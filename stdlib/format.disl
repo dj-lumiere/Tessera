@@ -358,6 +358,59 @@ require W: typename, Writer<W>
         write_hex64(#out, %low, 16)
         return()
 
+const TEN_POW_19_WIDE: I256 = 10000000000000000000
+
+; 256-bit values go out in 19-digit chunks too, until the rest fits in 128 bits.
+routine write_udecimal256<W>(#out: Ptr<W>, %value: I256, %min_digits: I64) -> Void
+require W: typename, Writer<W>
+    block entry():
+        %fits: Bool = %value.lshr(128).eq(0)
+        branch %fits ? narrow() : split()
+
+    block narrow():
+        write_udecimal128(#out, %value.to_i128(), %min_digits)
+        return()
+
+    block split():
+        %parts:    I256DivRem = %value.udivrem(TEN_POW_19_WIDE)
+        %high_min: I64 = %min_digits.sub(19).max(0)
+        write_udecimal256(#out, %parts.quotient, %high_min)
+        write_udecimal64(#out, %parts.remainder.to_i64(), 19)
+        return()
+
+routine write_decimal256<W>(#out: Ptr<W>, %value: I256) -> Void
+require W: typename, Writer<W>
+    block entry():
+        %negative: Bool = %value.slt(0)
+        branch %negative ? minus() : plain()
+
+    block plain():
+        write_udecimal256(#out, %value, 0)
+        return()
+
+    block minus():
+        write_str(#out, "-")
+        write_udecimal256(#out, %value.neg(), 0)
+        return()
+
+routine write_hex256<W>(#out: Ptr<W>, %value: I256) -> Void
+require W: typename, Writer<W>
+    block entry():
+        %high: I128 = %value.lshr(128).to_i128()
+        %low:  I128 = %value.to_i128()
+        %wide: Bool = %high.ne(0)
+        branch %wide ? both(%high, %low) : low_only(%low)
+
+    block low_only(%low: I128):
+        write_hex128(#out, %low)
+        return()
+
+    block both(%high: I128, %low: I128):
+        write_hex128(#out, %high)
+        write_hex64(#out, %low.lshr(64).to_i64(), 16)
+        write_hex64(#out, %low.to_i64(), 16)
+        return()
+
 ; -- Format --------------------------------------------------------------------
 
 routine I8.format<W>(%self: Self, #out: Ptr<W>) -> Void
@@ -448,6 +501,24 @@ routine I128.format_hex<W>(%self: Self, #out: Ptr<W>) -> Void
 require W: typename, Writer<W>
     block entry():
         write_hex128(#out, %self)
+        return()
+
+routine I256.format<W>(%self: Self, #out: Ptr<W>) -> Void
+require W: typename, Writer<W>
+    block entry():
+        write_decimal256(#out, %self)
+        return()
+
+routine I256.uformat<W>(%self: Self, #out: Ptr<W>) -> Void
+require W: typename, Writer<W>
+    block entry():
+        write_udecimal256(#out, %self, 0)
+        return()
+
+routine I256.format_hex<W>(%self: Self, #out: Ptr<W>) -> Void
+require W: typename, Writer<W>
+    block entry():
+        write_hex256(#out, %self)
         return()
 
 routine Bool.format<W>(%self: Self, #out: Ptr<W>) -> Void

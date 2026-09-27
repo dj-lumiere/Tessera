@@ -1,26 +1,35 @@
-; Disl stdlib: 3-by-2 limb division
+; Disl stdlib: 3-by-2 and 2-by-1 limb division
 ;
 ; div_3by2 divides the 192-bit (u2, u1, u0) by the 128-bit (d1, d0), for a
 ; normalized divisor (top bit of d1 set) and (u2, u1) < (d1, d0), so the
 ; quotient fits in 64 bits. It is the step of Knuth's algorithm D with a
-; two-limb divisor. All limbs are read as unsigned.
+; divisor of two or more limbs. div_2by1 divides the 128-bit (u1, u0) by the
+; normalized 64-bit d, for u1 < d: the step with a one-limb divisor. All limbs
+; are read as unsigned.
 ;
-; Two implementations, picked by target:
-;   x86_64   divq (128 / 64 in hardware) estimates the quotient from (u2, u1)
-;            and d1, then Knuth's test against d0 corrects it. With a
-;            two-limb divisor that test is exact, so no add-back is needed.
+; Two implementations of each, picked by target:
+;   x86_64   divq (128 / 64 in hardware). For 3-by-2 it estimates the
+;            quotient from (u2, u1) and d1, then Knuth's test against d0
+;            corrects it. With a two-limb divisor that test is exact, so no
+;            add-back is needed. For 2-by-1 it is the whole step.
 ;   others   Möller and Granlund, "Improved division by invariant integers"
 ;            (2011): multiply by a precomputed reciprocal instead of
 ;            dividing. ARM64 has no 128 / 64 divide. The code follows intx
 ;            (Paweł Bylica, Apache 2.0).
 ; divq beats the reciprocal when only a couple of digits share a divisor, as
-; in F128 division. div_3by2_mg is always defined, so it can be tested on x86.
+; in F128 division. div_3by2_mg and div_2by1_mg are always defined, so they
+; can be tested on x86.
 ;
-; Call div_3by2_prepare once per divisor and pass its result as %v.
+; Call div_3by2_prepare (div_2by1_prepare) once per divisor and pass its
+; result as %v.
 
 struct Div3By2
     quotient:  I64
     remainder: I128
+
+struct Div2By1
+    quotient:  I64
+    remainder: I64
 
 ; 0x7FD00 / (256 + i): 11-bit seeds for the reciprocal
 const RECIPROCAL_TABLE: Array<I64, 256> = [
@@ -118,6 +127,24 @@ routine div_3by2_mg(%u2: I64, %u1: I64, %u0: I64, %d1: I64, %d0: I64, %v: I64) -
         %res: Div3By2 = Div3By2 { quotient: %qq3, remainder: %rr2 }
         return(%res)
 
+; (u1, u0) / d with the reciprocal v = reciprocal_2by1(d) (Algorithm 4 of the paper).
+routine div_2by1_mg(%u1: I64, %u0: I64, %d: I64, %v: I64) -> Div2By1
+    block entry():
+        %u:     I128 = %u1.to_u128().shl(64).bitor(%u0.to_u128())
+        %q:     I128 = %v.to_u128().mul(%u1.to_u128()).add(%u)
+        %q_lo:  I64  = %q.to_i64()
+        %q_hi:  I64  = %q.lshr(64).to_i64().add(1)
+        %r:     I64  = %u0.sub(%q_hi.mul(%d))
+        ; The estimate is at most one too big (r wrapped above q_lo) or one too small (r >= d).
+        %back:  Bool = %r.ugt(%q_lo)
+        %q2:    I64  = %back ? %q_hi.sub(1) : %q_hi
+        %r2:    I64  = %back ? %r.add(%d) : %r
+        %over:  Bool = %r2.uge(%d)
+        %q3:    I64  = %over ? %q2.add(1) : %q2
+        %r3:    I64  = %over ? %r2.sub(%d) : %r2
+        %res: Div2By1 = Div2By1 { quotient: %q3, remainder: %r3 }
+        return(%res)
+
 ; -- divq ----------------------------------------------------------------------
 
 ; floor((hi × 2^64 + lo) / d) with x86's divq. Needs hi < d: divq faults when
@@ -158,7 +185,38 @@ routine div_3by2_divq(%u2: I64, %u1: I64, %u0: I64, %d1: I64, %d0: I64) -> Div3B
         %res: Div3By2 = Div3By2 { quotient: %q, remainder: %r }
         return(%res)
 
+@target(arch: "x86_64")
+routine div_2by1_divq(%u1: I64, %u0: I64, %d: I64) -> Div2By1
+    block entry():
+        %q:   I64 = divq_quotient(%u1, %u0, %d)
+        %r:   I64 = %u0.sub(%q.mul(%d))
+        %res: Div2By1 = Div2By1 { quotient: %q, remainder: %r }
+        return(%res)
+
 ; -- by target -----------------------------------------------------------------
+
+@target(arch: "x86_64")
+routine div_2by1_prepare(%d: I64) -> I64
+    block entry():
+        return(0)
+
+@target(arch: !"x86_64")
+routine div_2by1_prepare(%d: I64) -> I64
+    block entry():
+        %v: I64 = reciprocal_2by1(%d)
+        return(%v)
+
+@target(arch: "x86_64")
+routine div_2by1(%u1: I64, %u0: I64, %d: I64, %v: I64) -> Div2By1
+    block entry():
+        %r: Div2By1 = div_2by1_divq(%u1, %u0, %d)
+        return(%r)
+
+@target(arch: !"x86_64")
+routine div_2by1(%u1: I64, %u0: I64, %d: I64, %v: I64) -> Div2By1
+    block entry():
+        %r: Div2By1 = div_2by1_mg(%u1, %u0, %d, %v)
+        return(%r)
 
 @target(arch: "x86_64")
 routine div_3by2_prepare(%d1: I64, %d0: I64) -> I64

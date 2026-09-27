@@ -70,7 +70,7 @@ routine main() -> I32
 **Operations**
 
 - There are no operators. Everything is a method, and pure calls chain: `%i.add(1).bitand(%mask)`.
-- Signedness lives on the operation, not the type. `I8` to `I128` are the only integer types (no unsigned types):
+- Signedness lives on the operation, not the type. `I8` to `I256` are the only integer types (no unsigned types):
   `sdiv` / `udiv`, `srem` / `urem`, `slt` / `ult`, `sge` / `uge`, `ashr` / `lshr`, `shl`. There's no `shr`.
 - `add` / `sub` / `mul` wrap. Use `checked_*`, `overflowing_*`, or `saturating_*` when overflow matters.
 - Conversions are methods: `%n.to_i64()`, `%b.to_i64()` (Bool to 0/1), `%x.to_f64()`, `%u.uto_f64()`.
