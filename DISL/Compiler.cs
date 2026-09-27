@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 
 namespace Disl;
@@ -257,6 +258,7 @@ public sealed partial class Compiler
             case "I32": NoArgs(); return new IntType(32);
             case "I64": NoArgs(); return new IntType(64);
             case "I128": NoArgs(); return new IntType(128);
+            case "I256": NoArgs(); return new IntType(256);
             case "F16": NoArgs(); return FloatType.F16;
             case "BF16": NoArgs(); return FloatType.BF16;
             case "F32": NoArgs(); return FloatType.F32;
@@ -472,13 +474,13 @@ public sealed partial class Compiler
             }
             case IntType it:
             {
-                Int128 v = e is IntLit il ? il.Value : EvalConstInt(e, env, 0);
-                Int128 span = Int128.One << it.Bits;
-                Int128 min = it.Bits == 128 ? Int128.MinValue : -(span >> 1);
-                Int128 umax = it.Bits == 128 ? Int128.MaxValue : span - 1;
+                BigInteger v = e is IntLit il ? il.Value : EvalConstInt(e, env, 0);
+                BigInteger span = BigInteger.One << it.Bits;
+                BigInteger min = -(span >> 1);
+                BigInteger umax = span - 1;
                 // Values past the signed range are bit patterns, as in `0xb5c0fbcf` for an I32.
                 if (v < min || v > umax) throw new CompileError(e.Pos, $"{v} doesn't fit in {it}");
-                if (it.Bits < 128 && v > (span >> 1) - 1) v -= span;
+                if (v > (span >> 1) - 1) v -= span;
                 return v.ToString(CultureInfo.InvariantCulture);
             }
             case BoolType when e is BoolLit b:

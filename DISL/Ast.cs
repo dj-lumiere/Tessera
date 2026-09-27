@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace Disl;
 
 // ── Types as written ────────────────────────────────────────────────────────
@@ -105,7 +107,8 @@ public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos);
 
 public abstract record Expr(Pos Pos);
 
-public sealed record IntLit(Int128 Value, Pos Pos) : Expr(Pos);
+/// An integer literal. A value above a type's signed range is read as that type's two's-complement bit pattern.
+public sealed record IntLit(BigInteger Value, Pos Pos) : Expr(Pos);
 /// A literal whose type is fixed by its spelling: `b'A'` is I8, `'A'` is I32.
 public sealed record TypedIntLit(long Value, int Bits, Pos Pos) : Expr(Pos);
 public sealed record FloatLit(double Value, Pos Pos) : Expr(Pos);

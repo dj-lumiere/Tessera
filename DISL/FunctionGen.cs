@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Numerics;
 using System.Text;
 
 namespace Disl;
@@ -522,7 +524,7 @@ public sealed class FunctionGen
         return new Val(EmitTmp($"extractvalue {s.Llvm} {b.Op}, {member}"), ft);
     }
 
-    private Val IntConst(Int128 value, Pos pos, DType expected)
+    private Val IntConst(BigInteger value, Pos pos, DType expected)
     {
         var it = expected switch
         {
@@ -530,15 +532,13 @@ public sealed class FunctionGen
             EnumType en => en.Underlying,
             _ => throw Mismatch(pos, expected, "an integer literal"),
         };
-        if (it.Bits < 128)
-        {
-            Int128 min = -(Int128.One << (it.Bits - 1));
-            Int128 maxUnsigned = (Int128.One << it.Bits) - 1;
-            if (value < min || value > maxUnsigned) throw Err(pos, $"{value} does not fit in {it}");
-            // Values above the signed range are two's-complement bit patterns; LLVM wants the signed form.
-            if (value > maxUnsigned >> 1) value -= Int128.One << it.Bits;
-        }
-        return new Val(value.ToString(), expected);
+        BigInteger span = BigInteger.One << it.Bits;
+        BigInteger min = -(span >> 1);
+        BigInteger maxUnsigned = span - 1;
+        if (value < min || value > maxUnsigned) throw Err(pos, $"{value} does not fit in {it}");
+        // Values above the signed range are two's-complement bit patterns; LLVM wants the signed form.
+        if (value > maxUnsigned >> 1) value -= span;
+        return new Val(value.ToString(CultureInfo.InvariantCulture), expected);
     }
 
     private Val StringLiteral(StrLit s, DType expected)

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 
 namespace Disl;
 
@@ -66,10 +67,10 @@ public sealed class FloatType : DType
         : Hex(this == F32 ? (float)value : value);
 
     /// An LLVM constant with exactly these IEEE bits.
-    public string FromBits(Int128 bits) => this == F16 ? $"0xH{(ushort)bits:X4}"
-        : this == BF16 ? $"0xR{(ushort)bits:X4}"
-        : this == F32 ? Hex(BitConverter.Int32BitsToSingle(unchecked((int)(uint)bits)))
-        : Hex(BitConverter.Int64BitsToDouble(unchecked((long)(ulong)bits)));
+    public string FromBits(BigInteger bits) => this == F16 ? $"0xH{(ushort)(bits & ushort.MaxValue):X4}"
+        : this == BF16 ? $"0xR{(ushort)(bits & ushort.MaxValue):X4}"
+        : this == F32 ? Hex(BitConverter.Int32BitsToSingle(unchecked((int)(uint)(bits & uint.MaxValue))))
+        : Hex(BitConverter.Int64BitsToDouble(unchecked((long)(ulong)(bits & ulong.MaxValue))));
 
     private static string Hex(double d) =>
         "0x" + BitConverter.DoubleToInt64Bits(d).ToString("X16", CultureInfo.InvariantCulture);

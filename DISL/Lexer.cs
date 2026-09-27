@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Text;
 
 namespace Disl;
@@ -24,8 +25,9 @@ public readonly record struct Pos(string File, int Line, int Col)
     public override string ToString() => $"{File}:{Line}:{Col}";
 }
 
-/// IntValue holds an integer literal (up to 128 bits), a character's code, or a float's IEEE double bits.
-public sealed record Token(TokenKind Kind, string Text, Pos Pos, Int128 IntValue = default);
+/// IntValue holds an integer literal (a magnitude up to 256 bits, with its sign), a character's code, or a float's
+/// IEEE double bits.
+public sealed record Token(TokenKind Kind, string Text, Pos Pos, BigInteger IntValue = default);
 
 public sealed class CompileError(Pos pos, string message) : Exception($"{pos}: error: {message}")
 {
@@ -36,6 +38,10 @@ public sealed class CompileError(Pos pos, string message) : Exception($"{pos}: e
 /// is inside (), [], {} or follows a trailing backslash. Consecutive newlines collapse into one token.
 public sealed class Lexer(string file, string src)
 {
+    /// The widest integer type is I256, so a literal's magnitude is at most 2^256 - 1.
+    private const int MaxLiteralBits = 256;
+    private static readonly BigInteger MaxLiteral = (BigInteger.One << MaxLiteralBits) - 1;
+
     private int _i;
     private int _line = 1;
     private int _col = 1;
@@ -245,20 +251,19 @@ public sealed class Lexer(string file, string src)
         if (_i < src.Length && char.IsAsciiLetterOrDigit(src[_i]))
             throw new CompileError(pos, $"unexpected '{src[_i]}' in a number");
 
-        UInt128 mag = 0;
+        BigInteger mag = BigInteger.Zero;
         foreach (char d in digits)
         {
             int dv = Convert.ToInt32(d.ToString(), 16);
             if (dv >= radix) throw new CompileError(pos, $"digit '{d}' is invalid in base {radix}");
-            if (mag > (UInt128.MaxValue - (UInt128)dv) / (UInt128)radix)
-                throw new CompileError(pos, "integer literal overflows 128 bits");
-            mag = mag * (UInt128)radix + (UInt128)dv;
+            mag = mag * radix + dv;
+            if (mag > MaxLiteral) throw new CompileError(pos, $"integer literal overflows {MaxLiteralBits} bits");
         }
-        if (neg && mag > (UInt128)Int128.MaxValue + 1)
-            throw new CompileError(pos, "integer literal is below the 128-bit range");
+        if (neg && mag > (MaxLiteral >> 1) + 1)
+            throw new CompileError(pos, $"integer literal is below the {MaxLiteralBits}-bit range");
 
-        // Magnitudes above Int128.MaxValue are 128-bit two's-complement bit patterns.
-        Int128 value = neg ? unchecked(-(Int128)mag) : unchecked((Int128)mag);
+        // A magnitude above a type's signed range is that type's two's-complement bit pattern (IntConst).
+        BigInteger value = neg ? -mag : mag;
         return new Token(TokenKind.Int, src[start.._i], pos, value);
     }
 

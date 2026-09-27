@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace Disl;
 
 /// Recursive-descent parser. Layout is not significant: declarations are found by their keywords, statements are
@@ -344,9 +346,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return args;
     }
 
+    /// The low 64 bits of a token's value, read as two's complement.
+    private static long Low64(BigInteger v) => unchecked((long)(ulong)(v & ulong.MaxValue));
+
     private TypeArg ParseTypeArg()
     {
-        if (Is(TokenKind.Int)) return new TypeArgInt((long)Next().IntValue);
+        if (Is(TokenKind.Int)) return new TypeArgInt(Low64(Next().IntValue));
         if (Accept(TokenKind.At)) return new TypeArgAttr(ParseAttribute());
         if (Accept(TokenKind.LParen))
         {
@@ -567,13 +572,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 return new IntLit(t.IntValue, t.Pos);
             case TokenKind.Byte:
                 Next();
-                return new TypedIntLit((long)t.IntValue, 8, t.Pos);
+                return new TypedIntLit(Low64(t.IntValue), 8, t.Pos);
             case TokenKind.Char:
                 Next();
-                return new TypedIntLit((long)t.IntValue, 32, t.Pos);
+                return new TypedIntLit(Low64(t.IntValue), 32, t.Pos);
             case TokenKind.Float:
                 Next();
-                return new FloatLit(BitConverter.Int64BitsToDouble((long)t.IntValue), t.Pos);
+                return new FloatLit(BitConverter.Int64BitsToDouble(Low64(t.IntValue)), t.Pos);
             case TokenKind.Str:
                 Next();
                 return new StrLit(t.Text, t.Pos);
