@@ -82,7 +82,7 @@ routine main() -> I32
 - `routine name(%a: T, #p: Ptr<U>) -> R`. Methods are `routine Type.name(#self: Ptr<Self>, ...)` (pointer receiver)
   or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<I64>.new(#alloc)`.
 - **Most collection methods take `#self: Ptr<Self>`**, so a collection must live in memory (`alloca`) before you
-  call them. You can't call a pointer method on a temporary: `HashMapIter<K, V>.new(#m).next()` fails with "has no
+  call them. You can't call a pointer method on a temporary: `DictIter<K, V>.new(#m).next()` fails with "has no
   method 'next'"; alloca the iterator first.
 - Generic routines repeat their constraints: `require T: typename, Compare<T>`. Concepts: `Equal`, `Hash`,
   `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Format`.
@@ -161,13 +161,13 @@ releases storage. Out-of-range access, `pop` on empty, and `get` of a missing ke
 |------|----------------|-----------------|
 | `Array<T, N>` | `get`, `set`, `shift_left`, `shift_right`, `copy` | index |
 | `List<T>` | `push`, `pop`, `get`, `set`, `clear`, `reserve` | index |
-| `Deque<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `get`, `set` | front to back |
-| `HashMap<K, V>` | `put`, `get`, `contains`, `remove` | **insertion order (guaranteed)** |
-| `HashSet<T>` | `add`, `contains`, `remove` | **insertion order (guaranteed)** |
-| `BTreeMap<K, V>` | `put`, `get`, `contains`, `remove`, `key_order(rank)`, `get_order(rank)` | ascending key |
-| `BTreeSet<T>` | `add`, `contains`, `remove`, `get_order(rank)` | ascending |
+| `CircularList<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `get`, `set` | front to back |
+| `Dict<K, V>` | `put`, `get`, `contains`, `remove` | **insertion order (guaranteed)** |
+| `Set<T>` | `add`, `contains`, `remove` | **insertion order (guaranteed)** |
+| `SortedDict<K, V>` | `put`, `get`, `contains`, `remove`, `key_order(rank)`, `get_order(rank)` | ascending key |
+| `SortedSet<T>` | `add`, `contains`, `remove`, `get_order(rank)` | ascending |
 | `BTreeList<T>` | `push`, `insert(i, v)`, `get`, `set`, `remove(i)` | index |
-| `BinaryHeap<T>` | `push`, `pop`, `peek` (`T: Priority<T>`) | none |
+| `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Priority<T>`) | none |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
 removing then re-adding moves it to the end. Iterators are `XIter<T>.new(#collection)`; don't mutate a collection

@@ -1,4 +1,4 @@
-; BTreeMap<I64, I64> against a model. An LCG drives random put / remove / contains / get in three phases (few keys,
+; SortedDict<I64, I64> against a model. An LCG drives random put / remove / contains / get in three phases (few keys,
 ; many keys for a deep tree, then a drain that removes keys picked by rank so borrows and merges run). Every 500
 ; operations a checkpoint prints the length, a running checksum of every result, a hash of the ascending iteration
 ; sequence, and key_order / get_order at the first, middle, and last rank. Then eq.
@@ -30,31 +30,31 @@ require W: typename, Writer<W>
         return()
 
 ; Folds every (key, value) pair in iteration order.
-routine iteration_hash(#map: Ptr<BTreeMap<I64, I64>>) -> I64
+routine iteration_hash(#map: Ptr<SortedDict<I64, I64>>) -> I64
     block entry():
-        %iter_val: BTreeMapIter<I64, I64> = BTreeMapIter<I64, I64>.new(#map)
-        #iter: Ptr<BTreeMapIter<I64, I64>> = alloca<BTreeMapIter<I64, I64>>([%iter_val])
+        %iter_val: SortedDictIter<I64, I64> = SortedDictIter<I64, I64>.new(#map)
+        #iter: Ptr<SortedDictIter<I64, I64>> = alloca<SortedDictIter<I64, I64>>([%iter_val])
         jump next(#iter, 0)
 
-    block next(#iter: Ptr<BTreeMapIter<I64, I64>>, %hash: I64):
+    block next(#iter: Ptr<SortedDictIter<I64, I64>>, %hash: I64):
         %item: Option<KVPair<I64, I64>> = #iter.next()
         %more: Bool = %item.tag
         %pair: KVPair<I64, I64> = %item.value
         branch %more ? fold(#iter, %hash, %pair) : return(%hash)
 
-    block fold(#iter: Ptr<BTreeMapIter<I64, I64>>, %hash: I64, %pair: KVPair<I64, I64>):
+    block fold(#iter: Ptr<SortedDictIter<I64, I64>>, %hash: I64, %pair: KVPair<I64, I64>):
         %key:   I64 = %pair.key
         %value: I64 = %pair.value
         jump next(#iter, mix(mix(%hash, %key), %value))
 
-routine rank_hash_at(#map: Ptr<BTreeMap<I64, I64>>, %hash: I64, %rank: I64) -> I64
+routine rank_hash_at(#map: Ptr<SortedDict<I64, I64>>, %hash: I64, %rank: I64) -> I64
     block entry():
         %key:   I64 = #map.key_order(%rank)
         %value: I64 = #map.get_order(%rank)
         return(mix(mix(%hash, %key), %value))
 
 ; Folds key_order and get_order at the first, middle, and last rank; 0 for an empty map.
-routine rank_hash(#map: Ptr<BTreeMap<I64, I64>>) -> I64
+routine rank_hash(#map: Ptr<SortedDict<I64, I64>>) -> I64
     block entry():
         %length: I64 = #map.length()
         %empty:  Bool = %length.eq(0)
@@ -67,7 +67,7 @@ routine rank_hash(#map: Ptr<BTreeMap<I64, I64>>) -> I64
         return(%last)
 
 routine checkpoint(
-        #out: Ptr<BufWriter<FdWriter>>, #map: Ptr<BTreeMap<I64, I64>>, %phase: I64, %op: I64, %results: I64) -> Void
+        #out: Ptr<BufWriter<FdWriter>>, #map: Ptr<SortedDict<I64, I64>>, %phase: I64, %op: I64, %results: I64) -> Void
     block entry():
         write_str(#out, "phase ")
         %phase.format(#out)
@@ -83,7 +83,7 @@ routine checkpoint(
 ; %removes a remove of a random key, below %rank_removes a remove of the key at a random rank, otherwise a lookup.
 ; Returns the updated results checksum.
 routine run_phase(
-        #out: Ptr<BufWriter<FdWriter>>, #map: Ptr<BTreeMap<I64, I64>>, #rng: Ptr<Rng>,
+        #out: Ptr<BufWriter<FdWriter>>, #map: Ptr<SortedDict<I64, I64>>, #rng: Ptr<Rng>,
         %phase: I64, %ops: I64, %keys: I64, %puts: I64, %removes: I64, %rank_removes: I64, %results: I64) -> I64
     block entry():
         jump next(0, %results)
@@ -143,7 +143,7 @@ routine run_phase(
         jump next(%op, %results)
 
 ; Copies #from into #to from the largest key down, so the two trees are built by a different insertion order.
-routine copy_reversed(#from: Ptr<BTreeMap<I64, I64>>, #to: Ptr<BTreeMap<I64, I64>>) -> Void
+routine copy_reversed(#from: Ptr<SortedDict<I64, I64>>, #to: Ptr<SortedDict<I64, I64>>) -> Void
     block entry():
         jump next(#from.length())
 
@@ -173,14 +173,14 @@ routine main() -> I32
         #alloc: Ptr<Allocator> = alloca<Allocator>([%heap])
         %rng_val: Rng      = Rng { state: 1 }
         #rng:     Ptr<Rng> = alloca<Rng>([%rng_val])
-        %map_val: BTreeMap<I64, I64> = BTreeMap<I64, I64>.new(#alloc)
-        #map: Ptr<BTreeMap<I64, I64>> = alloca<BTreeMap<I64, I64>>([%map_val])
+        %map_val: SortedDict<I64, I64> = SortedDict<I64, I64>.new(#alloc)
+        #map: Ptr<SortedDict<I64, I64>> = alloca<SortedDict<I64, I64>>([%map_val])
 
         %r1: I64 = run_phase(#out, #map, #rng, 1, 3000, 64, 5, 7, 7, 0)
         %r2: I64 = run_phase(#out, #map, #rng, 2, 10000, 20000, 6, 7, 7, %r1)
 
-        %copy_val: BTreeMap<I64, I64> = BTreeMap<I64, I64>.new(#alloc)
-        #copy: Ptr<BTreeMap<I64, I64>> = alloca<BTreeMap<I64, I64>>([%copy_val])
+        %copy_val: SortedDict<I64, I64> = SortedDict<I64, I64>.new(#alloc)
+        #copy: Ptr<SortedDict<I64, I64>> = alloca<SortedDict<I64, I64>>([%copy_val])
         report_eq(#out, "empty copy equal", #map.eq(#copy))
         copy_reversed(#map, #copy)
         report_eq(#out, "reversed copy equal", #map.eq(#copy))

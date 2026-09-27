@@ -1,30 +1,30 @@
-﻿; Tessera stdlib collection: BTreeMap<K, V>
+﻿; Tessera stdlib collection: SortedDict<K, V>
 ;
 ; Order-statistic B-tree map with a fixed node key capacity of NODE_KEYS.
 ; Nodes store keys/values/children inline with fixed arrays.
-; The allocator is stored in BTreeMap; node helpers still receive it as a parameter.
+; The allocator is stored in SortedDict; node helpers still receive it as a parameter.
 
 const NODE_KEYS: I64 = 7
 const NODE_CHILDREN: I64 = 8
 const NODE_MIN_KEYS: I64 = 4
 
-record BTreeMapNode<K, V>
+record SortedDictNode<K, V>
 require K: typename, V: typename
     leaf: Bool
     length: I64
     subtree_count: I64
     keys: Array<K, NODE_KEYS>
     values: Array<V, NODE_KEYS>
-    children: Array<Ptr<BTreeMapNode<K, V>>, NODE_CHILDREN>
+    children: Array<Ptr<SortedDictNode<K, V>>, NODE_CHILDREN>
 
-record BTreeMap<K, V>
-conform Equal<BTreeMap<K, V>>
+record SortedDict<K, V>
+conform Equal<SortedDict<K, V>>
 require K: typename, V: typename, Compare<K>, Equal<V>
-    root: Ptr<BTreeMapNode<K, V>>
+    root: Ptr<SortedDictNode<K, V>>
     length: I64
     alloc: Ptr<Allocator>
 
-routine BTreeMap<K, V>.new(#alloc: Ptr<Allocator>) -> Self
+routine SortedDict<K, V>.new(#alloc: Ptr<Allocator>) -> Self
 require K: typename, V: typename, Compare<K>
     block entry():
         %map: Self = Self {
@@ -34,33 +34,33 @@ require K: typename, V: typename, Compare<K>
         }
         return(%map)
 
-routine BTreeMap<K, V>.length(#self: Ptr<Self>) -> I64
+routine SortedDict<K, V>.length(#self: Ptr<Self>) -> I64
 require K: typename, V: typename
     block entry():
         %length: I64 := #self.length
         return(%length)
 
-routine BTreeMap<K, V>.is_empty(#self: Ptr<Self>) -> Bool
+routine SortedDict<K, V>.is_empty(#self: Ptr<Self>) -> Bool
 require K: typename, V: typename
     block entry():
         %length: I64 := #self.length
         %empty: Bool = %length.eq(0)
         return(%empty)
 
-routine BTreeMapNode<K, V>.new(%leaf: Bool, #alloc: Ptr<Allocator>) -> Ptr<BTreeMapNode<K, V>>
+routine SortedDictNode<K, V>.new(%leaf: Bool, #alloc: Ptr<Allocator>) -> Ptr<SortedDictNode<K, V>>
 require K: typename, V: typename
     block entry():
-        #node: Ptr<BTreeMapNode<K, V>> = alloc<BTreeMapNode<K, V>>(#alloc, 1)
+        #node: Ptr<SortedDictNode<K, V>> = alloc<SortedDictNode<K, V>>(#alloc, 1)
         %failed: Bool = #node.is_null()
         branch %failed ? panic(TrapCode.AllocFailed) : init(#node, %leaf)
 
-    block init(#node: Ptr<BTreeMapNode<K, V>>, %leaf: Bool):
+    block init(#node: Ptr<SortedDictNode<K, V>>, %leaf: Bool):
         #node.leaf = %leaf
         #node.length = 0
         #node.subtree_count = 0
         return(#node)
 
-routine BTreeMapNode<K, V>.count(#self: Ptr<Self>) -> I64
+routine SortedDictNode<K, V>.count(#self: Ptr<Self>) -> I64
 require K: typename, V: typename
     block entry():
         %empty: Bool = #self.is_null()
@@ -70,7 +70,7 @@ require K: typename, V: typename
         %count: I64 := #self.subtree_count
         return(%count)
 
-routine BTreeMapNode<K, V>.recount(#self: Ptr<Self>) -> Void
+routine SortedDictNode<K, V>.recount(#self: Ptr<Self>) -> Void
 require K: typename, V: typename
     block entry():
         %leaf: Bool := #self.leaf
@@ -89,7 +89,7 @@ require K: typename, V: typename
         branch %done ? finish(%sum) : add_child(%i, %sum, %length)
 
     block add_child(%i: I64, %sum: I64, %length: I64):
-        #child: Ptr<BTreeMapNode<K, V>> := #self.children[%i]
+        #child: Ptr<SortedDictNode<K, V>> := #self.children[%i]
         %child_count: I64 = #child.count()
         %with_child: I64 = %sum.add(%child_count)
         %has_key: Bool = %i.slt(%length)
@@ -101,8 +101,8 @@ require K: typename, V: typename
         #self.subtree_count = %sum
         return()
 
-routine BTreeMap<K, V>.find_index(
-        #self: Ptr<Self>, #node: Ptr<BTreeMapNode<K, V>>, %key: K) -> I64
+routine SortedDict<K, V>.find_index(
+        #self: Ptr<Self>, #node: Ptr<SortedDictNode<K, V>>, %key: K) -> I64
 require K: typename, V: typename
     block entry():
         jump loop(0)
@@ -118,40 +118,40 @@ require K: typename, V: typename
         %before_or_equal: Bool = %cmp.sle(0)
         branch %before_or_equal ? return(%i) : loop(%i.add(1))
 
-routine BTreeMap<K, V>.get(#self: Ptr<Self>, %key: K) -> V
+routine SortedDict<K, V>.get(#self: Ptr<Self>, %key: K) -> V
 require K: typename, V: typename
     block entry():
-        #root: Ptr<BTreeMapNode<K, V>> := #self.root
+        #root: Ptr<SortedDictNode<K, V>> := #self.root
         %empty: Bool = #root.is_null()
         branch %empty ? panic(TrapCode.MissingKey) : search(#root, %key)
 
-    block search(#node: Ptr<BTreeMapNode<K, V>>, %key: K):
+    block search(#node: Ptr<SortedDictNode<K, V>>, %key: K):
         %i: I64 = #self.find_index(#node, %key)
         %length: I64 := #node.length
         %inside: Bool = %i.slt(%length)
         branch %inside ? maybe_match(#node, %i, %key) : descend_or_missing(#node, %i, %key)
 
-    block maybe_match(#node: Ptr<BTreeMapNode<K, V>>, %i: I64, %key: K):
+    block maybe_match(#node: Ptr<SortedDictNode<K, V>>, %i: I64, %key: K):
         %node_key: K := #node.keys[%i]
         %cmp: I32 = %key.compare(%node_key)
         %equal: Bool = %cmp.eq(0)
         branch %equal ? load(#node, %i) : descend_or_missing(#node, %i, %key)
 
-    block descend_or_missing(#node: Ptr<BTreeMapNode<K, V>>, %i: I64, %key: K):
+    block descend_or_missing(#node: Ptr<SortedDictNode<K, V>>, %i: I64, %key: K):
         %leaf: Bool := #node.leaf
         branch %leaf ? panic(TrapCode.MissingKey) : descend(#node, %i, %key)
 
-    block descend(#node: Ptr<BTreeMapNode<K, V>>, %i: I64, %key: K):
-        #child: Ptr<BTreeMapNode<K, V>> := #node.children[%i]
+    block descend(#node: Ptr<SortedDictNode<K, V>>, %i: I64, %key: K):
+        #child: Ptr<SortedDictNode<K, V>> := #node.children[%i]
         jump search(#child, %key)
 
-    block load(#node: Ptr<BTreeMapNode<K, V>>, %i: I64):
+    block load(#node: Ptr<SortedDictNode<K, V>>, %i: I64):
         %value: V := #node.values[%i]
         return(%value)
 
-; BTreeMaps are sorted by key, so structural in-order comparison of both
+; SortedDicts are sorted by key, so structural in-order comparison of both
 ; keys and values gives map equality.
-routine BTreeMap<K, V>.eq(#self: Ptr<Self>, #other: Ptr<Self>) -> Bool
+routine SortedDict<K, V>.eq(#self: Ptr<Self>, #other: Ptr<Self>) -> Bool
 require K: typename, V: typename, Compare<K>, Equal<V>
     block entry():
         %la: I64 := #self.length
@@ -176,34 +176,34 @@ require K: typename, V: typename, Compare<K>, Equal<V>
         %v_eq: Bool = %va.eq(%vb)
         branch %v_eq ? loop(%i.add(1), %len) : return(false)
 
-routine BTreeMap<K, V>.contains(#self: Ptr<Self>, %key: K) -> Bool
+routine SortedDict<K, V>.contains(#self: Ptr<Self>, %key: K) -> Bool
 require K: typename, V: typename
     block entry():
-        #root: Ptr<BTreeMapNode<K, V>> := #self.root
+        #root: Ptr<SortedDictNode<K, V>> := #self.root
         %empty: Bool = #root.is_null()
         branch %empty ? return(false) : search(#root, %key)
 
-    block search(#node: Ptr<BTreeMapNode<K, V>>, %key: K):
+    block search(#node: Ptr<SortedDictNode<K, V>>, %key: K):
         %i: I64 = #self.find_index(#node, %key)
         %length: I64 := #node.length
         %inside: Bool = %i.slt(%length)
         branch %inside ? maybe_match(#node, %i, %key) : descend_or_missing(#node, %i, %key)
 
-    block maybe_match(#node: Ptr<BTreeMapNode<K, V>>, %i: I64, %key: K):
+    block maybe_match(#node: Ptr<SortedDictNode<K, V>>, %i: I64, %key: K):
         %node_key: K := #node.keys[%i]
         %cmp: I32 = %key.compare(%node_key)
         %equal: Bool = %cmp.eq(0)
         branch %equal ? return(true) : descend_or_missing(#node, %i, %key)
 
-    block descend_or_missing(#node: Ptr<BTreeMapNode<K, V>>, %i: I64, %key: K):
+    block descend_or_missing(#node: Ptr<SortedDictNode<K, V>>, %i: I64, %key: K):
         %leaf: Bool := #node.leaf
         branch %leaf ? return(false) : descend(#node, %i, %key)
 
-    block descend(#node: Ptr<BTreeMapNode<K, V>>, %i: I64, %key: K):
-        #child: Ptr<BTreeMapNode<K, V>> := #node.children[%i]
+    block descend(#node: Ptr<SortedDictNode<K, V>>, %i: I64, %key: K):
+        #child: Ptr<SortedDictNode<K, V>> := #node.children[%i]
         jump search(#child, %key)
 
-routine BTreeMap<K, V>.get_order(#self: Ptr<Self>, %order: I64) -> V
+routine SortedDict<K, V>.get_order(#self: Ptr<Self>, %order: I64) -> V
 require K: typename, V: typename
     block entry():
         %length: I64 := #self.length
@@ -211,49 +211,49 @@ require K: typename, V: typename
         branch %in_bounds ? select_root(%order) : panic(TrapCode.Bounds)
 
     block select_root(%order: I64):
-        #root: Ptr<BTreeMapNode<K, V>> := #self.root
+        #root: Ptr<SortedDictNode<K, V>> := #self.root
         jump select_node(#root, %order)
 
-    block select_node(#node: Ptr<BTreeMapNode<K, V>>, %order: I64):
+    block select_node(#node: Ptr<SortedDictNode<K, V>>, %order: I64):
         jump scan(#node, %order, 0)
 
-    block scan(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
+    block scan(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
         %length: I64 := #node.length
         %done: Bool = %i.sge(%length)
         branch %done ? last_child(#node, %order, %i) : check_child(#node, %order, %i)
 
-    block check_child(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
+    block check_child(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
         %leaf: Bool := #node.leaf
         branch %leaf ? leaf_key(#node, %order, %i) : internal_child(#node, %order, %i)
 
-    block leaf_key(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
+    block leaf_key(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
         %match: Bool = %order.eq(%i)
         branch %match ? load_order(#node, %i) : scan(#node, %order, %i.add(1))
 
-    block internal_child(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
-        #child: Ptr<BTreeMapNode<K, V>> := #node.children[%i]
+    block internal_child(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
+        #child: Ptr<SortedDictNode<K, V>> := #node.children[%i]
         %child_count: I64 = #child.count()
         %in_child: Bool = %order.slt(%child_count)
         branch %in_child ? select_node(#child, %order) : check_key(#node, %order, %i, %child_count)
 
-    block check_key(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64, %child_count: I64):
+    block check_key(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64, %child_count: I64):
         %after_child: I64 = %order.sub(%child_count)
         %is_key: Bool = %after_child.eq(0)
         branch %is_key ? load_order(#node, %i) : scan(#node, %after_child.sub(1), %i.add(1))
 
-    block last_child(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
+    block last_child(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
         %leaf: Bool := #node.leaf
         branch %leaf ? panic(TrapCode.Unreachable) : descend_last(#node, %order, %i)
 
-    block descend_last(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
-        #child: Ptr<BTreeMapNode<K, V>> := #node.children[%i]
+    block descend_last(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
+        #child: Ptr<SortedDictNode<K, V>> := #node.children[%i]
         jump select_node(#child, %order)
 
-    block load_order(#node: Ptr<BTreeMapNode<K, V>>, %i: I64):
+    block load_order(#node: Ptr<SortedDictNode<K, V>>, %i: I64):
         %value: V := #node.values[%i]
         return(%value)
 
-routine BTreeMap<K, V>.key_order(#self: Ptr<Self>, %order: I64) -> K
+routine SortedDict<K, V>.key_order(#self: Ptr<Self>, %order: I64) -> K
 require K: typename, V: typename
     block entry():
         %length: I64 := #self.length
@@ -261,55 +261,55 @@ require K: typename, V: typename
         branch %in_bounds ? select_root(%order) : panic(TrapCode.Bounds)
 
     block select_root(%order: I64):
-        #root: Ptr<BTreeMapNode<K, V>> := #self.root
+        #root: Ptr<SortedDictNode<K, V>> := #self.root
         jump select_node(#root, %order)
 
-    block select_node(#node: Ptr<BTreeMapNode<K, V>>, %order: I64):
+    block select_node(#node: Ptr<SortedDictNode<K, V>>, %order: I64):
         jump scan(#node, %order, 0)
 
-    block scan(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
+    block scan(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
         %length: I64 := #node.length
         %done: Bool = %i.sge(%length)
         branch %done ? last_child(#node, %order, %i) : check_child(#node, %order, %i)
 
-    block check_child(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
+    block check_child(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
         %leaf: Bool := #node.leaf
         branch %leaf ? leaf_key(#node, %order, %i) : internal_child(#node, %order, %i)
 
-    block leaf_key(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
+    block leaf_key(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
         %match: Bool = %order.eq(%i)
         branch %match ? load_key(#node, %i) : scan(#node, %order, %i.add(1))
 
-    block internal_child(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
-        #child: Ptr<BTreeMapNode<K, V>> := #node.children[%i]
+    block internal_child(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
+        #child: Ptr<SortedDictNode<K, V>> := #node.children[%i]
         %child_count: I64 = #child.count()
         %in_child: Bool = %order.slt(%child_count)
         branch %in_child ? select_node(#child, %order) : check_key(#node, %order, %i, %child_count)
 
-    block check_key(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64, %child_count: I64):
+    block check_key(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64, %child_count: I64):
         %after_child: I64 = %order.sub(%child_count)
         %is_key: Bool = %after_child.eq(0)
         branch %is_key ? load_key(#node, %i) : scan(#node, %after_child.sub(1), %i.add(1))
 
-    block last_child(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
+    block last_child(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
         %leaf: Bool := #node.leaf
         branch %leaf ? panic(TrapCode.Unreachable) : descend_last(#node, %order, %i)
 
-    block descend_last(#node: Ptr<BTreeMapNode<K, V>>, %order: I64, %i: I64):
-        #child: Ptr<BTreeMapNode<K, V>> := #node.children[%i]
+    block descend_last(#node: Ptr<SortedDictNode<K, V>>, %order: I64, %i: I64):
+        #child: Ptr<SortedDictNode<K, V>> := #node.children[%i]
         jump select_node(#child, %order)
 
-    block load_key(#node: Ptr<BTreeMapNode<K, V>>, %i: I64):
+    block load_key(#node: Ptr<SortedDictNode<K, V>>, %i: I64):
         %key: K := #node.keys[%i]
         return(%key)
 
-routine BTreeMapNode<K, V>.split_child(
+routine SortedDictNode<K, V>.split_child(
         #self: Ptr<Self>, %index: I64, #alloc: Ptr<Allocator>) -> Void
 require K: typename, V: typename
     block entry():
-        #left: Ptr<BTreeMapNode<K, V>> := #self.children[%index]
+        #left: Ptr<SortedDictNode<K, V>> := #self.children[%index]
         %leaf: Bool := #left.leaf
-        #right: Ptr<BTreeMapNode<K, V>> = BTreeMapNode<K, V>.new(%leaf, #alloc)
+        #right: Ptr<SortedDictNode<K, V>> = SortedDictNode<K, V>.new(%leaf, #alloc)
         %mid: I64 = NODE_KEYS.sdiv(2)
         %node_keys_m_mid: I64 = NODE_KEYS.sub(%mid)
         %right_count: I64 = %node_keys_m_mid.sub(1)
@@ -322,12 +322,12 @@ require K: typename, V: typename
             : copy_children(#left, #right, %mid, %right_count)
 
     block copy_children(
-            #left: Ptr<BTreeMapNode<K, V>>, #right: Ptr<BTreeMapNode<K, V>>,
+            #left: Ptr<SortedDictNode<K, V>>, #right: Ptr<SortedDictNode<K, V>>,
             %mid: I64, %right_count: I64):
         jump child_loop(0, #left, #right, %mid, %right_count)
 
     block child_loop(
-            %i: I64, #left: Ptr<BTreeMapNode<K, V>>, #right: Ptr<BTreeMapNode<K, V>>,
+            %i: I64, #left: Ptr<SortedDictNode<K, V>>, #right: Ptr<SortedDictNode<K, V>>,
             %mid: I64, %right_count: I64):
         %done: Bool = %i.sgt(%right_count)
         branch %done
@@ -335,36 +335,36 @@ require K: typename, V: typename
             : child_copy(%i, #left, #right, %mid, %right_count)
 
     block child_copy(
-            %i: I64, #left: Ptr<BTreeMapNode<K, V>>, #right: Ptr<BTreeMapNode<K, V>>,
+            %i: I64, #left: Ptr<SortedDictNode<K, V>>, #right: Ptr<SortedDictNode<K, V>>,
             %mid: I64, %right_count: I64):
         %src: I64 = %mid.add(1).add(%i)
-        #child: Ptr<BTreeMapNode<K, V>> := #left.children[%src]
+        #child: Ptr<SortedDictNode<K, V>> := #left.children[%src]
         #right.children[%i] = #child
         jump child_loop(%i.add(1), #left, #right, %mid, %right_count)
 
     block promote(
-            #left: Ptr<BTreeMapNode<K, V>>, #right: Ptr<BTreeMapNode<K, V>>, %mid: I64):
+            #left: Ptr<SortedDictNode<K, V>>, #right: Ptr<SortedDictNode<K, V>>, %mid: I64):
         %parent_length: I64 := #self.length
         #self.keys.shift_right(%index, %parent_length)
         #self.values.shift_right(%index, %parent_length)
         jump shift_children(%parent_length, #left, #right, %mid)
 
     block shift_children(
-            %i: I64, #left: Ptr<BTreeMapNode<K, V>>, #right: Ptr<BTreeMapNode<K, V>>,
+            %i: I64, #left: Ptr<SortedDictNode<K, V>>, #right: Ptr<SortedDictNode<K, V>>,
             %mid: I64):
         %stop: I64 = %index.add(1)
         %done: Bool = %i.slt(%stop)
         branch %done ? install(#left, #right, %mid) : move_child(%i, #left, #right, %mid)
 
     block move_child(
-            %i: I64, #left: Ptr<BTreeMapNode<K, V>>, #right: Ptr<BTreeMapNode<K, V>>,
+            %i: I64, #left: Ptr<SortedDictNode<K, V>>, #right: Ptr<SortedDictNode<K, V>>,
             %mid: I64):
-        #child: Ptr<BTreeMapNode<K, V>> := #self.children[%i]
+        #child: Ptr<SortedDictNode<K, V>> := #self.children[%i]
         #self.children[%i.add(1)] = #child
         jump shift_children(%i.sub(1), #left, #right, %mid)
 
     block install(
-            #left: Ptr<BTreeMapNode<K, V>>, #right: Ptr<BTreeMapNode<K, V>>, %mid: I64):
+            #left: Ptr<SortedDictNode<K, V>>, #right: Ptr<SortedDictNode<K, V>>, %mid: I64):
         %middle_key: K := #left.keys[%mid]
         %middle_value: V := #left.values[%mid]
         #self.keys[%index] = %middle_key
@@ -379,8 +379,8 @@ require K: typename, V: typename
         #self.recount()
         return()
 
-routine BTreeMapNode<K, V>.insert_nonfull(
-        #self: Ptr<Self>, #map: Ptr<BTreeMap<K, V>>,
+routine SortedDictNode<K, V>.insert_nonfull(
+        #self: Ptr<Self>, #map: Ptr<SortedDict<K, V>>,
         %key: K, %value: V, #alloc: Ptr<Allocator>) -> Void
 require K: typename, V: typename
     block entry():
@@ -401,36 +401,36 @@ require K: typename, V: typename
 
     block insert_internal():
         %slot: I64 = #map.find_index(#self, %key)
-        #child: Ptr<BTreeMapNode<K, V>> := #self.children[%slot]
+        #child: Ptr<SortedDictNode<K, V>> := #self.children[%slot]
         %child_length: I64 := #child.length
         %full: Bool = %child_length.eq(NODE_KEYS)
         branch %full ? split_then_insert(%slot, #child) : descend(%slot, #child)
 
-    block split_then_insert(%slot: I64, #child: Ptr<BTreeMapNode<K, V>>):
+    block split_then_insert(%slot: I64, #child: Ptr<SortedDictNode<K, V>>):
         #self.split_child(%slot, #alloc)
         %pivot: K := #self.keys[%slot]
         %cmp: I32 = %key.compare(%pivot)
         %go_right: Bool = %cmp.sgt(0)
         %slot_p1: I64 = %slot.add(1)
         %next_slot: I64 = %go_right ? %slot_p1 : %slot
-        #next_child: Ptr<BTreeMapNode<K, V>> := #self.children[%next_slot]
+        #next_child: Ptr<SortedDictNode<K, V>> := #self.children[%next_slot]
         jump descend(%next_slot, #next_child)
 
-    block descend(%slot: I64, #child: Ptr<BTreeMapNode<K, V>>):
+    block descend(%slot: I64, #child: Ptr<SortedDictNode<K, V>>):
         #child.insert_nonfull(#map, %key, %value, #alloc)
         #self.recount()
         return()
 
-routine BTreeMap<K, V>.put(#self: Ptr<Self>, %key: K, %value: V) -> Void
+routine SortedDict<K, V>.put(#self: Ptr<Self>, %key: K, %value: V) -> Void
 require K: typename, V: typename
     block entry():
-        #root: Ptr<BTreeMapNode<K, V>> := #self.root
+        #root: Ptr<SortedDictNode<K, V>> := #self.root
         %empty: Bool = #root.is_null()
         branch %empty ? first_root() : maybe_replace(#root)
 
     block first_root():
         #alloc: Ptr<Allocator> := #self.alloc
-        #root: Ptr<BTreeMapNode<K, V>> = BTreeMapNode<K, V>.new(true, #alloc)
+        #root: Ptr<SortedDictNode<K, V>> = SortedDictNode<K, V>.new(true, #alloc)
         #root.keys[0] = %key
         #root.values[0] = %value
         #root.length = 1
@@ -439,31 +439,31 @@ require K: typename, V: typename
         #self.length = 1
         return()
 
-    block maybe_replace(#root: Ptr<BTreeMapNode<K, V>>):
+    block maybe_replace(#root: Ptr<SortedDictNode<K, V>>):
         %replaced: Bool = #root.replace(#self, %key, %value)
         branch %replaced ? return() : insert_root(#root)
 
-    block insert_root(#root: Ptr<BTreeMapNode<K, V>>):
+    block insert_root(#root: Ptr<SortedDictNode<K, V>>):
         #alloc: Ptr<Allocator> := #self.alloc
         %root_length: I64 := #root.length
         %full: Bool = %root_length.eq(NODE_KEYS)
         branch %full ? split_root(#root, #alloc) : insert_nonfull(#root, #alloc)
 
-    block split_root(#old_root: Ptr<BTreeMapNode<K, V>>, #alloc: Ptr<Allocator>):
-        #new_root: Ptr<BTreeMapNode<K, V>> = BTreeMapNode<K, V>.new(false, #alloc)
+    block split_root(#old_root: Ptr<SortedDictNode<K, V>>, #alloc: Ptr<Allocator>):
+        #new_root: Ptr<SortedDictNode<K, V>> = SortedDictNode<K, V>.new(false, #alloc)
         #new_root.children[0] = #old_root
         #self.root = #new_root
         #new_root.split_child(0, #alloc)
         jump insert_nonfull(#new_root, #alloc)
 
-    block insert_nonfull(#root: Ptr<BTreeMapNode<K, V>>, #alloc: Ptr<Allocator>):
+    block insert_nonfull(#root: Ptr<SortedDictNode<K, V>>, #alloc: Ptr<Allocator>):
         #root.insert_nonfull(#self, %key, %value, #alloc)
         %length: I64 := #self.length
         #self.length = %length.add(1)
         return()
 
-routine BTreeMapNode<K, V>.replace(
-        #self: Ptr<Self>, #map: Ptr<BTreeMap<K, V>>,
+routine SortedDictNode<K, V>.replace(
+        #self: Ptr<Self>, #map: Ptr<SortedDict<K, V>>,
         %key: K, %value: V) -> Bool
 require K: typename, V: typename
     block entry():
@@ -487,11 +487,11 @@ require K: typename, V: typename
         branch %leaf ? return(false): descend(%slot)
 
     block descend(%slot: I64):
-        #child: Ptr<BTreeMapNode<K, V>> := #self.children[%slot]
+        #child: Ptr<SortedDictNode<K, V>> := #self.children[%slot]
         %replaced: Bool = #child.replace(#map, %key, %value)
         return(%replaced)
 
-routine BTreeMapNode<K, V>.remove_leaf_at(#self: Ptr<Self>, %index: I64) -> V
+routine SortedDictNode<K, V>.remove_leaf_at(#self: Ptr<Self>, %index: I64) -> V
 require K: typename, V: typename
     block entry():
         %old: V := #self.values[%index]
@@ -508,12 +508,12 @@ require K: typename, V: typename
 ; Helpers below ensure a child has length >= 4 (= t) before any deletion
 ; descent so the child can absorb a one-key drop without underflowing.
 
-routine BTreeMapNode<K, V>.borrow_from_left(#self: Ptr<Self>, %i: I64) -> Void
+routine SortedDictNode<K, V>.borrow_from_left(#self: Ptr<Self>, %i: I64) -> Void
 require K: typename, V: typename
     block entry():
         %i_m1: I64 = %i.sub(1)
-        #left: Ptr<BTreeMapNode<K, V>> := #self.children[%i_m1]
-        #child: Ptr<BTreeMapNode<K, V>> := #self.children[%i]
+        #left: Ptr<SortedDictNode<K, V>> := #self.children[%i_m1]
+        #child: Ptr<SortedDictNode<K, V>> := #self.children[%i]
         %left_length: I64 := #left.length
         %child_length: I64 := #child.length
         #child.keys.shift_right(0, %child_length)
@@ -532,16 +532,16 @@ require K: typename, V: typename
             : move_child(#left, #child, %left_length, %child_length)
 
     block move_child(
-            #left: Ptr<BTreeMapNode<K, V>>, #child: Ptr<BTreeMapNode<K, V>>,
+            #left: Ptr<SortedDictNode<K, V>>, #child: Ptr<SortedDictNode<K, V>>,
             %left_length: I64, %child_length: I64):
         %child_count: I64 = %child_length.add(1)
         #child.children.shift_right(0, %child_count)
-        #moved: Ptr<BTreeMapNode<K, V>> := #left.children[%left_length]
+        #moved: Ptr<SortedDictNode<K, V>> := #left.children[%left_length]
         #child.children[0] = #moved
         jump finalize(#left, #child, %left_length, %child_length)
 
     block finalize(
-            #left: Ptr<BTreeMapNode<K, V>>, #child: Ptr<BTreeMapNode<K, V>>,
+            #left: Ptr<SortedDictNode<K, V>>, #child: Ptr<SortedDictNode<K, V>>,
             %left_length: I64, %child_length: I64):
         #left.length = %left_length.sub(1)
         #child.length = %child_length.add(1)
@@ -550,11 +550,11 @@ require K: typename, V: typename
         #self.recount()
         return()
 
-routine BTreeMapNode<K, V>.borrow_from_right(#self: Ptr<Self>, %i: I64) -> Void
+routine SortedDictNode<K, V>.borrow_from_right(#self: Ptr<Self>, %i: I64) -> Void
 require K: typename, V: typename
     block entry():
-        #child: Ptr<BTreeMapNode<K, V>> := #self.children[%i]
-        #right: Ptr<BTreeMapNode<K, V>> := #self.children[%i.add(1)]
+        #child: Ptr<SortedDictNode<K, V>> := #self.children[%i]
+        #right: Ptr<SortedDictNode<K, V>> := #self.children[%i.add(1)]
         %child_length: I64 := #child.length
         %right_length: I64 := #right.length
         %pivot_key: K := #self.keys[%i]
@@ -573,15 +573,15 @@ require K: typename, V: typename
             : move_child(#child, #right, %child_length, %right_length)
 
     block move_child(
-            #child: Ptr<BTreeMapNode<K, V>>, #right: Ptr<BTreeMapNode<K, V>>,
+            #child: Ptr<SortedDictNode<K, V>>, #right: Ptr<SortedDictNode<K, V>>,
             %child_length: I64, %right_length: I64):
-        #moved: Ptr<BTreeMapNode<K, V>> := #right.children[0]
+        #moved: Ptr<SortedDictNode<K, V>> := #right.children[0]
         #child.children[%child_length.add(1)] = #moved
         #right.children.shift_left(0, %right_length.add(1))
         jump finalize(#child, #right, %child_length, %right_length)
 
     block finalize(
-            #child: Ptr<BTreeMapNode<K, V>>, #right: Ptr<BTreeMapNode<K, V>>,
+            #child: Ptr<SortedDictNode<K, V>>, #right: Ptr<SortedDictNode<K, V>>,
             %child_length: I64, %right_length: I64):
         #child.length = %child_length.add(1)
         #right.length = %right_length.sub(1)
@@ -590,13 +590,13 @@ require K: typename, V: typename
         #self.recount()
         return()
 
-routine BTreeMapNode<K, V>.merge_children(
+routine SortedDictNode<K, V>.merge_children(
         #self: Ptr<Self>, %i: I64, #alloc: Ptr<Allocator>) -> Void
 require K: typename, V: typename
     block entry():
         %i_p1: I64 = %i.add(1)
-        #left: Ptr<BTreeMapNode<K, V>> := #self.children[%i]
-        #right: Ptr<BTreeMapNode<K, V>> := #self.children[%i_p1]
+        #left: Ptr<SortedDictNode<K, V>> := #self.children[%i]
+        #right: Ptr<SortedDictNode<K, V>> := #self.children[%i_p1]
         %left_length: I64 := #left.length
         %right_length: I64 := #right.length
         %pivot_key: K := #self.keys[%i]
@@ -612,13 +612,13 @@ require K: typename, V: typename
             : copy_children(#left, #right, %left_length, %right_length)
 
     block copy_children(
-            #left: Ptr<BTreeMapNode<K, V>>, #right: Ptr<BTreeMapNode<K, V>>,
+            #left: Ptr<SortedDictNode<K, V>>, #right: Ptr<SortedDictNode<K, V>>,
             %left_length: I64, %right_length: I64):
         #left.children.copy(%left_length.add(1), #right.children, 0, %right_length.add(1))
         jump finalize(#left, #right, %left_length, %right_length)
 
     block finalize(
-            #left: Ptr<BTreeMapNode<K, V>>, #right: Ptr<BTreeMapNode<K, V>>,
+            #left: Ptr<SortedDictNode<K, V>>, #right: Ptr<SortedDictNode<K, V>>,
             %left_length: I64, %right_length: I64):
         #left.length = %left_length.add(1).add(%right_length)
         %parent_length: I64 := #self.length
@@ -627,16 +627,16 @@ require K: typename, V: typename
         %i_p1: I64 = %i.add(1)
         #self.children.shift_left(%i_p1, %parent_length.add(1))
         #self.length = %parent_length.sub(1)
-        free<BTreeMapNode<K, V>>(#alloc, #right)
+        free<SortedDictNode<K, V>>(#alloc, #right)
         #left.recount()
         #self.recount()
         return()
 
-routine BTreeMapNode<K, V>.ensure_min(
+routine SortedDictNode<K, V>.ensure_min(
         #self: Ptr<Self>, %i: I64, #alloc: Ptr<Allocator>) -> I64
 require K: typename, V: typename
     block entry():
-        #child: Ptr<BTreeMapNode<K, V>> := #self.children[%i]
+        #child: Ptr<SortedDictNode<K, V>> := #self.children[%i]
         %child_length: I64 := #child.length
         %ok: Bool = %child_length.sge(NODE_MIN_KEYS)
         branch %ok ? return(%i): try_left()
@@ -646,7 +646,7 @@ require K: typename, V: typename
         branch %has_left ? check_left() : try_right(false)
 
     block check_left():
-        #left: Ptr<BTreeMapNode<K, V>> := #self.children[%i.sub(1)]
+        #left: Ptr<SortedDictNode<K, V>> := #self.children[%i.sub(1)]
         %left_length: I64 := #left.length
         %left_ok: Bool = %left_length.sge(NODE_MIN_KEYS)
         branch %left_ok ? do_borrow_left() : try_right(true)
@@ -661,7 +661,7 @@ require K: typename, V: typename
         branch %has_right ? check_right(%has_left) : pick_merge_no_right(%has_left)
 
     block check_right(%has_left: Bool):
-        #right: Ptr<BTreeMapNode<K, V>> := #self.children[%i.add(1)]
+        #right: Ptr<SortedDictNode<K, V>> := #self.children[%i.add(1)]
         %right_length: I64 := #right.length
         %right_ok: Bool = %right_length.sge(NODE_MIN_KEYS)
         branch %right_ok ? do_borrow_right() : pick_merge(%has_left)
@@ -685,8 +685,8 @@ require K: typename, V: typename
         #self.merge_children(%i, #alloc)
         return(%i)
 
-routine BTreeMapNode<K, V>.take_max_key(
-        #self: Ptr<Self>, #map: Ptr<BTreeMap<K, V>>, #out_value: Ptr<V>) -> K
+routine SortedDictNode<K, V>.take_max_key(
+        #self: Ptr<Self>, #map: Ptr<SortedDict<K, V>>, #out_value: Ptr<V>) -> K
 require K: typename, V: typename
     block entry():
         %leaf: Bool := #self.leaf
@@ -704,13 +704,13 @@ require K: typename, V: typename
         %length: I64 := #self.length
         #alloc: Ptr<Allocator> := #map.alloc
         %actual: I64 = #self.ensure_min(%length, #alloc)
-        #child: Ptr<BTreeMapNode<K, V>> := #self.children[%actual]
+        #child: Ptr<SortedDictNode<K, V>> := #self.children[%actual]
         %key: K = #child.take_max_key(#map, #out_value)
         #self.recount()
         return(%key)
 
-routine BTreeMapNode<K, V>.take_min_key(
-        #self: Ptr<Self>, #map: Ptr<BTreeMap<K, V>>, #out_value: Ptr<V>) -> K
+routine SortedDictNode<K, V>.take_min_key(
+        #self: Ptr<Self>, #map: Ptr<SortedDict<K, V>>, #out_value: Ptr<V>) -> K
 require K: typename, V: typename
     block entry():
         %leaf: Bool := #self.leaf
@@ -725,13 +725,13 @@ require K: typename, V: typename
     block descend():
         #alloc: Ptr<Allocator> := #map.alloc
         %actual: I64 = #self.ensure_min(0, #alloc)
-        #child: Ptr<BTreeMapNode<K, V>> := #self.children[%actual]
+        #child: Ptr<SortedDictNode<K, V>> := #self.children[%actual]
         %key: K = #child.take_min_key(#map, #out_value)
         #self.recount()
         return(%key)
 
-routine BTreeMapNode<K, V>.remove(
-        #self: Ptr<Self>, #map: Ptr<BTreeMap<K, V>>, %key: K) -> Bool
+routine SortedDictNode<K, V>.remove(
+        #self: Ptr<Self>, #map: Ptr<SortedDict<K, V>>, %key: K) -> Bool
 require K: typename, V: typename
     block entry():
         %slot: I64 = #map.find_index(#self, %key)
@@ -754,14 +754,14 @@ require K: typename, V: typename
         return(true)
 
     block remove_internal(%slot: I64):
-        #left: Ptr<BTreeMapNode<K, V>> := #self.children[%slot]
+        #left: Ptr<SortedDictNode<K, V>> := #self.children[%slot]
         %left_length: I64 := #left.length
         %left_ok: Bool = %left_length.sge(NODE_MIN_KEYS)
         branch %left_ok ? take_pred(%slot) : try_succ(%slot)
 
     block take_pred(%slot: I64):
         #out: Ptr<V> = alloca<V>
-        #left: Ptr<BTreeMapNode<K, V>> := #self.children[%slot]
+        #left: Ptr<SortedDictNode<K, V>> := #self.children[%slot]
         %replacement_key: K = #left.take_max_key(#map, #out)
         %replacement_value: V := #out
         #self.keys[%slot] = %replacement_key
@@ -770,14 +770,14 @@ require K: typename, V: typename
         return(true)
 
     block try_succ(%slot: I64):
-        #right: Ptr<BTreeMapNode<K, V>> := #self.children[%slot.add(1)]
+        #right: Ptr<SortedDictNode<K, V>> := #self.children[%slot.add(1)]
         %right_length: I64 := #right.length
         %right_ok: Bool = %right_length.sge(NODE_MIN_KEYS)
         branch %right_ok ? take_succ(%slot) : merge_and_recurse(%slot)
 
     block take_succ(%slot: I64):
         #out: Ptr<V> = alloca<V>
-        #right: Ptr<BTreeMapNode<K, V>> := #self.children[%slot.add(1)]
+        #right: Ptr<SortedDictNode<K, V>> := #self.children[%slot.add(1)]
         %replacement_key: K = #right.take_min_key(#map, #out)
         %replacement_value: V := #out
         #self.keys[%slot] = %replacement_key
@@ -788,7 +788,7 @@ require K: typename, V: typename
     block merge_and_recurse(%slot: I64):
         #alloc: Ptr<Allocator> := #map.alloc
         #self.merge_children(%slot, #alloc)
-        #merged: Ptr<BTreeMapNode<K, V>> := #self.children[%slot]
+        #merged: Ptr<SortedDictNode<K, V>> := #self.children[%slot]
         %removed: Bool = #merged.remove(#map, %key)
         #self.recount()
         return(%removed)
@@ -800,48 +800,48 @@ require K: typename, V: typename
     block descend(%slot: I64):
         #alloc: Ptr<Allocator> := #map.alloc
         %actual: I64 = #self.ensure_min(%slot, #alloc)
-        #child: Ptr<BTreeMapNode<K, V>> := #self.children[%actual]
+        #child: Ptr<SortedDictNode<K, V>> := #self.children[%actual]
         %removed: Bool = #child.remove(#map, %key)
         #self.recount()
         return(%removed)
 
-routine BTreeMap<K, V>.remove(#self: Ptr<Self>, %key: K) -> Bool
+routine SortedDict<K, V>.remove(#self: Ptr<Self>, %key: K) -> Bool
 require K: typename, V: typename
     block entry():
-        #root: Ptr<BTreeMapNode<K, V>> := #self.root
+        #root: Ptr<SortedDictNode<K, V>> := #self.root
         %empty: Bool = #root.is_null()
         branch %empty ? return(false) : remove_root(#root)
 
-    block remove_root(#root: Ptr<BTreeMapNode<K, V>>):
+    block remove_root(#root: Ptr<SortedDictNode<K, V>>):
         %removed: Bool = #root.remove(#self, %key)
         branch %removed ? after_remove(#root) : return(false)
 
-    block after_remove(#root: Ptr<BTreeMapNode<K, V>>):
+    block after_remove(#root: Ptr<SortedDictNode<K, V>>):
         %length: I64 := #self.length
         #self.length = %length.sub(1)
         %root_length: I64 := #root.length
         %empty_root: Bool = %root_length.eq(0)
         branch %empty_root ? maybe_shrink(#root) : return(true)
 
-    block maybe_shrink(#root: Ptr<BTreeMapNode<K, V>>):
+    block maybe_shrink(#root: Ptr<SortedDictNode<K, V>>):
         %leaf: Bool := #root.leaf
         branch %leaf ? clear_root(#root) : shrink(#root)
 
-    block clear_root(#root: Ptr<BTreeMapNode<K, V>>):
+    block clear_root(#root: Ptr<SortedDictNode<K, V>>):
         #alloc: Ptr<Allocator> := #self.alloc
-        free<BTreeMapNode<K, V>>(#alloc, #root)
+        free<SortedDictNode<K, V>>(#alloc, #root)
         #self.root = null
         return(true)
 
-    block shrink(#root: Ptr<BTreeMapNode<K, V>>):
+    block shrink(#root: Ptr<SortedDictNode<K, V>>):
         #alloc: Ptr<Allocator> := #self.alloc
-        #new_root: Ptr<BTreeMapNode<K, V>> := #root.children[0]
-        free<BTreeMapNode<K, V>>(#alloc, #root)
+        #new_root: Ptr<SortedDictNode<K, V>> := #root.children[0]
+        free<SortedDictNode<K, V>>(#alloc, #root)
         #self.root = #new_root
         return(true)
 
 ; Internal nodes store `length` separator keys and `length + 1` children.
-routine BTreeMapNode<K, V>.free_recursive(
+routine SortedDictNode<K, V>.free_recursive(
         #self: Ptr<Self>, #alloc: Ptr<Allocator>) -> Void
 require K: typename, V: typename
     block entry():
@@ -857,22 +857,22 @@ require K: typename, V: typename
         branch %done ? free_self() : free_child(%i, %child_count)
 
     block free_child(%i: I64, %child_count: I64):
-        #child: Ptr<BTreeMapNode<K, V>> := #self.children[%i]
+        #child: Ptr<SortedDictNode<K, V>> := #self.children[%i]
         #child.free_recursive(#alloc)
         jump child_loop(%i.add(1), %child_count)
 
     block free_self():
-        free<BTreeMapNode<K, V>>(#alloc, #self)
+        free<SortedDictNode<K, V>>(#alloc, #self)
         return()
 
-routine BTreeMap<K, V>.free(#self: Ptr<Self>) -> Void
+routine SortedDict<K, V>.free(#self: Ptr<Self>) -> Void
 require K: typename, V: typename
     block entry():
-        #root: Ptr<BTreeMapNode<K, V>> := #self.root
+        #root: Ptr<SortedDictNode<K, V>> := #self.root
         %empty: Bool = #root.is_null()
         branch %empty ? reset() : free_root(#root)
 
-    block free_root(#root: Ptr<BTreeMapNode<K, V>>):
+    block free_root(#root: Ptr<SortedDictNode<K, V>>):
         #alloc: Ptr<Allocator> := #self.alloc
         #root.free_recursive(#alloc)
         jump reset()
