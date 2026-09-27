@@ -1,0 +1,88 @@
+; Disl stdlib: the correctly rounded base-2 exponential 2^x of F128
+;
+; x itself is the fixed-point multiple of log2(2), so it goes straight to the shared
+; 2^x engine (exp_shared.disl). Integer x gives the exact power of two, normal or
+; subnormal. Round to nearest only: overflow gives +inf, underflow a correctly
+; rounded subnormal or +0, NaN comes back quiet with its sign and payload.
+;
+; Ported from CORE-MATH, src/binary128/exp2/exp2q.c via RazorForge's B128Exp2.rf.
+; Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
+; MIT license: see LICENSE-CORE-MATH
+
+; x >= 2^14 overflows
+const CM_EXP2_OVERFLOW:  I128 = 0x400D0000000000000000000000000000
+; x <= -0x1.01bcp+14 rounds to +0
+const CM_EXP2_UNDERFLOW: I128 = 0xC00D01BC000000000000000000000000
+
+; 2^x, correctly rounded.
+routine f128_cm_exp2(%x: F128) -> F128
+    block entry():
+        %u:      I128 = %x.bits
+        %hi:     I64  = cm_exp_hi(%u)
+        %mag_hi: I64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
+        %tiny:   Bool = %mag_hi.ult(0x3F8D71547652B82F)       ; 2^x rounds to 1
+        %large:  Bool = %mag_hi.uge(0x400D000000000000)
+        select:
+            %tiny -> return(CM_EXP_ONE)
+            %large -> edge(%u)
+            _ -> integer_check(%u)
+
+    ; NaN, infinities, and the overflow and underflow thresholds
+    block edge(%u: I128):
+        %is_nan:    Bool = f128_is_nan_bits(%u)
+        %overflow:  Bool = %u.sge(0).bitand(%u.uge(CM_EXP2_OVERFLOW))
+        %underflow: Bool = %u.uge(CM_EXP2_UNDERFLOW)
+        %quiet:     F128 = F128.from_bits(%u.bitor(F128_QUIET_BIT))
+        select:
+            %is_nan -> return(%quiet)
+            %overflow -> return(F128.INFINITY)
+            %underflow -> return(CM_EXP_ZERO)
+            _ -> integer_check(%u)
+
+    ; |x| >= 1 with no fraction bits in the low word
+    block integer_check(%u: I128):
+        %e:         I64  = f128_exponent(%u)
+        %candidate: Bool = %e.sge(16383).bitand(%u.to_i64().eq(0))
+        branch %candidate ? integer_test(%u, %e) : reduce(%u, %e)
+
+    ; the high word has 16 sign and exponent bits, then e - 16383 integer bits
+    block integer_test(%u: I128, %e: I64):
+        %fraction:   I64  = cm_exp_hi(%u).shl(%e.sub(16367))
+        %is_integer: Bool = %fraction.eq(0)
+        branch %is_integer ? exact(%u, %e) : reduce(%u, %e)
+
+    block exact(%u: I128, %e: I64):
+        %r: F128 = cm_exp2_exact(%u, %e)
+        return(%r)
+
+    ; the significand, two's-complemented for negative x
+    block reduce(%u: I128, %e: I64):
+        %hi:     I64  = cm_exp_hi(%u)
+        %sign2:  I128 = %u.ashr(127)
+        %sig:    I128 = %u.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
+        %signed: I128 = %sig.bitxor(%sign2).sub(%sign2)
+        %words:  CmExpWords3 = CmExpWords3 { w0: 0, w1: %signed.to_i64(), w2: cm_exp_hi(%signed) }
+        %reduced: CmExpWords3 = cm_exp_ashr3(%words, 0x401B.sub(%e))
+        %r: F128 = cm_exp_finish(%reduced, %u, CM_EXP_KIND_TWO)
+        return(%r)
+
+; 2^n for the integer n = x (biased exponent e): exact, normal or subnormal.
+routine cm_exp2_exact(%u: I128, %e: I64) -> F128
+    block entry():
+        %hi:        I64 = cm_exp_hi(%u)
+        %sign_mask: I64 = %hi.ashr(63)
+        %sig_hi:    I64 = %hi.bitand(0xFFFFFFFFFFFF).bitor(0x1000000000000)
+        %magnitude: I64 = %sig_hi.lshr(16431.sub(%e))
+        %n:         I64 = %magnitude.bitxor(%sign_mask).sub(%sign_mask)
+        %biased:    I64 = %n.add(16383)
+        %normal:    Bool = %biased.sgt(0)
+        branch %normal ? normal(%biased) : subnormal(%biased)
+
+    block normal(%biased: I64):
+        %r: F128 = F128.from_bits(%biased.to_i128().shl(112))
+        return(%r)
+
+    ; 2^-16383 is bit 111; each step down halves it
+    block subnormal(%biased: I64):
+        %r: F128 = F128.from_bits(F128_QUIET_BIT.lshr(0.sub(%biased).to_i128()))
+        return(%r)
