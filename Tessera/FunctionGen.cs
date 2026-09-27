@@ -261,7 +261,7 @@ public sealed class FunctionGen
     {
         PtrType or CallableType => $"getelementptr i8, ptr {v.Op}, i64 0",
         BoolType => $"or i1 {v.Op}, false",
-        IntType or EnumType => $"or {t.Llvm} {v.Op}, 0",
+        IntType or ChoiceType => $"or {t.Llvm} {v.Op}, 0",
         FloatType ft => $"fadd {t.Llvm} {v.Op}, {ft.Constant(-0.0)}",
         _ => $"select i1 true, {t.Llvm} {v.Op}, {t.Llvm} poison",
     };
@@ -295,7 +295,7 @@ public sealed class FunctionGen
                 DType? baseType = f.Base is FieldExpr or IndexExpr && IsPlaceChain(f.Base)
                     ? PlaceType(f.Base)
                     : (Infer(f.Base) as PtrType)?.Pointee;
-                return baseType is StructType s ? FieldOf(s, f.Name, f.Pos).Type : null;
+                return baseType is RecordType s ? FieldOf(s, f.Name, f.Pos).Type : null;
             }
             case IndexExpr ix:
             {
@@ -319,7 +319,7 @@ public sealed class FunctionGen
         _ => Infer(place) is PtrType { Pointee: var p } ? p : null,
     };
 
-    private (int Index, DType Type) FieldOf(StructType s, string name, Pos pos)
+    private (int Index, DType Type) FieldOf(RecordType s, string name, Pos pos)
     {
         var fields = _c.Fields(s);
         int i = fields.FindIndex(f => f.Name == name);
@@ -342,12 +342,12 @@ public sealed class FunctionGen
                 {
                     var p = EvalAny(f.Base);
                     if (p.Type is not PtrType { Pointee: { } pointee })
-                        throw Err(f.Pos, $"'.{f.Name}' needs a struct or a typed pointer to one, not {p.Type}");
+                        throw Err(f.Pos, $"'.{f.Name}' needs a record or a typed pointer to one, not {p.Type}");
                     (baseAddr, baseType) = (p.Op, pointee);
                 }
                 if (baseType is PtrType)
                     throw Err(f.Pos, "this field holds a pointer; load it into a #value first");
-                if (baseType is not StructType s)
+                if (baseType is not RecordType s)
                     throw Err(f.Pos, $"{baseType} has no fields");
                 var (idx, ft) = FieldOf(s, f.Name, f.Pos);
                 _c.EnsureTypeDefined(s);
@@ -416,12 +416,12 @@ public sealed class FunctionGen
             case TypedIntLit t: return new IntType(t.Bits);
             case ValueRef r: return Lookup(r).Type;
             case AllocaExpr a: return new PtrType(Resolve(a.Type));
-            case StructLit sl: return Resolve(sl.Type);
+            case RecordLit sl: return Resolve(sl.Type);
             case SelectExpr se: return Infer(se.IfTrue) ?? Infer(se.IfFalse);
             case FieldExpr or IndexExpr when IsPlaceChain(e):
                 return PlaceType(e) is { } pt ? new PtrType(pt) : null;
             case FieldExpr f:
-                return Infer(f.Base) is StructType s ? FieldOf(s, f.Name, f.Pos).Type : null;
+                return Infer(f.Base) is RecordType s ? FieldOf(s, f.Name, f.Pos).Type : null;
             case ConstRef r:
                 return InferConstRef(r);
             case CallExpr or NsCallExpr or MethodCallExpr:
@@ -483,7 +483,7 @@ public sealed class FunctionGen
             FieldExpr or IndexExpr when IsPlaceChain(e) => PlaceAsValue(e),
             FieldExpr f => ExtractField(f),
             SelectExpr s => EvalSelect(s, expected),
-            StructLit s => EvalStructLit(s),
+            RecordLit s => EvalRecordLit(s),
             ArrayLit a => throw Err(a.Pos, "array literals are only allowed as alloca initializers"),
             ConstRef r => EvalConstRef(r, expected),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),
@@ -518,7 +518,7 @@ public sealed class FunctionGen
     private Val ExtractField(FieldExpr f)
     {
         var b = EvalAny(f.Base);
-        if (b.Type is not StructType s) throw Err(f.Pos, $"{b.Type} has no fields");
+        if (b.Type is not RecordType s) throw Err(f.Pos, $"{b.Type} has no fields");
         var (idx, ft) = FieldOf(s, f.Name, f.Pos);
         int member = _c.Shape(s).FieldIndex[idx];
         return new Val(EmitTmp($"extractvalue {s.Llvm} {b.Op}, {member}"), ft);
@@ -529,7 +529,7 @@ public sealed class FunctionGen
         var it = expected switch
         {
             IntType i => i,
-            EnumType en => en.Underlying,
+            ChoiceType en => en.Underlying,
             _ => throw Mismatch(pos, expected, "an integer literal"),
         };
         BigInteger span = BigInteger.One << it.Bits;
@@ -548,7 +548,7 @@ public sealed class FunctionGen
         string g = _c.StringGlobal(s.Value);
         if (expected is PtrType { Pointee: null or IntType { Bits: 8 } })
             return new Val(g, expected);
-        if (expected is StructType { Name: "String" } st)
+        if (expected is RecordType { Name: "String" } st)
         {
             _c.EnsureTypeDefined(st);
             string a = EmitTmp($"insertvalue {st.Llvm} poison, ptr {g}, 0");
@@ -602,10 +602,10 @@ public sealed class FunctionGen
         return new Val(EmitTmp($"select i1 {c.Op}, {expected.Llvm} {a.Op}, {expected.Llvm} {b.Op}"), expected);
     }
 
-    private Val EvalStructLit(StructLit lit)
+    private Val EvalRecordLit(RecordLit lit)
     {
         var t = Resolve(lit.Type);
-        if (t is not StructType s) throw Err(lit.Pos, $"{t} is not a struct");
+        if (t is not RecordType s) throw Err(lit.Pos, $"{t} is not a record");
         var fields = _c.Fields(s);
         _c.EnsureTypeDefined(s);
         var given = new Dictionary<string, Expr>();
@@ -627,7 +627,7 @@ public sealed class FunctionGen
         return new Val(acc, s);
     }
 
-    // ── Consts, enum members, routine values ────────────────────────────────
+    // ── Consts, choice members, routine values ────────────────────────────────
 
     private sealed record ConstInfo(DType Type, Func<DType, Val> Emit);
 
@@ -643,11 +643,11 @@ public sealed class FunctionGen
         }
 
         var ownerType = TryResolveOwner(r.Owner);
-        if (ownerType is EnumType et)
+        if (ownerType is ChoiceType et)
         {
             var member = et.Decl.Members.FirstOrDefault(m => m.Name == r.Name);
-            if (member.Name is null) throw Err(r.Pos, $"enum '{et.Name}' has no member '{r.Name}'");
-            if (member.Value is not IntLit lit) throw Err(r.Pos, "enum member values must be integer literals");
+            if (member.Name is null) throw Err(r.Pos, $"choice '{et.Name}' has no member '{r.Name}'");
+            if (member.Value is not IntLit lit) throw Err(r.Pos, "choice member values must be integer literals");
             return new ConstInfo(et, _ => IntConst(lit.Value, r.Pos, et));
         }
         string ownerName = ownerType?.OwnerName ?? r.Owner.Name;
@@ -718,10 +718,10 @@ public sealed class FunctionGen
     {
         if (e is not MethodCallExpr m) return null;
         var rt = Infer(m.Receiver);
-        StructType? s = rt switch
+        RecordType? s = rt switch
         {
-            PtrType { Pointee: StructType ps } => ps,
-            StructType vs => vs,
+            PtrType { Pointee: RecordType ps } => ps,
+            RecordType vs => vs,
             _ => null,
         };
         if (s is null) return null;
@@ -803,9 +803,9 @@ public sealed class FunctionGen
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
 
-        // Enums are distinct from their underlying integer, but every enum compares: `eq` / `ne` lower to the
+        // Choices are distinct from their underlying integer, but every choice compares: `eq` / `ne` lower to the
         // prelude's `ieq` / `ine`.
-        if (rt is EnumType en && m.Name is "eq" or "ne")
+        if (rt is ChoiceType en && m.Name is "eq" or "ne")
         {
             var r = _c.FindFree(m.Name == "eq" ? "ieq" : "ine", _env.File, m.Pos)
                     ?? throw Err(m.Pos, $"the prelude has no '{(m.Name == "eq" ? "ieq" : "ine")}'");
@@ -823,14 +823,14 @@ public sealed class FunctionGen
         var o = r.Owner!;
         if (o.Args.Count == 0)
         {
-            if (!PrimitiveOrStructName(o.Name)) env.Bind(o.Name, owner); // blanket `T.m`
+            if (!PrimitiveOrRecordName(o.Name)) env.Bind(o.Name, owner); // blanket `T.m`
             env.Bind("Self", owner);
             return env;
         }
 
         List<DType> actual = owner switch
         {
-            StructType s => s.Args,
+            RecordType s => s.Args,
             ArrayType a => [a.Elem, new ConstArg(a.Count)],
             PtrType p => [p.Pointee ?? new IntType(8)],
             _ => throw Err(pos, $"{owner} does not match '{o}'"),
@@ -843,9 +843,9 @@ public sealed class FunctionGen
         return env;
     }
 
-    private bool PrimitiveOrStructName(string name) =>
+    private bool PrimitiveOrRecordName(string name) =>
         name is "I8" or "I16" or "I32" or "I64" or "F32" or "F64" or "Bool" or "Void" or "Ptr" or "Array"
-        || _c.FindStruct(name, _env.File, default) is not null || _c.FindEnum(name, _env.File, default) is not null;
+        || _c.FindRecord(name, _env.File, default) is not null || _c.FindChoice(name, _env.File, default) is not null;
 
     private void BindExplicit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, Pos pos)
     {
@@ -879,7 +879,7 @@ public sealed class FunctionGen
             case PtrType { Pointee: { } p } when t.Name == "Ptr" && t.Args is [TypeArgType inner]:
                 Unify(inner.Type, p, env, unbound);
                 break;
-            case StructType s when s.Decl.Name == t.Name && s.Args.Count == t.Args.Count:
+            case RecordType s when s.Decl.Name == t.Name && s.Args.Count == t.Args.Count:
                 for (int i = 0; i < s.Args.Count; i++)
                     if (t.Args[i] is TypeArgType ta) Unify(ta.Type, s.Args[i], env, unbound);
                 break;
@@ -1100,8 +1100,8 @@ public sealed class FunctionGen
             case SwitchTerm sw:
             {
                 var v = EvalAny(sw.Value);
-                if (v.Type is not (IntType or EnumType))
-                    throw Err(sw.Value.Pos, $"switch needs an integer or enum value, not {v.Type}");
+                if (v.Type is not (IntType or ChoiceType))
+                    throw Err(sw.Value.Pos, $"switch needs an integer or choice value, not {v.Type}");
                 string? defaultLabel = null;
                 var cases = new List<string>();
                 var seen = new HashSet<string>();
@@ -1115,15 +1115,15 @@ public sealed class FunctionGen
                         continue;
                     }
                     if (caseExpr is not (IntLit or TypedIntLit or ConstRef))
-                        throw Err(caseExpr.Pos, "switch cases must be integer literals, consts, or enum members");
+                        throw Err(caseExpr.Pos, "switch cases must be integer literals, consts, or choice members");
                     var cv = Eval(caseExpr, v.Type);
                     if (!long.TryParse(cv.Op, out _)) throw Err(caseExpr.Pos, "switch cases must be constant integers");
                     if (!seen.Add(cv.Op)) throw Err(caseExpr.Pos, $"duplicate switch case {cv.Op}");
                     cases.Add($"{v.Type.Llvm} {cv.Op}, label %{label}");
                 }
-                if (defaultLabel is null && v.Type is EnumType en)
+                if (defaultLabel is null && v.Type is ChoiceType en)
                 {
-                    // Without '_', a switch on an enum must name every member.
+                    // Without '_', a switch on a choice must name every member.
                     var missing = en.Decl.Members
                         .Where(mem => mem.Value is IntLit lit && !seen.Contains(IntConst(lit.Value, mem.Value.Pos, en).Op))
                         .Select(mem => mem.Name).ToList();

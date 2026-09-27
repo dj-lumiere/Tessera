@@ -67,11 +67,11 @@ public sealed record FieldDecl(string Name, TypeRef Type, List<Attribute> Attrib
     public Attribute? Attr(string name) => Attributes.FirstOrDefault(a => a.Name == name);
 }
 
-public sealed record StructDecl(
+public sealed record RecordDecl(
     string File, List<Attribute> Attributes, string Name, List<string> TypeParams, List<Clause> Clauses,
     List<FieldDecl> Fields, Pos Pos) : Decl(File, Attributes, Pos);
 
-public sealed record EnumDecl(
+public sealed record ChoiceDecl(
     string File, List<Attribute> Attributes, string Name, TypeRef Underlying, List<(string Name, Expr Value)> Members,
     Pos Pos) : Decl(File, Attributes, Pos);
 
@@ -125,14 +125,14 @@ public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Ar
 public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
     : Expr(Pos);
 
-/// `NAME` or `Type.NAME` — a const, or an enum member.
+/// `NAME` or `Type.NAME` — a const, or a choice member.
 public sealed record ConstRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos);
 
 /// `recv.name(args)`.
 public sealed record MethodCallExpr(Expr Receiver, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
     : Expr(Pos);
 
-/// `base.field` — a field of a value struct, or (behind a pointer) a place.
+/// `base.field` — a field of a value record, or (behind a pointer) a place.
 public sealed record FieldExpr(Expr Base, string Name, Pos Pos) : Expr(Pos);
 
 /// `#p[i]` — a place. As a binding value it is an address; with `:=` or as a store target it is memory.
@@ -145,7 +145,7 @@ public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) :
 public sealed record AllocaExpr(TypeRef Type, List<Expr>? Init, Pos Pos) : Expr(Pos);
 
 /// `Type { field: value, ... }`.
-public sealed record StructLit(TypeRef Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);
+public sealed record RecordLit(TypeRef Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);
 
 /// `[a, b, c]` — an array value, used in alloca initializers.
 public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos);

@@ -11,7 +11,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private static readonly HashSet<string> TerminatorKeywords =
         ["jump", "branch", "select", "switch", "return", "unreachable"];
 
-    private static readonly HashSet<string> DeclKeywords = ["routine", "struct", "enum", "const", "concept"];
+    private static readonly HashSet<string> DeclKeywords = ["routine", "record", "choice", "const", "concept"];
 
     public Module ParseModule()
     {
@@ -21,12 +21,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             var attrs = ParseAttributes();
             if (Cur.Kind != TokenKind.Ident || !DeclKeywords.Contains(Cur.Text))
-                throw Error($"expected a declaration (routine, struct, enum, const, concept), found {Describe(Cur)}");
+                throw Error($"expected a declaration (routine, record, choice, const, concept), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
                 "routine" => ParseRoutine(attrs, inConcept: false),
-                "struct" => ParseStruct(attrs),
-                "enum" => ParseEnum(attrs),
+                "record" => ParseRecord(attrs),
+                "choice" => ParseChoice(attrs),
                 "const" => ParseConst(attrs),
                 _ => ParseConcept(attrs),
             };
@@ -211,11 +211,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, blocks, pos);
     }
 
-    private StructDecl ParseStruct(List<Attribute> attrs)
+    private RecordDecl ParseRecord(List<Attribute> attrs)
     {
         var pos = Cur.Pos;
-        ExpectIdent("struct");
-        var name = Expect(TokenKind.Ident, "a struct name");
+        ExpectIdent("record");
+        var name = Expect(TokenKind.Ident, "a record name");
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
         var clauses = ParseClauses();
@@ -242,14 +242,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             fields.Add(new FieldDecl(f.Text, ParseType(), fieldAttrs, f.Pos));
             ExpectLineEnd();
         }
-        return new StructDecl(file, attrs, name.Text, typeParams, clauses, fields, pos);
+        return new RecordDecl(file, attrs, name.Text, typeParams, clauses, fields, pos);
     }
 
-    private EnumDecl ParseEnum(List<Attribute> attrs)
+    private ChoiceDecl ParseChoice(List<Attribute> attrs)
     {
         var pos = Cur.Pos;
-        ExpectIdent("enum");
-        var name = Expect(TokenKind.Ident, "an enum name");
+        ExpectIdent("choice");
+        var name = Expect(TokenKind.Ident, "a choice name");
         // The underlying type defaults to I32.
         var underlying = Accept(TokenKind.Colon) ? ParseType() : new TypeRef("I32", [], name.Pos);
         ExpectLineEnd();
@@ -257,17 +257,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var members = new List<(string, Expr)>();
         while (!AtDeclStart())
         {
-            var m = Expect(TokenKind.Ident, "an enum member");
+            var m = Expect(TokenKind.Ident, "a choice member");
             Expr value;
             if (Accept(TokenKind.Colon)) value = ParseExpr();
             else if (members.Count == 0) value = new IntLit(0, m.Pos);
             // A member without a value takes the previous value + 1.
             else if (members[^1].Item2 is IntLit prev) value = new IntLit(prev.Value + 1, m.Pos);
-            else throw new CompileError(m.Pos, $"enum member '{m.Text}' needs a value: the one before it isn't an integer literal");
+            else throw new CompileError(m.Pos, $"choice member '{m.Text}' needs a value: the one before it isn't an integer literal");
             members.Add((m.Text, value));
             ExpectLineEnd();
         }
-        return new EnumDecl(file, attrs, name.Text, underlying, members, pos);
+        return new ChoiceDecl(file, attrs, name.Text, underlying, members, pos);
     }
 
     private ConstDecl ParseConst(List<Attribute> attrs)
@@ -625,7 +625,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
 
         var owner = new TypeRef(name.Text, typeArgs, pos);
-        if (Is(TokenKind.LBrace)) return ParseStructLit(owner);
+        if (Is(TokenKind.LBrace)) return ParseRecordLit(owner);
 
         if (Is(TokenKind.Dot) && PeekTok(1).Kind == TokenKind.Ident)
         {
@@ -642,7 +642,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new ConstRef(null, name.Text, pos);
     }
 
-    private Expr ParseStructLit(TypeRef type)
+    private Expr ParseRecordLit(TypeRef type)
     {
         Expect(TokenKind.LBrace, "'{'");
         var fields = new List<(string, Expr, Pos)>();
@@ -656,7 +656,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             } while (Accept(TokenKind.Comma));
         }
         Expect(TokenKind.RBrace, "'}'");
-        return new StructLit(type, fields, type.Pos);
+        return new RecordLit(type, fields, type.Pos);
     }
 
     private Expr ParseAlloca()

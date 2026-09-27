@@ -49,7 +49,7 @@ routine main() -> I32
 - `:=` always loads. `=` binds when the left side has a type annotation and stores when it doesn't:
   `%v: I64 := #p` (load), `#p = %v` (store), `#p.field = %v`, `%f: T := #p.field`, `#p[%i] = %v`,
   `%e: T := #p[%i]`.
-- A field of an SSA struct value is read with plain `=`: `%tag: Bool = %opt.tag`.
+- A field of an SSA record value is read with plain `=`: `%tag: Bool = %opt.tag`.
 - `alloca<T>` gives stack memory; `alloca<T>([%init])` initializes it. Allocas are hoisted to the routine's entry,
   so an `alloca` inside a loop block reuses one slot.
 - Heap memory goes through an allocator: `alloc<T>(#alloc, %count)`, `free<T>(#alloc, #p)`.
@@ -65,7 +65,7 @@ routine main() -> I32
   can't be an arm: call it inside a block.
 - There are no `for` / `while` / `if`. A loop is a block that jumps to itself with new arguments.
 - A long `branch` continues on the next line when that line starts with `?` or `:`.
-- An integer `switch` needs a `_` arm. A `switch` on an enum without `_` must list every member.
+- An integer `switch` needs a `_` arm. A `switch` on a choice without `_` must list every member.
 
 **Operations**
 

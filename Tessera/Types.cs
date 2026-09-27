@@ -124,20 +124,20 @@ public sealed class CallableType(string callConv, List<DType> parameters, DType 
     public override string OwnerName => "Callable";
 }
 
-/// A user or library struct, instantiated with concrete arguments.
-public sealed class StructType(StructDecl decl, List<DType> args) : DType
+/// A user or library record, instantiated with concrete arguments.
+public sealed class RecordType(RecordDecl decl, List<DType> args) : DType
 {
-    public StructDecl Decl { get; } = decl;
+    public RecordDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
     public override string Name => Args.Count == 0 ? Decl.Name : $"{Decl.Name}<{string.Join(", ", Args.Select(a => a.Name))}>";
     public override string Llvm => $"%\"{Name}\"";
     public override string OwnerName => Decl.Name;
 }
 
-/// An enum: named constants of an underlying integer type.
-public sealed class EnumType(EnumDecl decl, IntType underlying) : DType
+/// A choice: named constants of an underlying integer type.
+public sealed class ChoiceType(ChoiceDecl decl, IntType underlying) : DType
 {
-    public EnumDecl Decl { get; } = decl;
+    public ChoiceDecl Decl { get; } = decl;
     public IntType Underlying { get; } = underlying;
     public override string Name => Decl.Name;
     public override string Llvm => Underlying.Llvm;

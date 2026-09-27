@@ -10,8 +10,8 @@ public sealed partial class Compiler
 {
     public BuildTarget Target { get; }
 
-    private readonly Dictionary<string, List<StructDecl>> _structs = [];
-    private readonly Dictionary<string, List<EnumDecl>> _enums = [];
+    private readonly Dictionary<string, List<RecordDecl>> _records = [];
+    private readonly Dictionary<string, List<ChoiceDecl>> _choices = [];
     private readonly Dictionary<string, List<RoutineDecl>> _free = [];
     private readonly Dictionary<(string Owner, string Name), List<RoutineDecl>> _methods = [];
     private readonly Dictionary<string, List<RoutineDecl>> _blanket = []; // owner is a type parameter: `T.bitcast<U>`
@@ -41,8 +41,8 @@ public sealed partial class Compiler
             if (!Selected(d)) continue;
             switch (d)
             {
-                case StructDecl s: Add(_structs, s.Name, s); break;
-                case EnumDecl e: Add(_enums, e.Name, e); break;
+                case RecordDecl s: Add(_records, s.Name, s); break;
+                case ChoiceDecl e: Add(_choices, e.Name, e); break;
                 case ConstDecl c: Add(_consts, (c.Owner?.Name ?? "", c.Name), c); break;
                 case ConceptDecl c: _concepts.Add(c.Name); break;
                 case RoutineDecl r:
@@ -184,11 +184,11 @@ public sealed partial class Compiler
         throw new CompileError(pos, $"{what} is ambiguous: defined in {string.Join(", ", candidates.Select(c => c.Pos))}");
     }
 
-    public StructDecl? FindStruct(string name, string file, Pos pos) =>
-        Pick(_structs.GetValueOrDefault(name), file, pos, $"struct '{name}'");
+    public RecordDecl? FindRecord(string name, string file, Pos pos) =>
+        Pick(_records.GetValueOrDefault(name), file, pos, $"record '{name}'");
 
-    public EnumDecl? FindEnum(string name, string file, Pos pos) =>
-        Pick(_enums.GetValueOrDefault(name), file, pos, $"enum '{name}'");
+    public ChoiceDecl? FindChoice(string name, string file, Pos pos) =>
+        Pick(_choices.GetValueOrDefault(name), file, pos, $"choice '{name}'");
 
     public RoutineDecl? FindFree(string name, string file, Pos pos) =>
         Pick(_free.GetValueOrDefault(name), file, pos, $"routine '{name}'");
@@ -286,10 +286,10 @@ public sealed partial class Compiler
             return alias;
         }
 
-        if (FindStruct(t.Name, env.File, t.Pos) is { } s)
+        if (FindRecord(t.Name, env.File, t.Pos) is { } s)
         {
             if (t.Args.Count != s.TypeParams.Count)
-                throw new CompileError(t.Pos, $"struct '{s.Name}' takes {s.TypeParams.Count} generic argument(s), got {t.Args.Count}");
+                throw new CompileError(t.Pos, $"record '{s.Name}' takes {s.TypeParams.Count} generic argument(s), got {t.Args.Count}");
             var args = new List<DType>();
             for (int i = 0; i < t.Args.Count; i++)
                 args.Add(t.Args[i] switch
@@ -299,15 +299,15 @@ public sealed partial class Compiler
                     TypeArgExpr te => new ConstArg(EvalConstInt(te.Expr, env, 0)),
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{s.Name}'"),
                 });
-            return new StructType(s, args);
+            return new RecordType(s, args);
         }
 
-        if (FindEnum(t.Name, env.File, t.Pos) is { } e)
+        if (FindChoice(t.Name, env.File, t.Pos) is { } e)
         {
             NoArgs();
             var under = ResolveType(e.Underlying, env);
-            if (under is not IntType it) throw new CompileError(e.Pos, $"enum '{e.Name}' must have an integer type");
-            return new EnumType(e, it);
+            if (under is not IntType it) throw new CompileError(e.Pos, $"choice '{e.Name}' must have an integer type");
+            return new ChoiceType(e, it);
         }
 
         if (t.Args.Count == 0 && FindConst("", t.Name, env.File, t.Pos) is { } c)
@@ -384,11 +384,11 @@ public sealed partial class Compiler
         }
     }
 
-    /// Fields of a struct type, with its type parameters substituted.
-    public List<(string Name, DType Type)> Fields(StructType s)
+    /// Fields of a record type, with its type parameters substituted.
+    public List<(string Name, DType Type)> Fields(RecordType s)
     {
         if (_fieldCache.TryGetValue(s.Name, out var cached)) return cached;
-        var env = StructEnv(s);
+        var env = RecordEnv(s);
         var fields = new List<(string, DType)>();
         _fieldCache[s.Name] = fields; // placed early so self-referencing pointers resolve
         foreach (var f in s.Decl.Fields)
@@ -400,8 +400,8 @@ public sealed partial class Compiler
         return fields;
     }
 
-    /// The struct's type parameters bound to its arguments, plus Self.
-    private TypeEnv StructEnv(StructType s)
+    /// The record's type parameters bound to its arguments, plus Self.
+    private TypeEnv RecordEnv(RecordType s)
     {
         var env = new TypeEnv(s.Decl.File);
         for (int i = 0; i < s.Decl.TypeParams.Count; i++) env.Bind(s.Decl.TypeParams[i], s.Args[i]);
@@ -409,12 +409,12 @@ public sealed partial class Compiler
         return env;
     }
 
-    /// Makes sure every struct type used in the IR has a definition.
+    /// Makes sure every record type used in the IR has a definition.
     public void EnsureTypeDefined(DType t)
     {
         switch (t)
         {
-            case StructType s when s.Decl.Attr("llvm") is null:
+            case RecordType s when s.Decl.Attr("llvm") is null:
                 if (!_definedTypes.Add(s.Name)) return;
                 var fields = Fields(s);
                 foreach (var (_, ft) in fields) EnsureTypeDefined(ft);

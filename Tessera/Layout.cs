@@ -4,11 +4,11 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-// Compile-time layout: `sizeof` / `alignof` in consts and generic arguments, and `@aligned` on structs and fields.
+// Compile-time layout: `sizeof` / `alignof` in consts and generic arguments, and `@aligned` on records and fields.
 public sealed partial class Compiler
 {
     private DataLayout? _dataLayout;
-    private readonly Dictionary<string, StructShape> _shapes = [];
+    private readonly Dictionary<string, RecordShape> _shapes = [];
     private readonly HashSet<string> _sizing = [];
 
     /// One LLVM member of a struct: a field, or (Type null) a zero-length `[0 x <Align x i8>]` that raises the
@@ -18,17 +18,17 @@ public sealed partial class Compiler
         public string Llvm => Type?.Llvm ?? $"[0 x <{Align} x i8>]";
     }
 
-    /// A struct's LLVM members and, for each field, the index of its member. `@aligned(N)` on the struct puts an
+    /// A record's LLVM members and, for each field, the index of its member. `@aligned(N)` on the record puts an
     /// alignment member first; on a field it puts one right before that field.
-    public sealed record StructShape(List<Member> Members, int[] FieldIndex);
+    public sealed record RecordShape(List<Member> Members, int[] FieldIndex);
 
-    public StructShape Shape(StructType s)
+    public RecordShape Shape(RecordType s)
     {
         if (_shapes.TryGetValue(s.Name, out var cached)) return cached;
         var fields = Fields(s);
-        var env = StructEnv(s);
+        var env = RecordEnv(s);
         var members = new List<Member>();
-        if (s.Decl.Attr("aligned") is { } structAlign) members.Add(AlignMember(structAlign, env));
+        if (s.Decl.Attr("aligned") is { } recordAlign) members.Add(AlignMember(recordAlign, env));
         var index = new int[fields.Count];
         for (int i = 0; i < fields.Count; i++)
         {
@@ -36,7 +36,7 @@ public sealed partial class Compiler
             index[i] = members.Count;
             members.Add(new Member(fields[i].Type, 0));
         }
-        return _shapes[s.Name] = new StructShape(members, index);
+        return _shapes[s.Name] = new RecordShape(members, index);
     }
 
     private Member AlignMember(Attribute attr, TypeEnv env)
@@ -64,7 +64,7 @@ public sealed partial class Compiler
         {
             case BoolType: return Layout(pos).Int(1);
             case IntType i: return Layout(pos).Int(i.Bits);
-            case EnumType e: return Layout(pos).Int(e.Underlying.Bits);
+            case ChoiceType e: return Layout(pos).Int(e.Underlying.Bits);
             case FloatType f: return Layout(pos).Float(f.Bits);
             case PtrType or CallableType: return Layout(pos).Pointer;
             case ArrayType a:
@@ -72,7 +72,7 @@ public sealed partial class Compiler
                 var (size, align) = SizeAlign(a.Elem, pos);
                 return (size * a.Count, align);
             }
-            case StructType s when s.Decl.Attr("llvm") is null:
+            case RecordType s when s.Decl.Attr("llvm") is null:
             {
                 if (!_sizing.Add(s.Name)) throw new CompileError(pos, $"{s} contains itself");
                 try
