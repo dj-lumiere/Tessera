@@ -166,7 +166,7 @@ releases storage. Out-of-range access, `pop` on empty, and `get` of a missing ke
 | `Set<T>` | `add`, `contains`, `remove` | **insertion order (guaranteed)** |
 | `SortedDict<K, V>` | `put`, `get`, `contains`, `remove`, `key_order(rank)`, `get_order(rank)` | ascending key |
 | `SortedSet<T>` | `add`, `contains`, `remove`, `get_order(rank)` | ascending |
-| `BTreeList<T>` | `push`, `insert(i, v)`, `get`, `set`, `remove(i)` | index |
+| `SortedList<T>` | `push`, `insert(i, v)`, `get`, `set`, `remove(i)` | index |
 | `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Priority<T>`) | none |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
