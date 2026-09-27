@@ -384,7 +384,9 @@ public sealed class FunctionGen
     private Val EvalIndex(Expr e)
     {
         var i = Eval(e, Infer(e) ?? new IntType(64));
-        if (i.Type is not IntType) throw Err(e.Pos, $"an index must be an integer, not {i.Type}");
+        if (i.Type is not IntType { IsNumber: true } it) throw Err(e.Pos, $"an index must be an integer, not {i.Type}");
+        // GEP reads its index as signed, so a narrow unsigned index is widened first.
+        if (it.IsUnsigned && it.Bits < 64) return new Val(EmitTmp($"zext {it.Llvm} {i.Op} to i64"), IntType.U(64));
         return i;
     }
 
@@ -413,7 +415,7 @@ public sealed class FunctionGen
         {
             case IntLit or FloatLit or NullLit or StrLit or ArrayLit: return null;
             case BoolLit: return BoolType.Instance;
-            case TypedIntLit t: return new IntType(t.Bits);
+            case TypedIntLit t: return new IntType(t.Bits); // transitional: I8 / I32 until the stdlib moves
             case ValueRef r: return Lookup(r).Type;
             case AllocaExpr a: return new PtrType(Resolve(a.Type));
             case RecordLit sl: return Resolve(sl.Type);
@@ -468,8 +470,8 @@ public sealed class FunctionGen
     {
         Val v = e switch
         {
-            IntLit i => IntConst(i.Value, i.Pos, expected),
-            TypedIntLit t => IntConst(t.Value, t.Pos, new IntType(t.Bits)),
+            IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
+            TypedIntLit t => TypedConst(t, expected),
             FloatLit f => expected is FloatType ft
                 ? new Val(ft.Constant(f.Value), ft)
                 : throw Mismatch(f.Pos, expected, "a float literal"),
@@ -524,7 +526,7 @@ public sealed class FunctionGen
         return new Val(EmitTmp($"extractvalue {s.Llvm} {b.Op}, {member}"), ft);
     }
 
-    private Val IntConst(BigInteger value, Pos pos, DType expected)
+    private Val IntConst(BigInteger value, Pos pos, DType expected, int hexDigits = 0)
     {
         var it = expected switch
         {
@@ -532,13 +534,16 @@ public sealed class FunctionGen
             ChoiceType en => en.Underlying,
             _ => throw Mismatch(pos, expected, "an integer literal"),
         };
-        BigInteger span = BigInteger.One << it.Bits;
-        BigInteger min = -(span >> 1);
-        BigInteger maxUnsigned = span - 1;
-        if (value < min || value > maxUnsigned) throw Err(pos, $"{value} does not fit in {it}");
-        // Values above the signed range are two's-complement bit patterns; LLVM wants the signed form.
-        if (value > maxUnsigned >> 1) value -= span;
-        return new Val(value.ToString(CultureInfo.InvariantCulture), expected);
+        string op = it.Literal(value, hexDigits, out var error) ?? throw Err(pos, error);
+        return new Val(op, expected);
+    }
+
+    /// `b'A'` is a Byte and `'A'` a Char. Until the stdlib leaves the signless types, they are also I8 and I32.
+    private Val TypedConst(TypedIntLit t, DType expected)
+    {
+        if (expected is IntType { Kind: IntKind.Legacy } legacy && legacy.Bits == t.Bits)
+            return new Val(t.Value.ToString(CultureInfo.InvariantCulture), legacy);
+        return new Val(t.Value.ToString(CultureInfo.InvariantCulture), t.Type);
     }
 
     private Val StringLiteral(StrLit s, DType expected)
@@ -546,7 +551,7 @@ public sealed class FunctionGen
         // Open question #5: a string literal is a NUL-terminated Ptr<I8> where a pointer is expected, and a
         // String value (data + length) where a String is expected.
         string g = _c.StringGlobal(s.Value);
-        if (expected is PtrType { Pointee: null or IntType { Bits: 8 } })
+        if (expected is PtrType { Pointee: null or IntType { Bits: 8, Kind: IntKind.Bits or IntKind.Legacy } })
             return new Val(g, expected);
         if (expected is RecordType { Name: "String" } st)
         {
@@ -669,9 +674,17 @@ public sealed class FunctionGen
         }
         return new ConstInfo(t, _ =>
         {
-            // Open question #10: an integer literal in a float const gives the float's raw bits.
+            // Open question #10: an integer literal in a float const gives the float's raw bits, and so does
+            // `F64.from_bits(0x...)`.
             if (t is FloatType ft && c.Value is IntLit bits)
                 return new Val(ft.FromBits(bits.Value), ft);
+            if (t is FloatType ft2 && c.Value is NsCallExpr { Name: "from_bits", Args: [IntLit raw] } fb
+                && fb.Owner.Name == ft2.Name)
+            {
+                if (new IntType(ft2.Bits, IntKind.Bits).Literal(raw.Value, raw.HexDigits, out var error) is null)
+                    throw Err(raw.Pos, error);
+                return new Val(ft2.FromBits(raw.Value), ft2);
+            }
             var saved = _env;
             _env = env;
             try { return Eval(c.Value, t); }
@@ -844,7 +857,8 @@ public sealed class FunctionGen
     }
 
     private bool PrimitiveOrRecordName(string name) =>
-        name is "I8" or "I16" or "I32" or "I64" or "F32" or "F64" or "Bool" or "Void" or "Ptr" or "Array"
+        IntType.FromName(name) is not null
+        || name is "F16" or "BF16" or "F32" or "F64" or "Bool" or "Void" or "Ptr" or "Array"
         || _c.FindRecord(name, _env.File, default) is not null || _c.FindChoice(name, _env.File, default) is not null;
 
     private void BindExplicit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, Pos pos)
@@ -947,22 +961,25 @@ public sealed class FunctionGen
     }
 
     /// An argument in the `...` part of a C variadic call gets C's default promotions: untyped integer literals
-    /// are `int` (I32), float literals and F32 values are F64, and Bool is widened to I32.
+    /// are `int` (S32), float literals and F32 values are F64, and Bool and narrow integers are widened to `int`
+    /// (zero-extended when unsigned or raw bits, sign-extended otherwise).
     private Val VariadicArg(Expr e)
     {
         var t = Infer(e) ?? e switch
         {
-            IntLit => new IntType(32),
+            IntLit => IntType.S(32),
             FloatLit => FloatType.F64,
-            StrLit => new PtrType(new IntType(8)),
+            StrLit => new PtrType(IntType.Byte),
             _ => throw Err(e.Pos, "cannot infer the type of this variadic argument; bind it with a type first"),
         };
         var v = Eval(e, t);
         return v.Type switch
         {
             FloatType ft when ft != FloatType.F64 => new Val(EmitTmp($"fpext {ft.Llvm} {v.Op} to double"), FloatType.F64),
-            BoolType => new Val(EmitTmp($"zext i1 {v.Op} to i32"), new IntType(32)),
-            IntType { Bits: < 32 } it => new Val(EmitTmp($"sext {it.Llvm} {v.Op} to i32"), new IntType(32)),
+            BoolType => new Val(EmitTmp($"zext i1 {v.Op} to i32"), IntType.S(32)),
+            IntType { Bits: < 32, Kind: IntKind.Unsigned or IntKind.Bits } it =>
+                new Val(EmitTmp($"zext {it.Llvm} {v.Op} to i32"), IntType.S(32)),
+            IntType { Bits: < 32 } it => new Val(EmitTmp($"sext {it.Llvm} {v.Op} to i32"), IntType.S(32)),
             _ => v,
         };
     }
@@ -1100,8 +1117,8 @@ public sealed class FunctionGen
             case SwitchTerm sw:
             {
                 var v = EvalAny(sw.Value);
-                if (v.Type is not (IntType or ChoiceType))
-                    throw Err(sw.Value.Pos, $"switch needs an integer or choice value, not {v.Type}");
+                if (v.Type is not (IntType { Kind: not IntKind.Bits } or ChoiceType))
+                    throw Err(sw.Value.Pos, $"switch needs an integer, Char, or choice value, not {v.Type}");
                 string? defaultLabel = null;
                 var cases = new List<string>();
                 var seen = new HashSet<string>();

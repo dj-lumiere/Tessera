@@ -349,6 +349,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// The low 64 bits of a token's value, read as two's complement.
     private static long Low64(BigInteger v) => unchecked((long)(ulong)(v & ulong.MaxValue));
 
+    /// The digit count of a `0x` literal, underscores aside; 0 for other bases and -1 for a negative hex literal.
+    private static int HexDigits(string text) =>
+        text.StartsWith("0x", StringComparison.Ordinal) ? text[2..].Count(c => c != '_')
+        : text.StartsWith("-0x", StringComparison.Ordinal) ? -1
+        : 0;
+
     private TypeArg ParseTypeArg()
     {
         if (Is(TokenKind.Int)) return new TypeArgInt(Low64(Next().IntValue));
@@ -569,7 +575,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             case TokenKind.Int:
                 Next();
-                return new IntLit(t.IntValue, t.Pos);
+                return new IntLit(t.IntValue, t.Pos, HexDigits(t.Text));
             case TokenKind.Byte:
                 Next();
                 return new TypedIntLit(Low64(t.IntValue), 8, t.Pos);

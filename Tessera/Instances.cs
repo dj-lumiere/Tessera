@@ -92,8 +92,8 @@ public sealed partial class Compiler
         if (external is not null) symbol = r.Attr("symbol")?.First ?? r.Name;
         else if (r.Owner is null && r.Name == "main" && r.TypeParams.Count == 0)
         {
-            if (ps.Count != 0 || ret is not IntType { Bits: 32 })
-                throw new CompileError(r.Pos, "main must be declared 'routine main() -> I32'");
+            if (ps.Count != 0 || ret is not IntType { Bits: 32, IsNumber: true })
+                throw new CompileError(r.Pos, "main must be declared 'routine main() -> S32'");
             symbol = "main";
         }
         else

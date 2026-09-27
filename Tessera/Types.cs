@@ -22,12 +22,87 @@ public abstract class DType : IEquatable<DType>
     public override string ToString() => Name;
 }
 
-public sealed class IntType(int bits) : DType
+/// What an integer's bits mean. `Bits` values have no meaning yet (`Byte` is the 8-bit one); `Char` is a Unicode
+/// scalar value. `Legacy` is the signless `I8`–`I256` family the stdlib is moving away from.
+public enum IntKind { Signed, Unsigned, Bits, Char, Legacy }
+
+public sealed class IntType(int bits, IntKind kind = IntKind.Legacy) : DType
 {
     public int Bits { get; } = bits;
-    public override string Name => $"I{Bits}";
+    public IntKind Kind { get; } = kind;
+
+    public static IntType S(int bits) => new(bits, IntKind.Signed);
+    public static IntType U(int bits) => new(bits, IntKind.Unsigned);
+    public static readonly IntType Byte = new(8, IntKind.Bits);
+    public static readonly IntType Char = new(32, IntKind.Char);
+
+    public static readonly int[] Widths = [8, 16, 32, 64, 128, 256];
+
+    /// `S64`, `U8`, `Bits32`, `Byte`, `Char`, `I64` back to a type.
+    public static IntType? FromName(string name)
+    {
+        if (name == "Byte") return Byte;
+        if (name == "Char") return Char;
+        (string prefix, IntKind kind)[] families =
+            [("S", IntKind.Signed), ("U", IntKind.Unsigned), ("Bits", IntKind.Bits), ("I", IntKind.Legacy)];
+        foreach (var (prefix, kind) in families)
+            if (name.StartsWith(prefix, StringComparison.Ordinal)
+                && int.TryParse(name.AsSpan(prefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
+                && Widths.Contains(bits) && name == new IntType(bits, kind).Name)
+                return new IntType(bits, kind);
+        return null;
+    }
+
+    public bool IsSigned => Kind is IntKind.Signed;
+    public bool IsUnsigned => Kind is IntKind.Unsigned;
+
+    /// Numbers: the types with arithmetic. Raw bits and Char have none.
+    public bool IsNumber => Kind is IntKind.Signed or IntKind.Unsigned or IntKind.Legacy;
+
+    public override string Name => Kind switch
+    {
+        IntKind.Signed => $"S{Bits}",
+        IntKind.Unsigned => $"U{Bits}",
+        IntKind.Bits => Bits == 8 ? "Byte" : $"Bits{Bits}",
+        IntKind.Char => "Char",
+        _ => $"I{Bits}",
+    };
+
     public override string Llvm => $"i{Bits}";
     public override string OwnerName => Name;
+
+    /// The LLVM constant for an integer literal of this type, or an error message. A number literal must lie in
+    /// its type's value range; a raw-bits literal must be hex with exactly one digit per four bits; the legacy
+    /// types also take a magnitude above the signed range as a bit pattern.
+    public string? Literal(BigInteger value, int hexDigits, out string error)
+    {
+        error = "";
+        BigInteger span = BigInteger.One << Bits;
+        (BigInteger min, BigInteger max) = Kind switch
+        {
+            IntKind.Signed => (-(span >> 1), (span >> 1) - 1),
+            IntKind.Legacy => (-(span >> 1), span - 1),
+            _ => (BigInteger.Zero, span - 1),
+        };
+        if (Kind is IntKind.Bits && hexDigits != Bits / 4)
+        {
+            error = $"a {Name} literal is written in hex with exactly {Bits / 4} digits (0x{new string('0', Bits / 4)})";
+            return null;
+        }
+        if (Kind is IntKind.Char)
+        {
+            error = "a Char is written as a character literal ('A'), or converted with U32.to_char()";
+            return null;
+        }
+        if (value < min || value > max)
+        {
+            error = $"{value} is out of range for {Name} ({min}..{max})";
+            return null;
+        }
+        // LLVM wants the signed form of a bit pattern.
+        if (value > (span >> 1) - 1) value -= span;
+        return value.ToString(CultureInfo.InvariantCulture);
+    }
 }
 
 public sealed class BoolType : DType

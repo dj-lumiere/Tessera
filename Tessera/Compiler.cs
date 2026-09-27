@@ -31,9 +31,7 @@ public sealed partial class Compiler
     private readonly Dictionary<string, List<(string Name, DType Type)>> _fieldCache = [];
     private readonly Dictionary<string, string> _strings = [];
 
-    private static readonly HashSet<string> PrimitiveNames = ["I8", "I16", "I32", "I64", "F32", "F64", "Bool", "Void"];
-
-    public Compiler(BuildTarget target, IEnumerable<Decl> decls)
+        public Compiler(BuildTarget target, IEnumerable<Decl> decls)
     {
         Target = target;
         foreach (var d in decls)
@@ -251,14 +249,14 @@ public sealed partial class Compiler
             return bound;
         }
 
+        if (IntType.FromName(t.Name) is { } intType)
+        {
+            NoArgs();
+            return intType;
+        }
+
         switch (t.Name)
         {
-            case "I8": NoArgs(); return new IntType(8);
-            case "I16": NoArgs(); return new IntType(16);
-            case "I32": NoArgs(); return new IntType(32);
-            case "I64": NoArgs(); return new IntType(64);
-            case "I128": NoArgs(); return new IntType(128);
-            case "I256": NoArgs(); return new IntType(256);
             case "F16": NoArgs(); return FloatType.F16;
             case "BF16": NoArgs(); return FloatType.BF16;
             case "F32": NoArgs(); return FloatType.F32;
@@ -306,7 +304,8 @@ public sealed partial class Compiler
         {
             NoArgs();
             var under = ResolveType(e.Underlying, env);
-            if (under is not IntType it) throw new CompileError(e.Pos, $"choice '{e.Name}' must have an integer type");
+            if (under is not IntType { IsNumber: true } it)
+                throw new CompileError(e.Pos, $"choice '{e.Name}' must have a signed or unsigned integer type, not {under}");
             return new ChoiceType(e, it);
         }
 
@@ -472,16 +471,14 @@ public sealed partial class Compiler
                     throw new CompileError(lit.Pos, $"{a} needs {a.Count} element(s), got {lit.Elements.Count}");
                 return "[" + string.Join(", ", lit.Elements.Select(x => $"{a.Elem.Llvm} {ConstInitializer(x, a.Elem, env)}")) + "]";
             }
+            case IntType it when e is TypedIntLit tl:
+                if (!tl.Type.Equals(it) && !(it.Kind is IntKind.Legacy && it.Bits == tl.Bits))
+                    throw new CompileError(e.Pos, $"expected {it}, found a {tl.Type} literal");
+                return tl.Value.ToString(CultureInfo.InvariantCulture);
             case IntType it:
             {
-                BigInteger v = e is IntLit il ? il.Value : EvalConstInt(e, env, 0);
-                BigInteger span = BigInteger.One << it.Bits;
-                BigInteger min = -(span >> 1);
-                BigInteger umax = span - 1;
-                // Values past the signed range are bit patterns, as in `0xb5c0fbcf` for an I32.
-                if (v < min || v > umax) throw new CompileError(e.Pos, $"{v} doesn't fit in {it}");
-                if (v > (span >> 1) - 1) v -= span;
-                return v.ToString(CultureInfo.InvariantCulture);
+                var (v, hex) = e is IntLit il ? (il.Value, il.HexDigits) : (EvalConstInt(e, env, 0), 0);
+                return it.Literal(v, hex, out var error) ?? throw new CompileError(e.Pos, error);
             }
             case BoolType when e is BoolLit b:
                 return b.Value ? "true" : "false";
