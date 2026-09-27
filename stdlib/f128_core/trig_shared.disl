@@ -21,11 +21,7 @@
 ; All integers here are unsigned: comparisons are `ult` / `uge` and right shifts `lshr`. The 2/pi limbs are
 ; TWO_OVER_PI from f128_math.disl, whose first 264 limbs are the ones CORE-MATH uses.
 
-; 256- and 384-bit unsigned fixed-point values, least significant limb first.
-struct CmTrigU256
-    lo: I128
-    hi: I128
-
+; A 384-bit unsigned fixed-point value, least significant limb first. 256-bit ones are I256.
 struct CmTrigU384
     l0: I128
     l1: I128
@@ -241,23 +237,16 @@ routine cm_trig_clz(%x: I128) -> I64
         %r: I64 = %x.leading_zeros().to_i64()
         return(%r)
 
-; The full 256-bit product of two 128-bit values.
-routine cm_trig_wmul(%x: I128, %y: I128) -> CmTrigU256
+; A 256-bit value from its 128-bit halves.
+routine cm_trig_join(%high: I128, %low: I128) -> I256
     block entry():
-        %xl:     I128 = %x.bitand(0xFFFFFFFFFFFFFFFF)
-        %xh:     I128 = %x.lshr(64)
-        %yl:     I128 = %y.bitand(0xFFFFFFFFFFFFFFFF)
-        %yh:     I128 = %y.lshr(64)
-        %ll:     I128 = %xl.mul(%yl)
-        %lh:     I128 = %xl.mul(%yh)
-        %hl:     I128 = %xh.mul(%yl)
-        %hh:     I128 = %xh.mul(%yh)
-        %lh_low: I128 = %lh.bitand(0xFFFFFFFFFFFFFFFF)
-        %hl_low: I128 = %hl.bitand(0xFFFFFFFFFFFFFFFF)
-        %mid:    I128 = %ll.lshr(64).add(%lh_low).add(%hl_low)
-        %low:    I128 = %mid.shl(64).bitor(%ll.bitand(0xFFFFFFFFFFFFFFFF))
-        %high:   I128 = %hh.add(%lh.lshr(64)).add(%hl.lshr(64)).add(%mid.lshr(64))
-        %r:      CmTrigU256 = CmTrigU256 { lo: %low, hi: %high }
+        %r: I256 = %high.to_u256().shl(128).bitor(%low.to_u256())
+        return(%r)
+
+; The high 128 bits of a 256-bit value.
+routine cm_trig_high(%x: I256) -> I128
+    block entry():
+        %r: I128 = %x.lshr(128).to_i128()
         return(%r)
 
 ; The high half of a 128×128-bit product from three 64-bit products: up to two units short of the exact
@@ -274,34 +263,21 @@ routine cm_trig_mhi(%x: I128, %y: I128) -> I128
         %r:  I128 = %hh.add(%hl).add(%lh)
         return(%r)
 
-routine cm_trig_add256(%a: CmTrigU256, %b: CmTrigU256) -> CmTrigU256
+; f << shift in the 256-bit frame, for 0 <= shift < 128. Two 128-bit shifts are cheaper than an I256
+; shift by a variable amount.
+routine cm_trig_place256(%f: I128, %shift: I64) -> I256
     block entry():
-        %lo:    I128 = %a.lo.add(%b.lo)
-        %carry: I128 = %lo.ult(%a.lo).to_i128()
-        %hi:    I128 = %a.hi.add(%b.hi).add(%carry)
-        %r:     CmTrigU256 = CmTrigU256 { lo: %lo, hi: %hi }
-        return(%r)
-
-routine cm_trig_sub256(%a: CmTrigU256, %b: CmTrigU256) -> CmTrigU256
-    block entry():
-        %borrow: I128 = %a.lo.ult(%b.lo).to_i128()
-        %lo:     I128 = %a.lo.sub(%b.lo)
-        %hi:     I128 = %a.hi.sub(%b.hi).sub(%borrow)
-        %r:      CmTrigU256 = CmTrigU256 { lo: %lo, hi: %hi }
-        return(%r)
-
-; f << shift in the 256-bit frame, for 0 <= shift < 128.
-routine cm_trig_place256(%f: I128, %shift: I64) -> CmTrigU256
-    block entry():
-        %lo: I128 = %f.shl(%shift.to_i128())
-        %hi: I128 = cm_trig_shl_join(%f, 0, %shift)
-        %r:  CmTrigU256 = CmTrigU256 { lo: %lo, hi: %hi }
+        %low:  I128 = %f.shl(%shift.to_i128())
+        %high: I128 = cm_trig_shl_join(%f, 0, %shift)
+        %r:    I256 = cm_trig_join(%high, %low)
         return(%r)
 
 ; The top 128 bits of s << shift, for 0 <= shift < 128.
-routine cm_trig_top256(%s: CmTrigU256, %shift: I64) -> I128
+routine cm_trig_top256(%s: I256, %shift: I64) -> I128
     block entry():
-        %r: I128 = cm_trig_shl_join(%s.lo, %s.hi, %shift)
+        %low:  I128 = %s.to_i128()
+        %high: I128 = cm_trig_high(%s)
+        %r:    I128 = cm_trig_shl_join(%low, %high, %shift)
         return(%r)
 
 routine cm_trig_add384(%a: CmTrigU384, %b: CmTrigU384) -> CmTrigU384
@@ -406,29 +382,23 @@ routine cm_trig_lz384(%x: CmTrigU384) -> I64
 ; exact value, never over.
 routine cm_trig_mul384(%a: CmTrigU384, %b: CmTrigU384) -> CmTrigU384
     block entry():
-        %p02: CmTrigU256 = cm_trig_wmul(%a.l0, %b.l2)
-        %p11: CmTrigU256 = cm_trig_wmul(%a.l1, %b.l1)
-        %p20: CmTrigU256 = cm_trig_wmul(%a.l2, %b.l0)
-        %p12: CmTrigU256 = cm_trig_wmul(%a.l1, %b.l2)
-        %p21: CmTrigU256 = cm_trig_wmul(%a.l2, %b.l1)
-        %p22: CmTrigU256 = cm_trig_wmul(%a.l2, %b.l2)
-        ; the diagonal one limb below the window contributes its high halves plus the carries of its lows
-        %sum:     I128 = %p02.lo.add(%p11.lo)
-        %carry1:  I128 = %sum.ult(%p02.lo).to_i128()
-        %sum2:    I128 = %sum.add(%p20.lo)
-        %carry2:  I128 = %sum2.ult(%sum).to_i128()
-        %carries: I128 = %carry1.add(%carry2)
-        %diag:    I128 = %p02.hi.add(%p11.hi)
-        %over1:   I128 = %diag.ult(%p02.hi).to_i128()
-        %diag2:   I128 = %diag.add(%p20.hi)
-        %over2:   I128 = %diag2.ult(%diag).to_i128()
-        %diag3:   I128 = %diag2.add(%carries)
-        %over3:   I128 = %diag3.ult(%diag2).to_i128()
-        %over:    I128 = %over1.add(%over2).add(%over3)
-        %a12: CmTrigU384 = CmTrigU384 { l0: %p12.lo, l1: %p12.hi, l2: 0 }
-        %a21: CmTrigU384 = CmTrigU384 { l0: %p21.lo, l1: %p21.hi, l2: 0 }
-        %a22: CmTrigU384 = CmTrigU384 { l0: 0, l1: %p22.lo, l2: %p22.hi }
-        %ad:  CmTrigU384 = CmTrigU384 { l0: %diag3, l1: %over, l2: 0 }
+        %p02: I256 = %a.l0.umul_wide(%b.l2)
+        %p11: I256 = %a.l1.umul_wide(%b.l1)
+        %p20: I256 = %a.l2.umul_wide(%b.l0)
+        %p12: I256 = %a.l1.umul_wide(%b.l2)
+        %p21: I256 = %a.l2.umul_wide(%b.l1)
+        %p22: I256 = %a.l2.umul_wide(%b.l2)
+        ; the diagonal one limb below the window contributes its sum from bit 128 up, in 130 bits
+        %sum:   I256 = %p02.add(%p11)
+        %over1: I128 = %sum.ult(%p02).to_i128()
+        %sum2:  I256 = %sum.add(%p20)
+        %over2: I128 = %sum2.ult(%sum).to_i128()
+        %diag:  I128 = cm_trig_high(%sum2)
+        %over:  I128 = %over1.add(%over2)
+        %a12: CmTrigU384 = CmTrigU384 { l0: %p12.to_i128(), l1: cm_trig_high(%p12), l2: 0 }
+        %a21: CmTrigU384 = CmTrigU384 { l0: %p21.to_i128(), l1: cm_trig_high(%p21), l2: 0 }
+        %a22: CmTrigU384 = CmTrigU384 { l0: 0, l1: %p22.to_i128(), l2: cm_trig_high(%p22) }
+        %ad:  CmTrigU384 = CmTrigU384 { l0: %diag, l1: %over, l2: 0 }
         %t12: CmTrigU384 = cm_trig_add384(%a12, %a21)
         %t34: CmTrigU384 = cm_trig_add384(%a22, %ad)
         %r:   CmTrigU384 = cm_trig_add384(%t12, %t34)
@@ -436,25 +406,25 @@ routine cm_trig_mul384(%a: CmTrigU384, %b: CmTrigU384) -> CmTrigU384
 
 ; The high 256 bits of a 256×256-bit product: the dropped tail leaves it up to one unit short of the exact
 ; value, never over.
-routine cm_trig_mul256(%a: CmTrigU256, %b: CmTrigU256) -> CmTrigU256
+routine cm_trig_mul256(%a: I256, %b: I256) -> I256
     block entry():
-        %hh:    CmTrigU256 = cm_trig_wmul(%a.hi, %b.hi)
-        %cross: CmTrigU256 = cm_trig_wmul(%a.hi, %b.lo)
-        %other: CmTrigU256 = cm_trig_wmul(%a.lo, %b.hi)
-        ; the two cross terms and the top of a.lo*b.lo land one limb below the window: only their carry
-        ; survives
-        %sum:     I128 = %cross.lo.add(%other.lo)
-        %carry1:  I128 = %sum.ult(%cross.lo).to_i128()
-        %sum2:    I128 = %sum.add(cm_trig_mhi(%a.lo, %b.lo))
-        %carry2:  I128 = %sum2.ult(%sum).to_i128()
-        %middle:  I128 = %cross.hi.add(%other.hi)
-        %over1:   I128 = %middle.ult(%cross.hi).to_i128()
-        %middle2: I128 = %middle.add(%carry1).add(%carry2)
-        %over2:   I128 = %middle2.ult(%middle).to_i128()
-        %low:     I128 = %hh.lo.add(%middle2)
-        %over3:   I128 = %low.ult(%middle2).to_i128()
-        %high:    I128 = %hh.hi.add(%over1).add(%over2).add(%over3)
-        %r:       CmTrigU256 = CmTrigU256 { lo: %low, hi: %high }
+        %a_hi:  I128 = cm_trig_high(%a)
+        %a_lo:  I128 = %a.to_i128()
+        %b_hi:  I128 = cm_trig_high(%b)
+        %b_lo:  I128 = %b.to_i128()
+        %hh:    I256 = %a_hi.umul_wide(%b_hi)
+        %cross: I256 = %a_hi.umul_wide(%b_lo)
+        %other: I256 = %a_lo.umul_wide(%b_hi)
+        %ll_hi: I128 = cm_trig_mhi(%a_lo, %b_lo)
+        ; the two cross terms and the top of a.lo*b.lo sit one limb below the window: only their sum from
+        ; bit 128 up survives, in 130 bits
+        %middle:  I256 = %cross.add(%other)
+        %over1:   I64  = %middle.ult(%cross).to_i64()
+        %middle2: I256 = %middle.add(%ll_hi.to_u256())
+        %over2:   I64  = %middle2.ult(%middle).to_i64()
+        %carried: I256 = %over1.add(%over2).to_u256().shl(128)
+        %shifted: I256 = %middle2.lshr(128).add(%carried)
+        %r:       I256 = %hh.add(%shifted)
         return(%r)
 
 ; -- tables --------------------------------------------------------------------
@@ -593,8 +563,8 @@ routine cm_trig_reduce(%m: I128, %e: I64) -> CmTrigReduced
         %high:    I64  = %g2.shl(%lz).bitor(%g1.lshr(%back))
         %low:     I64  = %g1.shl(%lz).bitor(%g0.lshr(%back))
         %g:       I128 = %high.to_u128().shl(64).bitor(%low.to_u128())
-        %product: CmTrigU256 = cm_trig_wmul(%g, CM_TRIG_PI_4)
-        %lzt:     I64  = cm_trig_clz(%product.hi)
+        %product: I256 = %g.umul_wide(CM_TRIG_PI_4)
+        %lzt:     I64  = cm_trig_clz(cm_trig_high(%product))
         %t1:      I128 = cm_trig_top256(%product, %lzt)
         %et:      I64  = 1.sub(%lz.add(%lzt))
         %r: CmTrigReduced = CmTrigReduced { ok: true, n: %n, negative: %negative, t1: %t1, et: %et }
@@ -797,10 +767,10 @@ routine cm_trig_fast(%m: I128, %e: I64, %cosine: Bool) -> CmTrigFast
     ; cos(theta) = 1 - (1 - cos(theta)), just under 1
     block small_cosine(%sq: CmTrigSquares, %et: I64):
         %correction: I128       = cm_trig_cos_corr(%sq.u1, %sq.u, %sq.v)
-        %placed:     CmTrigU256 = cm_trig_place256(%correction, %et.mul(2).add(128))
-        %all_ones:   CmTrigU256 = CmTrigU256 { lo: -1, hi: -1 }
-        %near_one:   CmTrigU256 = cm_trig_sub256(%all_ones, %placed)
-        %r: CmTrigFast = CmTrigFast { vouched: true, frac: %near_one.hi, exp: 0, sign: 0 }
+        %placed:     I256 = cm_trig_place256(%correction, %et.mul(2).add(128))
+        %near_one:   I256 = %placed.bitnot()                ; 2^256 - 1 - placed
+        %frac:       I128 = cm_trig_high(%near_one)
+        %r: CmTrigFast = CmTrigFast { vouched: true, frac: %frac, exp: 0, sign: 0 }
         return(%r)
 
     ; sin(theta) < theta drops a leading bit when t1 starts a binade
@@ -866,16 +836,16 @@ routine cm_trig_fast_tail(%red: CmTrigReduced, %sq: CmTrigSquares, %sine_theta: 
         %second2:     I128 = cm_trig_sincos(%j, 1.sub(%want_cos), 2)
         %c_frac:      I128 = cm_trig_mhi(%first2, %correction)
         %s_frac:      I128 = cm_trig_mhi(%second2, %sine_theta)
-        %c:           CmTrigU256 = cm_trig_place256(%c_frac, %et.mul(2).add(128))
-        %s:           CmTrigU256 = cm_trig_place256(%s_frac, %et.add(128))
-        %first:       CmTrigU256 = CmTrigU256 { lo: %first1, hi: %first2 }
-        %base:        CmTrigU256 = cm_trig_sub256(%first, %c)
+        %c:           I256 = cm_trig_place256(%c_frac, %et.mul(2).add(128))
+        %s:           I256 = cm_trig_place256(%s_frac, %et.add(128))
+        %first:       I256 = cm_trig_join(%first2, %first1)
+        %base:        I256 = %first.sub(%c)
         %negative:    Bool = %red.negative
         %subtract:    Bool = %negative.ne(%want_cos.ne(0))
-        %sum:         CmTrigU256 = cm_trig_add256(%base, %s)
-        %difference:  CmTrigU256 = cm_trig_sub256(%base, %s)
-        %f:           CmTrigU256 = %subtract ? %difference : %sum
-        %lz:          I64  = cm_trig_clz(%f.hi)
+        %sum:         I256 = %base.add(%s)
+        %difference:  I256 = %base.sub(%s)
+        %f:           I256 = %subtract ? %difference : %sum
+        %lz:          I64  = cm_trig_clz(cm_trig_high(%f))
         %frac:        I128 = cm_trig_top256(%f, %lz)
         %r: CmTrigFast = CmTrigFast { vouched: true, frac: %frac, exp: 0.sub(%lz), sign: %flip }
         return(%r)
@@ -899,23 +869,25 @@ routine cm_trig_alternating(%u: CmTrigU384, #coef: Ptr<I128>) -> CmTrigU384
         jump narrow(%k.sub(1), %next, %u, #coef)
 
     block widen_to_256(%acc: I128, %u: CmTrigU384, #coef: Ptr<I128>):
-        %wide: CmTrigU256 = CmTrigU256 { lo: 0, hi: %acc }
+        %wide: I256 = cm_trig_join(%acc, 0)
         jump middle(10, %wide, %u, #coef)
 
-    block middle(%k: I64, %acc: CmTrigU256, %u: CmTrigU384, #coef: Ptr<I128>):
+    block middle(%k: I64, %acc: I256, %u: CmTrigU384, #coef: Ptr<I128>):
         %done: Bool = %k.slt(2)
         branch %done ? widen_to_384(%acc, %u, #coef) : middle_step(%k, %acc, %u, #coef)
 
-    block middle_step(%k: I64, %acc: CmTrigU256, %u: CmTrigU384, #coef: Ptr<I128>):
+    block middle_step(%k: I64, %acc: I256, %u: CmTrigU384, #coef: Ptr<I128>):
         %c_lo:  I128       = cm_trig_coef(#coef, %k, 1)
         %c_hi:  I128       = cm_trig_coef(#coef, %k, 2)
-        %c:     CmTrigU256 = CmTrigU256 { lo: %c_lo, hi: %c_hi }
-        %u_top: CmTrigU256 = CmTrigU256 { lo: %u.l1, hi: %u.l2 }
-        %next:  CmTrigU256 = cm_trig_sub256(%c, cm_trig_mul256(%u_top, %acc))
+        %c:       I256 = cm_trig_join(%c_hi, %c_lo)
+        %u_top:   I256 = cm_trig_join(%u.l2, %u.l1)
+        %product: I256 = cm_trig_mul256(%u_top, %acc)
+        %next:    I256 = %c.sub(%product)
         jump middle(%k.sub(1), %next, %u, #coef)
 
-    block widen_to_384(%acc: CmTrigU256, %u: CmTrigU384, #coef: Ptr<I128>):
-        %wide: CmTrigU384 = CmTrigU384 { l0: 0, l1: %acc.lo, l2: %acc.hi }
+    block widen_to_384(%acc: I256, %u: CmTrigU384, #coef: Ptr<I128>):
+        %high: I128       = cm_trig_high(%acc)
+        %wide: CmTrigU384 = CmTrigU384 { l0: 0, l1: %acc.to_i128(), l2: %high }
         jump full(1, %wide, %u, #coef)
 
     block full(%k: I64, %acc: CmTrigU384, %u: CmTrigU384, #coef: Ptr<I128>):

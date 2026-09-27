@@ -879,92 +879,21 @@ routine F128.max(%self: Self, %other: Self) -> Self
 
 ; -- fused multiply-add ----------------------------------------------------------
 
-; A 256-bit unsigned number, hi × 2^128 + lo.
-struct U256
-    hi: I128
-    lo: I128
-
-; The exact 226-bit product of two 113-bit significands.
-routine f128_mul_exact(%ma: I128, %mb: I128) -> U256
+; x >> n (x read as unsigned) with everything shifted out ORed into bit 0.
+routine f128_shr_sticky256(%x: I256, %n: I64) -> I256
     block entry():
-        %a0:  I128 = %ma.bitand(0xFFFFFFFFFFFFFFFF)
-        %a1:  I128 = %ma.lshr(64)
-        %b0:  I128 = %mb.bitand(0xFFFFFFFFFFFFFFFF)
-        %b1:  I128 = %mb.lshr(64)
-        %p00: I128 = %a0.mul(%b0)
-        %mid: I128 = %a0.mul(%b1).add(%a1.mul(%b0))
-        %p11: I128 = %a1.mul(%b1)
-        %lo:  I128 = %p00.add(%mid.shl(64))
-        %c:   I128 = %lo.ult(%p00).to_i128()
-        %hi:  I128 = %p11.add(%mid.lshr(64)).add(%c)
-        %r: U256 = U256 { hi: %hi, lo: %lo }
-        return(%r)
-
-routine u256_shl(%x: U256, %n: I64) -> U256
-    block entry():
-        %none: Bool = %n.eq(0)
-        %big:  Bool = %n.sge(128)
-        select:
-            %none -> return(%x)
-            %big -> big()
-            _ -> small()
-
-    block big():
-        %r: U256 = U256 { hi: %x.lo.shl(%n.sub(128).to_i128()), lo: 0 }
-        return(%r)
-
-    block small():
-        %hi: I128 = %x.hi.shl(%n.to_i128()).bitor(%x.lo.lshr(128.sub(%n).to_i128()))
-        %r: U256 = U256 { hi: %hi, lo: %x.lo.shl(%n.to_i128()) }
-        return(%r)
-
-; x >> n with everything shifted out ORed into bit 0.
-routine u256_shr_sticky(%x: U256, %n: I64) -> U256
-    block entry():
-        %none: Bool = %n.eq(0)
-        %all:  Bool = %n.sge(256)
-        %big:  Bool = %n.sge(128)
-        select:
-            %none -> return(%x)
-            %all -> all()
-            %big -> big()
-            _ -> small()
+        %all: Bool = %n.sge(256)
+        branch %all ? all() : some()
 
     block all():
-        %any: I128 = %x.hi.bitor(%x.lo).ne(0).to_i128()
-        %r: U256 = U256 { hi: 0, lo: %any }
-        return(%r)
+        %any: I256 = %x.ne(0).to_i64().to_u256()
+        return(%any)
 
-    block big():
-        %m:    I64  = %n.sub(128)
-        %lost: Bool = %x.lo.ne(0).bitor(%x.hi.bitand(1.shl(%m.to_i128()).sub(1)).ne(0))
-        %lo:   I128 = %x.hi.lshr(%m.to_i128()).bitor(%lost.to_i128())
-        %r: U256 = U256 { hi: 0, lo: %lo }
-        return(%r)
-
-    block small():
-        %lost: Bool = %x.lo.bitand(1.shl(%n.to_i128()).sub(1)).ne(0)
-        %lo:   I128 = %x.lo.lshr(%n.to_i128()).bitor(%x.hi.shl(128.sub(%n).to_i128())).bitor(%lost.to_i128())
-        %r: U256 = U256 { hi: %x.hi.lshr(%n.to_i128()), lo: %lo }
-        return(%r)
-
-routine u256_ge(%a: U256, %b: U256) -> Bool
-    block entry():
-        %r: Bool = %a.hi.ugt(%b.hi).bitor(%a.hi.eq(%b.hi).bitand(%a.lo.uge(%b.lo)))
-        return(%r)
-
-routine u256_add(%a: U256, %b: U256) -> U256
-    block entry():
-        %lo: I128 = %a.lo.add(%b.lo)
-        %c:  I128 = %lo.ult(%a.lo).to_i128()
-        %r: U256 = U256 { hi: %a.hi.add(%b.hi).add(%c), lo: %lo }
-        return(%r)
-
-routine u256_sub(%a: U256, %b: U256) -> U256
-    block entry():
-        %lo: I128 = %a.lo.sub(%b.lo)
-        %c:  I128 = %a.lo.ult(%b.lo).to_i128()
-        %r: U256 = U256 { hi: %a.hi.sub(%b.hi).sub(%c), lo: %lo }
+    block some():
+        %shift: I256 = %n.to_i256()
+        %mask:  I256 = 1.shl(%shift).sub(1)
+        %lost:  Bool = %x.bitand(%mask).ne(0)
+        %r:     I256 = %x.lshr(%shift).bitor(%lost.to_i64().to_u256())
         return(%r)
 
 ; self × a + b with a single rounding: the 226-bit product is exact, c is
@@ -1018,48 +947,45 @@ routine f128_fma_bits(%x: I128, %y: I128, %c: I128) -> I128
         %px: F128Parts = f128_unpack(%x)
         %py: F128Parts = f128_unpack(%y)
         %pc: F128Parts = f128_unpack(%c)
-        %p:  U256 = u256_shl(f128_mul_exact(%px.sig, %py.sig), 29)
+        %p:  I256 = %px.sig.umul_wide(%py.sig).shl(29)
         %p_e: I64 = %px.exp.add(%py.exp).sub(253)
-        %c_sig: U256 = U256 { hi: 0, lo: %pc.sig }
-        %cc: U256 = u256_shl(%c_sig, 142)
+        %cc: I256 = %pc.sig.to_u256().shl(142)
         %c_e: I64 = %pc.exp.sub(254)
         %p_neg: Bool = %sign.ne(0)
         %c_neg: Bool = %c.slt(0)
         %p_first: Bool = %p_e.sge(%c_e)
-        %big:     U256 = %p_first ? %p : %cc
-        %small:   U256 = %p_first ? %cc : %p
+        %big:     I256 = %p_first ? %p : %cc
+        %small:   I256 = %p_first ? %cc : %p
         %e:       I64  = %p_first ? %p_e : %c_e
         %diff:    I64  = %p_first ? %p_e.sub(%c_e) : %c_e.sub(%p_e)
         %big_neg: Bool = %p_first ? %p_neg : %c_neg
         %small_neg: Bool = %p_first ? %c_neg : %p_neg
-        %aligned: U256 = u256_shr_sticky(%small, %diff)
+        %aligned: I256 = f128_shr_sticky256(%small, %diff)
         %same:    Bool = %big_neg.eq(%small_neg)
         branch %same ? sum(%big, %aligned, %e, %big_neg) : difference(%big, %aligned, %e, %big_neg)
 
-    block sum(%a: U256, %b: U256, %e: I64, %negative: Bool):
-        %total: U256 = u256_add(%a, %b)
+    block sum(%a: I256, %b: I256, %e: I64, %negative: Bool):
+        %total: I256 = %a.add(%b)
         jump round(%total, %e, %negative)
 
     ; an exact zero is +0
-    block difference(%a: U256, %b: U256, %e: I64, %a_negative: Bool):
-        %a_larger: Bool = u256_ge(%a, %b)
-        %m:        U256 = %a_larger ? u256_sub(%a, %b) : u256_sub(%b, %a)
+    block difference(%a: I256, %b: I256, %e: I64, %a_negative: Bool):
+        %a_larger: Bool = %a.uge(%b)
+        %m:        I256 = %a_larger ? %a.sub(%b) : %b.sub(%a)
         %negative: Bool = %a_larger ? %a_negative : %a_negative.bitnot()
         jump round(%m, %e, %negative)
 
     ; value = r × 2^e: bring the top bit to 255, then hand the high half (with
     ; a sticky bit for the low one) to f128_round_pack
-    block round(%r: U256, %e: I64, %negative: Bool):
-        %zero: Bool = %r.hi.eq(0).bitand(%r.lo.eq(0))
+    block round(%r: I256, %e: I64, %negative: Bool):
+        %zero: Bool = %r.eq(0)
         branch %zero ? return(0) : normalize(%r, %e, %negative)
 
-    block normalize(%r: U256, %e: I64, %negative: Bool):
-        %hi_zero: Bool = %r.hi.eq(0)
-        %lz_hi:   I64  = %r.hi.leading_zeros().to_i64()
-        %lz_lo:   I64  = %r.lo.leading_zeros().to_i64().add(128)
-        %lz:      I64  = %hi_zero ? %lz_lo : %lz_hi
-        %n:       U256 = u256_shl(%r, %lz)
-        %sig:     I128 = %n.hi.bitor(%n.lo.ne(0).to_i128())
+    block normalize(%r: I256, %e: I64, %negative: Bool):
+        %lz:      I64  = %r.leading_zeros().to_i64()
+        %n:       I256 = %r.shl(%lz.to_i256())
+        %high:    I128 = %n.lshr(128).to_i128()
+        %sig:     I128 = %high.bitor(%n.to_i128().ne(0).to_i128())
         %exp:     I64  = %e.sub(%lz).add(128).add(F128_BIAS).add(115)
         %bits:    I128 = f128_round_pack(%negative, %exp, %sig)
         return(%bits)

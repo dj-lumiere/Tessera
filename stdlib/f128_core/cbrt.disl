@@ -41,11 +41,6 @@ const CM_CBRT_QUIET_HI:  I64  = 0x0000800000000000                  ; quiet bit 
 const CM_CBRT_TWO_THIRD: I64  = 0xAAAAAAAAAAAAAAAB                  ; 2/3 in 0.64 fixed point
 const CM_CBRT_ONE_THIRD: I64  = 0x5555555555555555                  ; 1/3 in 0.64 fixed point
 
-; a 256-bit product as two 128-bit words
-struct CmCbrtU256
-    hi: I128
-    lo: I128
-
 ; -- entry point ---------------------------------------------------------------
 
 routine f128_cm_cbrt(%x: F128) -> F128
@@ -143,25 +138,6 @@ routine cm_cbrt_mhuU(%y: I64, %x: I128) -> I128
         %r: I128 = %xy1.add(%xy0.lshr(64))
         return(%r)
 
-; full 256-bit product of two unsigned 128-bit values
-routine cm_cbrt_mUU(%a: I128, %b: I128) -> CmCbrtU256
-    block entry():
-        %a0:        I128 = %a.bitand(CM_CBRT_LOW64)
-        %a1:        I128 = %a.lshr(64)
-        %b0:        I128 = %b.bitand(CM_CBRT_LOW64)
-        %b1:        I128 = %b.lshr(64)
-        %a1b0:      I128 = %a1.mul(%b0)
-        %a0b1:      I128 = %a0.mul(%b1)
-        %a1b1:      I128 = %a1.mul(%b1)
-        %a0b0:      I128 = %a0.mul(%b0)
-        %mid:       I128 = %a1b0.add(%a0b1)
-        %mid_carry: I128 = %mid.ult(%a1b0).to_i128().shl(64)
-        %lo:        I128 = %a0b0.add(%mid.shl(64))
-        %lo_carry:  I128 = %lo.ult(%a0b0).to_i128()
-        %hi:        I128 = %a1b1.add(%mid.lshr(64)).add(%mid_carry).add(%lo_carry)
-        %r: CmCbrtU256 = CmCbrtU256 { hi: %hi, lo: %lo }
-        return(%r)
-
 ; -- the root ------------------------------------------------------------------
 
 ; 1 + r ~ 1/cbrt(m), r signed, from the high significand word m (top bit set)
@@ -237,14 +213,15 @@ routine cm_cbrt_icbrt(%x: I128, %i: I64) -> I128
 ; shifted back, nudged by one so the caller's round bit goes the right way.
 routine cm_cbrt_exact(%sx1: I128, %xs: I128) -> I128
     block entry():
-        %c:        I128       = %sx1.add(0x4000).lshr(15).bitor(1.shl(113))
-        %cc:       CmCbrtU256 = cm_cbrt_mUU(%c, %c)
-        %p:        CmCbrtU256 = cm_cbrt_mUU(%cc.lo, %c)
-        %r31:      I128       = %cc.hi.mul(%c).add(%p.hi).sub(%xs.shl(86))
-        %r30:      I128       = %p.lo
-        %base:     I128       = %c.shl(15)
-        %below:    Bool       = %r31.slt(0)
-        %above:    Bool       = %r31.bitor(%r30).ne(0)
+        %c:        I128 = %sx1.add(0x4000).lshr(15).bitor(1.shl(113))
+        ; c^3 needs 342 bits, but c^3 - x × 2^214 is small, so modulo 2^256 its sign and zero test hold
+        %c_wide:   I256 = %c.to_u256()
+        %cube:     I256 = %c.umul_wide(%c).mul(%c_wide)
+        %target:   I256 = %xs.to_u256().shl(214)
+        %excess:   I256 = %cube.sub(%target)
+        %base:     I128 = %c.shl(15)
+        %below:    Bool = %excess.slt(0)
+        %above:    Bool = %excess.ne(0)
         select:
             %below -> return(%base.add(1))
             %above -> return(%base.sub(1))
