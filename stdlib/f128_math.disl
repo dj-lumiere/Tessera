@@ -457,7 +457,7 @@ routine F128.exp(%self: Self) -> Self
             _ -> compute()
 
     block compute():
-        %r: F128 = wide_exp(wide_from_f128(%self)).to_f128()
+        %r: F128 = f128_cm_exp(%self)
         return(%r)
 
 ; -- log -----------------------------------------------------------------------
@@ -510,7 +510,7 @@ routine F128.ln(%self: Self) -> Self
             _ -> compute()
 
     block compute():
-        %r: F128 = wide_log(wide_from_f128(%self)).to_f128()
+        %r: F128 = f128_cm_log(%self)
         return(%r)
 
 ; bits of 2/pi after the point, 64 per entry, most significant first (17280 bits)
@@ -903,14 +903,46 @@ routine f128_trig(%x: F128, %kind: TrigKind) -> F128
         %r: F128 = wide_trig(%x, %kind).to_f128()
         return(%r)
 
+; sin and cos are CORE-MATH ports (f128_core/); NaN and infinities keep
+; f128_trig's answers.
 routine F128.sin(%self: Self) -> Self
     block entry():
+        %finite: Bool = %self.is_finite()
+        branch %finite ? compute() : special()
+
+    block compute():
+        %r: Self = f128_cm_sin(%self)
+        return(%r)
+
+    block special():
         %r: Self = f128_trig(%self, TrigKind.Sin)
         return(%r)
 
 routine F128.cos(%self: Self) -> Self
     block entry():
+        %finite: Bool = %self.is_finite()
+        branch %finite ? compute() : special()
+
+    block compute():
+        %r: Self = f128_cm_cos(%self)
+        return(%r)
+
+    block special():
         %r: Self = f128_trig(%self, TrigKind.Cos)
+        return(%r)
+
+; sin and cos together, sharing one argument reduction
+routine F128.sin_cos(%self: Self) -> F128SinCos
+    block entry():
+        %finite: Bool = %self.is_finite()
+        branch %finite ? compute() : special()
+
+    block compute():
+        %r: F128SinCos = f128_cm_sin_cos(%self)
+        return(%r)
+
+    block special():
+        %r: F128SinCos = F128SinCos { sin: %self.sin(), cos: %self.cos() }
         return(%r)
 
 routine F128.tan(%self: Self) -> Self
@@ -1064,123 +1096,57 @@ routine wide_atan(%x: Wide) -> Wide
 ; Most functions below share the same frame: NaN in, NaN out; a few fixed
 ; answers for infinities and zeros; otherwise compute in Wide and round once.
 
+; atan, asin, acos, and atan2 are CORE-MATH ports (f128_core/); NaN in and
+; outside the domain keep F128's own NaNs.
 routine F128.atan(%self: Self) -> Self
     block entry():
         %nan:  Bool = %self.is_nan()
-        %inf:  Bool = %self.is_infinite()
-        %zero: Bool = f128_is_zero_bits(%self.bits)
         %quiet: Self = Self.from_bits(f128_quiet(%self.bits))
-        select:
-            %nan -> return(%quiet)
-            %zero -> return(%self)
-            %inf -> infinite()
-            _ -> compute()
-
-    block infinite():
-        %r0: Self = wide_half_pi().to_f128()
-        %r:  Self = %r0.copysign(%self)
-        return(%r)
+        branch %nan ? return(%quiet) : compute()
 
     block compute():
-        %r: Self = wide_atan(wide_from_f128(%self)).to_f128()
+        %r: Self = f128_cm_atan(%self)
         return(%r)
 
-; asin x = atan(x / sqrt((1 - x)(1 + x))), with the product exact near ±1.
 routine F128.asin(%self: Self) -> Self
     block entry():
         %nan:     Bool = %self.is_nan()
-        %zero:    Bool = f128_is_zero_bits(%self.bits)
-        %a:       Wide = wide_from_f128(%self.abs())
-        %outside: Bool = %a.above_one().bitor(%self.is_infinite())
-        %edge:    Bool = %self.abs().eq(F128.from_bits(0x3FFF0000000000000000000000000000))
+        %outside: Bool = %self.abs().gt(F128.from_bits(0x3FFF0000000000000000000000000000))
         %quiet:   Self = Self.from_bits(f128_quiet(%self.bits))
         %invalid: Self = Self.NAN
         select:
             %nan -> return(%quiet)
             %outside -> return(%invalid)
-            %zero -> return(%self)
-            %edge -> edge()
             _ -> compute()
 
-    block edge():
-        %r: Self = wide_half_pi().to_f128().copysign(%self)
-        return(%r)
-
     block compute():
-        %x:   Wide = wide_from_f128(%self)
-        %one: Wide = wide_one()
-        %d:   Wide = %one.sub(%x).mul(%one.add(%x)).sqrt()
-        %r:   Self = wide_atan(%x.div(%d)).to_f128()
+        %r: Self = f128_cm_asin(%self)
         return(%r)
 
-; acos x = 2 atan(sqrt((1 - x) / (1 + x))): no cancellation near 1.
 routine F128.acos(%self: Self) -> Self
     block entry():
         %nan:     Bool = %self.is_nan()
-        %a:       Wide = wide_from_f128(%self.abs())
-        %outside: Bool = %a.above_one().bitor(%self.is_infinite())
-        %minus_one: Bool = %self.eq(F128.from_bits(0xBFFF0000000000000000000000000000))
+        %outside: Bool = %self.abs().gt(F128.from_bits(0x3FFF0000000000000000000000000000))
         %quiet:   Self = Self.from_bits(f128_quiet(%self.bits))
         %invalid: Self = Self.NAN
         select:
             %nan -> return(%quiet)
             %outside -> return(%invalid)
-            %minus_one -> pi()
             _ -> compute()
 
-    block pi():
-        %r: Self = wide_half_pi().ldexp(1).to_f128()
-        return(%r)
-
     block compute():
-        %x:   Wide = wide_from_f128(%self)
-        %one: Wide = wide_one()
-        %q:   Wide = %one.sub(%x).div(%one.add(%x)).sqrt()
-        %r:   Self = wide_atan(%q).ldexp(1).to_f128()
+        %r: Self = f128_cm_acos(%self)
         return(%r)
 
 ; atan2(y, x), the angle of (x, y), with IEEE's rules for zeros and infinities.
 routine F128.atan2(%self: Self, %x: Self) -> Self
     block entry():
-        %y: Self = %self
-        %nan: Bool = %y.is_nan().bitor(%x.is_nan())
+        %nan: Bool = %self.is_nan().bitor(%x.is_nan())
         %quiet: Self = Self.NAN
-        branch %nan ? return(%quiet) : cases(%y)
+        branch %nan ? return(%quiet) : compute()
 
-    block cases(%y: Self):
-        %y_zero: Bool = f128_is_zero_bits(%y.bits)
-        %x_zero: Bool = f128_is_zero_bits(%x.bits)
-        %y_inf:  Bool = %y.is_infinite()
-        %x_inf:  Bool = %x.is_infinite()
-        %x_neg:  Bool = %x.bits.slt(0)
-        %half_pi: Wide = wide_half_pi()
-        ; the angle for y >= 0, as a Wide
-        %pi:       Wide = %half_pi.ldexp(1)
-        %quarter:  Wide = %half_pi.ldexp(-1)
-        %three_q:  Wide = %quarter.mul(wide_from_i64(3))
-        %zero_angle: Wide = wide_zero()
-        %flat:     Wide = %x_neg ? %pi : %zero_angle           ; y = 0, or x infinite
-        %corner:   Wide = %x_neg ? %three_q : %quarter         ; both infinite
-        %steep:    Wide = %x_inf ? %corner : %half_pi          ; y infinite
-        select:
-            %y_zero -> at(%y, %flat)
-            %y_inf -> at(%y, %steep)
-            %x_zero -> at(%y, %half_pi)
-            %x_inf -> at(%y, %flat)
-            _ -> general(%y)
-
-    ; |angle| from |y / x|, then the quadrant, then y's sign
-    block general(%y: Self):
-        %ratio: Wide = wide_from_f128(%y.abs()).div(wide_from_f128(%x.abs()))
-        %a:     Wide = wide_atan(%ratio)
-        %x_neg: Bool = %x.bits.slt(0)
-        %angle: Wide = %x_neg ? wide_half_pi().ldexp(1).sub(%a) : %a
-        jump at(%y, %angle)
-
-    ; y's sign on the angle, keeping -0 for y = -0 and x > 0
-    block at(%y: Self, %angle: Wide):
-        %r0: Self = %angle.to_f128()
-        %r:  Self = %r0.copysign(%y)
+    block compute():
+        %r: Self = f128_cm_atan2(%self, %x)
         return(%r)
 
 ; -- hyperbolic ----------------------------------------------------------------
@@ -1354,7 +1320,7 @@ routine F128.exp_m1(%self: Self) -> Self
             _ -> compute()
 
     block compute():
-        %r: Self = wide_exp_m1(wide_from_f128(%self)).to_f128()
+        %r: Self = f128_cm_expm1(%self)
         return(%r)
 
 routine F128.exp2(%self: Self) -> Self
@@ -1372,7 +1338,18 @@ routine F128.exp2(%self: Self) -> Self
             _ -> compute()
 
     block compute():
-        %r: Self = wide_exp(wide_from_f128(%self).mul(wide_const(0))).to_f128()
+        %r: Self = f128_cm_exp2(%self)
+        return(%r)
+
+; 10^x, a CORE-MATH port (f128_core/exp10.disl); exact for integer powers
+routine F128.exp10(%self: Self) -> Self
+    block entry():
+        %nan:   Bool = %self.is_nan()
+        %quiet: Self = Self.from_bits(f128_quiet(%self.bits))
+        branch %nan ? return(%quiet) : compute()
+
+    block compute():
+        %r: Self = f128_cm_exp10(%self)
         return(%r)
 
 routine F128.ln_1p(%self: Self) -> Self
@@ -1528,22 +1505,15 @@ routine F128.powi(%self: Self, %n: I32) -> Self
         %r: Self = %self.powf(%n.to_f128())
         return(%r)
 
-; cube root, odd: sign × e^(ln|x| / 3)
+; cube root, a CORE-MATH port (f128_core/cbrt.disl)
 routine F128.cbrt(%self: Self) -> Self
     block entry():
         %nan:  Bool = %self.is_nan()
-        %zero: Bool = f128_is_zero_bits(%self.bits)
-        %inf:  Bool = %self.is_infinite()
         %quiet: Self = Self.from_bits(f128_quiet(%self.bits))
-        %keep: Bool = %zero.bitor(%inf)
-        select:
-            %nan -> return(%quiet)
-            %keep -> return(%self)
-            _ -> compute()
+        branch %nan ? return(%quiet) : compute()
 
     block compute():
-        %l: Wide = wide_log(wide_from_f128(%self.abs()))
-        %r: Self = wide_exp(%l.div(wide_from_i64(3))).to_f128().copysign(%self)
+        %r: Self = f128_cm_cbrt(%self)
         return(%r)
 
 ; sqrt(x² + y²) without overflow or underflow; inf if either is infinite.
@@ -1559,9 +1529,7 @@ routine F128.hypot(%self: Self, %other: Self) -> Self
             _ -> compute()
 
     block compute():
-        %a: Wide = wide_from_f128(%self)
-        %b: Wide = wide_from_f128(%other)
-        %r: Self = %a.mul(%a).add(%b.mul(%b)).sqrt().to_f128()
+        %r: Self = f128_cm_hypot(%self, %other)
         return(%r)
 
 ; -- angles --------------------------------------------------------------------
