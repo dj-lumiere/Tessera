@@ -1,0 +1,295 @@
+; Tessera stdlib: the correctly rounded F128 arc sine
+;
+; Ported from CORE-MATH, src/binary128/asin/asinq.c via RazorForge's CoreMath/B128Asin.rf
+; (https://core-math.gitlabpages.inria.fr/).
+; Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
+; MIT license: see LICENSE-CORE-MATH
+;
+; Only the round-to-nearest path of the original is kept. Everything works on integers; the
+; helpers and tables shared with acos live in f128_core/asin_shared.tess.
+;
+; For |x| >= 0.022 the argument is reduced with the table point s_j = sin(pi/2/72*j):
+; asin(x) = asin(s_j) + asin(x*sqrt(1 - s_j^2) - s_j*sqrt(1 - x^2)), and the small remainder goes
+; through an odd polynomial. A 128-bit fast path is checked against its error bound and falls back
+; to a 320-bit accurate path.
+
+; asin(x), correctly rounded to nearest (ties to even). The result lies in [-pi/2, pi/2] and
+; asin(-x) = -asin(x); ±0 map to themselves. |x| > 1, ±infinity and a signaling NaN give the
+; default NaN (0xFFFF8 followed by zeros), and a quiet NaN is returned unchanged.
+routine f128_cm_asin(%x: F128) -> F128
+    block entry():
+        %bits:  I128 = %x.bits
+        %xb1:   I64  = cm_asin_hi(%bits).bitand(0x7FFFFFFFFFFFFFFF)
+        %xn:    I64  = %xb1.lshr(48)
+        %tiny:  Bool = %xn.slt(16327)                 ; |x| < 2^-56: asin(x) - x is below half an ulp
+        %large: Bool = %xn.sge(16383)                 ; |x| >= 1, infinity or NaN
+        select:
+            %tiny -> return(%x)
+            %large -> outside(%x, %xb1)
+            _ -> inside(%x)
+
+    block outside(%x: F128, %xb1: I64):
+        %bits:    I128 = %x.bits
+        %xb0:     I64  = cm_asin_lo(%bits)
+        %xsgn:    I64  = cm_asin_hi(%bits).bitand(0x8000000000000000)
+        %is_one:  Bool = %xb0.eq(0).bitand(%xb1.eq(0x3FFF000000000000))
+        %is_qnan: Bool = %xb1.sge(0x7FFF800000000000)
+        %hp_hi:   I64  = %xsgn.bitor(0x3FFF921FB54442D1)
+        %half_pi: F128 = F128.from_bits(cm_asin_join(%hp_hi, 0x8469898CC51701B8))
+        %nan:     F128 = F128.from_bits(cm_asin_join(0xFFFF800000000000, 0))
+        select:
+            %is_one -> return(%half_pi)
+            %is_qnan -> return(%x)
+            _ -> return(%nan)
+
+    block inside(%x: F128):
+        %r: F128 = cm_asin_fast(%x)
+        return(%r)
+
+; The unpacked argument 2^-57 <= |x| < 1: the 128-bit mantissa xa (implicit bit at 127), its
+; biased exponent xn, the sign word and the table point j.
+struct CmAsinArg
+    xa:   I128
+    xn:   I64
+    xsgn: I64
+    j:    I64
+
+routine cm_asin_unpack(%x: F128) -> CmAsinArg
+    block entry():
+        %bits: I128 = %x.bits
+        %hi:   I64  = cm_asin_hi(%bits)
+        %xb1:  I64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
+        %xb0:  I64  = cm_asin_lo(%bits)
+        %j:    I64  = cm_asin_jget(%xb1)
+        %xa:   I128 = cm_asin_join(%xb1.bitor(0x0001000000000000), %xb0).shl(15)
+        %xn:   I64  = %xb1.lshr(48)
+        %xsgn: I64  = %hi.bitand(0x8000000000000000)
+        %arg:  CmAsinArg = CmAsinArg { xa: %xa, xn: %xn, xsgn: %xsgn, j: %j }
+        return(%arg)
+
+; Packs the 113-bit mantissa v (implicit bit included), exponent xn, sign word and round bit.
+routine cm_asin_pack(%v: I128, %xn: I64, %xsgn: I64, %rnd: I64) -> F128
+    block entry():
+        %top: I128 = cm_asin_join(%xn.shl(48).bitor(%xsgn), %rnd)
+        %r:   F128 = F128.from_bits(%v.add(%top))
+        return(%r)
+
+; The 128-bit fast path of asin; it falls back to cm_asin_accurate when its result could round
+; either way.
+routine cm_asin_fast(%x: F128) -> F128
+    block entry():
+        %arg: CmAsinArg = cm_asin_unpack(%x)
+        %nz:  I64 = 16383.sub(%arg.xn)
+        %reduced: Bool = %arg.j.ne(0)
+        branch %reduced ? reduce(%x, %arg, %nz) : direct(%x, %arg, %nz)
+
+    ; asin(x) = asin(s_j) + asin(d) for the reduced argument d
+    block reduce(%x: F128, %arg: CmAsinArg, %nz: I64):
+        %x0:    I64 = cm_asin_lo(%arg.xa)
+        %x1:    I64 = cm_asin_hi(%arg.xa)
+        %root:  CmAsinRoot3 = cm_asin_fast_sqrt(%x0, %x1, %nz, 0)
+        %d:     CmAsinW3 = cm_asin_reduce3(%arg.xa, %nz, %arg.j, %root)
+        %dz:    I64 = %d.w2.leading_zeros()
+        %t:     I128 = cm_asin_top128(%d, %dz)
+        #phi0:  Ptr<I64> = CM_ASIN_PHI0.as_ptr()
+        %phi_j: CmAsinW3 = cm_asin_load3(#phi0, %arg.j.mul(5).add(2))
+        %xc:    CmAsinW3 = cm_asin_add3(%d, %phi_j)
+        %f:     I128 = cm_asin_fast_poly(%t, %dz.sub(6).mul(2))
+        %sum:   CmAsinW3 = cm_asin_add3(%xc, cm_asin_shift_poly3(%f, %dz.mul(3)))
+        ; round, and check the error bound of the fast path
+        %k:     I64  = %sum.w2.leading_zeros()
+        %rnd:   I64  = %sum.w1.lshr(cm_asin_sh(14.sub(%k))).bitand(1)
+        %err_sh: I64 = %dz.mul(3).sub(6)
+        %small_err: Bool = %err_sh.sle(57)
+        %eps:   I64  = %small_err ? 0x8000000000000000.lshr(cm_asin_sh(%err_sh)) : 64
+        %msk:   I128 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF.lshr(cm_asin_sh7(%k.add(50)))
+        %tail:  I128 = cm_asin_join(%sum.w1, %sum.w0).add(%eps.to_u128()).bitand(%msk)
+        %unsafe: Bool = %tail.ult(%eps.mul(2).to_u128())
+        %s:     I64  = cm_asin_sh(15.sub(%k))
+        %v_lo:  I64  = %sum.w1.lshr(%s).bitor(%sum.w2.shl(cm_asin_sh(%k.add(49))))
+        %v:     I128 = cm_asin_join(%sum.w2.lshr(%s), %v_lo)
+        %r:     F128 = cm_asin_pack(%v, 16382.sub(%k), %arg.xsgn, %rnd)
+        branch %unsafe ? accurate(%x) : return(%r)
+
+    ; small |x|: asin(x) = x + x^3*P(x^2)
+    block direct(%x: F128, %arg: CmAsinArg, %nz: I64):
+        %f:     I128 = cm_asin_fast_poly(%arg.xa, %nz.sub(6).mul(2))
+        %g:     CmAsinW4 = cm_asin_shift_poly4(%f, %nz.mul(2).add(1))
+        %xh:    I128 = %arg.xa.lshr(1)
+        %a2:    CmAsinCarry = cm_asin_ac(cm_asin_lo(%xh), %g.w2, 0)
+        %a3:    CmAsinCarry = cm_asin_ac(cm_asin_hi(%xh), %g.w3, %a2.carry)
+        %k:     I64  = %a3.sum.lshr(63)
+        %rnd:   I64  = %a2.sum.lshr(cm_asin_sh(%k.add(13))).bitand(1)
+        %v_all: I128 = cm_asin_join(%a3.sum, %a2.sum).lshr(cm_asin_sh7(%k.add(14)))
+        %v:     I128 = %v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        ; the bits under the round bit, checked against the error bound
+        %lk:    I64  = cm_asin_sh(51.sub(%k))
+        %rk:    I64  = cm_asin_sh(%k.add(13))
+        %th:    I64  = %a2.sum.shl(%lk).bitor(%g.w1.lshr(%rk))
+        %tlo:   I64  = %g.w1.shl(%lk).bitor(%g.w0.lshr(%rk))
+        %eps_sh: I64 = %nz.mul(2).add(8).add(%k)
+        %eps:   I128 = 0x80000000000000000000000000000000.lshr(cm_asin_sh7(%eps_sh))
+        %tt:    I128 = cm_asin_join(%th, %tlo).add(%eps)
+        %unsafe: Bool = %tt.ult(%eps)
+        %r:     F128 = cm_asin_pack(%v, %arg.xn.add(%k), %arg.xsgn, %rnd)
+        branch %unsafe ? accurate(%x) : return(%r)
+
+    block accurate(%x: F128):
+        %r: F128 = cm_asin_accurate(%x)
+        return(%r)
+
+; A 128-bit f placed as the top two of four words and shifted right by sf (the small-argument
+; alignment of the fast polynomial part), as the original's case split writes it.
+routine cm_asin_shift_poly4(%f: I128, %sf: I64) -> CmAsinW4
+    block entry():
+        %g3: I64 = cm_asin_hi(%f)
+        %g2: I64 = cm_asin_lo(%f)
+        %s:  I64 = cm_asin_sh(%sf)
+        %in_word: Bool = %sf.slt(64)
+        %in_one:  Bool = %sf.slt(128)
+        %in_two:  Bool = %sf.slt(192)
+        %gone:    CmAsinW4 = CmAsinW4 { w0: 0, w1: 0, w2: 0, w3: 0 }
+        select:
+            %in_word -> within_word(%g2, %g3, %s)
+            %in_one -> one_word(%g2, %g3, %s)
+            %in_two -> two_words(%g2, %g3, %s)
+            _ -> return(%gone)
+
+    block within_word(%g2: I64, %g3: I64, %s: I64):
+        %back: I64 = cm_asin_sh(0.sub(%s))
+        %w1:   I64 = %g2.shl(%back)
+        %w2:   I64 = %g2.lshr(%s).bitor(%g3.shl(%back))
+        %r: CmAsinW4 = CmAsinW4 { w0: 0, w1: %w1, w2: %w2, w3: %g3.lshr(%s) }
+        return(%r)
+
+    block one_word(%g2: I64, %g3: I64, %s: I64):
+        %w0: I64 = %g2.shl(cm_asin_sh(0.sub(%s)))
+        %w1: I64 = %g2.lshr(%s).bitor(%g3.shl(1).shl(cm_asin_sh(%s.bitnot())))
+        %r: CmAsinW4 = CmAsinW4 { w0: %w0, w1: %w1, w2: %g3.lshr(%s), w3: 0 }
+        return(%r)
+
+    ; unreachable for asin (|x| >= 2^-56 keeps sf below 128); kept as the original writes it
+    block two_words(%g2: I64, %g3: I64, %s: I64):
+        %w0: I64 = %g2.lshr(%s).bitor(%g3.shl(1).shl(cm_asin_sh(%s.bitnot())))
+        %r: CmAsinW4 = CmAsinW4 { w0: %w0, w1: %g2.lshr(%s), w2: 0, w3: 0 }
+        return(%r)
+
+; The 320-bit accurate path of f128_cm_asin for 2^-57 <= |x| < 1 (the C as_asinq_accurate).
+routine cm_asin_accurate(%x: F128) -> F128
+    block entry():
+        %arg: CmAsinArg = cm_asin_unpack(%x)
+        %nz:  I64 = 16383.sub(%arg.xn)
+        %reduced: Bool = %arg.j.ne(0)
+        branch %reduced ? reduce(%arg, %nz) : direct(%arg, %nz)
+
+    block reduce(%arg: CmAsinArg, %nz: I64):
+        %x0:    I64 = cm_asin_lo(%arg.xa)
+        %x1:    I64 = cm_asin_hi(%arg.xa)
+        %root:  CmAsinRoot5 = cm_asin_getcos(%nz, %x0, %x1)
+        %d:     CmAsinW5 = cm_asin_reduce5(%arg.xa, %nz, %arg.j, %root)
+        %dz:    I64 = cm_asin_clz5(%d, %nz)
+        %t:     CmAsinW5 = cm_asin_shift5(%d, 0.sub(%dz))
+        #phi0:  Ptr<I64> = CM_ASIN_PHI0.as_ptr()
+        %phi_j: CmAsinW5 = cm_asin_load5(#phi0, %arg.j.mul(5))
+        %xc:    CmAsinW5 = cm_asin_add5(%phi_j, %d)
+        %p:     CmAsinW5 = cm_asin_poly5(%t, %dz)
+        %sum:   CmAsinW5 = cm_asin_add5(%xc, cm_asin_shift5(%p, %dz.mul(3)))
+        %k:     I64  = %sum.w4.leading_zeros()
+        %rnd:   I64  = %sum.w3.lshr(cm_asin_sh(14.sub(%k))).bitand(1)
+        %s:     I64  = cm_asin_sh(15.sub(%k))
+        %v_lo:  I64  = %sum.w3.lshr(%s).bitor(%sum.w4.shl(cm_asin_sh(%k.add(49))))
+        %v:     I128 = cm_asin_join(%sum.w4.lshr(%s), %v_lo)
+        %r:     F128 = cm_asin_pack(%v, 16382.sub(%k), %arg.xsgn, %rnd)
+        return(%r)
+
+    block direct(%arg: CmAsinArg, %nz: I64):
+        %x0:    I64 = cm_asin_lo(%arg.xa)
+        %x1:    I64 = cm_asin_hi(%arg.xa)
+        %t:     CmAsinW5 = CmAsinW5 { w0: 0, w1: 0, w2: 0, w3: %x0, w4: %x1 }
+        %p:     CmAsinW5 = cm_asin_poly5(%t, %nz)
+        %f:     CmAsinW5 = cm_asin_shift5(%p, %nz.mul(2).add(1))
+        %xh:    I128 = %arg.xa.lshr(1)
+        %a3:    CmAsinCarry = cm_asin_ac(cm_asin_lo(%xh), %f.w3, 0)
+        %a4:    CmAsinCarry = cm_asin_ac(cm_asin_hi(%xh), %f.w4, %a3.carry)
+        %k:     I64  = %a4.sum.lshr(63)
+        %rnd:   I64  = %a3.sum.lshr(cm_asin_sh(%k.add(13))).bitand(1)
+        %v_all: I128 = cm_asin_join(%a4.sum, %a3.sum).lshr(cm_asin_sh(%k.add(14)).to_i128())
+        %v:     I128 = %v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        %r:     F128 = cm_asin_pack(%v, %arg.xn.add(%k), %arg.xsgn, %rnd)
+        return(%r)
+
+; asin(PTH[j]) as five-word fixed-point values, one row per table point
+const CM_ASIN_PHI0: Array<I64, 360> = [
+    0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000,
+    0x31DC03B852FDE26E, 0x067073CAA9724261, 0x146B2CF786E935F7, 0x13001BF1BB854BC4, 0x02CB0E871E4D3726,
+    0x9FD8E87590496F73, 0xCDD8EDD69F613BE7, 0xA4CBBF16F87E6782, 0xB7E6AB0FD3C59B0E, 0x0595F42CDB812489,
+    0xB3D4031693534F58, 0x5D01A5FAAED1D0D3, 0xFF3200C1C4F94322, 0x59F6668F9B56ACC6, 0x0861885FF6C0A35D,
+    0xB4FAB3FC67F7A8B9, 0xF5865C9C96D2FA32, 0x29425B02341193A3, 0x48B0673D280EB1C2, 0x0B2BA0DD41444021,
+    0x790DDFC5CBE9082F, 0x1C7DC75CEDB0A275, 0xC8153F82EA41ACEF, 0x6B9567F1AAD3C76A, 0x0DF716A41BBB8B7D,
+    0x6ED0830E8BE51BB2, 0xF0E929895ECC82ED, 0x7DE84CFCC54FE6F6, 0x76BC77009FD70571, 0x10C23F2FD8E3E9A0,
+    0x2AD1C043C574F910, 0x713AD3D086FF14D2, 0xBA270541AA876034, 0x92D9E59DBF55C60D, 0x138D717BA27EEABC,
+    0xB303FD12510F210A, 0x94A653871859E237, 0x0D1502EE17EB1BD7, 0x3739065AEC5C06AB, 0x1659054AE2B44A81,
+    0x006D05B30DABA4C3, 0x6908BE7DDFD7775B, 0xC00A83FEF85D99D7, 0x795FA4F368B70F06, 0x192349840A184357,
+    0xA914F322A5010D57, 0x49222451BF9432D3, 0x50DA7E2B81928F5C, 0x221D215E79A25603, 0x1BEE9DE650865623,
+    0x929E0B76F0A42573, 0xDA9BA7FC9C3431F1, 0x9174FA977E1BAAAD, 0xF758A3DF6D9553DD, 0x1EB94F058A92E80F,
+    0xCEE9D9A2DB7DE49B, 0xB88AA461C7C4F24C, 0x448F34C5B2254778, 0xCF80327E8E111BFE, 0x2185C42FED9C65A9,
+    0x0CBB8DA2A502B8EA, 0xE094E1731BA94E46, 0x97B764BC45EBE177, 0xBE926F0AD70B40FD, 0x245032E12E6A1D6D,
+    0xD3EC0402365050E0, 0xD057A4B66E7DA35B, 0x149B8CC2311B2017, 0xEC8890B158863303, 0x271B02290466D237,
+    0x1FD4828F5C9B8CA8, 0x319E956B7FDE7CC9, 0xC94382AC5F951B31, 0xE06D1BEBF0914A3B, 0x29E68BF629A0DA11,
+    0x71AE5A9CCE6BC46F, 0xF45AC44E54C7356E, 0x4C2591B80B5D94AC, 0x7355BED3FA0A825F, 0x2CAEEAE98E6DF044,
+    0x1614E2E195D53AB6, 0x4F839EF8340DF429, 0x040D34EE0E4D94BC, 0xF89ED2DDBCBF4628, 0x2F7CF8D136534AA2,
+    0xF265A4A1FB8335C7, 0xA4778FC22EB6B74E, 0xD853F8DFA8DC313F, 0x1162BC035BE61A75, 0x32443631456A4A4B,
+    0x8247E3B00A8A8583, 0x8BDC75BB08DA5F10, 0x27E44935F029B5AA, 0xF828F8301F2F6681, 0x3511E7D818E033D1,
+    0x5EAA69EB3673E6B7, 0xDED5356713B85CC8, 0xED71CB61A35FB922, 0x6967F0EEBE17495F, 0x37DDC249CAC0DE95,
+    0x56CB01BFF8B95B1E, 0x7AE06C0836E66ACF, 0xB966728BA24A156D, 0x2431F222087AE262, 0x3AA810220E622BA0,
+    0x0CD54146269826FD, 0xB38D91035609925A, 0x3C90404FA8FDCF10, 0xA93AE7E3B29AB57F, 0x3D711D0D40BC2C8D,
+    0x898DAFCF7EA69738, 0x60C82F9ADE96A188, 0xD441D9474B741773, 0xF588D3830E2690AF, 0x403DC62D61195AF3,
+    0xC5C3582884BC019F, 0xAB593F8CBE5BDE60, 0xB8561A02D8CD4426, 0x96ECCB83D59EB445, 0x430548E0B5CD9611,
+    0x536507B58B2D6C0A, 0xBF490C3CFDE570CB, 0x4B6BD1E189F08282, 0x624CD14038C8DA96, 0x45D126D0C3399240,
+    0x30E1DDE73C9AEAC0, 0x4D1BFFE4EA9A99F2, 0xE5D0081AFB2E1436, 0xE295B1B21AC2995C, 0x489D272385822B6E,
+    0x95453966359700AD, 0x17E1392B221445C2, 0x729B7DBD3347F60E, 0xA08F9CF2CC63D953, 0x4B69A4A8A606C031,
+    0xC7743390E65965FF, 0x0B847AB940E4873B, 0x8D1F17662A0B3481, 0xDAFCCC10FA37A2EA, 0x4E321C56E752580D,
+    0x7B57CE308F292447, 0xD150427A9A863F22, 0xC5E0B9E5677A4E20, 0x37FCA23BF3387E48, 0x5100A2EE4EDB94B2,
+    0xBDA4BD9416C5C7A3, 0x82969BB7DB7748D8, 0x00D78B1EC255A12C, 0x32A855887D51994D, 0x53C6BD236475E5CC,
+    0x8C2F292C5227C693, 0x42E7BD886156BE32, 0xB0DF3BF15143943C, 0xC543C697A208D585, 0x5693B9334FE20FDA,
+    0xED129E30B3377786, 0xF685DA7F0125CCE9, 0x4226EDEB7B2B6DEB, 0x532A9F496D475CCE, 0x595DDCADDD3AEDC3,
+    0xC246F045AE5F9921, 0xC469F3CBF90F9AB1, 0xB6AC3D0A4D2B5392, 0x4F4959241985A90A, 0x5C2AAAAC17F0E1D6,
+    0xB4CC0A0DA35889E0, 0xA4511CD3434D2F34, 0x151FA685F47230D4, 0xFBA7987CA6A53862, 0x5EF538076593E829,
+    0x39494CDB29EF9D2F, 0x6798F6EA9D4221D1, 0xD64E85FE6C15A177, 0x2D5B6BBE1108441C, 0x61BDBB8B67421581,
+    0x45AAE2F82DEE00CC, 0x76E81CE03E84D69A, 0x3316CDA9344E35C9, 0xEAE47C48F1215E66, 0x648A157110CF21B0,
+    0x41EEF34546C95B41, 0x79DFBCA51DA9087A, 0xB36F5AC6D44D45D1, 0x7C3A89B8D8280209, 0x67551870A5AF196B,
+    0x54F1BF06FD9B552D, 0x7E02C07120A7060F, 0x6738FB4AE60936DD, 0x8DDC4B0DDEE2054D, 0x6A1F0700BE9DE55F,
+    0x4E203FFBB54040B7, 0xFE905D1720B87885, 0x986A4823DF9A3CA9, 0x61EB119337A3335E, 0x6CEB2FA010C749F6,
+    0xF4A190060D439A24, 0x817D74DCF378CD86, 0x172EA99D30F812A7, 0x6AF33F05FD82F72C, 0x6FB3DF4B98F240B0,
+    0x9AEC3BED5A1C1404, 0x03A65BB59AD7A06A, 0x1846E90FA0DE023B, 0x7D2FE76C33E24ECC, 0x727F8D505178BF54,
+    0x6AE899663FDB4F17, 0xAA3655945C870D12, 0x659083B1CD9D70D7, 0x7E7EB442572A626C, 0x754B8B59E6F8C240,
+    0x9AF398B34ACBE664, 0xE3D6BA0A31B9F6C2, 0x768D232448470674, 0x5141ACF6BD77A871, 0x7814D9CC335F7D97,
+    0x7C43FDF5E9CE2813, 0x2DE8C2A724B9FA56, 0xAE3B7A549E5C78A5, 0x7084AC99E10C434A, 0x7ADF11214C0B6503,
+    0xE06FD2C8EDC4FD43, 0xB5C5702D7A091FDA, 0x8DF7819414BB24C6, 0xE968AE72D864E5AA, 0x7DAAA2B073C4877F,
+    0xE0558594031F34CB, 0xE3B66C6DB1B4677B, 0xA3AC86D4E6C0489A, 0x8833F79AC38B15C1, 0x80780D1E994FB7BB,
+    0x99C89E96E492DBC9, 0xD4129126B1733A9B, 0x725016B221B694E1, 0x75B2B442B022DD71, 0x83402903760FD134,
+    0x9158E49DE631A47E, 0xA6C00B85FEB1093C, 0xD0872B6328B14761, 0x3DBD94A2B5E37532, 0x860ABA7EB47087A9,
+    0xF69AF9A28D593E56, 0x1DA6495B5F99D1D3, 0x8C9A8AF0190B27C8, 0xBFD5796310D923A8, 0x88D65318AAE1284D,
+    0x92FAD152F7A419FA, 0xA898E37734F35E6F, 0x93294418A7B1EEF9, 0xAAA37BF72A9BCA36, 0x8BA145B068050A5C,
+    0x9EB0E34D8237D900, 0x248324370F0391A9, 0xF9AB140C3F2319E3, 0xA9A902EB63EC1333, 0x8E6BD976F7AE97C1,
+    0x69046A077A9FB34F, 0xB83240D17B1A5789, 0x97B6AD5DE0D13C0F, 0xBAC8E70E639B423D, 0x91365E5FEF79B4CD,
+    0x6BBDAE5C0DA83D6C, 0x37712D2DB36F9E39, 0xEEF92AE1713389C7, 0xB541D1074DDB5287, 0x94012FA0A5DB180A,
+    0xBB5676745C77EBBB, 0x57D8473FF0EBECE1, 0xAAFA85766FF71DB6, 0xA7DAB323606549D7, 0x96CCB7062A990CAE,
+    0x58A33D22EB345C38, 0xA1FBE3B19B08AA77, 0xD8499F6481B60D89, 0x92D1E25A3BC9B0E6, 0x9999717E6E1EC71F,
+    0x261113E4F262AF0F, 0x3DF0074844F7AC88, 0x4243932D0EABEDE2, 0xE575ABDED0B7D4F0, 0x9C621BF8FC82208D,
+    0x406CADF4E2B87105, 0x524E16FDF1D11D7B, 0xAA030B9D01B9FD9B, 0xED08E0CB58F4F54E, 0x9F2E16283B9C5D03,
+    0xD73E6DC68F1113A5, 0x942557AEBBE3D9EF, 0xF8F9C3FB6B1B03DE, 0x097B5496F5A6E1A0, 0xA1F7C7C61F889ECD,
+    0xC4FA9EC55A050116, 0x63D4F5D564C5B9E6, 0x5820483EA4C7D28F, 0xF2AFFDC3344F9CED, 0xA4C2A22CF44C08A6,
+    0xC6FE18D269AC4C10, 0xF087DF22F5BCC95D, 0xA894ADEC7B5A152A, 0x78B0E9FB162603EE, 0xA78D60417D3FDD14,
+    0xD65FD0023770EB25, 0x8B6F97871F584DA8, 0x1B63F18834D9B341, 0xAF5C7A86D6939813, 0xAA585D25A7E182E7,
+    0xC093AEC132B1C4AB, 0xF91F55DA8CC955FC, 0xCC5ECAF63081CE7D, 0xDCF0B021B83092B5, 0xAD240F36158AD0C8,
+    0xBD41045CDF957EB4, 0x4CF7C3415D74B2E9, 0x01BE218CDB35AE43, 0x5DD1C5FEC09949C9, 0xAFEE872FAF2E5B19,
+    0x5D33FB200912B7E2, 0x58BC9C09FF4EFAA2, 0x331D9BD6ED13A3B4, 0x63858412FBDAB72E, 0xB2B928E083506504,
+    0x3B1CDC0B95DF2E73, 0x4436F2F0C8996085, 0xC6F98F67EA025FD7, 0xC65A997A7F30B873, 0xB5846F60626B807F,
+    0x403667C077C1FC20, 0x697E62529203F9EB, 0x936EEE0E15D0DCEA, 0xC22B7C8099952145, 0xB84F2EB5AC3795E7,
+    0x388B200E8525E458, 0xB5CA574FC8A17BB9, 0xBB43E02F8AC0E731, 0x77344F09355E7066, 0xBB19877484CA70A4,
+    0x77D3B12CE16C9C68, 0x822D209B4424EFD5, 0x9684A28DAD6B791D, 0xCE9CA57812EA9DCF, 0xBDE45C1866F2D9E6,
+    0x5F01A5224504C357, 0x666C7B378DF042A5, 0x3C22AAD7FE194A3E, 0x514A5CD169B87306, 0xC0AF3B8491D54390,
+    0xCF86B4ABFFEE731F, 0xCA3271187934A232, 0x27BD0FDDF4ECBDCA, 0xE7744018C3407AA7, 0xC37A16C32273901B,
+    0xEF9975DEAA64C17A, 0x6BA80FA8E07F2CF2, 0x61818A93D068697F, 0xAE3E1A514A871A58, 0xC64503961527469C
+]

@@ -1,0 +1,440 @@
+; Tessera stdlib collection: HashMap<K, V>
+;
+; Insertion-ordered open-addressed hash map. Two layers:
+;   - Entries arrays (keys/values/hashes/entry_states) hold live and dead
+;     entries in the order they were first inserted. Iteration walks these.
+;   - Slots is an index table: each cell is -1 (empty), -2 (tombstone), or an
+;     entry index >= 0. Linear probing on the hash mod capacity.
+;
+; Both layers share `capacity`. Removal marks the entry dead and the slot a
+; tombstone; the entry's position in the entries array is retained so the
+; insertion order of surviving entries is preserved. Rehash compacts dead
+; entries away.
+;
+; entry_state values: 0 = dead, 1 = live.
+
+struct HashMap<K, V>
+conform Equal<HashMap<K, V>>
+require K: typename, V: typename, HashEqual<K>, Equal<V>
+    keys: Ptr<K>
+    values: Ptr<V>
+    hashes: Ptr<I64>
+    entry_states: Ptr<I8>
+    slots: Ptr<I64>
+    length: I64
+    entries_count: I64
+    capacity: I64
+    alloc: Ptr<Allocator>
+
+routine HashMap<K, V>.new(#alloc: Ptr<Allocator>) -> Self
+require K: typename, V: typename, HashEqual<K>
+    block entry():
+        %map: Self = Self {
+            keys: null,
+            values: null,
+            hashes: null,
+            entry_states: null,
+            slots: null,
+            length: 0,
+            entries_count: 0,
+            capacity: 0,
+            alloc: #alloc
+        }
+        return(%map)
+
+routine HashMap<K, V>.length(#self: Ptr<Self>) -> I64
+require K: typename, V: typename
+    block entry():
+        %length: I64 := #self.length
+        return(%length)
+
+routine HashMap<K, V>.is_empty(#self: Ptr<Self>) -> Bool
+require K: typename, V: typename
+    block entry():
+        %length: I64 := #self.length
+        %empty: Bool = %length.eq(0)
+        return(%empty)
+
+; Probe the slot table for %key. Returns the slot index at which the key was
+; found, or the slot at which a new entry should be installed (preferring the
+; first tombstone seen, else the first empty slot).
+routine HashMap<K, V>.slot(#self: Ptr<Self>, %key: K, %hash: I64) -> I64
+require K: typename, V: typename
+    block entry():
+        %capacity: I64 := #self.capacity
+        %mask: I64 = %capacity.sub(1)
+        %start: I64 = %hash.bitand(%mask)
+        jump probe(%start, -1)
+
+    block probe(%index: I64, %first_tombstone: I64):
+        #slots: Ptr<I64> := #self.slots
+        %entry_idx: I64 := #slots[%index]
+        %is_empty: Bool = %entry_idx.eq(-1)
+        %is_tombstone: Bool = %entry_idx.eq(-2)
+        select:
+            %is_empty -> empty_slot(%index, %first_tombstone)
+            %is_tombstone -> tombstone_slot(%index, %first_tombstone)
+            _ -> occupied_slot(%index, %first_tombstone, %entry_idx)
+
+    block empty_slot(%index: I64, %first_tombstone: I64):
+        %has_tombstone: Bool = %first_tombstone.sge(0)
+        %slot: I64 = %has_tombstone ? %first_tombstone : %index
+        return(%slot)
+
+    block tombstone_slot(%index: I64, %first_tombstone: I64):
+        %seen: Bool = %first_tombstone.sge(0)
+        %next_tombstone: I64 = %seen ? %first_tombstone : %index
+        %capacity: I64 := #self.capacity
+        %next: I64 = %index.add(1).bitand(%capacity.sub(1))
+        jump probe(%next, %next_tombstone)
+
+    block occupied_slot(%index: I64, %first_tombstone: I64, %entry_idx: I64):
+        #hashes: Ptr<I64> := #self.hashes
+        %entry_hash: I64 := #hashes[%entry_idx]
+        %hash_match: Bool = %entry_hash.eq(%hash)
+        branch %hash_match ? maybe_equal(%index, %first_tombstone, %entry_idx) : next(%index, %first_tombstone)
+
+    block maybe_equal(%index: I64, %first_tombstone: I64, %entry_idx: I64):
+        #keys: Ptr<K> := #self.keys
+        %entry_key: K := #keys[%entry_idx]
+        %equal: Bool = %entry_key.eq(%key)
+        branch %equal ? return(%index): next(%index, %first_tombstone)
+
+    block next(%index: I64, %first_tombstone: I64):
+        %capacity: I64 := #self.capacity
+        %next: I64 = %index.add(1).bitand(%capacity.sub(1))
+        jump probe(%next, %first_tombstone)
+
+; Returns the entry index for %key, or -1 if absent.
+routine HashMap<K, V>.find(#self: Ptr<Self>, %key: K) -> I64
+require K: typename, V: typename
+    block entry():
+        %capacity: I64 := #self.capacity
+        %empty: Bool = %capacity.eq(0)
+        branch %empty ? return(-1): hash()
+
+    block hash():
+        %hash: I64 = K.hash(%key)
+        %slot: I64 = #self.slot(%key, %hash)
+        #slots: Ptr<I64> := #self.slots
+        %entry_idx: I64 := #slots[%slot]
+        %found: Bool = %entry_idx.sge(0)
+        branch %found ? return(%entry_idx) : return(-1)
+
+routine HashMap<K, V>.contains(#self: Ptr<Self>, %key: K) -> Bool
+require K: typename, V: typename
+    block entry():
+        %found: Bool = #self.find(%key).sge(0)
+        return(%found)
+
+; Two HashMaps are equal when they hold the same key→value pairs, regardless
+; of insertion order or internal slot layout. With matching length, "every
+; key in A is in B and maps to an equal value" is sufficient.
+routine HashMap<K, V>.eq(#self: Ptr<Self>, #other: Ptr<Self>) -> Bool
+require K: typename, V: typename, HashEqual<K>, Equal<V>
+    block entry():
+        %la: I64 := #self.length
+        %lb: I64 := #other.length
+        %same_len: Bool = %la.eq(%lb)
+        branch %same_len ? scan() : return(false)
+
+    block scan():
+        %n: I64 := #self.entries_count
+        jump loop(0, %n)
+
+    block loop(%i: I64, %n: I64):
+        %done: Bool = %i.sge(%n)
+        branch %done ? return(true) : check(%i, %n)
+
+    block check(%i: I64, %n: I64):
+        #entry_states: Ptr<I8> := #self.entry_states
+        %s: I8 := #entry_states[%i]
+        %live: Bool = %s.eq(1)
+        branch %live ? probe(%i, %i.add(1), %n) : loop(%i.add(1), %n)
+
+    block probe(%i: I64, %i_next: I64, %n: I64):
+        #keys: Ptr<K> := #self.keys
+        %key: K := #keys[%i]
+        %eb: I64 = #other.find(%key)
+        %found: Bool = %eb.sge(0)
+        branch %found ? compare_value(%i, %i_next, %n, %eb) : return(false)
+
+    block compare_value(%i: I64, %i_next: I64, %n: I64, %eb: I64):
+        #values_a: Ptr<V> := #self.values
+        #values_b: Ptr<V> := #other.values
+        %va: V := #values_a[%i]
+        %vb: V := #values_b[%eb]
+        %eq: Bool = %va.eq(%vb)
+        branch %eq ? loop(%i_next, %n) : return(false)
+
+; Allocate fresh arrays at %new_capacity, walk the old entries in insertion
+; order, and re-insert each live entry. Dead entries are dropped, so the
+; entries array is compacted as a side effect.
+routine HashMap<K, V>.rehash(#self: Ptr<Self>, %new_capacity: I64) -> Void
+require K: typename, V: typename
+    block entry():
+        #alloc: Ptr<Allocator> := #self.alloc
+        #old_keys: Ptr<K> := #self.keys
+        #old_values: Ptr<V> := #self.values
+        #old_hashes: Ptr<I64> := #self.hashes
+        #old_entry_states: Ptr<I8> := #self.entry_states
+        #old_slots: Ptr<I64> := #self.slots
+        %old_count: I64 := #self.entries_count
+        #new_keys: Ptr<K> = alloc<K>(#alloc, %new_capacity)
+        #new_values: Ptr<V> = alloc<V>(#alloc, %new_capacity)
+        #new_hashes: Ptr<I64> = alloc<I64>(#alloc, %new_capacity)
+        #new_entry_states: Ptr<I8> = alloc<I8>(#alloc, %new_capacity)
+        #new_slots: Ptr<I64> = alloc<I64>(#alloc, %new_capacity)
+        %a: Bool = #new_keys.is_null()
+        %b: Bool = #new_values.is_null()
+        %c: Bool = #new_hashes.is_null()
+        %d: Bool = #new_entry_states.is_null()
+        %e: Bool = #new_slots.is_null()
+        %f1: Bool = %a.bitor(%b)
+        %f2: Bool = %c.bitor(%d)
+        %f3: Bool = %f1.bitor(%f2)
+        %failed: Bool = %f3.bitor(%e)
+        branch %failed
+            ? panic(TrapCode.AllocFailed)
+            : clear_loop(
+                0, #old_keys, #old_values, #old_hashes, #old_entry_states, #old_slots,
+                %old_count, #new_keys, #new_values, #new_hashes, #new_entry_states,
+                #new_slots, %new_capacity, #alloc)
+
+    block clear_loop(
+            %i: I64, #old_keys: Ptr<K>, #old_values: Ptr<V>,
+            #old_hashes: Ptr<I64>, #old_entry_states: Ptr<I8>, #old_slots: Ptr<I64>,
+            %old_count: I64, #new_keys: Ptr<K>, #new_values: Ptr<V>,
+            #new_hashes: Ptr<I64>, #new_entry_states: Ptr<I8>, #new_slots: Ptr<I64>,
+            %new_capacity: I64, #alloc: Ptr<Allocator>):
+        %done: Bool = %i.sge(%new_capacity)
+        branch %done
+            ? install(
+                #old_keys, #old_values, #old_hashes, #old_entry_states, #old_slots,
+                %old_count, #new_keys, #new_values, #new_hashes, #new_entry_states,
+                #new_slots, %new_capacity, #alloc)
+            : clear_one(
+                %i, #old_keys, #old_values, #old_hashes, #old_entry_states, #old_slots,
+                %old_count, #new_keys, #new_values, #new_hashes, #new_entry_states,
+                #new_slots, %new_capacity, #alloc)
+
+    block clear_one(
+            %i: I64, #old_keys: Ptr<K>, #old_values: Ptr<V>,
+            #old_hashes: Ptr<I64>, #old_entry_states: Ptr<I8>, #old_slots: Ptr<I64>,
+            %old_count: I64, #new_keys: Ptr<K>, #new_values: Ptr<V>,
+            #new_hashes: Ptr<I64>, #new_entry_states: Ptr<I8>, #new_slots: Ptr<I64>,
+            %new_capacity: I64, #alloc: Ptr<Allocator>):
+        #new_slots[%i] = -1
+        #new_entry_states[%i] = 0
+        jump clear_loop(
+            %i.add(1), #old_keys, #old_values, #old_hashes, #old_entry_states, #old_slots,
+            %old_count, #new_keys, #new_values, #new_hashes, #new_entry_states,
+            #new_slots, %new_capacity, #alloc)
+
+    block install(
+            #old_keys: Ptr<K>, #old_values: Ptr<V>, #old_hashes: Ptr<I64>,
+            #old_entry_states: Ptr<I8>, #old_slots: Ptr<I64>, %old_count: I64,
+            #new_keys: Ptr<K>, #new_values: Ptr<V>, #new_hashes: Ptr<I64>,
+            #new_entry_states: Ptr<I8>, #new_slots: Ptr<I64>, %new_capacity: I64,
+            #alloc: Ptr<Allocator>):
+        #self.keys = #new_keys
+        #self.values = #new_values
+        #self.hashes = #new_hashes
+        #self.entry_states = #new_entry_states
+        #self.slots = #new_slots
+        #self.length = 0
+        #self.entries_count = 0
+        #self.capacity = %new_capacity
+        jump move_loop(
+            0, #old_keys, #old_values, #old_hashes, #old_entry_states, #old_slots,
+            %old_count, #alloc)
+
+    block move_loop(
+            %i: I64, #old_keys: Ptr<K>, #old_values: Ptr<V>,
+            #old_hashes: Ptr<I64>, #old_entry_states: Ptr<I8>, #old_slots: Ptr<I64>,
+            %old_count: I64, #alloc: Ptr<Allocator>):
+        %done: Bool = %i.sge(%old_count)
+        branch %done
+            ? release_old(#old_keys, #old_values, #old_hashes, #old_entry_states, #old_slots, #alloc)
+            : move_one(
+                %i, #old_keys, #old_values, #old_hashes, #old_entry_states, #old_slots,
+                %old_count, #alloc)
+
+    block move_one(
+            %i: I64, #old_keys: Ptr<K>, #old_values: Ptr<V>,
+            #old_hashes: Ptr<I64>, #old_entry_states: Ptr<I8>, #old_slots: Ptr<I64>,
+            %old_count: I64, #alloc: Ptr<Allocator>):
+        %s: I8 := #old_entry_states[%i]
+        %live: Bool = %s.eq(1)
+        branch %live
+            ? insert_old(
+                %i, #old_keys, #old_values, #old_hashes, #old_entry_states, #old_slots,
+                %old_count, #alloc)
+            : move_loop(
+                %i.add(1), #old_keys, #old_values, #old_hashes, #old_entry_states, #old_slots,
+                %old_count, #alloc)
+
+    block insert_old(
+            %i: I64, #old_keys: Ptr<K>, #old_values: Ptr<V>,
+            #old_hashes: Ptr<I64>, #old_entry_states: Ptr<I8>, #old_slots: Ptr<I64>,
+            %old_count: I64, #alloc: Ptr<Allocator>):
+        %key: K := #old_keys[%i]
+        %value: V := #old_values[%i]
+        #self.put_direct(%key, %value)
+        jump move_loop(
+            %i.add(1), #old_keys, #old_values, #old_hashes, #old_entry_states, #old_slots,
+            %old_count, #alloc)
+
+    block release_old(
+            #old_keys: Ptr<K>, #old_values: Ptr<V>, #old_hashes: Ptr<I64>,
+            #old_entry_states: Ptr<I8>, #old_slots: Ptr<I64>, #alloc: Ptr<Allocator>):
+        %has_old: Bool = #old_slots.is_not_null()
+        branch %has_old
+            ? free_old(#old_keys, #old_values, #old_hashes, #old_entry_states, #old_slots, #alloc)
+            : return()
+
+    block free_old(
+            #old_keys: Ptr<K>, #old_values: Ptr<V>, #old_hashes: Ptr<I64>,
+            #old_entry_states: Ptr<I8>, #old_slots: Ptr<I64>, #alloc: Ptr<Allocator>):
+        free<K>(#alloc, #old_keys)
+        free<V>(#alloc, #old_values)
+        free<I64>(#alloc, #old_hashes)
+        free<I8>(#alloc, #old_entry_states)
+        free<I64>(#alloc, #old_slots)
+        return()
+
+routine HashMap<K, V>.ensure(#self: Ptr<Self>) -> Void
+require K: typename, V: typename
+    block entry():
+        %capacity: I64 := #self.capacity
+        %empty: Bool = %capacity.eq(0)
+        branch %empty ? first() : check(%capacity)
+
+    block first():
+        #self.rehash(8)
+        return()
+
+    block check(%capacity: I64):
+        %count: I64 := #self.entries_count
+        %limit: I64 = %capacity.mul(3).sdiv(4)
+        %full: Bool = %count.add(1).sge(%limit)
+        branch %full ? grow(%capacity) : return()
+
+    block grow(%capacity: I64):
+        %new_capacity: I64 = %capacity.mul(2)
+        #self.rehash(%new_capacity)
+        return()
+
+; Insert without growing — used internally by rehash after new arrays are in place.
+; If the key already lives, update its value in place (preserves position in
+; the entries array, and therefore insertion order). Otherwise append a fresh
+; entry at entries_count and bind the slot to that index.
+routine HashMap<K, V>.put_direct(#self: Ptr<Self>, %key: K, %value: V) -> Void
+require K: typename, V: typename
+    block entry():
+        %hash: I64 = K.hash(%key)
+        %slot: I64 = #self.slot(%key, %hash)
+        #slots: Ptr<I64> := #self.slots
+        %entry_idx: I64 := #slots[%slot]
+        %occupied: Bool = %entry_idx.sge(0)
+        branch %occupied ? replace(%entry_idx, %value) : add(%slot, %key, %value, %hash)
+
+    block replace(%entry_idx: I64, %value: V):
+        #values: Ptr<V> := #self.values
+        #values[%entry_idx] = %value
+        return()
+
+    block add(%slot: I64, %key: K, %value: V, %hash: I64):
+        %new_idx: I64 := #self.entries_count
+        #keys: Ptr<K> := #self.keys
+        #values: Ptr<V> := #self.values
+        #hashes: Ptr<I64> := #self.hashes
+        #entry_states: Ptr<I8> := #self.entry_states
+        #slots: Ptr<I64> := #self.slots
+        #keys[%new_idx] = %key
+        #values[%new_idx] = %value
+        #hashes[%new_idx] = %hash
+        #entry_states[%new_idx] = 1
+        #slots[%slot] = %new_idx
+        %length: I64 := #self.length
+        #self.length = %length.add(1)
+        #self.entries_count = %new_idx.add(1)
+        return()
+
+routine HashMap<K, V>.put(#self: Ptr<Self>, %key: K, %value: V) -> Void
+require K: typename, V: typename
+    block entry():
+        #self.ensure()
+        #self.put_direct(%key, %value)
+        return()
+
+routine HashMap<K, V>.get(#self: Ptr<Self>, %key: K) -> V
+require K: typename, V: typename
+    block entry():
+        %entry_idx: I64 = #self.find(%key)
+        %found: Bool = %entry_idx.sge(0)
+        branch %found ? load(%entry_idx) : panic(TrapCode.MissingKey)
+
+    block load(%entry_idx: I64):
+        #values: Ptr<V> := #self.values
+        %value: V := #values[%entry_idx]
+        return(%value)
+
+; Removal preserves the entries array's positional layout: we mark the entry
+; dead and stamp the slot table with a tombstone. The entry's position is
+; retained until the next rehash, so surviving entries keep their order.
+routine HashMap<K, V>.remove(#self: Ptr<Self>, %key: K) -> Bool
+require K: typename, V: typename
+    block entry():
+        %capacity: I64 := #self.capacity
+        %empty: Bool = %capacity.eq(0)
+        branch %empty ? return(false) : hash()
+
+    block hash():
+        %hash: I64 = K.hash(%key)
+        %slot: I64 = #self.slot(%key, %hash)
+        #slots: Ptr<I64> := #self.slots
+        %entry_idx: I64 := #slots[%slot]
+        %found: Bool = %entry_idx.sge(0)
+        branch %found ? remove(%slot, %entry_idx) : return(false)
+
+    block remove(%slot: I64, %entry_idx: I64):
+        #slots: Ptr<I64> := #self.slots
+        #entry_states: Ptr<I8> := #self.entry_states
+        #slots[%slot] = -2
+        #entry_states[%entry_idx] = 0
+        %length: I64 := #self.length
+        #self.length = %length.sub(1)
+        return(true)
+
+routine HashMap<K, V>.free(#self: Ptr<Self>) -> Void
+require K: typename, V: typename
+    block entry():
+        #slots: Ptr<I64> := #self.slots
+        %empty: Bool = #slots.is_null()
+        branch %empty ? reset() : release()
+
+    block release():
+        #alloc: Ptr<Allocator> := #self.alloc
+        #keys: Ptr<K> := #self.keys
+        #values: Ptr<V> := #self.values
+        #hashes: Ptr<I64> := #self.hashes
+        #entry_states: Ptr<I8> := #self.entry_states
+        #slots: Ptr<I64> := #self.slots
+        free<K>(#alloc, #keys)
+        free<V>(#alloc, #values)
+        free<I64>(#alloc, #hashes)
+        free<I8>(#alloc, #entry_states)
+        free<I64>(#alloc, #slots)
+        jump reset()
+
+    block reset():
+        #self.keys = null
+        #self.values = null
+        #self.hashes = null
+        #self.entry_states = null
+        #self.slots = null
+        #self.length = 0
+        #self.entries_count = 0
+        #self.capacity = 0
+        return()

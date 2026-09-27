@@ -1,0 +1,173 @@
+using System.Numerics;
+
+namespace Tessera;
+
+// ── Types as written ────────────────────────────────────────────────────────
+
+/// A type as written in source: `I64`, `Ptr<I8>`, `Array<T, 8>`, `Callable<@callconv("c"), (Ptr, CSize), Ptr>`.
+public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
+{
+    public override string ToString() => Args.Count == 0 ? Name : $"{Name}<{string.Join(", ", Args)}>";
+    public static TypeRef Simple(string name, Pos pos) => new(name, [], pos);
+}
+
+public abstract record TypeArg;
+public sealed record TypeArgType(TypeRef Type) : TypeArg { public override string ToString() => Type.ToString(); }
+public sealed record TypeArgInt(long Value) : TypeArg { public override string ToString() => Value.ToString(); }
+/// `(A, B)` — the parameter list of a Callable.
+public sealed record TypeArgTuple(List<TypeRef> Types) : TypeArg
+{
+    public override string ToString() => $"({string.Join(", ", Types)})";
+}
+/// `@callconv("c")` inside a Callable.
+public sealed record TypeArgAttr(Attribute Attr) : TypeArg { public override string ToString() => $"@{Attr.Name}"; }
+/// A compile-time integer expression as a generic argument: `max(sizeof<A>(), sizeof<B>())` in `Array<I8, …>`.
+public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string ToString() => "(expr)"; }
+
+// ── Declarations ────────────────────────────────────────────────────────────
+
+/// An attribute argument: `"c"`, `64`, `size: 64`, `os: !"windows"`, or a compile-time expression such as
+/// `max(alignof<A>(), alignof<B>())` (then Expr is set and Value is empty).
+public sealed record AttrArg(string? Key, string Value, bool Negated, Expr? Expr = null);
+
+public sealed record Attribute(string Name, List<AttrArg> Args, Pos Pos)
+{
+    public string? First => Args.Count > 0 ? Args[0].Value : null;
+}
+
+public sealed record Param(string Name, TypeRef Type, Pos Pos); // Name includes its sigil
+
+/// `require T: typename, Equal<T>` / `conform Equal<X> require ...` — kept for later concept checking.
+public sealed record Clause(string Kind, List<Token> Tokens);
+
+public abstract record Decl(string File, List<Attribute> Attributes, Pos Pos)
+{
+    public Attribute? Attr(string name) => Attributes.FirstOrDefault(a => a.Name == name);
+    /// True for declarations loaded from the standard library, which are checked only when used.
+    public bool IsLibrary { get; init; }
+}
+
+public sealed record RoutineDecl(
+    string File,
+    List<Attribute> Attributes,
+    TypeRef? Owner,              // `I64` in `I64.add`, `Option<T>` in `Option<T>.some`, `T` in `T.bitcast<U>`
+    string Name,
+    List<string> TypeParams,     // the routine's own: `U` in `T.bitcast<U>`, `T` in `add<T>`
+    List<Param> Params,
+    TypeRef ReturnType,
+    List<Clause> Clauses,
+    List<BlockDecl>? Blocks,     // null for an external or concept declaration
+    Pos Pos) : Decl(File, Attributes, Pos)
+{
+    public string DisplayName => Owner is null ? Name : $"{Owner}.{Name}";
+}
+
+public sealed record FieldDecl(string Name, TypeRef Type, List<Attribute> Attributes, Pos Pos)
+{
+    public Attribute? Attr(string name) => Attributes.FirstOrDefault(a => a.Name == name);
+}
+
+public sealed record StructDecl(
+    string File, List<Attribute> Attributes, string Name, List<string> TypeParams, List<Clause> Clauses,
+    List<FieldDecl> Fields, Pos Pos) : Decl(File, Attributes, Pos);
+
+public sealed record EnumDecl(
+    string File, List<Attribute> Attributes, string Name, TypeRef Underlying, List<(string Name, Expr Value)> Members,
+    Pos Pos) : Decl(File, Attributes, Pos);
+
+public sealed record ConstDecl(
+    string File, List<Attribute> Attributes, TypeRef? Owner, string Name, TypeRef Type, Expr Value, Pos Pos)
+    : Decl(File, Attributes, Pos);
+
+public sealed record ConceptDecl(
+    string File, List<Attribute> Attributes, string Name, List<string> TypeParams, List<Clause> Clauses,
+    List<RoutineDecl> Routines, Pos Pos) : Decl(File, Attributes, Pos);
+
+public sealed record BlockDecl(string Name, List<Param> Params, List<Stmt> Stmts, Terminator Terminator, Pos Pos);
+
+public sealed record Module(List<Decl> Decls);
+
+// ── Statements ──────────────────────────────────────────────────────────────
+
+public abstract record Stmt(Pos Pos);
+
+/// `%x: T = expr` — a binding. The expression is evaluated; memory is not read.
+public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : Stmt(Pos);
+
+/// `%x: T := place` — a load.
+public sealed record LoadStmt(string Name, TypeRef Type, Expr Place, Pos Pos) : Stmt(Pos);
+
+/// `place = expr` — a store.
+public sealed record StoreStmt(Expr Place, Expr Value, Pos Pos) : Stmt(Pos);
+
+/// `call(...)` evaluated for its side effect.
+public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos);
+
+// ── Expressions ─────────────────────────────────────────────────────────────
+
+public abstract record Expr(Pos Pos);
+
+/// An integer literal. A value above a type's signed range is read as that type's two's-complement bit pattern.
+public sealed record IntLit(BigInteger Value, Pos Pos) : Expr(Pos);
+/// A literal whose type is fixed by its spelling: `b'A'` is I8, `'A'` is I32.
+public sealed record TypedIntLit(long Value, int Bits, Pos Pos) : Expr(Pos);
+public sealed record FloatLit(double Value, Pos Pos) : Expr(Pos);
+public sealed record StrLit(string Value, Pos Pos) : Expr(Pos);
+public sealed record BoolLit(bool Value, Pos Pos) : Expr(Pos);
+public sealed record NullLit(Pos Pos) : Expr(Pos);
+public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos); // %x or #p
+
+/// `name(args)` or `name<T>(args)` — a free routine call.
+public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos);
+
+/// `Type.name(args)` — a call through a type's namespace: `I64.add(%a, %b)`, `Option<T>.none()`, `K.hash(%k)`.
+/// If `Owner` turns out to name a const rather than a type, this is a method call on that const.
+public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
+    : Expr(Pos);
+
+/// `NAME` or `Type.NAME` — a const, or an enum member.
+public sealed record ConstRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos);
+
+/// `recv.name(args)`.
+public sealed record MethodCallExpr(Expr Receiver, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
+    : Expr(Pos);
+
+/// `base.field` — a field of a value struct, or (behind a pointer) a place.
+public sealed record FieldExpr(Expr Base, string Name, Pos Pos) : Expr(Pos);
+
+/// `#p[i]` — a place. As a binding value it is an address; with `:=` or as a store target it is memory.
+public sealed record IndexExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
+
+/// `%cond ? a : b` — value select.
+public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) : Expr(Pos);
+
+/// `alloca<T>` or `alloca<T>([init, ...])`.
+public sealed record AllocaExpr(TypeRef Type, List<Expr>? Init, Pos Pos) : Expr(Pos);
+
+/// `Type { field: value, ... }`.
+public sealed record StructLit(TypeRef Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);
+
+/// `[a, b, c]` — an array value, used in alloca initializers.
+public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos);
+
+// ── Terminators ─────────────────────────────────────────────────────────────
+
+public abstract record Terminator(Pos Pos);
+
+/// A target in a jump / branch / select / switch position.
+public abstract record Target(Pos Pos);
+
+/// `name(args)` — a block call, or (resolved later) a call to a @noreturn routine.
+public sealed record CallTarget(string Name, List<Expr> Args, Pos Pos) : Target(Pos);
+public sealed record ReturnTarget(Expr? Value, Pos Pos) : Target(Pos);
+public sealed record UnreachableTarget(Pos Pos) : Target(Pos);
+/// Any other @noreturn call used as a target, such as `Panic.now()`.
+public sealed record ExprTarget(Expr Call, Pos Pos) : Target(Pos);
+
+public sealed record JumpTerm(CallTarget Target, Pos Pos) : Terminator(Pos);
+public sealed record BranchTerm(Expr Cond, Target IfTrue, Target IfFalse, Pos Pos) : Terminator(Pos);
+public sealed record SelectTerm(List<(Expr? Cond, Target Target)> Arms, Pos Pos) : Terminator(Pos);
+public sealed record SwitchTerm(Expr Value, List<(Expr? Case, Target Target)> Arms, Pos Pos) : Terminator(Pos);
+
+/// A terminator written as a bare target: `return(x)`, `unreachable`, or a @noreturn call such as `trap()`.
+public sealed record TargetTerm(Target Target, Pos Pos) : Terminator(Pos);

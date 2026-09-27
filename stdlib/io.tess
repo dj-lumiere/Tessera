@@ -1,0 +1,135 @@
+; Tessera stdlib: I/O
+;
+; Thin wrappers over POSIX write(2) for stdout (fd 1) and stderr (fd 2).
+; write_int converts an I64 to decimal using a stack buffer — no allocation.
+;
+; C-alias types (CInt, CSize) appear only on the c_write extern; user-facing
+; routines take I64 lengths and convert at the FFI boundary.
+
+@[external("c"), callconv("c"), symbol("write")]
+routine c_write(%fd: CInt, #buf: Ptr<I8>, %count: CSize) -> CSize
+
+; ============================================================
+; Basic output
+; ============================================================
+
+routine print(#str: Ptr<I8>, %len: I64) -> Void
+    block entry():
+        %len_c: CSize = i64_to_csize(%len)
+        c_write(1, #str, %len_c)
+        return()
+
+routine println(#str: Ptr<I8>, %len: I64) -> Void
+    block entry():
+        %len_c: CSize = i64_to_csize(%len)
+        c_write(1, #str, %len_c)
+        #newline: Ptr<I8> = alloca<I8>
+        #newline = 10                          ; '\n'
+        c_write(1, #newline, i64_to_csize(1))
+        return()
+
+routine print_slice(%slice: String) -> Void
+    block entry():
+        #data:  Ptr<I8> = %slice.data
+        %len:   I64     = %slice.length
+        %len_c: CSize   = i64_to_csize(%len)
+        c_write(1, #data, %len_c)
+        return()
+
+routine println_slice(%slice: String) -> Void
+    block entry():
+        #data:  Ptr<I8> = %slice.data
+        %len:   I64     = %slice.length
+        %len_c: CSize   = i64_to_csize(%len)
+        c_write(1, #data, %len_c)
+        #newline: Ptr<I8> = alloca<I8>
+        #newline = 10                          ; '\n'
+        c_write(1, #newline, i64_to_csize(1))
+        return()
+
+routine eprint_slice(%slice: String) -> Void
+    block entry():
+        #data:  Ptr<I8> = %slice.data
+        %len:   I64     = %slice.length
+        %len_c: CSize   = i64_to_csize(%len)
+        c_write(2, #data, %len_c)
+        return()
+
+routine eprintln_slice(%slice: String) -> Void
+    block entry():
+        eprint_slice(%slice)
+        eprint_slice("\n")
+        return()
+
+; ============================================================
+; Integer printing (no heap allocation)
+;
+; Writes decimal digits into a 20-byte stack buffer (max I64 is 19 digits
+; + sign), fills from the right, then writes the filled slice.
+; ============================================================
+
+routine print_int(%n: I64) -> Void
+    block entry():
+        write_int(1, %n)
+        return()
+
+routine eprint_int(%n: I64) -> Void
+    block entry():
+        write_int(2, %n)
+        return()
+
+; Writes %n in decimal to file descriptor %fd.
+routine write_int(%fd: CInt, %n: I64) -> Void
+    block entry():
+        %is_zero: Bool = %n.eq(0)
+        branch %is_zero ? write_zero() : check_neg(%n)
+
+    block write_zero():
+        #buf: Ptr<I8> = alloca<I8>
+        #buf = 48                              ; '0'
+        c_write(%fd, #buf, i64_to_csize(1))
+        return()
+
+    block check_neg(%n: I64):
+        %is_neg: Bool = %n.slt(0)
+        branch %is_neg ? negate(%n) : fill_digits(0, %n)
+
+    block negate(%n: I64):
+        %zero: I64 = 0
+        %pos: I64 = %zero.sub(%n)
+        jump fill_digits(1, %pos)
+
+    block fill_digits(%neg: I64, %n: I64):
+        ; 20-byte buffer: indices 0..19, filled right-to-left from index 19
+        #buf:   Ptr<Array<I8, 20>> = alloca<Array<I8, 20>>
+        #bytes: Ptr<I8>            = bitcast<Ptr<Array<I8, 20>>, Ptr<I8>>(#buf)
+        jump digit_loop(19, %n, #bytes, %neg)
+
+    block digit_loop(%pos: I64, %n: I64, #bytes: Ptr<I8>, %neg: I64):
+        %done: Bool = %n.eq(0)
+        branch %done ? maybe_sign(%pos, #bytes, %neg) : extract(%pos, %n, #bytes, %neg)
+
+    block extract(%pos: I64, %n: I64, #bytes: Ptr<I8>, %neg: I64):
+        %digit: I64 = %n.srem(10)
+        %rest:  I64 = %n.sdiv(10)
+        %prev:  I64 = %pos.sub(1)
+        %digit_48: I64 = %digit.add(48)     ; '0' = 48
+        %ascii: I8  = trunc<I64, I8>(%digit_48)
+        #bytes[%prev] = %ascii
+        jump digit_loop(%prev, %rest, #bytes, %neg)
+
+    block maybe_sign(%pos: I64, #bytes: Ptr<I8>, %neg: I64):
+        %has_neg: Bool = %neg.eq(1)
+        branch %has_neg ? write_sign(%pos, #bytes) : write(%pos, #bytes)
+
+    block write_sign(%pos: I64, #bytes: Ptr<I8>):
+        %prev: I64 = %pos.sub(1)
+        #bytes[%prev] = 45                     ; '-'
+        jump write(%prev, #bytes)
+
+    block write(%pos: I64, #bytes: Ptr<I8>):
+        %len:   I64     = 19.sub(%pos)
+        %len_c: CSize   = i64_to_csize(%len)
+        #start: Ptr<I8> = #bytes[%pos]
+        c_write(%fd, #start, %len_c)
+        return()

@@ -1,0 +1,228 @@
+; Tessera stdlib: correctly rounded cube root of F128
+;
+; Ported from CORE-MATH, src/binary128/cbrt/cbrtq.c via RazorForge's B128Cbrt.rf.
+; Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
+; MIT license: see LICENSE-CORE-MATH
+;
+; f128_cm_cbrt returns the exact cube root rounded to the nearest F128 (ties to
+; even). Only the round-to-nearest path of the original is kept: Tessera has no
+; dynamic rounding modes or exception flags. cbrt(-x) = -cbrt(x); ±0, ±inf and
+; NaN map to themselves, a signaling NaN is quieted.
+;
+; The work is all 64- and 128-bit integer code. A polynomial from a 16-entry
+; table gives 1/cbrt of the leading significand bits, one Newton step lifts it
+; to about 120 bits of cbrt, and when that lands too close to a rounding
+; boundary the exact residual c^3 - x of a 113-bit candidate c decides it.
+; Words are I64 / I128 holding unsigned bits; signedness lives on the ops.
+
+; -- tables --------------------------------------------------------------------
+
+; packed coefficients c0, c1, c2 of the 1/cbrt polynomial, per leading 4 bits
+const CM_CBRT_KNST: Array<I64, 16> = [
+    0xD3ED1E72EFD6337B, 0xB8BCBB918F877572, 0xA244650B6F3E7F80, 0x8F8418C89EFA9D5E,
+    0x7FB3D5217EBB3895, 0x724398C31E7FD263, 0x66C3629B4E47FF19, 0x5CD331CA2E136288,
+    0x543B0596EDE1AD3B, 0x4CBADD683DB29A42, 0x4622B8BD8D85ED78, 0x4052972A5D5B7219,
+    0x3B327852AD32F99E, 0x369A5BE7FD0C5AD6, 0x328241A6BCE7711B, 0x2EDA2954ACC41BB2
+]
+
+; the c3 coefficient, per leading 4 bits
+const CM_CBRT_KNSTH: Array<I64, 16> = [
+    0xA0, 0x83, 0x6D, 0x5C, 0x4E, 0x42, 0x39, 0x31,
+    0x2B, 0x25, 0x21, 0x1D, 0x1A, 0x17, 0x15, 0x13
+]
+
+; 2^63 / cbrt(2^i), i = 0, 1, 2
+const CM_CBRT_RCBRT_I: Array<I64, 3> = [
+    0x8000000000000000, 0x6597FA94F5B8F20B, 0x50A28BE635CA2B89
+]
+
+const CM_CBRT_LOW64:     I128 = 0xFFFFFFFFFFFFFFFF
+const CM_CBRT_QUIET_HI:  I64  = 0x0000800000000000                  ; quiet bit in the high word
+const CM_CBRT_TWO_THIRD: I64  = 0xAAAAAAAAAAAAAAAB                  ; 2/3 in 0.64 fixed point
+const CM_CBRT_ONE_THIRD: I64  = 0x5555555555555555                  ; 1/3 in 0.64 fixed point
+
+; -- entry point ---------------------------------------------------------------
+
+routine f128_cm_cbrt(%x: F128) -> F128
+    block entry():
+        %bits:     I128 = %x.bits
+        %hi:       I64  = %bits.lshr(64).to_i64()
+        %sign:     I64  = %hi.lshr(63)
+        %exponent: I64  = %hi.lshr(48).bitand(0x7FFF)
+        %is_tiny:  Bool = %exponent.eq(0)
+        %special:  Bool = %exponent.eq(0x7FFF)
+        select:
+            %is_tiny -> subnormal(%bits, %sign)
+            %special -> return(cm_cbrt_special(%x))
+            _ -> normal(%bits, %sign, %exponent)
+
+    block normal(%bits: I128, %sign: I64, %exponent: I64):
+        %e3:  I64 = %exponent.udiv(3).add(10922)
+        %rem: I64 = %exponent.urem(3)
+        %r: F128 = cm_cbrt_finish(%bits, %rem, %e3, %sign)
+        return(%r)
+
+    ; subnormal or ±0: normalize the significand so its top bit sits at bit 112
+    block subnormal(%bits: I128, %sign: I64):
+        %magnitude: I128 = %bits.bitand(F128_SIGN.bitnot())
+        %is_zero:   Bool = %magnitude.eq(0)
+        branch %is_zero ? return(%x) : normalize(%magnitude, %sign)
+
+    block normalize(%magnitude: I128, %sign: I64):
+        %shift:    I64  = %magnitude.leading_zeros().to_i64().sub(15)
+        %exponent: I64  = 121.sub(%shift)
+        %e3:       I64  = %exponent.udiv(3).add(10882)
+        %rem:      I64  = %exponent.urem(3)
+        %scaled:   I128 = %magnitude.shl(%shift.to_i128())
+        %r: F128 = cm_cbrt_finish(%scaled, %rem, %e3, %sign)
+        return(%r)
+
+; NaN or ±inf: a signaling NaN is quieted, everything else maps to itself
+routine cm_cbrt_special(%x: F128) -> F128
+    block entry():
+        %bits:      I128 = %x.bits
+        %hi:        I64  = %bits.lshr(64).to_i64()
+        %is_nan:    Bool = %bits.shl(16).ne(0)
+        %quiet:     Bool = %hi.bitand(CM_CBRT_QUIET_HI).ne(0)
+        %signaling: Bool = %is_nan.bitand(%quiet.bitnot())
+        %quieted:   F128 = F128.from_bits(%bits.bitor(F128_QUIET_BIT))
+        %r: F128 = %signaling ? %quieted : %x
+        return(%r)
+
+; Packs the cube root of the significand in %u (the exponent's remainder mod 3
+; in %rem) with the biased result exponent %e3 and the sign. Adding the round
+; bit carries into the exponent when rounding up overflows the fraction.
+routine cm_cbrt_finish(%u: I128, %rem: I64, %e3: I64, %sign: I64) -> F128
+    block entry():
+        %root:     I128 = cm_cbrt_icbrt(%u.shl(16), %rem)
+        %round:    I128 = %root.lshr(15).bitand(1)
+        %top:      I64  = %e3.shl(48).bitor(%sign.shl(63))
+        %offset:   I128 = %top.to_u128().shl(64).bitor(%round)
+        %r: F128 = F128.from_bits(%root.lshr(16).add(%offset))
+        return(%r)
+
+; -- multiword products --------------------------------------------------------
+
+; high word of the unsigned 64x64-bit product
+routine cm_cbrt_mhuu(%a: I64, %b: I64) -> I64
+    block entry():
+        %r: I64 = %a.to_u128().mul(%b.to_u128()).lshr(64).to_i64()
+        return(%r)
+
+; high word of the signed 64x64-bit product
+routine cm_cbrt_mhii(%a: I64, %b: I64) -> I64
+    block entry():
+        %r: I64 = %a.to_i128().mul(%b.to_i128()).ashr(64).to_i64()
+        return(%r)
+
+; approximate high half of the unsigned 128x128-bit product (a0*b0 and the
+; carries out of the low halves are dropped)
+routine cm_cbrt_mhUU(%a: I128, %b: I128) -> I128
+    block entry():
+        %a0:   I128 = %a.bitand(CM_CBRT_LOW64)
+        %a1:   I128 = %a.lshr(64)
+        %b0:   I128 = %b.bitand(CM_CBRT_LOW64)
+        %b1:   I128 = %b.lshr(64)
+        %a1b0: I128 = %a1.mul(%b0)
+        %a0b1: I128 = %a0.mul(%b1)
+        %a1b1: I128 = %a1.mul(%b1)
+        %r: I128 = %a1b1.add(%a1b0.lshr(64)).add(%a0b1.lshr(64))
+        return(%r)
+
+; high 128 bits of the unsigned 64x128-bit product
+routine cm_cbrt_mhuU(%y: I64, %x: I128) -> I128
+    block entry():
+        %y_wide: I128 = %y.to_u128()
+        %xy0:    I128 = %x.bitand(CM_CBRT_LOW64).mul(%y_wide)
+        %xy1:    I128 = %x.lshr(64).mul(%y_wide)
+        %r: I128 = %xy1.add(%xy0.lshr(64))
+        return(%r)
+
+; -- the root ------------------------------------------------------------------
+
+; 1 + r ~ 1/cbrt(m), r signed, from the high significand word m (top bit set)
+routine cm_cbrt_rcbrt(%m: I64) -> I64
+    block entry():
+        %index:  I64      = %m.lshr(60)
+        #knst:   Ptr<I64> = CM_CBRT_KNST.as_ptr()
+        #knsth:  Ptr<I64> = CM_CBRT_KNSTH.as_ptr()
+        %packed: I64     := #knst[%index]
+        %c3:     I64     := #knsth[%index]
+        %c0:     I64      = %packed.shl(36)
+        %c1:     I64      = %packed.shl(13).lshr(37)
+        %c2:     I64      = %packed.lshr(42)
+        %d:      I64      = %m.shl(4).sub(0x8000000000000000).ashr(32)
+        %d2:     I64      = %d.mul(%d).lshr(32)
+        %even:   I64      = %c0.add(%d2.mul(%c2))
+        %odd_c:  I64      = %c1.add(%d2.mul(%c3).lshr(22))
+        %odd:    I64      = %d.mul(%odd_c)
+        %r:      I64      = %even.sub(%odd)
+        jump refine(%m, %r)
+
+    ; one correction step: r -= r * h / 3 with h ~ m * (1 + r)^3 - 1
+    block refine(%m: I64, %r: I64):
+        %r2:       I64 = cm_cbrt_mhuu(%r, %r)
+        %r3:       I64 = cm_cbrt_mhuu(%r2, %r)
+        %err:      I64 = cm_cbrt_mhuu(%m, %r3).add(%r3).shl(22)
+        %third:    I64 = cm_cbrt_mhii(%err, CM_CBRT_ONE_THIRD)
+        %third_sq: I64 = cm_cbrt_mhii(%third, %third)
+        %h:        I64 = %third.sub(%third_sq.lshr(21))
+        %hr:       I64 = cm_cbrt_mhii(%h, %r).add(%h)
+        %result:   I64 = %r.sub(%hr.ashr(22))
+        return(%result)
+
+; The cube root of the significand, 2^i × (1 + x / 2^128) with x the fraction
+; bits left-aligned, refined by one Newton step. The root comes back the same
+; way, its leading 1 dropped: 112 fraction bits at 16..127, the round bit at 15
+; and 15 more below. When those low bits sit too close to a rounding boundary,
+; the rounding is decided exactly.
+routine cm_cbrt_icbrt(%x: I128, %i: I64) -> I128
+    block entry():
+        %approx:   I64  = cm_cbrt_rcbrt(%x.lshr(64).to_i64())
+        %is_small: Bool = %approx.sge(0)
+        %clamped:  I64  = %is_small ? -1 : %approx
+        #scale:    Ptr<I64> = CM_CBRT_RCBRT_I.as_ptr()
+        %factor:   I64 := #scale[%i]
+        %r:        I64  = cm_cbrt_mhuu(%clamped, %factor)
+        %r_wide:   I128 = %r.to_u128()
+        %r2:       I128 = %r_wide.mul(%r_wide)
+        %top_bit:  I128 = 1.shl(125.add(%i).to_i128())
+        %xs:       I128 = %x.lshr(3.sub(%i).to_i128()).bitor(%top_bit)
+        %sx:       I128 = cm_cbrt_mhUU(%r2, %xs)
+        jump newton(%xs, %r, %sx)
+
+    ; sx = r^2 x ~ cbrt(x); with h = r sx - 1, the Newton step is sx -= sx h / 3
+    ; (h3 = 2h/3, the product taken as signed, then shifted into place)
+    block newton(%xs: I128, %r: I64, %sx: I128):
+        %h:        I64  = cm_cbrt_mhuU(%r, %sx).to_i64()
+        %h_neg:    I64  = %h.ashr(63)
+        %h_fix:    I64  = %h_neg.bitand(CM_CBRT_TWO_THIRD)
+        %h3:       I64  = cm_cbrt_mhuu(%h, CM_CBRT_TWO_THIRD).sub(%h_fix)
+        %h3_wide:  I128 = %h3.to_u128()
+        %mm:       I128 = %h_neg.to_i128()
+        %xy1:      I128 = %sx.lshr(64).mul(%h3_wide)
+        %xy0:      I128 = %sx.bitand(CM_CBRT_LOW64).mul(%h3_wide)
+        %t:        I128 = %xy1.sub(%mm.bitand(%sx)).add(%xy0.lshr(64))
+        %ds:       I128 = %t.ashr(53)
+        %sx1:      I128 = %sx.shl(5).sub(%ds)
+        %dd:       I64  = %sx1.to_i64().shl(1).add(511).bitand(0xFFFF)
+        %boundary: Bool = %dd.ult(1023)
+        branch %boundary ? return(cm_cbrt_exact(%sx1, %xs)) : return(%sx1)
+
+; Rounds the candidate c = round(sx1 / 2^15) with c^3 - x: the result is c
+; shifted back, nudged by one so the caller's round bit goes the right way.
+routine cm_cbrt_exact(%sx1: I128, %xs: I128) -> I128
+    block entry():
+        %c:        I128 = %sx1.add(0x4000).lshr(15).bitor(1.shl(113))
+        ; c^3 needs 342 bits, but c^3 - x × 2^214 is small, so modulo 2^256 its sign and zero test hold
+        %c_wide:   I256 = %c.to_u256()
+        %cube:     I256 = %c.umul_wide(%c).mul(%c_wide)
+        %target:   I256 = %xs.to_u256().shl(214)
+        %excess:   I256 = %cube.sub(%target)
+        %base:     I128 = %c.shl(15)
+        %below:    Bool = %excess.slt(0)
+        %above:    Bool = %excess.ne(0)
+        select:
+            %below -> return(%base.add(1))
+            %above -> return(%base.sub(1))
+            _ -> return(%base)

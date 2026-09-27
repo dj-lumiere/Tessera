@@ -1,0 +1,53 @@
+; BF16 across call boundaries. At -O0, LLVM's x86 backend took a bfloat returned from a call for a promoted f32
+; and truncated it again, so Tessera routines pass BF16 as its i16 bits: directly, inside structs, in Option, and
+; through a Callable.
+
+struct Pair
+    a: BF16
+    b: BF16
+
+routine make_pair(%x: I16, %y: I16) -> Pair
+    block entry():
+        %p: Pair = Pair { a: BF16.from_bits(%x), b: BF16.from_bits(%y) }
+        return(%p)
+
+routine maybe(%x: I16) -> Option<BF16>
+    block entry():
+        %v: BF16 = BF16.from_bits(%x)
+        %r: Option<BF16> = Option<BF16>.some(%v)
+        return(%r)
+
+routine first_bits(%p: Pair) -> I16
+    block entry():
+        %a: BF16 = %p.a
+        %r: I16 = %a.to_bits()
+        return(%r)
+
+routine negate(%x: BF16) -> BF16
+    block entry():
+        %r: BF16 = %x.neg()
+        return(%r)
+
+struct Ops
+    op: Callable<(BF16,), BF16>
+
+routine main() -> I32
+    block entry():
+        %out_val: FdWriter      = FdWriter.stdout()
+        #out:     Ptr<FdWriter> = alloca<FdWriter>([%out_val])
+        %p: Pair = make_pair(-16512, 16320)
+        %b: BF16 = %p.b
+        %b.format(#out)
+        write_str(#out, " ")
+        first_bits(%p).format_hex(#out)
+        write_str(#out, " ")
+        %o: Option<BF16> = maybe(-16448)
+        %v: BF16 = %o.value
+        %v.format(#out)
+        write_str(#out, " ")
+        %ops: Ops = Ops { op: negate }
+        #ops: Ptr<Ops> = alloca<Ops>([%ops])
+        %n: BF16 = #ops.op(%v)
+        %n.format(#out)
+        write_line(#out)
+        return(0)

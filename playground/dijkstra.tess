@@ -1,0 +1,250 @@
+; Dijkstra's shortest path — Tessera playground showcase
+;
+; Finds single-source shortest distances on a directed weighted graph.
+;
+; Stdlib used:
+;   BinaryHeap<DijkstraEntry>   min-heap keyed by tentative distance
+;   List<Edge>                     per-node adjacency list
+;
+; Control flow highlights:
+;   block-parameter loops for dist initialisation, edge relaxation, printing
+;   inline branch terminator to drop stale priority-queue entries
+;   Priority<DijkstraEntry> concept for the min-heap ordering
+
+; ── C FFI ─────────────────────────────────────────────────────────────────────
+
+@[external("c"), callconv("c"), symbol("printf"), variadic]
+routine c_printf(#fmt: Ptr<I8>) -> I32
+
+; ── Types ─────────────────────────────────────────────────────────────────────
+
+const INF: I64 = 9223372036854775807    ; I64 max — sentinel for "unreachable"
+
+struct Edge
+    to:     I64
+    weight: I64
+
+; adj[u] is a separately heap-allocated List<Edge> reached through a pointer
+; slot.  Storing Ptr<List<Edge>> (not List<Edge>) means loading adj[u] gives a
+; callable method receiver directly — no address-of-element operation needed.
+struct Graph
+    adj:       Ptr<List<Ptr<List<Edge>>>>
+    num_nodes: I64
+
+struct DijkstraEntry
+conform Priority<DijkstraEntry>
+    dist: I64
+    node: I64
+
+; ── Priority<DijkstraEntry> ───────────────────────────────────────────────────
+
+; Lower distance = higher priority.
+routine DijkstraEntry.less(%a: DijkstraEntry, %b: DijkstraEntry) -> Bool
+    block entry():
+        %a_dist: I64 = %a.dist
+        %b_dist: I64 = %b.dist
+        %result: Bool = %a_dist.slt(%b_dist)
+        return(%result)
+
+; ── Graph ─────────────────────────────────────────────────────────────────────
+
+routine Graph.new(%num_nodes: I64, #alloc: Ptr<Allocator>) -> Self
+    block entry():
+        #adj: Ptr<List<Ptr<List<Edge>>>> = alloc<List<Ptr<List<Edge>>>>(#alloc, 1)
+        %adj_null: Bool = #adj.is_null()
+        branch %adj_null ? panic(TrapCode.AllocFailed) : setup(#adj)
+
+    block setup(#adj: Ptr<List<Ptr<List<Edge>>>>):
+        %adj_val: List<Ptr<List<Edge>>> = List<Ptr<List<Edge>>>.new(#alloc)
+        #adj = %adj_val
+        jump init_loop(0, #adj)
+
+    block init_loop(%i: I64, #adj: Ptr<List<Ptr<List<Edge>>>>):
+        %done: Bool = %i.sge(%num_nodes)
+        branch %done ? build(#adj) : make_list(%i, #adj)
+
+    block make_list(%i: I64, #adj: Ptr<List<Ptr<List<Edge>>>>):
+        #list: Ptr<List<Edge>> = alloc<List<Edge>>(#alloc, 1)
+        %list_null: Bool = #list.is_null()
+        branch %list_null ? panic(TrapCode.AllocFailed) : init_list(%i, #adj, #list)
+
+    block init_list(%i: I64, #adj: Ptr<List<Ptr<List<Edge>>>>, #list: Ptr<List<Edge>>):
+        %empty: List<Edge> = List<Edge>.new(#alloc)
+        #list = %empty
+        #adj.push(#list)
+        jump init_loop(%i.add(1), #adj)
+
+    block build(#adj: Ptr<List<Ptr<List<Edge>>>>):
+        %g: Self = Self { adj: #adj, num_nodes: %num_nodes }
+        return(%g)
+
+routine Graph.add_edge(#self: Ptr<Self>, %from: I64, %to: I64, %weight: I64) -> Void
+    block entry():
+        #adj:  Ptr<List<Ptr<List<Edge>>>> := #self.adj
+        #list: Ptr<List<Edge>>            = #adj.get(%from)
+        %edge: Edge = Edge { to: %to, weight: %weight }
+        #list.push(%edge)
+        return()
+
+routine Graph.free(#self: Ptr<Self>, #alloc: Ptr<Allocator>) -> Void
+    block entry():
+        %n:   I64                         := #self.num_nodes
+        #adj: Ptr<List<Ptr<List<Edge>>>> := #self.adj
+        jump free_loop(0, %n, #adj)
+
+    block free_loop(%i: I64, %n: I64, #adj: Ptr<List<Ptr<List<Edge>>>>):
+        %done: Bool = %i.sge(%n)
+        branch %done ? free_outer(#adj) : free_one(%i, %n, #adj)
+
+    block free_one(%i: I64, %n: I64, #adj: Ptr<List<Ptr<List<Edge>>>>):
+        #list: Ptr<List<Edge>> = #adj.get(%i)
+        #list.free()
+        free<List<Edge>>(#alloc, #list)
+        jump free_loop(%i.add(1), %n, #adj)
+
+    block free_outer(#adj: Ptr<List<Ptr<List<Edge>>>>):
+        #adj.free()
+        free<List<Ptr<List<Edge>>>>(#alloc, #adj)
+        return()
+
+; ── Dijkstra ─────────────────────────────────────────────────────────────────
+;
+; #dist must be caller-allocated with num_nodes elements.
+; Fills it with shortest distances from %source (INF where unreachable).
+; Owns and frees the priority queue before returning.
+
+routine dijkstra(
+    #graph:  Ptr<Graph>,
+    %source: I64,
+    #dist:   Ptr<I64>,
+    #alloc:  Ptr<Allocator>
+) -> Void
+    block entry():
+        %n:      I64 := #graph.num_nodes
+        %pq_val: BinaryHeap<DijkstraEntry> = BinaryHeap<DijkstraEntry>.new(#alloc)
+        #pq:     Ptr<BinaryHeap<DijkstraEntry>> = alloca<BinaryHeap<DijkstraEntry>>([%pq_val])
+        jump fill_inf(0, %n, #pq)
+
+    ; Phase 1 — initialise every distance slot to INF.
+    block fill_inf(%i: I64, %n: I64, #pq: Ptr<BinaryHeap<DijkstraEntry>>):
+        %done: Bool = %i.sge(%n)
+        branch %done ? seed(#pq) : write_inf(%i, %n, #pq)
+
+    block write_inf(%i: I64, %n: I64, #pq: Ptr<BinaryHeap<DijkstraEntry>>):
+        #dist[%i] = INF
+        jump fill_inf(%i.add(1), %n, #pq)
+
+    ; Phase 2 — set the source distance to 0 and seed the queue.
+    block seed(#pq: Ptr<BinaryHeap<DijkstraEntry>>):
+        #dist[%source] = 0
+        %first: DijkstraEntry = DijkstraEntry { dist: 0, node: %source }
+        #pq.push(%first)
+        jump main_loop(#pq)
+
+    ; Phase 3 — drain the queue, relaxing edges on each settled node.
+    block main_loop(#pq: Ptr<BinaryHeap<DijkstraEntry>>):
+        %empty: Bool = #pq.is_empty()
+        branch %empty ? done(#pq) : dequeue(#pq)
+
+    block dequeue(#pq: Ptr<BinaryHeap<DijkstraEntry>>):
+        %entry: DijkstraEntry = #pq.pop()
+        %d:     I64           = %entry.dist
+        %u:     I64           = %entry.node
+        %best:  I64           := #dist[%u]
+        %stale: Bool          = %d.sgt(%best)
+        ; re-push instead of decrease-key produces stale entries — drop them.
+        branch %stale ? main_loop(#pq) : scan(%u, %d, #pq)
+
+    block scan(%u: I64, %d: I64, #pq: Ptr<BinaryHeap<DijkstraEntry>>):
+        #adj:  Ptr<List<Ptr<List<Edge>>>> := #graph.adj
+        #list: Ptr<List<Edge>>            = #adj.get(%u)
+        %len:  I64                        = #list.length()
+        jump edge_loop(0, %len, %d, #list, #pq)
+
+    block edge_loop(%i: I64, %len: I64, %d: I64, #list: Ptr<List<Edge>>, #pq: Ptr<BinaryHeap<DijkstraEntry>>):
+        %done: Bool = %i.sge(%len)
+        branch %done ? main_loop(#pq) : relax(%i, %len, %d, #list, #pq)
+
+    block relax(%i: I64, %len: I64, %d: I64, #list: Ptr<List<Edge>>, #pq: Ptr<BinaryHeap<DijkstraEntry>>):
+        %edge:     Edge = #list.get(%i)
+        %v:        I64  = %edge.to
+        %w:        I64  = %edge.weight
+        %new_dist: I64  = %d.add(%w)
+        %best:     I64  := #dist[%v]
+        %better:   Bool = %new_dist.slt(%best)
+        branch %better ? improve(%i, %len, %d, #list, #pq, %v, %new_dist) \
+                       : edge_loop(%i.add(1), %len, %d, #list, #pq)
+
+    block improve(
+        %i: I64, %len: I64, %d: I64,
+        #list: Ptr<List<Edge>>,
+        #pq:   Ptr<BinaryHeap<DijkstraEntry>>,
+        %v: I64, %new_dist: I64
+    ):
+        #dist[%v] = %new_dist
+        %entry: DijkstraEntry = DijkstraEntry { dist: %new_dist, node: %v }
+        #pq.push(%entry)
+        jump edge_loop(%i.add(1), %len, %d, #list, #pq)
+
+    block done(#pq: Ptr<BinaryHeap<DijkstraEntry>>):
+        #pq.free()
+        return()
+
+; ── main ─────────────────────────────────────────────────────────────────────
+;
+; Classic 6-node directed weighted graph:
+;
+;       7        10       11        6
+;   0 ───> 1 ───> 2 ───> 3 ───> 4
+;   |      |      |              |
+;   | 9    | 15   | 2            | 9
+;   v      v      v              v
+;   2      3      5 <─────────── 5
+;   |             ^
+;   └─────14──────┘   (0 ──14──> 5)
+;
+; Expected shortest distances from node 0:
+;   node 0:  0    (source)
+;   node 1:  7    (0→1)
+;   node 2:  9    (0→2)
+;   node 3: 20    (0→2→3)
+;   node 4: 26    (0→2→3→4)
+;   node 5: 11    (0→2→5)
+
+routine main() -> I32
+    block entry():
+        %alloc_val: Allocator = make_heap_allocator()
+        #alloc: Ptr<Allocator> = alloca<Allocator>([%alloc_val])
+
+        %g: Graph = Graph.new(6, #alloc)
+        #graph: Ptr<Graph> = alloca<Graph>([%g])
+
+        #graph.add_edge(0, 1,  7)
+        #graph.add_edge(0, 2,  9)
+        #graph.add_edge(0, 5, 14)
+        #graph.add_edge(1, 2, 10)
+        #graph.add_edge(1, 3, 15)
+        #graph.add_edge(2, 3, 11)
+        #graph.add_edge(2, 5,  2)
+        #graph.add_edge(3, 4,  6)
+        #graph.add_edge(4, 5,  9)
+
+        #dist: Ptr<I64> = alloc<I64>(#alloc, 6)
+        dijkstra(#graph, 0, #dist, #alloc)
+
+        c_printf("Shortest distances from node 0:\n")
+        jump print_loop(0, #dist, #graph, #alloc)
+
+    block print_loop(%i: I64, #dist: Ptr<I64>, #graph: Ptr<Graph>, #alloc: Ptr<Allocator>):
+        %done: Bool = %i.sge(6)
+        branch %done ? cleanup(#dist, #graph, #alloc) : print_one(%i, #dist, #graph, #alloc)
+
+    block print_one(%i: I64, #dist: Ptr<I64>, #graph: Ptr<Graph>, #alloc: Ptr<Allocator>):
+        %d: I64 := #dist[%i]
+        c_printf("  node %lld  dist %lld\n", %i, %d)
+        jump print_loop(%i.add(1), #dist, #graph, #alloc)
+
+    block cleanup(#dist: Ptr<I64>, #graph: Ptr<Graph>, #alloc: Ptr<Allocator>):
+        #graph.free(#alloc)
+        free<I64>(#alloc, #dist)
+        return(0)

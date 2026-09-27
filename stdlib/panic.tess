@@ -1,0 +1,83 @@
+; Tessera stdlib: panic
+;
+; panic ends the program when a contract is broken: an index out of bounds,
+; unwrap of None, a failed allocation. It writes one line to stderr and exits
+; with status 101:
+;
+;     tessera: runtime error: index out of bounds
+;     tessera: runtime error: index out of bounds: row 7 of 5      (panic_msg)
+;
+; There is no unwinding and no recovery. Failures a caller is expected to
+; handle return Result or Option instead. trap() stays in the prelude as the
+; runtime-free way to stop: it needs no libc and prints nothing.
+
+@[external("c"), callconv("c"), symbol("exit"), noreturn]
+routine c_exit(%status: CInt) -> Void
+
+; Why the program stopped. Codes 0-63 belong to the stdlib; 64 and up are free
+; for programs (bitcast<I8, TrapCode>(64)).
+enum TrapCode: I8
+    Unreachable         ; a stdlib invariant broke: a bug in the stdlib
+    Bounds              ; an index or range outside the valid one
+    Empty               ; pop / peek on an empty collection
+    MissingKey          ; get of a key that isn't there
+    UnwrapNone          ; unwrap of None
+    UnwrapErr           ; unwrap of Err
+    UnwrapOk            ; unwrap_err of Ok
+    AllocFailed         ; the allocator returned null
+    InvalidArgument     ; outside the routine's domain: clamp with min > max, ilog of 0
+    AssertFailed
+    Overflow
+    DivByZero
+
+routine TrapCode.description(%self: Self) -> String
+    block entry():
+        switch %self:
+            TrapCode.Unreachable -> describe("internal error: entered unreachable code")
+            TrapCode.Bounds -> describe("index out of bounds")
+            TrapCode.Empty -> describe("the collection is empty")
+            TrapCode.MissingKey -> describe("key not found")
+            TrapCode.UnwrapNone -> describe("unwrap of None")
+            TrapCode.UnwrapErr -> describe("unwrap of Err")
+            TrapCode.UnwrapOk -> describe("unwrap_err of Ok")
+            TrapCode.AllocFailed -> describe("memory allocation failed")
+            TrapCode.InvalidArgument -> describe("invalid argument")
+            TrapCode.AssertFailed -> describe("assertion failed")
+            TrapCode.Overflow -> describe("arithmetic overflow")
+            TrapCode.DivByZero -> describe("division by zero")
+            _ -> describe("error code")
+
+    block describe(%text: String):
+        return(%text)
+
+; Writes "tessera: runtime error: <description>", plus the code when it is a
+; program's own (64 and up).
+routine panic_header(%code: TrapCode) -> Void
+    block entry():
+        eprint_slice("tessera: runtime error: ")
+        %text: String = %code.description()
+        eprint_slice(%text)
+        %raw:    I8   = bitcast<TrapCode, I8>(%code)
+        %stdlib: Bool = %raw.ult(64)
+        branch %stdlib ? return() : user_code(%raw)
+
+    block user_code(%raw: I8):
+        eprint_slice(" ")
+        eprint_int(%raw.to_u64())
+        return()
+
+@noreturn
+routine panic(%code: TrapCode) -> Void
+    block entry():
+        panic_header(%code)
+        eprint_slice("\n")
+        c_exit(101)
+
+@noreturn
+routine panic_msg(%code: TrapCode, %message: String) -> Void
+    block entry():
+        panic_header(%code)
+        eprint_slice(": ")
+        eprint_slice(%message)
+        eprint_slice("\n")
+        c_exit(101)

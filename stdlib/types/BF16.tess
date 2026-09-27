@@ -1,0 +1,630 @@
+; Tessera stdlib: BF16 — 16-bit bfloat16 (F32's exponent, 7-bit mantissa)
+;
+; Maps to LLVM IR bfloat. x86 has no BF16 arithmetic, so LLVM computes in F32
+; and rounds; the conversions call compiler-rt, which the compiler links.
+
+@llvm("bfloat")
+struct BF16
+conform Equal<BF16>, Compare<BF16>, Hash<BF16>
+
+; -- constants -----------------------------------------------------------------
+
+const BF16.INFINITY:     BF16 = 0x7F80  ; +inf bits
+const BF16.NEG_INFINITY: BF16 = 0xFF80  ; -inf bits
+const BF16.NAN:          BF16 = 0x7FC0  ; canonical quiet NaN bits
+
+; -- runtime support ---------------------------------------------------------
+
+; x86 has no BF16 arithmetic, so LLVM computes in F32 and narrows the result by
+; calling these compiler-rt routines. The Windows builds of compiler-rt lack
+; them, so the stdlib provides them under their C names.
+
+@[export("__truncsfbf2"), target(os: "windows")]
+routine bf16_trunc_from_f32(%x: F32) -> BF16
+    block entry():
+        %r: BF16 = %x.to_bf16()
+        return(%r)
+
+@[export("__truncdfbf2"), target(os: "windows")]
+routine bf16_trunc_from_f64(%x: F64) -> BF16
+    block entry():
+        %r: BF16 = %x.to_bf16()
+        return(%r)
+
+; -- arithmetic ----------------------------------------------------------------
+
+; Clears the sign bit, so abs(-0.0) is 0.0 and NaN stays NaN.
+routine BF16.abs(%self: Self) -> Self
+    block entry():
+        %r: Self = fabs<Self>(%self)
+        return(%r)
+
+; The smaller value; if one operand is NaN, the other one.
+routine BF16.min(%self: Self, %other: Self) -> Self
+    block entry():
+        %r: Self = minnum<Self>(%self, %other)
+        return(%r)
+
+; The larger value; if one operand is NaN, the other one.
+routine BF16.max(%self: Self, %other: Self) -> Self
+    block entry():
+        %r: Self = maxnum<Self>(%self, %other)
+        return(%r)
+
+routine BF16.add(%self: Self, %other: Self) -> Self
+    block entry():
+        %r: Self = fadd<Self>(%self, %other)
+        return(%r)
+
+routine BF16.sub(%self: Self, %other: Self) -> Self
+    block entry():
+        %r: Self = fsub<Self>(%self, %other)
+        return(%r)
+
+routine BF16.mul(%self: Self, %other: Self) -> Self
+    block entry():
+        %r: Self = fmul<Self>(%self, %other)
+        return(%r)
+
+; -- comparisons ---------------------------------------------------------------
+
+routine BF16.lt(%self: Self, %other: Self) -> Bool
+    block entry():
+        %r: Bool = flt<Self>(%self, %other)
+        return(%r)
+
+routine BF16.le(%self: Self, %other: Self) -> Bool
+    block entry():
+        %r: Bool = fle<Self>(%self, %other)
+        return(%r)
+
+routine BF16.gt(%self: Self, %other: Self) -> Bool
+    block entry():
+        %r: Bool = fgt<Self>(%self, %other)
+        return(%r)
+
+routine BF16.ge(%self: Self, %other: Self) -> Bool
+    block entry():
+        %r: Bool = fge<Self>(%self, %other)
+        return(%r)
+
+; -- division ------------------------------------------------------------------
+
+routine BF16.fdiv(%self: Self, %other: Self) -> Self
+    block entry():
+        %r: Self = fdiv<Self>(%self, %other)
+        return(%r)
+
+; -- equality, ordering, hashing -----------------------------------------------
+
+routine BF16.eq(%self: Self, %other: Self) -> Bool
+    block entry():
+        %r: Bool = feq<Self>(%self, %other)
+        return(%r)
+
+routine BF16.ne(%self: Self, %other: Self) -> Bool
+    block entry():
+        %r: Bool = fne<Self>(%self, %other)
+        return(%r)
+
+routine BF16.compare(%self: Self, %other: Self) -> I32
+    block entry():
+        %lt: Bool = %self.lt(%other)
+        branch %lt ? return(-1) : maybe_gt(%self, %other)
+
+    block maybe_gt(%self: Self, %other: Self):
+        %gt: Bool = %self.gt(%other)
+        branch %gt ? return(1) : return(0)
+
+routine BF16.hash(%self: Self) -> I64
+    block entry():
+        %h: I64 = xxh64_hash_i64(bitcast<Self, I16>(%self).to_u64(), 0)
+        return(%h)
+
+; -- named widening conversion -------------------------------------------------
+
+routine BF16.to_f64(%self: Self) -> F64
+    block entry():
+        %result: F64 = fpext<Self, F64>(%self)
+        return(%result)
+
+routine BF16.to_i32(%self: Self) -> I32
+    block entry():
+        %r: I32 = fptosi_sat<Self, I32>(%self)
+        return(%r)
+
+routine BF16.to_i64(%self: Self) -> I64
+    block entry():
+        %r: I64 = fptosi_sat<Self, I64>(%self)
+        return(%r)
+
+; ============================================================
+; Rust-level operations
+; ============================================================
+
+; -- constants ------------------------------------------------------------------
+
+const BF16.MAX:          BF16 = 0x7F7F  ; largest finite value
+const BF16.MIN:          BF16 = 0xFF7F  ; most negative finite value
+const BF16.MIN_POSITIVE: BF16 = 0x0080  ; smallest positive normal value
+const BF16.EPSILON:      BF16 = 0x3C00  ; the gap between 1.0 and the next value
+
+const BF16.PI: BF16 = 3.14159265358979323846264338327950288  ; pi
+const BF16.TAU: BF16 = 6.28318530717958647692528676655900577  ; 2 pi
+const BF16.E: BF16 = 2.71828182845904523536028747135266250  ; Euler's number
+const BF16.FRAC_PI_2: BF16 = 1.57079632679489661923132169163975144  ; pi / 2
+const BF16.FRAC_PI_4: BF16 = 0.785398163397448309615660845819875721  ; pi / 4
+const BF16.FRAC_1_PI: BF16 = 0.318309886183790671537767526745028724  ; 1 / pi
+const BF16.SQRT_2: BF16 = 1.41421356237309504880168872420969808  ; sqrt(2)
+const BF16.FRAC_1_SQRT_2: BF16 = 0.707106781186547524400844362104849039  ; 1 / sqrt(2)
+const BF16.LN_2: BF16 = 0.693147180559945309417232121458176568  ; ln(2)
+const BF16.LN_10: BF16 = 2.30258509299404568401799145468436421  ; ln(10)
+const BF16.LOG2_E: BF16 = 1.44269504088896340735992468100189214  ; log2(e)
+const BF16.LOG10_E: BF16 = 0.434294481903251827651128918916605082  ; log10(e)
+
+; -- sign ----------------------------------------------------------------------
+
+routine BF16.neg(%self: Self) -> Self
+    block entry():
+        %r: Self = fneg<Self>(%self)
+        return(%r)
+
+; The magnitude of self with the sign of %sign.
+routine BF16.copysign(%self: Self, %sign: Self) -> Self
+    block entry():
+        %r: Self = copysign<Self>(%self, %sign)
+        return(%r)
+
+; 1.0 for +0.0 and positive values, -1.0 for -0.0 and negative values, NaN for NaN.
+routine BF16.signum(%self: Self) -> Self
+    block entry():
+        %nan: Bool = %self.is_nan()
+        %unit: Self = copysign<Self>(1.0, %self)
+        %r: Self = %nan ? %self : %unit
+        return(%r)
+
+; Reads the sign bit, so it is true for +0.0 and for NaNs with the bit clear.
+routine BF16.is_sign_positive(%self: Self) -> Bool
+    block entry():
+        %bits: I16 = %self.to_bits()
+        %r: Bool = %bits.sge(0)
+        return(%r)
+
+routine BF16.is_sign_negative(%self: Self) -> Bool
+    block entry():
+        %bits: I16 = %self.to_bits()
+        %r: Bool = %bits.slt(0)
+        return(%r)
+
+; -- arithmetic ----------------------------------------------------------------
+
+; The remainder of self / other, with the sign of self (C fmod; Rust's %).
+routine BF16.frem(%self: Self, %other: Self) -> Self
+    block entry():
+        %r: Self = frem<Self>(%self, %other)
+        return(%r)
+
+routine BF16.recip(%self: Self) -> Self
+    block entry():
+        %r: Self = fdiv<Self>(1.0, %self)
+        return(%r)
+
+; self * a + b. Exact in F32 before the final rounding, since the product of two
+; 16-bit floats fits in F32.
+routine BF16.mul_add(%self: Self, %a: Self, %b: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.mul_add(%a.to_f32(), %b.to_f32()).to_bf16()
+        return(%r)
+
+; The quotient q of Euclidean division, so that self = q * other + r with 0 <= r < |other|.
+routine BF16.div_euclid(%self: Self, %other: Self) -> Self
+    block entry():
+        %q: Self = %self.fdiv(%other).trunc()
+        %rem: Self = frem<Self>(%self, %other)
+        %rem_negative: Bool = %rem.lt(0.0)
+        branch %rem_negative ? adjust(%q) : return(%q)
+
+    block adjust(%q: Self):
+        %positive_divisor: Bool = %other.gt(0.0)
+        %down: Self = %q.sub(1.0)
+        %up: Self = %q.add(1.0)
+        %r: Self = %positive_divisor ? %down : %up
+        return(%r)
+
+; The least non-negative remainder of self / other.
+routine BF16.rem_euclid(%self: Self, %other: Self) -> Self
+    block entry():
+        %rem: Self = frem<Self>(%self, %other)
+        %rem_negative: Bool = %rem.lt(0.0)
+        branch %rem_negative ? adjust(%rem) : return(%rem)
+
+    block adjust(%rem: Self):
+        %magnitude: Self = %other.abs()
+        %r: Self = %rem.add(%magnitude)
+        return(%r)
+
+; -- ordering ------------------------------------------------------------------
+
+; The smaller value, NaN if either is NaN, and -0.0 below +0.0.
+routine BF16.minimum(%self: Self, %other: Self) -> Self
+    block entry():
+        %r: Self = minimum<Self>(%self, %other)
+        return(%r)
+
+; The larger value, NaN if either is NaN, and +0.0 above -0.0.
+routine BF16.maximum(%self: Self, %other: Self) -> Self
+    block entry():
+        %r: Self = maximum<Self>(%self, %other)
+        return(%r)
+
+; Restricts self to %lo ..= %hi; NaN stays NaN. Traps unless %lo <= %hi.
+routine BF16.clamp(%self: Self, %lo: Self, %hi: Self) -> Self
+    block entry():
+        %valid: Bool = %lo.le(%hi)
+        branch %valid ? clamp() : panic(TrapCode.InvalidArgument)
+
+    block clamp():
+        %below: Bool = %self.lt(%lo)
+        %above: Bool = %self.gt(%hi)
+        %upper: Self = %above ? %hi : %self
+        %r: Self = %below ? %lo : %upper
+        return(%r)
+
+; IEEE 754 totalOrder: -NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN.
+routine BF16.total_compare(%self: Self, %other: Self) -> I32
+    block entry():
+        %a: I16 = %self.to_bits()
+        %b: I16 = %other.to_bits()
+        ; Flipping every bit but the sign of negative values makes the bits order like signed integers.
+        %a_key: I16 = %a.bitxor(%a.ashr(15).lshr(1))
+        %b_key: I16 = %b.bitxor(%b.ashr(15).lshr(1))
+        %r: I32 = %a_key.compare(%b_key)
+        return(%r)
+
+; -- rounding ------------------------------------------------------------------
+
+routine BF16.floor(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.floor().to_bf16()
+        return(%r)
+
+routine BF16.ceil(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.ceil().to_bf16()
+        return(%r)
+
+; Rounds half-way cases away from zero.
+routine BF16.round(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.round().to_bf16()
+        return(%r)
+
+; Rounds half-way cases to the even neighbor.
+routine BF16.round_ties_even(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.round_ties_even().to_bf16()
+        return(%r)
+
+; Rounds toward zero.
+routine BF16.trunc(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.trunc().to_bf16()
+        return(%r)
+
+; self minus its integer part, with the sign of self.
+routine BF16.fract(%self: Self) -> Self
+    block entry():
+        %whole: Self = %self.trunc()
+        %r: Self = %self.sub(%whole)
+        return(%r)
+
+; -- powers --------------------------------------------------------------------
+
+; NaN for negative values (other than -0.0).
+routine BF16.sqrt(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.sqrt().to_bf16()
+        return(%r)
+
+routine BF16.cbrt(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.cbrt().to_bf16()
+        return(%r)
+
+; self raised to an integer power, by repeated squaring.
+routine BF16.powi(%self: Self, %n: I32) -> Self
+    block entry():
+        %negative: Bool = %n.slt(0)
+        %magnitude: I32 = %n.abs()
+        jump loop(%self, %magnitude, 1.0, %negative)
+
+    ; %exp is read as unsigned, so I32.MIN's magnitude (which wraps) still works.
+    block loop(%base: Self, %exp: I32, %acc: Self, %negative: Bool):
+        %done: Bool = %exp.eq(0)
+        branch %done ? finish(%acc, %negative) : step(%base, %exp, %acc, %negative)
+
+    block step(%base: Self, %exp: I32, %acc: Self, %negative: Bool):
+        %odd: Bool = %exp.bitand(1).ne(0)
+        %with_base: Self = %acc.mul(%base)
+        %next_acc: Self = %odd ? %with_base : %acc
+        jump loop(%base.mul(%base), %exp.lshr(1), %next_acc, %negative)
+
+    block finish(%acc: Self, %negative: Bool):
+        %inverse: Self = %acc.recip()
+        %r: Self = %negative ? %inverse : %acc
+        return(%r)
+
+routine BF16.powf(%self: Self, %exp: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.powf(%exp.to_f32()).to_bf16()
+        return(%r)
+
+; e^self
+routine BF16.exp(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.exp().to_bf16()
+        return(%r)
+
+; 2^self
+routine BF16.exp2(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.exp2().to_bf16()
+        return(%r)
+
+; e^self - 1, accurate near 0.
+routine BF16.exp_m1(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.exp_m1().to_bf16()
+        return(%r)
+
+; The natural logarithm.
+routine BF16.ln(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.ln().to_bf16()
+        return(%r)
+
+routine BF16.log2(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.log2().to_bf16()
+        return(%r)
+
+routine BF16.log10(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.log10().to_bf16()
+        return(%r)
+
+; ln(1 + self), accurate near 0.
+routine BF16.ln_1p(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.ln_1p().to_bf16()
+        return(%r)
+
+; The logarithm with an arbitrary base.
+routine BF16.log(%self: Self, %base: Self) -> Self
+    block entry():
+        %num: Self = %self.ln()
+        %den: Self = %base.ln()
+        %r: Self = %num.fdiv(%den)
+        return(%r)
+
+; sqrt(self^2 + other^2). Squares of 16-bit floats cannot overflow F32.
+routine BF16.hypot(%self: Self, %other: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.hypot(%other.to_f32()).to_bf16()
+        return(%r)
+
+; -- trigonometry --------------------------------------------------------------
+
+; In radians.
+routine BF16.sin(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.sin().to_bf16()
+        return(%r)
+
+; In radians.
+routine BF16.cos(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.cos().to_bf16()
+        return(%r)
+
+; In radians.
+routine BF16.tan(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.tan().to_bf16()
+        return(%r)
+
+routine BF16.asin(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.asin().to_bf16()
+        return(%r)
+
+routine BF16.acos(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.acos().to_bf16()
+        return(%r)
+
+routine BF16.atan(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.atan().to_bf16()
+        return(%r)
+
+routine BF16.sinh(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.sinh().to_bf16()
+        return(%r)
+
+routine BF16.cosh(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.cosh().to_bf16()
+        return(%r)
+
+routine BF16.tanh(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.tanh().to_bf16()
+        return(%r)
+
+routine BF16.asinh(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.asinh().to_bf16()
+        return(%r)
+
+routine BF16.acosh(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.acosh().to_bf16()
+        return(%r)
+
+routine BF16.atanh(%self: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.atanh().to_bf16()
+        return(%r)
+
+; The angle of the point (other, self): self is y and %other is x.
+routine BF16.atan2(%self: Self, %other: Self) -> Self
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: Self = %wide.atan2(%other.to_f32()).to_bf16()
+        return(%r)
+
+routine BF16.to_degrees(%self: Self) -> Self
+    block entry():
+        %r: Self = %self.mul(57.2957795130823208767981548141051703)
+        return(%r)
+
+routine BF16.to_radians(%self: Self) -> Self
+    block entry():
+        %r: Self = %self.mul(0.0174532925199432957692369076848861271)
+        return(%r)
+
+; -- classification ------------------------------------------------------------
+
+routine BF16.is_nan(%self: Self) -> Bool
+    block entry():
+        %r: Bool = funo<Self>(%self, %self)
+        return(%r)
+
+routine BF16.is_infinite(%self: Self) -> Bool
+    block entry():
+        %magnitude: Self = fabs<Self>(%self)
+        %r: Bool = %magnitude.eq(Self.INFINITY)
+        return(%r)
+
+; Neither infinite nor NaN.
+routine BF16.is_finite(%self: Self) -> Bool
+    block entry():
+        %magnitude: Self = fabs<Self>(%self)
+        %r: Bool = %magnitude.lt(Self.INFINITY)
+        return(%r)
+
+; Not zero, subnormal, infinite, or NaN.
+routine BF16.is_normal(%self: Self) -> Bool
+    block entry():
+        %exponent: I16 = %self.to_bits().bitand(0x7F80)
+        %r: Bool = %exponent.ne(0).bitand(%exponent.ne(0x7F80))
+        return(%r)
+
+routine BF16.is_subnormal(%self: Self) -> Bool
+    block entry():
+        %bits: I16 = %self.to_bits()
+        %exponent: I16 = %bits.bitand(0x7F80)
+        %mantissa: I16 = %bits.bitand(0x007F)
+        %r: Bool = %exponent.eq(0).bitand(%mantissa.ne(0))
+        return(%r)
+
+; -- bits ----------------------------------------------------------------------
+
+; The raw IEEE 754 bits.
+routine BF16.to_bits(%self: Self) -> I16
+    block entry():
+        %r: I16 = bitcast<Self, I16>(%self)
+        return(%r)
+
+routine BF16.from_bits(%bits: I16) -> Self
+    block entry():
+        %r: Self = bitcast<I16, Self>(%bits)
+        return(%r)
+
+; -- conversions (float to integer saturates, NaN gives 0) --------------------
+
+routine BF16.to_f16(%self: Self) -> F16
+    block entry():
+        %wide: F32 = %self.to_f32()
+        %r: F16 = %wide.to_f16()
+        return(%r)
+
+routine BF16.to_bf16(%self: Self) -> BF16
+    block entry():
+        return(%self)
+
+routine BF16.to_f32(%self: Self) -> F32
+    block entry():
+        %r: F32 = fpext<Self, F32>(%self)
+        return(%r)
+
+routine BF16.to_i8(%self: Self) -> I8
+    block entry():
+        %r: I8 = fptosi_sat<Self, I8>(%self)
+        return(%r)
+
+routine BF16.to_u8(%self: Self) -> I8
+    block entry():
+        %r: I8 = fptoui_sat<Self, I8>(%self)
+        return(%r)
+
+routine BF16.to_i16(%self: Self) -> I16
+    block entry():
+        %r: I16 = fptosi_sat<Self, I16>(%self)
+        return(%r)
+
+routine BF16.to_u16(%self: Self) -> I16
+    block entry():
+        %r: I16 = fptoui_sat<Self, I16>(%self)
+        return(%r)
+
+routine BF16.to_u32(%self: Self) -> I32
+    block entry():
+        %r: I32 = fptoui_sat<Self, I32>(%self)
+        return(%r)
+
+routine BF16.to_u64(%self: Self) -> I64
+    block entry():
+        %r: I64 = fptoui_sat<Self, I64>(%self)
+        return(%r)
+
+routine BF16.to_i128(%self: Self) -> I128
+    block entry():
+        %r: I128 = fptosi_sat<Self, I128>(%self)
+        return(%r)
+
+routine BF16.to_u128(%self: Self) -> I128
+    block entry():
+        %r: I128 = fptoui_sat<Self, I128>(%self)
+        return(%r)

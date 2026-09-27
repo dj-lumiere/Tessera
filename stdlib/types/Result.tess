@@ -1,0 +1,147 @@
+; Tessera stdlib: Result<T, E>
+;
+; Result<T, E> is either a success value (T) or an error (E) — the standard way
+; to report an expected failure (malformed input, I/O error, allocation
+; failure). Contract violations (bugs) still panic; Result is for failures the
+; caller is expected to handle.
+;
+; Layout — separate fields, not an overlay:
+;   tag   : Bool (true = Ok, false = Err)
+;   value : T    (only meaningful when tag is true)
+;   error : E    (only meaningful when tag is false)
+;
+; Separate fields cost sizeof<T>() + sizeof<E>() instead of the max, but a
+; Result held as a value can be inspected with plain field extraction
+; (%r.tag, %r.value, %r.error) — no stack slot, cast, or load. That matters
+; because every propagation site reads a Result. Error types are usually small
+; enums, so the extra space is negligible. For C unions, use the overlay
+; pattern instead (playground/union_demo.tess).
+;
+; Constructors zero the whole struct first, so the inactive field never holds
+; uninitialized bytes.
+;
+; Void has no values and cannot be T; use Result<Unit, E> for operations that
+; only succeed or fail.
+;
+; Propagation idiom (caller returns Result<U, E>):
+;
+;     %r:    Result<I64, ParseError> = parse_int(%s)
+;     %ok:   Bool                    = %r.tag
+;     %e:    ParseError              = %r.error
+;     %fail: Result<U, ParseError>   = Result<U, ParseError>.err(%e)
+;     branch %ok ? use(%r.value) : return(%fail)
+
+struct Result<T, E>
+conform Equal<Result<T, E>> require T: typename, E: typename, Equal<T>, Equal<E>
+conform Hash<Result<T, E>>  require T: typename, E: typename, Hash<T>, Hash<E>
+require T: typename, E: typename
+    tag:   Bool
+    value: T
+    error: E
+
+; -- construction --------------------------------------------------------------
+
+routine Result<T, E>.ok(%value: T) -> Self
+require T: typename, E: typename
+    block entry():
+        #buf: Ptr<Self> = alloca<Self>
+        zero<Self>(#buf, 1)
+        #buf.tag = true
+        #buf.value = %value
+        %r: Self := #buf
+        return(%r)
+
+routine Result<T, E>.err(%error: E) -> Self
+require T: typename, E: typename
+    block entry():
+        #buf: Ptr<Self> = alloca<Self>
+        zero<Self>(#buf, 1)
+        #buf.error = %error
+        %r: Self := #buf
+        return(%r)
+
+; -- predicates ----------------------------------------------------------------
+
+routine Result<T, E>.is_ok(#self: Ptr<Self>) -> Bool
+require T: typename, E: typename
+    block entry():
+        %tag: Bool := #self.tag
+        return(%tag)
+
+routine Result<T, E>.is_err(#self: Ptr<Self>) -> Bool
+require T: typename, E: typename
+    block entry():
+        %tag: Bool := #self.tag
+        %result: Bool = %tag.eq(false)
+        return(%result)
+
+; -- extraction ----------------------------------------------------------------
+
+; Traps if the Result is Err.
+routine Result<T, E>.unwrap(#self: Ptr<Self>) -> T
+require T: typename, E: typename
+    block entry():
+        %tag: Bool := #self.tag
+        branch %tag ? load() : panic(TrapCode.UnwrapErr)
+
+    block load():
+        %value: T := #self.value
+        return(%value)
+
+; Traps if the Result is Ok.
+routine Result<T, E>.unwrap_err(#self: Ptr<Self>) -> E
+require T: typename, E: typename
+    block entry():
+        %tag: Bool := #self.tag
+        branch %tag ? panic(TrapCode.UnwrapOk) : load()
+
+    block load():
+        %error: E := #self.error
+        return(%error)
+
+; -- equality, hashing ---------------------------------------------------------
+
+; Equal when both are Ok with equal values, or both are Err with equal errors.
+; The inactive field is never compared.
+routine Result<T, E>.eq(%self: Self, %other: Self) -> Bool
+require T: typename, E: typename, Equal<T>, Equal<E>
+    block entry():
+        %ta: Bool = %self.tag
+        %tb: Bool = %other.tag
+        %tags_eq: Bool = %ta.eq(%tb)
+        branch %tags_eq ? compare(%self, %other, %ta) : return(false)
+
+    block compare(%self: Self, %other: Self, %tag: Bool):
+        branch %tag ? compare_values(%self, %other) : compare_errors(%self, %other)
+
+    block compare_values(%self: Self, %other: Self):
+        %va: T = %self.value
+        %vb: T = %other.value
+        %eq: Bool = %va.eq(%vb)
+        return(%eq)
+
+    block compare_errors(%self: Self, %other: Self):
+        %ea: E = %self.error
+        %eb: E = %other.error
+        %eq: Bool = %ea.eq(%eb)
+        return(%eq)
+
+; The tag is mixed in (1 = Ok, 0 = Err) so Ok(x) and Err(x) hash apart even
+; when T and E are the same type.
+routine Result<T, E>.hash(%self: Self) -> I64
+require T: typename, E: typename, Hash<T>, Hash<E>
+    block entry():
+        %tag: Bool = %self.tag
+        branch %tag ? hash_ok(%self) : hash_err(%self)
+
+    block hash_ok(%self: Self):
+        %v: T = %self.value
+        %hv: I64 = T.hash(%v)
+        %h: I64 = xxh64_combine2(1, %hv, 0)
+        return(%h)
+
+    block hash_err(%self: Self):
+        %e: E = %self.error
+        %he: I64 = E.hash(%e)
+        %h: I64 = xxh64_combine2(0, %he, 0)
+        return(%h)

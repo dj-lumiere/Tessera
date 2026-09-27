@@ -1,0 +1,353 @@
+; Tessera doubly-linked list
+;
+; Generic doubly-linked list with O(1) push/pop at both ends.
+; Nodes are heap-allocated via an explicit Allocator.
+;
+; Layout:
+;   ListNode<T>    heap node — value, prev, next
+;   LinkedList<T>  list head — head ptr, tail ptr, length
+;
+; Operations:
+;   push_front / push_back   O(1) insert
+;   pop_front  / pop_back    O(1) remove, returns Option<T>
+;   peek_front / peek_back   O(1) read-only, returns Option<T>
+;   length / is_empty        O(1)
+;   iter                     forward iterator (head → tail)
+;   free                     frees all nodes
+
+; ── Node ──────────────────────────────────────────────────────────────────────
+
+struct ListNode<T>
+require T: typename
+    value: T
+    prev:  Ptr<ListNode<T>>
+    next:  Ptr<ListNode<T>>
+
+; ── List ──────────────────────────────────────────────────────────────────────
+
+struct LinkedList<T>
+require T: typename
+    head:   Ptr<ListNode<T>>
+    tail:   Ptr<ListNode<T>>
+    length: I64
+
+; ── Iterator ──────────────────────────────────────────────────────────────────
+
+struct LinkedListIter<T>
+require T: typename
+    current: Ptr<ListNode<T>>
+
+; ── Construction ──────────────────────────────────────────────────────────────
+
+routine LinkedList<T>.new() -> Self
+    block entry():
+        %list: Self = Self { head: null, tail: null, length: 0 }
+        return(%list)
+
+; ── Queries ───────────────────────────────────────────────────────────────────
+
+routine LinkedList<T>.length(#self: Ptr<Self>) -> I64
+    block entry():
+        %len: I64 := #self.length
+        return(%len)
+
+routine LinkedList<T>.is_empty(#self: Ptr<Self>) -> Bool
+    block entry():
+        %len: I64 := #self.length
+        %empty: Bool = %len.eq(0)
+        return(%empty)
+
+routine LinkedList<T>.peek_front(#self: Ptr<Self>) -> Option<T>
+    block entry():
+        #head: Ptr<ListNode<T>> := #self.head
+        %empty: Bool = #head.is_null()
+        branch %empty ? return_none() : return_val(#head)
+
+    block return_none():
+        %none: Option<T> = Option<T>.none()
+        return(%none)
+
+    block return_val(#head: Ptr<ListNode<T>>):
+        %val: T := #head.value
+        %some: Option<T> = Option<T>.some(%val)
+        return(%some)
+
+routine LinkedList<T>.peek_back(#self: Ptr<Self>) -> Option<T>
+    block entry():
+        #tail: Ptr<ListNode<T>> := #self.tail
+        %empty: Bool = #tail.is_null()
+        branch %empty ? return_none() : return_val(#tail)
+
+    block return_none():
+        %none: Option<T> = Option<T>.none()
+        return(%none)
+
+    block return_val(#tail: Ptr<ListNode<T>>):
+        %val: T := #tail.value
+        %some: Option<T> = Option<T>.some(%val)
+        return(%some)
+
+; ── Insert ────────────────────────────────────────────────────────────────────
+
+routine LinkedList<T>.push_front(#self: Ptr<Self>, %val: T, #alloc: Ptr<Allocator>) -> Void
+    block entry():
+        #node: Ptr<ListNode<T>> = alloc<ListNode<T>>(#alloc, 1)
+        %alloc_failed: Bool = #node.is_null()
+        branch %alloc_failed ? panic(TrapCode.AllocFailed) : init(#node, %val)
+
+    block init(#node: Ptr<ListNode<T>>, %val: T):
+        #node.value = %val
+        #node.prev = null
+        #head: Ptr<ListNode<T>> := #self.head
+        #node.next = #head
+        %was_empty: Bool = #head.is_null()
+        branch %was_empty ? set_tail(#node) : link_old_head(#node, #head)
+
+    block set_tail(#node: Ptr<ListNode<T>>):
+        #self.tail = #node
+        jump finish(#node)
+
+    block link_old_head(#node: Ptr<ListNode<T>>, #head: Ptr<ListNode<T>>):
+        #head.prev = #node
+        jump finish(#node)
+
+    block finish(#node: Ptr<ListNode<T>>):
+        #self.head = #node
+        %len: I64 := #self.length
+        %next_len: I64 = %len.add(1)
+        #self.length = %next_len
+        return()
+
+routine LinkedList<T>.push_back(#self: Ptr<Self>, %val: T, #alloc: Ptr<Allocator>) -> Void
+    block entry():
+        #node: Ptr<ListNode<T>> = alloc<ListNode<T>>(#alloc, 1)
+        %alloc_failed: Bool = #node.is_null()
+        branch %alloc_failed ? panic(TrapCode.AllocFailed) : init(#node, %val)
+
+    block init(#node: Ptr<ListNode<T>>, %val: T):
+        #node.value = %val
+        #node.next = null
+        #tail: Ptr<ListNode<T>> := #self.tail
+        #node.prev = #tail
+        %was_empty: Bool = #tail.is_null()
+        branch %was_empty ? set_head(#node) : link_old_tail(#node, #tail)
+
+    block set_head(#node: Ptr<ListNode<T>>):
+        #self.head = #node
+        jump finish(#node)
+
+    block link_old_tail(#node: Ptr<ListNode<T>>, #tail: Ptr<ListNode<T>>):
+        #tail.next = #node
+        jump finish(#node)
+
+    block finish(#node: Ptr<ListNode<T>>):
+        #self.tail = #node
+        %len: I64 := #self.length
+        %next_len: I64 = %len.add(1)
+        #self.length = %next_len
+        return()
+
+; ── Remove ────────────────────────────────────────────────────────────────────
+
+routine LinkedList<T>.pop_front(#self: Ptr<Self>, #alloc: Ptr<Allocator>) -> Option<T>
+    block entry():
+        #head: Ptr<ListNode<T>> := #self.head
+        %empty: Bool = #head.is_null()
+        branch %empty ? return_none() : extract(#head)
+
+    block return_none():
+        %none: Option<T> = Option<T>.none()
+        return(%none)
+
+    block extract(#head: Ptr<ListNode<T>>):
+        %val: T := #head.value
+        #next: Ptr<ListNode<T>> := #head.next
+        #self.head = #next
+        %new_empty: Bool = #next.is_null()
+        branch %new_empty ? clear_tail(#head, %val) : unlink_next(#next, #head, %val)
+
+    block clear_tail(#head: Ptr<ListNode<T>>, %val: T):
+        #self.tail = null
+        jump finish(#head, %val)
+
+    block unlink_next(#next: Ptr<ListNode<T>>, #head: Ptr<ListNode<T>>, %val: T):
+        #next.prev = null
+        jump finish(#head, %val)
+
+    block finish(#head: Ptr<ListNode<T>>, %val: T):
+        %len: I64 := #self.length
+        %next_len: I64 = %len.sub(1)
+        #self.length = %next_len
+        free<ListNode<T>>(#alloc, #head)
+        %some: Option<T> = Option<T>.some(%val)
+        return(%some)
+
+routine LinkedList<T>.pop_back(#self: Ptr<Self>, #alloc: Ptr<Allocator>) -> Option<T>
+    block entry():
+        #tail: Ptr<ListNode<T>> := #self.tail
+        %empty: Bool = #tail.is_null()
+        branch %empty ? return_none() : extract(#tail)
+
+    block return_none():
+        %none: Option<T> = Option<T>.none()
+        return(%none)
+
+    block extract(#tail: Ptr<ListNode<T>>):
+        %val: T := #tail.value
+        #prev: Ptr<ListNode<T>> := #tail.prev
+        #self.tail = #prev
+        %new_empty: Bool = #prev.is_null()
+        branch %new_empty ? clear_head(#tail, %val) : unlink_prev(#prev, #tail, %val)
+
+    block clear_head(#tail: Ptr<ListNode<T>>, %val: T):
+        #self.head = null
+        jump finish(#tail, %val)
+
+    block unlink_prev(#prev: Ptr<ListNode<T>>, #tail: Ptr<ListNode<T>>, %val: T):
+        #prev.next = null
+        jump finish(#tail, %val)
+
+    block finish(#tail: Ptr<ListNode<T>>, %val: T):
+        %len: I64 := #self.length
+        %next_len: I64 = %len.sub(1)
+        #self.length = %next_len
+        free<ListNode<T>>(#alloc, #tail)
+        %some: Option<T> = Option<T>.some(%val)
+        return(%some)
+
+; ── Iterator ──────────────────────────────────────────────────────────────────
+
+routine LinkedList<T>.iter(#self: Ptr<Self>) -> LinkedListIter<T>
+    block entry():
+        #head: Ptr<ListNode<T>> := #self.head
+        %iter: LinkedListIter<T> = LinkedListIter<T> { current: #head }
+        return(%iter)
+
+; satisfies Iterator<T, LinkedListIter<T>>
+routine LinkedListIter<T>.next(#self: Ptr<Self>) -> Option<T>
+    block entry():
+        #cur: Ptr<ListNode<T>> := #self.current
+        %done: Bool = #cur.is_null()
+        branch %done ? return_none() : return_val(#cur)
+
+    block return_none():
+        %none: Option<T> = Option<T>.none()
+        return(%none)
+
+    block return_val(#cur: Ptr<ListNode<T>>):
+        %val: T := #cur.value
+        #next: Ptr<ListNode<T>> := #cur.next
+        #self.current = #next
+        %some: Option<T> = Option<T>.some(%val)
+        return(%some)
+
+; ── Free ──────────────────────────────────────────────────────────────────────
+
+routine LinkedList<T>.free(#self: Ptr<Self>, #alloc: Ptr<Allocator>) -> Void
+    block entry():
+        #cur: Ptr<ListNode<T>> := #self.head
+        jump loop(#cur)
+
+    block loop(#cur: Ptr<ListNode<T>>):
+        %done: Bool = #cur.is_null()
+        branch %done ? reset() : free_node(#cur)
+
+    block free_node(#cur: Ptr<ListNode<T>>):
+        #next: Ptr<ListNode<T>> := #cur.next
+        free<ListNode<T>>(#alloc, #cur)
+        jump loop(#next)
+
+    block reset():
+        #self.head = null
+        #self.tail = null
+        #self.length = 0
+        return()
+
+; ── Demo ──────────────────────────────────────────────────────────────────────
+
+routine print_list(#out: Ptr<BufWriter<FdWriter>>, #list: Ptr<LinkedList<I64>>) -> Void
+    block entry():
+        write_str(#out, "list [")
+        %iter_val: LinkedListIter<I64> = #list.iter()
+        #iter: Ptr<LinkedListIter<I64>> = alloca<LinkedListIter<I64>>([%iter_val])
+        jump next(#iter, true)
+
+    block next(#iter: Ptr<LinkedListIter<I64>>, %first: Bool):
+        %item: Option<I64> = #iter.next()
+        %more: Bool = %item.tag
+        %value: I64 = %item.value
+        branch %more ? item(#iter, %first, %value) : finish()
+
+    block item(#iter: Ptr<LinkedListIter<I64>>, %first: Bool, %value: I64):
+        branch %first ? write(#iter, %value) : separate(#iter, %value)
+
+    block separate(#iter: Ptr<LinkedListIter<I64>>, %value: I64):
+        write_str(#out, ", ")
+        jump write(#iter, %value)
+
+    block write(#iter: Ptr<LinkedListIter<I64>>, %value: I64):
+        %value.format(#out)
+        jump next(#iter, false)
+
+    block finish():
+        write_str(#out, "] length ")
+        #list.length().format(#out)
+        write_line(#out)
+        return()
+
+; Prints "<label> <value>" for a some, "<label> none" for a none.
+routine print_option(#out: Ptr<BufWriter<FdWriter>>, %label: String, %item: Option<I64>) -> Void
+    block entry():
+        write_str(#out, %label)
+        write_str(#out, " ")
+        %some: Bool = %item.tag
+        %value: I64 = %item.value
+        branch %some ? some(%value) : none()
+
+    block some(%value: I64):
+        %value.format(#out)
+        write_line(#out)
+        return()
+
+    block none():
+        write_str(#out, "none")
+        write_line(#out)
+        return()
+
+routine main() -> I32
+    block entry():
+        %fd_val: FdWriter      = FdWriter.stdout()
+        #fd:     Ptr<FdWriter> = alloca<FdWriter>([%fd_val])
+        #out: Ptr<BufWriter<FdWriter>> = alloca<BufWriter<FdWriter>>
+        #out.init(#fd)
+        %heap:  Allocator      = make_heap_allocator()
+        #alloc: Ptr<Allocator> = alloca<Allocator>([%heap])
+        %list_val: LinkedList<I64> = LinkedList<I64>.new()
+        #list: Ptr<LinkedList<I64>> = alloca<LinkedList<I64>>([%list_val])
+
+        print_list(#out, #list)
+        print_option(#out, "peek_front", #list.peek_front())
+        #list.push_back(1, #alloc)
+        #list.push_back(2, #alloc)
+        #list.push_back(3, #alloc)
+        #list.push_front(0, #alloc)
+        #list.push_front(-1, #alloc)
+        print_list(#out, #list)
+        print_option(#out, "peek_front", #list.peek_front())
+        print_option(#out, "peek_back", #list.peek_back())
+        print_option(#out, "pop_front", #list.pop_front(#alloc))
+        print_option(#out, "pop_back", #list.pop_back(#alloc))
+        print_list(#out, #list)
+        print_option(#out, "pop_back", #list.pop_back(#alloc))
+        print_option(#out, "pop_back", #list.pop_back(#alloc))
+        print_option(#out, "pop_back", #list.pop_back(#alloc))
+        print_option(#out, "pop_back", #list.pop_back(#alloc))
+        print_list(#out, #list)
+        #list.push_front(7, #alloc)
+        print_option(#out, "peek_back", #list.peek_back())
+        #list.push_back(8, #alloc)
+        print_list(#out, #list)
+        #list.free(#alloc)
+        print_list(#out, #list)
+        #out.flush()
+        return(0)
