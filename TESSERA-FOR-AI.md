@@ -15,7 +15,7 @@ dotnet run --project Tessera -- test tests playground examples Mini/generated  #
 ```
 
 A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines (the stdlib declares
-`Standard::Core`, `Standard::Core`, `Standard::Format`, `Standard::Alloc`, `Standard::Collections`, `Standard::Os`), but name lookup is still
+`Standard::Core`, `Standard::Format`, `Standard::Alloc`, `Standard::Collections`, `Standard::Os`), but name lookup is still
 global: every file in `stdlib/` is in scope without an import.
 
 ## Skeleton
