@@ -31,6 +31,7 @@ public sealed partial class Compiler
     private readonly Queue<Instance> _pending = new();
     private readonly Dictionary<string, List<(string Name, DType Type)>> _fieldCache = [];
     private readonly Dictionary<string, string> _strings = [];
+    private readonly Dictionary<string, string> _wideStrings = [];
 
         public Compiler(BuildTarget target, IEnumerable<Decl> decls)
     {
@@ -592,4 +593,21 @@ public sealed partial class Compiler
     }
 
     public static int Utf8Length(string value) => Encoding.UTF8.GetByteCount(value);
+
+    /// A wide string literal ending in a 0 unit, for a CWStr: UTF-16 units where `wchar_t` is 16 bits (Windows),
+    /// UTF-32 code points elsewhere.
+    public string WideStringGlobal(string value)
+    {
+        if (_wideStrings.TryGetValue(value, out var name)) return name;
+        name = $"@.wstr.{_wideStrings.Count}";
+        _wideStrings[value] = name;
+        bool utf16 = Target.Os == "windows";
+        var units = utf16
+            ? value.Select(c => (long)c).ToList()
+            : value.EnumerateRunes().Select(r => (long)r.Value).ToList();
+        units.Add(0);
+        string t = utf16 ? "i16" : "i32";
+        _globals.AppendLine($"{name} = private unnamed_addr constant [{units.Count} x {t}] [{string.Join(", ", units.Select(u => $"{t} {u}"))}]");
+        return name;
+    }
 }

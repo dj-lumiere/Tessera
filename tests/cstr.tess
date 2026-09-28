@@ -1,0 +1,47 @@
+// CStr and CWStr are pointers to terminated C text. A literal becomes one where one is expected; String.to_cstr /
+// to_cwstr copy through an allocator; List<Byte>.to_cstr ends the buffer with a NUL. C's own strlen / wcslen agree.
+@[external("c"), symbol("strlen")]
+routine c_strlen(%s: CStr) -> CSize
+
+@[external("c"), symbol("wcslen")]
+routine c_wcslen(%s: CWStr) -> CSize
+
+routine main() -> S32
+    block entry():
+        %heap:  Allocator      = make_heap_allocator()
+        #alloc: Ptr<Allocator> = claim
+        #alloc.store(%heap)
+
+        // literals
+        %hello: CStr = "hello"
+        print("{%hello.length()} {csize_to_u64(c_strlen(%hello))} {%hello.to_string()}\n")
+        %wide: CWStr = "héllo"
+        print("{%wide.length()} {csize_to_u64(c_wcslen(%wide))}\n")
+
+        // a String view copied into a C string
+        %text: String = "Tessera language"
+        #view: Ptr<String> = claim
+        #view.store(%text)
+        %word: String = #view.slice(0, 7)
+        %word_c: CStr = %word.to_cstr(#alloc)
+        print("{%word_c.to_string()} {csize_to_u64(c_strlen(%word_c))}\n")
+        %word_c.to_ptr().free(#alloc)
+
+        // a non-BMP character: 2 UTF-16 units on Windows, 1 UTF-32 unit elsewhere
+        %emoji: String = "a😀b"
+        %emoji_w: CWStr = %emoji.to_cwstr(#alloc)
+        %units: U64 = csize_to_u64(c_wcslen(%emoji_w))
+        %expected: Bool = %units.between(3, 4)
+        print("{%expected} {%emoji_w.length().eq(%units)}\n")
+        %emoji_w.to_ptr().free(#alloc)
+
+        // a List<Byte> built with write, handed to C
+        %buf_val: List<Byte> = .construct(#alloc)
+        #buf: Ptr<List<Byte>> = claim
+        #buf.store(%buf_val)
+        %n: S64 = 42
+        write(#buf, "answer = {%n}")
+        %answer: CStr = #buf.to_cstr()
+        print("{%answer.to_string()} {csize_to_u64(c_strlen(%answer))} {#buf.length()}\n")
+        #buf.destruct()
+        return(0)

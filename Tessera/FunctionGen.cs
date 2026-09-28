@@ -523,11 +523,22 @@ public sealed class FunctionGen
 
     private Val StringLiteral(StrLit s, DType expected)
     {
-        // Open question #5: a string literal is a NUL-terminated Ptr<Byte> where a pointer is expected, and a
-        // String value (data + length) where a String is expected.
+        // A string literal is a String (data + length) where a String is expected, a CStr or CWStr (a pointer to
+        // NUL-terminated text) where one of those is expected, and a NUL-terminated Ptr<Byte> where a pointer is.
         string g = _c.StringGlobal(s.Value);
         if (expected is PtrType { Pointee: null or IntType { Bits: 8, Kind: IntKind.Bits } })
             return new Val(g, expected);
+        // CStr and CWStr are one-field records over a pointer, so the value is the pointer itself.
+        if (expected is RecordType { Name: "CStr" } cs)
+        {
+            _c.EnsureTypeDefined(cs);
+            return new Val(g, cs);
+        }
+        if (expected is RecordType { Name: "CWStr" } cw)
+        {
+            _c.EnsureTypeDefined(cw);
+            return new Val(_c.WideStringGlobal(s.Value), cw);
+        }
         if (expected is RecordType { Name: "String" } st)
         {
             _c.EnsureTypeDefined(st);

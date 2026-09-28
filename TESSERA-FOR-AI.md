@@ -140,8 +140,9 @@ routine main() -> S32
   declared routines' signatures. Conditional conformance: `conform Equal<Box<T>> when T: typename, Equal<T>`. A
   record's own `require` applies to every use, so put element constraints on the routines that need them.
 - A bare literal doesn't bind a type parameter (open question #34): bind it first (`%n: S64 = 42`), then pass `%n`.
-- String literals are `String` where a `String` is expected and a NUL-terminated `Ptr<Byte>` where a pointer is
-  expected.
+- String literals are `String` where a `String` is expected, `CStr` / `CWStr` (terminated C text) where one of those
+  is, and a NUL-terminated `Ptr<Byte>` where a pointer is. Declare C string parameters as `%s: CStr`. A `String`
+  view has no terminator: pass `%s.to_cstr(#alloc)` (a copy) or `#buf.to_cstr()` on a `List<Byte>`.
 
 **Errors**
 
