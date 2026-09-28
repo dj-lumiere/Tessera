@@ -15,7 +15,7 @@ public sealed partial class Compiler
     private readonly Dictionary<string, List<RoutineDecl>> _free = [];
     private readonly Dictionary<(string Owner, string Name), List<RoutineDecl>> _methods = [];
     private readonly Dictionary<string, List<RoutineDecl>> _blanket = []; // owner is a type parameter: `T.bitcast<U>`
-    private readonly Dictionary<(string Owner, string Name), List<ConstDecl>> _consts = [];
+    private readonly Dictionary<(string Owner, string Name), List<PresetDecl>> _presets = [];
     private readonly HashSet<string> _concepts = [];
     private readonly List<RoutineDecl> _userRoutines = [];
     private readonly List<RoutineDecl> _allRoutines = [];
@@ -41,7 +41,7 @@ public sealed partial class Compiler
             {
                 case RecordDecl s: Add(_records, s.Name, s); break;
                 case ChoiceDecl e: Add(_choices, e.Name, e); break;
-                case ConstDecl c: Add(_consts, (c.Owner?.Name ?? "", c.Name), c); break;
+                case PresetDecl c: Add(_presets, (c.Owner?.Name ?? "", c.Name), c); break;
                 case ConceptDecl c: _concepts.Add(c.Name); break;
                 case RoutineDecl r:
                     if (r.Owner is null) Add(_free, r.Name, r);
@@ -54,7 +54,7 @@ public sealed partial class Compiler
         }
         RejectDuplicates(_records.Values, d => $"record '{d.Name}'");
         RejectDuplicates(_choices.Values, d => $"choice '{d.Name}'");
-        RejectDuplicates(_consts.Values, d => $"const '{(d.Owner is null ? d.Name : $"{d.Owner.Name}.{d.Name}")}'");
+        RejectDuplicates(_presets.Values, d => $"preset '{(d.Owner is null ? d.Name : $"{d.Owner.Name}.{d.Name}")}'");
         RejectDuplicates(_free.Values, d => $"routine '{d.Name}'");
         RejectDuplicates(_methods.Values, d => $"routine '{d.DisplayName}'");
         RejectDuplicates(_blanket.Values, d => $"routine '{d.DisplayName}'");
@@ -224,8 +224,8 @@ public sealed partial class Compiler
         Pick(_methods.GetValueOrDefault((owner, name)), file, pos, $"routine '{owner}.{name}'")
         ?? Pick(_blanket.GetValueOrDefault(name), file, pos, $"routine 'T.{name}'");
 
-    public ConstDecl? FindConst(string owner, string name, string file, Pos pos) =>
-        Pick(_consts.GetValueOrDefault((owner, name)), file, pos, $"const '{(owner == "" ? name : owner + "." + name)}'");
+    public PresetDecl? FindPreset(string owner, string name, string file, Pos pos) =>
+        Pick(_presets.GetValueOrDefault((owner, name)), file, pos, $"preset '{(owner == "" ? name : owner + "." + name)}'");
 
     /// The names that are type parameters of the routine's owner: `T` in `Option<T>.some`, `T` and `N` in
     /// `Array<T, N>.get`, `T` in `T.bitcast<U>`.
@@ -338,7 +338,7 @@ public sealed partial class Compiler
             return new ChoiceType(e, it);
         }
 
-        if (t.Args.Count == 0 && FindConst("", t.Name, env.File, t.Pos) is { } c)
+        if (t.Args.Count == 0 && FindPreset("", t.Name, env.File, t.Pos) is { } c)
             return new ConstArg(ConstInt(new TypeArgType(t), env, t.Pos));
 
         throw new CompileError(t.Pos, $"unknown type '{t.Name}'");
@@ -367,26 +367,26 @@ public sealed partial class Compiler
             case TypeArgExpr x: return EvalConstInt(x.Expr, env, 0);
             case TypeArgType { Type: { Args.Count: 0 } tr }:
                 if (env.Get(tr.Name) is ConstArg ca) return ca.Value;
-                if (FindConst("", tr.Name, env.File, pos) is { } c) return EvalConstInt(c.Value, env.Clone(c.File), 0);
+                if (FindPreset("", tr.Name, env.File, pos) is { } c) return EvalConstInt(c.Value, env.Clone(c.File), 0);
                 throw new CompileError(pos, $"'{tr.Name}' is not an integer constant");
             default:
                 throw new CompileError(pos, "expected an integer constant");
         }
     }
 
-    /// Compile-time integer evaluation for const-sized types: literals, consts, add / sub / mul chains, max / min,
+    /// Compile-time integer evaluation for preset-sized types: literals, presets, add / sub / mul chains, max / min,
     /// and sizeof / alignof.
     private long EvalConstInt(Expr e, TypeEnv env, int depth)
     {
-        if (depth > 32) throw new CompileError(e.Pos, "const definitions are circular");
+        if (depth > 32) throw new CompileError(e.Pos, "preset definitions are circular");
         switch (e)
         {
             case IntLit i when i.Value >= long.MinValue && i.Value <= long.MaxValue: return (long)i.Value;
-            case ConstRef { Owner: null } r when env.Get(r.Name) is ConstArg ca: return ca.Value;
-            case ConstRef r:
+            case PresetRef { Owner: null } r when env.Get(r.Name) is ConstArg ca: return ca.Value;
+            case PresetRef r:
             {
-                var c = FindConst(r.Owner?.Name ?? "", r.Name, env.File, r.Pos)
-                        ?? throw new CompileError(r.Pos, $"unknown const '{r.Name}'");
+                var c = FindPreset(r.Owner?.Name ?? "", r.Name, env.File, r.Pos)
+                        ?? throw new CompileError(r.Pos, $"unknown preset '{r.Name}'");
                 return EvalConstInt(c.Value, env.Clone(c.File), depth + 1);
             }
             case MethodCallExpr { Args.Count: 1 } m when m.Name is "add" or "sub" or "mul":
@@ -395,7 +395,7 @@ public sealed partial class Compiler
                 return m.Name switch { "add" => a + b, "sub" => a - b, _ => a * b };
             }
             case NsCallExpr { Owner.Args.Count: 0, Args.Count: 1 } n when n.Name is "add" or "sub" or "mul":
-                return EvalConstInt(new MethodCallExpr(new ConstRef(null, n.Owner.Name, n.Pos), n.Name, [], n.Args, n.Pos), env, depth);
+                return EvalConstInt(new MethodCallExpr(new PresetRef(null, n.Owner.Name, n.Pos), n.Name, [], n.Args, n.Pos), env, depth);
             case CallExpr { Name: "max" or "min", Args.Count: > 0 } c:
             {
                 var values = c.Args.Select(a => EvalConstInt(a, env, depth + 1)).ToList();
@@ -408,7 +408,7 @@ public sealed partial class Compiler
             }
             default:
                 throw new CompileError(e.Pos,
-                    "this is not a compile-time integer (use literals, consts, add/sub/mul, max/min, sizeof/alignof)");
+                    "this is not a compile-time integer (use literals, presets, add/sub/mul, max/min, sizeof/alignof)");
         }
     }
 
@@ -511,23 +511,23 @@ public sealed partial class Compiler
 
     // ── Const arrays ────────────────────────────────────────────────────────
 
-    private readonly Dictionary<string, string> _constArrays = [];
+    private readonly Dictionary<string, string> _presetArrays = [];
 
     /// A const of Array type is read-only static data: a private constant global, emitted once on first use.
-    public string ConstArrayGlobal(ConstDecl c, ArrayType t, TypeEnv env)
+    public string PresetArrayGlobal(PresetDecl c, ArrayType t, TypeEnv env)
     {
         string key = (c.Owner is null ? "" : env.Get("Self")?.Name + ".") + c.Name;
-        if (_constArrays.TryGetValue(key, out var name)) return name;
+        if (_presetArrays.TryGetValue(key, out var name)) return name;
         EnsureTypeDefined(t);
-        name = $"@\"const.{key}\"";
-        _constArrays[key] = name;
-        _globals.AppendLine($"{name} = private unnamed_addr constant {t.Llvm} {ConstInitializer(c.Value, t, env)}");
+        name = $"@\"preset.{key}\"";
+        _presetArrays[key] = name;
+        _globals.AppendLine($"{name} = private unnamed_addr constant {t.Llvm} {PresetInitializer(c.Value, t, env)}");
         return name;
     }
 
     /// The LLVM constant for a const array element: integer, float, and Bool literals (or integer consts), and
     /// nested array literals.
-    private string ConstInitializer(Expr e, DType t, TypeEnv env)
+    private string PresetInitializer(Expr e, DType t, TypeEnv env)
     {
         switch (t)
         {
@@ -536,7 +536,7 @@ public sealed partial class Compiler
                 if (e is not ArrayLit lit) throw new CompileError(e.Pos, $"expected an array literal for {a}");
                 if (lit.Elements.Count != a.Count)
                     throw new CompileError(lit.Pos, $"{a} needs {a.Count} element(s), got {lit.Elements.Count}");
-                return "[" + string.Join(", ", lit.Elements.Select(x => $"{a.Elem.Llvm} {ConstInitializer(x, a.Elem, env)}")) + "]";
+                return "[" + string.Join(", ", lit.Elements.Select(x => $"{a.Elem.Llvm} {PresetInitializer(x, a.Elem, env)}")) + "]";
             }
             case IntType it when e is TypedIntLit tl:
                 if (!tl.Type.Equals(it)) throw new CompileError(e.Pos, $"expected {it}, found a {tl.Type} literal");
@@ -555,7 +555,7 @@ public sealed partial class Compiler
                     throw new CompileError(raw.Pos, bitsError);
                 return ft.FromBits(raw.Value);
             default:
-                throw new CompileError(e.Pos, $"a const array element must be a literal of {t}");
+                throw new CompileError(e.Pos, $"a preset array element must be a literal of {t}");
         }
     }
 

@@ -230,8 +230,8 @@ public sealed class FunctionGen
             }
             case StoreStmt st:
             {
-                if (ConstArrayRoot(st.Place) is { } root)
-                    throw Err(st.Pos, $"'{root.Name}' is a const array; it's read-only");
+                if (PresetArrayRoot(st.Place) is { } root)
+                    throw Err(st.Pos, $"'{root.Name}' is a preset array; it's read-only");
                 var hint = PlacePointee(st.Place);
                 DType valueType = hint ?? Infer(st.Value)
                     ?? throw Err(st.Pos, "cannot infer the type stored through an opaque Ptr; bind the value with a type first");
@@ -264,12 +264,12 @@ public sealed class FunctionGen
 
     // ── Places ──────────────────────────────────────────────────────────────
 
-    /// The const array a place chain starts from (`K`, `K[i]`, `K[i].f`), if any.
-    private ConstRef? ConstArrayRoot(Expr place) => place switch
+    /// The preset array a place chain starts from (`K`, `K[i]`, `K[i].f`), if any.
+    private PresetRef? PresetArrayRoot(Expr place) => place switch
     {
-        FieldExpr f => ConstArrayRoot(f.Base),
-        IndexExpr ix => ConstArrayRoot(ix.Base),
-        ConstRef r when ResolveConst(r) is { Type: PtrType { Pointee: ArrayType } } => r,
+        FieldExpr f => PresetArrayRoot(f.Base),
+        IndexExpr ix => PresetArrayRoot(ix.Base),
+        PresetRef r when ResolvePreset(r) is { Type: PtrType { Pointee: ArrayType } } => r,
         _ => null,
     };
 
@@ -429,8 +429,8 @@ public sealed class FunctionGen
                 return PlaceType(e) is { } pt ? new PtrType(pt) : null;
             case FieldExpr f:
                 return Infer(f.Base) is RecordType s ? FieldOf(s, f.Name, f.Pos).Type : null;
-            case ConstRef r:
-                return InferConstRef(r);
+            case PresetRef r:
+                return InferPresetRef(r);
             case CallExpr or NsCallExpr or MethodCallExpr:
                 return InferCall(e, null);
             default:
@@ -438,9 +438,9 @@ public sealed class FunctionGen
         }
     }
 
-    private DType? InferConstRef(ConstRef r)
+    private DType? InferPresetRef(PresetRef r)
     {
-        if (ResolveConst(r) is { } c) return c.Type;
+        if (ResolvePreset(r) is { } c) return c.Type;
         return null; // a routine used as a Callable value takes its type from context
     }
 
@@ -492,7 +492,7 @@ public sealed class FunctionGen
             SelectExpr s => EvalSelect(s, expected),
             RecordLit s => EvalRecordLit(s),
             ArrayLit a => throw Err(a.Pos, "array literals are only allowed as alloca initializers"),
-            ConstRef r => EvalConstRef(r, expected),
+            PresetRef r => EvalPresetRef(r, expected),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),
             _ => throw new InvalidOperationException(e.GetType().Name),
         };
@@ -638,17 +638,17 @@ public sealed class FunctionGen
 
     // ── Consts, choice members, routine values ────────────────────────────────
 
-    private sealed record ConstInfo(DType Type, Func<DType, Val> Emit);
+    private sealed record PresetInfo(DType Type, Func<DType, Val> Emit);
 
-    private ConstInfo? ResolveConst(ConstRef r)
+    private PresetInfo? ResolvePreset(PresetRef r)
     {
         string file = _env.File;
         if (r.Owner is null)
         {
             if (_env.Get(r.Name) is ConstArg ca)
-                return new ConstInfo(IntType.U(64), exp => IntConst(ca.Value, r.Pos, exp));
-            var c = _c.FindConst("", r.Name, file, r.Pos);
-            return c is null ? null : ConstValue(c, null);
+                return new PresetInfo(IntType.U(64), exp => IntConst(ca.Value, r.Pos, exp));
+            var c = _c.FindPreset("", r.Name, file, r.Pos);
+            return c is null ? null : PresetValue(c, null);
         }
 
         var ownerType = TryResolveOwner(r.Owner);
@@ -657,28 +657,28 @@ public sealed class FunctionGen
             var member = et.Decl.Members.FirstOrDefault(m => m.Name == r.Name);
             if (member.Name is null) throw Err(r.Pos, $"choice '{et.Name}' has no member '{r.Name}'");
             if (member.Value is not IntLit lit) throw Err(r.Pos, "choice member values must be integer literals");
-            return new ConstInfo(et, _ => IntConst(lit.Value, r.Pos, et));
+            return new PresetInfo(et, _ => IntConst(lit.Value, r.Pos, et));
         }
         string ownerName = ownerType?.OwnerName ?? r.Owner.Name;
-        var oc = _c.FindConst(ownerName, r.Name, file, r.Pos)
-                 ?? throw Err(r.Pos, $"unknown const '{r.Owner}.{r.Name}'");
-        return ConstValue(oc, ownerType);
+        var oc = _c.FindPreset(ownerName, r.Name, file, r.Pos)
+                 ?? throw Err(r.Pos, $"unknown preset '{r.Owner}.{r.Name}'");
+        return PresetValue(oc, ownerType);
     }
 
-    private ConstInfo ConstValue(ConstDecl c, DType? self)
+    private PresetInfo PresetValue(PresetDecl c, DType? self)
     {
         var env = new Compiler.TypeEnv(c.File);
         if (self is not null) env.Bind("Self", self);
         var t = _c.ResolveType(c.Type, env);
-        // A const array is read-only static data; its name is the address.
+        // A preset array is read-only static data; its name is the address.
         if (t is ArrayType at)
         {
             var ptr = new PtrType(at);
-            return new ConstInfo(ptr, _ => new Val(_c.ConstArrayGlobal(c, at, env), ptr));
+            return new PresetInfo(ptr, _ => new Val(_c.PresetArrayGlobal(c, at, env), ptr));
         }
-        return new ConstInfo(t, _ =>
+        return new PresetInfo(t, _ =>
         {
-            // `F64.from_bits(0x...)` in a const is folded to the float with those bits.
+            // `F64.from_bits(0x...)` in a preset is folded to the float with those bits.
             if (t is FloatType ft2 && c.Value is NsCallExpr { Name: "from_bits", Args: [IntLit raw] } fb
                 && fb.Owner.Name == ft2.Name)
             {
@@ -693,9 +693,9 @@ public sealed class FunctionGen
         });
     }
 
-    private Val EvalConstRef(ConstRef r, DType expected)
+    private Val EvalPresetRef(PresetRef r, DType expected)
     {
-        if (ResolveConst(r) is { } c) return c.Emit(expected);
+        if (ResolvePreset(r) is { } c) return c.Emit(expected);
 
         // A routine named as a value is a function pointer.
         if (r.Owner is null && _c.FindFree(r.Name, _env.File, r.Pos) is { } routine)
@@ -712,7 +712,7 @@ public sealed class FunctionGen
         throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
     }
 
-    /// Resolves a type written as a namespace, or null if it doesn't name a type (it may be a const).
+    /// Resolves a type written as a namespace, or null if it doesn't name a type (it may be a preset).
     private DType? TryResolveOwner(TypeRef owner)
     {
         try { return Resolve(owner, allowVoid: true); }
@@ -766,8 +766,8 @@ public sealed class FunctionGen
                 var owner = TryResolveOwner(n.Owner);
                 if (owner is null)
                 {
-                    // `NAME.add(1)`: a method call on a const.
-                    var asMethod = new MethodCallExpr(new ConstRef(null, n.Owner.Name, n.Owner.Pos), n.Name, n.TypeArgs, n.Args, n.Pos);
+                    // `NAME.add(1)`: a method call on a preset.
+                    var asMethod = new MethodCallExpr(new PresetRef(null, n.Owner.Name, n.Owner.Pos), n.Name, n.TypeArgs, n.Args, n.Pos);
                     return PlanCall(asMethod, expected);
                 }
                 var r = _c.FindMethod(owner.OwnerName, n.Name, _env.File, n.Pos)
@@ -1133,8 +1133,8 @@ public sealed class FunctionGen
                         defaultLabel = label;
                         continue;
                     }
-                    if (caseExpr is not (IntLit or TypedIntLit or ConstRef))
-                        throw Err(caseExpr.Pos, "switch cases must be integer literals, consts, or choice members");
+                    if (caseExpr is not (IntLit or TypedIntLit or PresetRef))
+                        throw Err(caseExpr.Pos, "switch cases must be integer literals, presets, or choice members");
                     var cv = Eval(caseExpr, v.Type);
                     if (!long.TryParse(cv.Op, out _)) throw Err(caseExpr.Pos, "switch cases must be constant integers");
                     if (!seen.Add(cv.Op)) throw Err(caseExpr.Pos, $"duplicate switch case {cv.Op}");

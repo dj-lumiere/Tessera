@@ -11,7 +11,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private static readonly HashSet<string> TerminatorKeywords =
         ["jump", "branch", "select", "switch", "return", "unreachable"];
 
-    private static readonly HashSet<string> DeclKeywords = ["routine", "record", "choice", "const", "concept"];
+    private static readonly HashSet<string> DeclKeywords = ["routine", "record", "choice", "preset", "concept"];
 
     public Module ParseModule()
     {
@@ -22,14 +22,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             var attrs = ParseAttributes();
             bool isPrivate = IsIdent("private");
             if (isPrivate) Next();
+            if (IsIdent("const")) throw Error("'const' is now spelled 'preset'");
             if (Cur.Kind != TokenKind.Ident || !DeclKeywords.Contains(Cur.Text))
-                throw Error($"expected a declaration (routine, record, choice, const, concept), found {Describe(Cur)}");
+                throw Error($"expected a declaration (routine, record, choice, preset, concept), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
                 "routine" => ParseRoutine(attrs, inConcept: false),
                 "record" => ParseRecord(attrs),
                 "choice" => ParseChoice(attrs),
-                "const" => ParseConst(attrs),
+                "preset" => ParsePreset(attrs),
                 _ => ParseConcept(attrs),
             };
             decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate });
@@ -286,26 +287,26 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new ChoiceDecl(file, attrs, name.Text, underlying, members, pos);
     }
 
-    private ConstDecl ParseConst(List<Attribute> attrs)
+    private PresetDecl ParsePreset(List<Attribute> attrs)
     {
         var pos = Cur.Pos;
-        ExpectIdent("const");
+        ExpectIdent("preset");
         var first = ParseType();
         TypeRef? owner = null;
         string name = first.Name;
         if (Accept(TokenKind.Dot))
         {
             owner = first;
-            name = Expect(TokenKind.Ident, "a const name").Text;
+            name = Expect(TokenKind.Ident, "a preset name").Text;
         }
-        else if (first.Args.Count != 0) throw new CompileError(first.Pos, "a const name takes no generic arguments");
+        else if (first.Args.Count != 0) throw new CompileError(first.Pos, "a preset name takes no generic arguments");
 
-        Expect(TokenKind.Colon, "':' and the const's type");
+        Expect(TokenKind.Colon, "':' and the preset's type");
         var type = ParseType();
         Expect(TokenKind.Eq, "'='");
         var value = ParseExpr();
         ExpectLineEnd();
-        return new ConstDecl(file, attrs, owner, name, type, value, pos);
+        return new PresetDecl(file, attrs, owner, name, type, value, pos);
     }
 
     private ConceptDecl ParseConcept(List<Attribute> attrs)
@@ -657,11 +658,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (Is(TokenKind.LParen))
                 return new NsCallExpr(owner, member.Text, memberTypeArgs, ParseArgs(), pos);
             if (memberTypeArgs.Count != 0) throw Error("expected '(' after generic arguments");
-            return new ConstRef(owner, member.Text, pos);
+            return new PresetRef(owner, member.Text, pos);
         }
 
         if (typeArgs.Count != 0) throw new CompileError(pos, $"expected '(' or '.' after '{owner}'");
-        return new ConstRef(null, name.Text, pos);
+        return new PresetRef(null, name.Text, pos);
     }
 
     private Expr ParseRecordLit(TypeRef type)

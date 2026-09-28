@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-// Compile-time layout: `sizeof` / `alignof` in consts and generic arguments, and `@aligned` on records and fields.
+// Compile-time layout: `sizeof` / `alignof` in presets and generic arguments, and `@aligned` on records and fields.
 public sealed partial class Compiler
 {
     private DataLayout? _dataLayout;
@@ -44,7 +44,7 @@ public sealed partial class Compiler
         if (attr.Args is not [var arg]) throw new CompileError(attr.Pos, "@aligned takes one compile-time integer");
         var expr = arg.Expr ?? (long.TryParse(arg.Value, CultureInfo.InvariantCulture, out long n)
             ? new IntLit(n, attr.Pos)
-            : new ConstRef(null, arg.Value, attr.Pos));
+            : new PresetRef(null, arg.Value, attr.Pos));
         long align = EvalConstInt(expr, env, 0);
         if (align < 1 || (align & (align - 1)) != 0)
             throw new CompileError(attr.Pos, $"@aligned needs a power of two, got {align}");

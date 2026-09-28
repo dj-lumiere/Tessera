@@ -77,7 +77,7 @@ public sealed record ChoiceDecl(
     string File, List<Attribute> Attributes, string Name, TypeRef Underlying, List<(string Name, Expr Value)> Members,
     Pos Pos) : Decl(File, Attributes, Pos);
 
-public sealed record ConstDecl(
+public sealed record PresetDecl(
     string File, List<Attribute> Attributes, TypeRef? Owner, string Name, TypeRef Type, Expr Value, Pos Pos)
     : Decl(File, Attributes, Pos);
 
@@ -127,12 +127,12 @@ public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos); // %x or #p
 public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos);
 
 /// `Type.name(args)` — a call through a type's namespace: `S64.add(%a, %b)`, `Option<T>.none()`, `K.hash(%k)`.
-/// If `Owner` turns out to name a const rather than a type, this is a method call on that const.
+/// If `Owner` turns out to name a preset rather than a type, this is a method call on that preset.
 public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
     : Expr(Pos);
 
-/// `NAME` or `Type.NAME` — a const, or a choice member.
-public sealed record ConstRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos);
+/// `NAME` or `Type.NAME` — a preset, or a choice member.
+public sealed record PresetRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos);
 
 /// `recv.name(args)`.
 public sealed record MethodCallExpr(Expr Receiver, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
