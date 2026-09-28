@@ -115,6 +115,7 @@ public sealed class Emitter
         bool isMain = f.Name == "main";
         string ps = string.Join(", ", f.Params.Select(p => $"%{p}: S64"));
         _out.Append($"routine {f.Name}({ps}) -> {(isMain ? "S32" : "S64")}\n");
+        _folds = Foldable(cfg, isMain);
         var emitted = Emitted(cfg, isMain);
         bool first = true;
         foreach (var b in cfg.Blocks.Where(emitted.Contains))
@@ -134,6 +135,66 @@ public sealed class Emitter
 
     private static bool IsCopy(Expr x) => x is Var or IntLit or BoolLit or Unary { Op: "-", Operand: IntLit };
 
+    // ── Folded blocks ───────────────────────────────────────────────────────
+    //
+    // A block that only computes values and then jumps folds into the edge that reaches it: its computations become
+    // the jump's arguments (`loop(%i.add(1), %acc.add(%i))`). Arm arguments are evaluated only when the arm is taken,
+    // so this never runs anything the block wouldn't have. It's done only when the result stays as readable as the
+    // block: one edge leads in, each computed value is used once, in the order it was computed, and each is one
+    // operation on values the block received.
+
+    private HashSet<BasicBlock> _folds = [];
+
+    private HashSet<BasicBlock> Foldable(Cfg cfg, bool isMain)
+    {
+        var preds = new Dictionary<BasicBlock, int>();
+        foreach (var b in cfg.Blocks)
+            foreach (var s in b.Successors)
+                preds[s] = preds.GetValueOrDefault(s) + 1;
+        var candidates = cfg.Blocks.Where(b => b.Name != "entry" && preds.GetValueOrDefault(b) == 1
+                                               && !PassesThrough(b, isMain) && FoldsCleanly(cfg, b)).ToHashSet();
+        // a fold lands on an ordinary block, so no value is copied into two places
+        return candidates.Where(b => b.Term is not Goto g || !candidates.Contains(g.Target) && !PassesThrough(g.Target, isMain))
+                         .ToHashSet();
+    }
+
+    private static bool FoldsCleanly(Cfg cfg, BasicBlock b)
+    {
+        var computed = new List<string>();
+        foreach (var s in b.Code)
+        {
+            var (name, value) = s switch
+            {
+                Let l => (l.Name, l.Value),
+                Assign a => (a.Name, a.Value),
+                _ => ((string?)null, (Expr?)null),
+            };
+            if (name is null || value is null) return false;
+            if (IsCopy(value)) continue;
+            bool shallow = value switch
+            {
+                Binary x => IsCopy(x.Left) && IsCopy(x.Right),
+                Unary u => IsCopy(u.Operand),
+                Call c => c.Args.All(IsCopy),
+                _ => false,
+            };
+            // one operation on values the block received, not on what it computed itself
+            if (!shallow || Liveness.Reads(value).Any(computed.Contains) || computed.Contains(name)) return false;
+            computed.Add(name);
+        }
+        if (computed.Count == 0) return false;
+        List<string> uses = b.Term switch
+        {
+            Goto g => ParamsOf(cfg, g.Target).Where(computed.Contains).ToList(),
+            Ret { Value: Var v } when computed.Contains(v.Name) => [v.Name],
+            _ => [],
+        };
+        // every computed value is used exactly once, in the order it was computed
+        return uses.SequenceEqual(computed);
+    }
+
+    private bool Skips(BasicBlock b, bool isMain) => PassesThrough(b, isMain) || _folds.Contains(b);
+
     private static bool PassesThrough(BasicBlock b, bool isMain) =>
         b.Name != "entry"
         && b.Code.All(s => s is Let { Value: var l } && IsCopy(l) || s is Assign { Value: var a } && IsCopy(a))
@@ -146,9 +207,9 @@ public sealed class Emitter
         };
 
     /// Where an edge into `b` really lands: the first block that isn't a pass-through, or null for a return.
-    private static BasicBlock? Landing(BasicBlock b, bool isMain)
+    private BasicBlock? Landing(BasicBlock b, bool isMain)
     {
-        for (int hops = 0; PassesThrough(b, isMain); hops++)
+        for (int hops = 0; Skips(b, isMain); hops++)
         {
             if (b.Term is not Goto g || hops > 1000) return null;
             b = g.Target;
@@ -156,7 +217,7 @@ public sealed class Emitter
         return b;
     }
 
-    private static HashSet<BasicBlock> Emitted(Cfg cfg, bool isMain)
+    private HashSet<BasicBlock> Emitted(Cfg cfg, bool isMain)
     {
         var emitted = new HashSet<BasicBlock>();
         var work = new Stack<BasicBlock>([cfg.Blocks[0]]);
@@ -200,7 +261,7 @@ public sealed class Emitter
         /// The text of an edge into `target`: `name(args)`, or `return(x)` when the edge ends in a return.
         private string Edge(BasicBlock target, Dictionary<string, string> env)
         {
-            if (!PassesThrough(target, isMain))
+            if (!e.Skips(target, isMain))
                 return $"{target.Name}({string.Join(", ", ParamsOf(cfg, target).Select(p => env[p]))})";
             var inner = new Dictionary<string, string>(env);
             foreach (var s in target.Code)
@@ -211,7 +272,7 @@ public sealed class Emitter
                     Assign a => (a.Name, a.Value),
                     _ => throw new InvalidOperationException(),
                 };
-                inner[name] = CopyText(value, inner);
+                inner[name] = IsCopy(value) ? CopyText(value, inner) : Inline(value, inner);
             }
             return target.Term switch
             {
@@ -220,6 +281,18 @@ public sealed class Emitter
                 Ret r => ReturnText(CopyText(r.Value!, inner)),
                 _ => throw new InvalidOperationException(),
             };
+        }
+
+        /// A folded block's computation, written where the edge passes it: evaluated only when the edge is taken.
+        private string Inline(Expr value, Dictionary<string, string> env)
+        {
+            var saved = new Dictionary<string, string>(_env);
+            _env.Clear();
+            foreach (var (k, v) in env) _env[k] = v;
+            string text = Chain(value, lazy: true);
+            _env.Clear();
+            foreach (var (k, v) in saved) _env[k] = v;
+            return text;
         }
 
         private static string CopyText(Expr x, Dictionary<string, string> env) => x switch
@@ -278,7 +351,10 @@ public sealed class Emitter
                     Line(edge.StartsWith("return(") ? edge : $"jump {edge}");
                     break;
                 case CondGoto c:
-                    string cond = Value(c.Cond, "condition");
+                    // A condition that is a chain goes straight into the branch; one with nested arguments gets a name.
+                    string cond = IsChain(c.Cond) && c.Cond is not (IntLit or BoolLit or Var)
+                        ? Chain(c.Cond, lazy: false)
+                        : Value(c.Cond, "condition");
                     Line($"branch {cond} ? {Edge(c.IfTrue, _env)} : {Edge(c.IfFalse, _env)}");
                     break;
                 case SelectGoto s:
@@ -306,6 +382,15 @@ public sealed class Emitter
         private static bool IsSimple(Expr x) => x is IntLit or BoolLit or Var or Unary { Op: "-", Operand: IntLit };
 
         /// One operation on simple operands: fine as an argument (`.bitand(%start.gt(0))`).
+        /// A chain of operations whose arguments are all simple: `%n.rem(%d).eq(0)`. No argument nests.
+        private static bool IsChain(Expr x) => IsSimple(x) || x switch
+        {
+            Binary b => IsChain(b.Left) && IsSimple(b.Right),
+            Unary u => IsChain(u.Operand),
+            Call c => c.Args.All(IsSimple),
+            _ => false,
+        };
+
         private static bool IsShallow(Expr x) => IsSimple(x) || x switch
         {
             Binary b => IsSimple(b.Left) && IsSimple(b.Right),

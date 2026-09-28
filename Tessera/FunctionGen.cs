@@ -195,10 +195,23 @@ public sealed class FunctionGen
     /// A Tessera name in IR: `%x` becomes `x` and `#x` becomes `$x`, so a value and a pointer may share a name.
     private static string IrName(string name) => name[0] == '#' ? "$" + name[1..] : name[1..];
 
+    /// Where a `continue` arm goes: the LLVM block that holds the lines after the guard.
+    private string? _continueLabel;
+
     private void EmitStmt(Stmt s)
     {
         switch (s)
         {
+            case GuardStmt g:
+            {
+                var next = NewLBlock("cont");
+                string? outer = _continueLabel;
+                _continueLabel = next.Label;
+                EmitTerminator(g.Term);
+                _continueLabel = outer;
+                _cur = next;
+                break;
+            }
             case BindStmt b:
             {
                 var t = Resolve(b.Type);
@@ -1247,6 +1260,8 @@ public sealed class FunctionGen
     /// (arguments to pass, an inline return/unreachable/trap) gets its own edge block.
     private string ArmLabel(Target target)
     {
+        if (target is ContinueTarget cont)
+            return _continueLabel ?? throw Err(cont.Pos, "continue goes on with the next line, so it can't end a block");
         if (target is CallTarget { Args.Count: 0 } ct && _blocks.ContainsKey(ct.Name))
         {
             CheckBlockArgs(ct);
@@ -1308,6 +1323,9 @@ public sealed class FunctionGen
             }
             case UnreachableTarget:
                 Terminate("unreachable");
+                break;
+            case ContinueTarget ct:
+                Terminate($"br label %{_continueLabel ?? throw Err(ct.Pos, "continue goes on with the next line, so it can't end a block")}");
                 break;
             default:
                 throw new InvalidOperationException(target.GetType().Name);

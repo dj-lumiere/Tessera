@@ -90,6 +90,10 @@ routine main() -> S32
   returned value may be expressions (`loop(%i.add(1))`, `return(%x.to_s32())`), evaluated only when that arm is
   taken. An ordinary routine call can't be an arm by itself: call it inside a block.
 - There are no `for` / `while` / `if`. A loop is a block that jumps to itself with new arguments.
+- `continue` as an arm of `branch` / `when` goes on with the next line of the same block:
+  `branch %failed ? panic(TrapCode.AllocFailed) : continue`. Use it for guards instead of a block that only receives
+  the values the rest needs. It is not C's "next iteration" (that's `jump loop(...)`), and a block still ends with a
+  real terminator.
 - A long `branch` continues on the next line when that line starts with `?` or `:`.
 - An integer `when %v:` needs a `_` arm. A `when %v:` on a choice without `_` must list every member.
 
@@ -163,7 +167,9 @@ routine main() -> S32
 
 ## Idioms
 
-Loop with block parameters:
+Loop with block parameters. The next iteration's values go straight into the arm: arm arguments are evaluated only
+when that arm is taken, so `%total.add(%i)` never runs after the last iteration. Computing them in the block before
+the `branch` would (an overflow or an out-of-bounds load there is a real bug):
 
 ```tessera
 routine sum_to(%n: U64) -> U64
@@ -172,10 +178,7 @@ routine sum_to(%n: U64) -> U64
 
     block loop(%i: U64, %total: U64):
         %done : Bool = %i.ge(%n)
-        branch %done ? return(%total) : body(%i, %total)
-
-    block body(%i: U64, %total: U64):
-        jump loop(%i.add(1), %total.add(%i))
+        branch %done ? return(%total) : loop(%i.add(1), %total.add(%i))
 ```
 
 Iterating a collection (`next` returns `Option<T>`):

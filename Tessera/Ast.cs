@@ -122,6 +122,9 @@ public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : 
 
 /// `call(...)` evaluated for its side effect.
 public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos);
+/// A `branch` or `when` with a `continue` arm, in the middle of a block: the other arms leave, and `continue` goes
+/// on with the next line.
+public sealed record GuardStmt(Terminator Term, Pos Pos) : Stmt(Pos);
 
 // ── Expressions ─────────────────────────────────────────────────────────────
 
@@ -188,6 +191,8 @@ public abstract record Target(Pos Pos);
 public sealed record CallTarget(string Name, List<Expr> Args, Pos Pos) : Target(Pos);
 public sealed record ReturnTarget(Expr? Value, Pos Pos) : Target(Pos);
 public sealed record UnreachableTarget(Pos Pos) : Target(Pos);
+/// `continue` as an arm: go on with the next line of the same block.
+public sealed record ContinueTarget(Pos Pos) : Target(Pos);
 /// Any other @noreturn call used as a target, such as `Panic.now()`.
 public sealed record ExprTarget(Expr Call, Pos Pos) : Target(Pos);
 

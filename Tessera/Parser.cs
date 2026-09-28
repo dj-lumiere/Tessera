@@ -515,7 +515,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (Cur.Kind == TokenKind.Ident && TerminatorKeywords.Contains(Cur.Text))
             {
                 var term = ParseTerminator();
-                return new BlockDecl(name.Text, parameters, stmts, term, pos);
+                if (!HasContinue(term)) return new BlockDecl(name.Text, parameters, stmts, term, pos);
+                // a `continue` arm goes on with the next line, so the block isn't over
+                if (term is not (BranchTerm or WhenCondTerm or WhenValueTerm))
+                    throw new CompileError(term.Pos, "continue is an arm of branch or when");
+                if (AtBlockEnd())
+                    throw new CompileError(term.Pos, "a continue arm needs lines after it; the block still ends with a terminator");
+                stmts.Add(new GuardStmt(term, term.Pos));
+                continue;
             }
 
             var stmt = ParseStmt();
@@ -530,6 +537,27 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     }
 
     private bool AtBlockEnd() => AtDeclStart() || IsIdent("block");
+
+    /// Whether the current line is a `when` arm: it has a `->` before its end. Layout doesn't matter, so this is
+    /// how the arms end when lines follow a `when` with a `continue` arm.
+    private bool LineIsArm()
+    {
+        for (int k = 0; ; k++)
+        {
+            var t = PeekTok(k);
+            if (t.Kind == TokenKind.Arrow) return true;
+            if (t.Kind is TokenKind.Newline or TokenKind.Eof) return false;
+        }
+    }
+
+    private static bool HasContinue(Terminator t) => t switch
+    {
+        BranchTerm b => b.IfTrue is ContinueTarget || b.IfFalse is ContinueTarget,
+        WhenCondTerm w => w.Arms.Any(a => a.Target is ContinueTarget),
+        WhenValueTerm w => w.Arms.Any(a => a.Target is ContinueTarget),
+        TargetTerm { Target: ContinueTarget } => true,
+        _ => false,
+    };
 
     private Stmt ParseStmt()
     {
@@ -582,7 +610,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 Expect(TokenKind.Colon, "':'");
                 ExpectLineEnd();
                 var arms = new List<(Expr?, Target)>();
-                while (!AtBlockEnd())
+                while (!AtBlockEnd() && LineIsArm())   // an arm has `->`; the first line without one follows the when
                 {
                     Expr? cond = Accept(TokenKind.Underscore) ? null : ParseExpr();
                     Expect(TokenKind.Arrow, "'->'");
@@ -599,7 +627,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 Expect(TokenKind.Colon, "':'");
                 ExpectLineEnd();
                 var arms = new List<(Expr?, Target)>();
-                while (!AtBlockEnd())
+                while (!AtBlockEnd() && LineIsArm())
                 {
                     Expr? c = Accept(TokenKind.Underscore) ? null : ParsePostfix();
                     Expect(TokenKind.Arrow, "'->'");
@@ -625,6 +653,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             Next();
             return new UnreachableTarget(pos);
+        }
+        if (IsIdent("continue"))
+        {
+            Next();
+            return new ContinueTarget(pos);
         }
         if (IsIdent("return"))
         {
