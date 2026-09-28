@@ -17,6 +17,8 @@ public sealed partial class Compiler
     private readonly Dictionary<string, List<RoutineDecl>> _blanket = []; // owner is a type parameter: `T.bitcast<U>`
     private readonly Dictionary<(string Owner, string Name), List<PresetDecl>> _presets = [];
     private readonly List<RoutineDecl> _userRoutines = [];
+    private readonly HashSet<string> _modules = [];
+    private readonly List<ImportDecl> _imports = [];
     private readonly List<RoutineDecl> _allRoutines = [];
 
     private readonly StringBuilder _typeDefs = new();
@@ -39,6 +41,13 @@ public sealed partial class Compiler
             RegisterConcepts(d);
             switch (d)
             {
+                case ModuleDecl m:
+                    // `Std::Arch` also declares `Std`.
+                    for (int i = m.Path.IndexOf("::", StringComparison.Ordinal); i >= 0; i = m.Path.IndexOf("::", i + 2, StringComparison.Ordinal))
+                        _modules.Add(m.Path[..i]);
+                    _modules.Add(m.Path);
+                    break;
+                case ImportDecl imp: _imports.Add(imp); break;
                 case RecordDecl s: Add(_records, s.Name, s); break;
                 case ChoiceDecl e: Add(_choices, e.Name, e); break;
                 case PresetDecl c: Add(_presets, (c.Owner?.Name ?? "", c.Name), c); break;
@@ -51,6 +60,10 @@ public sealed partial class Compiler
                     break;
             }
         }
+        // Names are still one solution-wide namespace; for now an import only has to name a module that exists.
+        foreach (var imp in _imports)
+            if (!_modules.Contains(imp.Path))
+                throw new CompileError(imp.Pos, $"unknown module '{imp.Path}'");
         RejectDuplicates(_records.Values, d => $"record '{d.Name}'");
         RejectDuplicates(_choices.Values, d => $"choice '{d.Name}'");
         RejectDuplicates(_presets.Values, d => $"preset '{(d.Owner is null ? d.Name : $"{d.Owner.Name}.{d.Name}")}'");

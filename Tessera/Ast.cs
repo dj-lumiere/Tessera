@@ -56,6 +56,8 @@ public abstract record Decl(string File, List<Attribute> Attributes, Pos Pos)
     public bool IsLibrary { get; init; }
     /// `private`: visible only in the declaring file.
     public bool IsPrivate { get; init; }
+    /// The module the declaring file names (`Std::Format`), or "" for a file without a `module` line.
+    public string Module { get; init; } = "";
 }
 
 public sealed record RoutineDecl(
@@ -102,6 +104,12 @@ public sealed record ConceptDecl(
 public sealed record BlockDecl(string Name, List<Param> Params, List<Stmt> Stmts, Terminator Terminator, Pos Pos);
 
 public sealed record Module(List<Decl> Decls);
+
+/// `module Std::Format`: the module every declaration in the file belongs to. At most one, first in the file.
+public sealed record ModuleDecl(string File, string Path, Pos Pos) : Decl(File, [], Pos);
+
+/// `import Std::Format`: a module the file uses. Imports follow the module line, before any other declaration.
+public sealed record ImportDecl(string File, string Path, Pos Pos) : Decl(File, [], Pos);
 
 // ── Statements ──────────────────────────────────────────────────────────────
 

@@ -17,8 +17,27 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var decls = new List<Decl>();
         SkipNewlines();
+        string module = "";
+        if (IsIdent("module"))
+        {
+            var pos = Next().Pos;
+            module = ParseModulePath();
+            ExpectLineEnd();
+            decls.Add(new ModuleDecl(file, module, pos) { IsLibrary = isLibrary, Module = module });
+            SkipNewlines();
+        }
+        while (IsIdent("import"))
+        {
+            var pos = Next().Pos;
+            string path = ParseModulePath();
+            ExpectLineEnd();
+            decls.Add(new ImportDecl(file, path, pos) { IsLibrary = isLibrary, Module = module });
+            SkipNewlines();
+        }
         while (Cur.Kind != TokenKind.Eof)
         {
+            if (IsIdent("module")) throw Error("a file names its module once, on its first line");
+            if (IsIdent("import")) throw Error("imports go at the top of the file, after the module line");
             var attrs = ParseAttributes();
             bool isPrivate = IsIdent("private");
             if (isPrivate) Next();
@@ -34,10 +53,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 "conform" => ParseConformDecl(attrs),
                 _ => ParseConcept(attrs),
             };
-            decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate });
+            decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate, Module = module });
             SkipNewlines();
         }
         return new Module(decls);
+    }
+
+    /// `Std::Format`: PascalCase names joined by `::`.
+    private string ParseModulePath()
+    {
+        var parts = new List<string>();
+        do
+        {
+            var name = Expect(TokenKind.Ident, "a module name");
+            if (!char.IsAsciiLetterUpper(name.Text[0]))
+                throw new CompileError(name.Pos, $"module names are PascalCase: '{name.Text}'");
+            parts.Add(name.Text);
+        } while (Accept(TokenKind.ColonColon));
+        return string.Join("::", parts);
     }
 
     // ── Tokens ──────────────────────────────────────────────────────────────

@@ -14,7 +14,9 @@ dotnet run --project Tessera -- check file.tess        # type-check only
 dotnet run --project Tessera -- test tests playground  # golden tests
 ```
 
-A program needs `routine main() -> S32`. There are no imports: every file in `stdlib/` is in scope.
+A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines (the stdlib declares
+`Std::Arch`, `Std::Core`, `Std::Format`, `Std::Alloc`, `Std::Collections`, `Std::Os`), but name lookup is still
+global: every file in `stdlib/` is in scope without an import.
 
 ## Skeleton
 
