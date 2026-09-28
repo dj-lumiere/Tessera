@@ -116,6 +116,8 @@ routine main() -> S32
 
 - `private` before a declaration or a record field hides it from other files (`private routine helper(...)`,
   `private count: U64`). Inside the declaring file it's used as usual.
+- A name is unique under its parent, wherever it's declared: you can add `routine U64.double(...)` to a stdlib type,
+  but not a second `U64.midpoint`. Private names don't count outside their file.
 
 - A record with exactly one field has the same representation as that field (`F128` is an `i128`). Mark it
   `@aggregate` to keep it a one-member struct; `@aligned` on a one-field record needs `@aggregate`.

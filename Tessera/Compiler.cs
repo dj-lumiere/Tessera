@@ -52,6 +52,29 @@ public sealed partial class Compiler
                     break;
             }
         }
+        RejectDuplicates(_records.Values, d => $"record '{d.Name}'");
+        RejectDuplicates(_choices.Values, d => $"choice '{d.Name}'");
+        RejectDuplicates(_consts.Values, d => $"const '{(d.Owner is null ? d.Name : $"{d.Owner.Name}.{d.Name}")}'");
+        RejectDuplicates(_free.Values, d => $"routine '{d.Name}'");
+        RejectDuplicates(_methods.Values, d => $"routine '{d.DisplayName}'");
+        RejectDuplicates(_blanket.Values, d => $"routine '{d.DisplayName}'");
+    }
+
+    /// One name under one parent (a type, or the solution's namespace) names one declaration, wherever it's declared:
+    /// a routine added to a type from another file can't reuse a name the type already has. A `private` declaration
+    /// doesn't claim its name outside its file, so it may share the name with a declaration in another file; in its
+    /// own file it's the one that's visible (Pick).
+    private static void RejectDuplicates<T>(IEnumerable<List<T>> groups, Func<T, string> what) where T : Decl
+    {
+        foreach (var group in groups.Where(g => g.Count > 1))
+            for (int i = 0; i < group.Count; i++)
+                for (int j = i + 1; j < group.Count; j++)
+                {
+                    var (a, b) = (group[i], group[j]);
+                    if ((a.IsPrivate || b.IsPrivate) && a.File != b.File) continue;
+                    if (b.IsLibrary && !a.IsLibrary) (a, b) = (b, a);   // report at the user's declaration
+                    throw new CompileError(b.Pos, $"{what(b)} is already declared at {a.Pos}");
+                }
     }
 
     private static void Add<TK, TV>(Dictionary<TK, List<TV>> map, TK key, TV value) where TK : notnull
@@ -171,8 +194,9 @@ public sealed partial class Compiler
 
     // ── Name lookup ─────────────────────────────────────────────────────────
 
-    /// Several declarations may share a name across files (each btree file has its own NODE_KEYS). The one in the
-    /// referring file wins; otherwise the name must be unique.
+    /// A name is unique under its parent (RejectDuplicates) except for `private` declarations, which share names with
+    /// declarations in other files (each sorted collection has its own NODE_KEYS). The referring file's own
+    /// declaration wins.
     private static T? Pick<T>(List<T>? candidates, string file, Pos pos, string what) where T : Decl
     {
         if (candidates is null || candidates.Count == 0) return null;

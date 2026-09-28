@@ -6,14 +6,14 @@
 ; π is ever subtracted in floating point. Then two tiers, as in RazorForge's
 ; B128 sinpi / cospi / tanpi:
 ;
-; - fast: θ, sin θ, and cos θ in Wide (stdlib/f128_math.tess). The result is
+; - fast: θ, sin θ, and cos θ in F128Extended (stdlib/f128_math.tess). The result is
 ;   kept when all of it × (1 ± 2^-F128_PI_BAND) rounds to the same F128.
 ; - exact: otherwise the same formulas in 384-bit fixed point on BigNat
 ;   (error below 2^-370 relative), rounded once.
 ;
 ; The band is measured, not proven: on 30000 random reduced angles (every
 ; quadrant, all three functions, |d| from 2^-16382 to 1/2) the fast tier's
-; worst relative error against mpmath was 2^-150.2, the size of the Wide
+; worst relative error against mpmath was 2^-150.2, the size of the F128Extended
 ; series' first dropped term at |θ| = π/4, so 2^-145 leaves about 5 bits.
 ; Results near a rounding boundary do occur: cos_pi(x) = 1 - (πx)²/2 + …
 ; lies within 2^-226 of the midpoint below 1 for x near 2^-56.5 / π, where
@@ -77,18 +77,18 @@ routine f128_pi_pick(%quadrant: S64, %kind: TrigKind) -> PiPick
             TrigKind.Cos -> return(%cos)
             TrigKind.Tan -> return(%tan)
 
-; -- fast tier: Wide -----------------------------------------------------------
+; -- fast tier: F128Extended -----------------------------------------------------------
 
 record WideRounding
     ok:    Bool
     value: F128
 
 ; u rounded to F128, and whether all of u × (1 ± 2^-k) rounds to the same value.
-routine wide_round_within(%u: Wide, %k: S64) -> WideRounding
+routine wide_round_within(%u: F128Extended, %k: S64) -> WideRounding
     block entry():
         %r:         F128 = %u.to_f128()
-        %magnitude: Wide = %u.abs()
-        %delta:     Wide = Wide { negative: false, exp: %u.exp.sub(%k), hi: %u.hi, lo: %u.lo }
+        %magnitude: F128Extended = %u.abs()
+        %delta:     F128Extended = F128Extended { negative: false, exp: %u.exp.sub(%k), hi: %u.hi, lo: %u.lo }
         %low:       F128 = %magnitude.sub(%delta).to_f128()
         %high:      F128 = %magnitude.add(%delta).to_f128()
         %kept:      U128 = %r.abs().bits
@@ -96,10 +96,10 @@ routine wide_round_within(%u: Wide, %k: S64) -> WideRounding
         %w: WideRounding = WideRounding { ok: %ok, value: %r }
         return(%w)
 
-; The result in Wide from θ = d π/2 (d nonzero, |d| <= 1/2).
-routine wide_pi_trig(%d: F128, %pick: PiPick) -> Wide
+; The result in F128Extended from θ = d π/2 (d nonzero, |d| <= 1/2).
+routine wide_pi_trig(%d: F128, %pick: PiPick) -> F128Extended
     block entry():
-        %theta:    Wide = wide_from_f128(%d).mul(wide_half_pi())
+        %theta:    F128Extended = wide_from_f128(%d).mul(wide_half_pi())
         %tan:      Bool = %pick.divide
         %over_sin: Bool = %pick.over_sin
         select:
@@ -107,25 +107,25 @@ routine wide_pi_trig(%d: F128, %pick: PiPick) -> Wide
             %over_sin -> sine(%theta)
             _ -> cosine(%theta)
 
-    block sine(%theta: Wide):
-        %s: Wide = wide_sin_core(%theta)
+    block sine(%theta: F128Extended):
+        %s: F128Extended = wide_sin_core(%theta)
         jump signed(%s)
 
-    block cosine(%theta: Wide):
-        %c: Wide = wide_cos_core(%theta)
+    block cosine(%theta: F128Extended):
+        %c: F128Extended = wide_cos_core(%theta)
         jump signed(%c)
 
-    block quotient(%theta: Wide):
-        %s:     Wide = wide_sin_core(%theta)
-        %c:     Wide = wide_cos_core(%theta)
-        %top:   Wide = %pick.over_sin ? %s : %c
-        %under: Wide = %pick.over_sin ? %c : %s
-        %q:     Wide = %top.div(%under)
+    block quotient(%theta: F128Extended):
+        %s:     F128Extended = wide_sin_core(%theta)
+        %c:     F128Extended = wide_cos_core(%theta)
+        %top:   F128Extended = %pick.over_sin ? %s : %c
+        %under: F128Extended = %pick.over_sin ? %c : %s
+        %q:     F128Extended = %top.div(%under)
         jump signed(%q)
 
-    block signed(%v: Wide):
+    block signed(%v: F128Extended):
         %negative: Bool = %pick.negative
-        %r: Wide = %negative ? %v.neg() : %v
+        %r: F128Extended = %negative ? %v.neg() : %v
         return(%r)
 
 ; -- exact tier: 384-bit fixed point on BigNat ---------------------------------
@@ -361,7 +361,7 @@ routine f128_pi_trig_general(%red: PiReduced, %kind: TrigKind, %exact: Bool) -> 
         branch %exact ? slow(%pick) : fast(%pick)
 
     block fast(%pick: PiPick):
-        %w: Wide = wide_pi_trig(%red.d, %pick)
+        %w: F128Extended = wide_pi_trig(%red.d, %pick)
         %rounded: WideRounding = wide_round_within(%w, F128_PI_BAND)
         branch %rounded.ok ? return(%rounded.value) : slow(%pick)
 
