@@ -13,12 +13,16 @@ namespace Tessera;
 ///   fields, `when` arms) align them.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 8 spaces
 ///   further in; a line with nowhere to break (a comment, one long argument) stays as it is.
+/// - inside `routine Owner.name`, the owner type is written `Self` after the header names it (`List<T>` in a
+///   `List<T>` routine, not `List<U>`); comments and literals are left alone.
 /// Formatting is idempotent: formatting formatted text changes nothing.
 public static class Formatter
 {
     public static string Format(string text)
     {
         var lines = text.Replace("\r\n", "\n").Split('\n').Select(Clean).ToList();
+        lines = UseSelf(lines);
+        lines = JoinContinuations(lines);
         lines = Align(lines);
         lines = Space(lines);
         lines = DocBeforeAttributes(lines);
@@ -448,6 +452,142 @@ public static class Formatter
             if (j < s.Length && commas.Count > 0) return (i, j, commas);
         }
         return null;
+    }
+
+    // ── Joining ─────────────────────────────────────────────────────────
+
+    /// Joins a bracketed list that spans lines back into one line, so Wrap can break it again only where it must:
+    /// the fewest lines that fit. A list with a comment inside stays as written.
+    private static List<string> JoinContinuations(List<string> lines)
+    {
+        var continued = Continuations(lines);
+        var result = new List<string>();
+        int i = 0;
+        while (i < lines.Count)
+        {
+            int end = i + 1;
+            while (end < lines.Count && continued[end]) end++;
+            if (end - i == 1 || continued[i])
+            {
+                result.Add(lines[i]);
+                i++;
+                continue;
+            }
+            var group = lines.GetRange(i, end - i);
+            bool commented = group.Any(l => TopLevelComment(l) >= 0 || l.TrimStart().StartsWith("//"));
+            if (commented || group.Any(l => l.Length == 0))
+            {
+                result.AddRange(group);
+                i = end;
+                continue;
+            }
+            var joined = new StringBuilder(group[0].TrimEnd());
+            foreach (var next in group.Skip(1))
+            {
+                string piece = next.Trim();
+                char last = joined[^1];
+                bool tight = last is '(' or '[' || piece.StartsWith(')') || piece.StartsWith(']');
+                joined.Append(tight ? "" : " ").Append(piece);
+            }
+            result.Add(joined.ToString());
+            i = end;
+        }
+        return result;
+    }
+
+    // ── Self ────────────────────────────────────────────────────────────
+
+    /// Rewrites the owner type as `Self` inside each routine declared on it.
+    private static List<string> UseSelf(List<string> lines)
+    {
+        var result = new List<string>(lines);
+        for (int i = 0; i < result.Count; i++)
+        {
+            if (!result[i].StartsWith("routine ")) continue;
+            string? owner = Owner(result[i]);
+            if (owner is null || owner == "Self") continue;
+            int end = i + 1;
+            while (end < result.Count && (result[end].Length == 0 || result[end].StartsWith(' ') || result[end].StartsWith("require ")))
+                end++;
+            // `Self` starts where the owner is declared. A concrete owner is declared by the header (`U64.` in
+            // `routine U64.min`); a type parameter by its `require` line (`routine T.trunc<U>(%self: T)` with
+            // `require T: typename`), so its header keeps T. `require` lines always name their types.
+            bool typeParameter = Enumerable.Range(i + 1, end - i - 1).Any(j => result[j].StartsWith("require ")
+                && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^require |,\s*){owner}\s*:"));
+            if (!typeParameter)
+            {
+                int ownerEnd = "routine ".Length + owner.Length + 1;
+                result[i] = result[i][..ownerEnd] + ReplaceType(result[i][ownerEnd..], owner);
+            }
+            for (int j = i + 1; j < end; j++)
+                if (!result[j].StartsWith("require ") && !(typeParameter && result[j].StartsWith(' ') && j < FirstBodyLine(result, i, end)))
+                    result[j] = ReplaceType(result[j], owner);
+        }
+        return result;
+    }
+
+    /// The routine's first `block` line: everything before it is the header (and its `require` lines).
+    private static int FirstBodyLine(List<string> lines, int header, int end)
+    {
+        for (int j = header + 1; j < end; j++)
+            if (lines[j].StartsWith("    block ")) return j;
+        return end;
+    }
+
+    /// `U64` in `routine U64.min(...)`, `List<T>` in `routine List<T>.push(...)`.
+    private static string? Owner(string header)
+    {
+        int i = "routine ".Length;
+        int j = i;
+        while (j < header.Length && (char.IsLetterOrDigit(header[j]) || header[j] == '_')) j++;
+        if (j == i || !char.IsUpper(header[i])) return null;
+        if (j < header.Length && header[j] == '<')
+        {
+            int depth = 0;
+            for (; j < header.Length; j++)
+            {
+                if (header[j] == '<') depth++;
+                else if (header[j] == '>' && --depth == 0)
+                {
+                    j++;
+                    break;
+                }
+            }
+        }
+        return j < header.Length && header[j] == '.' ? header[i..j] : null;
+    }
+
+    /// Replaces whole occurrences of `type` with `Self`, outside comments and literals.
+    private static string ReplaceType(string line, string type)
+    {
+        var sb = new StringBuilder();
+        for (int i = 0; i < line.Length; i++)
+        {
+            char c = line[i];
+            if (c is '"' or '\'')
+            {
+                int end = SkipLiteral(line, i);
+                sb.Append(line, i, Math.Min(end + 1, line.Length) - i);
+                i = end;
+                continue;
+            }
+            if (c == '/' && i + 1 < line.Length && line[i + 1] == '/')
+            {
+                sb.Append(line, i, line.Length - i);
+                break;
+            }
+            bool boundaryBefore = i == 0 || !(char.IsLetterOrDigit(line[i - 1]) || line[i - 1] is '_' or '%' or '#' or '.');
+            int after = i + type.Length;
+            if (boundaryBefore && string.CompareOrdinal(line, i, type, 0, type.Length) == 0
+                && (after >= line.Length || !(char.IsLetterOrDigit(line[after]) || line[after] is '_' or '<')))
+            {
+                sb.Append("Self");
+                i = after - 1;
+                continue;
+            }
+            sb.Append(c);
+        }
+        return sb.ToString();
     }
 
     // ── Section comments ────────────────────────────────────────────────
