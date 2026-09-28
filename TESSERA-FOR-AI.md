@@ -82,14 +82,15 @@ routine main() -> S32
   `@external`.
 - **A block sees only the routine's parameters, its own parameters, and values it defines.** Anything else must be
   passed as a block argument. This is the most common error.
-- Every block ends with exactly one terminator: `jump b(...)`, `branch %c ? a(...) : b(...)`, `select:`,
-  `switch %v:`, `return(...)`, or `unreachable`. An arm of `branch` / `select` / `switch` names a block, or is an
+- Every block ends with exactly one terminator: `jump b(...)`, `branch %c ? a(...) : b(...)`, `when:`
+  (first condition that holds), `when %v:` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
+  `when` names a block, or is an
   inline `return(...)` or a call to a `@noreturn` routine (`trap()`, `panic(TrapCode.X)`). Block arguments and the
   returned value may be expressions (`loop(%i.add(1))`, `return(%x.to_s32())`), evaluated only when that arm is
   taken. An ordinary routine call can't be an arm by itself: call it inside a block.
 - There are no `for` / `while` / `if`. A loop is a block that jumps to itself with new arguments.
 - A long `branch` continues on the next line when that line starts with `?` or `:`.
-- An integer `switch` needs a `_` arm. A `switch` on a choice without `_` must list every member.
+- An integer `when %v:` needs a `_` arm. A `when %v:` on a choice without `_` must list every member.
 
 **Operations**
 
@@ -102,7 +103,10 @@ routine main() -> S32
   `%n.to_u8_clamp()`. Hashes, PRNGs, and bit tricks want `_wrap`.
 - Subtraction that can underflow panics even if the result is unused later, so don't compute `%len.sub(1)` before
   the branch that knows it's safe: pass it as a branch-arm argument (arm arguments are evaluated lazily), or compute
-  it in the arm's block. The same goes for a select, which evaluates both sides.
+  it in the arm's block. The same goes for a value select (`%c ? %a : %b`), which evaluates both sides; the
+  `when:` terminator runs its conditions in order and stops at the first that holds.
+- Range checks: `%c.between(b'0', b'9')` is the closed `[lo, hi]`, `%i.in_range(0, %len)` the half-open
+  `[lo, end)`, on every integer, float, `Byte`, and `Char`.
 - Lengths, indices, counts, and `sizeof` are `U64`. `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`,
   `abs_diff` returns the unsigned type.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
@@ -212,7 +216,10 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
 - `write_str(#out, "text")`, `write_line(#out)`, `%v.format(#out)` for every integer, float, `Bool`, and `String`,
   and `#p.format(#out)` for a pointer's address (`0x7ffd5e8c1a40`); `format_hex`, `format_fixed(#out, %digits)`;
   `format_with(#out, %v, %spec)` with a `FormatSpec`.
-- Quick one-offs: `println_slice("text")`, `print_int(%n)` (S64), `print_uint(%n)` (U64) from `stdlib/io.tess`.
+- `write_f(#out, "x = {%x}\n")` writes text and values in one line: it expands at compile time into
+  `write_str` / `.format` calls, a brace holds one expression (loads and chains allowed), `{{` is a literal brace,
+  and there are no format options. `print_f("...")` / `eprint_f("...")` do the same on stdout / stderr without
+  setting up a writer. The old `println_slice` / `print_int` helpers are gone.
 
 ## Collections
 

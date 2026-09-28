@@ -193,8 +193,8 @@ public sealed record ExprTarget(Expr Call, Pos Pos) : Target(Pos);
 
 public sealed record JumpTerm(CallTarget Target, Pos Pos) : Terminator(Pos);
 public sealed record BranchTerm(Expr Cond, Target IfTrue, Target IfFalse, Pos Pos) : Terminator(Pos);
-public sealed record SelectTerm(List<(Expr? Cond, Target Target)> Arms, Pos Pos) : Terminator(Pos);
-public sealed record SwitchTerm(Expr Value, List<(Expr? Case, Target Target)> Arms, Pos Pos) : Terminator(Pos);
+public sealed record WhenCondTerm(List<(Expr? Cond, Target Target)> Arms, Pos Pos) : Terminator(Pos);
+public sealed record WhenValueTerm(Expr Value, List<(Expr? Case, Target Target)> Arms, Pos Pos) : Terminator(Pos);
 
 /// A terminator written as a bare target: `return(x)`, `unreachable`, or a @noreturn call such as `trap()`.
 public sealed record TargetTerm(Target Target, Pos Pos) : Terminator(Pos);

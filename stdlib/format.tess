@@ -37,7 +37,7 @@ conform Format<Ptr<T>> when T: typename
 
 /// Writes straight to a file descriptor with write(2): no buffer, so nothing is
 /// lost if the program stops, and every call is a system call. A failed write
-/// sets `failed` and drops the rest// check has_failed() when it matters.
+/// sets `failed` and drops the rest; check has_failed() when it matters.
 record FdWriter
 conform Writer<FdWriter>
     private fd:     S32
@@ -84,6 +84,45 @@ routine FdWriter.write_bytes(#self: Ptr<Self>, #data: Ptr<Byte>, %length: U64) -
 
     block fail():
         #self.failed.store(true)
+        return()
+
+// -- StdoutWriter, StderrWriter ------------------------------------------------
+
+/// Standard output as a writer with no state, which is what print_f writes to.
+/// Every StdoutWriter is the same, so a null pointer stands for it and nothing
+/// needs a slot: `print_f("x = {%x}\n")` expands to write_f on
+/// StdoutWriter.shared(). A failed write is dropped; use an FdWriter to check.
+record StdoutWriter
+conform Writer<StdoutWriter>
+
+/// Standard error, the same way, for eprint_f.
+record StderrWriter
+conform Writer<StderrWriter>
+
+routine StdoutWriter.shared() -> Ptr<Self>
+    block entry():
+        #none: Ptr<Self> = null
+        return(#none)
+
+routine StderrWriter.shared() -> Ptr<Self>
+    block entry():
+        #none: Ptr<Self> = null
+        return(#none)
+
+routine StdoutWriter.write_bytes(#self: Ptr<Self>, #data: Ptr<Byte>, %length: U64) -> Void
+    block entry():
+        %fd: FdWriter = .stdout()
+        #fd: Ptr<FdWriter> = claim
+        #fd.store(%fd)
+        #fd.write_bytes(#data, %length)
+        return()
+
+routine StderrWriter.write_bytes(#self: Ptr<Self>, #data: Ptr<Byte>, %length: U64) -> Void
+    block entry():
+        %fd: FdWriter = .stderr()
+        #fd: Ptr<FdWriter> = claim
+        #fd.store(%fd)
+        #fd.write_bytes(#data, %length)
         return()
 
 // -- SliceWriter ---------------------------------------------------------------
@@ -684,7 +723,7 @@ require W: typename, Writer<W>
     block positional(%x: S64):
         %whole:    Bool = %exponent.ge(0)
         %fraction: Bool = %x.lt(0)
-        select:
+        when:
             %whole -> integral()
             %fraction -> below_one(%x)
             _ -> split()
@@ -1004,7 +1043,7 @@ require W: typename, Writer<W>
 
     block special(%negative: Bool, %fraction: U128):
         %nan: Bool = %fraction.ne(0)
-        select:
+        when:
             %nan -> text("NaN")
             %negative -> text("-inf")
             _ -> text("inf")
@@ -1136,7 +1175,7 @@ require W: typename, Writer<W>
     block entry():
         %special: Bool = %biased.eq(%exponent_max)
         %nan:     Bool = %special.bitand(%fraction.ne(0))
-        select:
+        when:
             %nan -> text("NaN")
             %special -> infinity()
             %negative -> minus()
@@ -1315,7 +1354,7 @@ require T: typename, W: typename, Writer<W>, Format<T>
         %half:   U64    = %pad.div(2)
         %fill:   String = %spec.fill
         %align:  Align  = %spec.align
-        switch %align:
+        when %align:
             Align.Left -> padded(0, %pad, %fill)
             Align.Right -> padded(%pad, 0, %fill)
             Align.Center -> padded(%half, %pad.sub(%half), %fill)

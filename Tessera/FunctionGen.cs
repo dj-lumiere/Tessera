@@ -402,6 +402,8 @@ public sealed class FunctionGen
                 return InferPresetRef(r);
             case NsCallExpr n when ArrayFrom(n) is { } from:
                 return from.Type;
+            case CallExpr wf when IsWriteF(wf):
+                return VoidType.Instance;
             case CallExpr or NsCallExpr or MethodCallExpr:
                 return InferCall(e, null);
             default:
@@ -468,6 +470,7 @@ public sealed class FunctionGen
             ImplicitCallExpr { Name: "from", TypeArgs.Count: 0, Args: [ArrayLit lit] } when expected is ArrayType at =>
                 EvalArrayLit(lit, at),
             ImplicitCallExpr => EvalCall(e, expected),
+            CallExpr wf when IsWriteF(wf) => EvalWriteF(wf),
             PresetRef r => EvalPresetRef(r, expected),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),
             _ => throw new InvalidOperationException(e.GetType().Name),
@@ -542,6 +545,76 @@ public sealed class FunctionGen
         string slot = $"%s{_allocas.Count}";
         _allocas.Add($"{slot} = alloca {t.Llvm}");
         return new Val(slot, new PtrType(t));
+    }
+
+    private static readonly Dictionary<string, string?> FormatCalls = new()
+    {
+        ["write_f"] = null, ["print_f"] = "StdoutWriter", ["eprint_f"] = "StderrWriter",
+    };
+
+    /// `write_f`, `print_f`, and `eprint_f`, unless the program declares a routine by that name.
+    private bool IsWriteF(CallExpr c) =>
+        FormatCalls.ContainsKey(c.Name) && _c.FindFree(c.Name, _env.File, c.Pos) is null;
+
+    /// `write_f(#out, "x = {%x}\n")` expands in place, in order: `write_str(#out, "x = ")`, `%x.format(#out)`,
+    /// `write_str(#out, "\n")`. A brace holds one expression; `{{` and `}}` are literal braces. Nothing is
+    /// allocated: each piece goes straight to the writer. `print_f("...")` / `eprint_f("...")` are the same with
+    /// the stateless `StdoutWriter.shared()` / `StderrWriter.shared()` as the writer.
+    private Val EvalWriteF(CallExpr c)
+    {
+        Expr writer;
+        StrLit template;
+        if (FormatCalls[c.Name] is { } stream)
+        {
+            if (c.Args is not [StrLit only])
+                throw Err(c.Pos, $"{c.Name} takes a string literal: {c.Name}(\"x = {{%x}}\\n\")");
+            writer = new NsCallExpr(new TypeRef(stream, [], c.Pos), "shared", [], [], c.Pos);
+            template = only;
+        }
+        else if (c.Args is [ValueRef named, StrLit given])
+        {
+            writer = named;
+            template = given;
+        }
+        else
+            throw Err(c.Pos, "write_f takes a named writer and a string literal: write_f(#out, \"x = {%x}\\n\")");
+        var text = new StringBuilder();
+        void Flush()
+        {
+            if (text.Length == 0) return;
+            EvalCall(new CallExpr("write_str", [], [writer, new StrLit(text.ToString(), template.Pos)], template.Pos),
+                VoidType.Instance);
+            text.Clear();
+        }
+
+        string s = template.Value;
+        for (int i = 0; i < s.Length; i++)
+        {
+            char ch = s[i];
+            if (ch is '{' or '}' && i + 1 < s.Length && s[i + 1] == ch)
+            {
+                text.Append(ch);
+                i++;
+                continue;
+            }
+            if (ch == '}') throw Err(template.Pos, "a '}' in a write_f string is written '}}'");
+            if (ch != '{')
+            {
+                text.Append(ch);
+                continue;
+            }
+            int end = s.IndexOf('}', i + 1);
+            if (end < 0) throw Err(template.Pos, "a '{' in a write_f string is never closed; a literal brace is '{{'");
+            string source = s[(i + 1)..end];
+            if (string.IsNullOrWhiteSpace(source)) throw Err(template.Pos, "'{}' holds no expression; a literal brace is '{{'");
+            var at = new Pos(template.Pos.File, template.Pos.Line, template.Pos.Col + 2 + i);
+            var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File).ParseLoneExpr();
+            Flush();
+            EvalCall(new MethodCallExpr(value, "format", [], [writer], at), VoidType.Instance);
+            i = end;
+        }
+        Flush();
+        return new Val("", VoidType.Instance);
     }
 
     /// `Array<T, N>.from([a, b, ...])`, the one way an array literal becomes a value. It is built in because a
@@ -1088,9 +1161,9 @@ public sealed class FunctionGen
                 break;
             }
 
-            case SelectTerm s:
+            case WhenCondTerm s:
             {
-                if (s.Arms[^1].Cond is not null) throw Err(s.Pos, "select needs a final '_' arm");
+                if (s.Arms[^1].Cond is not null) throw Err(s.Pos, "when needs a final '_' arm");
                 for (int i = 0; i < s.Arms.Count; i++)
                 {
                     var (cond, target) = s.Arms[i];
@@ -1109,12 +1182,12 @@ public sealed class FunctionGen
                 break;
             }
 
-            case SwitchTerm sw:
+            case WhenValueTerm sw:
             {
                 var v = EvalAny(sw.Value);
                 // Raw bits have no meaning to switch on, except Byte: text is bytes (b'a' cases).
                 if (v.Type is not (IntType { Kind: not IntKind.Bits } or IntType { Bits: 8 } or ChoiceType))
-                    throw Err(sw.Value.Pos, $"switch needs an integer, Byte, Char, or choice value, not {v.Type}");
+                    throw Err(sw.Value.Pos, $"when %v: needs an integer, Byte, Char, or choice value, not {v.Type}");
                 string? defaultLabel = null;
                 var cases = new List<string>();
                 var seen = new HashSet<string>();
@@ -1123,15 +1196,15 @@ public sealed class FunctionGen
                     string label = ArmLabel(target);
                     if (caseExpr is null)
                     {
-                        if (defaultLabel is not null) throw Err(target.Pos, "switch has two '_' arms");
+                        if (defaultLabel is not null) throw Err(target.Pos, "when has two '_' arms");
                         defaultLabel = label;
                         continue;
                     }
                     if (caseExpr is not (IntLit or TypedIntLit or PresetRef))
-                        throw Err(caseExpr.Pos, "switch cases must be integer literals, presets, or choice members");
+                        throw Err(caseExpr.Pos, "when cases must be integer literals, presets, or choice members");
                     var cv = Eval(caseExpr, v.Type);
-                    if (!long.TryParse(cv.Op, out _)) throw Err(caseExpr.Pos, "switch cases must be constant integers");
-                    if (!seen.Add(cv.Op)) throw Err(caseExpr.Pos, $"duplicate switch case {cv.Op}");
+                    if (!long.TryParse(cv.Op, out _)) throw Err(caseExpr.Pos, "when cases must be constant integers");
+                    if (!seen.Add(cv.Op)) throw Err(caseExpr.Pos, $"duplicate when case {cv.Op}");
                     cases.Add($"{v.Type.Llvm} {cv.Op}, label %{label}");
                 }
                 if (defaultLabel is null && v.Type is ChoiceType en)
@@ -1141,7 +1214,7 @@ public sealed class FunctionGen
                         .Where(mem => mem.Value is IntLit lit && !seen.Contains(IntConst(lit.Value, mem.Value.Pos, en).Op))
                         .Select(mem => mem.Name).ToList();
                     if (missing.Count > 0)
-                        throw Err(sw.Pos, $"switch on {en.Name} doesn't cover {string.Join(", ", missing)}; add them or a '_' arm");
+                        throw Err(sw.Pos, $"when on {en.Name} doesn't cover {string.Join(", ", missing)}; add them or a '_' arm");
                     var saved = _cur;
                     _cur = NewLBlock("nocase");
                     defaultLabel = _cur.Label;
@@ -1149,7 +1222,7 @@ public sealed class FunctionGen
                     _cur = saved;
                 }
                 if (defaultLabel is null)
-                    throw Err(sw.Pos, "switch needs a '_' arm (write '_ -> unreachable' if every case is covered)");
+                    throw Err(sw.Pos, "when needs a '_' arm (write '_ -> unreachable' if every case is covered)");
                 Terminate($"switch {v.Type.Llvm} {v.Op}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
                 break;
             }

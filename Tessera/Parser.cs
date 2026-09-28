@@ -9,7 +9,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private int _i;
 
     private static readonly HashSet<string> TerminatorKeywords =
-        ["jump", "branch", "select", "switch", "return", "unreachable"];
+        ["jump", "branch", "when", "return", "unreachable"];
 
     private static readonly HashSet<string> DeclKeywords = ["routine", "record", "choice", "preset", "concept", "conform"];
 
@@ -110,6 +110,16 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private void SkipNewlines()
     {
         while (Is(TokenKind.Newline)) Next();
+    }
+
+    /// One expression and nothing after it: the inside of a `{...}` in a `write_f` string.
+    public Expr ParseLoneExpr()
+    {
+        SkipNewlines();
+        var e = ParseExpr();
+        SkipNewlines();
+        if (!Is(TokenKind.Eof)) throw Error($"expected the end of the expression, found {Describe(Cur)}");
+        return e;
     }
 
     private void ExpectLineEnd()
@@ -570,7 +580,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 ExpectLineEnd();
                 return new BranchTerm(cond, a, b, pos);
             }
-            case "select":
+            // `when:` takes the first arm whose condition holds; `when %v:` matches one value against constants.
+            case "when" when PeekTok(1).Kind == TokenKind.Colon:
             {
                 Next();
                 Expect(TokenKind.Colon, "':'");
@@ -583,10 +594,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     arms.Add((cond, ParseTarget()));
                     ExpectLineEnd();
                 }
-                if (arms.Count == 0) throw new CompileError(pos, "select needs at least one arm");
-                return new SelectTerm(arms, pos);
+                if (arms.Count == 0) throw new CompileError(pos, "when needs at least one arm");
+                return new WhenCondTerm(arms, pos);
             }
-            case "switch":
+            case "when":
             {
                 Next();
                 var value = ParsePostfix();
@@ -600,8 +611,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     arms.Add((c, ParseTarget()));
                     ExpectLineEnd();
                 }
-                if (arms.Count == 0) throw new CompileError(pos, "switch needs at least one arm");
-                return new SwitchTerm(value, arms, pos);
+                if (arms.Count == 0) throw new CompileError(pos, "when needs at least one arm");
+                return new WhenValueTerm(value, arms, pos);
             }
             default:
             {

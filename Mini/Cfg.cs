@@ -9,6 +9,10 @@ namespace Mini;
 public abstract record Terminator;
 public sealed record Goto(BasicBlock Target) : Terminator;
 public sealed record CondGoto(Expr Cond, BasicBlock IfTrue, BasicBlock IfFalse) : Terminator;
+
+/// An else-if chain: the first arm whose condition holds, else `Otherwise`. Conditions run in order, and only
+/// until one holds.
+public sealed record SelectGoto(List<(Expr Cond, BasicBlock Target)> Arms, BasicBlock Otherwise) : Terminator;
 public sealed record Ret(Expr? Value) : Terminator;
 
 public sealed class BasicBlock(string name)
@@ -23,6 +27,7 @@ public sealed class BasicBlock(string name)
     {
         Goto g => [g.Target],
         CondGoto c => [c.IfTrue, c.IfFalse],
+        SelectGoto s => [.. s.Arms.Select(a => a.Target), s.Otherwise],
         _ => [],
     };
 }
@@ -123,6 +128,8 @@ internal sealed class CfgBuilder(Function fn)
                 if (bodyEnd is not null) bodyEnd.Term = new Goto(head);
                 return Place(after);
             }
+            case If { Else: [If] } chain:
+                return LowerChain(chain, cur);
             case If i:
             {
                 int n = ++_label;
@@ -142,6 +149,34 @@ internal sealed class CfgBuilder(Function fn)
             default:
                 throw new InvalidOperationException(s.GetType().Name);
         }
+    }
+
+    /// `if a {} else if b {} else {}` becomes one select: `then_N`, `then_N_2`, ..., and `else_N`.
+    private BasicBlock LowerChain(If first, BasicBlock cur)
+    {
+        int n = ++_label;
+        var arms = new List<(Expr Cond, List<Stmt> Body)>();
+        List<Stmt>? rest = [first];
+        while (rest is [If link])
+        {
+            arms.Add((link.Cond, link.Then));
+            rest = link.Else;
+        }
+        var targets = arms.Select((_, k) => NewBlock(k == 0 ? $"then_{n}" : $"then_{n}_{k + 1}")).ToList();
+        var els = rest is null ? null : NewBlock($"else_{n}");
+        var after = NewBlock($"after_if_{n}");
+        cur.Term = new SelectGoto([.. arms.Select((a, k) => (a.Cond, targets[k]))], els ?? after);
+        for (int k = 0; k < arms.Count; k++)
+        {
+            var end = LowerAll(arms[k].Body, Place(targets[k]));
+            if (end is not null) end.Term = new Goto(after);
+        }
+        if (els is not null)
+        {
+            var end = LowerAll(rest!, Place(els));
+            if (end is not null) end.Term = new Goto(after);
+        }
+        return Place(after);
     }
 
     private static void CollectAssigned(List<Stmt> stmts, HashSet<string> into)
@@ -237,6 +272,9 @@ public static class Liveness
         switch (b.Term)
         {
             case CondGoto c: Read(c.Cond); break;
+            case SelectGoto s:
+                foreach (var (cond, _) in s.Arms) Read(cond);
+                break;
             case Ret r: Read(r.Value); break;
         }
         return (use, def);

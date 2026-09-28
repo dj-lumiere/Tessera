@@ -246,11 +246,12 @@ public sealed class Emitter
                 case Let l: Define(l.Name, l.Value); break;
                 case Assign a: Define(a.Name, a.Value); break;
                 case Print p:
-                    Line($"print_int({Operand(p.Value)})");
-                    Line("println_slice(\"\")");
+                    // A value or a chain goes in braces; a literal is already text.
+                    string shown = IsSimple(p.Value) ? Operand(p.Value) : Chain(p.Value, lazy: false);
+                    Line($"print_f(\"{(IsLiteralText(shown) ? shown : $"{{{shown}}}")}\\n\")");
                     break;
-                case PrintStr p: Line($"println_slice(\"{p.Text}\")"); break;
-                case ExprStmt { Value: Call c }: Line(CallText(c)); break;
+                case PrintStr p: Line($"print_f(\"{TemplateText(p.Text)}\\n\")"); break;
+                case ExprStmt { Value: Call c }: Line(Chain(c, lazy: false)); break;
                 case ExprStmt x: Operand(x.Value); break;   // evaluated for its panics, like a + b overflowing
             }
         }
@@ -264,7 +265,7 @@ public sealed class Emitter
                 return;
             }
             string v = Fresh(name);
-            Line($"{v}: {Tess(e.TypeOf(value))} = {Compute(value)}");
+            Line($"{v}: {Tess(e.TypeOf(value))} = {Chain(value, lazy: false)}");
             _env[name] = v;
         }
 
@@ -280,63 +281,122 @@ public sealed class Emitter
                     string cond = Value(c.Cond, "condition");
                     Line($"branch {cond} ? {Edge(c.IfTrue, _env)} : {Edge(c.IfFalse, _env)}");
                     break;
+                case SelectGoto s:
+                {
+                    // Render every arm before writing `select:`, since a literal receiver may bind a line first.
+                    var arms = s.Arms.Select(a => (Cond: Chain(a.Cond, lazy: true), Edge: Edge(a.Target, _env))).ToList();
+                    string otherwise = Edge(s.Otherwise, _env);
+                    int width = arms.Max(a => a.Cond.Length);
+                    Line("when:");
+                    foreach (var (condText, edgeText) in arms) Line($"    {condText.PadRight(width)} -> {edgeText}");
+                    Line($"    {"_".PadRight(width)} -> {otherwise}");
+                    break;
+                }
                 case Ret { Value: null }:
                     Line("return(0)");
                     break;
                 case Ret r:
-                    Line(ReturnText(Operand(r.Value!)));
+                    Line(ReturnText(IsSimple(r.Value!) ? Operand(r.Value!) : Chain(r.Value!, lazy: false)));
                     break;
             }
         }
 
         // ── Expressions ─────────────────────────────────────────────────────
 
-        /// An operand: a value name or a literal.
-        private string Operand(Expr x) => x switch
+        private static bool IsSimple(Expr x) => x is IntLit or BoolLit or Var or Unary { Op: "-", Operand: IntLit };
+
+        /// One operation on simple operands: fine as an argument (`.bitand(%start.gt(0))`).
+        private static bool IsShallow(Expr x) => IsSimple(x) || x switch
+        {
+            Binary b => IsSimple(b.Left) && IsSimple(b.Right),
+            Unary u => IsSimple(u.Operand),
+            Call c => c.Args.All(IsSimple),
+            _ => false,
+        };
+
+        /// Literal text (`42`, `-5`, `true`), as opposed to a value name or a call.
+        private static bool IsLiteralText(string s) => !s.StartsWith('%') && !s.EndsWith(')');
+
+        /// An operand: a value name or a literal. Anything larger is bound to a named value first.
+        private string Operand(Expr x) => IsSimple(x) ? Chain(x, lazy: false) : Bind(x);
+
+        /// A value name, for a branch condition: a literal gets bound.
+        private string Value(Expr x, string name)
+        {
+            string op = Operand(x);
+            return op.StartsWith('%') ? op : BindText(op, e.TypeOf(x), name);
+        }
+
+        private string Bind(Expr x) => BindText(Chain(x, lazy: false), e.TypeOf(x), NameFor(x));
+
+        private string BindText(string text, Ty type, string name)
+        {
+            string v = Fresh(name);
+            Line($"{v}: {Tess(type)} = {text}");
+            return v;
+        }
+
+        /// `return(x)`; main returns S32, so a value is converted there (a literal just takes the type).
+        private string ReturnText(string operand) =>
+            isMain && !IsLiteralText(operand) ? $"return({operand}.to_s32())" : $"return({operand})";
+
+        /// An expression as one chain of calls, `%i.rem(15).eq(0)`. Eagerly (`lazy: false`), an argument that is
+        /// itself an operation is bound first, keeping one level of nesting as the Style Guide asks, and the left
+        /// side is bound before it so Mini's left-to-right order holds. In a select arm (`lazy: true`) only literals
+        /// are bound, because an arm's condition runs only after the arms before it failed.
+        private string Chain(Expr x, bool lazy) => x switch
         {
             IntLit i => i.Value.ToString(),
             BoolLit b => b.Value ? "true" : "false",
             Unary { Op: "-", Operand: IntLit i } => (-i.Value).ToString(),
             Var v => _env[v.Name],
-            _ => Bind(x),
+            Unary { Op: "-" } u => $"{Receiver(u.Operand, lazy)}.neg()",
+            Unary u => $"{Receiver(u.Operand, lazy)}.bitnot()",
+            Binary b => BinaryText(b, lazy),
+            Call c => CallChain(c, lazy),
+            _ => throw new InvalidOperationException(x.GetType().Name),
         };
 
-        /// An operand that must be a value name (a method receiver or a branch condition): literals get bound.
-        private string Value(Expr x, string name)
+        /// A receiver with no argument to take a type from (`.neg()`, `.bitnot()`): a literal is bound.
+        private string Receiver(Expr x, bool lazy)
         {
-            string op = Operand(x);
-            if (op.StartsWith('%')) return op;
-            string v = Fresh(name);
-            Line($"{v}: {Tess(e.TypeOf(x))} = {op}");
-            return v;
+            string text = Chain(x, lazy);
+            return IsLiteralText(text) ? BindText(text, e.TypeOf(x), "value") : text;
         }
 
-        private string Bind(Expr x)
+        /// Arguments stay inline while they're shallow; if one is deeper, every non-simple argument is bound, in
+        /// order, so calls inside them still run left to right.
+        private string CallChain(Call c, bool lazy)
         {
-            string v = Fresh(NameFor(x));
-            Line($"{v}: {Tess(e.TypeOf(x))} = {Compute(x)}");
-            return v;
+            bool bindAll = !lazy && !c.Args.All(IsShallow);
+            var args = c.Args.Select(a => bindAll ? Operand(a) : Chain(a, lazy));
+            return $"{c.Name}({string.Join(", ", args)})";
         }
 
-        /// The right-hand side of a binding: one method call or routine call.
-        /// `return(x)`; main returns S32, so a value is converted there (a literal just takes the type).
-        private string ReturnText(string operand) =>
-            isMain && operand.StartsWith('%') ? $"return({operand}.to_s32())" : $"return({operand})";
-
-        private string Compute(Expr x) => x switch
+        private string BinaryText(Binary b, bool lazy)
         {
-            Unary { Op: "-" } u => $"{Value(u.Operand, "value")}.neg()",
-            Unary u => $"{Value(u.Operand, "flag")}.bitnot()",
-            // A literal receiver takes its type from the argument (`3.sub(%n)`), but two untyped literals have
-            // none, and `-3.sub(...)` would read as a negation, so those receivers are bound first.
-            Binary { Left: IntLit { Value: >= 0 } or BoolLit, Right: not (IntLit or BoolLit or Unary { Operand: IntLit }) } b =>
-                $"{Operand(b.Left)}.{Method(b.Op)}({Operand(b.Right)})",
-            Binary b => $"{Value(b.Left, "left")}.{Method(b.Op)}({Operand(b.Right)})",
-            Call c => CallText(c),
-            _ => Operand(x),
-        };
+            string left, right;
+            if (!lazy && !IsShallow(b.Right))
+            {
+                left = Operand(b.Left);
+                right = Bind(b.Right);
+            }
+            else
+            {
+                left = Chain(b.Left, lazy);
+                right = Chain(b.Right, lazy);
+            }
+            // A literal receiver takes its type from the argument (`3.sub(%n)`), but two literals have none, and
+            // `-3.sub(...)` would read as a negation, so those receivers are bound.
+            if (IsLiteralText(left) && (IsLiteralText(right) || left.StartsWith('-')))
+                left = BindText(left, e.TypeOf(b.Left), "left");
+            return $"{left}.{Method(b.Op)}({right})";
+        }
 
-        private string CallText(Call c) => $"{c.Name}({string.Join(", ", c.Args.Select(Operand))})";
+        /// Mini text inside a Tessera `print_f` string: braces are doubled and backslashes escaped.
+        private static string TemplateText(string text) =>
+            text.Replace("\\", "\\\\").Replace("{", "{{").Replace("}", "}}");
+
 
         private static string Method(string op) => op switch
         {
