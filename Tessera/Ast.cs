@@ -4,7 +4,7 @@ namespace Tessera;
 
 // ── Types as written ────────────────────────────────────────────────────────
 
-/// A type as written in source: `I64`, `Ptr<I8>`, `Array<T, 8>`, `Callable<@callconv("c"), (Ptr, CSize), Ptr>`.
+/// A type as written in source: `S64`, `Ptr<Byte>`, `Array<T, 8>`, `Callable<@callconv("c"), (Ptr, CSize), Ptr>`.
 public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 {
     public override string ToString() => Args.Count == 0 ? Name : $"{Name}<{string.Join(", ", Args)}>";
@@ -21,7 +21,7 @@ public sealed record TypeArgTuple(List<TypeRef> Types) : TypeArg
 }
 /// `@callconv("c")` inside a Callable.
 public sealed record TypeArgAttr(Attribute Attr) : TypeArg { public override string ToString() => $"@{Attr.Name}"; }
-/// A compile-time integer expression as a generic argument: `max(sizeof<A>(), sizeof<B>())` in `Array<I8, …>`.
+/// A compile-time integer expression as a generic argument: `max(sizeof<A>(), sizeof<B>())` in `Array<Byte, …>`.
 public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string ToString() => "(expr)"; }
 
 // ── Declarations ────────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ public abstract record Decl(string File, List<Attribute> Attributes, Pos Pos)
 public sealed record RoutineDecl(
     string File,
     List<Attribute> Attributes,
-    TypeRef? Owner,              // `I64` in `I64.add`, `Option<T>` in `Option<T>.some`, `T` in `T.bitcast<U>`
+    TypeRef? Owner,              // `S64` in `S64.add`, `Option<T>` in `Option<T>.some`, `T` in `T.bitcast<U>`
     string Name,
     List<string> TypeParams,     // the routine's own: `U` in `T.bitcast<U>`, `T` in `add<T>`
     List<Param> Params,
@@ -124,7 +124,7 @@ public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos); // %x or #p
 /// `name(args)` or `name<T>(args)` — a free routine call.
 public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos);
 
-/// `Type.name(args)` — a call through a type's namespace: `I64.add(%a, %b)`, `Option<T>.none()`, `K.hash(%k)`.
+/// `Type.name(args)` — a call through a type's namespace: `S64.add(%a, %b)`, `Option<T>.none()`, `K.hash(%k)`.
 /// If `Owner` turns out to name a const rather than a type, this is a method call on that const.
 public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
     : Expr(Pos);

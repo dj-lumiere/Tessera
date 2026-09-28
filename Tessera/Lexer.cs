@@ -5,13 +5,13 @@ namespace Tessera;
 
 public enum TokenKind
 {
-    Ident,       // routine, I64, entry, add, ...
+    Ident,       // routine, S64, entry, add, ...
     Value,       // %name
     Pointer,     // #name
     At,          // @
     Int,         // 42, -5, 0xFF
-    Byte,        // b'A': an I8
-    Char,        // 'A': an I32 Unicode scalar value
+    Byte,        // b'A': a Byte
+    Char,        // 'A': a Char, a Unicode scalar value
     Str,         // "..."
     LParen, RParen, LBracket, RBracket, LBrace, RBrace, Lt, Gt,
     Float,       // 3.14, 1.5e10 — IntValue holds the double's bits
@@ -38,7 +38,7 @@ public sealed class CompileError(Pos pos, string message) : Exception($"{pos}: e
 /// is inside (), [], {} or follows a trailing backslash. Consecutive newlines collapse into one token.
 public sealed class Lexer(string file, string src)
 {
-    /// The widest integer type is I256, so a literal's magnitude is at most 2^256 - 1.
+    /// The widest integer types are S256 and U256, so a literal's magnitude is at most 2^256 - 1.
     private const int MaxLiteralBits = 256;
     private static readonly BigInteger MaxLiteral = (BigInteger.One << MaxLiteralBits) - 1;
 

@@ -9,9 +9,9 @@ conform Equal<BF16>, Compare<BF16>, Hash<BF16>
 
 ; -- constants -----------------------------------------------------------------
 
-const BF16.INFINITY:     BF16 = 0x7F80  ; +inf bits
-const BF16.NEG_INFINITY: BF16 = 0xFF80  ; -inf bits
-const BF16.NAN:          BF16 = 0x7FC0  ; canonical quiet NaN bits
+const BF16.INFINITY:     BF16 = BF16.from_bits(0x7F80)  ; +inf bits
+const BF16.NEG_INFINITY: BF16 = BF16.from_bits(0xFF80)  ; -inf bits
+const BF16.NAN:          BF16 = BF16.from_bits(0x7FC0)  ; canonical quiet NaN bits
 
 ; -- runtime support ---------------------------------------------------------
 
@@ -90,7 +90,7 @@ routine BF16.ge(%self: Self, %other: Self) -> Bool
 
 ; -- division ------------------------------------------------------------------
 
-routine BF16.fdiv(%self: Self, %other: Self) -> Self
+routine BF16.div(%self: Self, %other: Self) -> Self
     block entry():
         %r: Self = fdiv<Self>(%self, %other)
         return(%r)
@@ -107,7 +107,7 @@ routine BF16.ne(%self: Self, %other: Self) -> Bool
         %r: Bool = fne<Self>(%self, %other)
         return(%r)
 
-routine BF16.compare(%self: Self, %other: Self) -> I32
+routine BF16.compare(%self: Self, %other: Self) -> S32
     block entry():
         %lt: Bool = %self.lt(%other)
         branch %lt ? return(-1) : maybe_gt(%self, %other)
@@ -116,9 +116,9 @@ routine BF16.compare(%self: Self, %other: Self) -> I32
         %gt: Bool = %self.gt(%other)
         branch %gt ? return(1) : return(0)
 
-routine BF16.hash(%self: Self) -> I64
+routine BF16.hash(%self: Self) -> U64
     block entry():
-        %h: I64 = xxh64_hash_i64(bitcast<Self, I16>(%self).to_u64(), 0)
+        %h: U64 = xxh64_hash_u64(U16.from_bits(%self.bits()).to_u64(), 0)
         return(%h)
 
 ; -- named widening conversion -------------------------------------------------
@@ -128,26 +128,16 @@ routine BF16.to_f64(%self: Self) -> F64
         %result: F64 = fpext<Self, F64>(%self)
         return(%result)
 
-routine BF16.to_i32(%self: Self) -> I32
-    block entry():
-        %r: I32 = fptosi_sat<Self, I32>(%self)
-        return(%r)
-
-routine BF16.to_i64(%self: Self) -> I64
-    block entry():
-        %r: I64 = fptosi_sat<Self, I64>(%self)
-        return(%r)
-
 ; ============================================================
 ; Rust-level operations
 ; ============================================================
 
 ; -- constants ------------------------------------------------------------------
 
-const BF16.MAX:          BF16 = 0x7F7F  ; largest finite value
-const BF16.MIN:          BF16 = 0xFF7F  ; most negative finite value
-const BF16.MIN_POSITIVE: BF16 = 0x0080  ; smallest positive normal value
-const BF16.EPSILON:      BF16 = 0x3C00  ; the gap between 1.0 and the next value
+const BF16.MAX:          BF16 = BF16.from_bits(0x7F7F)  ; largest finite value
+const BF16.MIN:          BF16 = BF16.from_bits(0xFF7F)  ; most negative finite value
+const BF16.MIN_POSITIVE: BF16 = BF16.from_bits(0x0080)  ; smallest positive normal value
+const BF16.EPSILON:      BF16 = BF16.from_bits(0x3C00)  ; the gap between 1.0 and the next value
 
 const BF16.PI: BF16 = 3.14159265358979323846264338327950288  ; pi
 const BF16.TAU: BF16 = 6.28318530717958647692528676655900577  ; 2 pi
@@ -186,20 +176,20 @@ routine BF16.signum(%self: Self) -> Self
 ; Reads the sign bit, so it is true for +0.0 and for NaNs with the bit clear.
 routine BF16.is_sign_positive(%self: Self) -> Bool
     block entry():
-        %bits: I16 = %self.to_bits()
-        %r: Bool = %bits.sge(0)
+        %bits: S16 = S16.from_bits(%self.bits())
+        %r: Bool = %bits.ge(0)
         return(%r)
 
 routine BF16.is_sign_negative(%self: Self) -> Bool
     block entry():
-        %bits: I16 = %self.to_bits()
-        %r: Bool = %bits.slt(0)
+        %bits: S16 = S16.from_bits(%self.bits())
+        %r: Bool = %bits.lt(0)
         return(%r)
 
 ; -- arithmetic ----------------------------------------------------------------
 
 ; The remainder of self / other, with the sign of self (C fmod; Rust's %).
-routine BF16.frem(%self: Self, %other: Self) -> Self
+routine BF16.rem(%self: Self, %other: Self) -> Self
     block entry():
         %r: Self = frem<Self>(%self, %other)
         return(%r)
@@ -220,7 +210,7 @@ routine BF16.mul_add(%self: Self, %a: Self, %b: Self) -> Self
 ; The quotient q of Euclidean division, so that self = q * other + r with 0 <= r < |other|.
 routine BF16.div_euclid(%self: Self, %other: Self) -> Self
     block entry():
-        %q: Self = %self.fdiv(%other).trunc()
+        %q: Self = %self.div(%other).trunc()
         %rem: Self = frem<Self>(%self, %other)
         %rem_negative: Bool = %rem.lt(0.0)
         branch %rem_negative ? adjust(%q) : return(%q)
@@ -272,14 +262,14 @@ routine BF16.clamp(%self: Self, %lo: Self, %hi: Self) -> Self
         return(%r)
 
 ; IEEE 754 totalOrder: -NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN.
-routine BF16.total_compare(%self: Self, %other: Self) -> I32
+routine BF16.total_compare(%self: Self, %other: Self) -> S32
     block entry():
-        %a: I16 = %self.to_bits()
-        %b: I16 = %other.to_bits()
+        %a: S16 = S16.from_bits(%self.bits())
+        %b: S16 = S16.from_bits(%other.bits())
         ; Flipping every bit but the sign of negative values makes the bits order like signed integers.
-        %a_key: I16 = %a.bitxor(%a.ashr(15).lshr(1))
-        %b_key: I16 = %b.bitxor(%b.ashr(15).lshr(1))
-        %r: I32 = %a_key.compare(%b_key)
+        %a_key: S16 = %a.bitxor(%a.shr(15).bitand(S16.MAX))
+        %b_key: S16 = %b.bitxor(%b.shr(15).bitand(S16.MAX))
+        %r: S32 = %a_key.compare(%b_key)
         return(%r)
 
 ; -- rounding ------------------------------------------------------------------
@@ -340,22 +330,21 @@ routine BF16.cbrt(%self: Self) -> Self
         return(%r)
 
 ; self raised to an integer power, by repeated squaring.
-routine BF16.powi(%self: Self, %n: I32) -> Self
+routine BF16.powi(%self: Self, %n: S32) -> Self
     block entry():
-        %negative: Bool = %n.slt(0)
-        %magnitude: I32 = %n.abs()
+        %negative: Bool = %n.lt(0)
+        %magnitude: U32 = %n.abs_diff(0)
         jump loop(%self, %magnitude, 1.0, %negative)
 
-    ; %exp is read as unsigned, so I32.MIN's magnitude (which wraps) still works.
-    block loop(%base: Self, %exp: I32, %acc: Self, %negative: Bool):
+    block loop(%base: Self, %exp: U32, %acc: Self, %negative: Bool):
         %done: Bool = %exp.eq(0)
         branch %done ? finish(%acc, %negative) : step(%base, %exp, %acc, %negative)
 
-    block step(%base: Self, %exp: I32, %acc: Self, %negative: Bool):
+    block step(%base: Self, %exp: U32, %acc: Self, %negative: Bool):
         %odd: Bool = %exp.bitand(1).ne(0)
         %with_base: Self = %acc.mul(%base)
         %next_acc: Self = %odd ? %with_base : %acc
-        jump loop(%base.mul(%base), %exp.lshr(1), %next_acc, %negative)
+        jump loop(%base.mul(%base), %exp.shr(1), %next_acc, %negative)
 
     block finish(%acc: Self, %negative: Bool):
         %inverse: Self = %acc.recip()
@@ -420,7 +409,7 @@ routine BF16.log(%self: Self, %base: Self) -> Self
     block entry():
         %num: Self = %self.ln()
         %den: Self = %base.ln()
-        %r: Self = %num.fdiv(%den)
+        %r: Self = %num.div(%den)
         return(%r)
 
 ; sqrt(self^2 + other^2). Squares of 16-bit floats cannot overflow F32.
@@ -547,32 +536,32 @@ routine BF16.is_finite(%self: Self) -> Bool
 ; Not zero, subnormal, infinite, or NaN.
 routine BF16.is_normal(%self: Self) -> Bool
     block entry():
-        %exponent: I16 = %self.to_bits().bitand(0x7F80)
+        %exponent: U16 = U16.from_bits(%self.bits()).bitand(0x7F80)
         %r: Bool = %exponent.ne(0).bitand(%exponent.ne(0x7F80))
         return(%r)
 
 routine BF16.is_subnormal(%self: Self) -> Bool
     block entry():
-        %bits: I16 = %self.to_bits()
-        %exponent: I16 = %bits.bitand(0x7F80)
-        %mantissa: I16 = %bits.bitand(0x007F)
+        %bits: U16 = U16.from_bits(%self.bits())
+        %exponent: U16 = %bits.bitand(0x7F80)
+        %mantissa: U16 = %bits.bitand(0x007F)
         %r: Bool = %exponent.eq(0).bitand(%mantissa.ne(0))
         return(%r)
 
 ; -- bits ----------------------------------------------------------------------
 
 ; The raw IEEE 754 bits.
-routine BF16.to_bits(%self: Self) -> I16
+routine BF16.bits(%self: Self) -> Bits16
     block entry():
-        %r: I16 = bitcast<Self, I16>(%self)
+        %r: Bits16 = bitcast<Self, Bits16>(%self)
         return(%r)
 
-routine BF16.from_bits(%bits: I16) -> Self
+routine BF16.from_bits(%bits: Bits16) -> Self
     block entry():
-        %r: Self = bitcast<I16, Self>(%bits)
+        %r: Self = bitcast<Bits16, Self>(%bits)
         return(%r)
 
-; -- conversions (float to integer saturates, NaN gives 0) --------------------
+; -- float conversions -----------------------------------------------------------
 
 routine BF16.to_f16(%self: Self) -> F16
     block entry():
@@ -589,42 +578,225 @@ routine BF16.to_f32(%self: Self) -> F32
         %r: F32 = fpext<Self, F32>(%self)
         return(%r)
 
-routine BF16.to_i8(%self: Self) -> I8
+; -- integer conversions ---------------------------------------------------------
+;
+; to_<int> rounds toward zero and panics on NaN or a value out of the integer's
+; range; to_<int>_checked returns None instead, and to_<int>_clamp saturates
+; (NaN gives 0).
+
+routine BF16.to_s8(%self: Self) -> S8
     block entry():
-        %r: I8 = fptosi_sat<Self, I8>(%self)
+        %fits: Bool = %self.fits_int(-128.0, 128.0)
+        branch %fits ? done() : panic(TrapCode.Overflow)
+
+    block done():
+        %r: S8 = fptosi_sat<Self, S8>(%self)
         return(%r)
 
-routine BF16.to_u8(%self: Self) -> I8
+routine BF16.to_s8_checked(%self: Self) -> Option<S8>
     block entry():
-        %r: I8 = fptoui_sat<Self, I8>(%self)
+        %fits: Bool = %self.fits_int(-128.0, 128.0)
+        %value: S8 = fptosi_sat<Self, S8>(%self)
+        %r: Option<S8> = %fits.then_some(%value)
         return(%r)
 
-routine BF16.to_i16(%self: Self) -> I16
+routine BF16.to_s8_clamp(%self: Self) -> S8
     block entry():
-        %r: I16 = fptosi_sat<Self, I16>(%self)
+        %r: S8 = fptosi_sat<Self, S8>(%self)
         return(%r)
 
-routine BF16.to_u16(%self: Self) -> I16
+routine BF16.to_s16(%self: Self) -> S16
     block entry():
-        %r: I16 = fptoui_sat<Self, I16>(%self)
+        %fits: Bool = %self.fits_int(-32768.0, 32768.0)
+        branch %fits ? done() : panic(TrapCode.Overflow)
+
+    block done():
+        %r: S16 = fptosi_sat<Self, S16>(%self)
         return(%r)
 
-routine BF16.to_u32(%self: Self) -> I32
+routine BF16.to_s16_checked(%self: Self) -> Option<S16>
     block entry():
-        %r: I32 = fptoui_sat<Self, I32>(%self)
+        %fits: Bool = %self.fits_int(-32768.0, 32768.0)
+        %value: S16 = fptosi_sat<Self, S16>(%self)
+        %r: Option<S16> = %fits.then_some(%value)
         return(%r)
 
-routine BF16.to_u64(%self: Self) -> I64
+routine BF16.to_s16_clamp(%self: Self) -> S16
     block entry():
-        %r: I64 = fptoui_sat<Self, I64>(%self)
+        %r: S16 = fptosi_sat<Self, S16>(%self)
         return(%r)
 
-routine BF16.to_i128(%self: Self) -> I128
+routine BF16.to_s32(%self: Self) -> S32
     block entry():
-        %r: I128 = fptosi_sat<Self, I128>(%self)
+        %fits: Bool = %self.fits_int(-2147483648.0, 2147483648.0)
+        branch %fits ? done() : panic(TrapCode.Overflow)
+
+    block done():
+        %r: S32 = fptosi_sat<Self, S32>(%self)
         return(%r)
 
-routine BF16.to_u128(%self: Self) -> I128
+routine BF16.to_s32_checked(%self: Self) -> Option<S32>
     block entry():
-        %r: I128 = fptoui_sat<Self, I128>(%self)
+        %fits: Bool = %self.fits_int(-2147483648.0, 2147483648.0)
+        %value: S32 = fptosi_sat<Self, S32>(%self)
+        %r: Option<S32> = %fits.then_some(%value)
+        return(%r)
+
+routine BF16.to_s32_clamp(%self: Self) -> S32
+    block entry():
+        %r: S32 = fptosi_sat<Self, S32>(%self)
+        return(%r)
+
+routine BF16.to_s64(%self: Self) -> S64
+    block entry():
+        %fits: Bool = %self.fits_int(-9223372036854775808.0, 9223372036854775808.0)
+        branch %fits ? done() : panic(TrapCode.Overflow)
+
+    block done():
+        %r: S64 = fptosi_sat<Self, S64>(%self)
+        return(%r)
+
+routine BF16.to_s64_checked(%self: Self) -> Option<S64>
+    block entry():
+        %fits: Bool = %self.fits_int(-9223372036854775808.0, 9223372036854775808.0)
+        %value: S64 = fptosi_sat<Self, S64>(%self)
+        %r: Option<S64> = %fits.then_some(%value)
+        return(%r)
+
+routine BF16.to_s64_clamp(%self: Self) -> S64
+    block entry():
+        %r: S64 = fptosi_sat<Self, S64>(%self)
+        return(%r)
+
+routine BF16.to_s128(%self: Self) -> S128
+    block entry():
+        %fits: Bool = %self.fits_int(-170141183460469231731687303715884105728.0, 170141183460469231731687303715884105728.0)
+        branch %fits ? done() : panic(TrapCode.Overflow)
+
+    block done():
+        %r: S128 = fptosi_sat<Self, S128>(%self)
+        return(%r)
+
+routine BF16.to_s128_checked(%self: Self) -> Option<S128>
+    block entry():
+        %fits: Bool = %self.fits_int(-170141183460469231731687303715884105728.0, 170141183460469231731687303715884105728.0)
+        %value: S128 = fptosi_sat<Self, S128>(%self)
+        %r: Option<S128> = %fits.then_some(%value)
+        return(%r)
+
+routine BF16.to_s128_clamp(%self: Self) -> S128
+    block entry():
+        %r: S128 = fptosi_sat<Self, S128>(%self)
+        return(%r)
+
+routine BF16.to_u8(%self: Self) -> U8
+    block entry():
+        %fits: Bool = %self.fits_int(0.0, 256.0)
+        branch %fits ? done() : panic(TrapCode.Overflow)
+
+    block done():
+        %r: U8 = fptoui_sat<Self, U8>(%self)
+        return(%r)
+
+routine BF16.to_u8_checked(%self: Self) -> Option<U8>
+    block entry():
+        %fits: Bool = %self.fits_int(0.0, 256.0)
+        %value: U8 = fptoui_sat<Self, U8>(%self)
+        %r: Option<U8> = %fits.then_some(%value)
+        return(%r)
+
+routine BF16.to_u8_clamp(%self: Self) -> U8
+    block entry():
+        %r: U8 = fptoui_sat<Self, U8>(%self)
+        return(%r)
+
+routine BF16.to_u16(%self: Self) -> U16
+    block entry():
+        %fits: Bool = %self.fits_int(0.0, 65536.0)
+        branch %fits ? done() : panic(TrapCode.Overflow)
+
+    block done():
+        %r: U16 = fptoui_sat<Self, U16>(%self)
+        return(%r)
+
+routine BF16.to_u16_checked(%self: Self) -> Option<U16>
+    block entry():
+        %fits: Bool = %self.fits_int(0.0, 65536.0)
+        %value: U16 = fptoui_sat<Self, U16>(%self)
+        %r: Option<U16> = %fits.then_some(%value)
+        return(%r)
+
+routine BF16.to_u16_clamp(%self: Self) -> U16
+    block entry():
+        %r: U16 = fptoui_sat<Self, U16>(%self)
+        return(%r)
+
+routine BF16.to_u32(%self: Self) -> U32
+    block entry():
+        %fits: Bool = %self.fits_int(0.0, 4294967296.0)
+        branch %fits ? done() : panic(TrapCode.Overflow)
+
+    block done():
+        %r: U32 = fptoui_sat<Self, U32>(%self)
+        return(%r)
+
+routine BF16.to_u32_checked(%self: Self) -> Option<U32>
+    block entry():
+        %fits: Bool = %self.fits_int(0.0, 4294967296.0)
+        %value: U32 = fptoui_sat<Self, U32>(%self)
+        %r: Option<U32> = %fits.then_some(%value)
+        return(%r)
+
+routine BF16.to_u32_clamp(%self: Self) -> U32
+    block entry():
+        %r: U32 = fptoui_sat<Self, U32>(%self)
+        return(%r)
+
+routine BF16.to_u64(%self: Self) -> U64
+    block entry():
+        %fits: Bool = %self.fits_int(0.0, 18446744073709551616.0)
+        branch %fits ? done() : panic(TrapCode.Overflow)
+
+    block done():
+        %r: U64 = fptoui_sat<Self, U64>(%self)
+        return(%r)
+
+routine BF16.to_u64_checked(%self: Self) -> Option<U64>
+    block entry():
+        %fits: Bool = %self.fits_int(0.0, 18446744073709551616.0)
+        %value: U64 = fptoui_sat<Self, U64>(%self)
+        %r: Option<U64> = %fits.then_some(%value)
+        return(%r)
+
+routine BF16.to_u64_clamp(%self: Self) -> U64
+    block entry():
+        %r: U64 = fptoui_sat<Self, U64>(%self)
+        return(%r)
+
+routine BF16.to_u128(%self: Self) -> U128
+    block entry():
+        %fits: Bool = %self.fits_int(0.0, 340282366920938463463374607431768211456.0)
+        branch %fits ? done() : panic(TrapCode.Overflow)
+
+    block done():
+        %r: U128 = fptoui_sat<Self, U128>(%self)
+        return(%r)
+
+routine BF16.to_u128_checked(%self: Self) -> Option<U128>
+    block entry():
+        %fits: Bool = %self.fits_int(0.0, 340282366920938463463374607431768211456.0)
+        %value: U128 = fptoui_sat<Self, U128>(%self)
+        %r: Option<U128> = %fits.then_some(%value)
+        return(%r)
+
+routine BF16.to_u128_clamp(%self: Self) -> U128
+    block entry():
+        %r: U128 = fptoui_sat<Self, U128>(%self)
+        return(%r)
+
+; Whether self, rounded toward zero, lies in [%lo, %hi). False for NaN.
+routine BF16.fits_int(%self: Self, %lo: Self, %hi: Self) -> Bool
+    block entry():
+        %whole: Self = ftrunc<Self>(%self)
+        %r: Bool = %whole.ge(%lo).bitand(%whole.lt(%hi))
         return(%r)

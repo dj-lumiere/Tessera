@@ -124,7 +124,7 @@ static class Cli
         }
     }
 
-    /// Compiles the inputs to LLVM IR. An executable needs `routine main() -> I32`; checking for it here gives a
+    /// Compiles the inputs to LLVM IR. An executable needs `routine main() -> S32`; checking for it here gives a
     /// clear error instead of the platform linker's (lld-link says "subsystem must be defined").
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true)
     {
@@ -133,7 +133,7 @@ static class Cli
         string ir = compiler.Generate();
         if (executable && !compiler.HasMain)
             throw new CompileError(new Pos(ShownPath(Path.GetFullPath(inputs[0])), 1, 1),
-                "no entry point: an executable needs 'routine main() -> I32' (use 'tessera check' to type-check a file without one)");
+                "no entry point: an executable needs 'routine main() -> S32' (use 'tessera check' to type-check a file without one)");
         return ir;
     }
 
@@ -239,7 +239,7 @@ static class Cli
             };
             foreach (var a in new[] { "-Wno-override-module", optimize ? "-O2" : "-O0", "--target=" + target.LlvmTriple, ll, "-o", exe })
                 psi.ArgumentList.Add(a);
-            // I128 division, F16 / BF16 arithmetic and similar operations lower to compiler-rt routines. GNU
+            // U128 / S128 division, F16 / BF16 arithmetic and similar operations lower to compiler-rt routines. GNU
             // toolchains get them from libgcc; the MSVC toolchain has no equivalent, so link clang's builtins.
             if (target.Os == "windows" && BuiltinsLibrary() is { } builtins) psi.ArgumentList.Add(builtins);
             // lld-link reports in English whatever the system locale, and links faster than link.exe.

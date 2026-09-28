@@ -5,6 +5,8 @@
 ; What this program stresses:
 ;   * no operators: every rotate, xor, and add of the round function is a
 ;     method call, so one line of the spec becomes several named values
+;   * modular arithmetic: SHA-256 adds words modulo 2^32, so every sum is
+;     add_wrap on U32 (a plain add panics on overflow)
 ;   * loop-carried state: the eight working variables a..h ride through the
 ;     round loop as one record value (Working) instead of eight block params
 ;   * static data: the 64 round constants and the initial hash are const
@@ -19,15 +21,15 @@
 ; ── C FFI ─────────────────────────────────────────────────────────────────────
 
 @[external("c"), symbol("printf"), variadic]
-routine c_printf(#fmt: Ptr<I8>) -> I32
+routine c_printf(#fmt: Ptr<Byte>) -> S32
 
 ; ── Types ─────────────────────────────────────────────────────────────────────
 
-const MILLION: I64 = 1000000
+const MILLION: U64 = 1000000
 
 ; K[0..64): the first 32 bits of the fractional parts of the cube roots of the
 ; first 64 primes.
-const K: Array<I32, 64> = [
+const K: Array<U32, 64> = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -40,101 +42,101 @@ const K: Array<I32, 64> = [
 
 ; H(0): the first 32 bits of the fractional parts of the square roots of the
 ; first 8 primes.
-const H0: Array<I32, 8> = [
+const H0: Array<U32, 8> = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
 ]
 
 ; The eight working variables of one compression. The round loop carries them
 ; as a single SSA value, so each jump passes one argument instead of eight.
 record Working
-    a: I32
-    b: I32
-    c: I32
-    d: I32
-    e: I32
-    f: I32
-    g: I32
-    h: I32
+    a: U32
+    b: U32
+    c: U32
+    d: U32
+    e: U32
+    f: U32
+    g: U32
+    h: U32
 
 ; ── Round functions (FIPS 180-4 §4.1.2) ──────────────────────────────────────
 
 ; Σ0(x) = ROTR²(x) ⊕ ROTR¹³(x) ⊕ ROTR²²(x)
-routine big_sigma0(%x: I32) -> I32
+routine big_sigma0(%x: U32) -> U32
     block entry():
-        %r2:     I32 = %x.rotr(2)
-        %r13:    I32 = %x.rotr(13)
-        %r22:    I32 = %x.rotr(22)
-        %result: I32 = %r2.bitxor(%r13).bitxor(%r22)
+        %r2:     U32 = %x.rotr(2)
+        %r13:    U32 = %x.rotr(13)
+        %r22:    U32 = %x.rotr(22)
+        %result: U32 = %r2.bitxor(%r13).bitxor(%r22)
         return(%result)
 
 ; Σ1(x) = ROTR⁶(x) ⊕ ROTR¹¹(x) ⊕ ROTR²⁵(x)
-routine big_sigma1(%x: I32) -> I32
+routine big_sigma1(%x: U32) -> U32
     block entry():
-        %r6:     I32 = %x.rotr(6)
-        %r11:    I32 = %x.rotr(11)
-        %r25:    I32 = %x.rotr(25)
-        %result: I32 = %r6.bitxor(%r11).bitxor(%r25)
+        %r6:     U32 = %x.rotr(6)
+        %r11:    U32 = %x.rotr(11)
+        %r25:    U32 = %x.rotr(25)
+        %result: U32 = %r6.bitxor(%r11).bitxor(%r25)
         return(%result)
 
 ; σ0(x) = ROTR⁷(x) ⊕ ROTR¹⁸(x) ⊕ SHR³(x)
-routine small_sigma0(%x: I32) -> I32
+routine small_sigma0(%x: U32) -> U32
     block entry():
-        %r7:     I32 = %x.rotr(7)
-        %r18:    I32 = %x.rotr(18)
-        %s3:     I32 = %x.lshr(3)
-        %result: I32 = %r7.bitxor(%r18).bitxor(%s3)
+        %r7:     U32 = %x.rotr(7)
+        %r18:    U32 = %x.rotr(18)
+        %s3:     U32 = %x.shr(3)
+        %result: U32 = %r7.bitxor(%r18).bitxor(%s3)
         return(%result)
 
 ; σ1(x) = ROTR¹⁷(x) ⊕ ROTR¹⁹(x) ⊕ SHR¹⁰(x)
-routine small_sigma1(%x: I32) -> I32
+routine small_sigma1(%x: U32) -> U32
     block entry():
-        %r17:    I32 = %x.rotr(17)
-        %r19:    I32 = %x.rotr(19)
-        %s10:    I32 = %x.lshr(10)
-        %result: I32 = %r17.bitxor(%r19).bitxor(%s10)
+        %r17:    U32 = %x.rotr(17)
+        %r19:    U32 = %x.rotr(19)
+        %s10:    U32 = %x.shr(10)
+        %result: U32 = %r17.bitxor(%r19).bitxor(%s10)
         return(%result)
 
 ; Ch(e, f, g) = (e ∧ f) ⊕ (¬e ∧ g): each bit of e picks f or g.
-routine choose(%e: I32, %f: I32, %g: I32) -> I32
+routine choose(%e: U32, %f: U32, %g: U32) -> U32
     block entry():
-        %from_f: I32 = %e.bitand(%f)
-        %from_g: I32 = %e.bitnot().bitand(%g)
-        %result: I32 = %from_f.bitxor(%from_g)
+        %from_f: U32 = %e.bitand(%f)
+        %from_g: U32 = %e.bitnot().bitand(%g)
+        %result: U32 = %from_f.bitxor(%from_g)
         return(%result)
 
 ; Maj(a, b, c) = (a ∧ b) ⊕ (a ∧ c) ⊕ (b ∧ c): the bitwise majority vote.
-routine majority(%a: I32, %b: I32, %c: I32) -> I32
+routine majority(%a: U32, %b: U32, %c: U32) -> U32
     block entry():
-        %ab:     I32 = %a.bitand(%b)
-        %ac:     I32 = %a.bitand(%c)
-        %bc:     I32 = %b.bitand(%c)
-        %result: I32 = %ab.bitxor(%ac).bitxor(%bc)
+        %ab:     U32 = %a.bitand(%b)
+        %ac:     U32 = %a.bitand(%c)
+        %bc:     U32 = %b.bitand(%c)
+        %result: U32 = %ab.bitxor(%ac).bitxor(%bc)
         return(%result)
 
 ; One round:
 ;   T1 = h + Σ1(e) + Ch(e, f, g) + K[t] + W[t]
 ;   T2 = Σ0(a) + Maj(a, b, c)
 ;   (a, b, c, d, e, f, g, h) ← (T1 + T2, a, b, c, d + T1, e, f, g)
-routine sha256_round(%v: Working, %k: I32, %w: I32) -> Working
+routine sha256_round(%v: Working, %k: U32, %w: U32) -> Working
     block entry():
-        %a: I32 = %v.a
-        %b: I32 = %v.b
-        %c: I32 = %v.c
-        %d: I32 = %v.d
-        %e: I32 = %v.e
-        %f: I32 = %v.f
-        %g: I32 = %v.g
-        %h: I32 = %v.h
+        %a: U32 = %v.a
+        %b: U32 = %v.b
+        %c: U32 = %v.c
+        %d: U32 = %v.d
+        %e: U32 = %v.e
+        %f: U32 = %v.f
+        %g: U32 = %v.g
+        %h: U32 = %v.h
 
-        %sigma1: I32 = big_sigma1(%e)
-        %ch:     I32 = choose(%e, %f, %g)
-        %t1:     I32 = %h.add(%sigma1).add(%ch).add(%k).add(%w)
-        %sigma0: I32 = big_sigma0(%a)
-        %maj:    I32 = majority(%a, %b, %c)
-        %t2:     I32 = %sigma0.add(%maj)
+        %sigma1: U32 = big_sigma1(%e)
+        %ch:     U32 = choose(%e, %f, %g)
+        %t1:     U32 = %h.add_wrap(%sigma1).add_wrap(%ch).add_wrap(%k).add_wrap(%w)
+        %sigma0: U32 = big_sigma0(%a)
+        %maj:    U32 = majority(%a, %b, %c)
+        %t2:     U32 = %sigma0.add_wrap(%maj)
 
-        %new_a: I32 = %t1.add(%t2)
-        %new_e: I32 = %d.add(%t1)
+        %new_a: U32 = %t1.add_wrap(%t2)
+        %new_e: U32 = %d.add_wrap(%t1)
         %next:  Working = Working {
             a: %new_a, b: %a, c: %b, d: %c,
             e: %new_e, f: %e, g: %f, h: %g
@@ -144,179 +146,179 @@ routine sha256_round(%v: Working, %k: I32, %w: I32) -> Working
 ; ── Byte order ────────────────────────────────────────────────────────────────
 
 ; Reads 4 bytes as a big-endian word. Byte loads, so #p needs no alignment.
-routine load_be32(#p: Ptr<I8>) -> I32
+routine load_be32(#p: Ptr<Byte>) -> U32
     block entry():
-        %b0: I8 := #p[0]
-        %b1: I8 := #p[1]
-        %b2: I8 := #p[2]
-        %b3: I8 := #p[3]
-        %w0: I32 = %b0.to_u32().shl(24)
-        %w1: I32 = %b1.to_u32().shl(16)
-        %w2: I32 = %b2.to_u32().shl(8)
-        %w3: I32 = %b3.to_u32()
-        %result: I32 = %w0.bitor(%w1).bitor(%w2).bitor(%w3)
+        %b0: Byte := #p[0]
+        %b1: Byte := #p[1]
+        %b2: Byte := #p[2]
+        %b3: Byte := #p[3]
+        %w0: U32 = %b0.to_u8().to_u32().shl(24)
+        %w1: U32 = %b1.to_u8().to_u32().shl(16)
+        %w2: U32 = %b2.to_u8().to_u32().shl(8)
+        %w3: U32 = %b3.to_u8().to_u32()
+        %result: U32 = %w0.bitor(%w1).bitor(%w2).bitor(%w3)
         return(%result)
 
 ; Writes %value as 8 big-endian bytes.
-routine store_be64(#p: Ptr<I8>, %value: I64) -> Void
+routine store_be64(#p: Ptr<Byte>, %value: U64) -> Void
     block entry():
         jump byte_loop(0)
 
-    block byte_loop(%i: I64):
-        %done: Bool = %i.sge(8)
+    block byte_loop(%i: U64):
+        %done: Bool = %i.ge(8)
         branch %done ? return() : store_byte(%i)
 
-    block store_byte(%i: I64):
-        %shift: I64 = 56.sub(%i.mul(8))
-        %byte:  I8  = %value.lshr(%shift).to_i8()
+    block store_byte(%i: U64):
+        %shift: U64 = 56.sub(%i.mul(8))
+        %byte:  Byte = %value.shr(%shift).to_u8_wrap().bits()
         #p[%i] = %byte
         jump byte_loop(%i.add(1))
 
 ; ── Compression ───────────────────────────────────────────────────────────────
 
 ; Mixes one 64-byte block into the 8-word #state.
-routine sha256_compress(#state: Ptr<I32>, #block: Ptr<I8>) -> Void
+routine sha256_compress(#state: Ptr<U32>, #block: Ptr<Byte>) -> Void
     block entry():
-        #schedule: Ptr<Array<I32, 64>> = alloca<Array<I32, 64>>
-        #w:        Ptr<I32>             = #schedule.cast<I32>()
+        #schedule: Ptr<Array<U32, 64>> = alloca<Array<U32, 64>>
+        #w:        Ptr<U32>             = #schedule.cast<U32>()
         jump load_words(0, #w)
 
     ; W[0..16) — the block's own words.
-    block load_words(%t: I64, #w: Ptr<I32>):
-        %done: Bool = %t.sge(16)
+    block load_words(%t: U64, #w: Ptr<U32>):
+        %done: Bool = %t.ge(16)
         branch %done ? extend(16, #w) : load_word(%t, #w)
 
-    block load_word(%t: I64, #w: Ptr<I32>):
-        %offset: I64     = %t.mul(4)
-        #src:    Ptr<I8> = #block[%offset]
-        %word:   I32     = load_be32(#src)
+    block load_word(%t: U64, #w: Ptr<U32>):
+        %offset: U64       = %t.mul(4)
+        #src:    Ptr<Byte> = #block[%offset]
+        %word:   U32       = load_be32(#src)
         #w[%t] = %word
         jump load_words(%t.add(1), #w)
 
     ; W[16..64) — W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16]
-    block extend(%t: I64, #w: Ptr<I32>):
-        %done: Bool = %t.sge(64)
+    block extend(%t: U64, #w: Ptr<U32>):
+        %done: Bool = %t.ge(64)
         branch %done ? rounds(#w) : extend_word(%t, #w)
 
-    block extend_word(%t: I64, #w: Ptr<I32>):
-        %i2:  I64 = %t.sub(2)
-        %i7:  I64 = %t.sub(7)
-        %i15: I64 = %t.sub(15)
-        %i16: I64 = %t.sub(16)
-        %w2:  I32 := #w[%i2]
-        %w7:  I32 := #w[%i7]
-        %w15: I32 := #w[%i15]
-        %w16: I32 := #w[%i16]
-        %s1:  I32 = small_sigma1(%w2)
-        %s0:  I32 = small_sigma0(%w15)
-        #w[%t] = %s1.add(%w7).add(%s0).add(%w16)
+    block extend_word(%t: U64, #w: Ptr<U32>):
+        %i2:  U64 = %t.sub(2)
+        %i7:  U64 = %t.sub(7)
+        %i15: U64 = %t.sub(15)
+        %i16: U64 = %t.sub(16)
+        %w2:  U32 := #w[%i2]
+        %w7:  U32 := #w[%i7]
+        %w15: U32 := #w[%i15]
+        %w16: U32 := #w[%i16]
+        %s1:  U32 = small_sigma1(%w2)
+        %s0:  U32 = small_sigma0(%w15)
+        #w[%t] = %s1.add_wrap(%w7).add_wrap(%s0).add_wrap(%w16)
         jump extend(%t.add(1), #w)
 
-    block rounds(#w: Ptr<I32>):
-        %a: I32 := #state[0]
-        %b: I32 := #state[1]
-        %c: I32 := #state[2]
-        %d: I32 := #state[3]
-        %e: I32 := #state[4]
-        %f: I32 := #state[5]
-        %g: I32 := #state[6]
-        %h: I32 := #state[7]
+    block rounds(#w: Ptr<U32>):
+        %a: U32 := #state[0]
+        %b: U32 := #state[1]
+        %c: U32 := #state[2]
+        %d: U32 := #state[3]
+        %e: U32 := #state[4]
+        %f: U32 := #state[5]
+        %g: U32 := #state[6]
+        %h: U32 := #state[7]
         %start: Working = Working { a: %a, b: %b, c: %c, d: %d, e: %e, f: %f, g: %g, h: %h }
         jump round_loop(0, %start, #w)
 
-    block round_loop(%t: I64, %v: Working, #w: Ptr<I32>):
-        %done: Bool = %t.sge(64)
+    block round_loop(%t: U64, %v: Working, #w: Ptr<U32>):
+        %done: Bool = %t.ge(64)
         branch %done ? finish(%v) : round(%t, %v, #w)
 
-    block round(%t: I64, %v: Working, #w: Ptr<I32>):
-        %k_t:  I32     := K[%t]
-        %w_t:  I32     := #w[%t]
+    block round(%t: U64, %v: Working, #w: Ptr<U32>):
+        %k_t:  U32     := K[%t]
+        %w_t:  U32     := #w[%t]
         %next: Working = sha256_round(%v, %k_t, %w_t)
         jump round_loop(%t.add(1), %next, #w)
 
     ; H[i] += working variable i
     block finish(%v: Working):
-        %h0: I32 := #state[0]
-        %h1: I32 := #state[1]
-        %h2: I32 := #state[2]
-        %h3: I32 := #state[3]
-        %h4: I32 := #state[4]
-        %h5: I32 := #state[5]
-        %h6: I32 := #state[6]
-        %h7: I32 := #state[7]
-        #state[0] = %h0.add(%v.a)
-        #state[1] = %h1.add(%v.b)
-        #state[2] = %h2.add(%v.c)
-        #state[3] = %h3.add(%v.d)
-        #state[4] = %h4.add(%v.e)
-        #state[5] = %h5.add(%v.f)
-        #state[6] = %h6.add(%v.g)
-        #state[7] = %h7.add(%v.h)
+        %h0: U32 := #state[0]
+        %h1: U32 := #state[1]
+        %h2: U32 := #state[2]
+        %h3: U32 := #state[3]
+        %h4: U32 := #state[4]
+        %h5: U32 := #state[5]
+        %h6: U32 := #state[6]
+        %h7: U32 := #state[7]
+        #state[0] = %h0.add_wrap(%v.a)
+        #state[1] = %h1.add_wrap(%v.b)
+        #state[2] = %h2.add_wrap(%v.c)
+        #state[3] = %h3.add_wrap(%v.d)
+        #state[4] = %h4.add_wrap(%v.e)
+        #state[5] = %h5.add_wrap(%v.f)
+        #state[6] = %h6.add_wrap(%v.g)
+        #state[7] = %h7.add_wrap(%v.h)
         return()
 
 ; ── One-shot hash ─────────────────────────────────────────────────────────────
 
 ; Hashes #data[0..len) and writes the 8-word digest to #digest.
-routine sha256(#data: Ptr<I8>, %len: I64, #digest: Ptr<I32>) -> Void
+routine sha256(#data: Ptr<Byte>, %len: U64, #digest: Ptr<U32>) -> Void
     block entry():
-        #h0: Ptr<I32> = H0.as_ptr()
-        copy<I32>(#digest, #h0, 8)
-        %full_blocks: I64 = %len.sdiv(64)
+        #h0: Ptr<U32> = H0.as_ptr()
+        copy<U32>(#digest, #h0, 8)
+        %full_blocks: U64 = %len.div(64)
         jump block_loop(0, %full_blocks)
 
     ; Every complete 64-byte block is compressed straight from #data.
-    block block_loop(%i: I64, %full_blocks: I64):
-        %done: Bool = %i.sge(%full_blocks)
+    block block_loop(%i: U64, %full_blocks: U64):
+        %done: Bool = %i.ge(%full_blocks)
         branch %done ? pad(%full_blocks) : compress_block(%i, %full_blocks)
 
-    block compress_block(%i: I64, %full_blocks: I64):
-        %offset: I64     = %i.mul(64)
-        #src:    Ptr<I8> = #data[%offset]
+    block compress_block(%i: U64, %full_blocks: U64):
+        %offset: U64       = %i.mul(64)
+        #src:    Ptr<Byte> = #data[%offset]
         sha256_compress(#digest, #src)
         jump block_loop(%i.add(1), %full_blocks)
 
     ; The tail: leftover bytes, then 0x80, zeros, and the message length in
-    ; bits as a big-endian I64. That fits one block when fewer than 56 bytes
+    ; bits as a big-endian U64. That fits one block when fewer than 56 bytes
     ; are left over, and takes two otherwise.
-    block pad(%full_blocks: I64):
-        %rest_start: I64 = %full_blocks.mul(64)
-        %rest_len:   I64 = %len.sub(%rest_start)
+    block pad(%full_blocks: U64):
+        %rest_start: U64 = %full_blocks.mul(64)
+        %rest_len:   U64 = %len.sub(%rest_start)
 
-        #tail_buf: Ptr<Array<I8, 128>> = alloca<Array<I8, 128>>
-        #tail:     Ptr<I8>             = #tail_buf.cast<I8>()
-        zero<I8>(#tail, 128)
-        #rest: Ptr<I8> = #data[%rest_start]
-        copy<I8>(#tail, #rest, %rest_len)
+        #tail_buf: Ptr<Array<Byte, 128>> = alloca<Array<Byte, 128>>
+        #tail:     Ptr<Byte>               = #tail_buf.cast<Byte>()
+        zero<Byte>(#tail, 128)
+        #rest: Ptr<Byte> = #data[%rest_start]
+        copy<Byte>(#tail, #rest, %rest_len)
         #tail[%rest_len] = b'\x80'
 
-        %one_block: Bool = %rest_len.slt(56)
-        %tail_len:  I64  = %one_block ? 64 : 128
-        %len_at:    I64  = %tail_len.sub(8)
-        %bits:      I64  = %len.shl(3)
-        #len_dst: Ptr<I8> = #tail[%len_at]
+        %one_block: Bool = %rest_len.lt(56)
+        %tail_len:  U64  = %one_block ? 64 : 128
+        %len_at:    U64  = %tail_len.sub(8)
+        %bits:      U64  = %len.shl(3)
+        #len_dst: Ptr<Byte> = #tail[%len_at]
         store_be64(#len_dst, %bits)
 
         sha256_compress(#digest, #tail)
         branch %one_block ? return() : second_tail(#tail)
 
-    block second_tail(#tail: Ptr<I8>):
-        #second: Ptr<I8> = #tail[64]
+    block second_tail(#tail: Ptr<Byte>):
+        #second: Ptr<Byte> = #tail[64]
         sha256_compress(#digest, #second)
         return()
 
 ; ── Output ────────────────────────────────────────────────────────────────────
 
-routine print_digest(#label: Ptr<I8>, #digest: Ptr<I32>) -> Void
+routine print_digest(#label: Ptr<Byte>, #digest: Ptr<U32>) -> Void
     block entry():
         c_printf("%-9s ", #label)
         jump word_loop(0)
 
-    block word_loop(%i: I64):
-        %done: Bool = %i.sge(8)
+    block word_loop(%i: U64):
+        %done: Bool = %i.ge(8)
         branch %done ? end_line() : print_word(%i)
 
-    block print_word(%i: I64):
-        %word: I32 := #digest[%i]
+    block print_word(%i: U64):
+        %word: U32 := #digest[%i]
         c_printf("%08x", %word)
         jump word_loop(%i.add(1))
 
@@ -324,24 +326,24 @@ routine print_digest(#label: Ptr<I8>, #digest: Ptr<I32>) -> Void
         c_printf("\n")
         return()
 
-routine hash_and_print(#label: Ptr<I8>, #data: Ptr<I8>, %len: I64) -> Void
+routine hash_and_print(#label: Ptr<Byte>, #data: Ptr<Byte>, %len: U64) -> Void
     block entry():
-        #digest_buf: Ptr<Array<I32, 8>> = alloca<Array<I32, 8>>
-        #digest:     Ptr<I32>            = #digest_buf.cast<I32>()
+        #digest_buf: Ptr<Array<U32, 8>> = alloca<Array<U32, 8>>
+        #digest:     Ptr<U32>            = #digest_buf.cast<U32>()
         sha256(#data, %len, #digest)
         print_digest(#label, #digest)
         return()
 
-routine hash_string(#label: Ptr<I8>, %message: String) -> Void
+routine hash_string(#label: Ptr<Byte>, %message: String) -> Void
     block entry():
-        #data: Ptr<I8> = %message.data
-        %len:  I64     = %message.length
+        #data: Ptr<Byte> = %message.data
+        %len:  U64       = %message.length
         hash_and_print(#label, #data, %len)
         return()
 
 ; ── main ──────────────────────────────────────────────────────────────────────
 
-routine main() -> I32
+routine main() -> S32
     block entry():
         hash_string("empty", "")
         hash_string("abc", "abc")
@@ -350,19 +352,19 @@ routine main() -> I32
         ; One million 'a' bytes: 15,625 full blocks plus a two-block tail.
         %heap:  Allocator      = make_heap_allocator()
         #alloc: Ptr<Allocator> = alloca<Allocator>([%heap])
-        #many:  Ptr<I8>        = alloc<I8>(#alloc, MILLION)
+        #many:  Ptr<Byte>      = alloc<Byte>(#alloc, MILLION)
         %failed: Bool = #many.is_null()
         branch %failed ? panic(TrapCode.AllocFailed) : fill_loop(0, #alloc, #many)
 
-    block fill_loop(%i: I64, #alloc: Ptr<Allocator>, #many: Ptr<I8>):
-        %done: Bool = %i.sge(MILLION)
+    block fill_loop(%i: U64, #alloc: Ptr<Allocator>, #many: Ptr<Byte>):
+        %done: Bool = %i.ge(MILLION)
         branch %done ? hash_many(#alloc, #many) : fill_byte(%i, #alloc, #many)
 
-    block fill_byte(%i: I64, #alloc: Ptr<Allocator>, #many: Ptr<I8>):
+    block fill_byte(%i: U64, #alloc: Ptr<Allocator>, #many: Ptr<Byte>):
         #many[%i] = b'a'
         jump fill_loop(%i.add(1), #alloc, #many)
 
-    block hash_many(#alloc: Ptr<Allocator>, #many: Ptr<I8>):
+    block hash_many(#alloc: Ptr<Allocator>, #many: Ptr<Byte>):
         hash_and_print("million-a", #many, MILLION)
-        free<I8>(#alloc, #many)
+        free<Byte>(#alloc, #many)
         return(0)

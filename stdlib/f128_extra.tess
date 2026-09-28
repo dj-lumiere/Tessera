@@ -19,20 +19,20 @@
 ; lies within 2^-226 of the midpoint below 1 for x near 2^-56.5 / π, where
 ; the fast tier alone rounds the wrong way (tests/f128_extra.tess has them).
 
-const F128_PI_BAND: I64 = 145
+const F128_PI_BAND: S64 = 145
 
 ; floor(π × 2^384), least significant limb first (386 bits)
-const PI_FIXED_384: Array<I64, 7> = [
-    -4732044268327596948, 4983270260364809079, 589684135938649225, -6626703657320631856,
+const PI_FIXED_384: Array<U64, 7> = [
+    0xBE5466CF34E90C6C, 4983270260364809079, 589684135938649225, 0xA4093822299F31D0,
     1376283091369227076, 2611923443488327891, 3
 ]
-const PI_FIXED_BITS: I64 = 384
+const PI_FIXED_BITS: S64 = 384
 
 ; -- the exact reduction -------------------------------------------------------
 
 ; πx = quadrant × π/2 + d × π/2, with quadrant = r mod 4 and d = 2x - r exact.
 record PiReduced
-    quadrant: I64
+    quadrant: S64
     d:        F128
 
 ; For a finite x that is not an integer (so |x| < 2^112 and 2x can't overflow).
@@ -41,15 +41,15 @@ routine f128_pi_reduce(%x: F128) -> PiReduced
         %twice:   F128 = %x.add(%x)
         %nearest: F128 = %twice.round_ties_even()
         %d:       F128 = %twice.sub(%nearest)
-        %q:       I64  = %nearest.to_i128().bitand(3).to_i64()     ; two's complement: mod 4 for negatives too
+        %q:       S64  = %nearest.to_s128_clamp().bitand(3).to_s64_wrap()     ; two's complement: mod 4 for negatives too
         %r: PiReduced = PiReduced { quadrant: %q, d: %d }
         return(%r)
 
 ; Whether x (an integer) is odd; from 2^113 on every F128 is even.
 routine f128_integer_is_odd(%x: F128) -> Bool
     block entry():
-        %big: Bool = %x.abs().ge(F128.from_bits(0x40700000000000000000000000000000))   ; 2^113
-        %odd: Bool = %x.to_i128().bitand(1).eq(1)
+        %big: Bool = %x.abs().ge(f128_of(0x40700000000000000000000000000000))   ; 2^113
+        %odd: Bool = %x.to_s128_clamp().bitand(1).eq(1)
         %r:   Bool = %big.bitnot().bitand(%odd)
         return(%r)
 
@@ -63,11 +63,11 @@ record PiPick
     divide:   Bool      ; tan: divide by the other one
     negative: Bool
 
-routine f128_pi_pick(%quadrant: I64, %kind: TrigKind) -> PiPick
+routine f128_pi_pick(%quadrant: S64, %kind: TrigKind) -> PiPick
     block entry():
         %odd:   Bool = %quadrant.bitand(1).eq(1)
         %even:  Bool = %odd.bitnot()
-        %upper: Bool = %quadrant.sge(2)
+        %upper: Bool = %quadrant.ge(2)
         %middle: Bool = %quadrant.eq(1).bitor(%quadrant.eq(2))
         %sin: PiPick = PiPick { over_sin: %even, divide: false, negative: %upper }
         %cos: PiPick = PiPick { over_sin: %odd, divide: false, negative: %middle }
@@ -84,14 +84,14 @@ record WideRounding
     value: F128
 
 ; u rounded to F128, and whether all of u × (1 ± 2^-k) rounds to the same value.
-routine wide_round_within(%u: Wide, %k: I64) -> WideRounding
+routine wide_round_within(%u: Wide, %k: S64) -> WideRounding
     block entry():
         %r:         F128 = %u.to_f128()
         %magnitude: Wide = %u.abs()
         %delta:     Wide = Wide { negative: false, exp: %u.exp.sub(%k), hi: %u.hi, lo: %u.lo }
         %low:       F128 = %magnitude.sub(%delta).to_f128()
         %high:      F128 = %magnitude.add(%delta).to_f128()
-        %kept:      I128 = %r.abs().bits
+        %kept:      U128 = %r.abs().bits
         %ok:        Bool = %low.bits.eq(%kept).bitand(%high.bits.eq(%kept))
         %w: WideRounding = WideRounding { ok: %ok, value: %r }
         return(%w)
@@ -132,154 +132,155 @@ routine wide_pi_trig(%d: F128, %pick: PiPick) -> Wide
 
 ; self = a × b (self must be neither).
 routine BigNat<N>.set_product(#self: Ptr<Self>, #a: Ptr<Self>, #b: Ptr<Self>) -> Void
-require N: I64
+require N: U64
     block entry():
-        %a_length: I64 := #a.length
-        %b_length: I64 := #b.length
-        %length:   I64 = %a_length.add(%b_length)
-        %room:     Bool = %length.sle(N)
+        %a_length: U64 := #a.length
+        %b_length: U64 := #b.length
+        %length:   U64 = %a_length.add(%b_length)
+        %room:     Bool = %length.le(N)
         branch %room ? clear(0, %a_length, %b_length, %length) : panic(TrapCode.Overflow)
 
-    block clear(%i: I64, %a_length: I64, %b_length: I64, %length: I64):
-        %done: Bool = %i.sge(%length)
+    block clear(%i: U64, %a_length: U64, %b_length: U64, %length: U64):
+        %done: Bool = %i.ge(%length)
         branch %done ? row(0, %a_length, %b_length, %length) : clear_one(%i, %a_length, %b_length, %length)
 
-    block clear_one(%i: I64, %a_length: I64, %b_length: I64, %length: I64):
+    block clear_one(%i: U64, %a_length: U64, %b_length: U64, %length: U64):
         #self.limbs[%i] = 0
         jump clear(%i.add(1), %a_length, %b_length, %length)
 
     ; row i adds a[i] × b at limb i
-    block row(%i: I64, %a_length: I64, %b_length: I64, %length: I64):
-        %done: Bool = %i.sge(%a_length)
+    block row(%i: U64, %a_length: U64, %b_length: U64, %length: U64):
+        %done: Bool = %i.ge(%a_length)
         branch %done ? finish(%length) : row_start(%i, %a_length, %b_length, %length)
 
-    block row_start(%i: I64, %a_length: I64, %b_length: I64, %length: I64):
-        %a_limb: I64 := #a.limbs[%i]
-        jump column(%i, 0, 0, %a_limb.to_u128(), %a_length, %b_length, %length)
+    block row_start(%i: U64, %a_length: U64, %b_length: U64, %length: U64):
+        %a_limb: U64 := #a.limbs[%i]
+        jump column(%i, 0, 0, %a_limb, %a_length, %b_length, %length)
 
-    block column(%i: I64, %j: I64, %carry: I128, %a_limb: I128, %a_length: I64, %b_length: I64, %length: I64):
-        %done: Bool = %j.sge(%b_length)
+    block column(%i: U64, %j: U64, %carry: U128, %a_limb: U64, %a_length: U64, %b_length: U64, %length: U64):
+        %done: Bool = %j.ge(%b_length)
         branch %done ? row_end(%i, %carry, %a_length, %b_length, %length)
                      : column_step(%i, %j, %carry, %a_limb, %a_length, %b_length, %length)
 
     ; limb + a × b + carry < 2^128 for 64-bit a, b, limb, and carry
-    block column_step(%i: I64, %j: I64, %carry: I128, %a_limb: I128, %a_length: I64, %b_length: I64, %length: I64):
-        %at:     I64  = %i.add(%j)
-        %b_limb: I64  := #b.limbs[%j]
-        %limb:   I64  := #self.limbs[%at]
-        %sum:    I128 = %a_limb.mul(%b_limb.to_u128()).add(%limb.to_u128()).add(%carry)
-        #self.limbs[%at] = %sum.to_i64()
-        jump column(%i, %j.add(1), %sum.lshr(64), %a_limb, %a_length, %b_length, %length)
+    block column_step(%i: U64, %j: U64, %carry: U128, %a_limb: U64, %a_length: U64, %b_length: U64, %length: U64):
+        %at:     U64  = %i.add(%j)
+        %b_limb: U64 := #b.limbs[%j]
+        %limb:   U64 := #self.limbs[%at]
+        %sum:    U128 = %a_limb.mul_wide(%b_limb).add(%limb.to_u128()).add(%carry)
+        #self.limbs[%at] = %sum.to_u64_wrap()
+        jump column(%i, %j.add(1), %sum.shr(64), %a_limb, %a_length, %b_length, %length)
 
-    block row_end(%i: I64, %carry: I128, %a_length: I64, %b_length: I64, %length: I64):
-        %at: I64 = %i.add(%b_length)
-        #self.limbs[%at] = %carry.to_i64()
+    block row_end(%i: U64, %carry: U128, %a_length: U64, %b_length: U64, %length: U64):
+        #self.limbs[%i.add(%b_length)] = %carry.to_u64()
         jump row(%i.add(1), %a_length, %b_length, %length)
 
-    block finish(%length: I64):
+    block finish(%length: U64):
         #self.length = %length
         #self.trim()
         return()
 
 ; The 128 bits of self from bit %pos up (zeros past the top).
-routine BigNat<N>.bits128(#self: Ptr<Self>, %pos: I64) -> I128
-require N: I64
+routine BigNat<N>.bits128(#self: Ptr<Self>, %pos: U64) -> U128
+require N: U64
     block entry():
-        %at:     I64  = %pos.sdiv(64)
-        %offset: I64  = %pos.srem(64)
-        %l0:     I128 = #self.limb_or_zero(%at).to_u128()
-        %l1:     I128 = #self.limb_or_zero(%at.add(1)).to_u128()
-        %l2:     I128 = #self.limb_or_zero(%at.add(2)).to_u128()
-        %low:    I128 = %l1.shl(64).bitor(%l0).lshr(%offset.to_i128())
+        %at:     U64  = %pos.div(64)
+        %offset: U128 = %pos.rem(64).to_u128()
+        %l0:     U128 = #self.limb_or_zero(%at).to_u128()
+        %l1:     U128 = #self.limb_or_zero(%at.add(1)).to_u128()
+        %l2:     U128 = #self.limb_or_zero(%at.add(2)).to_u128()
+        %low:    U128 = %l1.shl(64).bitor(%l0).shr(%offset)
         ; two shifts, so a zero offset never shifts by 128
-        %high:   I128 = %l2.shl(127.sub(%offset).to_i128()).shl(1)
-        %r:      I128 = %low.bitor(%high)
+        %high:   U128 = %l2.shl(127.sub(%offset)).shl(1)
+        %r:      U128 = %low.bitor(%high)
         return(%r)
 
-routine BigNat<N>.limb_or_zero(#self: Ptr<Self>, %i: I64) -> I64
-require N: I64
+routine BigNat<N>.limb_or_zero(#self: Ptr<Self>, %i: U64) -> U64
+require N: U64
     block entry():
-        %length: I64  := #self.length
-        %inside: Bool = %i.slt(%length)
+        %length: U64  := #self.length
+        %inside: Bool = %i.lt(%length)
         branch %inside ? read(%i) : return(0)
 
-    block read(%i: I64):
-        %limb: I64 := #self.limbs[%i]
+    block read(%i: U64):
+        %limb: U64 := #self.limbs[%i]
         return(%limb)
 
 ; n × 2^e rounded once to F128 (n > 0).
-routine big_to_f128(#n: Ptr<BigNat<24>>, %e: I64, %negative: Bool) -> F128
+routine big_to_f128(#n: Ptr<BigNat<24>>, %e: S64, %negative: Bool) -> F128
     block entry():
-        %length: I64  = #n.bit_length()
-        %shift:  I64  = %length.sub(125).max(0)
+        %length: U64  = #n.bit_length()
+        %shift:  U64  = %length.sub_clamp(125)
         %sticky: Bool = #n.any_below(%shift)
-        %top:    I128 = #n.bits128(%shift)
-        %sig:    I128 = %top.bitor(%sticky.to_i128())
-        %exp:    I64  = %e.add(%shift).add(F128_BIAS).add(115)
-        %bits:   I128 = f128_round_pack(%negative, %exp, %sig)
-        %r:      F128 = F128.from_bits(%bits)
+        %top:    U128 = #n.bits128(%shift)
+        %sig:    U128 = %top.bitor(%sticky.to_u128())
+        %exp:    S64  = %e.add(%shift.to_s64()).add(F128_BIAS).add(115)
+        %bits:   U128 = f128_round_pack(%negative, %exp, %sig)
+        %r:      F128 = f128_of(%bits)
         return(%r)
 
 ; (num × 2^num_e) / (den × 2^den_e) rounded once to F128: a 126- or 127-bit
 ; quotient with the remainder as the sticky bit. Both operands are consumed.
-routine big_quotient_to_f128(#num: Ptr<BigNat<24>>, %num_e: I64, #den: Ptr<BigNat<24>>, %den_e: I64, %negative: Bool) -> F128
+routine big_quotient_to_f128(#num: Ptr<BigNat<24>>, %num_e: S64, #den: Ptr<BigNat<24>>, %den_e: S64, %negative: Bool) -> F128
     block entry():
-        %shift: I64  = 126.add(#den.bit_length()).sub(#num.bit_length())
-        %up:    Bool = %shift.sge(0)
+        %den_bits: S64  = #den.bit_length().to_s64()
+        %num_bits: S64  = #num.bit_length().to_s64()
+        %shift:    S64  = 126.add(%den_bits).sub(%num_bits)
+        %up:       Bool = %shift.ge(0)
         branch %up ? raise_num(%shift) : raise_den(%shift)
 
-    block raise_num(%shift: I64):
-        #num.shl(%shift)
+    block raise_num(%shift: S64):
+        #num.shl(%shift.to_u64())
         jump divide(%shift)
 
-    block raise_den(%shift: I64):
-        #den.shl(0.sub(%shift))
+    block raise_den(%shift: S64):
+        #den.shl(%shift.abs_diff(0))
         jump divide(%shift)
 
-    block divide(%shift: I64):
+    block divide(%shift: S64):
         #scratch: Ptr<BigNat<24>> = alloca<BigNat<24>>
-        %q:      I128 = #num.div_small(#den, #scratch, 127)
+        %q:      U128 = #num.div_small(#den, #scratch, 127)
         %sticky: Bool = #num.is_zero().bitnot()
-        %sig:    I128 = %q.bitor(%sticky.to_i128())
-        %exp:    I64  = %num_e.sub(%den_e).sub(%shift).add(F128_BIAS).add(115)
-        %bits:   I128 = f128_round_pack(%negative, %exp, %sig)
-        %r:      F128 = F128.from_bits(%bits)
+        %sig:    U128 = %q.bitor(%sticky.to_u128())
+        %exp:    S64  = %num_e.sub(%den_e).sub(%shift).add(F128_BIAS).add(115)
+        %bits:   U128 = f128_round_pack(%negative, %exp, %sig)
+        %r:      F128 = f128_of(%bits)
         return(%r)
 
 ; Σ (-u)^k / (j0 (j0 + 1) … (j0 + 2k - 1)) in fixed point with 2^384 as 1:
 ; j0 = 2 gives sin θ / θ, j0 = 1 gives cos θ, for u = θ² <= (π/4)². Each term
 ; is off by under 1.5 units (one rounding, one truncation); about 50 terms.
-routine big_trig_series(#out: Ptr<BigNat<24>>, #u: Ptr<BigNat<24>>, %j0: I64) -> Void
+routine big_trig_series(#out: Ptr<BigNat<24>>, #u: Ptr<BigNat<24>>, %j0: U64) -> Void
     block entry():
         #term:    Ptr<BigNat<24>> = alloca<BigNat<24>>
         #product: Ptr<BigNat<24>> = alloca<BigNat<24>>
         #minus:   Ptr<BigNat<24>> = alloca<BigNat<24>>
         #term.set(1)
-        #term.shl(PI_FIXED_BITS)
+        #term.shl(PI_FIXED_BITS.to_u64())
         #out.copy_from(#term)
         #minus.set(0)
         jump next(%j0, true, #term, #product, #minus)
 
     ; term ← term × u / (j (j + 1)); the signs alternate, starting with minus
-    block next(%j: I64, %subtract: Bool, #term: Ptr<BigNat<24>>, #product: Ptr<BigNat<24>>, #minus: Ptr<BigNat<24>>):
+    block next(%j: U64, %subtract: Bool, #term: Ptr<BigNat<24>>, #product: Ptr<BigNat<24>>, #minus: Ptr<BigNat<24>>):
         #product.set_product(#term, #u)
-        #product.shr_round_even(PI_FIXED_BITS)
+        #product.shr_round_even(PI_FIXED_BITS.to_u64())
         #term.copy_from(#product)
-        %divisor: I64 = %j.mul(%j.add(1))
-        %dropped: I64 = #term.div_limb(%divisor)
+        %divisor: U64 = %j.mul(%j.add(1))
+        %dropped: U64 = #term.div_limb(%divisor)
         %done:    Bool = #term.is_zero()
         branch %done ? finish(#minus) : accumulate(%j, %subtract, #term, #product, #minus)
 
-    block accumulate(%j: I64, %subtract: Bool, #term: Ptr<BigNat<24>>, #product: Ptr<BigNat<24>>, #minus: Ptr<BigNat<24>>):
+    block accumulate(%j: U64, %subtract: Bool, #term: Ptr<BigNat<24>>, #product: Ptr<BigNat<24>>, #minus: Ptr<BigNat<24>>):
         branch %subtract ? take(%j, #term, #product, #minus) : give(%j, #term, #product, #minus)
 
-    block take(%j: I64, #term: Ptr<BigNat<24>>, #product: Ptr<BigNat<24>>, #minus: Ptr<BigNat<24>>):
+    block take(%j: U64, #term: Ptr<BigNat<24>>, #product: Ptr<BigNat<24>>, #minus: Ptr<BigNat<24>>):
         #minus.add(#term)
-        jump next(%j.add(2), false, #term, #product, #minus)
+        jump next(%j.add_wrap(2), false, #term, #product, #minus)
 
-    block give(%j: I64, #term: Ptr<BigNat<24>>, #product: Ptr<BigNat<24>>, #minus: Ptr<BigNat<24>>):
+    block give(%j: U64, #term: Ptr<BigNat<24>>, #product: Ptr<BigNat<24>>, #minus: Ptr<BigNat<24>>):
         #out.add(#term)
-        jump next(%j.add(2), true, #term, #product, #minus)
+        jump next(%j.add_wrap(2), true, #term, #product, #minus)
 
     block finish(#minus: Ptr<BigNat<24>>):
         #out.sub(#minus)
@@ -295,12 +296,12 @@ routine f128_pi_trig_exact(%d: F128, %pick: PiPick) -> F128
         #pi.set(0)
         jump load_pi(0, %p, #pi)
 
-    block load_pi(%i: I64, %p: F128Parts, #pi: Ptr<BigNat<24>>):
-        %done: Bool = %i.sge(7)
+    block load_pi(%i: U64, %p: F128Parts, #pi: Ptr<BigNat<24>>):
+        %done: Bool = %i.ge(7)
         branch %done ? series(%p, #pi) : load_limb(%i, %p, #pi)
 
-    block load_limb(%i: I64, %p: F128Parts, #pi: Ptr<BigNat<24>>):
-        %limb: I64 := PI_FIXED_384[%i]
+    block load_limb(%i: U64, %p: F128Parts, #pi: Ptr<BigNat<24>>):
+        %limb: U64 := PI_FIXED_384[%i]
         #pi.push_limb(%limb)
         jump load_pi(%i.add(1), %p, #pi)
 
@@ -312,20 +313,20 @@ routine f128_pi_trig_exact(%d: F128, %pick: PiPick) -> F128
         #s:     Ptr<BigNat<24>> = alloca<BigNat<24>>
         #c:     Ptr<BigNat<24>> = alloca<BigNat<24>>
         #sin:   Ptr<BigNat<24>> = alloca<BigNat<24>>
-        #m.set_i128(%p.sig)
+        #m.set_u128(%p.sig)
         #t.set_product(#pi, #m)
         ; θ in fixed point (for u only; its relative accuracy doesn't matter there)
         #theta.copy_from(#t)
-        #theta.shr_round_even(113.sub(%p.exp))
+        #theta.shr_round_even(113.sub(%p.exp).to_u64())
         #u.set_product(#theta, #theta)
-        #u.shr_round_even(PI_FIXED_BITS)
+        #u.shr_round_even(PI_FIXED_BITS.to_u64())
         big_trig_series(#s, #u, 2)
         big_trig_series(#c, #u, 1)
         #sin.set_product(#t, #s)
-        %sin_e:    I64  = %p.exp.sub(113).sub(PI_FIXED_BITS).sub(PI_FIXED_BITS)
-        %cos_e:    I64  = 0.sub(PI_FIXED_BITS)
+        %sin_e:    S64  = %p.exp.sub(113).sub(PI_FIXED_BITS).sub(PI_FIXED_BITS)
+        %cos_e:    S64  = 0.sub(PI_FIXED_BITS)
         ; sin θ has θ's sign: it flips the result when sin θ is on top or below
-        %theta_negative: Bool = %d.bits.slt(0)
+        %theta_negative: Bool = f128_is_negative_bits(%d.bits)
         %sin_used: Bool = %pick.over_sin.bitor(%pick.divide)
         %flip:     Bool = %theta_negative.bitand(%sin_used)
         %negative: Bool = %pick.negative.bitxor(%flip)
@@ -336,16 +337,16 @@ routine f128_pi_trig_exact(%d: F128, %pick: PiPick) -> F128
             %over_sin -> return(big_to_f128(#sin, %sin_e, %negative))
             _ -> return(big_to_f128(#c, %cos_e, %negative))
 
-    block divide(#sin: Ptr<BigNat<24>>, %sin_e: I64, #c: Ptr<BigNat<24>>, %cos_e: I64, %negative: Bool):
+    block divide(#sin: Ptr<BigNat<24>>, %sin_e: S64, #c: Ptr<BigNat<24>>, %cos_e: S64, %negative: Bool):
         %over_sin: Bool = %pick.over_sin
         branch %over_sin ? tangent(#sin, %sin_e, #c, %cos_e, %negative)
                               : cotangent(#sin, %sin_e, #c, %cos_e, %negative)
 
-    block tangent(#sin: Ptr<BigNat<24>>, %sin_e: I64, #c: Ptr<BigNat<24>>, %cos_e: I64, %negative: Bool):
+    block tangent(#sin: Ptr<BigNat<24>>, %sin_e: S64, #c: Ptr<BigNat<24>>, %cos_e: S64, %negative: Bool):
         %r: F128 = big_quotient_to_f128(#sin, %sin_e, #c, %cos_e, %negative)
         return(%r)
 
-    block cotangent(#sin: Ptr<BigNat<24>>, %sin_e: I64, #c: Ptr<BigNat<24>>, %cos_e: I64, %negative: Bool):
+    block cotangent(#sin: Ptr<BigNat<24>>, %sin_e: S64, #c: Ptr<BigNat<24>>, %cos_e: S64, %negative: Bool):
         %r: F128 = big_quotient_to_f128(#c, %cos_e, #sin, %sin_e, %negative)
         return(%r)
 
@@ -394,13 +395,13 @@ routine F128.tan_pi(%self: Self) -> Self
 
 routine f128_sin_pi(%x: F128, %exact: Bool) -> F128
     block entry():
-        %bits:     I128 = %x.bits
+        %bits:     U128 = %x.bits
         %nan:      Bool = f128_is_nan_bits(%bits)
         %infinite: Bool = %x.is_infinite()
         %integer:  Bool = %x.trunc().eq(%x)                     ; zeros too
-        %zero:     F128 = F128.from_bits(%bits.bitand(F128_SIGN))
+        %zero:     F128 = f128_of(%bits.bitand(F128_SIGN))
         select:
-            %nan -> return(F128.from_bits(f128_quiet(%bits)))
+            %nan -> return(f128_of(f128_quiet(%bits)))
             %infinite -> return(F128.NAN)
             %integer -> return(%zero)
             _ -> reduce()
@@ -411,8 +412,8 @@ routine f128_sin_pi(%x: F128, %exact: Bool) -> F128
         branch %half ? unit(%red.quadrant) : general(%red)
 
     ; sin at n + 1/2 is 1 in quadrant 1 and -1 in quadrant 3
-    block unit(%quadrant: I64):
-        %one: F128 = F128.from_bits(F128_ONE)
+    block unit(%quadrant: S64):
+        %one: F128 = f128_of(F128_ONE)
         %r:   F128 = %quadrant.eq(1) ? %one : %one.neg()
         return(%r)
 
@@ -422,18 +423,18 @@ routine f128_sin_pi(%x: F128, %exact: Bool) -> F128
 
 routine f128_cos_pi(%x: F128, %exact: Bool) -> F128
     block entry():
-        %bits:     I128 = %x.bits
+        %bits:     U128 = %x.bits
         %nan:      Bool = f128_is_nan_bits(%bits)
         %infinite: Bool = %x.is_infinite()
         %integer:  Bool = %x.trunc().eq(%x)
         select:
-            %nan -> return(F128.from_bits(f128_quiet(%bits)))
+            %nan -> return(f128_of(f128_quiet(%bits)))
             %infinite -> return(F128.NAN)
             %integer -> unit()
             _ -> reduce()
 
     block unit():
-        %one: F128 = F128.from_bits(F128_ONE)
+        %one: F128 = f128_of(F128_ONE)
         %odd: Bool = f128_integer_is_odd(%x)
         %r:   F128 = %odd ? %one.neg() : %one
         return(%r)
@@ -441,7 +442,7 @@ routine f128_cos_pi(%x: F128, %exact: Bool) -> F128
     block reduce():
         %red:  PiReduced = f128_pi_reduce(%x)
         %half: Bool = f128_is_zero_bits(%red.d.bits)
-        %zero: F128 = F128.from_bits(0)
+        %zero: F128 = f128_of(0)
         branch %half ? return(%zero) : general(%red)
 
     block general(%red: PiReduced):
@@ -450,12 +451,12 @@ routine f128_cos_pi(%x: F128, %exact: Bool) -> F128
 
 routine f128_tan_pi(%x: F128, %exact: Bool) -> F128
     block entry():
-        %bits:     I128 = %x.bits
+        %bits:     U128 = %x.bits
         %nan:      Bool = f128_is_nan_bits(%bits)
         %infinite: Bool = %x.is_infinite()
         %integer:  Bool = %x.trunc().eq(%x)
         select:
-            %nan -> return(F128.from_bits(f128_quiet(%bits)))
+            %nan -> return(f128_of(f128_quiet(%bits)))
             %infinite -> return(F128.NAN)
             %integer -> zero()
             _ -> reduce()
@@ -463,9 +464,9 @@ routine f128_tan_pi(%x: F128, %exact: Bool) -> F128
     ; the sign of x, flipped for odd n
     block zero():
         %odd:      Bool = f128_integer_is_odd(%x)
-        %negative: Bool = %x.bits.slt(0).bitxor(%odd)
-        %sign:     I128 = %negative ? F128_SIGN : 0
-        %r:        F128 = F128.from_bits(%sign)
+        %negative: Bool = f128_is_negative_bits(%x.bits).bitxor(%odd)
+        %sign:     U128 = %negative ? F128_SIGN : 0
+        %r:        F128 = f128_of(%sign)
         return(%r)
 
     block reduce():
@@ -478,15 +479,15 @@ routine f128_tan_pi(%x: F128, %exact: Bool) -> F128
             _ -> general(%red)
 
     ; n + 1/2 has 2x = 2n + 1: quadrant 1 for an even n, 3 for an odd one
-    block pole(%quadrant: I64):
+    block pole(%quadrant: S64):
         %r: F128 = %quadrant.eq(1) ? F128.INFINITY : F128.NEG_INFINITY
         return(%r)
 
     ; θ = ±π/4: tan θ = sign(d) in even quadrants, -cot θ = -sign(d) in odd ones
     block unit(%red: PiReduced):
-        %one:      F128 = F128.from_bits(F128_ONE)
+        %one:      F128 = f128_of(F128_ONE)
         %odd:      Bool = %red.quadrant.bitand(1).eq(1)
-        %negative: Bool = %red.d.bits.slt(0).bitxor(%odd)
+        %negative: Bool = f128_is_negative_bits(%red.d.bits).bitxor(%odd)
         %r:        F128 = %negative ? %one.neg() : %one
         return(%r)
 

@@ -6,16 +6,20 @@ namespace Tessera;
 /// A resolved type. Two types are equal when their canonical names are equal.
 public abstract class DType : IEquatable<DType>
 {
-    /// Canonical source-level name: `I64`, `Ptr<I8>`, `Option<I64>`, `Array<I8, 20>`.
+    /// Canonical source-level name: `S64`, `Ptr<Byte>`, `Option<S64>`, `Array<Byte, 20>`.
     public abstract string Name { get; }
 
     /// The LLVM IR spelling.
     public abstract string Llvm { get; }
 
-    /// The namespace its routines live in: `I64`, `Ptr`, `Option`, `Array`.
+    /// The namespace its routines live in: `S64`, `Ptr`, `Option`, `Array`.
     public abstract string OwnerName { get; }
 
     public bool IsPointer => this is PtrType;
+
+    /// The type this one is represented as: itself, or for a transparent single-field record, its field's
+    /// representation.
+    public virtual DType Repr => this;
     public bool Equals(DType? other) => other is not null && other.Name == Name;
     public override bool Equals(object? obj) => obj is DType d && Equals(d);
     public override int GetHashCode() => Name.GetHashCode();
@@ -23,10 +27,10 @@ public abstract class DType : IEquatable<DType>
 }
 
 /// What an integer's bits mean. `Bits` values have no meaning yet (`Byte` is the 8-bit one); `Char` is a Unicode
-/// scalar value. `Legacy` is the signless `I8`–`I256` family the stdlib is moving away from.
-public enum IntKind { Signed, Unsigned, Bits, Char, Legacy }
+/// scalar value.
+public enum IntKind { Signed, Unsigned, Bits, Char }
 
-public sealed class IntType(int bits, IntKind kind = IntKind.Legacy) : DType
+public sealed class IntType(int bits, IntKind kind) : DType
 {
     public int Bits { get; } = bits;
     public IntKind Kind { get; } = kind;
@@ -38,13 +42,13 @@ public sealed class IntType(int bits, IntKind kind = IntKind.Legacy) : DType
 
     public static readonly int[] Widths = [8, 16, 32, 64, 128, 256];
 
-    /// `S64`, `U8`, `Bits32`, `Byte`, `Char`, `I64` back to a type.
+    /// `S64`, `U8`, `Bits32`, `Byte`, `Char` back to a type.
     public static IntType? FromName(string name)
     {
         if (name == "Byte") return Byte;
         if (name == "Char") return Char;
         (string prefix, IntKind kind)[] families =
-            [("S", IntKind.Signed), ("U", IntKind.Unsigned), ("Bits", IntKind.Bits), ("I", IntKind.Legacy)];
+            [("S", IntKind.Signed), ("U", IntKind.Unsigned), ("Bits", IntKind.Bits)];
         foreach (var (prefix, kind) in families)
             if (name.StartsWith(prefix, StringComparison.Ordinal)
                 && int.TryParse(name.AsSpan(prefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
@@ -57,23 +61,21 @@ public sealed class IntType(int bits, IntKind kind = IntKind.Legacy) : DType
     public bool IsUnsigned => Kind is IntKind.Unsigned;
 
     /// Numbers: the types with arithmetic. Raw bits and Char have none.
-    public bool IsNumber => Kind is IntKind.Signed or IntKind.Unsigned or IntKind.Legacy;
+    public bool IsNumber => Kind is IntKind.Signed or IntKind.Unsigned;
 
     public override string Name => Kind switch
     {
         IntKind.Signed => $"S{Bits}",
         IntKind.Unsigned => $"U{Bits}",
         IntKind.Bits => Bits == 8 ? "Byte" : $"Bits{Bits}",
-        IntKind.Char => "Char",
-        _ => $"I{Bits}",
+        _ => "Char",
     };
 
     public override string Llvm => $"i{Bits}";
     public override string OwnerName => Name;
 
     /// The LLVM constant for an integer literal of this type, or an error message. A number literal must lie in
-    /// its type's value range; a raw-bits literal must be hex with exactly one digit per four bits; the legacy
-    /// types also take a magnitude above the signed range as a bit pattern.
+    /// its type's value range; a raw-bits literal must be hex with exactly one digit per four bits.
     public string? Literal(BigInteger value, int hexDigits, out string error)
     {
         error = "";
@@ -81,7 +83,6 @@ public sealed class IntType(int bits, IntKind kind = IntKind.Legacy) : DType
         (BigInteger min, BigInteger max) = Kind switch
         {
             IntKind.Signed => (-(span >> 1), (span >> 1) - 1),
-            IntKind.Legacy => (-(span >> 1), span - 1),
             _ => (BigInteger.Zero, span - 1),
         };
         if (Kind is IntKind.Bits && hexDigits != Bits / 4)
@@ -199,13 +200,19 @@ public sealed class CallableType(string callConv, List<DType> parameters, DType 
     public override string OwnerName => "Callable";
 }
 
-/// A user or library record, instantiated with concrete arguments.
-public sealed class RecordType(RecordDecl decl, List<DType> args) : DType
+/// A user or library record, instantiated with concrete arguments. A record with exactly one field is transparent:
+/// it lowers to its field's type (`record F128 / bits: Bits128` is an `i128`), unless it is marked `@aggregate`.
+public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordType, DType?> transparentField) : DType
 {
     public RecordDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
     public override string Name => Args.Count == 0 ? Decl.Name : $"{Decl.Name}<{string.Join(", ", Args.Select(a => a.Name))}>";
-    public override string Llvm => $"%\"{Name}\"";
+
+    /// The field type a transparent record lowers to, or null for an aggregate.
+    public DType? TransparentField => transparentField(this);
+
+    public override DType Repr => TransparentField?.Repr ?? this;
+    public override string Llvm => TransparentField?.Llvm ?? $"%\"{Name}\"";
     public override string OwnerName => Decl.Name;
 }
 
@@ -219,7 +226,7 @@ public sealed class ChoiceType(ChoiceDecl decl, IntType underlying) : DType
     public override string OwnerName => Decl.Name;
 }
 
-/// An integer generic argument, such as the `8` in `Array<I64, 8>`.
+/// An integer generic argument, such as the `8` in `Array<S64, 8>`.
 public sealed class ConstArg(long value) : DType
 {
     public long Value { get; } = value;
@@ -270,10 +277,10 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
     /// C ABI aliases resolve to fixed-width integers (see Type-System → C ABI Aliases).
     public DType? ResolveCAlias(string name) => name switch
     {
-        "CInt" => new IntType(32),
-        "CLong" => new IntType(Os == "windows" ? 32 : Size),
-        "CSize" => new IntType(Size),
-        "CWChar" => new IntType(Os == "windows" ? 16 : 32),
+        "CInt" => IntType.S(32),
+        "CLong" => IntType.S(Os == "windows" ? 32 : Size),
+        "CSize" => IntType.U(Size),
+        "CWChar" => Os == "windows" ? IntType.U(16) : IntType.S(32),
         _ => null,
     };
 

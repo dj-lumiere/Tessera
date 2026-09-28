@@ -250,8 +250,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var pos = Cur.Pos;
         ExpectIdent("choice");
         var name = Expect(TokenKind.Ident, "a choice name");
-        // The underlying type defaults to I32.
-        var underlying = Accept(TokenKind.Colon) ? ParseType() : new TypeRef("I32", [], name.Pos);
+        // The underlying type is always written: `choice Dir: U8`.
+        if (!Accept(TokenKind.Colon))
+            throw new CompileError(name.Pos, $"choice '{name.Text}' needs its underlying type: choice {name.Text}: U8");
+        var underlying = ParseType();
         ExpectLineEnd();
 
         var members = new List<(string, Expr)>();

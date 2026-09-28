@@ -297,7 +297,7 @@ public sealed partial class Compiler
                     TypeArgExpr te => new ConstArg(EvalConstInt(te.Expr, env, 0)),
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{s.Name}'"),
                 });
-            return new RecordType(s, args);
+            return new RecordType(s, args, TransparentField);
         }
 
         if (FindChoice(t.Name, env.File, t.Pos) is { } e)
@@ -408,15 +408,53 @@ public sealed partial class Compiler
         return env;
     }
 
+    private readonly Dictionary<string, DType?> _transparent = [];
+    private readonly HashSet<string> _resolvingTransparent = [];
+    private readonly HashSet<string> _definingTypes = [];
+
+    /// A record with exactly one field lowers to that field's type, unless it is `@aggregate` (for C structs with one
+    /// member, which some ABIs pass differently from the member alone). Returns null for an aggregate.
+    private DType? TransparentField(RecordType s)
+    {
+        var d = s.Decl;
+        if (d.Attr("llvm") is not null || d.Attr("aggregate") is not null || d.Fields.Count != 1) return null;
+        if (_transparent.TryGetValue(s.Name, out var cached)) return cached;
+        if (d.Attr("aligned") is not null || d.Fields[0].Attr("aligned") is not null)
+            throw new CompileError(d.Pos, $"record '{d.Name}' has one field, so it lowers to that field's type; @aligned needs it to be @aggregate");
+        if (!_resolvingTransparent.Add(s.Name)) throw new CompileError(d.Pos, $"{s} contains itself");
+        try
+        {
+            var field = Fields(s)[0].Type;
+            _ = field.Llvm; // resolves nested transparent records, and finds a record that contains itself
+            return _transparent[s.Name] = field;
+        }
+        finally
+        {
+            _resolvingTransparent.Remove(s.Name);
+        }
+    }
+
     /// Makes sure every record type used in the IR has a definition.
     public void EnsureTypeDefined(DType t)
     {
         switch (t)
         {
+            case RecordType { TransparentField: { } field }:
+                EnsureTypeDefined(field);
+                break;
             case RecordType s when s.Decl.Attr("llvm") is null:
+                // A record can hold itself only through a pointer.
+                if (_definingTypes.Contains(s.Name)) throw new CompileError(s.Decl.Pos, $"{s} contains itself");
                 if (!_definedTypes.Add(s.Name)) return;
-                var fields = Fields(s);
-                foreach (var (_, ft) in fields) EnsureTypeDefined(ft);
+                _definingTypes.Add(s.Name);
+                try
+                {
+                    foreach (var (_, ft) in Fields(s)) EnsureTypeDefined(ft);
+                }
+                finally
+                {
+                    _definingTypes.Remove(s.Name);
+                }
                 _typeDefs.AppendLine($"{s.Llvm} = type {{ {string.Join(", ", Shape(s).Members.Select(m => m.Llvm))} }}");
                 break;
             case ArrayType a:
@@ -472,8 +510,7 @@ public sealed partial class Compiler
                 return "[" + string.Join(", ", lit.Elements.Select(x => $"{a.Elem.Llvm} {ConstInitializer(x, a.Elem, env)}")) + "]";
             }
             case IntType it when e is TypedIntLit tl:
-                if (!tl.Type.Equals(it) && !(it.Kind is IntKind.Legacy && it.Bits == tl.Bits))
-                    throw new CompileError(e.Pos, $"expected {it}, found a {tl.Type} literal");
+                if (!tl.Type.Equals(it)) throw new CompileError(e.Pos, $"expected {it}, found a {tl.Type} literal");
                 return tl.Value.ToString(CultureInfo.InvariantCulture);
             case IntType it:
             {
@@ -484,8 +521,10 @@ public sealed partial class Compiler
                 return b.Value ? "true" : "false";
             case FloatType ft when e is FloatLit f:
                 return ft.Constant(f.Value);
-            case FloatType ft when e is IntLit bits: // open question #10: raw bits
-                return ft.FromBits(bits.Value);
+            case FloatType ft when e is NsCallExpr { Name: "from_bits", Args: [IntLit raw] } fb && fb.Owner.Name == ft.Name:
+                if (new IntType(ft.Bits, IntKind.Bits).Literal(raw.Value, raw.HexDigits, out var bitsError) is null)
+                    throw new CompileError(raw.Pos, bitsError);
+                return ft.FromBits(raw.Value);
             default:
                 throw new CompileError(e.Pos, $"a const array element must be a literal of {t}");
         }

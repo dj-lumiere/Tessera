@@ -257,7 +257,7 @@ public sealed class FunctionGen
     }
 
     /// LLVM has no plain copy instruction; a named binding of an existing value is an identity op.
-    private string Copy(Val v, DType t) => t switch
+    private string Copy(Val v, DType t) => t.Repr switch
     {
         PtrType or CallableType => $"getelementptr i8, ptr {v.Op}, i64 0",
         BoolType => $"or i1 {v.Op}, false",
@@ -350,6 +350,7 @@ public sealed class FunctionGen
                 if (baseType is not RecordType s)
                     throw Err(f.Pos, $"{baseType} has no fields");
                 var (idx, ft) = FieldOf(s, f.Name, f.Pos);
+                if (s.TransparentField is not null) return (baseAddr, ft);
                 _c.EnsureTypeDefined(s);
                 int member = _c.Shape(s).FieldIndex[idx];
                 return (EmitTmp($"getelementptr {s.Llvm}, ptr {baseAddr}, i32 0, i32 {member}"), ft);
@@ -383,7 +384,7 @@ public sealed class FunctionGen
 
     private Val EvalIndex(Expr e)
     {
-        var i = Eval(e, Infer(e) ?? new IntType(64));
+        var i = Eval(e, Infer(e) ?? IntType.U(64));
         if (i.Type is not IntType { IsNumber: true } it) throw Err(e.Pos, $"an index must be an integer, not {i.Type}");
         // GEP reads its index as signed, so a narrow unsigned index is widened first.
         if (it.IsUnsigned && it.Bits < 64) return new Val(EmitTmp($"zext {it.Llvm} {i.Op} to i64"), IntType.U(64));
@@ -415,7 +416,7 @@ public sealed class FunctionGen
         {
             case IntLit or FloatLit or NullLit or StrLit or ArrayLit: return null;
             case BoolLit: return BoolType.Instance;
-            case TypedIntLit t: return new IntType(t.Bits); // transitional: I8 / I32 until the stdlib moves
+            case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
             case AllocaExpr a: return new PtrType(Resolve(a.Type));
             case RecordLit sl: return Resolve(sl.Type);
@@ -443,7 +444,7 @@ public sealed class FunctionGen
     {
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } c
             && _c.FindFree(c.Name, _env.File, c.Pos) is null)
-            return new IntType(64);
+            return IntType.U(64);
         if (IndirectCall(e) is { } ind) return ind.Callable.Ret;
         var plan = PlanCall(e, expected);
         return plan is null ? null : _c.Signature(plan.Decl, plan.Env).Ret;
@@ -471,7 +472,7 @@ public sealed class FunctionGen
         Val v = e switch
         {
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
-            TypedIntLit t => TypedConst(t, expected),
+            TypedIntLit t => TypedConst(t),
             FloatLit f => expected is FloatType ft
                 ? new Val(ft.Constant(f.Value), ft)
                 : throw Mismatch(f.Pos, expected, "a float literal"),
@@ -522,6 +523,7 @@ public sealed class FunctionGen
         var b = EvalAny(f.Base);
         if (b.Type is not RecordType s) throw Err(f.Pos, $"{b.Type} has no fields");
         var (idx, ft) = FieldOf(s, f.Name, f.Pos);
+        if (s.TransparentField is not null) return new Val(b.Op, ft);
         int member = _c.Shape(s).FieldIndex[idx];
         return new Val(EmitTmp($"extractvalue {s.Llvm} {b.Op}, {member}"), ft);
     }
@@ -538,20 +540,15 @@ public sealed class FunctionGen
         return new Val(op, expected);
     }
 
-    /// `b'A'` is a Byte and `'A'` a Char. Until the stdlib leaves the signless types, they are also I8 and I32.
-    private Val TypedConst(TypedIntLit t, DType expected)
-    {
-        if (expected is IntType { Kind: IntKind.Legacy } legacy && legacy.Bits == t.Bits)
-            return new Val(t.Value.ToString(CultureInfo.InvariantCulture), legacy);
-        return new Val(t.Value.ToString(CultureInfo.InvariantCulture), t.Type);
-    }
+    /// `b'A'` is a Byte and `'A'` a Char.
+    private static Val TypedConst(TypedIntLit t) => new(t.Value.ToString(CultureInfo.InvariantCulture), t.Type);
 
     private Val StringLiteral(StrLit s, DType expected)
     {
-        // Open question #5: a string literal is a NUL-terminated Ptr<I8> where a pointer is expected, and a
+        // Open question #5: a string literal is a NUL-terminated Ptr<Byte> where a pointer is expected, and a
         // String value (data + length) where a String is expected.
         string g = _c.StringGlobal(s.Value);
-        if (expected is PtrType { Pointee: null or IntType { Bits: 8, Kind: IntKind.Bits or IntKind.Legacy } })
+        if (expected is PtrType { Pointee: null or IntType { Bits: 8, Kind: IntKind.Bits } })
             return new Val(g, expected);
         if (expected is RecordType { Name: "String" } st)
         {
@@ -622,6 +619,8 @@ public sealed class FunctionGen
         var missing = fields.Where(f => !given.ContainsKey(f.Name)).Select(f => f.Name).ToList();
         if (missing.Count > 0) throw Err(lit.Pos, $"{s} literal is missing field(s): {string.Join(", ", missing)}");
 
+        if (s.TransparentField is not null) return new Val(Eval(given[fields[0].Name], fields[0].Type).Op, s);
+
         string acc = fields.Count == 0 ? "zeroinitializer" : "poison";
         var shape = _c.Shape(s);
         for (int i = 0; i < fields.Count; i++)
@@ -642,7 +641,7 @@ public sealed class FunctionGen
         if (r.Owner is null)
         {
             if (_env.Get(r.Name) is ConstArg ca)
-                return new ConstInfo(new IntType(64), exp => IntConst(ca.Value, r.Pos, exp));
+                return new ConstInfo(IntType.U(64), exp => IntConst(ca.Value, r.Pos, exp));
             var c = _c.FindConst("", r.Name, file, r.Pos);
             return c is null ? null : ConstValue(c, null);
         }
@@ -674,10 +673,7 @@ public sealed class FunctionGen
         }
         return new ConstInfo(t, _ =>
         {
-            // Open question #10: an integer literal in a float const gives the float's raw bits, and so does
-            // `F64.from_bits(0x...)`.
-            if (t is FloatType ft && c.Value is IntLit bits)
-                return new Val(ft.FromBits(bits.Value), ft);
+            // `F64.from_bits(0x...)` in a const is folded to the float with those bits.
             if (t is FloatType ft2 && c.Value is NsCallExpr { Name: "from_bits", Args: [IntLit raw] } fb
                 && fb.Owner.Name == ft2.Name)
             {
@@ -829,7 +825,7 @@ public sealed class FunctionGen
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }
 
-    /// Binds the owner's type parameters from a concrete type: `Option<T>` against `Option<I64>` binds T.
+    /// Binds the owner's type parameters from a concrete type: `Option<T>` against `Option<S64>` binds T.
     private Compiler.TypeEnv BindOwner(RoutineDecl r, DType owner, Pos pos)
     {
         var env = new Compiler.TypeEnv(r.File);
@@ -845,14 +841,14 @@ public sealed class FunctionGen
         {
             RecordType s => s.Args,
             ArrayType a => [a.Elem, new ConstArg(a.Count)],
-            PtrType p => [p.Pointee ?? new IntType(8)],
+            PtrType p => [p.Pointee ?? IntType.Byte],
             _ => throw Err(pos, $"{owner} does not match '{o}'"),
         };
         if (actual.Count != o.Args.Count) throw Err(pos, $"{owner} does not match '{o}'");
         for (int i = 0; i < o.Args.Count; i++)
             if (o.Args[i] is TypeArgType { Type.Args.Count: 0 } ta)
                 env.Bind(ta.Type.Name, actual[i]);
-        env.Bind("Self", owner is PtrType { Pointee: null } ? new PtrType(new IntType(8)) : owner);
+        env.Bind("Self", owner is PtrType { Pointee: null } ? new PtrType(IntType.Byte) : owner);
         return env;
     }
 
@@ -929,7 +925,7 @@ public sealed class FunctionGen
         string op = c.Name == "sizeof"
             ? $"ptrtoint (ptr getelementptr ({t.Llvm}, ptr null, i32 1) to i64)"
             : $"ptrtoint (ptr getelementptr ({{ i1, {t.Llvm} }}, ptr null, i32 0, i32 1) to i64)";
-        return new Val(op, new IntType(64));
+        return new Val(op, IntType.U(64));
     }
 
     private Val EmitCall(CallPlan plan)
@@ -973,7 +969,7 @@ public sealed class FunctionGen
             _ => throw Err(e.Pos, "cannot infer the type of this variadic argument; bind it with a type first"),
         };
         var v = Eval(e, t);
-        return v.Type switch
+        return v.Type.Repr switch
         {
             FloatType ft when ft != FloatType.F64 => new Val(EmitTmp($"fpext {ft.Llvm} {v.Op} to double"), FloatType.F64),
             BoolType => new Val(EmitTmp($"zext i1 {v.Op} to i32"), IntType.S(32)),
@@ -1117,8 +1113,9 @@ public sealed class FunctionGen
             case SwitchTerm sw:
             {
                 var v = EvalAny(sw.Value);
-                if (v.Type is not (IntType { Kind: not IntKind.Bits } or ChoiceType))
-                    throw Err(sw.Value.Pos, $"switch needs an integer, Char, or choice value, not {v.Type}");
+                // Raw bits have no meaning to switch on, except Byte: text is bytes (b'a' cases).
+                if (v.Type is not (IntType { Kind: not IntKind.Bits } or IntType { Bits: 8 } or ChoiceType))
+                    throw Err(sw.Value.Pos, $"switch needs an integer, Byte, Char, or choice value, not {v.Type}");
                 string? defaultLabel = null;
                 var cases = new List<string>();
                 var seen = new HashSet<string>();
@@ -1221,7 +1218,7 @@ public sealed class FunctionGen
                     if (r.Value is null) throw Err(r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
                     var v = Eval(r.Value, _inst.Ret);
                     if (_inst.PassesBf16AsBits && Instance.IsBf16(_inst.Ret))
-                        v = new Val(EmitTmp($"bitcast bfloat {v.Op} to i16"), new IntType(16));
+                        v = new Val(EmitTmp($"bitcast bfloat {v.Op} to i16"), new IntType(16, IntKind.Bits));
                     Terminate($"ret {_inst.LlvmRet} {v.Op}");
                 }
                 break;

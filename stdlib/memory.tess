@@ -5,40 +5,37 @@
 ; Allocator backed by libc malloc / realloc / free.
 ;
 ; Generic routines (alloc, realloc, free, zero, copy) form the prelude memory
-; surface used by every collection.  User-facing sizes are I64; C-alias sizes
+; surface used by every collection.  User-facing sizes are U64; C-alias sizes
 ; (CSize, CInt) appear only at the FFI boundary and immediately convert.
 
 ; ============================================================
-; FFI integer conversions (I64 ↔ CSize)
+; FFI integer conversions (U64 ↔ CSize)
 ;
-; Picked per target.  On a 64-bit target CSize is I64, so the conversion is a
-; no-op bitcast.  On a 32-bit target CSize is I32, so the I64→CSize direction
-; is a truncation and the CSize→I64 direction is a zero-extension (size_t is
-; semantically unsigned).
+; Picked per target. On a 64-bit target CSize is U64, so both directions are
+; the identity. On a 32-bit target CSize is U32: U64 → CSize panics on a size
+; that doesn't fit, and CSize → U64 widens.
 ; ============================================================
 
 @target(size: 64)
-routine i64_to_csize(%n: I64) -> CSize
+routine u64_to_csize(%n: U64) -> CSize
     block entry():
-        %r: CSize = bitcast<I64, CSize>(%n)
-        return(%r)
+        return(%n)
 
 @target(size: 32)
-routine i64_to_csize(%n: I64) -> CSize
+routine u64_to_csize(%n: U64) -> CSize
     block entry():
-        %r: CSize = trunc<I64, CSize>(%n)
+        %r: CSize = %n.to_u32()
         return(%r)
 
 @target(size: 64)
-routine csize_to_i64(%n: CSize) -> I64
+routine csize_to_u64(%n: CSize) -> U64
     block entry():
-        %r: I64 = bitcast<CSize, I64>(%n)
-        return(%r)
+        return(%n)
 
 @target(size: 32)
-routine csize_to_i64(%n: CSize) -> I64
+routine csize_to_u64(%n: CSize) -> U64
     block entry():
-        %r: I64 = zext<CSize, I64>(%n)
+        %r: U64 = %n.to_u64()
         return(%r)
 
 ; ============================================================
@@ -49,16 +46,16 @@ routine csize_to_i64(%n: CSize) -> I64
 routine c_malloc(%size: CSize) -> Ptr
 
 @[external("c"), symbol("realloc")]
-routine c_realloc(#Ptr: Ptr, %size: CSize) -> Ptr
+routine c_realloc(#ptr: Ptr, %size: CSize) -> Ptr
 
 @[external("c"), symbol("free")]
-routine c_free(#Ptr: Ptr) -> Void
+routine c_free(#ptr: Ptr) -> Void
 
 @[external("c"), symbol("memcpy")]
 routine c_memcpy(#dst: Ptr, #src: Ptr, %size: CSize) -> Void
 
 @[external("c"), symbol("memset")]
-routine c_memset(#Ptr: Ptr, %value: CInt, %size: CSize) -> Void
+routine c_memset(#ptr: Ptr, %value: CInt, %size: CSize) -> Void
 
 ; ============================================================
 ; Allocator record
@@ -89,9 +86,9 @@ routine heap_realloc_fn(#state: Ptr, #old_Ptr: Ptr, %size: CSize) -> Ptr
         return(#result)
 
 @callconv("c")
-routine heap_free_fn(#state: Ptr, #Ptr: Ptr) -> Void
+routine heap_free_fn(#state: Ptr, #ptr: Ptr) -> Void
     block entry():
-        c_free(#Ptr)
+        c_free(#ptr)
         return()
 
 ; ============================================================
@@ -111,54 +108,54 @@ routine make_heap_allocator() -> Allocator
 ; ============================================================
 ; Generic memory routines (prelude surface)
 ;
-; User-facing API stays in I64.  Conversion to CSize happens exactly at the
+; User-facing sizes are U64.  Conversion to CSize happens exactly at the
 ; allocator-callback boundary.
 ; ============================================================
 
-routine alloc<T>(#alloc: Ptr<Allocator>, %count: I64) -> Ptr<T>
+routine alloc<T>(#alloc: Ptr<Allocator>, %count: U64) -> Ptr<T>
 require T: typename
     block entry():
-        %elem_size: I64 = sizeof<T>()
-        %size:   I64    = %elem_size.mul(%count)
-        %size_c: CSize  = i64_to_csize(%size)
+        %elem_size: U64 = sizeof<T>()
+        %size:   U64    = %elem_size.mul(%count)
+        %size_c: CSize  = u64_to_csize(%size)
         #raw:    Ptr    = #alloc.alloc_fn(#alloc.state, %size_c)
         #typed:  Ptr<T> = bitcast<Ptr, Ptr<T>>(#raw)
         return(#typed)
 
-routine realloc<T>(#alloc: Ptr<Allocator>, #Ptr: Ptr<T>, %new_count: I64) -> Ptr<T>
+routine realloc<T>(#alloc: Ptr<Allocator>, #ptr: Ptr<T>, %new_count: U64) -> Ptr<T>
 require T: typename
     block entry():
-        %elem_size: I64  = sizeof<T>()
-        %size:    I64    = %elem_size.mul(%new_count)
-        %size_c:  CSize  = i64_to_csize(%size)
-        #raw_old: Ptr    = bitcast<Ptr<T>, Ptr>(#Ptr)
+        %elem_size: U64  = sizeof<T>()
+        %size:    U64    = %elem_size.mul(%new_count)
+        %size_c:  CSize  = u64_to_csize(%size)
+        #raw_old: Ptr    = bitcast<Ptr<T>, Ptr>(#ptr)
         #raw:     Ptr    = #alloc.realloc_fn(#alloc.state, #raw_old, %size_c)
         #typed:   Ptr<T> = bitcast<Ptr, Ptr<T>>(#raw)
         return(#typed)
 
-routine free<T>(#alloc: Ptr<Allocator>, #Ptr: Ptr<T>) -> Void
+routine free<T>(#alloc: Ptr<Allocator>, #ptr: Ptr<T>) -> Void
 require T: typename
     block entry():
-        #raw: Ptr = bitcast<Ptr<T>, Ptr>(#Ptr)
+        #raw: Ptr = bitcast<Ptr<T>, Ptr>(#ptr)
         #alloc.free_fn(#alloc.state, #raw)
         return()
 
-routine zero<T>(#Ptr: Ptr<T>, %count: I64) -> Void
+routine zero<T>(#ptr: Ptr<T>, %count: U64) -> Void
 require T: typename
     block entry():
-        %elem_size: I64 = sizeof<T>()
-        %size:   I64   = %elem_size.mul(%count)
-        %size_c: CSize = i64_to_csize(%size)
-        #raw:    Ptr   = bitcast<Ptr<T>, Ptr>(#Ptr)
+        %elem_size: U64 = sizeof<T>()
+        %size:   U64   = %elem_size.mul(%count)
+        %size_c: CSize = u64_to_csize(%size)
+        #raw:    Ptr   = bitcast<Ptr<T>, Ptr>(#ptr)
         c_memset(#raw, 0, %size_c)
         return()
 
-routine copy<T>(#dst: Ptr<T>, #src: Ptr<T>, %count: I64) -> Void
+routine copy<T>(#dst: Ptr<T>, #src: Ptr<T>, %count: U64) -> Void
 require T: typename
     block entry():
-        %elem_size: I64 = sizeof<T>()
-        %size:    I64   = %elem_size.mul(%count)
-        %size_c:  CSize = i64_to_csize(%size)
+        %elem_size: U64 = sizeof<T>()
+        %size:    U64   = %elem_size.mul(%count)
+        %size_c:  CSize = u64_to_csize(%size)
         #raw_dst: Ptr   = bitcast<Ptr<T>, Ptr>(#dst)
         #raw_src: Ptr   = bitcast<Ptr<T>, Ptr>(#src)
         c_memcpy(#raw_dst, #raw_src, %size_c)

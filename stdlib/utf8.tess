@@ -1,170 +1,169 @@
 ; Tessera stdlib: UTF-8 encode/decode
 ;
-; Codepoints are I32 (Unicode scalar values, 0..=0x10FFFF).
-; Bytes are I8 (raw octets in Ptr<I8> buffers).
+; Text is Char (a Unicode scalar value); bytes are Byte in Ptr<Byte> buffers,
+; read as U8 to look at their bits.
 ;
-; utf8_decode reads one codepoint starting at byte %pos (never reading at or
-; past %len) and returns a Utf8Decoded { codepoint, next_pos }.  On error it
-; returns { codepoint: -1, next_pos: %pos }.
+; utf8_decode reads one character starting at byte %pos (never reading at or
+; past %len) and returns a Utf8Decoded { char, next_pos, ok }. On a malformed
+; sequence (a bad lead or continuation byte, a surrogate, or a value past
+; 0x10FFFF) it returns { char: U+FFFD, next_pos: %pos, ok: false }.
 ;
-; utf8_encode writes one codepoint into #out (caller must ensure 4 bytes
-; of space) and returns the number of bytes written, or 0 on invalid codepoint.
+; utf8_encode writes one character into #out (caller must ensure 4 bytes of
+; space) and returns the number of bytes written.
 
 ; -- Utf8Decoded ---------------------------------------------------------------
 
 record Utf8Decoded
-    codepoint: I32
-    next_pos:  I64
+    char:     Char
+    next_pos: U64
+    ok:       Bool
 
 ; -- decode --------------------------------------------------------------------
 
-routine utf8_decode(#bytes: Ptr<I8>, %pos: I64, %len: I64) -> Utf8Decoded
+routine utf8_decode(#bytes: Ptr<Byte>, %pos: U64, %len: U64) -> Utf8Decoded
     block entry():
-        %past_end: Bool = %pos.sge(%len)
+        %past_end: Bool = %pos.ge(%len)
         branch %past_end ? error(%pos) : read_lead(%pos)
 
-    block read_lead(%pos: I64):
-        %b0:  I8  := #bytes[%pos]
-        %b0u: I32 = %b0.to_u32()
-        %next: I64 = %pos.add(1)
+    block read_lead(%pos: U64):
+        %b0:  Byte := #bytes[%pos]
+        %b0u: U32  = U8.from_byte(%b0).to_u32()
+        %next: U64 = %pos.add(1)
         ; single byte: 0xxxxxxx
-        %is_one: Bool = %b0u.ult(0x80)
-        branch %is_one ? done_one(%b0u, %next) : check_two(%b0u, %next)
+        %is_one: Bool = %b0u.lt(0x80)
+        branch %is_one ? done(%b0u, %pos, %next) : check_two(%b0u, %pos, %next)
 
-    block done_one(%cp: I32, %next: I64):
-        %result: Utf8Decoded = Utf8Decoded { codepoint: %cp, next_pos: %next }
-        return(%result)
-
-    block check_two(%b0u: I32, %next: I64):
+    block check_two(%b0u: U32, %pos: U64, %next: U64):
         ; two byte: 110xxxxx 10xxxxxx
-        %mask2: I32 = %b0u.bitand(0xE0)
+        %mask2: U32 = %b0u.bitand(0xE0)
         %is_two: Bool = %mask2.eq(0xC0)
-        branch %is_two ? read_two(%b0u, %next) : check_three(%b0u, %next)
+        branch %is_two ? read_two(%b0u, %pos, %next) : check_three(%b0u, %pos, %next)
 
-    block read_two(%b0u: I32, %next: I64):
-        %b1:  I8  := #bytes[%next]
-        %b1u: I32 = %b1.to_u32()
-        %valid: Bool = %b1u.bitand(0xC0).eq(0x80)
-        branch %valid ? done_two(%b0u, %b1u, %next) : error(%next)
+    block read_two(%b0u: U32, %pos: U64, %next: U64):
+        %b1u: U32 = utf8_continuation(#bytes, %next, %len)
+        %valid: Bool = %b1u.le(0x3F)
+        branch %valid ? done_two(%b0u, %b1u, %pos, %next) : error(%pos)
 
-    block done_two(%b0u: I32, %b1u: I32, %next: I64):
-        %hi:  I32 = %b0u.bitand(0x1F).shl(6)
-        %lo:  I32 = %b1u.bitand(0x3F)
-        %cp:  I32 = %hi.bitor(%lo)
-        %after: I64 = %next.add(1)
-        %result: Utf8Decoded = Utf8Decoded { codepoint: %cp, next_pos: %after }
-        return(%result)
+    block done_two(%b0u: U32, %b1u: U32, %pos: U64, %next: U64):
+        %hi:  U32 = %b0u.bitand(0x1F).shl(6)
+        %cp:  U32 = %hi.bitor(%b1u)
+        jump done(%cp, %pos, %next.add(1))
 
-    block check_three(%b0u: I32, %next: I64):
+    block check_three(%b0u: U32, %pos: U64, %next: U64):
         ; three byte: 1110xxxx 10xxxxxx 10xxxxxx
-        %mask3: I32 = %b0u.bitand(0xF0)
+        %mask3: U32 = %b0u.bitand(0xF0)
         %is_three: Bool = %mask3.eq(0xE0)
-        branch %is_three ? read_three(%b0u, %next) : check_four(%b0u, %next)
+        branch %is_three ? read_three(%b0u, %pos, %next) : check_four(%b0u, %pos, %next)
 
-    block read_three(%b0u: I32, %next: I64):
-        %b1:  I8  := #bytes[%next]
-        %b1u: I32 = %b1.to_u32()
-        %n2:  I64 = %next.add(1)
-        %b2:  I8  := #bytes[%n2]
-        %b2u: I32 = %b2.to_u32()
-        %ok1: Bool = %b1u.bitand(0xC0).eq(0x80)
-        %ok2: Bool = %b2u.bitand(0xC0).eq(0x80)
-        %valid: Bool = %ok1.bitand(%ok2)
-        branch %valid ? done_three(%b0u, %b1u, %b2u, %n2) : error(%next)
+    block read_three(%b0u: U32, %pos: U64, %next: U64):
+        %n2:  U64 = %next.add(1)
+        %b1u: U32 = utf8_continuation(#bytes, %next, %len)
+        %b2u: U32 = utf8_continuation(#bytes, %n2, %len)
+        %valid: Bool = %b1u.bitor(%b2u).le(0x3F)
+        branch %valid ? done_three(%b0u, %b1u, %b2u, %pos, %n2) : error(%pos)
 
-    block done_three(%b0u: I32, %b1u: I32, %b2u: I32, %n2: I64):
-        %hi:  I32 = %b0u.bitand(0x0F).shl(12)
-        %mid: I32 = %b1u.bitand(0x3F).shl(6)
-        %lo:  I32 = %b2u.bitand(0x3F)
-        %cp:  I32 = %hi.bitor(%mid).bitor(%lo)
-        %after: I64 = %n2.add(1)
-        %result: Utf8Decoded = Utf8Decoded { codepoint: %cp, next_pos: %after }
-        return(%result)
+    block done_three(%b0u: U32, %b1u: U32, %b2u: U32, %pos: U64, %n2: U64):
+        %hi:  U32 = %b0u.bitand(0x0F).shl(12)
+        %mid: U32 = %b1u.shl(6)
+        %cp:  U32 = %hi.bitor(%mid).bitor(%b2u)
+        jump done(%cp, %pos, %n2.add(1))
 
-    block check_four(%b0u: I32, %next: I64):
+    block check_four(%b0u: U32, %pos: U64, %next: U64):
         ; four byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
-        %mask4: I32 = %b0u.bitand(0xF8)
+        %mask4: U32 = %b0u.bitand(0xF8)
         %is_four: Bool = %mask4.eq(0xF0)
-        branch %is_four ? read_four(%b0u, %next) : error(%next)
+        branch %is_four ? read_four(%b0u, %pos, %next) : error(%pos)
 
-    block read_four(%b0u: I32, %next: I64):
-        %b1:  I8  := #bytes[%next]
-        %b1u: I32 = %b1.to_u32()
-        %n2:  I64 = %next.add(1)
-        %b2:  I8  := #bytes[%n2]
-        %b2u: I32 = %b2.to_u32()
-        %n3:  I64 = %n2.add(1)
-        %b3:  I8  := #bytes[%n3]
-        %b3u: I32 = %b3.to_u32()
-        %ok1:   Bool = %b1u.bitand(0xC0).eq(0x80)
-        %ok2:   Bool = %b2u.bitand(0xC0).eq(0x80)
-        %ok3:   Bool = %b3u.bitand(0xC0).eq(0x80)
-        %valid: Bool = %ok1.bitand(%ok2).bitand(%ok3)
-        branch %valid ? done_four(%b0u, %b1u, %b2u, %b3u, %n3) : error(%next)
+    block read_four(%b0u: U32, %pos: U64, %next: U64):
+        %n2:  U64 = %next.add(1)
+        %n3:  U64 = %n2.add(1)
+        %b1u: U32 = utf8_continuation(#bytes, %next, %len)
+        %b2u: U32 = utf8_continuation(#bytes, %n2, %len)
+        %b3u: U32 = utf8_continuation(#bytes, %n3, %len)
+        %valid: Bool = %b1u.bitor(%b2u).bitor(%b3u).le(0x3F)
+        branch %valid ? done_four(%b0u, %b1u, %b2u, %b3u, %pos, %n3) : error(%pos)
 
-    block done_four(%b0u: I32, %b1u: I32, %b2u: I32, %b3u: I32, %n3: I64):
-        %p0: I32 = %b0u.bitand(0x07).shl(18)
-        %p1: I32 = %b1u.bitand(0x3F).shl(12)
-        %p2: I32 = %b2u.bitand(0x3F).shl(6)
-        %p3: I32 = %b3u.bitand(0x3F)
-        %cp: I32 = %p0.bitor(%p1).bitor(%p2).bitor(%p3)
-        %after: I64 = %n3.add(1)
-        %result: Utf8Decoded = Utf8Decoded { codepoint: %cp, next_pos: %after }
+    block done_four(%b0u: U32, %b1u: U32, %b2u: U32, %b3u: U32, %pos: U64, %n3: U64):
+        %p0: U32 = %b0u.bitand(0x07).shl(18)
+        %p1: U32 = %b1u.shl(12)
+        %p2: U32 = %b2u.shl(6)
+        %cp: U32 = %p0.bitor(%p1).bitor(%p2).bitor(%b3u)
+        jump done(%cp, %pos, %n3.add(1))
+
+    ; A surrogate or a value past 0x10FFFF isn't a Char.
+    block done(%cp: U32, %pos: U64, %after: U64):
+        %char: Option<Char> = %cp.to_char_checked()
+        %ok: Bool = %char.tag
+        branch %ok ? decoded(%char.value, %after) : error(%pos)
+
+    block decoded(%char: Char, %after: U64):
+        %result: Utf8Decoded = Utf8Decoded { char: %char, next_pos: %after, ok: true }
         return(%result)
 
-    block error(%pos: I64):
-        %result: Utf8Decoded = Utf8Decoded { codepoint: -1, next_pos: %pos }
+    block error(%pos: U64):
+        %fffd: U32 = 0xFFFD
+        %replacement: Char = %fffd.to_char()
+        %result: Utf8Decoded = Utf8Decoded { char: %replacement, next_pos: %pos, ok: false }
         return(%result)
+
+; The payload bits of the continuation byte at %pos, 0x00 ..= 0x3F, or 0xFF
+; when the byte isn't a continuation byte or lies past %len.
+routine utf8_continuation(#bytes: Ptr<Byte>, %pos: U64, %len: U64) -> U32
+    block entry():
+        %past_end: Bool = %pos.ge(%len)
+        branch %past_end ? return(0xFF) : read(%pos)
+
+    block read(%pos: U64):
+        %b:  Byte := #bytes[%pos]
+        %bu: U32  = U8.from_byte(%b).to_u32()
+        %is_continuation: Bool = %bu.bitand(0xC0).eq(0x80)
+        branch %is_continuation ? return(%bu.bitand(0x3F)) : return(0xFF)
 
 ; -- encode --------------------------------------------------------------------
 
-; Writes 1–4 bytes into #out.  Caller must have >= 4 bytes available.
-; Returns byte count written, or 0 on invalid codepoint.
-routine utf8_encode(%cp: I32, #out: Ptr<I8>) -> I64
+; Writes 1–4 bytes into #out. Caller must have >= 4 bytes available.
+; Returns the byte count written.
+routine utf8_encode(%char: Char, #out: Ptr<Byte>) -> U64
     block entry():
-        %in_one: Bool = %cp.ult(0x80)
+        %cp: U32 = %char.to_u32()
+        %in_one: Bool = %cp.lt(0x80)
         branch %in_one ? enc_one(%cp) : check_two(%cp)
 
-    block enc_one(%cp: I32):
-        %b: I8 = %cp.trunc<I8>()
-        #out[0] = %b
+    block enc_one(%cp: U32):
+        #out[0] = %cp.to_u8().bits()
         return(1)
 
-    block check_two(%cp: I32):
-        %in_two: Bool = %cp.ult(0x800)
+    block check_two(%cp: U32):
+        %in_two: Bool = %cp.lt(0x800)
         branch %in_two ? enc_two(%cp) : check_three(%cp)
 
-    block enc_two(%cp: I32):
-        %hi: I32 = %cp.lshr(6).bitor(0xC0)
-        %lo: I32 = %cp.bitand(0x3F).bitor(0x80)
-        #out[0] = %hi.trunc<I8>()
-        #out[1] = %lo.trunc<I8>()
+    block enc_two(%cp: U32):
+        %hi: U32 = %cp.shr(6).bitor(0xC0)
+        %lo: U32 = %cp.bitand(0x3F).bitor(0x80)
+        #out[0] = %hi.to_u8().bits()
+        #out[1] = %lo.to_u8().bits()
         return(2)
 
-    block check_three(%cp: I32):
-        %in_three: Bool = %cp.ult(0x10000)
-        branch %in_three ? enc_three(%cp) : check_four(%cp)
+    block check_three(%cp: U32):
+        %in_three: Bool = %cp.lt(0x10000)
+        branch %in_three ? enc_three(%cp) : enc_four(%cp)
 
-    block enc_three(%cp: I32):
-        %b0: I32 = %cp.lshr(12).bitor(0xE0)
-        %b1: I32 = %cp.lshr(6).bitand(0x3F).bitor(0x80)
-        %b2: I32 = %cp.bitand(0x3F).bitor(0x80)
-        #out[0] = %b0.trunc<I8>()
-        #out[1] = %b1.trunc<I8>()
-        #out[2] = %b2.trunc<I8>()
+    block enc_three(%cp: U32):
+        %b0: U32 = %cp.shr(12).bitor(0xE0)
+        %b1: U32 = %cp.shr(6).bitand(0x3F).bitor(0x80)
+        %b2: U32 = %cp.bitand(0x3F).bitor(0x80)
+        #out[0] = %b0.to_u8().bits()
+        #out[1] = %b1.to_u8().bits()
+        #out[2] = %b2.to_u8().bits()
         return(3)
 
-    block check_four(%cp: I32):
-        %in_four: Bool = %cp.ult(0x110000)
-        branch %in_four ? enc_four(%cp) : return(0)
-
-    block enc_four(%cp: I32):
-        %b0: I32 = %cp.lshr(18).bitor(0xF0)
-        %b1: I32 = %cp.lshr(12).bitand(0x3F).bitor(0x80)
-        %b2: I32 = %cp.lshr(6).bitand(0x3F).bitor(0x80)
-        %b3: I32 = %cp.bitand(0x3F).bitor(0x80)
-        #out[0] = %b0.trunc<I8>()
-        #out[1] = %b1.trunc<I8>()
-        #out[2] = %b2.trunc<I8>()
-        #out[3] = %b3.trunc<I8>()
+    block enc_four(%cp: U32):
+        %b0: U32 = %cp.shr(18).bitor(0xF0)
+        %b1: U32 = %cp.shr(12).bitand(0x3F).bitor(0x80)
+        %b2: U32 = %cp.shr(6).bitand(0x3F).bitor(0x80)
+        %b3: U32 = %cp.bitand(0x3F).bitor(0x80)
+        #out[0] = %b0.to_u8().bits()
+        #out[1] = %b1.to_u8().bits()
+        #out[2] = %b2.to_u8().bits()
+        #out[3] = %b3.to_u8().bits()
         return(4)

@@ -12,8 +12,8 @@
 
 ; A 256-bit value (or square) as two 128-bit halves.
 record CmHypotSquare
-    hi: I128
-    lo: I128
+    hi: U128
+    lo: U128
 
 ; -- hypot ---------------------------------------------------------------------
 
@@ -22,13 +22,13 @@ record CmHypotSquare
 ; signaling NaN gives CM_SQRT_DEFAULT_NAN; otherwise a NaN leg comes back without its sign.
 routine f128_cm_hypot(%x: F128, %y: F128) -> F128
     block entry():
-        %x_abs:   I128 = %x.bits.bitand(F128_SIGN.bitnot())
-        %y_abs:   I128 = %y.bits.bitand(F128_SIGN.bitnot())
-        %swap:    Bool = %x_abs.ult(%y_abs)
-        %a:       I128 = %swap ? %y_abs : %x_abs            ; the larger leg
-        %b:       I128 = %swap ? %x_abs : %y_abs
-        %a_exp:   I64  = %a.lshr(112).to_i64()
-        %b_exp:   I64  = %b.lshr(112).to_i64()
+        %x_abs:   U128 = %x.bits.bitand(F128_SIGN.bitnot())
+        %y_abs:   U128 = %y.bits.bitand(F128_SIGN.bitnot())
+        %swap:    Bool = %x_abs.lt(%y_abs)
+        %a:       U128 = %swap ? %y_abs : %x_abs            ; the larger leg
+        %b:       U128 = %swap ? %x_abs : %y_abs
+        %a_exp:   S64  = %a.shr(112).to_s64_wrap()
+        %b_exp:   S64  = %b.shr(112).to_s64_wrap()
         %special: Bool = %a_exp.eq(0x7FFF)
         %b_tiny:  Bool = %b_exp.eq(0)
         select:
@@ -36,87 +36,87 @@ routine f128_cm_hypot(%x: F128, %y: F128) -> F128
             %b_tiny -> tiny_leg(%a, %a_exp, %b)
             _ -> legs(%a, %a_exp, %b, %b_exp)
 
-    block tiny_leg(%a: I128, %a_exp: I64, %b: I128):
+    block tiny_leg(%a: U128, %a_exp: S64, %b: U128):
         %b_zero: Bool = %b.eq(0)
-        %a_only: F128 = F128.from_bits(%a)
+        %a_only: F128 = f128_of(%a)
         branch %b_zero ? return(%a_only) : normalize_b(%a, %a_exp, %b)
 
     ; A subnormal leg moves its leading bit up to the implicit bit's place, and its exponent
     ; drops below 1 to match. Only then can the larger leg be subnormal too.
-    block normalize_b(%a: I128, %a_exp: I64, %b: I128):
-        %shift:  I64  = %b.leading_zeros().to_i64().sub(15)
-        %b_norm: I128 = %b.shl(%shift.to_i128())
-        %b_exp:  I64  = 1.sub(%shift)
+    block normalize_b(%a: U128, %a_exp: S64, %b: U128):
+        %shift:  S64  = %b.leading_zeros().to_s128().to_s64_wrap().sub_wrap(15)
+        %b_norm: U128 = %b.shl(%shift.to_u128())
+        %b_exp:  S64  = 1.sub_wrap(%shift)
         %a_tiny: Bool = %a_exp.eq(0)
         branch %a_tiny ? normalize_a(%a, %b_norm, %b_exp) : legs(%a, %a_exp, %b_norm, %b_exp)
 
-    block normalize_a(%a: I128, %b: I128, %b_exp: I64):
-        %shift: I64 = %a.leading_zeros().to_i64().sub(15)
-        jump legs(%a.shl(%shift.to_i128()), 1.sub(%shift), %b, %b_exp)
+    block normalize_a(%a: U128, %b: U128, %b_exp: S64):
+        %shift: S64 = %a.leading_zeros().to_s128().to_s64_wrap().sub_wrap(15)
+        jump legs(%a.shl(%shift.to_u128()), 1.sub_wrap(%shift), %b, %b_exp)
 
     ; Both legs as 1.frac × 2^(exp - 16383) with the leading bit placed at bit 127.
-    block legs(%a: I128, %a_exp: I64, %b: I128, %b_exp: I64):
-        %gap:        I64  = %a_exp.sub(%b_exp)
-        %a_top:      I128 = %a.shl(15).bitor(F128_SIGN)
-        %b_top:      I128 = %b.shl(15).bitor(F128_SIGN)
-        %negligible: Bool = %gap.sgt(56)                    ; b only matters as a sticky bit
+    block legs(%a: U128, %a_exp: S64, %b: U128, %b_exp: S64):
+        %gap:        S64  = %a_exp.sub_wrap(%b_exp)
+        %a_top:      U128 = %a.shl(15).bitor(F128_SIGN)
+        %b_top:      U128 = %b.shl(15).bitor(F128_SIGN)
+        %negligible: Bool = %gap.gt(56)                    ; b only matters as a sticky bit
         branch %negligible ? negligible(%a_top, %a_exp) : sum(%a_top, %a_exp, %b_top, %gap)
 
-    block negligible(%a_top: I128, %a_exp: I64):
+    block negligible(%a_top: U128, %a_exp: S64):
         %r: F128 = cm_hypot_round(%a_top.bitor(1), %a_exp)
         return(%r)
 
     ; s = a² + b² in fixed point (b aligned to a), normalized with an even or odd shift so its
     ; square root can reuse the sqrt refinement; a carry out of the sum bumps the exponent.
-    block sum(%a_top: I128, %a_exp: I64, %b_top: I128, %gap: I64):
-        %a_sq:     I128 = cm_hypot_sqr_hi(%a_top)
-        %b_sq:     I128 = cm_hypot_sqr_hi(%b_top.lshr(%gap.to_i128()))
-        %s:        I128 = %a_sq.add(%b_sq)
-        %carried:  Bool = %s.ult(%a_sq)
-        %carry:    I64  = %carried.to_i64()
-        %zeros:    I64  = %s.lshr(64).to_i64().leading_zeros()
-        %lead:     I64  = %carried ? 0 : %zeros
-        %shift:    I64  = 1.sub(%carry).add(%lead)
-        %odd:      I64  = %shift.bitand(1)
-        %frac:     I128 = %s.shl(%shift.to_i128())
-        %exp:      I64  = %a_exp.add(%carry)
-        %radicand: I128 = cm_sqrt_radicand(%frac, %odd)
-        %approx:   I128 = cm_sqrt_approx(%frac, %radicand, %odd)
-        %slack:    I16  = %approx.shl(2).to_i16()           ; the bits under the rounding point
-        %close:    Bool = %slack.sgt(-37).bitand(%slack.slt(13))
+    block sum(%a_top: U128, %a_exp: S64, %b_top: U128, %gap: S64):
+        %a_sq:     U128 = cm_hypot_sqr_hi(%a_top)
+        %b_sq:     U128 = cm_hypot_sqr_hi(%b_top.shr(%gap.to_u128()))
+        %s:        U128 = %a_sq.add_wrap(%b_sq)
+        %carried:  Bool = %s.lt(%a_sq)
+        %carry:    S64  = %carried.to_s64()
+        %zeros:    S64  = %s.shr(64).to_s64_wrap().leading_zeros()
+        %lead:     S64  = %carried ? 0 : %zeros
+        %shift:    S64  = 1.sub_wrap(%carry).add_wrap(%lead)
+        %odd:      S64  = %shift.bitand(1)
+        %frac:     U128 = %s.shl(%shift.to_u128())
+        %exp:      S64  = %a_exp.add_wrap(%carry)
+        %radicand: U128 = cm_sqrt_radicand(%frac, %odd)
+        %approx:   U128 = cm_sqrt_approx(%frac, %radicand, %odd)
+        %slack:    S16  = %approx.shl(2).to_s16_wrap()           ; the bits under the rounding point
+        %close:    Bool = %slack.gt(-37).bitand(%slack.lt(13))
         branch %close ? settle(%approx, %exp, %a_top, %b_top, %gap) : round(%approx, %exp)
 
-    block round(%approx: I128, %exp: I64):
+    block round(%approx: U128, %exp: S64):
         %r: F128 = cm_hypot_round(%approx, %exp)
         return(%r)
 
     ; approx is at most one unit (of its bit 14) off: square the candidate, compare it with the
     ; exact sum of squares, and leave bit 0 saying which way the true root lies. Rounding up
     ; can wrap the candidate to 0, which means 2^128: the exponent takes the carry.
-    block settle(%approx: I128, %exp: I64, %a_top: I128, %b_top: I128, %gap: I64):
-        %candidate: I128 = %approx.add(0x2000).bitand(0x3FFF.bitnot())
+    block settle(%approx: U128, %exp: S64, %a_top: U128, %b_top: U128, %gap: S64):
+        %candidate: U128 = %approx.add_wrap(0x2000).bitand(0x3FFF.bitnot())
         %wrapped:   Bool = %candidate.eq(0)
-        %excess:    I128 = cm_hypot_excess(%candidate.lshr(13), %a_top, %b_top, %gap)
-        %top_bit:   I128 = %wrapped ? F128_SIGN : 0
-        %above:     I128 = %excess.slt(0).to_i128()         ; the sum is below the square
-        %below:     I128 = %excess.sgt(0).to_i128()
-        %v:         I128 = %candidate.bitor(%top_bit).sub(%above).add(%below)
-        %r:         F128 = cm_hypot_round(%v, %exp.add(%wrapped.to_i64()))
+        %excess:    S128 = cm_hypot_excess(%candidate.shr(13), %a_top, %b_top, %gap)
+        %top_bit:   U128 = %wrapped ? F128_SIGN : 0
+        %above:     U128 = %excess.lt(0).to_u128()         ; the sum is below the square
+        %below:     U128 = %excess.gt(0).to_u128()
+        %v:         U128 = %candidate.bitor(%top_bit).sub_wrap(%above).add_wrap(%below)
+        %r:         F128 = cm_hypot_round(%v, %exp.add_wrap(%wrapped.to_s64()))
         return(%r)
 
 ; Both legs are at least as large as a finite number and the larger is infinite or NaN.
-routine cm_hypot_special(%a: I128, %b: I128) -> F128
+routine cm_hypot_special(%a: U128, %b: U128) -> F128
     block entry():
-        %a_class:   I64  = cm_hypot_class(%a)
-        %b_class:   I64  = cm_hypot_class(%b)
+        %a_class:   S64  = cm_hypot_class(%a)
+        %b_class:   S64  = cm_hypot_class(%b)
         %signaling: Bool = %a_class.eq(2).bitor(%b_class.eq(2))
-        %inf_nan:   Bool = %a_class.add(%b_class).eq(4)       ; infinity and a quiet NaN
+        %inf_nan:   Bool = %a_class.add_wrap(%b_class).eq(4)       ; infinity and a quiet NaN
         %a_nan:     Bool = %a_class.eq(3)
         %b_nan:     Bool = %b_class.eq(3)
-        %nan:       F128 = F128.from_bits(CM_SQRT_DEFAULT_NAN)
+        %nan:       F128 = f128_of(CM_SQRT_DEFAULT_NAN)
         %infinity:  F128 = F128.INFINITY
-        %a_value:   F128 = F128.from_bits(%a)
-        %b_value:   F128 = F128.from_bits(%b)
+        %a_value:   F128 = f128_of(%a)
+        %b_value:   F128 = f128_of(%b)
         select:
             %signaling -> return(%nan)
             %inf_nan -> return(%infinity)
@@ -126,114 +126,114 @@ routine cm_hypot_special(%a: I128, %b: I128) -> F128
 
 ; Classifies sign-stripped bits: 0 for a number, 1 for infinity, 2 for a signaling NaN,
 ; 3 for a quiet NaN.
-routine cm_hypot_class(%x: I128) -> I64
+routine cm_hypot_class(%x: U128) -> S64
     block entry():
-        %xh:       I64  = %x.lshr(64).to_i64()
-        %xl:       I64  = %x.to_i64()
-        %rest:     I64  = %xh.shl(32).bitor(%xl)
-        %t:        I64  = %xh.lshr(32).bitor(%rest.ne(0).to_i64())
-        %inf_up:   I64  = %t.uge(0x7FFF0000).to_i64()
-        %nan_up:   I64  = %t.uge(0x7FFF0001).to_i64()
-        %quiet_up: I64  = %t.uge(0x7FFF8000).to_i64()
-        %r:        I64  = %inf_up.add(%nan_up).add(%quiet_up)
+        %xh:       U64  = %x.shr(64).to_u64_wrap()
+        %xl:       U64  = %x.to_u64_wrap()
+        %rest:     U64  = %xh.shl(32).bitor(%xl)
+        %t:        U64  = %xh.shr(32).bitor(%rest.ne(0).to_u64())
+        %inf_up:   S64  = %t.ge(0x7FFF0000).to_s64()
+        %nan_up:   S64  = %t.ge(0x7FFF0001).to_s64()
+        %quiet_up: S64  = %t.ge(0x7FFF8000).to_s64()
+        %r:        S64  = %inf_up.add_wrap(%nan_up).add_wrap(%quiet_up)
         return(%r)
 
 ; Rounds v (leading bit at 127, sticky information in its low bits) times 2^(exp - 16383) to
 ; the nearest F128, ties to even: a normal result, +inf on overflow, or a subnormal.
-routine cm_hypot_round(%v: I128, %exp: I64) -> F128
+routine cm_hypot_round(%v: U128, %exp: S64) -> F128
     block entry():
-        %e:      I64  = %exp.sub(1)
-        %normal: Bool = %e.sgt(0)
+        %e:      S64  = %exp.sub_wrap(1)
+        %normal: Bool = %e.gt(0)
         branch %normal ? normal(%e) : subnormal(%e)
 
-    block normal(%e: I64):
-        %overflow: Bool = %e.sge(32766)
+    block normal(%e: S64):
+        %overflow: Bool = %e.ge(32766)
         %infinity: F128 = F128.INFINITY
         branch %overflow ? return(%infinity) : pack(%e)
 
     ; The leading bit lands on bit 112 and adds 1 to the exponent field e.
-    block pack(%e: I64):
-        %rest:     I128 = %v.bitand(0x7FFF)
+    block pack(%e: S64):
+        %rest:     U128 = %v.bitand(0x7FFF)
         %tie:      Bool = %rest.eq(0x4000)
-        %up:       I128 = %rest.lshr(14)
-        %kept:     I128 = %v.lshr(15)
-        %even:     I128 = %kept.bitand(1)
-        %round_up: I128 = %tie ? %even : %up
-        %field:    I128 = %e.to_i128().shl(112).bitor(%round_up)
-        %r:        F128 = F128.from_bits(%kept.add(%field))
+        %up:       U128 = %rest.shr(14)
+        %kept:     U128 = %v.shr(15)
+        %even:     U128 = %kept.bitand(1)
+        %round_up: U128 = %tie ? %even : %up
+        %field:    U128 = %e.to_u128_wrap().shl(112).bitor(%round_up)
+        %r:        F128 = f128_of(%kept.add_wrap(%field))
         return(%r)
 
     ; e <= 0: shift out 15 - e bits (at most 127) and round them.
-    block subnormal(%e: I64):
-        %one:      I128 = 1
-        %shift:    I128 = 15.sub(%e).to_i128()
-        %half:     I128 = %one.shl(14.sub(%e).to_i128())
-        %rest:     I128 = %v.bitand(%one.shl(%shift).sub(1))
+    block subnormal(%e: S64):
+        %one:      U128 = 1
+        %shift:    S128 = 15.sub_wrap(%e).to_s128()
+        %half:     U128 = %one.shl(14.sub_wrap(%e).to_u128())
+        %rest:     U128 = %v.bitand(%one.shl(%shift.to_u128()).sub_wrap(1))
         %tie:      Bool = %rest.eq(%half)
-        %up:       I128 = %rest.lshr(14.sub(%e).to_i128())
-        %kept:     I128 = %v.lshr(%shift)
-        %even:     I128 = %kept.bitand(1)
-        %round_up: I128 = %tie ? %even : %up
-        %r:        F128 = F128.from_bits(%kept.add(%round_up))
+        %up:       U128 = %rest.shr(14.sub_wrap(%e).to_u128())
+        %kept:     U128 = %v.shr(%shift.to_u128())
+        %even:     U128 = %kept.bitand(1)
+        %round_up: U128 = %tie ? %even : %up
+        %r:        F128 = f128_of(%kept.add_wrap(%round_up))
         return(%r)
 
 ; a² + b² - c², reduced mod 2^128 and read as signed, where a and b are the legs (leading bit
 ; at 127, b not yet aligned) and c the candidate root, all shifted down 13 bits. The sum is
 ; exact apart from a sticky bit for b's shifted-out part.
-routine cm_hypot_excess(%c: I128, %a_top: I128, %b_top: I128, %gap: I64) -> I128
+routine cm_hypot_excess(%c: U128, %a_top: U128, %b_top: U128, %gap: S64) -> S128
     block entry():
-        %c_sq:    I128          = %c.mul(%c)
-        %a_sq:    CmHypotSquare = cm_hypot_sqr(%a_top.lshr(13))
-        %b_sq:    CmHypotSquare = cm_hypot_sqr(%b_top.lshr(13))
+        %c_sq:    U128          = %c.mul_wrap(%c)
+        %a_sq:    CmHypotSquare = cm_hypot_sqr(%a_top.shr(13))
+        %b_sq:    CmHypotSquare = cm_hypot_sqr(%b_top.shr(13))
         %aligned: Bool          = %gap.eq(0)
         branch %aligned ? add(%c_sq, %a_sq, %b_sq) : align(%c_sq, %a_sq, %b_sq)
 
     ; b² × 2^(-2 gap), with the bits shifted out kept as a sticky bit.
-    block align(%c_sq: I128, %a_sq: CmHypotSquare, %b_sq: CmHypotSquare):
-        %k:       I128 = %gap.mul(2).to_i128()
-        %kc:      I128 = 128.sub(%k)
-        %b_hi:    I128 = %b_sq.hi
-        %b_lo:    I128 = %b_sq.lo
-        %sticky:  I128 = %b_lo.shl(%kc).ne(0).to_i128()
-        %low:     I128 = %b_lo.lshr(%k).bitor(%b_hi.shl(%kc)).bitor(%sticky)
-        %shifted: CmHypotSquare = CmHypotSquare { hi: %b_hi.lshr(%k), lo: %low }
+    block align(%c_sq: U128, %a_sq: CmHypotSquare, %b_sq: CmHypotSquare):
+        %k:       S128 = %gap.mul_wrap(2).to_s128()
+        %kc:      S128 = 128.sub_wrap(%k)
+        %b_hi:    U128 = %b_sq.hi
+        %b_lo:    U128 = %b_sq.lo
+        %sticky:  U128 = %b_lo.shl(%kc.to_u128()).ne(0).to_u128()
+        %low:     U128 = %b_lo.shr(%k.to_u128()).bitor(%b_hi.shl(%kc.to_u128())).bitor(%sticky)
+        %shifted: CmHypotSquare = CmHypotSquare { hi: %b_hi.shr(%k.to_u128()), lo: %low }
         jump add(%c_sq, %a_sq, %shifted)
 
-    block add(%c_sq: I128, %a_sq: CmHypotSquare, %b_sq: CmHypotSquare):
-        %b_lo:  I128 = %b_sq.lo
-        %lo:    I128 = %a_sq.lo.add(%b_lo)
-        %carry: I128 = %lo.ult(%b_lo).to_i128()
-        %hi:    I128 = %a_sq.hi.add(%b_sq.hi.add(%carry))
-        %wide:  Bool = %hi.lshr(102).ne(0)                   ; the sum carried: halve it (s = 2)
-        branch %wide ? halve(%c_sq, %hi, %lo) : return(%lo.sub(%c_sq))
+    block add(%c_sq: U128, %a_sq: CmHypotSquare, %b_sq: CmHypotSquare):
+        %b_lo:  U128 = %b_sq.lo
+        %lo:    U128 = %a_sq.lo.add_wrap(%b_lo)
+        %carry: U128 = %lo.lt(%b_lo).to_u128()
+        %hi:    U128 = %a_sq.hi.add_wrap(%b_sq.hi.add_wrap(%carry))
+        %wide:  Bool = %hi.shr(102).ne(0)                   ; the sum carried: halve it (s = 2)
+        branch %wide ? halve(%c_sq, %hi, %lo) : return(%lo.sub_wrap(%c_sq).to_s128_wrap())
 
-    block halve(%c_sq: I128, %hi: I128, %lo: I128):
-        %sticky: I128 = %lo.shl(126).ne(0).to_i128()
-        %low:    I128 = %lo.lshr(2).bitor(%hi.shl(126)).bitor(%sticky)
-        return(%low.sub(%c_sq))
+    block halve(%c_sq: U128, %hi: U128, %lo: U128):
+        %sticky: U128 = %lo.shl(126).ne(0).to_u128()
+        %low:    U128 = %lo.shr(2).bitor(%hi.shl(126)).bitor(%sticky)
+        return(%low.sub_wrap(%c_sq).to_s128_wrap())
 
 ; Approximate high 128 bits of a² (low × low dropped).
-routine cm_hypot_sqr_hi(%a: I128) -> I128
+routine cm_hypot_sqr_hi(%a: U128) -> U128
     block entry():
-        %a0:    I128 = %a.bitand(0xFFFFFFFFFFFFFFFF)
-        %a1:    I128 = %a.lshr(64)
-        %cross: I128 = %a1.mul(%a0).lshr(64)
-        %r:     I128 = %a1.mul(%a1).add(%cross).add(%cross)
+        %a0:    U128 = %a.bitand(0xFFFFFFFFFFFFFFFF)
+        %a1:    U128 = %a.shr(64)
+        %cross: U128 = %a1.mul_wrap(%a0).shr(64)
+        %r:     U128 = %a1.mul_wrap(%a1).add_wrap(%cross).add_wrap(%cross)
         return(%r)
 
 ; The full 256-bit a²: the cross term a1·a0 is added twice at bit 64.
-routine cm_hypot_sqr(%a: I128) -> CmHypotSquare
+routine cm_hypot_sqr(%a: U128) -> CmHypotSquare
     block entry():
-        %a0:     I128 = %a.bitand(0xFFFFFFFFFFFFFFFF)
-        %a1:     I128 = %a.lshr(64)
-        %cross:  I128 = %a1.mul(%a0)
-        %t:      I128 = %cross.shl(64)
-        %th:     I128 = %cross.lshr(64)
-        %lo0:    I128 = %a0.mul(%a0)
-        %hi0:    I128 = %a1.mul(%a1)
-        %lo1:    I128 = %lo0.add(%t)
-        %hi1:    I128 = %hi0.add(%lo1.ult(%t).to_i128()).add(%th)
-        %lo2:    I128 = %lo1.add(%t)
-        %hi2:    I128 = %hi1.add(%lo2.ult(%t).to_i128()).add(%th)
+        %a0:     U128 = %a.bitand(0xFFFFFFFFFFFFFFFF)
+        %a1:     U128 = %a.shr(64)
+        %cross:  U128 = %a1.mul_wrap(%a0)
+        %t:      U128 = %cross.shl(64)
+        %th:     U128 = %cross.shr(64)
+        %lo0:    U128 = %a0.mul_wrap(%a0)
+        %hi0:    U128 = %a1.mul_wrap(%a1)
+        %lo1:    U128 = %lo0.add_wrap(%t)
+        %hi1:    U128 = %hi0.add_wrap(%lo1.lt(%t).to_u128()).add_wrap(%th)
+        %lo2:    U128 = %lo1.add_wrap(%t)
+        %hi2:    U128 = %hi1.add_wrap(%lo2.lt(%t).to_u128()).add_wrap(%th)
         %r:      CmHypotSquare = CmHypotSquare { hi: %hi2, lo: %lo2 }
         return(%r)

@@ -10,83 +10,83 @@
 ; MIT license: see LICENSE-CORE-MATH
 
 ; x >= 0x1.34413509f79fef311f12b35816fap+12 overflows
-const CM_EXP10_OVERFLOW:  I128 = 0x400B34413509F79FEF311F12B35816FA
+const CM_EXP10_OVERFLOW:  U128 = 0x400B34413509F79FEF311F12B35816FA
 ; x <= -0x1.3657d621f4e96893f84497c723c1p+12 rounds to +0
-const CM_EXP10_UNDERFLOW: I128 = 0xC00B3657D621F4E96893F84497C723C1
+const CM_EXP10_UNDERFLOW: U128 = 0xC00B3657D621F4E96893F84497C723C1
 
 ; 10^x, correctly rounded.
 routine f128_cm_exp10(%x: F128) -> F128
     block entry():
-        %u:      I128 = %x.bits
-        %hi:     I64  = cm_exp_hi(%u)
-        %mag_hi: I64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
-        %tiny:   Bool = %mag_hi.ult(0x3F8BBCB7B1526E50)       ; 10^x rounds to 1
-        %large:  Bool = %mag_hi.uge(0x400B34413509F79F)
+        %u:      U128 = %x.bits
+        %hi:     U64  = cm_exp_hi(%u)
+        %mag_hi: U64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
+        %tiny:   Bool = %mag_hi.lt(0x3F8BBCB7B1526E50)       ; 10^x rounds to 1
+        %large:  Bool = %mag_hi.ge(0x400B34413509F79F)
         select:
             %tiny -> return(CM_EXP_ONE)
             %large -> edge(%u)
-            _ -> integer_check(%u)
+            _ -> integer_check(%u.to_s128_wrap())
 
     ; NaN, infinities, and the overflow and underflow thresholds
-    block edge(%u: I128):
+    block edge(%u: U128):
         %is_nan:    Bool = f128_is_nan_bits(%u)
-        %overflow:  Bool = %u.sge(0).bitand(%u.uge(CM_EXP10_OVERFLOW))
-        %underflow: Bool = %u.uge(CM_EXP10_UNDERFLOW)
-        %quiet:     F128 = F128.from_bits(%u.bitor(F128_QUIET_BIT))
+        %overflow:  Bool = f128_is_negative_bits(%u).bitnot().bitand(%u.ge(CM_EXP10_OVERFLOW))
+        %underflow: Bool = %u.ge(CM_EXP10_UNDERFLOW)
+        %quiet:     F128 = f128_of(%u.bitor(F128_QUIET_BIT))
         select:
             %is_nan -> return(%quiet)
             %overflow -> return(F128.INFINITY)
             %underflow -> return(CM_EXP_ZERO)
-            _ -> integer_check(%u)
+            _ -> integer_check(%u.to_s128_wrap())
 
     ; positive x >= 1 with no fraction bits in the low word
-    block integer_check(%u: I128):
-        %e:         I64  = f128_exponent(%u)
-        %positive:  Bool = %u.sge(0)
-        %candidate: Bool = %positive.bitand(%e.sge(16383)).bitand(%u.to_i64().eq(0))
-        branch %candidate ? integer_test(%u, %e) : reduce(%u)
+    block integer_check(%u: S128):
+        %e:         S64  = f128_exponent(%u.to_u128_wrap())
+        %positive:  Bool = %u.ge(0)
+        %candidate: Bool = %positive.bitand(%e.ge(16383)).bitand(%u.to_s64_wrap().eq(0))
+        branch %candidate ? integer_test(%u, %e) : reduce(%u.to_u128_wrap())
 
     ; the high word has 16 sign and exponent bits, then e - 16383 integer bits
-    block integer_test(%u: I128, %e: I64):
-        %hi:         I64  = cm_exp_hi(%u)
-        %fraction:   I64  = %hi.shl(%e.sub(16367))
-        %sig_hi:     I64  = %hi.bitand(0xFFFFFFFFFFFF).bitor(0x1000000000000)
-        %n:          I64  = %sig_hi.lshr(16431.sub(%e))
-        %exact:      Bool = %fraction.eq(0).bitand(%n.ule(48))
-        branch %exact ? power(%n) : reduce(%u)
+    block integer_test(%u: S128, %e: S64):
+        %hi:         U64  = cm_exp_hi(%u.to_u128_wrap())
+        %fraction:   U64  = %hi.shl(%e.sub_wrap(16367).to_u64())
+        %sig_hi:     U64  = %hi.bitand(0xFFFFFFFFFFFF).bitor(0x1000000000000)
+        %n:          U64  = %sig_hi.shr(16431.sub_wrap(%e).to_u64())
+        %exact:      Bool = %fraction.eq(0).bitand(%n.le(48))
+        branch %exact ? power(%n) : reduce(%u.to_u128_wrap())
 
-    block power(%n: I64):
+    block power(%n: U64):
         %r: F128 = cm_exp10_exact(%n)
         return(%r)
 
     ; x × log2(10): the significand times log2(10), one's-complemented for negative x
-    block reduce(%u: I128):
-        %hi:        I64  = cm_exp_hi(%u)
-        %sign_mask: I64  = %hi.ashr(63)
-        %sig:       I128 = %u.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
-        %k4: I64 := CM_EXP_ILN102[4]
-        %k5: I64 := CM_EXP_ILN102[5]
-        %k6: I64 := CM_EXP_ILN102[6]
+    block reduce(%u: U128):
+        %hi:        S64  = cm_exp_hi(%u).to_s64_wrap()
+        %sign_mask: S64  = %hi.shr(63)
+        %sig:       U128 = %u.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
+        %k4: U64 := CM_EXP_ILN102[4]
+        %k5: U64 := CM_EXP_ILN102[5]
+        %k6: U64 := CM_EXP_ILN102[6]
         %scaled:  CmExpWords3 = cm_exp_mul3x2_high(%k4, %k5, %k6, %sig)
-        %shift:   I64 = 0x4019.sub(f128_exponent(%u))
-        %reduced: CmExpWords3 = cm_exp_ashr3(cm_exp_flip3(%scaled, %sign_mask), %shift)
+        %shift:   S64 = 0x4019.sub_wrap(f128_exponent(%u))
+        %reduced: CmExpWords3 = cm_exp_ashr3(cm_exp_flip3(%scaled, %sign_mask.to_u64_wrap()), %shift.to_u64_wrap())
         %r: F128 = cm_exp_finish(%reduced, %u, CM_EXP_KIND_TEN)
         return(%r)
 
 ; 10^n for an integer n in 1..48, exact: 5^n fits 112 bits, so it is normalized to
 ; the significand and scaled by 2^n.
-routine cm_exp10_exact(%n: I64) -> F128
+routine cm_exp10_exact(%n: U64) -> F128
     block entry():
         jump power(0, 1, %n)
 
-    block power(%i: I64, %p: I128, %n: I64):
-        %done: Bool = %i.sge(%n)
-        branch %done ? pack(%p, %n) : power(%i.add(1), %p.mul(5), %n)
+    block power(%i: U64, %p: U128, %n: U64):
+        %done: Bool = %i.ge(%n)
+        branch %done ? pack(%p, %n.to_s64_wrap()) : power(%i.add_wrap(1), %p.mul_wrap(5), %n)
 
-    block pack(%p: I128, %n: I64):
-        %lz:       I64  = %p.leading_zeros().to_i64()
-        %sig:      I128 = %p.shl(%lz.sub(15).to_i128())
-        %exponent: I64  = 16509.sub(%lz).add(%n)
-        %bits:     I128 = %sig.add(%exponent.to_i128().shl(112))
-        %r: F128 = F128.from_bits(%bits)
+    block pack(%p: U128, %n: S64):
+        %lz:       S64  = %p.leading_zeros().to_s128().to_s64_wrap()
+        %sig:      U128 = %p.shl(%lz.sub_wrap(15).to_u128())
+        %exponent: S64  = 16509.sub_wrap(%lz).add_wrap(%n)
+        %bits:     U128 = %sig.add_wrap(%exponent.to_u128_wrap().shl(112))
+        %r: F128 = f128_of(%bits)
         return(%r)

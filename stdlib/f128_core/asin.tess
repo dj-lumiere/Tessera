@@ -18,25 +18,25 @@
 ; default NaN (0xFFFF8 followed by zeros), and a quiet NaN is returned unchanged.
 routine f128_cm_asin(%x: F128) -> F128
     block entry():
-        %bits:  I128 = %x.bits
-        %xb1:   I64  = cm_asin_hi(%bits).bitand(0x7FFFFFFFFFFFFFFF)
-        %xn:    I64  = %xb1.lshr(48)
-        %tiny:  Bool = %xn.slt(16327)                 ; |x| < 2^-56: asin(x) - x is below half an ulp
-        %large: Bool = %xn.sge(16383)                 ; |x| >= 1, infinity or NaN
+        %bits:  U128 = %x.bits
+        %xb1:   U64  = cm_asin_hi(%bits).bitand(0x7FFFFFFFFFFFFFFF)
+        %xn:    U64  = %xb1.shr(48)
+        %tiny:  Bool = %xn.lt(16327)                 ; |x| < 2^-56: asin(x) - x is below half an ulp
+        %large: Bool = %xn.ge(16383)                 ; |x| >= 1, infinity or NaN
         select:
             %tiny -> return(%x)
             %large -> outside(%x, %xb1)
             _ -> inside(%x)
 
-    block outside(%x: F128, %xb1: I64):
-        %bits:    I128 = %x.bits
-        %xb0:     I64  = cm_asin_lo(%bits)
-        %xsgn:    I64  = cm_asin_hi(%bits).bitand(0x8000000000000000)
+    block outside(%x: F128, %xb1: U64):
+        %bits:    U128 = %x.bits
+        %xb0:     U64  = cm_asin_lo(%bits.to_s128_wrap())
+        %xsgn:    U64  = cm_asin_hi(%bits).bitand(0x8000000000000000)
         %is_one:  Bool = %xb0.eq(0).bitand(%xb1.eq(0x3FFF000000000000))
-        %is_qnan: Bool = %xb1.sge(0x7FFF800000000000)
-        %hp_hi:   I64  = %xsgn.bitor(0x3FFF921FB54442D1)
-        %half_pi: F128 = F128.from_bits(cm_asin_join(%hp_hi, 0x8469898CC51701B8))
-        %nan:     F128 = F128.from_bits(cm_asin_join(0xFFFF800000000000, 0))
+        %is_qnan: Bool = %xb1.ge(0x7FFF800000000000)
+        %hp_hi:   U64  = %xsgn.bitor(0x3FFF921FB54442D1)
+        %half_pi: F128 = f128_of(cm_asin_join(%hp_hi, 0x8469898CC51701B8))
+        %nan:     F128 = f128_of(cm_asin_join(0xFFFF800000000000, 0))
         select:
             %is_one -> return(%half_pi)
             %is_qnan -> return(%x)
@@ -49,29 +49,29 @@ routine f128_cm_asin(%x: F128) -> F128
 ; The unpacked argument 2^-57 <= |x| < 1: the 128-bit mantissa xa (implicit bit at 127), its
 ; biased exponent xn, the sign word and the table point j.
 record CmAsinArg
-    xa:   I128
-    xn:   I64
-    xsgn: I64
-    j:    I64
+    xa:   U128
+    xn:   S64
+    xsgn: S64
+    j:    U64
 
 routine cm_asin_unpack(%x: F128) -> CmAsinArg
     block entry():
-        %bits: I128 = %x.bits
-        %hi:   I64  = cm_asin_hi(%bits)
-        %xb1:  I64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
-        %xb0:  I64  = cm_asin_lo(%bits)
-        %j:    I64  = cm_asin_jget(%xb1)
-        %xa:   I128 = cm_asin_join(%xb1.bitor(0x0001000000000000), %xb0).shl(15)
-        %xn:   I64  = %xb1.lshr(48)
-        %xsgn: I64  = %hi.bitand(0x8000000000000000)
-        %arg:  CmAsinArg = CmAsinArg { xa: %xa, xn: %xn, xsgn: %xsgn, j: %j }
+        %bits: U128 = %x.bits
+        %hi:   U64  = cm_asin_hi(%bits)
+        %xb1:  U64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
+        %xb0:  U64  = cm_asin_lo(%bits.to_s128_wrap())
+        %j:    U64  = cm_asin_jget(%xb1)
+        %xa:   U128 = cm_asin_join(%xb1.bitor(0x0001000000000000), %xb0).shl(15)
+        %xn:   U64  = %xb1.shr(48)
+        %xsgn: U64  = %hi.bitand(0x8000000000000000)
+        %arg:  CmAsinArg = CmAsinArg { xa: %xa, xn: %xn.to_s64_wrap(), xsgn: %xsgn.to_s64_wrap(), j: %j }
         return(%arg)
 
 ; Packs the 113-bit mantissa v (implicit bit included), exponent xn, sign word and round bit.
-routine cm_asin_pack(%v: I128, %xn: I64, %xsgn: I64, %rnd: I64) -> F128
+routine cm_asin_pack(%v: U128, %xn: S64, %xsgn: S64, %rnd: U64) -> F128
     block entry():
-        %top: I128 = cm_asin_join(%xn.shl(48).bitor(%xsgn), %rnd)
-        %r:   F128 = F128.from_bits(%v.add(%top))
+        %top: U128 = cm_asin_join(%xn.shl(48).bitor(%xsgn).to_u64_wrap(), %rnd)
+        %r:   F128 = f128_of(%v.add_wrap(%top))
         return(%r)
 
 ; The 128-bit fast path of asin; it falls back to cm_asin_accurate when its result could round
@@ -79,59 +79,59 @@ routine cm_asin_pack(%v: I128, %xn: I64, %xsgn: I64, %rnd: I64) -> F128
 routine cm_asin_fast(%x: F128) -> F128
     block entry():
         %arg: CmAsinArg = cm_asin_unpack(%x)
-        %nz:  I64 = 16383.sub(%arg.xn)
+        %nz:  S64 = 16383.sub_wrap(%arg.xn)
         %reduced: Bool = %arg.j.ne(0)
         branch %reduced ? reduce(%x, %arg, %nz) : direct(%x, %arg, %nz)
 
     ; asin(x) = asin(s_j) + asin(d) for the reduced argument d
-    block reduce(%x: F128, %arg: CmAsinArg, %nz: I64):
-        %x0:    I64 = cm_asin_lo(%arg.xa)
-        %x1:    I64 = cm_asin_hi(%arg.xa)
+    block reduce(%x: F128, %arg: CmAsinArg, %nz: S64):
+        %x0:    U64 = cm_asin_lo(%arg.xa.to_s128_wrap())
+        %x1:    U64 = cm_asin_hi(%arg.xa)
         %root:  CmAsinRoot3 = cm_asin_fast_sqrt(%x0, %x1, %nz, 0)
         %d:     CmAsinW3 = cm_asin_reduce3(%arg.xa, %nz, %arg.j, %root)
-        %dz:    I64 = %d.w2.leading_zeros()
-        %t:     I128 = cm_asin_top128(%d, %dz)
-        #phi0:  Ptr<I64> = CM_ASIN_PHI0.as_ptr()
-        %phi_j: CmAsinW3 = cm_asin_load3(#phi0, %arg.j.mul(5).add(2))
+        %dz:    S64 = %d.w2.leading_zeros().to_s64()
+        %t:     U128 = cm_asin_top128(%d, %dz)
+        #phi0:  Ptr<U64> = CM_ASIN_PHI0.as_ptr()
+        %phi_j: CmAsinW3 = cm_asin_load3(#phi0, %arg.j.mul_wrap(5).add_wrap(2))
         %xc:    CmAsinW3 = cm_asin_add3(%d, %phi_j)
-        %f:     I128 = cm_asin_fast_poly(%t, %dz.sub(6).mul(2))
-        %sum:   CmAsinW3 = cm_asin_add3(%xc, cm_asin_shift_poly3(%f, %dz.mul(3)))
+        %f:     U128 = cm_asin_fast_poly(%t, %dz.sub_wrap(6).mul_wrap(2))
+        %sum:   CmAsinW3 = cm_asin_add3(%xc, cm_asin_shift_poly3(%f, %dz.mul_wrap(3)))
         ; round, and check the error bound of the fast path
-        %k:     I64  = %sum.w2.leading_zeros()
-        %rnd:   I64  = %sum.w1.lshr(cm_asin_sh(14.sub(%k))).bitand(1)
-        %err_sh: I64 = %dz.mul(3).sub(6)
-        %small_err: Bool = %err_sh.sle(57)
-        %eps:   I64  = %small_err ? 0x8000000000000000.lshr(cm_asin_sh(%err_sh)) : 64
-        %msk:   I128 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF.lshr(cm_asin_sh7(%k.add(50)))
-        %tail:  I128 = cm_asin_join(%sum.w1, %sum.w0).add(%eps.to_u128()).bitand(%msk)
-        %unsafe: Bool = %tail.ult(%eps.mul(2).to_u128())
-        %s:     I64  = cm_asin_sh(15.sub(%k))
-        %v_lo:  I64  = %sum.w1.lshr(%s).bitor(%sum.w2.shl(cm_asin_sh(%k.add(49))))
-        %v:     I128 = cm_asin_join(%sum.w2.lshr(%s), %v_lo)
-        %r:     F128 = cm_asin_pack(%v, 16382.sub(%k), %arg.xsgn, %rnd)
+        %k:     S64  = %sum.w2.leading_zeros().to_s64()
+        %rnd:   U64  = %sum.w1.shr(cm_asin_sh(14.sub_wrap(%k))).bitand(1)
+        %err_sh: S64 = %dz.mul_wrap(3).sub_wrap(6)
+        %small_err: Bool = %err_sh.le(57)
+        %eps:   U64  = %small_err ? 0x8000000000000000.shr(cm_asin_sh(%err_sh)) : 64
+        %msk:   U128 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF.shr(cm_asin_sh7(%k.add_wrap(50)))
+        %tail:  U128 = cm_asin_join(%sum.w1, %sum.w0).add_wrap(%eps.to_u128()).bitand(%msk)
+        %unsafe: Bool = %tail.lt(%eps.mul_wrap(2).to_u128())
+        %s:     S64  = cm_asin_sh(15.sub_wrap(%k)).to_s64_wrap()
+        %v_lo:  U64  = %sum.w1.shr(%s.to_u64()).bitor(%sum.w2.shl(cm_asin_sh(%k.add_wrap(49))))
+        %v:     U128 = cm_asin_join(%sum.w2.shr(%s.to_u64()), %v_lo)
+        %r:     F128 = cm_asin_pack(%v, 16382.sub_wrap(%k), %arg.xsgn, %rnd)
         branch %unsafe ? accurate(%x) : return(%r)
 
     ; small |x|: asin(x) = x + x^3*P(x^2)
-    block direct(%x: F128, %arg: CmAsinArg, %nz: I64):
-        %f:     I128 = cm_asin_fast_poly(%arg.xa, %nz.sub(6).mul(2))
-        %g:     CmAsinW4 = cm_asin_shift_poly4(%f, %nz.mul(2).add(1))
-        %xh:    I128 = %arg.xa.lshr(1)
-        %a2:    CmAsinCarry = cm_asin_ac(cm_asin_lo(%xh), %g.w2, 0)
+    block direct(%x: F128, %arg: CmAsinArg, %nz: S64):
+        %f:     U128 = cm_asin_fast_poly(%arg.xa, %nz.sub_wrap(6).mul_wrap(2))
+        %g:     CmAsinW4 = cm_asin_shift_poly4(%f, %nz.mul_wrap(2).add_wrap(1))
+        %xh:    U128 = %arg.xa.shr(1)
+        %a2:    CmAsinCarry = cm_asin_ac(cm_asin_lo(%xh.to_s128_wrap()), %g.w2, 0)
         %a3:    CmAsinCarry = cm_asin_ac(cm_asin_hi(%xh), %g.w3, %a2.carry)
-        %k:     I64  = %a3.sum.lshr(63)
-        %rnd:   I64  = %a2.sum.lshr(cm_asin_sh(%k.add(13))).bitand(1)
-        %v_all: I128 = cm_asin_join(%a3.sum, %a2.sum).lshr(cm_asin_sh7(%k.add(14)))
-        %v:     I128 = %v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        %k:     S64  = %a3.sum.shr(63).to_s64_wrap()
+        %rnd:   U64  = %a2.sum.shr(cm_asin_sh(%k.add_wrap(13))).bitand(1)
+        %v_all: U128 = cm_asin_join(%a3.sum, %a2.sum).shr(cm_asin_sh7(%k.add_wrap(14)))
+        %v:     U128 = %v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
         ; the bits under the round bit, checked against the error bound
-        %lk:    I64  = cm_asin_sh(51.sub(%k))
-        %rk:    I64  = cm_asin_sh(%k.add(13))
-        %th:    I64  = %a2.sum.shl(%lk).bitor(%g.w1.lshr(%rk))
-        %tlo:   I64  = %g.w1.shl(%lk).bitor(%g.w0.lshr(%rk))
-        %eps_sh: I64 = %nz.mul(2).add(8).add(%k)
-        %eps:   I128 = 0x80000000000000000000000000000000.lshr(cm_asin_sh7(%eps_sh))
-        %tt:    I128 = cm_asin_join(%th, %tlo).add(%eps)
-        %unsafe: Bool = %tt.ult(%eps)
-        %r:     F128 = cm_asin_pack(%v, %arg.xn.add(%k), %arg.xsgn, %rnd)
+        %lk:    S64  = cm_asin_sh(51.sub_wrap(%k)).to_s64_wrap()
+        %rk:    S64  = cm_asin_sh(%k.add_wrap(13)).to_s64_wrap()
+        %th:    U64  = %a2.sum.shl(%lk.to_u64()).bitor(%g.w1.shr(%rk.to_u64()))
+        %tlo:   U64  = %g.w1.shl(%lk.to_u64()).bitor(%g.w0.shr(%rk.to_u64()))
+        %eps_sh: S64 = %nz.mul_wrap(2).add_wrap(8).add_wrap(%k)
+        %eps:   U128 = 0x80000000000000000000000000000000.shr(cm_asin_sh7(%eps_sh))
+        %tt:    U128 = cm_asin_join(%th, %tlo).add_wrap(%eps)
+        %unsafe: Bool = %tt.lt(%eps)
+        %r:     F128 = cm_asin_pack(%v, %arg.xn.add_wrap(%k), %arg.xsgn, %rnd)
         branch %unsafe ? accurate(%x) : return(%r)
 
     block accurate(%x: F128):
@@ -140,14 +140,14 @@ routine cm_asin_fast(%x: F128) -> F128
 
 ; A 128-bit f placed as the top two of four words and shifted right by sf (the small-argument
 ; alignment of the fast polynomial part), as the original's case split writes it.
-routine cm_asin_shift_poly4(%f: I128, %sf: I64) -> CmAsinW4
+routine cm_asin_shift_poly4(%f: U128, %sf: S64) -> CmAsinW4
     block entry():
-        %g3: I64 = cm_asin_hi(%f)
-        %g2: I64 = cm_asin_lo(%f)
-        %s:  I64 = cm_asin_sh(%sf)
-        %in_word: Bool = %sf.slt(64)
-        %in_one:  Bool = %sf.slt(128)
-        %in_two:  Bool = %sf.slt(192)
+        %g3: U64 = cm_asin_hi(%f)
+        %g2: U64 = cm_asin_lo(%f.to_s128_wrap())
+        %s:  S64 = cm_asin_sh(%sf).to_s64_wrap()
+        %in_word: Bool = %sf.lt(64)
+        %in_one:  Bool = %sf.lt(128)
+        %in_two:  Bool = %sf.lt(192)
         %gone:    CmAsinW4 = CmAsinW4 { w0: 0, w1: 0, w2: 0, w3: 0 }
         select:
             %in_word -> within_word(%g2, %g3, %s)
@@ -155,71 +155,71 @@ routine cm_asin_shift_poly4(%f: I128, %sf: I64) -> CmAsinW4
             %in_two -> two_words(%g2, %g3, %s)
             _ -> return(%gone)
 
-    block within_word(%g2: I64, %g3: I64, %s: I64):
-        %back: I64 = cm_asin_sh(0.sub(%s))
-        %w1:   I64 = %g2.shl(%back)
-        %w2:   I64 = %g2.lshr(%s).bitor(%g3.shl(%back))
-        %r: CmAsinW4 = CmAsinW4 { w0: 0, w1: %w1, w2: %w2, w3: %g3.lshr(%s) }
+    block within_word(%g2: U64, %g3: U64, %s: S64):
+        %back: S64 = cm_asin_sh(0.sub_wrap(%s)).to_s64_wrap()
+        %w1:   U64 = %g2.shl(%back.to_u64())
+        %w2:   U64 = %g2.shr(%s.to_u64()).bitor(%g3.shl(%back.to_u64()))
+        %r: CmAsinW4 = CmAsinW4 { w0: 0, w1: %w1, w2: %w2, w3: %g3.shr(%s.to_u64()) }
         return(%r)
 
-    block one_word(%g2: I64, %g3: I64, %s: I64):
-        %w0: I64 = %g2.shl(cm_asin_sh(0.sub(%s)))
-        %w1: I64 = %g2.lshr(%s).bitor(%g3.shl(1).shl(cm_asin_sh(%s.bitnot())))
-        %r: CmAsinW4 = CmAsinW4 { w0: %w0, w1: %w1, w2: %g3.lshr(%s), w3: 0 }
+    block one_word(%g2: U64, %g3: U64, %s: S64):
+        %w0: U64 = %g2.shl(cm_asin_sh(0.sub_wrap(%s)))
+        %w1: U64 = %g2.shr(%s.to_u64()).bitor(%g3.shl(1).shl(cm_asin_sh(%s.bitnot())))
+        %r: CmAsinW4 = CmAsinW4 { w0: %w0, w1: %w1, w2: %g3.shr(%s.to_u64()), w3: 0 }
         return(%r)
 
     ; unreachable for asin (|x| >= 2^-56 keeps sf below 128); kept as the original writes it
-    block two_words(%g2: I64, %g3: I64, %s: I64):
-        %w0: I64 = %g2.lshr(%s).bitor(%g3.shl(1).shl(cm_asin_sh(%s.bitnot())))
-        %r: CmAsinW4 = CmAsinW4 { w0: %w0, w1: %g2.lshr(%s), w2: 0, w3: 0 }
+    block two_words(%g2: U64, %g3: U64, %s: S64):
+        %w0: U64 = %g2.shr(%s.to_u64()).bitor(%g3.shl(1).shl(cm_asin_sh(%s.bitnot())))
+        %r: CmAsinW4 = CmAsinW4 { w0: %w0, w1: %g2.shr(%s.to_u64()), w2: 0, w3: 0 }
         return(%r)
 
 ; The 320-bit accurate path of f128_cm_asin for 2^-57 <= |x| < 1 (the C as_asinq_accurate).
 routine cm_asin_accurate(%x: F128) -> F128
     block entry():
         %arg: CmAsinArg = cm_asin_unpack(%x)
-        %nz:  I64 = 16383.sub(%arg.xn)
+        %nz:  S64 = 16383.sub_wrap(%arg.xn)
         %reduced: Bool = %arg.j.ne(0)
         branch %reduced ? reduce(%arg, %nz) : direct(%arg, %nz)
 
-    block reduce(%arg: CmAsinArg, %nz: I64):
-        %x0:    I64 = cm_asin_lo(%arg.xa)
-        %x1:    I64 = cm_asin_hi(%arg.xa)
+    block reduce(%arg: CmAsinArg, %nz: S64):
+        %x0:    U64 = cm_asin_lo(%arg.xa.to_s128_wrap())
+        %x1:    U64 = cm_asin_hi(%arg.xa)
         %root:  CmAsinRoot5 = cm_asin_getcos(%nz, %x0, %x1)
         %d:     CmAsinW5 = cm_asin_reduce5(%arg.xa, %nz, %arg.j, %root)
-        %dz:    I64 = cm_asin_clz5(%d, %nz)
-        %t:     CmAsinW5 = cm_asin_shift5(%d, 0.sub(%dz))
-        #phi0:  Ptr<I64> = CM_ASIN_PHI0.as_ptr()
-        %phi_j: CmAsinW5 = cm_asin_load5(#phi0, %arg.j.mul(5))
+        %dz:    S64 = cm_asin_clz5(%d, %nz)
+        %t:     CmAsinW5 = cm_asin_shift5(%d, 0.sub_wrap(%dz))
+        #phi0:  Ptr<U64> = CM_ASIN_PHI0.as_ptr()
+        %phi_j: CmAsinW5 = cm_asin_load5(#phi0, %arg.j.mul_wrap(5))
         %xc:    CmAsinW5 = cm_asin_add5(%phi_j, %d)
         %p:     CmAsinW5 = cm_asin_poly5(%t, %dz)
-        %sum:   CmAsinW5 = cm_asin_add5(%xc, cm_asin_shift5(%p, %dz.mul(3)))
-        %k:     I64  = %sum.w4.leading_zeros()
-        %rnd:   I64  = %sum.w3.lshr(cm_asin_sh(14.sub(%k))).bitand(1)
-        %s:     I64  = cm_asin_sh(15.sub(%k))
-        %v_lo:  I64  = %sum.w3.lshr(%s).bitor(%sum.w4.shl(cm_asin_sh(%k.add(49))))
-        %v:     I128 = cm_asin_join(%sum.w4.lshr(%s), %v_lo)
-        %r:     F128 = cm_asin_pack(%v, 16382.sub(%k), %arg.xsgn, %rnd)
+        %sum:   CmAsinW5 = cm_asin_add5(%xc, cm_asin_shift5(%p, %dz.mul_wrap(3)))
+        %k:     S64  = %sum.w4.leading_zeros().to_s64()
+        %rnd:   U64  = %sum.w3.shr(cm_asin_sh(14.sub_wrap(%k))).bitand(1)
+        %s:     S64  = cm_asin_sh(15.sub_wrap(%k)).to_s64_wrap()
+        %v_lo:  U64  = %sum.w3.shr(%s.to_u64()).bitor(%sum.w4.shl(cm_asin_sh(%k.add_wrap(49))))
+        %v:     U128 = cm_asin_join(%sum.w4.shr(%s.to_u64()), %v_lo)
+        %r:     F128 = cm_asin_pack(%v, 16382.sub_wrap(%k), %arg.xsgn, %rnd)
         return(%r)
 
-    block direct(%arg: CmAsinArg, %nz: I64):
-        %x0:    I64 = cm_asin_lo(%arg.xa)
-        %x1:    I64 = cm_asin_hi(%arg.xa)
+    block direct(%arg: CmAsinArg, %nz: S64):
+        %x0:    U64 = cm_asin_lo(%arg.xa.to_s128_wrap())
+        %x1:    U64 = cm_asin_hi(%arg.xa)
         %t:     CmAsinW5 = CmAsinW5 { w0: 0, w1: 0, w2: 0, w3: %x0, w4: %x1 }
         %p:     CmAsinW5 = cm_asin_poly5(%t, %nz)
-        %f:     CmAsinW5 = cm_asin_shift5(%p, %nz.mul(2).add(1))
-        %xh:    I128 = %arg.xa.lshr(1)
-        %a3:    CmAsinCarry = cm_asin_ac(cm_asin_lo(%xh), %f.w3, 0)
+        %f:     CmAsinW5 = cm_asin_shift5(%p, %nz.mul_wrap(2).add_wrap(1))
+        %xh:    U128 = %arg.xa.shr(1)
+        %a3:    CmAsinCarry = cm_asin_ac(cm_asin_lo(%xh.to_s128_wrap()), %f.w3, 0)
         %a4:    CmAsinCarry = cm_asin_ac(cm_asin_hi(%xh), %f.w4, %a3.carry)
-        %k:     I64  = %a4.sum.lshr(63)
-        %rnd:   I64  = %a3.sum.lshr(cm_asin_sh(%k.add(13))).bitand(1)
-        %v_all: I128 = cm_asin_join(%a4.sum, %a3.sum).lshr(cm_asin_sh(%k.add(14)).to_i128())
-        %v:     I128 = %v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
-        %r:     F128 = cm_asin_pack(%v, %arg.xn.add(%k), %arg.xsgn, %rnd)
+        %k:     S64  = %a4.sum.shr(63).to_s64_wrap()
+        %rnd:   U64  = %a3.sum.shr(cm_asin_sh(%k.add_wrap(13))).bitand(1)
+        %v_all: U128 = cm_asin_join(%a4.sum, %a3.sum).shr(S64.from_bits(cm_asin_sh(%k.add_wrap(14)).bits()).to_u128())
+        %v:     U128 = %v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        %r:     F128 = cm_asin_pack(%v, %arg.xn.add_wrap(%k), %arg.xsgn, %rnd)
         return(%r)
 
 ; asin(PTH[j]) as five-word fixed-point values, one row per table point
-const CM_ASIN_PHI0: Array<I64, 360> = [
+const CM_ASIN_PHI0: Array<U64, 360> = [
     0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000,
     0x31DC03B852FDE26E, 0x067073CAA9724261, 0x146B2CF786E935F7, 0x13001BF1BB854BC4, 0x02CB0E871E4D3726,
     0x9FD8E87590496F73, 0xCDD8EDD69F613BE7, 0xA4CBBF16F87E6782, 0xB7E6AB0FD3C59B0E, 0x0595F42CDB812489,

@@ -14,12 +14,12 @@ dotnet run --project Tessera -- check file.tess        # type-check only
 dotnet run --project Tessera -- test tests playground  # golden tests
 ```
 
-A program needs `routine main() -> I32`. There are no imports: every file in `stdlib/` is in scope.
+A program needs `routine main() -> S32`. There are no imports: every file in `stdlib/` is in scope.
 
 ## Skeleton
 
 ```tessera
-routine main() -> I32
+routine main() -> S32
     block entry():
         %fd_val: FdWriter      = FdWriter.stdout()
         #fd:     Ptr<FdWriter> = alloca<FdWriter>([%fd_val])
@@ -28,8 +28,8 @@ routine main() -> I32
         %heap:  Allocator      = make_heap_allocator()
         #alloc: Ptr<Allocator> = alloca<Allocator>([%heap])
 
-        %list_val: List<I64> = List<I64>.new(#alloc)
-        #list: Ptr<List<I64>> = alloca<List<I64>>([%list_val])
+        %list_val: List<S64> = List<S64>.new(#alloc)
+        #list: Ptr<List<S64>> = alloca<List<S64>>([%list_val])
         #list.push(42)
         write_str(#out, "first: ")
         #list.get(0).format(#out)
@@ -44,10 +44,10 @@ routine main() -> I32
 
 **Values and pointers**
 
-- Every binding is annotated: `%x: I64 = ...`. `%` names a non-pointer value and `#` names a pointer (`Ptr<T>`).
+- Every binding is annotated: `%x: S64 = ...`. `%` names a non-pointer value and `#` names a pointer (`Ptr<T>`).
   The compiler checks the sigil against the type.
 - `:=` always loads. `=` binds when the left side has a type annotation and stores when it doesn't:
-  `%v: I64 := #p` (load), `#p = %v` (store), `#p.field = %v`, `%f: T := #p.field`, `#p[%i] = %v`,
+  `%v: S64 := #p` (load), `#p = %v` (store), `#p.field = %v`, `%f: T := #p.field`, `#p[%i] = %v`,
   `%e: T := #p[%i]`.
 - A field of an SSA record value is read with plain `=`: `%tag: Bool = %opt.tag`.
 - `alloca<T>` gives stack memory; `alloca<T>([%init])` initializes it. Allocas are hoisted to the routine's entry,
@@ -70,24 +70,40 @@ routine main() -> I32
 **Operations**
 
 - There are no operators. Everything is a method, and pure calls chain: `%i.add(1).bitand(%mask)`.
-- Signedness lives on the operation, not the type. `I8` to `I256` are the only integer types (no unsigned types):
-  `sdiv` / `udiv`, `srem` / `urem`, `slt` / `ult`, `sge` / `uge`, `ashr` / `lshr`, `shl`. There's no `shr`.
-- `add` / `sub` / `mul` wrap. Use `checked_*`, `overflowing_*`, or `saturating_*` when overflow matters.
-- Conversions are methods: `%n.to_i64()`, `%b.to_i64()` (Bool to 0/1), `%x.to_f64()`, `%u.uto_f64()`.
-- Floats are `F16`, `BF16`, `F32`, `F64`, and software `F128`: `fadd`, `fmul`, `fdiv`, and so on.
+- Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
+  `add`, `div`, `rem`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on.
+- Arithmetic panics on overflow: `add`, `sub`, `mul`, `div`, `neg`, `abs`, `pow`, and a lossy `to_X`. Each has
+  `_checked` (returns `Option`), `_wrap` (modular), and `_clamp` (saturating) forms: `%h.mul_wrap(PRIME)`,
+  `%n.to_u8_clamp()`. Hashes, PRNGs, and bit tricks want `_wrap`.
+- Subtraction that can underflow panics even if the result is unused later, so don't compute `%len.sub(1)` before
+  the branch that knows it's safe: pass it as a branch-arm argument (arm arguments are evaluated lazily), or compute
+  it in the arm's block. The same goes for a select, which evaluates both sides.
+- Lengths, indices, counts, and `sizeof` are `U64`. `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`,
+  `abs_diff` returns the unsigned type.
+- A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
+- `Byte` and `Bits16` .. `Bits256` are raw bits with no arithmetic. `%x.bits()` and `U64.from_bits(%b)` move
+  between them and the numbers (`U8.from_byte` / `S8.from_byte` for 8 bits). Only `Byte` has methods: comparison,
+  `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, `shl` / `shr`, and `to_u8`. Memory and text are `Ptr<Byte>`;
+  a byte literal `b'A'` is a `Byte`, and a `Byte` or `Bits` hex literal has exactly width/4 digits (`0x0A`).
+- `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `%c.to_u32()` and `%n.to_char()`
+  convert.
+- Conversions are methods: `%n.to_s64()`, `%b.to_u64()` (Bool to 0/1), `%x.to_f64()`. Float to integer is
+  `to_s64` (panics on NaN or out of range), `to_s64_checked`, or `to_s64_clamp`.
+- Floats are `F16`, `BF16`, `F32`, `F64`, and software `F128` (a one-field record over its `U128` bits):
+  `add`, `mul`, `div`, `rem`, and so on. `%x.bits()` gives the `BitsN` pattern, `F64.from_bits(%b)` goes back.
 - Value select: `%r: T = %cond ? %a : %b`. Both sides are evaluated.
 
 **Routines and generics**
 
 - `routine name(%a: T, #p: Ptr<U>) -> R`. Methods are `routine Type.name(#self: Ptr<Self>, ...)` (pointer receiver)
-  or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<I64>.new(#alloc)`.
+  or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<S64>.new(#alloc)`.
 - **Most collection methods take `#self: Ptr<Self>`**, so a collection must live in memory (`alloca`) before you
   call them. You can't call a pointer method on a temporary: `DictIter<K, V>.new(#m).next()` fails with "has no
   method 'next'"; alloca the iterator first.
 - Generic routines repeat their constraints: `require T: typename, Compare<T>`. Concepts: `Equal`, `Hash`,
   `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Format`.
-- A bare literal doesn't bind a type parameter (open question #34): bind it first (`%n: I64 = 42`), then pass `%n`.
-- String literals are `String` where a `String` is expected and a NUL-terminated `Ptr<I8>` where a pointer is
+- A bare literal doesn't bind a type parameter (open question #34): bind it first (`%n: S64 = 42`), then pass `%n`.
+- String literals are `String` where a `String` is expected and a NUL-terminated `Ptr<Byte>` where a pointer is
   expected.
 
 **Errors**
@@ -95,36 +111,42 @@ routine main() -> I32
 - Bugs trap: `trap()`, or `panic(TrapCode.X)` / `panic_msg(...)` for a message (exit status 101).
 - Expected failures return `Result<T, E>`. There's no `?`: check `%r.tag` and branch.
 
+**Records**
+
+- A record with exactly one field has the same representation as that field (`F128` is an `i128`). Mark it
+  `@aggregate` to keep it a one-member struct; `@aligned` on a one-field record needs `@aggregate`.
+- A record can't contain itself by value; go through a `Ptr`.
+
 ## Idioms
 
 Loop with block parameters:
 
 ```tessera
-routine sum_to(%n: I64) -> I64
+routine sum_to(%n: U64) -> U64
     block entry():
         jump loop(0, 0)
 
-    block loop(%i: I64, %total: I64):
-        %done: Bool = %i.sge(%n)
+    block loop(%i: U64, %total: U64):
+        %done: Bool = %i.ge(%n)
         branch %done ? return(%total) : body(%i, %total)
 
-    block body(%i: I64, %total: I64):
+    block body(%i: U64, %total: U64):
         jump loop(%i.add(1), %total.add(%i))
 ```
 
 Iterating a collection (`next` returns `Option<T>`):
 
 ```tessera
-routine sum_list(#list: Ptr<List<I64>>) -> I64
+routine sum_list(#list: Ptr<List<S64>>) -> S64
     block entry():
-        %iter_val: ListIter<I64> = ListIter<I64>.new(#list)
-        #iter: Ptr<ListIter<I64>> = alloca<ListIter<I64>>([%iter_val])
+        %iter_val: ListIter<S64> = ListIter<S64>.new(#list)
+        #iter: Ptr<ListIter<S64>> = alloca<ListIter<S64>>([%iter_val])
         jump next(#iter, 0)
 
-    block next(#iter: Ptr<ListIter<I64>>, %total: I64):
-        %item:  Option<I64> = #iter.next()
+    block next(#iter: Ptr<ListIter<S64>>, %total: S64):
+        %item:  Option<S64> = #iter.next()
         %more:  Bool        = %item.tag
-        %value: I64         = %item.value
+        %value: S64         = %item.value
         branch %more ? next(#iter, %total.add(%value)) : return(%total)
 ```
 
@@ -143,14 +165,14 @@ routine parse_or_zero(%text: String) -> F64
 
 ## Output
 
-Format through `stdlib/format.tess`, not printf. printf is for C interop demos only: it can't print `I128`, `F16`,
+Format through `stdlib/format.tess`, not printf. printf is for C interop demos only: it can't print `S128`, `F16`,
 `BF16`, or `F128`, and a mismatched format is undefined behavior.
 
 - Writers: `FdWriter.stdout()` / `.stderr()` (unbuffered), `BufWriter<W>` (`init(#inner)`, then `flush()`),
   `SliceWriter` (into a caller buffer).
 - `write_str(#out, "text")`, `write_line(#out)`, `%v.format(#out)` for every integer, float, `Bool`, and `String`;
-  `uformat`, `format_hex`, `format_fixed(#out, %digits)`; `format_with(#out, %v, %spec)` with a `FormatSpec`.
-- Quick one-offs: `println_slice("text")`, `print_int(%n)` from `stdlib/io.tess`.
+  `format_hex`, `format_fixed(#out, %digits)`; `format_with(#out, %v, %spec)` with a `FormatSpec`.
+- Quick one-offs: `println_slice("text")`, `print_int(%n)` (S64), `print_uint(%n)` (U64) from `stdlib/io.tess`.
 
 ## Collections
 

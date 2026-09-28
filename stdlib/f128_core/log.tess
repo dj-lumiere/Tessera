@@ -13,134 +13,134 @@
 
 ; The rounding decision of an exact check: the round bit and the significand it applies to.
 record CmLogRounding
-    round: I64
-    sig:   I128
+    round: U64
+    sig:   U128
 
 ; A near-one result before the final rounding: significand, exponent adjustment, and whether the fast
 ; rounding test failed.
 record CmLogNear
-    sig:  I128
-    e:    I64
+    sig:  S128
+    e:    U64
     hard: Bool
 
 ; ln(x), correctly rounded to nearest (ties to even). ±0 -> -infinity, x < 0 -> NaN, +infinity ->
 ; +infinity, NaN -> the same NaN, quieted.
 routine f128_cm_log(%x: F128) -> F128
     block entry():
-        %u:       I128 = %x.bits
-        %hi:      I64  = cm_wide_hi(%u)
-        %lo:      I64  = cm_wide_lo(%u)
-        %special: Bool = %hi.uge(0x7FFF000000000000)
-        %near:    Bool = %hi.uge(0x3FFEFFFFF0000040).bitand(%hi.ule(0x3FFF000008000020))
+        %u:       U128 = %x.bits
+        %hi:      U64  = cm_wide_hi(%u)
+        %lo:      U64  = cm_wide_lo(%u)
+        %special: Bool = %hi.ge(0x7FFF000000000000)
+        %near:    Bool = %hi.ge(0x3FFEFFFFF0000040).bitand(%hi.le(0x3FFF000008000020))
         select:
             %special -> special(%hi, %lo)
             %near -> near_one(%u)
             _ -> general(%u)
 
     ; NaN, +infinity, or the sign bit set
-    block special(%hi: I64, %lo: I64):
-        %magnitude: I64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
-        %nan_exp:   Bool = %magnitude.ugt(0x7FFF000000000000)
+    block special(%hi: U64, %lo: U64):
+        %magnitude: U64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
+        %nan_exp:   Bool = %magnitude.gt(0x7FFF000000000000)
         %nan_frac:  Bool = %magnitude.eq(0x7FFF000000000000).bitand(%lo.ne(0))
         %nan:       Bool = %nan_exp.bitor(%nan_frac)
         %plus_inf:  Bool = %hi.eq(0x7FFF000000000000).bitand(%lo.eq(0))
         %zero:      Bool = %magnitude.eq(0).bitand(%lo.eq(0))
-        %quiet:     F128 = F128.from_bits(cm_wide_u128(%hi.bitor(0x0000800000000000), %lo))
-        %neg_inf:   F128 = F128.from_bits(0xFFFF0000000000000000000000000000)
+        %quiet:     F128 = f128_of(cm_wide_u128(%hi.bitor(0x0000800000000000), %lo))
+        %neg_inf:   F128 = f128_of(0xFFFF0000000000000000000000000000)
         ; x < 0: the NaN the original returns
-        %invalid:   F128 = F128.from_bits(0xFFFF800000000000000000000000000B)
+        %invalid:   F128 = f128_of(0xFFFF800000000000000000000000000B)
         select:
             %nan -> return(%quiet)
             %plus_inf -> return(%x)
             %zero -> return(%neg_inf)
             _ -> return(%invalid)
 
-    block near_one(%u: I128):
+    block near_one(%u: U128):
         %r: F128 = cm_log_near_one(%u)
         return(%r)
 
-    block general(%u: I128):
+    block general(%u: U128):
         %r: F128 = cm_log_general(%u)
         return(%r)
 
 ; ln(x) for positive finite x away from 1 (+0 included).
-routine cm_log_general(%u: I128) -> F128
+routine cm_log_general(%u: U128) -> F128
     block entry():
-        %hi:        I64  = cm_wide_hi(%u)
-        %lo:        I64  = cm_wide_lo(%u)
-        %e:         I64  = %hi.bitand(0xFFFF000000000000)
+        %hi:        U64  = cm_wide_hi(%u)
+        %lo:        U64  = cm_wide_lo(%u)
+        %e:         U64  = %hi.bitand(0xFFFF000000000000)
         %subnormal: Bool = %e.eq(0)
         branch %subnormal ? subnormal(%hi) : reduce(%hi, %lo, %e)
 
-    block subnormal(%hi: I64):
+    block subnormal(%hi: U64):
         %zero:    Bool = %u.eq(0)
-        %neg_inf: F128 = F128.from_bits(0xFFFF0000000000000000000000000000)
+        %neg_inf: F128 = f128_of(0xFFFF0000000000000000000000000000)
         branch %zero ? return(%neg_inf) : normalize(%hi)
 
     ; shift the leading bit up to bit 48 of the high word, lowering the exponent to match
-    block normalize(%hi: I64):
+    block normalize(%hi: U64):
         %hi_zero: Bool = %hi.eq(0)
-        %lz_lo:   I64  = cm_wide_lo(%u).leading_zeros().add(64)
-        %nz:      I64  = %hi_zero ? %lz_lo : %hi.leading_zeros()
-        %m:       I128 = %u.shl(%nz.sub(15).to_i128())
-        %e:       I64  = 0.sub(%nz.sub(16).shl(48))
-        jump reduce(cm_wide_hi(%m), cm_wide_lo(%m), %e)
+        %lz_lo:   S64  = cm_wide_lo(%u).leading_zeros().to_s64().add_wrap(64)
+        %nz:      S64  = %hi_zero ? %lz_lo : %hi.leading_zeros().to_s64()
+        %m:       U128 = %u.shl(%nz.sub_wrap(15).to_u128())
+        %e:       S64  = 0.sub_wrap(%nz.sub_wrap(16).shl(48))
+        jump reduce(cm_wide_hi(%m), cm_wide_lo(%m), %e.to_u64_wrap())
 
     ; x = 2^e * m: m is multiplied by four table reciprocals chosen from a crude log2(m)
-    block reduce(%mh: I64, %ml: I64, %e_field: I64):
-        %e:   I64 = %e_field.add(0x0070000000000000)          ; + 112 << 48
-        %l:   I64 = cm_log_log2(%mh)
-        %j0:  I64 = %l.lshr(59)
-        %j1:  I64 = %l.lshr(54).bitand(31)
-        %j2:  I64 = %l.lshr(49).bitand(31)
-        %j3:  I64 = %l.lshr(44).bitand(31)
-        %sig: I64 = %mh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        %rt0: I64 := CM_LOG_RT0[%j0]
-        %rt1: I64 := CM_LOG_RT1[%j1]
-        %rt2: I64 := CM_LOG_RT2[%j2]
-        %rt3: I64 := CM_LOG_RT3[%j3]
-        %r01: I64  = %rt1.mul(%rt0)
-        %r23: I64  = %rt2.mul(%rt3)
-        %r:   I128 = cm_wide_mul_64x64(%r01, %r23)
-        %rr:  I256 = cm_wide_u128(%sig, %ml).umul_wide(%r)
-        %rhh: I64 = %rr.limb(3)
-        %rhl: I64 = %rr.limb(2)
-        %rlh: I64 = %rr.limb(1)
-        %mh2: I64 = %rhh.shl(40).bitor(%rhl.lshr(24))
-        %ml2: I64 = %rhl.shl(40).bitor(%rlh.lshr(24))
+    block reduce(%mh: U64, %ml: U64, %e_field: U64):
+        %e:   U64 = %e_field.add_wrap(0x0070000000000000)          ; + 112 << 48
+        %l:   U64 = cm_log_log2(%mh)
+        %j0:  U64 = %l.shr(59)
+        %j1:  U64 = %l.shr(54).bitand(31)
+        %j2:  U64 = %l.shr(49).bitand(31)
+        %j3:  U64 = %l.shr(44).bitand(31)
+        %sig: U64 = %mh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        %rt0: U64 := CM_LOG_RT0[%j0]
+        %rt1: U64 := CM_LOG_RT1[%j1]
+        %rt2: U64 := CM_LOG_RT2[%j2]
+        %rt3: U64 := CM_LOG_RT3[%j3]
+        %r01: U64  = %rt1.mul_wrap(%rt0)
+        %r23: U64  = %rt2.mul_wrap(%rt3)
+        %r:   U128 = cm_wide_mul_64x64(%r01, %r23)
+        %rr:  U256 = cm_wide_u128(%sig, %ml).mul_wide(%r)
+        %rhh: U64 = %rr.shr(192).to_u64()
+        %rhl: U64 = %rr.shr(128).to_u64_wrap()
+        %rlh: U64 = %rr.shr(64).to_u64_wrap()
+        %mh2: U64 = %rhh.shl(40).bitor(%rhl.shr(24))
+        %ml2: U64 = %rhl.shl(40).bitor(%rlh.shr(24))
         %sum: CmWide3 = cm_log_table_sum(%e, %j0, %j1, %j2, %j3)
         ; the exact check compares against the normalized significand (subnormal x included)
-        %normalized: I128 = cm_wide_u128(%mh, %ml)
+        %normalized: U128 = cm_wide_u128(%mh, %ml)
         jump polynomial(%sum, %mh2, cm_wide_u128(%mh2, %ml2), %normalized)
 
     ; ln(1 + m) for the reduced m, added to the table sum
-    block polynomial(%sum: CmWide3, %mh: I64, %m: I128, %normalized: I128):
-        %c6:  I64 := CM_LOG_C[6]
-        %c7:  I64 := CM_LOG_C[7]
-        %c8:  I64 := CM_LOG_C[8]
-        %c10: I64 := CM_LOG_C[10]
-        %t10: I64  = cm_wide_mulhi_64x64(%mh, %c10)
-        %t8:  I64  = cm_wide_mulhi_64x64(%mh, %c8.sub(%t10))
-        %f3:  I128 = cm_wide_u128(%c7, %c6.sub(%t8))
-        %f2:  I128 = cm_log_coefficient(4).sub(cm_wide_mulhi_128x128(%m, %f3))
-        %f1:  I128 = cm_log_coefficient(2).sub(cm_wide_mulhi_128x128(%m, %f2))
-        %f0:  I128 = cm_log_coefficient(0).sub(cm_wide_mulhi_128x128(%m, %f1))
-        %p:   I128 = cm_wide_mulhi_128x128(%m, %f0)
+    block polynomial(%sum: CmWide3, %mh: U64, %m: U128, %normalized: U128):
+        %c6:  U64 := CM_LOG_C[6]
+        %c7:  U64 := CM_LOG_C[7]
+        %c8:  U64 := CM_LOG_C[8]
+        %c10: U64 := CM_LOG_C[10]
+        %t10: U64  = cm_wide_mulhi_64x64(%mh, %c10)
+        %t8:  U64  = cm_wide_mulhi_64x64(%mh, %c8.sub_wrap(%t10))
+        %f3:  U128 = cm_wide_u128(%c7, %c6.sub_wrap(%t8))
+        %f2:  U128 = cm_log_coefficient(4).sub_wrap(cm_wide_mulhi_128x128(%m, %f3))
+        %f1:  U128 = cm_log_coefficient(2).sub_wrap(cm_wide_mulhi_128x128(%m, %f2))
+        %f0:  U128 = cm_log_coefficient(0).sub_wrap(cm_wide_mulhi_128x128(%m, %f1))
+        %p:   U128 = cm_wide_mulhi_128x128(%m, %f0)
         %p3:  CmWide3 = CmWide3 { w0: cm_wide_lo(%p), w1: cm_wide_hi(%p), w2: 0 }
         %total: CmWide3 = cm_wide_add3(%sum, %p3)
         %r: F128 = cm_log_round(%total, %normalized)
         return(%r)
 
 ; Word pair (i, i + 1) of the ln(1 + r) polynomial as a 128-bit coefficient.
-routine cm_log_coefficient(%i: I64) -> I128
+routine cm_log_coefficient(%i: U64) -> U128
     block entry():
-        %lo: I64 := CM_LOG_C[%i]
-        %hi: I64 := CM_LOG_C[%i.add(1)]
-        %r: I128 = cm_wide_u128(%hi, %lo)
+        %lo: U64 := CM_LOG_C[%i]
+        %hi: U64 := CM_LOG_C[%i.add_wrap(1)]
+        %r: U128 = cm_wide_u128(%hi, %lo)
         return(%r)
 
 ; e * ln(2) minus the bias, plus the logarithms of the four chosen reciprocals, in 3-word fixed point.
-routine cm_log_table_sum(%e: I64, %j0: I64, %j1: I64, %j2: I64, %j3: I64) -> CmWide3
+routine cm_log_table_sum(%e: U64, %j0: U64, %j1: U64, %j2: U64, %j3: U64) -> CmWide3
     block entry():
         %ln2:    CmWide3 = cm_wide_row3(CM_LOG_LN2A.as_ptr(), 0)
         %offset: CmWide3 = cm_wide_row3(CM_LOG_OFFA.as_ptr(), 0)
@@ -153,103 +153,103 @@ routine cm_log_table_sum(%e: I64, %j0: I64, %j1: I64, %j2: I64, %j3: I64) -> CmW
 
 ; Rounds the 3-word fixed-point logarithm f to F128, checking exactly when it's too close to a midpoint.
 ; %x is the input with its significand normalized.
-routine cm_log_round(%f: CmWide3, %x: I128) -> F128
+routine cm_log_round(%f: CmWide3, %x: U128) -> F128
     block entry():
-        %mask: I64 = %f.w2.ashr(63)
-        %f0:   I64 = %f.w0.bitxor(%mask)
-        %f1:   I64 = %f.w1.bitxor(%mask)
-        %f2:   I64 = %f.w2.bitxor(%mask)
+        %mask: U64 = cm_sign_mask64(%f.w2)
+        %f0:   U64 = %f.w0.bitxor(%mask)
+        %f1:   U64 = %f.w1.bitxor(%mask)
+        %f2:   U64 = %f.w2.bitxor(%mask)
         %top_zero: Bool = %f2.eq(0)
-        %nz:   I64 = %top_zero ? %f1.leading_zeros().add(64) : %f2.leading_zeros()
-        %ns:   I64 = %nz.sub(15)
-        %tail: I64 = -1.lshr(%ns.bitand(63))
-        %half: I64 = 63.sub(%ns).bitand(63)
-        %rnd:  I64 = %f0.lshr(%half).bitand(1)
-        %el:   I64 = 0x4029.sub(%nz).bitor(%mask.shl(15))
-        %near_half: I64  = %f0.add(1.shl(%half)).add(12).bitand(%tail)
-        %hard:      Bool = %near_half.ule(24)
+        %nz:   U64 = %top_zero ? %f1.leading_zeros().add_wrap(64) : %f2.leading_zeros()
+        %ns:   U64 = %nz.sub_wrap(15)
+        %tail: U64 = U64.MAX.shr(%ns.bitand(63))
+        %half: U64 = 63.sub_wrap(%ns).bitand(63)
+        %rnd:  U64 = %f0.shr(%half).bitand(1)
+        %el:   U64 = 0x4029.sub_wrap(%nz).bitor(%mask.shl(15))
+        %near_half: U64  = %f0.add_wrap(1.shl(%half)).add_wrap(12).bitand(%tail)
+        %hard:      Bool = %near_half.le(24)
         branch %hard ? exact(%f0, %f1, %f2, %nz, %el) : fast(%f0, %f1, %f2, %ns, %el, %rnd)
 
-    block fast(%f0: I64, %f1: I64, %f2: I64, %ns: I64, %el: I64, %rnd: I64):
-        %ls:  I64  = %ns.bitand(63)
-        %rs:  I64  = 64.sub(%ns).bitand(63)
-        %sig: I128 = cm_log_shift_pair(%f0, %f1, %f2, %ls, %rs)
+    block fast(%f0: U64, %f1: U64, %f2: U64, %ns: U64, %el: U64, %rnd: U64):
+        %ls:  U64  = %ns.bitand(63)
+        %rs:  U64  = 64.sub_wrap(%ns).bitand(63)
+        %sig: U128 = cm_log_shift_pair(%f0, %f1, %f2, %ls, %rs)
         %r: F128 = cm_log_pack(%sig, %el, %rnd)
         return(%r)
 
     ; the rounding test failed: decide it exactly from 113 bits plus one
-    block exact(%f0: I64, %f1: I64, %f2: I64, %nz: I64, %el: I64):
-        %ls:     I64  = %nz.sub(14)
-        %rs:     I64  = 64.sub(%ls).bitand(63)
-        %sig:    I128 = cm_log_shift_pair(%f0, %f1, %f2, %ls.bitand(63), %rs)
-        %below:  I64  = %f0.lshr(63.sub(%ls).bitand(63)).bitand(1)
-        %m:      I128 = %sig.add(%below.to_u128())
+    block exact(%f0: U64, %f1: U64, %f2: U64, %nz: U64, %el: U64):
+        %ls:     U64  = %nz.sub_wrap(14)
+        %rs:     U64  = 64.sub_wrap(%ls).bitand(63)
+        %sig:    U128 = cm_log_shift_pair(%f0, %f1, %f2, %ls.bitand(63), %rs)
+        %below:  U64  = %f0.shr(63.sub_wrap(%ls).bitand(63)).bitand(1)
+        %m:      U128 = %sig.add_wrap(%below.to_u128())
         %exact:  CmLogRounding = cm_log_refine(%el, %m, %x)
         %r: F128 = cm_log_pack(%exact.sig, %el, %exact.round)
         return(%r)
 
 ; The 128 bits (f2:f1:f0 << ls) >> 64, shifting by ls left and rs = (64 - ls) mod 64 right as the original
 ; does (a zero ls ORs in the lower word unshifted, like the x86 shifts it was written for).
-routine cm_log_shift_pair(%f0: I64, %f1: I64, %f2: I64, %ls: I64, %rs: I64) -> I128
+routine cm_log_shift_pair(%f0: U64, %f1: U64, %f2: U64, %ls: U64, %rs: U64) -> U128
     block entry():
-        %hi: I64 = %f2.shl(%ls).bitor(%f1.lshr(%rs))
-        %lo: I64 = %f1.shl(%ls).bitor(%f0.lshr(%rs))
-        %r: I128 = cm_wide_u128(%hi, %lo)
+        %hi: U64 = %f2.shl(%ls).bitor(%f1.shr(%rs))
+        %lo: U64 = %f1.shl(%ls).bitor(%f0.shr(%rs))
+        %r: U128 = cm_wide_u128(%hi, %lo)
         return(%r)
 
 ; sig + (el << 112) + round: the exponent (and sign) field added to the significand, which carries into the
 ; exponent when its implicit bit is set.
-routine cm_log_pack(%sig: I128, %el: I64, %round: I64) -> F128
+routine cm_log_pack(%sig: U128, %el: U64, %round: U64) -> F128
     block entry():
-        %field: I128 = cm_wide_u128(%el.shl(48), %round)
-        %r: F128 = F128.from_bits(%sig.add(%field))
+        %field: U128 = cm_wide_u128(%el.shl(48), %round)
+        %r: F128 = f128_of(%sig.add_wrap(%field))
         return(%r)
 
 ; Crude fixed-point log2 of the high significand word x, whose bits select the reciprocal tables.
-routine cm_log_log2(%x: I64) -> I64
+routine cm_log_log2(%x: U64) -> U64
     block entry():
-        %j:   I64 = %x.lshr(43).bitand(31)
-        %z:   I64 = %x.lshr(11).bitand(0xFFFFFFFF)
-        %z2:  I64 = %z.mul(%z).lshr(32)
-        %k:   I64 = %j.mul(4)
-        %c0:  I64 := CM_LOG_L2C[%k]
-        %c1:  I64 := CM_LOG_L2C[%k.add(1)]
-        %c2:  I64 := CM_LOG_L2C[%k.add(2)]
-        %c3:  I64 := CM_LOG_L2C[%k.add(3)]
-        %t0:  I64 = %c0.sub(%z.mul(%c1).lshr(38)).bitand(0xFFFFFFFF)
-        %t2:  I64 = %c2.sub(%z.mul(%c3).lshr(32)).bitand(0xFFFFFFFF)
-        %t:   I64 = %t0.add(%z2.mul(%t2).lshr(44)).bitand(0xFFFFFFFF)
-        %base: I64 := CM_LOG_L2C0[%j]
-        %r:   I64 = %base.add(%z.mul(%t).lshr(4))
+        %j:   U64 = %x.shr(43).bitand(31)
+        %z:   U64 = %x.shr(11).bitand(0xFFFFFFFF)
+        %z2:  U64 = %z.mul_wrap(%z).shr(32)
+        %k:   U64 = %j.mul_wrap(4)
+        %c0:  U64 := CM_LOG_L2C[%k]
+        %c1:  U64 := CM_LOG_L2C[%k.add_wrap(1)]
+        %c2:  U64 := CM_LOG_L2C[%k.add_wrap(2)]
+        %c3:  U64 := CM_LOG_L2C[%k.add_wrap(3)]
+        %t0:  U64 = %c0.sub_wrap(%z.mul_wrap(%c1).shr(38)).bitand(0xFFFFFFFF)
+        %t2:  U64 = %c2.sub_wrap(%z.mul_wrap(%c3).shr(32)).bitand(0xFFFFFFFF)
+        %t:   U64 = %t0.add_wrap(%z2.mul_wrap(%t2).shr(44)).bitand(0xFFFFFFFF)
+        %base: U64 := CM_LOG_L2C0[%j]
+        %r:   U64 = %base.add_wrap(%z.mul_wrap(%t).shr(4))
         return(%r)
 
 ; (w2, w1, w0) >> s, logical, s < 192.
-routine cm_log_shift_right3(%t: CmWide3, %s: I64) -> CmWide3
+routine cm_log_shift_right3(%t: CmWide3, %s: U64) -> CmWide3
     block entry():
-        %rs:      I64  = %s.bitand(63)
-        %ls:      I64  = 64.sub(%rs).bitand(63)
+        %rs:      U64  = %s.bitand(63)
+        %ls:      U64  = 64.sub_wrap(%rs).bitand(63)
         %aligned: Bool = %rs.eq(0)
-        %b0:      I64  = %t.w0.lshr(%rs).bitor(%t.w1.shl(%ls))
-        %b1:      I64  = %t.w1.lshr(%rs).bitor(%t.w2.shl(%ls))
-        %b2:      I64  = %t.w2.lshr(%rs)
-        %bits:    CmWide3 = CmWide3 { w0: %b0, w1: %b1, w2: %b2 }
+        %b0:      S64  = %t.w0.shr(%rs).bitor(%t.w1.shl(%ls)).to_s64_wrap()
+        %b1:      S64  = %t.w1.shr(%rs).bitor(%t.w2.shl(%ls)).to_s64_wrap()
+        %b2:      S64  = %t.w2.shr(%rs).to_s64_wrap()
+        %bits:    CmWide3 = CmWide3 { w0: %b0.to_u64_wrap(), w1: %b1.to_u64_wrap(), w2: %b2.to_u64_wrap() }
         %start:   CmWide3 = %aligned ? %t : %bits
         jump words(%start, %s)
 
-    block words(%t: CmWide3, %k: I64):
-        %done: Bool = %k.ult(64)
+    block words(%t: CmWide3, %k: U64):
+        %done: Bool = %k.lt(64)
         %moved: CmWide3 = CmWide3 { w0: %t.w1, w1: %t.w2, w2: 0 }
-        branch %done ? return(%t) : words(%moved, %k.sub(64))
+        branch %done ? return(%t) : words(%moved, %k.sub_wrap(64))
 
 ; -- near 1 --------------------------------------------------------------------
 
 ; ln(x) for x within about 2^-29 of 1, where the general reduction would lose accuracy.
-routine cm_log_near_one(%x: I128) -> F128
+routine cm_log_near_one(%x: U128) -> F128
     block entry():
-        %one:   I128 = 0x3FFF0000000000000000000000000000
+        %one:   U128 = 0x3FFF0000000000000000000000000000
         %exact: Bool = %x.eq(%one)
-        %above: Bool = %x.ugt(%one)
-        %plus_zero: F128 = F128.from_bits(0)
+        %above: Bool = %x.gt(%one)
+        %plus_zero: F128 = f128_of(0)
         select:
             %exact -> return(%plus_zero)
             %above -> above()
@@ -264,76 +264,76 @@ routine cm_log_near_one(%x: I128) -> F128
         jump finish(%n, 1)
 
     ; normalize the top bit to 127, then round (exactly when the fast test failed)
-    block finish(%n: CmLogNear, %neg: I64):
-        %top_clear: Bool = %n.sig.slt(0).bitnot()
-        %sig:       I128 = %top_clear ? %n.sig.shl(1) : %n.sig
-        %e:         I64  = %top_clear ? %n.e.add(1) : %n.e
-        %rnd:       I64  = cm_wide_lo(%sig).lshr(14).bitand(1)
-        %biased:    I64  = 16381.sub(%e)
-        %el:        I64  = %biased.bitor(%neg.shl(15))
-        branch %n.hard ? exact(%sig, %el) : fast(%sig, %el, %rnd)
+    block finish(%n: CmLogNear, %neg: U64):
+        %top_clear: Bool = %n.sig.lt(0).bitnot()
+        %sig:       S128 = %top_clear ? %n.sig.shl(1) : %n.sig
+        %e:         U64  = %top_clear ? %n.e.add_wrap(1) : %n.e
+        %rnd:       U64  = cm_wide_lo(%sig.to_u128_wrap()).shr(14).bitand(1)
+        %biased:    U64  = 16381.sub_wrap(%e)
+        %el:        U64  = %biased.bitor(%neg.shl(15))
+        branch %n.hard ? exact(%sig.to_u128_wrap(), %el) : fast(%sig.to_u128_wrap(), %el, %rnd)
 
-    block fast(%sig: I128, %el: I64, %rnd: I64):
-        %r: F128 = cm_log_pack(%sig.lshr(15), %el, %rnd)
+    block fast(%sig: U128, %el: U64, %rnd: U64):
+        %r: F128 = cm_log_pack(%sig.shr(15), %el, %rnd)
         return(%r)
 
-    block exact(%sig: I128, %el: I64):
-        %m:       I128 = %sig.add(0x2000).lshr(14)
+    block exact(%sig: U128, %el: U64):
+        %m:       U128 = %sig.add_wrap(0x2000).shr(14)
         %rounded: CmLogRounding = cm_log_refine(%el, %m, %x)
         %r: F128 = cm_log_pack(%rounded.sig, %el, %rounded.round)
         return(%r)
 
 ; ln(x) for 1 < x < 1 + 2^-29 or so: t = x - 1, ln(1 + t) = t - t^2 * P(t), before the final rounding.
-routine cm_log_above_one(%x: I128) -> CmLogNear
+routine cm_log_above_one(%x: U128) -> CmLogNear
     block entry():
-        %t:       I128 = %x.sub(0x3FFF0000000000000000000000000000)
-        %nz:      I64  = %t.leading_zeros().to_i64()
-        %u:       I128 = %t.shl(%nz.to_i128())
-        %e:       I64  = %nz.sub(16)
-        %u2:      I128 = cm_wide_mulhi_128x128(%u, %u)
-        %m:       I128 = %u.lshr(%e.sub(20).to_i128())
-        %mh:      I64  = cm_wide_hi(%m)
-        %n10:     I64 := CM_LOG_NCP[10]
-        %n8:      I64 := CM_LOG_NCP[8]
-        %n7:      I64 := CM_LOG_NCP[7]
-        %n6:      I64 := CM_LOG_NCP[6]
-        %t10:     I64  = cm_wide_mulhi_64x64(%mh, %n10)
-        %t8:      I64  = cm_wide_mulhi_64x64(%mh, %n8.sub(%t10))
-        %f3:      I128 = cm_wide_u128(%n7, %n6.sub(%t8))
-        %f2:      I128 = cm_log_ncp(4).sub(cm_wide_mulhi_128x128(%m, %f3))
-        %f1:      I128 = cm_log_ncp(2).sub(cm_wide_mulhi_128x128(%m, %f2))
-        %f0:      I128 = cm_log_ncp(0).sub(cm_wide_mulhi_128x128(%m, %f1))
-        %p:       I128 = cm_wide_mulhi_128x128(%u2, %f0)
+        %t:       U128 = %x.sub_wrap(0x3FFF0000000000000000000000000000)
+        %nz:      S64  = %t.leading_zeros().to_s128().to_s64_wrap()
+        %u:       U128 = %t.shl(%nz.to_u128())
+        %e:       S64  = %nz.sub_wrap(16)
+        %u2:      U128 = cm_wide_mulhi_128x128(%u, %u)
+        %m:       U128 = %u.shr(%e.sub_wrap(20).to_u128())
+        %mh:      U64  = cm_wide_hi(%m)
+        %n10:     U64 := CM_LOG_NCP[10]
+        %n8:      U64 := CM_LOG_NCP[8]
+        %n7:      U64 := CM_LOG_NCP[7]
+        %n6:      U64 := CM_LOG_NCP[6]
+        %t10:     U64  = cm_wide_mulhi_64x64(%mh, %n10)
+        %t8:      U64  = cm_wide_mulhi_64x64(%mh, %n8.sub_wrap(%t10))
+        %f3:      U128 = cm_wide_u128(%n7, %n6.sub_wrap(%t8))
+        %f2:      U128 = cm_log_ncp(4).sub_wrap(cm_wide_mulhi_128x128(%m, %f3))
+        %f1:      U128 = cm_log_ncp(2).sub_wrap(cm_wide_mulhi_128x128(%m, %f2))
+        %f0:      U128 = cm_log_ncp(0).sub_wrap(cm_wide_mulhi_128x128(%m, %f1))
+        %p:       U128 = cm_wide_mulhi_128x128(%u2, %f0)
         %p3:      CmWide3 = CmWide3 { w0: 0, w1: cm_wide_lo(%p), w2: cm_wide_hi(%p) }
-        %shifted: CmWide3 = cm_log_shift_right3(%p3, %e)
+        %shifted: CmWide3 = cm_log_shift_right3(%p3, %e.to_u64_wrap())
         %u3:      CmWide3 = CmWide3 { w0: 0, w1: cm_wide_lo(%u), w2: cm_wide_hi(%u) }
         %z:       CmWide3 = cm_wide_sub3(%u3, %shifted)
         %r: CmLogNear = cm_log_near_test(%z, %e, 64, 63)
         return(%r)
 
 ; ln(x) for 1 - 2^-29 or so < x < 1: t = 1 - x, ln(1 - t) = -(t + t^2 * P(t)), before the final rounding.
-routine cm_log_below_one(%x: I128) -> CmLogNear
+routine cm_log_below_one(%x: U128) -> CmLogNear
     block entry():
-        %t:       I128 = 0x3FFF0000000000000000000000000000.sub(%x)
-        %nz:      I64  = %t.leading_zeros().to_i64()
-        %u:       I128 = %t.shl(%nz.to_i128())
-        %e:       I64  = %nz.sub(16)
-        %u2:      I128 = cm_wide_mulhi_128x128(%u, %u)
-        %m:       I128 = %u.lshr(%e.sub(20).to_i128())
-        %mh:      I64  = cm_wide_hi(%m)
-        %n10:     I64 := CM_LOG_NCN[10]
-        %n8:      I64 := CM_LOG_NCN[8]
-        %n6:      I64 := CM_LOG_NCN[6]
-        %t10:     I64  = cm_wide_mulhi_64x64(%mh, %n10)
-        %t8:      I64  = cm_wide_mulhi_64x64(%mh, %n8.add(%t10))
-        %t6:      I64  = cm_wide_mulhi_64x64(%mh, %n6.add(%t8))
-        %f2:      I128 = cm_log_ncn(4).add(%t6.to_u128())
-        %f1:      I128 = cm_log_ncn(2).add(cm_wide_mulhi_128x128(%m, %f2))
-        %f0:      I128 = cm_log_ncn(0).add(cm_wide_mulhi_128x128(%m, %f1))
-        %p:       I128 = cm_wide_mulhi_128x128(%u2, %f0)
-        %half_u:  I128 = %u.lshr(1)
+        %t:       U128 = 0x3FFF0000000000000000000000000000.sub_wrap(%x)
+        %nz:      S64  = %t.leading_zeros().to_s128().to_s64_wrap()
+        %u:       U128 = %t.shl(%nz.to_u128())
+        %e:       S64  = %nz.sub_wrap(16)
+        %u2:      U128 = cm_wide_mulhi_128x128(%u, %u)
+        %m:       U128 = %u.shr(%e.sub_wrap(20).to_u128())
+        %mh:      U64  = cm_wide_hi(%m)
+        %n10:     U64 := CM_LOG_NCN[10]
+        %n8:      U64 := CM_LOG_NCN[8]
+        %n6:      U64 := CM_LOG_NCN[6]
+        %t10:     U64  = cm_wide_mulhi_64x64(%mh, %n10)
+        %t8:      U64  = cm_wide_mulhi_64x64(%mh, %n8.add_wrap(%t10))
+        %t6:      U64  = cm_wide_mulhi_64x64(%mh, %n6.add_wrap(%t8))
+        %f2:      U128 = cm_log_ncn(4).add_wrap(%t6.to_u128())
+        %f1:      U128 = cm_log_ncn(2).add_wrap(cm_wide_mulhi_128x128(%m, %f2))
+        %f0:      U128 = cm_log_ncn(0).add_wrap(cm_wide_mulhi_128x128(%m, %f1))
+        %p:       U128 = cm_wide_mulhi_128x128(%u2, %f0)
+        %half_u:  U128 = %u.shr(1)
         %p3:      CmWide3 = CmWide3 { w0: 0, w1: cm_wide_lo(%p), w2: cm_wide_hi(%p) }
-        %shifted: CmWide3 = cm_log_shift_right3(%p3, %e.add(2))
+        %shifted: CmWide3 = cm_log_shift_right3(%p3, %e.add_wrap(2).to_u64_wrap())
         %u3:      CmWide3 = CmWide3 { w0: 0, w1: cm_wide_lo(%half_u), w2: cm_wide_hi(%half_u) }
         %z:       CmWide3 = cm_wide_add3(%u3, %shifted)
         %r: CmLogNear = cm_log_near_test(%z, %e, 62, 62)
@@ -341,49 +341,49 @@ routine cm_log_below_one(%x: I128) -> CmLogNear
 
 ; The near-one rounding test on z and the 128-bit significand to round. The rounding position sits %point - e
 ; bits into the tail words while e <= %last; past that, the error bound eps shrinks as e grows.
-routine cm_log_near_test(%z: CmWide3, %e: I64, %point: I64, %last: I64) -> CmLogNear
+routine cm_log_near_test(%z: CmWide3, %e: S64, %point: S64, %last: S64) -> CmLogNear
     block entry():
-        %tl:     I128 = cm_wide_u128(%z.w1, %z.w0)
-        %zs:     I64  = %z.w2.lshr(63)
-        %msk:    I128 = -1.lshr(50.sub(%zs).to_i128())
-        %nrnd:   I128 = 1.shl(13.add(%zs).to_i128())
-        %inside: Bool = %e.sle(%last)
+        %tl:     U128 = cm_wide_u128(%z.w1, %z.w0)
+        %zs:     S64  = %z.w2.shr(63).to_s64_wrap()
+        %msk:    U128 = U128.MAX.shr(50.sub(%zs).to_u128())
+        %nrnd:   U128 = 1.shl(13.add_wrap(%zs).to_u128_wrap())
+        %inside: Bool = %e.le(%last)
         branch %inside ? short(%tl, %msk, %nrnd) : long(%tl, %msk, %nrnd)
 
     ; e below the point: the tail shifts down to the rounding position
-    block short(%tl: I128, %msk: I128, %nrnd: I128):
-        %gap:   I128 = %point.sub(%e).to_i128()
-        %tail:  I128 = %tl.lshr(%gap)
-        %mask:  I128 = %msk.lshr(%gap)
-        %bound: I128 = %nrnd.shl(%e.to_i128()).bitor(12)
+    block short(%tl: U128, %msk: U128, %nrnd: U128):
+        %gap:   S128 = %point.sub_wrap(%e).to_s128()
+        %tail:  U128 = %tl.shr(%gap.to_u128())
+        %mask:  U128 = %msk.shr(%gap.to_u128())
+        %bound: U128 = %nrnd.shl(%e.to_u128()).bitor(12)
         jump test(%tail, %mask, %bound, 12)
 
-    block long(%tl: I128, %msk: I128, %nrnd: I128):
-        %eps:   I64  = 12.lshr(%e.sub(%point)).add(1)
-        %bound: I128 = %nrnd.shl(%point.to_i128()).bitor(%eps.to_u128())
+    block long(%tl: U128, %msk: U128, %nrnd: U128):
+        %eps:   U64  = 12.shr(%e.sub(%point).to_u64()).add(1)
+        %bound: U128 = %nrnd.shl(%point.to_u128()).bitor(%eps.to_u128())
         jump test(%tl, %msk, %bound, %eps)
 
-    block test(%tail: I128, %mask: I128, %bound: I128, %eps: I64):
-        %t:    I128 = %mask.bitand(%tail.add(%bound))
-        %hard: Bool = %t.ule(%eps.mul(2).to_u128())
-        %sig:  I128 = cm_wide_u128(%z.w2, %z.w1)
-        %r: CmLogNear = CmLogNear { sig: %sig, e: %e, hard: %hard }
+    block test(%tail: U128, %mask: U128, %bound: U128, %eps: U64):
+        %t:    U128 = %mask.bitand(%tail.add_wrap(%bound))
+        %hard: Bool = %t.le(%eps.mul_wrap(2).to_u128())
+        %sig:  U128 = cm_wide_u128(%z.w2, %z.w1)
+        %r: CmLogNear = CmLogNear { sig: %sig.to_s128_wrap(), e: %e.to_u64_wrap(), hard: %hard }
         return(%r)
 
 ; Word pair (i, i + 1) of the above-one polynomial.
-routine cm_log_ncp(%i: I64) -> I128
+routine cm_log_ncp(%i: U64) -> U128
     block entry():
-        %lo: I64 := CM_LOG_NCP[%i]
-        %hi: I64 := CM_LOG_NCP[%i.add(1)]
-        %r: I128 = cm_wide_u128(%hi, %lo)
+        %lo: U64 := CM_LOG_NCP[%i]
+        %hi: U64 := CM_LOG_NCP[%i.add_wrap(1)]
+        %r: U128 = cm_wide_u128(%hi, %lo)
         return(%r)
 
 ; Word pair (i, i + 1) of the below-one polynomial.
-routine cm_log_ncn(%i: I64) -> I128
+routine cm_log_ncn(%i: U64) -> U128
     block entry():
-        %lo: I64 := CM_LOG_NCN[%i]
-        %hi: I64 := CM_LOG_NCN[%i.add(1)]
-        %r: I128 = cm_wide_u128(%hi, %lo)
+        %lo: U64 := CM_LOG_NCN[%i]
+        %hi: U64 := CM_LOG_NCN[%i.add_wrap(1)]
+        %r: U128 = cm_wide_u128(%hi, %lo)
         return(%r)
 
 ; -- exact rounding ------------------------------------------------------------
@@ -391,37 +391,37 @@ routine cm_log_ncn(%i: I64) -> I128
 ; Decides the rounding exactly: evaluates 2^(m / ln 2) for the candidate m (113 bits plus one, exponent
 ; and sign in el) to about 380 bits and compares it with x's low bits. Returns the round bit and the
 ; significand.
-routine cm_log_refine(%el: I64, %m: I128, %x: I128) -> CmLogRounding
+routine cm_log_refine(%el: U64, %m: U128, %x: U128) -> CmLogRounding
     block entry():
-        #t_buf:  Ptr<Array<I64, 7>> = alloca<Array<I64, 7>>
-        #t:      Ptr<I64>           = #t_buf.as_ptr()
-        #ft_buf: Ptr<Array<I64, 6>> = alloca<Array<I64, 6>>
-        #ft:     Ptr<I64>           = #ft_buf.as_ptr()
-        %sm:     I64 = 0.sub(%el.lshr(15).bitand(1))
+        #t_buf:  Ptr<Array<U64, 7>> = alloca<Array<U64, 7>>
+        #t:      Ptr<U64>           = #t_buf.as_ptr()
+        #ft_buf: Ptr<Array<U64, 6>> = alloca<Array<U64, 6>>
+        #ft:     Ptr<U64>           = #ft_buf.as_ptr()
+        %sm:     U64 = 0.sub_wrap(%el.shr(15).bitand(1))
         cm_wide_mulhi_7x2(CM_WIDE_ILN2.as_ptr(), %m, #t)
         cm_wide_xor_words(#t, 7, %sm)
-        cm_wide_ashr7(#t, 0x402E.sub(%el.bitand(0x7FFF)))
+        cm_wide_ashr7(#t, 0x402E.sub_wrap(%el.bitand(0x7FFF)))
         cm_wide_exp2_frac(#t, #ft)
-        %w0: I64 := #ft[0]
-        %w1: I64 := #ft[1]
-        %w2: I64 := #ft[2]
-        %w3: I64 := #ft[3]
-        %w4: I64 := #ft[4]
+        %w0: U64 := #ft[0]
+        %w1: U64 := #ft[1]
+        %w2: U64 := #ft[2]
+        %w3: U64 := #ft[3]
+        %w4: U64 := #ft[4]
         %inexact: Bool = %w0.bitor(%w1).bitor(%w2).bitor(%w3).ne(0)
-        %sticky:  I64  = %w4.bitor(%inexact.to_i64())
-        %d:       I64  = %sticky.sub(cm_wide_lo(%x).shl(12))
-        %above:   Bool = %d.slt(0).bitnot()
+        %sticky:  U64  = %w4.bitor(%inexact.to_u64())
+        %d:       S64  = %sticky.sub_wrap(cm_wide_lo(%x).shl(12)).to_s64_wrap()
+        %above:   Bool = %d.lt(0).bitnot()
         %down:    Bool = %sm.ne(0) ? %above.bitnot() : %above
-        %doubled: I128 = %m.shl(1)
-        %mm:      I128 = %down ? %doubled.sub(1) : %doubled.add(1)
-        %round:   I64  = cm_wide_lo(%mm.lshr(1)).bitand(1)
-        %r: CmLogRounding = CmLogRounding { round: %round, sig: %mm.lshr(2) }
+        %doubled: U128 = %m.shl(1)
+        %mm:      U128 = %down ? %doubled.sub_wrap(1) : %doubled.add_wrap(1)
+        %round:   U64  = cm_wide_lo(%mm.shr(1)).bitand(1)
+        %r: CmLogRounding = CmLogRounding { round: %round, sig: %mm.shr(2) }
         return(%r)
 
 ; -- tables --------------------------------------------------------------------
 
 ; log2 approximation: 4 coefficients per 1/32 interval of the significand
-const CM_LOG_L2C: Array<I64, 128> = [
+const CM_LOG_L2C: Array<U64, 128> = [
     0x00000000B8AA3AF4, 0x00000000B8A9CF24, 0x00000000F5EC11E6, 0x00000000056CDE26,
     0x00000000B311AD8D, 0x00000000ADA42C83, 0x00000000E04081E5, 0x0000000004CE4AA7,
     0x00000000ADCD64B4, 0x00000000A393D29C, 0x00000000CD0DF3B5, 0x000000000445B73B,
@@ -457,7 +457,7 @@ const CM_LOG_L2C: Array<I64, 128> = [
 ]
 
 ; log2 approximation: the value at the start of each interval
-const CM_LOG_L2C0: Array<I64, 32> = [
+const CM_LOG_L2C0: Array<U64, 32> = [
     0x00000000111843D8, 0x0B5D69BAD62FA11A, 0x1663F6FAD5C18924, 0x2118B119BFF1FA3B,
     0x2B803474013E4469, 0x359EBC5B7234BAED, 0x3F782D720C23D39B, 0x49101EAC3E8EE930,
     0x5269E12F3A1E46C3, 0x5B888736793C6255, 0x646EEA2480D45E3C, 0x6D1FAFDCE6051F08,
@@ -469,31 +469,31 @@ const CM_LOG_L2C0: Array<I64, 32> = [
 ]
 
 ; ln(1 + t) polynomial for x just above 1, as (lo, hi) word pairs
-const CM_LOG_NCP: Array<I64, 12> = [
+const CM_LOG_NCP: Array<U64, 12> = [
     0xFFFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF, 0x5555555555555555, 0x0000055555555555,
     0xFFFFFFFFFFFFFFFD, 0x00000000003FFFFF, 0x3333333333333326, 0x0000000000000003,
     0x00002AAAAAAAAA84, 0x0000000000000000, 0x000000000249245A, 0x0000000000000000
 ]
 
 ; ln(1 - t) polynomial for x just below 1, as (lo, hi) word pairs
-const CM_LOG_NCN: Array<I64, 12> = [
+const CM_LOG_NCN: Array<U64, 12> = [
     0x0000000000000000, 0x8000000000000000, 0xAAAAAAAAAAAAAAAA, 0x000002AAAAAAAAAA,
     0xFFFFFFFFFFFFFFFF, 0x00000000000FFFFF, 0x6666666666666668, 0x0000000000000000,
     0x000002AAAAAAAAA8, 0x0000000000000000, 0x0000000000124926, 0x0000000000000000
 ]
 
 ; ln(2) in 3 words, scaled to the exponent field
-const CM_LOG_LN2A: Array<I64, 3> = [
+const CM_LOG_LN2A: Array<U64, 3> = [
     0x3F2F6AF40F343267, 0x1CF79ABC9E3B3980, 0x0000000B17217F7D
 ]
 
 ; offset that removes the exponent bias, in 3 words
-const CM_LOG_OFFA: Array<I64, 3> = [
+const CM_LOG_OFFA: Array<U64, 3> = [
     0x0198BFB39C605BC5, 0x718289F4C0A895F2, 0xFFFFFFFD3568989A
 ]
 
 ; reciprocal tables: 32-bit reciprocals for the four 5-bit index levels
-const CM_LOG_RT0: Array<I64, 32> = [
+const CM_LOG_RT0: Array<U64, 32> = [
     0x0000000080000000, 0x000000007D41D96E, 0x000000007A92BE8B, 0x0000000077F25CCE,
     0x0000000075606374, 0x0000000072DC8374, 0x0000000070666F77, 0x000000006DFDDBCC,
     0x000000006BA27E66, 0x0000000069540EC9, 0x000000006712460B, 0x0000000064DCDEC4,
@@ -504,7 +504,7 @@ const CM_LOG_RT0: Array<I64, 32> = [
     0x0000000045CAE0F2, 0x00000000444C0741, 0x0000000042D561B4, 0x000000004166C34D
 ]
 
-const CM_LOG_RT1: Array<I64, 32> = [
+const CM_LOG_RT1: Array<U64, 32> = [
     0x0000000080000000, 0x000000007FE9D3A9, 0x000000007FD3AB2A, 0x000000007FBD8680,
     0x000000007FA765AD, 0x000000007F9148AF, 0x000000007F7B2F86, 0x000000007F651A31,
     0x000000007F4F08AF, 0x000000007F38FAFF, 0x000000007F22F122, 0x000000007F0CEB16,
@@ -515,7 +515,7 @@ const CM_LOG_RT1: Array<I64, 32> = [
     0x000000007D98C9E7, 0x000000007D830822, 0x000000007D6D4A22, 0x000000007D578FE6
 ]
 
-const CM_LOG_RT2: Array<I64, 32> = [
+const CM_LOG_RT2: Array<U64, 32> = [
     0x0000000080000000, 0x000000007FFF4E8F, 0x000000007FFE9D1E, 0x000000007FFDEBAF,
     0x000000007FFD3A40, 0x000000007FFC88D2, 0x000000007FFBD765, 0x000000007FFB25F9,
     0x000000007FFA748E, 0x000000007FF9C325, 0x000000007FF911BC, 0x000000007FF86054,
@@ -526,7 +526,7 @@ const CM_LOG_RT2: Array<I64, 32> = [
     0x000000007FEC98FE, 0x000000007FEBE7A8, 0x000000007FEB3652, 0x000000007FEA84FD
 ]
 
-const CM_LOG_RT3: Array<I64, 32> = [
+const CM_LOG_RT3: Array<U64, 32> = [
     0x0000000080000000, 0x000000007FFFFA75, 0x000000007FFFF4E9, 0x000000007FFFEF5E,
     0x000000007FFFE9D2, 0x000000007FFFE447, 0x000000007FFFDEBB, 0x000000007FFFD930,
     0x000000007FFFD3A4, 0x000000007FFFCE18, 0x000000007FFFC88D, 0x000000007FFFC301,
@@ -538,7 +538,7 @@ const CM_LOG_RT3: Array<I64, 32> = [
 ]
 
 ; logarithms matching the RT0 entries, 3 words per entry
-const CM_LOG_LT0: Array<I64, 96> = [
+const CM_LOG_LT0: Array<U64, 96> = [
     0x0000000000000000, 0x0000000000000000, 0x0000000000000000,
     0xA89586EFCF459616, 0x0BF2D9D6938E7957, 0x00000000000058B9,
     0x1C4217AC03D7F347, 0x17E97EC3BBBE7FA5, 0x000000000000B172,
@@ -573,7 +573,7 @@ const CM_LOG_LT0: Array<I64, 96> = [
     0xA5E22A09ADE4180E, 0x7357A288FC7E3DE4, 0x00000000000ABE68
 ]
 
-const CM_LOG_LT1: Array<I64, 96> = [
+const CM_LOG_LT1: Array<U64, 96> = [
     0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0xFCD4886923DAE6B6,
     0xC85BEE167CAB86CE, 0x00000000000002C5, 0x635E6B704ED2F5FA, 0x90A17CEECC3FE577,
     0x000000000000058B, 0x0DF932DA91371DD2, 0x591B7D0A4D0016A7, 0x0000000000000851,
@@ -600,7 +600,7 @@ const CM_LOG_LT1: Array<I64, 96> = [
     0x000000000000532D, 0x1B3B44759B966886, 0x4397C0ABDEA76DC5, 0x00000000000055F3
 ]
 
-const CM_LOG_LT2: Array<I64, 96> = [
+const CM_LOG_LT2: Array<U64, 96> = [
     0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x9CF3BC3D208C9185,
     0x2E2F5FBCB16FF027, 0x0000000000000016, 0xDA087301FF6274D4, 0x5C7D7F2B9B75AFE0,
     0x000000000000002C, 0x134A54F71A0236C3, 0x8AAA5D97D2591B8F, 0x0000000000000042,
@@ -627,7 +627,7 @@ const CM_LOG_LT2: Array<I64, 96> = [
     0x0000000000000299, 0x4D28B6B2476EE8F8, 0x9A13A7F1BC8C0D71, 0x00000000000002AF
 ]
 
-const CM_LOG_LT3: Array<I64, 96> = [
+const CM_LOG_LT3: Array<U64, 96> = [
     0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x347FB733D023CC27,
     0xB16003D72F3C6259, 0x0000000000000000, 0x8679CA1F8E0297B8, 0x62E00F5F83035049,
     0x0000000000000001, 0x5490AB9896A762F9, 0x14402294D37EE9E5, 0x0000000000000002,
@@ -655,7 +655,7 @@ const CM_LOG_LT3: Array<I64, 96> = [
 ]
 
 ; ln(1 + r) polynomial for the reduced argument, as (lo, hi) word pairs
-const CM_LOG_C: Array<I64, 12> = [
+const CM_LOG_C: Array<U64, 12> = [
     0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0x000007FFFFFFFFFF,
     0x5555555555555551, 0x0000000000555555, 0xFFFFFFFFFFFFFFEA, 0x0000000000000003,
     0x00003333333332F7, 0x0000000000000000, 0x0000000002AAAA5E, 0x0000000000000000

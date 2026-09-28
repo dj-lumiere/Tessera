@@ -1,24 +1,24 @@
 ; Tessera stdlib: String
 ;
 ; String is a non-owning immutable view over a UTF-8 byte sequence:
-;   data   — Ptr<I8> to the first byte (null-terminated for C interop)
-;   length — I64 byte count (not including the null terminator)
+;   data   — Ptr<Byte> to the first byte (null-terminated for C interop)
+;   length — U64 byte count (not including the null terminator)
 ;
 ; String literal syntax ("hello") desugars directly to a String constant —
 ; no heap allocation, no allocator needed.
 ;
 ; String never owns its bytes.  The caller is responsible for ensuring the
 ; pointed-to data outlives the String.  For heap-owned byte buffers, use
-; List<I8>; load its data and length fields and pass them to
+; List<Byte>; load its data and length fields and pass them to
 ; String.from_ptr to get a String view.
 ;
 ; Factory routines (concat) take an explicit Ptr<Allocator> and
-; return a String whose data must be freed by the caller via free<I8>.
+; return a String whose data must be freed by the caller via free<Byte>.
 
 record String
 conform Equal<String>, Compare<String>, Hash<String>
-    data:   Ptr<I8>
-    length: I64
+    data:   Ptr<Byte>
+    length: U64
 
 ; -- construction --------------------------------------------------------------
 
@@ -27,7 +27,7 @@ routine String.empty() -> Self
         %str: Self = Self { data: null, length: 0 }
         return(%str)
 
-routine String.from_ptr(#data: Ptr<I8>, %length: I64) -> Self
+routine String.from_ptr(#data: Ptr<Byte>, %length: U64) -> Self
     block entry():
         %str: Self = Self { data: #data, length: %length }
         return(%str)
@@ -35,76 +35,75 @@ routine String.from_ptr(#data: Ptr<I8>, %length: I64) -> Self
 ; -- predicates ----------------------------------------------------------------
 
 ; The length in bytes of the UTF-8 text, not in characters (count those with chars()).
-routine String.length(#self: Ptr<Self>) -> I64
+routine String.length(#self: Ptr<Self>) -> U64
     block entry():
-        %length: I64 := #self.length
+        %length: U64 := #self.length
         return(%length)
 
 routine String.is_empty(#self: Ptr<Self>) -> Bool
     block entry():
-        %length: I64 := #self.length
+        %length: U64 := #self.length
         %result: Bool = %length.eq(0)
         return(%result)
 
 ; -- element access ------------------------------------------------------------
 
-routine String.byte_at(#self: Ptr<Self>, %index: I64) -> I8
+routine String.byte_at(#self: Ptr<Self>, %index: U64) -> U8
     block entry():
-        %length: I64 := #self.length
-        %in_bounds: Bool = %index.sge(0).bitand(%index.slt(%length))
+        %length: U64 := #self.length
+        %in_bounds: Bool = %index.lt(%length)
         branch %in_bounds ? load(%index) : panic(TrapCode.Bounds)
 
-    block load(%index: I64):
-        #data: Ptr<I8> := #self.data
-        %byte: I8 := #data[%index]
+    block load(%index: U64):
+        #data: Ptr<Byte> := #self.data
+        %byte: U8 = U8.from_byte(#data[%index])
         return(%byte)
 
 ; -- slicing -------------------------------------------------------------------
 
 ; Returns a sub-view [start, end).  Traps if range is out of bounds.
-routine String.slice(#self: Ptr<Self>, %start: I64, %end: I64) -> Self
+routine String.slice(#self: Ptr<Self>, %start: U64, %end: U64) -> Self
     block entry():
-        %length: I64 := #self.length
-        %valid_start: Bool = %start.sge(0)
-        %valid_end:   Bool = %end.sle(%length)
-        %valid_order: Bool = %start.sle(%end)
-        %valid:       Bool = %valid_start.bitand(%valid_end).bitand(%valid_order)
+        %length: U64 := #self.length
+        %valid_end:   Bool = %end.le(%length)
+        %valid_order: Bool = %start.le(%end)
+        %valid:       Bool = %valid_end.bitand(%valid_order)
         branch %valid ? make(%start, %end) : panic(TrapCode.Bounds)
 
-    block make(%start: I64, %end: I64):
-        #base: Ptr<I8> := #self.data
-        #from: Ptr<I8> = #base[%start]
-        %length: I64 := #self.length
-        %slice_len: I64 = %end.sub(%start)
+    block make(%start: U64, %end: U64):
+        #base: Ptr<Byte> := #self.data
+        #from: Ptr<Byte> = #base[%start]
+        %length: U64 := #self.length
+        %slice_len: U64 = %end.sub(%start)
         %result: Self = Self { data: #from, length: %slice_len }
         return(%result)
 
 ; -- heap-allocating operations ------------------------------------------------
 
 ; Allocates a new buffer containing a followed by b.
-; Caller must free the returned String's data pointer via free<I8>.
+; Caller must free the returned String's data pointer via free<Byte>.
 routine String.concat(%a: Self, %b: Self, #alloc: Ptr<Allocator>) -> Self
     block entry():
-        %la: I64 = %a.length
-        %lb: I64 = %b.length
-        %length: I64 = %la.add(%lb)
-        #data: Ptr<I8> = alloc<I8>(#alloc, %length.add(1))
+        %la: U64 = %a.length
+        %lb: U64 = %b.length
+        %length: U64 = %la.add(%lb)
+        #data: Ptr<Byte> = alloc<Byte>(#alloc, %length.add(1))
         %failed: Bool = #data.is_null()
         branch %failed ? panic(TrapCode.AllocFailed) : copy_a(#data)
 
-    block copy_a(#data: Ptr<I8>):
-        #src_a: Ptr<I8> = %a.data
-        %len_a: I64     = %a.length
-        copy<I8>(#data, #src_a, %len_a)
+    block copy_a(#data: Ptr<Byte>):
+        #src_a: Ptr<Byte> = %a.data
+        %len_a: U64     = %a.length
+        copy<Byte>(#data, #src_a, %len_a)
         jump copy_b(#data, %len_a)
 
-    block copy_b(#data: Ptr<I8>, %offset: I64):
-        #dst: Ptr<I8>   = #data[%offset]
-        #src_b: Ptr<I8> = %b.data
-        %len_b: I64     = %b.length
-        copy<I8>(#dst, #src_b, %len_b)
-        %length: I64    = %offset.add(%len_b)
-        #data[%length]  = 0
+    block copy_b(#data: Ptr<Byte>, %offset: U64):
+        #dst: Ptr<Byte>   = #data[%offset]
+        #src_b: Ptr<Byte> = %b.data
+        %len_b: U64     = %b.length
+        copy<Byte>(#dst, #src_b, %len_b)
+        %length: U64    = %offset.add(%len_b)
+        #data[%length]  = 0x00
         %result: Self = Self { data: #data, length: %length }
         return(%result)
 
@@ -112,159 +111,157 @@ routine String.concat(%a: Self, %b: Self, #alloc: Ptr<Allocator>) -> Self
 
 routine String.eq(%self: Self, %other: Self) -> Bool
     block entry():
-        %la: I64 = %self.length
-        %lb: I64 = %other.length
+        %la: U64 = %self.length
+        %lb: U64 = %other.length
         %same_len: Bool = %la.eq(%lb)
         branch %same_len ? scan(%self, %other, %la) : return(false)
 
-    block scan(%self: Self, %other: Self, %len: I64):
-        #pa: Ptr<I8> = %self.data
-        #pb: Ptr<I8> = %other.data
+    block scan(%self: Self, %other: Self, %len: U64):
+        #pa: Ptr<Byte> = %self.data
+        #pb: Ptr<Byte> = %other.data
         jump loop(0, %len, #pa, #pb)
 
-    block loop(%i: I64, %len: I64, #pa: Ptr<I8>, #pb: Ptr<I8>):
-        %done: Bool = %i.sge(%len)
+    block loop(%i: U64, %len: U64, #pa: Ptr<Byte>, #pb: Ptr<Byte>):
+        %done: Bool = %i.ge(%len)
         branch %done ? return(true) : step(%i, %len, #pa, #pb)
 
-    block step(%i: I64, %len: I64, #pa: Ptr<I8>, #pb: Ptr<I8>):
-        %ba: I8 := #pa[%i]
-        %bb: I8 := #pb[%i]
+    block step(%i: U64, %len: U64, #pa: Ptr<Byte>, #pb: Ptr<Byte>):
+        %ba: U8 = U8.from_byte(#pa[%i])
+        %bb: U8 = U8.from_byte(#pb[%i])
         %eq: Bool = %ba.eq(%bb)
         branch %eq ? loop(%i.add(1), %len, #pa, #pb) : return(false)
 
 ; Lexicographic byte-wise compare. Returns -1, 0, 1.
-; Bytes are compared as unsigned, so this matches `memcmp` ordering.
-routine String.compare(%self: Self, %other: Self) -> I32
+; Bytes are compared as U8, so this matches `memcmp` ordering.
+routine String.compare(%self: Self, %other: Self) -> S32
     block entry():
-        %la: I64 = %self.length
-        %lb: I64 = %other.length
-        %a_shorter: Bool = %la.sle(%lb)
-        %min: I64 = %a_shorter ? %la : %lb
-        #pa: Ptr<I8> = %self.data
-        #pb: Ptr<I8> = %other.data
+        %la: U64 = %self.length
+        %lb: U64 = %other.length
+        %a_shorter: Bool = %la.le(%lb)
+        %min: U64 = %a_shorter ? %la : %lb
+        #pa: Ptr<Byte> = %self.data
+        #pb: Ptr<Byte> = %other.data
         jump loop(0, %min, %la, %lb, #pa, #pb)
 
-    block loop(%i: I64, %min: I64, %la: I64, %lb: I64, #pa: Ptr<I8>, #pb: Ptr<I8>):
-        %done: Bool = %i.sge(%min)
+    block loop(%i: U64, %min: U64, %la: U64, %lb: U64, #pa: Ptr<Byte>, #pb: Ptr<Byte>):
+        %done: Bool = %i.ge(%min)
         branch %done ? lengths(%la, %lb) : step(%i, %min, %la, %lb, #pa, #pb)
 
-    block step(%i: I64, %min: I64, %la: I64, %lb: I64, #pa: Ptr<I8>, #pb: Ptr<I8>):
-        %ba: I8 := #pa[%i]
-        %bb: I8 := #pb[%i]
-        %ua: I64 = %ba.to_u64()
-        %ub: I64 = %bb.to_u64()
-        %lt: Bool = %ua.slt(%ub)
-        branch %lt ? return(-1) : maybe_gt(%i, %min, %la, %lb, %ua, %ub, #pa, #pb)
+    block step(%i: U64, %min: U64, %la: U64, %lb: U64, #pa: Ptr<Byte>, #pb: Ptr<Byte>):
+        %ba: U8 = U8.from_byte(#pa[%i])
+        %bb: U8 = U8.from_byte(#pb[%i])
+        %lt: Bool = %ba.lt(%bb)
+        branch %lt ? return(-1) : maybe_gt(%i, %min, %la, %lb, %ba, %bb, #pa, #pb)
 
     block maybe_gt(
-            %i: I64, %min: I64, %la: I64, %lb: I64,
-            %ua: I64, %ub: I64, #pa: Ptr<I8>, #pb: Ptr<I8>):
-        %gt: Bool = %ua.sgt(%ub)
+            %i: U64, %min: U64, %la: U64, %lb: U64,
+            %ba: U8, %bb: U8, #pa: Ptr<Byte>, #pb: Ptr<Byte>):
+        %gt: Bool = %ba.gt(%bb)
         branch %gt ? return(1) : loop(%i.add(1), %min, %la, %lb, #pa, #pb)
 
-    block lengths(%la: I64, %lb: I64):
-        %lt: Bool = %la.slt(%lb)
+    block lengths(%la: U64, %lb: U64):
+        %lt: Bool = %la.lt(%lb)
         branch %lt ? return(-1) : maybe_gt_len(%la, %lb)
 
-    block maybe_gt_len(%la: I64, %lb: I64):
-        %gt: Bool = %la.sgt(%lb)
+    block maybe_gt_len(%la: U64, %lb: U64):
+        %gt: Bool = %la.gt(%lb)
         branch %gt ? return(1) : return(0)
 
 ; xxHash64 of the byte contents, seeded with 0.
-routine String.hash(%self: Self) -> I64
+routine String.hash(%self: Self) -> U64
     block entry():
-        #data: Ptr<I8> = %self.data
-        %len: I64 = %self.length
-        %h: I64 = xxh64(#data, %len, 0)
+        #data: Ptr<Byte> = %self.data
+        %len: U64 = %self.length
+        %h: U64 = xxh64(#data, %len, 0)
         return(%h)
 
 ; -- search --------------------------------------------------------------------
 
 routine String.starts_with(#self: Ptr<Self>, %prefix: String) -> Bool
     block entry():
-        %sl: I64 := #self.length
-        %pl: I64 = %prefix.length
-        %fits: Bool = %pl.sle(%sl)
+        %sl: U64 := #self.length
+        %pl: U64 = %prefix.length
+        %fits: Bool = %pl.le(%sl)
         branch %fits ? scan(%pl) : return(false)
 
-    block scan(%pl: I64):
-        #sd: Ptr<I8> := #self.data
-        #pd: Ptr<I8> = %prefix.data
+    block scan(%pl: U64):
+        #sd: Ptr<Byte> := #self.data
+        #pd: Ptr<Byte> = %prefix.data
         jump loop(0, %pl, #sd, #pd)
 
-    block loop(%i: I64, %pl: I64, #sd: Ptr<I8>, #pd: Ptr<I8>):
-        %done: Bool = %i.sge(%pl)
+    block loop(%i: U64, %pl: U64, #sd: Ptr<Byte>, #pd: Ptr<Byte>):
+        %done: Bool = %i.ge(%pl)
         branch %done ? return(true) : step(%i, %pl, #sd, #pd)
 
-    block step(%i: I64, %pl: I64, #sd: Ptr<I8>, #pd: Ptr<I8>):
-        %a: I8 := #sd[%i]
-        %b: I8 := #pd[%i]
+    block step(%i: U64, %pl: U64, #sd: Ptr<Byte>, #pd: Ptr<Byte>):
+        %a: U8 = U8.from_byte(#sd[%i])
+        %b: U8 = U8.from_byte(#pd[%i])
         %eq: Bool = %a.eq(%b)
         branch %eq ? loop(%i.add(1), %pl, #sd, #pd) : return(false)
 
 routine String.ends_with(#self: Ptr<Self>, %suffix: String) -> Bool
     block entry():
-        %sl: I64 := #self.length
-        %fl: I64 = %suffix.length
-        %fits: Bool = %fl.sle(%sl)
+        %sl: U64 := #self.length
+        %fl: U64 = %suffix.length
+        %fits: Bool = %fl.le(%sl)
         branch %fits ? scan(%sl, %fl) : return(false)
 
-    block scan(%sl: I64, %fl: I64):
-        %off: I64 = %sl.sub(%fl)
-        #sd: Ptr<I8> := #self.data
-        #fd: Ptr<I8> = %suffix.data
+    block scan(%sl: U64, %fl: U64):
+        %off: U64 = %sl.sub(%fl)
+        #sd: Ptr<Byte> := #self.data
+        #fd: Ptr<Byte> = %suffix.data
         jump loop(0, %fl, %off, #sd, #fd)
 
-    block loop(%i: I64, %fl: I64, %off: I64, #sd: Ptr<I8>, #fd: Ptr<I8>):
-        %done: Bool = %i.sge(%fl)
+    block loop(%i: U64, %fl: U64, %off: U64, #sd: Ptr<Byte>, #fd: Ptr<Byte>):
+        %done: Bool = %i.ge(%fl)
         branch %done ? return(true) : step(%i, %fl, %off, #sd, #fd)
 
-    block step(%i: I64, %fl: I64, %off: I64, #sd: Ptr<I8>, #fd: Ptr<I8>):
-        %idx: I64 = %off.add(%i)
-        %a: I8 := #sd[%idx]
-        %b: I8 := #fd[%i]
+    block step(%i: U64, %fl: U64, %off: U64, #sd: Ptr<Byte>, #fd: Ptr<Byte>):
+        %idx: U64 = %off.add(%i)
+        %a: U8 = U8.from_byte(#sd[%idx])
+        %b: U8 = U8.from_byte(#fd[%i])
         %eq: Bool = %a.eq(%b)
         branch %eq ? loop(%i.add(1), %fl, %off, #sd, #fd) : return(false)
 
 ; Naive O(n*m) substring search. Returns the byte index of the first match,
-; or Option<I64>.none() when not found. An empty needle matches at 0.
-routine String.find(#self: Ptr<Self>, %needle: String) -> Option<I64>
+; or Option<U64>.none() when not found. An empty needle matches at 0.
+routine String.find(#self: Ptr<Self>, %needle: String) -> Option<U64>
     block entry():
-        %nlen: I64 = %needle.length
-        %slen: I64 := #self.length
+        %nlen: U64 = %needle.length
+        %slen: U64 := #self.length
         %empty_needle: Bool = %nlen.eq(0)
         branch %empty_needle ? hit(0) : check_fits(%nlen, %slen)
 
-    block check_fits(%nlen: I64, %slen: I64):
-        %too_big: Bool = %nlen.sgt(%slen)
+    block check_fits(%nlen: U64, %slen: U64):
+        %too_big: Bool = %nlen.gt(%slen)
         branch %too_big ? miss() : start(%nlen, %slen)
 
     block miss():
-        %r: Option<I64> = Option<I64>.none()
+        %r: Option<U64> = Option<U64>.none()
         return(%r)
 
-    block hit(%i: I64):
-        %r: Option<I64> = Option<I64>.some(%i)
+    block hit(%i: U64):
+        %r: Option<U64> = Option<U64>.some(%i)
         return(%r)
 
-    block start(%nlen: I64, %slen: I64):
-        #sd: Ptr<I8> := #self.data
-        #nd: Ptr<I8> = %needle.data
-        %last: I64 = %slen.sub(%nlen)
+    block start(%nlen: U64, %slen: U64):
+        #sd: Ptr<Byte> := #self.data
+        #nd: Ptr<Byte> = %needle.data
+        %last: U64 = %slen.sub(%nlen)
         jump outer(0, %last, %nlen, #sd, #nd)
 
-    block outer(%i: I64, %last: I64, %nlen: I64, #sd: Ptr<I8>, #nd: Ptr<I8>):
-        %past: Bool = %i.sgt(%last)
+    block outer(%i: U64, %last: U64, %nlen: U64, #sd: Ptr<Byte>, #nd: Ptr<Byte>):
+        %past: Bool = %i.gt(%last)
         branch %past ? miss() : inner(%i, 0, %last, %nlen, #sd, #nd)
 
-    block inner(%i: I64, %j: I64, %last: I64, %nlen: I64, #sd: Ptr<I8>, #nd: Ptr<I8>):
-        %done: Bool = %j.sge(%nlen)
+    block inner(%i: U64, %j: U64, %last: U64, %nlen: U64, #sd: Ptr<Byte>, #nd: Ptr<Byte>):
+        %done: Bool = %j.ge(%nlen)
         branch %done ? hit(%i) : check(%i, %j, %last, %nlen, #sd, #nd)
 
-    block check(%i: I64, %j: I64, %last: I64, %nlen: I64, #sd: Ptr<I8>, #nd: Ptr<I8>):
-        %idx: I64 = %i.add(%j)
-        %a: I8 := #sd[%idx]
-        %b: I8 := #nd[%j]
+    block check(%i: U64, %j: U64, %last: U64, %nlen: U64, #sd: Ptr<Byte>, #nd: Ptr<Byte>):
+        %idx: U64 = %i.add(%j)
+        %a: U8 = U8.from_byte(#sd[%idx])
+        %b: U8 = U8.from_byte(#nd[%j])
         %eq: Bool = %a.eq(%b)
         branch %eq
             ? inner(%i, %j.add(1), %last, %nlen, #sd, #nd)
@@ -272,7 +269,7 @@ routine String.find(#self: Ptr<Self>, %needle: String) -> Option<I64>
 
 routine String.contains(#self: Ptr<Self>, %needle: String) -> Bool
     block entry():
-        %r: Option<I64> = #self.find(%needle)
+        %r: Option<U64> = #self.find(%needle)
         %tag: Bool = %r.tag
         return(%tag)
 

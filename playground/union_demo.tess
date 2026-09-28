@@ -7,7 +7,7 @@
 ;
 ;     record N
 ;         @aligned(max(alignof<A>(), alignof<B>()))
-;         storage: Array<I8, max(sizeof<A>(), sizeof<B>())>
+;         storage: Array<S8, max(sizeof<A>(), sizeof<B>())>
 ;
 ; Access is always an explicit pointer cast to the active view. Whoever owns
 ; the data is responsible for knowing which view is currently active.
@@ -20,22 +20,23 @@
 ; the recommended Result.
 
 @[external("c"), symbol("printf"), variadic]
-routine c_printf(#fmt: Ptr<I8>) -> I32
+routine c_printf(#fmt: Ptr<Byte>) -> S32
 
 ; ============================================================
 ; A generic two-way overlay. Stdlib could ship UnionTwo / UnionThree, or
 ; users can inline the same shape — there is no special type-form involved.
 ; ============================================================
 
+@aggregate
 record UnionTwo<A, B>
 require A: typename, B: typename
     @aligned(max(alignof<A>(), alignof<B>()))
-    storage: Array<I8, max(sizeof<A>(), sizeof<B>())>
+    storage: Array<Byte, max(sizeof<A>(), sizeof<B>())>
 
 ; ============================================================
 ; Section 1: Manual tagged sum type
 ;
-; IntResult — either an Ok I64 or an I32 error code. The tag lives in the
+; IntResult — either an Ok S64 or an S32 error code. The tag lives in the
 ; wrapping record; the overlay carries the payload bytes.
 ;
 ; Constructors zero the overlay before writing a view: the Err view is only
@@ -43,34 +44,34 @@ require A: typename, B: typename
 ; uninitialized bytes.
 ; ============================================================
 
-choice IntResultTag: I32
+choice IntResultTag: S32
     Ok:  0
     Err: 1
 
 record IntResult
     tag: IntResultTag
-    payload: UnionTwo<I64, I32>
+    payload: UnionTwo<S64, S32>
 
-routine IntResult.ok(%value: I64) -> Self
+routine IntResult.ok(%value: S64) -> Self
     block entry():
-        #payload_buf: Ptr<UnionTwo<I64, I32>> = alloca<UnionTwo<I64, I32>>
-        zero<UnionTwo<I64, I32>>(#payload_buf, 1)
-        #ok_view: Ptr<I64> = #payload_buf.cast<I64>()
+        #payload_buf: Ptr<UnionTwo<S64, S32>> = alloca<UnionTwo<S64, S32>>
+        zero<UnionTwo<S64, S32>>(#payload_buf, 1)
+        #ok_view: Ptr<S64> = #payload_buf.cast<S64>()
         #ok_view = %value
-        %payload: UnionTwo<I64, I32> := #payload_buf
+        %payload: UnionTwo<S64, S32> := #payload_buf
         %r: Self = Self {
             tag: IntResultTag.Ok,
             payload: %payload
         }
         return(%r)
 
-routine IntResult.err(%code: I32) -> Self
+routine IntResult.err(%code: S32) -> Self
     block entry():
-        #payload_buf: Ptr<UnionTwo<I64, I32>> = alloca<UnionTwo<I64, I32>>
-        zero<UnionTwo<I64, I32>>(#payload_buf, 1)
-        #err_view: Ptr<I32> = #payload_buf.cast<I32>()
+        #payload_buf: Ptr<UnionTwo<S64, S32>> = alloca<UnionTwo<S64, S32>>
+        zero<UnionTwo<S64, S32>>(#payload_buf, 1)
+        #err_view: Ptr<S32> = #payload_buf.cast<S32>()
         #err_view = %code
-        %payload: UnionTwo<I64, I32> := #payload_buf
+        %payload: UnionTwo<S64, S32> := #payload_buf
         %r: Self = Self {
             tag: IntResultTag.Err,
             payload: %payload
@@ -87,17 +88,17 @@ routine IntResult.print(#self: Ptr<Self>) -> Void
             _ -> unreachable
 
     block print_ok():
-        #payload: Ptr<UnionTwo<I64, I32>> = #self.payload
-        #ok_view: Ptr<I64> = #payload.cast<I64>()
-        %v: I64 := #ok_view
+        #payload: Ptr<UnionTwo<S64, S32>> = #self.payload
+        #ok_view: Ptr<S64> = #payload.cast<S64>()
+        %v: S64 := #ok_view
         c_printf("Ok(%lld)\n", %v)
         return()
 
     block print_err():
-        #payload: Ptr<UnionTwo<I64, I32>> = #self.payload
-        #err_view: Ptr<I32> = #payload.cast<I32>()
-        %code: I32 := #err_view
-        c_printf("Err(%lld)\n", %code.to_i64())
+        #payload: Ptr<UnionTwo<S64, S32>> = #self.payload
+        #err_view: Ptr<S32> = #payload.cast<S32>()
+        %code: S32 := #err_view
+        c_printf("Err(%lld)\n", %code.to_s64())
         return()
 
 ; ============================================================
@@ -109,14 +110,15 @@ routine IntResult.print(#self: Ptr<Self>) -> Void
 ; Both views are the full 8 bytes, so no zeroing is needed.
 ; ============================================================
 
+@aggregate
 record Number
-    @aligned(max(alignof<I64>(), alignof<F64>()))
-    storage: Array<I8, max(sizeof<I64>(), sizeof<F64>())>
+    @aligned(max(alignof<S64>(), alignof<F64>()))
+    storage: Array<Byte, max(sizeof<S64>(), sizeof<F64>())>
 
-routine Number.from_int(%n: I64) -> Self
+routine Number.from_int(%n: S64) -> Self
     block entry():
         #buf: Ptr<Self> = alloca<Self>
-        #int_view: Ptr<I64> = #buf.cast<I64>()
+        #int_view: Ptr<S64> = #buf.cast<S64>()
         #int_view = %n
         %u: Self := #buf
         return(%u)
@@ -129,10 +131,10 @@ routine Number.from_float(%f: F64) -> Self
         %u: Self := #buf
         return(%u)
 
-routine Number.as_int(#self: Ptr<Self>) -> I64
+routine Number.as_int(#self: Ptr<Self>) -> S64
     block entry():
-        #view: Ptr<I64> = #self.cast<I64>()
-        %n: I64 := #view
+        #view: Ptr<S64> = #self.cast<S64>()
+        %n: S64 := #view
         return(%n)
 
 routine Number.as_float(#self: Ptr<Self>) -> F64
@@ -145,7 +147,7 @@ routine Number.as_float(#self: Ptr<Self>) -> F64
 ; main
 ; ============================================================
 
-routine main() -> I32
+routine main() -> S32
     block entry():
         ; --- tagged result ---
         %ok: IntResult = IntResult.ok(42)

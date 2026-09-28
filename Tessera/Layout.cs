@@ -72,6 +72,8 @@ public sealed partial class Compiler
                 var (size, align) = SizeAlign(a.Elem, pos);
                 return (size * a.Count, align);
             }
+            case RecordType { TransparentField: { } field }:
+                return SizeAlign(field, pos);
             case RecordType s when s.Decl.Attr("llvm") is null:
             {
                 if (!_sizing.Add(s.Name)) throw new CompileError(pos, $"{s} contains itself");

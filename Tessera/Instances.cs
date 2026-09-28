@@ -40,7 +40,7 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     /// __truncsfbf2.
     public bool PassesBf16AsBits => Decl.Attr("external") is null && Decl.Attr("export") is null;
 
-    public static bool IsBf16(DType t) => t is FloatType ft && ft == FloatType.BF16;
+    public static bool IsBf16(DType t) => t.Repr is FloatType ft && ft == FloatType.BF16;
 
     /// The LLVM type of a parameter or return value at the call boundary.
     public string AbiLlvm(DType t) => PassesBf16AsBits && IsBf16(t) ? "i16" : t.Llvm;
@@ -92,7 +92,7 @@ public sealed partial class Compiler
         if (external is not null) symbol = r.Attr("symbol")?.First ?? r.Name;
         else if (r.Owner is null && r.Name == "main" && r.TypeParams.Count == 0)
         {
-            if (ps.Count != 0 || ret is not IntType { Bits: 32, IsNumber: true })
+            if (ps.Count != 0 || ret is not IntType { Bits: 32, Kind: IntKind.Signed })
                 throw new CompileError(r.Pos, "main must be declared 'routine main() -> S32'");
             symbol = "main";
         }
