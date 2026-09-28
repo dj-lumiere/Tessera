@@ -56,7 +56,7 @@ routine Graph.construct(%num_nodes: U64, #alloc: Ptr<Allocator>) -> Self
 
     block setup(#adj: Ptr<List<Ptr<List<Edge>>>>):
         %adj_val: List<Ptr<List<Edge>>> = List<Ptr<List<Edge>>>.construct(#alloc)
-        #adj = %adj_val
+        #adj.store(%adj_val)
         jump init_loop(0, #adj)
 
     block init_loop(%i: U64, #adj: Ptr<List<Ptr<List<Edge>>>>):
@@ -70,7 +70,7 @@ routine Graph.construct(%num_nodes: U64, #alloc: Ptr<Allocator>) -> Self
 
     block init_list(%i: U64, #adj: Ptr<List<Ptr<List<Edge>>>>, #list: Ptr<List<Edge>>):
         %empty: List<Edge> = List<Edge>.construct(#alloc)
-        #list = %empty
+        #list.store(%empty)
         #adj.push(#list)
         jump init_loop(%i.add(1), #adj)
 
@@ -80,7 +80,7 @@ routine Graph.construct(%num_nodes: U64, #alloc: Ptr<Allocator>) -> Self
 
 routine Graph.add_edge(#self: Ptr<Self>, %from: U64, %to: U64, %weight: S64) -> Void
     block entry():
-        #adj:  Ptr<List<Ptr<List<Edge>>>> := #self.adj
+        #adj:  Ptr<List<Ptr<List<Edge>>>> = #self.adj.load()
         #list: Ptr<List<Edge>>            = #adj.get(%from)
         %edge: Edge = Edge { to: %to, weight: %weight }
         #list.push(%edge)
@@ -88,8 +88,8 @@ routine Graph.add_edge(#self: Ptr<Self>, %from: U64, %to: U64, %weight: S64) -> 
 
 routine Graph.destruct(#self: Ptr<Self>, #alloc: Ptr<Allocator>) -> Void
     block entry():
-        %n:   U64                         := #self.num_nodes
-        #adj: Ptr<List<Ptr<List<Edge>>>> := #self.adj
+        %n:   U64                         = #self.num_nodes.load()
+        #adj: Ptr<List<Ptr<List<Edge>>>> = #self.adj.load()
         jump free_loop(0, %n, #adj)
 
     block free_loop(%i: U64, %n: U64, #adj: Ptr<List<Ptr<List<Edge>>>>):
@@ -99,12 +99,12 @@ routine Graph.destruct(#self: Ptr<Self>, #alloc: Ptr<Allocator>) -> Void
     block free_one(%i: U64, %n: U64, #adj: Ptr<List<Ptr<List<Edge>>>>):
         #list: Ptr<List<Edge>> = #adj.get(%i)
         #list.destruct()
-        free<List<Edge>>(#alloc, #list)
+        #list.free(#alloc)
         jump free_loop(%i.add(1), %n, #adj)
 
     block free_outer(#adj: Ptr<List<Ptr<List<Edge>>>>):
         #adj.destruct()
-        free<List<Ptr<List<Edge>>>>(#alloc, #adj)
+        #adj.free(#alloc)
         return()
 
 // ── Dijkstra ─────────────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ routine dijkstra(
     #alloc:  Ptr<Allocator>
 ) -> Void
     block entry():
-        %n:      U64 := #graph.num_nodes
+        %n:      U64 = #graph.num_nodes.load()
         %pq_val: PriorityQueue<DijkstraEntry> = PriorityQueue<DijkstraEntry>.construct(#alloc)
         #pq:     Ptr<PriorityQueue<DijkstraEntry>> = alloca<PriorityQueue<DijkstraEntry>>([%pq_val])
         jump fill_inf(0, %n, #pq)
@@ -131,12 +131,12 @@ routine dijkstra(
         branch %done ? seed(#pq) : write_inf(%i, %n, #pq)
 
     block write_inf(%i: U64, %n: U64, #pq: Ptr<PriorityQueue<DijkstraEntry>>):
-        #dist[%i] = INF
+        #dist[%i].store(INF)
         jump fill_inf(%i.add(1), %n, #pq)
 
     // Phase 2 — set the source distance to 0 and seed the queue.
     block seed(#pq: Ptr<PriorityQueue<DijkstraEntry>>):
-        #dist[%source] = 0
+        #dist[%source].store(0)
         %first: DijkstraEntry = DijkstraEntry { dist: 0, node: %source }
         #pq.push(%first)
         jump main_loop(#pq)
@@ -150,13 +150,13 @@ routine dijkstra(
         %entry: DijkstraEntry = #pq.pop()
         %d:     S64           = %entry.dist
         %u:     U64           = %entry.node
-        %best:  S64           := #dist[%u]
+        %best:  S64           = #dist[%u].load()
         %stale: Bool          = %d.gt(%best)
         // re-push instead of decrease-key produces stale entries — drop them.
         branch %stale ? main_loop(#pq) : scan(%u, %d, #pq)
 
     block scan(%u: U64, %d: S64, #pq: Ptr<PriorityQueue<DijkstraEntry>>):
-        #adj:  Ptr<List<Ptr<List<Edge>>>> := #graph.adj
+        #adj:  Ptr<List<Ptr<List<Edge>>>> = #graph.adj.load()
         #list: Ptr<List<Edge>>            = #adj.get(%u)
         %len:  U64                        = #list.length()
         jump edge_loop(0, %len, %d, #list, #pq)
@@ -170,7 +170,7 @@ routine dijkstra(
         %v:        U64  = %edge.to
         %w:        S64  = %edge.weight
         %new_dist: S64  = %d.add(%w)
-        %best:     S64  := #dist[%v]
+        %best:     S64  = #dist[%v].load()
         %better:   Bool = %new_dist.lt(%best)
         branch %better ? improve(%i, %len, %d, #list, #pq, %v, %new_dist) \
                        : edge_loop(%i.add(1), %len, %d, #list, #pq)
@@ -181,7 +181,7 @@ routine dijkstra(
         #pq:   Ptr<PriorityQueue<DijkstraEntry>>,
         %v: U64, %new_dist: S64
     ):
-        #dist[%v] = %new_dist
+        #dist[%v].store(%new_dist)
         %entry: DijkstraEntry = DijkstraEntry { dist: %new_dist, node: %v }
         #pq.push(%entry)
         jump edge_loop(%i.add(1), %len, %d, #list, #pq)
@@ -240,11 +240,11 @@ routine main() -> S32
         branch %done ? cleanup(#dist, #graph, #alloc) : print_one(%i, #dist, #graph, #alloc)
 
     block print_one(%i: U64, #dist: Ptr<S64>, #graph: Ptr<Graph>, #alloc: Ptr<Allocator>):
-        %d: S64 := #dist[%i]
+        %d: S64 = #dist[%i].load()
         c_printf("  node %lld  dist %lld\n", %i, %d)
         jump print_loop(%i.add(1), #dist, #graph, #alloc)
 
     block cleanup(#dist: Ptr<S64>, #graph: Ptr<Graph>, #alloc: Ptr<Allocator>):
         #graph.destruct(#alloc)
-        free<S64>(#alloc, #dist)
+        #dist.free(#alloc)
         return(0)

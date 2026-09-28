@@ -79,13 +79,13 @@ routine new_expr(#alloc: Ptr<Allocator>, %node: Expr) -> Ptr<Expr>
         branch %failed ? panic(TrapCode.AllocFailed) : store(#p)
 
     block store(#p: Ptr<Expr>):
-        #p = %node
+        #p.store(%node)
         return(#p)
 
 /// Frees #e and its whole subtree.
 routine free_expr(#e: Ptr<Expr>, #alloc: Ptr<Allocator>) -> Void
     block entry():
-        %kind: ExprKind := #e.kind
+        %kind: ExprKind = #e.kind.load()
         switch %kind:
             ExprKind.Num -> release()
             ExprKind.Neg -> free_operand()
@@ -96,19 +96,19 @@ routine free_expr(#e: Ptr<Expr>, #alloc: Ptr<Allocator>) -> Void
             ExprKind.Rem -> free_both()
 
     block free_operand():
-        #operand: Ptr<Expr> := #e.lhs
+        #operand: Ptr<Expr> = #e.lhs.load()
         free_expr(#operand, #alloc)
         jump release()
 
     block free_both():
-        #lhs: Ptr<Expr> := #e.lhs
-        #rhs: Ptr<Expr> := #e.rhs
+        #lhs: Ptr<Expr> = #e.lhs.load()
+        #rhs: Ptr<Expr> = #e.rhs.load()
         free_expr(#lhs, #alloc)
         free_expr(#rhs, #alloc)
         jump release()
 
     block release():
-        free<Expr>(#alloc, #e)
+        #e.free(#alloc)
         return()
 
 // ── Lexer ─────────────────────────────────────────────────────────────────────
@@ -130,17 +130,17 @@ routine is_digit(%c: Byte) -> Bool
 /// Fails only on a number that doesn't fit in S64.
 routine Parser.peek(#self: Ptr<Self>) -> Result<Token, CalcError>
     block entry():
-        %start: U64 := #self.pos
+        %start: U64 = #self.pos.load()
         jump skip_space(%start)
 
     block skip_space(%i: U64):
-        %len:    U64  := #self.len
+        %len:    U64  = #self.len.load()
         %at_end: Bool = %i.ge(%len)
         branch %at_end ? end_token(%i) : check_space(%i)
 
     block check_space(%i: U64):
-        #src:      Ptr<Byte> := #self.src
-        %c:        Byte      := #src[%i]
+        #src:      Ptr<Byte> = #self.src.load()
+        %c:        Byte      = #src[%i].load()
         %is_space: Bool    = %c.eq(b' ')
         branch %is_space ? skip_space(%i.add(1)) : classify(%i, %c)
 
@@ -172,13 +172,13 @@ routine Parser.peek(#self: Ptr<Self>) -> Result<Token, CalcError>
 
     // %acc is the value of src[start..j) so far.
     block digits(%start: U64, %j: U64, %acc: S64):
-        %len:    U64  := #self.len
+        %len:    U64  = #self.len.load()
         %at_end: Bool = %j.ge(%len)
         branch %at_end ? number_done(%start, %j, %acc) : check_digit(%start, %j, %acc)
 
     block check_digit(%start: U64, %j: U64, %acc: S64):
-        #src:   Ptr<Byte> := #self.src
-        %c:     Byte      := #src[%j]
+        #src:   Ptr<Byte> = #self.src.load()
+        %c:     Byte      = #src[%j].load()
         %digit: Bool    = is_digit(%c)
         branch %digit ? scale(%start, %j, %acc, %c) : number_done(%start, %j, %acc)
 
@@ -208,7 +208,7 @@ routine Parser.peek(#self: Ptr<Self>) -> Result<Token, CalcError>
 routine Parser.advance(#self: Ptr<Self>, %tok: Token) -> Void
     block entry():
         %end: U64 = %tok.end
-        #self.pos = %end
+        #self.pos.store(%end)
         return()
 
 // ── Parser ────────────────────────────────────────────────────────────────────
@@ -288,14 +288,14 @@ routine Parser.parse_binary(#self: Ptr<Self>, %level: S64) -> Result<Ptr<Expr>, 
         branch %ok ? combine(#lhs, #right, %kind, %pos) : abandon(#lhs, %error)
 
     block combine(#lhs: Ptr<Expr>, #right: Ptr<Expr>, %kind: ExprKind, %pos: U64):
-        #alloc: Ptr<Allocator> := #self.alloc
+        #alloc: Ptr<Allocator> = #self.alloc.load()
         %node:  Expr = Expr { kind: %kind, value: 0, lhs: #lhs, rhs: #right, pos: %pos }
         #tree:  Ptr<Expr> = new_expr(#alloc, %node)
         jump next_op(#tree)
 
     // The left side parsed but what follows didn't: free it before failing.
     block abandon(#lhs: Ptr<Expr>, %error: CalcError):
-        #alloc: Ptr<Allocator> := #self.alloc
+        #alloc: Ptr<Allocator> = #self.alloc.load()
         free_expr(#lhs, #alloc)
         %r: Result<Ptr<Expr>, CalcError> = Result<Ptr<Expr>, CalcError>.err(%error)
         return(%r)
@@ -321,7 +321,7 @@ routine Parser.parse_primary(#self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
 
     block number(%tok: Token):
         #self.advance(%tok)
-        #alloc: Ptr<Allocator> := #self.alloc
+        #alloc: Ptr<Allocator> = #self.alloc.load()
         %value: S64  = %tok.value
         %pos:   U64  = %tok.pos
         %node:  Expr = Expr { kind: ExprKind.Num, value: %value, lhs: null, rhs: null, pos: %pos }
@@ -338,7 +338,7 @@ routine Parser.parse_primary(#self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
         branch %ok ? wrap_neg(#operand, %pos) : return(%inner)
 
     block wrap_neg(#operand: Ptr<Expr>, %pos: U64):
-        #alloc: Ptr<Allocator> := #self.alloc
+        #alloc: Ptr<Allocator> = #self.alloc.load()
         %node:  Expr = Expr { kind: ExprKind.Neg, value: 0, lhs: #operand, rhs: null, pos: %pos }
         #tree:  Ptr<Expr> = new_expr(#alloc, %node)
         %r:     Result<Ptr<Expr>, CalcError> = Result<Ptr<Expr>, CalcError>.ok(#tree)
@@ -372,7 +372,7 @@ routine Parser.parse_primary(#self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
         return(%r)
 
     block abandon(#tree: Ptr<Expr>, %error: CalcError):
-        #alloc: Ptr<Allocator> := #self.alloc
+        #alloc: Ptr<Allocator> = #self.alloc.load()
         free_expr(#tree, #alloc)
         jump fail(%error)
 
@@ -416,8 +416,8 @@ routine parse(%source: String, #alloc: Ptr<Allocator>) -> Result<Ptr<Expr>, Calc
 
 routine eval(#e: Ptr<Expr>) -> Result<S64, CalcError>
     block entry():
-        %kind: ExprKind := #e.kind
-        %pos:  U64      := #e.pos
+        %kind: ExprKind = #e.kind.load()
+        %pos:  U64      = #e.pos.load()
         switch %kind:
             ExprKind.Num -> number()
             ExprKind.Neg -> negate(%pos)
@@ -428,12 +428,12 @@ routine eval(#e: Ptr<Expr>) -> Result<S64, CalcError>
             ExprKind.Rem -> binary(%kind, %pos)
 
     block number():
-        %value: S64 := #e.value
+        %value: S64 = #e.value.load()
         %r: Result<S64, CalcError> = Result<S64, CalcError>.ok(%value)
         return(%r)
 
     block negate(%pos: U64):
-        #operand: Ptr<Expr> := #e.lhs
+        #operand: Ptr<Expr> = #e.lhs.load()
         %inner:   Result<S64, CalcError> = eval(#operand)
         %ok:      Bool = %inner.tag
         %x:       S64  = %inner.value
@@ -444,14 +444,14 @@ routine eval(#e: Ptr<Expr>) -> Result<S64, CalcError>
         jump checked(%negated, %pos)
 
     block binary(%kind: ExprKind, %pos: U64):
-        #lhs:  Ptr<Expr> := #e.lhs
+        #lhs:  Ptr<Expr> = #e.lhs.load()
         %left: Result<S64, CalcError> = eval(#lhs)
         %ok:   Bool = %left.tag
         %a:    S64  = %left.value
         branch %ok ? eval_rhs(%kind, %pos, %a) : return(%left)
 
     block eval_rhs(%kind: ExprKind, %pos: U64, %a: S64):
-        #rhs:   Ptr<Expr> := #e.rhs
+        #rhs:   Ptr<Expr> = #e.rhs.load()
         %right: Result<S64, CalcError> = eval(#rhs)
         %ok:    Bool = %right.tag
         %b:     S64  = %right.value

@@ -118,11 +118,7 @@ public abstract record Stmt(Pos Pos);
 /// `%x: T = expr` — a binding. The expression is evaluated; memory is not read.
 public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : Stmt(Pos);
 
-/// `%x: T := place` — a load.
-public sealed record LoadStmt(string Name, TypeRef Type, Expr Place, Pos Pos) : Stmt(Pos);
 
-/// `place = expr` — a store.
-public sealed record StoreStmt(Expr Place, Expr Value, Pos Pos) : Stmt(Pos);
 
 /// `call(...)` evaluated for its side effect.
 public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos);

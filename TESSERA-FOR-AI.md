@@ -55,13 +55,14 @@ routine main() -> S32
   `Addr` for an address with no pointee type, C's `void*`). `Ptr<T>` passes where an `Addr` is expected; the other
   way takes `#a.cast<T>()`.
   The compiler checks the sigil against the type.
-- `:=` always loads. `=` binds when the left side has a type annotation and stores when it doesn't:
-  `%v: S64 := #p` (load), `#p = %v` (store), `#p.field = %v`, `%f: T := #p.field`, `#p[%i] = %v`,
-  `%e: T := #p[%i]`.
+- `=` only binds. Memory is read and written with methods: `%v: S64 = #p.load()`, `#p.store(%v)`,
+  `%f: T = #p.field.load()`, `#p.field.store(%v)`, `%e: T = #p[%i].load()`, `#p[%i].store(%v)`. Places
+  (`#p.field`, `#p[%i]`) are addresses. Through an `Addr`, name the type: `#a.load<U32>()`. Registers:
+  `volatile_load()` / `volatile_store(...)`. (`:=` and `#p = %v` are gone and rejected.)
 - A field of an SSA record value is read with plain `=`: `%tag: Bool = %opt.tag`.
 - `alloca<T>` gives stack memory; `alloca<T>([%init])` initializes it. Allocas are hoisted to the routine's entry,
   so an `alloca` inside a loop block reuses one slot.
-- Heap memory goes through an allocator: `alloc<T>(#alloc, %count)`, `free<T>(#alloc, #p)`.
+- Heap memory goes through an allocator: `alloc<T>(#alloc, %count)`, `#p.free(#alloc)`.
 - `#p.cast<U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
   (`Bool`, `Char`, choices). Pointers may alias.
 
@@ -112,7 +113,7 @@ routine main() -> S32
   or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<S64>.construct(#alloc)`.
 - **Methods through a pointer.** `#p.m()` finds `T.m(#self: Ptr<Self>)` first, then `Ptr`'s own methods (`is_null`,
   `offset`, `cast`, ...). Value methods (`%self: Self`, such as `List.eq`) aren't reachable through a pointer, because
-  that would hide a load: load first (`%v: List<S64> := #p`). Don't name your own pointer methods after `Ptr`'s.
+  that would hide a load: load first (`%v: List<S64> = #p.load()`). Don't name your own pointer methods after `Ptr`'s.
 - **Most collection methods take `#self: Ptr<Self>`**, so a collection must live in memory (`alloca`) before you
   call them. You can't call a pointer method on a temporary: `DictIter<K, V>.construct(#m).next()` fails with "has no
   method 'next'"; alloca the iterator first.
@@ -245,7 +246,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release.
 - Other ways to make a value are named for what they make: `FdWriter.stdout()`, `String.from_ptr(#p, %n)`,
   `Option<T>.none()`, `FormatSpec.zero_padded(6)`.
-- `free<T>(#alloc, #p)` is not a destructor: it hands a block of memory back to its allocator.
+- `#p.free(#alloc)` is not a destructor: it hands a block of memory back to its allocator.
 
 ## Style
 

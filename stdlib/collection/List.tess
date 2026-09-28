@@ -28,39 +28,39 @@ require T: typename
 routine List<T>.length(#self: Ptr<Self>) -> U64
 require T: typename
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         return(%length)
 
 routine List<T>.is_empty(#self: Ptr<Self>) -> Bool
 require T: typename
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         %empty: Bool = %length.eq(0)
         return(%empty)
 
 routine List<T>.reserve(#self: Ptr<Self>, %capacity: U64) -> Void
 require T: typename
     block entry():
-        %old_capacity: U64 := #self.capacity
+        %old_capacity: U64 = #self.capacity.load()
         %enough: Bool = %old_capacity.ge(%capacity)
         branch %enough ? return() : grow(%capacity)
 
     block grow(%capacity: U64):
-        #alloc: Ptr<Allocator> := #self.alloc
-        #old_data: Ptr<T> := #self.data
+        #alloc: Ptr<Allocator> = #self.alloc.load()
+        #old_data: Ptr<T> = #self.data.load()
         #new_data: Ptr<T> = realloc<T>(#alloc, #old_data, %capacity)
         %failed: Bool = #new_data.is_null()
         branch %failed ? panic(TrapCode.AllocFailed) : install(#new_data, %capacity)
 
     block install(#new_data: Ptr<T>, %capacity: U64):
-        #self.data = #new_data
-        #self.capacity = %capacity
+        #self.data.store(#new_data)
+        #self.capacity.store(%capacity)
         return()
 
 routine List<T>.ensure_capacity(#self: Ptr<Self>, %wanted: U64) -> Void
 require T: typename
     block entry():
-        %capacity: U64 := #self.capacity
+        %capacity: U64 = #self.capacity.load()
         %enough: Bool = %capacity.ge(%wanted)
         branch %enough ? return() : choose(%capacity, %wanted)
 
@@ -87,56 +87,56 @@ require T: typename
 routine List<T>.push(#self: Ptr<Self>, %value: T) -> Void
 require T: typename
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         %wanted: U64 = %length.add(1)
         #self.ensure_capacity(%wanted)
-        #data: Ptr<T> := #self.data
-        #data[%length] = %value
-        #self.length = %wanted
+        #data: Ptr<T>  = #self.data.load()
+        #data[%length].store(%value)
+        #self.length.store(%wanted)
         return()
 
 routine List<T>.pop(#self: Ptr<Self>) -> T
 require T: typename
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         %empty: Bool = %length.eq(0)
         branch %empty ? panic(TrapCode.Empty) : pop(%length)
 
     block pop(%length: U64):
         %index: U64 = %length.sub(1)
-        #data: Ptr<T> := #self.data
-        %value: T := #data[%index]
-        #self.length = %index
+        #data: Ptr<T> = #self.data.load()
+        %value: T = #data[%index].load()
+        #self.length.store(%index)
         return(%value)
 
 routine List<T>.get(#self: Ptr<Self>, %index: U64) -> T
 require T: typename
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         %in_bounds: Bool = %index.lt(%length)
         branch %in_bounds ? load(%index) : panic(TrapCode.Bounds)
 
     block load(%index: U64):
-        #data: Ptr<T> := #self.data
-        %value: T := #data[%index]
+        #data: Ptr<T> = #self.data.load()
+        %value: T = #data[%index].load()
         return(%value)
 
 routine List<T>.set(#self: Ptr<Self>, %index: U64, %value: T) -> Void
 require T: typename
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         %in_bounds: Bool = %index.lt(%length)
         branch %in_bounds ? store(%index, %value) : panic(TrapCode.Bounds)
 
     block store(%index: U64, %value: T):
-        #data: Ptr<T> := #self.data
-        #data[%index] = %value
+        #data: Ptr<T> = #self.data.load()
+        #data[%index].store(%value)
         return()
 
 routine List<T>.clear(#self: Ptr<Self>) -> Void
 require T: typename
     block entry():
-        #self.length = 0
+        #self.length.store(0)
         return()
 
 routine List<T>.eq(%self: Self, %other: Self) -> Bool
@@ -157,27 +157,27 @@ require T: typename, Equal<T>
         branch %done ? return(true) : step(%i, %len, #pa, #pb)
 
     block step(%i: U64, %len: U64, #pa: Ptr<T>, #pb: Ptr<T>):
-        %x: T := #pa[%i]
-        %y: T := #pb[%i]
+        %x: T = #pa[%i].load()
+        %y: T = #pb[%i].load()
         %eq: Bool = %x.eq(%y)
         branch %eq ? loop(%i.add(1), %len, #pa, #pb) : return(false)
 
 routine List<T>.destruct(#self: Ptr<Self>) -> Void
 require T: typename
     block entry():
-        #data: Ptr<T> := #self.data
+        #data: Ptr<T> = #self.data.load()
         %empty: Bool = #data.is_null()
         branch %empty ? reset() : release(#data)
 
     block release(#data: Ptr<T>):
-        #alloc: Ptr<Allocator> := #self.alloc
-        free<T>(#alloc, #data)
+        #alloc: Ptr<Allocator> = #self.alloc.load()
+        #data.free(#alloc)
         jump reset()
 
     block reset():
-        #self.data = null
-        #self.length = 0
-        #self.capacity = 0
+        #self.data.store(null)
+        #self.length.store(0)
+        #self.capacity.store(0)
         return()
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
@@ -196,7 +196,7 @@ require T: typename, Destruct<T>
         branch %more ? element(#iter, #slot, %item.value) : finish()
 
     block element(#iter: Ptr<ListIter<T>>, #slot: Ptr<T>, %value: T):
-        #slot = %value
+        #slot.store(%value)
         #slot.destruct()
         jump next(#iter, #slot)
 

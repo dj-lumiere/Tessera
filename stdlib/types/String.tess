@@ -13,7 +13,7 @@
 // String.from_ptr to get a String view.
 //
 // Factory routines (concat) take an explicit Ptr<Allocator> and
-// return a String whose data must be freed by the caller via free<Byte>.
+// return a String whose data must be freed by the caller with `#data.free(#alloc)`.
 
 module Standard::Core
 
@@ -39,12 +39,12 @@ routine String.from_ptr(#data: Ptr<Byte>, %length: U64) -> Self
 /// The length in bytes of the UTF-8 text, not in characters (count those with chars()).
 routine String.length(#self: Ptr<Self>) -> U64
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         return(%length)
 
 routine String.is_empty(#self: Ptr<Self>) -> Bool
     block entry():
-        %length: U64 := #self.length
+        %length: U64  = #self.length.load()
         %result: Bool = %length.eq(0)
         return(%result)
 
@@ -52,12 +52,12 @@ routine String.is_empty(#self: Ptr<Self>) -> Bool
 
 routine String.byte_at(#self: Ptr<Self>, %index: U64) -> U8
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         %in_bounds: Bool = %index.lt(%length)
         branch %in_bounds ? load(%index) : panic(TrapCode.Bounds)
 
     block load(%index: U64):
-        #data: Ptr<Byte> := #self.data
+        #data: Ptr<Byte> = #self.data.load()
         %byte: U8 = U8.from_byte(#data[%index])
         return(%byte)
 
@@ -66,16 +66,16 @@ routine String.byte_at(#self: Ptr<Self>, %index: U64) -> U8
 /// Returns a sub-view [start, end).  Traps if range is out of bounds.
 routine String.slice(#self: Ptr<Self>, %start: U64, %end: U64) -> Self
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         %valid_end:   Bool = %end.le(%length)
         %valid_order: Bool = %start.le(%end)
         %valid:       Bool = %valid_end.bitand(%valid_order)
         branch %valid ? make(%start, %end) : panic(TrapCode.Bounds)
 
     block make(%start: U64, %end: U64):
-        #base: Ptr<Byte> := #self.data
+        #base: Ptr<Byte> = #self.data.load()
         #from: Ptr<Byte> = #base[%start]
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         %slice_len: U64 = %end.sub(%start)
         %result: Self = Self { data: #from, length: %slice_len }
         return(%result)
@@ -83,7 +83,7 @@ routine String.slice(#self: Ptr<Self>, %start: U64, %end: U64) -> Self
 // -- heap-allocating operations ------------------------------------------------
 
 /// Allocates a new buffer containing a followed by b.
-/// Caller must free the returned String's data pointer via free<Byte>.
+/// The caller frees the returned String's data with `#data.free(#alloc)`.
 routine String.concat(%a: Self, %b: Self, #alloc: Ptr<Allocator>) -> Self
     block entry():
         %la: U64 = %a.length
@@ -105,7 +105,7 @@ routine String.concat(%a: Self, %b: Self, #alloc: Ptr<Allocator>) -> Self
         %len_b: U64     = %b.length
         copy<Byte>(#dst, #src_b, %len_b)
         %length: U64    = %offset.add(%len_b)
-        #data[%length]  = 0x00
+        #data[%length].store(0x00)
         %result: Self = Self { data: #data, length: %length }
         return(%result)
 
@@ -181,13 +181,13 @@ routine String.hash(%self: Self) -> U64
 
 routine String.starts_with(#self: Ptr<Self>, %prefix: String) -> Bool
     block entry():
-        %sl: U64 := #self.length
+        %sl: U64 = #self.length.load()
         %pl: U64 = %prefix.length
         %fits: Bool = %pl.le(%sl)
         branch %fits ? scan(%pl) : return(false)
 
     block scan(%pl: U64):
-        #sd: Ptr<Byte> := #self.data
+        #sd: Ptr<Byte> = #self.data.load()
         #pd: Ptr<Byte> = %prefix.data
         jump loop(0, %pl, #sd, #pd)
 
@@ -203,14 +203,14 @@ routine String.starts_with(#self: Ptr<Self>, %prefix: String) -> Bool
 
 routine String.ends_with(#self: Ptr<Self>, %suffix: String) -> Bool
     block entry():
-        %sl: U64 := #self.length
+        %sl: U64 = #self.length.load()
         %fl: U64 = %suffix.length
         %fits: Bool = %fl.le(%sl)
         branch %fits ? scan(%sl, %fl) : return(false)
 
     block scan(%sl: U64, %fl: U64):
         %off: U64 = %sl.sub(%fl)
-        #sd: Ptr<Byte> := #self.data
+        #sd: Ptr<Byte> = #self.data.load()
         #fd: Ptr<Byte> = %suffix.data
         jump loop(0, %fl, %off, #sd, #fd)
 
@@ -230,7 +230,7 @@ routine String.ends_with(#self: Ptr<Self>, %suffix: String) -> Bool
 routine String.find(#self: Ptr<Self>, %needle: String) -> Option<U64>
     block entry():
         %nlen: U64 = %needle.length
-        %slen: U64 := #self.length
+        %slen: U64 = #self.length.load()
         %empty_needle: Bool = %nlen.eq(0)
         branch %empty_needle ? hit(0) : check_fits(%nlen, %slen)
 
@@ -247,7 +247,7 @@ routine String.find(#self: Ptr<Self>, %needle: String) -> Option<U64>
         return(%r)
 
     block start(%nlen: U64, %slen: U64):
-        #sd: Ptr<Byte> := #self.data
+        #sd: Ptr<Byte> = #self.data.load()
         #nd: Ptr<Byte> = %needle.data
         %last: U64 = %slen.sub(%nlen)
         jump outer(0, %last, %nlen, #sd, #nd)
@@ -279,12 +279,12 @@ routine String.contains(#self: Ptr<Self>, %needle: String) -> Bool
 
 routine String.bytes(#self: Ptr<Self>) -> StringBytesIter
     block entry():
-        %str: String := #self
+        %str: String = #self.load()
         %iter: StringBytesIter = StringBytesIter { str: %str, index: 0 }
         return(%iter)
 
 routine String.chars(#self: Ptr<Self>) -> StringCharsIter
     block entry():
-        %str: String := #self
+        %str: String = #self.load()
         %iter: StringCharsIter = StringCharsIter { str: %str, index: 0 }
         return(%iter)

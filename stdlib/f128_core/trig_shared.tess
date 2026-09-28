@@ -436,7 +436,7 @@ routine cm_trig_mul256(%a: U256, %b: U256) -> U256
 routine cm_trig_sincos(%j: U64, %w: U64, %limb: U64) -> U128
     block entry():
         %index: U64  = %j.mul(2).add(%w).mul(3).add(%limb)
-        %r:     U128 := CM_TRIG_SINCOS[%index]
+        %r:     U128 = CM_TRIG_SINCOS[%index].load()
         return(%r)
 
 routine cm_trig_sincos384(%j: U64, %w: U64) -> CmTrigU384
@@ -451,7 +451,7 @@ routine cm_trig_sincos384(%j: U64, %w: U64) -> CmTrigU384
 routine cm_trig_coef(#coef: Ptr<U128>, %k: U64, %limb: U64) -> U128
     block entry():
         %index: U64  = %k.mul(3).add(%limb)
-        %r:     U128 := #coef[%index]
+        %r:     U128 = #coef[%index].load()
         return(%r)
 
 // -- argument reduction --------------------------------------------------------
@@ -480,7 +480,7 @@ routine cm_trig_window_limb(%first: S64, %count: S64, %k: S64) -> U128
 
     block load(%first: S64, %k: S64):
         %index: U64  = %first.add(%k).to_u64()
-        %limb:  U64 := TWO_OVER_PI[%index]
+        %limb:  U64  = TWO_OVER_PI[%index].load()
         %r:     U128 = %limb.to_u128()
         return(%r)
 
@@ -504,7 +504,7 @@ routine cm_trig_product(%m: U128, %first: S64, %count: U64, #p: Ptr<U64>) -> Voi
         %acc:   U128 = %high.mul_wrap(%prev).add_wrap(%carry)
         %t:     U128 = %acc.add_wrap(%low.mul_wrap(%cur))
         %spill: U128 = %t.lt(%acc).to_u128().shl(64)
-        #p[%c] = %t.to_u64_wrap()
+        #p[%c].store(%t.to_u64_wrap())
         %next_carry: U128 = %t.shr(64).bitor(%spill)
         jump column(%c.add(1), %next_carry, %low, %high, %first, %count, #p)
 
@@ -532,11 +532,11 @@ routine cm_trig_reduce(%m: U128, %e: S64) -> CmTrigReduced
         %i2:   U64 = %i.add(2)
         %i3:   U64 = %i.add(3)
         %i4:   U64 = %i.add(4)
-        %a0:   U64 := #p[%i]
-        %a1:   U64 := #p[%i1]
-        %a2:   U64 := #p[%i2]
-        %a3:   U64 := #p[%i3]
-        %a4:   U64 := #p[%i4]
+        %a0:   U64 = #p[%i].load()
+        %a1:   U64 = #p[%i1].load()
+        %a2:   U64 = #p[%i2].load()
+        %a3:   U64 = #p[%i3].load()
+        %a4:   U64 = #p[%i4].load()
         %f0:       U64 = cm_trig_funnel(%a0, %a1, %bits)
         %f1:       U64 = cm_trig_funnel(%a1, %a2, %bits)
         %f2:       U64 = cm_trig_funnel(%a2, %a3, %bits)
@@ -591,13 +591,13 @@ routine cm_trig_reduce_wide(%m: U128, %e: S64) -> CmTrigWideReduced
         cm_trig_cut(#p, %i, %bits, #f)
         %i7:       U64 = %i.add(7).to_u64()
         %i8:       U64 = %i.add(8).to_u64()
-        %a7:       U64 := #p[%i7]
-        %a8:       U64 := #p[%i8]
+        %a7:       U64 = #p[%i7].load()
+        %a8:       U64 = #p[%i8].load()
         %quadrant: U64 = cm_trig_funnel(%a7, %a8, %bits).bitand(3)
-        %f6:       U64 := #f[6]
+        %f6:       U64  = #f[6].load()
         %n:        U64  = cm_trig_nearest(%quadrant, %f6)
         %g_top:    S64  = %f6.sub_wrap(%n.bitand(127).shl(57)).to_s64_wrap()
-        #f[6] = %g_top.to_u64_wrap()
+        #f[6].store(%g_top.to_u64_wrap())
         %negative: Bool = %g_top.lt(0)
         cm_trig_magnitude448(#f, %negative)
         // no binary128 comes within 2^-124 of a multiple of pi/2, so the residual keeps over 300 of its bits
@@ -625,9 +625,9 @@ routine cm_trig_cut(#p: Ptr<U64>, %i: S64, %bits: S64, #f: Ptr<U64>) -> Void
     block cut_one(%k: U64, #p: Ptr<U64>, %i: U64, %bits: S64, #f: Ptr<U64>):
         %at:    U64 = %i.add(%k)
         %above: U64 = %at.add(1)
-        %low:   U64 := #p[%at]
-        %high:  U64 := #p[%above]
-        #f[%k] = cm_trig_funnel(%low, %high, %bits)
+        %low:   U64 = #p[%at].load()
+        %high:  U64 = #p[%above].load()
+        #f[%k].store(cm_trig_funnel(%low, %high, %bits))
         jump cut(%k.add(1), #p, %i.to_s64(), %bits, #f)
 
 /// Replaces the seven-limb two's-complement fraction at #f by its magnitude when it is negative.
@@ -643,9 +643,9 @@ routine cm_trig_magnitude448(#f: Ptr<U64>, %negative: Bool) -> Void
         branch %done ? return() : flip_one(%k, %carry, %mask, #f)
 
     block flip_one(%k: U64, %carry: U64, %mask: U64, #f: Ptr<U64>):
-        %limb:    U64 := #f[%k]
+        %limb:    U64 = #f[%k].load()
         %flipped: U64 = %limb.bitxor(%mask).add_wrap(%carry)
-        #f[%k] = %flipped
+        #f[%k].store(%flipped)
         %next_carry: U64 = %flipped.lt(%carry).to_u64()
         jump flip(%k.add(1), %next_carry, %mask, #f)
 
@@ -660,7 +660,7 @@ routine cm_trig_lz448(#f: Ptr<U64>) -> S64
         branch %exhausted ? return(%all) : scan_one(%k.to_u64(), #f)
 
     block scan_one(%k: U64, #f: Ptr<U64>):
-        %limb:  U64 := #f[%k]
+        %limb:  U64  = #f[%k].load()
         %empty: Bool = %limb.eq(0)
         %above: U64  = 6.sub(%k).mul(64)
         %lz:    U64  = %above.add(%limb.leading_zeros())
@@ -671,7 +671,7 @@ routine cm_trig_top448(#f: Ptr<U64>, %lz: S64) -> CmTrigU384
     block entry():
         #shifted: Ptr<Array<U64, 7>> = alloca<Array<U64, 7>>
         #s:       Ptr<U64> = #shifted.as_ptr()
-        zero<U64>(#s, 7)
+        #s.zeroinit(7)
         %word:  S64 = %lz.shr(6)
         %wbits: S64 = %lz.bitand(63)
         jump shift(%word, 0, %word, %wbits, #f, #s)
@@ -683,18 +683,18 @@ routine cm_trig_top448(#f: Ptr<U64>, %lz: S64) -> CmTrigU384
 
     block shift_one(%q: U64, %below: U64, %word: U64, %wbits: S64, #f: Ptr<U64>, #s: Ptr<U64>):
         %from:    U64 = %q.sub(%word)
-        %limb:    U64 := #f[%from]
+        %limb:    U64 = #f[%from].load()
         %carried: U64 = %below.shr(1).shr(63.sub(%wbits).to_u64())
-        #s[%q] = %limb.shl(%wbits.to_u64()).bitor(%carried)
+        #s[%q].store(%limb.shl(%wbits.to_u64()).bitor(%carried))
         jump shift(%q.add(1).to_s64(), %limb, %word.to_s64(), %wbits, #f, #s)
 
     block assemble(#s: Ptr<U64>):
-        %s1: U64 := #s[1]
-        %s2: U64 := #s[2]
-        %s3: U64 := #s[3]
-        %s4: U64 := #s[4]
-        %s5: U64 := #s[5]
-        %s6: U64 := #s[6]
+        %s1: U64 = #s[1].load()
+        %s2: U64 = #s[2].load()
+        %s3: U64 = #s[3].load()
+        %s4: U64 = #s[4].load()
+        %s5: U64 = #s[5].load()
+        %s6: U64  = #s[6].load()
         %l0: U128 = %s2.to_u128().shl(64).bitor(%s1.to_u128())
         %l1: U128 = %s4.to_u128().shl(64).bitor(%s3.to_u128())
         %l2: U128 = %s6.to_u128().shl(64).bitor(%s5.to_u128())
@@ -735,12 +735,12 @@ routine cm_trig_sin_frac(%t1: U128, %u: U128, %v: U128) -> U128
 /// halves of sum (-1)^k u^k/(2k+4)! in v, six terms.
 routine cm_trig_cos_corr(%u1: U128, %u: U128, %v: U128) -> U128
     block entry():
-        %c0: U128 := CM_TRIG_COS_COEF[2]
-        %c1: U128 := CM_TRIG_COS_COEF[5]
-        %c2: U128 := CM_TRIG_COS_COEF[8]
-        %c3: U128 := CM_TRIG_COS_COEF[11]
-        %c4: U128 := CM_TRIG_COS_COEF[14]
-        %c5: U128 := CM_TRIG_COS_COEF[17]
+        %c0: U128 = CM_TRIG_COS_COEF[2].load()
+        %c1: U128 = CM_TRIG_COS_COEF[5].load()
+        %c2: U128 = CM_TRIG_COS_COEF[8].load()
+        %c3: U128 = CM_TRIG_COS_COEF[11].load()
+        %c4: U128 = CM_TRIG_COS_COEF[14].load()
+        %c5: U128 = CM_TRIG_COS_COEF[17].load()
         %even_tail: U128 = %c3.add_wrap(cm_trig_mhi(%v, %c5))
         %even:      U128 = %c1.add_wrap(cm_trig_mhi(%v, %even_tail))
         %odd:       U128 = %c2.add_wrap(cm_trig_mhi(%v, %c4))

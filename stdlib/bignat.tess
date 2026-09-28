@@ -25,8 +25,8 @@ require N: U64
 routine BigNat<N>.set(#self: Ptr<Self>, %value: U64) -> Void
 require N: U64
     block entry():
-        #self.limbs[0] = %value
-        #self.length = %value.ne(0).to_u64()
+        #self.limbs[0].store(%value)
+        #self.length.store(%value.ne(0).to_u64())
         return()
 
 routine BigNat<N>.set_u128(#self: Ptr<Self>, %value: U128) -> Void
@@ -34,38 +34,38 @@ require N: U64
     block entry():
         %low:  U64 = %value.to_u64_wrap()
         %high: U64 = %value.shr(64).to_u64()
-        #self.limbs[0] = %low
-        #self.limbs[1] = %high
+        #self.limbs[0].store(%low)
+        #self.limbs[1].store(%high)
         %two:  Bool = %high.ne(0)
         %one:  Bool = %low.ne(0)
         %used: U64  = %two ? 2 : %one.to_u64()
-        #self.length = %used
+        #self.length.store(%used)
         return()
 
 routine BigNat<N>.copy_from(#self: Ptr<Self>, #other: Ptr<Self>) -> Void
 require N: U64
     block entry():
-        %value: Self := #other
-        #self = %value
+        %value: Self = #other.load()
+        #self.store(%value)
         return()
 
 routine BigNat<N>.is_zero(#self: Ptr<Self>) -> Bool
 require N: U64
     block entry():
-        %length: U64  := #self.length
+        %length: U64  = #self.length.load()
         %zero:   Bool = %length.eq(0)
         return(%zero)
 
 routine BigNat<N>.bit_length(#self: Ptr<Self>) -> U64
 require N: U64
     block entry():
-        %length: U64  := #self.length
+        %length: U64  = #self.length.load()
         %zero:   Bool = %length.eq(0)
         branch %zero ? return(0) : count(%length)
 
     block count(%length: U64):
         %top_at: U64  = %length.sub(1)
-        %top:    U64 := #self.limbs[%top_at]
+        %top:    U64  = #self.limbs[%top_at].load()
         %bits:   U64  = %top_at.mul(64).add(64).sub(%top.leading_zeros())
         return(%bits)
 
@@ -73,20 +73,20 @@ require N: U64
 routine BigNat<N>.push_limb(#self: Ptr<Self>, %limb: U64) -> Void
 require N: U64
     block entry():
-        %length: U64  := #self.length
+        %length: U64  = #self.length.load()
         %room:   Bool = %length.lt(N)
         branch %room ? store(%length) : panic(TrapCode.Overflow)
 
     block store(%length: U64):
-        #self.limbs[%length] = %limb
-        #self.length = %length.add(1)
+        #self.limbs[%length].store(%limb)
+        #self.length.store(%length.add(1))
         return()
 
 /// Drops zero limbs from the top.
 routine BigNat<N>.trim(#self: Ptr<Self>) -> Void
 require N: U64
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         jump check(%length)
 
     block check(%length: U64):
@@ -95,19 +95,19 @@ require N: U64
 
     block look(%length: U64):
         %at:   U64  = %length.sub(1)
-        %top:  U64 := #self.limbs[%at]
+        %top:  U64  = #self.limbs[%at].load()
         %zero: Bool = %top.eq(0)
         branch %zero ? check(%at) : store(%length)
 
     block store(%length: U64):
-        #self.length = %length
+        #self.length.store(%length)
         return()
 
 /// self = self × m + add
 routine BigNat<N>.mul_add(#self: Ptr<Self>, %m: U64, %add: U64) -> Void
 require N: U64
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         jump loop(0, %add.to_u128(), %length)
 
     block loop(%i: U64, %carry: U128, %length: U64):
@@ -116,9 +116,9 @@ require N: U64
 
     // limb × m + carry < 2^128, so the sum can't overflow
     block step(%i: U64, %carry: U128, %length: U64):
-        %limb:    U64  := #self.limbs[%i]
+        %limb:    U64  = #self.limbs[%i].load()
         %product: U128 = %limb.mul_wide(%m).add(%carry)
-        #self.limbs[%i] = %product.to_u64_wrap()
+        #self.limbs[%i].store(%product.to_u64_wrap())
         jump loop(%i.add(1), %product.shr(64), %length)
 
     block spill(%carry: U128):
@@ -145,7 +145,7 @@ require N: U64
         jump loop(%left.sub(19))
 
     block last(%left: U64):
-        %factor: U64 := POW10_U64[%left]
+        %factor: U64 = POW10_U64[%left].load()
         #self.mul_add(%factor, 0)
         return()
 
@@ -155,7 +155,7 @@ require N: U64
     block entry():
         %limb_shift: U64  = %bits.div(64)
         %bit_shift:  U64  = %bits.rem(64)
-        %length:     U64 := #self.length
+        %length:     U64  = #self.length.load()
         %whole:      Bool = %bit_shift.eq(0)
         branch %whole ? move(%limb_shift) : shift_bits(0, 0, %length, %limb_shift, %bit_shift)
 
@@ -164,8 +164,8 @@ require N: U64
         branch %done ? spill(%carry, %limb_shift) : shift_one(%i, %carry, %length, %limb_shift, %bit_shift)
 
     block shift_one(%i: U64, %carry: U64, %length: U64, %limb_shift: U64, %bit_shift: U64):
-        %limb: U64 := #self.limbs[%i]
-        #self.limbs[%i] = %limb.shl(%bit_shift).bitor(%carry)
+        %limb: U64 = #self.limbs[%i].load()
+        #self.limbs[%i].store(%limb.shl(%bit_shift).bitor(%carry))
         %out: U64 = %limb.shr(64.sub(%bit_shift))
         jump shift_bits(%i.add(1), %out, %length, %limb_shift, %bit_shift)
 
@@ -179,7 +179,7 @@ require N: U64
 
     // Whole limbs move up by %limb_shift, top first, and zeros fill the bottom.
     block move(%limb_shift: U64):
-        %length:     U64  := #self.length
+        %length:     U64  = #self.length.load()
         %nothing:    Bool = %limb_shift.eq(0).bitor(%length.eq(0))
         %new_length: U64  = %length.add(%limb_shift)
         %room:       Bool = %new_length.le(N)
@@ -194,8 +194,8 @@ require N: U64
         branch %done ? zero_fill(0, %limb_shift, %new_length) : move_one(%left.sub(1), %limb_shift, %new_length)
 
     block move_one(%i: U64, %limb_shift: U64, %new_length: U64):
-        %limb: U64 := #self.limbs[%i]
-        #self.limbs[%i.add(%limb_shift)] = %limb
+        %limb: U64 = #self.limbs[%i].load()
+        #self.limbs[%i.add(%limb_shift)].store(%limb)
         jump move_loop(%i, %limb_shift, %new_length)
 
     block zero_fill(%i: U64, %limb_shift: U64, %new_length: U64):
@@ -203,18 +203,18 @@ require N: U64
         branch %done ? finish(%new_length) : zero_one(%i, %limb_shift, %new_length)
 
     block zero_one(%i: U64, %limb_shift: U64, %new_length: U64):
-        #self.limbs[%i] = 0
+        #self.limbs[%i].store(0)
         jump zero_fill(%i.add(1), %limb_shift, %new_length)
 
     block finish(%new_length: U64):
-        #self.length = %new_length
+        #self.length.store(%new_length)
         return()
 
 /// self = self / 2, rounding down
 routine BigNat<N>.shr1(#self: Ptr<Self>) -> Void
 require N: U64
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         jump loop(%length, 0)
 
     // %left limbs are still to shift, top first
@@ -223,8 +223,8 @@ require N: U64
         branch %done ? finish() : step(%left.sub(1), %carry)
 
     block step(%i: U64, %carry: U64):
-        %limb: U64 := #self.limbs[%i]
-        #self.limbs[%i] = %limb.shr(1).bitor(%carry.shl(63))
+        %limb: U64 = #self.limbs[%i].load()
+        #self.limbs[%i].store(%limb.shr(1).bitor(%carry.shl(63)))
         jump loop(%i, %limb.bitand(1))
 
     block finish():
@@ -235,8 +235,8 @@ require N: U64
 routine BigNat<N>.compare(#self: Ptr<Self>, #other: Ptr<Self>) -> S32
 require N: U64
     block entry():
-        %a_length: U64 := #self.length
-        %b_length: U64 := #other.length
+        %a_length: U64 = #self.length.load()
+        %b_length: U64  = #other.length.load()
         %shorter:  Bool = %a_length.lt(%b_length)
         %longer:   Bool = %a_length.gt(%b_length)
         select:
@@ -250,8 +250,8 @@ require N: U64
         branch %done ? return(0) : step(%left.sub(1))
 
     block step(%i: U64):
-        %a: U64 := #self.limbs[%i]
-        %b: U64 := #other.limbs[%i]
+        %a: U64 = #self.limbs[%i].load()
+        %b: U64 = #other.limbs[%i].load()
         %below: Bool = %a.lt(%b)
         %above: Bool = %a.gt(%b)
         select:
@@ -263,8 +263,8 @@ require N: U64
 routine BigNat<N>.sub(#self: Ptr<Self>, #other: Ptr<Self>) -> Void
 require N: U64
     block entry():
-        %a_length: U64 := #self.length
-        %b_length: U64 := #other.length
+        %a_length: U64 = #self.length.load()
+        %b_length: U64 = #other.length.load()
         jump loop(0, 0, %a_length, %b_length)
 
     block loop(%i: U64, %borrow: U64, %a_length: U64, %b_length: U64):
@@ -272,11 +272,11 @@ require N: U64
         branch %done ? finish() : step(%i, %borrow, %a_length, %b_length)
 
     block step(%i: U64, %borrow: U64, %a_length: U64, %b_length: U64):
-        %a:        U64  := #self.limbs[%i]
-        %b_limb:   U64  := #other.limbs[%i]
+        %a:        U64  = #self.limbs[%i].load()
+        %b_limb:   U64  = #other.limbs[%i].load()
         %in_b:     Bool = %i.lt(%b_length)
         %b:        U64  = %in_b ? %b_limb : 0
-        #self.limbs[%i] = %a.sub_wrap(%b).sub_wrap(%borrow)
+        #self.limbs[%i].store(%a.sub_wrap(%b).sub_wrap(%borrow))
         // a - b - borrow goes negative when a < b, or a == b with a borrow in
         %under:    Bool = %a.lt(%b)
         %even_out: Bool = %a.eq(%b).bitand(%borrow.eq(1))
@@ -317,8 +317,8 @@ require N: U64
 routine BigNat<N>.add(#self: Ptr<Self>, #other: Ptr<Self>) -> Void
 require N: U64
     block entry():
-        %a_length: U64 := #self.length
-        %b_length: U64 := #other.length
+        %a_length: U64 = #self.length.load()
+        %b_length: U64  = #other.length.load()
         %length:   U64  = %a_length.max(%b_length)
         jump loop(0, 0, %a_length, %b_length, %length)
 
@@ -327,16 +327,16 @@ require N: U64
         branch %done ? finish(%carry, %length) : step(%i, %carry, %a_length, %b_length, %length)
 
     block step(%i: U64, %carry: U64, %a_length: U64, %b_length: U64, %length: U64):
-        %a_limb: U64  := #self.limbs[%i]
-        %b_limb: U64  := #other.limbs[%i]
+        %a_limb: U64  = #self.limbs[%i].load()
+        %b_limb: U64  = #other.limbs[%i].load()
         %a:      U64  = %i.lt(%a_length) ? %a_limb : 0
         %b:      U64  = %i.lt(%b_length) ? %b_limb : 0
         %sum:    U128 = %a.to_u128().add(%b.to_u128()).add(%carry.to_u128())
-        #self.limbs[%i] = %sum.to_u64_wrap()
+        #self.limbs[%i].store(%sum.to_u64_wrap())
         jump loop(%i.add(1), %sum.shr(64).to_u64(), %a_length, %b_length, %length)
 
     block finish(%carry: U64, %length: U64):
-        #self.length = %length
+        #self.length.store(%length)
         %none: Bool = %carry.eq(0)
         branch %none ? return() : grow(%carry)
 
@@ -348,7 +348,7 @@ require N: U64
 routine BigNat<N>.div_limb(#self: Ptr<Self>, %d: U64) -> U64
 require N: U64
     block entry():
-        %length:  U64  := #self.length
+        %length:  U64  = #self.length.load()
         %divisor: U128 = %d.to_u128()
         jump loop(%length, 0, %divisor)
 
@@ -358,9 +358,9 @@ require N: U64
         branch %done ? finish(%rem) : step(%left.sub(1), %rem, %divisor)
 
     block step(%i: U64, %rem: U128, %divisor: U128):
-        %limb: U64  := #self.limbs[%i]
+        %limb: U64  = #self.limbs[%i].load()
         %cur:  U128 = %rem.shl(64).bitor(%limb.to_u128())
-        #self.limbs[%i] = %cur.div(%divisor).to_u64()
+        #self.limbs[%i].store(%cur.div(%divisor).to_u64())
         jump loop(%i, %cur.rem(%divisor), %divisor)
 
     block finish(%rem: U128):
@@ -371,13 +371,13 @@ require N: U64
 routine BigNat<N>.bit(#self: Ptr<Self>, %i: U64) -> Bool
 require N: U64
     block entry():
-        %length: U64  := #self.length
+        %length: U64  = #self.length.load()
         %at:     U64  = %i.div(64)
         %inside: Bool = %at.lt(%length)
         branch %inside ? read(%at) : return(false)
 
     block read(%at: U64):
-        %limb: U64  := #self.limbs[%at]
+        %limb: U64  = #self.limbs[%at].load()
         %set:  Bool = %limb.shr(%i.rem(64)).bitand(1).eq(1)
         return(%set)
 
@@ -385,7 +385,7 @@ require N: U64
 routine BigNat<N>.any_below(#self: Ptr<Self>, %n: U64) -> Bool
 require N: U64
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         %whole:  U64 = %n.div(64).min(%length)
         jump loop(0, %whole, %length)
 
@@ -394,7 +394,7 @@ require N: U64
         branch %done ? partial(%whole, %length) : step(%i, %whole, %length)
 
     block step(%i: U64, %whole: U64, %length: U64):
-        %limb: U64  := #self.limbs[%i]
+        %limb: U64  = #self.limbs[%i].load()
         %set:  Bool = %limb.ne(0)
         branch %set ? return(true) : loop(%i.add(1), %whole, %length)
 
@@ -403,7 +403,7 @@ require N: U64
         branch %inside ? mask(%whole) : return(false)
 
     block mask(%at: U64):
-        %limb: U64  := #self.limbs[%at]
+        %limb: U64  = #self.limbs[%at].load()
         %low:  U64  = 1.shl(%n.rem(64)).sub(1)
         %set:  Bool = %limb.bitand(%low).ne(0)
         return(%set)
@@ -417,7 +417,7 @@ require N: U64
         %sticky:     Bool = #self.any_below(%half_at)
         %limb_shift: U64  = %bits.div(64)
         %bit_shift:  U64  = %bits.rem(64)
-        %length:     U64 := #self.length
+        %length:     U64  = #self.length.load()
         %kept:       U64  = %length.sub_clamp(%limb_shift)
         jump loop(0, %kept, %length, %limb_shift, %bit_shift, %half, %sticky)
 
@@ -428,18 +428,18 @@ require N: U64
 
     block step(%i: U64, %kept: U64, %length: U64, %limb_shift: U64, %bit_shift: U64, %half: Bool, %sticky: Bool):
         %from:      U64  = %i.add(%limb_shift)
-        %low:       U64 := #self.limbs[%from]
+        %low:       U64  = #self.limbs[%from].load()
         %next_at:   U64  = %from.add(1)
         %has_next:  Bool = %next_at.lt(%length)
-        %next_limb: U64 := #self.limbs[%next_at.min(%length.sub(1))]
+        %next_limb: U64  = #self.limbs[%next_at.min(%length.sub(1))].load()
         %next:      U64  = %has_next ? %next_limb : 0
         // two shifts, so a zero bit shift never shifts by 64
         %high:      U64  = %next.shl(63.sub(%bit_shift)).shl(1)
-        #self.limbs[%i] = %low.shr(%bit_shift).bitor(%high)
+        #self.limbs[%i].store(%low.shr(%bit_shift).bitor(%high))
         jump loop(%i.add(1), %kept, %length, %limb_shift, %bit_shift, %half, %sticky)
 
     block shifted(%kept: U64, %half: Bool, %sticky: Bool):
-        #self.length = %kept
+        #self.length.store(%kept)
         #self.trim()
         %odd:   Bool = #self.bit(0)
         %round: Bool = %half.bitand(%sticky.bitor(%odd))

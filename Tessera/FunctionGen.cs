@@ -215,31 +215,6 @@ public sealed class FunctionGen
                 Define(b.Name, new Val(op, t), b.Pos);
                 break;
             }
-            case LoadStmt l:
-            {
-                var t = Resolve(l.Type);
-                Compiler.CheckSigil(l.Name, l.Type, t, _env, l.Pos);
-                var (addr, pointee) = Address(l.Place, t);
-                if (!pointee.Equals(t))
-                    throw Err(l.Pos, $"'{l.Name}' is declared {t}, but the place holds {pointee}");
-                _c.EnsureTypeDefined(t);
-                string op = LocalOp(l.Name);
-                Line($"{op} = load {t.Llvm}, ptr {addr}");
-                Define(l.Name, new Val(op, t), l.Pos);
-                break;
-            }
-            case StoreStmt st:
-            {
-                if (PresetArrayRoot(st.Place) is { } root)
-                    throw Err(st.Pos, $"'{root.Name}' is a preset array; it's read-only");
-                var hint = PlacePointee(st.Place);
-                DType valueType = hint ?? Infer(st.Value)
-                    ?? throw Err(st.Pos, "cannot infer the type stored through an opaque Ptr; bind the value with a type first");
-                var (addr, pointee) = Address(st.Place, valueType);
-                var v = Eval(st.Value, pointee);
-                Line($"store {pointee.Llvm} {v.Op}, ptr {addr}");
-                break;
-            }
             case ExprStmt e:
             {
                 if (IsNoReturn(e.Value))
@@ -804,13 +779,15 @@ public sealed class FunctionGen
         }
         else candidates.Add((rt, false));
 
-        foreach (var (owner, _) in candidates)
+        foreach (var (owner, passesPointer) in candidates)
         {
             var r = _c.FindMethod(owner.OwnerName, m.Name, _env.File, m.Pos);
             if (r is null || r.Params.Count == 0) continue;
             var env = BindOwner(r, owner, m.Pos);
             var selfType = _c.ResolveType(r.Params[0].Type, env);
-            if (!Compatible(rt, selfType)) continue;
+            // Through a pointer, T's method must take exactly that pointer: `#slot: Ptr<Addr>` doesn't make
+            // `#slot.load()` an Addr method on the slot.
+            if (passesPointer ? !selfType.Equals(rt) : !Compatible(rt, selfType)) continue;
             BindExplicit(r, env, m.TypeArgs, m.Pos);
             InferTypeArgs(r, env, m.Args, expected, 1);
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
@@ -947,7 +924,15 @@ public sealed class FunctionGen
         for (int i = fixedCount; i < plan.Args.Count; i++) args.Add(VariadicArg(plan.Args[i]));
 
         _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);
-        if (sig.IsTemplate) return ExpandTemplate(sig, args, plan.Pos);
+        if (sig.IsTemplate)
+        {
+            // A template isn't instantiated, so the types it names (a record read by `load`) are defined here.
+            foreach (var p in sig.Params) _c.EnsureTypeDefined(p);
+            _c.EnsureTypeDefined(sig.Ret);
+            if (sig.Decl.Name is "store" or "volatile_store" && plan.Receiver is { } place && PresetArrayRoot(place) is { } root)
+                throw Err(plan.Pos, $"'{root.Name}' is a preset array; it's read-only");
+            return ExpandTemplate(sig, args, plan.Pos);
+        }
 
         var inst = _c.RequireInstance(plan.Decl, plan.Env);
         string argList = string.Join(", ", args.Select(a => AbiArg(a, inst.PassesBf16AsBits)));

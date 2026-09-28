@@ -53,7 +53,7 @@ routine FdWriter.stderr() -> Self
 
 routine FdWriter.has_failed(#self: Ptr<Self>) -> Bool
     block entry():
-        %failed: Bool := #self.failed
+        %failed: Bool = #self.failed.load()
         return(%failed)
 
 /// write(2) may write fewer bytes than asked, so this loops. Each call asks for
@@ -61,7 +61,7 @@ routine FdWriter.has_failed(#self: Ptr<Self>) -> Bool
 /// io.tess declares CSize, but the Windows CRT returns int (open question #18).
 routine FdWriter.write_bytes(#self: Ptr<Self>, #data: Ptr<Byte>, %length: U64) -> Void
     block entry():
-        %fd: S32 := #self.fd
+        %fd: S32 = #self.fd.load()
         jump write_loop(#data, %length, %fd)
 
     block write_loop(#at: Ptr<Byte>, %remaining: U64, %fd: S32):
@@ -81,7 +81,7 @@ routine FdWriter.write_bytes(#self: Ptr<Self>, #data: Ptr<Byte>, %length: U64) -
         jump write_loop(#next, %remaining.sub(%wrote), %fd)
 
     block fail():
-        #self.failed = true
+        #self.failed.store(true)
         return()
 
 // -- SliceWriter ---------------------------------------------------------------
@@ -103,31 +103,31 @@ routine SliceWriter.construct(#data: Ptr<Byte>, %capacity: U64) -> Self
 /// The text written so far, a view into the buffer.
 routine SliceWriter.as_string(#self: Ptr<Self>) -> String
     block entry():
-        #data:   Ptr<Byte> := #self.data
-        %length: U64       := #self.length
+        #data:   Ptr<Byte> = #self.data.load()
+        %length: U64       = #self.length.load()
         %s: String = String.from_ptr(#data, %length)
         return(%s)
 
 routine SliceWriter.has_overflowed(#self: Ptr<Self>) -> Bool
     block entry():
-        %r: Bool := #self.overflowed
+        %r: Bool = #self.overflowed.load()
         return(%r)
 
 routine SliceWriter.write_bytes(#self: Ptr<Self>, #bytes: Ptr<Byte>, %count: U64) -> Void
     block entry():
-        %length:   U64  := #self.length
-        %capacity: U64  := #self.capacity
+        %length:   U64  = #self.length.load()
+        %capacity: U64  = #self.capacity.load()
         %room:     U64  = %capacity.sub(%length)
         %fits:     Bool = %count.le(%room)
         %taken:    U64  = %count.min(%room)
-        #data: Ptr<Byte> := #self.data
+        #data: Ptr<Byte> = #self.data.load()
         #to:   Ptr<Byte> = #data[%length]
         copy<Byte>(#to, #bytes, %taken)
-        #self.length = %length.add(%taken)
+        #self.length.store(%length.add(%taken))
         branch %fits ? return() : overflow()
 
     block overflow():
-        #self.overflowed = true
+        #self.overflowed.store(true)
         return()
 
 // -- BufWriter -----------------------------------------------------------------
@@ -146,19 +146,19 @@ conform Writer<BufWriter<W>>
 routine BufWriter<W>.construct(#self: Ptr<Self>, #inner: Ptr<W>) -> Void
 require W: typename
     block entry():
-        #self.inner = #inner
-        #self.length = 0
+        #self.inner.store(#inner)
+        #self.length.store(0)
         return()
 
 /// Writes out the buffered bytes.
 routine BufWriter<W>.flush(#self: Ptr<Self>) -> Void
 require W: typename, Writer<W>
     block entry():
-        %length: U64       := #self.length
-        #inner:  Ptr<W>    := #self.inner
+        %length: U64       = #self.length.load()
+        #inner:  Ptr<W>    = #self.inner.load()
         #buffer: Ptr<Array<Byte, 4096>> = #self.data
         #data:   Ptr<Byte> = #buffer.cast<Byte>()
-        #self.length = 0
+        #self.length.store(0)
         %empty: Bool = %length.eq(0)
         branch %empty ? return() : pass(#inner, #data, %length)
 
@@ -169,7 +169,7 @@ require W: typename, Writer<W>
 routine BufWriter<W>.write_bytes(#self: Ptr<Self>, #bytes: Ptr<Byte>, %count: U64) -> Void
 require W: typename, Writer<W>
     block entry():
-        %length: U64  := #self.length
+        %length: U64  = #self.length.load()
         %fits:   Bool = %length.add(%count).le(4096)
         branch %fits ? append(%length) : make_room()
 
@@ -179,7 +179,7 @@ require W: typename, Writer<W>
         branch %large ? direct() : append(0)
 
     block direct():
-        #inner: Ptr<W> := #self.inner
+        #inner: Ptr<W> = #self.inner.load()
         #inner.write_bytes(#bytes, %count)
         return()
 
@@ -188,7 +188,7 @@ require W: typename, Writer<W>
         #data:   Ptr<Byte> = #buffer.cast<Byte>()
         #to:     Ptr<Byte> = #data[%length]
         copy<Byte>(#to, #bytes, %count)
-        #self.length = %length.add(%count)
+        #self.length.store(%length.add(%count))
         return()
 
 // -- CountWriter ---------------------------------------------------------------
@@ -206,7 +206,7 @@ routine CountWriter.construct() -> Self
 
 routine CountWriter.write_bytes(#self: Ptr<Self>, #bytes: Ptr<Byte>, %length: U64) -> Void
     block entry():
-        %count: U64 := #self.count
+        %count: U64 = #self.count.load()
         jump loop(0, %count)
 
     block loop(%i: U64, %count: U64):
@@ -220,7 +220,7 @@ routine CountWriter.write_bytes(#self: Ptr<Self>, #bytes: Ptr<Byte>, %length: U6
         jump loop(%i.add(1), %count.add(%starts.to_u64()))
 
     block finish(%count: U64):
-        #self.count = %count
+        #self.count.store(%count)
         return()
 
 // -- text ----------------------------------------------------------------------
@@ -254,7 +254,7 @@ require W: typename, Writer<W>
     block digit(%end: U64, %rest: U64, #digits: Ptr<Byte>):
         %at:    U64 = %end.sub(1)
         %ascii: U8  = %rest.rem(10).to_u8().add(48)          // '0' = 48
-        #digits[%at] = %ascii.bits()
+        #digits[%at].store(%ascii.bits())
         %next:       U64  = %rest.div(10)
         %written:    U64  = 20.sub(%at)
         %more_value: Bool = %next.ne(0)
@@ -297,7 +297,7 @@ require W: typename, Writer<W>
         %nibble:  U8   = %rest.bitand(15).to_u8()
         %decimal: Bool = %nibble.lt(10)
         %base:    U8   = %decimal ? 48 : 87            // '0', or 'a' - 10
-        #digits[%at] = %base.add(%nibble).bits()
+        #digits[%at].store(%base.add(%nibble).bits())
         %next:       U64  = %rest.shr(4)
         %written:    U64  = 16.sub(%at)
         %more_value: Bool = %next.ne(0)
@@ -637,7 +637,7 @@ require W: typename, Writer<W>
 
     block fill(%end: U64, %rest: U64, #digits: Ptr<U8>):
         %at: U64 = %end.sub(1)
-        #digits[%at] = %rest.rem(10).to_u8().add(48)
+        #digits[%at].store(%rest.rem(10).to_u8().add(48))
         %next: U64  = %rest.div(10)
         %more: Bool = %next.ne(0)
         branch %more ? fill(%at, %next, #digits) : layout(%at, #digits)
@@ -948,7 +948,7 @@ require W: typename, Writer<W>
         %d: U8, %n: U64, %k: S64, #digits: Ptr<U8>,
         #r: Ptr<BigNat<320>>, #s: Ptr<BigNat<320>>, #plus: Ptr<BigNat<320>>, #minus: Ptr<BigNat<320>>, #t: Ptr<BigNat<320>>
     ):
-        #digits[%n] = %d.add(48)
+        #digits[%n].store(%d.add(48))
         jump next_digit(%n.add(1), %k, #digits, #r, #s, #plus, #minus, #t)
 
     // Both ends reachable: the nearer one, and the even digit on an exact tie.
@@ -964,7 +964,7 @@ require W: typename, Writer<W>
         %both:   Bool = %low.bitand(%high)
         %round:  Bool = %both ? %nearer : %high
         %digit:  U8   = %d.add(%round.to_u8())
-        #digits[%n] = %digit.add(48)
+        #digits[%n].store(%digit.add(48))
         %count:  U64  = %n.add(1)
         write_decimal_digits(#out, #digits, %count, %k.sub(%count.to_s64()))
         return()
@@ -1062,7 +1062,7 @@ require W: typename, Writer<W>
 
     block put(#n: Ptr<BigNat<864>>, #digits: Ptr<U8>, %places: U64, %at: U64, %rest: U64, %left: U64):
         %to: U64 = %at.sub(1)
-        #digits[%to] = %rest.rem(10).to_u8().add(48)
+        #digits[%to].store(%rest.rem(10).to_u8().add(48))
         jump digit(#n, #digits, %places, %to, %rest.div(10), %left.sub(1))
 
     // the top chunk is zero-padded to 19 digits
@@ -1071,7 +1071,7 @@ require W: typename, Writer<W>
         branch %inside ? look(#digits, %places, %at) : lay_out(#digits, %places, %at)
 
     block look(#digits: Ptr<U8>, %places: U64, %at: U64):
-        %ascii: U8   := #digits[%at]
+        %ascii: U8   = #digits[%at].load()
         %zero:  Bool = %ascii.eq(48)
         branch %zero ? skip_zeros(#digits, %places, %at.add(1)) : lay_out(#digits, %places, %at)
 
@@ -1286,7 +1286,7 @@ require T: typename, W: typename, Writer<W>, Format<T>
         %counter_val: CountWriter      = CountWriter.construct()
         #counter:     Ptr<CountWriter> = alloca<CountWriter>([%counter_val])
         %value.format(#counter)
-        %length: U64    := #counter.count
+        %length: U64    = #counter.count.load()
         %pad:    U64    = %spec.width.sub_clamp(%length)
         %half:   U64    = %pad.div(2)
         %fill:   String = %spec.fill
@@ -1321,14 +1321,14 @@ conform Writer<SignPadWriter<W>>
 routine SignPadWriter<W>.write_bytes(#self: Ptr<Self>, #bytes: Ptr<Byte>, %length: U64) -> Void
 require W: typename, Writer<W>
     block entry():
-        #inner: Ptr<W> := #self.inner
-        %pad:   U64    := #self.pad
+        #inner: Ptr<W> = #self.inner.load()
+        %pad:   U64    = #self.pad.load()
         %first: Bool   = %pad.gt(0).bitand(%length.gt(0))
         branch %first ? first(#inner, %pad) : pass(#inner, #bytes, %length)
 
     block first(#inner: Ptr<W>, %pad: U64):
-        %fill:   String := #self.fill
-        #self.pad = 0
+        %fill:   String = #self.fill.load()
+        #self.pad.store(0)
         %byte:   U8     = U8.from_byte(#bytes[0])
         %signed: Bool   = %byte.eq(45).bitor(%byte.eq(43))      // - or +
         branch %signed ? sign(#inner, %pad, %fill) : pad(#inner, %pad, %fill, #bytes, %length)

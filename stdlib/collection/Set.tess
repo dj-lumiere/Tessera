@@ -48,27 +48,27 @@ require T: typename, HashEqual<T>
 routine Set<T>.length(#self: Ptr<Self>) -> U64
 require T: typename
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         return(%length)
 
 routine Set<T>.is_empty(#self: Ptr<Self>) -> Bool
 require T: typename
     block entry():
-        %length: U64 := #self.length
+        %length: U64 = #self.length.load()
         %empty: Bool = %length.eq(0)
         return(%empty)
 
 routine Set<T>.slot(#self: Ptr<Self>, %key: T, %hash: U64) -> U64
 require T: typename
     block entry():
-        %capacity: U64 := #self.capacity
+        %capacity: U64 = #self.capacity.load()
         %mask: U64 = %capacity.sub(1)
         %start: U64 = %hash.bitand(%mask)
         jump probe(%start, SLOT_EMPTY)
 
     block probe(%index: U64, %first_tombstone: U64):
-        #slots: Ptr<U64> := #self.slots
-        %entry_idx: U64 := #slots[%index]
+        #slots: Ptr<U64> = #self.slots.load()
+        %entry_idx: U64 = #slots[%index].load()
         %is_empty: Bool = %entry_idx.eq(SLOT_EMPTY)
         %is_tombstone: Bool = %entry_idx.eq(SLOT_TOMBSTONE)
         select:
@@ -84,24 +84,24 @@ require T: typename
     block tombstone_slot(%index: U64, %first_tombstone: U64):
         %seen: Bool = %first_tombstone.ne(SLOT_EMPTY)
         %next_tombstone: U64 = %seen ? %first_tombstone : %index
-        %capacity: U64 := #self.capacity
+        %capacity: U64 = #self.capacity.load()
         %next: U64 = %index.add(1).bitand(%capacity.sub(1))
         jump probe(%next, %next_tombstone)
 
     block occupied_slot(%index: U64, %first_tombstone: U64, %entry_idx: U64):
-        #hashes: Ptr<U64> := #self.hashes
-        %entry_hash: U64 := #hashes[%entry_idx]
+        #hashes: Ptr<U64> = #self.hashes.load()
+        %entry_hash: U64  = #hashes[%entry_idx].load()
         %hash_match: Bool = %entry_hash.eq(%hash)
         branch %hash_match ? maybe_equal(%index, %first_tombstone, %entry_idx) : next(%index, %first_tombstone)
 
     block maybe_equal(%index: U64, %first_tombstone: U64, %entry_idx: U64):
-        #keys: Ptr<T> := #self.keys
-        %entry_key: T := #keys[%entry_idx]
+        #keys: Ptr<T> = #self.keys.load()
+        %entry_key: T = #keys[%entry_idx].load()
         %equal: Bool = %entry_key.eq(%key)
         branch %equal ? return(%index): next(%index, %first_tombstone)
 
     block next(%index: U64, %first_tombstone: U64):
-        %capacity: U64 := #self.capacity
+        %capacity: U64 = #self.capacity.load()
         %next: U64 = %index.add(1).bitand(%capacity.sub(1))
         jump probe(%next, %first_tombstone)
 
@@ -109,15 +109,15 @@ require T: typename
 routine Set<T>.find(#self: Ptr<Self>, %key: T) -> U64
 require T: typename
     block entry():
-        %capacity: U64 := #self.capacity
+        %capacity: U64 = #self.capacity.load()
         %empty: Bool = %capacity.eq(0)
         branch %empty ? return(SLOT_EMPTY): hash()
 
     block hash():
         %hash: U64 = %key.hash()
         %slot: U64 = #self.slot(%key, %hash)
-        #slots: Ptr<U64> := #self.slots
-        %entry_idx: U64 := #slots[%slot]
+        #slots: Ptr<U64> = #self.slots.load()
+        %entry_idx: U64 = #slots[%slot].load()
         %found: Bool = %entry_idx.lt(SLOT_TOMBSTONE)
         branch %found ? return(%entry_idx) : return(SLOT_EMPTY)
 
@@ -133,13 +133,13 @@ require T: typename
 routine Set<T>.eq(#self: Ptr<Self>, #other: Ptr<Self>) -> Bool
 require T: typename, HashEqual<T>
     block entry():
-        %la: U64 := #self.length
-        %lb: U64 := #other.length
+        %la: U64 = #self.length.load()
+        %lb: U64 = #other.length.load()
         %same_len: Bool = %la.eq(%lb)
         branch %same_len ? scan() : return(false)
 
     block scan():
-        %n: U64 := #self.entries_count
+        %n: U64 = #self.entries_count.load()
         jump loop(0, %n)
 
     block loop(%i: U64, %n: U64):
@@ -147,26 +147,26 @@ require T: typename, HashEqual<T>
         branch %done ? return(true) : check(%i, %n)
 
     block check(%i: U64, %n: U64):
-        #entry_states: Ptr<U8> := #self.entry_states
-        %s: U8 := #entry_states[%i]
+        #entry_states: Ptr<U8> = #self.entry_states.load()
+        %s: U8 = #entry_states[%i].load()
         %live: Bool = %s.eq(1)
         branch %live ? probe(%i, %i.add(1), %n) : loop(%i.add(1), %n)
 
     block probe(%i: U64, %i_next: U64, %n: U64):
-        #keys: Ptr<T> := #self.keys
-        %key: T := #keys[%i]
+        #keys: Ptr<T> = #self.keys.load()
+        %key: T = #keys[%i].load()
         %has: Bool = #other.contains(%key)
         branch %has ? loop(%i_next, %n) : return(false)
 
 routine Set<T>.rehash(#self: Ptr<Self>, %new_capacity: U64) -> Void
 require T: typename
     block entry():
-        #alloc: Ptr<Allocator> := #self.alloc
-        #old_keys: Ptr<T> := #self.keys
-        #old_hashes: Ptr<U64> := #self.hashes
-        #old_entry_states: Ptr<U8> := #self.entry_states
-        #old_slots: Ptr<U64> := #self.slots
-        %old_count: U64 := #self.entries_count
+        #alloc: Ptr<Allocator> = #self.alloc.load()
+        #old_keys: Ptr<T> = #self.keys.load()
+        #old_hashes: Ptr<U64> = #self.hashes.load()
+        #old_entry_states: Ptr<U8> = #self.entry_states.load()
+        #old_slots: Ptr<U64> = #self.slots.load()
+        %old_count: U64 = #self.entries_count.load()
         #new_keys: Ptr<T> = alloc<T>(#alloc, %new_capacity)
         #new_hashes: Ptr<U64> = alloc<U64>(#alloc, %new_capacity)
         #new_entry_states: Ptr<U8> = alloc<U8>(#alloc, %new_capacity)
@@ -205,8 +205,8 @@ require T: typename
             #new_keys: Ptr<T>, #new_hashes: Ptr<U64>,
             #new_entry_states: Ptr<U8>, #new_slots: Ptr<U64>,
             %new_capacity: U64, #alloc: Ptr<Allocator>):
-        #new_slots[%i] = SLOT_EMPTY
-        #new_entry_states[%i] = 0
+        #new_slots[%i].store(SLOT_EMPTY)
+        #new_entry_states[%i].store(0)
         jump clear_loop(
             %i.add(1), #old_keys, #old_hashes, #old_entry_states, #old_slots, %old_count,
             #new_keys, #new_hashes, #new_entry_states, #new_slots, %new_capacity, #alloc)
@@ -216,13 +216,13 @@ require T: typename
             #old_slots: Ptr<U64>, %old_count: U64,
             #new_keys: Ptr<T>, #new_hashes: Ptr<U64>, #new_entry_states: Ptr<U8>,
             #new_slots: Ptr<U64>, %new_capacity: U64, #alloc: Ptr<Allocator>):
-        #self.keys = #new_keys
-        #self.hashes = #new_hashes
-        #self.entry_states = #new_entry_states
-        #self.slots = #new_slots
-        #self.length = 0
-        #self.entries_count = 0
-        #self.capacity = %new_capacity
+        #self.keys.store(#new_keys)
+        #self.hashes.store(#new_hashes)
+        #self.entry_states.store(#new_entry_states)
+        #self.slots.store(#new_slots)
+        #self.length.store(0)
+        #self.entries_count.store(0)
+        #self.capacity.store(%new_capacity)
         jump move_loop(
             0, #old_keys, #old_hashes, #old_entry_states, #old_slots, %old_count, #alloc)
 
@@ -240,7 +240,7 @@ require T: typename
             %i: U64, #old_keys: Ptr<T>, #old_hashes: Ptr<U64>,
             #old_entry_states: Ptr<U8>, #old_slots: Ptr<U64>,
             %old_count: U64, #alloc: Ptr<Allocator>):
-        %s: U8 := #old_entry_states[%i]
+        %s: U8 = #old_entry_states[%i].load()
         %live: Bool = %s.eq(1)
         branch %live
             ? insert_old(
@@ -252,7 +252,7 @@ require T: typename
             %i: U64, #old_keys: Ptr<T>, #old_hashes: Ptr<U64>,
             #old_entry_states: Ptr<U8>, #old_slots: Ptr<U64>,
             %old_count: U64, #alloc: Ptr<Allocator>):
-        %key: T := #old_keys[%i]
+        %key: T = #old_keys[%i].load()
         #self.add_direct(%key)
         jump move_loop(
             %i.add(1), #old_keys, #old_hashes, #old_entry_states, #old_slots, %old_count, #alloc)
@@ -268,16 +268,16 @@ require T: typename
     block free_old(
             #old_keys: Ptr<T>, #old_hashes: Ptr<U64>,
             #old_entry_states: Ptr<U8>, #old_slots: Ptr<U64>, #alloc: Ptr<Allocator>):
-        free<T>(#alloc, #old_keys)
-        free<U64>(#alloc, #old_hashes)
-        free<U8>(#alloc, #old_entry_states)
-        free<U64>(#alloc, #old_slots)
+        #old_keys.free(#alloc)
+        #old_hashes.free(#alloc)
+        #old_entry_states.free(#alloc)
+        #old_slots.free(#alloc)
         return()
 
 routine Set<T>.ensure(#self: Ptr<Self>) -> Void
 require T: typename
     block entry():
-        %capacity: U64 := #self.capacity
+        %capacity: U64 = #self.capacity.load()
         %empty: Bool = %capacity.eq(0)
         branch %empty ? first() : check(%capacity)
 
@@ -286,7 +286,7 @@ require T: typename
         return()
 
     block check(%capacity: U64):
-        %count: U64 := #self.entries_count
+        %count: U64 = #self.entries_count.load()
         %limit: U64 = %capacity.mul(3).div(4)
         %full: Bool = %count.add(1).ge(%limit)
         branch %full ? grow(%capacity) : return()
@@ -303,24 +303,24 @@ require T: typename
     block entry():
         %hash: U64 = %key.hash()
         %slot: U64 = #self.slot(%key, %hash)
-        #slots: Ptr<U64> := #self.slots
-        %entry_idx: U64 := #slots[%slot]
+        #slots: Ptr<U64> = #self.slots.load()
+        %entry_idx: U64 = #slots[%slot].load()
         %exists: Bool = %entry_idx.lt(SLOT_TOMBSTONE)
         branch %exists ? return(false) : add(%slot, %key, %hash)
 
     block add(%slot: U64, %key: T, %hash: U64):
-        %new_idx: U64 := #self.entries_count
-        #keys: Ptr<T> := #self.keys
-        #hashes: Ptr<U64> := #self.hashes
-        #entry_states: Ptr<U8> := #self.entry_states
-        #slots: Ptr<U64> := #self.slots
-        #keys[%new_idx] = %key
-        #hashes[%new_idx] = %hash
-        #entry_states[%new_idx] = 1
-        #slots[%slot] = %new_idx
-        %length: U64 := #self.length
-        #self.length = %length.add(1)
-        #self.entries_count = %new_idx.add(1)
+        %new_idx: U64 = #self.entries_count.load()
+        #keys: Ptr<T> = #self.keys.load()
+        #hashes: Ptr<U64> = #self.hashes.load()
+        #entry_states: Ptr<U8> = #self.entry_states.load()
+        #slots: Ptr<U64> = #self.slots.load()
+        #keys[%new_idx].store(%key)
+        #hashes[%new_idx].store(%hash)
+        #entry_states[%new_idx].store(1)
+        #slots[%slot].store(%new_idx)
+        %length: U64  = #self.length.load()
+        #self.length.store(%length.add(1))
+        #self.entries_count.store(%new_idx.add(1))
         return(true)
 
 routine Set<T>.add(#self: Ptr<Self>, %key: T) -> Bool
@@ -336,54 +336,54 @@ require T: typename
 routine Set<T>.remove(#self: Ptr<Self>, %key: T) -> Bool
 require T: typename
     block entry():
-        %capacity: U64 := #self.capacity
+        %capacity: U64 = #self.capacity.load()
         %empty: Bool = %capacity.eq(0)
         branch %empty ? return(false) : hash()
 
     block hash():
         %hash: U64 = %key.hash()
         %slot: U64 = #self.slot(%key, %hash)
-        #slots: Ptr<U64> := #self.slots
-        %entry_idx: U64 := #slots[%slot]
+        #slots: Ptr<U64> = #self.slots.load()
+        %entry_idx: U64 = #slots[%slot].load()
         %found: Bool = %entry_idx.lt(SLOT_TOMBSTONE)
         branch %found ? remove(%slot, %entry_idx) : return(false)
 
     block remove(%slot: U64, %entry_idx: U64):
-        #slots: Ptr<U64> := #self.slots
-        #entry_states: Ptr<U8> := #self.entry_states
-        #slots[%slot] = SLOT_TOMBSTONE
-        #entry_states[%entry_idx] = 0
-        %length: U64 := #self.length
-        #self.length = %length.sub(1)
+        #slots: Ptr<U64> = #self.slots.load()
+        #entry_states: Ptr<U8> = #self.entry_states.load()
+        #slots[%slot].store(SLOT_TOMBSTONE)
+        #entry_states[%entry_idx].store(0)
+        %length: U64 = #self.length.load()
+        #self.length.store(%length.sub(1))
         return(true)
 
 routine Set<T>.destruct(#self: Ptr<Self>) -> Void
 require T: typename
     block entry():
-        #slots: Ptr<U64> := #self.slots
+        #slots: Ptr<U64> = #self.slots.load()
         %empty: Bool = #slots.is_null()
         branch %empty ? reset() : release()
 
     block release():
-        #alloc: Ptr<Allocator> := #self.alloc
-        #keys: Ptr<T> := #self.keys
-        #hashes: Ptr<U64> := #self.hashes
-        #entry_states: Ptr<U8> := #self.entry_states
-        #slots: Ptr<U64> := #self.slots
-        free<T>(#alloc, #keys)
-        free<U64>(#alloc, #hashes)
-        free<U8>(#alloc, #entry_states)
-        free<U64>(#alloc, #slots)
+        #alloc: Ptr<Allocator> = #self.alloc.load()
+        #keys: Ptr<T> = #self.keys.load()
+        #hashes: Ptr<U64> = #self.hashes.load()
+        #entry_states: Ptr<U8> = #self.entry_states.load()
+        #slots: Ptr<U64> = #self.slots.load()
+        #keys.free(#alloc)
+        #hashes.free(#alloc)
+        #entry_states.free(#alloc)
+        #slots.free(#alloc)
         jump reset()
 
     block reset():
-        #self.keys = null
-        #self.hashes = null
-        #self.entry_states = null
-        #self.slots = null
-        #self.length = 0
-        #self.entries_count = 0
-        #self.capacity = 0
+        #self.keys.store(null)
+        #self.hashes.store(null)
+        #self.entry_states.store(null)
+        #self.slots.store(null)
+        #self.length.store(0)
+        #self.entries_count.store(0)
+        #self.capacity.store(0)
         return()
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
@@ -402,7 +402,7 @@ require T: typename, HashEqual<T>, Destruct<T>
         branch %more ? element(#iter, #slot, %item.value) : finish()
 
     block element(#iter: Ptr<SetIter<T>>, #slot: Ptr<T>, %value: T):
-        #slot = %value
+        #slot.store(%value)
         #slot.destruct()
         jump next(#iter, #slot)
 

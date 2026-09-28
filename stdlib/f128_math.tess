@@ -201,9 +201,9 @@ routine F128Extended.ldexp(%self: Self, %k: S64) -> Self
 /// Entry %i of one of the constant tables.
 routine wide_table(#hi: Ptr<U128>, #lo: Ptr<U64>, #exp: Ptr<S64>, %i: U64) -> F128Extended
     block entry():
-        %h: U128 := #hi[%i]
-        %l: U64  := #lo[%i]
-        %e: S64  := #exp[%i]
+        %h: U128 = #hi[%i].load()
+        %l: U64  = #lo[%i].load()
+        %e: S64  = #exp[%i].load()
         %w: F128Extended = F128Extended { negative: false, exp: %e, hi: %h, lo: %l }
         return(%w)
 
@@ -694,13 +694,13 @@ routine limbs_bits64(#p: Ptr<U64>, %pos: S64) -> U64
     block entry():
         %i:   U64 = %pos.shr(6).to_u64()
         %off: S64 = %pos.bitand(63)
-        %low: U64 := #p[%i]
+        %low: U64 = #p[%i].load()
         %aligned: Bool = %off.eq(0)
         branch %aligned ? return(%low) : join(%i, %off, %low)
 
     block join(%i: U64, %off: S64, %low: U64):
         %j:    U64 = %i.add(1)
-        %high: U64 := #p[%j]
+        %high: U64 = #p[%j].load()
         %r:    U64 = %low.shr(%off.to_u64()).bitor(%high.shl(64.sub(%off).to_u64()))
         return(%r)
 
@@ -724,7 +724,7 @@ routine f128_reduce(%x: F128) -> Reduced
         %sh:    S64 = %start.add(8).mul(64).sub(%p.exp).add(112)
         #prod:  Ptr<Array<S64, 12>> = alloca<Array<S64, 12>>
         #limbs: Ptr<U64> = #prod.cast<U64>()
-        zero<U64>(#limbs, 12)
+        #limbs.zeroinit(12)
         %m0: U128 = %p.sig.bitand(0xFFFFFFFFFFFFFFFF)
         %m1: U128 = %p.sig.shr(64)
         jump multiply(0, %start, %sh, %m0, %m1, #limbs)
@@ -736,22 +736,22 @@ routine f128_reduce(%x: F128) -> Reduced
 
     block term(%k: U64, %start: U64, %sh: S64, %m0: U128, %m1: U128, #limbs: Ptr<U64>):
         %index: U64  = %start.add(7).sub(%k)
-        %w:     U64  := TWO_OVER_PI[%index]
+        %w:     U64  = TWO_OVER_PI[%index].load()
         %wide:  U128 = %w.to_u128()
         %lo_p:  U128 = %m0.mul_wrap(%wide)
         %hi_p:  U128 = %m1.mul_wrap(%wide)
         %k1:    U64  = %k.add(1)
         %k2:    U64  = %k.add(2)
-        %r0:    U64  := #limbs[%k]
-        %r1:    U64  := #limbs[%k1]
-        %r2:    U64  := #limbs[%k2]
+        %r0:    U64  = #limbs[%k].load()
+        %r1:    U64  = #limbs[%k1].load()
+        %r2:    U64  = #limbs[%k2].load()
         // limb k gets lo_p's low half; limb k+1 lo_p's high half and hi_p's low; k+2 the rest
         %s0:    U128 = %r0.to_u128().add(%lo_p.bitand(0xFFFFFFFFFFFFFFFF))
         %s1:    U128 = %r1.to_u128().add(%lo_p.shr(64)).add(%hi_p.bitand(0xFFFFFFFFFFFFFFFF)).add(%s0.shr(64))
         %s2:    U128 = %r2.to_u128().add(%hi_p.shr(64)).add(%s1.shr(64))
-        #limbs[%k] = %s0.to_u64_wrap()
-        #limbs[%k1] = %s1.to_u64_wrap()
-        #limbs[%k2] = %s2.to_u64()
+        #limbs[%k].store(%s0.to_u64_wrap())
+        #limbs[%k1].store(%s1.to_u64_wrap())
+        #limbs[%k2].store(%s2.to_u64())
         %carry: U64  = %s2.shr(64).to_u64()
         jump spill(%k.add(3), %carry, %k, %start, %sh, %m0, %m1, #limbs)
 
@@ -762,9 +762,9 @@ routine f128_reduce(%x: F128) -> Reduced
                      : spill_one(%j, %carry, %k, %start, %sh, %m0, %m1, #limbs)
 
     block spill_one(%j: U64, %carry: U64, %k: U64, %start: U64, %sh: S64, %m0: U128, %m1: U128, #limbs: Ptr<U64>):
-        %r: U64  := #limbs[%j]
+        %r: U64  = #limbs[%j].load()
         %s: U128 = %r.to_u128().add_wrap(%carry.to_u128())
-        #limbs[%j] = %s.to_u64_wrap()
+        #limbs[%j].store(%s.to_u64_wrap())
         jump spill(%j.add_wrap(1), %s.shr(64).to_u64(), %k, %start, %sh, %m0, %m1, #limbs)
 
     // quadrant: bits sh and sh+1; fraction: the 256 bits under sh, normalized
@@ -1772,7 +1772,7 @@ routine F128.erfc(%self: Self) -> Self
 routine wide_gamma_coef(%i: U64) -> F128Extended
     block entry():
         %w:   F128Extended = wide_table(WIDE_GAMMA_COEF_HI.as_ptr(), WIDE_GAMMA_COEF_LO.as_ptr(), WIDE_GAMMA_COEF_EXP.as_ptr(), %i)
-        %neg: Bool := WIDE_GAMMA_COEF_NEG[%i]
+        %neg: Bool = WIDE_GAMMA_COEF_NEG[%i].load()
         %r:   F128Extended = %neg ? %w.neg() : %w
         return(%r)
 

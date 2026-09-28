@@ -530,15 +530,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             string name = Next().Text;
             Next();
             var type = ParseType();
-            if (Accept(TokenKind.ColonEq)) return new LoadStmt(name, type, ParsePostfix(), pos);
-            Expect(TokenKind.Eq, "'=' or ':='");
+            if (Is(TokenKind.ColonEq))
+                throw Error("memory is read with a method now: %v: T = #place.load()");
+            Expect(TokenKind.Eq, "'='");
             return new BindStmt(name, type, ParseExpr(), pos);
         }
 
         var lhs = ParsePostfix();
-        if (Accept(TokenKind.Eq)) return new StoreStmt(lhs, ParseExpr(), pos);
+        if (Is(TokenKind.Eq))
+            throw Error("memory is written with a method now: #place.store(value)");
         if (lhs is not (CallExpr or NsCallExpr or MethodCallExpr))
-            throw new CompileError(pos, "a statement must be a binding, a load, a store, or a call");
+            throw new CompileError(pos, "a statement must be a binding or a call");
         return new ExprStmt(lhs, pos);
     }
 
