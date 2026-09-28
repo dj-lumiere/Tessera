@@ -344,7 +344,8 @@ public static class Formatter
         }
         items.Add(line[from..close].Trim());
         string head = line[..(open + 1)];
-        string tail = line[close..];
+        // a record literal keeps its inner spaces, `Self { a: 1, b: 2 }`, which trimming the items dropped
+        string tail = line[open] == '{' ? " " + line[close..] : line[close..];
         string pad = new(' ', Indent(line) + 8);
 
         var result = new List<string>();
