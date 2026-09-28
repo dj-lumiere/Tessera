@@ -60,6 +60,8 @@ routine main() -> S32
 - `alloca<T>` gives stack memory; `alloca<T>([%init])` initializes it. Allocas are hoisted to the routine's entry,
   so an `alloca` inside a loop block reuses one slot.
 - Heap memory goes through an allocator: `alloc<T>(#alloc, %count)`, `free<T>(#alloc, #p)`.
+- `#p.cast<U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
+  (`Bool`, `Char`, choices). Pointers may alias.
 
 **Blocks and control flow**
 
