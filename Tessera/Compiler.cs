@@ -16,7 +16,6 @@ public sealed partial class Compiler
     private readonly Dictionary<(string Owner, string Name), List<RoutineDecl>> _methods = [];
     private readonly Dictionary<string, List<RoutineDecl>> _blanket = []; // owner is a type parameter: `T.bitcast<U>`
     private readonly Dictionary<(string Owner, string Name), List<PresetDecl>> _presets = [];
-    private readonly HashSet<string> _concepts = [];
     private readonly List<RoutineDecl> _userRoutines = [];
     private readonly List<RoutineDecl> _allRoutines = [];
 
@@ -37,12 +36,12 @@ public sealed partial class Compiler
         foreach (var d in decls)
         {
             if (!Selected(d)) continue;
+            RegisterConcepts(d);
             switch (d)
             {
                 case RecordDecl s: Add(_records, s.Name, s); break;
                 case ChoiceDecl e: Add(_choices, e.Name, e); break;
                 case PresetDecl c: Add(_presets, (c.Owner?.Name ?? "", c.Name), c); break;
-                case ConceptDecl c: _concepts.Add(c.Name); break;
                 case RoutineDecl r:
                     if (r.Owner is null) Add(_free, r.Name, r);
                     else if (IsBlanketOwner(r)) Add(_blanket, r.Name, r);
@@ -137,6 +136,7 @@ public sealed partial class Compiler
         // may call them by their C name.
         foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.Attr("export") is not null)) CheckRoot(r);
         while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
+        if (VerifyFixedConformances() is [var first, ..]) throw first;
         return Output();
     }
 
@@ -159,6 +159,7 @@ public sealed partial class Compiler
                 errors.Add(e);
             }
         }
+        errors.AddRange(VerifyFixedConformances());
         return errors;
     }
 
@@ -326,6 +327,7 @@ public sealed partial class Compiler
                     TypeArgExpr te => new ConstArg(EvalConstInt(te.Expr, env, 0)),
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{s.Name}'"),
                 });
+            CheckRecordRequirements(s, args, t.Pos);
             return new RecordType(s, args, TransparentField);
         }
 

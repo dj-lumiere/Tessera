@@ -37,8 +37,17 @@ public sealed record Attribute(string Name, List<AttrArg> Args, Pos Pos)
 
 public sealed record Param(string Name, TypeRef Type, Pos Pos); // Name includes its sigil
 
-/// `require T: typename, Equal<T>` / `conform Equal<X> require ...` — kept for later concept checking.
-public sealed record Clause(string Kind, List<Token> Tokens);
+/// `require T: typename, N: U64, Equal<T>` or `conform Equal<Option<T>> when Equal<T>`. Tokens keeps the raw text;
+/// the parsed parts are below.
+public sealed record Clause(string Kind, List<Token> Tokens)
+{
+    /// require: the declared parameters and their kinds (`T: typename`, `N: U64`).
+    public List<(string Name, TypeRef Kind, Pos Pos)> Params { get; init; } = [];
+    /// require: the concept constraints; conform: the concepts conformed to.
+    public List<TypeRef> Concepts { get; init; } = [];
+    /// conform: the conditions after `when`, under which the conformance holds.
+    public List<TypeRef> When { get; init; } = [];
+}
 
 public abstract record Decl(string File, List<Attribute> Attributes, Pos Pos)
 {
@@ -79,6 +88,11 @@ public sealed record ChoiceDecl(
 
 public sealed record PresetDecl(
     string File, List<Attribute> Attributes, TypeRef? Owner, string Name, TypeRef Type, Expr Value, Pos Pos)
+    : Decl(File, Attributes, Pos);
+
+/// A top-level `conform C<X, ...> [when ...]`, with `require` clauses naming its type parameters. It declares a
+/// conformance no single record can carry: a multi-type concept, or a concept for a type declared elsewhere.
+public sealed record ConformDecl(string File, List<Attribute> Attributes, List<Clause> Clauses, Pos Pos)
     : Decl(File, Attributes, Pos);
 
 public sealed record ConceptDecl(

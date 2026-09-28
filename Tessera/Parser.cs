@@ -11,7 +11,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private static readonly HashSet<string> TerminatorKeywords =
         ["jump", "branch", "select", "switch", "return", "unreachable"];
 
-    private static readonly HashSet<string> DeclKeywords = ["routine", "record", "choice", "preset", "concept"];
+    private static readonly HashSet<string> DeclKeywords = ["routine", "record", "choice", "preset", "concept", "conform"];
 
     public Module ParseModule()
     {
@@ -24,13 +24,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (isPrivate) Next();
             if (IsIdent("const")) throw Error("'const' is now spelled 'preset'");
             if (Cur.Kind != TokenKind.Ident || !DeclKeywords.Contains(Cur.Text))
-                throw Error($"expected a declaration (routine, record, choice, preset, concept), found {Describe(Cur)}");
+                throw Error($"expected a declaration (routine, record, choice, preset, concept, conform), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
                 "routine" => ParseRoutine(attrs, inConcept: false),
                 "record" => ParseRecord(attrs),
                 "choice" => ParseChoice(attrs),
                 "preset" => ParsePreset(attrs),
+                "conform" => ParseConformDecl(attrs),
                 _ => ParseConcept(attrs),
             };
             decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate });
@@ -151,19 +152,75 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new Attribute(name.Text, args, name.Pos);
     }
 
-    /// `require ...` and `conform ...` lines after a declaration header.
+    /// `require ...` and `conform ...` lines after a declaration header. They follow it line by line: after a blank
+    /// line, a `conform` starts a declaration of its own.
     private List<Clause> ParseClauses()
     {
         var clauses = new List<Clause>();
-        while (IsIdent("require") || IsIdent("conform"))
+        while ((IsIdent("require") || IsIdent("conform"))
+               && _i > 0 && tokens[_i - 1] is { Kind: TokenKind.Newline } nl && nl.Pos.Line == Cur.Pos.Line - 1)
         {
-            string kind = Next().Text;
-            var toks = new List<Token>();
-            while (!Is(TokenKind.Newline) && !Is(TokenKind.Eof)) toks.Add(Next());
-            clauses.Add(new Clause(kind, toks));
+            clauses.Add(ParseClause());
             SkipNewlines();
         }
         return clauses;
+    }
+
+    /// One clause line. `require` lists parameters (`T: typename`, `N: U64`) and concept constraints (`Equal<T>`);
+    /// `conform` lists concepts, optionally followed by `when` and the constraints under which it holds.
+    private Clause ParseClause()
+    {
+        string kind = Next().Text;
+        int start = _i;
+        var parameters = new List<(string, TypeRef, Pos)>();
+        var concepts = new List<TypeRef>();
+        var when = new List<TypeRef>();
+        bool AtEnd() => Is(TokenKind.Newline) || Is(TokenKind.Eof);
+
+        // `T: typename`, `N: U64` declare parameters; anything else is a concept constraint.
+        void ParseRequireList(List<TypeRef> constraints)
+        {
+            do
+            {
+                if (Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.Colon)
+                {
+                    var name = Next();
+                    Next();
+                    parameters.Add((name.Text, ParseType(), name.Pos));
+                }
+                else constraints.Add(ParseType());
+            } while (Accept(TokenKind.Comma));
+        }
+
+        if (kind == "require") ParseRequireList(concepts);
+        else
+        {
+            do concepts.Add(ParseType()); while (Accept(TokenKind.Comma));
+            if (IsIdent("require"))
+                throw Error("a conformance's conditions are written with 'when': conform Equal<Option<T>> when T: typename, Equal<T>");
+            if (IsIdent("when"))
+            {
+                Next();
+                ParseRequireList(when);
+            }
+        }
+        if (!AtEnd()) throw Error($"expected the end of the {kind} clause, found {Describe(Cur)}");
+        var toks = tokens.Skip(start).Take(_i - start).ToList();
+        return new Clause(kind, toks) { Params = parameters, Concepts = concepts, When = when };
+    }
+
+    /// `conform C<X, ...> [when ...]` at top level, then `require` lines for its type parameters.
+    private ConformDecl ParseConformDecl(List<Attribute> attrs)
+    {
+        var pos = Cur.Pos;
+        var clauses = new List<Clause> { ParseClause() };
+        SkipNewlines();
+        while (IsIdent("require"))
+        {
+            clauses.Add(ParseClause());
+            SkipNewlines();
+        }
+        return new ConformDecl(file, attrs, clauses, pos);
     }
 
     private List<string> ParseTypeParamNames()

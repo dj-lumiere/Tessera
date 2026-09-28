@@ -103,7 +103,10 @@ routine main() -> S32
   call them. You can't call a pointer method on a temporary: `DictIter<K, V>.new(#m).next()` fails with "has no
   method 'next'"; alloca the iterator first.
 - Generic routines repeat their constraints: `require T: typename, Compare<T>`. Concepts: `Equal`, `Hash`,
-  `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Format`.
+  `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Format`. Constraints are checked: a type satisfies a
+  concept only through a `conform` (on its record, or a top-level `conform C<X>` line), and the compiler checks the
+  declared routines' signatures. Conditional conformance: `conform Equal<Box<T>> when T: typename, Equal<T>`. A
+  record's own `require` applies to every use, so put element constraints on the routines that need them.
 - A bare literal doesn't bind a type parameter (open question #34): bind it first (`%n: S64 = 42`), then pass `%n`.
 - String literals are `String` where a `String` is expected and a NUL-terminated `Ptr<Byte>` where a pointer is
   expected.

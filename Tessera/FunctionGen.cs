@@ -947,6 +947,7 @@ public sealed class FunctionGen
         for (int i = 0; i < fixedCount; i++) args.Add(EvalArg(plan.Args[i], sig.Params[i + offset]));
         for (int i = fixedCount; i < plan.Args.Count; i++) args.Add(VariadicArg(plan.Args[i]));
 
+        _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);
         if (sig.IsTemplate) return ExpandTemplate(sig, args, plan.Pos);
 
         var inst = _c.RequireInstance(plan.Decl, plan.Env);
