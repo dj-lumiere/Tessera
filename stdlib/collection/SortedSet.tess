@@ -7,8 +7,8 @@
 module Standard::Collections
 
 private preset NODE_KEYS: U64 = 7
-private preset NODE_CHILDREN: U64 = 8
-private preset NODE_MIN_KEYS: U64 = 4
+private preset NODE_CHILDREN: U64 = NODE_KEYS.add(1)
+private preset NODE_MIN_KEYS: U64 = NODE_KEYS.add(1).div(2)
 
 record SortedSetNode<T>
 require T: typename
@@ -86,30 +86,29 @@ require T: typename
         branch %done ? finish(%sum) : add_child(%i, %sum, %length)
 
     block add_child(%i: U64, %sum: U64, %length: U64):
-        #child         : Ptr<Self> = #self.children.get(%i)
-        %child_count   : U64       = #child.count()
-        %with_child    : U64       = %sum.add(%child_count)
-        %has_key       : Bool      = %i.lt(%length)
-        %with_child_p1 : U64       = %with_child.add(1)
-        %next_sum      : U64       = %has_key ? %with_child_p1 : %with_child
+        #child       : Ptr<Self> = #self.children.get(%i)
+        %child_count : U64       = #child.count()
+        %with_child  : U64       = %sum.add(%child_count)
+        %has_key     : Bool      = %i.lt(%length)
+        %next_sum    : U64       = %has_key ? %with_child.add(1) : %with_child
         jump loop(%i.add(1), %next_sum, %length)
 
     block finish(%sum: U64):
         #self.subtree_count.store(%sum)
         return()
 
-routine SortedSet<T>.find_index(#self: Ptr<Self>, #node: Ptr<SortedSetNode<T>>, %key: T) -> U64
+routine SortedSetNode<T>.find_index(#self: Ptr<Self>, %key: T) -> U64
 require T: typename
     block entry():
         jump loop(0)
 
     block loop(%i: U64):
-        %length : U64  = #node.length.load()
+        %length : U64  = #self.length.load()
         %done   : Bool = %i.ge(%length)
         branch %done ? return(%i): compare(%i)
 
     block compare(%i: U64):
-        %node_key        : T    = #node.keys.get(%i)
+        %node_key        : T    = #self.keys.get(%i)
         %cmp             : S32  = %key.compare(%node_key)
         %before_or_equal : Bool = %cmp.le(0)
         branch %before_or_equal ? return(%i): loop(%i.add(1))
@@ -122,18 +121,26 @@ require T: typename, Compare<T>
         %la       : U64  = #self.length.load()
         %lb       : U64  = #other.length.load()
         %same_len : Bool = %la.eq(%lb)
-        branch %same_len ? loop(0, %la) : return(false)
+        branch %same_len ? continue : return(false)
+        %a_val : SortedSetIter<T>      = .construct(#self)
+        %b_val : SortedSetIter<T>      = .construct(#other)
+        #a     : Ptr<SortedSetIter<T>> = claim
+        #b     : Ptr<SortedSetIter<T>> = claim
+        #a.store(%a_val)
+        #b.store(%b_val)
+        jump loop(#a, #b)
 
-    block loop(%i: U64, %len: U64):
-        %done : Bool = %i.ge(%len)
-        branch %done ? return(true) : step(%i, %len)
+    // both have the same length, so both run out together
+    block loop(#a: Ptr<SortedSetIter<T>>, #b: Ptr<SortedSetIter<T>>):
+        %x    : Option<T> = #a.next()
+        %y    : Option<T> = #b.next()
+        %more : Bool      = %x.tag
+        branch %more ? compare(#a, #b, %x.value, %y.value) : return(true)
 
-    block step(%i: U64, %len: U64):
-        %x   : T    = #self.get_by_rank(%i)
-        %y   : T    = #other.get_by_rank(%i)
+    block compare(#a: Ptr<SortedSetIter<T>>, #b: Ptr<SortedSetIter<T>>, %x: T, %y: T):
         %cmp : S32  = %x.compare(%y)
         %eq  : Bool = %cmp.eq(0)
-        branch %eq ? loop(%i.add(1), %len) : return(false)
+        branch %eq ? loop(#a, #b) : return(false)
 
 routine SortedSet<T>.contains(#self: Ptr<Self>, %key: T) -> Bool
 require T: typename
@@ -143,7 +150,7 @@ require T: typename
         branch %empty ? return(false): search(#root, %key)
 
     block search(#node: Ptr<SortedSetNode<T>>, %key: T):
-        %i      : U64  = #self.find_index(#node, %key)
+        %i      : U64  = #node.find_index(%key)
         %length : U64  = #node.length.load()
         %inside : Bool = %i.lt(%length)
         branch %inside ? maybe_match(#node, %i, %key) : descend_or_missing(#node, %i, %key)
@@ -216,14 +223,13 @@ require T: typename
 routine SortedSetNode<T>.split_child(#self: Ptr<Self>, %index: U64, #alloc: Ptr<Allocator>) -> Void
 require T: typename
     block entry():
-        #left            : Ptr<Self> = #self.children.get(%index)
-        %leaf            : Bool      = #left.leaf.load()
-        #right           : Ptr<Self> = Self.construct(%leaf, #alloc)
-        %mid             : U64       = NODE_KEYS.div(2)
-        %node_keys_m_mid : U64       = NODE_KEYS.sub(%mid)
-        %right_count     : U64       = %node_keys_m_mid.sub(1)
-        %mid_p1          : U64       = %mid.add(1)
-        #right.keys.copy(0, #left.keys, %mid_p1, %right_count)
+        #left        : Ptr<Self> = #self.children.get(%index)
+        %leaf        : Bool      = #left.leaf.load()
+        #right       : Ptr<Self> = Self.construct(%leaf, #alloc)
+        %mid         : U64       = NODE_KEYS.div(2)
+        %right_start : U64       = %mid.add(1)
+        %right_count : U64       = NODE_KEYS.sub(%right_start)
+        #right.keys.copy(0, #left.keys, %right_start, %right_count)
         #right.length.store(%right_count)
         branch %leaf
             ? promote(#left, #right, %mid)
@@ -270,15 +276,14 @@ require T: typename
         #self.recount()
         return()
 
-routine SortedSetNode<T>.insert_nonfull(#self: Ptr<Self>, #set: Ptr<SortedSet<T>>, %key: T,
-        #alloc: Ptr<Allocator>) -> Void
+routine SortedSetNode<T>.insert_nonfull(#self: Ptr<Self>, %key: T, #alloc: Ptr<Allocator>) -> Void
 require T: typename
     block entry():
         %leaf : Bool = #self.leaf.load()
         branch %leaf ? insert_leaf() : insert_internal()
 
     block insert_leaf():
-        %slot   : U64 = #set.find_index(#self, %key)
+        %slot   : U64 = #self.find_index(%key)
         %length : U64 = #self.length.load()
         #self.keys.shift_right(%slot, %length)
         #self.keys.set(%slot, %key)
@@ -288,7 +293,7 @@ require T: typename
         return()
 
     block insert_internal():
-        %slot         : U64       = #set.find_index(#self, %key)
+        %slot         : U64       = #self.find_index(%key)
         #child        : Ptr<Self> = #self.children.get(%slot)
         %child_length : U64       = #child.length.load()
         %full         : Bool      = %child_length.eq(NODE_KEYS)
@@ -299,13 +304,12 @@ require T: typename
         %pivot      : T         = #self.keys.get(%slot)
         %cmp        : S32       = %key.compare(%pivot)
         %go_right   : Bool      = %cmp.gt(0)
-        %slot_p1    : U64       = %slot.add(1)
-        %next_slot  : U64       = %go_right ? %slot_p1 : %slot
+        %next_slot  : U64       = %go_right ? %slot.add(1) : %slot
         #next_child : Ptr<Self> = #self.children.get(%next_slot)
         jump descend(%next_slot, #next_child)
 
     block descend(%slot: U64, #child: Ptr<Self>):
-        #child.insert_nonfull(#set, %key, #alloc)
+        #child.insert_nonfull(%key, #alloc)
         #self.recount()
         return()
 
@@ -343,7 +347,7 @@ require T: typename
         jump insert_nonfull(#new_root, #alloc)
 
     block insert_nonfull(#root: Ptr<SortedSetNode<T>>, #alloc: Ptr<Allocator>):
-        #root.insert_nonfull(#self, %key, #alloc)
+        #root.insert_nonfull(%key, #alloc)
         #self.length.store(#self.length.load().add(1))
         return(true)
 
@@ -360,22 +364,22 @@ require T: typename
 
 // Capacity = NODE_KEYS, t = NODE_MIN_KEYS. Non-root nodes maintain
 // length >= NODE_MIN_KEYS - 1.
-// Helpers below ensure a child has length >= 4 (= t) before any deletion
+// Helpers below ensure a child has length >= NODE_MIN_KEYS (= t) before any deletion
 // descent so the child can absorb a one-key drop without underflowing.
 
 routine SortedSetNode<T>.borrow_from_left(#self: Ptr<Self>, %i: U64) -> Void
 require T: typename
     block entry():
-        %i_m1         : U64       = %i.sub(1)
-        #left         : Ptr<Self> = #self.children.get(%i_m1)
+        %separator    : U64       = %i.sub(1)
+        #left         : Ptr<Self> = #self.children.get(%separator)
         #child        : Ptr<Self> = #self.children.get(%i)
         %left_length  : U64       = #left.length.load()
         %child_length : U64       = #child.length.load()
         #child.keys.shift_right(0, %child_length)
-        %pivot : T = #self.keys.get(%i_m1)
+        %pivot : T = #self.keys.get(%separator)
         #child.keys.set(0, %pivot)
         %new_pivot : T = #left.keys.get(%left_length.sub(1))
-        #self.keys.set(%i_m1, %new_pivot)
+        #self.keys.set(%separator, %new_pivot)
         %leaf : Bool = #child.leaf.load()
         branch %leaf
             ? finalize(#left, #child, %left_length, %child_length)
@@ -430,9 +434,8 @@ require T: typename
 routine SortedSetNode<T>.merge_children(#self: Ptr<Self>, %i: U64, #alloc: Ptr<Allocator>) -> Void
 require T: typename
     block entry():
-        %i_p1         : U64       = %i.add(1)
         #left         : Ptr<Self> = #self.children.get(%i)
-        #right        : Ptr<Self> = #self.children.get(%i_p1)
+        #right        : Ptr<Self> = #self.children.get(%i.add(1))
         %left_length  : U64       = #left.length.load()
         %right_length : U64       = #right.length.load()
         %pivot        : T         = #self.keys.get(%i)
@@ -452,8 +455,7 @@ require T: typename
         #left.length.store(%left_length.add(1).add(%right_length))
         %parent_length : U64 = #self.length.load()
         #self.keys.shift_left(%i, %parent_length)
-        %i_p1 : U64 = %i.add(1)
-        #self.children.shift_left(%i_p1, %parent_length.add(1))
+        #self.children.shift_left(%i.add(1), %parent_length.add(1))
         #self.length.store(%parent_length.sub(1))
         #right.free(#alloc)
         #left.recount()
@@ -504,15 +506,15 @@ require T: typename
         branch %has_left ? merge_with_left() : panic(TrapCode.Unreachable)
 
     block merge_with_left():
-        %i_m1 : U64 = %i.sub(1)
-        #self.merge_children(%i_m1, #alloc)
-        return(%i_m1)
+        %merged_at : U64 = %i.sub(1)
+        #self.merge_children(%merged_at, #alloc)
+        return(%merged_at)
 
     block merge_with_right():
         #self.merge_children(%i, #alloc)
         return(%i)
 
-routine SortedSetNode<T>.take_max(#self: Ptr<Self>, #set: Ptr<SortedSet<T>>) -> T
+routine SortedSetNode<T>.take_max(#self: Ptr<Self>, #alloc: Ptr<Allocator>) -> T
 require T: typename
     block entry():
         %leaf : Bool = #self.leaf.load()
@@ -525,15 +527,14 @@ require T: typename
         return(%key)
 
     block descend():
-        %length : U64            = #self.length.load()
-        #alloc  : Ptr<Allocator> = #set.alloc.load()
-        %actual : U64            = #self.ensure_min(%length, #alloc)
-        #child  : Ptr<Self>      = #self.children.get(%actual)
-        %key    : T              = #child.take_max(#set)
+        %length : U64       = #self.length.load()
+        %actual : U64       = #self.ensure_min(%length, #alloc)
+        #child  : Ptr<Self> = #self.children.get(%actual)
+        %key    : T         = #child.take_max(#alloc)
         #self.recount()
         return(%key)
 
-routine SortedSetNode<T>.take_min(#self: Ptr<Self>, #set: Ptr<SortedSet<T>>) -> T
+routine SortedSetNode<T>.take_min(#self: Ptr<Self>, #alloc: Ptr<Allocator>) -> T
 require T: typename
     block entry():
         %leaf : Bool = #self.leaf.load()
@@ -544,17 +545,16 @@ require T: typename
         return(%key)
 
     block descend():
-        #alloc  : Ptr<Allocator> = #set.alloc.load()
-        %actual : U64            = #self.ensure_min(0, #alloc)
-        #child  : Ptr<Self>      = #self.children.get(%actual)
-        %key    : T              = #child.take_min(#set)
+        %actual : U64       = #self.ensure_min(0, #alloc)
+        #child  : Ptr<Self> = #self.children.get(%actual)
+        %key    : T         = #child.take_min(#alloc)
         #self.recount()
         return(%key)
 
-routine SortedSetNode<T>.remove(#self: Ptr<Self>, #set: Ptr<SortedSet<T>>, %key: T) -> Bool
+routine SortedSetNode<T>.remove(#self: Ptr<Self>, %key: T, #alloc: Ptr<Allocator>) -> Bool
 require T: typename
     block entry():
-        %slot   : U64  = #set.find_index(#self, %key)
+        %slot   : U64  = #self.find_index(%key)
         %length : U64  = #self.length.load()
         %inside : Bool = %slot.lt(%length)
         branch %inside ? maybe_match(%slot) : descend_or_missing(%slot)
@@ -581,7 +581,7 @@ require T: typename
 
     block take_pred(%slot: U64):
         #left        : Ptr<Self> = #self.children.get(%slot)
-        %replacement : T         = #left.take_max(#set)
+        %replacement : T         = #left.take_max(#alloc)
         #self.keys.set(%slot, %replacement)
         #self.recount()
         return(true)
@@ -594,16 +594,15 @@ require T: typename
 
     block take_succ(%slot: U64):
         #right       : Ptr<Self> = #self.children.get(%slot.add(1))
-        %replacement : T         = #right.take_min(#set)
+        %replacement : T         = #right.take_min(#alloc)
         #self.keys.set(%slot, %replacement)
         #self.recount()
         return(true)
 
     block merge_and_recurse(%slot: U64):
-        #alloc : Ptr<Allocator> = #set.alloc.load()
         #self.merge_children(%slot, #alloc)
         #merged  : Ptr<Self> = #self.children.get(%slot)
-        %removed : Bool      = #merged.remove(#set, %key)
+        %removed : Bool      = #merged.remove(%key, #alloc)
         #self.recount()
         return(%removed)
 
@@ -612,10 +611,9 @@ require T: typename
         branch %leaf ? return(false): descend(%slot)
 
     block descend(%slot: U64):
-        #alloc   : Ptr<Allocator> = #set.alloc.load()
-        %actual  : U64            = #self.ensure_min(%slot, #alloc)
-        #child   : Ptr<Self>      = #self.children.get(%actual)
-        %removed : Bool           = #child.remove(#set, %key)
+        %actual  : U64       = #self.ensure_min(%slot, #alloc)
+        #child   : Ptr<Self> = #self.children.get(%actual)
+        %removed : Bool      = #child.remove(%key, #alloc)
         #self.recount()
         return(%removed)
 
@@ -627,7 +625,8 @@ require T: typename
         branch %empty ? return(false) : remove_root(#root)
 
     block remove_root(#root: Ptr<SortedSetNode<T>>):
-        %removed : Bool = #root.remove(#self, %key)
+        #alloc   : Ptr<Allocator> = #self.alloc.load()
+        %removed : Bool           = #root.remove(%key, #alloc)
         branch %removed ? after_remove(#root) : return(false)
 
     block after_remove(#root: Ptr<SortedSetNode<T>>):

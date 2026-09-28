@@ -21,8 +21,7 @@ preset SORT_RUN: U64 = 32
 routine sort_insertion<T>(#data: Ptr<T>, %lo: U64, %hi: U64) -> Void
 require T: typename, Compare<T>
     block entry():
-        %i_start : U64 = %lo.add(1)
-        jump outer(%i_start)
+        jump outer(%lo.add(1))
 
     block outer(%i: U64):
         %done : Bool = %i.ge(%hi)
@@ -49,8 +48,7 @@ require T: typename, Compare<T>
 
     block place(%i: U64, %j: U64, %x: T):
         #data[%j].store(%x)
-        %i_next : U64 = %i.add(1)
-        jump outer(%i_next)
+        jump outer(%i.add(1))
 
 // -- merge two sorted half-open ranges [lo, mid) and [mid, hi) -----------------
 //
@@ -79,15 +77,11 @@ require T: typename, Compare<T>
 
     block take_a(%i: U64, %j: U64, %k: U64, %a: T):
         #dst[%k].store(%a)
-        %i_next : U64 = %i.add(1)
-        %k_next : U64 = %k.add(1)
-        jump loop(%i_next, %j, %k_next)
+        jump loop(%i.add(1), %j, %k.add(1))
 
     block take_b(%i: U64, %j: U64, %k: U64, %b: T):
         #dst[%k].store(%b)
-        %j_next : U64 = %j.add(1)
-        %k_next : U64 = %k.add(1)
-        jump loop(%i, %j_next, %k_next)
+        jump loop(%i, %j.add(1), %k.add(1))
 
     block drain_a(%i: U64, %k: U64):
         %done : Bool = %i.ge(%mid)
@@ -96,9 +90,7 @@ require T: typename, Compare<T>
     block copy_a(%i: U64, %k: U64):
         %v : T = #src[%i].load()
         #dst[%k].store(%v)
-        %i_next : U64 = %i.add(1)
-        %k_next : U64 = %k.add(1)
-        jump drain_a(%i_next, %k_next)
+        jump drain_a(%i.add(1), %k.add(1))
 
     block drain_b(%j: U64, %k: U64):
         %done : Bool = %j.ge(%hi)
@@ -107,9 +99,7 @@ require T: typename, Compare<T>
     block copy_b(%j: U64, %k: U64):
         %v : T = #src[%j].load()
         #dst[%k].store(%v)
-        %j_next : U64 = %j.add(1)
-        %k_next : U64 = %k.add(1)
-        jump drain_b(%j_next, %k_next)
+        jump drain_b(%j.add(1), %k.add(1))
 
 // -- one bottom-up pass merging every pair of width-sized runs -----------------
 
@@ -130,9 +120,7 @@ require T: typename, Compare<T>
         %hi_ok   : Bool = %hi_raw.le(%n)
         %hi      : U64  = %hi_ok ? %hi_raw : %n
         sort_merge<T>(#src, #dst, %lo, %mid, %hi)
-        %step    : U64 = %width.mul(2)
-        %lo_next : U64 = %lo.add(%step)
-        jump loop(%lo_next)
+        jump loop(%hi_raw)
 
 // -- public entry point --------------------------------------------------------
 
@@ -153,44 +141,41 @@ require T: typename, Compare<T>
         #alloc   : Ptr<Allocator> = #self.alloc.load()
         #scratch : Ptr<T>         = alloc<T>(#alloc, %n)
         %failed  : Bool           = #scratch.is_null()
-        branch %failed ? panic(TrapCode.AllocFailed) : run_loop(0, %n, #data, #scratch, #alloc)
+        branch %failed ? panic(TrapCode.AllocFailed) : run_loop(0, %n, #data, #scratch)
 
-    block run_loop(%lo: U64, %n: U64, #data: Ptr<T>, #scratch: Ptr<T>, #alloc: Ptr<Allocator>):
+    block run_loop(%lo: U64, %n: U64, #data: Ptr<T>, #scratch: Ptr<T>):
         %done : Bool = %lo.ge(%n)
-        branch %done ? pass_start(%n, #data, #scratch,
-                #alloc) : run_step(%lo, %n, #data, #scratch, #alloc)
+        branch %done ? pass_start(%n, #data, #scratch) : run_step(%lo, %n, #data, #scratch)
 
-    block run_step(%lo: U64, %n: U64, #data: Ptr<T>, #scratch: Ptr<T>, #alloc: Ptr<Allocator>):
+    block run_step(%lo: U64, %n: U64, #data: Ptr<T>, #scratch: Ptr<T>):
         %hi_raw : U64  = %lo.add(SORT_RUN)
         %hi_ok  : Bool = %hi_raw.le(%n)
         %hi     : U64  = %hi_ok ? %hi_raw : %n
         sort_insertion<T>(#data, %lo, %hi)
-        %lo_next : U64 = %lo.add(SORT_RUN)
-        jump run_loop(%lo_next, %n, #data, #scratch, #alloc)
+        jump run_loop(%hi_raw, %n, #data, #scratch)
 
-    block pass_start(%n: U64, #data: Ptr<T>, #scratch: Ptr<T>, #alloc: Ptr<Allocator>):
-        jump pass_loop(SORT_RUN, #data, #scratch, %n, #data, #scratch, #alloc)
+    block pass_start(%n: U64, #data: Ptr<T>, #scratch: Ptr<T>):
+        jump pass_loop(SORT_RUN, #data, #scratch, %n, #data, #scratch)
 
     block pass_loop(%width: U64, #src: Ptr<T>, #dst: Ptr<T>, %n: U64, #data: Ptr<T>,
-            #scratch: Ptr<T>, #alloc: Ptr<Allocator>):
+            #scratch: Ptr<T>):
         %done : Bool = %width.ge(%n)
-        branch %done ? finish(#src, %n, #data, #scratch,
-                #alloc) : pass(%width, #src, #dst, %n, #data, #scratch, #alloc)
+        branch %done
+            ? finish(#src, %n, #data, #scratch)
+            : pass(%width, #src, #dst, %n, #data, #scratch)
 
-    block pass(%width: U64, #src: Ptr<T>, #dst: Ptr<T>, %n: U64, #data: Ptr<T>, #scratch: Ptr<T>,
-            #alloc: Ptr<Allocator>):
+    block pass(%width: U64, #src: Ptr<T>, #dst: Ptr<T>, %n: U64, #data: Ptr<T>, #scratch: Ptr<T>):
         sort_merge_pass<T>(#src, #dst, %n, %width)
-        %width_next : U64 = %width.mul(2)
-        jump pass_loop(%width_next, #dst, #src, %n, #data, #scratch, #alloc)
+        jump pass_loop(%width.mul(2), #dst, #src, %n, #data, #scratch)
 
-    block finish(#src: Ptr<T>, %n: U64, #data: Ptr<T>, #scratch: Ptr<T>, #alloc: Ptr<Allocator>):
+    block finish(#src: Ptr<T>, %n: U64, #data: Ptr<T>, #scratch: Ptr<T>):
         %in_place : Bool = #src.ptr_eq(#data)
-        branch %in_place ? release(#scratch, #alloc) : copy_back(#src, #data, #scratch, %n, #alloc)
+        branch %in_place ? release(#scratch) : copy_back(#src, #data, #scratch, %n)
 
-    block copy_back(#src: Ptr<T>, #data: Ptr<T>, #scratch: Ptr<T>, %n: U64, #alloc: Ptr<Allocator>):
+    block copy_back(#src: Ptr<T>, #data: Ptr<T>, #scratch: Ptr<T>, %n: U64):
         copy<T>(#data, #src, %n)
-        jump release(#scratch, #alloc)
+        jump release(#scratch)
 
-    block release(#scratch: Ptr<T>, #alloc: Ptr<Allocator>):
-        #scratch.free(#alloc)
+    block release(#scratch: Ptr<T>):
+        #scratch.free(#self.alloc.load())
         return()

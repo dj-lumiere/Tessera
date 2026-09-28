@@ -46,24 +46,24 @@ require T: typename
         #alloc     : Ptr<Allocator> = #self.alloc.load()
         #new_data  : Ptr<T>         = alloc<T>(#alloc, %new_capacity)
         %failed    : Bool           = #new_data.is_null()
-        branch %failed ? panic(TrapCode.AllocFailed) : move(#new_data, %new_start, %length,
-                %new_capacity, #alloc)
+        branch %failed
+            ? panic(TrapCode.AllocFailed)
+            : move(#new_data, %new_start, %length, %new_capacity)
 
-    block move(#new_data: Ptr<T>, %new_start: U64, %length: U64, %new_capacity: U64,
-            #alloc: Ptr<Allocator>):
+    block move(#new_data: Ptr<T>, %new_start: U64, %length: U64, %new_capacity: U64):
         #old_data : Ptr<T> = #self.data.load()
         %old_null : Bool   = #old_data.is_null()
         branch %old_null
             ? install(#new_data, %new_start, %new_capacity)
-            : copy_live(#new_data, %new_start, #old_data, %length, %new_capacity, #alloc)
+            : copy_live(#new_data, %new_start, #old_data, %length, %new_capacity)
 
     block copy_live(#new_data: Ptr<T>, %new_start: U64, #old_data: Ptr<T>, %length: U64,
-            %new_capacity: U64, #alloc: Ptr<Allocator>):
+            %new_capacity: U64):
         %old_start : U64    = #self.start.load()
         #src       : Ptr<T> = #old_data[%old_start]
         #dst       : Ptr<T> = #new_data[%new_start]
         copy<T>(#dst, #src, %length)
-        #old_data.free(#alloc)
+        #old_data.free(#self.alloc.load())
         jump install(#new_data, %new_start, %new_capacity)
 
     block install(#new_data: Ptr<T>, %new_start: U64, %new_capacity: U64):
@@ -133,8 +133,7 @@ require T: typename
         %length : U64    = #self.length.load()
         %index  : U64    = %start.add(%length)
         #data[%index].store(%value)
-        %new_length : U64 = %length.add(1)
-        #self.length.store(%new_length)
+        #self.length.store(%length.add(1))
         return()
 
 routine CircularList<T>.push(#self: Ptr<Self>, %value: T) -> Void
@@ -189,8 +188,7 @@ require T: typename
         %start : U64    = #self.start.load()
         %value : T      = #data[%start].load()
         #self.start.store(%start.add(1))
-        %new_length : U64 = %length.sub(1)
-        #self.length.store(%new_length)
+        #self.length.store(%length.sub(1))
         return(%value)
 
 routine CircularList<T>.get(#self: Ptr<Self>, %index: U64) -> T
@@ -226,10 +224,8 @@ require T: typename, Equal<T>
         branch %done ? return(true) : step(%i, %len, %sa, %sb, #pa, #pb)
 
     block step(%i: U64, %len: U64, %sa: U64, %sb: U64, #pa: Ptr<T>, #pb: Ptr<T>):
-        %ia : U64  = %sa.add(%i)
-        %ib : U64  = %sb.add(%i)
-        %x  : T    = #pa[%ia].load()
-        %y  : T    = #pb[%ib].load()
+        %x  : T    = #pa[%sa.add(%i)].load()
+        %y  : T    = #pb[%sb.add(%i)].load()
         %eq : Bool = %x.eq(%y)
         branch %eq ? loop(%i.add(1), %len, %sa, %sb, #pa, #pb) : return(false)
 

@@ -10,8 +10,8 @@
 module Standard::Collections
 
 private preset NODE_VALUES: U64 = 7
-private preset NODE_CHILDREN: U64 = 8
-private preset NODE_MIN: U64 = 4
+private preset NODE_CHILDREN: U64 = NODE_VALUES.add(1)
+private preset NODE_MIN: U64 = NODE_VALUES.add(1).div(2)
 
 record SortedListNode<T>
 require T: typename
@@ -103,17 +103,25 @@ require T: typename, Equal<T>
         %la       : U64  = #self.length.load()
         %lb       : U64  = #other.length.load()
         %same_len : Bool = %la.eq(%lb)
-        branch %same_len ? loop(0, %la) : return(false)
+        branch %same_len ? continue : return(false)
+        %a_val : SortedListIter<T>      = .construct(#self)
+        %b_val : SortedListIter<T>      = .construct(#other)
+        #a     : Ptr<SortedListIter<T>> = claim
+        #b     : Ptr<SortedListIter<T>> = claim
+        #a.store(%a_val)
+        #b.store(%b_val)
+        jump loop(#a, #b)
 
-    block loop(%i: U64, %len: U64):
-        %done : Bool = %i.ge(%len)
-        branch %done ? return(true) : step(%i, %len)
+    // both have the same length, so both run out together
+    block loop(#a: Ptr<SortedListIter<T>>, #b: Ptr<SortedListIter<T>>):
+        %x    : Option<T> = #a.next()
+        %y    : Option<T> = #b.next()
+        %more : Bool      = %x.tag
+        branch %more ? compare(#a, #b, %x.value, %y.value) : return(true)
 
-    block step(%i: U64, %len: U64):
-        %x  : T    = #self.get(%i)
-        %y  : T    = #other.get(%i)
+    block compare(#a: Ptr<SortedListIter<T>>, #b: Ptr<SortedListIter<T>>, %x: T, %y: T):
         %eq : Bool = %x.eq(%y)
-        branch %eq ? loop(%i.add(1), %len) : return(false)
+        branch %eq ? loop(#a, #b) : return(false)
 
 routine SortedList<T>.get(#self: Ptr<Self>, %order: U64) -> T
 require T: typename
@@ -141,8 +149,9 @@ require T: typename
         #child       : Ptr<SortedListNode<T>> = #node.children.get(%i)
         %child_count : U64                    = #child.count()
         %in_child    : Bool                   = %order.lt(%child_count)
-        branch %in_child ? select_node(#child,
-                %order) : scan(#node, %order.sub(%child_count), %i.add(1))
+        branch %in_child
+            ? select_node(#child, %order)
+            : scan(#node, %order.sub(%child_count), %i.add(1))
 
 /// The element at %rank, the same as get: a SortedList's rank is its position. Traps if %rank >= length.
 routine SortedList<T>.get_by_rank(#self: Ptr<Self>, %rank: U64) -> T
@@ -502,12 +511,12 @@ require T: typename
         return(%value)
 
     block remove_internal(%order: U64):
-        #local_order_Ptr : Ptr<U64>  = claim
-        %slot            : U64       = #self.find_child_strict(%order, #local_order_Ptr)
-        %local_order     : U64       = #local_order_Ptr.load()
-        #child           : Ptr<Self> = #self.children.get(%slot)
-        %child_length    : U64       = #child.length.load()
-        %ok              : Bool      = %child_length.ge(NODE_MIN)
+        #local_order  : Ptr<U64>  = claim
+        %slot         : U64       = #self.find_child_strict(%order, #local_order)
+        %local_order  : U64       = #local_order.load()
+        #child        : Ptr<Self> = #self.children.get(%slot)
+        %child_length : U64       = #child.length.load()
+        %ok           : Bool      = %child_length.ge(NODE_MIN)
         branch %ok ? descend(%slot, %local_order) : rebalance(%slot, %local_order)
 
     block descend(%slot: U64, %local_order: U64):
@@ -556,11 +565,11 @@ require T: typename
         jump descend(%slot, %local_order)
 
     block do_merge_left(%slot: U64, %local_order: U64):
-        %slot_m1   : U64       = %slot.sub(1)
-        #left      : Ptr<Self> = #self.children.get(%slot_m1)
+        %left_slot : U64       = %slot.sub(1)
+        #left      : Ptr<Self> = #self.children.get(%left_slot)
         %new_local : U64       = #left.count().add(%local_order)
-        #self.merge_children(%slot_m1, #alloc)
-        jump descend(%slot.sub(1), %new_local)
+        #self.merge_children(%left_slot, #alloc)
+        jump descend(%left_slot, %new_local)
 
     block right_only(%slot: U64, %local_order: U64):
         %parent_length : U64  = #self.length.load()
