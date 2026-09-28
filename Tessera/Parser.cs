@@ -59,7 +59,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new Module(decls);
     }
 
-    /// `Std::Format`: PascalCase names joined by `::`.
+    /// `Standard::Format`: PascalCase names joined by `::`.
     private string ParseModulePath()
     {
         var parts = new List<string>();

@@ -42,7 +42,7 @@ public sealed partial class Compiler
             switch (d)
             {
                 case ModuleDecl m:
-                    // `Std::Arch` also declares `Std`.
+                    // `Standard::Core` also declares `Standard`.
                     for (int i = m.Path.IndexOf("::", StringComparison.Ordinal); i >= 0; i = m.Path.IndexOf("::", i + 2, StringComparison.Ordinal))
                         _modules.Add(m.Path[..i]);
                     _modules.Add(m.Path);
