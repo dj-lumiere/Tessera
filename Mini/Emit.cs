@@ -28,7 +28,7 @@ public sealed class Emitter
             e._out.Append('\n');
             e.EmitFunction(f);
         }
-        return e._out.ToString();
+        return Tessera.Formatter.Format(e._out.ToString());
     }
 
     // ── Types ───────────────────────────────────────────────────────────────

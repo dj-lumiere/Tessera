@@ -12,6 +12,7 @@ dotnet run --project Tessera -- run   file.tess        # build and run (the whol
 dotnet run --project Tessera -- run -O file.tess       # the same at -O2
 dotnet run --project Tessera -- check file.tess        # type-check only
 dotnet run --project Tessera -- test tests playground examples Mini/generated  # golden tests
+dotnet run --project Tessera -- fmt <files or dirs>        # format in place (--check to only list)
 ```
 
 A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines (the stdlib declares
@@ -23,17 +24,17 @@ global: every file in `stdlib/` is in scope without an import.
 ```tessera
 routine main() -> S32
     block entry():
-        %fd_val: FdWriter      = .stdout()
-        #fd:     Ptr<FdWriter> = claim
+        %fd_val : FdWriter      = .stdout()
+        #fd     : Ptr<FdWriter> = claim
         #fd.store(%fd_val)
-        #out: Ptr<BufWriter<FdWriter>> = claim
+        #out : Ptr<BufWriter<FdWriter>> = claim
         #out.construct(#fd)
-        %heap:  Allocator      = make_heap_allocator()
-        #alloc: Ptr<Allocator> = claim
+        %heap  : Allocator      = make_heap_allocator()
+        #alloc : Ptr<Allocator> = claim
         #alloc.store(%heap)
 
-        %list_val: List<S64> = .construct(#alloc)
-        #list: Ptr<List<S64>> = claim
+        %list_val : List<S64>      = .construct(#alloc)
+        #list     : Ptr<List<S64>> = claim
         #list.store(%list_val)
         #list.push(42)
         write_str(#out, "first: ")
@@ -170,7 +171,7 @@ routine sum_to(%n: U64) -> U64
         jump loop(0, 0)
 
     block loop(%i: U64, %total: U64):
-        %done: Bool = %i.ge(%n)
+        %done : Bool = %i.ge(%n)
         branch %done ? return(%total) : body(%i, %total)
 
     block body(%i: U64, %total: U64):
@@ -182,15 +183,15 @@ Iterating a collection (`next` returns `Option<T>`):
 ```tessera
 routine sum_list(#list: Ptr<List<S64>>) -> S64
     block entry():
-        %iter_val: ListIter<S64> = .construct(#list)
-        #iter: Ptr<ListIter<S64>> = claim
+        %iter_val : ListIter<S64>      = .construct(#list)
+        #iter     : Ptr<ListIter<S64>> = claim
         #iter.store(%iter_val)
         jump next(#iter, 0)
 
     block next(#iter: Ptr<ListIter<S64>>, %total: S64):
-        %item:  Option<S64> = #iter.next()
-        %more:  Bool        = %item.tag
-        %value: S64         = %item.value
+        %item  : Option<S64> = #iter.next()
+        %more  : Bool        = %item.tag
+        %value : S64         = %item.value
         branch %more ? next(#iter, %total.add(%value)) : return(%total)
 ```
 
@@ -199,8 +200,8 @@ Propagating a `Result`:
 ```tessera
 routine parse_or_zero(%text: String) -> F64
     block entry():
-        %r:  Result<F64, ParseFloatError> = F64.parse(%text)
-        %ok: Bool = %r.tag
+        %r  : Result<F64, ParseFloatError> = F64.parse(%text)
+        %ok : Bool                         = %r.tag
         branch %ok ? return(%r.value) : failed(%r.error)
 
     block failed(%error: ParseFloatError):
@@ -282,7 +283,8 @@ preset arrays (`K.get(%i)`).
 
 ## Style
 
-Follow `tessera.wiki/Style-Guide.md`. In short: one purpose per block, blocks named for what they do (`grow`,
+Run `tessera fmt` on what you write: it aligns `%name : T = value` runs, spaces blocks and routines, and wraps lines
+over 100 characters at commas. Follow `tessera.wiki/Style-Guide.md`. In short: one purpose per block, blocks named for what they do (`grow`,
 `scan`, `sift_up`), values named for what they mean (`%in_bounds`, not `%t1`), boolean names that read as
 predicates, `return(...)` inline instead of a block that only returns, and helper routines instead of one huge
 block graph. Don't add syntax sugar to shorten code; readability comes from decomposition and naming.

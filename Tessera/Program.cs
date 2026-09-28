@@ -11,6 +11,7 @@ static class Cli
           tessera run   <file.tess>... [--target <arch-os-abi>] [-O]
           tessera test  <dir>...
           tessera check [<file.tess>...]   type-check every non-generic routine, the stdlib included
+          tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
 
         All input files form one compilation unit.
         test: every <name>.tess in each <dir> is built and run. Its stdout must equal <name>.expected (if present),
@@ -34,6 +35,7 @@ static class Cli
                 "run" => Run(args[1..]),
                 "test" => Test(args[1..]),
                 "check" => Check(args[1..]),
+                "fmt" => Fmt(args[1..]),
                 _ => Fail($"unknown command '{args[0]}'\n{Usage}"),
             };
         }
@@ -47,6 +49,28 @@ static class Cli
             Console.Error.WriteLine($"error: {e.Message}");
             return 1;
         }
+    }
+
+    private static int Fmt(string[] args)
+    {
+        bool check = args.Contains("--check");
+        var paths = args.Where(a => a != "--check").ToList();
+        if (paths.Count == 0) return Fail("fmt: give files or directories to format");
+        var files = paths.SelectMany(p => Directory.Exists(p)
+            ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
+            : [p]).Order().ToList();
+        int changed = 0;
+        foreach (var file in files)
+        {
+            string text = File.ReadAllText(file);
+            string formatted = Formatter.Format(text);
+            if (formatted == text) continue;
+            changed++;
+            if (check) Console.WriteLine(file);
+            else File.WriteAllText(file, formatted);
+        }
+        if (!check) Console.WriteLine($"formatted {changed} of {files.Count} file(s)");
+        return check && changed > 0 ? 1 : 0;
     }
 
     private static int Fail(string message)

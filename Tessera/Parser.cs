@@ -41,7 +41,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             var attrs = ParseAttributes();
             bool isPrivate = IsIdent("private");
             if (isPrivate) Next();
-            if (IsIdent("const")) throw Error("'const' is now spelled 'preset'");
             if (Cur.Kind != TokenKind.Ident || !DeclKeywords.Contains(Cur.Text))
                 throw Error($"expected a declaration (routine, record, choice, preset, concept, conform), found {Describe(Cur)}");
             Decl d = Cur.Text switch
@@ -540,15 +539,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             string name = Next().Text;
             Next();
             var type = ParseType();
-            if (Is(TokenKind.ColonEq))
-                throw Error("memory is read with a method now: %v: T = #place.load()");
             Expect(TokenKind.Eq, "'='");
             return new BindStmt(name, type, ParseExpr(), pos);
         }
 
         var lhs = ParsePostfix();
-        if (Is(TokenKind.Eq))
-            throw Error("memory is written with a method now: #place.store(value)");
         if (lhs is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr))
             throw new CompileError(pos, "a statement must be a binding or a call");
         return new ExprStmt(lhs, pos);
@@ -738,7 +733,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     case "false": Next(); return new BoolLit(false, t.Pos);
                     case "null": Next(); return new NullLit(t.Pos);
                     case "claim": return ParseClaim();
-                    case "alloca": throw new CompileError(t.Pos, "'alloca' is now spelled 'claim': #p: Ptr<T> = claim");
                 }
                 return ParseNameExpr();
             default:

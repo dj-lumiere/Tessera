@@ -59,8 +59,6 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             var pos = Here();
             char c = src[_i];
 
-            if (c == ';') throw new CompileError(pos, "comments start with '//' (';' was the comment marker until 2026-09-28)");
-
             if (c == '\\' && RestOfLineIsBlank(_i + 1))
             {
                 // line continuation: drop the backslash and the newline
