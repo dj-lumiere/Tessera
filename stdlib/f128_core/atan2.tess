@@ -77,13 +77,13 @@ routine f128_cm_atan2(%y: F128, %x: F128) -> F128
     // x < 0 holds
     block with_table(%red: CmAtanReduction, %f: U128, %x_neg: Bool, %y_sign: U128):
         %placed:  CmAtanU192 = cm_atan_place(%f, %red.dn.add(1))
-        %phi:     CmAtanU192 = cm_atan_row_top(CM_ATAN_PHI0.as_ptr(), %red.isct)
+        %phi:     CmAtanU192 = cm_atan_row_top(CM_ATAN_PHI0.to_ptr(), %red.isct)
         %angle:   CmAtanU192 = cm_atan_u192_add(%phi, %placed)
         %flip:    Bool       = %red.g.bitxor(%x_neg)
         %negated: CmAtanU192 = cm_atan_u192_not(%angle)
         %signed:  CmAtanU192 = %flip ? %negated : %angle
         %q:       U64        = cm_atan2_quadrant(%red.g, %x_neg)
-        %offset:  CmAtanU192 = cm_atan_row_top(CM_ATAN_QOFF.as_ptr(), %q)
+        %offset:  CmAtanU192 = cm_atan_row_top(CM_ATAN_QOFF.to_ptr(), %q)
         %final:   CmAtanU192 = cm_atan_u192_add(%offset, %signed)
         %rounded: CmAtanRounded = cm_atan_round_fixed(%final)
         %result:  F128 = F128 { bits: %rounded.bits.bitor(%y_sign) }
@@ -143,19 +143,19 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         %a:     U128 = cm_atan_join(%ah, %a_raw.to_u64_wrap())
         %b:     U128 = cm_atan_join(%bh, %b_raw.to_u64_wrap())
         %inda:  U64  = %ah.shr(41).bitand(127)
-        %rcp:   U64  = CM_ATAN2_RCP[%inda].load()
+        %rcp:   U64  = CM_ATAN2_RCP.get(%inda)
         %rsc:   U64  = %inda.eq(0).to_u64().add(%inda.lt(43).to_u64()).add(2)
         %rcpx:  U64  = %rsc.shl(8).bitor(%rcp)
         %ratio: U64  = %bh.shr(10).mul_wrap(%rcpx).shr(41)
         %near:  Bool = %dn.lt(64)
         %scaled: U64 = %ratio.shr(%dn.min(63).to_u64())
         %k:     U64  = %near ? %scaled : 0
-        %guess: U64  = CM_ATAN2_IND[%k].load()
+        %guess: U64  = CM_ATAN2_IND.get(%k)
         jump correct(%g, %a, %b, %dn, %near, %guess)
 
     block correct(%g: Bool, %a: U128, %b: U128, %dn: S64, %near: Bool, %guess: U64):
         %next_at: U64  = %guess.add(1)
-        %next_tn: U64  = CM_ATAN_TN[%next_at].load()
+        %next_tn: U64  = CM_ATAN_TN.get(%next_at)
         %ah:      U64  = %a.shr(64).to_u64()
         %bh:      U64  = %b.shr(64).to_u64()
         %below:   Bool = %ah.shr(15).mul_wrap(%next_tn).lt(%bh.shr(%dn.min(63).to_u64()))
@@ -176,12 +176,12 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
 
     // kn = b - a t, kd = a + b t (scaled), the index moved down one when kn goes negative
     block offset(%g: Bool, %a: U128, %b: U128, %dn: S64, %first: U64):
-        %first_tn: U64  = CM_ATAN_TN[%first].load()
+        %first_tn: U64  = CM_ATAN_TN.get(%first)
         %shift:    S128 = %dn.to_s128()
         %kn_first: S128 = %b.shl(15).sub_wrap(%a.mul_wrap(%first_tn.to_u128()).shl(%shift.to_u128())).to_s128_wrap()
         %over:     Bool = %kn_first.lt(0)
         %isct:     U64  = %over ? %first.sub(1) : %first
-        %tn:       U64  = CM_ATAN_TN[%isct].load()
+        %tn:       U64  = CM_ATAN_TN.get(%isct)
         %kn_raw:   U128 = %b.shl(15).sub_wrap(%a.mul_wrap(%tn.to_u128()).shl(%shift.to_u128()))
         %kn_zero:  Bool = %kn_raw.eq(0)
         %nzn_raw:  S64  = %kn_raw.leading_zeros().to_s64()
@@ -225,7 +225,7 @@ routine cm_atan2_accurate(%red: CmAtanReduction, %x_neg: Bool, %y_sign: U128) ->
         %dn: S64 = %red.dn
         cm_atan_limbs_shr(#f, 6, %dn.add(1))
         %row:    U64 = %red.isct.mul(6)
-        #phi:    Ptr<U64> = CM_ATAN_PHI0.as_ptr()[%row]
+        #phi:    Ptr<U64> = CM_ATAN_PHI0.to_ptr()[%row]
         cm_atan_limbs_add(#f, #phi, #f, 6)
         %flip:   Bool = %red.g.bitxor(%x_neg)
         branch %flip ? negate(#f) : quadrant(#f)
@@ -237,7 +237,7 @@ routine cm_atan2_accurate(%red: CmAtanReduction, %x_neg: Bool, %y_sign: U128) ->
     block quadrant(#f: Ptr<U64>):
         %q:      U64 = cm_atan2_quadrant(%red.g, %x_neg)
         %row:    U64 = %q.mul(6)
-        #offset: Ptr<U64> = CM_ATAN_QOFF.as_ptr()[%row]
+        #offset: Ptr<U64> = CM_ATAN_QOFF.to_ptr()[%row]
         cm_atan_limbs_add(#f, #offset, #f, 6)
         jump finish(#f, -1)
 
@@ -276,8 +276,8 @@ routine cm_atan2_special(%y: F128, %x: F128) -> F128
         %idx:     U64  = %corner ? 3.sub(%xs) : %flat
         %lo_at:   U64  = %idx.mul(2)
         %hi_at:   U64  = %lo_at.add(1)
-        %ol:      U64  = CM_ATAN2_RS[%lo_at].load()
-        %oh:      U64  = CM_ATAN2_RS[%hi_at].load()
+        %ol:      U64  = CM_ATAN2_RS.get(%lo_at)
+        %oh:      U64  = CM_ATAN2_RS.get(%hi_at)
         %y_sign:  U128 = %y.bits.bitand(F128_SIGN)
         %zero:    F128 = F128 { bits: %y_sign }
         %is_zero: Bool = %oh.eq(0)

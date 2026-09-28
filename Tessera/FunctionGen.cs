@@ -271,13 +271,8 @@ public sealed class FunctionGen
             case IndexExpr ix:
             {
                 if (ix.Base is FieldExpr or IndexExpr && IsPlaceChain(ix.Base))
-                    return PlaceType(ix.Base) is ArrayType a ? a.Elem : null;
-                return Infer(ix.Base) switch
-                {
-                    PtrType { Pointee: ArrayType a } => a.Elem,
-                    PtrType { Pointee: { } t } => t,
-                    _ => null,
-                };
+                    return PlaceType(ix.Base);
+                return Infer(ix.Base) is PtrType { Pointee: { } t } ? t : null;
             }
             default:
                 return null;
@@ -338,22 +333,22 @@ public sealed class FunctionGen
             {
                 if (ix.Base is FieldExpr or IndexExpr && IsPlaceChain(ix.Base))
                 {
-                    var (arrAddr, arrType) = PlaceAddress(ix.Base);
-                    if (arrType is PtrType)
+                    var (baseAddr, baseType) = PlaceAddress(ix.Base);
+                    if (baseType is PtrType)
                         throw Err(ix.Pos, "this field holds a pointer; load it into a #value before indexing");
-                    if (arrType is not ArrayType a) throw Err(ix.Pos, $"{arrType} cannot be indexed");
+                    if (baseType is ArrayType)
+                        throw Err(ix.Pos, $"'[]' on a {baseType} steps over whole arrays; for an element use .get(i) / .set(i, v), or .to_ptr()[i]");
                     var i = EvalIndex(ix.Index);
-                    _c.EnsureTypeDefined(a);
-                    return (EmitTmp($"getelementptr {a.Llvm}, ptr {arrAddr}, i64 0, {i.Type.Llvm} {i.Op}"), a.Elem);
+                    _c.EnsureTypeDefined(baseType);
+                    return (EmitTmp($"getelementptr {baseType.Llvm}, ptr {baseAddr}, {i.Type.Llvm} {i.Op}"), baseType);
                 }
                 var b = EvalAny(ix.Base);
                 if (b.Type is not PtrType bp) throw Err(ix.Pos, $"only pointers can be indexed; this is {b.Type}");
                 if (bp.Pointee is null) throw Err(ix.Pos, "an opaque Ptr cannot be indexed; cast it to Ptr<T> first");
                 var idx = EvalIndex(ix.Index);
                 _c.EnsureTypeDefined(bp.Pointee);
-                // `#arr[i]` on a Ptr<Array<T, N>> is element i of the array (as stdlib/collection/Array.tess uses it).
-                if (bp.Pointee is ArrayType arr)
-                    return (EmitTmp($"getelementptr {arr.Llvm}, ptr {b.Op}, i64 0, {idx.Type.Llvm} {idx.Op}"), arr.Elem);
+                // `Ptr<X>[i]` is the i-th X, whatever X is: on a Ptr<Array<T, N>> it steps over whole arrays (elements
+                // are .get / .set, or .to_ptr()[i]).
                 return (EmitTmp($"getelementptr {bp.Pointee.Llvm}, ptr {b.Op}, {idx.Type.Llvm} {idx.Op}"), bp.Pointee);
             }
             default:
@@ -924,13 +919,16 @@ public sealed class FunctionGen
         for (int i = fixedCount; i < plan.Args.Count; i++) args.Add(VariadicArg(plan.Args[i]));
 
         _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);
+        // A preset array is read-only static data. Until pointers can say so (Roadmap #31), the routines that write
+        // through their receiver are refused on one by name.
+        if (sig.Decl.Name is "store" or "volatile_store" or "set" or "shift_left" or "shift_right" or "copy"
+            && plan.Receiver is { } place && PresetArrayRoot(place) is { } root)
+            throw Err(plan.Pos, $"'{root.Name}' is a preset array; it's read-only");
         if (sig.IsTemplate)
         {
             // A template isn't instantiated, so the types it names (a record read by `load`) are defined here.
             foreach (var p in sig.Params) _c.EnsureTypeDefined(p);
             _c.EnsureTypeDefined(sig.Ret);
-            if (sig.Decl.Name is "store" or "volatile_store" && plan.Receiver is { } place && PresetArrayRoot(place) is { } root)
-                throw Err(plan.Pos, $"'{root.Name}' is a preset array; it's read-only");
             return ExpandTemplate(sig, args, plan.Pos);
         }
 

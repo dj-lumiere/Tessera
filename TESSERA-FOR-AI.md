@@ -234,6 +234,14 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 - Every routine with a body starts with `block entry():`, which takes no parameters. A routine without blocks must
   be `@external`.
 
+**Naming conversions.** A conversion is `to_<type>`: `%n.to_s64()`, `%x.to_u8_wrap()`, `#arr.to_ptr()`,
+`#out.to_string()`. There is no `as_<type>`. Other ways to make a value are named for what they make.
+
+**Arrays and `[]`.** `[]` is address arithmetic: `#p[%i]` is the address of the i-th `T` of a `Ptr<T>`. On a
+`Ptr<Array<T, N>>` that is the i-th whole array, so array elements are `#arr.get(%i)` / `#arr.set(%i, %v)` (bounds
+checked), or `#arr.to_ptr()[%i].load()` unchecked. The same holds for array fields (`#node.keys.get(%i)`) and
+preset arrays (`K.get(%i)`).
+
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
 `destruct`:
 
