@@ -5,7 +5,8 @@
 ; Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
 ; MIT license: see LICENSE-CORE-MATH
 ;
-; Words are U64 and U128, and word arithmetic wraps (_wrap) like the C unsigned arithmetic it replaces.
+; Words are U64 and U128, and word arithmetic wraps (_wrap) like the C unsigned arithmetic it replaces;
+; counts and indices use the plain (overflow-checked) operations.
 ; Numbers wider than 128 bits are little-endian runs of 64-bit words (word 0 is the least significant): a
 ; CmWide3 value for 3 words, a Ptr<U64> buffer for 6 or 7. The CORE-MATH name of each
 ; helper is in its comment.
@@ -93,10 +94,10 @@ routine cm_wide_mulhi_64x128(%a: U64, %b: U128) -> U128
 ; Row %i of a table of 3-word entries.
 routine cm_wide_row3(#table: Ptr<U64>, %i: U64) -> CmWide3
     block entry():
-        %base: U64 = %i.mul_wrap(3)
+        %base: U64 = %i.mul(3)
         %w0: U64 := #table[%base]
-        %w1: U64 := #table[%base.add_wrap(1)]
-        %w2: U64 := #table[%base.add_wrap(2)]
+        %w1: U64 := #table[%base.add(1)]
+        %w2: U64 := #table[%base.add(2)]
         %r: CmWide3 = CmWide3 { w0: %w0, w1: %w1, w2: %w2 }
         return(%r)
 
@@ -106,33 +107,33 @@ routine cm_wide_mulhi_add3(%a: U64, %b: CmWide3, %c: CmWide3) -> CmWide3
         %ab0: U128 = cm_wide_mul_64x64(%a, %b.w0)
         %ab1: U128 = cm_wide_mul_64x64(%a, %b.w1)
         %ab2: U128 = cm_wide_mul_64x64(%a, %b.w2)
-        %t0:  U128 = %ab1.bitand(0xFFFFFFFFFFFFFFFF).add_wrap(%ab0.shr(64))
-        %s0:  U128 = %c.w0.to_u128().add_wrap(%t0.bitand(0xFFFFFFFFFFFFFFFF))
-        %t1:  U128 = %ab2.bitand(0xFFFFFFFFFFFFFFFF).add_wrap(%ab1.shr(64)).add_wrap(%t0.shr(64))
-        %s1:  U128 = %c.w1.to_u128().add_wrap(%t1.bitand(0xFFFFFFFFFFFFFFFF)).add_wrap(%s0.shr(64))
-        %t2:  U128 = %ab2.shr(64).add_wrap(%t1.shr(64))
-        %w2:  S64  = %c.w2.add_wrap(cm_wide_lo(%t2)).add_wrap(cm_wide_hi(%s1)).to_s64_wrap()
-        %r: CmWide3 = CmWide3 { w0: cm_wide_lo(%s0), w1: cm_wide_lo(%s1), w2: %w2.to_u64_wrap() }
+        %t0:  U128 = %ab1.bitand(0xFFFFFFFFFFFFFFFF).add(%ab0.shr(64))
+        %s0:  U128 = %c.w0.to_u128().add(%t0.bitand(0xFFFFFFFFFFFFFFFF))
+        %t1:  U128 = %ab2.bitand(0xFFFFFFFFFFFFFFFF).add(%ab1.shr(64)).add(%t0.shr(64))
+        %s1:  U128 = %c.w1.to_u128().add(%t1.bitand(0xFFFFFFFFFFFFFFFF)).add(%s0.shr(64))
+        %t2:  U128 = %ab2.shr(64).add(%t1.shr(64))
+        %w2:  U64  = %c.w2.add_wrap(cm_wide_lo(%t2)).add_wrap(cm_wide_hi(%s1))
+        %r: CmWide3 = CmWide3 { w0: cm_wide_lo(%s0), w1: cm_wide_lo(%s1), w2: %w2 }
         return(%r)
 
 ; a + b over 3 words.
 routine cm_wide_add3(%a: CmWide3, %b: CmWide3) -> CmWide3
     block entry():
-        %s0: U128 = %a.w0.to_u128().add_wrap(%b.w0.to_u128())
-        %s1: U128 = %a.w1.to_u128().add_wrap(%b.w1.to_u128()).add_wrap(%s0.shr(64))
-        %w2: S64  = %a.w2.add_wrap(%b.w2).add_wrap(cm_wide_hi(%s1)).to_s64_wrap()
-        %r: CmWide3 = CmWide3 { w0: cm_wide_lo(%s0), w1: cm_wide_lo(%s1), w2: %w2.to_u64_wrap() }
+        %s0: U128 = %a.w0.to_u128().add(%b.w0.to_u128())
+        %s1: U128 = %a.w1.to_u128().add(%b.w1.to_u128()).add(%s0.shr(64))
+        %w2: U64  = %a.w2.add_wrap(%b.w2).add_wrap(cm_wide_hi(%s1))
+        %r: CmWide3 = CmWide3 { w0: cm_wide_lo(%s0), w1: cm_wide_lo(%s1), w2: %w2 }
         return(%r)
 
 ; a - b over 3 words.
 routine cm_wide_sub3(%a: CmWide3, %b: CmWide3) -> CmWide3
     block entry():
         %borrow0:  Bool = %a.w0.lt(%b.w0)
-        %w1:       S64  = %a.w1.sub_wrap(%b.w1).sub_wrap(%borrow0.to_u64()).to_s64_wrap()
+        %w1:       U64  = %a.w1.sub_wrap(%b.w1).sub_wrap(%borrow0.to_u64())
         %ties:     Bool = %a.w1.eq(%b.w1).bitand(%borrow0)
         %borrow1:  Bool = %a.w1.lt(%b.w1).bitor(%ties)
-        %w2:       S64  = %a.w2.sub_wrap(%b.w2).sub_wrap(%borrow1.to_u64()).to_s64_wrap()
-        %r: CmWide3 = CmWide3 { w0: %a.w0.sub_wrap(%b.w0), w1: %w1.to_u64_wrap(), w2: %w2.to_u64_wrap() }
+        %w2:       U64  = %a.w2.sub_wrap(%b.w2).sub_wrap(%borrow1.to_u64())
+        %r: CmWide3 = CmWide3 { w0: %a.w0.sub_wrap(%b.w0), w1: %w1, w2: %w2 }
         return(%r)
 
 ; -- word buffers --------------------------------------------------------------
@@ -149,7 +150,7 @@ routine cm_wide_xor_words(#x: Ptr<U64>, %n: U64, %mask: U64) -> Void
     block flip(%i: U64):
         %w: U64 := #x[%i]
         #x[%i] = %w.bitxor(%mask)
-        jump next(%i.add_wrap(1))
+        jump next(%i.add(1))
 
 ; (a * b) >> 64 for a 7-word a, truncated to 7 words. #out may be #a.
 routine cm_wide_mul7w(#a: Ptr<U64>, %b: U64, #out: Ptr<U64>) -> Void
@@ -165,10 +166,10 @@ routine cm_wide_mul7w(#a: Ptr<U64>, %b: U64, #out: Ptr<U64>) -> Void
     block word(%i: U64, %prev: U64):
         %ai: U64 := #a[%i]
         %p:  U128 = cm_wide_mul_64x64(%ai, %b)
-        %s:  U128 = %p.bitand(0xFFFFFFFFFFFFFFFF).add_wrap(%prev.to_u128())
-        #out[%i.sub_wrap(1)] = cm_wide_lo(%s)
+        %s:  U128 = %p.bitand(0xFFFFFFFFFFFFFFFF).add(%prev.to_u128())
+        #out[%i.sub(1)] = cm_wide_lo(%s)
         %carried: U64 = cm_wide_hi(%p).add_wrap(cm_wide_hi(%s))
-        jump next(%i.add_wrap(1), %carried)
+        jump next(%i.add(1), %carried)
 
     block last(%prev: U64):
         #out[6] = %prev
@@ -190,9 +191,9 @@ routine cm_wide_mulhi_7x2(#a: Ptr<U64>, %b: U128, #out: Ptr<U64>) -> Void
         branch %done ? low(#shifted, #low) : shift_word(%i, #shifted, #low)
 
     block shift_word(%i: U64, #shifted: Ptr<U64>, #low: Ptr<U64>):
-        %w: U64 := #a[%i.add_wrap(1)]
+        %w: U64 := #a[%i.add(1)]
         #shifted[%i] = %w
-        jump shift(%i.add_wrap(1), #shifted, #low)
+        jump shift(%i.add(1), #shifted, #low)
 
     block low(#shifted: Ptr<U64>, #low: Ptr<U64>):
         cm_wide_mul7w(#shifted, cm_wide_lo(%b), #low)
@@ -205,9 +206,9 @@ routine cm_wide_mulhi_7x2(#a: Ptr<U64>, %b: U128, #out: Ptr<U64>) -> Void
     block add_word(%i: U64, %carry: U64, #low: Ptr<U64>):
         %o: U64 := #out[%i]
         %t: U64 := #low[%i]
-        %s: U128 = %o.to_u128().add_wrap(%t.to_u128()).add_wrap(%carry.to_u128())
+        %s: U128 = %o.to_u128().add(%t.to_u128()).add(%carry.to_u128())
         #out[%i] = cm_wide_lo(%s)
-        jump add(%i.add_wrap(1), cm_wide_hi(%s), #low)
+        jump add(%i.add(1), cm_wide_hi(%s), #low)
 
 ; arsu7: arithmetic right shift of the 7-word #x by %n bits (n < 192), in place.
 routine cm_wide_ashr7(#x: Ptr<U64>, %n: U64) -> Void
@@ -220,23 +221,23 @@ routine cm_wide_ashr7(#x: Ptr<U64>, %n: U64) -> Void
 
     ; words move down by qk and shift by rk; the top word is shifted in once the loop ends
     block move(%i: U64, %rk: U64, %lk: U64, %qk: U64, %top: S64):
-        %src:  U64  = %qk.add_wrap(%i)
+        %src:  U64  = %qk.add(%i)
         %done: Bool = %src.gt(5)
         branch %done ? fill(%rk, %qk, %top) : move_word(%i, %rk, %lk, %qk, %top)
 
     block move_word(%i: U64, %rk: U64, %lk: U64, %qk: U64, %top: S64):
-        %src:      U64  = %qk.add_wrap(%i)
+        %src:      U64  = %qk.add(%i)
         %lower:    U64 := #x[%src]
-        %upper:    U64 := #x[%src.add_wrap(1)]
+        %upper:    U64 := #x[%src.add(1)]
         %combined: U64  = %upper.shl(%lk).bitor(%lower.shr(%rk))
         %aligned:  Bool = %rk.eq(0)
         #x[%i] = %aligned ? %lower : %combined
-        jump move(%i.add_wrap(1), %rk, %lk, %qk, %top)
+        jump move(%i.add(1), %rk, %lk, %qk, %top)
 
     block fill(%rk: U64, %qk: U64, %top: S64):
-        %k: U64 = 6.sub_wrap(%qk)
+        %k: U64 = 6.sub(%qk)
         #x[%k] = %top.shr(%rk.to_s64()).to_u64_wrap()
-        jump sign(%k.add_wrap(1), %top.shr(63))
+        jump sign(%k.add(1), %top.shr(63))
 
     block sign(%k: U64, %sign: S64):
         %done: Bool = %k.ge(7)
@@ -244,7 +245,7 @@ routine cm_wide_ashr7(#x: Ptr<U64>, %n: U64) -> Void
 
     block sign_word(%k: U64, %sign: S64):
         #x[%k] = %sign.to_u64_wrap()
-        jump sign(%k.add_wrap(1), %sign)
+        jump sign(%k.add(1), %sign)
 
 ; mhu6u6u6: the approximate high 6 words of the 6x6-word product a * b: every partial-product half at or
 ; above word 6, summed exactly modulo 2^384. Word w of the result reads only words >= w of a and b, so #out
@@ -264,20 +265,20 @@ routine cm_wide_mulhi_6x6(#b: Ptr<U64>, #a: Ptr<U64>, #out: Ptr<U64>) -> Void
 
     block add_term(%w: U64, %i: U64, %sum: U128):
         %ai:      U64  := #a[%i]
-        %j:       U64   = %w.add_wrap(5).sub_wrap(%i)
+        %j:       U64   = %w.add(5).sub(%i)
         %bj:      U64  := #b[%j]
         %high:    U128  = cm_wide_mul_64x64(%ai, %bj).shr(64)
         %has_low: Bool  = %i.gt(%w)
-        %k:       U64   = %has_low ? %j.add_wrap(1) : %j
+        %k:       U64   = %has_low ? %j.add(1) : %j
         %bk:      U64  := #b[%k]
         %low:     U128  = cm_wide_mul_64x64(%ai, %bk).bitand(0xFFFFFFFFFFFFFFFF)
-        %with_hi: U128  = %sum.add_wrap(%high)
-        %next:    U128  = %has_low ? %with_hi.add_wrap(%low) : %with_hi
-        jump term(%w, %i.add_wrap(1), %next)
+        %with_hi: U128  = %sum.add(%high)
+        %next:    U128  = %has_low ? %with_hi.add(%low) : %with_hi
+        jump term(%w, %i.add(1), %next)
 
     block store(%w: U64, %sum: U128):
         #out[%w] = cm_wide_lo(%sum)
-        jump word(%w.add_wrap(1), %sum.shr(64))
+        jump word(%w.add(1), %sum.shr(64))
 
 ; mahu1u6u6: ((a * b) >> 64) + c over 6 words. #out may be #b or #c.
 routine cm_wide_mulhi_add6(%a: U64, #b: Ptr<U64>, #c: Ptr<U64>, #out: Ptr<U64>) -> Void
@@ -293,16 +294,16 @@ routine cm_wide_mulhi_add6(%a: U64, #b: Ptr<U64>, #c: Ptr<U64>, #out: Ptr<U64>) 
     ; b's word i + 1 (none past word 5) times a, plus the high word carried from word i
     block word(%i: U64, %prev: U64, %carry: U64):
         %has_next: Bool  = %i.lt(5)
-        %j:        U64   = %i.add_wrap(1).min(5)
+        %j:        U64   = %i.add(1).min(5)
         %bj:       U64  := #b[%j]
         %product:  U128  = cm_wide_mul_64x64(%a, %bj)
         %p:        U128  = %has_next ? %product : 0
-        %s:        U128  = %p.bitand(0xFFFFFFFFFFFFFFFF).add_wrap(%prev.to_u128())
+        %s:        U128  = %p.bitand(0xFFFFFFFFFFFFFFFF).add(%prev.to_u128())
         %ci:       U64  := #c[%i]
-        %s2:       U128  = %ci.to_u128().add_wrap(%s.bitand(0xFFFFFFFFFFFFFFFF)).add_wrap(%carry.to_u128())
+        %s2:       U128  = %ci.to_u128().add(%s.bitand(0xFFFFFFFFFFFFFFFF)).add(%carry.to_u128())
         #out[%i] = cm_wide_lo(%s2)
         %next_prev: U64 = cm_wide_hi(%p).add_wrap(cm_wide_hi(%s))
-        jump next(%i.add_wrap(1), %next_prev, cm_wide_hi(%s2))
+        jump next(%i.add(1), %next_prev, cm_wide_hi(%s2))
 
 ; addu6u6: a + b over 6 words. #out may be #a or #b.
 routine cm_wide_add6(#a: Ptr<U64>, #b: Ptr<U64>, #out: Ptr<U64>) -> Void
@@ -316,9 +317,9 @@ routine cm_wide_add6(#a: Ptr<U64>, #b: Ptr<U64>, #out: Ptr<U64>) -> Void
     block word(%i: U64, %carry: U64):
         %ai: U64 := #a[%i]
         %bi: U64 := #b[%i]
-        %s:  U128 = %ai.to_u128().add_wrap(%bi.to_u128()).add_wrap(%carry.to_u128())
+        %s:  U128 = %ai.to_u128().add(%bi.to_u128()).add(%carry.to_u128())
         #out[%i] = cm_wide_lo(%s)
-        jump next(%i.add_wrap(1), cm_wide_hi(%s))
+        jump next(%i.add(1), cm_wide_hi(%s))
 
 ; -- 2^f to about 380 bits -----------------------------------------------------
 
@@ -326,7 +327,7 @@ routine cm_wide_add6(#a: Ptr<U64>, #b: Ptr<U64>, #out: Ptr<U64>) -> Void
 routine cm_wide_coefficient(%i: U64) -> Ptr<U64>
     block entry():
         #table: Ptr<U64> = CM_WIDE_EC.as_ptr()
-        #row:   Ptr<U64> = #table[%i.mul_wrap(6)]
+        #row:   Ptr<U64> = #table[%i.mul(6)]
         return(#row)
 
 ; The 2^r polynomial on the top word x: Horner over every coefficient row.
@@ -338,7 +339,7 @@ routine cm_wide_pol6(%x: U64, #out: Ptr<U64>) -> Void
     block step(%i: U64):
         cm_wide_mulhi_add6(%x, #out, cm_wide_coefficient(%i), #out)
         %done: Bool = %i.eq(0)
-        branch %done ? return() : step(%i.sub_wrap(1))
+        branch %done ? return() : step(%i.sub(1))
 
 ; The same polynomial on the second word x, keeping only the terms that still matter: row r enters shifted
 ; down by r words.
@@ -355,18 +356,18 @@ routine cm_wide_pol6red(%x: U64, #out: Ptr<U64>) -> Void
 
     ; row[k] = coefficient r's word r + k, for k <= 5 - r (the words above keep the zeros they started with)
     block load_row(%r: U64, %k: U64, #row: Ptr<U64>):
-        %full: Bool = %r.add_wrap(%k).eq(6)
+        %full: Bool = %r.add(%k).eq(6)
         branch %full ? horner(%r, #row) : load_word(%r, %k, #row)
 
     block load_word(%r: U64, %k: U64, #row: Ptr<U64>):
         #coefficient: Ptr<U64> = cm_wide_coefficient(%r)
-        %w: U64 := #coefficient[%r.add_wrap(%k)]
+        %w: U64 := #coefficient[%r.add(%k)]
         #row[%k] = %w
-        jump load_row(%r, %k.add_wrap(1), #row)
+        jump load_row(%r, %k.add(1), #row)
 
     block horner(%r: U64, #row: Ptr<U64>):
         cm_wide_mulhi_add6(%x, #out, #row, #out)
-        jump step(%r.sub_wrap(1), #row)
+        jump step(%r.sub(1), #row)
 
     block last():
         cm_wide_mulhi_add6(%x, #out, cm_wide_coefficient(0), #out)
@@ -429,7 +430,7 @@ routine cm_wide_exp2_frac(#x: Ptr<U64>, #out: Ptr<U64>) -> Void
         cm_wide_mulhi_6x6(#f, #f1, #f)
         cm_wide_mulhi_6x6(#f, #f2, #f)
         #etbl: Ptr<U64> = CM_WIDE_ETBL.as_ptr()
-        #row:  Ptr<U64> = #etbl[%j.mul_wrap(6)]
+        #row:  Ptr<U64> = #etbl[%j.mul(6)]
         cm_wide_mulhi_6x6(#f, #row, #out)
         return()
 

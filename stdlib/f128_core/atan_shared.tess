@@ -60,14 +60,14 @@ routine cm_atan_mul(%a: U64, %b: U64) -> U128
 routine cm_atan_mul_high64x128(%y: U64, %x: U128) -> U128
     block entry():
         %xy0: U128 = cm_atan_mul(%x.to_u64_wrap(), %y)
-        %xy1: U128 = cm_atan_mul(%x.shr(64).to_u64_wrap(), %y)
+        %xy1: U128 = cm_atan_mul(%x.shr(64).to_u64(), %y)
         %r:   U128 = %xy1.add_wrap(%xy0.shr(64))
         return(%r)
 
 ; the approximate high 128 bits of a² (the low × low product is dropped)
 routine cm_atan_square_high(%a: U128) -> U128
     block entry():
-        %a1:    U64  = %a.shr(64).to_u64_wrap()
+        %a1:    U64  = %a.shr(64).to_u64()
         %cross: U128 = cm_atan_mul(%a1, %a.to_u64_wrap()).shr(64)
         %r:     U128 = cm_atan_mul(%a1, %a1).add_wrap(%cross).add_wrap(%cross)
         return(%r)
@@ -76,9 +76,9 @@ routine cm_atan_square_high(%a: U128) -> U128
 routine cm_atan_mul_high256(%a: U128, %b: U128) -> U128
     block entry():
         %a0:   U64  = %a.to_u64_wrap()
-        %a1:   U64  = %a.shr(64).to_u64_wrap()
+        %a1:   U64  = %a.shr(64).to_u64()
         %b0:   U64  = %b.to_u64_wrap()
-        %b1:   U64  = %b.shr(64).to_u64_wrap()
+        %b1:   U64  = %b.shr(64).to_u64()
         %a1b0: U128 = cm_atan_mul(%a1, %b0).shr(64)
         %a0b1: U128 = cm_atan_mul(%a0, %b1).shr(64)
         %r:    U128 = cm_atan_mul(%a1, %b1).add_wrap(%a1b0).add_wrap(%a0b1)
@@ -88,19 +88,19 @@ routine cm_atan_mul_high256(%a: U128, %b: U128) -> U128
 ; by one Newton step.
 routine cm_atan_reciprocal(%kd: U128) -> U128
     block entry():
-        %kdh:     U64  = %kd.shr(64).to_u64_wrap()
+        %kdh:     U64  = %kd.shr(64).to_u64()
         %kdl:     U128 = %kd.bitand(0xFFFFFFFFFFFFFFFF)
         ; r = 2^127 / kdh cut to 64 bits: all ones when the quotient is 2^64
         %power:   Bool = %kdh.eq(0x8000000000000000)
         %two127:  U128 = 0x80000000000000000000000000000000
         %quot:    U128 = %two127.div(%kdh.to_u128())
         %r:       U64  = %power ? U64.MAX : %quot.to_u64_wrap()
-        %rr:      U128 = %r.to_s128().to_u128_wrap()
+        %rr:      U128 = %r.to_u128()
         %hl:      U128 = %kdl.mul_wrap(%rr)
         %hh_raw:  S128 = %kdh.to_u128().mul_wrap(%rr).add_wrap(%hl.shr(64)).to_s128_wrap()
         %hl_top:  S128 = %hl.to_u64_wrap().shr(7).to_s128()
         %hh:      S128 = %hh_raw.shl(57).bitor(%hl_top)
-        %hh_neg:  Bool = %hh.shr(92).to_s64_wrap().lt(0)
+        %hh_neg:  Bool = %hh.shr(92).to_s64().lt(0)
         %corr:    U128 = %hh_neg ? %rr.shl(64) : 0
         %dr:      U128 = cm_atan_mul_high64x128(%r, %hh.to_u128_wrap()).sub_wrap(%corr)
         %result:  U128 = %rr.shl(64).sub_wrap(cm_sar128(%dr, 56))
@@ -114,7 +114,7 @@ routine cm_atan_class(%hi: U64, %lo: U64) -> S64
         %inf:    S64  = %t.ge(0x7FFF0000).to_s64()
         %nan:    S64  = %t.ge(0x7FFF0001).to_s64()
         %quiet:  S64  = %t.ge(0x7FFF8000).to_s64()
-        %r:      S64  = %inf.add_wrap(%nan).add_wrap(%quiet)
+        %r:      S64  = %inf.add(%nan).add(%quiet)
         return(%r)
 
 ; knh:knl shifted left until its top bit is set; 128 for zero
@@ -129,7 +129,7 @@ routine cm_atan_normalize(%knh: U64, %knl: U64) -> CmAtanNorm
 
     block from_high():
         %nzn:   S64  = %knh.leading_zeros().to_s64()
-        %spill: U64  = %knl.shr(0.sub_wrap(%nzn).bitand(63).to_u64())
+        %spill: U64  = %knl.shr(0.sub(%nzn).bitand(63).to_u64())
         %h:     U64  = %knh.shl(%nzn.to_u64()).bitor(%spill)
         %kn:    U128 = cm_atan_join(%h, %knl.shl(%nzn.to_u64()))
         %r: CmAtanNorm = CmAtanNorm { kn: %kn, shift: %nzn }
@@ -138,7 +138,7 @@ routine cm_atan_normalize(%knh: U64, %knl: U64) -> CmAtanNorm
     block from_low():
         %nzl:   S64  = %knl.leading_zeros().to_s64()
         %kn:    U128 = cm_atan_join(%knl.shl(%nzl.to_u64()), 0)
-        %shift: S64  = %nzl.add_wrap(64)
+        %shift: S64  = %nzl.add(64)
         %r: CmAtanNorm = CmAtanNorm { kn: %kn, shift: %shift }
         return(%r)
 
@@ -174,10 +174,10 @@ routine cm_atan_u192_not(%a: CmAtanU192) -> CmAtanU192
 ; the top three limbs of row `row` of a 6-limb table (PHI0 or QOFF)
 routine cm_atan_row_top(#table: Ptr<U64>, %row: U64) -> CmAtanU192
     block entry():
-        %base: U64 = %row.mul_wrap(6)
-        %i3:   U64 = %base.add_wrap(3)
-        %i4:   U64 = %base.add_wrap(4)
-        %i5:   U64 = %base.add_wrap(5)
+        %base: U64 = %row.mul(6)
+        %i3:   U64 = %base.add(3)
+        %i4:   U64 = %base.add(4)
+        %i5:   U64 = %base.add(5)
         %l3:   U64 := #table[%i3]
         %l4:   U64 := #table[%i4]
         %l5:   U64 := #table[%i5]
@@ -191,13 +191,13 @@ routine cm_atan_place(%f: U128, %dn: S64) -> CmAtanU192
         branch %near ? near() : far()
 
     block near():
-        %top: U64  = %f.shr(64).to_u64_wrap().shr(%dn.to_u64())
-        %low: U128 = %f.shl(64.sub_wrap(%dn).to_u128())
+        %top: U64  = %f.shr(64).to_u64().shr(%dn.to_u64())
+        %low: U128 = %f.shl(64.sub(%dn).to_u128())
         %r: CmAtanU192 = CmAtanU192 { top: %top, low: %low }
         return(%r)
 
     block far():
-        %shift:  S64  = %dn.sub_wrap(64)
+        %shift:  S64  = %dn.sub(64)
         %inside: Bool = %shift.lt(128)
         %moved:  U128 = %f.shr(%shift.min(127).to_u128())
         %low:    U128 = %inside ? %moved : 0
@@ -213,11 +213,11 @@ routine cm_atan_fast_core(%kn: U128, %kd: U128, %dn: S64) -> U128
         %rcp:     U128 = cm_atan_reciprocal(%kd)
         %t:       U128 = cm_atan_mul_high256(%kn, %rcp)
         %square:  U128 = cm_atan_square_high(%t)
-        %dn2:     S64  = %dn.mul_wrap(2).sub_wrap(12)
+        %dn2:     S64  = %dn.mul(2).sub(12)
         %inside:  Bool = %dn2.lt(128)
         %scaled:  U128 = %square.shr(%dn2.min(127).to_u128())
         %t2:      U128 = %inside ? %scaled : 0
-        %t2h:     U64  = %t2.shr(64).to_u64_wrap()
+        %t2h:     U64  = %t2.shr(64).to_u64()
         %c16:     U64  := CM_ATAN_C[16]
         %c14:     U64  := CM_ATAN_C[14]
         %c12:     U64  := CM_ATAN_C[12]
@@ -234,12 +234,12 @@ routine cm_atan_fast_core(%kn: U128, %kd: U128, %dn: S64) -> U128
         branch %done ? finish(%f, %t, %t2) : term(%i, %f, %t, %t2)
 
     block term(%i: U64, %f: U128, %t: U128, %t2: U128):
-        %lo_at: U64  = %i.mul_wrap(2)
-        %hi_at: U64  = %lo_at.add_wrap(1)
+        %lo_at: U64  = %i.mul(2)
+        %hi_at: U64  = %lo_at.add(1)
         %c_lo:  U64  := CM_ATAN_C[%lo_at]
         %c_hi:  U64  := CM_ATAN_C[%hi_at]
         %next:  U128 = cm_atan_join(%c_hi, %c_lo).sub_wrap(cm_atan_mul_high256(%t2, %f))
-        jump horner(%i.sub_wrap(1), %next, %t, %t2)
+        jump horner(%i.sub(1), %next, %t, %t2)
 
     block finish(%f: U128, %t: U128, %t2: U128):
         %times_t2: U128 = cm_atan_mul_high256(%t2, %f)
@@ -252,16 +252,16 @@ routine cm_atan_fast_core(%kn: U128, %kd: U128, %dn: S64) -> U128
 routine cm_atan_round_fixed(%s: CmAtanU192) -> CmAtanRounded
     block entry():
         %f2:    U64  = %s.top
-        %f1:    U64  = %s.low.shr(64).to_u64_wrap()
+        %f1:    U64  = %s.low.shr(64).to_u64()
         %k:     U64  = %f2.leading_zeros()
-        %rnd:   U64  = %f1.shr(14.sub_wrap(%k)).bitand(1)
+        %rnd:   U64  = %f1.shr(14.sub(%k)).bitand(1)
         %t:     U128 = %s.low.add_wrap(0x0CA2339C0EBEDFA4)
-        %mask:  U64  = 1.shl(15.sub_wrap(%k)).sub_wrap(1)
-        %th:    U64  = %t.shr(64).to_u64_wrap().bitand(%mask).bitxor(1.shl(14.sub_wrap(%k)))
+        %mask:  U64  = 1.shl(15.sub(%k)).sub(1)
+        %th:    U64  = %t.shr(64).to_u64().bitand(%mask).bitxor(1.shl(14.sub(%k)))
         %hard:  Bool = %th.eq(0).bitand(%t.to_u64_wrap().lt(0x194467381D7DBF48))
-        %xn:    U64  = 0x3FFF.sub_wrap(%k)
-        %v0:    U64  = %f1.shr(15.sub_wrap(%k)).bitor(%f2.shl(49.add_wrap(%k)))
-        %v1:    U64  = %f2.shr(15.sub_wrap(%k))
+        %xn:    U64  = 0x3FFF.sub(%k)
+        %v0:    U64  = %f1.shr(15.sub(%k)).bitor(%f2.shl(49.add(%k)))
+        %v1:    U64  = %f2.shr(15.sub(%k))
         %bits:  U128 = cm_atan_join(%v1, %v0).add_wrap(cm_atan_join(%xn.shl(48), %rnd))
         %r: CmAtanRounded = CmAtanRounded { hard: %hard, bits: %bits }
         return(%r)
@@ -271,35 +271,35 @@ routine cm_atan_round_fixed(%s: CmAtanU192) -> CmAtanRounded
 routine cm_atan_round_direct(%f: U128, %dn: S64) -> CmAtanRounded
     block entry():
         %w0:     U64  = %f.to_u64_wrap()
-        %w1:     U64  = %f.shr(64).to_u64_wrap()
+        %w1:     U64  = %f.shr(64).to_u64()
         %k:      S64  = %w1.leading_zeros().to_s64()
-        %xn:     S64  = 0x3FFE.sub_wrap(%dn).sub_wrap(%k)
+        %xn:     S64  = 0x3FFE.sub(%dn).sub(%k)
         %normal: Bool = %xn.gt(0)
-        branch %normal ? normal(%w0, %w1, %k.to_u64_wrap(), %xn) : subnormal()
+        branch %normal ? normal(%w0, %w1, %k.to_u64(), %xn) : subnormal()
 
     block normal(%w0: U64, %w1: U64, %k: U64, %xn: S64):
         %ones:  U64  = U64.MAX
-        %mask:  U64  = %ones.shr(49.add_wrap(%k))
-        %tl:    U64  = %w0.add_wrap(6).bitand(%mask).bitxor(1.shl(14.sub_wrap(%k)))
+        %mask:  U64  = %ones.shr(49.add(%k))
+        %tl:    U64  = %w0.add_wrap(6).bitand(%mask).bitxor(1.shl(14.sub(%k)))
         %hard:  Bool = %tl.le(15)
-        %rnd:   U64  = %w0.shr(14.sub_wrap(%k)).bitand(1)
-        %v0:    U64  = %w0.shr(15.sub_wrap(%k)).bitor(%w1.shl(49.add_wrap(%k)))
-        %v1:    U64  = %w1.shr(15.sub_wrap(%k))
+        %rnd:   U64  = %w0.shr(14.sub(%k)).bitand(1)
+        %v0:    U64  = %w0.shr(15.sub(%k)).bitor(%w1.shl(49.add(%k)))
+        %v1:    U64  = %w1.shr(15.sub(%k))
         %bits:  U128 = cm_atan_join(%v1, %v0).add_wrap(cm_atan_join(%xn.shl(48).to_u64_wrap(), %rnd))
         %r: CmAtanRounded = CmAtanRounded { hard: %hard, bits: %bits }
         return(%r)
 
     block subnormal():
-        %ks:     S64  = %dn.sub_wrap(0x3FEF)                  ; 15 - 0x3FFE + dn
+        %ks:     S64  = %dn.sub(0x3FEF)                  ; 15 - 0x3FFE + dn
         %inside: Bool = %ks.lt(128)
         branch %inside ? partial(%ks) : gone(%ks)
 
     block partial(%ks: S64):
-        %shift: U128 = %ks.to_u128_wrap()
+        %shift: U128 = %ks.to_u128()
         %below: U128 = 1.shl(%shift).sub_wrap(1)
-        %tt:    U128 = %f.add_wrap(6).bitand(%below).bitxor(1.shl(%shift.sub_wrap(1)))
+        %tt:    U128 = %f.add_wrap(6).bitand(%below).bitxor(1.shl(%shift.sub(1)))
         %hard:  Bool = %tt.le(15)
-        %rnd:   U128 = %f.shr(%shift.sub_wrap(1)).bitand(1)
+        %rnd:   U128 = %f.shr(%shift.sub(1)).bitand(1)
         %bits:  U128 = %f.shr(%shift).add_wrap(%rnd)
         %r: CmAtanRounded = CmAtanRounded { hard: %hard, bits: %bits }
         return(%r)
@@ -325,9 +325,9 @@ routine cm_atan_limbs_add_at(#o: Ptr<U64>, %pos: U64, %v: U128, %n: U64) -> Void
 
     block add_limb(%q: U64, %c: U128):
         %limb: U64  := #o[%q]
-        %s:    U128 = %limb.to_u128().add_wrap(%c.bitand(0xFFFFFFFFFFFFFFFF))
+        %s:    U128 = %limb.to_u128().add(%c.bitand(0xFFFFFFFFFFFFFFFF))
         #o[%q] = %s.to_s64_wrap().to_u64_wrap()
-        jump carry(%q.add_wrap(1), %c.shr(64).add_wrap(%s.shr(64)))
+        jump carry(%q.add(1), %c.shr(64).add(%s.shr(64)))
 
 ; dst = a + b modulo 2^(64 n); dst may be a or b
 routine cm_atan_limbs_add(#dst: Ptr<U64>, #a: Ptr<U64>, #b: Ptr<U64>, %n: U64) -> Void
@@ -341,9 +341,9 @@ routine cm_atan_limbs_add(#dst: Ptr<U64>, #a: Ptr<U64>, #b: Ptr<U64>, %n: U64) -
     block add(%i: U64, %carry: U128):
         %ai: U64  := #a[%i]
         %bi: U64  := #b[%i]
-        %s:  U128 = %ai.to_u128().add_wrap(%bi.to_u128()).add_wrap(%carry)
+        %s:  U128 = %ai.to_u128().add(%bi.to_u128()).add(%carry)
         #dst[%i] = %s.to_s64_wrap().to_u64_wrap()
-        jump limb(%i.add_wrap(1), %s.shr(64))
+        jump limb(%i.add(1), %s.shr(64))
 
 ; dst = a - b modulo 2^(64 n); dst may be a or b
 routine cm_atan_limbs_sub(#dst: Ptr<U64>, #a: Ptr<U64>, #b: Ptr<U64>, %n: U64) -> Void
@@ -359,7 +359,7 @@ routine cm_atan_limbs_sub(#dst: Ptr<U64>, #a: Ptr<U64>, #b: Ptr<U64>, %n: U64) -
         %bi: U64  := #b[%i]
         %s:  U128 = %ai.to_u128().sub_wrap(%bi.to_u128()).sub_wrap(%borrow)
         #dst[%i] = %s.to_s64_wrap().to_u64_wrap()
-        jump limb(%i.add_wrap(1), %s.shr(64).bitand(1))
+        jump limb(%i.add(1), %s.shr(64).bitand(1))
 
 ; a = ~a on the low n limbs
 routine cm_atan_limbs_not(#a: Ptr<U64>, %n: U64) -> Void
@@ -373,7 +373,7 @@ routine cm_atan_limbs_not(#a: Ptr<U64>, %n: U64) -> Void
     block flip(%i: U64):
         %ai: U64 := #a[%i]
         #a[%i] = %ai.bitnot()
-        jump limb(%i.add_wrap(1))
+        jump limb(%i.add(1))
 
 ; o = a × b exactly (na + nb limbs); o is neither a nor b
 routine cm_atan_limbs_mul(#o: Ptr<U64>, #a: Ptr<U64>, %na: U64, #b: Ptr<U64>, %nb: U64) -> Void
@@ -387,13 +387,13 @@ routine cm_atan_limbs_mul(#o: Ptr<U64>, #a: Ptr<U64>, %na: U64, #b: Ptr<U64>, %n
 
     block column(%j: U64, %i: U64):
         %row_done: Bool = %i.ge(%na)
-        branch %row_done ? row(%j.add_wrap(1)) : product(%j, %i)
+        branch %row_done ? row(%j.add(1)) : product(%j, %i)
 
     block product(%j: U64, %i: U64):
         %ai: U64 := #a[%i]
         %bj: U64 := #b[%j]
-        cm_atan_limbs_add_at(#o, %i.add_wrap(%j), cm_atan_mul(%ai, %bj), %na.add_wrap(%nb))
-        jump column(%j, %i.add_wrap(1))
+        cm_atan_limbs_add_at(#o, %i.add(%j), cm_atan_mul(%ai, %bj), %na.add(%nb))
+        jump column(%j, %i.add(1))
 
 ; o = the approximate high n limbs of the product of the n-limb a and b: the partial products of
 ; column n-1 add their high words, the columns above add in full (the mhu2u2u2 .. mhu6u6u6 and
@@ -409,46 +409,46 @@ routine cm_atan_limbs_mul_high(#o: Ptr<U64>, #a: Ptr<U64>, #b: Ptr<U64>, %n: U64
 
     block column(%j: U64, %i: U64):
         %row_done: Bool = %i.ge(%n)
-        branch %row_done ? row(%j.add_wrap(1)) : product(%j, %i)
+        branch %row_done ? row(%j.add(1)) : product(%j, %i)
 
     block product(%j: U64, %i: U64):
-        %s:      U64  = %i.add_wrap(%j)
-        %kept:   Bool = %s.add_wrap(1).ge(%n)
-        branch %kept ? keep(%j, %i, %s) : column(%j, %i.add_wrap(1))
+        %s:      U64  = %i.add(%j)
+        %kept:   Bool = %s.add(1).ge(%n)
+        branch %kept ? keep(%j, %i, %s) : column(%j, %i.add(1))
 
     block keep(%j: U64, %i: U64, %s: U64):
         %ai:     U64  := #a[%i]
         %bj:     U64  := #b[%j]
         %p:      U128 = cm_atan_mul(%ai, %bj)
-        %edge:   Bool = %s.add_wrap(1).eq(%n)
+        %edge:   Bool = %s.add(1).eq(%n)
         %value:  U128 = %edge ? %p.shr(64) : %p
         %pos:    U64  = %edge ? 0 : %s.sub_wrap(%n)
         cm_atan_limbs_add_at(#o, %pos, %value, %n)
-        jump column(%j, %i.add_wrap(1))
+        jump column(%j, %i.add(1))
 
 ; a <<= k on n limbs, k >= 0
 routine cm_atan_limbs_shl_pos(#a: Ptr<U64>, %n: S64, %k: S64) -> Void
     block entry():
-        %dst:  S64  = %n.sub_wrap(1)
-        %src:  S64  = %dst.sub_wrap(%k.shr(6))
+        %dst:  S64  = %n.sub(1)
+        %src:  S64  = %dst.sub(%k.shr(6))
         %some: Bool = %src.ge(0)
-        branch %some ? first(%dst, %src.to_u64_wrap()) : clear(%dst)
+        branch %some ? first(%dst, %src.to_u64()) : clear(%dst)
 
     block first(%dst: S64, %src: U64):
         %c: U64 := #a[%src]
-        jump move(%dst, %src.sub_wrap(1).to_s64_wrap(), %c.to_s64_wrap())
+        jump move(%dst, %src.sub(1).to_s64(), %c.to_s64_wrap())
 
     ; the limb at dst takes c's bits and the top of the next lower limb
     block move(%dst: S64, %src: S64, %c: S64):
         %s:    S64  = %k.bitand(63)
         %more: Bool = %src.ge(0)
-        branch %more ? step(%dst.to_u64_wrap(), %src.to_u64_wrap(), %c, %s) : last(%dst.to_u64_wrap(), %c, %s)
+        branch %more ? step(%dst.to_u64(), %src.to_u64(), %c, %s) : last(%dst.to_u64(), %c, %s)
 
     block step(%dst: U64, %src: U64, %c: S64, %s: S64):
         %next:  U64 := #a[%src]
-        %under: S64 = %next.shr(1).shr(%k.bitnot().bitand(63).to_u64()).to_s64_wrap()
+        %under: S64 = %next.shr(1).shr(%k.bitnot().bitand(63).to_u64()).to_s64()
         #a[%dst] = %c.shl(%s).bitor(%under).to_u64_wrap()
-        jump move(%dst.sub_wrap(1).to_s64_wrap(), %src.sub_wrap(1).to_s64_wrap(), %next.to_s64_wrap())
+        jump move(%dst.sub(1).to_s64(), %src.sub_wrap(1).to_s64_wrap(), %next.to_s64_wrap())
 
     block last(%dst: U64, %c: S64, %s: S64):
         #a[%dst] = %c.shl(%s).to_u64_wrap()
@@ -456,23 +456,23 @@ routine cm_atan_limbs_shl_pos(#a: Ptr<U64>, %n: S64, %k: S64) -> Void
 
     block clear(%dst: S64):
         %done: Bool = %dst.lt(0)
-        branch %done ? return() : clear_one(%dst.to_u64_wrap())
+        branch %done ? return() : clear_one(%dst.to_u64())
 
     block clear_one(%dst: U64):
         %zero: S64 = 0
-        #a[%dst] = %zero.to_u64_wrap()
+        #a[%dst] = %zero.to_u64()
         jump clear(%dst.sub_wrap(1).to_s64_wrap())
 
 ; a >>= k (logical) on n limbs, k >= 0
 routine cm_atan_limbs_shr_pos(#a: Ptr<U64>, %n: U64, %k: S64) -> Void
     block entry():
-        %src:  U64  = %k.shr(6).to_u64_wrap()
+        %src:  U64  = %k.shr(6).to_u64()
         %some: Bool = %src.lt(%n)
         branch %some ? first(%src) : clear(0)
 
     block first(%src: U64):
         %c: U64 := #a[%src]
-        jump move(0, %src.add_wrap(1), %c)
+        jump move(0, %src.add(1), %c)
 
     ; the limb at dst takes c's bits and the bottom of the next higher limb
     block move(%dst: U64, %src: U64, %c: U64):
@@ -483,14 +483,14 @@ routine cm_atan_limbs_shr_pos(#a: Ptr<U64>, %n: U64, %k: S64) -> Void
     block step(%dst: U64, %src: U64, %c: U64, %s: S64):
         %next:    U64  := #a[%src]
         %aligned: Bool = %s.eq(0)
-        %over:    U64  = %next.shl(0.sub_wrap(%k).bitand(63).to_u64())
+        %over:    U64  = %next.shl(0.sub(%k).bitand(63).to_u64())
         %above:   U64  = %aligned ? 0 : %over
         #a[%dst] = %c.shr(%s.to_u64()).bitor(%above)
-        jump move(%dst.add_wrap(1), %src.add_wrap(1), %next)
+        jump move(%dst.add(1), %src.add(1), %next)
 
     block last(%dst: U64, %c: U64, %s: S64):
         #a[%dst] = %c.shr(%s.to_u64())
-        jump clear(%dst.add_wrap(1))
+        jump clear(%dst.add(1))
 
     block clear(%dst: U64):
         %done: Bool = %dst.ge(%n)
@@ -498,8 +498,8 @@ routine cm_atan_limbs_shr_pos(#a: Ptr<U64>, %n: U64, %k: S64) -> Void
 
     block clear_one(%dst: U64):
         %zero: S64 = 0
-        #a[%dst] = %zero.to_u64_wrap()
-        jump clear(%dst.add_wrap(1))
+        #a[%dst] = %zero.to_u64()
+        jump clear(%dst.add(1))
 
 ; a >>= k (logical), or a <<= -k when k < 0
 routine cm_atan_limbs_shr(#a: Ptr<U64>, %n: S64, %k: S64) -> Void
@@ -508,23 +508,23 @@ routine cm_atan_limbs_shr(#a: Ptr<U64>, %n: S64, %k: S64) -> Void
         branch %left ? left() : right()
 
     block left():
-        cm_atan_limbs_shl_pos(#a, %n, 0.sub_wrap(%k))
+        cm_atan_limbs_shl_pos(#a, %n, 0.sub(%k))
         return()
 
     block right():
-        cm_atan_limbs_shr_pos(#a, %n.to_u64_wrap(), %k)
+        cm_atan_limbs_shr_pos(#a, %n.to_u64(), %k)
         return()
 
 ; a >>= k (arithmetic) on n limbs, k >= 0
 routine cm_atan_limbs_sar(#a: Ptr<U64>, %n: U64, %k: S64) -> Void
     block entry():
-        %src:  U64  = %k.shr(6).to_u64_wrap()
+        %src:  U64  = %k.shr(6).to_u64()
         %some: Bool = %src.lt(%n)
         branch %some ? first(%src) : beyond()
 
     block first(%src: U64):
         %c: U64 := #a[%src]
-        jump move(0, %src.add_wrap(1), %c)
+        jump move(0, %src.add(1), %c)
 
     block move(%dst: U64, %src: U64, %c: U64):
         %s:    S64  = %k.bitand(63)
@@ -535,11 +535,11 @@ routine cm_atan_limbs_sar(#a: Ptr<U64>, %n: U64, %k: S64) -> Void
         %next:  U64 := #a[%src]
         %above: U64 = %next.shl(1).shl(%k.bitnot().bitand(63).to_u64())
         #a[%dst] = %c.shr(%s.to_u64()).bitor(%above)
-        jump move(%dst.add_wrap(1), %src.add_wrap(1), %next)
+        jump move(%dst.add(1), %src.add(1), %next)
 
     block last(%dst: U64, %c: S64, %s: S64):
         #a[%dst] = %c.shr(%s).to_u64_wrap()
-        jump fill(%dst.add_wrap(1), %c.shr(63))
+        jump fill(%dst.add(1), %c.shr(63))
 
     block beyond():
         %top_at: U64 = %n.sub_wrap(1)
@@ -657,7 +657,7 @@ routine cm_atan_accurate_series(#t: Ptr<U64>, %dn: S64, #f: Ptr<U64>) -> Void
         #t2:  Ptr<U64> = #t2_buf.cast<U64>()
         #tmp: Ptr<U64> = #tmp_buf.cast<U64>()
         cm_atan_limbs_mul_high(#t2, #t, #t, 6)
-        cm_atan_limbs_shr(#t2, 6, %dn.mul_wrap(2).sub_wrap(14))
+        cm_atan_limbs_shr(#t2, 6, %dn.mul(2).sub(14))
         %c0: U64 := CM_ATAN_CP[0]
         %c1: U64 := CM_ATAN_CP[1]
         zero<U64>(#f, 8)
@@ -672,12 +672,12 @@ routine cm_atan_accurate_series(#t: Ptr<U64>, %dn: S64, #f: Ptr<U64>) -> Void
 
     ; f = CP[ck..] - f × t2 (the top n limbs of t2)
     block step(%n: U64, %ck: U64, %left: S64, #t2: Ptr<U64>, #tmp: Ptr<U64>):
-        %next_ck: U64      = %ck.add_wrap(%n)
+        %next_ck: U64      = %ck.add(%n)
         #t2_top:  Ptr<U64> = #t2[6.sub(%n)]
         #coef:    Ptr<U64> = CM_ATAN_CP.as_ptr()[%next_ck]
         cm_atan_limbs_mul_high(#tmp, #f, #t2_top, %n)
         cm_atan_limbs_sub(#f, #coef, #tmp, %n)
-        jump term(%n, %next_ck, %left.sub_wrap(1), #t2, #tmp)
+        jump term(%n, %next_ck, %left.sub(1), #t2, #tmp)
 
     ; one more limb on top: CP holds it right after the last coefficient used
     block widen(%n: U64, %ck: U64, #t2: Ptr<U64>, #tmp: Ptr<U64>):
@@ -685,10 +685,10 @@ routine cm_atan_accurate_series(#t: Ptr<U64>, %dn: S64, #f: Ptr<U64>) -> Void
         branch %full ? finish(#t2, #tmp) : grow(%n, %ck, #t2, #tmp)
 
     block grow(%n: U64, %ck: U64, #t2: Ptr<U64>, #tmp: Ptr<U64>):
-        %top_at: U64  = %ck.add_wrap(%n)
+        %top_at: U64  = %ck.add(%n)
         %top:    U64  := CM_ATAN_CP[%top_at]
         #f[%n] = %top
-        %wider:  U64  = %n.add_wrap(1)
+        %wider:  U64  = %n.add(1)
         %last:   Bool = %wider.eq(6)
         %terms:  S64  = %last ? 4 : 5
         jump term(%wider, %ck, %terms, #t2, #tmp)
@@ -729,9 +729,9 @@ routine cm_atan_round_limbs(#f: Ptr<U64>, %dn: S64) -> U128
         %f4:     U64  := #f[4]
         %k:      S64  = %f5.leading_zeros().to_s64()
         %v:      U128 = cm_atan_join(%f5, %f4).shl(%k.to_u128())
-        %xn:     S64  = 0x3FFE.sub_wrap(%dn).sub_wrap(%k)
+        %xn:     S64  = 0x3FFE.sub(%dn).sub(%k)
         %normal: Bool = %xn.gt(0)
-        branch %normal ? normal(%v, %xn) : subnormal(%v, 15.sub_wrap(%xn))
+        branch %normal ? normal(%v, %xn) : subnormal(%v, 15.sub(%xn))
 
     block normal(%v: U128, %xn: S64):
         %rnd:  U128 = %v.shr(14).bitand(1)
@@ -743,7 +743,7 @@ routine cm_atan_round_limbs(#f: Ptr<U64>, %dn: S64) -> U128
         branch %inside ? partial(%v, %ks.to_s128()) : gone(%v, %ks)
 
     block partial(%v: U128, %ks: S128):
-        %rnd:  U128 = %v.shr(%ks.sub_wrap(1).to_u128()).bitand(1)
+        %rnd:  U128 = %v.shr(%ks.sub(1).to_u128()).bitand(1)
         %bits: U128 = %v.shr(%ks.to_u128()).add_wrap(%rnd)
         return(%bits)
 

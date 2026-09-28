@@ -74,7 +74,7 @@ routine f128_cm_atan2(%y: F128, %x: F128) -> F128
     ; the angle ±(PHI0[isct] + f) + (0, π/2 or π): negated when exactly one of |x| < |y| and
     ; x < 0 holds
     block with_table(%red: CmAtanReduction, %f: U128, %x_neg: Bool, %y_sign: U128):
-        %placed:  CmAtanU192 = cm_atan_place(%f, %red.dn.add_wrap(1))
+        %placed:  CmAtanU192 = cm_atan_place(%f, %red.dn.add(1))
         %phi:     CmAtanU192 = cm_atan_row_top(CM_ATAN_PHI0.as_ptr(), %red.isct)
         %angle:   CmAtanU192 = cm_atan_u192_add(%phi, %placed)
         %flip:    Bool       = %red.g.bitxor(%x_neg)
@@ -112,8 +112,8 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         %g:  Bool = %xa.lt(%ya)
         %a:  U128 = %g ? %ya : %xa
         %b:  U128 = %g ? %xa : %ya
-        %xn: S64  = %a.shr(112).to_s64_wrap()
-        %yn: S64  = %b.shr(112).to_s64_wrap()
+        %xn: S64  = %a.shr(112).to_s64()
+        %yn: S64  = %b.shr(112).to_s64()
         %b_subnormal: Bool = %yn.eq(0)
         branch %b_subnormal ? scale(%g, %a, %b, %xn) : estimate(%g, %a, %b, %xn, %yn)
 
@@ -123,26 +123,26 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         %none: CmAtanReduction = CmAtanReduction {
             zero: true, g: %g, isct: 0, dn: 0, kn: 0, kd0: 0, kd1: 0, kd2: 0
         }
-        %ns_b:   S64  = %b.leading_zeros().to_s128().to_s64_wrap().sub_wrap(15)
+        %ns_b:   S64  = %b.leading_zeros().to_s64().sub(15)
         %b_norm: U128 = %b.shl(%ns_b.max(0).to_u128())
-        %yn:     S64  = 1.sub_wrap(%ns_b)
+        %yn:     S64  = 1.sub(%ns_b)
         %a_subnormal: Bool = %xn.eq(0)
-        %ns_a:   S64  = %a.leading_zeros().to_s128().to_s64_wrap().sub_wrap(15)
+        %ns_a:   S64  = %a.leading_zeros().to_s64().sub(15)
         %a_norm: U128 = %a.shl(%ns_a.max(0).to_u128())
         %a_used: U128 = %a_subnormal ? %a_norm : %a
-        %xn_used: S64 = %a_subnormal ? 1.sub_wrap(%ns_a) : %xn
+        %xn_used: S64 = %a_subnormal ? 1.sub(%ns_a) : %xn
         branch %b_zero ? return(%none) : estimate(%g, %a_used, %b_norm, %xn_used, %yn)
 
     ; the table index from b × (1/a) estimated in a few bits, then corrected by one
     block estimate(%g: Bool, %a_raw: U128, %b_raw: U128, %xn: S64, %yn: S64):
-        %dn:    S64  = %xn.sub_wrap(%yn)
-        %ah:    U64  = %a_raw.shr(64).to_u64_wrap().bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        %bh:    U64  = %b_raw.shr(64).to_u64_wrap().bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        %dn:    S64  = %xn.sub(%yn)
+        %ah:    U64  = %a_raw.shr(64).to_u64().bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        %bh:    U64  = %b_raw.shr(64).to_u64().bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
         %a:     U128 = cm_atan_join(%ah, %a_raw.to_u64_wrap())
         %b:     U128 = cm_atan_join(%bh, %b_raw.to_u64_wrap())
         %inda:  U64  = %ah.shr(41).bitand(127)
         %rcp:   U64  := CM_ATAN2_RCP[%inda]
-        %rsc:   U64  = %inda.eq(0).to_u64().add_wrap(%inda.lt(43).to_u64()).add_wrap(2)
+        %rsc:   U64  = %inda.eq(0).to_u64().add(%inda.lt(43).to_u64()).add(2)
         %rcpx:  U64  = %rsc.shl(8).bitor(%rcp)
         %ratio: U64  = %bh.shr(10).mul_wrap(%rcpx).shr(41)
         %near:  Bool = %dn.lt(64)
@@ -152,13 +152,13 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         jump correct(%g, %a, %b, %dn, %near, %guess)
 
     block correct(%g: Bool, %a: U128, %b: U128, %dn: S64, %near: Bool, %guess: U64):
-        %next_at: U64  = %guess.add_wrap(1)
+        %next_at: U64  = %guess.add(1)
         %next_tn: U64  := CM_ATAN_TN[%next_at]
-        %ah:      U64  = %a.shr(64).to_u64_wrap()
-        %bh:      U64  = %b.shr(64).to_u64_wrap()
+        %ah:      U64  = %a.shr(64).to_u64()
+        %bh:      U64  = %b.shr(64).to_u64()
         %below:   Bool = %ah.shr(15).mul_wrap(%next_tn).lt(%bh.shr(%dn.min(63).to_u64()))
         %bump:    Bool = %near.bitand(%below)
-        %isct:    U64  = %guess.add_wrap(%bump.to_u64())
+        %isct:    U64  = %guess.add(%bump.to_u64())
         %plain:   Bool = %isct.eq(0)
         branch %plain ? plain(%g, %a, %b, %dn) : offset(%g, %a, %b, %dn, %isct.min(63))
 
@@ -168,7 +168,7 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         %kd: U128 = %a.shl(15)
         %r: CmAtanReduction = CmAtanReduction {
             zero: false, g: %g, isct: 0, dn: %dn, kn: %kn,
-            kd0: 0, kd1: %kd.to_u64_wrap(), kd2: %kd.shr(64).to_u64_wrap()
+            kd0: 0, kd1: %kd.to_u64_wrap(), kd2: %kd.shr(64).to_u64()
         }
         return(%r)
 
@@ -178,16 +178,16 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         %shift:    S128 = %dn.to_s128()
         %kn_first: S128 = %b.shl(15).sub_wrap(%a.mul_wrap(%first_tn.to_u128()).shl(%shift.to_u128())).to_s128_wrap()
         %over:     Bool = %kn_first.lt(0)
-        %isct:     U64  = %over ? %first.sub_wrap(1) : %first
+        %isct:     U64  = %over ? %first.sub(1) : %first
         %tn:       U64  := CM_ATAN_TN[%isct]
         %kn_raw:   U128 = %b.shl(15).sub_wrap(%a.mul_wrap(%tn.to_u128()).shl(%shift.to_u128()))
         %kn_zero:  Bool = %kn_raw.eq(0)
-        %nzn_raw:  S64  = %kn_raw.leading_zeros().to_s128().to_s64_wrap()
+        %nzn_raw:  S64  = %kn_raw.leading_zeros().to_s64()
         %nzn:      S64  = %kn_zero ? 0 : %nzn_raw
         %kn:       U128 = %kn_raw.shl(%nzn.to_u128())
         ; kd = a × 2^(15 + dn) + b t as 192 bits, then normalized
-        %sl:       S64  = %dn.add_wrap(15)
-        %a_top:    U64  = %a.shr(64).to_u64_wrap().shr(49.sub_wrap(%dn).to_u64())
+        %sl:       S64  = %dn.add(15)
+        %a_top:    U64  = %a.shr(64).to_u64().shr(49.sub(%dn).to_u64())
         %a_shifted: CmAtanU192 = CmAtanU192 { top: %a_top, low: %a.shl(%sl.to_u128()) }
         %bt:       CmAtanU192 = CmAtanU192 { top: 0, low: %b.mul_wrap(%tn.to_u128()) }
         %kd:       CmAtanU192 = cm_atan_u192_add(%a_shifted, %bt)
@@ -196,17 +196,17 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
     ; shift kd left until its top bit is set: a whole limb first if the top one is empty
     block normalize(%g: Bool, %isct: U64, %dn: S64, %kn: U128, %nzn: S64, %kd: CmAtanU192):
         %empty:  Bool = %kd.top.eq(0)
-        %top0:   U64  = %empty ? %kd.low.shr(64).to_u64_wrap() : %kd.top
+        %top0:   U64  = %empty ? %kd.low.shr(64).to_u64() : %kd.top
         %low0:   U128 = %empty ? %kd.low.shl(64) : %kd.low
         %z:      S64  = %top0.leading_zeros().to_s64()
-        %under:  U64  = %low0.shr(64).to_u64_wrap().shr(1).shr(%z.bitnot().bitand(63).to_u64())
+        %under:  U64  = %low0.shr(64).to_u64().shr(1).shr(%z.bitnot().bitand(63).to_u64())
         %kd2:    U64  = %top0.shl(%z.to_u64()).bitor(%under)
         %low:    U128 = %low0.shl(%z.to_u128())
-        %nzd:    S64  = %empty.to_s64().mul_wrap(64).add_wrap(%z)
-        %dn_new: S64  = %nzn.sub_wrap(%nzd).add_wrap(64)
+        %nzd:    S64  = %empty.to_s64().mul(64).add(%z)
+        %dn_new: S64  = %nzn.sub(%nzd).add(64)
         %r: CmAtanReduction = CmAtanReduction {
             zero: false, g: %g, isct: %isct, dn: %dn_new, kn: %kn,
-            kd0: %low.to_s64_wrap(), kd1: %low.shr(64).to_u64_wrap(), kd2: %kd2
+            kd0: %low.to_s64_wrap(), kd1: %low.shr(64).to_u64(), kd2: %kd2
         }
         return(%r)
 
@@ -221,7 +221,7 @@ routine cm_atan2_accurate(%red: CmAtanReduction, %x_neg: Bool, %y_sign: U128) ->
 
     block with_table(#f: Ptr<U64>):
         %dn: S64 = %red.dn
-        cm_atan_limbs_shr(#f, 6, %dn.add_wrap(1))
+        cm_atan_limbs_shr(#f, 6, %dn.add(1))
         %row:    U64 = %red.isct.mul(6)
         #phi:    Ptr<U64> = CM_ATAN_PHI0.as_ptr()[%row]
         cm_atan_limbs_add(#f, #phi, #f, 6)
@@ -250,8 +250,8 @@ routine cm_atan2_special(%y: F128, %x: F128) -> F128
         %magnitude: U128 = F128_SIGN.bitnot()
         %ix:        U128 = %x.bits.bitand(%magnitude)
         %iy:        U128 = %y.bits.bitand(%magnitude)
-        %x_class:   S64  = cm_atan_class(%ix.shr(64).to_u64_wrap(), %ix.to_u64_wrap())
-        %y_class:   S64  = cm_atan_class(%iy.shr(64).to_u64_wrap(), %iy.to_u64_wrap())
+        %x_class:   S64  = cm_atan_class(%ix.shr(64).to_u64(), %ix.to_u64_wrap())
+        %y_class:   S64  = cm_atan_class(%iy.shr(64).to_u64(), %iy.to_u64_wrap())
         %signaling: Bool = %x_class.eq(2).bitor(%y_class.eq(2))
         %y_nan:     Bool = %y_class.eq(3)
         %x_nan:     Bool = %x_class.eq(3)
@@ -264,16 +264,16 @@ routine cm_atan2_special(%y: F128, %x: F128) -> F128
 
     ; the angle's row in RS: 0 or π on the x axis, π/4 or 3π/4 for two infinities, else π/2
     block angle(%x_class: S64, %y_class: S64, %iy: U128):
-        %xs:      U64  = %x.bits.shr(127).to_u64_wrap()
+        %xs:      U64  = %x.bits.shr(127).to_u64()
         %x_inf:   Bool = %x_class.eq(1)
         %y_inf:   Bool = %y_class.eq(1)
         %on_axis: U64  = %iy.eq(0) ? %xs : 4
         %steep:   U64  = %y_inf ? 4 : %on_axis
         %flat:    U64  = %x_inf ? %xs : %steep
         %corner:  Bool = %x_inf.bitand(%y_inf)
-        %idx:     U64  = %corner ? 3.sub_wrap(%xs) : %flat
-        %lo_at:   U64  = %idx.mul_wrap(2)
-        %hi_at:   U64  = %lo_at.add_wrap(1)
+        %idx:     U64  = %corner ? 3.sub(%xs) : %flat
+        %lo_at:   U64  = %idx.mul(2)
+        %hi_at:   U64  = %lo_at.add(1)
         %ol:      U64  := CM_ATAN2_RS[%lo_at]
         %oh:      U64  := CM_ATAN2_RS[%hi_at]
         %y_sign:  U128 = %y.bits.bitand(F128_SIGN)
@@ -283,12 +283,12 @@ routine cm_atan2_special(%y: F128, %x: F128) -> F128
 
     block round(%ol: U64, %oh: U64, %y_sign: U128):
         %k:     U64  = %oh.leading_zeros()
-        %rnd:   U64  = %ol.shr(14.sub_wrap(%k)).bitand(1)
-        %frac:  U64  = %ol.shl(49.add_wrap(%k))
+        %rnd:   U64  = %ol.shr(14.sub(%k)).bitand(1)
+        %frac:  U64  = %ol.shl(49.add(%k))
         %up:    U64  = %frac.eq(0) ? 0 : %rnd
-        %xn:    U64  = 0x4000.sub_wrap(%k)
-        %v0:    U64  = %ol.shr(15.sub_wrap(%k)).bitor(%oh.shl(49.add_wrap(%k)))
-        %v1:    U64  = %oh.shr(15.sub_wrap(%k))
+        %xn:    U64  = 0x4000.sub(%k)
+        %v0:    U64  = %ol.shr(15.sub(%k)).bitor(%oh.shl(49.add(%k)))
+        %v1:    U64  = %oh.shr(15.sub(%k))
         %bits:  U128 = cm_atan_join(%v1, %v0).add_wrap(cm_atan_join(%xn.shl(48), %up))
         %r:     F128 = F128 { bits: %bits.bitor(%y_sign) }
         return(%r)

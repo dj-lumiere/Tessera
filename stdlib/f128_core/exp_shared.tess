@@ -301,7 +301,7 @@ routine cm_exp_mul(%a: U64, %b: U64) -> U128
 ; The high word of the product of two words.
 routine cm_exp_mulhi(%a: U64, %b: U64) -> U64
     block entry():
-        %r: U64 = cm_exp_mul(%a, %b).shr(64).to_u64_wrap()
+        %r: U64 = cm_exp_mul(%a, %b).shr(64).to_u64()
         return(%r)
 
 ; The approximate high half of a 128 × 128-bit product: the a0 × b0 word and the
@@ -343,12 +343,12 @@ routine cm_exp_mul3x2_high(%a0: U64, %a1: U64, %a2: U64, %b: U128) -> CmExpWords
         %p20:  U128 = cm_exp_mul(%a2, %b0)
         %p21:  U128 = cm_exp_mul(%a2, %b1)
         ; column sums: word 2 of the product, then word 3 with word 2's carry
-        %low2:  U128 = %p11.bitand(CM_EXP_LOW).add_wrap(%p20.bitand(CM_EXP_LOW))
-        %col2:  U128 = %low2.add_wrap(%p01.shr(64)).add_wrap(%p10.shr(64))
-        %high3: U128 = %p11.shr(64).add_wrap(%p20.shr(64)).add_wrap(%p21.bitand(CM_EXP_LOW))
-        %col3:  U128 = %col2.shr(64).add_wrap(%high3)
-        %top:  S64  = cm_exp_hi(%col3).add_wrap(cm_exp_hi(%p21)).to_s64_wrap()
-        %r: CmExpWords3 = CmExpWords3 { w0: %col2.to_s64_wrap().to_u64_wrap(), w1: %col3.to_s64_wrap().to_u64_wrap(), w2: %top.to_u64_wrap() }
+        %low2:  U128 = %p11.bitand(CM_EXP_LOW).add(%p20.bitand(CM_EXP_LOW))
+        %col2:  U128 = %low2.add(%p01.shr(64)).add(%p10.shr(64))
+        %high3: U128 = %p11.shr(64).add(%p20.shr(64)).add(%p21.bitand(CM_EXP_LOW))
+        %col3:  U128 = %col2.shr(64).add(%high3)
+        %top:  U64  = cm_exp_hi(%col3).add_wrap(cm_exp_hi(%p21))
+        %r: CmExpWords3 = CmExpWords3 { w0: %col2.to_s64_wrap().to_u64_wrap(), w1: %col3.to_s64_wrap().to_u64_wrap(), w2: %top }
         return(%r)
 
 ; Every word of w XORed with mask: a one's complement when mask is all ones.
@@ -371,8 +371,8 @@ routine cm_exp_ashr3(%w: CmExpWords3, %n: U64) -> CmExpWords3
             _ -> shift_bits(%w.w2, %sign, %sign, %bits)
 
     block shift_bits(%s0: U64, %s1: S64, %s2: S64, %bits: U64):
-        %r0: S64 = cm_exp_funnel(%s1.to_u64_wrap(), %s0, %bits.to_s64_wrap())
-        %r1: S64 = cm_exp_funnel(%s2.to_u64_wrap(), %s1.to_u64_wrap(), %bits.to_s64_wrap())
+        %r0: S64 = cm_exp_funnel(%s1.to_u64_wrap(), %s0, %bits.to_s64())
+        %r1: S64 = cm_exp_funnel(%s2.to_u64_wrap(), %s1.to_u64_wrap(), %bits.to_s64())
         %r:  CmExpWords3 = CmExpWords3 { w0: %r0.to_u64_wrap(), w1: %r1.to_u64_wrap(), w2: %s2.shr(%bits.to_s64()).to_u64_wrap() }
         return(%r)
 
@@ -382,7 +382,7 @@ routine cm_exp_ashr3(%w: CmExpWords3, %n: U64) -> CmExpWords3
 routine cm_exp_pair(#table: Ptr<U64>, %i: U64) -> U128
     block entry():
         %low_index:  U64 = %i.shl(1)
-        %high_index: U64 = %low_index.add_wrap(1)
+        %high_index: U64 = %low_index.add(1)
         %low:  U64 := #table[%low_index]
         %high: U64 := #table[%high_index]
         %r: U128 = cm_exp_join(%high, %low)
@@ -406,7 +406,7 @@ routine cm_exp_fast(%fs: CmExpWords3) -> U128
         ; the top terms in single words, the rest by 128-bit Horner steps
         %t4:   U64  = %c8.add_wrap(cm_exp_mulhi(%z, %c10))
         %t3:   U64  = %c6.add_wrap(cm_exp_mulhi(%z, %t4))
-        %t2:   U128 = cm_exp_join(%c5, %c4).add_wrap(cm_exp_mulhi(%z, %t3).to_u128())
+        %t2:   U128 = cm_exp_join(%c5, %c4).add(cm_exp_mulhi(%z, %t3).to_u128())
         %t1:   U128 = cm_exp_mul_add_hi(%z, %t2, cm_exp_join(%c3, %c2))
         %poly: U128 = cm_exp_mul_add_hi(%z, %t1, cm_exp_join(%c1, %c0))
         %i0: U64 = %fs.w2.shr(15).bitand(31)
@@ -447,7 +447,7 @@ routine cm_exp_finish(%fs: CmExpWords3, %x: U128, %kind: U64) -> F128
     ; the leading bit (at 112 after the shift) carries into the exponent field
     block normal_round(%el: S64, %sig: U128):
         %round_bit: U128 = %sig.shr(10).bitand(1)
-        %field:     U128 = %el.add_wrap(16382).to_u128_wrap().shl(112)
+        %field:     U128 = %el.add(16382).to_u128().shl(112)
         %bits:      U128 = %sig.shr(11).add_wrap(%field).add_wrap(%round_bit)
         %r: F128 = f128_of(%bits)
         return(%r)
@@ -457,7 +457,7 @@ routine cm_exp_finish(%fs: CmExpWords3, %x: U128, %kind: U64) -> F128
         branch %some ? subnormal_check(%el, %sig, %x, %kind) : return(CM_EXP_ZERO)
 
     block subnormal_check(%el: S64, %sig: U128, %x: U128, %kind: U64):
-        %shift: U128 = -16372.sub_wrap(%el).to_u128_wrap()
+        %shift: U128 = -16372.sub(%el).to_u128()
         %half:  U128 = 1.shl(%shift)
         %mask:  U128 = 2.shl(%shift).sub_wrap(1)
         %close: Bool = %sig.add_wrap(%half).add_wrap(6).bitand(%mask).le(6)
@@ -470,7 +470,7 @@ routine cm_exp_finish(%fs: CmExpWords3, %x: U128, %kind: U64) -> F128
     ; the accurate path may land one binade lower than the fast one, so the shift
     ; can reach 127; the result then rounds from its top bit alone (RF shifted by 128)
     block subnormal_round(%el: S64, %sig: U128):
-        %shift:     S128 = -16372.sub_wrap(%el).to_s128()
+        %shift:     S128 = -16372.sub(%el).to_s128()
         %vanishes:  Bool = %shift.gt(127)
         branch %vanishes ? return(CM_EXP_ZERO) : round(%sig, %shift)
 
@@ -486,14 +486,14 @@ routine cm_exp_finish(%fs: CmExpWords3, %x: U128, %kind: U64) -> F128
 routine cm_exp_add_column(#lo: Ptr<U64>, #hi: Ptr<U64>, %slot: S64, %count: S64, %word: U64) -> Void
     block entry():
         %in_range: Bool = %slot.ge(0).bitand(%slot.lt(%count))
-        branch %in_range ? add(%slot.to_u64_wrap()) : return()
+        branch %in_range ? add(%slot.to_u64()) : return()
 
     block add(%slot: U64):
         %low:  U64 := #lo[%slot]
         %high: U64 := #hi[%slot]
-        %sum:  U128 = %low.to_u128().add_wrap(%word.to_u128())
+        %sum:  U128 = %low.to_u128().add(%word.to_u128())
         #lo[%slot] = %sum.to_u64_wrap()
-        #hi[%slot] = %high.add_wrap(cm_exp_hi(%sum))
+        #hi[%slot] = %high.add(cm_exp_hi(%sum))
         return()
 
 ; Words out[0 .. count-1] = the words p .. p+count-1 of the product of the na-word a
@@ -515,27 +515,27 @@ routine cm_exp_mul_words(#out: Ptr<U64>, #a: Ptr<U64>, %na: U64, #b: Ptr<U64>, %
 
     block column(%i: U64, %j: U64, #lo: Ptr<U64>, #hi: Ptr<U64>):
         %row_done: Bool = %j.ge(%nb)
-        branch %row_done ? row(%i.add_wrap(1), #lo, #hi) : product(%i, %j, #lo, #hi)
+        branch %row_done ? row(%i.add(1), #lo, #hi) : product(%i, %j, #lo, #hi)
 
     block product(%i: U64, %j: U64, #lo: Ptr<U64>, #hi: Ptr<U64>):
         %ai:   U64  := #a[%i]
         %bj:   U64  := #b[%j]
         %prod: U128 = cm_exp_mul(%ai, %bj)
-        %slot: U64  = %i.add_wrap(%j).sub_wrap(%p)
+        %slot: U64  = %i.add(%j).sub_wrap(%p)
         cm_exp_add_column(#lo, #hi, %slot.to_s64_wrap(), %count, %prod.to_u64_wrap())
         cm_exp_add_column(#lo, #hi, %slot.add_wrap(1).to_s64_wrap(), %count, cm_exp_hi(%prod))
-        jump column(%i, %j.add_wrap(1), #lo, #hi)
+        jump column(%i, %j.add(1), #lo, #hi)
 
     block carry(%q: S64, %carry: U128, #lo: Ptr<U64>, #hi: Ptr<U64>):
         %done: Bool = %q.ge(%count)
-        branch %done ? return() : settle(%q.to_u64_wrap(), %carry, #lo, #hi)
+        branch %done ? return() : settle(%q.to_u64(), %carry, #lo, #hi)
 
     block settle(%q: U64, %carry: U128, #lo: Ptr<U64>, #hi: Ptr<U64>):
         %low:  U64  := #lo[%q]
         %high: U64  := #hi[%q]
-        %sum:  U128 = %low.to_u128().add_wrap(%carry)
+        %sum:  U128 = %low.to_u128().add(%carry)
         #out[%q] = %sum.to_s64_wrap().to_u64_wrap()
-        jump carry(%q.add_wrap(1).to_s64_wrap(), %sum.shr(64).add_wrap(%high.to_u128()), #lo, #hi)
+        jump carry(%q.add(1).to_s64(), %sum.shr(64).add(%high.to_u128()), #lo, #hi)
 
 ; out = floor(a × b / 2^64) + c modulo 2^(64n), for a word a and n-word b and c.
 ; out may alias b or c.
@@ -549,14 +549,14 @@ routine cm_exp_mul_add_words(#out: Ptr<U64>, %a: U64, #b: Ptr<U64>, #c: Ptr<U64>
         branch %done ? return() : add(%k, %prev, %carry)
 
     block add(%k: U64, %prev: U128, %carry: U128):
-        %next_k:   U64  = %k.add_wrap(1)
+        %next_k:   U64  = %k.add(1)
         %has_next: Bool = %next_k.lt(%n)
         %index:    U64  = %has_next ? %next_k : %k
         %bn:       U64  := #b[%index]
         %product:  U128 = cm_exp_mul(%a, %bn)
         %next:     U128 = %has_next ? %product : 0
         %ck:       U64  := #c[%k]
-        %sum: U128 = %prev.shr(64).add_wrap(%next.bitand(CM_EXP_LOW)).add_wrap(%ck.to_u128()).add_wrap(%carry)
+        %sum: U128 = %prev.shr(64).add(%next.bitand(CM_EXP_LOW)).add(%ck.to_u128()).add(%carry)
         #out[%k] = %sum.to_s64_wrap().to_u64_wrap()
         jump step(%next_k, %next, %sum.shr(64))
 
@@ -572,9 +572,9 @@ routine cm_exp_add_words(#dst: Ptr<U64>, #src: Ptr<U64>, %n: U64) -> Void
     block add(%k: U64, %carry: U128):
         %d:   U64  := #dst[%k]
         %s:   U64  := #src[%k]
-        %sum: U128 = %d.to_u128().add_wrap(%s.to_u128()).add_wrap(%carry)
+        %sum: U128 = %d.to_u128().add(%s.to_u128()).add(%carry)
         #dst[%k] = %sum.to_s64_wrap().to_u64_wrap()
-        jump step(%k.add_wrap(1), %sum.shr(64))
+        jump step(%k.add(1), %sum.shr(64))
 
 ; Word i of the len-word value at o, or the sign fill past its top.
 routine cm_exp_word_or_sign(#o: Ptr<U64>, %i: U64, %len: U64, %sign: U64) -> U64
@@ -588,7 +588,7 @@ routine cm_exp_word_or_sign(#o: Ptr<U64>, %i: U64, %len: U64, %sign: U64) -> U64
 ; Arithmetic right shift of the len-word value at o by n bits, in place (n < 64 len).
 routine cm_exp_ashr_words(#o: Ptr<U64>, %len: U64, %n: U64) -> Void
     block entry():
-        %top_index: U64 = %len.sub_wrap(1)
+        %top_index: U64 = %len.sub(1)
         %top:  U64 := #o[%top_index]
         %sign: S64 = S64.from_bits(%top.bits()).shr(63)
         jump step(0, %n.shr(6), %n.bitand(63), %sign)
@@ -600,11 +600,11 @@ routine cm_exp_ashr_words(#o: Ptr<U64>, %len: U64, %n: U64) -> Void
         branch %done ? return() : shift(%j, %words, %bits, %sign)
 
     block shift(%j: U64, %words: U64, %bits: U64, %sign: S64):
-        %from: U64 = %j.add_wrap(%words)
+        %from: U64 = %j.add(%words)
         %low:  U64 = cm_exp_word_or_sign(#o, %from, %len, %sign.to_u64_wrap())
-        %high: U64 = cm_exp_word_or_sign(#o, %from.add_wrap(1), %len, %sign.to_u64_wrap())
-        #o[%j] = cm_exp_funnel(%high, %low, %bits.to_s64_wrap()).to_u64_wrap()
-        jump step(%j.add_wrap(1), %words, %bits, %sign)
+        %high: U64 = cm_exp_word_or_sign(#o, %from.add(1), %len, %sign.to_u64_wrap())
+        #o[%j] = cm_exp_funnel(%high, %low, %bits.to_s64()).to_u64_wrap()
+        jump step(%j.add(1), %words, %bits, %sign)
 
 ; -- fallback paths --------------------------------------------------------------
 
@@ -623,8 +623,8 @@ routine cm_exp_reduce_wide(#out: Ptr<U64>, %x: U128, %kind: U64, %len: U64) -> V
     block twos_complement(%sign_mask: U64, %sig: U128):
         %mask2:  U128 = cm_exp_join(%sign_mask, %sign_mask)
         %signed: U128 = %sig.bitxor(%mask2).sub_wrap(%mask2)
-        %low_index:  U64 = %len.sub_wrap(2)
-        %high_index: U64 = %len.sub_wrap(1)
+        %low_index:  U64 = %len.sub(2)
+        %high_index: U64 = %len.sub(1)
         #out[%low_index] = %signed.to_s64_wrap().to_u64_wrap()
         #out[%high_index] = cm_exp_hi(%signed)
         return()
@@ -637,7 +637,7 @@ routine cm_exp_reduce_wide(#out: Ptr<U64>, %x: U128, %kind: U64, %len: U64) -> V
         %is_e:  Bool = %kind.eq(CM_EXP_KIND_E)
         #table: Ptr<U64> = %is_e ? CM_EXP_ILN2.as_ptr() : CM_EXP_ILN102.as_ptr()
         #coef:  Ptr<U64> = #table[7.sub(%len)]
-        cm_exp_mul_words(#out, #coef, %len, #sig_ptr, 2, 2, %len.to_s64_wrap())
+        cm_exp_mul_words(#out, #coef, %len, #sig_ptr, 2, 2, %len.to_s64())
         jump flip(0, %sign_mask)
 
     block flip(%q: U64, %sign_mask: U64):
@@ -647,7 +647,7 @@ routine cm_exp_reduce_wide(#out: Ptr<U64>, %x: U128, %kind: U64, %len: U64) -> V
     block flip_word(%q: U64, %sign_mask: U64):
         %word: U64 := #out[%q]
         #out[%q] = %word.bitxor(%sign_mask)
-        jump flip(%q.add_wrap(1), %sign_mask)
+        jump flip(%q.add(1), %sign_mask)
 
 ; The reduced argument of the wide paths: len words (4 or 7) of x × log2(base),
 ; shifted to put the integer part in the top word.
@@ -656,7 +656,7 @@ routine cm_exp_wide_argument(#out: Ptr<U64>, %x: U128, %kind: U64, %len: U64) ->
         cm_exp_reduce_wide(#out, %x, %kind, %len)
         %base:     S64 := CM_EXP_WIDE_SHIFT[%kind]
         %exponent: S64 = f128_exponent(%x)
-        cm_exp_ashr_words(#out, %len, %base.sub_wrap(%exponent).to_u64_wrap())
+        cm_exp_ashr_words(#out, %len, %base.sub(%exponent).to_u64())
         return()
 
 ; Row i of a flattened table of width-word rows.
@@ -674,7 +674,7 @@ routine cm_exp_horner(#poly: Ptr<U64>, %y: U64, #coefs: Ptr<U64>, %width: U64, %
 
     block step(%i: U64):
         %done: Bool = %i.eq(0)
-        branch %done ? return() : fold(%i.sub_wrap(1))
+        branch %done ? return() : fold(%i.sub(1))
 
     block fold(%i: U64):
         cm_exp_mul_add_words(#poly, %y, #poly, cm_exp_row(#coefs, %width, %i), %width)
@@ -827,9 +827,9 @@ routine cm_exp_superaccurate_next(#out: Ptr<U64>, #arg: Ptr<U64>, #c6: Ptr<U64>)
     block add_degree(%r: U64, %y: U64, #acc: Ptr<U64>, #term: Ptr<U64>):
         zero<U64>(#term, 8)
         #coef: Ptr<U64> = #c6[%r.mul(7)]
-        copy<U64>(#term, #coef, 6.sub_wrap(%r))
+        copy<U64>(#term, #coef, 6.sub(%r))
         cm_exp_mul_add_words(#acc, %y, #acc, #term, 6)
-        jump degree(%r.sub_wrap(1), %y, #acc, #term)
+        jump degree(%r.sub(1), %y, #acc, #term)
 
     block constant(%y: U64, #acc: Ptr<U64>):
         cm_exp_mul_add_words(#out, %y, #acc, #c6, 6)

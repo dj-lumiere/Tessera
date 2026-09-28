@@ -193,7 +193,7 @@ routine Wide.neg(%self: Self) -> Self
 
 routine Wide.ldexp(%self: Self, %k: S64) -> Self
     block entry():
-        %r: Self = Self { negative: %self.negative, exp: %self.exp.add_wrap(%k), hi: %self.hi, lo: %self.lo }
+        %r: Self = Self { negative: %self.negative, exp: %self.exp.add(%k), hi: %self.hi, lo: %self.lo }
         return(%r)
 
 ; Entry %i of one of the constant tables.
@@ -224,15 +224,15 @@ routine wide_normalize(%negative: Bool, %exp: S64, %hi: U128, %lo: U64) -> Wide
 
     block limb(%exp: S64, %hi: U128, %lo: U64):
         %new_hi: U128 = %hi.shl(64).bitor(%lo.to_u128())
-        jump count(%exp.sub_wrap(64), %new_hi, 0)
+        jump count(%exp.sub(64), %new_hi, 0)
 
     block bits(%exp: S64, %hi: U128, %lo: U64):
-        %s:      S64  = %hi.leading_zeros().to_s128().to_s64_wrap()
+        %s:      S64  = %hi.leading_zeros().to_s64()
         %some:   Bool = %s.gt(0)
-        %carry:  U128 = %some ? %lo.to_u128().shr(64.sub_wrap(%s).to_u128()) : 0
+        %carry:  U128 = %some ? %lo.to_u128().shr(64.sub(%s).to_u128()) : 0
         %new_hi: U128 = %hi.shl(%s.to_u128()).bitor(%carry)
         %new_lo: U64  = %lo.shl(%s.to_u64())
-        %w: Wide = Wide { negative: %negative, exp: %exp.sub_wrap(%s), hi: %new_hi, lo: %new_lo }
+        %w: Wide = Wide { negative: %negative, exp: %exp.sub(%s), hi: %new_hi, lo: %new_lo }
         return(%w)
 
 routine wide_from_f128(%x: F128) -> Wide
@@ -262,7 +262,7 @@ routine Wide.to_f128(%self: Self) -> F128
     block round():
         %sticky: U128 = %self.lo.ne(0).to_u128()
         %sig:    U128 = %self.hi.bitor(%sticky)
-        %bits:   U128 = f128_round_pack(%self.negative, %self.exp.add_wrap(16371), %sig)
+        %bits:   U128 = f128_round_pack(%self.negative, %self.exp.add(16371), %sig)
         %r:      F128 = f128_of(%bits)
         return(%r)
 
@@ -279,13 +279,13 @@ routine wide_shift_right(%hi: U128, %lo: U64, %n: S64) -> Wide
             _ -> done(0, 0)
 
     block small():
-        %new_lo: U64  = %lo.shr(%n.to_u64()).bitor(%hi.to_u64_wrap().shl(64.sub_wrap(%n).to_u64()))
+        %new_lo: U64  = %lo.shr(%n.to_u64()).bitor(%hi.to_u64_wrap().shl(64.sub(%n).to_u64()))
         %new_hi: U128 = %hi.shr(%n.to_u128())
         jump done(%new_hi, %new_lo)
 
     ; 64 <= n < 192: lo comes from hi, and hi keeps what's left above bit 128 + n - 64
     block big():
-        %new_lo: U64  = %hi.shr(%n.sub_wrap(64).to_u128()).to_u64_wrap()
+        %new_lo: U64  = %hi.shr(%n.sub(64).to_u128()).to_u64_wrap()
         %new_hi: U128 = %n.ge(128) ? 0 : %hi.shr(%n.min(127).to_u128())
         jump done(%new_hi, %new_lo)
 
@@ -308,7 +308,7 @@ routine Wide.add(%self: Self, %other: Self) -> Self
         %a_first:   Bool = %self.exp.gt(%other.exp).bitor(%self.exp.eq(%other.exp).bitand(%a_hi_more))
         %big:   Wide = %a_first ? %self : %other
         %small: Wide = %a_first ? %other : %self
-        %aligned: Wide = wide_shift_right(%small.hi, %small.lo, %big.exp.sub_wrap(%small.exp))
+        %aligned: Wide = wide_shift_right(%small.hi, %small.lo, %big.exp.sub(%small.exp))
         %same: Bool = %big.negative.eq(%small.negative)
         branch %same ? sum(%big, %aligned) : difference(%big, %aligned)
 
@@ -326,7 +326,7 @@ routine Wide.add(%self: Self, %other: Self) -> Self
     block overflow(%big: Wide, %hi: U128, %lo: U64):
         %new_lo: U64  = %lo.shr(1).bitor(%hi.to_u64_wrap().shl(63))
         %new_hi: U128 = %hi.shr(1).bitor(F128_SIGN)
-        jump done(%big.negative, %big.exp.add_wrap(1), %new_hi, %new_lo)
+        jump done(%big.negative, %big.exp.add(1), %new_hi, %new_lo)
 
     block difference(%big: Wide, %s: Wide):
         %lo:     U64  = %big.lo.sub_wrap(%s.lo)
@@ -364,20 +364,20 @@ routine Wide.mul(%self: Self, %other: Self) -> Self
         %c0:  U128 = %a0.mul_wrap(%b0).shr(64)
         %t1:  U128 = %a0.mul_wrap(%b1)
         %t1b: U128 = %a1.mul_wrap(%b0)
-        %s1:  U128 = %c0.add_wrap(%t1.bitand(0xFFFFFFFFFFFFFFFF)).add_wrap(%t1b.bitand(0xFFFFFFFFFFFFFFFF))
-        %k1:  U128 = %s1.shr(64).add_wrap(%t1.shr(64)).add_wrap(%t1b.shr(64))
+        %s1:  U128 = %c0.add(%t1.bitand(0xFFFFFFFFFFFFFFFF)).add(%t1b.bitand(0xFFFFFFFFFFFFFFFF))
+        %k1:  U128 = %s1.shr(64).add(%t1.shr(64)).add(%t1b.shr(64))
         %t2a: U128 = %a0.mul_wrap(%b2)
         %t2b: U128 = %a1.mul_wrap(%b1)
         %t2c: U128 = %a2.mul_wrap(%b0)
-        %s2:  U128 = %k1.add_wrap(%t2a.bitand(0xFFFFFFFFFFFFFFFF)).add_wrap(%t2b.bitand(0xFFFFFFFFFFFFFFFF)).add_wrap(%t2c.bitand(0xFFFFFFFFFFFFFFFF))
-        %k2:  U128 = %s2.shr(64).add_wrap(%t2a.shr(64)).add_wrap(%t2b.shr(64)).add_wrap(%t2c.shr(64))
+        %s2:  U128 = %k1.add(%t2a.bitand(0xFFFFFFFFFFFFFFFF)).add(%t2b.bitand(0xFFFFFFFFFFFFFFFF)).add(%t2c.bitand(0xFFFFFFFFFFFFFFFF))
+        %k2:  U128 = %s2.shr(64).add(%t2a.shr(64)).add(%t2b.shr(64)).add(%t2c.shr(64))
         %t3a: U128 = %a1.mul_wrap(%b2)
         %t3b: U128 = %a2.mul_wrap(%b1)
-        %s3:  U128 = %k2.add_wrap(%t3a.bitand(0xFFFFFFFFFFFFFFFF)).add_wrap(%t3b.bitand(0xFFFFFFFFFFFFFFFF))
-        %k3:  U128 = %s3.shr(64).add_wrap(%t3a.shr(64)).add_wrap(%t3b.shr(64))
+        %s3:  U128 = %k2.add(%t3a.bitand(0xFFFFFFFFFFFFFFFF)).add(%t3b.bitand(0xFFFFFFFFFFFFFFFF))
+        %k3:  U128 = %s3.shr(64).add(%t3a.shr(64)).add(%t3b.shr(64))
         %t4:  U128 = %a2.mul_wrap(%b2)
-        %s4:  U128 = %k3.add_wrap(%t4.bitand(0xFFFFFFFFFFFFFFFF))
-        %k4:  U128 = %s4.shr(64).add_wrap(%t4.shr(64))
+        %s4:  U128 = %k3.add(%t4.bitand(0xFFFFFFFFFFFFFFFF))
+        %k4:  U128 = %s4.shr(64).add(%t4.shr(64))
         ; limbs r5 r4 r3 (and r2 for the shift): product = r5..r0 × 2^(64 i)
         %r2: U64 = %s2.to_u64_wrap()
         %r3: U64 = %s3.to_u64_wrap()
@@ -387,7 +387,7 @@ routine Wide.mul(%self: Self, %other: Self) -> Self
         %hi_full: U128 = %r5.to_u128().shl(64).bitor(%r4.to_u128())
         %hi:  U128 = %top ? %hi_full : %hi_full.shl(1).bitor(%r3.to_u128().shr(63))
         %lo:  U64  = %top ? %r3 : %r3.shl(1).bitor(%r2.shr(63))
-        %exp: S64  = %self.exp.add_wrap(%other.exp).add_wrap(%top.to_s64())
+        %exp: S64  = %self.exp.add(%other.exp).add(%top.to_s64())
         %negative: Bool = %self.negative.bitxor(%other.negative)
         %r: Wide = Wide { negative: %negative, exp: %exp, hi: %hi, lo: %lo }
         return(%r)
@@ -397,14 +397,14 @@ routine Wide.mul(%self: Self, %other: Self) -> Self
 routine Wide.div(%self: Self, %other: Self) -> Self
     block entry():
         %e:     S64  = %other.exp
-        %unit:  Wide = %other.ldexp(0.sub_wrap(%e))                ; in [1, 2)
+        %unit:  Wide = %other.ldexp(0.sub(%e))                ; in [1, 2)
         %seed:  F64  = %unit.to_f128().to_f64()
         %one64: F64  = 1.0
         %y0:    Wide = wide_from_f128(%one64.div(%seed).to_f128())
         %one:   Wide = wide_from_i64(1)
         %y1:    Wide = %y0.add(%y0.mul(%one.sub(%unit.mul(%y0))))
         %y2:    Wide = %y1.add(%y1.mul(%one.sub(%unit.mul(%y1))))
-        %r:     Wide = %self.mul(%y2).ldexp(0.sub_wrap(%e))
+        %r:     Wide = %self.mul(%y2).ldexp(0.sub(%e))
         return(%r)
 
 ; round to the nearest integer, for |self| < 2^62
@@ -433,8 +433,8 @@ routine wide_exp(%x: Wide) -> Wide
         branch %done ? return(%scaled) : step(%i, %s, %d, %q)
 
     block step(%i: S64, %s: Wide, %d: Wide, %q: S64):
-        %c: Wide = wide_table(WIDE_EXP_COEF_HI.as_ptr(), WIDE_EXP_COEF_LO.as_ptr(), WIDE_EXP_COEF_EXP.as_ptr(), %i.to_u64_wrap())
-        jump horner(%i.sub_wrap(1), %s.mul(%d).add(%c), %d, %q)
+        %c: Wide = wide_table(WIDE_EXP_COEF_HI.as_ptr(), WIDE_EXP_COEF_LO.as_ptr(), WIDE_EXP_COEF_EXP.as_ptr(), %i.to_u64())
+        jump horner(%i.sub(1), %s.mul(%d).add(%c), %d, %q)
 
 routine F128.exp(%self: Self) -> Self
     block entry():
@@ -468,10 +468,10 @@ routine F128.exp(%self: Self) -> Self
 routine wide_log(%x: Wide) -> Wide
     block entry():
         %sqrt_half: Wide = wide_const(2)
-        %fr0:  Wide = %x.ldexp(0.sub_wrap(%x.exp))                 ; in [1, 2)
+        %fr0:  Wide = %x.ldexp(0.sub(%x.exp))                 ; in [1, 2)
         %low:  Bool = %fr0.hi.lt(%sqrt_half.ldexp(1).hi)     ; below sqrt(2)?
         %fr:   Wide = %low ? %fr0 : %fr0.ldexp(-1)
-        %e:    S64  = %low ? %x.exp : %x.exp.add_wrap(1)
+        %e:    S64  = %low ? %x.exp : %x.exp.add(1)
         %one:  Wide = wide_from_i64(1)
         %t:    Wide = %fr.sub(%one).div(%fr.add(%one))
         %tt:   Wide = %t.mul(%t)
@@ -483,8 +483,8 @@ routine wide_log(%x: Wide) -> Wide
         branch %done ? finish(%s, %t, %e) : step(%i, %s, %tt, %t, %e)
 
     block step(%i: S64, %s: Wide, %tt: Wide, %t: Wide, %e: S64):
-        %c: Wide = wide_table(WIDE_LOG_COEF_HI.as_ptr(), WIDE_LOG_COEF_LO.as_ptr(), WIDE_LOG_COEF_EXP.as_ptr(), %i.to_u64_wrap())
-        jump horner(%i.sub_wrap(1), %s.mul(%tt).add(%c), %tt, %t, %e)
+        %c: Wide = wide_table(WIDE_LOG_COEF_HI.as_ptr(), WIDE_LOG_COEF_LO.as_ptr(), WIDE_LOG_COEF_EXP.as_ptr(), %i.to_u64())
+        jump horner(%i.sub(1), %s.mul(%tt).add(%c), %tt, %t, %e)
 
     block finish(%s: Wide, %t: Wide, %e: S64):
         %ln_fr: Wide = %s.mul(%t).ldexp(1)
@@ -690,16 +690,16 @@ record Reduced
 ; 64 bits of the little-endian limbs at #p starting at bit %pos (pos >= 0).
 routine limbs_bits64(#p: Ptr<U64>, %pos: S64) -> U64
     block entry():
-        %i:   U64 = %pos.shr(6).to_u64_wrap()
+        %i:   U64 = %pos.shr(6).to_u64()
         %off: S64 = %pos.bitand(63)
         %low: U64 := #p[%i]
         %aligned: Bool = %off.eq(0)
         branch %aligned ? return(%low) : join(%i, %off, %low)
 
     block join(%i: U64, %off: S64, %low: U64):
-        %j:    U64 = %i.add_wrap(1)
+        %j:    U64 = %i.add(1)
         %high: U64 := #p[%j]
-        %r:    U64 = %low.shr(%off.to_u64()).bitor(%high.shl(64.sub_wrap(%off).to_u64()))
+        %r:    U64 = %low.shr(%off.to_u64()).bitor(%high.shl(64.sub(%off).to_u64()))
         return(%r)
 
 ; Reduces |x| (finite, nonzero). With x = m × 2^(e - 112), x × 2/π keeps only
@@ -718,8 +718,8 @@ routine f128_reduce(%x: F128) -> Reduced
         return(%r)
 
     block window(%p: F128Parts):
-        %start: S64 = %p.exp.sub_wrap(114).max(0).div(64)       ; first 2/π limb used
-        %sh:    S64 = %start.add_wrap(8).mul_wrap(64).sub_wrap(%p.exp).add_wrap(112)
+        %start: S64 = %p.exp.sub(114).max(0).div(64)       ; first 2/π limb used
+        %sh:    S64 = %start.add(8).mul(64).sub(%p.exp).add(112)
         #prod:  Ptr<Array<S64, 12>> = alloca<Array<S64, 12>>
         #limbs: Ptr<U64> = #prod.cast<U64>()
         zero<U64>(#limbs, 12)
@@ -730,48 +730,48 @@ routine f128_reduce(%x: F128) -> Reduced
     ; limb k of W (little-endian) is TWO_OVER_PI[start + 7 - k]; add m × w_k at limb k
     block multiply(%k: U64, %start: S64, %sh: S64, %m0: U128, %m1: U128, #limbs: Ptr<U64>):
         %done: Bool = %k.ge(8)
-        branch %done ? extract(%sh, #limbs) : term(%k, %start.to_u64_wrap(), %sh, %m0, %m1, #limbs)
+        branch %done ? extract(%sh, #limbs) : term(%k, %start.to_u64(), %sh, %m0, %m1, #limbs)
 
     block term(%k: U64, %start: U64, %sh: S64, %m0: U128, %m1: U128, #limbs: Ptr<U64>):
-        %index: U64  = %start.add_wrap(7).sub_wrap(%k)
+        %index: U64  = %start.add(7).sub(%k)
         %w:     U64  := TWO_OVER_PI[%index]
         %wide:  U128 = %w.to_u128()
         %lo_p:  U128 = %m0.mul_wrap(%wide)
         %hi_p:  U128 = %m1.mul_wrap(%wide)
-        %k1:    U64  = %k.add_wrap(1)
-        %k2:    U64  = %k.add_wrap(2)
+        %k1:    U64  = %k.add(1)
+        %k2:    U64  = %k.add(2)
         %r0:    U64  := #limbs[%k]
         %r1:    U64  := #limbs[%k1]
         %r2:    U64  := #limbs[%k2]
         ; limb k gets lo_p's low half; limb k+1 lo_p's high half and hi_p's low; k+2 the rest
-        %s0:    U128 = %r0.to_u128().add_wrap(%lo_p.bitand(0xFFFFFFFFFFFFFFFF))
-        %s1:    U128 = %r1.to_u128().add_wrap(%lo_p.shr(64)).add_wrap(%hi_p.bitand(0xFFFFFFFFFFFFFFFF)).add_wrap(%s0.shr(64))
-        %s2:    U128 = %r2.to_u128().add_wrap(%hi_p.shr(64)).add_wrap(%s1.shr(64))
+        %s0:    U128 = %r0.to_u128().add(%lo_p.bitand(0xFFFFFFFFFFFFFFFF))
+        %s1:    U128 = %r1.to_u128().add(%lo_p.shr(64)).add(%hi_p.bitand(0xFFFFFFFFFFFFFFFF)).add(%s0.shr(64))
+        %s2:    U128 = %r2.to_u128().add(%hi_p.shr(64)).add(%s1.shr(64))
         #limbs[%k] = %s0.to_u64_wrap()
         #limbs[%k1] = %s1.to_u64_wrap()
-        #limbs[%k2] = %s2.to_u64_wrap()
-        %carry: U64  = %s2.shr(64).to_u64_wrap()
-        jump spill(%k.add_wrap(3), %carry, %k, %start, %sh, %m0, %m1, #limbs)
+        #limbs[%k2] = %s2.to_u64()
+        %carry: U64  = %s2.shr(64).to_u64()
+        jump spill(%k.add(3), %carry, %k, %start, %sh, %m0, %m1, #limbs)
 
     ; carry on up the limbs
     block spill(%j: U64, %carry: U64, %k: U64, %start: U64, %sh: S64, %m0: U128, %m1: U128, #limbs: Ptr<U64>):
         %none: Bool = %carry.eq(0).bitor(%j.ge(12))
-        branch %none ? multiply(%k.add_wrap(1), %start.to_s64_wrap(), %sh, %m0, %m1, #limbs)
+        branch %none ? multiply(%k.add(1), %start.to_s64(), %sh, %m0, %m1, #limbs)
                      : spill_one(%j, %carry, %k, %start, %sh, %m0, %m1, #limbs)
 
     block spill_one(%j: U64, %carry: U64, %k: U64, %start: U64, %sh: S64, %m0: U128, %m1: U128, #limbs: Ptr<U64>):
         %r: U64  := #limbs[%j]
         %s: U128 = %r.to_u128().add_wrap(%carry.to_u128())
         #limbs[%j] = %s.to_u64_wrap()
-        jump spill(%j.add_wrap(1), %s.shr(64).to_u64_wrap(), %k, %start, %sh, %m0, %m1, #limbs)
+        jump spill(%j.add_wrap(1), %s.shr(64).to_u64(), %k, %start, %sh, %m0, %m1, #limbs)
 
     ; quadrant: bits sh and sh+1; fraction: the 256 bits under sh, normalized
     block extract(%sh: S64, #limbs: Ptr<U64>):
         %q:  U64  = limbs_bits64(#limbs, %sh).bitand(3)
-        %a:  U64  = limbs_bits64(#limbs, %sh.sub_wrap(64))
-        %b:  U64  = limbs_bits64(#limbs, %sh.sub_wrap(128))
-        %c:  U64  = limbs_bits64(#limbs, %sh.sub_wrap(192))
-        %d:  U64  = limbs_bits64(#limbs, %sh.sub_wrap(256))
+        %a:  U64  = limbs_bits64(#limbs, %sh.sub(64))
+        %b:  U64  = limbs_bits64(#limbs, %sh.sub(128))
+        %c:  U64  = limbs_bits64(#limbs, %sh.sub(192))
+        %d:  U64  = limbs_bits64(#limbs, %sh.sub(256))
         %x_hi: U128 = %a.to_u128().shl(64).bitor(%b.to_u128())
         %x_lo: U128 = %c.to_u128().shl(64).bitor(%d.to_u128())
         ; f = X × 2^-256 in [0, 1). Past 1/2, count the next quadrant and use
@@ -806,12 +806,12 @@ routine wide_from_256(%hi: U128, %lo: U128) -> Wide
             _ -> bits(%hi, %lo, %exp)
 
     block bits(%hi: U128, %lo: U128, %exp: S64):
-        %s:      S64  = %hi.leading_zeros().to_s128().to_s64_wrap()
+        %s:      S64  = %hi.leading_zeros().to_s64()
         %some:   Bool = %s.gt(0)
-        %carry:  U128 = %some ? %lo.shr(128.sub_wrap(%s).to_u128()) : 0
+        %carry:  U128 = %some ? %lo.shr(128.sub(%s).to_u128()) : 0
         %new_hi: U128 = %hi.shl(%s.to_u128()).bitor(%carry)
         %new_lo: U128 = %lo.shl(%s.to_u128())
-        %w: Wide = Wide { negative: false, exp: %exp.sub_wrap(%s), hi: %new_hi, lo: %new_lo.shr(64).to_u64_wrap() }
+        %w: Wide = Wide { negative: false, exp: %exp.sub(%s), hi: %new_hi, lo: %new_lo.shr(64).to_u64() }
         return(%w)
 
 ; -- sin, cos, tan -------------------------------------------------------------
@@ -830,8 +830,8 @@ routine wide_sin_core(%t: Wide) -> Wide
         branch %done ? return(%r) : step(%i, %s, %u, %t)
 
     block step(%i: S64, %s: Wide, %u: Wide, %t: Wide):
-        %c: Wide = wide_table(WIDE_SIN_COEF_HI.as_ptr(), WIDE_SIN_COEF_LO.as_ptr(), WIDE_SIN_COEF_EXP.as_ptr(), %i.to_u64_wrap())
-        jump horner(%i.sub_wrap(1), %s.mul(%u).add(%c), %u, %t)
+        %c: Wide = wide_table(WIDE_SIN_COEF_HI.as_ptr(), WIDE_SIN_COEF_LO.as_ptr(), WIDE_SIN_COEF_EXP.as_ptr(), %i.to_u64())
+        jump horner(%i.sub(1), %s.mul(%u).add(%c), %u, %t)
 
 routine wide_cos_core(%t: Wide) -> Wide
     block entry():
@@ -844,8 +844,8 @@ routine wide_cos_core(%t: Wide) -> Wide
         branch %done ? return(%s) : step(%i, %s, %u)
 
     block step(%i: S64, %s: Wide, %u: Wide):
-        %c: Wide = wide_table(WIDE_COS_COEF_HI.as_ptr(), WIDE_COS_COEF_LO.as_ptr(), WIDE_COS_COEF_EXP.as_ptr(), %i.to_u64_wrap())
-        jump horner(%i.sub_wrap(1), %s.mul(%u).add(%c), %u)
+        %c: Wide = wide_table(WIDE_COS_COEF_HI.as_ptr(), WIDE_COS_COEF_LO.as_ptr(), WIDE_COS_COEF_EXP.as_ptr(), %i.to_u64())
+        jump horner(%i.sub(1), %s.mul(%u).add(%c), %u)
 
 choice TrigKind: U8
     Sin
@@ -966,7 +966,7 @@ routine Wide.sqrt(%self: Self) -> Self
 
     block root():
         %half_e: S64  = %self.exp.shr(1)                        ; floor(e / 2)
-        %unit:   Wide = %self.ldexp(0.sub_wrap(%half_e).mul_wrap(2))        ; in [1, 4)
+        %unit:   Wide = %self.ldexp(0.sub(%half_e).mul(2))        ; in [1, 4)
         %seed64: F64  = %unit.to_f128().to_f64().sqrt()
         %one64:  F64  = 1.0
         %y0:     Wide = wide_from_f128(%one64.div(%seed64).to_f128())
@@ -1020,7 +1020,7 @@ routine wide_exp_m1(%x: Wide) -> Wide
 
     block step(%i: U64, %s: Wide, %x: Wide):
         %c: Wide = wide_table(WIDE_EXP_COEF_HI.as_ptr(), WIDE_EXP_COEF_LO.as_ptr(), WIDE_EXP_COEF_EXP.as_ptr(), %i)
-        jump horner(%i.sub_wrap(1), %s.mul(%x).add(%c), %x)
+        jump horner(%i.sub(1), %s.mul(%x).add(%c), %x)
 
 ; ln(1 + x) for x > -1: below |x| = 1/4, 2 atanh(t) with t = x / (2 + x)
 ; (|t| < 0.143, inside the log series' reach); else ln of 1 + x, which is exact.
@@ -1045,8 +1045,8 @@ routine wide_ln_1p(%x: Wide) -> Wide
         branch %done ? return(%r) : step(%i, %s, %tt, %t)
 
     block step(%i: S64, %s: Wide, %tt: Wide, %t: Wide):
-        %c: Wide = wide_table(WIDE_LOG_COEF_HI.as_ptr(), WIDE_LOG_COEF_LO.as_ptr(), WIDE_LOG_COEF_EXP.as_ptr(), %i.to_u64_wrap())
-        jump horner(%i.sub_wrap(1), %s.mul(%tt).add(%c), %tt, %t)
+        %c: Wide = wide_table(WIDE_LOG_COEF_HI.as_ptr(), WIDE_LOG_COEF_LO.as_ptr(), WIDE_LOG_COEF_EXP.as_ptr(), %i.to_u64())
+        jump horner(%i.sub(1), %s.mul(%tt).add(%c), %tt, %t)
 
 ; -- atan ----------------------------------------------------------------------
 
@@ -1665,7 +1665,7 @@ routine wide_special(%i: U64) -> Wide
 routine wide_erf_cf(%z: Wide, %levels: S64) -> Wide
     block entry():
         %zz: Wide = %z.mul(%z)
-        %n0: Wide = wide_from_i64(%levels.mul_wrap(2).add_wrap(1))
+        %n0: Wide = wide_from_i64(%levels.mul(2).add(1))
         jump level(%levels, %n0, wide_one(), %zz)
 
     block level(%i: S64, %n: Wide, %d: Wide, %zz: Wide):
@@ -1673,10 +1673,10 @@ routine wide_erf_cf(%z: Wide, %levels: S64) -> Wide
         branch %done ? finish(%n, %d, %zz) : step(%i, %n, %d, %zz)
 
     block step(%i: S64, %n: Wide, %d: Wide, %zz: Wide):
-        %i2: S64  = %i.mul_wrap(2)
-        %n1: Wide = %n.mul(wide_from_i64(%i2.sub_wrap(1))).add(%zz.mul(wide_from_i64(%i2)).mul(%d))
-        %n2: Wide = %n1.mul(wide_from_i64(%i2.sub_wrap(3))).sub(%zz.mul(wide_from_i64(%i2.sub_wrap(2))).mul(%n))
-        jump level(%i.sub_wrap(2), %n2, %n1, %zz)
+        %i2: S64  = %i.mul(2)
+        %n1: Wide = %n.mul(wide_from_i64(%i2.sub(1))).add(%zz.mul(wide_from_i64(%i2)).mul(%d))
+        %n2: Wide = %n1.mul(wide_from_i64(%i2.sub(3))).sub(%zz.mul(wide_from_i64(%i2.sub(2))).mul(%n))
+        jump level(%i.sub(2), %n2, %n1, %zz)
 
     block finish(%n: Wide, %d: Wide, %zz: Wide):
         %scale: Wide = %z.mul(wide_special(0)).mul(wide_exp(%zz.neg()))
@@ -1695,8 +1695,8 @@ routine wide_erfc_cf(%z: Wide, %levels: S64) -> Wide
 
     block step(%i: S64, %n: Wide, %d: Wide, %zz: Wide):
         %n1: Wide = %n.add(wide_from_i64(%i).ldexp(-1).mul(%d))
-        %n2: Wide = %zz.mul(%n1).add(wide_from_i64(%i.sub_wrap(1)).ldexp(-1).mul(%n))
-        jump level(%i.sub_wrap(2), %n2, %n1, %zz)
+        %n2: Wide = %zz.mul(%n1).add(wide_from_i64(%i.sub(1)).ldexp(-1).mul(%n))
+        jump level(%i.sub(2), %n2, %n1, %zz)
 
     block finish(%n: Wide, %d: Wide, %zz: Wide):
         %scale: Wide = %z.mul(wide_special(0)).mul(wide_exp(%zz.neg()))
@@ -1814,7 +1814,7 @@ routine wide_ln_gamma(%x: Wide) -> LnGamma
 
     block factor(%k: S64, %fr: Wide, %w: Wide, %odd: Bool, %reflect: Bool):
         %term: Wide = wide_from_i64(%k).add(%fr)
-        jump lift(%k.add_wrap(1), %fr, %w.mul(%term), %odd, %reflect)
+        jump lift(%k.add(1), %fr, %w.mul(%term), %odd, %reflect)
 
     block lifted(%fr: Wide, %w: Wide, %odd: Bool, %reflect: Bool):
         %a: Wide = wide_from_i64(20).add(%fr)
@@ -1832,8 +1832,8 @@ routine wide_ln_gamma(%x: Wide) -> LnGamma
                      : term(%i, %s, %a, %w, %fr, %odd, %reflect, %inv_aa)
 
     block term(%i: S64, %s: Wide, %a: Wide, %w: Wide, %fr: Wide, %odd: Bool, %reflect: Bool, %inv_aa: Wide):
-        %next: Wide = %s.mul(%inv_aa).add(wide_gamma_coef(%i.to_u64_wrap()))
-        jump series(%i.sub_wrap(1), %next, %a, %w, %fr, %odd, %reflect, %inv_aa)
+        %next: Wide = %s.mul(%inv_aa).add(wide_gamma_coef(%i.to_u64()))
+        jump series(%i.sub(1), %next, %a, %w, %fr, %odd, %reflect, %inv_aa)
 
     block assemble(%s: Wide, %a: Wide, %w: Wide, %fr: Wide, %odd: Bool, %reflect: Bool):
         %half:  Wide = wide_one().ldexp(-1)
