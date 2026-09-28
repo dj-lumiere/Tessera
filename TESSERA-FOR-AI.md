@@ -24,14 +24,17 @@ global: every file in `stdlib/` is in scope without an import.
 routine main() -> S32
     block entry():
         %fd_val: FdWriter      = FdWriter.stdout()
-        #fd:     Ptr<FdWriter> = alloca<FdWriter>([%fd_val])
-        #out: Ptr<BufWriter<FdWriter>> = alloca<BufWriter<FdWriter>>
+        #fd:     Ptr<FdWriter> = alloca
+        #fd.store(%fd_val)
+        #out: Ptr<BufWriter<FdWriter>> = alloca
         #out.construct(#fd)
         %heap:  Allocator      = make_heap_allocator()
-        #alloc: Ptr<Allocator> = alloca<Allocator>([%heap])
+        #alloc: Ptr<Allocator> = alloca
+        #alloc.store(%heap)
 
         %list_val: List<S64> = List<S64>.construct(#alloc)
-        #list: Ptr<List<S64>> = alloca<List<S64>>([%list_val])
+        #list: Ptr<List<S64>> = alloca
+        #list.store(%list_val)
         #list.push(42)
         write_str(#out, "first: ")
         #list.get(0).format(#out)
@@ -65,9 +68,10 @@ routine main() -> S32
   `%free_fn: Callable<…> = #alloc.free_fn.load()`, then `%free_fn.call(#state, #raw)`. `#alloc.free_fn(...)` is an
   error.
 - A field of an SSA record value is read with plain `=`: `%tag: Bool = %opt.tag`.
-- `alloca<T>` gives stack memory; `alloca<T>([%init])` initializes it with one value, arrays included. An array
-  value comes from `Array<T, N>.from([1, 2, %x])` or `Array<T, N>.from_ptr(#first)`; a bare `[1, 2]` isn't a value. Allocas are hoisted to the routine's entry,
-  so an `alloca` inside a loop block reuses one slot.
+- `#p: Ptr<T> = alloca` gives an uninitialized stack slot; its type comes from the binding, and the value goes in
+  with `#p.store(%v)`. An array value comes from `Array<T, N>.from([1, 2, %x])` or `Array<T, N>.from_ptr(#first)`;
+  a bare `[1, 2]` isn't a value. Allocas are hoisted to the routine's entry, so an `alloca` inside a loop block
+  reuses one slot.
 - Heap memory goes through an allocator: `alloc<T>(#alloc, %count)`, `#p.free(#alloc)`.
 - `#p.cast<U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
   (`Bool`, `Char`, choices). Pointers may alias.
@@ -171,7 +175,8 @@ Iterating a collection (`next` returns `Option<T>`):
 routine sum_list(#list: Ptr<List<S64>>) -> S64
     block entry():
         %iter_val: ListIter<S64> = ListIter<S64>.construct(#list)
-        #iter: Ptr<ListIter<S64>> = alloca<ListIter<S64>>([%iter_val])
+        #iter: Ptr<ListIter<S64>> = alloca
+        #iter.store(%iter_val)
         jump next(#iter, 0)
 
     block next(#iter: Ptr<ListIter<S64>>, %total: S64):

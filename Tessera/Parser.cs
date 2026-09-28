@@ -777,15 +777,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private Expr ParseAlloca()
     {
         var pos = Next().Pos;
-        Expect(TokenKind.Lt, "'<' after alloca");
-        var type = ParseType();
-        Expect(TokenKind.Gt, "'>'");
-        if (!Accept(TokenKind.LParen)) return new AllocaExpr(type, null, pos);
-        var init = ParsePrimary();
-        if (init is not ArrayLit list)
-            throw new CompileError(init.Pos, "alloca initializers are a bracketed list: alloca<T>([value])");
-        Expect(TokenKind.RParen, "')'");
-        return new AllocaExpr(type, list.Elements, pos);
+        // alloca only reserves a slot; its type comes from the binding (`#p: Ptr<T> = alloca`), and the value goes
+        // in with a store.
+        if (Cur.Kind is TokenKind.Lt or TokenKind.LParen)
+            throw new CompileError(pos, "alloca takes no type or initializer: #p: Ptr<T> = alloca, then #p.store(%value)");
+        return new AllocaExpr(pos);
     }
 
     private List<TypeRef> ParseTypeArgsOpt()

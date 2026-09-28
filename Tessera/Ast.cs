@@ -165,13 +165,13 @@ public sealed record IndexExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
 /// `%cond ? a : b` — value select.
 public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) : Expr(Pos);
 
-/// `alloca<T>` or `alloca<T>([init, ...])`.
-public sealed record AllocaExpr(TypeRef Type, List<Expr>? Init, Pos Pos) : Expr(Pos);
+/// `alloca`: an uninitialized stack slot for one T, where `Ptr<T>` is the expected type.
+public sealed record AllocaExpr(Pos Pos) : Expr(Pos);
 
 /// `Type { field: value, ... }`.
 public sealed record RecordLit(TypeRef Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);
 
-/// `[a, b, c]` — an array value, used in alloca initializers.
+/// `[a, b, c]` — the elements of `Array<T, N>.from([...])` or of a preset array.
 public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos);
 
 // ── Terminators ─────────────────────────────────────────────────────────────

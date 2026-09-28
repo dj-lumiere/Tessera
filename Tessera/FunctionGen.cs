@@ -392,7 +392,6 @@ public sealed class FunctionGen
             case BoolLit: return BoolType.Instance;
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
-            case AllocaExpr a: return new PtrType(Resolve(a.Type));
             case RecordLit sl: return Resolve(sl.Type);
             case SelectExpr se: return Infer(se.IfTrue) ?? Infer(se.IfFalse);
             case FieldExpr or IndexExpr when IsPlaceChain(e):
@@ -457,7 +456,7 @@ public sealed class FunctionGen
                 : throw Mismatch(n.Pos, expected, "null"),
             StrLit s => StringLiteral(s, expected),
             ValueRef r => Lookup(r),
-            AllocaExpr a => EvalAlloca(a),
+            AllocaExpr a => EvalAlloca(a, expected),
             FieldExpr or IndexExpr when IsPlaceChain(e) => PlaceAsValue(e),
             FieldExpr f => ExtractField(f),
             SelectExpr s => EvalSelect(s, expected),
@@ -530,22 +529,13 @@ public sealed class FunctionGen
         throw Mismatch(s.Pos, expected, "a string literal");
     }
 
-    private Val EvalAlloca(AllocaExpr a)
+    private Val EvalAlloca(AllocaExpr a, DType expected)
     {
-        var t = Resolve(a.Type);
+        if (expected is not PtrType { Pointee: { } t })
+            throw Err(a.Pos, $"alloca needs a typed pointer to fill, such as #p: Ptr<T> = alloca; found {expected}");
         _c.EnsureTypeDefined(t);
         string slot = $"%s{_allocas.Count}";
         _allocas.Add($"{slot} = alloca {t.Llvm}");
-        if (a.Init is { } init)
-        {
-            // The initializer is one value for every type, arrays included (open question #39).
-            if (init.Count != 1)
-                throw Err(a.Pos, t is ArrayType
-                    ? $"an alloca initializer is one value; build the array with {t}.from([...])"
-                    : $"a {t} slot takes a one-element initializer list");
-            var v = Eval(init[0], t);
-            Line($"store {t.Llvm} {v.Op}, ptr {slot}");
-        }
         return new Val(slot, new PtrType(t));
     }
 
