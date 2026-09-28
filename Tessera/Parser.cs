@@ -626,12 +626,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 var value = ParsePostfix();
                 Expect(TokenKind.Colon, "':'");
                 ExpectLineEnd();
-                var arms = new List<(Expr?, Target)>();
+                var arms = new List<(List<Expr>?, Target)>();
                 while (!AtBlockEnd() && LineIsArm())
                 {
-                    Expr? c = Accept(TokenKind.Underscore) ? null : ParsePostfix();
+                    // `_`, or one or more constants: `b' ', b'	' -> skip()`
+                    List<Expr>? cases = null;
+                    if (!Accept(TokenKind.Underscore))
+                    {
+                        cases = [];
+                        do cases.Add(ParsePostfix());
+                        while (Accept(TokenKind.Comma));
+                    }
                     Expect(TokenKind.Arrow, "'->'");
-                    arms.Add((c, ParseTarget()));
+                    arms.Add((cases, ParseTarget()));
                     ExpectLineEnd();
                 }
                 if (arms.Count == 0) throw new CompileError(pos, "when needs at least one arm");

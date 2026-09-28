@@ -1215,21 +1215,25 @@ public sealed class FunctionGen
                 string? defaultLabel = null;
                 var cases = new List<string>();
                 var seen = new HashSet<string>();
-                foreach (var (caseExpr, target) in sw.Arms)
+                foreach (var (caseExprs, target) in sw.Arms)
                 {
                     string label = ArmLabel(target);
-                    if (caseExpr is null)
+                    if (caseExprs is null)
                     {
                         if (defaultLabel is not null) throw Err(target.Pos, "when has two '_' arms");
                         defaultLabel = label;
                         continue;
                     }
-                    if (caseExpr is not (IntLit or TypedIntLit or PresetRef))
-                        throw Err(caseExpr.Pos, "when cases must be integer literals, presets, or choice members");
-                    var cv = Eval(caseExpr, v.Type);
-                    if (!long.TryParse(cv.Op, out _)) throw Err(caseExpr.Pos, "when cases must be constant integers");
-                    if (!seen.Add(cv.Op)) throw Err(caseExpr.Pos, $"duplicate when case {cv.Op}");
-                    cases.Add($"{v.Type.Llvm} {cv.Op}, label %{label}");
+                    // several values in one arm share its label; a value in two arms is an error
+                    foreach (var caseExpr in caseExprs)
+                    {
+                        if (caseExpr is not (IntLit or TypedIntLit or PresetRef))
+                            throw Err(caseExpr.Pos, "when cases must be integer literals, presets, or choice members");
+                        var cv = Eval(caseExpr, v.Type);
+                        if (!long.TryParse(cv.Op, out _)) throw Err(caseExpr.Pos, "when cases must be constant integers");
+                        if (!seen.Add(cv.Op)) throw Err(caseExpr.Pos, $"duplicate when case {cv.Op}");
+                        cases.Add($"{v.Type.Llvm} {cv.Op}, label %{label}");
+                    }
                 }
                 if (defaultLabel is null && v.Type is ChoiceType en)
                 {

@@ -7,6 +7,8 @@ namespace Tessera;
 /// - indentation is spaces, 4 per level (a tab becomes 4 spaces);
 /// - one blank line between blocks, and between a routine and the next top-level declaration or comment;
 /// - a doc comment sits directly on its declaration, above any attribute lines;
+/// - a top-level section comment (a group of `//` lines with a `// --`, `// ==`, or `// ──` divider) has a blank line
+///   before and after it;
 /// - `:`, `=`, and `->` have one space on each side, and consecutive lines of one kind (bindings, record or choice
 ///   fields, `when` arms) align them.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 8 spaces
@@ -20,6 +22,7 @@ public static class Formatter
         lines = Align(lines);
         lines = Space(lines);
         lines = DocBeforeAttributes(lines);
+        lines = SpaceSections(lines);
         var continued = Continuations(lines);
         lines = lines.SelectMany((l, i) => continued[i] ? WrapContinuation(l) : Wrap(l)).ToList();
         string result = string.Join('\n', lines).TrimEnd('\n');
@@ -445,6 +448,38 @@ public static class Formatter
             if (j < s.Length && commas.Count > 0) return (i, j, commas);
         }
         return null;
+    }
+
+    // ── Section comments ────────────────────────────────────────────────
+
+    private static bool IsDivider(string line) =>
+        line.StartsWith("// --") || line.StartsWith("// ==") || line.StartsWith("// ──") || line.StartsWith("//--");
+
+    /// A group of top-level `//` lines that holds a divider stands apart: a blank line before it and after it.
+    private static List<string> SpaceSections(List<string> lines)
+    {
+        var result = new List<string>();
+        int i = 0;
+        while (i < lines.Count)
+        {
+            string line = lines[i];
+            bool topComment = line.StartsWith("//") && !line.StartsWith("///");
+            if (!topComment)
+            {
+                result.Add(line);
+                i++;
+                continue;
+            }
+            int end = i;
+            while (end < lines.Count && lines[end].StartsWith("//") && !lines[end].StartsWith("///")) end++;
+            var group = lines.GetRange(i, end - i);
+            bool section = group.Any(IsDivider);
+            if (section && result.Count > 0 && result[^1].Length > 0) result.Add("");
+            result.AddRange(group);
+            if (section && end < lines.Count && lines[end].Length > 0) result.Add("");
+            i = end;
+        }
+        return result;
     }
 
     // ── Doc comments before attributes ─────────────────────────────────────

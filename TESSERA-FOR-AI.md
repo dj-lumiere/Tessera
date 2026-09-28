@@ -95,7 +95,9 @@ routine main() -> S32
   the values the rest needs. It is not C's "next iteration" (that's `jump loop(...)`), and a block still ends with a
   real terminator.
 - A long `branch` continues on the next line when that line starts with `?` or `:`.
-- An integer `when %v:` needs a `_` arm. A `when %v:` on a choice without `_` must list every member.
+- An integer `when %v:` needs a `_` arm. A `when %v:` on a choice without `_` must list every member. An arm may
+  list several values (`b'+', b'-' -> sign()`); there are no range patterns, so test ranges in `when:` with
+  `between` / `in_range`.
 
 **Operations**
 
