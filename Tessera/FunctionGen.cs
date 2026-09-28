@@ -427,6 +427,8 @@ public sealed class FunctionGen
 
     private Val EvalAny(Expr e)
     {
+        if (e is ImplicitCallExpr ic)
+            throw Err(ic.Pos, $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
         var t = Infer(e) ?? throw Err(e.Pos, "cannot infer the type of this expression; bind it with a type annotation");
         return Eval(e, t);
     }
@@ -463,6 +465,9 @@ public sealed class FunctionGen
             RecordLit s => EvalRecordLit(s),
             ArrayLit a => throw Err(a.Pos, "an array literal makes a value only through Array<T, N>.from([...])"),
             NsCallExpr n when ArrayFrom(n) is { } from => EvalArrayLit(from.Literal, from.Type),
+            ImplicitCallExpr { Name: "from", TypeArgs.Count: 0, Args: [ArrayLit lit] } when expected is ArrayType at =>
+                EvalArrayLit(lit, at),
+            ImplicitCallExpr => EvalCall(e, expected),
             PresetRef r => EvalPresetRef(r, expected),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),
             _ => throw new InvalidOperationException(e.GetType().Name),
@@ -688,6 +693,7 @@ public sealed class FunctionGen
     private bool IsNoReturn(Expr e) => e switch
     {
         CallExpr or NsCallExpr or MethodCallExpr => PlanCall(e, null) is { } p && p.Decl.Attr("noreturn") is not null,
+        ImplicitCallExpr => false,
         _ => false,
     };
 
@@ -728,6 +734,20 @@ public sealed class FunctionGen
                 BindExplicit(r, env, c.TypeArgs, c.Pos);
                 InferTypeArgs(r, env, c.Args, expected, 0);
                 return new CallPlan(r, env, null, c.Args, c.Pos);
+            }
+            case ImplicitCallExpr ic:
+            {
+                // The type the value is going to is the owner: `.none()` where an Option<T> is expected.
+                var owner = expected ?? throw Err(ic.Pos,
+                    $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
+                var r = _c.FindMethod(owner.OwnerName, ic.Name, _env.File, ic.Pos)
+                        ?? throw Err(ic.Pos, $"{owner} has no routine '{ic.Name}'");
+                if (r.Params.Count > 0 && r.Params[0].Name[1..] == "self")
+                    throw Err(ic.Pos, $"'{owner}.{ic.Name}' takes a receiver; a leading '.' only calls typewise routines");
+                var env = BindOwner(r, owner, ic.Pos);
+                BindExplicit(r, env, ic.TypeArgs, ic.Pos);
+                InferTypeArgs(r, env, ic.Args, expected, 0);
+                return new CallPlan(r, env, null, ic.Args, ic.Pos);
             }
             case NsCallExpr n:
             {

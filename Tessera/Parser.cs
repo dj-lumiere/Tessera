@@ -539,7 +539,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var lhs = ParsePostfix();
         if (Is(TokenKind.Eq))
             throw Error("memory is written with a method now: #place.store(value)");
-        if (lhs is not (CallExpr or NsCallExpr or MethodCallExpr))
+        if (lhs is not (CallExpr or NsCallExpr or MethodCallExpr or ImplicitCallExpr))
             throw new CompileError(pos, "a statement must be a binding or a call");
         return new ExprStmt(lhs, pos);
     }
@@ -701,6 +701,16 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             case TokenKind.Pointer:
                 Next();
                 return new ValueRef(t.Text, t.Pos);
+            case TokenKind.Dot when PeekTok(1).Kind == TokenKind.Ident:
+            {
+                // `.none()`: the owner type comes from where the value goes.
+                Next();
+                var member = Next();
+                var typeArgs = ParseTypeArgsOpt();
+                if (!Is(TokenKind.LParen))
+                    throw new CompileError(t.Pos, $"'.{member.Text}' needs arguments: a leading '.' is a typewise call, .{member.Text}(...)");
+                return new ImplicitCallExpr(member.Text, typeArgs, ParseArgs(), t.Pos);
+            }
             case TokenKind.LBracket:
             {
                 Next();

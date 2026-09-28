@@ -23,7 +23,7 @@ global: every file in `stdlib/` is in scope without an import.
 ```tessera
 routine main() -> S32
     block entry():
-        %fd_val: FdWriter      = FdWriter.stdout()
+        %fd_val: FdWriter      = .stdout()
         #fd:     Ptr<FdWriter> = claim
         #fd.store(%fd_val)
         #out: Ptr<BufWriter<FdWriter>> = claim
@@ -32,7 +32,7 @@ routine main() -> S32
         #alloc: Ptr<Allocator> = claim
         #alloc.store(%heap)
 
-        %list_val: List<S64> = List<S64>.construct(#alloc)
+        %list_val: List<S64> = .construct(#alloc)
         #list: Ptr<List<S64>> = claim
         #list.store(%list_val)
         #list.push(42)
@@ -121,7 +121,9 @@ routine main() -> S32
 **Routines and generics**
 
 - `routine name(%a: T, #p: Ptr<U>) -> R`. Methods are `routine Type.name(#self: Ptr<Self>, ...)` (pointer receiver)
-  or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<S64>.construct(#alloc)`.
+  or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<S64>.construct(#alloc)`. Where the
+  type is expected (a binding, an argument, a block argument, a return), a leading `.` leaves it out:
+  `%list: List<S64> = .construct(#alloc)`, `return(.none())`. Not at the head of a chain or as a statement.
 - **Methods through a pointer.** `#p.m()` finds `T.m(#self: Ptr<Self>)` first, then `Ptr`'s own methods (`is_null`,
   `offset`, `cast`, ...). Value methods (`%self: Self`, such as `List.eq`) aren't reachable through a pointer, because
   that would hide a load: load first (`%v: List<S64> = #p.load()`). Don't name your own pointer methods after `Ptr`'s.
@@ -175,7 +177,7 @@ Iterating a collection (`next` returns `Option<T>`):
 ```tessera
 routine sum_list(#list: Ptr<List<S64>>) -> S64
     block entry():
-        %iter_val: ListIter<S64> = ListIter<S64>.construct(#list)
+        %iter_val: ListIter<S64> = .construct(#list)
         #iter: Ptr<ListIter<S64>> = claim
         #iter.store(%iter_val)
         jump next(#iter, 0)

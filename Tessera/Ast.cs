@@ -149,6 +149,9 @@ public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Ar
 public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
     : Expr(Pos);
 
+/// `.name(args)`: a typewise call whose type is the expected one (`%n: Option<T> = .none()`).
+public sealed record ImplicitCallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos);
+
 /// `NAME` or `Type.NAME` — a preset, or a choice member.
 public sealed record PresetRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos);
 
