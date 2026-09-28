@@ -65,7 +65,8 @@ routine main() -> S32
   `%free_fn: Callable<…> = #alloc.free_fn.load()`, then `%free_fn.call(#state, #raw)`. `#alloc.free_fn(...)` is an
   error.
 - A field of an SSA record value is read with plain `=`: `%tag: Bool = %opt.tag`.
-- `alloca<T>` gives stack memory; `alloca<T>([%init])` initializes it. Allocas are hoisted to the routine's entry,
+- `alloca<T>` gives stack memory; `alloca<T>([%init])` initializes it with one value, arrays included. An array
+  value comes from `Array<T, N>.from([1, 2, %x])` or `Array<T, N>.from_ptr(#first)`; a bare `[1, 2]` isn't a value. Allocas are hoisted to the routine's entry,
   so an `alloca` inside a loop block reuses one slot.
 - Heap memory goes through an allocator: `alloc<T>(#alloc, %count)`, `#p.free(#alloc)`.
 - `#p.cast<U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
@@ -211,7 +212,7 @@ releases storage. Out-of-range access, `pop` on empty, and `get` of a missing ke
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array<T, N>` | `get`, `set`, `shift_left`, `shift_right`, `copy` | index |
+| `Array<T, N>` | `from`, `from_ptr`, `get`, `set`, `shift_left`, `shift_right`, `copy` | index |
 | `List<T>` | `push`, `pop`, `get`, `set`, `clear`, `reserve` | index |
 | `CircularList<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `get`, `set` | front to back |
 | `Dict<K, V>` | `put`, `get`, `contains`, `remove` | **insertion order (guaranteed)** |

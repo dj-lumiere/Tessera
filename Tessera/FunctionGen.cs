@@ -401,6 +401,8 @@ public sealed class FunctionGen
                 return Infer(f.Base) is RecordType s ? FieldOf(s, f.Name, f.Pos).Type : null;
             case PresetRef r:
                 return InferPresetRef(r);
+            case NsCallExpr n when ArrayFrom(n) is { } from:
+                return from.Type;
             case CallExpr or NsCallExpr or MethodCallExpr:
                 return InferCall(e, null);
             default:
@@ -460,7 +462,8 @@ public sealed class FunctionGen
             FieldExpr f => ExtractField(f),
             SelectExpr s => EvalSelect(s, expected),
             RecordLit s => EvalRecordLit(s),
-            ArrayLit a => throw Err(a.Pos, "array literals are only allowed as alloca initializers"),
+            ArrayLit a => throw Err(a.Pos, "an array literal makes a value only through Array<T, N>.from([...])"),
+            NsCallExpr n when ArrayFrom(n) is { } from => EvalArrayLit(from.Literal, from.Type),
             PresetRef r => EvalPresetRef(r, expected),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),
             _ => throw new InvalidOperationException(e.GetType().Name),
@@ -535,33 +538,40 @@ public sealed class FunctionGen
         _allocas.Add($"{slot} = alloca {t.Llvm}");
         if (a.Init is { } init)
         {
-            if (t is ArrayType arr) StoreArray(slot, arr, init, a.Pos);
-            else if (init.Count != 1) throw Err(a.Pos, $"a {t} slot takes a one-element initializer list");
-            else StoreInit(slot, t, init[0]);
+            // The initializer is one value for every type, arrays included (open question #39).
+            if (init.Count != 1)
+                throw Err(a.Pos, t is ArrayType
+                    ? $"an alloca initializer is one value; build the array with {t}.from([...])"
+                    : $"a {t} slot takes a one-element initializer list");
+            var v = Eval(init[0], t);
+            Line($"store {t.Llvm} {v.Op}, ptr {slot}");
         }
         return new Val(slot, new PtrType(t));
     }
 
-    private void StoreInit(string addr, DType t, Expr init)
-    {
-        if (t is ArrayType arr && init is ArrayLit list)
-        {
-            StoreArray(addr, arr, list.Elements, list.Pos);
-            return;
-        }
-        var v = Eval(init, t);
-        Line($"store {t.Llvm} {v.Op}, ptr {addr}");
-    }
+    /// `Array<T, N>.from([a, b, ...])`, the one way an array literal becomes a value. It is built in because a
+    /// literal list can't be a routine parameter.
+    private (ArrayType Type, ArrayLit Literal)? ArrayFrom(NsCallExpr n) =>
+        n is { Name: "from", TypeArgs.Count: 0, Args: [ArrayLit lit] } && TryResolveOwner(n.Owner) is ArrayType at
+            ? (at, lit)
+            : null;
 
-    private void StoreArray(string addr, ArrayType arr, List<Expr> elems, Pos pos)
+    /// An array literal as a value of `arr`. A nested literal fills a nested array.
+    private Val EvalArrayLit(ArrayLit lit, ArrayType arr)
     {
-        if (elems.Count != arr.Count)
-            throw Err(pos, $"{arr} needs {arr.Count} initializer element(s), got {elems.Count}");
-        for (int i = 0; i < elems.Count; i++)
+        if (lit.Elements.Count != arr.Count)
+            throw Err(lit.Pos, $"{arr} needs {arr.Count} element(s), got {lit.Elements.Count}");
+        _c.EnsureTypeDefined(arr);
+        string acc = "poison";
+        for (int i = 0; i < lit.Elements.Count; i++)
         {
-            string ea = EmitTmp($"getelementptr {arr.Llvm}, ptr {addr}, i64 0, i64 {i}");
-            StoreInit(ea, arr.Elem, elems[i]);
+            var e = lit.Elements[i];
+            var v = e is ArrayLit inner && arr.Elem is ArrayType innerType
+                ? EvalArrayLit(inner, innerType)
+                : Eval(e, arr.Elem);
+            acc = EmitTmp($"insertvalue {arr.Llvm} {acc}, {arr.Elem.Llvm} {v.Op}, {i}");
         }
+        return new Val(acc, arr);
     }
 
     private Val EvalSelect(SelectExpr s, DType expected)
