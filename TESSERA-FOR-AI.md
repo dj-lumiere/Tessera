@@ -72,7 +72,8 @@ routine main() -> S32
 
 - There are no operators. Everything is a method, and pure calls chain: `%i.add(1).bitand(%mask)`.
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
-  `add`, `div`, `rem`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on.
+  `add`, `div`, `rem`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more
+  shifts every bit out (0, or -1 for a negative S value shifted right).
 - Arithmetic panics on overflow: `add`, `sub`, `mul`, `div`, `neg`, `abs`, `pow`, and a lossy `to_X`. Each has
   `_checked` (returns `Option`), `_wrap` (modular), and `_clamp` (saturating) forms: `%h.mul_wrap(PRIME)`,
   `%n.to_u8_clamp()`. Hashes, PRNGs, and bit tricks want `_wrap`.
