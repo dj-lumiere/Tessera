@@ -26,18 +26,18 @@ routine main() -> S32
         %fd_val: FdWriter      = FdWriter.stdout()
         #fd:     Ptr<FdWriter> = alloca<FdWriter>([%fd_val])
         #out: Ptr<BufWriter<FdWriter>> = alloca<BufWriter<FdWriter>>
-        #out.init(#fd)
+        #out.construct(#fd)
         %heap:  Allocator      = make_heap_allocator()
         #alloc: Ptr<Allocator> = alloca<Allocator>([%heap])
 
-        %list_val: List<S64> = List<S64>.new(#alloc)
+        %list_val: List<S64> = List<S64>.construct(#alloc)
         #list: Ptr<List<S64>> = alloca<List<S64>>([%list_val])
         #list.push(42)
         write_str(#out, "first: ")
         #list.get(0).format(#out)
         write_line(#out)
 
-        #list.free()
+        #list.destruct()
         #out.flush()                // BufWriter output appears only on flush
         return(0)
 ```
@@ -107,9 +107,9 @@ routine main() -> S32
 **Routines and generics**
 
 - `routine name(%a: T, #p: Ptr<U>) -> R`. Methods are `routine Type.name(#self: Ptr<Self>, ...)` (pointer receiver)
-  or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<S64>.new(#alloc)`.
+  or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<S64>.construct(#alloc)`.
 - **Most collection methods take `#self: Ptr<Self>`**, so a collection must live in memory (`alloca`) before you
-  call them. You can't call a pointer method on a temporary: `DictIter<K, V>.new(#m).next()` fails with "has no
+  call them. You can't call a pointer method on a temporary: `DictIter<K, V>.construct(#m).next()` fails with "has no
   method 'next'"; alloca the iterator first.
 - Generic routines repeat their constraints: `require T: typename, Compare<T>`. Concepts: `Equal`, `Hash`,
   `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Format`. Constraints are checked: a type satisfies a
@@ -158,7 +158,7 @@ Iterating a collection (`next` returns `Option<T>`):
 ```tessera
 routine sum_list(#list: Ptr<List<S64>>) -> S64
     block entry():
-        %iter_val: ListIter<S64> = ListIter<S64>.new(#list)
+        %iter_val: ListIter<S64> = ListIter<S64>.construct(#list)
         #iter: Ptr<ListIter<S64>> = alloca<ListIter<S64>>([%iter_val])
         jump next(#iter, 0)
 
@@ -195,7 +195,7 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
 
 ## Collections
 
-All in `stdlib/collection/`, documented in `tessera.wiki/Collections.md`. `new(#alloc)` stores the allocator; `free()`
+All in `stdlib/collection/`, documented in `tessera.wiki/Collections.md`. `construct(#alloc)` stores the allocator; `destruct()`
 releases storage. Out-of-range access, `pop` on empty, and `get` of a missing key trap.
 
 | Type | Key operations | Iteration order |
@@ -211,8 +211,35 @@ releases storage. Out-of-range access, `pop` on empty, and `get` of a missing ke
 | `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Priority<T>`) | none |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
-removing then re-adding moves it to the end. Iterators are `XIter<T>.new(#collection)`; don't mutate a collection
+removing then re-adding moves it to the end. Iterators are `XIter<T>.construct(#collection)`; don't mutate a collection
 while iterating it.
+
+## Conventions
+
+**You are responsible.** Tessera has no `unsafe` / `danger` blocks and no borrow checker: like C and Zig, every
+operation is available everywhere and its contract is the programmer's to keep. The language removes undefined
+behavior where it can do so cheaply (overflow panics, defined shifts, checked conversions, bounds-checked
+collections), and documents the rest: pointer lifetimes, casts (bounds, alignment, valid values), aliasing, and
+freeing what you allocated. Don't wrap things in ceremony to look safe; write the check where it matters.
+
+**Routines every program has.**
+
+- `routine main() -> S32` is the entry point of an executable.
+- Every routine with a body starts with `block entry():`, which takes no parameters. A routine without blocks must
+  be `@external`.
+
+**Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
+`destruct`:
+
+- `Type.construct(...) -> Self` is the constructor, a typewise routine: `List<S64>.construct(#alloc)`,
+  `ListIter<T>.construct(#list)`, `CountWriter.construct()`. A type too large to return by value constructs in
+  place instead, through a pointer: `#out.construct(#fd)` for `BufWriter<W>`.
+- `#self.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
+  and leaves the value empty. Call it yourself; nothing runs it for you. It doesn't destruct the elements of a
+  collection; do that first if they own resources.
+- Other ways to make a value are named for what they make: `FdWriter.stdout()`, `String.from_ptr(#p, %n)`,
+  `Option<T>.none()`, `FormatSpec.zero_padded(6)`.
+- `free<T>(#alloc, #p)` is not a destructor: it hands a block of memory back to its allocator.
 
 ## Style
 
