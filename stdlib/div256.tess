@@ -1,0 +1,255 @@
+; Tessera stdlib: 256-bit division
+;
+; LLVM expands i256 udiv and sdiv into a loop that retires one quotient bit per
+; iteration (hundreds of nanoseconds). u256_divrem runs Knuth's algorithm D
+; (TAOCP vol. 2, 4.3.1) over 64-bit limbs instead, with the digit steps from
+; wide_div.tess, and U256 / S256 division calls it through u256_div, u256_rem,
+; s256_div and s256_rem.
+;
+; The callers check the divisor first: every routine here assumes a nonzero
+; divisor, and the signed ones assume the quotient fits (not MIN / -1).
+
+record U256DivRem
+    quotient:  U256
+    remainder: U256
+
+; -- limbs ---------------------------------------------------------------------
+
+; The 64-bit limb %index of %x (0 is the least significant), for %index < 4.
+routine u256_limb(%x: U256, %index: U64) -> U64
+    block entry():
+        %shift: U256 = %index.mul(64).to_u256()
+        %r:     U64  = %x.shr(%shift).to_u64_wrap()
+        return(%r)
+
+; The integer with limbs (l3, l2, l1, l0), most significant first.
+routine u256_from_limbs(%l3: U64, %l2: U64, %l1: U64, %l0: U64) -> U256
+    block entry():
+        %high: U256 = %l3.to_u256().shl(64).bitor(%l2.to_u256())
+        %mid:  U256 = %high.shl(64).bitor(%l1.to_u256())
+        %r:    U256 = %mid.shl(64).bitor(%l0.to_u256())
+        return(%r)
+
+; -- entry points --------------------------------------------------------------
+
+; Unsigned quotient and remainder, for a nonzero %d.
+routine u256_divrem(%u: U256, %d: U256) -> U256DivRem
+    block entry():
+        %below: Bool = %u.lt(%d)
+        branch %below ? return(U256DivRem { quotient: 0, remainder: %u }) : narrow()
+
+    ; d <= u, so when u fits in 128 bits, both do.
+    block narrow():
+        %fits: Bool = %u.shr(128).eq(0)
+        branch %fits ? by_u128() : by_limbs()
+
+    block by_u128():
+        %a: U128 = %u.to_u128()
+        %b: U128 = %d.to_u128()
+        %r: U256DivRem = U256DivRem { quotient: %a.div(%b).to_u256(), remainder: %a.rem(%b).to_u256() }
+        return(%r)
+
+    block by_limbs():
+        %one_limb: Bool = %d.shr(64).eq(0)
+        branch %one_limb ? by_one_limb() : by_several_limbs()
+
+    block by_one_limb():
+        %r: U256DivRem = u256_divrem_by_limb(%u, %d.to_u64())
+        return(%r)
+
+    block by_several_limbs():
+        %r: U256DivRem = u256_divrem_knuth(%u, %d)
+        return(%r)
+
+routine u256_div(%u: U256, %d: U256) -> U256
+    block entry():
+        %r: U256DivRem = u256_divrem(%u, %d)
+        return(%r.quotient)
+
+routine u256_rem(%u: U256, %d: U256) -> U256
+    block entry():
+        %r: U256DivRem = u256_divrem(%u, %d)
+        return(%r.remainder)
+
+; Signed division truncates toward zero; the remainder has the dividend's sign.
+; The magnitudes go through u256_divrem: abs_diff(0) is exact even for MIN.
+routine s256_div(%u: S256, %d: S256) -> S256
+    block entry():
+        %magnitudes: U256DivRem = u256_divrem(%u.abs_diff(0), %d.abs_diff(0))
+        %quotient:   S256 = %magnitudes.quotient.to_s256_wrap()
+        %negative:   Bool = %u.is_negative().bitxor(%d.is_negative())
+        branch %negative ? return(%quotient.neg_wrap()) : return(%quotient)
+
+routine s256_rem(%u: S256, %d: S256) -> S256
+    block entry():
+        %magnitudes: U256DivRem = u256_divrem(%u.abs_diff(0), %d.abs_diff(0))
+        %remainder:  S256 = %magnitudes.remainder.to_s256_wrap()
+        %negative:   Bool = %u.is_negative()
+        branch %negative ? return(%remainder.neg_wrap()) : return(%remainder)
+
+; -- one-limb divisor ----------------------------------------------------------
+
+; %u / %d for a nonzero one-limb %d: normalize so d's top bit is set, then one
+; 2-by-1 step per dividend limb, most significant first.
+routine u256_divrem_by_limb(%u: U256, %d: U64) -> U256DivRem
+    block entry():
+        %shift:  U64  = %d.leading_zeros()
+        %d_norm: U64  = %d.shl(%shift)
+        %v:      U64  = div_2by1_prepare(%d_norm)
+        %u_norm: U256 = %u.shl(%shift.to_u256())
+        ; The bits shifted out of the top; a funnel shift by 0 gives 0, where a
+        ; plain shr by 64 would be poison.
+        %u_over: U64  = fshl<U64>(0, u256_limb(%u, 3), %shift)
+        %s3: Div2By1 = div_2by1(%u_over, u256_limb(%u_norm, 3), %d_norm, %v)
+        %s2: Div2By1 = div_2by1(%s3.remainder, u256_limb(%u_norm, 2), %d_norm, %v)
+        %s1: Div2By1 = div_2by1(%s2.remainder, u256_limb(%u_norm, 1), %d_norm, %v)
+        %s0: Div2By1 = div_2by1(%s1.remainder, u256_limb(%u_norm, 0), %d_norm, %v)
+        %q:   U256 = u256_from_limbs(%s3.quotient, %s2.quotient, %s1.quotient, %s0.quotient)
+        %rem: U64  = %s0.remainder.shr(%shift)
+        %r: U256DivRem = U256DivRem { quotient: %q, remainder: %rem.to_u256() }
+        return(%r)
+
+; -- algorithm D ---------------------------------------------------------------
+
+; The working state of algorithm D for an n-limb divisor, 2 <= n <= 4. Both
+; operands are shifted left until the divisor's top bit is set; the shifted
+; dividend takes a fifth limb. Each step divides the window u[j .. j+n] by v
+; and leaves the window's remainder in u[j .. j+n-1], so u ends as the
+; (shifted) remainder.
+record U256Division
+    u:          Array<U64, 5>   ; the normalized dividend, least significant limb first
+    v:          Array<U64, 4>   ; the normalized divisor
+    n:          U64             ; the divisor's limb count
+    reciprocal: U64             ; div_3by2_prepare of v's top two limbs
+
+; %u / %d for a divisor of two or more limbs.
+routine u256_divrem_knuth(%u: U256, %d: U256) -> U256DivRem
+    block entry():
+        %lz:    U64 = %d.leading_zeros().to_u64()
+        %n:     U64 = 4.sub(%lz.shr(6))
+        %shift: U64 = %lz.bitand(63)
+        #state: Ptr<U256Division> = alloca<U256Division>
+        #state.init(%u, %d, %n, %shift)
+        jump digit(#state, 4.sub(%n), 0, %shift)
+
+    ; Quotient digits come out most significant first, from j = 4 - n down to 0.
+    block digit(#state: Ptr<U256Division>, %j: U64, %q: U256, %shift: U64):
+        %q_digit: U64  = #state.step(%j)
+        %q_next:  U256 = %q.shl(64).bitor(%q_digit.to_u256())
+        %done:    Bool = %j.eq(0)
+        branch %done ? finish(#state, %q_next, %shift) : digit(#state, %j.sub(1), %q_next, %shift)
+
+    block finish(#state: Ptr<U256Division>, %q: U256, %shift: U64):
+        %l3: U64 := #state.u[3]
+        %l2: U64 := #state.u[2]
+        %l1: U64 := #state.u[1]
+        %l0: U64 := #state.u[0]
+        %shifted:   U256 = u256_from_limbs(%l3, %l2, %l1, %l0)
+        %remainder: U256 = %shifted.shr(%shift.to_u256())
+        %r: U256DivRem = U256DivRem { quotient: %q, remainder: %remainder }
+        return(%r)
+
+routine U256Division.init(#self: Ptr<Self>, %u: U256, %d: U256, %n: U64, %shift: U64) -> Void
+    block entry():
+        %u_norm: U256 = %u.shl(%shift.to_u256())
+        %d_norm: U256 = %d.shl(%shift.to_u256())
+        ; A funnel shift by 0 gives 0, where a plain shr by 64 would be poison.
+        %u_over: U64  = fshl<U64>(0, u256_limb(%u, 3), %shift)
+        #self.u[0] = u256_limb(%u_norm, 0)
+        #self.u[1] = u256_limb(%u_norm, 1)
+        #self.u[2] = u256_limb(%u_norm, 2)
+        #self.u[3] = u256_limb(%u_norm, 3)
+        #self.u[4] = %u_over
+        #self.v[0] = u256_limb(%d_norm, 0)
+        #self.v[1] = u256_limb(%d_norm, 1)
+        #self.v[2] = u256_limb(%d_norm, 2)
+        #self.v[3] = u256_limb(%d_norm, 3)
+        #self.n = %n
+        %d1: U64 = u256_limb(%d_norm, %n.sub(1))
+        %d0: U64 = u256_limb(%d_norm, %n.sub(2))
+        %reciprocal: U64 = div_3by2_prepare(%d1, %d0)
+        #self.reciprocal = %reciprocal
+        return()
+
+; One step: the quotient digit of the window u[j .. j+n] by v, which
+; replaces the window with its remainder.
+routine U256Division.step(#self: Ptr<Self>, %j: U64) -> U64
+    block entry():
+        %n:      U64 := #self.n
+        %top_at: U64 = %j.add(%n)
+        %u2: U64 := #self.u[%top_at]
+        %u1: U64 := #self.u[%top_at.sub(1)]
+        %u0: U64 := #self.u[%top_at.sub(2)]
+        %d1: U64 := #self.v[%n.sub(1)]
+        %d0: U64 := #self.v[%n.sub(2)]
+        ; The window's remainder is below v, so its top limb ends as 0.
+        #self.u[%top_at] = 0
+        ; div_3by2 needs (u2, u1) < (d1, d0). When they are equal the digit is 2^64 - 1 exactly.
+        %saturated: Bool = %u2.eq(%d1).bitand(%u1.eq(%d0))
+        branch %saturated ? saturated(%n) : estimate(%n, %u2, %u1, %u0, %d1, %d0)
+
+    block saturated(%n: U64):
+        #self.submul(%j, %n, U64.MAX)
+        return(U64.MAX)
+
+    ; The top three limbs over the top two divisor limbs give q̂ and the
+    ; remainder of those limbs; subtracting q̂ times the lower divisor limbs
+    ; finishes the window. q̂ can be one too big for n >= 3: then that
+    ; subtraction borrows, and v is added back.
+    block estimate(%n: U64, %u2: U64, %u1: U64, %u0: U64, %d1: U64, %d0: U64):
+        %v:       U64     := #self.reciprocal
+        %top:     Div3By2 = div_3by2(%u2, %u1, %u0, %d1, %d0, %v)
+        %q_hat:   U64     = %top.quotient
+        %borrow:  U64     = #self.submul(%j, %n.sub(2), %q_hat)
+        %rhat:    U128    = %top.remainder
+        %taken:   U128    = %borrow.to_u128()
+        %rest:    U128    = %rhat.sub_wrap(%taken)
+        %low_at:  U64     = %j.add(%n).sub(2)
+        #self.u[%low_at] = %rest.to_u64_wrap()
+        #self.u[%low_at.add(1)] = %rest.shr(64).to_u64()
+        %too_big: Bool = %rhat.lt(%taken)
+        branch %too_big ? add_back(%n, %q_hat) : return(%q_hat)
+
+    block add_back(%n: U64, %q_hat: U64):
+        #self.add_back(%j, %n)
+        return(%q_hat.sub(1))
+
+; u[j .. j+len-1] -= v[0 .. len-1] × m; returns the limb that borrows out of the top.
+routine U256Division.submul(#self: Ptr<Self>, %j: U64, %len: U64, %m: U64) -> U64
+    block entry():
+        jump loop(0, 0)
+
+    block loop(%i: U64, %borrow: U64):
+        %done: Bool = %i.eq(%len)
+        branch %done ? return(%borrow) : limb(%i, %borrow)
+
+    ; v × m + borrow < 2^128, and when its high limb is 2^64 - 1 its low limb is 0,
+    ; so the next borrow fits a limb.
+    block limb(%i: U64, %borrow: U64):
+        %at:      U64  = %j.add(%i)
+        %v_limb:  U64  := #self.v[%i]
+        %u_limb:  U64  := #self.u[%at]
+        %product: U128 = %v_limb.mul_wide(%m).add(%borrow.to_u128())
+        %low:     U64  = %product.to_u64_wrap()
+        %wrapped: Bool = %u_limb.lt(%low)
+        #self.u[%at] = %u_limb.sub_wrap(%low)
+        %high:    U64  = %product.shr(64).to_u64()
+        jump loop(%i.add(1), %high.add(%wrapped.to_u64()))
+
+; u[j .. j+n-1] += v, dropping the carry out of the top: it cancels the borrow
+; that made the window negative.
+routine U256Division.add_back(#self: Ptr<Self>, %j: U64, %n: U64) -> Void
+    block entry():
+        jump loop(0, 0)
+
+    block loop(%i: U64, %carry: U64):
+        %done: Bool = %i.eq(%n)
+        branch %done ? return() : limb(%i, %carry)
+
+    block limb(%i: U64, %carry: U64):
+        %at:     U64  = %j.add(%i)
+        %v_limb: U64  := #self.v[%i]
+        %u_limb: U64  := #self.u[%at]
+        %sum:    U128 = %u_limb.to_u128().add(%v_limb.to_u128()).add(%carry.to_u128())
+        #self.u[%at] = %sum.to_u64_wrap()
+        jump loop(%i.add(1), %sum.shr(64).to_u64())
