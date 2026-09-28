@@ -716,7 +716,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     case "true": Next(); return new BoolLit(true, t.Pos);
                     case "false": Next(); return new BoolLit(false, t.Pos);
                     case "null": Next(); return new NullLit(t.Pos);
-                    case "alloca": return ParseAlloca();
+                    case "claim": return ParseClaim();
+                    case "alloca": throw new CompileError(t.Pos, "'alloca' is now spelled 'claim': #p: Ptr<T> = claim");
                 }
                 return ParseNameExpr();
             default:
@@ -774,14 +775,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new RecordLit(type, fields, type.Pos);
     }
 
-    private Expr ParseAlloca()
+    private Expr ParseClaim()
     {
         var pos = Next().Pos;
-        // alloca only reserves a slot; its type comes from the binding (`#p: Ptr<T> = alloca`), and the value goes
+        // claim only takes a stack slot; its type comes from the binding (`#p: Ptr<T> = claim`), and the value goes
         // in with a store.
         if (Cur.Kind is TokenKind.Lt or TokenKind.LParen)
-            throw new CompileError(pos, "alloca takes no type or initializer: #p: Ptr<T> = alloca, then #p.store(%value)");
-        return new AllocaExpr(pos);
+            throw new CompileError(pos, "claim takes no type or initializer: #p: Ptr<T> = claim, then #p.store(%value)");
+        return new ClaimExpr(pos);
     }
 
     private List<TypeRef> ParseTypeArgsOpt()

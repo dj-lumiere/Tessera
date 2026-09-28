@@ -165,8 +165,8 @@ public sealed record IndexExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
 /// `%cond ? a : b` — value select.
 public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) : Expr(Pos);
 
-/// `alloca`: an uninitialized stack slot for one T, where `Ptr<T>` is the expected type.
-public sealed record AllocaExpr(Pos Pos) : Expr(Pos);
+/// `claim`: an uninitialized stack slot for one T, where `Ptr<T>` is the expected type. Lowers to an LLVM alloca.
+public sealed record ClaimExpr(Pos Pos) : Expr(Pos);
 
 /// `Type { field: value, ... }`.
 public sealed record RecordLit(TypeRef Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);

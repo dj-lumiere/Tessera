@@ -456,7 +456,7 @@ public sealed class FunctionGen
                 : throw Mismatch(n.Pos, expected, "null"),
             StrLit s => StringLiteral(s, expected),
             ValueRef r => Lookup(r),
-            AllocaExpr a => EvalAlloca(a, expected),
+            ClaimExpr c => EvalClaim(c, expected),
             FieldExpr or IndexExpr when IsPlaceChain(e) => PlaceAsValue(e),
             FieldExpr f => ExtractField(f),
             SelectExpr s => EvalSelect(s, expected),
@@ -529,10 +529,10 @@ public sealed class FunctionGen
         throw Mismatch(s.Pos, expected, "a string literal");
     }
 
-    private Val EvalAlloca(AllocaExpr a, DType expected)
+    private Val EvalClaim(ClaimExpr a, DType expected)
     {
         if (expected is not PtrType { Pointee: { } t })
-            throw Err(a.Pos, $"alloca needs a typed pointer to fill, such as #p: Ptr<T> = alloca; found {expected}");
+            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as #p: Ptr<T> = claim; found {expected}");
         _c.EnsureTypeDefined(t);
         string slot = $"%s{_allocas.Count}";
         _allocas.Add($"{slot} = alloca {t.Llvm}");
