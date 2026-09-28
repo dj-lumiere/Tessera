@@ -1,27 +1,27 @@
-; Tessera stdlib: 3-by-2 and 2-by-1 limb division
-;
-; div_3by2 divides the 192-bit (u2, u1, u0) by the 128-bit (d1, d0), for a
-; normalized divisor (top bit of d1 set) and (u2, u1) < (d1, d0), so the
-; quotient fits in 64 bits. It is the step of Knuth's algorithm D with a
-; divisor of two or more limbs. div_2by1 divides the 128-bit (u1, u0) by the
-; normalized 64-bit d, for u1 < d: the step with a one-limb divisor. Limbs are
-; U64, and limb arithmetic is modulo 2^64 (_wrap), as the algorithms assume.
-;
-; Two implementations of each, picked by target:
-;   x86_64   divq (128 / 64 in hardware). For 3-by-2 it estimates the
-;            quotient from (u2, u1) and d1, then Knuth's test against d0
-;            corrects it. With a two-limb divisor that test is exact, so no
-;            add-back is needed. For 2-by-1 it is the whole step.
-;   others   Möller and Granlund, "Improved division by invariant integers"
-;            (2011): multiply by a precomputed reciprocal instead of
-;            dividing. ARM64 has no 128 / 64 divide. The code follows intx
-;            (Paweł Bylica, Apache 2.0).
-; divq beats the reciprocal when only a couple of digits share a divisor, as
-; in F128 division. div_3by2_mg and div_2by1_mg are always defined, so they
-; can be tested on x86.
-;
-; Call div_3by2_prepare (div_2by1_prepare) once per divisor and pass its
-; result as %v.
+// Tessera stdlib: 3-by-2 and 2-by-1 limb division
+//
+// div_3by2 divides the 192-bit (u2, u1, u0) by the 128-bit (d1, d0), for a
+// normalized divisor (top bit of d1 set) and (u2, u1) < (d1, d0), so the
+// quotient fits in 64 bits. It is the step of Knuth's algorithm D with a
+// divisor of two or more limbs. div_2by1 divides the 128-bit (u1, u0) by the
+// normalized 64-bit d, for u1 < d: the step with a one-limb divisor. Limbs are
+// U64, and limb arithmetic is modulo 2^64 (_wrap), as the algorithms assume.
+//
+// Two implementations of each, picked by target:
+//   x86_64   divq (128 / 64 in hardware). For 3-by-2 it estimates the
+//            quotient from (u2, u1) and d1, then Knuth's test against d0
+//            corrects it. With a two-limb divisor that test is exact, so no
+//            add-back is needed. For 2-by-1 it is the whole step.
+//   others   Möller and Granlund, "Improved division by invariant integers"
+//            (2011): multiply by a precomputed reciprocal instead of
+//            dividing. ARM64 has no 128 / 64 divide. The code follows intx
+//            (Paweł Bylica, Apache 2.0).
+// divq beats the reciprocal when only a couple of digits share a divisor, as
+// in F128 division. div_3by2_mg and div_2by1_mg are always defined, so they
+// can be tested on x86.
+//
+// Call div_3by2_prepare (div_2by1_prepare) once per divisor and pass its
+// result as %v.
 
 record Div3By2
     quotient:  U64
@@ -31,7 +31,7 @@ record Div2By1
     quotient:  U64
     remainder: U64
 
-; 0x7FD00 / (256 + i): 11-bit seeds for the reciprocal
+/// 0x7FD00 / (256 + i): 11-bit seeds for the reciprocal
 preset RECIPROCAL_TABLE: Array<U64, 256> = [
     2045, 2037, 2029, 2021, 2013, 2005, 1998, 1990, 1983, 1975, 1968, 1960, 1953, 1946, 1938, 1931,
     1924, 1917, 1910, 1903, 1896, 1889, 1883, 1876, 1869, 1863, 1856, 1849, 1843, 1836, 1830, 1824,
@@ -51,17 +51,17 @@ preset RECIPROCAL_TABLE: Array<U64, 256> = [
     1055, 1053, 1051, 1049, 1047, 1044, 1042, 1040, 1038, 1036, 1034, 1032, 1030, 1028, 1026, 1024
 ]
 
-; -- helpers -------------------------------------------------------------------
+// -- helpers -------------------------------------------------------------------
 
-; The high 64 bits of a × b, both unsigned.
+/// The high 64 bits of a × b, both unsigned.
 routine mul_high64(%a: U64, %b: U64) -> U64
     block entry():
         %r: U64 = %a.to_u128().mul_wrap(%b.to_u128()).shr(64).to_u64()
         return(%r)
 
-; -- Möller–Granlund -----------------------------------------------------------
+// -- Möller–Granlund -----------------------------------------------------------
 
-; floor((2^128 - 1) / d) - 2^64 for a normalized d (Algorithm 2 of the paper).
+/// floor((2^128 - 1) / d) - 2^64 for a normalized d (Algorithm 2 of the paper).
 routine reciprocal_2by1(%d: U64) -> U64
     block entry():
         %index: U64 = %d.shr(55).sub(256)
@@ -73,15 +73,15 @@ routine reciprocal_2by1(%d: U64) -> U64
         %gap:   U64 = 0x1000000000000000.sub_wrap(%v1.mul_wrap(%d40))
         %v2:    U64 = %v1.shl(13).add_wrap(%v1.mul_wrap(%gap).shr(47))
         %d0:    U64 = %d.bitand(1)
-        %d63:   U64 = %d.shr(1).add_wrap(%d0)                    ; ceil(d / 2)
+        %d63:   U64 = %d.shr(1).add_wrap(%d0)                    // ceil(d / 2)
         %e:     U64 = %v2.shr(1).bitand(0.sub_wrap(%d0)).sub_wrap(%v2.mul_wrap(%d63))
         %v3:    U64 = mul_high64(%v2, %e).shr(1).add_wrap(%v2.shl(31))
-        ; v4 = v3 - high(v3 × d + d) - d
+        // v4 = v3 - high(v3 × d + d) - d
         %p:     U128 = %v3.to_u128().mul_wrap(%d.to_u128()).add_wrap(%d.to_u128())
         %v4:    U64  = %v3.sub_wrap(%p.shr(64).to_u64()).sub_wrap(%d)
         return(%v4)
 
-; floor((2^192 - 1) / d) - 2^64 for the normalized two-limb d = (d1, d0).
+/// floor((2^192 - 1) / d) - 2^64 for the normalized two-limb d = (d1, d0).
 routine reciprocal_3by2(%d1: U64, %d0: U64) -> U64
     block entry():
         %v:     U64  = reciprocal_2by1(%d1)
@@ -127,7 +127,7 @@ routine div_3by2_mg(%u2: U64, %u1: U64, %u0: U64, %d1: U64, %d0: U64, %v: U64) -
         %res: Div3By2 = Div3By2 { quotient: %qq3, remainder: %rr2 }
         return(%res)
 
-; (u1, u0) / d with the reciprocal v = reciprocal_2by1(d) (Algorithm 4 of the paper).
+/// (u1, u0) / d with the reciprocal v = reciprocal_2by1(d) (Algorithm 4 of the paper).
 routine div_2by1_mg(%u1: U64, %u0: U64, %d: U64, %v: U64) -> Div2By1
     block entry():
         %u:     U128 = %u1.to_u128().shl(64).bitor(%u0.to_u128())
@@ -135,7 +135,7 @@ routine div_2by1_mg(%u1: U64, %u0: U64, %d: U64, %v: U64) -> Div2By1
         %q_lo:  U64  = %q.to_u64_wrap()
         %q_hi:  U64  = %q.shr(64).to_u64().add_wrap(1)
         %r:     U64  = %u0.sub_wrap(%q_hi.mul_wrap(%d))
-        ; The estimate is at most one too big (r wrapped above q_lo) or one too small (r >= d).
+        // The estimate is at most one too big (r wrapped above q_lo) or one too small (r >= d).
         %back:  Bool = %r.gt(%q_lo)
         %q2:    U64  = %back ? %q_hi.sub_wrap(1) : %q_hi
         %r2:    U64  = %back ? %r.add_wrap(%d) : %r
@@ -145,17 +145,17 @@ routine div_2by1_mg(%u1: U64, %u0: U64, %d: U64, %v: U64) -> Div2By1
         %res: Div2By1 = Div2By1 { quotient: %q3, remainder: %r3 }
         return(%res)
 
-; -- divq ----------------------------------------------------------------------
+// -- divq ----------------------------------------------------------------------
 
-; floor((hi × 2^64 + lo) / d) with x86's divq. Needs hi < d: divq faults when
-; the quotient doesn't fit in 64 bits.
+/// floor((hi × 2^64 + lo) / d) with x86's divq. Needs hi < d: divq faults when
+/// the quotient doesn't fit in 64 bits.
 @[external("llvm"), target(arch: "x86_64"), template("{t0} = call {{ i64, i64 }} asm \"divq $4\", \"={{ax}},={{dx}},0,1,r,~{{flags}}\"(i64 {%lo}, i64 {%hi}, i64 {%d})\n{result} = extractvalue {{ i64, i64 }} {t0}, 0")]
 routine divq_quotient(%hi: U64, %lo: U64, %d: U64) -> U64
 
 @target(arch: "x86_64")
 routine div_3by2_divq(%u2: U64, %u1: U64, %u0: U64, %d1: U64, %d0: U64) -> Div3By2
     block entry():
-        ; (u2, u1) < (d1, d0) leaves u2 <= d1; when equal, divq would fault.
+        // (u2, u1) < (d1, d0) leaves u2 <= d1; when equal, divq would fault.
         %top: Bool = %u2.eq(%d1)
         branch %top ? saturated() : estimate()
 
@@ -164,20 +164,20 @@ routine div_3by2_divq(%u2: U64, %u1: U64, %u0: U64, %d1: U64, %d0: U64) -> Div3B
         %rhat: U64  = %u1.sub_wrap(%q.mul_wrap(%d1))
         jump check(%q, %rhat.to_u128())
 
-    ; q = 2^64 - 1, and rhat = (u2, u1) - q × d1 = u1 + d1, which may carry
+    // q = 2^64 - 1, and rhat = (u2, u1) - q × d1 = u1 + d1, which may carry
     block saturated():
         %rhat: U128 = %u1.to_u128().add(%d1.to_u128())
         jump check(U64.MAX, %rhat)
 
-    ; Knuth's test: while q × d0 > (rhat, u0), q is one too big. Runs at most twice.
+    // Knuth's test: while q × d0 > (rhat, u0), q is one too big. Runs at most twice.
     block check(%q: U64, %rhat: U128):
-        %carried: Bool = %rhat.ge(18446744073709551616)       ; 2^64: the test can't fail
+        %carried: Bool = %rhat.ge(18446744073709551616)       // 2^64: the test can't fail
         %lhs:     U128 = %q.to_u128().mul_wrap(%d0.to_u128())
         %rhs:     U128 = %rhat.shl(64).bitor(%u0.to_u128())
         %too_big: Bool = %carried.bitnot().bitand(%lhs.gt(%rhs))
         branch %too_big ? check(%q.sub_wrap(1), %rhat.add(%d1.to_u128())) : done(%q)
 
-    ; The remainder is below 2^128, so the low 128 bits of the subtraction suffice.
+    // The remainder is below 2^128, so the low 128 bits of the subtraction suffice.
     block done(%q: U64):
         %d:    U128 = %d1.to_u128().shl(64).bitor(%d0.to_u128())
         %low:  U128 = %u1.to_u128().shl(64).bitor(%u0.to_u128())
@@ -193,7 +193,7 @@ routine div_2by1_divq(%u1: U64, %u0: U64, %d: U64) -> Div2By1
         %res: Div2By1 = Div2By1 { quotient: %q, remainder: %r }
         return(%res)
 
-; -- by target -----------------------------------------------------------------
+// -- by target -----------------------------------------------------------------
 
 @target(arch: "x86_64")
 routine div_2by1_prepare(%d: U64) -> U64

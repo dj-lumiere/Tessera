@@ -1,28 +1,28 @@
-; Tessera stdlib: the correctly rounded F128 arc sine
-;
-; Ported from CORE-MATH, src/binary128/asin/asinq.c via RazorForge's CoreMath/B128Asin.rf
-; (https://core-math.gitlabpages.inria.fr/).
-; Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
-; MIT license: see LICENSE-CORE-MATH
-;
-; Only the round-to-nearest path of the original is kept. Everything works on integers; the
-; helpers and tables shared with acos live in f128_core/asin_shared.tess.
-;
-; For |x| >= 0.022 the argument is reduced with the table point s_j = sin(pi/2/72*j):
-; asin(x) = asin(s_j) + asin(x*sqrt(1 - s_j^2) - s_j*sqrt(1 - x^2)), and the small remainder goes
-; through an odd polynomial. A 128-bit fast path is checked against its error bound and falls back
-; to a 320-bit accurate path.
+// Tessera stdlib: the correctly rounded F128 arc sine
+//
+// Ported from CORE-MATH, src/binary128/asin/asinq.c via RazorForge's CoreMath/B128Asin.rf
+// (https://core-math.gitlabpages.inria.fr/).
+// Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+//
+// Only the round-to-nearest path of the original is kept. Everything works on integers; the
+// helpers and tables shared with acos live in f128_core/asin_shared.tess.
+//
+// For |x| >= 0.022 the argument is reduced with the table point s_j = sin(pi/2/72*j):
+// asin(x) = asin(s_j) + asin(x*sqrt(1 - s_j^2) - s_j*sqrt(1 - x^2)), and the small remainder goes
+// through an odd polynomial. A 128-bit fast path is checked against its error bound and falls back
+// to a 320-bit accurate path.
 
-; asin(x), correctly rounded to nearest (ties to even). The result lies in [-pi/2, pi/2] and
-; asin(-x) = -asin(x); ±0 map to themselves. |x| > 1, ±infinity and a signaling NaN give the
-; default NaN (0xFFFF8 followed by zeros), and a quiet NaN is returned unchanged.
+/// asin(x), correctly rounded to nearest (ties to even). The result lies in [-pi/2, pi/2] and
+/// asin(-x) = -asin(x); ±0 map to themselves. |x| > 1, ±infinity and a signaling NaN give the
+/// default NaN (0xFFFF8 followed by zeros), and a quiet NaN is returned unchanged.
 routine f128_cm_asin(%x: F128) -> F128
     block entry():
         %bits:  U128 = %x.bits
         %xb1:   U64  = cm_asin_hi(%bits).bitand(0x7FFFFFFFFFFFFFFF)
         %xn:    U64  = %xb1.shr(48)
-        %tiny:  Bool = %xn.lt(16327)                 ; |x| < 2^-56: asin(x) - x is below half an ulp
-        %large: Bool = %xn.ge(16383)                 ; |x| >= 1, infinity or NaN
+        %tiny:  Bool = %xn.lt(16327)                 // |x| < 2^-56: asin(x) - x is below half an ulp
+        %large: Bool = %xn.ge(16383)                 // |x| >= 1, infinity or NaN
         select:
             %tiny -> return(%x)
             %large -> outside(%x, %xb1)
@@ -46,8 +46,8 @@ routine f128_cm_asin(%x: F128) -> F128
         %r: F128 = cm_asin_fast(%x)
         return(%r)
 
-; The unpacked argument 2^-57 <= |x| < 1: the 128-bit mantissa xa (implicit bit at 127), its
-; biased exponent xn, the sign word and the table point j.
+/// The unpacked argument 2^-57 <= |x| < 1: the 128-bit mantissa xa (implicit bit at 127), its
+/// biased exponent xn, the sign word and the table point j.
 record CmAsinArg
     xa:   U128
     xn:   S64
@@ -67,15 +67,15 @@ routine cm_asin_unpack(%x: F128) -> CmAsinArg
         %arg:  CmAsinArg = CmAsinArg { xa: %xa, xn: %xn.to_s64(), xsgn: %xsgn.to_s64_wrap(), j: %j }
         return(%arg)
 
-; Packs the 113-bit mantissa v (implicit bit included), exponent xn, sign word and round bit.
+/// Packs the 113-bit mantissa v (implicit bit included), exponent xn, sign word and round bit.
 routine cm_asin_pack(%v: U128, %xn: S64, %xsgn: S64, %rnd: U64) -> F128
     block entry():
         %top: U128 = cm_asin_join(%xn.shl(48).bitor(%xsgn).to_u64_wrap(), %rnd)
         %r:   F128 = f128_of(%v.add_wrap(%top))
         return(%r)
 
-; The 128-bit fast path of asin; it falls back to cm_asin_accurate when its result could round
-; either way.
+/// The 128-bit fast path of asin; it falls back to cm_asin_accurate when its result could round
+/// either way.
 routine cm_asin_fast(%x: F128) -> F128
     block entry():
         %arg: CmAsinArg = cm_asin_unpack(%x)
@@ -83,7 +83,7 @@ routine cm_asin_fast(%x: F128) -> F128
         %reduced: Bool = %arg.j.ne(0)
         branch %reduced ? reduce(%x, %arg, %nz) : direct(%x, %arg, %nz)
 
-    ; asin(x) = asin(s_j) + asin(d) for the reduced argument d
+    // asin(x) = asin(s_j) + asin(d) for the reduced argument d
     block reduce(%x: F128, %arg: CmAsinArg, %nz: S64):
         %x0:    U64 = cm_asin_lo(%arg.xa.to_s128_wrap())
         %x1:    U64 = cm_asin_hi(%arg.xa)
@@ -96,7 +96,7 @@ routine cm_asin_fast(%x: F128) -> F128
         %xc:    CmAsinW3 = cm_asin_add3(%d, %phi_j)
         %f:     U128 = cm_asin_fast_poly(%t, %dz.sub(6).mul(2))
         %sum:   CmAsinW3 = cm_asin_add3(%xc, cm_asin_shift_poly3(%f, %dz.mul(3)))
-        ; round, and check the error bound of the fast path
+        // round, and check the error bound of the fast path
         %k:     S64  = %sum.w2.leading_zeros().to_s64()
         %rnd:   U64  = %sum.w1.shr(cm_asin_sh(14.sub(%k))).bitand(1)
         %err_sh: S64 = %dz.mul(3).sub(6)
@@ -111,7 +111,7 @@ routine cm_asin_fast(%x: F128) -> F128
         %r:     F128 = cm_asin_pack(%v, 16382.sub(%k), %arg.xsgn, %rnd)
         branch %unsafe ? accurate(%x) : return(%r)
 
-    ; small |x|: asin(x) = x + x^3*P(x^2)
+    // small |x|: asin(x) = x + x^3*P(x^2)
     block direct(%x: F128, %arg: CmAsinArg, %nz: S64):
         %f:     U128 = cm_asin_fast_poly(%arg.xa, %nz.sub(6).mul(2))
         %g:     CmAsinW4 = cm_asin_shift_poly4(%f, %nz.mul(2).add(1))
@@ -122,7 +122,7 @@ routine cm_asin_fast(%x: F128) -> F128
         %rnd:   U64  = %a2.sum.shr(cm_asin_sh(%k.add(13))).bitand(1)
         %v_all: U128 = cm_asin_join(%a3.sum, %a2.sum).shr(cm_asin_sh7(%k.add(14)))
         %v:     U128 = %v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
-        ; the bits under the round bit, checked against the error bound
+        // the bits under the round bit, checked against the error bound
         %lk:    S64  = cm_asin_sh(51.sub(%k)).to_s64()
         %rk:    S64  = cm_asin_sh(%k.add(13)).to_s64()
         %th:    U64  = %a2.sum.shl(%lk.to_u64()).bitor(%g.w1.shr(%rk.to_u64()))
@@ -138,8 +138,8 @@ routine cm_asin_fast(%x: F128) -> F128
         %r: F128 = cm_asin_accurate(%x)
         return(%r)
 
-; A 128-bit f placed as the top two of four words and shifted right by sf (the small-argument
-; alignment of the fast polynomial part), as the original's case split writes it.
+/// A 128-bit f placed as the top two of four words and shifted right by sf (the small-argument
+/// alignment of the fast polynomial part), as the original's case split writes it.
 routine cm_asin_shift_poly4(%f: U128, %sf: S64) -> CmAsinW4
     block entry():
         %g3: U64 = cm_asin_hi(%f)
@@ -168,13 +168,13 @@ routine cm_asin_shift_poly4(%f: U128, %sf: S64) -> CmAsinW4
         %r: CmAsinW4 = CmAsinW4 { w0: %w0, w1: %w1, w2: %g3.shr(%s.to_u64()), w3: 0 }
         return(%r)
 
-    ; unreachable for asin (|x| >= 2^-56 keeps sf below 128); kept as the original writes it
+    // unreachable for asin (|x| >= 2^-56 keeps sf below 128); kept as the original writes it
     block two_words(%g2: U64, %g3: U64, %s: S64):
         %w0: U64 = %g2.shr(%s.to_u64()).bitor(%g3.shl(1).shl(cm_asin_sh(%s.bitnot())))
         %r: CmAsinW4 = CmAsinW4 { w0: %w0, w1: %g2.shr(%s.to_u64()), w2: 0, w3: 0 }
         return(%r)
 
-; The 320-bit accurate path of f128_cm_asin for 2^-57 <= |x| < 1 (the C as_asinq_accurate).
+/// The 320-bit accurate path of f128_cm_asin for 2^-57 <= |x| < 1 (the C as_asinq_accurate).
 routine cm_asin_accurate(%x: F128) -> F128
     block entry():
         %arg: CmAsinArg = cm_asin_unpack(%x)
@@ -218,7 +218,7 @@ routine cm_asin_accurate(%x: F128) -> F128
         %r:     F128 = cm_asin_pack(%v, %arg.xn.add(%k), %arg.xsgn, %rnd)
         return(%r)
 
-; asin(PTH[j]) as five-word fixed-point values, one row per table point
+/// asin(PTH[j]) as five-word fixed-point values, one row per table point
 preset CM_ASIN_PHI0: Array<U64, 360> = [
     0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000,
     0x31DC03B852FDE26E, 0x067073CAA9724261, 0x146B2CF786E935F7, 0x13001BF1BB854BC4, 0x02CB0E871E4D3726,

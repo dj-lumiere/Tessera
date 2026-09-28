@@ -1,33 +1,33 @@
-; Tessera stdlib: the correctly rounded base-2 exponential 2^x of F128
-;
-; x itself is the fixed-point multiple of log2(2), so it goes straight to the shared
-; 2^x engine (exp_shared.tess). Integer x gives the exact power of two, normal or
-; subnormal. Round to nearest only: overflow gives +inf, underflow a correctly
-; rounded subnormal or +0, NaN comes back quiet with its sign and payload.
-;
-; Ported from CORE-MATH, src/binary128/exp2/exp2q.c via RazorForge's B128Exp2.rf.
-; Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
-; MIT license: see LICENSE-CORE-MATH
+// Tessera stdlib: the correctly rounded base-2 exponential 2^x of F128
+//
+// x itself is the fixed-point multiple of log2(2), so it goes straight to the shared
+// 2^x engine (exp_shared.tess). Integer x gives the exact power of two, normal or
+// subnormal. Round to nearest only: overflow gives +inf, underflow a correctly
+// rounded subnormal or +0, NaN comes back quiet with its sign and payload.
+//
+// Ported from CORE-MATH, src/binary128/exp2/exp2q.c via RazorForge's B128Exp2.rf.
+// Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
 
-; x >= 2^14 overflows
+/// x >= 2^14 overflows
 preset CM_EXP2_OVERFLOW:  U128 = 0x400D0000000000000000000000000000
-; x <= -0x1.01bcp+14 rounds to +0
+/// x <= -0x1.01bcp+14 rounds to +0
 preset CM_EXP2_UNDERFLOW: U128 = 0xC00D01BC000000000000000000000000
 
-; 2^x, correctly rounded.
+/// 2^x, correctly rounded.
 routine f128_cm_exp2(%x: F128) -> F128
     block entry():
         %u:      U128 = %x.bits
         %hi:     U64  = cm_exp_hi(%u)
         %mag_hi: U64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
-        %tiny:   Bool = %mag_hi.lt(0x3F8D71547652B82F)       ; 2^x rounds to 1
+        %tiny:   Bool = %mag_hi.lt(0x3F8D71547652B82F)       // 2^x rounds to 1
         %large:  Bool = %mag_hi.ge(0x400D000000000000)
         select:
             %tiny -> return(CM_EXP_ONE)
             %large -> edge(%u)
             _ -> integer_check(%u)
 
-    ; NaN, infinities, and the overflow and underflow thresholds
+    // NaN, infinities, and the overflow and underflow thresholds
     block edge(%u: U128):
         %is_nan:    Bool = f128_is_nan_bits(%u)
         %overflow:  Bool = f128_is_negative_bits(%u).bitnot().bitand(%u.ge(CM_EXP2_OVERFLOW))
@@ -39,13 +39,13 @@ routine f128_cm_exp2(%x: F128) -> F128
             %underflow -> return(CM_EXP_ZERO)
             _ -> integer_check(%u)
 
-    ; |x| >= 1 with no fraction bits in the low word
+    // |x| >= 1 with no fraction bits in the low word
     block integer_check(%u: U128):
         %e:         S64  = f128_exponent(%u)
         %candidate: Bool = %e.ge(16383).bitand(%u.to_s64_wrap().eq(0))
         branch %candidate ? integer_test(%u, %e) : reduce(%u, %e)
 
-    ; the high word has 16 sign and exponent bits, then e - 16383 integer bits
+    // the high word has 16 sign and exponent bits, then e - 16383 integer bits
     block integer_test(%u: U128, %e: S64):
         %fraction:   S64  = cm_exp_hi(%u).shl(%e.sub(16367).to_u64()).to_s64_wrap()
         %is_integer: Bool = %fraction.eq(0)
@@ -55,7 +55,7 @@ routine f128_cm_exp2(%x: F128) -> F128
         %r: F128 = cm_exp2_exact(%u, %e)
         return(%r)
 
-    ; the significand, two's-complemented for negative x
+    // the significand, two's-complemented for negative x
     block reduce(%u: U128, %e: S64):
         %hi:     S64  = cm_exp_hi(%u).to_s64_wrap()
         %sign2:  U128 = 0.sub_wrap(%u.shr(127))
@@ -66,7 +66,7 @@ routine f128_cm_exp2(%x: F128) -> F128
         %r: F128 = cm_exp_finish(%reduced, %u, CM_EXP_KIND_TWO)
         return(%r)
 
-; 2^n for the integer n = x (biased exponent e): exact, normal or subnormal.
+/// 2^n for the integer n = x (biased exponent e): exact, normal or subnormal.
 routine cm_exp2_exact(%u: U128, %e: S64) -> F128
     block entry():
         %hi:        S64 = cm_exp_hi(%u).to_s64_wrap()
@@ -82,7 +82,7 @@ routine cm_exp2_exact(%u: U128, %e: S64) -> F128
         %r: F128 = f128_of(%biased.to_u128().shl(112))
         return(%r)
 
-    ; 2^-16383 is bit 111; each step down halves it
+    // 2^-16383 is bit 111; each step down halves it
     block subnormal(%biased: S64):
         %r: F128 = f128_of(F128_QUIET_BIT.shr(0.sub(%biased).to_u128()))
         return(%r)

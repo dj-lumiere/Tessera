@@ -1,17 +1,17 @@
-; Tessera stdlib: correctly rounded arc tangent of F128
-;
-; Ported from CORE-MATH, src/binary128/atan/atanq.c via RazorForge's B128Atan.rf.
-; Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
-; MIT license: see LICENSE-CORE-MATH
-;
-; f128_cm_atan(x) is the exact arc tangent rounded to nearest, ties to even. |x| below 2^-57
-; returns x and |x| above 2^115 returns ±π/2 (both already correctly rounded). Otherwise |x| (or
-; 1/|x| past 1) is reduced against a table angle atan(t) with t = TN[i] / 2^15 to
-; (|x| - t) / (1 + |x| t), whose series runs in atan_shared.tess; the table angle is added back
-; (and taken from π/2 past 1). NaN in gives NaN out: a quiet NaN unchanged, a signaling one the
-; default NaN.
+// Tessera stdlib: correctly rounded arc tangent of F128
+//
+// Ported from CORE-MATH, src/binary128/atan/atanq.c via RazorForge's B128Atan.rf.
+// Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+//
+// f128_cm_atan(x) is the exact arc tangent rounded to nearest, ties to even. |x| below 2^-57
+// returns x and |x| above 2^115 returns ±π/2 (both already correctly rounded). Otherwise |x| (or
+// 1/|x| past 1) is reduced against a table angle atan(t) with t = TN[i] / 2^15 to
+// (|x| - t) / (1 + |x| t), whose series runs in atan_shared.tess; the table angle is added back
+// (and taken from π/2 past 1). NaN in gives NaN out: a quiet NaN unchanged, a signaling one the
+// default NaN.
 
-; |x| in [2^-e, 2^-e+1) for e <= 7: the first guess of the table index from the top mantissa bits
+/// |x| in [2^-e, 2^-e+1) for e <= 7: the first guess of the table index from the top mantissa bits
 preset CM_ATAN_INDL: Array<U64, 128> = [
     0, 0, 1, 1, 2, 3, 3, 4, 5, 5, 6, 6, 7,
     8, 8, 9, 10, 10, 11, 12, 12, 13, 13, 14, 15, 15,
@@ -25,7 +25,7 @@ preset CM_ATAN_INDL: Array<U64, 128> = [
     60, 60, 61, 61, 61, 62, 62, 62, 63, 63, 63
 ]
 
-; |x| in [2^e, 2^e+1) for e <= 6: the first guess from the complemented top mantissa bits
+/// |x| in [2^e, 2^e+1) for e <= 6: the first guess from the complemented top mantissa bits
 preset CM_ATAN_INDH: Array<U64, 128> = [
     0, 0, 1, 1, 2, 2, 3, 4, 5, 5, 5, 6, 6,
     7, 8, 9, 10, 10, 10, 11, 11, 11, 12, 12, 13, 14,
@@ -46,15 +46,15 @@ routine f128_cm_atan(%x: F128) -> F128
         %hi:   U64  = %bits.shr(64).to_u64().bitand(0x7FFFFFFFFFFFFFFF)
         %lo:   U64  = %bits.to_u64_wrap()
         %xn:   U64  = %hi.shr(48)
-        ; for |x| < 2^-57 the difference atan(x) - x is under half an ulp (this covers ±0)
-        %tiny: Bool = %xn.lt(0x3FC6)                  ; 0x3FFF - 57
-        %huge: Bool = %xn.gt(0x4071)                  ; 0x3FFF + 114
+        // for |x| < 2^-57 the difference atan(x) - x is under half an ulp (this covers ±0)
+        %tiny: Bool = %xn.lt(0x3FC6)                  // 0x3FFF - 57
+        %huge: Bool = %xn.gt(0x4071)                  // 0x3FFF + 114
         select:
             %tiny -> return(%x)
             %huge -> huge(%hi, %lo, %sign)
             _ -> reduce(%hi, %lo, %xn, %sign)
 
-    ; |x| >= 2^115, infinity or NaN
+    // |x| >= 2^115, infinity or NaN
     block huge(%hi: U64, %lo: U64, %sign: U128):
         %class:    S64  = cm_atan_class(%hi, %lo)
         %signaling: Bool = %class.eq(2)
@@ -75,7 +75,7 @@ routine f128_cm_atan(%x: F128) -> F128
         %table: Bool = %red.isct.ne(0).bitor(%red.g)
         branch %table ? with_table(%red, %f, %sign) : direct(%red, %f, %sign)
 
-    ; atan|x| = PHI0[isct] + f, or π/2 - that past 1
+    // atan|x| = PHI0[isct] + f, or π/2 - that past 1
     block with_table(%red: CmAtanReduction, %f: U128, %sign: U128):
         %placed:   CmAtanU192 = cm_atan_place(%f, %red.dn.add(1))
         %phi:      CmAtanU192 = cm_atan_row_top(CM_ATAN_PHI0.as_ptr(), %red.isct)
@@ -98,8 +98,8 @@ routine f128_cm_atan(%x: F128) -> F128
         %r: F128 = cm_atan_accurate(%red, %sign)
         return(%r)
 
-; Reduces |x| = mant:lo × 2^(xn - 0x3FFF - 112) (mant carrying the implicit bit) against the
-; table. Far from 1 no table angle is needed: |x| itself, or 1/|x|.
+/// Reduces |x| = mant:lo × 2^(xn - 0x3FFF - 112) (mant carrying the implicit bit) against the
+/// table. Far from 1 no table angle is needed: |x| itself, or 1/|x|.
 routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
     block entry():
         %above: Bool = %xn.ge(0x3FFF)
@@ -110,7 +110,7 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
         %far: Bool = %e.gt(7)
         branch %far ? small(%e) : table_below(%e.to_s64())
 
-    ; |x| < 2^-7: kn / kd = |x| itself
+    // |x| < 2^-7: kn / kd = |x| itself
     block small(%e: U64):
         %kn: U128 = cm_atan_join(%mant, %lo).shl(15)
         %r: CmAtanReduction = CmAtanReduction {
@@ -118,7 +118,7 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
         }
         return(%r)
 
-    ; kn = |x| - t, kd = 1 + |x| t
+    // kn = |x| - t, kd = 1 + |x| t
     block table_below(%e: S64):
         %guess_at: U64  = %mant.shr(%e.add(41).to_u64())
         %guess:    U64  := CM_ATAN_INDL[%guess_at]
@@ -130,7 +130,7 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
         %tt:       U64  = %tn.shl(%e.add(33).to_u64())
         %norm:     CmAtanNorm = cm_atan_normalize(%mant.sub_wrap(%tt), %lo)
         %xa:       U128 = cm_atan_join(%mant, %lo).mul_wrap(%tn.to_u128())
-        ; kd = 1 + xa >> e: the leading one and xa's bits under it
+        // kd = 1 + xa >> e: the leading one and xa's bits under it
         %kd:       U128 = %xa.shr(%e.to_u128())
         %kd0:      S64  = %xa.to_s64_wrap().shl(0.sub(%e).bitand(63))
         %kd2:      U64  = %kd.shr(64).to_u64().bitor(0x8000000000000000)
@@ -146,7 +146,7 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
         %far: Bool = %e.gt(6)
         branch %far ? large(%e) : table_above(%e.to_s64())
 
-    ; |x| >= 2^7: kn / kd = 1 / |x|
+    // |x| >= 2^7: kn / kd = 1 / |x|
     block large(%e: U64):
         %kd:  U128 = cm_atan_join(%mant, %lo).shl(15)
         %one: U128 = 0x80000000000000000000000000000000
@@ -156,7 +156,7 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
         }
         return(%r)
 
-    ; kn = 1 - |x| t, kd = |x| + t, the index guess moved down one when |x| t passes 1
+    // kn = 1 - |x| t, kd = |x| + t, the index guess moved down one when |x| t passes 1
     block table_above(%e: S64):
         %xa:       U128 = cm_atan_join(%mant, %lo)
         %guess_at: U64  = %mant.bitxor(0x0000FFFFFFFFFFFF).shr(%e.add(42).to_u64())
@@ -172,7 +172,7 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
         %isct:     U64  = %over ? %first.sub_wrap(1) : %first
         %tn:       U64  := CM_ATAN_TN[%isct]
         %t:        U128 = %xa.mul_wrap(%tn.to_u128())
-        ; kn = -(t << e) with its top bit flipped, normalized
+        // kn = -(t << e) with its top bit flipped, normalized
         %neg:      U128 = 0.sub_wrap(%t.shl(%e.to_u128()))
         %knh:      U64  = %neg.shr(64).to_u64().bitxor(0x8000000000000000)
         %norm:     CmAtanNorm = cm_atan_normalize(%knh, %neg.to_u64_wrap())
@@ -187,7 +187,7 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
         }
         return(%r)
 
-; The accurate path: the same reduction, the series in 6 limbs.
+/// The accurate path: the same reduction, the series in 6 limbs.
 routine cm_atan_accurate(%red: CmAtanReduction, %sign: U128) -> F128
     block entry():
         #f_buf: Ptr<Array<S64, 8>> = alloca<Array<S64, 8>>
@@ -205,7 +205,7 @@ routine cm_atan_accurate(%red: CmAtanReduction, %sign: U128) -> F128
         %inverted: Bool = %red.g
         branch %inverted ? reflect(#f) : finish(#f, -1)
 
-    ; π/2 - f
+    // π/2 - f
     block reflect(#f: Ptr<U64>):
         #half_pi: Ptr<U64> = CM_ATAN_QOFF.as_ptr().offset(48)
         cm_atan_limbs_sub(#f, #half_pi, #f, 6)

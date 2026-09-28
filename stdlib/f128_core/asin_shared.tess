@@ -1,18 +1,18 @@
-; Tessera stdlib: the shared engine of the correctly rounded F128 asin and acos
-;
-; Ported from CORE-MATH, src/binary128/asin/asinq.c and src/binary128/acos/acosq.c via
-; RazorForge's CoreMath/B128AsinFam.rf (https://core-math.gitlabpages.inria.fr/). The two C
-; files carry identical copies of these helpers and tables, so they are kept once here and used
-; by f128_core/asin.tess and f128_core/acos.tess.
-; Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
-; MIT license: see LICENSE-CORE-MATH
-;
-; Only the round-to-nearest path of the original is kept. Everything works on integers (64-bit
-; words, carry chains, 64x64->128-bit products), never on F128 arithmetic. A multi-word value is a
-; record of words, least significant first (w0). Words are U64; word arithmetic that relies on C's
-; wrap-around uses the _wrap forms, and exponents, counts, and shift amounts use the plain
-; (overflow-checked) ones. Every variable shift amount is reduced modulo the width first, as the
-; C code relies on the hardware doing; an LLVM shift by the full width or more is poison.
+// Tessera stdlib: the shared engine of the correctly rounded F128 asin and acos
+//
+// Ported from CORE-MATH, src/binary128/asin/asinq.c and src/binary128/acos/acosq.c via
+// RazorForge's CoreMath/B128AsinFam.rf (https://core-math.gitlabpages.inria.fr/). The two C
+// files carry identical copies of these helpers and tables, so they are kept once here and used
+// by f128_core/asin.tess and f128_core/acos.tess.
+// Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+//
+// Only the round-to-nearest path of the original is kept. Everything works on integers (64-bit
+// words, carry chains, 64x64->128-bit products), never on F128 arithmetic. A multi-word value is a
+// record of words, least significant first (w0). Words are U64; word arithmetic that relies on C's
+// wrap-around uses the _wrap forms, and exponents, counts, and shift amounts use the plain
+// (overflow-checked) ones. Every variable shift amount is reduced modulo the width first, as the
+// C code relies on the hardware doing; an LLVM shift by the full width or more is poison.
 
 record CmAsinCarry
     sum:   U64
@@ -44,7 +44,7 @@ record CmAsinW6
     w4: U64
     w5: U64
 
-; 1 - x^2 normalized to four words, with its exponent e (the C omx2 results)
+/// 1 - x^2 normalized to four words, with its exponent e (the C omx2 results)
 record CmAsinNorm
     w0: U64
     w1: U64
@@ -52,21 +52,21 @@ record CmAsinNorm
     w3: U64
     e:  S64
 
-; sqrt(1 - x^2) to three words (fast path), with the exponent e of 1 - x^2
+/// sqrt(1 - x^2) to three words (fast path), with the exponent e of 1 - x^2
 record CmAsinRoot3
     w0: U64
     w1: U64
     w2: U64
     e:  S64
 
-; sqrt(1 - x^2) to five words (accurate path), with the exponent e of 1 - x^2
+/// sqrt(1 - x^2) to five words (accurate path), with the exponent e of 1 - x^2
 record CmAsinRoot5
     root: CmAsinW5
     e:    S64
 
-; -- words ---------------------------------------------------------------------
+// -- words ---------------------------------------------------------------------
 
-; The full 128-bit product of two unsigned words.
+/// The full 128-bit product of two unsigned words.
 routine cm_asin_mul(%a: U64, %b: U64) -> U128
     block entry():
         %r: U128 = %a.to_u128().mul_wrap(%b.to_u128())
@@ -87,13 +87,13 @@ routine cm_asin_join(%hi: U64, %lo: U64) -> U128
         %r: U128 = %hi.to_u128().shl(64).bitor(%lo.to_u128())
         return(%r)
 
-; The high word of the unsigned product a*b.
+/// The high word of the unsigned product a*b.
 routine cm_asin_mhuu(%a: U64, %b: U64) -> U64
     block entry():
         %r: U64 = cm_asin_hi(cm_asin_mul(%a, %b))
         return(%r)
 
-; The high word of the signed product a*b.
+/// The high word of the signed product a*b.
 routine cm_asin_mhii(%a: S64, %b: S64) -> S64
     block entry():
         %p:      S64 = cm_asin_mhuu(%a.to_u64_wrap(), %b.to_u64_wrap()).to_s64_wrap()
@@ -102,14 +102,14 @@ routine cm_asin_mhii(%a: S64, %b: S64) -> S64
         %r:      S64 = %p.sub_wrap(%a_fix).sub_wrap(%b_fix)
         return(%r)
 
-; a + b + c, with the carry out (0, 1 or 2).
+/// a + b + c, with the carry out (0, 1 or 2).
 routine cm_asin_ac(%a: U64, %b: U64, %c: U64) -> CmAsinCarry
     block entry():
         %s: U128 = %a.to_u128().add(%b.to_u128()).add(%c.to_u128())
         %r: CmAsinCarry = CmAsinCarry { sum: %s.to_u64_wrap(), carry: %s.shr(64).to_u64() }
         return(%r)
 
-; a - b - c, with the borrow out (0 or 1).
+/// a - b - c, with the borrow out (0 or 1).
 routine cm_asin_sc(%a: U64, %b: U64, %c: U64) -> CmAsinCarry
     block entry():
         %s:      U128 = %a.to_u128().sub_wrap(%b.to_u128()).sub_wrap(%c.to_u128())
@@ -117,13 +117,13 @@ routine cm_asin_sc(%a: U64, %b: U64, %c: U64) -> CmAsinCarry
         %r: CmAsinCarry = CmAsinCarry { sum: %s.to_u64_wrap(), carry: %borrow }
         return(%r)
 
-; A 64-bit shift amount taken modulo 64.
+/// A 64-bit shift amount taken modulo 64.
 routine cm_asin_sh(%n: S64) -> U64
     block entry():
         %r: S64 = %n.bitand(63)
         return(%r.to_u64())
 
-; A 128-bit shift amount taken modulo 128.
+/// A 128-bit shift amount taken modulo 128.
 routine cm_asin_sh7(%n: S64) -> U128
     block entry():
         %r: U128 = %n.bitand(127).to_u128()
@@ -174,7 +174,7 @@ routine cm_asin_sub5(%a: CmAsinW5, %b: CmAsinW5) -> CmAsinW5
         %r: CmAsinW5 = CmAsinW5 { w0: %r0.sum, w1: %r1.sum, w2: %r2.sum, w3: %r3.sum, w4: %r4.sum }
         return(%r)
 
-; Every word of a xor m (m is 0 or all ones: a one's complement when set).
+/// Every word of a xor m (m is 0 or all ones: a one's complement when set).
 routine cm_asin_xor3(%a: CmAsinW3, %m: U64) -> CmAsinW3
     block entry():
         %w0: U64 = %a.w0.bitxor(%m)
@@ -202,7 +202,7 @@ routine cm_asin_xor5(%a: CmAsinW5, %m: U64) -> CmAsinW5
         %r: CmAsinW5 = CmAsinW5 { w0: %w0, w1: %w1, w2: %w2, w3: %w3, w4: %w4 }
         return(%r)
 
-; Words k, k+1, k+2 of a table.
+/// Words k, k+1, k+2 of a table.
 routine cm_asin_load3(#table: Ptr<U64>, %k: U64) -> CmAsinW3
     block entry():
         %w0: U64 := #table[%k]
@@ -213,7 +213,7 @@ routine cm_asin_load3(#table: Ptr<U64>, %k: U64) -> CmAsinW3
         %r: CmAsinW3 = CmAsinW3 { w0: %w0, w1: %w1, w2: %w2 }
         return(%r)
 
-; Words k to k+3 of a table.
+/// Words k to k+3 of a table.
 routine cm_asin_load4(#table: Ptr<U64>, %k: U64) -> CmAsinW4
     block entry():
         %low:  CmAsinW3 = cm_asin_load3(#table, %k)
@@ -222,7 +222,7 @@ routine cm_asin_load4(#table: Ptr<U64>, %k: U64) -> CmAsinW4
         %r: CmAsinW4 = CmAsinW4 { w0: %low.w0, w1: %low.w1, w2: %low.w2, w3: %w3 }
         return(%r)
 
-; Words k to k+4 of a table.
+/// Words k to k+4 of a table.
 routine cm_asin_load5(#table: Ptr<U64>, %k: U64) -> CmAsinW5
     block entry():
         %low:  CmAsinW4 = cm_asin_load4(#table, %k)
@@ -231,9 +231,9 @@ routine cm_asin_load5(#table: Ptr<U64>, %k: U64) -> CmAsinW5
         %r: CmAsinW5 = CmAsinW5 { w0: %low.w0, w1: %low.w1, w2: %low.w2, w3: %low.w3, w4: %w4 }
         return(%r)
 
-; -- 128-bit helpers of the fast path ------------------------------------------
+// -- 128-bit helpers of the fast path ------------------------------------------
 
-; Approximate high 128 bits of the unsigned 128x128-bit product (the C mhUU).
+/// Approximate high 128 bits of the unsigned 128x128-bit product (the C mhUU).
 routine cm_asin_mhuu128(%a: S128, %b: S128) -> U128
     block entry():
         %a0:   U64  = cm_asin_lo(%a)
@@ -246,7 +246,7 @@ routine cm_asin_mhuu128(%a: S128, %b: S128) -> U128
         %r:    U128 = %a1b1.add_wrap(%a1b0.shr(64)).add_wrap(%a0b1.shr(64))
         return(%r)
 
-; Approximate high 128 bits of the square of a 128-bit value (the C sqrhU).
+/// Approximate high 128 bits of the square of a 128-bit value (the C sqrhU).
 routine cm_asin_sqrhu128(%a: S128) -> U128
     block entry():
         %a0:    U64  = cm_asin_lo(%a)
@@ -255,7 +255,7 @@ routine cm_asin_sqrhu128(%a: S128) -> U128
         %r:     U128 = cm_asin_mul(%a1, %a1).add_wrap(%cross)
         return(%r)
 
-; High three words of the product of a word y and a three-word x (the C mhu3uu3).
+/// High three words of the product of a word y and a three-word x (the C mhu3uu3).
 routine cm_asin_mh3w(%y: U64, %x: CmAsinW3) -> CmAsinW3
     block entry():
         %xy0: U128 = cm_asin_mul(%x.w0, %y)
@@ -267,7 +267,7 @@ routine cm_asin_mh3w(%y: U64, %x: CmAsinW3) -> CmAsinW3
         %r: CmAsinW3 = CmAsinW3 { w0: %r0.sum, w1: %r1.sum, w2: %r2.sum }
         return(%r)
 
-; High three words of the product of a two-word y and a three-word x (the C mhu3u2u3).
+/// High three words of the product of a two-word y and a three-word x (the C mhu3u2u3).
 routine cm_asin_mh3d(%y0: U64, %y1: U64, %x: CmAsinW3) -> CmAsinW3
     block entry():
         %x1y0: U128 = cm_asin_mul(%x.w1, %y0)
@@ -281,10 +281,10 @@ routine cm_asin_mh3d(%y0: U64, %y1: U64, %x: CmAsinW3) -> CmAsinW3
         %r: CmAsinW3 = CmAsinW3 { w0: %r0.sum, w1: %r1.sum, w2: %r2.sum }
         return(%r)
 
-; -- range reduction and 1/sqrt ------------------------------------------------
+// -- range reduction and 1/sqrt ------------------------------------------------
 
-; Reciprocal square root of a 64-bit fixed-point m in [1, 2), to almost 64 bits (the C rsqrt9):
-; a cubic from CM_ASIN_RSQRT, then one Newton step r1 = r0 - r0*(r0^2*m - 1)/2.
+/// Reciprocal square root of a 64-bit fixed-point m in [1, 2), to almost 64 bits (the C rsqrt9):
+/// a cubic from CM_ASIN_RSQRT, then one Newton step r1 = r0 - r0*(r0^2*m - 1)/2.
 routine cm_asin_rsqrt9(%m: U64) -> U64
     block entry():
         #rsqrt: Ptr<U64> = CM_ASIN_RSQRT.as_ptr()
@@ -305,7 +305,7 @@ routine cm_asin_rsqrt9(%m: U64) -> U64
         %r:     U64 = %r1.eq(0) ? U64.MAX : %r1
         return(%r)
 
-; The table index j of the range reduction, from the high word of 0 < |x| < 1 (the C jget).
+/// The table index j of the range reduction, from the high word of 0 < |x| < 1 (the C jget).
 routine cm_asin_jget(%x: U64) -> U64
     block entry():
         %z:       U64  = 0x3FFF000000000000.sub_wrap(%x)
@@ -328,7 +328,7 @@ routine cm_asin_jget(%x: U64) -> U64
         %r:       U64  = %j.add(%below.to_u64())
         return(%r)
 
-; The full 256-bit square of a two-word value (the C sqrU).
+/// The full 256-bit square of a two-word value (the C sqrU).
 routine cm_asin_sqru(%x0: U64, %x1: U64) -> CmAsinW4
     block entry():
         %p10:     U128 = cm_asin_mul(%x1, %x0)
@@ -342,9 +342,9 @@ routine cm_asin_sqru(%x0: U64, %x1: U64) -> CmAsinW4
         %r: CmAsinW4 = CmAsinW4 { w0: cm_asin_lo(%p00.to_s128_wrap()), w1: %r1.sum, w2: %r2.sum, w3: %r3.sum }
         return(%r)
 
-; Normalized 1 - x^2 for the two-word x scaled by 2^-s: four words and the exponent e. %mode
-; picks the C variant: 0 = asinq's omx2v2 (one's complement), 1 = acosq's omx2v2 (one's
-; complement, plus one when the top word vanishes), 2 = omx2v3 (exact two's complement).
+/// Normalized 1 - x^2 for the two-word x scaled by 2^-s: four words and the exponent e. %mode
+/// picks the C variant: 0 = asinq's omx2v2 (one's complement), 1 = acosq's omx2v2 (one's
+/// complement, plus one when the top word vanishes), 2 = omx2v3 (exact two's complement).
 routine cm_asin_omx2(%s: S64, %x0: U64, %x1: U64, %mode: S64) -> CmAsinNorm
     block entry():
         %q:  CmAsinW4 = cm_asin_sqru(%x0, %x1)
@@ -385,7 +385,7 @@ routine cm_asin_omx2(%s: S64, %x0: U64, %x1: U64, %mode: S64) -> CmAsinNorm
         %n: CmAsinNorm = CmAsinNorm { w0: %w0, w1: %w1, w2: %w2, w3: %w3, e: %lk.add(1) }
         return(%n)
 
-    ; the top word vanished: acos's variant adds one first, then everything moves up a word
+    // the top word vanished: acos's variant adds one first, then everything moves up a word
     block shift_low(%y: CmAsinW4, %mode: S64):
         %inc: U64 = %mode.eq(1).to_u64()
         %i0:  CmAsinCarry = cm_asin_ac(%y.w0, %inc, 0)
@@ -400,15 +400,15 @@ routine cm_asin_omx2(%s: S64, %x0: U64, %x1: U64, %mode: S64) -> CmAsinNorm
         %n: CmAsinNorm = CmAsinNorm { w0: 0, w1: %w1, w2: %w2, w3: %w3, e: %lk.add(65) }
         return(%n)
 
-; 2^64/sqrt(2)^(e&1): the scale that folds an odd exponent into the reciprocal square root.
+/// 2^64/sqrt(2)^(e&1): the scale that folds an odd exponent into the reciprocal square root.
 routine cm_asin_rsqrt2(%e: S64) -> U64
     block entry():
         %odd: Bool = %e.bitand(1).ne(0)
         %r:   U64  = %odd ? 0xB504F333F9DE6484 : 0xFFFFFFFFFFFFFFFF
         return(%r)
 
-; The fast path's sqrt(1 - x^2) for the mantissa words x (shifted left by 15) and
-; nz = 0x3fff - exponent; %mode is passed on to cm_asin_omx2.
+/// The fast path's sqrt(1 - x^2) for the mantissa words x (shifted left by 15) and
+/// nz = 0x3fff - exponent; %mode is passed on to cm_asin_omx2.
 routine cm_asin_fast_sqrt(%x0: U64, %x1: U64, %nz: S64, %mode: S64) -> CmAsinRoot3
     block entry():
         %q:    CmAsinNorm = cm_asin_omx2(%nz.mul(2).sub(2), %x0, %x1, %mode)
@@ -416,9 +416,9 @@ routine cm_asin_fast_sqrt(%x0: U64, %x1: U64, %nz: S64, %mode: S64) -> CmAsinRoo
         %rx:   U64 = %q.w3.shl(1).bitor(%q.w2.shr(63))
         %r:    U64 = cm_asin_mhuu(cm_asin_rsqrt9(%rx), cm_asin_rsqrt2(%e))
         %qhi:  CmAsinW3 = CmAsinW3 { w0: %q.w1, w1: %q.w2, w2: %q.w3 }
-        %sx:   CmAsinW3 = cm_asin_mh3w(%r, %qhi)          ; sqrt(1 - x^2), first try
+        %sx:   CmAsinW3 = cm_asin_mh3w(%r, %qhi)          // sqrt(1 - x^2), first try
         %hq:   CmAsinW3 = cm_asin_mh3w(%r, %sx)
-        ; the Newton correction: sx - sx*(sx*r - 1)/2 with a cubic term
+        // the Newton correction: sx - sx*(sx*r - 1)/2 with a cubic term
         %h0:   U64  = %hq.w0.shr(2).bitor(%hq.w1.shl(62))
         %h1:   U64  = %hq.w1.shr(2).bitor(%hq.w2.shl(62))
         %h2sq: U64  = cm_asin_mhii(%h1.to_s64_wrap(), %h1.to_s64_wrap()).to_u64_wrap()
@@ -427,7 +427,7 @@ routine cm_asin_fast_sqrt(%x0: U64, %x1: U64, %nz: S64, %mode: S64) -> CmAsinRoo
         %rk:   S64  = cm_asin_sh(64.sub(%lk)).to_s64()
         %cube: U128 = cm_asin_join(%h2.shr(%rk.to_u64()), %h2.shl(%lk.to_u64()))
         %hh:   S128 = cm_asin_join(%h1, %h0).sub_wrap(%cube).to_s128_wrap()
-        ; d = high part of the (unsigned sx) x (signed hh) product
+        // d = high part of the (unsigned sx) x (signed hh) product
         %sa:   U128 = cm_asin_join(%sx.w2, %sx.w1)
         %du:   U128 = cm_asin_mhuu128(%sa.to_s128_wrap(), %hh)
         %d:    U128 = %hh.lt(0) ? %du.sub_wrap(%sa) : %du
@@ -442,8 +442,8 @@ routine cm_asin_fast_sqrt(%x0: U64, %x1: U64, %nz: S64, %mode: S64) -> CmAsinRoo
         %res:  CmAsinRoot3 = CmAsinRoot3 { w0: %o.w0, w1: %o.w1, w2: %o.w2, e: %e }
         return(%res)
 
-; The fast path's reduced argument x*sqrt(1 - s_j^2) - s_j*sqrt(1 - x^2) to three words, for the
-; 128-bit mantissa xa, nz = 0x3fff - exponent, the table point j and sqrt(1 - x^2) in %root.
+/// The fast path's reduced argument x*sqrt(1 - s_j^2) - s_j*sqrt(1 - x^2) to three words, for the
+/// 128-bit mantissa xa, nz = 0x3fff - exponent, the table point j and sqrt(1 - x^2) in %root.
 routine cm_asin_reduce3(%xa: U128, %nz: S64, %j: U64, %root: CmAsinRoot3) -> CmAsinW3
     block entry():
         %xs:     U128 = %xa.shr(S64.from_bits(cm_asin_sh(%nz).bits()).to_u128())
@@ -473,8 +473,8 @@ routine cm_asin_reduce3(%xa: U128, %nz: S64, %j: U64, %root: CmAsinRoot3) -> CmA
         %d:  CmAsinW3 = cm_asin_sub3(%p, %sx)
         return(%d)
 
-; The top 128 bits of a three-word value shifted left by its leading zeros nz (the C code's
-; shift by 0 - nz: nz = 0 would OR the words, as in the original).
+/// The top 128 bits of a three-word value shifted left by its leading zeros nz (the C code's
+/// shift by 0 - nz: nz = 0 would OR the words, as in the original).
 routine cm_asin_top128(%d: CmAsinW3, %nz: S64) -> U128
     block entry():
         %l:  S64 = cm_asin_sh(%nz).to_s64()
@@ -484,8 +484,8 @@ routine cm_asin_top128(%d: CmAsinW3, %nz: S64) -> U128
         %t:  U128 = cm_asin_join(%hi, %lo)
         return(%t)
 
-; The fast path's odd polynomial part t^3*P(t^2) for the normalized t, with the shift s2 that
-; aligns t^2.
+/// The fast path's odd polynomial part t^3*P(t^2) for the normalized t, with the shift s2 that
+/// aligns t^2.
 routine cm_asin_fast_poly(%t: U128, %s2: S64) -> U128
     block entry():
         %t2_full: U128 = cm_asin_sqrhu128(%t.to_s128_wrap())
@@ -501,14 +501,14 @@ routine cm_asin_fast_poly(%t: U128, %s2: S64) -> U128
         %c12:     U64 := #c[12]
         %c10:     U64 := #c[10]
         %c11:     U64 := #c[11]
-        ; the small high coefficients take one word each
+        // the small high coefficients take one word each
         %f16:     U64  = %c16.add_wrap(cm_asin_mhuu(%t2h, %c18))
         %f14:     U64  = %c14.add_wrap(cm_asin_mhuu(%t2h, %f16))
         %f12:     U64  = %c12.add_wrap(cm_asin_mhuu(%t2h, %f14))
         %f10:     U128 = cm_asin_join(%c11, %c10.add_wrap(cm_asin_mhuu(%t2h, %f12)))
         jump horner(%t2, %t3, %f10, 8)
 
-    ; f = C[i] + t^2*f for i = 8, 6, 4, 2, 0, two words per coefficient
+    // f = C[i] + t^2*f for i = 8, 6, 4, 2, 0, two words per coefficient
     block horner(%t2: U128, %t3: U128, %f: U128, %i: U64):
         #c:     Ptr<U64> = CM_ASIN_C.as_ptr()
         %c_lo:  U64 := #c[%i]
@@ -522,8 +522,8 @@ routine cm_asin_fast_poly(%t: U128, %s2: S64) -> U128
         %r: U128 = cm_asin_mhuu128(%t3.to_s128_wrap(), %f.to_s128_wrap())
         return(%r)
 
-; A 128-bit f placed as the top two of three words and shifted right by sf (the fast path's
-; alignment of the polynomial part). sf = 0 ORs words, as in the original.
+/// A 128-bit f placed as the top two of three words and shifted right by sf (the fast path's
+/// alignment of the polynomial part). sf = 0 ORs words, as in the original.
 routine cm_asin_shift_poly3(%f: U128, %sf: S64) -> CmAsinW3
     block entry():
         %f2: U64 = cm_asin_hi(%f)
@@ -558,17 +558,17 @@ routine cm_asin_shift_poly3(%f: U128, %sf: S64) -> CmAsinW3
         %r: CmAsinW3 = CmAsinW3 { w0: %f2.shr(%s.to_u64()), w1: 0, w2: 0 }
         return(%r)
 
-; -- five-word arithmetic of the accurate path ---------------------------------
+// -- five-word arithmetic of the accurate path ---------------------------------
 
-; A five-word value shifted right by k bits, or left by -k bits (the C shrn and shln).
+/// A five-word value shifted right by k bits, or left by -k bits (the C shrn and shln).
 routine cm_asin_shift5(%a: CmAsinW5, %k: S64) -> CmAsinW5
     block entry():
         %gone: Bool = %k.ge(320).bitor(%k.le(-320))
         %zero: CmAsinW5 = CmAsinW5 { w0: 0, w1: 0, w2: 0, w3: 0, w4: 0 }
         branch %gone ? return(%zero) : window(%a, %k)
 
-    ; the words sit at 5..9 of a zero-padded buffer; word i of the result is the 64 bits at
-    ; bit 64*i + k of the value
+    // the words sit at 5..9 of a zero-padded buffer; word i of the result is the 64 bits at
+    // bit 64*i + k of the value
     block window(%a: CmAsinW5, %k: S64):
         #buf:   Ptr<Array<S64, 16>> = alloca<Array<S64, 16>>
         #words: Ptr<U64> = #buf.cast<U64>()
@@ -587,7 +587,7 @@ routine cm_asin_shift5(%a: CmAsinW5, %k: S64) -> CmAsinW5
         %r: CmAsinW5 = CmAsinW5 { w0: %w0, w1: %w1, w2: %w2, w3: %w3, w4: %w4 }
         return(%r)
 
-; The leading zeros of a five-word value, or %fallback when it is zero.
+/// The leading zeros of a five-word value, or %fallback when it is zero.
 routine cm_asin_clz5(%a: CmAsinW5, %fallback: S64) -> S64
     block entry():
         %has4: Bool = %a.w4.ne(0)
@@ -608,11 +608,11 @@ routine cm_asin_clz5(%a: CmAsinW5, %fallback: S64) -> S64
             %has0 -> return(%z0)
             _ -> return(%fallback)
 
-; Approximate high five words of the five-word product a*b (the C mhu5u5u5(o, b, a)). Two
-; carry chains run side by side: c0 through the row sums t, c1 through the accumulator o.
+/// Approximate high five words of the five-word product a*b (the C mhu5u5u5(o, b, a)). Two
+/// carry chains run side by side: c0 through the row sums t, c1 through the accumulator o.
 routine cm_asin_mh5(%b: CmAsinW5, %a: CmAsinW5) -> CmAsinW5
     block entry():
-        ; row of b1, with the top of a4*b0
+        // row of b1, with the top of a4*b0
         %a4b0: U128 = cm_asin_mul(%a.w4, %b.w0)
         %a3b1: U128 = cm_asin_mul(%a.w3, %b.w1)
         %a4b1: U128 = cm_asin_mul(%a.w4, %b.w1)
@@ -620,7 +620,7 @@ routine cm_asin_mh5(%b: CmAsinW5, %a: CmAsinW5) -> CmAsinW5
         %o10: CmAsinCarry = cm_asin_ac(cm_asin_hi(%a4b0), %t1.sum, 0)
         %t1b: CmAsinCarry = cm_asin_ac(cm_asin_hi(%a4b1), 0, %t1.carry)
         %o11: CmAsinCarry = cm_asin_ac(%t1b.sum, 0, %o10.carry)
-        ; row of b2
+        // row of b2
         %a2b2: U128 = cm_asin_mul(%a.w2, %b.w2)
         %a3b2: U128 = cm_asin_mul(%a.w3, %b.w2)
         %a4b2: U128 = cm_asin_mul(%a.w4, %b.w2)
@@ -630,7 +630,7 @@ routine cm_asin_mh5(%b: CmAsinW5, %a: CmAsinW5) -> CmAsinW5
         %o21: CmAsinCarry = cm_asin_ac(%o11.sum, %t2b.sum, %o20.carry)
         %t2c: CmAsinCarry = cm_asin_ac(cm_asin_hi(%a4b2), 0, %t2b.carry)
         %o22: CmAsinCarry = cm_asin_ac(%t2c.sum, 0, %o21.carry)
-        ; row of b3
+        // row of b3
         %a1b3: U128 = cm_asin_mul(%a.w1, %b.w3)
         %a2b3: U128 = cm_asin_mul(%a.w2, %b.w3)
         %a3b3: U128 = cm_asin_mul(%a.w3, %b.w3)
@@ -643,7 +643,7 @@ routine cm_asin_mh5(%b: CmAsinW5, %a: CmAsinW5) -> CmAsinW5
         %o32: CmAsinCarry = cm_asin_ac(%o22.sum, %t3c.sum, %o31.carry)
         %t3d: CmAsinCarry = cm_asin_ac(cm_asin_hi(%a4b3), 0, %t3c.carry)
         %o33: CmAsinCarry = cm_asin_ac(%t3d.sum, 0, %o32.carry)
-        ; row of b4
+        // row of b4
         %a0b4: U128 = cm_asin_mul(%a.w0, %b.w4)
         %a1b4: U128 = cm_asin_mul(%a.w1, %b.w4)
         %a2b4: U128 = cm_asin_mul(%a.w2, %b.w4)
@@ -662,10 +662,10 @@ routine cm_asin_mh5(%b: CmAsinW5, %a: CmAsinW5) -> CmAsinW5
         %r: CmAsinW5 = CmAsinW5 { w0: %o40.sum, w1: %o41.sum, w2: %o42.sum, w3: %o43.sum, w4: %o44.sum }
         return(%r)
 
-; High five words of the product of a two-word b and a five-word a (the C mhu5u2u5).
+/// High five words of the product of a two-word b and a five-word a (the C mhu5u2u5).
 routine cm_asin_mh5d(%b0: U64, %b1: U64, %a: CmAsinW5) -> CmAsinW5
     block entry():
-        ; row of b0
+        // row of b0
         %a1b0: U128 = cm_asin_mul(%a.w1, %b0)
         %a2b0: U128 = cm_asin_mul(%a.w2, %b0)
         %a3b0: U128 = cm_asin_mul(%a.w3, %b0)
@@ -674,7 +674,7 @@ routine cm_asin_mh5d(%b0: U64, %b1: U64, %a: CmAsinW5) -> CmAsinW5
         %o1: CmAsinCarry = cm_asin_ac(cm_asin_lo(%a3b0.to_s128_wrap()), cm_asin_hi(%a2b0), %o0.carry)
         %o2: CmAsinCarry = cm_asin_ac(cm_asin_lo(%a4b0.to_s128_wrap()), cm_asin_hi(%a3b0), %o1.carry)
         %o3: CmAsinCarry = cm_asin_ac(0, cm_asin_hi(%a4b0), %o2.carry)
-        ; row of b1, added in
+        // row of b1, added in
         %a0b1: U128 = cm_asin_mul(%a.w0, %b1)
         %a1b1: U128 = cm_asin_mul(%a.w1, %b1)
         %a2b1: U128 = cm_asin_mul(%a.w2, %b1)
@@ -693,7 +693,7 @@ routine cm_asin_mh5d(%b0: U64, %b1: U64, %a: CmAsinW5) -> CmAsinW5
         %r: CmAsinW5 = CmAsinW5 { w0: %s0.sum, w1: %s1.sum, w2: %s2.sum, w3: %s3.sum, w4: %s4.sum }
         return(%r)
 
-; High five words of the product of a word b0 and a five-word a (the C mhu5u1u5).
+/// High five words of the product of a word b0 and a five-word a (the C mhu5u1u5).
 routine cm_asin_mh5w(%b0: U64, %a: CmAsinW5) -> CmAsinW5
     block entry():
         %a0b0: U128 = cm_asin_mul(%a.w0, %b0)
@@ -709,7 +709,7 @@ routine cm_asin_mh5w(%b0: U64, %a: CmAsinW5) -> CmAsinW5
         %r: CmAsinW5 = CmAsinW5 { w0: %r0.sum, w1: %r1.sum, w2: %r2.sum, w3: %r3.sum, w4: %r4.sum }
         return(%r)
 
-; The full product of a word b0 and a four-word a (the C mu5u1u4).
+/// The full product of a word b0 and a four-word a (the C mu5u1u4).
 routine cm_asin_mu5(%b0: U64, %a: CmAsinW4) -> CmAsinW5
     block entry():
         %a0b0: U128 = cm_asin_mul(%a.w0, %b0)
@@ -724,7 +724,7 @@ routine cm_asin_mu5(%b0: U64, %a: CmAsinW4) -> CmAsinW5
         %r: CmAsinW5 = CmAsinW5 { w0: %w0, w1: %r1.sum, w2: %r2.sum, w3: %r3.sum, w4: %r4.sum }
         return(%r)
 
-; The full product of a word b0 and a five-word a (the C mu6u1u5).
+/// The full product of a word b0 and a five-word a (the C mu6u1u5).
 routine cm_asin_mu6(%b0: U64, %a: CmAsinW5) -> CmAsinW6
     block entry():
         %a0b0: U128 = cm_asin_mul(%a.w0, %b0)
@@ -742,10 +742,10 @@ routine cm_asin_mu6(%b0: U64, %a: CmAsinW5) -> CmAsinW6
             w0: %w0, w1: %r1.sum, w2: %r2.sum, w3: %r3.sum, w4: %r4.sum, w5: %r5.sum }
         return(%r)
 
-; Approximate high five words of the square of a five-word value (the C sqrhu5).
+/// Approximate high five words of the square of a five-word value (the C sqrhu5).
 routine cm_asin_sqrh5(%a: CmAsinW5) -> CmAsinW5
     block entry():
-        ; the cross products, once
+        // the cross products, once
         %a4a0: U128 = cm_asin_mul(%a.w4, %a.w0)
         %a3a1: U128 = cm_asin_mul(%a.w3, %a.w1)
         %o0a: CmAsinCarry = cm_asin_ac(cm_asin_hi(%a4a0), cm_asin_hi(%a3a1), 0)
@@ -761,12 +761,12 @@ routine cm_asin_sqrh5(%a: CmAsinW5) -> CmAsinW5
         %t2:  CmAsinCarry = cm_asin_ac(cm_asin_lo(%a4a3.to_s128_wrap()), cm_asin_hi(%a4a2), %t1.carry)
         %o2:  CmAsinCarry = cm_asin_ac(0, %t2.sum, %o1b.carry)
         %o3:  CmAsinCarry = cm_asin_ac(0, cm_asin_hi(%a4a3), %t2.carry)
-        ; doubled
+        // doubled
         %d0: CmAsinCarry = cm_asin_ac(%o0b.sum, %o0b.sum, 0)
         %d1: CmAsinCarry = cm_asin_ac(%o1b.sum, %o1b.sum, %d0.carry)
         %d2: CmAsinCarry = cm_asin_ac(%o2.sum, %o2.sum, %d1.carry)
         %d3: CmAsinCarry = cm_asin_ac(%o3.sum, %o3.sum, %d2.carry)
-        ; plus the squares
+        // plus the squares
         %a2a2: U128 = cm_asin_mul(%a.w2, %a.w2)
         %a3a3: U128 = cm_asin_mul(%a.w3, %a.w3)
         %a4a4: U128 = cm_asin_mul(%a.w4, %a.w4)
@@ -778,7 +778,7 @@ routine cm_asin_sqrh5(%a: CmAsinW5) -> CmAsinW5
         %r: CmAsinW5 = CmAsinW5 { w0: %q0.sum, w1: %q1.sum, w2: %q2.sum, w3: %q3.sum, w4: %q4.sum }
         return(%r)
 
-; Approximate high four words of the square of a four-word value (the C sqrhu4).
+/// Approximate high four words of the square of a four-word value (the C sqrhu4).
 routine cm_asin_sqrh4(%a: CmAsinW4) -> CmAsinW4
     block entry():
         %a2a1: U128 = cm_asin_mul(%a.w2, %a.w1)
@@ -791,11 +791,11 @@ routine cm_asin_sqrh4(%a: CmAsinW4) -> CmAsinW4
         %s0: CmAsinCarry = cm_asin_ac(%r0.sum, cm_asin_hi(%a2a1), 0)
         %s1: CmAsinCarry = cm_asin_ac(%r1.sum, 0, %s0.carry)
         %s2: CmAsinCarry = cm_asin_ac(%r2.sum, 0, %s1.carry)
-        ; doubled
+        // doubled
         %d0: CmAsinCarry = cm_asin_ac(%s0.sum, %s0.sum, 0)
         %d1: CmAsinCarry = cm_asin_ac(%s1.sum, %s1.sum, %d0.carry)
         %d2: CmAsinCarry = cm_asin_ac(%s2.sum, %s2.sum, %d1.carry)
-        ; plus the squares
+        // plus the squares
         %a2a2: U128 = cm_asin_mul(%a.w2, %a.w2)
         %a3a3: U128 = cm_asin_mul(%a.w3, %a.w3)
         %q0: CmAsinCarry = cm_asin_ac(%d0.sum, cm_asin_lo(%a2a2.to_s128_wrap()), 0)
@@ -805,7 +805,7 @@ routine cm_asin_sqrh4(%a: CmAsinW4) -> CmAsinW4
         %r: CmAsinW4 = CmAsinW4 { w0: %q0.sum, w1: %q1.sum, w2: %q2.sum, w3: %q3.sum }
         return(%r)
 
-; Approximate high two words of the two-word product a*b (the C mhu2u2u2(o, b, a)), as a U128.
+/// Approximate high two words of the two-word product a*b (the C mhu2u2u2(o, b, a)), as a U128.
 routine cm_asin_mh2(%b: S128, %a: S128) -> U128
     block entry():
         %b0:   U64  = cm_asin_lo(%b)
@@ -822,7 +822,7 @@ routine cm_asin_mh2(%b: S128, %a: S128) -> U128
         %r: U128 = cm_asin_join(%o1.sum, %o0.sum)
         return(%r)
 
-; Approximate high three words of the three-word product a*b (the C mhu3u3u3(o, b, a)).
+/// Approximate high three words of the three-word product a*b (the C mhu3u3u3(o, b, a)).
 routine cm_asin_mh3(%b: CmAsinW3, %a: CmAsinW3) -> CmAsinW3
     block entry():
         %a1b1: U128 = cm_asin_mul(%a.w1, %b.w1)
@@ -839,7 +839,7 @@ routine cm_asin_mh3(%b: CmAsinW3, %a: CmAsinW3) -> CmAsinW3
         %r: CmAsinW3 = cm_asin_add3(%sum, %cross)
         return(%r)
 
-; Approximate high four words of the four-word product a*b (the C mhu4u4u4(o, b, a)).
+/// Approximate high four words of the four-word product a*b (the C mhu4u4u4(o, b, a)).
 routine cm_asin_mh4(%b: CmAsinW4, %a: CmAsinW4) -> CmAsinW4
     block entry():
         %a3b0: U128 = cm_asin_mul(%a.w3, %b.w0)
@@ -873,9 +873,9 @@ routine cm_asin_mh4(%b: CmAsinW4, %a: CmAsinW4) -> CmAsinW4
         %r:    CmAsinW4 = cm_asin_add4(%o1, %m22)
         return(%r)
 
-; -- the accurate path: sqrt(1 - x^2) and the polynomial ------------------------
+// -- the accurate path: sqrt(1 - x^2) and the polynomial ------------------------
 
-; Words 0..4 of a six-word value shifted right by 2 (the C shrn(6, a, 2), whose top word is unused).
+/// Words 0..4 of a six-word value shifted right by 2 (the C shrn(6, a, 2), whose top word is unused).
 routine cm_asin_shr6_by2(%a: CmAsinW6) -> CmAsinW5
     block entry():
         %w0: U64 = %a.w0.shr(2).bitor(%a.w1.shl(62))
@@ -886,8 +886,8 @@ routine cm_asin_shr6_by2(%a: CmAsinW6) -> CmAsinW5
         %r: CmAsinW5 = CmAsinW5 { w0: %w0, w1: %w1, w2: %w2, w3: %w3, w4: %w4 }
         return(%r)
 
-; sqrt(1 - x^2) to five words for the mantissa words x (shifted left by 15) and
-; ex = 0x3fff - exponent, with the exponent e of 1 - x^2 (the C getcos).
+/// sqrt(1 - x^2) to five words for the mantissa words x (shifted left by 15) and
+/// ex = 0x3fff - exponent, with the exponent e of 1 - x^2 (the C getcos).
 routine cm_asin_getcos(%ex: S64, %x0: U64, %x1: U64) -> CmAsinRoot5
     block entry():
         %q:    CmAsinNorm = cm_asin_omx2(%ex.sub(1).mul(2), %x0, %x1, 2)
@@ -896,9 +896,9 @@ routine cm_asin_getcos(%ex: S64, %x0: U64, %x1: U64) -> CmAsinRoot5
         %rx:   U64 = %q.w3.shl(1).bitor(%q.w2.shr(63))
         %r:    U64 = cm_asin_mhuu(cm_asin_rsqrt9(%rx), cm_asin_rsqrt2(%e))
         %qw:   CmAsinW4 = CmAsinW4 { w0: %q.w0, w1: %q.w1, w2: %q.w2, w3: %q.w3 }
-        %sq:   CmAsinW5 = cm_asin_mu5(%r, %qw)                 ; sqrt(1 - x^2), first try
+        %sq:   CmAsinW5 = cm_asin_mu5(%r, %qw)                 // sqrt(1 - x^2), first try
         %h6:   CmAsinW5 = cm_asin_shr6_by2(cm_asin_mu6(%r, %sq))
-        ; h = r*sq - 1 as a small signed value; work on its magnitude
+        // h = r*sq - 1 as a small signed value; work on its magnitude
         %msk:  S64 = S64.from_bits(%h6.w4.bits()).shr(63)
         %h:    CmAsinW5 = cm_asin_xor5(%h6, %msk.to_u64_wrap())
         %htop: CmAsinW4 = CmAsinW4 { w0: %h.w1, w1: %h.w2, w2: %h.w3, w3: %h.w4 }
@@ -907,7 +907,7 @@ routine cm_asin_getcos(%ex: S64, %x0: U64, %x1: U64) -> CmAsinRoot5
         %h3b:  CmAsinW3 = CmAsinW3 { w0: %h.w2, w1: %h.w3, w2: %h.w4 }
         %h3a:  CmAsinW3 = CmAsinW3 { w0: %h2.w1, w1: %h2.w2, w2: %h2.w3 }
         %h3:   CmAsinW3 = cm_asin_mh3(%h3b, %h3a)
-        ; the series terms 1.5*h^2, 1.25*h^3 (up to sign), 35/32*h^4
+        // the series terms 1.5*h^2, 1.25*h^3 (up to sign), 35/32*h^4
         %m0: CmAsinCarry = cm_asin_ac(%h2.w0, %h2.w1.shl(63).bitor(%h2.w0.shr(1)), 0)
         %m1: CmAsinCarry = cm_asin_ac(%h2.w1, %h2.w2.shl(63).bitor(%h2.w1.shr(1)), %m0.carry)
         %m2: CmAsinCarry = cm_asin_ac(%h2.w2, %h2.w3.shl(63).bitor(%h2.w2.shr(1)), %m1.carry)
@@ -922,7 +922,7 @@ routine cm_asin_getcos(%ex: S64, %x0: U64, %x1: U64) -> CmAsinRoot5
         %h2s: CmAsinW5 = cm_asin_shift5(%m, 62.sub(%eo))
         %h3s: CmAsinW5 = cm_asin_shift5(%n, 123.sub(%eo.mul(2)))
         %t4:  CmAsinW5 = cm_asin_shift5(%t4w, 184.sub(%eo.mul(3)))
-        ; the series in the magnitude of h, its odd terms flipped when h < 0
+        // the series in the magnitude of h, its odd terms flipped when h < 0
         %was_negative: Bool = %msk.ne(0)
         %neg_1: CmAsinW5 = cm_asin_add5(%h, %h2s)
         %neg_2: CmAsinW5 = cm_asin_add5(%neg_1, %h3s)
@@ -931,7 +931,7 @@ routine cm_asin_getcos(%ex: S64, %x0: U64, %x1: U64) -> CmAsinRoot5
         %pos_2: CmAsinW5 = cm_asin_add5(%pos_1, %h3s)
         %pos_s: CmAsinW5 = cm_asin_sub5(%pos_2, %t4)
         %s:     CmAsinW5 = %was_negative ? %neg_s : %pos_s
-        ; sq -/+ (1 - x^2) * r * series
+        // sq -/+ (1 - x^2) * r * series
         %g6:   CmAsinW6 = cm_asin_mu6(%r, %s)
         %g:    CmAsinW5 = CmAsinW5 { w0: %g6.w1, w1: %g6.w2, w2: %g6.w3, w3: %g6.w4, w4: %g6.w5 }
         %x2l:  CmAsinW5 = CmAsinW5 { w0: 0, w1: %q.w0, w2: %q.w1, w3: %q.w2, w4: %q.w3 }
@@ -943,8 +943,8 @@ routine cm_asin_getcos(%ex: S64, %x0: U64, %x1: U64) -> CmAsinRoot5
         %res:  CmAsinRoot5 = CmAsinRoot5 { root: %root, e: %e }
         return(%res)
 
-; The accurate path's reduced argument x*sqrt(1 - s_j^2) - s_j*sqrt(1 - x^2) to five words, for
-; the 128-bit mantissa xa, nz = 0x3fff - exponent, the table point j and sqrt(1 - x^2) in %root.
+/// The accurate path's reduced argument x*sqrt(1 - s_j^2) - s_j*sqrt(1 - x^2) to five words, for
+/// the 128-bit mantissa xa, nz = 0x3fff - exponent, the table point j and sqrt(1 - x^2) in %root.
 routine cm_asin_reduce5(%xa: U128, %nz: S64, %j: U64, %root: CmAsinRoot5) -> CmAsinW5
     block entry():
         %xs:     U128 = %xa.shr(S64.from_bits(cm_asin_sh(%nz).bits()).to_u128())
@@ -962,8 +962,8 @@ routine cm_asin_reduce5(%xa: U128, %nz: S64, %j: U64, %root: CmAsinRoot5) -> CmA
         %d:      CmAsinW5 = cm_asin_sub5(%xc, %sx)
         return(%d)
 
-; The accurate path's polynomial P(t^2) to five words (the C evalpoly): Horner's rule with the
-; working width growing from two to five words as the coefficients grow.
+/// The accurate path's polynomial P(t^2) to five words (the C evalpoly): Horner's rule with the
+/// working width growing from two to five words as the coefficients grow.
 routine cm_asin_evalpoly(%t2: CmAsinW5) -> CmAsinW5
     block entry():
         #cp:  Ptr<U64> = CM_ASIN_CP.as_ptr()
@@ -1036,8 +1036,8 @@ routine cm_asin_evalpoly(%t2: CmAsinW5) -> CmAsinW5
         %p:   CmAsinW5 = cm_asin_mh5(%f, %t2)
         jump five_words(%t2, cm_asin_add5(%c, %p), %k.add(5))
 
-; t^3*P(t^2) to five words for the normalized t with nz leading zeros (the accurate path's
-; odd polynomial part, before alignment).
+/// t^3*P(t^2) to five words for the normalized t with nz leading zeros (the accurate path's
+/// odd polynomial part, before alignment).
 routine cm_asin_poly5(%t: CmAsinW5, %nz: S64) -> CmAsinW5
     block entry():
         %t2_full: CmAsinW5 = cm_asin_sqrh5(%t)
@@ -1047,14 +1047,14 @@ routine cm_asin_poly5(%t: CmAsinW5, %nz: S64) -> CmAsinW5
         %r:       CmAsinW5 = cm_asin_mh5(%t3, %p)
         return(%r)
 
-; -- tables --------------------------------------------------------------------
-; CM_ASIN_RSQRT: 64 rows of 4 coefficients of the cubic 1/sqrt approximation (rsqrt9)
-; CM_ASIN_STH:   rounded sin(pi/2/72*j) in the format of the range reduction
-; CM_ASIN_PTH:   rounded sin(pi/2/72*j)
-; CM_ASIN_CTH:   sqrt(1 - PTH[j]^2), five words per row
-; CM_ASIN_IND:   the table index of the range reduction
-; CM_ASIN_C:     the fast polynomial, two words per coefficient
-; CM_ASIN_CP:    the accurate polynomial, coefficients of growing width packed back to back
+// -- tables --------------------------------------------------------------------
+// CM_ASIN_RSQRT: 64 rows of 4 coefficients of the cubic 1/sqrt approximation (rsqrt9)
+// CM_ASIN_STH:   rounded sin(pi/2/72*j) in the format of the range reduction
+// CM_ASIN_PTH:   rounded sin(pi/2/72*j)
+// CM_ASIN_CTH:   sqrt(1 - PTH[j]^2), five words per row
+// CM_ASIN_IND:   the table index of the range reduction
+// CM_ASIN_C:     the fast polynomial, two words per coefficient
+// CM_ASIN_CP:    the accurate polynomial, coefficients of growing width packed back to back
 
 preset CM_ASIN_RSQRT: Array<U64, 256> = [
     0x00000000FFFFFFFF, 0x00000000FFFFF780, 0x00000000BFF55815, 0x000000009BB5B6E7,

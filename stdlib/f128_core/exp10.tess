@@ -1,33 +1,33 @@
-; Tessera stdlib: the correctly rounded base-10 exponential 10^x of F128
-;
-; x × log2(10) in 3-word fixed point, then the shared 2^x engine (exp_shared.tess).
-; x = 1, 2, ..., 48 give the exact power of ten. Round to nearest only: overflow
-; gives +inf, underflow a correctly rounded subnormal or +0, NaN comes back quiet
-; with its sign and payload.
-;
-; Ported from CORE-MATH, src/binary128/exp10/exp10q.c via RazorForge's B128Exp10.rf.
-; Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
-; MIT license: see LICENSE-CORE-MATH
+// Tessera stdlib: the correctly rounded base-10 exponential 10^x of F128
+//
+// x × log2(10) in 3-word fixed point, then the shared 2^x engine (exp_shared.tess).
+// x = 1, 2, ..., 48 give the exact power of ten. Round to nearest only: overflow
+// gives +inf, underflow a correctly rounded subnormal or +0, NaN comes back quiet
+// with its sign and payload.
+//
+// Ported from CORE-MATH, src/binary128/exp10/exp10q.c via RazorForge's B128Exp10.rf.
+// Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
 
-; x >= 0x1.34413509f79fef311f12b35816fap+12 overflows
+/// x >= 0x1.34413509f79fef311f12b35816fap+12 overflows
 preset CM_EXP10_OVERFLOW:  U128 = 0x400B34413509F79FEF311F12B35816FA
-; x <= -0x1.3657d621f4e96893f84497c723c1p+12 rounds to +0
+/// x <= -0x1.3657d621f4e96893f84497c723c1p+12 rounds to +0
 preset CM_EXP10_UNDERFLOW: U128 = 0xC00B3657D621F4E96893F84497C723C1
 
-; 10^x, correctly rounded.
+/// 10^x, correctly rounded.
 routine f128_cm_exp10(%x: F128) -> F128
     block entry():
         %u:      U128 = %x.bits
         %hi:     U64  = cm_exp_hi(%u)
         %mag_hi: U64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
-        %tiny:   Bool = %mag_hi.lt(0x3F8BBCB7B1526E50)       ; 10^x rounds to 1
+        %tiny:   Bool = %mag_hi.lt(0x3F8BBCB7B1526E50)       // 10^x rounds to 1
         %large:  Bool = %mag_hi.ge(0x400B34413509F79F)
         select:
             %tiny -> return(CM_EXP_ONE)
             %large -> edge(%u)
             _ -> integer_check(%u.to_s128_wrap())
 
-    ; NaN, infinities, and the overflow and underflow thresholds
+    // NaN, infinities, and the overflow and underflow thresholds
     block edge(%u: U128):
         %is_nan:    Bool = f128_is_nan_bits(%u)
         %overflow:  Bool = f128_is_negative_bits(%u).bitnot().bitand(%u.ge(CM_EXP10_OVERFLOW))
@@ -39,14 +39,14 @@ routine f128_cm_exp10(%x: F128) -> F128
             %underflow -> return(CM_EXP_ZERO)
             _ -> integer_check(%u.to_s128_wrap())
 
-    ; positive x >= 1 with no fraction bits in the low word
+    // positive x >= 1 with no fraction bits in the low word
     block integer_check(%u: S128):
         %e:         S64  = f128_exponent(%u.to_u128_wrap())
         %positive:  Bool = %u.ge(0)
         %candidate: Bool = %positive.bitand(%e.ge(16383)).bitand(%u.to_s64_wrap().eq(0))
         branch %candidate ? integer_test(%u, %e) : reduce(%u.to_u128_wrap())
 
-    ; the high word has 16 sign and exponent bits, then e - 16383 integer bits
+    // the high word has 16 sign and exponent bits, then e - 16383 integer bits
     block integer_test(%u: S128, %e: S64):
         %hi:         U64  = cm_exp_hi(%u.to_u128_wrap())
         %fraction:   U64  = %hi.shl(%e.sub(16367).to_u64())
@@ -59,7 +59,7 @@ routine f128_cm_exp10(%x: F128) -> F128
         %r: F128 = cm_exp10_exact(%n)
         return(%r)
 
-    ; x × log2(10): the significand times log2(10), one's-complemented for negative x
+    // x × log2(10): the significand times log2(10), one's-complemented for negative x
     block reduce(%u: U128):
         %hi:        S64  = cm_exp_hi(%u).to_s64_wrap()
         %sign_mask: S64  = %hi.shr(63)
@@ -73,8 +73,8 @@ routine f128_cm_exp10(%x: F128) -> F128
         %r: F128 = cm_exp_finish(%reduced, %u, CM_EXP_KIND_TEN)
         return(%r)
 
-; 10^n for an integer n in 1..48, exact: 5^n fits 112 bits, so it is normalized to
-; the significand and scaled by 2^n.
+/// 10^n for an integer n in 1..48, exact: 5^n fits 112 bits, so it is normalized to
+/// the significand and scaled by 2^n.
 routine cm_exp10_exact(%n: U64) -> F128
     block entry():
         jump power(0, 1, %n)

@@ -1,49 +1,49 @@
-; Tessera stdlib: correctly rounded F128 sine and cosine, the shared pipeline
-;
-; Ported from CORE-MATH, src/binary128/sin/sinq.c and src/binary128/cos/cosq.c via RazorForge's
-; B128TrigShared.rf (CORE-MATH's code is itself a C port of the binary128 sine and cosine of metallic-rs).
-; Copyright (c) 2026 Chen-Pang He <jdh863@gmail.com>
-; MIT license: see LICENSE-CORE-MATH
-;
-; Only the round-to-nearest path of the original is kept (no rounding-mode probe, errno or exception flags).
-; The sine is odd and the cosine even, so both run one pipeline on |x| in unsigned fixed point:
-; 1. Reduce: x*2/pi is formed as the exact product of the 113-bit significand with a window of 2/pi cut
-;    from 64-bit limbs at the exponent (Payne-Hanek), six limbs on the fast path and ten on the accurate one.
-; 2. Split: n = round(256*x/pi) mod 512 gives the quadrant n>>7 and a breakpoint j = n & 127, leaving a
-;    signed residual g with |g| <= 1/256, normalized into a floating fraction at its own exponent.
-; 3. Evaluate: sin(theta) and 1 - cos(theta) for theta = g*pi/2 by short polynomials (fast path, 128 bits)
-;    or eighteen Taylor terms summed in three tiers of 128, 256 and 384 bits (accurate path).
-; 4. Recombine with tables of sin(j*pi/256) and cos(j*pi/256).
-; 5. Round: the fast path keeps a 15-bit guard and hands anything within 16 units of the rounding midpoint
-;    to the 384-bit path, which rounds outright.
-; Below |x| = 2^-8 there is nothing to reduce, and below 2^-57 sin(x) rounds to x and cos(x) to 1.
-;
-; Limbs are unsigned (U64 / U128); limb arithmetic that relies on C's wrap-around uses the _wrap forms,
-; and exponents, counts, and shift amounts use the plain (overflow-checked) ones. The 2/pi limbs are
-; TWO_OVER_PI from f128_math.tess, whose first 264 limbs are the ones CORE-MATH uses.
+// Tessera stdlib: correctly rounded F128 sine and cosine, the shared pipeline
+//
+// Ported from CORE-MATH, src/binary128/sin/sinq.c and src/binary128/cos/cosq.c via RazorForge's
+// B128TrigShared.rf (CORE-MATH's code is itself a C port of the binary128 sine and cosine of metallic-rs).
+// Copyright (c) 2026 Chen-Pang He <jdh863@gmail.com>
+// MIT license: see LICENSE-CORE-MATH
+//
+// Only the round-to-nearest path of the original is kept (no rounding-mode probe, errno or exception flags).
+// The sine is odd and the cosine even, so both run one pipeline on |x| in unsigned fixed point:
+// 1. Reduce: x*2/pi is formed as the exact product of the 113-bit significand with a window of 2/pi cut
+//    from 64-bit limbs at the exponent (Payne-Hanek), six limbs on the fast path and ten on the accurate one.
+// 2. Split: n = round(256*x/pi) mod 512 gives the quadrant n>>7 and a breakpoint j = n & 127, leaving a
+//    signed residual g with |g| <= 1/256, normalized into a floating fraction at its own exponent.
+// 3. Evaluate: sin(theta) and 1 - cos(theta) for theta = g*pi/2 by short polynomials (fast path, 128 bits)
+//    or eighteen Taylor terms summed in three tiers of 128, 256 and 384 bits (accurate path).
+// 4. Recombine with tables of sin(j*pi/256) and cos(j*pi/256).
+// 5. Round: the fast path keeps a 15-bit guard and hands anything within 16 units of the rounding midpoint
+//    to the 384-bit path, which rounds outright.
+// Below |x| = 2^-8 there is nothing to reduce, and below 2^-57 sin(x) rounds to x and cos(x) to 1.
+//
+// Limbs are unsigned (U64 / U128); limb arithmetic that relies on C's wrap-around uses the _wrap forms,
+// and exponents, counts, and shift amounts use the plain (overflow-checked) ones. The 2/pi limbs are
+// TWO_OVER_PI from f128_math.tess, whose first 264 limbs are the ones CORE-MATH uses.
 
-; A 384-bit unsigned fixed-point value, least significant limb first. 256-bit ones are U256.
+/// A 384-bit unsigned fixed-point value, least significant limb first. 256-bit ones are U256.
 record CmTrigU384
     l0: U128
     l1: U128
     l2: U128
 
-; The fast path's result: the magnitude frac × 2^(exp - 128) and the sign bit it contributes. When
-; `vouched` is false the reduction lost too much precision and the accurate path must run.
+/// The fast path's result: the magnitude frac × 2^(exp - 128) and the sign bit it contributes. When
+/// `vouched` is false the reduction lost too much precision and the accurate path must run.
 record CmTrigFast
     vouched: Bool
     frac:    U128
     exp:     U64
     sign:    U128
 
-; The window of 2/pi for an exponent: its first limb, and how far the units bit of x*2/pi sits below bit
-; 64*W - 2 of the product (negative below |x| = 2^114, where the window is the top of 2/pi).
+/// The window of 2/pi for an exponent: its first limb, and how far the units bit of x*2/pi sits below bit
+/// 64*W - 2 of the product (negative below |x| = 2^114, where the window is the top of 2/pi).
 record CmTrigWindow
     first:  S64
     offset: S64
 
-; The fast reduction: n = round(256*x/pi) mod 512, whether g < 0, and theta = |g|*pi/2 = t1 × 2^(et - 128).
-; `ok` is false when the residual keeps fewer than 136 of the fraction's 192 bits.
+/// The fast reduction: n = round(256*x/pi) mod 512, whether g < 0, and theta = |g|*pi/2 = t1 × 2^(et - 128).
+/// `ok` is false when the residual keeps fewer than 136 of the fraction's 192 bits.
 record CmTrigReduced
     ok:       Bool
     n:        U64
@@ -51,26 +51,26 @@ record CmTrigReduced
     t1:       U128
     et:       S64
 
-; The accurate reduction: as CmTrigReduced, with theta = t × 2^(et - 384) normalized in 384 bits.
+/// The accurate reduction: as CmTrigReduced, with theta = t × 2^(et - 384) normalized in 384 bits.
 record CmTrigWideReduced
     n:        U64
     negative: Bool
     t:        CmTrigU384
     et:       S64
 
-; theta^2 as a 2^-128 fraction (u), theta^4 likewise (v), and the unshifted theta^2 = u1 × 2^(2*et - 128).
+/// theta^2 as a 2^-128 fraction (u), theta^4 likewise (v), and the unshifted theta^2 = u1 × 2^(2*et - 128).
 record CmTrigSquares
     u:  U128
     v:  U128
     u1: U128
 
-preset CM_TRIG_TINY:  U128 = 0x3FC60000000000000000000000000000    ; 2^-57
-preset CM_TRIG_ONE:   U128 = 0x3FFF0000000000000000000000000000    ; 1.0
-preset CM_TRIG_PI_4:  U128 = 0xC90FDAA22168C234C4C6628B80DC1CD1    ; pi/4 × 2^128
+preset CM_TRIG_TINY:  U128 = 0x3FC60000000000000000000000000000    // 2^-57
+preset CM_TRIG_ONE:   U128 = 0x3FFF0000000000000000000000000000    // 1.0
+preset CM_TRIG_PI_4:  U128 = 0xC90FDAA22168C234C4C6628B80DC1CD1    // pi/4 × 2^128
 
-; -- entry points --------------------------------------------------------------
+// -- entry points --------------------------------------------------------------
 
-; The bits of the correctly rounded sine (cosine false) or cosine (cosine true) of the argument bits.
+/// The bits of the correctly rounded sine (cosine false) or cosine (cosine true) of the argument bits.
 routine cm_trig(%bits: U128, %cosine: Bool) -> U128
     block entry():
         %magnitude:  U128 = %bits.bitand(F128_SIGN.bitnot())
@@ -81,14 +81,14 @@ routine cm_trig(%bits: U128, %cosine: Bool) -> U128
             %tiny -> tiny(%bits, %cosine)
             _ -> finite(%bits, %magnitude, %cosine)
 
-    ; ±infinity gives the default quiet NaN; a NaN is quieted, keeping its sign and payload
+    // ±infinity gives the default quiet NaN; a NaN is quieted, keeping its sign and payload
     block not_finite(%bits: U128, %magnitude: U128):
         %infinite:    Bool = %magnitude.eq(F128_INF)
         %default_nan: U128 = F128_QNAN
         %quieted:     U128 = %bits.bitor(F128_QUIET_BIT)
         branch %infinite ? return(%default_nan) : return(%quieted)
 
-    ; |x| < 2^-57: sin(x) rounds to x, cos(x) to 1
+    // |x| < 2^-57: sin(x) rounds to x, cos(x) to 1
     block tiny(%bits: U128, %cosine: Bool):
         %one: U128 = CM_TRIG_ONE
         branch %cosine ? return(%one) : return(%bits)
@@ -103,7 +103,7 @@ routine cm_trig(%bits: U128, %cosine: Bool) -> U128
         %r:        U128       = cm_trig_finish(%fast, %m, %e, %cosine, %sign)
         return(%r)
 
-; Both correctly rounded results, sharing the argument reduction (the expensive part) between them.
+/// Both correctly rounded results, sharing the argument reduction (the expensive part) between them.
 routine cm_trig_both(%bits: U128) -> F128SinCos
     block entry():
         %magnitude:  U128 = %bits.bitand(F128_SIGN.bitnot())
@@ -112,7 +112,7 @@ routine cm_trig_both(%bits: U128) -> F128SinCos
         %separate:   Bool = %not_finite.bitor(%tiny)
         branch %separate ? separate(%bits) : finite(%bits, %magnitude)
 
-    ; special and tiny arguments have nothing to share
+    // special and tiny arguments have nothing to share
     block separate(%bits: U128):
         %sin_bits: U128       = cm_trig(%bits, false)
         %cos_bits: U128       = cm_trig(%bits, true)
@@ -126,7 +126,7 @@ routine cm_trig_both(%bits: U128) -> F128SinCos
         %small: Bool = %e.lt(-8)
         branch %small ? small(%m, %e, %sign) : reduce(%m, %e, %sign)
 
-    ; below 2^-8 there is no reduction to share
+    // below 2^-8 there is no reduction to share
     block small(%m: U128, %e: S64, %sign: U128):
         %sin_fast: CmTrigFast = cm_trig_fast(%m, %e, false)
         %cos_fast: CmTrigFast = cm_trig_fast(%m, %e, true)
@@ -165,20 +165,20 @@ routine cm_trig_pair(%sin_bits: U128, %cos_bits: U128) -> F128SinCos
         %r:   F128SinCos = F128SinCos { sin: %sin, cos: %cos }
         return(%r)
 
-; The 113-bit significand of a finite normal magnitude.
+/// The 113-bit significand of a finite normal magnitude.
 routine cm_trig_significand(%magnitude: U128) -> U128
     block entry():
         %r: U128 = %magnitude.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
         return(%r)
 
-; The unbiased exponent of a finite normal magnitude: x = m × 2^(e - 112).
+/// The unbiased exponent of a finite normal magnitude: x = m × 2^(e - 112).
 routine cm_trig_exponent(%magnitude: U128) -> S64
     block entry():
         %r: S64 = %magnitude.shr(112).to_s64().sub(F128_BIAS)
         return(%r)
 
-; Rounds a fast-path result on its 15-bit guard, or runs the accurate path when the fast one cannot vouch
-; for it or the guard sits within 16 units of the rounding midpoint.
+/// Rounds a fast-path result on its 15-bit guard, or runs the accurate path when the fast one cannot vouch
+/// for it or the guard sits within 16 units of the rounding midpoint.
 routine cm_trig_finish(%fast: CmTrigFast, %m: U128, %e: S64, %cosine: Bool, %sign: U128) -> U128
     block entry():
         %frac:     U128 = %fast.frac
@@ -204,9 +204,9 @@ routine cm_trig_finish(%fast: CmTrigFast, %m: U128, %e: S64, %cosine: Bool, %sig
         %r: U128 = cm_trig_accurate(%m, %e, %cosine, %sign)
         return(%r)
 
-; -- wide integer helpers ------------------------------------------------------
+// -- wide integer helpers ------------------------------------------------------
 
-; The low 64 bits of (high:low) >> shift, for 0 <= shift < 64.
+/// The low 64 bits of (high:low) >> shift, for 0 <= shift < 64.
 routine cm_trig_funnel(%low: U64, %high: U64, %shift: S64) -> U64
     block entry():
         %low_part:  U64 = %low.shr(%shift.to_u64())
@@ -214,7 +214,7 @@ routine cm_trig_funnel(%low: U64, %high: U64, %shift: S64) -> U64
         %r:         U64 = %low_part.bitor(%high_part)
         return(%r)
 
-; The high 128 bits of (high:low) << shift, for 0 <= shift < 128.
+/// The high 128 bits of (high:low) << shift, for 0 <= shift < 128.
 routine cm_trig_shl_join(%low: U128, %high: U128, %shift: S64) -> U128
     block entry():
         %s:         S128 = %shift.to_s128()
@@ -223,7 +223,7 @@ routine cm_trig_shl_join(%low: U128, %high: U128, %shift: S64) -> U128
         %r:         U128 = %high_part.bitor(%low_part)
         return(%r)
 
-; The low 128 bits of (high:low) >> shift, for 0 <= shift < 128.
+/// The low 128 bits of (high:low) >> shift, for 0 <= shift < 128.
 routine cm_trig_shr_join(%low: U128, %high: U128, %shift: S64) -> U128
     block entry():
         %s:         S128 = %shift.to_s128()
@@ -232,26 +232,26 @@ routine cm_trig_shr_join(%low: U128, %high: U128, %shift: S64) -> U128
         %r:         U128 = %low_part.bitor(%high_part)
         return(%r)
 
-; Leading zeros of a 128-bit value, 128 when it is zero.
+/// Leading zeros of a 128-bit value, 128 when it is zero.
 routine cm_trig_clz(%x: U128) -> S64
     block entry():
         %r: S64 = %x.leading_zeros().to_s64()
         return(%r)
 
-; A 256-bit value from its 128-bit halves.
+/// A 256-bit value from its 128-bit halves.
 routine cm_trig_join(%high: U128, %low: U128) -> U256
     block entry():
         %r: U256 = %high.to_u256().shl(128).bitor(%low.to_u256())
         return(%r)
 
-; The high 128 bits of a 256-bit value.
+/// The high 128 bits of a 256-bit value.
 routine cm_trig_high(%x: U256) -> U128
     block entry():
         %r: U128 = %x.shr(128).to_u128()
         return(%r)
 
-; The high half of a 128×128-bit product from three 64-bit products: up to two units short of the exact
-; high half, never over.
+/// The high half of a 128×128-bit product from three 64-bit products: up to two units short of the exact
+/// high half, never over.
 routine cm_trig_mhi(%x: U128, %y: U128) -> U128
     block entry():
         %xh: U128 = %x.shr(64)
@@ -264,8 +264,8 @@ routine cm_trig_mhi(%x: U128, %y: U128) -> U128
         %r:  U128 = %hh.add_wrap(%hl).add_wrap(%lh)
         return(%r)
 
-; f << shift in the 256-bit frame, for 0 <= shift < 128. Two 128-bit shifts are cheaper than a U256
-; shift by a variable amount.
+/// f << shift in the 256-bit frame, for 0 <= shift < 128. Two 128-bit shifts are cheaper than a U256
+/// shift by a variable amount.
 routine cm_trig_place256(%f: U128, %shift: S64) -> U256
     block entry():
         %low:  U128 = %f.shl(%shift.to_u128())
@@ -273,7 +273,7 @@ routine cm_trig_place256(%f: U128, %shift: S64) -> U256
         %r:    U256 = cm_trig_join(%high, %low)
         return(%r)
 
-; The top 128 bits of s << shift, for 0 <= shift < 128.
+/// The top 128 bits of s << shift, for 0 <= shift < 128.
 routine cm_trig_top256(%s: U256, %shift: S64) -> U128
     block entry():
         %low:  U128 = %s.to_u128_wrap()
@@ -305,7 +305,7 @@ routine cm_trig_sub384(%a: CmTrigU384, %b: CmTrigU384) -> CmTrigU384
         %r:   CmTrigU384 = CmTrigU384 { l0: %r0, l1: %r1b, l2: %r2 }
         return(%r)
 
-; x << shift, discarding whatever leaves the window, for 0 <= shift < 384.
+/// x << shift, discarding whatever leaves the window, for 0 <= shift < 384.
 routine cm_trig_shl384(%x: CmTrigU384, %shift: S64) -> CmTrigU384
     block entry():
         %word: S64 = %shift.shr(7)
@@ -333,7 +333,7 @@ routine cm_trig_shl384(%x: CmTrigU384, %shift: S64) -> CmTrigU384
         %r:  CmTrigU384 = CmTrigU384 { l0: 0, l1: 0, l2: %l2 }
         return(%r)
 
-; x >> shift, saturating to zero past the window.
+/// x >> shift, saturating to zero past the window.
 routine cm_trig_shr384(%x: CmTrigU384, %shift: S64) -> CmTrigU384
     block entry():
         %gone: Bool       = %shift.ge(384)
@@ -366,7 +366,7 @@ routine cm_trig_shr384(%x: CmTrigU384, %shift: S64) -> CmTrigU384
         %r:  CmTrigU384 = CmTrigU384 { l0: %l0, l1: 0, l2: 0 }
         return(%r)
 
-; Leading zeros of a 384-bit value, 384 when it is zero.
+/// Leading zeros of a 384-bit value, 384 when it is zero.
 routine cm_trig_lz384(%x: CmTrigU384) -> S64
     block entry():
         %top:    Bool = %x.l2.ne(0)
@@ -379,8 +379,8 @@ routine cm_trig_lz384(%x: CmTrigU384) -> S64
             %middle -> return(%in_middle)
             _ -> return(%in_bottom)
 
-; The high 384 bits of a 384×384-bit product: the dropped tail leaves it up to four units short of the
-; exact value, never over.
+/// The high 384 bits of a 384×384-bit product: the dropped tail leaves it up to four units short of the
+/// exact value, never over.
 routine cm_trig_mul384(%a: CmTrigU384, %b: CmTrigU384) -> CmTrigU384
     block entry():
         %p02: U256 = %a.l0.mul_wide(%b.l2)
@@ -389,7 +389,7 @@ routine cm_trig_mul384(%a: CmTrigU384, %b: CmTrigU384) -> CmTrigU384
         %p12: U256 = %a.l1.mul_wide(%b.l2)
         %p21: U256 = %a.l2.mul_wide(%b.l1)
         %p22: U256 = %a.l2.mul_wide(%b.l2)
-        ; the diagonal one limb below the window contributes its sum from bit 128 up, in 130 bits
+        // the diagonal one limb below the window contributes its sum from bit 128 up, in 130 bits
         %sum:   U256 = %p02.add_wrap(%p11)
         %over1: U128 = %sum.lt(%p02).to_u128()
         %sum2:  U256 = %sum.add_wrap(%p20)
@@ -405,8 +405,8 @@ routine cm_trig_mul384(%a: CmTrigU384, %b: CmTrigU384) -> CmTrigU384
         %r:   CmTrigU384 = cm_trig_add384(%t12, %t34)
         return(%r)
 
-; The high 256 bits of a 256×256-bit product: the dropped tail leaves it up to one unit short of the exact
-; value, never over.
+/// The high 256 bits of a 256×256-bit product: the dropped tail leaves it up to one unit short of the exact
+/// value, never over.
 routine cm_trig_mul256(%a: U256, %b: U256) -> U256
     block entry():
         %a_hi:  U128 = cm_trig_high(%a)
@@ -417,8 +417,8 @@ routine cm_trig_mul256(%a: U256, %b: U256) -> U256
         %cross: U256 = %a_hi.mul_wide(%b_lo)
         %other: U256 = %a_lo.mul_wide(%b_hi)
         %ll_hi: U128 = cm_trig_mhi(%a_lo, %b_lo)
-        ; the two cross terms and the top of a.lo*b.lo sit one limb below the window: only their sum from
-        ; bit 128 up survives, in 130 bits
+        // the two cross terms and the top of a.lo*b.lo sit one limb below the window: only their sum from
+        // bit 128 up survives, in 130 bits
         %middle:  U256 = %cross.add_wrap(%other)
         %over1:   U64  = %middle.lt(%cross).to_u64()
         %middle2: U256 = %middle.add_wrap(%ll_hi.to_u256())
@@ -428,9 +428,9 @@ routine cm_trig_mul256(%a: U256, %b: U256) -> U256
         %r:       U256 = %hh.add_wrap(%shifted)
         return(%r)
 
-; -- tables --------------------------------------------------------------------
+// -- tables --------------------------------------------------------------------
 
-; Limb `limb` (0 = least significant) of sin(j*pi/256) (w = 0) or cos(j*pi/256) (w = 1) × 2^384.
+/// Limb `limb` (0 = least significant) of sin(j*pi/256) (w = 0) or cos(j*pi/256) (w = 1) × 2^384.
 routine cm_trig_sincos(%j: U64, %w: U64, %limb: U64) -> U128
     block entry():
         %index: U64  = %j.mul(2).add(%w).mul(3).add(%limb)
@@ -445,17 +445,17 @@ routine cm_trig_sincos384(%j: U64, %w: U64) -> CmTrigU384
         %r:  CmTrigU384 = CmTrigU384 { l0: %l0, l1: %l1, l2: %l2 }
         return(%r)
 
-; Limb `limb` of Taylor coefficient k in CM_TRIG_SIN_COEF or CM_TRIG_COS_COEF.
+/// Limb `limb` of Taylor coefficient k in CM_TRIG_SIN_COEF or CM_TRIG_COS_COEF.
 routine cm_trig_coef(#coef: Ptr<U128>, %k: U64, %limb: U64) -> U128
     block entry():
         %index: U64  = %k.mul(3).add(%limb)
         %r:     U128 := #coef[%index]
         return(%r)
 
-; -- argument reduction --------------------------------------------------------
+// -- argument reduction --------------------------------------------------------
 
-; Bits of 2/pi above position e-114 contribute multiples of 4 to x*2/pi (x = m × 2^(e-112)), so the window
-; starts at the limb holding bit e-113.
+/// Bits of 2/pi above position e-114 contribute multiples of 4 to x*2/pi (x = m × 2^(e-112)), so the window
+/// starts at the limb holding bit e-113.
 routine cm_trig_window(%e: S64) -> CmTrigWindow
     block entry():
         %big:  S64  = %e.sub(114)
@@ -469,7 +469,7 @@ routine cm_trig_window(%e: S64) -> CmTrigWindow
         %r: CmTrigWindow = CmTrigWindow { first: %first, offset: %offset }
         return(%r)
 
-; Limb k (most significant first) of the window of `count` limbs of 2/pi starting at `first`; zero outside it.
+/// Limb k (most significant first) of the window of `count` limbs of 2/pi starting at `first`; zero outside it.
 routine cm_trig_window_limb(%first: S64, %count: S64, %k: S64) -> U128
     block entry():
         %inside:  Bool = %k.ge(0).bitand(%k.lt(%count))
@@ -482,8 +482,8 @@ routine cm_trig_window_limb(%first: S64, %count: S64, %k: S64) -> U128
         %r:     U128 = %limb.to_u128()
         return(%r)
 
-; m × window as count+3 little-endian 64-bit limbs at #p, for the window of `count` limbs of 2/pi starting at
-; `first`: the product fills count+2 of them and the spare top limb stays zero.
+/// m × window as count+3 little-endian 64-bit limbs at #p, for the window of `count` limbs of 2/pi starting at
+/// `first`: the product fills count+2 of them and the spare top limb stays zero.
 routine cm_trig_product(%m: U128, %first: S64, %count: U64, #p: Ptr<U64>) -> Void
     block entry():
         %low:  U128 = %m.bitand(0xFFFFFFFFFFFFFFFF)
@@ -494,11 +494,11 @@ routine cm_trig_product(%m: U128, %first: S64, %count: U64, #p: Ptr<U64>) -> Voi
         %done: Bool = %c.ge(%count.add(3))
         branch %done ? return() : step(%c, %carry, %low, %high, %first, %count, #p)
 
-    ; column c is (high*prev + carry) + low*cur, with cur and prev the window limbs under the two halves of m
+    // column c is (high*prev + carry) + low*cur, with cur and prev the window limbs under the two halves of m
     block step(%c: U64, %carry: U128, %low: U128, %high: U128, %first: S64, %count: U64, #p: Ptr<U64>):
         %cur:  U128 = cm_trig_window_limb(%first, %count.to_s64(), %count.sub(1).sub_wrap(%c).to_s64_wrap())
         %prev: U128 = cm_trig_window_limb(%first, %count.to_s64(), %count.sub_wrap(%c).to_s64_wrap())
-        ; high < 2^49 keeps the first sum under 2^114, only the second can spill
+        // high < 2^49 keeps the first sum under 2^114, only the second can spill
         %acc:   U128 = %high.mul_wrap(%prev).add_wrap(%carry)
         %t:     U128 = %acc.add_wrap(%low.mul_wrap(%cur))
         %spill: U128 = %t.lt(%acc).to_u128().shl(64)
@@ -506,14 +506,14 @@ routine cm_trig_product(%m: U128, %first: S64, %count: U64, #p: Ptr<U64>) -> Voi
         %next_carry: U128 = %t.shr(64).bitor(%spill)
         jump column(%c.add(1), %next_carry, %low, %high, %first, %count, #p)
 
-; n = round(256*x/pi) mod 512 from the two quadrant bits and the top 64 bits of the fraction.
+/// n = round(256*x/pi) mod 512 from the two quadrant bits and the top 64 bits of the fraction.
 routine cm_trig_nearest(%quadrant: U64, %top_limb: U64) -> U64
     block entry():
         %top: U128 = %quadrant.to_u128().shl(64).bitor(%top_limb.to_u128())
         %r:   U64  = %top.add(0x100000000000000).shr(57).to_u64().bitand(511)
         return(%r)
 
-; Payne-Hanek on six limbs of 2/pi.
+/// Payne-Hanek on six limbs of 2/pi.
 routine cm_trig_reduce(%m: U128, %e: S64) -> CmTrigReduced
     block entry():
         %window:   CmTrigWindow = cm_trig_window(%e)
@@ -522,7 +522,7 @@ routine cm_trig_reduce(%m: U128, %e: S64) -> CmTrigReduced
         #product:  Ptr<Array<U64, 13>> = alloca<Array<U64, 13>>
         #p:        Ptr<U64> = #product.as_ptr()
         cm_trig_product(%m, %first, 6, #p)
-        ; the fraction is the 192 bits below the units bit, the quadrant the two above: limbs i ..= i+4
+        // the fraction is the 192 bits below the units bit, the quadrant the two above: limbs i ..= i+4
         %base: S64 = 190.sub(%offset)
         %i:    U64 = %base.shr(6).bitand(7).to_u64()
         %bits: S64 = %base.bitand(63)
@@ -539,11 +539,11 @@ routine cm_trig_reduce(%m: U128, %e: S64) -> CmTrigReduced
         %f1:       U64 = cm_trig_funnel(%a1, %a2, %bits)
         %f2:       U64 = cm_trig_funnel(%a2, %a3, %bits)
         %quadrant: U64 = cm_trig_funnel(%a3, %a4, %bits).bitand(3)
-        ; the residual's top limb becomes signed once n is taken out
+        // the residual's top limb becomes signed once n is taken out
         %n:        U64  = cm_trig_nearest(%quadrant, %f2)
         %g_top:    U64  = %f2.sub_wrap(%n.bitand(127).shl(57))
         %negative: Bool = %g_top.shr(63).eq(1)
-        ; |g|: complement and add one when negative
+        // |g|: complement and add one when negative
         %all_ones: U64  = U64.MAX
         %no_bits:  U64  = 0
         %mask:     U64  = %negative ? %all_ones : %no_bits
@@ -558,7 +558,7 @@ routine cm_trig_reduce(%m: U128, %e: S64) -> CmTrigReduced
         %failed:   CmTrigReduced = CmTrigReduced { ok: false, n: 0, negative: false, t1: 0, et: 0 }
         branch %lost ? return(%failed) : normalize(%n, %negative, %g0, %g1, %g2, %lz)
 
-    ; |g| <= 1/256 leaves at least seven leading zeros, so every shift below is in range
+    // |g| <= 1/256 leaves at least seven leading zeros, so every shift below is in range
     block normalize(%n: U64, %negative: Bool, %g0: U64, %g1: U64, %g2: U64, %lz: S64):
         %back:    S64  = 64.sub(%lz)
         %high:    U64  = %g2.shl(%lz.to_u64()).bitor(%g1.shr(%back.to_u64()))
@@ -571,7 +571,7 @@ routine cm_trig_reduce(%m: U128, %e: S64) -> CmTrigReduced
         %r: CmTrigReduced = CmTrigReduced { ok: true, n: %n, negative: %negative, t1: %t1, et: %et }
         return(%r)
 
-; cm_trig_reduce on ten limbs of 2/pi and a 448-bit fraction.
+/// cm_trig_reduce on ten limbs of 2/pi and a 448-bit fraction.
 routine cm_trig_reduce_wide(%m: U128, %e: S64) -> CmTrigWideReduced
     block entry():
         %window:   CmTrigWindow = cm_trig_window(%e)
@@ -580,7 +580,7 @@ routine cm_trig_reduce_wide(%m: U128, %e: S64) -> CmTrigWideReduced
         #product:  Ptr<Array<U64, 13>> = alloca<Array<U64, 13>>
         #p:        Ptr<U64> = #product.as_ptr()
         cm_trig_product(%m, %first, 10, #p)
-        ; the fraction is the 448 bits below the units bit, the quadrant the two above: limbs i ..= i+8
+        // the fraction is the 448 bits below the units bit, the quadrant the two above: limbs i ..= i+8
         %base: S64 = 190.sub(%offset)
         %i:    S64 = %base.shr(6).bitand(7)
         %bits: S64 = %base.bitand(63)
@@ -598,7 +598,7 @@ routine cm_trig_reduce_wide(%m: U128, %e: S64) -> CmTrigWideReduced
         #f[6] = %g_top.to_u64_wrap()
         %negative: Bool = %g_top.lt(0)
         cm_trig_magnitude448(#f, %negative)
-        ; no binary128 comes within 2^-124 of a multiple of pi/2, so the residual keeps over 300 of its bits
+        // no binary128 comes within 2^-124 of a multiple of pi/2, so the residual keeps over 300 of its bits
         %lz:   S64        = cm_trig_lz448(#f)
         %g:    CmTrigU384 = cm_trig_top448(#f, %lz)
         %pio2: CmTrigU384 = CmTrigU384 {
@@ -611,7 +611,7 @@ routine cm_trig_reduce_wide(%m: U128, %e: S64) -> CmTrigWideReduced
         %r: CmTrigWideReduced = CmTrigWideReduced { n: %n, negative: %negative, t: %t, et: %et }
         return(%r)
 
-; f[k] = the 64 bits of the product #p starting at bit `bits` of limb i+k, for k = 0..6.
+/// f[k] = the 64 bits of the product #p starting at bit `bits` of limb i+k, for k = 0..6.
 routine cm_trig_cut(#p: Ptr<U64>, %i: S64, %bits: S64, #f: Ptr<U64>) -> Void
     block entry():
         jump cut(0, #p, %i, %bits, #f)
@@ -628,7 +628,7 @@ routine cm_trig_cut(#p: Ptr<U64>, %i: S64, %bits: S64, #f: Ptr<U64>) -> Void
         #f[%k] = cm_trig_funnel(%low, %high, %bits)
         jump cut(%k.add(1), #p, %i.to_s64(), %bits, #f)
 
-; Replaces the seven-limb two's-complement fraction at #f by its magnitude when it is negative.
+/// Replaces the seven-limb two's-complement fraction at #f by its magnitude when it is negative.
 routine cm_trig_magnitude448(#f: Ptr<U64>, %negative: Bool) -> Void
     block entry():
         %all_ones: U64 = U64.MAX
@@ -647,7 +647,7 @@ routine cm_trig_magnitude448(#f: Ptr<U64>, %negative: Bool) -> Void
         %next_carry: U64 = %flipped.lt(%carry).to_u64()
         jump flip(%k.add(1), %next_carry, %mask, #f)
 
-; Leading zeros of the 448-bit fraction at #f (seven limbs, least significant first), 448 when it is zero.
+/// Leading zeros of the 448-bit fraction at #f (seven limbs, least significant first), 448 when it is zero.
 routine cm_trig_lz448(#f: Ptr<U64>) -> S64
     block entry():
         jump scan(6, #f)
@@ -664,7 +664,7 @@ routine cm_trig_lz448(#f: Ptr<U64>) -> S64
         %lz:    U64  = %above.add(%limb.leading_zeros())
         branch %empty ? scan(%k.sub(1).to_s64(), #f) : return(%lz.to_s64())
 
-; The top 384 bits of the 448-bit fraction at #f shifted left by lz (limbs 1..6 of the shifted value).
+/// The top 384 bits of the 448-bit fraction at #f shifted left by lz (limbs 1..6 of the shifted value).
 routine cm_trig_top448(#f: Ptr<U64>, %lz: S64) -> CmTrigU384
     block entry():
         #shifted: Ptr<Array<U64, 7>> = alloca<Array<U64, 7>>
@@ -674,7 +674,7 @@ routine cm_trig_top448(#f: Ptr<U64>, %lz: S64) -> CmTrigU384
         %wbits: S64 = %lz.bitand(63)
         jump shift(%word, 0, %word, %wbits, #f, #s)
 
-    ; s[q] = f[q - word] << wbits with the bits carried up from the limb below it
+    // s[q] = f[q - word] << wbits with the bits carried up from the limb below it
     block shift(%q: S64, %below: U64, %word: S64, %wbits: S64, #f: Ptr<U64>, #s: Ptr<U64>):
         %done: Bool = %q.ge(7)
         branch %done ? assemble(#s) : shift_one(%q.to_u64(), %below, %word.to_u64(), %wbits, #f, #s)
@@ -699,7 +699,7 @@ routine cm_trig_top448(#f: Ptr<U64>, %lz: S64) -> CmTrigU384
         %r:  CmTrigU384 = CmTrigU384 { l0: %l0, l1: %l1, l2: %l2 }
         return(%r)
 
-; -- fast path -----------------------------------------------------------------
+// -- fast path -----------------------------------------------------------------
 
 routine cm_trig_squares(%t1: U128, %et: S64) -> CmTrigSquares
     block entry():
@@ -712,8 +712,8 @@ routine cm_trig_squares(%t1: U128, %et: S64) -> CmTrigSquares
         %r: CmTrigSquares = CmTrigSquares { u: %u, v: %v, u1: %u1 }
         return(%r)
 
-; sin(theta) in theta's own floating form: t1*(1 - u*(A - u*B)) with the even and odd halves of a
-; degree-four minimax for (1 - sin(sqrt(u))/sqrt(u))/u in v.
+/// sin(theta) in theta's own floating form: t1*(1 - u*(A - u*B)) with the even and odd halves of a
+/// degree-four minimax for (1 - sin(sqrt(u))/sqrt(u))/u in v.
 routine cm_trig_sin_frac(%t1: U128, %u: U128, %v: U128) -> U128
     block entry():
         %s0: U128 = 0x2AAAAAAAAAAAAAAAAAAAAAAAAAAA8B20
@@ -729,8 +729,8 @@ routine cm_trig_sin_frac(%t1: U128, %u: U128, %v: U128) -> U128
         %r:         U128 = %t1.sub_wrap(cm_trig_mhi(%t1_u, %poly))
         return(%r)
 
-; 1 - cos(theta) as the floating fraction c1 × 2^(2*et - 128): theta^2*(1/2 - u*W) with W the even and odd
-; halves of sum (-1)^k u^k/(2k+4)! in v, six terms.
+/// 1 - cos(theta) as the floating fraction c1 × 2^(2*et - 128): theta^2*(1/2 - u*W) with W the even and odd
+/// halves of sum (-1)^k u^k/(2k+4)! in v, six terms.
 routine cm_trig_cos_corr(%u1: U128, %u: U128, %v: U128) -> U128
     block entry():
         %c0: U128 := CM_TRIG_COS_COEF[2]
@@ -752,29 +752,29 @@ routine cm_trig_unvouched() -> CmTrigFast
         %r: CmTrigFast = CmTrigFast { vouched: false, frac: 0, exp: 0, sign: 0 }
         return(%r)
 
-; The fast path: sin or cos of |x| as a 128-bit floating fraction, or unvouched.
+/// The fast path: sin or cos of |x| as a 128-bit floating fraction, or unvouched.
 routine cm_trig_fast(%m: U128, %e: S64, %cosine: Bool) -> CmTrigFast
     block entry():
         %small: Bool = %e.lt(-8)
         branch %small ? unreduced(%m, %e, %cosine) : reduced(%m, %e, %cosine)
 
-    ; below 2^-8 the argument is its own reduced angle
+    // below 2^-8 the argument is its own reduced angle
     block unreduced(%m: U128, %e: S64, %cosine: Bool):
         %t1: U128          = %m.shl(15)
         %et: S64           = %e.add(1)
         %sq: CmTrigSquares = cm_trig_squares(%t1, %et)
         branch %cosine ? small_cosine(%sq, %et) : small_sine(%t1, %sq, %et)
 
-    ; cos(theta) = 1 - (1 - cos(theta)), just under 1
+    // cos(theta) = 1 - (1 - cos(theta)), just under 1
     block small_cosine(%sq: CmTrigSquares, %et: S64):
         %correction: U128       = cm_trig_cos_corr(%sq.u1, %sq.u, %sq.v)
         %placed:     U256 = cm_trig_place256(%correction, %et.mul(2).add(128))
-        %near_one:   U256 = %placed.bitnot()                ; 2^256 - 1 - placed
+        %near_one:   U256 = %placed.bitnot()                // 2^256 - 1 - placed
         %frac:       U128 = cm_trig_high(%near_one)
         %r: CmTrigFast = CmTrigFast { vouched: true, frac: %frac, exp: 0, sign: 0 }
         return(%r)
 
-    ; sin(theta) < theta drops a leading bit when t1 starts a binade
+    // sin(theta) < theta drops a leading bit when t1 starts a binade
     block small_sine(%t1: U128, %sq: CmTrigSquares, %et: S64):
         %sine: U128 = cm_trig_sin_frac(%t1, %sq.u, %sq.v)
         %lz:   S64  = cm_trig_clz(%sine)
@@ -795,13 +795,13 @@ routine cm_trig_fast(%m: U128, %e: S64, %cosine: Bool) -> CmTrigFast
         %r:          CmTrigFast    = cm_trig_fast_tail(%red, %sq, %sine_theta, %cosine)
         return(%r)
 
-; The fast path after the reduction: sin or cos of A ± theta (A = j*pi/256) from the table and theta's
-; series.
+/// The fast path after the reduction: sin or cos of A ± theta (A = j*pi/256) from the table and theta's
+/// series.
 routine cm_trig_fast_tail(%red: CmTrigReduced, %sq: CmTrigSquares, %sine_theta: U128,
                           %cosine: Bool) -> CmTrigFast
     block entry():
-        ; the cosine is the sine a quadrant on: the top bit of the quadrant is the sign, the low bit which of
-        ; sin A and cos A is wanted
+        // the cosine is the sine a quadrant on: the top bit of the quadrant is the sign, the low bit which of
+        // sin A and cos A is wanted
         %n:          S64  = %red.n.to_s64()
         %quadrant:   S64  = %n.shr(7).add(%cosine.to_s64())
         %want_cos:   S64  = %quadrant.bitand(1)
@@ -814,7 +814,7 @@ routine cm_trig_fast_tail(%red: CmTrigReduced, %sq: CmTrigSquares, %sine_theta: 
         branch %pure_sine ? pure(%red, %sine_theta, %flip)
                           : combine(%red, %sq, %sine_theta, %want_cos, %j, %flip)
 
-    ; A = 0: the result is ±sin(theta) itself
+    // A = 0: the result is ±sin(theta) itself
     block pure(%red: CmTrigReduced, %sine_theta: U128, %flip: U128):
         %lz:        S64  = cm_trig_clz(%sine_theta)
         %frac:      U128 = %sine_theta.shl(%lz.to_u128())
@@ -827,7 +827,7 @@ routine cm_trig_fast_tail(%red: CmTrigReduced, %sq: CmTrigSquares, %sine_theta: 
         %r: CmTrigFast = CmTrigFast { vouched: true, frac: %frac, exp: %exp.to_u64_wrap(), sign: %sign }
         return(%r)
 
-    ; T1*cos(theta) ± T2*sin(theta), with T1 the wanted one of sin A and cos A and T2 the other
+    // T1*cos(theta) ± T2*sin(theta), with T1 the wanted one of sin A and cos A and T2 the other
     block combine(%red: CmTrigReduced, %sq: CmTrigSquares, %sine_theta: U128, %want_cos: S64, %j: S64,
                   %flip: U128):
         %et:          S64  = %red.et
@@ -851,10 +851,10 @@ routine cm_trig_fast_tail(%red: CmTrigReduced, %sq: CmTrigSquares, %sine_theta: 
         %r: CmTrigFast = CmTrigFast { vouched: true, frac: %frac, exp: 0.sub(%lz).to_u64_wrap(), sign: %flip }
         return(%r)
 
-; -- accurate path -------------------------------------------------------------
+// -- accurate path -------------------------------------------------------------
 
-; sum_{k>=0} (-1)^k coef[k]*u^k, eighteen terms by Horner in three tiers: terms 11..17 at 128 bits, 2..10
-; at 256 and 0..1 at 384. Every step stays positive because u*coef[k+1] < coef[k].
+/// sum_{k>=0} (-1)^k coef[k]*u^k, eighteen terms by Horner in three tiers: terms 11..17 at 128 bits, 2..10
+/// at 256 and 0..1 at 384. Every step stays positive because u*coef[k+1] < coef[k].
 routine cm_trig_alternating(%u: CmTrigU384, #coef: Ptr<U128>) -> CmTrigU384
     block entry():
         %last: U128 = cm_trig_coef(#coef, 17, 2)
@@ -903,8 +903,8 @@ routine cm_trig_alternating(%u: CmTrigU384, #coef: Ptr<U128>) -> CmTrigU384
         %next: CmTrigU384 = cm_trig_sub384(%c, cm_trig_mul384(%u, %acc))
         jump full(%k.sub(1), %next, %u, #coef)
 
-; Rounds a normalized 384-bit fraction frac × 2^(e2 - 384) to binary128, to nearest with ties to even. The
-; result is never subnormal here: |x| >= 2^-57 keeps it above 2^-124.
+/// Rounds a normalized 384-bit fraction frac × 2^(e2 - 384) to binary128, to nearest with ties to even. The
+/// result is never subnormal here: |x| >= 2^-57 keeps it above 2^-124.
 routine cm_trig_round384(%frac: CmTrigU384, %e2: U64, %sign: U128) -> U128
     block entry():
         %top:       U128 = %frac.l2
@@ -919,13 +919,13 @@ routine cm_trig_round384(%frac: CmTrigU384, %e2: U64, %sign: U128) -> U128
         %r:         U128 = %sign.bitor(%magnitude)
         return(%r)
 
-; The 384-bit path: everything the fast path would not decide.
+/// The 384-bit path: everything the fast path would not decide.
 routine cm_trig_accurate(%m: U128, %e: S64, %cosine: Bool, %sign: U128) -> U128
     block entry():
         %small: Bool = %e.lt(-8)
         branch %small ? unreduced(%m, %e, %cosine, %sign) : reduced(%m, %e, %cosine, %sign)
 
-    ; below 2^-8 the argument is its own reduced angle
+    // below 2^-8 the argument is its own reduced angle
     block unreduced(%m: U128, %e: S64, %cosine: Bool, %sign: U128):
         %t:   CmTrigU384        = CmTrigU384 { l0: 0, l1: 0, l2: %m.shl(15) }
         %red: CmTrigWideReduced = CmTrigWideReduced { n: 0, negative: false, t: %t, et: %e.add(1) }
@@ -937,7 +937,7 @@ routine cm_trig_accurate(%m: U128, %e: S64, %cosine: Bool, %sign: U128) -> U128
         %r:   U128              = cm_trig_evaluate(%red, %cosine, %sign)
         return(%r)
 
-; sin or cos of A ± theta at 384 bits, rounded.
+/// sin or cos of A ± theta at 384 bits, rounded.
 routine cm_trig_evaluate(%red: CmTrigWideReduced, %cosine: Bool, %sign: U128) -> U128
     block entry():
         %t:         CmTrigU384 = %red.t
@@ -951,7 +951,7 @@ routine cm_trig_evaluate(%red: CmTrigWideReduced, %cosine: Bool, %sign: U128) ->
         %flipped:   Bool       = %quadrant.bitand(2).ne(0)
         %flip_sign: U128       = %sign.bitxor(F128_SIGN)
         %sg:        U128       = %flipped ? %flip_sign : %sign
-        ; sin(theta) = theta*(1 - u*Q) keeps theta's floating form, at most one bit short
+        // sin(theta) = theta*(1 - u*Q) keeps theta's floating form, at most one bit short
         %q:         CmTrigU384 = cm_trig_alternating(%u, CM_TRIG_SIN_COEF.as_ptr())
         %uq:        CmTrigU384 = cm_trig_mul384(%u, %q)
         %t_uq:      CmTrigU384 = cm_trig_mul384(%t, %uq)
@@ -964,14 +964,14 @@ routine cm_trig_evaluate(%red: CmTrigWideReduced, %cosine: Bool, %sign: U128) ->
         branch %pure_sine ? pure(%sine, %es, %sg, %negative)
                           : combine(%u, %sine, %es, %want_cos, %j, %sg, %negative)
 
-    ; A = 0: the result is ±sin(theta) itself
+    // A = 0: the result is ±sin(theta) itself
     block pure(%sine: CmTrigU384, %es: S64, %sg: U128, %negative: Bool):
         %flip_sign: U128 = %sg.bitxor(F128_SIGN)
         %sign_out:  U128 = %negative ? %flip_sign : %sg
         %r:         U128 = cm_trig_round384(%sine, %es.to_u64_wrap(), %sign_out)
         return(%r)
 
-    ; 1 - cos(theta) = u*Q, so T*cos(theta) = T - T*(u*Q) never overflows the frame
+    // 1 - cos(theta) = u*Q, so T*cos(theta) = T - T*(u*Q) never overflows the frame
     block combine(%u: CmTrigU384, %sine: CmTrigU384, %es: S64, %want_cos: S64, %j: S64, %sg: U128,
                   %negative: Bool):
         %q:          CmTrigU384 = cm_trig_alternating(%u, CM_TRIG_COS_COEF.as_ptr())
@@ -991,10 +991,10 @@ routine cm_trig_evaluate(%red: CmTrigWideReduced, %cosine: Bool, %sign: U128) ->
         %r:          U128       = cm_trig_round384(%normalized, 0.sub(%lz).to_u64_wrap(), %sg)
         return(%r)
 
-; -- tables --------------------------------------------------------------------
+// -- tables --------------------------------------------------------------------
 
-; [sin(j*pi/256), cos(j*pi/256)] * 2^384, rounded to nearest: entry (j*2 + w)*3 + limb is 128-bit limb `limb`
-; (0 = least significant) of the sine (w = 0) or the cosine (w = 1). cos(0) saturates to 2^384 - 1.
+/// [sin(j*pi/256), cos(j*pi/256)] * 2^384, rounded to nearest: entry (j*2 + w)*3 + limb is 128-bit limb `limb`
+/// (0 = least significant) of the sine (w = 0) or the cosine (w = 1). cos(0) saturates to 2^384 - 1.
 preset CM_TRIG_SINCOS: Array<U128, 768> = [
     0x00000000000000000000000000000000, 0x00000000000000000000000000000000,
     0x00000000000000000000000000000000, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF,
@@ -1382,8 +1382,8 @@ preset CM_TRIG_SINCOS: Array<U128, 768> = [
     0xF0257406FA2C2F2506E03A898EBF83DB, 0x03243A3F9BD8F08CC3C75F41B6CE7AA7
 ]
 
-; 1/(2k+3)! * 2^384 for k = 0..17: sin(t)/t = 1 - sum_k (-1)^k c_k (t^2)^(k+1). Entry k*3 + limb is 128-bit
-; limb `limb` (0 = least significant).
+/// 1/(2k+3)! * 2^384 for k = 0..17: sin(t)/t = 1 - sum_k (-1)^k c_k (t^2)^(k+1). Entry k*3 + limb is 128-bit
+/// limb `limb` (0 = least significant).
 preset CM_TRIG_SIN_COEF: Array<U128, 54> = [
     0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB, 0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,
     0x2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, 0x22222222222222222222222222222222,
@@ -1414,7 +1414,7 @@ preset CM_TRIG_SIN_COEF: Array<U128, 54> = [
     0x00019EC8D1C94E85AF4C78B15C3D89D2, 0x00000000000000000000000000000000
 ]
 
-; 1/(2k+2)! * 2^384 for k = 0..17: 1 - cos(t) = sum_k (-1)^k c_k (t^2)^(k+1). Same layout as CM_TRIG_SIN_COEF.
+/// 1/(2k+2)! * 2^384 for k = 0..17: 1 - cos(t) = sum_k (-1)^k c_k (t^2)^(k+1). Same layout as CM_TRIG_SIN_COEF.
 preset CM_TRIG_COS_COEF: Array<U128, 54> = [
     0x00000000000000000000000000000000, 0x00000000000000000000000000000000,
     0x80000000000000000000000000000000, 0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB,

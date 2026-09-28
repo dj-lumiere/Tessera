@@ -1,34 +1,34 @@
-; SHA-256 (FIPS 180-4) — Tessera playground
-;
-; Hashes the standard NIST test vectors and prints each digest in hex.
-;
-; What this program stresses:
-;   * no operators: every rotate, xor, and add of the round function is a
-;     method call, so one line of the spec becomes several named values
-;   * modular arithmetic: SHA-256 adds words modulo 2^32, so every sum is
-;     add_wrap on U32 (a plain add panics on overflow)
-;   * loop-carried state: the eight working variables a..h ride through the
-;     round loop as one record value (Working) instead of eight block params
-;   * static data: the 64 round constants and the initial hash are preset
-;     arrays, read-only globals that the rounds load from (K[t])
-;
-; Expected output:
-;   empty     e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-;   abc       ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
-;   448-bit   248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1
-;   million-a cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0
+// SHA-256 (FIPS 180-4) — Tessera playground
+//
+// Hashes the standard NIST test vectors and prints each digest in hex.
+//
+// What this program stresses:
+//   * no operators: every rotate, xor, and add of the round function is a
+//     method call, so one line of the spec becomes several named values
+//   * modular arithmetic: SHA-256 adds words modulo 2^32, so every sum is
+//     add_wrap on U32 (a plain add panics on overflow)
+//   * loop-carried state: the eight working variables a..h ride through the
+//     round loop as one record value (Working) instead of eight block params
+//   * static data: the 64 round constants and the initial hash are preset
+//     arrays, read-only globals that the rounds load from (K[t])
+//
+// Expected output:
+//   empty     e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+//   abc       ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+//   448-bit   248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1
+//   million-a cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0
 
-; ── C FFI ─────────────────────────────────────────────────────────────────────
+// ── C FFI ─────────────────────────────────────────────────────────────────────
 
 @[external("c"), symbol("printf"), variadic]
 routine c_printf(#fmt: Ptr<Byte>) -> S32
 
-; ── Types ─────────────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 preset MILLION: U64 = 1000000
 
-; K[0..64): the first 32 bits of the fractional parts of the cube roots of the
-; first 64 primes.
+/// K[0..64): the first 32 bits of the fractional parts of the cube roots of the
+/// first 64 primes.
 preset K: Array<U32, 64> = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -40,14 +40,14 @@ preset K: Array<U32, 64> = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ]
 
-; H(0): the first 32 bits of the fractional parts of the square roots of the
-; first 8 primes.
+/// H(0): the first 32 bits of the fractional parts of the square roots of the
+/// first 8 primes.
 preset H0: Array<U32, 8> = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
 ]
 
-; The eight working variables of one compression. The round loop carries them
-; as a single SSA value, so each jump passes one argument instead of eight.
+/// The eight working variables of one compression. The round loop carries them
+/// as a single SSA value, so each jump passes one argument instead of eight.
 record Working
     a: U32
     b: U32
@@ -58,9 +58,9 @@ record Working
     g: U32
     h: U32
 
-; ── Round functions (FIPS 180-4 §4.1.2) ──────────────────────────────────────
+// ── Round functions (FIPS 180-4 §4.1.2) ──────────────────────────────────────
 
-; Σ0(x) = ROTR²(x) ⊕ ROTR¹³(x) ⊕ ROTR²²(x)
+/// Σ0(x) = ROTR²(x) ⊕ ROTR¹³(x) ⊕ ROTR²²(x)
 routine big_sigma0(%x: U32) -> U32
     block entry():
         %r2:     U32 = %x.rotr(2)
@@ -69,7 +69,7 @@ routine big_sigma0(%x: U32) -> U32
         %result: U32 = %r2.bitxor(%r13).bitxor(%r22)
         return(%result)
 
-; Σ1(x) = ROTR⁶(x) ⊕ ROTR¹¹(x) ⊕ ROTR²⁵(x)
+/// Σ1(x) = ROTR⁶(x) ⊕ ROTR¹¹(x) ⊕ ROTR²⁵(x)
 routine big_sigma1(%x: U32) -> U32
     block entry():
         %r6:     U32 = %x.rotr(6)
@@ -78,7 +78,7 @@ routine big_sigma1(%x: U32) -> U32
         %result: U32 = %r6.bitxor(%r11).bitxor(%r25)
         return(%result)
 
-; σ0(x) = ROTR⁷(x) ⊕ ROTR¹⁸(x) ⊕ SHR³(x)
+/// σ0(x) = ROTR⁷(x) ⊕ ROTR¹⁸(x) ⊕ SHR³(x)
 routine small_sigma0(%x: U32) -> U32
     block entry():
         %r7:     U32 = %x.rotr(7)
@@ -87,7 +87,7 @@ routine small_sigma0(%x: U32) -> U32
         %result: U32 = %r7.bitxor(%r18).bitxor(%s3)
         return(%result)
 
-; σ1(x) = ROTR¹⁷(x) ⊕ ROTR¹⁹(x) ⊕ SHR¹⁰(x)
+/// σ1(x) = ROTR¹⁷(x) ⊕ ROTR¹⁹(x) ⊕ SHR¹⁰(x)
 routine small_sigma1(%x: U32) -> U32
     block entry():
         %r17:    U32 = %x.rotr(17)
@@ -96,7 +96,7 @@ routine small_sigma1(%x: U32) -> U32
         %result: U32 = %r17.bitxor(%r19).bitxor(%s10)
         return(%result)
 
-; Ch(e, f, g) = (e ∧ f) ⊕ (¬e ∧ g): each bit of e picks f or g.
+/// Ch(e, f, g) = (e ∧ f) ⊕ (¬e ∧ g): each bit of e picks f or g.
 routine choose(%e: U32, %f: U32, %g: U32) -> U32
     block entry():
         %from_f: U32 = %e.bitand(%f)
@@ -104,7 +104,7 @@ routine choose(%e: U32, %f: U32, %g: U32) -> U32
         %result: U32 = %from_f.bitxor(%from_g)
         return(%result)
 
-; Maj(a, b, c) = (a ∧ b) ⊕ (a ∧ c) ⊕ (b ∧ c): the bitwise majority vote.
+/// Maj(a, b, c) = (a ∧ b) ⊕ (a ∧ c) ⊕ (b ∧ c): the bitwise majority vote.
 routine majority(%a: U32, %b: U32, %c: U32) -> U32
     block entry():
         %ab:     U32 = %a.bitand(%b)
@@ -113,10 +113,10 @@ routine majority(%a: U32, %b: U32, %c: U32) -> U32
         %result: U32 = %ab.bitxor(%ac).bitxor(%bc)
         return(%result)
 
-; One round:
-;   T1 = h + Σ1(e) + Ch(e, f, g) + K[t] + W[t]
-;   T2 = Σ0(a) + Maj(a, b, c)
-;   (a, b, c, d, e, f, g, h) ← (T1 + T2, a, b, c, d + T1, e, f, g)
+/// One round:
+///   T1 = h + Σ1(e) + Ch(e, f, g) + K[t] + W[t]
+///   T2 = Σ0(a) + Maj(a, b, c)
+///   (a, b, c, d, e, f, g, h) ← (T1 + T2, a, b, c, d + T1, e, f, g)
 routine sha256_round(%v: Working, %k: U32, %w: U32) -> Working
     block entry():
         %a: U32 = %v.a
@@ -143,9 +143,9 @@ routine sha256_round(%v: Working, %k: U32, %w: U32) -> Working
         }
         return(%next)
 
-; ── Byte order ────────────────────────────────────────────────────────────────
+// ── Byte order ────────────────────────────────────────────────────────────────
 
-; Reads 4 bytes as a big-endian word. Byte loads, so #p needs no alignment.
+/// Reads 4 bytes as a big-endian word. Byte loads, so #p needs no alignment.
 routine load_be32(#p: Ptr<Byte>) -> U32
     block entry():
         %b0: Byte := #p[0]
@@ -159,7 +159,7 @@ routine load_be32(#p: Ptr<Byte>) -> U32
         %result: U32 = %w0.bitor(%w1).bitor(%w2).bitor(%w3)
         return(%result)
 
-; Writes %value as 8 big-endian bytes.
+/// Writes %value as 8 big-endian bytes.
 routine store_be64(#p: Ptr<Byte>, %value: U64) -> Void
     block entry():
         jump byte_loop(0)
@@ -174,16 +174,16 @@ routine store_be64(#p: Ptr<Byte>, %value: U64) -> Void
         #p[%i] = %byte
         jump byte_loop(%i.add(1))
 
-; ── Compression ───────────────────────────────────────────────────────────────
+// ── Compression ───────────────────────────────────────────────────────────────
 
-; Mixes one 64-byte block into the 8-word #state.
+/// Mixes one 64-byte block into the 8-word #state.
 routine sha256_compress(#state: Ptr<U32>, #block: Ptr<Byte>) -> Void
     block entry():
         #schedule: Ptr<Array<U32, 64>> = alloca<Array<U32, 64>>
         #w:        Ptr<U32>             = #schedule.cast<U32>()
         jump load_words(0, #w)
 
-    ; W[0..16) — the block's own words.
+    // W[0..16) — the block's own words.
     block load_words(%t: U64, #w: Ptr<U32>):
         %done: Bool = %t.ge(16)
         branch %done ? extend(16, #w) : load_word(%t, #w)
@@ -195,7 +195,7 @@ routine sha256_compress(#state: Ptr<U32>, #block: Ptr<Byte>) -> Void
         #w[%t] = %word
         jump load_words(%t.add(1), #w)
 
-    ; W[16..64) — W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16]
+    // W[16..64) — W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16]
     block extend(%t: U64, #w: Ptr<U32>):
         %done: Bool = %t.ge(64)
         branch %done ? rounds(#w) : extend_word(%t, #w)
@@ -236,7 +236,7 @@ routine sha256_compress(#state: Ptr<U32>, #block: Ptr<Byte>) -> Void
         %next: Working = sha256_round(%v, %k_t, %w_t)
         jump round_loop(%t.add(1), %next, #w)
 
-    ; H[i] += working variable i
+    // H[i] += working variable i
     block finish(%v: Working):
         %h0: U32 := #state[0]
         %h1: U32 := #state[1]
@@ -256,9 +256,9 @@ routine sha256_compress(#state: Ptr<U32>, #block: Ptr<Byte>) -> Void
         #state[7] = %h7.add_wrap(%v.h)
         return()
 
-; ── One-shot hash ─────────────────────────────────────────────────────────────
+// ── One-shot hash ─────────────────────────────────────────────────────────────
 
-; Hashes #data[0..len) and writes the 8-word digest to #digest.
+/// Hashes #data[0..len) and writes the 8-word digest to #digest.
 routine sha256(#data: Ptr<Byte>, %len: U64, #digest: Ptr<U32>) -> Void
     block entry():
         #h0: Ptr<U32> = H0.as_ptr()
@@ -266,7 +266,7 @@ routine sha256(#data: Ptr<Byte>, %len: U64, #digest: Ptr<U32>) -> Void
         %full_blocks: U64 = %len.div(64)
         jump block_loop(0, %full_blocks)
 
-    ; Every complete 64-byte block is compressed straight from #data.
+    // Every complete 64-byte block is compressed straight from #data.
     block block_loop(%i: U64, %full_blocks: U64):
         %done: Bool = %i.ge(%full_blocks)
         branch %done ? pad(%full_blocks) : compress_block(%i, %full_blocks)
@@ -277,9 +277,9 @@ routine sha256(#data: Ptr<Byte>, %len: U64, #digest: Ptr<U32>) -> Void
         sha256_compress(#digest, #src)
         jump block_loop(%i.add(1), %full_blocks)
 
-    ; The tail: leftover bytes, then 0x80, zeros, and the message length in
-    ; bits as a big-endian U64. That fits one block when fewer than 56 bytes
-    ; are left over, and takes two otherwise.
+    // The tail: leftover bytes, then 0x80, zeros, and the message length in
+    // bits as a big-endian U64. That fits one block when fewer than 56 bytes
+    // are left over, and takes two otherwise.
     block pad(%full_blocks: U64):
         %rest_start: U64 = %full_blocks.mul(64)
         %rest_len:   U64 = %len.sub(%rest_start)
@@ -306,7 +306,7 @@ routine sha256(#data: Ptr<Byte>, %len: U64, #digest: Ptr<U32>) -> Void
         sha256_compress(#digest, #second)
         return()
 
-; ── Output ────────────────────────────────────────────────────────────────────
+// ── Output ────────────────────────────────────────────────────────────────────
 
 routine print_digest(#label: Ptr<Byte>, #digest: Ptr<U32>) -> Void
     block entry():
@@ -341,7 +341,7 @@ routine hash_string(#label: Ptr<Byte>, %message: String) -> Void
         hash_and_print(#label, #data, %len)
         return()
 
-; ── main ──────────────────────────────────────────────────────────────────────
+// ── main ──────────────────────────────────────────────────────────────────────
 
 routine main() -> S32
     block entry():
@@ -349,7 +349,7 @@ routine main() -> S32
         hash_string("abc", "abc")
         hash_string("448-bit", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
 
-        ; One million 'a' bytes: 15,625 full blocks plus a two-block tail.
+        // One million 'a' bytes: 15,625 full blocks plus a two-block tail.
         %heap:  Allocator      = make_heap_allocator()
         #alloc: Ptr<Allocator> = alloca<Allocator>([%heap])
         #many:  Ptr<Byte>      = alloc<Byte>(#alloc, MILLION)

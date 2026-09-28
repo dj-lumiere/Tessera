@@ -1,30 +1,30 @@
-; Tessera stdlib: correctly rounded natural logarithm of F128
-;
-; Ported from CORE-MATH, src/binary128/log/logq.c via RazorForge's B128Log.rf
-; (https://core-math.gitlabpages.inria.fr/).
-; Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
-; MIT license: see LICENSE-CORE-MATH
-;
-; Only the round-to-nearest path of the original is kept (no rounding-mode probe, exception flags, or errno).
-; The computation runs on 64- and 128-bit integer words, never on software F128 arithmetic: a table-driven
-; reduction and a polynomial give ln(x) to about 2^-150; when that can't decide the rounding, 2^(m / ln 2)
-; is evaluated to about 380 bits for the candidate m and compared with x. Inputs within about 2^-29 of 1
-; take their own path. The multi-word helpers (cm_wide_*) are in wide.tess.
+// Tessera stdlib: correctly rounded natural logarithm of F128
+//
+// Ported from CORE-MATH, src/binary128/log/logq.c via RazorForge's B128Log.rf
+// (https://core-math.gitlabpages.inria.fr/).
+// Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+//
+// Only the round-to-nearest path of the original is kept (no rounding-mode probe, exception flags, or errno).
+// The computation runs on 64- and 128-bit integer words, never on software F128 arithmetic: a table-driven
+// reduction and a polynomial give ln(x) to about 2^-150; when that can't decide the rounding, 2^(m / ln 2)
+// is evaluated to about 380 bits for the candidate m and compared with x. Inputs within about 2^-29 of 1
+// take their own path. The multi-word helpers (cm_wide_*) are in wide.tess.
 
-; The rounding decision of an exact check: the round bit and the significand it applies to.
+/// The rounding decision of an exact check: the round bit and the significand it applies to.
 record CmLogRounding
     round: U64
     sig:   U128
 
-; A near-one result before the final rounding: significand, exponent adjustment, and whether the fast
-; rounding test failed.
+/// A near-one result before the final rounding: significand, exponent adjustment, and whether the fast
+/// rounding test failed.
 record CmLogNear
     sig:  S128
     e:    U64
     hard: Bool
 
-; ln(x), correctly rounded to nearest (ties to even). ±0 -> -infinity, x < 0 -> NaN, +infinity ->
-; +infinity, NaN -> the same NaN, quieted.
+/// ln(x), correctly rounded to nearest (ties to even). ±0 -> -infinity, x < 0 -> NaN, +infinity ->
+/// +infinity, NaN -> the same NaN, quieted.
 routine f128_cm_log(%x: F128) -> F128
     block entry():
         %u:       U128 = %x.bits
@@ -37,7 +37,7 @@ routine f128_cm_log(%x: F128) -> F128
             %near -> near_one(%u)
             _ -> general(%u)
 
-    ; NaN, +infinity, or the sign bit set
+    // NaN, +infinity, or the sign bit set
     block special(%hi: U64, %lo: U64):
         %magnitude: U64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
         %nan_exp:   Bool = %magnitude.gt(0x7FFF000000000000)
@@ -47,7 +47,7 @@ routine f128_cm_log(%x: F128) -> F128
         %zero:      Bool = %magnitude.eq(0).bitand(%lo.eq(0))
         %quiet:     F128 = f128_of(cm_wide_u128(%hi.bitor(0x0000800000000000), %lo))
         %neg_inf:   F128 = f128_of(0xFFFF0000000000000000000000000000)
-        ; x < 0: the NaN the original returns
+        // x < 0: the NaN the original returns
         %invalid:   F128 = f128_of(0xFFFF800000000000000000000000000B)
         select:
             %nan -> return(%quiet)
@@ -63,7 +63,7 @@ routine f128_cm_log(%x: F128) -> F128
         %r: F128 = cm_log_general(%u)
         return(%r)
 
-; ln(x) for positive finite x away from 1 (+0 included).
+/// ln(x) for positive finite x away from 1 (+0 included).
 routine cm_log_general(%u: U128) -> F128
     block entry():
         %hi:        U64  = cm_wide_hi(%u)
@@ -77,7 +77,7 @@ routine cm_log_general(%u: U128) -> F128
         %neg_inf: F128 = f128_of(0xFFFF0000000000000000000000000000)
         branch %zero ? return(%neg_inf) : normalize(%hi)
 
-    ; shift the leading bit up to bit 48 of the high word, lowering the exponent to match
+    // shift the leading bit up to bit 48 of the high word, lowering the exponent to match
     block normalize(%hi: U64):
         %hi_zero: Bool = %hi.eq(0)
         %lz_lo:   S64  = cm_wide_lo(%u).leading_zeros().to_s64().add(64)
@@ -86,9 +86,9 @@ routine cm_log_general(%u: U128) -> F128
         %e:       S64  = 0.sub_wrap(%nz.sub(16).shl(48))
         jump reduce(cm_wide_hi(%m), cm_wide_lo(%m), %e.to_u64_wrap())
 
-    ; x = 2^e * m: m is multiplied by four table reciprocals chosen from a crude log2(m)
+    // x = 2^e * m: m is multiplied by four table reciprocals chosen from a crude log2(m)
     block reduce(%mh: U64, %ml: U64, %e_field: U64):
-        %e:   U64 = %e_field.add_wrap(0x0070000000000000)          ; + 112 << 48
+        %e:   U64 = %e_field.add_wrap(0x0070000000000000)          // + 112 << 48
         %l:   U64 = cm_log_log2(%mh)
         %j0:  U64 = %l.shr(59)
         %j1:  U64 = %l.shr(54).bitand(31)
@@ -109,11 +109,11 @@ routine cm_log_general(%u: U128) -> F128
         %mh2: U64 = %rhh.shl(40).bitor(%rhl.shr(24))
         %ml2: U64 = %rhl.shl(40).bitor(%rlh.shr(24))
         %sum: CmWide3 = cm_log_table_sum(%e, %j0, %j1, %j2, %j3)
-        ; the exact check compares against the normalized significand (subnormal x included)
+        // the exact check compares against the normalized significand (subnormal x included)
         %normalized: U128 = cm_wide_u128(%mh, %ml)
         jump polynomial(%sum, %mh2, cm_wide_u128(%mh2, %ml2), %normalized)
 
-    ; ln(1 + m) for the reduced m, added to the table sum
+    // ln(1 + m) for the reduced m, added to the table sum
     block polynomial(%sum: CmWide3, %mh: U64, %m: U128, %normalized: U128):
         %c6:  U64 := CM_LOG_C[6]
         %c7:  U64 := CM_LOG_C[7]
@@ -131,7 +131,7 @@ routine cm_log_general(%u: U128) -> F128
         %r: F128 = cm_log_round(%total, %normalized)
         return(%r)
 
-; Word pair (i, i + 1) of the ln(1 + r) polynomial as a 128-bit coefficient.
+/// Word pair (i, i + 1) of the ln(1 + r) polynomial as a 128-bit coefficient.
 routine cm_log_coefficient(%i: U64) -> U128
     block entry():
         %lo: U64 := CM_LOG_C[%i]
@@ -139,7 +139,7 @@ routine cm_log_coefficient(%i: U64) -> U128
         %r: U128 = cm_wide_u128(%hi, %lo)
         return(%r)
 
-; e * ln(2) minus the bias, plus the logarithms of the four chosen reciprocals, in 3-word fixed point.
+/// e * ln(2) minus the bias, plus the logarithms of the four chosen reciprocals, in 3-word fixed point.
 routine cm_log_table_sum(%e: U64, %j0: U64, %j1: U64, %j2: U64, %j3: U64) -> CmWide3
     block entry():
         %ln2:    CmWide3 = cm_wide_row3(CM_LOG_LN2A.as_ptr(), 0)
@@ -151,8 +151,8 @@ routine cm_log_table_sum(%e: U64, %j0: U64, %j1: U64, %j2: U64, %j3: U64) -> CmW
         %s4: CmWide3 = cm_wide_add3(%s3, cm_wide_row3(CM_LOG_LT3.as_ptr(), %j3))
         return(%s4)
 
-; Rounds the 3-word fixed-point logarithm f to F128, checking exactly when it's too close to a midpoint.
-; %x is the input with its significand normalized.
+/// Rounds the 3-word fixed-point logarithm f to F128, checking exactly when it's too close to a midpoint.
+/// %x is the input with its significand normalized.
 routine cm_log_round(%f: CmWide3, %x: U128) -> F128
     block entry():
         %mask: U64 = cm_sign_mask64(%f.w2)
@@ -177,7 +177,7 @@ routine cm_log_round(%f: CmWide3, %x: U128) -> F128
         %r: F128 = cm_log_pack(%sig, %el, %rnd)
         return(%r)
 
-    ; the rounding test failed: decide it exactly from 113 bits plus one
+    // the rounding test failed: decide it exactly from 113 bits plus one
     block exact(%f0: U64, %f1: U64, %f2: U64, %nz: U64, %el: U64):
         %ls:     U64  = %nz.sub_wrap(14)
         %rs:     U64  = 64.sub_wrap(%ls).bitand(63)
@@ -188,8 +188,8 @@ routine cm_log_round(%f: CmWide3, %x: U128) -> F128
         %r: F128 = cm_log_pack(%exact.sig, %el, %exact.round)
         return(%r)
 
-; The 128 bits (f2:f1:f0 << ls) >> 64, shifting by ls left and rs = (64 - ls) mod 64 right as the original
-; does (a zero ls ORs in the lower word unshifted, like the x86 shifts it was written for).
+/// The 128 bits (f2:f1:f0 << ls) >> 64, shifting by ls left and rs = (64 - ls) mod 64 right as the original
+/// does (a zero ls ORs in the lower word unshifted, like the x86 shifts it was written for).
 routine cm_log_shift_pair(%f0: U64, %f1: U64, %f2: U64, %ls: U64, %rs: U64) -> U128
     block entry():
         %hi: U64 = %f2.shl(%ls).bitor(%f1.shr(%rs))
@@ -197,15 +197,15 @@ routine cm_log_shift_pair(%f0: U64, %f1: U64, %f2: U64, %ls: U64, %rs: U64) -> U
         %r: U128 = cm_wide_u128(%hi, %lo)
         return(%r)
 
-; sig + (el << 112) + round: the exponent (and sign) field added to the significand, which carries into the
-; exponent when its implicit bit is set.
+/// sig + (el << 112) + round: the exponent (and sign) field added to the significand, which carries into the
+/// exponent when its implicit bit is set.
 routine cm_log_pack(%sig: U128, %el: U64, %round: U64) -> F128
     block entry():
         %field: U128 = cm_wide_u128(%el.shl(48), %round)
         %r: F128 = f128_of(%sig.add_wrap(%field))
         return(%r)
 
-; Crude fixed-point log2 of the high significand word x, whose bits select the reciprocal tables.
+/// Crude fixed-point log2 of the high significand word x, whose bits select the reciprocal tables.
 routine cm_log_log2(%x: U64) -> U64
     block entry():
         %j:   U64 = %x.shr(43).bitand(31)
@@ -223,7 +223,7 @@ routine cm_log_log2(%x: U64) -> U64
         %r:   U64 = %base.add_wrap(%z.mul_wrap(%t).shr(4))
         return(%r)
 
-; (w2, w1, w0) >> s, logical, s < 192.
+/// (w2, w1, w0) >> s, logical, s < 192.
 routine cm_log_shift_right3(%t: CmWide3, %s: U64) -> CmWide3
     block entry():
         %rs:      U64  = %s.bitand(63)
@@ -241,9 +241,9 @@ routine cm_log_shift_right3(%t: CmWide3, %s: U64) -> CmWide3
         %moved: CmWide3 = CmWide3 { w0: %t.w1, w1: %t.w2, w2: 0 }
         branch %done ? return(%t) : words(%moved, %k.sub(64))
 
-; -- near 1 --------------------------------------------------------------------
+// -- near 1 --------------------------------------------------------------------
 
-; ln(x) for x within about 2^-29 of 1, where the general reduction would lose accuracy.
+/// ln(x) for x within about 2^-29 of 1, where the general reduction would lose accuracy.
 routine cm_log_near_one(%x: U128) -> F128
     block entry():
         %one:   U128 = 0x3FFF0000000000000000000000000000
@@ -263,7 +263,7 @@ routine cm_log_near_one(%x: U128) -> F128
         %n: CmLogNear = cm_log_below_one(%x)
         jump finish(%n, 1)
 
-    ; normalize the top bit to 127, then round (exactly when the fast test failed)
+    // normalize the top bit to 127, then round (exactly when the fast test failed)
     block finish(%n: CmLogNear, %neg: U64):
         %top_clear: Bool = %n.sig.lt(0).bitnot()
         %sig:       S128 = %top_clear ? %n.sig.shl(1) : %n.sig
@@ -283,7 +283,7 @@ routine cm_log_near_one(%x: U128) -> F128
         %r: F128 = cm_log_pack(%rounded.sig, %el, %rounded.round)
         return(%r)
 
-; ln(x) for 1 < x < 1 + 2^-29 or so: t = x - 1, ln(1 + t) = t - t^2 * P(t), before the final rounding.
+/// ln(x) for 1 < x < 1 + 2^-29 or so: t = x - 1, ln(1 + t) = t - t^2 * P(t), before the final rounding.
 routine cm_log_above_one(%x: U128) -> CmLogNear
     block entry():
         %t:       U128 = %x.sub(0x3FFF0000000000000000000000000000)
@@ -311,7 +311,7 @@ routine cm_log_above_one(%x: U128) -> CmLogNear
         %r: CmLogNear = cm_log_near_test(%z, %e, 64, 63)
         return(%r)
 
-; ln(x) for 1 - 2^-29 or so < x < 1: t = 1 - x, ln(1 - t) = -(t + t^2 * P(t)), before the final rounding.
+/// ln(x) for 1 - 2^-29 or so < x < 1: t = 1 - x, ln(1 - t) = -(t + t^2 * P(t)), before the final rounding.
 routine cm_log_below_one(%x: U128) -> CmLogNear
     block entry():
         %t:       U128 = 0x3FFF0000000000000000000000000000.sub(%x)
@@ -339,8 +339,8 @@ routine cm_log_below_one(%x: U128) -> CmLogNear
         %r: CmLogNear = cm_log_near_test(%z, %e, 62, 62)
         return(%r)
 
-; The near-one rounding test on z and the 128-bit significand to round. The rounding position sits %point - e
-; bits into the tail words while e <= %last; past that, the error bound eps shrinks as e grows.
+/// The near-one rounding test on z and the 128-bit significand to round. The rounding position sits %point - e
+/// bits into the tail words while e <= %last; past that, the error bound eps shrinks as e grows.
 routine cm_log_near_test(%z: CmWide3, %e: S64, %point: S64, %last: S64) -> CmLogNear
     block entry():
         %tl:     U128 = cm_wide_u128(%z.w1, %z.w0)
@@ -350,7 +350,7 @@ routine cm_log_near_test(%z: CmWide3, %e: S64, %point: S64, %last: S64) -> CmLog
         %inside: Bool = %e.le(%last)
         branch %inside ? short(%tl, %msk, %nrnd) : long(%tl, %msk, %nrnd)
 
-    ; e below the point: the tail shifts down to the rounding position
+    // e below the point: the tail shifts down to the rounding position
     block short(%tl: U128, %msk: U128, %nrnd: U128):
         %gap:   S128 = %point.sub(%e).to_s128()
         %tail:  U128 = %tl.shr(%gap.to_u128())
@@ -370,7 +370,7 @@ routine cm_log_near_test(%z: CmWide3, %e: S64, %point: S64, %last: S64) -> CmLog
         %r: CmLogNear = CmLogNear { sig: %sig.to_s128_wrap(), e: %e.to_u64(), hard: %hard }
         return(%r)
 
-; Word pair (i, i + 1) of the above-one polynomial.
+/// Word pair (i, i + 1) of the above-one polynomial.
 routine cm_log_ncp(%i: U64) -> U128
     block entry():
         %lo: U64 := CM_LOG_NCP[%i]
@@ -378,7 +378,7 @@ routine cm_log_ncp(%i: U64) -> U128
         %r: U128 = cm_wide_u128(%hi, %lo)
         return(%r)
 
-; Word pair (i, i + 1) of the below-one polynomial.
+/// Word pair (i, i + 1) of the below-one polynomial.
 routine cm_log_ncn(%i: U64) -> U128
     block entry():
         %lo: U64 := CM_LOG_NCN[%i]
@@ -386,11 +386,11 @@ routine cm_log_ncn(%i: U64) -> U128
         %r: U128 = cm_wide_u128(%hi, %lo)
         return(%r)
 
-; -- exact rounding ------------------------------------------------------------
+// -- exact rounding ------------------------------------------------------------
 
-; Decides the rounding exactly: evaluates 2^(m / ln 2) for the candidate m (113 bits plus one, exponent
-; and sign in el) to about 380 bits and compares it with x's low bits. Returns the round bit and the
-; significand.
+/// Decides the rounding exactly: evaluates 2^(m / ln 2) for the candidate m (113 bits plus one, exponent
+/// and sign in el) to about 380 bits and compares it with x's low bits. Returns the round bit and the
+/// significand.
 routine cm_log_refine(%el: U64, %m: U128, %x: U128) -> CmLogRounding
     block entry():
         #t_buf:  Ptr<Array<U64, 7>> = alloca<Array<U64, 7>>
@@ -418,9 +418,9 @@ routine cm_log_refine(%el: U64, %m: U128, %x: U128) -> CmLogRounding
         %r: CmLogRounding = CmLogRounding { round: %round, sig: %mm.shr(2) }
         return(%r)
 
-; -- tables --------------------------------------------------------------------
+// -- tables --------------------------------------------------------------------
 
-; log2 approximation: 4 coefficients per 1/32 interval of the significand
+/// log2 approximation: 4 coefficients per 1/32 interval of the significand
 preset CM_LOG_L2C: Array<U64, 128> = [
     0x00000000B8AA3AF4, 0x00000000B8A9CF24, 0x00000000F5EC11E6, 0x00000000056CDE26,
     0x00000000B311AD8D, 0x00000000ADA42C83, 0x00000000E04081E5, 0x0000000004CE4AA7,
@@ -456,7 +456,7 @@ preset CM_LOG_L2C: Array<U64, 128> = [
     0x000000005DCC4ECE, 0x000000002FA4B68C, 0x00000000204190E7, 0x00000000005F4832
 ]
 
-; log2 approximation: the value at the start of each interval
+/// log2 approximation: the value at the start of each interval
 preset CM_LOG_L2C0: Array<U64, 32> = [
     0x00000000111843D8, 0x0B5D69BAD62FA11A, 0x1663F6FAD5C18924, 0x2118B119BFF1FA3B,
     0x2B803474013E4469, 0x359EBC5B7234BAED, 0x3F782D720C23D39B, 0x49101EAC3E8EE930,
@@ -468,31 +468,31 @@ preset CM_LOG_L2C0: Array<U64, 32> = [
     0xE829FB6931086C4E, 0xEE44CD5A005FB44D, 0xF446359B13F9EDEF, 0xFA2F045E78CC51CC
 ]
 
-; ln(1 + t) polynomial for x just above 1, as (lo, hi) word pairs
+/// ln(1 + t) polynomial for x just above 1, as (lo, hi) word pairs
 preset CM_LOG_NCP: Array<U64, 12> = [
     0xFFFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF, 0x5555555555555555, 0x0000055555555555,
     0xFFFFFFFFFFFFFFFD, 0x00000000003FFFFF, 0x3333333333333326, 0x0000000000000003,
     0x00002AAAAAAAAA84, 0x0000000000000000, 0x000000000249245A, 0x0000000000000000
 ]
 
-; ln(1 - t) polynomial for x just below 1, as (lo, hi) word pairs
+/// ln(1 - t) polynomial for x just below 1, as (lo, hi) word pairs
 preset CM_LOG_NCN: Array<U64, 12> = [
     0x0000000000000000, 0x8000000000000000, 0xAAAAAAAAAAAAAAAA, 0x000002AAAAAAAAAA,
     0xFFFFFFFFFFFFFFFF, 0x00000000000FFFFF, 0x6666666666666668, 0x0000000000000000,
     0x000002AAAAAAAAA8, 0x0000000000000000, 0x0000000000124926, 0x0000000000000000
 ]
 
-; ln(2) in 3 words, scaled to the exponent field
+/// ln(2) in 3 words, scaled to the exponent field
 preset CM_LOG_LN2A: Array<U64, 3> = [
     0x3F2F6AF40F343267, 0x1CF79ABC9E3B3980, 0x0000000B17217F7D
 ]
 
-; offset that removes the exponent bias, in 3 words
+/// offset that removes the exponent bias, in 3 words
 preset CM_LOG_OFFA: Array<U64, 3> = [
     0x0198BFB39C605BC5, 0x718289F4C0A895F2, 0xFFFFFFFD3568989A
 ]
 
-; reciprocal tables: 32-bit reciprocals for the four 5-bit index levels
+/// reciprocal tables: 32-bit reciprocals for the four 5-bit index levels
 preset CM_LOG_RT0: Array<U64, 32> = [
     0x0000000080000000, 0x000000007D41D96E, 0x000000007A92BE8B, 0x0000000077F25CCE,
     0x0000000075606374, 0x0000000072DC8374, 0x0000000070666F77, 0x000000006DFDDBCC,
@@ -537,7 +537,7 @@ preset CM_LOG_RT3: Array<U64, 32> = [
     0x000000007FFF64BD, 0x000000007FFF5F31, 0x000000007FFF59A6, 0x000000007FFF541A
 ]
 
-; logarithms matching the RT0 entries, 3 words per entry
+/// logarithms matching the RT0 entries, 3 words per entry
 preset CM_LOG_LT0: Array<U64, 96> = [
     0x0000000000000000, 0x0000000000000000, 0x0000000000000000,
     0xA89586EFCF459616, 0x0BF2D9D6938E7957, 0x00000000000058B9,
@@ -654,7 +654,7 @@ preset CM_LOG_LT3: Array<U64, 96> = [
     0x0000000000000014, 0x81F0878A8D99E057, 0x7CCE6DAF3F7A4090, 0x0000000000000015
 ]
 
-; ln(1 + r) polynomial for the reduced argument, as (lo, hi) word pairs
+/// ln(1 + r) polynomial for the reduced argument, as (lo, hi) word pairs
 preset CM_LOG_C: Array<U64, 12> = [
     0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0x000007FFFFFFFFFF,
     0x5555555555555551, 0x0000000000555555, 0xFFFFFFFFFFFFFFEA, 0x0000000000000003,

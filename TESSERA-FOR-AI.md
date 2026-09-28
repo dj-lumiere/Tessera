@@ -36,11 +36,16 @@ routine main() -> S32
         write_line(#out)
 
         #list.free()
-        #out.flush()                ; BufWriter output appears only on flush
+        #out.flush()                // BufWriter output appears only on flush
         return(0)
 ```
 
 ## Rules That Trip People Up
+
+**Comments**
+
+- `//` for comments, `///` for Markdown doc comments directly above a declaration, field, or choice member.
+  `;` is not a comment (it was until 2026-09-28) and is rejected.
 
 **Values and pointers**
 

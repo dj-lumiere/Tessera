@@ -1,21 +1,21 @@
-; Tessera stdlib: parsing floats
-;
-; F64.parse, F32.parse, F16.parse, and BF16.parse read decimal text and round
-; it correctly (to nearest, ties to even), however many digits it has.
-;
-;     [+-] digits [. digits] [(e|E) [+-] digits]      at least one mantissa digit
-;     [+-] inf | infinity | nan                        any letter case
-;
-; "5." and ".5" are accepted; whitespace is not. Errors are ParseFloatError:
-; Empty for "", Invalid for anything else that doesn't match.
-;
-; The method is exact, not fast: the value becomes a fraction N / D of big
-; naturals, and a bit-by-bit division gives the significand plus a remainder
-; for rounding. Only the first significant digits are kept; later ones only
-; record whether any was nonzero, which is enough to break a tie as long as
-; every exactly-halfway decimal fits in the kept digits: 767 digits for F64,
-; 11,563 for F128. So F64 and the smaller formats keep 800 digits in a
-; BigNat<72>, and F128 keeps 11,600 in a BigNat<864> (stdlib/bignat.tess).
+// Tessera stdlib: parsing floats
+//
+// F64.parse, F32.parse, F16.parse, and BF16.parse read decimal text and round
+// it correctly (to nearest, ties to even), however many digits it has.
+//
+//     [+-] digits [. digits] [(e|E) [+-] digits]      at least one mantissa digit
+//     [+-] inf | infinity | nan                        any letter case
+//
+// "5." and ".5" are accepted; whitespace is not. Errors are ParseFloatError:
+// Empty for "", Invalid for anything else that doesn't match.
+//
+// The method is exact, not fast: the value becomes a fraction N / D of big
+// naturals, and a bit-by-bit division gives the significand plus a remainder
+// for rounding. Only the first significant digits are kept; later ones only
+// record whether any was nonzero, which is enough to break a tie as long as
+// every exactly-halfway decimal fits in the kept digits: 767 digits for F64,
+// 11,563 for F128. So F64 and the smaller formats keep 800 digits in a
+// BigNat<72>, and F128 keeps 11,600 in a BigNat<864> (stdlib/bignat.tess).
 
 choice ParseFloatError: U8
     Empty
@@ -26,24 +26,24 @@ choice DecimalKind: U8
     Infinity
     NaN
 
-; The parsed text: value = digits × 10^exponent, digits kept in a BigNat.
+/// The parsed text: value = digits × 10^exponent, digits kept in a BigNat.
 record DecimalParts
     kind:     DecimalKind
     negative: Bool
-    kept:     S64       ; significant digits kept
+    kept:     S64       // significant digits kept
     exponent: S64
-    sticky:   Bool      ; a nonzero digit was dropped after the kept ones
+    sticky:   Bool      // a nonzero digit was dropped after the kept ones
 
 
 
-; -- text ----------------------------------------------------------------------
+// -- text ----------------------------------------------------------------------
 
 routine is_ascii_digit(%c: Byte) -> Bool
     block entry():
         %r: Bool = %c.ge(b'0').bitand(%c.le(b'9'))
         return(%r)
 
-; Is #text[0..length) %word, ignoring ASCII letter case? %word must be lowercase letters.
+/// Is #text[0..length) %word, ignoring ASCII letter case? %word must be lowercase letters.
 routine matches_word(#text: Ptr<Byte>, %length: U64, %word: String) -> Bool
     block entry():
         %word_length: U64  = %word.length
@@ -62,7 +62,7 @@ routine matches_word(#text: Ptr<Byte>, %length: U64, %word: String) -> Bool
         %same:   Bool = %folded.eq(%w)
         branch %same ? loop(%i.add(1), #letters) : return(false)
 
-; Reads %text into DecimalParts, accumulating the kept digits in #digits.
+/// Reads %text into DecimalParts, accumulating the kept digits in #digits.
 routine parse_decimal<N>(%text: String, #digits: Ptr<BigNat<N>>, %max_kept: S64) -> Result<DecimalParts, ParseFloatError>
 require N: U64
     block entry():
@@ -95,7 +95,7 @@ require N: U64
         %r: Result<DecimalParts, ParseFloatError> = Result<DecimalParts, ParseFloatError>.ok(%parts)
         return(%r)
 
-    ; Integer digits. Leading zeros are skipped; digits past the cap raise the exponent.
+    // Integer digits. Leading zeros are skipped; digits past the cap raise the exponent.
     block int_loop(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool, %seen: Bool):
         %at_end: Bool = %i.ge(%text.length)
         branch %at_end ? done(%negative, %kept, %exponent, %sticky, %seen)
@@ -124,7 +124,7 @@ require N: U64
         #digits.mul_add(10, %d)
         jump int_loop(%next, %negative, %kept.add(1), %exponent, %sticky, true)
 
-    ; Fraction digits. Each one kept, or each leading zero, lowers the exponent.
+    // Fraction digits. Each one kept, or each leading zero, lowers the exponent.
     block frac_loop(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool, %seen: Bool):
         %at_end: Bool = %i.ge(%text.length)
         branch %at_end ? done(%negative, %kept, %exponent, %sticky, %seen)
@@ -150,7 +150,7 @@ require N: U64
         #digits.mul_add(10, %d)
         jump frac_loop(%next, %negative, %kept.add(1), %exponent.sub(1), %sticky, true)
 
-    ; After the mantissa only an exponent may follow: e or E, a sign, digits.
+    // After the mantissa only an exponent may follow: e or E, a sign, digits.
     block exponent_mark(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool, %seen: Bool):
         #data:  Ptr<Byte> = %text.data
         %c:     Byte   := #data[%i]
@@ -173,7 +173,7 @@ require N: U64
         branch %has_digit ? exp_loop(%first, %negative, %kept, %exponent, %sticky, %minus, 0)
                           : fail(ParseFloatError.Invalid)
 
-    ; The exponent saturates at 1,000,000, far past any float's range.
+    // The exponent saturates at 1,000,000, far past any float's range.
     block exp_loop(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool, %exp_minus: Bool, %value: S64):
         %at_end: Bool = %i.ge(%text.length)
         branch %at_end ? exp_done(%negative, %kept, %exponent, %sticky, %exp_minus, %value)
@@ -206,11 +206,11 @@ require N: U64
         %r: Result<DecimalParts, ParseFloatError> = Result<DecimalParts, ParseFloatError>.err(%error)
         return(%r)
 
-; -- rounding ------------------------------------------------------------------
+// -- rounding ------------------------------------------------------------------
 
-; The IEEE bits, without the sign, of the float nearest to the parsed value,
-; for a format with %mantissa_bits stored bits, exponent bias %bias, and
-; all-ones exponent %exponent_max.
+/// The IEEE bits, without the sign, of the float nearest to the parsed value,
+/// for a format with %mantissa_bits stored bits, exponent bias %bias, and
+/// all-ones exponent %exponent_max.
 routine decimal_to_bits<N>(
     #digits: Ptr<BigNat<N>>, %parts: DecimalParts, %mantissa_bits: S64, %bias: S64, %exponent_max: S64,
     %huge_from: S64, %tiny_below: S64
@@ -225,8 +225,8 @@ require N: U64
             DecimalKind.NaN -> return(%infinity.bitor(%quiet))
             DecimalKind.Finite -> finite(%infinity)
 
-    ; Below 10^tiny_below everything rounds to zero; from 10^huge_from up, to
-    ; infinity. In between, the numbers stay inside BigNat's capacity.
+    // Below 10^tiny_below everything rounds to zero; from 10^huge_from up, to
+    // infinity. In between, the numbers stay inside BigNat's capacity.
     block finite(%infinity: U128):
         %zero:      Bool = #digits.is_zero()
         %kept:      S64  = %parts.kept
@@ -240,7 +240,7 @@ require N: U64
             %huge -> return(%infinity)
             _ -> scale(%exponent, %infinity)
 
-    ; value = n / d exactly
+    // value = n / d exactly
     block scale(%exponent: S64, %infinity: U128):
         #d:       Ptr<BigNat<N>> = alloca<BigNat<N>>
         #d.set(1)
@@ -255,8 +255,8 @@ require N: U64
         #d.mul_pow10(%exponent.abs_diff(0))
         jump estimate(%infinity, #d)
 
-    ; Pick the binary exponent e so that q = floor(value / 2^e) has
-    ; mantissa_bits + 1 bits, or fewer at the subnormal floor.
+    // Pick the binary exponent e so that q = floor(value / 2^e) has
+    // mantissa_bits + 1 bits, or fewer at the subnormal floor.
     block estimate(%infinity: U128, #d: Ptr<BigNat<N>>):
         %log2:  S64 = #digits.bit_length().to_s64().sub(#d.bit_length().to_s64())
         %floor: S64 = 1.sub(%bias).sub(%mantissa_bits)
@@ -266,7 +266,7 @@ require N: U64
         #t: Ptr<BigNat<N>> = alloca<BigNat<N>>
         jump attempt(%e, %infinity, #d, #a, #b, #t)
 
-    ; a / b = value / 2^e
+    // a / b = value / 2^e
     block attempt(%e: S64, %infinity: U128, #d: Ptr<BigNat<N>>, #a: Ptr<BigNat<N>>, #b: Ptr<BigNat<N>>, #t: Ptr<BigNat<N>>):
         #a.copy_from(#digits)
         #b.copy_from(#d)
@@ -281,14 +281,14 @@ require N: U64
         #b.shl(%e.to_u64())
         jump divide(%e, %infinity, #d, #a, #b, #t)
 
-    ; The estimate can be one bit short; then q has a bit too many: try e + 1.
+    // The estimate can be one bit short; then q has a bit too many: try e + 1.
     block divide(%e: S64, %infinity: U128, #d: Ptr<BigNat<N>>, #a: Ptr<BigNat<N>>, #b: Ptr<BigNat<N>>, #t: Ptr<BigNat<N>>):
         %q:       U128 = #a.div_small(#b, #t, %mantissa_bits.add(3).to_u64())
         %limit:   U128 = 1.shl(%mantissa_bits.add(1).to_u128())
         %too_big: Bool = %q.ge(%limit)
         branch %too_big ? attempt(%e.add(1), %infinity, #d, #a, #b, #t) : round(%e, %q, %infinity, #a, #b)
 
-    ; Round to nearest, ties to even. The remainder is in a; compare 2a with b.
+    // Round to nearest, ties to even. The remainder is in a; compare 2a with b.
     block round(%e: S64, %q: U128, %infinity: U128, #a: Ptr<BigNat<N>>, #b: Ptr<BigNat<N>>):
         #a.shl(1)
         %half:   S32  = #a.compare(#b)
@@ -298,7 +298,7 @@ require N: U64
         %odd:    Bool = %q.bitand(1).eq(1)
         %up:     Bool = %above.bitor(%tie.bitand(%sticky.bitor(%odd)))
         %rounded: U128 = %q.add(%up.to_u128())
-        ; rounding up can carry into a new bit
+        // rounding up can carry into a new bit
         %carry:  Bool = %rounded.eq(1.shl(%mantissa_bits.add(1).to_u128()))
         %q2:     U128 = %carry ? %rounded.shr(1) : %rounded
         %e2:     S64  = %e.add(%carry.to_s64())
@@ -309,7 +309,7 @@ require N: U64
         %bits:   U128 = %biased.to_u128().shl(%mantissa_bits.to_u128()).bitor(%q2.bitand(%hidden.sub(1)))
         branch %overflow ? return(%infinity) : return(%bits)
 
-; -- parse ---------------------------------------------------------------------
+// -- parse ---------------------------------------------------------------------
 
 routine F64.parse(%text: String) -> Result<Self, ParseFloatError>
     block entry():
@@ -393,7 +393,7 @@ routine F128.parse(%text: String) -> Result<Self, ParseFloatError>
         %fail:   Result<Self, ParseFloatError> = Result<Self, ParseFloatError>.err(%error)
         branch %ok ? build(%parts, #digits) : return(%fail)
 
-    ; F128's largest value is about 1.19e4932; its smallest subnormal, 6.5e-4966.
+    // F128's largest value is about 1.19e4932; its smallest subnormal, 6.5e-4966.
     block build(%parts: DecimalParts, #digits: Ptr<BigNat<864>>):
         %magnitude: U128 = decimal_to_bits(#digits, %parts, 112, 16383, 32767, 4933, -4966)
         %negative:  Bool = %parts.negative
@@ -402,18 +402,18 @@ routine F128.parse(%text: String) -> Result<Self, ParseFloatError>
         %r: Result<Self, ParseFloatError> = Result<Self, ParseFloatError>.ok(%value)
         return(%r)
 
-; -- F128, faithful ------------------------------------------------------------
-;
-; F128.parse_faithful trades correct rounding for speed and a small stack: the
-; result is one of the two F128 values around the decimal (error below 1 ulp),
-; and differs from F128.parse only when the decimal is within about 2^-7 ulp of
-; a halfway point. No BigNat: the first 38 significant digits go into a U128,
-; and the power of ten is a product of 10^(±2^i) taken from a table of 128-bit
-; mantissas (each rounded to nearest), keeping the high 128 bits of every
-; product. At most 13 products, 13 table roundings (2^-128 each), 13 dropped
-; product halves (under 2^-127 each), and the digits past 38 (under 10^-37)
-; add up to less than 2^-120 relative error, which 113-bit rounding turns into
-; at most 0.5 + 2^-7 ulp.
+// -- F128, faithful ------------------------------------------------------------
+//
+// F128.parse_faithful trades correct rounding for speed and a small stack: the
+// result is one of the two F128 values around the decimal (error below 1 ulp),
+// and differs from F128.parse only when the decimal is within about 2^-7 ulp of
+// a halfway point. No BigNat: the first 38 significant digits go into a U128,
+// and the power of ten is a product of 10^(±2^i) taken from a table of 128-bit
+// mantissas (each rounded to nearest), keeping the high 128 bits of every
+// product. At most 13 products, 13 table roundings (2^-128 each), 13 dropped
+// product halves (under 2^-127 each), and the digits past 38 (under 10^-37)
+// add up to less than 2^-120 relative error, which 113-bit rounding turns into
+// at most 0.5 + 2^-7 ulp.
 
 preset F128_POW10_POS_MANT: Array<U128, 13> = [
     0xA0000000000000000000000000000000,
@@ -452,13 +452,13 @@ preset F128_POW10_NEG_EXP: Array<S64, 13> = [
     -131, -134, -141, -154, -181, -234, -340, -553, -978, -1828, -3529, -6931, -13734
 ]
 
-; A value mant × 2^exp with the mantissa's top bit (127) set.
+/// A value mant × 2^exp with the mantissa's top bit (127) set.
 private record F128Wide
     mant: U128
     exp:  S64
 
-; The high 128 bits of a × b (both normalized), renormalized: the product of
-; two numbers in [2^127, 2^128) is in [2^254, 2^256).
+/// The high 128 bits of a × b (both normalized), renormalized: the product of
+/// two numbers in [2^127, 2^128) is in [2^254, 2^256).
 routine f128_wide_mul(%a: F128Wide, %m: U128, %e: S64) -> F128Wide
     block entry():
         %x:    U128 = %a.mant
@@ -472,8 +472,8 @@ routine f128_wide_mul(%a: F128Wide, %m: U128, %e: S64) -> F128Wide
         %p11:  U128 = %x1.mul(%y1)
         %mid:  U128 = %p00.shr(64).add(%p01.bitand(0xFFFFFFFFFFFFFFFF)).add(%p10.bitand(0xFFFFFFFFFFFFFFFF))
         %hi:   U128 = %p11.add(%p01.shr(64)).add(%p10.shr(64)).add(%mid.shr(64))
-        %next: U128 = %mid.shr(63).bitand(1)                 ; bit 127 of the low half
-        %top:  Bool = %hi.shr(127).eq(1)                     ; bit 255 set
+        %next: U128 = %mid.shr(63).bitand(1)                 // bit 127 of the low half
+        %top:  Bool = %hi.shr(127).eq(1)                     // bit 255 set
         %mant: U128 = %top ? %hi : %hi.shl(1).bitor(%next)
         %exp:  S64  = %a.exp.add(%e).add(%top ? 128 : 127)
         %r: F128Wide = F128Wide { mant: %mant, exp: %exp }
@@ -515,7 +515,7 @@ routine F128.parse_faithful(%text: String) -> Result<Self, ParseFloatError>
             %huge -> done(%sign.bitor(F128_INF))
             _ -> scale(%d, %exponent, %negative, %parts.sticky)
 
-    ; d × 10^exponent: normalize d, then multiply in 10^(2^i) for every set bit of |exponent|.
+    // d × 10^exponent: normalize d, then multiply in 10^(2^i) for every set bit of |exponent|.
     block scale(%d: U128, %exponent: S64, %negative: Bool, %sticky: Bool):
         %shift: U128 = %d.leading_zeros()
         %start: F128Wide = F128Wide { mant: %d.shl(%shift), exp: 0.sub(%shift.to_s64()) }
@@ -541,7 +541,7 @@ routine F128.parse_faithful(%text: String) -> Result<Self, ParseFloatError>
         %next:  F128Wide = f128_wide_mul(%w, %m, %e)
         jump power(%i.add(1), %left.shr(1), %down, %next, %negative, %sticky)
 
-    ; value = mant × 2^exp = sig × 2^(biased - 16383 - 115)
+    // value = mant × 2^exp = sig × 2^(biased - 16383 - 115)
     block pack(%w: F128Wide, %negative: Bool, %sticky: Bool):
         %sig:  U128 = %w.mant.bitor(%sticky.to_u128())
         %bits: U128 = f128_round_pack(%negative, %w.exp.add(16383).add(115), %sig)

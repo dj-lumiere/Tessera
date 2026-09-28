@@ -1,24 +1,24 @@
-; Tessera stdlib: correctly rounded two-argument arc tangent of F128
-;
-; Ported from CORE-MATH, src/binary128/atan2/atan2q.c via RazorForge's B128Atan2.rf.
-; Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
-; MIT license: see LICENSE-CORE-MATH
-;
-; f128_cm_atan2(y, x) is the exact angle of the point (x, y), in [-π, π], rounded to nearest,
-; ties to even. The ratio b/a of min(|x|, |y|) to max(|x|, |y|) is reduced against a table angle
-; atan(t) with t = TN[i] / 2^15, the series runs in atan_shared.tess, and the angle is rebuilt as
-; ±(PHI0[i] + f) plus a quadrant offset 0, π/2 or π; y's sign goes on last. Zero and infinite
-; coordinates follow C99 Annex F (signed zeros pick 0 or π, infinities the multiples of π/4).
-; NaN in gives NaN out: a quiet y, else a quiet x, unchanged; a signaling one the default NaN.
+// Tessera stdlib: correctly rounded two-argument arc tangent of F128
+//
+// Ported from CORE-MATH, src/binary128/atan2/atan2q.c via RazorForge's B128Atan2.rf.
+// Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+//
+// f128_cm_atan2(y, x) is the exact angle of the point (x, y), in [-π, π], rounded to nearest,
+// ties to even. The ratio b/a of min(|x|, |y|) to max(|x|, |y|) is reduced against a table angle
+// atan(t) with t = TN[i] / 2^15, the series runs in atan_shared.tess, and the angle is rebuilt as
+// ±(PHI0[i] + f) plus a quadrant offset 0, π/2 or π; y's sign goes on last. Zero and infinite
+// coordinates follow C99 Annex F (signed zeros pick 0 or π, infinities the multiples of π/4).
+// NaN in gives NaN out: a quiet y, else a quiet x, unchanged; a signaling one the default NaN.
 
-; 0, π, 3π/4, π/4, π/2 as (lo, hi) pairs of fixed point with 2 integer bits
+/// 0, π, 3π/4, π/4, π/2 as (lo, hi) pairs of fixed point with 2 integer bits
 preset CM_ATAN2_RS: Array<U64, 10> = [
     0x0000000000000000, 0x0000000000000000, 0x62633145C06E0E69, 0x6487ED5110B4611A,
     0xC9CA64F450528ACE, 0x4B65F1FCCC8748D3, 0x9898CC51701B839A, 0x1921FB54442D1846,
     0x313198A2E0370734, 0x3243F6A8885A308D
 ]
 
-; reciprocal estimates of the top mantissa bits of max(|x|, |y|), for the table-index guess
+/// reciprocal estimates of the top mantissa bits of max(|x|, |y|), for the table-index guess
 preset CM_ATAN2_RCP: Array<U64, 128> = [
     0, 248, 240, 232, 224, 217, 210, 202, 195, 188, 181, 174, 168,
     161, 155, 148, 142, 135, 129, 123, 117, 111, 105, 100, 94, 88,
@@ -32,7 +32,7 @@ preset CM_ATAN2_RCP: Array<U64, 128> = [
     22, 20, 18, 16, 14, 12, 10, 8, 6, 4, 2
 ]
 
-; the table index from the estimated ratio min/max × 2^7
+/// the table index from the estimated ratio min/max × 2^7
 preset CM_ATAN2_IND: Array<U64, 129> = [
     0, 0, 1, 1, 2, 3, 3, 4, 5, 5, 6, 6, 7,
     8, 8, 9, 10, 10, 11, 11, 12, 13, 13, 14, 15, 15,
@@ -71,8 +71,8 @@ routine f128_cm_atan2(%y: F128, %x: F128) -> F128
         %table: Bool = %red.isct.ne(0).bitor(%red.g).bitor(%x_neg)
         branch %table ? with_table(%red, %f, %x_neg, %y_sign) : direct(%red, %f, %y_sign)
 
-    ; the angle ±(PHI0[isct] + f) + (0, π/2 or π): negated when exactly one of |x| < |y| and
-    ; x < 0 holds
+    // the angle ±(PHI0[isct] + f) + (0, π/2 or π): negated when exactly one of |x| < |y| and
+    // x < 0 holds
     block with_table(%red: CmAtanReduction, %f: U128, %x_neg: Bool, %y_sign: U128):
         %placed:  CmAtanU192 = cm_atan_place(%f, %red.dn.add(1))
         %phi:     CmAtanU192 = cm_atan_row_top(CM_ATAN_PHI0.as_ptr(), %red.isct)
@@ -98,15 +98,15 @@ routine f128_cm_atan2(%y: F128, %x: F128) -> F128
         %r: F128 = cm_atan2_accurate(%red, %x_neg, %y_sign)
         return(%r)
 
-; the row of the quadrant offset: 0 (none), 1 (π/2 when |x| < |y|), 2 (π when x < 0, |x| >= |y|)
+/// the row of the quadrant offset: 0 (none), 1 (π/2 when |x| < |y|), 2 (π when x < 0, |x| >= |y|)
 routine cm_atan2_quadrant(%g: Bool, %x_neg: Bool) -> U64
     block entry():
         %left: U64 = %x_neg ? 2 : 0
         %q:    U64 = %g ? 1 : %left
         return(%q)
 
-; Reduces b/a for a = max(|x|, |y|), b = min(|x|, |y|) (sign-stripped bits) against the table
-; angle atan(TN[isct] / 2^15). zero is set when b = 0.
+/// Reduces b/a for a = max(|x|, |y|), b = min(|x|, |y|) (sign-stripped bits) against the table
+/// angle atan(TN[isct] / 2^15). zero is set when b = 0.
 routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
     block entry():
         %g:  Bool = %xa.lt(%ya)
@@ -117,7 +117,7 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         %b_subnormal: Bool = %yn.eq(0)
         branch %b_subnormal ? scale(%g, %a, %b, %xn) : estimate(%g, %a, %b, %xn, %yn)
 
-    ; subnormal b (or a too): normalize the significand, extending the exponent below 1
+    // subnormal b (or a too): normalize the significand, extending the exponent below 1
     block scale(%g: Bool, %a: U128, %b: U128, %xn: S64):
         %b_zero: Bool = %b.eq(0)
         %none: CmAtanReduction = CmAtanReduction {
@@ -133,7 +133,7 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         %xn_used: S64 = %a_subnormal ? 1.sub(%ns_a) : %xn
         branch %b_zero ? return(%none) : estimate(%g, %a_used, %b_norm, %xn_used, %yn)
 
-    ; the table index from b × (1/a) estimated in a few bits, then corrected by one
+    // the table index from b × (1/a) estimated in a few bits, then corrected by one
     block estimate(%g: Bool, %a_raw: U128, %b_raw: U128, %xn: S64, %yn: S64):
         %dn:    S64  = %xn.sub(%yn)
         %ah:    U64  = %a_raw.shr(64).to_u64().bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
@@ -162,7 +162,7 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         %plain:   Bool = %isct.eq(0)
         branch %plain ? plain(%g, %a, %b, %dn) : offset(%g, %a, %b, %dn, %isct.min(63))
 
-    ; b/a itself: kn = b, kd = a
+    // b/a itself: kn = b, kd = a
     block plain(%g: Bool, %a: U128, %b: U128, %dn: S64):
         %kn: U128 = %b.shl(15)
         %kd: U128 = %a.shl(15)
@@ -172,7 +172,7 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         }
         return(%r)
 
-    ; kn = b - a t, kd = a + b t (scaled), the index moved down one when kn goes negative
+    // kn = b - a t, kd = a + b t (scaled), the index moved down one when kn goes negative
     block offset(%g: Bool, %a: U128, %b: U128, %dn: S64, %first: U64):
         %first_tn: U64  := CM_ATAN_TN[%first]
         %shift:    S128 = %dn.to_s128()
@@ -185,7 +185,7 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         %nzn_raw:  S64  = %kn_raw.leading_zeros().to_s64()
         %nzn:      S64  = %kn_zero ? 0 : %nzn_raw
         %kn:       U128 = %kn_raw.shl(%nzn.to_u128())
-        ; kd = a × 2^(15 + dn) + b t as 192 bits, then normalized
+        // kd = a × 2^(15 + dn) + b t as 192 bits, then normalized
         %sl:       S64  = %dn.add(15)
         %a_top:    U64  = %a.shr(64).to_u64().shr(49.sub(%dn).to_u64())
         %a_shifted: CmAtanU192 = CmAtanU192 { top: %a_top, low: %a.shl(%sl.to_u128()) }
@@ -193,7 +193,7 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         %kd:       CmAtanU192 = cm_atan_u192_add(%a_shifted, %bt)
         jump normalize(%g, %isct, %dn, %kn, %nzn, %kd)
 
-    ; shift kd left until its top bit is set: a whole limb first if the top one is empty
+    // shift kd left until its top bit is set: a whole limb first if the top one is empty
     block normalize(%g: Bool, %isct: U64, %dn: S64, %kn: U128, %nzn: S64, %kd: CmAtanU192):
         %empty:  Bool = %kd.top.eq(0)
         %top0:   U64  = %empty ? %kd.low.shr(64).to_u64() : %kd.top
@@ -210,7 +210,7 @@ routine cm_atan2_reduce(%xa: U128, %ya: U128) -> CmAtanReduction
         }
         return(%r)
 
-; The accurate path: the same reduction, the series and the reconstruction in 6 limbs.
+/// The accurate path: the same reduction, the series and the reconstruction in 6 limbs.
 routine cm_atan2_accurate(%red: CmAtanReduction, %x_neg: Bool, %y_sign: U128) -> F128
     block entry():
         #f_buf: Ptr<Array<S64, 8>> = alloca<Array<S64, 8>>
@@ -244,7 +244,7 @@ routine cm_atan2_accurate(%red: CmAtanReduction, %x_neg: Bool, %y_sign: U128) ->
         %r:    F128 = F128 { bits: %bits.bitor(%y_sign) }
         return(%r)
 
-; NaN, infinite or zero coordinates
+/// NaN, infinite or zero coordinates
 routine cm_atan2_special(%y: F128, %x: F128) -> F128
     block entry():
         %magnitude: U128 = F128_SIGN.bitnot()
@@ -262,7 +262,7 @@ routine cm_atan2_special(%y: F128, %x: F128) -> F128
             %x_nan -> return(%x)
             _ -> angle(%x_class, %y_class, %iy)
 
-    ; the angle's row in RS: 0 or π on the x axis, π/4 or 3π/4 for two infinities, else π/2
+    // the angle's row in RS: 0 or π on the x axis, π/4 or 3π/4 for two infinities, else π/2
     block angle(%x_class: S64, %y_class: S64, %iy: U128):
         %xs:      U64  = %x.bits.shr(127).to_u64()
         %x_inf:   Bool = %x_class.eq(1)

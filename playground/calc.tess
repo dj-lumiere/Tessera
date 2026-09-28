@@ -1,31 +1,31 @@
-; Integer expression calculator — Tessera playground
-;
-; Parses and evaluates integer expressions such as "-(4 - 10) % 4":
-;
-;     expr    = term    (("+" | "-") term)*
-;     term    = primary (("*" | "/" | "%") primary)*
-;     primary = number | "(" expr ")" | "-" primary
-;
-; The parser builds a heap-allocated tree, the evaluator walks it with
-; overflow-checked S64 arithmetic, and every error (bad token, missing ")",
-; division by zero, overflow) is reported with its column.
-;
-; What this program stresses:
-;   * sum types: Expr is a tag plus every variant's fields. There is no
-;     payload-carrying choice; switches on the tag name every kind instead of
-;     using '_', so adding a kind is a compile error until each one handles it
-;   * error propagation: every call that can fail is followed by an explicit
-;     tag test and branch; Result<Ptr<Expr>, CalcError> is spelled out each time
-;   * cleanup on failure paths: when the right operand fails to parse, the
-;     already-built left subtree has to be freed by hand
-;   * recursion: parse_binary, parse_primary, eval, and free_expr recurse
+// Integer expression calculator — Tessera playground
+//
+// Parses and evaluates integer expressions such as "-(4 - 10) % 4":
+//
+//     expr    = term    (("+" | "-") term)*
+//     term    = primary (("*" | "/" | "%") primary)*
+//     primary = number | "(" expr ")" | "-" primary
+//
+// The parser builds a heap-allocated tree, the evaluator walks it with
+// overflow-checked S64 arithmetic, and every error (bad token, missing ")",
+// division by zero, overflow) is reported with its column.
+//
+// What this program stresses:
+//   * sum types: Expr is a tag plus every variant's fields. There is no
+//     payload-carrying choice; switches on the tag name every kind instead of
+//     using '_', so adding a kind is a compile error until each one handles it
+//   * error propagation: every call that can fail is followed by an explicit
+//     tag test and branch; Result<Ptr<Expr>, CalcError> is spelled out each time
+//   * cleanup on failure paths: when the right operand fails to parse, the
+//     already-built left subtree has to be freed by hand
+//   * recursion: parse_binary, parse_primary, eval, and free_expr recurse
 
-; ── C FFI ─────────────────────────────────────────────────────────────────────
+// ── C FFI ─────────────────────────────────────────────────────────────────────
 
 @[external("c"), symbol("printf"), variadic]
 routine c_printf(#fmt: Ptr<Byte>) -> S32
 
-; ── Tokens ────────────────────────────────────────────────────────────────────
+// ── Tokens ────────────────────────────────────────────────────────────────────
 
 choice TokenKind: U8
     Number
@@ -41,15 +41,15 @@ choice TokenKind: U8
 
 record Token
     kind:  TokenKind
-    value: S64          ; Number only
-    pos:   U64          ; byte offset of the first character
-    end:   U64          ; byte offset just past the token
+    value: S64          // Number only
+    pos:   U64          // byte offset of the first character
+    end:   U64          // byte offset just past the token
 
 record CalcError
     message: Ptr<Byte>
     pos:     U64
 
-; ── Syntax tree ───────────────────────────────────────────────────────────────
+// ── Syntax tree ───────────────────────────────────────────────────────────────
 
 choice ExprKind: U8
     Num
@@ -60,11 +60,11 @@ choice ExprKind: U8
     Div
     Rem
 
-; A manual sum type: `kind` says which fields mean something.
-;   Num                    value
-;   Neg                    lhs (the operand)
-;   Add Sub Mul Div Rem    lhs, rhs
-; `pos` is the column of the number or operator, for error messages.
+/// A manual sum type: `kind` says which fields mean something.
+///   Num                    value
+///   Neg                    lhs (the operand)
+///   Add Sub Mul Div Rem    lhs, rhs
+/// `pos` is the column of the number or operator, for error messages.
 record Expr
     kind:  ExprKind
     value: S64
@@ -82,7 +82,7 @@ routine new_expr(#alloc: Ptr<Allocator>, %node: Expr) -> Ptr<Expr>
         #p = %node
         return(#p)
 
-; Frees #e and its whole subtree.
+/// Frees #e and its whole subtree.
 routine free_expr(#e: Ptr<Expr>, #alloc: Ptr<Allocator>) -> Void
     block entry():
         %kind: ExprKind := #e.kind
@@ -111,7 +111,7 @@ routine free_expr(#e: Ptr<Expr>, #alloc: Ptr<Allocator>) -> Void
         free<Expr>(#alloc, #e)
         return()
 
-; ── Lexer ─────────────────────────────────────────────────────────────────────
+// ── Lexer ─────────────────────────────────────────────────────────────────────
 
 record Parser
     src:   Ptr<Byte>
@@ -126,8 +126,8 @@ routine is_digit(%c: Byte) -> Bool
         %result: Bool = %above.bitand(%below)
         return(%result)
 
-; Reads the token at the current position without consuming it.
-; Fails only on a number that doesn't fit in S64.
+/// Reads the token at the current position without consuming it.
+/// Fails only on a number that doesn't fit in S64.
 routine Parser.peek(#self: Ptr<Self>) -> Result<Token, CalcError>
     block entry():
         %start: U64 := #self.pos
@@ -170,7 +170,7 @@ routine Parser.peek(#self: Ptr<Self>) -> Result<Token, CalcError>
         %r:   Result<Token, CalcError> = Result<Token, CalcError>.ok(%tok)
         return(%r)
 
-    ; %acc is the value of src[start..j) so far.
+    // %acc is the value of src[start..j) so far.
     block digits(%start: U64, %j: U64, %acc: S64):
         %len:    U64  := #self.len
         %at_end: Bool = %j.ge(%len)
@@ -211,10 +211,10 @@ routine Parser.advance(#self: Ptr<Self>, %tok: Token) -> Void
         #self.pos = %end
         return()
 
-; ── Parser ────────────────────────────────────────────────────────────────────
+// ── Parser ────────────────────────────────────────────────────────────────────
 
-; The binary operator %kind stands for at precedence %level
-; (0: + -, 1: * / %), or None when it isn't one.
+/// The binary operator %kind stands for at precedence %level
+/// (0: + -, 1: * / %), or None when it isn't one.
 routine operator_at(%kind: TokenKind, %level: S64) -> Option<ExprKind>
     block entry():
         %additive: Bool = %level.eq(0)
@@ -241,7 +241,7 @@ routine operator_at(%kind: TokenKind, %level: S64) -> Option<ExprKind>
         %r: Option<ExprKind> = Option<ExprKind>.none()
         return(%r)
 
-; An operand of a level-%level operator: the next level down, or a primary.
+/// An operand of a level-%level operator: the next level down, or a primary.
 routine Parser.parse_operand(#self: Ptr<Self>, %level: S64) -> Result<Ptr<Expr>, CalcError>
     block entry():
         %lowest: Bool = %level.eq(0)
@@ -255,7 +255,7 @@ routine Parser.parse_operand(#self: Ptr<Self>, %level: S64) -> Result<Ptr<Expr>,
         %r: Result<Ptr<Expr>, CalcError> = #self.parse_primary()
         return(%r)
 
-; operand (op operand)* at one precedence level, folded to the left.
+/// operand (op operand)* at one precedence level, folded to the left.
 routine Parser.parse_binary(#self: Ptr<Self>, %level: S64) -> Result<Ptr<Expr>, CalcError>
     block entry():
         %first: Result<Ptr<Expr>, CalcError> = #self.parse_operand(%level)
@@ -293,7 +293,7 @@ routine Parser.parse_binary(#self: Ptr<Self>, %level: S64) -> Result<Ptr<Expr>, 
         #tree:  Ptr<Expr> = new_expr(#alloc, %node)
         jump next_op(#tree)
 
-    ; The left side parsed but what follows didn't: free it before failing.
+    // The left side parsed but what follows didn't: free it before failing.
     block abandon(#lhs: Ptr<Expr>, %error: CalcError):
         #alloc: Ptr<Allocator> := #self.alloc
         free_expr(#lhs, #alloc)
@@ -344,7 +344,7 @@ routine Parser.parse_primary(#self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
         %r:     Result<Ptr<Expr>, CalcError> = Result<Ptr<Expr>, CalcError>.ok(#tree)
         return(%r)
 
-    ; "(" expr ")"
+    // "(" expr ")"
     block group(%open: Token):
         #self.advance(%open)
         %inner: Result<Ptr<Expr>, CalcError> = #self.parse_binary(0)
@@ -384,7 +384,7 @@ routine Parser.parse_primary(#self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
         %r: Result<Ptr<Expr>, CalcError> = Result<Ptr<Expr>, CalcError>.err(%error)
         return(%r)
 
-; Parses all of %source; anything left after the expression is an error.
+/// Parses all of %source; anything left after the expression is an error.
 routine parse(%source: String, #alloc: Ptr<Allocator>) -> Result<Ptr<Expr>, CalcError>
     block entry():
         #src:     Ptr<Byte> = %source.data
@@ -403,7 +403,7 @@ routine parse(%source: String, #alloc: Ptr<Allocator>) -> Result<Ptr<Expr>, Calc
         %at_end:  Bool      = %kind.eq(TokenKind.End)
         %pos:     U64       = %tok.pos
         %done:    Result<Ptr<Expr>, CalcError> = Result<Ptr<Expr>, CalcError>.ok(#tree)
-        ; a lex error here is still "something after the expression"
+        // a lex error here is still "something after the expression"
         branch %at_end ? return(%done) : trailing(#tree, %pos)
 
     block trailing(#tree: Ptr<Expr>, %pos: U64):
@@ -412,7 +412,7 @@ routine parse(%source: String, #alloc: Ptr<Allocator>) -> Result<Ptr<Expr>, Calc
         %r: Result<Ptr<Expr>, CalcError> = Result<Ptr<Expr>, CalcError>.err(%e)
         return(%r)
 
-; ── Evaluator ─────────────────────────────────────────────────────────────────
+// ── Evaluator ─────────────────────────────────────────────────────────────────
 
 routine eval(#e: Ptr<Expr>) -> Result<S64, CalcError>
     block entry():
@@ -465,7 +465,7 @@ routine eval(#e: Ptr<Expr>) -> Result<S64, CalcError>
             ExprKind.Mul -> multiply(%pos, %a, %b)
             ExprKind.Div -> divide(%pos, %a, %b, %zero_divisor)
             ExprKind.Rem -> remainder(%pos, %a, %b, %zero_divisor)
-            _ -> unreachable            ; binary() only ever passes the five binary kinds
+            _ -> unreachable            // binary() only ever passes the five binary kinds
 
     block add(%pos: U64, %a: S64, %b: S64):
         %sum: Option<S64> = %a.add_checked(%b)
@@ -487,7 +487,7 @@ routine eval(#e: Ptr<Expr>) -> Result<S64, CalcError>
         %rest: Option<S64> = %a.rem_checked(%b)
         branch %zero_divisor ? division_by_zero(%pos) : checked(%rest, %pos)
 
-    ; None from a checked operation with a nonzero divisor means overflow.
+    // None from a checked operation with a nonzero divisor means overflow.
     block checked(%result: Option<S64>, %pos: U64):
         %fits:  Bool = %result.tag
         %value: S64  = %result.value
@@ -501,7 +501,7 @@ routine eval(#e: Ptr<Expr>) -> Result<S64, CalcError>
         %r: Result<S64, CalcError> = Result<S64, CalcError>.err(%e)
         return(%r)
 
-; ── Driver ────────────────────────────────────────────────────────────────────
+// ── Driver ────────────────────────────────────────────────────────────────────
 
 routine calculate(%source: String, #alloc: Ptr<Allocator>) -> Void
     block entry():

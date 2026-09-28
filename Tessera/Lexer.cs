@@ -58,6 +58,8 @@ public sealed class Lexer(string file, string src)
             var pos = Here();
             char c = src[_i];
 
+            if (c == ';') throw new CompileError(pos, "comments start with '//' (';' was the comment marker until 2026-09-28)");
+
             if (c == '\\' && RestOfLineIsBlank(_i + 1))
             {
                 // line continuation: drop the backslash and the newline
@@ -175,13 +177,16 @@ public sealed class Lexer(string file, string src)
 
     private static bool IsIdentChar(char c) => char.IsAsciiLetterOrDigit(c) || c == '_';
 
+    /// `//` starts a comment, and `///` a doc comment, which the lexer skips the same way.
+    private bool IsComment(int j) => j + 1 < src.Length && src[j] == '/' && src[j + 1] == '/';
+
     private void SkipSpaceAndComments()
     {
         while (_i < src.Length)
         {
             char c = src[_i];
             if (c == ' ' || c == '\t' || c == '﻿') Advance();
-            else if (c == ';') { while (_i < src.Length && src[_i] != '\n' && src[_i] != '\r') Advance(); }
+            else if (IsComment(_i)) { while (_i < src.Length && src[_i] != '\n' && src[_i] != '\r') Advance(); }
             else break;
         }
     }
@@ -193,7 +198,7 @@ public sealed class Lexer(string file, string src)
         {
             char c = src[j];
             if (c is ' ' or '\t' or '\r' or '\n') { j++; continue; }
-            if (c == ';')
+            if (IsComment(j))
             {
                 while (j < src.Length && src[j] != '\n') j++;
                 continue;
@@ -209,7 +214,7 @@ public sealed class Lexer(string file, string src)
         {
             char c = src[j];
             if (c == '\n' || c == '\r') return true;
-            if (c == ';') return true;
+            if (IsComment(j)) return true;
             if (c != ' ' && c != '\t') return false;
         }
         return true;
