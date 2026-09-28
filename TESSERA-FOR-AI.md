@@ -51,7 +51,9 @@ routine main() -> S32
 
 **Values and pointers**
 
-- Every binding is annotated: `%x: S64 = ...`. `%` names a non-pointer value and `#` names a pointer (`Ptr<T>`).
+- Every binding is annotated: `%x: S64 = ...`. `%` names a non-pointer value and `#` names a pointer (`Ptr<T>`, or
+  `Addr` for an address with no pointee type, C's `void*`). `Ptr<T>` passes where an `Addr` is expected; the other
+  way takes `#a.cast<T>()`.
   The compiler checks the sigil against the type.
 - `:=` always loads. `=` binds when the left side has a type annotation and stores when it doesn't:
   `%v: S64 := #p` (load), `#p = %v` (store), `#p.field = %v`, `%f: T := #p.field`, `#p[%i] = %v`,

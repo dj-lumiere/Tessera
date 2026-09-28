@@ -173,9 +173,9 @@ public sealed class VoidType : DType
 public sealed class PtrType(DType? pointee) : DType
 {
     public DType? Pointee { get; } = pointee;
-    public override string Name => Pointee is null ? "Ptr" : $"Ptr<{Pointee.Name}>";
+    public override string Name => Pointee is null ? "Addr" : $"Ptr<{Pointee.Name}>";
     public override string Llvm => "ptr";
-    public override string OwnerName => "Ptr";
+    public override string OwnerName => Pointee is null ? "Addr" : "Ptr";
 }
 
 /// `Array<T, N>`: N elements of T, stored inline.

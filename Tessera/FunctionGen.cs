@@ -464,9 +464,8 @@ public sealed class FunctionGen
 
     private static bool Compatible(DType actual, DType expected) =>
         actual.Equals(expected)
-        // Ptr<T> converts to the opaque Ptr (the C `void*` of FFI signatures), and back.
-        || (actual is PtrType && expected is PtrType { Pointee: null })
-        || (actual is PtrType { Pointee: null } && expected is PtrType);
+        // Ptr<T> converts to Addr (the C `void*` of FFI signatures); the other way takes a cast.
+        || (actual is PtrType && expected is PtrType { Pointee: null });
 
     private CompileError Mismatch(Pos pos, DType expected, string actual) => Err(pos, $"expected {expected}, found {actual}");
 
@@ -859,7 +858,7 @@ public sealed class FunctionGen
 
     private bool PrimitiveOrRecordName(string name) =>
         IntType.FromName(name) is not null
-        || name is "F16" or "BF16" or "F32" or "F64" or "Bool" or "Void" or "Ptr" or "Array"
+        || name is "F16" or "BF16" or "F32" or "F64" or "Bool" or "Void" or "Ptr" or "Addr" or "Array"
         || _c.FindRecord(name, _env.File, default) is not null || _c.FindChoice(name, _env.File, default) is not null;
 
     private void BindExplicit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, Pos pos)

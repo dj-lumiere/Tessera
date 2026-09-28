@@ -306,10 +306,11 @@ public sealed partial class Compiler
             case "F64": NoArgs(); return FloatType.F64;
             case "Bool": NoArgs(); return BoolType.Instance;
             case "Void": NoArgs(); return VoidType.Instance;
+            case "Addr": NoArgs(); return new PtrType(null);
             case "Ptr":
                 return t.Args switch
                 {
-                    [] => new PtrType(null),
+                    [] => throw new CompileError(t.Pos, "a pointer without a pointee type is spelled Addr"),
                     [TypeArgType inner] => new PtrType(ResolveType(inner.Type, env)),
                     _ => throw new CompileError(t.Pos, "Ptr takes one type argument"),
                 };
