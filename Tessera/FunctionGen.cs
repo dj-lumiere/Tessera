@@ -58,11 +58,7 @@ public sealed class FunctionGen
 
     public void Emit()
     {
-        var blocks = _decl.Blocks!;
-        if (blocks[0].Name != "entry")
-            throw Err(blocks[0].Pos, "the first block of a routine must be 'entry'");
-        if (blocks[0].Params.Count != 0)
-            throw Err(blocks[0].Pos, "the entry block takes no parameters");
+        var blocks = _decl.Blocks!;   // the parser guarantees a leading `block entry():`
 
         for (int i = 0; i < _decl.Params.Count; i++)
         {
@@ -324,7 +320,15 @@ public sealed class FunctionGen
         var fields = _c.Fields(s);
         int i = fields.FindIndex(f => f.Name == name);
         if (i < 0) throw Err(pos, $"{s} has no field '{name}'");
+        CheckFieldVisible(s, s.Decl.Fields[i], pos);
         return (i, fields[i].Type);
+    }
+
+    /// A `private` field is read, written, and given in a record literal only in the record's own file.
+    private void CheckFieldVisible(RecordType s, FieldDecl field, Pos pos)
+    {
+        if (field.IsPrivate && s.Decl.File != _env.File)
+            throw Err(pos, $"field '{field.Name}' of {s} is private to {s.Decl.File}");
     }
 
     /// Emits the address of a place chain and returns it with the type stored there.
@@ -614,6 +618,7 @@ public sealed class FunctionGen
         foreach (var (name, value, pos) in lit.Fields)
         {
             if (fields.All(f => f.Name != name)) throw Err(pos, $"{s} has no field '{name}'");
+            CheckFieldVisible(s, s.Decl.Fields.First(f => f.Name == name), pos);
             if (!given.TryAdd(name, value)) throw Err(pos, $"field '{name}' is given twice");
         }
         var missing = fields.Where(f => !given.ContainsKey(f.Name)).Select(f => f.Name).ToList();

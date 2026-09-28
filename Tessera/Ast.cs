@@ -45,6 +45,8 @@ public abstract record Decl(string File, List<Attribute> Attributes, Pos Pos)
     public Attribute? Attr(string name) => Attributes.FirstOrDefault(a => a.Name == name);
     /// True for declarations loaded from the standard library, which are checked only when used.
     public bool IsLibrary { get; init; }
+    /// `private`: visible only in the declaring file.
+    public bool IsPrivate { get; init; }
 }
 
 public sealed record RoutineDecl(
@@ -62,7 +64,7 @@ public sealed record RoutineDecl(
     public string DisplayName => Owner is null ? Name : $"{Owner}.{Name}";
 }
 
-public sealed record FieldDecl(string Name, TypeRef Type, List<Attribute> Attributes, Pos Pos)
+public sealed record FieldDecl(string Name, TypeRef Type, List<Attribute> Attributes, Pos Pos, bool IsPrivate = false)
 {
     public Attribute? Attr(string name) => Attributes.FirstOrDefault(a => a.Name == name);
 }

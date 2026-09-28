@@ -176,6 +176,11 @@ public sealed partial class Compiler
     private static T? Pick<T>(List<T>? candidates, string file, Pos pos, string what) where T : Decl
     {
         if (candidates is null || candidates.Count == 0) return null;
+        // A `private` declaration is visible only in its own file.
+        var visible = candidates.Where(c => !c.IsPrivate || c.File == file).ToList();
+        if (visible.Count == 0)
+            throw new CompileError(pos, $"{what} is private to {candidates[0].File}");
+        candidates = visible;
         if (candidates.Count == 1) return candidates[0];
         var local = candidates.Where(c => c.File == file).ToList();
         if (local.Count == 1) return local[0];

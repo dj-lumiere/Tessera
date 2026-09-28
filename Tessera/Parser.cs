@@ -20,6 +20,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         while (Cur.Kind != TokenKind.Eof)
         {
             var attrs = ParseAttributes();
+            bool isPrivate = IsIdent("private");
+            if (isPrivate) Next();
             if (Cur.Kind != TokenKind.Ident || !DeclKeywords.Contains(Cur.Text))
                 throw Error($"expected a declaration (routine, record, choice, const, concept), found {Describe(Cur)}");
             Decl d = Cur.Text switch
@@ -30,7 +32,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 "const" => ParseConst(attrs),
                 _ => ParseConcept(attrs),
             };
-            decls.Add(d with { IsLibrary = isLibrary });
+            decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate });
             SkipNewlines();
         }
         return new Module(decls);
@@ -93,7 +95,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     /// True at the start of the next top-level declaration (or the end of the file).
     private bool AtDeclStart() =>
-        Is(TokenKind.Eof) || Is(TokenKind.At) || (Cur.Kind == TokenKind.Ident && DeclKeywords.Contains(Cur.Text));
+        Is(TokenKind.Eof) || Is(TokenKind.At)
+        || (Cur.Kind == TokenKind.Ident && (DeclKeywords.Contains(Cur.Text) || Cur.Text == "private"));
 
     // ── Attributes and clauses ──────────────────────────────────────────────
 
@@ -203,11 +206,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ExpectLineEnd();
         var clauses = ParseClauses();
 
-        if (inConcept || !IsIdent("block"))
+        if (inConcept)
             return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos);
+
+        // Only an @external routine is declared without a body; every other one starts with `block entry():`.
+        string display = owner is null ? name : $"{owner}.{name}";
+        if (!IsIdent("block"))
+        {
+            if (attrs.Any(a => a.Name == "external"))
+                return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos);
+            throw new CompileError(pos, $"routine '{display}' has no body: it needs a 'block entry():'");
+        }
 
         var blocks = new List<BlockDecl>();
         while (IsIdent("block")) blocks.Add(ParseBlock());
+        if (blocks[0].Name != "entry")
+            throw new CompileError(blocks[0].Pos, $"the first block of routine '{display}' must be 'entry'");
+        if (blocks[0].Params.Count != 0)
+            throw new CompileError(blocks[0].Pos, "the entry block takes no parameters");
         return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, blocks, pos);
     }
 
@@ -223,23 +239,21 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var fields = new List<FieldDecl>();
         while (true)
         {
-            // Attributes belong to the next field when a field follows them, and to the next declaration otherwise.
-            var fieldAttrs = new List<Attribute>();
-            if (Is(TokenKind.At))
+            // Attributes and `private` belong to the next field when a field follows them, and to the next
+            // declaration otherwise.
+            int start = _i;
+            var fieldAttrs = ParseAttributes();
+            bool isPrivate = IsIdent("private") && PeekTok(1).Kind == TokenKind.Ident;
+            if (isPrivate) Next();
+            if (!(Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.Colon))
             {
-                int start = _i;
-                fieldAttrs = ParseAttributes();
-                if (!(Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.Colon))
-                {
-                    _i = start;
-                    break;
-                }
+                _i = start;
+                if (fieldAttrs.Count > 0 || isPrivate || AtDeclStart()) break;
             }
-            else if (AtDeclStart()) break;
 
             var f = Expect(TokenKind.Ident, "a field name");
             Expect(TokenKind.Colon, "':' after the field name");
-            fields.Add(new FieldDecl(f.Text, ParseType(), fieldAttrs, f.Pos));
+            fields.Add(new FieldDecl(f.Text, ParseType(), fieldAttrs, f.Pos, isPrivate));
             ExpectLineEnd();
         }
         return new RecordDecl(file, attrs, name.Text, typeParams, clauses, fields, pos);

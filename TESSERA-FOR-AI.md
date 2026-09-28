@@ -56,7 +56,8 @@ routine main() -> S32
 
 **Blocks and control flow**
 
-- A routine body is a list of blocks. The first is `block entry():`.
+- A routine body is a list of blocks. The first is `block entry():`, and a routine without blocks must be
+  `@external`.
 - **A block sees only the routine's parameters, its own parameters, and values it defines.** Anything else must be
   passed as a block argument. This is the most common error.
 - Every block ends with exactly one terminator: `jump b(...)`, `branch %c ? a(...) : b(...)`, `select:`,
@@ -112,6 +113,9 @@ routine main() -> S32
 - Expected failures return `Result<T, E>`. There's no `?`: check `%r.tag` and branch.
 
 **Records**
+
+- `private` before a declaration or a record field hides it from other files (`private routine helper(...)`,
+  `private count: U64`). Inside the declaring file it's used as usual.
 
 - A record with exactly one field has the same representation as that field (`F128` is an `i128`). Mark it
   `@aggregate` to keep it a one-member struct; `@aligned` on a one-field record needs `@aggregate`.
