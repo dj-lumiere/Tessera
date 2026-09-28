@@ -241,9 +241,9 @@ releases storage. Out-of-range access, `pop` on empty, and `get` of a missing ke
 | `CircularList<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `get`, `set` | front to back |
 | `Dict<K, V>` | `put`, `get`, `contains`, `remove` | **insertion order (guaranteed)** |
 | `Set<T>` | `add`, `contains`, `remove` | **insertion order (guaranteed)** |
-| `SortedDict<K, V>` | `put`, `get`, `contains`, `remove`, `key_order(rank)`, `get_order(rank)` | ascending key |
-| `SortedSet<T>` | `add`, `contains`, `remove`, `get_order(rank)` | ascending |
-| `SortedList<T>` | `push`, `insert(i, v)`, `get`, `set`, `remove(i)` | index |
+| `SortedDict<K, V>` | `put`, `get`, `contains`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
+| `SortedSet<T>` | `add`, `contains`, `remove`, `get_by_rank(rank)` | ascending |
+| `SortedList<T>` | `push`, `insert(i, v)`, `get` / `get_by_rank`, `set`, `remove(i)` | index |
 | `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Priority<T>`) | none |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and

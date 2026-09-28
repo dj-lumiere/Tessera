@@ -162,15 +162,15 @@ require K: typename, V: typename, Compare<K>, Equal<V>
         branch %done ? return(true) : step(%i, %len)
 
     block step(%i: U64, %len: U64):
-        %ka   : K    = #self.key_order(%i)
-        %kb   : K    = #other.key_order(%i)
+        %ka   : K    = #self.get_by_rank(%i).key
+        %kb   : K    = #other.get_by_rank(%i).key
         %cmp  : S32  = %ka.compare(%kb)
         %k_eq : Bool = %cmp.eq(0)
         branch %k_eq ? compare_value(%i, %len) : return(false)
 
     block compare_value(%i: U64, %len: U64):
-        %va   : V    = #self.get_order(%i)
-        %vb   : V    = #other.get_order(%i)
+        %va   : V    = #self.get_by_rank(%i).value
+        %vb   : V    = #other.get_by_rank(%i).value
         %v_eq : Bool = %va.eq(%vb)
         branch %v_eq ? loop(%i.add(1), %len) : return(false)
 
@@ -201,105 +201,82 @@ require K: typename, V: typename
         #child : Ptr<SortedDictNode<K, V>> = #node.children.get(%i)
         jump search(#child, %key)
 
-routine SortedDict<K, V>.get_order(#self: Ptr<Self>, %order: U64) -> V
+/// Where the entry of a rank lives: its node and its index there.
+private record SortedDictSpot<K, V>
+require K: typename, V: typename
+    node  : Ptr<SortedDictNode<K, V>>
+    index : U64
+
+/// The node and index of the %rank-th smallest key. Traps if %rank >= length.
+private routine SortedDict<K, V>.locate_rank(#self: Ptr<Self>, %rank: U64) -> SortedDictSpot<K, V>
 require K: typename, V: typename
     block entry():
         %length    : U64  = #self.length.load()
-        %in_bounds : Bool = %order.lt(%length)
-        branch %in_bounds ? select_root(%order) : panic(TrapCode.Bounds)
+        %in_bounds : Bool = %rank.lt(%length)
+        branch %in_bounds ? select_root(%rank) : panic(TrapCode.Bounds)
 
-    block select_root(%order: U64):
+    block select_root(%rank: U64):
         #root : Ptr<SortedDictNode<K, V>> = #self.root.load()
-        jump select_node(#root, %order)
+        jump select_node(#root, %rank)
 
-    block select_node(#node: Ptr<SortedDictNode<K, V>>, %order: U64):
-        jump scan(#node, %order, 0)
+    block select_node(#node: Ptr<SortedDictNode<K, V>>, %rank: U64):
+        jump scan(#node, %rank, 0)
 
-    block scan(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
+    block scan(#node: Ptr<SortedDictNode<K, V>>, %rank: U64, %i: U64):
         %length : U64  = #node.length.load()
         %done   : Bool = %i.ge(%length)
-        branch %done ? last_child(#node, %order, %i) : check_child(#node, %order, %i)
+        branch %done ? last_child(#node, %rank, %i) : check_child(#node, %rank, %i)
 
-    block check_child(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
+    block check_child(#node: Ptr<SortedDictNode<K, V>>, %rank: U64, %i: U64):
         %leaf : Bool = #node.leaf.load()
-        branch %leaf ? leaf_key(#node, %order, %i) : internal_child(#node, %order, %i)
+        branch %leaf ? leaf_key(#node, %rank, %i) : internal_child(#node, %rank, %i)
 
-    block leaf_key(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
-        %match : Bool = %order.eq(%i)
-        branch %match ? load_order(#node, %i) : scan(#node, %order, %i.add(1))
+    block leaf_key(#node: Ptr<SortedDictNode<K, V>>, %rank: U64, %i: U64):
+        %match : Bool = %rank.eq(%i)
+        branch %match ? found(#node, %i) : scan(#node, %rank, %i.add(1))
 
-    block internal_child(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
+    block internal_child(#node: Ptr<SortedDictNode<K, V>>, %rank: U64, %i: U64):
         #child       : Ptr<SortedDictNode<K, V>> = #node.children.get(%i)
         %child_count : U64                       = #child.count()
-        %in_child    : Bool                      = %order.lt(%child_count)
-        branch %in_child ? select_node(#child, %order) : check_key(#node, %order, %i, %child_count)
+        %in_child    : Bool                      = %rank.lt(%child_count)
+        branch %in_child ? select_node(#child, %rank) : check_key(#node, %rank, %i, %child_count)
 
-    block check_key(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64, %child_count: U64):
-        %after_child : U64  = %order.sub(%child_count)
+    block check_key(#node: Ptr<SortedDictNode<K, V>>, %rank: U64, %i: U64, %child_count: U64):
+        %after_child : U64  = %rank.sub(%child_count)
         %is_key      : Bool = %after_child.eq(0)
-        branch %is_key ? load_order(#node, %i) : scan(#node, %after_child.sub(1), %i.add(1))
+        branch %is_key ? found(#node, %i) : scan(#node, %after_child.sub(1), %i.add(1))
 
-    block last_child(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
+    block last_child(#node: Ptr<SortedDictNode<K, V>>, %rank: U64, %i: U64):
         %leaf : Bool = #node.leaf.load()
-        branch %leaf ? panic(TrapCode.Unreachable) : descend_last(#node, %order, %i)
+        branch %leaf ? panic(TrapCode.Unreachable) : descend_last(#node, %rank, %i)
 
-    block descend_last(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
+    block descend_last(#node: Ptr<SortedDictNode<K, V>>, %rank: U64, %i: U64):
         #child : Ptr<SortedDictNode<K, V>> = #node.children.get(%i)
-        jump select_node(#child, %order)
+        jump select_node(#child, %rank)
 
-    block load_order(#node: Ptr<SortedDictNode<K, V>>, %i: U64):
-        %value : V = #node.values.get(%i)
-        return(%value)
+    block found(#node: Ptr<SortedDictNode<K, V>>, %i: U64):
+        return(SortedDictSpot<K, V> { node: #node, index: %i })
 
-routine SortedDict<K, V>.key_order(#self: Ptr<Self>, %order: U64) -> K
+/// The %rank-th smallest key and its value, copied (0 is the smallest). Traps if %rank >= length. A copy, because
+/// writing a key through a pointer would break the order.
+routine SortedDict<K, V>.get_by_rank(#self: Ptr<Self>, %rank: U64) -> KVPair<K, V>
 require K: typename, V: typename
     block entry():
-        %length    : U64  = #self.length.load()
-        %in_bounds : Bool = %order.lt(%length)
-        branch %in_bounds ? select_root(%order) : panic(TrapCode.Bounds)
+        %spot  : SortedDictSpot<K, V>      = #self.locate_rank(%rank)
+        #node  : Ptr<SortedDictNode<K, V>> = %spot.node
+        %key   : K                         = #node.keys.get(%spot.index)
+        %value : V                         = #node.values.get(%spot.index)
+        return(KVPair<K, V> { key: %key, value: %value })
 
-    block select_root(%order: U64):
-        #root : Ptr<SortedDictNode<K, V>> = #self.root.load()
-        jump select_node(#root, %order)
-
-    block select_node(#node: Ptr<SortedDictNode<K, V>>, %order: U64):
-        jump scan(#node, %order, 0)
-
-    block scan(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
-        %length : U64  = #node.length.load()
-        %done   : Bool = %i.ge(%length)
-        branch %done ? last_child(#node, %order, %i) : check_child(#node, %order, %i)
-
-    block check_child(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
-        %leaf : Bool = #node.leaf.load()
-        branch %leaf ? leaf_key(#node, %order, %i) : internal_child(#node, %order, %i)
-
-    block leaf_key(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
-        %match : Bool = %order.eq(%i)
-        branch %match ? load_key(#node, %i) : scan(#node, %order, %i.add(1))
-
-    block internal_child(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
-        #child       : Ptr<SortedDictNode<K, V>> = #node.children.get(%i)
-        %child_count : U64                       = #child.count()
-        %in_child    : Bool                      = %order.lt(%child_count)
-        branch %in_child ? select_node(#child, %order) : check_key(#node, %order, %i, %child_count)
-
-    block check_key(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64, %child_count: U64):
-        %after_child : U64  = %order.sub(%child_count)
-        %is_key      : Bool = %after_child.eq(0)
-        branch %is_key ? load_key(#node, %i) : scan(#node, %after_child.sub(1), %i.add(1))
-
-    block last_child(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
-        %leaf : Bool = #node.leaf.load()
-        branch %leaf ? panic(TrapCode.Unreachable) : descend_last(#node, %order, %i)
-
-    block descend_last(#node: Ptr<SortedDictNode<K, V>>, %order: U64, %i: U64):
-        #child : Ptr<SortedDictNode<K, V>> = #node.children.get(%i)
-        jump select_node(#child, %order)
-
-    block load_key(#node: Ptr<SortedDictNode<K, V>>, %i: U64):
-        %key : K = #node.keys.get(%i)
-        return(%key)
+/// A pointer to the value of the %rank-th smallest key, to change it in place. Traps if %rank >= length. Valid until
+/// the next put or remove.
+routine SortedDict<K, V>.value_ptr_by_rank(#self: Ptr<Self>, %rank: U64) -> Ptr<V>
+require K: typename, V: typename
+    block entry():
+        %spot  : SortedDictSpot<K, V>      = #self.locate_rank(%rank)
+        #node  : Ptr<SortedDictNode<K, V>> = %spot.node
+        #value : Ptr<V>                    = #node.values.to_ptr()[%spot.index]
+        return(#value)
 
 routine SortedDictNode<K, V>.split_child(#self: Ptr<Self>, %index: U64,
         #alloc: Ptr<Allocator>) -> Void

@@ -129,8 +129,8 @@ require T: typename, Compare<T>
         branch %done ? return(true) : step(%i, %len)
 
     block step(%i: U64, %len: U64):
-        %x   : T    = #self.get_order(%i)
-        %y   : T    = #other.get_order(%i)
+        %x   : T    = #self.get_by_rank(%i)
+        %y   : T    = #other.get_by_rank(%i)
         %cmp : S32  = %x.compare(%y)
         %eq  : Bool = %cmp.eq(0)
         branch %eq ? loop(%i.add(1), %len) : return(false)
@@ -162,51 +162,52 @@ require T: typename
         #child : Ptr<SortedSetNode<T>> = #node.children.get(%i)
         jump search(#child, %key)
 
-routine SortedSet<T>.get_order(#self: Ptr<Self>, %order: U64) -> T
+/// The %rank-th smallest element (0 is the smallest). Traps if %rank >= length.
+routine SortedSet<T>.get_by_rank(#self: Ptr<Self>, %rank: U64) -> T
 require T: typename
     block entry():
         %length    : U64  = #self.length.load()
-        %in_bounds : Bool = %order.lt(%length)
-        branch %in_bounds ? select_root(%order) : panic(TrapCode.Bounds)
+        %in_bounds : Bool = %rank.lt(%length)
+        branch %in_bounds ? select_root(%rank) : panic(TrapCode.Bounds)
 
-    block select_root(%order: U64):
+    block select_root(%rank: U64):
         #root : Ptr<SortedSetNode<T>> = #self.root.load()
-        jump select_node(#root, %order)
+        jump select_node(#root, %rank)
 
-    block select_node(#node: Ptr<SortedSetNode<T>>, %order: U64):
-        jump scan(#node, %order, 0)
+    block select_node(#node: Ptr<SortedSetNode<T>>, %rank: U64):
+        jump scan(#node, %rank, 0)
 
-    block scan(#node: Ptr<SortedSetNode<T>>, %order: U64, %i: U64):
+    block scan(#node: Ptr<SortedSetNode<T>>, %rank: U64, %i: U64):
         %length : U64  = #node.length.load()
         %done   : Bool = %i.ge(%length)
-        branch %done ? last_child(#node, %order, %i) : check_child(#node, %order, %i)
+        branch %done ? last_child(#node, %rank, %i) : check_child(#node, %rank, %i)
 
-    block check_child(#node: Ptr<SortedSetNode<T>>, %order: U64, %i: U64):
+    block check_child(#node: Ptr<SortedSetNode<T>>, %rank: U64, %i: U64):
         %leaf : Bool = #node.leaf.load()
-        branch %leaf ? leaf_key(#node, %order, %i) : internal_child(#node, %order, %i)
+        branch %leaf ? leaf_key(#node, %rank, %i) : internal_child(#node, %rank, %i)
 
-    block leaf_key(#node: Ptr<SortedSetNode<T>>, %order: U64, %i: U64):
-        %match : Bool = %order.eq(%i)
-        branch %match ? load_key(#node, %i) : scan(#node, %order, %i.add(1))
+    block leaf_key(#node: Ptr<SortedSetNode<T>>, %rank: U64, %i: U64):
+        %match : Bool = %rank.eq(%i)
+        branch %match ? load_key(#node, %i) : scan(#node, %rank, %i.add(1))
 
-    block internal_child(#node: Ptr<SortedSetNode<T>>, %order: U64, %i: U64):
+    block internal_child(#node: Ptr<SortedSetNode<T>>, %rank: U64, %i: U64):
         #child       : Ptr<SortedSetNode<T>> = #node.children.get(%i)
         %child_count : U64                   = #child.count()
-        %in_child    : Bool                  = %order.lt(%child_count)
-        branch %in_child ? select_node(#child, %order) : check_key(#node, %order, %i, %child_count)
+        %in_child    : Bool                  = %rank.lt(%child_count)
+        branch %in_child ? select_node(#child, %rank) : check_key(#node, %rank, %i, %child_count)
 
-    block check_key(#node: Ptr<SortedSetNode<T>>, %order: U64, %i: U64, %child_count: U64):
-        %after_child : U64  = %order.sub(%child_count)
+    block check_key(#node: Ptr<SortedSetNode<T>>, %rank: U64, %i: U64, %child_count: U64):
+        %after_child : U64  = %rank.sub(%child_count)
         %is_key      : Bool = %after_child.eq(0)
         branch %is_key ? load_key(#node, %i) : scan(#node, %after_child.sub(1), %i.add(1))
 
-    block last_child(#node: Ptr<SortedSetNode<T>>, %order: U64, %i: U64):
+    block last_child(#node: Ptr<SortedSetNode<T>>, %rank: U64, %i: U64):
         %leaf : Bool = #node.leaf.load()
-        branch %leaf ? panic(TrapCode.Unreachable) : descend_last(#node, %order, %i)
+        branch %leaf ? panic(TrapCode.Unreachable) : descend_last(#node, %rank, %i)
 
-    block descend_last(#node: Ptr<SortedSetNode<T>>, %order: U64, %i: U64):
+    block descend_last(#node: Ptr<SortedSetNode<T>>, %rank: U64, %i: U64):
         #child : Ptr<SortedSetNode<T>> = #node.children.get(%i)
-        jump select_node(#child, %order)
+        jump select_node(#child, %rank)
 
     block load_key(#node: Ptr<SortedSetNode<T>>, %i: U64):
         %key : T = #node.keys.get(%i)
