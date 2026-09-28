@@ -75,6 +75,6 @@ fn main() {
   `return(%x.to_s32())` inline (Roadmap #12).
 - **Friction:**
   - The stdlib shares one global namespace with the program, so a Mini function named like a stdlib routine
-    (`print_f`) would collide. Modules (Roadmap #6) would fix that.
+    (`print`) would collide. Modules (Roadmap #6) would fix that.
   - There's no way to point a panic in generated code back at the `.mini` line that produced it. The spelling
     `@source("file", line, column)` is decided; where it attaches is open (Roadmap #40).

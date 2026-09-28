@@ -36,7 +36,7 @@ public sealed class CompileError(Pos pos, string message) : Exception($"{pos}: e
 
 /// Turns source text into tokens. Layout is not significant beyond newlines: a newline ends a statement unless it
 /// is inside (), [], {} or follows a trailing backslash. Consecutive newlines collapse into one token.
-/// `line` and `col` place `src` inside a larger file (the expressions in a `write_f` string).
+/// `line` and `col` place `src` inside a larger file (the expressions in a `write` string).
 public sealed class Lexer(string file, string src, int line = 1, int col = 1)
 {
     /// The widest integer types are S256 and U256, so a literal's magnitude is at most 2^256 - 1.

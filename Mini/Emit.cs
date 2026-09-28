@@ -248,9 +248,9 @@ public sealed class Emitter
                 case Print p:
                     // A value or a chain goes in braces; a literal is already text.
                     string shown = IsSimple(p.Value) ? Operand(p.Value) : Chain(p.Value, lazy: false);
-                    Line($"print_f(\"{(IsLiteralText(shown) ? shown : $"{{{shown}}}")}\\n\")");
+                    Line($"print(\"{(IsLiteralText(shown) ? shown : $"{{{shown}}}")}\\n\")");
                     break;
-                case PrintStr p: Line($"print_f(\"{TemplateText(p.Text)}\\n\")"); break;
+                case PrintStr p: Line($"print(\"{TemplateText(p.Text)}\\n\")"); break;
                 case ExprStmt { Value: Call c }: Line(Chain(c, lazy: false)); break;
                 case ExprStmt x: Operand(x.Value); break;   // evaluated for its panics, like a + b overflowing
             }
@@ -393,7 +393,7 @@ public sealed class Emitter
             return $"{left}.{Method(b.Op)}({right})";
         }
 
-        /// Mini text inside a Tessera `print_f` string: braces are doubled and backslashes escaped.
+        /// Mini text inside a Tessera `print` string: braces are doubled and backslashes escaped.
         private static string TemplateText(string text) =>
             text.Replace("\\", "\\\\").Replace("{", "{{").Replace("}", "}}");
 

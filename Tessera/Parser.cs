@@ -112,7 +112,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         while (Is(TokenKind.Newline)) Next();
     }
 
-    /// One expression and nothing after it: the inside of a `{...}` in a `write_f` string.
+    /// One expression and nothing after it: the inside of a `{...}` in a `write` string.
     public Expr ParseLoneExpr()
     {
         SkipNewlines();

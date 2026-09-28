@@ -402,7 +402,7 @@ public sealed class FunctionGen
                 return InferPresetRef(r);
             case NsCallExpr n when ArrayFrom(n) is { } from:
                 return from.Type;
-            case CallExpr wf when IsWriteF(wf):
+            case CallExpr wf when IsTemplateCall(wf):
                 return VoidType.Instance;
             case CallExpr or NsCallExpr or MethodCallExpr:
                 return InferCall(e, null);
@@ -470,7 +470,7 @@ public sealed class FunctionGen
             ImplicitCallExpr { Name: "from", TypeArgs.Count: 0, Args: [ArrayLit lit] } when expected is ArrayType at =>
                 EvalArrayLit(lit, at),
             ImplicitCallExpr => EvalCall(e, expected),
-            CallExpr wf when IsWriteF(wf) => EvalWriteF(wf),
+            CallExpr wf when IsTemplateCall(wf) => EvalTemplateCall(wf),
             PresetRef r => EvalPresetRef(r, expected),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),
             _ => throw new InvalidOperationException(e.GetType().Name),
@@ -549,18 +549,18 @@ public sealed class FunctionGen
 
     private static readonly Dictionary<string, string?> FormatCalls = new()
     {
-        ["write_f"] = null, ["print_f"] = "StdoutWriter", ["eprint_f"] = "StderrWriter",
+        ["write"] = null, ["print"] = "StdoutWriter", ["eprint"] = "StderrWriter",
     };
 
-    /// `write_f`, `print_f`, and `eprint_f`, unless the program declares a routine by that name.
-    private bool IsWriteF(CallExpr c) =>
+    /// `write`, `print`, and `eprint`, unless the program declares a routine by that name.
+    private bool IsTemplateCall(CallExpr c) =>
         FormatCalls.ContainsKey(c.Name) && _c.FindFree(c.Name, _env.File, c.Pos) is null;
 
-    /// `write_f(#out, "x = {%x}\n")` expands in place, in order: `write_str(#out, "x = ")`, `%x.format(#out)`,
+    /// `write(#out, "x = {%x}\n")` expands in place, in order: `write_str(#out, "x = ")`, `%x.format(#out)`,
     /// `write_str(#out, "\n")`. A brace holds one expression; `{{` and `}}` are literal braces. Nothing is
-    /// allocated: each piece goes straight to the writer. `print_f("...")` / `eprint_f("...")` are the same with
+    /// allocated: each piece goes straight to the writer. `print("...")` / `eprint("...")` are the same with
     /// the stateless `StdoutWriter.shared()` / `StderrWriter.shared()` as the writer.
-    private Val EvalWriteF(CallExpr c)
+    private Val EvalTemplateCall(CallExpr c)
     {
         Expr writer;
         StrLit template;
@@ -577,7 +577,7 @@ public sealed class FunctionGen
             template = given;
         }
         else
-            throw Err(c.Pos, "write_f takes a named writer and a string literal: write_f(#out, \"x = {%x}\\n\")");
+            throw Err(c.Pos, "write takes a named writer and a string literal: write(#out, \"x = {%x}\\n\")");
         var text = new StringBuilder();
         void Flush()
         {
@@ -597,14 +597,14 @@ public sealed class FunctionGen
                 i++;
                 continue;
             }
-            if (ch == '}') throw Err(template.Pos, "a '}' in a write_f string is written '}}'");
+            if (ch == '}') throw Err(template.Pos, "a '}' in a write or print string is written '}}'");
             if (ch != '{')
             {
                 text.Append(ch);
                 continue;
             }
             int end = s.IndexOf('}', i + 1);
-            if (end < 0) throw Err(template.Pos, "a '{' in a write_f string is never closed; a literal brace is '{{'");
+            if (end < 0) throw Err(template.Pos, "a '{' in a write or print string is never closed; a literal brace is '{{'");
             string source = s[(i + 1)..end];
             if (string.IsNullOrWhiteSpace(source)) throw Err(template.Pos, "'{}' holds no expression; a literal brace is '{{'");
             var at = new Pos(template.Pos.File, template.Pos.Line, template.Pos.Col + 2 + i);

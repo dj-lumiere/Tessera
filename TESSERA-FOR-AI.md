@@ -216,9 +216,9 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
 - `write_str(#out, "text")`, `write_line(#out)`, `%v.format(#out)` for every integer, float, `Bool`, and `String`,
   and `#p.format(#out)` for a pointer's address (`0x7ffd5e8c1a40`); `format_hex`, `format_fixed(#out, %digits)`;
   `format_with(#out, %v, %spec)` with a `FormatSpec`.
-- `write_f(#out, "x = {%x}\n")` writes text and values in one line: it expands at compile time into
+- `write(#out, "x = {%x}\n")` writes text and values in one line: it expands at compile time into
   `write_str` / `.format` calls, a brace holds one expression (loads and chains allowed), `{{` is a literal brace,
-  and there are no format options. `print_f("...")` / `eprint_f("...")` do the same on stdout / stderr without
+  and there are no format options. `print("...")` / `eprint("...")` do the same on stdout / stderr without
   setting up a writer. The old `println_slice` / `print_int` helpers are gone.
 
 ## Collections
