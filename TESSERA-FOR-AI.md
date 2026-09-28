@@ -205,10 +205,11 @@ routine parse_or_zero(%text: String) -> F64
 Format through `stdlib/format.tess`, not printf. printf is for C interop demos only: it can't print `S128`, `F16`,
 `BF16`, or `F128`, and a mismatched format is undefined behavior.
 
-- Writers: `FdWriter.stdout()` / `.stderr()` (unbuffered), `BufWriter<W>` (`init(#inner)`, then `flush()`),
-  `SliceWriter` (into a caller buffer).
-- `write_str(#out, "text")`, `write_line(#out)`, `%v.format(#out)` for every integer, float, `Bool`, and `String`;
-  `format_hex`, `format_fixed(#out, %digits)`; `format_with(#out, %v, %spec)` with a `FormatSpec`.
+- Writers: `FdWriter.stdout()` / `.stderr()` (unbuffered), `BufWriter<W>` (`#out.construct(#inner)`, then
+  `flush()`), `SliceWriter` (into a caller buffer).
+- `write_str(#out, "text")`, `write_line(#out)`, `%v.format(#out)` for every integer, float, `Bool`, and `String`,
+  and `#p.format(#out)` for a pointer's address (`0x7ffd5e8c1a40`); `format_hex`, `format_fixed(#out, %digits)`;
+  `format_with(#out, %v, %spec)` with a `FormatSpec`.
 - Quick one-offs: `println_slice("text")`, `print_int(%n)` (S64), `print_uint(%n)` (U64) from `stdlib/io.tess`.
 
 ## Collections

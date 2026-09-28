@@ -225,7 +225,10 @@ public sealed partial class Compiler
                 throw new CompileError(conf.Source.Pos, $"{claim}: {where} takes {method.TypeParams.Count} type parameter(s); the concept wants {req.TypeParams.Count}");
             for (int i = 0; i < req.Params.Count; i++)
             {
-                if (req.Params[i].Name[0] != method.Params[i].Name[0])
+                // The sigil follows the type: where the concept writes `%self: Self`, a pointer type (Ptr<T>, Addr)
+                // has `#self: Self`.
+                bool selfIsPointer = req.Params[i].Type.Name == "Self" && owner is PtrType;
+                if (req.Params[i].Name[0] != method.Params[i].Name[0] && !selfIsPointer)
                     throw new CompileError(conf.Source.Pos, $"{claim}: parameter {i + 1} of {where} is {method.Params[i].Name[0]}-valued; the concept wants {req.Params[i].Name[0]}");
                 if (ownTypeParams) continue;
                 var want = ResolveType(req.Params[i].Type, renv);
