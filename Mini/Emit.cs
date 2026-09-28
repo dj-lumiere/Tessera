@@ -116,7 +116,9 @@ public sealed class Emitter
         string ps = string.Join(", ", f.Params.Select(p => $"%{p}: S64"));
         _out.Append($"routine {f.Name}({ps}) -> {(isMain ? "S32" : "S64")}\n");
         _folds = Foldable(cfg, isMain);
+        _continued = Continued(cfg, isMain);
         var emitted = Emitted(cfg, isMain);
+        emitted.ExceptWith(_continued);
         bool first = true;
         foreach (var b in cfg.Blocks.Where(emitted.Contains))
         {
@@ -193,6 +195,38 @@ public sealed class Emitter
         return uses.SequenceEqual(computed);
     }
 
+    // ── Guards ──────────────────────────────────────────────────────────────
+    //
+    // When one side of a condition returns and the other reaches a block nothing else reaches, that block's code is
+    // written right after `branch c ? return(...) : continue`: the lines see every value above, so the block and
+    // its parameters disappear.
+
+    private HashSet<BasicBlock> _continued = [];
+
+    private HashSet<BasicBlock> Continued(Cfg cfg, bool isMain)
+    {
+        var preds = new Dictionary<BasicBlock, int>();
+        foreach (var b in cfg.Blocks)
+            foreach (var s in b.Successors)
+                preds[s] = preds.GetValueOrDefault(s) + 1;
+        var result = new HashSet<BasicBlock>();
+        foreach (var b in cfg.Blocks)
+            if (b.Term is CondGoto c && ContinueTarget(c, b, preds, isMain) is { } next)
+                result.Add(next);
+        return result;
+    }
+
+    /// The block a guard goes on into, if `c` is a guard: one side returns, the other reaches a block with no other
+    /// way in.
+    private BasicBlock? ContinueTarget(CondGoto c, BasicBlock from, Dictionary<BasicBlock, int> preds, bool isMain)
+    {
+        foreach (var (leave, stay) in new[] { (c.IfTrue, c.IfFalse), (c.IfFalse, c.IfTrue) })
+            if (Landing(leave, isMain) is null && stay != from && preds.GetValueOrDefault(stay) == 1
+                && !Skips(stay, isMain) && stay.Name != "entry")
+                return stay;
+        return null;
+    }
+
     private bool Skips(BasicBlock b, bool isMain) => PassesThrough(b, isMain) || _folds.Contains(b);
 
     private static bool PassesThrough(BasicBlock b, bool isMain) =>
@@ -207,7 +241,7 @@ public sealed class Emitter
         };
 
     /// Where an edge into `b` really lands: the first block that isn't a pass-through, or null for a return.
-    private BasicBlock? Landing(BasicBlock b, bool isMain)
+    internal BasicBlock? Landing(BasicBlock b, bool isMain)
     {
         for (int hops = 0; Skips(b, isMain); hops++)
         {
@@ -252,9 +286,32 @@ public sealed class Emitter
                 _env[p] = $"%{p}";
                 _bound.Add(p);
             }
-            foreach (var s in block.Code) Statement(s);
-            Terminator(block.Term!);
+            // a guard goes on with the next block's code in this one
+            for (var current = block; ; )
+            {
+                foreach (var s in current.Code) Statement(s);
+                if (current.Term is CondGoto c && e._continued.Contains(c.IfFalse) && Landing(c.IfTrue))
+                {
+                    Line($"branch {Condition(c.Cond)} ? {Edge(c.IfTrue, _env)} : continue");
+                    current = c.IfFalse;
+                    continue;
+                }
+                if (current.Term is CondGoto d && e._continued.Contains(d.IfTrue) && Landing(d.IfFalse))
+                {
+                    Line($"branch {Condition(d.Cond)} ? continue : {Edge(d.IfFalse, _env)}");
+                    current = d.IfTrue;
+                    continue;
+                }
+                Terminator(current.Term!);
+                break;
+            }
         }
+
+        /// Whether an edge into `target` ends in a return (so the other side of a guard can go on).
+        private bool Landing(BasicBlock target) => e.Landing(target, isMain) is null;
+
+        private string Condition(Expr cond) =>
+            IsChain(cond) && cond is not (IntLit or BoolLit or Var) ? Chain(cond, lazy: false) : Value(cond, "condition");
 
         private void Line(string text) => _o.Append($"        {text}\n");
 
@@ -352,10 +409,7 @@ public sealed class Emitter
                     break;
                 case CondGoto c:
                     // A condition that is a chain goes straight into the branch; one with nested arguments gets a name.
-                    string cond = IsChain(c.Cond) && c.Cond is not (IntLit or BoolLit or Var)
-                        ? Chain(c.Cond, lazy: false)
-                        : Value(c.Cond, "condition");
-                    Line($"branch {cond} ? {Edge(c.IfTrue, _env)} : {Edge(c.IfFalse, _env)}");
+                    Line($"branch {Condition(c.Cond)} ? {Edge(c.IfTrue, _env)} : {Edge(c.IfFalse, _env)}");
                     break;
                 case SelectGoto s:
                 {

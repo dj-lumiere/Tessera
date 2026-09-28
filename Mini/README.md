@@ -60,7 +60,9 @@ fn main() {
    (`samples/branches.mini` divides by `d` only after checking `d == 0`). A block that only computes the next
    values and jumps folds into the edge that reaches it (`loop(%i.add(1), %acc.add(%i))`), and a branch condition
    that is a chain is written in the branch itself, so `gcd`'s loop is one line:
-   `branch %b.ne(0) ? while_1(%b, %a.rem(%b)) : return(%a)`.
+   `branch %b.ne(0) ? while_1(%b, %a.rem(%b)) : return(%a)`. When one side of a condition returns and the other
+   reaches a block nothing else reaches, the guard is written `branch c ? return(...) : continue` and that block's
+   code follows in the same block.
 
 ## What the experiment found
 
@@ -70,8 +72,8 @@ fn main() {
 - **The output reads like hand-written Tessera** once temporaries are named for what they hold (`%is_less`),
   expressions are chained, and pass-through blocks are removed. See `generated/primes.tess` and
   `generated/branches.tess`.
-- **Line counts** (lines that aren't blank or comments, Tessera over Mini): branches 0.82, gcd 0.85, primes 0.85,
-  fib 0.95, collatz 1.11, literals 1.17, fizzbuzz 1.73. FizzBuzz stays higher because a branch that does something
+- **Line counts** (lines that aren't blank or comments, Tessera over Mini): primes 0.81, branches 0.82, gcd 0.85,
+  fib 0.86, collatz 1.07, literals 1.11, fizzbuzz 1.67. FizzBuzz stays higher because a branch that does something
   needs its own block (header, body, jump) where C needs `{ ... }`.
 - **Things that turned out to work:** a literal can be a receiver (`3 - n` is `3.sub(%n)`; only two untyped
   literals, or a negative one, need binding first), and an arm may return an expression, so `main` returns
