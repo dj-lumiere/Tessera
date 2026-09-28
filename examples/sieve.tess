@@ -1,0 +1,95 @@
+// The sieve of Eratosthenes: every prime up to 50, and how many there are below 10,000.
+//
+// Introduces:
+//   heap memory through an Allocator: alloc<T>, zeroinit, free
+//   raw element access with [] (address arithmetic), load and store
+//   a routine that owns its memory and frees it before returning
+
+/// Returns a table of %limit + 1 flags where table[n] is true when n is composite (0 and 1 count as composite).
+/// The caller frees it.
+routine sieve(%limit: U64, #alloc: Ptr<Allocator>) -> Ptr<Bool>
+    block entry():
+        %slots: U64 = %limit.add(1)
+        #composite: Ptr<Bool> = alloc<Bool>(#alloc, %slots)
+        %failed: Bool = #composite.is_null()
+        branch %failed ? panic(TrapCode.AllocFailed) : clear(#composite)
+
+    block clear(#composite: Ptr<Bool>):
+        #composite.zeroinit(%limit.add(1))
+        #composite[0].store(true)
+        #composite[1].store(true)
+        jump outer(#composite, 2)
+
+    /// Only factors up to sqrt(limit) need crossing out.
+    block outer(#composite: Ptr<Bool>, %p: U64):
+        %past_root: Bool = %p.mul(%p).gt(%limit)
+        branch %past_root ? return(#composite) : check_prime(#composite, %p)
+
+    block check_prime(#composite: Ptr<Bool>, %p: U64):
+        %crossed: Bool = #composite[%p].load()
+        branch %crossed ? outer(#composite, %p.add(1)) : cross_out(#composite, %p, %p.mul(%p))
+
+    block cross_out(#composite: Ptr<Bool>, %p: U64, %multiple: U64):
+        %done: Bool = %multiple.gt(%limit)
+        branch %done ? outer(#composite, %p.add(1)) : mark(#composite, %p, %multiple)
+
+    block mark(#composite: Ptr<Bool>, %p: U64, %multiple: U64):
+        #composite[%multiple].store(true)
+        jump cross_out(#composite, %p, %multiple.add(%p))
+
+routine print_primes(#out: Ptr<FdWriter>, %limit: U64, #alloc: Ptr<Allocator>) -> Void
+    block entry():
+        #composite: Ptr<Bool> = sieve(%limit, #alloc)
+        write_str(#out, "primes up to ")
+        %limit.format(#out)
+        write_str(#out, ":")
+        jump loop(#composite, 2)
+
+    block loop(#composite: Ptr<Bool>, %n: U64):
+        %done: Bool = %n.gt(%limit)
+        branch %done ? finish(#composite) : check(#composite, %n)
+
+    block check(#composite: Ptr<Bool>, %n: U64):
+        %crossed: Bool = #composite[%n].load()
+        branch %crossed ? loop(#composite, %n.add(1)) : print_one(#composite, %n)
+
+    block print_one(#composite: Ptr<Bool>, %n: U64):
+        write_str(#out, " ")
+        %n.format(#out)
+        jump loop(#composite, %n.add(1))
+
+    block finish(#composite: Ptr<Bool>):
+        write_line(#out)
+        #composite.free(#alloc)
+        return()
+
+routine count_primes(%limit: U64, #alloc: Ptr<Allocator>) -> U64
+    block entry():
+        #composite: Ptr<Bool> = sieve(%limit, #alloc)
+        jump loop(#composite, 0, 0)
+
+    block loop(#composite: Ptr<Bool>, %n: U64, %count: U64):
+        %done: Bool = %n.gt(%limit)
+        branch %done ? finish(#composite, %count) : tally(#composite, %n, %count)
+
+    block tally(#composite: Ptr<Bool>, %n: U64, %count: U64):
+        %crossed: Bool = #composite[%n].load()
+        %is_prime: U64 = %crossed.bitnot().to_u64()
+        jump loop(#composite, %n.add(1), %count.add(%is_prime))
+
+    block finish(#composite: Ptr<Bool>, %count: U64):
+        #composite.free(#alloc)
+        return(%count)
+
+routine main() -> S32
+    block entry():
+        %stdout: FdWriter       = FdWriter.stdout()
+        #out:    Ptr<FdWriter>  = alloca<FdWriter>([%stdout])
+        %heap:   Allocator      = make_heap_allocator()
+        #alloc:  Ptr<Allocator> = alloca<Allocator>([%heap])
+
+        print_primes(#out, 50, #alloc)
+        write_str(#out, "primes below 10000: ")
+        count_primes(9999, #alloc).format(#out)
+        write_line(#out)
+        return(0)

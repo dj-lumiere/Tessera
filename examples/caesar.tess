@@ -1,0 +1,61 @@
+// The Caesar cipher: shift each letter by a fixed amount, wrapping around the alphabet.
+//
+// Introduces:
+//   Byte for raw text: compared with byte literals, converted to U8 for arithmetic
+//   a stack buffer (alloca of an Array) written through its Ptr<Byte>
+//   String.from_ptr to view bytes as a String
+
+/// %shift is in 0 ..< 26. Letters keep their case; everything else passes through.
+routine shift_letter(%c: Byte, %shift: U8) -> Byte
+    block entry():
+        %is_upper: Bool = %c.ge(b'A').bitand(%c.le(b'Z'))
+        %is_lower: Bool = %c.ge(b'a').bitand(%c.le(b'z'))
+        select:
+            %is_upper -> rotate(b'A')
+            %is_lower -> rotate(b'a')
+            _         -> return(%c)
+
+    block rotate(%base: Byte):
+        %offset:  U8 = %c.to_u8().sub(%base.to_u8())
+        %shifted: U8 = %offset.add(%shift).rem(26)
+        return(%shifted.add(%base.to_u8()).bits())
+
+/// Writes %length shifted bytes of #text to #result.
+routine caesar(#text: Ptr<Byte>, %length: U64, %shift: U8, #result: Ptr<Byte>) -> Void
+    block entry():
+        jump loop(0)
+
+    block loop(%i: U64):
+        %done: Bool = %i.ge(%length)
+        branch %done ? return() : encode(%i)
+
+    block encode(%i: U64):
+        %c: Byte = #text[%i].load()
+        #result[%i].store(shift_letter(%c, %shift))
+        jump loop(%i.add(1))
+
+routine main() -> S32
+    block entry():
+        %stdout: FdWriter      = FdWriter.stdout()
+        #out:    Ptr<FdWriter> = alloca<FdWriter>([%stdout])
+
+        %plain: String = "Veni, vidi, vici. Zebra!"
+        %length: U64 = %plain.length
+        #secret_buf: Ptr<Array<Byte, 64>> = alloca<Array<Byte, 64>>
+        #back_buf:   Ptr<Array<Byte, 64>> = alloca<Array<Byte, 64>>
+        #secret: Ptr<Byte> = #secret_buf.to_ptr()
+        #back:   Ptr<Byte> = #back_buf.to_ptr()
+
+        caesar(%plain.data, %length, 3, #secret)
+        caesar(#secret, %length, 23, #back)     // 3 + 23 = 26, a full turn
+
+        write_str(#out, "plain:  ")
+        write_str(#out, %plain)
+        write_line(#out)
+        write_str(#out, "secret: ")
+        write_str(#out, String.from_ptr(#secret, %length))
+        write_line(#out)
+        write_str(#out, "back:   ")
+        write_str(#out, String.from_ptr(#back, %length))
+        write_line(#out)
+        return(0)

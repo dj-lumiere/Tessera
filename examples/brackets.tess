@@ -1,0 +1,90 @@
+// Check that (), [], and {} are balanced, using a List<Byte> as a stack.
+//
+// Introduces:
+//   List<T> as a stack: push, pop, is_empty
+//   a choice as the result of a check, and a switch that lists every member
+//   one cleanup block that every exit goes through, so the stack is destructed once
+
+choice Balance: U8
+    Balanced:   0
+    Mismatched: 1
+    Unclosed:   2
+
+routine closer_of(%open: Byte) -> Byte
+    block entry():
+        select:
+            %open.eq(b'(') -> return(b')')
+            %open.eq(b'[') -> return(b']')
+            _              -> return(b'}')
+
+routine check_balance(%text: String, #alloc: Ptr<Allocator>) -> Balance
+    block entry():
+        %stack_val: List<Byte> = List<Byte>.construct(#alloc)
+        #stack: Ptr<List<Byte>> = alloca<List<Byte>>([%stack_val])
+        jump scan(#stack, 0)
+
+    /// #stack holds the closers still expected, the innermost last.
+    block scan(#stack: Ptr<List<Byte>>, %i: U64):
+        %at_end: Bool = %i.ge(%text.length)
+        branch %at_end ? finish(#stack) : classify(#stack, %i)
+
+    block classify(#stack: Ptr<List<Byte>>, %i: U64):
+        #data: Ptr<Byte> = %text.data
+        %c: Byte = #data[%i].load()
+        %opens:  Bool = %c.eq(b'(').bitor(%c.eq(b'[')).bitor(%c.eq(b'{'))
+        %closes: Bool = %c.eq(b')').bitor(%c.eq(b']')).bitor(%c.eq(b'}'))
+        select:
+            %opens  -> open(#stack, %i, %c)
+            %closes -> close(#stack, %i, %c)
+            _       -> scan(#stack, %i.add(1))
+
+    block open(#stack: Ptr<List<Byte>>, %i: U64, %c: Byte):
+        #stack.push(closer_of(%c))
+        jump scan(#stack, %i.add(1))
+
+    block close(#stack: Ptr<List<Byte>>, %i: U64, %c: Byte):
+        %nothing_open: Bool = #stack.is_empty()
+        branch %nothing_open ? leave(#stack, Balance.Mismatched) : match(#stack, %i, %c)
+
+    block match(#stack: Ptr<List<Byte>>, %i: U64, %c: Byte):
+        %expected: Byte = #stack.pop()
+        %matches:  Bool = %expected.eq(%c)
+        branch %matches ? scan(#stack, %i.add(1)) : leave(#stack, Balance.Mismatched)
+
+    block finish(#stack: Ptr<List<Byte>>):
+        %all_closed: Bool = #stack.is_empty()
+        branch %all_closed ? leave(#stack, Balance.Balanced) : leave(#stack, Balance.Unclosed)
+
+    /// Every exit comes here, so the stack is destructed exactly once.
+    block leave(#stack: Ptr<List<Byte>>, %result: Balance):
+        #stack.destruct()
+        return(%result)
+
+routine report(#out: Ptr<FdWriter>, %text: String, #alloc: Ptr<Allocator>) -> Void
+    block entry():
+        write_str(#out, %text)
+        write_str(#out, "  ->  ")
+        %result: Balance = check_balance(%text, #alloc)
+        switch %result:
+            Balance.Balanced   -> say("balanced")
+            Balance.Mismatched -> say("mismatched")
+            Balance.Unclosed   -> say("unclosed")
+
+    block say(%verdict: String):
+        write_str(#out, %verdict)
+        write_line(#out)
+        return()
+
+routine main() -> S32
+    block entry():
+        %stdout: FdWriter       = FdWriter.stdout()
+        #out:    Ptr<FdWriter>  = alloca<FdWriter>([%stdout])
+        %heap:   Allocator      = make_heap_allocator()
+        #alloc:  Ptr<Allocator> = alloca<Allocator>([%heap])
+
+        report(#out, "f(a[i], {b: (c)})", #alloc)
+        report(#out, "(]", #alloc)
+        report(#out, "((x)", #alloc)
+        report(#out, "x)", #alloc)
+        report(#out, "no brackets", #alloc)
+        return(0)
