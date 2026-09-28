@@ -19,6 +19,7 @@ private preset SLOT_EMPTY:     U64 = 18446744073709551615   // U64.MAX
 private preset SLOT_TOMBSTONE: U64 = 18446744073709551614
 
 record Set<T>
+conform Destruct<Set<T>>
 require T: typename, HashEqual<T>
     keys: Ptr<T>
     hashes: Ptr<U64>
@@ -383,4 +384,28 @@ require T: typename
         #self.length = 0
         #self.entries_count = 0
         #self.capacity = 0
+        return()
+
+/// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
+/// Elements that are only borrowed (a `Ptr` to memory owned elsewhere) must not be destructed this way.
+routine Set<T>.destruct_all(#self: Ptr<Self>) -> Void
+require T: typename, HashEqual<T>, Destruct<T>
+    block entry():
+        %iter_val: SetIter<T> = SetIter<T>.construct(#self)
+        #iter:     Ptr<SetIter<T>> = alloca<SetIter<T>>([%iter_val])
+        #slot:     Ptr<T> = alloca<T>
+        jump next(#iter, #slot)
+
+    block next(#iter: Ptr<SetIter<T>>, #slot: Ptr<T>):
+        %item: Option<T> = #iter.next()
+        %more: Bool = %item.tag
+        branch %more ? element(#iter, #slot, %item.value) : finish()
+
+    block element(#iter: Ptr<SetIter<T>>, #slot: Ptr<T>, %value: T):
+        #slot = %value
+        #slot.destruct()
+        jump next(#iter, #slot)
+
+    block finish():
+        #self.destruct()
         return()

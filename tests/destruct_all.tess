@@ -1,0 +1,109 @@
+// destruct releases a collection's own storage; destruct_all destructs the elements first. A counting
+// allocator shows that every block is handed back: live blocks drop to 0 only with destruct_all.
+
+record Counts
+    live: S64
+
+@callconv("c")
+routine counting_alloc(#state: Ptr, %size: CSize) -> Ptr
+    block entry():
+        #counts: Ptr<Counts> = #state.cast<Counts>()
+        %live: S64 := #counts.live
+        #counts.live = %live.add(1)
+        %heap: Allocator = make_heap_allocator()
+        #r: Ptr = %heap.alloc_fn(null, %size)
+        return(#r)
+
+@callconv("c")
+routine counting_realloc(#state: Ptr, #old: Ptr, %size: CSize) -> Ptr
+    block entry():
+        %was_null: Bool = #old.is_null()
+        branch %was_null ? fresh() : resize()
+
+    block fresh():
+        #counts: Ptr<Counts> = #state.cast<Counts>()
+        %live: S64 := #counts.live
+        #counts.live = %live.add(1)
+        jump resize()
+
+    block resize():
+        %heap: Allocator = make_heap_allocator()
+        #r: Ptr = %heap.realloc_fn(null, #old, %size)
+        return(#r)
+
+@callconv("c")
+routine counting_free(#state: Ptr, #block: Ptr) -> Void
+    block entry():
+        %was_null: Bool = #block.is_null()
+        branch %was_null ? return() : release()
+
+    block release():
+        #counts: Ptr<Counts> = #state.cast<Counts>()
+        %live: S64 := #counts.live
+        #counts.live = %live.sub(1)
+        %heap: Allocator = make_heap_allocator()
+        %heap.free_fn(null, #block)
+        return()
+
+routine show(%label: String, #counts: Ptr<Counts>) -> Void
+    block entry():
+        print_slice(%label)
+        %live: S64 := #counts.live
+        print_int(%live)
+        println_slice("")
+        return()
+
+// A list of three inner lists, each with a few elements.
+routine fill(#outer: Ptr<List<List<S64>>>, #alloc: Ptr<Allocator>) -> Void
+    block entry():
+        jump loop(0)
+
+    block loop(%i: U64):
+        %done: Bool = %i.eq(3)
+        branch %done ? return() : add(%i)
+
+    block add(%i: U64):
+        %inner_val: List<S64> = List<S64>.construct(#alloc)
+        #inner: Ptr<List<S64>> = alloca<List<S64>>([%inner_val])
+        #inner.push(%i.to_s64())
+        #inner.push(7)
+        %filled: List<S64> := #inner
+        #outer.push(%filled)
+        jump loop(%i.add(1))
+
+routine main() -> S32
+    block entry():
+        #counts: Ptr<Counts> = alloca<Counts>([Counts { live: 0 }])
+        %counting: Allocator = Allocator {
+            alloc_fn:   counting_alloc,
+            realloc_fn: counting_realloc,
+            free_fn:    counting_free,
+            state:      #counts.cast<Byte>()
+        }
+        #alloc: Ptr<Allocator> = alloca<Allocator>([%counting])
+
+        %a_val: List<List<S64>> = List<List<S64>>.construct(#alloc)
+        #a: Ptr<List<List<S64>>> = alloca<List<List<S64>>>([%a_val])
+        fill(#a, #alloc)
+        show("filled: ", #counts)
+        #a.destruct()
+        show("after destruct (inner lists leak): ", #counts)
+
+        #counts.live = 0
+        %b_val: List<List<S64>> = List<List<S64>>.construct(#alloc)
+        #b: Ptr<List<List<S64>>> = alloca<List<List<S64>>>([%b_val])
+        fill(#b, #alloc)
+        #b.destruct_all()
+        show("after destruct_all: ", #counts)
+
+        #counts.live = 0
+        %d_val: Dict<S64, List<S64>> = Dict<S64, List<S64>>.construct(#alloc)
+        #d: Ptr<Dict<S64, List<S64>>> = alloca<Dict<S64, List<S64>>>([%d_val])
+        %v_val: List<S64> = List<S64>.construct(#alloc)
+        #v: Ptr<List<S64>> = alloca<List<S64>>([%v_val])
+        #v.push(1)
+        %v: List<S64> := #v
+        #d.put(5, %v)
+        #d.destruct_all_values()
+        show("dict after destruct_all_values: ", #counts)
+        return(0)

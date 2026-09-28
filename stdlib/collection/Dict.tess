@@ -19,6 +19,7 @@ private preset SLOT_EMPTY:     U64 = 18446744073709551615   // U64.MAX
 private preset SLOT_TOMBSTONE: U64 = 18446744073709551614
 
 record Dict<K, V>
+conform Destruct<Dict<K, V>>
 require K: typename, V: typename, HashEqual<K>
     keys: Ptr<K>
     values: Ptr<V>
@@ -441,4 +442,53 @@ require K: typename, V: typename
         #self.length = 0
         #self.entries_count = 0
         #self.capacity = 0
+        return()
+
+/// Destructs every key and value, then the dictionary itself.
+routine Dict<K, V>.destruct_all(#self: Ptr<Self>) -> Void
+require K: typename, V: typename, Destruct<K>, Destruct<V>
+    block entry():
+        %iter_val: DictIter<K, V> = DictIter<K, V>.construct(#self)
+        #iter:     Ptr<DictIter<K, V>> = alloca<DictIter<K, V>>([%iter_val])
+        #key_slot: Ptr<K> = alloca<K>
+        #value_slot: Ptr<V> = alloca<V>
+        jump next(#iter, #key_slot, #value_slot)
+
+    block next(#iter: Ptr<DictIter<K, V>>, #key_slot: Ptr<K>, #value_slot: Ptr<V>):
+        %item: Option<KVPair<K, V>> = #iter.next()
+        %more: Bool = %item.tag
+        branch %more ? entry_found(#iter, #key_slot, #value_slot, %item.value) : finish()
+
+    block entry_found(#iter: Ptr<DictIter<K, V>>, #key_slot: Ptr<K>, #value_slot: Ptr<V>, %entry: KVPair<K, V>):
+        #key_slot = %entry.key
+        #key_slot.destruct()
+        #value_slot = %entry.value
+        #value_slot.destruct()
+        jump next(#iter, #key_slot, #value_slot)
+
+    block finish():
+        #self.destruct()
+        return()
+
+/// Destructs every value (the keys own nothing), then the dictionary itself.
+routine Dict<K, V>.destruct_all_values(#self: Ptr<Self>) -> Void
+require K: typename, V: typename, Destruct<V>
+    block entry():
+        %iter_val: DictIter<K, V> = DictIter<K, V>.construct(#self)
+        #iter:     Ptr<DictIter<K, V>> = alloca<DictIter<K, V>>([%iter_val])
+        #value_slot: Ptr<V> = alloca<V>
+        jump next(#iter, #value_slot)
+
+    block next(#iter: Ptr<DictIter<K, V>>, #value_slot: Ptr<V>):
+        %item: Option<KVPair<K, V>> = #iter.next()
+        %more: Bool = %item.tag
+        branch %more ? entry_found(#iter, #value_slot, %item.value) : finish()
+
+    block entry_found(#iter: Ptr<DictIter<K, V>>, #value_slot: Ptr<V>, %entry: KVPair<K, V>):
+        #value_slot = %entry.value
+        #value_slot.destruct()
+        jump next(#iter, #value_slot)
+
+    block finish():
+        #self.destruct()
         return()

@@ -108,6 +108,9 @@ routine main() -> S32
 
 - `routine name(%a: T, #p: Ptr<U>) -> R`. Methods are `routine Type.name(#self: Ptr<Self>, ...)` (pointer receiver)
   or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<S64>.construct(#alloc)`.
+- **Methods through a pointer.** `#p.m()` finds `T.m(#self: Ptr<Self>)` first, then `Ptr`'s own methods (`is_null`,
+  `offset`, `cast`, ...). Value methods (`%self: Self`, such as `List.eq`) aren't reachable through a pointer, because
+  that would hide a load: load first (`%v: List<S64> := #p`). Don't name your own pointer methods after `Ptr`'s.
 - **Most collection methods take `#self: Ptr<Self>`**, so a collection must live in memory (`alloca`) before you
   call them. You can't call a pointer method on a temporary: `DictIter<K, V>.construct(#m).next()` fails with "has no
   method 'next'"; alloca the iterator first.
@@ -235,8 +238,9 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   `ListIter<T>.construct(#list)`, `CountWriter.construct()`. A type too large to return by value constructs in
   place instead, through a pointer: `#out.construct(#fd)` for `BufWriter<W>`.
 - `#self.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
-  and leaves the value empty. Call it yourself; nothing runs it for you. It doesn't destruct the elements of a
-  collection; do that first if they own resources.
+  and leaves the value empty. Call it yourself; nothing runs it for you. A collection's `destruct` doesn't touch its
+  elements; `destruct_all()` destructs them first (elements must conform to `Destruct<T>`), and `Dict` / `SortedDict`
+  also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release.
 - Other ways to make a value are named for what they make: `FdWriter.stdout()`, `String.from_ptr(#p, %n)`,
   `Option<T>.none()`, `FormatSpec.zero_padded(6)`.
 - `free<T>(#alloc, #p)` is not a destructor: it hands a block of memory back to its allocator.
