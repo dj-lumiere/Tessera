@@ -439,7 +439,7 @@ public sealed class FunctionGen
 
     private CompileError Mismatch(Pos pos, DType expected, string actual) => Err(pos, $"expected {expected}, found {actual}");
 
-    /// Evaluates `e` as a value of type `expected`. `asArgument` lets a field place be read (see EvalArg).
+    /// Evaluates `e` as a value of type `expected`.
     private Val Eval(Expr e, DType expected)
     {
         Val v = e switch
@@ -470,18 +470,13 @@ public sealed class FunctionGen
         return v;
     }
 
-    /// Call arguments follow the stdlib's usage (open question #3): a field place whose type is what the
-    /// parameter wants is read (`#alloc.state` → Ptr); otherwise it is passed by address (`#left.keys` →
-    /// Ptr<Array<…>>).
+    /// A place argument is its address, as everywhere else: memory is never read implicitly (open question #3).
+    /// When the parameter wants what is stored there, the error says to load it.
     private Val EvalArg(Expr e, DType expected)
     {
         if (e is FieldExpr or IndexExpr && IsPlaceChain(e) && PlaceType(e) is { } t && Compatible(t, expected)
             && !(expected is PtrType { Pointee: { } pe } && pe.Equals(t)))
-        {
-            var (addr, ft) = PlaceAddress(e);
-            _c.EnsureTypeDefined(ft);
-            return new Val(EmitTmp($"load {ft.Llvm}, ptr {addr}"), ft);
-        }
+            throw Err(e.Pos, $"expected {expected}, found the place {new PtrType(t)}; read it first with .load()");
         return Eval(e, expected);
     }
 
@@ -696,11 +691,13 @@ public sealed class FunctionGen
         _ => false,
     };
 
-    /// A call through a Callable field: `#alloc.alloc_fn(args)`.
-    private (Expr Place, CallableType Callable, List<Expr> Args)? IndirectCall(Expr e)
+    /// A call through a Callable value: `%fn.call(args)`. A Callable stored in memory is loaded first
+    /// (`%fn: Callable<…> = #alloc.alloc_fn.load()`); calling the field directly would hide that load.
+    private (Expr Callee, CallableType Callable, List<Expr> Args)? IndirectCall(Expr e)
     {
         if (e is not MethodCallExpr m) return null;
         var rt = Infer(m.Receiver);
+        if (m.Name == "call" && rt is CallableType ct) return (m.Receiver, ct, m.Args);
         RecordType? s = rt switch
         {
             PtrType { Pointee: RecordType ps } => ps,
@@ -710,8 +707,10 @@ public sealed class FunctionGen
         if (s is null) return null;
         if (_c.FindMethod(s.OwnerName, m.Name, _env.File, m.Pos) is not null) return null;
         var field = _c.Fields(s).FirstOrDefault(f => f.Name == m.Name);
-        if (field.Type is not CallableType ct) return null;
-        return (new FieldExpr(m.Receiver, m.Name, m.Pos), ct, m.Args);
+        if (field.Type is CallableType)
+            throw Err(m.Pos, $"'{m.Name}' is a Callable field: load it (.{m.Name}.load()) and call the value "
+                + $"with .call(...)");
+        return null;
     }
 
     /// Works out which routine a call refers to and binds its type parameters.
@@ -883,7 +882,7 @@ public sealed class FunctionGen
             && _c.FindFree(sz.Name, _env.File, sz.Pos) is null)
             return SizeOrAlign(sz);
 
-        if (IndirectCall(e) is { } ind) return EmitIndirect(ind.Place, ind.Callable, ind.Args, e.Pos);
+        if (IndirectCall(e) is { } ind) return EmitIndirect(ind.Callee, ind.Callable, ind.Args, e.Pos);
 
         var plan = PlanCall(e, expected);
         if (plan is null)
@@ -970,13 +969,11 @@ public sealed class FunctionGen
 
     private Val EvalReceiver(Expr recv, DType selfType) => Eval(recv, selfType);
 
-    private Val EmitIndirect(Expr place, CallableType ct, List<Expr> argExprs, Pos pos)
+    private Val EmitIndirect(Expr callee, CallableType ct, List<Expr> argExprs, Pos pos)
     {
         if (argExprs.Count != ct.Params.Count)
             throw Err(pos, $"this Callable takes {ct.Params.Count} argument(s), got {argExprs.Count}");
-        Val fp = place is FieldExpr f && IsPlaceChain(f)
-            ? LoadPlace(f)
-            : Eval(place, ct);
+        Val fp = Eval(callee, ct);
         var args = argExprs.Select((a, i) => EvalArg(a, ct.Params[i])).ToList();
         string cc = ct.CallConv switch { "fast" => "fastcc ", "cold" => "coldcc ", _ => "" };
         bool bits = ct.CallConv != "c";
@@ -997,12 +994,6 @@ public sealed class FunctionGen
 
     private Val AbiResult(string op, DType t, bool bf16AsBits) =>
         bf16AsBits && Instance.IsBf16(t) ? new Val(EmitTmp($"bitcast i16 {op} to bfloat"), t) : new Val(op, t);
-
-    private Val LoadPlace(Expr place)
-    {
-        var (addr, t) = PlaceAddress(place);
-        return new Val(EmitTmp($"load {t.Llvm}, ptr {addr}"), t);
-    }
 
     /// Expands an `@external("llvm")` routine's `@template` in place.
     private Val ExpandTemplate(Instance sig, List<Val> args, Pos pos)

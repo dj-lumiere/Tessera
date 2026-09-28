@@ -59,6 +59,11 @@ routine main() -> S32
   `%f: T = #p.field.load()`, `#p.field.store(%v)`, `%e: T = #p[%i].load()`, `#p[%i].store(%v)`. Places
   (`#p.field`, `#p[%i]`) are addresses. Through an `Addr`, name the type: `#a.load<U32>()`. Registers:
   `volatile_load()` / `volatile_store(...)`. (`:=` and `#p = %v` are gone and rejected.)
+- Memory is never read implicitly. A place passed as an argument is its address, so `U8.from_byte(#p[%i])` is an
+  error: write `U8.from_byte(#p[%i].load())`.
+- A `Callable` value is called with `.call(args)`. One stored in a field is loaded first:
+  `%free_fn: Callable<…> = #alloc.free_fn.load()`, then `%free_fn.call(#state, #raw)`. `#alloc.free_fn(...)` is an
+  error.
 - A field of an SSA record value is read with plain `=`: `%tag: Bool = %opt.tag`.
 - `alloca<T>` gives stack memory; `alloca<T>([%init])` initializes it. Allocas are hoisted to the routine's entry,
   so an `alloca` inside a loop block reuses one slot.
