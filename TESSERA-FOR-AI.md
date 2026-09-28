@@ -11,7 +11,7 @@ answer.
 dotnet run --project Tessera -- run   file.tess        # build and run (the whole stdlib is always available)
 dotnet run --project Tessera -- run -O file.tess       # the same at -O2
 dotnet run --project Tessera -- check file.tess        # type-check only
-dotnet run --project Tessera -- test tests playground examples  # golden tests
+dotnet run --project Tessera -- test tests playground examples Mini/generated  # golden tests
 ```
 
 A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines (the stdlib declares
@@ -84,8 +84,9 @@ routine main() -> S32
   passed as a block argument. This is the most common error.
 - Every block ends with exactly one terminator: `jump b(...)`, `branch %c ? a(...) : b(...)`, `select:`,
   `switch %v:`, `return(...)`, or `unreachable`. An arm of `branch` / `select` / `switch` names a block, or is an
-  inline `return(%x)` or a call to a `@noreturn` routine (`trap()`, `panic(TrapCode.X)`). An ordinary routine call
-  can't be an arm: call it inside a block.
+  inline `return(...)` or a call to a `@noreturn` routine (`trap()`, `panic(TrapCode.X)`). Block arguments and the
+  returned value may be expressions (`loop(%i.add(1))`, `return(%x.to_s32())`), evaluated only when that arm is
+  taken. An ordinary routine call can't be an arm by itself: call it inside a block.
 - There are no `for` / `while` / `if`. A loop is a block that jumps to itself with new arguments.
 - A long `branch` continues on the next line when that line starts with `?` or `:`.
 - An integer `switch` needs a `_` arm. A `switch` on a choice without `_` must list every member.
