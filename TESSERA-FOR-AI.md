@@ -212,7 +212,8 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
 `BF16`, or `F128`, and a mismatched format is undefined behavior.
 
 - Writers: `FdWriter.stdout()` / `.stderr()` (unbuffered), `BufWriter<W>` (`#out.construct(#inner)`, then
-  `flush()`), `SliceWriter` (into a caller buffer).
+  `flush()`), `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `write(#buf, ...)`, then
+  `#buf.to_string()`; there's no string builder type).
 - `write_str(#out, "text")`, `write_line(#out)`, `%v.format(#out)` for every integer, float, `Bool`, and `String`,
   and `#p.format(#out)` for a pointer's address (`0x7ffd5e8c1a40`); `format_hex`, `format_fixed(#out, %digits)`;
   `format_with(#out, %v, %spec)` with a `FormatSpec`.
