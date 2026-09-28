@@ -1,0 +1,183 @@
+// The sorted-collection iterators walk the tree with a stack. On trees several levels deep, after inserts and removes
+// that split, borrow, and merge nodes, each must yield exactly get_by_rank(0), get_by_rank(1), ... and then stop, and
+// eq (which walks two iterators side by side) must see a copy as equal and a changed copy as different.
+
+preset COUNT: S64 = 3000
+
+// ── SortedDict ───────────────────────────────────────────────────────────────
+
+routine fill_dict(#map: Ptr<SortedDict<S64, S64>>) -> Void
+    block entry():
+        jump put(0)
+
+    block put(%i: S64):
+        %done : Bool = %i.ge(COUNT)
+        branch %done ? remove(0) : continue
+        #map.put(%i.mul(7919).rem(10007), %i)
+        jump put(%i.add(1))
+
+    block remove(%i: S64):
+        %done : Bool = %i.ge(COUNT)
+        branch %done ? return() : continue
+        #map.remove(%i.mul(3).mul(7919).rem(10007))
+        jump remove(%i.add(1))
+
+/// Walks the iterator and counts the entries that differ from get_by_rank; -1 if it yields too many or too few.
+routine check_dict(#map: Ptr<SortedDict<S64, S64>>) -> S64
+    block entry():
+        %iter_val : SortedDictIter<S64, S64>      = .construct(#map)
+        #iter     : Ptr<SortedDictIter<S64, S64>> = claim
+        #iter.store(%iter_val)
+        jump next(#iter, 0, 0)
+
+    block next(#iter: Ptr<SortedDictIter<S64, S64>>, %rank: U64, %bad: S64):
+        %item : Option<KVPair<S64, S64>> = #iter.next()
+        %more : Bool                     = %item.tag
+        branch %more ? continue : finish(%rank, %bad)
+        %past_end : Bool = %rank.ge(#map.length())
+        branch %past_end ? return(-1) : continue
+        %want       : KVPair<S64, S64> = #map.get_by_rank(%rank)
+        %got        : KVPair<S64, S64> = %item.value
+        %key_same   : Bool             = %want.key.eq(%got.key)
+        %value_same : Bool             = %want.value.eq(%got.value)
+        %same       : Bool             = %key_same.bitand(%value_same)
+        %wrong      : S64              = %same ? 0 : 1
+        jump next(#iter, %rank.add(1), %bad.add(%wrong))
+
+    block finish(%rank: U64, %bad: S64):
+        %all : Bool = %rank.eq(#map.length())
+        branch %all ? return(%bad) : return(-1)
+
+// ── SortedSet ────────────────────────────────────────────────────────────────
+
+routine fill_set(#set: Ptr<SortedSet<S64>>) -> Void
+    block entry():
+        jump add(0)
+
+    block add(%i: S64):
+        %done : Bool = %i.ge(COUNT)
+        branch %done ? remove(0) : continue
+        #set.add(%i.mul(7919).rem(10007))
+        jump add(%i.add(1))
+
+    block remove(%i: S64):
+        %done : Bool = %i.ge(COUNT)
+        branch %done ? return() : continue
+        #set.remove(%i.mul(3).mul(7919).rem(10007))
+        jump remove(%i.add(1))
+
+routine check_set(#set: Ptr<SortedSet<S64>>) -> S64
+    block entry():
+        %iter_val : SortedSetIter<S64>      = .construct(#set)
+        #iter     : Ptr<SortedSetIter<S64>> = claim
+        #iter.store(%iter_val)
+        jump next(#iter, 0, 0)
+
+    block next(#iter: Ptr<SortedSetIter<S64>>, %rank: U64, %bad: S64):
+        %item : Option<S64> = #iter.next()
+        %more : Bool        = %item.tag
+        branch %more ? continue : finish(%rank, %bad)
+        %past_end : Bool = %rank.ge(#set.length())
+        branch %past_end ? return(-1) : continue
+        %same  : Bool = #set.get_by_rank(%rank).eq(%item.value)
+        %wrong : S64  = %same ? 0 : 1
+        jump next(#iter, %rank.add(1), %bad.add(%wrong))
+
+    block finish(%rank: U64, %bad: S64):
+        %all : Bool = %rank.eq(#set.length())
+        branch %all ? return(%bad) : return(-1)
+
+// ── SortedList ───────────────────────────────────────────────────────────────
+
+/// Inserts at scattered positions, then removes every third position counted from the front.
+routine fill_list(#list: Ptr<SortedList<S64>>) -> Void
+    block entry():
+        jump insert(0)
+
+    block insert(%i: S64):
+        %done : Bool = %i.ge(COUNT)
+        branch %done ? remove(0) : continue
+        %at : U64 = %i.mul(37).to_u64().rem(#list.length().add(1))
+        #list.insert(%at, %i)
+        jump insert(%i.add(1))
+
+    block remove(%at: U64):
+        %done : Bool = %at.ge(#list.length())
+        branch %done ? return() : continue
+        #list.remove(%at)
+        jump remove(%at.add(2))
+
+routine check_list(#list: Ptr<SortedList<S64>>) -> S64
+    block entry():
+        %iter_val : SortedListIter<S64>      = .construct(#list)
+        #iter     : Ptr<SortedListIter<S64>> = claim
+        #iter.store(%iter_val)
+        jump next(#iter, 0, 0)
+
+    block next(#iter: Ptr<SortedListIter<S64>>, %rank: U64, %bad: S64):
+        %item : Option<S64> = #iter.next()
+        %more : Bool        = %item.tag
+        branch %more ? continue : finish(%rank, %bad)
+        %past_end : Bool = %rank.ge(#list.length())
+        branch %past_end ? return(-1) : continue
+        %same  : Bool = #list.get(%rank).eq(%item.value)
+        %wrong : S64  = %same ? 0 : 1
+        jump next(#iter, %rank.add(1), %bad.add(%wrong))
+
+    block finish(%rank: U64, %bad: S64):
+        %all : Bool = %rank.eq(#list.length())
+        branch %all ? return(%bad) : return(-1)
+
+routine main() -> S32
+    block entry():
+        %heap  : Allocator      = make_heap_allocator()
+        #alloc : Ptr<Allocator> = claim
+        #alloc.store(%heap)
+
+        %map_val : SortedDict<S64, S64>      = .construct(#alloc)
+        #map     : Ptr<SortedDict<S64, S64>> = claim
+        #map.store(%map_val)
+        #copy : Ptr<SortedDict<S64, S64>> = claim
+        #copy.store(%map_val)
+        fill_dict(#map)
+        fill_dict(#copy)
+        print("dict: {#map.length()} entries, {check_dict(#map)} wrong, copy equal {#map.eq(#copy)}\n")
+        %last : KVPair<S64, S64> = #copy.get_by_rank(#copy.length().sub(1))
+        #copy.put(%last.key, %last.value.add(1))
+        print("dict: changed copy equal {#map.eq(#copy)}\n")
+
+        %set_val : SortedSet<S64>      = .construct(#alloc)
+        #set     : Ptr<SortedSet<S64>> = claim
+        #set.store(%set_val)
+        #set_copy : Ptr<SortedSet<S64>> = claim
+        #set_copy.store(%set_val)
+        fill_set(#set)
+        fill_set(#set_copy)
+        print("set: {#set.length()} keys, {check_set(#set)} wrong, copy equal {#set.eq(#set_copy)}\n")
+        #set_copy.remove(#set_copy.get_by_rank(0))
+        #set_copy.add(-1)
+        print("set: changed copy equal {#set.eq(#set_copy)}\n")
+
+        %list_val : SortedList<S64>      = .construct(#alloc)
+        #list     : Ptr<SortedList<S64>> = claim
+        #list.store(%list_val)
+        #list_copy : Ptr<SortedList<S64>> = claim
+        #list_copy.store(%list_val)
+        fill_list(#list)
+        fill_list(#list_copy)
+        print("list: {#list.length()} values, {check_list(#list)} wrong, copy equal {#list.eq(#list_copy)}\n")
+        #list_copy.set(0, -1)
+        print("list: changed copy equal {#list.eq(#list_copy)}\n")
+
+        %empty_val : SortedDict<S64, S64>      = .construct(#alloc)
+        #empty     : Ptr<SortedDict<S64, S64>> = claim
+        #empty.store(%empty_val)
+        print("empty: {check_dict(#empty)} wrong\n")
+
+        #map.destruct()
+        #copy.destruct()
+        #set.destruct()
+        #set_copy.destruct()
+        #list.destruct()
+        #list_copy.destruct()
+        return(0)

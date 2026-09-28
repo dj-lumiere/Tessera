@@ -1,10 +1,9 @@
 // Tessera stdlib collection: SortedDictIter<K, V>
 //
-// In-order iterator over SortedDict<K, V>.  Yields KVPair<K, V> with keys in
-// ascending sorted order, using the order-statistic routine get_by_rank.
-// Each next() makes one O(log n) tree walk.
-//
-// See SortedSetIter.tess for a note on the O(n log n) vs O(n) tradeoff.
+// In-order iterator over SortedDict<K, V>. Yields KVPair<K, V> with keys in
+// ascending sorted order. It keeps the path from the root to the current node
+// on an inline stack, so a full traversal is O(n) and the iterator allocates
+// nothing.
 //
 // KVPair<K, V> is defined in option.tess.
 //
@@ -12,36 +11,86 @@
 
 module Standard::Collections
 
+/// Every internal node has at least two children, so 2^64 entries fit in 64 levels.
+private preset ITER_DEPTH: U64 = 64
+
+/// `nodes[d]` and `indices[d]` for each level `d < depth`: the node, and in it the next key to yield. Every child
+/// left of that key has been walked already.
 record SortedDictIter<K, V>
 conform Iterator<KVPair<K, V>, SortedDictIter<K, V>>
 require K: typename, V: typename
-    map   : Ptr<SortedDict<K, V>>
-    order : U64
-    total : U64
+    nodes   : Array<Ptr<SortedDictNode<K, V>>, ITER_DEPTH>
+    indices : Array<U64, ITER_DEPTH>
+    depth   : U64
 
 routine SortedDictIter<K, V>.construct(#map: Ptr<SortedDict<K, V>>) -> Self
 require K: typename, V: typename
     block entry():
-        %total : U64  = #map.length()
-        %iter  : Self = Self { map: #map, order: 0, total: %total }
+        #iter  : Ptr<Self>                 = claim
+        #root  : Ptr<SortedDictNode<K, V>> = #map.root.load()
+        %empty : Bool                      = #root.is_null()
+        #iter.depth.store(0)
+        branch %empty ? finish(#iter) : continue
+        #iter.push_leftmost(#root)
+        jump finish(#iter)
+
+    block finish(#iter: Ptr<Self>):
+        %iter : Self = #iter.load()
         return(%iter)
+
+/// Pushes #node and the first child of each level below it, down to a leaf.
+private routine SortedDictIter<K, V>.push_leftmost(#self: Ptr<Self>,
+        #node: Ptr<SortedDictNode<K, V>>) -> Void
+require K: typename, V: typename
+    block entry():
+        jump push(#node)
+
+    block push(#node: Ptr<SortedDictNode<K, V>>):
+        %depth : U64  = #self.depth.load()
+        %leaf  : Bool = #node.leaf.load()
+        #self.nodes.set(%depth, #node)
+        #self.indices.set(%depth, 0)
+        #self.depth.store(%depth.add(1))
+        branch %leaf ? return() : first_child(#node)
+
+    block first_child(#node: Ptr<SortedDictNode<K, V>>):
+        jump push(#node.children.get(0))
 
 routine SortedDictIter<K, V>.next(#self: Ptr<Self>) -> Option<KVPair<K, V>>
 require K: typename, V: typename
     block entry():
-        %order : U64  = #self.order.load()
-        %total : U64  = #self.total.load()
-        %done  : Bool = %order.ge(%total)
-        branch %done ? return_none() : return_some(%order)
+        jump top()
 
-    block return_none():
-        %none : Option<KVPair<K, V>> = .none()
-        return(%none)
+    block top():
+        %depth : U64  = #self.depth.load()
+        %empty : Bool = %depth.eq(0)
+        branch %empty ? done() : continue
+        %level   : U64                       = %depth.sub(1)
+        #node    : Ptr<SortedDictNode<K, V>> = #self.nodes.get(%level)
+        %index   : U64                       = #self.indices.get(%level)
+        %length  : U64                       = #node.length.load()
+        %has_key : Bool                      = %index.lt(%length)
+        branch %has_key ? take(#node, %level, %index) : pop(%level)
 
-    block return_some(%order: U64):
-        #map        : Ptr<SortedDict<K, V>> = #self.map.load()
-        %pair       : KVPair<K, V>          = #map.get_by_rank(%order)
-        %order_next : U64                   = %order.add(1)
-        #self.order.store(%order_next)
+    block pop(%level: U64):
+        #self.depth.store(%level)
+        jump top()
+
+    block take(#node: Ptr<SortedDictNode<K, V>>, %level: U64, %index: U64):
+        %key   : K            = #node.keys.get(%index)
+        %value : V            = #node.values.get(%index)
+        %pair  : KVPair<K, V> = KVPair<K, V> { key: %key, value: %value }
+        %leaf  : Bool         = #node.leaf.load()
+        #self.indices.set(%level, %index.add(1))
+        branch %leaf ? yield(%pair) : continue
+        #right : Ptr<SortedDictNode<K, V>> = #node.children.get(%index.add(1))
+        #self.push_leftmost(#right)
+        jump yield(%pair)
+
+    block yield(%pair: KVPair<K, V>):
         %some : Option<KVPair<K, V>> = .some(%pair)
         return(%some)
+
+    block done():
+        %none : Option<KVPair<K, V>> = .none()
+        return(%none)
