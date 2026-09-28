@@ -12,7 +12,8 @@ namespace Tessera;
 /// - `:`, `=`, and `->` have one space on each side, and consecutive lines of one kind (bindings, record or choice
 ///   fields, `when` arms) align them.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 8 spaces
-///   further in; a line with nowhere to break (a comment, one long argument) stays as it is.
+///   further in; a line with nowhere to break (a comment, one long argument) stays as it is. A long `branch` puts its
+///   `? target` and `: target` on their own lines, 4 spaces further in, first.
 /// - inside `routine Owner.name`, the owner type is written `Self` after the header names it (`List<T>` in a
 ///   `List<T>` routine, not `List<U>`); comments and literals are left alone.
 /// Formatting is idempotent: formatting formatted text changes nothing.
@@ -333,6 +334,7 @@ public static class Formatter
     private static IEnumerable<string> Wrap(string line)
     {
         if (line.Length <= MaxWidth || line.TrimStart().StartsWith("//")) return [line];
+        if (SplitBranch(line) is { } arms) return arms.SelectMany(Wrap);
         var list = FirstCommaList(line);
         if (list is not var (open, close, commas)) return [line];
         var items = new List<string>();
@@ -377,12 +379,27 @@ public static class Formatter
         return result;
     }
 
+    /// A long `branch %c ? a(...) : b(...)` puts each target on its own line, 4 spaces further in, rather than breaking
+    /// inside the first target's arguments.
+    private static string[]? SplitBranch(string line)
+    {
+        string trimmed = line.TrimStart();
+        if (!trimmed.StartsWith("branch ") || TopLevelComment(line) >= 0) return null;
+        int question = TopLevelIndex(line, 0, " ? ");
+        if (question < 0) return null;
+        int colon = TopLevelIndex(line, question + 3, " : ");
+        string pad = new(' ', Indent(line) + 4);
+        if (colon < 0)   // the `:` target is already on the next line
+            return [line[..question], pad + "? " + line[(question + 3)..].Trim()];
+        return [line[..question], pad + "? " + line[(question + 3)..colon].Trim(), pad + ": " + line[(colon + 3)..].Trim()];
+    }
+
     /// A continuation line (inside a bracket opened above) breaks after its own top-level commas, keeping its indent.
     private static IEnumerable<string> WrapContinuation(string line)
     {
         if (line.Length <= MaxWidth || line.TrimStart().StartsWith("//")) return [line];
         var cuts = new List<int>();
-        int depth = 0;
+        int depth = 0, angle = 0;
         for (int i = 0; i < line.Length; i++)
         {
             char c = line[i];
@@ -390,7 +407,8 @@ public static class Formatter
             else if (c == '/' && i + 1 < line.Length && line[i + 1] == '/') break;
             else if (c is '(' or '[' or '{') depth++;
             else if (c is ')' or ']' or '}') depth--;
-            else if (c == ',' && depth == 0) cuts.Add(i);
+            else if (IsAngle(line, i, out int step)) angle = Math.Max(0, angle + step);
+            else if (c == ',' && depth == 0 && angle == 0) cuts.Add(i);
         }
         if (cuts.Count == 0) return [line];
         string pad = new(' ', Indent(line));
@@ -419,6 +437,14 @@ public static class Formatter
         return result;
     }
 
+    /// `<` or `>` of a type argument list (`Dict<K, V>`), whose commas are not break points. Tessera has no comparison
+    /// operators, so every angle bracket is one, except the `>` of `->`.
+    private static bool IsAngle(string s, int i, out int step)
+    {
+        step = s[i] == '<' ? 1 : s[i] == '>' && !(i > 0 && s[i - 1] == '-') ? -1 : 0;
+        return step != 0;
+    }
+
     /// The first `(`, `[`, or `{` group at the line's top level whose own depth holds a comma: its bounds and commas.
     private static (int Open, int Close, List<int> Commas)? FirstCommaList(string s)
     {
@@ -433,7 +459,7 @@ public static class Formatter
             if (c == '/' && i + 1 < s.Length && s[i + 1] == '/') return null;
             if (c is not ('(' or '[' or '{')) continue;
             var commas = new List<int>();
-            int depth = 0, j = i;
+            int depth = 0, angle = 0, j = i;
             for (; j < s.Length; j++)
             {
                 char d = s[j];
@@ -448,7 +474,8 @@ public static class Formatter
                     depth--;
                     if (depth == 0) break;
                 }
-                else if (d == ',' && depth == 1) commas.Add(j);
+                else if (IsAngle(s, j, out int step)) angle = Math.Max(0, angle + step);
+                else if (d == ',' && depth == 1 && angle == 0) commas.Add(j);
             }
             if (j < s.Length && commas.Count > 0) return (i, j, commas);
         }
