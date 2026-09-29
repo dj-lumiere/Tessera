@@ -343,14 +343,18 @@ public static class Formatter
         string prev = PreviousCode(lines, continued, i);
         if (IsBlockHeader(line))
             // the first block follows its routine header (and `require` lines) directly
-            return !(Indent(prev) == 0 && (prev.StartsWith("routine ") || prev.StartsWith("require ")));
+            return !(Indent(prev) == 0 && (IsRoutineHeader(prev) || prev.StartsWith("require ")));
         if (line.StartsWith("require ") || line.StartsWith("conform "))
             return false;   // continues the declaration above, even after a multi-line header
         if (Indent(line) == 0)
             // a top-level line after a routine or record body, or a declaration after a body-less routine
-            return prev.Length > 0 && (Indent(prev) > 0 || (StartsDeclaration(line) && prev.StartsWith("routine ")));
+            return prev.Length > 0 && (Indent(prev) > 0 || (StartsDeclaration(line) && IsRoutineHeader(prev)));
         return false;
     }
+
+    /// `routine ...`, `private routine ...`, or `internal routine ...`.
+    private static bool IsRoutineHeader(string line) =>
+        line.StartsWith("routine ") || line.StartsWith("private routine ") || line.StartsWith("internal routine ");
 
     private static bool StartsDeclaration(string line) =>
         line.StartsWith("routine ") || line.StartsWith("record ") || line.StartsWith("choice ") ||

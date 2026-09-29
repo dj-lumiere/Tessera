@@ -367,21 +367,21 @@ public static class Derive
             case "eq":
                 sb.Append($"routine {c.Name}.eq(self: Self, other: Self) -> Bool\n");
                 sb.Append("    block entry():\n");
-                sb.Append("        r : Bool = Standard::Intrinsics::ieq<Self>(self, other)\n");
+                sb.Append("        r : Bool = ieq<Self>(self, other)\n");
                 sb.Append("        return(r)\n");
                 break;
             case "hash":
                 sb.Append($"routine {c.Name}.hash(self: Self) -> U64\n");
                 sb.Append("    block entry():\n");
-                sb.Append($"        v : {u} = Standard::Intrinsics::bitcast<Self, {u}>(self)\n");
+                sb.Append($"        v : {u} = bitcast<Self, {u}>(self)\n");
                 sb.Append("        r : U64 = v.hash()\n");
                 sb.Append("        return(r)\n");
                 break;
             case "compare":
                 sb.Append($"routine {c.Name}.compare(self: Self, other: Self) -> S32\n");
                 sb.Append("    block entry():\n");
-                sb.Append($"        a : {u} = Standard::Intrinsics::bitcast<Self, {u}>(self)\n");
-                sb.Append($"        b : {u} = Standard::Intrinsics::bitcast<Self, {u}>(other)\n");
+                sb.Append($"        a : {u} = bitcast<Self, {u}>(self)\n");
+                sb.Append($"        b : {u} = bitcast<Self, {u}>(other)\n");
                 sb.Append("        r : S32 = a.compare(b)\n");
                 sb.Append("        return(r)\n");
                 break;

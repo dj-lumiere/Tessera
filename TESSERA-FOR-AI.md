@@ -80,7 +80,7 @@ routine main() -> S32
   with `p.store(v)`. An array value comes from `Array<T, N>.from([1, 2, x])` or `Array<T, N>.from_ptr(first)`;
   a bare `[1, 2]` isn't a value. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot.
-- Heap memory goes through an allocator: `alloc<T>(alloc, count)`, `p.free(alloc)`.
+- Heap memory goes through an allocator: `allocate<T>(alloc, count)`, `p.free(alloc)`.
 - `p.cast<U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
   (`Bool`, `Char`, choices). Pointers may alias.
 

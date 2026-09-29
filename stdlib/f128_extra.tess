@@ -67,17 +67,17 @@ record PiPick
 
 routine f128_pi_pick(quadrant: S64, kind: TrigKind) -> PiPick
     block entry():
-        odd    : Bool   = quadrant.bitand(1).eq(1)
-        even   : Bool   = odd.bitnot()
-        upper  : Bool   = quadrant.ge(2)
-        middle : Bool   = quadrant.eq(1).bitor(quadrant.eq(2))
-        sin    : PiPick = PiPick { over_sin: even, divide: false, negative: upper }
-        cos    : PiPick = PiPick { over_sin: odd, divide: false, negative: middle }
-        tan    : PiPick = PiPick { over_sin: even, divide: true, negative: odd }
+        odd       : Bool   = quadrant.bitand(1).eq(1)
+        even      : Bool   = odd.bitnot()
+        upper     : Bool   = quadrant.ge(2)
+        middle    : Bool   = quadrant.eq(1).bitor(quadrant.eq(2))
+        sin_value : PiPick = PiPick { over_sin: even, divide: false, negative: upper }
+        cos_value : PiPick = PiPick { over_sin: odd, divide: false, negative: middle }
+        tan_value : PiPick = PiPick { over_sin: even, divide: true, negative: odd }
         when kind:
-            TrigKind.Sin -> return(sin)
-            TrigKind.Cos -> return(cos)
-            TrigKind.Tan -> return(tan)
+            TrigKind.Sin -> return(sin_value)
+            TrigKind.Cos -> return(cos_value)
+            TrigKind.Tan -> return(tan_value)
 
 // -- fast tier: F128Extended -----------------------------------------------------------
 
@@ -102,13 +102,13 @@ routine wide_round_within(u: F128Extended, k: S64) -> WideRounding
 /// The result in F128Extended from θ = d π/2 (d nonzero, |d| <= 1/2).
 routine wide_pi_trig(d: F128, pick: PiPick) -> F128Extended
     block entry():
-        theta    : F128Extended = wide_from_f128(d).mul(wide_half_pi())
-        tan      : Bool         = pick.divide
-        over_sin : Bool         = pick.over_sin
+        theta     : F128Extended = wide_from_f128(d).mul(wide_half_pi())
+        tan_value : Bool         = pick.divide
+        over_sin  : Bool         = pick.over_sin
         when:
-            tan      -> quotient(theta)
-            over_sin -> signed(wide_sin_core(theta))
-            _        -> signed(wide_cos_core(theta))
+            tan_value -> quotient(theta)
+            over_sin  -> signed(wide_sin_core(theta))
+            _         -> signed(wide_cos_core(theta))
 
     block quotient(theta: F128Extended):
         s     : F128Extended = wide_sin_core(theta)
@@ -308,13 +308,13 @@ routine f128_pi_trig_exact(d: F128, pick: PiPick) -> F128
         jump load_pi(i.add(1), p, pi)
 
     block series(p: F128Parts, pi: Ptr<BigNat<24>>):
-        claim m     : Ptr<BigNat<24>>
-        claim t     : Ptr<BigNat<24>>
-        claim theta : Ptr<BigNat<24>>
-        claim u     : Ptr<BigNat<24>>
-        claim s     : Ptr<BigNat<24>>
-        claim c     : Ptr<BigNat<24>>
-        claim sin   : Ptr<BigNat<24>>
+        claim m         : Ptr<BigNat<24>>
+        claim t         : Ptr<BigNat<24>>
+        claim theta     : Ptr<BigNat<24>>
+        claim u         : Ptr<BigNat<24>>
+        claim s         : Ptr<BigNat<24>>
+        claim c         : Ptr<BigNat<24>>
+        claim sin_value : Ptr<BigNat<24>>
         m.set_u128(p.sig)
         t.set_product(pi, m)
         // θ in fixed point (for u only; its relative accuracy doesn't matter there)
@@ -324,7 +324,7 @@ routine f128_pi_trig_exact(d: F128, pick: PiPick) -> F128
         u.shr_round_even(PI_FIXED_BITS.to_u64())
         big_trig_series(s, u, 2)
         big_trig_series(c, u, 1)
-        sin.set_product(t, s)
+        sin_value.set_product(t, s)
         sin_e : S64 = p.exponent.sub(113).sub(PI_FIXED_BITS).sub(PI_FIXED_BITS)
         cos_e : S64 = 0.sub(PI_FIXED_BITS)
         // sin θ has θ's sign: it flips the result when sin θ is on top or below
@@ -332,25 +332,27 @@ routine f128_pi_trig_exact(d: F128, pick: PiPick) -> F128
         sin_used       : Bool = pick.over_sin.bitor(pick.divide)
         flip           : Bool = theta_negative.bitand(sin_used)
         negative       : Bool = pick.negative.bitxor(flip)
-        tan            : Bool = pick.divide
+        tan_value      : Bool = pick.divide
         over_sin       : Bool = pick.over_sin
         when:
-            tan      -> divide(sin, sin_e, c, cos_e, negative)
-            over_sin -> return(big_to_f128(sin, sin_e, negative))
-            _        -> return(big_to_f128(c, cos_e, negative))
+            tan_value -> divide(sin_value, sin_e, c, cos_e, negative)
+            over_sin  -> return(big_to_f128(sin_value, sin_e, negative))
+            _         -> return(big_to_f128(c, cos_e, negative))
 
-    block divide(sin: Ptr<BigNat<24>>, sin_e: S64, c: Ptr<BigNat<24>>, cos_e: S64, negative: Bool):
+    block divide(sin_value: Ptr<BigNat<24>>, sin_e: S64, c: Ptr<BigNat<24>>, cos_e: S64,
+            negative: Bool):
         over_sin : Bool = pick.over_sin
-        branch over_sin ? tangent(sin, sin_e, c, cos_e, negative)
-                              : cotangent(sin, sin_e, c, cos_e, negative)
+        branch over_sin ? tangent(sin_value, sin_e, c, cos_e, negative)
+                              : cotangent(sin_value, sin_e, c, cos_e, negative)
 
-    block tangent(sin: Ptr<BigNat<24>>, sin_e: S64, c: Ptr<BigNat<24>>, cos_e: S64, negative: Bool):
-        r : F128 = big_quotient_to_f128(sin, sin_e, c, cos_e, negative)
+    block tangent(sin_value: Ptr<BigNat<24>>, sin_e: S64, c: Ptr<BigNat<24>>, cos_e: S64,
+            negative: Bool):
+        r : F128 = big_quotient_to_f128(sin_value, sin_e, c, cos_e, negative)
         return(r)
 
-    block cotangent(sin: Ptr<BigNat<24>>, sin_e: S64, c: Ptr<BigNat<24>>, cos_e: S64,
+    block cotangent(sin_value: Ptr<BigNat<24>>, sin_e: S64, c: Ptr<BigNat<24>>, cos_e: S64,
             negative: Bool):
-        r : F128 = big_quotient_to_f128(c, cos_e, sin, sin_e, negative)
+        r : F128 = big_quotient_to_f128(c, cos_e, sin_value, sin_e, negative)
         return(r)
 
 // -- the two tiers -------------------------------------------------------------
