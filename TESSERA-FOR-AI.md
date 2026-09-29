@@ -74,7 +74,7 @@ routine main() -> S32
   `%free_fn: Callable<…> = %alloc.free_fn.load()`, then `%free_fn.call(%state, %raw)`. `%alloc.free_fn(...)` is an
   error.
 - A field of an SSA record value is read with plain `=`: `%key: K = %pair.key`.
-- `claim %p : Ptr<T>` claims an uninitialized stack slot; its type comes from the binding, and the value goes in
+- `claim %p : Ptr<T>` claims an uninitialized slot for the routine call (a stack slot in practice); its type comes from the binding, and the value goes in
   with `%p.store(%v)`. An array value comes from `Array<T, N>.from([1, 2, %x])` or `Array<T, N>.from_ptr(%first)`;
   a bare `[1, 2]` isn't a value. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot.
