@@ -291,6 +291,10 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 **Naming conversions.** A conversion is `to_<type>`: `%n.to_s64()`, `%x.to_u8_wrap()`, `%arr.to_ptr()`,
 `%out.to_string()`. There is no `as_<type>`. Other ways to make a value are named for what they make.
 
+**Name case.** Types, concepts, modules, and choice / variant cases are `PascalCase` (`TrapCode.DivByZero`,
+`.Absent`), with acronyms written as words (`Eof`, `FdWriter`, `Nan`). Routines, fields, blocks, and values are
+`snake_case`. Only presets are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
+
 **Arrays and `[]`.** `[]` is address arithmetic: `%p[%i]` is the address of the i-th `T` of a `Ptr<T>`. On a
 `Ptr<Array<T, N>>` that is the i-th whole array, so array elements are `%arr.get(%i)` / `%arr.set(%i, %v)` (bounds
 checked), or `%arr.to_ptr()[%i].load()` unchecked. The same holds for array fields (`%node.keys.get(%i)`) and
