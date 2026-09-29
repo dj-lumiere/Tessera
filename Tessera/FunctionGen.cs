@@ -1093,7 +1093,7 @@ public sealed class FunctionGen
         // prelude's `ieq` / `ine`.
         if (rt is ChoiceType en && m.Name is "eq" or "ne")
         {
-            var r = _c.FindFree(m.Name == "eq" ? "ieq" : "ine", _env.File, m.Pos)
+            var r = _c.FindFree(m.Name == "eq" ? "ieq" : "ine", _env.File, m.Pos, "Standard::Intrinsics")
                     ?? throw Err(m.Pos, $"the prelude has no '{(m.Name == "eq" ? "ieq" : "ine")}'");
             var env = new Compiler.TypeEnv(r.File);
             env.Bind("T", en);

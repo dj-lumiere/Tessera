@@ -9,105 +9,104 @@ record Counts
     live : S64
 
 @callconv("c")
-routine counting_alloc(#state: Addr, %size: CSize) -> Addr
+routine counting_alloc(state: Addr, size: CSize) -> Addr
     block entry():
-        #counts : Ptr<Counts> = #state.cast<Counts>()
-        #counts.live.load().add(1).store_into(#counts.live)
-        %heap : Allocator = make_heap_allocator()
-        #r    : Addr      = %heap.alloc_fn.call(null, %size)
-        return(#r)
+        counts : Ptr<Counts> = state.cast<Counts>()
+        counts.live.load().add(1).store_into(counts.live)
+        heap : Allocator = make_heap_allocator()
+        r    : Addr      = heap.alloc_fn.call(null, size)
+        return(r)
 
 @callconv("c")
-routine counting_realloc(#state: Addr, #old: Addr, %size: CSize) -> Addr
+routine counting_realloc(state: Addr, old: Addr, size: CSize) -> Addr
     block entry():
-        %was_null : Bool = #old.is_null()
-        branch %was_null ? fresh() : resize()
+        was_null : Bool = old.is_null()
+        branch was_null ? fresh() : resize()
 
     block fresh():
-        #counts : Ptr<Counts> = #state.cast<Counts>()
-        #counts.live.load().add(1).store_into(#counts.live)
+        counts : Ptr<Counts> = state.cast<Counts>()
+        counts.live.load().add(1).store_into(counts.live)
         jump resize()
 
     block resize():
-        %heap : Allocator = make_heap_allocator()
-        #r    : Addr      = %heap.realloc_fn.call(null, #old, %size)
-        return(#r)
+        heap : Allocator = make_heap_allocator()
+        r    : Addr      = heap.realloc_fn.call(null, old, size)
+        return(r)
 
 @callconv("c")
-routine counting_free(#state: Addr, #block: Addr) -> Void
+routine counting_free(state: Addr, block: Addr) -> Void
     block entry():
-        %was_null : Bool = #block.is_null()
-        branch %was_null ? return() : release()
+        was_null : Bool = block.is_null()
+        branch was_null ? return() : release()
 
     block release():
-        #counts : Ptr<Counts> = #state.cast<Counts>()
-        #counts.live.load().sub(1).store_into(#counts.live)
-        %heap : Allocator = make_heap_allocator()
-        %heap.free_fn.call(null, #block)
+        counts : Ptr<Counts> = state.cast<Counts>()
+        counts.live.load().sub(1).store_into(counts.live)
+        heap : Allocator = make_heap_allocator()
+        heap.free_fn.call(null, block)
         return()
 
-routine show(%label: String, #counts: Ptr<Counts>) -> Void
+routine show(label: String, counts: Ptr<Counts>) -> Void
     block entry():
-        print("{%label}")
-        %live : S64 = #counts.live.load()
-        print("{%live}\n")
+        print("{label}")
+        live : S64 = counts.live.load()
+        print("{live}\n")
         return()
 
 // A list of three inner lists, each with a few elements.
-routine fill(#outer: Ptr<List<List<S64>>>, #alloc: Ptr<Allocator>) -> Void
+routine fill(outer: Ptr<List<List<S64>>>, alloc: Ptr<Allocator>) -> Void
     block entry():
         jump loop(0)
 
-    block loop(%i: U64):
-        %done : Bool = %i.eq(3)
-        branch %done ? return() : add(%i)
+    block loop(i: U64):
+        done : Bool = i.eq(3)
+        branch done ? return() : add(i)
 
-    block add(%i: U64):
-        %inner_val : List<S64> = .construct(#alloc)
-        claim #inner : Ptr<List<S64>>
-        #inner.store(%inner_val)
-        #inner.push(%i.to_s64())
-        #inner.push(7)
-        %filled : List<S64> = #inner.load()
-        #outer.push(%filled)
-        jump loop(%i.add(1))
+    block add(i: U64):
+        inner_val : List<S64> = .construct(alloc)
+        claim inner : Ptr<List<S64>>
+        inner.store(inner_val)
+        inner.push(i.to_s64())
+        inner.push(7)
+        filled : List<S64> = inner.load()
+        outer.push(filled)
+        jump loop(i.add(1))
 
 routine main() -> S32
     block entry():
-        claim #counts : Ptr<Counts>
-        #counts.store(Counts { live: 0 })
-        %counting : Allocator = Allocator { alloc_fn:   counting_alloc,
-                realloc_fn: counting_realloc, free_fn:    counting_free,
-                state:      #counts.cast<Byte>() }
-        claim #alloc : Ptr<Allocator>
-        #alloc.store(%counting)
+        claim counts : Ptr<Counts>
+        counts.store(Counts { live: 0 })
+        counting : Allocator = Allocator { alloc_fn:   counting_alloc, realloc_fn: counting_realloc,
+                free_fn:    counting_free, state:      counts.cast<Byte>() }
+        claim alloc : Ptr<Allocator>
+        alloc.store(counting)
 
-        %a_val : List<List<S64>> = .construct(#alloc)
-        claim #a : Ptr<List<List<S64>>>
-        #a.store(%a_val)
-        fill(#a, #alloc)
-        show("filled: ", #counts)
-        #a.destruct()
-        show("after destruct (inner lists leak): ", #counts)
+        a_val : List<List<S64>> = .construct(alloc)
+        claim a : Ptr<List<List<S64>>>
+        a.store(a_val)
+        fill(a, alloc)
+        show("filled: ", counts)
+        a.destruct()
+        show("after destruct (inner lists leak): ", counts)
 
-        #counts.live.store(0)
-        %b_val : List<List<S64>> = .construct(#alloc)
-        claim #b : Ptr<List<List<S64>>>
-        #b.store(%b_val)
-        fill(#b, #alloc)
-        #b.destruct_all()
-        show("after destruct_all: ", #counts)
+        counts.live.store(0)
+        b_val : List<List<S64>> = .construct(alloc)
+        claim b : Ptr<List<List<S64>>>
+        b.store(b_val)
+        fill(b, alloc)
+        b.destruct_all()
+        show("after destruct_all: ", counts)
 
-        #counts.live.store(0)
-        %d_val : Dict<S64, List<S64>> = .construct(#alloc)
-        claim #d : Ptr<Dict<S64, List<S64>>>
-        #d.store(%d_val)
-        %v_val : List<S64> = .construct(#alloc)
-        claim #v : Ptr<List<S64>>
-        #v.store(%v_val)
-        #v.push(1)
-        %v : List<S64> = #v.load()
-        #d.put(5, %v)
-        #d.destruct_all_values()
-        show("dict after destruct_all_values: ", #counts)
+        counts.live.store(0)
+        d_val : Dict<S64, List<S64>> = .construct(alloc)
+        claim d : Ptr<Dict<S64, List<S64>>>
+        d.store(d_val)
+        v_val : List<S64> = .construct(alloc)
+        claim v : Ptr<List<S64>>
+        v.store(v_val)
+        v.push(1)
+        v_loaded : List<S64> = v.load()
+        d.put(5, v_loaded)
+        d.destruct_all_values()
+        show("dict after destruct_all_values: ", counts)
         return(0)

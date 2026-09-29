@@ -21,7 +21,7 @@
 // can be tested on x86.
 //
 // Call div_3by2_prepare (div_2by1_prepare) once per divisor and pass its
-// result as %v.
+// result as v.
 
 module Standard::Core
 
@@ -56,190 +56,190 @@ preset RECIPROCAL_TABLE: Array<U64, 256> = [2045, 2037, 2029, 2021, 2013, 2005, 
 // -- helpers -------------------------------------------------------------------
 
 /// The high 64 bits of a × b, both unsigned.
-routine mul_high64(%a: U64, %b: U64) -> U64
+routine mul_high64(a: U64, b: U64) -> U64
     block entry():
-        %r : U64 = %a.to_u128().mul_wrap(%b.to_u128()).shr(64).to_u64()
-        return(%r)
+        r : U64 = a.to_u128().mul_wrap(b.to_u128()).shr(64).to_u64()
+        return(r)
 
 // -- Möller–Granlund -----------------------------------------------------------
 
 /// floor((2^128 - 1) / d) - 2^64 for a normalized d (Algorithm 2 of the paper).
-routine reciprocal_2by1(%d: U64) -> U64
+routine reciprocal_2by1(d: U64) -> U64
     block entry():
-        %index : U64 = %d.shr(55).sub(256)
-        %v0    : U64 = RECIPROCAL_TABLE.get(%index)
-        %d40   : U64 = %d.shr(24).add_wrap(1)
-        %v0_sq : U64 = %v0.mul_wrap(%v0).bitand(0xFFFFFFFF)
-        %fix1  : U64 = %v0_sq.mul_wrap(%d40).shr(40).bitand(0xFFFFFFFF)
-        %v1    : U64 = %v0.shl(11).sub(%fix1).sub(1)
-        %gap   : U64 = 0x1000000000000000.sub_wrap(%v1.mul_wrap(%d40))
-        %v2    : U64 = %v1.shl(13).add_wrap(%v1.mul_wrap(%gap).shr(47))
-        %d0    : U64 = %d.bitand(1)
-        %d63   : U64 = %d.shr(1).add_wrap(%d0)  // ceil(d / 2)
-        %e     : U64 = %v2.shr(1).bitand(0.sub_wrap(%d0)).sub_wrap(%v2.mul_wrap(%d63))
-        %v3    : U64 = mul_high64(%v2, %e).shr(1).add_wrap(%v2.shl(31))
+        index : U64 = d.shr(55).sub(256)
+        v0    : U64 = RECIPROCAL_TABLE.get(index)
+        d40   : U64 = d.shr(24).add_wrap(1)
+        v0_sq : U64 = v0.mul_wrap(v0).bitand(0xFFFFFFFF)
+        fix1  : U64 = v0_sq.mul_wrap(d40).shr(40).bitand(0xFFFFFFFF)
+        v1    : U64 = v0.shl(11).sub(fix1).sub(1)
+        gap   : U64 = 0x1000000000000000.sub_wrap(v1.mul_wrap(d40))
+        v2    : U64 = v1.shl(13).add_wrap(v1.mul_wrap(gap).shr(47))
+        d0    : U64 = d.bitand(1)
+        d63   : U64 = d.shr(1).add_wrap(d0)  // ceil(d / 2)
+        e     : U64 = v2.shr(1).bitand(0.sub_wrap(d0)).sub_wrap(v2.mul_wrap(d63))
+        v3    : U64 = mul_high64(v2, e).shr(1).add_wrap(v2.shl(31))
         // v4 = v3 - high(v3 × d + d) - d
-        %p  : U128 = %v3.to_u128().mul_wrap(%d.to_u128()).add_wrap(%d.to_u128())
-        %v4 : U64  = %v3.sub_wrap(%p.shr(64).to_u64()).sub_wrap(%d)
-        return(%v4)
+        p  : U128 = v3.to_u128().mul_wrap(d.to_u128()).add_wrap(d.to_u128())
+        v4 : U64  = v3.sub_wrap(p.shr(64).to_u64()).sub_wrap(d)
+        return(v4)
 
 /// floor((2^192 - 1) / d) - 2^64 for the normalized two-limb d = (d1, d0).
-routine reciprocal_3by2(%d1: U64, %d0: U64) -> U64
+routine reciprocal_3by2(d1: U64, d0: U64) -> U64
     block entry():
-        %v     : U64  = reciprocal_2by1(%d1)
-        %p     : U64  = %d1.mul_wrap(%v).add_wrap(%d0)
-        %wrap1 : Bool = %p.lt(%d0)
-        branch %wrap1 ? step_down(%v, %p) : cross(%v, %p)
+        v     : U64  = reciprocal_2by1(d1)
+        p     : U64  = d1.mul_wrap(v).add_wrap(d0)
+        wrap1 : Bool = p.lt(d0)
+        branch wrap1 ? step_down(v, p) : cross(v, p)
 
-    block step_down(%v: U64, %p: U64):
-        %twice : Bool = %p.ge(%d1)
-        %v2    : U64  = %twice ? %v.sub_wrap(2) : %v.sub_wrap(1)
-        %p2    : U64  = %twice ? %p.sub_wrap(%d1).sub_wrap(%d1) : %p.sub_wrap(%d1)
-        jump cross(%v2, %p2)
+    block step_down(v: U64, p: U64):
+        twice : Bool = p.ge(d1)
+        v2    : U64  = twice ? v.sub_wrap(2) : v.sub_wrap(1)
+        p2    : U64  = twice ? p.sub_wrap(d1).sub_wrap(d1) : p.sub_wrap(d1)
+        jump cross(v2, p2)
 
-    block cross(%v: U64, %p: U64):
-        %t     : U128 = %v.to_u128().mul_wrap(%d0.to_u128())
-        %t_lo  : U64  = %t.to_u64_wrap()
-        %t_hi  : U64  = %t.shr(64).to_u64()
-        %p2    : U64  = %p.add_wrap(%t_hi)
-        %wrap2 : Bool = %p2.lt(%t_hi)
-        %over  : Bool = %p2.gt(%d1).bitor(%t_lo.ge(%d0))
-        %again : Bool = %p2.ge(%d1).bitand(%over)
-        %down  : U64  = %wrap2.to_u64().add(%wrap2.bitand(%again).to_u64())
-        %r     : U64  = %v.sub_wrap(%down)
-        return(%r)
+    block cross(v: U64, p: U64):
+        t     : U128 = v.to_u128().mul_wrap(d0.to_u128())
+        t_lo  : U64  = t.to_u64_wrap()
+        t_hi  : U64  = t.shr(64).to_u64()
+        p2    : U64  = p.add_wrap(t_hi)
+        wrap2 : Bool = p2.lt(t_hi)
+        over  : Bool = p2.gt(d1).bitor(t_lo.ge(d0))
+        again : Bool = p2.ge(d1).bitand(over)
+        down  : U64  = wrap2.to_u64().add(wrap2.bitand(again).to_u64())
+        r     : U64  = v.sub_wrap(down)
+        return(r)
 
-routine div_3by2_mg(%u2: U64, %u1: U64, %u0: U64, %d1: U64, %d0: U64, %v: U64) -> Div3By2
+routine div_3by2_mg(u2: U64, u1: U64, u0: U64, d1: U64, d0: U64, v: U64) -> Div3By2
     block entry():
-        %d    : U128    = %d1.to_u128().shl(64).bitor(%d0.to_u128())
-        %q    : U128    = %v.to_u128().mul_wrap(%u2.to_u128()).add_wrap(%u2.to_u128().shl(64).bitor(%u1.to_u128()))
-        %q_lo : U64     = %q.to_u64_wrap()
-        %q_hi : U64     = %q.shr(64).to_u64()
-        %r1   : U64     = %u1.sub_wrap(%q_hi.mul_wrap(%d1))
-        %t    : U128    = %d0.to_u128().mul_wrap(%q_hi.to_u128())
-        %r    : U128    = %r1.to_u128().shl(64).bitor(%u0.to_u128()).sub_wrap(%t).sub_wrap(%d)
-        %r_hi : U64     = %r.shr(64).to_u64()
-        %qq   : U64     = %q_hi.add_wrap(1)
-        %back : Bool    = %r_hi.ge(%q_lo)
-        %qq2  : U64     = %back ? %qq.sub_wrap(1) : %qq
-        %rr   : U128    = %back ? %r.add_wrap(%d) : %r
-        %over : Bool    = %rr.ge(%d)
-        %qq3  : U64     = %over ? %qq2.add_wrap(1) : %qq2
-        %rr2  : U128    = %over ? %rr.sub_wrap(%d) : %rr
-        %res  : Div3By2 = Div3By2 { quotient: %qq3, remainder: %rr2 }
-        return(%res)
+        d    : U128    = d1.to_u128().shl(64).bitor(d0.to_u128())
+        q    : U128    = v.to_u128().mul_wrap(u2.to_u128()).add_wrap(u2.to_u128().shl(64).bitor(u1.to_u128()))
+        q_lo : U64     = q.to_u64_wrap()
+        q_hi : U64     = q.shr(64).to_u64()
+        r1   : U64     = u1.sub_wrap(q_hi.mul_wrap(d1))
+        t    : U128    = d0.to_u128().mul_wrap(q_hi.to_u128())
+        r    : U128    = r1.to_u128().shl(64).bitor(u0.to_u128()).sub_wrap(t).sub_wrap(d)
+        r_hi : U64     = r.shr(64).to_u64()
+        qq   : U64     = q_hi.add_wrap(1)
+        back : Bool    = r_hi.ge(q_lo)
+        qq2  : U64     = back ? qq.sub_wrap(1) : qq
+        rr   : U128    = back ? r.add_wrap(d) : r
+        over : Bool    = rr.ge(d)
+        qq3  : U64     = over ? qq2.add_wrap(1) : qq2
+        rr2  : U128    = over ? rr.sub_wrap(d) : rr
+        res  : Div3By2 = Div3By2 { quotient: qq3, remainder: rr2 }
+        return(res)
 
 /// (u1, u0) / d with the reciprocal v = reciprocal_2by1(d) (Algorithm 4 of the paper).
-routine div_2by1_mg(%u1: U64, %u0: U64, %d: U64, %v: U64) -> Div2By1
+routine div_2by1_mg(u1: U64, u0: U64, d: U64, v: U64) -> Div2By1
     block entry():
-        %u    : U128 = %u1.to_u128().shl(64).bitor(%u0.to_u128())
-        %q    : U128 = %v.to_u128().mul_wrap(%u1.to_u128()).add_wrap(%u)
-        %q_lo : U64  = %q.to_u64_wrap()
-        %q_hi : U64  = %q.shr(64).to_u64().add_wrap(1)
-        %r    : U64  = %u0.sub_wrap(%q_hi.mul_wrap(%d))
+        u    : U128 = u1.to_u128().shl(64).bitor(u0.to_u128())
+        q    : U128 = v.to_u128().mul_wrap(u1.to_u128()).add_wrap(u)
+        q_lo : U64  = q.to_u64_wrap()
+        q_hi : U64  = q.shr(64).to_u64().add_wrap(1)
+        r    : U64  = u0.sub_wrap(q_hi.mul_wrap(d))
         // The estimate is at most one too big (r wrapped above q_lo) or one too small (r >= d).
-        %back : Bool    = %r.gt(%q_lo)
-        %q2   : U64     = %back ? %q_hi.sub_wrap(1) : %q_hi
-        %r2   : U64     = %back ? %r.add_wrap(%d) : %r
-        %over : Bool    = %r2.ge(%d)
-        %q3   : U64     = %over ? %q2.add_wrap(1) : %q2
-        %r3   : U64     = %over ? %r2.sub_wrap(%d) : %r2
-        %res  : Div2By1 = Div2By1 { quotient: %q3, remainder: %r3 }
-        return(%res)
+        back : Bool    = r.gt(q_lo)
+        q2   : U64     = back ? q_hi.sub_wrap(1) : q_hi
+        r2   : U64     = back ? r.add_wrap(d) : r
+        over : Bool    = r2.ge(d)
+        q3   : U64     = over ? q2.add_wrap(1) : q2
+        r3   : U64     = over ? r2.sub_wrap(d) : r2
+        res  : Div2By1 = Div2By1 { quotient: q3, remainder: r3 }
+        return(res)
 
 // -- divq ----------------------------------------------------------------------
 
 /// floor((hi × 2^64 + lo) / d) with x86's divq. Needs hi < d: divq faults when
 /// the quotient doesn't fit in 64 bits.
 @[external("llvm"), target(arch: "x86_64"),
-        template("{t0} = call {{ i64, i64 }} asm \"divq $4\", \"={{ax}},={{dx}},0,1,r,~{{flags}}\"(i64 {%lo}, i64 {%hi}, i64 {%d})\n{result} = extractvalue {{ i64, i64 }} {t0}, 0")]
-routine divq_quotient(%hi: U64, %lo: U64, %d: U64) -> U64
+        template("{t0} = call {{ i64, i64 }} asm \"divq $4\", \"={{ax}},={{dx}},0,1,r,~{{flags}}\"(i64 {lo}, i64 {hi}, i64 {d})\n{result} = extractvalue {{ i64, i64 }} {t0}, 0")]
+routine divq_quotient(hi: U64, lo: U64, d: U64) -> U64
 
 @target(arch: "x86_64")
-routine div_3by2_divq(%u2: U64, %u1: U64, %u0: U64, %d1: U64, %d0: U64) -> Div3By2
+routine div_3by2_divq(u2: U64, u1: U64, u0: U64, d1: U64, d0: U64) -> Div3By2
     block entry():
         // (u2, u1) < (d1, d0) leaves u2 <= d1; when equal, divq would fault.
-        %top : Bool = %u2.eq(%d1)
-        branch %top ? saturated() : estimate()
+        top : Bool = u2.eq(d1)
+        branch top ? saturated() : estimate()
 
     block estimate():
-        %q    : U64 = divq_quotient(%u2, %u1, %d1)
-        %rhat : U64 = %u1.sub_wrap(%q.mul_wrap(%d1))
-        jump check(%q, %rhat.to_u128())
+        q    : U64 = divq_quotient(u2, u1, d1)
+        rhat : U64 = u1.sub_wrap(q.mul_wrap(d1))
+        jump check(q, rhat.to_u128())
 
     // q = 2^64 - 1, and rhat = (u2, u1) - q × d1 = u1 + d1, which may carry
     block saturated():
-        %rhat : U128 = %u1.to_u128().add(%d1.to_u128())
-        jump check(U64.MAX, %rhat)
+        rhat : U128 = u1.to_u128().add(d1.to_u128())
+        jump check(U64.MAX, rhat)
 
     // Knuth's test: while q × d0 > (rhat, u0), q is one too big. Runs at most twice.
-    block check(%q: U64, %rhat: U128):
-        %carried : Bool = %rhat.ge(18446744073709551616)  // 2^64: the test can't fail
-        %lhs     : U128 = %q.to_u128().mul_wrap(%d0.to_u128())
-        %rhs     : U128 = %rhat.shl(64).bitor(%u0.to_u128())
-        %too_big : Bool = %carried.bitnot().bitand(%lhs.gt(%rhs))
-        branch %too_big ? check(%q.sub_wrap(1), %rhat.add(%d1.to_u128())) : done(%q)
+    block check(q: U64, rhat: U128):
+        carried : Bool = rhat.ge(18446744073709551616)  // 2^64: the test can't fail
+        lhs     : U128 = q.to_u128().mul_wrap(d0.to_u128())
+        rhs     : U128 = rhat.shl(64).bitor(u0.to_u128())
+        too_big : Bool = carried.bitnot().bitand(lhs.gt(rhs))
+        branch too_big ? check(q.sub_wrap(1), rhat.add(d1.to_u128())) : done(q)
 
     // The remainder is below 2^128, so the low 128 bits of the subtraction suffice.
-    block done(%q: U64):
-        %d   : U128    = %d1.to_u128().shl(64).bitor(%d0.to_u128())
-        %low : U128    = %u1.to_u128().shl(64).bitor(%u0.to_u128())
-        %r   : U128    = %low.sub_wrap(%d.mul_wrap(%q.to_u128()))
-        %res : Div3By2 = Div3By2 { quotient: %q, remainder: %r }
-        return(%res)
+    block done(q: U64):
+        d   : U128    = d1.to_u128().shl(64).bitor(d0.to_u128())
+        low : U128    = u1.to_u128().shl(64).bitor(u0.to_u128())
+        r   : U128    = low.sub_wrap(d.mul_wrap(q.to_u128()))
+        res : Div3By2 = Div3By2 { quotient: q, remainder: r }
+        return(res)
 
 @target(arch: "x86_64")
-routine div_2by1_divq(%u1: U64, %u0: U64, %d: U64) -> Div2By1
+routine div_2by1_divq(u1: U64, u0: U64, d: U64) -> Div2By1
     block entry():
-        %q   : U64     = divq_quotient(%u1, %u0, %d)
-        %r   : U64     = %u0.sub_wrap(%q.mul_wrap(%d))
-        %res : Div2By1 = Div2By1 { quotient: %q, remainder: %r }
-        return(%res)
+        q   : U64     = divq_quotient(u1, u0, d)
+        r   : U64     = u0.sub_wrap(q.mul_wrap(d))
+        res : Div2By1 = Div2By1 { quotient: q, remainder: r }
+        return(res)
 
 // -- by target -----------------------------------------------------------------
 
 @target(arch: "x86_64")
-routine div_2by1_prepare(%d: U64) -> U64
+routine div_2by1_prepare(d: U64) -> U64
     block entry():
         return(0)
 
 @target(arch: !"x86_64")
-routine div_2by1_prepare(%d: U64) -> U64
+routine div_2by1_prepare(d: U64) -> U64
     block entry():
-        %v : U64 = reciprocal_2by1(%d)
-        return(%v)
+        v : U64 = reciprocal_2by1(d)
+        return(v)
 
 @target(arch: "x86_64")
-routine div_2by1(%u1: U64, %u0: U64, %d: U64, %v: U64) -> Div2By1
+routine div_2by1(u1: U64, u0: U64, d: U64, v: U64) -> Div2By1
     block entry():
-        %r : Div2By1 = div_2by1_divq(%u1, %u0, %d)
-        return(%r)
+        r : Div2By1 = div_2by1_divq(u1, u0, d)
+        return(r)
 
 @target(arch: !"x86_64")
-routine div_2by1(%u1: U64, %u0: U64, %d: U64, %v: U64) -> Div2By1
+routine div_2by1(u1: U64, u0: U64, d: U64, v: U64) -> Div2By1
     block entry():
-        %r : Div2By1 = div_2by1_mg(%u1, %u0, %d, %v)
-        return(%r)
+        r : Div2By1 = div_2by1_mg(u1, u0, d, v)
+        return(r)
 
 @target(arch: "x86_64")
-routine div_3by2_prepare(%d1: U64, %d0: U64) -> U64
+routine div_3by2_prepare(d1: U64, d0: U64) -> U64
     block entry():
         return(0)
 
 @target(arch: !"x86_64")
-routine div_3by2_prepare(%d1: U64, %d0: U64) -> U64
+routine div_3by2_prepare(d1: U64, d0: U64) -> U64
     block entry():
-        %v : U64 = reciprocal_3by2(%d1, %d0)
-        return(%v)
+        v : U64 = reciprocal_3by2(d1, d0)
+        return(v)
 
 @target(arch: "x86_64")
-routine div_3by2(%u2: U64, %u1: U64, %u0: U64, %d1: U64, %d0: U64, %v: U64) -> Div3By2
+routine div_3by2(u2: U64, u1: U64, u0: U64, d1: U64, d0: U64, v: U64) -> Div3By2
     block entry():
-        %r : Div3By2 = div_3by2_divq(%u2, %u1, %u0, %d1, %d0)
-        return(%r)
+        r : Div3By2 = div_3by2_divq(u2, u1, u0, d1, d0)
+        return(r)
 
 @target(arch: !"x86_64")
-routine div_3by2(%u2: U64, %u1: U64, %u0: U64, %d1: U64, %d0: U64, %v: U64) -> Div3By2
+routine div_3by2(u2: U64, u1: U64, u0: U64, d1: U64, d0: U64, v: U64) -> Div3By2
     block entry():
-        %r : Div3By2 = div_3by2_mg(%u2, %u1, %u0, %d1, %d0, %v)
-        return(%r)
+        r : Div3By2 = div_3by2_mg(u2, u1, u0, d1, d0, v)
+        return(r)

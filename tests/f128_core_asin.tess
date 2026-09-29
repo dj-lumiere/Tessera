@@ -6,94 +6,94 @@
 import Standard::Format
 
 // 0 = asin, 1 = asin's accurate path, 2 = acos, 3 = acos's accurate path
-routine evaluate(%which: U64, %x: F128) -> F128
+routine evaluate(which: U64, x: F128) -> F128
     block entry():
-        when %which:
-            0 -> asin(%x)
-            1 -> asin_accurate(%x)
-            2 -> acos(%x)
-            _ -> acos_accurate(%x)
+        when which:
+            0 -> asin(x)
+            1 -> asin_accurate(x)
+            2 -> acos(x)
+            _ -> acos_accurate(x)
 
-    block asin(%x: F128):
-        %r : F128 = f128_cm_asin(%x)
-        return(%r)
+    block asin(x: F128):
+        r : F128 = f128_cm_asin(x)
+        return(r)
 
-    block asin_accurate(%x: F128):
-        %r : F128 = cm_asin_accurate(%x)
-        return(%r)
+    block asin_accurate(x: F128):
+        r : F128 = cm_asin_accurate(x)
+        return(r)
 
-    block acos(%x: F128):
-        %r : F128 = f128_cm_acos(%x)
-        return(%r)
+    block acos(x: F128):
+        r : F128 = f128_cm_acos(x)
+        return(r)
 
-    block acos_accurate(%x: F128):
-        %r : F128 = cm_acos_accurate(%x)
-        return(%r)
+    block acos_accurate(x: F128):
+        r : F128 = cm_acos_accurate(x)
+        return(r)
 
-// Whether a routine takes %x: the full functions take everything; asin's accurate path takes
+// Whether a routine takes x: the full functions take everything; asin's accurate path takes
 // 2^-56 <= |x| < 1 (the fast path's own range), acos's |x| < 1.
-routine accepts(%which: U64, %x: F128) -> Bool
+routine accepts(which: U64, x: F128) -> Bool
     block entry():
-        %exp     : U64  = %x.bits().shr(112).bitand(32767).to_u64()
-        %below_1 : Bool = %exp.lt(16383)
-        %asin_ok : Bool = %below_1.bitand(%exp.ge(16327))
-        %full    : Bool = %which.bitand(1).eq(0)
-        %is_asin : Bool = %which.eq(1)
-        %partial : Bool = %is_asin ? %asin_ok : %below_1
-        %r       : Bool = %full.bitor(%partial)
-        return(%r)
+        exp     : U64  = x.bits().shr(112).bitand(32767).to_u64()
+        below_1 : Bool = exp.lt(16383)
+        asin_ok : Bool = below_1.bitand(exp.ge(16327))
+        full    : Bool = which.bitand(1).eq(0)
+        is_asin : Bool = which.eq(1)
+        partial : Bool = is_asin ? asin_ok : below_1
+        r       : Bool = full.bitor(partial)
+        return(r)
 
-routine run(#out: Ptr<FdWriter>, %name: String, %which: U64, #want: Ptr<U128>) -> Void
+routine run(out: Ptr<FdWriter>, name: String, which: U64, want: Ptr<U128>) -> Void
     block entry():
-        jump next(#out, %name, %which, #want, 0, 0, 0)
+        jump next(out, name, which, want, 0, 0, 0)
 
-    block next(#out: Ptr<FdWriter>, %name: String, %which: U64, #want: Ptr<U128>, %i: U64,
-            %checked: U64, %wrong: U64):
-        %done : Bool = %i.eq(CASE_COUNT)
-        branch %done ? summary(#out, %name, %checked, %wrong)
-                     : case(#out, %name, %which, #want, %i, %checked, %wrong)
+    block next(out: Ptr<FdWriter>, name: String, which: U64, want: Ptr<U128>, i: U64, checked: U64,
+            wrong: U64):
+        done : Bool = i.eq(CASE_COUNT)
+        branch done ? summary(out, name, checked, wrong)
+                     : case(out, name, which, want, i, checked, wrong)
 
-    block case(#out: Ptr<FdWriter>, %name: String, %which: U64, #want: Ptr<U128>, %i: U64,
-            %checked: U64, %wrong: U64):
-        #xs    : Ptr<U128> = CASE_X.to_ptr()
-        %bits  : U128      = #xs[%i].load()
-        %x     : F128      = f128_of(%bits)
-        %taken : Bool      = accepts(%which, %x)
-        branch %taken ? compare(#out, %name, %which, #want, %i, %checked, %wrong, %x)
-                      : next(#out, %name, %which, #want, %i.add(1), %checked, %wrong)
+    block case(out: Ptr<FdWriter>, name: String, which: U64, want: Ptr<U128>, i: U64, checked: U64,
+            wrong: U64):
+        xs    : Ptr<U128> = CASE_X.to_ptr()
+        bits  : U128      = xs[i].load()
+        x     : F128      = f128_of(bits)
+        taken : Bool      = accepts(which, x)
+        branch taken ? compare(out, name, which, want, i, checked, wrong, x)
+                      : next(out, name, which, want, i.add(1), checked, wrong)
 
-    block compare(#out: Ptr<FdWriter>, %name: String, %which: U64, #want: Ptr<U128>, %i: U64,
-            %checked: U64, %wrong: U64, %x: F128):
-        %got   : F128 = evaluate(%which, %x)
-        %good  : U128 = #want[%i].load()
-        %right : Bool = %got.bits().eq(%good)
-        branch %right ? next(#out, %name, %which, #want, %i.add(1), %checked.add(1), %wrong)
-                      : report(#out, %name, %which, #want, %i, %checked, %wrong, %x, %got, %good)
+    block compare(out: Ptr<FdWriter>, name: String, which: U64, want: Ptr<U128>, i: U64,
+            checked: U64, wrong: U64, x: F128):
+        got   : F128 = evaluate(which, x)
+        good  : U128 = want[i].load()
+        right : Bool = got.bits().eq(good)
+        branch right ? next(out, name, which, want, i.add(1), checked.add(1), wrong)
+                      : report(out, name, which, want, i, checked, wrong, x, got, good)
 
-    block report(#out: Ptr<FdWriter>, %name: String, %which: U64, #want: Ptr<U128>, %i: U64,
-            %checked: U64, %wrong: U64, %x: F128, %got: F128, %good: U128):
-        write(#out, "{%name} ")
-        %x.bits().represent_hex(#out)
-        write(#out, ": got ")
-        %got.bits().represent_hex(#out)
-        write(#out, ", want ")
-        %good.represent_hex(#out)
-        write(#out, "\n")
-        jump next(#out, %name, %which, #want, %i.add(1), %checked.add(1), %wrong.add(1))
+    block report(out: Ptr<FdWriter>, name: String, which: U64, want: Ptr<U128>, i: U64,
+            checked: U64, wrong: U64, x: F128, got: F128, good: U128):
+        write(out, "{name} ")
+        x.bits().represent_hex(out)
+        write(out, ": got ")
+        got.bits().represent_hex(out)
+        write(out, ", want ")
+        good.represent_hex(out)
+        write(out, "\n")
+        jump next(out, name, which, want, i.add(1), checked.add(1), wrong.add(1))
 
-    block summary(#out: Ptr<FdWriter>, %name: String, %checked: U64, %wrong: U64):
-        write(#out, "{%name}: {%checked} checked, {%wrong} wrong\n")
+    block summary(out: Ptr<FdWriter>, name: String, checked: U64, wrong: U64):
+        write(out, "{name}: {checked} checked, {wrong} wrong\n")
         return()
 
 routine main() -> S32
     block entry():
-        %out_val : FdWriter = .stdout()
-        claim #out : Ptr<FdWriter>
-        #out.store(%out_val)
-        run(#out, "asin", 0, CASE_ASIN.to_ptr())
-        run(#out, "asin accurate", 1, CASE_ASIN.to_ptr())
-        run(#out, "acos", 2, CASE_ACOS.to_ptr())
-        run(#out, "acos accurate", 3, CASE_ACOS.to_ptr())
+        out_val : FdWriter = .stdout()
+        claim out : Ptr<FdWriter>
+        out.store(out_val)
+        run(out, "asin", 0, CASE_ASIN.to_ptr())
+        run(out, "asin accurate", 1, CASE_ASIN.to_ptr())
+        run(out, "acos", 2, CASE_ACOS.to_ptr())
+        run(out, "acos accurate", 3, CASE_ACOS.to_ptr())
         return(0)
 
 preset CASE_COUNT: U64 = 2827
