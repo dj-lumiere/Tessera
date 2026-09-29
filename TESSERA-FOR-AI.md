@@ -15,9 +15,12 @@ dotnet run --project Tessera -- test tests playground examples  # golden tests
 dotnet run --project Tessera -- fmt <files or dirs>        # format in place (--check to only list)
 ```
 
-A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines (the stdlib declares
-`Standard::Core`, `Standard::Format`, `Standard::Alloc`, `Standard::Collections`, `Standard::Os`), but name lookup is still
-global: every file in `stdlib/` is in scope without an import.
+A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines. Name lookup follows
+modules: a file sees its own module, `Standard::Core` (always imported: the built-in types, `Option`, `Result`,
+`String`), and what it imports, so printing a number needs `import Standard::Format` and a `List` needs
+`import Standard::Collections`. A routine declared in its type's module comes with the type; one another module adds
+to it (like `S64.represent` from `Standard::Format`) needs that module imported. A qualified path
+(`Standard::Format::write_str`) reaches any public name without an import.
 
 ## Skeleton
 
