@@ -508,7 +508,7 @@ public sealed class FunctionGen
         return v;
     }
 
-    /// A place argument is its address, as everywhere else: memory is never read implicitly (open question #3).
+    /// A place argument is its address, as everywhere else: memory is never read implicitly (see Memory-Model, The Rule).
     /// When the parameter wants what is stored there, the error says to load it.
     private Val EvalArg(Expr e, DType expected)
     {

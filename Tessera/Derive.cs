@@ -73,7 +73,8 @@ public static class Derive
             throw new CompileError(at, $"{name} is an @llvm record, so it has no fields to derive {concept} from");
         if (r.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
             throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}<...>'");
-        // A pointer compares by address only through ptr_eq, on purpose (Roadmap #1), so there's nothing to derive.
+        // A pointer compares by address only through ptr_eq, on purpose (see Type-System, Ptr<T> and T's API),
+        // so there's nothing to derive.
         if (concept is "Equal" or "Hash" or "Compare"
             && r.Fields.FirstOrDefault(f => f.Type.Name is "Ptr" or "Addr") is { } pointer)
             throw new CompileError(at, $"{name} can't derive {concept}: field '{pointer.Name}' is a pointer; declare '{method}'");
