@@ -40,6 +40,7 @@ public sealed partial class Compiler
         foreach (var d in Derive.Routines(decls.ToList()))
         {
             if (!Selected(d)) continue;
+            _fileModule.TryAdd(d.File, d.Module);
             RegisterConcepts(d);
             switch (d)
             {
@@ -49,7 +50,10 @@ public sealed partial class Compiler
                         _modules.Add(m.Path[..i]);
                     _modules.Add(m.Path);
                     break;
-                case ImportDecl imp: _imports.Add(imp); break;
+                case ImportDecl imp:
+                    _imports.Add(imp);
+                    (_fileImports.TryGetValue(imp.File, out var set) ? set : _fileImports[imp.File] = []).Add(imp.Path);
+                    break;
                 case RecordDecl s: Add(_records, s.Name, s); break;
                 case VariantDecl v: Add(_variants, v.Name, v); break;
                 case ChoiceDecl e: Add(_choices, e.Name, e); break;
@@ -63,7 +67,7 @@ public sealed partial class Compiler
                     break;
             }
         }
-        // Names are still one solution-wide namespace; for now an import only has to name a module that exists.
+        // A name is still unique across the solution (RejectDuplicates); modules decide where it's visible.
         foreach (var imp in _imports)
             if (!_modules.Contains(imp.Path))
                 throw new CompileError(imp.Pos, $"unknown module '{imp.Path}'");
@@ -212,16 +216,43 @@ public sealed partial class Compiler
 
     // ── Name lookup ─────────────────────────────────────────────────────────
 
+    public const string CoreModule = "Standard::Core";
+
+    private readonly Dictionary<string, string> _fileModule = [];
+    private readonly Dictionary<string, HashSet<string>> _fileImports = [];
+
+    /// The module a file declares; "" for the solution's root.
+    public string ModuleOf(string file) => _fileModule.GetValueOrDefault(file, "");
+
+    private static string ShowModule(string module) => module == "" ? "the root module" : module;
+
+    /// Whether `file` sees `d`: by its plain name when `path` is null, or through `path::name`. A plain name reaches
+    /// the file's own module, Standard::Core (always imported), and the modules the file imports. `private` limits a
+    /// declaration to its file and `internal` to its module, qualified or not.
+    public bool Visible(Decl d, string file, string? path)
+    {
+        if (path is not null && d.Module != path) return false;
+        if (d.IsPrivate) return d.File == file;
+        string from = ModuleOf(file);
+        if (d.IsInternal) return d.Module == from;
+        return path is not null || d.Module == from || d.Module == CoreModule
+               || (_fileImports.TryGetValue(file, out var imports) && imports.Contains(d.Module));
+    }
+
+    private string Hidden(Decl d, string what, string? path) =>
+        path is not null && d.Module != path ? $"{what} isn't in {path}; it's in {ShowModule(d.Module)}"
+        : d.IsPrivate ? $"{what} is private to {d.File}"
+        : d.IsInternal ? $"{what} is internal to {ShowModule(d.Module)}"
+        : $"{what} is in {ShowModule(d.Module)}; import {d.Module} or write {d.Module}::...";
+
     /// A name is unique under its parent (RejectDuplicates) except for `private` declarations, which share names with
     /// declarations in other files (each sorted collection has its own NODE_KEYS). The referring file's own
     /// declaration wins.
-    private static T? Pick<T>(List<T>? candidates, string file, Pos pos, string what) where T : Decl
+    private T? Pick<T>(List<T>? candidates, string file, Pos pos, string what, string? path = null) where T : Decl
     {
         if (candidates is null || candidates.Count == 0) return null;
-        // A `private` declaration is visible only in its own file.
-        var visible = candidates.Where(c => !c.IsPrivate || c.File == file).ToList();
-        if (visible.Count == 0)
-            throw new CompileError(pos, $"{what} is private to {candidates[0].File}");
+        var visible = candidates.Where(c => Visible(c, file, path)).ToList();
+        if (visible.Count == 0) throw new CompileError(pos, Hidden(candidates[0], what, path));
         candidates = visible;
         if (candidates.Count == 1) return candidates[0];
         var local = candidates.Where(c => c.File == file).ToList();
@@ -229,28 +260,60 @@ public sealed partial class Compiler
         throw new CompileError(pos, $"{what} is ambiguous: defined in {string.Join(", ", candidates.Select(c => c.Pos))}");
     }
 
-    public RecordDecl? FindRecord(string name, string file, Pos pos) =>
-        Pick(_records.GetValueOrDefault(name), file, pos, $"record '{name}'");
+    public RecordDecl? FindRecord(string name, string file, Pos pos, string? path = null) =>
+        Pick(_records.GetValueOrDefault(name), file, pos, $"record '{name}'", path);
 
-    public VariantDecl? FindVariant(string name, string file, Pos pos) =>
-        Pick(_variants.GetValueOrDefault(name), file, pos, $"variant '{name}'");
+    public VariantDecl? FindVariant(string name, string file, Pos pos, string? path = null) =>
+        Pick(_variants.GetValueOrDefault(name), file, pos, $"variant '{name}'", path);
 
-    public ChoiceDecl? FindChoice(string name, string file, Pos pos) =>
-        Pick(_choices.GetValueOrDefault(name), file, pos, $"choice '{name}'");
+    public ChoiceDecl? FindChoice(string name, string file, Pos pos, string? path = null) =>
+        Pick(_choices.GetValueOrDefault(name), file, pos, $"choice '{name}'", path);
 
-    public RoutineDecl? FindFree(string name, string file, Pos pos) =>
-        Pick(_free.GetValueOrDefault(name), file, pos, $"routine '{name}'");
+    public RoutineDecl? FindFree(string name, string file, Pos pos, string? path = null) =>
+        Pick(_free.GetValueOrDefault(name), file, pos, $"routine '{name}'", path);
 
-    public RoutineDecl? FindMethod(string owner, string name, string file, Pos pos) =>
-        Pick(_methods.GetValueOrDefault((owner, name)), file, pos, $"routine '{owner}.{name}'")
-        ?? Pick(_blanket.GetValueOrDefault(name), file, pos, $"routine 'T.{name}'");
+    /// A routine on a type. One declared in the type's own module goes wherever the type goes; one another module adds
+    /// needs that module imported, like any other name. `anyModule` skips that check, for a call on a value whose
+    /// type came from a type parameter: the routine's concept constraints already vouch for the method.
+    public RoutineDecl? FindMethod(string owner, string name, string file, Pos pos, bool anyModule = false)
+    {
+        if (_methods.GetValueOrDefault((owner, name)) is { Count: > 0 } methods)
+        {
+            string? home = TypeModule(owner);
+            var visible = methods.Where(m =>
+                m.IsPrivate ? m.File == file
+                : m.IsInternal ? m.Module == ModuleOf(file)
+                : anyModule || m.Module == home || Visible(m, file, null)).ToList();
+            if (visible.Count == 0)
+                throw new CompileError(pos, Hidden(methods[0], $"routine '{owner}.{name}'", null));
+            if (visible.Count == 1) return visible[0];
+            var local = visible.Where(m => m.File == file).ToList();
+            if (local.Count == 1) return local[0];
+            throw new CompileError(pos, $"routine '{owner}.{name}' is ambiguous: defined in {string.Join(", ", visible.Select(m => m.Pos))}");
+        }
+        return Pick(_blanket.GetValueOrDefault(name)?.Where(b => anyModule || Visible(b, file, null) || !b.IsPrivate && !b.IsInternal).ToList(),
+            file, pos, $"routine 'T.{name}'");
+    }
+
+    /// Whether some record, variant, or choice has this name, visible from here or not.
+    public bool DeclaresType(string name) =>
+        _records.ContainsKey(name) || _variants.ContainsKey(name) || _choices.ContainsKey(name);
+
+    /// The module that declares a type: Standard::Core for the built-in ones.
+    private string? TypeModule(string owner)
+    {
+        if (_records.GetValueOrDefault(owner) is [var r, ..]) return r.Module;
+        if (_variants.GetValueOrDefault(owner) is [var v, ..]) return v.Module;
+        if (_choices.GetValueOrDefault(owner) is [var c, ..]) return c.Module;
+        return CoreModule;
+    }
 
     /// A routine on every type, `T.name`.
     public RoutineDecl? FindBlanket(string name, string file, Pos pos) =>
         Pick(_blanket.GetValueOrDefault(name), file, pos, $"routine 'T.{name}'");
 
-    public PresetDecl? FindPreset(string owner, string name, string file, Pos pos) =>
-        Pick(_presets.GetValueOrDefault((owner, name)), file, pos, $"preset '{(owner == "" ? name : owner + "." + name)}'");
+    public PresetDecl? FindPreset(string owner, string name, string file, Pos pos, string? path = null) =>
+        Pick(_presets.GetValueOrDefault((owner, name)), file, pos, $"preset '{(owner == "" ? name : owner + "." + name)}'", path);
 
     /// The names that are type parameters of the routine's owner: `T` in `Option<T>.some`, `T` and `N` in
     /// `Array<T, N>.get`, `T` in `T.bitcast<U>`.
@@ -297,11 +360,15 @@ public sealed partial class Compiler
             if (t.Args.Count != 0) throw new CompileError(t.Pos, $"type '{t.Name}' takes no generic arguments");
         }
 
-        if (env.Get(t.Name) is { } bound)
+        if (t.Path is null && env.Get(t.Name) is { } bound)
         {
             NoArgs();
             return bound;
         }
+
+        // The built-in types live in Standard::Core.
+        if (t.Path is not (null or CoreModule))
+            return ResolveDeclaredType(t, env);
 
         if (IntType.FromName(t.Name) is { } intType)
         {
@@ -339,7 +406,18 @@ public sealed partial class Compiler
             return alias;
         }
 
-        if (FindRecord(t.Name, env.File, t.Pos) is { } s)
+        return ResolveDeclaredType(t, env);
+    }
+
+    /// A record, variant, or choice by name, or a preset used as a generic argument.
+    private DType ResolveDeclaredType(TypeRef t, TypeEnv env)
+    {
+        void NoArgs()
+        {
+            if (t.Args.Count != 0) throw new CompileError(t.Pos, $"type '{t.Name}' takes no generic arguments");
+        }
+
+        if (FindRecord(t.Name, env.File, t.Pos, t.Path) is { } s)
         {
             if (t.Args.Count != s.TypeParams.Count)
                 throw new CompileError(t.Pos, $"record '{s.Name}' takes {s.TypeParams.Count} generic argument(s), got {t.Args.Count}");
@@ -356,7 +434,7 @@ public sealed partial class Compiler
             return new RecordType(s, args, TransparentField);
         }
 
-        if (FindVariant(t.Name, env.File, t.Pos) is { } v)
+        if (FindVariant(t.Name, env.File, t.Pos, t.Path) is { } v)
         {
             if (t.Args.Count != v.TypeParams.Count)
                 throw new CompileError(t.Pos, $"variant '{v.Name}' takes {v.TypeParams.Count} generic argument(s), got {t.Args.Count}");
@@ -373,7 +451,7 @@ public sealed partial class Compiler
             return new VariantType(v, args, VariantPayloads);
         }
 
-        if (FindChoice(t.Name, env.File, t.Pos) is { } e)
+        if (FindChoice(t.Name, env.File, t.Pos, t.Path) is { } e)
         {
             NoArgs();
             var under = ResolveType(e.Underlying, env);
@@ -382,10 +460,10 @@ public sealed partial class Compiler
             return new ChoiceType(e, it);
         }
 
-        if (t.Args.Count == 0 && FindPreset("", t.Name, env.File, t.Pos) is { } c)
+        if (t.Args.Count == 0 && FindPreset("", t.Name, env.File, t.Pos, t.Path) is { } c)
             return new ConstArg(ConstInt(new TypeArgType(t), env, t.Pos));
 
-        throw new CompileError(t.Pos, $"unknown type '{t.Name}'");
+        throw new CompileError(t.Pos, $"unknown type '{t}'");
     }
 
     private DType ResolveCallable(TypeRef t, TypeEnv env)

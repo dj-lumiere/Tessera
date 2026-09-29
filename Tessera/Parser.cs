@@ -41,7 +41,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (IsIdent("import")) throw Error("imports go at the top of the file, after the module line");
             var attrs = ParseAttributes();
             bool isPrivate = IsIdent("private");
-            if (isPrivate) Next();
+            bool isInternal = IsIdent("internal");
+            if (isPrivate || isInternal) Next();
             if (Cur.Kind != TokenKind.Ident || !DeclKeywords.Contains(Cur.Text))
                 throw Error($"expected a declaration (routine, record, choice, variant, preset, concept, conform), found {Describe(Cur)}");
             Decl d = Cur.Text switch
@@ -54,7 +55,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 "conform" => ParseConformDecl(attrs),
                 _ => ParseConcept(attrs),
             };
-            decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate, Module = module });
+            decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate, IsInternal = isInternal, Module = module });
             SkipNewlines();
         }
         return new Module(decls);
@@ -142,7 +143,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// True at the start of the next top-level declaration (or the end of the file).
     private bool AtDeclStart() =>
         Is(TokenKind.Eof) || Is(TokenKind.At)
-        || (Cur.Kind == TokenKind.Ident && (DeclKeywords.Contains(Cur.Text) || Cur.Text == "private"));
+        || (Cur.Kind == TokenKind.Ident && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "private" or "internal"));
 
     // ── Attributes and clauses ──────────────────────────────────────────────
 
@@ -346,16 +347,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             int start = _i;
             var fieldAttrs = ParseAttributes();
             bool isPrivate = IsIdent("private") && PeekTok(1).Kind == TokenKind.Ident;
-            if (isPrivate) Next();
+            bool isInternal = IsIdent("internal") && PeekTok(1).Kind == TokenKind.Ident;
+            if (isPrivate || isInternal) Next();
             if (!(Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.Colon))
             {
                 _i = start;
-                if (fieldAttrs.Count > 0 || isPrivate || AtDeclStart()) break;
+                if (fieldAttrs.Count > 0 || isPrivate || isInternal || AtDeclStart()) break;
             }
 
             var f = Expect(TokenKind.Ident, "a field name");
             Expect(TokenKind.Colon, "':' after the field name");
-            fields.Add(new FieldDecl(f.Text, ParseType(), fieldAttrs, f.Pos, isPrivate));
+            fields.Add(new FieldDecl(f.Text, ParseType(), fieldAttrs, f.Pos, isPrivate, isInternal));
             ExpectLineEnd();
         }
         return new RecordDecl(file, attrs, name.Text, typeParams, clauses, fields, pos);
@@ -473,8 +475,22 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private TypeRef ParseType()
     {
-        var name = Expect(TokenKind.Ident, "a type");
-        return new TypeRef(name.Text, ParseTypeArgs(), name.Pos);
+        var (path, name) = ParseQualifiedName("a type");
+        return new TypeRef(name.Text, ParseTypeArgs(), name.Pos) { Path = path };
+    }
+
+    /// `Name` or `Standard::Collections::Name`: the module path, if any, and the name.
+    private (string? Path, Token Name) ParseQualifiedName(string what)
+    {
+        var name = Expect(TokenKind.Ident, what);
+        string? path = null;
+        while (Is(TokenKind.ColonColon) && PeekTok(1).Kind == TokenKind.Ident)
+        {
+            Next();
+            path = path is null ? name.Text : $"{path}::{name.Text}";
+            name = Next();
+        }
+        return (path, name);
     }
 
     private List<TypeArg> ParseTypeArgs()
@@ -808,7 +824,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private Expr ParseNameExpr()
     {
         var pos = Cur.Pos;
-        var name = Next();
+        var (path, name) = ParseQualifiedName("a name");
         var typeArgs = ParseTypeArgs();
 
         if (Is(TokenKind.LParen))
@@ -816,10 +832,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             var targs = typeArgs.Select(a => a is TypeArgType tt
                 ? tt.Type
                 : throw new CompileError(pos, "call type arguments must be types")).ToList();
-            return new CallExpr(name.Text, targs, ParseArgs(), pos);
+            return new CallExpr(name.Text, targs, ParseArgs(), pos) { Path = path };
         }
 
-        var owner = new TypeRef(name.Text, typeArgs, pos);
+        var owner = new TypeRef(name.Text, typeArgs, pos) { Path = path };
         if (Is(TokenKind.LBrace)) return ParseRecordLit(owner);
 
         if (Is(TokenKind.Dot) && PeekTok(1).Kind == TokenKind.Ident)
@@ -834,7 +850,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
 
         if (typeArgs.Count != 0) throw new CompileError(pos, $"expected '(' or '.' after '{owner}'");
-        return new PresetRef(null, name.Text, pos);
+        return new PresetRef(null, name.Text, pos) { Path = path };
     }
 
     private Expr ParseRecordLit(TypeRef type)

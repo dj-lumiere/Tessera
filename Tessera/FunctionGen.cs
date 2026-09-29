@@ -307,12 +307,19 @@ public sealed class FunctionGen
         return (i, fields[i].Type);
     }
 
-    /// A `private` field is read, written, and given in a record literal only in the record's own file.
+    /// A `private` field is read, written, and given in a record literal only in the record's own file, and an
+    /// `internal` one only in its module.
     private void CheckFieldVisible(RecordType s, FieldDecl field, Pos pos)
     {
         if (field.IsPrivate && s.Decl.File != _env.File)
             throw Err(pos, $"field '{field.Name}' of {s} is private to {s.Decl.File}");
+        if (field.IsInternal && s.Decl.Module != _c.ModuleOf(_env.File))
+            throw Err(pos, $"field '{field.Name}' of {s} is internal to {s.Decl.Module}");
     }
+
+    /// Whether `t` is what one of the instance's type parameters stands for. A method called on such a value is found
+    /// whatever module declares it: the routine's constraints on the parameter vouch for it.
+    private bool FromTypeParameter(DType t) => _env.All.Any(kv => kv.Key != "Self" && kv.Value.Equals(t));
 
     /// Emits the address of a place chain and returns it with the type stored there.
     private (string Addr, DType Type) PlaceAddress(Expr e)
@@ -724,6 +731,9 @@ public sealed class FunctionGen
         return label;
     }
 
+    /// Where write / print find write_str and the standard streams, whatever the file imports.
+    private const string FormatModule = "Standard::Format";
+
     private static readonly Dictionary<string, string?> FormatCalls = new()
     {
         ["write"] = null, ["print"] = "StdoutWriter", ["eprint"] = "StderrWriter",
@@ -745,7 +755,7 @@ public sealed class FunctionGen
         {
             if (c.Args is not [StrLit only])
                 throw Err(c.Pos, $"{c.Name} takes a string literal: {c.Name}(\"x = {{%x}}\\n\")");
-            writer = new NsCallExpr(new TypeRef(stream, [], c.Pos), "shared", [], [], c.Pos);
+            writer = new NsCallExpr(new TypeRef(stream, [], c.Pos) { Path = FormatModule }, "shared", [], [], c.Pos);
             template = only;
         }
         else if (c.Args is [ValueRef named, StrLit given])
@@ -759,7 +769,8 @@ public sealed class FunctionGen
         void Flush()
         {
             if (text.Length == 0) return;
-            EvalCall(new CallExpr("write_str", [], [writer, new StrLit(text.ToString(), template.Pos)], template.Pos),
+            EvalCall(new CallExpr("write_str", [], [writer, new StrLit(text.ToString(), template.Pos)], template.Pos)
+                { Path = FormatModule },
                 VoidType.Instance);
             text.Clear();
         }
@@ -866,7 +877,7 @@ public sealed class FunctionGen
         {
             if (_env.Get(r.Name) is ConstArg ca)
                 return new PresetInfo(IntType.U(64), exp => IntConst(ca.Value, r.Pos, exp));
-            var c = _c.FindPreset("", r.Name, file, r.Pos);
+            var c = _c.FindPreset("", r.Name, file, r.Pos, r.Path);
             return c is null ? null : PresetValue(c, null);
         }
 
@@ -976,9 +987,9 @@ public sealed class FunctionGen
         {
             case CallExpr c:
             {
-                if (_blocks.ContainsKey(c.Name) && _c.FindFree(c.Name, _env.File, c.Pos) is null)
+                if (_blocks.ContainsKey(c.Name) && _c.FindFree(c.Name, _env.File, c.Pos, c.Path) is null)
                     throw Err(c.Pos, $"'{c.Name}' is a block; blocks are entered with jump/branch, not called");
-                var r = _c.FindFree(c.Name, _env.File, c.Pos);
+                var r = _c.FindFree(c.Name, _env.File, c.Pos, c.Path);
                 if (r is null) return null;
                 var env = new Compiler.TypeEnv(r.File);
                 BindExplicit(r, env, c.TypeArgs, c.Pos);
@@ -1047,7 +1058,7 @@ public sealed class FunctionGen
 
         foreach (var (owner, passesPointer) in candidates)
         {
-            var r = _c.FindMethod(owner.OwnerName, m.Name, _env.File, m.Pos);
+            var r = _c.FindMethod(owner.OwnerName, m.Name, _env.File, m.Pos, FromTypeParameter(owner));
             if (r is null || r.Params.Count == 0) continue;
             var env = BindOwner(r, owner, m.Pos);
             var selfType = _c.ResolveType(r.Params[0].Type, env);
@@ -1116,8 +1127,7 @@ public sealed class FunctionGen
     private bool PrimitiveOrRecordName(string name) =>
         IntType.FromName(name) is not null
         || name is "F16" or "BF16" or "F32" or "F64" or "Bool" or "Void" or "Ptr" or "Addr" or "Array"
-        || _c.FindRecord(name, _env.File, default) is not null || _c.FindChoice(name, _env.File, default) is not null
-        || _c.FindVariant(name, _env.File, default) is not null;
+        || _c.DeclaresType(name);
 
     private void BindExplicit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, Pos pos)
     {

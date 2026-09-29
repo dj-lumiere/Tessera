@@ -50,7 +50,7 @@ public sealed partial class Compiler
 
     private ConceptDecl FindConcept(TypeRef c, string file)
     {
-        var decl = Pick(_conceptDecls.GetValueOrDefault(c.Name), file, c.Pos, $"concept '{c.Name}'")
+        var decl = Pick(_conceptDecls.GetValueOrDefault(c.Name), file, c.Pos, $"concept '{c.Name}'", c.Path)
                    ?? throw new CompileError(c.Pos, $"unknown concept '{c.Name}'");
         if (decl.TypeParams.Count != c.Args.Count)
             throw new CompileError(c.Pos, $"concept '{c.Name}' takes {decl.TypeParams.Count} argument(s), got {c.Args.Count}");

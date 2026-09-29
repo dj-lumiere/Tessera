@@ -7,7 +7,11 @@ namespace Tessera;
 /// A type as written in source: `S64`, `Ptr<Byte>`, `Array<T, 8>`, `Callable<@callconv("c"), (Ptr, CSize), Ptr>`.
 public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 {
-    public override string ToString() => Args.Count == 0 ? Name : $"{Name}<{string.Join(", ", Args)}>";
+    /// The module a qualified name was written with: `Standard::Collections` in `Standard::Collections::List<T>`.
+    public string? Path { get; init; }
+
+    public override string ToString() =>
+        (Path is null ? "" : Path + "::") + (Args.Count == 0 ? Name : $"{Name}<{string.Join(", ", Args)}>");
     public static TypeRef Simple(string name, Pos pos) => new(name, [], pos);
 }
 
@@ -56,6 +60,8 @@ public abstract record Decl(string File, List<Attribute> Attributes, Pos Pos)
     public bool IsLibrary { get; init; }
     /// `private`: visible only in the declaring file.
     public bool IsPrivate { get; init; }
+    /// `internal`: visible only in the declaring module.
+    public bool IsInternal { get; init; }
     /// The module the declaring file names (`Standard::Format`), or "" for a file without a `module` line.
     public string Module { get; init; } = "";
 }
@@ -75,7 +81,8 @@ public sealed record RoutineDecl(
     public string DisplayName => Owner is null ? Name : $"{Owner}.{Name}";
 }
 
-public sealed record FieldDecl(string Name, TypeRef Type, List<Attribute> Attributes, Pos Pos, bool IsPrivate = false)
+public sealed record FieldDecl(string Name, TypeRef Type, List<Attribute> Attributes, Pos Pos, bool IsPrivate = false,
+    bool IsInternal = false)
 {
     public Attribute? Attr(string name) => Attributes.FirstOrDefault(a => a.Name == name);
 }
@@ -152,7 +159,11 @@ public sealed record NullLit(Pos Pos) : Expr(Pos);
 public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos); // %x or #p
 
 /// `name(args)` or `name<T>(args)` — a free routine call.
-public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos);
+public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos)
+{
+    /// The module of a qualified call: `Standard::Format` in `Standard::Format::write_str(...)`.
+    public string? Path { get; init; }
+}
 
 /// `Type.name(args)` — a call through a type's namespace: `S64.add(%a, %b)`, `Option<T>.absent()`, `K.hash(%k)`.
 /// If `Owner` turns out to name a preset rather than a type, this is a method call on that preset.
@@ -166,7 +177,11 @@ public sealed record ImplicitCallExpr(string Name, List<TypeRef> TypeArgs, List<
 public sealed record ImplicitMemberExpr(string Name, Pos Pos) : Expr(Pos);
 
 /// `NAME` or `Type.NAME` — a preset, or a choice member.
-public sealed record PresetRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos);
+public sealed record PresetRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos)
+{
+    /// The module of a qualified preset without an owner type: `Standard::Core` in `Standard::Core::PI`.
+    public string? Path { get; init; }
+}
 
 /// `recv.name(args)`.
 public sealed record MethodCallExpr(Expr Receiver, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
