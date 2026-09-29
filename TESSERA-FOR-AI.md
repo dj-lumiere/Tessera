@@ -2,7 +2,7 @@
 
 A compact reference for writing correct Tessera on the first try. It covers the rules that are easy to get wrong
 coming from C, Rust, or LLVM IR. The full language is in `tessera.wiki/`; when the wiki and `stdlib/` disagree, the
-stdlib wins. Undecided questions live in `tessera.wiki/Roadmap.md#open-questions`: point to them, don't silently pick an
+stdlib wins. Undecided questions live in `tessera.wiki/docs/Roadmap.md#open-questions`: point to them, don't silently pick an
 answer.
 
 ## Toolchain
@@ -250,7 +250,7 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
 
 ## Collections
 
-All in `stdlib/collection/`, documented in `tessera.wiki/Collections.md`. `construct(%alloc)` stores the allocator; `destruct()`
+All in `stdlib/collection/`, documented in `tessera.wiki/docs/Collections.md`. `construct(%alloc)` stores the allocator; `destruct()`
 releases storage. Out-of-range access, `pop` on empty, and `get` of a missing key trap.
 
 | Type | Key operations | Iteration order |
@@ -309,7 +309,7 @@ preset arrays (`K.get(%i)`).
 
 Run `tessera fmt` on what you write: it aligns `%name : T = value` runs, spaces blocks and routines, joins broken
 lists and wraps lines over 100 characters at commas, and writes a routine's owner type as `Self` after it's declared
-(not in `require` lines). Follow `tessera.wiki/Style-Guide.md`. In short: one purpose per block, blocks named for what they do (`grow`,
+(not in `require` lines). Follow `tessera.wiki/docs/Style-Guide.md`. In short: one purpose per block, blocks named for what they do (`grow`,
 `scan`, `sift_up`), values named for what they mean (`%in_bounds`, not `%t1`), boolean names that read as
 predicates, `return(...)` inline instead of a block that only returns, and helper routines instead of one huge
 block graph. Don't add syntax sugar to shorten code; readability comes from decomposition and naming.
