@@ -1054,6 +1054,14 @@ public sealed class FunctionGen
         }
     }
 
+    /// Whether an untyped literal can take `t`: an integer literal a number type, a float literal a float type.
+    private static bool LiteralCanBe(Expr literal, DType? t) => literal switch
+    {
+        IntLit => t is IntType { IsNumber: true },
+        FloatLit => t is FloatType,
+        _ => t is not null,
+    };
+
     private CallPlan? PlanMethod(MethodCallExpr m, DType? expected)
     {
         if (IndirectCall(m) is not null) return null;
@@ -1064,8 +1072,16 @@ public sealed class FunctionGen
             // An untyped literal receiver takes its type from the arguments: through the parameters of a routine on
             // every type (`7.store_into(#p)` with `#dest: Ptr<T>`), or else as the first typed argument
             // (`0.sub(%x)`); then from context.
-            rt = BlanketReceiverType(m) ?? m.Args.Select(Infer).FirstOrDefault(t => t is not null) ?? expected;
-            if (rt is null) throw Err(m.Receiver.Pos, "cannot infer the type of this literal receiver");
+            // The result's type says the receiver's only for a routine that returns Self (`%x : U64 = 1.shl(3)`), so it
+            // is borrowed only when it's a type the literal could have.
+            rt = BlanketReceiverType(m) ?? m.Args.Select(Infer).FirstOrDefault(t => t is not null)
+                 ?? (LiteralCanBe(m.Receiver, expected) ? expected : null);
+            if (rt is null)
+            {
+                string example = m.Receiver is FloatLit ? "F64" : "S64";
+                throw Err(m.Receiver.Pos,
+                    $"nothing says this literal's type (its arguments are untyped too); name the type: {example}.{m.Name}(...)");
+            }
         }
 
         // Receivers behind a pointer: `#p.m()` finds T.m(#self: Ptr<Self>) first, then Ptr<T>.m(#self: Self).
