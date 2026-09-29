@@ -26,9 +26,8 @@ public abstract class DType : IEquatable<DType>
     public override string ToString() => Name;
 }
 
-/// What an integer's bits mean. `Bits` values have no meaning yet (`Byte` is the 8-bit one); `Char` is a Unicode
-/// scalar value.
-public enum IntKind { Signed, Unsigned, Bits, Char }
+/// What an integer's bits mean. A `Byte` is 8 bits of memory with no arithmetic; a `Char` is a Unicode scalar value.
+public enum IntKind { Signed, Unsigned, Byte, Char }
 
 public sealed class IntType(int bits, IntKind kind) : DType
 {
@@ -37,18 +36,18 @@ public sealed class IntType(int bits, IntKind kind) : DType
 
     public static IntType S(int bits) => new(bits, IntKind.Signed);
     public static IntType U(int bits) => new(bits, IntKind.Unsigned);
-    public static readonly IntType Byte = new(8, IntKind.Bits);
+    public static readonly IntType Byte = new(8, IntKind.Byte);
     public static readonly IntType Char = new(32, IntKind.Char);
 
     public static readonly int[] Widths = [8, 16, 32, 64, 128, 256];
 
-    /// `S64`, `U8`, `Bits32`, `Byte`, `Char` back to a type.
+    /// `S64`, `U8`, `Byte`, `Char` back to a type.
     public static IntType? FromName(string name)
     {
         if (name == "Byte") return Byte;
         if (name == "Char") return Char;
         (string prefix, IntKind kind)[] families =
-            [("S", IntKind.Signed), ("U", IntKind.Unsigned), ("Bits", IntKind.Bits)];
+            [("S", IntKind.Signed), ("U", IntKind.Unsigned)];
         foreach (var (prefix, kind) in families)
             if (name.StartsWith(prefix, StringComparison.Ordinal)
                 && int.TryParse(name.AsSpan(prefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
@@ -67,7 +66,7 @@ public sealed class IntType(int bits, IntKind kind) : DType
     {
         IntKind.Signed => $"S{Bits}",
         IntKind.Unsigned => $"U{Bits}",
-        IntKind.Bits => Bits == 8 ? "Byte" : $"Bits{Bits}",
+        IntKind.Byte => "Byte",
         _ => "Char",
     };
 
@@ -75,7 +74,7 @@ public sealed class IntType(int bits, IntKind kind) : DType
     public override string OwnerName => Name;
 
     /// The LLVM constant for an integer literal of this type, or an error message. A number literal must lie in
-    /// its type's value range; a raw-bits literal must be hex with exactly one digit per four bits.
+    /// its type's value range; a Byte literal must be hex with exactly two digits.
     public string? Literal(BigInteger value, int hexDigits, out string error)
     {
         error = "";
@@ -85,9 +84,9 @@ public sealed class IntType(int bits, IntKind kind) : DType
             IntKind.Signed => (-(span >> 1), (span >> 1) - 1),
             _ => (BigInteger.Zero, span - 1),
         };
-        if (Kind is IntKind.Bits && hexDigits != Bits / 4)
+        if (Kind is IntKind.Byte && hexDigits != 2)
         {
-            error = $"a {Name} literal is written in hex with exactly {Bits / 4} digits (0x{new string('0', Bits / 4)})";
+            error = "a Byte literal is written in hex with exactly 2 digits (0x00), or as a byte literal (b'A')";
             return null;
         }
         if (Kind is IntKind.Char)
@@ -201,14 +200,14 @@ public sealed class CallableType(string callConv, List<DType> parameters, DType 
 }
 
 /// A user or library record, instantiated with concrete arguments. A record with exactly one field is transparent:
-/// it lowers to its field's type (`record F128 / bits: Bits128` is an `i128`), unless it is marked `@aggregate`.
+/// it lowers to its field's type (`record Meters / value: U64` is an `i64`), unless it is marked `@aggregate`.
 public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordType, DType?> transparentField) : DType
 {
     public RecordDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
     public override string Name => Args.Count == 0 ? Decl.Name : $"{Decl.Name}<{string.Join(", ", Args.Select(a => a.Name))}>";
 
-    /// The field type a transparent record lowers to, or null for an aggregate.
+    /// The type a transparent or library `@llvm("iN")` record lowers to, or null for an aggregate.
     public DType? TransparentField => transparentField(this);
 
     public override DType Repr => TransparentField?.Repr ?? this;

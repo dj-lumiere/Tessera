@@ -130,10 +130,10 @@ public sealed record GuardStmt(Terminator Term, Pos Pos) : Stmt(Pos);
 
 public abstract record Expr(Pos Pos);
 
-/// An integer literal. HexDigits counts the digits of a `0x` literal (0 for other bases), since a raw-bits literal
-/// must spell out every digit of its width.
+/// An integer literal. HexDigits counts the digits of a `0x` literal (0 for other bases), since a Byte literal
+/// must have exactly two.
 public sealed record IntLit(BigInteger Value, Pos Pos, int HexDigits = 0) : Expr(Pos);
-/// A literal whose type is fixed by its spelling: `b'A'` is a Byte (Bits 8), `'A'` is a Char (Bits 32).
+/// A literal whose type is fixed by its spelling: `b'A'` is a Byte (8 bits), `'A'` is a Char (32 bits).
 public sealed record TypedIntLit(long Value, int Bits, Pos Pos) : Expr(Pos)
 {
     public IntType Type => Bits == 8 ? IntType.Byte : IntType.Char;
@@ -147,12 +147,12 @@ public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos); // %x or #p
 /// `name(args)` or `name<T>(args)` — a free routine call.
 public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos);
 
-/// `Type.name(args)` — a call through a type's namespace: `S64.add(%a, %b)`, `Option<T>.none()`, `K.hash(%k)`.
+/// `Type.name(args)` — a call through a type's namespace: `S64.add(%a, %b)`, `Option<T>.absent()`, `K.hash(%k)`.
 /// If `Owner` turns out to name a preset rather than a type, this is a method call on that preset.
 public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
     : Expr(Pos);
 
-/// `.name(args)`: a typewise call whose type is the expected one (`%n: Option<T> = .none()`).
+/// `.name(args)`: a typewise call whose type is the expected one (`%n: Option<T> = .absent()`).
 public sealed record ImplicitCallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos);
 
 /// `NAME` or `Type.NAME` — a preset, or a choice member.

@@ -17,7 +17,7 @@ Run one with `dotnet run --project Tessera -- run examples/<name>.tess`. Every p
 | [insertion_sort](insertion_sort.tess) | `Array<T, N>` with `get` / `set`, and `List<S64>.sort` from the stdlib |
 | [brackets](brackets.tess) | `List<T>` as a stack, a `choice` result, a `when` over every member, one cleanup exit |
 | [word_count](word_count.tess) | `String` views, `Dict<String, U64>` in insertion order, `DictIter` |
-| [temperature](temperature.tess) | `F64` arithmetic, integer ↔ float conversion, `format` and `format_fixed` |
+| [temperature](temperature.tess) | `F64` arithmetic, integer ↔ float conversion, `represent` and `represent_fixed` |
 
 The larger programs in [`playground/`](../playground) combine these: Dijkstra, a lazy segment tree, SHA-256, and a
 calculator.

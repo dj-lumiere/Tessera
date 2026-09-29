@@ -539,7 +539,7 @@ public sealed class FunctionGen
         // A string literal is a String (data + length) where a String is expected, a CStr or CWStr (a pointer to
         // NUL-terminated text) where one of those is expected, and a NUL-terminated Ptr<Byte> where a pointer is.
         string g = _c.StringGlobal(s.Value);
-        if (expected is PtrType { Pointee: null or IntType { Bits: 8, Kind: IntKind.Bits } })
+        if (expected is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } })
             return new Val(g, expected);
         // CStr and CWStr are one-field records over a pointer, so the value is the pointer itself.
         if (expected is RecordType { Name: "CStr" } cs)
@@ -580,7 +580,7 @@ public sealed class FunctionGen
     private bool IsTemplateCall(CallExpr c) =>
         FormatCalls.ContainsKey(c.Name) && _c.FindFree(c.Name, _env.File, c.Pos) is null;
 
-    /// `write(#out, "x = {%x}\n")` expands in place, in order: `write_str(#out, "x = ")`, `%x.format(#out)`,
+    /// `write(#out, "x = {%x}\n")` expands in place, in order: `write_str(#out, "x = ")`, `%x.represent(#out)`,
     /// `write_str(#out, "\n")`. A brace holds one expression; `{{` and `}}` are literal braces. Nothing is
     /// allocated: each piece goes straight to the writer. `print("...")` / `eprint("...")` are the same with
     /// the stateless `StdoutWriter.shared()` / `StderrWriter.shared()` as the writer.
@@ -634,7 +634,7 @@ public sealed class FunctionGen
             var at = new Pos(template.Pos.File, template.Pos.Line, template.Pos.Col + 2 + i);
             var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File).ParseLoneExpr();
             Flush();
-            EvalCall(new MethodCallExpr(value, "format", [], [writer], at), VoidType.Instance);
+            EvalCall(new MethodCallExpr(value, "represent", [], [writer], at), VoidType.Instance);
             i = end;
         }
         Flush();
@@ -748,7 +748,7 @@ public sealed class FunctionGen
             if (t is FloatType ft2 && c.Value is NsCallExpr { Name: "from_bits", Args: [IntLit raw] } fb
                 && fb.Owner.Name == ft2.Name)
             {
-                if (new IntType(ft2.Bits, IntKind.Bits).Literal(raw.Value, raw.HexDigits, out var error) is null)
+                if (IntType.U(ft2.Bits).Literal(raw.Value, raw.HexDigits, out var error) is null)
                     throw Err(raw.Pos, error);
                 return new Val(ft2.FromBits(raw.Value), ft2);
             }
@@ -834,7 +834,7 @@ public sealed class FunctionGen
             }
             case ImplicitCallExpr ic:
             {
-                // The type the value is going to is the owner: `.none()` where an Option<T> is expected.
+                // The type the value is going to is the owner: `.absent()` where an Option<T> is expected.
                 var owner = expected ?? throw Err(ic.Pos,
                     $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
                 var r = _c.FindMethod(owner.OwnerName, ic.Name, _env.File, ic.Pos)
@@ -1079,7 +1079,7 @@ public sealed class FunctionGen
 
     /// An argument in the `...` part of a C variadic call gets C's default promotions: untyped integer literals
     /// are `int` (S32), float literals and F32 values are F64, and Bool and narrow integers are widened to `int`
-    /// (zero-extended when unsigned or raw bits, sign-extended otherwise).
+    /// (zero-extended when unsigned or a Byte, sign-extended otherwise).
     private Val VariadicArg(Expr e)
     {
         var t = Infer(e) ?? e switch
@@ -1094,7 +1094,7 @@ public sealed class FunctionGen
         {
             FloatType ft when ft != FloatType.F64 => new Val(EmitTmp($"fpext {ft.Llvm} {v.Op} to double"), FloatType.F64),
             BoolType => new Val(EmitTmp($"zext i1 {v.Op} to i32"), IntType.S(32)),
-            IntType { Bits: < 32, Kind: IntKind.Unsigned or IntKind.Bits } it =>
+            IntType { Bits: < 32, Kind: IntKind.Unsigned or IntKind.Byte } it =>
                 new Val(EmitTmp($"zext {it.Llvm} {v.Op} to i32"), IntType.S(32)),
             IntType { Bits: < 32 } it => new Val(EmitTmp($"sext {it.Llvm} {v.Op} to i32"), IntType.S(32)),
             _ => v,
@@ -1226,8 +1226,7 @@ public sealed class FunctionGen
             case WhenValueTerm sw:
             {
                 var v = EvalAny(sw.Value);
-                // Raw bits have no meaning to switch on, except Byte: text is bytes (b'a' cases).
-                if (v.Type is not (IntType { Kind: not IntKind.Bits } or IntType { Bits: 8 } or ChoiceType))
+                if (v.Type is not (IntType or ChoiceType))
                     throw Err(sw.Value.Pos, $"when %v: needs an integer, Byte, Char, or choice value, not {v.Type}");
                 string? defaultLabel = null;
                 var cases = new List<string>();
@@ -1337,7 +1336,7 @@ public sealed class FunctionGen
                     if (r.Value is null) throw Err(r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
                     var v = Eval(r.Value, _inst.Ret);
                     if (_inst.PassesBf16AsBits && Instance.IsBf16(_inst.Ret))
-                        v = new Val(EmitTmp($"bitcast bfloat {v.Op} to i16"), new IntType(16, IntKind.Bits));
+                        v = new Val(EmitTmp($"bitcast bfloat {v.Op} to i16"), IntType.U(16));
                     Terminate($"ret {_inst.LlvmRet} {v.Op}");
                 }
                 break;

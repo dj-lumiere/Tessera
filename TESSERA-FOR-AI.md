@@ -38,7 +38,7 @@ routine main() -> S32
         #list.store(%list_val)
         #list.push(42)
         write_str(#out, "first: ")
-        #list.get(0).format(#out)
+        #list.get(0).represent(#out)
         write_line(#out)
 
         #list.destruct()
@@ -122,16 +122,16 @@ routine main() -> S32
 - Lengths, indices, counts, and `sizeof` are `U64`. `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`,
   `abs_diff` returns the unsigned type.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
-- `Byte` and `Bits16` .. `Bits256` are raw bits with no arithmetic. `%x.bits()` and `U64.from_bits(%b)` move
-  between them and the numbers (`U8.from_byte` / `S8.from_byte` for 8 bits). Only `Byte` has methods: comparison,
-  `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, `shl` / `shr`, and `to_u8`. Memory and text are `Ptr<Byte>`;
-  a byte literal `b'A'` is a `Byte`, and a `Byte` or `Bits` hex literal has exactly width/4 digits (`0x0A`).
+- `Byte` is memory with no arithmetic; there are no wider raw-bits types. `%x.bits()` and `U8.from_byte(%b)` /
+  `S8.from_byte(%b)` move between it and the numbers, and `S64` <-> `U64` is `to_u64_wrap` / `to_s64_wrap`. It has
+  comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, `shl` / `shr`, and `to_u8`. Memory and text are `Ptr<Byte>`;
+  a byte literal `b'A'` is a `Byte`, and a `Byte` hex literal has exactly two digits (`0x0A`).
 - `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `%c.to_u32()` and `%n.to_char()`
   convert.
 - Conversions are methods: `%n.to_s64()`, `%b.to_u64()` (Bool to 0/1), `%x.to_f64()`. Float to integer is
   `to_s64` (panics on NaN or out of range), `to_s64_checked`, or `to_s64_clamp`.
-- Floats are `F16`, `BF16`, `F32`, `F64`, and software `F128` (a one-field record over its `U128` bits):
-  `add`, `mul`, `div`, `rem`, and so on. `%x.bits()` gives the `BitsN` pattern, `F64.from_bits(%b)` goes back.
+- Floats are `F16`, `BF16`, `F32`, `F64`, and software `F128` (an `i128`; stdlib code reads it with `f128_bits`):
+  `add`, `mul`, `div`, `rem`, and so on. `%x.bits()` gives the bits as the same-width `U`, `F64.from_bits(%u)` goes back.
 - Value select: `%r: T = %cond ? %a : %b`. Both sides are evaluated.
 
 **Routines and generics**
@@ -139,7 +139,7 @@ routine main() -> S32
 - `routine name(%a: T, #p: Ptr<U>) -> R`. Methods are `routine Type.name(#self: Ptr<Self>, ...)` (pointer receiver)
   or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<S64>.construct(#alloc)`. Where the
   type is expected (a binding, an argument, a block argument, a return), a leading `.` leaves it out:
-  `%list: List<S64> = .construct(#alloc)`, `return(.none())`. Not at the head of a chain or as a statement.
+  `%list: List<S64> = .construct(#alloc)`, `return(.absent())`. Not at the head of a chain or as a statement.
 - **Methods through a pointer.** `#p.m()` finds `T.m(#self: Ptr<Self>)` first, then `Ptr`'s own methods (`is_null`,
   `offset`, `cast`, ...). Value methods (`%self: Self`, such as `List.eq`) aren't reachable through a pointer, because
   that would hide a load: load first (`%v: List<S64> = #p.load()`). Don't name your own pointer methods after `Ptr`'s.
@@ -147,7 +147,7 @@ routine main() -> S32
   call them. You can't call a pointer method on a temporary: `DictIter<K, V>.construct(#m).next()` fails with "has no
   method 'next'"; claim a slot for the iterator first.
 - Generic routines repeat their constraints: `require T: typename, Compare<T>`. Concepts: `Equal`, `Hash`,
-  `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Format`. Constraints are checked: a type satisfies a
+  `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Represent`. Constraints are checked: a type satisfies a
   concept only through a `conform` (on its record, or a top-level `conform C<X>` line), and the compiler checks the
   declared routines' signatures. Conditional conformance: `conform Equal<Box<T>> when T: typename, Equal<T>`. A
   record's own `require` applies to every use, so put element constraints on the routines that need them.
@@ -226,11 +226,14 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
 - Writers: `FdWriter.stdout()` / `.stderr()` (unbuffered), `BufWriter<W>` (`#out.construct(#inner)`, then
   `flush()`), `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `write(#buf, ...)`, then
   `#buf.to_string()`; there's no string builder type).
-- `write_str(#out, "text")`, `write_line(#out)`, `%v.format(#out)` for every integer, float, `Bool`, and `String`,
-  and `#p.format(#out)` for a pointer's address (`0x7ffd5e8c1a40`); `format_hex`, `format_fixed(#out, %digits)`;
-  `format_with(#out, %v, %spec)` with a `FormatSpec`.
+- `write_str(#out, "text")`, `write_line(#out)`, `%v.represent(#out)` for every integer, float, `Bool`, and `String`,
+  and `#p.represent(#out)` for a pointer's address (`0x7ffd5e8c1a40`); `represent_hex`, `represent_fixed(#out, %digits)`;
+  `represent_with(#out, %v, %spec)` with a `FormatSpec`.
+- `%v.diagnose(#out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.present(3)`, `[1, 2]`. A record or
+  choice gets routines written for it with `@derive(Represent, Diagnose, Equal, Hash, Compare)` (any subset), which
+  also declares the conformance. Without `@derive`, declare the routine: a bare `conform` never generates one.
 - `write(#out, "x = {%x}\n")` writes text and values in one line: it expands at compile time into
-  `write_str` / `.format` calls, a brace holds one expression (loads and chains allowed), `{{` is a literal brace,
+  `write_str` / `.represent` calls, a brace holds one expression (loads and chains allowed), `{{` is a literal brace,
   and there are no format options. `print("...")` / `eprint("...")` do the same on stdout / stderr without
   setting up a writer. The old `println_slice` / `print_int` helpers are gone.
 
@@ -248,7 +251,7 @@ releases storage. Out-of-range access, `pop` on empty, and `get` of a missing ke
 | `Set<T>` | `add`, `contains`, `remove` | **insertion order (guaranteed)** |
 | `SortedDict<K, V>` | `put`, `get`, `contains`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
 | `SortedSet<T>` | `add`, `contains`, `remove`, `get_by_rank(rank)` | ascending |
-| `SortedList<T>` | `push`, `insert(i, v)`, `get` / `get_by_rank`, `set`, `remove(i)` | index |
+| `SortedList<T>` | `push` (sorted, after equals), `get` / `get_by_rank`, `rank(v)`, `contains`, `remove(i)` (`T: Compare<T>`) | ascending |
 | `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Priority<T>`) | none |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
@@ -288,7 +291,7 @@ preset arrays (`K.get(%i)`).
   elements; `destruct_all()` destructs them first (elements must conform to `Destruct<T>`), and `Dict` / `SortedDict`
   also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release.
 - Other ways to make a value are named for what they make: `FdWriter.stdout()`, `String.from_ptr(#p, %n)`,
-  `Option<T>.none()`, `FormatSpec.zero_padded(6)`.
+  `Option<T>.absent()`, `FormatSpec.zero_padded(6)`.
 - `#p.free(#alloc)` is not a destructor: it hands a block of memory back to its allocator.
 
 ## Style

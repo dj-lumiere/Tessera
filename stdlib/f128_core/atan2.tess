@@ -37,11 +37,11 @@ preset CM_ATAN2_IND: Array<U64, 129> = [0, 0, 1, 1, 2, 3, 3, 4, 5, 5, 6, 6, 7, 8
 
 routine f128_cm_atan2(%y: F128, %x: F128) -> F128
     block entry():
-        %x_neg     : Bool = f128_is_negative_bits(%x.bits)
-        %y_sign    : U128 = %y.bits.bitand(F128_SIGN)
+        %x_neg     : Bool = f128_is_negative_bits(%x.bits())
+        %y_sign    : U128 = %y.bits().bitand(F128_SIGN)
         %magnitude : U128 = F128_SIGN.bitnot()
-        %xa        : U128 = %x.bits.bitand(%magnitude)
-        %ya        : U128 = %y.bits.bitand(%magnitude)
+        %xa        : U128 = %x.bits().bitand(%magnitude)
+        %ya        : U128 = %y.bits().bitand(%magnitude)
         %nonfinite : Bool = %xa.ge(F128_INF).bitor(%ya.ge(F128_INF))
         branch %nonfinite ? special() : reduce(%xa, %ya, %x_neg, %y_sign)
 
@@ -73,13 +73,13 @@ routine f128_cm_atan2(%y: F128, %x: F128) -> F128
         %offset  : CmAtanU192    = cm_atan_row_top(CM_ATAN_QOFF.to_ptr(), %q)
         %final   : CmAtanU192    = cm_atan_u192_add(%offset, %signed)
         %rounded : CmAtanRounded = cm_atan_round_fixed(%final)
-        %result  : F128          = F128 { bits: %rounded.bits.bitor(%y_sign) }
+        %result  : F128          = f128_of(%rounded.bits.bitor(%y_sign))
         %hard    : Bool          = %rounded.hard
         branch %hard ? accurate(%red, %x_neg, %y_sign) : return(%result)
 
     block direct(%red: CmAtanReduction, %f: U128, %y_sign: U128):
         %rounded : CmAtanRounded = cm_atan_round_direct(%f, %red.dn)
-        %result  : F128          = F128 { bits: %rounded.bits.bitor(%y_sign) }
+        %result  : F128          = f128_of(%rounded.bits.bitor(%y_sign))
         %hard    : Bool          = %rounded.hard
         branch %hard ? accurate(%red, false, %y_sign) : return(%result)
 
@@ -225,21 +225,21 @@ routine cm_atan2_accurate(%red: CmAtanReduction, %x_neg: Bool, %y_sign: U128) ->
 
     block finish(#f: Ptr<U64>, %dn: S64):
         %bits : U128 = cm_atan_round_limbs(#f, %dn)
-        %r    : F128 = F128 { bits: %bits.bitor(%y_sign) }
+        %r    : F128 = f128_of(%bits.bitor(%y_sign))
         return(%r)
 
 /// NaN, infinite or zero coordinates
 routine cm_atan2_special(%y: F128, %x: F128) -> F128
     block entry():
         %magnitude : U128 = F128_SIGN.bitnot()
-        %ix        : U128 = %x.bits.bitand(%magnitude)
-        %iy        : U128 = %y.bits.bitand(%magnitude)
+        %ix        : U128 = %x.bits().bitand(%magnitude)
+        %iy        : U128 = %y.bits().bitand(%magnitude)
         %x_class   : S64  = cm_atan_class(%ix.shr(64).to_u64(), %ix.to_u64_wrap())
         %y_class   : S64  = cm_atan_class(%iy.shr(64).to_u64(), %iy.to_u64_wrap())
         %signaling : Bool = %x_class.eq(2).bitor(%y_class.eq(2))
         %y_nan     : Bool = %y_class.eq(3)
         %x_nan     : Bool = %x_class.eq(3)
-        %default   : F128 = F128 { bits: 0xFFFF8000000000000000000000000000 }
+        %default   : F128 = f128_of(0xFFFF8000000000000000000000000000)
         when:
             %signaling -> return(%default)
             %y_nan     -> return(%y)
@@ -248,7 +248,7 @@ routine cm_atan2_special(%y: F128, %x: F128) -> F128
 
     // the angle's row in RS: 0 or π on the x axis, π/4 or 3π/4 for two infinities, else π/2
     block angle(%x_class: S64, %y_class: S64, %iy: U128):
-        %xs      : U64  = %x.bits.shr(127).to_u64()
+        %xs      : U64  = %x.bits().shr(127).to_u64()
         %x_inf   : Bool = %x_class.eq(1)
         %y_inf   : Bool = %y_class.eq(1)
         %on_axis : U64  = %iy.eq(0) ? %xs : 4
@@ -260,8 +260,8 @@ routine cm_atan2_special(%y: F128, %x: F128) -> F128
         %hi_at   : U64  = %lo_at.add(1)
         %ol      : U64  = CM_ATAN2_RS.get(%lo_at)
         %oh      : U64  = CM_ATAN2_RS.get(%hi_at)
-        %y_sign  : U128 = %y.bits.bitand(F128_SIGN)
-        %zero    : F128 = F128 { bits: %y_sign }
+        %y_sign  : U128 = %y.bits().bitand(F128_SIGN)
+        %zero    : F128 = f128_of(%y_sign)
         %is_zero : Bool = %oh.eq(0)
         branch %is_zero ? return(%zero) : continue
         %k    : U64  = %oh.leading_zeros()
@@ -272,5 +272,5 @@ routine cm_atan2_special(%y: F128, %x: F128) -> F128
         %v0   : U64  = %ol.shr(15.sub(%k)).bitor(%oh.shl(49.add(%k)))
         %v1   : U64  = %oh.shr(15.sub(%k))
         %bits : U128 = cm_atan_join(%v1, %v0).add_wrap(cm_atan_join(%xn.shl(48), %up))
-        %r    : F128 = F128 { bits: %bits.bitor(%y_sign) }
+        %r    : F128 = f128_of(%bits.bitor(%y_sign))
         return(%r)

@@ -99,7 +99,7 @@ routine F32.compare(%self: Self, %other: Self) -> S32
 
 routine F32.hash(%self: Self) -> U64
     block entry():
-        %h : U64 = xxh64_hash_u64(U32.from_bits(%self.bits()).to_u64(), 0)
+        %h : U64 = xxh64_hash_u64(%self.bits().to_u64(), 0)
         return(%h)
 
 // -- named widening conversion -------------------------------------------------
@@ -180,13 +180,13 @@ routine F32.signum(%self: Self) -> Self
 /// Reads the sign bit, so it is true for +0.0 and for NaNs with the bit clear.
 routine F32.is_sign_positive(%self: Self) -> Bool
     block entry():
-        %bits : S32  = .from_bits(%self.bits())
+        %bits : S32  = %self.bits().to_s32_wrap()
         %r    : Bool = %bits.ge(0)
         return(%r)
 
 routine F32.is_sign_negative(%self: Self) -> Bool
     block entry():
-        %bits : S32  = .from_bits(%self.bits())
+        %bits : S32  = %self.bits().to_s32_wrap()
         %r    : Bool = %bits.lt(0)
         return(%r)
 
@@ -274,8 +274,8 @@ routine F32.in_range(%self: Self, %lo: Self, %end: Self) -> Bool
 /// IEEE 754 totalOrder: -NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN.
 routine F32.total_compare(%self: Self, %other: Self) -> S32
     block entry():
-        %a : S32 = .from_bits(%self.bits())
-        %b : S32 = .from_bits(%other.bits())
+        %a : S32 = %self.bits().to_s32_wrap()
+        %b : S32 = %other.bits().to_s32_wrap()
         // Flipping every bit but the sign of negative values makes the bits order like signed integers.
         %a_key : S32 = %a.bitxor(%a.shr(31).bitand(S32.MAX))
         %b_key : S32 = %b.bitxor(%b.shr(31).bitand(S32.MAX))
@@ -517,13 +517,13 @@ routine F32.is_finite(%self: Self) -> Bool
 /// Not zero, subnormal, infinite, or NaN.
 routine F32.is_normal(%self: Self) -> Bool
     block entry():
-        %exponent : U32  = U32.from_bits(%self.bits()).bitand(0x7F800000)
+        %exponent : U32  = %self.bits().bitand(0x7F800000)
         %r        : Bool = %exponent.ne(0).bitand(%exponent.ne(0x7F800000))
         return(%r)
 
 routine F32.is_subnormal(%self: Self) -> Bool
     block entry():
-        %bits     : U32  = .from_bits(%self.bits())
+        %bits     : U32  = %self.bits()
         %exponent : U32  = %bits.bitand(0x7F800000)
         %mantissa : U32  = %bits.bitand(0x007FFFFF)
         %r        : Bool = %exponent.eq(0).bitand(%mantissa.ne(0))
@@ -532,14 +532,14 @@ routine F32.is_subnormal(%self: Self) -> Bool
 // -- bits ----------------------------------------------------------------------
 
 /// The raw IEEE 754 bits.
-routine F32.bits(%self: Self) -> Bits32
+routine F32.bits(%self: Self) -> U32
     block entry():
-        %r : Bits32 = bitcast<Self, Bits32>(%self)
+        %r : U32 = bitcast<Self, U32>(%self)
         return(%r)
 
-routine F32.from_bits(%bits: Bits32) -> Self
+routine F32.from_bits(%bits: U32) -> Self
     block entry():
-        %r : Self = bitcast<Bits32, Self>(%bits)
+        %r : Self = bitcast<U32, Self>(%bits)
         return(%r)
 
 // -- float conversions -----------------------------------------------------------
@@ -548,7 +548,7 @@ routine F32.from_bits(%bits: Bits32) -> Self
 /// fptrunc, which calls compiler-rt's __truncsfhf2 (see F16's runtime support).
 routine F32.to_f16(%self: Self) -> F16
     block entry():
-        %bits      : U32 = .from_bits(%self.bits())
+        %bits      : U32 = %self.bits()
         %sign      : U16 = %bits.shr(16).to_u16().bitand(0x8000)
         %magnitude : U32 = %bits.bitand(0x7FFFFFFF)
         when:
@@ -558,7 +558,7 @@ routine F32.to_f16(%self: Self) -> F16
             _                         -> normal(%sign, %magnitude)
 
     block overflow(%sign: U16):
-        %r : F16 = .from_bits(%sign.bitor(0x7C00).bits())
+        %r : F16 = .from_bits(%sign.bitor(0x7C00))
         return(%r)
 
     // Infinity stays infinity; NaN keeps its top payload bits and is made quiet.
@@ -567,16 +567,16 @@ routine F32.to_f16(%self: Self) -> F16
         %is_nan   : Bool = %magnitude.gt(0x7F800000)
         %nan_bits : U16  = %payload.bitor(0x7E00)
         %body     : U16  = %is_nan ? %nan_bits : 0x7C00
-        %r        : F16  = .from_bits(%sign.bitor(%body).bits())
+        %r        : F16  = .from_bits(%sign.bitor(%body))
         return(%r)
 
     // Below F16's smallest normal: scale so one F16 subnormal step is 1.0, and
     // round to an integer (exact in F32, ties to even). 0x400 carries into the
     // smallest normal, which is the right encoding.
     block subnormal(%sign: U16, %magnitude: U32):
-        %scaled : Self = Self.from_bits(%magnitude.bits()).mul(16777216.0)
+        %scaled : Self = Self.from_bits(%magnitude).mul(16777216.0)
         %steps  : U16  = rint<Self>(%scaled).to_u16()
-        %r      : F16  = .from_bits(%sign.bitor(%steps).bits())
+        %r      : F16  = .from_bits(%sign.bitor(%steps))
         return(%r)
 
     // Round the 13 dropped mantissa bits to even, then rebias the exponent from
@@ -585,28 +585,28 @@ routine F32.to_f16(%self: Self) -> F16
         %lowest_kept : U32 = %magnitude.shr(13).bitand(1)
         %rounded     : U32 = %magnitude.add(0xFFF).add(%lowest_kept)
         %rebiased    : U32 = %rounded.shr(13).sub(0x1C000)
-        %r           : F16 = .from_bits(%sign.bitor(%rebiased.to_u16()).bits())
+        %r           : F16 = .from_bits(%sign.bitor(%rebiased.to_u16()))
         return(%r)
 
 /// Rounds to nearest, ties to even, by adding a bias below the kept 16 bits.
 /// Written out because the Windows compiler-rt has no __truncsfbf2.
 routine F32.to_bf16(%self: Self) -> BF16
     block entry():
-        %bits : U32  = .from_bits(%self.bits())
+        %bits : U32  = %self.bits()
         %nan  : Bool = %self.is_nan()
         branch %nan ? quiet_nan(%bits) : round(%bits)
 
     // Keep the sign and top payload bits, and force the quiet bit.
     block quiet_nan(%bits: U32):
         %top : U16  = %bits.shr(16).to_u16().bitor(0x0040)
-        %r   : BF16 = .from_bits(%top.bits())
+        %r   : BF16 = .from_bits(%top)
         return(%r)
 
     block round(%bits: U32):
         %lowest_kept : U32  = %bits.shr(16).bitand(1)
         %bias        : U32  = %lowest_kept.add(0x7FFF)
         %top         : U16  = %bits.add(%bias).shr(16).to_u16()
-        %r           : BF16 = .from_bits(%top.bits())
+        %r           : BF16 = .from_bits(%top)
         return(%r)
 
 routine F32.to_f32(%self: Self) -> Self
@@ -630,7 +630,7 @@ routine F32.to_s8_checked(%self: Self) -> Option<S8>
     block entry():
         %fits  : Bool       = %self.fits_int(-128.0, 128.0)
         %value : S8         = fptosi_sat<Self, S8>(%self)
-        %r     : Option<S8> = %fits.then_some(%value)
+        %r     : Option<S8> = %fits.then_present(%value)
         return(%r)
 
 routine F32.to_s8_clamp(%self: Self) -> S8
@@ -649,7 +649,7 @@ routine F32.to_s16_checked(%self: Self) -> Option<S16>
     block entry():
         %fits  : Bool        = %self.fits_int(-32768.0, 32768.0)
         %value : S16         = fptosi_sat<Self, S16>(%self)
-        %r     : Option<S16> = %fits.then_some(%value)
+        %r     : Option<S16> = %fits.then_present(%value)
         return(%r)
 
 routine F32.to_s16_clamp(%self: Self) -> S16
@@ -668,7 +668,7 @@ routine F32.to_s32_checked(%self: Self) -> Option<S32>
     block entry():
         %fits  : Bool        = %self.fits_int(-2147483648.0, 2147483648.0)
         %value : S32         = fptosi_sat<Self, S32>(%self)
-        %r     : Option<S32> = %fits.then_some(%value)
+        %r     : Option<S32> = %fits.then_present(%value)
         return(%r)
 
 routine F32.to_s32_clamp(%self: Self) -> S32
@@ -687,7 +687,7 @@ routine F32.to_s64_checked(%self: Self) -> Option<S64>
     block entry():
         %fits  : Bool        = %self.fits_int(-9223372036854775808.0, 9223372036854775808.0)
         %value : S64         = fptosi_sat<Self, S64>(%self)
-        %r     : Option<S64> = %fits.then_some(%value)
+        %r     : Option<S64> = %fits.then_present(%value)
         return(%r)
 
 routine F32.to_s64_clamp(%self: Self) -> S64
@@ -708,7 +708,7 @@ routine F32.to_s128_checked(%self: Self) -> Option<S128>
         %fits  : Bool         = %self.fits_int(-170141183460469231731687303715884105728.0,
                 170141183460469231731687303715884105728.0)
         %value : S128         = fptosi_sat<Self, S128>(%self)
-        %r     : Option<S128> = %fits.then_some(%value)
+        %r     : Option<S128> = %fits.then_present(%value)
         return(%r)
 
 routine F32.to_s128_clamp(%self: Self) -> S128
@@ -727,7 +727,7 @@ routine F32.to_u8_checked(%self: Self) -> Option<U8>
     block entry():
         %fits  : Bool       = %self.fits_int(0.0, 256.0)
         %value : U8         = fptoui_sat<Self, U8>(%self)
-        %r     : Option<U8> = %fits.then_some(%value)
+        %r     : Option<U8> = %fits.then_present(%value)
         return(%r)
 
 routine F32.to_u8_clamp(%self: Self) -> U8
@@ -746,7 +746,7 @@ routine F32.to_u16_checked(%self: Self) -> Option<U16>
     block entry():
         %fits  : Bool        = %self.fits_int(0.0, 65536.0)
         %value : U16         = fptoui_sat<Self, U16>(%self)
-        %r     : Option<U16> = %fits.then_some(%value)
+        %r     : Option<U16> = %fits.then_present(%value)
         return(%r)
 
 routine F32.to_u16_clamp(%self: Self) -> U16
@@ -765,7 +765,7 @@ routine F32.to_u32_checked(%self: Self) -> Option<U32>
     block entry():
         %fits  : Bool        = %self.fits_int(0.0, 4294967296.0)
         %value : U32         = fptoui_sat<Self, U32>(%self)
-        %r     : Option<U32> = %fits.then_some(%value)
+        %r     : Option<U32> = %fits.then_present(%value)
         return(%r)
 
 routine F32.to_u32_clamp(%self: Self) -> U32
@@ -784,7 +784,7 @@ routine F32.to_u64_checked(%self: Self) -> Option<U64>
     block entry():
         %fits  : Bool        = %self.fits_int(0.0, 18446744073709551616.0)
         %value : U64         = fptoui_sat<Self, U64>(%self)
-        %r     : Option<U64> = %fits.then_some(%value)
+        %r     : Option<U64> = %fits.then_present(%value)
         return(%r)
 
 routine F32.to_u64_clamp(%self: Self) -> U64
@@ -803,7 +803,7 @@ routine F32.to_u128_checked(%self: Self) -> Option<U128>
     block entry():
         %fits  : Bool         = %self.fits_int(0.0, 340282366920938463463374607431768211456.0)
         %value : U128         = fptoui_sat<Self, U128>(%self)
-        %r     : Option<U128> = %fits.then_some(%value)
+        %r     : Option<U128> = %fits.then_present(%value)
         return(%r)
 
 routine F32.to_u128_clamp(%self: Self) -> U128

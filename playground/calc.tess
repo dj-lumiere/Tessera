@@ -142,7 +142,7 @@ routine Parser.peek(#self: Ptr<Self>) -> Result<Token, CalcError>
 
     block end_token(%i: U64):
         %tok : Token                    = Token { kind: TokenKind.End, value: 0, pos: %i, end: %i }
-        %r   : Result<Token, CalcError> = .ok(%tok)
+        %r   : Result<Token, CalcError> = .success(%tok)
         return(%r)
 
     block classify(%i: U64, %c: Byte):
@@ -163,7 +163,7 @@ routine Parser.peek(#self: Ptr<Self>) -> Result<Token, CalcError>
     block single(%i: U64, %kind: TokenKind):
         %end : U64                      = %i.add(1)
         %tok : Token                    = Token { kind: %kind, value: 0, pos: %i, end: %end }
-        %r   : Result<Token, CalcError> = .ok(%tok)
+        %r   : Result<Token, CalcError> = .success(%tok)
         return(%r)
 
     // %acc is the value of src[start..j) so far.
@@ -193,13 +193,13 @@ routine Parser.peek(#self: Ptr<Self>) -> Result<Token, CalcError>
 
     block too_large(%start: U64):
         %e : CalcError                = CalcError { message: "number too large", pos: %start }
-        %r : Result<Token, CalcError> = .err(%e)
+        %r : Result<Token, CalcError> = .failure(%e)
         return(%r)
 
     block number_done(%start: U64, %j: U64, %acc: S64):
         %tok : Token                    = Token { kind: TokenKind.Number, value: %acc, pos: %start,
                 end: %j }
-        %r   : Result<Token, CalcError> = .ok(%tok)
+        %r   : Result<Token, CalcError> = .success(%tok)
         return(%r)
 
 routine Parser.advance(#self: Ptr<Self>, %tok: Token) -> Void
@@ -231,11 +231,11 @@ routine operator_at(%kind: TokenKind, %level: S64) -> Option<ExprKind>
             _                 -> not_found()
 
     block found(%op: ExprKind):
-        %r : Option<ExprKind> = .some(%op)
+        %r : Option<ExprKind> = .present(%op)
         return(%r)
 
     block not_found():
-        %r : Option<ExprKind> = .none()
+        %r : Option<ExprKind> = .absent()
         return(%r)
 
 /// An operand of a level-%level operator: the next level down, or a primary.
@@ -272,7 +272,7 @@ routine Parser.parse_binary(#self: Ptr<Self>, %level: S64) -> Result<Ptr<Expr>, 
         %op       : Option<ExprKind>             = operator_at(%tok_kind, %level)
         %is_op    : Bool                         = %op.tag
         %kind     : ExprKind                     = %op.value
-        %done     : Result<Ptr<Expr>, CalcError> = .ok(#lhs)
+        %done     : Result<Ptr<Expr>, CalcError> = .success(#lhs)
         branch %is_op ? continue : return(%done)
         #self.advance(%tok)
         %rhs   : Result<Ptr<Expr>, CalcError> = #self.parse_operand(%level)
@@ -292,7 +292,7 @@ routine Parser.parse_binary(#self: Ptr<Self>, %level: S64) -> Result<Ptr<Expr>, 
     block abandon(#lhs: Ptr<Expr>, %error: CalcError):
         #alloc : Ptr<Allocator> = #self.alloc.load()
         free_expr(#lhs, #alloc)
-        %r : Result<Ptr<Expr>, CalcError> = .err(%error)
+        %r : Result<Ptr<Expr>, CalcError> = .failure(%error)
         return(%r)
 
 routine Parser.parse_primary(#self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
@@ -322,7 +322,7 @@ routine Parser.parse_primary(#self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
         %node  : Expr                         = Expr { kind: ExprKind.Num, value: %value, lhs: null,
                 rhs: null, pos: %pos }
         #leaf  : Ptr<Expr>                    = new_expr(#alloc, %node)
-        %r     : Result<Ptr<Expr>, CalcError> = .ok(#leaf)
+        %r     : Result<Ptr<Expr>, CalcError> = .success(#leaf)
         return(%r)
 
     block negate(%tok: Token):
@@ -338,7 +338,7 @@ routine Parser.parse_primary(#self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
         %node  : Expr                         = Expr { kind: ExprKind.Neg, value: 0, lhs: #operand,
                 rhs: null, pos: %pos }
         #tree  : Ptr<Expr>                    = new_expr(#alloc, %node)
-        %r     : Result<Ptr<Expr>, CalcError> = .ok(#tree)
+        %r     : Result<Ptr<Expr>, CalcError> = .success(#tree)
         return(%r)
 
     // "(" expr ")"
@@ -365,7 +365,7 @@ routine Parser.parse_primary(#self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
 
     block close(#tree: Ptr<Expr>, %close: Token):
         #self.advance(%close)
-        %r : Result<Ptr<Expr>, CalcError> = .ok(#tree)
+        %r : Result<Ptr<Expr>, CalcError> = .success(#tree)
         return(%r)
 
     block abandon(#tree: Ptr<Expr>, %error: CalcError):
@@ -378,7 +378,7 @@ routine Parser.parse_primary(#self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
         jump fail(%e)
 
     block fail(%error: CalcError):
-        %r : Result<Ptr<Expr>, CalcError> = .err(%error)
+        %r : Result<Ptr<Expr>, CalcError> = .failure(%error)
         return(%r)
 
 /// Parses all of %source; anything left after the expression is an error.
@@ -400,13 +400,13 @@ routine parse(%source: String, #alloc: Ptr<Allocator>) -> Result<Ptr<Expr>, Calc
         %kind   : TokenKind                    = %tok.kind
         %at_end : Bool                         = %kind.eq(TokenKind.End)
         %pos    : U64                          = %tok.pos
-        %done   : Result<Ptr<Expr>, CalcError> = .ok(#tree)
+        %done   : Result<Ptr<Expr>, CalcError> = .success(#tree)
         // a lex error here is still "something after the expression"
         branch %at_end ? return(%done) : continue
         free_expr(#tree, #alloc)
         %e : CalcError                    = CalcError {
                 message: "unexpected input after expression", pos: %pos }
-        %r : Result<Ptr<Expr>, CalcError> = .err(%e)
+        %r : Result<Ptr<Expr>, CalcError> = .failure(%e)
         return(%r)
 
 // ── Evaluator ─────────────────────────────────────────────────────────────────
@@ -423,7 +423,7 @@ routine eval(#e: Ptr<Expr>) -> Result<S64, CalcError>
 
     block number():
         %value : S64                    = #e.value.load()
-        %r     : Result<S64, CalcError> = .ok(%value)
+        %r     : Result<S64, CalcError> = .success(%value)
         return(%r)
 
     block negate(%pos: U64):
@@ -467,14 +467,14 @@ routine eval(#e: Ptr<Expr>) -> Result<S64, CalcError>
     block checked(%result: Option<S64>, %pos: U64):
         %fits  : Bool                   = %result.tag
         %value : S64                    = %result.value
-        %ok    : Result<S64, CalcError> = .ok(%value)
+        %ok    : Result<S64, CalcError> = .success(%value)
         %e     : CalcError              = CalcError { message: "overflow", pos: %pos }
-        %fail  : Result<S64, CalcError> = .err(%e)
+        %fail  : Result<S64, CalcError> = .failure(%e)
         branch %fits ? return(%ok) : return(%fail)
 
     block division_by_zero(%pos: U64):
         %e : CalcError              = CalcError { message: "division by zero", pos: %pos }
-        %r : Result<S64, CalcError> = .err(%e)
+        %r : Result<S64, CalcError> = .failure(%e)
         return(%r)
 
 // ── Driver ────────────────────────────────────────────────────────────────────

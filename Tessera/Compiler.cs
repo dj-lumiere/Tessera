@@ -36,7 +36,7 @@ public sealed partial class Compiler
         public Compiler(BuildTarget target, IEnumerable<Decl> decls)
     {
         Target = target;
-        foreach (var d in decls)
+        foreach (var d in Derive.Routines(decls.ToList()))
         {
             if (!Selected(d)) continue;
             RegisterConcepts(d);
@@ -464,10 +464,16 @@ public sealed partial class Compiler
 
     /// A record with exactly one field lowers to that field's type, unless it is `@aggregate` (for C structs with one
     /// member, which some ABIs pass differently from the member alone). Returns null for an aggregate.
+    /// A library `@llvm("iN")` record with no fields lowers to an N-bit integer the same way.
     private DType? TransparentField(RecordType s)
     {
         var d = s.Decl;
-        if (d.Attr("llvm") is not null || d.Attr("aggregate") is not null || d.Fields.Count != 1) return null;
+        // A library `@llvm("iN")` record (F128) is an integer of that width underneath. Built-in names never get here.
+        if (d.Attr("llvm") is { } llvm)
+            return llvm.First is ['i', .. var digits] && int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
+                ? IntType.U(bits)
+                : throw new CompileError(d.Pos, $"@llvm on a library record takes an integer type (\"i128\"), got \"{llvm.First}\"");
+        if (d.Attr("aggregate") is not null || d.Fields.Count != 1) return null;
         if (_transparent.TryGetValue(s.Name, out var cached)) return cached;
         if (d.Attr("aligned") is not null || d.Fields[0].Attr("aligned") is not null)
             throw new CompileError(d.Pos, $"record '{d.Name}' has one field, so it lowers to that field's type; @aligned needs it to be @aggregate");
@@ -572,7 +578,7 @@ public sealed partial class Compiler
             case FloatType ft when e is FloatLit f:
                 return ft.Constant(f.Value);
             case FloatType ft when e is NsCallExpr { Name: "from_bits", Args: [IntLit raw] } fb && fb.Owner.Name == ft.Name:
-                if (new IntType(ft.Bits, IntKind.Bits).Literal(raw.Value, raw.HexDigits, out var bitsError) is null)
+                if (IntType.U(ft.Bits).Literal(raw.Value, raw.HexDigits, out var bitsError) is null)
                     throw new CompileError(raw.Pos, bitsError);
                 return ft.FromBits(raw.Value);
             default:

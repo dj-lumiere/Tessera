@@ -1,11 +1,15 @@
 // Tessera stdlib collection: SortedList<T>
 //
-// Sequence tree with a fixed node value capacity of NODE_VALUES. Nodes store
-// arrays inline. The allocator is stored in SortedList; node helpers still
-// receive it as a parameter.
+// A sorted sequence that keeps duplicates: push puts a value after every equal
+// one, so equal values stay in the order they came. get(%order) and
+// remove(%order) work by position in that order; rank finds where a value goes.
 //
-// Internal nodes use `length` as the child count (no separator keys — navigation
-// is purely by subtree_count). Leaf nodes use `length` as the value count.
+// The elements live in a B-tree keyed by position, with a fixed node value
+// capacity of NODE_VALUES. Nodes store arrays inline. The allocator is stored
+// in SortedList; node helpers still receive it as a parameter. Internal nodes
+// use `length` as the child count (no separator keys: navigation is purely by
+// subtree_count). Leaf nodes use `length` as the value count. push finds its
+// position by binary search over get, so it costs O(log² n).
 
 module Standard::Collections
 
@@ -23,13 +27,15 @@ require T: typename
 
 record SortedList<T>
 conform Destruct<SortedList<T>>
-require T: typename
+conform Represent<SortedList<T>> when T: typename, Compare<T>, Diagnose<T>
+conform Diagnose<SortedList<T>> when T: typename, Compare<T>, Diagnose<T>
+require T: typename, Compare<T>
     root   : Ptr<SortedListNode<T>>
     length : U64
     alloc  : Ptr<Allocator>
 
 routine SortedList<T>.construct(#alloc: Ptr<Allocator>) -> Self
-require T: typename
+require T: typename, Compare<T>
     block entry():
         %list : Self = Self { root: null, length: 0, alloc: #alloc }
         return(%list)
@@ -153,48 +159,61 @@ require T: typename
             ? select_node(#child, %order)
             : scan(#node, %order.sub(%child_count), %i.add(1))
 
-/// The element at %rank, the same as get: a SortedList's rank is its position. Traps if %rank >= length.
+/// The element at %rank, the same as get: a SortedList's rank is its position in sorted order. Traps if
+/// %rank >= length.
 routine SortedList<T>.get_by_rank(#self: Ptr<Self>, %rank: U64) -> T
 require T: typename
     block entry():
         return(#self.get(%rank))
 
-routine SortedList<T>.set(#self: Ptr<Self>, %order: U64, %value: T) -> Void
-require T: typename
+/// Puts %value in sorted order, after every element equal to it.
+routine SortedList<T>.push(#self: Ptr<Self>, %value: T) -> Void
+require T: typename, Compare<T>
     block entry():
-        %length    : U64  = #self.length.load()
-        %in_bounds : Bool = %order.lt(%length)
-        branch %in_bounds ? set_root(%order, %value) : panic(TrapCode.Bounds)
-
-    block set_root(%order: U64, %value: T):
-        #root : Ptr<SortedListNode<T>> = #self.root.load()
-        jump set_node(#root, %order, %value)
-
-    block set_node(#node: Ptr<SortedListNode<T>>, %order: U64, %value: T):
-        %leaf : Bool = #node.leaf.load()
-        branch %leaf ? leaf_set(#node, %order, %value) : internal_set(#node, %order, %value)
-
-    block leaf_set(#node: Ptr<SortedListNode<T>>, %order: U64, %value: T):
-        #node.values.set(%order, %value)
+        %order : U64 = #self.bound(%value, true)
+        #self.insert_at(%order, %value)
         return()
 
-    block internal_set(#node: Ptr<SortedListNode<T>>, %order: U64, %value: T):
-        jump scan(#node, %order, %value, 0)
+/// The number of elements less than %value: the position of its first copy if it's there, and where push would put
+/// it if not.
+routine SortedList<T>.rank(#self: Ptr<Self>, %value: T) -> U64
+require T: typename, Compare<T>
+    block entry():
+        %rank : U64 = #self.bound(%value, false)
+        return(%rank)
 
-    block scan(#node: Ptr<SortedListNode<T>>, %order: U64, %value: T, %i: U64):
-        #child       : Ptr<SortedListNode<T>> = #node.children.get(%i)
-        %child_count : U64                    = #child.count()
-        %in_child    : Bool                   = %order.lt(%child_count)
-        branch %in_child
-            ? set_node(#child, %order, %value)
-            : scan(#node, %order.sub(%child_count), %value, %i.add(1))
+routine SortedList<T>.contains(#self: Ptr<Self>, %value: T) -> Bool
+require T: typename, Compare<T>
+    block entry():
+        %rank   : U64  = #self.rank(%value)
+        %length : U64  = #self.length.load()
+        %inside : Bool = %rank.lt(%length)
+        branch %inside ? check(%rank) : return(false)
 
-routine SortedList<T>.push(#self: Ptr<Self>, %value: T) -> Void
-require T: typename
+    block check(%rank: U64):
+        %at   : T    = #self.get(%rank)
+        %same : Bool = %at.compare(%value).eq(0)
+        return(%same)
+
+/// The number of elements less than %value, or with %or_equal, less than or equal to it. Binary search over get.
+private routine SortedList<T>.bound(#self: Ptr<Self>, %value: T, %or_equal: Bool) -> U64
+require T: typename, Compare<T>
     block entry():
         %length : U64 = #self.length.load()
-        #self.insert(%length, %value)
-        return()
+        jump search(0, %length)
+
+    block search(%lo: U64, %hi: U64):
+        %open : Bool = %lo.lt(%hi)
+        branch %open ? probe(%lo, %hi) : return(%lo)
+
+    block probe(%lo: U64, %hi: U64):
+        %mid     : U64  = %lo.add(%hi.sub(%lo).div(2))
+        %at      : T    = #self.get(%mid)
+        %order   : S32  = %at.compare(%value)
+        %below   : Bool = %order.lt(0)
+        %equal   : Bool = %order.eq(0).bitand(%or_equal)
+        %left_of : Bool = %below.bitor(%equal)
+        branch %left_of ? search(%mid.add(1), %hi) : search(%lo, %mid)
 
 routine SortedListNode<T>.split_child(#self: Ptr<Self>, %index: U64, #alloc: Ptr<Allocator>) -> Void
 require T: typename
@@ -232,7 +251,8 @@ require T: typename
         %parent_length : U64 = #self.length.load()
         jump shift_children(%parent_length, #left, #right, %mid, %right_count)
 
-    block shift_children(%i: U64, #left: Ptr<Self>, #right: Ptr<Self>, %mid: U64, %right_count: U64):
+    block shift_children(%i: U64, #left: Ptr<Self>, #right: Ptr<Self>, %mid: U64,
+            %right_count: U64):
         %stop : U64  = %index.add(1)
         %done : Bool = %i.lt(%stop)
         branch %done
@@ -343,7 +363,8 @@ require T: typename
         #self.recount()
         return()
 
-routine SortedList<T>.insert(#self: Ptr<Self>, %order: U64, %value: T) -> Void
+/// Inserts %value before position %order. push picks the position, so the order holds.
+private routine SortedList<T>.insert_at(#self: Ptr<Self>, %order: U64, %value: T) -> Void
 require T: typename
     block entry():
         %length    : U64  = #self.length.load()
@@ -689,4 +710,30 @@ require T: typename, Destruct<T>
 
     block finish():
         #self.destruct()
+        return()
+
+// -- text -----------------------------------------------------------------------
+
+/// The elements in sorted order, each diagnosed (strings quoted): [1, 2, 3].
+routine SortedList<T>.represent<W>(%self: Self, #out: Ptr<W>) -> Void
+require T: typename, Compare<T>, Diagnose<T>, W: typename, Writer<W>
+    block entry():
+        claim #whole : Ptr<Self>
+        #whole.store(%self)
+        %iter_val : SortedListIter<T> = .construct(#whole)
+        claim #iter : Ptr<SortedListIter<T>>
+        #iter.store(%iter_val)
+        diagnose_items<T, SortedListIter<T>, W>(#out, #iter, "[", "]")
+        return()
+
+/// The elements in sorted order, each diagnosed: [1, 2, 3].
+routine SortedList<T>.diagnose<W>(%self: Self, #out: Ptr<W>) -> Void
+require T: typename, Compare<T>, Diagnose<T>, W: typename, Writer<W>
+    block entry():
+        claim #whole : Ptr<Self>
+        #whole.store(%self)
+        %iter_val : SortedListIter<T> = .construct(#whole)
+        claim #iter : Ptr<SortedListIter<T>>
+        #iter.store(%iter_val)
+        diagnose_items<T, SortedListIter<T>, W>(#out, #iter, "[", "]")
         return()

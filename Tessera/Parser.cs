@@ -750,7 +750,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 return new ValueRef(t.Text, t.Pos);
             case TokenKind.Dot when PeekTok(1).Kind == TokenKind.Ident:
             {
-                // `.none()`: the owner type comes from where the value goes.
+                // `.absent()`: the owner type comes from where the value goes.
                 Next();
                 var member = Next();
                 var typeArgs = ParseTypeArgsOpt();
