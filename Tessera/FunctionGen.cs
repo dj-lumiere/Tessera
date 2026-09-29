@@ -1224,7 +1224,7 @@ public sealed class FunctionGen
         for (int i = fixedCount; i < plan.Args.Count; i++) args.Add(VariadicArg(plan.Args[i]));
 
         _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);
-        // A preset array is read-only static data. Until pointers can say so (Roadmap #31), the routines that write
+        // A preset array is read-only static data, and pointers carry no read-only marker, so the routines that write
         // through their receiver are refused on one by name.
         if (sig.Decl.Name is "store" or "volatile_store" or "set" or "shift_left" or "shift_right" or "copy"
             && plan.Receiver is { } place && PresetArrayRoot(place) is { } root)
