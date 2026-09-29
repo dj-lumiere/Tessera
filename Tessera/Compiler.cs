@@ -210,7 +210,7 @@ public sealed partial class Compiler
     private void CheckExternal(RoutineDecl r)
     {
         var env = new TypeEnv(r.File);
-        foreach (var p in r.Params) CheckSigil(p.Name, ResolveType(p.Type, env), p.Pos);
+        foreach (var p in r.Params) ResolveType(p.Type, env);
         ResolveType(r.ReturnType, env, allowVoid: true);
     }
 
@@ -293,6 +293,16 @@ public sealed partial class Compiler
         }
         return Pick(_blanket.GetValueOrDefault(name)?.Where(b => anyModule || Visible(b, file, null) || !b.IsPrivate && !b.IsInternal).ToList(),
             file, pos, $"routine 'T.{name}'");
+    }
+
+    /// The routine or preset a bare name means in `file`, described for an error, if there is one.
+    public string? NameTaken(string name, string file)
+    {
+        if (_free.GetValueOrDefault(name)?.FirstOrDefault(d => Visible(d, file, null)) is { } r)
+            return $"routine '{name}' ({r.Pos})";
+        if (_presets.GetValueOrDefault(("", name))?.FirstOrDefault(d => Visible(d, file, null)) is { } p)
+            return $"preset '{name}' ({p.Pos})";
+        return null;
     }
 
     /// Whether some record, variant, or choice has this name, visible from here or not.
@@ -671,21 +681,6 @@ public sealed partial class Compiler
 
     /// The sigil must match the type: `#` for pointers, `%` for everything else. A value declared with a bare type
     /// parameter (`%val: From`) may hold any type, so generic code such as the prelude's casts is exempt.
-    public static void CheckSigil(string name, TypeRef declared, DType t, TypeEnv env, Pos pos)
-    {
-        if (declared.Args.Count == 0 && declared.Name != "Self" && env.Has(declared.Name)) return;
-        CheckSigil(name, t, pos);
-    }
-
-    public static void CheckSigil(string name, DType t, Pos pos)
-    {
-        bool ptrSigil = name[0] == '#';
-        if (ptrSigil && !t.IsPointer)
-            throw new CompileError(pos, $"'{name}' has type {t}; only Ptr values use the '#' sigil (write %{name[1..]})");
-        if (!ptrSigil && t.IsPointer)
-            throw new CompileError(pos, $"'{name}' has type {t}; Ptr values must use the '#' sigil (write #{name[1..]})");
-    }
-
     // ── Const arrays ────────────────────────────────────────────────────────
 
     private readonly Dictionary<string, string> _presetArrays = [];

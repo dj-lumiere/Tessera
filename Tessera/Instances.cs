@@ -73,7 +73,6 @@ public sealed partial class Compiler
         foreach (var p in r.Params)
         {
             var t = ResolveType(p.Type, env);
-            CheckSigil(p.Name, p.Type, t, env, p.Pos);
             ps.Add(t);
         }
         var ret = ResolveType(r.ReturnType, env, allowVoid: true);

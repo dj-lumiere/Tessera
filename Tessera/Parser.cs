@@ -4,9 +4,14 @@ namespace Tessera;
 
 /// Recursive-descent parser. Layout is not significant: declarations are found by their keywords, statements are
 /// separated by newlines, and a block ends at its terminator.
-public sealed class Parser(List<Token> tokens, string file, bool isLibrary = false)
+public sealed class Parser(List<Token> tokens, string file, bool isLibrary = false, IEnumerable<string>? values = null)
 {
     private int _i;
+
+    /// The value names visible where the parser is: the routine's parameters, the block's parameters, and the
+    /// bindings above. A bare name in this set is a value; any other is a routine, preset, or type, found later.
+    private HashSet<string> _values = values is null ? [] : [.. values];
+    private HashSet<string> _routineValues = [];
 
     private static readonly HashSet<string> TerminatorKeywords =
         ["jump", "branch", "when", "return", "unreachable"];
@@ -322,6 +327,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
 
         var blocks = new List<BlockDecl>();
+        _routineValues = [.. parameters.Select(p => p.Name)];
         while (IsIdent("block")) blocks.Add(ParseBlock());
         if (blocks[0].Name != "entry")
             throw new CompileError(blocks[0].Pos, $"the first block of routine '{display}' must be 'entry'");
@@ -461,10 +467,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             do
             {
-                var n = Cur;
-                if (n.Kind is not (TokenKind.Value or TokenKind.Pointer))
-                    throw Error($"expected a %value or #pointer parameter, found {Describe(n)}");
-                Next();
+                var n = Expect(TokenKind.Ident, "a parameter name");
                 Expect(TokenKind.Colon, "':'");
                 list.Add(new Param(n.Text, ParseType(), n.Pos));
             } while (Accept(TokenKind.Comma));
@@ -545,6 +548,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var parameters = ParseParams();
         Expect(TokenKind.Colon, "':' after the block header");
         ExpectLineEnd();
+        _values = [.. _routineValues, .. parameters.Select(p => p.Name)];
 
         var stmts = new List<Stmt>();
         while (true)
@@ -603,13 +607,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var pos = Cur.Pos;
         if (IsIdent("claim")) return ParseClaim();
-        if (Cur.Kind is TokenKind.Value or TokenKind.Pointer && PeekTok(1).Kind == TokenKind.Colon)
+        if (Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon)
         {
             string name = Next().Text;
             Next();
             var type = ParseType();
             Expect(TokenKind.Eq, "'='");
-            return new BindStmt(name, type, ParseExpr(), pos);
+            var value = ParseExpr();
+            _values.Add(name);
+            return new BindStmt(name, type, value, pos);
         }
 
         var lhs = ParsePostfix();
@@ -679,7 +685,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                         while (Accept(TokenKind.Comma));
                     }
                     Expect(TokenKind.Arrow, "'->'");
+                    // `.Present(value) -> use(value)`: a variant arm's binding is a value in its target.
+                    var bound = (cases ?? []).Select(PatternBinding).OfType<string>().Where(n => !_values.Contains(n)).ToList();
+                    _values.UnionWith(bound);
                     arms.Add((cases, ParseTarget()));
+                    _values.ExceptWith(bound);
                     ExpectLineEnd();
                 }
                 if (arms.Count == 0) throw new CompileError(pos, "when needs at least one arm");
@@ -693,6 +703,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             }
         }
     }
+
+    /// The name a variant case pattern binds: `value` in `.Present(value)` or `Option.Present(value)`.
+    private static string? PatternBinding(Expr e) => e switch
+    {
+        NsCallExpr { Args: [PresetRef { Owner: null, Path: null } r] } => r.Name,
+        ImplicitCallExpr { Args: [PresetRef { Owner: null, Path: null } r] } => r.Name,
+        _ => null,
+    };
 
     private Target ParseTarget()
     {
@@ -784,8 +802,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             case TokenKind.Str:
                 Next();
                 return new StrLit(t.Text, t.Pos);
-            case TokenKind.Value:
-            case TokenKind.Pointer:
+            // A value is never called or given type arguments, so `alloc<T>(...)` stays a routine call even beside a
+            // value named `alloc` (which the checker then rejects as a clash).
+            case TokenKind.Ident when _values.Contains(t.Text)
+                                      && PeekTok(1).Kind is not (TokenKind.ColonColon or TokenKind.LParen or TokenKind.Lt):
                 Next();
                 return new ValueRef(t.Text, t.Pos);
             case TokenKind.Dot when PeekTok(1).Kind == TokenKind.Ident:
@@ -875,9 +895,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private Stmt ParseClaim()
     {
         var pos = Next().Pos;
-        if (Cur.Kind != TokenKind.Pointer)
-            throw new CompileError(pos, "claim binds a pointer name: claim #p : Ptr<T>");
+        if (Cur.Kind != TokenKind.Ident)
+            throw new CompileError(pos, "claim binds a pointer name: claim p : Ptr<T>");
         string name = Next().Text;
+        _values.Add(name);
         Expect(TokenKind.Colon, "':'");
         var type = ParseType();
         if (Is(TokenKind.Eq))

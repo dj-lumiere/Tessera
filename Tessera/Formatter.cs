@@ -152,10 +152,10 @@ public static class Formatter
     private static bool IsWhenHeader(string trimmed) =>
         (trimmed == "when:" || trimmed.StartsWith("when ")) && StripComment(trimmed).EndsWith(':');
 
-    /// `%name : Type = rest`, where the type may hold spaces inside brackets (`Callable<(A, B), R>`).
+    /// `name : Type = rest`, where the type may hold spaces inside brackets (`Callable<(A, B), R>`).
     private static (string Name, string Type, string Tail)? SplitBinding(string s)
     {
-        if (s.Length < 2 || s[0] is not ('%' or '#')) return null;
+        if (s.Length == 0 || !IsNameStart(s[0])) return null;
         int i = 1;
         while (i < s.Length && (char.IsLetterOrDigit(s[i]) || s[i] == '_')) i++;
         string name = s[..i];
@@ -169,12 +169,15 @@ public static class Formatter
         return (name, type, rest);
     }
 
-    /// `claim #name : Type`; a line with anything after the type (an initializer, which is an error) isn't one.
+    /// A value's name starts with a letter or `_`; `%` and `#` may start one too (the old sigils).
+    private static bool IsNameStart(char c) => char.IsLetter(c) || c is '_' or '%' or '#';
+
+    /// `claim name : Type`; a line with anything after the type (an initializer, which is an error) isn't one.
     private static (string Name, string Type)? SplitClaim(string s)
     {
         if (!s.StartsWith("claim ")) return null;
         string body = s[6..].TrimStart();
-        if (body.Length < 2 || body[0] != '#') return null;
+        if (body.Length == 0 || !IsNameStart(body[0])) return null;
         int i = 1;
         while (i < body.Length && (char.IsLetterOrDigit(body[i]) || body[i] == '_')) i++;
         int colon = SkipSpaces(body, i);

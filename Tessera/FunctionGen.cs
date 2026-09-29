@@ -65,6 +65,7 @@ public sealed class FunctionGen
             var p = _decl.Params[i];
             if (!_routineParams.TryAdd(p.Name, new Val($"%a.{IrName(p.Name)}", _inst.Params[i])))
                 throw Err(p.Pos, $"parameter '{p.Name}' is declared twice");
+            CheckValueName(p.Name, p.Pos);
         }
 
         foreach (var b in blocks)
@@ -76,7 +77,6 @@ public sealed class FunctionGen
             foreach (var p in b.Params)
             {
                 var t = Resolve(p.Type);
-                Compiler.CheckSigil(p.Name, p.Type, t, _env, p.Pos);
                 // A block parameter may shadow a routine parameter (stdlib/io.tess print_int does this).
                 if (!seen.Add(p.Name)) throw Err(p.Pos, $"block '{b.Name}' declares '{p.Name}' twice");
                 types.Add(t);
@@ -177,7 +177,10 @@ public sealed class FunctionGen
         _values = new Dictionary<string, Val>(_routineParams);
         var types = _blockParamTypes[b.Name];
         for (int i = 0; i < b.Params.Count; i++)
+        {
+            CheckValueName(b.Params[i].Name, b.Params[i].Pos);
             _values[b.Params[i].Name] = new Val(ParamOp(b.Name, b.Params[i].Name), types[i]);
+        }
 
         foreach (var s in b.Stmts) EmitStmt(s);
         EmitTerminator(b.Terminator);
@@ -187,13 +190,22 @@ public sealed class FunctionGen
     {
         if (_values.ContainsKey(name))
             throw Err(pos, $"'{name}' is already defined in block '{_blockName}' (SSA values are bound once)");
+        CheckValueName(name, pos);
         _values[name] = v;
+    }
+
+    /// A value can't take the name of a routine or preset the file sees: a bare name means one thing.
+    private void CheckValueName(string name, Pos pos)
+    {
+        if (_c.NameTaken(name, _env.File) is { } taken)
+            throw Err(pos, $"'{name}' names a value here and {taken}; rename the value");
     }
 
     private string LocalOp(string name) => $"%v.{_blockName}.{IrName(name)}";
 
-    /// A Tessera name in IR: `%x` becomes `x` and `#x` becomes `$x`, so a value and a pointer may share a name.
-    private static string IrName(string name) => name[0] == '#' ? "$" + name[1..] : name[1..];
+    /// A Tessera name in IR. `%` and `#` may start a name (`%x` and `x` are different names), and LLVM names can't
+    /// hold them, so they become `.` and `$`.
+    private static string IrName(string name) => name.Replace("#", "$").Replace("%", ".");
 
     /// Where a `continue` arm goes: the LLVM block that holds the lines after the guard.
     private string? _continueLabel;
@@ -215,7 +227,6 @@ public sealed class FunctionGen
             case BindStmt b:
             {
                 var t = Resolve(b.Type);
-                Compiler.CheckSigil(b.Name, b.Type, t, _env, b.Pos);
                 var v = Eval(b.Value, t);
                 string op = LocalOp(b.Name);
                 // Name the instruction that produced the value after the binding, so the IR reads like the
@@ -656,7 +667,9 @@ public sealed class FunctionGen
                 return (index, null);
             case [ValueRef r] when payload is not null:
                 return (index, r);
-            case [ValueRef]:
+            case [PresetRef { Owner: null, Path: null } p] when payload is not null:
+                return (index, new ValueRef(p.Name, p.Pos));
+            case [ValueRef] or [PresetRef { Owner: null, Path: null }]:
                 throw Err(e.Pos, $"{v.Decl.Name}.{name} carries no payload to bind");
             default:
                 throw Err(e.Pos, $"bind the payload to a name: {v.Decl.Name}.{name}(%value)");
@@ -716,7 +729,6 @@ public sealed class FunctionGen
     private string BindingArm(VariantType vt, string slot, int index, ValueRef binding, Target target)
     {
         var payload = vt.Payloads[index]!;
-        Compiler.CheckSigil(binding.Name, payload, binding.Pos);
         var saved = _cur;
         var savedValues = _values;
         _cur = NewLBlock("case");
@@ -796,7 +808,8 @@ public sealed class FunctionGen
             string source = s[(i + 1)..end];
             if (string.IsNullOrWhiteSpace(source)) throw Err(template.Pos, "'{}' holds no expression; a literal brace is '{{'");
             var at = new Pos(template.Pos.File, template.Pos.Line, template.Pos.Col + 2 + i);
-            var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File).ParseLoneExpr();
+            var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File, values: _values.Keys)
+                .ParseLoneExpr();
             Flush();
             EvalCall(new MethodCallExpr(value, "represent", [], [writer], at), VoidType.Instance);
             i = end;
@@ -939,8 +952,14 @@ public sealed class FunctionGen
                 throw Err(r.Pos, $"routine '{r.Name}' does not match {ct}");
             return new Val($"@{Compiler.Quote(inst.Symbol)}", ct);
         }
+        // A value of another block reads as a bare name here; say what went wrong rather than "unknown".
+        if (r.Owner is null && r.Path is null && BoundInSomeBlock(r.Name))
+            throw Err(r.Pos, $"'{r.Name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block arguments");
         throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
     }
+
+    private bool BoundInSomeBlock(string name) =>
+        _decl.Blocks!.Any(b => b.Params.Any(p => p.Name == name) || b.Stmts.Any(s => s is BindStmt bs && bs.Name == name));
 
     /// Resolves a type written as a namespace, or null if it doesn't name a type (it may be a preset).
     private DType? TryResolveOwner(TypeRef owner)
@@ -1003,7 +1022,7 @@ public sealed class FunctionGen
                     $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
                 var r = _c.FindMethod(owner.OwnerName, ic.Name, _env.File, ic.Pos)
                         ?? throw Err(ic.Pos, $"{owner} has no routine '{ic.Name}'");
-                if (r.Params.Count > 0 && r.Params[0].Name[1..] == "self")
+                if (r.Params.Count > 0 && r.Params[0].Name is "self" or "%self" or "#self")
                     throw Err(ic.Pos, $"'{owner}.{ic.Name}' takes a receiver; a leading '.' only calls typewise routines");
                 var env = BindOwner(r, owner, ic.Pos);
                 BindExplicit(r, env, ic.TypeArgs, ic.Pos);

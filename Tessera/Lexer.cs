@@ -83,10 +83,12 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
 
             if (c == '%' || c == '#')
             {
+                // `%` and `#` may start a name; they're part of it and mean nothing more (values had sigils
+                // before 2026-09-29, so `%x` and `x` are different names).
                 Advance();
                 string name = ReadIdent();
                 if (name.Length == 0) throw new CompileError(pos, $"expected a name after '{c}'");
-                _tokens.Add(new Token(c == '%' ? TokenKind.Value : TokenKind.Pointer, c + name, pos));
+                _tokens.Add(new Token(TokenKind.Ident, c + name, pos));
                 continue;
             }
 
