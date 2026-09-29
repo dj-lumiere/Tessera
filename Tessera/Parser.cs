@@ -562,6 +562,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private Stmt ParseStmt()
     {
         var pos = Cur.Pos;
+        if (IsIdent("claim")) return ParseClaim();
         if (Cur.Kind is TokenKind.Value or TokenKind.Pointer && PeekTok(1).Kind == TokenKind.Colon)
         {
             string name = Next().Text;
@@ -772,7 +773,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     case "true": Next(); return new BoolLit(true, t.Pos);
                     case "false": Next(); return new BoolLit(false, t.Pos);
                     case "null": Next(); return new NullLit(t.Pos);
-                    case "claim": return ParseClaim();
                 }
                 return ParseNameExpr();
             default:
@@ -830,14 +830,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new RecordLit(type, fields, type.Pos);
     }
 
-    private Expr ParseClaim()
+    /// `claim #p : Ptr<T>`: a stack slot bound to a pointer name. It takes no initializer; the value goes in with a
+    /// store.
+    private Stmt ParseClaim()
     {
         var pos = Next().Pos;
-        // claim only takes a stack slot; its type comes from the binding (`#p: Ptr<T> = claim`), and the value goes
-        // in with a store.
-        if (Cur.Kind is TokenKind.Lt or TokenKind.LParen)
-            throw new CompileError(pos, "claim takes no type or initializer: #p: Ptr<T> = claim, then #p.store(%value)");
-        return new ClaimExpr(pos);
+        if (Cur.Kind != TokenKind.Pointer)
+            throw new CompileError(pos, "claim binds a pointer name: claim #p : Ptr<T>");
+        string name = Next().Text;
+        Expect(TokenKind.Colon, "':'");
+        var type = ParseType();
+        if (Is(TokenKind.Eq))
+            throw new CompileError(pos, "claim takes no initializer: claim #p : Ptr<T>, then #p.store(%value)");
+        return new BindStmt(name, type, new ClaimExpr(pos), pos);
     }
 
     private List<TypeRef> ParseTypeArgsOpt()

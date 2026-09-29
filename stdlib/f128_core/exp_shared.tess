@@ -26,7 +26,7 @@ preset CM_EXP_KIND_TEN: U64 = 2
 
 preset CM_EXP_ONE:  F128 = F128 { bits: F128_ONE }
 preset CM_EXP_ZERO: F128 = F128 { bits: 0 }
-preset CM_EXP_LOW:  U128 = U64.MAX.to_u128()      // the low word of a U128
+preset CM_EXP_LOW:  U128 = U64.MAX.to_u128()  // the low word of a U128
 
 /// The wide reductions' exponent shift is this minus x's biased exponent, by kind.
 preset CM_EXP_WIDE_SHIFT: Array<S64, 3> = [0x402E, 0x402F, 0x402D]
@@ -486,10 +486,10 @@ routine cm_exp_add_column(#lo: Ptr<U64>, #hi: Ptr<U64>, %slot: S64, %count: S64,
 routine cm_exp_mul_words(#out: Ptr<U64>, #a: Ptr<U64>, %na: U64, #b: Ptr<U64>, %nb: U64, %p: U64,
         %count: S64) -> Void
     block entry():
-        #lo_words : Ptr<Array<S64, 8>> = claim
-        #hi_words : Ptr<Array<S64, 8>> = claim
-        #lo       : Ptr<U64>           = #lo_words.cast<U64>()
-        #hi       : Ptr<U64>           = #hi_words.cast<U64>()
+        claim #lo_words : Ptr<Array<S64, 8>>
+        claim #hi_words : Ptr<Array<S64, 8>>
+        #lo : Ptr<U64> = #lo_words.cast<U64>()
+        #hi : Ptr<U64> = #hi_words.cast<U64>()
         #lo.zeroinit(8)
         #hi.zeroinit(8)
         jump row(0, #lo, #hi)
@@ -613,8 +613,8 @@ routine cm_exp_reduce_wide(#out: Ptr<U64>, %x: U128, %kind: U64, %len: U64) -> V
         return()
 
     block scale(%sign_mask: U64, %sig: U128):
-        #sig_words : Ptr<Array<S64, 2>> = claim
-        #sig_ptr   : Ptr<U64>           = #sig_words.cast<U64>()
+        claim #sig_words : Ptr<Array<S64, 2>>
+        #sig_ptr : Ptr<U64> = #sig_words.cast<U64>()
         #sig_ptr[0].store(%sig.to_s64_wrap().to_u64_wrap())
         #sig_ptr[1].store(cm_exp_hi(%sig))
         %is_e  : Bool     = %kind.eq(CM_EXP_KIND_E)
@@ -626,7 +626,7 @@ routine cm_exp_reduce_wide(#out: Ptr<U64>, %x: U128, %kind: U64, %len: U64) -> V
     block flip(%q: U64, %sign_mask: U64):
         %done : Bool = %q.ge(%len)
         branch %done ? return() : continue
-        #out[%q].store(#out[%q].load().bitxor(%sign_mask))
+        #out[%q].load().bitxor(%sign_mask).store_into(#out[%q])
         jump flip(%q.add(1), %sign_mask)
 
 /// The reduced argument of the wide paths: len words (4 or 7) of x × log2(base),
@@ -665,17 +665,17 @@ routine cm_exp_horner(#poly: Ptr<U64>, %y: U64, #coefs: Ptr<U64>, %width: U64, %
 /// result is still too close to a rounding boundary.
 routine cm_exp_accurate(%x: U128, %kind: U64) -> CmExpScaled
     block entry():
-        #arg_words  : Ptr<Array<S64, 8>> = claim
-        #tab_words  : Ptr<Array<S64, 8>> = claim
-        #poly_words : Ptr<Array<S64, 8>> = claim
-        #low_words  : Ptr<Array<S64, 8>> = claim
-        #arg        : Ptr<U64>           = #arg_words.cast<U64>()
-        #tab        : Ptr<U64>           = #tab_words.cast<U64>()
-        #poly       : Ptr<U64>           = #poly_words.cast<U64>()
-        #low        : Ptr<U64>           = #low_words.cast<U64>()
+        claim #arg_words  : Ptr<Array<S64, 8>>
+        claim #tab_words  : Ptr<Array<S64, 8>>
+        claim #poly_words : Ptr<Array<S64, 8>>
+        claim #low_words  : Ptr<Array<S64, 8>>
+        #arg  : Ptr<U64> = #arg_words.cast<U64>()
+        #tab  : Ptr<U64> = #tab_words.cast<U64>()
+        #poly : Ptr<U64> = #poly_words.cast<U64>()
+        #low  : Ptr<U64> = #low_words.cast<U64>()
         cm_exp_wide_argument(#arg, %x, %kind, 4)
         %el_word : U64 = #arg[3].load()
-        %el      : S64 = .from_bits(%el_word.bits())          // the exponent, stored as a word
+        %el      : S64 = .from_bits(%el_word.bits())  // the exponent, stored as a word
         %top     : U64 = #arg[2].load()
         %x0      : U64 = #arg[0].load()
         %x1      : U64 = #arg[1].load()
@@ -719,7 +719,7 @@ routine cm_exp_accurate_is_close(%el: S64, %f0: U64, %f1: U64, %f2: U64) -> Bool
 
     block normal():
         %low     : U128 = cm_exp_join(%f1, %f0)
-        %dropped : U128 = %low.add_wrap(8).bitand(0x7FFFFFFFFFFFFFF)       // 2^59 - 1
+        %dropped : U128 = %low.add_wrap(8).bitand(0x7FFFFFFFFFFFFFF)  // 2^59 - 1
         %r       : Bool = %dropped.le(16)
         return(%r)
 
@@ -756,17 +756,17 @@ routine cm_exp_accurate_is_close(%el: S64, %f0: U64, %f1: U64, %f2: U64) -> Bool
 /// a rounding boundary: returns the unbiased exponent and the 2^x significand.
 routine cm_exp_superaccurate(%x: U128, %kind: U64) -> CmExpScaled
     block entry():
-        #arg_words  : Ptr<Array<S64, 8>> = claim
-        #poly_words : Ptr<Array<S64, 8>> = claim
-        #next_words : Ptr<Array<S64, 8>> = claim
-        #low_words  : Ptr<Array<S64, 8>> = claim
-        #arg        : Ptr<U64>           = #arg_words.cast<U64>()
-        #poly       : Ptr<U64>           = #poly_words.cast<U64>()
-        #next       : Ptr<U64>           = #next_words.cast<U64>()
-        #low        : Ptr<U64>           = #low_words.cast<U64>()
+        claim #arg_words  : Ptr<Array<S64, 8>>
+        claim #poly_words : Ptr<Array<S64, 8>>
+        claim #next_words : Ptr<Array<S64, 8>>
+        claim #low_words  : Ptr<Array<S64, 8>>
+        #arg  : Ptr<U64> = #arg_words.cast<U64>()
+        #poly : Ptr<U64> = #poly_words.cast<U64>()
+        #next : Ptr<U64> = #next_words.cast<U64>()
+        #low  : Ptr<U64> = #low_words.cast<U64>()
         cm_exp_wide_argument(#arg, %x, %kind, 7)
         %el_word : U64 = #arg[6].load()
-        %el      : S64 = .from_bits(%el_word.bits())          // the exponent, stored as a word
+        %el      : S64 = .from_bits(%el_word.bits())  // the exponent, stored as a word
         %top     : U64 = #arg[5].load()
         // a degree-36 polynomial in the top fraction word below its 4 table bits
         #c6   : Ptr<U64> = CM_EXP_C6.to_ptr()
@@ -789,11 +789,11 @@ routine cm_exp_superaccurate(%x: U128, %kind: U64) -> CmExpScaled
 /// to the words it can reach.
 routine cm_exp_superaccurate_next(#out: Ptr<U64>, #arg: Ptr<U64>, #c6: Ptr<U64>) -> Void
     block entry():
-        #acc_words  : Ptr<Array<S64, 8>> = claim
-        #term_words : Ptr<Array<S64, 8>> = claim
-        #acc        : Ptr<U64>           = #acc_words.cast<U64>()
-        #term       : Ptr<U64>           = #term_words.cast<U64>()
-        %y          : U64                = #arg[4].load()
+        claim #acc_words  : Ptr<Array<S64, 8>>
+        claim #term_words : Ptr<Array<S64, 8>>
+        #acc  : Ptr<U64> = #acc_words.cast<U64>()
+        #term : Ptr<U64> = #term_words.cast<U64>()
+        %y    : U64      = #arg[4].load()
         #acc.zeroinit(8)
         jump degree(5, %y, #acc, #term)
 
@@ -817,12 +817,12 @@ routine cm_exp_superaccurate_next(#out: Ptr<U64>, #arg: Ptr<U64>, #c6: Ptr<U64>)
 /// 1 + y (c1 + y c2), each product keeping its top words.
 routine cm_exp_superaccurate_low(#out: Ptr<U64>, #arg: Ptr<U64>, #c6: Ptr<U64>) -> Void
     block entry():
-        #y_words     : Ptr<Array<S64, 8>> = claim
-        #prod_words  : Ptr<Array<S64, 8>> = claim
-        #slope_words : Ptr<Array<S64, 8>> = claim
-        #y           : Ptr<U64>           = #y_words.cast<U64>()
-        #prod        : Ptr<U64>           = #prod_words.cast<U64>()
-        #slope       : Ptr<U64>           = #slope_words.cast<U64>()
+        claim #y_words     : Ptr<Array<S64, 8>>
+        claim #prod_words  : Ptr<Array<S64, 8>>
+        claim #slope_words : Ptr<Array<S64, 8>>
+        #y     : Ptr<U64> = #y_words.cast<U64>()
+        #prod  : Ptr<U64> = #prod_words.cast<U64>()
+        #slope : Ptr<U64> = #slope_words.cast<U64>()
         #y.zeroinit(8)
         copy<U64>(#y.offset(16), #arg, 4)
         cm_exp_mul_words(#prod, #y, 6, cm_exp_row(#c6, 6, 2), 6, 6, 6)

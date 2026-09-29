@@ -239,6 +239,10 @@ public sealed partial class Compiler
         Pick(_methods.GetValueOrDefault((owner, name)), file, pos, $"routine '{owner}.{name}'")
         ?? Pick(_blanket.GetValueOrDefault(name), file, pos, $"routine 'T.{name}'");
 
+    /// A routine on every type, `T.name`.
+    public RoutineDecl? FindBlanket(string name, string file, Pos pos) =>
+        Pick(_blanket.GetValueOrDefault(name), file, pos, $"routine 'T.{name}'");
+
     public PresetDecl? FindPreset(string owner, string name, string file, Pos pos) =>
         Pick(_presets.GetValueOrDefault((owner, name)), file, pos, $"preset '{(owner == "" ? name : owner + "." + name)}'");
 

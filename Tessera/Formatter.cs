@@ -9,8 +9,9 @@ namespace Tessera;
 /// - a doc comment sits directly on its declaration, above any attribute lines;
 /// - a top-level section comment (a group of `//` lines with a `// --`, `// ==`, or `// ──` divider) has a blank line
 ///   before and after it;
-/// - `:`, `=`, and `->` have one space on each side, and consecutive lines of one kind (bindings, record or choice
-///   fields, `when` arms) align them.
+/// - `:`, `=`, and `->` have one space on each side, and consecutive lines of one kind (bindings, claims, record or
+///   choice fields, `when` arms) align them.
+/// - an inline comment sits exactly two spaces after its code; comments are never aligned with each other.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 8 spaces
 ///   further in; a line with nowhere to break (a comment, one long argument) stays as it is. A long `branch` puts its
 ///   `? target` and `: target` on their own lines, 4 spaces further in, first.
@@ -38,7 +39,12 @@ public static class Formatter
     {
         int tabs = 0;
         while (tabs < line.Length && line[tabs] == '\t') tabs++;
-        return (new string(' ', tabs * 4) + line[tabs..]).TrimEnd();
+        line = (new string(' ', tabs * 4) + line[tabs..]).TrimEnd();
+        // an inline comment sits two spaces after its code
+        int comment = TopLevelComment(line);
+        if (comment > 0 && line[..comment].Trim().Length > 0)
+            line = $"{line[..comment].TrimEnd()}  {line[comment..]}";
+        return line;
     }
 
     private static int Indent(string line) => line.Length - line.TrimStart().Length;
@@ -47,9 +53,10 @@ public static class Formatter
 
     // ── Alignment ───────────────────────────────────────────────────────────
 
-    private enum Kind { Binding, Field, Arm }
+    private enum Kind { Binding, Claim, Field, Arm }
 
-    /// One alignable line split into its columns: `name : type = rest`, `name : rest`, or `left -> rest`.
+    /// One alignable line split into its columns: `name : type = rest`, `claim name : rest`, `name : rest`, or
+    /// `left -> rest`.
     private sealed record Row(int Index, Kind Kind, int Indent, string Name, string? Type, string Rest);
 
     private static List<string> Align(List<string> lines)
@@ -65,8 +72,9 @@ public static class Formatter
 
             if (indent == 0 && trimmed.Length > 0)
             {
-                if (trimmed.StartsWith("record ")) context = "record";
-                else if (trimmed.StartsWith("choice ")) context = "choice";
+                string decl = trimmed.StartsWith("private ") ? trimmed[8..] : trimmed;
+                if (decl.StartsWith("record ")) context = "record";
+                else if (decl.StartsWith("choice ")) context = "choice";
                 else if (!(trimmed.StartsWith("conform ") || trimmed.StartsWith("require ") || trimmed.StartsWith("@")))
                     context = null;
                 whenIndent = -1;
@@ -80,6 +88,8 @@ public static class Formatter
                 row = new Row(i, Kind.Arm, indent, arm.Left, null, arm.Right);
             else if (SplitBinding(trimmed) is { } b)
                 row = new Row(i, Kind.Binding, indent, b.Name, b.Type, b.Tail);
+            else if (SplitClaim(trimmed) is { } c)
+                row = new Row(i, Kind.Claim, indent, c.Name, null, c.Type);
             else if (context is not null && indent == 4 && SplitField(trimmed) is { } f)
                 row = new Row(i, Kind.Field, indent, f.Name, null, f.Tail);
             rows.Add(row);
@@ -115,6 +125,7 @@ public static class Formatter
                 result[r.Index] = r.Kind switch
                 {
                     Kind.Binding => $"{pad}{r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} = {r.Rest}",
+                    Kind.Claim => $"{pad}claim {r.Name.PadRight(nameWidth)} : {r.Rest}",
                     Kind.Field => $"{pad}{r.Name.PadRight(nameWidth)} : {r.Rest}",
                     _ => $"{pad}{r.Name.PadRight(nameWidth)} -> {r.Rest}",
                 };
@@ -143,6 +154,22 @@ public static class Formatter
         string rest = s[(eq + 1)..].Trim();
         if (type.Length == 0 || rest.Length == 0) return null;
         return (name, type, rest);
+    }
+
+    /// `claim #name : Type`; a line with anything after the type (an initializer, which is an error) isn't one.
+    private static (string Name, string Type)? SplitClaim(string s)
+    {
+        if (!s.StartsWith("claim ")) return null;
+        string body = s[6..].TrimStart();
+        if (body.Length < 2 || body[0] != '#') return null;
+        int i = 1;
+        while (i < body.Length && (char.IsLetterOrDigit(body[i]) || body[i] == '_')) i++;
+        int colon = SkipSpaces(body, i);
+        if (colon >= body.Length || body[colon] != ':' || (colon + 1 < body.Length && body[colon + 1] is ':' or '='))
+            return null;
+        string type = body[(colon + 1)..].Trim();
+        if (type.Length == 0 || TopLevelIndex(type, 0, "=") >= 0) return null;
+        return (body[..i], type);
     }
 
     /// `name: rest` inside a record or choice (a field and its type, or a member and its value).

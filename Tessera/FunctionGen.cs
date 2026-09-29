@@ -564,7 +564,7 @@ public sealed class FunctionGen
     private Val EvalClaim(ClaimExpr a, DType expected)
     {
         if (expected is not PtrType { Pointee: { } t })
-            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as #p: Ptr<T> = claim; found {expected}");
+            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim #p : Ptr<T>; found {expected}");
         _c.EnsureTypeDefined(t);
         string slot = $"%s{_allocas.Count}";
         _allocas.Add($"{slot} = alloca {t.Llvm}");
@@ -876,8 +876,10 @@ public sealed class FunctionGen
         var rt = Infer(m.Receiver);
         if (rt is null)
         {
-            // An untyped literal receiver (`0.sub(%x)`) takes its type from the arguments, then from context.
-            rt = m.Args.Select(Infer).FirstOrDefault(t => t is not null) ?? expected;
+            // An untyped literal receiver takes its type from the arguments: through the parameters of a routine on
+            // every type (`7.store_into(#p)` with `#dest: Ptr<T>`), or else as the first typed argument
+            // (`0.sub(%x)`); then from context.
+            rt = BlanketReceiverType(m) ?? m.Args.Select(Infer).FirstOrDefault(t => t is not null) ?? expected;
             if (rt is null) throw Err(m.Receiver.Pos, "cannot infer the type of this literal receiver");
         }
 
@@ -915,6 +917,19 @@ public sealed class FunctionGen
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
+    }
+
+    /// The receiver type a `T.name` routine gets from the other arguments, if there is such a routine and they fix T.
+    private DType? BlanketReceiverType(MethodCallExpr m)
+    {
+        if (_c.FindBlanket(m.Name, _env.File, m.Pos) is not { Owner: { } owner } r || r.Params.Count == 0
+            || r.Params[0].Type is not { Args.Count: 0 } self || self.Name != owner.Name)
+            return null;
+        var env = new Compiler.TypeEnv(r.File);
+        var unbound = new HashSet<string> { owner.Name };
+        for (int i = 0; i < m.Args.Count && i + 1 < r.Params.Count; i++)
+            if (Infer(m.Args[i]) is { } at) Unify(r.Params[i + 1].Type, at, env, unbound);
+        return env.Get(owner.Name);
     }
 
     /// Binds the owner's type parameters from a concrete type: `Option<T>` against `Option<S64>` binds T.
@@ -1040,6 +1055,8 @@ public sealed class FunctionGen
         if (sig.Decl.Name is "store" or "volatile_store" or "set" or "shift_left" or "shift_right" or "copy"
             && plan.Receiver is { } place && PresetArrayRoot(place) is { } root)
             throw Err(plan.Pos, $"'{root.Name}' is a preset array; it's read-only");
+        if (sig.Decl.Name == "store_into" && plan.Args.Count == 1 && PresetArrayRoot(plan.Args[0]) is { } destRoot)
+            throw Err(plan.Pos, $"'{destRoot.Name}' is a preset array; it's read-only");
         if (sig.IsTemplate)
         {
             // A template isn't instantiated, so the types it names (a record read by `load`) are defined here.

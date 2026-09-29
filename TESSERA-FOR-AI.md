@@ -24,17 +24,17 @@ global: every file in `stdlib/` is in scope without an import.
 ```tessera
 routine main() -> S32
     block entry():
-        %fd_val : FdWriter      = .stdout()
-        #fd     : Ptr<FdWriter> = claim
+        %fd_val : FdWriter = .stdout()
+        claim #fd : Ptr<FdWriter>
         #fd.store(%fd_val)
-        #out : Ptr<BufWriter<FdWriter>> = claim
+        claim #out : Ptr<BufWriter<FdWriter>>
         #out.construct(#fd)
-        %heap  : Allocator      = make_heap_allocator()
-        #alloc : Ptr<Allocator> = claim
+        %heap : Allocator = make_heap_allocator()
+        claim #alloc : Ptr<Allocator>
         #alloc.store(%heap)
 
-        %list_val : List<S64>      = .construct(#alloc)
-        #list     : Ptr<List<S64>> = claim
+        %list_val : List<S64> = .construct(#alloc)
+        claim #list : Ptr<List<S64>>
         #list.store(%list_val)
         #list.push(42)
         write_str(#out, "first: ")
@@ -42,7 +42,7 @@ routine main() -> S32
         write_line(#out)
 
         #list.destruct()
-        #out.flush()                // BufWriter output appears only on flush
+        #out.flush()  // BufWriter output appears only on flush
         return(0)
 ```
 
@@ -62,14 +62,19 @@ routine main() -> S32
 - `=` only binds. Memory is read and written with methods: `%v: S64 = #p.load()`, `#p.store(%v)`,
   `%f: T = #p.field.load()`, `#p.field.store(%v)`, `%e: T = #p[%i].load()`, `#p[%i].store(%v)`. Places
   (`#p.field`, `#p[%i]`) are addresses. Through an `Addr`, name the type: `#a.load<U32>()`. Registers:
-  `volatile_load()` / `volatile_store(...)`. (`:=` and `#p = %v` are gone and rejected.)
+  `volatile_load()` / `volatile_store(...)`. (`:=` and `#p = %v` are gone and rejected.) From the value's side,
+  `%v.store_into(#p)` is `#p.store(%v)`, so a chain can end in memory: `%a.add(%b).store_into(#sum)`. A
+  read-modify-write on one place reads left to right: `#self.length.load().add(1).store_into(#self.length)`, not
+  `#self.length.store(#self.length.load().add(1))`. The load needn't come first: `%x.sub(#p.load()).store_into(#p)`
+  (for a commutative op, put the load first: `#p.load().add(%x).store_into(#p)`). A literal receiver takes its type from the pointer
+  (`0.store_into(#count)`).
 - Memory is never read implicitly. A place passed as an argument is its address, so `U8.from_byte(#p[%i])` is an
   error: write `U8.from_byte(#p[%i].load())`.
 - A `Callable` value is called with `.call(args)`. One stored in a field is loaded first:
   `%free_fn: Callable<…> = #alloc.free_fn.load()`, then `%free_fn.call(#state, #raw)`. `#alloc.free_fn(...)` is an
   error.
 - A field of an SSA record value is read with plain `=`: `%tag: Bool = %opt.tag`.
-- `#p: Ptr<T> = claim` claims an uninitialized stack slot; its type comes from the binding, and the value goes in
+- `claim #p : Ptr<T>` claims an uninitialized stack slot; its type comes from the binding, and the value goes in
   with `#p.store(%v)`. An array value comes from `Array<T, N>.from([1, 2, %x])` or `Array<T, N>.from_ptr(#first)`;
   a bare `[1, 2]` isn't a value. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot.
@@ -188,8 +193,8 @@ Iterating a collection (`next` returns `Option<T>`):
 ```tessera
 routine sum_list(#list: Ptr<List<S64>>) -> S64
     block entry():
-        %iter_val : ListIter<S64>      = .construct(#list)
-        #iter     : Ptr<ListIter<S64>> = claim
+        %iter_val : ListIter<S64> = .construct(#list)
+        claim #iter : Ptr<ListIter<S64>>
         #iter.store(%iter_val)
         jump next(#iter, 0)
 
