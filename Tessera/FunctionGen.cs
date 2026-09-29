@@ -932,10 +932,13 @@ public sealed class FunctionGen
             if (expected is not CallableType ct)
                 throw Err(r.Pos, $"'{r.Name}' is a routine; it can only be used as a value where a Callable is expected");
             var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
-            bool sameCc = (ct.CallConv is "c" or "tessera") == (inst.CallConv is "c" or "tessera") || ct.CallConv == inst.CallConv;
             if (!inst.Ret.Equals(ct.Ret) || inst.Params.Count != ct.Params.Count
-                || inst.Params.Zip(ct.Params).Any(p => !p.First.Equals(p.Second)) || !sameCc)
+                || inst.Params.Zip(ct.Params).Any(p => !p.First.Equals(p.Second)) || inst.CallConv != ct.CallConv)
                 throw Err(r.Pos, $"routine '{r.Name}' does not match {ct}");
+            // A call through a Callable passes BF16 as its i16 bits, as Tessera routines do; an external C routine
+            // takes a real bfloat, so it can't sit behind one.
+            if (!inst.PassesBf16AsBits && (Instance.IsBf16(inst.Ret) || inst.Params.Any(Instance.IsBf16)))
+                throw Err(r.Pos, $"routine '{r.Name}' passes BF16 the C way, so it can't be a Callable; wrap it in a Tessera routine");
             return new Val($"@{Compiler.Quote(inst.Symbol)}", ct);
         }
         throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
@@ -1280,7 +1283,7 @@ public sealed class FunctionGen
         Val fp = Eval(callee, ct);
         var args = argExprs.Select((a, i) => EvalArg(a, ct.Params[i])).ToList();
         string cc = ct.CallConv switch { "fast" => "fastcc ", "cold" => "coldcc ", _ => "" };
-        bool bits = ct.CallConv != "c";
+        const bool bits = true;
         string argList = string.Join(", ", args.Select(a => AbiArg(a, bits)));
         string ret = bits && Instance.IsBf16(ct.Ret) ? "i16" : ct.Ret.Llvm;
         string call = $"call {cc}{ret} {fp.Op}({argList})";

@@ -468,17 +468,24 @@ public sealed partial class Compiler
 
     private DType ResolveCallable(TypeRef t, TypeEnv env)
     {
-        string cc = "tessera";
+        string cc = "default";
         var parts = t.Args.ToList();
         if (parts.Count > 0 && parts[0] is TypeArgAttr { Attr: { Name: "callconv" } attr })
         {
-            cc = attr.First ?? throw new CompileError(attr.Pos, "@callconv needs a name");
+            cc = CheckCallConv(attr);
             parts.RemoveAt(0);
         }
         if (parts is not [TypeArgTuple ps, TypeArgType ret])
-            throw new CompileError(t.Pos, "Callable is written Callable<@callconv(\"c\"), (Params...), Ret>");
+            throw new CompileError(t.Pos, "Callable is written Callable<(Params...), Ret>");
         return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), ResolveType(ret.Type, env, allowVoid: true));
     }
+
+    /// `@callconv("fast")` or `@callconv("cold")`; every other routine uses the default, the C convention.
+    public static string CheckCallConv(Attribute attr) => attr.First switch
+    {
+        "fast" or "cold" => attr.First,
+        _ => throw new CompileError(attr.Pos, $"@callconv takes \"fast\" or \"cold\", not {(attr.First is null ? "nothing" : $"\"{attr.First}\"")}"),
+    };
 
     /// The integer value of an Array length or other integer generic argument.
     private long ConstInt(TypeArg arg, TypeEnv env, Pos pos)

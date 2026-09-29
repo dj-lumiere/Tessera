@@ -187,14 +187,14 @@ public sealed class ArrayType(DType elem, long count) : DType
     public override string OwnerName => "Array";
 }
 
-/// `Callable<@callconv(cc), (params), ret>`: a function pointer.
+/// `Callable<(params), ret>`, or `Callable<@callconv("fast"), (params), ret>`: a function pointer.
 public sealed class CallableType(string callConv, List<DType> parameters, DType ret) : DType
 {
     public string CallConv { get; } = callConv;
     public List<DType> Params { get; } = parameters;
     public DType Ret { get; } = ret;
     public override string Name =>
-        $"Callable<@callconv(\"{CallConv}\"), ({string.Join(", ", Params.Select(p => p.Name))}), {Ret.Name}>";
+        $"Callable<{(CallConv == "default" ? "" : $"@callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Name))}), {Ret.Name}>";
     public override string Llvm => "ptr";
     public override string OwnerName => "Callable";
 }

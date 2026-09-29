@@ -13,9 +13,10 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     public bool IsTemplate => Decl.Attr("template") is not null;
     public bool NoReturn => Decl.Attr("noreturn") is not null;
     public bool Variadic => Decl.Attr("variadic") is not null;
-    public string CallConv => Decl.Attr("callconv")?.First ?? (IsExternalC ? "c" : "tessera");
+    /// "default" (the C convention, which every routine uses unless it asks otherwise), "fast", or "cold".
+    public string CallConv => Decl.Attr("callconv")?.First ?? "default";
 
-    /// `fastcc ` / `coldcc ` / empty for the C convention (which ordinary Tessera routines also use for now).
+    /// `fastcc ` / `coldcc ` / empty for the default.
     public string CcPrefix => CallConv switch
     {
         "fast" => "fastcc ",
@@ -63,6 +64,7 @@ public sealed partial class Compiler
         foreach (var a in r.Attributes)
             if (!KnownAttributes.Contains(a.Name))
                 throw new CompileError(a.Pos, $"attribute '@{a.Name}' is not supported by this compiler yet");
+        if (r.Attr("callconv") is { } callconv) CheckCallConv(callconv);
 
         var needed = new HashSet<string>(OwnerTypeParams(r).Concat(r.TypeParams));
         foreach (var n in needed)

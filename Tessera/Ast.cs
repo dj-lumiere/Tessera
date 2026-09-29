@@ -4,7 +4,7 @@ namespace Tessera;
 
 // ── Types as written ────────────────────────────────────────────────────────
 
-/// A type as written in source: `S64`, `Ptr<Byte>`, `Array<T, 8>`, `Callable<@callconv("c"), (Ptr, CSize), Ptr>`.
+/// A type as written in source: `S64`, `Ptr<Byte>`, `Array<T, 8>`, `Callable<(Ptr, CSize), Ptr>`.
 public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 {
     /// The module a qualified name was written with: `Standard::Collections` in `Standard::Collections::List<T>`.
@@ -23,7 +23,7 @@ public sealed record TypeArgTuple(List<TypeRef> Types) : TypeArg
 {
     public override string ToString() => $"({string.Join(", ", Types)})";
 }
-/// `@callconv("c")` inside a Callable.
+/// `@callconv("fast")` inside a Callable.
 public sealed record TypeArgAttr(Attribute Attr) : TypeArg { public override string ToString() => $"@{Attr.Name}"; }
 /// A compile-time integer expression as a generic argument: `max(sizeof<A>(), sizeof<B>())` in `Array<Byte, …>`.
 public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string ToString() => "(expr)"; }
