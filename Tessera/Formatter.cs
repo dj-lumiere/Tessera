@@ -53,10 +53,10 @@ public static class Formatter
 
     // ── Alignment ───────────────────────────────────────────────────────────
 
-    private enum Kind { Binding, Claim, Field, Arm }
+    private enum Kind { Binding, Claim, Field, Arm, Conform }
 
-    /// One alignable line split into its columns: `name : type = rest`, `claim name : rest`, `name : rest`, or
-    /// `left -> rest`.
+    /// One alignable line split into its columns: `name : type = rest`, `claim name : rest`, `name : rest`,
+    /// `left -> rest`, or `conform C<X> when rest`.
     private sealed record Row(int Index, Kind Kind, int Indent, string Name, string? Type, string Rest);
 
     private static List<string> Align(List<string> lines)
@@ -93,6 +93,8 @@ public static class Formatter
                 row = new Row(i, Kind.Claim, indent, c.Name, null, c.Type);
             else if (context is not null && indent == 4 && SplitField(trimmed) is { } f)
                 row = new Row(i, Kind.Field, indent, f.Name, null, f.Tail);
+            else if (indent == 0 && SplitConformWhen(trimmed) is { } cw)
+                row = new Row(i, Kind.Conform, indent, cw.Head, null, cw.Conditions);
             rows.Add(row);
 
             if (IsWhenHeader(trimmed)) whenIndent = indent;
@@ -128,6 +130,7 @@ public static class Formatter
                     Kind.Binding => $"{pad}{r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} = {r.Rest}",
                     Kind.Claim => $"{pad}claim {r.Name.PadRight(nameWidth)} : {r.Rest}",
                     Kind.Field => $"{pad}{r.Name.PadRight(nameWidth)} : {r.Rest}",
+                    Kind.Conform => $"{pad}{r.Name.PadRight(nameWidth)} when {r.Rest}",
                     _ => $"{pad}{r.Name.PadRight(nameWidth)} -> {r.Rest}",
                 };
                 result[r.Index] = result[r.Index].TrimEnd();
@@ -135,6 +138,15 @@ public static class Formatter
             start = end + 1;
         }
         return result;
+    }
+
+    /// `conform Equal<Option<T>> when T: typename, Equal<T>`: the conformance, and its conditions after `when`.
+    private static (string Head, string Conditions)? SplitConformWhen(string s)
+    {
+        if (!s.StartsWith("conform ")) return null;
+        int when = TopLevelIndex(s, 0, " when ");
+        if (when < 0) return null;
+        return (s[..when].TrimEnd(), s[(when + 6)..].Trim());
     }
 
     private static bool IsWhenHeader(string trimmed) =>
