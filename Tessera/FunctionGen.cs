@@ -65,7 +65,6 @@ public sealed class FunctionGen
             var p = _decl.Params[i];
             if (!_routineParams.TryAdd(p.Name, new Val($"%a.{IrName(p.Name)}", _inst.Params[i])))
                 throw Err(p.Pos, $"parameter '{p.Name}' is declared twice");
-            CheckValueName(p.Name, p.Pos);
         }
 
         foreach (var b in blocks)
@@ -178,7 +177,6 @@ public sealed class FunctionGen
         var types = _blockParamTypes[b.Name];
         for (int i = 0; i < b.Params.Count; i++)
         {
-            CheckValueName(b.Params[i].Name, b.Params[i].Pos);
             _values[b.Params[i].Name] = new Val(ParamOp(b.Name, b.Params[i].Name), types[i]);
         }
 
@@ -190,22 +188,13 @@ public sealed class FunctionGen
     {
         if (_values.ContainsKey(name))
             throw Err(pos, $"'{name}' is already defined in block '{_blockName}' (SSA values are bound once)");
-        CheckValueName(name, pos);
         _values[name] = v;
-    }
-
-    /// A value can't take the name of a routine or preset the file sees: a bare name means one thing.
-    private void CheckValueName(string name, Pos pos)
-    {
-        if (_c.NameTaken(name, _env.File) is { } taken)
-            throw Err(pos, $"'{name}' names a value here and {taken}; rename the value");
     }
 
     private string LocalOp(string name) => $"%v.{_blockName}.{IrName(name)}";
 
-    /// A Tessera name in IR. `%` and `#` may start a name (`%x` and `x` are different names), and LLVM names can't
-    /// hold them, so they become `.` and `$`.
-    private static string IrName(string name) => name.Replace("#", "$").Replace("%", ".");
+    /// A value's name in IR: `%count` becomes `count`. A `#` inside a name, which LLVM names can't hold, becomes `$`.
+    private static string IrName(string name) => name.TrimStart('%').Replace("#", "$");
 
     /// Where a `continue` arm goes: the LLVM block that holds the lines after the guard.
     private string? _continueLabel;
@@ -667,9 +656,7 @@ public sealed class FunctionGen
                 return (index, null);
             case [ValueRef r] when payload is not null:
                 return (index, r);
-            case [PresetRef { Owner: null, Path: null } p] when payload is not null:
-                return (index, new ValueRef(p.Name, p.Pos));
-            case [ValueRef] or [PresetRef { Owner: null, Path: null }]:
+            case [ValueRef]:
                 throw Err(e.Pos, $"{v.Decl.Name}.{name} carries no payload to bind");
             default:
                 throw Err(e.Pos, $"bind the payload to a name: {v.Decl.Name}.{name}(%value)");
@@ -696,7 +683,7 @@ public sealed class FunctionGen
         {
             if (patterns is null)
             {
-                if (defaultLabel is not null) throw Err(target.Pos, "when has two '_' arms");
+                if (defaultLabel is not null) throw Err(target.Pos, "when has two else arms");
                 defaultLabel = ArmLabel(target);
                 continue;
             }
@@ -713,10 +700,10 @@ public sealed class FunctionGen
         }
         if (defaultLabel is null)
         {
-            // Without '_', a when on a variant must name every case.
+            // Without else, a when on a variant must name every case.
             var missing = vt.Decl.Cases.Where((_, i) => !seen.Contains(i)).Select(c => c.Name).ToList();
             if (missing.Count > 0)
-                throw Err(sw.Pos, $"when on {vt} doesn't cover {string.Join(", ", missing)}; add them or a '_' arm");
+                throw Err(sw.Pos, $"when on {vt} doesn't cover {string.Join(", ", missing)}; add them or an else arm");
             var saved = _cur;
             _cur = NewLBlock("nocase");
             defaultLabel = _cur.Label;
@@ -808,8 +795,7 @@ public sealed class FunctionGen
             string source = s[(i + 1)..end];
             if (string.IsNullOrWhiteSpace(source)) throw Err(template.Pos, "'{}' holds no expression; a literal brace is '{{'");
             var at = new Pos(template.Pos.File, template.Pos.Line, template.Pos.Col + 2 + i);
-            var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File, values: _values.Keys)
-                .ParseLoneExpr();
+            var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File).ParseLoneExpr();
             Flush();
             EvalCall(new MethodCallExpr(value, "represent", [], [writer], at), VoidType.Instance);
             i = end;
@@ -952,14 +938,10 @@ public sealed class FunctionGen
                 throw Err(r.Pos, $"routine '{r.Name}' does not match {ct}");
             return new Val($"@{Compiler.Quote(inst.Symbol)}", ct);
         }
-        // A value of another block reads as a bare name here; say what went wrong rather than "unknown".
-        if (r.Owner is null && r.Path is null && BoundInSomeBlock(r.Name))
-            throw Err(r.Pos, $"'{r.Name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block arguments");
         throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
     }
 
-    private bool BoundInSomeBlock(string name) =>
-        _decl.Blocks!.Any(b => b.Params.Any(p => p.Name == name) || b.Stmts.Any(s => s is BindStmt bs && bs.Name == name));
+
 
     /// Resolves a type written as a namespace, or null if it doesn't name a type (it may be a preset).
     private DType? TryResolveOwner(TypeRef owner)
@@ -1392,13 +1374,13 @@ public sealed class FunctionGen
 
             case WhenCondTerm s:
             {
-                if (s.Arms[^1].Cond is not null) throw Err(s.Pos, "when needs a final '_' arm");
+                if (s.Arms[^1].Cond is not null) throw Err(s.Pos, "when needs a final else arm");
                 for (int i = 0; i < s.Arms.Count; i++)
                 {
                     var (cond, target) = s.Arms[i];
                     if (cond is null)
                     {
-                        if (i != s.Arms.Count - 1) throw Err(target.Pos, "the '_' arm must come last");
+                        if (i != s.Arms.Count - 1) throw Err(target.Pos, "the else arm must come last");
                         EmitTarget(target);
                         break;
                     }
@@ -1429,7 +1411,7 @@ public sealed class FunctionGen
                     string label = ArmLabel(target);
                     if (caseExprs is null)
                     {
-                        if (defaultLabel is not null) throw Err(target.Pos, "when has two '_' arms");
+                        if (defaultLabel is not null) throw Err(target.Pos, "when has two else arms");
                         defaultLabel = label;
                         continue;
                     }
@@ -1446,12 +1428,12 @@ public sealed class FunctionGen
                 }
                 if (defaultLabel is null && v.Type is ChoiceType en)
                 {
-                    // Without '_', a switch on a choice must name every member.
+                    // Without else, a when on a choice must name every member.
                     var missing = en.Decl.Members
                         .Where(mem => mem.Value is IntLit lit && !seen.Contains(IntConst(lit.Value, mem.Value.Pos, en).Op))
                         .Select(mem => mem.Name).ToList();
                     if (missing.Count > 0)
-                        throw Err(sw.Pos, $"when on {en.Name} doesn't cover {string.Join(", ", missing)}; add them or a '_' arm");
+                        throw Err(sw.Pos, $"when on {en.Name} doesn't cover {string.Join(", ", missing)}; add them or an else arm");
                     var saved = _cur;
                     _cur = NewLBlock("nocase");
                     defaultLabel = _cur.Label;
@@ -1459,7 +1441,7 @@ public sealed class FunctionGen
                     _cur = saved;
                 }
                 if (defaultLabel is null)
-                    throw Err(sw.Pos, "when needs a '_' arm (write '_ -> unreachable' if every case is covered)");
+                    throw Err(sw.Pos, "when needs an else arm (write 'else -> unreachable' if every case is covered)");
                 Terminate($"switch {v.Type.Llvm} {v.Op}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
                 break;
             }

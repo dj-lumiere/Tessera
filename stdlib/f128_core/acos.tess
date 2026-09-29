@@ -19,241 +19,241 @@ module Standard::Core
 /// acos(x), correctly rounded to nearest (ties to even). The result lies in [0, pi]. |x| > 1,
 /// ±infinity and a signaling NaN give the default NaN (0xFFFF8 followed by zeros), and a quiet NaN
 /// is returned unchanged.
-routine f128_cm_acos(x: F128) -> F128
+routine f128_cm_acos(%x: F128) -> F128
     block entry():
-        bits  : U128 = x.bits()
-        xb1   : U64  = cm_asin_hi(bits).bitand(0x7FFFFFFFFFFFFFFF)
-        large : Bool = xb1.shr(48).ge(16383)  // |x| >= 1, infinity or NaN
-        branch large ? outside(x, xb1) : inside(x)
+        %bits  : U128 = %x.bits()
+        %xb1   : U64  = cm_asin_hi(%bits).bitand(0x7FFFFFFFFFFFFFFF)
+        %large : Bool = %xb1.shr(48).ge(16383)  // |x| >= 1, infinity or NaN
+        branch %large ? outside(%x, %xb1) : inside(%x)
 
-    block outside(x: F128, xb1: U64):
-        bits     : S128 = x.bits().to_s128_wrap()
-        xb0      : U64  = cm_asin_lo(bits)
-        negative : Bool = bits.lt(0)
-        is_one   : Bool = xb0.eq(0).bitand(xb1.eq(0x3FFF000000000000))
-        is_qnan  : Bool = xb1.ge(0x7FFF800000000000)
-        pi       : F128 = f128_of(cm_asin_join(0x4000921FB54442D1, 0x8469898CC51701B8))
-        zero     : F128 = f128_of(0)
-        one_r    : F128 = negative ? pi : zero
-        nan      : F128 = f128_of(cm_asin_join(0xFFFF800000000000, 0))
+    block outside(%x: F128, %xb1: U64):
+        %bits     : S128 = %x.bits().to_s128_wrap()
+        %xb0      : U64  = cm_asin_lo(%bits)
+        %negative : Bool = %bits.lt(0)
+        %is_one   : Bool = %xb0.eq(0).bitand(%xb1.eq(0x3FFF000000000000))
+        %is_qnan  : Bool = %xb1.ge(0x7FFF800000000000)
+        %pi       : F128 = f128_of(cm_asin_join(0x4000921FB54442D1, 0x8469898CC51701B8))
+        %zero     : F128 = f128_of(0)
+        %one_r    : F128 = %negative ? %pi : %zero
+        %nan      : F128 = f128_of(cm_asin_join(0xFFFF800000000000, 0))
         when:
-            is_one  -> return(one_r)
-            is_qnan -> return(x)
-            _       -> return(nan)
+            %is_one  -> return(%one_r)
+            %is_qnan -> return(%x)
+            else     -> return(%nan)
 
-    block inside(x: F128):
-        r : F128 = cm_acos_fast(x)
-        return(r)
+    block inside(%x: F128):
+        %r : F128 = cm_acos_fast(%x)
+        return(%r)
 
 /// Whether acos subtracts the reduced arc sine from pi/2: always but for x > 0 on the last table
 /// points, where the result comes from sqrt(1 - x^2) directly.
-routine cm_acos_via_half_pi(arg: CmAsinArg) -> Bool
+routine cm_acos_via_half_pi(%arg: CmAsinArg) -> Bool
     block entry():
-        r : Bool = arg.xsgn.ne(0).bitor(arg.j.lt(71))
-        return(r)
+        %r : Bool = %arg.xsgn.ne(0).bitor(%arg.j.lt(71))
+        return(%r)
 
 /// The 128-bit fast path of acos; it falls back to cm_acos_accurate when its result could round
 /// either way.
-routine cm_acos_fast(x: F128) -> F128
+routine cm_acos_fast(%x: F128) -> F128
     block entry():
-        arg     : CmAsinArg = cm_asin_unpack(x)
-        nz      : S64       = 16383.sub(arg.xn)
-        reduced : Bool      = arg.j.ne(0)
-        branch reduced ? root(x, arg, nz) : small(x, arg, nz)
+        %arg     : CmAsinArg = cm_asin_unpack(%x)
+        %nz      : S64       = 16383.sub(%arg.xn)
+        %reduced : Bool      = %arg.j.ne(0)
+        branch %reduced ? root(%x, %arg, %nz) : small(%x, %arg, %nz)
 
-    block root(x: F128, arg: CmAsinArg, nz: S64):
-        x0   : U64         = cm_asin_lo(arg.xa.to_s128_wrap())
-        x1   : U64         = cm_asin_hi(arg.xa)
-        root : CmAsinRoot3 = cm_asin_fast_sqrt(x0, x1, nz, 1)
-        via  : Bool        = cm_acos_via_half_pi(arg)
-        branch via ? reduce(x, arg, root) : near_one(x, arg, root)
+    block root(%x: F128, %arg: CmAsinArg, %nz: S64):
+        %x0   : U64         = cm_asin_lo(%arg.xa.to_s128_wrap())
+        %x1   : U64         = cm_asin_hi(%arg.xa)
+        %root : CmAsinRoot3 = cm_asin_fast_sqrt(%x0, %x1, %nz, 1)
+        %via  : Bool        = cm_acos_via_half_pi(%arg)
+        branch %via ? reduce(%x, %arg, %root) : near_one(%x, %arg, %root)
 
     // the reduced argument d, with acos(x) = pi/2 - asin(s_j) - asin(d)
-    block reduce(x: F128, arg: CmAsinArg, root: CmAsinRoot3):
-        nz : S64      = 16383.sub(arg.xn)
-        d  : CmAsinW3 = cm_asin_reduce3(arg.xa, nz, arg.j, root)
-        dz : S64      = d.w2.leading_zeros().to_s64()
-        t  : U128     = cm_asin_top128(d, dz)
-        jump via_half_pi(x, arg, d, t, dz)
+    block reduce(%x: F128, %arg: CmAsinArg, %root: CmAsinRoot3):
+        %nz : S64      = 16383.sub(%arg.xn)
+        %d  : CmAsinW3 = cm_asin_reduce3(%arg.xa, %nz, %arg.j, %root)
+        %dz : S64      = %d.w2.leading_zeros().to_s64()
+        %t  : U128     = cm_asin_top128(%d, %dz)
+        jump via_half_pi(%x, %arg, %d, %t, %dz)
 
     // x near 1: acos(x) = asin(sqrt(1 - x^2)), with t = sqrt(1 - x^2) itself
-    block near_one(x: F128, arg: CmAsinArg, root: CmAsinRoot3):
-        dz : S64          = root.e.shr(1)
-        xc : CmAsinW3     = CmAsinW3 { w0: root.w0, w1: root.w1, w2: root.w2 }
-        t  : U128         = cm_asin_join(root.w2, root.w1)
-        r  : Option<F128> = cm_acos_fast_direct(arg, xc, t, dz)
-        when r:
-            .Present(y) -> return(y)
-            .Absent     -> accurate(x)
+    block near_one(%x: F128, %arg: CmAsinArg, %root: CmAsinRoot3):
+        %dz : S64          = %root.e.shr(1)
+        %xc : CmAsinW3     = CmAsinW3 { w0: %root.w0, w1: %root.w1, w2: %root.w2 }
+        %t  : U128         = cm_asin_join(%root.w2, %root.w1)
+        %r  : Option<F128> = cm_acos_fast_direct(%arg, %xc, %t, %dz)
+        when %r:
+            .Present(%y) -> return(%y)
+            .Absent      -> accurate(%x)
 
     // small |x|: x itself, aligned to the fixed point of the result
-    block small(x: F128, arg: CmAsinArg, nz: S64):
-        xc : CmAsinW3 = cm_acos_align_x(arg.xa, nz)
-        jump via_half_pi(x, arg, xc, arg.xa, nz)
+    block small(%x: F128, %arg: CmAsinArg, %nz: S64):
+        %xc : CmAsinW3 = cm_acos_align_x(%arg.xa, %nz)
+        jump via_half_pi(%x, %arg, %xc, %arg.xa, %nz)
 
-    block via_half_pi(x: F128, arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64):
-        r : Option<F128> = cm_acos_fast_half_pi(arg, xc, t, nz)
-        when r:
-            .Present(y) -> return(y)
-            .Absent     -> accurate(x)
+    block via_half_pi(%x: F128, %arg: CmAsinArg, %xc: CmAsinW3, %t: U128, %nz: S64):
+        %r : Option<F128> = cm_acos_fast_half_pi(%arg, %xc, %t, %nz)
+        when %r:
+            .Present(%y) -> return(%y)
+            .Absent      -> accurate(%x)
 
-    block accurate(x: F128):
-        r : F128 = cm_acos_accurate(x)
-        return(r)
+    block accurate(%x: F128):
+        %r : F128 = cm_acos_accurate(%x)
+        return(%r)
 
 /// The 128-bit mantissa xa shifted right by nz into three words (the fast path's |x| < 0.022).
-routine cm_acos_align_x(xa: U128, nz: S64) -> CmAsinW3
+routine cm_acos_align_x(%xa: U128, %nz: S64) -> CmAsinW3
     block entry():
-        xb0     : U64      = cm_asin_lo(xa.to_s128_wrap())
-        xb1     : U64      = cm_asin_hi(xa)
-        s       : S64      = cm_asin_sh(nz).to_s64()
-        in_word : Bool     = nz.lt(64)
-        in_one  : Bool     = nz.lt(128)
-        in_two  : Bool     = nz.lt(192)
-        gone    : CmAsinW3 = CmAsinW3 { w0: 0, w1: 0, w2: 0 }
+        %xb0     : U64      = cm_asin_lo(%xa.to_s128_wrap())
+        %xb1     : U64      = cm_asin_hi(%xa)
+        %s       : S64      = cm_asin_sh(%nz).to_s64()
+        %in_word : Bool     = %nz.lt(64)
+        %in_one  : Bool     = %nz.lt(128)
+        %in_two  : Bool     = %nz.lt(192)
+        %gone    : CmAsinW3 = CmAsinW3 { w0: 0, w1: 0, w2: 0 }
         when:
-            in_word -> within_word(xb0, xb1, s)
-            in_one  -> one_word(xb0, xb1, s)
-            in_two  -> two_words(xb1, s)
-            _       -> return(gone)
+            %in_word -> within_word(%xb0, %xb1, %s)
+            %in_one  -> one_word(%xb0, %xb1, %s)
+            %in_two  -> two_words(%xb1, %s)
+            else     -> return(%gone)
 
-    block within_word(xb0: U64, xb1: U64, s: S64):
-        back : S64      = cm_asin_sh(0.sub(s)).to_s64()
-        w0   : U64      = xb0.shl(back.to_u64())
-        w1   : U64      = xb1.shl(back.to_u64()).bitor(xb0.shr(s.to_u64()))
-        r    : CmAsinW3 = CmAsinW3 { w0: w0, w1: w1, w2: xb1.shr(s.to_u64()) }
-        return(r)
+    block within_word(%xb0: U64, %xb1: U64, %s: S64):
+        %back : S64      = cm_asin_sh(0.sub(%s)).to_s64()
+        %w0   : U64      = %xb0.shl(%back.to_u64())
+        %w1   : U64      = %xb1.shl(%back.to_u64()).bitor(%xb0.shr(%s.to_u64()))
+        %r    : CmAsinW3 = CmAsinW3 { w0: %w0, w1: %w1, w2: %xb1.shr(%s.to_u64()) }
+        return(%r)
 
-    block one_word(xb0: U64, xb1: U64, s: S64):
-        w0 : U64      = xb1.shl(1).shl(cm_asin_sh(s.bitnot())).bitor(xb0.shr(s.to_u64()))
-        r  : CmAsinW3 = CmAsinW3 { w0: w0, w1: xb1.shr(s.to_u64()), w2: 0 }
-        return(r)
+    block one_word(%xb0: U64, %xb1: U64, %s: S64):
+        %w0 : U64      = %xb1.shl(1).shl(cm_asin_sh(%s.bitnot())).bitor(%xb0.shr(%s.to_u64()))
+        %r  : CmAsinW3 = CmAsinW3 { w0: %w0, w1: %xb1.shr(%s.to_u64()), w2: 0 }
+        return(%r)
 
-    block two_words(xb1: U64, s: S64):
-        r : CmAsinW3 = CmAsinW3 { w0: xb1.shr(s.to_u64()), w1: 0, w2: 0 }
-        return(r)
+    block two_words(%xb1: U64, %s: S64):
+        %r : CmAsinW3 = CmAsinW3 { w0: %xb1.shr(%s.to_u64()), w1: 0, w2: 0 }
+        return(%r)
 
 /// Finishes the fast path as pi/2 -/+ (asin(s_j) + d + t^3*P(t^2)) at half scale. The value is
 /// missing when the result could round either way.
-routine cm_acos_fast_half_pi(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> Option<F128>
+routine cm_acos_fast_half_pi(%arg: CmAsinArg, %xc: CmAsinW3, %t: U128, %nz: S64) -> Option<F128>
     block entry():
-        f          : U128     = cm_asin_fast_poly(t, nz.sub(6).mul(2))
-        sf         : S64      = nz.mul(3).add(1)
-        fs         : CmAsinW3 = cm_asin_shift_poly3(f, sf)
-        h0         : U64      = xc.w0.shr(1).bitor(xc.w1.shl(63))
-        h1         : U64      = xc.w1.shr(1).bitor(xc.w2.shl(63))
-        half       : CmAsinW3 = CmAsinW3 { w0: h0, w1: h1, w2: xc.w2.shr(1) }
-        phi0       : Ptr<U64> = CM_ACOS_PHI0.to_ptr()
-        phi_j      : CmAsinW3 = cm_asin_load3(phi0, arg.j.mul(5).add(2))
-        asin_value : CmAsinW3 = cm_asin_add3(cm_asin_add3(half, phi_j), fs)
+        %f     : U128     = cm_asin_fast_poly(%t, %nz.sub(6).mul(2))
+        %sf    : S64      = %nz.mul(3).add(1)
+        %fs    : CmAsinW3 = cm_asin_shift_poly3(%f, %sf)
+        %h0    : U64      = %xc.w0.shr(1).bitor(%xc.w1.shl(63))
+        %h1    : U64      = %xc.w1.shr(1).bitor(%xc.w2.shl(63))
+        %half  : CmAsinW3 = CmAsinW3 { w0: %h0, w1: %h1, w2: %xc.w2.shr(1) }
+        %phi0  : Ptr<U64> = CM_ACOS_PHI0.to_ptr()
+        %phi_j : CmAsinW3 = cm_asin_load3(%phi0, %arg.j.mul(5).add(2))
+        %asin  : CmAsinW3 = cm_asin_add3(cm_asin_add3(%half, %phi_j), %fs)
         // pi/2 - asin(x) for x >= 0; for x < 0 the complement gives pi/2 + asin(|x|) - 1 ulp
-        m    : S64          = arg.xsgn.shr(63)
-        flip : CmAsinW3     = cm_asin_xor3(asin_value, m.to_u64_wrap())
-        pi4  : CmAsinW3     = cm_asin_load3(phi0, 362)
-        s    : CmAsinW3     = cm_asin_sub3(pi4, flip)
-        k    : S64          = s.w2.leading_zeros().to_s64()
-        rnd  : U64          = s.w1.shr(cm_asin_sh(14.sub(k))).bitand(1)
-        eps  : U64          = 1.shl(cm_asin_sh(69.sub(sf.min(60))))
-        sh   : S64          = cm_asin_sh(15.sub(k)).to_s64()
-        v_lo : U64          = s.w1.shr(sh.to_u64()).bitor(s.w2.shl(cm_asin_sh(k.add(49))))
-        v    : U128         = cm_asin_join(s.w2.shr(sh.to_u64()), v_lo)
-        y    : F128         = cm_asin_pack(v, 16383.sub(k), 0, rnd)
-        r    : Option<F128> = cm_acos_checked(y, s, k, eps)
-        return(r)
+        %m    : S64          = %arg.xsgn.shr(63)
+        %flip : CmAsinW3     = cm_asin_xor3(%asin, %m.to_u64_wrap())
+        %pi4  : CmAsinW3     = cm_asin_load3(%phi0, 362)
+        %s    : CmAsinW3     = cm_asin_sub3(%pi4, %flip)
+        %k    : S64          = %s.w2.leading_zeros().to_s64()
+        %rnd  : U64          = %s.w1.shr(cm_asin_sh(14.sub(%k))).bitand(1)
+        %eps  : U64          = 1.shl(cm_asin_sh(69.sub(%sf.min(60))))
+        %sh   : S64          = cm_asin_sh(15.sub(%k)).to_s64()
+        %v_lo : U64          = %s.w1.shr(%sh.to_u64()).bitor(%s.w2.shl(cm_asin_sh(%k.add(49))))
+        %v    : U128         = cm_asin_join(%s.w2.shr(%sh.to_u64()), %v_lo)
+        %y    : F128         = cm_asin_pack(%v, 16383.sub(%k), 0, %rnd)
+        %r    : Option<F128> = cm_acos_checked(%y, %s, %k, %eps)
+        return(%r)
 
 /// Finishes the fast path for x near 1 as asin(t) = t + t^3*P(t^2) with t = sqrt(1 - x^2). The
 /// value is missing when the result could round either way.
-routine cm_acos_fast_direct(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> Option<F128>
+routine cm_acos_fast_direct(%arg: CmAsinArg, %xc: CmAsinW3, %t: U128, %nz: S64) -> Option<F128>
     block entry():
-        f     : U128         = cm_asin_fast_poly(t, nz.sub(6).mul(2))
-        sf    : S64          = nz.mul(2)
-        fs    : CmAsinW3     = cm_asin_shift_poly3(f, sf)
-        s     : CmAsinW3     = cm_asin_add3(xc, fs)
-        k     : S64          = s.w2.shr(63).to_s64()
-        rnd   : U64          = s.w1.shr(cm_asin_sh(k.add(13))).bitand(1)
-        v_all : U128         = cm_asin_join(s.w2, s.w1).shr(cm_asin_sh7(k.add(14)))
-        v     : U128         = v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
-        eps   : U64          = 1.shl(cm_asin_sh(68.sub(sf.min(60))))
-        xn    : S64          = arg.xn.add(k).sub(nz)
-        y     : F128         = cm_asin_pack(v, xn, 0, rnd)
-        r     : Option<F128> = cm_acos_checked(y, s, k, eps)
-        return(r)
+        %f     : U128         = cm_asin_fast_poly(%t, %nz.sub(6).mul(2))
+        %sf    : S64          = %nz.mul(2)
+        %fs    : CmAsinW3     = cm_asin_shift_poly3(%f, %sf)
+        %s     : CmAsinW3     = cm_asin_add3(%xc, %fs)
+        %k     : S64          = %s.w2.shr(63).to_s64()
+        %rnd   : U64          = %s.w1.shr(cm_asin_sh(%k.add(13))).bitand(1)
+        %v_all : U128         = cm_asin_join(%s.w2, %s.w1).shr(cm_asin_sh7(%k.add(14)))
+        %v     : U128         = %v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        %eps   : U64          = 1.shl(cm_asin_sh(68.sub(%sf.min(60))))
+        %xn    : S64          = %arg.xn.add(%k).sub(%nz)
+        %y     : F128         = cm_asin_pack(%v, %xn, 0, %rnd)
+        %r     : Option<F128> = cm_acos_checked(%y, %s, %k, %eps)
+        return(%r)
 
 /// y, rounded from the fixed-point sum s with k leading zeros, when the bits below its round
 /// bit, widened by eps, stay clear of the rounding boundary; otherwise missing.
-routine cm_acos_checked(y: F128, s: CmAsinW3, k: S64, eps: U64) -> Option<F128>
+routine cm_acos_checked(%y: F128, %s: CmAsinW3, %k: S64, %eps: U64) -> Option<F128>
     block entry():
-        top    : U64          = 0xFFFFFFFFFFFFFFFF.shr(cm_asin_sh(k.add(50)))
-        msk    : U128         = cm_asin_join(top, 0xFFFFFFFFFFFFFFFF)
-        tail   : U128         = cm_asin_join(s.w1, s.w0).add_wrap(eps.to_u128()).bitand(msk)
-        unsafe : Bool         = tail.lt(eps.mul_wrap(2).to_u128())
-        none   : Option<F128> = .Absent
-        some   : Option<F128> = .Present(y)
-        r      : Option<F128> = unsafe ? none : some
-        return(r)
+        %top    : U64          = 0xFFFFFFFFFFFFFFFF.shr(cm_asin_sh(%k.add(50)))
+        %msk    : U128         = cm_asin_join(%top, 0xFFFFFFFFFFFFFFFF)
+        %tail   : U128         = cm_asin_join(%s.w1, %s.w0).add_wrap(%eps.to_u128()).bitand(%msk)
+        %unsafe : Bool         = %tail.lt(%eps.mul_wrap(2).to_u128())
+        %none   : Option<F128> = .Absent
+        %some   : Option<F128> = .Present(%y)
+        %r      : Option<F128> = %unsafe ? %none : %some
+        return(%r)
 
 /// The 320-bit accurate path of f128_cm_acos for |x| < 1 (the C as_acosq_accurate).
-routine cm_acos_accurate(x: F128) -> F128
+routine cm_acos_accurate(%x: F128) -> F128
     block entry():
-        arg     : CmAsinArg = cm_asin_unpack(x)
-        nz      : S64       = 16383.sub(arg.xn)
-        x0      : U64       = cm_asin_lo(arg.xa.to_s128_wrap())
-        x1      : U64       = cm_asin_hi(arg.xa)
-        xw      : CmAsinW5  = CmAsinW5 { w0: 0, w1: 0, w2: 0, w3: x0, w4: x1 }
-        reduced : Bool      = arg.j.ne(0)
-        branch reduced ? root(arg, nz, xw) : small(arg, nz, xw)
+        %arg     : CmAsinArg = cm_asin_unpack(%x)
+        %nz      : S64       = 16383.sub(%arg.xn)
+        %x0      : U64       = cm_asin_lo(%arg.xa.to_s128_wrap())
+        %x1      : U64       = cm_asin_hi(%arg.xa)
+        %xw      : CmAsinW5  = CmAsinW5 { w0: 0, w1: 0, w2: 0, w3: %x0, w4: %x1 }
+        %reduced : Bool      = %arg.j.ne(0)
+        branch %reduced ? root(%arg, %nz, %xw) : small(%arg, %nz, %xw)
 
-    block root(arg: CmAsinArg, nz: S64, xw: CmAsinW5):
-        root : CmAsinRoot5 = cm_asin_getcos(nz, xw.w3, xw.w4)
-        via  : Bool        = cm_acos_via_half_pi(arg)
-        branch via ? reduce(arg, nz, root) : near_one(arg, root)
+    block root(%arg: CmAsinArg, %nz: S64, %xw: CmAsinW5):
+        %root : CmAsinRoot5 = cm_asin_getcos(%nz, %xw.w3, %xw.w4)
+        %via  : Bool        = cm_acos_via_half_pi(%arg)
+        branch %via ? reduce(%arg, %nz, %root) : near_one(%arg, %root)
 
-    block reduce(arg: CmAsinArg, nz: S64, root: CmAsinRoot5):
-        d  : CmAsinW5 = cm_asin_reduce5(arg.xa, nz, arg.j, root)
-        dz : S64      = cm_asin_clz5(d, nz)
-        t  : CmAsinW5 = cm_asin_shift5(d, 0.sub(dz))
-        r  : F128     = cm_acos_accurate_half_pi(arg, d, t, dz)
-        return(r)
+    block reduce(%arg: CmAsinArg, %nz: S64, %root: CmAsinRoot5):
+        %d  : CmAsinW5 = cm_asin_reduce5(%arg.xa, %nz, %arg.j, %root)
+        %dz : S64      = cm_asin_clz5(%d, %nz)
+        %t  : CmAsinW5 = cm_asin_shift5(%d, 0.sub(%dz))
+        %r  : F128     = cm_acos_accurate_half_pi(%arg, %d, %t, %dz)
+        return(%r)
 
-    block near_one(arg: CmAsinArg, root: CmAsinRoot5):
-        dz    : S64      = root.e.shr(1)
-        p     : CmAsinW5 = cm_asin_poly5(root.root, dz)
-        f     : CmAsinW5 = cm_asin_shift5(p, dz.mul(2))
-        s     : CmAsinW5 = cm_asin_add5(root.root, f)
-        k     : S64      = s.w4.shr(63).to_s64()
-        rnd   : U64      = s.w3.shr(cm_asin_sh(k.add(13))).bitand(1)
-        v_all : U128     = cm_asin_join(s.w4,
-                s.w3).shr(cm_asin_sh(k.add(14)).to_s64_wrap().to_u128())
-        v     : U128     = v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
-        xn    : S64      = arg.xn.add(k).sub(dz)
-        r     : F128     = cm_asin_pack(v, xn, 0, rnd)
-        return(r)
+    block near_one(%arg: CmAsinArg, %root: CmAsinRoot5):
+        %dz    : S64      = %root.e.shr(1)
+        %p     : CmAsinW5 = cm_asin_poly5(%root.root, %dz)
+        %f     : CmAsinW5 = cm_asin_shift5(%p, %dz.mul(2))
+        %s     : CmAsinW5 = cm_asin_add5(%root.root, %f)
+        %k     : S64      = %s.w4.shr(63).to_s64()
+        %rnd   : U64      = %s.w3.shr(cm_asin_sh(%k.add(13))).bitand(1)
+        %v_all : U128     = cm_asin_join(%s.w4,
+                %s.w3).shr(cm_asin_sh(%k.add(14)).to_s64_wrap().to_u128())
+        %v     : U128     = %v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        %xn    : S64      = %arg.xn.add(%k).sub(%dz)
+        %r     : F128     = cm_asin_pack(%v, %xn, 0, %rnd)
+        return(%r)
 
-    block small(arg: CmAsinArg, nz: S64, xw: CmAsinW5):
-        xc : CmAsinW5 = cm_asin_shift5(xw, nz)
-        r  : F128     = cm_acos_accurate_half_pi(arg, xc, xw, nz)
-        return(r)
+    block small(%arg: CmAsinArg, %nz: S64, %xw: CmAsinW5):
+        %xc : CmAsinW5 = cm_asin_shift5(%xw, %nz)
+        %r  : F128     = cm_acos_accurate_half_pi(%arg, %xc, %xw, %nz)
+        return(%r)
 
 /// Finishes the accurate path as pi/2 -/+ (asin(s_j) + d + t^3*P(t^2)) at half scale.
-routine cm_acos_accurate_half_pi(arg: CmAsinArg, xc: CmAsinW5, t: CmAsinW5, nz: S64) -> F128
+routine cm_acos_accurate_half_pi(%arg: CmAsinArg, %xc: CmAsinW5, %t: CmAsinW5, %nz: S64) -> F128
     block entry():
-        p          : CmAsinW5 = cm_asin_poly5(t, nz)
-        f          : CmAsinW5 = cm_asin_shift5(p, nz.mul(3).add(1))
-        half       : CmAsinW5 = cm_asin_shift5(xc, 1)
-        phi0       : Ptr<U64> = CM_ACOS_PHI0.to_ptr()
-        phi_j      : CmAsinW5 = cm_asin_load5(phi0, arg.j.mul(5))
-        asin_value : CmAsinW5 = cm_asin_add5(cm_asin_add5(phi_j, half), f)
-        pi4        : CmAsinW5 = cm_asin_load5(phi0, 360)
-        above      : CmAsinW5 = cm_asin_add5(pi4, asin_value)
-        below      : CmAsinW5 = cm_asin_sub5(pi4, asin_value)
-        s          : CmAsinW5 = arg.xsgn.ne(0) ? above : below
-        k          : S64      = s.w4.leading_zeros().to_s64()
-        rnd        : U64      = s.w3.shr(cm_asin_sh(14.sub(k))).bitand(1)
-        sh         : S64      = cm_asin_sh(15.sub(k)).to_s64()
-        v_lo       : U64      = s.w3.shr(sh.to_u64()).bitor(s.w4.shl(cm_asin_sh(k.add(49))))
-        v          : U128     = cm_asin_join(s.w4.shr(sh.to_u64()), v_lo)
-        r          : F128     = cm_asin_pack(v, 16383.sub(k), 0, rnd)
-        return(r)
+        %p     : CmAsinW5 = cm_asin_poly5(%t, %nz)
+        %f     : CmAsinW5 = cm_asin_shift5(%p, %nz.mul(3).add(1))
+        %half  : CmAsinW5 = cm_asin_shift5(%xc, 1)
+        %phi0  : Ptr<U64> = CM_ACOS_PHI0.to_ptr()
+        %phi_j : CmAsinW5 = cm_asin_load5(%phi0, %arg.j.mul(5))
+        %asin  : CmAsinW5 = cm_asin_add5(cm_asin_add5(%phi_j, %half), %f)
+        %pi4   : CmAsinW5 = cm_asin_load5(%phi0, 360)
+        %above : CmAsinW5 = cm_asin_add5(%pi4, %asin)
+        %below : CmAsinW5 = cm_asin_sub5(%pi4, %asin)
+        %s     : CmAsinW5 = %arg.xsgn.ne(0) ? %above : %below
+        %k     : S64      = %s.w4.leading_zeros().to_s64()
+        %rnd   : U64      = %s.w3.shr(cm_asin_sh(14.sub(%k))).bitand(1)
+        %sh    : S64      = cm_asin_sh(15.sub(%k)).to_s64()
+        %v_lo  : U64      = %s.w3.shr(%sh.to_u64()).bitor(%s.w4.shl(cm_asin_sh(%k.add(49))))
+        %v     : U128     = cm_asin_join(%s.w4.shr(%sh.to_u64()), %v_lo)
+        %r     : F128     = cm_asin_pack(%v, 16383.sub(%k), 0, %rnd)
+        return(%r)
 
 /// asin(PTH[j])/2 as five-word fixed-point values, one row per table point; row 72 is (pi/2)/2
 preset CM_ACOS_PHI0: Array<U64, 365> = [0x0000000000000000, 0x0000000000000000, 0x0000000000000000,

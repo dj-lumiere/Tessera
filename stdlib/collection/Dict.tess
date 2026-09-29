@@ -36,270 +36,274 @@ require K: typename, V: typename, HashEqual<K>
     capacity      : U64
     alloc         : Ptr<Allocator>
 
-routine Dict<K, V>.construct(alloc: Ptr<Allocator>) -> Self
+routine Dict<K, V>.construct(%alloc: Ptr<Allocator>) -> Self
 require K: typename, V: typename, HashEqual<K>
     block entry():
-        map : Self = Self { keys: null, values: null, hashes: null, entry_states: null, slots: null,
-                length: 0, entries_count: 0, capacity: 0, alloc: alloc }
-        return(map)
+        %map : Self = Self { keys: null, values: null, hashes: null, entry_states: null,
+                slots: null, length: 0, entries_count: 0, capacity: 0, alloc: %alloc }
+        return(%map)
 
-routine Dict<K, V>.length(self: Ptr<Self>) -> U64
+routine Dict<K, V>.length(%self: Ptr<Self>) -> U64
 require K: typename, V: typename
     block entry():
-        length : U64 = self.length.load()
-        return(length)
+        %length : U64 = %self.length.load()
+        return(%length)
 
-routine Dict<K, V>.is_empty(self: Ptr<Self>) -> Bool
+routine Dict<K, V>.is_empty(%self: Ptr<Self>) -> Bool
 require K: typename, V: typename
     block entry():
-        length : U64  = self.length.load()
-        empty  : Bool = length.eq(0)
-        return(empty)
+        %length : U64  = %self.length.load()
+        %empty  : Bool = %length.eq(0)
+        return(%empty)
 
 /// Probe the slot table for key. Returns the slot index at which the key was
 /// found, or the slot at which a new entry should be installed (preferring the
 /// first tombstone seen, else the first empty slot).
-routine Dict<K, V>.slot(self: Ptr<Self>, key: K, hash: U64) -> U64
+routine Dict<K, V>.slot(%self: Ptr<Self>, %key: K, %hash: U64) -> U64
 require K: typename, V: typename
     block entry():
-        capacity : U64 = self.capacity.load()
-        mask     : U64 = capacity.sub(1)
-        start    : U64 = hash.bitand(mask)
-        jump probe(start, SLOT_EMPTY)
+        %capacity : U64 = %self.capacity.load()
+        %mask     : U64 = %capacity.sub(1)
+        %start    : U64 = %hash.bitand(%mask)
+        jump probe(%start, SLOT_EMPTY)
 
-    block probe(index: U64, first_tombstone: U64):
-        slots        : Ptr<U64> = self.slots.load()
-        entry_idx    : U64      = slots[index].load()
-        is_empty     : Bool     = entry_idx.eq(SLOT_EMPTY)
-        is_tombstone : Bool     = entry_idx.eq(SLOT_TOMBSTONE)
+    block probe(%index: U64, %first_tombstone: U64):
+        %slots        : Ptr<U64> = %self.slots.load()
+        %entry_idx    : U64      = %slots[%index].load()
+        %is_empty     : Bool     = %entry_idx.eq(SLOT_EMPTY)
+        %is_tombstone : Bool     = %entry_idx.eq(SLOT_TOMBSTONE)
         when:
-            is_empty     -> empty_slot(index, first_tombstone)
-            is_tombstone -> tombstone_slot(index, first_tombstone)
-            _            -> occupied_slot(index, first_tombstone, entry_idx)
+            %is_empty     -> empty_slot(%index, %first_tombstone)
+            %is_tombstone -> tombstone_slot(%index, %first_tombstone)
+            else          -> occupied_slot(%index, %first_tombstone, %entry_idx)
 
-    block empty_slot(index: U64, first_tombstone: U64):
-        has_tombstone : Bool = first_tombstone.ne(SLOT_EMPTY)
-        slot          : U64  = has_tombstone ? first_tombstone : index
-        return(slot)
+    block empty_slot(%index: U64, %first_tombstone: U64):
+        %has_tombstone : Bool = %first_tombstone.ne(SLOT_EMPTY)
+        %slot          : U64  = %has_tombstone ? %first_tombstone : %index
+        return(%slot)
 
-    block tombstone_slot(index: U64, first_tombstone: U64):
-        seen           : Bool = first_tombstone.ne(SLOT_EMPTY)
-        next_tombstone : U64  = seen ? first_tombstone : index
-        capacity       : U64  = self.capacity.load()
-        next           : U64  = index.add(1).bitand(capacity.sub(1))
-        jump probe(next, next_tombstone)
+    block tombstone_slot(%index: U64, %first_tombstone: U64):
+        %seen           : Bool = %first_tombstone.ne(SLOT_EMPTY)
+        %next_tombstone : U64  = %seen ? %first_tombstone : %index
+        %capacity       : U64  = %self.capacity.load()
+        %next           : U64  = %index.add(1).bitand(%capacity.sub(1))
+        jump probe(%next, %next_tombstone)
 
-    block occupied_slot(index: U64, first_tombstone: U64, entry_idx: U64):
-        hashes     : Ptr<U64> = self.hashes.load()
-        entry_hash : U64      = hashes[entry_idx].load()
-        hash_match : Bool     = entry_hash.eq(hash)
-        branch hash_match
-            ? maybe_equal(index, first_tombstone, entry_idx)
-            : next(index, first_tombstone)
+    block occupied_slot(%index: U64, %first_tombstone: U64, %entry_idx: U64):
+        %hashes     : Ptr<U64> = %self.hashes.load()
+        %entry_hash : U64      = %hashes[%entry_idx].load()
+        %hash_match : Bool     = %entry_hash.eq(%hash)
+        branch %hash_match
+            ? maybe_equal(%index, %first_tombstone, %entry_idx)
+            : next(%index, %first_tombstone)
 
-    block maybe_equal(index: U64, first_tombstone: U64, entry_idx: U64):
-        keys      : Ptr<K> = self.keys.load()
-        entry_key : K      = keys[entry_idx].load()
-        equal     : Bool   = entry_key.eq(key)
-        branch equal ? return(index): next(index, first_tombstone)
+    block maybe_equal(%index: U64, %first_tombstone: U64, %entry_idx: U64):
+        %keys      : Ptr<K> = %self.keys.load()
+        %entry_key : K      = %keys[%entry_idx].load()
+        %equal     : Bool   = %entry_key.eq(%key)
+        branch %equal ? return(%index): next(%index, %first_tombstone)
 
-    block next(index: U64, first_tombstone: U64):
-        capacity : U64 = self.capacity.load()
-        next     : U64 = index.add(1).bitand(capacity.sub(1))
-        jump probe(next, first_tombstone)
+    block next(%index: U64, %first_tombstone: U64):
+        %capacity : U64 = %self.capacity.load()
+        %next     : U64 = %index.add(1).bitand(%capacity.sub(1))
+        jump probe(%next, %first_tombstone)
 
 /// Returns the entry index for key, or SLOT_EMPTY if absent.
-routine Dict<K, V>.find(self: Ptr<Self>, key: K) -> U64
+routine Dict<K, V>.find(%self: Ptr<Self>, %key: K) -> U64
 require K: typename, V: typename
     block entry():
-        capacity : U64  = self.capacity.load()
-        empty    : Bool = capacity.eq(0)
-        branch empty ? return(SLOT_EMPTY): hash()
+        %capacity : U64  = %self.capacity.load()
+        %empty    : Bool = %capacity.eq(0)
+        branch %empty ? return(SLOT_EMPTY): hash()
 
     block hash():
-        hash      : U64      = K.hash(key)
-        slot      : U64      = self.slot(key, hash)
-        slots     : Ptr<U64> = self.slots.load()
-        entry_idx : U64      = slots[slot].load()
-        found     : Bool     = entry_idx.lt(SLOT_TOMBSTONE)
-        branch found ? return(entry_idx) : return(SLOT_EMPTY)
+        %hash      : U64      = K.hash(%key)
+        %slot      : U64      = %self.slot(%key, %hash)
+        %slots     : Ptr<U64> = %self.slots.load()
+        %entry_idx : U64      = %slots[%slot].load()
+        %found     : Bool     = %entry_idx.lt(SLOT_TOMBSTONE)
+        branch %found ? return(%entry_idx) : return(SLOT_EMPTY)
 
-routine Dict<K, V>.contains(self: Ptr<Self>, key: K) -> Bool
+routine Dict<K, V>.contains(%self: Ptr<Self>, %key: K) -> Bool
 require K: typename, V: typename
     block entry():
-        found : Bool = self.find(key).ne(SLOT_EMPTY)
-        return(found)
+        %found : Bool = %self.find(%key).ne(SLOT_EMPTY)
+        return(%found)
 
 /// Two Dicts are equal when they hold the same key→value pairs, regardless
 /// of insertion order or internal slot layout. With matching length, "every
 /// key in A is in B and maps to an equal value" is sufficient.
-routine Dict<K, V>.eq(self: Ptr<Self>, other: Ptr<Self>) -> Bool
+routine Dict<K, V>.eq(%self: Ptr<Self>, %other: Ptr<Self>) -> Bool
 require K: typename, V: typename, HashEqual<K>, Equal<V>
     block entry():
-        la       : U64  = self.length.load()
-        lb       : U64  = other.length.load()
-        same_len : Bool = la.eq(lb)
-        branch same_len ? scan() : return(false)
+        %la       : U64  = %self.length.load()
+        %lb       : U64  = %other.length.load()
+        %same_len : Bool = %la.eq(%lb)
+        branch %same_len ? scan() : return(false)
 
     block scan():
-        n : U64 = self.entries_count.load()
-        jump loop(0, n)
+        %n : U64 = %self.entries_count.load()
+        jump loop(0, %n)
 
-    block loop(i: U64, n: U64):
-        done : Bool = i.ge(n)
-        branch done ? return(true) : check(i, n)
+    block loop(%i: U64, %n: U64):
+        %done : Bool = %i.ge(%n)
+        branch %done ? return(true) : check(%i, %n)
 
-    block check(i: U64, n: U64):
-        entry_states : Ptr<U8> = self.entry_states.load()
-        s            : U8      = entry_states[i].load()
-        live         : Bool    = s.eq(1)
-        branch live ? probe(i, n) : loop(i.add(1), n)
+    block check(%i: U64, %n: U64):
+        %entry_states : Ptr<U8> = %self.entry_states.load()
+        %s            : U8      = %entry_states[%i].load()
+        %live         : Bool    = %s.eq(1)
+        branch %live ? probe(%i, %n) : loop(%i.add(1), %n)
 
-    block probe(i: U64, n: U64):
-        keys  : Ptr<K> = self.keys.load()
-        key   : K      = keys[i].load()
-        eb    : U64    = other.find(key)
-        found : Bool   = eb.lt(SLOT_TOMBSTONE)
-        branch found ? compare_value(i, n, eb) : return(false)
+    block probe(%i: U64, %n: U64):
+        %keys  : Ptr<K> = %self.keys.load()
+        %key   : K      = %keys[%i].load()
+        %eb    : U64    = %other.find(%key)
+        %found : Bool   = %eb.lt(SLOT_TOMBSTONE)
+        branch %found ? compare_value(%i, %n, %eb) : return(false)
 
-    block compare_value(i: U64, n: U64, eb: U64):
-        values_a : Ptr<V> = self.values.load()
-        values_b : Ptr<V> = other.values.load()
-        va       : V      = values_a[i].load()
-        vb       : V      = values_b[eb].load()
-        eq       : Bool   = va.eq(vb)
-        branch eq ? loop(i.add(1), n) : return(false)
+    block compare_value(%i: U64, %n: U64, %eb: U64):
+        %values_a : Ptr<V> = %self.values.load()
+        %values_b : Ptr<V> = %other.values.load()
+        %va       : V      = %values_a[%i].load()
+        %vb       : V      = %values_b[%eb].load()
+        %eq       : Bool   = %va.eq(%vb)
+        branch %eq ? loop(%i.add(1), %n) : return(false)
 
 /// Allocate fresh arrays at new_capacity, walk the old entries in insertion
 /// order, and re-insert each live entry. Dead entries are dropped, so the
 /// entries array is compacted as a side effect.
-routine Dict<K, V>.rehash(self: Ptr<Self>, new_capacity: U64) -> Void
+routine Dict<K, V>.rehash(%self: Ptr<Self>, %new_capacity: U64) -> Void
 require K: typename, V: typename
     block entry():
-        alloc            : Ptr<Allocator> = self.alloc.load()
-        old_keys         : Ptr<K>         = self.keys.load()
-        old_values       : Ptr<V>         = self.values.load()
-        old_hashes       : Ptr<U64>       = self.hashes.load()
-        old_entry_states : Ptr<U8>        = self.entry_states.load()
-        old_slots        : Ptr<U64>       = self.slots.load()
-        old_count        : U64            = self.entries_count.load()
-        new_keys         : Ptr<K>         = allocate<K>(alloc, new_capacity)
-        new_values       : Ptr<V>         = allocate<V>(alloc, new_capacity)
-        new_hashes       : Ptr<U64>       = allocate<U64>(alloc, new_capacity)
-        new_entry_states : Ptr<U8>        = allocate<U8>(alloc, new_capacity)
-        new_slots        : Ptr<U64>       = allocate<U64>(alloc, new_capacity)
-        a                : Bool           = new_keys.is_null()
-        b                : Bool           = new_values.is_null()
-        c                : Bool           = new_hashes.is_null()
-        d                : Bool           = new_entry_states.is_null()
-        e                : Bool           = new_slots.is_null()
-        f1               : Bool           = a.bitor(b)
-        f2               : Bool           = c.bitor(d)
-        f3               : Bool           = f1.bitor(f2)
-        failed           : Bool           = f3.bitor(e)
-        branch failed
+        %alloc            : Ptr<Allocator> = %self.alloc.load()
+        %old_keys         : Ptr<K>         = %self.keys.load()
+        %old_values       : Ptr<V>         = %self.values.load()
+        %old_hashes       : Ptr<U64>       = %self.hashes.load()
+        %old_entry_states : Ptr<U8>        = %self.entry_states.load()
+        %old_slots        : Ptr<U64>       = %self.slots.load()
+        %old_count        : U64            = %self.entries_count.load()
+        %new_keys         : Ptr<K>         = allocate<K>(%alloc, %new_capacity)
+        %new_values       : Ptr<V>         = allocate<V>(%alloc, %new_capacity)
+        %new_hashes       : Ptr<U64>       = allocate<U64>(%alloc, %new_capacity)
+        %new_entry_states : Ptr<U8>        = allocate<U8>(%alloc, %new_capacity)
+        %new_slots        : Ptr<U64>       = allocate<U64>(%alloc, %new_capacity)
+        %a                : Bool           = %new_keys.is_null()
+        %b                : Bool           = %new_values.is_null()
+        %c                : Bool           = %new_hashes.is_null()
+        %d                : Bool           = %new_entry_states.is_null()
+        %e                : Bool           = %new_slots.is_null()
+        %f1               : Bool           = %a.bitor(%b)
+        %f2               : Bool           = %c.bitor(%d)
+        %f3               : Bool           = %f1.bitor(%f2)
+        %failed           : Bool           = %f3.bitor(%e)
+        branch %failed
             ? panic(TrapCode.AllocFailed)
-            : clear_loop(0, old_keys, old_values, old_hashes, old_entry_states, old_slots,
-                    old_count, new_keys, new_values, new_hashes, new_entry_states, new_slots,
-                    new_capacity)
+            : clear_loop(0, %old_keys, %old_values, %old_hashes, %old_entry_states, %old_slots,
+                    %old_count, %new_keys, %new_values, %new_hashes, %new_entry_states, %new_slots,
+                    %new_capacity)
 
-    block clear_loop(i: U64, old_keys: Ptr<K>, old_values: Ptr<V>, old_hashes: Ptr<U64>,
-            old_entry_states: Ptr<U8>, old_slots: Ptr<U64>, old_count: U64, new_keys: Ptr<K>,
-            new_values: Ptr<V>, new_hashes: Ptr<U64>, new_entry_states: Ptr<U8>,
-            new_slots: Ptr<U64>, new_capacity: U64):
-        done : Bool = i.ge(new_capacity)
-        branch done
-            ? install(old_keys, old_values, old_hashes, old_entry_states, old_slots, old_count,
-                    new_keys, new_values, new_hashes, new_entry_states, new_slots, new_capacity)
-            : clear_one(i, old_keys, old_values, old_hashes, old_entry_states, old_slots, old_count,
-                    new_keys, new_values, new_hashes, new_entry_states, new_slots, new_capacity)
+    block clear_loop(%i: U64, %old_keys: Ptr<K>, %old_values: Ptr<V>, %old_hashes: Ptr<U64>,
+            %old_entry_states: Ptr<U8>, %old_slots: Ptr<U64>, %old_count: U64, %new_keys: Ptr<K>,
+            %new_values: Ptr<V>, %new_hashes: Ptr<U64>, %new_entry_states: Ptr<U8>,
+            %new_slots: Ptr<U64>, %new_capacity: U64):
+        %done : Bool = %i.ge(%new_capacity)
+        branch %done
+            ? install(%old_keys, %old_values, %old_hashes, %old_entry_states, %old_slots,
+                    %old_count, %new_keys, %new_values, %new_hashes, %new_entry_states, %new_slots,
+                    %new_capacity)
+            : clear_one(%i, %old_keys, %old_values, %old_hashes, %old_entry_states, %old_slots,
+                    %old_count, %new_keys, %new_values, %new_hashes, %new_entry_states, %new_slots,
+                    %new_capacity)
 
-    block clear_one(i: U64, old_keys: Ptr<K>, old_values: Ptr<V>, old_hashes: Ptr<U64>,
-            old_entry_states: Ptr<U8>, old_slots: Ptr<U64>, old_count: U64, new_keys: Ptr<K>,
-            new_values: Ptr<V>, new_hashes: Ptr<U64>, new_entry_states: Ptr<U8>,
-            new_slots: Ptr<U64>, new_capacity: U64):
-        new_slots[i].store(SLOT_EMPTY)
-        new_entry_states[i].store(0)
-        jump clear_loop(i.add(1), old_keys, old_values, old_hashes, old_entry_states, old_slots,
-                old_count, new_keys, new_values, new_hashes, new_entry_states, new_slots,
-                new_capacity)
+    block clear_one(%i: U64, %old_keys: Ptr<K>, %old_values: Ptr<V>, %old_hashes: Ptr<U64>,
+            %old_entry_states: Ptr<U8>, %old_slots: Ptr<U64>, %old_count: U64, %new_keys: Ptr<K>,
+            %new_values: Ptr<V>, %new_hashes: Ptr<U64>, %new_entry_states: Ptr<U8>,
+            %new_slots: Ptr<U64>, %new_capacity: U64):
+        %new_slots[%i].store(SLOT_EMPTY)
+        %new_entry_states[%i].store(0)
+        jump clear_loop(%i.add(1), %old_keys, %old_values, %old_hashes, %old_entry_states,
+                %old_slots, %old_count, %new_keys, %new_values, %new_hashes, %new_entry_states,
+                %new_slots, %new_capacity)
 
-    block install(old_keys: Ptr<K>, old_values: Ptr<V>, old_hashes: Ptr<U64>,
-            old_entry_states: Ptr<U8>, old_slots: Ptr<U64>, old_count: U64, new_keys: Ptr<K>,
-            new_values: Ptr<V>, new_hashes: Ptr<U64>, new_entry_states: Ptr<U8>,
-            new_slots: Ptr<U64>, new_capacity: U64):
-        self.keys.store(new_keys)
-        self.values.store(new_values)
-        self.hashes.store(new_hashes)
-        self.entry_states.store(new_entry_states)
-        self.slots.store(new_slots)
-        self.length.store(0)
-        self.entries_count.store(0)
-        self.capacity.store(new_capacity)
-        jump move_loop(0, old_keys, old_values, old_hashes, old_entry_states, old_slots, old_count)
+    block install(%old_keys: Ptr<K>, %old_values: Ptr<V>, %old_hashes: Ptr<U64>,
+            %old_entry_states: Ptr<U8>, %old_slots: Ptr<U64>, %old_count: U64, %new_keys: Ptr<K>,
+            %new_values: Ptr<V>, %new_hashes: Ptr<U64>, %new_entry_states: Ptr<U8>,
+            %new_slots: Ptr<U64>, %new_capacity: U64):
+        %self.keys.store(%new_keys)
+        %self.values.store(%new_values)
+        %self.hashes.store(%new_hashes)
+        %self.entry_states.store(%new_entry_states)
+        %self.slots.store(%new_slots)
+        %self.length.store(0)
+        %self.entries_count.store(0)
+        %self.capacity.store(%new_capacity)
+        jump move_loop(0, %old_keys, %old_values, %old_hashes, %old_entry_states, %old_slots,
+                %old_count)
 
-    block move_loop(i: U64, old_keys: Ptr<K>, old_values: Ptr<V>, old_hashes: Ptr<U64>,
-            old_entry_states: Ptr<U8>, old_slots: Ptr<U64>, old_count: U64):
-        done : Bool = i.ge(old_count)
-        branch done
-            ? release_old(old_keys, old_values, old_hashes, old_entry_states, old_slots)
-            : move_one(i, old_keys, old_values, old_hashes, old_entry_states, old_slots, old_count)
+    block move_loop(%i: U64, %old_keys: Ptr<K>, %old_values: Ptr<V>, %old_hashes: Ptr<U64>,
+            %old_entry_states: Ptr<U8>, %old_slots: Ptr<U64>, %old_count: U64):
+        %done : Bool = %i.ge(%old_count)
+        branch %done
+            ? release_old(%old_keys, %old_values, %old_hashes, %old_entry_states, %old_slots)
+            : move_one(%i, %old_keys, %old_values, %old_hashes, %old_entry_states, %old_slots,
+                    %old_count)
 
-    block move_one(i: U64, old_keys: Ptr<K>, old_values: Ptr<V>, old_hashes: Ptr<U64>,
-            old_entry_states: Ptr<U8>, old_slots: Ptr<U64>, old_count: U64):
-        s    : U8   = old_entry_states[i].load()
-        live : Bool = s.eq(1)
-        branch live
-            ? insert_old(i, old_keys, old_values, old_hashes, old_entry_states, old_slots,
-                    old_count)
-            : move_loop(i.add(1), old_keys, old_values, old_hashes, old_entry_states, old_slots,
-                    old_count)
+    block move_one(%i: U64, %old_keys: Ptr<K>, %old_values: Ptr<V>, %old_hashes: Ptr<U64>,
+            %old_entry_states: Ptr<U8>, %old_slots: Ptr<U64>, %old_count: U64):
+        %s    : U8   = %old_entry_states[%i].load()
+        %live : Bool = %s.eq(1)
+        branch %live
+            ? insert_old(%i, %old_keys, %old_values, %old_hashes, %old_entry_states, %old_slots,
+                    %old_count)
+            : move_loop(%i.add(1), %old_keys, %old_values, %old_hashes, %old_entry_states,
+                    %old_slots, %old_count)
 
-    block insert_old(i: U64, old_keys: Ptr<K>, old_values: Ptr<V>, old_hashes: Ptr<U64>,
-            old_entry_states: Ptr<U8>, old_slots: Ptr<U64>, old_count: U64):
-        key   : K   = old_keys[i].load()
-        value : V   = old_values[i].load()
-        hash  : U64 = old_hashes[i].load()
-        self.put_direct(key, value, hash)
-        jump move_loop(i.add(1), old_keys, old_values, old_hashes, old_entry_states, old_slots,
-                old_count)
+    block insert_old(%i: U64, %old_keys: Ptr<K>, %old_values: Ptr<V>, %old_hashes: Ptr<U64>,
+            %old_entry_states: Ptr<U8>, %old_slots: Ptr<U64>, %old_count: U64):
+        %key   : K   = %old_keys[%i].load()
+        %value : V   = %old_values[%i].load()
+        %hash  : U64 = %old_hashes[%i].load()
+        %self.put_direct(%key, %value, %hash)
+        jump move_loop(%i.add(1), %old_keys, %old_values, %old_hashes, %old_entry_states,
+                %old_slots, %old_count)
 
-    block release_old(old_keys: Ptr<K>, old_values: Ptr<V>, old_hashes: Ptr<U64>,
-            old_entry_states: Ptr<U8>, old_slots: Ptr<U64>):
-        has_old : Bool = old_slots.is_not_null()
-        branch has_old
-            ? free_old(old_keys, old_values, old_hashes, old_entry_states, old_slots)
+    block release_old(%old_keys: Ptr<K>, %old_values: Ptr<V>, %old_hashes: Ptr<U64>,
+            %old_entry_states: Ptr<U8>, %old_slots: Ptr<U64>):
+        %has_old : Bool = %old_slots.is_not_null()
+        branch %has_old
+            ? free_old(%old_keys, %old_values, %old_hashes, %old_entry_states, %old_slots)
             : return()
 
-    block free_old(old_keys: Ptr<K>, old_values: Ptr<V>, old_hashes: Ptr<U64>,
-            old_entry_states: Ptr<U8>, old_slots: Ptr<U64>):
-        alloc : Ptr<Allocator> = self.alloc.load()
-        old_keys.free(alloc)
-        old_values.free(alloc)
-        old_hashes.free(alloc)
-        old_entry_states.free(alloc)
-        old_slots.free(alloc)
+    block free_old(%old_keys: Ptr<K>, %old_values: Ptr<V>, %old_hashes: Ptr<U64>,
+            %old_entry_states: Ptr<U8>, %old_slots: Ptr<U64>):
+        %alloc : Ptr<Allocator> = %self.alloc.load()
+        %old_keys.free(%alloc)
+        %old_values.free(%alloc)
+        %old_hashes.free(%alloc)
+        %old_entry_states.free(%alloc)
+        %old_slots.free(%alloc)
         return()
 
-routine Dict<K, V>.ensure(self: Ptr<Self>) -> Void
+routine Dict<K, V>.ensure(%self: Ptr<Self>) -> Void
 require K: typename, V: typename
     block entry():
-        capacity : U64  = self.capacity.load()
-        empty    : Bool = capacity.eq(0)
-        branch empty ? first() : check(capacity)
+        %capacity : U64  = %self.capacity.load()
+        %empty    : Bool = %capacity.eq(0)
+        branch %empty ? first() : check(%capacity)
 
     block first():
-        self.rehash(8)
+        %self.rehash(8)
         return()
 
-    block check(capacity: U64):
-        count : U64  = self.entries_count.load()
-        limit : U64  = capacity.mul(3).div(4)
-        full  : Bool = count.add(1).ge(limit)
-        branch full ? grow(capacity) : return()
+    block check(%capacity: U64):
+        %count : U64  = %self.entries_count.load()
+        %limit : U64  = %capacity.mul(3).div(4)
+        %full  : Bool = %count.add(1).ge(%limit)
+        branch %full ? grow(%capacity) : return()
 
-    block grow(capacity: U64):
-        self.rehash(capacity.mul(2))
+    block grow(%capacity: U64):
+        %self.rehash(%capacity.mul(2))
         return()
 
 /// Insert without growing — used internally by rehash after new arrays are in place.
@@ -307,189 +311,189 @@ require K: typename, V: typename
 /// the entries array, and therefore insertion order). Otherwise append a fresh
 /// entry at entries_count and bind the slot to that index. hash is the key's hash, so rehash can pass the stored
 /// one instead of hashing every key again.
-routine Dict<K, V>.put_direct(self: Ptr<Self>, key: K, value: V, hash: U64) -> Void
+routine Dict<K, V>.put_direct(%self: Ptr<Self>, %key: K, %value: V, %hash: U64) -> Void
 require K: typename, V: typename
     block entry():
-        slot      : U64      = self.slot(key, hash)
-        slots     : Ptr<U64> = self.slots.load()
-        entry_idx : U64      = slots[slot].load()
-        occupied  : Bool     = entry_idx.lt(SLOT_TOMBSTONE)
-        branch occupied ? replace(entry_idx, value) : add(slot, key, value, hash)
+        %slot      : U64      = %self.slot(%key, %hash)
+        %slots     : Ptr<U64> = %self.slots.load()
+        %entry_idx : U64      = %slots[%slot].load()
+        %occupied  : Bool     = %entry_idx.lt(SLOT_TOMBSTONE)
+        branch %occupied ? replace(%entry_idx, %value) : add(%slot, %key, %value, %hash)
 
-    block replace(entry_idx: U64, value: V):
-        values : Ptr<V> = self.values.load()
-        values[entry_idx].store(value)
+    block replace(%entry_idx: U64, %value: V):
+        %values : Ptr<V> = %self.values.load()
+        %values[%entry_idx].store(%value)
         return()
 
-    block add(slot: U64, key: K, value: V, hash: U64):
-        new_idx      : U64      = self.entries_count.load()
-        keys         : Ptr<K>   = self.keys.load()
-        values       : Ptr<V>   = self.values.load()
-        hashes       : Ptr<U64> = self.hashes.load()
-        entry_states : Ptr<U8>  = self.entry_states.load()
-        slots        : Ptr<U64> = self.slots.load()
-        keys[new_idx].store(key)
-        values[new_idx].store(value)
-        hashes[new_idx].store(hash)
-        entry_states[new_idx].store(1)
-        slots[slot].store(new_idx)
-        self.length.load().add(1).store_into(self.length)
-        self.entries_count.store(new_idx.add(1))
+    block add(%slot: U64, %key: K, %value: V, %hash: U64):
+        %new_idx      : U64      = %self.entries_count.load()
+        %keys         : Ptr<K>   = %self.keys.load()
+        %values       : Ptr<V>   = %self.values.load()
+        %hashes       : Ptr<U64> = %self.hashes.load()
+        %entry_states : Ptr<U8>  = %self.entry_states.load()
+        %slots        : Ptr<U64> = %self.slots.load()
+        %keys[%new_idx].store(%key)
+        %values[%new_idx].store(%value)
+        %hashes[%new_idx].store(%hash)
+        %entry_states[%new_idx].store(1)
+        %slots[%slot].store(%new_idx)
+        %self.length.load().add(1).store_into(%self.length)
+        %self.entries_count.store(%new_idx.add(1))
         return()
 
-routine Dict<K, V>.put(self: Ptr<Self>, key: K, value: V) -> Void
+routine Dict<K, V>.put(%self: Ptr<Self>, %key: K, %value: V) -> Void
 require K: typename, V: typename
     block entry():
-        self.ensure()
-        self.put_direct(key, value, K.hash(key))
+        %self.ensure()
+        %self.put_direct(%key, %value, K.hash(%key))
         return()
 
-routine Dict<K, V>.get(self: Ptr<Self>, key: K) -> V
+routine Dict<K, V>.get(%self: Ptr<Self>, %key: K) -> V
 require K: typename, V: typename
     block entry():
-        entry_idx : U64  = self.find(key)
-        found     : Bool = entry_idx.lt(SLOT_TOMBSTONE)
-        branch found ? load(entry_idx) : panic(TrapCode.MissingKey)
+        %entry_idx : U64  = %self.find(%key)
+        %found     : Bool = %entry_idx.lt(SLOT_TOMBSTONE)
+        branch %found ? load(%entry_idx) : panic(TrapCode.MissingKey)
 
-    block load(entry_idx: U64):
-        values : Ptr<V> = self.values.load()
-        value  : V      = values[entry_idx].load()
-        return(value)
+    block load(%entry_idx: U64):
+        %values : Ptr<V> = %self.values.load()
+        %value  : V      = %values[%entry_idx].load()
+        return(%value)
 
 /// Removal preserves the entries array's positional layout: we mark the entry
 /// dead and stamp the slot table with a tombstone. The entry's position is
 /// retained until the next rehash, so surviving entries keep their order.
-routine Dict<K, V>.remove(self: Ptr<Self>, key: K) -> Bool
+routine Dict<K, V>.remove(%self: Ptr<Self>, %key: K) -> Bool
 require K: typename, V: typename
     block entry():
-        capacity : U64  = self.capacity.load()
-        empty    : Bool = capacity.eq(0)
-        branch empty ? return(false) : hash()
+        %capacity : U64  = %self.capacity.load()
+        %empty    : Bool = %capacity.eq(0)
+        branch %empty ? return(false) : hash()
 
     block hash():
-        hash      : U64      = K.hash(key)
-        slot      : U64      = self.slot(key, hash)
-        slots     : Ptr<U64> = self.slots.load()
-        entry_idx : U64      = slots[slot].load()
-        found     : Bool     = entry_idx.lt(SLOT_TOMBSTONE)
-        branch found ? remove(slot, entry_idx) : return(false)
+        %hash      : U64      = K.hash(%key)
+        %slot      : U64      = %self.slot(%key, %hash)
+        %slots     : Ptr<U64> = %self.slots.load()
+        %entry_idx : U64      = %slots[%slot].load()
+        %found     : Bool     = %entry_idx.lt(SLOT_TOMBSTONE)
+        branch %found ? remove(%slot, %entry_idx) : return(false)
 
-    block remove(slot: U64, entry_idx: U64):
-        slots        : Ptr<U64> = self.slots.load()
-        entry_states : Ptr<U8>  = self.entry_states.load()
-        slots[slot].store(SLOT_TOMBSTONE)
-        entry_states[entry_idx].store(0)
-        self.length.load().sub(1).store_into(self.length)
+    block remove(%slot: U64, %entry_idx: U64):
+        %slots        : Ptr<U64> = %self.slots.load()
+        %entry_states : Ptr<U8>  = %self.entry_states.load()
+        %slots[%slot].store(SLOT_TOMBSTONE)
+        %entry_states[%entry_idx].store(0)
+        %self.length.load().sub(1).store_into(%self.length)
         return(true)
 
-routine Dict<K, V>.destruct(self: Ptr<Self>) -> Void
+routine Dict<K, V>.destruct(%self: Ptr<Self>) -> Void
 require K: typename, V: typename
     block entry():
-        slots : Ptr<U64> = self.slots.load()
-        empty : Bool     = slots.is_null()
-        branch empty ? reset() : release()
+        %slots : Ptr<U64> = %self.slots.load()
+        %empty : Bool     = %slots.is_null()
+        branch %empty ? reset() : release()
 
     block release():
-        alloc        : Ptr<Allocator> = self.alloc.load()
-        keys         : Ptr<K>         = self.keys.load()
-        values       : Ptr<V>         = self.values.load()
-        hashes       : Ptr<U64>       = self.hashes.load()
-        entry_states : Ptr<U8>        = self.entry_states.load()
-        slots        : Ptr<U64>       = self.slots.load()
-        keys.free(alloc)
-        values.free(alloc)
-        hashes.free(alloc)
-        entry_states.free(alloc)
-        slots.free(alloc)
+        %alloc        : Ptr<Allocator> = %self.alloc.load()
+        %keys         : Ptr<K>         = %self.keys.load()
+        %values       : Ptr<V>         = %self.values.load()
+        %hashes       : Ptr<U64>       = %self.hashes.load()
+        %entry_states : Ptr<U8>        = %self.entry_states.load()
+        %slots        : Ptr<U64>       = %self.slots.load()
+        %keys.free(%alloc)
+        %values.free(%alloc)
+        %hashes.free(%alloc)
+        %entry_states.free(%alloc)
+        %slots.free(%alloc)
         jump reset()
 
     block reset():
-        self.keys.store(null)
-        self.values.store(null)
-        self.hashes.store(null)
-        self.entry_states.store(null)
-        self.slots.store(null)
-        self.length.store(0)
-        self.entries_count.store(0)
-        self.capacity.store(0)
+        %self.keys.store(null)
+        %self.values.store(null)
+        %self.hashes.store(null)
+        %self.entry_states.store(null)
+        %self.slots.store(null)
+        %self.length.store(0)
+        %self.entries_count.store(0)
+        %self.capacity.store(0)
         return()
 
 /// Destructs every key and value, then the dictionary itself.
-routine Dict<K, V>.destruct_all(self: Ptr<Self>) -> Void
+routine Dict<K, V>.destruct_all(%self: Ptr<Self>) -> Void
 require K: typename, V: typename, Destruct<K>, Destruct<V>
     block entry():
-        iter_val : DictIter<K, V> = .construct(self)
-        claim iter : Ptr<DictIter<K, V>>
-        iter.store(iter_val)
-        claim key_slot   : Ptr<K>
-        claim value_slot : Ptr<V>
-        jump next(iter, key_slot, value_slot)
+        %iter_val : DictIter<K, V> = .construct(%self)
+        claim %iter : Ptr<DictIter<K, V>>
+        %iter.store(%iter_val)
+        claim %key_slot   : Ptr<K>
+        claim %value_slot : Ptr<V>
+        jump next(%iter, %key_slot, %value_slot)
 
-    block next(iter: Ptr<DictIter<K, V>>, key_slot: Ptr<K>, value_slot: Ptr<V>):
-        item : Option<KVPair<K, V>> = iter.next()
-        when item:
-            .Present(entry) -> entry_found(iter, key_slot, value_slot, entry)
-            .Absent         -> finish()
+    block next(%iter: Ptr<DictIter<K, V>>, %key_slot: Ptr<K>, %value_slot: Ptr<V>):
+        %item : Option<KVPair<K, V>> = %iter.next()
+        when %item:
+            .Present(%entry) -> entry_found(%iter, %key_slot, %value_slot, %entry)
+            .Absent          -> finish()
 
-    block entry_found(iter: Ptr<DictIter<K, V>>, key_slot: Ptr<K>, value_slot: Ptr<V>,
-            entry: KVPair<K, V>):
-        key_slot.store(entry.key)
-        key_slot.destruct()
-        value_slot.store(entry.value)
-        value_slot.destruct()
-        jump next(iter, key_slot, value_slot)
+    block entry_found(%iter: Ptr<DictIter<K, V>>, %key_slot: Ptr<K>, %value_slot: Ptr<V>,
+            %entry: KVPair<K, V>):
+        %key_slot.store(%entry.key)
+        %key_slot.destruct()
+        %value_slot.store(%entry.value)
+        %value_slot.destruct()
+        jump next(%iter, %key_slot, %value_slot)
 
     block finish():
-        self.destruct()
+        %self.destruct()
         return()
 
 /// Destructs every value (the keys own nothing), then the dictionary itself.
-routine Dict<K, V>.destruct_all_values(self: Ptr<Self>) -> Void
+routine Dict<K, V>.destruct_all_values(%self: Ptr<Self>) -> Void
 require K: typename, V: typename, Destruct<V>
     block entry():
-        iter_val : DictIter<K, V> = .construct(self)
-        claim iter : Ptr<DictIter<K, V>>
-        iter.store(iter_val)
-        claim value_slot : Ptr<V>
-        jump next(iter, value_slot)
+        %iter_val : DictIter<K, V> = .construct(%self)
+        claim %iter : Ptr<DictIter<K, V>>
+        %iter.store(%iter_val)
+        claim %value_slot : Ptr<V>
+        jump next(%iter, %value_slot)
 
-    block next(iter: Ptr<DictIter<K, V>>, value_slot: Ptr<V>):
-        item : Option<KVPair<K, V>> = iter.next()
-        when item:
-            .Present(entry) -> entry_found(iter, value_slot, entry)
-            .Absent         -> finish()
+    block next(%iter: Ptr<DictIter<K, V>>, %value_slot: Ptr<V>):
+        %item : Option<KVPair<K, V>> = %iter.next()
+        when %item:
+            .Present(%entry) -> entry_found(%iter, %value_slot, %entry)
+            .Absent          -> finish()
 
-    block entry_found(iter: Ptr<DictIter<K, V>>, value_slot: Ptr<V>, entry: KVPair<K, V>):
-        value_slot.store(entry.value)
-        value_slot.destruct()
-        jump next(iter, value_slot)
+    block entry_found(%iter: Ptr<DictIter<K, V>>, %value_slot: Ptr<V>, %entry: KVPair<K, V>):
+        %value_slot.store(%entry.value)
+        %value_slot.destruct()
+        jump next(%iter, %value_slot)
 
     block finish():
-        self.destruct()
+        %self.destruct()
         return()
 
 // -- text -----------------------------------------------------------------------
 
 /// The entries in insertion order, keys and values diagnosed (strings quoted): {"a": 1, "b": 2}.
-routine Dict<K, V>.represent<W>(self: Self, out: Ptr<W>) -> Void
+routine Dict<K, V>.represent<W>(%self: Self, %out: Ptr<W>) -> Void
 require K: typename, V: typename, HashEqual<K>, Diagnose<K>, Diagnose<V>, W: typename, Writer<W>
     block entry():
-        claim whole : Ptr<Self>
-        whole.store(self)
-        iter_val : DictIter<K, V> = .construct(whole)
-        claim iter : Ptr<DictIter<K, V>>
-        iter.store(iter_val)
-        diagnose_entries<K, V, DictIter<K, V>, W>(out, iter)
+        claim %whole : Ptr<Self>
+        %whole.store(%self)
+        %iter_val : DictIter<K, V> = .construct(%whole)
+        claim %iter : Ptr<DictIter<K, V>>
+        %iter.store(%iter_val)
+        diagnose_entries<K, V, DictIter<K, V>, W>(%out, %iter)
         return()
 
 /// The entries in insertion order, keys and values diagnosed: {"a": 1, "b": 2}.
-routine Dict<K, V>.diagnose<W>(self: Self, out: Ptr<W>) -> Void
+routine Dict<K, V>.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
 require K: typename, V: typename, HashEqual<K>, Diagnose<K>, Diagnose<V>, W: typename, Writer<W>
     block entry():
-        claim whole : Ptr<Self>
-        whole.store(self)
-        iter_val : DictIter<K, V> = .construct(whole)
-        claim iter : Ptr<DictIter<K, V>>
-        iter.store(iter_val)
-        diagnose_entries<K, V, DictIter<K, V>, W>(out, iter)
+        claim %whole : Ptr<Self>
+        %whole.store(%self)
+        %iter_val : DictIter<K, V> = .construct(%whole)
+        claim %iter : Ptr<DictIter<K, V>>
+        %iter.store(%iter_val)
+        diagnose_entries<K, V, DictIter<K, V>, W>(%out, %iter)
         return()

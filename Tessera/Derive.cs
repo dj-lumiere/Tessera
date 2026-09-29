@@ -123,20 +123,20 @@ public static class Derive
         switch (method)
         {
             case "represent" or "diagnose":
-                sb.Append($"routine {self}.{method}<W>(self: Self, out: Ptr<W>) -> Void\n");
+                sb.Append($"routine {self}.{method}<W>(%self: Self, %out: Ptr<W>) -> Void\n");
                 sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append("Writer<W>"))}\n");
                 WriteBody(sb, r);
                 break;
             case "eq":
-                Header(sb, $"routine {self}.eq(self: Self, other: Self) -> Bool", constraints);
+                Header(sb, $"routine {self}.eq(%self: Self, %other: Self) -> Bool", constraints);
                 EqBody(sb, r);
                 break;
             case "hash":
-                Header(sb, $"routine {self}.hash(self: Self) -> U64", constraints);
+                Header(sb, $"routine {self}.hash(%self: Self) -> U64", constraints);
                 HashBody(sb, r);
                 break;
             case "compare":
-                Header(sb, $"routine {self}.compare(self: Self, other: Self) -> S32", constraints);
+                Header(sb, $"routine {self}.compare(%self: Self, %other: Self) -> S32", constraints);
                 CompareBody(sb, r);
                 break;
         }
@@ -153,17 +153,17 @@ public static class Derive
     private static void WriteBody(StringBuilder sb, RecordDecl r)
     {
         sb.Append("    block entry():\n");
-        if (r.Fields.Count == 0) sb.Append($"        write_str(out, \"{r.Name} {{}}\")\n");
+        if (r.Fields.Count == 0) sb.Append($"        write_str(%out, \"{r.Name} {{}}\")\n");
         for (int i = 0; i < r.Fields.Count; i++)
         {
             var f = r.Fields[i];
             string before = i == 0 ? $"{r.Name} {{ " : ", ";
-            string value = $"f{i}";
-            sb.Append($"        write_str(out, \"{before}{f.Name}: \")\n");
-            sb.Append($"        {value} : {f.Type} = self.{f.Name}\n");
-            sb.Append($"        {value}.diagnose(out)\n");
+            string value = $"%f{i}";
+            sb.Append($"        write_str(%out, \"{before}{f.Name}: \")\n");
+            sb.Append($"        {value} : {f.Type} = %self.{f.Name}\n");
+            sb.Append($"        {value}.diagnose(%out)\n");
         }
-        if (r.Fields.Count > 0) sb.Append("        write_str(out, \" }\")\n");
+        if (r.Fields.Count > 0) sb.Append("        write_str(%out, \" }\")\n");
         sb.Append("        return()\n");
     }
 
@@ -179,13 +179,13 @@ public static class Derive
         for (int i = 0; i < r.Fields.Count; i++)
         {
             var f = r.Fields[i];
-            sb.Append($"        a{i} : {f.Type} = self.{f.Name}\n");
-            sb.Append($"        b{i} : {f.Type} = other.{f.Name}\n");
-            sb.Append($"        e{i} : Bool = a{i}.eq(b{i})\n");
-            if (i > 0) sb.Append($"        all{i} : Bool = all{i - 1}.bitand(e{i})\n");
-            else sb.Append("        all0 : Bool = e0\n");
+            sb.Append($"        %a{i} : {f.Type} = %self.{f.Name}\n");
+            sb.Append($"        %b{i} : {f.Type} = %other.{f.Name}\n");
+            sb.Append($"        %e{i} : Bool = %a{i}.eq(%b{i})\n");
+            if (i > 0) sb.Append($"        %all{i} : Bool = %all{i - 1}.bitand(%e{i})\n");
+            else sb.Append("        %all0 : Bool = %e0\n");
         }
-        sb.Append($"        return(all{r.Fields.Count - 1})\n");
+        sb.Append($"        return(%all{r.Fields.Count - 1})\n");
     }
 
     /// The fields' hashes, combined in order with xxh64_combine2.
@@ -200,12 +200,12 @@ public static class Derive
         for (int i = 0; i < r.Fields.Count; i++)
         {
             var f = r.Fields[i];
-            sb.Append($"        a{i} : {f.Type} = self.{f.Name}\n");
-            sb.Append($"        g{i} : U64 = a{i}.hash()\n");
-            if (i > 0) sb.Append($"        h{i} : U64 = xxh64_combine2(h{i - 1}, g{i}, 0)\n");
-            else sb.Append("        h0 : U64 = g0\n");
+            sb.Append($"        %a{i} : {f.Type} = %self.{f.Name}\n");
+            sb.Append($"        %g{i} : U64 = %a{i}.hash()\n");
+            if (i > 0) sb.Append($"        %h{i} : U64 = xxh64_combine2(%h{i - 1}, %g{i}, 0)\n");
+            else sb.Append("        %h0 : U64 = %g0\n");
         }
-        sb.Append($"        return(h{r.Fields.Count - 1})\n");
+        sb.Append($"        return(%h{r.Fields.Count - 1})\n");
     }
 
     /// Field by field, in declaration order: the first field that differs decides.
@@ -221,23 +221,23 @@ public static class Derive
         {
             var f = r.Fields[i];
             if (i > 0) sb.Append($"\n    block field{i}():\n");
-            sb.Append($"        a{i} : {f.Type} = self.{f.Name}\n");
-            sb.Append($"        b{i} : {f.Type} = other.{f.Name}\n");
-            sb.Append($"        c{i} : S32 = a{i}.compare(b{i})\n");
+            sb.Append($"        %a{i} : {f.Type} = %self.{f.Name}\n");
+            sb.Append($"        %b{i} : {f.Type} = %other.{f.Name}\n");
+            sb.Append($"        %c{i} : S32 = %a{i}.compare(%b{i})\n");
             if (i == r.Fields.Count - 1)
             {
-                sb.Append($"        return(c{i})\n");
+                sb.Append($"        return(%c{i})\n");
             }
             else
             {
-                sb.Append($"        differs{i} : Bool = c{i}.ne(0)\n");
-                sb.Append($"        branch differs{i} ? decided(c{i}) : field{i + 1}()\n");
+                sb.Append($"        %differs{i} : Bool = %c{i}.ne(0)\n");
+                sb.Append($"        branch %differs{i} ? decided(%c{i}) : field{i + 1}()\n");
             }
         }
         if (r.Fields.Count > 1)
         {
-            sb.Append("\n    block decided(c: S32):\n");
-            sb.Append("        return(c)\n");
+            sb.Append("\n    block decided(%c: S32):\n");
+            sb.Append("        return(%c)\n");
         }
     }
 
@@ -249,6 +249,7 @@ public static class Derive
     {
         var constraints = Constraints(v.Clauses, concept);
         string self = SelfName(v.Name, v.TypeParams);
+        string Payload(VariantCase c, string name) => $"%{name}";
         var sb = new StringBuilder();
         sb.Append($"conform {concept}<{self}>");
         if (constraints.Count > 0) sb.Append($" when {string.Join(", ", constraints)}");
@@ -259,41 +260,41 @@ public static class Derive
             case "represent" or "diagnose":
             {
                 string prefix = method == "diagnose" ? $"{v.Name}." : "";
-                sb.Append($"routine {self}.{method}<W>(self: Self, out: Ptr<W>) -> Void\n");
+                sb.Append($"routine {self}.{method}<W>(%self: Self, %out: Ptr<W>) -> Void\n");
                 sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append("Writer<W>"))}\n");
-                sb.Append("    block entry():\n        when self:\n");
+                sb.Append("    block entry():\n        when %self:\n");
                 for (int i = 0; i < cases.Count; i++)
                     sb.Append(cases[i].Payload is null
                         ? $"            {v.Name}.{cases[i].Name} -> named(\"{prefix}{cases[i].Name}\")\n"
-                        : $"            {v.Name}.{cases[i].Name}({"p"}) -> case{i}({"p"})\n");
+                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "p")}) -> case{i}({Payload(cases[i], "p")})\n");
                 for (int i = 0; i < cases.Count; i++)
                 {
                     if (cases[i].Payload is null) continue;
-                    string p = "p";
+                    string p = Payload(cases[i], "p");
                     sb.Append($"\n    block case{i}({p}: {cases[i].Payload}):\n");
-                    sb.Append($"        write_str(out, \"{prefix}{cases[i].Name}(\")\n");
-                    sb.Append($"        {p}.diagnose(out)\n");
-                    sb.Append("        write_str(out, \")\")\n        return()\n");
+                    sb.Append($"        write_str(%out, \"{prefix}{cases[i].Name}(\")\n");
+                    sb.Append($"        {p}.diagnose(%out)\n");
+                    sb.Append("        write_str(%out, \")\")\n        return()\n");
                 }
-                sb.Append("\n    block named(text: String):\n        write_str(out, text)\n        return()\n");
+                sb.Append("\n    block named(%text: String):\n        write_str(%out, %text)\n        return()\n");
                 break;
             }
             case "eq" or "compare":
             {
                 bool eq = method == "eq";
                 string ret = eq ? "Bool" : "S32";
-                Header(sb, $"routine {self}.{method}(self: Self, other: Self) -> {ret}", constraints);
-                sb.Append("    block entry():\n        when self:\n");
+                Header(sb, $"routine {self}.{method}(%self: Self, %other: Self) -> {ret}", constraints);
+                sb.Append("    block entry():\n        when %self:\n");
                 for (int i = 0; i < cases.Count; i++)
                     sb.Append(cases[i].Payload is null
                         ? $"            {v.Name}.{cases[i].Name} -> left{i}()\n"
-                        : $"            {v.Name}.{cases[i].Name}({"a"}) -> left{i}({"a"})\n");
+                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "a")}) -> left{i}({Payload(cases[i], "a")})\n");
                 for (int i = 0; i < cases.Count; i++)
                 {
                     var c = cases[i];
-                    string a = c.Payload is null ? "" : "a", b = c.Payload is null ? "" : "b";
+                    string a = c.Payload is null ? "" : Payload(c, "a"), b = c.Payload is null ? "" : Payload(c, "b");
                     sb.Append(c.Payload is null ? $"\n    block left{i}():\n" : $"\n    block left{i}({a}: {c.Payload}):\n");
-                    sb.Append("        when other:\n");
+                    sb.Append("        when %other:\n");
                     string same = c.Payload is null
                         ? $"return({(eq ? "true" : "0")})"
                         : $"same{i}({a}, {b})";
@@ -302,7 +303,7 @@ public static class Derive
                         : $"            {v.Name}.{c.Name}({b}) -> {same}\n");
                     if (eq)
                     {
-                        if (cases.Count > 1) sb.Append("            _ -> return(false)\n");
+                        if (cases.Count > 1) sb.Append("            else -> return(false)\n");
                     }
                     else
                     {
@@ -313,27 +314,27 @@ public static class Derive
                     }
                     if (c.Payload is null) continue;
                     sb.Append($"\n    block same{i}({a}: {c.Payload}, {b}: {c.Payload}):\n");
-                    sb.Append($"        r : {ret} = {a}.{method}({b})\n        return(r)\n");
+                    sb.Append($"        %r : {ret} = {a}.{method}({b})\n        return(%r)\n");
                 }
                 break;
             }
             case "hash":
             {
-                Header(sb, $"routine {self}.hash(self: Self) -> U64", constraints);
-                sb.Append("    block entry():\n        when self:\n");
+                Header(sb, $"routine {self}.hash(%self: Self) -> U64", constraints);
+                sb.Append("    block entry():\n        when %self:\n");
                 for (int i = 0; i < cases.Count; i++)
                     sb.Append(cases[i].Payload is null
                         ? $"            {v.Name}.{cases[i].Name} -> bare({i})\n"
-                        : $"            {v.Name}.{cases[i].Name}({"a"}) -> case{i}({"a"})\n");
+                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "a")}) -> case{i}({Payload(cases[i], "a")})\n");
                 for (int i = 0; i < cases.Count; i++)
                 {
                     if (cases[i].Payload is null) continue;
-                    string a = "a";
+                    string a = Payload(cases[i], "a");
                     sb.Append($"\n    block case{i}({a}: {cases[i].Payload}):\n");
-                    sb.Append($"        g : U64 = {a}.hash()\n");
-                    sb.Append($"        h : U64 = xxh64_combine2({i}, g, 0)\n        return(h)\n");
+                    sb.Append($"        %g : U64 = {a}.hash()\n");
+                    sb.Append($"        %h : U64 = xxh64_combine2({i}, %g, 0)\n        return(%h)\n");
                 }
-                sb.Append("\n    block bare(index: U64):\n        h : U64 = xxh64_hash_u64(index, 0)\n        return(h)\n");
+                sb.Append("\n    block bare(%index: U64):\n        %h : U64 = xxh64_hash_u64(%index, 0)\n        return(%h)\n");
                 break;
             }
         }
@@ -354,36 +355,36 @@ public static class Derive
                 if (c.Members.Count == 0)
                     throw new CompileError(c.Pos, $"{c.Name} has no members to {method}");
                 string prefix = method == "diagnose" ? $"{c.Name}." : "";
-                sb.Append($"routine {c.Name}.{method}<W>(self: Self, out: Ptr<W>) -> Void\n");
+                sb.Append($"routine {c.Name}.{method}<W>(%self: Self, %out: Ptr<W>) -> Void\n");
                 sb.Append("require W: typename, Writer<W>\n");
                 sb.Append("    block entry():\n");
-                sb.Append("        when self:\n");
+                sb.Append("        when %self:\n");
                 foreach (var (name, _) in c.Members)
                     sb.Append($"            {c.Name}.{name} -> named(\"{prefix}{name}\")\n");
-                sb.Append("\n    block named(text: String):\n");
-                sb.Append("        write_str(out, text)\n");
+                sb.Append("\n    block named(%text: String):\n");
+                sb.Append("        write_str(%out, %text)\n");
                 sb.Append("        return()\n");
                 break;
             case "eq":
-                sb.Append($"routine {c.Name}.eq(self: Self, other: Self) -> Bool\n");
+                sb.Append($"routine {c.Name}.eq(%self: Self, %other: Self) -> Bool\n");
                 sb.Append("    block entry():\n");
-                sb.Append("        r : Bool = ieq<Self>(self, other)\n");
-                sb.Append("        return(r)\n");
+                sb.Append("        %r : Bool = ieq<Self>(%self, %other)\n");
+                sb.Append("        return(%r)\n");
                 break;
             case "hash":
-                sb.Append($"routine {c.Name}.hash(self: Self) -> U64\n");
+                sb.Append($"routine {c.Name}.hash(%self: Self) -> U64\n");
                 sb.Append("    block entry():\n");
-                sb.Append($"        v : {u} = bitcast<Self, {u}>(self)\n");
-                sb.Append("        r : U64 = v.hash()\n");
-                sb.Append("        return(r)\n");
+                sb.Append($"        %v : {u} = bitcast<Self, {u}>(%self)\n");
+                sb.Append("        %r : U64 = %v.hash()\n");
+                sb.Append("        return(%r)\n");
                 break;
             case "compare":
-                sb.Append($"routine {c.Name}.compare(self: Self, other: Self) -> S32\n");
+                sb.Append($"routine {c.Name}.compare(%self: Self, %other: Self) -> S32\n");
                 sb.Append("    block entry():\n");
-                sb.Append($"        a : {u} = bitcast<Self, {u}>(self)\n");
-                sb.Append($"        b : {u} = bitcast<Self, {u}>(other)\n");
-                sb.Append("        r : S32 = a.compare(b)\n");
-                sb.Append("        return(r)\n");
+                sb.Append($"        %a : {u} = bitcast<Self, {u}>(%self)\n");
+                sb.Append($"        %b : {u} = bitcast<Self, {u}>(%other)\n");
+                sb.Append("        %r : S32 = %a.compare(%b)\n");
+                sb.Append("        return(%r)\n");
                 break;
         }
         return sb.ToString();

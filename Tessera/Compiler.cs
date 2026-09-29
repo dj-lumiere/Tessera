@@ -295,16 +295,6 @@ public sealed partial class Compiler
             file, pos, $"routine 'T.{name}'");
     }
 
-    /// The routine or preset a bare name means in `file`, described for an error, if there is one.
-    public string? NameTaken(string name, string file)
-    {
-        if (_free.GetValueOrDefault(name)?.FirstOrDefault(d => Visible(d, file, null)) is { } r)
-            return $"routine '{name}' ({r.Pos})";
-        if (_presets.GetValueOrDefault(("", name))?.FirstOrDefault(d => Visible(d, file, null)) is { } p)
-            return $"preset '{name}' ({p.Pos})";
-        return null;
-    }
-
     /// Whether some record, variant, or choice has this name, visible from here or not.
     public bool DeclaresType(string name) =>
         _records.ContainsKey(name) || _variants.ContainsKey(name) || _choices.ContainsKey(name);
