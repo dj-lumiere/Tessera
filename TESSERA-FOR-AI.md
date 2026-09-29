@@ -11,7 +11,7 @@ answer.
 dotnet run --project Tessera -- run   file.tess        # build and run (the whole stdlib is always available)
 dotnet run --project Tessera -- run -O file.tess       # the same at -O2
 dotnet run --project Tessera -- check file.tess        # type-check only
-dotnet run --project Tessera -- test tests playground examples Mini/generated  # golden tests
+dotnet run --project Tessera -- test tests playground examples  # golden tests
 dotnet run --project Tessera -- fmt <files or dirs>        # format in place (--check to only list)
 ```
 
