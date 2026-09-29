@@ -1117,6 +1117,9 @@ public sealed class FunctionGen
             env.Bind("T", en);
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
+        // `#p.eq(#q)` where T.eq takes values: the load is written, not implied.
+        if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held.OwnerName, m.Name, _env.File, m.Pos, FromTypeParameter(held)) is not null)
+            throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; load it: .load().{m.Name}(...)");
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }
 

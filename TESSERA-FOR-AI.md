@@ -148,8 +148,8 @@ routine main() -> S32
   type is expected (a binding, an argument, a block argument, a return), a leading `.` leaves it out:
   `%list: List<S64> = .construct(%alloc)`, `return(.Absent)`. Not at the head of a chain or as a statement.
 - **Methods through a pointer.** `%p.m()` finds `T.m(%self: Ptr<Self>)` first, then `Ptr`'s own methods (`is_null`,
-  `offset`, `cast`, ...). Value methods (`%self: Self`, such as `List.eq`) aren't reachable through a pointer, because
-  that would hide a load: load first (`%v: List<S64> = %p.load()`). Don't name your own pointer methods after `Ptr`'s.
+  `offset`, `cast`, ...). Value methods (`%self: Self`, such as every collection's `eq`) aren't reachable through a
+  pointer, because that would hide a load: load first (`%a.load().eq(%b.load())`). Don't name your own pointer methods after `Ptr`'s.
 - **Most collection methods take `%self: Ptr<Self>`**, so a collection must live in memory (`claim` a slot) before you
   call them. You can't call a pointer method on a temporary: `DictIter<K, V>.construct(%m).next()` fails with "has no
   method 'next'"; claim a slot for the iterator first.
