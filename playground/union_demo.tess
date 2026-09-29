@@ -15,9 +15,10 @@
 // Trade-off: an overlay value can only be read through memory (cast + load),
 // so a value-held overlay needs a stack slot before it can be inspected.
 // That is the right cost for C ABI unions (Section 2). For everyday tagged
-// results, prefer stdlib Result<T, E>, whose separate fields are readable by
-// plain extraction (%r.value) — Section 1 exists to show the mechanism, not as
-// the recommended Result.
+// values, declare a `variant` (stdlib Option<T> and Result<T, E> are ones):
+// the compiler lowers it to this same tag-plus-overlay layout and confines the
+// slot, cast, and load to the payload binding of a `when` arm. Section 1 spells
+// that lowering out by hand to show the mechanism, not as the recommended Result.
 
 @[external("c"), symbol("printf"), variadic]
 routine c_printf(#fmt: Ptr<Byte>) -> S32
@@ -37,7 +38,8 @@ require A: typename, B: typename
 // Section 1: Manual tagged sum type
 //
 // IntResult — either an Ok S64 or an S32 error code. The tag lives in the
-// wrapping record; the overlay carries the payload bytes.
+// wrapping record; the overlay carries the payload bytes. This is what
+// `variant IntResult` with cases `Ok : S64` and `Err : S32` lowers to.
 //
 // Constructors zero the overlay before writing a view: the Err view is only
 // 4 of the 8 bytes, and loading the whole overlay must not pick up
@@ -52,7 +54,7 @@ record IntResult
     tag     : IntResultTag
     payload : UnionTwo<S64, S32>
 
-routine IntResult.success(%value: S64) -> Self
+routine IntResult.Success(%value: S64) -> Self
     block entry():
         claim #payload_buf : Ptr<UnionTwo<S64, S32>>
         #payload_buf.zeroinit(1)
@@ -62,7 +64,7 @@ routine IntResult.success(%value: S64) -> Self
         %r       : Self               = Self { tag: IntResultTag.Ok, payload: %payload }
         return(%r)
 
-routine IntResult.failure(%code: S32) -> Self
+routine IntResult.Failure(%code: S32) -> Self
     block entry():
         claim #payload_buf : Ptr<UnionTwo<S64, S32>>
         #payload_buf.zeroinit(1)
@@ -144,8 +146,8 @@ routine Number.to_float(#self: Ptr<Self>) -> F64
 routine main() -> S32
     block entry():
         // --- tagged result ---
-        %ok  : IntResult = .success(42)
-        %err : IntResult = .failure(-5)
+        %ok  : IntResult = .Success(42)
+        %err : IntResult = .Failure(-5)
 
         claim #ok_ptr : Ptr<IntResult>
         #ok_ptr.store(%ok)

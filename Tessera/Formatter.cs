@@ -9,8 +9,8 @@ namespace Tessera;
 /// - a doc comment sits directly on its declaration, above any attribute lines;
 /// - a top-level section comment (a group of `//` lines with a `// --`, `// ==`, or `// ──` divider) has a blank line
 ///   before and after it;
-/// - `:`, `=`, and `->` have one space on each side, and consecutive lines of one kind (bindings, claims, record or
-///   choice fields, `when` arms) align them.
+/// - `:`, `=`, and `->` have one space on each side, and consecutive lines of one kind (bindings, claims, record
+///   fields, choice members, variant cases, `when` arms) align them.
 /// - an inline comment sits exactly two spaces after its code; comments are never aligned with each other.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 8 spaces
 ///   further in; a line with nowhere to break (a comment, one long argument) stays as it is. A long `branch` puts its
@@ -62,7 +62,7 @@ public static class Formatter
     private static List<string> Align(List<string> lines)
     {
         var rows = new List<Row?>();
-        string? context = null;      // "record" or "choice" while inside one, for its field lines
+        string? context = null;      // "record", "choice", or "variant" while inside one, for its field lines
         int whenIndent = -1;          // the indent of the innermost `when ... :` whose arms we're in
         for (int i = 0; i < lines.Count; i++)
         {
@@ -75,6 +75,7 @@ public static class Formatter
                 string decl = trimmed.StartsWith("private ") ? trimmed[8..] : trimmed;
                 if (decl.StartsWith("record ")) context = "record";
                 else if (decl.StartsWith("choice ")) context = "choice";
+                else if (decl.StartsWith("variant ")) context = "variant";
                 else if (!(trimmed.StartsWith("conform ") || trimmed.StartsWith("require ") || trimmed.StartsWith("@")))
                     context = null;
                 whenIndent = -1;
@@ -172,7 +173,8 @@ public static class Formatter
         return (body[..i], type);
     }
 
-    /// `name: rest` inside a record or choice (a field and its type, or a member and its value).
+    /// `name: rest` inside a record, choice, or variant (a field and its type, a member and its value, or a case and its
+    /// payload).
     private static (string Name, string Tail)? SplitField(string s)
     {
         int i = 0;
@@ -337,7 +339,7 @@ public static class Formatter
 
     private static bool StartsDeclaration(string line) =>
         line.StartsWith("routine ") || line.StartsWith("record ") || line.StartsWith("choice ") ||
-        line.StartsWith("concept ") || line.StartsWith("//") || line.StartsWith("@");
+        line.StartsWith("variant ") || line.StartsWith("concept ") || line.StartsWith("//") || line.StartsWith("@");
 
     /// The nearest line before `i` that isn't a comment, attribute, continuation, or blank.
     private static string PreviousCode(List<string> lines, List<bool> continued, int i)

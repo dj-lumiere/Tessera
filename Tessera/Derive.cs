@@ -2,8 +2,8 @@ using System.Text;
 
 namespace Tessera;
 
-/// `@derive(Represent, Diagnose, Equal, Hash, Compare)` on a record or choice: the compiler declares the conformance and
-/// writes the routine. Each routine is generated as Tessera source, parsed in the type's file (so it sees private
+/// `@derive(Represent, Diagnose, Equal, Hash, Compare)` on a record, choice, or variant: the compiler declares the
+/// conformance and writes the routine. Each routine is generated as Tessera source, parsed in the type's file (so it sees private
 /// fields), and checked like any other routine.
 public static class Derive
 {
@@ -20,7 +20,7 @@ public static class Derive
             .Select(r => (r.Owner!.Name, r.Name))
             .ToHashSet();
         var derived = new List<Decl>();
-        foreach (var type in decls.Where(d => d is RecordDecl or ChoiceDecl))
+        foreach (var type in decls.Where(d => d is RecordDecl or ChoiceDecl or VariantDecl))
         {
             foreach (var attr in type.Attributes.Where(a => a.Name == "derive"))
             {
@@ -37,6 +37,7 @@ public static class Derive
                     {
                         RecordDecl r => RecordSource(r, concept, method),
                         ChoiceDecl c => ChoiceSource(c, concept, method),
+                        VariantDecl v => VariantSource(v, concept, method),
                         _ => "",
                     };
                     derived.AddRange(Parse(type, source));
@@ -46,13 +47,27 @@ public static class Derive
         return [.. decls, .. derived];
     }
 
-    private static string Name(Decl d) => d is RecordDecl r ? r.Name : ((ChoiceDecl)d).Name;
+    private static string Name(Decl d) => d switch
+    {
+        RecordDecl r => r.Name,
+        VariantDecl v => v.Name,
+        _ => ((ChoiceDecl)d).Name,
+    };
 
     private static void Check(Decl type, string concept, string method, HashSet<(string, string)> declared, Pos at)
     {
         string name = Name(type);
         if (declared.Contains((name, method)))
             throw new CompileError(at, $"{name} derives {concept} and also declares '{method}'; keep one");
+        if (type is VariantDecl v)
+        {
+            if (v.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
+                throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}<...>'");
+            if (concept is "Equal" or "Hash" or "Compare"
+                && v.Cases.FirstOrDefault(c => c.Payload?.Name is "Ptr" or "Addr") is { } pointerCase)
+                throw new CompileError(at, $"{name} can't derive {concept}: case '{pointerCase.Name}' carries a pointer; declare '{method}'");
+            return;
+        }
         if (type is not RecordDecl r) return;
         if (r.Attr("llvm") is not null)
             throw new CompileError(at, $"{name} is an @llvm record, so it has no fields to derive {concept} from");
@@ -79,19 +94,27 @@ public static class Derive
 
     // ── Records ─────────────────────────────────────────────────────────────
 
-    private static string RecordSource(RecordDecl r, string concept, string method)
+    /// A generic type conforms when its type parameters do. Represent writes the parts with diagnose (strings keep
+    /// their quotes), so it needs Diagnose of them.
+    private static List<string> Constraints(List<Clause> clauses, string concept)
     {
-        var requires = r.Clauses.Where(c => c.Kind == "require").ToList();
+        var requires = clauses.Where(c => c.Kind == "require").ToList();
         var parameters = requires.SelectMany(c => c.Params).ToList();
-        // A generic record conforms when its type parameters do. Represent writes the fields with diagnose (strings
-        // keep their quotes), so it needs Diagnose of them.
-        string fieldConcept = concept == "Represent" ? "Diagnose" : concept;
-        var constraints = parameters.Select(p => $"{p.Name}: {p.Kind}")
+        string partConcept = concept == "Represent" ? "Diagnose" : concept;
+        return parameters.Select(p => $"{p.Name}: {p.Kind}")
             .Concat(requires.SelectMany(c => c.Concepts).Select(c => c.ToString()))
-            .Concat(parameters.Where(p => p.Kind.Name == "typename").Select(p => $"{fieldConcept}<{p.Name}>"))
+            .Concat(parameters.Where(p => p.Kind.Name == "typename").Select(p => $"{partConcept}<{p.Name}>"))
             .Distinct()
             .ToList();
-        string self = r.TypeParams.Count == 0 ? r.Name : $"{r.Name}<{string.Join(", ", r.TypeParams)}>";
+    }
+
+    private static string SelfName(string name, List<string> typeParams) =>
+        typeParams.Count == 0 ? name : $"{name}<{string.Join(", ", typeParams)}>";
+
+    private static string RecordSource(RecordDecl r, string concept, string method)
+    {
+        var constraints = Constraints(r.Clauses, concept);
+        string self = SelfName(r.Name, r.TypeParams);
 
         var sb = new StringBuilder();
         sb.Append($"conform {concept}<{self}>");
@@ -217,6 +240,106 @@ public static class Derive
             sb.Append("\n    block decided(%c: S32):\n");
             sb.Append("        return(%c)\n");
         }
+    }
+
+    // ── Variants ────────────────────────────────────────────────────────────
+
+    /// A variant writes its case and payload (`Number(5)`, or `Expr.Number(5)` to diagnose), is equal when the cases and
+    /// payloads are, hashes its case with its payload, and orders by case, then by payload.
+    private static string VariantSource(VariantDecl v, string concept, string method)
+    {
+        var constraints = Constraints(v.Clauses, concept);
+        string self = SelfName(v.Name, v.TypeParams);
+        string Payload(VariantCase c, string name) => $"{(c.Payload!.Name is "Ptr" or "Addr" ? "#" : "%")}{name}";
+        var sb = new StringBuilder();
+        sb.Append($"conform {concept}<{self}>");
+        if (constraints.Count > 0) sb.Append($" when {string.Join(", ", constraints)}");
+        sb.Append("\n\n");
+        var cases = v.Cases;
+        switch (method)
+        {
+            case "represent" or "diagnose":
+            {
+                string prefix = method == "diagnose" ? $"{v.Name}." : "";
+                sb.Append($"routine {self}.{method}<W>(%self: Self, #out: Ptr<W>) -> Void\n");
+                sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append("Writer<W>"))}\n");
+                sb.Append("    block entry():\n        when %self:\n");
+                for (int i = 0; i < cases.Count; i++)
+                    sb.Append(cases[i].Payload is null
+                        ? $"            {v.Name}.{cases[i].Name} -> named(\"{prefix}{cases[i].Name}\")\n"
+                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "p")}) -> case{i}({Payload(cases[i], "p")})\n");
+                for (int i = 0; i < cases.Count; i++)
+                {
+                    if (cases[i].Payload is null) continue;
+                    string p = Payload(cases[i], "p");
+                    sb.Append($"\n    block case{i}({p}: {cases[i].Payload}):\n");
+                    sb.Append($"        write_str(#out, \"{prefix}{cases[i].Name}(\")\n");
+                    sb.Append($"        {p}.diagnose(#out)\n");
+                    sb.Append("        write_str(#out, \")\")\n        return()\n");
+                }
+                sb.Append("\n    block named(%text: String):\n        write_str(#out, %text)\n        return()\n");
+                break;
+            }
+            case "eq" or "compare":
+            {
+                bool eq = method == "eq";
+                string ret = eq ? "Bool" : "S32";
+                Header(sb, $"routine {self}.{method}(%self: Self, %other: Self) -> {ret}", constraints);
+                sb.Append("    block entry():\n        when %self:\n");
+                for (int i = 0; i < cases.Count; i++)
+                    sb.Append(cases[i].Payload is null
+                        ? $"            {v.Name}.{cases[i].Name} -> left{i}()\n"
+                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "a")}) -> left{i}({Payload(cases[i], "a")})\n");
+                for (int i = 0; i < cases.Count; i++)
+                {
+                    var c = cases[i];
+                    string a = c.Payload is null ? "" : Payload(c, "a"), b = c.Payload is null ? "" : Payload(c, "b");
+                    sb.Append(c.Payload is null ? $"\n    block left{i}():\n" : $"\n    block left{i}({a}: {c.Payload}):\n");
+                    sb.Append("        when %other:\n");
+                    string same = c.Payload is null
+                        ? $"return({(eq ? "true" : "0")})"
+                        : $"same{i}({a}, {b})";
+                    sb.Append(c.Payload is null
+                        ? $"            {v.Name}.{c.Name} -> {same}\n"
+                        : $"            {v.Name}.{c.Name}({b}) -> {same}\n");
+                    if (eq)
+                    {
+                        if (cases.Count > 1) sb.Append("            _ -> return(false)\n");
+                    }
+                    else
+                    {
+                        var before = cases.Take(i).Select(x => $"{v.Name}.{x.Name}").ToList();
+                        var after = cases.Skip(i + 1).Select(x => $"{v.Name}.{x.Name}").ToList();
+                        if (before.Count > 0) sb.Append($"            {string.Join(", ", before)} -> return(1)\n");
+                        if (after.Count > 0) sb.Append($"            {string.Join(", ", after)} -> return(-1)\n");
+                    }
+                    if (c.Payload is null) continue;
+                    sb.Append($"\n    block same{i}({a}: {c.Payload}, {b}: {c.Payload}):\n");
+                    sb.Append($"        %r : {ret} = {a}.{method}({b})\n        return(%r)\n");
+                }
+                break;
+            }
+            case "hash":
+            {
+                Header(sb, $"routine {self}.hash(%self: Self) -> U64", constraints);
+                sb.Append("    block entry():\n        when %self:\n");
+                for (int i = 0; i < cases.Count; i++)
+                    sb.Append(cases[i].Payload is null
+                        ? $"            {v.Name}.{cases[i].Name} -> bare({i})\n"
+                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "a")}) -> case{i}({Payload(cases[i], "a")})\n");
+                for (int i = 0; i < cases.Count; i++)
+                {
+                    if (cases[i].Payload is null) continue;
+                    string a = Payload(cases[i], "a");
+                    sb.Append($"\n    block case{i}({a}: {cases[i].Payload}):\n");
+                    sb.Append($"        %g : U64 = {a}.hash()\n");
+                    sb.Append($"        %h : U64 = xxh64_combine2({i}, %g, 0)\n        return(%h)\n");
+                }
+                sb.Append("\n    block bare(%index: U64):\n        %h : U64 = xxh64_hash_u64(%index, 0)\n        return(%h)\n");
+                break;
+            }
+        }
+        return sb.ToString();
     }
 
     // ── Choices ─────────────────────────────────────────────────────────────

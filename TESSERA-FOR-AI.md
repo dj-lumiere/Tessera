@@ -73,7 +73,7 @@ routine main() -> S32
 - A `Callable` value is called with `.call(args)`. One stored in a field is loaded first:
   `%free_fn: Callable<…> = #alloc.free_fn.load()`, then `%free_fn.call(#state, #raw)`. `#alloc.free_fn(...)` is an
   error.
-- A field of an SSA record value is read with plain `=`: `%tag: Bool = %opt.tag`.
+- A field of an SSA record value is read with plain `=`: `%key: K = %pair.key`.
 - `claim #p : Ptr<T>` claims an uninitialized stack slot; its type comes from the binding, and the value goes in
   with `#p.store(%v)`. An array value comes from `Array<T, N>.from([1, 2, %x])` or `Array<T, N>.from_ptr(#first)`;
   a bare `[1, 2]` isn't a value. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
@@ -139,7 +139,7 @@ routine main() -> S32
 - `routine name(%a: T, #p: Ptr<U>) -> R`. Methods are `routine Type.name(#self: Ptr<Self>, ...)` (pointer receiver)
   or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<S64>.construct(#alloc)`. Where the
   type is expected (a binding, an argument, a block argument, a return), a leading `.` leaves it out:
-  `%list: List<S64> = .construct(#alloc)`, `return(.absent())`. Not at the head of a chain or as a statement.
+  `%list: List<S64> = .construct(#alloc)`, `return(.Absent)`. Not at the head of a chain or as a statement.
 - **Methods through a pointer.** `#p.m()` finds `T.m(#self: Ptr<Self>)` first, then `Ptr`'s own methods (`is_null`,
   `offset`, `cast`, ...). Value methods (`%self: Self`, such as `List.eq`) aren't reachable through a pointer, because
   that would hide a load: load first (`%v: List<S64> = #p.load()`). Don't name your own pointer methods after `Ptr`'s.
@@ -159,7 +159,7 @@ routine main() -> S32
 **Errors**
 
 - Bugs trap: `trap()`, or `panic(TrapCode.X)` / `panic_msg(...)` for a message (exit status 101).
-- Expected failures return `Result<T, E>`. There's no `?`: check `%r.tag` and branch.
+- Expected failures return `Result<T, E>`. There's no `?`: `when %r:` with `.Success(%v)` / `.Failure(%e)` arms.
 
 **Records**
 
@@ -171,6 +171,16 @@ routine main() -> S32
 - A record with exactly one field has the same representation as that field (`F128` is an `i128`). Mark it
   `@aggregate` to keep it a one-member struct; `@aligned` on a one-field record needs `@aggregate`.
 - A record can't contain itself by value; go through a `Ptr`.
+
+**Variants**
+
+- `variant Expr` lists cases, each with at most one payload type (`Number : S64`, `Add : BinaryExpr`, `Empty`); several
+  values go in a record, since there are no tuples. `Option<T>` (`Absent`, `Present : T`) and `Result<T, E>`
+  (`Failure : E`, `Success : T`) are variants.
+- Build: `Expr.Number(5)`, `.Number(5)` where the type is known, `Expr.Empty` / `.Empty`.
+- Read with `when %e:`; `Expr.Number(%n) -> target(%n)` binds the payload for that arm's target only, `Expr.Empty`
+  or `.Present` matches without binding. Without `_`, list every case. There's no field access on a variant.
+- Payloads overlap; a payload arm reads through a stack slot (gone at `-O`). `@derive(...)` works on variants.
 
 ## Idioms
 
@@ -199,10 +209,10 @@ routine sum_list(#list: Ptr<List<S64>>) -> S64
         jump next(#iter, 0)
 
     block next(#iter: Ptr<ListIter<S64>>, %total: S64):
-        %item  : Option<S64> = #iter.next()
-        %more  : Bool        = %item.tag
-        %value : S64         = %item.value
-        branch %more ? next(#iter, %total.add(%value)) : return(%total)
+        %item : Option<S64> = #iter.next()
+        when %item:
+            .Present(%value) -> next(#iter, %total.add(%value))
+            .Absent          -> return(%total)
 ```
 
 Propagating a `Result`:
@@ -210,9 +220,10 @@ Propagating a `Result`:
 ```tessera
 routine parse_or_zero(%text: String) -> F64
     block entry():
-        %r  : Result<F64, ParseFloatError> = F64.parse(%text)
-        %ok : Bool                         = %r.tag
-        branch %ok ? return(%r.value) : failed(%r.error)
+        %r : Result<F64, ParseFloatError> = F64.parse(%text)
+        when %r:
+            .Success(%value) -> return(%value)
+            .Failure(%error) -> failed(%error)
 
     block failed(%error: ParseFloatError):
         return(0.0)
@@ -229,7 +240,7 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
 - `write_str(#out, "text")`, `write_line(#out)`, `%v.represent(#out)` for every integer, float, `Bool`, and `String`,
   and `#p.represent(#out)` for a pointer's address (`0x7ffd5e8c1a40`); `represent_hex`, `represent_fixed(#out, %digits)`;
   `represent_with(#out, %v, %spec)` with a `FormatSpec`.
-- `%v.diagnose(#out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.present(3)`, `[1, 2]`. A record or
+- `%v.diagnose(#out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.Present(3)`, `[1, 2]`. A record or
   choice gets routines written for it with `@derive(Represent, Diagnose, Equal, Hash, Compare)` (any subset), which
   also declares the conformance. Without `@derive`, declare the routine: a bare `conform` never generates one.
 - `write(#out, "x = {%x}\n")` writes text and values in one line: it expands at compile time into
@@ -291,7 +302,7 @@ preset arrays (`K.get(%i)`).
   elements; `destruct_all()` destructs them first (elements must conform to `Destruct<T>`), and `Dict` / `SortedDict`
   also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release.
 - Other ways to make a value are named for what they make: `FdWriter.stdout()`, `String.from_ptr(#p, %n)`,
-  `Option<T>.absent()`, `FormatSpec.zero_padded(6)`.
+  `Option<T>.Absent`, `FormatSpec.zero_padded(6)`.
 - `#p.free(#alloc)` is not a destructor: it hands a block of memory back to its allocator.
 
 ## Style

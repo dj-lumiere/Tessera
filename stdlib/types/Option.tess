@@ -1,11 +1,14 @@
 // Tessera stdlib: Option<T> and KVPair<K, V>
 //
-// Option<T> is a tagged value — the standard way to represent a value that may
-// be absent. It is the return type of every collection iterator's next().
+// Option<T> is a value that may be absent. It is the return type of every
+// collection iterator's next(). Read it with when:
 //
-// Layout:
-//   tag   : Bool (true = Present, false = Absent)
-//   value : T    (only meaningful when tag is true)
+//     when %item:
+//         .Present(%value) -> use(%value)
+//         .Absent          -> done()
+//
+// Absent is the first case, so a zeroed Option is Absent and Absent orders
+// before every Present.
 //
 // KVPair<K, V> is a plain value pair used by Dict and SortedDict iterators.
 
@@ -13,134 +16,47 @@ module Standard::Core
 
 // -- Option --------------------------------------------------------------------
 
-record Option<T>
-conform Equal<Option<T>> when T: typename, Equal<T>
-conform Hash<Option<T>>  when T: typename, Hash<T>
+@derive(Represent, Diagnose, Equal, Hash, Compare)
+variant Option<T>
 require T: typename
-    tag   : Bool
-    value : T
+    Absent
+    Present : T
 
-routine Option<T>.absent() -> Self
-require T: typename
-    block entry():
-        claim #buf : Ptr<Self>
-        #buf.zeroinit(1)
-        %opt : Self = #buf.load()
-        return(%opt)
-
-routine Option<T>.present(%value: T) -> Self
+routine Option<T>.is_present(%self: Self) -> Bool
 require T: typename
     block entry():
-        claim #buf : Ptr<Self>
-        #buf.tag.store(true)
-        #buf.value.store(%value)
-        %opt : Self = #buf.load()
-        return(%opt)
+        when %self:
+            .Present -> return(true)
+            .Absent  -> return(false)
 
-routine Option<T>.is_present(#self: Ptr<Self>) -> Bool
+routine Option<T>.is_absent(%self: Self) -> Bool
 require T: typename
     block entry():
-        %tag : Bool = #self.tag.load()
-        return(%tag)
+        when %self:
+            .Present -> return(false)
+            .Absent  -> return(true)
 
-routine Option<T>.is_absent(#self: Ptr<Self>) -> Bool
+/// The value. Traps if it's absent.
+routine Option<T>.unwrap(%self: Self) -> T
 require T: typename
     block entry():
-        %tag    : Bool = #self.tag.load()
-        %result : Bool = %tag.eq(false)
-        return(%result)
+        when %self:
+            .Present(%value) -> return(%value)
+            .Absent          -> panic(TrapCode.UnwrapAbsent)
 
-/// unwrap takes a pointer so the value GEP is cheap — no record copy needed.
-/// Traps if tag is false.
-routine Option<T>.unwrap(#self: Ptr<Self>) -> T
-require T: typename
-    block entry():
-        %tag : Bool = #self.tag.load()
-        branch %tag ? load() : panic(TrapCode.UnwrapAbsent)
-
-    block load():
-        %value : T = #self.value.load()
-        return(%value)
-
-/// The value if present, otherwise %default. Takes the Option by value, so it
-/// chains directly off a routine that returns one.
+/// The value if present, otherwise %default.
 routine Option<T>.unwrap_or(%self: Self, %default: T) -> T
 require T: typename
     block entry():
-        %tag   : Bool = %self.tag
-        %value : T    = %self.value
-        %r     : T    = %tag ? %value : %default
-        return(%r)
-
-// -- Option: equality, hashing -------------------------------------------------
-
-routine Option<T>.eq(%self: Self, %other: Self) -> Bool
-require T: typename, Equal<T>
-    block entry():
-        %ta      : Bool = %self.tag
-        %tb      : Bool = %other.tag
-        %tags_eq : Bool = %ta.eq(%tb)
-        branch %tags_eq ? maybe_compare(%self, %other, %ta) : return(false)
-
-    block maybe_compare(%self: Self, %other: Self, %tag: Bool):
-        branch %tag ? compare_values(%self, %other) : return(true)
-
-    block compare_values(%self: Self, %other: Self):
-        %va : T    = %self.value
-        %vb : T    = %other.value
-        %eq : Bool = %va.eq(%vb)
-        return(%eq)
-
-routine Option<T>.hash(%self: Self) -> U64
-require T: typename, Hash<T>
-    block entry():
-        %tag : Bool = %self.tag
-        branch %tag ? hash_some(%self) : hash_none()
-
-    // Distinct, hardcoded hash for Absent so it does not collide with Present(0)
-    // or anything else// pulled from xxh64(empty, seed=0).
-    block hash_none():
-        %h : U64 = xxh64_hash_u64(0, 0)
-        return(%h)
-
-    // Combine a "1" tag with the inner value's hash so Present(0) and Absent
-    // live in different buckets.
-    block hash_some(%self: Self):
-        %v  : T   = %self.value
-        %hv : U64 = %v.hash()
-        %h  : U64 = xxh64_combine2(1, %hv, 0)
-        return(%h)
+        when %self:
+            .Present(%value) -> return(%value)
+            .Absent          -> return(%default)
 
 // -- KVPair --------------------------------------------------------------------
 
 /// Yielded by Dict and SortedDict iterators.
+@derive(Equal, Hash)
 record KVPair<K, V>
-conform Equal<KVPair<K, V>> when K: typename, V: typename, Equal<K>, Equal<V>
-conform Hash<KVPair<K, V>>  when K: typename, V: typename, Hash<K>, Hash<V>
 require K: typename, V: typename
     key   : K
     value : V
-
-routine KVPair<K, V>.eq(%self: Self, %other: Self) -> Bool
-require K: typename, V: typename, Equal<K>, Equal<V>
-    block entry():
-        %ka   : K    = %self.key
-        %kb   : K    = %other.key
-        %k_eq : Bool = %ka.eq(%kb)
-        branch %k_eq ? compare_values(%self, %other) : return(false)
-
-    block compare_values(%self: Self, %other: Self):
-        %va   : V    = %self.value
-        %vb   : V    = %other.value
-        %v_eq : Bool = %va.eq(%vb)
-        return(%v_eq)
-
-routine KVPair<K, V>.hash(%self: Self) -> U64
-require K: typename, V: typename, Hash<K>, Hash<V>
-    block entry():
-        %k  : K   = %self.key
-        %v  : V   = %self.value
-        %hk : U64 = K.hash(%k)
-        %hv : U64 = V.hash(%v)
-        %h  : U64 = xxh64_combine2(%hk, %hv, 0)
-        return(%h)
