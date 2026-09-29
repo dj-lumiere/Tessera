@@ -463,7 +463,7 @@ public sealed partial class Compiler
             return new ChoiceType(e, it);
         }
 
-        if (t.Args.Count == 0 && FindPreset("", t.Name, env.File, t.Pos, t.Path) is { } c)
+        if (t.Args.Count == 0 && FindPreset("", t.Name, env.File, t.Pos, t.Path) is { IsGlobal: false })
             return new ConstArg(ConstInt(new TypeArgType(t), env, t.Pos));
 
         throw new CompileError(t.Pos, $"unknown type '{t}'");
@@ -499,7 +499,7 @@ public sealed partial class Compiler
             case TypeArgExpr x: return EvalConstInt(x.Expr, env, 0);
             case TypeArgType { Type: { Args.Count: 0 } tr }:
                 if (env.Get(tr.Name) is ConstArg ca) return ca.Value;
-                if (FindPreset("", tr.Name, env.File, pos) is { } c) return EvalConstInt(c.Value, env.Clone(c.File), 0);
+                if (FindPreset("", tr.Name, env.File, pos) is { } c) return EvalConstInt(ConstValue(c, pos), env.Clone(c.File), 0);
                 throw new CompileError(pos, $"'{tr.Name}' is not an integer constant");
             default:
                 throw new CompileError(pos, "expected an integer constant");
@@ -519,7 +519,7 @@ public sealed partial class Compiler
             {
                 var c = FindPreset(r.Owner?.Name ?? "", r.Name, env.File, r.Pos)
                         ?? throw new CompileError(r.Pos, $"unknown preset '{r.Name}'");
-                return EvalConstInt(c.Value, env.Clone(c.File), depth + 1);
+                return EvalConstInt(ConstValue(c, r.Pos), env.Clone(c.File), depth + 1);
             }
             case MethodCallExpr { Args.Count: 1 } m when m.Name is "add" or "sub" or "mul":
             {
@@ -685,6 +685,24 @@ public sealed partial class Compiler
 
     private readonly Dictionary<string, string> _presetArrays = [];
 
+    /// A preset's value, for compile-time evaluation. A global changes at run time, so it has none.
+    private static Expr ConstValue(PresetDecl c, Pos pos) =>
+        c.IsGlobal ? throw new CompileError(pos, $"'{c.Name}' is a global, not a compile-time constant") : c.Value!;
+
+    private readonly Dictionary<string, string> _globalVars = [];
+
+    /// A global is a private mutable global variable, emitted once on first use: its value, or all-zero bytes.
+    public string GlobalVariable(PresetDecl c, DType t, TypeEnv env)
+    {
+        if (_globalVars.TryGetValue(c.Name, out var name)) return name;
+        EnsureTypeDefined(t);
+        name = $"@\"global.{c.Name}\"";
+        _globalVars[c.Name] = name;
+        string init = c.Value is null ? "zeroinitializer" : PresetInitializer(c.Value, t, env);
+        _globals.AppendLine($"{name} = internal global {t.Llvm} {init}");
+        return name;
+    }
+
     /// A const of Array type is read-only static data: a private constant global, emitted once on first use.
     public string PresetArrayGlobal(PresetDecl c, ArrayType t, TypeEnv env)
     {
@@ -693,7 +711,7 @@ public sealed partial class Compiler
         EnsureTypeDefined(t);
         name = $"@\"preset.{key}\"";
         _presetArrays[key] = name;
-        _globals.AppendLine($"{name} = private unnamed_addr constant {t.Llvm} {PresetInitializer(c.Value, t, env)}");
+        _globals.AppendLine($"{name} = private unnamed_addr constant {t.Llvm} {PresetInitializer(c.Value!, t, env)}");
         return name;
     }
 
@@ -727,7 +745,7 @@ public sealed partial class Compiler
                     throw new CompileError(raw.Pos, bitsError);
                 return ft.FromBits(raw.Value);
             default:
-                throw new CompileError(e.Pos, $"a preset array element must be a literal of {t}");
+                throw new CompileError(e.Pos, $"a preset array element or global initializer must be a literal of {t}");
         }
     }
 

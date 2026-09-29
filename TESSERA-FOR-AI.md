@@ -82,6 +82,8 @@ routine main() -> S32
   a bare `[1, 2]` isn't a value. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot.
 - Heap memory goes through an allocator: `allocate<T>(%alloc, %count)`, `%p.free(%alloc)`.
+- `global NAME: T [= literal]` is mutable static storage (all-zero without a value). Its name is a `Ptr<T>`:
+  `TICKS.load()`, `STATS.calls.store(%n)`. A `preset` is read-only; a global isn't a compile-time constant.
 - `%p.cast<U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
   (`Bool`, `Char`, choices). Pointers may alias.
 
@@ -293,7 +295,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 
 **Name case.** Types, concepts, modules, and choice / variant cases are `PascalCase` (`TrapCode.DivByZero`,
 `.Absent`), with acronyms written as words (`Eof`, `FdWriter`, `Nan`). Routines, fields, blocks, and values are
-`snake_case`. Only presets are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
+`snake_case`. Only presets and globals are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
 
 **Arrays and `[]`.** `[]` is address arithmetic: `%p[%i]` is the address of the i-th `T` of a `Ptr<T>`. On a
 `Ptr<Array<T, N>>` that is the i-th whole array, so array elements are `%arr.get(%i)` / `%arr.set(%i, %v)` (bounds

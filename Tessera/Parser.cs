@@ -12,7 +12,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ["jump", "branch", "when", "return", "unreachable"];
 
     private static readonly HashSet<string> DeclKeywords =
-        ["routine", "record", "choice", "variant", "preset", "concept", "conform"];
+        ["routine", "record", "choice", "variant", "preset", "global", "concept", "conform"];
 
     public Module ParseModule()
     {
@@ -44,7 +44,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             bool isInternal = IsIdent("internal");
             if (isPrivate || isInternal) Next();
             if (Cur.Kind != TokenKind.Ident || !DeclKeywords.Contains(Cur.Text))
-                throw Error($"expected a declaration (routine, record, choice, variant, preset, concept, conform), found {Describe(Cur)}");
+                throw Error($"expected a declaration (routine, record, choice, variant, preset, global, concept, conform), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
                 "routine" => ParseRoutine(attrs, inConcept: false),
@@ -52,6 +52,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 "choice" => ParseChoice(attrs),
                 "variant" => ParseVariant(attrs),
                 "preset" => ParsePreset(attrs),
+                "global" => ParseGlobal(attrs),
                 "conform" => ParseConformDecl(attrs),
                 _ => ParseConcept(attrs),
             };
@@ -432,6 +433,20 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var value = ParseExpr();
         ExpectLineEnd();
         return new PresetDecl(file, attrs, owner, name, type, value, pos);
+    }
+
+    /// `global NAME: T` (all-zero) or `global NAME: T = value`.
+    private PresetDecl ParseGlobal(List<Attribute> attrs)
+    {
+        var pos = Cur.Pos;
+        ExpectIdent("global");
+        var name = Expect(TokenKind.Ident, "a global name");
+        if (Is(TokenKind.Dot)) throw Error("a global belongs to its module, not to a type: global NAME: T");
+        Expect(TokenKind.Colon, "':' and the global's type");
+        var type = ParseType();
+        Expr? value = Accept(TokenKind.Eq) ? ParseExpr() : null;
+        ExpectLineEnd();
+        return new PresetDecl(file, attrs, null, name.Text, type, value, pos) { IsGlobal = true };
     }
 
     private ConceptDecl ParseConcept(List<Attribute> attrs)

@@ -102,9 +102,14 @@ public sealed record VariantDecl(
 
 public sealed record VariantCase(string Name, TypeRef? Payload, Pos Pos);
 
+/// `preset NAME: T = value`, or with `IsGlobal`, `global NAME: T [= value]`: mutable static storage whose name is a
+/// `Ptr<T>`, all-zero when it has no value.
 public sealed record PresetDecl(
-    string File, List<Attribute> Attributes, TypeRef? Owner, string Name, TypeRef Type, Expr Value, Pos Pos)
-    : Decl(File, Attributes, Pos);
+    string File, List<Attribute> Attributes, TypeRef? Owner, string Name, TypeRef Type, Expr? Value, Pos Pos)
+    : Decl(File, Attributes, Pos)
+{
+    public bool IsGlobal { get; init; }
+}
 
 /// A top-level `conform C<X, ...> [when ...]`, with `require` clauses naming its type parameters. It declares a
 /// conformance no single record can carry: a multi-type concept, or a concept for a type declared elsewhere.

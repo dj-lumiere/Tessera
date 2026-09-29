@@ -257,7 +257,7 @@ public sealed class FunctionGen
     {
         FieldExpr f => PresetArrayRoot(f.Base),
         IndexExpr ix => PresetArrayRoot(ix.Base),
-        PresetRef r when ResolvePreset(r) is { Type: PtrType { Pointee: ArrayType } } => r,
+        PresetRef r when ResolvePreset(r) is { Type: PtrType { Pointee: ArrayType }, IsGlobal: false } => r,
         _ => null,
     };
 
@@ -404,9 +404,18 @@ public sealed class FunctionGen
         throw Err(r.Pos, $"'{r.Name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block arguments");
     }
 
+    /// `NAME.field` parses like `Type.PRESET`. When NAME is a global or preset rather than a type, it's a field of the
+    /// place NAME names: `STATS.calls` is `FieldExpr(STATS, calls)`.
+    private Expr AsField(Expr e) =>
+        e is PresetRef { Owner: { Args.Count: 0 } o } r && TryResolveOwner(o) is null
+        && _c.FindPreset("", o.Name, _env.File, o.Pos, o.Path) is not null
+            ? new FieldExpr(new PresetRef(null, o.Name, o.Pos) { Path = o.Path }, r.Name, r.Pos)
+            : e;
+
     /// The type an expression has on its own, or null if it depends on context (untyped literals, null).
     private DType? Infer(Expr e)
     {
+        e = AsField(e);
         switch (e)
         {
             case IntLit or FloatLit or NullLit or StrLit or ArrayLit: return null;
@@ -472,6 +481,7 @@ public sealed class FunctionGen
     /// Evaluates `e` as a value of type `expected`.
     private Val Eval(Expr e, DType expected)
     {
+        e = AsField(e);
         Val v = e switch
         {
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
@@ -868,7 +878,7 @@ public sealed class FunctionGen
 
     // ── Consts, choice members, routine values ────────────────────────────────
 
-    private sealed record PresetInfo(DType Type, Func<DType, Val> Emit);
+    private sealed record PresetInfo(DType Type, Func<DType, Val> Emit, bool IsGlobal = false);
 
     private PresetInfo? ResolvePreset(PresetRef r)
     {
@@ -900,6 +910,12 @@ public sealed class FunctionGen
         var env = new Compiler.TypeEnv(c.File);
         if (self is not null) env.Bind("Self", self);
         var t = _c.ResolveType(c.Type, env);
+        // A global's name is the address of its storage.
+        if (c.IsGlobal)
+        {
+            var slot = new PtrType(t);
+            return new PresetInfo(slot, _ => new Val(_c.GlobalVariable(c, t, env), slot), IsGlobal: true);
+        }
         // A preset array is read-only static data; its name is the address.
         if (t is ArrayType at)
         {
@@ -918,7 +934,7 @@ public sealed class FunctionGen
             }
             var saved = _env;
             _env = env;
-            try { return Eval(c.Value, t); }
+            try { return Eval(c.Value!, t); }
             finally { _env = saved; }
         });
     }
