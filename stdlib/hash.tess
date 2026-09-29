@@ -25,28 +25,28 @@ preset XXH64_P5: U64 = 0x27D4EB2F165667C5
 
 /// Read 8 bytes starting at %data[%off] as a little-endian U64.
 /// Byte-by-byte so we don't depend on host endianness or alignment.
-routine xxh64_read_u64(%data: Ptr<Byte>, %off: U64) -> U64
+routine xxh64_read_u64(%data: Ptr<Byte>, %off: USize) -> U64
     block entry():
         jump loop(0, 0, 0)
 
-    block loop(%i: U64, %acc: U64, %shift: U64):
+    block loop(%i: USize, %acc: U64, %shift: U64):
         %done : Bool = %i.ge(8)
         branch %done ? return(%acc) : continue
-        %idx  : U64  = %off.add(%i)
-        %b    : Byte = %data[%idx].load()
-        %next : U64  = %acc.bitor(U8.from_byte(%b).to_u64().shl(%shift))
+        %idx  : USize = %off.add(%i)
+        %b    : Byte  = %data[%idx].load()
+        %next : U64   = %acc.bitor(U8.from_byte(%b).to_u64().shl(%shift))
         jump loop(%i.add(1), %next, %shift.add(8))
 
-routine xxh64_read_u32(%data: Ptr<Byte>, %off: U64) -> U32
+routine xxh64_read_u32(%data: Ptr<Byte>, %off: USize) -> U32
     block entry():
         jump loop(0, 0, 0)
 
-    block loop(%i: U64, %acc: U32, %shift: U32):
+    block loop(%i: USize, %acc: U32, %shift: U32):
         %done : Bool = %i.ge(4)
         branch %done ? return(%acc) : continue
-        %idx  : U64  = %off.add(%i)
-        %b    : Byte = %data[%idx].load()
-        %next : U32  = %acc.bitor(U8.from_byte(%b).to_u32().shl(%shift))
+        %idx  : USize = %off.add(%i)
+        %b    : Byte  = %data[%idx].load()
+        %next : U32   = %acc.bitor(U8.from_byte(%b).to_u32().shl(%shift))
         jump loop(%i.add(1), %next, %shift.add(8))
 
 // -- xxh64 internal mixers -----------------------------------------------------
@@ -81,7 +81,7 @@ routine xxh64_finalize(%h: U64) -> U64
 //   3. Drain remaining 8-byte chunks, then a 4-byte chunk, then trailing bytes.
 //   4. Apply the finalization mixer.
 
-routine xxh64(%data: Ptr<Byte>, %len: U64, %seed: U64) -> U64
+routine xxh64(%data: Ptr<Byte>, %len: USize, %seed: U64) -> U64
     block entry():
         %big : Bool = %len.ge(32)
         branch %big ? big_init() : after_block(%seed.add_wrap(XXH64_P5), 0)
@@ -93,12 +93,12 @@ routine xxh64(%data: Ptr<Byte>, %len: U64, %seed: U64) -> U64
         %v4_0 : U64 = %seed.sub_wrap(XXH64_P1)
         jump big_loop(%v1_0, %v2_0, %v3_0, %v4_0, 0)
 
-    block big_loop(%v1: U64, %v2: U64, %v3: U64, %v4: U64, %off: U64):
-        %remaining : U64  = %len.sub(%off)
-        %has32     : Bool = %remaining.ge(32)
+    block big_loop(%v1: U64, %v2: U64, %v3: U64, %v4: U64, %off: USize):
+        %remaining : USize = %len.sub(%off)
+        %has32     : Bool  = %remaining.ge(32)
         branch %has32 ? big_step(%v1, %v2, %v3, %v4, %off) : big_finish(%v1, %v2, %v3, %v4, %off)
 
-    block big_step(%v1: U64, %v2: U64, %v3: U64, %v4: U64, %off: U64):
+    block big_step(%v1: U64, %v2: U64, %v3: U64, %v4: U64, %off: USize):
         %k1  : U64 = xxh64_read_u64(%data, %off)
         %k2  : U64 = xxh64_read_u64(%data, %off.add(8))
         %k3  : U64 = xxh64_read_u64(%data, %off.add(16))
@@ -109,7 +109,7 @@ routine xxh64(%data: Ptr<Byte>, %len: U64, %seed: U64) -> U64
         %v4n : U64 = xxh64_round(%v4, %k4)
         jump big_loop(%v1n, %v2n, %v3n, %v4n, %off.add(32))
 
-    block big_finish(%v1: U64, %v2: U64, %v3: U64, %v4: U64, %off: U64):
+    block big_finish(%v1: U64, %v2: U64, %v3: U64, %v4: U64, %off: USize):
         %r1   : U64 = %v1.rotl( 1)
         %r2   : U64 = %v2.rotl( 7)
         %r3   : U64 = %v3.rotl(12)
@@ -121,37 +121,37 @@ routine xxh64(%data: Ptr<Byte>, %len: U64, %seed: U64) -> U64
         %h4   : U64 = xxh64_merge(%h3, %v4)
         jump after_block(%h4, %off)
 
-    block after_block(%h: U64, %off: U64):
-        %h_len : U64 = %h.add_wrap(%len)
+    block after_block(%h: U64, %off: USize):
+        %h_len : U64 = %h.add_wrap(%len.to_u64())
         jump tail8_loop(%h_len, %off)
 
-    block tail8_loop(%h: U64, %off: U64):
-        %rem  : U64  = %len.sub(%off)
-        %has8 : Bool = %rem.ge(8)
+    block tail8_loop(%h: U64, %off: USize):
+        %rem  : USize = %len.sub(%off)
+        %has8 : Bool  = %rem.ge(8)
         branch %has8 ? tail8_step(%h, %off) : tail4(%h, %off)
 
-    block tail8_step(%h: U64, %off: U64):
+    block tail8_step(%h: U64, %off: USize):
         %k  : U64 = xxh64_read_u64(%data, %off)
         %h2 : U64 = %h.bitxor(xxh64_round(0, %k)).rotl(27).mul_wrap(XXH64_P1).add_wrap(XXH64_P4)
         jump tail8_loop(%h2, %off.add(8))
 
-    block tail4(%h: U64, %off: U64):
-        %rem  : U64  = %len.sub(%off)
-        %has4 : Bool = %rem.ge(4)
+    block tail4(%h: U64, %off: USize):
+        %rem  : USize = %len.sub(%off)
+        %has4 : Bool  = %rem.ge(4)
         branch %has4 ? tail4_step(%h, %off) : tail1_loop(%h, %off)
 
-    block tail4_step(%h: U64, %off: U64):
+    block tail4_step(%h: U64, %off: USize):
         %k32 : U32 = xxh64_read_u32(%data, %off)
         %ku  : U64 = %k32.to_u64()
         %h2  : U64 = %h.bitxor(%ku.mul_wrap(XXH64_P1)).rotl(23).mul_wrap(XXH64_P2).add_wrap(XXH64_P3)
         jump tail1_loop(%h2, %off.add(4))
 
-    block tail1_loop(%h: U64, %off: U64):
-        %rem  : U64  = %len.sub(%off)
-        %has1 : Bool = %rem.ge(1)
+    block tail1_loop(%h: U64, %off: USize):
+        %rem  : USize = %len.sub(%off)
+        %has1 : Bool  = %rem.ge(1)
         branch %has1 ? tail1_step(%h, %off) : finalize(%h)
 
-    block tail1_step(%h: U64, %off: U64):
+    block tail1_step(%h: U64, %off: USize):
         %b  : Byte = %data[%off].load()
         %bu : U64  = U8.from_byte(%b).to_u64()
         %h2 : U64  = %h.bitxor(%bu.mul_wrap(XXH64_P5)).rotl(11).mul_wrap(XXH64_P1)

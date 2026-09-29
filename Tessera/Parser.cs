@@ -211,7 +211,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return clauses;
     }
 
-    /// One clause line. `require` lists parameters (`T: typename`, `N: U64`) and concept constraints (`Equal<T>`);
+    /// One clause line. `require` lists parameters (`T: typename`, `N: USize`) and concept constraints (`Equal<T>`);
     /// `conform` lists concepts, optionally followed by `when` and the constraints under which it holds.
     private Clause ParseClause()
     {
@@ -222,7 +222,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var when = new List<TypeRef>();
         bool AtEnd() => Is(TokenKind.Newline) || Is(TokenKind.Eof);
 
-        // `T: typename`, `N: U64` declare parameters; anything else is a concept constraint.
+        // `T: typename`, `N: USize` declare parameters; anything else is a concept constraint.
         void ParseRequireList(List<TypeRef> constraints)
         {
             do

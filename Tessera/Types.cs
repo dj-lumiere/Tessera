@@ -29,10 +29,13 @@ public abstract class DType : IEquatable<DType>
 /// What an integer's bits mean. A `Byte` is 8 bits of memory with no arithmetic; a `Char` is a Unicode scalar value.
 public enum IntKind { Signed, Unsigned, Byte, Char }
 
-public sealed class IntType(int bits, IntKind kind) : DType
+/// `IsSize` marks USize / SSize: the target's pointer width, a type of its own that never equals the fixed-width
+/// integer of the same width.
+public sealed class IntType(int bits, IntKind kind, bool isSize = false) : DType
 {
     public int Bits { get; } = bits;
     public IntKind Kind { get; } = kind;
+    public bool IsSize { get; } = isSize;
 
     public static IntType S(int bits) => new(bits, IntKind.Signed);
     public static IntType U(int bits) => new(bits, IntKind.Unsigned);
@@ -64,6 +67,8 @@ public sealed class IntType(int bits, IntKind kind) : DType
 
     public override string Name => Kind switch
     {
+        IntKind.Signed when IsSize => "SSize",
+        IntKind.Unsigned when IsSize => "USize",
         IntKind.Signed => $"S{Bits}",
         IntKind.Unsigned => $"U{Bits}",
         IntKind.Byte => "Byte",
@@ -295,12 +300,14 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
         return Parse($"{arch}-linux-gnu");
     }
 
-    /// C ABI aliases resolve to fixed-width integers (see Type-System → C ABI Aliases).
-    public DType? ResolveCAlias(string name) => name switch
+    /// The types whose width the target decides: USize / SSize, and the C ABI aliases, which resolve to fixed-width
+    /// integers (see Type-System → C ABI Aliases).
+    public DType? ResolveTargetType(string name) => name switch
     {
+        "USize" => new IntType(Size, IntKind.Unsigned, isSize: true),
+        "SSize" => new IntType(Size, IntKind.Signed, isSize: true),
         "CInt" => IntType.S(32),
         "CLong" => IntType.S(Os == "windows" ? 32 : Size),
-        "CSize" => IntType.U(Size),
         "CWChar" => Os == "windows" ? IntType.U(16) : IntType.S(32),
         _ => null,
     };

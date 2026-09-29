@@ -10,12 +10,12 @@ import Standard::Format
 record Rng
     state : U64
 
-routine Rng.below(%self: Ptr<Self>, %bound: U64) -> U64
+routine Rng.below(%self: Ptr<Self>, %bound: USize) -> USize
     block entry():
         %state : U64 = %self.state.load()
         %next  : U64 = %state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         %self.state.store(%next)
-        %value : U64 = %next.shr(33).rem(%bound)
+        %value : USize = %next.shr(33).rem(%bound.to_u64()).to_usize()
         return(%value)
 
 routine mix(%hash: S64, %value: S64) -> S64
@@ -48,8 +48,8 @@ routine iteration_hash(%map: Ptr<Dict<S64, S64>>) -> S64
         %value : S64 = %pair.value
         jump next(%iter, mix(mix(%hash, %key), %value))
 
-routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<Dict<S64, S64>>, %phase: U64, %op: U64,
-        %results: S64) -> Void
+routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<Dict<S64, S64>>, %phase: USize,
+        %op: USize, %results: S64) -> Void
     block entry():
         write(%out, "phase {%phase}")
         labeled(%out, "op", %op.to_s64())
@@ -61,48 +61,48 @@ routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<Dict<S64, S64>>, %p
 
 // Runs ops random operations on keys below keys. Returns the updated results checksum.
 routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<Dict<S64, S64>>, %rng: Ptr<Rng>,
-        %phase: U64, %ops: U64, %keys: U64, %results: S64) -> S64
+        %phase: USize, %ops: USize, %keys: USize, %results: S64) -> S64
     block entry():
         jump next(0, %results)
 
-    block next(%op: U64, %results: S64):
+    block next(%op: USize, %results: S64):
         %done : Bool = %op.ge(%ops)
         branch %done ? return(%results) : pick(%op, %results)
 
-    block pick(%op: U64, %results: S64):
-        %key       : S64  = %rng.below(%keys).to_s64()
-        %kind      : U64  = %rng.below(10)
-        %is_put    : Bool = %kind.lt(5)
-        %is_remove : Bool = %kind.lt(7)
+    block pick(%op: USize, %results: S64):
+        %key       : S64   = %rng.below(%keys).to_s64()
+        %kind      : USize = %rng.below(10)
+        %is_put    : Bool  = %kind.lt(5)
+        %is_remove : Bool  = %kind.lt(7)
         when:
             %is_put    -> put(%op, %results, %key)
             %is_remove -> remove(%op, %results, %key)
             else       -> lookup(%op, %results, %key)
 
-    block put(%op: U64, %results: S64, %key: S64):
+    block put(%op: USize, %results: S64, %key: S64):
         %value : S64 = %rng.below(1000000).to_s64()
         %map.put(%key, %value)
         jump record(%op, %results, %value)
 
-    block remove(%op: U64, %results: S64, %key: S64):
+    block remove(%op: USize, %results: S64, %key: S64):
         %removed : Bool = %map.remove(%key)
         jump record(%op, %results, %removed.to_s64())
 
-    block lookup(%op: U64, %results: S64, %key: S64):
+    block lookup(%op: USize, %results: S64, %key: S64):
         %found : Bool = %map.contains(%key)
         branch %found ? get(%op, %results, %key) : record(%op, %results, -1)
 
-    block get(%op: U64, %results: S64, %key: S64):
+    block get(%op: USize, %results: S64, %key: S64):
         %value : S64 = %map.get(%key)
         jump record(%op, %results, %value)
 
-    block record(%op: U64, %results: S64, %result: S64):
-        %mixed   : S64  = mix(%results, %result)
-        %op_next : U64  = %op.add(1)
-        %report  : Bool = %op_next.rem(500).eq(0)
+    block record(%op: USize, %results: S64, %result: S64):
+        %mixed   : S64   = mix(%results, %result)
+        %op_next : USize = %op.add(1)
+        %report  : Bool  = %op_next.rem(500).eq(0)
         branch %report ? report(%op_next, %mixed) : next(%op_next, %mixed)
 
-    block report(%op: U64, %results: S64):
+    block report(%op: USize, %results: S64):
         checkpoint(%out, %map, %phase, %op, %results)
         jump next(%op, %results)
 
@@ -110,32 +110,33 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<Dict<S64, S64>>, %rn
 // a different insertion order.
 routine copy_rotated(%from: Ptr<Dict<S64, S64>>, %to: Ptr<Dict<S64, S64>>) -> Void
     block entry():
-        %half : U64 = %from.length().div(2)
+        %half : USize = %from.length().div(2)
         jump pass(0, %half, true)
 
-    block pass(%pass: U64, %half: U64, %second: Bool):
+    block pass(%pass: USize, %half: USize, %second: Bool):
         %done     : Bool               = %pass.eq(2)
         %iter_val : DictIter<S64, S64> = .construct(%from)
         claim %iter : Ptr<DictIter<S64, S64>>
         %iter.store(%iter_val)
         branch %done ? return() : next(%pass, %half, %second, %iter, 0)
 
-    block next(%pass: U64, %half: U64, %second: Bool, %iter: Ptr<DictIter<S64, S64>>, %index: U64):
+    block next(%pass: USize, %half: USize, %second: Bool, %iter: Ptr<DictIter<S64, S64>>,
+            %index: USize):
         %item : Option<KVPair<S64, S64>> = %iter.next()
         when %item:
             .Present(%pair) -> consider(%pass, %half, %second, %iter, %index, %pair)
             .Absent         -> pass(%pass.add(1), %half, %second.bitnot())
 
-    block consider(%pass: U64, %half: U64, %second: Bool, %iter: Ptr<DictIter<S64, S64>>,
-            %index: U64, %pair: KVPair<S64, S64>):
+    block consider(%pass: USize, %half: USize, %second: Bool, %iter: Ptr<DictIter<S64, S64>>,
+            %index: USize, %pair: KVPair<S64, S64>):
         %in_second : Bool = %index.ge(%half)
         %wanted    : Bool = %in_second.eq(%second)
         branch %wanted
             ? copy(%pass, %half, %second, %iter, %index, %pair)
             : next(%pass, %half, %second, %iter, %index.add(1))
 
-    block copy(%pass: U64, %half: U64, %second: Bool, %iter: Ptr<DictIter<S64, S64>>, %index: U64,
-            %pair: KVPair<S64, S64>):
+    block copy(%pass: USize, %half: USize, %second: Bool, %iter: Ptr<DictIter<S64, S64>>,
+            %index: USize, %pair: KVPair<S64, S64>):
         %to.put(%pair.key, %pair.value)
         jump next(%pass, %half, %second, %iter, %index.add(1))
 

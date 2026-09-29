@@ -105,7 +105,7 @@ routine F128Extended.ldexp(%self: Self, %k: S64) -> Self
         return(%r)
 
 /// Entry %i of one of the constant tables.
-routine wide_table(%hi: Ptr<U128>, %lo: Ptr<U64>, %exponent: Ptr<S64>, %i: U64) -> F128Extended
+routine wide_table(%hi: Ptr<U128>, %lo: Ptr<U64>, %exponent: Ptr<S64>, %i: USize) -> F128Extended
     block entry():
         %h : U128         = %hi[%i].load()
         %l : U64          = %lo[%i].load()
@@ -113,7 +113,7 @@ routine wide_table(%hi: Ptr<U128>, %lo: Ptr<U64>, %exponent: Ptr<S64>, %i: U64) 
         %w : F128Extended = F128Extended { negative: false, exponent: %e, hi: %h, lo: %l }
         return(%w)
 
-routine wide_const(%i: U64) -> F128Extended
+routine wide_const(%i: USize) -> F128Extended
     block entry():
         %w : F128Extended = wide_table(WIDE_CONST_HI.to_ptr(), WIDE_CONST_LO.to_ptr(),
                 WIDE_CONST_EXP.to_ptr(), %i)
@@ -343,7 +343,7 @@ routine wide_exp(%x: F128Extended) -> F128Extended
         %scaled : F128Extended = %s.ldexp(%q)
         branch %done ? return(%scaled) : continue
         %c : F128Extended = wide_table(WIDE_EXP_COEF_HI.to_ptr(), WIDE_EXP_COEF_LO.to_ptr(),
-                WIDE_EXP_COEF_EXP.to_ptr(), %i.to_u64())
+                WIDE_EXP_COEF_EXP.to_ptr(), %i.to_usize())
         jump horner(%i.sub(1), %s.mul(%d).add(%c), %d, %q)
 
 routine F128.exp(%self: Self) -> Self
@@ -395,7 +395,7 @@ routine wide_log(%x: F128Extended) -> F128Extended
 
     block step(%i: S64, %s: F128Extended, %tt: F128Extended, %t: F128Extended, %e: S64):
         %c : F128Extended = wide_table(WIDE_LOG_COEF_HI.to_ptr(), WIDE_LOG_COEF_LO.to_ptr(),
-                WIDE_LOG_COEF_EXP.to_ptr(), %i.to_u64())
+                WIDE_LOG_COEF_EXP.to_ptr(), %i.to_usize())
         jump horner(%i.sub(1), %s.mul(%tt).add(%c), %tt, %t, %e)
 
     block finish(%s: F128Extended, %t: F128Extended, %e: S64):
@@ -578,21 +578,21 @@ routine f128_reduce(%x: F128) -> Reduced
         jump multiply(0, %start, %sh, %m0, %m1, %limbs)
 
     // limb k of W (little-endian) is TWO_OVER_PI[start + 7 - k]; add m × w_k at limb k
-    block multiply(%k: U64, %start: S64, %sh: S64, %m0: U128, %m1: U128, %limbs: Ptr<U64>):
+    block multiply(%k: USize, %start: S64, %sh: S64, %m0: U128, %m1: U128, %limbs: Ptr<U64>):
         %done : Bool = %k.ge(8)
-        branch %done ? extract(%sh, %limbs) : term(%k, %start.to_u64(), %sh, %m0, %m1, %limbs)
+        branch %done ? extract(%sh, %limbs) : term(%k, %start.to_usize(), %sh, %m0, %m1, %limbs)
 
-    block term(%k: U64, %start: U64, %sh: S64, %m0: U128, %m1: U128, %limbs: Ptr<U64>):
-        %index : U64  = %start.add(7).sub(%k)
-        %w     : U64  = TWO_OVER_PI.get(%index)
-        %wide  : U128 = %w.to_u128()
-        %lo_p  : U128 = %m0.mul_wrap(%wide)
-        %hi_p  : U128 = %m1.mul_wrap(%wide)
-        %k1    : U64  = %k.add(1)
-        %k2    : U64  = %k.add(2)
-        %r0    : U64  = %limbs[%k].load()
-        %r1    : U64  = %limbs[%k1].load()
-        %r2    : U64  = %limbs[%k2].load()
+    block term(%k: USize, %start: USize, %sh: S64, %m0: U128, %m1: U128, %limbs: Ptr<U64>):
+        %index : USize = %start.add(7).sub(%k)
+        %w     : U64   = TWO_OVER_PI.get(%index)
+        %wide  : U128  = %w.to_u128()
+        %lo_p  : U128  = %m0.mul_wrap(%wide)
+        %hi_p  : U128  = %m1.mul_wrap(%wide)
+        %k1    : USize = %k.add(1)
+        %k2    : USize = %k.add(2)
+        %r0    : U64   = %limbs[%k].load()
+        %r1    : U64   = %limbs[%k1].load()
+        %r2    : U64   = %limbs[%k2].load()
         // limb k gets lo_p's low half; limb k+1 lo_p's high half and hi_p's low; k+2 the rest
         %s0 : U128 = %r0.to_u128().add(%lo_p.bitand(0xFFFFFFFFFFFFFFFF))
         %s1 : U128 = %r1.to_u128().add(%lo_p.shr(64)).add(%hi_p.bitand(0xFFFFFFFFFFFFFFFF)).add(%s0.shr(64))
@@ -604,14 +604,14 @@ routine f128_reduce(%x: F128) -> Reduced
         jump spill(%k.add(3), %carry, %k, %start, %sh, %m0, %m1, %limbs)
 
     // carry on up the limbs
-    block spill(%j: U64, %carry: U64, %k: U64, %start: U64, %sh: S64, %m0: U128, %m1: U128,
+    block spill(%j: USize, %carry: U64, %k: USize, %start: USize, %sh: S64, %m0: U128, %m1: U128,
             %limbs: Ptr<U64>):
         %none : Bool = %carry.eq(0).bitor(%j.ge(12))
         branch %none ? multiply(%k.add(1), %start.to_s64(), %sh, %m0, %m1, %limbs)
                      : spill_one(%j, %carry, %k, %start, %sh, %m0, %m1, %limbs)
 
-    block spill_one(%j: U64, %carry: U64, %k: U64, %start: U64, %sh: S64, %m0: U128, %m1: U128,
-            %limbs: Ptr<U64>):
+    block spill_one(%j: USize, %carry: U64, %k: USize, %start: USize, %sh: S64, %m0: U128,
+            %m1: U128, %limbs: Ptr<U64>):
         %r : U64  = %limbs[%j].load()
         %s : U128 = %r.to_u128().add_wrap(%carry.to_u128())
         %limbs[%j].store(%s.to_u64_wrap())
@@ -684,7 +684,7 @@ routine wide_sin_core(%t: F128Extended) -> F128Extended
         %r    : F128Extended = %s.mul(%t)
         branch %done ? return(%r) : continue
         %c : F128Extended = wide_table(WIDE_SIN_COEF_HI.to_ptr(), WIDE_SIN_COEF_LO.to_ptr(),
-                WIDE_SIN_COEF_EXP.to_ptr(), %i.to_u64())
+                WIDE_SIN_COEF_EXP.to_ptr(), %i.to_usize())
         jump horner(%i.sub(1), %s.mul(%u).add(%c), %u, %t)
 
 routine wide_cos_core(%t: F128Extended) -> F128Extended
@@ -698,7 +698,7 @@ routine wide_cos_core(%t: F128Extended) -> F128Extended
         %done : Bool = %i.lt(0)
         branch %done ? return(%s) : continue
         %c : F128Extended = wide_table(WIDE_COS_COEF_HI.to_ptr(), WIDE_COS_COEF_LO.to_ptr(),
-                WIDE_COS_COEF_EXP.to_ptr(), %i.to_u64())
+                WIDE_COS_COEF_EXP.to_ptr(), %i.to_usize())
         jump horner(%i.sub(1), %s.mul(%u).add(%c), %u)
 
 choice TrigKind: U8
@@ -867,7 +867,7 @@ routine wide_exp_m1(%x: F128Extended) -> F128Extended
                 WIDE_EXP_COEF_EXP.to_ptr(), 35)
         jump horner(34, %last, %x)
 
-    block horner(%i: U64, %s: F128Extended, %x: F128Extended):
+    block horner(%i: USize, %s: F128Extended, %x: F128Extended):
         %done : Bool         = %i.lt(1)
         %r    : F128Extended = %s.mul(%x)
         branch %done ? return(%r) : continue
@@ -898,7 +898,7 @@ routine wide_ln_1p(%x: F128Extended) -> F128Extended
         %r    : F128Extended = %s.mul(%t).ldexp(1)
         branch %done ? return(%r) : continue
         %c : F128Extended = wide_table(WIDE_LOG_COEF_HI.to_ptr(), WIDE_LOG_COEF_LO.to_ptr(),
-                WIDE_LOG_COEF_EXP.to_ptr(), %i.to_u64())
+                WIDE_LOG_COEF_EXP.to_ptr(), %i.to_usize())
         jump horner(%i.sub(1), %s.mul(%tt).add(%c), %tt, %t)
 
 // -- atan ----------------------------------------------------------------------
@@ -916,7 +916,7 @@ routine wide_atan_series(%x: F128Extended) -> F128Extended
         %r    : F128Extended = %s.mul(%x)
         branch %done ? return(%r) : continue
         %c : F128Extended = wide_table(WIDE_LOG_COEF_HI.to_ptr(), WIDE_LOG_COEF_LO.to_ptr(),
-                WIDE_LOG_COEF_EXP.to_ptr(), %i.to_u64_wrap())
+                WIDE_LOG_COEF_EXP.to_ptr(), %i.to_usize())
         jump horner(%i.sub_wrap(1), %s.mul(%u).add(%c), %u, %x)
 
 /// atan x for any finite x: past |x| = 1, π/2 - atan(1/|x|); then three
@@ -1223,7 +1223,7 @@ routine F128.ln_1p(%self: Self) -> Self
         return(%r)
 
 /// ln x scaled by a constant (1/ln 2, 1/ln 10) before the single rounding.
-routine f128_log_scaled(%x: F128, %scale: U64) -> F128
+routine f128_log_scaled(%x: F128, %scale: USize) -> F128
     block entry():
         %scaled  : F128 = %x.ln()
         %finite  : Bool = %scaled.is_finite().bitand(%x.is_nan().bitnot())
@@ -1369,7 +1369,7 @@ routine F128.hypot(%self: Self, %other: Self) -> Self
 
 // -- angles --------------------------------------------------------------------
 
-routine f128_scale_angle(%x: F128, %which: U64) -> F128
+routine f128_scale_angle(%x: F128, %which: USize) -> F128
     block entry():
         %keep : Bool = f128_is_zero_bits(%x.bits()).bitor(%x.is_finite().bitnot())
         branch %keep ? return(%x) : continue
@@ -1432,7 +1432,7 @@ preset WIDE_GAMMA_COEF_NEG: Array<Bool, 36> = [false, true, false, true, false, 
 
 // -- erf, erfc (TLFloat's continued fractions) ----------------------------------
 
-routine wide_special(%i: U64) -> F128Extended
+routine wide_special(%i: USize) -> F128Extended
     block entry():
         %w : F128Extended = wide_table(WIDE_SPECIAL_CONST_HI.to_ptr(),
                 WIDE_SPECIAL_CONST_LO.to_ptr(), WIDE_SPECIAL_CONST_EXP.to_ptr(), %i)
@@ -1545,7 +1545,7 @@ routine F128.erfc(%self: Self) -> Self
 
 // -- gamma, ln_gamma (Stirling with argument shift and reflection) ---------------
 
-routine wide_gamma_coef(%i: U64) -> F128Extended
+routine wide_gamma_coef(%i: USize) -> F128Extended
     block entry():
         %w   : F128Extended = wide_table(WIDE_GAMMA_COEF_HI.to_ptr(), WIDE_GAMMA_COEF_LO.to_ptr(),
                 WIDE_GAMMA_COEF_EXP.to_ptr(), %i)
@@ -1616,7 +1616,7 @@ routine wide_ln_gamma(%x: F128Extended) -> LnGamma
 
     block term(%i: S64, %s: F128Extended, %a: F128Extended, %w: F128Extended, %fr: F128Extended,
             %odd: Bool, %reflect: Bool, %inv_aa: F128Extended):
-        %next : F128Extended = %s.mul(%inv_aa).add(wide_gamma_coef(%i.to_u64()))
+        %next : F128Extended = %s.mul(%inv_aa).add(wide_gamma_coef(%i.to_usize()))
         jump series(%i.sub(1), %next, %a, %w, %fr, %odd, %reflect, %inv_aa)
 
     block assemble(%s: F128Extended, %a: F128Extended, %w: F128Extended, %fr: F128Extended,

@@ -4,7 +4,7 @@ namespace Tessera;
 
 // ── Types as written ────────────────────────────────────────────────────────
 
-/// A type as written in source: `S64`, `Ptr<Byte>`, `Array<T, 8>`, `Callable<(Ptr, CSize), Ptr>`.
+/// A type as written in source: `S64`, `Ptr<Byte>`, `Array<T, 8>`, `Callable<(Ptr, USize), Ptr>`.
 public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 {
     /// The module a qualified name was written with: `Standard::Collections` in `Standard::Collections::List<T>`.
@@ -45,7 +45,7 @@ public sealed record Param(string Name, TypeRef Type, Pos Pos); // Name includes
 /// the parsed parts are below.
 public sealed record Clause(string Kind, List<Token> Tokens)
 {
-    /// require: the declared parameters and their kinds (`T: typename`, `N: U64`).
+    /// require: the declared parameters and their kinds (`T: typename`, `N: USize`).
     public List<(string Name, TypeRef Kind, Pos Pos)> Params { get; init; } = [];
     /// require: the concept constraints; conform: the concepts conformed to.
     public List<TypeRef> Concepts { get; init; } = [];

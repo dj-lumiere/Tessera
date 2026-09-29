@@ -10,6 +10,9 @@ public sealed partial class Compiler
 {
     public BuildTarget Target { get; }
 
+    /// The target's USize: lengths, indices, counts, sizeof / alignof, and integer generic arguments.
+    public IntType USize => new(Target.Size, IntKind.Unsigned, isSize: true);
+
     private readonly Dictionary<string, List<RecordDecl>> _records = [];
     private readonly Dictionary<string, List<VariantDecl>> _variants = [];
     private readonly Dictionary<string, List<ChoiceDecl>> _choices = [];
@@ -400,7 +403,7 @@ public sealed partial class Compiler
                 return ResolveCallable(t, env);
         }
 
-        if (Target.ResolveCAlias(t.Name) is { } alias)
+        if (Target.ResolveTargetType(t.Name) is { } alias)
         {
             NoArgs();
             return alias;

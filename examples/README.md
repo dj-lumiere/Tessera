@@ -12,11 +12,11 @@ Run one with `dotnet run --project Tessera -- run examples/<name>.tess`. Every p
 | [fibonacci](fibonacci.tess) | Overflow: `add` panics, `add_checked` returns an `Option` |
 | [collatz](collatz.tess) | A nested loop split into two routines, best-so-far carried in block parameters |
 | [sieve](sieve.tess) | Heap memory: `alloc`, `zeroinit`, `[]` with `load` / `store`, `free` |
-| [binary_search](binary_search.tess) | Preset arrays, returning `Option<U64>`, a three-way `when:` |
+| [binary_search](binary_search.tess) | Preset arrays, returning `Option<USize>`, a three-way `when:` |
 | [caesar](caesar.tess) | `Byte` text, a stack buffer, `String.from_ptr` |
 | [insertion_sort](insertion_sort.tess) | `Array<T, N>` with `get` / `set`, and `List<S64>.sort` from the stdlib |
 | [brackets](brackets.tess) | `List<T>` as a stack, a `choice` result, a `when` over every member, one cleanup exit |
-| [word_count](word_count.tess) | `String` views, `Dict<String, U64>` in insertion order, `DictIter` |
+| [word_count](word_count.tess) | `String` views, `Dict<String, USize>` in insertion order, `DictIter` |
 | [temperature](temperature.tess) | `F64` arithmetic, integer ↔ float conversion, `represent` and `represent_fixed` |
 
 The larger programs in [`playground/`](../playground) combine these: Dijkstra, a lazy segment tree, SHA-256, and a

@@ -5,66 +5,36 @@
 // Allocator backed by libc malloc / realloc / free.
 //
 // Generic routines (alloc, realloc, free, zero, copy) form the prelude memory
-// surface used by every collection.  User-facing sizes are U64; C-alias sizes
-// (CSize, CInt) appear only at the FFI boundary and immediately convert.
+// surface used by every collection.  Sizes and counts are USize.
 
 module Standard::Alloc
-
-// ============================================================
-// FFI integer conversions (U64 ↔ CSize)
-//
-// Picked per target. On a 64-bit target CSize is U64, so both directions are
-// the identity. On a 32-bit target CSize is U32: U64 → CSize panics on a size
-// that doesn't fit, and CSize → U64 widens.
-// ============================================================
-
-@target(size: 64)
-routine u64_to_csize(%n: U64) -> CSize
-    block entry():
-        return(%n)
-
-@target(size: 32)
-routine u64_to_csize(%n: U64) -> CSize
-    block entry():
-        %r : CSize = %n.to_u32()
-        return(%r)
-
-@target(size: 64)
-routine csize_to_u64(%n: CSize) -> U64
-    block entry():
-        return(%n)
-
-@target(size: 32)
-routine csize_to_u64(%n: CSize) -> U64
-    block entry():
-        %r : U64 = %n.to_u64()
-        return(%r)
 
 // ============================================================
 // C FFI: libc memory
 // ============================================================
 
 @[external("c"), symbol("malloc")]
-private routine c_malloc(%size: CSize) -> Addr
+private routine c_malloc(%size: USize) -> Addr
 
 @[external("c"), symbol("realloc")]
-private routine c_realloc(%ptr: Addr, %size: CSize) -> Addr
+private routine c_realloc(%ptr: Addr, %size: USize) -> Addr
 
 @[external("c"), symbol("free")]
 private routine c_free(%ptr: Addr) -> Void
 
 @[external("c"), symbol("memcpy")]
-private routine c_memcpy(%dst: Addr, %src: Addr, %size: CSize) -> Void
+private routine c_memcpy(%dst: Addr, %src: Addr, %size: USize) -> Void
 
 // ============================================================
 // Allocator record
 //
-// Callbacks use C calling convention and C-alias sizes — they are FFI types.
+// Callbacks use the C calling convention and USize sizes, so libc's own
+// functions fit behind them.
 // ============================================================
 
 record Allocator
-    alloc_fn   : Callable<(Addr, CSize), Addr>
-    realloc_fn : Callable<(Addr, Addr, CSize), Addr>
+    alloc_fn   : Callable<(Addr, USize), Addr>
+    realloc_fn : Callable<(Addr, Addr, USize), Addr>
     free_fn    : Callable<(Addr, Addr), Void>
     state      : Addr
 
@@ -72,12 +42,12 @@ record Allocator
 // Heap allocator backend (libc wrappers matching Allocator callbacks)
 // ============================================================
 
-private routine heap_alloc_fn(%state: Addr, %size: CSize) -> Addr
+private routine heap_alloc_fn(%state: Addr, %size: USize) -> Addr
     block entry():
         %result : Addr = c_malloc(%size)
         return(%result)
 
-private routine heap_realloc_fn(%state: Addr, %old_ptr: Addr, %size: CSize) -> Addr
+private routine heap_realloc_fn(%state: Addr, %old_ptr: Addr, %size: USize) -> Addr
     block entry():
         %result : Addr = c_realloc(%old_ptr, %size)
         return(%result)
@@ -100,45 +70,42 @@ routine make_heap_allocator() -> Allocator
 // ============================================================
 // Generic memory routines (prelude surface)
 //
-// User-facing sizes are U64.  Conversion to CSize happens exactly at the
-// allocator-callback boundary.
+// Sizes and counts are USize, the same type the allocator callbacks and libc
+// take.
 // ============================================================
 
-routine allocate<T>(%alloc: Ptr<Allocator>, %count: U64) -> Ptr<T>
+routine allocate<T>(%alloc: Ptr<Allocator>, %count: USize) -> Ptr<T>
 require T: typename
     block entry():
-        %elem_size : U64                           = sizeof<T>()
-        %size      : U64                           = %elem_size.mul(%count)
-        %size_c    : CSize                         = u64_to_csize(%size)
-        %alloc_fn  : Callable<(Addr, CSize), Addr> = %alloc.alloc_fn.load()
+        %elem_size : USize                         = sizeof<T>()
+        %size      : USize                         = %elem_size.mul(%count)
+        %alloc_fn  : Callable<(Addr, USize), Addr> = %alloc.alloc_fn.load()
         %state     : Addr                          = %alloc.state.load()
-        %raw       : Addr                          = %alloc_fn.call(%state, %size_c)
+        %raw       : Addr                          = %alloc_fn.call(%state, %size)
         %typed     : Ptr<T>                        = bitcast<Addr, Ptr<T>>(%raw)
         return(%typed)
 
-routine reallocate<T>(%alloc: Ptr<Allocator>, %ptr: Ptr<T>, %new_count: U64) -> Ptr<T>
+routine reallocate<T>(%alloc: Ptr<Allocator>, %ptr: Ptr<T>, %new_count: USize) -> Ptr<T>
 require T: typename
     block entry():
-        %elem_size  : U64                                 = sizeof<T>()
-        %size       : U64                                 = %elem_size.mul(%new_count)
-        %size_c     : CSize                               = u64_to_csize(%size)
+        %elem_size  : USize                               = sizeof<T>()
+        %size       : USize                               = %elem_size.mul(%new_count)
         %raw_old    : Addr                                = bitcast<Ptr<T>, Addr>(%ptr)
-        %realloc_fn : Callable<(Addr, Addr, CSize), Addr> = %alloc.realloc_fn.load()
+        %realloc_fn : Callable<(Addr, Addr, USize), Addr> = %alloc.realloc_fn.load()
         %state      : Addr                                = %alloc.state.load()
         %raw        : Addr                                = %realloc_fn.call(%state, %raw_old,
-                %size_c)
+                %size)
         %typed      : Ptr<T>                              = bitcast<Addr, Ptr<T>>(%raw)
         return(%typed)
 
-routine copy<T>(%dst: Ptr<T>, %src: Ptr<T>, %count: U64) -> Void
+routine copy<T>(%dst: Ptr<T>, %src: Ptr<T>, %count: USize) -> Void
 require T: typename
     block entry():
-        %elem_size : U64   = sizeof<T>()
-        %size      : U64   = %elem_size.mul(%count)
-        %size_c    : CSize = u64_to_csize(%size)
+        %elem_size : USize = sizeof<T>()
+        %size      : USize = %elem_size.mul(%count)
         %raw_dst   : Addr  = bitcast<Ptr<T>, Addr>(%dst)
         %raw_src   : Addr  = bitcast<Ptr<T>, Addr>(%src)
-        c_memcpy(%raw_dst, %raw_src, %size_c)
+        c_memcpy(%raw_dst, %raw_src, %size)
         return()
 
 // ============================================================
@@ -149,7 +116,7 @@ require T: typename
 /// %c.to_ptr().free(%alloc).
 routine String.to_cstr(%self: Self, %alloc: Ptr<Allocator>) -> CStr
     block entry():
-        %length : U64       = %self.length
+        %length : USize     = %self.length
         %buffer : Ptr<Byte> = allocate<Byte>(%alloc, %length.add(1))
         %failed : Bool      = %buffer.is_null()
         branch %failed ? panic(TrapCode.AllocFailed) : continue
@@ -172,24 +139,24 @@ routine String.to_cwstr(%self: Self, %alloc: Ptr<Allocator>) -> CWStr
         %iter.store(%iter_val)
         jump next(%iter, %units, 0)
 
-    block next(%iter: Ptr<StringCharsIter>, %units: Ptr<CWChar>, %n: U64):
+    block next(%iter: Ptr<StringCharsIter>, %units: Ptr<CWChar>, %n: USize):
         %c : Option<Char> = %iter.next()
         when %c:
             .Present(%char) -> put(%iter, %units, %n, %char)
             .Absent         -> finish(%units, %n)
 
-    block put(%iter: Ptr<StringCharsIter>, %units: Ptr<CWChar>, %n: U64, %char: Char):
-        %count : U64 = encode_cwchar(%char, %units[%n])
+    block put(%iter: Ptr<StringCharsIter>, %units: Ptr<CWChar>, %n: USize, %char: Char):
+        %count : USize = encode_cwchar(%char, %units[%n])
         jump next(%iter, %units, %n.add(%count))
 
-    block finish(%units: Ptr<CWChar>, %n: U64):
+    block finish(%units: Ptr<CWChar>, %n: USize):
         %units[%n].store(0)
         return(.from_ptr(%units))
 
 /// Writes %char at %out as UTF-16, one unit or a surrogate pair, and returns
 /// how many units it wrote.
 @target(os: "windows")
-private routine encode_cwchar(%char: Char, %out: Ptr<CWChar>) -> U64
+private routine encode_cwchar(%char: Char, %out: Ptr<CWChar>) -> USize
     block entry():
         %cp  : U32  = %char.to_u32()
         %bmp : Bool = %cp.lt(0x10000)
@@ -207,7 +174,7 @@ private routine encode_cwchar(%char: Char, %out: Ptr<CWChar>) -> U64
 
 /// Writes %char at %out as one UTF-32 unit.
 @target(os: !"windows")
-private routine encode_cwchar(%char: Char, %out: Ptr<CWChar>) -> U64
+private routine encode_cwchar(%char: Char, %out: Ptr<CWChar>) -> USize
     block entry():
         %out.store(%char.to_u32().to_s32())
         return(1)

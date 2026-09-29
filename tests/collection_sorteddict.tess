@@ -11,12 +11,12 @@ import Standard::Format
 record Rng
     state : U64
 
-routine Rng.below(%self: Ptr<Self>, %bound: U64) -> U64
+routine Rng.below(%self: Ptr<Self>, %bound: USize) -> USize
     block entry():
         %state : U64 = %self.state.load()
         %next  : U64 = %state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         %self.state.store(%next)
-        %value : U64 = %next.shr(33).rem(%bound)
+        %value : USize = %next.shr(33).rem(%bound.to_u64()).to_usize()
         return(%value)
 
 routine mix(%hash: S64, %value: S64) -> S64
@@ -49,7 +49,7 @@ routine iteration_hash(%map: Ptr<SortedDict<S64, S64>>) -> S64
         %value : S64 = %pair.value
         jump next(%iter, mix(mix(%hash, %key), %value))
 
-routine rank_hash_at(%map: Ptr<SortedDict<S64, S64>>, %hash: S64, %rank: U64) -> S64
+routine rank_hash_at(%map: Ptr<SortedDict<S64, S64>>, %hash: S64, %rank: USize) -> S64
     block entry():
         %key   : S64 = %map.get_by_rank(%rank).key
         %value : S64 = %map.get_by_rank(%rank).value
@@ -58,18 +58,18 @@ routine rank_hash_at(%map: Ptr<SortedDict<S64, S64>>, %hash: S64, %rank: U64) ->
 // Folds get_by_rank at the first, middle, and last rank; 0 for an empty map.
 routine rank_hash(%map: Ptr<SortedDict<S64, S64>>) -> S64
     block entry():
-        %length : U64  = %map.length()
-        %empty  : Bool = %length.eq(0)
+        %length : USize = %map.length()
+        %empty  : Bool  = %length.eq(0)
         branch %empty ? return(0) : ranks(%length)
 
-    block ranks(%length: U64):
+    block ranks(%length: USize):
         %first  : S64 = rank_hash_at(%map, 0, 0)
         %middle : S64 = rank_hash_at(%map, %first, %length.div(2))
         %last   : S64 = rank_hash_at(%map, %middle, %length.sub(1))
         return(%last)
 
-routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<SortedDict<S64, S64>>, %phase: U64,
-        %op: U64, %results: S64) -> Void
+routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<SortedDict<S64, S64>>, %phase: USize,
+        %op: USize, %results: S64) -> Void
     block entry():
         write(%out, "phase {%phase}")
         labeled(%out, "op", %op.to_s64())
@@ -84,62 +84,62 @@ routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<SortedDict<S64, S64
 // removes a remove of a random key, below rank_removes a remove of the key at a random rank, otherwise a lookup.
 // Returns the updated results checksum.
 routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<SortedDict<S64, S64>>, %rng: Ptr<Rng>,
-        %phase: U64, %ops: U64, %keys: U64, %puts: U64, %removes: U64, %rank_removes: U64,
-        %results: S64) -> S64
+        %phase: USize, %ops: USize, %keys: USize, %puts: USize, %removes: USize,
+        %rank_removes: USize, %results: S64) -> S64
     block entry():
         jump next(0, %results)
 
-    block next(%op: U64, %results: S64):
+    block next(%op: USize, %results: S64):
         %done : Bool = %op.ge(%ops)
         branch %done ? return(%results) : pick(%op, %results)
 
-    block pick(%op: U64, %results: S64):
-        %key            : S64  = %rng.below(%keys).to_s64()
-        %kind           : U64  = %rng.below(10)
-        %is_put         : Bool = %kind.lt(%puts)
-        %is_remove      : Bool = %kind.lt(%removes)
-        %is_rank_remove : Bool = %kind.lt(%rank_removes)
+    block pick(%op: USize, %results: S64):
+        %key            : S64   = %rng.below(%keys).to_s64()
+        %kind           : USize = %rng.below(10)
+        %is_put         : Bool  = %kind.lt(%puts)
+        %is_remove      : Bool  = %kind.lt(%removes)
+        %is_rank_remove : Bool  = %kind.lt(%rank_removes)
         when:
             %is_put         -> put(%op, %results, %key)
             %is_remove      -> remove(%op, %results, %key)
             %is_rank_remove -> remove_ranked(%op, %results)
             else            -> lookup(%op, %results, %key)
 
-    block put(%op: U64, %results: S64, %key: S64):
+    block put(%op: USize, %results: S64, %key: S64):
         %value : S64 = %rng.below(1000000).to_s64()
         %map.put(%key, %value)
         jump record(%op, %results, %value)
 
-    block remove(%op: U64, %results: S64, %key: S64):
+    block remove(%op: USize, %results: S64, %key: S64):
         %removed : Bool = %map.remove(%key)
         jump record(%op, %results, %removed.to_s64())
 
-    block remove_ranked(%op: U64, %results: S64):
-        %length : U64  = %map.length()
-        %empty  : Bool = %length.eq(0)
+    block remove_ranked(%op: USize, %results: S64):
+        %length : USize = %map.length()
+        %empty  : Bool  = %length.eq(0)
         branch %empty ? record(%op, %results, -2) : remove_at(%op, %results, %length)
 
-    block remove_at(%op: U64, %results: S64, %length: U64):
-        %rank    : U64  = %rng.below(%length)
-        %key     : S64  = %map.get_by_rank(%rank).key
-        %removed : Bool = %map.remove(%key)
+    block remove_at(%op: USize, %results: S64, %length: USize):
+        %rank    : USize = %rng.below(%length)
+        %key     : S64   = %map.get_by_rank(%rank).key
+        %removed : Bool  = %map.remove(%key)
         jump record(%op, %results, mix(%key, %removed.to_s64()))
 
-    block lookup(%op: U64, %results: S64, %key: S64):
+    block lookup(%op: USize, %results: S64, %key: S64):
         %found : Bool = %map.contains(%key)
         branch %found ? get(%op, %results, %key) : record(%op, %results, -1)
 
-    block get(%op: U64, %results: S64, %key: S64):
+    block get(%op: USize, %results: S64, %key: S64):
         %value : S64 = %map.get(%key)
         jump record(%op, %results, %value)
 
-    block record(%op: U64, %results: S64, %result: S64):
-        %mixed   : S64  = mix(%results, %result)
-        %op_next : U64  = %op.add(1)
-        %report  : Bool = %op_next.rem(500).eq(0)
+    block record(%op: USize, %results: S64, %result: S64):
+        %mixed   : S64   = mix(%results, %result)
+        %op_next : USize = %op.add(1)
+        %report  : Bool  = %op_next.rem(500).eq(0)
         branch %report ? report(%op_next, %mixed) : next(%op_next, %mixed)
 
-    block report(%op: U64, %results: S64):
+    block report(%op: USize, %results: S64):
         checkpoint(%out, %map, %phase, %op, %results)
         jump next(%op, %results)
 
@@ -148,11 +148,11 @@ routine copy_reversed(%from: Ptr<SortedDict<S64, S64>>, %to: Ptr<SortedDict<S64,
     block entry():
         jump next(%from.length())
 
-    block next(%rank_end: U64):
+    block next(%rank_end: USize):
         %done : Bool = %rank_end.eq(0)
         branch %done ? return() : copy(%rank_end.sub(1))
 
-    block copy(%rank: U64):
+    block copy(%rank: USize):
         %to.put(%from.get_by_rank(%rank).key, %from.get_by_rank(%rank).value)
         jump next(%rank)
 

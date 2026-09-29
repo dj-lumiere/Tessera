@@ -10,7 +10,7 @@ static class Cli
           tessera build <file.tess>... [-o <out>] [--emit-llvm] [--target <arch-os-abi>] [-O]
           tessera run   <file.tess>... [--target <arch-os-abi>] [-O]
           tessera test  <dir>...
-          tessera check [<file.tess>...]   type-check every non-generic routine, the stdlib included
+          tessera check [--target <arch-os-abi>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
 
         All input files form one compilation unit.
@@ -116,7 +116,18 @@ static class Cli
     private static int Check(string[] args)
     {
         var target = BuildTarget.Host();
-        var compiler = new Compiler(target, LoadDecls(args, target));
+        var files = new List<string>();
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--target" && i + 1 < args.Length)
+            {
+                try { target = BuildTarget.Parse(args[++i]); }
+                catch (ArgumentException e) { throw new ToolError(e.Message); }
+            }
+            else if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
+            else files.Add(args[i]);
+        }
+        var compiler = new Compiler(target, LoadDecls([.. files], target));
         var errors = compiler.CheckAll();
         foreach (var e in errors) Console.Error.WriteLine(e.Message);
         Console.Error.WriteLine($"{compiler.InstanceCount} routine instance(s) checked, {errors.Count} error(s)");

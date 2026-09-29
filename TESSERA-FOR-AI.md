@@ -122,8 +122,10 @@ routine main() -> S32
   `when:` terminator runs its conditions in order and stops at the first that holds.
 - Range checks: `%c.between(b'0', b'9')` is the closed `[lo, hi]`, `%i.in_range(0, %len)` the half-open
   `[lo, end)`, on every integer, float, `Byte`, and `Char`.
-- Lengths, indices, counts, and `sizeof` are `U64`. `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`,
-  `abs_diff` returns the unsigned type.
+- Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `USize`; integer generic parameters are `N: USize`.
+  `USize` / `SSize` are the pointer-width integers (C's `size_t` / `ssize_t`), types of their own that never mix with
+  `U64` / `S64`: convert with `%n.to_u64()` / `%x.to_usize()`. Hashes stay `U64`.
+- `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`, `abs_diff` returns the unsigned type.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `%x.bits()` and `U8.from_byte(%b)` /
   `S8.from_byte(%b)` move between it and the numbers, and `S64` <-> `U64` is `to_u64_wrap` / `to_s64_wrap`. It has

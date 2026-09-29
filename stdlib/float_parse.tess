@@ -44,14 +44,14 @@ routine is_ascii_digit(%c: Byte) -> Bool
         return(%r)
 
 /// Is %text[0..length) %word, ignoring ASCII letter case? %word must be lowercase letters.
-routine matches_word(%text: Ptr<Byte>, %length: U64, %word: String) -> Bool
+routine matches_word(%text: Ptr<Byte>, %length: USize, %word: String) -> Bool
     block entry():
-        %word_length : U64       = %word.length
+        %word_length : USize     = %word.length
         %letters     : Ptr<Byte> = %word.data
         %same_length : Bool      = %length.eq(%word_length)
         branch %same_length ? loop(0, %letters) : return(false)
 
-    block loop(%i: U64, %letters: Ptr<Byte>):
+    block loop(%i: USize, %letters: Ptr<Byte>):
         %done : Bool = %i.ge(%length)
         branch %done ? return(true) : continue
         %c      : Byte = %text[%i].load()
@@ -63,11 +63,11 @@ routine matches_word(%text: Ptr<Byte>, %length: U64, %word: String) -> Bool
 /// Reads %text into DecimalParts, accumulating the kept digits in %digits.
 routine parse_decimal<N>(%text: String, %digits: Ptr<BigNat<N>>,
         %max_kept: S64) -> Result<DecimalParts, ParseFloatError>
-require N: U64
+require N: USize
     block entry():
         %digits.set(0)
-        %length : U64  = %text.length
-        %empty  : Bool = %length.eq(0)
+        %length : USize = %text.length
+        %empty  : Bool  = %length.eq(0)
         branch %empty ? fail(ParseFloatError.Empty) : sign()
 
     block sign():
@@ -76,12 +76,12 @@ require N: U64
         %minus : Bool      = %c.eq(b'-')
         %plus  : Bool      = %c.eq(b'+')
         %skip  : Bool      = %minus.bitor(%plus)
-        jump body(%skip.to_u64(), %minus)
+        jump body(%skip.to_usize(), %minus)
 
-    block body(%start: U64, %negative: Bool):
+    block body(%start: USize, %negative: Bool):
         %data : Ptr<Byte> = %text.data
         %rest : Ptr<Byte> = %data[%start]
-        %left : U64       = %text.length.sub(%start)
+        %left : USize     = %text.length.sub(%start)
         %inf  : Bool      = matches_word(%rest, %left,
                 "inf").bitor(matches_word(%rest, %left, "infinity"))
         %nan  : Bool      = matches_word(%rest, %left, "nan")
@@ -97,13 +97,13 @@ require N: U64
         return(%r)
 
     // Integer digits. Leading zeros are skipped; digits past the cap raise the exponent.
-    block int_loop(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
+    block int_loop(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
             %seen: Bool):
         %at_end : Bool = %i.ge(%text.length)
         branch %at_end ? done(%negative, %kept, %exponent, %sticky, %seen)
                        : int_char(%i, %negative, %kept, %exponent, %sticky, %seen)
 
-    block int_char(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
+    block int_char(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
             %seen: Bool):
         %data  : Ptr<Byte> = %text.data
         %c     : Byte      = %data[%i].load()
@@ -115,28 +115,29 @@ require N: U64
             %point -> frac_loop(%i.add(1), %negative, %kept, %exponent, %sticky, %seen)
             else   -> exponent_mark(%i, %negative, %kept, %exponent, %sticky, %seen)
 
-    block int_digit(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool, %d: U64):
-        %leading : Bool = %kept.eq(0).bitand(%d.eq(0))
-        %full    : Bool = %kept.ge(%max_kept)
-        %next    : U64  = %i.add(1)
+    block int_digit(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool, %d: U64):
+        %leading : Bool  = %kept.eq(0).bitand(%d.eq(0))
+        %full    : Bool  = %kept.ge(%max_kept)
+        %next    : USize = %i.add(1)
         when:
             %leading -> int_loop(%next, %negative, %kept, %exponent, %sticky, true)
             %full    -> int_loop(%next, %negative, %kept, %exponent.add(1), %sticky.bitor(%d.ne(0)),
                     true)
             else     -> int_keep(%next, %negative, %kept, %exponent, %sticky, %d)
 
-    block int_keep(%next: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool, %d: U64):
+    block int_keep(%next: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
+            %d: U64):
         %digits.mul_add(10, %d)
         jump int_loop(%next, %negative, %kept.add(1), %exponent, %sticky, true)
 
     // Fraction digits. Each one kept, or each leading zero, lowers the exponent.
-    block frac_loop(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
+    block frac_loop(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
             %seen: Bool):
         %at_end : Bool = %i.ge(%text.length)
         branch %at_end ? done(%negative, %kept, %exponent, %sticky, %seen)
                        : frac_char(%i, %negative, %kept, %exponent, %sticky, %seen)
 
-    block frac_char(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
+    block frac_char(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
             %seen: Bool):
         %data  : Ptr<Byte> = %text.data
         %c     : Byte      = %data[%i].load()
@@ -146,22 +147,23 @@ require N: U64
                     %c.to_u8().sub(b'0'.to_u8()).to_u64())
             : exponent_mark(%i, %negative, %kept, %exponent, %sticky, %seen)
 
-    block frac_digit(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool, %d: U64):
-        %leading : Bool = %kept.eq(0).bitand(%d.eq(0))
-        %full    : Bool = %kept.ge(%max_kept)
-        %next    : U64  = %i.add(1)
+    block frac_digit(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
+            %d: U64):
+        %leading : Bool  = %kept.eq(0).bitand(%d.eq(0))
+        %full    : Bool  = %kept.ge(%max_kept)
+        %next    : USize = %i.add(1)
         when:
             %leading -> frac_loop(%next, %negative, %kept, %exponent.sub(1), %sticky, true)
             %full    -> frac_loop(%next, %negative, %kept, %exponent, %sticky.bitor(%d.ne(0)), true)
             else     -> frac_keep(%next, %negative, %kept, %exponent, %sticky, %d)
 
-    block frac_keep(%next: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
+    block frac_keep(%next: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
             %d: U64):
         %digits.mul_add(10, %d)
         jump frac_loop(%next, %negative, %kept.add(1), %exponent.sub(1), %sticky, true)
 
     // After the mantissa only an exponent may follow: e or E, a sign, digits.
-    block exponent_mark(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
+    block exponent_mark(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
             %seen: Bool):
         %data  : Ptr<Byte> = %text.data
         %c     : Byte      = %data[%i].load()
@@ -171,31 +173,31 @@ require N: U64
             ? exponent_sign(%i.add(1), %negative, %kept, %exponent, %sticky)
             : fail(ParseFloatError.Invalid)
 
-    block exponent_sign(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool):
+    block exponent_sign(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool):
         %at_end : Bool = %i.ge(%text.length)
         branch %at_end
             ? fail(ParseFloatError.Invalid)
             : read_sign(%i, %negative, %kept, %exponent, %sticky)
 
-    block read_sign(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool):
+    block read_sign(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool):
         %data      : Ptr<Byte> = %text.data
         %c         : Byte      = %data[%i].load()
         %minus     : Bool      = %c.eq(b'-')
         %plus      : Bool      = %c.eq(b'+')
-        %skip      : U64       = %minus.bitor(%plus).to_u64()
-        %first     : U64       = %i.add(%skip)
+        %skip      : USize     = %minus.bitor(%plus).to_usize()
+        %first     : USize     = %i.add(%skip)
         %has_digit : Bool      = %first.lt(%text.length)
         branch %has_digit ? exp_loop(%first, %negative, %kept, %exponent, %sticky, %minus, 0)
                           : fail(ParseFloatError.Invalid)
 
     // The exponent saturates at 1,000,000, far past any float's range.
-    block exp_loop(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
+    block exp_loop(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
             %exp_minus: Bool, %value: S64):
         %at_end : Bool = %i.ge(%text.length)
         branch %at_end ? exp_done(%negative, %kept, %exponent, %sticky, %exp_minus, %value)
                        : exp_char(%i, %negative, %kept, %exponent, %sticky, %exp_minus, %value)
 
-    block exp_char(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
+    block exp_char(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
             %exp_minus: Bool, %value: S64):
         %data  : Ptr<Byte> = %text.data
         %c     : Byte      = %data[%i].load()
@@ -203,7 +205,7 @@ require N: U64
         branch %digit ? exp_digit(%i, %negative, %kept, %exponent, %sticky, %exp_minus, %value, %c)
                       : fail(ParseFloatError.Invalid)
 
-    block exp_digit(%i: U64, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
+    block exp_digit(%i: USize, %negative: Bool, %kept: S64, %exponent: S64, %sticky: Bool,
             %exp_minus: Bool, %value: S64, %c: Byte):
         %d    : S64 = %c.to_u8().sub(b'0'.to_u8()).to_s64()
         %next : S64 = %value.mul(10).add(%d).min(1000000)
@@ -231,7 +233,7 @@ require N: U64
 /// all-ones exponent %exponent_max.
 routine decimal_to_bits<N>(%digits: Ptr<BigNat<N>>, %parts: DecimalParts, %mantissa_bits: S64,
         %bias: S64, %exponent_max: S64, %huge_from: S64, %tiny_below: S64) -> U128
-require N: U64
+require N: USize
     block entry():
         %infinity : U128        = %exponent_max.to_u128().shl(%mantissa_bits.to_u128())
         %quiet    : U128        = 1.shl(%mantissa_bits.sub(1).to_u128())
@@ -264,11 +266,11 @@ require N: U64
         branch %up ? scale_up(%exponent, %infinity, %d) : scale_down(%exponent, %infinity, %d)
 
     block scale_up(%exponent: S64, %infinity: U128, %d: Ptr<BigNat<N>>):
-        %digits.mul_pow10(%exponent.to_u64())
+        %digits.mul_pow10(%exponent.to_usize())
         jump estimate(%infinity, %d)
 
     block scale_down(%exponent: S64, %infinity: U128, %d: Ptr<BigNat<N>>):
-        %d.mul_pow10(%exponent.abs_diff(0))
+        %d.mul_pow10(%exponent.abs_diff(0).to_usize())
         jump estimate(%infinity, %d)
 
     // Pick the binary exponent e so that q = floor(value / 2^e) has
@@ -294,18 +296,18 @@ require N: U64
 
     block widen_a(%e: S64, %infinity: U128, %d: Ptr<BigNat<N>>, %a: Ptr<BigNat<N>>,
             %b: Ptr<BigNat<N>>, %t: Ptr<BigNat<N>>):
-        %a.shl(%e.abs_diff(0))
+        %a.shl(%e.abs_diff(0).to_usize())
         jump divide(%e, %infinity, %d, %a, %b, %t)
 
     block widen_b(%e: S64, %infinity: U128, %d: Ptr<BigNat<N>>, %a: Ptr<BigNat<N>>,
             %b: Ptr<BigNat<N>>, %t: Ptr<BigNat<N>>):
-        %b.shl(%e.to_u64())
+        %b.shl(%e.to_usize())
         jump divide(%e, %infinity, %d, %a, %b, %t)
 
     // The estimate can be one bit short; then q has a bit too many: try e + 1.
     block divide(%e: S64, %infinity: U128, %d: Ptr<BigNat<N>>, %a: Ptr<BigNat<N>>,
             %b: Ptr<BigNat<N>>, %t: Ptr<BigNat<N>>):
-        %q       : U128 = %a.div_small(%b, %t, %mantissa_bits.add(3).to_u64())
+        %q       : U128 = %a.div_small(%b, %t, %mantissa_bits.add(3).to_usize())
         %limit   : U128 = 1.shl(%mantissa_bits.add(1).to_u128())
         %too_big : Bool = %q.ge(%limit)
         branch %too_big
@@ -518,17 +520,17 @@ routine F128.parse_faithful(%text: String) -> Result<Self, ParseFloatError>
             DecimalKind.Finite   -> finite(%parts, %negative, %sign, %digits)
 
     block finite(%parts: DecimalParts, %negative: Bool, %sign: U128, %digits: Ptr<BigNat<3>>):
-        %length    : U64  = %digits.length.load()
-        %low       : U64  = %digits.limbs.get(0)
-        %high      : U64  = %digits.limbs.get(1)
-        %d_low     : U128 = %length.ge(1) ? %low.to_u128() : 0
-        %d_high    : U128 = %length.ge(2) ? %high.to_u128().shl(64) : 0
-        %d         : U128 = %d_low.bitor(%d_high)
-        %kept      : S64  = %parts.kept
-        %exponent  : S64  = %parts.exponent
-        %magnitude : S64  = %kept.add(%exponent)
-        %zero      : Bool = %d.eq(0).bitor(%magnitude.lt(-4966))
-        %huge      : Bool = %magnitude.gt(4933)
+        %length    : USize = %digits.length.load()
+        %low       : U64   = %digits.limbs.get(0)
+        %high      : U64   = %digits.limbs.get(1)
+        %d_low     : U128  = %length.ge(1) ? %low.to_u128() : 0
+        %d_high    : U128  = %length.ge(2) ? %high.to_u128().shl(64) : 0
+        %d         : U128  = %d_low.bitor(%d_high)
+        %kept      : S64   = %parts.kept
+        %exponent  : S64   = %parts.exponent
+        %magnitude : S64   = %kept.add(%exponent)
+        %zero      : Bool  = %d.eq(0).bitor(%magnitude.lt(-4966))
+        %huge      : Bool  = %magnitude.gt(4933)
         when:
             %zero -> done(%sign)
             %huge -> done(%sign.bitor(F128_INF))
@@ -542,17 +544,17 @@ routine F128.parse_faithful(%text: String) -> Result<Self, ParseFloatError>
         %left  : U64      = %exponent.abs_diff(0)
         jump power(0, %left, %down, %start, %negative, %sticky)
 
-    block power(%i: U64, %left: U64, %down: Bool, %w: F128Wide, %negative: Bool, %sticky: Bool):
+    block power(%i: USize, %left: U64, %down: Bool, %w: F128Wide, %negative: Bool, %sticky: Bool):
         %done : Bool = %left.eq(0)
         branch %done ? pack(%w, %negative, %sticky) : bit(%i, %left, %down, %w, %negative, %sticky)
 
-    block bit(%i: U64, %left: U64, %down: Bool, %w: F128Wide, %negative: Bool, %sticky: Bool):
+    block bit(%i: USize, %left: U64, %down: Bool, %w: F128Wide, %negative: Bool, %sticky: Bool):
         %set : Bool = %left.bitand(1).eq(1)
         branch %set
             ? times(%i, %left, %down, %w, %negative, %sticky)
             : power(%i.add(1), %left.shr(1), %down, %w, %negative, %sticky)
 
-    block times(%i: U64, %left: U64, %down: Bool, %w: F128Wide, %negative: Bool, %sticky: Bool):
+    block times(%i: USize, %left: U64, %down: Bool, %w: F128Wide, %negative: Bool, %sticky: Bool):
         %pos_m : U128     = F128_POW10_POS_MANT.get(%i)
         %pos_e : S64      = F128_POW10_POS_EXP.get(%i)
         %neg_m : U128     = F128_POW10_NEG_MANT.get(%i)

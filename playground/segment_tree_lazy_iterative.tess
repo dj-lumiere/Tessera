@@ -32,7 +32,7 @@ require T: typename, L: typename
     routine T.combine(%self: Self, %right: Self) -> Self
 
     /// Apply one lazy tag to an aggregate value over a segment of length.
-    routine T.apply(%self: Self, %lazy: L, %length: U64) -> Self
+    routine T.apply(%self: Self, %lazy: L, %length: USize) -> Self
 
     /// Compose tags so the returned tag represents newer after older.
     routine L.compose(%self: Self, %older: Self) -> Self
@@ -45,66 +45,67 @@ record LazySegmentTree<T, L>
 require T: typename, L: typename, LazySegmentOps<T, L>
     data   : Ptr<T>
     lazy   : Ptr<L>
-    length : U64
-    size   : U64
-    height : U64
+    length : USize
+    size   : USize
+    height : USize
 
-routine LazySegmentTree<T, L>.parent(%self: Ptr<Self>, %node: U64) -> U64
+routine LazySegmentTree<T, L>.parent(%self: Ptr<Self>, %node: USize) -> USize
     block entry():
-        %parent : U64 = %node.shr(1)
+        %parent : USize = %node.shr(1)
         return(%parent)
 
-routine LazySegmentTree<T, L>.left_child(%self: Ptr<Self>, %node: U64) -> U64
+routine LazySegmentTree<T, L>.left_child(%self: Ptr<Self>, %node: USize) -> USize
     block entry():
-        %child : U64 = %node.shl(1)
+        %child : USize = %node.shl(1)
         return(%child)
 
-routine LazySegmentTree<T, L>.right_child(%self: Ptr<Self>, %node: U64) -> U64
+routine LazySegmentTree<T, L>.right_child(%self: Ptr<Self>, %node: USize) -> USize
     block entry():
-        %right_child : U64 = %node.shl(1).bitor(1)
+        %right_child : USize = %node.shl(1).bitor(1)
         return(%right_child)
 
-routine LazySegmentTree<T, L>.is_right_child(%self: Ptr<Self>, %node: U64) -> Bool
+routine LazySegmentTree<T, L>.is_right_child(%self: Ptr<Self>, %node: USize) -> Bool
     block entry():
         %is_right : Bool = %node.bitand(1).ne(0)
         return(%is_right)
 
-routine LazySegmentTree<T, L>.leaf(%self: Ptr<Self>, %index: U64) -> U64
+routine LazySegmentTree<T, L>.leaf(%self: Ptr<Self>, %index: USize) -> USize
     block entry():
-        %size : U64 = %self.size.load()
-        %leaf : U64 = %index.bitor(%size)
+        %size : USize = %self.size.load()
+        %leaf : USize = %index.bitor(%size)
         return(%leaf)
 
-routine LazySegmentTree<T, L>.cover_width(%self: Ptr<Self>, %height: U64) -> U64
+routine LazySegmentTree<T, L>.cover_width(%self: Ptr<Self>, %height: USize) -> USize
     block entry():
-        %width : U64 = 1.shl(%height)
+        %width : USize = 1.shl(%height)
         return(%width)
 
-routine LazySegmentTree<T, L>.cover_mask(%self: Ptr<Self>, %height: U64) -> U64
+routine LazySegmentTree<T, L>.cover_mask(%self: Ptr<Self>, %height: USize) -> USize
     block entry():
-        %mask : U64 = %self.cover_width(%height).sub(1)
+        %mask : USize = %self.cover_width(%height).sub(1)
         return(%mask)
 
-routine LazySegmentTree<T, L>.aligned_to_cover(%self: Ptr<Self>, %node: U64, %height: U64) -> Bool
+routine LazySegmentTree<T, L>.aligned_to_cover(%self: Ptr<Self>, %node: USize,
+        %height: USize) -> Bool
     block entry():
-        %mask    : U64  = %self.cover_mask(%height)
-        %aligned : Bool = %node.bitand(%mask).eq(0)
+        %mask    : USize = %self.cover_mask(%height)
+        %aligned : Bool  = %node.bitand(%mask).eq(0)
         return(%aligned)
 
-routine LazySegmentTree<T, L>.construct(%length: U64, %alloc: Ptr<Allocator>) -> Self
+routine LazySegmentTree<T, L>.construct(%length: USize, %alloc: Ptr<Allocator>) -> Self
     block entry():
         %invalid : Bool = %length.le(0)
         branch %invalid ? panic(TrapCode.InvalidArgument) : choose_size(1, 0)
 
-    block choose_size(%size: U64, %height: U64):
+    block choose_size(%size: USize, %height: USize):
         %done : Bool = %size.ge(%length)
         branch %done ? allocate(%size, %height) : grow(%size, %height)
 
-    block grow(%size: U64, %height: U64):
+    block grow(%size: USize, %height: USize):
         jump choose_size(%size.shl(1), %height.add(1))
 
-    block allocate(%size: U64, %height: U64):
-        %data_count  : U64    = %size.shl(1)
+    block allocate(%size: USize, %height: USize):
+        %data_count  : USize  = %size.shl(1)
         %data        : Ptr<T> = allocate<T>(%alloc, %data_count)
         %lazy        : Ptr<L> = allocate<L>(%alloc, %size)
         %data_failed : Bool   = %data.is_null()
@@ -114,99 +115,102 @@ routine LazySegmentTree<T, L>.construct(%length: U64, %alloc: Ptr<Allocator>) ->
             ? panic(TrapCode.AllocFailed)
             : init_data(%data, %lazy, %length, %size, %height, %data_count)
 
-    block init_data(%data: Ptr<T>, %lazy: Ptr<L>, %length: U64, %size: U64, %height: U64,
-            %data_count: U64):
+    block init_data(%data: Ptr<T>, %lazy: Ptr<L>, %length: USize, %size: USize, %height: USize,
+            %data_count: USize):
         jump data_loop(0, %data, %lazy, %length, %size, %height, %data_count)
 
-    block data_loop(%i: U64, %data: Ptr<T>, %lazy: Ptr<L>, %length: U64, %size: U64, %height: U64,
-            %data_count: U64):
+    block data_loop(%i: USize, %data: Ptr<T>, %lazy: Ptr<L>, %length: USize, %size: USize,
+            %height: USize, %data_count: USize):
         %done : Bool = %i.ge(%data_count)
         branch %done
             ? init_lazy(0, %data, %lazy, %length, %size, %height)
             : data_one(%i, %data, %lazy, %length, %size, %height, %data_count)
 
-    block data_one(%i: U64, %data: Ptr<T>, %lazy: Ptr<L>, %length: U64, %size: U64, %height: U64,
-            %data_count: U64):
+    block data_one(%i: USize, %data: Ptr<T>, %lazy: Ptr<L>, %length: USize, %size: USize,
+            %height: USize, %data_count: USize):
         %identity : T = .identity()
         %data[%i].store(%identity)
         jump data_loop(%i.add(1), %data, %lazy, %length, %size, %height, %data_count)
 
-    block init_lazy(%i: U64, %data: Ptr<T>, %lazy: Ptr<L>, %length: U64, %size: U64, %height: U64):
+    block init_lazy(%i: USize, %data: Ptr<T>, %lazy: Ptr<L>, %length: USize, %size: USize,
+            %height: USize):
         %done : Bool = %i.ge(%size)
         branch %done
             ? finish(%data, %lazy, %length, %size, %height)
             : lazy_one(%i, %data, %lazy, %length, %size, %height)
 
-    block lazy_one(%i: U64, %data: Ptr<T>, %lazy: Ptr<L>, %length: U64, %size: U64, %height: U64):
+    block lazy_one(%i: USize, %data: Ptr<T>, %lazy: Ptr<L>, %length: USize, %size: USize,
+            %height: USize):
         %identity : L = .identity()
         %lazy[%i].store(%identity)
         jump init_lazy(%i.add(1), %data, %lazy, %length, %size, %height)
 
-    block finish(%data: Ptr<T>, %lazy: Ptr<L>, %length: U64, %size: U64, %height: U64):
+    block finish(%data: Ptr<T>, %lazy: Ptr<L>, %length: USize, %size: USize, %height: USize):
         %tree : Self = Self { data: %data, lazy: %lazy, length: %length, size: %size,
                 height: %height }
         return(%tree)
 
-routine LazySegmentTree<T, L>.length(%self: Ptr<Self>) -> U64
+routine LazySegmentTree<T, L>.length(%self: Ptr<Self>) -> USize
     block entry():
-        %length : U64 = %self.length.load()
+        %length : USize = %self.length.load()
         return(%length)
 
 routine LazySegmentTree<T, L>.build_from(%self: Ptr<Self>, %values: Ptr<T>) -> Void
     block entry():
         jump copy_loop(0)
 
-    block copy_loop(%i: U64):
-        %length : U64  = %self.length.load()
-        %done   : Bool = %i.ge(%length)
+    block copy_loop(%i: USize):
+        %length : USize = %self.length.load()
+        %done   : Bool  = %i.ge(%length)
         branch %done ? reset_lazy(0) : copy_one(%i)
 
-    block copy_one(%i: U64):
+    block copy_one(%i: USize):
         %data  : Ptr<T> = %self.data.load()
-        %leaf  : U64    = %self.leaf(%i)
+        %leaf  : USize  = %self.leaf(%i)
         %value : T      = %values[%i].load()
         %data[%leaf].store(%value)
         jump copy_loop(%i.add(1))
 
-    block reset_lazy(%i: U64):
-        %size : U64  = %self.size.load()
-        %done : Bool = %i.ge(%size)
+    block reset_lazy(%i: USize):
+        %size : USize = %self.size.load()
+        %done : Bool  = %i.ge(%size)
         branch %done ? pull_all() : reset_one(%i)
 
-    block reset_one(%i: U64):
+    block reset_one(%i: USize):
         %lazy     : Ptr<L> = %self.lazy.load()
         %identity : L      = .identity()
         %lazy[%i].store(%identity)
         jump reset_lazy(%i.add(1))
 
     block pull_all():
-        %size  : U64 = %self.size.load()
-        %start : U64 = %size.sub(1)
+        %size  : USize = %self.size.load()
+        %start : USize = %size.sub(1)
         jump pull_loop(%start)
 
-    block pull_loop(%node: U64):
+    block pull_loop(%node: USize):
         %done : Bool = %node.le(0)
         branch %done ? return() : continue
         %self.pull_node(%node)
         jump pull_loop(%node.sub(1))
 
-routine LazySegmentTree<T, L>.pull_node(%self: Ptr<Self>, %node: U64) -> Void
+routine LazySegmentTree<T, L>.pull_node(%self: Ptr<Self>, %node: USize) -> Void
     block entry():
         %data        : Ptr<T> = %self.data.load()
-        %left        : U64    = %self.left_child(%node)
-        %right       : U64    = %self.right_child(%node)
+        %left        : USize  = %self.left_child(%node)
+        %right       : USize  = %self.right_child(%node)
         %left_value  : T      = %data[%left].load()
         %right_value : T      = %data[%right].load()
         %value       : T      = %left_value.combine(%right_value)
         %data[%node].store(%value)
         return()
 
-routine LazySegmentTree<T, L>.apply_node(%self: Ptr<Self>, %node: U64, %tag: L, %width: U64) -> Void
+routine LazySegmentTree<T, L>.apply_node(%self: Ptr<Self>, %node: USize, %tag: L,
+        %width: USize) -> Void
     block entry():
         %data : Ptr<T> = %self.data.load()
         %data[%node].load().apply(%tag, %width).store_into(%data[%node])
-        %size        : U64  = %self.size.load()
-        %is_internal : Bool = %node.lt(%size)
+        %size        : USize = %self.size.load()
+        %is_internal : Bool  = %node.lt(%size)
         branch %is_internal ? continue : return()
         %lazy : Ptr<L> = %self.lazy.load()
         %old  : L      = %lazy[%node].load()
@@ -214,17 +218,17 @@ routine LazySegmentTree<T, L>.apply_node(%self: Ptr<Self>, %node: U64, %tag: L, 
         %lazy[%node].store(%next)
         return()
 
-routine LazySegmentTree<T, L>.push_node(%self: Ptr<Self>, %node: U64, %width: U64) -> Void
+routine LazySegmentTree<T, L>.push_node(%self: Ptr<Self>, %node: USize, %width: USize) -> Void
     block entry():
         %lazy  : Ptr<L> = %self.lazy.load()
         %tag   : L      = %lazy[%node].load()
         %clean : Bool   = %tag.is_identity_lazy()
         branch %clean ? return() : spread(%node, %tag, %width)
 
-    block spread(%node: U64, %tag: L, %width: U64):
-        %child_width : U64 = %width.shr(1)
-        %left        : U64 = %self.left_child(%node)
-        %right       : U64 = %self.right_child(%node)
+    block spread(%node: USize, %tag: L, %width: USize):
+        %child_width : USize = %width.shr(1)
+        %left        : USize = %self.left_child(%node)
+        %right       : USize = %self.right_child(%node)
         %self.apply_node(%left, %tag, %child_width)
         %self.apply_node(%right, %tag, %child_width)
         %lazy     : Ptr<L> = %self.lazy.load()
@@ -232,161 +236,161 @@ routine LazySegmentTree<T, L>.push_node(%self: Ptr<Self>, %node: U64, %width: U6
         %lazy[%node].store(%identity)
         return()
 
-routine LazySegmentTree<T, L>.push_path(%self: Ptr<Self>, %node: U64) -> Void
+routine LazySegmentTree<T, L>.push_path(%self: Ptr<Self>, %node: USize) -> Void
     block entry():
-        %height : U64 = %self.height.load()
+        %height : USize = %self.height.load()
         jump loop(%height)
 
-    block loop(%level: U64):
+    block loop(%level: USize):
         %done : Bool = %level.le(0)
         branch %done ? return() : continue
-        %ancestor : U64 = %node.shr(%level)
-        %width    : U64 = %self.cover_width(%level)
+        %ancestor : USize = %node.shr(%level)
+        %width    : USize = %self.cover_width(%level)
         %self.push_node(%ancestor, %width)
         jump loop(%level.sub(1))
 
-routine LazySegmentTree<T, L>.rebuild_path(%self: Ptr<Self>, %node: U64) -> Void
+routine LazySegmentTree<T, L>.rebuild_path(%self: Ptr<Self>, %node: USize) -> Void
     block entry():
-        %parent : U64 = %self.parent(%node)
+        %parent : USize = %self.parent(%node)
         jump loop(%parent)
 
-    block loop(%node: U64):
+    block loop(%node: USize):
         %done : Bool = %node.le(0)
         branch %done ? return() : continue
         %self.pull_node(%node)
-        %parent : U64 = %self.parent(%node)
+        %parent : USize = %self.parent(%node)
         jump loop(%parent)
 
-routine LazySegmentTree<T, L>.rebuild_left_boundary(%self: Ptr<Self>, %node: U64) -> Void
+routine LazySegmentTree<T, L>.rebuild_left_boundary(%self: Ptr<Self>, %node: USize) -> Void
     block entry():
         jump loop(1)
 
-    block loop(%level: U64):
-        %height : U64  = %self.height.load()
-        %done   : Bool = %level.gt(%height)
+    block loop(%level: USize):
+        %height : USize = %self.height.load()
+        %done   : Bool  = %level.gt(%height)
         branch %done ? return() : continue
         %aligned : Bool = %self.aligned_to_cover(%node, %level)
         branch %aligned ? next(%level) : pull(%level)
 
-    block pull(%level: U64):
-        %ancestor : U64 = %node.shr(%level)
+    block pull(%level: USize):
+        %ancestor : USize = %node.shr(%level)
         %self.pull_node(%ancestor)
         jump next(%level)
 
-    block next(%level: U64):
+    block next(%level: USize):
         jump loop(%level.add(1))
 
-routine LazySegmentTree<T, L>.rebuild_right_boundary(%self: Ptr<Self>, %exclusive: U64) -> Void
+routine LazySegmentTree<T, L>.rebuild_right_boundary(%self: Ptr<Self>, %exclusive: USize) -> Void
     block entry():
         jump loop(1)
 
-    block loop(%level: U64):
-        %height : U64  = %self.height.load()
-        %done   : Bool = %level.gt(%height)
+    block loop(%level: USize):
+        %height : USize = %self.height.load()
+        %done   : Bool  = %level.gt(%height)
         branch %done ? return() : continue
         %aligned : Bool = %self.aligned_to_cover(%exclusive, %level)
         branch %aligned ? next(%level) : pull(%level)
 
-    block pull(%level: U64):
-        %ancestor : U64 = %exclusive.sub(1).shr(%level)
+    block pull(%level: USize):
+        %ancestor : USize = %exclusive.sub(1).shr(%level)
         %self.pull_node(%ancestor)
         jump next(%level)
 
-    block next(%level: U64):
+    block next(%level: USize):
         jump loop(%level.add(1))
 
-routine LazySegmentTree<T, L>.set(%self: Ptr<Self>, %index: U64, %value: T) -> Void
+routine LazySegmentTree<T, L>.set(%self: Ptr<Self>, %index: USize, %value: T) -> Void
     block entry():
-        %length       : U64  = %self.length.load()
-        %not_negative : Bool = %index.ge(0)
-        %before_end   : Bool = %index.lt(%length)
-        %in_bounds    : Bool = %not_negative.bitand(%before_end)
+        %length       : USize = %self.length.load()
+        %not_negative : Bool  = %index.ge(0)
+        %before_end   : Bool  = %index.lt(%length)
+        %in_bounds    : Bool  = %not_negative.bitand(%before_end)
         branch %in_bounds ? continue : panic(TrapCode.Bounds)
-        %node : U64 = %self.leaf(%index)
+        %node : USize = %self.leaf(%index)
         %self.push_path(%node)
         %data : Ptr<T> = %self.data.load()
         %data[%node].store(%value)
         %self.rebuild_path(%node)
         return()
 
-routine LazySegmentTree<T, L>.get(%self: Ptr<Self>, %index: U64) -> T
+routine LazySegmentTree<T, L>.get(%self: Ptr<Self>, %index: USize) -> T
     block entry():
-        %length       : U64  = %self.length.load()
-        %not_negative : Bool = %index.ge(0)
-        %before_end   : Bool = %index.lt(%length)
-        %in_bounds    : Bool = %not_negative.bitand(%before_end)
+        %length       : USize = %self.length.load()
+        %not_negative : Bool  = %index.ge(0)
+        %before_end   : Bool  = %index.lt(%length)
+        %in_bounds    : Bool  = %not_negative.bitand(%before_end)
         branch %in_bounds ? load(%index) : panic(TrapCode.Bounds)
 
-    block load(%index: U64):
-        %node : U64 = %self.leaf(%index)
+    block load(%index: USize):
+        %node : USize = %self.leaf(%index)
         %self.push_path(%node)
         %data  : Ptr<T> = %self.data.load()
         %value : T      = %data[%node].load()
         return(%value)
 
-routine LazySegmentTree<T, L>.range_apply(%self: Ptr<Self>, %left: U64, %right: U64,
+routine LazySegmentTree<T, L>.range_apply(%self: Ptr<Self>, %left: USize, %right: USize,
         %tag: L) -> Void
     block entry():
-        %valid_left  : Bool = %left.ge(0)
-        %valid_order : Bool = %left.le(%right)
-        %length      : U64  = %self.length.load()
-        %valid_right : Bool = %right.le(%length)
-        %valid_a     : Bool = %valid_left.bitand(%valid_order)
-        %valid       : Bool = %valid_a.bitand(%valid_right)
+        %valid_left  : Bool  = %left.ge(0)
+        %valid_order : Bool  = %left.le(%right)
+        %length      : USize = %self.length.load()
+        %valid_right : Bool  = %right.le(%length)
+        %valid_a     : Bool  = %valid_left.bitand(%valid_order)
+        %valid       : Bool  = %valid_a.bitand(%valid_right)
         branch %valid ? continue : panic(TrapCode.Bounds)
         %empty : Bool = %left.eq(%right)
         branch %empty ? return() : continue
-        %l0   : U64 = %self.leaf(%left)
-        %r0   : U64 = %self.leaf(%right.sub(1))
-        %rex0 : U64 = %r0.add(1)
+        %l0   : USize = %self.leaf(%left)
+        %r0   : USize = %self.leaf(%right.sub(1))
+        %rex0 : USize = %r0.add(1)
         %self.push_path(%l0)
         %self.push_path(%r0)
         jump loop(%l0, %rex0, 1, %tag, %l0, %rex0)
 
-    block loop(%l: U64, %r: U64, %width: U64, %tag: L, %l0: U64, %rex0: U64):
+    block loop(%l: USize, %r: USize, %width: USize, %tag: L, %l0: USize, %rex0: USize):
         %done : Bool = %l.ge(%r)
         branch %done ? rebuild(%l0, %rex0) : apply_left(%l, %r, %width, %tag, %l0, %rex0)
 
-    block apply_left(%l: U64, %r: U64, %width: U64, %tag: L, %l0: U64, %rex0: U64):
+    block apply_left(%l: USize, %r: USize, %width: USize, %tag: L, %l0: USize, %rex0: USize):
         %take_left : Bool = %self.is_right_child(%l)
         branch %take_left
             ? take_left(%l, %r, %width, %tag, %l0, %rex0)
             : apply_right(%l, %r, %width, %tag, %l0, %rex0)
 
-    block take_left(%l: U64, %r: U64, %width: U64, %tag: L, %l0: U64, %rex0: U64):
+    block take_left(%l: USize, %r: USize, %width: USize, %tag: L, %l0: USize, %rex0: USize):
         %self.apply_node(%l, %tag, %width)
         jump apply_right(%l.add(1), %r, %width, %tag, %l0, %rex0)
 
-    block apply_right(%l: U64, %r: U64, %width: U64, %tag: L, %l0: U64, %rex0: U64):
+    block apply_right(%l: USize, %r: USize, %width: USize, %tag: L, %l0: USize, %rex0: USize):
         %take_right : Bool = %self.is_right_child(%r)
         branch %take_right
             ? take_right(%l, %r, %width, %tag, %l0, %rex0)
             : climb(%l, %r, %width, %tag, %l0, %rex0)
 
-    block take_right(%l: U64, %r: U64, %width: U64, %tag: L, %l0: U64, %rex0: U64):
-        %node : U64 = %r.sub(1)
+    block take_right(%l: USize, %r: USize, %width: USize, %tag: L, %l0: USize, %rex0: USize):
+        %node : USize = %r.sub(1)
         %self.apply_node(%node, %tag, %width)
         jump climb(%l, %node, %width, %tag, %l0, %rex0)
 
-    block climb(%l: U64, %r: U64, %width: U64, %tag: L, %l0: U64, %rex0: U64):
-        %next_l     : U64 = %self.parent(%l)
-        %next_r     : U64 = %self.parent(%r)
-        %next_width : U64 = %width.shl(1)
+    block climb(%l: USize, %r: USize, %width: USize, %tag: L, %l0: USize, %rex0: USize):
+        %next_l     : USize = %self.parent(%l)
+        %next_r     : USize = %self.parent(%r)
+        %next_width : USize = %width.shl(1)
         jump loop(%next_l, %next_r, %next_width, %tag, %l0, %rex0)
 
-    block rebuild(%l0: U64, %rex0: U64):
+    block rebuild(%l0: USize, %rex0: USize):
         %self.rebuild_left_boundary(%l0)
         %self.rebuild_right_boundary(%rex0)
         return()
 
-routine LazySegmentTree<T, L>.range_query(%self: Ptr<Self>, %left: U64, %right: U64) -> T
+routine LazySegmentTree<T, L>.range_query(%self: Ptr<Self>, %left: USize, %right: USize) -> T
     block entry():
-        %valid_left  : Bool = %left.ge(0)
-        %valid_order : Bool = %left.le(%right)
-        %length      : U64  = %self.length.load()
-        %valid_right : Bool = %right.le(%length)
-        %valid_a     : Bool = %valid_left.bitand(%valid_order)
-        %valid       : Bool = %valid_a.bitand(%valid_right)
+        %valid_left  : Bool  = %left.ge(0)
+        %valid_order : Bool  = %left.le(%right)
+        %length      : USize = %self.length.load()
+        %valid_right : Bool  = %right.le(%length)
+        %valid_a     : Bool  = %valid_left.bitand(%valid_order)
+        %valid       : Bool  = %valid_a.bitand(%valid_right)
         branch %valid ? continue : panic(TrapCode.Bounds)
         %empty : Bool = %left.eq(%right)
         branch %empty ? empty() : prepare(%left, %right)
@@ -395,47 +399,47 @@ routine LazySegmentTree<T, L>.range_query(%self: Ptr<Self>, %left: U64, %right: 
         %identity : T = .identity()
         return(%identity)
 
-    block prepare(%left: U64, %right: U64):
-        %l : U64 = %self.leaf(%left)
-        %r : U64 = %self.leaf(%right.sub(1))
+    block prepare(%left: USize, %right: USize):
+        %l : USize = %self.leaf(%left)
+        %r : USize = %self.leaf(%right.sub(1))
         %self.push_path(%l)
         %self.push_path(%r)
         %left_acc  : T = .identity()
         %right_acc : T = .identity()
         jump loop(%l, %r.add(1), %left_acc, %right_acc)
 
-    block loop(%l: U64, %r: U64, %left_acc: T, %right_acc: T):
+    block loop(%l: USize, %r: USize, %left_acc: T, %right_acc: T):
         %done : Bool = %l.ge(%r)
         branch %done ? finish(%left_acc, %right_acc) : take_left(%l, %r, %left_acc, %right_acc)
 
-    block take_left(%l: U64, %r: U64, %left_acc: T, %right_acc: T):
+    block take_left(%l: USize, %r: USize, %left_acc: T, %right_acc: T):
         %use_left : Bool = %self.is_right_child(%l)
         branch %use_left
             ? use_left(%l, %r, %left_acc, %right_acc)
             : take_right(%l, %r, %left_acc, %right_acc)
 
-    block use_left(%l: U64, %r: U64, %left_acc: T, %right_acc: T):
+    block use_left(%l: USize, %r: USize, %left_acc: T, %right_acc: T):
         %data      : Ptr<T> = %self.data.load()
         %value     : T      = %data[%l].load()
         %next_left : T      = %left_acc.combine(%value)
         jump take_right(%l.add(1), %r, %next_left, %right_acc)
 
-    block take_right(%l: U64, %r: U64, %left_acc: T, %right_acc: T):
+    block take_right(%l: USize, %r: USize, %left_acc: T, %right_acc: T):
         %use_right : Bool = %self.is_right_child(%r)
         branch %use_right
             ? use_right(%l, %r, %left_acc, %right_acc)
             : climb(%l, %r, %left_acc, %right_acc)
 
-    block use_right(%l: U64, %r: U64, %left_acc: T, %right_acc: T):
-        %node       : U64    = %r.sub(1)
+    block use_right(%l: USize, %r: USize, %left_acc: T, %right_acc: T):
+        %node       : USize  = %r.sub(1)
         %data       : Ptr<T> = %self.data.load()
         %value      : T      = %data[%node].load()
         %next_right : T      = %value.combine(%right_acc)
         jump climb(%l, %node, %left_acc, %next_right)
 
-    block climb(%l: U64, %r: U64, %left_acc: T, %right_acc: T):
-        %next_l : U64 = %self.parent(%l)
-        %next_r : U64 = %self.parent(%r)
+    block climb(%l: USize, %r: USize, %left_acc: T, %right_acc: T):
+        %next_l : USize = %self.parent(%l)
+        %next_r : USize = %self.parent(%r)
         jump loop(%next_l, %next_r, %left_acc, %right_acc)
 
     block finish(%left_acc: T, %right_acc: T):
@@ -492,7 +496,7 @@ routine RangeSum.combine(%self: Self, %right: Self) -> Self
         %total : Self = Self { sum: %self.sum.add(%right.sum) }
         return(%total)
 
-routine RangeSum.apply(%self: Self, %lazy: RangeAdd, %length: U64) -> Self
+routine RangeSum.apply(%self: Self, %lazy: RangeAdd, %length: USize) -> Self
     block entry():
         %added  : S64  = %lazy.delta.mul(%length.to_s64())
         %result : Self = Self { sum: %self.sum.add(%added) }
@@ -514,34 +518,34 @@ routine RangeAdd.is_identity_lazy(%self: Self) -> Bool
         return(%none)
 
 routine print_sum(%out: Ptr<BufWriter<FdWriter>>, %tree: Ptr<LazySegmentTree<RangeSum, RangeAdd>>,
-        %left: U64, %right: U64) -> Void
+        %left: USize, %right: USize) -> Void
     block entry():
         %total : RangeSum = %tree.range_query(%left, %right)
         write(%out, "sum [{%left}, {%right}) = {%total.sum}\n")
         return()
 
 routine print_get(%out: Ptr<BufWriter<FdWriter>>, %tree: Ptr<LazySegmentTree<RangeSum, RangeAdd>>,
-        %index: U64) -> Void
+        %index: USize) -> Void
     block entry():
         %value : RangeSum = %tree.get(%index)
         write(%out, "get {%index} = {%value.sum}\n")
         return()
 
-routine print_add(%out: Ptr<BufWriter<FdWriter>>, %left: U64, %right: U64, %delta: S64) -> Void
+routine print_add(%out: Ptr<BufWriter<FdWriter>>, %left: USize, %right: USize, %delta: S64) -> Void
     block entry():
         write(%out, "add {%delta} to [{%left}, {%right})\n")
         return()
 
 /// Fills count leaves with i * 7 mod 10: 0 7 4 1 8 5 2 9 6 3.
-routine fill_values(%values: Ptr<RangeSum>, %count: U64) -> Void
+routine fill_values(%values: Ptr<RangeSum>, %count: USize) -> Void
     block entry():
         jump loop(0)
 
-    block loop(%i: U64):
+    block loop(%i: USize):
         %done : Bool = %i.ge(%count)
         branch %done ? return() : store(%i)
 
-    block store(%i: U64):
+    block store(%i: USize):
         %leaf : RangeSum = RangeSum { sum: %i.mul(7).rem(10).to_s64() }
         %values[%i].store(%leaf)
         jump loop(%i.add(1))

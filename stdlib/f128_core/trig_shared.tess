@@ -430,13 +430,13 @@ routine cm_trig_mul256(%a: U256, %b: U256) -> U256
 // -- tables --------------------------------------------------------------------
 
 /// Limb `limb` (0 = least significant) of sin(j*pi/256) (w = 0) or cos(j*pi/256) (w = 1) × 2^384.
-routine cm_trig_sincos(%j: U64, %w: U64, %limb: U64) -> U128
+routine cm_trig_sincos(%j: USize, %w: USize, %limb: USize) -> U128
     block entry():
-        %index : U64  = %j.mul(2).add(%w).mul(3).add(%limb)
-        %r     : U128 = CM_TRIG_SINCOS.get(%index)
+        %index : USize = %j.mul(2).add(%w).mul(3).add(%limb)
+        %r     : U128  = CM_TRIG_SINCOS.get(%index)
         return(%r)
 
-routine cm_trig_sincos384(%j: U64, %w: U64) -> CmTrigU384
+routine cm_trig_sincos384(%j: USize, %w: USize) -> CmTrigU384
     block entry():
         %l0 : U128       = cm_trig_sincos(%j, %w, 0)
         %l1 : U128       = cm_trig_sincos(%j, %w, 1)
@@ -445,10 +445,10 @@ routine cm_trig_sincos384(%j: U64, %w: U64) -> CmTrigU384
         return(%r)
 
 /// Limb `limb` of Taylor coefficient k in CM_TRIG_SIN_COEF or CM_TRIG_COS_COEF.
-routine cm_trig_coef(%coef: Ptr<U128>, %k: U64, %limb: U64) -> U128
+routine cm_trig_coef(%coef: Ptr<U128>, %k: USize, %limb: USize) -> U128
     block entry():
-        %index : U64  = %k.mul(3).add(%limb)
-        %r     : U128 = %coef[%index].load()
+        %index : USize = %k.mul(3).add(%limb)
+        %r     : U128  = %coef[%index].load()
         return(%r)
 
 // -- argument reduction --------------------------------------------------------
@@ -472,31 +472,31 @@ routine cm_trig_window_limb(%first: S64, %count: S64, %k: S64) -> U128
         %inside  : Bool = %k.in_range(0, %count)
         %outside : U128 = 0
         branch %inside ? continue : return(%outside)
-        %index : U64  = %first.add(%k).to_u64()
-        %limb  : U64  = TWO_OVER_PI.get(%index)
-        %r     : U128 = %limb.to_u128()
+        %index : USize = %first.add(%k).to_usize()
+        %limb  : U64   = TWO_OVER_PI.get(%index)
+        %r     : U128  = %limb.to_u128()
         return(%r)
 
 /// m × window as count+3 little-endian 64-bit limbs at %p, for the window of `count` limbs of 2/pi starting at
 /// `first`: the product fills count+2 of them and the spare top limb stays zero.
-routine cm_trig_product(%m: U128, %first: S64, %count: U64, %p: Ptr<U64>) -> Void
+routine cm_trig_product(%m: U128, %first: S64, %count: USize, %p: Ptr<U64>) -> Void
     block entry():
         %low  : U128 = %m.bitand(0xFFFFFFFFFFFFFFFF)
         %high : U128 = %m.shr(64)
         jump column(0, 0, %low, %high, %first, %count, %p)
 
-    block column(%c: U64, %carry: U128, %low: U128, %high: U128, %first: S64, %count: U64,
+    block column(%c: USize, %carry: U128, %low: U128, %high: U128, %first: S64, %count: USize,
             %p: Ptr<U64>):
         %done : Bool = %c.ge(%count.add(3))
         branch %done ? return() : step(%c, %carry, %low, %high, %first, %count, %p)
 
     // column c is (high*prev + carry) + low*cur, with cur and prev the window limbs under the two halves of m
-    block step(%c: U64, %carry: U128, %low: U128, %high: U128, %first: S64, %count: U64,
+    block step(%c: USize, %carry: U128, %low: U128, %high: U128, %first: S64, %count: USize,
             %p: Ptr<U64>):
         %cur  : U128 = cm_trig_window_limb(%first, %count.to_s64(),
-                %count.sub(1).sub_wrap(%c).to_s64_wrap())
+                %count.to_s64().sub(1).sub(%c.to_s64()))
         %prev : U128 = cm_trig_window_limb(%first, %count.to_s64(),
-                %count.sub_wrap(%c).to_s64_wrap())
+                %count.to_s64().sub(%c.to_s64()))
         // high < 2^49 keeps the first sum under 2^114, only the second can spill
         %acc   : U128 = %high.mul_wrap(%prev).add_wrap(%carry)
         %t     : U128 = %acc.add_wrap(%low.mul_wrap(%cur))
@@ -825,9 +825,9 @@ routine cm_trig_fast_tail(%red: CmTrigReduced, %sq: CmTrigSquares, %sine_theta: 
             %j: S64, %flip: U128):
         %et         : S64        = %red.et
         %correction : U128       = cm_trig_cos_corr(%sq.u1, %sq.u, %sq.v)
-        %first1     : U128       = cm_trig_sincos(%j.to_u64(), %want_cos.to_u64(), 1)
-        %first2     : U128       = cm_trig_sincos(%j.to_u64(), %want_cos.to_u64(), 2)
-        %second2    : U128       = cm_trig_sincos(%j.to_u64(), 1.sub(%want_cos).to_u64(), 2)
+        %first1     : U128       = cm_trig_sincos(%j.to_usize(), %want_cos.to_usize(), 1)
+        %first2     : U128       = cm_trig_sincos(%j.to_usize(), %want_cos.to_usize(), 2)
+        %second2    : U128       = cm_trig_sincos(%j.to_usize(), 1.sub(%want_cos).to_usize(), 2)
         %c_frac     : U128       = cm_trig_mhi(%first2, %correction)
         %s_frac     : U128       = cm_trig_mhi(%second2, %sine_theta)
         %c          : U256       = cm_trig_place256(%c_frac, %et.mul(2).add(128))
@@ -854,22 +854,22 @@ routine cm_trig_alternating(%u: CmTrigU384, %coef: Ptr<U128>) -> CmTrigU384
         %last : U128 = cm_trig_coef(%coef, 17, 2)
         jump narrow(16, %last, %u, %coef)
 
-    block narrow(%k: U64, %acc: U128, %u: CmTrigU384, %coef: Ptr<U128>):
+    block narrow(%k: USize, %acc: U128, %u: CmTrigU384, %coef: Ptr<U128>):
         %done : Bool = %k.lt(11)
         branch %done
             ? middle(10, cm_trig_join(%acc, 0), %u, %coef)
             : narrow_step(%k, %acc, %u, %coef)
 
-    block narrow_step(%k: U64, %acc: U128, %u: CmTrigU384, %coef: Ptr<U128>):
+    block narrow_step(%k: USize, %acc: U128, %u: CmTrigU384, %coef: Ptr<U128>):
         %c    : U128 = cm_trig_coef(%coef, %k, 2)
         %next : U128 = %c.sub_wrap(cm_trig_mhi(%u.l2, %acc))
         jump narrow(%k.sub(1), %next, %u, %coef)
 
-    block middle(%k: U64, %acc: U256, %u: CmTrigU384, %coef: Ptr<U128>):
+    block middle(%k: USize, %acc: U256, %u: CmTrigU384, %coef: Ptr<U128>):
         %done : Bool = %k.lt(2)
         branch %done ? widen_to_384(%acc, %u, %coef) : middle_step(%k, %acc, %u, %coef)
 
-    block middle_step(%k: U64, %acc: U256, %u: CmTrigU384, %coef: Ptr<U128>):
+    block middle_step(%k: USize, %acc: U256, %u: CmTrigU384, %coef: Ptr<U128>):
         %c_lo    : U128 = cm_trig_coef(%coef, %k, 1)
         %c_hi    : U128 = cm_trig_coef(%coef, %k, 2)
         %c       : U256 = cm_trig_join(%c_hi, %c_lo)
@@ -886,9 +886,9 @@ routine cm_trig_alternating(%u: CmTrigU384, %coef: Ptr<U128>) -> CmTrigU384
     block full(%k: S64, %acc: CmTrigU384, %u: CmTrigU384, %coef: Ptr<U128>):
         %done : Bool = %k.lt(0)
         branch %done ? return(%acc) : continue
-        %c0   : U128       = cm_trig_coef(%coef, %k.to_u64(), 0)
-        %c1   : U128       = cm_trig_coef(%coef, %k.to_u64(), 1)
-        %c2   : U128       = cm_trig_coef(%coef, %k.to_u64(), 2)
+        %c0   : U128       = cm_trig_coef(%coef, %k.to_usize(), 0)
+        %c1   : U128       = cm_trig_coef(%coef, %k.to_usize(), 1)
+        %c2   : U128       = cm_trig_coef(%coef, %k.to_usize(), 2)
         %c    : CmTrigU384 = CmTrigU384 { l0: %c0, l1: %c1, l2: %c2 }
         %next : CmTrigU384 = cm_trig_sub384(%c, cm_trig_mul384(%u, %acc))
         jump full(%k.sub(1), %next, %u, %coef)
@@ -966,8 +966,8 @@ routine cm_trig_evaluate(%red: CmTrigWideReduced, %cosine: Bool, %sign: U128) ->
             %negative: Bool):
         %q          : CmTrigU384 = cm_trig_alternating(%u, CM_TRIG_COS_COEF.to_ptr())
         %one_minus  : CmTrigU384 = cm_trig_mul384(%u, %q)
-        %first      : CmTrigU384 = cm_trig_sincos384(%j.to_u64(), %want_cos.to_u64())
-        %second     : CmTrigU384 = cm_trig_sincos384(%j.to_u64(), 1.sub(%want_cos).to_u64())
+        %first      : CmTrigU384 = cm_trig_sincos384(%j.to_usize(), %want_cos.to_usize())
+        %second     : CmTrigU384 = cm_trig_sincos384(%j.to_usize(), 1.sub(%want_cos).to_usize())
         %first_c    : CmTrigU384 = cm_trig_mul384(%first, %one_minus)
         %base       : CmTrigU384 = cm_trig_sub384(%first, %first_c)
         %second_s   : CmTrigU384 = cm_trig_mul384(%second, %sine)

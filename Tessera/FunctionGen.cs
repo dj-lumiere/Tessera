@@ -378,10 +378,11 @@ public sealed class FunctionGen
 
     private Val EvalIndex(Expr e)
     {
-        var i = Eval(e, Infer(e) ?? IntType.U(64));
+        var i = Eval(e, Infer(e) ?? _c.USize);
         if (i.Type is not IntType { IsNumber: true } it) throw Err(e.Pos, $"an index must be an integer, not {i.Type}");
-        // GEP reads its index as signed, so a narrow unsigned index is widened first.
-        if (it.IsUnsigned && it.Bits < 64) return new Val(EmitTmp($"zext {it.Llvm} {i.Op} to i64"), IntType.U(64));
+        // GEP reads its index as signed, so a narrower unsigned index is widened to the pointer width first.
+        int width = _c.Target.Size;
+        if (it.IsUnsigned && it.Bits < width) return new Val(EmitTmp($"zext {it.Llvm} {i.Op} to i{width}"), _c.USize);
         return i;
     }
 
@@ -443,7 +444,7 @@ public sealed class FunctionGen
     {
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } c
             && _c.FindFree(c.Name, _env.File, c.Pos) is null)
-            return IntType.U(64);
+            return _c.USize;
         if (IndirectCall(e) is { } ind) return ind.Callable.Ret;
         var plan = PlanCall(e, expected);
         return plan is null ? null : _c.Signature(plan.Decl, plan.Env).Ret;
@@ -571,7 +572,7 @@ public sealed class FunctionGen
         {
             _c.EnsureTypeDefined(st);
             string a = EmitTmp($"insertvalue {st.Llvm} poison, ptr {g}, 0");
-            return new Val(EmitTmp($"insertvalue {st.Llvm} {a}, i64 {Compiler.Utf8Length(s.Value)}, 1"), st);
+            return new Val(EmitTmp($"insertvalue {st.Llvm} {a}, {_c.USize.Llvm} {Compiler.Utf8Length(s.Value)}, 1"), st);
         }
         throw Mismatch(s.Pos, expected, "a string literal");
     }
@@ -875,7 +876,7 @@ public sealed class FunctionGen
         if (r.Owner is null)
         {
             if (_env.Get(r.Name) is ConstArg ca)
-                return new PresetInfo(IntType.U(64), exp => IntConst(ca.Value, r.Pos, exp));
+                return new PresetInfo(_c.USize, exp => IntConst(ca.Value, r.Pos, exp));
             var c = _c.FindPreset("", r.Name, file, r.Pos, r.Path);
             return c is null ? null : PresetValue(c, null);
         }
@@ -1203,9 +1204,9 @@ public sealed class FunctionGen
         var t = Resolve(c.TypeArgs[0]);
         _c.EnsureTypeDefined(t);
         string op = c.Name == "sizeof"
-            ? $"ptrtoint (ptr getelementptr ({t.Llvm}, ptr null, i32 1) to i64)"
-            : $"ptrtoint (ptr getelementptr ({{ i1, {t.Llvm} }}, ptr null, i32 0, i32 1) to i64)";
-        return new Val(op, IntType.U(64));
+            ? $"ptrtoint (ptr getelementptr ({t.Llvm}, ptr null, i32 1) to {_c.USize.Llvm})"
+            : $"ptrtoint (ptr getelementptr ({{ i1, {t.Llvm} }}, ptr null, i32 0, i32 1) to {_c.USize.Llvm})";
+        return new Val(op, _c.USize);
     }
 
     private Val EmitCall(CallPlan plan)
@@ -1342,6 +1343,12 @@ public sealed class FunctionGen
             if (sig.Env.Get(key) is { } t)
             {
                 sb.Append(t is ConstArg ca ? ca.Name : t.Llvm);
+                continue;
+            }
+            // `{USize}` / `{SSize}`: the target's pointer-width integer type.
+            if (key is "USize" or "SSize")
+            {
+                sb.Append(_c.Target.ResolveTargetType(key)!.Llvm);
                 continue;
             }
             throw Err(sig.Decl.Pos, $"unknown placeholder '{{{key}}}' in the template of '{sig.Decl.DisplayName}'");
