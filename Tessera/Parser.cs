@@ -695,10 +695,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
-    /// `else`, the default arm of `when`. The old spelling `_` gets a pointed error.
+    /// `else`, the default arm of `when`.
     private bool AcceptElse()
     {
-        if (Is(TokenKind.Underscore)) throw Error("the default arm of when is written else: else -> target()");
         if (!IsIdent("else")) return false;
         Next();
         return true;
