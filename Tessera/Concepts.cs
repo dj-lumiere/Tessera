@@ -33,6 +33,11 @@ public sealed partial class Compiler
                     foreach (var concept in cl.Concepts)
                         _conformances.Add(new Conformance(concept, r.TypeParams, cl.When, r));
                 break;
+            case VariantDecl v:
+                foreach (var cl in v.Clauses.Where(c => c.Kind == "conform"))
+                    foreach (var concept in cl.Concepts)
+                        _conformances.Add(new Conformance(concept, v.TypeParams, cl.When, v));
+                break;
             case ConformDecl cd:
             {
                 var parameters = cd.Clauses.SelectMany(c => c.Params).Select(p => p.Name).Distinct().ToList();
@@ -69,17 +74,21 @@ public sealed partial class Compiler
     }
 
     /// Checks a record's `require` concepts for one instantiation.
-    private void CheckRecordRequirements(RecordDecl s, List<DType> args, Pos at)
+    private void CheckRecordRequirements(RecordDecl s, List<DType> args, Pos at) =>
+        CheckRequirements(s.Clauses, s.TypeParams, s.File, s.Pos, args, at, new RecordType(s, args, _ => null).Name);
+
+    /// The `require` concepts of a generic record or variant, for the type arguments it's formed with.
+    private void CheckRequirements(List<Clause> clauses, List<string> typeParams, string file, Pos declared,
+        List<DType> args, Pos at, string shown)
     {
-        var constraints = s.Clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts).ToList();
+        var constraints = clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts).ToList();
         if (constraints.Count == 0) return;
-        string key = s.Pos + "|" + string.Join(",", args.Select(a => a.Name));
+        string key = declared + "|" + string.Join(",", args.Select(a => a.Name));
         if (!_checkedRequirements.Add(key)) return;
-        var env = new TypeEnv(s.File);
-        for (int i = 0; i < s.TypeParams.Count && i < args.Count; i++) env.Bind(s.TypeParams[i], args[i]);
-        var shown = new RecordType(s, args, _ => null);
+        var env = new TypeEnv(file);
+        for (int i = 0; i < typeParams.Count && i < args.Count; i++) env.Bind(typeParams[i], args[i]);
         foreach (var c in constraints)
-            RequireConformance(c, env, at, shown.Name);
+            RequireConformance(c, env, at, shown);
     }
 
     private void RequireConformance(TypeRef constraint, TypeEnv env, Pos at, string neededBy)
@@ -167,6 +176,7 @@ public sealed partial class Compiler
         switch (actual)
         {
             case RecordType rt when rt.Decl.Name == pattern.Name: actualArgs = rt.Args; break;
+            case VariantType vt when vt.Decl.Name == pattern.Name: actualArgs = vt.Args; break;
             case PtrType pt when pattern.Name == "Ptr" && pt.Pointee is not null: actualArgs = [pt.Pointee]; break;
             case ArrayType at when pattern.Name == "Array": actualArgs = [at.Elem, new ConstArg(at.Count)]; break;
             default: return false;
@@ -258,6 +268,7 @@ public sealed partial class Compiler
         List<DType> actual = owner switch
         {
             RecordType s => s.Args,
+            VariantType v => v.Args,
             ArrayType a => [a.Elem, new ConstArg(a.Count)],
             PtrType p => [p.Pointee ?? IntType.Byte],
             _ => throw new CompileError(pos, $"{owner} does not match '{o}'"),

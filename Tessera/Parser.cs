@@ -11,7 +11,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private static readonly HashSet<string> TerminatorKeywords =
         ["jump", "branch", "when", "return", "unreachable"];
 
-    private static readonly HashSet<string> DeclKeywords = ["routine", "record", "choice", "preset", "concept", "conform"];
+    private static readonly HashSet<string> DeclKeywords =
+        ["routine", "record", "choice", "variant", "preset", "concept", "conform"];
 
     public Module ParseModule()
     {
@@ -42,12 +43,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             bool isPrivate = IsIdent("private");
             if (isPrivate) Next();
             if (Cur.Kind != TokenKind.Ident || !DeclKeywords.Contains(Cur.Text))
-                throw Error($"expected a declaration (routine, record, choice, preset, concept, conform), found {Describe(Cur)}");
+                throw Error($"expected a declaration (routine, record, choice, variant, preset, concept, conform), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
                 "routine" => ParseRoutine(attrs, inConcept: false),
                 "record" => ParseRecord(attrs),
                 "choice" => ParseChoice(attrs),
+                "variant" => ParseVariant(attrs),
                 "preset" => ParsePreset(attrs),
                 "conform" => ParseConformDecl(attrs),
                 _ => ParseConcept(attrs),
@@ -357,6 +359,28 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             ExpectLineEnd();
         }
         return new RecordDecl(file, attrs, name.Text, typeParams, clauses, fields, pos);
+    }
+
+    /// `variant Name<T>`, its clauses, then one case per line: `Number : S64` carries a payload, `Empty` doesn't.
+    private VariantDecl ParseVariant(List<Attribute> attrs)
+    {
+        var pos = Cur.Pos;
+        ExpectIdent("variant");
+        var name = Expect(TokenKind.Ident, "a variant name");
+        var typeParams = ParseTypeParamNames();
+        ExpectLineEnd();
+        var clauses = ParseClauses();
+
+        var cases = new List<VariantCase>();
+        while (!AtDeclStart())
+        {
+            var c = Expect(TokenKind.Ident, "a variant case");
+            TypeRef? payload = Accept(TokenKind.Colon) ? ParseType() : null;
+            cases.Add(new VariantCase(c.Text, payload, c.Pos));
+            ExpectLineEnd();
+        }
+        if (cases.Count == 0) throw new CompileError(pos, $"variant '{name.Text}' needs at least one case");
+        return new VariantDecl(file, attrs, name.Text, typeParams, clauses, cases, pos);
     }
 
     private ChoiceDecl ParseChoice(List<Attribute> attrs)
@@ -754,8 +778,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 Next();
                 var member = Next();
                 var typeArgs = ParseTypeArgsOpt();
-                if (!Is(TokenKind.LParen))
-                    throw new CompileError(t.Pos, $"'.{member.Text}' needs arguments: a leading '.' is a typewise call, .{member.Text}(...)");
+                // `.Nothing` without arguments can only be a variant case; the checker says so otherwise.
+                if (!Is(TokenKind.LParen) && typeArgs.Count == 0) return new ImplicitMemberExpr(member.Text, t.Pos);
                 return new ImplicitCallExpr(member.Text, typeArgs, ParseArgs(), t.Pos);
             }
             case TokenKind.LBracket:

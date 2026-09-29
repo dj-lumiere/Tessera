@@ -74,6 +74,22 @@ public sealed partial class Compiler
             }
             case RecordType { TransparentField: { } field }:
                 return SizeAlign(field, pos);
+            case VariantType v:
+            {
+                if (!_sizing.Add(v.Name)) throw new CompileError(pos, $"{v} contains itself");
+                try
+                {
+                    var (tagSize, tagAlign) = Layout(pos).Int(v.Tag.Bits);
+                    var (_, size, align) = VariantStorage(v);
+                    long offset = RoundUp(tagSize, align);
+                    long whole = Math.Max(tagAlign, align);
+                    return (RoundUp(offset + size, whole), whole);
+                }
+                finally
+                {
+                    _sizing.Remove(v.Name);
+                }
+            }
             case RecordType s when s.Decl.Attr("llvm") is null:
             {
                 if (!_sizing.Add(s.Name)) throw new CompileError(pos, $"{s} contains itself");

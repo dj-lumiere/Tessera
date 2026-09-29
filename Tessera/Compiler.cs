@@ -11,6 +11,7 @@ public sealed partial class Compiler
     public BuildTarget Target { get; }
 
     private readonly Dictionary<string, List<RecordDecl>> _records = [];
+    private readonly Dictionary<string, List<VariantDecl>> _variants = [];
     private readonly Dictionary<string, List<ChoiceDecl>> _choices = [];
     private readonly Dictionary<string, List<RoutineDecl>> _free = [];
     private readonly Dictionary<(string Owner, string Name), List<RoutineDecl>> _methods = [];
@@ -50,6 +51,7 @@ public sealed partial class Compiler
                     break;
                 case ImportDecl imp: _imports.Add(imp); break;
                 case RecordDecl s: Add(_records, s.Name, s); break;
+                case VariantDecl v: Add(_variants, v.Name, v); break;
                 case ChoiceDecl e: Add(_choices, e.Name, e); break;
                 case PresetDecl c: Add(_presets, (c.Owner?.Name ?? "", c.Name), c); break;
                 case RoutineDecl r:
@@ -66,6 +68,7 @@ public sealed partial class Compiler
             if (!_modules.Contains(imp.Path))
                 throw new CompileError(imp.Pos, $"unknown module '{imp.Path}'");
         RejectDuplicates(_records.Values, d => $"record '{d.Name}'");
+        RejectDuplicates(_variants.Values, d => $"variant '{d.Name}'");
         RejectDuplicates(_choices.Values, d => $"choice '{d.Name}'");
         RejectDuplicates(_presets.Values, d => $"preset '{(d.Owner is null ? d.Name : $"{d.Owner.Name}.{d.Name}")}'");
         RejectDuplicates(_free.Values, d => $"routine '{d.Name}'");
@@ -229,6 +232,9 @@ public sealed partial class Compiler
     public RecordDecl? FindRecord(string name, string file, Pos pos) =>
         Pick(_records.GetValueOrDefault(name), file, pos, $"record '{name}'");
 
+    public VariantDecl? FindVariant(string name, string file, Pos pos) =>
+        Pick(_variants.GetValueOrDefault(name), file, pos, $"variant '{name}'");
+
     public ChoiceDecl? FindChoice(string name, string file, Pos pos) =>
         Pick(_choices.GetValueOrDefault(name), file, pos, $"choice '{name}'");
 
@@ -348,6 +354,23 @@ public sealed partial class Compiler
                 });
             CheckRecordRequirements(s, args, t.Pos);
             return new RecordType(s, args, TransparentField);
+        }
+
+        if (FindVariant(t.Name, env.File, t.Pos) is { } v)
+        {
+            if (t.Args.Count != v.TypeParams.Count)
+                throw new CompileError(t.Pos, $"variant '{v.Name}' takes {v.TypeParams.Count} generic argument(s), got {t.Args.Count}");
+            var args = new List<DType>();
+            for (int i = 0; i < t.Args.Count; i++)
+                args.Add(t.Args[i] switch
+                {
+                    TypeArgType ta => ResolveTypeInner(ta.Type, env),
+                    TypeArgInt ti => new ConstArg(ti.Value),
+                    TypeArgExpr te => new ConstArg(EvalConstInt(te.Expr, env, 0)),
+                    _ => throw new CompileError(t.Pos, $"invalid generic argument for '{v.Name}'"),
+                });
+            CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}<{string.Join(", ", args.Select(a => a.Name))}>");
+            return new VariantType(v, args, VariantPayloads);
         }
 
         if (FindChoice(t.Name, env.File, t.Pos) is { } e)
@@ -490,6 +513,34 @@ public sealed partial class Compiler
         }
     }
 
+    private List<DType?> VariantPayloads(VariantType v)
+    {
+        var env = new TypeEnv(v.Decl.File);
+        for (int i = 0; i < v.Decl.TypeParams.Count && i < v.Args.Count; i++) env.Bind(v.Decl.TypeParams[i], v.Args[i]);
+        return v.Decl.Cases.Select(c =>
+        {
+            if (c.Payload is null) return null;
+            var t = ResolveType(c.Payload, env);
+            if (t is VoidType) throw new CompileError(c.Pos, $"case '{c.Name}' can't carry Void; leave the payload out");
+            return t;
+        }).ToList();
+    }
+
+    /// The storage a variant's cases share: the most aligned payload type, and the largest payload's size.
+    public (DType? Aligner, long Size, long Align) VariantStorage(VariantType v)
+    {
+        DType? aligner = null;
+        long size = 0, align = 1;
+        foreach (var p in v.Payloads)
+        {
+            if (p is null) continue;
+            var (s, a) = SizeAlign(p, v.Decl.Pos);
+            size = Math.Max(size, s);
+            if (aligner is null || a > align) (aligner, align) = (p, Math.Max(a, align));
+        }
+        return (aligner, size, align);
+    }
+
     /// Makes sure every record type used in the IR has a definition.
     public void EnsureTypeDefined(DType t)
     {
@@ -498,6 +549,27 @@ public sealed partial class Compiler
             case RecordType { TransparentField: { } field }:
                 EnsureTypeDefined(field);
                 break;
+            case VariantType v:
+            {
+                if (_definingTypes.Contains(v.Name)) throw new CompileError(v.Decl.Pos, $"{v} contains itself");
+                if (!_definedTypes.Add(v.Name)) return;
+                _definingTypes.Add(v.Name);
+                try
+                {
+                    foreach (var p in v.Payloads)
+                        if (p is not null) EnsureTypeDefined(p);
+                }
+                finally
+                {
+                    _definingTypes.Remove(v.Name);
+                }
+                // The storage is words as wide as its alignment, so an optimized copy moves words, not bytes.
+                var (aligner, size, align) = VariantStorage(v);
+                long words = (size + align - 1) / align;
+                string body = aligner is null ? v.Tag.Llvm : $"{v.Tag.Llvm}, [0 x {aligner.Llvm}], [{words} x i{align * 8}]";
+                _typeDefs.AppendLine($"{v.Llvm} = type {{ {body} }}");
+                break;
+            }
             case RecordType s when s.Decl.Attr("llvm") is null:
                 // A record can hold itself only through a pointer.
                 if (_definingTypes.Contains(s.Name)) throw new CompileError(s.Decl.Pos, $"{s} contains itself");

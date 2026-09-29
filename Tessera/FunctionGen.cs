@@ -411,6 +411,8 @@ public sealed class FunctionGen
                 return PlaceType(e) is { } pt ? new PtrType(pt) : null;
             case FieldExpr f:
                 return Infer(f.Base) is RecordType s ? FieldOf(s, f.Name, f.Pos).Type : null;
+            case NsCallExpr or PresetRef when VariantCaseOf(e, null) is { } vc:
+                return vc.Type;
             case PresetRef r:
                 return InferPresetRef(r);
             case NsCallExpr n when ArrayFrom(n) is { } from:
@@ -444,6 +446,8 @@ public sealed class FunctionGen
     {
         if (e is ImplicitCallExpr ic)
             throw Err(ic.Pos, $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
+        if (e is ImplicitMemberExpr im)
+            throw Err(im.Pos, $"'.{im.Name}' needs a known variant type here; write the type: Type.{im.Name}");
         var t = Infer(e) ?? throw Err(e.Pos, "cannot infer the type of this expression; bind it with a type annotation");
         return Eval(e, t);
     }
@@ -482,6 +486,10 @@ public sealed class FunctionGen
             NsCallExpr n when ArrayFrom(n) is { } from => EvalArrayLit(from.Literal, from.Type),
             ImplicitCallExpr { Name: "from", TypeArgs.Count: 0, Args: [ArrayLit lit] } when expected is ArrayType at =>
                 EvalArrayLit(lit, at),
+            NsCallExpr or ImplicitCallExpr or ImplicitMemberExpr or PresetRef when VariantCaseOf(e, expected) is { } vc =>
+                EmitVariantCase(vc, e.Pos),
+            ImplicitMemberExpr m => throw Err(m.Pos,
+                $"'.{m.Name}' isn't a case of {expected}: a leading '.' without arguments names a variant case; a typewise call is .{m.Name}(...)"),
             ImplicitCallExpr => EvalCall(e, expected),
             CallExpr wf when IsTemplateCall(wf) => EvalTemplateCall(wf),
             PresetRef r => EvalPresetRef(r, expected),
@@ -569,6 +577,151 @@ public sealed class FunctionGen
         string slot = $"%s{_allocas.Count}";
         _allocas.Add($"{slot} = alloca {t.Llvm}");
         return new Val(slot, new PtrType(t));
+    }
+
+    private string NewSlot(DType t)
+    {
+        _c.EnsureTypeDefined(t);
+        string slot = $"%s{_allocas.Count}";
+        _allocas.Add($"{slot} = alloca {t.Llvm}");
+        return slot;
+    }
+
+    // ── Variants ────────────────────────────────────────────────────────────
+
+    private sealed record VariantCaseRef(VariantType Type, int Index, List<Expr> Args);
+
+    /// `Expr.Number(5)`, `.Number(5)` where an Expr is expected, or `Expr.Empty`: a case of a variant, if `e` names one.
+    private VariantCaseRef? VariantCaseOf(Expr e, DType? expected)
+    {
+        (DType? owner, string name, List<Expr> args) = e switch
+        {
+            NsCallExpr n => (TryResolveOwner(n.Owner), n.Name, n.Args),
+            ImplicitCallExpr ic => (expected, ic.Name, ic.Args),
+            ImplicitMemberExpr m => (expected, m.Name, []),
+            PresetRef { Owner: { } o } r => (TryResolveOwner(o), r.Name, []),
+            _ => (null, "", []),
+        };
+        if (owner is not VariantType v) return null;
+        int index = v.CaseIndex(name);
+        return index < 0 ? null : new VariantCaseRef(v, index, args);
+    }
+
+    /// A variant holding one case: the tag, and the payload written into the shared storage. The storage can only be
+    /// reached through memory, so a case with a payload is built in a stack slot.
+    private Val EmitVariantCase(VariantCaseRef c, Pos pos)
+    {
+        var (v, index, args) = c;
+        string name = $"{v.Decl.Name}.{v.Decl.Cases[index].Name}";
+        var payload = v.Payloads[index];
+        if (payload is null && args.Count != 0) throw Err(pos, $"{name} carries no payload; write {name}");
+        if (payload is not null && args.Count != 1) throw Err(pos, $"{name} carries one {payload}: {name}(...)");
+        _c.EnsureTypeDefined(v);
+        string tagged = EmitTmp($"insertvalue {v.Llvm} zeroinitializer, {v.Tag.Llvm} {index}, 0");
+        if (payload is null) return new Val(tagged, v);
+        var value = EvalArg(args[0], payload);
+        string slot = NewSlot(v);
+        Line($"store {v.Llvm} {tagged}, ptr {slot}");
+        string at = EmitTmp($"getelementptr inbounds {v.Llvm}, ptr {slot}, i32 0, i32 2");
+        Line($"store {payload.Llvm} {value.Op}, ptr {at}");
+        return new Val(EmitTmp($"load {v.Llvm}, ptr {slot}"), v);
+    }
+
+    /// One case pattern of a `when` on a variant: `Expr.Number(%n)` binds the payload, `Expr.Number` and
+    /// `Expr.Empty` don't.
+    private (int Index, ValueRef? Binding) VariantPattern(Expr e, VariantType v)
+    {
+        (string? owner, string name, List<Expr> args) = e switch
+        {
+            NsCallExpr n => (n.Owner.Name, n.Name, n.Args),
+            ImplicitCallExpr ic => (null, ic.Name, ic.Args),
+            ImplicitMemberExpr m => (null, m.Name, []),
+            PresetRef { Owner: { } o } r => (o.Name, r.Name, []),
+            _ => throw Err(e.Pos, $"a when on {v} matches its cases: {v.Decl.Name}.{v.Decl.Cases[0].Name}"),
+        };
+        if (owner is not null && owner != v.Decl.Name) throw Err(e.Pos, $"'{owner}' isn't {v}; its cases are {v.Decl.Name}.*");
+        int index = v.CaseIndex(name);
+        if (index < 0) throw Err(e.Pos, $"variant '{v.Decl.Name}' has no case '{name}'");
+        var payload = v.Payloads[index];
+        switch (args)
+        {
+            case []:
+                return (index, null);
+            case [ValueRef r] when payload is not null:
+                return (index, r);
+            case [ValueRef]:
+                throw Err(e.Pos, $"{v.Decl.Name}.{name} carries no payload to bind");
+            default:
+                throw Err(e.Pos, $"bind the payload to a name: {v.Decl.Name}.{name}(%value)");
+        }
+    }
+
+    /// A `when` on a variant switches on its tag. An arm that binds the payload gets its own block, which reads the
+    /// payload out of a stack copy of the value and then goes on to the arm's target.
+    private void EmitVariantWhen(WhenValueTerm sw, Val v, VariantType vt)
+    {
+        string tag = EmitTmp($"extractvalue {vt.Llvm} {v.Op}, 0");
+        var arms = sw.Arms.Select(a => (Patterns: a.Cases?.Select(c => VariantPattern(c, vt)).ToList(), a.Target)).ToList();
+        string? slot = null;
+        if (arms.Any(a => a.Patterns?.Any(p => p.Binding is not null) == true))
+        {
+            slot = NewSlot(vt);
+            Line($"store {vt.Llvm} {v.Op}, ptr {slot}");
+        }
+
+        string? defaultLabel = null;
+        var cases = new List<string>();
+        var seen = new HashSet<int>();
+        foreach (var (patterns, target) in arms)
+        {
+            if (patterns is null)
+            {
+                if (defaultLabel is not null) throw Err(target.Pos, "when has two '_' arms");
+                defaultLabel = ArmLabel(target);
+                continue;
+            }
+            if (patterns.Count > 1 && patterns.Any(p => p.Binding is not null))
+                throw Err(target.Pos, "an arm that binds a payload matches one case");
+            string label = patterns[0].Binding is { } binding
+                ? BindingArm(vt, slot!, patterns[0].Index, binding, target)
+                : ArmLabel(target);
+            foreach (var (index, _) in patterns)
+            {
+                if (!seen.Add(index)) throw Err(target.Pos, $"duplicate when case {vt.Decl.Name}.{vt.Decl.Cases[index].Name}");
+                cases.Add($"{vt.Tag.Llvm} {index}, label %{label}");
+            }
+        }
+        if (defaultLabel is null)
+        {
+            // Without '_', a when on a variant must name every case.
+            var missing = vt.Decl.Cases.Where((_, i) => !seen.Contains(i)).Select(c => c.Name).ToList();
+            if (missing.Count > 0)
+                throw Err(sw.Pos, $"when on {vt} doesn't cover {string.Join(", ", missing)}; add them or a '_' arm");
+            var saved = _cur;
+            _cur = NewLBlock("nocase");
+            defaultLabel = _cur.Label;
+            Terminate("unreachable");
+            _cur = saved;
+        }
+        Terminate($"switch {vt.Tag.Llvm} {tag}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
+    }
+
+    private string BindingArm(VariantType vt, string slot, int index, ValueRef binding, Target target)
+    {
+        var payload = vt.Payloads[index]!;
+        Compiler.CheckSigil(binding.Name, payload, binding.Pos);
+        var saved = _cur;
+        var savedValues = _values;
+        _cur = NewLBlock("case");
+        string label = _cur.Label;
+        string at = EmitTmp($"getelementptr inbounds {vt.Llvm}, ptr {slot}, i32 0, i32 2");
+        string value = EmitTmp($"load {payload.Llvm}, ptr {at}");
+        _values = new Dictionary<string, Val>(_values);
+        Define(binding.Name, new Val(value, payload), binding.Pos);
+        EmitTarget(target);
+        _values = savedValues;
+        _cur = saved;
+        return label;
     }
 
     private static readonly Dictionary<string, string?> FormatCalls = new()
@@ -947,6 +1100,7 @@ public sealed class FunctionGen
         List<DType> actual = owner switch
         {
             RecordType s => s.Args,
+            VariantType v => v.Args,
             ArrayType a => [a.Elem, new ConstArg(a.Count)],
             PtrType p => [p.Pointee ?? IntType.Byte],
             _ => throw Err(pos, $"{owner} does not match '{o}'"),
@@ -962,7 +1116,8 @@ public sealed class FunctionGen
     private bool PrimitiveOrRecordName(string name) =>
         IntType.FromName(name) is not null
         || name is "F16" or "BF16" or "F32" or "F64" or "Bool" or "Void" or "Ptr" or "Addr" or "Array"
-        || _c.FindRecord(name, _env.File, default) is not null || _c.FindChoice(name, _env.File, default) is not null;
+        || _c.FindRecord(name, _env.File, default) is not null || _c.FindChoice(name, _env.File, default) is not null
+        || _c.FindVariant(name, _env.File, default) is not null;
 
     private void BindExplicit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, Pos pos)
     {
@@ -999,6 +1154,10 @@ public sealed class FunctionGen
             case RecordType s when s.Decl.Name == t.Name && s.Args.Count == t.Args.Count:
                 for (int i = 0; i < s.Args.Count; i++)
                     if (t.Args[i] is TypeArgType ta) Unify(ta.Type, s.Args[i], env, unbound);
+                break;
+            case VariantType v when v.Decl.Name == t.Name && v.Args.Count == t.Args.Count:
+                for (int i = 0; i < v.Args.Count; i++)
+                    if (t.Args[i] is TypeArgType ta) Unify(ta.Type, v.Args[i], env, unbound);
                 break;
             case ArrayType a when t.Name == "Array" && t.Args.Count == 2:
                 if (t.Args[0] is TypeArgType e) Unify(e.Type, a.Elem, env, unbound);
@@ -1226,8 +1385,13 @@ public sealed class FunctionGen
             case WhenValueTerm sw:
             {
                 var v = EvalAny(sw.Value);
+                if (v.Type is VariantType vt)
+                {
+                    EmitVariantWhen(sw, v, vt);
+                    break;
+                }
                 if (v.Type is not (IntType or ChoiceType))
-                    throw Err(sw.Value.Pos, $"when %v: needs an integer, Byte, Char, or choice value, not {v.Type}");
+                    throw Err(sw.Value.Pos, $"when %v: needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
                 string? defaultLabel = null;
                 var cases = new List<string>();
                 var seen = new HashSet<string>();

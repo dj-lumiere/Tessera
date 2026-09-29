@@ -88,6 +88,13 @@ public sealed record ChoiceDecl(
     string File, List<Attribute> Attributes, string Name, TypeRef Underlying, List<(string Name, Expr Value)> Members,
     Pos Pos) : Decl(File, Attributes, Pos);
 
+/// `variant Expr` and its cases, each a name and at most one payload type: `Number : S64`, `Empty`.
+public sealed record VariantDecl(
+    string File, List<Attribute> Attributes, string Name, List<string> TypeParams, List<Clause> Clauses,
+    List<VariantCase> Cases, Pos Pos) : Decl(File, Attributes, Pos);
+
+public sealed record VariantCase(string Name, TypeRef? Payload, Pos Pos);
+
 public sealed record PresetDecl(
     string File, List<Attribute> Attributes, TypeRef? Owner, string Name, TypeRef Type, Expr Value, Pos Pos)
     : Decl(File, Attributes, Pos);
@@ -154,6 +161,9 @@ public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeAr
 
 /// `.name(args)`: a typewise call whose type is the expected one (`%n: Option<T> = .absent()`).
 public sealed record ImplicitCallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos);
+
+/// `.Nothing`: a variant case without a payload, of the variant the value goes to.
+public sealed record ImplicitMemberExpr(string Name, Pos Pos) : Expr(Pos);
 
 /// `NAME` or `Type.NAME` — a preset, or a choice member.
 public sealed record PresetRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos);

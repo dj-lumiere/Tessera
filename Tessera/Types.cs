@@ -215,6 +215,28 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public override string OwnerName => Decl.Name;
 }
 
+/// A variant: a tag naming one case, and that case's payload in storage every case shares. It lowers to
+/// `{ tag, [0 x A], [N x iW] }`: A is the most aligned payload type (it aligns the storage without taking space), W
+/// is that alignment in bits, and N words hold the largest payload.
+public sealed class VariantType(VariantDecl decl, List<DType> args, Func<VariantType, List<DType?>> payloads) : DType
+{
+    private List<DType?>? _payloads;
+
+    public VariantDecl Decl { get; } = decl;
+    public List<DType> Args { get; } = args;
+    public override string Name => Args.Count == 0 ? Decl.Name : $"{Decl.Name}<{string.Join(", ", Args.Select(a => a.Name))}>";
+    public override string Llvm => $"%\"{Name}\"";
+    public override string OwnerName => Decl.Name;
+
+    /// Each case's payload type, or null for a case without one.
+    public List<DType?> Payloads => _payloads ??= payloads(this);
+
+    public IntType Tag => Decl.Cases.Count <= 256 ? IntType.U(8) : IntType.U(32);
+
+    /// The case's position, which is its tag; -1 if there's no such case.
+    public int CaseIndex(string name) => Decl.Cases.FindIndex(c => c.Name == name);
+}
+
 /// A choice: named constants of an underlying integer type.
 public sealed class ChoiceType(ChoiceDecl decl, IntType underlying) : DType
 {
