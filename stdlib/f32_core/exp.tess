@@ -1,0 +1,103 @@
+// Tessera stdlib: the correctly rounded exponential e^x of F32
+//
+// x / ln(2) = k/64 + h: 2^(k/64) from a table, 2^h from a polynomial, all in
+// F64. A second, longer polynomial settles the cases the first can't round.
+// Round to nearest only: overflow gives +inf, underflow a correctly rounded
+// subnormal or +0, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/exp/expf.c via RazorForge's B32Exp.rf.
+// Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// 2^(i/64) for i in 0..63, as F64 bits.
+preset CM_EXPF_TB: Array<U64, 64> = [0x3FF0000000000000, 0x3FF02C9A3E778061, 0x3FF059B0D3158574,
+        0x3FF0874518759BC8, 0x3FF0B5586CF9890F, 0x3FF0E3EC32D3D1A2, 0x3FF11301D0125B51,
+        0x3FF1429AAEA92DE0, 0x3FF172B83C7D517B, 0x3FF1A35BEB6FCB75, 0x3FF1D4873168B9AA,
+        0x3FF2063B88628CD6, 0x3FF2387A6E756238, 0x3FF26B4565E27CDD, 0x3FF29E9DF51FDEE1,
+        0x3FF2D285A6E4030B, 0x3FF306FE0A31B715, 0x3FF33C08B26416FF, 0x3FF371A7373AA9CB,
+        0x3FF3A7DB34E59FF7, 0x3FF3DEA64C123422, 0x3FF4160A21F72E2A, 0x3FF44E086061892D,
+        0x3FF486A2B5C13CD0, 0x3FF4BFDAD5362A27, 0x3FF4F9B2769D2CA7, 0x3FF5342B569D4F82,
+        0x3FF56F4736B527DA, 0x3FF5AB07DD485429, 0x3FF5E76F15AD2148, 0x3FF6247EB03A5585,
+        0x3FF6623882552225, 0x3FF6A09E667F3BCD, 0x3FF6DFB23C651A2F, 0x3FF71F75E8EC5F74,
+        0x3FF75FEB564267C9, 0x3FF7A11473EB0187, 0x3FF7E2F336CF4E62, 0x3FF82589994CCE13,
+        0x3FF868D99B4492ED, 0x3FF8ACE5422AA0DB, 0x3FF8F1AE99157736, 0x3FF93737B0CDC5E5,
+        0x3FF97D829FDE4E50, 0x3FF9C49182A3F090, 0x3FFA0C667B5DE565, 0x3FFA5503B23E255D,
+        0x3FFA9E6B5579FDBF, 0x3FFAE89F995AD3AD, 0x3FFB33A2B84F15FB, 0x3FFB7F76F2FB5E47,
+        0x3FFBCC1E904BC1D2, 0x3FFC199BDD85529C, 0x3FFC67F12E57D14B, 0x3FFCB720DCEF9069,
+        0x3FFD072D4A07897C, 0x3FFD5818DCFBA487, 0x3FFDA9E603DB3285, 0x3FFDFC97337B9B5F,
+        0x3FFE502EE78B3FF6, 0x3FFEA4AFA2A490DA, 0x3FFEFA1BEE615A27, 0x3FFF50765B6E4540,
+        0x3FFFA7C1819E90D8]
+
+/// e^x, correctly rounded.
+routine f32_cm_exp(%x: F32) -> F32
+    block entry():
+        %tu      : U32  = %x.bits()
+        %z       : F64  = %x.to_f64()
+        %a       : F64  = %z.mul(0x1.71547652b82fep+0)  // x / ln(2)
+        %ua      : U64  = %a.add(0x1.8p+46).bits()  // the low bits of the sum are round(64 a)
+        %ux      : U32  = %tu.shl(1)
+        %outside : Bool = %ux.gt(0x8562E42E).bitor(%ux.lt(0x6F93813E))
+        branch %outside ? edge(%tu, %ux, %z, %a, %ua) : fast(%z, %a, %ua)
+
+    // |x| > 0x1.62e42ep+6, x is NaN, or |x| < 0x1.93813ep-16
+    block edge(%tu: U32, %ux: U32, %z: F64, %a: F64, %ua: U64):
+        %tiny     : Bool = %ux.lt(0x6F93813E)
+        %special  : Bool = %ux.ge(0xFF000000)
+        %negative : Bool = %tu.shr(31).eq(1)
+        %under    : Bool = %tu.gt(0xC2CE8EC0)  // x < -0x1.9d1d8p+6
+        when:
+            %tiny     -> tiny(%z)
+            %special  -> special(%ux, %negative)
+            %under    -> underflow(%z)
+            %negative -> fast(%z, %a, %ua)
+            else      -> big(%tu, %z, %a, %ua)
+
+    block tiny(%z: F64):
+        %r : F64 = %z.mul(0.5).add(1.0).mul(%z).add(1.0)  // 1 + z (1 + z / 2)
+        return(%r.to_f32())
+
+    // infinities and NaN, which comes back quiet with its sign and payload
+    block special(%ux: U32, %negative: Bool):
+        %nan : Bool = %ux.gt(0xFF000000)
+        when:
+            %nan      -> return(%x.add(%x))
+            %negative -> return(0.0)
+            else      -> return(F32.INFINITY)
+
+    // the result underflows to a tiny subnormal or zero
+    block underflow(%z: F64):
+        %y       : F64 = %z.add(0x1.9d1d9fccf477p+6).mul(0x1.71547652b82edp-150).add(0x1p-149)
+        %clamped : F64 = %y.max(0x1p-151)
+        return(%clamped.to_f32())
+
+    // positive x near the top of the range: x > 0x1.62e42ep+6 overflows
+    block big(%tu: U32, %z: F64, %a: F64, %ua: U64):
+        %overflow : Bool = %tu.gt(0x42B17217)
+        branch %overflow ? return(F32.INFINITY) : fast(%z, %a, %ua)
+
+    block fast(%z: F64, %a: F64, %ua: U64):
+        %ia    : F64  = F64.sub(0x1.8p+46, F64.from_bits(%ua))  // -round(64 a) / 64
+        %h     : F64  = %a.add(%ia)
+        %entry : U64  = CM_EXPF_TB.get(%ua.bitand(0x3F).to_usize())
+        %sv    : F64  = F64.from_bits(%entry.add_wrap(%ua.shr(6).shl(52)))  // 2^(round(64 a) / 64)
+        %h2    : F64  = %h.mul(%h)
+        %p01   : F64  = %h.mul(0x1.62e42fef4c4e7p-1).add(1.0)
+        %p23   : F64  = %h.mul(0x1.c6b19384ecd93p-5).add(0x1.ebfd1b232f475p-3)
+        %r     : F64  = %h2.mul(%p23).add(%p01).mul(%sv)
+        %ub    : F32  = %r.to_f32()
+        %lb    : F32  = %r.sub(%r.mul(0x1.3edbbe4560327p-33)).to_f32()
+        %sure  : Bool = %ub.eq(%lb)
+        branch %sure ? return(%ub) : slow(%z, %ia, %sv)
+
+    // The fast path can't decide the rounding: redo it with a longer reduction and polynomial.
+    block slow(%z: F64, %ia: F64, %sv: F64):
+        %h   : F64 = %z.mul(0x1.7154765p+0).add(%ia).add(%z.mul(0x1.5c17f0bbbe88p-31))
+        %h2  : F64 = %h.mul(%h)
+        %w   : F64 = %sv.mul(%h)
+        %c01 : F64 = %h.mul(0x1.ebfbdff82c58fp-3).add(0x1.62e42fefa39efp-1)
+        %c23 : F64 = %h.mul(0x1.3b2ab6fb92e5ep-7).add(0x1.c6b08d702e0edp-5)
+        %c45 : F64 = %h.mul(0x1.430976b8ce6efp-13).add(0x1.5d886e6d54203p-10)
+        %r   : F64 = %h2.mul(%c45).add(%c23).mul(%h2).add(%c01).mul(%w).add(%sv)
+        return(%r.to_f32())
