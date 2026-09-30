@@ -208,7 +208,10 @@ routine main() -> S32
 - Build: `Expr.Number(5)`, `.Number(5)` where the type is known, `Expr.Empty` / `.Empty`.
 - Read with `when %e:`; `Expr.Number(%n) -> target(%n)` binds the payload for that arm's target only, `Expr.Empty`
   or `.Present` matches without binding. Without `else`, list every case. There's no field access on a variant.
-- Payloads overlap; a payload arm reads through a stack slot (gone at `-O`). `@derive(...)` works on variants.
+- Payloads overlap; a payload arm reads through a stack slot (gone at `-O`).
+- A choice or variant without `@derive` derives Represent, Diagnose, Equal, Hash, and Compare (a variant's only when
+  its payloads have them), skipping what it declares itself; `@derive(...)` lists exactly what to derive,
+  `@derive()` nothing. A record derives only what it lists.
 
 ## Idioms
 
@@ -268,8 +271,9 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
   and `%p.represent(%out)` for a pointer's address (`0x7ffd5e8c1a40`); `represent_hex`, `represent_fixed(%out, %digits)`;
   `represent_with(%out, %v, %spec)` with a `FormatSpec`.
 - `%v.diagnose(%out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.Present(3)`, `[1, 2]`. A record or
-  choice gets routines written for it with `@derive(Represent, Diagnose, Equal, Hash, Compare)` (any subset), which
-  also declares the conformance. Without `@derive`, declare the routine: a bare `conform` never generates one.
+  record gets routines written for it with `@derive(Represent, Diagnose, Equal, Hash, Compare)` (any subset), which
+  also declares the conformance; choices and variants get all five without asking. Otherwise declare the routine: a
+  bare `conform` never generates one.
 - `write(%out, "x = {%x}\n")` writes text and values in one line: it expands at compile time into
   `write_str` / `.represent` calls, a brace holds one expression (loads and chains allowed), `{{` is a literal brace,
   and there are no format options. `print("...")` / `eprint("...")` do the same on stdout / stderr without
