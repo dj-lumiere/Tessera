@@ -555,8 +555,10 @@ routine limbs_bits64(%p: Ptr<U64>, %pos: S64) -> U64
 /// Reduces |x| (finite, nonzero). With x = m × 2^(e - 112), x × 2/π keeps only
 /// the bits of 2/π that land below 4: a 512-bit window W of them, so x × 2/π
 /// mod 4 = m × W × 2^-sh. The product's bits above sh give the quadrant and the
-/// ones below it the fraction f, which stays accurate to about 2^-330 absolute:
-/// enough even where x sits right next to a multiple of π/2.
+/// ones below it the fraction f. The window is good to about 2^-330, but f keeps
+/// only the 256 bits under sh, so θ is good to about 2^-256 absolute: relative
+/// 2^-133 at worst, where x sits closest to a multiple of π/2 (|θ| = 2^-123.3),
+/// which is why tan sends |θ| < 2^-90 to its exact tier (f128_tan.tess).
 routine f128_reduce(%x: F128) -> Reduced
     block entry():
         %p     : F128Parts = f128_unpack(%x.bits())
@@ -706,59 +708,16 @@ choice TrigKind: U8
     Cos
     Tan
 
-/// sin, cos, or tan of a finite nonzero x, before the final rounding.
-routine wide_trig(%x: F128, %kind: TrigKind) -> F128Extended
+/// sin and cos of NaN (a quiet NaN) and of the infinities (NaN).
+routine f128_trig_nonfinite(%x: F128) -> F128
     block entry():
-        %red : Reduced      = f128_reduce(%x)
-        %k   : U64          = %red.quadrant
-        %s   : F128Extended = wide_sin_core(%red.theta)
-        %c   : F128Extended = wide_cos_core(%red.theta)
-        %odd : Bool         = %k.bitand(1).eq(1)
-        // sin(kπ/2 + θ) = sin θ, cos θ, -sin θ, -cos θ for k = 0, 1, 2, 3; cos is sin one quadrant on
-        %sin_base : F128Extended = %odd ? %c : %s
-        %sin_neg  : Bool         = %k.ge(2)
-        %cos_base : F128Extended = %odd ? %s : %c
-        %cos_neg  : Bool         = %k.eq(1).bitor(%k.eq(2))
-        %sin_v    : F128Extended = %sin_neg ? %sin_base.neg() : %sin_base
-        %cos_v    : F128Extended = %cos_neg ? %cos_base.neg() : %cos_base
-        // sin is odd in x, cos even
-        %x_neg : Bool         = f128_is_negative_bits(%x.bits())
-        %sin_r : F128Extended = %x_neg ? %sin_v.neg() : %sin_v
-        when %kind:
-            TrigKind.Sin -> return(%sin_r)
-            TrigKind.Cos -> return(%cos_v)
-            TrigKind.Tan -> tan(%sin_r, %cos_v)
-
-    block tan(%sin: F128Extended, %cos: F128Extended):
-        %r : F128Extended = %sin.div(%cos)
+        %is_nan : Bool = %x.is_nan()
+        %quiet  : F128 = f128_of(f128_quiet(%x.bits()))
+        %r      : F128 = %is_nan ? %quiet : F128.NAN
         return(%r)
 
-/// NaN for NaN and infinities; sin and tan keep a zero's sign, cos(0) is 1.
-routine f128_trig(%x: F128, %kind: TrigKind) -> F128
-    block entry():
-        %finite   : Bool = %x.is_finite()
-        %zero     : Bool = f128_is_zero_bits(%x.bits())
-        %nan      : F128 = F128.NAN
-        %quiet    : F128 = f128_of(f128_quiet(%x.bits()))
-        %is_nan   : Bool = %x.is_nan()
-        %infinite : Bool = %finite.bitnot()
-        when:
-            %is_nan   -> return(%quiet)
-            %infinite -> return(%nan)
-            %zero     -> at_zero()
-            else      -> compute()
-
-    block at_zero():
-        %one_bits : F128 = f128_of(0x3FFF0000000000000000000000000000)
-        %is_cos   : Bool = %kind.eq(TrigKind.Cos)
-        branch %is_cos ? return(%one_bits) : return(%x)
-
-    block compute():
-        %r : F128 = wide_trig(%x, %kind).to_f128()
-        return(%r)
-
-/// sin and cos are CORE-MATH ports (f128_core/); NaN and infinities keep
-/// f128_trig's answers.
+/// sin and cos are CORE-MATH ports (f128_core/); NaN and infinities go to
+/// f128_trig_nonfinite. tan is in f128_tan.tess.
 routine F128.sin(%self: Self) -> Self
     block entry():
         %finite : Bool = %self.is_finite()
@@ -769,7 +728,7 @@ routine F128.sin(%self: Self) -> Self
         return(%r)
 
     block special():
-        %r : Self = f128_trig(%self, TrigKind.Sin)
+        %r : Self = f128_trig_nonfinite(%self)
         return(%r)
 
 routine F128.cos(%self: Self) -> Self
@@ -782,7 +741,7 @@ routine F128.cos(%self: Self) -> Self
         return(%r)
 
     block special():
-        %r : Self = f128_trig(%self, TrigKind.Cos)
+        %r : Self = f128_trig_nonfinite(%self)
         return(%r)
 
 /// sin and cos together, sharing one argument reduction
@@ -797,11 +756,6 @@ routine F128.sin_cos(%self: Self) -> F128SinCos
 
     block special():
         %r : F128SinCos = F128SinCos { sin: %self.sin(), cos: %self.cos() }
-        return(%r)
-
-routine F128.tan(%self: Self) -> Self
-    block entry():
-        %r : Self = f128_trig(%self, TrigKind.Tan)
         return(%r)
 
 // -- more F128Extended -----------------------------------------------------------------
