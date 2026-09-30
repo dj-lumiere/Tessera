@@ -1,0 +1,160 @@
+name: Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  # The golden tests (tests/, playground/, examples/) on every host the compiler supports, 64-bit and, where the
+  # host can run it, 32-bit. Mini/ is a separate repo and is not checked out here.
+  test:
+    name: test (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux-gnu
+          - os: ubuntu-latest
+            target: x86-linux-gnu
+          - os: windows-latest
+            target: x86_64-windows-msvc
+          - os: windows-latest
+            target: x86-windows-msvc
+          - os: macos-latest
+            target: aarch64-macos-none
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install LLVM 21 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
+          sudo ln -sf /usr/bin/clang-21 /usr/local/bin/clang
+          sudo ln -sf /usr/bin/ld.lld-21 /usr/local/bin/ld.lld
+          clang --version
+
+      # 32-bit crt files, libc, libm, and libgcc for clang --target=i686-linux-gnu.
+      - name: Install 32-bit libraries (Linux)
+        if: matrix.target == 'x86-linux-gnu'
+        run: sudo apt-get install -y gcc-multilib
+
+      - name: Cache LLVM 21 (Windows)
+        if: runner.os == 'Windows'
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: C:\llvm21
+          key: llvm-21.1.8-win64
+
+      - name: Download LLVM 21 (Windows)
+        if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          curl.exe -L -o llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang+llvm-21.1.8-x86_64-pc-windows-msvc.tar.xz"
+          if ($LASTEXITCODE -ne 0) { throw 'LLVM download failed' }
+          New-Item -ItemType Directory -Force C:\llvm21 | Out-Null
+          tar -xf llvm.tar.xz -C C:\llvm21 --strip-components=1
+          if ($LASTEXITCODE -ne 0) { throw 'LLVM extract failed' }
+          Remove-Item llvm.tar.xz
+
+      - name: Put LLVM 21 on PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-Content $env:GITHUB_PATH 'C:\llvm21\bin'
+
+      # Keg-only; GITHUB_PATH entries are prepended, so this shadows Apple clang.
+      - name: Install LLVM 21 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@21
+          echo "$(brew --prefix llvm@21)/bin" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain
+        run: clang --version
+
+      - name: Build
+        run: dotnet build Tessera --configuration Release
+
+      - name: Check formatting
+        if: matrix.target == 'x86_64-linux-gnu'
+        run: dotnet Tessera/bin/Release/net10.0/tessera.dll fmt --check stdlib tests playground examples
+
+      - name: Check the stdlib
+        run: dotnet Tessera/bin/Release/net10.0/tessera.dll check --target ${{ matrix.target }}
+
+      - name: Golden tests
+        run: dotnet Tessera/bin/Release/net10.0/tessera.dll test --target ${{ matrix.target }} tests playground examples
+
+  # SonarQube analysis of the C# compiler, with coverage from the golden tests. SonarQube lives inside the tailnet;
+  # the runner joins it as an ephemeral node (a Tailscale OAuth client with scope auth_keys and the ACL tag tag:ci).
+  # Secrets don't reach pull requests from forks, so it runs only for this repository's own branches.
+  sonarqube:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install LLVM 21
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
+          sudo ln -sf /usr/bin/clang-21 /usr/local/bin/clang
+          sudo ln -sf /usr/bin/ld.lld-21 /usr/local/bin/ld.lld
+
+      - name: Connect to tailnet for SonarQube
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Install SonarScanner and dotnet-coverage
+        run: |
+          dotnet tool install --global dotnet-sonarscanner
+          dotnet tool install --global dotnet-coverage
+          echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+
+      - name: SonarQube begin
+        run: |
+          dotnet sonarscanner begin \
+            /k:"tessera" \
+            /d:sonar.host.url="${{ secrets.SONAR_HOST_URL }}" \
+            /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
+            /d:sonar.cs.vscoveragexml.reportsPaths="coverage.xml"
+
+      - name: Build
+        run: dotnet build Tessera --configuration Release
+
+      # The compiler has no unit tests; its coverage is what the golden tests exercise.
+      - name: Golden tests with coverage
+        run: |
+          dotnet-coverage collect -f xml -o coverage.xml \
+            "dotnet Tessera/bin/Release/net10.0/tessera.dll test tests playground examples"
+
+      - name: SonarQube end
+        if: always()
+        run: dotnet sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
