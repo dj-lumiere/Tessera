@@ -590,7 +590,7 @@ public sealed class FunctionGen
     private Val EvalClaim(ClaimExpr a, DType expected)
     {
         if (expected is not PtrType { Pointee: { } t })
-            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim #p : Ptr<T>; found {expected}");
+            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim %p : Ptr<T>; found {expected}");
         _c.EnsureTypeDefined(t);
         string slot = $"%s{_allocas.Count}";
         _allocas.Add($"{slot} = alloca {t.Llvm}");

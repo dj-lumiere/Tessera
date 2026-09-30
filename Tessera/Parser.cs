@@ -917,6 +917,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         string name = Next().Text;
         Expect(TokenKind.Colon, "':'");
         var type = ParseType();
+        if (type is not { Name: "Ptr", Args.Count: 1 })
+            throw new CompileError(type.Pos, $"claim takes a typed pointer written Ptr<T>: claim %p : Ptr<T>; found {type}");
         if (Is(TokenKind.Eq))
             throw new CompileError(pos, "claim takes no initializer: claim %p : Ptr<T>, then %p.store(%value)");
         return new BindStmt(name, type, new ClaimExpr(pos), pos);

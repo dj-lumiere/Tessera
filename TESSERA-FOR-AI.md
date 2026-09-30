@@ -85,7 +85,7 @@ routine main() -> S32
   `%free_fn: Callable<…> = %alloc.free_fn.load()`, then `%free_fn.call(%state, %raw)`. `%alloc.free_fn(...)` is an
   error.
 - A field of an SSA record value is read with plain `=`: `%key: K = %pair.key`.
-- `claim %p : Ptr<T>` claims an uninitialized slot for the routine call (a stack slot in practice); its type comes from the binding, and the value goes in
+- `claim %p : Ptr<T>` claims an uninitialized slot for the routine call (a stack slot in practice); its type comes from the binding, which must be written `Ptr<T>` (anything else is a parse error), and the value goes in
   with `%p.store(%v)`. An array value comes from `Array<T, N>.from([1, 2, %x])` or `Array<T, N>.from_ptr(%first)`;
   a bare `[1, 2]` isn't a value. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot.
@@ -313,7 +313,8 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 `.Absent`), with acronyms written as words (`Eof`, `FdWriter`, `Nan`). Routines, fields, blocks, and values are
 `snake_case`. Only presets and globals are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
 
-**Arrays and `[]`.** `[]` is address arithmetic: `%p[%i]` is the address of the i-th `T` of a `Ptr<T>`. On a
+**Arrays and `[]`.** `[]` is address arithmetic: `%p[%i]` is the address of the i-th `T` of a `Ptr<T>`
+(`%p.stride(%n)` is the same step as a value method, `%n` an `SSize` that may be negative; `offset` counts bytes). On a
 `Ptr<Array<T, N>>` that is the i-th whole array, so array elements are `%arr.get(%i)` / `%arr.set(%i, %v)` (bounds
 checked), or `%arr.to_ptr()[%i].load()` unchecked. The same holds for array fields (`%node.keys.get(%i)`) and
 preset arrays (`K.get(%i)`).
