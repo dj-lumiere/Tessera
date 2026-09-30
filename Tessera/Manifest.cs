@@ -65,7 +65,8 @@ public sealed record Manifest(
         ["debug"] = ["emit-llvm"],
     };
 
-    public static Manifest Load(string path)
+    /// <paramref name="defaultTarget"/> is the triple used when [target] names none (the host if null).
+    public static Manifest Load(string path, BuildTarget? defaultTarget = null)
     {
         path = System.IO.Path.GetFullPath(path);
         string dir = System.IO.Path.GetDirectoryName(path)!;
@@ -95,7 +96,7 @@ public sealed record Manifest(
             throw new ManifestError(path, $"[target] executable is a file name, not a path: '{executable}'");
 
         BuildTarget triple;
-        try { triple = Str(target, "triple", path) is { } t ? BuildTarget.Parse(t) : BuildTarget.Host(); }
+        try { triple = Str(target, "triple", path) is { } t ? BuildTarget.Parse(t) : defaultTarget ?? BuildTarget.Host(); }
         catch (ArgumentException e) { throw new ManifestError(path, $"[target] triple: {e.Message}"); }
 
         bool optimize = (Str(target, "mode", path) ?? "debug") switch

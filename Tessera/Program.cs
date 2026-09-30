@@ -11,7 +11,7 @@ static class Cli
           tessera run                   build it and run it
           tessera build <file.tess>... [-o <out>] [--emit-llvm] [--target <arch-os-abi>] [-O]
           tessera run   <file.tess>... [--target <arch-os-abi>] [-O]
-          tessera test  <dir>...
+          tessera test  [--target <arch-os-abi>] <dir>...
           tessera check [--target <arch-os-abi>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
 
@@ -319,9 +319,14 @@ static class Cli
                 psi.ArgumentList.Add(a);
             // U128 / S128 division, F16 / BF16 arithmetic and similar operations lower to compiler-rt routines. GNU
             // toolchains get them from libgcc; the MSVC toolchain has no equivalent, so link clang's builtins.
-            if (target.Os == "windows" && BuiltinsLibrary() is { } builtins) psi.ArgumentList.Add(builtins);
+            if (target.Os == "windows" && BuiltinsLibrary(target) is { } builtins) psi.ArgumentList.Add(builtins);
             // lld-link reports in English whatever the system locale, and links faster than link.exe.
             if (target.Os == "windows") psi.ArgumentList.Add("-fuse-ld=lld");
+            // The UCRT defines printf and its family inline in the headers; 32-bit x86 has no exported symbol for
+            // them, so an IR-level call needs the out-of-line copies.
+            if (target is { Os: "windows", Arch: "x86" }) psi.ArgumentList.Add("-llegacy_stdio_definitions");
+            // glibc keeps the math functions the stdlib calls (acos, fma, ...) in a separate libm.
+            if (target.Os == "linux") psi.ArgumentList.Add("-lm");
             foreach (var a in extra ?? []) psi.ArgumentList.Add(a);
 
             Process p;
@@ -342,26 +347,26 @@ static class Cli
         }
     }
 
-    private static string? _builtins;
-    private static bool _builtinsSearched;
+    private static readonly Dictionary<string, string?> Builtins = [];
 
-    /// clang's compiler-rt builtins library, if it is installed.
-    private static string? BuiltinsLibrary()
+    /// clang's compiler-rt builtins library for the target, if it is installed.
+    private static string? BuiltinsLibrary(BuildTarget target)
     {
-        if (_builtinsSearched) return _builtins;
-        _builtinsSearched = true;
+        if (Builtins.TryGetValue(target.LlvmTriple, out var found)) return found;
+        string? builtins = null;
         try
         {
             var psi = new ProcessStartInfo("clang") { RedirectStandardOutput = true, UseShellExecute = false };
+            psi.ArgumentList.Add("--target=" + target.LlvmTriple);
             psi.ArgumentList.Add("--rtlib=compiler-rt");
             psi.ArgumentList.Add("-print-libgcc-file-name");
             using var p = Process.Start(psi)!;
             string path = p.StandardOutput.ReadToEnd().Trim();
             p.WaitForExit();
-            if (File.Exists(path)) _builtins = path;
+            if (File.Exists(path)) builtins = path;
         }
         catch (System.ComponentModel.Win32Exception) { }
-        return _builtins;
+        return Builtins[target.LlvmTriple] = builtins;
     }
 
     private static (int Code, string Stdout, string Stderr) Exec(string exe, bool captureOutput)
@@ -371,6 +376,9 @@ static class Cli
             UseShellExecute = false,
             RedirectStandardOutput = captureOutput,
             RedirectStandardError = captureOutput,
+            // Programs write UTF-8; without this the output is decoded in the console's code page.
+            StandardOutputEncoding = captureOutput ? System.Text.Encoding.UTF8 : null,
+            StandardErrorEncoding = captureOutput ? System.Text.Encoding.UTF8 : null,
         };
         using var p = Process.Start(psi)!;
         string stdout = "", stderr = "";
@@ -390,6 +398,18 @@ static class Cli
 
     private static int Test(string[] args)
     {
+        var target = BuildTarget.Host();
+        var dirs = new List<string>();
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--target" && i + 1 < args.Length)
+            {
+                try { target = BuildTarget.Parse(args[++i]); }
+                catch (ArgumentException e) { throw new ToolError(e.Message); }
+            }
+            else dirs.Add(args[i]);
+        }
+        args = [.. dirs];
         if (args.Length == 0) throw new ToolError("test takes one or more directories");
         // A test is one file, or a subdirectory whose .tess files are compiled together (several modules); its
         // .expected / .exit / .error files sit next to it either way.
@@ -409,14 +429,22 @@ static class Cli
         }
         bool qualify = args.Length > 1;
 
-        var target = BuildTarget.Host();
-        int passed = 0;
+        int passed = 0, skipped = 0;
         var failures = new List<string>();
 
         foreach (var (stem, sources) in tests)
         {
             string name = Path.GetFileName(stem);
             if (qualify) name = Path.GetFileName(Path.GetDirectoryName(stem)) + "/" + name;
+            // A <name>.arch file lists the architectures a test runs on, one per line (a test of an
+            // architecture-specific routine); on any other target it is skipped.
+            if (File.Exists(stem + ".arch")
+                && !File.ReadAllLines(stem + ".arch").Select(l => l.Trim()).Contains(target.Arch))
+            {
+                skipped++;
+                Console.WriteLine($"  skip  {name}");
+                continue;
+            }
             string? why = RunOne(sources, stem, target);
             if (why is null)
             {
@@ -430,7 +458,8 @@ static class Cli
             }
         }
 
-        Console.WriteLine($"\n{passed} passed, {failures.Count} failed");
+        string skips = skipped > 0 ? $", {skipped} skipped" : "";
+        Console.WriteLine($"\n{passed} passed, {failures.Count} failed{skips} ({target.LlvmTriple})");
         return failures.Count == 0 ? 0 : 1;
     }
 
@@ -456,7 +485,7 @@ static class Cli
         {
             if (sources is [var only] && Path.GetFileName(only) == Manifest.FileName)
             {
-                manifest = Manifest.Load(only);
+                manifest = Manifest.Load(only, target);
                 (sources, target) = ([.. manifest.Sources], manifest.Target);
             }
             ir = Compile(sources, target);

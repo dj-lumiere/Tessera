@@ -1,0 +1,166 @@
+// Tessera stdlib: F32 / F64 <-> S128 / U128 conversions on 32-bit targets
+//
+// LLVM lowers these conversions to compiler-rt calls (__fixdfti, __floattidf, ...), but compiler-rt and libgcc
+// build their 128-bit routines only for 64-bit targets. On a 32-bit target the stdlib provides them under the same
+// names, written with U64 and U128 bit operations, which LLVM expands inline there.
+//
+// Only in-range values matter: the stdlib calls these through fptosi_sat / fptoui_sat, which handle NaN and
+// clamping themselves. F16 and BF16 reach them through F32.
+
+module Standard::Core
+
+// -- float to integer ----------------------------------------------------------
+
+/// |x| rounded toward zero, saturating at U128.MAX. Negative values give 0.
+@[export("__fixunsdfti"), target(size: 32)]
+routine f64_to_u128_soft(%x: F64) -> U128
+    block entry():
+        %negative  : Bool = %x.is_sign_negative()
+        %bits      : U64  = %x.bits()
+        %exp       : U64  = %bits.shr(52).bitand(0x7FF)
+        %under_one : Bool = %exp.lt(1023)
+        %zero      : Bool = %negative.bitor(%under_one)
+        branch %zero ? return(0) : in_range(%bits, %exp)
+
+    block in_range(%bits: U64, %exp: U64):
+        %too_big : Bool = %exp.ge(1151)  // 2^128 and above
+        branch %too_big ? return(U128.MAX) : split(%bits, %exp)
+
+    block split(%bits: U64, %exp: U64):
+        %mantissa : U64  = %bits.bitand(0xFFFFFFFFFFFFF).bitor(0x10000000000000)
+        %fraction : Bool = %exp.lt(1075)  // below 2^52 the value has bits after the point
+        branch %fraction ? drop_fraction(%mantissa, %exp) : scale_up(%mantissa, %exp)
+
+    block drop_fraction(%mantissa: U64, %exp: U64):
+        %shift : U64  = U64.sub(1075, %exp)
+        %whole : U64  = %mantissa.shr(%shift)
+        %r     : U128 = %whole.to_u128()
+        return(%r)
+
+    block scale_up(%mantissa: U64, %exp: U64):
+        %shift : U128 = %exp.sub(1075).to_u128()
+        %r     : U128 = %mantissa.to_u128().shl(%shift)
+        return(%r)
+
+/// x rounded toward zero, saturating at S128.MIN and S128.MAX.
+@[export("__fixdfti"), target(size: 32)]
+routine f64_to_s128_soft(%x: F64) -> S128
+    block entry():
+        %size     : F64  = %x.abs()
+        %too_big  : Bool = %size.ge(170141183460469231731687303715884105728.0)  // 2^127
+        %negative : Bool = %x.is_sign_negative()
+        branch %too_big ? saturate(%negative) : convert(%size, %negative)
+
+    block saturate(%negative: Bool):
+        branch %negative ? return(S128.MIN) : return(S128.MAX)
+
+    block convert(%size: F64, %negative: Bool):
+        %magnitude : U128 = f64_to_u128_soft(%size)
+        branch %negative ? negate(%magnitude) : done(%magnitude)
+
+    block negate(%magnitude: U128):
+        %twos : U128 = %magnitude.bitnot().add_wrap(1)
+        jump done(%twos)
+
+    block done(%bits: U128):
+        %r : S128 = %bits.to_s128_wrap()
+        return(%r)
+
+@[export("__fixunssfti"), target(size: 32)]
+routine f32_to_u128_soft(%x: F32) -> U128
+    block entry():
+        %r : U128 = f64_to_u128_soft(%x.to_f64())  // exact: every F32 is an F64
+        return(%r)
+
+@[export("__fixsfti"), target(size: 32)]
+routine f32_to_s128_soft(%x: F32) -> S128
+    block entry():
+        %r : S128 = f64_to_s128_soft(%x.to_f64())
+        return(%r)
+
+// -- integer to float ----------------------------------------------------------
+//
+// A value too wide for the 64-bit (F64) or 32-bit (F32) integer conversion is shifted down to that width, with the
+// bits shifted out ORed into the lowest bit (a sticky bit), converted once, and scaled back by a power of two. The
+// sticky bit sits below the rounding position, so the one rounding is the correct round-to-nearest-even.
+
+@[export("__floatuntidf"), target(size: 32)]
+routine u128_to_f64_soft(%u: U128) -> F64
+    block entry():
+        %high : U64  = %u.shr(64).to_u64_wrap()
+        %fits : Bool = %high.eq(0)
+        branch %fits ? narrow(%u) : wide(%u, %high)
+
+    block narrow(%u: U128):
+        %r : F64 = %u.to_u64_wrap().to_f64()
+        return(%r)
+
+    block wide(%u: U128, %high: U64):
+        %shift   : U64  = U64.sub(64, %high.leading_zeros())
+        %amount  : U128 = %shift.to_u128()
+        %kept    : U64  = %u.shr(%amount).to_u64_wrap()
+        %mask    : U128 = U128.shl(1, %amount).sub(1)
+        %lost    : Bool = %u.bitand(%mask).ne(0)
+        %sticky  : U64  = %kept.bitor(%lost.to_u64())
+        %rounded : F64  = %sticky.to_f64()
+        %scale   : F64  = F64.from_bits(U64.add(1023, %shift).shl(52))
+        %r       : F64  = %rounded.mul(%scale)
+        return(%r)
+
+@[export("__floattidf"), target(size: 32)]
+routine s128_to_f64_soft(%s: S128) -> F64
+    block entry():
+        %negative : Bool = %s.is_negative()
+        %bits     : U128 = %s.to_u128_wrap()
+        branch %negative ? negative(%bits) : positive(%bits)
+
+    block positive(%bits: U128):
+        %r : F64 = u128_to_f64_soft(%bits)
+        return(%r)
+
+    block negative(%bits: U128):
+        %magnitude : U128 = %bits.bitnot().add_wrap(1)
+        %size      : F64  = u128_to_f64_soft(%magnitude)
+        %r         : F64  = %size.neg()
+        return(%r)
+
+@[export("__floatuntisf"), target(size: 32)]
+routine u128_to_f32_soft(%u: U128) -> F32
+    block entry():
+        %high : U128 = %u.shr(32)
+        %fits : Bool = %high.eq(0)
+        branch %fits ? narrow(%u) : wide(%u)
+
+    block narrow(%u: U128):
+        %r : F32 = %u.to_u32_wrap().to_f32()
+        return(%r)
+
+    block wide(%u: U128):
+        %width   : U128 = U128.sub(128, %u.leading_zeros())
+        %amount  : U128 = %width.sub(32)
+        %kept    : U32  = %u.shr(%amount).to_u32_wrap()
+        %mask    : U128 = U128.shl(1, %amount).sub(1)
+        %lost    : Bool = %u.bitand(%mask).ne(0)
+        %sticky  : U32  = %kept.bitor(%lost.to_u32())
+        %rounded : F32  = %sticky.to_f32()
+        %exp     : U32  = %amount.to_u32_wrap().add(127)
+        %scale   : F32  = F32.from_bits(%exp.shl(23))
+        %r       : F32  = %rounded.mul(%scale)
+        return(%r)
+
+@[export("__floattisf"), target(size: 32)]
+routine s128_to_f32_soft(%s: S128) -> F32
+    block entry():
+        %negative : Bool = %s.is_negative()
+        %bits     : U128 = %s.to_u128_wrap()
+        branch %negative ? negative(%bits) : positive(%bits)
+
+    block positive(%bits: U128):
+        %r : F32 = u128_to_f32_soft(%bits)
+        return(%r)
+
+    block negative(%bits: U128):
+        %magnitude : U128 = %bits.bitnot().add_wrap(1)
+        %size      : F32  = u128_to_f32_soft(%magnitude)
+        %r         : F32  = %size.neg()
+        return(%r)
