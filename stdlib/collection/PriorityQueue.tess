@@ -41,28 +41,46 @@ require T: typename
 routine PriorityQueue<T>.reserve(%self: Ptr<Self>, %capacity: USize) -> Void
 require T: typename
     block entry():
+        %reserved : Bool = %self.make_capacity(%capacity)
+        branch %reserved ? return() : panic(TrapCode.AllocFailed)
+
+/// `reserve`, returning a Failure instead of trapping when the allocator fails.
+routine PriorityQueue<T>.reserve_result(%self: Ptr<Self>,
+        %capacity: USize) -> Result<Unit, AllocFailed>
+require T: typename
+    block entry():
+        %reserved : Bool = %self.make_capacity(%capacity)
+        branch %reserved ? return(.Success(Unit.value())) : return(.Failure(AllocFailed {}))
+
+/// Grows the heap array to at least %capacity elements. Returns false when the
+/// allocator fails, leaving the queue as it was.
+private routine PriorityQueue<T>.make_capacity(%self: Ptr<Self>, %capacity: USize) -> Bool
+require T: typename
+    block entry():
         %old_capacity : USize = %self.capacity.load()
         %enough       : Bool  = %old_capacity.ge(%capacity)
-        branch %enough ? return() : grow(%capacity)
+        branch %enough ? return(true) : grow(%capacity)
 
     block grow(%capacity: USize):
         %alloc    : Ptr<Allocator> = %self.alloc.load()
         %old_data : Ptr<T>         = %self.data.load()
         %new_data : Ptr<T>         = reallocate<T>(%alloc, %old_data, %capacity)
         %failed   : Bool           = %new_data.is_null()
-        branch %failed ? panic(TrapCode.AllocFailed) : install(%new_data, %capacity)
+        branch %failed ? return(false) : install(%new_data, %capacity)
 
     block install(%new_data: Ptr<T>, %capacity: USize):
         %self.data.store(%new_data)
         %self.capacity.store(%capacity)
-        return()
+        return(true)
 
-routine PriorityQueue<T>.ensure(%self: Ptr<Self>, %wanted: USize) -> Void
+/// Makes room for %wanted elements, doubling the capacity. Returns false when
+/// the allocator fails, leaving the queue as it was.
+private routine PriorityQueue<T>.make_room(%self: Ptr<Self>, %wanted: USize) -> Bool
 require T: typename
     block entry():
         %capacity : USize = %self.capacity.load()
         %enough   : Bool  = %capacity.ge(%wanted)
-        branch %enough ? return() : choose(%capacity, %wanted)
+        branch %enough ? return(true) : choose(%capacity, %wanted)
 
     block choose(%capacity: USize, %wanted: USize):
         %empty : Bool = %capacity.eq(0)
@@ -72,24 +90,29 @@ require T: typename
         %base         : USize = 8
         %use_wanted   : Bool  = %wanted.gt(%base)
         %new_capacity : USize = %use_wanted ? %wanted : %base
-        %self.reserve(%new_capacity)
-        return()
+        return(%self.make_capacity(%new_capacity))
 
     block double(%capacity: USize, %wanted: USize):
         %next   : USize = %capacity.mul(2)
         %enough : Bool  = %next.ge(%wanted)
-        branch %enough ? reserve(%next) : double(%next, %wanted)
-
-    block reserve(%new_capacity: USize):
-        %self.reserve(%new_capacity)
-        return()
+        branch %enough ? return(%self.make_capacity(%next)) : double(%next, %wanted)
 
 routine PriorityQueue<T>.push(%self: Ptr<Self>, %value: T) -> Void
 require T: typename
     block entry():
+        %pushed : Result<Unit, AllocFailed> = %self.push_result(%value)
+        when %pushed:
+            .Success -> return()
+            .Failure -> panic(TrapCode.AllocFailed)
+
+/// `push`, returning a Failure instead of trapping when the allocator fails.
+routine PriorityQueue<T>.push_result(%self: Ptr<Self>, %value: T) -> Result<Unit, AllocFailed>
+require T: typename
+    block entry():
         %length : USize = %self.length.load()
         %wanted : USize = %length.add(1)
-        %self.ensure(%wanted)
+        %room   : Bool  = %self.make_room(%wanted)
+        branch %room ? continue : return(.Failure(AllocFailed {}))
         %data : Ptr<T> = %self.data.load()
         %data[%length].store(%value)
         %self.length.store(%wanted)
@@ -97,7 +120,7 @@ require T: typename
 
     block sift_up(%index: USize):
         %at_root : Bool = %index.eq(0)
-        branch %at_root ? return() : compare_parent(%index)
+        branch %at_root ? return(.Success(Unit.value())) : compare_parent(%index)
 
     block compare_parent(%index: USize):
         %parent       : USize  = %index.sub(1).div(2)
@@ -105,7 +128,9 @@ require T: typename
         %child_value  : T      = %data[%index].load()
         %parent_value : T      = %data[%parent].load()
         %less         : Bool   = %child_value.less(%parent_value)
-        branch %less ? swap(%index, %parent, %child_value, %parent_value) : return()
+        branch %less
+            ? swap(%index, %parent, %child_value, %parent_value)
+            : return(.Success(Unit.value()))
 
     block swap(%index: USize, %parent: USize, %child_value: T, %parent_value: T):
         %data : Ptr<T> = %self.data.load()
@@ -116,21 +141,39 @@ require T: typename
 routine PriorityQueue<T>.peek(%self: Ptr<Self>) -> T
 require T: typename
     block entry():
-        %length : USize = %self.length.load()
-        %empty  : Bool  = %length.eq(0)
-        branch %empty ? panic(TrapCode.Empty) : load()
+        %top : Option<T> = %self.peek_checked()
+        when %top:
+            .Present(%value) -> return(%value)
+            .Absent          -> panic(TrapCode.Empty)
 
-    block load():
-        %data  : Ptr<T> = %self.data.load()
-        %value : T      = %data[0].load()
-        return(%value)
-
-routine PriorityQueue<T>.pop(%self: Ptr<Self>) -> T
+/// `peek`, returning Absent instead of trapping on an empty queue.
+routine PriorityQueue<T>.peek_checked(%self: Ptr<Self>) -> Option<T>
 require T: typename
     block entry():
         %length : USize = %self.length.load()
         %empty  : Bool  = %length.eq(0)
-        branch %empty ? panic(TrapCode.Empty) : remove_root(%length)
+        branch %empty ? return(.Absent) : load()
+
+    block load():
+        %data  : Ptr<T> = %self.data.load()
+        %value : T      = %data[0].load()
+        return(.Present(%value))
+
+routine PriorityQueue<T>.pop(%self: Ptr<Self>) -> T
+require T: typename
+    block entry():
+        %popped : Option<T> = %self.pop_checked()
+        when %popped:
+            .Present(%value) -> return(%value)
+            .Absent          -> panic(TrapCode.Empty)
+
+/// `pop`, returning Absent instead of trapping on an empty queue.
+routine PriorityQueue<T>.pop_checked(%self: Ptr<Self>) -> Option<T>
+require T: typename
+    block entry():
+        %length : USize = %self.length.load()
+        %empty  : Bool  = %length.eq(0)
+        branch %empty ? return(.Absent) : remove_root(%length)
 
     block remove_root(%length: USize):
         %data       : Ptr<T> = %self.data.load()
@@ -138,7 +181,7 @@ require T: typename
         %new_length : USize  = %length.sub(1)
         %self.length.store(%new_length)
         %now_empty : Bool = %new_length.eq(0)
-        branch %now_empty ? return(%result): move_last(%result, %new_length)
+        branch %now_empty ? return(.Present(%result)): move_last(%result, %new_length)
 
     block move_last(%result: T, %new_length: USize):
         %data : Ptr<T> = %self.data.load()
@@ -151,7 +194,7 @@ require T: typename
         %left     : USize = %index.mul(2).add(1)
         %right    : USize = %left.add(1)
         %has_left : Bool  = %left.lt(%length)
-        branch %has_left ? choose_child(%index, %left, %right, %result) : return(%result)
+        branch %has_left ? choose_child(%index, %left, %right, %result) : return(.Present(%result))
 
     block choose_child(%index: USize, %left: USize, %right: USize, %result: T):
         %length    : USize = %self.length.load()
@@ -175,7 +218,7 @@ require T: typename
         %child_less  : Bool   = %child_value.less(%index_value)
         branch %child_less
             ? swap_down(%index, %child, %index_value, %child_value, %result)
-            : return(%result)
+            : return(.Present(%result))
 
     block swap_down(%index: USize, %child: USize, %index_value: T, %child_value: T, %result: T):
         %data : Ptr<T> = %self.data.load()

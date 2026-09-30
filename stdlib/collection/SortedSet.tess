@@ -50,12 +50,13 @@ require T: typename
         %empty  : Bool  = %length.eq(0)
         return(%empty)
 
+/// A new empty node, or null when the allocator fails.
 routine SortedSetNode<T>.construct(%leaf: Bool, %alloc: Ptr<Allocator>) -> Ptr<Self>
 require T: typename
     block entry():
         %node   : Ptr<Self> = allocate<Self>(%alloc, 1)
         %failed : Bool      = %node.is_null()
-        branch %failed ? panic(TrapCode.AllocFailed) : init(%node, %leaf)
+        branch %failed ? return(%node) : init(%node, %leaf)
 
     block init(%node: Ptr<Self>, %leaf: Bool):
         %node.leaf.store(%leaf)
@@ -238,16 +239,20 @@ require T: typename
         %key : T = %node.keys.get(%i)
         return(%key)
 
+/// Splits the full child at %index around its middle. Returns false when the
+/// allocator fails, before anything has moved.
 routine SortedSetNode<T>.split_child(%self: Ptr<Self>, %index: USize,
-        %alloc: Ptr<Allocator>) -> Void
+        %alloc: Ptr<Allocator>) -> Bool
 require T: typename
     block entry():
-        %left        : Ptr<Self> = %self.children.get(%index)
-        %leaf        : Bool      = %left.leaf.load()
-        %right       : Ptr<Self> = Self.construct(%leaf, %alloc)
-        %mid         : USize     = NODE_KEYS.div(2)
-        %right_start : USize     = %mid.add(1)
-        %right_count : USize     = NODE_KEYS.sub(%right_start)
+        %left     : Ptr<Self> = %self.children.get(%index)
+        %leaf     : Bool      = %left.leaf.load()
+        %right    : Ptr<Self> = Self.construct(%leaf, %alloc)
+        %no_right : Bool      = %right.is_null()
+        branch %no_right ? return(false) : continue
+        %mid         : USize = NODE_KEYS.div(2)
+        %right_start : USize = %mid.add(1)
+        %right_count : USize = NODE_KEYS.sub(%right_start)
         %right.keys.copy(0, %left.keys, %right_start, %right_count)
         %right.length.store(%right_count)
         branch %leaf
@@ -295,9 +300,11 @@ require T: typename
         %left.recount()
         %right.recount()
         %self.recount()
-        return()
+        return(true)
 
-routine SortedSetNode<T>.insert_nonfull(%self: Ptr<Self>, %key: T, %alloc: Ptr<Allocator>) -> Void
+/// Inserts below a node that isn't full. Returns false when a split fails to
+/// allocate; the tree then holds the same elements, some nodes already split.
+routine SortedSetNode<T>.insert_nonfull(%self: Ptr<Self>, %key: T, %alloc: Ptr<Allocator>) -> Bool
 require T: typename
     block entry():
         %leaf : Bool = %self.leaf.load()
@@ -311,7 +318,7 @@ require T: typename
         %new_length : USize = %length.add(1)
         %self.length.store(%new_length)
         %self.subtree_count.store(%new_length)
-        return()
+        return(true)
 
     block insert_internal():
         %slot         : USize     = %self.find_index(%key)
@@ -321,7 +328,8 @@ require T: typename
         branch %full ? split_then_insert(%slot, %child) : descend(%slot, %child)
 
     block split_then_insert(%slot: USize, %child: Ptr<Self>):
-        %self.split_child(%slot, %alloc)
+        %split : Bool = %self.split_child(%slot, %alloc)
+        branch %split ? continue : return(false)
         %pivot      : T         = %self.keys.get(%slot)
         %cmp        : S32       = %key.compare(%pivot)
         %go_right   : Bool      = %cmp.gt(0)
@@ -330,15 +338,26 @@ require T: typename
         jump descend(%next_slot, %next_child)
 
     block descend(%slot: USize, %child: Ptr<Self>):
-        %child.insert_nonfull(%key, %alloc)
+        %inserted : Bool = %child.insert_nonfull(%key, %alloc)
+        branch %inserted ? continue : return(false)
         %self.recount()
-        return()
+        return(true)
 
 routine SortedSet<T>.add(%self: Ptr<Self>, %key: T) -> Bool
 require T: typename
     block entry():
+        %added : Result<Bool, AllocFailed> = %self.add_result(%key)
+        when %added:
+            .Success(%is_new) -> return(%is_new)
+            .Failure          -> panic(TrapCode.AllocFailed)
+
+/// `add`, returning a Failure instead of trapping when the allocator fails. The
+/// Success holds whether %key was new.
+routine SortedSet<T>.add_result(%self: Ptr<Self>, %key: T) -> Result<Bool, AllocFailed>
+require T: typename
+    block entry():
         %exists : Bool = %self.contains(%key)
-        branch %exists ? return(false): insert()
+        branch %exists ? return(.Success(false)) : insert()
 
     block insert():
         %alloc : Ptr<Allocator>        = %self.alloc.load()
@@ -347,13 +366,15 @@ require T: typename
         branch %empty ? first_root(%alloc) : insert_root(%root, %alloc)
 
     block first_root(%alloc: Ptr<Allocator>):
-        %root : Ptr<SortedSetNode<T>> = SortedSetNode<T>.construct(true, %alloc)
+        %root    : Ptr<SortedSetNode<T>> = SortedSetNode<T>.construct(true, %alloc)
+        %no_root : Bool                  = %root.is_null()
+        branch %no_root ? return(.Failure(AllocFailed {})) : continue
         %root.keys.set(0, %key)
         %root.length.store(1)
         %root.subtree_count.store(1)
         %self.root.store(%root)
         %self.length.store(1)
-        return(true)
+        return(.Success(true))
 
     block insert_root(%root: Ptr<SortedSetNode<T>>, %alloc: Ptr<Allocator>):
         %root_length : USize = %root.length.load()
@@ -362,15 +383,25 @@ require T: typename
 
     block split_root(%old_root: Ptr<SortedSetNode<T>>, %alloc: Ptr<Allocator>):
         %new_root : Ptr<SortedSetNode<T>> = SortedSetNode<T>.construct(false, %alloc)
+        %no_root  : Bool                  = %new_root.is_null()
+        branch %no_root ? return(.Failure(AllocFailed {})) : continue
         %new_root.children.set(0, %old_root)
+        %split : Bool = %new_root.split_child(0, %alloc)
+        branch %split ? install_root(%new_root, %alloc) : discard_root(%new_root, %alloc)
+
+    block install_root(%new_root: Ptr<SortedSetNode<T>>, %alloc: Ptr<Allocator>):
         %self.root.store(%new_root)
-        %new_root.split_child(0, %alloc)
         jump insert_nonfull(%new_root, %alloc)
 
+    block discard_root(%new_root: Ptr<SortedSetNode<T>>, %alloc: Ptr<Allocator>):
+        %new_root.free(%alloc)
+        return(.Failure(AllocFailed {}))
+
     block insert_nonfull(%root: Ptr<SortedSetNode<T>>, %alloc: Ptr<Allocator>):
-        %root.insert_nonfull(%key, %alloc)
+        %inserted : Bool = %root.insert_nonfull(%key, %alloc)
+        branch %inserted ? continue : return(.Failure(AllocFailed {}))
         %self.length.load().add(1).store_into(%self.length)
-        return(true)
+        return(.Success(true))
 
 routine SortedSetNode<T>.remove_leaf_at(%self: Ptr<Self>, %index: USize) -> T
 require T: typename

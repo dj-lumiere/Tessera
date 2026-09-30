@@ -260,7 +260,11 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
 ## Collections
 
 All in `stdlib/collection/`, documented in `tessera.wiki/docs/Collections.md`. `construct(%alloc)` stores the allocator; `destruct()`
-releases storage. Out-of-range access, `pop` on empty, and `get` of a missing key trap.
+releases storage. Out-of-range access, `pop` on empty, and `get` of a missing key trap; the `_checked` forms
+(`get_checked`, `pop_checked`, `peek_checked`) return `Option<T>` instead. Allocation failure traps too; each
+insertion and `reserve` has a `_result` form (`push_result`, `put_result`, `add_result`) that returns
+`Result<T, AllocFailed>` and leaves the collection unchanged on a `Failure`. `_checked` always means `Option`, `_result`
+always `Result`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|

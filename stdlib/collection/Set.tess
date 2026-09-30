@@ -169,7 +169,9 @@ require T: typename, HashEqual<T>
         %has  : Bool   = %other.contains(%key)
         branch %has ? loop(%i.add(1), %n) : return(false)
 
-routine Set<T>.rehash(%self: Ptr<Self>, %new_capacity: USize) -> Void
+/// Moves the live entries into fresh arrays of %new_capacity. Returns false when
+/// the allocator fails, leaving the set as it was.
+private routine Set<T>.rehash(%self: Ptr<Self>, %new_capacity: USize) -> Bool
 require T: typename
     block entry():
         %alloc            : Ptr<Allocator> = %self.alloc.load()
@@ -190,9 +192,17 @@ require T: typename
         %f2               : Bool           = %c.bitor(%d)
         %failed           : Bool           = %f1.bitor(%f2)
         branch %failed
-            ? panic(TrapCode.AllocFailed)
+            ? discard(%alloc, %new_keys, %new_hashes, %new_entry_states, %new_slots)
             : clear_loop(0, %old_keys, %old_hashes, %old_entry_states, %old_slots, %old_count,
                     %new_keys, %new_hashes, %new_entry_states, %new_slots, %new_capacity)
+
+    block discard(%alloc: Ptr<Allocator>, %new_keys: Ptr<T>, %new_hashes: Ptr<U64>,
+            %new_entry_states: Ptr<U8>, %new_slots: Ptr<USize>):
+        free_unless_null<T>(%new_keys, %alloc)
+        free_unless_null<U64>(%new_hashes, %alloc)
+        free_unless_null<U8>(%new_entry_states, %alloc)
+        free_unless_null<USize>(%new_slots, %alloc)
+        return(false)
 
     block clear_loop(%i: USize, %old_keys: Ptr<T>, %old_hashes: Ptr<U64>,
             %old_entry_states: Ptr<U8>, %old_slots: Ptr<USize>, %old_count: USize,
@@ -253,7 +263,7 @@ require T: typename
         %has_old : Bool = %old_slots.is_not_null()
         branch %has_old
             ? free_old(%old_keys, %old_hashes, %old_entry_states, %old_slots)
-            : return()
+            : return(true)
 
     block free_old(%old_keys: Ptr<T>, %old_hashes: Ptr<U64>, %old_entry_states: Ptr<U8>,
             %old_slots: Ptr<USize>):
@@ -262,9 +272,11 @@ require T: typename
         %old_hashes.free(%alloc)
         %old_entry_states.free(%alloc)
         %old_slots.free(%alloc)
-        return()
+        return(true)
 
-routine Set<T>.ensure(%self: Ptr<Self>) -> Void
+/// Makes room for one more entry. Returns false when the allocator fails,
+/// leaving the set as it was.
+private routine Set<T>.ensure(%self: Ptr<Self>) -> Bool
 require T: typename
     block entry():
         %capacity : USize = %self.capacity.load()
@@ -272,18 +284,16 @@ require T: typename
         branch %empty ? first() : check(%capacity)
 
     block first():
-        %self.rehash(8)
-        return()
+        return(%self.rehash(8))
 
     block check(%capacity: USize):
         %count : USize = %self.entries_count.load()
         %limit : USize = %capacity.mul(3).div(4)
         %full  : Bool  = %count.add(1).ge(%limit)
-        branch %full ? grow(%capacity) : return()
+        branch %full ? grow(%capacity) : return(true)
 
     block grow(%capacity: USize):
-        %self.rehash(%capacity.mul(2))
-        return()
+        return(%self.rehash(%capacity.mul(2)))
 
 /// Insert without growing — used internally by rehash after new arrays are in place.
 /// Returns true if a new entry was appended, false if %key already lived. %hash is the key's hash, so rehash can pass
@@ -314,13 +324,21 @@ require T: typename
 routine Set<T>.add(%self: Ptr<Self>, %key: T) -> Bool
 require T: typename
     block entry():
-        %self.ensure()
-        %added : Bool = %self.add_direct(%key, %key.hash())
-        return(%added)
+        %added : Result<Bool, AllocFailed> = %self.add_result(%key)
+        when %added:
+            .Success(%is_new) -> return(%is_new)
+            .Failure          -> panic(TrapCode.AllocFailed)
 
-/// Removal preserves the entries array's positional layout: we mark the entry
-/// dead and stamp the slot table with a tombstone. The entry's position is
-/// retained until the next rehash, so surviving entries keep their order.
+/// `add`, returning a Failure instead of trapping when the allocator fails. The
+/// Success holds whether %key was new.
+routine Set<T>.add_result(%self: Ptr<Self>, %key: T) -> Result<Bool, AllocFailed>
+require T: typename
+    block entry():
+        %room : Bool = %self.ensure()
+        branch %room ? continue : return(.Failure(AllocFailed {}))
+        %added : Bool = %self.add_direct(%key, %key.hash())
+        return(.Success(%added))
+
 routine Set<T>.remove(%self: Ptr<Self>, %key: T) -> Bool
 require T: typename
     block entry():
@@ -423,4 +441,13 @@ require T: typename, HashEqual<T>, Diagnose<T>, W: typename, Writer<W>
         claim %iter : Ptr<SetIter<T>>
         %iter.store(%iter_val)
         diagnose_items<T, SetIter<T>, W>(%out, %iter, "{", "}")
+        return()
+
+/// Frees %ptr unless it is null: a failed rehash releases the arrays it did get.
+private routine free_unless_null<T>(%ptr: Ptr<T>, %alloc: Ptr<Allocator>) -> Void
+require T: typename
+    block entry():
+        %present : Bool = %ptr.is_not_null()
+        branch %present ? continue : return()
+        %ptr.free(%alloc)
         return()

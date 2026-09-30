@@ -43,7 +43,9 @@ require T: typename
         %empty  : Bool  = %length.eq(0)
         return(%empty)
 
-routine CircularList<T>.recenter(%self: Ptr<Self>, %new_capacity: USize) -> Void
+/// Moves the elements into a new buffer of %new_capacity, centered. Returns false
+/// when the allocator fails, leaving the list as it was.
+private routine CircularList<T>.recenter(%self: Ptr<Self>, %new_capacity: USize) -> Bool
 require T: typename
     block entry():
         %length    : USize          = %self.length.load()
@@ -53,7 +55,7 @@ require T: typename
         %new_data  : Ptr<T>         = allocate<T>(%alloc, %new_capacity)
         %failed    : Bool           = %new_data.is_null()
         branch %failed
-            ? panic(TrapCode.AllocFailed)
+            ? return(false)
             : move(%new_data, %new_start, %length, %new_capacity)
 
     block move(%new_data: Ptr<T>, %new_start: USize, %length: USize, %new_capacity: USize):
@@ -76,7 +78,7 @@ require T: typename
         %self.data.store(%new_data)
         %self.start.store(%new_start)
         %self.capacity.store(%new_capacity)
-        return()
+        return(true)
 
 /// The capacity to recenter into when one end runs out: double it only when the circular_list is more than half full.
 /// Otherwise the live range just moves back to the middle, so a queue (push_back / pop_front) keeps a bounded buffer
@@ -89,12 +91,12 @@ require T: typename
         %new_capacity : USize = %crowded ? %capacity.mul(2) : %capacity
         return(%new_capacity)
 
-routine CircularList<T>.ensure_front(%self: Ptr<Self>) -> Void
+private routine CircularList<T>.ensure_front(%self: Ptr<Self>) -> Bool
 require T: typename
     block entry():
         %start           : USize = %self.start.load()
         %has_front_space : Bool  = %start.gt(0)
-        branch %has_front_space ? return() : choose()
+        branch %has_front_space ? return(true) : choose()
 
     block choose():
         %capacity : USize = %self.capacity.load()
@@ -102,45 +104,51 @@ require T: typename
         branch %empty ? initial() : grow(%capacity)
 
     block initial():
-        %self.recenter(4)
-        return()
+        return(%self.recenter(4))
 
     block grow(%capacity: USize):
-        %self.recenter(%self.grown_capacity(%capacity))
-        return()
+        return(%self.recenter(%self.grown_capacity(%capacity)))
 
-routine CircularList<T>.ensure_back(%self: Ptr<Self>) -> Void
+private routine CircularList<T>.ensure_back(%self: Ptr<Self>) -> Bool
 require T: typename
     block entry():
         %start          : USize = %self.start.load()
         %length         : USize = %self.length.load()
         %capacity       : USize = %self.capacity.load()
         %has_back_space : Bool  = %start.add(%length).lt(%capacity)
-        branch %has_back_space ? return() : choose(%capacity)
+        branch %has_back_space ? return(true) : choose(%capacity)
 
     block choose(%capacity: USize):
         %empty : Bool = %capacity.eq(0)
         branch %empty ? initial() : grow(%capacity)
 
     block initial():
-        %self.recenter(4)
-        return()
+        return(%self.recenter(4))
 
     block grow(%capacity: USize):
-        %self.recenter(%self.grown_capacity(%capacity))
-        return()
+        return(%self.recenter(%self.grown_capacity(%capacity)))
 
 routine CircularList<T>.push_back(%self: Ptr<Self>, %value: T) -> Void
 require T: typename
     block entry():
-        %self.ensure_back()
+        %pushed : Result<Unit, AllocFailed> = %self.push_back_result(%value)
+        when %pushed:
+            .Success -> return()
+            .Failure -> panic(TrapCode.AllocFailed)
+
+/// `push_back`, returning a Failure instead of trapping when the allocator fails.
+routine CircularList<T>.push_back_result(%self: Ptr<Self>, %value: T) -> Result<Unit, AllocFailed>
+require T: typename
+    block entry():
+        %room : Bool = %self.ensure_back()
+        branch %room ? continue : return(.Failure(AllocFailed {}))
         %data   : Ptr<T> = %self.data.load()
         %start  : USize  = %self.start.load()
         %length : USize  = %self.length.load()
         %index  : USize  = %start.add(%length)
         %data[%index].store(%value)
         %self.length.store(%length.add(1))
-        return()
+        return(.Success(Unit.value()))
 
 routine CircularList<T>.push(%self: Ptr<Self>, %value: T) -> Void
 require T: typename
@@ -148,24 +156,49 @@ require T: typename
         %self.push_back(%value)
         return()
 
+/// `push`, returning a Failure instead of trapping when the allocator fails.
+routine CircularList<T>.push_result(%self: Ptr<Self>, %value: T) -> Result<Unit, AllocFailed>
+require T: typename
+    block entry():
+        return(%self.push_back_result(%value))
+
 routine CircularList<T>.push_front(%self: Ptr<Self>, %value: T) -> Void
 require T: typename
     block entry():
-        %self.ensure_front()
+        %pushed : Result<Unit, AllocFailed> = %self.push_front_result(%value)
+        when %pushed:
+            .Success -> return()
+            .Failure -> panic(TrapCode.AllocFailed)
+
+/// `push_front`, returning a Failure instead of trapping when the allocator fails.
+routine CircularList<T>.push_front_result(%self: Ptr<Self>, %value: T) -> Result<Unit, AllocFailed>
+require T: typename
+    block entry():
+        %room : Bool = %self.ensure_front()
+        branch %room ? continue : return(.Failure(AllocFailed {}))
         %data      : Ptr<T> = %self.data.load()
         %start     : USize  = %self.start.load()
         %new_start : USize  = %start.sub(1)
         %data[%new_start].store(%value)
         %self.start.store(%new_start)
         %self.length.load().add(1).store_into(%self.length)
-        return()
+        return(.Success(Unit.value()))
 
 routine CircularList<T>.pop_back(%self: Ptr<Self>) -> T
 require T: typename
     block entry():
+        %popped : Option<T> = %self.pop_back_checked()
+        when %popped:
+            .Present(%value) -> return(%value)
+            .Absent          -> panic(TrapCode.Empty)
+
+/// `pop_back`, returning Absent instead of trapping on an empty list.
+routine CircularList<T>.pop_back_checked(%self: Ptr<Self>) -> Option<T>
+require T: typename
+    block entry():
         %length : USize = %self.length.load()
         %empty  : Bool  = %length.eq(0)
-        branch %empty ? panic(TrapCode.Empty) : pop(%length)
+        branch %empty ? return(.Absent) : pop(%length)
 
     block pop(%length: USize):
         %new_length : USize  = %length.sub(1)
@@ -174,7 +207,7 @@ require T: typename
         %index      : USize  = %start.add(%new_length)
         %value      : T      = %data[%index].load()
         %self.length.store(%new_length)
-        return(%value)
+        return(.Present(%value))
 
 routine CircularList<T>.pop(%self: Ptr<Self>) -> T
 require T: typename
@@ -182,12 +215,27 @@ require T: typename
         %value : T = %self.pop_back()
         return(%value)
 
+/// `pop`, returning Absent instead of trapping on an empty list.
+routine CircularList<T>.pop_checked(%self: Ptr<Self>) -> Option<T>
+require T: typename
+    block entry():
+        return(%self.pop_back_checked())
+
 routine CircularList<T>.pop_front(%self: Ptr<Self>) -> T
+require T: typename
+    block entry():
+        %popped : Option<T> = %self.pop_front_checked()
+        when %popped:
+            .Present(%value) -> return(%value)
+            .Absent          -> panic(TrapCode.Empty)
+
+/// `pop_front`, returning Absent instead of trapping on an empty list.
+routine CircularList<T>.pop_front_checked(%self: Ptr<Self>) -> Option<T>
 require T: typename
     block entry():
         %length : USize = %self.length.load()
         %empty  : Bool  = %length.eq(0)
-        branch %empty ? panic(TrapCode.Empty) : pop(%length)
+        branch %empty ? return(.Absent) : pop(%length)
 
     block pop(%length: USize):
         %data  : Ptr<T> = %self.data.load()
@@ -195,7 +243,7 @@ require T: typename
         %value : T      = %data[%start].load()
         %self.start.store(%start.add(1))
         %self.length.store(%length.sub(1))
-        return(%value)
+        return(.Present(%value))
 
 routine CircularList<T>.get(%self: Ptr<Self>, %index: USize) -> T
 require T: typename
@@ -209,6 +257,20 @@ require T: typename
         %start : USize  = %self.start.load()
         %value : T      = %data[%start.add(%index)].load()
         return(%value)
+
+/// `get`, returning Absent instead of trapping on an index past the end.
+routine CircularList<T>.get_checked(%self: Ptr<Self>, %index: USize) -> Option<T>
+require T: typename
+    block entry():
+        %length    : USize = %self.length.load()
+        %in_bounds : Bool  = %index.lt(%length)
+        branch %in_bounds ? load(%index) : return(.Absent)
+
+    block load(%index: USize):
+        %data  : Ptr<T> = %self.data.load()
+        %start : USize  = %self.start.load()
+        %value : T      = %data[%start.add(%index)].load()
+        return(.Present(%value))
 
 routine CircularList<T>.eq(%self: Self, %other: Self) -> Bool
 require T: typename, Equal<T>

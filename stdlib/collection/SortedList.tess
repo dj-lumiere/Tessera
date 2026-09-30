@@ -57,12 +57,13 @@ require T: typename
         %empty  : Bool  = %length.eq(0)
         return(%empty)
 
+/// A new empty node, or null when the allocator fails.
 routine SortedListNode<T>.construct(%leaf: Bool, %alloc: Ptr<Allocator>) -> Ptr<Self>
 require T: typename
     block entry():
         %node   : Ptr<Self> = allocate<Self>(%alloc, 1)
         %failed : Bool      = %node.is_null()
-        branch %failed ? panic(TrapCode.AllocFailed) : init(%node, %leaf)
+        branch %failed ? return(%node) : init(%node, %leaf)
 
     block init(%node: Ptr<Self>, %leaf: Bool):
         %node.leaf.store(%leaf)
@@ -148,9 +149,18 @@ require T: typename, Equal<T>
 routine SortedList<T>.get(%self: Ptr<Self>, %order: USize) -> T
 require T: typename
     block entry():
+        %found : Option<T> = %self.get_checked(%order)
+        when %found:
+            .Present(%value) -> return(%value)
+            .Absent          -> panic(TrapCode.Bounds)
+
+/// `get`, returning Absent instead of trapping on a position past the end.
+routine SortedList<T>.get_checked(%self: Ptr<Self>, %order: USize) -> Option<T>
+require T: typename
+    block entry():
         %length    : USize = %self.length.load()
         %in_bounds : Bool  = %order.lt(%length)
-        branch %in_bounds ? select_root(%order) : panic(TrapCode.Bounds)
+        branch %in_bounds ? select_root(%order) : return(.Absent)
 
     block select_root(%order: USize):
         %root : Ptr<SortedListNode<T>> = %self.root.load()
@@ -162,7 +172,7 @@ require T: typename
 
     block leaf_get(%node: Ptr<SortedListNode<T>>, %order: USize):
         %value : T = %node.values.get(%order)
-        return(%value)
+        return(.Present(%value))
 
     block internal_get(%node: Ptr<SortedListNode<T>>, %order: USize):
         jump scan(%node, %order, 0)
@@ -186,9 +196,18 @@ require T: typename
 routine SortedList<T>.push(%self: Ptr<Self>, %value: T) -> Void
 require T: typename, Compare<T>
     block entry():
-        %order : USize = %self.bound(%value, true)
-        %self.insert_at(%order, %value)
-        return()
+        %pushed : Result<Unit, AllocFailed> = %self.push_result(%value)
+        when %pushed:
+            .Success -> return()
+            .Failure -> panic(TrapCode.AllocFailed)
+
+/// `push`, returning a Failure instead of trapping when the allocator fails.
+routine SortedList<T>.push_result(%self: Ptr<Self>, %value: T) -> Result<Unit, AllocFailed>
+require T: typename, Compare<T>
+    block entry():
+        %order    : USize = %self.bound(%value, true)
+        %inserted : Bool  = %self.insert_at(%order, %value)
+        branch %inserted ? return(.Success(Unit.value())) : return(.Failure(AllocFailed {}))
 
 /// The number of elements less than %value: the position of its first copy if it's there, and where push would put
 /// it if not.
@@ -231,16 +250,20 @@ require T: typename, Compare<T>
         %left_of : Bool  = %below.bitor(%equal)
         branch %left_of ? search(%mid.add(1), %hi) : search(%lo, %mid)
 
+/// Splits the full child at %index around its middle. Returns false when the
+/// allocator fails, before anything has moved.
 routine SortedListNode<T>.split_child(%self: Ptr<Self>, %index: USize,
-        %alloc: Ptr<Allocator>) -> Void
+        %alloc: Ptr<Allocator>) -> Bool
 require T: typename
     block entry():
-        %left        : Ptr<Self> = %self.children.get(%index)
-        %leaf        : Bool      = %left.leaf.load()
-        %right       : Ptr<Self> = Self.construct(%leaf, %alloc)
-        %length      : USize     = %left.length.load()
-        %mid         : USize     = %length.div(2)
-        %right_count : USize     = %length.sub(%mid)
+        %left     : Ptr<Self> = %self.children.get(%index)
+        %leaf     : Bool      = %left.leaf.load()
+        %right    : Ptr<Self> = Self.construct(%leaf, %alloc)
+        %no_right : Bool      = %right.is_null()
+        branch %no_right ? return(false) : continue
+        %length      : USize = %left.length.load()
+        %mid         : USize = %length.div(2)
+        %right_count : USize = %length.sub(%mid)
         branch %leaf
             ? copy_values(%left, %right, %mid, %right_count)
             : copy_children(%left, %right, %mid, %right_count)
@@ -292,7 +315,7 @@ require T: typename
         %left.recount()
         %right.recount()
         %self.recount()
-        return()
+        return(true)
 
 /// Insert variant: an order equal to the rightmost subtree's count means
 /// "append at the end of that child", so `remaining == count` keeps us in
@@ -333,8 +356,10 @@ require T: typename
         %out_local.store(%remaining)
         return(%i)
 
+/// Inserts below a node that isn't full. Returns false when a split fails to
+/// allocate; the tree then holds the same elements, some nodes already split.
 routine SortedListNode<T>.insert_nonfull(%self: Ptr<Self>, %order: USize, %value: T,
-        %alloc: Ptr<Allocator>) -> Void
+        %alloc: Ptr<Allocator>) -> Bool
 require T: typename
     block entry():
         %leaf : Bool = %self.leaf.load()
@@ -347,7 +372,7 @@ require T: typename
         %new_length : USize = %length.add(1)
         %self.length.store(%new_length)
         %self.subtree_count.store(%new_length)
-        return()
+        return(true)
 
     block insert_internal(%order: USize, %value: T):
         claim %local_order : Ptr<USize>
@@ -361,7 +386,8 @@ require T: typename
             : descend(%slot, %child, %local_order_val, %value)
 
     block split_then_insert(%slot: USize, %local_order: USize, %value: T):
-        %self.split_child(%slot, %alloc)
+        %split : Bool = %self.split_child(%slot, %alloc)
+        branch %split ? continue : return(false)
         %left       : Ptr<Self> = %self.children.get(%slot)
         %left_count : USize     = %left.count()
         %go_right   : Bool      = %local_order.gt(%left_count)
@@ -380,12 +406,14 @@ require T: typename
         jump descend(%right_slot, %child, %right_order, %value)
 
     block descend(%slot: USize, %child: Ptr<Self>, %local_order: USize, %value: T):
-        %child.insert_nonfull(%local_order, %value, %alloc)
+        %inserted : Bool = %child.insert_nonfull(%local_order, %value, %alloc)
+        branch %inserted ? continue : return(false)
         %self.recount()
-        return()
+        return(true)
 
-/// Inserts %value before position %order. push picks the position, so the order holds.
-private routine SortedList<T>.insert_at(%self: Ptr<Self>, %order: USize, %value: T) -> Void
+/// Inserts %value before position %order. push picks the position, so the order holds. Returns false when the
+/// allocator fails, leaving the list with the same elements.
+private routine SortedList<T>.insert_at(%self: Ptr<Self>, %order: USize, %value: T) -> Bool
 require T: typename
     block entry():
         %length    : USize = %self.length.load()
@@ -399,13 +427,15 @@ require T: typename
         branch %empty ? first_root(%value, %alloc) : insert_root(%root, %order, %value, %alloc)
 
     block first_root(%value: T, %alloc: Ptr<Allocator>):
-        %root : Ptr<SortedListNode<T>> = SortedListNode<T>.construct(true, %alloc)
+        %root    : Ptr<SortedListNode<T>> = SortedListNode<T>.construct(true, %alloc)
+        %no_root : Bool                   = %root.is_null()
+        branch %no_root ? return(false) : continue
         %root.values.set(0, %value)
         %root.length.store(1)
         %root.subtree_count.store(1)
         %self.root.store(%root)
         %self.length.store(1)
-        return()
+        return(true)
 
     block insert_root(%root: Ptr<SortedListNode<T>>, %order: USize, %value: T,
             %alloc: Ptr<Allocator>):
@@ -418,17 +448,30 @@ require T: typename
     block split_root(%old_root: Ptr<SortedListNode<T>>, %order: USize, %value: T,
             %alloc: Ptr<Allocator>):
         %new_root : Ptr<SortedListNode<T>> = SortedListNode<T>.construct(false, %alloc)
+        %no_root  : Bool                   = %new_root.is_null()
+        branch %no_root ? return(false) : continue
         %new_root.children.set(0, %old_root)
         %new_root.length.store(1)
+        %split : Bool = %new_root.split_child(0, %alloc)
+        branch %split
+            ? install_root(%new_root, %order, %value, %alloc)
+            : discard_root(%new_root, %alloc)
+
+    block install_root(%new_root: Ptr<SortedListNode<T>>, %order: USize, %value: T,
+            %alloc: Ptr<Allocator>):
         %self.root.store(%new_root)
-        %new_root.split_child(0, %alloc)
         jump insert_nonfull(%new_root, %order, %value, %alloc)
+
+    block discard_root(%new_root: Ptr<SortedListNode<T>>, %alloc: Ptr<Allocator>):
+        %new_root.free(%alloc)
+        return(false)
 
     block insert_nonfull(%root: Ptr<SortedListNode<T>>, %order: USize, %value: T,
             %alloc: Ptr<Allocator>):
-        %root.insert_nonfull(%order, %value, %alloc)
+        %inserted : Bool = %root.insert_nonfull(%order, %value, %alloc)
+        branch %inserted ? continue : return(false)
         %self.length.load().add(1).store_into(%self.length)
-        return()
+        return(true)
 
 // Capacity = NODE_VALUES, t = NODE_MIN. Internal-node `length` is the
 // child count, so the underflow threshold (length < NODE_MIN) is shared

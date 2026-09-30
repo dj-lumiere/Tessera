@@ -51,12 +51,13 @@ require K: typename, V: typename
         %empty  : Bool  = %length.eq(0)
         return(%empty)
 
+/// A new empty node, or null when the allocator fails.
 routine SortedDictNode<K, V>.construct(%leaf: Bool, %alloc: Ptr<Allocator>) -> Ptr<Self>
 require K: typename, V: typename
     block entry():
         %node   : Ptr<Self> = allocate<Self>(%alloc, 1)
         %failed : Bool      = %node.is_null()
-        branch %failed ? panic(TrapCode.AllocFailed) : init(%node, %leaf)
+        branch %failed ? return(%node) : init(%node, %leaf)
 
     block init(%node: Ptr<Self>, %leaf: Bool):
         %node.leaf.store(%leaf)
@@ -123,9 +124,18 @@ require K: typename, V: typename
 routine SortedDict<K, V>.get(%self: Ptr<Self>, %key: K) -> V
 require K: typename, V: typename
     block entry():
+        %found : Option<V> = %self.get_checked(%key)
+        when %found:
+            .Present(%value) -> return(%value)
+            .Absent          -> panic(TrapCode.MissingKey)
+
+/// `get`, returning Absent instead of trapping on a missing key.
+routine SortedDict<K, V>.get_checked(%self: Ptr<Self>, %key: K) -> Option<V>
+require K: typename, V: typename
+    block entry():
         %root  : Ptr<SortedDictNode<K, V>> = %self.root.load()
         %empty : Bool                      = %root.is_null()
-        branch %empty ? panic(TrapCode.MissingKey) : search(%root, %key)
+        branch %empty ? return(.Absent) : search(%root, %key)
 
     block search(%node: Ptr<SortedDictNode<K, V>>, %key: K):
         %i      : USize = %node.find_index(%key)
@@ -141,7 +151,7 @@ require K: typename, V: typename
 
     block descend_or_missing(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
         %leaf : Bool = %node.leaf.load()
-        branch %leaf ? panic(TrapCode.MissingKey) : descend(%node, %i, %key)
+        branch %leaf ? return(.Absent) : descend(%node, %i, %key)
 
     block descend(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
         %child : Ptr<SortedDictNode<K, V>> = %node.children.get(%i)
@@ -149,7 +159,7 @@ require K: typename, V: typename
 
     block load(%node: Ptr<SortedDictNode<K, V>>, %i: USize):
         %value : V = %node.values.get(%i)
-        return(%value)
+        return(.Present(%value))
 
 /// SortedDicts are sorted by key, so structural in-order comparison of both
 /// keys and values gives map equality.
@@ -299,16 +309,20 @@ require K: typename, V: typename
         %value : Ptr<V>                    = %node.values.to_ptr()[%spot.index]
         return(%value)
 
+/// Splits the full child at %index around its middle. Returns false when the
+/// allocator fails, before anything has moved.
 routine SortedDictNode<K, V>.split_child(%self: Ptr<Self>, %index: USize,
-        %alloc: Ptr<Allocator>) -> Void
+        %alloc: Ptr<Allocator>) -> Bool
 require K: typename, V: typename
     block entry():
-        %left        : Ptr<Self> = %self.children.get(%index)
-        %leaf        : Bool      = %left.leaf.load()
-        %right       : Ptr<Self> = Self.construct(%leaf, %alloc)
-        %mid         : USize     = NODE_KEYS.div(2)
-        %right_start : USize     = %mid.add(1)
-        %right_count : USize     = NODE_KEYS.sub(%right_start)
+        %left     : Ptr<Self> = %self.children.get(%index)
+        %leaf     : Bool      = %left.leaf.load()
+        %right    : Ptr<Self> = Self.construct(%leaf, %alloc)
+        %no_right : Bool      = %right.is_null()
+        branch %no_right ? return(false) : continue
+        %mid         : USize = NODE_KEYS.div(2)
+        %right_start : USize = %mid.add(1)
+        %right_count : USize = NODE_KEYS.sub(%right_start)
         %right.keys.copy(0, %left.keys, %right_start, %right_count)
         %right.values.copy(0, %left.values, %right_start, %right_count)
         %right.length.store(%right_count)
@@ -360,10 +374,12 @@ require K: typename, V: typename
         %left.recount()
         %right.recount()
         %self.recount()
-        return()
+        return(true)
 
+/// Inserts below a node that isn't full. Returns false when a split fails to
+/// allocate; the tree then holds the same elements, some nodes already split.
 routine SortedDictNode<K, V>.insert_nonfull(%self: Ptr<Self>, %key: K, %value: V,
-        %alloc: Ptr<Allocator>) -> Void
+        %alloc: Ptr<Allocator>) -> Bool
 require K: typename, V: typename
     block entry():
         %leaf : Bool = %self.leaf.load()
@@ -379,7 +395,7 @@ require K: typename, V: typename
         %new_length : USize = %length.add(1)
         %self.length.store(%new_length)
         %self.subtree_count.store(%new_length)
-        return()
+        return(true)
 
     block insert_internal():
         %slot         : USize     = %self.find_index(%key)
@@ -389,7 +405,8 @@ require K: typename, V: typename
         branch %full ? split_then_insert(%slot, %child) : descend(%slot, %child)
 
     block split_then_insert(%slot: USize, %child: Ptr<Self>):
-        %self.split_child(%slot, %alloc)
+        %split : Bool = %self.split_child(%slot, %alloc)
+        branch %split ? continue : return(false)
         %pivot      : K         = %self.keys.get(%slot)
         %cmp        : S32       = %key.compare(%pivot)
         %go_right   : Bool      = %cmp.gt(0)
@@ -398,11 +415,22 @@ require K: typename, V: typename
         jump descend(%next_slot, %next_child)
 
     block descend(%slot: USize, %child: Ptr<Self>):
-        %child.insert_nonfull(%key, %value, %alloc)
+        %inserted : Bool = %child.insert_nonfull(%key, %value, %alloc)
+        branch %inserted ? continue : return(false)
         %self.recount()
-        return()
+        return(true)
 
 routine SortedDict<K, V>.put(%self: Ptr<Self>, %key: K, %value: V) -> Void
+require K: typename, V: typename
+    block entry():
+        %put : Result<Unit, AllocFailed> = %self.put_result(%key, %value)
+        when %put:
+            .Success -> return()
+            .Failure -> panic(TrapCode.AllocFailed)
+
+/// `put`, returning a Failure instead of trapping when the allocator fails.
+routine SortedDict<K, V>.put_result(%self: Ptr<Self>, %key: K,
+        %value: V) -> Result<Unit, AllocFailed>
 require K: typename, V: typename
     block entry():
         %root  : Ptr<SortedDictNode<K, V>> = %self.root.load()
@@ -410,19 +438,21 @@ require K: typename, V: typename
         branch %empty ? first_root() : maybe_replace(%root)
 
     block first_root():
-        %alloc : Ptr<Allocator>            = %self.alloc.load()
-        %root  : Ptr<SortedDictNode<K, V>> = SortedDictNode<K, V>.construct(true, %alloc)
+        %alloc   : Ptr<Allocator>            = %self.alloc.load()
+        %root    : Ptr<SortedDictNode<K, V>> = SortedDictNode<K, V>.construct(true, %alloc)
+        %no_root : Bool                      = %root.is_null()
+        branch %no_root ? return(.Failure(AllocFailed {})) : continue
         %root.keys.set(0, %key)
         %root.values.set(0, %value)
         %root.length.store(1)
         %root.subtree_count.store(1)
         %self.root.store(%root)
         %self.length.store(1)
-        return()
+        return(.Success(Unit.value()))
 
     block maybe_replace(%root: Ptr<SortedDictNode<K, V>>):
         %replaced : Bool = %root.replace(%key, %value)
-        branch %replaced ? return() : insert_root(%root)
+        branch %replaced ? return(.Success(Unit.value())) : insert_root(%root)
 
     block insert_root(%root: Ptr<SortedDictNode<K, V>>):
         %alloc       : Ptr<Allocator> = %self.alloc.load()
@@ -432,15 +462,25 @@ require K: typename, V: typename
 
     block split_root(%old_root: Ptr<SortedDictNode<K, V>>, %alloc: Ptr<Allocator>):
         %new_root : Ptr<SortedDictNode<K, V>> = SortedDictNode<K, V>.construct(false, %alloc)
+        %no_root  : Bool                      = %new_root.is_null()
+        branch %no_root ? return(.Failure(AllocFailed {})) : continue
         %new_root.children.set(0, %old_root)
+        %split : Bool = %new_root.split_child(0, %alloc)
+        branch %split ? install_root(%new_root, %alloc) : discard_root(%new_root, %alloc)
+
+    block install_root(%new_root: Ptr<SortedDictNode<K, V>>, %alloc: Ptr<Allocator>):
         %self.root.store(%new_root)
-        %new_root.split_child(0, %alloc)
         jump insert_nonfull(%new_root, %alloc)
 
+    block discard_root(%new_root: Ptr<SortedDictNode<K, V>>, %alloc: Ptr<Allocator>):
+        %new_root.free(%alloc)
+        return(.Failure(AllocFailed {}))
+
     block insert_nonfull(%root: Ptr<SortedDictNode<K, V>>, %alloc: Ptr<Allocator>):
-        %root.insert_nonfull(%key, %value, %alloc)
+        %inserted : Bool = %root.insert_nonfull(%key, %value, %alloc)
+        branch %inserted ? continue : return(.Failure(AllocFailed {}))
         %self.length.load().add(1).store_into(%self.length)
-        return()
+        return(.Success(Unit.value()))
 
 routine SortedDictNode<K, V>.replace(%self: Ptr<Self>, %key: K, %value: V) -> Bool
 require K: typename, V: typename

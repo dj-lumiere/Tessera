@@ -1,0 +1,416 @@
+// The `_result` forms against an allocator that fails after a budget of calls, and the `_checked` forms on empty
+// collections and missing keys. Each case inserts 0, 1, 2, ... until the allocator fails, checks that the collection
+// still holds exactly what went in, then grants more budget and inserts once more. The budgets reach every failure
+// point: a partial Dict / Set rehash, a B-tree leaf split during descent, and a root split whose sibling fails.
+
+import Standard::Alloc
+import Standard::Collections
+import Standard::Format
+
+@[external("c"), symbol("malloc")]
+routine c_malloc(%size: USize) -> Addr
+
+@[external("c"), symbol("realloc")]
+routine c_realloc(%ptr: Addr, %size: USize) -> Addr
+
+@[external("c"), symbol("free")]
+routine c_free(%ptr: Addr) -> Void
+
+// The smaller number comes out of a PriorityQueue first.
+conform Priority<S64>
+
+routine S64.less(%a: Self, %b: Self) -> Bool
+    block entry():
+        return(%a.lt(%b))
+
+// -- the budgeted allocator: %state points at the number of calls still allowed --------------------------------------
+
+routine take_budget(%state: Addr) -> Bool
+    block entry():
+        %budget : Ptr<USize> = %state.cast<USize>()
+        %left   : USize      = %budget.load()
+        %spent  : Bool       = %left.eq(0)
+        branch %spent ? return(false) : continue
+        %left.sub(1).store_into(%budget)
+        return(true)
+
+routine budget_alloc(%state: Addr, %size: USize) -> Addr
+    block entry():
+        %allowed : Bool = take_budget(%state)
+        branch %allowed ? return(c_malloc(%size)) : return(null)
+
+routine budget_realloc(%state: Addr, %old: Addr, %size: USize) -> Addr
+    block entry():
+        %allowed : Bool = take_budget(%state)
+        branch %allowed ? return(c_realloc(%old, %size)) : return(null)
+
+routine budget_free(%state: Addr, %ptr: Addr) -> Void
+    block entry():
+        c_free(%ptr)
+        return()
+
+// -- sequences ------------------------------------------------------------------------------------------------------
+
+routine list_case(%alloc: Ptr<Allocator>, %budget: Ptr<USize>, %grant: USize) -> Void
+    block entry():
+        %budget.store(%grant)
+        %list_val : List<S64> = .construct(%alloc)
+        claim %list : Ptr<List<S64>>
+        %list.store(%list_val)
+        jump fill(%list, 0)
+
+    block fill(%list: Ptr<List<S64>>, %i: S64):
+        %pushed : Result<Unit, AllocFailed> = %list.push_result(%i)
+        when %pushed:
+            .Success -> fill(%list, %i.add(1))
+            .Failure -> failed(%list)
+
+    block failed(%list: Ptr<List<S64>>):
+        print("List, budget {%grant}: {%list.load()}\n")
+        %budget.store(1)
+        %list.push(99)
+        print("  then push: {%list.load()}\n")
+        %list.destruct()
+        return()
+
+routine circular_case(%alloc: Ptr<Allocator>, %budget: Ptr<USize>, %grant: USize) -> Void
+    block entry():
+        %budget.store(%grant)
+        %deque_val : CircularList<S64> = .construct(%alloc)
+        claim %deque : Ptr<CircularList<S64>>
+        %deque.store(%deque_val)
+        jump fill(%deque, 0)
+
+    // Alternates ends, so both push_front_result and push_back_result reach the allocator.
+    block fill(%deque: Ptr<CircularList<S64>>, %i: S64):
+        %front : Bool = %i.rem(2).eq(1)
+        branch %front ? push_front(%deque, %i) : push_back(%deque, %i)
+
+    block push_front(%deque: Ptr<CircularList<S64>>, %i: S64):
+        %pushed : Result<Unit, AllocFailed> = %deque.push_front_result(%i)
+        jump pushed(%deque, %i, %pushed)
+
+    block push_back(%deque: Ptr<CircularList<S64>>, %i: S64):
+        %pushed : Result<Unit, AllocFailed> = %deque.push_back_result(%i)
+        jump pushed(%deque, %i, %pushed)
+
+    block pushed(%deque: Ptr<CircularList<S64>>, %i: S64, %pushed: Result<Unit, AllocFailed>):
+        when %pushed:
+            .Success -> fill(%deque, %i.add(1))
+            .Failure -> failed(%deque)
+
+    block failed(%deque: Ptr<CircularList<S64>>):
+        print("CircularList, budget {%grant}: {%deque.load()}\n")
+        %budget.store(1)
+        %deque.push_front(99)
+        print("  then push_front: {%deque.load()}\n")
+        %deque.destruct()
+        return()
+
+routine queue_case(%alloc: Ptr<Allocator>, %budget: Ptr<USize>, %grant: USize) -> Void
+    block entry():
+        %budget.store(%grant)
+        %queue_val : PriorityQueue<S64> = .construct(%alloc)
+        claim %queue : Ptr<PriorityQueue<S64>>
+        %queue.store(%queue_val)
+        jump fill(%queue, 0)
+
+    // Pushes 100, 99, 98, ..., so each push sifts to the top.
+    block fill(%queue: Ptr<PriorityQueue<S64>>, %i: S64):
+        %pushed : Result<Unit, AllocFailed> = %queue.push_result(S64.sub(100, %i))
+        when %pushed:
+            .Success -> fill(%queue, %i.add(1))
+            .Failure -> failed(%queue)
+
+    block failed(%queue: Ptr<PriorityQueue<S64>>):
+        print("PriorityQueue, budget {%grant}: {%queue.length()} elements, top {%queue.peek_checked()}\n")
+        %budget.store(1)
+        %queue.push(0)
+        print("  then push: top {%queue.pop()}, next {%queue.pop_checked()}\n")
+        %queue.destruct()
+        return()
+
+// -- hash collections -----------------------------------------------------------------------------------------------
+
+// Every key below %count maps to ten times itself.
+routine dict_intact(%map: Ptr<Dict<S64, S64>>, %count: S64) -> Bool
+    block entry():
+        %length : S64  = %map.length().to_s64()
+        %same   : Bool = %length.eq(%count)
+        branch %same ? check(0) : return(false)
+
+    block check(%i: S64):
+        %done : Bool = %i.ge(%count)
+        branch %done ? return(true) : continue
+        %value : S64  = %map.get(%i)
+        %right : Bool = %value.eq(%i.mul(10))
+        branch %right ? check(%i.add(1)) : return(false)
+
+routine dict_case(%alloc: Ptr<Allocator>, %budget: Ptr<USize>, %grant: USize) -> Void
+    block entry():
+        %budget.store(%grant)
+        %map_val : Dict<S64, S64> = .construct(%alloc)
+        claim %map : Ptr<Dict<S64, S64>>
+        %map.store(%map_val)
+        jump fill(%map, 0)
+
+    block fill(%map: Ptr<Dict<S64, S64>>, %i: S64):
+        %put : Result<Unit, AllocFailed> = %map.put_result(%i, %i.mul(10))
+        when %put:
+            .Success -> fill(%map, %i.add(1))
+            .Failure -> failed(%map, %i)
+
+    block failed(%map: Ptr<Dict<S64, S64>>, %count: S64):
+        print("Dict, budget {%grant}: {%count} entries, intact {dict_intact(%map, %count)}")
+        %budget.store(5)
+        %map.put(%count, %count.mul(10))
+        print(", then put: intact {dict_intact(%map, %count.add(1))}\n")
+        %map.destruct()
+        return()
+
+routine set_intact(%set: Ptr<Set<S64>>, %count: S64) -> Bool
+    block entry():
+        %length : S64  = %set.length().to_s64()
+        %same   : Bool = %length.eq(%count)
+        branch %same ? check(0) : return(false)
+
+    block check(%i: S64):
+        %done : Bool = %i.ge(%count)
+        branch %done ? return(true) : continue
+        %has : Bool = %set.contains(%i)
+        branch %has ? check(%i.add(1)) : return(false)
+
+routine set_case(%alloc: Ptr<Allocator>, %budget: Ptr<USize>, %grant: USize) -> Void
+    block entry():
+        %budget.store(%grant)
+        %set_val : Set<S64> = .construct(%alloc)
+        claim %set : Ptr<Set<S64>>
+        %set.store(%set_val)
+        jump fill(%set, 0)
+
+    block fill(%set: Ptr<Set<S64>>, %i: S64):
+        %added : Result<Bool, AllocFailed> = %set.add_result(%i)
+        when %added:
+            .Success -> fill(%set, %i.add(1))
+            .Failure -> failed(%set, %i)
+
+    block failed(%set: Ptr<Set<S64>>, %count: S64):
+        print("Set, budget {%grant}: {%count} keys, intact {set_intact(%set, %count)}")
+        %budget.store(4)
+        %added : Bool                      = %set.add(%count)
+        %again : Result<Bool, AllocFailed> = %set.add_result(%count)
+        print(", then add: {%added}, again {%again}, intact {set_intact(%set, %count.add(1))}\n")
+        %set.destruct()
+        return()
+
+// -- B-trees --------------------------------------------------------------------------------------------------------
+
+// Rank i holds key i and value ten times i, and get finds each key.
+routine sorted_dict_intact(%map: Ptr<SortedDict<S64, S64>>, %count: S64) -> Bool
+    block entry():
+        %length : S64  = %map.length().to_s64()
+        %same   : Bool = %length.eq(%count)
+        branch %same ? check(0) : return(false)
+
+    block check(%i: S64):
+        %done : Bool = %i.ge(%count)
+        branch %done ? return(true) : continue
+        %pair  : KVPair<S64, S64> = %map.get_by_rank(%i.to_usize())
+        %key   : S64              = %pair.key
+        %value : S64              = %pair.value
+        %found : S64              = %map.get(%i)
+        %tens  : S64              = %i.mul(10)
+        %right : Bool             = %key.eq(%i).bitand(%value.eq(%tens)).bitand(%found.eq(%tens))
+        branch %right ? check(%i.add(1)) : return(false)
+
+routine sorted_dict_case(%alloc: Ptr<Allocator>, %budget: Ptr<USize>, %grant: USize) -> Void
+    block entry():
+        %budget.store(%grant)
+        %map_val : SortedDict<S64, S64> = .construct(%alloc)
+        claim %map : Ptr<SortedDict<S64, S64>>
+        %map.store(%map_val)
+        jump fill(%map, 0)
+
+    block fill(%map: Ptr<SortedDict<S64, S64>>, %i: S64):
+        %put : Result<Unit, AllocFailed> = %map.put_result(%i, %i.mul(10))
+        when %put:
+            .Success -> fill(%map, %i.add(1))
+            .Failure -> failed(%map, %i)
+
+    block failed(%map: Ptr<SortedDict<S64, S64>>, %count: S64):
+        print("SortedDict, budget {%grant}: {%count} entries, intact {sorted_dict_intact(%map, %count)}")
+        %budget.store(3)
+        %map.put(%count, %count.mul(10))
+        print(", then put: intact {sorted_dict_intact(%map, %count.add(1))}\n")
+        %map.destruct()
+        return()
+
+routine sorted_set_intact(%set: Ptr<SortedSet<S64>>, %count: S64) -> Bool
+    block entry():
+        %length : S64  = %set.length().to_s64()
+        %same   : Bool = %length.eq(%count)
+        branch %same ? check(0) : return(false)
+
+    block check(%i: S64):
+        %done : Bool = %i.ge(%count)
+        branch %done ? return(true) : continue
+        %key   : S64  = %set.get_by_rank(%i.to_usize())
+        %right : Bool = %key.eq(%i).bitand(%set.contains(%i))
+        branch %right ? check(%i.add(1)) : return(false)
+
+routine sorted_set_case(%alloc: Ptr<Allocator>, %budget: Ptr<USize>, %grant: USize) -> Void
+    block entry():
+        %budget.store(%grant)
+        %set_val : SortedSet<S64> = .construct(%alloc)
+        claim %set : Ptr<SortedSet<S64>>
+        %set.store(%set_val)
+        jump fill(%set, 0)
+
+    block fill(%set: Ptr<SortedSet<S64>>, %i: S64):
+        %added : Result<Bool, AllocFailed> = %set.add_result(%i)
+        when %added:
+            .Success -> fill(%set, %i.add(1))
+            .Failure -> failed(%set, %i)
+
+    block failed(%set: Ptr<SortedSet<S64>>, %count: S64):
+        print("SortedSet, budget {%grant}: {%count} keys, intact {sorted_set_intact(%set, %count)}")
+        %budget.store(3)
+        %added : Bool = %set.add(%count)
+        print(", then add: {%added}, intact {sorted_set_intact(%set, %count.add(1))}\n")
+        %set.destruct()
+        return()
+
+routine sorted_list_intact(%list: Ptr<SortedList<S64>>, %count: S64) -> Bool
+    block entry():
+        %length : S64  = %list.length().to_s64()
+        %same   : Bool = %length.eq(%count)
+        branch %same ? check(0) : return(false)
+
+    block check(%i: S64):
+        %done : Bool = %i.ge(%count)
+        branch %done ? return(true) : continue
+        %value : S64  = %list.get(%i.to_usize())
+        %rank  : S64  = %list.rank(%i).to_s64()
+        %right : Bool = %value.eq(%i).bitand(%rank.eq(%i))
+        branch %right ? check(%i.add(1)) : return(false)
+
+routine sorted_list_case(%alloc: Ptr<Allocator>, %budget: Ptr<USize>, %grant: USize) -> Void
+    block entry():
+        %budget.store(%grant)
+        %list_val : SortedList<S64> = .construct(%alloc)
+        claim %list : Ptr<SortedList<S64>>
+        %list.store(%list_val)
+        jump fill(%list, 0)
+
+    block fill(%list: Ptr<SortedList<S64>>, %i: S64):
+        %pushed : Result<Unit, AllocFailed> = %list.push_result(%i)
+        when %pushed:
+            .Success -> fill(%list, %i.add(1))
+            .Failure -> failed(%list, %i)
+
+    block failed(%list: Ptr<SortedList<S64>>, %count: S64):
+        print("SortedList, budget {%grant}: {%count} elements, intact {sorted_list_intact(%list, %count)}")
+        %budget.store(3)
+        %list.push(%count)
+        print(", then push: intact {sorted_list_intact(%list, %count.add(1))}\n")
+        %list.destruct()
+        return()
+
+// -- the _checked forms -----------------------------------------------------------------------------------------------
+
+routine checked_forms(%alloc: Ptr<Allocator>, %budget: Ptr<USize>) -> Void
+    block entry():
+        %budget.store(100)
+        %list_val : List<S64> = .construct(%alloc)
+        claim %list : Ptr<List<S64>>
+        %list.store(%list_val)
+        print("List: pop_checked {%list.pop_checked()}")
+        %list.push(7)
+        print(", get_checked(0) {%list.get_checked(0)}, get_checked(1) {%list.get_checked(1)}")
+        print(", pop_checked {%list.pop_checked()}\n")
+        %list.destruct()
+
+        %deque_val : CircularList<S64> = .construct(%alloc)
+        claim %deque : Ptr<CircularList<S64>>
+        %deque.store(%deque_val)
+        print("CircularList: pop_front_checked {%deque.pop_front_checked()}")
+        print(", pop_back_checked {%deque.pop_back_checked()}")
+        %deque.push_back(1)
+        %deque.push_back(2)
+        print(", get_checked(1) {%deque.get_checked(1)}, get_checked(2) {%deque.get_checked(2)}")
+        print(", pop_front_checked {%deque.pop_front_checked()}, pop_checked {%deque.pop_checked()}\n")
+        %deque.destruct()
+
+        %queue_val : PriorityQueue<S64> = .construct(%alloc)
+        claim %queue : Ptr<PriorityQueue<S64>>
+        %queue.store(%queue_val)
+        print("PriorityQueue: peek_checked {%queue.peek_checked()}, pop_checked {%queue.pop_checked()}")
+        %queue.push(5)
+        %queue.push(3)
+        print(", peek_checked {%queue.peek_checked()}, pop_checked {%queue.pop_checked()}\n")
+        %queue.destruct()
+
+        %map_val : Dict<S64, S64> = .construct(%alloc)
+        claim %map : Ptr<Dict<S64, S64>>
+        %map.store(%map_val)
+        print("Dict: get_checked(1) {%map.get_checked(1)}")
+        %map.put(1, 10)
+        print(", after put {%map.get_checked(1)}, get_checked(2) {%map.get_checked(2)}\n")
+        %map.destruct()
+
+        %sorted_val : SortedDict<S64, S64> = .construct(%alloc)
+        claim %sorted : Ptr<SortedDict<S64, S64>>
+        %sorted.store(%sorted_val)
+        print("SortedDict: get_checked(1) {%sorted.get_checked(1)}")
+        %sorted.put(1, 10)
+        print(", after put {%sorted.get_checked(1)}, get_checked(2) {%sorted.get_checked(2)}\n")
+        %sorted.destruct()
+
+        %ordered_val : SortedList<S64> = .construct(%alloc)
+        claim %ordered : Ptr<SortedList<S64>>
+        %ordered.store(%ordered_val)
+        print("SortedList: get_checked(0) {%ordered.get_checked(0)}")
+        %ordered.push(4)
+        print(", after push {%ordered.get_checked(0)}\n")
+        %ordered.destruct()
+        return()
+
+routine main() -> S32
+    block entry():
+        claim %budget : Ptr<USize>
+        %budget.store(0)
+        %budgeted : Allocator = Allocator { alloc_fn: budget_alloc, realloc_fn: budget_realloc,
+                free_fn: budget_free, state: %budget }
+        claim %alloc : Ptr<Allocator>
+        %alloc.store(%budgeted)
+        jump sequences(%alloc, %budget, 0)
+
+    block sequences(%alloc: Ptr<Allocator>, %budget: Ptr<USize>, %grant: USize):
+        %done : Bool = %grant.gt(2)
+        branch %done ? hashes(%alloc, %budget, 0) : continue
+        list_case(%alloc, %budget, %grant)
+        circular_case(%alloc, %budget, %grant)
+        queue_case(%alloc, %budget, %grant)
+        jump sequences(%alloc, %budget, %grant.add(1))
+
+    // Dict rehashes into 5 arrays and Set into 4, so the budgets stop partway through a rehash too.
+    block hashes(%alloc: Ptr<Allocator>, %budget: Ptr<USize>, %grant: USize):
+        %done : Bool = %grant.gt(12)
+        branch %done ? trees(%alloc, %budget, 0) : continue
+        dict_case(%alloc, %budget, %grant)
+        set_case(%alloc, %budget, %grant)
+        jump hashes(%alloc, %budget, %grant.add(1))
+
+    // Ascending keys fill a root leaf (1 node), split it (2 more), add leaves until the root is full (6 more), then
+    // split the root again (2) above one more leaf split: budgets up to 12 fail at each of those steps.
+    block trees(%alloc: Ptr<Allocator>, %budget: Ptr<USize>, %grant: USize):
+        %done : Bool = %grant.gt(12)
+        branch %done ? checked(%alloc, %budget) : continue
+        sorted_dict_case(%alloc, %budget, %grant)
+        sorted_set_case(%alloc, %budget, %grant)
+        sorted_list_case(%alloc, %budget, %grant)
+        jump trees(%alloc, %budget, %grant.add(1))
+
+    block checked(%alloc: Ptr<Allocator>, %budget: Ptr<USize>):
+        checked_forms(%alloc, %budget)
+        return(0)

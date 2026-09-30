@@ -41,28 +41,51 @@ require T: typename
 routine List<T>.reserve(%self: Ptr<Self>, %capacity: USize) -> Void
 require T: typename
     block entry():
+        %reserved : Bool = %self.make_capacity(%capacity)
+        branch %reserved ? return() : panic(TrapCode.AllocFailed)
+
+/// `reserve`, returning a Failure instead of trapping when the allocator fails.
+routine List<T>.reserve_result(%self: Ptr<Self>, %capacity: USize) -> Result<Unit, AllocFailed>
+require T: typename
+    block entry():
+        %reserved : Bool = %self.make_capacity(%capacity)
+        branch %reserved ? return(.Success(Unit.value())) : return(.Failure(AllocFailed {}))
+
+/// Grows the buffer to at least %capacity elements. Returns false when the
+/// allocator fails, leaving the list as it was.
+private routine List<T>.make_capacity(%self: Ptr<Self>, %capacity: USize) -> Bool
+require T: typename
+    block entry():
         %old_capacity : USize = %self.capacity.load()
         %enough       : Bool  = %old_capacity.ge(%capacity)
-        branch %enough ? return() : grow(%capacity)
+        branch %enough ? return(true) : grow(%capacity)
 
     block grow(%capacity: USize):
         %alloc    : Ptr<Allocator> = %self.alloc.load()
         %old_data : Ptr<T>         = %self.data.load()
         %new_data : Ptr<T>         = reallocate<T>(%alloc, %old_data, %capacity)
         %failed   : Bool           = %new_data.is_null()
-        branch %failed ? panic(TrapCode.AllocFailed) : install(%new_data, %capacity)
+        branch %failed ? return(false) : install(%new_data, %capacity)
 
     block install(%new_data: Ptr<T>, %capacity: USize):
         %self.data.store(%new_data)
         %self.capacity.store(%capacity)
-        return()
+        return(true)
 
 routine List<T>.ensure_capacity(%self: Ptr<Self>, %wanted: USize) -> Void
 require T: typename
     block entry():
+        %room : Bool = %self.make_room(%wanted)
+        branch %room ? return() : panic(TrapCode.AllocFailed)
+
+/// Makes room for %wanted elements, doubling the capacity. Returns false when
+/// the allocator fails, leaving the list as it was.
+private routine List<T>.make_room(%self: Ptr<Self>, %wanted: USize) -> Bool
+require T: typename
+    block entry():
         %capacity : USize = %self.capacity.load()
         %enough   : Bool  = %capacity.ge(%wanted)
-        branch %enough ? return() : choose(%capacity, %wanted)
+        branch %enough ? return(true) : choose(%capacity, %wanted)
 
     block choose(%capacity: USize, %wanted: USize):
         %empty : Bool = %capacity.eq(0)
@@ -72,42 +95,56 @@ require T: typename
         %base         : USize = 4
         %use_wanted   : Bool  = %wanted.gt(%base)
         %new_capacity : USize = %use_wanted ? %wanted : %base
-        %self.reserve(%new_capacity)
-        return()
+        return(%self.make_capacity(%new_capacity))
 
     block double(%capacity: USize, %wanted: USize):
         %next   : USize = %capacity.mul(2)
         %enough : Bool  = %next.ge(%wanted)
-        branch %enough ? reserve(%next) : double(%next, %wanted)
-
-    block reserve(%new_capacity: USize):
-        %self.reserve(%new_capacity)
-        return()
+        branch %enough ? return(%self.make_capacity(%next)) : double(%next, %wanted)
 
 routine List<T>.push(%self: Ptr<Self>, %value: T) -> Void
 require T: typename
     block entry():
+        %pushed : Result<Unit, AllocFailed> = %self.push_result(%value)
+        when %pushed:
+            .Success -> return()
+            .Failure -> panic(TrapCode.AllocFailed)
+
+/// `push`, returning a Failure instead of trapping when the allocator fails.
+routine List<T>.push_result(%self: Ptr<Self>, %value: T) -> Result<Unit, AllocFailed>
+require T: typename
+    block entry():
         %length : USize = %self.length.load()
         %wanted : USize = %length.add(1)
-        %self.ensure_capacity(%wanted)
+        %room   : Bool  = %self.make_room(%wanted)
+        branch %room ? continue : return(.Failure(AllocFailed {}))
         %data : Ptr<T> = %self.data.load()
         %data[%length].store(%value)
         %self.length.store(%wanted)
-        return()
+        return(.Success(Unit.value()))
 
 routine List<T>.pop(%self: Ptr<Self>) -> T
 require T: typename
     block entry():
+        %popped : Option<T> = %self.pop_checked()
+        when %popped:
+            .Present(%value) -> return(%value)
+            .Absent          -> panic(TrapCode.Empty)
+
+/// `pop`, returning Absent instead of trapping on an empty list.
+routine List<T>.pop_checked(%self: Ptr<Self>) -> Option<T>
+require T: typename
+    block entry():
         %length : USize = %self.length.load()
         %empty  : Bool  = %length.eq(0)
-        branch %empty ? panic(TrapCode.Empty) : pop(%length)
+        branch %empty ? return(.Absent) : pop(%length)
 
     block pop(%length: USize):
         %index : USize  = %length.sub(1)
         %data  : Ptr<T> = %self.data.load()
         %value : T      = %data[%index].load()
         %self.length.store(%index)
-        return(%value)
+        return(.Present(%value))
 
 routine List<T>.get(%self: Ptr<Self>, %index: USize) -> T
 require T: typename
@@ -120,6 +157,19 @@ require T: typename
         %data  : Ptr<T> = %self.data.load()
         %value : T      = %data[%index].load()
         return(%value)
+
+/// `get`, returning Absent instead of trapping on an index past the end.
+routine List<T>.get_checked(%self: Ptr<Self>, %index: USize) -> Option<T>
+require T: typename
+    block entry():
+        %length    : USize = %self.length.load()
+        %in_bounds : Bool  = %index.lt(%length)
+        branch %in_bounds ? load(%index) : return(.Absent)
+
+    block load(%index: USize):
+        %data  : Ptr<T> = %self.data.load()
+        %value : T      = %data[%index].load()
+        return(.Present(%value))
 
 routine List<T>.set(%self: Ptr<Self>, %index: USize, %value: T) -> Void
 require T: typename

@@ -184,8 +184,9 @@ require K: typename, V: typename, HashEqual<K>, Equal<V>
 
 /// Allocate fresh arrays at %new_capacity, walk the old entries in insertion
 /// order, and re-insert each live entry. Dead entries are dropped, so the
-/// entries array is compacted as a side effect.
-routine Dict<K, V>.rehash(%self: Ptr<Self>, %new_capacity: USize) -> Void
+/// entries array is compacted as a side effect. Returns false when the
+/// allocator fails, leaving the map as it was.
+private routine Dict<K, V>.rehash(%self: Ptr<Self>, %new_capacity: USize) -> Bool
 require K: typename, V: typename
     block entry():
         %alloc            : Ptr<Allocator> = %self.alloc.load()
@@ -210,10 +211,19 @@ require K: typename, V: typename
         %f3               : Bool           = %f1.bitor(%f2)
         %failed           : Bool           = %f3.bitor(%e)
         branch %failed
-            ? panic(TrapCode.AllocFailed)
+            ? discard(%alloc, %new_keys, %new_values, %new_hashes, %new_entry_states, %new_slots)
             : clear_loop(0, %old_keys, %old_values, %old_hashes, %old_entry_states, %old_slots,
                     %old_count, %new_keys, %new_values, %new_hashes, %new_entry_states, %new_slots,
                     %new_capacity)
+
+    block discard(%alloc: Ptr<Allocator>, %new_keys: Ptr<K>, %new_values: Ptr<V>,
+            %new_hashes: Ptr<U64>, %new_entry_states: Ptr<U8>, %new_slots: Ptr<USize>):
+        free_unless_null<K>(%new_keys, %alloc)
+        free_unless_null<V>(%new_values, %alloc)
+        free_unless_null<U64>(%new_hashes, %alloc)
+        free_unless_null<U8>(%new_entry_states, %alloc)
+        free_unless_null<USize>(%new_slots, %alloc)
+        return(false)
 
     block clear_loop(%i: USize, %old_keys: Ptr<K>, %old_values: Ptr<V>, %old_hashes: Ptr<U64>,
             %old_entry_states: Ptr<U8>, %old_slots: Ptr<USize>, %old_count: USize,
@@ -285,7 +295,7 @@ require K: typename, V: typename
         %has_old : Bool = %old_slots.is_not_null()
         branch %has_old
             ? free_old(%old_keys, %old_values, %old_hashes, %old_entry_states, %old_slots)
-            : return()
+            : return(true)
 
     block free_old(%old_keys: Ptr<K>, %old_values: Ptr<V>, %old_hashes: Ptr<U64>,
             %old_entry_states: Ptr<U8>, %old_slots: Ptr<USize>):
@@ -295,9 +305,11 @@ require K: typename, V: typename
         %old_hashes.free(%alloc)
         %old_entry_states.free(%alloc)
         %old_slots.free(%alloc)
-        return()
+        return(true)
 
-routine Dict<K, V>.ensure(%self: Ptr<Self>) -> Void
+/// Makes room for one more entry. Returns false when the allocator fails,
+/// leaving the map as it was.
+private routine Dict<K, V>.ensure(%self: Ptr<Self>) -> Bool
 require K: typename, V: typename
     block entry():
         %capacity : USize = %self.capacity.load()
@@ -305,18 +317,16 @@ require K: typename, V: typename
         branch %empty ? first() : check(%capacity)
 
     block first():
-        %self.rehash(8)
-        return()
+        return(%self.rehash(8))
 
     block check(%capacity: USize):
         %count : USize = %self.entries_count.load()
         %limit : USize = %capacity.mul(3).div(4)
         %full  : Bool  = %count.add(1).ge(%limit)
-        branch %full ? grow(%capacity) : return()
+        branch %full ? grow(%capacity) : return(true)
 
     block grow(%capacity: USize):
-        %self.rehash(%capacity.mul(2))
-        return()
+        return(%self.rehash(%capacity.mul(2)))
 
 /// Insert without growing — used internally by rehash after new arrays are in place.
 /// If the key already lives, update its value in place (preserves position in
@@ -356,9 +366,19 @@ require K: typename, V: typename
 routine Dict<K, V>.put(%self: Ptr<Self>, %key: K, %value: V) -> Void
 require K: typename, V: typename
     block entry():
-        %self.ensure()
+        %put : Result<Unit, AllocFailed> = %self.put_result(%key, %value)
+        when %put:
+            .Success -> return()
+            .Failure -> panic(TrapCode.AllocFailed)
+
+/// `put`, returning a Failure instead of trapping when the allocator fails.
+routine Dict<K, V>.put_result(%self: Ptr<Self>, %key: K, %value: V) -> Result<Unit, AllocFailed>
+require K: typename, V: typename
+    block entry():
+        %room : Bool = %self.ensure()
+        branch %room ? continue : return(.Failure(AllocFailed {}))
         %self.put_direct(%key, %value, K.hash(%key))
-        return()
+        return(.Success(Unit.value()))
 
 routine Dict<K, V>.get(%self: Ptr<Self>, %key: K) -> V
 require K: typename, V: typename
@@ -375,6 +395,19 @@ require K: typename, V: typename
 /// Removal preserves the entries array's positional layout: we mark the entry
 /// dead and stamp the slot table with a tombstone. The entry's position is
 /// retained until the next rehash, so surviving entries keep their order.
+/// `get`, returning Absent instead of trapping on a missing key.
+routine Dict<K, V>.get_checked(%self: Ptr<Self>, %key: K) -> Option<V>
+require K: typename, V: typename
+    block entry():
+        %entry_idx : USize = %self.find(%key)
+        %found     : Bool  = %entry_idx.lt(SLOT_TOMBSTONE)
+        branch %found ? load(%entry_idx) : return(.Absent)
+
+    block load(%entry_idx: USize):
+        %values : Ptr<V> = %self.values.load()
+        %value  : V      = %values[%entry_idx].load()
+        return(.Present(%value))
+
 routine Dict<K, V>.remove(%self: Ptr<Self>, %key: K) -> Bool
 require K: typename, V: typename
     block entry():
@@ -508,4 +541,13 @@ require K: typename, V: typename, HashEqual<K>, Diagnose<K>, Diagnose<V>, W: typ
         claim %iter : Ptr<DictIter<K, V>>
         %iter.store(%iter_val)
         diagnose_entries<K, V, DictIter<K, V>, W>(%out, %iter)
+        return()
+
+/// Frees %ptr unless it is null: a failed rehash releases the arrays it did get.
+private routine free_unless_null<T>(%ptr: Ptr<T>, %alloc: Ptr<Allocator>) -> Void
+require T: typename
+    block entry():
+        %present : Bool = %ptr.is_not_null()
+        branch %present ? continue : return()
+        %ptr.free(%alloc)
         return()
