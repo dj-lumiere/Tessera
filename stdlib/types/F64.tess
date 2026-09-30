@@ -564,6 +564,33 @@ routine F64.from_bits(%bits: U64) -> Self
 
 // -- float conversions -----------------------------------------------------------
 
+/// %a + %b rounded to odd: truncated toward zero, with the lowest bit set when the sum is inexact. A narrower
+/// format with at most 51 bits rounds it to nearest exactly as it would the true sum, so F16's and BF16's
+/// mul_add add their exact F64 product this way and narrow once. Finite inputs; an infinite or NaN sum is
+/// returned as the addition gives it.
+routine f64_add_round_to_odd(%a: F64, %b: F64) -> F64
+    block entry():
+        %s      : F64  = %a.add(%b)
+        %finite : Bool = %s.is_finite()
+        branch %finite ? error(%s) : return(%s)
+
+    // TwoSum: e is exactly (a + b) - s.
+    block error(%s: F64):
+        %bv      : F64  = %s.sub(%a)
+        %av      : F64  = %s.sub(%bv)
+        %e       : F64  = %a.sub(%av).add(%b.sub(%bv))
+        %inexact : Bool = %e.ne(0.0)
+        %even    : Bool = %s.bits().bitand(1).eq(0)
+        %bump    : Bool = %inexact.bitand(%even)
+        branch %bump ? toward(%s, %e) : return(%s)
+
+    // s rounded to an even neighbour: the odd one is the other neighbour of the true sum, one ulp toward e.
+    block toward(%s: F64, %e: F64):
+        %outward : Bool = %e.is_sign_negative().eq(%s.is_sign_negative())
+        %bits    : U64  = %s.bits()
+        %odd     : U64  = %outward ? %bits.add_wrap(1) : %bits.sub_wrap(1)
+        return(F64.from_bits(%odd))
+
 /// Narrows to F32 with round-to-odd, then rounds that to F16; F32's 24 bits are
 /// enough (2 * 11 + 2) for the second rounding to be exact.
 routine F64.to_f16(%self: Self) -> F16
