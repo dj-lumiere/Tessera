@@ -1,0 +1,275 @@
+// Tessera stdlib: the correctly rounded log-gamma function of F32
+//
+// log|gamma(x)| from rational approximations for |x| < 0x1.52p-1 and up to
+// 0x1.afc1ap+1, Stirling's series above, polynomials around the zeros near
+// -2.7476, -2.4570 and -3.1435, and the reflection formula for the other
+// negative x, all in F64. Hard-to-round inputs come from a table. Only the
+// value is computed: C's signgam (the sign of gamma(x)) is not.
+// Round to nearest only: 0 and the negative integers give +inf, +-inf gives
+// +inf, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/lgamma/lgammaf.c via RazorForge's B32Lgamma.rf.
+// Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// -log(r) for the reciprocals r in CM_F32_LGAMMA_IX, as F64 bits.
+preset CM_F32_LGAMMA_IL: Array<U64, 16> = [0x3C659CAEEC280116, 0x3FAF0A30C01162AA,
+        0x3FBE27076E2AF2EB, 0x3FC5FF3070A793D6, 0x3FCC8FF7C79A9A20, 0x3FD1675CABABA60F,
+        0x3FD4618BC21C5EC2, 0x3FD739D7F6BBD007, 0x3FD9F323ECBF984D, 0x3FDC8FF7C79A9A21,
+        0x3FDF128F5FAF06EC, 0x3FE0BE72E4252A83, 0x3FE1E85F5E7040D1, 0x3FE307D7334F10BE,
+        0x3FE41D8FE84672AF, 0x3FE52A2D265BC5AB]
+
+/// Reciprocals 1 / (1 + i/16), rounded, for i in 0..15, as F64 bits.
+preset CM_F32_LGAMMA_IX: Array<U64, 16> = [0x3FF0000000000000, 0x3FEE1E1E1E1E1E1E,
+        0x3FEC71C71C71C71C, 0x3FEAF286BCA1AF28, 0x3FE999999999999A, 0x3FE8618618618618,
+        0x3FE745D1745D1746, 0x3FE642C8590B2164, 0x3FE5555555555555, 0x3FE47AE147AE147B,
+        0x3FE3B13B13B13B14, 0x3FE2F684BDA12F68, 0x3FE2492492492492, 0x3FE1A7B9611A7B96,
+        0x3FE1111111111111, 0x3FE0842108421084]
+
+/// Inputs whose log-gamma is hard to round, as F32 bits.
+preset CM_F32_LGAMMA_EXC_X: Array<U32, 27> = [0x1B7679FF, 0x1E88452D, 0x2AD345DE, 0x39EEFE83,
+        0x3B7C53AA, 0x42468B59, 0x449ACF07, 0x46541516, 0x46B16323, 0x4F3F94C0, 0x50522F52,
+        0x65FCA09F, 0x716E5DD5, 0x77AC5674, 0x7943DEF8, 0x8212E5B3, 0x9B7679FF, 0x9E88452D,
+        0xA77A8E47, 0xAA6C2DFF, 0xABA1BF3A, 0xB0D6F2CA, 0xB0E17820, 0xC02C060F, 0xC134EB14,
+        0xC33139A3, 0xC6F7E151]
+
+/// The correctly rounded results for those inputs, as f + df (F32 bits).
+preset CM_F32_LGAMMA_EXC_F: Array<U32, 27> = [0x4247C72D, 0x4236BD8C, 0x41E4E374, 0x40F62DD4,
+        0x40B1D661, 0x430F25A7, 0x45ECD681, 0x47E1C01B, 0x48483ADF, 0x517A24A3, 0x5292EE5E,
+        0x68CEAD5A, 0x747E2BB9, 0x7ACF27B3, 0x7C7232D7, 0x42AA3D22, 0x4247C72D, 0x4236BD8C,
+        0x42052B95, 0x41E98AC9, 0x41DBEF61, 0x41A23559, 0x41A1D37B, 0xBDABC3E3, 0xC1875615,
+        0xC43991AF, 0xC89116DE]
+preset CM_F32_LGAMMA_EXC_DF: Array<U32, 27> = [0xB5800000, 0xB5800000, 0x35000000, 0xB4000000,
+        0x34000000, 0x36800000, 0xB9000000, 0x3B000000, 0xBB800000, 0xC4800000, 0xC6000000,
+        0xDC000000, 0x67800000, 0xEE000000, 0x6F800000, 0xB6000000, 0xB5800000, 0xB5800000,
+        0xB5800000, 0xB5000000, 0xB5000000, 0xB5000000, 0x35000000, 0x31000000, 0xB5000000,
+        0xB7800000, 0xBC000000]
+
+/// log|gamma(x)|, correctly rounded.
+routine f32_cm_lgamma(%x: F32) -> F32
+    block entry():
+        %fx      : F32  = %x.floor()
+        %ax      : F32  = %x.abs()
+        %tu      : U32  = %ax.bits()
+        %special : Bool = %tu.ge(0x7F800000)
+        %integer : Bool = %fx.eq(%x)
+        when:
+            %special -> special(%tu)
+            %integer -> integer(%fx, %ax, %tu)
+            else     -> general(%fx, %ax, %tu)
+
+    // +-inf gives +inf, NaN comes back quiet
+    block special(%tu: U32):
+        %infinite : Bool = %tu.eq(0x7F800000)
+        branch %infinite ? return(%x.mul(%x)) : return(%x.add(%x))
+
+    // an integer: a pole at 0 and the negative integers, and log(gamma) = 0 at 1 and 2
+    block integer(%fx: F32, %ax: F32, %tu: U32):
+        %pole : Bool = %x.le(0.0)
+        %zero : Bool = %x.eq(1.0).bitor(%x.eq(2.0))
+        when:
+            %pole -> return(F32.from_bits(0x7F800000))
+            %zero -> return(0.0)
+            else  -> general(%fx, %ax, %tu)
+
+    block general(%fx: F32, %ax: F32, %tu: U32):
+        %z     : F64  = %ax.to_f64()
+        %s     : F64  = %x.to_f64()
+        %small : Bool = %ax.lt(0x1.52p-1)
+        %large : Bool = %ax.gt(0x1.afc1ap+1)
+        when:
+            %small -> small(%z, %s)
+            %large -> large(%fx, %ax, %z)
+            else   -> middle(%fx, %tu, %z, %s)
+
+    // |x| < 0x1.52p-1: a rational approximation of log|gamma(x)| + log|x|
+    block small(%z: F64, %s: F64):
+        %n1  : F64 = %s.add(0x1.505bdf4b65acp+4).mul(%s.add(0x1.51c80eb47e068p+2))
+        %n2  : F64 = %s.sub(0x1.0000000007cb8p+0).mul(%s.add(0x1.4ac529250a1fcp+1))
+        %n3  : F64 = %s.add(0x1.a8c99dbe1621ap+0).mul(%s.add(0x1.4abdcc74115eap+0))
+        %n4  : F64 = %s.add(0x1.1b87fe5a5b923p+0).mul(%s.add(0x1.05b8a4d47ff64p+0))
+        %num : F64 = %s.mul(0x1.0fc0fad268c4dp+2).mul(%n1.mul(%n2).mul(%n3.mul(%n4)))
+        %d1  : F64 = %s.add(0x1.4db2cfe9a5265p+5).mul(%s.add(0x1.062e99d1c4f27p+3))
+        %d2  : F64 = %s.add(0x1.c81bc2ecf25f6p+1).mul(%s.add(0x1.108e55c10091bp+1))
+        %d3  : F64 = %s.add(0x1.7dd25af0b83d4p+0).mul(%s.add(0x1.36bf1880125fcp+0))
+        %d4  : F64 = %s.add(0x1.1379fc8023d9cp+0).mul(%s.add(0x1.03712e41525d2p+0))
+        %den : F64 = %d1.mul(%d2).mul(%d3.mul(%d4))
+        jump finish(%num.div(%den).sub(cm_f32_lgamma_ln(%z)))
+
+    // |x| > 0x1.afc1ap+1: Stirling's series
+    block large(%fx: F32, %ax: F32, %z: F64):
+        %huge : Bool = %x.ge(0x1.895f1cp+121)
+        branch %huge ? return(%x.mul_add(0x1.4d3398p+6, 0x1.10f35ep+103)) : stirling(%fx, %ax, %z)
+
+    block stirling(%fx: F32, %ax: F32, %z: F64):
+        %lz     : F64  = cm_f32_lgamma_ln(%z)
+        %f      : F64  = %z.sub(0.5).mul(%lz.sub(1.0)).add(0x1.acfe390c97d69p-2)
+        %iz     : F64  = F64.div(1.0, %z)
+        %iz2    : F64  = %iz.mul(%iz)
+        %exact  : Bool = %ax.ge(0x1p+20)
+        %terms1 : Bool = %ax.gt(1198.0)
+        %terms2 : Bool = %ax.gt(0x1.279a7p+6)
+        %terms4 : Bool = %ax.gt(0x1.555556p+3)
+        when:
+            %exact  -> reflect_check(%fx, %f, %lz)
+            %terms1 -> reflect_check(%fx, %f.add(%iz.mul(0x1.5555555555555p-4)), %lz)
+            %terms2 -> terms2(%fx, %f, %lz, %iz, %iz2)
+            %terms4 -> terms4(%fx, %f, %lz, %iz, %iz2)
+            else    -> terms8(%fx, %f, %lz, %iz, %iz2)
+
+    block terms2(%fx: F32, %f: F64, %lz: F64, %iz: F64, %iz2: F64):
+        %p : F64 = %iz2.mul(-0x1.6c0fd270c465p-9).add(0x1.555555547fbadp-4)
+        jump reflect_check(%fx, %f.add(%iz.mul(%p)), %lz)
+
+    block terms4(%fx: F32, %f: F64, %lz: F64, %iz: F64, %iz2: F64):
+        %iz4 : F64 = %iz2.mul(%iz2)
+        %p0  : F64 = %iz2.mul(-0x1.6c16bdc45944fp-9).add(0x1.555555554de0bp-4)
+        %p2  : F64 = %iz2.mul(-0x1.2e9cfff3b29c2p-11).add(0x1.a0077f300ecb3p-11)
+        %p   : F64 = %p0.add(%iz4.mul(%p2))
+        jump reflect_check(%fx, %f.add(%iz.mul(%p)), %lz)
+
+    block terms8(%fx: F32, %f: F64, %lz: F64, %iz: F64, %iz2: F64):
+        %iz4 : F64 = %iz2.mul(%iz2)
+        %iz8 : F64 = %iz4.mul(%iz4)
+        %p0  : F64 = %iz2.mul(-0x1.6c16c0e7c4cf4p-9).add(0x1.5555555551286p-4)
+        %p2  : F64 = %iz2.mul(-0x1.37e87ec19cb45p-11).add(0x1.a0193267fe6f2p-11)
+        %p4  : F64 = %iz2.mul(-0x1.c16c8946b19b6p-10).add(0x1.b40011dfff081p-11)
+        %p6  : F64 = %iz2.mul(-0x1.4f5843a71a338p-8).add(0x1.e9f47ace150d8p-9)
+        %lo  : F64 = %p0.add(%iz4.mul(%p2))
+        %hi  : F64 = %p4.add(%iz4.mul(%p6))
+        %p   : F64 = %lo.add(%iz8.mul(%hi))
+        jump reflect_check(%fx, %f.add(%iz.mul(%p)), %lz)
+
+    block reflect_check(%fx: F32, %f: F64, %lz: F64):
+        %negative : Bool = %x.lt(0.0)
+        branch %negative ? reflect(%fx, %f, %lz) : finish(%f)
+
+    // log|gamma(x)| = log(pi) - log|gamma(-x)| - log(-x) - log|sin(pi x)|
+    block reflect(%fx: F32, %f: F64, %lz: F64):
+        %g  : F64 = F64.sub(0x1.250d048e7a1bdp+0, %f).sub(%lz)
+        %lp : F64 = cm_f32_lgamma_ln(cm_f32_lgamma_sinpi(%x.sub(%fx).to_f64()))
+        jump finish(%g.sub(%lp))
+
+    // 0x1.52p-1 <= |x| <= 0x1.afc1ap+1: a rational approximation of log(gamma(|x|))
+    block middle(%fx: F32, %tu: U32, %z: F64, %s: F64):
+        %n0       : F64  = %z.sub(1.0).mul(%z.sub(2.0)).mul(0x1.3cc0e6a0106b3p+2)
+        %n1       : F64  = %z.add(0x1.667923ff14df7p+5).mul(%z.add(0x1.2d35f25ad8f64p+3))
+        %n2       : F64  = %z.add(0x1.b8c9eab9d5bd3p+1).mul(%z.add(0x1.7a4a97f494127p+0))
+        %n3       : F64  = %z.add(0x1.3a6c8295b4445p-1).mul(%z.add(0x1.da44e8b810024p-3))
+        %n4       : F64  = %n3.mul(%z.add(0x1.9061e81c77e4ap-5))
+        %num      : F64  = %n0.mul(%n1.mul(%n2).mul(%n4))
+        %d1       : F64  = %z.add(0x1.491a899e84c52p+6).mul(%z.add(0x1.d202961b9e098p+3))
+        %d2       : F64  = %z.add(0x1.4ced68c631ed6p+2).mul(%z.add(0x1.2589eedf40738p+1))
+        %d3       : F64  = %z.add(0x1.1302e3337271p+0).mul(%z.add(0x1.c36b802f26dffp-2))
+        %d4       : F64  = %z.add(0x1.3ded448acc39dp-3).mul(%z.add(0x1.bffc491078eafp-6))
+        %den      : F64  = %d1.mul(%d2).mul(%d3.mul(%d4))
+        %f        : F64  = %num.div(%den)
+        %negative : Bool = %x.lt(0.0)
+        branch %negative ? middle_negative(%fx, %tu, %z, %s, %f) : finish(%f)
+
+    block middle_negative(%fx: F32, %tu: U32, %z: F64, %s: F64, %f: F64):
+        %near1 : Bool = %tu.lt(0x40301B93).bitand(%tu.gt(0x402F95C2))
+        %near2 : Bool = %tu.gt(0x401CECCB).bitand(%tu.lt(0x401D95CA))
+        %near3 : Bool = %tu.gt(0x40492009).bitand(%tu.lt(0x404940EF))
+        when:
+            %near1 -> near1(%s)
+            %near2 -> near2(%s)
+            %near3 -> near3(%s)
+            else   -> middle_reflect(%fx, %z, %f)
+
+    // near the zero of lgamma at about -2.7476
+    block near1(%s: F64):
+        %h  : F64 = %s.add(0x1.5fb410a1bd901p+1).sub(0x1.a19a96d2e6f85p-54)
+        %hh : F64 = %h.mul(%h)
+        %h4 : F64 = %hh.mul(%hh)
+        %a0 : F64 = %h.mul(0x1.3267f3c265a54p+3).add(-0x1.ea12da904b18cp+0)
+        %a2 : F64 = %h.mul(0x1.f504accc3f2e4p+5).add(-0x1.4185ac30cadb3p+4)
+        %a4 : F64 = %h.mul(0x1.43740491dc22p+9).add(-0x1.8588444c679b4p+7)
+        %a6 : F64 = %h.mul(0x1.dac829f365795p+12).add(-0x1.12400ea23f9e6p+11)
+        %p  : F64 = %a0.add(%hh.mul(%a2)).add(%h4.mul(%a4.add(%hh.mul(%a6))))
+        jump finish(%h.mul(%p))
+
+    // near the zero of lgamma at about -2.4570
+    block near2(%s: F64):
+        %h  : F64 = %s.add(0x1.3a7fc9600f86cp+1).add(0x1.55f64f98af8dp-55)
+        %hh : F64 = %h.mul(%h)
+        %h4 : F64 = %hh.mul(%hh)
+        %a0 : F64 = %h.mul(0x1.36eebb002f61ap+2).add(0x1.83fe966af535fp+0)
+        %a2 : F64 = %h.mul(0x1.1718d7aedb0b5p+3).add(0x1.694a60589a0b3p+0)
+        %a4 : F64 = %h.mul(0x1.8d4297421205bp+4).add(0x1.733a045eca0d3p+2)
+        %p  : F64 = %a0.add(%hh.mul(%a2)).add(%h4.mul(%a4.add(%hh.mul(0x1.7feea5fb29965p+4))))
+        jump finish(%h.mul(%p))
+
+    // near the zero of lgamma at about -3.1435
+    block near3(%s: F64):
+        %h  : F64 = %s.add(0x1.9260dbc9e59afp+1).add(0x1.f717cd335a7b3p-53)
+        %hh : F64 = %h.mul(%h)
+        %h4 : F64 = %hh.mul(%hh)
+        %a0 : F64 = %h.mul(0x1.9d4d297715105p+4).add(0x1.f20a65f2fac55p+2)
+        %a2 : F64 = %h.mul(0x1.267203d24de38p+9).add(0x1.c1137124d5b21p+6)
+        %a4 : F64 = %h.mul(0x1.2941214faaf0cp+14).add(0x1.99a63399a0b44p+11)
+        %p  : F64 = %a0.add(%hh.mul(%a2)).add(%h4.mul(%a4.add(%hh.mul(0x1.bb912c0c9cdd1p+16))))
+        jump finish(%h.mul(%p))
+
+    // log|gamma(x)| = log(pi) - log(gamma(|x|)) - log|x sin(pi x)|
+    block middle_reflect(%fx: F32, %z: F64, %f: F64):
+        %g  : F64 = F64.sub(0x1.250d048e7a1bdp+0, %f)
+        %lp : F64 = cm_f32_lgamma_ln(cm_f32_lgamma_sinpi(%x.sub(%fx).to_f64()).mul(%z))
+        jump finish(%g.sub(%lp))
+
+    block finish(%f: F64):
+        %r    : F32  = %f.to_f32()
+        %hard : Bool = %f.bits().add_wrap(5).bitand(0xFFFFFFF).le(31)
+        branch %hard ? return(cm_f32_lgamma_exception(%x.bits(), %r)) : return(%r)
+
+/// sin(pi x) for x in [0, 1), as an even polynomial in x - 1/2 that vanishes at 0 and 1.
+private routine cm_f32_lgamma_sinpi(%x: F64) -> F64
+    block entry():
+        %y  : F64 = %x.sub(0.5)
+        %x2 : F64 = %y.mul(%y)
+        %x4 : F64 = %x2.mul(%x2)
+        %x8 : F64 = %x4.mul(%x4)
+        %a0 : F64 = %x2.mul(-0x1.de9e64df22ea4p+1).add(0x1p+2)
+        %a2 : F64 = %x2.mul(-0x1.d4fcd82df91bp-3).add(0x1.472be122401f8p+0)
+        %a4 : F64 = %x2.mul(-0x1.f3091c427b611p-10).add(0x1.9f05c97e0aab2p-6)
+        %a6 : F64 = %x2.mul(-0x1.15484325ef569p-18).add(0x1.b22c9bfdca547p-14)
+        %p  : F64 = %a0.add(%x4.mul(%a2)).add(%x8.mul(%a4.add(%x4.mul(%a6))))
+        return(F64.sub(0.25, %x2).mul(%p))
+
+/// log(x) for a positive normal F64 x, through a 16-entry reciprocal table.
+private routine cm_f32_lgamma_ln(%x: F64) -> F64
+    block entry():
+        %tb : U64   = %x.bits()
+        %e  : F64   = %tb.shr(52).to_s64_wrap().sub(0x3FF).to_f64()
+        %i  : USize = %tb.shr(48).bitand(0xF).to_usize()
+        %t  : F64   = F64.from_bits(%tb.bitand(0x000FFFFFFFFFFFFF).bitor(0x3FF0000000000000))
+        %z  : F64   = F64.from_bits(CM_F32_LGAMMA_IX.get(%i)).mul(%t).sub(1.0)
+        %z2 : F64   = %z.mul(%z)
+        %z4 : F64   = %z2.mul(%z2)
+        %a0 : F64   = %z.mul(-0x1.ffffffffd1d67p-2).add(0x1.fffffffffff24p-1)
+        %a2 : F64   = %z.mul(-0x1.ffffeca81b866p-3).add(0x1.55555537802dep-2)
+        %a4 : F64   = %z.mul(-0x1.54f3e581b61bfp-3).add(0x1.999611761d772p-3)
+        %a6 : F64   = %z.mul(-0x1.9115a5af1e1edp-4).add(0x1.1e642b4cb5143p-3)
+        %p  : F64   = %a0.add(%z2.mul(%a2)).add(%z4.mul(%a4.add(%z2.mul(%a6))))
+        %l  : F64   = %e.mul(0x1.62e42fefa39efp-1).add(F64.from_bits(CM_F32_LGAMMA_IL.get(%i)))
+        return(%l.add(%z.mul(%p)))
+
+/// The tabulated correctly rounded log-gamma for a hard-to-round input with F32 bits xb, or fallback.
+private routine cm_f32_lgamma_exception(%xb: U32, %fallback: F32) -> F32
+    block entry():
+        jump scan(0)
+
+    block scan(%k: USize):
+        %done : Bool = %k.eq(27)
+        branch %done ? return(%fallback) : check(%k)
+
+    block check(%k: USize):
+        %found : Bool = CM_F32_LGAMMA_EXC_X.get(%k).eq(%xb)
+        branch %found ? hit(%k) : scan(%k.add(1))
+
+    block hit(%k: USize):
+        %f  : F32 = F32.from_bits(CM_F32_LGAMMA_EXC_F.get(%k))
+        %df : F32 = F32.from_bits(CM_F32_LGAMMA_EXC_DF.get(%k))
+        return(%f.add(%df))

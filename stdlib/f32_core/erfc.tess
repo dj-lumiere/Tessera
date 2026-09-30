@@ -1,0 +1,163 @@
+// Tessera stdlib: the correctly rounded complementary error function of F32
+//
+// Near zero erfc(x) = 1 - (odd polynomial). Elsewhere erfc(|x|) = e^(-x^2) s(z)
+// with e^(-x^2) = 2^(j/128) 2^k e^(-d) from a table and a polynomial, and s a
+// polynomial in the rational reduction z = (|x| - a) / (|x| + b); for x < 0
+// erfc(x) = 2 - erfc(-x). All in F64. Round to nearest only: -inf gives 2,
+// +inf gives 0, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/erfc/erfcf.c via RazorForge's B32Erfc.rf.
+// Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// 2^(j/128) for j in 0..127, as F64 bits.
+preset CM_F32_ERFC_E: Array<U64, 128> = [0x3FF0000000000000, 0x3FF0163DA9FB3335, 0x3FF02C9A3E778061,
+        0x3FF04315E86E7F85, 0x3FF059B0D3158574, 0x3FF0706B29DDF6DE, 0x3FF0874518759BC8,
+        0x3FF09E3ECAC6F383, 0x3FF0B5586CF9890F, 0x3FF0CC922B7247F7, 0x3FF0E3EC32D3D1A2,
+        0x3FF0FB66AFFED31B, 0x3FF11301D0125B51, 0x3FF12ABDC06C31CC, 0x3FF1429AAEA92DE0,
+        0x3FF15A98C8A58E51, 0x3FF172B83C7D517B, 0x3FF18AF9388C8DEA, 0x3FF1A35BEB6FCB75,
+        0x3FF1BBE084045CD4, 0x3FF1D4873168B9AA, 0x3FF1ED5022FCD91D, 0x3FF2063B88628CD6,
+        0x3FF21F49917DDC96, 0x3FF2387A6E756238, 0x3FF251CE4FB2A63F, 0x3FF26B4565E27CDD,
+        0x3FF284DFE1F56381, 0x3FF29E9DF51FDEE1, 0x3FF2B87FD0DAD990, 0x3FF2D285A6E4030B,
+        0x3FF2ECAFA93E2F56, 0x3FF306FE0A31B715, 0x3FF32170FC4CD831, 0x3FF33C08B26416FF,
+        0x3FF356C55F929FF1, 0x3FF371A7373AA9CB, 0x3FF38CAE6D05D866, 0x3FF3A7DB34E59FF7,
+        0x3FF3C32DC313A8E5, 0x3FF3DEA64C123422, 0x3FF3FA4504AC801C, 0x3FF4160A21F72E2A,
+        0x3FF431F5D950A897, 0x3FF44E086061892D, 0x3FF46A41ED1D0057, 0x3FF486A2B5C13CD0,
+        0x3FF4A32AF0D7D3DE, 0x3FF4BFDAD5362A27, 0x3FF4DCB299FDDD0D, 0x3FF4F9B2769D2CA7,
+        0x3FF516DAA2CF6642, 0x3FF5342B569D4F82, 0x3FF551A4CA5D920F, 0x3FF56F4736B527DA,
+        0x3FF58D12D497C7FD, 0x3FF5AB07DD485429, 0x3FF5C9268A5946B7, 0x3FF5E76F15AD2148,
+        0x3FF605E1B976DC09, 0x3FF6247EB03A5585, 0x3FF6434634CCC320, 0x3FF6623882552225,
+        0x3FF68155D44CA973, 0x3FF6A09E667F3BCD, 0x3FF6C012750BDABF, 0x3FF6DFB23C651A2F,
+        0x3FF6FF7DF9519484, 0x3FF71F75E8EC5F74, 0x3FF73F9A48A58174, 0x3FF75FEB564267C9,
+        0x3FF780694FDE5D3F, 0x3FF7A11473EB0187, 0x3FF7C1ED0130C132, 0x3FF7E2F336CF4E62,
+        0x3FF80427543E1A12, 0x3FF82589994CCE13, 0x3FF8471A4623C7AD, 0x3FF868D99B4492ED,
+        0x3FF88AC7D98A6699, 0x3FF8ACE5422AA0DB, 0x3FF8CF3216B5448C, 0x3FF8F1AE99157736,
+        0x3FF9145B0B91FFC6, 0x3FF93737B0CDC5E5, 0x3FF95A44CBC8520F, 0x3FF97D829FDE4E50,
+        0x3FF9A0F170CA07BA, 0x3FF9C49182A3F090, 0x3FF9E86319E32323, 0x3FFA0C667B5DE565,
+        0x3FFA309BEC4A2D33, 0x3FFA5503B23E255D, 0x3FFA799E1330B358, 0x3FFA9E6B5579FDBF,
+        0x3FFAC36BBFD3F37A, 0x3FFAE89F995AD3AD, 0x3FFB0E07298DB666, 0x3FFB33A2B84F15FB,
+        0x3FFB59728DE5593A, 0x3FFB7F76F2FB5E47, 0x3FFBA5B030A1064A, 0x3FFBCC1E904BC1D2,
+        0x3FFBF2C25BD71E09, 0x3FFC199BDD85529C, 0x3FFC40AB5FFFD07A, 0x3FFC67F12E57D14B,
+        0x3FFC8F6D9406E7B5, 0x3FFCB720DCEF9069, 0x3FFCDF0B555DC3FA, 0x3FFD072D4A07897C,
+        0x3FFD2F87080D89F2, 0x3FFD5818DCFBA487, 0x3FFD80E316C98398, 0x3FFDA9E603DB3285,
+        0x3FFDD321F301B460, 0x3FFDFC97337B9B5F, 0x3FFE264614F5A129, 0x3FFE502EE78B3FF6,
+        0x3FFE7A51FBC74C83, 0x3FFEA4AFA2A490DA, 0x3FFECF482D8E67F1, 0x3FFEFA1BEE615A27,
+        0x3FFF252B376BBA97, 0x3FFF50765B6E4540, 0x3FFF7BFDAD9CBE14, 0x3FFFA7C1819E90D8,
+        0x3FFFD3C22B8F71F1]
+
+/// Two rows of 16 coefficients (for |x| <= 0x1.0a2p+1 and above), as F64 bits: the shift a and pole b
+/// of z = (|x| - a) / (|x| + b), then the polynomial s(z).
+preset CM_F32_ERFC_CT: Array<U64, 32> = [0x3FEC162355429B28, 0x400D99999999999A, 0x3FDDA951CECE2B85,
+        0xBFF70EF6CFF4BCC4, 0x4003D7F7B3D617DE, 0xC009D0AA47537C51, 0x4009754EA9A3FCB1,
+        0xC0027A5453FCC015, 0x3FF1EF2E0531AEBA, 0xBFCECA090F5A1C06, 0xBFB7A3CD173A063C,
+        0x3FB30FA68A68FDDD, 0x3F555AD9A326993A, 0xBF907E7B0BB39FBF, 0x3F52328706C0E950,
+        0x3F6D6AA0B7B19CFE, 0x401137C8983F8516, 0x400799999999999A, 0x3FC05B53AA241333,
+        0xBFCA3F53872BF870, 0x3FBDE4C30742C9D5, 0xBFACB24BFA591986, 0x3F9666AEC059CA5F,
+        0xBF7A61250EB26B0B, 0x3F52B28B7924B34D, 0x3F041B13A9D45013, 0xBF16DD5E8A273613,
+        0x3EF09CE8EA5E8DA5, 0x3ED33923B4102981, 0xBEC1DFD161E3F984, 0xBE8C87618FCAE3B3,
+        0x3E8E8A6FFA0BA2C7]
+
+/// erfc(x) = 1 - erf(x), correctly rounded.
+routine f32_cm_erfc(%x: F32) -> F32
+    block entry():
+        %ax    : F32  = %x.abs()
+        %axd   : F64  = %ax.to_f64()
+        %x2    : F64  = %axd.mul(%axd)
+        %tu    : U32  = %x.bits()
+        %at    : U32  = %tu.bitand(0x7FFFFFFF)
+        %sgn   : U64  = %tu.shr(31).to_u64()
+        %row   : U64  = %at.gt(0x40051000).to_u64()
+        %two   : Bool = %tu.gt(0xC07547CA)  // x < -0x1.ea8f94p+1
+        %zero  : Bool = %at.ge(0x4120DDFC)  // |x| >= 0x1.41bbf8p+3
+        %small : Bool = %at.le(0x3DB80000)  // |x| <= 0x1.7p-4
+        when:
+            %two   -> two(%tu)
+            %zero  -> zero(%at)
+            %small -> small(%tu, %at, %sgn, %x2)
+            else   -> main(%axd, %x2, %sgn, %row)
+
+    // x < -0x1.ea8f94p+1: erfc(x) rounds to 2; -inf and negative NaNs
+    block two(%tu: U32):
+        %special  : Bool = %tu.ge(0xFF800000)
+        %infinite : Bool = %tu.eq(0xFF800000)
+        when:
+            %infinite -> return(2.0)
+            %special  -> return(%x.add(%x))
+            else      -> return(F32.sub(2.0, 0x1p-25))
+
+    // |x| >= 0x1.41bbf8p+3 with x > 0: erfc(x) < 2^-150 rounds to 0; +inf and positive NaNs
+    block zero(%at: U32):
+        %special  : Bool = %at.ge(0x7F800000)
+        %infinite : Bool = %at.eq(0x7F800000)
+        when:
+            %infinite -> return(0.0)
+            %special  -> return(%x.add(%x))
+            else      -> return(F32.mul(0x1p-149, 0.25))
+
+    // |x| <= 0x1.7p-4
+    block small(%tu: U32, %at: U32, %sgn: U64, %x2: F64):
+        %hard : Bool = %tu.eq(0xB76C9F62)  // x = -0x1.d93ec4p-17
+        %one  : Bool = %at.le(0x32E2DFC4)  // |x| <= 0x1.c5bf88p-26: erfc(x) rounds to 1
+        when:
+            %hard -> return(F32.add(0x1.00010ap+0, 0x1p-25))
+            %one  -> one(%at, %sgn)
+            else  -> odd(%x2)
+
+    block one(%at: U32, %sgn: U64):
+        %exact    : Bool = %at.eq(0)
+        %positive : Bool = %sgn.eq(0)
+        when:
+            %exact    -> return(1.0)
+            %positive -> return(F32.add(1.0, -0x1p-26))
+            else      -> return(F32.add(1.0, 0x1p-25))
+
+    // around 0, erfc(x) behaves as 1 - (odd polynomial)
+    block odd(%x2: F64):
+        %p3 : F64 = %x2.mul(0x1.553af09b8008ep-8).add(-0x1.b82c609607dcbp-6)
+        %p2 : F64 = %x2.mul(%p3).add(0x1.ce2f218831d2fp-4)
+        %p1 : F64 = %x2.mul(%p2).add(-0x1.812746b03610bp-2)
+        %p0 : F64 = %x2.mul(%p1).add(0x1.20dd750429b6dp+0)
+        %f0 : F64 = %x.to_f64().mul(%p0)
+        return(F64.sub(1.0, %f0).to_f32())
+
+    // -0x1.ea8f94p+1 <= x <= 0x1.41bbf8p+3 with |x| > 0x1.7p-4: erfc(|x|) = e^(-x^2) s(z)
+    block main(%axd: F64, %x2: F64, %sgn: U64, %row: U64):
+        %jt  : F64   = %x2.mul(0x1.71547652b82fep+0).sub(0x1.00004p+10)
+        %j   : S64   = %jt.bits().shl(12).to_s64_wrap().shr(48)
+        %sce : S64   = %j.shr(7).add(%sgn.shl(11).bitor(0x3FF).to_s64_wrap())
+        %sc  : F64   = F64.from_bits(%sce.to_u64_wrap().shl(52))
+        %jf  : F64   = %j.to_f64()
+        %d   : F64   = %x2.add(%jf.mul(0x1.62e42fefap-8)).add(%jf.mul(0x1.cf79abd6f5dc8p-47))
+        %d2  : F64   = %d.mul(%d)
+        %ej  : USize = %j.bitand(127).to_u64_wrap().to_usize()
+        %e0  : F64   = F64.from_bits(CM_F32_ERFC_E.get(%ej))
+        %f01 : F64   = %d.mul(0x1.5555555556a14p-3).add(-0x1.ffffffffff333p-2)
+        %f23 : F64   = %d.mul(0x1.1111074cc7b22p-7).add(-0x1.55556666659b4p-5)
+        %f   : F64   = %d.add(%d2.mul(%f01.add(%d2.mul(%f23))))
+        %b   : USize = %row.mul(16).to_usize()
+        %z   : F64   = %axd.sub(cm_f32_erfc_coef(%b, 0)).div(%axd.add(cm_f32_erfc_coef(%b, 1)))
+        %z2  : F64   = %z.mul(%z)
+        %z4  : F64   = %z2.mul(%z2)
+        %z8  : F64   = %z4.mul(%z4)
+        %c0  : F64   = cm_f32_erfc_coef(%b, 3).add(%z.mul(cm_f32_erfc_coef(%b, 4)))
+        %c2  : F64   = cm_f32_erfc_coef(%b, 5).add(%z.mul(cm_f32_erfc_coef(%b, 6)))
+        %c4  : F64   = cm_f32_erfc_coef(%b, 7).add(%z.mul(cm_f32_erfc_coef(%b, 8)))
+        %c6  : F64   = cm_f32_erfc_coef(%b, 9).add(%z.mul(cm_f32_erfc_coef(%b, 10)))
+        %c8  : F64   = cm_f32_erfc_coef(%b, 11).add(%z.mul(cm_f32_erfc_coef(%b, 12)))
+        %c10 : F64   = cm_f32_erfc_coef(%b, 13).add(%z.mul(cm_f32_erfc_coef(%b, 14)))
+        %p0  : F64   = %c0.add(%z2.mul(%c2))
+        %p1  : F64   = %c4.add(%z2.mul(%c6))
+        %q0  : F64   = %c8.add(%z2.mul(%c10))
+        %q   : F64   = %q0.add(%z4.mul(cm_f32_erfc_coef(%b, 15)))
+        %s0  : F64   = %p0.add(%z4.mul(%p1)).add(%z8.mul(%q))
+        %s   : F64   = cm_f32_erfc_coef(%b, 2).add(%z.mul(%s0))
+        %r   : F64   = %sc.mul(%e0.sub(%f.mul(%e0))).mul(%s)
+        %off : F64   = %sgn.eq(1) ? 2.0 : 0.0
+        return(%off.add(%r).to_f32())
+
+/// Coefficient k of the row starting at base in CM_F32_ERFC_CT.
+private routine cm_f32_erfc_coef(%base: USize, %k: USize) -> F64
+    block entry():
+        return(F64.from_bits(CM_F32_ERFC_CT.get(%base.add(%k))))
