@@ -90,22 +90,31 @@ routine cm_log_general(%u: U128) -> F128
 
     // x = 2^e * m: m is multiplied by four table reciprocals chosen from a crude log2(m)
     block reduce(%mh: U64, %ml: U64, %e_field: U64):
-        %e   : U64     = %e_field.add_wrap(0x0070000000000000)  // + 112 << 48
-        %l   : U64     = cm_log_log2(%mh)
-        %j0  : USize   = %l.shr(59).to_usize()
-        %j1  : USize   = %l.shr(54).bitand(31).to_usize()
-        %j2  : USize   = %l.shr(49).bitand(31).to_usize()
-        %j3  : USize   = %l.shr(44).bitand(31).to_usize()
-        %sig : U64     = %mh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        %rt0 : U64     = CM_LOG_RT0.get(%j0)
-        %rt1 : U64     = CM_LOG_RT1.get(%j1)
-        %rt2 : U64     = CM_LOG_RT2.get(%j2)
-        %rt3 : U64     = CM_LOG_RT3.get(%j3)
-        %r01 : U64     = %rt1.mul_wrap(%rt0)
-        %r23 : U64     = %rt2.mul_wrap(%rt3)
-        %r   : U128    = cm_wide_mul_64x64(%r01, %r23)
-        %rr  : U256    = cm_wide_u128(%sig, %ml).mul_wide(%r)
-        %rhh : U64     = %rr.shr(192).to_u64()
+        %e : U64 = %e_field.add_wrap(0x0070000000000000)  // + 112 << 48
+        jump scale(%mh, %ml, %e, cm_log_log2(%mh))
+
+    // The four 5-bit digits of l index the reciprocals, whose product r makes m * r slightly above 1. The
+    // crude log2 can overshoot an index boundary by a hair, leaving m * r just below 1, which the unsigned
+    // reduced argument can't hold (the original, CORE-MATH's logq.c, is off by about 2^-20 there: m just
+    // below 2^(k / 2^20) for k = 29, 256, 285); then the index one lower is taken.
+    block scale(%mh: U64, %ml: U64, %e: U64, %l: U64):
+        %j0  : USize = %l.shr(59).to_usize()
+        %j1  : USize = %l.shr(54).bitand(31).to_usize()
+        %j2  : USize = %l.shr(49).bitand(31).to_usize()
+        %j3  : USize = %l.shr(44).bitand(31).to_usize()
+        %sig : U64   = %mh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        %rt0 : U64   = CM_LOG_RT0.get(%j0)
+        %rt1 : U64   = CM_LOG_RT1.get(%j1)
+        %rt2 : U64   = CM_LOG_RT2.get(%j2)
+        %rt3 : U64   = CM_LOG_RT3.get(%j3)
+        %r01 : U64   = %rt1.mul_wrap(%rt0)
+        %r23 : U64   = %rt2.mul_wrap(%rt3)
+        %r   : U128  = cm_wide_mul_64x64(%r01, %r23)
+        %rr  : U256  = cm_wide_u128(%sig, %ml).mul_wide(%r)
+        %rhh : U64   = %rr.shr(192).to_u64()
+        // m * r below 1: the product's leading bit (2^236) is clear
+        %below_one : Bool = %rhh.shr(44).eq(0)
+        branch %below_one ? scale(%mh, %ml, %e, %l.sub(0x0000100000000000)) : continue
         %rhl : U64     = %rr.shr(128).to_u64_wrap()
         %rlh : U64     = %rr.shr(64).to_u64_wrap()
         %mh2 : U64     = %rhh.shl(40).bitor(%rhl.shr(24))
