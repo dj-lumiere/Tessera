@@ -1,0 +1,67 @@
+// U256 division at algorithm D's edges, for the U64-limb form (64-bit targets) and the U32-limb one (32-bit
+// targets), which must print the same. Each case also checks u = q × d + r with r < d. The limbs below are 32 bits,
+// most significant first; the add-back cases are Hacker's Delight's (divmnu64), where q̂ survives Knuth's D3 test
+// one too big.
+
+import Standard::Format
+import Standard::Os
+
+/// The U256 with 32-bit limbs (w7 .. w0), most significant first.
+routine words(%w7: U32, %w6: U32, %w5: U32, %w4: U32, %w3: U32, %w2: U32, %w1: U32,
+        %w0: U32) -> U256
+    block entry():
+        %a : U256 = %w7.to_u256().shl(32).bitor(%w6.to_u256())
+        %b : U256 = %a.shl(32).bitor(%w5.to_u256())
+        %c : U256 = %b.shl(32).bitor(%w4.to_u256())
+        %d : U256 = %c.shl(32).bitor(%w3.to_u256())
+        %e : U256 = %d.shl(32).bitor(%w2.to_u256())
+        %f : U256 = %e.shl(32).bitor(%w1.to_u256())
+        %g : U256 = %f.shl(32).bitor(%w0.to_u256())
+        return(%g)
+
+routine check(%name: String, %u: U256, %d: U256) -> Void
+    block entry():
+        %q       : U256   = %u.div(%d)
+        %r       : U256   = %u.rem(%d)
+        %back    : U256   = %q.mul_wrap(%d).add_wrap(%r)
+        %exact   : Bool   = %back.eq(%u).bitand(%r.lt(%d))
+        %verdict : String = verdict(%exact)
+        print("{%name}: q = {%q}, r = {%r} ({%verdict})\n")
+        return()
+
+routine verdict(%exact: Bool) -> String
+    block entry():
+        branch %exact ? return("ok") : return("WRONG")
+
+routine main() -> S32
+    block entry():
+        // Add back needed: q̂ passes D3 and is still one too big.
+        check("add back, 3 by 3", words(0, 0, 0, 0, 0, 0x80000000, 0, 3),
+                words(0, 0, 0, 0, 0, 0x20000000, 0, 1))
+        check("add back, 4 by 3", words(0, 0, 0, 0, 0x7FFFFFFF, 0x80000000, 0, 0),
+                words(0, 0, 0, 0, 0, 0x80000000, 0, 1))
+        // D3 lowers q̂.
+        check("D3 correction", words(0, 0, 0, 0, 0, 0x80000000, 0x0000FFFE, 0),
+                words(0, 0, 0, 0, 0, 0, 0x80000000, 0x0000FFFF))
+        // The window's top limb equals the divisor's: q̂ starts above a limb.
+        check("q-hat over a limb", words(0, 0, 0x80000000, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0),
+                words(0, 0, 0, 0, 0, 0x80000000, 0xFFFFFFFF, 0xFFFFFFFF))
+        // Full width, divisors of every limb count.
+        %max : U256 = U256.MAX
+        check("max by 1 limb", %max, words(0, 0, 0, 0, 0, 0, 0, 0xFFFFFFFF))
+        check("max by 2 limbs", %max, words(0, 0, 0, 0, 0, 0, 1, 0))
+        check("max by 3 limbs", %max, words(0, 0, 0, 0, 0, 0x12345678, 0x9ABCDEF0, 0x0FEDCBA9))
+        check("max by 4 limbs", %max,
+                words(0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF))
+        check("max by 5 limbs", %max, words(0, 0, 0, 1, 0, 0, 0, 0))
+        check("max by 7 limbs", %max, words(0, 0x7FFFFFFF, 0, 0, 0, 0, 0, 1))
+        check("max by 8 limbs", %max, words(0x80000000, 0, 0, 0, 0, 0, 0, 0))
+        check("max by max", %max, %max)
+        check("normalized top", words(0xFFFFFFFF, 0xFFFFFFFE, 0, 0, 0, 0, 0, 0),
+                words(0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 7))
+        check("unnormalized, remainder", words(0, 0, 0, 0x5, 0x6, 0x7, 0x8, 0x9),
+                words(0, 0, 0, 0, 0, 0x3, 0x0, 0x2))
+        check("fits 64 bits", words(0, 0, 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF),
+                words(0, 0, 0, 0, 0, 0, 0, 10))
+        check("below", words(0, 0, 0, 0, 0, 0, 0, 5), words(0, 0, 0, 0, 0, 0, 0, 6))
+        return(0)
