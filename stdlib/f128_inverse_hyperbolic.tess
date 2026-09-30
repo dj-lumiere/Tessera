@@ -1,0 +1,202 @@
+// Tessera stdlib: F128 asinh, acosh, atanh
+//
+// The inverse hyperbolic functions, correctly rounded (to nearest, ties to even). CORE-MATH has no binary128
+// versions, so they run in two tiers, as sin_pi does (f128_extra.tess):
+//
+// - fast: the formulas below in F128Extended (192 bits, f128_math.tess). The result is kept when all of it
+//   × (1 ± 2^-band) rounds to the same F128 (wide_round_within).
+// - exact: otherwise the same formulas in F128Big (448 bits, f128_big.tess), within about 2^-420 relative, rounded
+//   once.
+//
+// On a = |x| (asinh and atanh are odd), with y = x - 1 for acosh:
+//
+//   asinh a = ln_1p(a + a² / (1 + sqrt(1 + a²)))   (the fast tier uses ln(a + sqrt(a² + 1)) from 1/2 on)
+//   acosh x = ln_1p(y + sqrt(y (y + 2)))           (the fast tier uses ln(x + sqrt(x² - 1)) from y = 1/2 on)
+//   atanh a = ln_1p(2a / (1 - a)) / 2
+//
+// None of them cancels: y and 1 - a are exact where it matters, every other sum adds positive terms, and ln_1p
+// keeps its relative accuracy near 0, so asinh(2^-16494) and acosh(1 + 2^-112) are as accurate as the rest. Both
+// wide types have S64 exponents, so a² can't overflow for a near F128.MAX.
+//
+// Exact cases: asinh(±0) = ±0, acosh(1) = +0, and atanh(±0) = ±0 (atanh(±1) = ±inf is a pole) are answered first.
+// No other input gives an F128 or a midpoint between two, since both are rational: for an algebraic x the results
+// are nonzero and e^asinh x = x + sqrt(x² + 1), e^acosh x = x + sqrt(x² - 1), and e^(2 atanh x) = (1 + x) / (1 - x)
+// are algebraic, while e^y is transcendental for every nonzero algebraic y (Hermite-Lindemann), so the results are
+// transcendental.
+//
+// The bands are measured, not proven: on 50000 random inputs per function (every exponent from the subnormals to
+// F128.MAX, plus runs around the switch points, 1 + tiny for acosh, and 1 - tiny for atanh) the fast tier's worst
+// relative error against mpmath was 2^-137.9 for each of the three. That is the log series' first dropped term
+// (wide_log stops at t^51 for t = (m - 1) / (m + 1) up to 0.1716, so 2^-138.0 of ln m at m = sqrt(2)), so
+// 2^-133 leaves about 5 bits. Random inputs miss the band about once in a million. Results near a rounding
+// boundary do occur, where the fast tier alone could round the wrong way: asinh x = x - x³/6 + … and
+// atanh x = x + x³/3 + … can be tuned to within 2^-114 ulp of a midpoint for x near 2^-56 (2^-41 ulp near
+// 2^-21), and acosh(1 + y) with y = 2k² 2^-112, which is sqrt(2y) = 2k 2^-56 less corrections with small
+// denominators, lands within 2^-39 ulp of one for about one k in a thousand (tests/f128_inverse_hyperbolic.tess
+// has some of each).
+
+module Standard::Core
+
+preset F128_ASINH_BAND: S64 = 133
+preset F128_ACOSH_BAND: S64 = 133
+preset F128_ATANH_BAND: S64 = 133
+
+// -- fast tier: F128Extended ---------------------------------------------------
+
+/// asinh a for a > 0.
+routine wide_asinh(%a: F128Extended) -> F128Extended
+    block entry():
+        %aa    : F128Extended = %a.mul(%a)
+        %root  : F128Extended = %aa.add(wide_one()).sqrt()
+        %small : Bool         = %a.exponent.lt(-1)
+        branch %small ? near(%aa, %root) : return(wide_log(%a.add(%root)))
+
+    block near(%aa: F128Extended, %root: F128Extended):
+        %r : F128Extended = wide_ln_1p(%a.add(%aa.div(wide_one().add(%root))))
+        return(%r)
+
+/// acosh x for x > 1; y = x - 1 is exact wherever it's used (below 1/2).
+routine wide_acosh(%x: F128) -> F128Extended
+    block entry():
+        %w     : F128Extended = wide_from_f128(%x)
+        %y     : F128Extended = %w.sub(wide_one())
+        %small : Bool         = %y.exponent.lt(-1)
+        branch %small ? near(%y) : far(%w)
+
+    block near(%y: F128Extended):
+        %root : F128Extended = %y.mul(%y.add(wide_from_i64(2))).sqrt()
+        %r    : F128Extended = wide_ln_1p(%y.add(%root))
+        return(%r)
+
+    block far(%w: F128Extended):
+        %root : F128Extended = %w.mul(%w).sub(wide_one()).sqrt()
+        %r    : F128Extended = wide_log(%w.add(%root))
+        return(%r)
+
+/// atanh a for 0 < a < 1.
+routine wide_atanh(%a: F128) -> F128Extended
+    block entry():
+        %w   : F128Extended = wide_from_f128(%a)
+        %arg : F128Extended = %w.ldexp(1).div(wide_one().sub(%w))
+        %r   : F128Extended = wide_ln_1p(%arg).ldexp(-1)
+        return(%r)
+
+// -- exact tier: F128Big -------------------------------------------------------
+
+/// asinh a for a > 0.
+routine big_asinh(%a: F128) -> F128Big
+    block entry():
+        %b    : F128Big = big_from_f128(%a)
+        %one  : F128Big = big_one()
+        %bb   : F128Big = %b.mul(%b)
+        %root : F128Big = %bb.add(%one).sqrt()
+        %r    : F128Big = big_ln_1p(%b.add(%bb.div(%one.add(%root))))
+        return(%r)
+
+/// acosh x for x > 1.
+routine big_acosh(%x: F128) -> F128Big
+    block entry():
+        %y    : F128Big = big_from_f128(%x).sub(big_one())
+        %root : F128Big = %y.mul(%y.add(big_from_s64(2))).sqrt()
+        %r    : F128Big = big_ln_1p(%y.add(%root))
+        return(%r)
+
+/// atanh a for 0 < a < 1.
+routine big_atanh(%a: F128) -> F128Big
+    block entry():
+        %b   : F128Big = big_from_f128(%a)
+        %arg : F128Big = %b.ldexp(1).div(big_one().sub(%b))
+        %r   : F128Big = big_ln_1p(%arg).ldexp(-1)
+        return(%r)
+
+// -- asinh, acosh, atanh -------------------------------------------------------
+
+/// asinh, correctly rounded: ±0 and ±inf are their own, NaN stays NaN.
+routine F128.asinh(%self: Self) -> Self
+    block entry():
+        %r : Self = f128_asinh(%self, false)
+        return(%r)
+
+/// acosh, correctly rounded: +0 at 1, +inf at +inf, NaN below 1.
+routine F128.acosh(%self: Self) -> Self
+    block entry():
+        %r : Self = f128_acosh(%self, false)
+        return(%r)
+
+/// atanh, correctly rounded: ±0 at ±0, ±inf at ±1, NaN beyond.
+routine F128.atanh(%self: Self) -> Self
+    block entry():
+        %r : Self = f128_atanh(%self, false)
+        return(%r)
+
+/// %exact skips the fast tier (the tests use it to check the exact tier on its own).
+routine f128_asinh(%x: F128, %exact: Bool) -> F128
+    block entry():
+        %bits : U128 = %x.bits()
+        %nan  : Bool = f128_is_nan_bits(%bits)
+        %zero : Bool = f128_is_zero_bits(%bits)
+        %inf  : Bool = %x.is_infinite()
+        when:
+            %nan  -> return(f128_of(f128_quiet(%bits)))
+            %zero -> return(%x)
+            %inf  -> return(%x)
+            else  -> tiers(%x.abs())
+
+    block tiers(%a: F128):
+        branch %exact ? slow(%a) : continue
+        %w       : F128Extended = wide_asinh(wide_from_f128(%a))
+        %rounded : WideRounding = wide_round_within(%w, F128_ASINH_BAND)
+        branch %rounded.ok ? return(%rounded.value.copysign(%x)) : slow(%a)
+
+    block slow(%a: F128):
+        %r : F128 = big_asinh(%a).to_f128().copysign(%x)
+        return(%r)
+
+routine f128_acosh(%x: F128, %exact: Bool) -> F128
+    block entry():
+        %bits  : U128 = %x.bits()
+        %nan   : Bool = f128_is_nan_bits(%bits)
+        %one   : F128 = f128_of(F128_ONE)
+        %below : Bool = %x.lt(%one)
+        %unit  : Bool = %x.eq(%one)
+        %inf   : Bool = %x.is_infinite()
+        when:
+            %nan   -> return(f128_of(f128_quiet(%bits)))
+            %below -> return(F128.NAN)
+            %unit  -> return(f128_of(0))
+            %inf   -> return(%x)
+            else   -> tiers()
+
+    block tiers():
+        branch %exact ? slow() : continue
+        %rounded : WideRounding = wide_round_within(wide_acosh(%x), F128_ACOSH_BAND)
+        branch %rounded.ok ? return(%rounded.value) : slow()
+
+    block slow():
+        %r : F128 = big_acosh(%x).to_f128()
+        return(%r)
+
+routine f128_atanh(%x: F128, %exact: Bool) -> F128
+    block entry():
+        %bits   : U128 = %x.bits()
+        %nan    : Bool = f128_is_nan_bits(%bits)
+        %zero   : Bool = f128_is_zero_bits(%bits)
+        %a      : F128 = %x.abs()
+        %one    : F128 = f128_of(F128_ONE)
+        %at_one : Bool = %a.eq(%one)
+        %beyond : Bool = %a.gt(%one)
+        when:
+            %nan    -> return(f128_of(f128_quiet(%bits)))
+            %zero   -> return(%x)
+            %beyond -> return(F128.NAN)
+            %at_one -> return(F128.INFINITY.copysign(%x))
+            else    -> tiers(%a)
+
+    block tiers(%a: F128):
+        branch %exact ? slow(%a) : continue
+        %rounded : WideRounding = wide_round_within(wide_atanh(%a), F128_ATANH_BAND)
+        branch %rounded.ok ? return(%rounded.value.copysign(%x)) : slow(%a)
+
+    block slow(%a: F128):
+        %r : F128 = big_atanh(%a).to_f128().copysign(%x)
+        return(%r)

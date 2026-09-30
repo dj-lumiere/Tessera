@@ -1,0 +1,130 @@
+// F128 asinh, acosh, and atanh are correctly rounded (stdlib/f128_inverse_hyperbolic.tess): each line is the
+// result, its bits, which tier gave it, and the exact tier's own bits when they differ (never). Every result was
+// checked against mpmath at 2000 bits, rounded to binary128. The hard cases lie within 2^-39 ulp of a midpoint,
+// where the fast tier's band test fails and the exact tier decides.
+
+import Standard::Format
+import Standard::Os
+
+choice Fn: U8
+    Asinh
+    Acosh
+    Atanh
+
+routine compute(%f: Fn, %x: F128, %exact: Bool) -> F128
+    block entry():
+        when %f:
+            Fn.Asinh -> return(f128_asinh(%x, %exact))
+            Fn.Acosh -> return(f128_acosh(%x, %exact))
+            Fn.Atanh -> return(f128_atanh(%x, %exact))
+
+/// Whether the fast tier keeps its result (x finite and not a special case).
+routine fast_keeps(%f: Fn, %x: F128) -> Bool
+    block entry():
+        when %f:
+            Fn.Asinh -> return(wide_round_within(wide_asinh(wide_from_f128(%x.abs())),
+                    F128_ASINH_BAND).ok)
+            Fn.Acosh -> return(wide_round_within(wide_acosh(%x), F128_ACOSH_BAND).ok)
+            Fn.Atanh -> return(wide_round_within(wide_atanh(%x.abs()), F128_ATANH_BAND).ok)
+
+routine value(%out: Ptr<FdWriter>, %name: String, %r: F128) -> Void
+    block entry():
+        write(%out, "{%name} = {%r} ")
+        %r.bits().represent_hex(%out)
+        return()
+
+/// A special case: answered before either tier.
+routine special(%out: Ptr<FdWriter>, %name: String, %f: Fn, %bits: U128) -> Void
+    block entry():
+        value(%out, %name, compute(%f, f128_of(%bits), false))
+        write(%out, "\n")
+        return()
+
+/// A general case: the result, the tier that gave it, and the exact tier on its own.
+routine tiered(%out: Ptr<FdWriter>, %name: String, %f: Fn, %bits: U128) -> Void
+    block entry():
+        %x     : F128 = f128_of(%bits)
+        %r     : F128 = compute(%f, %x, false)
+        %exact : F128 = compute(%f, %x, true)
+        %fast  : Bool = fast_keeps(%f, %x)
+        value(%out, %name, %r)
+        %tier : String = %fast ? " fast" : " exact"
+        write_str(%out, %tier)
+        %agree : Bool = %exact.bits().eq(%r.bits())
+        branch %agree ? done() : differ(%exact)
+
+    block differ(%exact: F128):
+        write(%out, " but the exact tier gives ")
+        %exact.bits().represent_hex(%out)
+        jump done()
+
+    block done():
+        write(%out, "\n")
+        return()
+
+routine main() -> S32
+    block entry():
+        claim %out : Ptr<FdWriter>
+        FdWriter.stdout().store_into(%out)
+        write(%out, "-- special cases\n")
+        special(%out, "asinh(+0)", Fn.Asinh, 0)
+        special(%out, "asinh(-0)", Fn.Asinh, 0x80000000000000000000000000000000)
+        special(%out, "asinh(+inf)", Fn.Asinh, 0x7FFF0000000000000000000000000000)
+        special(%out, "asinh(-inf)", Fn.Asinh, 0xFFFF0000000000000000000000000000)
+        special(%out, "asinh(nan)", Fn.Asinh, 0x7FFF8000000000000000000000000000)
+        special(%out, "asinh(snan)", Fn.Asinh, 0x7FFF0000000000000000000000000001)
+        special(%out, "acosh(1)", Fn.Acosh, 0x3FFF0000000000000000000000000000)
+        special(%out, "acosh(+inf)", Fn.Acosh, 0x7FFF0000000000000000000000000000)
+        special(%out, "acosh(-inf)", Fn.Acosh, 0xFFFF0000000000000000000000000000)
+        special(%out, "acosh(+0)", Fn.Acosh, 0)
+        special(%out, "acosh(-0)", Fn.Acosh, 0x80000000000000000000000000000000)
+        special(%out, "acosh(1 - 2^-113)", Fn.Acosh, 0x3FFEFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        special(%out, "acosh(-2)", Fn.Acosh, 0xC0000000000000000000000000000000)
+        special(%out, "acosh(-nan)", Fn.Acosh, 0xFFFF8000000000000000000000000000)
+        special(%out, "atanh(+0)", Fn.Atanh, 0)
+        special(%out, "atanh(-0)", Fn.Atanh, 0x80000000000000000000000000000000)
+        special(%out, "atanh(1)", Fn.Atanh, 0x3FFF0000000000000000000000000000)
+        special(%out, "atanh(-1)", Fn.Atanh, 0xBFFF0000000000000000000000000000)
+        special(%out, "atanh(1 + 2^-112)", Fn.Atanh, 0x3FFF0000000000000000000000000001)
+        special(%out, "atanh(-2)", Fn.Atanh, 0xC0000000000000000000000000000000)
+        special(%out, "atanh(+inf)", Fn.Atanh, 0x7FFF0000000000000000000000000000)
+        special(%out, "atanh(snan)", Fn.Atanh, 0x7FFF0000000000000000000000000001)
+        write(%out, "-- asinh\n")
+        tiered(%out, "asinh(1)", Fn.Asinh, 0x3FFF0000000000000000000000000000)
+        tiered(%out, "asinh(-0.5)", Fn.Asinh, 0xBFFE0000000000000000000000000000)
+        tiered(%out, "asinh(0.5 - 2^-114)", Fn.Asinh, 0x3FFDFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        tiered(%out, "asinh(3)", Fn.Asinh, 0x40008000000000000000000000000000)
+        tiered(%out, "asinh(2^-60)", Fn.Asinh, 0x3FC30000000000000000000000000000)
+        tiered(%out, "asinh(1e-30)", Fn.Asinh, 0x3F9B4484BFEEBC29F863424B06F3529A)
+        tiered(%out, "asinh(min subnormal)", Fn.Asinh, 1)
+        tiered(%out, "asinh(-min normal)", Fn.Asinh, 0x80010000000000000000000000000000)
+        tiered(%out, "asinh(1e100)", Fn.Asinh, 0x414B249AD2594C37CEB0B2784C4CE0BF)
+        tiered(%out, "asinh(-max)", Fn.Asinh, 0xFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        write(%out, "-- acosh\n")
+        tiered(%out, "acosh(1 + 2^-112)", Fn.Acosh, 0x3FFF0000000000000000000000000001)
+        tiered(%out, "acosh(1 + 2^-60)", Fn.Acosh, 0x3FFF0000000000000010000000000000)
+        tiered(%out, "acosh(1.5)", Fn.Acosh, 0x3FFF8000000000000000000000000000)
+        tiered(%out, "acosh(1.5 - 2^-112)", Fn.Acosh, 0x3FFF7FFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        tiered(%out, "acosh(2)", Fn.Acosh, 0x40000000000000000000000000000000)
+        tiered(%out, "acosh(10)", Fn.Acosh, 0x40024000000000000000000000000000)
+        tiered(%out, "acosh(2^100)", Fn.Acosh, 0x40630000000000000000000000000000)
+        tiered(%out, "acosh(max)", Fn.Acosh, 0x7FFEFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        write(%out, "-- atanh\n")
+        tiered(%out, "atanh(0.5)", Fn.Atanh, 0x3FFE0000000000000000000000000000)
+        tiered(%out, "atanh(-0.25)", Fn.Atanh, 0xBFFD0000000000000000000000000000)
+        tiered(%out, "atanh(1/9)", Fn.Atanh, 0x3FFBC71C71C71C71C71C71C71C71C71C)
+        tiered(%out, "atanh(1 - 2^-113)", Fn.Atanh, 0x3FFEFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        tiered(%out, "atanh(-1 + 2^-60)", Fn.Atanh, 0xBFFEFFFFFFFFFFFFFFE0000000000000)
+        tiered(%out, "atanh(2^-70)", Fn.Atanh, 0x3FB90000000000000000000000000000)
+        tiered(%out, "atanh(-min subnormal)", Fn.Atanh, 0x80000000000000000000000000000001)
+        write(%out, "-- near a midpoint\n")
+        tiered(%out, "asinh(a)", Fn.Asinh, 0x3FC77137449123EF65CDDE7F16C56E33)
+        tiered(%out, "asinh(b)", Fn.Asinh, 0xBFD059DF4020FC31070880EE6A67CB9B)
+        tiered(%out, "asinh(c)", Fn.Asinh, 0x5730F0A2980210DD4C882FE62AF99148)
+        tiered(%out, "acosh(1 + 14112 2^-112)", Fn.Acosh, 0x3FFF0000000000000000000000003720)
+        tiered(%out, "acosh(1 + 23328 2^-112)", Fn.Acosh, 0x3FFF0000000000000000000000005B20)
+        tiered(%out, "acosh(1 + 549084930048 2^-112)", Fn.Acosh, 0x3FFF0000000000000000007FD8032000)
+        tiered(%out, "atanh(a)", Fn.Atanh, 0x3FC6D12ED0AF1A27EF3DABAE134C2DA3)
+        tiered(%out, "atanh(b)", Fn.Atanh, 0xBFC87FFFFFFFFFFFFFFFFFFFFFFFFFFD)
+        tiered(%out, "atanh(c)", Fn.Atanh, 0x3FFEFFFFFFFFFA821DFB43C1666679BB)
+        return(0)
