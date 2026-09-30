@@ -1,0 +1,119 @@
+// floor, ceil, trunc, round, round_ties_even, mul_add and rem at their edges. Off AArch64 these work on the bits
+// instead of calling libm, and AArch64 uses its instructions; both give these bits. A NaN prints without its bits,
+// whose sign and payload differ between targets.
+
+import Standard::Format
+import Standard::Os
+
+routine show(%name: String, %v: F64) -> Void
+    block entry():
+        %nan : Bool = %v.is_nan()
+        branch %nan ? nan() : number()
+
+    block nan():
+        print("{%name} NaN\n")
+        return()
+
+    block number():
+        print("{%name} {%v} {%v.bits()}\n")
+        return()
+
+routine show32(%name: String, %v: F32) -> Void
+    block entry():
+        %nan : Bool = %v.is_nan()
+        branch %nan ? nan() : number()
+
+    block nan():
+        print("{%name} NaN\n")
+        return()
+
+    block number():
+        print("{%name} {%v} {%v.bits()}\n")
+        return()
+
+routine rounding() -> Void
+    block entry():
+        show("floor(-0.0)", F64.floor(-0.0))
+        show("floor(-0.5)", F64.floor(-0.5))
+        show("floor(0x1p-1074)", F64.floor(0x1p-1074))
+        show("floor(-0x1p-1074)", F64.floor(-0x1p-1074))
+        show("floor(-4503599627370495.5)", F64.floor(-4503599627370495.5))
+        show("floor(-inf)", F64.floor(F64.NEG_INFINITY))
+        show("floor(NaN)", F64.floor(F64.NAN))
+        show("ceil(-0.5)", F64.ceil(-0.5))
+        show("ceil(0x1p-1074)", F64.ceil(0x1p-1074))
+        show("ceil(4503599627370495.5)", F64.ceil(4503599627370495.5))
+        show("trunc(-1.9999999999999998)", F64.trunc(-1.9999999999999998))
+        show("trunc(0x1.fffffffffffffp+51)", F64.trunc(0x1.fffffffffffffp+51))
+        show("round(0.49999999999999994)", F64.round(0.49999999999999994))
+        show("round(-0.5)", F64.round(-0.5))
+        show("round(-0.3)", F64.round(-0.3))
+        show("round(2.5)", F64.round(2.5))
+        show("round(4503599627370495.5)", F64.round(4503599627370495.5))
+        show("round_ties_even(2.5)", F64.round_ties_even(2.5))
+        show("round_ties_even(-3.5)", F64.round_ties_even(-3.5))
+        show("round_ties_even(-0.5)", F64.round_ties_even(-0.5))
+        show("round_ties_even(4503599627370495.5)", F64.round_ties_even(4503599627370495.5))
+        show("round_ties_even(0x1p+52)", F64.round_ties_even(0x1p+52))
+        show32("F32 floor(-0.5)", F32.floor(-0.5))
+        show32("F32 ceil(8388607.5)", F32.ceil(8388607.5))
+        show32("F32 round(0.49999997)", F32.round(0.49999997))
+        show32("F32 round(-8388607.5)", F32.round(-8388607.5))
+        show32("F32 round_ties_even(8388606.5)", F32.round_ties_even(8388606.5))
+        show32("F32 trunc(-0x1p-149)", F32.trunc(-0x1p-149))
+        return()
+
+routine fma() -> Void
+    block entry():
+        // a product that cancels c to its last bits, one whose rounding alone would lose c, and results that
+        // round into the subnormals or overflow
+        %x : F64 = 1.0000000000000002
+        show("fma(x, x, -1)", %x.mul_add(%x, -1.0))
+        show("fma(x, x, -(x*x))", %x.mul_add(%x, %x.mul(%x).neg()))
+        show("fma(1+2^-52, 1-2^-53, -1)",
+                F64.mul_add(1.0000000000000002, 0.99999999999999989, -1.0))
+        show("fma(0x1p-537, 0x1p-537, 0)", F64.mul_add(0x1p-537, 0x1p-537, 0.0))
+        show("fma(0x1.8p-538, 0x1p-537, 0)", F64.mul_add(0x1.8p-538, 0x1p-537, 0.0))
+        show("fma(0x1p-1074, 0.5, 0)", F64.mul_add(0x1p-1074, 0.5, 0.0))
+        show("fma(0x1p-1074, 0.5, -0)", F64.mul_add(0x1p-1074, 0.5, -0.0))
+        show("fma(-0x1p-1074, 0.5, 0)", F64.mul_add(-0x1p-1074, 0.5, 0.0))
+        show("fma(0x1p-1074, 0x1p-1074, 0x1p-1074)", F64.mul_add(0x1p-1074, 0x1p-1074, 0x1p-1074))
+        show("fma(0x1p-1074, -0x1p-1074, 0x1p-1074)", F64.mul_add(0x1p-1074, -0x1p-1074, 0x1p-1074))
+        show("fma(MAX, 2, -MAX)", F64.mul_add(F64.MAX, 2.0, F64.MAX.neg()))
+        show("fma(MAX, 2, 0)", F64.mul_add(F64.MAX, 2.0, 0.0))
+        show("fma(1, 1, -1)", F64.mul_add(1.0, 1.0, -1.0))
+        show("fma(-0, 1, -0)", F64.mul_add(-0.0, 1.0, -0.0))
+        show("fma(inf, 0, 1)", F64.mul_add(F64.INFINITY, 0.0, 1.0))
+        show("fma(inf, 1, -inf)", F64.mul_add(F64.INFINITY, 1.0, F64.NEG_INFINITY))
+        show("fma(2, 3, inf)", F64.mul_add(2.0, 3.0, F64.INFINITY))
+        show("fma(0x1p+1000, 0x1p+1000, -inf)", F64.mul_add(0x1p+1000, 0x1p+1000, F64.NEG_INFINITY))
+        // F32: x*y is an F32 midpoint and z tips it up; the F64 sum rounded to nearest would sit on the midpoint
+        show32("F32 fma(1+2^-12, 1+2^-12, 2^-70)", F32.mul_add(0x1.001p+0, 0x1.001p+0, 0x1p-70))
+        show32("F32 fma(0x1p-75, 0x1p-75, 0)", F32.mul_add(0x1p-75, 0x1p-75, 0.0))
+        show32("F32 fma(0x1.8p-76, 0x1p-74, 0)", F32.mul_add(0x1.8p-76, 0x1p-74, 0.0))
+        return()
+
+routine remainders() -> Void
+    block entry():
+        show("rem(5.5, 2)", F64.rem(5.5, 2.0))
+        show("rem(-5.5, 2)", F64.rem(-5.5, 2.0))
+        show("rem(-4, 2)", F64.rem(-4.0, 2.0))
+        show("rem(MAX, 0x1p-1074)", F64.rem(F64.MAX, 0x1p-1074))
+        show("rem(MAX, 3)", F64.rem(F64.MAX, 3.0))
+        show("rem(0x1p-1022, 0x1.8p-1073)", F64.rem(0x1p-1022, 0x1.8p-1073))
+        show("rem(1, 0.1)", F64.rem(1.0, 0.1))
+        show("rem(0.1, 1)", F64.rem(0.1, 1.0))
+        show("rem(-0, 1)", F64.rem(-0.0, 1.0))
+        show("rem(3, inf)", F64.rem(3.0, F64.INFINITY))
+        show("rem(inf, 3)", F64.rem(F64.INFINITY, 3.0))
+        show("rem(3, 0)", F64.rem(3.0, 0.0))
+        show32("F32 rem(1e30, 7)", F32.rem(1e30, 7.0))
+        show32("F32 rem(-0x1p-149, 0x1p-149)", F32.rem(-0x1p-149, 0x1p-149))
+        return()
+
+routine main() -> S32
+    block entry():
+        rounding()
+        fma()
+        remainders()
+        return(0)

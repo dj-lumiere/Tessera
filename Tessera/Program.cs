@@ -347,8 +347,6 @@ static class Cli
             // The UCRT defines printf and its family inline in the headers; 32-bit x86 has no exported symbol for
             // them, so an IR-level call needs the out-of-line copies.
             if (target is { Os: "windows", Arch: "x86" }) psi.ArgumentList.Add("-llegacy_stdio_definitions");
-            // glibc keeps the math functions the stdlib calls (acos, fma, ...) in a separate libm.
-            if (target.Os == "linux") psi.ArgumentList.Add("-lm");
             foreach (var a in extra ?? []) psi.ArgumentList.Add(a);
 
             Process p;
