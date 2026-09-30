@@ -11,7 +11,7 @@ static class Cli
           tessera run                   build it and run it
           tessera build <file.tess>... [-o <out>] [--emit-llvm] [--target <arch-os-abi>] [-O]
           tessera run   <file.tess>... [--target <arch-os-abi>] [-O]
-          tessera test  [--target <arch-os-abi>] <dir>...
+          tessera test  [--target <arch-os-abi>] <dir-or-file.tess>...
           tessera check [--target <arch-os-abi>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
 
@@ -430,13 +430,20 @@ static class Cli
             else dirs.Add(args[i]);
         }
         args = [.. dirs];
-        if (args.Length == 0) throw new ToolError("test takes one or more directories");
+        if (args.Length == 0) throw new ToolError("test takes one or more directories or .tess files");
         // A test is one file, or a subdirectory whose .tess files are compiled together (several modules); its
         // .expected / .exit / .error files sit next to it either way.
         // A subdirectory with a config.toml builds through it.
         var tests = new List<(string Stem, string[] Sources)>();
         foreach (var dir in args)
         {
+            if (File.Exists(dir))
+            {
+                if (Path.GetExtension(dir) != ".tess") throw new ToolError($"{dir} is not a .tess file");
+                tests.Add((Path.ChangeExtension(dir, null), [dir]));
+                continue;
+            }
+            if (!Directory.Exists(dir)) throw new ToolError($"{dir} does not exist");
             var found = Directory.GetFiles(dir, "*.tess").Select(f => (Path.ChangeExtension(f, null), new[] { f }))
                 .Concat(Directory.GetDirectories(dir)
                     .Select(d => (d, File.Exists(Path.Combine(d, Manifest.FileName))
