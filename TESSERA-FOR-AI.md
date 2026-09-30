@@ -36,18 +36,15 @@ import Standard::Os
 
 routine main() -> S32
     block entry():
-        %fd_val : FdWriter = .stdout()
         claim %fd : Ptr<FdWriter>
-        %fd.store(%fd_val)
+        FdWriter.stdout().store_into(%fd)
         claim %out : Ptr<BufWriter<FdWriter>>
         %out.construct(%fd)
-        %heap : Allocator = make_heap_allocator()
         claim %alloc : Ptr<Allocator>
-        %alloc.store(%heap)
+        make_heap_allocator().store_into(%alloc)
 
-        %list_val : List<S64> = .construct(%alloc)
         claim %list : Ptr<List<S64>>
-        %list.store(%list_val)
+        List<S64>.construct(%alloc).store_into(%list)
         %list.push(42)
         write_str(%out, "first: ")
         %list.get(0).represent(%out)
@@ -87,7 +84,8 @@ routine main() -> S32
   error.
 - A field of an SSA record value is read with plain `=`: `%key: K = %pair.key`.
 - `claim %p : Ptr<T>` claims an uninitialized slot for the routine call (a stack slot in practice); its type comes from the binding, which must be written `Ptr<T>` (anything else is a parse error), and the value goes in
-  with `%p.store(%v)`. An array value comes from `Array<T, N>.from([1, 2, %x])` or `Array<T, N>.from_ptr(%first)`;
+  with `%p.store(%v)`, or `%v.store_into(%p)` at the end of the chain that makes it:
+  `List<S64>.construct(%alloc).store_into(%list)` (no `%list_val` for a single store). An array value comes from `Array<T, N>.from([1, 2, %x])` or `Array<T, N>.from_ptr(%first)`;
   a bare `[1, 2]` isn't a value. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot.
 - Heap memory goes through an allocator: `allocate<T>(%alloc, %count)`, `%p.free(%alloc)`.
@@ -223,9 +221,8 @@ Iterating a collection (`next` returns `Option<T>`):
 ```tessera
 routine sum_list(%list: Ptr<List<S64>>) -> S64
     block entry():
-        %iter_val : ListIter<S64> = .construct(%list)
         claim %iter : Ptr<ListIter<S64>>
-        %iter.store(%iter_val)
+        ListIter<S64>.construct(%list).store_into(%iter)
         jump next(%iter, 0)
 
     block next(%iter: Ptr<ListIter<S64>>, %total: S64):
