@@ -1340,118 +1340,13 @@ preset WIDE_GAMMA_COEF_NEG: Array<Bool, 36> = [false, true, false, true, false, 
         false, true, false, true, false, true, false, true, false, true, false, true, false, true,
         false, true, false, true, false, true, false, true, false, true, false, true, false, true]
 
-// -- erf, erfc (TLFloat's continued fractions) ----------------------------------
+// -- constants of erf and gamma -------------------------------------------------
 
 routine wide_special(%i: USize) -> F128Extended
     block entry():
         %w : F128Extended = wide_table(WIDE_SPECIAL_CONST_HI.to_ptr(),
                 WIDE_SPECIAL_CONST_LO.to_ptr(), WIDE_SPECIAL_CONST_EXP.to_ptr(), %i)
         return(%w)
-
-/// erf z = 2/sqrt(pi) × z e^(-z²) × d/n, from the continued fraction evaluated
-/// backward over %levels levels (even), two per step.
-routine wide_erf_cf(%z: F128Extended, %levels: S64) -> F128Extended
-    block entry():
-        %zz : F128Extended = %z.mul(%z)
-        %n0 : F128Extended = wide_from_i64(%levels.mul(2).add(1))
-        jump level(%levels, %n0, wide_one(), %zz)
-
-    block level(%i: S64, %n: F128Extended, %d: F128Extended, %zz: F128Extended):
-        %done : Bool = %i.le(0)
-        branch %done ? finish(%n, %d, %zz) : step(%i, %n, %d, %zz)
-
-    block step(%i: S64, %n: F128Extended, %d: F128Extended, %zz: F128Extended):
-        %i2 : S64          = %i.mul(2)
-        %n1 : F128Extended = %n.mul(wide_from_i64(%i2.sub(1))).add(%zz.mul(wide_from_i64(%i2)).mul(%d))
-        %n2 : F128Extended = %n1.mul(wide_from_i64(%i2.sub(3))).sub(%zz.mul(wide_from_i64(%i2.sub(2))).mul(%n))
-        jump level(%i.sub(2), %n2, %n1, %zz)
-
-    block finish(%n: F128Extended, %d: F128Extended, %zz: F128Extended):
-        %scale : F128Extended = %z.mul(wide_special(0)).mul(wide_exp(%zz.neg()))
-        %r     : F128Extended = %scale.mul(%d.ldexp(1).div(%n))
-        return(%r)
-
-/// erfc z = 1/sqrt(pi) × z e^(-z²) × d/n, for the tail |z| >= 3.125.
-routine wide_erfc_cf(%z: F128Extended, %levels: S64) -> F128Extended
-    block entry():
-        %zz : F128Extended = %z.mul(%z)
-        jump level(%levels, wide_one(), wide_one(), %zz)
-
-    block level(%i: S64, %n: F128Extended, %d: F128Extended, %zz: F128Extended):
-        %done : Bool = %i.le(0)
-        branch %done ? finish(%n, %d, %zz) : step(%i, %n, %d, %zz)
-
-    block step(%i: S64, %n: F128Extended, %d: F128Extended, %zz: F128Extended):
-        %n1 : F128Extended = %n.add(wide_from_i64(%i).ldexp(-1).mul(%d))
-        %n2 : F128Extended = %zz.mul(%n1).add(wide_from_i64(%i.sub(1)).ldexp(-1).mul(%n))
-        jump level(%i.sub(2), %n2, %n1, %zz)
-
-    block finish(%n: F128Extended, %d: F128Extended, %zz: F128Extended):
-        %scale : F128Extended = %z.mul(wide_special(0)).mul(wide_exp(%zz.neg()))
-        %r     : F128Extended = %scale.mul(%d.div(%n))
-        return(%r)
-
-preset F128_ERF_SPLIT: F128 = f128_of(0x40009000000000000000000000000000)  // 3.125
-preset F128_ERF_FLAT:  F128 = f128_of(0x4005E000000000000000000000000000)  // 120
-
-routine F128.erf(%self: Self) -> Self
-    block entry():
-        %nan   : Bool = %self.is_nan()
-        %zero  : Bool = f128_is_zero_bits(%self.bits())
-        %a     : Self = %self.abs()
-        %flat  : Bool = %a.gt(F128_ERF_FLAT).bitor(%self.is_infinite())
-        %tail  : Bool = %a.ge(F128_ERF_SPLIT)
-        %quiet : Self = f128_of(f128_quiet(%self.bits()))
-        when:
-            %nan  -> return(%quiet)
-            %zero -> return(%self)
-            %flat -> one()
-            %tail -> tail(%a)
-            else  -> middle()
-
-    block one():
-        %r : Self = f128_of(0x3FFF0000000000000000000000000000).copysign(%self)
-        return(%r)
-
-    block tail(%a: Self):
-        %c : F128Extended = wide_erfc_cf(wide_from_f128(%a), 120)
-        %r : Self         = wide_one().sub(%c).to_f128().copysign(%self)
-        return(%r)
-
-    block middle():
-        %r : Self = wide_erf_cf(wide_from_f128(%self), 72).to_f128()
-        return(%r)
-
-routine F128.erfc(%self: Self) -> Self
-    block entry():
-        %nan   : Bool = %self.is_nan()
-        %neg   : Bool = f128_is_negative_bits(%self.bits())
-        %a     : Self = %self.abs()
-        %flat  : Bool = %a.gt(F128_ERF_FLAT).bitor(%self.is_infinite())
-        %tail  : Bool = %a.ge(F128_ERF_SPLIT)
-        %quiet : Self = f128_of(f128_quiet(%self.bits()))
-        when:
-            %nan  -> return(%quiet)
-            %flat -> flat(%neg)
-            %tail -> tail(%a, %neg)
-            else  -> middle()
-
-    // erfc(+big) underflows to +0; erfc(-big) is 2
-    block flat(%neg: Bool):
-        %two  : Self = f128_of(0x40000000000000000000000000000000)
-        %zero : Self = f128_of(0)
-        branch %neg ? return(%two) : return(%zero)
-
-    block tail(%a: Self, %neg: Bool):
-        %c   : F128Extended = wide_erfc_cf(wide_from_f128(%a), 120)
-        %two : F128Extended = wide_from_i64(2)
-        %v   : F128Extended = %neg ? %two.sub(%c) : %c
-        %r   : Self         = %v.to_f128()
-        return(%r)
-
-    block middle():
-        %r : Self = wide_one().sub(wide_erf_cf(wide_from_f128(%self), 72)).to_f128()
-        return(%r)
 
 // -- gamma, ln_gamma (Stirling with argument shift and reflection) ---------------
 

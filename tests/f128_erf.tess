@@ -1,0 +1,123 @@
+// F128 erf and erfc, correctly rounded (stdlib/f128_erf.tess): each input with its result's value and bits,
+// the tier that decided it (fast: F128Extended passed the band test; exact: F128Big), and whether the exact tier
+// alone gives the same bits. Every result was checked against mpmath at 2000 bits, rounded once. The "near"
+// inputs put the result within 2^-165 to 2^-229 of a rounding boundary (see the header of f128_erf.tess); at
+// erf(8.7334...) just below F128_ERF_ONE and erfc(-8.6939...) the fast tier alone would round the wrong way.
+
+import Standard::Format
+import Standard::Os
+
+/// Which tier decides erf x: "fast" when the F128Extended value passes the band test, else "exact".
+routine erf_tier(%x: F128) -> String
+    block entry():
+        %a      : F128 = %x.abs()
+        %zero   : Bool = f128_is_zero_bits(%x.bits())
+        %inside : Bool = %a.lt(F128_ERF_ONE).bitand(%zero.bitnot())
+        branch %inside ? return(band(wide_erf(%a))) : return("special")
+
+routine erfc_tier(%x: F128) -> String
+    block entry():
+        %zero   : Bool = f128_is_zero_bits(%x.bits())
+        %inside : Bool = %x.lt(F128_ERFC_ZERO).bitand(%x.gt(F128_ERFC_TWO.neg())).bitand(%zero.bitnot())
+        branch %inside ? return(band(wide_erfc(%x))) : return("special")
+
+routine band(%w: F128Extended) -> String
+    block entry():
+        %ok : Bool   = wide_round_within(%w, F128_ERF_BAND).ok
+        %r  : String = %ok ? "fast" : "exact"
+        return(%r)
+
+routine erf_case(%out: Ptr<FdWriter>, %label: String, %x: F128) -> Void
+    block entry():
+        report(%out, "erf", %label, %x, %x.erf(), f128_erf(%x, true), erf_tier(%x))
+        return()
+
+routine erfc_case(%out: Ptr<FdWriter>, %label: String, %x: F128) -> Void
+    block entry():
+        report(%out, "erfc", %label, %x, %x.erfc(), f128_erfc(%x, true), erfc_tier(%x))
+        return()
+
+routine report(%out: Ptr<FdWriter>, %name: String, %label: String, %x: F128, %r: F128, %exact: F128,
+        %tier: String) -> Void
+    block entry():
+        %same : Bool = %r.bits().eq(%exact.bits())
+        write(%out, "{%name}({%x}) {%label}: {%r} ")
+        %r.bits().represent_hex(%out)
+        write(%out, " {%tier}, exact tier agrees: {%same}\n")
+        return()
+
+routine main() -> S32
+    block entry():
+        claim %out : Ptr<FdWriter>
+        FdWriter.stdout().store_into(%out)
+
+        erf_case(%out, "special", f128_of(0x00000000000000000000000000000000))
+        erf_case(%out, "special", f128_of(0x80000000000000000000000000000000))
+        erf_case(%out, "special", f128_of(0x7FFF0000000000000000000000000000))
+        erf_case(%out, "special", f128_of(0xFFFF0000000000000000000000000000))
+        erf_case(%out, "special", f128_of(0x7FFF8000000000000000000000000000))
+        erf_case(%out, "special", f128_of(0x7FFF0000000000000000000000000001))
+        erf_case(%out, "special", f128_of(0xFFFF8000000000000000000000000005))
+        erf_case(%out, "special", f128_of(0x7FFEFFFFFFFFFFFFFFFFFFFFFFFFFFFF))
+        erf_case(%out, "special", f128_of(0xFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFF))
+        erfc_case(%out, "special", f128_of(0x00000000000000000000000000000000))
+        erfc_case(%out, "special", f128_of(0x80000000000000000000000000000000))
+        erfc_case(%out, "special", f128_of(0x7FFF0000000000000000000000000000))
+        erfc_case(%out, "special", f128_of(0xFFFF0000000000000000000000000000))
+        erfc_case(%out, "special", f128_of(0x7FFF0000000000000000000000000001))
+        erfc_case(%out, "special", f128_of(0x7FFEFFFFFFFFFFFFFFFFFFFFFFFFFFFF))
+        erfc_case(%out, "special", f128_of(0xFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFF))
+        erf_case(%out, "plain", f128_of(0x00000000000000000000000000000001))
+        erf_case(%out, "plain", f128_of(0x80000000000000000000000000000001))
+        erf_case(%out, "plain", f128_of(0x0C17387AE70C9E700B8049732D11A23D))
+        erf_case(%out, "plain", f128_of(0x3FDDB7CDFD9D7BDBAB7D6AE6881CB511))
+        erf_case(%out, "plain", f128_of(0x3FFE0000000000000000000000000000))
+        erf_case(%out, "plain", f128_of(0x3FFF0000000000000000000000000000))
+        erf_case(%out, "plain", f128_of(0xC0000000000000000000000000000000))
+        erf_case(%out, "plain", f128_of(0x40007FFFFFFFFFFFFFFFFFFFFFFFFFFF))
+        erf_case(%out, "plain", f128_of(0x40008000000000000000000000000000))
+        erf_case(%out, "plain", f128_of(0x40010000000000000000000000000000))
+        erf_case(%out, "plain", f128_of(0xC0014000000000000000000000000000))
+        erf_case(%out, "plain", f128_of(0x40020000000000000000000000000000))
+        erf_case(%out, "plain", f128_of(0x40021666666666666666666666666666))
+        erfc_case(%out, "plain", f128_of(0x3F7A16C262777579C58C46475896767B))
+        erfc_case(%out, "plain", f128_of(0xBF7A16C262777579C58C46475896767B))
+        erfc_case(%out, "plain", f128_of(0x3FFE0000000000000000000000000000))
+        erfc_case(%out, "plain", f128_of(0xBFFF0000000000000000000000000000))
+        erfc_case(%out, "plain", f128_of(0x4000799999999999999999999999999A))
+        erfc_case(%out, "plain", f128_of(0x40007FFFFFFFFFFFFFFFFFFFFFFFFFFF))
+        erfc_case(%out, "plain", f128_of(0x40008000000000000000000000000000))
+        erfc_case(%out, "plain", f128_of(0x4000FFFFFFFFFFFFFFFFFFFFFFFFFFFF))
+        erfc_case(%out, "plain", f128_of(0x40010000000000000000000000000000))
+        erfc_case(%out, "plain", f128_of(0x40024000000000000000000000000000))
+        erfc_case(%out, "plain", f128_of(0x4003B000000000000000000000000000))
+        erfc_case(%out, "plain", f128_of(0xC0008000000000000000000000000000))
+        erfc_case(%out, "plain", f128_of(0xC0014000000000000000000000000000))
+        erfc_case(%out, "plain", f128_of(0xC0021333333333333333333333333333))
+        erfc_case(%out, "plain", f128_of(0x40059000000000000000000000000000))
+        erfc_case(%out, "plain", f128_of(0x4005AA00000000000000000000000000))
+        erfc_case(%out, "plain", f128_of(0x4005AB9C8393DDD2517E5404D6DD3C9C))
+        erfc_case(%out, "plain", f128_of(0x4005AB9C8393DDD2517E5404D6DD3C9D))
+        erf_case(%out, "near", f128_of(0x3F875CE63311F6628D6799B52CA58F69))
+        erf_case(%out, "near", f128_of(0xBF87E263DFCC98A35695AF6AF7141C15))
+        erf_case(%out, "near", f128_of(0x3C1763C18658FEE8598412704F558CE1))
+        erf_case(%out, "near", f128_of(0xBC17E2B0614F2FD35FCD6EDED17FC2E2))
+        erf_case(%out, "near", f128_of(0x00016A2223F660155F5167FE11BDFCAF))
+        erf_case(%out, "near", f128_of(0x8001E2551926EA7E95BF5C01FFEBFFE7))
+        erf_case(%out, "near", f128_of(0x0000C56C6396DC42C53F6A4A9F4B6226))
+        erf_case(%out, "near", f128_of(0x000000000000BFEC676ED3AF9F01C44E))
+        erf_case(%out, "near", f128_of(0x000000000000000000000000000B1C6F))
+        erfc_case(%out, "near", f128_of(0x3F8CC5BF891B4EF6AA79C3B0520D5DB9))
+        erfc_case(%out, "near", f128_of(0xBF8DC5BF891B4EF6AA79C3B0520D5DB9))
+        erfc_case(%out, "near", f128_of(0x3F8E544FA6D47B38FFDB52C43D8A064B))
+        erfc_case(%out, "near", f128_of(0xBF8F544FA6D47B38FFDB52C43D8A064B))
+        erfc_case(%out, "near", f128_of(0x3F9B55E750E9A9C1F1787C2A0DF3BE4D))
+        erfc_case(%out, "near", f128_of(0xBF9C55E750E9A9C1F1787C2A0DF3BE4D))
+        erfc_case(%out, "near", f128_of(0x3FB5C5BF891B4FD98A3E5157CD629A9B))
+        erfc_case(%out, "near", f128_of(0xBFB6C5BF891B4FD98A3E5157CD629A9B))
+        erf_case(%out, "near", f128_of(0x4002177842BCE67448BC471EEA540734))
+        erf_case(%out, "near", f128_of(0x4002177842BCE67448BC471EEA540735))
+        erf_case(%out, "near", f128_of(0xC002177842BCE67448BC471EEA540734))
+        erfc_case(%out, "near", f128_of(0xC00216348A5859398F7A86034CB5B0B3))
+        erfc_case(%out, "near", f128_of(0xC00216348A5859398F7A86034CB5B0B4))
+        return(0)
