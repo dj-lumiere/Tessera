@@ -32,6 +32,10 @@ public sealed record Token(TokenKind Kind, string Text, Pos Pos, BigInteger IntV
 public sealed class CompileError(Pos pos, string message) : Exception($"{pos}: error: {message}")
 {
     public Pos Pos { get; } = pos;
+
+    /// An error no fallback may swallow: a lookup that tries a name as a type and then as something else still
+    /// reports it (a module the target doesn't have).
+    public bool Final { get; init; }
 }
 
 /// Turns source text into tokens. Layout is not significant beyond newlines: a newline ends a statement unless it

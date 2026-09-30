@@ -120,7 +120,7 @@ public sealed partial class Compiler
         if (sig.IsExternalC)
         {
             if (_declaredSymbols.Add(sig.Symbol))
-                _declares.AppendLine($"declare {sig.CcPrefix}{sig.LlvmRet} @{Quote(sig.Symbol)}({sig.LlvmParamTypes}){sig.FnAttrs}");
+                _declares.Add((sig.Symbol, $"declare {sig.CcPrefix}{sig.LlvmRet} @{Quote(sig.Symbol)}({sig.LlvmParamTypes}){sig.FnAttrs}"));
         }
         else if (!sig.IsTemplate)
         {
@@ -136,6 +136,7 @@ public sealed partial class Compiler
         if (inst.Decl.Attr("export") is { } export)
         {
             string name = export.First ?? throw new CompileError(export.Pos, "@export needs a symbol name");
+            _exported.Add(name);
             _functions.AppendLine($"@{Quote(name)} = alias {inst.LlvmRet} ({inst.LlvmParamTypes}), ptr @{Quote(inst.Symbol)}");
             _functions.AppendLine();
         }

@@ -17,8 +17,9 @@ dotnet run --project Tessera -- fmt <files or dirs>        # format in place (--
 
 A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `Standard::Core` (always imported: the built-in types, `Option`, `Result`,
-`String`), and what it imports, so printing a number needs `import Standard::Format` and a `List` needs
-`import Standard::Collections`. A routine declared in its type's module comes with the type; one another module adds
+`String`), and what it imports, so printing a number needs `import Standard::Format`, a `List` needs
+`import Standard::Collections`, and `make_heap_allocator` / `FdWriter` need `import Standard::Os` (the hosted layer,
+the only one that calls libc; a target with OS `none` has none of it). A routine declared in its type's module comes with the type; one another module adds
 to it (like `S64.represent` from `Standard::Format`) needs that module imported. A qualified path
 (`Standard::Format::write_str`) reaches any public name without an import. Two modules may declare the same name:
 the file's own module wins over its imports, and two imports offering it need the path. `alias Standard::Format as
@@ -27,6 +28,11 @@ Fmt` shortens a path (`Fmt::write_str`) without importing; `alias Standard::Coll
 ## Skeleton
 
 ```tessera
+import Standard::Alloc
+import Standard::Collections
+import Standard::Format
+import Standard::Os
+
 routine main() -> S32
     block entry():
         %fd_val : FdWriter = .stdout()
@@ -169,7 +175,9 @@ routine main() -> S32
 
 **Errors**
 
-- Bugs trap: `trap()`, or `panic(TrapCode.X)` / `panic_msg(...)` for a message (exit status 101).
+- Bugs trap: `trap()`, or `panic(TrapCode.X)` / `panic_msg(...)` for a message. Those call the panic handler; the
+  default (Standard::Os) prints one line and exits with status 101, and a program replaces it with
+  `@[export("tessera_panic_handler"), noreturn] routine my_handler(%code: TrapCode, %message: String) -> Void`.
 - Expected failures return `Result<T, E>`. There's no `?`: `when %r:` with `.Success(%v)` / `.Failure(%e)` arms.
 
 **Records**

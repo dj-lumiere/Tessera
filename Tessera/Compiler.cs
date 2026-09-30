@@ -28,7 +28,8 @@ public sealed partial class Compiler
 
     private readonly StringBuilder _typeDefs = new();
     private readonly StringBuilder _globals = new();
-    private readonly StringBuilder _declares = new();
+    private readonly List<(string Symbol, string Line)> _declares = [];
+    private readonly HashSet<string> _exported = [];
     private readonly StringBuilder _functions = new();
     private readonly HashSet<string> _definedTypes = [];
     private readonly HashSet<string> _declaredSymbols = [];
@@ -73,8 +74,12 @@ public sealed partial class Compiler
             }
         }
         foreach (var imp in _imports)
+        {
             if (!_modules.Contains(imp.Path))
                 throw new CompileError(imp.Pos, $"unknown module '{imp.Path}'");
+            if (!imp.IsLibrary && IsOsModule(imp.Path) && !Target.HasOs)
+                throw new CompileError(imp.Pos, NoOs(imp.Path));
+        }
         // A routine on a declared type names the type as its own file sees it; the lookups say why it can't.
         foreach (var m in _methods.Values.SelectMany(g => g))
             if (OwnerDecl(m) is null && DeclaresType(m.Owner!.Name))
@@ -240,8 +245,11 @@ public sealed partial class Compiler
     {
         foreach (var r in _userRoutines) CheckRoot(r);
         // Exported library routines are always emitted: something outside Tessera (C code, or LLVM's own lowering)
-        // may call them by their C name.
-        foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.Attr("export") is not null)) CheckRoot(r);
+        // may call them by their C name. A program's export of the same name replaces the library's, the way a
+        // program supplies its own panic handler.
+        var programExports = _userRoutines.Select(r => r.Attr("export")?.First).Where(n => n is not null).ToHashSet();
+        foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.Attr("export") is { } e && !programExports.Contains(e.First)))
+            CheckRoot(r);
         while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
         if (VerifyFixedConformances() is [var first, ..]) throw first;
         return Output();
@@ -287,7 +295,12 @@ public sealed partial class Compiler
         var o = new StringBuilder();
         o.AppendLine($"target triple = \"{Target.LlvmTriple}\"");
         o.AppendLine();
-        foreach (var sb in new[] { _typeDefs, _globals, _declares })
+        // An external routine that an `@export` in this solution defines (the panic handler) is that definition,
+        // not a declaration.
+        var declares = new StringBuilder();
+        foreach (var (symbol, line) in _declares)
+            if (!_exported.Contains(symbol)) declares.AppendLine(line);
+        foreach (var sb in new[] { _typeDefs, _globals, declares })
             if (sb.Length > 0) o.Append(sb).AppendLine();
         o.Append(_functions);
         return o.ToString();
@@ -303,6 +316,13 @@ public sealed partial class Compiler
     // ── Name lookup ─────────────────────────────────────────────────────────
 
     public const string CoreModule = "Standard::Core";
+    public const string OsModule = "Standard::Os";
+
+    private static bool IsOsModule(string module) =>
+        module == OsModule || module.StartsWith(OsModule + "::", StringComparison.Ordinal);
+
+    private string NoOs(string module) =>
+        $"{module} needs an operating system, and target {Target.Arch}-{Target.Os}-{Target.Abi} has none";
 
     private readonly Dictionary<string, string> _fileModule = [];
     private readonly Dictionary<string, HashSet<string>> _fileImports = [];
@@ -352,7 +372,13 @@ public sealed partial class Compiler
         var visible = candidates.Where(c => Visible(c, file, path)).ToList();
         if (visible.Count == 0) throw new CompileError(pos, Hidden(candidates[0], what, path));
         var nearest = Nearest(visible, file);
-        if (nearest.Count == 1) return nearest[0];
+        if (nearest.Count == 1)
+        {
+            // The hosted layer exists only on a target with an operating system; its own files may still name it.
+            if (IsOsModule(nearest[0].Module) && !Target.HasOs && !IsOsModule(ModuleOf(file)))
+                throw new CompileError(pos, $"{what} is in {nearest[0].Module}: {NoOs(nearest[0].Module)}") { Final = true };
+            return nearest[0];
+        }
         var modules = nearest.Select(c => c.Module).Distinct().ToList();
         if (modules.Count > 1)
             throw new CompileError(pos, $"{what} is ambiguous: it's in {string.Join(" and ", modules.Select(ShowModule))}; "

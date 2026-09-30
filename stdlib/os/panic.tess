@@ -1,0 +1,41 @@
+// Tessera stdlib: the default panic handler
+//
+// Standard::Core's panic calls tessera_panic_handler, a link-time symbol. This
+// is the hosted default: one line on stderr, then exit status 101.
+//
+//     tessera: runtime error: index out of bounds
+//     tessera: runtime error: index out of bounds: row 7 of 5      (panic_msg)
+//
+// A program replaces it by exporting its own routine under the same name; a
+// target without an operating system has no default, so a program for one
+// exports a handler (halt, blink an LED, reset) or fails to link.
+
+module Standard::Os
+
+import Standard::Format
+
+@[export("tessera_panic_handler"), noreturn, target(os: !"none")]
+routine default_panic_handler(%code: TrapCode, %message: String) -> Void
+    block entry():
+        %text : String = %code.description()
+        eprint("tessera: runtime error: {%text}")
+        %raw    : U8   = bitcast<TrapCode, U8>(%code)
+        %stdlib : Bool = %raw.lt(64)
+        branch %stdlib ? message() : code(%raw)
+
+    // A program's own codes (64 and up) have no description, so the number is written too.
+    block code(%raw: U8):
+        eprint(" {%raw}")
+        jump message()
+
+    block message():
+        %none : Bool = %message.length.eq(0)
+        branch %none ? finish() : detail()
+
+    block detail():
+        eprint(": {%message}")
+        jump finish()
+
+    block finish():
+        eprint("\n")
+        c_exit(101)

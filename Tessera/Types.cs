@@ -331,6 +331,9 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
         _ => null,
     };
 
+    /// Whether the target has an operating system, which the hosted layer (Standard::Os) needs.
+    public bool HasOs => Os != "none";
+
     /// Evaluates one `@target(key: value)` predicate.
     public bool Matches(string key, string value) => key switch
     {

@@ -1,8 +1,9 @@
 // Tessera stdlib: Allocator pattern and memory routines
 //
 // The Allocator record is a manual vtable: callers pass Ptr<Allocator> to any
-// routine that performs heap allocation.  make_heap_allocator() returns an
-// Allocator backed by libc malloc / realloc / free.
+// routine that performs heap allocation. Nothing here needs an operating system;
+// make_heap_allocator(), backed by libc malloc / realloc / free, is in
+// Standard::Os (os/heap.tess).
 //
 // Generic routines (alloc, realloc, free, zero, copy) form the prelude memory
 // surface used by every collection.  Sizes and counts are USize.
@@ -10,22 +11,6 @@
 module Standard::Alloc
 
 import Standard::Format
-
-// ============================================================
-// C FFI: libc memory
-// ============================================================
-
-@[external("c"), symbol("malloc")]
-private routine c_malloc(%size: USize) -> Addr
-
-@[external("c"), symbol("realloc")]
-private routine c_realloc(%ptr: Addr, %size: USize) -> Addr
-
-@[external("c"), symbol("free")]
-private routine c_free(%ptr: Addr) -> Void
-
-@[external("c"), symbol("memcpy")]
-private routine c_memcpy(%dst: Addr, %src: Addr, %size: USize) -> Void
 
 // ============================================================
 // Allocator record
@@ -44,35 +29,6 @@ record Allocator
 /// `List.push_result`. The collection is left as it was before the call.
 @derive(Represent, Diagnose, Equal, Hash)
 record AllocFailed
-
-// ============================================================
-// Heap allocator backend (libc wrappers matching Allocator callbacks)
-// ============================================================
-
-private routine heap_alloc_fn(%state: Addr, %size: USize) -> Addr
-    block entry():
-        %result : Addr = c_malloc(%size)
-        return(%result)
-
-private routine heap_realloc_fn(%state: Addr, %old_ptr: Addr, %size: USize) -> Addr
-    block entry():
-        %result : Addr = c_realloc(%old_ptr, %size)
-        return(%result)
-
-private routine heap_free_fn(%state: Addr, %ptr: Addr) -> Void
-    block entry():
-        c_free(%ptr)
-        return()
-
-// ============================================================
-// Allocator factory
-// ============================================================
-
-routine make_heap_allocator() -> Allocator
-    block entry():
-        %alloc : Allocator = Allocator { alloc_fn:   heap_alloc_fn, realloc_fn: heap_realloc_fn,
-                free_fn:    heap_free_fn, state:      null }
-        return(%alloc)
 
 // ============================================================
 // Generic memory routines (prelude surface)
@@ -112,8 +68,13 @@ require T: typename
         %size      : USize = %elem_size.mul(%count)
         %raw_dst   : Addr  = bitcast<Ptr<T>, Addr>(%dst)
         %raw_src   : Addr  = bitcast<Ptr<T>, Addr>(%src)
-        c_memcpy(%raw_dst, %raw_src, %size)
+        copy_bytes(%raw_dst, %raw_src, %size)
         return()
+
+// llvm.memcpy, so the alloc layer needs no libc (a freestanding target supplies memcpy itself).
+@[external("llvm"),
+        template("call void @llvm.memcpy.p0.p0.{USize}(ptr {%dst}, ptr {%src}, {USize} {%bytes}, i1 false)")]
+private routine copy_bytes(%dst: Addr, %src: Addr, %bytes: USize) -> Void
 
 // ============================================================
 // C strings (types/CStr.tess)

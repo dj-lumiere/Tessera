@@ -743,6 +743,7 @@ public sealed class FunctionGen
 
     /// Where write / print find write_str and the standard streams, whatever the file imports.
     private const string FormatModule = "Standard::Format";
+    private const string OsModule = "Standard::Os";
 
     private static readonly Dictionary<string, string?> FormatCalls = new()
     {
@@ -765,7 +766,11 @@ public sealed class FunctionGen
         {
             if (c.Args is not [StrLit only])
                 throw Err(c.Pos, $"{c.Name} takes a string literal: {c.Name}(\"x = {{%x}}\\n\")");
-            writer = new NsCallExpr(new TypeRef(stream, [], c.Pos) { Path = FormatModule }, "shared", [], [], c.Pos);
+            if (!_c.Target.HasOs)
+                throw Err(c.Pos, $"{c.Name} writes to standard {(c.Name == "print" ? "output" : "error")}, which is in "
+                    + $"{OsModule}, and target {_c.Target.Arch}-{_c.Target.Os}-{_c.Target.Abi} has no operating system; "
+                    + "write(%out, ...) to a Writer of your own instead");
+            writer = new NsCallExpr(new TypeRef(stream, [], c.Pos) { Path = OsModule }, "shared", [], [], c.Pos);
             template = only;
         }
         else if (c.Args is [ValueRef named, StrLit given])
@@ -967,7 +972,7 @@ public sealed class FunctionGen
     private DType? TryResolveOwner(TypeRef owner)
     {
         try { return Resolve(owner, allowVoid: true); }
-        catch (CompileError) when (owner.Args.Count == 0) { return null; }
+        catch (CompileError e) when (owner.Args.Count == 0 && !e.Final) { return null; }
     }
 
     // ── Calls ───────────────────────────────────────────────────────────────

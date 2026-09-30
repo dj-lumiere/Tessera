@@ -2,7 +2,9 @@
 //
 // Formatting writes text into a Writer: any type with a write_bytes method.
 // Nothing allocates unless the Writer does, nothing parses a format string, and
-// every value is written by one visible call:
+// every value is written by one visible call. The writers for standard output
+// and file descriptors need an operating system, so they're in Standard::Os
+// (os/writers.tess):
 //
 //     %out_val: FdWriter = FdWriter.stdout()
 //     claim %out : Ptr<FdWriter>
@@ -19,7 +21,6 @@ module Standard::Format
 
 import Standard::Alloc
 import Standard::Collections
-import Standard::Os
 
 concept Writer<W>
 require W: typename
@@ -38,95 +39,6 @@ conform Represent<F16>, Represent<BF16>, Represent<F32>, Represent<F64>, Represe
 conform Represent<Bool>, Represent<Char>, Represent<String>, Represent<Addr>
 conform Represent<Ptr<T>>      when T: typename
 conform Represent<Array<T, N>> when T: typename, N: USize, Diagnose<T>
-
-// -- FdWriter ------------------------------------------------------------------
-
-/// Writes straight to a file descriptor with write(2): no buffer, so nothing is
-/// lost if the program stops, and every call is a system call. A failed write
-/// sets `failed` and drops the rest; check has_failed() when it matters.
-record FdWriter
-conform Writer<FdWriter>
-    private fd:     S32
-    private failed: Bool
-
-routine FdWriter.stdout() -> Self
-    block entry():
-        %w : Self = Self { fd: 1, failed: false }
-        return(%w)
-
-routine FdWriter.stderr() -> Self
-    block entry():
-        %w : Self = Self { fd: 2, failed: false }
-        return(%w)
-
-routine FdWriter.has_failed(%self: Ptr<Self>) -> Bool
-    block entry():
-        %failed : Bool = %self.failed.load()
-        return(%failed)
-
-/// write(2) may write fewer bytes than asked, so this loops. Each call asks for
-/// at most 2^30 bytes and reads the result as a 32-bit count: the binding in
-/// io.tess declares SSize, but the Windows CRT returns int (open question #18).
-routine FdWriter.write_bytes(%self: Ptr<Self>, %data: Ptr<Byte>, %length: USize) -> Void
-    block entry():
-        %fd : S32 = %self.fd.load()
-        jump write_loop(%data, %length, %fd)
-
-    block write_loop(%at: Ptr<Byte>, %remaining: USize, %fd: S32):
-        %done : Bool = %remaining.eq(0)
-        branch %done ? return() : continue
-        %chunk    : USize = %remaining.min(1073741824)
-        %wrote_c  : SSize = c_write(%fd, %at, %chunk)
-        %wrote_32 : S32   = %wrote_c.to_s32_wrap()
-        %progress : Bool  = %wrote_32.gt(0)
-        branch %progress ? advance(%at, %remaining, %fd, %wrote_32.to_usize()) : fail()
-
-    block advance(%at: Ptr<Byte>, %remaining: USize, %fd: S32, %wrote: USize):
-        %next : Ptr<Byte> = %at[%wrote]
-        jump write_loop(%next, %remaining.sub(%wrote), %fd)
-
-    block fail():
-        %self.failed.store(true)
-        return()
-
-// -- StdoutWriter, StderrWriter ------------------------------------------------
-
-/// Standard output as a writer with no state, which is what print writes to.
-/// Every StdoutWriter is the same, so a null pointer stands for it and nothing
-/// needs a slot: `print("x = {%x}\n")` expands to write on
-/// StdoutWriter.shared(). A failed write is dropped; use an FdWriter to check.
-record StdoutWriter
-conform Writer<StdoutWriter>
-
-/// Standard error, the same way, for eprint.
-record StderrWriter
-conform Writer<StderrWriter>
-
-routine StdoutWriter.shared() -> Ptr<Self>
-    block entry():
-        %none : Ptr<Self> = null
-        return(%none)
-
-routine StderrWriter.shared() -> Ptr<Self>
-    block entry():
-        %none : Ptr<Self> = null
-        return(%none)
-
-routine StdoutWriter.write_bytes(%self: Ptr<Self>, %data: Ptr<Byte>, %length: USize) -> Void
-    block entry():
-        %fd_val : FdWriter = .stdout()
-        claim %fd : Ptr<FdWriter>
-        %fd.store(%fd_val)
-        %fd.write_bytes(%data, %length)
-        return()
-
-routine StderrWriter.write_bytes(%self: Ptr<Self>, %data: Ptr<Byte>, %length: USize) -> Void
-    block entry():
-        %fd_val : FdWriter = .stderr()
-        claim %fd : Ptr<FdWriter>
-        %fd.store(%fd_val)
-        %fd.write_bytes(%data, %length)
-        return()
 
 // -- SliceWriter ---------------------------------------------------------------
 
