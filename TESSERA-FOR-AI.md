@@ -92,6 +92,10 @@ routine main() -> S32
 - Heap memory goes through an allocator: `allocate<T>(%alloc, %count)`, `%p.free(%alloc)`.
 - `global NAME: T [= literal]` is mutable static storage (all-zero without a value). Its name is a `Ptr<T>`:
   `TICKS.load()`, `STATS.calls.store(%n)`. A `preset` is read-only; a global isn't a compile-time constant.
+- A `preset` is folded by the compiler, and only from literals, other presets, integer and `Bool` arithmetic and
+  conversions (`add`, `shl`, `bitor`, `to_u128`, `to_u8_wrap`, …), F32/F64 `add`/`sub`/`mul`/`div`/`neg`,
+  `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and F128. A routine call is an error; nothing
+  runs at compile time. Overflow or an out-of-range conversion in a preset is a compile error.
 - `%p.cast<U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
   (`Bool`, `Char`, choices). Pointers may alias.
 

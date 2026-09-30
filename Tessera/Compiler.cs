@@ -244,6 +244,7 @@ public sealed partial class Compiler
 
     public string Generate()
     {
+        foreach (var c in _presets.Values.SelectMany(g => g).Where(c => !c.IsLibrary)) CheckPreset(c);
         foreach (var r in _userRoutines) CheckRoot(r);
         // Exported library routines are always emitted: something outside Tessera (C code, or LLVM's own lowering)
         // may call them by their C name. A program's export of the same name replaces the library's, the way a
@@ -263,6 +264,11 @@ public sealed partial class Compiler
     public List<CompileError> CheckAll()
     {
         var errors = new List<CompileError>();
+        foreach (var c in _presets.Values.SelectMany(g => g))
+        {
+            try { CheckPreset(c); }
+            catch (CompileError e) { errors.Add(e); }
+        }
         // A routine derived without being asked for holds only when its payloads allow it, so it's checked when used.
         foreach (var r in _allRoutines.Where(r => !Tessera.Derive.IsImplicit(r)))
         {
@@ -278,6 +284,27 @@ public sealed partial class Compiler
         }
         errors.AddRange(VerifyFixedConformances());
         return errors;
+    }
+
+    /// Folds a preset (or a global's initializer) whether or not anything uses it, so a preset that isn't a
+    /// constant is an error where it's written. Presets on a generic owner are folded where they're used.
+    private void CheckPreset(PresetDecl c)
+    {
+        var env = new TypeEnv(c.File);
+        DType? self = null;
+        if (c.Owner is not null)
+        {
+            if (c.Owner.Args.Count != 0 || TypeDeclQuiet(c.Owner.Name, c.File, c.Owner.Path) is RecordDecl { TypeParams.Count: > 0 })
+                return;
+            self = ResolveType(c.Owner, env);
+            env.Bind("Self", self);
+        }
+        var t = ResolveType(c.Type, env);
+        if (c.IsGlobal || t is ArrayType)
+        {
+            if (c.Value is not null) PresetInitializer(c.Value, t, env);
+        }
+        else PresetConst(c, t, self, c.Pos);
     }
 
     /// Instantiates a routine that needs no type arguments: user code is always checked, even if unused.
@@ -665,49 +692,22 @@ public sealed partial class Compiler
             case TypeArgExpr x: return EvalConstInt(x.Expr, env, 0);
             case TypeArgType { Type: { Args.Count: 0 } tr }:
                 if (env.Get(tr.Name) is ConstArg ca) return ca.Value;
-                if (FindPreset("", tr.Name, env.File, pos) is { } c) return EvalConstInt(ConstValue(c, pos), env.Clone(c.File), 0);
+                if (FindPreset("", tr.Name, env.File, pos) is not null) return EvalConstInt(new PresetRef(null, tr.Name, pos), env, 0);
                 throw new CompileError(pos, $"'{tr.Name}' is not an integer constant");
             default:
                 throw new CompileError(pos, "expected an integer constant");
         }
     }
 
-    /// Compile-time integer evaluation for preset-sized types: literals, presets, add / sub / mul chains, max / min,
-    /// and sizeof / alignof.
+    /// A compile-time integer (an Array length, an alignment, an integer generic argument): any folded integer
+    /// constant (ConstFold.cs).
     private long EvalConstInt(Expr e, TypeEnv env, int depth)
     {
-        if (depth > 32) throw new CompileError(e.Pos, "preset definitions are circular");
-        switch (e)
-        {
-            case IntLit i when i.Value >= long.MinValue && i.Value <= long.MaxValue: return (long)i.Value;
-            case PresetRef { Owner: null } r when env.Get(r.Name) is ConstArg ca: return ca.Value;
-            case PresetRef r:
-            {
-                var c = FindPreset(r.Owner?.Name ?? "", r.Name, env.File, r.Pos)
-                        ?? throw new CompileError(r.Pos, $"unknown preset '{r.Name}'");
-                return EvalConstInt(ConstValue(c, r.Pos), env.Clone(c.File), depth + 1);
-            }
-            case MethodCallExpr { Args.Count: 1 } m when m.Name is "add" or "sub" or "mul":
-            {
-                long a = EvalConstInt(m.Receiver, env, depth + 1), b = EvalConstInt(m.Args[0], env, depth + 1);
-                return m.Name switch { "add" => a + b, "sub" => a - b, _ => a * b };
-            }
-            case NsCallExpr { Owner.Args.Count: 0, Args.Count: 1 } n when n.Name is "add" or "sub" or "mul":
-                return EvalConstInt(new MethodCallExpr(new PresetRef(null, n.Owner.Name, n.Pos), n.Name, [], n.Args, n.Pos), env, depth);
-            case CallExpr { Name: "max" or "min", Args.Count: > 0 } c:
-            {
-                var values = c.Args.Select(a => EvalConstInt(a, env, depth + 1)).ToList();
-                return c.Name == "max" ? values.Max() : values.Min();
-            }
-            case CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } c:
-            {
-                var (size, align) = SizeAlign(ResolveType(c.TypeArgs[0], env), c.Pos);
-                return c.Name == "sizeof" ? size : align;
-            }
-            default:
-                throw new CompileError(e.Pos,
-                    "this is not a compile-time integer (use literals, presets, add/sub/mul, max/min, sizeof/alignof)");
-        }
+        var v = Fold(e, null, env);
+        if (v.Type is not (null or IntType))
+            throw new CompileError(e.Pos, $"expected a compile-time integer, found {v.Type.Name}");
+        if (v.Value < long.MinValue || v.Value > long.MaxValue) throw new CompileError(e.Pos, $"{v.Value} is too large here");
+        return (long)v.Value;
     }
 
     /// The tuple of these item types, `(A, B)`: the stdlib's `Tuple2<A, B>` up to `Tuple4`.
@@ -861,8 +861,6 @@ public sealed partial class Compiler
     private readonly Dictionary<string, string> _presetArrays = [];
 
     /// A preset's value, for compile-time evaluation. A global changes at run time, so it has none.
-    private static Expr ConstValue(PresetDecl c, Pos pos) =>
-        c.IsGlobal ? throw new CompileError(pos, $"'{c.Name}' is a global, not a compile-time constant") : c.Value!;
 
     private readonly Dictionary<string, string> _globalVars = [];
 
@@ -891,38 +889,20 @@ public sealed partial class Compiler
         return name;
     }
 
-    /// The LLVM constant for a const array element: integer, float, and Bool literals (or integer consts), and
-    /// nested array literals.
+    /// The LLVM constant for a preset array element or a global's initializer: a folded constant (ConstFold.cs),
+    /// or a nested array literal.
     private string PresetInitializer(Expr e, DType t, TypeEnv env)
     {
-        switch (t)
+        if (t is ArrayType a)
         {
-            case ArrayType a:
-            {
-                if (e is not ArrayLit lit) throw new CompileError(e.Pos, $"expected an array literal for {a}");
-                if (lit.Elements.Count != a.Count)
-                    throw new CompileError(lit.Pos, $"{a} needs {a.Count} element(s), got {lit.Elements.Count}");
-                return "[" + string.Join(", ", lit.Elements.Select(x => $"{a.Elem.Llvm} {PresetInitializer(x, a.Elem, env)}")) + "]";
-            }
-            case IntType it when e is TypedIntLit tl:
-                if (!tl.Type.Equals(it)) throw new CompileError(e.Pos, $"expected {it}, found a {tl.Type} literal");
-                return tl.Value.ToString(CultureInfo.InvariantCulture);
-            case IntType it:
-            {
-                var (v, hex) = e is IntLit il ? (il.Value, il.HexDigits) : (EvalConstInt(e, env, 0), 0);
-                return it.Literal(v, hex, out var error) ?? throw new CompileError(e.Pos, error);
-            }
-            case BoolType when e is BoolLit b:
-                return b.Value ? "true" : "false";
-            case FloatType ft when e is FloatLit f:
-                return ft.Constant(f.Value);
-            case FloatType ft when e is NsCallExpr { Name: "from_bits", Args: [IntLit raw] } fb && fb.Owner.Name == ft.Name:
-                if (IntType.U(ft.Bits).Literal(raw.Value, raw.HexDigits, out var bitsError) is null)
-                    throw new CompileError(raw.Pos, bitsError);
-                return ft.FromBits(raw.Value);
-            default:
-                throw new CompileError(e.Pos, $"a preset array element or global initializer must be a literal of {t}");
+            if (e is not ArrayLit lit) throw new CompileError(e.Pos, $"expected an array literal for {a}");
+            if (lit.Elements.Count != a.Count)
+                throw new CompileError(lit.Pos, $"{a} needs {a.Count} element(s), got {lit.Elements.Count}");
+            return "[" + string.Join(", ", lit.Elements.Select(x => $"{a.Elem.Llvm} {PresetInitializer(x, a.Elem, env)}")) + "]";
         }
+        if (t is not (IntType or BoolType or FloatType or ChoiceType) && BitRecordWidth(t) is null)
+            throw new CompileError(e.Pos, $"a preset array element or global initializer can't be a {t.Name}");
+        return ConstLlvm(Typed(Fold(e, t, env), t, e.Pos));
     }
 
     // ── String literals ─────────────────────────────────────────────────────

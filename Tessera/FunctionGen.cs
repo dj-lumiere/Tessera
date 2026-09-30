@@ -987,21 +987,8 @@ public sealed class FunctionGen
             var ptr = new PtrType(at);
             return new PresetInfo(ptr, _ => new Val(_c.PresetArrayGlobal(c, at, env), ptr));
         }
-        return new PresetInfo(t, _ =>
-        {
-            // `F64.from_bits(0x...)` in a preset is folded to the float with those bits.
-            if (t is FloatType ft2 && c.Value is NsCallExpr { Name: "from_bits", Args: [IntLit raw] } fb
-                && fb.Owner.Name == ft2.Name)
-            {
-                if (IntType.U(ft2.Bits).Literal(raw.Value, raw.HexDigits, out var error) is null)
-                    throw Err(raw.Pos, error);
-                return new Val(ft2.FromBits(raw.Value), ft2);
-            }
-            var saved = _env;
-            _env = env;
-            try { return Eval(c.Value!, t); }
-            finally { _env = saved; }
-        });
+        // Every other preset is a constant the compiler folded (ConstFold.cs), the same at each use.
+        return new PresetInfo(t, _ => new Val(Compiler.ConstLlvm(_c.PresetConst(c, t, self, c.Pos)), t));
     }
 
     private Val EvalPresetRef(PresetRef r, DType expected)

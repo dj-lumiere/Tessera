@@ -168,7 +168,7 @@ public sealed class FloatType : DType
         "0x" + BitConverter.DoubleToInt64Bits(d).ToString("X16", CultureInfo.InvariantCulture);
 
     /// Rounds a float to bfloat16 (the top 16 bits), to nearest with ties to even. NaNs stay quiet NaNs.
-    private static ushort ToBFloat16Bits(float f)
+    internal static ushort ToBFloat16Bits(float f)
     {
         uint bits = BitConverter.SingleToUInt32Bits(f);
         if (float.IsNaN(f)) return (ushort)((bits >> 16) | 0x40);
