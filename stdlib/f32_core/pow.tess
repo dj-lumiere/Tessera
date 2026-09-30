@@ -1,0 +1,437 @@
+// Tessera stdlib: the correctly rounded power x^y of F32
+//
+// x^y = 2^(y log2(x)): log2(x) from a 32-entry reciprocal table and a
+// polynomial, 2^t from a 16-entry table and a polynomial, all in F64. When the
+// result lands too close to a rounding boundary, an accurate path redoes both
+// in double-double arithmetic. Round to nearest only, with the C pow special
+// cases: overflow gives ±inf, a negative base with a non-integer exponent
+// gives NaN, x^±0 = 1 and 1^y = 1 (except for a signaling NaN), NaN comes back
+// quiet.
+//
+// Ported from CORE-MATH, src/binary32/pow/powf.c via RazorForge's B32Pow.rf.
+// The accurate path's odd-integer test on y shifts by 8 + et unguarded in C,
+// which is undefined for 8 + et >= 32 (and in practice gave a negative result
+// for a negative x and an even |y| >= 2^24): as in RazorForge, that shift
+// clears the bits here, so those results stay positive.
+// Copyright (c) 2022-2025 Alexei Sibidanov <sibid@uvic.ca> and Paul Zimmermann
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// A double-double value hi + lo.
+record CmF32PowDd
+    hi : F64
+    lo : F64
+
+/// x^y, correctly rounded.
+routine f32_cm_pow(%x: F32, %y: F32) -> F32
+    block entry():
+        %tx      : U64  = %x.to_f64().bits()
+        %ty      : U64  = %y.to_f64().bits()
+        %tx2     : U64  = %tx.shl(1)
+        %ty2     : U64  = %ty.shl(1)
+        %unit_x  : Bool = %tx2.eq(0x7FE0000000000000)  // |x| = 1
+        %zero_y  : Bool = %ty2.eq(0)
+        %special : Bool = %ty2.ge(0xFFE0000000000000)  // y is ±inf or NaN
+        %unusual : Bool = %tx.ge(0x7FF0000000000000)  // x is ±inf, NaN, or has its sign bit set
+        when:
+            %unit_x  -> unit_base(%tx, %ty2)
+            %zero_y  -> zero_exponent()
+            %special -> special_exponent(%tx2, %ty, %ty2)
+            %unusual -> unusual_base(%tx, %tx2, %ty)
+            else     -> finite_base(%tx, %tx2, %ty)
+
+    block unit_base(%tx: U64, %ty2: U64):
+        %minus : Bool = %tx.shr(63).eq(1)
+        branch %minus ? minus_one(%ty2) : plus_one()
+
+    // x = -1
+    block minus_one(%ty2: U64):
+        %nan_y   : Bool = %ty2.gt(0xFFE0000000000000)
+        %odd     : Bool = cm_f32_pow_isodd(%y)
+        %integer : Bool = cm_f32_pow_isint(%y)
+        when:
+            %nan_y   -> return(%y.add(%y))
+            %odd     -> return(%x)
+            %integer -> return(%x.neg())
+            else     -> return(F32.from_bits(0xFFC00000))
+
+    // 1^y = 1 except for a signaling NaN y
+    block plus_one():
+        %signaling : Bool = cm_f32_pow_is_signaling(%y)
+        branch %signaling ? return(%x.add(%y)) : return(%x)
+
+    // x^0 = 1 except for a signaling NaN x
+    block zero_exponent():
+        %signaling : Bool = cm_f32_pow_is_signaling(%x)
+        branch %signaling ? return(%x.add(%y)) : return(1.0)
+
+    // y = ±inf or NaN
+    block special_exponent(%tx2: U64, %ty: U64, %ty2: U64):
+        %nan_x : Bool = %tx2.gt(0xFFE0000000000000)
+        %inf_y : Bool = %ty2.eq(0xFFE0000000000000)
+        when:
+            %nan_x -> return(%x.add(%y))
+            %inf_y -> infinite_exponent(%tx2, %ty)
+            else   -> return(%x.add(%y))
+
+    block infinite_exponent(%tx2: U64, %ty: U64):
+        %below_one : Bool = %tx2.lt(0x7FE0000000000000)
+        %negative  : Bool = %ty.shr(63).eq(1)
+        %vanishes  : Bool = %below_one.ne(%negative)
+        branch %vanishes ? return(0.0) : return(F32.INFINITY)
+
+    // x is ±inf, NaN, or has its sign bit set
+    block unusual_base(%tx: U64, %tx2: U64, %ty: U64):
+        %inf_x    : Bool = %tx2.eq(0xFFE0000000000000)
+        %nan_x    : Bool = %tx2.gt(0xFFE0000000000000)
+        %nonzero  : Bool = %x.to_f64().ne(0.0)
+        %fraction : Bool = cm_f32_pow_isint(%y).bitnot()
+        %invalid  : Bool = %tx.gt(0x7FF0000000000000).bitand(%fraction).bitand(%nonzero)
+        when:
+            %inf_x   -> infinite_base(%ty)
+            %nan_x   -> return(%x.add(%x))
+            %invalid -> return(F32.from_bits(0xFFC00000))
+            else     -> finite_base(%tx, %tx2, %ty)
+
+    block infinite_base(%ty: U64):
+        %odd      : Bool = cm_f32_pow_isodd(%y)
+        %base     : F32  = %odd ? %x : %x.abs()
+        %negative : Bool = %ty.shr(63).eq(1)
+        branch %negative ? return(F32.div(1.0, %base)) : return(%base)
+
+    block finite_base(%tx: U64, %tx2: U64, %ty: U64):
+        %zero_x : Bool = %tx2.eq(0)
+        branch %zero_x ? zero_base(%ty) : reduce(%tx, %ty)
+
+    // x = ±0
+    block zero_base(%ty: U64):
+        %negative : Bool = %ty.shr(63).eq(1)
+        %odd      : Bool = cm_f32_pow_isodd(%y)
+        %pole     : Bool = %negative.bitand(%odd)
+        when:
+            %pole     -> return(F32.div(1.0, F32.copysign(0.0, %x)))
+            %negative -> return(F32.INFINITY)
+            %odd      -> return(F32.copysign(1.0, %x).mul(0.0))
+            else      -> return(0.0)
+
+    // |x| = 2^e xd, with 1/xd approximated from a 32-entry table
+    block reduce(%tx: U64, %ty: U64):
+        %m     : U64   = %tx.bitand(0x000FFFFFFFFFFFFF)
+        %e0    : S64   = %tx.shr(52).bitand(0x7FF).to_s64().sub(0x3FF)
+        %j     : U64   = %m.add(U64.shl(1, 46)).shr(47)
+        %e     : S64   = %j.gt(13) ? %e0.add(1) : %e0
+        %xd    : F64   = F64.from_bits(%m.bitor(0x3FF0000000000000))
+        %z     : F64   = %xd.mul_add(F64.from_bits(CM_F32_POW_IX.get(%j.to_usize())), -1.0)
+        %z2    : F64   = %z.mul(%z)
+        %z4    : F64   = %z2.mul(%z2)
+        %c6    : F64   = %z.mul(-0x1.717d824a520f7p-3).add(0x1.a6406efd4b877p-3)
+        %c4    : F64   = %z.mul(-0x1.ec709bdf453ecp-3).add(0x1.2776c441b72ep-2)
+        %c2    : F64   = %z.mul(-0x1.71547652bc4a9p-2).add(0x1.ec709dc3a2d0bp-2)
+        %c0    : F64   = %z.mul(-0x1.71547652b82fep-1).add(0x1.71547652b82fep+0)
+        %c02   : F64   = %z2.mul(%c2).add(%c0)
+        %c46   : F64   = %z2.mul(%c6).add(%c4)
+        %poly  : F64   = %z4.mul(%c46).add(%c02)
+        %j2    : USize = %j.to_usize().mul(2)
+        %l     : F64   = %z.mul(%poly).sub(F64.from_bits(CM_F32_POW_LIX.get(%j2.add(1))))
+        %y16   : F64   = %y.to_f64().mul(16.0)
+        %zt    : F64   = %e.to_f64().sub(F64.from_bits(CM_F32_POW_LIX.get(%j2))).mul(%y16)
+        %t     : F64   = %l.mul(%y16).add(%zt)  // 16 y log2(x)
+        %over  : Bool  = %t.gt(2048.0)
+        %under : Bool  = %t.lt(-2400.0)
+        %near1 : Bool  = %t.abs().lt(0x1p-26)
+        when:
+            %over  -> overflow()
+            %under -> underflow()
+            %near1 -> return(%t.add(1.0).to_f32())
+            else   -> exp2(%l, %y16, %zt, %t, %ty)
+
+    block overflow():
+        %odd : Bool = cm_f32_pow_isodd(%y)
+        branch %odd
+            ? return(F32.copysign(0x1p+127, %x).mul(0x1p+127))
+            : return(F32.mul(0x1p+127, 0x1p+127))
+
+    block underflow():
+        %odd : Bool = cm_f32_pow_isodd(%y)
+        branch %odd
+            ? return(F32.copysign(0x1p-126, %x).mul(0x1p-126))
+            : return(F32.mul(0x1p-126, 0x1p-126))
+
+    // 2^(t/16) = 2^el 2^(jl/16) 2^(h/16) with t = 16 el + jl + h
+    block exp2(%l: F64, %y16: F64, %zt: F64, %t: F64, %ty: U64):
+        %ia   : F64  = %t.floor()
+        %h    : F64  = %l.mul_add(%y16, %zt.sub(%ia))
+        %il   : S64  = %ia.to_s64()
+        %jl   : S64  = %il.bitand(0xF)
+        %el   : S64  = %il.sub(%jl).shr(4)
+        %s0   : F64  = F64.from_bits(CM_F32_POW_TB.get(%jl.to_usize()))
+        %s    : F64  = %s0.mul(F64.from_bits(%el.to_u64_wrap().add_wrap(0x3FF).shl(52)))
+        %h2   : F64  = %h.mul(%h)
+        %d0   : F64  = %h.mul(0x1.ebfbdff84555ap-11).add(0x1.62e42fefa398bp-5)
+        %d2   : F64  = %h.mul(0x1.3b2ad1b1716a2p-23).add(0x1.c6b08d4ad86d3p-17)
+        %d4   : F64  = %h.mul(0x1.4a1d7f457ac56p-37).add(0x1.5d7472718ce9dp-30)
+        %poly : F64  = %h2.mul(%h2.mul(%d4).add(%d2)).add(%d0)
+        %w    : F64  = %s.mul(%h)
+        %rr   : F64  = %w.mul(%poly).add(%s)
+        %hard : Bool = %rr.bits().add_wrap(468).bitand(0xFFFFFFF).le(936)
+        branch %hard ? return(cm_f32_pow_accurate(%x, %y)) : sign(%rr, %ty)
+
+    // an odd integer y keeps the sign of x: kk has the units bit of y on top
+    block sign(%rr: F64, %ty: U64):
+        %et    : S64  = %ty.shr(52).bitand(0x7FF).to_s64().sub(0x3FF)
+        %left  : Bool = %et.ge(-11).bitand(%et.lt(53))
+        %right : Bool = %et.lt(-11).bitand(%et.gt(-75))
+        when:
+            %left  -> parity(%rr, %ty.shl(%et.add(11).to_u64_wrap()))
+            %right -> parity(%rr, %ty.shr(S64.sub(-11, %et).to_u64_wrap()))
+            else   -> parity(%rr, 0)
+
+    block parity(%rr: F64, %kk: U64):
+        %odd : Bool = %kk.shl(1).eq(0).bitand(%kk.ne(0))
+        %r   : F64  = %odd ? %rr.copysign(%x.to_f64()) : %rr
+        return(%r.to_f32())
+
+/// True when y is an integer (or ±0).
+private routine cm_f32_pow_isint(%y: F32) -> Bool
+    block entry():
+        %wy    : U32  = %y.bits()
+        %ey    : S64  = %wy.shr(23).bitand(0xFF).to_s64().sub(127)
+        %s     : S64  = %ey.add(9)
+        %whole : Bool = %ey.ge(0)
+        branch %whole ? big(%wy, %s) : return(%wy.shl(1).eq(0))
+
+    block big(%wy: U32, %s: S64):
+        %wide : Bool = %s.ge(32)
+        branch %wide ? return(true) : return(%wy.shl(%s.to_u32_wrap()).eq(0))
+
+/// True when y is an odd integer.
+private routine cm_f32_pow_isodd(%y: F32) -> Bool
+    block entry():
+        %wy     : U32  = %y.bits()
+        %ey     : S64  = %wy.shr(23).bitand(0xFF).to_s64().sub(127)
+        %s      : S64  = %ey.add(9)
+        %inside : Bool = %ey.ge(0).bitand(%s.lt(32))
+        %last   : Bool = %ey.ge(0).bitand(%s.eq(32))
+        when:
+            %inside -> fraction(%wy, %s)
+            %last   -> return(%wy.bitand(1).eq(1))
+            else    -> return(false)
+
+    // the units bit sits inside the mantissa: y is odd if nothing follows it and it is set
+    block fraction(%wy: U32, %s: S64):
+        %integer : Bool = %wy.shl(%s.to_u32_wrap()).eq(0)
+        branch %integer ? units(%wy, %s) : return(false)
+
+    block units(%wy: U32, %s: S64):
+        %bit : U32 = %wy.shr(S64.sub(32, %s).to_u32_wrap()).bitand(1)
+        return(%bit.eq(1))
+
+/// True when x is a signaling NaN.
+private routine cm_f32_pow_is_signaling(%x: F32) -> Bool
+    block entry():
+        %u : U32 = %x.bits().bitxor(0x00400000)
+        return(%u.bitand(0x7FFFFFFF).gt(0x7FC00000))
+
+/// The double-double product (xh + xl) (ch + cl).
+private routine cm_f32_pow_muldd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF32PowDd
+    block entry():
+        %ahlh : F64 = %ch.mul(%xl)
+        %alhh : F64 = %cl.mul(%xh)
+        %ahhh : F64 = %ch.mul(%xh)
+        %err  : F64 = %ch.mul_add(%xh, %ahhh.neg())  // the exact rounding error of ch xh
+        %ahhl : F64 = %err.add(%alhh.add(%ahlh))
+        %hi   : F64 = %ahhh.add(%ahhl)
+        %lo   : F64 = %ahhh.sub(%hi).add(%ahhl)
+        return(CmF32PowDd { hi: %hi, lo: %lo })
+
+/// The double-double times double product (xh + xl) ch.
+private routine cm_f32_pow_mulddd(%xh: F64, %xl: F64, %ch: F64) -> CmF32PowDd
+    block entry():
+        %ahlh : F64 = %ch.mul(%xl)
+        %ahhh : F64 = %ch.mul(%xh)
+        %err  : F64 = %ch.mul_add(%xh, %ahhh.neg())
+        %ahhl : F64 = %err.add(%ahlh)
+        %hi   : F64 = %ahhh.add(%ahhl)
+        %lo   : F64 = %ahhh.sub(%hi).add(%ahhl)
+        return(CmF32PowDd { hi: %hi, lo: %lo })
+
+/// Double-double Horner evaluation of the log2 series (13 double-double coefficients).
+private routine cm_f32_pow_poly_log(%xh: F64, %xl: F64) -> CmF32PowDd
+    block entry():
+        jump step(12, F64.from_bits(CM_F32_POW_CH.get(24)), F64.from_bits(CM_F32_POW_CH.get(25)))
+
+    block step(%i: USize, %ch: F64, %cl: F64):
+        %done : Bool = %i.eq(0)
+        branch %done ? return(CmF32PowDd { hi: %ch, lo: %cl }) : horner(%i.sub(1), %ch, %cl)
+
+    block horner(%i: USize, %ch: F64, %cl: F64):
+        %p  : CmF32PowDd = cm_f32_pow_muldd(%xh, %xl, %ch, %cl)
+        %c0 : F64        = F64.from_bits(CM_F32_POW_CH.get(%i.mul(2)))
+        %c1 : F64        = F64.from_bits(CM_F32_POW_CH.get(%i.mul(2).add(1)))
+        %th : F64        = %p.hi.add(%c0)
+        %tl : F64        = %c0.sub(%th).add(%p.hi)
+        jump step(%i, %th, %p.lo.add(%tl.add(%c1)))
+
+/// Double-double Horner evaluation of the 2^x series (18 double-double coefficients).
+private routine cm_f32_pow_poly_exp(%xh: F64, %xl: F64) -> CmF32PowDd
+    block entry():
+        jump step(17, F64.from_bits(CM_F32_POW_CE.get(34)), F64.from_bits(CM_F32_POW_CE.get(35)))
+
+    block step(%i: USize, %ch: F64, %cl: F64):
+        %done : Bool = %i.eq(0)
+        branch %done ? return(CmF32PowDd { hi: %ch, lo: %cl }) : horner(%i.sub(1), %ch, %cl)
+
+    block horner(%i: USize, %ch: F64, %cl: F64):
+        %p  : CmF32PowDd = cm_f32_pow_muldd(%xh, %xl, %ch, %cl)
+        %c0 : F64        = F64.from_bits(CM_F32_POW_CE.get(%i.mul(2)))
+        %c1 : F64        = F64.from_bits(CM_F32_POW_CE.get(%i.mul(2).add(1)))
+        %th : F64        = %p.hi.add(%c0)
+        %tl : F64        = %c0.sub(%th).add(%p.hi)
+        jump step(%i, %th, %p.lo.add(%tl.add(%c1)))
+
+/// The accurate path of pow, in double-double arithmetic, for results close to a rounding boundary. x is
+/// finite, positive or a negative base with an integer exponent, not ±0 or ±1; y is finite and nonzero.
+private routine cm_f32_pow_accurate(%x0: F32, %y0: F32) -> F32
+    block entry():
+        %yd  : F64  = %y0.to_f64()
+        %t0  : U64  = %x0.to_f64().bits()
+        %e0  : S64  = %t0.shr(52).bitand(0x7FF).to_s64().sub(0x3FF)
+        %t   : U64  = %t0.bitand(0x000FFFFFFFFFFFFF)
+        %big : Bool = %t.gt(0x6A09E667F3BCD)  // mantissa above sqrt(2)
+        %e   : S64  = %big ? %e0.add(1) : %e0
+        %o   : F64  = %big ? 2.0 : 1.0
+        %xm1 : F64  = F64.from_bits(%t.bitor(0x3FF0000000000000))
+        // log2(x) from an atanh-like series in z = (x - o) / (x + o)
+        %xm : F64        = %xm1.sub(%o)
+        %xp : F64        = %xm1.add(%o)
+        %zh : F64        = %xm.div(%xp)
+        %zl : F64        = %zh.mul_add(%xp.neg(), %xm).div(%xp)
+        %z2 : CmF32PowDd = cm_f32_pow_muldd(%zh, %zl, %zh, %zl)
+        %p2 : CmF32PowDd = cm_f32_pow_poly_log(%z2.hi, %z2.lo)
+        %q  : CmF32PowDd = cm_f32_pow_muldd(%zh, %zl, %p2.hi, %p2.lo)
+        %r  : CmF32PowDd = cm_f32_pow_mulddd(%q.hi, %q.lo, %yd)
+        %ey : F64        = %e.to_f64().mul(%yd)
+        %eh : F64        = %ey.add(%r.hi)
+        %el : F64        = %ey.sub(%eh).add(%r.hi).add(%r.lo)
+        %ee : F64        = %eh.round_ties_even()
+        %s  : CmF32PowDd = cm_f32_pow_poly_exp(%eh.sub(%ee), %el)
+        %sc : F64        = F64.from_bits(%ee.to_s64().to_u64_wrap().add_wrap(0x3FF).shl(52))
+        // kk keeps the bits of y from its units bit down; a shift of 32 or more clears it (y is then an even
+        // integer), where C's unguarded shift is undefined.
+        %ty    : U32  = %y0.bits()
+        %et    : S64  = %ty.shr(23).bitand(0xFF).to_s64().sub(0x7F)
+        %sh    : S64  = %et.add(8)
+        %left  : Bool = %sh.ge(0).bitand(%sh.lt(32))
+        %right : Bool = %sh.lt(0).bitand(S64.sub(-8, %et).lt(32))
+        when:
+            %left  -> parity(%s.hi, %s.lo, %sc, %et, %ty.shl(%sh.to_u32_wrap()))
+            %right -> parity(%s.hi, %s.lo, %sc, %et, %ty.shr(S64.sub(-8, %et).to_u32_wrap()))
+            else   -> parity(%s.hi, %s.lo, %sc, %et, 0)
+
+    block parity(%eh: F64, %el: F64, %sc: F64, %et: S64, %kk: U32):
+        %integer : Bool = %et.ge(0).bitand(%kk.shl(1).eq(0)).bitor(%et.ge(23))
+        %odd     : Bool = %integer.bitand(%kk.ne(0))
+        %lmid    : U64  = %el.bits().shr(23).bitand(0x1FFFFFFF)
+        %ones    : Bool = %lmid.eq(0x1FFFFFFF)
+        %zeros   : Bool = %lmid.eq(0)
+        when:
+            %ones  -> lmid_ones(%eh, %el, %sc, %odd)
+            %zeros -> lmid_zeros(%eh, %el, %sc, %odd)
+            else   -> nudge(%eh, %el, %sc, %odd)
+
+    // the middle bits of el are all ones: move one ulp of eh from el to eh when el reaches half of it
+    block lmid_ones(%eh: F64, %el: F64, %sc: F64, %odd: Bool):
+        %small : Bool = %eh.lt(1.0)
+        %ulp   : F64  = %small ? 0x1p-53 : 0x1p-52
+        %half  : F64  = %small ? 0x1p-54 : 0x1p-53
+        %up    : Bool = %el.ge(%half)
+        %down  : Bool = %el.le(%half.neg())
+        when:
+            %up   -> nudge(%eh.add(%ulp), %el.sub(%ulp), %sc, %odd)
+            %down -> nudge(%eh.sub(%ulp), %el.add(%ulp), %sc, %odd)
+            else  -> nudge(%eh, %el, %sc, %odd)
+
+    // the middle bits of el are all zeros: move one ulp of eh from el to eh when el reaches it
+    block lmid_zeros(%eh: F64, %el: F64, %sc: F64, %odd: Bool):
+        %small : Bool = %eh.lt(1.0)
+        %ulp   : F64  = %small ? 0x1p-53 : 0x1p-52
+        %up    : Bool = %el.gt(0.0).bitand(%el.ge(%ulp))
+        %down  : Bool = %el.le(0.0).bitand(%el.le(%ulp.neg()))
+        when:
+            %up   -> nudge(%eh.add(%ulp), %el.sub(%ulp), %sc, %odd)
+            %down -> nudge(%eh.sub(%ulp), %el.add(%ulp), %sc, %odd)
+            else  -> nudge(%eh, %el, %sc, %odd)
+
+    // eh sits exactly on an F32 rounding boundary: el decides the side
+    block nudge(%eh: F64, %el: F64, %sc: F64, %odd: Bool):
+        %lh    : U64  = %eh.bits()
+        %tie   : Bool = %lh.bitand(0xFFFFFFF).eq(0).bitand(%el.abs().gt(0x1p-91))
+        %below : Bool = %tie.bitand(%el.lt(0.0))
+        when:
+            %below -> scale(F64.from_bits(%lh.sub_wrap(1)), %sc, %odd)
+            %tie   -> scale(F64.from_bits(%lh.add_wrap(1)), %sc, %odd)
+            else   -> scale(%eh, %sc, %odd)
+
+    block scale(%eh: F64, %sc: F64, %odd: Bool):
+        %v : F64 = %eh.mul(%sc)
+        %r : F64 = %odd ? %v.copysign(%x0.to_f64()) : %v
+        return(%r.to_f32())
+
+/// 1/(1 + j/32) (rounded), for j in 0..32, as F64 bits.
+preset CM_F32_POW_IX: Array<U64, 33> = [0x3FF0000000000000, 0x3FEF07C1F07C0000, 0x3FEE1E1E1E1E0000,
+        0x3FED41D41D420000, 0x3FEC71C71C720000, 0x3FEBACF914C20000, 0x3FEAF286BCA20000,
+        0x3FEA41A41A420000, 0x3FE99999999A0000, 0x3FE8F9C18F9C0000, 0x3FE8618618620000,
+        0x3FE7D05F417D0000, 0x3FE745D1745D0000, 0x3FE6C16C16C10000, 0x3FE642C8590B0000,
+        0x3FE5C9882B930000, 0x3FE5555555550000, 0x3FE4E5E0A72F0000, 0x3FE47AE147AE0000,
+        0x3FE4141414140000, 0x3FE3B13B13B10000, 0x3FE3521CFB2B0000, 0x3FE2F684BDA10000,
+        0x3FE29E4129E40000, 0x3FE2492492490000, 0x3FE1F7047DC10000, 0x3FE1A7B9611A0000,
+        0x3FE15B1E5F750000, 0x3FE1111111110000, 0x3FE0C9714FBD0000, 0x3FE0842108420000,
+        0x3FE0410410410000, 0x3FE0000000000000]
+
+/// -log2 of the reciprocal table entries as (high, low) pairs, as F64 bits.
+preset CM_F32_POW_LIX: Array<U64, 66> = [0x0000000000000000, 0x0000000000000000, 0xBFA6C00000000000,
+        0x3F04B229B87F3F89, 0xBFB6600000000000, 0xBF0FB7D654235799, 0xBFC0800000000000,
+        0xBF38B119B2C9C87B, 0xBFC5C00000000000, 0xBECA39FA6533294D, 0xBFCAC00000000000,
+        0xBF3EBC5B663DD4B8, 0xBFCFC00000000000, 0x3F1F4A37FE0FA46F, 0xBFD2400000000000,
+        0xBF301EAC33103E6B, 0xBFD4A00000000000, 0x3F361ED0D15725E0, 0xBFD6E00000000000,
+        0xBF210E6CEB499BA9, 0xBFD9200000000000, 0x3F3115DB8ADA837D, 0xBFDB400000000000,
+        0xBF3FAFDCE266D7AE, 0xBFDD600000000000, 0xBF3D4F80CD19906F, 0xBFDF800000000000,
+        0x3F35EA5CCD0A7396, 0x3FDE800000000000, 0xBF20500D67FE62EB, 0x3FDC800000000000,
+        0x3F19DC2D41AA4626, 0x3FDA800000000000, 0x3F4FF2E2FF321344, 0x3FD8A00000000000,
+        0x3F4130157F4C3A3E, 0x3FD6C00000000000, 0x3F461ED0CAD929CC, 0x3FD5000000000000,
+        0xBF42089A632D7949, 0x3FD3200000000000, 0x3F47FDC6DFB2D21A, 0x3FD1600000000000,
+        0x3F4380A6C36088F3, 0x3FCF600000000000, 0xBED3AB7DC7BA81AC, 0x3FCC000000000000,
+        0xBF1CC2C0061EF1A2, 0x3FC8A00000000000, 0x3F3130157C97BBE0, 0x3FC5600000000000,
+        0x3F1EE14FF34C4128, 0x3FC2200000000000, 0x3F3B5B854C4FDE69, 0x3FBE000000000000,
+        0x3F2635D1DF7CB0B5, 0x3FB7E00000000000, 0xBF23F6D2636C101E, 0x3FB1C00000000000,
+        0xBF133567F1B193A4, 0x3FA7800000000000, 0xBF18D66C5313A71D, 0x3F97400000000000,
+        0x3EEF7430EE200E00, 0x0000000000000000, 0x0000000000000000]
+
+/// 2^(i/16) for i in 0..15, as F64 bits.
+preset CM_F32_POW_TB: Array<U64, 16> = [0x3FF0000000000000, 0x3FF0B5586CF9890F, 0x3FF172B83C7D517B,
+        0x3FF2387A6E756238, 0x3FF306FE0A31B715, 0x3FF3DEA64C123422, 0x3FF4BFDAD5362A27,
+        0x3FF5AB07DD485429, 0x3FF6A09E667F3BCD, 0x3FF7A11473EB0187, 0x3FF8ACE5422AA0DB,
+        0x3FF9C49182A3F090, 0x3FFAE89F995AD3AD, 0x3FFC199BDD85529C, 0x3FFD5818DCFBA487,
+        0x3FFEA4AFA2A490DA]
+
+/// The double-double coefficients (high, low) of the accurate log2 series, as F64 bits.
+preset CM_F32_POW_CH: Array<U64, 26> = [0x40071547652B82FE, 0x3C8777D0FFDA2B89, 0x3FEEC709DC3A03FD,
+        0x3C8D27F04FF73B3A, 0x3FE2776C50EF9BFE, 0x3C8E4B514251D0EC, 0x3FDA61762A7ADED9,
+        0x3C6DE632DC7F6998, 0x3FD484B13D7C02AE, 0x3C7A320EC342DDB3, 0x3FD0C9A84993FD48,
+        0xBC6E6425CE9A74A4, 0x3FCC68F568D8BEAF, 0xBC603A175487FEAB, 0x3FC89F3B14657DFB,
+        0x3C6F04A3ACF0BCF7, 0x3FC5B9AD2F2D12A0, 0xBC568FDFF6815A6F, 0x3FC3702165B88ACB,
+        0x3C345B052ACE6C8E, 0x3FC1998F60F2F005, 0xBC679A94F62FB524, 0x3FBF9BC428E30809,
+        0xBC451F063387E470, 0x3FC1AC0AB871296A, 0x3C62BA6A2E1A625B]
+
+/// The double-double coefficients (high, low) of the accurate 2^x series, as F64 bits.
+preset CM_F32_POW_CE: Array<U64, 36> = [0x3FF0000000000000, 0x39DF7D70599926C4, 0x3FE62E42FEFA39EF,
+        0x3C7ABC9E3B39856B, 0x3FCEBFBDFF82C58F, 0xBC65E43A540C283D, 0x3FAC6B08D704A0C0,
+        0xBC4D3316277451E6, 0x3F83B2AB6FBA4E77, 0x3C14E66003BA7F85, 0x3F55D87FE78A6731,
+        0x3BD07183D46A9697, 0x3F2430912F86C787, 0x3BCBC81AFCA4C930, 0x3EEFFCBFC588B0C7,
+        0xBB8E63F6F0116F4C, 0x3EB62C0223A5C826, 0xBB530542D98EA4A5, 0x3E7B5253D395E7C6,
+        0xBAF9285A132CE05E, 0x3E3E4CF5158B7B01, 0xBAC9AC1FACAE1B88, 0x3DFE8CAC7351A7A8,
+        0xBA44FB82ADEBD76B, 0x3DBC3BD65182746D, 0x3A484AD0689D30E0, 0x3D78161931D765C3,
+        0xBA0254C6535279CE, 0x3D3314943A26C9E2, 0xB9DF4F2FDC14FB82, 0x3CEC36E53B459602,
+        0x398F0D06A5A63C41, 0x3CA397637B3876A4, 0xB945632C551AE458, 0x3C598FBFEFDDDB51,
+        0xB8CFD134923D52B4]

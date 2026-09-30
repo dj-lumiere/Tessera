@@ -1,0 +1,89 @@
+// Tessera stdlib: the correctly rounded Euclidean distance sqrt(x^2 + y^2) of F32
+//
+// x^2 + y^2 is exact in F64 up to one rounding, and its square root lands
+// within a hair of the true value: only square roots within a few F64 ulps of
+// an F32 rounding boundary need a correction term. Round to nearest only:
+// overflow gives +inf, an infinite leg gives +inf even when the other is NaN
+// (unless it is a signaling NaN), NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/hypot/hypotf.c via RazorForge's B32Hypot.rf.
+// Copyright (c) 2022-2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// sqrt(x^2 + y^2), correctly rounded.
+routine f32_cm_hypot(%x: F32, %y: F32) -> F32
+    block entry():
+        %ax      : F32  = %x.abs()
+        %ay      : F32  = %y.abs()
+        %tx      : U32  = %ax.bits()
+        %ty      : U32  = %ay.bits()
+        %special : Bool = %tx.ge(0x7F800000).bitor(%ty.ge(0x7F800000))
+        branch %special ? special(%ax, %ay, %tx, %ty) : order(%ax, %ay)
+
+    // x or y is infinite or NaN
+    block special(%ax: F32, %ay: F32, %tx: U32, %ty: U32):
+        %snan_x : Bool = %tx.gt(0x7F800000).bitand(%tx.shr(22).bitand(1).eq(0))
+        %snan_y : Bool = %ty.gt(0x7F800000).bitand(%ty.shr(22).bitand(1).eq(0))
+        %snan   : Bool = %snan_x.bitor(%snan_y)
+        %inf_x  : Bool = %tx.eq(0x7F800000)
+        %inf_y  : Bool = %ty.eq(0x7F800000)
+        when:
+            %snan  -> return(cm_f32_hypot_quiet_nan(%x, %y))
+            %inf_x -> return(%ax)
+            %inf_y -> return(%ay)
+            else   -> return(cm_f32_hypot_quiet_nan(%ax, %ay))
+
+    // Both legs are finite and non-negative here, so a plain comparison is max / min.
+    block order(%ax: F32, %ay: F32):
+        %swap  : Bool = %ay.gt(%ax)
+        %big   : F32  = %swap ? %ay : %ax
+        %small : F32  = %swap ? %ax : %ay
+        %xd    : F64  = %big.to_f64()
+        %yd    : F64  = %small.to_f64()
+        %x2    : F64  = %xd.mul(%xd)
+        %y2    : F64  = %yd.mul(%yd)
+        %r2    : F64  = %x2.add(%y2)
+        %tiny  : Bool = %yd.lt(%xd.mul(0x1.fffffep-13))
+        branch %tiny ? return(F32.mul_add(0x1p-13, %small, %big)) : root(%x2, %y2, %r2)
+
+    block root(%x2: F64, %y2: F64, %r2: F64):
+        %r    : F64  = %r2.sqrt()
+        %tu   : U64  = %r.bits()
+        %c    : F32  = %r.to_f32()
+        %huge : Bool = %tu.gt(0x47EFFFFFE0000000)  // r > 0x1.fffffep+127: overflows or rounds down to the max
+        %far  : Bool = %tu.add_wrap(1).bitand(0xFFFFFFF).gt(2)  // r is far from a rounding boundary
+        when:
+            %huge -> return(%c)
+            %far  -> return(%c)
+            else  -> check(%x2, %y2, %r2, %r, %c)
+
+    // r is close to a rounding boundary: c is exact, or the correction term decides.
+    block check(%x2: F64, %y2: F64, %r2: F64, %r: F64, %c: F32):
+        %cd    : F64  = %c.to_f64()
+        %exact : Bool = %cd.mul(%cd).sub(%x2).sub(%y2).eq(0.0)
+        branch %exact ? return(%c) : correct(%x2, %y2, %r2, %r)
+
+    block correct(%x2: F64, %y2: F64, %r2: F64, %r: F64):
+        %ir2 : F64  = F64.div(0.5, %r2)
+        %dr2 : F64  = %x2.sub(%r2).add(%y2)
+        %rs  : F64  = %r.mul(%ir2)
+        %dz  : F64  = %dr2.sub(%r.mul_add(%r, %r2.neg()))
+        %dr  : F64  = %rs.mul(%dz)
+        %rh  : F64  = %r.add(%dr)
+        %rl  : F64  = %dr.add(%r.sub(%rh))
+        %hu  : U64  = %rh.bits()
+        %mid : Bool = %hu.bitand(0xFFFFFFF).eq(0)
+        %up  : Bool = %mid.bitand(%rl.gt(0.0))
+        %dn  : Bool = %mid.bitand(%rl.lt(0.0))
+        when:
+            %up  -> return(F64.from_bits(%hu.add_wrap(1)).to_f32())
+            %dn  -> return(F64.from_bits(%hu.sub_wrap(1)).to_f32())
+            else -> return(%rh.to_f32())
+
+/// x as a quiet NaN if it is a NaN, else y as a quiet NaN, the way the x86 x + y picks between NaN operands.
+private routine cm_f32_hypot_quiet_nan(%x: F32, %y: F32) -> F32
+    block entry():
+        %pick : F32 = %x.is_nan() ? %x : %y
+        return(F32.from_bits(%pick.bits().bitor(0x00400000)))

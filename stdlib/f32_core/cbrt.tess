@@ -1,0 +1,87 @@
+// Tessera stdlib: the correctly rounded cube root of F32
+//
+// x = 2^(3 et + it) z with 1 <= z < 2: cbrt(z) from a rational approximation
+// in F64, scaled by 2^(it/3) 2^et. When the result sits too close to a
+// rounding boundary, one Newton step refines it, and an exact cube root has
+// its rounding noise cleared. Round to nearest only: ±0, ±inf and NaN map to
+// themselves (NaN comes back quiet).
+//
+// Ported from CORE-MATH, src/binary32/cbrt/cbrtf.c via RazorForge's B32Cbrt.rf.
+// Copyright (c) 2023 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// The cube root of x, correctly rounded.
+routine f32_cm_cbrt(%x: F32) -> F32
+    block entry():
+        %u      : U32  = %x.bits()
+        %au     : U32  = %u.shl(1)
+        %sgn    : U64  = %u.shr(31).to_u64()
+        %e      : S64  = %au.shr(24).to_s64()
+        %normal : Bool = %au.ge(0x01000000).bitand(%au.lt(0xFF000000))
+        branch %normal ? reduce(%au, %e, %sgn) : edge(%au, %e, %sgn)
+
+    // ±0, subnormals, ±inf and NaN
+    block edge(%au: U32, %e: S64, %sgn: U64):
+        %special : Bool = %au.ge(0xFF000000)
+        %zero    : Bool = %au.eq(0)
+        when:
+            %special -> return(%x.add(%x))  // x + x also quiets a signaling NaN
+            %zero    -> return(%x)
+            else     -> subnormal(%au, %e, %sgn)
+
+    // normalize the mantissa
+    block subnormal(%au: U32, %e: S64, %sgn: U64):
+        %nz : U32 = %au.leading_zeros().sub(7)
+        jump reduce(%au.shl(%nz), %e.sub(%nz.to_s64().sub(1)), %sgn)
+
+    // cbrt(x) = cbrt(z) scale with 1 <= z < 2 and scale = ±2^(it/3) 2^(et-342)
+    block reduce(%au: U32, %e: S64, %sgn: U64):
+        %mant  : U64  = %au.bitand(0x00FFFFFF).to_u64()
+        %z     : F64  = F64.from_bits(%mant.shl(28).bitor(U64.shl(0x3FF, 52)))
+        %eb    : S64  = %e.add(899)
+        %et    : S64  = %eb.div(3)
+        %it    : S64  = %eb.rem(3)
+        %isc0  : U64  = cm_f32_cbrt_escale(%it).bits()
+        %isc1  : U64  = %isc0.add_wrap(%et.sub(342).to_u64_wrap().shl(52))
+        %scale : F64  = F64.from_bits(%isc1.bitor(%sgn.shl(63)))
+        %r0    : F64  = F64.div(-0x1.9931c6c2d19d1p-6, %z)
+        %z2    : F64  = %z.mul(%z)
+        %z4    : F64  = %z2.mul(%z2)
+        %p0    : F64  = %z.mul(0x1.67ad8ee258d1ap-1).add(0x1.2319d352ea5d5p-1)
+        %p1    : F64  = %z.mul(0x1.b6388fc510a75p-3).add(-0x1.9342edf9cbad9p-2)
+        %p2    : F64  = %z.mul(0x1.7b096936192c4p-6).add(-0x1.6002455599e2fp-4)
+        %p3    : F64  = %z.mul(0x1.169ef81d6c34ep-12).add(-0x1.e5577187e8bf8p-9)
+        %lo    : F64  = %z2.mul(%p1).add(%p0)
+        %hi    : F64  = %z2.mul(%p3).add(%p2)
+        %f     : F64  = %z4.mul(%hi).add(%lo).add(%r0)
+        %r     : F64  = %f.mul(%scale)
+        %ub    : F32  = %r.to_f32()
+        %lb    : F32  = %r.sub(%scale.mul(0x1.85d4f3f7556ecp-30)).to_f32()
+        %sure  : Bool = %ub.eq(%lb)
+        branch %sure ? return(%ub) : newton(%z, %scale, %f, %r0)
+
+    // one Newton step when the first approximation is too close to a rounding boundary
+    block newton(%z: F64, %scale: F64, %f0: F64, %r0: F64):
+        %h     : F64  = %f0.mul(%f0).mul(%f0).sub(%z)
+        %f     : F64  = %f0.sub(%f0.mul(%r0).mul(-0x1.ab16ec65d138fp+3).mul(%h))
+        %r     : F64  = %f.mul(%scale)
+        %bits  : U64  = %r.bits()
+        %m0    : S64  = %bits.shl(19).to_s64_wrap()
+        %m1    : S64  = %m0.shr(63)
+        %exact : Bool = %m0.bitxor(%m1).lt(S64.shl(1, 31))
+        branch %exact ? exact(%bits) : return(%r.to_f32())
+
+    // an exact cube root: clear the rounding noise below the F32 precision
+    block exact(%bits: U64):
+        %cleared : U64 = %bits.add_wrap(U64.shl(1, 31)).bitand(0xFFFFFFFF00000000)
+        return(F64.from_bits(%cleared).to_f32())
+
+/// The scale 2^(it/3) of the cube root reduction, for it in 0..2.
+private routine cm_f32_cbrt_escale(%it: S64) -> F64
+    block entry():
+        when %it:
+            0    -> return(1.0)
+            1    -> return(0x1.428a2f98d728bp+0)
+            else -> return(0x1.965fea53d6e3dp+0)
