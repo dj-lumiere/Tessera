@@ -708,6 +708,15 @@ public sealed partial class Compiler
         }
     }
 
+    /// The tuple of these item types, `(A, B)`: the stdlib's `Tuple2<A, B>` up to `Tuple4`.
+    public RecordType TupleOf(List<DType> items, Pos pos)
+    {
+        var decl = _records.GetValueOrDefault($"Tuple{items.Count}")?.FirstOrDefault(RecordType.IsTupleDecl)
+                   ?? throw new CompileError(pos, $"a tuple has {Parser.MinTupleItems} to {Parser.MaxTupleItems} items, not {items.Count}");
+        CheckRecordRequirements(decl, items, pos);
+        return new RecordType(decl, items, TransparentField);
+    }
+
     /// Fields of a record type, with its type parameters substituted.
     public List<(string Name, DType Type)> Fields(RecordType s)
     {

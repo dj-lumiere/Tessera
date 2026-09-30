@@ -244,6 +244,24 @@ public sealed class FunctionGen
                 Define(b.Name, new Val(op, t), b.Pos);
                 break;
             }
+            case DestructureStmt d:
+            {
+                // Only a tuple comes apart; a record's fields are read by name (FAQ: Why no destructuring?).
+                var v = EvalAny(d.Value);
+                if (v.Type is not RecordType { IsTuple: true } tuple)
+                    throw Err(d.Value.Pos, $"only a tuple can be taken apart, and this is {v.Type}; read its fields by name");
+                if (tuple.Args.Count != d.Names.Count)
+                    throw Err(d.Pos, $"{tuple} has {tuple.Args.Count} items, and {d.Names.Count} names take them");
+                var shape = _c.Shape(tuple);
+                for (int i = 0; i < d.Names.Count; i++)
+                {
+                    var (name, pos) = d.Names[i];
+                    string op = LocalOp(name);
+                    Line($"{op} = extractvalue {tuple.Llvm} {v.Op}, {shape.FieldIndex[i]}");
+                    Define(name, new Val(op, tuple.Args[i]), pos);
+                }
+                break;
+            }
             case ExprStmt e:
             {
                 if (IsNoReturn(e.Value))
@@ -439,6 +457,11 @@ public sealed class FunctionGen
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
             case RecordLit sl: return Resolve(sl.Type);
+            case TupleLit tl:
+            {
+                var items = tl.Items.Select(Infer).ToList();
+                return items.Any(i => i is null) ? null : _c.TupleOf(items!, tl.Pos);
+            }
             case SelectExpr se: return Infer(se.IfTrue) ?? Infer(se.IfFalse);
             case FieldExpr or IndexExpr when IsPlaceChain(e):
                 return PlaceType(e) is { } pt ? new PtrType(pt) : null;
@@ -516,6 +539,7 @@ public sealed class FunctionGen
             FieldExpr f => ExtractField(f),
             SelectExpr s => EvalSelect(s, expected),
             RecordLit s => EvalRecordLit(s),
+            TupleLit t => EvalTupleLit(t, expected),
             ArrayLit a => throw Err(a.Pos, "an array literal makes a value only through Array<T, N>.from([...])"),
             NsCallExpr n when ArrayFrom(n) is { } from => EvalArrayLit(from.Literal, from.Type),
             ImplicitCallExpr { Name: "from", TypeArgs.Count: 0, Args: [ArrayLit lit] } when expected is ArrayType at =>
@@ -867,6 +891,22 @@ public sealed class FunctionGen
         var a = Eval(s.IfTrue, expected);
         var b = Eval(s.IfFalse, expected);
         return new Val(EmitTmp($"select i1 {c.Op}, {expected.Llvm} {a.Op}, {expected.Llvm} {b.Op}"), expected);
+    }
+
+    /// `(%a, %b)`: each item takes the type the expected tuple has in its place.
+    private Val EvalTupleLit(TupleLit lit, DType expected)
+    {
+        if (expected is not RecordType { IsTuple: true } s || s.Args.Count != lit.Items.Count)
+            throw Mismatch(lit.Pos, expected, $"a tuple of {lit.Items.Count} items");
+        _c.EnsureTypeDefined(s);
+        var shape = _c.Shape(s);
+        string acc = "poison";
+        for (int i = 0; i < lit.Items.Count; i++)
+        {
+            var v = Eval(lit.Items[i], s.Args[i]);
+            acc = EmitTmp($"insertvalue {s.Llvm} {acc}, {s.Args[i].Llvm} {v.Op}, {shape.FieldIndex[i]}");
+        }
+        return new Val(acc, s);
     }
 
     private Val EvalRecordLit(RecordLit lit)

@@ -503,8 +503,27 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private TypeRef ParseType()
     {
+        if (Is(TokenKind.LParen))
+        {
+            var pos = Next().Pos;
+            var items = new List<TypeRef>();
+            do items.Add(ParseType()); while (Accept(TokenKind.Comma));
+            Expect(TokenKind.RParen, "')'");
+            return TupleType(items, pos);
+        }
         var (path, name) = ParseQualifiedName("a type");
-        return new TypeRef(name.Text, ParseTypeArgs(), name.Pos) { Path = path };
+        return new TypeRef(name.Text, ParseTypeArgs(callable: name.Text == "Callable" && path is null), name.Pos) { Path = path };
+    }
+
+    public const int MinTupleItems = 2, MaxTupleItems = 4;
+
+    /// `(A, B)` is the stdlib's `Tuple2<A, B>`, up to `Tuple4`.
+    private static TypeRef TupleType(List<TypeRef> items, Pos pos)
+    {
+        if (items.Count is < MinTupleItems or > MaxTupleItems)
+            throw new CompileError(pos, $"a tuple has {MinTupleItems} to {MaxTupleItems} items, not {items.Count}; use a record for more");
+        return new TypeRef($"Tuple{items.Count}", items.Select(i => (TypeArg)new TypeArgType(i)).ToList(), pos)
+            { Path = "Standard::Core" };
     }
 
     /// `Name` or `Standard::Collections::Name`: the module path, if any, and the name.
@@ -521,12 +540,25 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return (path, name);
     }
 
-    private List<TypeArg> ParseTypeArgs()
+    /// Generic arguments. A parenthesized list is a tuple type, except `Callable`'s first one, its parameter list:
+    /// `Callable<(S64, S64), (S64, S64)>` takes two S64s and returns a pair.
+    private List<TypeArg> ParseTypeArgs(bool callable = false)
     {
         var args = new List<TypeArg>();
         if (!Accept(TokenKind.Lt)) return args;
         do args.Add(ParseTypeArg()); while (Accept(TokenKind.Comma));
         Expect(TokenKind.Gt, "'>'");
+        bool paramsSeen = false;
+        for (int i = 0; i < args.Count; i++)
+        {
+            if (args[i] is not TypeArgTuple tuple) continue;
+            if (callable && !paramsSeen)
+            {
+                paramsSeen = true;
+                continue;
+            }
+            args[i] = new TypeArgType(TupleType(tuple.Types, tuple.Types.Count > 0 ? tuple.Types[0].Pos : Cur.Pos));
+        }
         return args;
     }
 
@@ -636,8 +668,23 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             string name = Next().Text;
             Next();
             var type = ParseType();
+            if (Is(TokenKind.Comma))
+                throw Error("a tuple's items take their types from the tuple: write %a, %b = ... without types");
             Expect(TokenKind.Eq, "'='");
             return new BindStmt(name, type, ParseExpr(), pos);
+        }
+        if (Cur.Kind == TokenKind.Value && PeekTok(1).Kind == TokenKind.Comma)
+        {
+            var names = new List<(string, Pos)>();
+            do
+            {
+                var n = Expect(TokenKind.Value, "a value name");
+                names.Add((n.Text, n.Pos));
+            } while (Accept(TokenKind.Comma));
+            if (Is(TokenKind.Colon))
+                throw Error("a tuple's items take their types from the tuple: write %a, %b = ... without types");
+            Expect(TokenKind.Eq, "'='");
+            return new DestructureStmt(names, ParseExpr(), pos);
         }
         if (Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon)
             throw Error($"a binding names a value, written with %: %{Cur.Text} : T = ...");
@@ -834,6 +881,17 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 // `.Nothing` without arguments can only be a variant case; the checker says so otherwise.
                 if (!Is(TokenKind.LParen) && typeArgs.Count == 0) return new ImplicitMemberExpr(member.Text, t.Pos);
                 return new ImplicitCallExpr(member.Text, typeArgs, ParseArgs(), t.Pos);
+            }
+            case TokenKind.LParen:
+            {
+                // Parentheses only make tuples: there's nothing to group in a language without operators.
+                Next();
+                var items = new List<Expr>();
+                do items.Add(ParseExpr()); while (Accept(TokenKind.Comma));
+                Expect(TokenKind.RParen, "')'");
+                if (items.Count is < MinTupleItems or > MaxTupleItems)
+                    throw new CompileError(t.Pos, $"a tuple has {MinTupleItems} to {MaxTupleItems} items, not {items.Count}");
+                return new TupleLit(items, t.Pos);
             }
             case TokenKind.LBracket:
             {

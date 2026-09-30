@@ -146,6 +146,10 @@ public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : 
 
 /// `call(...)` evaluated for its side effect.
 public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos);
+
+/// `%q, %r = div_rem(%a, %b)`: binds every item of a tuple, each with the item's type. Tuples are the only values
+/// taken apart this way.
+public sealed record DestructureStmt(List<(string Name, Pos Pos)> Names, Expr Value, Pos Pos) : Stmt(Pos);
 /// A `branch` or `when` with a `continue` arm, in the middle of a block: the other arms leave, and `continue` goes
 /// on with the next line.
 public sealed record GuardStmt(Terminator Term, Pos Pos) : Stmt(Pos);
@@ -215,6 +219,9 @@ public sealed record RecordLit(TypeRef Type, List<(string Name, Expr Value, Pos 
 
 /// `[a, b, c]` — the elements of `Array<T, N>.from([...])` or of a preset array.
 public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos);
+
+/// `(%q, %r)`: a tuple of 2 to 4 items.
+public sealed record TupleLit(List<Expr> Items, Pos Pos) : Expr(Pos);
 
 // ── Terminators ─────────────────────────────────────────────────────────────
 

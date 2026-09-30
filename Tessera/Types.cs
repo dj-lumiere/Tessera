@@ -226,8 +226,16 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
 {
     public RecordDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
-    public override string Name => Args.Count == 0 ? Decl.Name : $"{Decl.Name}<{string.Join(", ", Args.Select(a => a.Name))}>";
+    public override string Name =>
+        IsTuple ? $"({string.Join(", ", Args.Select(a => a.Name))})"
+        : Args.Count == 0 ? Decl.Name : $"{Decl.Name}<{string.Join(", ", Args.Select(a => a.Name))}>";
     public override string Key => DeclKey(Decl, Decl.Name, Args);
+
+    /// A tuple, `(A, B)`: the stdlib's `Tuple2` to `Tuple4`.
+    public bool IsTuple => IsTupleDecl(Decl);
+
+    public static bool IsTupleDecl(RecordDecl d) =>
+        d.Module == "Standard::Core" && d.Name is "Tuple2" or "Tuple3" or "Tuple4";
 
     /// The type a transparent or library `@llvm("iN")` record lowers to, or null for an aggregate.
     public DType? TransparentField => transparentField(this);
