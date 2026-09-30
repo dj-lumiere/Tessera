@@ -750,8 +750,8 @@ public sealed partial class Compiler
                 : throw new CompileError(d.Pos, $"@llvm on a library record takes an integer type (\"i128\"), got \"{llvm.First}\"");
         if (d.Attr("aggregate") is not null || d.Fields.Count != 1) return null;
         if (_transparent.TryGetValue(s.Key, out var cached)) return cached;
-        if (d.Attr("aligned") is not null || d.Fields[0].Attr("aligned") is not null)
-            throw new CompileError(d.Pos, $"record '{d.Name}' has one field, so it lowers to that field's type; @aligned needs it to be @aggregate");
+        if (d.Attr("layout") is not null || d.Fields[0].Attr("aligned") is not null)
+            throw new CompileError(d.Pos, $"record '{d.Name}' has one field, so it lowers to that field's type; a layout or @aligned needs it to be @aggregate");
         if (!_resolvingTransparent.Add(s.Key)) throw new CompileError(d.Pos, $"{s} contains itself");
         try
         {

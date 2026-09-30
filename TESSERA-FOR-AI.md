@@ -187,7 +187,7 @@ routine main() -> S32
   but not a second `U64.midpoint`. Private names don't count outside their file.
 
 - A record with exactly one field has the same representation as that field (`F128` is an `i128`). Mark it
-  `@aggregate` to keep it a one-member struct; `@aligned` on a one-field record needs `@aggregate`.
+  `@aggregate` to keep it a one-member struct; `@layout(align: N)` on a one-field record (a record's alignment; `@aligned` is for fields) needs `@aggregate`.
 - A record can't contain itself by value; go through a `Ptr`.
 
 **Variants**

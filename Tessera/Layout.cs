@@ -4,7 +4,8 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-// Compile-time layout: `sizeof` / `alignof` in presets and generic arguments, and `@aligned` on records and fields.
+// Compile-time layout: `sizeof` / `alignof` in presets and generic arguments, `@layout(align: N)` on records, and
+// `@aligned` on fields.
 public sealed partial class Compiler
 {
     private DataLayout? _dataLayout;
@@ -18,8 +19,8 @@ public sealed partial class Compiler
         public string Llvm => Type?.Llvm ?? $"[0 x <{Align} x i8>]";
     }
 
-    /// A record's LLVM members and, for each field, the index of its member. `@aligned(N)` on the record puts an
-    /// alignment member first; on a field it puts one right before that field.
+    /// A record's LLVM members and, for each field, the index of its member. `@layout(align: N)` on the record puts
+    /// an alignment member first; `@aligned(N)` on a field puts one right before that field.
     public sealed record RecordShape(List<Member> Members, int[] FieldIndex);
 
     public RecordShape Shape(RecordType s)
@@ -28,30 +29,50 @@ public sealed partial class Compiler
         var fields = Fields(s);
         var env = RecordEnv(s);
         var members = new List<Member>();
-        if (s.Decl.Attr("aligned") is { } recordAlign) members.Add(AlignMember(recordAlign, env));
+        if (RecordAlign(s.Decl) is { } recordAlign) members.Add(AlignMember(recordAlign, s.Decl.Attr("layout")!.Pos, "@layout(align: N)", env));
         var index = new int[fields.Count];
         for (int i = 0; i < fields.Count; i++)
         {
-            if (s.Decl.Fields[i].Attr("aligned") is { } fieldAlign) members.Add(AlignMember(fieldAlign, env));
+            if (s.Decl.Fields[i].Attr("aligned") is { } fieldAlign)
+            {
+                if (fieldAlign.Args is not [var arg]) throw new CompileError(fieldAlign.Pos, "@aligned takes one compile-time integer");
+                members.Add(AlignMember(arg, fieldAlign.Pos, "@aligned", env));
+            }
             index[i] = members.Count;
             members.Add(new Member(fields[i].Type, 0));
         }
         return _shapes[s.Key] = new RecordShape(members, index);
     }
 
-    private Member AlignMember(Attribute attr, TypeEnv env)
+    /// A record's `@layout(...)`: `align: N` raises the whole record's alignment, and is the only layout the
+    /// compiler implements so far. Returns the alignment argument, or null for the C layout.
+    private static AttrArg? RecordAlign(RecordDecl d)
     {
-        if (attr.Args is not [var arg]) throw new CompileError(attr.Pos, "@aligned takes one compile-time integer");
+        if (d.Attr("aligned") is { } misplaced)
+            throw new CompileError(misplaced.Pos, "@aligned goes on a field; a record's own alignment is @layout(align: N)");
+        if (d.Attr("layout") is not { } layout) return null;
+        return layout.Args switch
+        {
+            [{ Key: "align" } align] => align,
+            [{ Key: null, Value: "dense" or "std140" or "std430" } planned] =>
+                throw new CompileError(layout.Pos, $"@layout({planned.Value}) is planned but not implemented yet (Roadmap #56)"),
+            _ => throw new CompileError(layout.Pos,
+                "@layout takes one layout: align: N (a power of two), or the planned dense, std140, std430"),
+        };
+    }
+
+    private Member AlignMember(AttrArg arg, Pos pos, string what, TypeEnv env)
+    {
         var expr = arg.Expr ?? (long.TryParse(arg.Value, CultureInfo.InvariantCulture, out long n)
-            ? new IntLit(n, attr.Pos)
-            : new PresetRef(null, arg.Value, attr.Pos));
+            ? new IntLit(n, pos)
+            : new PresetRef(null, arg.Value, pos));
         long align = EvalConstInt(expr, env, 0);
         if (align < 1 || (align & (align - 1)) != 0)
-            throw new CompileError(attr.Pos, $"@aligned needs a power of two, got {align}");
+            throw new CompileError(pos, $"{what} needs a power of two, got {align}");
         // The member's vector type must have exactly this alignment on the target.
-        long vectorAlign = Layout(attr.Pos).VectorAlign(align * 8);
+        long vectorAlign = Layout(pos).VectorAlign(align * 8);
         if (vectorAlign != align)
-            throw new CompileError(attr.Pos, $"@aligned({align}) isn't supported on {Target.LlvmTriple}");
+            throw new CompileError(pos, $"alignment {align} isn't supported on {Target.LlvmTriple}");
         return new Member(null, align);
     }
 
