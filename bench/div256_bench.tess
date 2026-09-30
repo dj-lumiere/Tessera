@@ -1,0 +1,90 @@
+// U256 division throughput: Knuth's algorithm D over U64 limbs (stdlib/div256.tess). On x86_64 its digit steps
+// use divq; elsewhere, 32-bit x86 included, the Möller-Granlund reciprocal. Divisors of one to four limbs cover
+// both the 2-by-1 and the 3-by-2 step. A baseline loop builds the same operands without dividing, so its time can
+// be subtracted. The checksum must match on every target.
+
+import Standard::Format
+import Standard::Os
+
+@[external("c"), symbol("clock")]
+routine c_clock() -> CLong
+
+preset ROUNDS: U64 = 2000000
+
+/// clock() ticks per second: CLOCKS_PER_SEC, which POSIX fixes at a million.
+@target(os: "windows")
+preset TICKS_PER_SECOND: S64 = 1000
+
+@target(os: !"windows")
+preset TICKS_PER_SECOND: S64 = 1000000
+
+record Operands
+    state    : U64
+    dividend : U256
+    divisor  : U256
+
+routine xorshift(%x: U64) -> U64
+    block entry():
+        %a : U64 = %x.bitxor(%x.shl(13))
+        %b : U64 = %a.bitxor(%a.shr(7))
+        %c : U64 = %b.bitxor(%b.shl(17))
+        return(%c)
+
+/// Four random limbs; the top %keep limbs of the divisor survive (1 to 4), and its top limb is never zero.
+routine limbs(%s0: U64, %keep: U64) -> Operands
+    block entry():
+        %s1 : U64  = xorshift(%s0)
+        %s2 : U64  = xorshift(%s1)
+        %s3 : U64  = xorshift(%s2)
+        %s4 : U64  = xorshift(%s3)
+        %s5 : U64  = xorshift(%s4)
+        %n  : U256 = join(%s1, %s2, %s3, %s4)
+        %d  : U256 = %n.shr(U64.sub(4, %keep).mul(64).to_u256()).bitxor(%s5.bitor(1).to_u256())
+        return(Operands { state: %s5, dividend: %n, divisor: %d })
+
+routine join(%a: U64, %b: U64, %c: U64, %d: U64) -> U256
+    block entry():
+        %ab   : U256 = %a.to_u256().shl(64).bitor(%b.to_u256())
+        %abc  : U256 = %ab.shl(64).bitor(%c.to_u256())
+        %abcd : U256 = %abc.shl(64).bitor(%d.to_u256())
+        return(%abcd)
+
+routine run(%divide: Bool) -> U64
+    block entry():
+        jump loop(0, 88172645463325252, 0, %divide)
+
+    block loop(%i: U64, %state: U64, %sum: U64, %divide: Bool):
+        %done : Bool = %i.ge(ROUNDS)
+        branch %done ? return(%sum) : step(%i, %state, %sum, %divide)
+
+    block step(%i: U64, %state: U64, %sum: U64, %divide: Bool):
+        %keep : U64      = %i.rem(4).add(1)
+        %ops  : Operands = limbs(%state, %keep)
+        branch %divide ? divide(%i, %ops, %sum, %divide) : touch(%i, %ops, %sum, %divide)
+
+    block divide(%i: U64, %ops: Operands, %sum: U64, %divide: Bool):
+        %q    : U256 = %ops.dividend.div(%ops.divisor)
+        %r    : U256 = %ops.dividend.rem(%ops.divisor)
+        %mix  : U64  = %q.bitxor(%r).to_u64_wrap()
+        %next : U64  = %sum.bitxor(%mix)
+        jump loop(%i.add(1), %ops.state, %next, %divide)
+
+    block touch(%i: U64, %ops: Operands, %sum: U64, %divide: Bool):
+        %mix  : U64 = %ops.dividend.bitxor(%ops.divisor).to_u64_wrap()
+        %next : U64 = %sum.bitxor(%mix)
+        jump loop(%i.add(1), %ops.state, %next, %divide)
+
+routine main() -> S32
+    block entry():
+        %t0       : CLong = c_clock()
+        %base_sum : U64   = run(false)
+        %t1       : CLong = c_clock()
+        %div_sum  : U64   = run(true)
+        %t2       : CLong = c_clock()
+        %base     : S64   = %t1.sub(%t0).to_s64()
+        %total    : S64   = %t2.sub(%t1).to_s64()
+        %divs     : S64   = ROUNDS.mul(2).to_s64()  // a div and a rem per round
+        %ns       : S64   = %total.sub(%base).mul(1000000000).div(TICKS_PER_SECOND).div(%divs)
+        print("{%ns} ns per U256 division (baseline {%base}, total {%total} of {TICKS_PER_SECOND} ticks/s)\n")
+        print("checksum {%div_sum} ({%base_sum})\n")
+        return(0)
