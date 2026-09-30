@@ -361,9 +361,15 @@ routine BF16.powi(%self: Self, %n: S32) -> Self
 
 routine BF16.powf(%self: Self, %exponent: Self) -> Self
     block entry():
-        %wide : F32  = %self.to_f32()
-        %r    : Self = %wide.powf(%exponent.to_f32()).to_bf16()
-        return(%r)
+        %narrow : F32  = f32_cm_pow(%self.to_f32(), %exponent.to_f32())
+        %tie    : Bool = bf16_on_midpoint(%narrow)
+        branch %tie ? wide() : return(%narrow.to_bf16())
+
+    // On a BF16 midpoint the F32 result can't tell which way to round; the F64 one can (checked on all pairs:
+    // where it too is a midpoint, the result is exact and ties to even).
+    block wide():
+        %r : F64 = f64_cm_pow(%self.to_f64(), %exponent.to_f64())
+        return(%r.to_bf16())
 
 /// e^self
 routine BF16.exp(%self: Self) -> Self
@@ -423,9 +429,14 @@ routine BF16.log(%self: Self, %base: Self) -> Self
 /// sqrt(self^2 + other^2). Squares of 16-bit floats cannot overflow F32.
 routine BF16.hypot(%self: Self, %other: Self) -> Self
     block entry():
-        %wide : F32  = %self.to_f32()
-        %r    : Self = %wide.hypot(%other.to_f32()).to_bf16()
-        return(%r)
+        %narrow : F32  = f32_cm_hypot(%self.to_f32(), %other.to_f32())
+        %tie    : Bool = bf16_on_midpoint(%narrow)
+        branch %tie ? wide() : return(%narrow.to_bf16())
+
+    // As in powf: the F64 result decides, and where it too is a midpoint the result is exact.
+    block wide():
+        %r : F64 = f64_cm_hypot(%self.to_f64(), %other.to_f64())
+        return(%r.to_bf16())
 
 // -- trigonometry --------------------------------------------------------------
 
@@ -507,8 +518,49 @@ routine BF16.atanh(%self: Self) -> Self
 /// The angle of the point (other, self): self is y and %other is x.
 routine BF16.atan2(%self: Self, %other: Self) -> Self
     block entry():
+        %narrow : F32  = f32_cm_atan2(%self.to_f32(), %other.to_f32())
+        %tie    : Bool = bf16_on_midpoint(%narrow)
+        branch %tie ? wide() : return(%narrow.to_bf16())
+
+    block wide():
+        %r     : F64  = f64_cm_atan2(%self.to_f64(), %other.to_f64())
+        %still : Bool = bf16_on_midpoint_f64(%r)
+        branch %still ? tiny(%r) : return(%r.to_bf16())
+
+    // Still a midpoint in F64: x > 0 and |y / x| tiny (checked on all pairs), where atan2 = atan(y / x) lies
+    // just inside y / x. One F64 ulp toward zero puts it on the right side.
+    block tiny(%r: F64):
+        %inside : F64 = F64.from_bits(%r.bits().sub(1))
+        return(%inside.to_bf16())
+
+// -- special functions ---------------------------------------------------------
+
+/// The error function.
+routine BF16.erf(%self: Self) -> Self
+    block entry():
         %wide : F32  = %self.to_f32()
-        %r    : Self = %wide.atan2(%other.to_f32()).to_bf16()
+        %r    : Self = %wide.erf().to_bf16()
+        return(%r)
+
+/// 1 - erf(self), accurate where erf is near 1.
+routine BF16.erfc(%self: Self) -> Self
+    block entry():
+        %wide : F32  = %self.to_f32()
+        %r    : Self = %wide.erfc().to_bf16()
+        return(%r)
+
+/// Γ(self): ±inf at ±0, NaN at the negative integers and -inf.
+routine BF16.gamma(%self: Self) -> Self
+    block entry():
+        %wide : F32  = %self.to_f32()
+        %r    : Self = %wide.gamma().to_bf16()
+        return(%r)
+
+/// ln |Γ(self)|: +inf at 0 and the negative integers.
+routine BF16.ln_gamma(%self: Self) -> Self
+    block entry():
+        %wide : F32  = %self.to_f32()
+        %r    : Self = %wide.ln_gamma().to_bf16()
         return(%r)
 
 routine BF16.to_degrees(%self: Self) -> Self
@@ -520,6 +572,40 @@ routine BF16.to_radians(%self: Self) -> Self
     block entry():
         %r : Self = %self.mul(0.0174532925199432957692369076848861271)
         return(%r)
+
+// -- rounding from wider results -------------------------------------------------
+//
+// The math functions compute in F32 with its correctly rounded CORE-MATH ports and round to BF16. That
+// rounding is itself correct unless the F32 result lands exactly on a BF16 midpoint: F32 rounding keeps order
+// and every BF16 midpoint is an F32 value. For the one-argument functions no input rounds wrongly (every BF16
+// input checked with mpmath); the two-argument ones (powf, hypot, atan2) go through F64 at a midpoint.
+
+/// Whether %r lies exactly between two BF16 values: its low 16 bits are 0x8000.
+private routine bf16_on_midpoint(%r: F32) -> Bool
+    block entry():
+        %low : U32  = %r.bits().bitand(0xFFFF)
+        %mid : Bool = %r.is_finite().bitand(%low.eq(0x8000))
+        return(%mid)
+
+/// Whether %r lies exactly between two BF16 values.
+private routine bf16_on_midpoint_f64(%r: F64) -> Bool
+    block entry():
+        %a   : F64  = %r.abs()
+        %sub : Bool = %a.lt(0x1p-126)
+        branch %sub ? subnormal(%a) : normal(%a)
+
+    // BF16 keeps 7 fraction bits: a midpoint has bit 44 set and nothing below it.
+    block normal(%a: F64):
+        %low : U64  = %a.bits().bitand(0x1FFFFFFFFFFF)
+        %mid : Bool = %a.is_finite().bitand(%low.eq(0x100000000000))
+        return(%mid)
+
+    // Below 2^-126 BF16's quantum is 2^-133: a midpoint is an odd multiple of 2^-134.
+    block subnormal(%a: F64):
+        %t     : F64  = %a.mul(0x1p134)
+        %whole : Bool = %t.trunc().eq(%t)
+        %odd   : Bool = %t.rem(2.0).eq(1.0)
+        return(%whole.bitand(%odd))
 
 // -- classification ------------------------------------------------------------
 
