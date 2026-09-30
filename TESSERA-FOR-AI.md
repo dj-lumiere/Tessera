@@ -190,10 +190,20 @@ routine main() -> S32
   `@aggregate` to keep it a one-member struct; `@layout(align: N)` on a one-field record (a record's alignment; `@aligned` is for fields) needs `@aggregate`.
 - A record can't contain itself by value; go through a `Ptr`.
 
+**Tuples**
+
+- `(A, B)` to `(A, B, C, D)`: the type; `(%a, %b)`: a value; fields `item0` .. `item3`. Returning several values is
+  returning a tuple: `-> (U64, U64)`, `return((%q, %r))`.
+- `%q, %r = div_rem(%a, %b)` takes a tuple apart, every item, no types. It's the only destructuring: a record's
+  fields are read by name. Nested tuples come apart one level at a time.
+- A tuple of bare literals has no type: `(1, 2)` needs one from where it goes (`%t : (S64, S64) = (1, 2)`).
+- Parentheses only make tuples; there's no `(%a)` grouping. In `Callable<(A, B), R>` the first list is the parameters.
+- Use a record when the parts mean something (`quotient`, `remainder`); a tuple when they're just values.
+
 **Variants**
 
 - `variant Expr` lists cases, each with at most one payload type (`Number : S64`, `Add : BinaryExpr`, `Empty`); several
-  values go in a record, since there are no tuples. `Option<T>` (`Absent`, `Present : T`) and `Result<T, E>`
+  values go in a record or a tuple. `Option<T>` (`Absent`, `Present : T`) and `Result<T, E>`
   (`Failure : E`, `Success : T`) are variants.
 - Build: `Expr.Number(5)`, `.Number(5)` where the type is known, `Expr.Empty` / `.Empty`.
 - Read with `when %e:`; `Expr.Number(%n) -> target(%n)` binds the payload for that arm's target only, `Expr.Empty`
