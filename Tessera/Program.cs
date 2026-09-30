@@ -170,15 +170,37 @@ static class Cli
 
     /// Compiles the inputs to LLVM IR. An executable needs `routine main() -> S32`; checking for it here gives a
     /// clear error instead of the platform linker's (lld-link says "subsystem must be defined").
-    public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true)
+    public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
+        IReadOnlyList<string>? roots = null)
     {
         var inputs = files.ToList();
-        var compiler = new Compiler(target, LoadDecls(inputs, target));
+        var compiler = new Compiler(target, LoadDecls(inputs, target)) { FileTagPaths = FileTagPaths(inputs, roots) };
         string ir = compiler.Generate();
         if (executable && !compiler.HasMain)
             throw new CompileError(new Pos(ShownPath(Path.GetFullPath(inputs[0])), 1, 1),
                 "no entry point: an executable needs 'routine main() -> S32' (use 'tessera check' to type-check a file without one)");
         return ir;
+    }
+
+    /// Each input as private symbols name it: relative to its package root, the deepest of `roots` that holds it
+    /// (a manifest's directory or a library's), else the directory the inputs share. So a symbol doesn't depend on
+    /// where the build runs. Keyed by the name the parser gave the file.
+    private static Dictionary<string, string> FileTagPaths(List<string> inputs, IReadOnlyList<string>? roots)
+    {
+        var full = inputs.Select(Path.GetFullPath).ToList();
+        string common = Path.GetDirectoryName(full[0])!;
+        foreach (var f in full)
+            while (!f.StartsWith(common.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                common = Path.GetDirectoryName(common) ?? "";
+        var tags = new Dictionary<string, string>();
+        foreach (var f in full)
+        {
+            string root = roots?.Select(Path.GetFullPath)
+                .Where(r => f.StartsWith(r.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                .MaxBy(r => r.Length) ?? common;
+            tags[ShownPath(f)] = Path.GetRelativePath(root, f).Replace('\\', '/');
+        }
+        return tags;
     }
 
     private static List<Decl> LoadDecls(IEnumerable<string> files, BuildTarget target)
@@ -242,7 +264,7 @@ static class Cli
 
     private static string BuildManifest(Manifest m)
     {
-        string ir = Compile(m.Sources, m.Target);
+        string ir = Compile(m.Sources, m.Target, roots: m.Roots);
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
         Link(ir, m.ExecutablePath, m.Target, m.Optimize, m.LinkArguments());

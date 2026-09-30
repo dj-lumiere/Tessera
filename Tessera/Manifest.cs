@@ -41,6 +41,10 @@ public sealed record Manifest(
 {
     public const string FileName = "config.toml";
 
+    /// The package roots its sources are named from in symbols: the manifest's directory, and each `library`
+    /// directory (another package's root).
+    public List<string> Roots { get; init; } = [];
+
     /// Where the build writes its output: `build/` next to the manifest.
     public string OutputDirectory => System.IO.Path.Combine(Directory, "build");
 
@@ -109,6 +113,8 @@ public sealed record Manifest(
         string Resolve(string p) => System.IO.Path.GetFullPath(System.IO.Path.Combine(dir, p));
 
         var sources = new List<string>();
+        var roots = new List<string> { dir };
+        roots.AddRange((Strs(target, "library", path) ?? []).Select(Resolve).Where(System.IO.Directory.Exists));
         foreach (var entry in (Strs(target, "sources", path) ?? ["."]).Concat(Strs(target, "library", path) ?? []))
         {
             string full = Resolve(entry);
@@ -129,7 +135,7 @@ public sealed record Manifest(
             Strs(target, "c-libraries", path) ?? [],
             (Strs(target, "library-paths", path) ?? []).Select(Resolve).ToList(),
             linkScript,
-            Bool(debug, "emit-llvm", path) ?? false);
+            Bool(debug, "emit-llvm", path) ?? false) { Roots = roots };
     }
 
     private static bool IsUnder(string file, string dir) =>

@@ -99,7 +99,23 @@ public sealed class FunctionGen
             }
             else ps.Add($"{_inst.Params[i].Llvm} {name}");
         }
-        _out.AppendLine($"define {_inst.CcPrefix}{_inst.LlvmRet} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {{");
+        // A routine every solution may emit from the same source (a generic routine's instance, or a stdlib routine
+        // compiled into each solution until the stdlib is prebuilt) is linkonce_odr: the linker keeps one copy. COFF
+        // and ELF deduplicate through a comdat; Mach-O has none and relies on the weak definition. A stdlib routine
+        // with an @export is weak instead, so the program's own export of that name wins at link time too.
+        string linkage = "", comdat = "";
+        bool shared = _c.IsGenericInstance(_inst) || _decl.IsLibrary;
+        bool exported = _decl.Attr("export") is not null;
+        if (shared && (!exported || _decl.IsLibrary))
+        {
+            linkage = exported ? "weak " : "linkonce_odr ";
+            if (_c.Target.Os != "macos")
+            {
+                _out.AppendLine($"${Compiler.Quote(_inst.Symbol)} = comdat any");
+                comdat = " comdat";
+            }
+        }
+        _out.AppendLine($"define {linkage}{_inst.CcPrefix}{_inst.LlvmRet} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs}{comdat} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
         foreach (var u in unpack) _out.AppendLine($"  {u}");

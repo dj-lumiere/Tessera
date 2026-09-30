@@ -316,6 +316,13 @@ public sealed partial class Compiler
     // ── Name lookup ─────────────────────────────────────────────────────────
 
     public const string CoreModule = "Standard::Core";
+
+    /// How private symbols name each input file (Program.FileTagPaths): its path from its package root. A stdlib file
+    /// is already named from the stdlib directory.
+    public Dictionary<string, string> FileTagPaths { get; init; } = [];
+
+    /// The file part of a private declaration's symbol.
+    public string FileTagPath(Decl d) => FileTagPaths.GetValueOrDefault(d.File, d.File);
     public const string OsModule = "Standard::Os";
 
     private static bool IsOsModule(string module) =>

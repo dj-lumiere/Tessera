@@ -52,9 +52,9 @@ public sealed partial class Compiler
 
     private static string Source(string name) => name.Length.ToString(CultureInfo.InvariantCulture) + name;
 
-    /// A name's source form, with its file as an ABI tag when it's private.
-    private static string UnqualifiedName(string name, Decl d) =>
-        d.IsPrivate ? Source(name) + "B" + Source(FileTag(d.File)) : Source(name);
+    /// A name's source form, with its file (from its package root) as an ABI tag when it's private.
+    private string UnqualifiedName(string name, Decl d) =>
+        d.IsPrivate ? Source(name) + "B" + Source(FileTag(FileTagPath(d))) : Source(name);
 
     private static string FileTag(string file) =>
         new(file.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_').ToArray());
@@ -179,7 +179,7 @@ public sealed partial class Compiler
         private List<Step> Declared(Decl d, string name, List<DType> args, DType t)
         {
             var steps = ModuleSteps(d.Module);
-            steps.Add(Named(UnqualifiedName(name, d), DType.DeclKey(d, name, []), args, t));
+            steps.Add(Named(c.UnqualifiedName(name, d), DType.DeclKey(d, name, []), args, t));
             return steps;
         }
 
@@ -317,7 +317,7 @@ public sealed partial class Compiler
                         ?? throw new CompileError(t.Pos, $"unknown type '{t}'");
                 steps = ModuleSteps(d.Module);
                 qualified = DType.DeclKey(d, t.Name, []);
-                steps.Add(new Step(UnqualifiedName(t.Name, d), "TP:" + qualified, null, null));
+                steps.Add(new Step(c.UnqualifiedName(t.Name, d), "TP:" + qualified, null, null));
             }
             string argsKey = "TREF:" + qualified + "<" + string.Join(",", t.Args.Select(a => a.ToString())) + ">";
             var head = steps[^1];

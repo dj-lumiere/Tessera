@@ -102,6 +102,10 @@ public sealed partial class Compiler
         return new Instance(r, env, symbol, ps, ret);
     }
 
+    /// Whether an instance comes from a generic routine: its own type parameters, or its owner's (`List<T>.push`).
+    public bool IsGenericInstance(Instance inst) =>
+        inst.Decl.TypeParams.Count != 0 || OwnerTypeParams(inst.Decl).Count != 0;
+
     /// Returns the instance for a call, queueing its body for emission (or its declaration) the first time.
     public Instance RequireInstance(RoutineDecl r, TypeEnv env)
     {
@@ -137,7 +141,9 @@ public sealed partial class Compiler
         {
             string name = export.First ?? throw new CompileError(export.Pos, "@export needs a symbol name");
             _exported.Add(name);
-            _functions.AppendLine($"@{Quote(name)} = alias {inst.LlvmRet} ({inst.LlvmParamTypes}), ptr @{Quote(inst.Symbol)}");
+            // A stdlib export is a default the program may replace, so its name is weak.
+            string weak = inst.Decl.IsLibrary ? "weak " : "";
+            _functions.AppendLine($"@{Quote(name)} = {weak}alias {inst.LlvmRet} ({inst.LlvmParamTypes}), ptr @{Quote(inst.Symbol)}");
             _functions.AppendLine();
         }
     }
