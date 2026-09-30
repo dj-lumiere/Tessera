@@ -152,7 +152,9 @@ routine main() -> S32
 **Routines and generics**
 
 - `routine name(%a: T, %p: Ptr<U>) -> R`. Methods are `routine Type.name(%self: Ptr<Self>, ...)` (pointer receiver)
-  or `(%self: Self, ...)` (value receiver). Without a receiver it's typewise: `List<S64>.construct(%alloc)`. Where the
+  or `(%self: Self, ...)` (value receiver). The name `%self` is what makes a method: only a first parameter named
+  `%self` (typed `Self` or `Ptr<Self>`) allows `%x.name(...)`; anything else is typewise: `List<S64>.construct(%alloc)`,
+  `Job.less(%a, %b)`. A routine meeting a concept (`less`, `eq`, `compare`, `hash`) takes `%self` as the concept does. Where the
   type is expected (a binding, an argument, a block argument, a return), a leading `.` leaves it out:
   `%list: List<S64> = .construct(%alloc)`, `return(.Absent)`. Not at the head of a chain or as a statement.
 - **Methods through a pointer.** `%p.m()` finds `T.m(%self: Ptr<Self>)` first, then `Ptr`'s own methods (`is_null`,

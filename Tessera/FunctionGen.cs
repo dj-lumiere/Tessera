@@ -1089,8 +1089,6 @@ public sealed class FunctionGen
                     $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
                 var r = _c.FindMethod(owner, ic.Name, _env.File, ic.Pos)
                         ?? throw Err(ic.Pos, $"{owner} has no routine '{ic.Name}'");
-                if (r.Params.Count > 0 && r.Params[0].Name is "self" or "%self" or "#self")
-                    throw Err(ic.Pos, $"'{owner}.{ic.Name}' takes a receiver; a leading '.' only calls typewise routines");
                 var env = BindOwner(r, owner, ic.Pos);
                 BindExplicit(r, env, ic.TypeArgs, ic.Pos);
                 InferTypeArgs(r, env, ic.Args, expected, 0);
@@ -1158,10 +1156,17 @@ public sealed class FunctionGen
         }
         else candidates.Add((rt, false));
 
+        RoutineDecl? typewise = null;
         foreach (var (owner, passesPointer) in candidates)
         {
             var r = _c.FindMethod(owner, m.Name, _env.File, m.Pos, FromTypeParameter(owner) || Derived);
-            if (r is null || r.Params.Count == 0) continue;
+            if (r is null) continue;
+            // Only a routine whose first parameter is %self is a method; the rest are called by their type.
+            if (!Compiler.HasReceiver(r))
+            {
+                typewise ??= r;
+                continue;
+            }
             var env = BindOwner(r, owner, m.Pos);
             var selfType = _c.ResolveType(r.Params[0].Type, env);
             // Through a pointer, T's method must take exactly that pointer: `#slot: Ptr<Addr>` doesn't make
@@ -1182,6 +1187,9 @@ public sealed class FunctionGen
             env.Bind("T", en);
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
+        if (typewise is not null)
+            throw Err(m.Pos, $"'{typewise.DisplayName}' has no %self, so it isn't a method; call it by its type: "
+                + $"{typewise.Owner!.Name}.{m.Name}(...)");
         // `#p.eq(#q)` where T.eq takes values: the load is written, not implied.
         if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held) || Derived) is not null)
             throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; load it: .load().{m.Name}(...)");
@@ -1191,7 +1199,7 @@ public sealed class FunctionGen
     /// The receiver type a `T.name` routine gets from the other arguments, if there is such a routine and they fix T.
     private DType? BlanketReceiverType(MethodCallExpr m)
     {
-        if (_c.FindBlanket(m.Name, _env.File, m.Pos) is not { Owner: { } owner } r || r.Params.Count == 0
+        if (_c.FindBlanket(m.Name, _env.File, m.Pos) is not { Owner: { } owner } r || !Compiler.HasReceiver(r)
             || r.Params[0].Type is not { Args.Count: 0 } self || self.Name != owner.Name)
             return null;
         var env = new Compiler.TypeEnv(r.File);
