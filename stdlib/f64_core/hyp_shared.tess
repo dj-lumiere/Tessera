@@ -1,0 +1,206 @@
+// Tessera stdlib: tables and double-double helpers shared by the F64 sinh, cosh and tanh
+//
+// exp(x) is reduced as x = (2^12 ie + 2^6 i0 + i1) log(2) / 2^12 + dx, with 2^(i0/64) and 2^(i1/2^12) from
+// two 64-entry double-double tables and exp(dx) from a short polynomial. The accurate path evaluates a longer
+// polynomial in double-double arithmetic (cm_f64_hyp_exp_accurate).
+//
+// Ported from CORE-MATH, src/binary64/sinh/sinh.c and src/binary64/cosh/cosh.c (which carry identical copies
+// of these helpers and tables) via RazorForge's B64HypShared.rf.
+// Copyright (c) 2023-2026 Alexei Sibidanov and Paul Zimmermann
+// Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// Low parts of 2^(i/64) for i in 0..63 as a double-double, as F64 bits.
+preset CM_F64_HYP_T0_LO: Array<U64, 64> = [0x0000000000000000, 0xBC719083535B085E,
+        0x3C8D73E2A475B466, 0x3C6186BE4BB28500, 0x3C98A62E4ADC610A, 0x3C403A1727C57B52,
+        0xBC96C51039449B3A, 0xBC932FBF9AF1369E, 0xBC819041B9D78A76, 0x3C8E5B4C7B4968E4,
+        0x3C9E016E00A2643C, 0x3C8DC775814A8494, 0x3C99B07EB6C70572, 0x3C82BD339940E9DA,
+        0x3C8612E8AFAD1256, 0x3C90024754DB41D4, 0x3C86F46AD23182E4, 0x3C932721843659A6,
+        0xBC963AEABF42EAE2, 0xBC75E436D661F5E2, 0x3C8ADA0911F09EBC, 0xBC5EF3691C309278,
+        0x3C489B7A04EF80D0, 0x3C73C1A3B69062F0, 0x3C7D4397AFEC42E2, 0xBC94B309D25957E4,
+        0xBC807ABE1DB13CAC, 0x3C99BB2C011D93AC, 0x3C96324C054647AC, 0x3C9BA6F93080E65E,
+        0xBC9383C17E40B496, 0xBC9BB60987591C34, 0xBC9BDD3413B26456, 0xBC6BBE3A683C88AA,
+        0xBC816E4786887A9A, 0xBC90245957316DD4, 0xBC841577EE049930, 0x3C705D02BA15797E,
+        0xBC9D4C1DD41532D8, 0xBC9FC6F89BD4F6BA, 0x3C96E9F156864B26, 0x3C85CC13A2E3976C,
+        0xBC675FC781B57EBC, 0xBC9D185B7C1B85D0, 0x3C7C7C46B071F2BE, 0xBC9359495D1CD532,
+        0xBC9D2F6EDB8D41E2, 0x3C90FAC90EF7FD32, 0x3C97A1CD345DCC82, 0xBC62805E3084D708,
+        0xBC75584F7E54AC3A, 0x3C823DD07A2D9E84, 0x3C811065895048DE, 0x3C92884DFF483CAC,
+        0x3C7503CBD1E949DC, 0xBC9CBC3743797A9C, 0x3C82ED02D75B3706, 0x3C9C2300696DB532,
+        0xBC91A5CD4F184B5C, 0x3C839E8980A9CC90, 0xBC9E9C23179C2894, 0x3C9DC7F486A4B6B0,
+        0x3C99D3E12DD8A18A, 0x3C874853F3A5931E]
+
+/// High parts of 2^(i/64) for i in 0..63, as F64 bits.
+preset CM_F64_HYP_T0_HI: Array<U64, 64> = [0x3FF0000000000000, 0x3FF02C9A3E778061,
+        0x3FF059B0D3158574, 0x3FF0874518759BC8, 0x3FF0B5586CF9890F, 0x3FF0E3EC32D3D1A2,
+        0x3FF11301D0125B51, 0x3FF1429AAEA92DE0, 0x3FF172B83C7D517B, 0x3FF1A35BEB6FCB75,
+        0x3FF1D4873168B9AA, 0x3FF2063B88628CD6, 0x3FF2387A6E756238, 0x3FF26B4565E27CDD,
+        0x3FF29E9DF51FDEE1, 0x3FF2D285A6E4030B, 0x3FF306FE0A31B715, 0x3FF33C08B26416FF,
+        0x3FF371A7373AA9CB, 0x3FF3A7DB34E59FF7, 0x3FF3DEA64C123422, 0x3FF4160A21F72E2A,
+        0x3FF44E086061892D, 0x3FF486A2B5C13CD0, 0x3FF4BFDAD5362A27, 0x3FF4F9B2769D2CA7,
+        0x3FF5342B569D4F82, 0x3FF56F4736B527DA, 0x3FF5AB07DD485429, 0x3FF5E76F15AD2148,
+        0x3FF6247EB03A5585, 0x3FF6623882552225, 0x3FF6A09E667F3BCD, 0x3FF6DFB23C651A2F,
+        0x3FF71F75E8EC5F74, 0x3FF75FEB564267C9, 0x3FF7A11473EB0187, 0x3FF7E2F336CF4E62,
+        0x3FF82589994CCE13, 0x3FF868D99B4492ED, 0x3FF8ACE5422AA0DB, 0x3FF8F1AE99157736,
+        0x3FF93737B0CDC5E5, 0x3FF97D829FDE4E50, 0x3FF9C49182A3F090, 0x3FFA0C667B5DE565,
+        0x3FFA5503B23E255D, 0x3FFA9E6B5579FDBF, 0x3FFAE89F995AD3AD, 0x3FFB33A2B84F15FB,
+        0x3FFB7F76F2FB5E47, 0x3FFBCC1E904BC1D2, 0x3FFC199BDD85529C, 0x3FFC67F12E57D14B,
+        0x3FFCB720DCEF9069, 0x3FFD072D4A07897C, 0x3FFD5818DCFBA487, 0x3FFDA9E603DB3285,
+        0x3FFDFC97337B9B5F, 0x3FFE502EE78B3FF6, 0x3FFEA4AFA2A490DA, 0x3FFEFA1BEE615A27,
+        0x3FFF50765B6E4540, 0x3FFFA7C1819E90D8]
+
+/// Low parts of 2^(i/2^12) for i in 0..63 as a double-double, as F64 bits.
+preset CM_F64_HYP_T1_LO: Array<U64, 64> = [0x0000000000000000, 0x3C9AE8E38C59C72A,
+        0xBC57B5D0D58EA8F4, 0x3C94115CB6B16A8E, 0xBC8D7C96F201BB2E, 0x3C984711D4C35EA0,
+        0xBC80484245243778, 0xBC94B237DA2025FA, 0xBC75E00E62D6B30E, 0x3C9A1D6CEDBB9480,
+        0xBC94ACF197A00142, 0xBC6EAF2EA42391A6, 0x3C7DA93F90835F76, 0xBC86A79084AB093C,
+        0x3C986364F8FBE8F8, 0xBC882E8E14E3110E, 0xBC84F6B2A7609F72, 0xBC7E1A258EA8F71A,
+        0x3C74362CA5BC26F2, 0x3C9095A56C919D02, 0xBC6406AC4E81A646, 0x3C9B5A6902767E08,
+        0xBC991B2060859320, 0x3C8427068AB22306, 0x3C9C1D0660524E08, 0xBC9E7BDFB3204BE8,
+        0x3C8843AA8B9CBBC6, 0xBC734104EE7EDAE8, 0xBC72B6AEB6176892, 0x3C7A8CD33B8A1BB2,
+        0x3C72EDC08E5DA99A, 0x3C857BA2DC7E0C72, 0x3C9B61299AB8CDB8, 0xBC990565902C5F44,
+        0x3C870FC41C5C2D54, 0x3C94B9A6E145D76C, 0xBC7008EFF5142BFA, 0xBC977669F033C7DE,
+        0xBC909BB78EEEAD0A, 0x3C9371231477ECE6, 0x3C75E7626621EB5A, 0xBC9BC72B100828A4,
+        0xBC6CE39CBBAB8BBE, 0x3C816996709DA2E2, 0xBC8C11F5239BF536, 0x3C8E1D4EB5EDC6B4,
+        0xBC9AFB99946EE3F0, 0xBC98F06D8A148A32, 0xBC82BF310FC54EB6, 0xBC9C95A035EB4176,
+        0xBC9491793E46834C, 0xBC73E8D0D9C49090, 0xBC9314AA16278AA4, 0x3C848DAF888E9650,
+        0x3C856DC8046821F4, 0x3C945B42356B9D46, 0xBC7082EF51B61D7E, 0x3C72106ED0920A34,
+        0xBC9FD4CF26EA5D0E, 0xBC909F8775E78084, 0x3C564CBBA902CA28, 0x3C94383EF231D206,
+        0x3C94A47A505B3A46, 0x3C9E471202234680]
+
+/// High parts of 2^(i/2^12) for i in 0..63, as F64 bits.
+preset CM_F64_HYP_T1_HI: Array<U64, 64> = [0x3FF0000000000000, 0x3FF000B175EFFDC7,
+        0x3FF00162F3904052, 0x3FF0021478E11CE6, 0x3FF002C605E2E8CF, 0x3FF003779A95F959,
+        0x3FF0042936FAA3D8, 0x3FF004DADB113DA0, 0x3FF0058C86DA1C0A, 0x3FF0063E3A559473,
+        0x3FF006EFF583FC3D, 0x3FF007A1B865A8CA, 0x3FF0085382FAEF83, 0x3FF00905554425D4,
+        0x3FF009B72F41A12B, 0x3FF00A6910F3B6FD, 0x3FF00B1AFA5ABCBF, 0x3FF00BCCEB7707EC,
+        0x3FF00C7EE448EE02, 0x3FF00D30E4D0C483, 0x3FF00DE2ED0EE0F5, 0x3FF00E94FD0398E0,
+        0x3FF00F4714AF41D3, 0x3FF00FF93412315C, 0x3FF010AB5B2CBD11, 0x3FF0115D89FF3A8B,
+        0x3FF0120FC089FF63, 0x3FF012C1FECD613B, 0x3FF0137444C9B5B5, 0x3FF01426927F5278,
+        0x3FF014D8E7EE8D2F, 0x3FF0158B4517BB88, 0x3FF0163DA9FB3335, 0x3FF016F0169949ED,
+        0x3FF017A28AF25567, 0x3FF018550706AB62, 0x3FF019078AD6A19F, 0x3FF019BA16628DE2,
+        0x3FF01A6CA9AAC5F3, 0x3FF01B1F44AF9F9E, 0x3FF01BD1E77170B4, 0x3FF01C8491F08F08,
+        0x3FF01D37442D5070, 0x3FF01DE9FE280AC8, 0x3FF01E9CBFE113EF, 0x3FF01F4F8958C1C6,
+        0x3FF020025A8F6A35, 0x3FF020B533856324, 0x3FF02168143B0281, 0x3FF0221AFCB09E3E,
+        0x3FF022CDECE68C4F, 0x3FF02380E4DD22AD, 0x3FF02433E494B755, 0x3FF024E6EC0DA046,
+        0x3FF02599FB483385, 0x3FF0264D1244C719, 0x3FF027003103B10E, 0x3FF027B357854772,
+        0x3FF0286685C9E059, 0x3FF02919BBD1D1D8, 0x3FF029CCF99D720A, 0x3FF02A803F2D170D,
+        0x3FF02B338C811703, 0x3FF02BE6E199C811]
+
+/// A double-double value hi + lo.
+record CmF64HypDd
+    hi : F64
+    lo : F64
+
+/// x + y as hi + lo exactly, when |x| >= |y| (or x = 0).
+routine cm_f64_hyp_fasttwosum(%x: F64, %y: F64) -> CmF64HypDd
+    block entry():
+        %s : F64 = %x.add(%y)
+        %z : F64 = %s.sub(%x)
+        %e : F64 = %y.sub(%z)
+        return(CmF64HypDd { hi: %s, lo: %e })
+
+/// The double-double product (xh + xl) (ch + cl), not renormalized.
+routine cm_f64_hyp_muldd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64HypDd
+    block entry():
+        %h : F64 = %xh.mul(%ch)
+        %l : F64 = %xh.mul_add(%ch, %h.neg()).add(%xh.mul(%cl)).add(%xl.mul(%ch))
+        return(CmF64HypDd { hi: %h, lo: %l })
+
+/// The double-double times double product (xh + xl) ch, not renormalized.
+routine cm_f64_hyp_mulddd(%xh: F64, %xl: F64, %ch: F64) -> CmF64HypDd
+    block entry():
+        %h : F64 = %xh.mul(%ch)
+        %l : F64 = %xh.mul_add(%ch, %h.neg()).add(%xl.mul(%ch))
+        return(CmF64HypDd { hi: %h, lo: %l })
+
+/// The first Horner step of a double-double polynomial: (c_hi + c_lo) + l, with l the higher-degree tail
+/// evaluated in double precision.
+routine cm_f64_hyp_polydd_init(%l: F64, %c_hi: F64, %c_lo: F64) -> CmF64HypDd
+    block entry():
+        %s : CmF64HypDd = cm_f64_hyp_fasttwosum(%c_hi, %l)
+        return(CmF64HypDd { hi: %s.hi, lo: %s.lo.add(%c_lo) })
+
+/// One Horner step of a double-double polynomial: (ch + cl) (xh + xl) + (c_hi + c_lo).
+routine cm_f64_hyp_polydd_step(%xh: F64, %xl: F64, %ch: F64, %cl: F64, %c_hi: F64,
+        %c_lo: F64) -> CmF64HypDd
+    block entry():
+        %p : CmF64HypDd = cm_f64_hyp_muldd(%xh, %xl, %ch, %cl)
+        %s : CmF64HypDd = cm_f64_hyp_fasttwosum(%c_hi, %p.hi)
+        %l : F64        = %p.lo.add(%c_lo).add(%s.lo)
+        return(CmF64HypDd { hi: %s.hi, lo: %l })
+
+/// Accurate exp(x) as a double-double, given t = round(x 2^12 / log 2) as an F64 and the table value
+/// th + tl of 2^(t/2^12), already scaled; the result is scaled like th.
+routine cm_f64_hyp_exp_accurate(%x: F64, %t: F64, %th: F64, %tl: F64) -> CmF64HypDd
+    block entry():
+        // log(2) / 2^12 as a triple-double l2h + l2l + l2ll, with l2h t exact
+        %dx   : F64        = %x.sub(%t.mul(0x1.62e42ffp-13))
+        %dxl0 : F64        = %t.mul(0x1.718432a1b0e26p-47)
+        %dxll : F64        = %t.mul(0x1.9ff0342542fc3p-102).add(%t.mul_add(0x1.718432a1b0e26p-47,
+                %dxl0.neg()))
+        %dxh  : F64        = %dx.add(%dxl0)
+        %dxl  : F64        = %dx.sub(%dxh).add(%dxl0).add(%dxll)
+        %tail : F64        = %dxh.mul(0x1.6c16c169400a7p-10).add(0x1.11111113e93e9p-7)
+        %fl   : F64        = %dxh.mul(%dxh.mul(%tail).add(0x1.5555555555555p-5))
+        %p3   : CmF64HypDd = cm_f64_hyp_polydd_init(%fl, 0x1.5555555555555p-3,
+                0x1.53e93e9f26e62p-57)
+        %p2   : CmF64HypDd = cm_f64_hyp_polydd_step(%dxh, %dxl, %p3.hi, %p3.lo, 0x1p-1,
+                -0x1.8259d904fd34fp-93)
+        %p1   : CmF64HypDd = cm_f64_hyp_polydd_step(%dxh, %dxl, %p2.hi, %p2.lo, 0x1p+0,
+                0x1.6c16bd194535dp-94)
+        %p0   : CmF64HypDd = cm_f64_hyp_muldd(%dxh, %dxl, %p1.hi, %p1.lo)
+        %f    : CmF64HypDd = cm_f64_hyp_muldd(%th, %tl, %p0.hi, %p0.lo)
+        // th + tl + fh + fl, renormalized
+        %zh : F64 = %th.add(%f.hi)
+        %zl : F64 = %th.sub(%zh).add(%f.hi)
+        %uh : F64 = %zh.add(%tl)
+        %ul : F64 = %zh.sub(%uh).add(%tl).add(%zl)
+        %vh : F64 = %uh.add(%f.lo)
+        %vl : F64 = %uh.sub(%vh).add(%f.lo).add(%ul)
+        return(CmF64HypDd { hi: %vh, lo: %vl })
+
+/// 2^(e - 1023) as an F64, from the biased exponent e (the bits e << 52).
+routine cm_f64_hyp_scale(%e: S64) -> F64
+    block entry():
+        return(F64.from_bits(%e.to_u64_wrap().shl(52)))
+
+/// 2^(i0/64) 2^(i1/2^12) as a double-double, from the two tables.
+routine cm_f64_hyp_table(%i0: USize, %i1: USize) -> CmF64HypDd
+    block entry():
+        %t0h : F64 = F64.from_bits(CM_F64_HYP_T0_HI.get(%i0))
+        %t0l : F64 = F64.from_bits(CM_F64_HYP_T0_LO.get(%i0))
+        %t1h : F64 = F64.from_bits(CM_F64_HYP_T1_HI.get(%i1))
+        %t1l : F64 = F64.from_bits(CM_F64_HYP_T1_LO.get(%i1))
+        %th  : F64 = %t0h.mul(%t1h)
+        %tl  : F64 = %t0h.mul(%t1l).add(%t1h.mul(%t0l)).add(%t0h.mul_add(%t1h, %th.neg()))
+        return(CmF64HypDd { hi: %th, lo: %tl })
+
+/// The fast-path polynomial exp(d) - 1 ~ d ((1 + d/2) + d2 (c2 + d c3)) of sinh and cosh, with d2 = dx^2
+/// passed in (d is dx or -dx).
+routine cm_f64_hyp_poly(%d: F64, %d2: F64) -> F64
+    block entry():
+        %a : F64 = %d.mul(0x1p-1).add(0x1p+0)
+        %b : F64 = %d.mul(0x1.55555551c98cp-5).add(0x1.5555555aaaaaep-3)
+        return(%d.mul(%d2.mul(%b).add(%a)))
+
+/// True when the accurate result h + l (h = round(h + l)) may still round the wrong way: the last bits of l
+/// are within 8 of zero, or the exponent gap between h and l exceeds 103. sinh and cosh then look the
+/// argument up in their database.
+routine cm_f64_hyp_is_hard(%h: F64, %l: F64) -> Bool
+    block entry():
+        %eh : U64 = %h.bits().shr(52).bitand(0x7FF)
+        %el : U64 = %l.bits().shr(52).bitand(0x7FF)
+        %ml : U64 = %l.bits().add_wrap(8).bitand(0x000FFFFFFFFFFFFF)
+        return(%ml.le(16).bitor(%eh.gt(%el.add(103))))
+
+/// y1 for the final sum y0 + y1: when y1 is a power of two, it moves one ulp toward y2 so that the rounding
+/// of y0 + y1 sees the sticky bits of y2.
+routine cm_f64_hyp_nudge(%y1: F64, %y2: F64) -> F64
+    block entry():
+        %tu     : U64  = %y1.bits()
+        %pow2   : Bool = %tu.bitand(0x000FFFFFFFFFFFFF).eq(0)
+        %toward : Bool = %y2.bits().bitxor(%tu).shr(63).eq(1)
+        %moved  : U64  = %toward ? %tu.sub_wrap(1) : %tu.add_wrap(1)
+        return(F64.from_bits(%pow2 ? %moved : %tu))

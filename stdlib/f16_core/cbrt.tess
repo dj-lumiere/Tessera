@@ -1,0 +1,69 @@
+// Tessera stdlib: the correctly rounded cube root of F16
+//
+// The F32 cube root of x, correctly rounded, then rounded to F16. That double
+// rounding goes wrong only for exact cube roots, which are recognized from a
+// few mantissa bits and built exactly, and for 0x1.544p(k) with k = 1 mod 3,
+// which is corrected by hand. Round to nearest only: ±0, ±inf and NaN map to
+// themselves (NaN comes back quiet).
+//
+// Ported from CORE-MATH, src/binary16/cbrt/cbrtf16.c via RazorForge's B16Cbrt.rf.
+// The original falls back on the C library's binary32 cbrtf, and RazorForge on
+// its correctly rounded F64 cbrt narrowed to F32; here it is f32_cm_cbrt, the
+// correctly rounded F32 cube root, which gives the same values.
+// Copyright (c) 2025 Maxence Ponsardin
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// The cube root of x, correctly rounded.
+routine f16_cm_cbrt(%x: F16) -> F16
+    block entry():
+        // F16.to_f32 keeps a signaling NaN signaling, and its bits could pass for an exact cube below
+        // (RazorForge's conversion quiets it, which rules that out); NaN comes back quiet either way
+        %nan : Bool = %x.is_nan()
+        branch %nan ? return(%x.add(%x)) : continue
+        %tu    : U32   = %x.bits().to_u32()
+        %xf    : U32   = %x.to_f32().bits()
+        %k     : USize = %xf.shr(19).bitand(0xF).to_usize()
+        %tm    : U32   = CM_F16_CBRT_TM.get(%k)
+        %match : Bool  = %tm.eq(%xf.shr(13).bitand(0x3F))
+        branch %match ? exponent(%tu, %xf, %k) : hard(%tu)
+
+    // The mantissa is that of an exact cube; the exponent must fit too.
+    block exponent(%tu: U32, %xf: U32, %k: USize):
+        %expo  : U32  = %xf.bitand(0x7FFFFFFF).shr(23)
+        %te    : U32  = CM_F16_CBRT_TE.get(%k)
+        %exact : Bool = %te.eq(%expo.add(2).rem(3))
+        branch %exact ? exact(%tu, %expo, %te, %k) : hard(%tu)
+
+    // expo - 127 - te is a multiple of 3, so its truncated and floored quotients agree.
+    block exact(%tu: U32, %expo: U32, %te: U32, %k: USize):
+        %q  : S32 = %expo.to_s32().sub(127).sub(%te.to_s32())
+        %qu : U32 = %q.div(3).to_u32_wrap()
+        %r  : U32 = %tu.bitand(0x8000).add_wrap(%qu.shl(10)).add_wrap(CM_F16_CBRT_TF.get(%k))
+        return(F16.from_bits(%r.to_u16_wrap()))
+
+    // The only input the F32 cube root rounds wrongly is 0x1.544p(k) with k = 1 mod 3.
+    block hard(%tu: U32):
+        %e     : U32  = %tu.bitand(0x7FFF).shr(10)
+        %wrong : Bool = %tu.bitand(0x03FF).eq(0x0151).bitand(%e.rem(3).eq(1)).bitand(%e.lt(31))
+        branch %wrong ? fix(%tu, %e) : return(f32_cm_cbrt(%x.to_f32()).to_f16())
+
+    block fix(%tu: U32, %e: U32):
+        %q    : S32 = %e.to_s32().sub(16).div(3).add(15)
+        %r    : U32 = %q.to_u32_wrap().shl(10).add_wrap(0x018B).add_wrap(%tu.shr(15).shl(15))
+        %t    : F32 = F16.from_bits(%r.to_u16_wrap()).to_f32()
+        %half : F32 = %r.shr(15).to_f32().sub(0.5)
+        %sum  : F32 = %t.add(F32.mul(0x1p-16, %half))
+        return(%sum.to_f16())
+
+/// The F32 mantissa bits 13..18 of an exact-cube input, indexed by its bits 19..22 (0xff = none).
+preset CM_F16_CBRT_TM: Array<U32, 16> = [0x00, 0xFF, 0xFF, 0xFF, 0x33, 0x1C, 0x32, 0xFF, 0xFF, 0xFF,
+        0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0x10]
+
+/// The exponent residue (mod 3) an exact-cube input must have, for the same index.
+preset CM_F16_CBRT_TE: Array<U32, 16> = [0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+
+/// The F16 bits of the exact cube root's significand (with a unit exponent), for the same index.
+preset CM_F16_CBRT_TF: Array<U32, 16> = [0x3C00, 0, 0, 0, 0x3D80, 0x3F00, 0x3C80, 0, 0, 0, 0,
+        0x3E00, 0, 0, 0, 0x3D00]

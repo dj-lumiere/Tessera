@@ -1,0 +1,316 @@
+// Tessera stdlib: the correctly rounded arc tangent of F64
+//
+// atan(x) = j pi/256 + atan(h) with h = (x - tan(j pi/256)) / (1 + x tan(j pi/256)),
+// j picked from a crude quadratic in the bits of x, and a short odd polynomial
+// in h; above 0x1.2ded8e34a9035p+7, atan(x) = sign(x) pi/2 + atan(-1/x), and
+// small |x| takes an odd polynomial in x. When the fast path's error bound
+// can't decide the rounding, the accurate path redoes it in double-double
+// with 129 reduction points, and a table covers the inputs too close to a
+// rounding boundary. Round to nearest only: +-0 stays itself, +-inf gives
+// +-pi/2 rounded, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary64/atan/atan.c via RazorForge's B64Atan.rf.
+// Copyright (c) 2023-2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// tan(pi/256 j) for j = 0..128, as F64 bits.
+preset CM_F64_ATAN_AH: Array<U64, 129> = [0x0000000000000000, 0x3F89224E047E368E,
+        0x3F992346247A91F0, 0x3FA2DBAAE9A05DB0, 0x3FA927278A3B1162, 0x3FAF7495EA3F3783,
+        0x3FB2E239CCFF3831, 0x3FB60B9F7597FDEC, 0x3FB936BB8C5B2DA2, 0x3FBC63CE377FC802,
+        0x3FBF93183A8DB9E9, 0x3FC1626D85A91E70, 0x3FC2FCAC73A60640, 0x3FC4986A74CF4E57,
+        0x3FC635C990CE0D36, 0x3FC7D4EC54FB5968, 0x3FC975F5E0553158, 0x3FCB1909EFD8B762,
+        0x3FCCBE4CEB4B4CF2, 0x3FCE65E3F27C9F2A, 0x3FD007FA758626AE, 0x3FD0DE53475F3B3C,
+        0x3FD1B6103D3597E9, 0x3FD28F459ECAD74D, 0x3FD36A08355C63DC, 0x3FD4466D542BAC92,
+        0x3FD5248AE1701B17, 0x3FD604775FBB27DF, 0x3FD6E649F7D78649, 0x3FD7CA1A832D0F84,
+        0x3FD8B00196B3D022, 0x3FD998188E816BF0, 0x3FDA827999FCEF32, 0x3FDB6F3FC8C61E5B,
+        0x3FDC5E87185E67B6, 0x3FDD506C82A2C800, 0x3FDE450E0D273E7A, 0x3FDF3C8AD985D9EE,
+        0x3FE01B819B5A7CF7, 0x3FE09A4C59BD0D4D, 0x3FE11AB7190834EC, 0x3FE19CD3FE8E405D,
+        0x3FE220B5EF047825, 0x3FE2A6709A74F289, 0x3FE32E1889047FFD, 0x3FE3B7C3289ED6F3,
+        0x3FE44386DB9CE5DB, 0x3FE4D17B087B265D, 0x3FE561B82AB7F990, 0x3FE5F457E4F4812E,
+        0x3FE6897514751DB6, 0x3FE7212BE621BE6D, 0x3FE7BB99ED2990CF, 0x3FE858DE3B716571,
+        0x3FE8F9197BF85EEB, 0x3FE99C6E0F634394, 0x3FEA43002AE42850, 0x3FEAECF5F9BA35A6,
+        0x3FEB9A77C18C1AF2, 0x3FEC4BB009E77983, 0x3FED00CBC7384D2E, 0x3FEDB9FA89953FCF,
+        0x3FEE776EAFC91706, 0x3FEF395D9F0E3C92, 0x3FF0000000000000, 0x3FF065C900AAF2D8,
+        0x3FF0CE29D0883C99, 0x3FF139447E6A86EE, 0x3FF1A73D55278C4B, 0x3FF2183B0C4573FF,
+        0x3FF28C66FDAF8F09, 0x3FF303ED61109E20, 0x3FF37EFD8D87607E, 0x3FF3FDCA42847507,
+        0x3FF48089F8BF42CC, 0x3FF507773C537EAD, 0x3FF592D11142FA55, 0x3FF622DB63C8ECC2,
+        0x3FF6B7DF86265200, 0x3FF7522CBDD428A8, 0x3FF7F218E25A7461, 0x3FF89801106CC709,
+        0x3FF9444A7462122A, 0x3FF9F7632FA9E871, 0x3FFAB1C35D8A74EA, 0x3FFB73EE3C3EF16A,
+        0x3FFC3E738086BC0F, 0x3FFD11F0DAE40609, 0x3FFDEF13B73C1406, 0x3FFED69B4153A45D,
+        0x3FFFC95ABAD6CF4A, 0x4000641E192CEAB3, 0x4000EA21D716FBF7, 0x40017749711A6679,
+        0x40020C36C6A7F38E, 0x4002A99F50FD4F4F, 0x4003504F333F9DE6, 0x4004012CE2586A17,
+        0x4004BD3D87FE0650, 0x400585AA4E1530FA, 0x40065BC6CC825147, 0x40074118E4B6A7C8,
+        0x400837626D70FDB8, 0x400940AD30ABC792, 0x400A5F59E90600DD, 0x400B9633283B6D14,
+        0x400CE885653127E7, 0x400E5A3DE972A377, 0x400FF01305ECD8DC, 0x4010D7DC7CFF4C9E,
+        0x4011D0143E71565F, 0x4012E4FF1626B949, 0x40141BFEE2424771, 0x40157BE4EAA5E11B,
+        0x40170D751908C1B1, 0x4018DC25C117782B, 0x401AF73F4CA3310F, 0x401D7398D15E70DB,
+        0x4020372FB36B87E2, 0x402208DBDAE055EF, 0x40244E6C595AFDCC, 0x4027398C57F3F1AD,
+        0x402B1D03C03D2F7F, 0x403046E9FE60A77E, 0x40345AFFED201B55, 0x403B267195B1FFAE,
+        0x40445E2455E4AAA7, 0x40545EED6854CE99, 0x0000000000000000]
+
+/// atan(CM_F64_ATAN_AH[j]) - pi/256 j, as F64 bits.
+preset CM_F64_ATAN_AL: Array<U64, 129> = [0x0000000000000000, 0x3C1A3CA6C727C59D,
+        0x3BF138B0EF96A186, 0x3C436E7F8A3F5E42, 0xBBFAC986EFB92662, 0x3C406EC8011EE816,
+        0xBC5858437D431332, 0xBC3CEBD13EB7C513, 0xBC5840CAC0D81DB5, 0x3C5400B0FDAA109E,
+        0x3C40E04E06C86E72, 0x3C4F7AD829163CA7, 0xBC52680735CE2CD8, 0xBC690559690B42E4,
+        0x3C591D29110B41AA, 0xBC4EA90E27182780, 0xBC2DC82AC14E3E1C, 0xBC573A10FD13DAAF,
+        0xBC63A7FFBEABDA0B, 0xBC6DB6627A24D523, 0xBC645F97DD3099F6, 0xBC66293F68741816,
+        0xBC6AB240D40633E9, 0xBC2DE34D14E832E0, 0x3C6AF540D9FB4926, 0x3C6DA60FDBC82AC4,
+        0xBC792A601170138A, 0xBC67F1FCA1D5D15B, 0xBC64E223EA716C7B, 0x3C7B24C824AC51FC,
+        0x3C64314CD132BA43, 0xBC711F1E0817879A, 0xBC6C3DEA4DBAD538, 0x3C660D1B780EE3EB,
+        0xBC4AB5EDB7DFA545, 0xBC68E1437048B5BD, 0xBC706951C97B050F, 0xBC414AF9522AB518,
+        0xBC7ABA0D7D97D1F2, 0x3C4095BC4EBC2C42, 0x3C8798826FA27774, 0x3C8008F6258FC98F,
+        0xBC5462AF7CEB7DE6, 0xBC71184DFD78B472, 0x3C79141876DC40C5, 0x3C8481C20189726C,
+        0x3C82E851BD025441, 0x3C713ADA9B8BC419, 0xBC805B4C3C4CBEE8, 0xBC85619249BD96F1,
+        0xBC6B0A0FBCAFC671, 0xBC819FF2DC66DA45, 0x3C81320449592D92, 0xBC81FDDCD2F3DA8E,
+        0x3C6D44A42E35CC97, 0xBC7585A178B4A18D, 0x3C6F95A531B3A970, 0xBC396C2D43CA3392,
+        0xBC6A5BED94B05DEF, 0x3C454509D2BFF511, 0xBC6B4C867CEF300C, 0xBC1DDFAC663D6BC6,
+        0xBC7A510683FF7CB6, 0x3C44FDCD8E4E8710, 0x0000000000000000, 0xBC8DEEC7FC9042AD,
+        0xBC8395AE45E0657D, 0x3C8332CF301A97F3, 0xBC86CC8C4B78213B, 0x3C870A90841DA57A,
+        0xBC6BA39BAD450EE0, 0xBC88692946D9F93C, 0x3C63B711BF765B58, 0x3C7C21387985B081,
+        0xBC87DDB19D3D0EFC, 0xBC7F5E354CF971F3, 0xBC700F0AD675330D, 0xBC82C93F50AB2C0E,
+        0x3C7BEC391ADC37D5, 0xBC69686DDC9FFCF5, 0xBC78D16529514246, 0xBC8092F51E9C2803,
+        0xBC807C06755404C4, 0x3C802E0D43ABC92B, 0x3C5D0184E48AF6F7, 0x3C773BE957380BC2,
+        0xBC702B6E26C84462, 0x3C525C4F3FFA6E1F, 0xBC5E302DB3C6823F, 0x3C73207830326C0E,
+        0xBC66308CEE7927BF, 0xBC70147EBF0DF4C5, 0xBC7168533CC41D8B, 0xBC652A0B0333E9C5,
+        0x3C68659EECE35395, 0x3C820FCAD18CB36F, 0xBC752AFDBD5A8C74, 0xBC79747A792907D7,
+        0x3C790C59393B52C8, 0x3C7AF6934F13A3A8, 0xBC48534DCAB5AD3E, 0xBC7555AA8BFCA9A1,
+        0xBC556B3FEE9CA72B, 0x3C54B3FDD4FDC06C, 0x3C6285D367C55DDC, 0xBC48712976F17A16,
+        0xBC3ABE8AB65D49FC, 0x3C5CD9BE81AD764B, 0x3C4742C2922656FA, 0xBC77C842978BEE09,
+        0x3C67BC7DEA7C3C03, 0x3C4AEFBE25B404E9, 0xBC34BCFAAA95CB2C, 0x3C50FE741E4EC679,
+        0x3C5FE74A5B0EC709, 0x3C50CA1C19F710EF, 0x3C52867B40BA77D6, 0x3C60FD4E0D4B1547,
+        0x3C5C16C9ECC1621D, 0x3C56B81A36E75E8C, 0xBC57C22045771848, 0x3C5970503BE105C0,
+        0xBC3F299D010AEAD2, 0x3C5D2B61DEFF33EC, 0x3BF0E84D9567203A, 0xBBFAD44B44B92653,
+        0xBC3296D577B5E21D, 0x3C02DB53886013CA, 0x0000000000000000]
+
+/// A crude piecewise quadratic approximation of atan that picks the table index:
+/// constant terms.
+preset CM_F64_ATAN_C0: Array<U64, 31> = [419, 500, 582, 745, 908, 1234, 1559, 2210, 2860, 4156,
+        5444, 7989, 10476, 15224, 19601, 27105, 33036, 41266, 46469, 52375, 55587, 58906, 60612,
+        62325, 63192, 64056, 64491, 64923, 65141, 65358, 65467]
+
+/// Linear terms of the index quadratic.
+preset CM_F64_ATAN_C1: Array<U64, 31> = [81, 81, 163, 163, 326, 326, 651, 650, 1299, 1293, 2569,
+        2520, 4917, 4576, 8341, 6648, 10210, 6292, 7926, 4038, 4591, 2172, 2390, 1107, 1207, 556,
+        605, 278, 303, 139, 151]
+
+/// Quadratic terms of the index quadratic (subtracted).
+preset CM_F64_ATAN_C2: Array<U64, 31> = [0, 0, 0, 0, 0, 0, 0, 1, 3, 4, 24, 32, 168, 200, 838, 731,
+        1998, 1117, 2048, 849, 1291, 479, 688, 247, 349, 124, 175, 62, 88, 31, 44]
+
+/// The inputs |x| whose arc tangent is too close to a rounding boundary, as F64 bits
+/// (two appear twice, as in CORE-MATH; the first match wins).
+preset CM_F64_ATAN_DB_X: Array<U64, 12> = [0x3F80DC89A3B55010, 0x3F7E3FB41D2D2260,
+        0x3FE7BA49F739829F, 0x3FCA933FE176B375, 0x3F7BB04A79820063, 0x3F7CD30A9499618B,
+        0x3F8F44AA37B8E66B, 0x3F7FD2AC95E57EF9, 0x3F96419079BBF601, 0x3FE7BA49F739829F,
+        0x3FCD768804487B07, 0x3F7BB04A79820063]
+
+/// The high parts of their arc tangents, as F64 bits.
+preset CM_F64_ATAN_DB_H: Array<U64, 12> = [0x3F80DC70AC228717, 0x3F7E3F9013A852F8,
+        0x3FE46AC372243536, 0x3FCA33F32AC5CEB5, 0x3F7BB02ED5C5E956, 0x3F7CD2EB65F92A46,
+        0x3F8F440B04187C87, 0x3F7FD2829FEBC03A, 0x3F9640AADE8F5427, 0x3FE46AC372243536,
+        0x3FCCF5676F373EC1, 0x3F7BB02ED5C5E956]
+
+/// The low parts of their arc tangents, as F64 bits.
+preset CM_F64_ATAN_DB_L: Array<U64, 12> = [0x3C20000000000000, 0x3C10000000000000,
+        0x3920000000000000, 0xB8F0000000000000, 0xB8C0000000000000, 0xB8F0000000000000,
+        0xB8F0000000000000, 0xB8F0000000000000, 0x38D0000000000000, 0x3910000000000000,
+        0xB910000000000000, 0xB8C0000000000000]
+
+/// arctan(x), correctly rounded.
+routine f64_cm_atan(%x: F64) -> F64
+    block entry():
+        %tu    : U64  = %x.bits()
+        %at    : U64  = %tu.bitand(0x7FFFFFFFFFFFFFFF)  // |x|
+        %small : Bool = %at.lt(0x3F7B21C475E6362A)  // |x| < 0x1.b21c475e6362ap-8
+        %large : Bool = %at.gt(0x4062DED8E34A9035)  // |x| > 0x1.2ded8e34a9035p+7
+        when:
+            %small -> small(%at)
+            %large -> large(%at)
+            else   -> table(%tu, %at)
+
+    block small(%at: U64):
+        %zero : Bool = %at.eq(0)
+        %tiny : Bool = %at.lt(0x3E40000000000000)  // |x| < 2^-27
+        when:
+            %zero -> return(%x)
+            %tiny -> return(F64.mul_add(-0x1p-54, %x, %x))
+            else  -> series()
+
+    // x + x^3 p(x^2)
+    block series():
+        %x2   : F64  = %x.mul(%x)
+        %x3   : F64  = %x.mul(%x2)
+        %x4   : F64  = %x2.mul(%x2)
+        %a01  : F64  = %x2.mul(0x1.99999999998c1p-3).add(-0x1.5555555555555p-2)
+        %a23  : F64  = %x2.mul(0x1.c711fd121ae8p-4).add(-0x1.249249176aecp-3)
+        %f    : F64  = %x3.mul(%a01.add(%x4.mul(%a23)))
+        %epsp : F64  = %f.mul(0x1.6p-50)
+        %epsm : F64  = %f.mul(0x1.6p-51)
+        %ub   : F64  = %f.add(%epsp).add(%x)
+        %lb   : F64  = %f.sub(%epsm).add(%x)
+        %sure : Bool = %ub.eq(%lb)
+        branch %sure ? return(%ub) : return(cm_f64_atan_accurate(%x, %ub))
+
+    // sign(x) pi/2 + atan(-1/x); from 0x1.d02967c31cdb5p+53 on just sign(x) pi/2 rounded, or NaN
+    block large(%at: U64):
+        %ah     : F64  = F64.copysign(0x1.921fb54442d18p+0, %x)
+        %al     : F64  = F64.copysign(0x1.1a62633145c07p-54, %x)
+        %nan    : Bool = %at.gt(0x7FF0000000000000)
+        %settle : Bool = %at.ge(0x434D02967C31CDB5)
+        when:
+            %nan    -> return(%x.add(%x))
+            %settle -> return(%ah.add(%al))
+            else    -> finish(F64.div(-1.0, %x), %ah, %al)
+
+    // 0x1.b21c475e6362ap-8 <= |x| <= 0x1.2ded8e34a9035p+7: reduce by tan(j pi/256), 1 <= i <= 30
+    block table(%tu: U64, %at: U64):
+        %i   : USize = %at.shr(51).sub(2030).to_usize()
+        %u   : U64   = %tu.bitand(0x0007FFFFFFFFFFFF)
+        %ut  : U64   = %u.shr(35)
+        %ut2 : U64   = %ut.mul_wrap(%ut).shr(16)
+        %j0  : U64   = CM_F64_ATAN_C0.get(%i).shl(16).add_wrap(%ut.mul_wrap(CM_F64_ATAN_C1.get(%i)))
+        %j   : USize = %j0.sub_wrap(%ut2.mul_wrap(CM_F64_ATAN_C2.get(%i))).shr(25).to_usize()
+        %sg  : F64   = F64.copysign(1.0, %x)
+        %ta  : F64   = %sg.mul(F64.from_bits(CM_F64_ATAN_AH.get(%j)))
+        %id  : F64   = %sg.mul(%j.to_u64().to_f64())
+        %al  : F64   = %sg.mul(F64.from_bits(CM_F64_ATAN_AL.get(%j))).add(F64.mul(
+                0x1.8469898cc517p-55, %id))
+        %h   : F64   = %x.sub(%ta).div(%x.mul(%ta).add(1.0))
+        %ah  : F64   = F64.mul(0x1.921fb54442dp-7, %id)
+        jump finish(%h, %ah, %al)
+
+    // ah + al + atan(h), with the fast path's error bound
+    block finish(%h: F64, %ah: F64, %al: F64):
+        %h2   : F64  = %h.mul(%h)
+        %h4   : F64  = %h2.mul(%h2)
+        %a01  : F64  = %h2.mul(-0x1.555555555552bp-2).add(1.0)
+        %a23  : F64  = %h2.mul(-0x1.248d2c8444ac6p-3).add(0x1.9999999069c2p-3)
+        %fp   : F64  = %a01.add(%h4.mul(%a23))
+        %all  : F64  = %h.mul_add(%fp, %al)
+        %e    : F64  = %h.mul(0x1.f8p-51)
+        %ub   : F64  = %all.add(%e).add(%ah)
+        %lb   : F64  = %all.sub(%e).add(%ah)
+        %sure : Bool = %ub.eq(%lb)
+        branch %sure ? return(%ub) : return(cm_f64_atan_accurate(%x, %ub))
+
+/// The accurate path, for the inputs the fast path can't round: atan(x) to about 107
+/// bits in double-double, with 2^-27 <= |x|; a is the fast-path approximation.
+routine cm_f64_atan_accurate(%x: F64, %a: F64) -> F64
+    block entry():
+        %phi : F64   = %a.abs().mul(0x1.45f306dc9c883p6).add(256.5)
+        %i   : USize = %phi.bits().shr(44).bitand(0xFF).to_usize()  // 256.5 < phi < 384.5, so 0 <= i <= 128
+        %inf : Bool  = %i.eq(128)
+        branch %inf ? reciprocal(%i) : reduce(%i)
+
+    // h = -1/x
+    block reciprocal(%i: USize):
+        %h : F64 = F64.div(-1.0, %x)
+        jump poly(%i, %h, F64.mul_add(%h, %x, 1.0).mul(%h))
+
+    // h = (x - ta) / (1 + x ta) with ta = tan(i pi/256)
+    block reduce(%i: USize):
+        %ta   : F64 = F64.from_bits(CM_F64_ATAN_AH.get(%i)).copysign(%x)
+        %zta  : F64 = %x.mul(%ta)
+        %ztal : F64 = %x.mul_add(%ta, %zta.neg())
+        %zmta : F64 = %x.sub(%ta)
+        %v    : F64 = F64.add(1.0, %zta)
+        %d    : F64 = F64.sub(1.0, %v)
+        %ev   : F64 = %d.add(%zta).sub(%d.add(%v).sub(1.0)).add(%ztal)
+        %r    : F64 = F64.div(1.0, %v)
+        %rl   : F64 = %r.mul_add(%v.neg(), 1.0).sub(%ev.mul(%r)).mul(%r)
+        %h    : F64 = %r.mul(%zmta)
+        %hl   : F64 = %r.mul_add(%zmta, %h.neg()).add(%rl.mul(%zmta))
+        jump poly(%i, %h, %hl)
+
+    // atan(h + hl) = h + h^3 q(h^2) in double-double
+    block poly(%i: USize, %h: F64, %hl: F64):
+        %p2  : CmF64InvtrigDD = cm_f64_atan_muldd(%h, %hl, %h, %hl)
+        %h2  : F64            = %p2.hi
+        %h2l : F64            = %p2.lo
+        %h4  : F64            = %h2.mul(%h2)
+        %p3  : CmF64InvtrigDD = cm_f64_atan_muldd(%h, %hl, %h2, %h2l)
+        %a01 : F64            = %h2.mul(-0x1.745d1745d1265p-4).add(0x1.c71c71c71c71cp-4)
+        %a23 : F64            = %h2.mul(-0x1.1107c41ad3253p-4).add(0x1.3b13b115bcbc4p-4)
+        %fl  : F64            = %h2.mul(%a01.add(%h4.mul(%a23)))
+        // the double-double polynomial over ch[0..2], Horner from the top coefficient
+        %ch3  : F64            = F64.add(-0x1.2492492492492p-3, %fl)
+        %cl3  : F64            = F64.sub(-0x1.2492492492492p-3,
+                %ch3).add(%fl).add(-0x1.249242093c016p-57)
+        %m2   : CmF64InvtrigDD = cm_f64_atan_muldd(%h2, %h2l, %ch3, %cl3)
+        %th2  : F64            = %m2.hi.add(0x1.999999999999ap-3)
+        %tl2  : F64            = F64.sub(0x1.999999999999ap-3, %th2).add(%m2.hi)
+        %cl2  : F64            = %m2.lo.add(%tl2.add(-0x1.999999999bcb8p-57))
+        %m1   : CmF64InvtrigDD = cm_f64_atan_muldd(%h2, %h2l, %th2, %cl2)
+        %th1  : F64            = %m1.hi.add(-0x1.5555555555555p-2)
+        %tl1  : F64            = F64.sub(-0x1.5555555555555p-2, %th1).add(%m1.hi)
+        %cl1  : F64            = %m1.lo.add(%tl1.add(-0x1.5555555555555p-56))
+        %f    : CmF64InvtrigDD = cm_f64_atan_muldd(%p3.hi, %p3.lo, %th1, %cl1)
+        %sg   : F64            = F64.copysign(1.0, %x)
+        %zero : Bool           = %i.eq(0)
+        branch %zero ? round(%h, %f.hi, %f.lo, %sg) : offset(%i, %h, %hl, %f, %sg)
+
+    // add i pi/256 (three parts) and atan(tan(i pi/256)) - i pi/256
+    block offset(%i: USize, %h: F64, %hl: F64, %f: CmF64InvtrigDD, %sg: F64):
+        %inner : Bool           = %i.lt(128)
+        %df    : F64            = %inner ? %sg.mul(F64.from_bits(CM_F64_ATAN_AL.get(%i))) : 0.0
+        %id    : F64            = %i.to_u64().to_f64().copysign(%x)
+        %ah    : F64            = F64.mul(0x1.921fb54442dp-7, %id)
+        %al    : F64            = F64.mul(0x1.8469898cc518p-55, %id)
+        %at    : F64            = F64.mul(-0x1.fc8f8cbb5bf8p-104, %id)
+        %s1    : CmF64InvtrigDD = cm_f64_atan_adddd(%al, %at, %df, 0.0)
+        %s2    : CmF64InvtrigDD = cm_f64_atan_adddd(%s1.hi, %s1.lo, %h, %hl)
+        %s3    : CmF64InvtrigDD = cm_f64_atan_adddd(%s2.hi, %s2.lo, %f.hi, %f.lo)
+        jump round(%ah, %s3.hi, %s3.lo, %sg)
+
+    // ah + al + at, with the inputs too close to a rounding boundary settled apart
+    block round(%ah: F64, %al: F64, %at: F64, %sg: F64):
+        %s0   : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(%ah, %al)
+        %s1   : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(%s0.lo, %at)
+        %v0   : F64            = %s0.hi
+        %v1   : F64            = %s1.hi
+        %t0   : U64            = %v0.bits()
+        %t1   : U64            = %v1.bits()
+        %near : Bool           = %t1.add_wrap(1).bitand(0x000FFFFFFFFFFFFF).le(2)
+        %gap  : Bool           = %t0.shr(52).bitand(0x7FF).sub_wrap(%t1.shr(52).bitand(0x7FF)).gt(103)
+        %hard : Bool           = %near.bitor(%gap)
+        branch %hard ? database(%x.abs(), %v0, %v1, %s1.lo, %sg, 0) : return(%v1.add(%v0))
+
+    block database(%ax: F64, %v0: F64, %v1: F64, %v2: F64, %sg: F64, %k: USize):
+        %end : Bool = %k.eq(12)
+        branch %end ? nudge(%v0, %v1, %v2) : continue
+        %hit : Bool = %ax.eq(F64.from_bits(CM_F64_ATAN_DB_X.get(%k)))
+        branch %hit ? found(%k, %sg) : database(%ax, %v0, %v1, %v2, %sg, %k.add(1))
+
+    block found(%k: USize, %sg: F64):
+        %rh : F64 = F64.from_bits(CM_F64_ATAN_DB_H.get(%k)).copysign(%x)
+        %rl : F64 = %sg.mul(F64.from_bits(CM_F64_ATAN_DB_L.get(%k)))
+        return(%rh.add(%rl))
+
+    // v1 has an all-zero significand: move it one ulp toward v2
+    block nudge(%v0: F64, %v1: F64, %v2: F64):
+        %t1    : U64  = %v1.bits()
+        %exact : Bool = %t1.bitand(0x000FFFFFFFFFFFFF).ne(0)
+        branch %exact ? return(%v1.add(%v0)) : continue
+        %opposite : Bool = %v2.bits().bitxor(%t1).shr(63).ne(0)
+        %t        : U64  = %opposite ? %t1.sub_wrap(1) : %t1.add_wrap(1)
+        return(F64.from_bits(%t).add(%v0))
+
+/// The double-double sum (xh + xl) + (ch + cl), for any operands.
+routine cm_f64_atan_adddd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64InvtrigDD
+    block entry():
+        %s : F64 = %xh.add(%ch)
+        %d : F64 = %s.sub(%xh)
+        %l : F64 = %ch.sub(%d).add(%xh.add(%d.sub(%s))).add(%xl.add(%cl))
+        return(CmF64InvtrigDD { hi: %s, lo: %l })
+
+/// The double-double product (xh + xl) (ch + cl), renormalized.
+routine cm_f64_atan_muldd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64InvtrigDD
+    block entry():
+        %ahlh : F64 = %ch.mul(%xl)
+        %alhh : F64 = %cl.mul(%xh)
+        %ahhh : F64 = %ch.mul(%xh)
+        %ahhl : F64 = %ch.mul_add(%xh, %ahhh.neg()).add(%alhh.add(%ahlh))
+        return(cm_f64_invtrig_fasttwosum(%ahhh, %ahhl))

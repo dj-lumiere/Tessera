@@ -1,0 +1,331 @@
+// Tessera stdlib: the correctly rounded inverse hyperbolic sine of F64
+//
+// For |x| < 0x1.bp-4 an odd polynomial, redone in double-double when its error bound can't decide the rounding.
+// Otherwise asinh |x| = log(|x| + sqrt(x^2 + 1)), with the argument as a double-double (2|x| + 1/(2|x|) past
+// 2^26, just 2|x| past 2^52) and the logarithm from the tables of archyp_shared.tess, checked with an error
+// bound; the accurate path computes the logarithm to about 150 bits and looks the few hardest arguments up in
+// a table of exact values.
+// Round to nearest only: ±0, ±inf and NaN map to themselves (NaN quiet), asinh(-x) = -asinh(x).
+//
+// Ported from CORE-MATH, src/binary64/asinh/asinh.c via RazorForge's B64Asinh.rf.
+// Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// Hard-to-round arguments |x| (sorted), as F64 bits.
+preset CM_F64_ASINH_DB_X: Array<U64, 35> = [0x3FD00F9476450863, 0x3FD1F0A79315B287,
+        0x3FD2B9618FF7ACB7, 0x3FD389EF683F3AA7, 0x3FD3B07E0C779DDA, 0x3FD48441DF33B6D3,
+        0x3FD687BD068C1C1E, 0x3FD8740C4453A056, 0x3FD891ACDA11167E, 0x3FDBAFC3479FC9CC,
+        0x3FDC59869F17B483, 0x3FDC8BE879787986, 0x3FDE73B46ABB01E1, 0x3FDED6236DA268B0,
+        0x3FDF399EBAFC1951, 0x3FDF70975AB0D471, 0x3FDFBDD4A37760B7, 0x3FDFEE72EFB4BFDD,
+        0x3FE02339D6BDB741, 0x3FE09E7C831B1A23, 0x3FE16D32C862FC3B, 0x3FE857954132083D,
+        0x3FE8A5C3B60F7E11, 0x3FE9740EB419DD04, 0x3FEA16D9CC06011A, 0x3FEBB635BE2213D1,
+        0x3FED4B21EBF542F0, 0x3FF7B8516FFD2406, 0x3FF9295B9116E2E2, 0x3FFFEDC65E327140,
+        0x40057E377B3F0B4B, 0x4026056B06A21918, 0x403843E1B5E5979C, 0x409FEE8F69C4CD25,
+        0x4170FBC6C02B1C90]
+
+/// The high parts of asinh |x| for those arguments, as F64 bits.
+preset CM_F64_ASINH_DB_H: Array<U64, 35> = [0x3FCFCB35067F343C, 0x3FD1B68AAE88FEBA,
+        0x3FD27781D9AA4E25, 0x3FD33F52DB6DF1AF, 0x3FD364303E1AD8F6, 0x3FD42E385800F0A4,
+        0x3FD616CC75D49226, 0x3FD7E4F2AD132A1D, 0x3FD8009D924A3FFD, 0x3FDAE3773250E7D2,
+        0x3FDB7EFA91915C95, 0x3FDBAD0485E0FE0A, 0x3FDD68039861AB53, 0x3FDDC0CB8F638126,
+        0x3FDE1A4F519FAB77, 0x3FDE4BAE8BCD6EA6, 0x3FDE90F16EB88C09, 0x3FDEBC791A88BED8,
+        0x3FDF0B2264E34555, 0x3FDFE694C3C89138, 0x3FE0A9C9334066DB, 0x3FE67425FE575C88,
+        0x3FE6B23AD4415A17, 0x3FE754AB7535D47D, 0x3FE7D3755D851062, 0x3FE91167CAE3CFA9,
+        0x3FEA3FC7E4DD47D1, 0x3FF2F5D3B178914A, 0x3FF3BFFA88639760, 0x3FF710F91E844F9B,
+        0x3FFB6E2C73F41415, 0x4008C0A26D055288, 0x400F0F978201EB84, 0x4020A19AEBB51E90,
+        0x40316369CD53BB69]
+
+/// The low parts, as F64 bits.
+preset CM_F64_ASINH_DB_L: Array<U64, 35> = [0x3C60000000000000, 0x3C70000000000000,
+        0xBC70000000000000, 0x3C70000000000000, 0x3C70000000000000, 0x3C70000000000000,
+        0xBC70000000000000, 0x3C70000000000000, 0x3C70000000000000, 0x3C70000000000000,
+        0x3C70000000000000, 0xBC70000000000000, 0x3C70000000000000, 0x3C70000000000000,
+        0xBC70000000000000, 0x3C70000000000000, 0x3C70000000000000, 0x3C70000000000000,
+        0x3C70000000000000, 0x3C70000000000000, 0xBC80000000000000, 0xBC80000000000000,
+        0xBC80000000000000, 0x3C80000000000000, 0xBC80000000000000, 0x3C80000000000000,
+        0xBC80000000000000, 0x3C90000000000000, 0x3C90000000000000, 0x3C90000000000000,
+        0x3C90000000000000, 0x3CA0000000000000, 0x3CA0000000000000, 0xBCC0000000000000,
+        0x3CD0000000000000]
+
+/// asinh x, correctly rounded.
+routine f64_cm_asinh(%x: F64) -> F64
+    block entry():
+        %ax        : F64  = %x.abs()
+        %u         : U64  = %ax.bits()
+        %small     : Bool = %u.lt(0x3FBB000000000000)  // |x| < 0x1.bp-4
+        %mid       : Bool = %u.lt(0x4190000000000000)  // |x| < 2^26
+        %big       : Bool = %u.lt(0x4330000000000000)  // |x| < 2^52
+        %nonfinite : Bool = %u.ge(0x7FF0000000000000)
+        when:
+            %small     -> small(%u)
+            %mid       -> moderate(%ax, %u)
+            %big       -> log_fast(%ax, F64.mul(2.0, %ax), F64.div(0.5, %ax), 0x3FF, 0.0, 0.0)
+            %nonfinite -> return(%x.add(%x))
+            else       -> log_fast(%ax, %ax, 0.0, 0x3FE, 0.0, 0.0)  // log(2|x|) = log(|x|) + log(2)
+
+    block small(%u: U64):
+        %zero : Bool = %u.eq(0)
+        %tiny : Bool = %u.lt(0x3E57137449123EF7)  // |x| < 0x1.7137449123ef7p-26: asinh x rounds to x
+        when:
+            %zero -> return(%x)
+            %tiny -> return(F64.mul_add(-0x1p-60, %x, %x))
+            else  -> series(%u)
+
+    block series(%u: U64):
+        %x2h  : F64  = %x.mul(%x)
+        %x2l  : F64  = %x.mul_add(%x, %x2h.neg())
+        %x3h  : F64  = %x2h.mul(%x)
+        %lt6  : Bool = %u.lt(0x3F93000000000000)  // |x| < 0x1.3p-6
+        %lt12 : Bool = %u.lt(0x3F30000000000000)  // |x| < 2^-12
+        %lt26 : Bool = %u.lt(0x3E5A000000000000)  // |x| < 0x1.ap-26
+        when:
+            %lt26 -> check(%x2h, %x2l, %x3h, %x3h.mul(-0x1.5555555555555p-3))
+            %lt12 -> check(%x2h, %x2l, %x3h,
+                    %x3h.mul(%x2h.mul(0x1.3333327c57c6p-4).add(-0x1.5555555555555p-3)))
+            %lt6  -> series6(%x2h, %x2l, %x3h)
+            else  -> series4(%x2h, %x2l, %x3h)
+
+    // 2^-12 <= |x| < 0x1.3p-6
+    block series6(%x2h: F64, %x2l: F64, %x3h: F64):
+        %c0 : F64 = %x2h.mul(0x1.f186866d775fp-6).add(-0x1.6db6d9a665159p-5)
+        %c1 : F64 = %x2h.mul(%c0).add(0x1.333333332f2ffp-4)
+        %c2 : F64 = %x2h.mul(%c1).add(-0x1.5555555555555p-3)
+        jump check(%x2h, %x2l, %x3h, %x3h.mul(%c2))
+
+    // 0x1.3p-6 <= |x| < 0x1.bp-4: a minimax polynomial with relative error < 2^-63.091
+    block series4(%x2h: F64, %x2l: F64, %x3h: F64):
+        %c1 : F64 = %x2h.mul(-0x1.6db6db6da466cp-5).add(0x1.333333333331p-4)
+        %c3 : F64 = %x2h.mul(-0x1.6e8b651b09d72p-6).add(0x1.f1c71c2ea7be4p-6)
+        %c5 : F64 = %x2h.mul(-0x1.bab7833c1ep-7).add(0x1.1c309fc0e69c2p-6)
+        %x4 : F64 = %x2h.mul(%x2h)
+        %s3 : F64 = %x4.mul(%x4.mul(%c5).add(%c3)).add(%c1)
+        %s  : F64 = %x2h.mul(%s3).add(-0x1.5555555555555p-3)
+        jump check(%x2h, %x2l, %x3h, %x3h.mul(%s))
+
+    block check(%x2h: F64, %x2l: F64, %x3h: F64, %sl: F64):
+        %eps  : F64  = F64.mul(0x1.79p-53, %x3h)
+        %lb   : F64  = %x.add(%sl.sub(%eps))
+        %ub   : F64  = %x.add(%sl.add(%eps))
+        %sure : Bool = %lb.eq(%ub)
+        branch %sure ? return(%lb) : return(cm_f64_asinh_zero(%x, %x2h, %x2l))
+
+    // 0x1.bp-4 <= |x| < 2^26: ah + al = |x| + sqrt(x^2 + 1)
+    block moderate(%ax: F64, %u: U64):
+        %x2h   : F64        = %x.mul(%x)
+        %x2l   : F64        = %x.mul_add(%x, %x2h.neg())
+        %below : Bool       = %u.lt(0x3FF0000000000000)
+        %s     : CmF64HypDd = %below ? cm_f64_hyp_fasttwosum(1.0,
+                %x2h) : cm_f64_hyp_fasttwosum(%x2h, 1.0)
+        %th    : F64        = %s.hi
+        %tl    : F64        = %s.lo.add(%x2l)
+        %sh    : F64        = %th.sqrt()
+        %rs    : F64        = F64.div(0.5, %th)
+        %sl    : F64        = %tl.sub(%sh.mul_add(%sh, %th.neg())).mul(%rs.mul(%sh))
+        %a     : CmF64HypDd = cm_f64_hyp_fasttwosum(%sh, %ax)
+        jump log_fast(%ax, %a.hi, %sl.add(%a.lo), 0x3FF, %x2h, %x2l)
+
+    // log(ah + al) (less log(2) when off = 0x3FE), from the tables
+    block log_fast(%ax: F64, %ah: F64, %al: F64, %off: S64, %x2h: F64, %x2l: F64):
+        %tb  : U64   = %ah.bits()
+        %e   : S64   = %tb.shr(52).to_s64().sub(%off)
+        %tm  : U64   = %tb.bitand(0x000FFFFFFFFFFFFF)
+        %ed  : F64   = %e.to_f64()
+        %j   : U64   = cm_f64_archyp_index(%tm)
+        %m   : F64   = F64.from_bits(%tm.bitor(0x3FF0000000000000))
+        %i1  : USize = %j.shr(5).to_usize()
+        %i2  : USize = %j.bitand(0x1F).to_usize()
+        %r   : F64   = F64.from_bits(CM_F64_ARCHYP_R1.get(%i1)).mul(F64.from_bits(CM_F64_ARCHYP_R2.get(%i2)))
+        %dx  : F64   = %r.mul_add(%m, -1.0)
+        %dx2 : F64   = %dx.mul(%dx)
+        %f   : F64   = %dx2.mul(cm_f64_archyp_log_poly(%dx, %dx2))
+        // log(2) as l2h + l2l with l2h on 42 bits, so l2h ed is exact
+        %l1h   : F64  = F64.from_bits(CM_F64_ARCHYP_L1_HI.get(%i1))
+        %l2h   : F64  = F64.from_bits(CM_F64_ARCHYP_L2_HI.get(%i2))
+        %l1l   : F64  = F64.from_bits(CM_F64_ARCHYP_L1_LO.get(%i1))
+        %l2l   : F64  = F64.from_bits(CM_F64_ARCHYP_L2_LO.get(%i2))
+        %lh0   : F64  = F64.mul(0x1.62e42fefa38p-1, %ed).add(%l1h.add(%l2h))
+        %ll1   : F64  = F64.mul(0x1.ef35793c7673p-45,
+                %ed).add(%l1l).add(%l2l).add(%al.div(%ah)).add(%f)
+        %ll0   : F64  = %ll1.add(%dx)
+        %sgn   : F64  = F64.copysign(1.0, %x)
+        %lh    : F64  = %lh0.mul(%sgn)
+        %ll    : F64  = %ll0.mul(%sgn)
+        %eps   : F64  = 0x1.80df744ce99c7p-63  // 1.63e-19 in the original
+        %lb    : F64  = %lh.add(%ll.sub(%eps))
+        %ub    : F64  = %lh.add(%ll.add(%eps))
+        %sure  : Bool = %lb.eq(%ub)
+        %near0 : Bool = %ax.lt(0x1p-2)
+        when:
+            %sure  -> return(%lb)
+            %near0 -> return(cm_f64_asinh_zero(%x, %x2h, %x2l))
+            else   -> return(cm_f64_asinh_refine(%x, %ah, %al,
+                    F64.mul(0x1.71547652b82fep+0, %lb.abs())))
+
+/// The double-double sum (xh + xl) + (ch + cl), the high parts with an exact two-sum.
+private routine cm_f64_asinh_adddd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64HypDd
+    block entry():
+        %s : F64 = %xh.add(%ch)
+        %d : F64 = %s.sub(%xh)
+        %l : F64 = %ch.sub(%d).add(%xh.add(%d.sub(%s))).add(%xl.add(%cl))
+        return(CmF64HypDd { hi: %s, lo: %l })
+
+/// The double-double product (xh + xl) (ch + cl), renormalized.
+private routine cm_f64_asinh_muldd_acc(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64HypDd
+    block entry():
+        %ahlh : F64 = %ch.mul(%xl)
+        %alhh : F64 = %cl.mul(%xh)
+        %ahhh : F64 = %ch.mul(%xh)
+        %ahhl : F64 = %ch.mul_add(%xh, %ahhh.neg()).add(%alhh.add(%ahlh))
+        %h    : F64 = %ahhh.add(%ahhl)
+        %l    : F64 = %ahhh.sub(%h).add(%ahhl)
+        return(CmF64HypDd { hi: %h, lo: %l })
+
+/// The double-double times double product (xh + xl) ch, renormalized.
+private routine cm_f64_asinh_mulddd(%xh: F64, %xl: F64, %ch: F64) -> CmF64HypDd
+    block entry():
+        %ahlh : F64 = %ch.mul(%xl)
+        %ahhh : F64 = %ch.mul(%xh)
+        %ahhl : F64 = %ch.mul_add(%xh, %ahhh.neg()).add(%ahlh)
+        %h    : F64 = %ahhh.add(%ahhl)
+        %l    : F64 = %ahhh.sub(%h).add(%ahhl)
+        return(CmF64HypDd { hi: %h, lo: %l })
+
+/// The first Horner step of a double-double polynomial: (c_hi + c_lo) + l.
+private routine cm_f64_asinh_polydd_init(%l: F64, %c_hi: F64, %c_lo: F64) -> CmF64HypDd
+    block entry():
+        %ch : F64 = %c_hi.add(%l)
+        %cl : F64 = %c_hi.sub(%ch).add(%l).add(%c_lo)
+        return(CmF64HypDd { hi: %ch, lo: %cl })
+
+/// One Horner step of a double-double polynomial: (ch + cl) (xh + xl) + (c_hi + c_lo).
+private routine cm_f64_asinh_polydd_step(%xh: F64, %xl: F64, %ch: F64, %cl: F64, %c_hi: F64,
+        %c_lo: F64) -> CmF64HypDd
+    block entry():
+        %p  : CmF64HypDd = cm_f64_asinh_muldd_acc(%xh, %xl, %ch, %cl)
+        %th : F64        = %p.hi.add(%c_hi)
+        %tl : F64        = %c_hi.sub(%th).add(%p.hi)
+        %l  : F64        = %p.lo.add(%tl.add(%c_lo))
+        return(CmF64HypDd { hi: %th, lo: %l })
+
+/// The accurate path of asinh for small |x|: a double-double odd polynomial, with x^2 = x2h + x2l.
+private routine cm_f64_asinh_zero(%x: F64, %x2h: F64, %x2l: F64) -> F64
+    block entry():
+        %c0  : F64        = %x2h.mul(-0x1.3b92d6368192cp-9).add(0x1.0095da47b392cp-8)
+        %c1  : F64        = %x2h.mul(%c0).add(-0x1.2e6d98527bcc6p-8)
+        %c2  : F64        = %x2h.mul(%c1).add(0x1.51712f7bee368p-8)
+        %y2  : F64        = %x2h.mul(%x2h.mul(%c2).add(-0x1.7828d553ec8p-8))
+        %p25 : CmF64HypDd = cm_f64_asinh_polydd_init(%y2, 0x1.a685fc5de7a04p-8,
+                0x1.40d284a1d67f9p-62)
+        %p23 : CmF64HypDd = cm_f64_asinh_polydd_step(%x2h, %x2l, %p25.hi, %p25.lo,
+                -0x1.df3bd104aa267p-8, -0x1.546da9bc5b32ap-62)
+        %p21 : CmF64HypDd = cm_f64_asinh_polydd_step(%x2h, %x2l, %p23.hi, %p23.lo,
+                0x1.12ef3ceae4d12p-7, -0x1.ba9c13deb261fp-61)
+        %p19 : CmF64HypDd = cm_f64_asinh_polydd_step(%x2h, %x2l, %p21.hi, %p21.lo,
+                -0x1.3fde50d764083p-7, -0x1.d024df7fa0542p-61)
+        %p17 : CmF64HypDd = cm_f64_asinh_polydd_step(%x2h, %x2l, %p19.hi, %p19.lo,
+                0x1.7a87878786c7ep-7, 0x1.a83c7bace55ebp-61)
+        %p15 : CmF64HypDd = cm_f64_asinh_polydd_step(%x2h, %x2l, %p17.hi, %p17.lo,
+                -0x1.c999999999977p-7, -0x1.38e7a467ecc55p-61)
+        %p13 : CmF64HypDd = cm_f64_asinh_polydd_step(%x2h, %x2l, %p15.hi, %p15.lo,
+                0x1.1c4ec4ec4ec4fp-6, -0x1.74e3c1dfd4c3dp-60)
+        %p11 : CmF64HypDd = cm_f64_asinh_polydd_step(%x2h, %x2l, %p13.hi, %p13.lo,
+                -0x1.6e8ba2e8ba2e9p-6, 0x1.17f937248cf81p-60)
+        %p9  : CmF64HypDd = cm_f64_asinh_polydd_step(%x2h, %x2l, %p11.hi, %p11.lo,
+                0x1.f1c71c71c71c7p-6, 0x1.c71a35cfa0671p-62)
+        %p7  : CmF64HypDd = cm_f64_asinh_polydd_step(%x2h, %x2l, %p9.hi, %p9.lo,
+                -0x1.6db6db6db6db7p-5, 0x1.2492496091b0cp-60)
+        %p5  : CmF64HypDd = cm_f64_asinh_polydd_step(%x2h, %x2l, %p7.hi, %p7.lo,
+                0x1.3333333333333p-4, 0x1.99999999949dfp-59)
+        %p3  : CmF64HypDd = cm_f64_asinh_polydd_step(%x2h, %x2l, %p5.hi, %p5.lo,
+                -0x1.5555555555555p-3, -0x1.5555555555555p-57)
+        %px  : CmF64HypDd = cm_f64_asinh_muldd_acc(%p3.hi, %p3.lo, %x2h, %x2l)
+        %p   : CmF64HypDd = cm_f64_asinh_mulddd(%px.hi, %px.lo, %x)
+        %s0  : CmF64HypDd = cm_f64_hyp_fasttwosum(%x, %p.hi)
+        %s1  : CmF64HypDd = cm_f64_hyp_fasttwosum(%s0.lo, %p.lo)
+        return(%s0.hi.add(cm_f64_hyp_nudge(%s1.hi, %s1.lo)))
+
+/// The accurate path of asinh: log(zh + zl) to about 150 bits, where zh + zl is |x| + sqrt(x^2 + 1) (or
+/// 2|x| + 1/(2|x|), or |x| when zl = 0 and the exponent then gets one more) and a approximates log2(zh + zl).
+private routine cm_f64_asinh_refine(%x: F64, %zh: F64, %zl: F64, %a: F64) -> F64
+    block entry():
+        %tb   : U64           = %zh.bits()
+        %zero : Bool          = %zl.eq(0.0)
+        %e0   : S64           = %tb.shr(52).to_s64().sub(0x3FF)
+        %e    : S64           = %zero ? %e0.add(1) : %e0
+        %m    : F64           = F64.from_bits(%tb.bitand(0x000FFFFFFFFFFFFF).bitor(0x3FF0000000000000))
+        %ed   : F64           = %e.to_f64()
+        %i    : U64           = %a.sub(%ed).add(0x1.00008p+0).bits().sub_wrap(0x3FF0000000000000).shr(36)
+        %i1   : USize         = %i.shr(12).bitand(0x1F).to_usize()
+        %i2   : USize         = %i.shr(8).bitand(0xF).to_usize()
+        %i3   : USize         = %i.shr(4).bitand(0xF).to_usize()
+        %i4   : USize         = %i.bitand(0xF).to_usize()
+        %el2  : F64           = F64.mul(-0x1.9ff0342542fc3p-91, %ed)
+        %el1  : F64           = F64.mul(0x1.ef35793c768p-46, %ed)
+        %el0  : F64           = F64.mul(0x1.62e42fefa38p-2, %ed)
+        %big  : CmF64ArchypTd = cm_f64_archyp_log_table(%i1, %i2, %i3, %i4)
+        %big0 : F64           = %big.hi.add(%el0)
+        %rt   : CmF64HypDd    = cm_f64_archyp_rt(%i1, %i2, %i3, %i4)
+        %dh   : F64           = %rt.hi.mul(%m)
+        %dl   : F64           = %rt.hi.mul_add(%m, %dh.neg())
+        %sh   : F64           = %rt.lo.mul(%m)
+        %sl   : F64           = %rt.lo.mul_add(%m, %sh.neg())
+        %q    : CmF64HypDd    = cm_f64_hyp_fasttwosum(%dh.sub(1.0), %dl)
+        // zl / 2^e, scaled like m = zh / 2^e
+        %zs   : F64        = F64.from_bits(%zl.bits().sub_wrap(%e.to_u64_wrap().shl(52)))
+        %xl   : F64        = %zero ? %q.lo : %q.lo.add(%rt.hi.mul(%zs))
+        %xs   : CmF64HypDd = cm_f64_asinh_adddd(%q.hi, %xl, %sh, %sl)
+        %xh   : F64        = %xs.hi
+        %c    : F64        = %xh.mul(-0x1.55555555c3157p-4).add(0x1.9999999a0754fp-4)
+        %tail : F64        = %xh.mul(%xh.mul(%c).add(-0x1p-3))
+        %p3   : CmF64HypDd = cm_f64_asinh_polydd_init(%tail, 0x1.5555555555555p-3,
+                0x1.55540c15cf91fp-57)
+        %p2   : CmF64HypDd = cm_f64_asinh_polydd_step(%xh, %xs.lo, %p3.hi, %p3.lo, -0x1p-2,
+                -0x1.932ce43199a8dp-110)
+        %p1   : CmF64HypDd = cm_f64_asinh_polydd_step(%xh, %xs.lo, %p2.hi, %p2.lo, 0x1p-1,
+                0x1.24b67ee516e3bp-111)
+        %p0   : CmF64HypDd = cm_f64_asinh_muldd_acc(%xh, %xs.lo, %p1.hi, %p1.lo)
+        %pe   : CmF64HypDd = cm_f64_asinh_adddd(%p0.hi, %p0.lo, %el1, %el2)
+        %s    : CmF64HypDd = cm_f64_asinh_adddd(%pe.hi, %pe.lo, %big.mid, %big.lo)
+        // big0 + s as a triple-double v0 + v1 + v2, renormalized
+        %w0   : CmF64HypDd = cm_f64_hyp_fasttwosum(%big0, %s.hi)
+        %w1   : CmF64HypDd = cm_f64_hyp_fasttwosum(%w0.lo, %s.lo)
+        %w2   : CmF64HypDd = cm_f64_hyp_fasttwosum(%w0.hi, %w1.hi)
+        %w3   : CmF64HypDd = cm_f64_hyp_fasttwosum(%w2.lo, %w1.lo)
+        %two  : F64        = F64.copysign(2.0, %x)
+        %v0   : F64        = %w2.hi.mul(%two)
+        %v1   : F64        = cm_f64_hyp_nudge(%w3.hi.mul(%two), %w3.lo.mul(%two))
+        %tu   : U64        = %v1.bits()
+        %er   : U64        = %tu.add_wrap(41).bitand(0x000FFFFFFFFFFFFF)
+        %de   : U64        = %v0.bits().shr(52).bitand(0x7FF).sub_wrap(%tu.shr(52).bitand(0x7FF))
+        %res  : F64        = %v0.add(%v1)
+        %hard : Bool       = %de.gt(99).bitor(%er.lt(80))
+        branch %hard ? return(cm_f64_asinh_database(%x, %res)) : return(%res)
+
+/// The exact asinh x for the arguments the fast and accurate paths can't round, or f for any other x.
+private routine cm_f64_asinh_database(%x: F64, %f: F64) -> F64
+    block entry():
+        jump search(0, 34)
+
+    block search(%a: S64, %b: S64):
+        %open : Bool = %a.le(%b)
+        branch %open ? probe(%a, %b) : return(%f)
+
+    block probe(%a: S64, %b: S64):
+        %m     : S64   = %a.add(%b).div(2)
+        %mu    : USize = %m.to_usize()
+        %key   : F64   = F64.from_bits(CM_F64_ASINH_DB_X.get(%mu))
+        %ax    : F64   = %x.abs()
+        %below : Bool  = %key.lt(%ax)
+        %found : Bool  = %key.eq(%ax)
+        when:
+            %below -> search(%m.add(1), %b)
+            %found -> hit(%mu)
+            else   -> search(%a, %m.sub(1))
+
+    block hit(%mu: USize):
+        %sgn : F64 = F64.copysign(1.0, %x)
+        %h   : F64 = F64.from_bits(CM_F64_ASINH_DB_H.get(%mu))
+        %l   : F64 = F64.from_bits(CM_F64_ASINH_DB_L.get(%mu))
+        return(%sgn.mul(%h).add(%sgn.mul(%l)))

@@ -1,0 +1,286 @@
+// Tessera stdlib: the correctly rounded hyperbolic tangent of F64
+//
+// For |x| < 1/4 an odd polynomial, redone in double-double when its error bound can't decide the rounding.
+// Otherwise tanh |x| = 1 - 2 / (1 + e^(2|x|)) = 2 (1/2 - e^(-2|x|) / (1 + e^(-2|x|))), with e^(-2|x|) from the
+// tables of hyp_shared.tess and a short polynomial, checked with an error bound; the accurate path evaluates
+// the exponential and the quotient in double-double and looks the few hardest arguments up in a table of
+// exact values. Past |x| ~ 19.06 the result rounds to ±1.
+// Round to nearest only: ±inf give ±1, NaN comes back quiet, ±0 map to themselves.
+//
+// Ported from CORE-MATH, src/binary64/tanh/tanh.c via RazorForge's B64Tanh.rf.
+// Copyright (c) 2023-2026 Alexei Sibidanov, Cyprien Peignier, Paul Zimmermann
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// Hard-to-round arguments |x| (sorted), as F64 bits.
+preset CM_F64_TANH_DB_X: Array<U64, 12> = [0x3FCAC343B179FEC4, 0x3FD00764A988BF73,
+        0x3FD17D1E8A63711F, 0x3FD291C601A05276, 0x3FD36F33D51C264D, 0x3FD43EAEA23649C3,
+        0x3FDD88D7550B2826, 0x3FDE611AA58AB608, 0x3FE01EFE7AC8C15D, 0x3FE1005EC0BCCABB,
+        0x3FE33DFEB0FA4BFE, 0x3FE49F24AC5CAC35]
+
+/// The high parts of tanh |x| for those arguments, as F64 bits.
+preset CM_F64_TANH_DB_H: Array<U64, 12> = [0x3FCA612499C53078, 0x3FCF676484C0703B,
+        0x3FD110E96A6C2D96, 0x3FD210B7D0C03743, 0x3FD2DBB7B1C91363, 0x3FD39877ED028641,
+        0x3FDB9A3637366AFD, 0x3FDC493DC899E4A6, 0x3FDDC3FE1B524821, 0x3FDF20B1C8557DED,
+        0x3FE1372F9EE76E99, 0x3FE22C495FF06104]
+
+/// The low parts, as F64 bits.
+preset CM_F64_TANH_DB_L: Array<U64, 12> = [0x3C60000000000000, 0xB970000000000000,
+        0xB960000000000000, 0x3C70000000000000, 0xB950000000000000, 0xBC80000000000000,
+        0x3C70000000000000, 0xBC80000000000000, 0xB970000000000000, 0xBC80000000000000,
+        0x3C80000000000000, 0xB970000000000000]
+
+/// tanh x, correctly rounded.
+routine f64_cm_tanh(%x: F64) -> F64
+    block entry():
+        %ax        : F64  = %x.abs()
+        %aix       : U64  = %ax.bits()
+        %saturated : Bool = %aix.ge(0x40330FC1931F09CA)  // |x| >= 0x1.30fc1931f09cap+4: tanh x rounds to ±1
+        branch %saturated ? saturated(%aix) : continue
+        // t = round(-2|x| 2^12 / log 2) and its bits: e^(-2|x|) = 2^ie 2^(i0/64) 2^(i1/2^12) e^dx
+        %v0    : F64   = %ax.mul_add(-0x1.71547652b82fep+13, 0x1.8000004p+25)
+        %jt    : U64   = %v0.bits()
+        %t     : F64   = F64.from_bits(%jt.bitand(0xFFFFFFFFF8000000)).sub(0x1.8p+25)
+        %i1    : USize = %jt.shr(27).bitand(0x3F).to_usize()
+        %i0    : USize = %jt.shr(33).bitand(0x3F).to_usize()
+        %ie    : S64   = %jt.shl(13).to_s64_wrap().shr(52)
+        %sp    : F64   = cm_f64_hyp_scale(%ie.add(1023))
+        %two   : F64   = F64.copysign(2.0, %x)
+        %below : Bool  = %aix.lt(0x400D76C8B4395810)  // |x| < ~3.683
+        %small : Bool  = %aix.lt(0x3FD0000000000000)  // |x| < 1/4
+        when:
+            %small -> small(%aix)
+            %below -> medium(%ax, %t, %i0, %i1, %sp, %two)
+            else   -> large(%ax, %t, %i0, %i1, %sp, %two)
+
+    block saturated(%aix: U64):
+        %nan      : Bool = %aix.gt(0x7FF0000000000000)
+        %infinite : Bool = %aix.eq(0x7FF0000000000000)
+        %f        : F64  = F64.copysign(1.0, %x)
+        when:
+            %nan      -> return(%x.add(%x))
+            %infinite -> return(%f)
+            else      -> return(%f.sub(F64.copysign(0x1p-55, %x)))
+
+    block small(%aix: U64):
+        %zero : Bool = %aix.eq(0)
+        %tiny : Bool = %aix.le(0x3E4D12ED0AF1A27F)  // |x| <= 0x1.d12ed0af1a27fp-27
+        when:
+            %zero -> return(%x)
+            %tiny -> return(%x.mul_add(-0x1p-55, %x))
+            else  -> series()
+
+    block series():
+        %x2   : F64        = %x.mul(%x)
+        %x3   : F64        = %x2.mul(%x)
+        %x4   : F64        = %x2.mul(%x2)
+        %x8   : F64        = %x4.mul(%x4)
+        %a1   : F64        = %x2.mul(0x1.d6c64dfba2565p-9).add(-0x1.226e17d1bc09bp-7)
+        %b1   : F64        = %x2.mul(0x1.1535ad0c31d0ep-11).add(-0x1.7bdd094d327afp-10)
+        %p1   : F64        = %x4.mul(%b1).add(%a1)
+        %a0   : F64        = %x2.mul(0x1.1111111110f33p-3).add(-0x1.5555555555555p-2)
+        %b0   : F64        = %x2.mul(0x1.664f4838e0a43p-6).add(-0x1.ba1ba1b9b8ea6p-5)
+        %p0   : F64        = %x4.mul(%b0).add(%a0)
+        %p    : F64        = %p0.add(%x8.mul(%p1)).mul(%x3)
+        %r    : CmF64HypDd = cm_f64_hyp_fasttwosum(%x, %p)
+        %e    : F64        = %x3.mul(0x1.c0p-52)
+        %lb   : F64        = %r.hi.add(%r.lo.sub(%e))
+        %ub   : F64        = %r.hi.add(%r.lo.add(%e))
+        %sure : Bool       = %lb.eq(%ub)
+        branch %sure ? return(%lb) : return(cm_f64_tanh_zero(%x))
+
+    // 1/4 <= |x| < ~3.683: tanh |x| = 2 (1/2 - r / (1 + r)) with r = e^(-2|x|)
+    block medium(%ax: F64, %t: F64, %i0: USize, %i1: USize, %sp: F64, %two: F64):
+        %tt : CmF64HypDd = cm_f64_hyp_table(%i0, %i1)
+        %th : F64        = %tt.hi.mul(%sp)
+        %tl : F64        = %tt.lo.mul(%sp)
+        // -2|x| = t log(2) / 2^12 + dx, with log(2) / 2^13 as l2h + l2l
+        %dx   : F64        = %t.mul(-0x1.62e42ffp-14).sub(%ax).sub(%t.mul(-0x1.718432a1b0e26p-48))
+        %dx2  : F64        = %dx.mul(%dx)
+        %p    : F64        = cm_f64_tanh_poly(%dx, %dx2)
+        %r    : CmF64HypDd = cm_f64_hyp_fasttwosum(%th, %tl.add(%th.mul(%p)))
+        %q    : CmF64HypDd = cm_f64_hyp_fasttwosum(1.0, %r.hi)
+        %ql   : F64        = %r.lo.add(%q.lo)
+        %rqh  : F64        = F64.div(1.0, %q.hi)
+        %rql  : F64        = %ql.mul(%rqh).add(%rqh.mul_add(%q.hi, -1.0)).mul(%rqh.neg())
+        %pp   : CmF64HypDd = cm_f64_tanh_muldd_acc(%r.hi, %r.lo, %rqh, %rql)
+        %e    : F64        = %r.hi.mul(0x1.0dp-62)
+        %d    : CmF64HypDd = cm_f64_tanh_fasttwosub(0.5, %pp.hi)
+        %dh   : F64        = %d.hi.mul(%two)
+        %dl   : F64        = %d.lo.sub(%pp.lo).mul(%two)
+        %lb   : F64        = %dh.add(%dl.sub(%e))
+        %ub   : F64        = %dh.add(%dl.add(%e))
+        %sure : Bool       = %lb.eq(%ub)
+        branch %sure ? return(%lb) : accurate(%ax, %t, %th, %tl, %two)
+
+    // ~3.683 <= |x| < 0x1.30fc1931f09cap+4: tanh |x| = 1 - 2r / (1 + r) with r = e^(-2|x|)
+    block large(%ax: F64, %t: F64, %i0: USize, %i1: USize, %sp: F64, %two: F64):
+        %t0h  : F64  = F64.from_bits(CM_F64_HYP_T0_HI.get(%i0))
+        %t1h  : F64  = F64.from_bits(CM_F64_HYP_T1_HI.get(%i1))
+        %dx   : F64  = F64.mul_add(-0x1.62e42fefa39efp-14, %t, %ax.neg())
+        %dx2  : F64  = %dx.mul(%dx)
+        %p    : F64  = cm_f64_tanh_poly(%dx, %dx2)
+        %rh0  : F64  = %t0h.mul(%t1h).mul(%sp)
+        %rh1  : F64  = %rh0.add(%p.add(F64.mul(0x1.3p-54, %ax)).mul(%rh0))
+        %e    : F64  = %rh1.mul(0x1.1p-49)
+        %rh2  : F64  = F64.mul(2.0, %rh1).div(F64.add(1.0, %rh1))
+        %one  : F64  = F64.copysign(1.0, %x)
+        %rh   : F64  = %rh2.copysign(%x)
+        %lb   : F64  = %one.sub(%rh.add(%e))
+        %ub   : F64  = %one.sub(%rh.sub(%e))
+        %sure : Bool = %lb.eq(%ub)
+        branch %sure ? return(%lb) : large_accurate(%ax, %t, %i0, %i1, %sp, %two)
+
+    block large_accurate(%ax: F64, %t: F64, %i0: USize, %i1: USize, %sp: F64, %two: F64):
+        %tt : CmF64HypDd = cm_f64_hyp_table(%i0, %i1)
+        jump accurate(%ax, %t, %tt.hi.mul(%sp), %tt.lo.mul(%sp), %two)
+
+    // tanh |x| = 2 (1/2 - r / (1 + r)) in double-double, with r = e^(-2|x|) = th + tl times the polynomial
+    block accurate(%ax: F64, %t: F64, %th: F64, %tl: F64, %two: F64):
+        %r    : CmF64HypDd = cm_f64_tanh_exp_accurate(F64.mul(-2.0, %ax), %t, %th, %tl)
+        %q0   : CmF64HypDd = cm_f64_hyp_fasttwosum(1.0, %r.hi)
+        %q    : CmF64HypDd = cm_f64_hyp_fasttwosum(%q0.hi, %r.lo.add(%q0.lo))
+        %rqh  : F64        = F64.div(1.0, %q.hi)
+        %rql  : F64        = %q.lo.mul(%rqh).add(%rqh.mul_add(%q.hi, -1.0)).mul(%rqh.neg())
+        %pp   : CmF64HypDd = cm_f64_tanh_muldd_acc(%r.hi, %r.lo, %rqh, %rql)
+        %d0   : CmF64HypDd = cm_f64_tanh_fasttwosub(0.5, %pp.hi)
+        %d    : CmF64HypDd = cm_f64_hyp_fasttwosum(%d0.hi, %d0.lo.sub(%pp.lo))
+        %res  : F64        = %two.mul(%d.hi).add(%two.mul(%d.lo))
+        %hard : Bool       = %d.lo.bits().add_wrap(32).bitand(0x000FFFFFFFFFFFFF).lt(65)
+        branch %hard ? return(cm_f64_tanh_database(%x, %res)) : return(%res)
+
+/// The fast-path polynomial e^d - 1 ~ d ((2 + 2d) + d2 (c2 + d c3)) of tanh (scaled by 2), with d2 = d^2.
+private routine cm_f64_tanh_poly(%d: F64, %d2: F64) -> F64
+    block entry():
+        %a : F64 = %d.mul(0x1p+1).add(0x1p+1)
+        %b : F64 = %d.mul(0x1.55555553a12f4p-1).add(0x1.55555557e54ffp+0)
+        return(%d.mul(%d2.mul(%b).add(%a)))
+
+/// x - y as hi + lo exactly, when |x| >= |y|.
+private routine cm_f64_tanh_fasttwosub(%x: F64, %y: F64) -> CmF64HypDd
+    block entry():
+        %s : F64 = %x.sub(%y)
+        %z : F64 = %x.sub(%s)
+        %e : F64 = %z.sub(%y)
+        return(CmF64HypDd { hi: %s, lo: %e })
+
+/// The double-double product (xh + xl) (ch + cl), renormalized.
+private routine cm_f64_tanh_muldd_acc(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64HypDd
+    block entry():
+        %plh  : F64 = %xl.mul(%ch)
+        %phl  : F64 = %xh.mul(%cl)
+        %phh  : F64 = %xh.mul(%ch)
+        %rest : F64 = %xh.mul_add(%ch, %phh.neg()).add(%phl.add(%plh))
+        return(cm_f64_hyp_fasttwosum(%phh, %rest))
+
+/// The double-double times double product (xh + xl) c, renormalized.
+private routine cm_f64_tanh_mulddd_acc(%xh: F64, %xl: F64, %c: F64) -> CmF64HypDd
+    block entry():
+        %pl   : F64 = %xl.mul(%c)
+        %ph   : F64 = %xh.mul(%c)
+        %rest : F64 = %xh.mul_add(%c, %ph.neg()).add(%pl)
+        return(cm_f64_hyp_fasttwosum(%ph, %rest))
+
+/// One Horner step of a double-double polynomial with the renormalizing product: (ch + cl) (xh + xl)
+/// + (c_hi + c_lo).
+private routine cm_f64_tanh_polydd_step(%xh: F64, %xl: F64, %ch: F64, %cl: F64, %c_hi: F64,
+        %c_lo: F64) -> CmF64HypDd
+    block entry():
+        %p : CmF64HypDd = cm_f64_tanh_muldd_acc(%xh, %xl, %ch, %cl)
+        %s : CmF64HypDd = cm_f64_hyp_fasttwosum(%c_hi, %p.hi)
+        %l : F64        = %p.lo.add(%c_lo).add(%s.lo)
+        return(CmF64HypDd { hi: %s.hi, lo: %l })
+
+/// Accurate exp(x) as a double-double, given t = round(x 2^12 / log 2) as an F64 and the scaled table value
+/// th + tl; cm_f64_hyp_exp_accurate with the renormalizing products.
+private routine cm_f64_tanh_exp_accurate(%x: F64, %t: F64, %th: F64, %tl: F64) -> CmF64HypDd
+    block entry():
+        %dx   : F64        = %x.sub(%t.mul(0x1.62e42ffp-13))
+        %dxl0 : F64        = %t.mul(0x1.718432a1b0e26p-47)
+        %dxll : F64        = %t.mul(0x1.9ff0342542fc3p-102).add(%t.mul_add(0x1.718432a1b0e26p-47,
+                %dxl0.neg()))
+        %dxh  : F64        = %dx.add(%dxl0)
+        %dxl  : F64        = %dx.sub(%dxh).add(%dxl0).add(%dxll)
+        %tail : F64        = %dxh.mul(0x1.6c16c169400a7p-10).add(0x1.11111113e93e9p-7)
+        %fl   : F64        = %dxh.mul(%dxh.mul(%tail).add(0x1.5555555555555p-5))
+        %p3   : CmF64HypDd = cm_f64_hyp_polydd_init(%fl, 0x1.5555555555555p-3,
+                0x1.53e93e9f26e62p-57)
+        %p2   : CmF64HypDd = cm_f64_tanh_polydd_step(%dxh, %dxl, %p3.hi, %p3.lo, 0x1p-1,
+                -0x1.8259d904fd34fp-93)
+        %p1   : CmF64HypDd = cm_f64_tanh_polydd_step(%dxh, %dxl, %p2.hi, %p2.lo, 0x1p+0,
+                0x1.6c16bd194535dp-94)
+        %p0   : CmF64HypDd = cm_f64_tanh_muldd_acc(%dxh, %dxl, %p1.hi, %p1.lo)
+        %f    : CmF64HypDd = cm_f64_tanh_muldd_acc(%th, %tl, %p0.hi, %p0.lo)
+        %zh   : F64        = %th.add(%f.hi)
+        %zl   : F64        = %th.sub(%zh).add(%f.hi)
+        %uh   : F64        = %zh.add(%tl)
+        %ul   : F64        = %zh.sub(%uh).add(%tl).add(%zl)
+        %vh   : F64        = %uh.add(%f.lo)
+        %vl   : F64        = %uh.sub(%vh).add(%f.lo).add(%ul)
+        return(CmF64HypDd { hi: %vh, lo: %vl })
+
+/// The accurate path of tanh for 0x1.d12ed0af1a27fp-27 < |x| < 1/4: a double-double odd polynomial.
+private routine cm_f64_tanh_zero(%x: F64) -> F64
+    block entry():
+        %x2  : F64        = %x.mul(%x)
+        %x2l : F64        = %x.mul_add(%x, %x2.neg())
+        %c0  : F64        = %x2.mul(0x1.22e609bf8671fp-19).add(-0x1.aade68fb2f076p-18)
+        %c1  : F64        = %x2.mul(%c0).add(0x1.0ae346258cbdep-16)
+        %c2  : F64        = %x2.mul(%c1).add(-0x1.497b99d2a77d1p-15)
+        %y2  : F64        = %x2.mul(%x2.mul(%c2).add(0x1.967e0a63ca836p-14))
+        %p19 : CmF64HypDd = cm_f64_hyp_polydd_init(%y2, -0x1.f57d76ea30928p-13,
+                -0x1.c30601213cae9p-67)
+        %p17 : CmF64HypDd = cm_f64_tanh_polydd_step(%x2, %x2l, %p19.hi, %p19.lo,
+                0x1.3558247faa32dp-11, -0x1.e0cfb423aedfdp-65)
+        %p15 : CmF64HypDd = cm_f64_tanh_polydd_step(%x2, %x2l, %p17.hi, %p17.lo,
+                -0x1.7da36452b5e46p-10, -0x1.aba8d51bd9cp-65)
+        %p13 : CmF64HypDd = cm_f64_tanh_polydd_step(%x2, %x2l, %p15.hi, %p15.lo,
+                0x1.d6d3d0e157db3p-9, -0x1.71376fa06ce94p-65)
+        %p11 : CmF64HypDd = cm_f64_tanh_polydd_step(%x2, %x2l, %p13.hi, %p13.lo,
+                -0x1.226e355e6c23cp-7, -0x1.c9674586913f3p-61)
+        %p9  : CmF64HypDd = cm_f64_tanh_polydd_step(%x2, %x2l, %p11.hi, %p11.lo,
+                0x1.664f4882c10fap-6, -0x1.9d5cb27c0af28p-63)
+        %p7  : CmF64HypDd = cm_f64_tanh_polydd_step(%x2, %x2l, %p9.hi, %p9.lo,
+                -0x1.ba1ba1ba1ba1cp-5, 0x1.7917c1d676ff5p-59)
+        %p5  : CmF64HypDd = cm_f64_tanh_polydd_step(%x2, %x2l, %p7.hi, %p7.lo, 0x1.1111111111111p-3,
+                0x1.111110f8c0178p-59)
+        %p3  : CmF64HypDd = cm_f64_tanh_polydd_step(%x2, %x2l, %p5.hi, %p5.lo,
+                -0x1.5555555555555p-2, -0x1.5555555554cc4p-56)
+        %px  : CmF64HypDd = cm_f64_tanh_mulddd_acc(%p3.hi, %p3.lo, %x)
+        %p   : CmF64HypDd = cm_f64_tanh_muldd_acc(%px.hi, %px.lo, %x2, %x2l)
+        %s0  : CmF64HypDd = cm_f64_hyp_fasttwosum(%x, %p.hi)
+        %s1  : CmF64HypDd = cm_f64_hyp_fasttwosum(%s0.lo, %p.lo)
+        %y1  : F64        = cm_f64_hyp_nudge(%s1.hi, %s1.lo)
+        %r   : F64        = %s0.hi.add(%y1)
+        // the one argument whose nudged sum still rounds the wrong way
+        %pow2   : Bool = %s1.hi.bits().bitand(0x000FFFFFFFFFFFFF).eq(0)
+        %lookup : Bool = %pow2.bitand(%x.abs().eq(0x1.ac343b179fec4p-3))
+        branch %lookup ? return(cm_f64_tanh_database(%x, %r)) : return(%r)
+
+/// The exact tanh x for the arguments the fast and accurate paths can't round, or f for any other x.
+private routine cm_f64_tanh_database(%x: F64, %f: F64) -> F64
+    block entry():
+        jump search(0, 11)
+
+    block search(%a: S64, %b: S64):
+        %open : Bool = %a.le(%b)
+        branch %open ? probe(%a, %b) : return(%f)
+
+    block probe(%a: S64, %b: S64):
+        %m     : S64   = %a.add(%b).div(2)
+        %mu    : USize = %m.to_usize()
+        %key   : F64   = F64.from_bits(CM_F64_TANH_DB_X.get(%mu))
+        %ax    : F64   = %x.abs()
+        %below : Bool  = %key.lt(%ax)
+        %found : Bool  = %key.eq(%ax)
+        when:
+            %below -> search(%m.add(1), %b)
+            %found -> hit(%mu)
+            else   -> search(%a, %m.sub(1))
+
+    block hit(%mu: USize):
+        %sgn : F64 = F64.copysign(1.0, %x)
+        %h   : F64 = F64.from_bits(CM_F64_TANH_DB_H.get(%mu))
+        %l   : F64 = F64.from_bits(CM_F64_TANH_DB_L.get(%mu))
+        return(%sgn.mul(%h).add(%sgn.mul(%l)))

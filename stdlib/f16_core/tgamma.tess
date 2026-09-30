@@ -1,0 +1,116 @@
+// Tessera stdlib: the correctly rounded gamma function of F16
+//
+// Near zero gamma(x) = 1/x - euler_gamma + O(x). Positive integers give (x-1)!
+// exactly. Otherwise gamma on [2.375, 3.375) (x reduced to x - 23/8 = i + d)
+// from a degree-15 polynomial in d, shifted to x by the product of the i
+// factors between them, all in F64. Round to nearest only: overflow gives
+// +inf, +-0 gives +-inf, the negative integers and -inf give NaN, NaN comes
+// back quiet, and a result too small for F16 is a zero with the sign of
+// gamma(x).
+//
+// Ported from CORE-MATH, src/binary16/tgamma/tgammaf16.c via RazorForge's B16Tgamma.rf.
+// Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca> and Paul Zimmermann
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// gamma(x), correctly rounded.
+routine f16_cm_tgamma(%x: F16) -> F16
+    block entry():
+        %xf      : F32  = %x.to_f32()
+        %tu      : U32  = %xf.bits()
+        %ax      : U32  = %tu.shl(1)
+        %z       : F64  = %xf.to_f64()
+        %fx      : F32  = %xf.floor()
+        %special : Bool = %ax.ge(0xFF000000)
+        %tiny    : Bool = %ax.le(0x6F000000)  // |x| <= 2^-16
+        %over    : Bool = %xf.ge(0x1.274p+3)
+        %integer : Bool = %fx.eq(%xf)
+        %under   : Bool = %xf.lt(-16.0)
+        when:
+            %special -> special(%tu, %ax)
+            %tiny    -> tiny(%z)
+            %over    -> return(F16.from_bits(0x7C00))
+            %integer -> integer(%xf, %fx)
+            %under   -> under(%fx)
+            else     -> main(%z)
+
+    // +-inf or NaN: gamma(+inf) = +inf, gamma(-inf) has no real result (the
+    // negative quiet NaN of the original's x / x on x86), and a NaN is quieted by x + x
+    block special(%tu: U32, %ax: U32):
+        %infinite : Bool = %ax.eq(0xFF000000)
+        %minusinf : Bool = %infinite.bitand(%tu.shr(31).eq(1))
+        when:
+            %minusinf -> return(F16.from_bits(0xFE00))
+            %infinite -> return(%x)
+            else      -> return(%x.to_f32().add(%x.to_f32()).to_f16())
+
+    // |x| <= 2^-16: gamma(x) = 1/x - euler_gamma + O(x)
+    block tiny(%z: F64):
+        %c : F64 = F64.sub(0x1.fa658c23b1578p-1, %z.mul(0x1.d0a118f324b63p-1))
+        %d : F64 = %c.mul(%z).sub(0x1.2788cfc6fb619p-1)
+        return(F64.div(1.0, %z).add(%d).to_f16())
+
+    // an integer: a pole at zero, no real result at the negative integers (the
+    // positive quiet NaN of the original's constant 0.0f / 0.0f), else (k - 1)!
+    block integer(%xf: F32, %fx: F32):
+        %zero     : Bool = %xf.eq(0.0)
+        %negative : Bool = %xf.lt(0.0)
+        when:
+            %zero     -> return(F32.div(1.0, %xf).to_f16())
+            %negative -> return(F16.from_bits(0x7E00))
+            else      -> factorial(%fx.to_s32(), 1, 1.0, 1.0)
+
+    block factorial(%k: S32, %i: S32, %t0: F64, %x0: F64):
+        %more : Bool = %i.lt(%k)
+        branch %more ? factorial(%k, %i.add(1), %t0.mul(%x0), %x0.add(1.0)) : return(%t0.to_f16())
+
+    // x < -16, not an integer: |gamma(x)| < 2^-25 rounds to a zero of the sign of gamma(x)
+    block under(%fx: F32):
+        %even : Bool = %fx.to_s32().bitand(1).eq(0)
+        branch %even ? return(F16.from_bits(0x0000)) : return(F16.from_bits(0x8000))
+
+    // gamma(23/8 + i + d) from a polynomial in d, shifted by the i factors between
+    block main(%z: F64):
+        %m    : F64  = %z.sub(0x1.7p+1)
+        %i    : F64  = %m.round_ties_even()
+        %step : F64  = F64.copysign(1.0, %i)
+        %d    : F64  = %m.sub(%i)
+        %d2   : F64  = %d.mul(%d)
+        %d4   : F64  = %d2.mul(%d2)
+        %d8   : F64  = %d4.mul(%d4)
+        %a0   : F64  = %d.mul(0x1.8f2754ddcf90dp+0).add(0x1.c9a76be577123p+0)
+        %a2   : F64  = %d.mul(0x1.e1f42cf0ae4a1p-2).add(0x1.0d1191949419bp+0)
+        %a4   : F64  = %d.mul(0x1.e1f2b30cd907bp-5).add(0x1.82b358a3ab638p-3)
+        %a6   : F64  = %d.mul(0x1.1522c9f3cd012p-8).add(0x1.240f6d4071bd8p-6)
+        %a8   : F64  = %d.mul(0x1.9808a8b96c37ep-13).add(0x1.1fd0051a0525bp-10)
+        %a10  : F64  = %d.mul(0x1.49c85a7e1fd04p-18).add(0x1.b3f78e01152b5p-15)
+        %a12  : F64  = %d.mul(-0x1.368f0b7ed9e36p-23).add(0x1.471ca49184475p-19)
+        %a14  : F64  = %d.mul(-0x1.a69ed2042842cp-25).add(0x1.882222f9049efp-23)
+        %b0   : F64  = %a0.add(%d2.mul(%a2))
+        %b4   : F64  = %a4.add(%d2.mul(%a6))
+        %b8   : F64  = %a8.add(%d2.mul(%a10))
+        %b12  : F64  = %a12.add(%d2.mul(%a14))
+        %lo   : F64  = %b0.add(%d4.mul(%b4))
+        %hi   : F64  = %b8.add(%d4.mul(%b12))
+        %f    : F64  = %lo.add(%d8.mul(%hi))
+        %jm   : S32  = %i.abs().to_s32()
+        %none : Bool = %jm.eq(0)
+        branch %none ? finish(%f, %i, 1.0) : shift(%z, %f, %i, %step, %jm)
+
+    // the first factor: x - 1/2 - step/2
+    block shift(%z: F64, %f: F64, %i: F64, %step: F64, %jm: S32):
+        %z1 : F64 = %z.sub(%step.mul(0.5).add(0.5))
+        jump product(%z1, %z1, %jm.sub(1), %f, %i, %step)
+
+    block product(%z: F64, %w: F64, %j: S32, %f: F64, %i: F64, %step: F64):
+        %done : Bool = %j.eq(0)
+        branch %done
+            ? finish(%f, %i, %w)
+            : product(%z.sub(%step), %w.mul(%z.sub(%step)), %j.sub(1), %f, %i, %step)
+
+    // for x below the polynomial's interval the product divides
+    block finish(%f: F64, %i: F64, %w: F64):
+        %below : Bool = %i.le(-0.5)
+        %wv    : F64  = %below ? F64.div(1.0, %w) : %w
+        return(%f.mul(%wv).to_f16())

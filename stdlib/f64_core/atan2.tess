@@ -1,0 +1,723 @@
+// Tessera stdlib: the correctly rounded two-argument arc tangent of F64
+//
+// atan2(y, x) is a quadrant offset (0, +-pi/2 or +-pi) plus or minus atan(z),
+// z = min(|x|, |y|) / max(|x|, |y|), and atan(z) = atan(j/64) +
+// atan((z - j/64) / (1 + z j/64)) with a short odd polynomial. A second F64
+// stage in double-double takes most of what the first can't round; the rest,
+// and inputs whose exponents differ by 53 or more, go to an accurate path that
+// evaluates a degree-29/29 rational approximation of atan in 192-bit "tint"
+// arithmetic. Round to nearest only. Zeros and infinities follow C99; a NaN
+// comes back quiet, y's if both are NaN (as x86's y + x).
+//
+// Ported from CORE-MATH, src/binary64/atan2/atan2.c and tint.h via RazorForge's
+// B64Atan2.rf.
+// Copyright (c) 2024-2025 Paul Zimmermann and Alexei Sibidanov (atan2.c)
+// Copyright (c) 2023-2024 Paul Zimmermann and Alexei Sibidanov (tint.h)
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// The degree-29/29 rational approximation z P(z) / Q(z) of atan(z) on [0, 1], its
+/// coefficients as tints: P's top significand words.
+preset CM_F64_ATAN2_PH: Array<U64, 30> = [0x82703F8B53112ECA, 0xB3CF74B427D53E03,
+        0xB08498B17B88C39A, 0xFD4BAA7BB52B0D83, 0x96541948B85FB386, 0x96AAA5D4BAFFC590,
+        0x83CD41B5FA862B11, 0xCBBC7752197CC106, 0x8CF8F7C585767042, 0xAFDC36D6B36139BF,
+        0xC6F8FB1463822519, 0xCCE79F10F754E315, 0xC090384DBD77132E, 0xA556AC9EEE25E867,
+        0x81BD2677DDFCBC38, 0xB9ED12169D72E8D9, 0xF2DF6DA875B666FA, 0x902D34D4DB910ED8,
+        0x9AEFA41961CE1207, 0x95DB9977C5E6E263, 0x817CB6D8236D5F4D, 0xC5EEC4228C352098,
+        0x840C38CCFCB5DC64, 0x97074AF7B286B19E, 0x9054011C32D4B7A5, 0xDDDB4A2EAAB2BB15,
+        0x80EF9A1B3E59ABE5, 0xCA16DD49CD30854C, 0xA0BA01B8742BA801, 0x9C0440896CE6515C]
+
+/// P's middle significand words.
+preset CM_F64_ATAN2_PM: Array<U64, 30> = [0x71CE6279D467AA45, 0xEE590B839E751890,
+        0x11E37821D784D8FA, 0xB25425BEB0A04DC3, 0xE0B815ACE425A859, 0xF23DB783B6E4CE55,
+        0xAD8F9D6E3EB9D833, 0xBC66CFB3EDEFA6E3, 0xCD92A5B9AC13D8C8, 0x11DF63474E3859D4,
+        0x2F9F04CF55C10377, 0x91CE47EDCBC8A4EE, 0x1DFB4D9A1D595DE7, 0xD84DAFA25141D203,
+        0x1DF33F27DBB60939, 0xC81D95DCEF13C227, 0xC29DD3A69C274C65, 0x6F3ECDDFD6AF0A9F,
+        0xACD0317666753751, 0x85367A63FAB8A720, 0x70C7815F28909D9B, 0x789E56BE1DEE9B67,
+        0xB55A44095BF7F312, 0xC20AAC21F3130F1D, 0xC68D3C5D525F4AF4, 0x753761A8F0E9AA8D,
+        0x18E6AFE0651FDF49, 0xBAD8CA379401027C, 0xE6DC14A9516D7F04, 0x0CF3470FA7F10AC3]
+
+/// P's low significand words.
+preset CM_F64_ATAN2_PL: Array<U64, 30> = [0x019C9B28466B6FC0, 0xF2570B12BCB2381A,
+        0x2795B14B84B9D78C, 0x92008D9FB34B68FF, 0xBECA17C69BB4F7A0, 0x2C54E054D3B69F7E,
+        0x4EF470D801FA03CA, 0x568B2F9E4FEB8910, 0x043BD4A023DBE04D, 0x42B30B2C089A2B6C,
+        0x1C44675C6D483606, 0xB2A6F721AC656B42, 0xE506CA899A394F70, 0xF1C7C2A5156B3EC3,
+        0xCB4C2C73286A6C29, 0x974B95796B93C332, 0x83B9260976C8F0C5, 0x8E950D7E70A8E9B2,
+        0x3EAF42A53FCC6534, 0xFC2B63BD115998D8, 0x0C54E97155D12158, 0xBA25BDA81292CCC1,
+        0x6668B8792D4ECD08, 0x369E9FDBDD48528A, 0xEEB3C98615DEE188, 0x3F20620CD3E075BB,
+        0xD1C0329E6A702D9D, 0x1FC7F47985486F16, 0x1F5303D878905D2F, 0xA9DC80682C111A9D]
+
+/// P's exponents.
+preset CM_F64_ATAN2_PEX: Array<S64, 30> = [-10, -8, -6, -5, -3, -2, -1, -1, 0, 0, 0, 0, 0, 0, 0, -1,
+        -2, -2, -3, -4, -5, -7, -8, -10, -12, -15, -17, -21, -25, -59]
+
+/// P's signs.
+preset CM_F64_ATAN2_PSGN: Array<U64, 30> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+
+/// Q's top significand words.
+preset CM_F64_ATAN2_QH: Array<U64, 30> = [0x82703F8B53112ECA, 0xB3CF74B427D53E03,
+        0xB33C44AF0D43C9E8, 0x8264D256F0BF4D61, 0x9D97C4947687B2EE, 0xA0F888DC7AAB949E,
+        0x8FD9C7172AB0828E, 0xE38168B78A51EE15, 0xA164CCDBB65EE133, 0xCED0C0CBE44FAC2F,
+        0xF0E6660438C90371, 0x8000000000000000, 0xF8EA68F9AD849103, 0xDDC64EEEE3506234,
+        0xB52DDFBA2D37C8E2, 0x87AC113D26B683A1, 0xBA065070B900F3D5, 0xE902D2A4BFC22441,
+        0x84E405C915F7769B, 0x896DA46C7E6CEBB3, 0x801A0C1A0DFEFC92, 0xD59D088930DF07DB,
+        0x9DB56A6984B77231, 0xCB7450D9D62D2E68, 0xE12A52E02B64B23E, 0xD057B6D0900ED30D,
+        0x9B1F1CA22FEF7AE5, 0xAEBA710F053AAC3B, 0x84B9ADA076CD007D, 0xCCA4B9046786937D]
+
+/// Q's middle significand words.
+preset CM_F64_ATAN2_QM: Array<U64, 30> = [0x71CE6279D467AA45, 0xEE590B839E751890,
+        0xF4426F84614701DB, 0xEE21431CC0F29764, 0xEF4087C49DDE5229, 0xF623F19AC413DB23,
+        0x1A9F72FADAFC3DFB, 0x604A47815C8091EB, 0xE623433C5E086402, 0xD7C2ADFC7C5DDA9E,
+        0x3DCA1A0F58F0D943, 0x0000000000000000, 0xB257E4BFC606967F, 0x47A33EA40A2B22E4,
+        0x24551A9B19FA064A, 0x4E97756C38785B0B, 0xE49D8F9F238F1EEB, 0x945CFE6C83A5B828,
+        0x0FAAF34C3C51DD39, 0xE0AFC0B6DB3DBBF5, 0xF8E0A97902E08D47, 0xA8CB00021849FBAF,
+        0xCF7C2074E0480959, 0x9787B4265977D004, 0x97C9139A8CED716C, 0x5E04BB17EB879A5E,
+        0x19A687F0A4073EEE, 0x30EA5D6FB116F775, 0x13E55006073F76B1, 0x233C1E691C127C1F]
+
+/// Q's low significand words.
+preset CM_F64_ATAN2_QL: Array<U64, 30> = [0x019C9B28466B6FC0, 0xF2570B12BCB238CF,
+        0x979E49DC5B858442, 0xCE0CC1B593AC9952, 0x742BC6E02BFB6DF8, 0x854744A164F70ECD,
+        0xAF96A180EA297178, 0x9FAAA42312E8EB30, 0xCB228AFD335A245F, 0xA22B4A311CF5A5B1,
+        0x8A92B9DE68C4488C, 0x0000000000000000, 0x818FA2816928C4AA, 0xA6A2C129ACE2470A,
+        0x3D78C68B54BC3850, 0xF75F0A4506931BA8, 0x6805D48D67F1DCD9, 0x519EBB457F8CCCA0,
+        0xA97FA0AE99382C93, 0x061CCFF6E78EFFF4, 0x81898E0B7D8EF0BC, 0xF80CC91AA0BDDF89,
+        0x3316ECAA6AA4604E, 0xBA615CEE00A841D7, 0x70A176AD2B5F16D2, 0x23ED135B60BEA070,
+        0x05A9CCBC8C14578B, 0x8A9BCFEF5698F8F1, 0x4CF4259968228F3E, 0xF493E0B7A3DE459A]
+
+/// Q's exponents.
+preset CM_F64_ATAN2_QEX: Array<S64, 30> = [-10, -8, -6, -4, -3, -2, -1, -1, 0, 0, 0, 1, 0, 0, 0, 0,
+        -1, -2, -2, -3, -4, -6, -7, -9, -11, -13, -15, -18, -21, -26]
+
+/// Q's signs.
+preset CM_F64_ATAN2_QSGN: Array<U64, 30> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+/// j/64 for j = 0..64, the fast path's reduction points, as F64 bits.
+preset CM_F64_ATAN2_T2: Array<U64, 65> = [0x0000000000000000, 0x3F90000000000000,
+        0x3FA0000000000000, 0x3FA8000000000000, 0x3FB0000000000000, 0x3FB4000000000000,
+        0x3FB8000000000000, 0x3FBC000000000000, 0x3FC0000000000000, 0x3FC2000000000000,
+        0x3FC4000000000000, 0x3FC6000000000000, 0x3FC8000000000000, 0x3FCA000000000000,
+        0x3FCC000000000000, 0x3FCE000000000000, 0x3FD0000000000000, 0x3FD1000000000000,
+        0x3FD2000000000000, 0x3FD3000000000000, 0x3FD4000000000000, 0x3FD5000000000000,
+        0x3FD6000000000000, 0x3FD7000000000000, 0x3FD8000000000000, 0x3FD9000000000000,
+        0x3FDA000000000000, 0x3FDB000000000000, 0x3FDC000000000000, 0x3FDD000000000000,
+        0x3FDE000000000000, 0x3FDF000000000000, 0x3FE0000000000000, 0x3FE0800000000000,
+        0x3FE1000000000000, 0x3FE1800000000000, 0x3FE2000000000000, 0x3FE2800000000000,
+        0x3FE3000000000000, 0x3FE3800000000000, 0x3FE4000000000000, 0x3FE4800000000000,
+        0x3FE5000000000000, 0x3FE5800000000000, 0x3FE6000000000000, 0x3FE6800000000000,
+        0x3FE7000000000000, 0x3FE7800000000000, 0x3FE8000000000000, 0x3FE8800000000000,
+        0x3FE9000000000000, 0x3FE9800000000000, 0x3FEA000000000000, 0x3FEA800000000000,
+        0x3FEB000000000000, 0x3FEB800000000000, 0x3FEC000000000000, 0x3FEC800000000000,
+        0x3FED000000000000, 0x3FED800000000000, 0x3FEE000000000000, 0x3FEE800000000000,
+        0x3FEF000000000000, 0x3FEF800000000000, 0x3FF0000000000000]
+
+/// atan(j/64) as a double-double: the high parts, as F64 bits.
+preset CM_F64_ATAN2_F2H: Array<U64, 65> = [0x0000000000000000, 0x3F8FFF555BBB7300,
+        0x3F9FFD55BBA97600, 0x3FA7FB818430DA40, 0x3FAFF55BB72CFE00, 0x3FB3F59F0E7C55A0,
+        0x3FB7EE182602F100, 0x3FBBE39EBE6F07C0, 0x3FBFD5BA9AAC2F60, 0x3FC1E1FAFB043720,
+        0x3FC3D6EEE8C66270, 0x3FC5C9811E3EC270, 0x3FC7B97B4BCE5B00, 0x3FC9A6A8E96C8620,
+        0x3FCB90D7529260A0, 0x3FCD77D5DF205730, 0x3FCF5B75F92C80E0, 0x3FD09DC597D86360,
+        0x3FD18BF5A30BF178, 0x3FD278372057EF48, 0x3FD362773707EBC8, 0x3FD44AA436C2AF08,
+        0x3FD530AD9951CD48, 0x3FD614840309CFE0, 0x3FD6F61941E4DEF0, 0x3FD7D5604B63B3F8,
+        0x3FD8B24D394A1B28, 0x3FD98CD5454D6B18, 0x3FDA64EEC3CC2400, 0x3FDB3A911DA65C70,
+        0x3FDC0DB4C94EC9F0, 0x3FDCDE53432C1350, 0x3FDDAC670561BB50, 0x3FDE77EB7F175A38,
+        0x3FDF40DD0B541418, 0x3FE0039C73C1A40C, 0x3FE0657E94DB30D0, 0x3FE0C6145B5B43DC,
+        0x3FE1255D9BFBD2A8, 0x3FE1835A88BE7C14, 0x3FE1E00BABDEFEB4, 0x3FE23B71E2CC9E6C,
+        0x3FE2958E59308E30, 0x3FE2EE628406CBCC, 0x3FE345F01CCE37BC, 0x3FE39C391CD41718,
+        0x3FE3F13FB89E96F4, 0x3FE445065B795B54, 0x3FE4978FA3269EE0, 0x3FE4E8DE5BB6EC04,
+        0x3FE538F57B890620, 0x3FE587D81F732FBC, 0x3FE5D58987169B18, 0x3FE6220D115D7B8C,
+        0x3FE66D663923E088, 0x3FE6B798920B3D98, 0x3FE700A7C5784634, 0x3FE748978FBA8E10,
+        0x3FE78F6BBD5D3160, 0x3FE7D528289FA094, 0x3FE819D0B7158A4C, 0x3FE85D69576CC2C4,
+        0x3FE89FF5FF57F1F8, 0x3FE8E17AA99CC05C, 0x3FE921FB54442D18]
+
+/// The low parts of atan(j/64), as F64 bits.
+preset CM_F64_ATAN2_F2L: Array<U64, 65> = [0x0000000000000000, 0xBCA95220C39D4DFF,
+        0x3CA2542779D776DE, 0xBCA6061BBE3DE53C, 0xBCA639269B0DA47E, 0xBC84A7663AF440F7,
+        0x3CAD1824D59F9E13, 0x3C8BEF71E5340B31, 0x3CAB8CB225E627D0, 0x3CAB92DE9BAC94C2,
+        0xBC9D3CB89E62DAFD, 0xBCA882A55960087A, 0x3C91347B0B4F881D, 0x3CA873D8079ED0D2,
+        0x3C9022F621A5C1CB, 0x3CA9C648D1534598, 0xBC94EA9238610A08, 0x3CA2C5C8E721970D,
+        0x3C630CA4748B1BF9, 0xBCA20EF9BA6DBF90, 0x3CAE69C5ABB498D2, 0x3C9A8A86F0EA9311,
+        0x3C9DB5336FEEF7F0, 0x3C99636A3AA3B840, 0x3C81CE2A8C848B74, 0xBC84B1BBD1EA6DB3,
+        0xBCA4925E8B916E0B, 0x3C79E6C988FD0A77, 0xBCAA49BD836A1700, 0xBCACA3CF09C6B5F8,
+        0xBC7CC1CE70934C34, 0x3C82E982DDF3872A, 0xBC82EA406EE84D0F, 0xBCADE35847C81979,
+        0xBC6A3992DC382A23, 0xBC8B32C949C9D593, 0xBC7D5B495F6349E6, 0xBCAF34582F6255FE,
+        0x3C9ED42511E3F11D, 0xBC91CEF189FF9E7F, 0xBC5928DF287A668F, 0xBCAE3BDE360C7DDB,
+        0x3C9BD86313CE4FDE, 0xBCA8E8A85803CC1D, 0xBC977EF7641C777F, 0x3CAB73EF3389D02F,
+        0x3C7ECF8B492644F0, 0x3CAC1125FD3810C7, 0x3CA2483350FE548B, 0x3C84A33DBEB3796C,
+        0xBCA46EDD2AF69483, 0xBCA2BCB93B18B52A, 0x3C60028E4BC5E7CA, 0x3CAED487ACAF1174,
+        0xBCA2DD4DFD7D1777, 0x3C92BFE3CF3B9D79, 0xBC78C34D25AADEF6, 0xBC9F426ACF4D3BDB,
+        0xBCAAFE57DD9FF230, 0xBC954FBEF0E862AB, 0x3C990227758B11BA, 0x3CA16B66E7FC8B8C,
+        0xBC855B9A5E177A1B, 0x3CAC27CFAA9F7A14, 0x3C81A62633145C07]
+
+/// The quadrant offsets 0, +-pi/2, +-pi, indexed by (sign x) 4 + (sign y) 2 + (|y| > |x|),
+/// as double-doubles: the high parts, as F64 bits.
+preset CM_F64_ATAN2_OH: Array<U64, 8> = [0x0000000000000000, 0x3FF921FB54442D18, 0x0000000000000000,
+        0xBFF921FB54442D18, 0x400921FB54442D18, 0x3FF921FB54442D18, 0xC00921FB54442D18,
+        0xBFF921FB54442D18]
+
+/// The low parts of the quadrant offsets, as F64 bits.
+preset CM_F64_ATAN2_OL: Array<U64, 8> = [0x0000000000000000, 0x3C91A62633145C07, 0x0000000000000000,
+        0xBC91A62633145C07, 0x3CA1A62633145C07, 0x3C91A62633145C07, 0xBCA1A62633145C07,
+        0xBC91A62633145C07]
+
+/// A tint: (-1)^sgn (hm/2^128 + l/2^192) 2^ex, where the top bit of hm is 1
+/// unless the value is zero.
+record CmF64Atan2Tint
+    hm  : U128
+    l   : U64
+    ex  : S64
+    sgn : U64
+
+/// A 192-bit significand: h 2^64 + l.
+record CmF64Atan2Sig
+    h : U128
+    l : U64
+
+/// atan2(y, x): the angle of the point (x, y), correctly rounded, in [-pi, pi].
+routine f64_cm_atan2(%y: F64, %x: F64) -> F64
+    block entry():
+        %iy      : U64  = %y.bits()
+        %ix      : U64  = %x.bits()
+        %aiy     : U64  = %iy.bitand(0x7FFFFFFFFFFFFFFF)
+        %aix     : U64  = %ix.bitand(0x7FFFFFFFFFFFFFFF)
+        %yodd    : Bool = %aiy.eq(0).bitor(%aiy.ge(0x7FF0000000000000))
+        %xodd    : Bool = %aix.eq(0).bitor(%aix.ge(0x7FF0000000000000))
+        %special : Bool = %yodd.bitor(%xodd)
+        branch %special ? return(cm_f64_atan2_special(%y, %x)) : continue
+        %sy  : U64  = %iy.shr(63)
+        %sx  : U64  = %ix.shr(63)
+        %gt  : U64  = %aix.lt(%aiy).to_u64()
+        %dxy : U64  = %aix.sub_wrap(%aiy).bitxor(U64.sub_wrap(0, %gt))
+        %far : Bool = %dxy.ge(0x0350000000000000)  // the exponents differ by 53 or more
+        branch %far ? return(cm_f64_atan2_accurate(%y, %x)) : fast(%sy, %sx, %gt)
+
+    // offset + atan(j/64) + atan((ym - xm j/64) / (xm + ym j/64)), with xm = max(|x|, |y|) and ym the other
+    block fast(%sy: U64, %sx: U64, %gt: U64):
+        %swap : Bool  = %y.abs().gt(%x.abs())
+        %xm0  : F64   = %swap ? %y.abs() : %x.abs()
+        %ym0  : F64   = %swap ? %x.abs() : %y.abs()
+        %cs   : F64   = %gt.bitxor(%sx).bitxor(%sy).ne(0) ? -1.0 : 1.0
+        %kw   : USize = %sx.shl(2).bitor(%sy.shl(1)).bitor(%gt).to_usize()
+        %jj   : F64   = %ym0.div(%xm0).add(2.0078125)
+        %jt   : USize = %jj.bits().shr(45).bitand(127).to_usize()
+        %fh0  : F64   = F64.from_bits(CM_F64_ATAN2_F2H.get(%jt)).mul(%cs)
+        %fl0  : F64   = F64.from_bits(CM_F64_ATAN2_F2L.get(%jt)).mul(%cs)
+        %fh   : F64   = %fh0.add(F64.from_bits(CM_F64_ATAN2_OH.get(%kw)))
+        %fl   : F64   = %fl0.add(F64.from_bits(CM_F64_ATAN2_OL.get(%kw)))
+        // scale tiny operands up, and huge ones down (unless j = 0)
+        %tiny : Bool           = %xm0.lt(0x1p-920)
+        %huge : Bool           = %xm0.gt(0x1p1022).bitand(%jt.ne(0))
+        %xm1  : F64            = %tiny ? %xm0.mul(0x1p920) : %xm0
+        %ym1  : F64            = %tiny ? %ym0.mul(0x1p920) : %ym0
+        %xm   : F64            = %huge ? %xm1.mul(0.5) : %xm1
+        %ym   : F64            = %huge ? %ym1.mul(0.5) : %ym1
+        %t0   : F64            = F64.from_bits(CM_F64_ATAN2_T2.get(%jt))
+        %zn   : F64            = %t0.neg().mul_add(%xm, %ym)
+        %zd   : F64            = %t0.mul_add(%ym, %xm)
+        %z0   : F64            = %zn.div(%zd)
+        %z2   : F64            = %z0.mul(%z0)
+        %z    : F64            = %z0.mul(%cs)
+        %p2   : F64            = %z2.mul(-0x1.248ad469844a1p-3).add(0x1.999999860e1cap-3)
+        %p1   : F64            = %z2.mul(%p2).add(-0x1.55555555554d2p-2)
+        %dz   : F64            = %z.mul(%z2).mul(%p1)
+        %eps  : F64            = %z.abs().mul(0x1.051p-51).add(0x1p-90)
+        %s    : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(%fh, %z)
+        %rl   : F64            = %fl.add(%dz).add(%s.lo)
+        %lb   : F64            = %s.hi.add(%rl.sub(%eps))
+        %ub   : F64            = %s.hi.add(%rl.add(%eps))
+        %sure : Bool           = %lb.eq(%ub)
+        branch %sure ? return(%ub) : second(%xm, %ym, %t0, %cs, %fh, %fl)
+
+    // the same reduction with z in double-double
+    block second(%xm: F64, %ym: F64, %t0: F64, %cs: F64, %fh: F64, %fl: F64):
+        %dh0  : F64            = %ym.mul(%t0)
+        %dl0  : F64            = %ym.mul_add(%t0, %dh0.neg())
+        %d    : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(%xm, %dh0)
+        %dh   : F64            = %d.hi
+        %rdh  : F64            = F64.div(1.0, %dh)
+        %dl   : F64            = %dl0.add(%d.lo)
+        %nh0  : F64            = %xm.mul(%t0)
+        %nl0  : F64            = %xm.mul_add(%t0, %nh0.neg())
+        %dt   : F64            = %ym.sub(%nh0)
+        %y1   : F64            = %dt.add(%nh0)
+        %lost : Bool           = %y1.ne(%ym)
+        %nlo  : F64            = %lost ? %ym.sub(%y1).sub(%nl0) : %nl0.neg()
+        %n    : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(%dt, %nlo)
+        %zh0  : F64            = %n.hi.mul(%rdh)
+        %z2   : F64            = %zh0.mul(%zh0)
+        %zl0  : F64            = %rdh.mul(%dh.mul_add(%zh0.neg(),
+                %n.hi).add(%n.lo.sub(%n.hi.mul(%rdh).mul(%dl))))
+        %pa   : F64            = %z2.mul(0x1.999999999755ep-3).add(-0x1.5555555555555p-2)
+        %pb   : F64            = %z2.mul(0x1.c6f7d73531bc2p-4).add(-0x1.24924883596f8p-3)
+        %zl1  : F64            = %zl0.add(%zh0.mul(%z2).mul(%pa.add(%z2.mul(%z2).mul(%pb))))
+        %zh   : F64            = %zh0.mul(%cs)
+        %zl   : F64            = %zl1.mul(%cs)
+        %eps  : F64            = F64.mul(0x1.4p-50, %zh.abs().mul(%z2).add(0x1p-51))
+        %f    : CmF64InvtrigDD = cm_f64_invtrig_fastsum(%fh, %fl, %zh, %zl)
+        %lb   : F64            = %f.hi.add(%f.lo.sub(%eps))
+        %ub   : F64            = %f.hi.add(%f.lo.add(%eps))
+        %sure : Bool           = %lb.eq(%ub)
+        branch %sure ? return(%ub) : return(cm_f64_atan2_accurate(%y, %x))
+
+/// atan2 when a coordinate is zero, infinite or NaN.
+routine cm_f64_atan2_special(%y: F64, %x: F64) -> F64
+    block entry():
+        %aiy  : U64  = %y.bits().shl(1)
+        %aix  : U64  = %x.bits().shl(1)
+        %nan  : Bool = %aiy.gt(0xFFE0000000000000).bitor(%aix.gt(0xFFE0000000000000))
+        %yinf : Bool = %aiy.eq(0xFFE0000000000000)
+        %xinf : Bool = %aix.eq(0xFFE0000000000000)
+        %zero : Bool = %aiy.eq(0).bitor(%aix.eq(0))
+        when:
+            %nan  -> nan()
+            %xinf -> x_inf(%yinf)
+            %yinf -> return(F64.copysign(0x1.921fb54442d18p+0,
+                    %y).add(F64.copysign(0x1.1a62633145c07p-54, %y)))
+            %zero -> zero(%aiy, %aix)
+            else  -> return(0.0)
+
+    // the first NaN operand wins, quiet, like x86's y + x
+    block nan():
+        branch %y.is_nan() ? return(%y.add(%y)) : return(%x.add(%x))
+
+    block x_inf(%yinf: Bool):
+        %xneg : Bool = %x.lt(0.0)
+        branch %yinf ? both_inf(%xneg) : continue
+        branch %xneg
+            ? return(F64.copysign(0x1.921fb54442d18p+1,
+                    %y).add(F64.copysign(0x1.1a62633145c07p-53, %y)))
+            : return(F64.copysign(0.0, %y))
+
+    // +-3pi/4 or +-pi/4
+    block both_inf(%xneg: Bool):
+        branch %xneg
+            ? return(F64.copysign(0x1.2d97c7f3321d2p+1, %y).add(F64.copysign(0x1p-54, %y)))
+            : return(F64.copysign(0x1.921fb54442d18p-1, %y).add(F64.copysign(0x1p-55, %y)))
+
+    block zero(%aiy: U64, %aix: U64):
+        %both : Bool = %aiy.eq(0).bitand(%aix.eq(0))
+        %yz   : Bool = %aiy.eq(0)
+        %ypos : Bool = %y.gt(0.0)
+        when:
+            %both -> both_zero()
+            %yz   -> y_zero()
+            %ypos -> return(F64.add(0x1.921fb54442d18p+0, 0x1.1a62633145c07p-54))
+            else  -> return(F64.sub(-0x1.921fb54442d18p+0, 0x1.1a62633145c07p-54))
+
+    // +-0 for x = +0, +-pi for x = -0
+    block both_zero():
+        %xplus : Bool = %x.bits().eq(0)
+        %yplus : Bool = %y.bits().eq(0)
+        when:
+            %xplus -> return(%y)
+            %yplus -> return(F64.add(0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53))
+            else   -> return(F64.sub(-0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53))
+
+    block y_zero():
+        %xpos  : Bool = %x.gt(0.0)
+        %yplus : Bool = %y.bits().shr(63).eq(0)
+        when:
+            %xpos  -> return(%y.div(%x))
+            %yplus -> return(F64.add(0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53))
+            else   -> return(F64.sub(-0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53))
+
+/// The accurate path: atan2(y, x) for finite non-zero y and x, from a degree-29/29
+/// rational approximation of atan in tint arithmetic.
+routine cm_f64_atan2_accurate(%y: F64, %x: F64) -> F64
+    block entry():
+        %t    : F64  = %y.div(%x)
+        %zero : Bool = %t.eq(0.0)
+        branch %zero ? underflow(%t) : continue
+        %corr  : F64  = %t.mul_add(%x, %y.neg())
+        %exact : Bool = %corr.eq(0.0).bitand(%x.gt(0.0))
+        branch %exact ? exact(%t) : general()
+
+    // y/x underflows to zero
+    block underflow(%t: F64):
+        %xpos : Bool = %x.gt(0.0)
+        %ypos : Bool = %y.gt(0.0)
+        when:
+            %xpos -> return(%t)
+            %ypos -> return(F64.add(0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53))
+            else  -> return(F64.sub(-0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53))
+
+    // t = y/x exactly, x > 0: for a tiny t, atan(t) is t minus a hair
+    block exact(%t: F64):
+        %small : Bool = %t.abs().le(0x1.d12ed0af1a27fp-27)
+        branch %small ? continue : general()
+        %big : Bool = %y.abs().ge(0x1p-915)
+        branch %big ? return(%t.mul_add(-0x1p-54, %t)) : continue
+        %corr2 : F64 = %t.mul(0x1p105).mul_add(%x, %y.neg().mul(0x1p105))
+        branch %corr2.eq(0.0) ? return(%t.mul_add(-0x1p-54, %t)) : general()
+
+    block general():
+        %inv  : Bool           = %y.abs().gt(%x.abs())
+        %num  : F64            = %inv ? %x : %y
+        %den  : F64            = %inv ? %y : %x
+        %z    : CmF64Atan2Tint = cm_f64_atan2_div(cm_f64_atan2_from_f64(%num),
+                cm_f64_atan2_from_f64(%den))
+        %tiny : Bool           = %inv.bitnot().bitand(%x.gt(0.0)).bitand(%z.ex.le(-96))
+        branch %tiny ? tiny(%z) : rational(%inv, %z)
+
+    // atan(y/x) rounds like y/x nudged slightly toward zero
+    block tiny(%z: CmF64Atan2Tint):
+        %zl  : U64  = %z.l.sub_wrap(2)
+        %zh0 : U64  = %z.hm.shr(64).to_u64()
+        %zm0 : U64  = %z.hm.to_u64_wrap()
+        %zm  : U64  = %zl.lt(2) ? %zm0.sub_wrap(1) : %zm0
+        %zh  : U64  = %zm.lt(1) ? %zh0.sub_wrap(1) : %zh0
+        %hm  : U128 = %zh.to_u128().shl(64).bitor(%zm.to_u128())
+        return(cm_f64_atan2_to_f64(CmF64Atan2Tint { hm: %hm, l: %zl, ex: %z.ex, sgn: %z.sgn }, 1))
+
+    // z P(z) / Q(z) for the positive z, by Horner's rule from the top coefficients
+    block rational(%inv: Bool, %z: CmF64Atan2Tint):
+        %za : CmF64Atan2Tint = CmF64Atan2Tint { hm: %z.hm, l: %z.l, ex: %z.ex, sgn: 0 }
+        jump horner(%inv, %z.sgn, %za, 29, cm_f64_atan2_p(29), cm_f64_atan2_q(29))
+
+    block horner(%inv: Bool, %sz: U64, %za: CmF64Atan2Tint, %i: USize, %p: CmF64Atan2Tint,
+            %q: CmF64Atan2Tint):
+        %done : Bool = %i.eq(0)
+        branch %done ? quotient(%inv, %sz, %za, %p, %q) : continue
+        %k  : USize          = %i.sub(1)
+        %pz : CmF64Atan2Tint = cm_f64_atan2_mul(%p, %za)
+        %qz : CmF64Atan2Tint = cm_f64_atan2_mul(%q, %za)
+        jump horner(%inv, %sz, %za, %k, cm_f64_atan2_add(%pz, cm_f64_atan2_p(%k)),
+                cm_f64_atan2_add(%qz, cm_f64_atan2_q(%k)))
+
+    // z approximates atan(y/x) (or atan(x/y) when inv), with -pi/4 < z < pi/4
+    block quotient(%inv: Bool, %sz: U64, %za: CmF64Atan2Tint, %p: CmF64Atan2Tint,
+            %q: CmF64Atan2Tint):
+        %r : CmF64Atan2Tint = cm_f64_atan2_div(cm_f64_atan2_mul(%p, %za), %q)
+        %a : CmF64Atan2Tint = CmF64Atan2Tint { hm: %r.hm, l: %r.l, ex: %r.ex, sgn: %sz }
+        branch %inv ? invert(%a) : quadrant(%a, 662)
+
+    // +-pi/2 - atan(x/y)
+    block invert(%a: CmF64Atan2Tint):
+        %pi2 : CmF64Atan2Tint = cm_f64_atan2_pi(1)
+        %pos : Bool           = %a.sgn.eq(0)
+        branch %pos ? minus_pos(%a, %pi2) : minus_neg(%a, %pi2)
+
+    // pi/2 - atan(x/y)
+    block minus_pos(%a: CmF64Atan2Tint, %pi2: CmF64Atan2Tint):
+        %neg : CmF64Atan2Tint = CmF64Atan2Tint { hm: %a.hm, l: %a.l, ex: %a.ex, sgn: 1 }
+        jump quadrant(cm_f64_atan2_add(%pi2, %neg), 524)
+
+    // -pi/2 - atan(x/y)
+    block minus_neg(%a: CmF64Atan2Tint, %pi2: CmF64Atan2Tint):
+        %s : CmF64Atan2Tint = cm_f64_atan2_add(%a, %pi2)
+        jump quadrant(CmF64Atan2Tint { hm: %s.hm, l: %s.l, ex: %s.ex, sgn: 1 }, 524)
+
+    // now -pi/2 < z < pi/2; a negative x moves it to the opposite quadrant
+    block quadrant(%a: CmF64Atan2Tint, %err: U64):
+        %xneg : Bool = %x.lt(0.0)
+        branch %xneg ? continue : return(cm_f64_atan2_to_f64(%a, %err))
+        %pi  : CmF64Atan2Tint = cm_f64_atan2_pi(2)
+        %pos : Bool           = %a.sgn.eq(0)
+        branch %pos
+            ? opposite_pos(%a, %pi)
+            : return(cm_f64_atan2_to_f64(cm_f64_atan2_add(%a, %pi), 266))
+
+    // -(pi - z)
+    block opposite_pos(%a: CmF64Atan2Tint, %pi: CmF64Atan2Tint):
+        %neg : CmF64Atan2Tint = CmF64Atan2Tint { hm: %a.hm, l: %a.l, ex: %a.ex, sgn: 1 }
+        %s   : CmF64Atan2Tint = cm_f64_atan2_add(%pi, %neg)
+        return(cm_f64_atan2_to_f64(CmF64Atan2Tint { hm: %s.hm, l: %s.l, ex: %s.ex, sgn: 1 }, 266))
+
+/// The tint pi (ex = 2) or pi/2 (ex = 1), with error below 2^-196.
+routine cm_f64_atan2_pi(%ex: S64) -> CmF64Atan2Tint
+    block entry():
+        %hm : U128 = 0xC90FDAA22168C234C4C6628B80DC1CD1
+        return(CmF64Atan2Tint { hm: %hm, l: 0x29024E088A67CC74, ex: %ex, sgn: 0 })
+
+/// Coefficient i of the numerator polynomial P.
+routine cm_f64_atan2_p(%i: USize) -> CmF64Atan2Tint
+    block entry():
+        %hm : U128 = CM_F64_ATAN2_PH.get(%i).to_u128().shl(64).bitor(CM_F64_ATAN2_PM.get(%i).to_u128())
+        return(CmF64Atan2Tint { hm: %hm, l: CM_F64_ATAN2_PL.get(%i), ex: CM_F64_ATAN2_PEX.get(%i),
+                sgn: CM_F64_ATAN2_PSGN.get(%i) })
+
+/// Coefficient i of the denominator polynomial Q.
+routine cm_f64_atan2_q(%i: USize) -> CmF64Atan2Tint
+    block entry():
+        %hm : U128 = CM_F64_ATAN2_QH.get(%i).to_u128().shl(64).bitor(CM_F64_ATAN2_QM.get(%i).to_u128())
+        return(CmF64Atan2Tint { hm: %hm, l: CM_F64_ATAN2_QL.get(%i), ex: CM_F64_ATAN2_QEX.get(%i),
+                sgn: CM_F64_ATAN2_QSGN.get(%i) })
+
+/// The product of two tints, with error below 10 ulps.
+routine cm_f64_atan2_mul(%a: CmF64Atan2Tint, %b: CmF64Atan2Tint) -> CmF64Atan2Tint
+    block entry():
+        %mask : U128 = 0xFFFFFFFFFFFFFFFF
+        %ah   : U128 = %a.hm.shr(64)
+        %am   : U128 = %a.hm.bitand(%mask)
+        %al   : U128 = %a.l.to_u128()
+        %bh   : U128 = %b.hm.shr(64)
+        %bm   : U128 = %b.hm.bitand(%mask)
+        %bl   : U128 = %b.l.to_u128()
+        %rh   : U128 = %ah.mul_wrap(%bh)
+        %rm1  : U128 = %ah.mul_wrap(%bm)
+        %rm2  : U128 = %am.mul_wrap(%bh)
+        %rl1  : U128 = %ah.mul_wrap(%bl)
+        %rl2  : U128 = %am.mul_wrap(%bm)
+        %rl3  : U128 = %al.mul_wrap(%bh)
+        %h0   : U64  = %rh.shr(64).to_u64()
+        %m0   : U64  = %rh.to_u64_wrap()
+        // accumulate rm1
+        %l0 : U64 = %rm1.to_u64_wrap()
+        %t1 : U64 = %rm1.shr(64).to_u64()
+        %m1 : U64 = %m0.add_wrap(%t1)
+        %h1 : U64 = %m1.lt(%t1) ? %h0.add_wrap(1) : %h0
+        // accumulate rm2
+        %l2  : U64 = %rm2.to_u64_wrap()
+        %t2  : U64 = %rm2.shr(64).to_u64()
+        %l1  : U64 = %l0.add_wrap(%l2)
+        %cm0 : U64 = %l1.lt(%l2).to_u64()
+        %m2  : U64 = %m1.add_wrap(%t2)
+        %h2  : U64 = %m2.lt(%t2) ? %h1.add_wrap(1) : %h1
+        // accumulate rl1 + rl2 + rl3
+        %sl  : U128 = %rl1.shr(64).add_wrap(%rl2.shr(64)).add_wrap(%rl3.shr(64))
+        %l3  : U64  = %sl.to_u64_wrap()
+        %cm1 : U64  = %cm0.add_wrap(%sl.shr(64).to_u64())
+        %lf  : U64  = %l1.add_wrap(%l3)
+        %cm  : U64  = %lf.lt(%l3) ? %cm1.add_wrap(1) : %cm1
+        // accumulate cm
+        %m    : U64  = %m2.add_wrap(%cm)
+        %h    : U64  = %m.lt(%cm) ? %h2.add_wrap(1) : %h2
+        %ex   : S64  = %a.ex.add(%b.ex)
+        %sgn  : U64  = %a.sgn.bitxor(%b.sgn)
+        %norm : Bool = %h.shr(63).eq(0)
+        branch %norm ? continue : return(cm_f64_atan2_tint(%h, %m, %lf, %ex, %sgn))
+        %hn : U64 = %h.shl(1).bitor(%m.shr(63))
+        %mn : U64 = %m.shl(1).bitor(%lf.shr(63))
+        return(cm_f64_atan2_tint(%hn, %mn, %lf.shl(1), %ex.sub(1), %sgn))
+
+/// The tint with significand words h, m, l.
+routine cm_f64_atan2_tint(%h: U64, %m: U64, %l: U64, %ex: S64, %sgn: U64) -> CmF64Atan2Tint
+    block entry():
+        %hm : U128 = %h.to_u128().shl(64).bitor(%m.to_u128())
+        return(CmF64Atan2Tint { hm: %hm, l: %l, ex: %ex, sgn: %sgn })
+
+/// Compares |a| with |b|: -1, 0 or 1.
+routine cm_f64_atan2_cmp_abs(%a: CmF64Atan2Tint, %b: CmF64Atan2Tint) -> S64
+    block entry():
+        %az : Bool = %a.hm.shr(64).eq(0)
+        %bz : Bool = %b.hm.shr(64).eq(0)
+        when:
+            %az  -> return(%bz ? 0 : -1)
+            %bz  -> return(1)
+            else -> by_value()
+
+    block by_value():
+        when:
+            %a.ex.gt(%b.ex) -> return(1)
+            %a.ex.lt(%b.ex) -> return(-1)
+            %a.hm.gt(%b.hm) -> return(1)
+            %a.hm.lt(%b.hm) -> return(-1)
+            %a.l.gt(%b.l)   -> return(1)
+            %a.l.lt(%b.l)   -> return(-1)
+            else            -> return(0)
+
+/// A 192-bit significand shifted right by k bits.
+routine cm_f64_atan2_rshift(%h: U128, %l: U64, %k: U64) -> CmF64Atan2Sig
+    block entry():
+        %k128 : U128 = %k.to_u128()
+        when:
+            %k.eq(0)   -> return(CmF64Atan2Sig { h: %h, l: %l })
+            %k.lt(64)  -> below64(%k128)
+            %k.eq(64)  -> return(CmF64Atan2Sig { h: %h.shr(64), l: %h.to_u64_wrap() })
+            %k.lt(128) -> return(CmF64Atan2Sig { h: %h.shr(%k128),
+                    l: %h.shr(%k128.sub(64)).to_u64_wrap() })
+            %k.lt(192) -> return(CmF64Atan2Sig { h: 0, l: %h.shr(%k128.sub(64)).to_u64_wrap() })
+            else       -> return(CmF64Atan2Sig { h: 0, l: 0 })
+
+    block below64(%k128: U128):
+        %lo : U64 = %h.shl(U128.sub(64, %k128)).to_u64_wrap().bitor(%l.shr(%k))
+        return(CmF64Atan2Sig { h: %h.shr(%k128), l: %lo })
+
+/// A 192-bit significand shifted left by k bits.
+routine cm_f64_atan2_lshift(%h: U128, %l: U64, %k: U64) -> CmF64Atan2Sig
+    block entry():
+        %k128 : U128 = %k.to_u128()
+        %wl   : U128 = %l.to_u128()
+        when:
+            %k.eq(0)   -> return(CmF64Atan2Sig { h: %h, l: %l })
+            %k.lt(64)  -> below64(%k128)
+            %k.eq(64)  -> return(CmF64Atan2Sig { h: %h.shl(64).bitor(%wl), l: 0 })
+            %k.lt(128) -> return(CmF64Atan2Sig { h: %h.shl(%k128).bitor(%wl.shl(%k128.sub(64))),
+                    l: 0 })
+            %k.lt(192) -> return(CmF64Atan2Sig { h: %wl.shl(%k128.sub(64)), l: 0 })
+            else       -> return(CmF64Atan2Sig { h: 0, l: 0 })
+
+    block below64(%k128: U128):
+        %hi : U128 = %h.shl(%k128).bitor(%l.shr(U64.sub(64, %k)).to_u128())
+        return(CmF64Atan2Sig { h: %hi, l: %l.shl(%k) })
+
+/// The leading zero count of a 192-bit significand.
+routine cm_f64_atan2_clz(%h: U128, %l: U64) -> U64
+    block entry():
+        %high : Bool = %h.ne(0)
+        branch %high ? return(%h.leading_zeros().to_u64()) : return(%l.leading_zeros().add(128))
+
+/// The sum of two tints, with error below 2 ulps.
+routine cm_f64_atan2_add(%a: CmF64Atan2Tint, %b: CmF64Atan2Tint) -> CmF64Atan2Tint
+    block entry():
+        %c : S64 = cm_f64_atan2_cmp_abs(%a, %b)
+        when %c:
+            0    -> equal()
+            -1   -> ordered(%b, %a)
+            else -> ordered(%a, %b)
+
+    // |a| = |b|: 0 or 2 a, exactly
+    block equal():
+        %opposite : Bool = %a.sgn.bitxor(%b.sgn).ne(0)
+        branch %opposite
+            ? return(CmF64Atan2Tint { hm: 0, l: 0, ex: -1076, sgn: 0 })
+            : return(CmF64Atan2Tint { hm: %a.hm, l: %a.l, ex: %a.ex.add(1), sgn: %a.sgn })
+
+    // |u| > |v|, thus u.ex >= v.ex
+    block ordered(%u: CmF64Atan2Tint, %v: CmF64Atan2Tint):
+        %sh       : U64           = %u.ex.to_u64_wrap().sub_wrap(%v.ex.to_u64_wrap())
+        %t        : CmF64Atan2Sig = cm_f64_atan2_rshift(%v.hm, %v.l, %sh)
+        %opposite : Bool          = %u.sgn.bitxor(%v.sgn).ne(0)
+        branch %opposite ? subtract(%u, %v, %sh, %t) : sum(%u, %t)
+
+    block subtract(%u: CmF64Atan2Tint, %v: CmF64Atan2Tint, %sh: U64, %t: CmF64Atan2Sig):
+        %tl     : U64  = %u.l.sub_wrap(%t.l)
+        %th0    : U128 = %u.hm.sub_wrap(%t.h)
+        %th     : U128 = %tl.gt(%u.l) ? %th0.sub_wrap(1) : %th0
+        %ex     : U64  = cm_f64_atan2_clz(%th, %tl)
+        %simple : Bool = %ex.le(1).bitor(%sh.eq(0))
+        branch %simple ? continue : exact(%u, %v, %sh, %ex)
+        %r : CmF64Atan2Sig = cm_f64_atan2_lshift(%th, %tl, %ex)
+        return(CmF64Atan2Tint { hm: %r.h, l: %r.l, ex: %u.ex.sub(%ex.to_s64()), sgn: %u.sgn })
+
+    // ex >= 2 and sh >= 1: redo the subtraction without neglecting the low part of v
+    block exact(%u: CmF64Atan2Tint, %v: CmF64Atan2Tint, %sh: U64, %ex: U64):
+        %t2  : CmF64Atan2Sig = cm_f64_atan2_lshift(%v.hm, %v.l, %ex.sub_wrap(%sh))
+        %r0  : CmF64Atan2Sig = cm_f64_atan2_lshift(%u.hm, %u.l, %ex)
+        %ul  : U64           = %r0.l.sub_wrap(%t2.l)
+        %uh0 : U128          = %r0.h.sub_wrap(%t2.h)
+        %uh  : U128          = %ul.gt(%r0.l) ? %uh0.sub_wrap(1) : %uh0
+        %ex1 : U64           = cm_f64_atan2_clz(%uh, %ul)
+        %r1  : CmF64Atan2Sig = cm_f64_atan2_lshift(%uh, %ul, %ex1)
+        return(CmF64Atan2Tint { hm: %r1.h, l: %r1.l, ex: %u.ex.sub(%ex.add(%ex1).to_s64()),
+                sgn: %u.sgn })
+
+    block sum(%u: CmF64Atan2Tint, %t: CmF64Atan2Sig):
+        %rl   : U64  = %u.l.add_wrap(%t.l)
+        %cl   : U128 = %rl.lt(%u.l).to_u128()
+        %rh0  : U128 = %u.hm.add_wrap(%t.h)
+        %ch0  : U128 = %rh0.lt(%u.hm).to_u128()
+        %rh   : U128 = %rh0.add_wrap(%cl)
+        %ch   : U128 = %rh.lt(%cl) ? %ch0.add_wrap(1) : %ch0
+        %over : Bool = %ch.ne(0)
+        branch %over ? continue : return(CmF64Atan2Tint { hm: %rh, l: %rl, ex: %u.ex, sgn: %u.sgn })
+        %rl2 : U64  = %rh.shl(63).to_u64_wrap().bitor(%rl.shr(1))
+        %rh2 : U128 = %ch.shl(127).bitor(%rh.shr(1))
+        return(CmF64Atan2Tint { hm: %rh2, l: %rl2, ex: %u.ex.add(1), sgn: %u.sgn })
+
+/// The tint equal to a finite non-zero F64.
+routine cm_f64_atan2_from_f64(%x: F64) -> CmF64Atan2Tint
+    block entry():
+        %u      : U64  = %x.bits()
+        %sgn    : U64  = %u.shr(63)
+        %ax     : U64  = %u.bitand(0x7FFFFFFFFFFFFFFF)
+        %e      : U64  = %ax.shr(52)
+        %normal : Bool = %e.ne(0)
+        branch %normal ? continue : subnormal(%ax, %sgn)
+        %hn : U64 = %ax.shl(11).bitor(0x8000000000000000)
+        return(CmF64Atan2Tint { hm: %hn.to_u128().shl(64), l: 0, ex: %e.to_s64().sub(0x3FE),
+                sgn: %sgn })
+
+    block subnormal(%ax: U64, %sgn: U64):
+        %lz : U64 = %ax.leading_zeros()
+        %hs : U64 = %ax.shl(%lz)
+        return(CmF64Atan2Tint { hm: %hs.to_u128().shl(64), l: 0, ex: S64.sub(-0x3F2, %lz.to_s64()),
+                sgn: %sgn })
+
+/// A tint rounded to the nearest F64. err is 0 to convert a tint that holds an F64
+/// exactly, and otherwise a bound in ulps on the error of the low word.
+routine cm_f64_atan2_to_f64(%a: CmF64Atan2Tint, %err: U64) -> F64
+    block entry():
+        %sgn   : U64  = %a.sgn
+        %ex    : S64  = %a.ex
+        %hh    : U64  = %a.hm.shr(64).to_u64()
+        %mm    : U64  = %a.hm.to_u64_wrap()
+        %ll    : U64  = %a.l
+        %over  : Bool = %ex.ge(1025)  // |a| >= 2^1024
+        %under : Bool = %ex.le(-1074)  // |a| < 2^-1074
+        %sub   : Bool = %ex.le(-1022)
+        when:
+            %over  -> return(F64.from_bits(%sgn.shl(63).bitor(0x7FF0000000000000)))
+            %under -> underflow(%sgn, %ex, %hh, %mm, %ll)
+            %sub   -> subnormal(%sgn, %ex, %hh, %mm, %ll)
+            else   -> round(%sgn, %ex, %hh, %mm, %ll)
+
+    // below 2^-1075 to zero; exactly 2^-1075 to zero (ties to even), above to 2^-1074
+    block underflow(%sgn: U64, %ex: S64, %hh: U64, %mm: U64, %ll: U64):
+        %small : Bool = %ex.lt(-1074)
+        %mid   : Bool = %hh.eq(0x8000000000000000).bitand(%mm.eq(0)).bitand(%ll.eq(0))
+        when:
+            %small -> return(F64.from_bits(%sgn.shl(63)))
+            %mid   -> return(F64.from_bits(%sgn.shl(63)))
+            else   -> return(F64.from_bits(%sgn.shl(63).bitor(1)))
+
+    // shift the significand to the subnormal quantum, keeping a sticky bit
+    block subnormal(%sgn: U64, %ex: S64, %hh: U64, %mm: U64, %ll: U64):
+        %sh     : U64 = S64.sub(-1021, %ex).to_u64()  // 1 <= sh <= 52
+        %c      : U64 = U64.sub(64, %sh)
+        %sticky : U64 = %ll.gt(0).to_u64()
+        %ll2    : U64 = %mm.shl(%c).bitor(%ll.shr(%sh)).bitor(%sticky)
+        %mm2    : U64 = %hh.shl(%c).bitor(%mm.shr(%sh))
+        jump round(%sgn, %ex.add(%sh.to_s64()), %hh.shr(%sh), %mm2, %ll2)
+
+    block round(%sgn: U64, %ex: S64, %hh: U64, %mm: U64, %ll: U64):
+        %low    : U64  = %hh.bitand(0x7FF)
+        %h      : F64  = %hh.shr(11).to_f64()
+        %zero   : Bool = %err.eq(0)
+        %below  : Bool = %low.lt(0x400)
+        %above  : Bool = %low.gt(0x400)
+        %middle : Bool = %mm.eq(0).bitand(%ll.eq(0))
+        // 0.25 rounds toward zero, 0.75 away, 0.5 is the exact middle
+        %lmid   : F64 = %middle ? 0.5 : 0.75
+        %lhigh  : F64 = %above ? 0.75 : %lmid
+        %lround : F64 = %below ? 0.25 : %lhigh
+        %l      : F64 = %zero ? 0.0 : %lround
+        %sg     : F64 = %sgn.ne(0) ? -1.0 : 1.0
+        %hr     : F64 = F64.mul_add(%l, %sg, %sg.mul(%h)).mul(0x1p-52)
+        // now -1021 <= ex <= 1024, so 2^(ex - 1) is a normal number
+        %scale : F64 = F64.from_bits(U64.add_wrap(0x3FF0000000000000,
+                %ex.sub(1).to_u64_wrap().shl(52)))
+        return(%hr.mul(%scale))
+
+/// An approximation of 1/a, with absolute error below 2^-103.9 when 1 <= 1/a <= 2.
+routine cm_f64_atan2_inv(%a: CmF64Atan2Tint) -> CmF64Atan2Tint
+    block entry():
+        %d0        : F64            = cm_f64_atan2_to_f64(%a, 0)  // exact
+        %subnormal : Bool           = %d0.abs().lt(0x1p-1022)
+        %d         : F64            = %subnormal ? %d0.mul(0x1p53) : %d0
+        %r0        : CmF64Atan2Tint = cm_f64_atan2_from_f64(F64.div(1.0, %d))
+        %rex       : S64            = %subnormal ? %r0.ex.add(53) : %r0.ex
+        %r         : CmF64Atan2Tint = CmF64Atan2Tint { hm: %r0.hm, l: %r0.l, ex: %rex,
+                sgn: %r0.sgn }
+        // one Newton step r + r (1 - a r)
+        %ar  : CmF64Atan2Tint = cm_f64_atan2_mul(%a, %r)
+        %nar : CmF64Atan2Tint = CmF64Atan2Tint { hm: %ar.hm, l: %ar.l, ex: %ar.ex,
+                sgn: U64.sub_wrap(1, %ar.sgn) }
+        %one : CmF64Atan2Tint = CmF64Atan2Tint { hm: 0x80000000000000000000000000000000, l: 0,
+                ex: 1, sgn: 0 }
+        %e   : CmF64Atan2Tint = cm_f64_atan2_add(%one, %nar)
+        return(cm_f64_atan2_add(%r, cm_f64_atan2_mul(%r, %e)))
+
+/// An approximation of b/a, with relative error below 2^-185.53.
+routine cm_f64_atan2_div(%b: CmF64Atan2Tint, %a: CmF64Atan2Tint) -> CmF64Atan2Tint
+    block entry():
+        %y : CmF64Atan2Tint = cm_f64_atan2_inv(%a)
+        %r : CmF64Atan2Tint = cm_f64_atan2_mul(%y, %b)
+        // Karp-Markstein: r + y (b - a r)
+        %ar  : CmF64Atan2Tint = cm_f64_atan2_mul(%a, %r)
+        %nar : CmF64Atan2Tint = CmF64Atan2Tint { hm: %ar.hm, l: %ar.l, ex: %ar.ex,
+                sgn: U64.sub_wrap(1, %ar.sgn) }
+        %e   : CmF64Atan2Tint = cm_f64_atan2_add(%b, %nar)
+        return(cm_f64_atan2_add(%r, cm_f64_atan2_mul(%y, %e)))

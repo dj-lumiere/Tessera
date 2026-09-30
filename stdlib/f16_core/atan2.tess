@@ -1,0 +1,239 @@
+// Tessera stdlib: the correctly rounded two-argument arc tangent of F16
+//
+// The F16 arguments widen exactly to F32 and run the F32 atan2 algorithm:
+// atan2(y, x) is off + atan(z), with z = y/x or -x/y (whichever is at most 1)
+// and off a multiple of pi/2 picked by the signs and which of |y|, |x| is
+// larger. A degree-7/7 rational approximation in F64 settles most inputs; the
+// rest go through a double-double polynomial, and a tiny ratio y/x through
+// z - z^3/3. The final F64 value is rounded straight to F16 (never through
+// F32, which would round twice). Round to nearest only. Zeros and infinities
+// follow C99; a NaN comes back quiet, x's if both are NaN (as x86's x + y).
+//
+// Ported from CORE-MATH, src/binary16/atan2/atan2f16.c via RazorForge's B16Atan2.rf.
+// Copyright (c) 2022-2025 Alexei Sibidanov <sibid@uvic.ca> and Paul Zimmermann
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// Offsets added to the reduced arc tangent, indexed by (sign y) 4 + (sign x) 2
+/// + (|y| > |x|), as F64 bits: 0, pi/2, pi, pi/2, -0, -pi/2, -pi, -pi/2.
+preset CM_F16_ATAN2_OFF: Array<U64, 8> = [0x0000000000000000, 0x3FF921FB54442D18,
+        0x400921FB54442D18, 0x3FF921FB54442D18, 0x8000000000000000, 0xBFF921FB54442D18,
+        0xC00921FB54442D18, 0xBFF921FB54442D18]
+
+/// Low parts of the offsets above (pi/2 minus its F64 rounding, and twice that
+/// for pi), as F64 bits.
+preset CM_F16_ATAN2_OFFL: Array<U64, 8> = [0x0000000000000000, 0x3C91A62633145C07,
+        0x3CA1A62633145C07, 0x3C91A62633145C07, 0x8000000000000000, 0xBC91A62633145C07,
+        0xBCA1A62633145C07, 0xBC91A62633145C07]
+
+/// Double-double coefficients (high, low interleaved) of the accurate atan(z)/z
+/// polynomial in z^2, as F64 bits.
+preset CM_F16_ATAN2_C: Array<U64, 64> = [0x3FF0000000000000, 0xBA88C1DAC5492248, 0xBFD5555555555555,
+        0xBC755553BF3A2ABE, 0x3FC999999999999A, 0xBC699DEED1EC9071, 0xBFC2492492492492,
+        0xBC5FD99C8D18269A, 0x3FBC71C71C71C717, 0xBC2651EEE4C4D9D0, 0xBFB745D1745D1649,
+        0xBC5632683D6C44A6, 0x3FB3B13B13B11C63, 0x3C5BF69C1F8AF41D, 0xBFB11111110E6338,
+        0x3C23C3E431E8BB68, 0x3FAE1E1E1DC45C4A, 0xBC4BE2DB05C77BBF, 0xBFAAF286B8164B4F,
+        0x3C2A4673491F0942, 0x3FA86185E9AD4846, 0x3C4E12E32D79FCEE, 0xBFA642C6D5161FAE,
+        0x3C43CE76C1CA03F0, 0x3FA47AD6F277E5BF, 0xBC3ABD8D85BDB714, 0xBFA2F64A2EE8896D,
+        0x3C2EF87D4B615323, 0x3FA1A6A2B31741B5, 0x3C1A5D9D973547EE, 0xBFA07FBDAD65E0A6,
+        0xBC265AC07F5D35F4, 0x3F9EE9932A9A5F8B, 0x3C2F8B9623F6F55A, 0xBF9CE8B5B9584DC6,
+        0x3C2FE5AF96E8EA2D, 0x3F9AC9CB288087B7, 0xBC3450CDFCEAF5CA, 0xBF984B025351F3E6,
+        0x3C2579561B0D73DA, 0x3F952F5B8ECDD52B, 0x3C3036BD2C6FBA47, 0xBF9163A8C44909DC,
+        0x3C318F735FFB9F16, 0x3F8A400DCE3EEA6F, 0xBC2C90569C0C1B5C, 0xBF81CAA78AE6DB3A,
+        0xBC24C60F8161EA09, 0x3F752672453C0731, 0x3C1834EFB598C338, 0xBF65850C5BE137CF,
+        0xBC0445FC150CA7F5, 0x3F523EB98D22E1CA, 0xBBF388FBAF1D7830, 0xBF38F4E974A40741,
+        0x3BD271198A97DA34, 0x3F1A5CF2E9CF76E5, 0xBBB887EB4A63B665, 0xBEF420C270719E32,
+        0x3B8EFD595B27888B, 0x3EC3BA2D69B51677, 0xBB64FB06829CDFC7, 0xBE829B7E6F676385,
+        0xBB2A783B6DE718FB]
+
+/// A double-double number hi + lo.
+record CmF16Atan2DD
+    hi : F64
+    lo : F64
+
+/// atan2(y, x): the angle of the point (x, y), correctly rounded, in [-pi, pi].
+routine f16_cm_atan2(%y: F16, %x: F16) -> F16
+    block entry():
+        %ux      : U32  = %x.to_f32().bits()
+        %uy      : U32  = %y.to_f32().bits()
+        %ax      : U32  = %ux.bitand(0x7FFFFFFF)
+        %ay      : U32  = %uy.bitand(0x7FFFFFFF)
+        %yneg    : Bool = %uy.shr(31).ne(0)
+        %sy      : F64  = %yneg ? -1.0 : 1.0
+        %special : Bool = %ay.ge(0x7F800000).bitor(%ax.ge(0x7F800000))
+        %yzero   : Bool = %ay.eq(0)
+        when:
+            %special -> special(%ux, %ax, %ay, %sy)
+            %yzero   -> y_zero(%ux, %uy, %ax, %sy)
+            else     -> general(%ux, %uy, %ax, %ay)
+
+    // x or y is NaN or infinity: a NaN x wins over a NaN y, and the result is quiet
+    block special(%ux: U32, %ax: U32, %ay: U32, %sy: F64):
+        %xnan : Bool = %ax.gt(0x7F800000)
+        %ynan : Bool = %ay.gt(0x7F800000)
+        %yinf : Bool = %ay.eq(0x7F800000)
+        %xinf : Bool = %ax.eq(0x7F800000)
+        %both : Bool = %yinf.bitand(%xinf)
+        %xneg : Bool = %ux.shr(31).ne(0)
+        when:
+            %xnan -> return(F16.from_bits(%x.bits().bitor(0x0200)))
+            %ynan -> return(F16.from_bits(%y.bits().bitor(0x0200)))
+            %both -> both_inf(%xneg, %sy)
+            %xinf -> x_inf(%xneg, %sy)
+            else  -> return(F64.mul(0x1.921fb54442d18p+0, %sy).to_f16())
+
+    // +-3pi/4 or +-pi/4
+    block both_inf(%xneg: Bool, %sy: F64):
+        branch %xneg
+            ? return(F64.mul(0x1.2d97c7f3321d2p+1, %sy).to_f16())
+            : return(F64.mul(0x1.921fb54442d18p-1, %sy).to_f16())
+
+    block x_inf(%xneg: Bool, %sy: F64):
+        branch %xneg
+            ? return(F64.mul(0x1.921fb54442d18p+1, %sy).to_f16())
+            : return(F64.mul(0.0, %sy).to_f16())
+
+    block y_zero(%ux: U32, %uy: U32, %ax: U32, %sy: F64):
+        %xzero : Bool = %ax.eq(0)
+        %xpos  : Bool = %ux.shr(31).eq(0)
+        when:
+            %xzero -> zeros(%ux, %uy)
+            %xpos  -> return(F64.mul(0.0, %sy).to_f16())
+            else   -> general(%ux, %uy, %ax, 0)
+
+    // both zero: +-0 or +-pi by the signs
+    block zeros(%ux: U32, %uy: U32):
+        %iz   : USize = %uy.shr(31).mul(4).add(%ux.shr(31).mul(2)).to_usize()
+        %off  : F64   = F64.from_bits(CM_F16_ATAN2_OFF.get(%iz))
+        %xneg : Bool  = %ux.shr(31).ne(0)
+        branch %xneg
+            ? return(%off.add(F64.from_bits(CM_F16_ATAN2_OFFL.get(%iz))).to_f16())
+            : return(%off.to_f16())
+
+    block general(%ux: U32, %uy: U32, %ax: U32, %ay: U32):
+        %gt  : Bool  = %ay.gt(%ax)
+        %gti : U32   = %gt ? 1 : 0
+        %mg  : F64   = %gt ? 1.0 : 0.0
+        %mng : F64   = %gt ? 0.0 : 1.0
+        %sg  : F64   = %gt ? -1.0 : 1.0
+        %i   : USize = %uy.shr(31).mul(4).add(%ux.shr(31).mul(2)).add(%gti).to_usize()
+        %off : F64   = F64.from_bits(CM_F16_ATAN2_OFF.get(%i))
+        %zx  : F64   = %x.to_f32().to_f64()
+        %zy  : F64   = %y.to_f32().to_f64()
+        // z = x/y if |y| > |x|, and z = y/x otherwise
+        %num   : F64  = %mg.mul(%zx).add(%mng.mul(%zy))
+        %den   : F64  = %mg.mul(%zy).add(%mng.mul(%zx))
+        %z     : F64  = %num.div(%den)
+        %xbig  : Bool = %ax.ge(%ay)
+        %d     : U32  = %xbig ? %ax.sub_wrap(%ay) : %ay.sub_wrap(%ax)
+        %close : Bool = %d.lt(0x0D800000)
+        branch %close
+            ? rational(%ax, %ay, %gt, %i, %off, %sg, %z)
+            : combine(%ax, %ay, %gt, %i, %off, %sg, %z, 1.0)
+
+    // the exponents are close: a rational approximation of atan(z)/z
+    block rational(%ax: U32, %ay: U32, %gt: Bool, %i: USize, %off: F64, %sg: F64, %z: F64):
+        %z2  : F64 = %z.mul(%z)
+        %z4  : F64 = %z2.mul(%z2)
+        %z8  : F64 = %z4.mul(%z4)
+        %cn0 : F64 = %z2.mul(0x1.40e0698f94c35p+1).add(0x1p+0)
+        %cn2 : F64 = %z2.mul(0x1.d873386572976p-1).add(0x1.248c5da347f0dp+1)
+        %cn4 : F64 = %z2.mul(0x1.33f5e041eed0fp-7).add(0x1.46fa40b20f1dp-3)
+        %cn6 : F64 = 0x1.546bbf28667c5p-14
+        %n0  : F64 = %z4.mul(%cn2).add(%cn0)
+        %n4  : F64 = %z4.mul(%cn6).add(%cn4)
+        %n   : F64 = %z8.mul(%n4).add(%n0)
+        %cd0 : F64 = %z2.mul(0x1.6b8b143a3f6dap+1).add(0x1p+0)
+        %cd2 : F64 = %z2.mul(0x1.8221d086914ebp+0).add(0x1.8421201d18ed5p+1)
+        %cd4 : F64 = %z2.mul(0x1.0f4951fd1e72dp-5).add(0x1.670657e3a07bap-2)
+        %cd6 : F64 = 0x1.b3874b8798286p-11
+        %d0  : F64 = %z4.mul(%cd2).add(%cd0)
+        %d4  : F64 = %z4.mul(%cd6).add(%cd4)
+        %d   : F64 = %z8.mul(%d4).add(%d0)
+        jump combine(%ax, %ay, %gt, %i, %off, %sg, %z, %n.div(%d))
+
+    block combine(%ax: U32, %ay: U32, %gt: Bool, %i: USize, %off: F64, %sg: F64, %z: F64, %r: F64):
+        %res  : F64  = %z.mul(%sg).mul(%r).add(%off)
+        %hard : Bool = %res.bits().add_wrap(8).bitand(0xFFFFFFF).le(16)
+        branch %hard ? check_tiny(%ax, %ay, %gt, %i, %off, %sg) : return(%res.to_f16())
+
+    block check_tiny(%ax: U32, %ay: U32, %gt: Bool, %i: USize, %off: F64, %sg: F64):
+        %tiny : Bool = %ay.lt(%ax).bitand(%ax.sub_wrap(%ay).shr(23).ge(25))  // the exponents differ by 25 or more
+        branch %tiny
+            ? return(cm_f16_atan2_tiny(%y.to_f32(), %x.to_f32()))
+            : accurate(%gt, %i, %off, %sg)
+
+    // the fast path can't decide the rounding: redo it in double-double
+    block accurate(%gt: Bool, %i: USize, %off: F64, %sg: F64):
+        %zx   : F64          = %x.to_f32().to_f64()
+        %zy   : F64          = %y.to_f32().to_f64()
+        %n    : F64          = %gt ? %zx : %zy
+        %d    : F64          = %gt ? %zy : %zx
+        %zh   : F64          = %n.div(%d)
+        %zl   : F64          = %zh.mul_add(%d.neg(), %n).div(%d)
+        %z2   : CmF16Atan2DD = cm_f16_atan2_muldd(%zh, %zl, %zh, %zl)
+        %p0   : CmF16Atan2DD = cm_f16_atan2_polydd(%z2.hi, %z2.lo)
+        %p    : CmF16Atan2DD = cm_f16_atan2_muldd(%zh.mul(%sg), %zl.mul(%sg), %p0.hi, %p0.lo)
+        %offl : F64          = F64.from_bits(CM_F16_ATAN2_OFFL.get(%i))
+        %sh   : F64          = %p.hi.add(%off)
+        %sl   : F64          = %off.sub(%sh).add(%p.hi).add(%p.lo).add(%offl)
+        %th   : F64          = %sh.to_f32().to_f64()
+        %tm   : F64          = %sh.sub(%th).add(%sl)
+        %wide : Bool         = %th.add(%th.mul(0x1p-60)).eq(%th.sub(%th.mul(0x1p-60)))
+        branch %wide ? nudge(%th, %tm) : return(%th.add(%tm).to_f16())
+
+    // th is so large that th +- th 2^-60 rounds to th: scale tm away from the rounding boundary
+    block nudge(%th: F64, %tm: F64):
+        %tthu   : U64  = %th.bits().bitand(0x7FF0000000000000).sub_wrap(0x0180000000000000)  // exponent of th, minus 24
+        %beyond : Bool = %tm.abs().gt(F64.from_bits(%tthu))
+        %scaled : F64  = %beyond ? %tm.mul(1.25) : %tm.mul(0.75)
+        return(%th.add(%scaled).to_f16())
+
+/// Double-double product (xh + xl) (ch + cl).
+routine cm_f16_atan2_muldd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF16Atan2DD
+    block entry():
+        %ahlh : F64          = %ch.mul(%xl)
+        %alhh : F64          = %cl.mul(%xh)
+        %ahhh : F64          = %ch.mul(%xh)
+        %ahhl : F64          = %ch.mul_add(%xh, %ahhh.neg()).add(%alhh.add(%ahlh))
+        %hi   : F64          = %ahhh.add(%ahhl)
+        %r    : CmF16Atan2DD = CmF16Atan2DD { hi: %hi, lo: %ahhh.sub(%hi).add(%ahhl) }
+        return(%r)
+
+/// The 32-term double-double polynomial of CM_F16_ATAN2_C at xh + xl, by Horner's rule.
+routine cm_f16_atan2_polydd(%xh: F64, %xl: F64) -> CmF16Atan2DD
+    block entry():
+        jump loop(31, F64.from_bits(CM_F16_ATAN2_C.get(62)), F64.from_bits(CM_F16_ATAN2_C.get(63)))
+
+    block loop(%i: USize, %ch: F64, %cl: F64):
+        %done : Bool = %i.eq(0)
+        branch %done ? return(CmF16Atan2DD { hi: %ch, lo: %cl }) : step(%i.sub(1), %ch, %cl)
+
+    block step(%i: USize, %ch: F64, %cl: F64):
+        %m  : CmF16Atan2DD = cm_f16_atan2_muldd(%xh, %xl, %ch, %cl)
+        %c0 : F64          = F64.from_bits(CM_F16_ATAN2_C.get(%i.mul(2)))
+        %c1 : F64          = F64.from_bits(CM_F16_ATAN2_C.get(%i.mul(2).add(1)))
+        %th : F64          = %m.hi.add(%c0)
+        %tl : F64          = %c0.sub(%th).add(%m.hi)
+        jump loop(%i, %th, %m.lo.add(%tl.add(%c1)))
+
+/// atan2(y, x) for a tiny ratio y/x, from z - z^3/3 with z = y/x, rounded once to F16.
+routine cm_f16_atan2_tiny(%y: F32, %x: F32) -> F16
+    block entry():
+        %dy       : F64  = %y.to_f64()
+        %dx       : F64  = %x.to_f64()
+        %z        : F64  = %dy.div(%dx)
+        %e        : F64  = %z.neg().mul_add(%dx, %dy)  // z x + e = y, so y/x = z + e/x
+        %zz       : F64  = %z.mul(%z)
+        %cz       : F64  = F64.mul(-0x1.5555555555555p-2, %z)
+        %corr     : F64  = %e.div(%dx).add(%cz.mul(%zz))
+        %t        : U64  = %z.bits()
+        %boundary : Bool = %t.bitand(0xFFFFFFF).eq(0)
+        branch %boundary ? nudge(%t, %z, %corr) : return(%z.to_f16())
+
+    // z sits on a rounding boundary: move its last bit toward the correction so the final rounding is not a tie
+    block nudge(%t: U64, %z: F64, %corr: F64):
+        %up : Bool = %z.mul(%corr).gt(0.0)
+        %u  : U64  = %up ? %t.add_wrap(1) : %t.sub_wrap(1)
+        return(F64.from_bits(%u).to_f16())

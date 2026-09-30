@@ -1,0 +1,97 @@
+// Tessera stdlib: the correctly rounded arc sine of F16
+//
+// Evaluated in F32: odd minimax polynomials on [0, 0.25] and [0.25, 0.5], and
+// for |x| >= 0.5 the reduction asin(x) = pi/2 - 2 asin(sqrt((1 - |x|)/2)). A
+// handful of inputs whose F32 result would round wrongly are returned
+// explicitly. Round to nearest only: |x| > 1, +-inf and NaN give the default
+// NaN 0xFE00 (the original's NaN test never holds, so a NaN input takes the
+// |x| > 1 path too).
+//
+// Ported from CORE-MATH, src/binary16/asin/asinf16.c via RazorForge's B16Asin.rf.
+// Copyright (c) 2025 Paul Zimmermann
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// arcsin(x), correctly rounded.
+routine f16_cm_asin(%x: F16) -> F16
+    block entry():
+        %v        : F32  = %x.to_f32()
+        %u        : U32  = %v.bits()
+        %au       : U32  = %u.bitand(0x7FFFFFFF)
+        %negative : Bool = %u.shr(31).eq(1)
+        %outside  : Bool = %au.ge(0x3F800000)  // NaN, infinity or |x| >= 1
+        %reduce   : Bool = %au.ge(0x3F000000)
+        when:
+            %outside -> outside(%au, %negative)
+            %reduce  -> reduce(%v)
+            else     -> reduced(%v, %au, false, %negative)
+
+    block outside(%au: U32, %negative: Bool):
+        %one : Bool = %au.eq(0x3F800000)
+        branch %one ? signed(0x1.921fb6p+0, %negative.bitnot()) : return(F16.from_bits(0xFE00))
+
+    // argument reduction: asin(x) = pi/2 - 2 asin(sqrt((1 - |x|)/2))
+    block reduce(%v: F32):
+        %t : F32 = F32.sub(1.0, %v.abs()).mul(0.5).sqrt()
+        jump reduced(%t, %t.bits().bitand(0x7FFFFFFF), true, %v.lt(0.0))
+
+    // now 0 <= |t| <= 0.5 (the polynomials are odd, so a negative t needs no reduction)
+    block reduced(%t: F32, %au: U32, %reduce: Bool, %negative: Bool):
+        %tt       : F32  = %t.mul(%t)
+        %positive : Bool = %au.eq(%x.to_f32().bits())
+        %quarter  : Bool = %au.lt(0x3E800000)
+        branch %quarter
+            ? below_quarter(%t, %tt, %au, %reduce, %negative, %positive)
+            : above_quarter(%t, %tt, %au, %reduce, %negative, %positive)
+
+    // |t| < 0.25
+    block below_quarter(%t: F32, %tt: F32, %au: U32, %reduce: Bool, %negative: Bool,
+            %positive: Bool):
+        %tiny : Bool = %au.le(0x3D388000).bitand(%reduce.bitnot())
+        when:
+            %tiny              -> tiny(%au, %positive)
+            %au.eq(0x3DD30000) -> signed(0x1.a6c00ap-4, %positive)  // |x| = 0x1.a6p-4
+            %au.eq(0x3D688000) -> signed(0x1.d14004p-5, %positive)  // |x| = 0x1.d1p-5
+            %au.eq(0x3DFA0000) -> signed(0x1.f5400ap-4, %positive)  // |x| = 0x1.f4p-4
+            else               -> continue
+        // degree-5 odd polynomial for asin on [0, 0.25], evaluated as t + t^3 (c1 + c2 t^2)
+        %c1 : F32 = F32.mul_add(0x1.43696ep-4, %tt, 0x1.552e8ep-3)
+        %y  : F32 = %c1.mul_add(%tt.mul(%t), %t)
+        jump finish(%y, %reduce, %negative)
+
+    // for |x| <= 0x1.71p-5, asin(x) rounds to x
+    block tiny(%au: U32, %positive: Bool):
+        %v    : F32  = %x.to_f32()
+        %zero : Bool = %au.eq(0)
+        when:
+            %zero     -> return(%x)
+            %positive -> return(%v.add(0x1p-26).to_f16())
+            else      -> return(%v.sub(0x1p-26).to_f16())
+
+    // 0.25 <= |t| <= 0.5
+    block above_quarter(%t: F32, %tt: F32, %au: U32, %reduce: Bool, %negative: Bool,
+            %positive: Bool):
+        when:
+            %au.eq(0x3EB24000) -> signed(0x1.6c2012p-2, %positive)  // |x| = 0x1.648p-2
+            %au.eq(0x3ED96000) -> signed(0x1.c0fffap-2, %positive)  // |x| = 0x1.b2cp-2
+            %au.eq(0x3EF0A000) -> signed(0x1.f4fffp-2, %positive)  // |x| = 0x1.e14p-2
+            else               -> continue
+        // degree-7 odd polynomial for asin on [0.25, 0.5]
+        %c5 : F32 = F32.mul_add(0x1.08e44p-4, %tt, 0x1.258e54p-4)
+        %c1 : F32 = F32.mul_add(0x1.55a7ep-3, %tt, 1.0)
+        %p  : F32 = %c5.mul_add(%tt.mul(%tt), %c1)
+        jump finish(%t.mul(%p), %reduce, %negative)
+
+    block finish(%y: F32, %reduce: Bool, %negative: Bool):
+        branch %reduce ? reconstruct(%y, %negative) : return(%y.to_f16())
+
+    // argument reconstruction
+    block reconstruct(%y: F32, %negative: Bool):
+        %r : F32 = F32.sub(0x1.921fb6p+0, %y.mul(2.0))
+        branch %negative ? return(%r.neg().to_f16()) : return(%r.to_f16())
+
+    // an explicit result r, negated for a negative x
+    block signed(%r: F32, %positive: Bool):
+        %h : F16 = %r.to_f16()
+        branch %positive ? return(%h) : return(%h.neg())

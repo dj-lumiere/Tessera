@@ -1,0 +1,258 @@
+// Tessera stdlib: the correctly rounded log-gamma of F16
+//
+// log|gamma(x)| in F64: a rational approximation (in root-product form) of
+// lgamma(x) + log|x| for |x| < 0x1.52p-1, another with exact zeros at 1 and 2
+// up to 0x1.afc1ap+1, and Stirling's series above; negative x goes through
+// the reflection formula, with dedicated polynomials around the three zeros
+// of lgamma near -2.46, -2.75 and -3.14. Round to nearest only: the poles
+// (zero and the negative integers) and +-inf give +inf, NaN comes back quiet.
+// The original also sets C's signgam; this routine returns only the value.
+//
+// Ported from CORE-MATH, src/binary16/lgamma/lgammaf16.c via RazorForge's B16Lgamma.rf.
+// Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca> and Paul Zimmermann
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// Roots of the rational approximations, as F64 bits, 8 per product: entries
+/// 0..7 the numerator and 8..15 the denominator for |x| < 0x1.52p-1, entries
+/// 16..23 the denominator for 0x1.52p-1 <= |x| <= 0x1.afc1ap+1.
+preset CM_F16_LGAMMA_R8: Array<U64, 24> = [0xC03505BDF4B65AC0, 0xC0151C80EB47E068,
+        0x3FF0000000007CB8, 0xC004AC529250A1FC, 0xBFFA8C99DBE1621A, 0xBFF4ABDCC74115EA,
+        0xBFF1B87FE5A5B923, 0xBFF05B8A4D47FF64, 0xC044DB2CFE9A5265, 0xC02062E99D1C4F27,
+        0xC00C81BC2ECF25F6, 0xC00108E55C10091B, 0xBFF7DD25AF0B83D4, 0xBFF36BF1880125FC,
+        0xBFF1379FC8023D9C, 0xBFF03712E41525D2, 0xC05491A899E84C52, 0xC02D202961B9E098,
+        0xC014CED68C631ED6, 0xC002589EEDF40738, 0xBFF1302E33372710, 0xBFDC36B802F26DFF,
+        0xBFC3DED448ACC39D, 0xBF9BFFC491078EAF]
+
+/// Roots of the numerator for 0x1.52p-1 <= |x| <= 0x1.afc1ap+1, as F64 bits.
+preset CM_F16_LGAMMA_RN: Array<U64, 7> = [0xC04667923FF14DF7, 0xC022D35F25AD8F64,
+        0xC00B8C9EAB9D5BD3, 0xBFF7A4A97F494127, 0xBFE3A6C8295B4445, 0xBFCDA44E8B810024,
+        0xBFA9061E81C77E4A]
+
+/// log(1/ix[i]) for the logarithm's 16-entry table reduction, as F64 bits.
+preset CM_F16_LGAMMA_IL: Array<U64, 16> = [0x3C659CAEEC280116, 0x3FAF0A30C01162AA,
+        0x3FBE27076E2AF2EB, 0x3FC5FF3070A793D6, 0x3FCC8FF7C79A9A20, 0x3FD1675CABABA60F,
+        0x3FD4618BC21C5EC2, 0x3FD739D7F6BBD007, 0x3FD9F323ECBF984D, 0x3FDC8FF7C79A9A21,
+        0x3FDF128F5FAF06EC, 0x3FE0BE72E4252A83, 0x3FE1E85F5E7040D1, 0x3FE307D7334F10BE,
+        0x3FE41D8FE84672AF, 0x3FE52A2D265BC5AB]
+
+/// Approximations ix[i] of 1/(1 + i/16 + 1/32) for the logarithm's table
+/// reduction, as F64 bits.
+preset CM_F16_LGAMMA_IX: Array<U64, 16> = [0x3FF0000000000000, 0x3FEE1E1E1E1E1E1E,
+        0x3FEC71C71C71C71C, 0x3FEAF286BCA1AF28, 0x3FE999999999999A, 0x3FE8618618618618,
+        0x3FE745D1745D1746, 0x3FE642C8590B2164, 0x3FE5555555555555, 0x3FE47AE147AE147B,
+        0x3FE3B13B13B13B14, 0x3FE2F684BDA12F68, 0x3FE2492492492492, 0x3FE1A7B9611A7B96,
+        0x3FE1111111111111, 0x3FE0842108421084]
+
+/// log|gamma(x)|, correctly rounded.
+routine f16_cm_lgamma(%x: F16) -> F16
+    block entry():
+        %xf      : F32  = %x.to_f32()
+        %fx      : F32  = %xf.floor()
+        %ax      : F32  = %xf.abs()
+        %tu      : U32  = %ax.bits()
+        %special : Bool = %tu.ge(0x7F800000)
+        %integer : Bool = %fx.eq(%xf)
+        when:
+            %special -> special(%xf, %tu)
+            %integer -> integer(%xf, %fx, %ax, %tu)
+            else     -> body(%xf, %fx, %ax, %tu)
+
+    block special(%xf: F32, %tu: U32):
+        %infinite : Bool = %tu.eq(0x7F800000)
+        branch %infinite ? return(F16.from_bits(0x7C00)) : return(%xf.add(%xf).to_f16())
+
+    // an integer: a pole at zero and the negative integers, and exact zeros at 1 and 2
+    block integer(%xf: F32, %fx: F32, %ax: F32, %tu: U32):
+        %pole    : Bool = %xf.le(0.0)
+        %one_two : Bool = %xf.eq(1.0).bitor(%xf.eq(2.0))
+        when:
+            %pole    -> return(F16.from_bits(0x7C00))
+            %one_two -> return(F16.from_bits(0))
+            else     -> body(%xf, %fx, %ax, %tu)
+
+    block body(%xf: F32, %fx: F32, %ax: F32, %tu: U32):
+        %s     : F64  = %xf.to_f64()
+        %z     : F64  = %ax.to_f64()
+        %small : Bool = %ax.lt(0x1.52p-1)
+        %large : Bool = %ax.gt(0x1.afc1ap+1)
+        when:
+            %small -> small(%s, %z)
+            %large -> large(%xf, %fx, %ax, %z)
+            else   -> mid(%xf, %fx, %tu, %s, %z)
+
+    // a rational approximation of lgamma(x) + log|x| near zero
+    block small(%s: F64, %z: F64):
+        %num : F64 = F64.mul(0x1.0fc0fad268c4dp+2, %s).mul(cm_f16_lgamma_r8(%s, 0))
+        %f   : F64 = %num.div(cm_f16_lgamma_r8(%s, 8)).sub(cm_f16_lgamma_ln(%z))
+        return(%f.to_f16())
+
+    block large(%xf: F32, %fx: F32, %ax: F32, %z: F64):
+        // lgamma(0x1.ff4p+12) rounds to the largest finite F16, larger inputs overflow
+        when:
+            %xf.gt(0x1.ff4p+12) -> return(F16.from_bits(0x7C00))
+            %xf.ge(0x1.ff4p+12) -> return(F16.from_bits(0x7BFF))
+            else                -> continue
+        // Stirling's series
+        %lz  : F64 = cm_f16_lgamma_ln(%z)
+        %f   : F64 = %z.sub(0.5).mul(%lz.sub(1.0)).add(0x1.acfe390c97d69p-2)
+        %iz  : F64 = F64.div(1.0, %z)
+        %iz2 : F64 = %iz.mul(%iz)
+        %iz4 : F64 = %iz2.mul(%iz2)
+        when:
+            %ax.gt(1198.0)        -> stirling1(%xf, %fx, %lz, %f, %iz)
+            %ax.gt(0x1.279a7p+6)  -> stirling2(%xf, %fx, %lz, %f, %iz, %iz2)
+            %ax.gt(0x1.555556p+3) -> stirling4(%xf, %fx, %lz, %f, %iz, %iz2, %iz4)
+            else                  -> stirling8(%xf, %fx, %lz, %f, %iz, %iz2, %iz4)
+
+    block stirling1(%xf: F32, %fx: F32, %lz: F64, %f: F64, %iz: F64):
+        jump reflect_large(%xf, %fx, %lz, %f.add(%iz.mul(0x1.5555555555555p-4)))
+
+    block stirling2(%xf: F32, %fx: F32, %lz: F64, %f: F64, %iz: F64, %iz2: F64):
+        %p : F64 = %iz2.mul(-0x1.6c0fd270c465p-9).add(0x1.555555547fbadp-4)
+        jump reflect_large(%xf, %fx, %lz, %f.add(%iz.mul(%p)))
+
+    block stirling4(%xf: F32, %fx: F32, %lz: F64, %f: F64, %iz: F64, %iz2: F64, %iz4: F64):
+        %p0 : F64 = %iz2.mul(-0x1.6c16bdc45944fp-9).add(0x1.555555554de0bp-4)
+        %p2 : F64 = %iz2.mul(-0x1.2e9cfff3b29c2p-11).add(0x1.a0077f300ecb3p-11)
+        %p  : F64 = %p0.add(%iz4.mul(%p2))
+        jump reflect_large(%xf, %fx, %lz, %f.add(%iz.mul(%p)))
+
+    block stirling8(%xf: F32, %fx: F32, %lz: F64, %f: F64, %iz: F64, %iz2: F64, %iz4: F64):
+        %iz8 : F64 = %iz4.mul(%iz4)
+        %p0  : F64 = %iz2.mul(-0x1.6c16c0e7c4cf4p-9).add(0x1.5555555551286p-4)
+        %p2  : F64 = %iz2.mul(-0x1.37e87ec19cb45p-11).add(0x1.a0193267fe6f2p-11)
+        %p4  : F64 = %iz2.mul(-0x1.c16c8946b19b6p-10).add(0x1.b40011dfff081p-11)
+        %p6  : F64 = %iz2.mul(-0x1.4f5843a71a338p-8).add(0x1.e9f47ace150d8p-9)
+        %q0  : F64 = %p0.add(%iz4.mul(%p2))
+        %q4  : F64 = %p4.add(%iz4.mul(%p6))
+        %p   : F64 = %q0.add(%iz8.mul(%q4))
+        jump reflect_large(%xf, %fx, %lz, %f.add(%iz.mul(%p)))
+
+    // the reflection formula lgamma(x) = log(pi) - lgamma(-x) - log|x sin(pi x)|
+    block reflect_large(%xf: F32, %fx: F32, %lz: F64, %f: F64):
+        %negative : Bool = %xf.lt(0.0)
+        branch %negative ? continue : return(%f.to_f16())
+        %g  : F64 = F64.sub(0x1.250d048e7a1bdp+0, %f).sub(%lz)
+        %lp : F64 = cm_f16_lgamma_ln(cm_f16_lgamma_sinpi(%xf.sub(%fx).to_f64()))
+        return(%g.sub(%lp).to_f16())
+
+    // a rational approximation with exact zeros at 1 and 2
+    block mid(%xf: F32, %fx: F32, %tu: U32, %s: F64, %z: F64):
+        %num      : F64  = %z.sub(1.0).mul(%z.sub(2.0)).mul(0x1.3cc0e6a0106b3p+2).mul(cm_f16_lgamma_r7(%z))
+        %f        : F64  = %num.div(cm_f16_lgamma_r8(%z, 16))
+        %negative : Bool = %xf.lt(0.0)
+        branch %negative ? continue : return(%f.to_f16())
+        %zero1 : Bool = %tu.gt(0x402F95C2).bitand(%tu.lt(0x40301B93))
+        %zero2 : Bool = %tu.gt(0x401CECCB).bitand(%tu.lt(0x401D95CA))
+        %zero3 : Bool = %tu.gt(0x40492009).bitand(%tu.lt(0x404940EF))
+        when:
+            %zero1 -> near_zero1(%s)
+            %zero2 -> near_zero2(%s)
+            %zero3 -> near_zero3(%s)
+            else   -> continue
+        %g  : F64 = F64.sub(0x1.250d048e7a1bdp+0, %f)
+        %lp : F64 = cm_f16_lgamma_ln(cm_f16_lgamma_sinpi(%xf.sub(%fx).to_f64()).mul(%z))
+        return(%g.sub(%lp).to_f16())
+
+    // near the zero of lgamma at -0x1.5fb410a1bd901p+1
+    block near_zero1(%s: F64):
+        %h : F64 = %s.add(0x1.5fb410a1bd901p+1).sub(0x1.a19a96d2e6f85p-54)
+        %f : F64 = cm_f16_lgamma_zero_poly(%h, -0x1.ea12da904b18cp+0, 0x1.3267f3c265a54p+3,
+                -0x1.4185ac30cadb3p+4, 0x1.f504accc3f2e4p+5, -0x1.8588444c679b4p+7,
+                0x1.43740491dc22p+9, -0x1.12400ea23f9e6p+11, 0x1.dac829f365795p+12)
+        return(%f.to_f16())
+
+    // near the zero of lgamma at -0x1.3a7fc9600f86cp+1
+    block near_zero2(%s: F64):
+        %h : F64 = %s.add(0x1.3a7fc9600f86cp+1).add(0x1.55f64f98af8dp-55)
+        %f : F64 = cm_f16_lgamma_zero_poly(%h, 0x1.83fe966af535fp+0, 0x1.36eebb002f61ap+2,
+                0x1.694a60589a0b3p+0, 0x1.1718d7aedb0b5p+3, 0x1.733a045eca0d3p+2,
+                0x1.8d4297421205bp+4, 0x1.7feea5fb29965p+4, 0.0)
+        return(%f.to_f16())
+
+    // near the zero of lgamma at -0x1.9260dbc9e59afp+1
+    block near_zero3(%s: F64):
+        %h : F64 = %s.add(0x1.9260dbc9e59afp+1).add(0x1.f717cd335a7b3p-53)
+        %f : F64 = cm_f16_lgamma_zero_poly(%h, 0x1.f20a65f2fac55p+2, 0x1.9d4d297715105p+4,
+                0x1.c1137124d5b21p+6, 0x1.267203d24de38p+9, 0x1.99a63399a0b44p+11,
+                0x1.2941214faaf0cp+14, 0x1.bb912c0c9cdd1p+16, 0.0)
+        return(%f.to_f16())
+
+/// h ((a0 + h a1) + h^2 (a2 + h a3) + h^4 ((a4 + h a5) + h^2 (a6 + h a7))), grouped as in
+/// the original. A degree-6 polynomial passes a7 = 0: a6 + h 0 is exactly a6.
+private routine cm_f16_lgamma_zero_poly(%h: F64, %a0: F64, %a1: F64, %a2: F64, %a3: F64, %a4: F64,
+        %a5: F64, %a6: F64, %a7: F64) -> F64
+    block entry():
+        %h2 : F64 = %h.mul(%h)
+        %h4 : F64 = %h2.mul(%h2)
+        %c0 : F64 = %a0.add(%h.mul(%a1))
+        %c2 : F64 = %a2.add(%h.mul(%a3))
+        %c4 : F64 = %a4.add(%h.mul(%a5))
+        %c6 : F64 = %a6.add(%h.mul(%a7))
+        %lo : F64 = %c0.add(%h2.mul(%c2))
+        %hi : F64 = %c4.add(%h2.mul(%c6))
+        return(%h.mul(%lo.add(%h4.mul(%hi))))
+
+/// The product (x - r0)(x - r1)...(x - r7) over the 8 roots starting at base in
+/// CM_F16_LGAMMA_R8, grouped as in the original.
+private routine cm_f16_lgamma_r8(%x: F64, %base: USize) -> F64
+    block entry():
+        %p01 : F64 = cm_f16_lgamma_factor(%x, %base, 0).mul(cm_f16_lgamma_factor(%x, %base, 1))
+        %p23 : F64 = cm_f16_lgamma_factor(%x, %base, 2).mul(cm_f16_lgamma_factor(%x, %base, 3))
+        %p45 : F64 = cm_f16_lgamma_factor(%x, %base, 4).mul(cm_f16_lgamma_factor(%x, %base, 5))
+        %p67 : F64 = cm_f16_lgamma_factor(%x, %base, 6).mul(cm_f16_lgamma_factor(%x, %base, 7))
+        return(%p01.mul(%p23).mul(%p45.mul(%p67)))
+
+/// x minus root k of the 8 starting at base in CM_F16_LGAMMA_R8.
+private routine cm_f16_lgamma_factor(%x: F64, %base: USize, %k: USize) -> F64
+    block entry():
+        return(%x.sub(F64.from_bits(CM_F16_LGAMMA_R8.get(%base.add(%k)))))
+
+/// The product (x - r0)(x - r1)...(x - r6) over the numerator roots of the
+/// mid-range approximation, grouped as in the original.
+private routine cm_f16_lgamma_r7(%x: F64) -> F64
+    block entry():
+        %p01 : F64 = cm_f16_lgamma_rn(%x, 0).mul(cm_f16_lgamma_rn(%x, 1))
+        %p23 : F64 = cm_f16_lgamma_rn(%x, 2).mul(cm_f16_lgamma_rn(%x, 3))
+        %p45 : F64 = cm_f16_lgamma_rn(%x, 4).mul(cm_f16_lgamma_rn(%x, 5))
+        return(%p01.mul(%p23).mul(%p45.mul(cm_f16_lgamma_rn(%x, 6))))
+
+/// x minus root k of CM_F16_LGAMMA_RN.
+private routine cm_f16_lgamma_rn(%x: F64, %k: USize) -> F64
+    block entry():
+        return(%x.sub(F64.from_bits(CM_F16_LGAMMA_RN.get(%k))))
+
+/// An approximation of sin(pi x) for 0 <= x <= 1.
+private routine cm_f16_lgamma_sinpi(%x: F64) -> F64
+    block entry():
+        %y  : F64 = %x.sub(0.5)
+        %x2 : F64 = %y.mul(%y)
+        %x4 : F64 = %x2.mul(%x2)
+        %x8 : F64 = %x4.mul(%x4)
+        %c0 : F64 = %x2.mul(-0x1.de9e64df22ea4p+1).add(0x1p+2)
+        %c2 : F64 = %x2.mul(-0x1.d4fcd82df91bp-3).add(0x1.472be122401f8p+0)
+        %c4 : F64 = %x2.mul(-0x1.f3091c427b611p-10).add(0x1.9f05c97e0aab2p-6)
+        %c6 : F64 = %x2.mul(-0x1.15484325ef569p-18).add(0x1.b22c9bfdca547p-14)
+        %lo : F64 = %c0.add(%x4.mul(%c2))
+        %hi : F64 = %c4.add(%x4.mul(%c6))
+        return(F64.sub(0.25, %x2).mul(%lo.add(%x8.mul(%hi))))
+
+/// An approximation of the natural logarithm of a positive normal F64.
+private routine cm_f16_lgamma_ln(%x: F64) -> F64
+    block entry():
+        %tu : U64   = %x.bits()
+        %e  : S64   = %tu.shr(52).to_s64().sub(0x3FF)
+        %i  : USize = %tu.shr(48).bitand(0xF).to_usize()
+        %m  : F64   = F64.from_bits(%tu.bitand(0x000FFFFFFFFFFFFF).bitor(0x3FF0000000000000))
+        %z  : F64   = F64.from_bits(CM_F16_LGAMMA_IX.get(%i)).mul(%m).sub(1.0)
+        %z2 : F64   = %z.mul(%z)
+        %z4 : F64   = %z2.mul(%z2)
+        %c0 : F64   = %z.mul(-0x1.ffffffffd1d67p-2).add(0x1.fffffffffff24p-1)
+        %c2 : F64   = %z.mul(-0x1.ffffeca81b866p-3).add(0x1.55555537802dep-2)
+        %c4 : F64   = %z.mul(-0x1.54f3e581b61bfp-3).add(0x1.999611761d772p-3)
+        %c6 : F64   = %z.mul(-0x1.9115a5af1e1edp-4).add(0x1.1e642b4cb5143p-3)
+        %p  : F64   = %c0.add(%z2.mul(%c2)).add(%z4.mul(%c4.add(%z2.mul(%c6))))
+        %il : F64   = F64.from_bits(CM_F16_LGAMMA_IL.get(%i))
+        return(%e.to_f64().mul(0x1.62e42fefa39efp-1).add(%il).add(%z.mul(%p)))

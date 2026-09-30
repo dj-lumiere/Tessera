@@ -1,0 +1,640 @@
+// Tessera stdlib: 256-bit floating-point arithmetic for the third phase of the F64 power x^y
+//
+// A CmF64PowQint is (-1)^sgn (rh 2^128 + rl) 2^(ex - 255) (the C qint64_t). The third phase computes
+// exp(y log(x)) with it to a relative error below about 2^-240, for the hardest cases.
+//
+// Ported from CORE-MATH, src/binary64/pow/pow.c and qint.h via RazorForge's B64Pow.rf. Rounding a subnormal
+// result masks its shift amounts to 6 bits, as the x86 shift instructions of the C original do.
+// Copyright (c) 2022-2025 CERN and Inria
+// Authors: Tom Hubrecht and Paul Zimmermann
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// A 256-bit floating-point value (-1)^sgn (rh 2^128 + rl) 2^(ex - 255).
+record CmF64PowQint
+    rh  : U128
+    rl  : U128
+    ex  : S64
+    sgn : U64
+
+/// The zero CmF64PowQint.
+private routine cm_f64_pow_qint_zero() -> CmF64PowQint
+    block entry():
+        return(CmF64PowQint { rh: 0, rl: 0, ex: 0, sgn: 0 })
+
+/// log(2) as a CmF64PowQint, with absolute error below 2^-256.14.
+private routine cm_f64_pow_qint_log2() -> CmF64PowQint
+    block entry():
+        %h : U128 = cm_f64_pow_join(0xB17217F7D1CF79AB, 0xC9E3B39803F2F6AF)
+        %l : U128 = cm_f64_pow_join(0x40F343267298B62D, 0x8A0D175B8BAAFA2B)
+        return(CmF64PowQint { rh: %h, rl: %l, ex: -1, sgn: 0 })
+
+/// The carry of the wrapped 128-bit addition sum = a + b: 1 or 0.
+private routine cm_f64_pow_carry(%sum: U128, %a: U128) -> U128
+    block entry():
+        %wrapped : Bool = %sum.lt(%a)
+        branch %wrapped ? return(1) : return(0)
+
+/// The 256-bit value h:l shifted left by n bits (right by -n when n < 0); bits shifted out are lost.
+private routine cm_f64_pow_shift256(%h: U128, %l: U128, %n: S64) -> (U128, U128)
+    block entry():
+        %left : Bool = %n.ge(0)
+        branch %left
+            ? left(%n.to_u64_wrap().to_u128())
+            : right(S64.sub(0, %n).to_u64_wrap().to_u128())
+
+    block left(%k: U128):
+        %far : Bool = %k.ge(128)
+        branch %far
+            ? return((%l.shl(%k.sub(128)), 0))
+            : return((%h.shl(%k).bitor(%l.shr(U128.sub(128, %k))), %l.shl(%k)))
+
+    block right(%k: U128):
+        %far : Bool = %k.ge(128)
+        branch %far
+            ? return((0, %h.shr(%k.sub(128))))
+            : return((%h.shr(%k), %h.shl(U128.sub(128, %k)).bitor(%l.shr(%k))))
+
+/// The number of leading zero bits of the 256-bit value ch:cl.
+private routine cm_f64_pow_clz256(%ch: U128, %cl: U128) -> U64
+    block entry():
+        %high : Bool = %ch.ne(0)
+        branch %high
+            ? return(%ch.leading_zeros().to_u64_wrap())
+            : return(%cl.leading_zeros().to_u64_wrap().add(128))
+
+/// Compares |a| and |b|: -1, 0 or 1.
+private routine cm_f64_pow_cmp_qint(%a: CmF64PowQint, %b: CmF64PowQint) -> S64
+    block entry():
+        %by_ex : S32 = %a.ex.compare(%b.ex)
+        %by_h  : S32 = %a.rh.compare(%b.rh)
+        %by_l  : S32 = %a.rl.compare(%b.rl)
+        %by_r  : S32 = %by_h.ne(0) ? %by_h : %by_l
+        %c     : S32 = %by_ex.ne(0) ? %by_ex : %by_r
+        return(%c.to_s64())
+
+/// Compares |a| and |b| using only their upper two limbs: -1, 0 or 1.
+private routine cm_f64_pow_cmp_qint_22(%a: CmF64PowQint, %b: CmF64PowQint) -> S64
+    block entry():
+        %by_ex : S32 = %a.ex.compare(%b.ex)
+        %by_h  : S32 = %a.rh.compare(%b.rh)
+        %c     : S32 = %by_ex.ne(0) ? %by_ex : %by_h
+        return(%c.to_s64())
+
+/// a + b with error below 2 ulps (exact in the Sterbenz case).
+private routine cm_f64_pow_add_qint(%a: CmF64PowQint, %b: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %a_zero : Bool = %a.rh.eq(0).bitand(%a.rl.eq(0))
+        %b_zero : Bool = %b.rh.eq(0).bitand(%b.rl.eq(0))
+        when:
+            %a_zero -> return(%b)
+            %b_zero -> return(%a)
+            else    -> compare()
+
+    block compare():
+        %c   : S64  = cm_f64_pow_cmp_qint(%a, %b)
+        %tie : Bool = %c.eq(0)
+        branch %tie ? tie() : continue
+        %swap : Bool         = %c.lt(0)
+        %aa   : CmF64PowQint = %swap ? %b : %a
+        %bb   : CmF64PowQint = %swap ? %a : %b
+        %k    : S64          = %aa.ex.sub(%bb.ex)
+        // now |aa| > |bb| and k >= 0: align bb on aa
+        %bh, %bl = cm_f64_pow_shift256(%bb.rh, %bb.rl, S64.sub(0, %k))
+        %differ : Bool = %aa.sgn.ne(%bb.sgn)
+        branch %differ ? subtract(%aa, %bb, %bh, %bl, %k) : add(%aa, %bh, %bl)
+
+    block tie():
+        %differ : Bool = %a.sgn.ne(%b.sgn)
+        branch %differ
+            ? return(cm_f64_pow_qint_zero())
+            : return(CmF64PowQint { rh: %a.rh, rl: %a.rl, ex: %a.ex.add(1), sgn: %a.sgn })
+
+    block subtract(%aa: CmF64PowQint, %bb: CmF64PowQint, %bh: U128, %bl: U128, %k: S64):
+        %ch     : U128 = cm_f64_pow_sub_borrow(%aa.rh, %aa.rl, %bh, %bl)
+        %cl     : U128 = %aa.rl.sub_wrap(%bl)
+        %ex     : U64  = cm_f64_pow_clz256(%ch, %cl)
+        %renorm : Bool = %ex.gt(0)
+        branch %renorm ? renormalize(%aa, %bb, %k, %ex) : finish(%ch, %cl, 0, %aa.ex, %aa.sgn)
+
+    // shift aa by ex bits to the left, and bb by ex - k bits to the left, then subtract again
+    block renormalize(%aa: CmF64PowQint, %bb: CmF64PowQint, %k: S64, %ex: U64):
+        %ah, %al = cm_f64_pow_shift256(%aa.rh, %aa.rl, %ex.to_s64())
+        %bh, %bl = cm_f64_pow_shift256(%bb.rh, %bb.rl, %ex.to_s64().sub(%k))
+        %ch : U128 = cm_f64_pow_sub_borrow(%ah, %al, %bh, %bl)
+        %cl : U128 = %al.sub_wrap(%bl)
+        jump finish(%ch, %cl, cm_f64_pow_clz256(%ch, %cl), %aa.ex.sub(%ex.to_s64()), %aa.sgn)
+
+    block finish(%ch: U128, %cl: U128, %ex: U64, %rex: S64, %sgn: U64):
+        %h, %l = cm_f64_pow_shift256(%ch, %cl, %ex.to_s64())
+        return(CmF64PowQint { rh: %h, rl: %l, ex: %rex.sub(%ex.to_s64()), sgn: %sgn })
+
+    block add(%aa: CmF64PowQint, %bh: U128, %bl: U128):
+        %ch0     : U128 = %aa.rh.add_wrap(%bh)
+        %cy0     : U128 = cm_f64_pow_carry(%ch0, %aa.rh)
+        %cl      : U128 = %aa.rl.add_wrap(%bl)
+        %low_cy  : Bool = %cl.lt(%aa.rl)
+        %ch      : U128 = %low_cy ? %ch0.add_wrap(1) : %ch0
+        %cy      : U128 = %low_cy.bitand(%ch.eq(0)) ? %cy0.add_wrap(1) : %cy0
+        %carried : Bool = %cy.ne(0)
+        %sh      : U128 = U128.shl(1, 127).bitor(%ch.shr(1))
+        %sl      : U128 = %ch.shl(127).bitor(%cl.shr(1))
+        branch %carried
+            ? return(CmF64PowQint { rh: %sh, rl: %sl, ex: %aa.ex.add(1), sgn: %aa.sgn })
+            : return(CmF64PowQint { rh: %ch, rl: %cl, ex: %aa.ex, sgn: %aa.sgn })
+
+/// The upper half of the 256-bit difference ah:al - bh:bl.
+private routine cm_f64_pow_sub_borrow(%ah: U128, %al: U128, %bh: U128, %bl: U128) -> U128
+    block entry():
+        %ch     : U128 = %ah.sub_wrap(%bh)
+        %borrow : Bool = %al.lt(%bl)
+        branch %borrow ? return(%ch.sub_wrap(1)) : return(%ch)
+
+/// a + b using only the upper two limbs of a and b, with error below 2 ulps (128-bit ulps).
+private routine cm_f64_pow_add_qint_22(%a: CmF64PowQint, %b: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %a_zero : Bool = %a.rh.eq(0)
+        %b_zero : Bool = %b.rh.eq(0)
+        when:
+            %a_zero -> return(%b)
+            %b_zero -> return(%a)
+            else    -> compare()
+
+    block compare():
+        %c   : S64  = cm_f64_pow_cmp_qint_22(%a, %b)
+        %tie : Bool = %c.eq(0)
+        branch %tie ? tie() : continue
+        %swap   : Bool         = %c.lt(0)
+        %aa     : CmF64PowQint = %swap ? %b : %a
+        %bb     : CmF64PowQint = %swap ? %a : %b
+        %k      : U64          = %aa.ex.sub(%bb.ex).to_u64_wrap()
+        %bh     : U128         = %bb.rh.shr(%k.to_u128())
+        %differ : Bool         = %aa.sgn.ne(%bb.sgn)
+        branch %differ ? subtract(%aa, %bb, %bh, %k) : add(%aa, %bh)
+
+    block tie():
+        %differ : Bool = %a.sgn.ne(%b.sgn)
+        branch %differ
+            ? return(cm_f64_pow_qint_zero())
+            : return(CmF64PowQint { rh: %a.rh, rl: %a.rl, ex: %a.ex.add(1), sgn: %a.sgn })
+
+    block subtract(%aa: CmF64PowQint, %bb: CmF64PowQint, %bh: U128, %k: U64):
+        %ch     : U128 = %aa.rh.sub_wrap(%bh)
+        %ex     : U64  = %ch.leading_zeros().to_u64_wrap()
+        %renorm : Bool = %ex.gt(0)
+        branch %renorm ? renormalize(%aa, %bb, %k, %ex) : finish(%ch, 0, %aa.ex, %aa.sgn)
+
+    block renormalize(%aa: CmF64PowQint, %bb: CmF64PowQint, %k: U64, %ex: U64):
+        %ah    : U128 = %aa.rh.shl(%ex.to_u128())
+        %ahead : Bool = %ex.ge(%k)
+        branch %ahead ? continue : behind(%aa, %bb, %k, %ex, %ah)
+        %ch : U128 = %ah.sub_wrap(%bb.rh.shl(%ex.sub(%k).to_u128()))
+        jump finish(%ch, %ch.leading_zeros().to_u64_wrap(), %aa.ex.sub(%ex.to_s64()), %aa.sgn)
+
+    block behind(%aa: CmF64PowQint, %bb: CmF64PowQint, %k: U64, %ex: U64, %ah: U128):
+        %ch : U128 = %ah.sub_wrap(%bb.rh.shr(%k.sub(%ex).to_u128()))
+        jump finish(%ch, %ch.leading_zeros().to_u64_wrap(), %aa.ex.sub(%ex.to_s64()), %aa.sgn)
+
+    block finish(%ch: U128, %ex: U64, %rex: S64, %sgn: U64):
+        return(CmF64PowQint { rh: %ch.shl(%ex.to_u128()), rl: 0, ex: %rex.sub(%ex.to_s64()),
+                sgn: %sgn })
+
+    block add(%aa: CmF64PowQint, %bh: U128):
+        %ch    : U128 = %aa.rh.add_wrap(%bh)
+        %carry : Bool = %ch.lt(%aa.rh)
+        branch %carry
+            ? return(CmF64PowQint { rh: U128.shl(1, 127).bitor(%ch.shr(1)), rl: 0,
+                    ex: %aa.ex.add(1), sgn: %aa.sgn })
+            : return(CmF64PowQint { rh: %ch, rl: 0, ex: %aa.ex, sgn: %aa.sgn })
+
+/// Normalizes a 256-bit product t6:t5 whose top bit is at position 254 or 255.
+private routine cm_f64_pow_qint_norm(%t6: U128, %t5: U128, %ex: S64, %sgn: U64) -> CmF64PowQint
+    block entry():
+        %low : Bool = %t6.shr(127).eq(0)
+        branch %low
+            ? return(CmF64PowQint { rh: %t6.shl(1).bitor(%t5.shr(127)), rl: %t5.shl(1), ex: %ex,
+                    sgn: %sgn })
+            : return(CmF64PowQint { rh: %t6, rl: %t5, ex: %ex.add(1), sgn: %sgn })
+
+/// The lower 64 bits of v, as a U128.
+private routine cm_f64_pow_low64(%v: U128) -> U128
+    block entry():
+        return(%v.bitand(0xFFFFFFFFFFFFFFFF))
+
+/// a b with error below 14 ulps.
+private routine cm_f64_pow_mul_qint(%a: CmF64PowQint, %b: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %ahh : U64  = cm_f64_pow_hi(%a.rh)
+        %ahl : U64  = cm_f64_pow_lo(%a.rh)
+        %alh : U64  = cm_f64_pow_hi(%a.rl)
+        %all : U64  = cm_f64_pow_lo(%a.rl)
+        %bhh : U64  = cm_f64_pow_hi(%b.rh)
+        %bhl : U64  = cm_f64_pow_lo(%b.rh)
+        %blh : U64  = cm_f64_pow_hi(%b.rl)
+        %bll : U64  = cm_f64_pow_lo(%b.rl)
+        %r33 : U128 = %ahh.mul_wide(%bhh)
+        %r32 : U128 = %ahh.mul_wide(%bhl)
+        %r23 : U128 = %ahl.mul_wide(%bhh)
+        %r31 : U128 = %ahh.mul_wide(%blh)
+        %r13 : U128 = %alh.mul_wide(%bhh)
+        %r22 : U128 = %ahl.mul_wide(%bhl)
+        %r30 : U128 = %ahh.mul_wide(%bll)
+        %r03 : U128 = %all.mul_wide(%bhh)
+        %r21 : U128 = %ahl.mul_wide(%blh)
+        %r12 : U128 = %alh.mul_wide(%bhl)
+        %t3  : U128 = %r12.shr(64).add_wrap(%r21.shr(64)).add_wrap(%r03.shr(64)).add_wrap(%r30.shr(64))
+        %t4  : U128 = %r22.add_wrap(%t3)
+        %c4a : U128 = cm_f64_pow_carry(%t4, %r22)
+        %t4b : U128 = %r13.add_wrap(%t4)
+        %c4b : U128 = %c4a.add_wrap(cm_f64_pow_carry(%t4b, %r13))
+        %t4c : U128 = %r31.add_wrap(%t4b)
+        %c4  : U128 = %c4b.add_wrap(cm_f64_pow_carry(%t4c, %r31))
+        %t5  : U128 = %r23.add_wrap(%t4c.shr(64))
+        %c5a : U128 = cm_f64_pow_carry(%t5, %r23)
+        %t5b : U128 = %r32.add_wrap(%t5)
+        %c5  : U128 = %c5a.add_wrap(cm_f64_pow_carry(%t5b, %r32))
+        %t6  : U128 = %r33.add_wrap(%c5.shl(64).bitor(%t5b.shr(64))).add_wrap(%c4)
+        %t5f : U128 = %t5b.shl(64).bitor(cm_f64_pow_low64(%t4c))
+        return(cm_f64_pow_qint_norm(%t6, %t5f, %a.ex.add(%b.ex), %a.sgn.bitxor(%b.sgn)))
+
+/// a b using only the upper three limbs of a and b, with error below 6 ulps.
+private routine cm_f64_pow_mul_qint_33(%a: CmF64PowQint, %b: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %ahh : U64  = cm_f64_pow_hi(%a.rh)
+        %ahl : U64  = cm_f64_pow_lo(%a.rh)
+        %alh : U64  = cm_f64_pow_hi(%a.rl)
+        %bhh : U64  = cm_f64_pow_hi(%b.rh)
+        %bhl : U64  = cm_f64_pow_lo(%b.rh)
+        %blh : U64  = cm_f64_pow_hi(%b.rl)
+        %r33 : U128 = %ahh.mul_wide(%bhh)
+        %r32 : U128 = %ahh.mul_wide(%bhl)
+        %r23 : U128 = %ahl.mul_wide(%bhh)
+        %r31 : U128 = %ahh.mul_wide(%blh)
+        %r13 : U128 = %alh.mul_wide(%bhh)
+        %r22 : U128 = %ahl.mul_wide(%bhl)
+        %r21 : U128 = %ahl.mul_wide(%blh)
+        %r12 : U128 = %alh.mul_wide(%bhl)
+        %t3  : U128 = %r12.shr(64).add_wrap(%r21.shr(64))
+        %t4  : U128 = %r22.add_wrap(%t3)
+        %c4a : U128 = cm_f64_pow_carry(%t4, %r22)
+        %t4b : U128 = %r13.add_wrap(%t4)
+        %c4b : U128 = %c4a.add_wrap(cm_f64_pow_carry(%t4b, %r13))
+        %t4c : U128 = %r31.add_wrap(%t4b)
+        %c4  : U128 = %c4b.add_wrap(cm_f64_pow_carry(%t4c, %r31))
+        %t5  : U128 = %r23.add_wrap(%t4c.shr(64))
+        %c5a : U128 = cm_f64_pow_carry(%t5, %r23)
+        %t5b : U128 = %r32.add_wrap(%t5)
+        %c5  : U128 = %c5a.add_wrap(cm_f64_pow_carry(%t5b, %r32))
+        %t6  : U128 = %r33.add_wrap(%c5.shl(64).bitor(%t5b.shr(64))).add_wrap(%c4)
+        %t5f : U128 = %t5b.shl(64).bitor(cm_f64_pow_low64(%t4c))
+        return(cm_f64_pow_qint_norm(%t6, %t5f, %a.ex.add(%b.ex), %a.sgn.bitxor(%b.sgn)))
+
+/// a b using only the upper limb of b, with error below 2 ulps.
+routine cm_f64_pow_mul_qint_41(%a: CmF64PowQint, %b: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %bhh : U64  = cm_f64_pow_hi(%b.rh)
+        %r33 : U128 = cm_f64_pow_hi(%a.rh).mul_wide(%bhh)
+        %r23 : U128 = cm_f64_pow_lo(%a.rh).mul_wide(%bhh)
+        %r13 : U128 = cm_f64_pow_hi(%a.rl).mul_wide(%bhh)
+        %r03 : U128 = cm_f64_pow_lo(%a.rl).mul_wide(%bhh)
+        %t3  : U128 = %r03.shr(64)
+        %t4  : U128 = %r13.add_wrap(%t3)
+        %c4  : U128 = cm_f64_pow_carry(%t4, %r13)
+        %t5  : U128 = %r23.add_wrap(%t4.shr(64))
+        %c5  : U128 = cm_f64_pow_carry(%t5, %r23)
+        %t6  : U128 = %r33.add_wrap(%c5.shl(64).bitor(%t5.shr(64))).add_wrap(%c4)
+        %t5f : U128 = %t5.shl(64).bitor(cm_f64_pow_low64(%t4))
+        return(cm_f64_pow_qint_norm(%t6, %t5f, %a.ex.add(%b.ex), %a.sgn.bitxor(%b.sgn)))
+
+/// a b using only the upper three limbs of a and the upper limb of b (exact).
+private routine cm_f64_pow_mul_qint_31(%a: CmF64PowQint, %b: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %bhh : U64  = cm_f64_pow_hi(%b.rh)
+        %r33 : U128 = cm_f64_pow_hi(%a.rh).mul_wide(%bhh)
+        %r23 : U128 = cm_f64_pow_lo(%a.rh).mul_wide(%bhh)
+        %t4  : U128 = cm_f64_pow_hi(%a.rl).mul_wide(%bhh)
+        %t5  : U128 = %r23.add_wrap(%t4.shr(64))
+        %c5  : U128 = cm_f64_pow_carry(%t5, %r23)
+        %t6  : U128 = %r33.add_wrap(%c5.shl(64).bitor(%t5.shr(64)))
+        %t5f : U128 = %t5.shl(64).bitor(cm_f64_pow_low64(%t4))
+        return(cm_f64_pow_qint_norm(%t6, %t5f, %a.ex.add(%b.ex), %a.sgn.bitxor(%b.sgn)))
+
+/// a b using only the upper two limbs of a and b (exact).
+private routine cm_f64_pow_mul_qint_22(%a: CmF64PowQint, %b: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %ahh : U64  = cm_f64_pow_hi(%a.rh)
+        %ahl : U64  = cm_f64_pow_lo(%a.rh)
+        %bhh : U64  = cm_f64_pow_hi(%b.rh)
+        %bhl : U64  = cm_f64_pow_lo(%b.rh)
+        %r33 : U128 = %ahh.mul_wide(%bhh)
+        %r32 : U128 = %ahh.mul_wide(%bhl)
+        %r23 : U128 = %ahl.mul_wide(%bhh)
+        %t4  : U128 = %ahl.mul_wide(%bhl)
+        %t5  : U128 = %r23.add_wrap(%t4.shr(64))
+        %c5a : U128 = cm_f64_pow_carry(%t5, %r23)
+        %t5b : U128 = %r32.add_wrap(%t5)
+        %c5  : U128 = %c5a.add_wrap(cm_f64_pow_carry(%t5b, %r32))
+        %t6  : U128 = %r33.add_wrap(%c5.shl(64).bitor(%t5b.shr(64)))
+        %t5f : U128 = %t5b.shl(64).bitor(cm_f64_pow_low64(%t4))
+        return(cm_f64_pow_qint_norm(%t6, %t5f, %a.ex.add(%b.ex), %a.sgn.bitxor(%b.sgn)))
+
+/// a b using only the upper two limbs of a and the upper limb of b (exact).
+private routine cm_f64_pow_mul_qint_21(%a: CmF64PowQint, %b: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %bhh : U64  = cm_f64_pow_hi(%b.rh)
+        %r33 : U128 = cm_f64_pow_hi(%a.rh).mul_wide(%bhh)
+        %r23 : U128 = cm_f64_pow_lo(%a.rh).mul_wide(%bhh)
+        %t6  : U128 = %r33.add_wrap(%r23.shr(64))
+        return(cm_f64_pow_qint_norm(%t6, %r23.shl(64), %a.ex.add(%b.ex), %a.sgn.bitxor(%b.sgn)))
+
+/// a b using only the upper limbs of a and b (exact).
+private routine cm_f64_pow_mul_qint_11(%a: CmF64PowQint, %b: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %t6 : U128 = cm_f64_pow_hi(%a.rh).mul_wide(cm_f64_pow_hi(%b.rh))
+        return(cm_f64_pow_qint_norm(%t6, 0, %a.ex.add(%b.ex), %a.sgn.bitxor(%b.sgn)))
+
+/// b a for an integer b, with error below 2 ulps.
+private routine cm_f64_pow_mul_qint_2(%b: S64, %a: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %zero : Bool = %b.eq(0)
+        branch %zero ? return(cm_f64_pow_qint_zero()) : continue
+        %neg  : Bool = %b.lt(0)
+        %c0   : U64  = %b.to_u64_wrap()
+        %c1   : U64  = %neg ? U64.sub_wrap(0, %c0) : %c0
+        %ng   : U64  = %neg ? 1 : 0
+        %sgn  : U64  = %ng.bitxor(%a.sgn)
+        %unit : Bool = %c1.eq(1)
+        branch %unit
+            ? return(CmF64PowQint { rh: %a.rh, rl: %a.rl, ex: %a.ex, sgn: %sgn })
+            : continue
+        %k   : U64  = %c1.leading_zeros()  // scale c so that 2^63 <= c < 2^64
+        %c   : U64  = %c1.shl(%k)
+        %rex : S64  = %a.ex.add(64).sub(%k.to_s64())
+        %t3a : U128 = cm_f64_pow_hi(%a.rh).mul_wide(%c)
+        %t2  : U128 = cm_f64_pow_lo(%a.rh).mul_wide(%c)
+        %t1  : U128 = cm_f64_pow_hi(%a.rl).mul_wide(%c)
+        %t0  : U128 = cm_f64_pow_lo(%a.rl).mul_wide(%c)
+        %ta  : U128 = %t0.shr(64)
+        %t1s : U128 = %ta.add_wrap(%t1)
+        %cy1 : U128 = cm_f64_pow_carry(%t1s, %ta)
+        %tb  : U128 = %cy1.shl(64).bitor(%t1s.shr(64))
+        %t2s : U128 = %tb.add_wrap(%t2)
+        %cy2 : U128 = cm_f64_pow_carry(%t2s, %tb)
+        %t3  : U128 = %t3a.add_wrap(%cy2.shl(64).bitor(%t2s.shr(64)))
+        %ex  : U64  = cm_f64_pow_hi(%t3).leading_zeros()
+        %t2f : U128 = %t2s.shl(64).bitor(cm_f64_pow_low64(%t1s))
+        %low : Bool = %ex.ne(0)
+        branch %low
+            ? return(CmF64PowQint { rh: %t3.shl(1).bitor(%t2f.shr(127)), rl: %t2f.shl(1),
+                    ex: %rex.sub(1), sgn: %sgn })
+            : return(CmF64PowQint { rh: %t3, rl: %t2f, ex: %rex, sgn: %sgn })
+
+/// A nonzero finite F64 as a CmF64PowQint (exact).
+routine cm_f64_pow_qint_fromd(%b: F64) -> CmF64PowQint
+    block entry():
+        %d : CmF64PowDint = cm_f64_pow_dint_fromd(%b)
+        return(CmF64PowQint { rh: cm_f64_pow_join(cm_f64_pow_hi(%d.r), 0), rl: 0, ex: %d.ex,
+                sgn: %d.sgn })
+
+/// a as an integer, rounded toward zero.
+private routine cm_f64_pow_qint_toi(%a: CmF64PowQint) -> S64
+    block entry():
+        %small : Bool = %a.ex.lt(0)
+        branch %small ? return(0) : continue
+        %r   : S64  = cm_f64_pow_hi(%a.rh).shr(S64.sub(63, %a.ex).to_u64_wrap()).to_s64_wrap()
+        %neg : Bool = %a.sgn.ne(0)
+        branch %neg ? return(S64.sub(0, %r)) : return(%r)
+
+/// log(1+z) for |z| <= 2^-13 (only the upper limb of z nonzero), with relative error below 2^-252.66.
+private routine cm_f64_pow_p_3(%z: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %r0 : CmF64PowQint = cm_f64_pow_mul_qint_11(cm_f64_pow_p_3_at(0), %z)
+        %r1 : CmF64PowQint = cm_f64_pow_add_qint_22(cm_f64_pow_p_3_at(1), %r0)
+        jump horner(2, %r1)
+
+    // the products and sums widen as the terms grow
+    block horner(%k: USize, %r: CmF64PowQint):
+        %done : Bool = %k.eq(18)
+        %p11  : Bool = %k.lt(4)
+        %p21  : Bool = %k.lt(8)
+        %p31  : Bool = %k.lt(14)
+        when:
+            %done -> return(cm_f64_pow_mul_qint_41(%r, %z))
+            %p11  -> add_22(%k, cm_f64_pow_mul_qint_11(%r, %z))
+            %p21  -> add_22(%k, cm_f64_pow_mul_qint_21(%r, %z))
+            %p31  -> add(%k, cm_f64_pow_mul_qint_31(%r, %z))
+            else  -> add(%k, cm_f64_pow_mul_qint_41(%r, %z))
+
+    block add_22(%k: USize, %zr: CmF64PowQint):
+        %next : CmF64PowQint = cm_f64_pow_add_qint_22(cm_f64_pow_p_3_at(%k), %zr)
+        jump horner(%k.add(1), %next)
+
+    block add(%k: USize, %zr: CmF64PowQint):
+        %next : CmF64PowQint = cm_f64_pow_add_qint(cm_f64_pow_p_3_at(%k), %zr)
+        jump horner(%k.add(1), %next)
+
+/// exp(y) for |y| < 0.00016923, with relative error below 2^-241.11.
+private routine cm_f64_pow_q_3(%y: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %r0 : CmF64PowQint = cm_f64_pow_mul_qint_11(%y, cm_f64_pow_q_3_at(0))
+        %r1 : CmF64PowQint = cm_f64_pow_add_qint_22(cm_f64_pow_q_3_at(1), %r0)
+        jump horner(2, %r1)
+
+    block horner(%k: USize, %r: CmF64PowQint):
+        %done : Bool = %k.eq(15)
+        %p22  : Bool = %k.lt(7)
+        %p33  : Bool = %k.lt(12)
+        when:
+            %done -> return(%r)
+            %p22  -> add_22(%k, cm_f64_pow_mul_qint_22(%y, %r))
+            %p33  -> add(%k, cm_f64_pow_mul_qint_33(%y, %r))
+            else  -> add(%k, cm_f64_pow_mul_qint(%y, %r))
+
+    block add_22(%k: USize, %yr: CmF64PowQint):
+        %next : CmF64PowQint = cm_f64_pow_add_qint_22(cm_f64_pow_q_3_at(%k), %yr)
+        jump horner(%k.add(1), %next)
+
+    block add(%k: USize, %yr: CmF64PowQint):
+        %next : CmF64PowQint = cm_f64_pow_add_qint(cm_f64_pow_q_3_at(%k), %yr)
+        jump horner(%k.add(1), %next)
+
+/// log(x) with relative error below 2^-250.74.
+routine cm_f64_pow_log_3(%x: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %xh    : U64          = cm_f64_pow_hi(%x.rh)
+        %above : Bool         = %xh.gt(0xB504F333F9DE6484)
+        %big_e : S64          = %above ? %x.ex.add(1) : %x.ex
+        %i     : U64          = %above ? %xh.shr(57) : %xh.shr(56)
+        %ii    : USize        = %i.sub(90).to_usize()
+        %xx    : CmF64PowQint = CmF64PowQint { rh: %x.rh, rl: %x.rl, ex: %x.ex.sub(%big_e),
+                sgn: %x.sgn }
+        %z1    : CmF64PowQint = cm_f64_pow_mul_qint(%xx, cm_f64_pow_inverse_3_1(%ii))
+        %j     : U64          = cm_f64_pow_hi(%z1.rh).shr(S64.sub(50, %z1.ex).to_u64_wrap())
+        %jj    : USize        = %j.sub(8128).to_usize()
+        %z2    : CmF64PowQint = cm_f64_pow_mul_qint(%z1, cm_f64_pow_inverse_3_2(%jj))
+        %m_one : CmF64PowQint = CmF64PowQint { rh: U128.shl(1, 127), rl: 0, ex: 0, sgn: 1 }
+        %z     : CmF64PowQint = cm_f64_pow_add_qint(%m_one, %z2)
+        %r     : CmF64PowQint = cm_f64_pow_mul_qint_2(%big_e, cm_f64_pow_qint_log2())
+        %p0    : CmF64PowQint = cm_f64_pow_p_3(%z)
+        %p1    : CmF64PowQint = cm_f64_pow_add_qint(cm_f64_pow_log_inv_3_2(%jj), %p0)
+        %p2    : CmF64PowQint = cm_f64_pow_add_qint(cm_f64_pow_log_inv_3_1(%ii), %p1)
+        return(cm_f64_pow_add_qint(%p2, %r))
+
+/// exp(x) for |x| < 744.45 with relative error below 2^-241.10.
+routine cm_f64_pow_exp_3(%x: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %log2_inv : CmF64PowQint = CmF64PowQint { rh: cm_f64_pow_join(0xB8AA3B295C17F0BC, 0), rl: 0,
+                ex: 12, sgn: 0 }
+        %kk0      : CmF64PowQint = cm_f64_pow_mul_qint_11(%x, %log2_inv)
+        %k        : S64          = cm_f64_pow_qint_toi(%kk0)
+        %kk1      : CmF64PowQint = cm_f64_pow_mul_qint_2(%k, cm_f64_pow_qint_log2())
+        %kk       : CmF64PowQint = CmF64PowQint { rh: %kk1.rh, rl: %kk1.rl, ex: %kk1.ex.sub(12),
+                sgn: %kk1.sgn.bitxor(1) }
+        %y        : CmF64PowQint = cm_f64_pow_add_qint(%x, %kk)
+        %big_m    : S64          = %k.shr(12)
+        %i2       : USize        = %k.shr(6).to_u64_wrap().bitand(0x3F).to_usize()
+        %i1       : USize        = %k.to_u64_wrap().bitand(0x3F).to_usize()
+        %r0       : CmF64PowQint = cm_f64_pow_q_3(%y)
+        %r1       : CmF64PowQint = cm_f64_pow_mul_qint(cm_f64_pow_t1_3(%i2), %r0)
+        %r2       : CmF64PowQint = cm_f64_pow_mul_qint(cm_f64_pow_t2_3(%i1), %r1)
+        return(CmF64PowQint { rh: %r2.rh, rl: %r2.rl, ex: %r2.ex.add(%big_m), sgn: %r2.sgn })
+
+/// a rounded to its precision in the subnormal range (to nearest); unchanged when a.ex > -1023.
+private routine cm_f64_pow_subnormalize_qint(%a: CmF64PowQint) -> CmF64PowQint
+    block entry():
+        %normal : Bool = %a.ex.gt(-1023)
+        branch %normal ? return(%a) : continue
+        %ex     : U64  = S64.sub(0, %a.ex.add(1011)).to_u64_wrap()
+        %sh     : U64  = %ex.bitand(63)
+        %hh     : U64  = cm_f64_pow_hi(%a.rh)
+        %hi0    : U64  = %hh.shr(%sh)
+        %md     : U64  = %hh.shr(%ex.sub_wrap(1).bitand(63)).bitand(1)
+        %low_hh : Bool = %hh.bitand(U64.shr(0xFFFFFFFFFFFFFFFF, %sh)).ne(0)
+        %lo     : Bool = %low_hh.bitor(cm_f64_pow_lo(%a.rh).ne(0)).bitor(%a.rl.ne(0))
+        %hi     : U64  = %lo ? %hi0.add_wrap(%md) : %hi0.add_wrap(%hi0.bitand(%md))
+        %hh2    : U64  = %hi.shl(%sh)
+        %carry  : Bool = %hh2.eq(0)
+        branch %carry
+            ? return(CmF64PowQint { rh: U128.shl(1, 127), rl: 0, ex: %a.ex.add(1), sgn: %a.sgn })
+            : return(CmF64PowQint { rh: cm_f64_pow_join(%hh2, 0), rl: 0, ex: %a.ex, sgn: %a.sgn })
+
+/// a rounded to the nearest F64.
+routine cm_f64_pow_qint_tod(%a: CmF64PowQint) -> F64
+    block entry():
+        %q      : CmF64PowQint = cm_f64_pow_subnormalize_qint(%a)
+        %hh     : U64          = cm_f64_pow_hi(%q.rh)
+        %r0     : F64          = F64.from_bits(%hh.shr(11).bitor(0x3FF0000000000000))
+        %half   : Bool         = %hh.bitand(0x400).ne(0)
+        %rd0    : F64          = %half ? F64.add(0.0, 0x1p-53) : 0.0
+        %sticky : Bool         = %hh.bitand(0x3FF).ne(0).bitor(cm_f64_pow_lo(%q.rh).ne(0)).bitor(%q.rl.ne(0))
+        %rd1    : F64          = %sticky ? %rd0.add(0x1p-54) : %rd0
+        %neg    : Bool         = %q.sgn.ne(0)
+        %rd     : F64          = %neg ? %rd1.neg() : %rd1
+        %r1     : F64          = F64.from_bits(%r0.bits().bitor(%q.sgn.shl(63)))
+        %r      : F64          = %r1.add(%rd)
+        %high   : Bool         = %q.ex.gt(-1023)
+        branch %high ? high(%r, %q.ex) : low(%r, %q.ex)
+
+    block high(%r: F64, %ex: S64):
+        %edge : Bool = %ex.eq(1024)
+        %over : Bool = %ex.gt(1023)
+        when:
+            %edge -> return(%r.mul(2.0).mul(0x1p+1023))
+            %over -> return(F64.mul(0x1.fffffffffffffp+1023, 0x1.fffffffffffffp+1023))
+            else  -> return(%r.mul(F64.from_bits(%ex.add(1023).to_u64_wrap().bitand(0x7FF).shl(52))))
+
+    block low(%r: F64, %ex: S64):
+        %edge  : Bool = %ex.eq(-1075)
+        %below : Bool = %ex.lt(-1074)
+        when:
+            %edge  -> return(%r.mul(0.5).mul(F64.from_bits(1)))
+            %below -> return(F64.from_bits(1).mul(F64.from_bits(1)))
+            else   -> return(%r.mul(F64.from_bits(U64.shl(1, %ex.add(1074).to_u64_wrap()))))
+
+/// Entry i of a 256-bit table: limbs mant[4i] .. mant[4i+3], exponent and sign.
+private routine cm_f64_pow_qint_entry(%m0: U64, %m1: U64, %m2: U64, %m3: U64, %ex: S64,
+        %sgn: U64) -> CmF64PowQint
+    block entry():
+        return(CmF64PowQint { rh: cm_f64_pow_join(%m0, %m1), rl: cm_f64_pow_join(%m2, %m3), ex: %ex,
+                sgn: %sgn })
+
+private routine cm_f64_pow_inverse_3_1(%i: USize) -> CmF64PowQint
+    block entry():
+        %b  : USize = %i.mul(4)
+        %m0 : U64   = CM_F64_POW_INVERSE_3_1_MANT.get(%b)
+        %m1 : U64   = CM_F64_POW_INVERSE_3_1_MANT.get(%b.add(1))
+        %m2 : U64   = CM_F64_POW_INVERSE_3_1_MANT.get(%b.add(2))
+        %m3 : U64   = CM_F64_POW_INVERSE_3_1_MANT.get(%b.add(3))
+        return(cm_f64_pow_qint_entry(%m0, %m1, %m2, %m3, CM_F64_POW_INVERSE_3_1_EX.get(%i),
+                CM_F64_POW_INVERSE_3_1_SGN.get(%i)))
+
+private routine cm_f64_pow_inverse_3_2(%i: USize) -> CmF64PowQint
+    block entry():
+        %b  : USize = %i.mul(4)
+        %m0 : U64   = CM_F64_POW_INVERSE_3_2_MANT.get(%b)
+        %m1 : U64   = CM_F64_POW_INVERSE_3_2_MANT.get(%b.add(1))
+        %m2 : U64   = CM_F64_POW_INVERSE_3_2_MANT.get(%b.add(2))
+        %m3 : U64   = CM_F64_POW_INVERSE_3_2_MANT.get(%b.add(3))
+        return(cm_f64_pow_qint_entry(%m0, %m1, %m2, %m3, CM_F64_POW_INVERSE_3_2_EX.get(%i),
+                CM_F64_POW_INVERSE_3_2_SGN.get(%i)))
+
+private routine cm_f64_pow_log_inv_3_1(%i: USize) -> CmF64PowQint
+    block entry():
+        %b  : USize = %i.mul(4)
+        %m0 : U64   = CM_F64_POW_LOG_INV_3_1_MANT.get(%b)
+        %m1 : U64   = CM_F64_POW_LOG_INV_3_1_MANT.get(%b.add(1))
+        %m2 : U64   = CM_F64_POW_LOG_INV_3_1_MANT.get(%b.add(2))
+        %m3 : U64   = CM_F64_POW_LOG_INV_3_1_MANT.get(%b.add(3))
+        return(cm_f64_pow_qint_entry(%m0, %m1, %m2, %m3, CM_F64_POW_LOG_INV_3_1_EX.get(%i),
+                CM_F64_POW_LOG_INV_3_1_SGN.get(%i)))
+
+private routine cm_f64_pow_log_inv_3_2(%i: USize) -> CmF64PowQint
+    block entry():
+        %b  : USize = %i.mul(4)
+        %m0 : U64   = CM_F64_POW_LOG_INV_3_2_MANT.get(%b)
+        %m1 : U64   = CM_F64_POW_LOG_INV_3_2_MANT.get(%b.add(1))
+        %m2 : U64   = CM_F64_POW_LOG_INV_3_2_MANT.get(%b.add(2))
+        %m3 : U64   = CM_F64_POW_LOG_INV_3_2_MANT.get(%b.add(3))
+        return(cm_f64_pow_qint_entry(%m0, %m1, %m2, %m3, CM_F64_POW_LOG_INV_3_2_EX.get(%i),
+                CM_F64_POW_LOG_INV_3_2_SGN.get(%i)))
+
+private routine cm_f64_pow_t1_3(%i: USize) -> CmF64PowQint
+    block entry():
+        %b  : USize = %i.mul(4)
+        %m0 : U64   = CM_F64_POW_T1_3_MANT.get(%b)
+        %m1 : U64   = CM_F64_POW_T1_3_MANT.get(%b.add(1))
+        %m2 : U64   = CM_F64_POW_T1_3_MANT.get(%b.add(2))
+        %m3 : U64   = CM_F64_POW_T1_3_MANT.get(%b.add(3))
+        return(cm_f64_pow_qint_entry(%m0, %m1, %m2, %m3, CM_F64_POW_T1_3_EX.get(%i),
+                CM_F64_POW_T1_3_SGN.get(%i)))
+
+private routine cm_f64_pow_t2_3(%i: USize) -> CmF64PowQint
+    block entry():
+        %b  : USize = %i.mul(4)
+        %m0 : U64   = CM_F64_POW_T2_3_MANT.get(%b)
+        %m1 : U64   = CM_F64_POW_T2_3_MANT.get(%b.add(1))
+        %m2 : U64   = CM_F64_POW_T2_3_MANT.get(%b.add(2))
+        %m3 : U64   = CM_F64_POW_T2_3_MANT.get(%b.add(3))
+        return(cm_f64_pow_qint_entry(%m0, %m1, %m2, %m3, CM_F64_POW_T2_3_EX.get(%i),
+                CM_F64_POW_T2_3_SGN.get(%i)))
+
+private routine cm_f64_pow_p_3_at(%i: USize) -> CmF64PowQint
+    block entry():
+        %b  : USize = %i.mul(4)
+        %m0 : U64   = CM_F64_POW_P_3_MANT.get(%b)
+        %m1 : U64   = CM_F64_POW_P_3_MANT.get(%b.add(1))
+        %m2 : U64   = CM_F64_POW_P_3_MANT.get(%b.add(2))
+        %m3 : U64   = CM_F64_POW_P_3_MANT.get(%b.add(3))
+        return(cm_f64_pow_qint_entry(%m0, %m1, %m2, %m3, CM_F64_POW_P_3_EX.get(%i),
+                CM_F64_POW_P_3_SGN.get(%i)))
+
+private routine cm_f64_pow_q_3_at(%i: USize) -> CmF64PowQint
+    block entry():
+        %b  : USize = %i.mul(4)
+        %m0 : U64   = CM_F64_POW_Q_3_MANT.get(%b)
+        %m1 : U64   = CM_F64_POW_Q_3_MANT.get(%b.add(1))
+        %m2 : U64   = CM_F64_POW_Q_3_MANT.get(%b.add(2))
+        %m3 : U64   = CM_F64_POW_Q_3_MANT.get(%b.add(3))
+        return(cm_f64_pow_qint_entry(%m0, %m1, %m2, %m3, CM_F64_POW_Q_3_EX.get(%i),
+                CM_F64_POW_Q_3_SGN.get(%i)))

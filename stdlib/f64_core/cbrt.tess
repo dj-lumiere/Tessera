@@ -1,0 +1,146 @@
+// Tessera stdlib: the correctly rounded cube root of F64
+//
+// x = ±2^(3 et + it) z with 1 <= z < 2: a cubic polynomial gives cbrt(z) to
+// about 13 bits, a cubic Newton step triples that, and a linear Newton step
+// with y^3 in double-double arithmetic lands within half an ulp. When the
+// correction sits too close to a rounding boundary, one more step settles it
+// (with two inputs known to need more), and an exact cube root has its
+// rounding noise cleared. Round to nearest only: ±0, ±inf and NaN map to
+// themselves (NaN comes back quiet), and cbrt(-x) = -cbrt(x).
+//
+// Ported from CORE-MATH, src/binary64/cbrt/cbrt.c via RazorForge's B64Cbrt.rf.
+// Copyright (c) 2021-2022 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// The cube root of x, correctly rounded.
+routine f64_cm_cbrt(%x: F64) -> F64
+    block entry():
+        %hx   : U64  = %x.bits()
+        %mant : U64  = %hx.bitand(0x000FFFFFFFFFFFFF)
+        %sign : U64  = %hx.shr(63)
+        %e    : S64  = %hx.shr(52).bitand(0x7FF).to_s64()
+        %edge : Bool = %e.eq(0).bitor(%e.eq(0x7FF))
+        branch %edge ? edge(%hx, %mant, %sign, %e) : reduce(%mant, %sign, %e)
+
+    // ±0, subnormals, ±inf and NaN
+    block edge(%hx: U64, %mant: U64, %sign: U64, %e: S64):
+        %ix      : U64  = %hx.bitand(0x7FFFFFFFFFFFFFFF)
+        %special : Bool = %e.eq(0x7FF).bitor(%ix.eq(0))
+        branch %special ? return(%x.add(%x)) : continue  // x + x also quiets a signaling NaN
+        // subnormal: normalize the mantissa
+        %nz : U64 = %ix.leading_zeros().sub(11)
+        jump reduce(%mant.shl(%nz).bitand(0x000FFFFFFFFFFFFF), %sign, %e.sub(%nz.to_s64().sub(1)))
+
+    // 2^(3 et + it) <= |x| < 2^(3 et + it + 1) with 0 <= it <= 2 (et biased)
+    block reduce(%mant: U64, %sign: U64, %e: S64):
+        %eb   : S64 = %e.add(3072)
+        %cvt1 : U64 = %mant.bitor(0x3FF0000000000000)
+        %et   : S64 = %eb.div(3)
+        %it   : S64 = %eb.rem(3)
+        // cbrt(x) = cbrt(zz) 2^(et-1365) where 1 <= |zz| < 8
+        %zz : F64 = F64.from_bits(%cvt1.add(%it.to_u64_wrap().shl(52)).bitor(%sign.shl(63)))
+        // cbrt(zz) = cbrt(z) isc, where isc is ±1, ±2^(1/3) or ±2^(2/3), and 1 <= z < 2
+        %isc : F64 = F64.from_bits(cm_f64_cbrt_escale(%it).bits().bitor(%sign.shl(63)))
+        %z   : F64 = F64.from_bits(%cvt1)
+        %r   : F64 = F64.div(1.0, %z)
+        %rr  : F64 = %r.mul(cm_f64_cbrt_rsc(%it, %sign))
+        %z2  : F64 = %z.mul(%z)
+        %c0  : F64 = F64.add(0x1.1b0babccfef9cp-1, %z.mul(0x1.2c9a3e94d1da5p-1))
+        %c2  : F64 = F64.add(-0x1.4dc30b1a1ddbap-3, %z.mul(0x1.7a8d3e4ec9b07p-6))
+        // c0 + c1 z + c2 z^2 + c3 z^3 approximates z^(1/3) on [1, 2] with error < 9.2e-5
+        %y0  : F64 = %c0.add(%z2.mul(%c2))
+        %y02 : F64 = %y0.mul(%y0)
+        %h0  : F64 = %y02.mul(%y0.mul(%r)).sub(1.0)
+        // a cubic variant of Newton's method on f(y) = 1 - z/y^3
+        %k  : F64 = F64.sub(0x1.5555555555555p-2, F64.mul(0x1.c71c71c71c71cp-3, %h0))
+        %yz : F64 = %y0.sub(%h0.mul(%y0).mul(%k))
+        %y  : F64 = %yz.mul(%isc)
+        // one more (linear) Newton iteration, with y^3 computed to about 106 bits
+        %y2  : F64 = %y.mul(%y)
+        %y2l : F64 = %y.mul_add(%y, %y2.neg())
+        %y3  : F64 = %y2.mul(%y)
+        %y3l : F64 = %y.mul_add(%y2, %y3.neg()).add(%y.mul(%y2l))
+        %h   : F64 = %y3.sub(%zz).add(%y3l).mul(%rr)
+        %dy0 : F64 = %h.mul(%y.mul(0x1.5555555555555p-2))
+        %y1  : F64 = %y.sub(%dy0)
+        %dy  : F64 = %y.sub(%y1).sub(%dy0)
+        // the cube root is now y1 + dy with |dy| < 1/2 ulp(y1): rounding is hard only when dy is close to
+        // 1/2 ulp or 3/2 ulp
+        %hard : Bool = cm_f64_cbrt_near_boundary(%dy, 0x1p-75)
+        branch %hard ? refine(%y1, %zz, %rr, %et) : finish(%y1, %dy, %zz, %et)
+
+    block refine(%y1: F64, %zz: F64, %rr: F64, %et: S64):
+        %y2   : F64  = %y1.mul(%y1)
+        %y2l  : F64  = %y1.mul_add(%y1, %y2.neg())
+        %y3   : F64  = %y2.mul(%y1)
+        %y3l  : F64  = %y1.mul_add(%y2, %y3.neg()).add(%y1.mul(%y2l))
+        %h    : F64  = %y3.sub(%zz).add(%y3l).mul(%rr)
+        %dy0  : F64  = %h.mul(%y1.mul(0x1.5555555555555p-2))
+        %y    : F64  = %y1.sub(%dy0)
+        %dy   : F64  = %y1.sub(%y).sub(%dy0)
+        %hard : Bool = cm_f64_cbrt_near_boundary(%dy, 0x1p-98)
+        branch %hard ? known(%y, %dy, %zz, %et) : finish(%y, %dy, %zz, %et)
+
+    // two inputs whose cube root lies within 2^-98 of a rounding boundary
+    block known(%y1: F64, %dy: F64, %zz: F64, %et: S64):
+        %azz    : F64  = %zz.abs()
+        %first  : Bool = %azz.eq(0x1.9b78223aa307cp+1)
+        %second : Bool = %azz.eq(0x1.a202bfc89ddffp+2)
+        when:
+            %first  -> finish(F64.copysign(0x1.79d15d0e8d59cp+0, %zz), %dy, %zz, %et)
+            %second -> finish(F64.copysign(0x1.de87aa837820fp+0, %zz), %dy, %zz, %et)
+            else    -> finish(%y1, %dy, %zz, %et)
+
+    block finish(%y1: F64, %dy: F64, %zz: F64, %et: S64):
+        %bits : U64 = %y1.bits().add_wrap(%et.sub(342).sub(1023).to_u64_wrap().shl(52))
+        // exact cube roots have the low 34 mantissa bits all 0 or all 1
+        %m0    : U64  = %bits.shl(30)
+        %m0neg : Bool = %m0.shr(63).eq(1)
+        %m1    : U64  = %m0neg ? %m0.bitnot() : %m0
+        %close : Bool = %m1.le(U64.shl(1, 30))
+        branch %close ? exact(%bits, %y1, %dy, %zz) : return(F64.from_bits(%bits))
+
+    // a cube root that may be exact: round the last bits away
+    block exact(%bits: U64, %y1: F64, %dy: F64, %zz: F64):
+        %cvt4  : F64  = F64.from_bits(%y1.bits().add_wrap(U64.shl(1,
+                15)).bitand(0xFFFFFFFFFFFF0000))
+        %tight : Bool = %cvt4.sub(%y1).sub(%dy).abs().lt(0x1p-60)
+        %one   : Bool = %zz.abs().eq(1.0)
+        %clear : Bool = %tight.bitor(%one)
+        branch %clear
+            ? return(F64.from_bits(%bits.add_wrap(U64.shl(1, 15)).bitand(0xFFFFFFFFFFFF0000)))
+            : return(F64.from_bits(%bits))
+
+/// Whether the correction dy lies within tol of 1/2 ulp or 3/2 ulp of the
+/// approximation (ulp 2^-52 on [1, 2)).
+private routine cm_f64_cbrt_near_boundary(%dy: F64, %tol: F64) -> Bool
+    block entry():
+        %ady  : F64 = %dy.abs()
+        %ady0 : F64 = %ady.sub(0x1p-53).abs()
+        %ady1 : F64 = %ady.sub(0x1.8p-52).abs()  // 0x1p-52 + 0x1p-53
+        return(%ady0.lt(%tol).bitor(%ady1.lt(%tol)))
+
+/// The scale 2^(it/3) of the cube root reduction, for it in 0..2.
+private routine cm_f64_cbrt_escale(%it: S64) -> F64
+    block entry():
+        when %it:
+            0    -> return(1.0)
+            1    -> return(0x1.428a2f98d728bp+0)
+            else -> return(0x1.965fea53d6e3dp+0)
+
+/// The reciprocal scale ±2^-it applied to 1/z, for it in 0..2, negated when
+/// the sign bit is 1.
+private routine cm_f64_cbrt_rsc(%it: S64, %sign: U64) -> F64
+    block entry():
+        %magnitude : F64  = cm_f64_cbrt_rsc_magnitude(%it)
+        %negative  : Bool = %sign.eq(1)
+        branch %negative ? return(%magnitude.neg()) : return(%magnitude)
+
+private routine cm_f64_cbrt_rsc_magnitude(%it: S64) -> F64
+    block entry():
+        when %it:
+            0    -> return(1.0)
+            1    -> return(0.5)
+            else -> return(0.25)

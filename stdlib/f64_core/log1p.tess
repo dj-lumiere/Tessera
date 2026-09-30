@@ -1,0 +1,475 @@
+// Tessera stdlib: the correctly rounded log(1 + x) of F64
+//
+// Near zero a polynomial in x, as a double-double. Elsewhere 1 + x = t + dt
+// exactly, t = 2^e y with a reciprocal rf_j of y from a table: log(1 + x) =
+// e log(2) - log(rf_j) + log(rf_j (t + dt)) with a short polynomial. When that
+// can't decide the rounding, the accurate path uses a longer polynomial near
+// zero, or four levels of reciprocal tables and triple-double arithmetic.
+// Round to nearest only: log1p(+-0) is +-0, log1p(-1) is -inf, an input below
+// -1 gives NaN, +inf maps to itself, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary64/log1p/log1p.c via RazorForge's B64Log1p.rf.
+// Copyright (c) 2024-2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// log(1 + x), correctly rounded.
+routine f64_cm_log1p(%x: F64) -> F64
+    block entry():
+        %ixu   : U64  = %x.bits()
+        %ax    : U64  = %ixu.shl(1)
+        %small : Bool = %ax.lt(0x7F60000000000000)  // |x| < 0.0625
+        branch %small ? small(%ax) : large(%ixu, %ax)
+
+    block small(%ax: U64):
+        %tiny : Bool = %ax.lt(0x7940000000000000)  // |x| < 2^-53
+        branch %tiny ? return(cm_f64_log1p_tiny(%x)) : continue
+        %x2         : F64  = %x.mul(%x)
+        %very_small : Bool = %ax.lt(0x7E60000000000000)  // |x| < 2^-12
+        branch %very_small ? very_small(%ax, %x2) : medium(%x2)
+
+    block very_small(%ax: U64, %x2: F64):
+        %eps   : F64  = F64.mul(0x1.ap-64, %x)
+        %short : Bool = %ax.lt(0x7D43360000000000)  // |x| < 0x1.19bp-21
+        branch %short ? continue : longer(%x2, %eps)
+        %c01 : F64 = %x.mul(0x1.55555555558f7p-2).add(-0x1.00000000001d1p-1)
+        jump decide(%x, %x2.mul(%c01), %eps)
+
+    block longer(%x2: F64, %eps: F64):
+        %c01 : F64 = %x.mul(0x1.5555555555551p-2).add(-0x1.ffffffffffffdp-2)
+        %c23 : F64 = %x.mul(0x1.99999b442f73fp-3).add(-0x1.000000d5555e1p-2)
+        jump decide(%x, %x2.mul(%c01.add(%x2.mul(%c23))), %eps)
+
+    block medium(%x2: F64):
+        %x3  : F64 = %x2.mul(%x)
+        %x4  : F64 = %x2.mul(%x2)
+        %hx  : F64 = F64.mul(-0.5, %x)
+        %ln1 : F64 = %hx.mul_add(%x, %x)
+        %ln0 : F64 = %hx.mul_add(%x, %x.sub(%ln1))
+        %f0a : F64 = %x.mul(-0x1p-2).add(0x1.5555555555555p-2)
+        %f0b : F64 = %x.mul(-0x1.555555555583bp-3).add(0x1.9999999999b41p-3)
+        %f1a : F64 = %x.mul(-0x1.fffffffe42e43p-4).add(0x1.24924923f39ep-3)
+        %f1b : F64 = %x.mul(-0x1.99999de10510fp-4).add(0x1.c71c75511d70bp-4)
+        %f2a : F64 = %x.mul(-0x1.554fb43e54e0fp-4).add(0x1.7457e81b175f6p-4)
+        %f2b : F64 = %x.mul(-0x1.28558ad5a7ac4p-4).add(0x1.3ed68744f3d18p-4)
+        %f0  : F64 = %f0a.add(%x2.mul(%f0b))
+        %f1  : F64 = %f1a.add(%x2.mul(%f1b))
+        %f2  : F64 = %f2a.add(%x2.mul(%f2b))
+        %f   : F64 = %f0.add(%x4.mul(%f1.add(%x4.mul(%f2))))
+        jump decide(%ln1, %ln0.add(%x3.mul(%f)), %x3.mul(0x1.b6p-52))
+
+    // |x| >= 0.0625: 1 + x = t + dt
+    block large(%ixu: U64, %ax: U64):
+        %near    : Bool = %ixu.to_s64_wrap().lt(0x4340000000000000).bitand(%ixu.lt(0xBFF0000000000000))
+        %big     : Bool = %ixu.lt(0x4690000000000000)  // 2^53 <= x < 2^106
+        %special : Bool = %ixu.ge(0x7FF0000000000000)
+        when:
+            %near    -> near()  // 0.0625 < x < 2^53 or -1 < x < -0.0625
+            %big     -> reduce(%x, 1.0)
+            %special -> return(cm_f64_log1p_special(%x))
+            else     -> reduce(%x, 0.0)
+
+    block near():
+        %s : CmF64LogDd = cm_f64_log1p_fasttwosum(1.0, %x)
+        jump reduce(%s.hi, %s.lo)
+
+    block reduce(%tf: F64, %dtf: F64):
+        %j   : S64   = %tf.bits().sub_wrap(0x3FE6A00000000000).to_s64_wrap()
+        %j1  : USize = %j.shr(46).bitand(0x3F).to_usize()
+        %je  : S64   = %j.shr(52)
+        %rf  : U64   = CM_F64_LOG1P_RF.get(%j1)
+        %low : Bool  = %je.lt(1022)
+        branch %low
+            ? scaled(%j1, %je, F64.from_bits(%rf.sub_wrap(%je.to_u64_wrap().shl(52))), %tf, %dtf)
+            : continue
+        // scale t and dt instead of rs, which would become subnormal
+        %sc : F64 = cm_f64_log1p_scale(%je)
+        jump scaled(%j1, %je, F64.from_bits(%rf.sub_wrap(U64.shl(1021, 52))), %tf.mul(%sc),
+                %dtf.mul(%sc))
+
+    block scaled(%j1: USize, %je: S64, %rs: F64, %tf: F64, %dtf: F64):
+        %dh  : F64        = %rs.mul(%tf)
+        %dl  : F64        = %rs.mul_add(%tf, %dh.neg()).add(%rs.mul(%dtf))
+        %xs  : CmF64LogDd = cm_f64_log1p_fasttwosum(%dh.sub(1.0), %dl)
+        %xh  : F64        = %xs.hi
+        %x2  : F64        = %xh.mul(%xh)
+        %c01 : F64        = %xh.mul(0x1.5555555554cf5p-2).add(-0x1.000000000003dp-1)
+        %c23 : F64        = %xh.mul(0x1.99999a3661724p-3).add(-0x1.ffffffeca2939p-3)
+        %c45 : F64        = %xh.mul(0x1.247b887a6e5edp-3).add(-0x1.555d345bfe6fdp-3)
+        %xl  : F64        = %xs.lo.add(%x2.mul(%c01.add(%x2.mul(%c23.add(%x2.mul(%c45))))))
+        %jed : F64        = %je.to_f64()
+        %l1  : F64        = F64.mul(0x1.62e42fefa4p-1, %jed)
+        %l0  : F64        = F64.mul(-0x1.8432a1b0e2634p-43, %jed)
+        %lfh : F64        = F64.from_bits(CM_F64_LOG1P_LF.get(%j1.mul(2).add(1)))
+        %lfl : F64        = F64.from_bits(CM_F64_LOG1P_LF.get(%j1.mul(2)))
+        %s   : CmF64LogDd = cm_f64_log1p_fastsum(%lfh.add(%l1), %lfl.add(%l0), %xh, %xl)
+        jump decide(%s.hi, %s.lo, 0x1.ap-65)
+
+    block decide(%ln1: F64, %ln0: F64, %eps: F64):
+        %lb   : F64  = %ln1.add(%ln0.sub(%eps))
+        %ub   : F64  = %ln1.add(%ln0.add(%eps))
+        %sure : Bool = %lb.eq(%ub)
+        branch %sure ? return(%lb) : return(cm_f64_log1p_refine(%x, %lb))
+
+/// log1p x for |x| < 2^-53: x - |x| 2^-54 rounds like log1p x (and +-0 stays itself).
+private routine cm_f64_log1p_tiny(%x: F64) -> F64
+    block entry():
+        %zero : Bool = %x.bits().shl(1).eq(0)
+        branch %zero ? return(%x) : return(%x.abs().mul_add(-0x1p-54, %x))
+
+/// The factor that scales t and dt when e is 1022, 1023 or 1024.
+private routine cm_f64_log1p_scale(%je: S64) -> F64
+    block entry():
+        %e1022 : Bool = %je.eq(1022)
+        %e1023 : Bool = %je.eq(1023)
+        when:
+            %e1022 -> return(0.5)
+            %e1023 -> return(0.25)
+            else   -> return(0.125)
+
+/// log1p of NaN (itself, quiet), +inf (itself), -1 (-inf) or an input below -1 (NaN).
+private routine cm_f64_log1p_special(%x: F64) -> F64
+    block entry():
+        %ixu   : U64  = %x.bits()
+        %nan   : Bool = %ixu.shl(1).gt(0xFFE0000000000000)
+        %inf   : Bool = %ixu.eq(0x7FF0000000000000)
+        %minus : Bool = %ixu.eq(0xBFF0000000000000)
+        when:
+            %nan   -> return(%x.add(%x))
+            %inf   -> return(%x)
+            %minus -> return(F64.from_bits(0xFFF0000000000000))  // the pole
+            else   -> return(F64.from_bits(0xFFF8000000000000))  // the default NaN of 0/0
+
+/// The accurate path of log1p, taken when the fast path can't decide the rounding: a is the fast path's
+/// approximation, x is finite and above -1.
+private routine cm_f64_log1p_refine(%x: F64, %a: F64) -> F64
+    block entry():
+        %ax   : U64  = %x.bits().shl(1)
+        %tiny : Bool = %ax.lt(0x7940000000000000)
+        %near : Bool = %ax.lt(0x7EA0000000000000)
+        when:
+            %tiny -> return(cm_f64_log1p_tiny(%x))
+            %near -> return(cm_f64_log1p_refine_near_zero(%x))
+            else  -> return(cm_f64_log1p_refine_table(%x, %a))
+
+/// The accurate path for |x| < 2^-10: a polynomial with double-double coefficients.
+private routine cm_f64_log1p_refine_near_zero(%x: F64) -> F64
+    block entry():
+        %x2h : F64        = %x.mul(%x)
+        %x2l : F64        = %x.mul_add(%x, %x2h.neg())
+        %x3  : CmF64LogDd = cm_f64_log1p_mulddd(%x, %x2h, %x2l)
+        %c01 : F64        = %x.mul(0x1.c71c71c7185aap-4).add(-0x1.fffffffffc555p-4)
+        %c23 : F64        = %x.mul(0x1.745d51f1817c7p-4).add(-0x1.9999d44449a31p-4)
+        %sl  : F64        = %x.mul(%c01.add(%x2h.mul(%c23)))
+        // Horner evaluation of the double-double coefficients cz, in the double x
+        %h0 : CmF64LogDd = cm_f64_log1p_fasttwosum(F64.from_bits(CM_F64_LOG1P_CZ.get(8)), %sl)
+        jump horner(4, %h0.hi, F64.from_bits(CM_F64_LOG1P_CZ.get(9)).add(%h0.lo), %x2h, %x2l, %x3)
+
+    block horner(%i: USize, %ch: F64, %cl: F64, %x2h: F64, %x2l: F64, %x3: CmF64LogDd):
+        %done : Bool = %i.eq(0)
+        branch %done ? finish(%ch, %cl, %x2h, %x2l, %x3) : continue
+        %k  : USize      = %i.sub(1)
+        %m  : CmF64LogDd = cm_f64_log1p_mulddd(%x, %ch, %cl)
+        %zh : F64        = F64.from_bits(CM_F64_LOG1P_CZ.get(%k.mul(2)))
+        %zl : F64        = F64.from_bits(CM_F64_LOG1P_CZ.get(%k.mul(2).add(1)))
+        %t  : CmF64LogDd = cm_f64_log1p_fastsum(%zh, %zl, %m.hi, %m.lo)
+        jump horner(%k, %t.hi, %t.lo, %x2h, %x2l, %x3)
+
+    block finish(%ch: F64, %cl: F64, %x2h: F64, %x2l: F64, %x3: CmF64LogDd):
+        %p : CmF64LogDd = cm_f64_log1p_muldd(%ch, %cl, %x3.hi, %x3.lo)
+        %q : CmF64LogDd = cm_f64_log1p_fastsum(%x2h.mul(-0.5), %x2l.mul(-0.5), %p.hi, %p.lo)
+        return(cm_f64_log1p_final(%x, %q.hi, %q.lo))
+
+/// The accurate path for |x| >= 2^-10: four levels of reciprocal tables, indexed by the fast path's approximation
+/// a, and a polynomial with double-double coefficients.
+private routine cm_f64_log1p_refine_table(%x: F64, %a: F64) -> F64
+    block entry():
+        %ixu   : U64   = %x.bits()
+        %j     : S64   = %a.mul(0x1.71547652b82fep+16).round_ties_even().to_s64()
+        %ii    : S64   = %j.add(34952)
+        %j1    : USize = %ii.shr(12).bitand(0xF).to_usize()
+        %j2    : USize = %ii.shr(8).bitand(0xF).to_usize()
+        %j3    : USize = %ii.shr(4).bitand(0xF).to_usize()
+        %j4    : USize = %ii.bitand(0xF).to_usize()
+        %je    : S64   = %ii.shr(16)
+        %k1    : USize = %j1.mul(3)
+        %k2    : USize = %j2.add(16).mul(3)
+        %k3    : USize = %j3.add(32).mul(3)
+        %k4    : USize = %j4.add(48).mul(3)
+        %ll0   : F64   = cm_f64_log1p_ln_sum(%k1, %k2, %k3, %k4)
+        %ll1   : F64   = cm_f64_log1p_ln_sum(%k1.add(1), %k2.add(1), %k3.add(1), %k4.add(1))
+        %ll2   : F64   = cm_f64_log1p_ln_sum(%k1.add(2), %k2.add(2), %k3.add(2), %k4.add(2))
+        %t12   : F64   = cm_f64_log1p_rt(%j1, 0).mul(cm_f64_log1p_rt(%j2, 1))
+        %t34   : F64   = cm_f64_log1p_rt(%j3, 2).mul(cm_f64_log1p_rt(%j4, 3))
+        %th    : F64   = %t12.mul(%t34)
+        %tl    : F64   = %t12.mul_add(%t34, %th.neg())
+        %below : Bool  = %ixu.to_s64_wrap().lt(0x4690000000000000)
+        %split : Bool  = %below.bitand(%ixu.lt(0xBFE0000000000000))
+        // 1 + x = t + dt
+        when:
+            %split -> split(%je, %ll0, %ll1, %ll2, %th, %tl)
+            %below -> reduce(%je, %ll0, %ll1, %ll2, %th, %tl, F64.add(1.0, %x), 0)
+            else   -> reduce(%je, %ll0, %ll1, %ll2, %th, %tl, %x, 0)
+
+    block split(%je: S64, %ll0: F64, %ll1: F64, %ll2: F64, %th: F64, %tl: F64):
+        %s    : CmF64LogDd = cm_f64_log1p_twosum(1.0, %x)
+        %dtu  : U64        = %s.lo.bits()
+        %zero : Bool       = %dtu.shl(1).eq(0)  // a zero dt of either sign counts as +0
+        %dt   : U64        = %zero ? 0 : %dtu
+        jump reduce(%je, %ll0, %ll1, %ll2, %th, %tl, %s.hi, %dt)
+
+    block reduce(%je: S64, %ll0: F64, %ll1: F64, %ll2: F64, %th: F64, %tl: F64, %tf: F64,
+            %dtu: U64):
+        %escale : U64        = %je.to_u64_wrap().shl(52)
+        %t      : F64        = F64.from_bits(%tf.bits().sub_wrap(%escale))
+        %dh     : F64        = %th.mul(%t)
+        %dl     : F64        = %th.mul_add(%t, %dh.neg())
+        %sh     : F64        = %tl.mul(%t)
+        %sl     : F64        = %tl.mul_add(%t, %sh.neg())
+        %xs0    : CmF64LogDd = cm_f64_log1p_fasttwosum(%dh.sub(1.0), %dl)
+        %xs     : CmF64LogDd = cm_f64_log1p_fastsum(%xs0.hi, %xs0.lo, %sh, %sl)
+        %has_dt : Bool       = %dtu.ne(0)
+        branch %has_dt ? continue : poly(%je, %ll0, %ll1, %ll2, %xs.hi, %xs.lo)
+        %dt  : F64        = F64.from_bits(%dtu.sub_wrap(%escale))
+        %ddh : F64        = %th.mul(%dt)
+        %ddl : F64        = %th.mul_add(%dt, %ddh.neg()).add(%tl.mul(%dt))
+        %xd  : CmF64LogDd = cm_f64_log1p_fastsum(%xs.hi, %xs.lo, %ddh, %ddl)
+        jump poly(%je, %ll0, %ll1, %ll2, %xd.hi, %xd.lo)
+
+    block poly(%je: S64, %ll0: F64, %ll1: F64, %ll2: F64, %xh: F64, %xl: F64):
+        %c01 : F64 = %xh.mul(0x1.2492492492492p-3).add(-0x1.5555555555555p-3)
+        %c23 : F64 = %xh.mul(0x1.c71c71c802f68p-4).add(-0x1.0000000073334p-3)
+        %sl  : F64 = %xh.mul(%c01.add(%xh.mul(%xh).mul(%c23)))
+        // Horner evaluation of the double-double coefficients cy, in the double-double (xh, xl)
+        %h0     : CmF64LogDd = cm_f64_log1p_fasttwosum(F64.from_bits(CM_F64_LOG1P_CY.get(8)), %sl)
+        %cl     : F64        = F64.from_bits(CM_F64_LOG1P_CY.get(9)).add(%h0.lo)
+        %c      : CmF64LogDd = cm_f64_log1p_horner_cy(%xh, %xl, %h0.hi, %cl)
+        %p      : CmF64LogDd = cm_f64_log1p_muldd(%xh, %xl, %c.hi, %c.lo)
+        %scaled : Bool       = %je.ne(0)
+        branch %scaled ? continue : combine(%ll2, %ll1, %ll0, %p)
+        %jed  : F64        = %je.to_f64()
+        %ln22 : F64        = F64.mul(0x1.62e42fefa4p-1, %jed).add(%ll2)
+        %ln21 : F64        = F64.mul(-0x1.8432a1b0e28p-43, %jed)
+        %ln20 : F64        = F64.mul(0x1.cc01f97b57a08p-87, %jed)
+        %q    : CmF64LogDd = cm_f64_log1p_fastsum(%ln21, %ln20, %ll1, %ll0)
+        jump combine(%ln22, %q.hi, %q.lo, %p)
+
+    block combine(%ln22: F64, %ln21: F64, %ln20: F64, %p: CmF64LogDd):
+        %r : CmF64LogDd = cm_f64_log1p_sum(%ln21, %ln20, %p.hi, %p.lo)
+        return(cm_f64_log1p_final(%ln22, %r.hi, %r.lo))
+
+/// The Horner steps of degrees 3 down to 0 over the coefficients cy, in the double-double (xh, xl), from (ch, cl).
+private routine cm_f64_log1p_horner_cy(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64LogDd
+    block entry():
+        jump step(4, %ch, %cl)
+
+    block step(%i: USize, %ch: F64, %cl: F64):
+        %done : Bool = %i.eq(0)
+        branch %done ? return(CmF64LogDd { hi: %ch, lo: %cl }) : continue
+        %k  : USize      = %i.sub(1)
+        %m  : CmF64LogDd = cm_f64_log1p_muldd(%xh, %xl, %ch, %cl)
+        %yh : F64        = F64.from_bits(CM_F64_LOG1P_CY.get(%k.mul(2)))
+        %yl : F64        = F64.from_bits(CM_F64_LOG1P_CY.get(%k.mul(2).add(1)))
+        %u  : CmF64LogDd = cm_f64_log1p_fastsum(%yh, %yl, %m.hi, %m.lo)
+        jump step(%k, %u.hi, %u.lo)
+
+/// Reciprocal j of level k of the accurate path.
+private routine cm_f64_log1p_rt(%j: USize, %k: USize) -> F64
+    block entry():
+        return(F64.from_bits(CM_F64_LOG1P_RT.get(%k.mul(16).add(%j))))
+
+/// The sum of the four entries k1..k4 of CM_F64_LOG1P_LN, grouped as (k1 + k2) + (k3 + k4).
+private routine cm_f64_log1p_ln_sum(%k1: USize, %k2: USize, %k3: USize, %k4: USize) -> F64
+    block entry():
+        %a : F64 = F64.from_bits(CM_F64_LOG1P_LN.get(%k1)).add(F64.from_bits(CM_F64_LOG1P_LN.get(%k2)))
+        %b : F64 = F64.from_bits(CM_F64_LOG1P_LN.get(%k3)).add(F64.from_bits(CM_F64_LOG1P_LN.get(%k4)))
+        return(%a.add(%b))
+
+/// The triple-double ln22 + ln21 + ln20 rounded: after renormalizing, when the middle word has an all-zero mantissa,
+/// it's nudged one ulp toward the low word so that the sum of the top two rounds correctly.
+private routine cm_f64_log1p_final(%ln22: F64, %ln21: F64, %ln20: F64) -> F64
+    block entry():
+        %w0    : CmF64LogDd = cm_f64_log1p_fasttwosum(%ln22, %ln21)
+        %w1    : CmF64LogDd = cm_f64_log1p_fasttwosum(%w0.lo, %ln20)
+        %tb    : U64        = %w1.hi.bits()
+        %power : Bool       = %tb.bitand(0x000FFFFFFFFFFFFF).eq(0)
+        branch %power ? continue : return(%w0.hi.add(%w1.hi))
+        %opposite : Bool = %w1.lo.bits().bitxor(%tb).shr(63).eq(1)
+        %nudged   : U64  = %opposite ? %tb.sub_wrap(1) : %tb.add_wrap(1)
+        return(%w0.hi.add(F64.from_bits(%nudged)))
+
+/// Error-free sum of x and y when |x| >= |y|: s = x + y rounded, and s + e = x + y exactly.
+private routine cm_f64_log1p_fasttwosum(%x: F64, %y: F64) -> CmF64LogDd
+    block entry():
+        %s : F64 = %x.add(%y)
+        %z : F64 = %s.sub(%x)
+        return(CmF64LogDd { hi: %s, lo: %y.sub(%z) })
+
+/// Error-free sum of xh and ch in any order of magnitude.
+private routine cm_f64_log1p_twosum(%xh: F64, %ch: F64) -> CmF64LogDd
+    block entry():
+        %s : F64 = %xh.add(%ch)
+        %d : F64 = %s.sub(%xh)
+        return(CmF64LogDd { hi: %s, lo: %ch.sub(%d).add(%xh.add(%d.sub(%s))) })
+
+/// The sum of the double-doubles (xh, xl) and (yh, yl) when |xh| >= |yh|.
+private routine cm_f64_log1p_fastsum(%xh: F64, %xl: F64, %yh: F64, %yl: F64) -> CmF64LogDd
+    block entry():
+        %s : CmF64LogDd = cm_f64_log1p_fasttwosum(%xh, %yh)
+        return(CmF64LogDd { hi: %s.hi, lo: %xl.add(%yl).add(%s.lo) })
+
+/// The sum of the double-doubles (xh, xl) and (ch, cl) in any order of magnitude.
+private routine cm_f64_log1p_sum(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64LogDd
+    block entry():
+        %s : CmF64LogDd = cm_f64_log1p_twosum(%xh, %ch)
+        return(CmF64LogDd { hi: %s.hi, lo: %xl.add(%cl).add(%s.lo) })
+
+/// The product of the double-doubles (xh, xl) and (ch, cl).
+private routine cm_f64_log1p_muldd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64LogDd
+    block entry():
+        %ahhh : F64 = %ch.mul(%xh)
+        %lo   : F64 = %cl.mul(%xh).add(%ch.mul(%xl)).add(%ch.mul_add(%xh, %ahhh.neg()))
+        return(CmF64LogDd { hi: %ahhh, lo: %lo })
+
+/// The product of the double x and the double-double (ch, cl).
+private routine cm_f64_log1p_mulddd(%x: F64, %ch: F64, %cl: F64) -> CmF64LogDd
+    block entry():
+        %ahhh : F64 = %ch.mul(%x)
+        return(CmF64LogDd { hi: %ahhh, lo: %cl.mul(%x).add(%ch.mul_add(%x, %ahhh.neg())) })
+
+/// Reciprocals rf[j] of the fast path, from about sqrt(2) down to 1/sqrt(2), as F64 bits.
+preset CM_F64_LOG1P_RF: Array<U64, 64> = [0x3FF6816818000000, 0x3FF642C858000000,
+        0x3FF6058160000000, 0x3FF5C98828000000, 0x3FF58ED230000000, 0x3FF5555558000000,
+        0x3FF51D07E8000000, 0x3FF4E5E0A8000000, 0x3FF4AFD6A0000000, 0x3FF47AE148000000,
+        0x3FF446F868000000, 0x3FF4141418000000, 0x3FF3E22CC0000000, 0x3FF3B13B10000000,
+        0x3FF3813810000000, 0x3FF3521CF8000000, 0x3FF323E348000000, 0x3FF2F684C0000000,
+        0x3FF2C9FB50000000, 0x3FF29E4128000000, 0x3FF27350B8000000, 0x3FF2492490000000,
+        0x3FF21FB780000000, 0x3FF1F70480000000, 0x3FF1CF06B0000000, 0x3FF1A7B960000000,
+        0x3FF1811810000000, 0x3FF15B1E60000000, 0x3FF135C810000000, 0x3FF1111110000000,
+        0x3FF0ECF568000000, 0x3FF0C97150000000, 0x3FF0A68108000000, 0x3FF0842108000000,
+        0x3FF0624DD0000000, 0x3FF0410410000000, 0x3FF0204080000000, 0x3FF0000000000000,
+        0x3FEF81F820000000, 0x3FEF07C1F0000000, 0x3FEE9131A8000000, 0x3FEE1E1E20000000,
+        0x3FEDAE6078000000, 0x3FED41D420000000, 0x3FECD85688000000, 0x3FEC71C720000000,
+        0x3FEC0E0700000000, 0x3FEBACF918000000, 0x3FEB4E81B8000000, 0x3FEAF286C0000000,
+        0x3FEA98EF60000000, 0x3FEA41A418000000, 0x3FE9EC8E98000000, 0x3FE9999998000000,
+        0x3FE948B100000000, 0x3FE8F9C190000000, 0x3FE8ACB910000000, 0x3FE8618618000000,
+        0x3FE8181818000000, 0x3FE7D05F40000000, 0x3FE78A4C80000000, 0x3FE745D178000000,
+        0x3FE702E060000000, 0x3FE6C16C18000000]
+
+/// Double-double -log(rf[j]) as (low, high) pairs of F64 bits.
+preset CM_F64_LOG1P_LF: Array<U64, 128> = [0xBD5F2F8281BADE6A, 0xBFD5D5BDE3994000,
+        0x3D5C2843FDD367A4, 0xBFD522AE0438C000, 0xBD306C10C34C14B0, 0xBFD4718DC171C000,
+        0x3D4CFA4E853F5890, 0xBFD3C2526CB34000, 0xBD5CE3AC179BD856, 0xBFD314F1E0534000,
+        0xBD5B91F82DEB8122, 0xBFD269621934C000, 0x3D546BBB83D7163E, 0xBFD1BF995A9A8000,
+        0x3D5B842E5A74BDB0, 0xBFD1178E84A80000, 0xBD5862715E5BB534, 0xBFD071385F4D4000,
+        0xBD59BCBCBEA0CDF8, 0xBFCF991C6EB38000, 0xBD401101CB605958, 0xBFCE530F10670000,
+        0x3D50C38C81AD8F06, 0xBFCD10380B658000, 0x3D53AA40992A6D82, 0xBFCBD0874C3C0000,
+        0x3D530F68780AE82E, 0xBFCA93ED248B0000, 0xBD07D116989D0980, 0xBFC95A5AC5F70000,
+        0xBD51E0012BA619CA, 0xBFC823C150518000, 0x3D454535D5671858, 0xBFC6F0127CF58000,
+        0xBD5ED87DB3498128, 0xBFC5BF407B540000, 0xBD5AAFDE9C9FC39A, 0xBFC4913D94338000,
+        0xBD4015868C234000, 0xBFC365FCA3158000, 0x3D5EFF33F502C226, 0xBFC23D7126CA0000,
+        0x3D4B8521E874D358, 0xBFC1178E72280000, 0x3D454D75AFE84568, 0xBFBFE89129DC0000,
+        0xBD51A813F3FA7C1E, 0xBFBDA72783840000, 0xBD56C6676F40963E, 0xBFBB6AC8AFAD0000,
+        0xBD52620B7957A7A6, 0xBFB9335E4D590000, 0x3D4F8FFEE5598F38, 0xBFB700D2F4EB0000,
+        0xBD5FAB0F5BF42CA2, 0xBFB4D31165200000, 0xBD37A3E970B1C3A8, 0xBFB2AA0492470000,
+        0xBD4D030435FECB50, 0xBFB08598A59E0000, 0x3D435084A4FB8AB8, 0xBFACCB7357DE0000,
+        0x3D432F36D60B44C4, 0xBFA894AA1CA00000, 0x3D2C1BCCE5BE8110, 0xBFA466AE8A2E0000,
+        0x3D5777740B18714A, 0xBFA0415D81E80000, 0xBD4955C057693D94, 0xBF98492470C80000,
+        0x3D44F71ADDB8BE00, 0xBF90205648940000, 0xBD3BCDA4E198AFB0, 0xBF801014F5880000,
+        0x3BCC000000000000, 0x0000000000000000, 0xBD5FE0DF75092C5E, 0x3F8FC0A891000000,
+        0x3D298036EC7E0A10, 0x3F9F829B1E780000, 0x3D5BA010F49E5FF0, 0x3FA7745938320000,
+        0xBD53AB13C266D328, 0x3FAF0A30A0120000, 0xBD471798573E45D4, 0x3FB341D78B1C0000,
+        0x3D5AD32F072669FC, 0x3FB6F0D272E50000, 0xBD454E391E16EA38, 0x3FBA926D434B0000,
+        0xBD2A302BBAF05590, 0x3FBE27074E2B0000, 0x3D3CB4CD66E31F30, 0x3FC0D77E8CD08000,
+        0xBD35B7A5BC474128, 0x3FC29552E9200000, 0xBD17062E8135F740, 0x3FC44D2B5E4B8000,
+        0x3D43D4C88FE1F4B0, 0x3FC5FF3060A78000, 0xBD537B70004A6946, 0x3FC7AB8904110000,
+        0xBD54A5885167C1EC, 0x3FC9525AA7F48000, 0x3D5FF9D5953004AC, 0x3FCAF3C940008000,
+        0x3D4A21EC41D8219C, 0x3FCC8FF7CF9A8000, 0xBD3A322BF2F02AE8, 0x3FCE27075E2B0000,
+        0x3D5F1548B8A33616, 0x3FCFB9186B5E0000, 0x3D50E36401F7A006, 0x3FD0A324E0F38000,
+        0xBD59F1FA55382A8A, 0x3FD1675CACABC000, 0xBD3A69763DEB0960, 0x3FD22941FC0F8000,
+        0x3D5D30BC3AC91BDA, 0x3FD2E8E2BEE10000, 0x3D37A79CF4D73B28, 0x3FD3A64C59694000,
+        0x3D5EC345197B22DE, 0x3FD4618BB81C4000, 0xBD3F4810A30AEBA8, 0x3FD51AAD7C2E0000,
+        0x3D4394D2371C1D1C, 0x3FD5D1BDBBD80000]
+
+/// Reciprocals rt[k][j] of the four levels of the accurate path, 16 per level, as F64 bits.
+preset CM_F64_LOG1P_RT: Array<U64, 64> = [0x3FF6A09E68000000, 0x3FF5AB07E0000000,
+        0x3FF4BFDAD8000000, 0x3FF3DEA650000000, 0x3FF306FE08000000, 0x3FF2387A70000000,
+        0x3FF172B840000000, 0x3FF0B55870000000, 0x3FF0000000000000, 0x3FEEA4AFA0000000,
+        0x3FED5818E0000000, 0x3FEC199BE0000000, 0x3FEAE89F98000000, 0x3FE9C49180000000,
+        0x3FE8ACE540000000, 0x3FE7A11470000000, 0x3FF059B0D0000000, 0x3FF04E5F70000000,
+        0x3FF04315E8000000, 0x3FF037D430000000, 0x3FF02C9A40000000, 0x3FF0216818000000,
+        0x3FF0163DA8000000, 0x3FF00B1AF8000000, 0x3FF0000000000000, 0x3FEFE9D968000000,
+        0x3FEFD3C228000000, 0x3FEFBDBA38000000, 0x3FEFA7C180000000, 0x3FEF91D800000000,
+        0x3FEF7BFDB0000000, 0x3FEF663278000000, 0x3FF0058C88000000, 0x3FF004DAD8000000,
+        0x3FF0042938000000, 0x3FF0037798000000, 0x3FF002C608000000, 0x3FF0021478000000,
+        0x3FF00162F0000000, 0x3FF000B178000000, 0x3FF0000000000000, 0x3FEFFE9D20000000,
+        0x3FEFFD3A58000000, 0x3FEFFBD798000000, 0x3FEFFA74E8000000, 0x3FEFF91248000000,
+        0x3FEFF7AFB8000000, 0x3FEFF64D38000000, 0x3FF00058B8000000, 0x3FF0004DA0000000,
+        0x3FF0004288000000, 0x3FF0003778000000, 0x3FF0002C60000000, 0x3FF0002148000000,
+        0x3FF0001630000000, 0x3FF0000B18000000, 0x3FF0000000000000, 0x3FEFFFE9D0000000,
+        0x3FEFFFD3A0000000, 0x3FEFFFBD78000000, 0x3FEFFFA748000000, 0x3FEFFF9118000000,
+        0x3FEFFF7AE8000000, 0x3FEFFF64C0000000]
+
+/// Triple-double -log(rt[k][j]) as (low, middle, high) F64 bits, 16 entries per level.
+preset CM_F64_LOG1P_LN: Array<U64, 192> = [0x3A061FA45B636EA2, 0xBD2497697CB31340,
+        0xBFD62E43033A8000, 0xBA242B671E5E6D5E, 0x3D3FC50EE605BD80, 0xBFD3687AA721C000,
+        0x3A00CC2EA968D329, 0x3D4F48666C24EAC0, 0xBFD0A2B247D58000, 0xBA2963904DB0A34E,
+        0xBD458495E50D36A0, 0xBFCBB9D3D8080000, 0x3A0337E0D9F81652, 0x3D2C89A0BEDE9780,
+        0xBFC62E42F0378000, 0xBA01BDF53871D50B, 0x3D52D67E8A0C1D70, 0xBFC0A2B24A100000,
+        0xB9D781DD6FC40530, 0x3D507A22A9E81ED8, 0xBFB62E43327C0000, 0xB9F84E4562B8F2F3,
+        0xBD4868AFE1489500, 0xBFA62E435BAE0000, 0x0000000000000000, 0x0000000000000000,
+        0x0000000000000000, 0xB9F17E3EC05CDE70, 0x3D5174A196895690, 0x3FA62E432B220000,
+        0xBA08067EC2A27738, 0x3D4111A4EADF3130, 0x3FB62E42E4A80000, 0xBA260BEF06B14405,
+        0x3D4DD4EC4E1D4210, 0x3FC0A2B233F08000, 0xBA1B18E160362C24, 0x3D26BD65E8B0B700,
+        0x3FC62E43056C0000, 0xBA2C6AC3F1862A6B, 0xBD30F5AAD509EA80, 0x3FCBB9D3CBD68000,
+        0xBA2DEAD1A4581ACF, 0xBD4AC842DE005640, 0x3FD0A2B244DA4000, 0xBA296B1F2F60E3E4,
+        0x3D59CEC9A50DB228, 0x3FD3687AA9B78000, 0x39FDBD93CDC08613, 0x3D396F39C49FA8A0,
+        0xBF962E423DD40000, 0xBA13C008F058A015, 0xBD4F26429AF65B70, 0xBF936879E5140000,
+        0x3A2F96A86136C1D1, 0xBD5BFC5AFB2BD378, 0xBF90A2B2240C0000, 0x3A23917CEA885BE0,
+        0xBD1421E0C2976380, 0xBF8BB9D4B2880000, 0x3A2F0F1B5D989675, 0x3D592A7506C90A18,
+        0xBF862E43C1200000, 0xBA2F7F8D6A190051, 0xBD594925AE0E5240, 0xBF80A2B41DD00000,
+        0x3A1CCB0919263869, 0xBD50FB337FF2CF28, 0xBF762E4106800000, 0x3A2C9A5EFE4B7C6C,
+        0xBD3966C27788D1C0, 0xBF662E3E4CC00000, 0x0000000000000000, 0x0000000000000000,
+        0x0000000000000000, 0xBA040288CCAE8F0F, 0xBD5F3C5FF88D19C8, 0x3F662E462B600000,
+        0xBA1F7E788A871350, 0xBD4A9610028771C0, 0x3F762E44C9300000, 0x3A2574CC6D3F577D,
+        0x3D52A3A1A65AA398, 0x3F80A2B1E3300000, 0xB9C56BB79B254F33, 0xBD34A995B6D9DDC0,
+        0x3F862E4367C00000, 0x3A1C4C209CA6783D, 0xBD4D7B98EF459110, 0x3F8BB9D449A80000,
+        0x3A2E9731DE7F0155, 0xBD4DE722390BBD60, 0x3F90A2B1F1940000, 0x39FFADC62522444D,
+        0xBD2FD95CB835E380, 0x3F93687AD1140000, 0xBA01F72D2A6A460E, 0x3D4A25045C37C330,
+        0xBF562E4795000000, 0x3A22847E318FD3FF, 0xBD5C633239E1CDC8, 0xBF53686E5DC00000,
+        0x3A263F5750B9D826, 0xBD5CB15590F1CD78, 0xBF50A2B653800000, 0xBA11382D6395C24C,
+        0x3D47636A5400E2B0, 0xBF4BB9BF13800000, 0x3A1BE4491EC20322, 0x3D5D0C5E2C9B6BE8,
+        0xBF462E53E5000000, 0xBA2706F04CC2C9F6, 0xBD5F3BC0CE9B9A08, 0xBF40A2AB37000000,
+        0x3A2AB6F41DF01D7F, 0x3D3A7CBC9A97BA40, 0xBF362E0A00000000, 0xB9B67E487663CA3E,
+        0xBD4957976DC5F360, 0xBF262E84FC000000, 0x0000000000000000, 0x0000000000000000,
+        0x0000000000000000, 0x3A29681E48DDE135, 0xBD4868625640A690, 0x3F262E7B00000000,
+        0x3A2A2948CD558655, 0xBD52EE3D96B696A0, 0x3F362E35F6000000, 0xB9FCFC26CCF6D0E4,
+        0x3D153EDBCF116500, 0x3F40A2B4B2000000, 0x3A2F68D24B9E338D, 0x3CC783E334613000,
+        0x3F462E4BE1000000, 0xBA0F33369BF7DFF1, 0xBD560785F20ACB20, 0x3F4BB9E085000000,
+        0xBA0685A35575EFF1, 0xBCF5A62EC6656800, 0x3F50A2B94D400000, 0xBA04C4D1ABCA79BF,
+        0x3D17DED26DC81300, 0x3F5368810F800000, 0x3A140676DEA39B19, 0x3D525337681FA900,
+        0xBF162DC284000000, 0xBA1EC76C964AC8D6, 0xBD5504032E2ED388, 0xBF1367D0EC000000,
+        0x3A08ECAEB6D9523C, 0x3D3C28FDE83047E0, 0xBF10A1DD6C000000, 0xBA2E4069214576BE,
+        0x3D558F2757976EF8, 0xBF0BBBCFF0000000, 0x3A286146D1F9B91F, 0xBD5D4717CA0A3230,
+        0xBF062FE138000000, 0x3A21EB44B07102C5, 0xBD486FFCDA252780, 0xBF00A3EEB0000000,
+        0xBA295BBB5FD5A466, 0x3D41CE399729E7B0, 0xBEF62FF0A0000000, 0xBA279059023F8767,
+        0xBD5DBF1C6A400408, 0xBEE62FF840000000, 0x0000000000000000, 0x0000000000000000,
+        0x0000000000000000, 0xBA2B4CB08D6FD48F, 0xBD5DB0E38E5AAA98, 0x3EE63007C0000000,
+        0xBA20E6A88BFC3838, 0x3D42B1C755804390, 0x3EF6300F60000000, 0x3A18074FEACFE49D,
+        0x3D5401BB919F14E0, 0x3F00A21148000000, 0xBA2F56F5F168DB15, 0xBD385D6F6487CE20,
+        0x3F062E1EC0000000, 0x3A29EAE7E05A0143, 0xBD5AF5D58A7C9218, 0x3F0BBA3010000000,
+        0xBA1A859095999AE3, 0x3D5590FAA0883BD8, 0x3F10A32298000000, 0x3A24F787E495E5E0,
+        0xBD1FBB791220A180, 0x3F13682F14000000]
+
+/// Double-double (high, low) coefficients of the accurate path near 0 (degrees 3 to 7 of log(1 + x)), as
+/// F64 bits.
+preset CM_F64_LOG1P_CZ: Array<U64, 10> = [0x3FD5555555555555, 0x3C75555555555556,
+        0xBFD0000000000000, 0x3A925558EFF3C1EF, 0x3FC999999999999A, 0xBC6999999A91D6CA,
+        0xBFC5555555555555, 0xBC6588AAB185593A, 0x3FC2492492492492, 0x3C628C490ABC528F]
+
+/// Double-double (high, low) coefficients of the accurate path after table reduction (degrees 1 to 5),
+/// as F64 bits.
+preset CM_F64_LOG1P_CY: Array<U64, 10> = [0x3FF0000000000000, 0x0000000000000000,
+        0xBFE0000000000000, 0x0000000000000000, 0x3FD5555555555555, 0x3C75555555555555,
+        0xBFD0000000000000, 0xB9480007ED9858B7, 0x3FC999999999999A, 0xBC69999999999991]
