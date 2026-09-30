@@ -12,7 +12,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ["jump", "branch", "when", "return", "unreachable"];
 
     private static readonly HashSet<string> DeclKeywords =
-        ["routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "alias"];
+        ["routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "define"];
 
     public Module ParseModule()
     {
@@ -44,7 +44,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             bool isInternal = IsIdent("internal");
             if (isPrivate || isInternal) Next();
             if (Cur.Kind != TokenKind.Ident || !DeclKeywords.Contains(Cur.Text))
-                throw Error($"expected a declaration (routine, record, choice, variant, preset, global, concept, conform, alias), found {Describe(Cur)}");
+                throw Error($"expected a declaration (routine, record, choice, variant, preset, global, concept, conform, define), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
                 "routine" => ParseRoutine(attrs, inConcept: false),
@@ -54,7 +54,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 "preset" => ParsePreset(attrs),
                 "global" => ParseGlobal(attrs),
                 "conform" => ParseConformDecl(attrs),
-                "alias" => ParseAlias(attrs),
+                "define" => ParseDefine(attrs),
                 _ => ParseConcept(attrs),
             };
             decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate, IsInternal = isInternal, Module = module });
@@ -63,15 +63,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new Module(decls);
     }
 
-    /// `alias Standard::Format as Fmt`, `alias Standard::Collections::List<S64> as Numbers`.
-    private AliasDecl ParseAlias(List<Attribute> attrs)
+    /// `define Fmt = Standard::Format`, `define Numbers = Standard::Collections::List<S64>`.
+    private AliasDecl ParseDefine(List<Attribute> attrs)
     {
         var pos = Next().Pos;
-        var target = ParseType();
-        ExpectIdent("as");
-        var name = Expect(TokenKind.Ident, "the alias's name");
+        var name = Expect(TokenKind.Ident, "the defined name");
         if (!char.IsAsciiLetterUpper(name.Text[0]))
-            throw new CompileError(name.Pos, $"an alias names a module or a type, so it's PascalCase: '{name.Text}'");
+            throw new CompileError(name.Pos, $"define names a module or a type, so the name is PascalCase: '{name.Text}'");
+        Expect(TokenKind.Eq, "'='");
+        var target = ParseType();
         ExpectLineEnd();
         return new AliasDecl(file, attrs, target, name.Text, pos);
     }

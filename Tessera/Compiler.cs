@@ -102,20 +102,20 @@ public sealed partial class Compiler
         CheckAliases();
     }
 
-    /// An alias names a module or a type that exists, and it takes a name no type in its module has.
+    /// A `define` names a module or a type that exists, and it takes a name no type in its module has.
     private void CheckAliases()
     {
-        RejectDuplicates(_aliases.Values, d => $"alias '{d.Name}'", (a, b) => a.Module == b.Module);
+        RejectDuplicates(_aliases.Values, d => $"define '{d.Name}'", (a, b) => a.Module == b.Module);
         foreach (var a in _aliases.Values.SelectMany(g => g))
         {
             if (IsModuleAlias(a)) continue;
             if (TypeDeclQuiet(a.Target.Name, a.File, a.Target.Path) is null)
-                throw new CompileError(a.Target.Pos, $"alias '{a.Name}' names '{a.Target}', which is neither a module nor a type");
+                throw new CompileError(a.Target.Pos, $"define {a.Name} = {a.Target}: that's neither a module nor a type");
             var clash = (_records.GetValueOrDefault(a.Name) ?? []).Cast<Decl>()
                 .Concat(_variants.GetValueOrDefault(a.Name) ?? []).Concat(_choices.GetValueOrDefault(a.Name) ?? [])
                 .FirstOrDefault(d => d.Module == a.Module && !(d.IsPrivate && d.File != a.File));
             if (clash is not null)
-                throw new CompileError(a.Pos, $"alias '{a.Name}' is already declared as a type at {clash.Pos}");
+                throw new CompileError(a.Pos, $"define '{a.Name}' is already declared as a type at {clash.Pos}");
         }
     }
 
@@ -123,8 +123,8 @@ public sealed partial class Compiler
 
     private bool IsModuleAlias(AliasDecl a) => a.Target.Args.Count == 0 && _modules.Contains(FullPath(a.Target));
 
-    /// A module path with a leading module alias replaced: `Fmt::write_str` is `Standard::Format::write_str` after
-    /// `alias Standard::Format as Fmt`.
+    /// A module path with a leading defined module name replaced: `Fmt::write_str` is `Standard::Format::write_str`
+    /// after `define Fmt = Standard::Format`.
     private string? ExpandPath(string? path, string file)
     {
         if (path is null) return null;
@@ -134,7 +134,7 @@ public sealed partial class Compiler
         if (aliases is not { Count: > 0 }) return path;
         var nearest = Nearest(aliases, file);
         if (nearest.Count > 1)
-            throw new CompileError(nearest[1].Pos, $"alias '{head}' is ambiguous: defined at {string.Join(", ", nearest.Select(a => a.Pos))}");
+            throw new CompileError(nearest[1].Pos, $"'{head}' is ambiguous: defined at {string.Join(", ", nearest.Select(a => a.Pos))}");
         string target = FullPath(nearest[0].Target);
         return cut < 0 ? target : target + path[cut..];
     }
@@ -162,7 +162,7 @@ public sealed partial class Compiler
         if (a.Target.Args.Count > 0)
         {
             if (use.Args.Count > 0)
-                throw new CompileError(use.Pos, $"alias '{a.Name}' already has its generic arguments: it's {a.Target}");
+                throw new CompileError(use.Pos, $"{a.Name} already has its generic arguments: define {a.Name} = {a.Target}");
             return ResolveTypeInner(a.Target, new TypeEnv(a.File));
         }
         var d = TypeDeclQuiet(a.Target.Name, a.File, a.Target.Path)!;
