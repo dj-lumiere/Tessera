@@ -7,13 +7,16 @@ static class Cli
 {
     private const string Usage = """
         usage:
+          tessera build                 build the solution its config.toml describes (here or above)
+          tessera run                   build it and run it
           tessera build <file.tess>... [-o <out>] [--emit-llvm] [--target <arch-os-abi>] [-O]
           tessera run   <file.tess>... [--target <arch-os-abi>] [-O]
           tessera test  <dir>...
           tessera check [--target <arch-os-abi>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
 
-        All input files form one compilation unit.
+        All input files form one compilation unit. Without files, build and run read config.toml, which sets
+        everything the flags would; its output goes to build/ next to it.
         test: every <name>.tess in each <dir>, and every subdirectory <name>/ (its files compiled together), is
               built and run. Its stdout must equal <name>.expected (if present), and its exit code must equal
               the number in <name>.exit (default 0). If <name>.error exists, the build must fail with a message
@@ -46,6 +49,11 @@ static class Cli
             return 1;
         }
         catch (ToolError e)
+        {
+            Console.Error.WriteLine($"error: {e.Message}");
+            return 1;
+        }
+        catch (ManifestError e)
         {
             Console.Error.WriteLine($"error: {e.Message}");
             return 1;
@@ -182,15 +190,18 @@ static class Cli
             if (!File.Exists(f)) throw new ToolError($"no such file: {f}");
             decls.AddRange(ParseFile(f, isLibrary: false));
         }
+        // Stdlib files are named from the stdlib directory (stdlib/collection/List.tess) wherever the build runs, so
+        // the file tags in private symbols don't depend on the working directory.
         foreach (var f in Directory.GetFiles(StdlibDir(), "*.tess", SearchOption.AllDirectories).Order())
             if (!inputs.Contains(Path.GetFullPath(f)))
-                decls.AddRange(ParseFile(f, isLibrary: true));
+                decls.AddRange(ParseFile(f, isLibrary: true,
+                    Path.Combine("stdlib", Path.GetRelativePath(StdlibDir(), f))));
         return decls;
     }
 
-    private static List<Decl> ParseFile(string path, bool isLibrary)
+    private static List<Decl> ParseFile(string path, bool isLibrary, string? shownAs = null)
     {
-        string shown = ShownPath(path);
+        string shown = shownAs ?? ShownPath(path);
         var tokens = new Lexer(shown, File.ReadAllText(path)).Lex();
         return new Parser(tokens, shown, isLibrary).ParseModule().Decls;
     }
@@ -218,8 +229,33 @@ static class Cli
         throw new ToolError("cannot find the standard library; set TESSERA_STDLIB to the stdlib directory");
     }
 
+    /// The solution's manifest, for `build` / `run` given no files. A manifest build takes no flags.
+    private static Manifest? ManifestFor(string[] args)
+    {
+        if (args.Any(a => !a.StartsWith('-'))) return null;
+        string path = Manifest.Find(Directory.GetCurrentDirectory())
+                      ?? throw new ToolError($"no input files, and no {Manifest.FileName} here or above");
+        if (args.Length > 0)
+            throw new ToolError($"a build from {Manifest.FileName} takes no flags ({string.Join(" ", args)}); set them in {path}");
+        return Manifest.Load(path);
+    }
+
+    private static string BuildManifest(Manifest m)
+    {
+        string ir = Compile(m.Sources, m.Target);
+        Directory.CreateDirectory(m.OutputDirectory);
+        if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
+        Link(ir, m.ExecutablePath, m.Target, m.Optimize, m.LinkArguments());
+        return m.ExecutablePath;
+    }
+
     private static int Build(string[] args)
     {
+        if (ManifestFor(args) is { } manifest)
+        {
+            Console.WriteLine(ShownPath(BuildManifest(manifest)));
+            return 0;
+        }
         var o = ParseOptions(args);
         string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm);
         string stem = Path.ChangeExtension(o.Inputs[0], null);
@@ -238,6 +274,12 @@ static class Cli
 
     private static int Run(string[] args)
     {
+        if (ManifestFor(args) is { } manifest)
+        {
+            if (manifest.Target.LlvmTriple != BuildTarget.Host().LlvmTriple)
+                throw new ToolError($"{manifest.Path} builds for {manifest.Target.LlvmTriple}, which this machine can't run; use tessera build");
+            return Exec(BuildManifest(manifest), captureOutput: false).Code;
+        }
         var o = ParseOptions(args);
         string exe = TempExe();
         try
@@ -261,7 +303,7 @@ static class Cli
     }
 
     /// Hands the IR to clang, which runs the LLVM backend and the platform linker.
-    private static void Link(string ir, string exe, BuildTarget target, bool optimize)
+    private static void Link(string ir, string exe, BuildTarget target, bool optimize, IEnumerable<string>? extra = null)
     {
         string ll = Path.ChangeExtension(TempExe(), ".ll");
         File.WriteAllText(ll, ir);
@@ -280,6 +322,7 @@ static class Cli
             if (target.Os == "windows" && BuiltinsLibrary() is { } builtins) psi.ArgumentList.Add(builtins);
             // lld-link reports in English whatever the system locale, and links faster than link.exe.
             if (target.Os == "windows") psi.ArgumentList.Add("-fuse-ld=lld");
+            foreach (var a in extra ?? []) psi.ArgumentList.Add(a);
 
             Process p;
             try { p = Process.Start(psi)!; }
@@ -350,12 +393,15 @@ static class Cli
         if (args.Length == 0) throw new ToolError("test takes one or more directories");
         // A test is one file, or a subdirectory whose .tess files are compiled together (several modules); its
         // .expected / .exit / .error files sit next to it either way.
+        // A subdirectory with a config.toml builds through it.
         var tests = new List<(string Stem, string[] Sources)>();
         foreach (var dir in args)
         {
             var found = Directory.GetFiles(dir, "*.tess").Select(f => (Path.ChangeExtension(f, null), new[] { f }))
                 .Concat(Directory.GetDirectories(dir)
-                    .Select(d => (d, Directory.GetFiles(d, "*.tess", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()))
+                    .Select(d => (d, File.Exists(Path.Combine(d, Manifest.FileName))
+                        ? [Path.Combine(d, Manifest.FileName)]
+                        : Directory.GetFiles(d, "*.tess", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()))
                     .Where(t => t.Item2.Length > 0))
                 .OrderBy(t => t.Item1, StringComparer.Ordinal).ToList();
             if (found.Count == 0) throw new ToolError($"no .tess files in {dir}");
@@ -404,10 +450,21 @@ static class Cli
     {
         string? expectedError = File.Exists(stem + ".error") ? File.ReadAllText(stem + ".error").Trim() : null;
 
+        Manifest? manifest = null;
         string ir;
         try
         {
+            if (sources is [var only] && Path.GetFileName(only) == Manifest.FileName)
+            {
+                manifest = Manifest.Load(only);
+                (sources, target) = ([.. manifest.Sources], manifest.Target);
+            }
             ir = Compile(sources, target);
+        }
+        catch (ManifestError e)
+        {
+            if (expectedError is null) return $"manifest error: {e.Message}";
+            return e.Message.Contains(expectedError) ? null : $"expected an error containing \"{expectedError}\", got: {e.Message}";
         }
         catch (CompileError e)
         {
@@ -419,7 +476,7 @@ static class Cli
         string exe = TempExe();
         try
         {
-            try { Link(ir, exe, target, optimize: false); }
+            try { Link(ir, exe, target, manifest?.Optimize ?? false, manifest?.LinkArguments()); }
             catch (ToolError e) { return e.Message; }
 
             var (code, stdout, stderr) = Exec(exe, captureOutput: true);

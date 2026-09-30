@@ -13,6 +13,7 @@ dotnet run --project Tessera -- run -O file.tess       # the same at -O2
 dotnet run --project Tessera -- check file.tess        # type-check only
 dotnet run --project Tessera -- test tests playground examples  # golden tests
 dotnet run --project Tessera -- fmt <files or dirs>        # format in place (--check to only list)
+dotnet run --project Tessera -- build                      # build the solution in config.toml (here or above) into build/
 ```
 
 A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines. Name lookup follows
