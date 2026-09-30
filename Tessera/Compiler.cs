@@ -69,7 +69,8 @@ public sealed partial class Compiler
                     else if (IsBlanketOwner(r)) Add(_blanket, r.Name, r);
                     else Add(_methods, (r.Owner.Name, r.Name), r);
                     _allRoutines.Add(r);
-                    if (!r.IsLibrary) _userRoutines.Add(r);
+                    // A routine derived without being asked for is checked when used, like a library routine.
+                    if (!r.IsLibrary && !Tessera.Derive.IsImplicit(r)) _userRoutines.Add(r);
                     break;
             }
         }

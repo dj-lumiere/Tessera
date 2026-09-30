@@ -285,6 +285,11 @@ public sealed partial class Compiler
                 var env = new TypeEnv(conf.Source.File);
                 var decl = FindConcept(conf.Concept, conf.Source.File);
                 var args = ConceptArgs(conf.Concept, env);
+                // A conformance conditional on concrete types (`Equal<Shape> when Equal<Circle>`) just doesn't hold
+                // when its condition fails; only one that holds is checked.
+                if (conf.When.Any(w => Conforms(FindConcept(w, conf.Source.File), ConceptArgs(w, env), conf.Source.File,
+                        conf.Source.Pos) is not null))
+                    continue;
                 if (Conforms(decl, args, conf.Source.File, conf.Source.Pos) is { } why)
                     throw new CompileError(conf.Source.Pos, $"{Show(decl.Name, args)} doesn't hold: {why}");
             }

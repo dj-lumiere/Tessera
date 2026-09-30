@@ -5,6 +5,12 @@ namespace Tessera;
 /// `@derive(Represent, Diagnose, Equal, Hash, Compare)` on a record, choice, or variant: the compiler declares the
 /// conformance and writes the routine. Each routine is generated as Tessera source, parsed in the type's file (so it sees private
 /// fields), and checked like any other routine.
+///
+/// A choice or variant without `@derive` derives all five, except what it declares itself (a routine of the name, or a
+/// `conform`). Those conformances hold only when the payloads have them (`Compare<Shape> when Compare<Circle>`), and
+/// their routines are checked only when something uses them, as library routines are. `@derive()` derives nothing.
+/// Generated code names Standard::Format by its path, and finds its fields' and payloads' methods whatever module
+/// declares them, so it needs no import.
 public static class Derive
 {
     private static readonly Dictionary<string, string> Methods = new()
@@ -19,13 +25,25 @@ public static class Derive
             .Where(r => r.Owner is not null)
             .Select(r => (r.Owner!.Name, r.Name))
             .ToHashSet();
+        // Conformances declared by a top-level `conform Equal<Color>`, by concept and type name.
+        var conformed = decls.OfType<ConformDecl>()
+            .SelectMany(c => c.Clauses.SelectMany(cl => cl.Concepts))
+            .Where(c => c.Args is [TypeArgType])
+            .Select(c => (c.Name, ((TypeArgType)c.Args[0]).Type.Name))
+            .ToHashSet();
         var derived = new List<Decl>();
         foreach (var type in decls.Where(d => d is RecordDecl or ChoiceDecl or VariantDecl))
         {
-            foreach (var attr in type.Attributes.Where(a => a.Name == "derive"))
+            var attrs = type.Attributes.Where(a => a.Name == "derive").ToList();
+            if (attrs.Count == 0 && type is ChoiceDecl or VariantDecl)
             {
-                if (attr.Args.Count == 0)
-                    throw new CompileError(attr.Pos, "@derive names the concepts to derive: @derive(Equal, Hash)");
+                foreach (var (concept, method) in Methods)
+                    if (Implicit(type, concept, method, declared, conformed))
+                        derived.AddRange(Parse(type, Source(type, concept, method, implicitly: true), implicitly: true));
+                continue;
+            }
+            foreach (var attr in attrs)
+            {
                 foreach (var arg in attr.Args)
                 {
                     string concept = arg.Value;
@@ -33,19 +51,44 @@ public static class Derive
                         throw new CompileError(attr.Pos,
                             $"@derive can't derive '{concept}'; it derives {string.Join(", ", Methods.Keys)}");
                     Check(type, concept, method, declared, attr.Pos);
-                    string source = type switch
-                    {
-                        RecordDecl r => RecordSource(r, concept, method),
-                        ChoiceDecl c => ChoiceSource(c, concept, method),
-                        VariantDecl v => VariantSource(v, concept, method),
-                        _ => "",
-                    };
-                    derived.AddRange(Parse(type, source));
+                    derived.AddRange(Parse(type, Source(type, concept, method, implicitly: false), implicitly: false));
                 }
             }
         }
         return [.. decls, .. derived];
     }
+
+    private static string Source(Decl type, string concept, string method, bool implicitly) => type switch
+    {
+        RecordDecl r => RecordSource(r, concept, method),
+        ChoiceDecl c => ChoiceSource(c, concept, method, implicitly),
+        VariantDecl v => VariantSource(v, concept, method, implicitly),
+        _ => "",
+    };
+
+    /// Whether a choice or variant without `@derive` gets this concept: not when it declares the routine or the
+    /// conformance itself, nor what can't hold (a pointer payload compares only by address, through ptr_eq; a choice
+    /// with no members has nothing to write).
+    private static bool Implicit(Decl type, string concept, string method, HashSet<(string, string)> declared,
+        HashSet<(string, string)> conformed)
+    {
+        string name = Name(type);
+        if (declared.Contains((name, method)) || conformed.Contains((concept, name))) return false;
+        var clauses = type switch { VariantDecl v => v.Clauses, ChoiceDecl => [], _ => [] };
+        if (clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept))) return false;
+        return type switch
+        {
+            ChoiceDecl c => c.Members.Count > 0 || method is not ("represent" or "diagnose"),
+            VariantDecl v => concept is not ("Equal" or "Hash" or "Compare")
+                             || v.Cases.All(c => c.Payload?.Name is not ("Ptr" or "Addr")),
+            _ => false,
+        };
+    }
+
+    /// Standard::Format's names, written with their path so generated code needs no import.
+    private const string Fmt = "Standard::Format::";
+
+    private static string Qualified(string concept) => concept is "Represent" or "Diagnose" ? Fmt + concept : concept;
 
     private static string Name(Decl d) => d switch
     {
@@ -80,18 +123,25 @@ public static class Derive
             throw new CompileError(at, $"{name} can't derive {concept}: field '{pointer.Name}' is a pointer; declare '{method}'");
     }
 
-    private static IEnumerable<Decl> Parse(Decl type, string source)
+    /// Parses generated source in the type's file. Each routine is marked `@derived` (`@derived(implicit)` when the
+    /// type didn't ask), which lets it find methods in any module and, when implicit, keeps it from being checked
+    /// until something uses it.
+    private static IEnumerable<Decl> Parse(Decl type, string source, bool implicitly)
     {
         var tokens = new Lexer(type.File, source, type.Pos.Line, type.Pos.Col).Lex();
         // The type's @target / @feature carry over, so the derived code exists exactly where the type does.
         var selection = type.Attributes.Where(a => a.Name is "target" or "feature").ToList();
+        var mark = new Attribute("derived", implicitly ? [new AttrArg(null, "implicit", false)] : [], type.Pos);
         foreach (var g in new Parser(tokens, type.File, type.IsLibrary).ParseModule().Decls)
             yield return g with
             {
-                Attributes = [.. g.Attributes, .. selection], Module = type.Module, IsLibrary = type.IsLibrary,
-                IsPrivate = type.IsPrivate,
+                Attributes = [.. g.Attributes, .. selection, .. (g is RoutineDecl ? new[] { mark } : [])],
+                Module = type.Module, IsLibrary = type.IsLibrary, IsPrivate = type.IsPrivate,
             };
     }
+
+    /// Whether a routine was derived without the type asking (a choice or variant with no `@derive`).
+    public static bool IsImplicit(Decl d) => d.Attr("derived") is { Args: [{ Value: "implicit" }] };
 
     // ── Records ─────────────────────────────────────────────────────────────
 
@@ -101,7 +151,7 @@ public static class Derive
     {
         var requires = clauses.Where(c => c.Kind == "require").ToList();
         var parameters = requires.SelectMany(c => c.Params).ToList();
-        string partConcept = concept == "Represent" ? "Diagnose" : concept;
+        string partConcept = Qualified(concept == "Represent" ? "Diagnose" : concept);
         return parameters.Select(p => $"{p.Name}: {p.Kind}")
             .Concat(requires.SelectMany(c => c.Concepts).Select(c => c.ToString()))
             .Concat(parameters.Where(p => p.Kind.Name == "typename").Select(p => $"{partConcept}<{p.Name}>"))
@@ -118,14 +168,14 @@ public static class Derive
         string self = SelfName(r.Name, r.TypeParams);
 
         var sb = new StringBuilder();
-        sb.Append($"conform {concept}<{self}>");
+        sb.Append($"conform {Qualified(concept)}<{self}>");
         if (constraints.Count > 0) sb.Append($" when {string.Join(", ", constraints)}");
         sb.Append("\n\n");
         switch (method)
         {
             case "represent" or "diagnose":
                 sb.Append($"routine {self}.{method}<W>(%self: Self, %out: Ptr<W>) -> Void\n");
-                sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append("Writer<W>"))}\n");
+                sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append(Fmt + "Writer<W>"))}\n");
                 WriteBody(sb, r);
                 break;
             case "eq":
@@ -154,17 +204,17 @@ public static class Derive
     private static void WriteBody(StringBuilder sb, RecordDecl r)
     {
         sb.Append("    block entry():\n");
-        if (r.Fields.Count == 0) sb.Append($"        write_str(%out, \"{r.Name} {{}}\")\n");
+        if (r.Fields.Count == 0) sb.Append($"        Standard::Format::write_str(%out, \"{r.Name} {{}}\")\n");
         for (int i = 0; i < r.Fields.Count; i++)
         {
             var f = r.Fields[i];
             string before = i == 0 ? $"{r.Name} {{ " : ", ";
             string value = $"%f{i}";
-            sb.Append($"        write_str(%out, \"{before}{f.Name}: \")\n");
+            sb.Append($"        Standard::Format::write_str(%out, \"{before}{f.Name}: \")\n");
             sb.Append($"        {value} : {f.Type} = %self.{f.Name}\n");
             sb.Append($"        {value}.diagnose(%out)\n");
         }
-        if (r.Fields.Count > 0) sb.Append("        write_str(%out, \" }\")\n");
+        if (r.Fields.Count > 0) sb.Append("        Standard::Format::write_str(%out, \" }\")\n");
         sb.Append("        return()\n");
     }
 
@@ -246,13 +296,20 @@ public static class Derive
 
     /// A variant writes its case and payload (`Number(5)`, or `Expr.Number(5)` to diagnose), is equal when the cases and
     /// payloads are, hashes its case with its payload, and orders by case, then by payload.
-    private static string VariantSource(VariantDecl v, string concept, string method)
+    private static string VariantSource(VariantDecl v, string concept, string method, bool implicitly)
     {
         var constraints = Constraints(v.Clauses, concept);
+        // A derive nobody asked for holds only when every payload has the concept.
+        if (implicitly)
+        {
+            string part = Qualified(concept == "Represent" ? "Diagnose" : concept);
+            constraints = constraints.Concat(v.Cases.Where(c => c.Payload is not null).Select(c => $"{part}<{c.Payload}>"))
+                .Distinct().ToList();
+        }
         string self = SelfName(v.Name, v.TypeParams);
         string Payload(VariantCase c, string name) => $"%{name}";
         var sb = new StringBuilder();
-        sb.Append($"conform {concept}<{self}>");
+        sb.Append($"conform {Qualified(concept)}<{self}>");
         if (constraints.Count > 0) sb.Append($" when {string.Join(", ", constraints)}");
         sb.Append("\n\n");
         var cases = v.Cases;
@@ -262,7 +319,7 @@ public static class Derive
             {
                 string prefix = method == "diagnose" ? $"{v.Name}." : "";
                 sb.Append($"routine {self}.{method}<W>(%self: Self, %out: Ptr<W>) -> Void\n");
-                sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append("Writer<W>"))}\n");
+                sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append(Fmt + "Writer<W>"))}\n");
                 sb.Append("    block entry():\n        when %self:\n");
                 for (int i = 0; i < cases.Count; i++)
                     sb.Append(cases[i].Payload is null
@@ -273,11 +330,11 @@ public static class Derive
                     if (cases[i].Payload is null) continue;
                     string p = Payload(cases[i], "p");
                     sb.Append($"\n    block case{i}({p}: {cases[i].Payload}):\n");
-                    sb.Append($"        write_str(%out, \"{prefix}{cases[i].Name}(\")\n");
+                    sb.Append($"        Standard::Format::write_str(%out, \"{prefix}{cases[i].Name}(\")\n");
                     sb.Append($"        {p}.diagnose(%out)\n");
-                    sb.Append("        write_str(%out, \")\")\n        return()\n");
+                    sb.Append("        Standard::Format::write_str(%out, \")\")\n        return()\n");
                 }
-                sb.Append("\n    block named(%text: String):\n        write_str(%out, %text)\n        return()\n");
+                sb.Append("\n    block named(%text: String):\n        Standard::Format::write_str(%out, %text)\n        return()\n");
                 break;
             }
             case "eq" or "compare":
@@ -345,11 +402,11 @@ public static class Derive
     // ── Choices ─────────────────────────────────────────────────────────────
 
     /// A choice writes its member (`Red`, or `Color.Red` to diagnose), and compares and hashes as its underlying integer.
-    private static string ChoiceSource(ChoiceDecl c, string concept, string method)
+    private static string ChoiceSource(ChoiceDecl c, string concept, string method, bool implicitly)
     {
         var u = c.Underlying;
         var sb = new StringBuilder();
-        sb.Append($"conform {concept}<{c.Name}>\n\n");
+        sb.Append($"conform {Qualified(concept)}<{c.Name}>\n\n");
         switch (method)
         {
             case "represent" or "diagnose":
@@ -357,13 +414,13 @@ public static class Derive
                     throw new CompileError(c.Pos, $"{c.Name} has no members to {method}");
                 string prefix = method == "diagnose" ? $"{c.Name}." : "";
                 sb.Append($"routine {c.Name}.{method}<W>(%self: Self, %out: Ptr<W>) -> Void\n");
-                sb.Append("require W: typename, Writer<W>\n");
+                sb.Append($"require W: typename, {Fmt}Writer<W>\n");
                 sb.Append("    block entry():\n");
                 sb.Append("        when %self:\n");
                 foreach (var (name, _) in c.Members)
                     sb.Append($"            {c.Name}.{name} -> named(\"{prefix}{name}\")\n");
                 sb.Append("\n    block named(%text: String):\n");
-                sb.Append("        write_str(%out, %text)\n");
+                sb.Append("        Standard::Format::write_str(%out, %text)\n");
                 sb.Append("        return()\n");
                 break;
             case "eq":

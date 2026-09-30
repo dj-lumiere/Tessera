@@ -355,6 +355,10 @@ public sealed class FunctionGen
     /// whatever module declares it: the routine's constraints on the parameter vouch for it.
     private bool FromTypeParameter(DType t) => _env.All.Any(kv => kv.Key != "Self" && kv.Value.Equals(t));
 
+    /// A derived routine calls its fields' and payloads' methods whatever module declares them: its constraints
+    /// vouch for them, and the type's file needn't import Standard::Format for its represent.
+    private bool Derived => _decl.Attr("derived") is not null;
+
     /// Emits the address of a place chain and returns it with the type stored there.
     private (string Addr, DType Type) PlaceAddress(Expr e)
     {
@@ -1156,7 +1160,7 @@ public sealed class FunctionGen
 
         foreach (var (owner, passesPointer) in candidates)
         {
-            var r = _c.FindMethod(owner, m.Name, _env.File, m.Pos, FromTypeParameter(owner));
+            var r = _c.FindMethod(owner, m.Name, _env.File, m.Pos, FromTypeParameter(owner) || Derived);
             if (r is null || r.Params.Count == 0) continue;
             var env = BindOwner(r, owner, m.Pos);
             var selfType = _c.ResolveType(r.Params[0].Type, env);
@@ -1179,7 +1183,7 @@ public sealed class FunctionGen
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
         // `#p.eq(#q)` where T.eq takes values: the load is written, not implied.
-        if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held)) is not null)
+        if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held) || Derived) is not null)
             throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; load it: .load().{m.Name}(...)");
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }
