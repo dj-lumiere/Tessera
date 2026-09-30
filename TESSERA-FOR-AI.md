@@ -164,8 +164,9 @@ routine main() -> S32
 - **Methods through a pointer.** `%p.m()` finds `T.m(%self: Ptr<Self>)` first, then `Ptr`'s own methods (`is_null`,
   `offset`, `cast`, ...). Value methods (`%self: Self`, such as every collection's `eq`) aren't reachable through a
   pointer, because that would hide a load: load first (`%a.load().eq(%b.load())`). Don't name your own pointer methods after `Ptr`'s.
-- **Most collection methods take `%self: Ptr<Self>`**, so a collection must live in memory (`claim` a slot) before you
-  call them. You can't call a pointer method on a temporary: `DictIter<K, V>.construct(%m).next()` fails with "has no
+- **Collection methods that change the collection take `%self: Ptr<Self>`**, so it must live in memory (`claim` a
+  slot) before you call them; read-only ones (`length`, `is_empty`, `get`, `contains`, ...) take `%self: Self`: call
+  them on a value, or load first (`%list.load().length()`). You can't call a pointer method on a temporary: `DictIter<K, V>.construct(%m).next()` fails with "has no
   method 'next'"; claim a slot for the iterator first.
 - Generic routines repeat their constraints: `require T: typename, Compare<T>`. Concepts: `Equal`, `Hash`,
   `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Represent`. Constraints are checked: a type satisfies a
