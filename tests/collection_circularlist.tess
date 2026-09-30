@@ -57,7 +57,7 @@ routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %circular_list: Ptr<CircularL
     block entry():
         write(%out, "phase {%phase}")
         labeled(%out, "op", %op.to_s64())
-        labeled(%out, "length", %circular_list.length().to_s64())
+        labeled(%out, "length", %circular_list.load().length().to_s64())
         labeled(%out, "results", %results)
         labeled(%out, "iteration", iteration_hash(%circular_list))
         %capacity : USize = %circular_list.capacity.load()
@@ -107,13 +107,13 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %circular_list: Ptr<CircularLi
         jump record(%op, %results, %value, %pbe, %pfe, %obe, %ofe)
 
     block pop_back(%op: USize, %results: S64, %pbe: USize, %pfe: USize, %obe: USize, %ofe: USize):
-        %empty : Bool = %circular_list.is_empty()
+        %empty : Bool = %circular_list.load().is_empty()
         branch %empty
             ? record(%op, %results, -1, %pbe, %pfe, %obe, %ofe)
             : record(%op, %results, %circular_list.pop_back(), %pbe, %pfe, %obe, %ofe)
 
     block pop_front(%op: USize, %results: S64, %pbe: USize, %pfe: USize, %obe: USize, %ofe: USize):
-        %empty : Bool = %circular_list.is_empty()
+        %empty : Bool = %circular_list.load().is_empty()
         branch %empty
             ? record(%op, %results, -1, %pbe, %pfe, %obe, %ofe)
             : pop_front_one(%op, %results, %pbe, %pfe, %obe, %ofe)
@@ -124,24 +124,24 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %circular_list: Ptr<CircularLi
         jump record(%op, %results, %value, %pbe, %pfe, %obe, %ofe)
 
     block get(%op: USize, %results: S64, %pbe: USize, %pfe: USize, %obe: USize, %ofe: USize):
-        %empty : Bool = %circular_list.is_empty()
+        %empty : Bool = %circular_list.load().is_empty()
         branch %empty
             ? record(%op, %results, -2, %pbe, %pfe, %obe, %ofe)
             : get_one(%op, %results, %pbe, %pfe, %obe, %ofe)
 
     block get_one(%op: USize, %results: S64, %pbe: USize, %pfe: USize, %obe: USize, %ofe: USize):
-        %index : USize = %rng.below(%circular_list.length())
-        %value : S64   = %circular_list.get(%index)
+        %index : USize = %rng.below(%circular_list.load().length())
+        %value : S64   = %circular_list.load().get(%index)
         jump record(%op, %results, %value, %pbe, %pfe, %obe, %ofe)
 
     block set(%op: USize, %results: S64, %pbe: USize, %pfe: USize, %obe: USize, %ofe: USize):
-        %empty : Bool = %circular_list.is_empty()
+        %empty : Bool = %circular_list.load().is_empty()
         branch %empty
             ? record(%op, %results, -3, %pbe, %pfe, %obe, %ofe)
             : set_one(%op, %results, %pbe, %pfe, %obe, %ofe)
 
     block set_one(%op: USize, %results: S64, %pbe: USize, %pfe: USize, %obe: USize, %ofe: USize):
-        %index : USize = %rng.below(%circular_list.length())
+        %index : USize = %rng.below(%circular_list.load().length())
         %value : S64   = %rng.below(1000000).to_s64()
         %circular_list.set(%index, %value)
         jump record(%op, %results, %index.to_s64(), %pbe, %pfe, %obe, %ofe)
@@ -166,7 +166,7 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %circular_list: Ptr<CircularLi
 // Copies from into to by pushing each element at the front, back to front, so to has a different start.
 routine copy_reversed_pushes(%from: Ptr<CircularList<S64>>, %to: Ptr<CircularList<S64>>) -> Void
     block entry():
-        %length : USize = %from.length()
+        %length : USize = %from.load().length()
         jump next(%length)
 
     block next(%index: USize):
@@ -174,7 +174,7 @@ routine copy_reversed_pushes(%from: Ptr<CircularList<S64>>, %to: Ptr<CircularLis
         branch %done ? return() : copy(%index.sub(1))
 
     block copy(%index: USize):
-        %to.push_front(%from.get(%index))
+        %to.push_front(%from.load().get(%index))
         jump next(%index)
 
 routine report_eq(%out: Ptr<BufWriter<FdWriter>>, %label: String, %equal: Bool) -> Void
@@ -216,7 +216,7 @@ routine main() -> S32
         report_eq(%out, "empty copy equal", %circular_list.load().eq(%copied.load()))
         copy_reversed_pushes(%circular_list, %copied)
         report_eq(%out, "copy equal", %circular_list.load().eq(%copied.load()))
-        %front : S64 = %copied.get(0)
+        %front : S64 = %copied.load().get(0)
         %copied.set(0, %front.add(1))
         report_eq(%out, "changed front equal", %circular_list.load().eq(%copied.load()))
         %copied.set(0, %front)
@@ -225,9 +225,9 @@ routine main() -> S32
         %copied.pop_front()
         report_eq(%out, "restored equal", %circular_list.load().eq(%copied.load()))
         %copied.clear()
-        report_eq(%out, "cleared is empty", %copied.is_empty())
+        report_eq(%out, "cleared is empty", %copied.load().is_empty())
         %copied.destruct()
         %circular_list.destruct()
-        report_eq(%out, "freed is empty", %circular_list.is_empty())
+        report_eq(%out, "freed is empty", %circular_list.load().is_empty())
         %out.flush()
         return(0)

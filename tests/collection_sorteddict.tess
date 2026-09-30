@@ -52,14 +52,14 @@ routine iteration_hash(%map: Ptr<SortedDict<S64, S64>>) -> S64
 
 routine rank_hash_at(%map: Ptr<SortedDict<S64, S64>>, %hash: S64, %rank: USize) -> S64
     block entry():
-        %key   : S64 = %map.get_by_rank(%rank).key
-        %value : S64 = %map.get_by_rank(%rank).value
+        %key   : S64 = %map.load().get_by_rank(%rank).key
+        %value : S64 = %map.load().get_by_rank(%rank).value
         return(mix(mix(%hash, %key), %value))
 
 // Folds get_by_rank at the first, middle, and last rank; 0 for an empty map.
 routine rank_hash(%map: Ptr<SortedDict<S64, S64>>) -> S64
     block entry():
-        %length : USize = %map.length()
+        %length : USize = %map.load().length()
         %empty  : Bool  = %length.eq(0)
         branch %empty ? return(0) : ranks(%length)
 
@@ -74,7 +74,7 @@ routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<SortedDict<S64, S64
     block entry():
         write(%out, "phase {%phase}")
         labeled(%out, "op", %op.to_s64())
-        labeled(%out, "length", %map.length().to_s64())
+        labeled(%out, "length", %map.load().length().to_s64())
         labeled(%out, "results", %results)
         labeled(%out, "iteration", iteration_hash(%map))
         labeled(%out, "ranks", rank_hash(%map))
@@ -116,22 +116,22 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<SortedDict<S64, S64>
         jump record(%op, %results, %removed.to_s64())
 
     block remove_ranked(%op: USize, %results: S64):
-        %length : USize = %map.length()
+        %length : USize = %map.load().length()
         %empty  : Bool  = %length.eq(0)
         branch %empty ? record(%op, %results, -2) : remove_at(%op, %results, %length)
 
     block remove_at(%op: USize, %results: S64, %length: USize):
         %rank    : USize = %rng.below(%length)
-        %key     : S64   = %map.get_by_rank(%rank).key
+        %key     : S64   = %map.load().get_by_rank(%rank).key
         %removed : Bool  = %map.remove(%key)
         jump record(%op, %results, mix(%key, %removed.to_s64()))
 
     block lookup(%op: USize, %results: S64, %key: S64):
-        %found : Bool = %map.contains(%key)
+        %found : Bool = %map.load().contains(%key)
         branch %found ? get(%op, %results, %key) : record(%op, %results, -1)
 
     block get(%op: USize, %results: S64, %key: S64):
-        %value : S64 = %map.get(%key)
+        %value : S64 = %map.load().get(%key)
         jump record(%op, %results, %value)
 
     block record(%op: USize, %results: S64, %result: S64):
@@ -147,14 +147,14 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<SortedDict<S64, S64>
 // Copies from into to from the largest key down, so the two trees are built by a different insertion order.
 routine copy_reversed(%from: Ptr<SortedDict<S64, S64>>, %to: Ptr<SortedDict<S64, S64>>) -> Void
     block entry():
-        jump next(%from.length())
+        jump next(%from.load().length())
 
     block next(%rank_end: USize):
         %done : Bool = %rank_end.eq(0)
         branch %done ? return() : copy(%rank_end.sub(1))
 
     block copy(%rank: USize):
-        %to.put(%from.get_by_rank(%rank).key, %from.get_by_rank(%rank).value)
+        %to.put(%from.load().get_by_rank(%rank).key, %from.load().get_by_rank(%rank).value)
         jump next(%rank)
 
 routine report_eq(%out: Ptr<BufWriter<FdWriter>>, %label: String, %equal: Bool) -> Void
@@ -194,13 +194,13 @@ routine main() -> S32
         report_eq(%out, "extra key equal", %map.load().eq(%copied.load()))
         %copied.remove(-1)
         report_eq(%out, "extra key removed equal", %map.load().eq(%copied.load()))
-        %key : S64 = %map.get_by_rank(0).key
-        %copied.put(%key, %map.get(%key).add(1))
+        %key : S64 = %map.load().get_by_rank(0).key
+        %copied.put(%key, %map.load().get(%key).add(1))
         report_eq(%out, "changed value equal", %map.load().eq(%copied.load()))
         %copied.destruct()
 
         %r3 : S64 = run_phase(%out, %map, %rng, 3, 14000, 20000, 1, 3, 8, %r2)
         %map.destruct()
-        report_eq(%out, "freed is empty", %map.is_empty())
+        report_eq(%out, "freed is empty", %map.load().is_empty())
         %out.flush()
         return(0)

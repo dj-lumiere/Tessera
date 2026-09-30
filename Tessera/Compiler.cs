@@ -263,7 +263,8 @@ public sealed partial class Compiler
     public List<CompileError> CheckAll()
     {
         var errors = new List<CompileError>();
-        foreach (var r in _allRoutines)
+        // A routine derived without being asked for holds only when its payloads allow it, so it's checked when used.
+        foreach (var r in _allRoutines.Where(r => !Tessera.Derive.IsImplicit(r)))
         {
             try
             {

@@ -48,15 +48,15 @@ routine iteration_hash(%set: Ptr<SortedSet<S64>>) -> S64
 // Folds the elements at ranks 0, length / 3, length / 2, and length - 1 (0 for an empty set).
 routine rank_hash(%set: Ptr<SortedSet<S64>>) -> S64
     block entry():
-        %length : USize = %set.length()
+        %length : USize = %set.load().length()
         %empty  : Bool  = %length.eq(0)
         branch %empty ? return(0) : fold(%length)
 
     block fold(%length: USize):
-        %first : S64 = %set.get_by_rank(0)
-        %third : S64 = %set.get_by_rank(%length.div(3))
-        %half  : S64 = %set.get_by_rank(%length.div(2))
-        %last  : S64 = %set.get_by_rank(%length.sub(1))
+        %first : S64 = %set.load().get_by_rank(0)
+        %third : S64 = %set.load().get_by_rank(%length.div(3))
+        %half  : S64 = %set.load().get_by_rank(%length.div(2))
+        %last  : S64 = %set.load().get_by_rank(%length.sub(1))
         %hash  : S64 = mix(mix(mix(mix(0, %first), %third), %half), %last)
         return(%hash)
 
@@ -65,7 +65,7 @@ routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %set: Ptr<SortedSet<S64>>, %p
     block entry():
         write(%out, "phase {%phase}")
         labeled(%out, "op", %op.to_s64())
-        labeled(%out, "length", %set.length().to_s64())
+        labeled(%out, "length", %set.load().length().to_s64())
         labeled(%out, "results", %results)
         labeled(%out, "ranks", rank_hash(%set))
         labeled(%out, "iteration", iteration_hash(%set))
@@ -100,13 +100,13 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %set: Ptr<SortedSet<S64>>, %rn
         jump record(%op, %results, %added.to_s64())
 
     block remove(%op: USize, %results: S64, %key: S64):
-        %nonempty    : Bool = %set.is_empty().bitnot()
+        %nonempty    : Bool = %set.load().is_empty().bitnot()
         %rank_remove : Bool = %by_rank.bitand(%nonempty)
         branch %rank_remove ? remove_rank(%op, %results) : remove_key(%op, %results, %key)
 
     block remove_rank(%op: USize, %results: S64):
-        %rank : USize = %rng.below(%set.length())
-        %key  : S64   = %set.get_by_rank(%rank)
+        %rank : USize = %rng.below(%set.load().length())
+        %key  : S64   = %set.load().get_by_rank(%rank)
         jump remove_key(%op, %results, %key)
 
     block remove_key(%op: USize, %results: S64, %key: S64):
@@ -114,7 +114,7 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %set: Ptr<SortedSet<S64>>, %rn
         jump record(%op, %results, mix(%key, %removed.to_s64()))
 
     block lookup(%op: USize, %results: S64, %key: S64):
-        %found : Bool = %set.contains(%key)
+        %found : Bool = %set.load().contains(%key)
         jump record(%op, %results, %found.to_s64())
 
     block record(%op: USize, %results: S64, %result: S64):
@@ -130,7 +130,7 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %set: Ptr<SortedSet<S64>>, %rn
 // Adds from's elements to to by rank, starting from the middle, so to is built in a different order.
 routine copy_rotated(%from: Ptr<SortedSet<S64>>, %to: Ptr<SortedSet<S64>>) -> Void
     block entry():
-        %length : USize = %from.length()
+        %length : USize = %from.load().length()
         %half   : USize = %length.div(2)
         jump next(0, %length, %half)
 
@@ -140,7 +140,7 @@ routine copy_rotated(%from: Ptr<SortedSet<S64>>, %to: Ptr<SortedSet<S64>>) -> Vo
 
     block copy(%i: USize, %length: USize, %half: USize):
         %rank : USize = %i.add(%half).rem(%length)
-        %to.add(%from.get_by_rank(%rank))
+        %to.add(%from.load().get_by_rank(%rank))
         jump next(%i.add(1), %length, %half)
 
 routine report_eq(%out: Ptr<BufWriter<FdWriter>>, %label: String, %equal: Bool) -> Void
@@ -180,12 +180,12 @@ routine main() -> S32
         report_eq(%out, "extra element equal", %set.load().eq(%copied.load()))
         %copied.remove(-1)
         report_eq(%out, "extra element removed equal", %set.load().eq(%copied.load()))
-        %last : S64 = %set.get_by_rank(%set.length().sub(1))
+        %last : S64 = %set.load().get_by_rank(%set.load().length().sub(1))
         %copied.remove(%last)
         %copied.add(%last.add(1))
         report_eq(%out, "changed element equal", %set.load().eq(%copied.load()))
         %copied.destruct()
         %set.destruct()
-        report_eq(%out, "freed is empty", %set.is_empty())
+        report_eq(%out, "freed is empty", %set.load().is_empty())
         %out.flush()
         return(0)

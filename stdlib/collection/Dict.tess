@@ -44,32 +44,32 @@ require K: typename, V: typename, HashEqual<K>
                 slots: null, length: 0, entries_count: 0, capacity: 0, alloc: %alloc }
         return(%map)
 
-routine Dict<K, V>.length(%self: Ptr<Self>) -> USize
+routine Dict<K, V>.length(%self: Self) -> USize
 require K: typename, V: typename
     block entry():
-        %length : USize = %self.length.load()
+        %length : USize = %self.length
         return(%length)
 
-routine Dict<K, V>.is_empty(%self: Ptr<Self>) -> Bool
+routine Dict<K, V>.is_empty(%self: Self) -> Bool
 require K: typename, V: typename
     block entry():
-        %length : USize = %self.length.load()
+        %length : USize = %self.length
         %empty  : Bool  = %length.eq(0)
         return(%empty)
 
 /// Probe the slot table for %key. Returns the slot index at which the key was
 /// found, or the slot at which a new entry should be installed (preferring the
 /// first tombstone seen, else the first empty slot).
-routine Dict<K, V>.slot(%self: Ptr<Self>, %key: K, %hash: U64) -> USize
+routine Dict<K, V>.slot(%self: Self, %key: K, %hash: U64) -> USize
 require K: typename, V: typename
     block entry():
-        %capacity : USize = %self.capacity.load()
+        %capacity : USize = %self.capacity
         %mask     : USize = %capacity.sub(1)
         %start    : USize = %hash.to_usize_wrap().bitand(%mask)
         jump probe(%start, SLOT_EMPTY)
 
     block probe(%index: USize, %first_tombstone: USize):
-        %slots        : Ptr<USize> = %self.slots.load()
+        %slots        : Ptr<USize> = %self.slots
         %entry_idx    : USize      = %slots[%index].load()
         %is_empty     : Bool       = %entry_idx.eq(SLOT_EMPTY)
         %is_tombstone : Bool       = %entry_idx.eq(SLOT_TOMBSTONE)
@@ -86,12 +86,12 @@ require K: typename, V: typename
     block tombstone_slot(%index: USize, %first_tombstone: USize):
         %seen           : Bool  = %first_tombstone.ne(SLOT_EMPTY)
         %next_tombstone : USize = %seen ? %first_tombstone : %index
-        %capacity       : USize = %self.capacity.load()
+        %capacity       : USize = %self.capacity
         %next           : USize = %index.add(1).bitand(%capacity.sub(1))
         jump probe(%next, %next_tombstone)
 
     block occupied_slot(%index: USize, %first_tombstone: USize, %entry_idx: USize):
-        %hashes     : Ptr<U64> = %self.hashes.load()
+        %hashes     : Ptr<U64> = %self.hashes
         %entry_hash : U64      = %hashes[%entry_idx].load()
         %hash_match : Bool     = %entry_hash.eq(%hash)
         branch %hash_match
@@ -99,33 +99,33 @@ require K: typename, V: typename
             : next(%index, %first_tombstone)
 
     block maybe_equal(%index: USize, %first_tombstone: USize, %entry_idx: USize):
-        %keys      : Ptr<K> = %self.keys.load()
+        %keys      : Ptr<K> = %self.keys
         %entry_key : K      = %keys[%entry_idx].load()
         %equal     : Bool   = %entry_key.eq(%key)
         branch %equal ? return(%index): next(%index, %first_tombstone)
 
     block next(%index: USize, %first_tombstone: USize):
-        %capacity : USize = %self.capacity.load()
+        %capacity : USize = %self.capacity
         %next     : USize = %index.add(1).bitand(%capacity.sub(1))
         jump probe(%next, %first_tombstone)
 
 /// Returns the entry index for %key, or SLOT_EMPTY if absent.
-routine Dict<K, V>.find(%self: Ptr<Self>, %key: K) -> USize
+routine Dict<K, V>.find(%self: Self, %key: K) -> USize
 require K: typename, V: typename
     block entry():
-        %capacity : USize = %self.capacity.load()
+        %capacity : USize = %self.capacity
         %empty    : Bool  = %capacity.eq(0)
         branch %empty ? return(SLOT_EMPTY): hash()
 
     block hash():
         %hash      : U64        = K.hash(%key)
         %slot      : USize      = %self.slot(%key, %hash)
-        %slots     : Ptr<USize> = %self.slots.load()
+        %slots     : Ptr<USize> = %self.slots
         %entry_idx : USize      = %slots[%slot].load()
         %found     : Bool       = %entry_idx.lt(SLOT_TOMBSTONE)
         branch %found ? return(%entry_idx) : return(SLOT_EMPTY)
 
-routine Dict<K, V>.contains(%self: Ptr<Self>, %key: K) -> Bool
+routine Dict<K, V>.contains(%self: Self, %key: K) -> Bool
 require K: typename, V: typename
     block entry():
         %found : Bool = %self.find(%key).ne(SLOT_EMPTY)
@@ -170,7 +170,7 @@ require K: typename, V: typename, HashEqual<K>, Equal<V>
     block probe(%i: USize, %n: USize):
         %keys  : Ptr<K> = %self.keys.load()
         %key   : K      = %keys[%i].load()
-        %eb    : USize  = %other.find(%key)
+        %eb    : USize  = %other.load().find(%key)
         %found : Bool   = %eb.lt(SLOT_TOMBSTONE)
         branch %found ? compare_value(%i, %n, %eb) : return(false)
 
@@ -336,7 +336,7 @@ require K: typename, V: typename
 routine Dict<K, V>.put_direct(%self: Ptr<Self>, %key: K, %value: V, %hash: U64) -> Void
 require K: typename, V: typename
     block entry():
-        %slot      : USize      = %self.slot(%key, %hash)
+        %slot      : USize      = %self.load().slot(%key, %hash)
         %slots     : Ptr<USize> = %self.slots.load()
         %entry_idx : USize      = %slots[%slot].load()
         %occupied  : Bool       = %entry_idx.lt(SLOT_TOMBSTONE)
@@ -380,7 +380,7 @@ require K: typename, V: typename
         %self.put_direct(%key, %value, K.hash(%key))
         return(.Success(Unit.value()))
 
-routine Dict<K, V>.get(%self: Ptr<Self>, %key: K) -> V
+routine Dict<K, V>.get(%self: Self, %key: K) -> V
 require K: typename, V: typename
     block entry():
         %entry_idx : USize = %self.find(%key)
@@ -388,7 +388,7 @@ require K: typename, V: typename
         branch %found ? load(%entry_idx) : panic(TrapCode.MissingKey)
 
     block load(%entry_idx: USize):
-        %values : Ptr<V> = %self.values.load()
+        %values : Ptr<V> = %self.values
         %value  : V      = %values[%entry_idx].load()
         return(%value)
 
@@ -396,7 +396,7 @@ require K: typename, V: typename
 /// dead and stamp the slot table with a tombstone. The entry's position is
 /// retained until the next rehash, so surviving entries keep their order.
 /// `get`, returning Absent instead of trapping on a missing key.
-routine Dict<K, V>.get_checked(%self: Ptr<Self>, %key: K) -> Option<V>
+routine Dict<K, V>.get_checked(%self: Self, %key: K) -> Option<V>
 require K: typename, V: typename
     block entry():
         %entry_idx : USize = %self.find(%key)
@@ -404,7 +404,7 @@ require K: typename, V: typename
         branch %found ? load(%entry_idx) : return(.Absent)
 
     block load(%entry_idx: USize):
-        %values : Ptr<V> = %self.values.load()
+        %values : Ptr<V> = %self.values
         %value  : V      = %values[%entry_idx].load()
         return(.Present(%value))
 
@@ -417,7 +417,7 @@ require K: typename, V: typename
 
     block hash():
         %hash      : U64        = K.hash(%key)
-        %slot      : USize      = %self.slot(%key, %hash)
+        %slot      : USize      = %self.load().slot(%key, %hash)
         %slots     : Ptr<USize> = %self.slots.load()
         %entry_idx : USize      = %slots[%slot].load()
         %found     : Bool       = %entry_idx.lt(SLOT_TOMBSTONE)

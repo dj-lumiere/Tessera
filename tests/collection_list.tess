@@ -49,7 +49,7 @@ routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %list: Ptr<List<S64>>, %phase
     block entry():
         write(%out, "phase {%phase}")
         labeled(%out, "op", %op.to_s64())
-        labeled(%out, "length", %list.length().to_s64())
+        labeled(%out, "length", %list.load().length().to_s64())
         labeled(%out, "results", %results)
         labeled(%out, "iteration", iteration_hash(%list))
         write(%out, "\n")
@@ -88,7 +88,7 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %list: Ptr<List<S64>>, %rng: P
         jump record(%op, %results, %value)
 
     block pop(%op: USize, %results: S64):
-        %empty : Bool = %list.is_empty()
+        %empty : Bool = %list.load().is_empty()
         branch %empty ? record(%op, %results, -1) : pop_one(%op, %results)
 
     block pop_one(%op: USize, %results: S64):
@@ -96,20 +96,20 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %list: Ptr<List<S64>>, %rng: P
         jump record(%op, %results, %value)
 
     block get(%op: USize, %results: S64):
-        %empty : Bool = %list.is_empty()
+        %empty : Bool = %list.load().is_empty()
         branch %empty ? record(%op, %results, -2) : get_one(%op, %results)
 
     block get_one(%op: USize, %results: S64):
-        %index : USize = %rng.below(%list.length())
-        %value : S64   = %list.get(%index)
+        %index : USize = %rng.below(%list.load().length())
+        %value : S64   = %list.load().get(%index)
         jump record(%op, %results, %value)
 
     block set(%op: USize, %results: S64):
-        %empty : Bool = %list.is_empty()
+        %empty : Bool = %list.load().is_empty()
         branch %empty ? record(%op, %results, -3) : set_one(%op, %results)
 
     block set_one(%op: USize, %results: S64):
-        %index : USize = %rng.below(%list.length())
+        %index : USize = %rng.below(%list.load().length())
         %value : S64   = %rng.below(1000000).to_s64()
         %list.set(%index, %value)
         jump record(%op, %results, %index.to_s64())
@@ -120,7 +120,7 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %list: Ptr<List<S64>>, %rng: P
 
     block reserve(%op: USize, %results: S64):
         %extra : USize = %rng.below(3000)
-        %list.reserve(%list.length().add(%extra))
+        %list.reserve(%list.load().length().add(%extra))
         jump record(%op, %results, %extra.to_s64())
 
     block record(%op: USize, %results: S64, %result: S64):
@@ -136,7 +136,7 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %list: Ptr<List<S64>>, %rng: P
 // Pushes every element of from onto to.
 routine copy_into(%from: Ptr<List<S64>>, %to: Ptr<List<S64>>) -> Void
     block entry():
-        %length : USize = %from.length()
+        %length : USize = %from.load().length()
         jump next(0, %length)
 
     block next(%index: USize, %length: USize):
@@ -144,7 +144,7 @@ routine copy_into(%from: Ptr<List<S64>>, %to: Ptr<List<S64>>) -> Void
         branch %done ? return() : copy(%index, %length)
 
     block copy(%index: USize, %length: USize):
-        %to.push(%from.get(%index))
+        %to.push(%from.load().get(%index))
         jump next(%index.add(1), %length)
 
 routine report_eq(%out: Ptr<BufWriter<FdWriter>>, %label: String, %equal: Bool) -> Void
@@ -183,8 +183,8 @@ routine main() -> S32
         copy_into(%list, %copied)
         %same : List<S64> = %copied.load()
         report_eq(%out, "copy equal", %full.eq(%same))
-        %last_index : USize = %copied.length().sub(1)
-        %last       : S64   = %copied.get(%last_index)
+        %last_index : USize = %copied.load().length().sub(1)
+        %last       : S64   = %copied.load().get(%last_index)
         %copied.set(%last_index, %last.add(1))
         %changed : List<S64> = %copied.load()
         report_eq(%out, "changed last equal", %full.eq(%changed))
@@ -197,6 +197,6 @@ routine main() -> S32
         report_eq(%out, "restored equal", %full.eq(%restored))
         %copied.destruct()
         %list.destruct()
-        report_eq(%out, "freed is empty", %list.is_empty())
+        report_eq(%out, "freed is empty", %list.load().is_empty())
         %out.flush()
         return(0)
