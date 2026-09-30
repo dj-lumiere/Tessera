@@ -12,7 +12,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ["jump", "branch", "when", "return", "unreachable"];
 
     private static readonly HashSet<string> DeclKeywords =
-        ["routine", "record", "choice", "variant", "preset", "global", "concept", "conform"];
+        ["routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "alias"];
 
     public Module ParseModule()
     {
@@ -44,7 +44,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             bool isInternal = IsIdent("internal");
             if (isPrivate || isInternal) Next();
             if (Cur.Kind != TokenKind.Ident || !DeclKeywords.Contains(Cur.Text))
-                throw Error($"expected a declaration (routine, record, choice, variant, preset, global, concept, conform), found {Describe(Cur)}");
+                throw Error($"expected a declaration (routine, record, choice, variant, preset, global, concept, conform, alias), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
                 "routine" => ParseRoutine(attrs, inConcept: false),
@@ -54,12 +54,26 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 "preset" => ParsePreset(attrs),
                 "global" => ParseGlobal(attrs),
                 "conform" => ParseConformDecl(attrs),
+                "alias" => ParseAlias(attrs),
                 _ => ParseConcept(attrs),
             };
             decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate, IsInternal = isInternal, Module = module });
             SkipNewlines();
         }
         return new Module(decls);
+    }
+
+    /// `alias Standard::Format as Fmt`, `alias Standard::Collections::List<S64> as Numbers`.
+    private AliasDecl ParseAlias(List<Attribute> attrs)
+    {
+        var pos = Next().Pos;
+        var target = ParseType();
+        ExpectIdent("as");
+        var name = Expect(TokenKind.Ident, "the alias's name");
+        if (!char.IsAsciiLetterUpper(name.Text[0]))
+            throw new CompileError(name.Pos, $"an alias names a module or a type, so it's PascalCase: '{name.Text}'");
+        ExpectLineEnd();
+        return new AliasDecl(file, attrs, target, name.Text, pos);
     }
 
     /// `Standard::Format`: PascalCase names joined by `::`.

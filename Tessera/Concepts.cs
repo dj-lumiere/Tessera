@@ -83,7 +83,7 @@ public sealed partial class Compiler
     {
         var constraints = clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts).ToList();
         if (constraints.Count == 0) return;
-        string key = declared + "|" + string.Join(",", args.Select(a => a.Name));
+        string key = declared + "|" + string.Join(",", args.Select(a => a.Key));
         if (!_checkedRequirements.Add(key)) return;
         var env = new TypeEnv(file);
         for (int i = 0; i < typeParams.Count && i < args.Count; i++) env.Bind(typeParams[i], args[i]);
@@ -175,8 +175,8 @@ public sealed partial class Compiler
         List<DType> actualArgs;
         switch (actual)
         {
-            case RecordType rt when rt.Decl.Name == pattern.Name: actualArgs = rt.Args; break;
-            case VariantType vt when vt.Decl.Name == pattern.Name: actualArgs = vt.Args; break;
+            case RecordType rt when NamesDecl(pattern, rt.Decl, binding.File): actualArgs = rt.Args; break;
+            case VariantType vt when NamesDecl(pattern, vt.Decl, binding.File): actualArgs = vt.Args; break;
             case PtrType pt when pattern.Name == "Ptr" && pt.Pointee is not null: actualArgs = [pt.Pointee]; break;
             case ArrayType at when pattern.Name == "Array": actualArgs = [at.Elem, new ConstArg(at.Count)]; break;
             default: return false;
@@ -220,7 +220,7 @@ public sealed partial class Compiler
             string ownerParam = req.Owner!.Name == "Self" ? concept.TypeParams[0] : req.Owner.Name;
             var owner = cenv.Get(ownerParam)!;
             string claim = $"{key} (declared at {conf.Source.Pos})";
-            var method = FindMethod(owner.OwnerName, req.Name, conf.Source.File, conf.Source.Pos)
+            var method = FindMethod(owner, req.Name, conf.Source.File, conf.Source.Pos)
                          ?? throw new CompileError(conf.Source.Pos, $"{claim} needs routine '{owner.Name}.{req.Name}', which doesn't exist");
 
             var renv = cenv.Clone();

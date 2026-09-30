@@ -20,7 +20,9 @@ modules: a file sees its own module, `Standard::Core` (always imported: the buil
 `String`), and what it imports, so printing a number needs `import Standard::Format` and a `List` needs
 `import Standard::Collections`. A routine declared in its type's module comes with the type; one another module adds
 to it (like `S64.represent` from `Standard::Format`) needs that module imported. A qualified path
-(`Standard::Format::write_str`) reaches any public name without an import.
+(`Standard::Format::write_str`) reaches any public name without an import. Two modules may declare the same name:
+the file's own module wins over its imports, and two imports offering it need the path. `alias Standard::Format as
+Fmt` shortens a path (`Fmt::write_str`) without importing; `alias Standard::Collections::Dict as Map` names a type.
 
 ## Skeleton
 

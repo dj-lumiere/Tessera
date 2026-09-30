@@ -130,6 +130,11 @@ public sealed record ModuleDecl(string File, string Path, Pos Pos) : Decl(File, 
 /// `import Standard::Format`: a module the file uses. Imports follow the module line, before any other declaration.
 public sealed record ImportDecl(string File, string Path, Pos Pos) : Decl(File, [], Pos);
 
+/// `alias Standard::Format as Fmt` or `alias Standard::Collections::List<S64> as Numbers`: a second name for a
+/// module or a type. It belongs to its module like any declaration, so importers see it.
+public sealed record AliasDecl(string File, List<Attribute> Attributes, TypeRef Target, string Name, Pos Pos)
+    : Decl(File, Attributes, Pos);
+
 // ── Statements ──────────────────────────────────────────────────────────────
 
 public abstract record Stmt(Pos Pos);

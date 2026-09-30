@@ -24,7 +24,7 @@ public sealed partial class Compiler
 
     public RecordShape Shape(RecordType s)
     {
-        if (_shapes.TryGetValue(s.Name, out var cached)) return cached;
+        if (_shapes.TryGetValue(s.Key, out var cached)) return cached;
         var fields = Fields(s);
         var env = RecordEnv(s);
         var members = new List<Member>();
@@ -36,7 +36,7 @@ public sealed partial class Compiler
             index[i] = members.Count;
             members.Add(new Member(fields[i].Type, 0));
         }
-        return _shapes[s.Name] = new RecordShape(members, index);
+        return _shapes[s.Key] = new RecordShape(members, index);
     }
 
     private Member AlignMember(Attribute attr, TypeEnv env)
@@ -76,7 +76,7 @@ public sealed partial class Compiler
                 return SizeAlign(field, pos);
             case VariantType v:
             {
-                if (!_sizing.Add(v.Name)) throw new CompileError(pos, $"{v} contains itself");
+                if (!_sizing.Add(v.Key)) throw new CompileError(pos, $"{v} contains itself");
                 try
                 {
                     var (tagSize, tagAlign) = Layout(pos).Int(v.Tag.Bits);
@@ -87,12 +87,12 @@ public sealed partial class Compiler
                 }
                 finally
                 {
-                    _sizing.Remove(v.Name);
+                    _sizing.Remove(v.Key);
                 }
             }
             case RecordType s when s.Decl.Attr("llvm") is null:
             {
-                if (!_sizing.Add(s.Name)) throw new CompileError(pos, $"{s} contains itself");
+                if (!_sizing.Add(s.Key)) throw new CompileError(pos, $"{s} contains itself");
                 try
                 {
                     long offset = 0, maxAlign = 1;
@@ -106,7 +106,7 @@ public sealed partial class Compiler
                 }
                 finally
                 {
-                    _sizing.Remove(s.Name);
+                    _sizing.Remove(s.Key);
                 }
             }
             default:

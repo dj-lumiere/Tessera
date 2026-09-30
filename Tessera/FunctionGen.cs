@@ -993,7 +993,7 @@ public sealed class FunctionGen
             _ => null,
         };
         if (s is null) return null;
-        if (_c.FindMethod(s.OwnerName, m.Name, _env.File, m.Pos) is not null) return null;
+        if (_c.FindMethod(s, m.Name, _env.File, m.Pos) is not null) return null;
         var field = _c.Fields(s).FirstOrDefault(f => f.Name == m.Name);
         if (field.Type is CallableType)
             throw Err(m.Pos, $"'{m.Name}' is a Callable field: load it (.{m.Name}.load()) and call the value "
@@ -1022,7 +1022,7 @@ public sealed class FunctionGen
                 // The type the value is going to is the owner: `.absent()` where an Option<T> is expected.
                 var owner = expected ?? throw Err(ic.Pos,
                     $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
-                var r = _c.FindMethod(owner.OwnerName, ic.Name, _env.File, ic.Pos)
+                var r = _c.FindMethod(owner, ic.Name, _env.File, ic.Pos)
                         ?? throw Err(ic.Pos, $"{owner} has no routine '{ic.Name}'");
                 if (r.Params.Count > 0 && r.Params[0].Name is "self" or "%self" or "#self")
                     throw Err(ic.Pos, $"'{owner}.{ic.Name}' takes a receiver; a leading '.' only calls typewise routines");
@@ -1040,7 +1040,7 @@ public sealed class FunctionGen
                     var asMethod = new MethodCallExpr(new PresetRef(null, n.Owner.Name, n.Owner.Pos), n.Name, n.TypeArgs, n.Args, n.Pos);
                     return PlanCall(asMethod, expected);
                 }
-                var r = _c.FindMethod(owner.OwnerName, n.Name, _env.File, n.Pos)
+                var r = _c.FindMethod(owner, n.Name, _env.File, n.Pos)
                         ?? throw Err(n.Pos, $"{owner} has no routine '{n.Name}'");
                 var env = BindOwner(r, owner, n.Pos);
                 BindExplicit(r, env, n.TypeArgs, n.Pos);
@@ -1095,7 +1095,7 @@ public sealed class FunctionGen
 
         foreach (var (owner, passesPointer) in candidates)
         {
-            var r = _c.FindMethod(owner.OwnerName, m.Name, _env.File, m.Pos, FromTypeParameter(owner));
+            var r = _c.FindMethod(owner, m.Name, _env.File, m.Pos, FromTypeParameter(owner));
             if (r is null || r.Params.Count == 0) continue;
             var env = BindOwner(r, owner, m.Pos);
             var selfType = _c.ResolveType(r.Params[0].Type, env);
@@ -1118,7 +1118,7 @@ public sealed class FunctionGen
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
         // `#p.eq(#q)` where T.eq takes values: the load is written, not implied.
-        if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held.OwnerName, m.Name, _env.File, m.Pos, FromTypeParameter(held)) is not null)
+        if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held)) is not null)
             throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; load it: .load().{m.Name}(...)");
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }

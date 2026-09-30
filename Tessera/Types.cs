@@ -3,11 +3,15 @@ using System.Numerics;
 
 namespace Tessera;
 
-/// A resolved type. Two types are equal when their canonical names are equal.
+/// A resolved type. Two types are equal when their keys are equal.
 public abstract class DType : IEquatable<DType>
 {
-    /// Canonical source-level name: `S64`, `Ptr<Byte>`, `Option<S64>`, `Array<Byte, 20>`.
+    /// Source-level name, for messages: `S64`, `Ptr<Byte>`, `Option<S64>`, `Array<Byte, 20>`.
     public abstract string Name { get; }
+
+    /// The type's identity. It's the name, except that a declared type is named by its module (and by its file, if
+    /// it's private), since two modules may each declare a `Point`: `Standard::Core::Option<S64>`.
+    public virtual string Key => Name;
 
     /// The LLVM IR spelling.
     public abstract string Llvm { get; }
@@ -20,9 +24,17 @@ public abstract class DType : IEquatable<DType>
     /// The type this one is represented as: itself, or for a transparent single-field record, its field's
     /// representation.
     public virtual DType Repr => this;
-    public bool Equals(DType? other) => other is not null && other.Name == Name;
+    public bool Equals(DType? other) => other is not null && other.Key == Key;
     public override bool Equals(object? obj) => obj is DType d && Equals(d);
-    public override int GetHashCode() => Name.GetHashCode();
+    public override int GetHashCode() => Key.GetHashCode();
+
+    /// A declared type's key: its module path and name, with generic arguments by key.
+    public static string DeclKey(Decl d, string name, List<DType> args)
+    {
+        string head = d.Module == "" ? name : $"{d.Module}::{name}";
+        if (d.IsPrivate) head += "@" + new string(d.File.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_').ToArray());
+        return args.Count == 0 ? head : $"{head}<{string.Join(", ", args.Select(a => a.Key))}>";
+    }
     public override string ToString() => Name;
 }
 
@@ -178,6 +190,7 @@ public sealed class PtrType(DType? pointee) : DType
 {
     public DType? Pointee { get; } = pointee;
     public override string Name => Pointee is null ? "Addr" : $"Ptr<{Pointee.Name}>";
+    public override string Key => Pointee is null ? "Addr" : $"Ptr<{Pointee.Key}>";
     public override string Llvm => "ptr";
     public override string OwnerName => Pointee is null ? "Addr" : "Ptr";
 }
@@ -188,6 +201,7 @@ public sealed class ArrayType(DType elem, long count) : DType
     public DType Elem { get; } = elem;
     public long Count { get; } = count;
     public override string Name => $"Array<{Elem.Name}, {Count}>";
+    public override string Key => $"Array<{Elem.Key}, {Count}>";
     public override string Llvm => $"[{Count} x {Elem.Llvm}]";
     public override string OwnerName => "Array";
 }
@@ -200,6 +214,8 @@ public sealed class CallableType(string callConv, List<DType> parameters, DType 
     public DType Ret { get; } = ret;
     public override string Name =>
         $"Callable<{(CallConv == "default" ? "" : $"@callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Name))}), {Ret.Name}>";
+    public override string Key =>
+        $"Callable<{(CallConv == "default" ? "" : $"@callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Key))}), {Ret.Key}>";
     public override string Llvm => "ptr";
     public override string OwnerName => "Callable";
 }
@@ -211,12 +227,13 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public RecordDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
     public override string Name => Args.Count == 0 ? Decl.Name : $"{Decl.Name}<{string.Join(", ", Args.Select(a => a.Name))}>";
+    public override string Key => DeclKey(Decl, Decl.Name, Args);
 
     /// The type a transparent or library `@llvm("iN")` record lowers to, or null for an aggregate.
     public DType? TransparentField => transparentField(this);
 
     public override DType Repr => TransparentField?.Repr ?? this;
-    public override string Llvm => TransparentField?.Llvm ?? $"%\"{Name}\"";
+    public override string Llvm => TransparentField?.Llvm ?? $"%\"{Key}\"";
     public override string OwnerName => Decl.Name;
 }
 
@@ -230,7 +247,8 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
     public VariantDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
     public override string Name => Args.Count == 0 ? Decl.Name : $"{Decl.Name}<{string.Join(", ", Args.Select(a => a.Name))}>";
-    public override string Llvm => $"%\"{Name}\"";
+    public override string Key => DeclKey(Decl, Decl.Name, Args);
+    public override string Llvm => $"%\"{Key}\"";
     public override string OwnerName => Decl.Name;
 
     /// Each case's payload type, or null for a case without one.
@@ -248,6 +266,7 @@ public sealed class ChoiceType(ChoiceDecl decl, IntType underlying) : DType
     public ChoiceDecl Decl { get; } = decl;
     public IntType Underlying { get; } = underlying;
     public override string Name => Decl.Name;
+    public override string Key => DeclKey(Decl, Decl.Name, []);
     public override string Llvm => Underlying.Llvm;
     public override string OwnerName => Decl.Name;
 }

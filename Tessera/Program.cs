@@ -14,9 +14,10 @@ static class Cli
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
 
         All input files form one compilation unit.
-        test: every <name>.tess in each <dir> is built and run. Its stdout must equal <name>.expected (if present),
-              and its exit code must equal the number in <name>.exit (default 0). If <name>.error exists, the
-              build must fail with a message containing its text.
+        test: every <name>.tess in each <dir>, and every subdirectory <name>/ (its files compiled together), is
+              built and run. Its stdout must equal <name>.expected (if present), and its exit code must equal
+              the number in <name>.exit (default 0). If <name>.error exists, the build must fail with a message
+              containing its text.
         """;
 
     public static int Execute(string[] args)
@@ -347,12 +348,18 @@ static class Cli
     private static int Test(string[] args)
     {
         if (args.Length == 0) throw new ToolError("test takes one or more directories");
-        var files = new List<string>();
+        // A test is one file, or a subdirectory whose .tess files are compiled together (several modules); its
+        // .expected / .exit / .error files sit next to it either way.
+        var tests = new List<(string Stem, string[] Sources)>();
         foreach (var dir in args)
         {
-            var found = Directory.GetFiles(dir, "*.tess").OrderBy(f => f, StringComparer.Ordinal).ToList();
+            var found = Directory.GetFiles(dir, "*.tess").Select(f => (Path.ChangeExtension(f, null), new[] { f }))
+                .Concat(Directory.GetDirectories(dir)
+                    .Select(d => (d, Directory.GetFiles(d, "*.tess", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()))
+                    .Where(t => t.Item2.Length > 0))
+                .OrderBy(t => t.Item1, StringComparer.Ordinal).ToList();
             if (found.Count == 0) throw new ToolError($"no .tess files in {dir}");
-            files.AddRange(found);
+            tests.AddRange(found);
         }
         bool qualify = args.Length > 1;
 
@@ -360,12 +367,11 @@ static class Cli
         int passed = 0;
         var failures = new List<string>();
 
-        foreach (var file in files)
+        foreach (var (stem, sources) in tests)
         {
-            string stem = Path.ChangeExtension(file, null);
             string name = Path.GetFileName(stem);
             if (qualify) name = Path.GetFileName(Path.GetDirectoryName(stem)) + "/" + name;
-            string? why = RunOne(file, stem, target);
+            string? why = RunOne(sources, stem, target);
             if (why is null)
             {
                 passed++;
@@ -394,14 +400,14 @@ static class Cli
     }
 
     /// Returns null on success, or the reason the test failed.
-    private static string? RunOne(string file, string stem, BuildTarget target)
+    private static string? RunOne(string[] sources, string stem, BuildTarget target)
     {
         string? expectedError = File.Exists(stem + ".error") ? File.ReadAllText(stem + ".error").Trim() : null;
 
         string ir;
         try
         {
-            ir = Compile([file], target);
+            ir = Compile(sources, target);
         }
         catch (CompileError e)
         {

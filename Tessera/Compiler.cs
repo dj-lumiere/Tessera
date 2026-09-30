@@ -20,6 +20,7 @@ public sealed partial class Compiler
     private readonly Dictionary<(string Owner, string Name), List<RoutineDecl>> _methods = [];
     private readonly Dictionary<string, List<RoutineDecl>> _blanket = []; // owner is a type parameter: `T.bitcast<U>`
     private readonly Dictionary<(string Owner, string Name), List<PresetDecl>> _presets = [];
+    private readonly Dictionary<string, List<AliasDecl>> _aliases = [];
     private readonly List<RoutineDecl> _userRoutines = [];
     private readonly HashSet<string> _modules = [];
     private readonly List<ImportDecl> _imports = [];
@@ -57,6 +58,7 @@ public sealed partial class Compiler
                     _imports.Add(imp);
                     (_fileImports.TryGetValue(imp.File, out var set) ? set : _fileImports[imp.File] = []).Add(imp.Path);
                     break;
+                case AliasDecl a: Add(_aliases, a.Name, a); break;
                 case RecordDecl s: Add(_records, s.Name, s); break;
                 case VariantDecl v: Add(_variants, v.Name, v); break;
                 case ChoiceDecl e: Add(_choices, e.Name, e); break;
@@ -70,24 +72,104 @@ public sealed partial class Compiler
                     break;
             }
         }
-        // A name is still unique across the solution (RejectDuplicates); modules decide where it's visible.
         foreach (var imp in _imports)
             if (!_modules.Contains(imp.Path))
                 throw new CompileError(imp.Pos, $"unknown module '{imp.Path}'");
-        RejectDuplicates(_records.Values, d => $"record '{d.Name}'");
-        RejectDuplicates(_variants.Values, d => $"variant '{d.Name}'");
-        RejectDuplicates(_choices.Values, d => $"choice '{d.Name}'");
-        RejectDuplicates(_presets.Values, d => $"preset '{(d.Owner is null ? d.Name : $"{d.Owner.Name}.{d.Name}")}'");
-        RejectDuplicates(_free.Values, d => $"routine '{d.Name}'");
-        RejectDuplicates(_methods.Values, d => $"routine '{d.DisplayName}'");
-        RejectDuplicates(_blanket.Values, d => $"routine '{d.DisplayName}'");
+        // A routine on a declared type names the type as its own file sees it; the lookups say why it can't.
+        foreach (var m in _methods.Values.SelectMany(g => g))
+            if (OwnerDecl(m) is null && DeclaresType(m.Owner!.Name))
+            {
+                var (name, path) = (m.Owner.Name, m.Owner.Path);
+                _ = FindRecord(name, m.File, m.Owner.Pos, path) ?? (Decl?)FindVariant(name, m.File, m.Owner.Pos, path)
+                    ?? FindChoice(name, m.File, m.Owner.Pos, path);
+            }
+        // A name is unique under its parent: a module for types, presets, and free routines, a type for its routines.
+        static bool SameModule(Decl a, Decl b) => a.Module == b.Module;
+        RejectDuplicates(_records.Values, d => $"record '{d.Name}'", SameModule);
+        RejectDuplicates(_variants.Values, d => $"variant '{d.Name}'", SameModule);
+        RejectDuplicates(_choices.Values, d => $"choice '{d.Name}'", SameModule);
+        RejectDuplicates(_presets.Values, d => $"preset '{(d.Owner is null ? d.Name : $"{d.Owner.Name}.{d.Name}")}'",
+            (a, b) => a.Owner is null ? a.Module == b.Module : OwnerDecl(a.Owner, a.File) == OwnerDecl(b.Owner!, b.File));
+        RejectDuplicates(_free.Values, d => $"routine '{d.Name}'", SameModule);
+        RejectDuplicates(_methods.Values, d => $"routine '{d.DisplayName}'", (a, b) => OwnerDecl(a) == OwnerDecl(b));
+        RejectDuplicates(_blanket.Values, d => $"routine '{d.DisplayName}'", (_, _) => true);
+        CheckAliases();
     }
 
-    /// One name under one parent (a type, or the solution's namespace) names one declaration, wherever it's declared:
-    /// a routine added to a type from another file can't reuse a name the type already has. A `private` declaration
-    /// doesn't claim its name outside its file, so it may share the name with a declaration in another file; in its
-    /// own file it's the one that's visible (Pick).
-    private static void RejectDuplicates<T>(IEnumerable<List<T>> groups, Func<T, string> what) where T : Decl
+    /// An alias names a module or a type that exists, and it takes a name no type in its module has.
+    private void CheckAliases()
+    {
+        RejectDuplicates(_aliases.Values, d => $"alias '{d.Name}'", (a, b) => a.Module == b.Module);
+        foreach (var a in _aliases.Values.SelectMany(g => g))
+        {
+            if (IsModuleAlias(a)) continue;
+            if (TypeDeclQuiet(a.Target.Name, a.File, a.Target.Path) is null)
+                throw new CompileError(a.Target.Pos, $"alias '{a.Name}' names '{a.Target}', which is neither a module nor a type");
+            var clash = (_records.GetValueOrDefault(a.Name) ?? []).Cast<Decl>()
+                .Concat(_variants.GetValueOrDefault(a.Name) ?? []).Concat(_choices.GetValueOrDefault(a.Name) ?? [])
+                .FirstOrDefault(d => d.Module == a.Module && !(d.IsPrivate && d.File != a.File));
+            if (clash is not null)
+                throw new CompileError(a.Pos, $"alias '{a.Name}' is already declared as a type at {clash.Pos}");
+        }
+    }
+
+    private static string FullPath(TypeRef t) => t.Path is null ? t.Name : $"{t.Path}::{t.Name}";
+
+    private bool IsModuleAlias(AliasDecl a) => a.Target.Args.Count == 0 && _modules.Contains(FullPath(a.Target));
+
+    /// A module path with a leading module alias replaced: `Fmt::write_str` is `Standard::Format::write_str` after
+    /// `alias Standard::Format as Fmt`.
+    private string? ExpandPath(string? path, string file)
+    {
+        if (path is null) return null;
+        int cut = path.IndexOf("::", StringComparison.Ordinal);
+        string head = cut < 0 ? path : path[..cut];
+        var aliases = _aliases.GetValueOrDefault(head)?.Where(a => IsModuleAlias(a) && Visible(a, file, null)).ToList();
+        if (aliases is not { Count: > 0 }) return path;
+        var nearest = Nearest(aliases, file);
+        if (nearest.Count > 1)
+            throw new CompileError(nearest[1].Pos, $"alias '{head}' is ambiguous: defined at {string.Join(", ", nearest.Select(a => a.Pos))}");
+        string target = FullPath(nearest[0].Target);
+        return cut < 0 ? target : target + path[cut..];
+    }
+
+    /// The type alias a type name means from `file`, or null when it means a declared type (or nothing). An alias and
+    /// a type of the same name compete like two types do (Nearest).
+    private AliasDecl? TypeAlias(TypeRef t, string file)
+    {
+        var aliases = _aliases.GetValueOrDefault(t.Name)?.Where(a => !IsModuleAlias(a) && Visible(a, file, t.Path)).ToList();
+        if (aliases is not { Count: > 0 }) return null;
+        var types = new List<Decl>();
+        types.AddRange(_records.GetValueOrDefault(t.Name) ?? []);
+        types.AddRange(_variants.GetValueOrDefault(t.Name) ?? []);
+        types.AddRange(_choices.GetValueOrDefault(t.Name) ?? []);
+        var nearest = Nearest(aliases.Cast<Decl>().Concat(types.Where(d => Visible(d, file, t.Path))).ToList(), file);
+        if (nearest is [AliasDecl only]) return only;
+        if (nearest.All(d => d is not AliasDecl)) return null;
+        throw new CompileError(t.Pos, $"type '{t.Name}' is ambiguous: defined at {string.Join(", ", nearest.Select(d => d.Pos))}");
+    }
+
+    /// The type an alias names, with the use's generic arguments if the alias has none of its own. The target is
+    /// looked up from the alias's file, the use's arguments from the use.
+    private DType ResolveAlias(AliasDecl a, TypeRef use, TypeEnv env)
+    {
+        if (a.Target.Args.Count > 0)
+        {
+            if (use.Args.Count > 0)
+                throw new CompileError(use.Pos, $"alias '{a.Name}' already has its generic arguments: it's {a.Target}");
+            return ResolveTypeInner(a.Target, new TypeEnv(a.File));
+        }
+        var d = TypeDeclQuiet(a.Target.Name, a.File, a.Target.Path)!;
+        var absolute = new TypeRef(a.Target.Name, use.Args, use.Pos) { Path = d.Module == "" ? null : d.Module };
+        return ResolveTypeInner(absolute, env);
+    }
+
+    /// One name under one parent names one declaration, wherever it's declared: two modules may each have a
+    /// `Point`, but a routine added to a type from another file can't reuse a name the type already has. A `private`
+    /// declaration doesn't claim its name outside its file, so it may share the name with a declaration in another
+    /// file; in its own file it's the one that's visible (Pick).
+    private static void RejectDuplicates<T>(IEnumerable<List<T>> groups, Func<T, string> what, Func<T, T, bool> sameParent)
+        where T : Decl
     {
         foreach (var group in groups.Where(g => g.Count > 1))
             for (int i = 0; i < group.Count; i++)
@@ -95,6 +177,7 @@ public sealed partial class Compiler
                 {
                     var (a, b) = (group[i], group[j]);
                     if ((a.IsPrivate || b.IsPrivate) && a.File != b.File) continue;
+                    if (!sameParent(a, b)) continue;
                     if (b.IsLibrary && !a.IsLibrary) (a, b) = (b, a);   // report at the user's declaration
                     throw new CompileError(b.Pos, $"{what(b)} is already declared at {a.Pos}");
                 }
@@ -248,20 +331,72 @@ public sealed partial class Compiler
         : d.IsInternal ? $"{what} is internal to {ShowModule(d.Module)}"
         : $"{what} is in {ShowModule(d.Module)}; import {d.Module} or write {d.Module}::...";
 
-    /// A name is unique under its parent (RejectDuplicates) except for `private` declarations, which share names with
-    /// declarations in other files (each sorted collection has its own NODE_KEYS). The referring file's own
-    /// declaration wins.
+    /// Of the declarations a file sees under one name, the ones that win: the file's own (a `private` one shares its
+    /// name with declarations in other files), else its module's, else all of them, from Standard::Core and the
+    /// imports alike.
+    private List<T> Nearest<T>(List<T> visible, string file) where T : Decl
+    {
+        if (visible.Count <= 1) return visible;
+        if (visible.Where(c => c.File == file).ToList() is { Count: > 0 } local) return local;
+        string module = ModuleOf(file);
+        if (visible.Where(c => c.Module == module).ToList() is { Count: > 0 } own) return own;
+        return visible;
+    }
+
+    /// The declaration a name means from `file`, or null if none has the name. Two modules may each declare it: the
+    /// nearest wins (Nearest), and two imports that both offer it make the name ambiguous.
     private T? Pick<T>(List<T>? candidates, string file, Pos pos, string what, string? path = null) where T : Decl
     {
         if (candidates is null || candidates.Count == 0) return null;
+        path = ExpandPath(path, file);
         var visible = candidates.Where(c => Visible(c, file, path)).ToList();
         if (visible.Count == 0) throw new CompileError(pos, Hidden(candidates[0], what, path));
-        candidates = visible;
-        if (candidates.Count == 1) return candidates[0];
-        var local = candidates.Where(c => c.File == file).ToList();
-        if (local.Count == 1) return local[0];
-        throw new CompileError(pos, $"{what} is ambiguous: defined in {string.Join(", ", candidates.Select(c => c.Pos))}");
+        var nearest = Nearest(visible, file);
+        if (nearest.Count == 1) return nearest[0];
+        var modules = nearest.Select(c => c.Module).Distinct().ToList();
+        if (modules.Count > 1)
+            throw new CompileError(pos, $"{what} is ambiguous: it's in {string.Join(" and ", modules.Select(ShowModule))}; "
+                + $"write the module path ({modules[0]}::...)");
+        throw new CompileError(pos, $"{what} is ambiguous: defined in {string.Join(", ", nearest.Select(c => c.Pos))}");
     }
+
+    /// The declared type (record, variant, or choice) a type name means from `file`, or null for a built-in type, a
+    /// type parameter, or a name nothing declares. It doesn't report errors: the name's use does.
+    public Decl? TypeDeclQuiet(string name, string file, string? path = null)
+    {
+        path = ExpandPath(path, file);
+        var candidates = new List<Decl>();
+        candidates.AddRange(_records.GetValueOrDefault(name) ?? []);
+        candidates.AddRange(_variants.GetValueOrDefault(name) ?? []);
+        candidates.AddRange(_choices.GetValueOrDefault(name) ?? []);
+        return Nearest(candidates.Where(c => Visible(c, file, path)).ToList(), file) is [var only] ? only : null;
+    }
+
+    private readonly Dictionary<RoutineDecl, Decl?> _ownerDecls = [];
+
+    /// The declared type a routine is on (`Point` in `routine Point.norm`), as the routine's own file sees the name;
+    /// null for a built-in type.
+    private Decl? OwnerDecl(RoutineDecl r)
+    {
+        if (!_ownerDecls.TryGetValue(r, out var d)) _ownerDecls[r] = d = OwnerDecl(r.Owner!, r.File);
+        return d;
+    }
+
+    private Decl? OwnerDecl(TypeRef owner, string file) => TypeDeclQuiet(owner.Name, file, owner.Path);
+
+    /// The declaration behind a type. A built-in type (`S64`, `Ptr<T>`) has one too, a record in Standard::Core that
+    /// carries its conformances; null if there's none.
+    private Decl? DeclOf(DType t) => t switch
+    {
+        RecordType r => r.Decl,
+        VariantType v => v.Decl,
+        ChoiceType c => c.Decl,
+        _ => _records.GetValueOrDefault(t.OwnerName)?.FirstOrDefault(r => r.Module == CoreModule),
+    };
+
+    /// Whether a type pattern's name (`List` in `conform Equal<List<T>>`) means this declaration from `file`.
+    public bool NamesDecl(TypeRef pattern, Decl d, string file) =>
+        TypeDeclQuiet(pattern.Name, file, pattern.Path) == d;
 
     public RecordDecl? FindRecord(string name, string file, Pos pos, string? path = null) =>
         Pick(_records.GetValueOrDefault(name), file, pos, $"record '{name}'", path);
@@ -278,11 +413,13 @@ public sealed partial class Compiler
     /// A routine on a type. One declared in the type's own module goes wherever the type goes; one another module adds
     /// needs that module imported, like any other name. `anyModule` skips that check, for a call on a value whose
     /// type came from a type parameter: the routine's concept constraints already vouch for the method.
-    public RoutineDecl? FindMethod(string owner, string name, string file, Pos pos, bool anyModule = false)
+    public RoutineDecl? FindMethod(DType ownerType, string name, string file, Pos pos, bool anyModule = false)
     {
-        if (_methods.GetValueOrDefault((owner, name)) is { Count: > 0 } methods)
+        string owner = ownerType.OwnerName;
+        var ownerDecl = DeclOf(ownerType);
+        if (_methods.GetValueOrDefault((owner, name))?.Where(m => OwnerDecl(m) == ownerDecl).ToList() is { Count: > 0 } methods)
         {
-            string? home = TypeModule(owner);
+            string home = ownerDecl?.Module ?? CoreModule;
             var visible = methods.Where(m =>
                 m.IsPrivate ? m.File == file
                 : m.IsInternal ? m.Module == ModuleOf(file)
@@ -300,16 +437,8 @@ public sealed partial class Compiler
 
     /// Whether some record, variant, or choice has this name, visible from here or not.
     public bool DeclaresType(string name) =>
-        _records.ContainsKey(name) || _variants.ContainsKey(name) || _choices.ContainsKey(name);
-
-    /// The module that declares a type: Standard::Core for the built-in ones.
-    private string? TypeModule(string owner)
-    {
-        if (_records.GetValueOrDefault(owner) is [var r, ..]) return r.Module;
-        if (_variants.GetValueOrDefault(owner) is [var v, ..]) return v.Module;
-        if (_choices.GetValueOrDefault(owner) is [var c, ..]) return c.Module;
-        return CoreModule;
-    }
+        _records.ContainsKey(name) || _variants.ContainsKey(name) || _choices.ContainsKey(name)
+        || _aliases.GetValueOrDefault(name)?.Any(a => !IsModuleAlias(a)) == true;
 
     /// A routine on every type, `T.name`.
     public RoutineDecl? FindBlanket(string name, string file, Pos pos) =>
@@ -368,6 +497,7 @@ public sealed partial class Compiler
             NoArgs();
             return bound;
         }
+        if (t.Path is not null) t = t with { Path = ExpandPath(t.Path, env.File) };
 
         // The built-in types live in Standard::Core.
         if (t.Path is not (null or CoreModule))
@@ -412,9 +542,10 @@ public sealed partial class Compiler
         return ResolveDeclaredType(t, env);
     }
 
-    /// A record, variant, or choice by name, or a preset used as a generic argument.
+    /// A record, variant, or choice by name (or an alias for one), or a preset used as a generic argument.
     private DType ResolveDeclaredType(TypeRef t, TypeEnv env)
     {
+        if (TypeAlias(t, env.File) is { } alias) return ResolveAlias(alias, t, env);
         void NoArgs()
         {
             if (t.Args.Count != 0) throw new CompileError(t.Pos, $"type '{t.Name}' takes no generic arguments");
@@ -547,10 +678,10 @@ public sealed partial class Compiler
     /// Fields of a record type, with its type parameters substituted.
     public List<(string Name, DType Type)> Fields(RecordType s)
     {
-        if (_fieldCache.TryGetValue(s.Name, out var cached)) return cached;
+        if (_fieldCache.TryGetValue(s.Key, out var cached)) return cached;
         var env = RecordEnv(s);
         var fields = new List<(string, DType)>();
-        _fieldCache[s.Name] = fields; // placed early so self-referencing pointers resolve
+        _fieldCache[s.Key] = fields; // placed early so self-referencing pointers resolve
         foreach (var f in s.Decl.Fields)
         {
             if (fields.Any(x => x.Item1 == f.Name))
@@ -585,19 +716,19 @@ public sealed partial class Compiler
                 ? IntType.U(bits)
                 : throw new CompileError(d.Pos, $"@llvm on a library record takes an integer type (\"i128\"), got \"{llvm.First}\"");
         if (d.Attr("aggregate") is not null || d.Fields.Count != 1) return null;
-        if (_transparent.TryGetValue(s.Name, out var cached)) return cached;
+        if (_transparent.TryGetValue(s.Key, out var cached)) return cached;
         if (d.Attr("aligned") is not null || d.Fields[0].Attr("aligned") is not null)
             throw new CompileError(d.Pos, $"record '{d.Name}' has one field, so it lowers to that field's type; @aligned needs it to be @aggregate");
-        if (!_resolvingTransparent.Add(s.Name)) throw new CompileError(d.Pos, $"{s} contains itself");
+        if (!_resolvingTransparent.Add(s.Key)) throw new CompileError(d.Pos, $"{s} contains itself");
         try
         {
             var field = Fields(s)[0].Type;
             _ = field.Llvm; // resolves nested transparent records, and finds a record that contains itself
-            return _transparent[s.Name] = field;
+            return _transparent[s.Key] = field;
         }
         finally
         {
-            _resolvingTransparent.Remove(s.Name);
+            _resolvingTransparent.Remove(s.Key);
         }
     }
 
@@ -639,9 +770,9 @@ public sealed partial class Compiler
                 break;
             case VariantType v:
             {
-                if (_definingTypes.Contains(v.Name)) throw new CompileError(v.Decl.Pos, $"{v} contains itself");
-                if (!_definedTypes.Add(v.Name)) return;
-                _definingTypes.Add(v.Name);
+                if (_definingTypes.Contains(v.Key)) throw new CompileError(v.Decl.Pos, $"{v} contains itself");
+                if (!_definedTypes.Add(v.Key)) return;
+                _definingTypes.Add(v.Key);
                 try
                 {
                     foreach (var p in v.Payloads)
@@ -649,7 +780,7 @@ public sealed partial class Compiler
                 }
                 finally
                 {
-                    _definingTypes.Remove(v.Name);
+                    _definingTypes.Remove(v.Key);
                 }
                 // The storage is words as wide as its alignment, so an optimized copy moves words, not bytes.
                 var (aligner, size, align) = VariantStorage(v);
@@ -660,16 +791,16 @@ public sealed partial class Compiler
             }
             case RecordType s when s.Decl.Attr("llvm") is null:
                 // A record can hold itself only through a pointer.
-                if (_definingTypes.Contains(s.Name)) throw new CompileError(s.Decl.Pos, $"{s} contains itself");
-                if (!_definedTypes.Add(s.Name)) return;
-                _definingTypes.Add(s.Name);
+                if (_definingTypes.Contains(s.Key)) throw new CompileError(s.Decl.Pos, $"{s} contains itself");
+                if (!_definedTypes.Add(s.Key)) return;
+                _definingTypes.Add(s.Key);
                 try
                 {
                     foreach (var (_, ft) in Fields(s)) EnsureTypeDefined(ft);
                 }
                 finally
                 {
-                    _definingTypes.Remove(s.Name);
+                    _definingTypes.Remove(s.Key);
                 }
                 _typeDefs.AppendLine($"{s.Llvm} = type {{ {string.Join(", ", Shape(s).Members.Select(m => m.Llvm))} }}");
                 break;
@@ -694,10 +825,11 @@ public sealed partial class Compiler
     /// A global is a private mutable global variable, emitted once on first use: its value, or all-zero bytes.
     public string GlobalVariable(PresetDecl c, DType t, TypeEnv env)
     {
-        if (_globalVars.TryGetValue(c.Name, out var name)) return name;
+        string symbol = MangleVariable(c, null);
+        if (_globalVars.TryGetValue(symbol, out var name)) return name;
         EnsureTypeDefined(t);
-        name = $"@\"global.{c.Name}\"";
-        _globalVars[c.Name] = name;
+        name = "@" + symbol;
+        _globalVars[symbol] = name;
         string init = c.Value is null ? "zeroinitializer" : PresetInitializer(c.Value, t, env);
         _globals.AppendLine($"{name} = internal global {t.Llvm} {init}");
         return name;
@@ -706,10 +838,10 @@ public sealed partial class Compiler
     /// A const of Array type is read-only static data: a private constant global, emitted once on first use.
     public string PresetArrayGlobal(PresetDecl c, ArrayType t, TypeEnv env)
     {
-        string key = (c.Owner is null ? "" : env.Get("Self")?.Name + ".") + c.Name;
+        string key = MangleVariable(c, c.Owner is null ? null : env.Get("Self"));
         if (_presetArrays.TryGetValue(key, out var name)) return name;
         EnsureTypeDefined(t);
-        name = $"@\"preset.{key}\"";
+        name = "@" + key;
         _presetArrays[key] = name;
         _globals.AppendLine($"{name} = private unnamed_addr constant {t.Llvm} {PresetInitializer(c.Value!, t, env)}");
         return name;

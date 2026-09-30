@@ -97,14 +97,7 @@ public sealed partial class Compiler
                 throw new CompileError(r.Pos, "main must be declared 'routine main() -> S32'");
             symbol = "main";
         }
-        else
-        {
-            string owner = r.Owner is null ? "" : (env.Get("Self") ?? env.Get(r.Owner.Name))!.Name + ".";
-            string targs = r.TypeParams.Count == 0 ? "" : $"<{string.Join(", ", r.TypeParams.Select(p => env.Get(p)!.Name))}>";
-            symbol = $"_D.{owner}{r.Name}{targs}";
-            // Private routines of the same name may live in different files, so the file joins the symbol.
-            if (r.IsPrivate) symbol += "." + new string(r.File.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_').ToArray());
-        }
+        else symbol = MangleRoutine(r, env, ps, ret);
 
         return new Instance(r, env, symbol, ps, ret);
     }
