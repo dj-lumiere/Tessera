@@ -157,6 +157,10 @@ routine main() -> S32
   `Job.less(%a, %b)`. A routine meeting a concept (`less`, `eq`, `compare`, `hash`) takes `%self` as the concept does. Where the
   type is expected (a binding, an argument, a block argument, a return), a leading `.` leaves it out:
   `%list: List<S64> = .construct(%alloc)`, `return(.Absent)`. Not at the head of a chain or as a statement.
+- **`Ptr<T>` or `T`** (for `%self` and any parameter): take `Ptr<T>` when the routine changes the value in place, or
+  when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
+  compound-assignment methods (`add_assign` and the like): change a value in memory by load, act, store —
+  `%p.load().add(1).store_into(%p)`.
 - **Methods through a pointer.** `%p.m()` finds `T.m(%self: Ptr<Self>)` first, then `Ptr`'s own methods (`is_null`,
   `offset`, `cast`, ...). Value methods (`%self: Self`, such as every collection's `eq`) aren't reachable through a
   pointer, because that would hide a load: load first (`%a.load().eq(%b.load())`). Don't name your own pointer methods after `Ptr`'s.
