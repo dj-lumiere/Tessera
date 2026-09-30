@@ -1,0 +1,82 @@
+// Tessera stdlib: the correctly rounded tangent of F32
+//
+// x * 2/pi = q + z, and tan(z pi/2) is a rational function n/d of z in F64: an even q gives n/d, an odd one
+// -d/n. The few arguments the fast path can't round come from a small table of exact results. Round to
+// nearest only: +-0 stays itself, infinities give NaN, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/tan/tanf.c via RazorForge's B32Tan.rf.
+// Copyright (c) 2022-2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// tan(x), correctly rounded.
+routine f32_cm_tan(%x: F32) -> F32
+    block entry():
+        %t      : U32  = %x.bits()
+        %e      : U32  = %t.shr(23).bitand(0xFF)
+        %tiny   : Bool = %e.lt(102)  // |x| < 2^-26: tan(x) rounds like x + x |x| tiny
+        %small  : Bool = %e.lt(115)  // |x| < 2^-13
+        %medium : Bool = %e.lt(155)  // |x| < 2^28
+        %finite : Bool = %e.lt(0xFF)
+        when:
+            %tiny   -> return(%x.mul_add(%x.abs(), %x))
+            %small  -> return(%x.mul_add(%x.mul(%x).mul(0x1.555556p-2), %x))
+            %medium -> fast(cm_f32_tan_reduce(%x.to_f64()))
+            %finite -> fast(cm_f32_trig_reduce_big(%t, 150))
+            else    -> special(%t)
+
+    // NaN comes back quiet with its sign and payload, an infinity gives a NaN
+    block special(%t: U32):
+        %nan : Bool = %t.shl(9).ne(0)
+        branch %nan ? return(%x.add(%x)) : return(F32.NAN)
+
+    block fast(%red: CmF32TrigReduced):
+        %z    : F64  = %red.z
+        %z2   : F64  = %z.mul(%z)
+        %z4   : F64  = %z2.mul(%z2)
+        %n01  : F64  = %z2.mul(-0x1.fd226e573289fp-2).add(0x1.921fb54442d18p+0)
+        %n23  : F64  = %z2.mul(-0x1.725beb40f33e5p-13).add(0x1.b7a60c8dac9f6p-6)
+        %n    : F64  = %z4.mul(%n23).add(%n01).mul(%z)
+        %d01  : F64  = %z2.mul(-0x1.2395347fb829dp+0).add(0x1p+0)
+        %d23  : F64  = %z2.mul(-0x1.9a707ab98d1c1p-9).add(0x1.2313660f29c36p-3)
+        %d    : F64  = %z4.mul(%d23).add(%d01)
+        %odd  : Bool = %red.q.bitand(1).eq(1)  // an even quotient gives n/d, an odd one -d/n
+        %s0   : F64  = %odd ? 1.0 : 0.0
+        %s1   : F64  = %odd ? 0.0 : 1.0
+        %num  : F64  = %n.mul(%s1).sub(%d.mul(%s0))
+        %den  : F64  = %n.mul(%s0).add(%d.mul(%s1))
+        %r    : F64  = %num.div(%den)
+        %tail : U64  = %r.bits().add_wrap(7).bitand(0x1FFFFFFF)
+        %near : Bool = %tail.le(14)  // close to a rounding boundary: only a few known arguments
+        branch %near ? return(cm_f32_tan_database(%x, %r)) : return(%r.to_f32())
+
+/// Reduces x (|x| < 2^28) modulo pi/2 with a two-part 2/pi: x * 2/pi = q + z. Only the low bit of q matters.
+private routine cm_f32_tan_reduce(%x: F64) -> CmF32TrigReduced
+    block entry():
+        %idl : F64 = %x.mul(-0x1.b1bbead603d8bp-32)
+        %idh : F64 = %x.mul(0x1.45f306ep-1)
+        %q   : F64 = %idh.add(0x1.8p+52)  // rounds idh to an integer, left in the low mantissa bits
+        %id  : F64 = %q.sub(0x1.8p+52)
+        %z   : F64 = %idh.sub(%id).add(%idl)
+        return(CmF32TrigReduced { z: %z, q: %q.bits() })
+
+/// The tangent of the arguments whose fast path isn't correctly rounded, as sign(x) (rh + rl) with rh + rl
+/// the result for |x|; any other x gives r.
+private routine cm_f32_tan_database(%x: F32, %r: F64) -> F32
+    block entry():
+        %ax : U32 = %x.bits().bitand(0x7FFFFFFF)
+        when %ax:
+            0x3F8A1F62 -> exact(0x1.ddf9f6p+0, -0x1.891d24p-52)
+            0x4D56D355 -> exact(0x1.e80304p-3, 0x1.419f46p-58)
+            0x57D7B0ED -> exact(0x1.60d1c8p-2, -0x1.2d6c3ap-55)
+            0x5980445E -> exact(0x1.ca1edp+0, 0x1.f6053p-53)
+            0x63FC86FE -> exact(0x1.597f9cp-1, 0x1.925978p-53)
+            0x6A662711 -> exact(-0x1.f33584p+1, 0x1.d7254ap-51)
+            0x6AD36709 -> exact(-0x1.c5612ep-1, -0x1.26c33ep-53)
+            0x72B505BB -> exact(-0x1.e42a1ep+0, -0x1.1dc906p-52)
+            else       -> return(%r.to_f32())
+
+    block exact(%rh: F32, %rl: F32):
+        %negative : Bool = %x.bits().shr(31).eq(1)
+        branch %negative ? return(%rh.neg().sub(%rl)) : return(%rh.add(%rl))
