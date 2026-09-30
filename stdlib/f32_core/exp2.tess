@@ -1,0 +1,113 @@
+// Tessera stdlib: the correctly rounded base-2 exponential 2^x of F32
+//
+// x = k/64 + h: 2^(k/64) from a table, 2^h from a polynomial, all in F64. A
+// second, longer polynomial settles the cases the first can't round, and
+// integers 1 <= |x| < 2^9 give exact powers of two directly.
+// Round to nearest only: overflow gives +inf, underflow a correctly rounded
+// subnormal or +0, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/exp2/exp2f.c via RazorForge's B32Exp2.rf.
+// Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// 2^x, correctly rounded. Integer x gives an exact power of two.
+routine f32_cm_exp2(%x: F32) -> F32
+    block entry():
+        %tu          : U32  = %x.bits()
+        %maybe_whole : Bool = %tu.bitand(0xFFFF).eq(0)
+        branch %maybe_whole ? whole_range(%tu) : general(%tu)
+
+    // x may be an integer: look at its exponent, 2^k <= |x| < 2^(k+1)
+    block whole_range(%tu: U32):
+        %e     : U32  = %tu.shr(23).bitand(0xFF)
+        %small : Bool = %e.between(127, 135)  // 0 <= k < 9
+        branch %small ? whole_check(%tu, %e.sub(127)) : general(%tu)
+
+    block whole_check(%tu: U32, %k: U32):
+        %whole : Bool = %tu.shl(%k.add(9)).eq(0)
+        branch %whole ? whole(%tu, %k) : general(%tu)
+
+    // x is an integer with 1 <= |x| < 2^9: the result is an exact power of two (or a subnormal)
+    block whole(%tu: U32, %k: U32):
+        %mant      : U64  = %tu.bitand(0x7FFFFF).bitor(0x800000).to_u64()
+        %magnitude : S64  = %mant.shr(U32.sub(23, %k).to_u64()).to_s64()
+        %negative  : Bool = %tu.shr(31).eq(1)
+        %signed    : S64  = %negative ? %magnitude.neg() : %magnitude
+        %m         : S64  = %signed.add(127)
+        %normal    : Bool = %m.between(1, 254)
+        %subnormal : Bool = %m.between(-22, 0)
+        when:
+            %normal    -> return(F32.from_bits(%m.to_u32_wrap().shl(23)))
+            %subnormal -> return(F32.from_bits(U32.shl(1, %m.add(22).to_u32_wrap())))
+            else       -> general(%tu)
+
+    block general(%tu: U32):
+        %ux      : U32  = %tu.shl(1)
+        %outside : Bool = %ux.ge(0x86000000).bitor(%ux.lt(0x65000000))
+        branch %outside ? edge(%tu, %ux) : fast(%tu, %ux)
+
+    // |x| >= 128, x is NaN, or |x| < 0x1p-26
+    block edge(%tu: U32, %ux: U32):
+        %tiny   : Bool = %ux.lt(0x65000000)
+        %finite : Bool = %tu.ge(0xC3000000).bitand(%tu.lt(0xC3150000))  // -149 < x <= -128
+        when:
+            %tiny   -> return(%x.add(1.0))
+            %finite -> fast(%tu, %ux)
+            else    -> special(%tu, %ux)
+
+    // infinities, NaN, x <= -149 (underflow) or x >= 128 (overflow)
+    block special(%tu: U32, %ux: U32):
+        %special  : Bool = %ux.ge(0xFF000000)
+        %nan      : Bool = %ux.gt(0xFF000000)
+        %negative : Bool = %tu.shr(31).eq(1)
+        %under    : Bool = %tu.ge(0xC3150000)
+        when:
+            %nan     -> return(%x.add(%x))
+            %special -> infinite(%negative)
+            %under   -> underflow()
+            else     -> return(F32.INFINITY)
+
+    block infinite(%negative: Bool):
+        branch %negative ? return(0.0) : return(F32.INFINITY)
+
+    block underflow():
+        %z       : F64 = %x.to_f64()
+        %y       : F64 = %z.add(149.0).mul(0x1p-150).add(0x1p-149)
+        %clamped : F64 = %y.max(0x1p-151)
+        return(%clamped.to_f32())
+
+    block fast(%tu: U32, %ux: U32):
+        %xd   : F64  = %x.to_f64()
+        %h    : F64  = %xd.sub(%xd.add(0x1.8p+46).sub(0x1.8p+46))
+        %h2   : F64  = %h.mul(%h)
+        %u    : U32  = %x.add(0x1.8p+17).bits()  // the low bits are round(64 x)
+        %tb   : U64  = CM_F32_EXP_TB.get(%u.bitand(0x3F).to_usize())
+        %sv   : F64  = F64.from_bits(%tb.add_wrap(%u.shr(6).to_u64().shl(52)))  // 2^(round(64 x) / 64)
+        %p01  : F64  = %h.mul(0x1.62e42fef4c4e7p-1).add(1.0)
+        %p23  : F64  = %h.mul(0x1.c6b19384ecd93p-5).add(0x1.ebfd1b232f475p-3)
+        %r    : F64  = %sv.mul(%h2.mul(%p23).add(%p01))
+        %ub   : F32  = %r.to_f32()
+        %lb   : F32  = %r.sub(%r.mul(0x1.3d8p-33)).to_f32()
+        %sure : Bool = %ub.eq(%lb)
+        branch %sure ? return(%ub) : hard(%tu, %ux, %h, %h2, %sv)
+
+    // The fast path can't decide the rounding: three hard cases, then a longer polynomial.
+    block hard(%tu: U32, %ux: U32, %h: F64, %h2: F64, %sv: F64):
+        %near  : Bool = %ux.le(0x79E7526E)
+        %case1 : Bool = %near.bitand(%tu.eq(0x3B429D37))
+        %case2 : Bool = %near.bitand(%tu.eq(0xBCF3A937))
+        %case3 : Bool = %near.bitand(%tu.eq(0xB8D3D026))
+        when:
+            %case1 -> return(F32.sub(0x1.00870ap+0, 0x1p-25))
+            %case2 -> return(F32.sub(0x1.f58d62p-1, 0x1p-26))
+            %case3 -> return(F32.add(0x1.fff6d2p-1, 0x1p-26))
+            else   -> slow(%h, %h2, %sv)
+
+    block slow(%h: F64, %h2: F64, %sv: F64):
+        %c01 : F64 = %h.mul(0x1.ebfbdff82c58fp-3).add(0x1.62e42fefa39efp-1)
+        %c23 : F64 = %h.mul(0x1.3b2ab6fb92e5ep-7).add(0x1.c6b08d702e0edp-5)
+        %c45 : F64 = %h.mul(0x1.430976b8ce6efp-13).add(0x1.5d886e6d54203p-10)
+        %r   : F64 = %sv.mul(%h).mul(%h2.mul(%h2.mul(%c45).add(%c23)).add(%c01)).add(%sv)
+        return(%r.to_f32())

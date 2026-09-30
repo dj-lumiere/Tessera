@@ -1,0 +1,108 @@
+// Tessera stdlib: the correctly rounded base-2 logarithm of F32
+//
+// x = 2^e (1 + m), 1 + m = (1 + j/64) (1 + z) with 1/(1 + j/64) from a table:
+// log2 x = e - log2(r_j) + log2(1 + z), with a short polynomial in F64. A
+// longer polynomial settles the cases the first can't round. Powers of two
+// give exact integers. Round to nearest only: log2(+-0) is -inf, a negative
+// input gives NaN, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/log2/log2f.c via RazorForge's B32Log2.rf.
+// Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// 1/(1 + i/64) for i in 0..64, rounded to 29 bits, as F64 bits.
+preset CM_F32_LOG2_IX: Array<U64, 65> = [0x3FF0000000000000, 0x3FEF81F820000000, 0x3FEF07C1F0000000,
+        0x3FEE9131AC000000, 0x3FEE1E1E1E000000, 0x3FEDAE6077000000, 0x3FED41D41D000000,
+        0x3FECD85689000000, 0x3FEC71C71C000000, 0x3FEC0E0704000000, 0x3FEBACF915000000,
+        0x3FEB4E81B5000000, 0x3FEAF286BD000000, 0x3FEA98EF60000000, 0x3FEA41A41A000000,
+        0x3FE9EC8E95000000, 0x3FE999999A000000, 0x3FE948B0FD000000, 0x3FE8F9C190000000,
+        0x3FE8ACB90F000000, 0x3FE8618618000000, 0x3FE8181818000000, 0x3FE7D05F41000000,
+        0x3FE78A4C81000000, 0x3FE745D174000000, 0x3FE702E05C000000, 0x3FE6C16C17000000,
+        0x3FE6816817000000, 0x3FE642C859000000, 0x3FE6058160000000, 0x3FE5C9882C000000,
+        0x3FE58ED231000000, 0x3FE5555555000000, 0x3FE51D07EB000000, 0x3FE4E5E0A7000000,
+        0x3FE4AFD6A0000000, 0x3FE47AE148000000, 0x3FE446F865000000, 0x3FE4141414000000,
+        0x3FE3E22CBD000000, 0x3FE3B13B14000000, 0x3FE3813814000000, 0x3FE3521CFB000000,
+        0x3FE323E34A000000, 0x3FE2F684BE000000, 0x3FE2C9FB4E000000, 0x3FE29E412A000000,
+        0x3FE27350B9000000, 0x3FE2492492000000, 0x3FE21FB781000000, 0x3FE1F7047E000000,
+        0x3FE1CF06AE000000, 0x3FE1A7B961000000, 0x3FE1811812000000, 0x3FE15B1E5F000000,
+        0x3FE135C811000000, 0x3FE1111111000000, 0x3FE0ECF56C000000, 0x3FE0C97150000000,
+        0x3FE0A6810A000000, 0x3FE0842108000000, 0x3FE0624DD3000000, 0x3FE0410410000000,
+        0x3FE0204081000000, 0x3FE0000000000000]
+
+/// log2(CM_F32_LOG2_IX[i]) for i in 0..64, as F64 bits.
+preset CM_F32_LOG2_LIX: Array<U64, 65> = [0x0000000000000000, 0xBF96E7966EAD8AC5,
+        0xBFA6BAD38119A13A, 0xBFB0EB389EE9F560, 0xBFB663F6FC3A678D, 0xBFBBC8423D408321,
+        0xBFC08C588E79F8E9, 0xBFC32AE9E28FC362, 0xBFC5C01A3CDE7F74, 0xBFC84C2BCCF005A9,
+        0xBFCACF5E2C156D8F, 0xBFCD49EE4B90C47C, 0xBFCFBC16B67C143B, 0xBFD11307DC445FEC,
+        0xBFD24407ABF4DC03, 0xBFD37124CEDE831F, 0xBFD49A784A5BC715, 0xBFD5C01A3965CC38,
+        0xBFD6E221CC2BB868, 0xBFD800A564AA10B6, 0xBFD91BBA8A906B7F, 0xBFDA33760ADBB56E,
+        0xBFDB47EBF91D417C, 0xBFDC592FAF028F8E, 0xBFDD6753E1A43E85, 0xBFDE726AA2157F61,
+        0xBFDF7A8567CD1CBD, 0xBFE03FDA8A93EA1C, 0xBFE0C10500ED4FEE, 0xBFE140C9FB5A8F7F,
+        0xBFE1BF311DAEFB44, 0xBFE23C41D317EDC1, 0xBFE2B80347F8250C, 0xBFE3327C6A752222,
+        0xBFE3ABB3FB080128, 0xBFE423B07F5114E5, 0xBFE49A784B147150, 0xBFE5101187E9B871,
+        0xBFE5848226C6C7C3, 0xBFE5F7CFF3DE8F2A, 0xBFE66A008D8EDE91, 0xBFE6DB19694A04AA,
+        0xBFE74B1FD6B5E715, 0xBFE7BA18F99CE2A5, 0xBFE82809D4D79BA9, 0xBFE894F749CF5047,
+        0xBFE900E615BAC2F7, 0xBFE96BDAD16F5160, 0xBFE9D5D9FE08BAEF, 0xBFEA3EE7F3E4A7EB,
+        0xBFEAA708F4DE7FE0, 0xBFEB0E4125CA68FE, 0xBFEB74948F9A72B0, 0xBFEBDA071B77C9E2,
+        0xBFEC3E9CA4193F99, 0xBFECA258DD397814, 0xBFED053F6D543325, 0xBFED6753DFEDAA39,
+        0xBFEDC899AA874B31, 0xBFEE29142F2E8B3D, 0xBFEE88C6B41B14AE, 0xBFEEE7B4718B4414,
+        0xBFEF45E08C87B090, 0xBFEFA34E117D8785, 0xBFF0000000000000]
+
+/// log2 x, correctly rounded.
+routine f32_cm_log2(%x: F32) -> F32
+    block entry():
+        %ux      : U32  = %x.bits()
+        %special : Bool = %ux.ge(0x7F800000)  // x <= -0, +inf, or NaN
+        %small   : Bool = %ux.lt(0x00800000)
+        when:
+            %special -> return(cm_f32_log2_special(%x))
+            %small   -> small(%ux)
+            else     -> normal(%ux)
+
+    // +0 or a subnormal
+    block small(%ux: U32):
+        %zero : Bool = %ux.eq(0)
+        branch %zero ? return(cm_f32_log2_special(%x)) : continue
+        %n : U32 = %ux.leading_zeros().sub(8)
+        jump normal(%ux.shl(%n).sub_wrap(%n.shl(23)))
+
+    // ux is a normalized positive pattern (the exponent field may be below 1 for a subnormal x)
+    block normal(%ux: U32):
+        %e     : S64  = %ux.to_s32_wrap().shr(23).to_s64().sub(127)
+        %m     : U32  = %ux.bitand(0x7FFFFF)
+        %power : Bool = %m.eq(0)
+        branch %power ? return(%e.to_f32()) : continue
+        %j    : USize = %m.add(0x10000).shr(17).to_usize()
+        %xd   : F64   = F64.from_bits(%m.to_u64().shl(29).bitor(0x3FF0000000000000))
+        %z    : F64   = %xd.mul(F64.from_bits(CM_F32_LOG2_IX.get(%j))).sub(1.0)
+        %z2   : F64   = %z.mul(%z)
+        %el   : F64   = %e.to_f64().sub(F64.from_bits(CM_F32_LOG2_LIX.get(%j)))
+        %tail : F64   = %z.mul(0x1.ec60b584ca47fp-2).add(-0x1.71574d6939f6cp-1)
+        %f    : F64   = %el.add(%z.mul(0x1.7154765bab2b5p+0)).add(%z2.mul(%tail))
+        %lb   : F32   = %f.to_f32()
+        %ub   : F32   = %f.add(0x1.661p-32).to_f32()
+        %sure : Bool  = %lb.eq(%ub)
+        branch %sure ? return(%lb) : slow(%z, %z2, %el)
+
+    // The fast path can't decide the rounding: a longer polynomial.
+    block slow(%z: F64, %z2: F64, %el: F64):
+        %c0 : F64 = F64.sub(0x1.71547652b8314p+0, %z.mul(0x1.71547652b7f67p-1))
+        %c2 : F64 = F64.sub(0x1.ec709db872c63p-2, %z.mul(0x1.715476b064cdfp-2))
+        %c4 : F64 = F64.sub(0x1.277c72c15441fp-2, %z.mul(0x1.ec4ff35b64c31p-3))
+        %c  : F64 = %c0.add(%z2.mul(%c2.add(%z2.mul(%c4))))
+        return(%el.add(%z.mul(%c)).to_f32())
+
+/// log2 of +-0 (-inf), +inf (itself), NaN (itself, quiet) or a negative input (NaN).
+private routine cm_f32_log2_special(%x: F32) -> F32
+    block entry():
+        %ux   : U32  = %x.bits()
+        %zero : Bool = %ux.shl(1).eq(0)
+        %inf  : Bool = %ux.eq(0x7F800000)
+        %nan  : Bool = %ux.shl(1).gt(0xFF000000)
+        when:
+            %zero -> return(F32.from_bits(0xFF800000))
+            %inf  -> return(%x)
+            %nan  -> return(%x.add(%x))
+            else  -> return(F32.from_bits(0xFFC00000))

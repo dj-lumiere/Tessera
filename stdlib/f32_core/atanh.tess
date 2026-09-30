@@ -1,0 +1,137 @@
+// Tessera stdlib: the correctly rounded inverse hyperbolic tangent of F32
+//
+// Small |x| goes through an odd polynomial in F64. Otherwise
+// atanh(x) = (log(1 + x) - log(1 - x)) / 2, both logarithms reduced through a
+// 64-entry reciprocal table and a short polynomial; longer polynomials settle
+// the cases the first can't round. Round to nearest only: ±0 maps to itself,
+// ±1 gives ±inf, |x| > 1 gives NaN, and a NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/atanh/atanhf.c via RazorForge's B32Atanh.rf.
+// Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// Approximate reciprocals of 1 + j/64 for j in 0..63, as F64 bits.
+preset CM_F32_ATANH_TR: Array<U64, 64> = [0x3FEFC07F02000000, 0x3FEF44659E000000,
+        0x3FEECC07B3000000, 0x3FEE573AC9000000, 0x3FEDE5D6E4000000, 0x3FED77B655000000,
+        0x3FED0CB58F000000, 0x3FECA4B305000000, 0x3FEC3F8F02000000, 0x3FEBDD2B8A000000,
+        0x3FEB7D6C3E000000, 0x3FEB203640000000, 0x3FEAC5701B000000, 0x3FEA6D01A7000000,
+        0x3FEA16D3F9000000, 0x3FE9C2D14F000000, 0x3FE970E4F8000000, 0x3FE920FB4A000000,
+        0x3FE8D3018D000000, 0x3FE886E5F1000000, 0x3FE83C977B000000, 0x3FE7F405FD000000,
+        0x3FE7AD2209000000, 0x3FE767DCE4000000, 0x3FE724287F000000, 0x3FE6E1F76B000000,
+        0x3FE6A13CD1000000, 0x3FE661EC6A000000, 0x3FE623FA77000000, 0x3FE5E75BB9000000,
+        0x3FE5AC056B000000, 0x3FE571ED3C000000, 0x3FE5390949000000, 0x3FE5015015000000,
+        0x3FE4CAB887000000, 0x3FE49539E4000000, 0x3FE460CBC8000000, 0x3FE42D6626000000,
+        0x3FE3FB0140000000, 0x3FE3C995A4000000, 0x3FE3991C2C000000, 0x3FE3698DF4000000,
+        0x3FE33AE45B000000, 0x3FE30D1901000000, 0x3FE2E025C0000000, 0x3FE2B404AD000000,
+        0x3FE288B013000000, 0x3FE25E2271000000, 0x3FE2345679000000, 0x3FE20B470C000000,
+        0x3FE1E2EF3B000000, 0x3FE1BB4A40000000, 0x3FE1945381000000, 0x3FE16E0689000000,
+        0x3FE1485F0E000000, 0x3FE12358E7000000, 0x3FE0FEF011000000, 0x3FE0DB20A9000000,
+        0x3FE0B7E6EC000000, 0x3FE0953F39000000, 0x3FE073260A000000, 0x3FE05197F8000000,
+        0x3FE03091B5000000, 0x3FE0101010000000]
+
+/// -log of the entries of the reciprocal table, halved, as F64 bits.
+preset CM_F32_ATANH_TL: Array<U64, 64> = [0x3F6FE02A69106789, 0x3F87B91B1155B11B,
+        0x3F939E87BA1EBD60, 0x3F9B42DD713971BF, 0x3FA16536EE637AE1, 0x3FA51B073C96183F,
+        0x3FA8C345DA019B21, 0x3FAC5E5492ABC743, 0x3FAFEC912FBBEABB, 0x3FB1B72AD33F67A0,
+        0x3FB371FC1F6E8F74, 0x3FB526E5E5A1B438, 0x3FB6D60FE601D21D, 0x3FB87FA06438C911,
+        0x3FBA23BC223AB563, 0x3FBBC28673A58CD6, 0x3FBD5C216B8FBB91, 0x3FBEF0ADCAEC5936,
+        0x3FC040259530D041, 0x3FC1058BF8D24AD5, 0x3FC1C898C09D99FB, 0x3FC2895A13E286A3,
+        0x3FC347DD9A447D55, 0x3FC404308716A7E4, 0x3FC4BE5F963B78A1, 0x3FC5767718015A6C,
+        0x3FC62C82F3A5C795, 0x3FC6E08EAB13A1E4, 0x3FC792A55FE147A2, 0x3FC842D1D9928B17,
+        0x3FC8F11E873A62C7, 0x3FC99D958207E08B, 0x3FCA484090C1BB0A, 0x3FCAF129324B786B,
+        0x3FCB9858970710FB, 0x3FCC3DD7A6DDAD4D, 0x3FCCE1AF0B65F3EB, 0x3FCD83E725022F3E,
+        0x3FCE2488197C6C26, 0x3FCEC399D3D68CC0, 0x3FCF6123FAC028AC, 0x3FCFFD2E07E7F498,
+        0x3FD04BDF9E3B26D2, 0x3FD0986F4FA93521, 0x3FD0E4498651CC8C, 0x3FD12F719595EFBC,
+        0x3FD179EABB0A99A1, 0x3FD1C3B81E933C25, 0x3FD20CDCD0E0AB6E, 0x3FD2555BCF50F7CB,
+        0x3FD29D37FF34B08B, 0x3FD2E47437640268, 0x3FD32B1338401D71, 0x3FD37117B5C147B6,
+        0x3FD3B6844A13FC23, 0x3FD3FB5B857F6F42, 0x3FD43F9FE2F7CE67, 0x3FD48353D11488DF,
+        0x3FD4C679B014EE3A, 0x3FD50913CC03686B, 0x3FD54B2468259498, 0x3FD58CADB57D7989,
+        0x3FD5CDB1DCAA1765, 0x3FD60E32F46788D9]
+
+/// n log(2) / 2 for n in 1..24 (rounded so that the fast path's error bound holds), as F64 bits.
+preset CM_F32_ATANH_LN2N: Array<U64, 24> = [0x3FD62E42FEDB2A44, 0x3FE62E42FEEAB21A,
+        0x3FF0A2B23F33E789, 0x3FF62E42FEF27604, 0x3FFBB9D3BEB10480, 0x4000A2B23F37C97E,
+        0x4003687A9F1710BC, 0x40062E42FEF657FA, 0x4008F40B5ED59F38, 0x400BB9D3BEB4E676,
+        0x400E7F9C1E942DB4, 0x4010A2B23F39BA79, 0x401205966F295E18, 0x4013687A9F1901B7,
+        0x4014CB5ECF08A556, 0x40162E42FEF848F5, 0x401791272EE7EC93, 0x4018F40B5ED79032,
+        0x401A56EF8EC733D1, 0x401BB9D3BEB6D770, 0x401D1CB7EEA67B0F, 0x401E7F9C1E961EAE,
+        0x401FE2804E85C24D, 0x4020A2B23F3AB2F6]
+
+/// atanh(x), correctly rounded.
+routine f32_cm_atanh(%x: F32) -> F32
+    block entry():
+        %ux : U32 = %x.bits()
+        %ax : U32 = %ux.shl(1)
+        when:
+            %ax.eq(0)          -> return(%x)
+            %ax.lt(0x73713744) -> return(%x.mul_add(0x1p-25, %x))  // |x| < 0x1.713744p-12
+            %ax.lt(0x7A300000) -> poly()  // |x| < 0x1.3p-5
+            %ax.eq(0x7F000000) -> return(%x.div(0.0))  // ±1
+            %ax.gt(0xFF000000) -> return(%x.add(%x))  // NaN
+            %ax.gt(0x7F000000) -> return(F32.from_bits(0xFFC00000))  // |x| > 1
+            else               -> general(%ux, %ax)
+
+    block poly():
+        %z  : F64 = %x.to_f64()
+        %z2 : F64 = %z.mul(%z)
+        %z4 : F64 = %z2.mul(%z2)
+        %p0 : F64 = %z2.mul(0x1.9999999ba4ee8p-3).add(0x1.5555555555527p-2)
+        %p1 : F64 = %z2.mul(0x1.c8236aae809c6p-4).add(0x1.24922c280990ap-3)
+        %r  : F64 = %z4.mul(%p1).add(%p0)
+        return(%z.add(%z.mul(%z2).mul(%r)).to_f32())
+
+    // md / 2^32 is |x|: td = 1 + |x| and tn = (1 - |x|) 2^nz, both in [1, 2)
+    block general(%ux: U32, %ax: U32):
+        %negative : Bool  = %ux.shr(31).eq(1)
+        %sgn      : F64   = %negative ? -1.0 : 1.0
+        %e        : U32   = %ax.shr(24)
+        %md       : U32   = %ux.shl(8).bitor(0x80000000).shr(U32.sub(126, %e))
+        %mn0      : U32   = U32.sub_wrap(0, %md)
+        %nz       : U32   = %mn0.leading_zeros().add(1)
+        %mn       : U32   = %mn0.shl(%nz)
+        %jn       : USize = %mn.shr(26).to_usize()
+        %jd       : USize = %md.shr(26).to_usize()
+        %tn       : F64   = F64.from_bits(%mn.to_u64().shl(20).bitor(0x3FF0000000000000))
+        %td       : F64   = F64.from_bits(%md.to_u64().shl(20).bitor(0x3FF0000000000000))
+        %zn       : F64   = %tn.mul(F64.from_bits(CM_F32_ATANH_TR.get(%jn))).sub(1.0)
+        %zd       : F64   = %td.mul(F64.from_bits(CM_F32_ATANH_TR.get(%jd))).sub(1.0)
+        %zn2      : F64   = %zn.mul(%zn)
+        %zd2      : F64   = %zd.mul(%zd)
+        %tln      : F64   = F64.from_bits(CM_F32_ATANH_TL.get(%jn))
+        %tld      : F64   = F64.from_bits(CM_F32_ATANH_TL.get(%jd))
+        %ln2n     : F64   = F64.from_bits(CM_F32_ATANH_LN2N.get(%nz.sub(1).to_usize()))
+        %rn_head  : F64   = %tln.sub(%ln2n).add(%zn.mul(0x1.fffffffce5a6ap-2))
+        %rn       : F64   = %rn_head.add(%zn2.mul(%zn.mul(0x1.555a0f53d79a5p-3).add(-0x1.0001f81ec0ab8p-2)))
+        %rd_head  : F64   = %tld.add(%zd.mul(0x1.fffffffce5a6ap-2))
+        %rd       : F64   = %rd_head.add(%zd2.mul(%zd.mul(0x1.555a0f53d79a5p-3).add(-0x1.0001f81ec0ab8p-2)))
+        %r        : F64   = %sgn.mul(%rd.sub(%rn))
+        %ub       : F32   = %r.to_f32()
+        %lb       : F32   = %r.add(%sgn.mul(0x1.f0fab08151146p-33)).to_f32()
+        %sure     : Bool  = %ub.eq(%lb)
+        branch %sure ? return(%ub) : slow(%sgn, %nz, %zn, %zd, %zn2, %zd2, %tln, %tld)
+
+    // too close to a rounding boundary: evaluate both logarithms with longer polynomials
+    block slow(%sgn: F64, %nz: U32, %zn: F64, %zd: F64, %zn2: F64, %zd2: F64, %tln: F64, %tld: F64):
+        %zn4 : F64 = %zn2.mul(%zn2)
+        %zd4 : F64 = %zd2.mul(%zd2)
+        %nzf : F64 = %nz.to_f64()
+        %fn  : F64 = cm_f32_atanh_log1p(%zn, %zn2, %zn4)
+        %fn1 : F64 = %fn.add(F64.mul(0x1.0ca86c3898dp-50, %nzf))
+        %fn2 : F64 = %fn1.add(%tln)
+        %en  : F64 = %nzf.mul(0x1.62e42fefa3ap-2)
+        %fd  : F64 = cm_f32_atanh_log1p(%zd, %zd2, %zd4)
+        %fd1 : F64 = %fd.add(%tld)
+        %r   : F64 = %fd1.sub(%fn2).add(%en)
+        return(%sgn.mul(%r).to_f32())
+
+/// The longer polynomial of atanh's slow path: about log(1 + z) / 2, given z, z^2 and z^4.
+routine cm_f32_atanh_log1p(%z: F64, %z2: F64, %z4: F64) -> F64
+    block entry():
+        %p01 : F64 = %z.mul(-0x1.000000000001bp-2).add(0x1p-1)
+        %p23 : F64 = %z.mul(-0x1.fffffff26d72ep-4).add(0x1.55555555555bap-3)
+        %p45 : F64 = %z.mul(-0x1.555c39cb9ee8p-4).add(0x1.99999989035p-4)
+        %p03 : F64 = %z2.mul(%p23).add(%p01)
+        %p46 : F64 = %z2.mul(0x1.24992d8b014a1p-4).add(%p45)
+        return(%z.mul(%z4.mul(%p46).add(%p03)))

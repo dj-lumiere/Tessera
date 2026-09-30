@@ -1,0 +1,112 @@
+// Tessera stdlib: the correctly rounded arc sine of F32
+//
+// A fast odd polynomial in x covers |x| < 0x1.c29p-1 and settles most inputs.
+// The rest go through an accurate path in F64: for |x| < 1/2 a degree-11
+// polynomial in x^2, above that pi/2 - sqrt(1 - |x|) times a polynomial in
+// 1 - |x|. Round to nearest only: |x| > 1 gives NaN, NaN comes back quiet.
+// The accurate polynomial cm_f32_asin_poly12 is shared with acos.
+//
+// Ported from CORE-MATH, src/binary32/asin/asinf.c via RazorForge's B32Asin.rf.
+// Copyright (c) 2023 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// The two degree-11 accurate-path polynomials, as F64 bits: entries 0..11
+/// approximate (asin(x) - x) / x^3 in x^2, entries 12..23 approximate
+/// (pi/2 - asin(1 - z)) / sqrt(z) in z.
+preset CM_F32_ASIN_C: Array<U64, 24> = [0x3FC555555555529C, 0x3FB333333337E0DD, 0x3FA6DB6DB3B4465E,
+        0x3F9F1C72E13AC306, 0x3F96E89CEBE06BC4, 0x3F91C6DCF5289094, 0x3F8C6DBBCC7C6315,
+        0x3F88F8DC2615E996, 0x3F7A5833B7BF15E8, 0x3F943F44ACE1665C, 0xBF90FB17DF881C73,
+        0x3FA07520C026B2D6, 0x3FF6A09E667F3BCB, 0x3FBE2B7DDDFF2DB9, 0x3F9B27247AB42DBC,
+        0x3F802995CC4E0744, 0x3F65FFB0276EC8EA, 0x3F5033885A928DEC, 0x3F3911F2BE23F8C7,
+        0x3F24C3C55D2437FD, 0x3F0AF477E1D7B461, 0x3F0ABD6BDFF67DCB, 0xBEF1717E86D0FA28,
+        0x3EF6FF526DE46023]
+
+/// arcsin(x), correctly rounded.
+routine f32_cm_asin(%x: F32) -> F32
+    block entry():
+        %xs      : F64  = %x.to_f64()
+        %ax      : U32  = %x.bits().shl(1)
+        %outside : Bool = %ax.gt(0x7F000000)
+        %fast    : Bool = %ax.lt(0x7EC29000)
+        when:
+            %outside -> outside(%ax)
+            %fast    -> fast(%ax, %xs)
+            else     -> accurate(%ax, %xs)
+
+    // |x| > 1 or NaN, which comes back quiet with its sign and payload
+    block outside(%ax: U32):
+        %nan : Bool = %ax.gt(0xFF000000)
+        branch %nan ? return(%x.add(%x)) : return(F32.from_bits(0xFFC00000))
+
+    // |x| < 0x1.c29p-1
+    block fast(%ax: U32, %xs: F64):
+        %tiny : Bool = %ax.lt(0x73000000)  // |x| < 0x1p-12
+        branch %tiny ? return(%x.mul_add(0x1p-25, %x)) : continue
+        %z2   : F64  = %xs.mul(%xs)
+        %z4   : F64  = %z2.mul(%z2)
+        %z8   : F64  = %z4.mul(%z4)
+        %z16  : F64  = %z8.mul(%z8)
+        %a01  : F64  = %z2.mul(0x1.55557aeca105dp-3).add(0x1.0000000000005p+0)
+        %a23  : F64  = %z2.mul(0x1.775738a5a6f92p-5).add(0x1.3314ec3db7d12p-4)
+        %a45  : F64  = %z2.mul(0x1.605c6d58740fp-2).add(0x1.5d5f7ce1c8538p-8)
+        %a67  : F64  = %z2.mul(0x1.f152170f151ebp+3).add(-0x1.5728b732d73c6p+1)
+        %p0   : F64  = %z8.mul(%z4.mul(%a67).add(%a45)).add(%z4.mul(%a23).add(%a01))
+        %b01  : F64  = %z2.mul(0x1.71971e17375ap+7).add(-0x1.f962ea3ca992ep+5)
+        %b23  : F64  = %z2.mul(0x1.26a3b8d4bdb14p+9).add(-0x1.860512b4ba23p+8)
+        %b45  : F64  = %z2.mul(0x1.b3d722aebfa2ep+8).add(-0x1.36f2ea5698b51p+9)
+        %b67  : F64  = %z2.mul(0x1.1518af6a65e2dp+5).add(-0x1.6cf89703b1289p+7)
+        %p1   : F64  = %z8.mul(%z4.mul(%b67).add(%b45)).add(%z4.mul(%b23).add(%b01))
+        %rf   : F64  = %xs.mul(%z16.mul(%p1).add(%p0))
+        %ub   : F32  = %rf.to_f32()
+        %lb   : F32  = %rf.sub(%xs.mul(0x1.efa8ebp-31)).to_f32()
+        %sure : Bool = %ub.eq(%lb)
+        branch %sure ? return(%ub) : accurate(%ax, %xs)
+
+    // The fast path can't decide the rounding, or |x| >= 0x1.c29p-1.
+    block accurate(%ax: U32, %xs: F64):
+        %half  : Bool = %ax.lt(0x7E000000)  // |x| < 1/2
+        %hard1 : Bool = %ax.eq(0x7E55688A)
+        %hard2 : Bool = %ax.eq(0x7E107434)
+        when:
+            %half  -> small(%xs)
+            %hard1 -> return(F32.copysign(0x1.75b8a2p-1, %x).add(F32.copysign(0x1p-26, %x)))
+            %hard2 -> return(F32.copysign(0x1.1f4b64p-1, %x).add(F32.copysign(0x1p-26, %x)))
+            else   -> large(%xs)
+
+    // x + x^3 p(x^2)
+    block small(%xs: F64):
+        %z2 : F64 = %xs.mul(%xs)
+        %r  : F64 = %xs.mul(%z2).mul(cm_f32_asin_poly12(%z2, 0)).add(%xs)
+        return(%r.to_f32())
+
+    // sign(x) (pi/2 - sqrt(z) q(z)) with z = 1 - |x|
+    block large(%xs: F64):
+        %z : F64 = F64.sub(1.0, %xs.abs())
+        %s : F64 = %z.sqrt()
+        %r : F64 = F64.sub(0x1.921fb54442d18p+0, %s.mul(cm_f32_asin_poly12(%z, 12)))
+        return(%r.copysign(%xs).to_f32())
+
+/// Evaluates one of the two degree-11 polynomials of CM_F32_ASIN_C at z; base
+/// is 0 or 12, the index of its first coefficient.
+routine cm_f32_asin_poly12(%z: F64, %base: USize) -> F64
+    block entry():
+        %z2  : F64 = %z.mul(%z)
+        %z4  : F64 = %z2.mul(%z2)
+        %c0  : F64 = %z.mul(cm_f32_asin_coef(%base, 1)).add(cm_f32_asin_coef(%base, 0))
+        %c2  : F64 = %z.mul(cm_f32_asin_coef(%base, 3)).add(cm_f32_asin_coef(%base, 2))
+        %c4  : F64 = %z.mul(cm_f32_asin_coef(%base, 5)).add(cm_f32_asin_coef(%base, 4))
+        %c6  : F64 = %z.mul(cm_f32_asin_coef(%base, 7)).add(cm_f32_asin_coef(%base, 6))
+        %c8  : F64 = %z.mul(cm_f32_asin_coef(%base, 9)).add(cm_f32_asin_coef(%base, 8))
+        %c10 : F64 = %z.mul(cm_f32_asin_coef(%base, 11)).add(cm_f32_asin_coef(%base, 10))
+        %d0  : F64 = %c2.mul(%z2).add(%c0)
+        %d4  : F64 = %c6.mul(%z2).add(%c4)
+        %d8  : F64 = %z2.mul(%c10).add(%c8)
+        %r   : F64 = %z4.mul(%z4.mul(%d8).add(%d4)).add(%d0)
+        return(%r)
+
+/// Coefficient k of the polynomial starting at base in CM_F32_ASIN_C.
+private routine cm_f32_asin_coef(%base: USize, %k: USize) -> F64
+    block entry():
+        return(F64.from_bits(CM_F32_ASIN_C.get(%base.add(%k))))

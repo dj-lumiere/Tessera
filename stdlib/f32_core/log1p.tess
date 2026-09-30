@@ -1,0 +1,128 @@
+// Tessera stdlib: the correctly rounded log(1 + x) of F32
+//
+// Near zero a polynomial in x. Elsewhere 1 + x = 2^e (1 + m), and
+// 1 + m = x0_j (1 + z) with 1/x0_j from a table, so log(1 + x) =
+// e log(2) - log(x0_j) + log(1 + z), with a short polynomial in F64. A longer
+// polynomial, a two-part log(2) and a double-float final sum settle the cases
+// the first can't round. Round to nearest only: log1p(-1) is -inf, an input
+// below -1 gives NaN, +-0 and +inf map to themselves, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/log1p/log1pf.c via RazorForge's B32Log1p.rf.
+// Copyright (c) 2023-2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// 1/(1 + (j + 0.5)/32) for j in 0..31, rounded to 23 bits, as F64 bits.
+preset CM_F32_LOG1P_X0: Array<U64, 32> = [0x3FEF81F800000000, 0x3FEE9131C0000000,
+        0x3FEDAE6080000000, 0x3FECD85680000000, 0x3FEC0E0700000000, 0x3FEB4E81C0000000,
+        0x3FEA98EF80000000, 0x3FE9EC8E80000000, 0x3FE948B100000000, 0x3FE8ACB900000000,
+        0x3FE8181800000000, 0x3FE78A4C80000000, 0x3FE702E040000000, 0x3FE6816800000000,
+        0x3FE6058180000000, 0x3FE58ED240000000, 0x3FE51D0800000000, 0x3FE4AFD6C0000000,
+        0x3FE446F880000000, 0x3FE3E22CC0000000, 0x3FE3813800000000, 0x3FE323E340000000,
+        0x3FE2C9FB40000000, 0x3FE27350C0000000, 0x3FE21FB780000000, 0x3FE1CF06C0000000,
+        0x3FE1811800000000, 0x3FE135C800000000, 0x3FE0ECF580000000, 0x3FE0A68100000000,
+        0x3FE0624DC0000000, 0x3FE0204080000000]
+
+/// -log(CM_F32_LOG1P_X0[j]) offset by 0x1.7654p-37 (so the fast path errs upward), as F64 bits.
+preset CM_F32_LOG1P_LIX: Array<U64, 32> = [0x3F8FC0B0B1599CE4, 0x3FA77457A64A42AB,
+        0x3FB341D74627847D, 0x3FBA926D8A568810, 0x3FC0D77E8CD667AA, 0x3FC44D2B38D15679,
+        0x3FC7AB886A16B2B3, 0x3FCAF3C9B686996D, 0x3FCE27075E30CC37, 0x3FD0A3250A767D98,
+        0x3FD229423BD2662E, 0x3FD3A64C596C3292, 0x3FD51AADD530E505, 0x3FD686C85E9E0177,
+        0x3FD7EAF7DF859CAE, 0x3FD94793EE2403B3, 0x3FDA9CEC5A9CF512, 0x3FDBEB4D3BAA086F,
+        0x3FDD32FE2A03D8B5, 0x3FDE744257D97431, 0x3FDFAF58CF7BDFE7, 0x3FE0723E6D1E5599,
+        0x3FE109F3B52EC2F3, 0x3FE19EE6A7693FC5, 0x3FE23130D9C03597, 0x3FE2C0E9CC4604F1,
+        0x3FE34E28BD9E5837, 0x3FE3D9028A72CD5F, 0x3FE4618B9C1DD52D, 0x3FE4E7D825B8D20B,
+        0x3FE56BF9FAB56A02, 0x3FE5EE02AB258CCA]
+
+/// log(1 + x), correctly rounded.
+routine f32_cm_log1p(%x: F32) -> F32
+    block entry():
+        %z       : F64  = %x.to_f64()
+        %ux      : U32  = %x.bits()
+        %ax      : U32  = %ux.bitand(0x7FFFFFFF)
+        %below   : Bool = %ux.ge(0xBF800000)  // x <= -1, -inf, or a negative NaN
+        %special : Bool = %ax.ge(0x7F800000)  // +inf or a positive NaN
+        %small   : Bool = %ax.lt(0x3C880000)  // |x| < 0x1.1p-6
+        when:
+            %below   -> return(cm_f32_log1p_special(%x))
+            %special -> return(cm_f32_log1p_special(%x))
+            %small   -> small(%z, %ax)
+            else     -> normal(%z)
+
+    block small(%z: F64, %ax: U32):
+        %tiny : Bool = %ax.lt(0x33000000)  // |x| < 0x1p-25
+        branch %tiny ? tiny(%ax) : continue
+        %f        : F64  = cm_f32_log1p_poly(%z, %z.mul(%z))
+        %r        : F64  = %z.add(%f)
+        %boundary : Bool = %r.bits().bitand(0xFFFFFFF).eq(0)
+        branch %boundary
+            ? return(%r.add(%f.add(%z.sub(%r)).mul(0x1p+14)).to_f32())
+            : return(%r.to_f32())
+
+    // log1p(x) rounds like x - x^2
+    block tiny(%ax: U32):
+        %zero : Bool = %ax.eq(0)
+        branch %zero ? return(%x) : return(%x.mul_add(%x.neg(), %x))
+
+    block normal(%z: F64):
+        %tp   : U64   = %z.add(1.0).bits()
+        %e    : S64   = %tp.shr(52).to_s64().sub(0x3FF)
+        %ed   : F64   = %e.to_f64()
+        %m52  : U64   = %tp.bitand(0x000FFFFFFFFFFFFF)
+        %j    : USize = %tp.shr(47).bitand(31).to_usize()
+        %xd   : F64   = F64.from_bits(%m52.bitor(0x3FF0000000000000))
+        %zj   : F64   = %xd.mul(F64.from_bits(CM_F32_LOG1P_X0.get(%j))).sub(1.0)  // exact for x < 0x1.0cp+30
+        %lixj : F64   = F64.from_bits(CM_F32_LOG1P_LIX.get(%j))
+        %z2   : F64   = %zj.mul(%zj)
+        %c01  : F64   = F64.sub(0x1.ffffffe1eac82p-1, %zj.mul(0x1.ffffff7da1724p-2))
+        %c23  : F64   = F64.sub(0x1.5564d8fa59d0cp-2, %zj.mul(0x1.001219d3dba2ap-2))
+        %r    : F64   = %ed.mul(0x1.62e42fefa39efp-1).add(%lixj).add(%zj.mul(%c01.add(%z2.mul(%c23))))
+        %ub   : F32   = %r.to_f32()
+        %lb   : F32   = %r.sub(0x1.7b33170824155p-36).to_f32()
+        %sure : Bool  = %ub.eq(%lb)
+        branch %sure ? return(%ub) : slow(%zj, %z2, %ed, %lixj)
+
+    // The fast path can't decide the rounding: a longer polynomial, a two-part log(2) and a double-float final sum.
+    block slow(%z: F64, %z2: F64, %ed: F64, %lixj: F64):
+        %f    : F64  = cm_f32_log1p_poly(%z, %z2)
+        %lj   : F64  = %lixj.sub(0x1.7654p-37)  // remove the offset
+        %lh   : F64  = %ed.mul(0x1.62e4p-1)
+        %ll   : F64  = %ed.mul(0x1.7f7d1cf79abcap-20).add(%z)
+        %rh   : F64  = %lh.add(%lj)
+        %rl   : F64  = %lh.sub(%rh).add(%lj).add(%ll.add(%f))
+        %fh   : F32  = %rh.add(%rl).to_f32()
+        %fl64 : F64  = %rh.sub(%fh.to_f64()).add(%rl)
+        %fl   : F32  = %fl64.to_f32()
+        %tfl  : F32  = %fl.mul(2.0)
+        %tie  : Bool = %fh.add(%tfl).sub(%fh).eq(%tfl)
+        branch %tie ? tie(%fh, %fl, %fl64) : return(%fh.add(%fl))
+
+    // fh + fl may land on a tie: move fl by half its size toward fl64
+    block tie(%fh: F32, %fl: F32, %fl64: F64):
+        %sign : F32 = %fl64.sub(%fl.to_f64()).to_f32()
+        %step : F32 = F32.copysign(0.5, %sign).mul(%fl.abs())
+        return(%fh.add(%fl.add(%step)))
+
+/// z^2 (-1/2 + z/3 - z^2/4 + ...), the tail of log(1 + z) past z.
+private routine cm_f32_log1p_poly(%z: F64, %z2: F64) -> F64
+    block entry():
+        %z4  : F64 = %z2.mul(%z2)
+        %c01 : F64 = %z.mul(0x1.5555555556f6bp-2).add(-0.5)
+        %c23 : F64 = %z.mul(0x1.9999988d176e4p-3).add(-0x1.00000000029b9p-2)
+        %c46 : F64 = F64.sub(0x1.24adeca50e2bcp-3,
+                %z.mul(0x1.001ba33bf57cfp-3)).mul(%z).add(-0x1.55555418889a7p-3)
+        return(%z2.mul(%c01.add(%z2.mul(%c23)).add(%z4.mul(%c46))))
+
+/// log1p of -1 (-inf), +inf (itself), NaN (itself, quiet) or an input below -1 (NaN).
+private routine cm_f32_log1p_special(%x: F32) -> F32
+    block entry():
+        %ux    : U32  = %x.bits()
+        %minus : Bool = %ux.eq(0xBF800000)
+        %inf   : Bool = %ux.eq(0x7F800000)
+        %nan   : Bool = %ux.shl(1).gt(0xFF000000)
+        when:
+            %minus -> return(F32.from_bits(0xFF800000))
+            %inf   -> return(%x)
+            %nan   -> return(%x.add(%x))
+            else   -> return(F32.from_bits(0xFFC00000))

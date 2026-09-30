@@ -1,0 +1,131 @@
+// Tessera stdlib: the correctly rounded base-10 logarithm of F32
+//
+// x = 2^e (1 + m), 1 + m = (1 + j/64) (1 + z) with 1/(1 + j/64) from a table:
+// log10 x = e log10(2) - log10(r_j) + log10(1 + z), with a short polynomial
+// in F64. A longer polynomial and a two-part log10(2) settle the cases the
+// first can't round. Powers of ten give exact integers. Round to nearest
+// only: log10(+-0) is -inf, a negative input gives NaN, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/log10/log10f.c via RazorForge's B32Log10.rf.
+// Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// 1/(1 + i/64) for i in 0..64, rounded to 29 bits, as F64 bits.
+preset CM_F32_LOG10_TR: Array<U64, 65> = [0x3FF0000000000000, 0x3FEF81F820000000,
+        0x3FEF07C1F0000000, 0x3FEE9131AC000000, 0x3FEE1E1E1E000000, 0x3FEDAE6077000000,
+        0x3FED41D41D000000, 0x3FECD85689000000, 0x3FEC71C71C000000, 0x3FEC0E0704000000,
+        0x3FEBACF915000000, 0x3FEB4E81B5000000, 0x3FEAF286BD000000, 0x3FEA98EF60000000,
+        0x3FEA41A41A000000, 0x3FE9EC8E95000000, 0x3FE999999A000000, 0x3FE948B0FD000000,
+        0x3FE8F9C190000000, 0x3FE8ACB90F000000, 0x3FE8618618000000, 0x3FE8181818000000,
+        0x3FE7D05F41000000, 0x3FE78A4C81000000, 0x3FE745D174000000, 0x3FE702E05C000000,
+        0x3FE6C16C17000000, 0x3FE6816817000000, 0x3FE642C859000000, 0x3FE6058160000000,
+        0x3FE5C9882C000000, 0x3FE58ED231000000, 0x3FE5555555000000, 0x3FE51D07EB000000,
+        0x3FE4E5E0A7000000, 0x3FE4AFD6A0000000, 0x3FE47AE148000000, 0x3FE446F865000000,
+        0x3FE4141414000000, 0x3FE3E22CBD000000, 0x3FE3B13B14000000, 0x3FE3813814000000,
+        0x3FE3521CFB000000, 0x3FE323E34A000000, 0x3FE2F684BE000000, 0x3FE2C9FB4E000000,
+        0x3FE29E412A000000, 0x3FE27350B9000000, 0x3FE2492492000000, 0x3FE21FB781000000,
+        0x3FE1F7047E000000, 0x3FE1CF06AE000000, 0x3FE1A7B961000000, 0x3FE1811812000000,
+        0x3FE15B1E5F000000, 0x3FE135C811000000, 0x3FE1111111000000, 0x3FE0ECF56C000000,
+        0x3FE0C97150000000, 0x3FE0A6810A000000, 0x3FE0842108000000, 0x3FE0624DD3000000,
+        0x3FE0410410000000, 0x3FE0204081000000, 0x3FE0000000000000]
+
+/// -log10(CM_F32_LOG10_TR[i]) for i in 0..64 with a small offset, as F64 bits.
+preset CM_F32_LOG10_TL: Array<U64, 65> = [0xBD12000000000000, 0x3F7B947689310DFA,
+        0x3F8B5E909C96D11B, 0x3F945F4F59ED1E08, 0x3F9AF5F92CBD8BC1, 0x3FA0BA01A606DCDE,
+        0x3FA3ED119B9A29CD, 0x3FA714834298ED14, 0x3FAA30A9D983564C, 0x3FAD41D512670665,
+        0x3FB02428C0F65442, 0x3FB1A23444EECB67, 0x3FB31B30543F4BDD, 0x3FB48F3ED39BFC2D,
+        0x3FB5FE8049A0E34B, 0x3FB769140A6A9F30, 0x3FB8CF1836C98BDB, 0x3FBA30A9D55540CA,
+        0x3FBB8DE4D1EE8167, 0x3FBCE6E4202CA20F, 0x3FBE3BC1ACCACD30, 0x3FBF8C9683B5AAFD,
+        0x3FC06CBD68CA9A03, 0x3FC11142F19DF6C5, 0x3FC1B3E71FA7A913, 0x3FC254B4D37A4677,
+        0x3FC2F3B6912CBE9C, 0x3FC390F68311581A, 0x3FC42C7E7FFFC53D, 0x3FC4C65808C78CD1,
+        0x3FC55E8C50751BEA, 0x3FC5F52445DEC36C, 0x3FC68A288C3F1195, 0x3FC71DA17BDF0CAD,
+        0x3FC7AF973608AF6E, 0x3FC84011952A250E, 0x3FC8CF1837A7E9F4, 0x3FC95CB2891E436A,
+        0x3FC9E8E7B0F86974, 0x3FCA73BEAA5DB121, 0x3FCAFD3E39455867, 0x3FCB856CF060D985,
+        0x3FCC0C5134DE1F90, 0x3FCC91F1371BC934, 0x3FCD1652FFCD3EE8, 0x3FCD997C6F635E09,
+        0x3FCE1B733AB90ED0, 0x3FCE9C3CEADAC7EB, 0x3FCF1BDEEC43A29A, 0x3FCF9A5E7A5FA392,
+        0x3FD00BE05AC02EF5, 0x3FD04A054D81A29E, 0x3FD087A0835957C5, 0x3FD0C4B4570994E1,
+        0x3FD101431AA1FE1B, 0x3FD13D4F08B98DA2, 0x3FD178DA53EDB85C, 0x3FD1B3E71E9F9D22,
+        0x3FD1EE777DEFDEB7, 0x3FD2288D7B48E205, 0x3FD2622B0F52E469, 0x3FD29B522A4C62DE,
+        0x3FD2D404B0E30F4A, 0x3FD30C4478F3FBAF, 0x3FD34413509F78DF]
+
+/// The F32 bits of 10^n (n in 0..10), indexed by bits 24..27 of the pattern (0 = no power).
+preset CM_F32_LOG10_ST: Array<U32, 16> = [0x501502F9, 0x41200000, 0x42C80000, 0x0, 0x447A0000, 0x0,
+        0x461C4000, 0x47C35000, 0x0, 0x49742400, 0x0, 0x4B189680, 0x4CBEBC20, 0x0, 0x4E6E6B28,
+        0x3F800000]
+
+/// log10 x, correctly rounded.
+routine f32_cm_log10(%x: F32) -> F32
+    block entry():
+        %ux      : U32  = %x.bits()
+        %special : Bool = %ux.ge(0x7F800000)  // x <= -0, +inf, or NaN
+        %power   : Bool = %ux.eq(CM_F32_LOG10_ST.get(%ux.shr(24).bitand(0xF).to_usize()))
+        %small   : Bool = %ux.lt(0x00800000)
+        when:
+            %special -> return(cm_f32_log10_special(%x))
+            %power   -> power(%ux)
+            %small   -> small(%ux)
+            else     -> normal(%ux)
+
+    // x = 10^n: n = floor((e + 1) log10(2)) for the biased exponent e
+    block power(%ux: U32):
+        %je : U32 = %ux.shr(23).sub_wrap(126).mul_wrap(0x4D104D4).shr(28)
+        return(%je.to_f32())
+
+    // +0 or a subnormal
+    block small(%ux: U32):
+        %zero : Bool = %ux.eq(0)
+        branch %zero ? return(cm_f32_log10_special(%x)) : continue
+        %n : U32 = %ux.leading_zeros().sub(8)
+        jump normal(%ux.shl(%n).sub_wrap(%n.shl(23)))
+
+    // ux is a normalized positive pattern (the exponent field may be below 1 for a subnormal x)
+    block normal(%ux: U32):
+        %e    : S64   = %ux.to_s32_wrap().shr(23).to_s64().sub(127)
+        %ed   : F64   = %e.to_f64()
+        %m    : U64   = %ux.bitand(0x7FFFFF).to_u64()
+        %j    : USize = %m.add(0x10000).shr(17).to_usize()
+        %tz   : F64   = F64.from_bits(%m.shl(29).bitor(0x3FF0000000000000))
+        %tlj  : F64   = F64.from_bits(CM_F32_LOG10_TL.get(%j))
+        %z    : F64   = %tz.mul(F64.from_bits(CM_F32_LOG10_TR.get(%j))).sub(1.0)
+        %z2   : F64   = %z.mul(%z)
+        %head : F64   = %ed.mul(0x1.34413509f79ffp-2).add(%tlj).add(%z.mul(0x1.bcb7b15d35067p-2))
+        %tail : F64   = %z.mul(0x1.2870e2624ce4ep-3).add(-0x1.bcbb1cd29cbafp-3)
+        %r    : F64   = %head.add(%z2.mul(%tail))
+        %ub   : F32   = %r.to_f32()
+        %lb   : F32   = %r.add(0x1.af23fp-34).to_f32()
+        %sure : Bool  = %ub.eq(%lb)
+        branch %sure ? return(%ub) : slow(%z, %z2, %ed, %tlj)
+
+    // The fast path can't decide the rounding: a longer polynomial and a two-part log10(2).
+    block slow(%z: F64, %z2: F64, %ed: F64, %tlj: F64):
+        %c01      : F64  = F64.sub(0x1.bcb7b1526e50ep-2, %z.mul(0x1.bcb7b1526e53dp-3))
+        %c23      : F64  = F64.sub(0x1.287a7636f3fa2p-3, %z.mul(0x1.bcb7b146a14b3p-4))
+        %c46      : F64  = F64.sub(0x1.63c627d5219cbp-4,
+                %z.mul(0x1.2880736c8762dp-4)).add(%z2.mul(0x1.fc1ecf913961ap-5))
+        %f        : F64  = %z.mul(%c01.add(%z2.mul(%c23.add(%z2.mul(%c46)))))
+        %f1       : F64  = %f.sub(%ed.mul(0x1.0cee0ed4ca7e9p-54))
+        %f2       : F64  = %f1.add(%tlj.sub(F64.from_bits(CM_F32_LOG10_TL.get(0))))
+        %el       : F64  = %ed.mul(0x1.34413509f7ap-2)
+        %r        : F64  = %el.add(%f2)
+        %boundary : Bool = %r.bits().bitand(0x0FFFFFFF).eq(0)
+        branch %boundary ? nudge(%el, %f2, %r) : return(%r.to_f32())
+
+    // r lies on an F32 rounding boundary: nudge it by the rounding error of el + f
+    block nudge(%el: F64, %f: F64, %r: F64):
+        %dr : F64 = %el.sub(%r).add(%f)
+        return(%r.add(%dr.mul(32.0)).to_f32())
+
+/// log10 of +-0 (-inf), +inf (itself), NaN (itself, quiet) or a negative input (NaN).
+private routine cm_f32_log10_special(%x: F32) -> F32
+    block entry():
+        %ux   : U32  = %x.bits()
+        %zero : Bool = %ux.shl(1).eq(0)
+        %inf  : Bool = %ux.eq(0x7F800000)
+        %nan  : Bool = %ux.shl(1).gt(0xFF000000)
+        when:
+            %zero -> return(F32.from_bits(0xFF800000))
+            %inf  -> return(%x)
+            %nan  -> return(%x.add(%x))
+            else  -> return(F32.from_bits(0xFFC00000))
