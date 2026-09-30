@@ -250,6 +250,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         int digitsStart = _i;
         Func<char, bool> isDigit = radix == 10 ? char.IsAsciiDigit : char.IsAsciiHexDigit;
         while (_i < src.Length && (isDigit(src[_i]) || src[_i] == '_')) Advance();
+        if (radix == 16 && IsHexFloatTail()) return ReadHexFloat(start, digitsStart, pos);
 
         // A float has a fraction (`1.5`) or an exponent (`1e10`). `0.sub(...)` is an integer and a method call.
         bool fraction = radix == 10 && Peek() == '.' && char.IsAsciiDigit(Peek(1));
@@ -276,6 +277,63 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         // A magnitude above a type's signed range is that type's two's-complement bit pattern (IntConst).
         BigInteger value = neg ? -mag : mag;
         return new Token(TokenKind.Int, src[start.._i], pos, value);
+    }
+
+    /// After a hex literal's integer digits: an optional `.` and hex fraction, then a `p` exponent. The exponent is
+    /// required, as in C, so `0x10.add(1)` stays a method call on an integer (`a` and `d` are hex digits too).
+    private bool IsHexFloatTail()
+    {
+        int j = _i;
+        if (j < src.Length && src[j] == '.')
+        {
+            j++;
+            while (j < src.Length && (char.IsAsciiHexDigit(src[j]) || src[j] == '_')) j++;
+        }
+        if (j >= src.Length || src[j] is not ('p' or 'P')) return false;
+        j++;
+        if (j < src.Length && src[j] is '+' or '-') j++;
+        return j < src.Length && char.IsAsciiDigit(src[j]);
+    }
+
+    /// `0x1.8p+46`: hex digits scaled by a power of two. The value must be exactly an F64 (float literals are held
+    /// as doubles), so a hex float never rounds.
+    private Token ReadHexFloat(int start, int digitsStart, Pos pos)
+    {
+        string intDigits = src[digitsStart.._i].Replace("_", "");
+        string fracDigits = "";
+        if (Peek() == '.')
+        {
+            Advance();
+            int fracStart = _i;
+            while (_i < src.Length && (char.IsAsciiHexDigit(src[_i]) || src[_i] == '_')) Advance();
+            fracDigits = src[fracStart.._i].Replace("_", "");
+        }
+        Advance();  // 'p'
+        int expStart = _i;
+        if (Peek() is '+' or '-') Advance();
+        while (_i < src.Length && char.IsAsciiDigit(src[_i])) Advance();
+        string text = src[start.._i];
+        if (intDigits.Length + fracDigits.Length == 0) throw new CompileError(pos, $"malformed float literal '{text}'");
+        if (_i < src.Length && char.IsAsciiLetterOrDigit(src[_i]))
+            throw new CompileError(pos, $"unexpected '{src[_i]}' in a number");
+        if (!int.TryParse(src[expStart.._i], System.Globalization.CultureInfo.InvariantCulture, out int exponent))
+            throw new CompileError(pos, $"malformed float literal '{text}'");
+
+        BigInteger mantissa = BigInteger.Zero;
+        foreach (char d in intDigits + fracDigits) mantissa = mantissa * 16 + Convert.ToInt32(d.ToString(), 16);
+        long scale = (long)exponent - 4L * fracDigits.Length;
+        bool negative = src[start] == '-';
+        if (mantissa.IsZero)
+            return new Token(TokenKind.Float, text, pos, BitConverter.DoubleToInt64Bits(negative ? -0.0 : 0.0));
+
+        // m × 2^scale with m odd is exactly a double when m has at most 53 bits, its lowest bit is at or above
+        // 2^-1074 (the smallest subnormal), and its top bit at or below 2^1023.
+        while (mantissa.IsEven) { mantissa >>= 1; scale++; }
+        long bits = (long)mantissa.GetBitLength();
+        if (bits > 53 || scale < -1074 || scale + bits - 1 > 1023)
+            throw new CompileError(pos, $"hex float literal '{text}' is not exactly an F64");
+        double value = Math.ScaleB((double)mantissa, (int)scale);
+        return new Token(TokenKind.Float, text, pos, BitConverter.DoubleToInt64Bits(negative ? -value : value));
     }
 
     private Token ReadFloat(int start, Pos pos)
