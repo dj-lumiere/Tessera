@@ -334,7 +334,7 @@ public static class Derive
                     sb.Append($"        {p}.diagnose(%out)\n");
                     sb.Append("        Standard::Format::write_str(%out, \")\")\n        return()\n");
                 }
-                sb.Append("\n    block named(%text: String):\n        Standard::Format::write_str(%out, %text)\n        return()\n");
+                sb.Append("\n    block named(%text: Bytes):\n        Standard::Format::write_str(%out, %text)\n        return()\n");
                 break;
             }
             case "eq" or "compare":
@@ -419,7 +419,7 @@ public static class Derive
                 sb.Append("        when %self:\n");
                 foreach (var (name, _) in c.Members)
                     sb.Append($"            {c.Name}.{name} -> named(\"{prefix}{name}\")\n");
-                sb.Append("\n    block named(%text: String):\n");
+                sb.Append("\n    block named(%text: Bytes):\n");
                 sb.Append("        Standard::Format::write_str(%out, %text)\n");
                 sb.Append("        return()\n");
                 break;

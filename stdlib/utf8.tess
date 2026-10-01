@@ -5,8 +5,8 @@
 //
 // utf8_decode reads one character starting at byte %pos (never reading at or
 // past %len) and returns a Utf8Decoded { char, next_pos, ok }. On a malformed
-// sequence (a bad lead or continuation byte, a surrogate, or a value past
-// 0x10FFFF) it returns { char: U+FFFD, next_pos: %pos, ok: false }.
+// sequence (a bad lead or continuation byte, an overlong form, a surrogate, or
+// a value past 0x10FFFF) it returns { char: U+FFFD, next_pos: %pos, ok: false }.
 //
 // utf8_encode writes one character into %out (caller must ensure 4 bytes of
 // space) and returns the number of bytes written.
@@ -33,7 +33,7 @@ routine utf8_decode(%bytes: Ptr<Byte>, %pos: USize, %len: USize) -> Utf8Decoded
         %next : USize = %pos.add(1)
         // single byte: 0xxxxxxx
         %is_one : Bool = %b0u.lt(0x80)
-        branch %is_one ? done(%b0u, %pos, %next) : check_two(%b0u, %pos, %next)
+        branch %is_one ? done(%b0u, 0, %pos, %next) : check_two(%b0u, %pos, %next)
 
     block check_two(%b0u: U32, %pos: USize, %next: USize):
         // two byte: 110xxxxx 10xxxxxx
@@ -49,7 +49,7 @@ routine utf8_decode(%bytes: Ptr<Byte>, %pos: USize, %len: USize) -> Utf8Decoded
     block done_two(%b0u: U32, %b1u: U32, %pos: USize, %next: USize):
         %hi : U32 = %b0u.bitand(0x1F).shl(6)
         %cp : U32 = %hi.bitor(%b1u)
-        jump done(%cp, %pos, %next.add(1))
+        jump done(%cp, 0x80, %pos, %next.add(1))
 
     block check_three(%b0u: U32, %pos: USize, %next: USize):
         // three byte: 1110xxxx 10xxxxxx 10xxxxxx
@@ -68,7 +68,7 @@ routine utf8_decode(%bytes: Ptr<Byte>, %pos: USize, %len: USize) -> Utf8Decoded
         %hi  : U32 = %b0u.bitand(0x0F).shl(12)
         %mid : U32 = %b1u.shl(6)
         %cp  : U32 = %hi.bitor(%mid).bitor(%b2u)
-        jump done(%cp, %pos, %n2.add(1))
+        jump done(%cp, 0x800, %pos, %n2.add(1))
 
     block check_four(%b0u: U32, %pos: USize, %next: USize):
         // four byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
@@ -90,10 +90,13 @@ routine utf8_decode(%bytes: Ptr<Byte>, %pos: USize, %len: USize) -> Utf8Decoded
         %p1 : U32 = %b1u.shl(12)
         %p2 : U32 = %b2u.shl(6)
         %cp : U32 = %p0.bitor(%p1).bitor(%p2).bitor(%b3u)
-        jump done(%cp, %pos, %n3.add(1))
+        jump done(%cp, 0x10000, %pos, %n3.add(1))
 
-    // A surrogate or a value past 0x10FFFF isn't a Char.
-    block done(%cp: U32, %pos: USize, %after: USize):
+    // An overlong form (below %min, the smallest value that needs this many bytes), a surrogate, or a value
+    // past 0x10FFFF isn't a Char.
+    block done(%cp: U32, %min: U32, %pos: USize, %after: USize):
+        %overlong : Bool = %cp.lt(%min)
+        branch %overlong ? error(%pos) : continue
         %scalar : Option<Char> = %cp.to_char_checked()
         when %scalar:
             .Present(%char) -> decoded(%char, %after)

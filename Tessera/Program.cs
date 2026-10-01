@@ -71,7 +71,17 @@ static class Cli
         int changed = 0;
         foreach (var file in files)
         {
-            string text = File.ReadAllText(file);
+            string text;
+            try
+            {
+                text = SourceText.Read(file, ShownPath(file));
+            }
+            catch (CompileError e)
+            {
+                // Not UTF-8: compiling reports it; there is nothing to format.
+                Console.Error.WriteLine($"skipped {e.Message}");
+                continue;
+            }
             string formatted = Formatter.Format(text);
             if (formatted == text) continue;
             changed++;
@@ -224,7 +234,7 @@ static class Cli
     private static List<Decl> ParseFile(string path, bool isLibrary, string? shownAs = null)
     {
         string shown = shownAs ?? ShownPath(path);
-        var tokens = new Lexer(shown, File.ReadAllText(path)).Lex();
+        var tokens = new Lexer(shown, SourceText.Read(path, shown)).Lex();
         return new Parser(tokens, shown, isLibrary).ParseModule().Decls;
     }
 

@@ -913,7 +913,7 @@ public sealed partial class Compiler
         if (_strings.TryGetValue(value, out var name)) return name;
         name = $"@.str.{_strings.Count}";
         _strings[value] = name;
-        var bytes = Encoding.UTF8.GetBytes(value);
+        var bytes = SourceText.Utf8(value);
         var sb = new StringBuilder();
         foreach (byte b in bytes.Append((byte)0))
             sb.Append(b is >= 0x20 and < 0x7F and not (byte)'"' and not (byte)'\\' ? ((char)b).ToString() : $"\\{b:X2}");
@@ -921,7 +921,7 @@ public sealed partial class Compiler
         return name;
     }
 
-    public static int Utf8Length(string value) => Encoding.UTF8.GetByteCount(value);
+    public static int Utf8Length(string value) => SourceText.Utf8(value).Length;
 
     /// A wide string literal ending in a 0 unit, for a CWStr: UTF-16 units where `wchar_t` is 16 bits (Windows),
     /// UTF-32 code points elsewhere.

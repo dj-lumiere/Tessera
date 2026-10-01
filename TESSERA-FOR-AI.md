@@ -18,7 +18,7 @@ dotnet run --project Tessera -- build                      # build the solution 
 
 A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `Standard::Core` (always imported: the built-in types, `Option`, `Result`,
-`String`), and what it imports, so printing a number needs `import Standard::Format`, a `List` needs
+`Bytes`), and what it imports, so printing a number needs `import Standard::Format`, a `List` needs
 `import Standard::Collections`, and `make_heap_allocator` / `FdWriter` need `import Standard::Os` (the hosted layer,
 the only one that calls libc; a target with OS `none` has none of it). A routine declared in its type's module comes with the type; one another module adds
 to it (like `S64.represent` from `Standard::Format`) needs that module imported. A qualified path
@@ -180,15 +180,19 @@ routine main() -> S32
 - A bare literal doesn't bind a type parameter: bind it first (`%n: S64 = 42`), then pass `%n`.
 - When every operand is a literal, name the type with a typewise call: `S64.eq(0, 1)`, `U128.shl(1, 100)`. There are
   no literal suffixes (`0u64`).
-- String literals are `String` where a `String` is expected, `CStr` / `CWStr` (terminated C text) where one of those
-  is, and a NUL-terminated `Ptr<Byte>` where a pointer is. Declare C string parameters as `%s: CStr`. A `String`
+- `Bytes` is the one text type: bytes, UTF-8 by convention, unchecked (`is_utf8` checks; `chars()` reads a bad
+  sequence as U+FFFD). A literal holds its UTF-8. Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
+  character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
+  Source files must be UTF-8.
+- String literals are `Bytes` where a `Bytes` is expected, `CStr` / `CWStr` (terminated C text) where one of those
+  is, and a NUL-terminated `Ptr<Byte>` where a pointer is. Declare C string parameters as `%s: CStr`. A `Bytes`
   view has no terminator: pass `%s.to_cstr(%alloc)` (a copy) or `%buf.to_cstr()` on a `List<Byte>`.
 
 **Errors**
 
 - Bugs trap: `trap()`, or `panic(TrapCode.X)` / `panic_msg(...)` for a message. Those call the panic handler; the
   default (Standard::Os) prints one line and exits with status 101, and a program replaces it with
-  `@[export("tessera_panic_handler"), noreturn] routine my_handler(%code: TrapCode, %message: String) -> Void`.
+  `@[export("tessera_panic_handler"), noreturn] routine my_handler(%code: TrapCode, %message: Bytes) -> Void`.
 - Expected failures return `Result<T, E>`. There's no `?`: `when %r:` with `.Success(%v)` / `.Failure(%e)` arms.
 
 **Records**
@@ -260,7 +264,7 @@ routine sum_list(%list: Ptr<List<S64>>) -> S64
 Propagating a `Result`:
 
 ```tessera
-routine parse_or_zero(%text: String) -> F64
+routine parse_or_zero(%text: Bytes) -> F64
     block entry():
         %r : Result<F64, ParseFloatError> = F64.parse(%text)
         when %r:
@@ -278,8 +282,8 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
 
 - Writers: `FdWriter.stdout()` / `.stderr()` (unbuffered), `BufWriter<W>` (`%out.construct(%inner)`, then
   `flush()`), `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `write(%buf, ...)`, then
-  `%buf.to_string()`; there's no string builder type).
-- `write_str(%out, "text")`, `write_line(%out)`, `%v.represent(%out)` for every integer, float, `Bool`, and `String`,
+  `%buf.to_bytes()`; there's no string builder type).
+- `write_str(%out, "text")`, `write_line(%out)`, `%v.represent(%out)` for every integer, float, `Bool`, and `Bytes`,
   and `%p.represent(%out)` for a pointer's address (`0x7ffd5e8c1a40`); `represent_hex`, `represent_fixed(%out, %digits)`;
   `represent_with(%out, %v, %spec)` with a `FormatSpec`.
 - `%v.diagnose(%out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.Present(3)`, `[1, 2]`. A record or
@@ -331,7 +335,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   be `@external`.
 
 **Naming conversions.** A conversion is `to_<type>`: `%n.to_s64()`, `%x.to_u8_wrap()`, `%arr.to_ptr()`,
-`%out.to_string()`. There is no `as_<type>`. Other ways to make a value are named for what they make.
+`%out.to_bytes()`. There is no `as_<type>`. Other ways to make a value are named for what they make.
 
 **Name case.** Types, concepts, modules, and choice / variant cases are `PascalCase` (`TrapCode.DivByZero`,
 `.Absent`), with acronyms written as words (`Eof`, `FdWriter`, `Nan`). Routines, fields, blocks, and values are
@@ -353,7 +357,7 @@ preset arrays (`K.get(%i)`).
   and leaves the value empty. Call it yourself; nothing runs it for you. A collection's `destruct` doesn't touch its
   elements; `destruct_all()` destructs them first (elements must conform to `Destruct<T>`), and `Dict` / `SortedDict`
   also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release.
-- Other ways to make a value are named for what they make: `FdWriter.stdout()`, `String.from_ptr(%p, %n)`,
+- Other ways to make a value are named for what they make: `FdWriter.stdout()`, `Bytes.from_ptr(%p, %n)`,
   `Option<T>.Absent`, `FormatSpec.zero_padded(6)`.
 - `%p.free(%alloc)` is not a destructor: it hands a block of memory back to its allocator.
 

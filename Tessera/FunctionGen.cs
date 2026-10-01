@@ -606,7 +606,7 @@ public sealed class FunctionGen
 
     private Val StringLiteral(StrLit s, DType expected)
     {
-        // A string literal is a String (data + length) where a String is expected, a CStr or CWStr (a pointer to
+        // A string literal is a Bytes (data + length, UTF-8) where a Bytes is expected, a CStr or CWStr (a pointer to
         // NUL-terminated text) where one of those is expected, and a NUL-terminated Ptr<Byte> where a pointer is.
         string g = _c.StringGlobal(s.Value);
         if (expected is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } })
@@ -619,10 +619,12 @@ public sealed class FunctionGen
         }
         if (expected is RecordType { Name: "CWStr" } cw)
         {
+            if (SourceText.HasRawByte(s.Value))
+                throw Err(s.Pos, "a wide string holds characters; a \\x escape above 7F is a raw byte");
             _c.EnsureTypeDefined(cw);
             return new Val(_c.WideStringGlobal(s.Value), cw);
         }
-        if (expected is RecordType { Name: "String" } st)
+        if (expected is RecordType { Name: "Bytes" } st)
         {
             _c.EnsureTypeDefined(st);
             string a = EmitTmp($"insertvalue {st.Llvm} poison, ptr {g}, 0");

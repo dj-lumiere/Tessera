@@ -2,7 +2,7 @@
 //
 // Diagnose writes a value the way a programmer reads it: as Tessera source
 // where there is a literal for it. Represent is for the program's own output,
-// so a String represents as its text but diagnoses in quotes with escapes:
+// so a Bytes represents as its text but diagnoses in quotes with escapes:
 //
 //     %name.represent(%out)  // Ada
 //     %name.diagnose(%out)   // "Ada"
@@ -26,17 +26,16 @@ conform Diagnose<S8>, Diagnose<S16>, Diagnose<S32>, Diagnose<S64>, Diagnose<S128
 conform Diagnose<U8>, Diagnose<U16>, Diagnose<U32>, Diagnose<U64>, Diagnose<U128>, Diagnose<U256>
 conform Diagnose<USize>, Diagnose<SSize>
 conform Diagnose<F16>, Diagnose<BF16>, Diagnose<F32>, Diagnose<F64>, Diagnose<F128>
-conform Diagnose<Bool>, Diagnose<Char>, Diagnose<Byte>, Diagnose<String>, Diagnose<Unit>, Diagnose<Addr>
+conform Diagnose<Bool>, Diagnose<Char>, Diagnose<Byte>, Diagnose<Bytes>, Diagnose<Unit>, Diagnose<Addr>
 conform Diagnose<Ptr<T>>      when T: typename
 conform Diagnose<Array<T, N>> when T: typename, N: USize, Diagnose<T>
 
 // -- text ----------------------------------------------------------------------
 
 /// One byte inside a quoted literal: an escape (\n, \t, \r, \0, \\, or the
-/// quote), the byte itself when it's printable ASCII, and otherwise \xHH. With
-/// %raw_high, bytes from 0x80 up are written as they are, so a String's UTF-8
-/// stays readable.
-routine write_escaped_byte<W>(%out: Ptr<W>, %byte: Byte, %quote: Byte, %raw_high: Bool) -> Void
+/// quote), the byte itself when it's printable ASCII, and otherwise \xHH, or
+/// \u0000HH when %as_char (a character literal takes no \x).
+routine write_escaped_byte<W>(%out: Ptr<W>, %byte: Byte, %quote: Byte, %as_char: Bool) -> Void
 require W: typename, Writer<W>
     block entry():
         %is_quote : Bool = %byte.eq(%quote)
@@ -55,15 +54,13 @@ require W: typename, Writer<W>
             b'\\' -> escape("\\\\")
             else  -> other()
 
-    block escape(%text: String):
+    block escape(%text: Bytes):
         write_str(%out, %text)
         return()
 
     block other():
         %printable : Bool = %byte.between(0x20, 0x7E)
-        %high      : Bool = %byte.ge(0x80).bitand(%raw_high)
-        %as_is     : Bool = %printable.bitor(%high)
-        branch %as_is ? raw() : hex()
+        branch %printable ? raw() : hex()
 
     block raw():
         claim %slot : Ptr<Byte>
@@ -72,11 +69,22 @@ require W: typename, Writer<W>
         return()
 
     block hex():
+        branch %as_char ? char_hex() : byte_hex()
+
+    block byte_hex():
         write_str(%out, "\\x")
         write_hex_u64(%out, %byte.to_u8().to_u64(), 2)
         return()
 
-routine String.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+    block char_hex():
+        write_str(%out, "\\u")
+        write_hex_u64(%out, %byte.to_u8().to_u64(), 6)
+        return()
+
+/// In quotes: ASCII through the byte escapes, a well-formed UTF-8 character as
+/// it is, and each byte of a malformed sequence as \xHH, so the text reads back
+/// as the same bytes.
+routine Bytes.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
 require W: typename, Writer<W>
     block entry():
         write_str(%out, "\"")
@@ -88,9 +96,27 @@ require W: typename, Writer<W>
         branch %more ? step(%at) : close()
 
     block step(%at: USize):
+        %data  : Ptr<Byte> = %self.data
+        %byte  : Byte      = %data[%at].load()
+        %ascii : Bool      = %byte.lt(0x80)
+        branch %ascii ? ascii(%at, %byte) : wide(%at, %byte)
+
+    block ascii(%at: USize, %byte: Byte):
+        write_escaped_byte(%out, %byte, b'"', false)
+        jump walk(%at.add(1))
+
+    block wide(%at: USize, %byte: Byte):
+        %data : Ptr<Byte>   = %self.data
+        %d    : Utf8Decoded = utf8_decode(%data, %at, %self.length)
+        branch %d.ok ? character(%at, %d.next_pos) : malformed(%at, %byte)
+
+    block character(%at: USize, %next: USize):
         %data : Ptr<Byte> = %self.data
-        %byte : Byte      = %data[%at].load()
-        write_escaped_byte(%out, %byte, b'"', true)
+        %out.write_bytes(%data[%at], %next.sub(%at))
+        jump walk(%next)
+
+    block malformed(%at: USize, %byte: Byte):
+        write_escaped_byte(%out, %byte, b'"', false)
         jump walk(%at.add(1))
 
     block close():
@@ -117,7 +143,7 @@ require W: typename, Writer<W>
 
     block ascii(%code: U32):
         %byte : Byte = %code.to_u8().bits()
-        write_escaped_byte(%out, %byte, b'\'', false)
+        write_escaped_byte(%out, %byte, b'\'', true)
         jump close()
 
     block wide():

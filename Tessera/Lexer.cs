@@ -25,6 +25,53 @@ public readonly record struct Pos(string File, int Line, int Col)
     public override string ToString() => $"{File}:{Line}:{Col}";
 }
 
+/// Source files are UTF-8 (a BOM is allowed); anything else is an error at the first byte that doesn't decode,
+/// never a silent U+FFFD.
+public static class SourceText
+{
+    private static readonly UTF8Encoding Strict = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    public static string Read(string path, string shown)
+    {
+        byte[] bytes = File.ReadAllBytes(path);
+        int start = bytes is [0xEF, 0xBB, 0xBF, ..] ? 3 : 0;
+        try
+        {
+            return Strict.GetString(bytes, start, bytes.Length - start);
+        }
+        catch (DecoderFallbackException e)
+        {
+            int bad = start + e.Index;
+            var before = bytes.AsSpan(start, bad - start);
+            int lineStart = start + before.LastIndexOf((byte)'\n') + 1;
+            int line = 1 + before.Count((byte)'\n');
+            int col = 1 + Strict.GetString(bytes, lineStart, bad - lineStart).Length;
+            throw new CompileError(new Pos(shown, line, col), "the source is not valid UTF-8 (save the file as UTF-8)");
+        }
+    }
+
+    /// Bytes 0x80..0xFF from a \x escape travel through a literal's string as the lone surrogates U+DC80..U+DCFF
+    /// (UTF-8 source and \u escapes can't produce a surrogate, so nothing else maps there).
+    public static char RawByte(int b) => b < 0x80 ? (char)b : (char)(0xDC00 + b);
+
+    public static bool HasRawByte(string s) => s.Any(c => c is >= '\uDC80' and <= '\uDCFF');
+
+    /// A literal's bytes: its characters in UTF-8, raw bytes as themselves.
+    public static byte[] Utf8(string s)
+    {
+        var bytes = new List<byte>();
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c is >= '\uDC80' and <= '\uDCFF') { bytes.Add((byte)(c - 0xDC00)); continue; }
+            int n = char.IsHighSurrogate(c) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]) ? 2 : 1;
+            bytes.AddRange(Encoding.UTF8.GetBytes(s.Substring(i, n)));
+            i += n - 1;
+        }
+        return bytes.ToArray();
+    }
+}
+
 /// IntValue holds an integer literal (a magnitude up to 256 bits, with its sign), a character's code, or a float's
 /// IEEE double bits.
 public sealed record Token(TokenKind Kind, string Text, Pos Pos, BigInteger IntValue = default);
@@ -369,7 +416,10 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             v = e switch
             {
                 'n' => 10, 't' => 9, 'r' => 13, '0' => 0, '\\' => '\\', '\'' => '\'', '"' => '"',
-                'x' => ReadHexByte(pos),
+                'x' when byteOnly => ReadHexByte(pos),
+                'x' => throw new CompileError(pos, "a character takes \\uXXXXXX; \\xXX is a byte"),
+                'u' when !byteOnly => ReadScalar(pos),
+                'u' => throw new CompileError(pos, "a byte takes \\xXX; \\uXXXXXX is a character"),
                 _ => throw new CompileError(pos, $"unknown escape '\\{e}'"),
             };
         }
@@ -398,6 +448,18 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         return v;
     }
 
+    /// The six hex digits after \u: a Unicode scalar value (not a surrogate, at most 0x10FFFF).
+    private int ReadScalar(Pos pos)
+    {
+        if (_i + 6 > src.Length || !src.Substring(_i, 6).All(char.IsAsciiHexDigit))
+            throw new CompileError(pos, "\\u needs six hex digits, as in \\u00E9");
+        int v = Convert.ToInt32(src.Substring(_i, 6), 16);
+        if (v > 0x10FFFF || v is >= 0xD800 and <= 0xDFFF)
+            throw new CompileError(pos, $"\\u{v:X6} is not a Unicode scalar value (a surrogate or past 10FFFF)");
+        for (int k = 0; k < 6; k++) Advance();
+        return v;
+    }
+
     private long ReadHexByte(Pos pos)
     {
         string hex = $"{Peek()}{Peek(1)}";
@@ -421,10 +483,12 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             if (c != '\\') { sb.Append(c); continue; }
             char e = Peek();
             Advance();
+            // \xXX is one byte as it is; \uXXXXXX is a character, in UTF-8
             sb.Append(e switch
             {
-                'n' => '\n', 't' => '\t', 'r' => '\r', '0' => '\0', '\\' => '\\', '"' => '"', '\'' => '\'',
-                'x' => (char)ReadHexByte(pos),
+                'n' => "\n", 't' => "\t", 'r' => "\r", '0' => "\0", '\\' => "\\", '"' => "\"", '\'' => "'",
+                'x' => SourceText.RawByte((int)ReadHexByte(pos)).ToString(),
+                'u' => char.ConvertFromUtf32(ReadScalar(pos)),
                 _ => throw new CompileError(pos, $"unknown escape '\\{e}'"),
             });
         }

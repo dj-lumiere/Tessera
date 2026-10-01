@@ -36,7 +36,7 @@ conform Represent<S8>, Represent<S16>, Represent<S32>, Represent<S64>, Represent
 conform Represent<U8>, Represent<U16>, Represent<U32>, Represent<U64>, Represent<U128>, Represent<U256>
 conform Represent<USize>, Represent<SSize>
 conform Represent<F16>, Represent<BF16>, Represent<F32>, Represent<F64>, Represent<F128>
-conform Represent<Bool>, Represent<Char>, Represent<String>, Represent<Addr>
+conform Represent<Bool>, Represent<Char>, Represent<Bytes>, Represent<Addr>
 conform Represent<Ptr<T>>      when T: typename
 conform Represent<Array<T, N>> when T: typename, N: USize, Diagnose<T>
 
@@ -57,11 +57,11 @@ routine SliceWriter.construct(%data: Ptr<Byte>, %capacity: USize) -> Self
         return(%w)
 
 /// The text written so far, a view into the buffer.
-routine SliceWriter.to_string(%self: Self) -> String
+routine SliceWriter.to_bytes(%self: Self) -> Bytes
     block entry():
         %data   : Ptr<Byte> = %self.data
         %length : USize     = %self.length
-        %s      : String    = .from_ptr(%data, %length)
+        %s      : Bytes     = .from_ptr(%data, %length)
         return(%s)
 
 routine SliceWriter.has_overflowed(%self: Self) -> Bool
@@ -179,7 +179,7 @@ routine CountWriter.write_bytes(%self: Ptr<Self>, %bytes: Ptr<Byte>, %length: US
 
 // -- text ----------------------------------------------------------------------
 
-routine write_str<W>(%out: Ptr<W>, %text: String) -> Void
+routine write_str<W>(%out: Ptr<W>, %text: Bytes) -> Void
 require W: typename, Writer<W>
     block entry():
         %data   : Ptr<Byte> = %text.data
@@ -569,7 +569,7 @@ require W: typename, Writer<W>
         write_str(%out, "false")
         return()
 
-routine String.represent<W>(%self: Self, %out: Ptr<W>) -> Void
+routine Bytes.represent<W>(%self: Self, %out: Ptr<W>) -> Void
 require W: typename, Writer<W>
     block entry():
         write_str(%out, %self)
@@ -1020,7 +1020,7 @@ require W: typename, Writer<W>
             %negative -> text("-inf")
             else      -> text("inf")
 
-    block text(%s: String):
+    block text(%s: Bytes):
         write_str(%out, %s)
         return()
 
@@ -1160,7 +1160,7 @@ require W: typename, Writer<W>
     block infinity():
         branch %negative ? text("-inf") : text("inf")
 
-    block text(%s: String):
+    block text(%s: Bytes):
         write_str(%out, %s)
         return()
 
@@ -1278,7 +1278,7 @@ choice Align: U8
 
 record FormatSpec
     width : USize
-    fill  : String
+    fill  : Bytes
     align : Align
 
 /// Right-aligned to %width, padded with spaces.
@@ -1299,13 +1299,13 @@ routine FormatSpec.with_align(%self: Self, %align: Align) -> Self
         return(%spec)
 
 /// %fill is one character (any UTF-8 text works, but width counts it as one).
-routine FormatSpec.with_fill(%self: Self, %fill: String) -> Self
+routine FormatSpec.with_fill(%self: Self, %fill: Bytes) -> Self
     block entry():
         %spec : Self = Self { width: %self.width, fill: %fill, align: %self.align }
         return(%spec)
 
 /// Writes %text %count times.
-routine write_repeated<W>(%out: Ptr<W>, %text: String, %count: USize) -> Void
+routine write_repeated<W>(%out: Ptr<W>, %text: Bytes, %count: USize) -> Void
 require W: typename, Writer<W>
     block entry():
         jump loop(%count)
@@ -1325,24 +1325,24 @@ require T: typename, W: typename, Writer<W>, Represent<T>
         claim %counter : Ptr<CountWriter>
         %counter.store(%counter_val)
         %value.represent(%counter)
-        %length : USize  = %counter.count.load()
-        %pad    : USize  = %spec.width.sub_clamp(%length)
-        %half   : USize  = %pad.div(2)
-        %fill   : String = %spec.fill
-        %align  : Align  = %spec.align
+        %length : USize = %counter.count.load()
+        %pad    : USize = %spec.width.sub_clamp(%length)
+        %half   : USize = %pad.div(2)
+        %fill   : Bytes = %spec.fill
+        %align  : Align = %spec.align
         when %align:
             Align.Left      -> padded(0, %pad, %fill)
             Align.Right     -> padded(%pad, 0, %fill)
             Align.Center    -> padded(%half, %pad.sub(%half), %fill)
             Align.AfterSign -> after_sign(%pad, %fill)
 
-    block padded(%before: USize, %after: USize, %fill: String):
+    block padded(%before: USize, %after: USize, %fill: Bytes):
         write_repeated(%out, %fill, %before)
         %value.represent(%out)
         write_repeated(%out, %fill, %after)
         return()
 
-    block after_sign(%pad: USize, %fill: String):
+    block after_sign(%pad: USize, %fill: Bytes):
         %inner_val : SignPadWriter<W> = SignPadWriter<W> { inner: %out, fill: %fill, pad: %pad}
         claim %inner : Ptr<SignPadWriter<W>>
         %inner.store(%inner_val)
@@ -1355,7 +1355,7 @@ record SignPadWriter<W>
 require W: typename
 conform Writer<SignPadWriter<W>>
     inner : Ptr<W>
-    fill  : String
+    fill  : Bytes
     pad   : USize
 
 routine SignPadWriter<W>.write_bytes(%self: Ptr<Self>, %bytes: Ptr<Byte>, %length: USize) -> Void
@@ -1367,18 +1367,18 @@ require W: typename, Writer<W>
         branch %first ? first(%inner, %pad) : pass(%inner, %bytes, %length)
 
     block first(%inner: Ptr<W>, %pad: USize):
-        %fill : String = %self.fill.load()
+        %fill : Bytes = %self.fill.load()
         %self.pad.store(0)
         %byte   : U8   = .from_byte(%bytes[0].load())
         %signed : Bool = %byte.eq(45).bitor(%byte.eq(43))  // - or +
         branch %signed ? sign(%inner, %pad, %fill) : pad(%inner, %pad, %fill, %bytes, %length)
 
-    block sign(%inner: Ptr<W>, %pad: USize, %fill: String):
+    block sign(%inner: Ptr<W>, %pad: USize, %fill: Bytes):
         %inner.write_bytes(%bytes, 1)
         %rest : Ptr<Byte> = %bytes[1]
         jump pad(%inner, %pad, %fill, %rest, %length.sub(1))
 
-    block pad(%inner: Ptr<W>, %pad: USize, %fill: String, %from: Ptr<Byte>, %count: USize):
+    block pad(%inner: Ptr<W>, %pad: USize, %fill: Bytes, %from: Ptr<Byte>, %count: USize):
         write_repeated(%inner, %fill, %pad)
         jump pass(%inner, %from, %count)
 
