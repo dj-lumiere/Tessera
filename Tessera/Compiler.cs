@@ -850,7 +850,17 @@ public sealed partial class Compiler
                 {
                     _definingTypes.Remove(s.Key);
                 }
-                _typeDefs.AppendLine($"{s.Llvm} = type {{ {string.Join(", ", Shape(s).Members.Select(m => m.Llvm))} }}");
+                var shape = Shape(s);
+                string members = string.Join(", ", shape.Members.Select(m => m.Llvm));
+                if (!shape.Dense) _typeDefs.AppendLine($"{s.Llvm} = type {{ {members} }}");
+                else if (shape.WrapAlign == 0) _typeDefs.AppendLine($"{s.Llvm} = type <{{ {members} }}>");
+                else
+                {
+                    // A packed struct ignores an alignment member inside it, so the alignment wraps it.
+                    string inner = $"%\"{s.Key}.dense\"";
+                    _typeDefs.AppendLine($"{inner} = type <{{ {members} }}>");
+                    _typeDefs.AppendLine($"{s.Llvm} = type {{ [0 x <{shape.WrapAlign} x i8>], {inner} }}");
+                }
                 break;
             case ArrayType a:
                 EnsureTypeDefined(a.Elem);

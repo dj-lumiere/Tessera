@@ -31,6 +31,9 @@ public sealed class FunctionGen
     private readonly Dictionary<string, List<(string Pred, List<string> Ops)>> _incoming = [];
     private readonly List<LBlock> _lblocks = [];
     private readonly List<string> _allocas = [];
+
+    /// Field addresses (GEP results) less aligned than their type, with the alignment they have.
+    private readonly Dictionary<string, long> _placeAlign = [];
     private AbiSig _sig = null!;
     private readonly Dictionary<string, Val> _routineParams = [];
     private Dictionary<string, Val> _values = [];
@@ -111,7 +114,7 @@ public sealed class FunctionGen
                         at = $"{name}.c{k}.at";
                         unpack.Add($"{at} = getelementptr inbounds i8, ptr {buffer}, i64 {part.Offset}");
                     }
-                    unpack.Add($"store {part.Llvm} {name}.c{k}, ptr {at}");
+                    unpack.Add($"store {part.Llvm} {name}.c{k}, ptr {at}{PartAlign(part.Offset)}");
                 }
                 unpack.Add($"{name} = load {_inst.Params[i].Llvm}, ptr {buffer}");
             }
@@ -285,7 +288,7 @@ public sealed class FunctionGen
                 {
                     var (name, pos) = d.Names[i];
                     string op = LocalOp(name);
-                    Line($"{op} = extractvalue {tuple.Llvm} {v.Op}, {shape.FieldIndex[i]}");
+                    Line($"{op} = extractvalue {tuple.Llvm} {v.Op}, {shape.ValuePath(i)}");
                     Define(name, new Val(op, tuple.Args[i]), pos);
                 }
                 break;
@@ -412,8 +415,15 @@ public sealed class FunctionGen
                 var (idx, ft) = FieldOf(s, f.Name, f.Pos);
                 if (s.TransparentField is not null) return (baseAddr, ft);
                 _c.EnsureTypeDefined(s);
-                int member = _c.Shape(s).FieldIndex[idx];
-                return (EmitTmp($"getelementptr {s.Llvm}, ptr {baseAddr}, i32 0, i32 {member}"), ft);
+                string fieldAddr = EmitTmp($"getelementptr {s.Llvm}, ptr {baseAddr}, i32 0, {_c.Shape(s).GepPath(idx)}");
+                // In a dense record (or below one) a field may sit at an offset its type's alignment doesn't divide: the
+                // address is only as aligned as the base and the offset allow, and loads and stores through the place
+                // use that alignment. A Ptr taken from it assumes its type's alignment, which the author owns.
+                long baseAlign = _placeAlign.TryGetValue(baseAddr, out long known) ? known : _c.SizeAlign(s, f.Pos).Align;
+                long offset = _c.FieldOffsets(s, f.Pos)[idx];
+                long fieldAlign = offset == 0 ? baseAlign : Math.Min(baseAlign, offset & -offset);
+                if (fieldAlign < _c.SizeAlign(ft, f.Pos).Align) _placeAlign[fieldAddr] = fieldAlign;
+                return (fieldAddr, ft);
             }
             case IndexExpr ix:
             {
@@ -426,7 +436,15 @@ public sealed class FunctionGen
                         throw Err(ix.Pos, $"'[]' on a {baseType} steps over whole arrays; for an element use .get(i) / .set(i, v), or .to_ptr()[i]");
                     var i = EvalIndex(ix.Index);
                     _c.EnsureTypeDefined(baseType);
-                    return (EmitTmp($"getelementptr {baseType.Llvm}, ptr {baseAddr}, {i.Type.Llvm} {i.Op}"), baseType);
+                    string elemAddr = EmitTmp($"getelementptr {baseType.Llvm}, ptr {baseAddr}, {i.Type.Llvm} {i.Op}");
+                    // an element of an unaligned place is as aligned as the place and the stride allow
+                    if (_placeAlign.TryGetValue(baseAddr, out long placeAlign))
+                    {
+                        long stride = _c.SizeAlign(baseType, ix.Pos).Size;
+                        long elemAlign = stride == 0 ? placeAlign : Math.Min(placeAlign, stride & -stride);
+                        if (elemAlign < _c.SizeAlign(baseType, ix.Pos).Align) _placeAlign[elemAddr] = elemAlign;
+                    }
+                    return (elemAddr, baseType);
                 }
                 var b = EvalAny(ix.Base);
                 if (b.Type is not PtrType bp) throw Err(ix.Pos, $"only pointers can be indexed; this is {b.Type}");
@@ -607,14 +625,16 @@ public sealed class FunctionGen
         return new Val(addr, new PtrType(t));
     }
 
+    /// The `, align N` a load or store through this address needs, if it's less aligned than its type.
+    private string AlignSuffix(string addr) => _placeAlign.TryGetValue(addr, out long a) ? $", align {a}" : "";
+
     private Val ExtractField(FieldExpr f)
     {
         var b = EvalAny(f.Base);
         if (b.Type is not RecordType s) throw Err(f.Pos, $"{b.Type} has no fields");
         var (idx, ft) = FieldOf(s, f.Name, f.Pos);
         if (s.TransparentField is not null) return new Val(b.Op, ft);
-        int member = _c.Shape(s).FieldIndex[idx];
-        return new Val(EmitTmp($"extractvalue {s.Llvm} {b.Op}, {member}"), ft);
+        return new Val(EmitTmp($"extractvalue {s.Llvm} {b.Op}, {_c.Shape(s).ValuePath(idx)}"), ft);
     }
 
     private Val IntConst(BigInteger value, Pos pos, DType expected, int hexDigits = 0)
@@ -681,6 +701,9 @@ public sealed class FunctionGen
         _allocas.Add($"{slot} = alloca [{Math.Max(size, 16)} x i8], align {Math.Max(align, 16)}");
         return slot;
     }
+
+    /// The alignment a part has at this offset in a 16-aligned buffer: a dense record's field may sit at any byte.
+    private static string PartAlign(long offset) => $", align {(offset == 0 ? 16 : Math.Min(16, offset & -offset))}";
 
     /// The address `offset` bytes into a buffer.
     private string BufferAt(string buffer, long offset) =>
@@ -953,7 +976,7 @@ public sealed class FunctionGen
         for (int i = 0; i < lit.Items.Count; i++)
         {
             var v = Eval(lit.Items[i], s.Args[i]);
-            acc = EmitTmp($"insertvalue {s.Llvm} {acc}, {s.Args[i].Llvm} {v.Op}, {shape.FieldIndex[i]}");
+            acc = EmitTmp($"insertvalue {s.Llvm} {acc}, {s.Args[i].Llvm} {v.Op}, {shape.ValuePath(i)}");
         }
         return new Val(acc, s);
     }
@@ -981,7 +1004,7 @@ public sealed class FunctionGen
         for (int i = 0; i < fields.Count; i++)
         {
             var v = Eval(given[fields[i].Name], fields[i].Type);
-            acc = EmitTmp($"insertvalue {s.Llvm} {acc}, {fields[i].Type.Llvm} {v.Op}, {shape.FieldIndex[i]}");
+            acc = EmitTmp($"insertvalue {s.Llvm} {acc}, {fields[i].Type.Llvm} {v.Op}, {shape.ValuePath(i)}");
         }
         return new Val(acc, s);
     }
@@ -1358,9 +1381,23 @@ public sealed class FunctionGen
         if (!arityOk)
             throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' takes {(sig.Variadic ? "at least " : "")}{fixedCount} argument(s), got {plan.Args.Count}");
 
+        // A load or store reads its address straight from a place chain, so a field of a dense record keeps the
+        // alignment it really has (see PlaceAddress); anywhere else such an address is refused.
+        var access = sig.IsTemplate && sig.Decl.Name is "load" or "store" or "volatile_load" or "volatile_store" or "store_into"
+            ? (sig.Decl.Name == "store_into" ? plan.Args.FirstOrDefault() : plan.Receiver)
+            : null;
+        string alignSuffix = "";
+        Val Address(Expr e, DType t)
+        {
+            if (e != access || e is not (FieldExpr or IndexExpr) || !IsPlaceChain(e)) return EvalArg(e, t);
+            var (addr, pointee) = PlaceAddress(e);
+            alignSuffix = AlignSuffix(addr);
+            return new Val(addr, new PtrType(pointee));
+        }
         var args = new List<Val>();
-        if (plan.Receiver is not null) args.Add(EvalReceiver(plan.Receiver, sig.Params[0]));
-        for (int i = 0; i < fixedCount; i++) args.Add(EvalArg(plan.Args[i], sig.Params[i + offset]));
+        if (plan.Receiver is not null)
+            args.Add(plan.Receiver == access ? Address(plan.Receiver, sig.Params[0]) : EvalReceiver(plan.Receiver, sig.Params[0]));
+        for (int i = 0; i < fixedCount; i++) args.Add(Address(plan.Args[i], sig.Params[i + offset]));
         for (int i = fixedCount; i < plan.Args.Count; i++) args.Add(VariadicArg(plan.Args[i]));
 
         _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);
@@ -1376,7 +1413,7 @@ public sealed class FunctionGen
             // A template isn't instantiated, so the types it names (a record read by `load`) are defined here.
             foreach (var p in sig.Params) _c.EnsureTypeDefined(p);
             _c.EnsureTypeDefined(sig.Ret);
-            return ExpandTemplate(sig, args, plan.Pos);
+            return ExpandTemplate(sig, args, plan.Pos, alignSuffix);
         }
 
         var inst = _c.RequireInstance(plan.Decl, plan.Env);
@@ -1416,7 +1453,7 @@ public sealed class FunctionGen
                     string buffer = NewBuffer(paramTypes[i]);
                     Line($"store {a.Type.Llvm} {a.Op}, ptr {buffer}");
                     foreach (var part in info.Parts)
-                        argList.Add($"{part.Llvm}{part.Attrs} {EmitTmp($"load {part.Llvm}, ptr {BufferAt(buffer, part.Offset)}")}");
+                        argList.Add($"{part.Llvm}{part.Attrs} {EmitTmp($"load {part.Llvm}, ptr {BufferAt(buffer, part.Offset)}{PartAlign(part.Offset)}")}");
                     break;
                 }
                 case AbiPass.Indirect or AbiPass.ByVal:
@@ -1502,9 +1539,9 @@ public sealed class FunctionGen
         bf16AsBits && Instance.IsBf16(t) ? new Val(EmitTmp($"bitcast i16 {op} to bfloat"), t) : new Val(op, t);
 
     /// Expands an `@external("llvm")` routine's `@template` in place.
-    private Val ExpandTemplate(Instance sig, List<Val> args, Pos pos)
+    private Val ExpandTemplate(Instance sig, List<Val> args, Pos pos, string suffix = "")
     {
-        string text = sig.Decl.Attr("template")!.First!;
+        string text = sig.Decl.Attr("template")!.First! + suffix;
         string? result = sig.Ret is VoidType ? null : Tmp();
         var temps = new Dictionary<string, string>();
         var sb = new StringBuilder();

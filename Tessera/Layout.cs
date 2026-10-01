@@ -20,8 +20,17 @@ public sealed partial class Compiler
     }
 
     /// A record's LLVM members and, for each field, the index of its member. `@layout(align: N)` on the record puts
-    /// an alignment member first; `@aligned(N)` on a field puts one right before that field.
-    public sealed record RecordShape(List<Member> Members, int[] FieldIndex);
+    /// an alignment member first; `@aligned(N)` on a field puts one right before that field. A dense record's
+    /// members are packed (`<{ ... }>`); with `align: N` too, they sit inside `{ [0 x <N x i8>], <{ ... }> }`, so a
+    /// field is one level deeper (WrapAlign is N then, else 0).
+    public sealed record RecordShape(List<Member> Members, int[] FieldIndex, bool Dense = false, long WrapAlign = 0)
+    {
+        /// The field's index path for extractvalue / insertvalue.
+        public string ValuePath(int field) => WrapAlign > 0 ? $"1, {FieldIndex[field]}" : $"{FieldIndex[field]}";
+
+        /// The field's index path after a GEP's leading `i32 0`.
+        public string GepPath(int field) => WrapAlign > 0 ? $"i32 1, i32 {FieldIndex[field]}" : $"i32 {FieldIndex[field]}";
+    }
 
     public RecordShape Shape(RecordType s)
     {
@@ -29,7 +38,17 @@ public sealed partial class Compiler
         var fields = Fields(s);
         var env = RecordEnv(s);
         var members = new List<Member>();
-        if (RecordAlign(s.Decl) is { } recordAlign) members.Add(AlignMember(recordAlign, s.Decl.Attr("layout")!.Pos, "@layout(align: N)", env));
+        var (dense, recordAlign) = LayoutOf(s.Decl);
+        if (dense)
+        {
+            for (int i = 0; i < fields.Count; i++)
+                if (s.Decl.Fields[i].Attr("aligned") is { } a)
+                    throw new CompileError(a.Pos, "@aligned has no place in a @layout(dense) record: its fields have no padding");
+            long wrap = recordAlign is null ? 0 : AlignMember(recordAlign, s.Decl.Attr("layout")!.Pos, "@layout(align: N)", env).Align;
+            return _shapes[s.Key] = new RecordShape(fields.Select(f => new Member(f.Type, 0)).ToList(),
+                Enumerable.Range(0, fields.Count).ToArray(), Dense: true, WrapAlign: wrap);
+        }
+        if (recordAlign is not null) members.Add(AlignMember(recordAlign, s.Decl.Attr("layout")!.Pos, "@layout(align: N)", env));
         var index = new int[fields.Count];
         for (int i = 0; i < fields.Count; i++)
         {
@@ -44,21 +63,42 @@ public sealed partial class Compiler
         return _shapes[s.Key] = new RecordShape(members, index);
     }
 
-    /// A record's `@layout(...)`: `align: N` raises the whole record's alignment, and is the only layout the
-    /// compiler implements so far. Returns the alignment argument, or null for the C layout.
-    private static AttrArg? RecordAlign(RecordDecl d)
+    /// A record's `@layout(...)`: `dense` packs the fields with no padding (alignment 1), and `align: N` raises the
+    /// whole record's alignment, alone or with dense. Returns whether it's dense and the alignment argument.
+    private static (bool Dense, AttrArg? Align) LayoutOf(RecordDecl d)
     {
         if (d.Attr("aligned") is { } misplaced)
             throw new CompileError(misplaced.Pos, "@aligned goes on a field; a record's own alignment is @layout(align: N)");
-        if (d.Attr("layout") is not { } layout) return null;
+        if (d.Attr("layout") is not { } layout) return (false, null);
         return layout.Args switch
         {
-            [{ Key: "align" } align] => align,
-            [{ Key: null, Value: "dense" or "std140" or "std430" } planned] =>
+            [{ Key: "align" } align] => (false, align),
+            [{ Key: null, Value: "dense" }] => (true, null),
+            [{ Key: null, Value: "dense" }, { Key: "align" } align] => (true, align),
+            [{ Key: "align" } align, { Key: null, Value: "dense" }] => (true, align),
+            [{ Key: null, Value: "std140" or "std430" } planned] =>
                 throw new CompileError(layout.Pos, $"@layout({planned.Value}) is planned but not implemented yet (Roadmap #56)"),
             _ => throw new CompileError(layout.Pos,
-                "@layout takes one layout: align: N (a power of two), or the planned dense, std140, std430"),
+                "@layout takes dense, align: N (a power of two), or both; std140 and std430 are planned"),
         };
+    }
+
+    /// Each field's byte offset in the record (the C layout's, or a dense record's running sum).
+    public long[] FieldOffsets(RecordType s, Pos pos)
+    {
+        var shape = Shape(s);
+        var offsets = new long[shape.FieldIndex.Length];
+        long offset = 0;
+        int field = 0;
+        for (int m = 0; m < shape.Members.Count; m++)
+        {
+            var member = shape.Members[m];
+            var (size, align) = member.Type is null ? (0, member.Align) : SizeAlign(member.Type, pos);
+            if (!shape.Dense) offset = RoundUp(offset, align);
+            if (field < offsets.Length && shape.FieldIndex[field] == m) offsets[field++] = offset;
+            offset += size;
+        }
+        return offsets;
     }
 
     private Member AlignMember(AttrArg arg, Pos pos, string what, TypeEnv env)
@@ -116,8 +156,15 @@ public sealed partial class Compiler
                 if (!_sizing.Add(s.Key)) throw new CompileError(pos, $"{s} contains itself");
                 try
                 {
+                    var shape = Shape(s);
+                    if (shape.Dense)
+                    {
+                        long sum = shape.Members.Sum(m => SizeAlign(m.Type!, pos).Size);
+                        long whole = Math.Max(1, shape.WrapAlign);
+                        return (RoundUp(sum, whole), whole);
+                    }
                     long offset = 0, maxAlign = 1;
-                    foreach (var m in Shape(s).Members)
+                    foreach (var m in shape.Members)
                     {
                         var (size, align) = m.Type is null ? (0, m.Align) : SizeAlign(m.Type, pos);
                         offset = RoundUp(offset, align) + size;

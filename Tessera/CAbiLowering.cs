@@ -148,14 +148,9 @@ public sealed partial class Compiler
             }
             case RecordType r:
             {
-                long offset = 0;
-                foreach (var m in Shape(r).Members)
-                {
-                    var (size, align) = m.Type is null ? (0, m.Align) : SizeAlign(m.Type, pos);
-                    offset = RoundUp(offset, align);
-                    if (m.Type is not null) AddLeaves(m.Type, at + offset, acc, pos);
-                    offset += size;
-                }
+                var offsets = FieldOffsets(r, pos);
+                var fields = Fields(r);
+                for (int i = 0; i < fields.Count; i++) AddLeaves(fields[i].Type, at + offsets[i], acc, pos);
                 break;
             }
             default:
@@ -228,7 +223,7 @@ public sealed partial class Compiler
         var classes = Enumerable.Repeat('n', n).ToList();
         foreach (var l in leaves)
         {
-            if (l.Offset / 8 != (l.Offset + l.Size - 1) / 8 && l.Size <= 8) return null;  // straddles: unaligned
+            if (l.Offset % Math.Min(l.Size, 8) != 0) return null;  // an unaligned field (dense) goes in memory
             for (long e = l.Offset / 8; e <= (l.Offset + l.Size - 1) / 8; e++)
                 classes[(int)e] = l.Kind == 'f' && classes[(int)e] != 'i' ? 's' : 'i';
         }
@@ -391,7 +386,12 @@ public sealed partial class Compiler
         AbiValue r;
         if (!IsAggregate(ret)) r = AbiValue.Direct(ret);
         else if (Flat(ret) is { } rf)
-            r = Coerce(new AbiPart(rf.Count == 1 ? rf[0].Llvm : $"{{ {rf[0].Llvm}, {rf[1].Llvm} }}", 0));
+        {
+            // Two fields come back as a struct of them, packed when the second isn't where a plain struct puts it.
+            bool packed = rf.Count == 2 && rf[1].Offset != RoundUp(rf[0].Size, Math.Min(rf[1].Size, xlen * 2));
+            r = Coerce(new AbiPart(rf.Count == 1 ? rf[0].Llvm
+                : packed ? $"<{{ {rf[0].Llvm}, {rf[1].Llvm} }}>" : $"{{ {rf[0].Llvm}, {rf[1].Llvm} }}", 0));
+        }
         else
         {
             r = Integer(ret, isReturn: true);
