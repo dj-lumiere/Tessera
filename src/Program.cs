@@ -14,6 +14,8 @@ static class Cli
           tessera test  [<target>] <dir-or-file.tess>...
           tessera check [<target>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
+          tessera version               print the builder's version
+          tessera help                  print this text
 
         <target>: --target <arch-os-abi> (default: this machine), --cpu <name> (default: the triple's baseline, such
                   as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). #feature reads the result.
@@ -25,6 +27,23 @@ static class Cli
               the number in <name>.exit (default 0). If <name>.error exists, the build must fail with a message
               containing its text.
         """;
+
+    private static int Help()
+    {
+        Console.WriteLine(Usage);
+        return 0;
+    }
+
+    /// The builder's version, without the build metadata .NET appends (`0.1.0+<commit>`).
+    private static int Version()
+    {
+        string version = typeof(Cli).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion ?? "unknown";
+        Console.WriteLine($"tessera {version.Split('+')[0]}");
+        return 0;
+    }
 
     public static int Execute(string[] args)
     {
@@ -43,6 +62,8 @@ static class Cli
                 "test" => Test(args[1..]),
                 "check" => Check(args[1..]),
                 "fmt" => Fmt(args[1..]),
+                "version" => Version(),
+                "help" => Help(),
                 _ => Fail($"unknown command '{args[0]}'\n{Usage}"),
             };
         }
@@ -479,13 +500,7 @@ static class Cli
                 continue;
             }
             if (!Directory.Exists(dir)) throw new ToolError($"{dir} does not exist");
-            var found = Directory.GetFiles(dir, "*.tess").Select(f => (Path.ChangeExtension(f, null), new[] { f }))
-                .Concat(Directory.GetDirectories(dir)
-                    .Select(d => (d, File.Exists(Path.Combine(d, Manifest.FileName))
-                        ? [Path.Combine(d, Manifest.FileName)]
-                        : Directory.GetFiles(d, "*.tess", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()))
-                    .Where(t => t.Item2.Length > 0))
-                .OrderBy(t => t.Item1, StringComparer.Ordinal).ToList();
+            var found = TestsIn(dir);
             if (found.Count == 0) throw new ToolError($"no .tess files in {dir}");
             tests.AddRange(found);
         }
@@ -498,10 +513,7 @@ static class Cli
         {
             string name = Path.GetFileName(stem);
             if (qualify) name = Path.GetFileName(Path.GetDirectoryName(stem)) + "/" + name;
-            // A <name>.arch file lists the architectures a test runs on, one per line (a test of an
-            // architecture-specific routine); on any other target it is skipped.
-            if (File.Exists(stem + ".arch")
-                && !File.ReadAllLines(stem + ".arch").Select(l => l.Trim()).Contains(target.Arch))
+            if (!RunsOn(stem, target))
             {
                 skipped++;
                 Console.WriteLine($"  skip  {name}");
@@ -525,6 +537,22 @@ static class Cli
         return failures.Count == 0 ? 0 : 1;
     }
 
+    /// The golden tests in a directory: every <name>.tess, and every subdirectory <name>/ (its .tess files compiled
+    /// together, or built through its config.toml). A test's .expected / .exit / .error files sit next to it.
+    internal static List<(string Stem, string[] Sources)> TestsIn(string dir) =>
+        Directory.GetFiles(dir, "*.tess").Select(f => (Path.ChangeExtension(f, null), new[] { f }))
+            .Concat(Directory.GetDirectories(dir)
+                .Select(d => (d, File.Exists(Path.Combine(d, Manifest.FileName))
+                    ? [Path.Combine(d, Manifest.FileName)]
+                    : Directory.GetFiles(d, "*.tess", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()))
+                .Where(t => t.Item2.Length > 0))
+            .OrderBy(t => t.Item1, StringComparer.Ordinal).ToList();
+
+    /// A <name>.arch file lists the architectures a test runs on, one per line (a test of an architecture-specific
+    /// routine); on any other target it is skipped.
+    internal static bool RunsOn(string stem, BuildTarget target) =>
+        !File.Exists(stem + ".arch") || File.ReadAllLines(stem + ".arch").Select(l => l.Trim()).Contains(target.Arch);
+
     private static string Normalize(string s) => s.Replace("\r\n", "\n").TrimEnd('\n');
 
     private static string FirstDifference(string[] want, string[] got)
@@ -537,7 +565,7 @@ static class Cli
     }
 
     /// Returns null on success, or the reason the test failed.
-    private static string? RunOne(string[] sources, string stem, BuildTarget target)
+    internal static string? RunOne(string[] sources, string stem, BuildTarget target)
     {
         string? expectedError = File.Exists(stem + ".error") ? File.ReadAllText(stem + ".error").Trim() : null;
 

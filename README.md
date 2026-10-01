@@ -71,9 +71,9 @@ What sets it apart:
 
 | Path | Contents |
 |------|----------|
-| `src/` | The builder, in C#. It emits LLVM IR text and links through `clang`. |
+| `Tessera.csproj`, `src/` | The builder, in C#. It emits LLVM IR text and links through `clang`. |
 | `stdlib/` | The standard library, written in Tessera. It's the source of truth for the current design. |
-| `tests/` | Golden tests for the builder, including larger programs: Dijkstra, a lazy segment tree, SHA-256, a calculator, and more. |
+| `tests/` | Golden tests for the builder, including larger programs: Dijkstra, a lazy segment tree, SHA-256, a calculator, and more. `tests/Tessera.Tests.csproj` runs each one (and each example) as its own xUnit case, for an IDE's test runner. |
 | `examples/` | Introductory programs, one idea each: FizzBuzz, binary search, a Caesar cipher, a prime sieve, word count, and more. |
 | `playground/` | Gitignored: your own programs to build and run (the Rider configuration *Playground* runs `playground/main.tess`). |
 | `Tessera.tmbundle/` | A TextMate grammar for syntax highlighting. |
@@ -90,13 +90,14 @@ rules that are easy to get wrong.
 You need the [.NET 10 SDK](https://dotnet.microsoft.com/) and clang 21 or newer on `PATH`.
 
 ```sh
-dotnet run --project src -- run tests/hello.tess          # build and run a program
-dotnet run --project src -- build prog.tess -o prog       # build an executable
-dotnet run --project src -- build prog.tess --emit-llvm   # write LLVM IR instead
-dotnet run --project src -- build                         # build the solution in config.toml into build/
-dotnet run --project src -- check                         # type-check the whole stdlib
-dotnet run --project src -- test tests examples             # run the golden tests
-dotnet run --project src -- fmt stdlib tests examples        # format the sources
+dotnet run -- run tests/hello.tess          # build and run a program
+dotnet run -- build prog.tess -o prog       # build an executable
+dotnet run -- build prog.tess --emit-llvm   # write LLVM IR instead
+dotnet run -- build                         # build the solution in config.toml into build/
+dotnet run -- check                         # type-check the whole stdlib
+dotnet run -- test tests examples             # run the golden tests
+dotnet run -- fmt stdlib tests examples        # format the sources
+dotnet run -- version                         # print the builder's version (help lists every command)
 ```
 
 With files, `build` and `run` also take `--target <arch-os-abi>` and `-O`, and all the files form one solution. Without

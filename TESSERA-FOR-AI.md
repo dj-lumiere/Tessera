@@ -8,12 +8,13 @@ answer.
 ## Toolchain
 
 ```sh
-dotnet run --project src -- run   file.tess        # build and run (the whole stdlib is always available)
-dotnet run --project src -- run -O file.tess       # the same at -O2
-dotnet run --project src -- check file.tess        # type-check only
-dotnet run --project src -- test tests examples             # golden tests
-dotnet run --project src -- fmt <files or dirs>        # format in place (--check to only list)
-dotnet run --project src -- build                      # build the solution in config.toml (here or above) into build/
+dotnet run -- run   file.tess        # build and run (the whole stdlib is always available)
+dotnet run -- run -O file.tess       # the same at -O2
+dotnet run -- check file.tess        # type-check only
+dotnet run -- test tests examples             # golden tests
+dotnet run -- fmt <files or dirs>        # format in place (--check to only list)
+dotnet run -- build                      # build the solution in config.toml (here or above) into build/
+dotnet run -- version                    # the builder's version; help prints every command
 ```
 
 A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines. Name lookup follows
