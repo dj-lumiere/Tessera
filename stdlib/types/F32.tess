@@ -395,27 +395,44 @@ routine F32.cbrt(%self: Self) -> Self
         %r : Self = f32_cm_cbrt(%self)
         return(%r)
 
-/// self raised to an integer power, by repeated squaring.
+/// self raised to an integer power, correctly rounded. An n of at most 2^24 in magnitude converts to F32
+/// exactly and goes to powf. A larger one goes through the F64 power, whose rounding to F32 is correct unless it
+/// lands exactly on an F32 midpoint; there the F128 power decides (checked for every x and n that reach it).
 routine F32.powi(%self: Self, %n: S32) -> Self
     block entry():
-        %negative  : Bool = %n.lt(0)
-        %magnitude : U32  = %n.abs_diff(0)
-        jump loop(%self, %magnitude, 1.0, %negative)
-
-    block loop(%base: Self, %exponent: U32, %acc: Self, %negative: Bool):
-        %done : Bool = %exponent.eq(0)
-        branch %done ? finish(%acc, %negative) : step(%base, %exponent, %acc, %negative)
-
-    block step(%base: Self, %exponent: U32, %acc: Self, %negative: Bool):
-        %odd       : Bool = %exponent.bitand(1).ne(0)
-        %with_base : Self = %acc.mul(%base)
-        %next_acc  : Self = %odd ? %with_base : %acc
-        jump loop(%base.mul(%base), %exponent.shr(1), %next_acc, %negative)
-
-    block finish(%acc: Self, %negative: Bool):
-        %inverse : Self = %acc.recip()
-        %r       : Self = %negative ? %inverse : %acc
+        %small : Bool = %n.abs_diff(0).le(0x1000000)
+        branch %small ? continue : wide()
+        %r : Self = %self.powf(%n.to_f32())
         return(%r)
+
+    block wide():
+        %r   : F64  = %self.to_f64().powf(%n.to_f64())
+        %tie : Bool = f32_on_midpoint_f64(%r)
+        branch %tie ? exact() : return(%r.to_f32())
+
+    block exact():
+        %r : F128 = %self.to_f128().powf(%n.to_f128())
+        return(%r.to_f32())
+
+/// Whether %r lies exactly between two F32 values.
+private routine f32_on_midpoint_f64(%r: F64) -> Bool
+    block entry():
+        %a   : F64  = %r.abs()
+        %sub : Bool = %a.lt(0x1p-126)
+        branch %sub ? subnormal(%a) : normal(%a)
+
+    // F32 keeps 23 fraction bits: a midpoint has bit 28 set and nothing below it.
+    block normal(%a: F64):
+        %low : U64  = %a.bits().bitand(0x1FFFFFFF)
+        %mid : Bool = %a.is_finite().bitand(%low.eq(0x10000000))
+        return(%mid)
+
+    // Below 2^-126 F32's quantum is 2^-149: a midpoint is an odd multiple of 2^-150.
+    block subnormal(%a: F64):
+        %t     : F64  = %a.mul(0x1p150)
+        %whole : Bool = %t.trunc().eq(%t)
+        %odd   : Bool = %t.rem(2.0).eq(1.0)
+        return(%whole.bitand(%odd))
 
 routine F32.powf(%self: Self, %exponent: Self) -> Self
     block entry():

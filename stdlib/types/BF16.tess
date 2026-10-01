@@ -339,27 +339,18 @@ routine BF16.cbrt(%self: Self) -> Self
         %r    : Self = %wide.cbrt().to_bf16()
         return(%r)
 
-/// self raised to an integer power, by repeated squaring.
+/// self raised to an integer power, correctly rounded. The F64 power (n converts exactly) rounds correctly to
+/// BF16 unless it lands exactly on a BF16 midpoint; there the F128 power decides (checked for every x and n
+/// that reach it).
 routine BF16.powi(%self: Self, %n: S32) -> Self
     block entry():
-        %negative  : Bool = %n.lt(0)
-        %magnitude : U32  = %n.abs_diff(0)
-        jump loop(%self, %magnitude, 1.0, %negative)
+        %r   : F64  = %self.to_f64().powf(%n.to_f64())
+        %tie : Bool = bf16_on_midpoint_f64(%r)
+        branch %tie ? exact() : return(%r.to_bf16())
 
-    block loop(%base: Self, %exponent: U32, %acc: Self, %negative: Bool):
-        %done : Bool = %exponent.eq(0)
-        branch %done ? finish(%acc, %negative) : step(%base, %exponent, %acc, %negative)
-
-    block step(%base: Self, %exponent: U32, %acc: Self, %negative: Bool):
-        %odd       : Bool = %exponent.bitand(1).ne(0)
-        %with_base : Self = %acc.mul(%base)
-        %next_acc  : Self = %odd ? %with_base : %acc
-        jump loop(%base.mul(%base), %exponent.shr(1), %next_acc, %negative)
-
-    block finish(%acc: Self, %negative: Bool):
-        %inverse : Self = %acc.recip()
-        %r       : Self = %negative ? %inverse : %acc
-        return(%r)
+    block exact():
+        %r : F128 = %self.to_f128().powf(%n.to_f128())
+        return(%r.to_bf16())
 
 routine BF16.powf(%self: Self, %exponent: Self) -> Self
     block entry():
