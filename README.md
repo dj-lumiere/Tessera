@@ -61,7 +61,7 @@ What sets it apart:
 - **Nothing hidden.** No implicit conversions, destructors, exceptions, vtables, or allocations: every runtime
   operation is written in the source.
 
-> **Status:** the language is still changing, and the compiler works but is incomplete. Modules are namespaces
+> **Status:** the language is still changing, and the builder works but is incomplete. Modules are namespaces
 > (`import`, qualified paths, `define`, `private` / `internal`; `Standard::Core` is always imported), two modules may
 > declare the same name, and symbols follow the Itanium C++ mangling. A solution is described by a `config.toml`, or
 > is every file on the command line; the stdlib is compiled in with it. The stdlib is layered so that only
@@ -71,9 +71,9 @@ What sets it apart:
 
 | Path | Contents |
 |------|----------|
-| `Tessera/` | The compiler, in C#. It emits LLVM IR text and links through `clang`. |
+| `src/` | The builder, in C#. It emits LLVM IR text and links through `clang`. |
 | `stdlib/` | The standard library, written in Tessera. It's the source of truth for the current design. |
-| `tests/` | Golden tests for the compiler, including larger programs: Dijkstra, a lazy segment tree, SHA-256, a calculator, and more. |
+| `tests/` | Golden tests for the builder, including larger programs: Dijkstra, a lazy segment tree, SHA-256, a calculator, and more. |
 | `examples/` | Introductory programs, one idea each: FizzBuzz, binary search, a Caesar cipher, a prime sieve, word count, and more. |
 | `playground/` | Gitignored: your own programs to build and run (the Rider configuration *Playground* runs `playground/main.tess`). |
 | `Tessera.tmbundle/` | A TextMate grammar for syntax highlighting. |
@@ -90,13 +90,13 @@ rules that are easy to get wrong.
 You need the [.NET 10 SDK](https://dotnet.microsoft.com/) and clang 21 or newer on `PATH`.
 
 ```sh
-dotnet run --project Tessera -- run tests/hello.tess          # build and run a program
-dotnet run --project Tessera -- build prog.tess -o prog       # build an executable
-dotnet run --project Tessera -- build prog.tess --emit-llvm   # write LLVM IR instead
-dotnet run --project Tessera -- build                         # build the solution in config.toml into build/
-dotnet run --project Tessera -- check                         # type-check the whole stdlib
-dotnet run --project Tessera -- test tests examples             # run the golden tests
-dotnet run --project Tessera -- fmt stdlib tests examples        # format the sources
+dotnet run --project src -- run tests/hello.tess          # build and run a program
+dotnet run --project src -- build prog.tess -o prog       # build an executable
+dotnet run --project src -- build prog.tess --emit-llvm   # write LLVM IR instead
+dotnet run --project src -- build                         # build the solution in config.toml into build/
+dotnet run --project src -- check                         # type-check the whole stdlib
+dotnet run --project src -- test tests examples             # run the golden tests
+dotnet run --project src -- fmt stdlib tests examples        # format the sources
 ```
 
 With files, `build` and `run` also take `--target <arch-os-abi>` and `-O`, and all the files form one solution. Without
@@ -119,6 +119,6 @@ modules, or a `config.toml` to build from), with one of:
 
 - `<name>.expected`: the program's stdout
 - `<name>.exit`: its exit code (default 0)
-- `<name>.error`: text the compile error must contain
+- `<name>.error`: text the build error must contain
 
 The programs in `examples/` carry `<name>.expected` files too, so they run as tests alongside `tests/`.

@@ -812,13 +812,13 @@ public sealed partial class Compiler
         }
     }
 
-    /// A compile-time integer (an Array length, an alignment, an integer generic argument): any folded integer
+    /// A buildtime integer (an Array length, an alignment, an integer generic argument): any folded integer
     /// constant (ConstFold.cs).
     private long EvalConstInt(Expr e, TypeEnv env, int depth)
     {
         var v = Fold(e, null, env);
         if (v.Type is not (null or IntType))
-            throw new CompileError(e.Pos, $"expected a compile-time integer, found {v.Type.Name}");
+            throw new CompileError(e.Pos, $"expected a buildtime integer, found {v.Type.Name}");
         if (v.Value < long.MinValue || v.Value > long.MaxValue) throw new CompileError(e.Pos, $"{v.Value} is too large here");
         return (long)v.Value;
     }
@@ -983,7 +983,7 @@ public sealed partial class Compiler
 
     private readonly Dictionary<string, string> _presetArrays = [];
 
-    /// A preset's value, for compile-time evaluation. A global changes at run time, so it has none.
+    /// A preset's value, for buildtime evaluation. A global changes at run time, so it has none.
 
     private readonly Dictionary<string, string> _globalVars = [];
 

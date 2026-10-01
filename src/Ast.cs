@@ -26,12 +26,12 @@ public sealed record TypeArgTuple(List<TypeRef> Types) : TypeArg
 }
 /// `#callconv("fast")` inside a Callable.
 public sealed record TypeArgAttr(Attribute Attr) : TypeArg { public override string ToString() => $"#{Attr.Name}"; }
-/// A compile-time integer expression as a generic argument: `max(sizeof<A>(), sizeof<B>())` in `Array<Byte, …>`.
+/// A buildtime integer expression as a generic argument: `max(sizeof<A>(), sizeof<B>())` in `Array<Byte, …>`.
 public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string ToString() => "(expr)"; }
 
 // ── Declarations ────────────────────────────────────────────────────────────
 
-/// An attribute argument: `"c"`, `64`, `size: 64`, `os: !"windows"`, or a compile-time expression such as
+/// An attribute argument: `"c"`, `64`, `size: 64`, `os: !"windows"`, or a buildtime expression such as
 /// `max(alignof<A>(), alignof<B>())` (then Expr is set and Value is empty).
 public sealed record AttrArg(string? Key, string Value, bool Negated, Expr? Expr = null);
 

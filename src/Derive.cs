@@ -2,7 +2,7 @@ using System.Text;
 
 namespace Tessera;
 
-/// `#derive(Represent, Diagnose, Equal, Hash, Compare)` on a record, choice, or variant: the compiler declares the
+/// `#derive(Represent, Diagnose, Equal, Hash, Compare)` on a record, choice, or variant: the builder declares the
 /// conformance and writes the routine. Each routine is generated as Tessera source, parsed in the type's file (so it sees private
 /// fields), and checked like any other routine.
 ///

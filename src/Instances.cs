@@ -71,7 +71,7 @@ public sealed partial class Compiler
     {
         foreach (var a in r.Attributes)
             if (!KnownAttributes.Contains(a.Name))
-                throw new CompileError(a.Pos, $"attribute '@{a.Name}' is not supported by this compiler yet");
+                throw new CompileError(a.Pos, $"attribute '@{a.Name}' is not supported by this builder yet");
         if (r.Attr("callconv") is { } callconv) CheckCallConv(callconv);
         CheckInlining(r);
 

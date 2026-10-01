@@ -1,8 +1,8 @@
 # Examples
 
 Short programs that each introduce one or two ideas. Read them in this order; each builds on the ones before it.
-Run one with `dotnet run --project Tessera -- run examples/<name>.tess`. Every program has a `<name>.expected`, so
-`dotnet run --project Tessera -- test examples` checks them all.
+Run one with `dotnet run --project src -- run examples/<name>.tess`. Every program has a `<name>.expected`, so
+`dotnet run --project src -- test examples` checks them all.
 
 | Program | What it shows |
 |---------|---------------|

@@ -3,7 +3,7 @@ using System.Numerics;
 
 namespace Tessera;
 
-/// A value the compiler folded: an integer (Type null while it is an untyped literal), a Bool (0 or 1), or the IEEE
+/// A value the builder folded: an integer (Type null while it is an untyped literal), a Bool (0 or 1), or the IEEE
 /// bits of a float or of a bit-pattern record such as F128.
 public sealed record ConstVal(DType? Type, BigInteger Value);
 
@@ -13,8 +13,8 @@ public sealed partial class Compiler
     // min, max, the bitwise operations and shifts, neg, and the checked and _wrap conversions of integers; the
     // bitwise operations of Bool; add, sub, mul, div, and neg of F32 and F64; max, min, sizeof, and alignof; and
     // T.from_bits(...) for a float or a bit-pattern record. Each follows the stdlib routine's meaning, and what would
-    // panic at run time (overflow, a zero divisor, a value out of range) is a compile error. Nothing else runs at
-    // compile time: a routine call in a preset is an error, not code at each use.
+    // panic at run time (overflow, a zero divisor, a value out of range) is a build error. Nothing else runs at
+    // build time: a routine call in a preset is an error, not code at each use.
 
     private const string PresetForms =
         "literals, other presets, integer and Bool arithmetic and conversions, F32/F64 add/sub/mul/div/neg, " +
@@ -152,9 +152,9 @@ public sealed partial class Compiler
                 return new ConstVal(null, c.Name == "sizeof" ? size : align);
             }
             case CallExpr c:
-                throw new CompileError(c.Pos, $"'{c.Name}' can't run at compile time; a preset is made of {PresetForms}");
+                throw new CompileError(c.Pos, $"'{c.Name}' can't run at build time; a preset is made of {PresetForms}");
             default:
-                throw new CompileError(e.Pos, $"this isn't a compile-time constant; a preset is made of {PresetForms}");
+                throw new CompileError(e.Pos, $"this isn't a buildtime constant; a preset is made of {PresetForms}");
         }
     }
 
@@ -198,13 +198,13 @@ public sealed partial class Compiler
         if (n.Name == "from_bits" && n.Args.Count == 1)
         {
             int? bits = owner is FloatType ft ? ft.Bits : BitRecordWidth(owner);
-            if (bits is null) throw new CompileError(n.Pos, $"{owner.Name}.from_bits isn't a compile-time constant");
+            if (bits is null) throw new CompileError(n.Pos, $"{owner.Name}.from_bits isn't a buildtime constant");
             var raw = Typed(Fold(n.Args[0], IntType.U(bits.Value), env), IntType.U(bits.Value), n.Args[0].Pos);
             return new ConstVal(owner, raw.Value);
         }
         // `S64.add(1, 2)`: the receiver is the first argument, of the owner type
         if (n.Args.Count == 0)
-            throw new CompileError(n.Pos, $"'{owner.Name}.{n.Name}' can't run at compile time; a preset is made of {PresetForms}");
+            throw new CompileError(n.Pos, $"'{owner.Name}.{n.Name}' can't run at build time; a preset is made of {PresetForms}");
         var receiver = Typed(Fold(n.Args[0], owner, env), owner, n.Args[0].Pos);
         return Apply(receiver, n.Name, n.Args.Skip(1).ToList(), env, n.Pos);
     }
@@ -248,7 +248,7 @@ public sealed partial class Compiler
             case FloatType ft when ft == FloatType.F32 || ft == FloatType.F64:
                 return ApplyFloat(r.Value, ft, name, args, env, pos);
             default:
-                throw new CompileError(pos, $"{r.Type!.Name}.{name} can't run at compile time; a preset is made of {PresetForms}");
+                throw new CompileError(pos, $"{r.Type!.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
         }
     }
 
@@ -290,12 +290,12 @@ public sealed partial class Compiler
                     if (b < 0 || b >= it.Bits) return new ConstVal(it, it.IsSigned && a < 0 ? -1 : 0);
                     return new ConstVal(it, it.IsSigned ? a >> (int)b : Unsigned(a, it.Bits) >> (int)b);
                 default:
-                    throw new CompileError(pos, $"{it.Name}.{name} can't run at compile time; a preset is made of {PresetForms}");
+                    throw new CompileError(pos, $"{it.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
             }
             CheckOverflow(v, it, name, pos);
             return new ConstVal(it, v);
         }
-        throw new CompileError(pos, $"{it.Name}.{name} can't run at compile time; a preset is made of {PresetForms}");
+        throw new CompileError(pos, $"{it.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
     }
 
     private static void CheckOverflow(BigInteger v, IntType it, string name, Pos pos)
@@ -316,7 +316,7 @@ public sealed partial class Compiler
             _ => IntType.FromName(target.ToUpperInvariant()) is { IsNumber: true } t ? t : null,
         };
         if (to is null)
-            throw new CompileError(pos, $"{from.Name}.{name} can't run at compile time; a preset is made of {PresetForms}");
+            throw new CompileError(pos, $"{from.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
         if (wrap) return new ConstVal(to, Wrap(a, to));
         var (min, max) = Range(to);
         if (a < min || a > max) throw new CompileError(pos, $"{a} doesn't fit in {to.Name} ({from.Name}.{name} in a preset)");
@@ -332,7 +332,7 @@ public sealed partial class Compiler
             BigInteger v = name switch { "bitand" => a & b, "bitor" => a | b, _ => a ^ b };
             return new ConstVal(BoolType.Instance, v);
         }
-        throw new CompileError(pos, $"Bool.{name} can't run at compile time; a preset is made of {PresetForms}");
+        throw new CompileError(pos, $"Bool.{name} can't run at build time; a preset is made of {PresetForms}");
     }
 
     /// F32 and F64 arithmetic, rounded to nearest like the hardware (C# float and double are IEEE).
@@ -354,7 +354,7 @@ public sealed partial class Compiler
             double rd = name switch { "add" => a + yd, "sub" => a - yd, "mul" => a * yd, _ => a / yd };
             return new ConstVal(ft, BitConverter.DoubleToUInt64Bits(rd));
         }
-        throw new CompileError(pos, $"{ft.Name}.{name} can't run at compile time; a preset is made of {PresetForms}");
+        throw new CompileError(pos, $"{ft.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
     }
 
     /// The bits of a float literal rounded to ft, as FloatType.Constant rounds it.

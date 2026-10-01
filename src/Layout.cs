@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-// Compile-time layout: `sizeof` / `alignof` in presets and generic arguments, `#layout(align: N)` on records, and
+// Buildtime layout: `sizeof` / `alignof` in presets and generic arguments, `#layout(align: N)` on records, and
 // `#aligned` on fields.
 public sealed partial class Compiler
 {
@@ -54,7 +54,7 @@ public sealed partial class Compiler
         {
             if (s.Decl.Fields[i].Attr("aligned") is { } fieldAlign)
             {
-                if (fieldAlign.Args is not [var arg]) throw new CompileError(fieldAlign.Pos, "#aligned takes one compile-time integer");
+                if (fieldAlign.Args is not [var arg]) throw new CompileError(fieldAlign.Pos, "#aligned takes one buildtime integer");
                 members.Add(AlignMember(arg, fieldAlign.Pos, "#aligned", env));
             }
             index[i] = members.Count;
@@ -187,7 +187,7 @@ public sealed partial class Compiler
                 }
             }
             default:
-                throw new CompileError(pos, $"the size of {t} isn't known at compile time");
+                throw new CompileError(pos, $"the size of {t} isn't known at build time");
         }
     }
 
@@ -195,7 +195,7 @@ public sealed partial class Compiler
 }
 
 /// The parts of an LLVM data layout string that decide type sizes and alignments, with LLVM's defaults for anything
-/// the string leaves out. The string comes from clang, so the compiler and LLVM agree.
+/// the string leaves out. The string comes from clang, so the builder and LLVM agree.
 public sealed class DataLayout
 {
     private static readonly Dictionary<string, DataLayout> Cache = [];

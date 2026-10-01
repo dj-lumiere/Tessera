@@ -8,12 +8,12 @@ answer.
 ## Toolchain
 
 ```sh
-dotnet run --project Tessera -- run   file.tess        # build and run (the whole stdlib is always available)
-dotnet run --project Tessera -- run -O file.tess       # the same at -O2
-dotnet run --project Tessera -- check file.tess        # type-check only
-dotnet run --project Tessera -- test tests examples             # golden tests
-dotnet run --project Tessera -- fmt <files or dirs>        # format in place (--check to only list)
-dotnet run --project Tessera -- build                      # build the solution in config.toml (here or above) into build/
+dotnet run --project src -- run   file.tess        # build and run (the whole stdlib is always available)
+dotnet run --project src -- run -O file.tess       # the same at -O2
+dotnet run --project src -- check file.tess        # type-check only
+dotnet run --project src -- test tests examples             # golden tests
+dotnet run --project src -- fmt <files or dirs>        # format in place (--check to only list)
+dotnet run --project src -- build                      # build the solution in config.toml (here or above) into build/
 ```
 
 A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines. Name lookup follows
@@ -198,7 +198,7 @@ routine main() -> S32
   method 'next'"; claim a slot for the iterator first.
 - Generic routines repeat their constraints: `require T: typename, Compare<T>`. Concepts: `Equal`, `Hash`,
   `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Represent`. Constraints are checked: a type satisfies a
-  concept only through a `conform` (on its record, or a top-level `conform C<X>` line), and the compiler checks the
+  concept only through a `conform` (on its record, or a top-level `conform C<X>` line), and the builder checks the
   declared routines' signatures. Conditional conformance: `conform Equal<Box<T>> when T: typename, Equal<T>`. A
   record's own `require` applies to every use, so put element constraints on the routines that need them.
 - A bare literal doesn't bind a type parameter: bind it first (`%n: S64 = 42`), then pass `%n`.
@@ -315,7 +315,7 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
   record gets routines written for it with `#derive(Represent, Diagnose, Equal, Hash, Compare)` (any subset), which
   also declares the conformance; choices and variants get all five without asking. Otherwise declare the routine: a
   bare `conform` never generates one.
-- `write(%out, "x = {%x}\n")` writes text and values in one line: it expands at compile time into
+- `write(%out, "x = {%x}\n")` writes text and values in one line: it expands at build time into
   `write_str` / `.represent` calls, a brace holds one expression (loads and chains allowed, and literals with their own braces:
   `"{sum2(Array<S64, 2> { 7, 8 })}"`), `{{` is a literal brace,
   and there are no format options. `print("...")` / `eprint("...")` do the same on stdout / stderr without

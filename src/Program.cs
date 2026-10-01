@@ -276,7 +276,7 @@ static class Cli
     private static string? _stdlib;
 
     /// The standard library: $TESSERA_STDLIB, or the nearest `stdlib/` (with a prelude.tess) above the working
-    /// directory or the compiler binary.
+    /// directory or the builder binary.
     private static string StdlibDir()
     {
         if (_stdlib is not null) return _stdlib;
@@ -397,7 +397,7 @@ static class Cli
             string linkerOutput = outTask.Result;
             p.WaitForExit();
             if (p.ExitCode != 0)
-                throw new ToolError($"clang failed (this is a compiler bug if the IR is invalid):\n{linkerOutput}{err}");
+                throw new ToolError($"clang failed (this is a builder bug if the IR is invalid):\n{linkerOutput}{err}");
         }
         finally
         {
@@ -559,10 +559,10 @@ static class Cli
         }
         catch (CompileError e)
         {
-            if (expectedError is null) return $"compile error: {e.Message}";
+            if (expectedError is null) return $"build error: {e.Message}";
             return e.Message.Contains(expectedError) ? null : $"expected an error containing \"{expectedError}\", got: {e.Message}";
         }
-        if (expectedError is not null) return $"expected a compile error containing \"{expectedError}\", but it compiled";
+        if (expectedError is not null) return $"expected a build error containing \"{expectedError}\", but it compiled";
 
         string exe = TempExe();
         try
