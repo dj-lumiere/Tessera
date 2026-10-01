@@ -161,6 +161,48 @@ require K: typename, V: typename
         %value : V = %node.values.get(%i)
         return(.Present(%value))
 
+/// The address of %key's value, checked like get: a place to update the value in place. Only the value: changing a
+/// key in place would break the order. It stays valid until the dict changes shape or is destructed.
+routine SortedDict<K, V>.at(%self: Self, %key: K) -> Ptr<V>
+require K: typename, V: typename
+    block entry():
+        %found : Option<Ptr<V>> = %self.at_checked(%key)
+        when %found:
+            .Present(%value) -> return(%value)
+            .Absent          -> panic(TrapCode.MissingKey)
+
+/// `at`, returning Absent instead of trapping on a missing key.
+routine SortedDict<K, V>.at_checked(%self: Self, %key: K) -> Option<Ptr<V>>
+require K: typename, V: typename
+    block entry():
+        %root  : Ptr<SortedDictNode<K, V>> = %self.root
+        %empty : Bool                      = %root.is_null()
+        branch %empty ? return(.Absent) : search(%root, %key)
+
+    block search(%node: Ptr<SortedDictNode<K, V>>, %key: K):
+        %i      : USize = %node.find_index(%key)
+        %length : USize = %node.length.load()
+        %inside : Bool  = %i.lt(%length)
+        branch %inside ? maybe_match(%node, %i, %key) : descend_or_missing(%node, %i, %key)
+
+    block maybe_match(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
+        %node_key : K    = %node.keys.get(%i)
+        %cmp      : S32  = %key.compare(%node_key)
+        %equal    : Bool = %cmp.eq(0)
+        branch %equal ? address(%node, %i) : descend_or_missing(%node, %i, %key)
+
+    block descend_or_missing(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
+        %leaf : Bool = %node.leaf.load()
+        branch %leaf ? return(.Absent) : descend(%node, %i, %key)
+
+    block descend(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
+        %child : Ptr<SortedDictNode<K, V>> = %node.children.get(%i)
+        jump search(%child, %key)
+
+    block address(%node: Ptr<SortedDictNode<K, V>>, %i: USize):
+        %value : Ptr<V> = %node.values.at(%i)
+        return(.Present(%value))
+
 /// SortedDicts are sorted by key, so structural in-order comparison of both
 /// keys and values gives map equality.
 routine SortedDict<K, V>.eq(%self: Self, %other: Self) -> Bool
