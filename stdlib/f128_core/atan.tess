@@ -4,7 +4,7 @@
 // Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
 // MIT license: see LICENSE-CORE-MATH
 //
-// f128_cm_atan(x) is the exact arc tangent rounded to nearest, ties to even. |x| below 2^-57
+// F128.atan(x) is the exact arc tangent rounded to nearest, ties to even. |x| below 2^-57
 // returns x and |x| above 2^115 returns ±π/2 (both already correctly rounded). Otherwise |x| (or
 // 1/|x| past 1) is reduced against a table angle atan(t) with t = TN[i] / 2^15 to
 // (|x| - t) / (1 + |x| t), whose series runs in atan_shared.tess; the table angle is added back
@@ -29,9 +29,14 @@ preset CM_ATAN_INDH: Array<U64, 128> = [0, 0, 1, 1, 2, 2, 3, 4, 5, 5, 5, 6, 6, 7
         44, 45, 45, 46, 46, 46, 47, 47, 47, 48, 48, 49, 49, 49, 50, 50, 51, 51, 52, 52, 53, 53, 54,
         54, 54, 55, 55, 56, 57, 57, 58, 58, 59, 59, 60, 60, 61, 62, 62, 63]
 
-routine f128_cm_atan(%x: F128) -> F128
+/// atan, asin, acos, and atan2 are CORE-MATH ports; NaN in and
+/// outside the domain keep F128's own NaNs.
+routine F128.atan(%self: Self) -> Self
     block entry():
-        %bits : U128 = %x.bits()
+        %nan   : Bool = %self.is_nan()
+        %quiet : Self = f128_of(f128_quiet(%self.bits()))
+        branch %nan ? return(%quiet) : continue
+        %bits : U128 = %self.bits()
         %sign : U128 = %bits.bitand(F128_SIGN)
         %hi   : U64  = %bits.shr(64).to_u64().bitand(0x7FFFFFFFFFFFFFFF)
         %lo   : U64  = %bits.to_u64_wrap()
@@ -40,7 +45,7 @@ routine f128_cm_atan(%x: F128) -> F128
         %tiny : Bool = %xn.lt(0x3FC6)  // 0x3FFF - 57
         %huge : Bool = %xn.gt(0x4071)  // 0x3FFF + 114
         when:
-            %tiny -> return(%x)
+            %tiny -> return(%self)
             %huge -> huge(%hi, %lo, %sign)
             else  -> reduce(%hi, %lo, %xn, %sign)
 
@@ -49,12 +54,12 @@ routine f128_cm_atan(%x: F128) -> F128
         %class     : S64  = cm_atan_class(%hi, %lo)
         %signaling : Bool = %class.eq(2)
         %quiet     : Bool = %class.eq(3)
-        %default   : F128 = f128_of(0xFFFF8000000000000000000000000000)
+        %default   : Self = f128_of(0xFFFF8000000000000000000000000000)
         %half_pi   : U128 = 0x3FFF921FB54442D18469898CC51701B8
-        %angle     : F128 = f128_of(%half_pi.bitor(%sign))
+        %angle     : Self = f128_of(%half_pi.bitor(%sign))
         when:
             %signaling -> return(%default)
-            %quiet     -> return(%x)
+            %quiet     -> return(%self)
             else       -> return(%angle)
 
     block reduce(%hi: U64, %lo: U64, %xn: U64, %sign: U128):
@@ -74,18 +79,18 @@ routine f128_cm_atan(%x: F128) -> F128
         %reflected : CmAtanU192    = cm_atan_u192_sub(%half_pi, %angle)
         %final     : CmAtanU192    = %red.g ? %reflected : %angle
         %rounded   : CmAtanRounded = cm_atan_round_fixed(%final)
-        %result    : F128          = f128_of(%rounded.bits.bitor(%sign))
+        %result    : Self          = f128_of(%rounded.bits.bitor(%sign))
         %hard      : Bool          = %rounded.hard
         branch %hard ? accurate(%red, %sign) : return(%result)
 
     block direct(%red: CmAtanReduction, %f: U128, %sign: U128):
         %rounded : CmAtanRounded = cm_atan_round_direct(%f, %red.dn)
-        %result  : F128          = f128_of(%rounded.bits.bitor(%sign))
+        %result  : Self          = f128_of(%rounded.bits.bitor(%sign))
         %hard    : Bool          = %rounded.hard
         branch %hard ? accurate(%red, %sign) : return(%result)
 
     block accurate(%red: CmAtanReduction, %sign: U128):
-        %r : F128 = cm_atan_accurate(%red, %sign)
+        %r : Self = cm_atan_accurate(%red, %sign)
         return(%r)
 
 /// Reduces |x| = mant:lo × 2^(xn - 0x3FFF - 112) (mant carrying the implicit bit) against the

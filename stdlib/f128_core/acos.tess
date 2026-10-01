@@ -16,33 +16,40 @@
 
 module Standard::Core
 
-/// acos(x), correctly rounded to nearest (ties to even). The result lies in [0, pi]. |x| > 1,
-/// ±infinity and a signaling NaN give the default NaN (0xFFFF8 followed by zeros), and a quiet NaN
-/// is returned unchanged.
-routine f128_cm_acos(%x: F128) -> F128
+routine F128.acos(%self: Self) -> Self
     block entry():
-        %bits  : U128 = %x.bits()
+        %nan     : Bool = %self.is_nan()
+        %outside : Bool = %self.abs().gt(f128_of(0x3FFF0000000000000000000000000000))
+        %quiet   : Self = f128_of(f128_quiet(%self.bits()))
+        %invalid : Self = Self.NAN
+        when:
+            %nan     -> return(%quiet)
+            %outside -> return(%invalid)
+            else     -> compute()
+
+    block compute():
+        %bits  : U128 = %self.bits()
         %xb1   : U64  = cm_asin_hi(%bits).bitand(0x7FFFFFFFFFFFFFFF)
         %large : Bool = %xb1.shr(48).ge(16383)  // |x| >= 1, infinity or NaN
-        branch %large ? outside(%x, %xb1) : inside(%x)
+        branch %large ? outside(%self, %xb1) : inside(%self)
 
-    block outside(%x: F128, %xb1: U64):
-        %bits     : S128 = %x.bits().to_s128_wrap()
+    block outside(%self: Self, %xb1: U64):
+        %bits     : S128 = %self.bits().to_s128_wrap()
         %xb0      : U64  = cm_asin_lo(%bits)
         %negative : Bool = %bits.lt(0)
         %is_one   : Bool = %xb0.eq(0).bitand(%xb1.eq(0x3FFF000000000000))
         %is_qnan  : Bool = %xb1.ge(0x7FFF800000000000)
-        %pi       : F128 = f128_of(cm_asin_join(0x4000921FB54442D1, 0x8469898CC51701B8))
-        %zero     : F128 = f128_of(0)
-        %one_r    : F128 = %negative ? %pi : %zero
-        %nan      : F128 = f128_of(cm_asin_join(0xFFFF800000000000, 0))
+        %pi       : Self = f128_of(cm_asin_join(0x4000921FB54442D1, 0x8469898CC51701B8))
+        %zero     : Self = f128_of(0)
+        %one_r    : Self = %negative ? %pi : %zero
+        %nan      : Self = f128_of(cm_asin_join(0xFFFF800000000000, 0))
         when:
             %is_one  -> return(%one_r)
-            %is_qnan -> return(%x)
+            %is_qnan -> return(%self)
             else     -> return(%nan)
 
-    block inside(%x: F128):
-        %r : F128 = cm_acos_fast(%x)
+    block inside(%self: Self):
+        %r : Self = cm_acos_fast(%self)
         return(%r)
 
 /// Whether acos subtracts the reduced arc sine from pi/2: always but for x > 0 on the last table
@@ -192,7 +199,7 @@ routine cm_acos_checked(%y: F128, %s: CmAsinW3, %k: S64, %eps: U64) -> Option<F1
         %r      : Option<F128> = %unsafe ? %none : %some
         return(%r)
 
-/// The 320-bit accurate path of f128_cm_acos for |x| < 1 (the C as_acosq_accurate).
+/// The 320-bit accurate path of F128.acos for |x| < 1 (the C as_acosq_accurate).
 routine cm_acos_accurate(%x: F128) -> F128
     block entry():
         %arg     : CmAsinArg = cm_asin_unpack(%x)

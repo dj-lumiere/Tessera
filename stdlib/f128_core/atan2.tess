@@ -4,7 +4,7 @@
 // Copyright (c) 2026 Alexei Sibidanov <sibid@uvic.ca>
 // MIT license: see LICENSE-CORE-MATH
 //
-// f128_cm_atan2(y, x) is the exact angle of the point (x, y), in [-π, π], rounded to nearest,
+// F128.atan2(y, x) is the exact angle of the point (x, y), in [-π, π], rounded to nearest,
 // ties to even. The ratio b/a of min(|x|, |y|) to max(|x|, |y|) is reduced against a table angle
 // atan(t) with t = TN[i] / 2^15, the series runs in atan_shared.tess, and the angle is rebuilt as
 // ±(PHI0[i] + f) plus a quadrant offset 0, π/2 or π; y's sign goes on last. Zero and infinite
@@ -35,18 +35,22 @@ preset CM_ATAN2_IND: Array<U64, 129> = [0, 0, 1, 1, 2, 3, 3, 4, 5, 5, 6, 6, 7, 8
         48, 49, 49, 50, 50, 50, 51, 51, 52, 52, 52, 53, 53, 54, 54, 54, 55, 55, 56, 56, 56, 57, 57,
         57, 58, 58, 58, 59, 59, 60, 60, 60, 61, 61, 61, 62, 62, 62, 63, 63, 63]
 
-routine f128_cm_atan2(%y: F128, %x: F128) -> F128
+/// atan2(y, x), the angle of (x, y), with IEEE's rules for zeros and infinities.
+routine F128.atan2(%self: Self, %x: Self) -> Self
     block entry():
+        %nan   : Bool = %self.is_nan().bitor(%x.is_nan())
+        %quiet : Self = Self.NAN
+        branch %nan ? return(%quiet) : continue
         %x_neg     : Bool = f128_is_negative_bits(%x.bits())
-        %y_sign    : U128 = %y.bits().bitand(F128_SIGN)
+        %y_sign    : U128 = %self.bits().bitand(F128_SIGN)
         %magnitude : U128 = F128_SIGN.bitnot()
         %xa        : U128 = %x.bits().bitand(%magnitude)
-        %ya        : U128 = %y.bits().bitand(%magnitude)
+        %ya        : U128 = %self.bits().bitand(%magnitude)
         %nonfinite : Bool = %xa.ge(F128_INF).bitor(%ya.ge(F128_INF))
         branch %nonfinite ? special() : reduce(%xa, %ya, %x_neg, %y_sign)
 
     block special():
-        %r : F128 = cm_atan2_special(%y, %x)
+        %r : Self = cm_atan2_special(%self, %x)
         return(%r)
 
     block reduce(%xa: U128, %ya: U128, %x_neg: Bool, %y_sign: U128):
@@ -73,18 +77,18 @@ routine f128_cm_atan2(%y: F128, %x: F128) -> F128
         %offset  : CmAtanU192    = cm_atan_row_top(CM_ATAN_QOFF.to_ptr(), %q)
         %final   : CmAtanU192    = cm_atan_u192_add(%offset, %signed)
         %rounded : CmAtanRounded = cm_atan_round_fixed(%final)
-        %result  : F128          = f128_of(%rounded.bits.bitor(%y_sign))
+        %result  : Self          = f128_of(%rounded.bits.bitor(%y_sign))
         %hard    : Bool          = %rounded.hard
         branch %hard ? accurate(%red, %x_neg, %y_sign) : return(%result)
 
     block direct(%red: CmAtanReduction, %f: U128, %y_sign: U128):
         %rounded : CmAtanRounded = cm_atan_round_direct(%f, %red.dn)
-        %result  : F128          = f128_of(%rounded.bits.bitor(%y_sign))
+        %result  : Self          = f128_of(%rounded.bits.bitor(%y_sign))
         %hard    : Bool          = %rounded.hard
         branch %hard ? accurate(%red, false, %y_sign) : return(%result)
 
     block accurate(%red: CmAtanReduction, %x_neg: Bool, %y_sign: U128):
-        %r : F128 = cm_atan2_accurate(%red, %x_neg, %y_sign)
+        %r : Self = cm_atan2_accurate(%red, %x_neg, %y_sign)
         return(%r)
 
 /// the row of the quadrant offset: 0 (none), 1 (π/2 when |x| < |y|), 2 (π when x < 0, |x| >= |y|)

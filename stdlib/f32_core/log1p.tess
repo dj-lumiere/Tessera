@@ -35,18 +35,18 @@ preset CM_F32_LOG1P_LIX: Array<U64, 32> = [0x3F8FC0B0B1599CE4, 0x3FA77457A64A42A
         0x3FE34E28BD9E5837, 0x3FE3D9028A72CD5F, 0x3FE4618B9C1DD52D, 0x3FE4E7D825B8D20B,
         0x3FE56BF9FAB56A02, 0x3FE5EE02AB258CCA]
 
-/// log(1 + x), correctly rounded.
-routine f32_cm_log1p(%x: F32) -> F32
+/// ln(1 + self), accurate near 0.
+routine F32.ln_1p(%self: Self) -> Self
     block entry():
-        %z       : F64  = %x.to_f64()
-        %ux      : U32  = %x.bits()
+        %z       : F64  = %self.to_f64()
+        %ux      : U32  = %self.bits()
         %ax      : U32  = %ux.bitand(0x7FFFFFFF)
         %below   : Bool = %ux.ge(0xBF800000)  // x <= -1, -inf, or a negative NaN
         %special : Bool = %ax.ge(0x7F800000)  // +inf or a positive NaN
         %small   : Bool = %ax.lt(0x3C880000)  // |x| < 0x1.1p-6
         when:
-            %below   -> return(cm_f32_log1p_special(%x))
-            %special -> return(cm_f32_log1p_special(%x))
+            %below   -> return(cm_f32_log1p_special(%self))
+            %special -> return(cm_f32_log1p_special(%self))
             %small   -> small(%z, %ax)
             else     -> normal(%z)
 
@@ -63,7 +63,7 @@ routine f32_cm_log1p(%x: F32) -> F32
     // log1p(x) rounds like x - x^2
     block tiny(%ax: U32):
         %zero : Bool = %ax.eq(0)
-        branch %zero ? return(%x) : return(%x.mul_add(%x.neg(), %x))
+        branch %zero ? return(%self) : return(%self.mul_add(%self.neg(), %self))
 
     block normal(%z: F64):
         %tp   : U64   = %z.add(1.0).bits()
@@ -78,8 +78,8 @@ routine f32_cm_log1p(%x: F32) -> F32
         %c01  : F64   = F64.sub(0x1.ffffffe1eac82p-1, %zj.mul(0x1.ffffff7da1724p-2))
         %c23  : F64   = F64.sub(0x1.5564d8fa59d0cp-2, %zj.mul(0x1.001219d3dba2ap-2))
         %r    : F64   = %ed.mul(0x1.62e42fefa39efp-1).add(%lixj).add(%zj.mul(%c01.add(%z2.mul(%c23))))
-        %ub   : F32   = %r.to_f32()
-        %lb   : F32   = %r.sub(0x1.7b33170824155p-36).to_f32()
+        %ub   : Self  = %r.to_f32()
+        %lb   : Self  = %r.sub(0x1.7b33170824155p-36).to_f32()
         %sure : Bool  = %ub.eq(%lb)
         branch %sure ? return(%ub) : slow(%zj, %z2, %ed, %lixj)
 
@@ -91,17 +91,17 @@ routine f32_cm_log1p(%x: F32) -> F32
         %ll   : F64  = %ed.mul(0x1.7f7d1cf79abcap-20).add(%z)
         %rh   : F64  = %lh.add(%lj)
         %rl   : F64  = %lh.sub(%rh).add(%lj).add(%ll.add(%f))
-        %fh   : F32  = %rh.add(%rl).to_f32()
+        %fh   : Self = %rh.add(%rl).to_f32()
         %fl64 : F64  = %rh.sub(%fh.to_f64()).add(%rl)
-        %fl   : F32  = %fl64.to_f32()
-        %tfl  : F32  = %fl.mul(2.0)
+        %fl   : Self = %fl64.to_f32()
+        %tfl  : Self = %fl.mul(2.0)
         %tie  : Bool = %fh.add(%tfl).sub(%fh).eq(%tfl)
         branch %tie ? tie(%fh, %fl, %fl64) : return(%fh.add(%fl))
 
     // fh + fl may land on a tie: move fl by half its size toward fl64
-    block tie(%fh: F32, %fl: F32, %fl64: F64):
-        %sign : F32 = %fl64.sub(%fl.to_f64()).to_f32()
-        %step : F32 = F32.copysign(0.5, %sign).mul(%fl.abs())
+    block tie(%fh: Self, %fl: Self, %fl64: F64):
+        %sign : Self = %fl64.sub(%fl.to_f64()).to_f32()
+        %step : Self = Self.copysign(0.5, %sign).mul(%fl.abs())
         return(%fh.add(%fl.add(%step)))
 
 /// z^2 (-1/2 + z/3 - z^2/4 + ...), the tail of log(1 + z) past z.

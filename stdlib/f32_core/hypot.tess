@@ -12,46 +12,46 @@
 
 module Standard::Core
 
-/// sqrt(x^2 + y^2), correctly rounded.
-routine f32_cm_hypot(%x: F32, %y: F32) -> F32
+/// sqrt(self^2 + other^2) without intermediate overflow.
+routine F32.hypot(%self: Self, %other: Self) -> Self
     block entry():
-        %ax      : F32  = %x.abs()
-        %ay      : F32  = %y.abs()
+        %ax      : Self = %self.abs()
+        %ay      : Self = %other.abs()
         %tx      : U32  = %ax.bits()
         %ty      : U32  = %ay.bits()
         %special : Bool = %tx.ge(0x7F800000).bitor(%ty.ge(0x7F800000))
         branch %special ? special(%ax, %ay, %tx, %ty) : order(%ax, %ay)
 
     // x or y is infinite or NaN
-    block special(%ax: F32, %ay: F32, %tx: U32, %ty: U32):
+    block special(%ax: Self, %ay: Self, %tx: U32, %ty: U32):
         %snan_x : Bool = %tx.gt(0x7F800000).bitand(%tx.shr(22).bitand(1).eq(0))
         %snan_y : Bool = %ty.gt(0x7F800000).bitand(%ty.shr(22).bitand(1).eq(0))
         %snan   : Bool = %snan_x.bitor(%snan_y)
         %inf_x  : Bool = %tx.eq(0x7F800000)
         %inf_y  : Bool = %ty.eq(0x7F800000)
         when:
-            %snan  -> return(cm_f32_hypot_quiet_nan(%x, %y))
+            %snan  -> return(cm_f32_hypot_quiet_nan(%self, %other))
             %inf_x -> return(%ax)
             %inf_y -> return(%ay)
             else   -> return(cm_f32_hypot_quiet_nan(%ax, %ay))
 
     // Both legs are finite and non-negative here, so a plain comparison is max / min.
-    block order(%ax: F32, %ay: F32):
+    block order(%ax: Self, %ay: Self):
         %swap  : Bool = %ay.gt(%ax)
-        %big   : F32  = %swap ? %ay : %ax
-        %small : F32  = %swap ? %ax : %ay
+        %big   : Self = %swap ? %ay : %ax
+        %small : Self = %swap ? %ax : %ay
         %xd    : F64  = %big.to_f64()
         %yd    : F64  = %small.to_f64()
         %x2    : F64  = %xd.mul(%xd)
         %y2    : F64  = %yd.mul(%yd)
         %r2    : F64  = %x2.add(%y2)
         %tiny  : Bool = %yd.lt(%xd.mul(0x1.fffffep-13))
-        branch %tiny ? return(F32.mul_add(0x1p-13, %small, %big)) : root(%x2, %y2, %r2)
+        branch %tiny ? return(Self.mul_add(0x1p-13, %small, %big)) : root(%x2, %y2, %r2)
 
     block root(%x2: F64, %y2: F64, %r2: F64):
         %r    : F64  = %r2.sqrt()
         %tu   : U64  = %r.bits()
-        %c    : F32  = %r.to_f32()
+        %c    : Self = %r.to_f32()
         %huge : Bool = %tu.gt(0x47EFFFFFE0000000)  // r > 0x1.fffffep+127: overflows or rounds down to the max
         %far  : Bool = %tu.add_wrap(1).bitand(0xFFFFFFF).gt(2)  // r is far from a rounding boundary
         when:
@@ -60,7 +60,7 @@ routine f32_cm_hypot(%x: F32, %y: F32) -> F32
             else  -> check(%x2, %y2, %r2, %r, %c)
 
     // r is close to a rounding boundary: c is exact, or the correction term decides.
-    block check(%x2: F64, %y2: F64, %r2: F64, %r: F64, %c: F32):
+    block check(%x2: F64, %y2: F64, %r2: F64, %r: F64, %c: Self):
         %cd    : F64  = %c.to_f64()
         %exact : Bool = %cd.mul(%cd).sub(%x2).sub(%y2).eq(0.0)
         branch %exact ? return(%c) : correct(%x2, %y2, %r2, %r)

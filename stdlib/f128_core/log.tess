@@ -25,11 +25,26 @@ record CmLogNear
     e    : U64
     hard : Bool
 
-/// ln(x), correctly rounded to nearest (ties to even). ±0 -> -infinity, x < 0 -> NaN, +infinity ->
-/// +infinity, NaN -> the same NaN, quieted.
-routine f128_cm_log(%x: F128) -> F128
+/// ln x: NaN for x < 0, -inf at ±0, +inf at +inf.
+routine F128.ln(%self: Self) -> Self
     block entry():
-        %u       : U128 = %x.bits()
+        %bits      : S128 = %self.bits().to_s128_wrap()
+        %nan       : Bool = %self.is_nan()
+        %zero      : Bool = f128_is_zero_bits(%bits.to_u128_wrap())
+        %negative  : Bool = %bits.lt(0)
+        %inf       : Bool = %self.is_infinite()
+        %quiet     : Self = f128_of(f128_quiet(%bits.to_u128_wrap()))
+        %minus_inf : Self = Self.NEG_INFINITY
+        %invalid   : Self = Self.NAN
+        when:
+            %nan      -> return(%quiet)
+            %zero     -> return(%minus_inf)
+            %negative -> return(%invalid)
+            %inf      -> return(%self)
+            else      -> compute()
+
+    block compute():
+        %u       : U128 = %self.bits()
         %hi      : U64  = cm_wide_hi(%u)
         %lo      : U64  = cm_wide_lo(%u)
         %special : Bool = %hi.ge(0x7FFF000000000000)
@@ -47,22 +62,22 @@ routine f128_cm_log(%x: F128) -> F128
         %nan       : Bool = %nan_exp.bitor(%nan_frac)
         %plus_inf  : Bool = %hi.eq(0x7FFF000000000000).bitand(%lo.eq(0))
         %zero      : Bool = %magnitude.eq(0).bitand(%lo.eq(0))
-        %quiet     : F128 = f128_of(cm_wide_u128(%hi.bitor(0x0000800000000000), %lo))
-        %neg_inf   : F128 = f128_of(0xFFFF0000000000000000000000000000)
+        %quiet     : Self = f128_of(cm_wide_u128(%hi.bitor(0x0000800000000000), %lo))
+        %neg_inf   : Self = f128_of(0xFFFF0000000000000000000000000000)
         // x < 0: the NaN the original returns
-        %invalid : F128 = f128_of(0xFFFF800000000000000000000000000B)
+        %invalid : Self = f128_of(0xFFFF800000000000000000000000000B)
         when:
             %nan      -> return(%quiet)
-            %plus_inf -> return(%x)
+            %plus_inf -> return(%self)
             %zero     -> return(%neg_inf)
             else      -> return(%invalid)
 
     block near_one(%u: U128):
-        %r : F128 = cm_log_near_one(%u)
+        %r : Self = cm_log_near_one(%u)
         return(%r)
 
     block general(%u: U128):
-        %r : F128 = cm_log_general(%u)
+        %r : Self = cm_log_general(%u)
         return(%r)
 
 /// ln(x) for positive finite x away from 1 (+0 included).

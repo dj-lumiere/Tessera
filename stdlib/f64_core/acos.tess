@@ -15,10 +15,10 @@
 
 module Standard::Core
 
-/// arccos(x), correctly rounded.
-routine f64_cm_acos(%x: F64) -> F64
+/// arccos(self), correctly rounded.
+routine F64.acos(%self: Self) -> Self
     block entry():
-        %xu    : U64  = %x.bits()
+        %xu    : U64  = %self.bits()
         %ax    : U64  = %xu.shl(1)
         %large : Bool = %ax.gt(0x7FC0000000000000)  // |x| > 1/2
         %tiny  : Bool = %ax.le(0x7E00000000000000)  // |x| < 2^-15
@@ -29,56 +29,57 @@ routine f64_cm_acos(%x: F64) -> F64
 
     block large(%xu: U64, %ax: U64):
         %neg  : Bool = %xu.shr(63).ne(0)
-        %f0h  : F64  = %neg ? 0x1.921fb54442d18p+1 : 0.0
-        %f0l  : F64  = %neg ? 0x1.1a62633145c07p-53 : 0.0
+        %f0h  : Self = %neg ? 0x1.921fb54442d18p+1 : 0.0
+        %f0l  : Self = %neg ? 0x1.1a62633145c07p-53 : 0.0
         %edge : Bool = %ax.ge(0x7FE0000000000000)  // |x| >= 1
         branch %edge ? edge(%ax, %f0h, %f0l) : continue
         // acos(x) = 2 asin(sqrt((1 - x)/2)) for x > 1/2, and pi - 2 asin(sqrt((1 + x)/2)) for x < -1/2
-        %t   : F64 = F64.sub(2.0, F64.mul(2.0, %x.abs()))
-        %jd  : F64 = %t.mul(0x1p5).round_ties_even()
-        %z   : F64 = %t.sqrt().copysign(%x)
-        %zl  : F64 = %z.mul_add(%z, %t.neg()).mul(F64.div(-0.5, %t).mul(%z))
-        %tr  : F64 = F64.mul(0.25, %t).sub(%jd.mul(0x1p-7))
-        %eps : F64 = %z.mul(%tr).abs().mul(0x1.8cp-52).add(0x1p-105)
+        %t   : Self = Self.sub(2.0, Self.mul(2.0, %self.abs()))
+        %jd  : Self = %t.mul(0x1p5).round_ties_even()
+        %z   : Self = %t.sqrt().copysign(%self)
+        %zl  : Self = %z.mul_add(%z, %t.neg()).mul(Self.div(-0.5, %t).mul(%z))
+        %tr  : Self = Self.mul(0.25, %t).sub(%jd.mul(0x1p-7))
+        %eps : Self = %z.mul(%tr).abs().mul(0x1.8cp-52).add(0x1p-105)
         jump poly(%z, %zl, %tr, %jd, %f0h, %f0l, %eps)
 
     // |x| = 1, |x| > 1 or NaN
-    block edge(%ax: U64, %f0h: F64, %f0l: F64):
+    block edge(%ax: U64, %f0h: Self, %f0l: Self):
         %one : Bool = %ax.eq(0x7FE0000000000000)
         %nan : Bool = %ax.gt(0xFFE0000000000000)
         when:
             %one -> return(%f0h.add(%f0l))
-            %nan -> return(%x.add(%x))
-            else -> return(F64.from_bits(0xFFF8000000000000))
+            %nan -> return(%self.add(%self))
+            else -> return(Self.from_bits(0xFFF8000000000000))
 
     // pi/2 - x - x^3/6; for |x| <= 0x1.cb3b3869747f4p-55 the cubic term is dropped (the bounds agree there)
     block tiny(%ax: U64):
         %cubic : Bool           = %ax.gt(0x791967670D2E8FE8)
-        %v     : F64            = %cubic ? %x.mul(%x).mul(F64.mul(-0x1.5555555555555p-3, %x)) : 0.0
-        %hw    : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(0x1.921fb54442d18p+0, %x.neg())
-        %l     : F64            = %v.add(%hw.lo.add(0x1.1a62633145c07p-54))
-        %lb    : F64            = %hw.hi.add(%l.sub(0x1.34p-79))
-        %ub    : F64            = %hw.hi.add(%l.add(0x1.34p-79))
+        %v     : Self           = %cubic ? %self.mul(%self).mul(Self.mul(-0x1.5555555555555p-3,
+                %self)) : 0.0
+        %hw    : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(0x1.921fb54442d18p+0, %self.neg())
+        %l     : Self           = %v.add(%hw.lo.add(0x1.1a62633145c07p-54))
+        %lb    : Self           = %hw.hi.add(%l.sub(0x1.34p-79))
+        %ub    : Self           = %hw.hi.add(%l.add(0x1.34p-79))
         %sure  : Bool           = %lb.eq(%ub)
-        branch %sure ? return(%lb) : return(cm_f64_acos_accurate(%x, %lb))
+        branch %sure ? return(%lb) : return(cm_f64_acos_accurate(%self, %lb))
 
     // 2^-15 <= |x| <= 1/2: pi/2 - asin(x), sharing the arc sine's tables
     block small():
-        %t2  : F64 = %x.mul(%x)
-        %jd  : F64 = %t2.mul(0x1p7).round_ties_even()
-        %t   : F64 = %x.mul_add(%x, F64.mul(-0x1p-7, %jd))
-        %z   : F64 = %x.neg()
-        %eps : F64 = %z.mul(%t).mul(0x1.81p-52)  // negative for x > 0, but the rounding test still holds
+        %t2  : Self = %self.mul(%self)
+        %jd  : Self = %t2.mul(0x1p7).round_ties_even()
+        %t   : Self = %self.mul_add(%self, Self.mul(-0x1p-7, %jd))
+        %z   : Self = %self.neg()
+        %eps : Self = %z.mul(%t).mul(0x1.81p-52)  // negative for x > 0, but the rounding test still holds
         jump poly(%z, 0.0, %t, %jd, 0x1.921fb54442d18p+0, 0x1.1a62633145c07p-54, %eps)
 
     // asin(z + zl) from the piece j = round(128 z^2), t = z^2 - j/128, plus f0h + f0l
-    block poly(%z: F64, %zl: F64, %t: F64, %jd: F64, %f0h: F64, %f0l: F64, %eps: F64):
+    block poly(%z: Self, %zl: Self, %t: Self, %jd: Self, %f0h: Self, %f0l: Self, %eps: Self):
         %j8   : USize          = %jd.to_u64().to_usize().mul(8)
         %f    : CmF64InvtrigDD = cm_f64_invtrig_asin_poly(%z, %zl, %t, %j8, %f0h, %f0l)
-        %lb   : F64            = %f.hi.add(%f.lo.sub(%eps))
-        %ub   : F64            = %f.hi.add(%f.lo.add(%eps))
+        %lb   : Self           = %f.hi.add(%f.lo.sub(%eps))
+        %ub   : Self           = %f.hi.add(%f.lo.add(%eps))
         %sure : Bool           = %lb.eq(%ub)
-        branch %sure ? return(%lb) : return(cm_f64_acos_accurate(%x, %lb))
+        branch %sure ? return(%lb) : return(cm_f64_acos_accurate(%self, %lb))
 
 /// The accurate path, for the inputs the fast path can't round: with x = cos(phi),
 /// rotates the angle by a multiple of pi/64 close to phi and evaluates the arc sine of

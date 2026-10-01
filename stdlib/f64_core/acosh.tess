@@ -28,10 +28,10 @@ preset CM_F64_ACOSH_DB_L: Array<U64, 7> = [0x3C80000000000000, 0x3C9000000000000
         0xBC90000000000000, 0x3CB0000000000000, 0x3CB0000000000000, 0x3CC0000000000000,
         0xBCA0000000000000]
 
-/// acosh x, correctly rounded.
-routine f64_cm_acosh(%x: F64) -> F64
+/// acosh self, correctly rounded.
+routine F64.acosh(%self: Self) -> Self
     block entry():
-        %ix       : U64  = %x.bits()
+        %ix       : U64  = %self.bits()
         %special  : Bool = %ix.ge(0x7FF0000000000000)  // x < 0, NaN or +inf
         %upto_one : Bool = %ix.le(0x3FF0000000000000)  // 0 <= x <= 1
         %near_one : Bool = %ix.lt(0x3FF1E83E425AEE63)  // x < 0x1.1e83e425aee63p+0
@@ -51,96 +51,96 @@ routine f64_cm_acosh(%x: F64) -> F64
 
     block special(%ix: U64):
         %quiet : Bool = %ix.eq(0x7FF0000000000000).bitor(%ix.shl(1).gt(0xFFE0000000000000))  // +inf or NaN
-        branch %quiet ? return(%x.add(%x)) : return(F64.from_bits(0xFFF8000000000000))
+        branch %quiet ? return(%self.add(%self)) : return(Self.from_bits(0xFFF8000000000000))
 
     block upto_one(%ix: U64):
         %one : Bool = %ix.eq(0x3FF0000000000000)
-        branch %one ? return(0.0) : return(F64.from_bits(0xFFF8000000000000))
+        branch %one ? return(0.0) : return(Self.from_bits(0xFFF8000000000000))
 
     // 1 < x < 0x1.1e83e425aee63p+0: acosh(1 + z) = sqrt(2z) (1 + z P(z)), with sqrt(2z) = sh + sl
     block near_one():
-        %z    : F64  = %x.sub(1.0)
-        %iz   : F64  = F64.div(-0.25, %z)
-        %zt   : F64  = F64.mul(2.0, %z)
-        %sh   : F64  = %zt.sqrt()
-        %sl   : F64  = %sh.mul_add(%sh, %zt.neg()).mul(%sh.mul(%iz))
-        %z2   : F64  = %z.mul(%z)
-        %z4   : F64  = %z2.mul(%z2)
-        %c2   : F64  = %z.mul(-0x1.6db6db6d5534cp-8).add(0x1.3333333332f95p-6)
-        %c4   : F64  = %z.mul(-0x1.6e8b8e3e40d58p-11).add(0x1.f1c71c1e04356p-10)
-        %c6   : F64  = %z.mul(-0x1.c9045534e6d9ep-14).add(0x1.1c4ba825ac4fep-12)
-        %c8   : F64  = %z.mul(-0x1.f1f4f8cc65342p-17).add(0x1.71fedae26a76bp-15)
-        %c24  : F64  = %z2.mul(%c4).add(%c2)
-        %c68  : F64  = %z2.mul(%c8).add(%c6)
-        %poly : F64  = %z.mul(%z4.mul(%c68).add(%c24)).add(-0x1.5555555555555p-4)
-        %ds   : F64  = %sh.mul(%z).mul_add(%poly, %sl)
-        %eps  : F64  = %ds.mul(0x1.00p-50).sub(F64.mul(0x1p-104, %sh))
-        %lb   : F64  = %sh.add(%ds.sub(%eps))
-        %ub   : F64  = %sh.add(%ds.add(%eps))
+        %z    : Self = %self.sub(1.0)
+        %iz   : Self = Self.div(-0.25, %z)
+        %zt   : Self = Self.mul(2.0, %z)
+        %sh   : Self = %zt.sqrt()
+        %sl   : Self = %sh.mul_add(%sh, %zt.neg()).mul(%sh.mul(%iz))
+        %z2   : Self = %z.mul(%z)
+        %z4   : Self = %z2.mul(%z2)
+        %c2   : Self = %z.mul(-0x1.6db6db6d5534cp-8).add(0x1.3333333332f95p-6)
+        %c4   : Self = %z.mul(-0x1.6e8b8e3e40d58p-11).add(0x1.f1c71c1e04356p-10)
+        %c6   : Self = %z.mul(-0x1.c9045534e6d9ep-14).add(0x1.1c4ba825ac4fep-12)
+        %c8   : Self = %z.mul(-0x1.f1f4f8cc65342p-17).add(0x1.71fedae26a76bp-15)
+        %c24  : Self = %z2.mul(%c4).add(%c2)
+        %c68  : Self = %z2.mul(%c8).add(%c6)
+        %poly : Self = %z.mul(%z4.mul(%c68).add(%c24)).add(-0x1.5555555555555p-4)
+        %ds   : Self = %sh.mul(%z).mul_add(%poly, %sl)
+        %eps  : Self = %ds.mul(0x1.00p-50).sub(Self.mul(0x1p-104, %sh))
+        %lb   : Self = %sh.add(%ds.sub(%eps))
+        %ub   : Self = %sh.add(%ds.add(%eps))
         %sure : Bool = %lb.eq(%ub)
         branch %sure ? return(%lb) : return(cm_f64_acosh_one(%z, %sh, %sl))
 
     // x < 111.75: th + tl = x + sqrt(x^2 - 1), and log(th + tl) = log(th) + tl/th
     block moderate():
-        %x2h : F64        = %x.mul(%x)
-        %wh  : F64        = %x2h.sub(1.0)
-        %wl  : F64        = %x.mul_add(%x, %x2h.neg())
-        %sh  : F64        = %wh.sqrt()
-        %ish : F64        = F64.div(0.5, %wh)
-        %sl  : F64        = %wl.sub(%sh.mul_add(%sh, %wh.neg())).mul(%sh.mul(%ish))
-        %s   : CmF64HypDd = cm_f64_hyp_fasttwosum(%x, %sh)
-        %tl  : F64        = %s.lo.add(%sl)
+        %x2h : Self       = %self.mul(%self)
+        %wh  : Self       = %x2h.sub(1.0)
+        %wl  : Self       = %self.mul_add(%self, %x2h.neg())
+        %sh  : Self       = %wh.sqrt()
+        %ish : Self       = Self.div(0.5, %wh)
+        %sl  : Self       = %wl.sub(%sh.mul_add(%sh, %wh.neg())).mul(%sh.mul(%ish))
+        %s   : CmF64HypDd = cm_f64_hyp_fasttwosum(%self, %sh)
+        %tl  : Self       = %s.lo.add(%sl)
         jump log_fast(%s.hi.bits(), 0x3FF, %tl.div(%s.hi), 0x1.81p-63)
 
     // 111.75 <= x < 738: log(x + sqrt(x^2 - 1)) = log(2x) + g with g a series in z = 1/x^2
     block series3():
-        %z  : F64 = F64.div(1.0, %x.mul(%x))
-        %c0 : F64 = %z.mul(-0x1.aab6691f2bae7p-5).add(-0x1.7fffffebf3e6cp-4)
-        %c1 : F64 = %z.mul(%c0).add(-0x1.000000000005cp-2)
-        jump log_fast(%x.bits(), 0x3FE, %z.mul(%c1).add(0x1.5c4b6148816e2p-66), 0x1.c3p-63)
+        %z  : Self = Self.div(1.0, %self.mul(%self))
+        %c0 : Self = %z.mul(-0x1.aab6691f2bae7p-5).add(-0x1.7fffffebf3e6cp-4)
+        %c1 : Self = %z.mul(%c0).add(-0x1.000000000005cp-2)
+        jump log_fast(%self.bits(), 0x3FE, %z.mul(%c1).add(0x1.5c4b6148816e2p-66), 0x1.c3p-63)
 
     // 738 <= x < 32896
     block series2():
-        %z  : F64 = F64.div(1.0, %x.mul(%x))
-        %c0 : F64 = %z.mul(-0x1.8000268641bfep-4).add(-0x1.ffffffffff214p-3)
-        jump log_fast(%x.bits(), 0x3FE, %z.mul(%c0).add(-0x1.7f77c8429c6c6p-67), 0x1.9ap-63)
+        %z  : Self = Self.div(1.0, %self.mul(%self))
+        %c0 : Self = %z.mul(-0x1.8000268641bfep-4).add(-0x1.ffffffffff214p-3)
+        jump log_fast(%self.bits(), 0x3FE, %z.mul(%c0).add(-0x1.7f77c8429c6c6p-67), 0x1.9ap-63)
 
     // 32896 <= x < 0x1.ap+31
     block series1():
-        %z : F64 = F64.div(1.0, %x.mul(%x))
-        jump log_fast(%x.bits(), 0x3FE, %z.mul(-0x1.000000017d048p-2).add(0x1.7a0ed2effdd1p-67),
+        %z : Self = Self.div(1.0, %self.mul(%self))
+        jump log_fast(%self.bits(), 0x3FE, %z.mul(-0x1.000000017d048p-2).add(0x1.7a0ed2effdd1p-67),
                 0x1.99p-63)
 
     // log(2^(e - off) m) + g for the bits t of 2^e m, from the tables
-    block log_fast(%t: U64, %off: S64, %g: F64, %eps: F64):
+    block log_fast(%t: U64, %off: S64, %g: Self, %eps: Self):
         %e   : S64   = %t.shr(52).to_s64().sub(%off)
         %tm  : U64   = %t.bitand(0x000FFFFFFFFFFFFF)
-        %ed  : F64   = %e.to_f64()
+        %ed  : Self  = %e.to_f64()
         %j   : U64   = cm_f64_archyp_index(%tm)
-        %m   : F64   = F64.from_bits(%tm.bitor(0x3FF0000000000000))
+        %m   : Self  = Self.from_bits(%tm.bitor(0x3FF0000000000000))
         %i1  : USize = %j.shr(5).to_usize()
         %i2  : USize = %j.bitand(0x1F).to_usize()
-        %r   : F64   = F64.from_bits(CM_F64_ARCHYP_R1.get(%i1)).mul(F64.from_bits(CM_F64_ARCHYP_R2.get(%i2)))
-        %dx  : F64   = %r.mul_add(%m, -1.0)
-        %dx2 : F64   = %dx.mul(%dx)
-        %f   : F64   = %dx2.mul(cm_f64_archyp_log_poly(%dx, %dx2))
+        %r   : Self  = Self.from_bits(CM_F64_ARCHYP_R1.get(%i1)).mul(Self.from_bits(CM_F64_ARCHYP_R2.get(%i2)))
+        %dx  : Self  = %r.mul_add(%m, -1.0)
+        %dx2 : Self  = %dx.mul(%dx)
+        %f   : Self  = %dx2.mul(cm_f64_archyp_log_poly(%dx, %dx2))
         // log(2) as l2h + l2l with l2h on 42 bits, so l2h ed is exact
-        %l1h  : F64  = F64.from_bits(CM_F64_ARCHYP_L1_HI.get(%i1))
-        %l2h  : F64  = F64.from_bits(CM_F64_ARCHYP_L2_HI.get(%i2))
-        %l1l  : F64  = F64.from_bits(CM_F64_ARCHYP_L1_LO.get(%i1))
-        %l2l  : F64  = F64.from_bits(CM_F64_ARCHYP_L2_LO.get(%i2))
-        %lh   : F64  = %l1h.add(%l2h).add(F64.mul(0x1.62e42fefa38p-1, %ed))
-        %t1   : F64  = F64.mul(0x1.ef35793c7673p-45, %ed).add(%l1l.add(%l2l))
-        %t2   : F64  = %f.add(%t1)
-        %t3   : F64  = %g.add(%t2)
-        %ll   : F64  = %dx.add(%t3)
-        %lb   : F64  = %lh.add(%ll.sub(%eps))
-        %ub   : F64  = %lh.add(%ll.add(%eps))
+        %l1h  : Self = Self.from_bits(CM_F64_ARCHYP_L1_HI.get(%i1))
+        %l2h  : Self = Self.from_bits(CM_F64_ARCHYP_L2_HI.get(%i2))
+        %l1l  : Self = Self.from_bits(CM_F64_ARCHYP_L1_LO.get(%i1))
+        %l2l  : Self = Self.from_bits(CM_F64_ARCHYP_L2_LO.get(%i2))
+        %lh   : Self = %l1h.add(%l2h).add(Self.mul(0x1.62e42fefa38p-1, %ed))
+        %t1   : Self = Self.mul(0x1.ef35793c7673p-45, %ed).add(%l1l.add(%l2l))
+        %t2   : Self = %f.add(%t1)
+        %t3   : Self = %g.add(%t2)
+        %ll   : Self = %dx.add(%t3)
+        %lb   : Self = %lh.add(%ll.sub(%eps))
+        %ub   : Self = %lh.add(%ll.add(%eps))
         %sure : Bool = %lb.eq(%ub)
         // 0x1.71547652b82fep+0 approximates 1/log(2)
         branch %sure
             ? return(%lb)
-            : return(cm_f64_acosh_refine(%x, F64.mul(0x1.71547652b82fep+0, %lb)))
+            : return(cm_f64_acosh_refine(%self, Self.mul(0x1.71547652b82fep+0, %lb)))
 
 /// The double-double sum (xh + xl) + (ch + cl): an exact two-sum of the high parts plus the low parts.
 private routine cm_f64_acosh_adddd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64HypDd

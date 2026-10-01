@@ -1,12 +1,12 @@
-// Tessera stdlib: F128 transcendental functions
+// Tessera stdlib: F128Extended and the F128 helpers built on it
 //
-// exponent and log for F128 are computed in F128Extended, a 192-bit-mantissa float, then
-// rounded once to F128. The 79 bits beyond F128's 113 absorb the rounding of
-// every intermediate step (each at most 2^-190 relative) and the truncation of
-// the series, so the results are faithful: within 1 ulp, and almost always the
-// correctly rounded value. The method follows RazorForge's B128Math and TLFloat
-// (Naoki Shibata, Boost 1.0); the series coefficients and constants below were
-// computed to 192 bits with exact rationals and mpmath.
+// F128Extended is a 192-bit-mantissa float. Code here computes in it and rounds once to F128. The 79 bits
+// beyond F128's 113 absorb the rounding of every intermediate step (each at most 2^-190 relative) and the
+// truncation of the series, so the results are faithful: within 1 ulp, and almost always the correctly rounded
+// value. The method follows RazorForge's B128Math and TLFloat (Naoki Shibata, Boost 1.0); the series
+// coefficients and constants below were computed to 192 bits with exact rationals and mpmath. The correctly
+// rounded exp, ln, sin, cos, the atan family, cbrt, hypot, and sqrt are CORE-MATH ports, methods defined in
+// f128_core/.
 
 module Standard::Core
 
@@ -346,30 +346,6 @@ routine wide_exp(%x: F128Extended) -> F128Extended
                 WIDE_EXP_COEF_EXP.to_ptr(), %i.to_usize())
         jump horner(%i.sub(1), %s.mul(%d).add(%c), %d, %q)
 
-routine F128.exp(%self: Self) -> Self
-    block entry():
-        %nan      : Bool = %self.is_nan()
-        %bits     : S128 = %self.bits().to_s128_wrap()
-        %negative : Bool = %bits.lt(0)
-        // e^x overflows past x = 11356.52 and is below half the smallest subnormal
-        // before x = -11433.4; beyond those the answer needs no series.
-        %big       : Self = f128_of(0x400C6300000000000000000000000000)  // 11360
-        %small     : Self = f128_of(0xC00C6700000000000000000000000000)  // -11488
-        %over      : Bool = %self.gt(%big)
-        %under     : Bool = %self.lt(%small)
-        %quiet     : Self = f128_of(f128_quiet(%bits.to_u128_wrap()))
-        %infinity  : Self = Self.INFINITY
-        %plus_zero : Self = f128_of(0)
-        when:
-            %nan   -> return(%quiet)
-            %over  -> return(%infinity)
-            %under -> return(%plus_zero)
-            else   -> compute()
-
-    block compute():
-        %r : Self = f128_cm_exp(%self)
-        return(%r)
-
 // -- log -----------------------------------------------------------------------
 
 /// ln x for finite x > 0: x = fr × 2^e with fr in [sqrt(1/2), sqrt(2)); then
@@ -401,28 +377,6 @@ routine wide_log(%x: F128Extended) -> F128Extended
     block finish(%s: F128Extended, %t: F128Extended, %e: S64):
         %ln_fr : F128Extended = %s.mul(%t).ldexp(1)
         %r     : F128Extended = wide_from_i64(%e).mul(wide_const(0)).add(%ln_fr)
-        return(%r)
-
-/// ln x: NaN for x < 0, -inf at ±0, +inf at +inf.
-routine F128.ln(%self: Self) -> Self
-    block entry():
-        %bits      : S128 = %self.bits().to_s128_wrap()
-        %nan       : Bool = %self.is_nan()
-        %zero      : Bool = f128_is_zero_bits(%bits.to_u128_wrap())
-        %negative  : Bool = %bits.lt(0)
-        %inf       : Bool = %self.is_infinite()
-        %quiet     : Self = f128_of(f128_quiet(%bits.to_u128_wrap()))
-        %minus_inf : Self = Self.NEG_INFINITY
-        %invalid   : Self = Self.NAN
-        when:
-            %nan      -> return(%quiet)
-            %zero     -> return(%minus_inf)
-            %negative -> return(%invalid)
-            %inf      -> return(%self)
-            else      -> compute()
-
-    block compute():
-        %r : Self = f128_cm_log(%self)
         return(%r)
 
 /// bits of 2/pi after the point, 64 per entry, most significant first (17280 bits)
@@ -716,48 +670,6 @@ routine f128_trig_nonfinite(%x: F128) -> F128
         %r      : F128 = %is_nan ? %quiet : F128.NAN
         return(%r)
 
-/// sin and cos are CORE-MATH ports (f128_core/); NaN and infinities go to
-/// f128_trig_nonfinite. tan is in f128_tan.tess.
-routine F128.sin(%self: Self) -> Self
-    block entry():
-        %finite : Bool = %self.is_finite()
-        branch %finite ? compute() : special()
-
-    block compute():
-        %r : Self = f128_cm_sin(%self)
-        return(%r)
-
-    block special():
-        %r : Self = f128_trig_nonfinite(%self)
-        return(%r)
-
-routine F128.cos(%self: Self) -> Self
-    block entry():
-        %finite : Bool = %self.is_finite()
-        branch %finite ? compute() : special()
-
-    block compute():
-        %r : Self = f128_cm_cos(%self)
-        return(%r)
-
-    block special():
-        %r : Self = f128_trig_nonfinite(%self)
-        return(%r)
-
-/// sin and cos together, sharing one argument reduction
-routine F128.sin_cos(%self: Self) -> F128SinCos
-    block entry():
-        %finite : Bool = %self.is_finite()
-        branch %finite ? compute() : special()
-
-    block compute():
-        %r : F128SinCos = f128_cm_sin_cos(%self)
-        return(%r)
-
-    block special():
-        %r : F128SinCos = F128SinCos { sin: %self.sin(), cos: %self.cos() }
-        return(%r)
-
 // -- more F128Extended -----------------------------------------------------------------
 
 routine F128Extended.abs(%self: Self) -> Self
@@ -898,109 +810,11 @@ routine wide_atan(%x: F128Extended) -> F128Extended
         %r  : F128Extended = %x.negative ? %r1.neg() : %r1
         return(%r)
 
-// -- F128 wrappers -------------------------------------------------------------
-
-// Most functions below share the same frame: NaN in, NaN out; a few fixed
-// answers for infinities and zeros; otherwise compute in F128Extended and round once.
-
-/// atan, asin, acos, and atan2 are CORE-MATH ports (f128_core/); NaN in and
-/// outside the domain keep F128's own NaNs.
-routine F128.atan(%self: Self) -> Self
-    block entry():
-        %nan   : Bool = %self.is_nan()
-        %quiet : Self = f128_of(f128_quiet(%self.bits()))
-        branch %nan ? return(%quiet) : continue
-        %r : Self = f128_cm_atan(%self)
-        return(%r)
-
-routine F128.asin(%self: Self) -> Self
-    block entry():
-        %nan     : Bool = %self.is_nan()
-        %outside : Bool = %self.abs().gt(f128_of(0x3FFF0000000000000000000000000000))
-        %quiet   : Self = f128_of(f128_quiet(%self.bits()))
-        %invalid : Self = Self.NAN
-        when:
-            %nan     -> return(%quiet)
-            %outside -> return(%invalid)
-            else     -> compute()
-
-    block compute():
-        %r : Self = f128_cm_asin(%self)
-        return(%r)
-
-routine F128.acos(%self: Self) -> Self
-    block entry():
-        %nan     : Bool = %self.is_nan()
-        %outside : Bool = %self.abs().gt(f128_of(0x3FFF0000000000000000000000000000))
-        %quiet   : Self = f128_of(f128_quiet(%self.bits()))
-        %invalid : Self = Self.NAN
-        when:
-            %nan     -> return(%quiet)
-            %outside -> return(%invalid)
-            else     -> compute()
-
-    block compute():
-        %r : Self = f128_cm_acos(%self)
-        return(%r)
-
-/// atan2(y, x), the angle of (x, y), with IEEE's rules for zeros and infinities.
-routine F128.atan2(%self: Self, %x: Self) -> Self
-    block entry():
-        %nan   : Bool = %self.is_nan().bitor(%x.is_nan())
-        %quiet : Self = Self.NAN
-        branch %nan ? return(%quiet) : continue
-        %r : Self = f128_cm_atan2(%self, %x)
-        return(%r)
-
-// -- hyperbolic ----------------------------------------------------------------
+// -- F128 methods --------------------------------------------------------------
 
 // sinh, cosh, and tanh, correctly rounded, are in f128_hyperbolic.tess.
 
 // -- exponentials and logarithms -----------------------------------------------
-
-routine F128.exp_m1(%self: Self) -> Self
-    block entry():
-        %nan       : Bool = %self.is_nan()
-        %zero      : Bool = f128_is_zero_bits(%self.bits())
-        %over      : Bool = %self.gt(f128_of(0x400C6300000000000000000000000000))  // 11360
-        %quiet     : Self = f128_of(f128_quiet(%self.bits()))
-        %infinity  : Self = Self.INFINITY
-        when:
-            %nan   -> return(%quiet)
-            %zero  -> return(%self)
-            %over  -> return(%infinity)
-            else   -> compute()
-
-    block compute():
-        %r : Self = f128_cm_expm1(%self)
-        return(%r)
-
-routine F128.exp2(%self: Self) -> Self
-    block entry():
-        %nan       : Bool = %self.is_nan()
-        %over      : Bool = %self.gt(f128_of(0x400D0008000000000000000000000000))  // 16386
-        %under     : Bool = %self.lt(f128_of(0xC00D0300000000000000000000000000))  // -16576
-        %quiet     : Self = f128_of(f128_quiet(%self.bits()))
-        %infinity  : Self = Self.INFINITY
-        %plus_zero : Self = f128_of(0)
-        when:
-            %nan   -> return(%quiet)
-            %over  -> return(%infinity)
-            %under -> return(%plus_zero)
-            else   -> compute()
-
-    block compute():
-        %r : Self = f128_cm_exp2(%self)
-        return(%r)
-
-/// 10^x, a CORE-MATH port (f128_core/exp10.tess); exact for integer powers
-routine F128.exp10(%self: Self) -> Self
-    block entry():
-        %nan   : Bool = %self.is_nan()
-        %quiet : Self = f128_of(f128_quiet(%self.bits()))
-        branch %nan ? return(%quiet) : continue
-        %r : Self = f128_cm_exp10(%self)
-        return(%r)
 
 /// log of self to the given base: ln self / ln base
 routine F128.log(%self: Self, %base: Self) -> Self
@@ -1029,31 +843,6 @@ routine f128_is_odd_integer(%x: F128) -> Bool
         %big : Bool = %x.abs().ge(f128_of(0x40700000000000000000000000000000))  // 2^113
         %odd : Bool = %x.to_s128_clamp().bitand(1).eq(1)
         %r   : Bool = %int.bitand(%big.bitnot()).bitand(%odd)
-        return(%r)
-
-/// cube root, a CORE-MATH port (f128_core/cbrt.tess)
-routine F128.cbrt(%self: Self) -> Self
-    block entry():
-        %nan   : Bool = %self.is_nan()
-        %quiet : Self = f128_of(f128_quiet(%self.bits()))
-        branch %nan ? return(%quiet) : continue
-        %r : Self = f128_cm_cbrt(%self)
-        return(%r)
-
-/// sqrt(x² + y²) without overflow or underflow; inf if either is infinite.
-routine F128.hypot(%self: Self, %other: Self) -> Self
-    block entry():
-        %inf      : Bool = %self.is_infinite().bitor(%other.is_infinite())
-        %nan      : Bool = %self.is_nan().bitor(%other.is_nan())
-        %infinity : Self = Self.INFINITY
-        %quiet    : Self = Self.NAN
-        when:
-            %inf -> return(%infinity)
-            %nan -> return(%quiet)
-            else -> compute()
-
-    block compute():
-        %r : Self = f128_cm_hypot(%self, %other)
         return(%r)
 
 // -- angles --------------------------------------------------------------------

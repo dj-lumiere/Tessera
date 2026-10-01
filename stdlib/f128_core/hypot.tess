@@ -19,13 +19,21 @@ record CmHypotSquare
 
 // -- hypot ---------------------------------------------------------------------
 
-/// sqrt(x² + y²), correctly rounded, without spurious overflow or underflow. IEEE results for
-/// the special cases: an infinite leg gives +inf, even with a quiet NaN in the other leg; a
-/// signaling NaN gives CM_SQRT_DEFAULT_NAN; otherwise a NaN leg comes back without its sign.
-routine f128_cm_hypot(%x: F128, %y: F128) -> F128
+/// sqrt(x² + y²) without overflow or underflow; inf if either is infinite.
+routine F128.hypot(%self: Self, %other: Self) -> Self
     block entry():
-        %x_abs   : U128 = %x.bits().bitand(F128_SIGN.bitnot())
-        %y_abs   : U128 = %y.bits().bitand(F128_SIGN.bitnot())
+        %inf      : Bool = %self.is_infinite().bitor(%other.is_infinite())
+        %nan      : Bool = %self.is_nan().bitor(%other.is_nan())
+        %infinity : Self = Self.INFINITY
+        %quiet    : Self = Self.NAN
+        when:
+            %inf -> return(%infinity)
+            %nan -> return(%quiet)
+            else -> compute()
+
+    block compute():
+        %x_abs   : U128 = %self.bits().bitand(F128_SIGN.bitnot())
+        %y_abs   : U128 = %other.bits().bitand(F128_SIGN.bitnot())
         %swap    : Bool = %x_abs.lt(%y_abs)
         %a       : U128 = %swap ? %y_abs : %x_abs  // the larger leg
         %b       : U128 = %swap ? %x_abs : %y_abs
@@ -40,7 +48,7 @@ routine f128_cm_hypot(%x: F128, %y: F128) -> F128
 
     block tiny_leg(%a: U128, %a_exp: S64, %b: U128):
         %b_zero : Bool = %b.eq(0)
-        %a_only : F128 = f128_of(%a)
+        %a_only : Self = f128_of(%a)
         branch %b_zero ? return(%a_only) : normalize_b(%a, %a_exp, %b)
 
     // A subnormal leg moves its leading bit up to the implicit bit's place, and its exponent
@@ -65,7 +73,7 @@ routine f128_cm_hypot(%x: F128, %y: F128) -> F128
         branch %negligible ? negligible(%a_top, %a_exp) : sum(%a_top, %a_exp, %b_top, %gap)
 
     block negligible(%a_top: U128, %a_exp: S64):
-        %r : F128 = cm_hypot_round(%a_top.bitor(1), %a_exp)
+        %r : Self = cm_hypot_round(%a_top.bitor(1), %a_exp)
         return(%r)
 
     // s = a² + b² in fixed point (b aligned to a), normalized with an even or odd shift so its
@@ -89,7 +97,7 @@ routine f128_cm_hypot(%x: F128, %y: F128) -> F128
         branch %close ? settle(%approx, %exponent, %a_top, %b_top, %gap) : round(%approx, %exponent)
 
     block round(%approx: U128, %exponent: S64):
-        %r : F128 = cm_hypot_round(%approx, %exponent)
+        %r : Self = cm_hypot_round(%approx, %exponent)
         return(%r)
 
     // approx is at most one unit (of its bit 14) off: square the candidate, compare it with the
@@ -103,7 +111,7 @@ routine f128_cm_hypot(%x: F128, %y: F128) -> F128
         %above     : U128 = %excess.lt(0).to_u128()  // the sum is below the square
         %below     : U128 = %excess.gt(0).to_u128()
         %v         : U128 = %candidate.bitor(%top_bit).sub_wrap(%above).add_wrap(%below)
-        %r         : F128 = cm_hypot_round(%v, %exponent.add(%wrapped.to_s64()))
+        %r         : Self = cm_hypot_round(%v, %exponent.add(%wrapped.to_s64()))
         return(%r)
 
 /// Both legs are at least as large as a finite number and the larger is infinite or NaN.

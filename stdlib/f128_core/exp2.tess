@@ -16,10 +16,22 @@ preset CM_EXP2_OVERFLOW:  U128 = 0x400D0000000000000000000000000000
 /// x <= -0x1.01bcp+14 rounds to +0
 preset CM_EXP2_UNDERFLOW: U128 = 0xC00D01BC000000000000000000000000
 
-/// 2^x, correctly rounded.
-routine f128_cm_exp2(%x: F128) -> F128
+routine F128.exp2(%self: Self) -> Self
     block entry():
-        %u      : U128 = %x.bits()
+        %nan       : Bool = %self.is_nan()
+        %over      : Bool = %self.gt(f128_of(0x400D0008000000000000000000000000))  // 16386
+        %under     : Bool = %self.lt(f128_of(0xC00D0300000000000000000000000000))  // -16576
+        %quiet     : Self = f128_of(f128_quiet(%self.bits()))
+        %infinity  : Self = Self.INFINITY
+        %plus_zero : Self = f128_of(0)
+        when:
+            %nan   -> return(%quiet)
+            %over  -> return(%infinity)
+            %under -> return(%plus_zero)
+            else   -> compute()
+
+    block compute():
+        %u      : U128 = %self.bits()
         %hi     : U64  = cm_exp_hi(%u)
         %mag_hi : U64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
         %tiny   : Bool = %mag_hi.lt(0x3F8D71547652B82F)  // 2^x rounds to 1
@@ -34,10 +46,10 @@ routine f128_cm_exp2(%x: F128) -> F128
         %is_nan    : Bool = f128_is_nan_bits(%u)
         %overflow  : Bool = f128_is_negative_bits(%u).bitnot().bitand(%u.ge(CM_EXP2_OVERFLOW))
         %underflow : Bool = %u.ge(CM_EXP2_UNDERFLOW)
-        %quiet     : F128 = f128_of(%u.bitor(F128_QUIET_BIT))
+        %quiet     : Self = f128_of(%u.bitor(F128_QUIET_BIT))
         when:
             %is_nan    -> return(%quiet)
-            %overflow  -> return(F128.INFINITY)
+            %overflow  -> return(Self.INFINITY)
             %underflow -> return(CM_EXP_ZERO)
             else       -> integer_check(%u)
 
@@ -54,7 +66,7 @@ routine f128_cm_exp2(%x: F128) -> F128
         branch %is_integer ? exact(%u, %e) : reduce(%u, %e)
 
     block exact(%u: U128, %e: S64):
-        %r : F128 = cm_exp2_exact(%u, %e)
+        %r : Self = cm_exp2_exact(%u, %e)
         return(%r)
 
     // the significand, two's-complemented for negative x
@@ -66,7 +78,7 @@ routine f128_cm_exp2(%x: F128) -> F128
         %words   : CmExpWords3 = CmExpWords3 { w0: 0, w1: %signed.to_s64_wrap().to_u64_wrap(),
                 w2: cm_exp_hi(%signed) }
         %reduced : CmExpWords3 = cm_exp_ashr3(%words, 0x401B.sub(%e).to_u64())
-        %r       : F128        = cm_exp_finish(%reduced, %u, CM_EXP_KIND_TWO)
+        %r       : Self        = cm_exp_finish(%reduced, %u, CM_EXP_KIND_TWO)
         return(%r)
 
 /// 2^n for the integer n = x (biased exponent e): exact, normal or subnormal.

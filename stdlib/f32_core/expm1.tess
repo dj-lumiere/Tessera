@@ -23,11 +23,11 @@ preset CM_F32_EXPM1_TD: Array<U64, 32> = [0x3FF0000000000000, 0x3FF059B0D3158574
         0x3FFC199BDD85529C, 0x3FFCB720DCEF9069, 0x3FFD5818DCFBA487, 0x3FFDFC97337B9B5F,
         0x3FFEA4AFA2A490DA, 0x3FFF50765B6E4540]
 
-/// e^x - 1, correctly rounded, and accurate near zero.
-routine f32_cm_expm1(%x: F32) -> F32
+/// e^self - 1, accurate near 0.
+routine F32.exp_m1(%self: Self) -> Self
     block entry():
-        %ux    : U32  = %x.bits()
-        %z     : F64  = %x.to_f64()
+        %ux    : U32  = %self.bits()
+        %z     : F64  = %self.to_f64()
         %ax    : U32  = %ux.shl(1)
         %small : Bool = %ax.lt(0x7C400000)
         %large : Bool = %ax.ge(0x8562E430)
@@ -41,8 +41,8 @@ routine f32_cm_expm1(%x: F32) -> F32
         %zero : Bool = %ax.eq(0)
         %tiny : Bool = %ax.lt(0x676A09E8)
         when:
-            %zero -> return(%x)
-            %tiny -> return(%x.abs().mul_add(0x1p-25, %x))  // rounds like x + |x| 2^-25
+            %zero -> return(%self)
+            %tiny -> return(%self.abs().mul_add(0x1p-25, %self))  // rounds like x + |x| 2^-25
             else  -> series(%z)
 
     block series(%z: F64):
@@ -63,13 +63,13 @@ routine f32_cm_expm1(%x: F32) -> F32
         %negative : Bool = %ux.shr(31).eq(1)
         %infinite : Bool = %ax.eq(0xFF000000)
         when:
-            %nan      -> return(%x.add(%x))
+            %nan      -> return(%self.add(%self))
             %negative -> minus_one(%infinite)
-            else      -> return(F32.INFINITY)
+            else      -> return(Self.INFINITY)
 
     // x < 0: the result is -1 (the float just above it is too far away)
     block minus_one(%infinite: Bool):
-        branch %infinite ? return(-1.0) : return(F32.add(-1.0, 0x1p-26))
+        branch %infinite ? return(-1.0) : return(Self.add(-1.0, 0x1p-26))
 
     block fast(%ux: U32, %z: F64):
         %a    : F64  = %z.mul(0x1.71547652b82fep+5)  // 32 x / ln(2)
@@ -82,15 +82,15 @@ routine f32_cm_expm1(%x: F32) -> F32
         %tb   : U64  = CM_F32_EXPM1_TD.get(%uu.bitand(0x1F).to_usize())
         %sv   : F64  = F64.from_bits(%tb.add_wrap(%uu.shr(5).shl(52)))  // 2^(round(32 x / ln(2)) / 32)
         %r    : F64  = %h2.mul(%c2).add(%c0).mul(%sv).sub(1.0)
-        %ub   : F32  = %r.to_f32()
-        %lb   : F32  = %r.sub(%sv.mul(0x1.3b3p-33)).to_f32()
+        %ub   : Self = %r.to_f32()
+        %lb   : Self = %r.sub(%sv.mul(0x1.3b3p-33)).to_f32()
         %sure : Bool = %ub.eq(%lb)
         branch %sure ? return(%ub) : hard(%ux, %z, %ia, %sv)
 
     // The fast path can't decide the rounding.
     block hard(%ux: U32, %z: F64, %ia: F64, %sv: F64):
         %far : Bool = %ux.gt(0xC18AA123)  // x < -17.32
-        branch %far ? return(F32.add(-1.0, 0x1p-26)) : slow(%z, %ia, %sv)
+        branch %far ? return(Self.add(-1.0, 0x1p-26)) : slow(%z, %ia, %sv)
 
     // a longer reduction and polynomial
     block slow(%z: F64, %ia: F64, %sv: F64):

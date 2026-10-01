@@ -14,10 +14,10 @@
 
 module Standard::Core
 
-/// 2^x, correctly rounded. Integer x gives an exact power of two.
-routine f64_cm_exp2(%x: F64) -> F64
+/// 2^self
+routine F64.exp2(%self: Self) -> Self
     block entry():
-        %ux   : U64  = %x.bits()
+        %ux   : U64  = %self.bits()
         %ax   : U64  = %ux.shl(1)
         %zero : Bool = %ax.eq(0)
         %big  : Bool = %ax.ge(0x8120000000000000)  // |x| >= 1024, infinite or NaN
@@ -25,7 +25,7 @@ routine f64_cm_exp2(%x: F64) -> F64
         when:
             %zero -> return(1.0)
             %big  -> edge(%ux, %ax)
-            %tiny -> return(F64.add(1.0, F64.copysign(0x1p-54, %x)))
+            %tiny -> return(Self.add(1.0, Self.copysign(0x1p-54, %self)))
             else  -> fast(%ux, %ax)
 
     block edge(%ux: U64, %ax: U64):
@@ -34,55 +34,55 @@ routine f64_cm_exp2(%x: F64) -> F64
         %positive : Bool = %ux.shr(63).eq(0)
         %under    : Bool = %ux.ge(0xC090CC0000000000)  // x <= -1075
         when:
-            %nan      -> return(%x.add(%x))
+            %nan      -> return(%self.add(%self))
             %inf      -> infinite(%positive)
-            %positive -> return(F64.mul(0x1p1023, %x))  // x >= 1024: overflow
+            %positive -> return(Self.mul(0x1p1023, %self))  // x >= 1024: overflow
             %under    -> return(0.0)
             else      -> fast(%ux, %ax)
 
     block infinite(%positive: Bool):
-        branch %positive ? return(%x) : return(0.0)
+        branch %positive ? return(%self) : return(0.0)
 
     block fast(%ux: U64, %ax: U64):
         // frac is nonzero exactly when x is not an integer
         %m      : U64        = %ux.shl(12)
         %ex     : U64        = %ax.shr(53).sub_wrap(0x3FF)
         %frac   : U64        = %ex.shr(63).bitor(%m.shl(%ex.bitand(63)))
-        %sx     : F64        = F64.mul(4096.0, %x)
-        %fx     : F64        = %sx.round_ties_even()
-        %z      : F64        = %sx.sub(%fx)
-        %z2     : F64        = %z.mul(%z)
+        %sx     : Self       = Self.mul(4096.0, %self)
+        %fx     : Self       = %sx.round_ties_even()
+        %z      : Self       = %sx.sub(%fx)
+        %z2     : Self       = %z.mul(%z)
         %k      : S64        = %fx.to_s64()
         %ie     : S64        = %k.shr(12)
         %tt     : CmF64ExpDd = cm_f64_exp_table_2pow(%k.to_u64_wrap())
-        %tz     : F64        = %tt.hi.mul(%z)
-        %p01    : F64        = F64.add(0x1.62e42fefa39efp-13, %z.mul(0x1.ebfbdff82c58fp-27))
-        %p23    : F64        = F64.add(0x1.c6b08d73b3e01p-41, %z.mul(0x1.3b2ab6fdda001p-55))
-        %fl     : F64        = %tz.mul(%p01.add(%z2.mul(%p23))).add(%tt.lo)
+        %tz     : Self       = %tt.hi.mul(%z)
+        %p01    : Self       = Self.add(0x1.62e42fefa39efp-13, %z.mul(0x1.ebfbdff82c58fp-27))
+        %p23    : Self       = Self.add(0x1.c6b08d73b3e01p-41, %z.mul(0x1.3b2ab6fdda001p-55))
+        %fl     : Self       = %tz.mul(%p01.add(%z2.mul(%p23))).add(%tt.lo)
         %normal : Bool       = %ux.le(0xC08FF00000000000)  // x >= -1022
         %whole  : Bool       = %frac.eq(0)
         when:
             %normal -> normal(%tt.hi, %fl, %ie, %whole)
             else    -> subnormal(%tt.hi, %fl, %ie, %whole)
 
-    block normal(%fh: F64, %fl: F64, %ie: S64, %whole: Bool):
+    block normal(%fh: Self, %fl: Self, %ie: S64, %whole: Bool):
         branch %whole ? return(cm_f64_exp_ldexp(%fh, %ie)) : continue
-        %ub   : F64  = %fh.add(%fl.add(0x1.fdp-63))
-        %lb   : F64  = %fh.add(%fl.sub(0x1.fdp-63))
+        %ub   : Self = %fh.add(%fl.add(0x1.fdp-63))
+        %lb   : Self = %fh.add(%fl.sub(0x1.fdp-63))
         %sure : Bool = %ub.eq(%lb)
-        branch %sure ? return(cm_f64_exp_ldexp(%lb, %ie)) : return(cm_f64_exp2_accurate(%x))
+        branch %sure ? return(cm_f64_exp_ldexp(%lb, %ie)) : return(cm_f64_exp2_accurate(%self))
 
-    block subnormal(%fh: F64, %fl: F64, %ie: S64, %whole: Bool):
-        %bias : F64        = F64.from_bits(S64.sub(1, %ie).to_u64_wrap().shl(52))
+    block subnormal(%fh: Self, %fl: Self, %ie: S64, %whole: Bool):
+        %bias : Self       = Self.from_bits(S64.sub(1, %ie).to_u64_wrap().shl(52))
         %s    : CmF64ExpDd = cm_f64_exp_fasttwosum(%bias, %fh)
-        %sl   : F64        = %fl.add(%s.lo)
-        branch %whole ? return(F64.from_bits(%s.hi.bits().bitand(0x000FFFFFFFFFFFFF))) : continue
-        %ub   : F64  = %s.hi.add(%sl.add(0x1.fdp-63))
-        %lb   : F64  = %s.hi.add(%sl.sub(0x1.fdp-63))
+        %sl   : Self       = %fl.add(%s.lo)
+        branch %whole ? return(Self.from_bits(%s.hi.bits().bitand(0x000FFFFFFFFFFFFF))) : continue
+        %ub   : Self = %s.hi.add(%sl.add(0x1.fdp-63))
+        %lb   : Self = %s.hi.add(%sl.sub(0x1.fdp-63))
         %sure : Bool = %ub.eq(%lb)
         branch %sure
-            ? return(F64.from_bits(%lb.bits().bitand(0x000FFFFFFFFFFFFF)))
-            : return(cm_f64_exp2_accurate(%x))
+            ? return(Self.from_bits(%lb.bits().bitand(0x000FFFFFFFFFFFFF)))
+            : return(cm_f64_exp2_accurate(%self))
 
 /// The slow accurate path of exp2, for finite x that is not an integer, with
 /// 2^x neither overflowing nor below 2^-1075.

@@ -16,11 +16,11 @@
 
 module Standard::Core
 
-/// x^y, correctly rounded.
-routine f16_cm_pow(%x: F16, %y: F16) -> F16
+/// self^exponent, correctly rounded.
+routine F16.powf(%self: Self, %exponent: Self) -> Self
     block entry():
-        %xu : U32 = %x.bits().to_u32()
-        %yu : U32 = %y.bits().to_u32()
+        %xu : U32 = %self.bits().to_u32()
+        %yu : U32 = %exponent.bits().to_u32()
         %xa : U32 = %xu.bitand(0x7FFF)
         %ya : U32 = %yu.bitand(0x7FFF)
         when:
@@ -38,52 +38,52 @@ routine f16_cm_pow(%x: F16, %y: F16) -> F16
     // (-1)^y: ±1 for an integer y, NaN otherwise
     block minus_one(%yu: U32, %ya: U32):
         when:
-            %ya.gt(0x7C00)        -> return(%y.add(%y))
+            %ya.gt(0x7C00)        -> return(%exponent.add(%exponent))
             cm_f16_pow_isint(%yu) -> minus_one_int(%yu)
-            else                  -> return(F16.from_bits(0xFE00))
+            else                  -> return(Self.from_bits(0xFE00))
 
     block minus_one_int(%yu: U32):
         %odd : Bool = cm_f16_pow_isodd(%yu)
-        branch %odd ? return(%x) : return(%x.neg())
+        branch %odd ? return(%self) : return(%self.neg())
 
     // 1^y = 1, except for a signaling NaN y
     block plus_one(%yu: U32, %ya: U32):
         %snan : Bool = %ya.gt(0x7C00).bitand(%yu.bitand(0x0200).eq(0))
-        branch %snan ? return(%y.add(%y)) : return(%x)
+        branch %snan ? return(%exponent.add(%exponent)) : return(%self)
 
     // x^0 = 1, except for a signaling NaN x
     block zero_exponent(%xa: U32, %xu: U32):
         %snan : Bool = %xa.gt(0x7C00).bitand(%xu.bitand(0x0200).eq(0))
-        branch %snan ? return(%x.add(%x)) : return(1.0)
+        branch %snan ? return(%self.add(%self)) : return(1.0)
 
     // |x| = 1 was handled above
     block special_exponent(%xa: U32, %yu: U32, %ya: U32):
         when:
-            %xa.gt(0x7C00) -> return(%x.add(%x))
+            %xa.gt(0x7C00) -> return(%self.add(%self))
             %ya.eq(0x7C00) -> infinite_exponent(%xa, %yu)
-            else           -> return(%y.add(%y))
+            else           -> return(%exponent.add(%exponent))
 
     // 0 when |x| < 1 and y = +inf or |x| > 1 and y = -inf, else +inf
     block infinite_exponent(%xa: U32, %yu: U32):
         %small : Bool = %xa.lt(0x3C00)
         %neg   : Bool = %yu.shr(15).eq(1)
         %zero  : Bool = %small.ne(%neg)
-        branch %zero ? return(F16.from_bits(0x0000)) : return(F16.INFINITY)
+        branch %zero ? return(Self.from_bits(0x0000)) : return(Self.INFINITY)
 
     // x = ±0: a signed zero or infinity, negative only for -0 and an odd integer y
     block zero_base(%xu: U32, %yu: U32):
         %odd_neg : Bool = cm_f16_pow_isodd(%yu).bitand(%xu.shr(15).ne(0))
         %neg_y   : Bool = %yu.shr(15).eq(1)
         when:
-            %neg_y.bitand(%odd_neg) -> return(F16.NEG_INFINITY)
-            %neg_y                  -> return(F16.INFINITY)
-            %odd_neg                -> return(F16.from_bits(0x8000))
-            else                    -> return(F16.from_bits(0x0000))
+            %neg_y.bitand(%odd_neg) -> return(Self.NEG_INFINITY)
+            %neg_y                  -> return(Self.INFINITY)
+            %odd_neg                -> return(Self.from_bits(0x8000))
+            else                    -> return(Self.from_bits(0x0000))
 
     block special_base(%xa: U32, %xu: U32, %yu: U32):
         when:
             %xa.eq(0x7C00) -> infinite_base(%xu, %yu)
-            %xa.gt(0x7C00) -> return(%x.add(%x))
+            %xa.gt(0x7C00) -> return(%self.add(%self))
             else           -> negative_base(%xa, %yu)
 
     // ±inf: the sign survives only for an odd y, and a negative y gives a zero
@@ -92,12 +92,12 @@ routine f16_cm_pow(%x: F16, %y: F16) -> F16
         %signed : U32  = %odd ? %xu : %xu.bitand(0x7FFF)
         %neg_y  : Bool = %yu.shr(15).eq(1)
         %r      : U32  = %neg_y ? %signed.bitand(0x8000) : %signed
-        return(F16.from_bits(%r.to_u16()))
+        return(Self.from_bits(%r.to_u16()))
 
     // x < 0: NaN for a non-integer y, else |x|^y with the sign of an odd y
     block negative_base(%xa: U32, %yu: U32):
         %int : Bool = cm_f16_pow_isint(%yu)
-        branch %int ? continue : return(F16.from_bits(0xFE00))
+        branch %int ? continue : return(Self.from_bits(0xFE00))
         %odd  : Bool = cm_f16_pow_isodd(%yu)
         %sign : U64  = %odd ? 0x8000000000000000 : 0
         jump listed(%xa, %yu, %sign)
@@ -122,12 +122,12 @@ routine f16_cm_pow(%x: F16, %y: F16) -> F16
             else                                  -> classify(%xu, %yu, %sign)
 
     block classify(%xu: U32, %yu: U32, %sign: U64):
-        %xd   : F64  = F16.from_bits(%xu.to_u16()).to_f64()
-        %isex : U64  = cm_f16_pow_is_exact(%xu, %yu, %y)
+        %xd   : F64  = Self.from_bits(%xu.to_u16()).to_f64()
+        %isex : U64  = cm_f16_pow_is_exact(%xu, %yu, %exponent)
         %pow2 : Bool = %isex.gt(0xFF)
         // x = 2^E with an integer y E in range: the exact power of two
         branch %pow2 ? done(%isex, %sign) : continue
-        %ret      : U64  = cm_f16_pow_exp(cm_f16_pow_log(%xd).mul(%y.to_f64())).bits()
+        %ret      : U64  = cm_f16_pow_exp(cm_f16_pow_log(%xd).mul(%exponent.to_f64())).bits()
         %may_snap : Bool = %isex.ne(0)
         branch %may_snap ? snap(%xd, %isex, %ret, %sign) : done(%ret, %sign)
 
