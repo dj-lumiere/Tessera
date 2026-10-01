@@ -206,6 +206,17 @@ public sealed class ArrayType(DType elem, long count) : DType
     public override string OwnerName => "Array";
 }
 
+/// `Vector<T, N>`: N lanes of T as one SIMD value, LLVM's `<N x T>`. `Vector<Bool, N>` is a lane mask.
+public sealed class VectorType(DType elem, long count) : DType
+{
+    public DType Elem { get; } = elem;
+    public long Count { get; } = count;
+    public override string Name => $"Vector<{Elem.Name}, {Count}>";
+    public override string Key => $"Vector<{Elem.Key}, {Count}>";
+    public override string Llvm => $"<{Count} x {Elem.Llvm}>";
+    public override string OwnerName => "Vector";
+}
+
 /// `Callable<(params), ret>`, or `Callable<@callconv("fast"), (params), ret>`: a function pointer.
 public sealed class CallableType(string callConv, List<DType> parameters, DType ret) : DType
 {

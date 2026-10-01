@@ -595,6 +595,17 @@ public sealed partial class Compiler
                 if (t.Args is not [TypeArgType elem, var count])
                     throw new CompileError(t.Pos, "Array takes an element type and a length: Array<T, N>");
                 return new ArrayType(ResolveType(elem.Type, env), ConstInt(count, env, t.Pos));
+            case "Vector":
+            {
+                if (t.Args is not [TypeArgType lane, var lanes])
+                    throw new CompileError(t.Pos, "Vector takes a lane type and a lane count: Vector<T, N>");
+                var laneType = ResolveType(lane.Type, env);
+                if (laneType.Repr is not (IntType or FloatType or BoolType))
+                    throw new CompileError(t.Pos, $"a Vector's lanes are integers, floats, or Bool (a mask), not {laneType}");
+                long n = ConstInt(lanes, env, t.Pos);
+                if (n < 1) throw new CompileError(t.Pos, "a Vector has at least one lane");
+                return new VectorType(laneType, n);
+            }
             case "Callable":
                 return ResolveCallable(t, env);
         }

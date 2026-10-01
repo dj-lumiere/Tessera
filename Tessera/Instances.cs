@@ -170,9 +170,12 @@ public sealed partial class Compiler
     /// routines (as an LLVM value), but not across a C boundary, where C would expect the ABI's own convention.
     private void CheckCBoundary(Instance sig)
     {
-        if (AggregateAbiKnown || sig.CallConv == "fast" || (!sig.IsExternalC && sig.Decl.Attr("export") is null)) return;
+        if (sig.CallConv == "fast" || (!sig.IsExternalC && sig.Decl.Attr("export") is null)) return;
         foreach (var t in sig.Params.Append(sig.Ret))
-            if (IsAggregate(t))
+            if (t.Repr is VectorType)
+                throw new CompileError(sig.Decl.Pos,
+                    $"{t} can't cross the C ABI yet: C passes vectors by rules that depend on the CPU's features");
+            else if (!AggregateAbiKnown && IsAggregate(t))
                 throw new CompileError(sig.Decl.Pos,
                     $"passing {t} by value across the C ABI isn't implemented for {Target.Arch} yet; pass a Ptr<{t}>");
     }

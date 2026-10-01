@@ -185,6 +185,7 @@ public sealed partial class Compiler
             case VariantType vt when NamesDecl(pattern, vt.Decl, binding.File): actualArgs = vt.Args; break;
             case PtrType pt when pattern.Name == "Ptr" && pt.Pointee is not null: actualArgs = [pt.Pointee]; break;
             case ArrayType at when pattern.Name == "Array": actualArgs = [at.Elem, new ConstArg(at.Count)]; break;
+            case VectorType vt when pattern.Name == "Vector": actualArgs = [vt.Elem, new ConstArg(vt.Count)]; break;
             default: return false;
         }
         if (actualArgs.Count != pattern.Args.Count) return false;
@@ -276,6 +277,7 @@ public sealed partial class Compiler
             RecordType s => s.Args,
             VariantType v => v.Args,
             ArrayType a => [a.Elem, new ConstArg(a.Count)],
+            VectorType v => [v.Elem, new ConstArg(v.Count)],
             PtrType p => [p.Pointee ?? IntType.Byte],
             _ => throw new CompileError(pos, $"{owner} does not match '{o}'"),
         };

@@ -1,0 +1,474 @@
+// Tessera stdlib: Vector<T, N> — N lanes of T as one SIMD value
+//
+// Maps to LLVM IR <N x T>, built into the compiler like Array<T, N>. A lane is an integer (S8..S64, U8..U64, USize,
+// SSize), a float (F32, F64), or a Bool, which makes Vector<Bool, N> a lane mask: what a compare gives and select
+// takes. N is any compile-time USize of at least 1, and the width is the program's choice: the same Vector<F32, 8>
+// is one AVX register on x86-64-v3 and two SSE ones on x86-64-v1, and correct either way. SIMD_BYTES says how wide
+// the target's native vectors are, for code that wants to match it.
+//
+// Operations are lane-wise and named like the scalar ones, with the same rules: integer add, sub, and mul panic if
+// any lane overflows (the _wrap and _clamp forms don't), a shift by the lane width or more shifts every bit out,
+// and float min and max return the other operand when one is NaN. Compares give a mask. The layout is LLVM's:
+// lanes packed (a Bool lane is one bit) and aligned for the whole vector, so Vector<F32, 3> takes 16 bytes where
+// Array<F32, 3> takes 12. A Vector can't cross the C ABI yet.
+
+module Standard::Core
+
+@llvm("<{N} x {T}>")
+record Vector<T, N>
+require T: typename, N: USize
+
+// -- lane kinds ----------------------------------------------------------------------
+
+/// T is an integer lane: wrapping, clamping, and bitwise operations.
+concept IntLane<T>
+require T: typename
+
+/// T is a float lane: division, square root, negation.
+concept FloatLane<T>
+require T: typename
+
+/// T is a number lane, integer or float: arithmetic, compares, min and max, memory.
+concept NumberLane<T>
+require T: typename
+
+/// T is a lane the bitwise operations take: an integer or a Bool.
+concept BitLane<T>
+require T: typename
+
+/// T is Bool: the vector is a lane mask.
+concept MaskLane<T>
+require T: typename
+
+conform IntLane<S8>, IntLane<S16>, IntLane<S32>, IntLane<S64>, IntLane<U8>, IntLane<U16>, IntLane<U32>, IntLane<U64>, IntLane<USize>, IntLane<SSize>
+conform FloatLane<F32>, FloatLane<F64>
+conform NumberLane<S8>, NumberLane<S16>, NumberLane<S32>, NumberLane<S64>, NumberLane<U8>, NumberLane<U16>, NumberLane<U32>, NumberLane<U64>, NumberLane<USize>, NumberLane<SSize>, NumberLane<F32>, NumberLane<F64>
+conform BitLane<S8>, BitLane<S16>, BitLane<S32>, BitLane<S64>, BitLane<U8>, BitLane<U16>, BitLane<U32>, BitLane<U64>, BitLane<USize>, BitLane<SSize>, BitLane<Bool>
+conform MaskLane<Bool>
+
+// -- the target's native width ---------------------------------------------------------
+
+// The bytes in one of the target's vector registers, or 0 without SIMD registers: Vector<F32, SIMD_BYTES.div(4)>
+// matches it. 32 with AVX2 (--cpu x86-64-v3 and up); 16 with SSE2, on AArch64, on ARM with NEON, and on RISC-V with
+// V (its registers are at least 128 bits); 0 on i386 without SSE2, ARM without NEON (Cortex-M), RISC-V without V,
+// and AVR. A wider Vector still works on any target, split into several registers or into scalar code.
+@[target(arch: "x86_64"), feature("avx2")]
+preset SIMD_BYTES: USize = 32
+@[target(arch: "x86_64"), feature(not "avx2")]
+preset SIMD_BYTES: USize = 16
+@[target(arch: "x86"), feature("avx2")]
+preset SIMD_BYTES: USize = 32
+@[target(arch: "x86"), feature(not "avx2"), feature("sse2")]
+preset SIMD_BYTES: USize = 16
+@[target(arch: "x86"), feature(not "sse2")]
+preset SIMD_BYTES: USize = 0
+@target(arch: "aarch64")
+preset SIMD_BYTES: USize = 16
+@[target(arch: "arm"), feature("neon")]
+preset SIMD_BYTES: USize = 16
+@[target(arch: "arm"), feature(not "neon")]
+preset SIMD_BYTES: USize = 0
+@[target(arch: "riscv64"), feature("v")]
+preset SIMD_BYTES: USize = 16
+@[target(arch: "riscv64"), feature(not "v")]
+preset SIMD_BYTES: USize = 0
+@[target(arch: "riscv32"), feature("v")]
+preset SIMD_BYTES: USize = 16
+@[target(arch: "riscv32"), feature(not "v")]
+preset SIMD_BYTES: USize = 0
+@target(arch: not "x86_64", arch: not "x86", arch: not "aarch64", arch: not "arm",
+        arch: not "riscv64", arch: not "riscv32")
+preset SIMD_BYTES: USize = 0
+
+// -- metadata --------------------------------------------------------------------------
+
+routine Vector<T, N>.length() -> USize
+require T: typename, N: USize
+    block entry():
+        return(N)
+
+// -- construction ----------------------------------------------------------------------
+
+/// Every lane %x.
+@[external("llvm"),
+        template("{t0} = insertelement {Self} poison, {T} {%x}, i64 0\n{result} = shufflevector {Self} {t0}, {Self} poison, <{N} x i32> zeroinitializer")]
+routine Vector<T, N>.splat(%x: T) -> Self
+require T: typename, N: USize
+
+/// Every lane zero (false, for a mask).
+@[external("llvm"), template("{result} = bitcast {Self} zeroinitializer to {Self}")]
+routine Vector<T, N>.zero() -> Self
+require T: typename, N: USize
+
+/// The array's elements as lanes, element i in lane i.
+routine Vector<T, N>.from_array(%array: Array<T, N>) -> Self
+require T: typename, N: USize
+    block entry():
+        claim %elements : Ptr<Array<T, N>>
+        %elements.store(%array)
+        %start : Self = Self.zero()
+        jump fill(0, %start, %elements)
+
+    block fill(%i: USize, %acc: Self, %elements: Ptr<Array<T, N>>):
+        %more : Bool = %i.lt(N)
+        branch %more ? put(%i, %acc, %elements) : return(%acc)
+
+    block put(%i: USize, %acc: Self, %elements: Ptr<Array<T, N>>):
+        %lane : T    = %elements.get(%i)
+        %next : Self = %acc.with(%i, %lane)
+        jump fill(%i.add(1), %next, %elements)
+
+/// The lanes as an array, lane i in element i.
+routine Vector<T, N>.to_array(%self: Self) -> Array<T, N>
+require T: typename, N: USize
+    block entry():
+        claim %elements : Ptr<Array<T, N>>
+        jump fill(0, %self, %elements)
+
+    block fill(%i: USize, %self: Self, %elements: Ptr<Array<T, N>>):
+        %more : Bool = %i.lt(N)
+        branch %more ? put(%i, %self, %elements) : done(%elements)
+
+    block put(%i: USize, %self: Self, %elements: Ptr<Array<T, N>>):
+        %lane : T = %self.get(%i)
+        %elements.set(%i, %lane)
+        jump fill(%i.add(1), %self, %elements)
+
+    block done(%elements: Ptr<Array<T, N>>):
+        %array : Array<T, N> = %elements.load()
+        return(%array)
+
+// -- lanes -----------------------------------------------------------------------------
+
+@[external("llvm"), template("{result} = extractelement {Self} {%self}, {USize} {%index}")]
+private routine Vector<T, N>.get_unchecked(%self: Self, %index: USize) -> T
+require T: typename, N: USize
+
+@[external("llvm"), template("{result} = insertelement {Self} {%self}, {T} {%x}, {USize} {%index}")]
+private routine Vector<T, N>.with_unchecked(%self: Self, %index: USize, %x: T) -> Self
+require T: typename, N: USize
+
+/// Lane %index; panics if %index is N or more.
+routine Vector<T, N>.get(%self: Self, %index: USize) -> T
+require T: typename, N: USize
+    block entry():
+        %in_bounds : Bool = %index.lt(N)
+        branch %in_bounds ? continue : panic(TrapCode.Bounds)
+        %lane : T = %self.get_unchecked(%index)
+        return(%lane)
+
+/// A copy with lane %index set to %x; panics if %index is N or more.
+routine Vector<T, N>.with(%self: Self, %index: USize, %x: T) -> Self
+require T: typename, N: USize
+    block entry():
+        %in_bounds : Bool = %index.lt(N)
+        branch %in_bounds ? continue : panic(TrapCode.Bounds)
+        %r : Self = %self.with_unchecked(%index, %x)
+        return(%r)
+
+// -- memory ----------------------------------------------------------------------------
+
+// A Ptr<Vector<T, N>> loads and stores the whole vector at the vector's alignment. These read and write N Ts in a
+// row at any T-aligned address: an array's elements, a list's storage.
+
+/// Reads the N Ts at %first as lanes. %first need only be aligned for T.
+@[external("llvm"), template("{result} = load {Self}, ptr {%first}, align {sizeof T}")]
+routine Vector<T, N>.load_from(%first: Ptr<T>) -> Self
+require T: typename, N: USize, NumberLane<T>
+
+/// Writes the lanes to the N Ts at %first. %first need only be aligned for T.
+@[external("llvm"), template("store {Self} {%self}, ptr {%first}, align {sizeof T}")]
+routine Vector<T, N>.store_to(%self: Self, %first: Ptr<T>) -> Void
+require T: typename, N: USize, NumberLane<T>
+
+// -- arithmetic ------------------------------------------------------------------------
+
+@[external("llvm"), template("{result} = {by T|fadd|add|add} {Self} {%self}, {%other}")]
+private routine Vector<T, N>.add_raw(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"), template("{result} = {by T|fsub|sub|sub} {Self} {%self}, {%other}")]
+private routine Vector<T, N>.sub_raw(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"), template("{result} = {by T|fmul|mul|mul} {Self} {%self}, {%other}")]
+private routine Vector<T, N>.mul_raw(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, NumberLane<T>
+
+// Whether any lane overflows: never for floats.
+@[external("llvm"),
+        template("{by T|{result} = or i1 false, false|{t0} = call {{ {Self}, <{N} x i1> }} @llvm.sadd.with.overflow.{mangle Self}({Self} {%self}, {Self} {%other})\n{t1} = extractvalue {{ {Self}, <{N} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{N}i1(<{N} x i1> {t1})|{t0} = call {{ {Self}, <{N} x i1> }} @llvm.uadd.with.overflow.{mangle Self}({Self} {%self}, {Self} {%other})\n{t1} = extractvalue {{ {Self}, <{N} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{N}i1(<{N} x i1> {t1})}")]
+private routine Vector<T, N>.add_overflows(%self: Self, %other: Self) -> Bool
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"),
+        template("{by T|{result} = or i1 false, false|{t0} = call {{ {Self}, <{N} x i1> }} @llvm.ssub.with.overflow.{mangle Self}({Self} {%self}, {Self} {%other})\n{t1} = extractvalue {{ {Self}, <{N} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{N}i1(<{N} x i1> {t1})|{t0} = call {{ {Self}, <{N} x i1> }} @llvm.usub.with.overflow.{mangle Self}({Self} {%self}, {Self} {%other})\n{t1} = extractvalue {{ {Self}, <{N} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{N}i1(<{N} x i1> {t1})}")]
+private routine Vector<T, N>.sub_overflows(%self: Self, %other: Self) -> Bool
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"),
+        template("{by T|{result} = or i1 false, false|{t0} = call {{ {Self}, <{N} x i1> }} @llvm.smul.with.overflow.{mangle Self}({Self} {%self}, {Self} {%other})\n{t1} = extractvalue {{ {Self}, <{N} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{N}i1(<{N} x i1> {t1})|{t0} = call {{ {Self}, <{N} x i1> }} @llvm.umul.with.overflow.{mangle Self}({Self} {%self}, {Self} {%other})\n{t1} = extractvalue {{ {Self}, <{N} x i1> }} {t0}, 1\n{result} = call i1 @llvm.vector.reduce.or.v{N}i1(<{N} x i1> {t1})}")]
+private routine Vector<T, N>.mul_overflows(%self: Self, %other: Self) -> Bool
+require T: typename, N: USize, NumberLane<T>
+
+/// Lane-wise sum; for integers, panics if any lane overflows.
+routine Vector<T, N>.add(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, NumberLane<T>
+    block entry():
+        %overflow : Bool = %self.add_overflows(%other)
+        branch %overflow ? panic(TrapCode.Overflow) : continue
+        %r : Self = %self.add_raw(%other)
+        return(%r)
+
+/// Lane-wise difference; for integers, panics if any lane overflows.
+routine Vector<T, N>.sub(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, NumberLane<T>
+    block entry():
+        %overflow : Bool = %self.sub_overflows(%other)
+        branch %overflow ? panic(TrapCode.Overflow) : continue
+        %r : Self = %self.sub_raw(%other)
+        return(%r)
+
+/// Lane-wise product; for integers, panics if any lane overflows.
+routine Vector<T, N>.mul(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, NumberLane<T>
+    block entry():
+        %overflow : Bool = %self.mul_overflows(%other)
+        branch %overflow ? panic(TrapCode.Overflow) : continue
+        %r : Self = %self.mul_raw(%other)
+        return(%r)
+
+/// Lane-wise sum, each lane wrapping modulo 2^bits.
+routine Vector<T, N>.add_wrap(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, IntLane<T>
+    block entry():
+        %r : Self = %self.add_raw(%other)
+        return(%r)
+
+/// Lane-wise difference, each lane wrapping modulo 2^bits.
+routine Vector<T, N>.sub_wrap(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, IntLane<T>
+    block entry():
+        %r : Self = %self.sub_raw(%other)
+        return(%r)
+
+/// Lane-wise product, each lane wrapping modulo 2^bits.
+routine Vector<T, N>.mul_wrap(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, IntLane<T>
+    block entry():
+        %r : Self = %self.mul_raw(%other)
+        return(%r)
+
+/// Lane-wise sum, each lane saturating at T's MIN / MAX.
+@[external("llvm"),
+        template("{result} = call {Self} @llvm.{by T||s|u}add.sat.{mangle Self}({Self} {%self}, {Self} {%other})")]
+routine Vector<T, N>.add_clamp(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, IntLane<T>
+
+/// Lane-wise difference, each lane saturating at T's MIN / MAX.
+@[external("llvm"),
+        template("{result} = call {Self} @llvm.{by T||s|u}sub.sat.{mangle Self}({Self} {%self}, {Self} {%other})")]
+routine Vector<T, N>.sub_clamp(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, IntLane<T>
+
+/// Lane-wise quotient.
+@[external("llvm"), template("{result} = fdiv {Self} {%self}, {%other}")]
+routine Vector<T, N>.div(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, FloatLane<T>
+
+/// Each lane negated (-0.0 for 0.0).
+@[external("llvm"), template("{result} = fneg {Self} {%self}")]
+routine Vector<T, N>.neg(%self: Self) -> Self
+require T: typename, N: USize, FloatLane<T>
+
+/// Each lane's magnitude.
+@[external("llvm"), template("{result} = call {Self} @llvm.fabs.{mangle Self}({Self} {%self})")]
+routine Vector<T, N>.abs(%self: Self) -> Self
+require T: typename, N: USize, FloatLane<T>
+
+/// Each lane's square root; NaN for a negative lane (other than -0.0).
+@[external("llvm"), template("{result} = call {Self} @llvm.sqrt.{mangle Self}({Self} {%self})")]
+routine Vector<T, N>.sqrt(%self: Self) -> Self
+require T: typename, N: USize, FloatLane<T>
+
+// min and max as selects, not minnum / maxnum: those become libm calls on 32-bit ARM. A NaN lane gives the other
+// operand's lane, as the scalar min and max do. The templates take scalars or vectors alike.
+@[external("llvm"),
+        template("{by T|{t0} = fcmp uno {Self} {%self}, {%self}\n{t1} = fcmp uno {Self} {%other}, {%other}\n{t2} = fcmp ole {Self} {%self}, {%other}\n{t3} = select <{N} x i1> {t2}, {Self} {%self}, {Self} {%other}\n{t4} = select <{N} x i1> {t0}, {Self} {%other}, {Self} {t3}\n{result} = select <{N} x i1> {t1}, {Self} {%self}, {Self} {t4}|{result} = call {Self} @llvm.smin.{mangle Self}({Self} {%self}, {Self} {%other})|{result} = call {Self} @llvm.umin.{mangle Self}({Self} {%self}, {Self} {%other})}")]
+routine Vector<T, N>.min(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"),
+        template("{by T|{t0} = fcmp uno {Self} {%self}, {%self}\n{t1} = fcmp uno {Self} {%other}, {%other}\n{t2} = fcmp oge {Self} {%self}, {%other}\n{t3} = select <{N} x i1> {t2}, {Self} {%self}, {Self} {%other}\n{t4} = select <{N} x i1> {t0}, {Self} {%other}, {Self} {t3}\n{result} = select <{N} x i1> {t1}, {Self} {%self}, {Self} {t4}|{result} = call {Self} @llvm.smax.{mangle Self}({Self} {%self}, {Self} {%other})|{result} = call {Self} @llvm.umax.{mangle Self}({Self} {%self}, {Self} {%other})}")]
+routine Vector<T, N>.max(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, NumberLane<T>
+
+// -- bitwise and shifts ----------------------------------------------------------------
+
+@[external("llvm"), template("{result} = and {Self} {%self}, {%other}")]
+routine Vector<T, N>.bitand(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, BitLane<T>
+
+@[external("llvm"), template("{result} = or {Self} {%self}, {%other}")]
+routine Vector<T, N>.bitor(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, BitLane<T>
+
+@[external("llvm"), template("{result} = xor {Self} {%self}, {%other}")]
+routine Vector<T, N>.bitxor(%self: Self, %other: Self) -> Self
+require T: typename, N: USize, BitLane<T>
+
+@[external("llvm"), template("{result} = xor {Self} {%self}, splat ({T} -1)")]
+routine Vector<T, N>.bitnot(%self: Self) -> Self
+require T: typename, N: USize, BitLane<T>
+
+/// Each lane shifted left by the matching lane of %n. A shift by the lane width or more (or a negative one) gives 0.
+@[external("llvm"),
+        template("{t0} = icmp ult {Self} {%n}, splat ({T} {bits T})\n{t1} = shl {Self} {%self}, {%n}\n{result} = select <{N} x i1> {t0}, {Self} {t1}, {Self} zeroinitializer")]
+routine Vector<T, N>.shl(%self: Self, %n: Self) -> Self
+require T: typename, N: USize, IntLane<T>
+
+/// Each lane shifted right by the matching lane of %n: arithmetic for signed lanes, logical for unsigned. A shift
+/// by the lane width or more (or a negative one) gives the sign fill: 0, or -1 for a negative signed lane.
+@[external("llvm"),
+        template("{t0} = icmp ult {Self} {%n}, splat ({T} {bits T})\n{by T||{t1} = ashr {Self} {%self}, {%n}\n{t3} = icmp slt {Self} {%self}, zeroinitializer\n{t2} = sext <{N} x i1> {t3} to {Self}|{t1} = lshr {Self} {%self}, {%n}\n{t2} = bitcast {Self} zeroinitializer to {Self}}\n{result} = select <{N} x i1> {t0}, {Self} {t1}, {Self} {t2}")]
+routine Vector<T, N>.shr(%self: Self, %n: Self) -> Self
+require T: typename, N: USize, IntLane<T>
+
+// -- compares --------------------------------------------------------------------------
+
+// Each gives a mask, lane i true where the compare holds for lane i. Float compares are ordered (false when a lane
+// is NaN), as the scalar ones are.
+
+@[external("llvm"), template("{result} = {by T|fcmp oeq|icmp eq|icmp eq} {Self} {%self}, {%other}")]
+routine Vector<T, N>.eq(%self: Self, %other: Self) -> Vector<Bool, N>
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"), template("{result} = {by T|fcmp one|icmp ne|icmp ne} {Self} {%self}, {%other}")]
+routine Vector<T, N>.ne(%self: Self, %other: Self) -> Vector<Bool, N>
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"),
+        template("{result} = {by T|fcmp olt|icmp slt|icmp ult} {Self} {%self}, {%other}")]
+routine Vector<T, N>.lt(%self: Self, %other: Self) -> Vector<Bool, N>
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"),
+        template("{result} = {by T|fcmp ole|icmp sle|icmp ule} {Self} {%self}, {%other}")]
+routine Vector<T, N>.le(%self: Self, %other: Self) -> Vector<Bool, N>
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"),
+        template("{result} = {by T|fcmp ogt|icmp sgt|icmp ugt} {Self} {%self}, {%other}")]
+routine Vector<T, N>.gt(%self: Self, %other: Self) -> Vector<Bool, N>
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"),
+        template("{result} = {by T|fcmp oge|icmp sge|icmp uge} {Self} {%self}, {%other}")]
+routine Vector<T, N>.ge(%self: Self, %other: Self) -> Vector<Bool, N>
+require T: typename, N: USize, NumberLane<T>
+
+// -- masks -----------------------------------------------------------------------------
+
+/// Whether every lane is true.
+@[external("llvm"),
+        template("{result} = call i1 @llvm.vector.reduce.and.{mangle Self}({Self} {%self})")]
+routine Vector<T, N>.all(%self: Self) -> Bool
+require T: typename, N: USize, MaskLane<T>
+
+/// Whether some lane is true.
+@[external("llvm"),
+        template("{result} = call i1 @llvm.vector.reduce.or.{mangle Self}({Self} {%self})")]
+routine Vector<T, N>.any(%self: Self) -> Bool
+require T: typename, N: USize, MaskLane<T>
+
+/// Whether no lane is true.
+routine Vector<T, N>.none(%self: Self) -> Bool
+require T: typename, N: USize, MaskLane<T>
+    block entry():
+        %some : Bool = %self.any()
+        return(%some.bitnot())
+
+/// How many lanes are true.
+@[external("llvm"),
+        template("{t0} = bitcast {Self} {%self} to i{N}\n{t1} = call i{N} @llvm.ctpop.i{N}(i{N} {t0})\n{result} = zext i{N} {t1} to {USize}")]
+routine Vector<T, N>.count(%self: Self) -> USize
+require T: typename, N: USize, MaskLane<T>
+
+/// Lane i of %if_true where this mask's lane i is true, else lane i of %if_false.
+@[external("llvm"),
+        template("{result} = select {Self} {%self}, <{N} x {U}> {%if_true}, <{N} x {U}> {%if_false}")]
+routine Vector<T, N>.select<U>(%self: Self, %if_true: Vector<U, N>,
+        %if_false: Vector<U, N>) -> Vector<U, N>
+require T: typename, N: USize, MaskLane<T>, U: typename
+
+// -- reductions ------------------------------------------------------------------------
+
+@[external("llvm"), template("{result} = {by T|fadd|add|add} {T} {%a}, {%b}")]
+private routine Vector<T, N>.lane_add(%a: T, %b: T) -> T
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"),
+        template("{by T|{result} = or i1 false, false|{t0} = call {{ {T}, i1 }} @llvm.sadd.with.overflow.{mangle T}({T} {%a}, {T} {%b})\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1|{t0} = call {{ {T}, i1 }} @llvm.uadd.with.overflow.{mangle T}({T} {%a}, {T} {%b})\n{result} = extractvalue {{ {T}, i1 }} {t0}, 1}")]
+private routine Vector<T, N>.lane_add_overflows(%a: T, %b: T) -> Bool
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"),
+        template("{by T|{t0} = fcmp uno {T} {%a}, {%a}\n{t1} = fcmp uno {T} {%b}, {%b}\n{t2} = fcmp ole {T} {%a}, {%b}\n{t3} = select i1 {t2}, {T} {%a}, {T} {%b}\n{t4} = select i1 {t0}, {T} {%b}, {T} {t3}\n{result} = select i1 {t1}, {T} {%a}, {T} {t4}|{result} = call {T} @llvm.smin.{mangle T}({T} {%a}, {T} {%b})|{result} = call {T} @llvm.umin.{mangle T}({T} {%a}, {T} {%b})}")]
+private routine Vector<T, N>.lane_min(%a: T, %b: T) -> T
+require T: typename, N: USize, NumberLane<T>
+
+@[external("llvm"),
+        template("{by T|{t0} = fcmp uno {T} {%a}, {%a}\n{t1} = fcmp uno {T} {%b}, {%b}\n{t2} = fcmp oge {T} {%a}, {%b}\n{t3} = select i1 {t2}, {T} {%a}, {T} {%b}\n{t4} = select i1 {t0}, {T} {%b}, {T} {t3}\n{result} = select i1 {t1}, {T} {%a}, {T} {t4}|{result} = call {T} @llvm.smax.{mangle T}({T} {%a}, {T} {%b})|{result} = call {T} @llvm.umax.{mangle T}({T} {%a}, {T} {%b})}")]
+private routine Vector<T, N>.lane_max(%a: T, %b: T) -> T
+require T: typename, N: USize, NumberLane<T>
+
+/// The lanes added in order, lane 0 first; for integers, panics on overflow. In order, so a float sum is the same
+/// on every target, though a tree of adds would be faster.
+routine Vector<T, N>.sum(%self: Self) -> T
+require T: typename, N: USize, NumberLane<T>
+    block entry():
+        %first : T = %self.get(0)
+        jump step(1, %first, %self)
+
+    block step(%i: USize, %acc: T, %self: Self):
+        %more : Bool = %i.lt(N)
+        branch %more ? add(%i, %acc, %self) : return(%acc)
+
+    block add(%i: USize, %acc: T, %self: Self):
+        %lane     : T    = %self.get(%i)
+        %overflow : Bool = Self.lane_add_overflows(%acc, %lane)
+        branch %overflow ? panic(TrapCode.Overflow) : continue
+        %next : T = Self.lane_add(%acc, %lane)
+        jump step(%i.add(1), %next, %self)
+
+/// The smallest lane; a NaN lane counts only if every lane is NaN.
+routine Vector<T, N>.reduce_min(%self: Self) -> T
+require T: typename, N: USize, NumberLane<T>
+    block entry():
+        %first : T = %self.get(0)
+        jump step(1, %first, %self)
+
+    block step(%i: USize, %acc: T, %self: Self):
+        %more : Bool = %i.lt(N)
+        branch %more ? take(%i, %acc, %self) : return(%acc)
+
+    block take(%i: USize, %acc: T, %self: Self):
+        %lane : T = %self.get(%i)
+        %next : T = Self.lane_min(%acc, %lane)
+        jump step(%i.add(1), %next, %self)
+
+/// The largest lane; a NaN lane counts only if every lane is NaN.
+routine Vector<T, N>.reduce_max(%self: Self) -> T
+require T: typename, N: USize, NumberLane<T>
+    block entry():
+        %first : T = %self.get(0)
+        jump step(1, %first, %self)
+
+    block step(%i: USize, %acc: T, %self: Self):
+        %more : Bool = %i.lt(N)
+        branch %more ? take(%i, %acc, %self) : return(%acc)
+
+    block take(%i: USize, %acc: T, %self: Self):
+        %lane : T = %self.get(%i)
+        %next : T = Self.lane_max(%acc, %lane)
+        jump step(%i.add(1), %next, %self)

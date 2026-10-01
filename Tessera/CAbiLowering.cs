@@ -127,6 +127,12 @@ public sealed partial class Compiler
                 for (long k = 0; k < a.Count; k++) AddLeaves(a.Elem, at + k * step, acc, pos);
                 break;
             }
+            case VectorType v when v.Elem.Repr is not BoolType:
+            {
+                long step = SizeAlign(v.Elem, pos).Size;
+                for (long k = 0; k < v.Count; k++) AddLeaves(v.Elem, at + k * step, acc, pos);
+                break;
+            }
             case VariantType v:
             {
                 var (tagSize, _) = SizeAlign(v.Tag, pos);

@@ -1281,6 +1281,7 @@ public sealed class FunctionGen
             RecordType s => s.Args,
             VariantType v => v.Args,
             ArrayType a => [a.Elem, new ConstArg(a.Count)],
+            VectorType v => [v.Elem, new ConstArg(v.Count)],
             PtrType p => [p.Pointee ?? IntType.Byte],
             _ => throw Err(pos, $"{owner} does not match '{o}'"),
         };
@@ -1294,7 +1295,7 @@ public sealed class FunctionGen
 
     private bool PrimitiveOrRecordName(string name) =>
         IntType.FromName(name) is not null
-        || name is "F16" or "BF16" or "F32" or "F64" or "Bool" or "Void" or "Ptr" or "Addr" or "Array"
+        || name is "F16" or "BF16" or "F32" or "F64" or "Bool" or "Void" or "Ptr" or "Addr" or "Array" or "Vector"
         || _c.DeclaresType(name);
 
     private void BindExplicit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, Pos pos)
@@ -1341,6 +1342,11 @@ public sealed class FunctionGen
                 if (t.Args[0] is TypeArgType e) Unify(e.Type, a.Elem, env, unbound);
                 if (t.Args[1] is TypeArgType { Type: { Args.Count: 0 } n } && unbound.Contains(n.Name) && !env.Has(n.Name))
                     env.Bind(n.Name, new ConstArg(a.Count));
+                break;
+            case VectorType vt when t.Name == "Vector" && t.Args.Count == 2:
+                if (t.Args[0] is TypeArgType ve) Unify(ve.Type, vt.Elem, env, unbound);
+                if (t.Args[1] is TypeArgType { Type: { Args.Count: 0 } vn } && unbound.Contains(vn.Name) && !env.Has(vn.Name))
+                    env.Bind(vn.Name, new ConstArg(vt.Count));
                 break;
         }
     }
@@ -1552,10 +1558,35 @@ public sealed class FunctionGen
             if (ch == '}' && i + 1 < text.Length && text[i + 1] == '}') { sb.Append('}'); i++; continue; }
             if (ch != '{') { sb.Append(ch); continue; }
 
-            int close = text.IndexOf('}', i);
+            int close = MatchingBrace(text, i);
             if (close < 0) throw Err(pos, $"unterminated placeholder in the template of '{sig.Decl.DisplayName}'");
             string key = text[(i + 1)..close];
+
+            // `{by T|float|signed|unsigned}`: the text for T's kind (its lanes', for a vector), expanded in turn. One
+            // generic routine then emits fadd, add, or the signed / unsigned compare its type needs.
+            if (key.StartsWith("by ", StringComparison.Ordinal))
+            {
+                var parts = SplitTopLevel(key[3..]);
+                if (parts.Count != 4 || sig.Env.Get(parts[0].Trim()) is not { } kindOf)
+                    throw Err(sig.Decl.Pos, $"'{{by T|float|signed|unsigned}}' needs a type parameter and three texts, in '{sig.Decl.DisplayName}'");
+                var lane = kindOf.Repr is VectorType vt ? vt.Elem.Repr : kindOf.Repr;
+                string chosen = lane switch
+                {
+                    FloatType => parts[1],
+                    IntType { Kind: IntKind.Signed } => parts[2],
+                    _ => parts[3],
+                };
+                text = text[..i] + chosen + text[(close + 1)..];
+                i--;
+                continue;
+            }
             i = close;
+            // `{mangle T}`: the type as an overloaded intrinsic's name spells it (f32, i64, v4f32, p0).
+            if (key.StartsWith("mangle ", StringComparison.Ordinal) && sig.Env.Get(key[7..]) is { } mangled)
+            {
+                sb.Append(Mangle(mangled));
+                continue;
+            }
 
             if (key == "result")
             {
@@ -1586,6 +1617,13 @@ public sealed class FunctionGen
                 sb.Append(_c.SizeAlign(sized, pos).Size);
                 continue;
             }
+            // `{bits T}`: a type parameter's width in bits (a vector's lane width for its lanes).
+            if (key.StartsWith("bits ", StringComparison.Ordinal) && sig.Env.Get(key[5..]) is { } wide)
+            {
+                var laneOf = wide.Repr is VectorType wv ? wv.Elem.Repr : wide.Repr;
+                sb.Append(laneOf switch { BoolType => 1, IntType it => it.Bits, _ => _c.SizeAlign(laneOf, pos).Size * 8 });
+                continue;
+            }
             // `{USize}` / `{SSize}`: the target's pointer-width integer type.
             if (key is "USize" or "SSize")
             {
@@ -1599,6 +1637,48 @@ public sealed class FunctionGen
         foreach (var l in lines) Line(l);
         return result is null ? new Val("", VoidType.Instance) : new Val(result, sig.Ret);
     }
+
+    /// The index of the `}` closing the `{` at `open`, counting nested braces; -1 if none.
+    private static int MatchingBrace(string text, int open)
+    {
+        int depth = 0;
+        for (int j = open; j < text.Length; j++)
+        {
+            if (text[j] == '{') depth++;
+            else if (text[j] == '}' && --depth == 0) return j;
+        }
+        return -1;
+    }
+
+    /// Splits on `|` outside nested braces.
+    private static List<string> SplitTopLevel(string text)
+    {
+        var parts = new List<string>();
+        int depth = 0, start = 0;
+        for (int j = 0; j < text.Length; j++)
+        {
+            if (text[j] == '{') depth++;
+            else if (text[j] == '}') depth--;
+            else if (text[j] == '|' && depth == 0)
+            {
+                parts.Add(text[start..j]);
+                start = j + 1;
+            }
+        }
+        parts.Add(text[start..]);
+        return parts;
+    }
+
+    /// An overloaded intrinsic's type suffix.
+    private static string Mangle(DType t) => t.Repr switch
+    {
+        VectorType v => $"v{v.Count}{Mangle(v.Elem)}",
+        FloatType f => f.Llvm switch { "half" => "f16", "bfloat" => "bf16", "float" => "f32", "double" => "f64", var o => o },
+        BoolType => "i1",
+        IntType i => $"i{i.Bits}",
+        PtrType or CallableType => "p0",
+        var o => o.Llvm,
+    };
 
     // ── Terminators ─────────────────────────────────────────────────────────
 
