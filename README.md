@@ -1,4 +1,4 @@
-<img src="assets/logo.svg" width="96" alt="Tessera logo">
+<img src="branding/tessera.svg" width="96" alt="Tessera logo">
 
 # Tessera
 
