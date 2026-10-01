@@ -262,19 +262,37 @@ routine F64.recip(%self: Self) -> Self
         %r : Self = fdiv<Self>(1.0, %self)
         return(%r)
 
-/// self * a + b with a single rounding.
+/// self * a + b with a single rounding: the FMA instruction where the CPU has one (every AArch64, x86 with the
+/// fma feature, as in --cpu x86-64-v3), mul_add_soft elsewhere.
 @target(arch: "aarch64")
 routine F64.mul_add(%self: Self, %a: Self, %b: Self) -> Self
     block entry():
         %r : Self = fma<Self>(%self, %a, %b)
         return(%r)
 
-/// self * a + b with a single rounding.
-///
-/// Without an FMA instruction LLVM calls libm's fma, so this forms the 106-bit product exactly in a U128,
-/// aligns b to it (bits shifted out past the product become a sticky bit), and rounds only the sum.
-@target(arch: !"aarch64")
+@[target(arch: "x86_64"), feature("fma")]
 routine F64.mul_add(%self: Self, %a: Self, %b: Self) -> Self
+    block entry():
+        %r : Self = fma<Self>(%self, %a, %b)
+        return(%r)
+
+@[target(arch: "x86_64"), feature(!"fma")]
+routine F64.mul_add(%self: Self, %a: Self, %b: Self) -> Self
+    block entry():
+        %r : Self = %self.mul_add_soft(%a, %b)
+        return(%r)
+
+@target(arch: !"aarch64", arch: !"x86_64")
+routine F64.mul_add(%self: Self, %a: Self, %b: Self) -> Self
+    block entry():
+        %r : Self = %self.mul_add_soft(%a, %b)
+        return(%r)
+
+/// self * a + b with a single rounding, without an FMA instruction.
+///
+/// Without one LLVM calls libm's fma, so this forms the 106-bit product exactly in a U128,
+/// aligns b to it (bits shifted out past the product become a sticky bit), and rounds only the sum.
+private routine F64.mul_add_soft(%self: Self, %a: Self, %b: Self) -> Self
     block entry():
         %factor_special : Bool = %self.is_finite().bitand(%a.is_finite()).bitnot()
         %addend_special : Bool = %b.is_finite().bitnot()

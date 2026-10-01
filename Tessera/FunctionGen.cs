@@ -115,7 +115,7 @@ public sealed class FunctionGen
                 comdat = " comdat";
             }
         }
-        _out.AppendLine($"define {linkage}{_inst.CcPrefix}{_inst.LlvmRet} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs}{comdat} {{");
+        _out.AppendLine($"define {linkage}{_inst.CcPrefix}{_inst.LlvmRet} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
         foreach (var u in unpack) _out.AppendLine($"  {u}");

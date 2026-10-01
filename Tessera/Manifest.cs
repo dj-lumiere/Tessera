@@ -65,7 +65,7 @@ public sealed record Manifest(
     private static readonly Dictionary<string, HashSet<string>> Keys = new()
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
-        ["target"] = ["executable", "triple", "mode", "sources", "library", "c-libraries", "library-paths", "link-script"],
+        ["target"] = ["executable", "triple", "cpu", "features", "mode", "sources", "library", "c-libraries", "library-paths", "link-script"],
         ["debug"] = ["emit-llvm"],
     };
 
@@ -102,6 +102,10 @@ public sealed record Manifest(
         BuildTarget triple;
         try { triple = Str(target, "triple", path) is { } t ? BuildTarget.Parse(t) : defaultTarget ?? BuildTarget.Host(); }
         catch (ArgumentException e) { throw new ManifestError(path, $"[target] triple: {e.Message}"); }
+        // cpu = "x86-64-v3", features = ["fma", "-avx512f"]: the same as --cpu and --feature.
+        if (Str(target, "cpu", path) is { } cpu) triple = triple with { Cpu = cpu };
+        if (Strs(target, "features", path) is { } features)
+            triple = triple with { Features = features.Select(f => f.Length > 0 && f[0] is '+' or '-' ? f : "+" + f).ToList() };
 
         bool optimize = (Str(target, "mode", path) ?? "debug") switch
         {

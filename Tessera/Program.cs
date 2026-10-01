@@ -9,11 +9,14 @@ static class Cli
         usage:
           tessera build                 build the solution its config.toml describes (here or above)
           tessera run                   build it and run it
-          tessera build <file.tess>... [-o <out>] [--emit-llvm] [--target <arch-os-abi>] [-O]
-          tessera run   <file.tess>... [--target <arch-os-abi>] [-O]
-          tessera test  [--target <arch-os-abi>] <dir-or-file.tess>...
-          tessera check [--target <arch-os-abi>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
+          tessera build <file.tess>... [-o <out>] [--emit-llvm] [<target>] [-O]
+          tessera run   <file.tess>... [<target>] [-O]
+          tessera test  [<target>] <dir-or-file.tess>...
+          tessera check [<target>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
+
+        <target>: --target <arch-os-abi> (default: this machine), --cpu <name> (default: the triple's baseline, such
+                  as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). @feature reads the result.
 
         All input files form one compilation unit. Without files, build and run read config.toml, which sets
         everything the flags would; its output goes to build/ next to it.
@@ -100,6 +103,37 @@ static class Cli
 
     private sealed class ToolError(string message) : Exception(message);
 
+    /// `--target`, `--cpu`, and `--feature`, in any order; Build applies the CPU and features to the triple.
+    private sealed class TargetArgs
+    {
+        private BuildTarget _target = BuildTarget.Host();
+        private string? _cpu;
+        private readonly List<string> _features = [];
+
+        public bool TryTake(string[] args, ref int i)
+        {
+            if (i + 1 >= args.Length) return false;
+            switch (args[i])
+            {
+                case "--target":
+                    try { _target = BuildTarget.Parse(args[++i]); }
+                    catch (ArgumentException e) { throw new ToolError(e.Message); }
+                    return true;
+                case "--cpu":
+                    _cpu = args[++i];
+                    return true;
+                case "--feature":
+                    foreach (var f in args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries))
+                        _features.Add(f[0] is '+' or '-' ? f : "+" + f);
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        public BuildTarget Build() => _target with { Cpu = _cpu, Features = _features };
+    }
+
     private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, bool Optimize);
 
     private static Options ParseOptions(string[] args)
@@ -107,18 +141,15 @@ static class Cli
         var inputs = new List<string>();
         string? output = null;
         bool emit = false, opt = false;
-        var target = BuildTarget.Host();
+        var targetArgs = new TargetArgs();
         for (int i = 0; i < args.Length; i++)
         {
+            if (targetArgs.TryTake(args, ref i)) continue;
             switch (args[i])
             {
                 case "-o" when i + 1 < args.Length: output = args[++i]; break;
                 case "--emit-llvm": emit = true; break;
                 case "-O": opt = true; break;
-                case "--target" when i + 1 < args.Length:
-                    try { target = BuildTarget.Parse(args[++i]); }
-                    catch (ArgumentException e) { throw new ToolError(e.Message); }
-                    break;
                 default:
                     if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
                     inputs.Add(args[i]);
@@ -126,7 +157,7 @@ static class Cli
             }
         }
         if (inputs.Count == 0) throw new ToolError("no input files");
-        return new Options(inputs, output, emit, target, opt);
+        return new Options(inputs, output, emit, targetArgs.Build(), opt);
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -134,18 +165,15 @@ static class Cli
     /// import syntax yet).
     private static int Check(string[] args)
     {
-        var target = BuildTarget.Host();
+        var targetArgs = new TargetArgs();
         var files = new List<string>();
         for (int i = 0; i < args.Length; i++)
         {
-            if (args[i] == "--target" && i + 1 < args.Length)
-            {
-                try { target = BuildTarget.Parse(args[++i]); }
-                catch (ArgumentException e) { throw new ToolError(e.Message); }
-            }
-            else if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
-            else files.Add(args[i]);
+            if (targetArgs.TryTake(args, ref i)) continue;
+            if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
+            files.Add(args[i]);
         }
+        var target = targetArgs.Build();
         var compiler = new Compiler(target, LoadDecls([.. files], target));
         var errors = compiler.CheckAll();
         foreach (var e in errors) Console.Error.WriteLine(e.Message);
@@ -428,17 +456,14 @@ static class Cli
 
     private static int Test(string[] args)
     {
-        var target = BuildTarget.Host();
+        var targetArgs = new TargetArgs();
         var dirs = new List<string>();
         for (int i = 0; i < args.Length; i++)
         {
-            if (args[i] == "--target" && i + 1 < args.Length)
-            {
-                try { target = BuildTarget.Parse(args[++i]); }
-                catch (ArgumentException e) { throw new ToolError(e.Message); }
-            }
-            else dirs.Add(args[i]);
+            if (targetArgs.TryTake(args, ref i)) continue;
+            dirs.Add(args[i]);
         }
+        var target = targetArgs.Build();
         args = [.. dirs];
         if (args.Length == 0) throw new ToolError("test takes one or more directories or .tess files");
         // A test is one file, or a subdirectory whose .tess files are compiled together (several modules); its

@@ -288,9 +288,16 @@ public sealed class ConstArg(long value) : DType
     public override string OwnerName => Name;
 }
 
-/// The build target: a triple `arch-os-abi`, with the pointer width derived from it.
+/// The build target: a triple `arch-os-abi`, with the pointer width derived from it, and optionally a CPU and extra
+/// features (see CpuModel).
 public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, string LlvmTriple)
 {
+    /// `--cpu`: the CPU to generate code for; null keeps the triple's default.
+    public string? Cpu { get; init; }
+
+    /// `--feature`: features to add (`+name`) or remove (`-name`) on top of the CPU's.
+    public IReadOnlyList<string> Features { get; init; } = [];
+
     public static BuildTarget Parse(string triple)
     {
         var parts = triple.Split('-');

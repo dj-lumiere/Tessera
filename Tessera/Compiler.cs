@@ -231,8 +231,12 @@ public sealed partial class Compiler
             }
             else if (a.Name == "feature")
             {
-                // No CPU feature set is configured yet, so every feature is absent.
-                if (a.Args.Any(arg => !arg.Negated)) return false;
+                var cpu = CpuModel.For(Target, a.Pos);
+                foreach (var arg in a.Args)
+                {
+                    if (arg.Key is not null) throw new CompileError(a.Pos, "@feature takes feature names, as in @feature(\"avx2\")");
+                    if (cpu.Has(arg.Value, a.Pos) == arg.Negated) return false;
+                }
             }
         }
         return true;
