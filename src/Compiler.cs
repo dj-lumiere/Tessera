@@ -10,6 +10,11 @@ public sealed partial class Compiler
 {
     public BuildTarget Target { get; }
 
+    /// Whether the standard library's exported routines (the panic handler, the half and bfloat conversions LLVM calls)
+    /// are emitted even when nothing here calls them. A program needs them; a library linked into another language's
+    /// program doesn't, since that program brings its own runtime.
+    public bool EmitLibraryExports { get; init; } = true;
+
     /// The target's USize: lengths, indices, counts, sizeof / alignof, and integer generic arguments.
     public IntType USize => new(Target.Size, IntKind.Unsigned, isSize: true);
 
@@ -254,8 +259,9 @@ public sealed partial class Compiler
         // may call them by their C name. A program's export of the same name replaces the library's, the way a
         // program supplies its own panic handler.
         var programExports = _userRoutines.Select(r => r.Attr("export")?.First).Where(n => n is not null).ToHashSet();
-        foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.Attr("export") is { } e && !programExports.Contains(e.First)))
-            CheckRoot(r);
+        if (EmitLibraryExports)
+            foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.Attr("export") is { } e && !programExports.Contains(e.First)))
+                CheckRoot(r);
         while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
         if (InlineRecursion() is [var recursive, ..]) throw recursive;
         if (VerifyFixedConformances() is [var first, ..]) throw first;

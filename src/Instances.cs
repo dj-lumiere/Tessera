@@ -101,6 +101,14 @@ public sealed partial class Compiler
 
         string symbol;
         if (external is not null) symbol = r.Attr("symbol")?.First ?? r.Name;
+        // `#export("name")` defines the routine under that plain C name: Tessera's own calls use it too, so a caller in
+        // another module and one here reach the same definition, which LLVM can inline (an alias it can't see through).
+        else if (r.Attr("export") is { } export)
+        {
+            symbol = export.First ?? throw new CompileError(export.Pos, "#export needs a symbol name");
+            if (r.TypeParams.Count != 0 || OwnerTypeParams(r).Count != 0)
+                throw new CompileError(export.Pos, $"'{r.DisplayName}' is generic, and one C name can't name every instance");
+        }
         else if (r.Owner is null && r.Name == "main" && r.TypeParams.Count == 0)
         {
             if (ps.Count != 0 || ret is not IntType { Bits: 32, Kind: IntKind.Signed })
@@ -139,7 +147,9 @@ public sealed partial class Compiler
     public Instance RequireInstance(RoutineDecl r, TypeEnv env)
     {
         var sig = Signature(r, env);
-        if (_instances.TryGetValue(sig.Symbol, out var existing))
+        // An #external declaration and an #export definition of one C name are one routine; the definition is the
+        // instance, whichever was reached first, and the declaration is never emitted (see _exported).
+        if (_instances.TryGetValue(sig.Symbol, out var existing) && !(existing.IsExternalC && r.Attr("export") is not null))
         {
             if (existing.Decl != r && !sig.IsExternalC)
                 throw new CompileError(r.Pos, $"'{sig.Symbol}' is defined more than once (also at {existing.Decl.Pos})");
@@ -180,16 +190,9 @@ public sealed partial class Compiler
     private void EmitInstance(Instance inst)
     {
         new FunctionGen(this, inst, _functions).Emit();
-        // `#export("name")` adds a plain C symbol for the routine.
-        if (inst.Decl.Attr("export") is { } export)
-        {
-            string name = export.First ?? throw new CompileError(export.Pos, "#export needs a symbol name");
-            _exported.Add(name);
-            // A stdlib export is a default the program may replace, so its name is weak.
-            string weak = inst.Decl.IsLibrary ? "weak " : "";
-            _functions.AppendLine($"@{Quote(name)} = {weak}alias {AbiRet(inst, withAttrs: false)} ({string.Join(", ", AbiParams(inst, withAttrs: false))}), ptr @{Quote(inst.Symbol)}");
-            _functions.AppendLine();
-        }
+        // An exported routine is defined under its C name (its Symbol), so a declaration of that name elsewhere in the
+        // program is this definition, not a second one.
+        if (inst.Decl.Attr("export") is not null) _exported.Add(inst.Symbol);
     }
 
     public static string Quote(string symbol) =>
