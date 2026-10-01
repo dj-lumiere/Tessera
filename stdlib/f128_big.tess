@@ -13,24 +13,27 @@ import Standard::Format
 /// Bits in an F128Big mantissa.
 preset BIG_BITS: USize = 448
 
+// ln 2 and π/2 as hi + lo, each 448 bits, least significant limb first: ln 2 = hi × 2^-448 + lo × 2^-898,
+// π/2 = hi × 2^-447 + lo × 2^-896 (computed with mpmath at 2000 bits)
+preset BIG_LN2_HI: @Array<U64, 7> <- { 0xED2EAE35C1382144, 0x559552FB4AFA1B10, 0xE7B876206DEBAC98,
+        0x8A0D175B8BAAFA2B, 0x40F343267298B62D, 0xC9E3B39803F2F6AF, 0xB17217F7D1CF79AB }
+
+preset BIG_LN2_LO: @Array<U64, 7> <- { 0xD77E9AF4E0C0C921, 0xCB3A1EC67595232B, 0x95BE83B1D95FDD2D,
+        0xE7AA6F0EC4D980EC, 0x6B2F6844C5F0E1FA, 0xFA5B2858892BA314, 0x9D5CECA445A6E094 }
+
+preset BIG_HALF_PI_HI: @Array<U64, 7> <- { 0x302B0A6DF25F1437, 0xEF9519B3CD3A431B,
+        0x514A08798E3404DD, 0x020BBEA63B139B22, 0x29024E088A67CC74, 0xC4C6628B80DC1CD1,
+        0xC90FDAA22168C234 }
+
+preset BIG_HALF_PI_LO: @Array<U64, 7> <- { 0x9250CCA3D9C8B67B, 0x5D3E4822F8963FCC,
+        0xDC70D7F6B5133F4B, 0x17FEB96DE80D6FDB, 0xE89885D34C6FDAD6, 0xC90B6AECC4BCFD8D,
+        0x9FC26ADADAA3848B }
+
 /// mant × 2^exponent, with mant exactly BIG_BITS bits long (top bit set); zero has an empty mant.
 record F128Big
     negative : Bool
     exponent : S64
     mant     : BigNat<16>
-
-// ln 2 and π/2 as hi + lo, each 448 bits, least significant limb first: ln 2 = hi × 2^-448 + lo × 2^-898,
-// π/2 = hi × 2^-447 + lo × 2^-896 (computed with mpmath at 2000 bits)
-preset BIG_LN2_HI: @Array<U64, 7> <- { 0xED2EAE35C1382144, 0x559552FB4AFA1B10, 0xE7B876206DEBAC98,
-        0x8A0D175B8BAAFA2B, 0x40F343267298B62D, 0xC9E3B39803F2F6AF, 0xB17217F7D1CF79AB }
-preset BIG_LN2_LO: @Array<U64, 7> <- { 0xD77E9AF4E0C0C921, 0xCB3A1EC67595232B, 0x95BE83B1D95FDD2D,
-        0xE7AA6F0EC4D980EC, 0x6B2F6844C5F0E1FA, 0xFA5B2858892BA314, 0x9D5CECA445A6E094 }
-preset BIG_HALF_PI_HI: @Array<U64, 7> <- { 0x302B0A6DF25F1437, 0xEF9519B3CD3A431B,
-        0x514A08798E3404DD, 0x020BBEA63B139B22, 0x29024E088A67CC74, 0xC4C6628B80DC1CD1,
-        0xC90FDAA22168C234 }
-preset BIG_HALF_PI_LO: @Array<U64, 7> <- { 0x9250CCA3D9C8B67B, 0x5D3E4822F8963FCC,
-        0xDC70D7F6B5133F4B, 0x17FEB96DE80D6FDB, 0xE89885D34C6FDAD6, 0xC90B6AECC4BCFD8D,
-        0x9FC26ADADAA3848B }
 
 // -- making one ----------------------------------------------------------------
 
@@ -473,6 +476,11 @@ routine big_ln_1p(%u: F128Big) -> F128Big
 
 // -- sin, cos ------------------------------------------------------------------
 
+/// |x| = k π/2 + θ with k mod 4 and |θ| <= π/4, for a finite nonzero x.
+record BigReduced
+    quadrant : U64
+    theta    : F128Big
+
 /// sin θ = θ Σ (-θ²)^k / (2k+1)! for |θ| <= π/4.
 routine big_sin_core(%t: F128Big) -> F128Big
     block entry():
@@ -501,11 +509,6 @@ routine big_cos_core(%t: F128Big) -> F128Big
         %next : F128Big = %term.mul(%u).div_u64(%j.add(1).mul(%j.add(2)))
         %done : Bool    = big_negligible(%next, %sum)
         branch %done ? return(%sum) : series(%j.add(2), %next, %sum.add(%next), %u)
-
-/// |x| = k π/2 + θ with k mod 4 and |θ| <= π/4, for a finite nonzero x.
-record BigReduced
-    quadrant : U64
-    theta    : F128Big
 
 /// Reduces |x| by π/2 (Payne-Hanek). With |x| = m × 2^(e - 112), the bits of 2/π that land below 4 are a window W
 /// of 14 limbs (896 bits) from limb s on: |x| × 2/π mod 4 = m W × 2^-sh. The bits above sh give the quadrant, the

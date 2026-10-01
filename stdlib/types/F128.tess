@@ -14,10 +14,6 @@
 
 module Standard::Core
 
-#llvm("i128")
-record F128
-conform Equal<F128>, Compare<F128>, Hash<F128>
-
 preset F128_BIAS:      S64  = 16383
 preset F128_EXP_MAX:   S64  = F128_BIAS.mul(2).add(1)  // all-ones exponent
 preset F128_IMPLICIT:  U128 = 0x10000000000000000000000000000  // 2^112
@@ -26,7 +22,6 @@ preset F128_SIGN:      U128 = 0x80000000000000000000000000000000
 preset F128_INF:       U128 = F128_EXP_MAX.to_u128().shl(112)
 preset F128_QNAN:      U128 = F128_INF.bitor(F128_QUIET_BIT)
 preset F128_QUIET_BIT: U128 = F128_IMPLICIT.shr(1)  // 2^111
-
 preset F128.INFINITY:     F128 = F128.from_bits(F128_INF)
 preset F128.NEG_INFINITY: F128 = F128.from_bits(F128_SIGN.bitor(F128_INF))
 preset F128.NAN:          F128 = F128.from_bits(F128_QNAN)
@@ -34,6 +29,10 @@ preset F128.MAX:          F128 = F128.from_bits(F128_INF.sub(1))
 preset F128.MIN:          F128 = F128.from_bits(F128_SIGN.bitor(F128_INF.sub(1)))
 preset F128.MIN_POSITIVE: F128 = F128.from_bits(F128_IMPLICIT)
 preset F128.EPSILON:      F128 = F128.from_bits(0x3F8F0000000000000000000000000000)  // 2^-112
+
+#llvm("i128")
+record F128
+conform Equal<F128>, Compare<F128>, Hash<F128>
 
 // -- bits ----------------------------------------------------------------------
 
@@ -124,6 +123,12 @@ routine F128.copysign(%self: Self, %sign: Self) -> Self
 
 // -- shifting and rounding -----------------------------------------------------
 
+/// A finite, nonzero value as (significand with the implicit bit at 112, unbiased
+/// exponent). Subnormals are normalized, so their exponent drops below -16382.
+record F128Parts
+    sig      : U128
+    exponent : S64
+
 /// value >> n, with every bit shifted out ORed into bit 0 (0 <= n)
 routine f128_shr_sticky(%value: U128, %n: S64) -> U128
     block entry():
@@ -189,12 +194,6 @@ routine f128_round_pack(%negative: Bool, %exponent: S64, %sig: U128) -> U128
         %field    : U128 = %biased.to_u128().shl(112)
         %bits     : U128 = %sign.bitor(%field).bitor(%final.bitand(F128_FRAC_MASK))
         branch %overflow ? return(%sign.bitor(F128_INF)) : return(%bits)
-
-/// A finite, nonzero value as (significand with the implicit bit at 112, unbiased
-/// exponent). Subnormals are normalized, so their exponent drops below -16382.
-record F128Parts
-    sig      : U128
-    exponent : S64
 
 routine f128_unpack(%bits: U128) -> F128Parts
     block entry():
@@ -1001,7 +1000,9 @@ routine f128_fma_bits(%x: U128, %y: U128, %c: U128) -> U128
 
 preset F128.PI:            F128 = F128.from_bits(0x4000921FB54442D18469898CC51701B8)  // pi
 preset F128.TAU:           F128 = F128.from_bits(0x4001921FB54442D18469898CC51701B8)  // 2 pi
+
 preset F128.E:             F128 = F128.from_bits(0x40005BF0A8B1457695355FB8AC404E7A)  // Euler's number
+
 preset F128.FRAC_PI_2:     F128 = F128.from_bits(0x3FFF921FB54442D18469898CC51701B8)  // pi / 2
 preset F128.FRAC_PI_4:     F128 = F128.from_bits(0x3FFE921FB54442D18469898CC51701B8)  // pi / 4
 preset F128.FRAC_1_PI:     F128 = F128.from_bits(0x3FFD45F306DC9C882A53F84EAFA3EA6A)  // 1 / pi
@@ -1011,7 +1012,6 @@ preset F128.LN_2:          F128 = F128.from_bits(0x3FFE62E42FEFA39EF35793C767300
 preset F128.LN_10:         F128 = F128.from_bits(0x400026BB1BBB5551582DD4ADAC5705A6)  // ln(10)
 preset F128.LOG2_E:        F128 = F128.from_bits(0x3FFF71547652B82FE1777D0FFDA0D23A)  // log2(e)
 preset F128.LOG10_E:       F128 = F128.from_bits(0x3FFDBCB7B1526E50E32A6AB7555F5A68)  // log10(e)
-
 preset F128_ONE: U128 = F128_BIAS.to_u128().shl(112)
 
 // -- hashing, reciprocal ------------------------------------------------------
@@ -1278,6 +1278,11 @@ routine F128.in_range(%self: Self, %lo: Self, %end: Self) -> Bool
 
 // -- stepping and scaling ------------------------------------------------------
 
+/// self = fraction × 2^exponent with 0.5 <= |fraction| < 1.
+record F128Frexp
+    fraction : F128
+    exponent : S64
+
 /// The least value above self (IEEE 754 nextUp): the smallest subnormal after
 /// ±0, +inf stays +inf, -tiny steps to -0, and a NaN comes back quieted.
 routine F128.next_up(%self: Self) -> Self
@@ -1340,11 +1345,6 @@ routine F128.logb(%self: Self) -> Self
         %p : F128Parts = f128_unpack(%self.bits())
         %r : Self      = %p.exponent.to_f128()
         return(%r)
-
-/// self = fraction × 2^exponent with 0.5 <= |fraction| < 1.
-record F128Frexp
-    fraction : F128
-    exponent : S64
 
 /// Splits self into a signed fraction with 0.5 <= |fraction| < 1 and a power of
 /// two (C frexp). Zeros and infinities come back whole with exponent 0, a NaN

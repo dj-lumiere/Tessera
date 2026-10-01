@@ -13,314 +13,6 @@
 
 module Standard::Core
 
-/// A fast reduction: x/(2pi) mod 1 ~ k/2^15 + r + 2^-16, with only the low 15 bits of k meaningful.
-record CmF64SinReduced
-    k : U64
-    r : F64
-
-/// An accurate reduction: x/(2pi) mod 1 = k/2^13 + (-1)^neg r/2^128 + eps, |r/2^128| <= 2^-14.
-record CmF64SinAccReduced
-    k   : U64
-    r   : U128
-    neg : U64
-
-/// In radians.
-routine F64.sin(%self: Self) -> Self
-    block entry():
-        %ux : U64 = %self.bits()
-        %au : U64 = %ux.shl(1)
-        // |x| <= 0x1.7137449123ef6p-26: sin(x) rounds like x - x^3/6
-        %tiny : Bool = %au.le(0x7CAE26E892247DEC)
-        branch %tiny ? tiny(%au) : continue
-        %e        : U64  = %ux.shr(52).bitand(0x7FF)
-        %moderate : Bool = %e.lt(1054)
-        %special  : Bool = %e.eq(0x7FF)
-        when:
-            %moderate -> return(cm_f64_sin_moderate(%self, %ux.shr(63)))
-            %special  -> return(%self.sub(%self))
-            else      -> return(cm_f64_sin_large(%self))
-
-    block tiny(%au: U64):
-        %zero : Bool = %au.eq(0)
-        branch %zero ? return(%self) : return(%self.mul_add(-0x1p-54, %self))
-
-/// The high half of a 128 x 128-bit fixed-point product, floor(a b / 2^128) up to the dropped low-times-low
-/// partial product.
-private routine cm_f64_sin_mhuu(%a: U128, %b: U128) -> U128
-    block entry():
-        %ah   : U64  = cm_f64_trig_hi(%a)
-        %al   : U64  = cm_f64_trig_lo(%a)
-        %bh   : U64  = cm_f64_trig_hi(%b)
-        %bl   : U64  = cm_f64_trig_lo(%b)
-        %ahbh : U128 = %ah.mul_wide(%bh)
-        %ahbl : U128 = %ah.mul_wide(%bl)
-        %albh : U128 = %al.mul_wide(%bh)
-        return(%ahbh.add_wrap(%ahbl.shr(64).add_wrap(%albh.shr(64))))
-
-/// (-1)^sbit r/2^128 rounded to F64, for r non-zero and the result not subnormal.
-private routine cm_f64_sin_u128_to_f64(%r: U128, %sbit: U64) -> F64
-    block entry():
-        %sh : U128 = %r.leading_zeros()
-        // the upper 53 non-zero bits and the round bit
-        %h     : U64 = cm_f64_trig_lo(%r.shr(U128.sub_wrap(75, %sh)))
-        %rbit  : U64 = cm_f64_trig_lo(%r.shr(U128.sub_wrap(74, %sh))).bitand(1)
-        %vbits : U64 = %sbit.eq(1) ? 0xBCA0000000000000 : 0x3CA0000000000000
-        // +-2^-53 scaled by 2^-sh
-        %v     : F64 = F64.from_bits(%vbits.sub_wrap(%sh.to_u64().shl(52)))
-        %a     : F64 = %h.to_f64().mul(%v)
-        %scale : F64 = %rbit.eq(1) ? 0x1p-53 : 0x1p-54
-        return(%a.add(%a.mul(%scale)))
-
-/// (xh + xl) + (yh + yl) in double-double, for |xh| >= |yh|.
-private routine cm_f64_sin_fastsum(%xh: F64, %xl: F64, %yh: F64, %yl: F64) -> CmF64TrigDD
-    block entry():
-        %s : CmF64TrigDD = cm_f64_trig_fast_two_sum(%xh, %yh)
-        return(CmF64TrigDD { hi: %s.hi, lo: %xl.add(%yl).add(%s.lo) })
-
-/// (xh + xl) (ch + cl) in double-double.
-private routine cm_f64_sin_muldd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64TrigDD
-    block entry():
-        %ahhh : F64 = %xh.mul(%ch)
-        %lo   : F64 = %xh.mul(%cl).add(%xl.mul(%ch)).add(%xh.mul_add(%ch, %ahhh.neg()))
-        return(CmF64TrigDD { hi: %ahhh, lo: %lo })
-
-/// Word j of the 1/(2pi) table: 1/(2pi) ~ sum of T[j] / 2^(64j).
-private routine cm_f64_sin_t(%j: U64) -> U64
-    block entry():
-        return(CM_F64_SIN_T.get(%j.to_usize()))
-
-/// The fast reduction for |x| >= 2^31: x/(2pi) mod 1 = k/2^15 + r + 2^-16 + s with 0 <= r + 2^-16 < 2^-15 and
-/// 0 <= s < 2^-67.988.
-private routine cm_f64_sin_reduce_large(%x: F64) -> CmF64SinReduced
-    block entry():
-        %ux : U64 = %x.bits()
-        %e  : U64 = %ux.shr(52).bitand(0x7FF)
-        %m  : U64 = U64.shl(1, 52).bitor(%ux.bitand(0x000FFFFFFFFFFFFF))
-        %i  : U64 = %e.sub(1011).div(64)
-        // the table from bit f of word i on (a shift by 64 leaves nothing for f = 0)
-        %f    : U64  = %e.sub(1011).bitand(0x3F)
-        %back : U64  = U64.sub(64, %f)
-        %v0   : U64  = cm_f64_sin_t(%i).shl(%f).bitor(cm_f64_sin_t(%i.add(1)).shr(%back))
-        %v1   : U64  = cm_f64_sin_t(%i.add(1)).shl(%f).bitor(cm_f64_sin_t(%i.add(2)).shr(%back))
-        %u0   : U128 = %m.to_u128().mul_wrap(cm_f64_trig_u128(%v0, %v1))
-        // round r to nearest, where 0x810000000000000 = 2^59 + 2^52
-        %magic : U128 = cm_f64_trig_u128(0x0001000000000000, 0x0810000000000000)
-        %u     : U128 = %u0.add_wrap(%magic)
-        // the next 53 bits of u after the first 15
-        %t : F64 = %u.shl(15).shr(75).to_f64()
-        %r : F64 = %t.mul(0x1p-68).sub(0x1p-16)
-        return(CmF64SinReduced { k: cm_f64_trig_lo(%u.shr(113)), r: %r })
-
-/// Sr with Sr/2^128 ~ sin(2 pi r) for 0 <= r < 2^-14, where u, u2 and u4 are r, r^2 and r^4 in 128-bit fixed
-/// point and u2h = floor(u2 / 2^64).
-private routine cm_f64_sin_eval_ps(%u: U128, %u2: U128, %u2h: U128, %u4: U128) -> U128
-    block entry():
-        // Estrin's scheme: the degree-{1,3} part plus r^4 times the degree-{5,7} part, with alternating signs
-        %ps0 : U128 = cm_f64_trig_u128(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFC396)
-        %ps1 : U128 = cm_f64_trig_u128(0x2AAAAAAAAAAAAAAA, 0xAAAAA9646E8F872E)
-        %ps2 : U128 = cm_f64_trig_u128(0x0222222222222220, 0x467B898367FB1249)
-        %ps3 : U128 = cm_f64_trig_u128(0, 0x000D00D00BFFF5EE)
-        %sh  : U128 = cm_f64_sin_mhuu(%ps2.sub_wrap(%ps3.mul_wrap(%u2h)), %u4)
-        %s   : U128 = %ps0.sub_wrap(cm_f64_sin_mhuu(%ps1, %u2)).add_wrap(%sh)
-        return(cm_f64_sin_mhuu(%s, %u))
-
-/// Cr with Cr/2^128 ~ cos(2 pi r) for 0 <= r < 2^-14, where u2 and u4 are r^2 and r^4 in 128-bit fixed point
-/// and u2h = floor(u2 / 2^64).
-private routine cm_f64_sin_eval_pc(%u2: U128, %u2h: U128, %u4: U128) -> U128
-    block entry():
-        %pc0 : U128 = cm_f64_trig_u128(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF)
-        %pc1 : U128 = cm_f64_trig_u128(0x7FFFFFFFFFFFFFFF, 0xFFFFFFFFFA998BF0)
-        %pc2 : U128 = cm_f64_trig_u128(0x0AAAAAAAAAAAAAAA, 0xAAA2CAECC94962C7)
-        %pc3 : U128 = cm_f64_trig_u128(0x005B05B05B05AC1A, 0x642013BC289028B6)
-        %pc4 : U128 = cm_f64_trig_u128(0, 0x0001A0193D9A550C)
-        %sh0 : U128 = %pc3.sub_wrap(%u2h.mul_wrap(%pc4))
-        %sh  : U128 = %pc2.sub_wrap(cm_f64_sin_mhuu(%sh0, %u2))
-        %s   : U128 = %pc0.sub_wrap(cm_f64_sin_mhuu(%pc1, %u2))
-        return(%s.add_wrap(cm_f64_sin_mhuu(%sh, %u4)))
-
-/// The accurate reduction for |x| >= 2^-16: x/(2pi) mod 1 = k/2^13 + (-1)^neg r/2^128 + eps, with
-/// |r/2^128| <= 2^-14 and 0 <= eps < 2^-127.999.
-private routine cm_f64_sin_reduce_large_acc(%x: F64) -> CmF64SinAccReduced
-    block entry():
-        %ux : U64 = %x.bits()
-        %e  : U64 = %ux.shr(52).bitand(0x7FF)
-        %m  : U64 = U64.shl(1, 52).bitor(%ux.bitand(0x000FFFFFFFFFFFFF))
-        // i = ceil((e - 1074) / 64) - 1, possibly -1 (then the first word is 0)
-        %ip1 : U64 = %e.sub(947).div(64)
-        %f   : U64 = %e.add(64).sub(1011).bitand(0x3F)
-        %w0  : U64 = cm_f64_sin_t(%ip1.max(1).sub(1))
-        %t0  : U64 = %ip1.ge(1) ? %w0 : 0
-        %t1  : U64 = cm_f64_sin_t(%ip1)
-        %t2  : U64 = cm_f64_sin_t(%ip1.add(1))
-        %t3  : U64 = cm_f64_sin_t(%ip1.add(2))
-        // shift the words left by f (a shift by 64 leaves nothing for f = 0)
-        %back : U64  = U64.sub(64, %f)
-        %v0   : U64  = %t0.shl(%f).bitor(%t1.shr(%back))
-        %v1   : U64  = %t1.shl(%f).bitor(%t2.shr(%back))
-        %v2   : U64  = %t2.shl(%f).bitor(%t3.shr(%back))
-        %mm   : U128 = %m.to_u128()
-        %u0   : U128 = %mm.mul_wrap(cm_f64_trig_u128(%v0, %v1))
-        %v    : U128 = %mm.mul_wrap(%v2.to_u128())
-        // add the contribution of m V2 from 2^-76 to 2^-128
-        %u1 : U128 = %u0.add_wrap(%v.shr(64))
-        %k  : U64  = cm_f64_trig_lo(%u1.shr(115))
-        // ignore the leading 13 bits, then round k to nearest to have |r/2^128| < 2^-14
-        %mask : U128 = cm_f64_trig_u128(0x0007FFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF)
-        %u    : U128 = %u1.bitand(%mask)
-        %neg  : U64  = cm_f64_trig_lo(%u.shr(114))
-        %up   : Bool = %neg.ne(0)
-        branch %up
-            ? return(CmF64SinAccReduced { k: %k.add(1).bitand(0x1FFF),
-                    r: %mask.add_wrap(1).sub_wrap(%u), neg: %neg })
-            : return(CmF64SinAccReduced { k: %k, r: %u, neg: %neg })
-
-/// Entry i (0 <= i <= 32) of the sin(pi i/2^6) table, in 128-bit fixed point.
-private routine cm_f64_sin_s1u(%i: U64) -> U128
-    block entry():
-        %k : USize = %i.to_usize().mul(2)
-        return(cm_f64_trig_u128(CM_F64_SIN_S1U.get(%k.add(1)), CM_F64_SIN_S1U.get(%k)))
-
-/// The accurate path in 128-bit fixed point, for finite |x| >= 2^-16.
-private routine cm_f64_sin_large_accurate(%x: F64) -> F64
-    block entry():
-        %red : CmF64SinAccReduced = cm_f64_sin_reduce_large_acc(%x)
-        %k   : U64                = %red.k
-        // twopi/2^128 approximates 2pi/2^3: replace r by 2pi r
-        %twopi : U128 = cm_f64_trig_u128(0xC90FDAA22168C234, 0xC4C6628B80DC1CD1)
-        %r     : U128 = cm_f64_sin_mhuu(%twopi, %red.r.shl(3))
-        %u2    : U128 = cm_f64_sin_mhuu(%r, %r)
-        %u4    : U128 = cm_f64_sin_mhuu(%u2, %u2)
-        %u2h   : U128 = %u2.shr(64)
-        // x/(2pi) mod 1 = k/2^13 + r + eps: with k = 2^12 s + 2^6 i1 + i2, t1 = pi i1/2^6 and t2 = pi i2/2^12,
-        // sin(pi k/2^12) and cos(pi k/2^12) follow from sin/cos of t1 and t2, up to the sign (-1)^s
-        %sbit0 : U64 = %x.gt(0.0) ? 0 : 1
-        %sbit  : U64 = %sbit0.bitxor(%k.shr(12))
-        %i1    : U64 = %k.shr(6).bitand(0x3F)
-        %i2    : U64 = %k.bitand(0x3F)
-        // |sin(t1)| and |cos(t1)| through sin(pi - t) = sin(t) and cos(t) = sin(t + pi/2)
-        %low : Bool  = %i1.le(32)
-        %s1  : U128  = cm_f64_sin_s1u(%low ? %i1 : U64.sub(64, %i1))
-        %c1  : U128  = cm_f64_sin_s1u(%i1.abs_diff(32))
-        %j   : USize = %i2.to_usize().mul(2)
-        %c2  : U128  = cm_f64_trig_u128(CM_F64_SIN_C2U.get(%j.add(1)), CM_F64_SIN_C2U.get(%j))
-        %s2  : U128  = cm_f64_trig_u128(CM_F64_SIN_S2U.get(%j.add(1)), CM_F64_SIN_S2U.get(%j))
-        // sin(t1 + t2) >= 0 for 0 <= t1 + t2 < pi, and cos(t1 + t2)
-        %first : Bool = %i1.lt(32)
-        %sa    : U128 = cm_f64_sin_mhuu(%s1, %c2)
-        %sb    : U128 = cm_f64_sin_mhuu(%c1, %s2)
-        %s1u   : U128 = %first ? %sa.add_wrap(%sb) : %sa.sub_wrap(%sb)
-        %ca    : U128 = cm_f64_sin_mhuu(%c1, %c2)
-        %cb    : U128 = cm_f64_sin_mhuu(%s1, %s2)
-        %c1u   : U128 = %first ? %ca.sub_wrap(%cb) : %ca.add_wrap(%cb)
-        %sr    : U128 = cm_f64_sin_eval_ps(%r, %u2, %u2h, %u4)
-        %cr    : U128 = cm_f64_sin_eval_pc(%u2, %u2h, %u4)
-        // sin(x) ~ sin(z) cos(r) + cos(z) sin(r), where the first term is >= 0
-        %sc     : U128 = cm_f64_sin_mhuu(%s1u, %cr)
-        %cs     : U128 = cm_f64_sin_mhuu(%c1u, %sr)
-        %nonneg : U64  = %first ? 1 : 0
-        %add    : Bool = %nonneg.bitxor(%red.neg).eq(1)
-        %under  : Bool = %sc.lt(%cs)
-        when:
-            %add   -> return(cm_f64_sin_u128_to_f64(%sc.add_wrap(%cs), %sbit))
-            %under -> return(cm_f64_sin_u128_to_f64(%cs.sub_wrap(%sc), %sbit.bitxor(1)))
-            else   -> return(cm_f64_sin_u128_to_f64(%sc.sub_wrap(%cs), %sbit))
-
-/// The accurate path for |x| < 2^-16: x + (c3h + c3l) x^3 + c5 x^5 with relative error below 2^-112.743, in
-/// double-double.
-private routine cm_f64_sin_small_accurate(%x: F64) -> F64
-    block entry():
-        %c3h : F64         = -0x1.5555555555555p-3
-        %c3l : F64         = -0x1.55554b00de7e8p-57
-        %c5  : F64         = 0x1.111111110848p-7
-        %x2h : F64         = %x.mul(%x)
-        %x2l : F64         = %x.mul_add(%x, %x2h.neg())
-        %h   : F64         = %c5.mul(%x2h).add(%c3l)
-        %s   : CmF64TrigDD = cm_f64_trig_fast_two_sum(%c3h, %h)
-        %p0  : CmF64TrigDD = cm_f64_sin_muldd(%s.hi, %s.lo, %x2h, %x2l)
-        %p   : CmF64TrigDD = cm_f64_sin_muldd(%p0.hi, %p0.lo, %x, 0.0)
-        %q   : CmF64TrigDD = cm_f64_trig_fast_two_sum(%x, %p.hi)
-        %l   : F64         = %p.lo.add(%q.lo)
-        return(%q.hi.add(%l))
-
-/// sin of j/2^15 turns (j = 2^7 i1 + i2) plus r, from the tables of sin and cos at i1 pi/2^7 and i2 pi/2^14 and
-/// the polynomial values sh ~ sin(r) and ch ~ cos(r) - 1: (Sh, Sl + Sh ch + Ch sh).
-private routine cm_f64_sin_combine(%i1: U64, %i2: U64, %sh: F64, %ch: F64) -> CmF64TrigDD
-    block entry():
-        %a   : USize       = %i1.to_usize().mul(4)
-        %b   : USize       = %i2.to_usize().mul(4)
-        %s1h : F64         = CM_F64_SIN_U1.get(%a)
-        %s1l : F64         = CM_F64_SIN_U1.get(%a.add(1))
-        %c1h : F64         = CM_F64_SIN_U1.get(%a.add(2))
-        %c1l : F64         = CM_F64_SIN_U1.get(%a.add(3))
-        %s2h : F64         = CM_F64_SIN_U2.get(%b)
-        %s2l : F64         = CM_F64_SIN_U2.get(%b.add(1))
-        %c2h : F64         = CM_F64_SIN_U2.get(%b.add(2))
-        %c2l : F64         = CM_F64_SIN_U2.get(%b.add(3))
-        %p1  : CmF64TrigDD = cm_f64_sin_muldd(%s1h, %s1l, %c2h, %c2l)
-        %p2  : CmF64TrigDD = cm_f64_sin_muldd(%s2h, %s2l, %c1h, %c1l)
-        %s   : CmF64TrigDD = cm_f64_sin_fastsum(%p1.hi, %p1.lo, %p2.hi, %p2.lo)
-        %cc  : F64         = %c1h.mul(%c2h).sub(%s1h.mul(%s2h))
-        return(CmF64TrigDD { hi: %s.hi, lo: %s.lo.add(%s.hi.mul(%ch)).add(%cc.mul(%sh)) })
-
-/// The fast path for 0x1.7137449123ef6p-26 < |x| < 2^31; sbit is the sign bit of x.
-private routine cm_f64_sin_moderate(%x: F64, %sbit: U64) -> F64
-    block entry():
-        %ax : F64 = %x.abs()
-        // |invpi/2^14 - 1/pi| < 2^-55.496
-        %k : F64 = F64.mul(0x1.45f306dc9c883p+12, %ax).round_ties_even()
-        // |2^14 (pih + pil) + pi| < 2^-108.041, and rh is exact
-        %rh : F64 = %k.mul_add(-0x1.921fb54442d18p-13, %ax)
-        %rl : F64 = %k.mul(-0x1.1a62633145c07p-67)
-        %r  : F64 = %rh.add(%rl)
-        %r2 : F64 = %r.mul(%r)
-        %j  : U64 = %k.to_s64().to_u64_wrap()
-        // a reduction by an odd multiple of pi flips the sign
-        %sgn : U64 = %sbit.bitxor(%j.shr(14).bitand(1))
-        %i1  : U64 = %j.shr(7).bitand(0x7F)
-        %i2  : U64 = %j.bitand(0x7F)
-        // r - c3 r^3 approximates sin(r) with absolute error < 2^-76.494, -r^2/2 + c4 r^4 approximates
-        // cos(r) - 1 with absolute error < 2^-92.723, for |r| <= 2^-13.339
-        %sh    : F64         = %r.mul(F64.sub(1.0, F64.mul(0x1.55555553068fp-3, %r2)))
-        %ch    : F64         = %r2.mul(F64.add(-0.5, F64.mul(0x1.55555553bfd3p-5, %r2)))
-        %f     : CmF64TrigDD = cm_f64_sin_combine(%i1, %i2, %sh, %ch)
-        %flip  : Bool        = %sgn.eq(1)
-        %fh    : F64         = %flip ? %f.hi.neg() : %f.hi
-        %fl0   : F64         = %flip ? %f.lo.neg() : %f.lo
-        %fl    : F64         = %fl0.sub(0x1.dep-64)
-        %lb    : F64         = %fh.add(%fl)
-        %ub    : F64         = %fh.add(%fl.add(0x1.dep-63))
-        %done  : Bool        = %ub.eq(%lb)
-        %small : Bool        = %ax.lt(0x1p-16)
-        when:
-            %done  -> return(%lb)
-            %small -> return(cm_f64_sin_small_accurate(%x))
-            else   -> return(cm_f64_sin_large_accurate(%x))
-
-/// The fast path for finite |x| >= 2^31.
-private routine cm_f64_sin_large(%x: F64) -> F64
-    block entry():
-        %red : CmF64SinReduced = cm_f64_sin_reduce_large(%x.abs())
-        %j   : U64             = %red.k
-        %r   : F64             = %red.r
-        // x/(2pi) ~ k + j/2^15 + r with 0 <= r < 2^-15; a reduction by an odd multiple of pi flips the sign
-        %sbit0 : U64         = %x.gt(0.0) ? 0 : 1
-        %r2    : F64         = %r.mul(%r)
-        %sbit  : U64         = %sbit0.bitxor(%j.shr(14))
-        %i1    : U64         = %j.shr(7).bitand(0x7F)
-        %i2    : U64         = %j.bitand(0x7F)
-        %sh    : F64         = %r.mul(F64.sub(0x1.921fb54442d18p+2,
-                F64.mul(0x1.4abbcdb6b26d1p+5, %r2)))
-        %ch    : F64         = %r2.mul(F64.add(-0x1.3bd3cc9be45dep+4,
-                F64.mul(0x1.03c1eee483083p+6, %r2)))
-        %f     : CmF64TrigDD = cm_f64_sin_combine(%i1, %i2, %sh, %ch)
-        %flip  : Bool        = %sbit.eq(1)
-        %fh    : F64         = %flip ? %f.hi.neg() : %f.hi
-        %fl    : F64         = %flip ? %f.lo.neg() : %f.lo
-        %lb    : F64         = %fh.add(%fl.sub(0x1.41p-63))
-        %ub    : F64         = %fh.add(%fl.add(0x1.41p-63))
-        %done  : Bool        = %lb.eq(%ub)
-        branch %done ? return(%lb) : return(cm_f64_sin_large_accurate(%x))
-
 /// 1/(2pi) rounded down to 1280 bits: 1/(2pi) ~ sum of T[j] / 2^(64j), with T[19] zeroed as in the C table.
 preset CM_F64_SIN_T: @Array<U64, 20> <- { 0x0, 0x28be60db9391054a, 0x7f09d5f47d4d3770,
         0x36d8a5664f10e410, 0x7f9458eaf7aef158, 0x6dc91b8e909374b8, 0x1924bba82746487,
@@ -675,3 +367,311 @@ preset CM_F64_SIN_C2U: @Array<U64, 128> <- { 0xffffffffffffffff, 0xfffffffffffff
         0xe0aa07fcb29eef39, 0xffbce8e27ee40754, 0xccfed60a91097c48, 0xffba9dd8dc8b1e83,
         0xe907d9a298ab1feb, 0xffb848f3489ede86, 0xbfdfce09aea7ac02, 0xffb5ea31da2269e5,
         0xbadfe70a1ef51116, 0xffb38194a87a3097 }
+
+/// A fast reduction: x/(2pi) mod 1 ~ k/2^15 + r + 2^-16, with only the low 15 bits of k meaningful.
+record CmF64SinReduced
+    k : U64
+    r : F64
+
+/// An accurate reduction: x/(2pi) mod 1 = k/2^13 + (-1)^neg r/2^128 + eps, |r/2^128| <= 2^-14.
+record CmF64SinAccReduced
+    k   : U64
+    r   : U128
+    neg : U64
+
+/// In radians.
+routine F64.sin(%self: Self) -> Self
+    block entry():
+        %ux : U64 = %self.bits()
+        %au : U64 = %ux.shl(1)
+        // |x| <= 0x1.7137449123ef6p-26: sin(x) rounds like x - x^3/6
+        %tiny : Bool = %au.le(0x7CAE26E892247DEC)
+        branch %tiny ? tiny(%au) : continue
+        %e        : U64  = %ux.shr(52).bitand(0x7FF)
+        %moderate : Bool = %e.lt(1054)
+        %special  : Bool = %e.eq(0x7FF)
+        when:
+            %moderate -> return(cm_f64_sin_moderate(%self, %ux.shr(63)))
+            %special  -> return(%self.sub(%self))
+            else      -> return(cm_f64_sin_large(%self))
+
+    block tiny(%au: U64):
+        %zero : Bool = %au.eq(0)
+        branch %zero ? return(%self) : return(%self.mul_add(-0x1p-54, %self))
+
+/// The high half of a 128 x 128-bit fixed-point product, floor(a b / 2^128) up to the dropped low-times-low
+/// partial product.
+private routine cm_f64_sin_mhuu(%a: U128, %b: U128) -> U128
+    block entry():
+        %ah   : U64  = cm_f64_trig_hi(%a)
+        %al   : U64  = cm_f64_trig_lo(%a)
+        %bh   : U64  = cm_f64_trig_hi(%b)
+        %bl   : U64  = cm_f64_trig_lo(%b)
+        %ahbh : U128 = %ah.mul_wide(%bh)
+        %ahbl : U128 = %ah.mul_wide(%bl)
+        %albh : U128 = %al.mul_wide(%bh)
+        return(%ahbh.add_wrap(%ahbl.shr(64).add_wrap(%albh.shr(64))))
+
+/// (-1)^sbit r/2^128 rounded to F64, for r non-zero and the result not subnormal.
+private routine cm_f64_sin_u128_to_f64(%r: U128, %sbit: U64) -> F64
+    block entry():
+        %sh : U128 = %r.leading_zeros()
+        // the upper 53 non-zero bits and the round bit
+        %h     : U64 = cm_f64_trig_lo(%r.shr(U128.sub_wrap(75, %sh)))
+        %rbit  : U64 = cm_f64_trig_lo(%r.shr(U128.sub_wrap(74, %sh))).bitand(1)
+        %vbits : U64 = %sbit.eq(1) ? 0xBCA0000000000000 : 0x3CA0000000000000
+        // +-2^-53 scaled by 2^-sh
+        %v     : F64 = F64.from_bits(%vbits.sub_wrap(%sh.to_u64().shl(52)))
+        %a     : F64 = %h.to_f64().mul(%v)
+        %scale : F64 = %rbit.eq(1) ? 0x1p-53 : 0x1p-54
+        return(%a.add(%a.mul(%scale)))
+
+/// (xh + xl) + (yh + yl) in double-double, for |xh| >= |yh|.
+private routine cm_f64_sin_fastsum(%xh: F64, %xl: F64, %yh: F64, %yl: F64) -> CmF64TrigDD
+    block entry():
+        %s : CmF64TrigDD = cm_f64_trig_fast_two_sum(%xh, %yh)
+        return(CmF64TrigDD { hi: %s.hi, lo: %xl.add(%yl).add(%s.lo) })
+
+/// (xh + xl) (ch + cl) in double-double.
+private routine cm_f64_sin_muldd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64TrigDD
+    block entry():
+        %ahhh : F64 = %xh.mul(%ch)
+        %lo   : F64 = %xh.mul(%cl).add(%xl.mul(%ch)).add(%xh.mul_add(%ch, %ahhh.neg()))
+        return(CmF64TrigDD { hi: %ahhh, lo: %lo })
+
+/// Word j of the 1/(2pi) table: 1/(2pi) ~ sum of T[j] / 2^(64j).
+private routine cm_f64_sin_t(%j: U64) -> U64
+    block entry():
+        return(CM_F64_SIN_T.get(%j.to_usize()))
+
+/// The fast reduction for |x| >= 2^31: x/(2pi) mod 1 = k/2^15 + r + 2^-16 + s with 0 <= r + 2^-16 < 2^-15 and
+/// 0 <= s < 2^-67.988.
+private routine cm_f64_sin_reduce_large(%x: F64) -> CmF64SinReduced
+    block entry():
+        %ux : U64 = %x.bits()
+        %e  : U64 = %ux.shr(52).bitand(0x7FF)
+        %m  : U64 = U64.shl(1, 52).bitor(%ux.bitand(0x000FFFFFFFFFFFFF))
+        %i  : U64 = %e.sub(1011).div(64)
+        // the table from bit f of word i on (a shift by 64 leaves nothing for f = 0)
+        %f    : U64  = %e.sub(1011).bitand(0x3F)
+        %back : U64  = U64.sub(64, %f)
+        %v0   : U64  = cm_f64_sin_t(%i).shl(%f).bitor(cm_f64_sin_t(%i.add(1)).shr(%back))
+        %v1   : U64  = cm_f64_sin_t(%i.add(1)).shl(%f).bitor(cm_f64_sin_t(%i.add(2)).shr(%back))
+        %u0   : U128 = %m.to_u128().mul_wrap(cm_f64_trig_u128(%v0, %v1))
+        // round r to nearest, where 0x810000000000000 = 2^59 + 2^52
+        %magic : U128 = cm_f64_trig_u128(0x0001000000000000, 0x0810000000000000)
+        %u     : U128 = %u0.add_wrap(%magic)
+        // the next 53 bits of u after the first 15
+        %t : F64 = %u.shl(15).shr(75).to_f64()
+        %r : F64 = %t.mul(0x1p-68).sub(0x1p-16)
+        return(CmF64SinReduced { k: cm_f64_trig_lo(%u.shr(113)), r: %r })
+
+/// Sr with Sr/2^128 ~ sin(2 pi r) for 0 <= r < 2^-14, where u, u2 and u4 are r, r^2 and r^4 in 128-bit fixed
+/// point and u2h = floor(u2 / 2^64).
+private routine cm_f64_sin_eval_ps(%u: U128, %u2: U128, %u2h: U128, %u4: U128) -> U128
+    block entry():
+        // Estrin's scheme: the degree-{1,3} part plus r^4 times the degree-{5,7} part, with alternating signs
+        %ps0 : U128 = cm_f64_trig_u128(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFC396)
+        %ps1 : U128 = cm_f64_trig_u128(0x2AAAAAAAAAAAAAAA, 0xAAAAA9646E8F872E)
+        %ps2 : U128 = cm_f64_trig_u128(0x0222222222222220, 0x467B898367FB1249)
+        %ps3 : U128 = cm_f64_trig_u128(0, 0x000D00D00BFFF5EE)
+        %sh  : U128 = cm_f64_sin_mhuu(%ps2.sub_wrap(%ps3.mul_wrap(%u2h)), %u4)
+        %s   : U128 = %ps0.sub_wrap(cm_f64_sin_mhuu(%ps1, %u2)).add_wrap(%sh)
+        return(cm_f64_sin_mhuu(%s, %u))
+
+/// Cr with Cr/2^128 ~ cos(2 pi r) for 0 <= r < 2^-14, where u2 and u4 are r^2 and r^4 in 128-bit fixed point
+/// and u2h = floor(u2 / 2^64).
+private routine cm_f64_sin_eval_pc(%u2: U128, %u2h: U128, %u4: U128) -> U128
+    block entry():
+        %pc0 : U128 = cm_f64_trig_u128(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF)
+        %pc1 : U128 = cm_f64_trig_u128(0x7FFFFFFFFFFFFFFF, 0xFFFFFFFFFA998BF0)
+        %pc2 : U128 = cm_f64_trig_u128(0x0AAAAAAAAAAAAAAA, 0xAAA2CAECC94962C7)
+        %pc3 : U128 = cm_f64_trig_u128(0x005B05B05B05AC1A, 0x642013BC289028B6)
+        %pc4 : U128 = cm_f64_trig_u128(0, 0x0001A0193D9A550C)
+        %sh0 : U128 = %pc3.sub_wrap(%u2h.mul_wrap(%pc4))
+        %sh  : U128 = %pc2.sub_wrap(cm_f64_sin_mhuu(%sh0, %u2))
+        %s   : U128 = %pc0.sub_wrap(cm_f64_sin_mhuu(%pc1, %u2))
+        return(%s.add_wrap(cm_f64_sin_mhuu(%sh, %u4)))
+
+/// The accurate reduction for |x| >= 2^-16: x/(2pi) mod 1 = k/2^13 + (-1)^neg r/2^128 + eps, with
+/// |r/2^128| <= 2^-14 and 0 <= eps < 2^-127.999.
+private routine cm_f64_sin_reduce_large_acc(%x: F64) -> CmF64SinAccReduced
+    block entry():
+        %ux : U64 = %x.bits()
+        %e  : U64 = %ux.shr(52).bitand(0x7FF)
+        %m  : U64 = U64.shl(1, 52).bitor(%ux.bitand(0x000FFFFFFFFFFFFF))
+        // i = ceil((e - 1074) / 64) - 1, possibly -1 (then the first word is 0)
+        %ip1 : U64 = %e.sub(947).div(64)
+        %f   : U64 = %e.add(64).sub(1011).bitand(0x3F)
+        %w0  : U64 = cm_f64_sin_t(%ip1.max(1).sub(1))
+        %t0  : U64 = %ip1.ge(1) ? %w0 : 0
+        %t1  : U64 = cm_f64_sin_t(%ip1)
+        %t2  : U64 = cm_f64_sin_t(%ip1.add(1))
+        %t3  : U64 = cm_f64_sin_t(%ip1.add(2))
+        // shift the words left by f (a shift by 64 leaves nothing for f = 0)
+        %back : U64  = U64.sub(64, %f)
+        %v0   : U64  = %t0.shl(%f).bitor(%t1.shr(%back))
+        %v1   : U64  = %t1.shl(%f).bitor(%t2.shr(%back))
+        %v2   : U64  = %t2.shl(%f).bitor(%t3.shr(%back))
+        %mm   : U128 = %m.to_u128()
+        %u0   : U128 = %mm.mul_wrap(cm_f64_trig_u128(%v0, %v1))
+        %v    : U128 = %mm.mul_wrap(%v2.to_u128())
+        // add the contribution of m V2 from 2^-76 to 2^-128
+        %u1 : U128 = %u0.add_wrap(%v.shr(64))
+        %k  : U64  = cm_f64_trig_lo(%u1.shr(115))
+        // ignore the leading 13 bits, then round k to nearest to have |r/2^128| < 2^-14
+        %mask : U128 = cm_f64_trig_u128(0x0007FFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF)
+        %u    : U128 = %u1.bitand(%mask)
+        %neg  : U64  = cm_f64_trig_lo(%u.shr(114))
+        %up   : Bool = %neg.ne(0)
+        branch %up
+            ? return(CmF64SinAccReduced { k: %k.add(1).bitand(0x1FFF),
+                    r: %mask.add_wrap(1).sub_wrap(%u), neg: %neg })
+            : return(CmF64SinAccReduced { k: %k, r: %u, neg: %neg })
+
+/// Entry i (0 <= i <= 32) of the sin(pi i/2^6) table, in 128-bit fixed point.
+private routine cm_f64_sin_s1u(%i: U64) -> U128
+    block entry():
+        %k : USize = %i.to_usize().mul(2)
+        return(cm_f64_trig_u128(CM_F64_SIN_S1U.get(%k.add(1)), CM_F64_SIN_S1U.get(%k)))
+
+/// The accurate path in 128-bit fixed point, for finite |x| >= 2^-16.
+private routine cm_f64_sin_large_accurate(%x: F64) -> F64
+    block entry():
+        %red : CmF64SinAccReduced = cm_f64_sin_reduce_large_acc(%x)
+        %k   : U64                = %red.k
+        // twopi/2^128 approximates 2pi/2^3: replace r by 2pi r
+        %twopi : U128 = cm_f64_trig_u128(0xC90FDAA22168C234, 0xC4C6628B80DC1CD1)
+        %r     : U128 = cm_f64_sin_mhuu(%twopi, %red.r.shl(3))
+        %u2    : U128 = cm_f64_sin_mhuu(%r, %r)
+        %u4    : U128 = cm_f64_sin_mhuu(%u2, %u2)
+        %u2h   : U128 = %u2.shr(64)
+        // x/(2pi) mod 1 = k/2^13 + r + eps: with k = 2^12 s + 2^6 i1 + i2, t1 = pi i1/2^6 and t2 = pi i2/2^12,
+        // sin(pi k/2^12) and cos(pi k/2^12) follow from sin/cos of t1 and t2, up to the sign (-1)^s
+        %sbit0 : U64 = %x.gt(0.0) ? 0 : 1
+        %sbit  : U64 = %sbit0.bitxor(%k.shr(12))
+        %i1    : U64 = %k.shr(6).bitand(0x3F)
+        %i2    : U64 = %k.bitand(0x3F)
+        // |sin(t1)| and |cos(t1)| through sin(pi - t) = sin(t) and cos(t) = sin(t + pi/2)
+        %low : Bool  = %i1.le(32)
+        %s1  : U128  = cm_f64_sin_s1u(%low ? %i1 : U64.sub(64, %i1))
+        %c1  : U128  = cm_f64_sin_s1u(%i1.abs_diff(32))
+        %j   : USize = %i2.to_usize().mul(2)
+        %c2  : U128  = cm_f64_trig_u128(CM_F64_SIN_C2U.get(%j.add(1)), CM_F64_SIN_C2U.get(%j))
+        %s2  : U128  = cm_f64_trig_u128(CM_F64_SIN_S2U.get(%j.add(1)), CM_F64_SIN_S2U.get(%j))
+        // sin(t1 + t2) >= 0 for 0 <= t1 + t2 < pi, and cos(t1 + t2)
+        %first : Bool = %i1.lt(32)
+        %sa    : U128 = cm_f64_sin_mhuu(%s1, %c2)
+        %sb    : U128 = cm_f64_sin_mhuu(%c1, %s2)
+        %s1u   : U128 = %first ? %sa.add_wrap(%sb) : %sa.sub_wrap(%sb)
+        %ca    : U128 = cm_f64_sin_mhuu(%c1, %c2)
+        %cb    : U128 = cm_f64_sin_mhuu(%s1, %s2)
+        %c1u   : U128 = %first ? %ca.sub_wrap(%cb) : %ca.add_wrap(%cb)
+        %sr    : U128 = cm_f64_sin_eval_ps(%r, %u2, %u2h, %u4)
+        %cr    : U128 = cm_f64_sin_eval_pc(%u2, %u2h, %u4)
+        // sin(x) ~ sin(z) cos(r) + cos(z) sin(r), where the first term is >= 0
+        %sc     : U128 = cm_f64_sin_mhuu(%s1u, %cr)
+        %cs     : U128 = cm_f64_sin_mhuu(%c1u, %sr)
+        %nonneg : U64  = %first ? 1 : 0
+        %add    : Bool = %nonneg.bitxor(%red.neg).eq(1)
+        %under  : Bool = %sc.lt(%cs)
+        when:
+            %add   -> return(cm_f64_sin_u128_to_f64(%sc.add_wrap(%cs), %sbit))
+            %under -> return(cm_f64_sin_u128_to_f64(%cs.sub_wrap(%sc), %sbit.bitxor(1)))
+            else   -> return(cm_f64_sin_u128_to_f64(%sc.sub_wrap(%cs), %sbit))
+
+/// The accurate path for |x| < 2^-16: x + (c3h + c3l) x^3 + c5 x^5 with relative error below 2^-112.743, in
+/// double-double.
+private routine cm_f64_sin_small_accurate(%x: F64) -> F64
+    block entry():
+        %c3h : F64         = -0x1.5555555555555p-3
+        %c3l : F64         = -0x1.55554b00de7e8p-57
+        %c5  : F64         = 0x1.111111110848p-7
+        %x2h : F64         = %x.mul(%x)
+        %x2l : F64         = %x.mul_add(%x, %x2h.neg())
+        %h   : F64         = %c5.mul(%x2h).add(%c3l)
+        %s   : CmF64TrigDD = cm_f64_trig_fast_two_sum(%c3h, %h)
+        %p0  : CmF64TrigDD = cm_f64_sin_muldd(%s.hi, %s.lo, %x2h, %x2l)
+        %p   : CmF64TrigDD = cm_f64_sin_muldd(%p0.hi, %p0.lo, %x, 0.0)
+        %q   : CmF64TrigDD = cm_f64_trig_fast_two_sum(%x, %p.hi)
+        %l   : F64         = %p.lo.add(%q.lo)
+        return(%q.hi.add(%l))
+
+/// sin of j/2^15 turns (j = 2^7 i1 + i2) plus r, from the tables of sin and cos at i1 pi/2^7 and i2 pi/2^14 and
+/// the polynomial values sh ~ sin(r) and ch ~ cos(r) - 1: (Sh, Sl + Sh ch + Ch sh).
+private routine cm_f64_sin_combine(%i1: U64, %i2: U64, %sh: F64, %ch: F64) -> CmF64TrigDD
+    block entry():
+        %a   : USize       = %i1.to_usize().mul(4)
+        %b   : USize       = %i2.to_usize().mul(4)
+        %s1h : F64         = CM_F64_SIN_U1.get(%a)
+        %s1l : F64         = CM_F64_SIN_U1.get(%a.add(1))
+        %c1h : F64         = CM_F64_SIN_U1.get(%a.add(2))
+        %c1l : F64         = CM_F64_SIN_U1.get(%a.add(3))
+        %s2h : F64         = CM_F64_SIN_U2.get(%b)
+        %s2l : F64         = CM_F64_SIN_U2.get(%b.add(1))
+        %c2h : F64         = CM_F64_SIN_U2.get(%b.add(2))
+        %c2l : F64         = CM_F64_SIN_U2.get(%b.add(3))
+        %p1  : CmF64TrigDD = cm_f64_sin_muldd(%s1h, %s1l, %c2h, %c2l)
+        %p2  : CmF64TrigDD = cm_f64_sin_muldd(%s2h, %s2l, %c1h, %c1l)
+        %s   : CmF64TrigDD = cm_f64_sin_fastsum(%p1.hi, %p1.lo, %p2.hi, %p2.lo)
+        %cc  : F64         = %c1h.mul(%c2h).sub(%s1h.mul(%s2h))
+        return(CmF64TrigDD { hi: %s.hi, lo: %s.lo.add(%s.hi.mul(%ch)).add(%cc.mul(%sh)) })
+
+/// The fast path for 0x1.7137449123ef6p-26 < |x| < 2^31; sbit is the sign bit of x.
+private routine cm_f64_sin_moderate(%x: F64, %sbit: U64) -> F64
+    block entry():
+        %ax : F64 = %x.abs()
+        // |invpi/2^14 - 1/pi| < 2^-55.496
+        %k : F64 = F64.mul(0x1.45f306dc9c883p+12, %ax).round_ties_even()
+        // |2^14 (pih + pil) + pi| < 2^-108.041, and rh is exact
+        %rh : F64 = %k.mul_add(-0x1.921fb54442d18p-13, %ax)
+        %rl : F64 = %k.mul(-0x1.1a62633145c07p-67)
+        %r  : F64 = %rh.add(%rl)
+        %r2 : F64 = %r.mul(%r)
+        %j  : U64 = %k.to_s64().to_u64_wrap()
+        // a reduction by an odd multiple of pi flips the sign
+        %sgn : U64 = %sbit.bitxor(%j.shr(14).bitand(1))
+        %i1  : U64 = %j.shr(7).bitand(0x7F)
+        %i2  : U64 = %j.bitand(0x7F)
+        // r - c3 r^3 approximates sin(r) with absolute error < 2^-76.494, -r^2/2 + c4 r^4 approximates
+        // cos(r) - 1 with absolute error < 2^-92.723, for |r| <= 2^-13.339
+        %sh    : F64         = %r.mul(F64.sub(1.0, F64.mul(0x1.55555553068fp-3, %r2)))
+        %ch    : F64         = %r2.mul(F64.add(-0.5, F64.mul(0x1.55555553bfd3p-5, %r2)))
+        %f     : CmF64TrigDD = cm_f64_sin_combine(%i1, %i2, %sh, %ch)
+        %flip  : Bool        = %sgn.eq(1)
+        %fh    : F64         = %flip ? %f.hi.neg() : %f.hi
+        %fl0   : F64         = %flip ? %f.lo.neg() : %f.lo
+        %fl    : F64         = %fl0.sub(0x1.dep-64)
+        %lb    : F64         = %fh.add(%fl)
+        %ub    : F64         = %fh.add(%fl.add(0x1.dep-63))
+        %done  : Bool        = %ub.eq(%lb)
+        %small : Bool        = %ax.lt(0x1p-16)
+        when:
+            %done  -> return(%lb)
+            %small -> return(cm_f64_sin_small_accurate(%x))
+            else   -> return(cm_f64_sin_large_accurate(%x))
+
+/// The fast path for finite |x| >= 2^31.
+private routine cm_f64_sin_large(%x: F64) -> F64
+    block entry():
+        %red : CmF64SinReduced = cm_f64_sin_reduce_large(%x.abs())
+        %j   : U64             = %red.k
+        %r   : F64             = %red.r
+        // x/(2pi) ~ k + j/2^15 + r with 0 <= r < 2^-15; a reduction by an odd multiple of pi flips the sign
+        %sbit0 : U64         = %x.gt(0.0) ? 0 : 1
+        %r2    : F64         = %r.mul(%r)
+        %sbit  : U64         = %sbit0.bitxor(%j.shr(14))
+        %i1    : U64         = %j.shr(7).bitand(0x7F)
+        %i2    : U64         = %j.bitand(0x7F)
+        %sh    : F64         = %r.mul(F64.sub(0x1.921fb54442d18p+2,
+                F64.mul(0x1.4abbcdb6b26d1p+5, %r2)))
+        %ch    : F64         = %r2.mul(F64.add(-0x1.3bd3cc9be45dep+4,
+                F64.mul(0x1.03c1eee483083p+6, %r2)))
+        %f     : CmF64TrigDD = cm_f64_sin_combine(%i1, %i2, %sh, %ch)
+        %flip  : Bool        = %sbit.eq(1)
+        %fh    : F64         = %flip ? %f.hi.neg() : %f.hi
+        %fl    : F64         = %flip ? %f.lo.neg() : %f.lo
+        %lb    : F64         = %fh.add(%fl.sub(0x1.41p-63))
+        %ub    : F64         = %fh.add(%fl.add(0x1.41p-63))
+        %done  : Bool        = %lb.eq(%ub)
+        branch %done ? return(%lb) : return(cm_f64_sin_large_accurate(%x))

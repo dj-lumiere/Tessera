@@ -11,46 +11,6 @@
 
 module Standard::Core
 
-/// tanh(self), correctly rounded.
-routine F16.tanh(%self: Self) -> Self
-    block entry():
-        %u        : U16  = %self.bits()
-        %au       : U16  = %u.bitand(0x7FFF)
-        %positive : Bool = %au.eq(%u)
-        when:
-            %au.ge(0x4482) -> saturate(%au,
-                    %positive)  // |x| >= 0x1.208p+2: tanh(x) rounds to sign(x)
-            %au.le(0x2744) -> tiny(%au)  // |x| <= 0x1.d1p-6: tanh(x) rounds to x
-            %u.eq(0xBFD5)  -> return(F32.to_f16(-0x1.ec002p-1))  // the one case the tables can't absorb
-            else           -> split(%u)
-
-    block saturate(%au: U16, %positive: Bool):
-        %near_one : F32  = 0x1.fffff2p-1
-        %signed   : F32  = %positive ? %near_one : %near_one.neg()
-        %one      : Self = %positive ? 1.0 : -1.0
-        when:
-            %au.gt(0x7C00) -> return(%self.sub(%self))  // NaN
-            %au.eq(0x7C00) -> return(%one)
-            else           -> return(%signed.to_f16())
-
-    block tiny(%au: U16):
-        %zero : Bool = %au.eq(0)
-        branch %zero ? return(%self) : continue
-        %t : F32 = %self.to_f32()
-        return(%t.mul_add(-0x1p-12, %t).to_f16())
-
-    // tanh = sinh(x1 + x2) / cosh(x1 + x2)
-    block split(%u: U16):
-        %i1 : USize = %u.shr(5).to_usize()
-        %i2 : USize = %u.shr(10).shl(5).bitor(%u.bitand(0x1F)).to_usize()
-        %s1 : F32   = F32.from_bits(CM_F16_TANH_S1.get(%i1))
-        %c1 : F32   = F32.from_bits(CM_F16_HYP_C1.get(%i1))
-        %s2 : F32   = F32.from_bits(CM_F16_HYP_S2.get(%i2))
-        %c2 : F32   = F32.from_bits(CM_F16_HYP_C2.get(%i2))
-        %s  : F32   = %s1.mul_add(%c2, %c1.mul(%s2))
-        %c  : F32   = %c1.mul_add(%c2, %s1.mul(%s2))
-        return(%s.div(%c).to_f16())
-
 /// sinh(x1) for tanh, indexed by i1 (entries edited upstream to avoid rounding exceptions).
 preset CM_F16_TANH_S1: @Array<U32, 2048> <- { 0x00000000, 0x36000001, 0x36800001, 0x36C00001,
         0x37000001, 0x37200001, 0x37400001, 0x37600001, 0x37800001, 0x37900001, 0x37A00001,
@@ -345,3 +305,43 @@ preset CM_F16_TANH_S1: @Array<U32, 2048> <- { 0x00000000, 0x36000001, 0x36800001
         0x7F800001, 0x7F800001, 0x7F800001, 0x7F800001, 0x7F800001, 0x7FC00000, 0x7FC00000,
         0x7FC00000, 0x7FC00000, 0x7FC00000, 0x7FC00000, 0x7FC00000, 0x7FC00000, 0x7FC00000,
         0x7FC00000, 0x7FC00000, 0x7FC00000, 0x7FC00000, 0x7FC00000, 0x7FC00000, 0x7FC00000 }
+
+/// tanh(self), correctly rounded.
+routine F16.tanh(%self: Self) -> Self
+    block entry():
+        %u        : U16  = %self.bits()
+        %au       : U16  = %u.bitand(0x7FFF)
+        %positive : Bool = %au.eq(%u)
+        when:
+            %au.ge(0x4482) -> saturate(%au,
+                    %positive)  // |x| >= 0x1.208p+2: tanh(x) rounds to sign(x)
+            %au.le(0x2744) -> tiny(%au)  // |x| <= 0x1.d1p-6: tanh(x) rounds to x
+            %u.eq(0xBFD5)  -> return(F32.to_f16(-0x1.ec002p-1))  // the one case the tables can't absorb
+            else           -> split(%u)
+
+    block saturate(%au: U16, %positive: Bool):
+        %near_one : F32  = 0x1.fffff2p-1
+        %signed   : F32  = %positive ? %near_one : %near_one.neg()
+        %one      : Self = %positive ? 1.0 : -1.0
+        when:
+            %au.gt(0x7C00) -> return(%self.sub(%self))  // NaN
+            %au.eq(0x7C00) -> return(%one)
+            else           -> return(%signed.to_f16())
+
+    block tiny(%au: U16):
+        %zero : Bool = %au.eq(0)
+        branch %zero ? return(%self) : continue
+        %t : F32 = %self.to_f32()
+        return(%t.mul_add(-0x1p-12, %t).to_f16())
+
+    // tanh = sinh(x1 + x2) / cosh(x1 + x2)
+    block split(%u: U16):
+        %i1 : USize = %u.shr(5).to_usize()
+        %i2 : USize = %u.shr(10).shl(5).bitor(%u.bitand(0x1F)).to_usize()
+        %s1 : F32   = F32.from_bits(CM_F16_TANH_S1.get(%i1))
+        %c1 : F32   = F32.from_bits(CM_F16_HYP_C1.get(%i1))
+        %s2 : F32   = F32.from_bits(CM_F16_HYP_S2.get(%i2))
+        %c2 : F32   = F32.from_bits(CM_F16_HYP_C2.get(%i2))
+        %s  : F32   = %s1.mul_add(%c2, %c1.mul(%s2))
+        %c  : F32   = %c1.mul_add(%c2, %s1.mul(%s2))
+        return(%s.div(%c).to_f16())

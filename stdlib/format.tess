@@ -6,9 +6,7 @@
 // and file descriptors need an operating system, so they're in Standard::Os
 // (os/writers.tess):
 //
-//     %out_val: FdWriter = FdWriter.stdout()
-//     claim %out : @FdWriter
-//     %out.store(%out_val)
+//     claim %out : @FdWriter <- FdWriter.stdout()
 //     write_str(%out, "x = ")
 //     %x.represent(%out)
 //     write_line(%out)
@@ -195,6 +193,10 @@ require W: typename, Writer<W>
 
 // -- integer digits ------------------------------------------------------------
 
+preset TEN_POW_19: U128 = 10000000000000000000
+preset TWO_POW_64: U128 = U64.MAX.to_u128().add(1)
+preset TEN_POW_19_WIDE: U256 = TEN_POW_19.to_u256()
+
 /// %value in decimal, zero-padded to at least %min_digits digits (at most 20).
 routine write_decimal_u64<W>(%out: @W, %value: U64, %min_digits: USize) -> Void
 require W: typename, Writer<W>
@@ -264,9 +266,6 @@ require W: typename, Writer<W>
         %out.write_bytes(%first, 16.sub(%start))
         return()
 
-preset TEN_POW_19: U128 = 10000000000000000000
-preset TWO_POW_64: U128 = U64.MAX.to_u128().add(1)
-
 /// 128-bit values go out in 19-digit chunks, so only the chunking divides U128.
 routine write_decimal_u128<W>(%out: @W, %value: U128, %min_digits: USize) -> Void
 require W: typename, Writer<W>
@@ -317,8 +316,6 @@ require W: typename, Writer<W>
         write_hex_u64(%out, %high, 0)
         write_hex_u64(%out, %low, 16)
         return()
-
-preset TEN_POW_19_WIDE: U256 = TEN_POW_19.to_u256()
 
 /// 256-bit values go out in 19-digit chunks too, until the rest fits in 128 bits.
 routine write_decimal_u256<W>(%out: @W, %value: U256, %min_digits: USize) -> Void
@@ -1233,19 +1230,19 @@ require T: typename
 conform Represent<Hex<T>>
     value : T
 
-routine Hex<T>.represent<W>(%self: Self, %out: @W) -> Void
-require T: typename, W: typename, Writer<W>
-    block entry():
-        %value : T = %self.value
-        %value.represent_hex(%out)
-        return()
-
 /// A float with a fixed number of digits after the point (represent_fixed).
 record Fixed<T>
 require T: typename
 conform Represent<Fixed<T>>
     value  : T
     digits : USize
+
+routine Hex<T>.represent<W>(%self: Self, %out: @W) -> Void
+require T: typename, W: typename, Writer<W>
+    block entry():
+        %value : T = %self.value
+        %value.represent_hex(%out)
+        return()
 
 routine Fixed<T>.represent<W>(%self: Self, %out: @W) -> Void
 require T: typename, W: typename, Writer<W>
@@ -1273,6 +1270,15 @@ record FormatSpec
     width : USize
     fill  : Bytes
     align : Align
+
+/// Passes writes on to %inner, putting %pad copies of %fill before the first
+/// byte, or after it when it is - or +.
+record SignPadWriter<W>
+require W: typename
+conform Writer<SignPadWriter<W>>
+    inner : @W
+    fill  : Bytes
+    pad   : USize
 
 /// Right-aligned to %width, padded with spaces.
 routine FormatSpec.construct(%width: USize) -> Self
@@ -1337,15 +1343,6 @@ require T: typename, W: typename, Writer<W>, Represent<T>
         claim %inner : @SignPadWriter<W> <- SignPadWriter<W> { inner: %out, fill: %fill, pad: %pad}
         %value.represent(%inner)
         return()
-
-/// Passes writes on to %inner, putting %pad copies of %fill before the first
-/// byte, or after it when it is - or +.
-record SignPadWriter<W>
-require W: typename
-conform Writer<SignPadWriter<W>>
-    inner : @W
-    fill  : Bytes
-    pad   : USize
 
 routine SignPadWriter<W>.write_bytes(%self: @Self, %bytes: @Byte, %length: USize) -> Void
 require W: typename, Writer<W>

@@ -19,6 +19,10 @@ namespace Tessera;
 ///   (`routine Ptr<T>.load`); comments and literals are left alone;
 /// - parentheses around one value, which group nothing in a language without operators, are dropped: `(%x).add(1)` is
 ///   `%x.add(1)`; a call's arguments, a tuple type, and `(a, b)` (an error the builder reports) stay;
+/// - top-level declarations come in one order: module, imports (sorted), defines, globals, presets, types (records,
+///   choices, variants), concepts, standalone conformances, routines, and `main` last. Within a kind the written order
+///   stays, a declaration keeps the comments and attributes above it, and a file divided by section comments is
+///   ordered section by section. A file already in order is left as it is;
 /// - inside `routine Owner.name`, the owner type is written `Self` after the header names it (`List<T>` in a
 ///   `List<T>` routine, not `List<U>`); comments and literals are left alone.
 /// Formatting is idempotent: formatting formatted text changes nothing.
@@ -30,6 +34,7 @@ public static class Formatter
         lines = lines.Select(UseAt).ToList();
         lines = UseSelf(lines);
         lines = JoinContinuations(lines);
+        lines = OrderDeclarations(lines);
         lines = lines.Select(DropGroupingParens).ToList();
         lines = Align(lines);
         lines = Space(lines);
@@ -583,6 +588,151 @@ public static class Formatter
             }
             result.Add(joined.ToString());
             i = end;
+        }
+        return result;
+    }
+
+    // ── Declaration order ───────────────────────────────────────────────
+
+    private enum DeclKind { Module, Import, Define, Global, Preset, Type, Concept, Conform, Routine, Main }
+
+    /// One top-level declaration with the comments and attributes above it, or a section divider (Kind null).
+    private sealed record DeclChunk(DeclKind? Kind, List<string> Lines, int Index)
+    {
+        /// Every line is top-level and fits on one line: a one-line declaration with its comments, not one with a body
+        /// or a list long enough to be wrapped later.
+        public bool Compact => Kind is not null && Lines.All(l => l.Length > 0 && l[0] != ' ' && l.Length <= MaxWidth);
+    }
+
+    /// The kind a top-level line declares, or null if it starts no declaration.
+    private static DeclKind? DeclKindOf(string line)
+    {
+        if (line.Length == 0 || line[0] == ' ') return null;
+        string s = line.StartsWith("private ") ? line[8..] : line.StartsWith("internal ") ? line[9..] : line;
+        int space = s.IndexOf(' ');
+        string word = space < 0 ? s : s[..space];
+        return word switch
+        {
+            "module" => DeclKind.Module,
+            "import" => DeclKind.Import,
+            "define" => DeclKind.Define,
+            "global" => DeclKind.Global,
+            "preset" => DeclKind.Preset,
+            "record" or "choice" or "variant" => DeclKind.Type,
+            "concept" => DeclKind.Concept,
+            "conform" => DeclKind.Conform,
+            "routine" => s.StartsWith("routine main(") || s.StartsWith("routine main (") ? DeclKind.Main : DeclKind.Routine,
+            _ => null,
+        };
+    }
+
+    /// Puts the top-level declarations in the canonical order (see the class comment). A file whose declarations are
+    /// already in order comes back unchanged, so the pass never moves blank lines it doesn't have to.
+    private static List<string> OrderDeclarations(List<string> lines)
+    {
+        // The file's opening comment, followed by a blank line, stays on top.
+        int start = 0;
+        while (start < lines.Count && lines[start].StartsWith("//") && !IsDivider(lines[start])) start++;
+        if (start == 0 || start >= lines.Count || lines[start].Length != 0) start = 0;
+        var header = lines.Take(start).ToList();
+
+        var units = new List<DeclChunk>();
+        var pending = new List<string>();
+        DeclChunk? current = null;
+        int i = start;
+        while (i < lines.Count)
+        {
+            string line = lines[i];
+            bool body = current is not null && (line.Length == 0 || line[0] == ' '
+                || ((line.StartsWith("conform ") || line.StartsWith("require ")) && lines[i - 1].Length != 0));
+            if (body && pending.Count == 0)
+            {
+                current!.Lines.Add(line);
+                i++;
+                continue;
+            }
+            if (current is not null)
+            {
+                while (current.Lines.Count > 0 && current.Lines[^1].Length == 0) current.Lines.RemoveAt(current.Lines.Count - 1);
+                current = null;
+            }
+            if (line.Length == 0)
+            {
+                if (pending.Count > 0) pending.Add(line);
+                i++;
+                continue;
+            }
+            if (line.StartsWith("//") && !line.StartsWith("///"))
+            {
+                int end = i;
+                while (end < lines.Count && lines[end].StartsWith("//") && !lines[end].StartsWith("///")) end++;
+                if (lines.Skip(i).Take(end - i).Any(IsDivider))
+                {
+                    // A loose comment above the divider stays with it.
+                    while (pending.Count > 0 && pending[^1].Length == 0) pending.RemoveAt(pending.Count - 1);
+                    if (pending.Count > 0) pending.Add("");
+                    units.Add(new DeclChunk(null, [.. pending, .. lines.GetRange(i, end - i)], units.Count));
+                    pending.Clear();
+                    i = end;
+                    continue;
+                }
+            }
+            if (DeclKindOf(line) is { } kind)
+            {
+                current = new DeclChunk(kind, [.. pending, line], units.Count);
+                units.Add(current);
+                pending.Clear();
+                i++;
+                continue;
+            }
+            pending.Add(line);  // a comment or an attribute above the next declaration
+            i++;
+        }
+        if (current is not null)
+            while (current.Lines.Count > 0 && current.Lines[^1].Length == 0) current.Lines.RemoveAt(current.Lines.Count - 1);
+        while (pending.Count > 0 && pending[^1].Length == 0) pending.RemoveAt(pending.Count - 1);
+
+        // A module or import line after another declaration is an error the parser reports; the file stays as it is,
+        // so fmt doesn't hide the mistake by moving the line.
+        int firstOther = units.FindIndex(u => u.Kind is not (DeclKind.Module or DeclKind.Import));
+        if (firstOther >= 0 && units.Skip(firstOther).Any(u => u.Kind is DeclKind.Module or DeclKind.Import)) return lines;
+
+        // Order each section; main goes to the very end.
+        var sections = new List<List<DeclChunk>> { new() };
+        foreach (var u in units)
+        {
+            if (u.Kind is null) sections.Add([u]);
+            else sections[^1].Add(u);
+        }
+        var mains = units.Where(u => u.Kind == DeclKind.Main).ToList();
+        var ordered = new List<DeclChunk>();
+        foreach (var section in sections)
+        {
+            ordered.AddRange(section.Where(u => u.Kind is null));
+            ordered.AddRange(section
+                .Where(u => u.Kind is not null and not DeclKind.Main)
+                .OrderBy(u => u.Kind)
+                .ThenBy(u => u.Kind == DeclKind.Import ? u.Lines.First(l => DeclKindOf(l) is not null) : "", StringComparer.Ordinal)
+                .ThenBy(u => u.Index));
+        }
+        ordered.AddRange(mains);
+        if (ordered.Select(u => u.Index).SequenceEqual(units.Select(u => u.Index))) return lines;
+
+        var result = new List<string>(header);
+        if (header.Count > 0) result.Add("");
+        DeclChunk? previous = null;
+        foreach (var u in ordered)
+        {
+            bool tight = previous is not null && previous.Kind == u.Kind && previous.Compact && u.Compact;
+            if (previous is not null && !tight) result.Add("");
+            if (u.Kind is null && previous is null && result.Count > 0 && result[^1].Length != 0) result.Add("");
+            result.AddRange(u.Lines);
+            previous = u;
+        }
+        if (pending.Count > 0)
+        {
+            result.Add("");
+            result.AddRange(pending);
         }
         return result;
     }

@@ -391,7 +391,8 @@ array presets (`K.get(%i)`, with `preset K: @Array<T, N> <- { ... }`).
 
 Run `tessera fmt` on what you write: it aligns `%name : T = value` runs, spaces blocks and routines, joins broken
 lists and wraps lines over 100 characters at commas, and writes a routine's owner type as `Self` after it's declared
-(not in `require` lines). Follow `../Tessera-Wiki/docs/Style-Guide.md`. In short: one purpose per block, blocks named for what they do (`grow`,
+(not in `require` lines). It also orders the top-level declarations: module, sorted imports, defines, globals,
+presets, types, concepts, standalone conformances, routines (in your order), and `main` last. Follow `../Tessera-Wiki/docs/Style-Guide.md`. In short: one purpose per block, blocks named for what they do (`grow`,
 `scan`, `sift_up`), values named for what they mean (`%in_bounds`, not `%t1`), boolean names that read as
 predicates, `return(...)` inline instead of a block that only returns, and helper routines instead of one huge
 block graph. Don't add syntax sugar to shorten code; readability comes from decomposition and naming.

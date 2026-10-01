@@ -20,258 +20,6 @@
 
 module Standard::Core
 
-/// A double-double value hi + lo.
-record CmF64LogDd
-    hi : F64
-    lo : F64
-
-/// A "dint": (-1)^sgn m 2^(ex - 127), with the 128-bit significand m normalized so that its top bit is set (or m = 0
-/// for zero).
-record CmF64LogDint
-    m   : U128
-    ex  : S64
-    sgn : U64
-
-/// The natural logarithm.
-routine F64.ln(%self: Self) -> Self
-    block entry():
-        %u    : U64  = %self.bits()
-        %e    : S64  = %u.shr(52).to_s64().sub(0x3FF)
-        %edge : Bool = %e.ge(0x400).bitor(%e.eq(-0x3FF))
-        branch %edge ? edge(%u, %e) : normal(%u, %e)
-
-    // x <= 0, NaN, infinity or subnormal
-    block edge(%u: U64, %e: S64):
-        %nan_inf  : Bool = %e.eq(0x400).bitor(%e.eq(0xC00).bitand(%u.ne(0xFFF0000000000000)))
-        %negative : Bool = %self.lt(0.0)
-        %zero     : Bool = %self.eq(0.0)
-        when:
-            %nan_inf  -> return(%self.add(%self))  // +inf or NaN of either sign
-            %negative -> return(Self.from_bits(0xFFF8000000000000))  // the default NaN of 0/0
-            %zero     -> return(Self.from_bits(0xFFF0000000000000))  // the pole
-            else      -> subnormal()
-
-    // scale into the normal range
-    block subnormal():
-        %us : U64 = %self.mul(0x1p52).bits()
-        jump normal(%us, %us.shr(52).to_s64().sub(0x3FF).sub(52))
-
-    // now x = m 2^e with 1 <= m < 2 and -1074 <= e <= 1023
-    block normal(%u: U64, %e: S64):
-        %mbits : U64  = %u.bitand(0x000FFFFFFFFFFFFF)
-        %one   : Bool = %mbits.eq(0).bitand(%e.eq(0))
-        branch %one ? return(0.0) : continue
-        %hl    : CmF64LogDd = cm_f64_log_fast(%e, %mbits)
-        %left  : Self       = %hl.hi.add(%hl.lo.sub(0x1.b6p-69))  // the fast path's maximal absolute error
-        %right : Self       = %hl.hi.add(%hl.lo.add(0x1.b6p-69))
-        %sure  : Bool       = %left.eq(%right)
-        branch %sure ? return(%left) : return(cm_f64_log_dint_to_f64(cm_f64_log_dint_log_of(%self)))
-
-/// The fast path of log: a double-double approximation of log(2^e m) with absolute error below 0x1.b6p-69, where
-/// m = 1 + mbits/2^52.
-private routine cm_f64_log_fast(%e: S64, %mbits: U64) -> CmF64LogDd
-    block entry():
-        %m     : U64  = %mbits.add(0x0010000000000000)
-        %yf    : F64  = F64.from_bits(%mbits.bitor(0x3FF0000000000000))
-        %large : Bool = %m.ge(0x16A09E667F3BCD)  // m > sqrt(2): divide it by 2 to avoid cancellation
-        branch %large ? reduce(%e.add(1), %m.shr(44), %yf.mul(0.5)) : reduce(%e, %m.shr(43), %yf)
-
-    block reduce(%ee: S64, %i: U64, %y: F64):
-        %k  : USize = %i.sub(362).to_usize()
-        %r  : F64   = F64.from_bits(CM_F64_LOG_INVERSE.get(%k))
-        %l1 : F64   = F64.from_bits(CM_F64_LOG_LOG_INV.get(%k.mul(2)))
-        %l2 : F64   = F64.from_bits(CM_F64_LOG_LOG_INV.get(%k.mul(2).add(1)))
-        %z  : F64   = %r.mul_add(%y, -1.0)  // exact
-        // P(z) - z, for |z| < 0.00212097167968735
-        %z2  : F64 = %z.mul(%z)
-        %p45 : F64 = F64.mul_add(-0x1.55362255e0f63p-3, %z, 0x1.999a14758b084p-3)
-        %p23 : F64 = F64.mul_add(-0x1.0000000537df6p-2, %z, 0x1.555555554f4d8p-2)
-        %ph0 : F64 = %p45.mul_add(%z2, %p23)
-        %ph1 : F64 = %ph0.mul_add(%z, -0x1.ffffffffffffap-2)
-        %ph  : F64 = %ph1.mul(%z2)
-        // add e log(2): log2_h is an integer multiple of 2^-42, so e log2_h + l1 is exact
-        %eed : F64 = %ee.to_f64()
-        %hi  : F64 = %eed.mul_add(0x1.62e42fefa38p-1, %l1)
-        %h   : F64 = %hi.add(%z)
-        %lo0 : F64 = %z.sub(%h.sub(%hi))
-        %lo1 : F64 = %ph.add(%lo0.add(%l2))
-        %lo  : F64 = %eed.mul_add(0x1.ef35793c7673p-45, %lo1)
-        return(CmF64LogDd { hi: %h, lo: %lo })
-
-/// The accurate path of log: log x as a dint with about 126 bits of accuracy, for a positive finite x other than 1.
-routine cm_f64_log_dint_log_of(%x: F64) -> CmF64LogDint
-    block entry():
-        %d     : CmF64LogDint = cm_f64_log_dint_from_f64(%x)
-        %hi    : U64          = %d.m.shr(64).to_u64()
-        %above : Bool         = %hi.gt(0xB504F333F9DE6484)  // the lookup index
-        branch %above ? reduce(%d, %d.ex.add(1), %hi.shr(56)) : reduce(%d, %d.ex, %hi.shr(55))
-
-    block reduce(%d: CmF64LogDint, %e: S64, %i: U64):
-        %k      : USize        = %i.sub(128).to_usize()
-        %inv    : CmF64LogDint = CmF64LogDint { m: CM_F64_LOG_DINV_HI.get(%k).to_u128().shl(64),
-                ex: CM_F64_LOG_DINV_EX.get(%k), sgn: 0 }
-        %xr     : CmF64LogDint = CmF64LogDint { m: %d.m, ex: %d.ex.sub(%e), sgn: 0 }
-        %zp     : CmF64LogDint = cm_f64_log_dint_mul(%xr, %inv)
-        %minus1 : CmF64LogDint = CmF64LogDint { m: U128.shl(1, 127), ex: 0, sgn: 1 }
-        %z      : CmF64LogDint = cm_f64_log_dint_add(%minus1, %zp)
-        %log2   : CmF64LogDint = CmF64LogDint { m: 0xB17217F7D1CF79ABC9E3B39803F2F6AF, ex: -1,
-                sgn: 0 }
-        %r      : CmF64LogDint = cm_f64_log_dint_mul_int(%e, %log2)  // e log(2)
-        %p      : CmF64LogDint = cm_f64_log_dint_poly(%z)
-        %lk_hi  : U128         = CM_F64_LOG_DLOG_INV_HI.get(%k).to_u128().shl(64)
-        %lk_m   : U128         = %lk_hi.bitor(CM_F64_LOG_DLOG_INV_LO.get(%k).to_u128())
-        %lk_ex  : S64          = CM_F64_LOG_DLOG_INV_EX.get(%k)
-        %lk     : CmF64LogDint = CmF64LogDint { m: %lk_m, ex: %lk_ex,
-                sgn: CM_F64_LOG_DLOG_INV_SGN.get(%k) }
-        %s      : CmF64LogDint = cm_f64_log_dint_add(%lk, %p)
-        return(cm_f64_log_dint_add(%s, %r))
-
-/// The accurate-path polynomial approximating log(1 + z), evaluated in dint arithmetic.
-private routine cm_f64_log_dint_poly(%z: CmF64LogDint) -> CmF64LogDint
-    block entry():
-        jump horner(1, cm_f64_log_dint_coefficient(0))
-
-    block horner(%j: USize, %r: CmF64LogDint):
-        %done : Bool = %j.eq(13)
-        branch %done ? return(cm_f64_log_dint_mul(%z, %r)) : continue
-        %t : CmF64LogDint = cm_f64_log_dint_mul(%z, %r)
-        jump horner(%j.add(1), cm_f64_log_dint_add(cm_f64_log_dint_coefficient(%j), %t))
-
-/// Coefficient j of the accurate-path polynomial, highest degree first.
-private routine cm_f64_log_dint_coefficient(%j: USize) -> CmF64LogDint
-    block entry():
-        %m : U128 = CM_F64_LOG_DP_HI.get(%j).to_u128().shl(64).bitor(CM_F64_LOG_DP_LO.get(%j).to_u128())
-        return(CmF64LogDint { m: %m, ex: CM_F64_LOG_DP_EX.get(%j), sgn: CM_F64_LOG_DP_SGN.get(%j) })
-
-/// a + b, rounded to nearest on 128 bits.
-private routine cm_f64_log_dint_add(%a: CmF64LogDint, %b: CmF64LogDint) -> CmF64LogDint
-    block entry():
-        %a_zero   : Bool = %a.m.eq(0)
-        %b_zero   : Bool = %b.m.eq(0)
-        %same_ex  : Bool = %a.ex.eq(%b.ex)
-        %equal    : Bool = %same_ex.bitand(%a.m.eq(%b.m))
-        %a_larger : Bool = %a.ex.gt(%b.ex).bitor(%same_ex.bitand(%a.m.gt(%b.m)))
-        when:
-            %a_zero   -> return(%b)
-            %b_zero   -> return(%a)
-            %equal    -> equal()
-            %a_larger -> align(%a, %b)
-            else      -> align(%b, %a)
-
-    // |a| = |b|
-    block equal():
-        %opposite : Bool = %a.sgn.ne(%b.sgn)
-        branch %opposite
-            ? return(CmF64LogDint { m: 0, ex: 0, sgn: 0 })
-            : return(CmF64LogDint { m: %a.m, ex: %a.ex.add(1), sgn: %a.sgn })
-
-    // from now on |x| > |y|: shift y's significand to x's exponent, rounding to nearest
-    block align(%x: CmF64LogDint, %y: CmF64LogDint):
-        %sh      : S64  = %x.ex.sub(%y.ex)
-        %shifted : Bool = %sh.gt(0)
-        branch %shifted ? continue : combine(%x, %y.m, %y.sgn)
-        // a shift past 128 bits leaves the round bit 0, as C's guard sh <= 128 does
-        %round : U128 = %y.m.shr(%sh.sub(1).to_u128()).bitand(1)
-        jump combine(%x, %y.m.add_wrap(%round).shr(%sh.to_u128()), %y.sgn)
-
-    block combine(%x: CmF64LogDint, %ym: U128, %ysgn: U64):
-        %opposite : Bool = %x.sgn.ne(%ysgn)
-        branch %opposite ? normalize(%x.m.sub_wrap(%ym), %x.ex, %x) : continue
-        %c     : U128 = %x.m.add_wrap(%ym)
-        %carry : Bool = %c.lt(%x.m)  // carry out of the 128 bits
-        branch %carry ? carry(%c, %x) : normalize(%c, %x.ex, %x)
-
-    block carry(%c: U128, %x: CmF64LogDint):
-        %rounded : U128 = %c.add_wrap(%c.bitand(1))
-        jump normalize(U128.shl(1, 127).bitor(%rounded.shr(1)), %x.ex.add(1), %x)
-
-    block normalize(%c: U128, %m_ex: S64, %x: CmF64LogDint):
-        %zero : Bool = %c.eq(0)
-        branch %zero
-            ? return(CmF64LogDint { m: 0, ex: %m_ex.sub(%x.ex.add(64)), sgn: %x.sgn })
-            : continue
-        %lz : U128 = %c.leading_zeros()
-        return(CmF64LogDint { m: %c.shl(%lz), ex: %m_ex.sub(%lz.to_s64()), sgn: %x.sgn })
-
-/// a b, with 126 bits of accuracy.
-routine cm_f64_log_dint_mul(%a: CmF64LogDint, %b: CmF64LogDint) -> CmF64LogDint
-    block entry():
-        %mask : U128 = 0xFFFFFFFFFFFFFFFF
-        %ahi  : U128 = %a.m.shr(64)
-        %alo  : U128 = %a.m.bitand(%mask)
-        %bhi  : U128 = %b.m.shr(64)
-        %blo  : U128 = %b.m.bitand(%mask)
-        %t0   : U128 = %ahi.mul_wrap(%bhi)
-        %m1   : U128 = %ahi.mul_wrap(%blo)
-        %m2   : U128 = %alo.mul_wrap(%bhi)
-        %m    : U128 = %m1.add_wrap(%m2)
-        %wrap : Bool = %m.lt(%m1)
-        %t1   : U128 = %wrap ? %t0.add_wrap(U128.shl(1, 64)) : %t0
-        %t    : U128 = %t1.add_wrap(%m.shr(64))
-        %low  : U128 = %m.bitand(%mask).shr(63)
-        %sgn  : U64  = %a.sgn.bitxor(%b.sgn)
-        %top  : Bool = %t.shr(127).eq(1)
-        // make the top bit of the significand 1
-        branch %top
-            ? return(CmF64LogDint { m: %t.add_wrap(%low), ex: %a.ex.add(%b.ex).add(1), sgn: %sgn })
-            : return(CmF64LogDint { m: %t.shl(1).add_wrap(%low), ex: %a.ex.add(%b.ex), sgn: %sgn })
-
-/// b a for a small integer b.
-private routine cm_f64_log_dint_mul_int(%b: S64, %a: CmF64LogDint) -> CmF64LogDint
-    block entry():
-        %zero : Bool = %b.eq(0)
-        branch %zero ? return(CmF64LogDint { m: 0, ex: 0, sgn: 0 }) : continue
-        %negative : Bool = %b.lt(0)
-        branch %negative
-            ? scale(%b.neg().to_u128(), U64.sub(1, %a.sgn))
-            : scale(%b.to_u128(), %a.sgn)
-
-    block scale(%c: U128, %sgn: U64):
-        %t0    : U128 = %a.m.shr(64).mul_wrap(%c)
-        %wide  : Bool = %t0.shr(64).ne(0)
-        %sh    : U128 = %wide ? %t0.leading_zeros() : 64
-        %t     : U128 = %t0.shl(%sh)
-        %l0    : U128 = %a.m.bitand(0xFFFFFFFFFFFFFFFF).mul_wrap(%c)
-        %l     : U128 = %l0.shl(%sh.sub(1)).shr(63)
-        %s     : U128 = %l.add_wrap(%t)
-        %carry : Bool = %s.lt(%l)
-        branch %carry
-            ? continue
-            : return(CmF64LogDint { m: %s, ex: %a.ex.add(64).sub(%sh.to_s64()), sgn: %sgn })
-        %rounded : U128 = %s.add_wrap(%s.bitand(1))
-        %m       : U128 = U128.shl(1, 127).bitor(%rounded.shr(1))
-        return(CmF64LogDint { m: %m, ex: %a.ex.add(64).sub(%sh.to_s64().sub(1)), sgn: %sgn })
-
-/// A positive finite x as a dint.
-private routine cm_f64_log_dint_from_f64(%x: F64) -> CmF64LogDint
-    block entry():
-        %u      : U64  = %x.bits()
-        %eb     : U64  = %u.shr(52).bitand(0x7FF)
-        %frac   : U64  = %u.bitand(0x000FFFFFFFFFFFFF)
-        %normal : Bool = %eb.ne(0)
-        %mant   : U64  = %normal ? %frac.add(0x0010000000000000) : %frac
-        %e      : S64  = %eb.to_s64().sub(0x3FF)
-        %t      : U64  = %mant.leading_zeros()
-        %sub    : Bool = %t.gt(11)
-        %shift  : S64  = %sub ? %t.to_s64().sub(12) : 0
-        return(CmF64LogDint { m: %mant.shl(%t).to_u128().shl(64), ex: %e.sub(%shift), sgn: 0 })
-
-/// A dint rounded to the nearest F64, assuming the result is in the normal range.
-routine cm_f64_log_dint_to_f64(%d: CmF64LogDint) -> F64
-    block entry():
-        %hi     : U64  = %d.m.shr(64).to_u64()
-        %lo     : U64  = %d.m.to_u64_wrap()
-        %rbits  : U64  = %hi.shr(11).bitor(0x3FF0000000000000)  // the upper 53 bits of hi, 1 <= r < 2
-        %round  : Bool = %hi.shr(10).bitand(1).eq(1)
-        %sticky : Bool = %hi.bitand(0x3FF).ne(0).bitor(%lo.ne(0))
-        %rd0    : F64  = %round ? 0x1p-53 : 0.0
-        %rd     : F64  = %sticky ? %rd0.add(0x1p-54) : %rd0
-        %r0     : F64  = F64.from_bits(%rbits.bitor(%d.sgn.shl(63)))
-        %plus   : Bool = %d.sgn.eq(0)
-        %r      : F64  = %plus ? %r0.add(%rd) : %r0.add(%rd.neg())
-        %scale  : F64  = F64.from_bits(%d.ex.add(1023).to_u64_wrap().bitand(0x7FF).shl(52))
-        return(%r.mul(%scale))
-
 /// Reciprocals r[i] of the fast path, 362 <= i <= 724, as F64 bits: a 10-bit approximation of 1/y for
 /// i 2^-9 <= y < (i + 1) 2^-9 such that r[i] y - 1 is exact (the entries for i = 511, 512 are forced to 1).
 preset CM_F64_LOG_INVERSE: @Array<U64, 363> <- { 0x3FF6980000000000, 0x3FF6880000000000,
@@ -851,3 +599,255 @@ preset CM_F64_LOG_DP_SGN: @Array<U64, 13> <- { 0x0000000000000000, 0x00000000000
         0x0000000000000000, 0x0000000000000001, 0x0000000000000000, 0x0000000000000001,
         0x0000000000000000, 0x0000000000000001, 0x0000000000000000, 0x0000000000000001,
         0x0000000000000000, 0x0000000000000001, 0x0000000000000000 }
+
+/// A double-double value hi + lo.
+record CmF64LogDd
+    hi : F64
+    lo : F64
+
+/// A "dint": (-1)^sgn m 2^(ex - 127), with the 128-bit significand m normalized so that its top bit is set (or m = 0
+/// for zero).
+record CmF64LogDint
+    m   : U128
+    ex  : S64
+    sgn : U64
+
+/// The natural logarithm.
+routine F64.ln(%self: Self) -> Self
+    block entry():
+        %u    : U64  = %self.bits()
+        %e    : S64  = %u.shr(52).to_s64().sub(0x3FF)
+        %edge : Bool = %e.ge(0x400).bitor(%e.eq(-0x3FF))
+        branch %edge ? edge(%u, %e) : normal(%u, %e)
+
+    // x <= 0, NaN, infinity or subnormal
+    block edge(%u: U64, %e: S64):
+        %nan_inf  : Bool = %e.eq(0x400).bitor(%e.eq(0xC00).bitand(%u.ne(0xFFF0000000000000)))
+        %negative : Bool = %self.lt(0.0)
+        %zero     : Bool = %self.eq(0.0)
+        when:
+            %nan_inf  -> return(%self.add(%self))  // +inf or NaN of either sign
+            %negative -> return(Self.from_bits(0xFFF8000000000000))  // the default NaN of 0/0
+            %zero     -> return(Self.from_bits(0xFFF0000000000000))  // the pole
+            else      -> subnormal()
+
+    // scale into the normal range
+    block subnormal():
+        %us : U64 = %self.mul(0x1p52).bits()
+        jump normal(%us, %us.shr(52).to_s64().sub(0x3FF).sub(52))
+
+    // now x = m 2^e with 1 <= m < 2 and -1074 <= e <= 1023
+    block normal(%u: U64, %e: S64):
+        %mbits : U64  = %u.bitand(0x000FFFFFFFFFFFFF)
+        %one   : Bool = %mbits.eq(0).bitand(%e.eq(0))
+        branch %one ? return(0.0) : continue
+        %hl    : CmF64LogDd = cm_f64_log_fast(%e, %mbits)
+        %left  : Self       = %hl.hi.add(%hl.lo.sub(0x1.b6p-69))  // the fast path's maximal absolute error
+        %right : Self       = %hl.hi.add(%hl.lo.add(0x1.b6p-69))
+        %sure  : Bool       = %left.eq(%right)
+        branch %sure ? return(%left) : return(cm_f64_log_dint_to_f64(cm_f64_log_dint_log_of(%self)))
+
+/// The fast path of log: a double-double approximation of log(2^e m) with absolute error below 0x1.b6p-69, where
+/// m = 1 + mbits/2^52.
+private routine cm_f64_log_fast(%e: S64, %mbits: U64) -> CmF64LogDd
+    block entry():
+        %m     : U64  = %mbits.add(0x0010000000000000)
+        %yf    : F64  = F64.from_bits(%mbits.bitor(0x3FF0000000000000))
+        %large : Bool = %m.ge(0x16A09E667F3BCD)  // m > sqrt(2): divide it by 2 to avoid cancellation
+        branch %large ? reduce(%e.add(1), %m.shr(44), %yf.mul(0.5)) : reduce(%e, %m.shr(43), %yf)
+
+    block reduce(%ee: S64, %i: U64, %y: F64):
+        %k  : USize = %i.sub(362).to_usize()
+        %r  : F64   = F64.from_bits(CM_F64_LOG_INVERSE.get(%k))
+        %l1 : F64   = F64.from_bits(CM_F64_LOG_LOG_INV.get(%k.mul(2)))
+        %l2 : F64   = F64.from_bits(CM_F64_LOG_LOG_INV.get(%k.mul(2).add(1)))
+        %z  : F64   = %r.mul_add(%y, -1.0)  // exact
+        // P(z) - z, for |z| < 0.00212097167968735
+        %z2  : F64 = %z.mul(%z)
+        %p45 : F64 = F64.mul_add(-0x1.55362255e0f63p-3, %z, 0x1.999a14758b084p-3)
+        %p23 : F64 = F64.mul_add(-0x1.0000000537df6p-2, %z, 0x1.555555554f4d8p-2)
+        %ph0 : F64 = %p45.mul_add(%z2, %p23)
+        %ph1 : F64 = %ph0.mul_add(%z, -0x1.ffffffffffffap-2)
+        %ph  : F64 = %ph1.mul(%z2)
+        // add e log(2): log2_h is an integer multiple of 2^-42, so e log2_h + l1 is exact
+        %eed : F64 = %ee.to_f64()
+        %hi  : F64 = %eed.mul_add(0x1.62e42fefa38p-1, %l1)
+        %h   : F64 = %hi.add(%z)
+        %lo0 : F64 = %z.sub(%h.sub(%hi))
+        %lo1 : F64 = %ph.add(%lo0.add(%l2))
+        %lo  : F64 = %eed.mul_add(0x1.ef35793c7673p-45, %lo1)
+        return(CmF64LogDd { hi: %h, lo: %lo })
+
+/// The accurate path of log: log x as a dint with about 126 bits of accuracy, for a positive finite x other than 1.
+routine cm_f64_log_dint_log_of(%x: F64) -> CmF64LogDint
+    block entry():
+        %d     : CmF64LogDint = cm_f64_log_dint_from_f64(%x)
+        %hi    : U64          = %d.m.shr(64).to_u64()
+        %above : Bool         = %hi.gt(0xB504F333F9DE6484)  // the lookup index
+        branch %above ? reduce(%d, %d.ex.add(1), %hi.shr(56)) : reduce(%d, %d.ex, %hi.shr(55))
+
+    block reduce(%d: CmF64LogDint, %e: S64, %i: U64):
+        %k      : USize        = %i.sub(128).to_usize()
+        %inv    : CmF64LogDint = CmF64LogDint { m: CM_F64_LOG_DINV_HI.get(%k).to_u128().shl(64),
+                ex: CM_F64_LOG_DINV_EX.get(%k), sgn: 0 }
+        %xr     : CmF64LogDint = CmF64LogDint { m: %d.m, ex: %d.ex.sub(%e), sgn: 0 }
+        %zp     : CmF64LogDint = cm_f64_log_dint_mul(%xr, %inv)
+        %minus1 : CmF64LogDint = CmF64LogDint { m: U128.shl(1, 127), ex: 0, sgn: 1 }
+        %z      : CmF64LogDint = cm_f64_log_dint_add(%minus1, %zp)
+        %log2   : CmF64LogDint = CmF64LogDint { m: 0xB17217F7D1CF79ABC9E3B39803F2F6AF, ex: -1,
+                sgn: 0 }
+        %r      : CmF64LogDint = cm_f64_log_dint_mul_int(%e, %log2)  // e log(2)
+        %p      : CmF64LogDint = cm_f64_log_dint_poly(%z)
+        %lk_hi  : U128         = CM_F64_LOG_DLOG_INV_HI.get(%k).to_u128().shl(64)
+        %lk_m   : U128         = %lk_hi.bitor(CM_F64_LOG_DLOG_INV_LO.get(%k).to_u128())
+        %lk_ex  : S64          = CM_F64_LOG_DLOG_INV_EX.get(%k)
+        %lk     : CmF64LogDint = CmF64LogDint { m: %lk_m, ex: %lk_ex,
+                sgn: CM_F64_LOG_DLOG_INV_SGN.get(%k) }
+        %s      : CmF64LogDint = cm_f64_log_dint_add(%lk, %p)
+        return(cm_f64_log_dint_add(%s, %r))
+
+/// The accurate-path polynomial approximating log(1 + z), evaluated in dint arithmetic.
+private routine cm_f64_log_dint_poly(%z: CmF64LogDint) -> CmF64LogDint
+    block entry():
+        jump horner(1, cm_f64_log_dint_coefficient(0))
+
+    block horner(%j: USize, %r: CmF64LogDint):
+        %done : Bool = %j.eq(13)
+        branch %done ? return(cm_f64_log_dint_mul(%z, %r)) : continue
+        %t : CmF64LogDint = cm_f64_log_dint_mul(%z, %r)
+        jump horner(%j.add(1), cm_f64_log_dint_add(cm_f64_log_dint_coefficient(%j), %t))
+
+/// Coefficient j of the accurate-path polynomial, highest degree first.
+private routine cm_f64_log_dint_coefficient(%j: USize) -> CmF64LogDint
+    block entry():
+        %m : U128 = CM_F64_LOG_DP_HI.get(%j).to_u128().shl(64).bitor(CM_F64_LOG_DP_LO.get(%j).to_u128())
+        return(CmF64LogDint { m: %m, ex: CM_F64_LOG_DP_EX.get(%j), sgn: CM_F64_LOG_DP_SGN.get(%j) })
+
+/// a + b, rounded to nearest on 128 bits.
+private routine cm_f64_log_dint_add(%a: CmF64LogDint, %b: CmF64LogDint) -> CmF64LogDint
+    block entry():
+        %a_zero   : Bool = %a.m.eq(0)
+        %b_zero   : Bool = %b.m.eq(0)
+        %same_ex  : Bool = %a.ex.eq(%b.ex)
+        %equal    : Bool = %same_ex.bitand(%a.m.eq(%b.m))
+        %a_larger : Bool = %a.ex.gt(%b.ex).bitor(%same_ex.bitand(%a.m.gt(%b.m)))
+        when:
+            %a_zero   -> return(%b)
+            %b_zero   -> return(%a)
+            %equal    -> equal()
+            %a_larger -> align(%a, %b)
+            else      -> align(%b, %a)
+
+    // |a| = |b|
+    block equal():
+        %opposite : Bool = %a.sgn.ne(%b.sgn)
+        branch %opposite
+            ? return(CmF64LogDint { m: 0, ex: 0, sgn: 0 })
+            : return(CmF64LogDint { m: %a.m, ex: %a.ex.add(1), sgn: %a.sgn })
+
+    // from now on |x| > |y|: shift y's significand to x's exponent, rounding to nearest
+    block align(%x: CmF64LogDint, %y: CmF64LogDint):
+        %sh      : S64  = %x.ex.sub(%y.ex)
+        %shifted : Bool = %sh.gt(0)
+        branch %shifted ? continue : combine(%x, %y.m, %y.sgn)
+        // a shift past 128 bits leaves the round bit 0, as C's guard sh <= 128 does
+        %round : U128 = %y.m.shr(%sh.sub(1).to_u128()).bitand(1)
+        jump combine(%x, %y.m.add_wrap(%round).shr(%sh.to_u128()), %y.sgn)
+
+    block combine(%x: CmF64LogDint, %ym: U128, %ysgn: U64):
+        %opposite : Bool = %x.sgn.ne(%ysgn)
+        branch %opposite ? normalize(%x.m.sub_wrap(%ym), %x.ex, %x) : continue
+        %c     : U128 = %x.m.add_wrap(%ym)
+        %carry : Bool = %c.lt(%x.m)  // carry out of the 128 bits
+        branch %carry ? carry(%c, %x) : normalize(%c, %x.ex, %x)
+
+    block carry(%c: U128, %x: CmF64LogDint):
+        %rounded : U128 = %c.add_wrap(%c.bitand(1))
+        jump normalize(U128.shl(1, 127).bitor(%rounded.shr(1)), %x.ex.add(1), %x)
+
+    block normalize(%c: U128, %m_ex: S64, %x: CmF64LogDint):
+        %zero : Bool = %c.eq(0)
+        branch %zero
+            ? return(CmF64LogDint { m: 0, ex: %m_ex.sub(%x.ex.add(64)), sgn: %x.sgn })
+            : continue
+        %lz : U128 = %c.leading_zeros()
+        return(CmF64LogDint { m: %c.shl(%lz), ex: %m_ex.sub(%lz.to_s64()), sgn: %x.sgn })
+
+/// a b, with 126 bits of accuracy.
+routine cm_f64_log_dint_mul(%a: CmF64LogDint, %b: CmF64LogDint) -> CmF64LogDint
+    block entry():
+        %mask : U128 = 0xFFFFFFFFFFFFFFFF
+        %ahi  : U128 = %a.m.shr(64)
+        %alo  : U128 = %a.m.bitand(%mask)
+        %bhi  : U128 = %b.m.shr(64)
+        %blo  : U128 = %b.m.bitand(%mask)
+        %t0   : U128 = %ahi.mul_wrap(%bhi)
+        %m1   : U128 = %ahi.mul_wrap(%blo)
+        %m2   : U128 = %alo.mul_wrap(%bhi)
+        %m    : U128 = %m1.add_wrap(%m2)
+        %wrap : Bool = %m.lt(%m1)
+        %t1   : U128 = %wrap ? %t0.add_wrap(U128.shl(1, 64)) : %t0
+        %t    : U128 = %t1.add_wrap(%m.shr(64))
+        %low  : U128 = %m.bitand(%mask).shr(63)
+        %sgn  : U64  = %a.sgn.bitxor(%b.sgn)
+        %top  : Bool = %t.shr(127).eq(1)
+        // make the top bit of the significand 1
+        branch %top
+            ? return(CmF64LogDint { m: %t.add_wrap(%low), ex: %a.ex.add(%b.ex).add(1), sgn: %sgn })
+            : return(CmF64LogDint { m: %t.shl(1).add_wrap(%low), ex: %a.ex.add(%b.ex), sgn: %sgn })
+
+/// b a for a small integer b.
+private routine cm_f64_log_dint_mul_int(%b: S64, %a: CmF64LogDint) -> CmF64LogDint
+    block entry():
+        %zero : Bool = %b.eq(0)
+        branch %zero ? return(CmF64LogDint { m: 0, ex: 0, sgn: 0 }) : continue
+        %negative : Bool = %b.lt(0)
+        branch %negative
+            ? scale(%b.neg().to_u128(), U64.sub(1, %a.sgn))
+            : scale(%b.to_u128(), %a.sgn)
+
+    block scale(%c: U128, %sgn: U64):
+        %t0    : U128 = %a.m.shr(64).mul_wrap(%c)
+        %wide  : Bool = %t0.shr(64).ne(0)
+        %sh    : U128 = %wide ? %t0.leading_zeros() : 64
+        %t     : U128 = %t0.shl(%sh)
+        %l0    : U128 = %a.m.bitand(0xFFFFFFFFFFFFFFFF).mul_wrap(%c)
+        %l     : U128 = %l0.shl(%sh.sub(1)).shr(63)
+        %s     : U128 = %l.add_wrap(%t)
+        %carry : Bool = %s.lt(%l)
+        branch %carry
+            ? continue
+            : return(CmF64LogDint { m: %s, ex: %a.ex.add(64).sub(%sh.to_s64()), sgn: %sgn })
+        %rounded : U128 = %s.add_wrap(%s.bitand(1))
+        %m       : U128 = U128.shl(1, 127).bitor(%rounded.shr(1))
+        return(CmF64LogDint { m: %m, ex: %a.ex.add(64).sub(%sh.to_s64().sub(1)), sgn: %sgn })
+
+/// A positive finite x as a dint.
+private routine cm_f64_log_dint_from_f64(%x: F64) -> CmF64LogDint
+    block entry():
+        %u      : U64  = %x.bits()
+        %eb     : U64  = %u.shr(52).bitand(0x7FF)
+        %frac   : U64  = %u.bitand(0x000FFFFFFFFFFFFF)
+        %normal : Bool = %eb.ne(0)
+        %mant   : U64  = %normal ? %frac.add(0x0010000000000000) : %frac
+        %e      : S64  = %eb.to_s64().sub(0x3FF)
+        %t      : U64  = %mant.leading_zeros()
+        %sub    : Bool = %t.gt(11)
+        %shift  : S64  = %sub ? %t.to_s64().sub(12) : 0
+        return(CmF64LogDint { m: %mant.shl(%t).to_u128().shl(64), ex: %e.sub(%shift), sgn: 0 })
+
+/// A dint rounded to the nearest F64, assuming the result is in the normal range.
+routine cm_f64_log_dint_to_f64(%d: CmF64LogDint) -> F64
+    block entry():
+        %hi     : U64  = %d.m.shr(64).to_u64()
+        %lo     : U64  = %d.m.to_u64_wrap()
+        %rbits  : U64  = %hi.shr(11).bitor(0x3FF0000000000000)  // the upper 53 bits of hi, 1 <= r < 2
+        %round  : Bool = %hi.shr(10).bitand(1).eq(1)
+        %sticky : Bool = %hi.bitand(0x3FF).ne(0).bitor(%lo.ne(0))
+        %rd0    : F64  = %round ? 0x1p-53 : 0.0
+        %rd     : F64  = %sticky ? %rd0.add(0x1p-54) : %rd0
+        %r0     : F64  = F64.from_bits(%rbits.bitor(%d.sgn.shl(63)))
+        %plus   : Bool = %d.sgn.eq(0)
+        %r      : F64  = %plus ? %r0.add(%rd) : %r0.add(%rd.neg())
+        %scale  : F64  = F64.from_bits(%d.ex.add(1023).to_u64_wrap().bitand(0x7FF).shl(52))
+        return(%r.mul(%scale))
