@@ -920,7 +920,9 @@ public sealed partial class Compiler
     {
         if (t is ArrayType a)
         {
-            if (e is not ArrayLit lit) throw new CompileError(e.Pos, $"expected an array literal for {a}");
+            if (e is not ArrayLit lit) throw new CompileError(e.Pos, $"expected an array literal for {a}: {a} {{ ... }}");
+            if (!ResolveType(lit.Type!, env).Equals(a))
+                throw new CompileError(lit.Pos, $"expected an array literal for {a}, found one for {ResolveType(lit.Type!, env)}");
             if (lit.Elements.Count != a.Count)
                 throw new CompileError(lit.Pos, $"{a} needs {a.Count} element(s), got {lit.Elements.Count}");
             return "[" + string.Join(", ", lit.Elements.Select(x => $"{a.Elem.Llvm} {PresetInitializer(x, a.Elem, env)}")) + "]";

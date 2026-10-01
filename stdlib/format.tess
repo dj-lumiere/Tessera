@@ -77,7 +77,7 @@ routine SliceWriter.write_bytes(%self: Ptr<Self>, %bytes: Ptr<Byte>, %count: USi
         %fits     : Bool      = %count.le(%room)
         %taken    : USize     = %count.min(%room)
         %data     : Ptr<Byte> = %self.data.load()
-        %to       : Ptr<Byte> = %data[%length]
+        %to       : Ptr<Byte> = %data.stride(%length)
         copy<Byte>(%to, %bytes, %taken)
         %self.length.store(%length.add(%taken))
         branch %fits ? return() : continue
@@ -140,7 +140,7 @@ require W: typename, Writer<W>
     block append(%length: USize):
         %buffer : Ptr<Array<Byte, 4096>> = %self.data
         %data   : Ptr<Byte>              = %buffer.cast<Byte>()
-        %to     : Ptr<Byte>              = %data[%length]
+        %to     : Ptr<Byte>              = %data.stride(%length)
         copy<Byte>(%to, %bytes, %count)
         %self.length.store(%length.add(%count))
         return()
@@ -169,7 +169,7 @@ routine CountWriter.write_bytes(%self: Ptr<Self>, %bytes: Ptr<Byte>, %length: US
 
     // continuation bytes are 10xxxxxx
     block step(%i: USize, %count: USize):
-        %byte   : U8   = .from_byte(%bytes[%i].load())
+        %byte   : U8   = .from_byte(%bytes.stride(%i).load())
         %starts : Bool = %byte.bitand(0xC0).ne(0x80)
         jump loop(%i.add(1), %count.add(%starts.to_usize()))
 
@@ -208,7 +208,7 @@ require W: typename, Writer<W>
     block digit(%end: USize, %rest: U64, %digits: Ptr<Byte>):
         %at    : USize = %end.sub(1)
         %ascii : U8    = %rest.mod(10).to_u8().add(48)  // '0' = 48
-        %digits[%at].store(%ascii.bits())
+        %digits.stride(%at).store(%ascii.bits())
         %next       : U64   = %rest.div(10)
         %written    : USize = 20.sub(%at)
         %more_value : Bool  = %next.ne(0)
@@ -217,7 +217,7 @@ require W: typename, Writer<W>
         branch %more ? digit(%at, %next, %digits) : emit(%at, %digits)
 
     block emit(%start: USize, %digits: Ptr<Byte>):
-        %first : Ptr<Byte> = %digits[%start]
+        %first : Ptr<Byte> = %digits.stride(%start)
         %out.write_bytes(%first, 20.sub(%start))
         return()
 
@@ -251,7 +251,7 @@ require W: typename, Writer<W>
         %nibble  : U8    = %rest.bitand(15).to_u8()
         %decimal : Bool  = %nibble.lt(10)
         %base    : U8    = %decimal ? 48 : 87  // '0', or 'a' - 10
-        %digits[%at].store(%base.add(%nibble).bits())
+        %digits.stride(%at).store(%base.add(%nibble).bits())
         %next       : U64   = %rest.shr(4)
         %written    : USize = 16.sub(%at)
         %more_value : Bool  = %next.ne(0)
@@ -260,7 +260,7 @@ require W: typename, Writer<W>
         branch %more ? digit(%at, %next, %digits) : emit(%at, %digits)
 
     block emit(%start: USize, %digits: Ptr<Byte>):
-        %first : Ptr<Byte> = %digits[%start]
+        %first : Ptr<Byte> = %digits.stride(%start)
         %out.write_bytes(%first, 16.sub(%start))
         return()
 
@@ -669,13 +669,13 @@ require W: typename, Writer<W>
 
     block fill(%end: USize, %rest: U64, %digits: Ptr<U8>):
         %at : USize = %end.sub(1)
-        %digits[%at].store(%rest.mod(10).to_u8().add(48))
+        %digits.stride(%at).store(%rest.mod(10).to_u8().add(48))
         %next : U64  = %rest.div(10)
         %more : Bool = %next.ne(0)
         branch %more ? fill(%at, %next, %digits) : layout(%at, %digits)
 
     block layout(%start: USize, %digits: Ptr<U8>):
-        %first : Ptr<U8> = %digits[%start]
+        %first : Ptr<U8> = %digits.stride(%start)
         write_decimal_digits(%out, %first, 20.sub(%start), %d.exponent)
         return()
 
@@ -718,7 +718,7 @@ require W: typename, Writer<W>
         %head : USize = %n.sub(%tail)
         write_digits(%out, %first, %head)
         write_str(%out, ".")
-        %rest : Ptr<U8> = %first[%head]
+        %rest : Ptr<U8> = %first.stride(%head)
         write_digits(%out, %rest, %tail)
         return()
 
@@ -730,7 +730,7 @@ require W: typename, Writer<W>
 
     block mantissa_tail(%x: S64):
         write_str(%out, ".")
-        %rest : Ptr<U8> = %first[1]
+        %rest : Ptr<U8> = %first.stride(1)
         write_digits(%out, %rest, %n.sub(1))
         jump exponent_part(%x)
 
@@ -984,7 +984,7 @@ require W: typename, Writer<W>
     block emit(%d: U8, %n: USize, %k: S64, %digits: Ptr<U8>, %r: Ptr<BigNat<320>>,
             %s: Ptr<BigNat<320>>, %plus: Ptr<BigNat<320>>, %minus: Ptr<BigNat<320>>,
             %t: Ptr<BigNat<320>>):
-        %digits[%n].store(%d.add(48))
+        %digits.stride(%n).store(%d.add(48))
         jump next_digit(%n.add(1), %k, %digits, %r, %s, %plus, %minus, %t)
 
     // Both ends reachable: the nearer one, and the even digit on an exact tie.
@@ -998,7 +998,7 @@ require W: typename, Writer<W>
         %both     : Bool = %low.bitand(%high)
         %round_up : Bool = %both ? %nearer : %high
         %digit    : U8   = %d.add(%round_up.to_u8())
-        %digits[%n].store(%digit.add(48))
+        %digits.stride(%n).store(%digit.add(48))
         %count : USize = %n.add(1)
         write_decimal_digits(%out, %digits, %count, %k.sub(%count.to_s64()))
         return()
@@ -1100,7 +1100,7 @@ require W: typename, Writer<W>
     block put(%n: Ptr<BigNat<864>>, %chars: Ptr<U8>, %places: USize, %at: USize, %rest: U64,
             %left: USize):
         %to : USize = %at.sub(1)
-        %chars[%to].store(%rest.mod(10).to_u8().add(48))
+        %chars.stride(%to).store(%rest.mod(10).to_u8().add(48))
         jump digit(%n, %chars, %places, %to, %rest.div(10), %left.sub(1))
 
     // the top chunk is zero-padded to 19 digits
@@ -1109,7 +1109,7 @@ require W: typename, Writer<W>
         branch %inside ? look(%chars, %places, %at) : lay_out(%chars, %places, %at)
 
     block look(%chars: Ptr<U8>, %places: USize, %at: USize):
-        %ascii : U8   = %chars[%at].load()
+        %ascii : U8   = %chars.stride(%at).load()
         %zero  : Bool = %ascii.eq(48)
         branch %zero ? skip_zeros(%chars, %places, %at.add(1)) : lay_out(%chars, %places, %at)
 
@@ -1122,7 +1122,7 @@ require W: typename, Writer<W>
             : zero_int(%chars, %places, %first)
 
     block int_part(%chars: Ptr<U8>, %places: USize, %first: USize, %int_count: USize):
-        %from : Ptr<U8> = %chars[%first]
+        %from : Ptr<U8> = %chars.stride(%first)
         write_digits(%out, %from, %int_count)
         jump fraction(%chars, %places, %first.add(%int_count))
 
@@ -1138,7 +1138,7 @@ require W: typename, Writer<W>
         %count : USize = 16640.sub(%from)
         write_str(%out, ".")
         write_zeros(%out, %places.sub(%count))
-        %start : Ptr<U8> = %chars[%from]
+        %start : Ptr<U8> = %chars.stride(%from)
         write_digits(%out, %start, %count)
         write_zeros(%out, %digits.sub(%places))
         return()
@@ -1369,13 +1369,13 @@ require W: typename, Writer<W>
     block first(%inner: Ptr<W>, %pad: USize):
         %fill : Bytes = %self.fill.load()
         %self.pad.store(0)
-        %byte   : U8   = .from_byte(%bytes[0].load())
+        %byte   : U8   = .from_byte(%bytes.stride(0).load())
         %signed : Bool = %byte.eq(45).bitor(%byte.eq(43))  // - or +
         branch %signed ? sign(%inner, %pad, %fill) : pad(%inner, %pad, %fill, %bytes, %length)
 
     block sign(%inner: Ptr<W>, %pad: USize, %fill: Bytes):
         %inner.write_bytes(%bytes, 1)
-        %rest : Ptr<Byte> = %bytes[1]
+        %rest : Ptr<Byte> = %bytes.stride(1)
         jump pad(%inner, %pad, %fill, %rest, %length.sub(1))
 
     block pad(%inner: Ptr<W>, %pad: USize, %fill: Bytes, %from: Ptr<Byte>, %count: USize):

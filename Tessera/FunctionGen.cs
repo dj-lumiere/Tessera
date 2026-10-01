@@ -318,7 +318,7 @@ public sealed class FunctionGen
     // ── Places ──────────────────────────────────────────────────────────────
 
     /// The preset array a place chain starts from (`K`, `K[i]`, `K[i].f`), if any.
-    private PresetRef? PresetArrayRoot(Expr place) => place switch
+    private PresetRef? PresetArrayRoot(Expr place) => AsStride(place) switch
     {
         FieldExpr f => PresetArrayRoot(f.Base),
         IndexExpr ix => PresetArrayRoot(ix.Base),
@@ -327,9 +327,9 @@ public sealed class FunctionGen
     };
 
     /// Is `e` a place chain rooted at a pointer: `#p.f`, `#p[i]`, `#p.f[i].g`?
-    private bool IsPlaceChain(Expr e) => e switch
+    private bool IsPlaceChain(Expr e) => AsStride(e) switch
     {
-        FieldExpr f => f.Base is FieldExpr or IndexExpr ? IsPlaceChain(f.Base) : Infer(f.Base) is PtrType,
+        FieldExpr f => AsStride(f.Base) is FieldExpr or IndexExpr ? IsPlaceChain(f.Base) : Infer(f.Base) is PtrType,
         IndexExpr => true,
         _ => false,
     };
@@ -337,18 +337,18 @@ public sealed class FunctionGen
     /// The type stored at a place chain, without emitting anything.
     private DType? PlaceType(Expr e)
     {
-        switch (e)
+        switch (AsStride(e))
         {
             case FieldExpr f:
             {
-                DType? baseType = f.Base is FieldExpr or IndexExpr && IsPlaceChain(f.Base)
+                DType? baseType = AsStride(f.Base) is FieldExpr or IndexExpr && IsPlaceChain(f.Base)
                     ? PlaceType(f.Base)
                     : (Infer(f.Base) as PtrType)?.Pointee;
                 return baseType is RecordType s ? FieldOf(s, f.Name, f.Pos).Type : null;
             }
             case IndexExpr ix:
             {
-                if (ix.Base is FieldExpr or IndexExpr && IsPlaceChain(ix.Base))
+                if (AsStride(ix.Base) is FieldExpr or IndexExpr && IsPlaceChain(ix.Base))
                     return PlaceType(ix.Base);
                 return Infer(ix.Base) is PtrType { Pointee: { } t } ? t : null;
             }
@@ -357,7 +357,7 @@ public sealed class FunctionGen
         }
     }
 
-    private DType? PlacePointee(Expr place) => place switch
+    private DType? PlacePointee(Expr place) => AsStride(place) switch
     {
         FieldExpr or IndexExpr when IsPlaceChain(place) => PlaceType(place),
         _ => Infer(place) is PtrType { Pointee: var p } ? p : null,
@@ -393,13 +393,13 @@ public sealed class FunctionGen
     /// Emits the address of a place chain and returns it with the type stored there.
     private (string Addr, DType Type) PlaceAddress(Expr e)
     {
-        switch (e)
+        switch (AsStride(e))
         {
             case FieldExpr f:
             {
                 string baseAddr;
                 DType baseType;
-                if (f.Base is FieldExpr or IndexExpr && IsPlaceChain(f.Base))
+                if (AsStride(f.Base) is FieldExpr or IndexExpr && IsPlaceChain(f.Base))
                     (baseAddr, baseType) = PlaceAddress(f.Base);
                 else
                 {
@@ -427,13 +427,13 @@ public sealed class FunctionGen
             }
             case IndexExpr ix:
             {
-                if (ix.Base is FieldExpr or IndexExpr && IsPlaceChain(ix.Base))
+                if (AsStride(ix.Base) is FieldExpr or IndexExpr && IsPlaceChain(ix.Base))
                 {
                     var (baseAddr, baseType) = PlaceAddress(ix.Base);
                     if (baseType is PtrType)
-                        throw Err(ix.Pos, "this field holds a pointer; load it into a #value before indexing");
+                        throw Err(ix.Pos, "this field holds a pointer; load it into a #value before stepping it");
                     if (baseType is ArrayType)
-                        throw Err(ix.Pos, $"'[]' on a {baseType} steps over whole arrays; for an element use .get(i) / .set(i, v), or .to_ptr()[i]");
+                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .at(i), .get(i) / .set(i, v), or .to_ptr().stride(i)");
                     var i = EvalIndex(ix.Index);
                     _c.EnsureTypeDefined(baseType);
                     string elemAddr = EmitTmp($"getelementptr {baseType.Llvm}, ptr {baseAddr}, {i.Type.Llvm} {i.Op}");
@@ -447,12 +447,12 @@ public sealed class FunctionGen
                     return (elemAddr, baseType);
                 }
                 var b = EvalAny(ix.Base);
-                if (b.Type is not PtrType bp) throw Err(ix.Pos, $"only pointers can be indexed; this is {b.Type}");
-                if (bp.Pointee is null) throw Err(ix.Pos, "an opaque Ptr cannot be indexed; cast it to Ptr<T> first");
+                if (b.Type is not PtrType bp) throw Err(ix.Pos, $"only pointers have stride; this is {b.Type}");
+                if (bp.Pointee is null) throw Err(ix.Pos, "an Addr has no element type to stride over: cast it to Ptr<T> first, or step bytes with offset");
                 var idx = EvalIndex(ix.Index);
                 _c.EnsureTypeDefined(bp.Pointee);
-                // `Ptr<X>[i]` is the i-th X, whatever X is: on a Ptr<Array<T, N>> it steps over whole arrays (elements
-                // are .get / .set, or .to_ptr()[i]).
+                // `Ptr<X>.stride(i)` is the i-th X, whatever X is: on a Ptr<Array<T, N>> it steps over whole arrays
+                // (elements are .at / .get / .set, or .to_ptr().stride(i)).
                 return (EmitTmp($"getelementptr {bp.Pointee.Llvm}, ptr {b.Op}, {idx.Type.Llvm} {idx.Op}"), bp.Pointee);
             }
             default:
@@ -462,8 +462,9 @@ public sealed class FunctionGen
 
     private Val EvalIndex(Expr e)
     {
-        var i = Eval(e, Infer(e) ?? _c.USize);
-        if (i.Type is not IntType { IsNumber: true } it) throw Err(e.Pos, $"an index must be an integer, not {i.Type}");
+        DType literal = e is IntLit lit && lit.Value.Sign < 0 ? new IntType(_c.Target.Size, IntKind.Signed, isSize: true) : _c.USize;
+        var i = Eval(e, Infer(e) ?? literal);
+        if (i.Type is not IntType { IsSize: true } it) throw Err(e.Pos, $"stride takes a USize or an SSize, not {i.Type}");
         // GEP reads its index as signed, so a narrower unsigned index is widened to the pointer width first.
         int width = _c.Target.Size;
         if (it.IsUnsigned && it.Bits < width) return new Val(EmitTmp($"zext {it.Llvm} {i.Op} to i{width}"), _c.USize);
@@ -473,7 +474,7 @@ public sealed class FunctionGen
     /// The address of a place (`#p`, `#p.f`, `#p[i]`) and the type stored there. `opaqueAs` types an opaque `Ptr`.
     private (string Addr, DType Pointee) Address(Expr place, DType opaqueAs)
     {
-        if (place is FieldExpr or IndexExpr && IsPlaceChain(place)) return PlaceAddress(place);
+        if (AsStride(place) is FieldExpr or IndexExpr && IsPlaceChain(place)) return PlaceAddress(place);
         var v = EvalAny(place);
         if (v.Type is not PtrType p)
             throw Err(place.Pos, $"this is {v.Type}, not a pointer; memory is only reached through Ptr values");
@@ -508,13 +509,22 @@ public sealed class FunctionGen
             ? new FieldExpr(new PresetRef(null, o.Name, o.Pos) { Path = o.Path }, r.Name, r.Pos)
             : e;
 
+    /// `%p.stride(%n)` on a pointer is built in: the address %n Ts past %p (LLVM GEP's first index; on a
+    /// `Ptr<Array<T, N>>` that's %n whole arrays). It's a place like `%p.f`, so it chains (`%p.stride(%i).f`) and a
+    /// load or store through it keeps a dense record's real alignment. %n is a USize or an SSize (negative moves back).
+    private Expr AsStride(Expr e) =>
+        e is MethodCallExpr { Name: "stride", TypeArgs.Count: 0, Args: [var n] } m && Infer(m.Receiver) is PtrType
+            ? new IndexExpr(m.Receiver, n, m.Pos)
+            : e;
+
     /// The type an expression has on its own, or null if it depends on context (untyped literals, null).
     private DType? Infer(Expr e)
     {
-        e = AsField(e);
+        e = AsStride(AsField(e));
         switch (e)
         {
-            case IntLit or FloatLit or NullLit or StrLit or ArrayLit: return null;
+            case IntLit or FloatLit or NullLit or StrLit: return null;
+            case ArrayLit a: return Resolve(a.Type!);
             case BoolLit: return BoolType.Instance;
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
@@ -533,8 +543,6 @@ public sealed class FunctionGen
                 return vc.Type;
             case PresetRef r:
                 return InferPresetRef(r);
-            case NsCallExpr n when ArrayFrom(n) is { } from:
-                return from.Type;
             case CallExpr wf when IsTemplateCall(wf):
                 return VoidType.Instance;
             case CallExpr or NsCallExpr or MethodCallExpr:
@@ -582,7 +590,7 @@ public sealed class FunctionGen
     /// Evaluates `e` as a value of type `expected`.
     private Val Eval(Expr e, DType expected)
     {
-        e = AsField(e);
+        e = AsStride(AsField(e));
         Val v = e switch
         {
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
@@ -602,10 +610,7 @@ public sealed class FunctionGen
             SelectExpr s => EvalSelect(s, expected),
             RecordLit s => EvalRecordLit(s),
             TupleLit t => EvalTupleLit(t, expected),
-            ArrayLit a => throw Err(a.Pos, "an array literal makes a value only through Array<T, N>.from([...])"),
-            NsCallExpr n when ArrayFrom(n) is { } from => EvalArrayLit(from.Literal, from.Type),
-            ImplicitCallExpr { Name: "from", TypeArgs.Count: 0, Args: [ArrayLit lit] } when expected is ArrayType at =>
-                EvalArrayLit(lit, at),
+            ArrayLit a => EvalElementsLit(a),
             NsCallExpr or ImplicitCallExpr or ImplicitMemberExpr or PresetRef when VariantCaseOf(e, expected) is { } vc =>
                 EmitVariantCase(vc, e.Pos),
             ImplicitMemberExpr m => throw Err(m.Pos,
@@ -625,7 +630,7 @@ public sealed class FunctionGen
     /// When the parameter wants what is stored there, the error says to load it.
     private Val EvalArg(Expr e, DType expected)
     {
-        if (e is FieldExpr or IndexExpr && IsPlaceChain(e) && PlaceType(e) is { } t && Compatible(t, expected)
+        if (AsStride(e) is FieldExpr or IndexExpr && IsPlaceChain(e) && PlaceType(e) is { } t && Compatible(t, expected)
             && !(expected is PtrType { Pointee: { } pe } && pe.Equals(t)))
             throw Err(e.Pos, $"expected {expected}, found the place {new PtrType(t)}; read it first with .load()");
         return Eval(e, expected);
@@ -944,29 +949,27 @@ public sealed class FunctionGen
         return new Val("", VoidType.Instance);
     }
 
-    /// `Array<T, N>.from([a, b, ...])`, the one way an array literal becomes a value. It is built in because a
-    /// literal list can't be a routine parameter.
-    private (ArrayType Type, ArrayLit Literal)? ArrayFrom(NsCallExpr n) =>
-        n is { Name: "from", TypeArgs.Count: 0, Args: [ArrayLit lit] } && TryResolveOwner(n.Owner) is ArrayType at
-            ? (at, lit)
-            : null;
-
-    /// An array literal as a value of `arr`. A nested literal fills a nested array.
-    private Val EvalArrayLit(ArrayLit lit, ArrayType arr)
+    /// `Array<T, N> { a, b, c }` or `Vector<T, N> { a, b, c }`: N elements in order, each typed by T.
+    private Val EvalElementsLit(ArrayLit lit)
     {
-        if (lit.Elements.Count != arr.Count)
-            throw Err(lit.Pos, $"{arr} needs {arr.Count} element(s), got {lit.Elements.Count}");
-        _c.EnsureTypeDefined(arr);
+        var t = Resolve(lit.Type!);
+        var (elem, count, insert) = t switch
+        {
+            ArrayType a => (a.Elem, a.Count, "insertvalue"),
+            VectorType v => (v.Elem, v.Count, "insertelement"),
+            _ => throw Err(lit.Pos, $"only an Array or a Vector takes its elements in order; a record names its fields: {t} {{ name: value }}"),
+        };
+        if (lit.Elements.Count != count)
+            throw Err(lit.Pos, $"{t} needs {count} element(s), got {lit.Elements.Count}");
+        _c.EnsureTypeDefined(t);
         string acc = "poison";
         for (int i = 0; i < lit.Elements.Count; i++)
         {
-            var e = lit.Elements[i];
-            var v = e is ArrayLit inner && arr.Elem is ArrayType innerType
-                ? EvalArrayLit(inner, innerType)
-                : Eval(e, arr.Elem);
-            acc = EmitTmp($"insertvalue {arr.Llvm} {acc}, {arr.Elem.Llvm} {v.Op}, {i}");
+            var v = Eval(lit.Elements[i], elem);
+            string at = t is VectorType ? $"i32 {i}" : $"{i}";
+            acc = EmitTmp($"{insert} {t.Llvm} {acc}, {elem.Llvm} {v.Op}, {at}");
         }
-        return new Val(acc, arr);
+        return new Val(acc, t);
     }
 
     private Val EvalSelect(SelectExpr s, DType expected)
@@ -1410,7 +1413,7 @@ public sealed class FunctionGen
         string alignSuffix = "";
         Val Address(Expr e, DType t)
         {
-            if (e != access || e is not (FieldExpr or IndexExpr) || !IsPlaceChain(e)) return EvalArg(e, t);
+            if (e != access || AsStride(e) is not (FieldExpr or IndexExpr) || !IsPlaceChain(e)) return EvalArg(e, t);
             var (addr, pointee) = PlaceAddress(e);
             alignSuffix = AlignSuffix(addr);
             return new Val(addr, new PtrType(pointee));

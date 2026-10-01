@@ -66,7 +66,7 @@ require T: typename
 
     block probe(%index: USize, %first_tombstone: USize):
         %slots        : Ptr<USize> = %self.slots
-        %entry_idx    : USize      = %slots[%index].load()
+        %entry_idx    : USize      = %slots.stride(%index).load()
         %is_empty     : Bool       = %entry_idx.eq(SLOT_EMPTY)
         %is_tombstone : Bool       = %entry_idx.eq(SLOT_TOMBSTONE)
         when:
@@ -88,7 +88,7 @@ require T: typename
 
     block occupied_slot(%index: USize, %first_tombstone: USize, %entry_idx: USize):
         %hashes     : Ptr<U64> = %self.hashes
-        %entry_hash : U64      = %hashes[%entry_idx].load()
+        %entry_hash : U64      = %hashes.stride(%entry_idx).load()
         %hash_match : Bool     = %entry_hash.eq(%hash)
         branch %hash_match
             ? maybe_equal(%index, %first_tombstone, %entry_idx)
@@ -96,7 +96,7 @@ require T: typename
 
     block maybe_equal(%index: USize, %first_tombstone: USize, %entry_idx: USize):
         %keys      : Ptr<T> = %self.keys
-        %entry_key : T      = %keys[%entry_idx].load()
+        %entry_key : T      = %keys.stride(%entry_idx).load()
         %equal     : Bool   = %entry_key.eq(%key)
         branch %equal ? return(%index): next(%index, %first_tombstone)
 
@@ -117,7 +117,7 @@ require T: typename
         %hash      : U64        = %key.hash()
         %slot      : USize      = %self.slot(%key, %hash)
         %slots     : Ptr<USize> = %self.slots
-        %entry_idx : USize      = %slots[%slot].load()
+        %entry_idx : USize      = %slots.stride(%slot).load()
         %found     : Bool       = %entry_idx.lt(SLOT_TOMBSTONE)
         branch %found ? return(%entry_idx) : return(SLOT_EMPTY)
 
@@ -159,13 +159,13 @@ require T: typename, HashEqual<T>
 
     block check(%i: USize, %n: USize):
         %entry_states : Ptr<U8> = %self.entry_states.load()
-        %s            : U8      = %entry_states[%i].load()
+        %s            : U8      = %entry_states.stride(%i).load()
         %live         : Bool    = %s.eq(1)
         branch %live ? probe(%i, %n) : loop(%i.add(1), %n)
 
     block probe(%i: USize, %n: USize):
         %keys : Ptr<T> = %self.keys.load()
-        %key  : T      = %keys[%i].load()
+        %key  : T      = %keys.stride(%i).load()
         %has  : Bool   = %other.load().contains(%key)
         branch %has ? loop(%i.add(1), %n) : return(false)
 
@@ -218,8 +218,8 @@ require T: typename
     block clear_one(%i: USize, %old_keys: Ptr<T>, %old_hashes: Ptr<U64>, %old_entry_states: Ptr<U8>,
             %old_slots: Ptr<USize>, %old_count: USize, %new_keys: Ptr<T>, %new_hashes: Ptr<U64>,
             %new_entry_states: Ptr<U8>, %new_slots: Ptr<USize>, %new_capacity: USize):
-        %new_slots[%i].store(SLOT_EMPTY)
-        %new_entry_states[%i].store(0)
+        %new_slots.stride(%i).store(SLOT_EMPTY)
+        %new_entry_states.stride(%i).store(0)
         jump clear_loop(%i.add(1), %old_keys, %old_hashes, %old_entry_states, %old_slots,
                 %old_count, %new_keys, %new_hashes, %new_entry_states, %new_slots, %new_capacity)
 
@@ -244,7 +244,7 @@ require T: typename
 
     block move_one(%i: USize, %old_keys: Ptr<T>, %old_hashes: Ptr<U64>, %old_entry_states: Ptr<U8>,
             %old_slots: Ptr<USize>, %old_count: USize):
-        %s    : U8   = %old_entry_states[%i].load()
+        %s    : U8   = %old_entry_states.stride(%i).load()
         %live : Bool = %s.eq(1)
         branch %live
             ? insert_old(%i, %old_keys, %old_hashes, %old_entry_states, %old_slots, %old_count)
@@ -253,8 +253,8 @@ require T: typename
 
     block insert_old(%i: USize, %old_keys: Ptr<T>, %old_hashes: Ptr<U64>,
             %old_entry_states: Ptr<U8>, %old_slots: Ptr<USize>, %old_count: USize):
-        %key  : T   = %old_keys[%i].load()
-        %hash : U64 = %old_hashes[%i].load()
+        %key  : T   = %old_keys.stride(%i).load()
+        %hash : U64 = %old_hashes.stride(%i).load()
         %self.add_direct(%key, %hash)
         jump move_loop(%i.add(1), %old_keys, %old_hashes, %old_entry_states, %old_slots, %old_count)
 
@@ -303,7 +303,7 @@ require T: typename
     block entry():
         %slot      : USize      = %self.load().slot(%key, %hash)
         %slots     : Ptr<USize> = %self.slots.load()
-        %entry_idx : USize      = %slots[%slot].load()
+        %entry_idx : USize      = %slots.stride(%slot).load()
         %exists    : Bool       = %entry_idx.lt(SLOT_TOMBSTONE)
         branch %exists ? return(false) : add(%slot, %key, %hash)
 
@@ -313,10 +313,10 @@ require T: typename
         %hashes       : Ptr<U64>   = %self.hashes.load()
         %entry_states : Ptr<U8>    = %self.entry_states.load()
         %slots        : Ptr<USize> = %self.slots.load()
-        %keys[%new_idx].store(%key)
-        %hashes[%new_idx].store(%hash)
-        %entry_states[%new_idx].store(1)
-        %slots[%slot].store(%new_idx)
+        %keys.stride(%new_idx).store(%key)
+        %hashes.stride(%new_idx).store(%hash)
+        %entry_states.stride(%new_idx).store(1)
+        %slots.stride(%slot).store(%new_idx)
         %self.length.load().add(1).store_into(%self.length)
         %self.entries_count.store(%new_idx.add(1))
         return(true)
@@ -350,15 +350,15 @@ require T: typename
         %hash      : U64        = %key.hash()
         %slot      : USize      = %self.load().slot(%key, %hash)
         %slots     : Ptr<USize> = %self.slots.load()
-        %entry_idx : USize      = %slots[%slot].load()
+        %entry_idx : USize      = %slots.stride(%slot).load()
         %found     : Bool       = %entry_idx.lt(SLOT_TOMBSTONE)
         branch %found ? remove(%slot, %entry_idx) : return(false)
 
     block remove(%slot: USize, %entry_idx: USize):
         %slots        : Ptr<USize> = %self.slots.load()
         %entry_states : Ptr<U8>    = %self.entry_states.load()
-        %slots[%slot].store(SLOT_TOMBSTONE)
-        %entry_states[%entry_idx].store(0)
+        %slots.stride(%slot).store(SLOT_TOMBSTONE)
+        %entry_states.stride(%entry_idx).store(0)
         %self.length.load().sub(1).store_into(%self.length)
         return(true)
 

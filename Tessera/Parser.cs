@@ -842,12 +842,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     e = new FieldExpr(e, name.Text, pos);
             }
             else if (Is(TokenKind.LBracket))
-            {
-                var pos = Next().Pos;
-                var idx = ParseExpr();
-                Expect(TokenKind.RBracket, "']'");
-                e = new IndexExpr(e, idx, pos);
-            }
+                throw Error("'[]' is gone: %p.stride(%i) is the address %i Ts past %p, and .at(%i) / .get(%i) reach an element");
             else return e;
         }
     }
@@ -897,14 +892,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 return new TupleLit(items, t.Pos);
             }
             case TokenKind.LBracket:
-            {
-                Next();
-                var elems = new List<Expr>();
-                if (!Is(TokenKind.RBracket))
-                    do elems.Add(ParseExpr()); while (Accept(TokenKind.Comma));
-                Expect(TokenKind.RBracket, "']'");
-                return new ArrayLit(elems, t.Pos);
-            }
+                throw Error("an array literal names its type: Array<S32, 3> { 1, 2, 3 }");
             case TokenKind.Ident:
                 switch (t.Text)
                 {
@@ -955,6 +943,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         Expect(TokenKind.LBrace, "'{'");
         var fields = new List<(string, Expr, Pos)>();
+        // `Array<T, N> { a, b, c }` / `Vector<T, N> { a, b, c }`: elements in order, where a record names its fields.
+        if (!Is(TokenKind.RBrace) && !(Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon))
+        {
+            var elems = new List<Expr>();
+            do elems.Add(ParseExpr()); while (Accept(TokenKind.Comma));
+            Expect(TokenKind.RBrace, "'}'");
+            return new ArrayLit(elems, type.Pos) { Type = type };
+        }
         if (!Is(TokenKind.RBrace))
         {
             do

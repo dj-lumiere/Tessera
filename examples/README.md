@@ -11,7 +11,7 @@ Run one with `dotnet run --project Tessera -- run examples/<name>.tess`. Every p
 | [gcd](gcd.tess) | Helper routines, loop state in block parameters, dividing before multiplying to avoid overflow |
 | [fibonacci](fibonacci.tess) | Overflow: `add` panics, `add_checked` returns an `Option` |
 | [collatz](collatz.tess) | A nested loop split into two routines, best-so-far carried in block parameters |
-| [sieve](sieve.tess) | Heap memory: `alloc`, `zeroinit`, `[]` with `load` / `store`, `free` |
+| [sieve](sieve.tess) | Heap memory: `alloc`, `zeroinit`, `stride` with `load` / `store`, `free` |
 | [binary_search](binary_search.tess) | Preset arrays, returning `Option<USize>`, a three-way `when:` |
 | [caesar](caesar.tess) | `Byte` text, a stack buffer, `String.from_ptr` |
 | [insertion_sort](insertion_sort.tess) | `Array<T, N>` with `get` / `set`, and `List<S64>.sort` from the stdlib |

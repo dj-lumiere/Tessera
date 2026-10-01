@@ -70,23 +70,23 @@ routine main() -> S32
   passes where an `Addr` is expected; the other way takes `%a.cast<T>()`. `#` has no meaning (it was the pointer
   sigil until 2026-09-29).
 - `=` only binds. Memory is read and written with methods: `%v: S64 = %p.load()`, `%p.store(%v)`,
-  `%f: T = %p.field.load()`, `%p.field.store(%v)`, `%e: T = %p[%i].load()`, `%p[%i].store(%v)`. Places
-  (`%p.field`, `%p[%i]`) are addresses. An `Addr` has no `load` or `store`: cast it to say what's there, `%a.cast<U32>().load()`. Registers:
+  `%f: T = %p.field.load()`, `%p.field.store(%v)`, `%e: T = %p.stride(%i).load()`, `%p.stride(%i).store(%v)`. Places
+  (`%p.field`, `%p.stride(%i)`) are addresses. An `Addr` has no `load` or `store`: cast it to say what's there, `%a.cast<U32>().load()`. Registers:
   `volatile_load()` / `volatile_store(...)`. (`:=` and `%p = %v` are gone and rejected.) From the value's side,
   `%v.store_into(%p)` is `%p.store(%v)`, so a chain can end in memory: `%a.add(%b).store_into(%sum)`. A
   read-modify-write on one place reads left to right: `%self.length.load().add(1).store_into(%self.length)`, not
   `%self.length.store(%self.length.load().add(1))`. The load needn't come first: `%x.sub(%p.load()).store_into(%p)`
   (for a commutative op, put the load first: `%p.load().add(%x).store_into(%p)`). A literal receiver takes its type from the pointer
   (`0.store_into(%count)`).
-- Memory is never read implicitly. A place passed as an argument is its address, so `U8.from_byte(%p[%i])` is an
-  error: write `U8.from_byte(%p[%i].load())`.
+- Memory is never read implicitly. A place passed as an argument is its address, so `U8.from_byte(%p.stride(%i))` is an
+  error: write `U8.from_byte(%p.stride(%i).load())`.
 - A `Callable` value is called with `.call(args)`. One stored in a field is loaded first:
   `%free_fn: Callable<…> = %alloc.free_fn.load()`, then `%free_fn.call(%state, %raw)`. `%alloc.free_fn(...)` is an
   error.
 - A field of an SSA record value is read with plain `=`: `%key: K = %pair.key`.
 - `claim %p : Ptr<T>` claims an uninitialized slot for the routine call (a stack slot in practice); its type comes from the binding, which must be written `Ptr<T>` (anything else is a parse error), and the value goes in
   with `%p.store(%v)`, or `%v.store_into(%p)` at the end of the chain that makes it:
-  `List<S64>.construct(%alloc).store_into(%list)` (no `%list_val` for a single store). An array value comes from `Array<T, N>.from([1, 2, %x])` or `Array<T, N>.from_ptr(%first)`;
+  `List<S64>.construct(%alloc).store_into(%list)` (no `%list_val` for a single store). An array value comes from `Array<T, N> { 1, 2, %x }` or `Array<T, N>.from_ptr(%first)`;
   a bare `[1, 2]` isn't a value. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot.
 - Heap memory goes through an allocator: `allocate<T>(%alloc, %count)`, `%p.free(%alloc)`.
@@ -306,7 +306,7 @@ always `Result`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array<T, N>` | `from`, `from_ptr`, `get`, `set`, `shift_left`, `shift_right`, `copy` | index |
+| `Array<T, N>` | `Array<T, N> { a, b }` literal, `from_ptr`, `at`, `get`, `set`, `shift_left`, `shift_right`, `copy` | index |
 | `List<T>` | `push`, `pop`, `get`, `set`, `clear`, `reserve` | index |
 | `CircularList<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `get`, `set` | front to back |
 | `Dict<K, V>` | `put`, `get`, `contains`, `remove` | **insertion order (guaranteed)** |
@@ -341,10 +341,11 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 `.Absent`), with acronyms written as words (`Eof`, `FdWriter`, `Nan`). Routines, fields, blocks, and values are
 `snake_case`. Only presets and globals are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
 
-**Arrays and `[]`.** `[]` is address arithmetic: `%p[%i]` is the address of the i-th `T` of a `Ptr<T>`
-(`%p.stride(%n)` is the same step as a value method, `%n` an `SSize` that may be negative; `offset` counts bytes). On a
-`Ptr<Array<T, N>>` that is the i-th whole array, so array elements are `%arr.get(%i)` / `%arr.set(%i, %v)` (bounds
-checked), or `%arr.to_ptr()[%i].load()` unchecked. The same holds for array fields (`%node.keys.get(%i)`) and
+**Arrays and `stride`.** There is no `[]`. `%p.stride(%i)` is the address of the i-th `T` of a `Ptr<T>` (a
+`USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `%p.stride(%i).f` works. On a
+`Ptr<Array<T, N>>` that is the i-th whole array, so array elements are `%arr.get(%i)` / `%arr.set(%i, %v)` / `%arr.at(%i)`
+(bounds checked), or `%arr.to_ptr().stride(%i).load()` unchecked. Literals name their type: `Array<S32, 3> { 1, 2, 3 }`,
+`Vector<F32, 4> { ... }`. The same holds for array fields (`%node.keys.get(%i)`) and
 preset arrays (`K.get(%i)`).
 
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with

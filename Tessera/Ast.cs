@@ -218,7 +218,11 @@ public sealed record ClaimExpr(Pos Pos) : Expr(Pos);
 public sealed record RecordLit(TypeRef Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);
 
 /// `[a, b, c]` — the elements of `Array<T, N>.from([...])` or of a preset array.
-public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos);
+/// `Array<T, N> { a, b, c }` or `Vector<T, N> { a, b, c }`.
+public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
+{
+    public TypeRef? Type { get; init; }
+}
 
 /// `(%q, %r)`: a tuple of 2 to 4 items.
 public sealed record TupleLit(List<Expr> Items, Pos Pos) : Expr(Pos);
