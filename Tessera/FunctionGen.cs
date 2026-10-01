@@ -485,8 +485,20 @@ public sealed class FunctionGen
     private Val Lookup(ValueRef r)
     {
         if (_values.TryGetValue(r.Name, out var v)) return v;
+        if (!BoundInRoutine(r.Name))
+            throw Err(r.Pos, $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
         throw Err(r.Pos, $"'{r.Name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block arguments");
     }
+
+    /// Whether some block of this routine binds `name`: a parameter, a block parameter, or a binding.
+    private bool BoundInRoutine(string name) =>
+        _decl.Params.Any(p => p.Name == name)
+        || _decl.Blocks!.Any(b => b.Params.Any(p => p.Name == name) || b.Stmts.Any(s => s switch
+        {
+            BindStmt bind => bind.Name == name,
+            DestructureStmt d => d.Names.Any(n => n.Name == name),
+            _ => false,
+        }));
 
     /// `NAME.field` parses like `Type.PRESET`. When NAME is a global or preset rather than a type, it's a field of the
     /// place NAME names: `STATS.calls` is `FieldExpr(STATS, calls)`.
