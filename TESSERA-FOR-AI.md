@@ -227,12 +227,14 @@ routine main() -> S32
 
 **Tuples**
 
-- `(A, B)` to `(A, B, C, D)`: the type; `(%a, %b)`: a value; fields `item0` .. `item3`. Returning several values is
-  returning a tuple: `-> (U64, U64)`, `return((%q, %r))`.
+- `(A, B)` to `(A, B, C, D)`: the type; `{ %a, %b }`: a value where the type is known, braces like every aggregate
+  value; fields `item0` .. `item3`. Returning several values is returning a tuple: `-> (U64, U64)`,
+  `return({ %q, %r })`.
 - `%q, %r = div_rem(%a, %b)` takes a tuple apart, every item, no types. It's the only destructuring: a record's
   fields are read by name. Nested tuples come apart one level at a time.
-- A tuple of bare literals has no type: `(1, 2)` needs one from where it goes (`%t : (S64, S64) = (1, 2)`).
-- Parentheses only make tuples; there's no `(%a)` grouping. In `Callable<(A, B), R>` the first list is the parameters.
+- A tuple value takes its type from where it goes (`%t : (S64, S64) = { 1, 2 }`); `(1, 2)` in an expression is an error.
+- Parentheses make a tuple type and hold a call's arguments. Around one value they group nothing, so `(%a)` is `%a`
+  and `fmt` drops them. In `Callable<(A, B), R>` the first list is the parameters.
 - Use a record when the parts mean something (`quotient`, `remainder`); a tuple when they're just values.
 
 **Variants**

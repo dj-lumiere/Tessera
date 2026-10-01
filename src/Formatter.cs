@@ -17,6 +17,8 @@ namespace Tessera;
 ///   `? target` and `: target` on their own lines, 4 spaces further in, first.
 /// - a pointer type is written `@T`, not `Ptr<T>`, except where routines are declared on or called through the record
 ///   (`routine Ptr<T>.load`); comments and literals are left alone;
+/// - parentheses around one value, which group nothing in a language without operators, are dropped: `(%x).add(1)` is
+///   `%x.add(1)`; a call's arguments, a tuple type, and `(a, b)` (an error the builder reports) stay;
 /// - inside `routine Owner.name`, the owner type is written `Self` after the header names it (`List<T>` in a
 ///   `List<T>` routine, not `List<U>`); comments and literals are left alone.
 /// Formatting is idempotent: formatting formatted text changes nothing.
@@ -28,6 +30,7 @@ public static class Formatter
         lines = lines.Select(UseAt).ToList();
         lines = UseSelf(lines);
         lines = JoinContinuations(lines);
+        lines = lines.Select(DropGroupingParens).ToList();
         lines = Align(lines);
         lines = Space(lines);
         lines = DocBeforeAttributes(lines);
@@ -589,6 +592,79 @@ public static class Formatter
     /// Writes `Ptr<X>` as `@X` outside comments and literals. The record's own name stays where it is declared
     /// (`record Ptr<T>`), where a routine is declared on or called through it (`Ptr<X>.name`), and when qualified
     /// (`Standard::Core::Ptr<X>`).
+    // ── Grouping parentheses ─────────────────────────────────────────────────
+
+    /// Drops the parentheses around a single value where an expression starts (after `(`, `,`, `=`, `<-`, `?`, or a
+    /// `when` arm's `->`). A `(` right after a name, `>`, `)`, or `]` holds a call's arguments, and one after `:` or `<`
+    /// starts a type, so those stay; so does a group with a comma at its top level.
+    private static string DropGroupingParens(string line)
+    {
+        string trimmed = line.TrimStart();
+        bool signature = trimmed.StartsWith("routine ", StringComparison.Ordinal)
+                         || trimmed.StartsWith("private routine ", StringComparison.Ordinal)
+                         || trimmed.StartsWith("internal routine ", StringComparison.Ordinal);
+        var sb = new StringBuilder();
+        for (int i = 0; i < line.Length; i++)
+        {
+            char c = line[i];
+            if (c is '"' or '\'')
+            {
+                int end = SkipLiteral(line, i);
+                sb.Append(line, i, Math.Min(end + 1, line.Length) - i);
+                i = end;
+                continue;
+            }
+            if (c == '/' && i + 1 < line.Length && line[i + 1] == '/')
+            {
+                sb.Append(line, i, line.Length - i);
+                break;
+            }
+            if (c == '(' && OpensExpression(sb, signature) && MatchingParen(line, i) is int close)
+            {
+                string inner = line[(i + 1)..close];
+                if (inner.Trim().Length > 0 && TopLevelIndex(inner, 0, ",") < 0)
+                {
+                    sb.Append(DropGroupingParens(inner).Trim());
+                    i = close;
+                    continue;
+                }
+            }
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    private static bool OpensExpression(StringBuilder before, bool signature)
+    {
+        if (before.Length == 0) return false;
+        char last = before[^1];
+        if (char.IsLetterOrDigit(last) || last is '_' or '%' or '>' or ')' or ']' or '.')
+            return last == '>' && !signature && before.Length >= 2 && before[^2] == '-';
+        string text = before.ToString().TrimEnd();
+        if (text.Length == 0) return false;
+        if (text.EndsWith("->", StringComparison.Ordinal)) return !signature;
+        if (text.EndsWith("<-", StringComparison.Ordinal)) return true;
+        return text[^1] is '(' or '{' or ',' or '=' or '?';
+    }
+
+    /// The `)` closing the `(` at `open`, skipping literals; null if the line ends first.
+    private static int? MatchingParen(string s, int open)
+    {
+        int depth = 0;
+        for (int i = open; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c is '"' or '\'')
+            {
+                i = SkipLiteral(s, i);
+                continue;
+            }
+            if (c is '(' or '[' or '{') depth++;
+            else if (c is ')' or ']' or '}' && --depth == 0) return c == ')' ? i : null;
+        }
+        return null;
+    }
+
     private static string UseAt(string line)
     {
         var sb = new StringBuilder();

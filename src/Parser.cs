@@ -909,14 +909,16 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             }
             case TokenKind.LParen:
             {
-                // Parentheses only make tuples: there's nothing to group in a language without operators.
+                // Parentheses make a tuple type, `(S64, S64)`, and hold a call's arguments. Around one value they group
+                // nothing (there are no operators), so `(%x)` is `%x`, which `fmt` writes without them; every aggregate
+                // value, a tuple's included, is written with braces.
                 Next();
-                var items = new List<Expr>();
-                do items.Add(ParseExpr()); while (Accept(TokenKind.Comma));
+                var inner = ParseExpr();
+                if (Is(TokenKind.Comma))
+                    throw new CompileError(t.Pos, "a tuple value is written with braces where its type is known: { %a, %b }; "
+                                                  + "parentheses make a tuple type, (S64, S64)");
                 Expect(TokenKind.RParen, "')'");
-                if (items.Count is < MinTupleItems or > MaxTupleItems)
-                    throw new CompileError(t.Pos, $"a tuple has {MinTupleItems} to {MaxTupleItems} items, not {items.Count}");
-                return new TupleLit(items, t.Pos);
+                return inner;
             }
             case TokenKind.LBrace:
                 // `{ 1, 2, 3 }` / `{ x: 1 }`: the type comes from where the value goes, as with `.absent()`.

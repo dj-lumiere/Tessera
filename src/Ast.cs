@@ -233,9 +233,6 @@ public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
     public TypeRef? Type { get; init; }
 }
 
-/// `(%q, %r)`: a tuple of 2 to 4 items.
-public sealed record TupleLit(List<Expr> Items, Pos Pos) : Expr(Pos);
-
 // ── Terminators ─────────────────────────────────────────────────────────────
 
 public abstract record Terminator(Pos Pos);

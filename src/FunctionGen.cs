@@ -532,11 +532,6 @@ public sealed class FunctionGen
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
             case RecordLit sl: return sl.Type is null ? null : Resolve(sl.Type);
-            case TupleLit tl:
-            {
-                var items = tl.Items.Select(Infer).ToList();
-                return items.Any(i => i is null) ? null : _c.TupleOf(items!, tl.Pos);
-            }
             case SelectExpr se: return Infer(se.IfTrue) ?? Infer(se.IfFalse);
             case FieldExpr or IndexExpr when IsPlaceChain(e):
                 return PlaceType(e) is { } pt ? new PtrType(pt) : null;
@@ -612,7 +607,6 @@ public sealed class FunctionGen
             FieldExpr f => ExtractField(f),
             SelectExpr s => EvalSelect(s, expected),
             RecordLit s => EvalRecordLit(s, expected),
-            TupleLit t => EvalTupleLit(t, expected),
             ArrayLit a => EvalElementsLit(a, expected),
             NsCallExpr or ImplicitCallExpr or ImplicitMemberExpr or PresetRef when VariantCaseOf(e, expected) is { } vc =>
                 EmitVariantCase(vc, e.Pos),
@@ -958,6 +952,7 @@ public sealed class FunctionGen
     private Val EvalElementsLit(ArrayLit lit, DType expected)
     {
         var t = lit.Type is null ? expected : Resolve(lit.Type);
+        if (lit.Type is null && t is RecordType { IsTuple: true } tuple) return EvalTupleLit(lit, tuple);
         var (elem, count, insert) = t switch
         {
             ArrayType a => (a.Elem, a.Count, "insertvalue"),
@@ -985,17 +980,17 @@ public sealed class FunctionGen
         return new Val(EmitTmp($"select i1 {c.Op}, {expected.Llvm} {a.Op}, {expected.Llvm} {b.Op}"), expected);
     }
 
-    /// `(%a, %b)`: each item takes the type the expected tuple has in its place.
-    private Val EvalTupleLit(TupleLit lit, DType expected)
+    /// `{ %a, %b }` where a tuple is expected: each item takes the type the tuple has in its place.
+    private Val EvalTupleLit(ArrayLit lit, RecordType s)
     {
-        if (expected is not RecordType { IsTuple: true } s || s.Args.Count != lit.Items.Count)
-            throw Mismatch(lit.Pos, expected, $"a tuple of {lit.Items.Count} items");
+        if (s.Args.Count != lit.Elements.Count)
+            throw Mismatch(lit.Pos, s, $"a tuple of {lit.Elements.Count} items");
         _c.EnsureTypeDefined(s);
         var shape = _c.Shape(s);
         string acc = "poison";
-        for (int i = 0; i < lit.Items.Count; i++)
+        for (int i = 0; i < lit.Elements.Count; i++)
         {
-            var v = Eval(lit.Items[i], s.Args[i]);
+            var v = Eval(lit.Elements[i], s.Args[i]);
             acc = EmitTmp($"insertvalue {s.Llvm} {acc}, {s.Args[i].Llvm} {v.Op}, {shape.ValuePath(i)}");
         }
         return new Val(acc, s);
@@ -1198,12 +1193,12 @@ public sealed class FunctionGen
     }
 
     /// Whether an untyped literal can take `t`: an integer literal a number type, a float literal a float type, a
-    /// bare `{ a, b }` an Array or a Vector, a bare `{ x: a }` a record.
+    /// bare `{ a, b }` an Array, a Vector, or a tuple, a bare `{ x: a }` a record.
     private static bool LiteralCanBe(Expr literal, DType? t) => literal switch
     {
         IntLit => t is IntType { IsNumber: true },
         FloatLit => t is FloatType,
-        ArrayLit => t is ArrayType or VectorType,
+        ArrayLit => t is ArrayType or VectorType or RecordType { IsTuple: true },
         RecordLit => t is RecordType,
         _ => t is not null,
     };
