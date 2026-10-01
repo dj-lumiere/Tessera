@@ -35,7 +35,9 @@ routine F128.atan(%self: Self) -> Self
     block entry():
         %nan   : Bool = %self.is_nan()
         %quiet : Self = f128_of(f128_quiet(%self.bits()))
-        branch %nan ? return(%quiet) : continue
+        branch %nan
+            ? return(%quiet)
+            : continue
         %bits : U128 = %self.bits()
         %sign : U128 = %bits.bitand(F128_SIGN)
         %hi   : U64  = %bits.shr(64).to_u64().bitand(0x7FFFFFFFFFFFFFFF)
@@ -68,26 +70,34 @@ routine F128.atan(%self: Self) -> Self
         %kd    : U128            = cm_atan_join(%red.kd2, %red.kd1)
         %f     : U128            = cm_atan_fast_core(%red.kn, %kd, %red.dn)
         %table : Bool            = %red.isct.ne(0).bitor(%red.g)
-        branch %table ? with_table(%red, %f, %sign) : direct(%red, %f, %sign)
+        branch %table
+            ? with_table(%red, %f, %sign)
+            : direct(%red, %f, %sign)
 
     // atan|x| = PHI0[isct] + f, or π/2 - that past 1
     block with_table(%red: CmAtanReduction, %f: U128, %sign: U128):
-        %placed    : CmAtanU192    = cm_atan_place(%f, %red.dn.add(1))
-        %phi       : CmAtanU192    = cm_atan_row_top(CM_ATAN_PHI0.to_ptr(), %red.isct)
-        %angle     : CmAtanU192    = cm_atan_u192_add(%phi, %placed)
-        %half_pi   : CmAtanU192    = cm_atan_row_top(CM_ATAN_QOFF.to_ptr(), 1)
-        %reflected : CmAtanU192    = cm_atan_u192_sub(%half_pi, %angle)
-        %final     : CmAtanU192    = %red.g ? %reflected : %angle
-        %rounded   : CmAtanRounded = cm_atan_round_fixed(%final)
-        %result    : Self          = f128_of(%rounded.bits.bitor(%sign))
-        %hard      : Bool          = %rounded.hard
-        branch %hard ? accurate(%red, %sign) : return(%result)
+        %placed    : CmAtanU192 = cm_atan_place(%f, %red.dn.add(1))
+        %phi       : CmAtanU192 = cm_atan_row_top(CM_ATAN_PHI0.to_ptr(), %red.isct)
+        %angle     : CmAtanU192 = cm_atan_u192_add(%phi, %placed)
+        %half_pi   : CmAtanU192 = cm_atan_row_top(CM_ATAN_QOFF.to_ptr(), 1)
+        %reflected : CmAtanU192 = cm_atan_u192_sub(%half_pi, %angle)
+        %final     : CmAtanU192 = %red.g
+            ? %reflected
+            : %angle
+        %rounded : CmAtanRounded = cm_atan_round_fixed(%final)
+        %result  : Self          = f128_of(%rounded.bits.bitor(%sign))
+        %hard    : Bool          = %rounded.hard
+        branch %hard
+            ? accurate(%red, %sign)
+            : return(%result)
 
     block direct(%red: CmAtanReduction, %f: U128, %sign: U128):
         %rounded : CmAtanRounded = cm_atan_round_direct(%f, %red.dn)
         %result  : Self          = f128_of(%rounded.bits.bitor(%sign))
         %hard    : Bool          = %rounded.hard
-        branch %hard ? accurate(%red, %sign) : return(%result)
+        branch %hard
+            ? accurate(%red, %sign)
+            : return(%result)
 
     block accurate(%red: CmAtanReduction, %sign: U128):
         %r : Self = cm_atan_accurate(%red, %sign)
@@ -98,12 +108,16 @@ routine F128.atan(%self: Self) -> Self
 routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
     block entry():
         %above : Bool = %xn.ge(0x3FFF)
-        branch %above ? above_one() : below_one()
+        branch %above
+            ? above_one()
+            : below_one()
 
     block below_one():
         %e   : U64  = 0x3FFF.sub(%xn)
         %far : Bool = %e.gt(7)
-        branch %far ? small(%e) : table_below(%e.to_s64())
+        branch %far
+            ? small(%e)
+            : table_below(%e.to_s64())
 
     // |x| < 2^-7: kn / kd = |x| itself
     block small(%e: U64):
@@ -136,7 +150,9 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
     block above_one():
         %e   : U64  = %xn.sub(0x3FFF)
         %far : Bool = %e.gt(6)
-        branch %far ? large(%e) : table_above(%e.to_s64())
+        branch %far
+            ? large(%e)
+            : table_above(%e.to_s64())
 
     // |x| >= 2^7: kn / kd = 1 / |x|
     block large(%e: U64):
@@ -159,9 +175,11 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
         %first_tn : U64   = CM_ATAN_TN.get(%first)
         %past     : U128  = %xa.mul_wrap(%first_tn.to_u128())
         %over     : Bool  = %past.shr(64).to_u64().bitand(%limit).ne(0)
-        %isct     : USize = %over ? %first.sub_wrap(1) : %first
-        %tn       : U64   = CM_ATAN_TN.get(%isct)
-        %t        : U128  = %xa.mul_wrap(%tn.to_u128())
+        %isct     : USize = %over
+            ? %first.sub_wrap(1)
+            : %first
+        %tn : U64  = CM_ATAN_TN.get(%isct)
+        %t  : U128 = %xa.mul_wrap(%tn.to_u128())
         // kn = -(t << e) with its top bit flipped, normalized
         %neg    : U128            = 0.sub_wrap(%t.shl(%e.to_u128()))
         %knh    : U64             = %neg.shr(64).to_u64().bitxor(0x8000000000000000)
@@ -183,7 +201,9 @@ routine cm_atan_accurate(%red: CmAtanReduction, %sign: U128) -> F128
         %f : @U64 = %f_buf.cast<U64>()
         cm_atan_accurate_core(%red, %f)
         %table : Bool = %red.isct.ne(0).bitor(%red.g)
-        branch %table ? with_table(%f) : finish(%f, %red.dn)
+        branch %table
+            ? with_table(%f)
+            : finish(%f, %red.dn)
 
     block with_table(%f: @U64):
         %dn : S64 = %red.dn
@@ -192,7 +212,9 @@ routine cm_atan_accurate(%red: CmAtanReduction, %sign: U128) -> F128
         %phi : @U64  = CM_ATAN_PHI0.to_ptr().stride(%row)
         cm_atan_limbs_add(%f, %phi, %f, 6)
         %inverted : Bool = %red.g
-        branch %inverted ? reflect(%f) : finish(%f, -1)
+        branch %inverted
+            ? reflect(%f)
+            : finish(%f, -1)
 
     // π/2 - f
     block reflect(%f: @U64):

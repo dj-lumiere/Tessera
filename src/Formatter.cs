@@ -13,8 +13,9 @@ namespace Tessera;
 ///   fields, choice members, variant cases, `when` arms) align them.
 /// - an inline comment sits exactly two spaces after its code; comments are never aligned with each other.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 8 spaces
-///   further in; a line with nowhere to break (a comment, one long argument) stays as it is. A long `branch` puts its
-///   `? target` and `: target` on their own lines, 4 spaces further in, first.
+///   further in; a line with nowhere to break (a comment, one long argument) stays as it is;
+/// - a `branch`, and a select that is a binding's or a claim's whole value, always put `? a` and `: b` on their own
+///   lines, 4 spaces further in, so the two outcomes sit one above the other; a select inside an argument stays.
 /// - a pointer type is written `@T`, not `Ptr<T>`, except where routines are declared on or called through the record
 ///   (`routine Ptr<T>.load`); comments and literals are left alone;
 /// - parentheses around one value, which group nothing in a language without operators, are dropped: `(%x).add(1)` is
@@ -35,6 +36,7 @@ public static class Formatter
         lines = UseSelf(lines);
         lines = JoinContinuations(lines);
         lines = OrderDeclarations(lines);
+        lines = SplitSelects(lines);
         lines = lines.Select(DropGroupingParens).ToList();
         lines = Align(lines);
         lines = Space(lines);
@@ -459,6 +461,54 @@ public static class Formatter
         if (colon < 0)   // the `:` target is already on the next line
             return [line[..question], pad + "? " + line[(question + 3)..].Trim()];
         return [line[..question], pad + "? " + line[(question + 3)..colon].Trim(), pad + ": " + line[(colon + 3)..].Trim()];
+    }
+
+    // ── Selects and branches ─────────────────────────────────────────────
+
+    /// Writes every `branch %c ? a : b`, and every `%x : T = %c ? a : b` / `claim %p : @T <- %c ? a : b`, on three
+    /// lines: the condition, then `? a` and `: b` 4 spaces further in. Arms already on their own lines are joined first,
+    /// so every such statement comes out the same way. The lexer reads a line starting with `?` or `:` as the end of
+    /// the one above, so the meaning doesn't change.
+    private static List<string> SplitSelects(List<string> lines)
+    {
+        var joined = new List<string>();
+        foreach (var line in lines)
+        {
+            string trimmed = line.TrimStart();
+            bool arm = trimmed.StartsWith("? ") || trimmed.StartsWith(": ");
+            if (arm && joined.Count > 0 && joined[^1].Length > 0 && !joined[^1].TrimStart().StartsWith("//"))
+            {
+                // A comment on the line above (where SplitSelect puts one) moves to the end of the joined line.
+                string previous = joined[^1];
+                int comment = TopLevelComment(previous);
+                joined[^1] = comment < 0
+                    ? previous.TrimEnd() + " " + trimmed
+                    : previous[..comment].TrimEnd() + " " + trimmed + "  " + previous[comment..];
+            }
+            else
+                joined.Add(line);
+        }
+        return joined.SelectMany(SplitSelect).ToList();
+    }
+
+    private static string[] SplitSelect(string line)
+    {
+        string trimmed = line.TrimStart();
+        if (trimmed.StartsWith("//")) return [line];
+        int comment = TopLevelComment(line);
+        string code = comment >= 0 ? line[..comment].TrimEnd() : line;
+        string trailing = comment >= 0 ? "  " + line[comment..] : "";
+        int from;
+        if (trimmed.StartsWith("branch ")) from = 0;
+        else if (trimmed.StartsWith("claim ") && TopLevelIndex(code, 0, "<-") is var arrow and >= 0) from = arrow + 2;
+        else if (SplitBinding(trimmed) is not null && TopLevelIndex(code, 0, "=") is var eq and >= 0) from = eq + 1;
+        else return [line];
+        int question = TopLevelIndex(code, from, " ? ");
+        if (question < 0) return [line];
+        int colon = TopLevelIndex(code, question + 3, " : ");
+        if (colon < 0) return [line];
+        string pad = new(' ', Indent(line) + 4);
+        return [code[..question] + trailing, pad + "? " + code[(question + 3)..colon].Trim(), pad + ": " + code[(colon + 3)..].Trim()];
     }
 
     /// A continuation line (inside a bracket opened above) breaks after its own top-level commas, keeping its indent.

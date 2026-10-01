@@ -139,7 +139,8 @@ routine main() -> S32
   `branch %failed ? panic(TrapCode.AllocFailed) : continue`. Use it for guards instead of a block that only receives
   the values the rest needs. It is not C's "next iteration" (that's `jump loop(...)`), and a block still ends with a
   real terminator.
-- A long `branch` continues on the next line when that line starts with `?` or `:`.
+- A line that starts with `?` or `:` continues the one above. `fmt` writes every `branch`, and every select that is a
+  binding's or claim's whole value, on three lines: the condition, then `? a` and `: b` 4 spaces further in.
 - An integer `when %v:` needs an `else` arm. A `when %v:` on a choice without `else` must list every member. An arm may
   list several values (`b'+', b'-' -> sign()`); there are no range patterns, so test ranges in `when:` with
   `between` / `in_range`.

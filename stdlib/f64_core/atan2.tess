@@ -185,34 +185,52 @@ routine F64.atan2(%self: Self, %other: Self) -> Self
         %yodd    : Bool = %aiy.eq(0).bitor(%aiy.ge(0x7FF0000000000000))
         %xodd    : Bool = %aix.eq(0).bitor(%aix.ge(0x7FF0000000000000))
         %special : Bool = %yodd.bitor(%xodd)
-        branch %special ? return(cm_f64_atan2_special(%self, %other)) : continue
+        branch %special
+            ? return(cm_f64_atan2_special(%self, %other))
+            : continue
         %sy  : U64  = %iy.shr(63)
         %sx  : U64  = %ix.shr(63)
         %gt  : U64  = %aix.lt(%aiy).to_u64()
         %dxy : U64  = %aix.sub_wrap(%aiy).bitxor(U64.sub_wrap(0, %gt))
         %far : Bool = %dxy.ge(0x0350000000000000)  // the exponents differ by 53 or more
-        branch %far ? return(cm_f64_atan2_accurate(%self, %other)) : fast(%sy, %sx, %gt)
+        branch %far
+            ? return(cm_f64_atan2_accurate(%self, %other))
+            : fast(%sy, %sx, %gt)
 
     // offset + atan(j/64) + atan((ym - xm j/64) / (xm + ym j/64)), with xm = max(|x|, |y|) and ym the other
     block fast(%sy: U64, %sx: U64, %gt: U64):
-        %swap : Bool  = %self.abs().gt(%other.abs())
-        %xm0  : Self  = %swap ? %self.abs() : %other.abs()
-        %ym0  : Self  = %swap ? %other.abs() : %self.abs()
-        %cs   : Self  = %gt.bitxor(%sx).bitxor(%sy).ne(0) ? -1.0 : 1.0
-        %kw   : USize = %sx.shl(2).bitor(%sy.shl(1)).bitor(%gt).to_usize()
-        %jj   : Self  = %ym0.div(%xm0).add(2.0078125)
-        %jt   : USize = %jj.bits().shr(45).bitand(127).to_usize()
-        %fh0  : Self  = Self.from_bits(CM_F64_ATAN2_F2H.get(%jt)).mul(%cs)
-        %fl0  : Self  = Self.from_bits(CM_F64_ATAN2_F2L.get(%jt)).mul(%cs)
-        %fh   : Self  = %fh0.add(Self.from_bits(CM_F64_ATAN2_OH.get(%kw)))
-        %fl   : Self  = %fl0.add(Self.from_bits(CM_F64_ATAN2_OL.get(%kw)))
+        %swap : Bool = %self.abs().gt(%other.abs())
+        %xm0  : Self = %swap
+            ? %self.abs()
+            : %other.abs()
+        %ym0 : Self = %swap
+            ? %other.abs()
+            : %self.abs()
+        %cs : Self = %gt.bitxor(%sx).bitxor(%sy).ne(0)
+            ? -1.0
+            : 1.0
+        %kw  : USize = %sx.shl(2).bitor(%sy.shl(1)).bitor(%gt).to_usize()
+        %jj  : Self  = %ym0.div(%xm0).add(2.0078125)
+        %jt  : USize = %jj.bits().shr(45).bitand(127).to_usize()
+        %fh0 : Self  = Self.from_bits(CM_F64_ATAN2_F2H.get(%jt)).mul(%cs)
+        %fl0 : Self  = Self.from_bits(CM_F64_ATAN2_F2L.get(%jt)).mul(%cs)
+        %fh  : Self  = %fh0.add(Self.from_bits(CM_F64_ATAN2_OH.get(%kw)))
+        %fl  : Self  = %fl0.add(Self.from_bits(CM_F64_ATAN2_OL.get(%kw)))
         // scale tiny operands up, and huge ones down (unless j = 0)
-        %tiny : Bool           = %xm0.lt(0x1p-920)
-        %huge : Bool           = %xm0.gt(0x1p1022).bitand(%jt.ne(0))
-        %xm1  : Self           = %tiny ? %xm0.mul(0x1p920) : %xm0
-        %ym1  : Self           = %tiny ? %ym0.mul(0x1p920) : %ym0
-        %xm   : Self           = %huge ? %xm1.mul(0.5) : %xm1
-        %ym   : Self           = %huge ? %ym1.mul(0.5) : %ym1
+        %tiny : Bool = %xm0.lt(0x1p-920)
+        %huge : Bool = %xm0.gt(0x1p1022).bitand(%jt.ne(0))
+        %xm1  : Self = %tiny
+            ? %xm0.mul(0x1p920)
+            : %xm0
+        %ym1 : Self = %tiny
+            ? %ym0.mul(0x1p920)
+            : %ym0
+        %xm : Self = %huge
+            ? %xm1.mul(0.5)
+            : %xm1
+        %ym : Self = %huge
+            ? %ym1.mul(0.5)
+            : %ym1
         %t0   : Self           = Self.from_bits(CM_F64_ATAN2_T2.get(%jt))
         %zn   : Self           = %t0.neg().mul_add(%xm, %ym)
         %zd   : Self           = %t0.mul_add(%ym, %xm)
@@ -228,7 +246,9 @@ routine F64.atan2(%self: Self, %other: Self) -> Self
         %lb   : Self           = %s.hi.add(%rl.sub(%eps))
         %ub   : Self           = %s.hi.add(%rl.add(%eps))
         %sure : Bool           = %lb.eq(%ub)
-        branch %sure ? return(%ub) : second(%xm, %ym, %t0, %cs, %fh, %fl)
+        branch %sure
+            ? return(%ub)
+            : second(%xm, %ym, %t0, %cs, %fh, %fl)
 
     // the same reduction with z in double-double
     block second(%xm: Self, %ym: Self, %t0: Self, %cs: Self, %fh: Self, %fl: Self):
@@ -243,7 +263,9 @@ routine F64.atan2(%self: Self, %other: Self) -> Self
         %dt   : Self           = %ym.sub(%nh0)
         %y1   : Self           = %dt.add(%nh0)
         %lost : Bool           = %y1.ne(%ym)
-        %nlo  : Self           = %lost ? %ym.sub(%y1).sub(%nl0) : %nl0.neg()
+        %nlo  : Self           = %lost
+            ? %ym.sub(%y1).sub(%nl0)
+            : %nl0.neg()
         %n    : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(%dt, %nlo)
         %zh0  : Self           = %n.hi.mul(%rdh)
         %z2   : Self           = %zh0.mul(%zh0)
@@ -259,7 +281,9 @@ routine F64.atan2(%self: Self, %other: Self) -> Self
         %lb   : Self           = %f.hi.add(%f.lo.sub(%eps))
         %ub   : Self           = %f.hi.add(%f.lo.add(%eps))
         %sure : Bool           = %lb.eq(%ub)
-        branch %sure ? return(%ub) : return(cm_f64_atan2_accurate(%self, %other))
+        branch %sure
+            ? return(%ub)
+            : return(cm_f64_atan2_accurate(%self, %other))
 
 /// atan2 when a coordinate is zero, infinite or NaN.
 routine cm_f64_atan2_special(%y: F64, %x: F64) -> F64
@@ -280,11 +304,15 @@ routine cm_f64_atan2_special(%y: F64, %x: F64) -> F64
 
     // the first NaN operand wins, quiet, like x86's y + x
     block nan():
-        branch %y.is_nan() ? return(%y.add(%y)) : return(%x.add(%x))
+        branch %y.is_nan()
+            ? return(%y.add(%y))
+            : return(%x.add(%x))
 
     block x_inf(%yinf: Bool):
         %xneg : Bool = %x.lt(0.0)
-        branch %yinf ? both_inf(%xneg) : continue
+        branch %yinf
+            ? both_inf(%xneg)
+            : continue
         branch %xneg
             ? return(F64.copysign(0x1.921fb54442d18p+1,
                     %y).add(F64.copysign(0x1.1a62633145c07p-53, %y)))
@@ -329,10 +357,14 @@ routine cm_f64_atan2_accurate(%y: F64, %x: F64) -> F64
     block entry():
         %t    : F64  = %y.div(%x)
         %zero : Bool = %t.eq(0.0)
-        branch %zero ? underflow(%t) : continue
+        branch %zero
+            ? underflow(%t)
+            : continue
         %corr  : F64  = %t.mul_add(%x, %y.neg())
         %exact : Bool = %corr.eq(0.0).bitand(%x.gt(0.0))
-        branch %exact ? exact(%t) : general()
+        branch %exact
+            ? exact(%t)
+            : general()
 
     // y/x underflows to zero
     block underflow(%t: F64):
@@ -346,29 +378,45 @@ routine cm_f64_atan2_accurate(%y: F64, %x: F64) -> F64
     // t = y/x exactly, x > 0: for a tiny t, atan(t) is t minus a hair
     block exact(%t: F64):
         %small : Bool = %t.abs().le(0x1.d12ed0af1a27fp-27)
-        branch %small ? continue : general()
+        branch %small
+            ? continue
+            : general()
         %big : Bool = %y.abs().ge(0x1p-915)
-        branch %big ? return(%t.mul_add(-0x1p-54, %t)) : continue
+        branch %big
+            ? return(%t.mul_add(-0x1p-54, %t))
+            : continue
         %corr2 : F64 = %t.mul(0x1p105).mul_add(%x, %y.neg().mul(0x1p105))
-        branch %corr2.eq(0.0) ? return(%t.mul_add(-0x1p-54, %t)) : general()
+        branch %corr2.eq(0.0)
+            ? return(%t.mul_add(-0x1p-54, %t))
+            : general()
 
     block general():
-        %inv  : Bool           = %y.abs().gt(%x.abs())
-        %num  : F64            = %inv ? %x : %y
-        %den  : F64            = %inv ? %y : %x
+        %inv : Bool = %y.abs().gt(%x.abs())
+        %num : F64  = %inv
+            ? %x
+            : %y
+        %den : F64 = %inv
+            ? %y
+            : %x
         %z    : CmF64Atan2Tint = cm_f64_atan2_div(cm_f64_atan2_from_f64(%num),
                 cm_f64_atan2_from_f64(%den))
         %tiny : Bool           = %inv.bitnot().bitand(%x.gt(0.0)).bitand(%z.ex.le(-96))
-        branch %tiny ? tiny(%z) : rational(%inv, %z)
+        branch %tiny
+            ? tiny(%z)
+            : rational(%inv, %z)
 
     // atan(y/x) rounds like y/x nudged slightly toward zero
     block tiny(%z: CmF64Atan2Tint):
-        %zl  : U64  = %z.l.sub_wrap(2)
-        %zh0 : U64  = %z.hm.shr(64).to_u64()
-        %zm0 : U64  = %z.hm.to_u64_wrap()
-        %zm  : U64  = %zl.lt(2) ? %zm0.sub_wrap(1) : %zm0
-        %zh  : U64  = %zm.lt(1) ? %zh0.sub_wrap(1) : %zh0
-        %hm  : U128 = %zh.to_u128().shl(64).bitor(%zm.to_u128())
+        %zl  : U64 = %z.l.sub_wrap(2)
+        %zh0 : U64 = %z.hm.shr(64).to_u64()
+        %zm0 : U64 = %z.hm.to_u64_wrap()
+        %zm  : U64 = %zl.lt(2)
+            ? %zm0.sub_wrap(1)
+            : %zm0
+        %zh : U64 = %zm.lt(1)
+            ? %zh0.sub_wrap(1)
+            : %zh0
+        %hm : U128 = %zh.to_u128().shl(64).bitor(%zm.to_u128())
         return(cm_f64_atan2_to_f64(CmF64Atan2Tint { hm: %hm, l: %zl, ex: %z.ex, sgn: %z.sgn }, 1))
 
     // z P(z) / Q(z) for the positive z, by Horner's rule from the top coefficients
@@ -379,7 +427,9 @@ routine cm_f64_atan2_accurate(%y: F64, %x: F64) -> F64
     block horner(%inv: Bool, %sz: U64, %za: CmF64Atan2Tint, %i: USize, %p: CmF64Atan2Tint,
             %q: CmF64Atan2Tint):
         %done : Bool = %i.eq(0)
-        branch %done ? quotient(%inv, %sz, %za, %p, %q) : continue
+        branch %done
+            ? quotient(%inv, %sz, %za, %p, %q)
+            : continue
         %k  : USize          = %i.sub(1)
         %pz : CmF64Atan2Tint = cm_f64_atan2_mul(%p, %za)
         %qz : CmF64Atan2Tint = cm_f64_atan2_mul(%q, %za)
@@ -391,13 +441,17 @@ routine cm_f64_atan2_accurate(%y: F64, %x: F64) -> F64
             %q: CmF64Atan2Tint):
         %r : CmF64Atan2Tint = cm_f64_atan2_div(cm_f64_atan2_mul(%p, %za), %q)
         %a : CmF64Atan2Tint = CmF64Atan2Tint { hm: %r.hm, l: %r.l, ex: %r.ex, sgn: %sz }
-        branch %inv ? invert(%a) : quadrant(%a, 662)
+        branch %inv
+            ? invert(%a)
+            : quadrant(%a, 662)
 
     // +-pi/2 - atan(x/y)
     block invert(%a: CmF64Atan2Tint):
         %pi2 : CmF64Atan2Tint = cm_f64_atan2_pi(1)
         %pos : Bool           = %a.sgn.eq(0)
-        branch %pos ? minus_pos(%a, %pi2) : minus_neg(%a, %pi2)
+        branch %pos
+            ? minus_pos(%a, %pi2)
+            : minus_neg(%a, %pi2)
 
     // pi/2 - atan(x/y)
     block minus_pos(%a: CmF64Atan2Tint, %pi2: CmF64Atan2Tint):
@@ -412,7 +466,9 @@ routine cm_f64_atan2_accurate(%y: F64, %x: F64) -> F64
     // now -pi/2 < z < pi/2; a negative x moves it to the opposite quadrant
     block quadrant(%a: CmF64Atan2Tint, %err: U64):
         %xneg : Bool = %x.lt(0.0)
-        branch %xneg ? continue : return(cm_f64_atan2_to_f64(%a, %err))
+        branch %xneg
+            ? continue
+            : return(cm_f64_atan2_to_f64(%a, %err))
         %pi  : CmF64Atan2Tint = cm_f64_atan2_pi(2)
         %pos : Bool           = %a.sgn.eq(0)
         branch %pos
@@ -467,27 +523,37 @@ routine cm_f64_atan2_mul(%a: CmF64Atan2Tint, %b: CmF64Atan2Tint) -> CmF64Atan2Ti
         %l0 : U64 = %rm1.to_u64_wrap()
         %t1 : U64 = %rm1.shr(64).to_u64()
         %m1 : U64 = %m0.add_wrap(%t1)
-        %h1 : U64 = %m1.lt(%t1) ? %h0.add_wrap(1) : %h0
+        %h1 : U64 = %m1.lt(%t1)
+            ? %h0.add_wrap(1)
+            : %h0
         // accumulate rm2
         %l2  : U64 = %rm2.to_u64_wrap()
         %t2  : U64 = %rm2.shr(64).to_u64()
         %l1  : U64 = %l0.add_wrap(%l2)
         %cm0 : U64 = %l1.lt(%l2).to_u64()
         %m2  : U64 = %m1.add_wrap(%t2)
-        %h2  : U64 = %m2.lt(%t2) ? %h1.add_wrap(1) : %h1
+        %h2  : U64 = %m2.lt(%t2)
+            ? %h1.add_wrap(1)
+            : %h1
         // accumulate rl1 + rl2 + rl3
         %sl  : U128 = %rl1.shr(64).add_wrap(%rl2.shr(64)).add_wrap(%rl3.shr(64))
         %l3  : U64  = %sl.to_u64_wrap()
         %cm1 : U64  = %cm0.add_wrap(%sl.shr(64).to_u64())
         %lf  : U64  = %l1.add_wrap(%l3)
-        %cm  : U64  = %lf.lt(%l3) ? %cm1.add_wrap(1) : %cm1
+        %cm  : U64  = %lf.lt(%l3)
+            ? %cm1.add_wrap(1)
+            : %cm1
         // accumulate cm
-        %m    : U64  = %m2.add_wrap(%cm)
-        %h    : U64  = %m.lt(%cm) ? %h2.add_wrap(1) : %h2
+        %m : U64 = %m2.add_wrap(%cm)
+        %h : U64 = %m.lt(%cm)
+            ? %h2.add_wrap(1)
+            : %h2
         %ex   : S64  = %a.ex.add(%b.ex)
         %sgn  : U64  = %a.sgn.bitxor(%b.sgn)
         %norm : Bool = %h.shr(63).eq(0)
-        branch %norm ? continue : return(cm_f64_atan2_tint(%h, %m, %lf, %ex, %sgn))
+        branch %norm
+            ? continue
+            : return(cm_f64_atan2_tint(%h, %m, %lf, %ex, %sgn))
         %hn : U64 = %h.shl(1).bitor(%m.shr(63))
         %mn : U64 = %m.shl(1).bitor(%lf.shr(63))
         return(cm_f64_atan2_tint(%hn, %mn, %lf.shl(1), %ex.sub(1), %sgn))
@@ -557,7 +623,9 @@ routine cm_f64_atan2_lshift(%h: U128, %l: U64, %k: U64) -> CmF64Atan2Sig
 routine cm_f64_atan2_clz(%h: U128, %l: U64) -> U64
     block entry():
         %high : Bool = %h.ne(0)
-        branch %high ? return(%h.leading_zeros().to_u64()) : return(%l.leading_zeros().add(128))
+        branch %high
+            ? return(%h.leading_zeros().to_u64())
+            : return(%l.leading_zeros().add(128))
 
 /// The sum of two tints, with error below 2 ulps.
 routine cm_f64_atan2_add(%a: CmF64Atan2Tint, %b: CmF64Atan2Tint) -> CmF64Atan2Tint
@@ -580,15 +648,21 @@ routine cm_f64_atan2_add(%a: CmF64Atan2Tint, %b: CmF64Atan2Tint) -> CmF64Atan2Ti
         %sh       : U64           = %u.ex.to_u64_wrap().sub_wrap(%v.ex.to_u64_wrap())
         %t        : CmF64Atan2Sig = cm_f64_atan2_rshift(%v.hm, %v.l, %sh)
         %opposite : Bool          = %u.sgn.bitxor(%v.sgn).ne(0)
-        branch %opposite ? subtract(%u, %v, %sh, %t) : sum(%u, %t)
+        branch %opposite
+            ? subtract(%u, %v, %sh, %t)
+            : sum(%u, %t)
 
     block subtract(%u: CmF64Atan2Tint, %v: CmF64Atan2Tint, %sh: U64, %t: CmF64Atan2Sig):
-        %tl     : U64  = %u.l.sub_wrap(%t.l)
-        %th0    : U128 = %u.hm.sub_wrap(%t.h)
-        %th     : U128 = %tl.gt(%u.l) ? %th0.sub_wrap(1) : %th0
+        %tl  : U64  = %u.l.sub_wrap(%t.l)
+        %th0 : U128 = %u.hm.sub_wrap(%t.h)
+        %th  : U128 = %tl.gt(%u.l)
+            ? %th0.sub_wrap(1)
+            : %th0
         %ex     : U64  = cm_f64_atan2_clz(%th, %tl)
         %simple : Bool = %ex.le(1).bitor(%sh.eq(0))
-        branch %simple ? continue : exact(%u, %v, %sh, %ex)
+        branch %simple
+            ? continue
+            : exact(%u, %v, %sh, %ex)
         %r : CmF64Atan2Sig = cm_f64_atan2_lshift(%th, %tl, %ex)
         return(CmF64Atan2Tint { hm: %r.h, l: %r.l, ex: %u.ex.sub(%ex.to_s64()), sgn: %u.sgn })
 
@@ -598,21 +672,27 @@ routine cm_f64_atan2_add(%a: CmF64Atan2Tint, %b: CmF64Atan2Tint) -> CmF64Atan2Ti
         %r0  : CmF64Atan2Sig = cm_f64_atan2_lshift(%u.hm, %u.l, %ex)
         %ul  : U64           = %r0.l.sub_wrap(%t2.l)
         %uh0 : U128          = %r0.h.sub_wrap(%t2.h)
-        %uh  : U128          = %ul.gt(%r0.l) ? %uh0.sub_wrap(1) : %uh0
+        %uh  : U128          = %ul.gt(%r0.l)
+            ? %uh0.sub_wrap(1)
+            : %uh0
         %ex1 : U64           = cm_f64_atan2_clz(%uh, %ul)
         %r1  : CmF64Atan2Sig = cm_f64_atan2_lshift(%uh, %ul, %ex1)
         return(CmF64Atan2Tint { hm: %r1.h, l: %r1.l, ex: %u.ex.sub(%ex.add(%ex1).to_s64()),
                 sgn: %u.sgn })
 
     block sum(%u: CmF64Atan2Tint, %t: CmF64Atan2Sig):
-        %rl   : U64  = %u.l.add_wrap(%t.l)
-        %cl   : U128 = %rl.lt(%u.l).to_u128()
-        %rh0  : U128 = %u.hm.add_wrap(%t.h)
-        %ch0  : U128 = %rh0.lt(%u.hm).to_u128()
-        %rh   : U128 = %rh0.add_wrap(%cl)
-        %ch   : U128 = %rh.lt(%cl) ? %ch0.add_wrap(1) : %ch0
+        %rl  : U64  = %u.l.add_wrap(%t.l)
+        %cl  : U128 = %rl.lt(%u.l).to_u128()
+        %rh0 : U128 = %u.hm.add_wrap(%t.h)
+        %ch0 : U128 = %rh0.lt(%u.hm).to_u128()
+        %rh  : U128 = %rh0.add_wrap(%cl)
+        %ch  : U128 = %rh.lt(%cl)
+            ? %ch0.add_wrap(1)
+            : %ch0
         %over : Bool = %ch.ne(0)
-        branch %over ? continue : return(CmF64Atan2Tint { hm: %rh, l: %rl, ex: %u.ex, sgn: %u.sgn })
+        branch %over
+            ? continue
+            : return(CmF64Atan2Tint { hm: %rh, l: %rl, ex: %u.ex, sgn: %u.sgn })
         %rl2 : U64  = %rh.shl(63).to_u64_wrap().bitor(%rl.shr(1))
         %rh2 : U128 = %ch.shl(127).bitor(%rh.shr(1))
         return(CmF64Atan2Tint { hm: %rh2, l: %rl2, ex: %u.ex.add(1), sgn: %u.sgn })
@@ -625,7 +705,9 @@ routine cm_f64_atan2_from_f64(%x: F64) -> CmF64Atan2Tint
         %ax     : U64  = %u.bitand(0x7FFFFFFFFFFFFFFF)
         %e      : U64  = %ax.shr(52)
         %normal : Bool = %e.ne(0)
-        branch %normal ? continue : subnormal(%ax, %sgn)
+        branch %normal
+            ? continue
+            : subnormal(%ax, %sgn)
         %hn : U64 = %ax.shl(11).bitor(0x8000000000000000)
         return(CmF64Atan2Tint { hm: %hn.to_u128().shl(64), l: 0, ex: %e.to_s64().sub(0x3FE),
                 sgn: %sgn })
@@ -680,12 +762,22 @@ routine cm_f64_atan2_to_f64(%a: CmF64Atan2Tint, %err: U64) -> F64
         %above  : Bool = %low.gt(0x400)
         %middle : Bool = %mm.eq(0).bitand(%ll.eq(0))
         // 0.25 rounds toward zero, 0.75 away, 0.5 is the exact middle
-        %lmid   : F64 = %middle ? 0.5 : 0.75
-        %lhigh  : F64 = %above ? 0.75 : %lmid
-        %lround : F64 = %below ? 0.25 : %lhigh
-        %l      : F64 = %zero ? 0.0 : %lround
-        %sg     : F64 = %sgn.ne(0) ? -1.0 : 1.0
-        %hr     : F64 = F64.mul_add(%l, %sg, %sg.mul(%h)).mul(0x1p-52)
+        %lmid : F64 = %middle
+            ? 0.5
+            : 0.75
+        %lhigh : F64 = %above
+            ? 0.75
+            : %lmid
+        %lround : F64 = %below
+            ? 0.25
+            : %lhigh
+        %l : F64 = %zero
+            ? 0.0
+            : %lround
+        %sg : F64 = %sgn.ne(0)
+            ? -1.0
+            : 1.0
+        %hr : F64 = F64.mul_add(%l, %sg, %sg.mul(%h)).mul(0x1p-52)
         // now -1021 <= ex <= 1024, so 2^(ex - 1) is a normal number
         %scale : F64 = F64.from_bits(U64.add_wrap(0x3FF0000000000000,
                 %ex.sub(1).to_u64_wrap().shl(52)))
@@ -694,13 +786,16 @@ routine cm_f64_atan2_to_f64(%a: CmF64Atan2Tint, %err: U64) -> F64
 /// An approximation of 1/a, with absolute error below 2^-103.9 when 1 <= 1/a <= 2.
 routine cm_f64_atan2_inv(%a: CmF64Atan2Tint) -> CmF64Atan2Tint
     block entry():
-        %d0        : F64            = cm_f64_atan2_to_f64(%a, 0)  // exact
-        %subnormal : Bool           = %d0.abs().lt(0x1p-1022)
-        %d         : F64            = %subnormal ? %d0.mul(0x1p53) : %d0
-        %r0        : CmF64Atan2Tint = cm_f64_atan2_from_f64(F64.div(1.0, %d))
-        %rex       : S64            = %subnormal ? %r0.ex.add(53) : %r0.ex
-        %r         : CmF64Atan2Tint = CmF64Atan2Tint { hm: %r0.hm, l: %r0.l, ex: %rex,
-                sgn: %r0.sgn }
+        %d0        : F64  = cm_f64_atan2_to_f64(%a, 0)  // exact
+        %subnormal : Bool = %d0.abs().lt(0x1p-1022)
+        %d         : F64  = %subnormal
+            ? %d0.mul(0x1p53)
+            : %d0
+        %r0  : CmF64Atan2Tint = cm_f64_atan2_from_f64(F64.div(1.0, %d))
+        %rex : S64            = %subnormal
+            ? %r0.ex.add(53)
+            : %r0.ex
+        %r : CmF64Atan2Tint = CmF64Atan2Tint { hm: %r0.hm, l: %r0.l, ex: %rex, sgn: %r0.sgn }
         // one Newton step r + r (1 - a r)
         %ar  : CmF64Atan2Tint = cm_f64_atan2_mul(%a, %r)
         %nar : CmF64Atan2Tint = CmF64Atan2Tint { hm: %ar.hm, l: %ar.l, ex: %ar.ex,
