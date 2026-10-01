@@ -9,7 +9,7 @@ public sealed record ConstVal(DType? Type, BigInteger Value);
 
 public sealed partial class Compiler
 {
-    // Presets fold to constants here, and only these forms fold: literals; other presets; add, sub, mul, div, rem,
+    // Presets fold to constants here, and only these forms fold: literals; other presets; add, sub, mul, div, mod,
     // min, max, the bitwise operations and shifts, neg, and the checked and _wrap conversions of integers; the
     // bitwise operations of Bool; add, sub, mul, div, and neg of F32 and F64; max, min, sizeof, and alignof; and
     // T.from_bits(...) for a float or a bit-pattern record. Each follows the stdlib routine's meaning, and what would
@@ -274,7 +274,7 @@ public sealed partial class Compiler
                 case "add": v = a + b; break;
                 case "sub": v = a - b; break;
                 case "mul": v = a * b; break;
-                case "div" or "rem":
+                case "div" or "mod":
                     if (b.IsZero) throw new CompileError(pos, $"{name} by zero in a preset");
                     v = name == "div" ? BigInteger.Divide(a, b) : BigInteger.Remainder(a, b);
                     break;

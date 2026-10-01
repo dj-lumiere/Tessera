@@ -125,7 +125,7 @@ routine main() -> S32
 
 - There are no operators. Everything is a method, and pure calls chain: `%i.add(1).bitand(%mask)`.
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
-  `add`, `div`, `rem`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more
+  `add`, `div`, `mod`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more
   shifts every bit out (0, or -1 for a negative S value shifted right).
 - Arithmetic panics on overflow: `add`, `sub`, `mul`, `div`, `neg`, `abs`, `pow`, and a lossy `to_X`. Each has
   `_checked` (returns `Option`), `_wrap` (modular), and `_clamp` (saturating) forms: `%h.mul_wrap(PRIME)`,
@@ -150,7 +150,7 @@ routine main() -> S32
 - Conversions are methods: `%n.to_s64()`, `%b.to_u64()` (Bool to 0/1), `%x.to_f64()`. Float to integer is
   `to_s64` (panics on NaN or out of range), `to_s64_checked`, or `to_s64_clamp`.
 - Floats are `F16`, `BF16`, `F32`, `F64`, and software `F128` (an `i128`; stdlib code reads it with `f128_bits`):
-  `add`, `mul`, `div`, `rem`, and so on. `%x.bits()` gives the bits as the same-width `U`, `F64.from_bits(%u)` goes back.
+  `add`, `mul`, `div`, `mod`, and so on. `%x.bits()` gives the bits as the same-width `U`, `F64.from_bits(%u)` goes back.
 - Value select: `%r: T = %cond ? %a : %b`. Both sides are evaluated.
 
 **Routines and generics**
