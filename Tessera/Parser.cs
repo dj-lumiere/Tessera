@@ -195,7 +195,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                         key = Next().Text;
                         Next();
                     }
-                    bool negated = Accept(TokenKind.Bang);
+                    // `not "windows"`: the value must not match
+                    bool negated = Is(TokenKind.Ident) && PeekTok(0).Text == "not"
+                                   && PeekTok(1).Kind is TokenKind.Str or TokenKind.Int or TokenKind.Ident;
+                    if (negated) Next();
                     if (Is(TokenKind.Ident) && PeekTok(1).Kind is TokenKind.LParen or TokenKind.Lt)
                     {
                         args.Add(new AttrArg(key, "", negated, ParseExpr()));

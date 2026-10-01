@@ -15,7 +15,7 @@ public enum TokenKind
     Str,         // "..."
     LParen, RParen, LBracket, RBracket, LBrace, RBrace, Lt, Gt,
     Float,       // 3.14, 1.5e10 — IntValue holds the double's bits
-    Comma, Colon, ColonColon, ColonEq, Eq, Arrow, Question, Dot, Underscore, Bang,
+    Comma, Colon, ColonColon, ColonEq, Eq, Arrow, Question, Dot, Underscore,
     Newline,
     Eof,
 }
@@ -191,7 +191,6 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 case '>': kind = TokenKind.Gt; break;
                 case ',': kind = TokenKind.Comma; break;
                 case '?': kind = TokenKind.Question; break;
-                case '!': kind = TokenKind.Bang; break;
                 case '.': kind = TokenKind.Dot; break;
                 case '@': kind = TokenKind.At; break;
                 case '_': kind = TokenKind.Underscore; break;
