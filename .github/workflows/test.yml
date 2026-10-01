@@ -108,6 +108,37 @@ jobs:
         continue-on-error: true
         run: dotnet Tessera/bin/Release/net10.0/tessera.dll run -O --target ${{ matrix.target }} bench/div256_bench.tess
 
+  # Targets no hosted runner runs: type-check the stdlib and have LLVM compile it for each (no link, so no sysroot or
+  # emulator). Catches backend crashes and lowering gaps, such as llvm.minimum on 32-bit ARM.
+  cross-check:
+    name: cross-check (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [arm-linux-gnueabihf, aarch64-linux-gnu, riscv64-linux-gnu]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install LLVM 21
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
+          sudo ln -sf /usr/bin/clang-21 /usr/local/bin/clang
+          clang --version
+
+      - name: Build
+        run: dotnet build Tessera --configuration Release
+
+      - name: Check the stdlib
+        run: dotnet Tessera/bin/Release/net10.0/tessera.dll check --target ${{ matrix.target }}
+
   # SonarQube analysis of the C# compiler, with coverage from the golden tests. Whether the tests pass is the test
   # job's call, so a failing test doesn't stop the analysis here. SonarQube lives inside the tailnet; the runner joins it as an ephemeral node (a Tailscale OAuth client with scope auth_keys and the ACL tag tag:ci).
   # Secrets don't reach pull requests from forks, so it runs only for this repository's own branches.
