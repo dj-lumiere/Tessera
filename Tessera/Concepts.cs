@@ -158,7 +158,13 @@ public sealed partial class Compiler
             VerifyConformance(concept, args, conf);
             return null;
         }
-        return $"no conformance to {Show(concept.Name, args)} is declared";
+        // A marker states a capability its conformances grant per target (the atomics), so say which target.
+        bool targetBound = _conformances.Any(c => c.Concept.Name == concept.Name
+                                                  && c.Source.Attributes.Any(a => a.Name is "target" or "feature"));
+        string where = targetBound
+            ? $" for {Target.LlvmTriple} (CPU {CpuModel.For(Target, at).Cpu}{(Target.Features.Count > 0 ? $", {string.Join(",", Target.Features)}" : "")})"
+            : "";
+        return $"no conformance to {Show(concept.Name, args)} is declared{where}";
     }
 
     /// Matches a type pattern over `vars` against a concrete type, binding the variables.

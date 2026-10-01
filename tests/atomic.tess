@@ -1,0 +1,76 @@
+// Atomics on Ptr<T>: load and store, swap, the fetch_ operations (each returns the value it replaced), strong and weak
+// compare_exchange (Success with the previous value, or Failure with the one found), the memory-order suffixes,
+// several widths and kinds of T, and the fences. One thread, so the values are fixed; what's checked is that each
+// operation does what it says and compiles to valid atomic IR.
+
+import Standard::Format
+import Standard::Os
+
+/// Adds one with a weak compare-and-exchange, retrying on any failure, spurious or not.
+routine increment(%counter: Ptr<U32>) -> U32
+    block entry():
+        %seen : U32 = %counter.atomic_load_relaxed()
+        jump attempt(%seen)
+
+    block attempt(%seen: U32):
+        %next   : U32              = %seen.add(1)
+        %result : Result<U32, U32> = %counter.atomic_compare_exchange_weak_acq_rel(%seen, %next)
+        when %result:
+            .Success(%previous) -> return(%next)
+            .Failure(%actual)   -> attempt(%actual)
+
+routine main() -> S32
+    block entry():
+        claim %n : Ptr<U32>
+        %n.atomic_store(5)
+        %a : U32 = %n.atomic_fetch_add(3)
+        %b : U32 = %n.atomic_fetch_sub_relaxed(1)
+        %c : U32 = %n.atomic_fetch_or_acq_rel(0x10)
+        %d : U32 = %n.atomic_fetch_and(0x1F)
+        %e : U32 = %n.atomic_fetch_xor_release(1)
+        %f : U32 = %n.atomic_swap_acquire(100)
+        %g : U32 = %n.atomic_load_acquire()
+        print("U32 {%a} {%b} {%c} {%d} {%e} {%f} {%g}\n")
+        %won  : Result<U32, U32> = %n.atomic_compare_exchange(100, 7)
+        %lost : Result<U32, U32> = %n.atomic_compare_exchange(100, 9)
+        %now  : U32              = %n.atomic_load()
+        print("cas {%won} {%lost} {%now}\n")
+        %bumped : U32 = increment(%n)
+        print("weak {%bumped} {%n.atomic_load()}\n")
+
+        claim %s : Ptr<S64>
+        %s.atomic_store_release(-5)
+        %s_old : S64 = %s.atomic_fetch_add(-10)
+        print("S64 {%s_old} {%s.atomic_load()}\n")
+
+        claim %small : Ptr<U8>
+        %small.atomic_store(250)
+        %wrapped : U8 = %small.atomic_fetch_add(10)
+        claim %half : Ptr<S16>
+        %half.atomic_store_relaxed(-1)
+        %h_old : S16 = %half.atomic_fetch_sub(32767)
+        print("narrow {%wrapped} {%small.atomic_load()} {%h_old} {%half.atomic_load()}\n")
+
+        claim %bits : Ptr<Byte>
+        %bits.atomic_store(0x0F)
+        %bits_old : Byte = %bits.atomic_fetch_or(0xF0)
+        print("Byte {%bits_old.to_u8()} {%bits.atomic_load().to_u8()}\n")
+
+        claim %other : Ptr<U32>
+        claim %slot  : Ptr<Ptr<U32>>
+        %slot.atomic_store(%n)
+        %was  : Ptr<U32>                   = %slot.atomic_swap(%other)
+        %back : Result<Ptr<U32>, Ptr<U32>> = %slot.atomic_compare_exchange(%other, %was)
+        print("Ptr {%back.is_success()} {%slot.atomic_load().load()}\n")
+
+        claim %x : Ptr<F64>
+        %x.atomic_store(1.5)
+        %x_add : F64 = %x.atomic_fetch_fadd(2.25)
+        %x_sub : F64 = %x.atomic_fetch_fsub_relaxed(0.75)
+        print("F64 {%x_add} {%x_sub} {%x.atomic_load()}\n")
+
+        fence()
+        fence_acquire()
+        fence_release()
+        compiler_fence_acq_rel()
+        return(0)

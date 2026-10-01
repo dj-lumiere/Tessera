@@ -1580,6 +1580,12 @@ public sealed class FunctionGen
                 sb.Append(t is ConstArg ca ? ca.Name : t.Llvm);
                 continue;
             }
+            // `{sizeof T}`: a type parameter's size in bytes (an atomic access is aligned to it).
+            if (key.StartsWith("sizeof ", StringComparison.Ordinal) && sig.Env.Get(key[7..]) is { } sized)
+            {
+                sb.Append(_c.SizeAlign(sized, pos).Size);
+                continue;
+            }
             // `{USize}` / `{SSize}`: the target's pointer-width integer type.
             if (key is "USize" or "SSize")
             {

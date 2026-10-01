@@ -596,8 +596,14 @@ public static class Formatter
                 result[i] = result[i][..ownerEnd] + ReplaceType(result[i][ownerEnd..], owner);
             }
             for (int j = i + 1; j < end; j++)
-                if (!result[j].StartsWith("require ") && !(typeParameter && result[j].StartsWith(' ') && j < FirstBodyLine(result, i, end)))
-                    result[j] = ReplaceType(result[j], owner);
+            {
+                if (result[j].StartsWith("require ") || (typeParameter && result[j].StartsWith(' ') && j < FirstBodyLine(result, i, end)))
+                    continue;
+                // `claim %p : Ptr<T>` spells its pointer type out, so a routine on Ptr<T> keeps it there.
+                if (owner.StartsWith("Ptr<", StringComparison.Ordinal) && result[j].TrimStart().StartsWith("claim ", StringComparison.Ordinal))
+                    continue;
+                result[j] = ReplaceType(result[j], owner);
+            }
         }
         return result;
     }
