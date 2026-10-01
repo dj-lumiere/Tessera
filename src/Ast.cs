@@ -215,11 +215,12 @@ public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) :
 /// to an LLVM alloca.
 public sealed record ClaimExpr(Pos Pos) : Expr(Pos);
 
-/// `Type { field: value, ... }`.
-public sealed record RecordLit(TypeRef Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);
+/// `Type { field: value, ... }`, or `{ field: value, ... }` typed by where the value goes (Type is null).
+public sealed record RecordLit(TypeRef? Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);
 
 /// `[a, b, c]` — the elements of `Array<T, N>.from([...])` or of a preset array.
-/// `Array<T, N> { a, b, c }` or `Vector<T, N> { a, b, c }`.
+/// `Array<T, N> { a, b, c }` or `Vector<T, N> { a, b, c }`, or `{ a, b, c }` typed by where the value goes
+/// (Type is null).
 public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
 {
     public TypeRef? Type { get; init; }

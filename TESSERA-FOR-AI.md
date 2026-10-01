@@ -88,7 +88,10 @@ routine main() -> S32
 - `claim %p : @T` claims an uninitialized slot for the routine call (a stack slot in practice); its type comes from the binding, which must be written `@T` (anything else is a parse error), and the value goes in
   with `%p.store(%v)`, or `%v.store_into(%p)` at the end of the chain that makes it:
   `List<S64>.construct(%alloc).store_into(%list)` (no `%list_val` for a single store). An array value comes from `Array<T, N> { 1, 2, %x }` or `Array<T, N>.from_ptr(%first)`;
-  a bare `[1, 2]` isn't a value. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
+  a bare `[1, 2]` isn't a value. Where the type is known from where the value goes (a typed binding, a `preset` or
+  `global`, an argument, an element of an outer literal, the pointer of `store_into`), the type can be left off:
+  `preset SORTED: Array<S64, 3> = { -8, 0, 7 }`, `%p : Point = { x: 1, y: 2 }`, `sum2({ 7, 8 })`, like `.absent()`.
+  A receiver gives it no type: `{ 1, 2 }.eq(...)` is an error. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot.
 - Heap memory goes through an allocator: `allocate<T>(%alloc, %count)`, `%p.free(%alloc)`.
 - `global NAME: T [= literal]` is mutable static storage (all-zero without a value). Its name is a `@T`:
@@ -292,13 +295,14 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
   also declares the conformance; choices and variants get all five without asking. Otherwise declare the routine: a
   bare `conform` never generates one.
 - `write(%out, "x = {%x}\n")` writes text and values in one line: it expands at compile time into
-  `write_str` / `.represent` calls, a brace holds one expression (loads and chains allowed), `{{` is a literal brace,
+  `write_str` / `.represent` calls, a brace holds one expression (loads and chains allowed, and literals with their own braces:
+  `"{sum2({ 7, 8 })}"`), `{{` is a literal brace,
   and there are no format options. `print("...")` / `eprint("...")` do the same on stdout / stderr without
   setting up a writer. The old `println_slice` / `print_int` helpers are gone.
 
 ## Collections
 
-All in `stdlib/collection/`, documented in `tessera.wiki/docs/Collections.md`. `construct(%alloc)` stores the allocator; `destruct()`
+All in `stdlib/collection/`, documented in `../Tessera-Wiki/docs/Collections.md`. `construct(%alloc)` stores the allocator; `destruct()`
 releases storage. Out-of-range access, `pop` on empty, and `get` of a missing key trap; the `_checked` forms
 (`get_checked`, `pop_checked`, `peek_checked`) return `Option<T>` instead. Allocation failure traps too; each
 insertion and `reserve` has a `_result` form (`push_result`, `put_result`, `add_result`) that returns

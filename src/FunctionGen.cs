@@ -524,11 +524,11 @@ public sealed class FunctionGen
         switch (e)
         {
             case IntLit or FloatLit or NullLit or StrLit: return null;
-            case ArrayLit a: return Resolve(a.Type!);
+            case ArrayLit a: return a.Type is null ? null : Resolve(a.Type);
             case BoolLit: return BoolType.Instance;
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
-            case RecordLit sl: return Resolve(sl.Type);
+            case RecordLit sl: return sl.Type is null ? null : Resolve(sl.Type);
             case TupleLit tl:
             {
                 var items = tl.Items.Select(Infer).ToList();
@@ -608,9 +608,9 @@ public sealed class FunctionGen
             FieldExpr or IndexExpr when IsPlaceChain(e) => PlaceAsValue(e),
             FieldExpr f => ExtractField(f),
             SelectExpr s => EvalSelect(s, expected),
-            RecordLit s => EvalRecordLit(s),
+            RecordLit s => EvalRecordLit(s, expected),
             TupleLit t => EvalTupleLit(t, expected),
-            ArrayLit a => EvalElementsLit(a),
+            ArrayLit a => EvalElementsLit(a, expected),
             NsCallExpr or ImplicitCallExpr or ImplicitMemberExpr or PresetRef when VariantCaseOf(e, expected) is { } vc =>
                 EmitVariantCase(vc, e.Pos),
             ImplicitMemberExpr m => throw Err(m.Pos,
@@ -935,7 +935,8 @@ public sealed class FunctionGen
                 text.Append(ch);
                 continue;
             }
-            int end = s.IndexOf('}', i + 1);
+            // The hole ends at its matching '}', so a literal inside it keeps its braces: "{sum2({ 7, 8 })}".
+            int end = MatchingBrace(s, i);
             if (end < 0) throw Err(template.Pos, "a '{' in a write or print string is never closed; a literal brace is '{{'");
             string source = s[(i + 1)..end];
             if (string.IsNullOrWhiteSpace(source)) throw Err(template.Pos, "'{}' holds no expression; a literal brace is '{{'");
@@ -949,10 +950,11 @@ public sealed class FunctionGen
         return new Val("", VoidType.Instance);
     }
 
-    /// `Array<T, N> { a, b, c }` or `Vector<T, N> { a, b, c }`: N elements in order, each typed by T.
-    private Val EvalElementsLit(ArrayLit lit)
+    /// `Array<T, N> { a, b, c }` or `Vector<T, N> { a, b, c }`: N elements in order, each typed by T. A bare
+    /// `{ a, b, c }` takes the type the value goes to.
+    private Val EvalElementsLit(ArrayLit lit, DType expected)
     {
-        var t = Resolve(lit.Type!);
+        var t = lit.Type is null ? expected : Resolve(lit.Type);
         var (elem, count, insert) = t switch
         {
             ArrayType a => (a.Elem, a.Count, "insertvalue"),
@@ -996,9 +998,9 @@ public sealed class FunctionGen
         return new Val(acc, s);
     }
 
-    private Val EvalRecordLit(RecordLit lit)
+    private Val EvalRecordLit(RecordLit lit, DType expected)
     {
-        var t = Resolve(lit.Type);
+        var t = lit.Type is null ? expected : Resolve(lit.Type);
         if (t is not RecordType s) throw Err(lit.Pos, $"{t} is not a record");
         var fields = _c.Fields(s);
         _c.EnsureTypeDefined(s);
@@ -1187,11 +1189,14 @@ public sealed class FunctionGen
         }
     }
 
-    /// Whether an untyped literal can take `t`: an integer literal a number type, a float literal a float type.
+    /// Whether an untyped literal can take `t`: an integer literal a number type, a float literal a float type, a
+    /// bare `{ a, b }` an Array or a Vector, a bare `{ x: a }` a record.
     private static bool LiteralCanBe(Expr literal, DType? t) => literal switch
     {
         IntLit => t is IntType { IsNumber: true },
         FloatLit => t is FloatType,
+        ArrayLit => t is ArrayType or VectorType,
+        RecordLit => t is RecordType,
         _ => t is not null,
     };
 
@@ -1211,9 +1216,15 @@ public sealed class FunctionGen
                  ?? (LiteralCanBe(m.Receiver, expected) ? expected : null);
             if (rt is null)
             {
-                string example = m.Receiver is FloatLit ? "F64" : "S64";
+                string fix = m.Receiver switch
+                {
+                    ArrayLit => "Array<T, N> { ... }",
+                    RecordLit => "Type { ... }",
+                    FloatLit => $"F64.{m.Name}(...)",
+                    _ => $"S64.{m.Name}(...)",
+                };
                 throw Err(m.Receiver.Pos,
-                    $"nothing says this literal's type (its arguments are untyped too); name the type: {example}.{m.Name}(...)");
+                    $"nothing says this literal's type (its arguments are untyped too); name the type: {fix}");
             }
         }
 

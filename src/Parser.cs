@@ -897,8 +897,11 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     throw new CompileError(t.Pos, $"a tuple has {MinTupleItems} to {MaxTupleItems} items, not {items.Count}");
                 return new TupleLit(items, t.Pos);
             }
+            case TokenKind.LBrace:
+                // `{ 1, 2, 3 }` / `{ x: 1 }`: the type comes from where the value goes, as with `.absent()`.
+                return ParseRecordLit(null, t.Pos);
             case TokenKind.LBracket:
-                throw Error("an array literal names its type: Array<S32, 3> { 1, 2, 3 }");
+                throw Error("an array literal is written with braces: Array<S32, 3> { 1, 2, 3 }, or { 1, 2, 3 } where the type is known");
             case TokenKind.Ident:
                 switch (t.Text)
                 {
@@ -928,7 +931,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
 
         var owner = new TypeRef(name.Text, typeArgs, pos) { Path = path };
-        if (Is(TokenKind.LBrace)) return ParseRecordLit(owner);
+        if (Is(TokenKind.LBrace)) return ParseRecordLit(owner, owner.Pos);
 
         if (Is(TokenKind.Dot) && PeekTok(1).Kind == TokenKind.Ident)
         {
@@ -945,7 +948,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new PresetRef(null, name.Text, pos) { Path = path };
     }
 
-    private Expr ParseRecordLit(TypeRef type)
+    private Expr ParseRecordLit(TypeRef? type, Pos pos)
     {
         Expect(TokenKind.LBrace, "'{'");
         var fields = new List<(string, Expr, Pos)>();
@@ -955,7 +958,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             var elems = new List<Expr>();
             do elems.Add(ParseExpr()); while (Accept(TokenKind.Comma));
             Expect(TokenKind.RBrace, "'}'");
-            return new ArrayLit(elems, type.Pos) { Type = type };
+            return new ArrayLit(elems, pos) { Type = type };
         }
         if (!Is(TokenKind.RBrace))
         {
@@ -967,7 +970,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             } while (Accept(TokenKind.Comma));
         }
         Expect(TokenKind.RBrace, "'}'");
-        return new RecordLit(type, fields, type.Pos);
+        return new RecordLit(type, fields, pos);
     }
 
     /// `claim %p : @T`: a stack slot bound to a pointer name. It takes no initializer; the value goes in with a
