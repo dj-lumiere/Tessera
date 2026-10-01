@@ -561,6 +561,7 @@ public sealed class FunctionGen
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } c
             && _c.FindFree(c.Name, _env.File, c.Pos) is null)
             return _c.USize;
+        if (AddrOfCallable(e) is not null) return new PtrType(null);
         if (IndirectCall(e) is { } ind) return ind.Callable.Ret;
         var plan = PlanCall(e, expected);
         return plan is null ? null : _c.Signature(plan.Decl, plan.Env).Ret;
@@ -1116,12 +1117,37 @@ public sealed class FunctionGen
 
     // ── Calls ───────────────────────────────────────────────────────────────
 
-    private bool IsNoReturn(Expr e) => e switch
+    private bool IsNoReturn(Expr e) => AddrOfCallable(e) is null && e switch
     {
         CallExpr or NsCallExpr or MethodCallExpr => PlanCall(e, null) is { } p && p.Decl.Attr("noreturn") is not null,
         ImplicitCallExpr => false,
         _ => false,
     };
+
+    /// The code address of a Callable: `%fn.addr()`, or `routine_name.addr()` (typed by the routine's own
+    /// signature). An `Addr` for C code that takes a function as `void*`; calling it again needs a `Callable`.
+    private (Expr Callee, CallableType Callable)? AddrOfCallable(Expr e)
+    {
+        // A bare routine name parses like a namespace: `twice.addr()`.
+        if (e is NsCallExpr { Name: "addr", Args.Count: 0, TypeArgs.Count: 0, Owner: { Args.Count: 0 } owner }
+            && TryResolveOwner(owner) is null && _c.FindFree(owner.Name, _env.File, owner.Pos) is { } named)
+        {
+            var namedInst = _c.RequireInstance(named, new Compiler.TypeEnv(named.File));
+            return (new PresetRef(null, owner.Name, owner.Pos),
+                new CallableType(namedInst.CallConv, namedInst.Params, namedInst.Ret));
+        }
+
+        if (e is not MethodCallExpr { Name: "addr", Args.Count: 0 } m) return null;
+        if (Infer(m.Receiver) is CallableType ct) return (m.Receiver, ct);
+        if (m.Receiver is PresetRef { Owner: null } r && ResolvePreset(r) is null
+            && _c.FindFree(r.Name, _env.File, r.Pos) is { } routine)
+        {
+            var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
+            return (m.Receiver, new CallableType(inst.CallConv, inst.Params, inst.Ret));
+        }
+
+        return null;
+    }
 
     /// A call through a Callable value: `%fn.call(args)`. A Callable stored in memory is loaded first
     /// (`%fn: Callable<…> = %alloc.alloc_fn.load()`); calling the field directly would hide that load.
@@ -1209,7 +1235,7 @@ public sealed class FunctionGen
 
     private CallPlan? PlanMethod(MethodCallExpr m, DType? expected)
     {
-        if (IndirectCall(m) is not null) return null;
+        if (IndirectCall(m) is not null || AddrOfCallable(m) is not null) return null;
 
         var rt = Infer(m.Receiver);
         if (rt is null)
@@ -1393,6 +1419,7 @@ public sealed class FunctionGen
             && _c.FindFree(sz.Name, _env.File, sz.Pos) is null)
             return SizeOrAlign(sz);
 
+        if (AddrOfCallable(e) is { } addr) return new Val(Eval(addr.Callee, addr.Callable).Op, new PtrType(null));
         if (IndirectCall(e) is { } ind) return EmitIndirect(ind.Callee, ind.Callable, ind.Args, e.Pos);
 
         var plan = PlanCall(e, expected);

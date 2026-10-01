@@ -78,6 +78,9 @@ routine main() -> S32
   (`0.store_into(%count)`).
 - Memory is never read implicitly. A place passed as an argument is its address, so `U8.from_byte(%p.stride(%i))` is an
   error: write `U8.from_byte(%p.stride(%i).load())`.
+- `.addr()` gives a `Callable`'s code address as an `Addr`, for C code that takes a function as `void*`:
+  `%fn.addr()`, or `my_routine.addr()` (typed by the routine's own signature). A `Callable` never widens to `Addr` on
+  its own, and an `Addr` is not callable.
 - A `Callable` value is called with `.call(args)`. One stored in a field is loaded first:
   `%free_fn: Callable<…> = %alloc.free_fn.load()`, then `%free_fn.call(%state, %raw)`. `%alloc.free_fn(...)` is an
   error.
