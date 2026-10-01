@@ -97,7 +97,7 @@ public sealed class FunctionGen
                 ps.Add($"i16 {name}.bits");
                 unpack.Add($"{name} = bitcast i16 {name}.bits to bfloat");
             }
-            else ps.Add($"{_inst.Params[i].Llvm} {name}");
+            else ps.Add($"{_inst.Params[i].Llvm}{_inst.ParamExt(_c.Target, i)} {name}");
         }
         // A routine every solution may emit from the same source (a generic routine's instance, or a stdlib routine
         // compiled into each solution until the stdlib is prebuilt) is linkonce_odr: the linker keeps one copy. COFF
@@ -115,7 +115,7 @@ public sealed class FunctionGen
                 comdat = " comdat";
             }
         }
-        _out.AppendLine($"define {linkage}{_inst.CcPrefix}{_inst.LlvmRet} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat} {{");
+        _out.AppendLine($"define {linkage}{_inst.CcPrefix}{_inst.RetExt(_c.Target)}{_inst.LlvmRet} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
         foreach (var u in unpack) _out.AppendLine($"  {u}");
@@ -1337,9 +1337,9 @@ public sealed class FunctionGen
         }
 
         var inst = _c.RequireInstance(plan.Decl, plan.Env);
-        string argList = string.Join(", ", args.Select(a => AbiArg(a, inst.PassesBf16AsBits)));
+        string argList = string.Join(", ", args.Select((a, i) => AbiArg(a, inst.PassesBf16AsBits, inst.ParamExt(_c.Target, i))));
         string fnType = inst.IsExternalC ? $"{inst.LlvmRet} ({inst.LlvmParamTypes}) " : $"{inst.LlvmRet} ";
-        string call = $"call {inst.CcPrefix}{fnType}@{Compiler.Quote(inst.Symbol)}({argList})";
+        string call = $"call {inst.CcPrefix}{inst.RetExt(_c.Target)}{fnType}@{Compiler.Quote(inst.Symbol)}({argList})";
         if (inst.Ret is VoidType)
         {
             Line(call);
@@ -1382,9 +1382,11 @@ public sealed class FunctionGen
         var args = argExprs.Select((a, i) => EvalArg(a, ct.Params[i])).ToList();
         string cc = ct.CallConv switch { "fast" => "fastcc ", "cold" => "coldcc ", _ => "" };
         const bool bits = true;
-        string argList = string.Join(", ", args.Select(a => AbiArg(a, bits)));
+        bool c = ct.CallConv != "fast";
+        string argList = string.Join(", ", args.Select((a, i) => AbiArg(a, bits, c ? CAbi.Ext(_c.Target, ct.Params[i], isReturn: false) : "")));
         string ret = bits && Instance.IsBf16(ct.Ret) ? "i16" : ct.Ret.Llvm;
-        string call = $"call {cc}{ret} {fp.Op}({argList})";
+        string retExt = c ? CAbi.Ext(_c.Target, ct.Ret, isReturn: true).TrimStart() : "";
+        string call = $"call {cc}{(retExt.Length > 0 ? retExt + " " : "")}{ret} {fp.Op}({argList})";
         if (ct.Ret is VoidType)
         {
             Line(call);
@@ -1394,8 +1396,8 @@ public sealed class FunctionGen
     }
 
     /// A call argument as the callee's ABI wants it: a BF16 goes to a Tessera routine as its i16 bits.
-    private string AbiArg(Val a, bool bf16AsBits) =>
-        bf16AsBits && Instance.IsBf16(a.Type) ? $"i16 {EmitTmp($"bitcast bfloat {a.Op} to i16")}" : $"{a.Type.Llvm} {a.Op}";
+    private string AbiArg(Val a, bool bf16AsBits, string ext = "") =>
+        bf16AsBits && Instance.IsBf16(a.Type) ? $"i16 {EmitTmp($"bitcast bfloat {a.Op} to i16")}" : $"{a.Type.Llvm}{ext} {a.Op}";
 
     private Val AbiResult(string op, DType t, bool bf16AsBits) =>
         bf16AsBits && Instance.IsBf16(t) ? new Val(EmitTmp($"bitcast i16 {op} to bfloat"), t) : new Val(op, t);

@@ -48,6 +48,18 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
 
     public string LlvmRet => AbiLlvm(Ret);
 
+    /// The C ABI's extension attribute on parameter i (" signext" / " zeroext" / ""); fastcc routines take none.
+    public string ParamExt(BuildTarget target, int i) =>
+        CallConv == "fast" || i >= Params.Count ? "" : CAbi.Ext(target, Params[i], isReturn: false);
+
+    /// The return value's extension attribute, written before the type ("signext " / "zeroext " / "").
+    public string RetExt(BuildTarget target) =>
+        CallConv == "fast" ? "" : CAbi.Ext(target, Ret, isReturn: true).TrimStart() is { Length: > 0 } e ? e + " " : "";
+
+    /// The parameter types with their extension attributes, as a declaration lists them.
+    public string LlvmParamDecls(BuildTarget target) =>
+        string.Join(", ", Params.Select((p, i) => AbiLlvm(p) + ParamExt(target, i)).Concat(Variadic ? ["..."] : []));
+
     public string LlvmParamTypes =>
         string.Join(", ", Params.Select(AbiLlvm).Concat(Variadic ? ["..."] : []));
 }
@@ -144,7 +156,7 @@ public sealed partial class Compiler
         if (sig.IsExternalC)
         {
             if (_declaredSymbols.Add(sig.Symbol))
-                _declares.Add((sig.Symbol, $"declare {sig.CcPrefix}{sig.LlvmRet} @{Quote(sig.Symbol)}({sig.LlvmParamTypes}){sig.FnAttrs}"));
+                _declares.Add((sig.Symbol, $"declare {sig.CcPrefix}{sig.RetExt(Target)}{sig.LlvmRet} @{Quote(sig.Symbol)}({sig.LlvmParamDecls(Target)}){sig.FnAttrs}"));
         }
         else if (!sig.IsTemplate)
         {
