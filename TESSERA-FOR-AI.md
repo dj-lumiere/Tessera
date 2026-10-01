@@ -71,7 +71,7 @@ routine main() -> S32
   sigil until 2026-09-29).
 - `=` only binds. Memory is read and written with methods: `%v: S64 = %p.load()`, `%p.store(%v)`,
   `%f: T = %p.field.load()`, `%p.field.store(%v)`, `%e: T = %p[%i].load()`, `%p[%i].store(%v)`. Places
-  (`%p.field`, `%p[%i]`) are addresses. Through an `Addr`, name the type: `%a.load<U32>()`. Registers:
+  (`%p.field`, `%p[%i]`) are addresses. An `Addr` has no `load` or `store`: cast it to say what's there, `%a.cast<U32>().load()`. Registers:
   `volatile_load()` / `volatile_store(...)`. (`:=` and `%p = %v` are gone and rejected.) From the value's side,
   `%v.store_into(%p)` is `%p.store(%v)`, so a chain can end in memory: `%a.add(%b).store_into(%sum)`. A
   read-modify-write on one place reads left to right: `%self.length.load().add(1).store_into(%self.length)`, not

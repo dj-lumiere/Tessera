@@ -1248,6 +1248,9 @@ public sealed class FunctionGen
         // `#p.eq(#q)` where T.eq takes values: the load is written, not implied.
         if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held) || Derived) is not null)
             throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; load it: .load().{m.Name}(...)");
+        // Memory is read through a typed pointer only; an Addr says where, not what.
+        if (rt is PtrType { Pointee: null } && m.Name is "load" or "store" or "volatile_load" or "volatile_store")
+            throw Err(m.Pos, $"an Addr has no pointee type to {m.Name}; cast it first: .cast<T>().{m.Name}(...)");
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }
 
