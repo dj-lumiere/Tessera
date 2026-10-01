@@ -19,5 +19,6 @@ Run one with `dotnet run --project Tessera -- run examples/<name>.tess`. Every p
 | [word_count](word_count.tess) | `String` views, `Dict<String, USize>` in insertion order, `DictIter` |
 | [temperature](temperature.tess) | `F64` arithmetic, integer ↔ float conversion, `represent` and `represent_fixed` |
 
-The larger programs in [`playground/`](../playground) combine these: Dijkstra, a lazy segment tree, SHA-256, and a
-calculator.
+Larger programs in [`tests/`](../tests) combine these: [Dijkstra](../tests/dijkstra.tess), a
+[lazy segment tree](../tests/segment_tree_lazy_iterative.tess), [SHA-256](../tests/sha256.tess), and a
+[calculator](../tests/calc.tess).
