@@ -333,9 +333,18 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
     {
         "USize" => new IntType(Size, IntKind.Unsigned, isSize: true),
         "SSize" => new IntType(Size, IntKind.Signed, isSize: true),
-        "CInt" => IntType.S(32),
-        "CLong" => IntType.S(Os == "windows" ? 32 : Size),
-        "CWChar" => Os == "windows" ? IntType.U(16) : IntType.S(32),
+        // int is 16-bit on AVR and 32-bit everywhere else; long is 32-bit on Windows (LLP64) and at least 32 bits
+        // elsewhere (AVR's pointers are 16-bit, its long isn't); wchar_t is unsigned 16-bit on Windows, int on AVR,
+        // unsigned on ARM and AArch64 except Apple's, and int elsewhere.
+        "CInt" => IntType.S(Arch == "avr" ? 16 : 32),
+        "CLong" => IntType.S(Os == "windows" ? 32 : Math.Max(32, Size)),
+        "CWChar" => (Arch, Os) switch
+        {
+            (_, "windows") => IntType.U(16),
+            ("avr", _) => IntType.S(16),
+            ("arm" or "aarch64", not "macos") => IntType.U(32),
+            _ => IntType.S(32),
+        },
         _ => null,
     };
 
