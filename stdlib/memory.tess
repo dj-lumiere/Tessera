@@ -1,6 +1,6 @@
 // Tessera stdlib: Allocator pattern and memory routines
 //
-// The Allocator record is a manual vtable: callers pass Ptr<Allocator> to any
+// The Allocator record is a manual vtable: callers pass @Allocator to any
 // routine that performs heap allocation. Nothing here needs an operating system;
 // make_heap_allocator(), backed by libc malloc / realloc / free, is in
 // Standard::Os (os/heap.tess).
@@ -27,7 +27,7 @@ record Allocator
 
 /// The error of a `_result` operation whose allocator returned null, such as
 /// `List.push_result`. The collection is left as it was before the call.
-@derive(Represent, Diagnose, Equal, Hash)
+#derive(Represent, Diagnose, Equal, Hash)
 record AllocFailed
 
 // ============================================================
@@ -37,7 +37,7 @@ record AllocFailed
 // take.
 // ============================================================
 
-routine allocate<T>(%alloc: Ptr<Allocator>, %count: USize) -> Ptr<T>
+routine allocate<T>(%alloc: @Allocator, %count: USize) -> @T
 require T: typename
     block entry():
         %elem_size : USize                         = sizeof<T>()
@@ -45,10 +45,10 @@ require T: typename
         %alloc_fn  : Callable<(Addr, USize), Addr> = %alloc.alloc_fn.load()
         %state     : Addr                          = %alloc.state.load()
         %raw       : Addr                          = %alloc_fn.call(%state, %size)
-        %typed     : Ptr<T>                        = %raw.cast<T>()
+        %typed     : @T                            = %raw.cast<T>()
         return(%typed)
 
-routine reallocate<T>(%alloc: Ptr<Allocator>, %ptr: Ptr<T>, %new_count: USize) -> Ptr<T>
+routine reallocate<T>(%alloc: @Allocator, %ptr: @T, %new_count: USize) -> @T
 require T: typename
     block entry():
         %elem_size  : USize                               = sizeof<T>()
@@ -58,10 +58,10 @@ require T: typename
         %state      : Addr                                = %alloc.state.load()
         %raw        : Addr                                = %realloc_fn.call(%state, %raw_old,
                 %size)
-        %typed      : Ptr<T>                              = %raw.cast<T>()
+        %typed      : @T                                  = %raw.cast<T>()
         return(%typed)
 
-routine copy<T>(%dst: Ptr<T>, %src: Ptr<T>, %count: USize) -> Void
+routine copy<T>(%dst: @T, %src: @T, %count: USize) -> Void
 require T: typename
     block entry():
         %elem_size : USize = sizeof<T>()
@@ -72,7 +72,7 @@ require T: typename
         return()
 
 // llvm.memcpy, so the alloc layer needs no libc (a freestanding target supplies memcpy itself).
-@[external("llvm"),
+#[external("llvm"),
         template("call void @llvm.memcpy.p0.p0.{USize}(ptr {%dst}, ptr {%src}, {USize} {%bytes}, i1 false)")]
 private routine copy_bytes(%dst: Addr, %src: Addr, %bytes: USize) -> Void
 
@@ -82,11 +82,11 @@ private routine copy_bytes(%dst: Addr, %src: Addr, %bytes: USize) -> Void
 
 /// Copies %self into memory from %alloc and ends it with a NUL. Free it with
 /// %c.to_ptr().free(%alloc).
-routine Bytes.to_cstr(%self: Self, %alloc: Ptr<Allocator>) -> CStr
+routine Bytes.to_cstr(%self: Self, %alloc: @Allocator) -> CStr
     block entry():
-        %length : USize     = %self.length
-        %buffer : Ptr<Byte> = allocate<Byte>(%alloc, %length.add(1))
-        %failed : Bool      = %buffer.is_null()
+        %length : USize = %self.length
+        %buffer : @Byte = allocate<Byte>(%alloc, %length.add(1))
+        %failed : Bool  = %buffer.is_null()
         branch %failed ? panic(TrapCode.AllocFailed) : continue
         copy<Byte>(%buffer, %self.data, %length)
         %buffer.stride(%length).store(0x00)
@@ -95,34 +95,34 @@ routine Bytes.to_cstr(%self: Self, %alloc: Ptr<Allocator>) -> CStr
 /// Converts %self to wide characters in memory from %alloc, ending with a 0:
 /// UTF-16 on Windows, UTF-32 elsewhere. Free it with %w.to_ptr().free(%alloc).
 /// A UTF-8 byte count bounds both unit counts, so one allocation is enough.
-routine Bytes.to_cwstr(%self: Self, %alloc: Ptr<Allocator>) -> CWStr
+routine Bytes.to_cwstr(%self: Self, %alloc: @Allocator) -> CWStr
     block entry():
-        %units  : Ptr<CWChar> = allocate<CWChar>(%alloc, %self.length.add(1))
-        %failed : Bool        = %units.is_null()
+        %units  : @CWChar = allocate<CWChar>(%alloc, %self.length.add(1))
+        %failed : Bool    = %units.is_null()
         branch %failed ? panic(TrapCode.AllocFailed) : continue
         %iter_val : BytesCharsIter = %self.chars()
-        claim %iter : Ptr<BytesCharsIter>
+        claim %iter : @BytesCharsIter
         %iter.store(%iter_val)
         jump next(%iter, %units, 0)
 
-    block next(%iter: Ptr<BytesCharsIter>, %units: Ptr<CWChar>, %n: USize):
+    block next(%iter: @BytesCharsIter, %units: @CWChar, %n: USize):
         %c : Option<Char> = %iter.next()
         when %c:
             .Present(%char) -> put(%iter, %units, %n, %char)
             .Absent         -> finish(%units, %n)
 
-    block put(%iter: Ptr<BytesCharsIter>, %units: Ptr<CWChar>, %n: USize, %char: Char):
+    block put(%iter: @BytesCharsIter, %units: @CWChar, %n: USize, %char: Char):
         %count : USize = encode_cwchar(%char, %units.stride(%n))
         jump next(%iter, %units, %n.add(%count))
 
-    block finish(%units: Ptr<CWChar>, %n: USize):
+    block finish(%units: @CWChar, %n: USize):
         %units.stride(%n).store(0)
         return(.from_ptr(%units))
 
 /// Writes %char at %out as UTF-16, one unit or a surrogate pair, and returns
 /// how many units it wrote.
-@target(os: "windows")
-private routine encode_cwchar(%char: Char, %out: Ptr<CWChar>) -> USize
+#target(os: "windows")
+private routine encode_cwchar(%char: Char, %out: @CWChar) -> USize
     block entry():
         %cp  : U32  = %char.to_u32()
         %bmp : Bool = %cp.lt(0x10000)
@@ -140,9 +140,9 @@ private routine encode_cwchar(%char: Char, %out: Ptr<CWChar>) -> USize
 
 /// Writes %char at %out as one UTF-32 unit. CWChar is S32 on some targets and U32 on others (ARM and AArch64 outside
 /// Apple); the code point's bits are the same either way.
-@target(os: not "windows")
-private routine encode_cwchar(%char: Char, %out: Ptr<CWChar>) -> USize
+#target(os: not "windows")
+private routine encode_cwchar(%char: Char, %out: @CWChar) -> USize
     block entry():
-        %unit : Ptr<U32> = %out.cast<U32>()
+        %unit : @U32 = %out.cast<U32>()
         %unit.store(%char.to_u32())
         return(1)

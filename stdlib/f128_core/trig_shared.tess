@@ -445,7 +445,7 @@ routine cm_trig_sincos384(%j: USize, %w: USize) -> CmTrigU384
         return(%r)
 
 /// Limb `limb` of Taylor coefficient k in CM_TRIG_SIN_COEF or CM_TRIG_COS_COEF.
-routine cm_trig_coef(%coef: Ptr<U128>, %k: USize, %limb: USize) -> U128
+routine cm_trig_coef(%coef: @U128, %k: USize, %limb: USize) -> U128
     block entry():
         %index : USize = %k.mul(3).add(%limb)
         %r     : U128  = %coef.stride(%index).load()
@@ -479,20 +479,20 @@ routine cm_trig_window_limb(%first: S64, %count: S64, %k: S64) -> U128
 
 /// m × window as count+3 little-endian 64-bit limbs at %p, for the window of `count` limbs of 2/pi starting at
 /// `first`: the product fills count+2 of them and the spare top limb stays zero.
-routine cm_trig_product(%m: U128, %first: S64, %count: USize, %p: Ptr<U64>) -> Void
+routine cm_trig_product(%m: U128, %first: S64, %count: USize, %p: @U64) -> Void
     block entry():
         %low  : U128 = %m.bitand(0xFFFFFFFFFFFFFFFF)
         %high : U128 = %m.shr(64)
         jump column(0, 0, %low, %high, %first, %count, %p)
 
     block column(%c: USize, %carry: U128, %low: U128, %high: U128, %first: S64, %count: USize,
-            %p: Ptr<U64>):
+            %p: @U64):
         %done : Bool = %c.ge(%count.add(3))
         branch %done ? return() : step(%c, %carry, %low, %high, %first, %count, %p)
 
     // column c is (high*prev + carry) + low*cur, with cur and prev the window limbs under the two halves of m
     block step(%c: USize, %carry: U128, %low: U128, %high: U128, %first: S64, %count: USize,
-            %p: Ptr<U64>):
+            %p: @U64):
         %cur  : U128 = cm_trig_window_limb(%first, %count.to_s64(),
                 %count.to_s64().sub(1).sub(%c.to_s64()))
         %prev : U128 = cm_trig_window_limb(%first, %count.to_s64(),
@@ -518,8 +518,8 @@ routine cm_trig_reduce(%m: U128, %e: S64) -> CmTrigReduced
         %window : CmTrigWindow = cm_trig_window(%e)
         %first  : S64          = %window.first
         %offset : S64          = %window.offset
-        claim %product : Ptr<Array<U64, 13>>
-        %p : Ptr<U64> = %product.to_ptr()
+        claim %product : @Array<U64, 13>
+        %p : @U64 = %product.to_ptr()
         cm_trig_product(%m, %first, 6, %p)
         // the fraction is the 192 bits below the units bit, the quadrant the two above: limbs i ..= i+4
         %base     : S64   = 190.sub(%offset)
@@ -573,15 +573,15 @@ routine cm_trig_reduce_wide(%m: U128, %e: S64) -> CmTrigWideReduced
         %window : CmTrigWindow = cm_trig_window(%e)
         %first  : S64          = %window.first
         %offset : S64          = %window.offset
-        claim %product : Ptr<Array<U64, 13>>
-        %p : Ptr<U64> = %product.to_ptr()
+        claim %product : @Array<U64, 13>
+        %p : @U64 = %product.to_ptr()
         cm_trig_product(%m, %first, 10, %p)
         // the fraction is the 448 bits below the units bit, the quadrant the two above: limbs i ..= i+8
         %base : S64   = 190.sub(%offset)
         %i    : USize = %base.shr(6).bitand(7).to_usize()
         %bits : S64   = %base.bitand(63)
-        claim %fraction : Ptr<Array<U64, 7>>
-        %f : Ptr<U64> = %fraction.to_ptr()
+        claim %fraction : @Array<U64, 7>
+        %f : @U64 = %fraction.to_ptr()
         cm_trig_cut(%p, %i, %bits, %f)
         %i7       : USize = %i.add(7)
         %i8       : USize = %i.add(8)
@@ -607,15 +607,15 @@ routine cm_trig_reduce_wide(%m: U128, %e: S64) -> CmTrigWideReduced
         return(%r)
 
 /// f[k] = the 64 bits of the product %p starting at bit `bits` of limb i+k, for k = 0..6.
-routine cm_trig_cut(%p: Ptr<U64>, %i: USize, %bits: S64, %f: Ptr<U64>) -> Void
+routine cm_trig_cut(%p: @U64, %i: USize, %bits: S64, %f: @U64) -> Void
     block entry():
         jump cut(0, %p, %i, %bits, %f)
 
-    block cut(%k: USize, %p: Ptr<U64>, %i: USize, %bits: S64, %f: Ptr<U64>):
+    block cut(%k: USize, %p: @U64, %i: USize, %bits: S64, %f: @U64):
         %done : Bool = %k.ge(7)
         branch %done ? return() : cut_one(%k, %p, %i, %bits, %f)
 
-    block cut_one(%k: USize, %p: Ptr<U64>, %i: USize, %bits: S64, %f: Ptr<U64>):
+    block cut_one(%k: USize, %p: @U64, %i: USize, %bits: S64, %f: @U64):
         %at    : USize = %i.add(%k)
         %above : USize = %at.add(1)
         %low   : U64   = %p.stride(%at).load()
@@ -624,14 +624,14 @@ routine cm_trig_cut(%p: Ptr<U64>, %i: USize, %bits: S64, %f: Ptr<U64>) -> Void
         jump cut(%k.add(1), %p, %i, %bits, %f)
 
 /// Replaces the seven-limb two's-complement fraction at %f by its magnitude when it is negative.
-routine cm_trig_magnitude448(%f: Ptr<U64>, %negative: Bool) -> Void
+routine cm_trig_magnitude448(%f: @U64, %negative: Bool) -> Void
     block entry():
         %all_ones : U64 = U64.MAX
         %no_bits  : U64 = 0
         %mask     : U64 = %negative ? %all_ones : %no_bits
         jump flip(0, %negative.to_u64(), %mask, %f)
 
-    block flip(%k: USize, %carry: U64, %mask: U64, %f: Ptr<U64>):
+    block flip(%k: USize, %carry: U64, %mask: U64, %f: @U64):
         %done : Bool = %k.ge(7)
         branch %done ? return() : continue
         %limb    : U64 = %f.stride(%k).load()
@@ -641,16 +641,16 @@ routine cm_trig_magnitude448(%f: Ptr<U64>, %negative: Bool) -> Void
         jump flip(%k.add(1), %next_carry, %mask, %f)
 
 /// Leading zeros of the 448-bit fraction at %f (seven limbs, least significant first), 448 when it is zero.
-routine cm_trig_lz448(%f: Ptr<U64>) -> S64
+routine cm_trig_lz448(%f: @U64) -> S64
     block entry():
         jump scan(6, %f)
 
-    block scan(%k: SSize, %f: Ptr<U64>):
+    block scan(%k: SSize, %f: @U64):
         %exhausted : Bool = %k.lt(0)
         %all       : S64  = 448
         branch %exhausted ? return(%all) : scan_one(%k.to_usize(), %f)
 
-    block scan_one(%k: USize, %f: Ptr<U64>):
+    block scan_one(%k: USize, %f: @U64):
         %limb  : U64  = %f.stride(%k).load()
         %empty : Bool = %limb.eq(0)
         %above : U64  = 6.sub(%k).mul(64).to_u64()
@@ -658,28 +658,28 @@ routine cm_trig_lz448(%f: Ptr<U64>) -> S64
         branch %empty ? scan(%k.sub(1).to_ssize(), %f) : return(%lz.to_s64())
 
 /// The top 384 bits of the 448-bit fraction at %f shifted left by lz (limbs 1..6 of the shifted value).
-routine cm_trig_top448(%f: Ptr<U64>, %lz: S64) -> CmTrigU384
+routine cm_trig_top448(%f: @U64, %lz: S64) -> CmTrigU384
     block entry():
-        claim %shifted : Ptr<Array<U64, 7>>
-        %s : Ptr<U64> = %shifted.to_ptr()
+        claim %shifted : @Array<U64, 7>
+        %s : @U64 = %shifted.to_ptr()
         %s.zeroinit(7)
         %word  : USize = %lz.shr(6).to_usize()
         %wbits : S64   = %lz.bitand(63)
         jump shift(%word, 0, %word, %wbits, %f, %s)
 
     // s[q] = f[q - word] << wbits with the bits carried up from the limb below it
-    block shift(%q: USize, %below: U64, %word: USize, %wbits: S64, %f: Ptr<U64>, %s: Ptr<U64>):
+    block shift(%q: USize, %below: U64, %word: USize, %wbits: S64, %f: @U64, %s: @U64):
         %done : Bool = %q.ge(7)
         branch %done ? assemble(%s) : shift_one(%q, %below, %word, %wbits, %f, %s)
 
-    block shift_one(%q: USize, %below: U64, %word: USize, %wbits: S64, %f: Ptr<U64>, %s: Ptr<U64>):
+    block shift_one(%q: USize, %below: U64, %word: USize, %wbits: S64, %f: @U64, %s: @U64):
         %from    : USize = %q.sub(%word)
         %limb    : U64   = %f.stride(%from).load()
         %carried : U64   = %below.shr(1).shr(63.sub(%wbits).to_u64())
         %s.stride(%q).store(%limb.shl(%wbits.to_u64()).bitor(%carried))
         jump shift(%q.add(1), %limb, %word, %wbits, %f, %s)
 
-    block assemble(%s: Ptr<U64>):
+    block assemble(%s: @U64):
         %s1 : U64        = %s.stride(1).load()
         %s2 : U64        = %s.stride(2).load()
         %s3 : U64        = %s.stride(3).load()
@@ -849,27 +849,27 @@ routine cm_trig_fast_tail(%red: CmTrigReduced, %sq: CmTrigSquares, %sine_theta: 
 
 /// sum_{k>=0} (-1)^k coef[k]*u^k, eighteen terms by Horner in three tiers: terms 11..17 at 128 bits, 2..10
 /// at 256 and 0..1 at 384. Every step stays positive because u*coef[k+1] < coef[k].
-routine cm_trig_alternating(%u: CmTrigU384, %coef: Ptr<U128>) -> CmTrigU384
+routine cm_trig_alternating(%u: CmTrigU384, %coef: @U128) -> CmTrigU384
     block entry():
         %last : U128 = cm_trig_coef(%coef, 17, 2)
         jump narrow(16, %last, %u, %coef)
 
-    block narrow(%k: USize, %acc: U128, %u: CmTrigU384, %coef: Ptr<U128>):
+    block narrow(%k: USize, %acc: U128, %u: CmTrigU384, %coef: @U128):
         %done : Bool = %k.lt(11)
         branch %done
             ? middle(10, cm_trig_join(%acc, 0), %u, %coef)
             : narrow_step(%k, %acc, %u, %coef)
 
-    block narrow_step(%k: USize, %acc: U128, %u: CmTrigU384, %coef: Ptr<U128>):
+    block narrow_step(%k: USize, %acc: U128, %u: CmTrigU384, %coef: @U128):
         %c    : U128 = cm_trig_coef(%coef, %k, 2)
         %next : U128 = %c.sub_wrap(cm_trig_mhi(%u.l2, %acc))
         jump narrow(%k.sub(1), %next, %u, %coef)
 
-    block middle(%k: USize, %acc: U256, %u: CmTrigU384, %coef: Ptr<U128>):
+    block middle(%k: USize, %acc: U256, %u: CmTrigU384, %coef: @U128):
         %done : Bool = %k.lt(2)
         branch %done ? widen_to_384(%acc, %u, %coef) : middle_step(%k, %acc, %u, %coef)
 
-    block middle_step(%k: USize, %acc: U256, %u: CmTrigU384, %coef: Ptr<U128>):
+    block middle_step(%k: USize, %acc: U256, %u: CmTrigU384, %coef: @U128):
         %c_lo    : U128 = cm_trig_coef(%coef, %k, 1)
         %c_hi    : U128 = cm_trig_coef(%coef, %k, 2)
         %c       : U256 = cm_trig_join(%c_hi, %c_lo)
@@ -878,12 +878,12 @@ routine cm_trig_alternating(%u: CmTrigU384, %coef: Ptr<U128>) -> CmTrigU384
         %next    : U256 = %c.sub_wrap(%product)
         jump middle(%k.sub(1), %next, %u, %coef)
 
-    block widen_to_384(%acc: U256, %u: CmTrigU384, %coef: Ptr<U128>):
+    block widen_to_384(%acc: U256, %u: CmTrigU384, %coef: @U128):
         %high : U128       = cm_trig_high(%acc)
         %wide : CmTrigU384 = CmTrigU384 { l0: 0, l1: %acc.to_u128_wrap(), l2: %high }
         jump full(1, %wide, %u, %coef)
 
-    block full(%k: S64, %acc: CmTrigU384, %u: CmTrigU384, %coef: Ptr<U128>):
+    block full(%k: S64, %acc: CmTrigU384, %u: CmTrigU384, %coef: @U128):
         %done : Bool = %k.lt(0)
         branch %done ? return(%acc) : continue
         %c0   : U128       = cm_trig_coef(%coef, %k.to_usize(), 0)

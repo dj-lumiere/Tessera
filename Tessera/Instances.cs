@@ -94,13 +94,13 @@ public sealed partial class Compiler
 
         var external = r.Attr("external");
         if (external is not null && external.First is not ("c" or "llvm"))
-            throw new CompileError(external.Pos, "only @external(\"c\") and @external(\"llvm\") are supported");
+            throw new CompileError(external.Pos, "only #external(\"c\") and #external(\"llvm\") are supported");
         if (external is { First: "llvm" } && r.Attr("template") is null)
-            throw new CompileError(r.Pos, $"@external(\"llvm\") routine '{r.DisplayName}' needs a @template");
+            throw new CompileError(r.Pos, $"#external(\"llvm\") routine '{r.DisplayName}' needs a #template");
         if (external is not null && r.Blocks is not null)
             throw new CompileError(r.Pos, $"external routine '{r.DisplayName}' cannot have a body");
         if (external is null && r.Blocks is null)
-            throw new CompileError(r.Pos, $"routine '{r.DisplayName}' has no body (mark it @external to declare it)");
+            throw new CompileError(r.Pos, $"routine '{r.DisplayName}' has no body (mark it #external to declare it)");
 
         string symbol;
         if (external is not null) symbol = r.Attr("symbol")?.First ?? r.Name;
@@ -134,7 +134,7 @@ public sealed partial class Compiler
                 throw new CompileError(r.Params[i].Pos, "%self is the receiver, so it's the first parameter");
             var self = env.Get("Self") ?? env.Get(r.Owner.Name);
             if (self is not null && !ps[0].Equals(self) && !(ps[0] is PtrType { Pointee: { } pointee } && pointee.Equals(self)))
-                throw new CompileError(r.Params[i].Pos, $"%self is Self or Ptr<Self> ({self} or Ptr<{self}>), not {ps[0]}");
+                throw new CompileError(r.Params[i].Pos, $"%self is Self or @Self ({self} or @{self}), not {ps[0]}");
         }
     }
 
@@ -177,16 +177,16 @@ public sealed partial class Compiler
                     $"{t} can't cross the C ABI yet: C passes vectors by rules that depend on the CPU's features");
             else if (!AggregateAbiKnown && IsAggregate(t))
                 throw new CompileError(sig.Decl.Pos,
-                    $"passing {t} by value across the C ABI isn't implemented for {Target.Arch} yet; pass a Ptr<{t}>");
+                    $"passing {t} by value across the C ABI isn't implemented for {Target.Arch} yet; pass a @{t}");
     }
 
     private void EmitInstance(Instance inst)
     {
         new FunctionGen(this, inst, _functions).Emit();
-        // `@export("name")` adds a plain C symbol for the routine.
+        // `#export("name")` adds a plain C symbol for the routine.
         if (inst.Decl.Attr("export") is { } export)
         {
-            string name = export.First ?? throw new CompileError(export.Pos, "@export needs a symbol name");
+            string name = export.First ?? throw new CompileError(export.Pos, "#export needs a symbol name");
             _exported.Add(name);
             // A stdlib export is a default the program may replace, so its name is weak.
             string weak = inst.Decl.IsLibrary ? "weak " : "";

@@ -14,12 +14,12 @@ conform Destruct<PriorityQueue<T>>
 conform Represent<PriorityQueue<T>> when T: typename, Priority<T>, Diagnose<T>
 conform Diagnose<PriorityQueue<T>>  when T: typename, Priority<T>, Diagnose<T>
 require T: typename, Priority<T>
-    data     : Ptr<T>
+    data     : @T
     length   : USize
     capacity : USize
-    alloc    : Ptr<Allocator>
+    alloc    : @Allocator
 
-routine PriorityQueue<T>.construct(%alloc: Ptr<Allocator>) -> Self
+routine PriorityQueue<T>.construct(%alloc: @Allocator) -> Self
 require T: typename, Priority<T>
     block entry():
         %queue : Self = Self { data: null, length: 0, capacity: 0, alloc: %alloc }
@@ -38,15 +38,14 @@ require T: typename
         %empty  : Bool  = %length.eq(0)
         return(%empty)
 
-routine PriorityQueue<T>.reserve(%self: Ptr<Self>, %capacity: USize) -> Void
+routine PriorityQueue<T>.reserve(%self: @Self, %capacity: USize) -> Void
 require T: typename
     block entry():
         %reserved : Bool = %self.make_capacity(%capacity)
         branch %reserved ? return() : panic(TrapCode.AllocFailed)
 
 /// `reserve`, returning a Failure instead of trapping when the allocator fails.
-routine PriorityQueue<T>.reserve_result(%self: Ptr<Self>,
-        %capacity: USize) -> Result<Unit, AllocFailed>
+routine PriorityQueue<T>.reserve_result(%self: @Self, %capacity: USize) -> Result<Unit, AllocFailed>
 require T: typename
     block entry():
         %reserved : Bool = %self.make_capacity(%capacity)
@@ -54,7 +53,7 @@ require T: typename
 
 /// Grows the heap array to at least %capacity elements. Returns false when the
 /// allocator fails, leaving the queue as it was.
-private routine PriorityQueue<T>.make_capacity(%self: Ptr<Self>, %capacity: USize) -> Bool
+private routine PriorityQueue<T>.make_capacity(%self: @Self, %capacity: USize) -> Bool
 require T: typename
     block entry():
         %old_capacity : USize = %self.capacity.load()
@@ -62,20 +61,20 @@ require T: typename
         branch %enough ? return(true) : grow(%capacity)
 
     block grow(%capacity: USize):
-        %alloc    : Ptr<Allocator> = %self.alloc.load()
-        %old_data : Ptr<T>         = %self.data.load()
-        %new_data : Ptr<T>         = reallocate<T>(%alloc, %old_data, %capacity)
-        %failed   : Bool           = %new_data.is_null()
+        %alloc    : @Allocator = %self.alloc.load()
+        %old_data : @T         = %self.data.load()
+        %new_data : @T         = reallocate<T>(%alloc, %old_data, %capacity)
+        %failed   : Bool       = %new_data.is_null()
         branch %failed ? return(false) : install(%new_data, %capacity)
 
-    block install(%new_data: Ptr<T>, %capacity: USize):
+    block install(%new_data: @T, %capacity: USize):
         %self.data.store(%new_data)
         %self.capacity.store(%capacity)
         return(true)
 
 /// Makes room for %wanted elements, doubling the capacity. Returns false when
 /// the allocator fails, leaving the queue as it was.
-private routine PriorityQueue<T>.make_room(%self: Ptr<Self>, %wanted: USize) -> Bool
+private routine PriorityQueue<T>.make_room(%self: @Self, %wanted: USize) -> Bool
 require T: typename
     block entry():
         %capacity : USize = %self.capacity.load()
@@ -97,7 +96,7 @@ require T: typename
         %enough : Bool  = %next.ge(%wanted)
         branch %enough ? return(%self.make_capacity(%next)) : double(%next, %wanted)
 
-routine PriorityQueue<T>.push(%self: Ptr<Self>, %value: T) -> Void
+routine PriorityQueue<T>.push(%self: @Self, %value: T) -> Void
 require T: typename
     block entry():
         %pushed : Result<Unit, AllocFailed> = %self.push_result(%value)
@@ -106,14 +105,14 @@ require T: typename
             .Failure -> panic(TrapCode.AllocFailed)
 
 /// `push`, returning a Failure instead of trapping when the allocator fails.
-routine PriorityQueue<T>.push_result(%self: Ptr<Self>, %value: T) -> Result<Unit, AllocFailed>
+routine PriorityQueue<T>.push_result(%self: @Self, %value: T) -> Result<Unit, AllocFailed>
 require T: typename
     block entry():
         %length : USize = %self.length.load()
         %wanted : USize = %length.add(1)
         %room   : Bool  = %self.make_room(%wanted)
         branch %room ? continue : return(.Failure(AllocFailed {}))
-        %data : Ptr<T> = %self.data.load()
+        %data : @T = %self.data.load()
         %data.stride(%length).store(%value)
         %self.length.store(%wanted)
         jump sift_up(%length)
@@ -123,17 +122,17 @@ require T: typename
         branch %at_root ? return(.Success(Unit.value())) : compare_parent(%index)
 
     block compare_parent(%index: USize):
-        %parent       : USize  = %index.sub(1).div(2)
-        %data         : Ptr<T> = %self.data.load()
-        %child_value  : T      = %data.stride(%index).load()
-        %parent_value : T      = %data.stride(%parent).load()
-        %less         : Bool   = %child_value.less(%parent_value)
+        %parent       : USize = %index.sub(1).div(2)
+        %data         : @T    = %self.data.load()
+        %child_value  : T     = %data.stride(%index).load()
+        %parent_value : T     = %data.stride(%parent).load()
+        %less         : Bool  = %child_value.less(%parent_value)
         branch %less
             ? swap(%index, %parent, %child_value, %parent_value)
             : return(.Success(Unit.value()))
 
     block swap(%index: USize, %parent: USize, %child_value: T, %parent_value: T):
-        %data : Ptr<T> = %self.data.load()
+        %data : @T = %self.data.load()
         %data.stride(%parent).store(%child_value)
         %data.stride(%index).store(%parent_value)
         jump sift_up(%parent)
@@ -155,11 +154,11 @@ require T: typename
         branch %empty ? return(.Absent) : load()
 
     block load():
-        %data  : Ptr<T> = %self.data
-        %value : T      = %data.stride(0).load()
+        %data  : @T = %self.data
+        %value : T  = %data.stride(0).load()
         return(.Present(%value))
 
-routine PriorityQueue<T>.pop(%self: Ptr<Self>) -> T
+routine PriorityQueue<T>.pop(%self: @Self) -> T
 require T: typename
     block entry():
         %popped : Option<T> = %self.pop_checked()
@@ -168,7 +167,7 @@ require T: typename
             .Absent          -> panic(TrapCode.Empty)
 
 /// `pop`, returning Absent instead of trapping on an empty queue.
-routine PriorityQueue<T>.pop_checked(%self: Ptr<Self>) -> Option<T>
+routine PriorityQueue<T>.pop_checked(%self: @Self) -> Option<T>
 require T: typename
     block entry():
         %length : USize = %self.length.load()
@@ -176,16 +175,16 @@ require T: typename
         branch %empty ? return(.Absent) : remove_root(%length)
 
     block remove_root(%length: USize):
-        %data       : Ptr<T> = %self.data.load()
-        %result     : T      = %data.stride(0).load()
-        %new_length : USize  = %length.sub(1)
+        %data       : @T    = %self.data.load()
+        %result     : T     = %data.stride(0).load()
+        %new_length : USize = %length.sub(1)
         %self.length.store(%new_length)
         %now_empty : Bool = %new_length.eq(0)
         branch %now_empty ? return(.Present(%result)): move_last(%result, %new_length)
 
     block move_last(%result: T, %new_length: USize):
-        %data : Ptr<T> = %self.data.load()
-        %last : T      = %data.stride(%new_length).load()
+        %data : @T = %self.data.load()
+        %last : T  = %data.stride(%new_length).load()
         %data.stride(0).store(%last)
         jump sift_down(0, %result)
 
@@ -204,43 +203,43 @@ require T: typename
             : compare_with_child(%index, %left, %result)
 
     block compare_children(%index: USize, %left: USize, %right: USize, %result: T):
-        %data        : Ptr<T> = %self.data.load()
-        %left_value  : T      = %data.stride(%left).load()
-        %right_value : T      = %data.stride(%right).load()
-        %right_less  : Bool   = %right_value.less(%left_value)
-        %child       : USize  = %right_less ? %right : %left
+        %data        : @T    = %self.data.load()
+        %left_value  : T     = %data.stride(%left).load()
+        %right_value : T     = %data.stride(%right).load()
+        %right_less  : Bool  = %right_value.less(%left_value)
+        %child       : USize = %right_less ? %right : %left
         jump compare_with_child(%index, %child, %result)
 
     block compare_with_child(%index: USize, %child: USize, %result: T):
-        %data        : Ptr<T> = %self.data.load()
-        %index_value : T      = %data.stride(%index).load()
-        %child_value : T      = %data.stride(%child).load()
-        %child_less  : Bool   = %child_value.less(%index_value)
+        %data        : @T   = %self.data.load()
+        %index_value : T    = %data.stride(%index).load()
+        %child_value : T    = %data.stride(%child).load()
+        %child_less  : Bool = %child_value.less(%index_value)
         branch %child_less
             ? swap_down(%index, %child, %index_value, %child_value, %result)
             : return(.Present(%result))
 
     block swap_down(%index: USize, %child: USize, %index_value: T, %child_value: T, %result: T):
-        %data : Ptr<T> = %self.data.load()
+        %data : @T = %self.data.load()
         %data.stride(%index).store(%child_value)
         %data.stride(%child).store(%index_value)
         jump sift_down(%child, %result)
 
-routine PriorityQueue<T>.clear(%self: Ptr<Self>) -> Void
+routine PriorityQueue<T>.clear(%self: @Self) -> Void
 require T: typename
     block entry():
         %self.length.store(0)
         return()
 
-routine PriorityQueue<T>.destruct(%self: Ptr<Self>) -> Void
+routine PriorityQueue<T>.destruct(%self: @Self) -> Void
 require T: typename
     block entry():
-        %data  : Ptr<T> = %self.data.load()
-        %empty : Bool   = %data.is_null()
+        %data  : @T   = %self.data.load()
+        %empty : Bool = %data.is_null()
         branch %empty ? reset() : release(%data)
 
-    block release(%data: Ptr<T>):
-        %alloc : Ptr<Allocator> = %self.alloc.load()
+    block release(%data: @T):
+        %alloc : @Allocator = %self.alloc.load()
         %data.free(%alloc)
         jump reset()
 
@@ -251,19 +250,19 @@ require T: typename
         return()
 
 /// Destructs every element, then the queue itself: for elements the queue owns.
-routine PriorityQueue<T>.destruct_all(%self: Ptr<Self>) -> Void
+routine PriorityQueue<T>.destruct_all(%self: @Self) -> Void
 require T: typename, Destruct<T>
     block entry():
-        %length : USize  = %self.length.load()
-        %data   : Ptr<T> = %self.data.load()
+        %length : USize = %self.length.load()
+        %data   : @T    = %self.data.load()
         jump loop(0, %length, %data)
 
-    block loop(%i: USize, %length: USize, %data: Ptr<T>):
+    block loop(%i: USize, %length: USize, %data: @T):
         %done : Bool = %i.ge(%length)
         branch %done ? finish() : element(%i, %length, %data)
 
-    block element(%i: USize, %length: USize, %data: Ptr<T>):
-        %item : Ptr<T> = %data.stride(%i)
+    block element(%i: USize, %length: USize, %data: @T):
+        %item : @T = %data.stride(%i)
         %item.destruct()
         jump loop(%i.add(1), %length, %data)
 
@@ -275,7 +274,7 @@ require T: typename, Destruct<T>
 
 /// The elements in heap order (the top first, the rest not sorted), each
 /// diagnosed (strings quoted): [1, 4, 2].
-routine PriorityQueue<T>.represent<W>(%self: Self, %out: Ptr<W>) -> Void
+routine PriorityQueue<T>.represent<W>(%self: Self, %out: @W) -> Void
 require T: typename, Priority<T>, Diagnose<T>, W: typename, Writer<W>
     block entry():
         write_str(%out, "[")
@@ -295,8 +294,8 @@ require T: typename, Priority<T>, Diagnose<T>, W: typename, Writer<W>
         jump element(%at)
 
     block element(%at: USize):
-        %data  : Ptr<T> = %self.data
-        %value : T      = %data.stride(%at).load()
+        %data  : @T = %self.data
+        %value : T  = %data.stride(%at).load()
         %value.diagnose(%out)
         jump walk(%at.add(1))
 
@@ -306,7 +305,7 @@ require T: typename, Priority<T>, Diagnose<T>, W: typename, Writer<W>
 
 /// The elements in heap order (the top first, the rest not sorted), each
 /// diagnosed: [1, 4, 2].
-routine PriorityQueue<T>.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine PriorityQueue<T>.diagnose<W>(%self: Self, %out: @W) -> Void
 require T: typename, Priority<T>, Diagnose<T>, W: typename, Writer<W>
     block entry():
         write_str(%out, "[")
@@ -326,8 +325,8 @@ require T: typename, Priority<T>, Diagnose<T>, W: typename, Writer<W>
         jump element(%at)
 
     block element(%at: USize):
-        %data  : Ptr<T> = %self.data
-        %value : T      = %data.stride(%at).load()
+        %data  : @T = %self.data
+        %value : T  = %data.stride(%at).load()
         %value.diagnose(%out)
         jump walk(%at.add(1))
 

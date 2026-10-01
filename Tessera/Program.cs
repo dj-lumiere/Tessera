@@ -16,7 +16,7 @@ static class Cli
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
 
         <target>: --target <arch-os-abi> (default: this machine), --cpu <name> (default: the triple's baseline, such
-                  as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). @feature reads the result.
+                  as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). #feature reads the result.
 
         All input files form one compilation unit. Without files, build and run read config.toml, which sets
         everything the flags would; its output goes to build/ next to it.

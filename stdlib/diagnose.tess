@@ -12,22 +12,22 @@
 // diagnose as their address.
 //
 // A record, choice, or variant gets a diagnose from the compiler with
-// @derive(Diagnose): Point { x: 1, y: 2 }, Color.Red, Option.Present(3).
-// @derive(Represent) writes the same record text (fields are diagnosed inside
+// #derive(Diagnose): Point { x: 1, y: 2 }, Color.Red, Option.Present(3).
+// #derive(Represent) writes the same record text (fields are diagnosed inside
 // any aggregate), a choice member as Red, and a variant case as Present(3).
 
 module Standard::Format
 
 concept Diagnose<T>
 require T: typename
-    routine Self.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+    routine Self.diagnose<W>(%self: Self, %out: @W) -> Void
 
 conform Diagnose<S8>, Diagnose<S16>, Diagnose<S32>, Diagnose<S64>, Diagnose<S128>, Diagnose<S256>
 conform Diagnose<U8>, Diagnose<U16>, Diagnose<U32>, Diagnose<U64>, Diagnose<U128>, Diagnose<U256>
 conform Diagnose<USize>, Diagnose<SSize>
 conform Diagnose<F16>, Diagnose<BF16>, Diagnose<F32>, Diagnose<F64>, Diagnose<F128>
 conform Diagnose<Bool>, Diagnose<Char>, Diagnose<Byte>, Diagnose<Bytes>, Diagnose<Unit>, Diagnose<Addr>
-conform Diagnose<Ptr<T>>      when T: typename
+conform Diagnose<@T>          when T: typename
 conform Diagnose<Array<T, N>> when T: typename, N: USize, Diagnose<T>
 
 // -- text ----------------------------------------------------------------------
@@ -35,7 +35,7 @@ conform Diagnose<Array<T, N>> when T: typename, N: USize, Diagnose<T>
 /// One byte inside a quoted literal: an escape (\n, \t, \r, \0, \\, or the
 /// quote), the byte itself when it's printable ASCII, and otherwise \xHH, or
 /// \u0000HH when %as_char (a character literal takes no \x).
-routine write_escaped_byte<W>(%out: Ptr<W>, %byte: Byte, %quote: Byte, %as_char: Bool) -> Void
+routine write_escaped_byte<W>(%out: @W, %byte: Byte, %quote: Byte, %as_char: Bool) -> Void
 require W: typename, Writer<W>
     block entry():
         %is_quote : Bool = %byte.eq(%quote)
@@ -63,7 +63,7 @@ require W: typename, Writer<W>
         branch %printable ? raw() : hex()
 
     block raw():
-        claim %slot : Ptr<Byte>
+        claim %slot : @Byte
         %slot.store(%byte)
         %out.write_bytes(%slot, 1)
         return()
@@ -84,7 +84,7 @@ require W: typename, Writer<W>
 /// In quotes: ASCII through the byte escapes, a well-formed UTF-8 character as
 /// it is, and each byte of a malformed sequence as \xHH, so the text reads back
 /// as the same bytes.
-routine Bytes.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine Bytes.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         write_str(%out, "\"")
@@ -96,9 +96,9 @@ require W: typename, Writer<W>
         branch %more ? step(%at) : close()
 
     block step(%at: USize):
-        %data  : Ptr<Byte> = %self.data
-        %byte  : Byte      = %data.stride(%at).load()
-        %ascii : Bool      = %byte.lt(0x80)
+        %data  : @Byte = %self.data
+        %byte  : Byte  = %data.stride(%at).load()
+        %ascii : Bool  = %byte.lt(0x80)
         branch %ascii ? ascii(%at, %byte) : wide(%at, %byte)
 
     block ascii(%at: USize, %byte: Byte):
@@ -106,12 +106,12 @@ require W: typename, Writer<W>
         jump walk(%at.add(1))
 
     block wide(%at: USize, %byte: Byte):
-        %data : Ptr<Byte>   = %self.data
+        %data : @Byte       = %self.data
         %d    : Utf8Decoded = utf8_decode(%data, %at, %self.length)
         branch %d.ok ? character(%at, %d.next_pos) : malformed(%at, %byte)
 
     block character(%at: USize, %next: USize):
-        %data : Ptr<Byte> = %self.data
+        %data : @Byte = %self.data
         %out.write_bytes(%data.stride(%at), %next.sub(%at))
         jump walk(%next)
 
@@ -123,7 +123,7 @@ require W: typename, Writer<W>
         write_str(%out, "\"")
         return()
 
-routine Byte.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine Byte.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         write_str(%out, "b'")
@@ -133,7 +133,7 @@ require W: typename, Writer<W>
 
 /// ASCII goes through the byte escapes; any other character is written as its
 /// UTF-8.
-routine Char.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine Char.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         write_str(%out, "'")
@@ -156,25 +156,25 @@ require W: typename, Writer<W>
 
 // -- values that read the same both ways ---------------------------------------
 
-routine Bool.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine Bool.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine Unit.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine Unit.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         write_str(%out, "Unit")
         return()
 
-routine Addr.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine Addr.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine Ptr<T>.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine Ptr<T>.diagnose<W>(%self: Self, %out: @W) -> Void
 require T: typename, W: typename, Writer<W>
     block entry():
         %self.represent(%out)
@@ -182,27 +182,27 @@ require T: typename, W: typename, Writer<W>
 
 // -- arrays --------------------------------------------------------------------
 
-routine Array<T, N>.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine Array<T, N>.diagnose<W>(%self: Self, %out: @W) -> Void
 require T: typename, N: USize, Diagnose<T>, W: typename, Writer<W>
     block entry():
-        claim %slot : Ptr<Self>
+        claim %slot : @Self
         %slot.store(%self)
         write_str(%out, "[")
         jump walk(0, %slot)
 
-    block walk(%at: USize, %slot: Ptr<Self>):
+    block walk(%at: USize, %slot: @Self):
         %more : Bool = %at.lt(N)
         branch %more ? item(%at, %slot) : close()
 
-    block item(%at: USize, %slot: Ptr<Self>):
+    block item(%at: USize, %slot: @Self):
         %first : Bool = %at.eq(0)
         branch %first ? element(%at, %slot) : separate(%at, %slot)
 
-    block separate(%at: USize, %slot: Ptr<Self>):
+    block separate(%at: USize, %slot: @Self):
         write_str(%out, ", ")
         jump element(%at, %slot)
 
-    block element(%at: USize, %slot: Ptr<Self>):
+    block element(%at: USize, %slot: @Self):
         %value : T = %slot.get(%at)
         %value.diagnose(%out)
         jump walk(%at.add(1), %slot)
@@ -216,115 +216,115 @@ require T: typename, N: USize, Diagnose<T>, W: typename, Writer<W>
 // A number's decimal text is already its literal (floats keep a .0 or an
 // exponent), so diagnose is represent.
 
-routine S8.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine S8.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine S16.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine S16.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine S32.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine S32.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine S64.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine S64.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine S128.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine S128.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine S256.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine S256.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine U8.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine U8.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine U16.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine U16.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine U32.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine U32.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine U64.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine U64.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine U128.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine U128.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine U256.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine U256.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine USize.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine USize.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine SSize.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine SSize.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine F16.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine F16.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine BF16.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine BF16.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine F32.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine F32.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine F64.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine F64.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)
         return()
 
-routine F128.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine F128.diagnose<W>(%self: Self, %out: @W) -> Void
 require W: typename, Writer<W>
     block entry():
         %self.represent(%out)

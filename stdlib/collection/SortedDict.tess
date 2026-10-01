@@ -20,7 +20,7 @@ require K: typename, V: typename
     subtree_count : USize
     keys          : Array<K, NODE_KEYS>
     values        : Array<V, NODE_KEYS>
-    children      : Array<Ptr<SortedDictNode<K, V>>, NODE_CHILDREN>
+    children      : Array<@SortedDictNode<K, V>, NODE_CHILDREN>
 
 record SortedDict<K, V>
 conform Destruct<SortedDict<K, V>>
@@ -28,11 +28,11 @@ conform Represent<SortedDict<K, V>> when K: typename, V: typename, Compare<K>, D
 conform Diagnose<SortedDict<K, V>>  when K: typename, V: typename, Compare<K>, Diagnose<K>, Diagnose<V>
 conform Equal<SortedDict<K, V>>     when K: typename, V: typename, Compare<K>, Equal<V>
 require K: typename, V: typename, Compare<K>
-    root   : Ptr<SortedDictNode<K, V>>
+    root   : @SortedDictNode<K, V>
     length : USize
-    alloc  : Ptr<Allocator>
+    alloc  : @Allocator
 
-routine SortedDict<K, V>.construct(%alloc: Ptr<Allocator>) -> Self
+routine SortedDict<K, V>.construct(%alloc: @Allocator) -> Self
 require K: typename, V: typename, Compare<K>
     block entry():
         %map : Self = Self { root: null, length: 0, alloc: %alloc }
@@ -52,30 +52,30 @@ require K: typename, V: typename
         return(%empty)
 
 /// A new empty node, or null when the allocator fails.
-routine SortedDictNode<K, V>.construct(%leaf: Bool, %alloc: Ptr<Allocator>) -> Ptr<Self>
+routine SortedDictNode<K, V>.construct(%leaf: Bool, %alloc: @Allocator) -> @Self
 require K: typename, V: typename
     block entry():
-        %node   : Ptr<Self> = allocate<Self>(%alloc, 1)
-        %failed : Bool      = %node.is_null()
+        %node   : @Self = allocate<Self>(%alloc, 1)
+        %failed : Bool  = %node.is_null()
         branch %failed ? return(%node) : init(%node, %leaf)
 
-    block init(%node: Ptr<Self>, %leaf: Bool):
+    block init(%node: @Self, %leaf: Bool):
         %node.leaf.store(%leaf)
         %node.length.store(0)
         %node.subtree_count.store(0)
         return(%node)
 
-routine SortedDictNode<K, V>.count(%self: Ptr<Self>) -> USize
+routine SortedDictNode<K, V>.count(%self: @Self) -> USize
 require K: typename, V: typename
     block entry():
         %empty : Bool = %self.is_null()
         branch %empty ? return(0) : count(%self)
 
-    block count(%self: Ptr<Self>):
+    block count(%self: @Self):
         %count : USize = %self.subtree_count.load()
         return(%count)
 
-routine SortedDictNode<K, V>.recount(%self: Ptr<Self>) -> Void
+routine SortedDictNode<K, V>.recount(%self: @Self) -> Void
 require K: typename, V: typename
     block entry():
         %leaf   : Bool  = %self.leaf.load()
@@ -94,18 +94,18 @@ require K: typename, V: typename
         branch %done ? finish(%sum) : add_child(%i, %sum, %length)
 
     block add_child(%i: USize, %sum: USize, %length: USize):
-        %child       : Ptr<Self> = %self.children.get(%i)
-        %child_count : USize     = %child.count()
-        %with_child  : USize     = %sum.add(%child_count)
-        %has_key     : Bool      = %i.lt(%length)
-        %next_sum    : USize     = %has_key ? %with_child.add(1) : %with_child
+        %child       : @Self = %self.children.get(%i)
+        %child_count : USize = %child.count()
+        %with_child  : USize = %sum.add(%child_count)
+        %has_key     : Bool  = %i.lt(%length)
+        %next_sum    : USize = %has_key ? %with_child.add(1) : %with_child
         jump loop(%i.add(1), %next_sum, %length)
 
     block finish(%sum: USize):
         %self.subtree_count.store(%sum)
         return()
 
-routine SortedDictNode<K, V>.find_index(%self: Ptr<Self>, %key: K) -> USize
+routine SortedDictNode<K, V>.find_index(%self: @Self, %key: K) -> USize
 require K: typename, V: typename
     block entry():
         jump loop(0)
@@ -133,74 +133,74 @@ require K: typename, V: typename
 routine SortedDict<K, V>.get_checked(%self: Self, %key: K) -> Option<V>
 require K: typename, V: typename
     block entry():
-        %root  : Ptr<SortedDictNode<K, V>> = %self.root
-        %empty : Bool                      = %root.is_null()
+        %root  : @SortedDictNode<K, V> = %self.root
+        %empty : Bool                  = %root.is_null()
         branch %empty ? return(.Absent) : search(%root, %key)
 
-    block search(%node: Ptr<SortedDictNode<K, V>>, %key: K):
+    block search(%node: @SortedDictNode<K, V>, %key: K):
         %i      : USize = %node.find_index(%key)
         %length : USize = %node.length.load()
         %inside : Bool  = %i.lt(%length)
         branch %inside ? maybe_match(%node, %i, %key) : descend_or_missing(%node, %i, %key)
 
-    block maybe_match(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
+    block maybe_match(%node: @SortedDictNode<K, V>, %i: USize, %key: K):
         %node_key : K    = %node.keys.get(%i)
         %cmp      : S32  = %key.compare(%node_key)
         %equal    : Bool = %cmp.eq(0)
         branch %equal ? load(%node, %i) : descend_or_missing(%node, %i, %key)
 
-    block descend_or_missing(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
+    block descend_or_missing(%node: @SortedDictNode<K, V>, %i: USize, %key: K):
         %leaf : Bool = %node.leaf.load()
         branch %leaf ? return(.Absent) : descend(%node, %i, %key)
 
-    block descend(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
-        %child : Ptr<SortedDictNode<K, V>> = %node.children.get(%i)
+    block descend(%node: @SortedDictNode<K, V>, %i: USize, %key: K):
+        %child : @SortedDictNode<K, V> = %node.children.get(%i)
         jump search(%child, %key)
 
-    block load(%node: Ptr<SortedDictNode<K, V>>, %i: USize):
+    block load(%node: @SortedDictNode<K, V>, %i: USize):
         %value : V = %node.values.get(%i)
         return(.Present(%value))
 
 /// The address of %key's value, checked like get: a place to update the value in place. Only the value: changing a
 /// key in place would break the order. It stays valid until the dict changes shape or is destructed.
-routine SortedDict<K, V>.at(%self: Self, %key: K) -> Ptr<V>
+routine SortedDict<K, V>.at(%self: Self, %key: K) -> @V
 require K: typename, V: typename
     block entry():
-        %found : Option<Ptr<V>> = %self.at_checked(%key)
+        %found : Option<@V> = %self.at_checked(%key)
         when %found:
             .Present(%value) -> return(%value)
             .Absent          -> panic(TrapCode.MissingKey)
 
 /// `at`, returning Absent instead of trapping on a missing key.
-routine SortedDict<K, V>.at_checked(%self: Self, %key: K) -> Option<Ptr<V>>
+routine SortedDict<K, V>.at_checked(%self: Self, %key: K) -> Option<@V>
 require K: typename, V: typename
     block entry():
-        %root  : Ptr<SortedDictNode<K, V>> = %self.root
-        %empty : Bool                      = %root.is_null()
+        %root  : @SortedDictNode<K, V> = %self.root
+        %empty : Bool                  = %root.is_null()
         branch %empty ? return(.Absent) : search(%root, %key)
 
-    block search(%node: Ptr<SortedDictNode<K, V>>, %key: K):
+    block search(%node: @SortedDictNode<K, V>, %key: K):
         %i      : USize = %node.find_index(%key)
         %length : USize = %node.length.load()
         %inside : Bool  = %i.lt(%length)
         branch %inside ? maybe_match(%node, %i, %key) : descend_or_missing(%node, %i, %key)
 
-    block maybe_match(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
+    block maybe_match(%node: @SortedDictNode<K, V>, %i: USize, %key: K):
         %node_key : K    = %node.keys.get(%i)
         %cmp      : S32  = %key.compare(%node_key)
         %equal    : Bool = %cmp.eq(0)
         branch %equal ? address(%node, %i) : descend_or_missing(%node, %i, %key)
 
-    block descend_or_missing(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
+    block descend_or_missing(%node: @SortedDictNode<K, V>, %i: USize, %key: K):
         %leaf : Bool = %node.leaf.load()
         branch %leaf ? return(.Absent) : descend(%node, %i, %key)
 
-    block descend(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
-        %child : Ptr<SortedDictNode<K, V>> = %node.children.get(%i)
+    block descend(%node: @SortedDictNode<K, V>, %i: USize, %key: K):
+        %child : @SortedDictNode<K, V> = %node.children.get(%i)
         jump search(%child, %key)
 
-    block address(%node: Ptr<SortedDictNode<K, V>>, %i: USize):
-        %value : Ptr<V> = %node.values.at(%i)
+    block address(%node: @SortedDictNode<K, V>, %i: USize):
+        %value : @V = %node.values.at(%i)
         return(.Present(%value))
 
 /// SortedDicts are sorted by key, so structural in-order comparison of both
@@ -208,15 +208,15 @@ require K: typename, V: typename
 routine SortedDict<K, V>.eq(%self: Self, %other: Self) -> Bool
 require K: typename, V: typename, Compare<K>, Equal<V>
     block entry():
-        claim %a : Ptr<Self>
-        claim %b : Ptr<Self>
+        claim %a : @Self
+        claim %b : @Self
         %a.store(%self)
         %b.store(%other)
         %equal : Bool = %a.eq_at(%b)
         return(%equal)
 
 /// eq, through pointers to the two SortedDicts.
-private routine SortedDict<K, V>.eq_at(%self: Ptr<Self>, %other: Ptr<Self>) -> Bool
+private routine SortedDict<K, V>.eq_at(%self: @Self, %other: @Self) -> Bool
 require K: typename, V: typename, Compare<K>, Equal<V>
     block entry():
         %la       : USize = %self.length.load()
@@ -225,21 +225,21 @@ require K: typename, V: typename, Compare<K>, Equal<V>
         branch %same_len ? continue : return(false)
         %a_val : SortedDictIter<K, V> = .construct(%self)
         %b_val : SortedDictIter<K, V> = .construct(%other)
-        claim %a : Ptr<SortedDictIter<K, V>>
-        claim %b : Ptr<SortedDictIter<K, V>>
+        claim %a : @SortedDictIter<K, V>
+        claim %b : @SortedDictIter<K, V>
         %a.store(%a_val)
         %b.store(%b_val)
         jump loop(%a, %b)
 
     // both have the same length, so both run out together
-    block loop(%a: Ptr<SortedDictIter<K, V>>, %b: Ptr<SortedDictIter<K, V>>):
+    block loop(%a: @SortedDictIter<K, V>, %b: @SortedDictIter<K, V>):
         %x : Option<KVPair<K, V>> = %a.next()
         %y : Option<KVPair<K, V>> = %b.next()
         when %x:
             .Present(%x_item) -> compare(%a, %b, %x_item, %y.unwrap())
             .Absent           -> return(true)
 
-    block compare(%a: Ptr<SortedDictIter<K, V>>, %b: Ptr<SortedDictIter<K, V>>, %x: KVPair<K, V>,
+    block compare(%a: @SortedDictIter<K, V>, %b: @SortedDictIter<K, V>, %x: KVPair<K, V>,
             %y: KVPair<K, V>):
         %cmp  : S32  = %x.key.compare(%y.key)
         %k_eq : Bool = %cmp.eq(0)
@@ -250,34 +250,34 @@ require K: typename, V: typename, Compare<K>, Equal<V>
 routine SortedDict<K, V>.contains(%self: Self, %key: K) -> Bool
 require K: typename, V: typename
     block entry():
-        %root  : Ptr<SortedDictNode<K, V>> = %self.root
-        %empty : Bool                      = %root.is_null()
+        %root  : @SortedDictNode<K, V> = %self.root
+        %empty : Bool                  = %root.is_null()
         branch %empty ? return(false) : search(%root, %key)
 
-    block search(%node: Ptr<SortedDictNode<K, V>>, %key: K):
+    block search(%node: @SortedDictNode<K, V>, %key: K):
         %i      : USize = %node.find_index(%key)
         %length : USize = %node.length.load()
         %inside : Bool  = %i.lt(%length)
         branch %inside ? maybe_match(%node, %i, %key) : descend_or_missing(%node, %i, %key)
 
-    block maybe_match(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
+    block maybe_match(%node: @SortedDictNode<K, V>, %i: USize, %key: K):
         %node_key : K    = %node.keys.get(%i)
         %cmp      : S32  = %key.compare(%node_key)
         %equal    : Bool = %cmp.eq(0)
         branch %equal ? return(true) : descend_or_missing(%node, %i, %key)
 
-    block descend_or_missing(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
+    block descend_or_missing(%node: @SortedDictNode<K, V>, %i: USize, %key: K):
         %leaf : Bool = %node.leaf.load()
         branch %leaf ? return(false) : descend(%node, %i, %key)
 
-    block descend(%node: Ptr<SortedDictNode<K, V>>, %i: USize, %key: K):
-        %child : Ptr<SortedDictNode<K, V>> = %node.children.get(%i)
+    block descend(%node: @SortedDictNode<K, V>, %i: USize, %key: K):
+        %child : @SortedDictNode<K, V> = %node.children.get(%i)
         jump search(%child, %key)
 
 /// Where the entry of a rank lives: its node and its index there.
 private record SortedDictSpot<K, V>
 require K: typename, V: typename
-    node  : Ptr<SortedDictNode<K, V>>
+    node  : @SortedDictNode<K, V>
     index : USize
 
 /// The node and index of the %rank-th smallest key. Traps if %rank >= length.
@@ -289,45 +289,45 @@ require K: typename, V: typename
         branch %in_bounds ? select_root(%rank) : panic(TrapCode.Bounds)
 
     block select_root(%rank: USize):
-        %root : Ptr<SortedDictNode<K, V>> = %self.root
+        %root : @SortedDictNode<K, V> = %self.root
         jump select_node(%root, %rank)
 
-    block select_node(%node: Ptr<SortedDictNode<K, V>>, %rank: USize):
+    block select_node(%node: @SortedDictNode<K, V>, %rank: USize):
         jump scan(%node, %rank, 0)
 
-    block scan(%node: Ptr<SortedDictNode<K, V>>, %rank: USize, %i: USize):
+    block scan(%node: @SortedDictNode<K, V>, %rank: USize, %i: USize):
         %length : USize = %node.length.load()
         %done   : Bool  = %i.ge(%length)
         branch %done ? last_child(%node, %rank, %i) : check_child(%node, %rank, %i)
 
-    block check_child(%node: Ptr<SortedDictNode<K, V>>, %rank: USize, %i: USize):
+    block check_child(%node: @SortedDictNode<K, V>, %rank: USize, %i: USize):
         %leaf : Bool = %node.leaf.load()
         branch %leaf ? leaf_key(%node, %rank, %i) : internal_child(%node, %rank, %i)
 
-    block leaf_key(%node: Ptr<SortedDictNode<K, V>>, %rank: USize, %i: USize):
+    block leaf_key(%node: @SortedDictNode<K, V>, %rank: USize, %i: USize):
         %match : Bool = %rank.eq(%i)
         branch %match ? found(%node, %i) : scan(%node, %rank, %i.add(1))
 
-    block internal_child(%node: Ptr<SortedDictNode<K, V>>, %rank: USize, %i: USize):
-        %child       : Ptr<SortedDictNode<K, V>> = %node.children.get(%i)
-        %child_count : USize                     = %child.count()
-        %in_child    : Bool                      = %rank.lt(%child_count)
+    block internal_child(%node: @SortedDictNode<K, V>, %rank: USize, %i: USize):
+        %child       : @SortedDictNode<K, V> = %node.children.get(%i)
+        %child_count : USize                 = %child.count()
+        %in_child    : Bool                  = %rank.lt(%child_count)
         branch %in_child ? select_node(%child, %rank) : check_key(%node, %rank, %i, %child_count)
 
-    block check_key(%node: Ptr<SortedDictNode<K, V>>, %rank: USize, %i: USize, %child_count: USize):
+    block check_key(%node: @SortedDictNode<K, V>, %rank: USize, %i: USize, %child_count: USize):
         %after_child : USize = %rank.sub(%child_count)
         %is_key      : Bool  = %after_child.eq(0)
         branch %is_key ? found(%node, %i) : scan(%node, %after_child.sub(1), %i.add(1))
 
-    block last_child(%node: Ptr<SortedDictNode<K, V>>, %rank: USize, %i: USize):
+    block last_child(%node: @SortedDictNode<K, V>, %rank: USize, %i: USize):
         %leaf : Bool = %node.leaf.load()
         branch %leaf ? panic(TrapCode.Unreachable) : descend_last(%node, %rank, %i)
 
-    block descend_last(%node: Ptr<SortedDictNode<K, V>>, %rank: USize, %i: USize):
-        %child : Ptr<SortedDictNode<K, V>> = %node.children.get(%i)
+    block descend_last(%node: @SortedDictNode<K, V>, %rank: USize, %i: USize):
+        %child : @SortedDictNode<K, V> = %node.children.get(%i)
         jump select_node(%child, %rank)
 
-    block found(%node: Ptr<SortedDictNode<K, V>>, %i: USize):
+    block found(%node: @SortedDictNode<K, V>, %i: USize):
         return(SortedDictSpot<K, V> { node: %node, index: %i })
 
 /// The %rank-th smallest key and its value, copied (0 is the smallest). Traps if %rank >= length. A copy, because
@@ -335,32 +335,31 @@ require K: typename, V: typename
 routine SortedDict<K, V>.get_by_rank(%self: Self, %rank: USize) -> KVPair<K, V>
 require K: typename, V: typename
     block entry():
-        %spot  : SortedDictSpot<K, V>      = %self.locate_rank(%rank)
-        %node  : Ptr<SortedDictNode<K, V>> = %spot.node
-        %key   : K                         = %node.keys.get(%spot.index)
-        %value : V                         = %node.values.get(%spot.index)
+        %spot  : SortedDictSpot<K, V>  = %self.locate_rank(%rank)
+        %node  : @SortedDictNode<K, V> = %spot.node
+        %key   : K                     = %node.keys.get(%spot.index)
+        %value : V                     = %node.values.get(%spot.index)
         return(KVPair<K, V> { key: %key, value: %value })
 
 /// A pointer to the value of the %rank-th smallest key, to change it in place. Traps if %rank >= length. Valid until
 /// the next put or remove.
-routine SortedDict<K, V>.value_ptr_by_rank(%self: Self, %rank: USize) -> Ptr<V>
+routine SortedDict<K, V>.value_ptr_by_rank(%self: Self, %rank: USize) -> @V
 require K: typename, V: typename
     block entry():
-        %spot  : SortedDictSpot<K, V>      = %self.locate_rank(%rank)
-        %node  : Ptr<SortedDictNode<K, V>> = %spot.node
-        %value : Ptr<V>                    = %node.values.to_ptr().stride(%spot.index)
+        %spot  : SortedDictSpot<K, V>  = %self.locate_rank(%rank)
+        %node  : @SortedDictNode<K, V> = %spot.node
+        %value : @V                    = %node.values.to_ptr().stride(%spot.index)
         return(%value)
 
 /// Splits the full child at %index around its middle. Returns false when the
 /// allocator fails, before anything has moved.
-routine SortedDictNode<K, V>.split_child(%self: Ptr<Self>, %index: USize,
-        %alloc: Ptr<Allocator>) -> Bool
+routine SortedDictNode<K, V>.split_child(%self: @Self, %index: USize, %alloc: @Allocator) -> Bool
 require K: typename, V: typename
     block entry():
-        %left     : Ptr<Self> = %self.children.get(%index)
-        %leaf     : Bool      = %left.leaf.load()
-        %right    : Ptr<Self> = Self.construct(%leaf, %alloc)
-        %no_right : Bool      = %right.is_null()
+        %left     : @Self = %self.children.get(%index)
+        %leaf     : Bool  = %left.leaf.load()
+        %right    : @Self = Self.construct(%leaf, %alloc)
+        %no_right : Bool  = %right.is_null()
         branch %no_right ? return(false) : continue
         %mid         : USize = NODE_KEYS.div(2)
         %right_start : USize = %mid.add(1)
@@ -372,40 +371,38 @@ require K: typename, V: typename
             ? promote(%left, %right, %mid)
             : copy_children(%left, %right, %mid, %right_count)
 
-    block copy_children(%left: Ptr<Self>, %right: Ptr<Self>, %mid: USize, %right_count: USize):
+    block copy_children(%left: @Self, %right: @Self, %mid: USize, %right_count: USize):
         jump child_loop(0, %left, %right, %mid, %right_count)
 
-    block child_loop(%i: USize, %left: Ptr<Self>, %right: Ptr<Self>, %mid: USize,
-            %right_count: USize):
+    block child_loop(%i: USize, %left: @Self, %right: @Self, %mid: USize, %right_count: USize):
         %done : Bool = %i.gt(%right_count)
         branch %done
             ? promote(%left, %right, %mid)
             : child_copy(%i, %left, %right, %mid, %right_count)
 
-    block child_copy(%i: USize, %left: Ptr<Self>, %right: Ptr<Self>, %mid: USize,
-            %right_count: USize):
-        %src   : USize     = %mid.add(1).add(%i)
-        %child : Ptr<Self> = %left.children.get(%src)
+    block child_copy(%i: USize, %left: @Self, %right: @Self, %mid: USize, %right_count: USize):
+        %src   : USize = %mid.add(1).add(%i)
+        %child : @Self = %left.children.get(%src)
         %right.children.set(%i, %child)
         jump child_loop(%i.add(1), %left, %right, %mid, %right_count)
 
-    block promote(%left: Ptr<Self>, %right: Ptr<Self>, %mid: USize):
+    block promote(%left: @Self, %right: @Self, %mid: USize):
         %parent_length : USize = %self.length.load()
         %self.keys.shift_right(%index, %parent_length)
         %self.values.shift_right(%index, %parent_length)
         jump shift_children(%parent_length, %left, %right, %mid)
 
-    block shift_children(%i: USize, %left: Ptr<Self>, %right: Ptr<Self>, %mid: USize):
+    block shift_children(%i: USize, %left: @Self, %right: @Self, %mid: USize):
         %stop : USize = %index.add(1)
         %done : Bool  = %i.lt(%stop)
         branch %done ? install(%left, %right, %mid) : move_child(%i, %left, %right, %mid)
 
-    block move_child(%i: USize, %left: Ptr<Self>, %right: Ptr<Self>, %mid: USize):
-        %child : Ptr<Self> = %self.children.get(%i)
+    block move_child(%i: USize, %left: @Self, %right: @Self, %mid: USize):
+        %child : @Self = %self.children.get(%i)
         %self.children.set(%i.add(1), %child)
         jump shift_children(%i.sub(1), %left, %right, %mid)
 
-    block install(%left: Ptr<Self>, %right: Ptr<Self>, %mid: USize):
+    block install(%left: @Self, %right: @Self, %mid: USize):
         %middle_key   : K = %left.keys.get(%mid)
         %middle_value : V = %left.values.get(%mid)
         %self.keys.set(%index, %middle_key)
@@ -420,8 +417,8 @@ require K: typename, V: typename
 
 /// Inserts below a node that isn't full. Returns false when a split fails to
 /// allocate; the tree then holds the same elements, some nodes already split.
-routine SortedDictNode<K, V>.insert_nonfull(%self: Ptr<Self>, %key: K, %value: V,
-        %alloc: Ptr<Allocator>) -> Bool
+routine SortedDictNode<K, V>.insert_nonfull(%self: @Self, %key: K, %value: V,
+        %alloc: @Allocator) -> Bool
 require K: typename, V: typename
     block entry():
         %leaf : Bool = %self.leaf.load()
@@ -440,29 +437,29 @@ require K: typename, V: typename
         return(true)
 
     block insert_internal():
-        %slot         : USize     = %self.find_index(%key)
-        %child        : Ptr<Self> = %self.children.get(%slot)
-        %child_length : USize     = %child.length.load()
-        %full         : Bool      = %child_length.eq(NODE_KEYS)
+        %slot         : USize = %self.find_index(%key)
+        %child        : @Self = %self.children.get(%slot)
+        %child_length : USize = %child.length.load()
+        %full         : Bool  = %child_length.eq(NODE_KEYS)
         branch %full ? split_then_insert(%slot, %child) : descend(%slot, %child)
 
-    block split_then_insert(%slot: USize, %child: Ptr<Self>):
+    block split_then_insert(%slot: USize, %child: @Self):
         %split : Bool = %self.split_child(%slot, %alloc)
         branch %split ? continue : return(false)
-        %pivot      : K         = %self.keys.get(%slot)
-        %cmp        : S32       = %key.compare(%pivot)
-        %go_right   : Bool      = %cmp.gt(0)
-        %next_slot  : USize     = %go_right ? %slot.add(1) : %slot
-        %next_child : Ptr<Self> = %self.children.get(%next_slot)
+        %pivot      : K     = %self.keys.get(%slot)
+        %cmp        : S32   = %key.compare(%pivot)
+        %go_right   : Bool  = %cmp.gt(0)
+        %next_slot  : USize = %go_right ? %slot.add(1) : %slot
+        %next_child : @Self = %self.children.get(%next_slot)
         jump descend(%next_slot, %next_child)
 
-    block descend(%slot: USize, %child: Ptr<Self>):
+    block descend(%slot: USize, %child: @Self):
         %inserted : Bool = %child.insert_nonfull(%key, %value, %alloc)
         branch %inserted ? continue : return(false)
         %self.recount()
         return(true)
 
-routine SortedDict<K, V>.put(%self: Ptr<Self>, %key: K, %value: V) -> Void
+routine SortedDict<K, V>.put(%self: @Self, %key: K, %value: V) -> Void
 require K: typename, V: typename
     block entry():
         %put : Result<Unit, AllocFailed> = %self.put_result(%key, %value)
@@ -471,18 +468,17 @@ require K: typename, V: typename
             .Failure -> panic(TrapCode.AllocFailed)
 
 /// `put`, returning a Failure instead of trapping when the allocator fails.
-routine SortedDict<K, V>.put_result(%self: Ptr<Self>, %key: K,
-        %value: V) -> Result<Unit, AllocFailed>
+routine SortedDict<K, V>.put_result(%self: @Self, %key: K, %value: V) -> Result<Unit, AllocFailed>
 require K: typename, V: typename
     block entry():
-        %root  : Ptr<SortedDictNode<K, V>> = %self.root.load()
-        %empty : Bool                      = %root.is_null()
+        %root  : @SortedDictNode<K, V> = %self.root.load()
+        %empty : Bool                  = %root.is_null()
         branch %empty ? first_root() : maybe_replace(%root)
 
     block first_root():
-        %alloc   : Ptr<Allocator>            = %self.alloc.load()
-        %root    : Ptr<SortedDictNode<K, V>> = SortedDictNode<K, V>.construct(true, %alloc)
-        %no_root : Bool                      = %root.is_null()
+        %alloc   : @Allocator            = %self.alloc.load()
+        %root    : @SortedDictNode<K, V> = SortedDictNode<K, V>.construct(true, %alloc)
+        %no_root : Bool                  = %root.is_null()
         branch %no_root ? return(.Failure(AllocFailed {})) : continue
         %root.keys.set(0, %key)
         %root.values.set(0, %value)
@@ -492,39 +488,39 @@ require K: typename, V: typename
         %self.length.store(1)
         return(.Success(Unit.value()))
 
-    block maybe_replace(%root: Ptr<SortedDictNode<K, V>>):
+    block maybe_replace(%root: @SortedDictNode<K, V>):
         %replaced : Bool = %root.replace(%key, %value)
         branch %replaced ? return(.Success(Unit.value())) : insert_root(%root)
 
-    block insert_root(%root: Ptr<SortedDictNode<K, V>>):
-        %alloc       : Ptr<Allocator> = %self.alloc.load()
-        %root_length : USize          = %root.length.load()
-        %full        : Bool           = %root_length.eq(NODE_KEYS)
+    block insert_root(%root: @SortedDictNode<K, V>):
+        %alloc       : @Allocator = %self.alloc.load()
+        %root_length : USize      = %root.length.load()
+        %full        : Bool       = %root_length.eq(NODE_KEYS)
         branch %full ? split_root(%root, %alloc) : insert_nonfull(%root, %alloc)
 
-    block split_root(%old_root: Ptr<SortedDictNode<K, V>>, %alloc: Ptr<Allocator>):
-        %new_root : Ptr<SortedDictNode<K, V>> = SortedDictNode<K, V>.construct(false, %alloc)
-        %no_root  : Bool                      = %new_root.is_null()
+    block split_root(%old_root: @SortedDictNode<K, V>, %alloc: @Allocator):
+        %new_root : @SortedDictNode<K, V> = SortedDictNode<K, V>.construct(false, %alloc)
+        %no_root  : Bool                  = %new_root.is_null()
         branch %no_root ? return(.Failure(AllocFailed {})) : continue
         %new_root.children.set(0, %old_root)
         %split : Bool = %new_root.split_child(0, %alloc)
         branch %split ? install_root(%new_root, %alloc) : discard_root(%new_root, %alloc)
 
-    block install_root(%new_root: Ptr<SortedDictNode<K, V>>, %alloc: Ptr<Allocator>):
+    block install_root(%new_root: @SortedDictNode<K, V>, %alloc: @Allocator):
         %self.root.store(%new_root)
         jump insert_nonfull(%new_root, %alloc)
 
-    block discard_root(%new_root: Ptr<SortedDictNode<K, V>>, %alloc: Ptr<Allocator>):
+    block discard_root(%new_root: @SortedDictNode<K, V>, %alloc: @Allocator):
         %new_root.free(%alloc)
         return(.Failure(AllocFailed {}))
 
-    block insert_nonfull(%root: Ptr<SortedDictNode<K, V>>, %alloc: Ptr<Allocator>):
+    block insert_nonfull(%root: @SortedDictNode<K, V>, %alloc: @Allocator):
         %inserted : Bool = %root.insert_nonfull(%key, %value, %alloc)
         branch %inserted ? continue : return(.Failure(AllocFailed {}))
         %self.length.load().add(1).store_into(%self.length)
         return(.Success(Unit.value()))
 
-routine SortedDictNode<K, V>.replace(%self: Ptr<Self>, %key: K, %value: V) -> Bool
+routine SortedDictNode<K, V>.replace(%self: @Self, %key: K, %value: V) -> Bool
 require K: typename, V: typename
     block entry():
         %slot   : USize = %self.find_index(%key)
@@ -547,11 +543,11 @@ require K: typename, V: typename
         branch %leaf ? return(false): descend(%slot)
 
     block descend(%slot: USize):
-        %child    : Ptr<Self> = %self.children.get(%slot)
-        %replaced : Bool      = %child.replace(%key, %value)
+        %child    : @Self = %self.children.get(%slot)
+        %replaced : Bool  = %child.replace(%key, %value)
         return(%replaced)
 
-routine SortedDictNode<K, V>.remove_leaf_at(%self: Ptr<Self>, %index: USize) -> V
+routine SortedDictNode<K, V>.remove_leaf_at(%self: @Self, %index: USize) -> V
 require K: typename, V: typename
     block entry():
         %old    : V     = %self.values.get(%index)
@@ -568,14 +564,14 @@ require K: typename, V: typename
 // Helpers below ensure a child has length >= NODE_MIN_KEYS (= t) before any deletion
 // descent so the child can absorb a one-key drop without underflowing.
 
-routine SortedDictNode<K, V>.borrow_from_left(%self: Ptr<Self>, %i: USize) -> Void
+routine SortedDictNode<K, V>.borrow_from_left(%self: @Self, %i: USize) -> Void
 require K: typename, V: typename
     block entry():
-        %separator    : USize     = %i.sub(1)
-        %left         : Ptr<Self> = %self.children.get(%separator)
-        %child        : Ptr<Self> = %self.children.get(%i)
-        %left_length  : USize     = %left.length.load()
-        %child_length : USize     = %child.length.load()
+        %separator    : USize = %i.sub(1)
+        %left         : @Self = %self.children.get(%separator)
+        %child        : @Self = %self.children.get(%i)
+        %left_length  : USize = %left.length.load()
+        %child_length : USize = %child.length.load()
         %child.keys.shift_right(0, %child_length)
         %child.values.shift_right(0, %child_length)
         %pivot_key   : K = %self.keys.get(%separator)
@@ -591,15 +587,14 @@ require K: typename, V: typename
             ? finalize(%left, %child, %left_length, %child_length)
             : move_child(%left, %child, %left_length, %child_length)
 
-    block move_child(%left: Ptr<Self>, %child: Ptr<Self>, %left_length: USize,
-            %child_length: USize):
+    block move_child(%left: @Self, %child: @Self, %left_length: USize, %child_length: USize):
         %child_count : USize = %child_length.add(1)
         %child.children.shift_right(0, %child_count)
-        %moved : Ptr<Self> = %left.children.get(%left_length)
+        %moved : @Self = %left.children.get(%left_length)
         %child.children.set(0, %moved)
         jump finalize(%left, %child, %left_length, %child_length)
 
-    block finalize(%left: Ptr<Self>, %child: Ptr<Self>, %left_length: USize, %child_length: USize):
+    block finalize(%left: @Self, %child: @Self, %left_length: USize, %child_length: USize):
         %left.length.store(%left_length.sub(1))
         %child.length.store(%child_length.add(1))
         %left.recount()
@@ -607,15 +602,15 @@ require K: typename, V: typename
         %self.recount()
         return()
 
-routine SortedDictNode<K, V>.borrow_from_right(%self: Ptr<Self>, %i: USize) -> Void
+routine SortedDictNode<K, V>.borrow_from_right(%self: @Self, %i: USize) -> Void
 require K: typename, V: typename
     block entry():
-        %child        : Ptr<Self> = %self.children.get(%i)
-        %right        : Ptr<Self> = %self.children.get(%i.add(1))
-        %child_length : USize     = %child.length.load()
-        %right_length : USize     = %right.length.load()
-        %pivot_key    : K         = %self.keys.get(%i)
-        %pivot_value  : V         = %self.values.get(%i)
+        %child        : @Self = %self.children.get(%i)
+        %right        : @Self = %self.children.get(%i.add(1))
+        %child_length : USize = %child.length.load()
+        %right_length : USize = %right.length.load()
+        %pivot_key    : K     = %self.keys.get(%i)
+        %pivot_value  : V     = %self.values.get(%i)
         %child.keys.set(%child_length, %pivot_key)
         %child.values.set(%child_length, %pivot_value)
         %new_pivot_key   : K = %right.keys.get(0)
@@ -629,15 +624,13 @@ require K: typename, V: typename
             ? finalize(%child, %right, %child_length, %right_length)
             : move_child(%child, %right, %child_length, %right_length)
 
-    block move_child(%child: Ptr<Self>, %right: Ptr<Self>, %child_length: USize,
-            %right_length: USize):
-        %moved : Ptr<Self> = %right.children.get(0)
+    block move_child(%child: @Self, %right: @Self, %child_length: USize, %right_length: USize):
+        %moved : @Self = %right.children.get(0)
         %child.children.set(%child_length.add(1), %moved)
         %right.children.shift_left(0, %right_length.add(1))
         jump finalize(%child, %right, %child_length, %right_length)
 
-    block finalize(%child: Ptr<Self>, %right: Ptr<Self>, %child_length: USize,
-            %right_length: USize):
+    block finalize(%child: @Self, %right: @Self, %child_length: USize, %right_length: USize):
         %child.length.store(%child_length.add(1))
         %right.length.store(%right_length.sub(1))
         %child.recount()
@@ -645,16 +638,15 @@ require K: typename, V: typename
         %self.recount()
         return()
 
-routine SortedDictNode<K, V>.merge_children(%self: Ptr<Self>, %i: USize,
-        %alloc: Ptr<Allocator>) -> Void
+routine SortedDictNode<K, V>.merge_children(%self: @Self, %i: USize, %alloc: @Allocator) -> Void
 require K: typename, V: typename
     block entry():
-        %left         : Ptr<Self> = %self.children.get(%i)
-        %right        : Ptr<Self> = %self.children.get(%i.add(1))
-        %left_length  : USize     = %left.length.load()
-        %right_length : USize     = %right.length.load()
-        %pivot_key    : K         = %self.keys.get(%i)
-        %pivot_value  : V         = %self.values.get(%i)
+        %left         : @Self = %self.children.get(%i)
+        %right        : @Self = %self.children.get(%i.add(1))
+        %left_length  : USize = %left.length.load()
+        %right_length : USize = %right.length.load()
+        %pivot_key    : K     = %self.keys.get(%i)
+        %pivot_value  : V     = %self.values.get(%i)
         %left.keys.set(%left_length, %pivot_key)
         %left.values.set(%left_length, %pivot_value)
         %dst_start : USize = %left_length.add(1)
@@ -665,12 +657,11 @@ require K: typename, V: typename
             ? finalize(%left, %right, %left_length, %right_length)
             : copy_children(%left, %right, %left_length, %right_length)
 
-    block copy_children(%left: Ptr<Self>, %right: Ptr<Self>, %left_length: USize,
-            %right_length: USize):
+    block copy_children(%left: @Self, %right: @Self, %left_length: USize, %right_length: USize):
         %left.children.copy(%left_length.add(1), %right.children, 0, %right_length.add(1))
         jump finalize(%left, %right, %left_length, %right_length)
 
-    block finalize(%left: Ptr<Self>, %right: Ptr<Self>, %left_length: USize, %right_length: USize):
+    block finalize(%left: @Self, %right: @Self, %left_length: USize, %right_length: USize):
         %left.length.store(%left_length.add(1).add(%right_length))
         %parent_length : USize = %self.length.load()
         %self.keys.shift_left(%i, %parent_length)
@@ -682,13 +673,12 @@ require K: typename, V: typename
         %self.recount()
         return()
 
-routine SortedDictNode<K, V>.ensure_min(%self: Ptr<Self>, %i: USize,
-        %alloc: Ptr<Allocator>) -> USize
+routine SortedDictNode<K, V>.ensure_min(%self: @Self, %i: USize, %alloc: @Allocator) -> USize
 require K: typename, V: typename
     block entry():
-        %child        : Ptr<Self> = %self.children.get(%i)
-        %child_length : USize     = %child.length.load()
-        %ok           : Bool      = %child_length.ge(NODE_MIN_KEYS)
+        %child        : @Self = %self.children.get(%i)
+        %child_length : USize = %child.length.load()
+        %ok           : Bool  = %child_length.ge(NODE_MIN_KEYS)
         branch %ok ? return(%i): try_left()
 
     block try_left():
@@ -696,9 +686,9 @@ require K: typename, V: typename
         branch %has_left ? check_left() : try_right(false)
 
     block check_left():
-        %left        : Ptr<Self> = %self.children.get(%i.sub(1))
-        %left_length : USize     = %left.length.load()
-        %left_ok     : Bool      = %left_length.ge(NODE_MIN_KEYS)
+        %left        : @Self = %self.children.get(%i.sub(1))
+        %left_length : USize = %left.length.load()
+        %left_ok     : Bool  = %left_length.ge(NODE_MIN_KEYS)
         branch %left_ok ? do_borrow_left() : try_right(true)
 
     block do_borrow_left():
@@ -711,9 +701,9 @@ require K: typename, V: typename
         branch %has_right ? check_right(%has_left) : pick_merge_no_right(%has_left)
 
     block check_right(%has_left: Bool):
-        %right        : Ptr<Self> = %self.children.get(%i.add(1))
-        %right_length : USize     = %right.length.load()
-        %right_ok     : Bool      = %right_length.ge(NODE_MIN_KEYS)
+        %right        : @Self = %self.children.get(%i.add(1))
+        %right_length : USize = %right.length.load()
+        %right_ok     : Bool  = %right_length.ge(NODE_MIN_KEYS)
         branch %right_ok ? do_borrow_right() : pick_merge(%has_left)
 
     block do_borrow_right():
@@ -735,8 +725,7 @@ require K: typename, V: typename
         %self.merge_children(%i, %alloc)
         return(%i)
 
-routine SortedDictNode<K, V>.take_max_key(%self: Ptr<Self>, %out_value: Ptr<V>,
-        %alloc: Ptr<Allocator>) -> K
+routine SortedDictNode<K, V>.take_max_key(%self: @Self, %out_value: @V, %alloc: @Allocator) -> K
 require K: typename, V: typename
     block entry():
         %leaf : Bool = %self.leaf.load()
@@ -751,15 +740,14 @@ require K: typename, V: typename
         return(%key)
 
     block descend():
-        %length : USize     = %self.length.load()
-        %actual : USize     = %self.ensure_min(%length, %alloc)
-        %child  : Ptr<Self> = %self.children.get(%actual)
-        %key    : K         = %child.take_max_key(%out_value, %alloc)
+        %length : USize = %self.length.load()
+        %actual : USize = %self.ensure_min(%length, %alloc)
+        %child  : @Self = %self.children.get(%actual)
+        %key    : K     = %child.take_max_key(%out_value, %alloc)
         %self.recount()
         return(%key)
 
-routine SortedDictNode<K, V>.take_min_key(%self: Ptr<Self>, %out_value: Ptr<V>,
-        %alloc: Ptr<Allocator>) -> K
+routine SortedDictNode<K, V>.take_min_key(%self: @Self, %out_value: @V, %alloc: @Allocator) -> K
 require K: typename, V: typename
     block entry():
         %leaf : Bool = %self.leaf.load()
@@ -772,13 +760,13 @@ require K: typename, V: typename
         return(%key)
 
     block descend():
-        %actual : USize     = %self.ensure_min(0, %alloc)
-        %child  : Ptr<Self> = %self.children.get(%actual)
-        %key    : K         = %child.take_min_key(%out_value, %alloc)
+        %actual : USize = %self.ensure_min(0, %alloc)
+        %child  : @Self = %self.children.get(%actual)
+        %key    : K     = %child.take_min_key(%out_value, %alloc)
         %self.recount()
         return(%key)
 
-routine SortedDictNode<K, V>.remove(%self: Ptr<Self>, %key: K, %alloc: Ptr<Allocator>) -> Bool
+routine SortedDictNode<K, V>.remove(%self: @Self, %key: K, %alloc: @Allocator) -> Bool
 require K: typename, V: typename
     block entry():
         %slot   : USize = %self.find_index(%key)
@@ -801,32 +789,32 @@ require K: typename, V: typename
         return(true)
 
     block remove_internal(%slot: USize):
-        %left        : Ptr<Self> = %self.children.get(%slot)
-        %left_length : USize     = %left.length.load()
-        %left_ok     : Bool      = %left_length.ge(NODE_MIN_KEYS)
+        %left        : @Self = %self.children.get(%slot)
+        %left_length : USize = %left.length.load()
+        %left_ok     : Bool  = %left_length.ge(NODE_MIN_KEYS)
         branch %left_ok ? take_pred(%slot) : try_succ(%slot)
 
     block take_pred(%slot: USize):
-        claim %out : Ptr<V>
-        %left              : Ptr<Self> = %self.children.get(%slot)
-        %replacement_key   : K         = %left.take_max_key(%out, %alloc)
-        %replacement_value : V         = %out.load()
+        claim %out : @V
+        %left              : @Self = %self.children.get(%slot)
+        %replacement_key   : K     = %left.take_max_key(%out, %alloc)
+        %replacement_value : V     = %out.load()
         %self.keys.set(%slot, %replacement_key)
         %self.values.set(%slot, %replacement_value)
         %self.recount()
         return(true)
 
     block try_succ(%slot: USize):
-        %right        : Ptr<Self> = %self.children.get(%slot.add(1))
-        %right_length : USize     = %right.length.load()
-        %right_ok     : Bool      = %right_length.ge(NODE_MIN_KEYS)
+        %right        : @Self = %self.children.get(%slot.add(1))
+        %right_length : USize = %right.length.load()
+        %right_ok     : Bool  = %right_length.ge(NODE_MIN_KEYS)
         branch %right_ok ? take_succ(%slot) : merge_and_recurse(%slot)
 
     block take_succ(%slot: USize):
-        claim %out : Ptr<V>
-        %right             : Ptr<Self> = %self.children.get(%slot.add(1))
-        %replacement_key   : K         = %right.take_min_key(%out, %alloc)
-        %replacement_value : V         = %out.load()
+        claim %out : @V
+        %right             : @Self = %self.children.get(%slot.add(1))
+        %replacement_key   : K     = %right.take_min_key(%out, %alloc)
+        %replacement_value : V     = %out.load()
         %self.keys.set(%slot, %replacement_key)
         %self.values.set(%slot, %replacement_value)
         %self.recount()
@@ -834,8 +822,8 @@ require K: typename, V: typename
 
     block merge_and_recurse(%slot: USize):
         %self.merge_children(%slot, %alloc)
-        %merged  : Ptr<Self> = %self.children.get(%slot)
-        %removed : Bool      = %merged.remove(%key, %alloc)
+        %merged  : @Self = %self.children.get(%slot)
+        %removed : Bool  = %merged.remove(%key, %alloc)
         %self.recount()
         return(%removed)
 
@@ -844,49 +832,49 @@ require K: typename, V: typename
         branch %leaf ? return(false): descend(%slot)
 
     block descend(%slot: USize):
-        %actual  : USize     = %self.ensure_min(%slot, %alloc)
-        %child   : Ptr<Self> = %self.children.get(%actual)
-        %removed : Bool      = %child.remove(%key, %alloc)
+        %actual  : USize = %self.ensure_min(%slot, %alloc)
+        %child   : @Self = %self.children.get(%actual)
+        %removed : Bool  = %child.remove(%key, %alloc)
         %self.recount()
         return(%removed)
 
-routine SortedDict<K, V>.remove(%self: Ptr<Self>, %key: K) -> Bool
+routine SortedDict<K, V>.remove(%self: @Self, %key: K) -> Bool
 require K: typename, V: typename
     block entry():
-        %root  : Ptr<SortedDictNode<K, V>> = %self.root.load()
-        %empty : Bool                      = %root.is_null()
+        %root  : @SortedDictNode<K, V> = %self.root.load()
+        %empty : Bool                  = %root.is_null()
         branch %empty ? return(false) : remove_root(%root)
 
-    block remove_root(%root: Ptr<SortedDictNode<K, V>>):
-        %alloc   : Ptr<Allocator> = %self.alloc.load()
-        %removed : Bool           = %root.remove(%key, %alloc)
+    block remove_root(%root: @SortedDictNode<K, V>):
+        %alloc   : @Allocator = %self.alloc.load()
+        %removed : Bool       = %root.remove(%key, %alloc)
         branch %removed ? after_remove(%root) : return(false)
 
-    block after_remove(%root: Ptr<SortedDictNode<K, V>>):
+    block after_remove(%root: @SortedDictNode<K, V>):
         %self.length.load().sub(1).store_into(%self.length)
         %root_length : USize = %root.length.load()
         %empty_root  : Bool  = %root_length.eq(0)
         branch %empty_root ? maybe_shrink(%root) : return(true)
 
-    block maybe_shrink(%root: Ptr<SortedDictNode<K, V>>):
+    block maybe_shrink(%root: @SortedDictNode<K, V>):
         %leaf : Bool = %root.leaf.load()
         branch %leaf ? clear_root(%root) : shrink(%root)
 
-    block clear_root(%root: Ptr<SortedDictNode<K, V>>):
-        %alloc : Ptr<Allocator> = %self.alloc.load()
+    block clear_root(%root: @SortedDictNode<K, V>):
+        %alloc : @Allocator = %self.alloc.load()
         %root.free(%alloc)
         %self.root.store(null)
         return(true)
 
-    block shrink(%root: Ptr<SortedDictNode<K, V>>):
-        %alloc    : Ptr<Allocator>            = %self.alloc.load()
-        %new_root : Ptr<SortedDictNode<K, V>> = %root.children.get(0)
+    block shrink(%root: @SortedDictNode<K, V>):
+        %alloc    : @Allocator            = %self.alloc.load()
+        %new_root : @SortedDictNode<K, V> = %root.children.get(0)
         %root.free(%alloc)
         %self.root.store(%new_root)
         return(true)
 
 /// Internal nodes store `length` separator keys and `length + 1` children.
-routine SortedDictNode<K, V>.free_recursive(%self: Ptr<Self>, %alloc: Ptr<Allocator>) -> Void
+routine SortedDictNode<K, V>.free_recursive(%self: @Self, %alloc: @Allocator) -> Void
 require K: typename, V: typename
     block entry():
         %leaf : Bool = %self.leaf.load()
@@ -901,7 +889,7 @@ require K: typename, V: typename
         branch %done ? free_self() : free_child(%i, %child_count)
 
     block free_child(%i: USize, %child_count: USize):
-        %child : Ptr<Self> = %self.children.get(%i)
+        %child : @Self = %self.children.get(%i)
         %child.free_recursive(%alloc)
         jump child_loop(%i.add(1), %child_count)
 
@@ -909,15 +897,15 @@ require K: typename, V: typename
         %self.free(%alloc)
         return()
 
-routine SortedDict<K, V>.destruct(%self: Ptr<Self>) -> Void
+routine SortedDict<K, V>.destruct(%self: @Self) -> Void
 require K: typename, V: typename
     block entry():
-        %root  : Ptr<SortedDictNode<K, V>> = %self.root.load()
-        %empty : Bool                      = %root.is_null()
+        %root  : @SortedDictNode<K, V> = %self.root.load()
+        %empty : Bool                  = %root.is_null()
         branch %empty ? reset() : free_root(%root)
 
-    block free_root(%root: Ptr<SortedDictNode<K, V>>):
-        %alloc : Ptr<Allocator> = %self.alloc.load()
+    block free_root(%root: @SortedDictNode<K, V>):
+        %alloc : @Allocator = %self.alloc.load()
         %root.free_recursive(%alloc)
         jump reset()
 
@@ -927,23 +915,23 @@ require K: typename, V: typename
         return()
 
 /// Destructs every key and value, then the dictionary itself.
-routine SortedDict<K, V>.destruct_all(%self: Ptr<Self>) -> Void
+routine SortedDict<K, V>.destruct_all(%self: @Self) -> Void
 require K: typename, V: typename, Destruct<K>, Destruct<V>
     block entry():
         %iter_val : SortedDictIter<K, V> = .construct(%self)
-        claim %iter : Ptr<SortedDictIter<K, V>>
+        claim %iter : @SortedDictIter<K, V>
         %iter.store(%iter_val)
-        claim %key_slot   : Ptr<K>
-        claim %value_slot : Ptr<V>
+        claim %key_slot   : @K
+        claim %value_slot : @V
         jump next(%iter, %key_slot, %value_slot)
 
-    block next(%iter: Ptr<SortedDictIter<K, V>>, %key_slot: Ptr<K>, %value_slot: Ptr<V>):
+    block next(%iter: @SortedDictIter<K, V>, %key_slot: @K, %value_slot: @V):
         %item : Option<KVPair<K, V>> = %iter.next()
         when %item:
             .Present(%entry) -> entry_found(%iter, %key_slot, %value_slot, %entry)
             .Absent          -> finish()
 
-    block entry_found(%iter: Ptr<SortedDictIter<K, V>>, %key_slot: Ptr<K>, %value_slot: Ptr<V>,
+    block entry_found(%iter: @SortedDictIter<K, V>, %key_slot: @K, %value_slot: @V,
             %entry: KVPair<K, V>):
         %key_slot.store(%entry.key)
         %key_slot.destruct()
@@ -956,22 +944,22 @@ require K: typename, V: typename, Destruct<K>, Destruct<V>
         return()
 
 /// Destructs every value (the keys own nothing), then the dictionary itself.
-routine SortedDict<K, V>.destruct_all_values(%self: Ptr<Self>) -> Void
+routine SortedDict<K, V>.destruct_all_values(%self: @Self) -> Void
 require K: typename, V: typename, Destruct<V>
     block entry():
         %iter_val : SortedDictIter<K, V> = .construct(%self)
-        claim %iter : Ptr<SortedDictIter<K, V>>
+        claim %iter : @SortedDictIter<K, V>
         %iter.store(%iter_val)
-        claim %value_slot : Ptr<V>
+        claim %value_slot : @V
         jump next(%iter, %value_slot)
 
-    block next(%iter: Ptr<SortedDictIter<K, V>>, %value_slot: Ptr<V>):
+    block next(%iter: @SortedDictIter<K, V>, %value_slot: @V):
         %item : Option<KVPair<K, V>> = %iter.next()
         when %item:
             .Present(%entry) -> entry_found(%iter, %value_slot, %entry)
             .Absent          -> finish()
 
-    block entry_found(%iter: Ptr<SortedDictIter<K, V>>, %value_slot: Ptr<V>, %entry: KVPair<K, V>):
+    block entry_found(%iter: @SortedDictIter<K, V>, %value_slot: @V, %entry: KVPair<K, V>):
         %value_slot.store(%entry.value)
         %value_slot.destruct()
         jump next(%iter, %value_slot)
@@ -983,25 +971,25 @@ require K: typename, V: typename, Destruct<V>
 // -- text -----------------------------------------------------------------------
 
 /// The entries in key order, keys and values diagnosed (strings quoted): {"a": 1, "b": 2}.
-routine SortedDict<K, V>.represent<W>(%self: Self, %out: Ptr<W>) -> Void
+routine SortedDict<K, V>.represent<W>(%self: Self, %out: @W) -> Void
 require K: typename, V: typename, Compare<K>, Diagnose<K>, Diagnose<V>, W: typename, Writer<W>
     block entry():
-        claim %whole : Ptr<Self>
+        claim %whole : @Self
         %whole.store(%self)
         %iter_val : SortedDictIter<K, V> = .construct(%whole)
-        claim %iter : Ptr<SortedDictIter<K, V>>
+        claim %iter : @SortedDictIter<K, V>
         %iter.store(%iter_val)
         diagnose_entries<K, V, SortedDictIter<K, V>, W>(%out, %iter)
         return()
 
 /// The entries in key order, keys and values diagnosed: {"a": 1, "b": 2}.
-routine SortedDict<K, V>.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine SortedDict<K, V>.diagnose<W>(%self: Self, %out: @W) -> Void
 require K: typename, V: typename, Compare<K>, Diagnose<K>, Diagnose<V>, W: typename, Writer<W>
     block entry():
-        claim %whole : Ptr<Self>
+        claim %whole : @Self
         %whole.store(%self)
         %iter_val : SortedDictIter<K, V> = .construct(%whole)
-        claim %iter : Ptr<SortedDictIter<K, V>>
+        claim %iter : @SortedDictIter<K, V>
         %iter.store(%iter_val)
         diagnose_entries<K, V, SortedDictIter<K, V>, W>(%out, %iter)
         return()

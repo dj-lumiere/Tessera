@@ -37,14 +37,14 @@ import Standard::Os
 
 routine main() -> S32
     block entry():
-        claim %fd : Ptr<FdWriter>
+        claim %fd : @FdWriter
         FdWriter.stdout().store_into(%fd)
-        claim %out : Ptr<BufWriter<FdWriter>>
+        claim %out : @BufWriter<FdWriter>
         %out.construct(%fd)
-        claim %alloc : Ptr<Allocator>
+        claim %alloc : @Allocator
         make_heap_allocator().store_into(%alloc)
 
-        claim %list : Ptr<List<S64>>
+        claim %list : @List<S64>
         List<S64>.construct(%alloc).store_into(%list)
         %list.push(42)
         write_str(%out, "first: ")
@@ -65,10 +65,11 @@ routine main() -> S32
 
 **Values and pointers**
 
-- Every value is written with `%`, pointers included: `%x: S64 = ...`, `claim %p : Ptr<S64>`. The type says
-  whether a value is a pointer (`Ptr<T>`, or `Addr` for an address with no pointee type, C's `void*`). `Ptr<T>`
-  passes where an `Addr` is expected; the other way takes `%a.cast<T>()`. `#` has no meaning (it was the pointer
-  sigil until 2026-09-29).
+- Every value is written with `%`, pointers included: `%x: S64 = ...`, `claim %p : @S64`. The type says
+  whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
+  passes where an `Addr` is expected; the other way takes `%a.cast<T>()`. `@T` is how the record `Ptr<T>` is
+  written (`@@Byte`, `@Array<@S32, 3>`); it keeps its name only where routines are declared on it or called through
+  it (`routine Ptr<T>.load`). Attributes start with `#`: `#target(os: "windows")`, `#[external("c"), noreturn]`.
 - `=` only binds. Memory is read and written with methods: `%v: S64 = %p.load()`, `%p.store(%v)`,
   `%f: T = %p.field.load()`, `%p.field.store(%v)`, `%e: T = %p.stride(%i).load()`, `%p.stride(%i).store(%v)`. Places
   (`%p.field`, `%p.stride(%i)`) are addresses. An `Addr` has no `load` or `store`: cast it to say what's there, `%a.cast<U32>().load()`. Registers:
@@ -84,13 +85,13 @@ routine main() -> S32
   `%free_fn: Callable<…> = %alloc.free_fn.load()`, then `%free_fn.call(%state, %raw)`. `%alloc.free_fn(...)` is an
   error.
 - A field of an SSA record value is read with plain `=`: `%key: K = %pair.key`.
-- `claim %p : Ptr<T>` claims an uninitialized slot for the routine call (a stack slot in practice); its type comes from the binding, which must be written `Ptr<T>` (anything else is a parse error), and the value goes in
+- `claim %p : @T` claims an uninitialized slot for the routine call (a stack slot in practice); its type comes from the binding, which must be written `@T` (anything else is a parse error), and the value goes in
   with `%p.store(%v)`, or `%v.store_into(%p)` at the end of the chain that makes it:
   `List<S64>.construct(%alloc).store_into(%list)` (no `%list_val` for a single store). An array value comes from `Array<T, N> { 1, 2, %x }` or `Array<T, N>.from_ptr(%first)`;
   a bare `[1, 2]` isn't a value. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot.
 - Heap memory goes through an allocator: `allocate<T>(%alloc, %count)`, `%p.free(%alloc)`.
-- `global NAME: T [= literal]` is mutable static storage (all-zero without a value). Its name is a `Ptr<T>`:
+- `global NAME: T [= literal]` is mutable static storage (all-zero without a value). Its name is a `@T`:
   `TICKS.load()`, `STATS.calls.store(%n)`. A `preset` is read-only; a global isn't a compile-time constant.
 - A `preset` is folded by the compiler, and only from literals, other presets, integer and `Bool` arithmetic and
   conversions (`add`, `shl`, `bitor`, `to_u128`, `to_u8_wrap`, …), F32/F64 `add`/`sub`/`mul`/`div`/`neg`,
@@ -102,13 +103,13 @@ routine main() -> S32
 **Blocks and control flow**
 
 - A routine body is a list of blocks. The first is `block entry():`, and a routine without blocks must be
-  `@external`.
+  `#external`.
 - **A block sees only the routine's parameters, its own parameters, and values it defines.** Anything else must be
   passed as a block argument. This is the most common error.
 - Every block ends with exactly one terminator: `jump b(...)`, `branch %c ? a(...) : b(...)`, `when:`
   (first condition that holds), `when %v:` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
   `when` names a block, or is an
-  inline `return(...)` or a call to a `@noreturn` routine (`trap()`, `panic(TrapCode.X)`). Block arguments and the
+  inline `return(...)` or a call to a `#noreturn` routine (`trap()`, `panic(TrapCode.X)`). Block arguments and the
   returned value may be expressions (`loop(%i.add(1))`, `return(%x.to_s32())`), evaluated only when that arm is
   taken. An ordinary routine call can't be an arm by itself: call it inside a block.
 - There are no `for` / `while` / `if`. A loop is a block that jumps to itself with new arguments.
@@ -143,7 +144,7 @@ routine main() -> S32
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `%x.bits()` and `U8.from_byte(%b)` /
   `S8.from_byte(%b)` move between it and the numbers, and `S64` <-> `U64` is `to_u64_wrap` / `to_s64_wrap`. It has
-  comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, `shl` / `shr`, and `to_u8`. Memory and text are `Ptr<Byte>`;
+  comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, `shl` / `shr`, and `to_u8`. Memory and text are `@Byte`;
   a byte literal `b'A'` is a `Byte`, and a `Byte` hex literal has exactly two digits (`0x0A`).
 - `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `%c.to_u32()` and `%n.to_char()`
   convert.
@@ -155,20 +156,20 @@ routine main() -> S32
 
 **Routines and generics**
 
-- `routine name(%a: T, %p: Ptr<U>) -> R`. Methods are `routine Type.name(%self: Ptr<Self>, ...)` (pointer receiver)
+- `routine name(%a: T, %p: @U) -> R`. Methods are `routine Type.name(%self: @Self, ...)` (pointer receiver)
   or `(%self: Self, ...)` (value receiver). The name `%self` is what makes a method: only a first parameter named
-  `%self` (typed `Self` or `Ptr<Self>`) allows `%x.name(...)`; anything else is typewise: `List<S64>.construct(%alloc)`,
+  `%self` (typed `Self` or `@Self`) allows `%x.name(...)`; anything else is typewise: `List<S64>.construct(%alloc)`,
   `Job.less(%a, %b)`. A routine meeting a concept (`less`, `eq`, `compare`, `hash`) takes `%self` as the concept does. Where the
   type is expected (a binding, an argument, a block argument, a return), a leading `.` leaves it out:
   `%list: List<S64> = .construct(%alloc)`, `return(.Absent)`. Not at the head of a chain or as a statement.
-- **`Ptr<T>` or `T`** (for `%self` and any parameter): take `Ptr<T>` when the routine changes the value in place, or
+- **`@T` or `T`** (for `%self` and any parameter): take `@T` when the routine changes the value in place, or
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound-assignment methods (`add_assign` and the like): change a value in memory by load, act, store —
   `%p.load().add(1).store_into(%p)`.
-- **Methods through a pointer.** `%p.m()` finds `T.m(%self: Ptr<Self>)` first, then `Ptr`'s own methods (`is_null`,
+- **Methods through a pointer.** `%p.m()` finds `T.m(%self: @Self)` first, then `Ptr`'s own methods (`is_null`,
   `offset`, `cast`, ...). Value methods (`%self: Self`, such as every collection's `eq`) aren't reachable through a
   pointer, because that would hide a load: load first (`%a.load().eq(%b.load())`). Don't name your own pointer methods after `Ptr`'s.
-- **Collection methods that change the collection take `%self: Ptr<Self>`**, so it must live in memory (`claim` a
+- **Collection methods that change the collection take `%self: @Self`**, so it must live in memory (`claim` a
   slot) before you call them; read-only ones (`length`, `is_empty`, `get`, `contains`, ...) take `%self: Self`: call
   them on a value, or load first (`%list.load().length()`). You can't call a pointer method on a temporary: `DictIter<K, V>.construct(%m).next()` fails with "has no
   method 'next'"; claim a slot for the iterator first.
@@ -185,14 +186,14 @@ routine main() -> S32
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
 - String literals are `Bytes` where a `Bytes` is expected, `CStr` / `CWStr` (terminated C text) where one of those
-  is, and a NUL-terminated `Ptr<Byte>` where a pointer is. Declare C string parameters as `%s: CStr`. A `Bytes`
+  is, and a NUL-terminated `@Byte` where a pointer is. Declare C string parameters as `%s: CStr`. A `Bytes`
   view has no terminator: pass `%s.to_cstr(%alloc)` (a copy) or `%buf.to_cstr()` on a `List<Byte>`.
 
 **Errors**
 
 - Bugs trap: `trap()`, or `panic(TrapCode.X)` / `panic_msg(...)` for a message. Those call the panic handler; the
   default (Standard::Os) prints one line and exits with status 101, and a program replaces it with
-  `@[export("tessera_panic_handler"), noreturn] routine my_handler(%code: TrapCode, %message: Bytes) -> Void`.
+  `#[export("tessera_panic_handler"), noreturn] routine my_handler(%code: TrapCode, %message: Bytes) -> Void`.
 - Expected failures return `Result<T, E>`. There's no `?`: `when %r:` with `.Success(%v)` / `.Failure(%e)` arms.
 
 **Records**
@@ -203,7 +204,7 @@ routine main() -> S32
   but not a second `U64.midpoint`. Private names don't count outside their file.
 
 - A record with exactly one field has the same representation as that field (`F128` is an `i128`). Mark it
-  `@aggregate` to keep it a one-member struct; `@layout(align: N)` on a one-field record (a record's alignment; `@aligned` is for fields) needs `@aggregate`.
+  `#aggregate` to keep it a one-member struct; `#layout(align: N)` on a one-field record (a record's alignment; `#aligned` is for fields) needs `#aggregate`.
 - A record can't contain itself by value; go through a `Ptr`.
 
 **Tuples**
@@ -225,9 +226,9 @@ routine main() -> S32
 - Read with `when %e:`; `Expr.Number(%n) -> target(%n)` binds the payload for that arm's target only, `Expr.Empty`
   or `.Present` matches without binding. Without `else`, list every case. There's no field access on a variant.
 - Payloads overlap; a payload arm reads through a stack slot (gone at `-O`).
-- A choice or variant without `@derive` derives Represent, Diagnose, Equal, Hash, and Compare (a variant's only when
-  its payloads have them), skipping what it declares itself; `@derive(...)` lists exactly what to derive,
-  `@derive()` nothing. A record derives only what it lists.
+- A choice or variant without `#derive` derives Represent, Diagnose, Equal, Hash, and Compare (a variant's only when
+  its payloads have them), skipping what it declares itself; `#derive(...)` lists exactly what to derive,
+  `#derive()` nothing. A record derives only what it lists.
 
 ## Idioms
 
@@ -248,13 +249,13 @@ routine sum_to(%n: U64) -> U64
 Iterating a collection (`next` returns `Option<T>`):
 
 ```tessera
-routine sum_list(%list: Ptr<List<S64>>) -> S64
+routine sum_list(%list: @List<S64>) -> S64
     block entry():
-        claim %iter : Ptr<ListIter<S64>>
+        claim %iter : @ListIter<S64>
         ListIter<S64>.construct(%list).store_into(%iter)
         jump next(%iter, 0)
 
-    block next(%iter: Ptr<ListIter<S64>>, %total: S64):
+    block next(%iter: @ListIter<S64>, %total: S64):
         %item : Option<S64> = %iter.next()
         when %item:
             .Present(%value) -> next(%iter, %total.add(%value))
@@ -287,7 +288,7 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
   and `%p.represent(%out)` for a pointer's address (`0x7ffd5e8c1a40`); `represent_hex`, `represent_fixed(%out, %digits)`;
   `represent_with(%out, %v, %spec)` with a `FormatSpec`.
 - `%v.diagnose(%out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.Present(3)`, `[1, 2]`. A record or
-  record gets routines written for it with `@derive(Represent, Diagnose, Equal, Hash, Compare)` (any subset), which
+  record gets routines written for it with `#derive(Represent, Diagnose, Equal, Hash, Compare)` (any subset), which
   also declares the conformance; choices and variants get all five without asking. Otherwise declare the routine: a
   bare `conform` never generates one.
 - `write(%out, "x = {%x}\n")` writes text and values in one line: it expands at compile time into
@@ -332,7 +333,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 
 - `routine main() -> S32` is the entry point of an executable.
 - Every routine with a body starts with `block entry():`, which takes no parameters. A routine without blocks must
-  be `@external`.
+  be `#external`.
 
 **Naming conversions.** A conversion is `to_<type>`: `%n.to_s64()`, `%x.to_u8_wrap()`, `%arr.to_ptr()`,
 `%out.to_bytes()`. There is no `as_<type>`. Other ways to make a value are named for what they make.
@@ -341,9 +342,9 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 `.Absent`), with acronyms written as words (`Eof`, `FdWriter`, `Nan`). Routines, fields, blocks, and values are
 `snake_case`. Only presets and globals are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
 
-**Arrays and `stride`.** There is no `[]`. `%p.stride(%i)` is the address of the i-th `T` of a `Ptr<T>` (a
+**Arrays and `stride`.** There is no `[]`. `%p.stride(%i)` is the address of the i-th `T` of a `@T` (a
 `USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `%p.stride(%i).f` works. On a
-`Ptr<Array<T, N>>` that is the i-th whole array, so array elements are `%arr.get(%i)` / `%arr.set(%i, %v)` / `%arr.at(%i)`
+`@Array<T, N>` that is the i-th whole array, so array elements are `%arr.get(%i)` / `%arr.set(%i, %v)` / `%arr.at(%i)`
 (bounds checked), or `%arr.to_ptr().stride(%i).load()` unchecked. Literals name their type: `Array<S32, 3> { 1, 2, 3 }`,
 `Vector<F32, 4> { ... }`. The same holds for array fields (`%node.keys.get(%i)`) and
 preset arrays (`K.get(%i)`).

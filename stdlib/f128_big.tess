@@ -37,7 +37,7 @@ preset BIG_HALF_PI_LO: Array<U64, 7> = Array<U64, 7> { 0x9250CCA3D9C8B67B, 0x5D3
 // -- making one ----------------------------------------------------------------
 
 /// m × 2^exponent with m brought to BIG_BITS bits (rounded to nearest, ties to even, when longer). Uses %m.
-routine big_make(%negative: Bool, %exponent: S64, %m: Ptr<BigNat<16>>) -> F128Big
+routine big_make(%negative: Bool, %exponent: S64, %m: @BigNat<16>) -> F128Big
     block entry():
         %zero : Bool = %m.is_zero()
         branch %zero ? zero() : fit(%exponent)
@@ -70,14 +70,14 @@ routine big_make(%negative: Bool, %exponent: S64, %m: Ptr<BigNat<16>>) -> F128Bi
 
 routine big_zero() -> F128Big
     block entry():
-        claim %m : Ptr<BigNat<16>>
+        claim %m : @BigNat<16>
         %m.set(0)
         %r : F128Big = big_make(false, 0, %m)
         return(%r)
 
 routine big_from_u128(%negative: Bool, %value: U128, %exponent: S64) -> F128Big
     block entry():
-        claim %m : Ptr<BigNat<16>>
+        claim %m : @BigNat<16>
         %m.set_u128(%value)
         %r : F128Big = big_make(%negative, %exponent, %m)
         return(%r)
@@ -105,8 +105,8 @@ routine big_from_f128(%x: F128) -> F128Big
 /// An F128Extended, exactly.
 routine big_from_wide(%w: F128Extended) -> F128Big
     block entry():
-        claim %m   : Ptr<BigNat<16>>
-        claim %low : Ptr<BigNat<16>>
+        claim %m   : @BigNat<16>
+        claim %low : @BigNat<16>
         %m.set_u128(%w.hi)
         %m.shl(64)
         %low.set(%w.lo)
@@ -115,22 +115,22 @@ routine big_from_wide(%w: F128Extended) -> F128Big
         return(%r)
 
 /// limbs (7 of them, least significant first) × 2^exponent.
-routine big_from_limbs(%limbs: Ptr<U64>, %exponent: S64) -> F128Big
+routine big_from_limbs(%limbs: @U64, %exponent: S64) -> F128Big
     block entry():
-        claim %m : Ptr<BigNat<16>>
+        claim %m : @BigNat<16>
         %m.set(0)
         jump load(0, %m)
 
-    block load(%i: USize, %m: Ptr<BigNat<16>>):
+    block load(%i: USize, %m: @BigNat<16>):
         %done : Bool = %i.ge(7)
         branch %done ? finish(%m) : one(%i, %m)
 
-    block one(%i: USize, %m: Ptr<BigNat<16>>):
+    block one(%i: USize, %m: @BigNat<16>):
         %limb : U64 = %limbs.stride(%i).load()
         %m.push_limb(%limb)
         jump load(%i.add(1), %m)
 
-    block finish(%m: Ptr<BigNat<16>>):
+    block finish(%m: @BigNat<16>):
         %r : F128Big = big_make(false, %exponent, %m)
         return(%r)
 
@@ -183,7 +183,7 @@ routine F128Big.to_f128(%self: Self) -> F128
 
     // the top 125 bits with a sticky bit, as big_to_f128 hands them to f128_round_pack
     block round():
-        claim %m : Ptr<BigNat<16>>
+        claim %m : @BigNat<16>
         %m.store(%self.mant)
         %shift    : USize = BIG_BITS.sub(125)
         %sticky   : Bool  = %m.any_below(%shift)
@@ -199,7 +199,7 @@ routine F128Big.to_wide(%self: Self) -> F128Extended
     block entry():
         %zero : Bool = %self.is_zero()
         branch %zero ? return(wide_zero()) : continue
-        claim %m : Ptr<BigNat<16>>
+        claim %m : @BigNat<16>
         %m.store(%self.mant)
         %shift : USize        = BIG_BITS.sub(192)
         %hi    : U128         = %m.bits128(%shift.add(64))
@@ -228,8 +228,8 @@ routine F128Big.compare_magnitude(%self: Self, %other: Self) -> S32
             else    -> mantissas()
 
     block mantissas():
-        claim %a : Ptr<BigNat<16>>
-        claim %b : Ptr<BigNat<16>>
+        claim %a : @BigNat<16>
+        claim %b : @BigNat<16>
         %a.store(%self.mant)
         %b.store(%other.mant)
         %r : S32 = %a.compare(%b)
@@ -279,35 +279,35 @@ routine F128Big.add(%self: Self, %other: Self) -> Self
         branch %far ? return(%big) : align(%big, %small, %d)
 
     block align(%big: Self, %small: Self, %d: S64):
-        claim %x : Ptr<BigNat<16>>
-        claim %y : Ptr<BigNat<16>>
+        claim %x : @BigNat<16>
+        claim %y : @BigNat<16>
         %x.store(%big.mant)
         %y.store(%small.mant)
         %x.shl(64)
         %near : Bool = %d.le(64)
         branch %near ? up(%big, %small, %d, %x, %y) : down(%big, %small, %d, %x, %y)
 
-    block up(%big: Self, %small: Self, %d: S64, %x: Ptr<BigNat<16>>, %y: Ptr<BigNat<16>>):
+    block up(%big: Self, %small: Self, %d: S64, %x: @BigNat<16>, %y: @BigNat<16>):
         %y.shl(64.sub(%d).to_usize())
         jump combine(%big, %small, %x, %y)
 
-    block down(%big: Self, %small: Self, %d: S64, %x: Ptr<BigNat<16>>, %y: Ptr<BigNat<16>>):
+    block down(%big: Self, %small: Self, %d: S64, %x: @BigNat<16>, %y: @BigNat<16>):
         %y.shr_round_even(%d.sub(64).to_usize())
         jump combine(%big, %small, %x, %y)
 
-    block combine(%big: Self, %small: Self, %x: Ptr<BigNat<16>>, %y: Ptr<BigNat<16>>):
+    block combine(%big: Self, %small: Self, %x: @BigNat<16>, %y: @BigNat<16>):
         %same : Bool = %big.negative.eq(%small.negative)
         branch %same ? plus(%big, %x, %y) : minus(%big, %x, %y)
 
-    block plus(%big: Self, %x: Ptr<BigNat<16>>, %y: Ptr<BigNat<16>>):
+    block plus(%big: Self, %x: @BigNat<16>, %y: @BigNat<16>):
         %x.add(%y)
         jump finish(%big, %x)
 
-    block minus(%big: Self, %x: Ptr<BigNat<16>>, %y: Ptr<BigNat<16>>):
+    block minus(%big: Self, %x: @BigNat<16>, %y: @BigNat<16>):
         %x.sub(%y)
         jump finish(%big, %x)
 
-    block finish(%big: Self, %x: Ptr<BigNat<16>>):
+    block finish(%big: Self, %x: @BigNat<16>):
         %r : Self = big_make(%big.negative, %big.exponent.sub(64), %x)
         return(%r)
 
@@ -319,9 +319,9 @@ routine F128Big.sub(%self: Self, %other: Self) -> Self
 /// The product, rounded once.
 routine F128Big.mul(%self: Self, %other: Self) -> Self
     block entry():
-        claim %a : Ptr<BigNat<16>>
-        claim %b : Ptr<BigNat<16>>
-        claim %p : Ptr<BigNat<16>>
+        claim %a : @BigNat<16>
+        claim %b : @BigNat<16>
+        claim %p : @BigNat<16>
         %a.store(%self.mant)
         %b.store(%other.mant)
         %p.set_product(%a, %b)
@@ -332,7 +332,7 @@ routine F128Big.mul(%self: Self, %other: Self) -> Self
 /// self × n, rounded once.
 routine F128Big.mul_u64(%self: Self, %n: U64) -> Self
     block entry():
-        claim %a : Ptr<BigNat<16>>
+        claim %a : @BigNat<16>
         %a.store(%self.mant)
         %a.mul_add(%n, 0)
         %a.trim()  // n = 0 leaves zero limbs
@@ -349,7 +349,7 @@ routine F128Big.mul_s64(%self: Self, %n: S64) -> Self
 /// self / n (n > 0), rounded once: 64 more bits go into the division.
 routine F128Big.div_u64(%self: Self, %n: U64) -> Self
     block entry():
-        claim %a : Ptr<BigNat<16>>
+        claim %a : @BigNat<16>
         %a.store(%self.mant)
         %a.shl(64)
         %dropped : U64  = %a.div_limb(%n)
@@ -357,7 +357,7 @@ routine F128Big.div_u64(%self: Self, %n: U64) -> Self
         // a remainder only matters as a sticky bit below the 64 extra bits
         %a.shl(1)
         %bit : U64 = %sticky.to_u64()
-        claim %s : Ptr<BigNat<16>>
+        claim %s : @BigNat<16>
         %s.set(%bit)
         %a.add(%s)
         %r : Self = big_make(%self.negative, %self.exponent.sub(65), %a)
@@ -536,23 +536,23 @@ routine big_reduce(%x: F128) -> BigReduced
     block window(%p: F128Parts):
         %s  : USize = %p.exponent.sub(114).max(0).div(64).to_usize()
         %sh : S64   = %s.add(14).mul(64).to_s64().sub(%p.exponent).add(112)
-        claim %w : Ptr<BigNat<24>>
+        claim %w : @BigNat<24>
         %w.set(0)
         jump load(0, %s, %sh, %p, %w)
 
     // limb k of W, least significant first, is TWO_OVER_PI[s + 13 - k]
-    block load(%k: USize, %s: USize, %sh: S64, %p: F128Parts, %w: Ptr<BigNat<24>>):
+    block load(%k: USize, %s: USize, %sh: S64, %p: F128Parts, %w: @BigNat<24>):
         %done : Bool = %k.ge(14)
         branch %done ? multiply(%sh, %p, %w) : load_one(%k, %s, %sh, %p, %w)
 
-    block load_one(%k: USize, %s: USize, %sh: S64, %p: F128Parts, %w: Ptr<BigNat<24>>):
+    block load_one(%k: USize, %s: USize, %sh: S64, %p: F128Parts, %w: @BigNat<24>):
         %limb : U64 = TWO_OVER_PI.get(%s.add(13).sub(%k))
         %w.push_limb(%limb)
         jump load(%k.add(1), %s, %sh, %p, %w)
 
-    block multiply(%sh: S64, %p: F128Parts, %w: Ptr<BigNat<24>>):
-        claim %m    : Ptr<BigNat<24>>
-        claim %prod : Ptr<BigNat<24>>
+    block multiply(%sh: S64, %p: F128Parts, %w: @BigNat<24>):
+        claim %m    : @BigNat<24>
+        claim %prod : @BigNat<24>
         %w.trim()
         %m.set_u128(%p.sig)
         %prod.set_product(%m, %w)
@@ -560,13 +560,13 @@ routine big_reduce(%x: F128) -> BigReduced
         %q         : U64   = %prod.bits128(%at).to_u64_wrap().bitand(3)
         %past_half : Bool  = %prod.bit(%at.sub(1))
         // f = F × 2^-sh with F the bits under sh; past 1/2, count the next quadrant and use f - 1
-        claim %f : Ptr<BigNat<16>>
+        claim %f : @BigNat<16>
         %f.set(0)
         jump fraction(0, %at, %prod, %f, %q, %past_half)
 
     // copy the bits under sh into f, 64 at a time from the bottom (sh is a whole number of limbs past any
     // leftover bits, which bits128 reads across)
-    block fraction(%i: USize, %at: USize, %prod: Ptr<BigNat<24>>, %f: Ptr<BigNat<16>>, %q: U64,
+    block fraction(%i: USize, %at: USize, %prod: @BigNat<24>, %f: @BigNat<16>, %q: U64,
             %past_half: Bool):
         %pos  : USize = %i.mul(64)
         %done : Bool  = %pos.ge(%at)
@@ -574,7 +574,7 @@ routine big_reduce(%x: F128) -> BigReduced
             ? finish(%at, %f, %q, %past_half)
             : fraction_one(%i, %at, %prod, %f, %q, %past_half)
 
-    block fraction_one(%i: USize, %at: USize, %prod: Ptr<BigNat<24>>, %f: Ptr<BigNat<16>>, %q: U64,
+    block fraction_one(%i: USize, %at: USize, %prod: @BigNat<24>, %f: @BigNat<16>, %q: U64,
             %past_half: Bool):
         %pos  : USize = %i.mul(64)
         %left : USize = %at.sub(%pos)
@@ -583,19 +583,19 @@ routine big_reduce(%x: F128) -> BigReduced
         %f.push_limb(%word.bitand(%mask))
         jump fraction(%i.add(1), %at, %prod, %f, %q, %past_half)
 
-    block finish(%at: USize, %f: Ptr<BigNat<16>>, %q: U64, %past_half: Bool):
+    block finish(%at: USize, %f: @BigNat<16>, %q: U64, %past_half: Bool):
         %f.trim()
         branch %past_half ? complement(%at, %f, %q) : scale(false, %at, %f, %q)
 
     // f - 1 = -(2^sh - F) × 2^-sh, taken exactly before any rounding
-    block complement(%at: USize, %f: Ptr<BigNat<16>>, %q: U64):
-        claim %c : Ptr<BigNat<16>>
+    block complement(%at: USize, %f: @BigNat<16>, %q: U64):
+        claim %c : @BigNat<16>
         %c.set(1)
         %c.shl(%at)
         %c.sub(%f)
         jump scale(true, %at, %c, %q.add_wrap(1).bitand(3))
 
-    block scale(%negative: Bool, %at: USize, %g: Ptr<BigNat<16>>, %k: U64):
+    block scale(%negative: Bool, %at: USize, %g: @BigNat<16>, %k: U64):
         %frac : F128Big    = big_make(%negative, 0.sub(%at.to_s64()), %g)
         %r    : BigReduced = BigReduced { quadrant: %k, theta: %frac.mul(big_half_pi()) }
         return(%r)

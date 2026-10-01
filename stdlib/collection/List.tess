@@ -14,12 +14,12 @@ conform Equal<List<T>>     when T: typename, Equal<T>
 conform Represent<List<T>> when T: typename, Diagnose<T>
 conform Diagnose<List<T>>  when T: typename, Diagnose<T>
 require T: typename
-    data     : Ptr<T>
+    data     : @T
     length   : USize
     capacity : USize
-    alloc    : Ptr<Allocator>
+    alloc    : @Allocator
 
-routine List<T>.construct(%alloc: Ptr<Allocator>) -> Self
+routine List<T>.construct(%alloc: @Allocator) -> Self
 require T: typename
     block entry():
         %list : Self = Self { data: null, length: 0, capacity: 0, alloc: %alloc }
@@ -38,14 +38,14 @@ require T: typename
         %empty  : Bool  = %length.eq(0)
         return(%empty)
 
-routine List<T>.reserve(%self: Ptr<Self>, %capacity: USize) -> Void
+routine List<T>.reserve(%self: @Self, %capacity: USize) -> Void
 require T: typename
     block entry():
         %reserved : Bool = %self.make_capacity(%capacity)
         branch %reserved ? return() : panic(TrapCode.AllocFailed)
 
 /// `reserve`, returning a Failure instead of trapping when the allocator fails.
-routine List<T>.reserve_result(%self: Ptr<Self>, %capacity: USize) -> Result<Unit, AllocFailed>
+routine List<T>.reserve_result(%self: @Self, %capacity: USize) -> Result<Unit, AllocFailed>
 require T: typename
     block entry():
         %reserved : Bool = %self.make_capacity(%capacity)
@@ -53,7 +53,7 @@ require T: typename
 
 /// Grows the buffer to at least %capacity elements. Returns false when the
 /// allocator fails, leaving the list as it was.
-private routine List<T>.make_capacity(%self: Ptr<Self>, %capacity: USize) -> Bool
+private routine List<T>.make_capacity(%self: @Self, %capacity: USize) -> Bool
 require T: typename
     block entry():
         %old_capacity : USize = %self.capacity.load()
@@ -61,18 +61,18 @@ require T: typename
         branch %enough ? return(true) : grow(%capacity)
 
     block grow(%capacity: USize):
-        %alloc    : Ptr<Allocator> = %self.alloc.load()
-        %old_data : Ptr<T>         = %self.data.load()
-        %new_data : Ptr<T>         = reallocate<T>(%alloc, %old_data, %capacity)
-        %failed   : Bool           = %new_data.is_null()
+        %alloc    : @Allocator = %self.alloc.load()
+        %old_data : @T         = %self.data.load()
+        %new_data : @T         = reallocate<T>(%alloc, %old_data, %capacity)
+        %failed   : Bool       = %new_data.is_null()
         branch %failed ? return(false) : install(%new_data, %capacity)
 
-    block install(%new_data: Ptr<T>, %capacity: USize):
+    block install(%new_data: @T, %capacity: USize):
         %self.data.store(%new_data)
         %self.capacity.store(%capacity)
         return(true)
 
-routine List<T>.ensure_capacity(%self: Ptr<Self>, %wanted: USize) -> Void
+routine List<T>.ensure_capacity(%self: @Self, %wanted: USize) -> Void
 require T: typename
     block entry():
         %room : Bool = %self.make_room(%wanted)
@@ -80,7 +80,7 @@ require T: typename
 
 /// Makes room for %wanted elements, doubling the capacity. Returns false when
 /// the allocator fails, leaving the list as it was.
-private routine List<T>.make_room(%self: Ptr<Self>, %wanted: USize) -> Bool
+private routine List<T>.make_room(%self: @Self, %wanted: USize) -> Bool
 require T: typename
     block entry():
         %capacity : USize = %self.capacity.load()
@@ -102,7 +102,7 @@ require T: typename
         %enough : Bool  = %next.ge(%wanted)
         branch %enough ? return(%self.make_capacity(%next)) : double(%next, %wanted)
 
-routine List<T>.push(%self: Ptr<Self>, %value: T) -> Void
+routine List<T>.push(%self: @Self, %value: T) -> Void
 require T: typename
     block entry():
         %pushed : Result<Unit, AllocFailed> = %self.push_result(%value)
@@ -111,19 +111,19 @@ require T: typename
             .Failure -> panic(TrapCode.AllocFailed)
 
 /// `push`, returning a Failure instead of trapping when the allocator fails.
-routine List<T>.push_result(%self: Ptr<Self>, %value: T) -> Result<Unit, AllocFailed>
+routine List<T>.push_result(%self: @Self, %value: T) -> Result<Unit, AllocFailed>
 require T: typename
     block entry():
         %length : USize = %self.length.load()
         %wanted : USize = %length.add(1)
         %room   : Bool  = %self.make_room(%wanted)
         branch %room ? continue : return(.Failure(AllocFailed {}))
-        %data : Ptr<T> = %self.data.load()
+        %data : @T = %self.data.load()
         %data.stride(%length).store(%value)
         %self.length.store(%wanted)
         return(.Success(Unit.value()))
 
-routine List<T>.pop(%self: Ptr<Self>) -> T
+routine List<T>.pop(%self: @Self) -> T
 require T: typename
     block entry():
         %popped : Option<T> = %self.pop_checked()
@@ -132,7 +132,7 @@ require T: typename
             .Absent          -> panic(TrapCode.Empty)
 
 /// `pop`, returning Absent instead of trapping on an empty list.
-routine List<T>.pop_checked(%self: Ptr<Self>) -> Option<T>
+routine List<T>.pop_checked(%self: @Self) -> Option<T>
 require T: typename
     block entry():
         %length : USize = %self.length.load()
@@ -140,9 +140,9 @@ require T: typename
         branch %empty ? return(.Absent) : pop(%length)
 
     block pop(%length: USize):
-        %index : USize  = %length.sub(1)
-        %data  : Ptr<T> = %self.data.load()
-        %value : T      = %data.stride(%index).load()
+        %index : USize = %length.sub(1)
+        %data  : @T    = %self.data.load()
+        %value : T     = %data.stride(%index).load()
         %self.length.store(%index)
         return(.Present(%value))
 
@@ -154,8 +154,8 @@ require T: typename
         branch %in_bounds ? load(%index) : panic(TrapCode.Bounds)
 
     block load(%index: USize):
-        %data  : Ptr<T> = %self.data
-        %value : T      = %data.stride(%index).load()
+        %data  : @T = %self.data
+        %value : T  = %data.stride(%index).load()
         return(%value)
 
 /// `get`, returning Absent instead of trapping on an index past the end.
@@ -167,12 +167,12 @@ require T: typename
         branch %in_bounds ? load(%index) : return(.Absent)
 
     block load(%index: USize):
-        %data  : Ptr<T> = %self.data
-        %value : T      = %data.stride(%index).load()
+        %data  : @T = %self.data
+        %value : T  = %data.stride(%index).load()
         return(.Present(%value))
 
 /// The address of element %index, checked like get: a place to read or write in place. It stays valid until the list grows, shrinks, or is destructed.
-routine List<T>.at(%self: Self, %index: USize) -> Ptr<T>
+routine List<T>.at(%self: Self, %index: USize) -> @T
 require T: typename
     block entry():
         %length    : USize = %self.length
@@ -180,12 +180,12 @@ require T: typename
         branch %in_bounds ? address(%index) : panic(TrapCode.Bounds)
 
     block address(%index: USize):
-        %data    : Ptr<T> = %self.data
-        %element : Ptr<T> = %data.stride(%index)
+        %data    : @T = %self.data
+        %element : @T = %data.stride(%index)
         return(%element)
 
 /// `at`, returning Absent instead of trapping on an index past the end.
-routine List<T>.at_checked(%self: Self, %index: USize) -> Option<Ptr<T>>
+routine List<T>.at_checked(%self: Self, %index: USize) -> Option<@T>
 require T: typename
     block entry():
         %length    : USize = %self.length
@@ -193,11 +193,11 @@ require T: typename
         branch %in_bounds ? address(%index) : return(.Absent)
 
     block address(%index: USize):
-        %data    : Ptr<T> = %self.data
-        %element : Ptr<T> = %data.stride(%index)
+        %data    : @T = %self.data
+        %element : @T = %data.stride(%index)
         return(.Present(%element))
 
-routine List<T>.set(%self: Ptr<Self>, %index: USize, %value: T) -> Void
+routine List<T>.set(%self: @Self, %index: USize, %value: T) -> Void
 require T: typename
     block entry():
         %length    : USize = %self.length.load()
@@ -205,11 +205,11 @@ require T: typename
         branch %in_bounds ? store(%index, %value) : panic(TrapCode.Bounds)
 
     block store(%index: USize, %value: T):
-        %data : Ptr<T> = %self.data.load()
+        %data : @T = %self.data.load()
         %data.stride(%index).store(%value)
         return()
 
-routine List<T>.clear(%self: Ptr<Self>) -> Void
+routine List<T>.clear(%self: @Self) -> Void
 require T: typename
     block entry():
         %self.length.store(0)
@@ -224,29 +224,29 @@ require T: typename, Equal<T>
         branch %same_len ? scan(%self, %other, %la) : return(false)
 
     block scan(%self: Self, %other: Self, %len: USize):
-        %pa : Ptr<T> = %self.data
-        %pb : Ptr<T> = %other.data
+        %pa : @T = %self.data
+        %pb : @T = %other.data
         jump loop(0, %len, %pa, %pb)
 
-    block loop(%i: USize, %len: USize, %pa: Ptr<T>, %pb: Ptr<T>):
+    block loop(%i: USize, %len: USize, %pa: @T, %pb: @T):
         %done : Bool = %i.ge(%len)
         branch %done ? return(true) : step(%i, %len, %pa, %pb)
 
-    block step(%i: USize, %len: USize, %pa: Ptr<T>, %pb: Ptr<T>):
+    block step(%i: USize, %len: USize, %pa: @T, %pb: @T):
         %x  : T    = %pa.stride(%i).load()
         %y  : T    = %pb.stride(%i).load()
         %eq : Bool = %x.eq(%y)
         branch %eq ? loop(%i.add(1), %len, %pa, %pb) : return(false)
 
-routine List<T>.destruct(%self: Ptr<Self>) -> Void
+routine List<T>.destruct(%self: @Self) -> Void
 require T: typename
     block entry():
-        %data  : Ptr<T> = %self.data.load()
-        %empty : Bool   = %data.is_null()
+        %data  : @T   = %self.data.load()
+        %empty : Bool = %data.is_null()
         branch %empty ? reset() : release(%data)
 
-    block release(%data: Ptr<T>):
-        %alloc : Ptr<Allocator> = %self.alloc.load()
+    block release(%data: @T):
+        %alloc : @Allocator = %self.alloc.load()
         %data.free(%alloc)
         jump reset()
 
@@ -258,22 +258,22 @@ require T: typename
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
 /// Elements that are only borrowed (a `Ptr` to memory owned elsewhere) must not be destructed this way.
-routine List<T>.destruct_all(%self: Ptr<Self>) -> Void
+routine List<T>.destruct_all(%self: @Self) -> Void
 require T: typename, Destruct<T>
     block entry():
         %iter_val : ListIter<T> = .construct(%self)
-        claim %iter : Ptr<ListIter<T>>
+        claim %iter : @ListIter<T>
         %iter.store(%iter_val)
-        claim %slot : Ptr<T>
+        claim %slot : @T
         jump next(%iter, %slot)
 
-    block next(%iter: Ptr<ListIter<T>>, %slot: Ptr<T>):
+    block next(%iter: @ListIter<T>, %slot: @T):
         %item : Option<T> = %iter.next()
         when %item:
             .Present(%value) -> element(%iter, %slot, %value)
             .Absent          -> finish()
 
-    block element(%iter: Ptr<ListIter<T>>, %slot: Ptr<T>, %value: T):
+    block element(%iter: @ListIter<T>, %slot: @T, %value: T):
         %slot.store(%value)
         %slot.destruct()
         jump next(%iter, %slot)
@@ -291,14 +291,14 @@ require T: typename, Destruct<T>
 conform Writer<List<Byte>>
 
 /// Appends %length bytes, growing through the list's allocator.
-routine List<Byte>.write_bytes(%self: Ptr<Self>, %data: Ptr<Byte>, %length: USize) -> Void
+routine List<Byte>.write_bytes(%self: @Self, %data: @Byte, %length: USize) -> Void
     block entry():
         %nothing : Bool = %length.eq(0)
         branch %nothing ? return() : continue
         %old : USize = %self.length.load()
         %new : USize = %old.add(%length)
         %self.ensure_capacity(%new)
-        %base : Ptr<Byte> = %self.data.load()
+        %base : @Byte = %self.data.load()
         copy<Byte>(%base.stride(%old), %data, %length)
         %self.length.store(%new)
         return()
@@ -307,43 +307,43 @@ routine List<Byte>.write_bytes(%self: Ptr<Self>, %data: Ptr<Byte>, %length: USiz
 /// list next grows or is destructed, and it isn't NUL-terminated.
 routine List<Byte>.to_bytes(%self: Self) -> Bytes
     block entry():
-        %data   : Ptr<Byte> = %self.data
-        %length : USize     = %self.length
-        %text   : Bytes     = .from_ptr(%data, %length)
+        %data   : @Byte = %self.data
+        %length : USize = %self.length
+        %text   : Bytes = .from_ptr(%data, %length)
         return(%text)
 
 /// Ends the bytes with a NUL (not counted in the length) and points at them,
 /// for C. Valid until the list next changes or is destructed.
-routine List<Byte>.to_cstr(%self: Ptr<Self>) -> CStr
+routine List<Byte>.to_cstr(%self: @Self) -> CStr
     block entry():
         %length : USize = %self.length.load()
         %self.ensure_capacity(%length.add(1))
-        %data : Ptr<Byte> = %self.data.load()
+        %data : @Byte = %self.data.load()
         %data.stride(%length).store(0x00)
         return(.from_ptr(%data))
 
 // -- text -----------------------------------------------------------------------
 
 /// The elements in order, each diagnosed (strings quoted): [1, 2, 3].
-routine List<T>.represent<W>(%self: Self, %out: Ptr<W>) -> Void
+routine List<T>.represent<W>(%self: Self, %out: @W) -> Void
 require T: typename, Diagnose<T>, W: typename, Writer<W>
     block entry():
-        claim %whole : Ptr<Self>
+        claim %whole : @Self
         %whole.store(%self)
         %iter_val : ListIter<T> = .construct(%whole)
-        claim %iter : Ptr<ListIter<T>>
+        claim %iter : @ListIter<T>
         %iter.store(%iter_val)
         diagnose_items<T, ListIter<T>, W>(%out, %iter, "[", "]")
         return()
 
 /// The elements in order, each diagnosed: [1, 2, 3].
-routine List<T>.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine List<T>.diagnose<W>(%self: Self, %out: @W) -> Void
 require T: typename, Diagnose<T>, W: typename, Writer<W>
     block entry():
-        claim %whole : Ptr<Self>
+        claim %whole : @Self
         %whole.store(%self)
         %iter_val : ListIter<T> = .construct(%whole)
-        claim %iter : Ptr<ListIter<T>>
+        claim %iter : @ListIter<T>
         %iter.store(%iter_val)
         diagnose_items<T, ListIter<T>, W>(%out, %iter, "[", "]")
         return()

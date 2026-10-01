@@ -6,7 +6,7 @@ namespace Tessera;
 /// A resolved type. Two types are equal when their keys are equal.
 public abstract class DType : IEquatable<DType>
 {
-    /// Source-level name, for messages: `S64`, `Ptr<Byte>`, `Option<S64>`, `Array<Byte, 20>`.
+    /// Source-level name, for messages: `S64`, `@Byte`, `Option<S64>`, `Array<Byte, 20>`.
     public abstract string Name { get; }
 
     /// The type's identity. It's the name, except that a declared type is named by its module (and by its file, if
@@ -185,11 +185,11 @@ public sealed class VoidType : DType
     public override string OwnerName => Name;
 }
 
-/// `Ptr<T>`, or the opaque `Ptr` when Pointee is null. Every pointer lowers to LLVM `ptr`.
+/// `Ptr<T>` (written `@T`), or `Addr` when Pointee is null. Every pointer lowers to LLVM `ptr`.
 public sealed class PtrType(DType? pointee) : DType
 {
     public DType? Pointee { get; } = pointee;
-    public override string Name => Pointee is null ? "Addr" : $"Ptr<{Pointee.Name}>";
+    public override string Name => Pointee is null ? "Addr" : $"@{Pointee.Name}";
     public override string Key => Pointee is null ? "Addr" : $"Ptr<{Pointee.Key}>";
     public override string Llvm => "ptr";
     public override string OwnerName => Pointee is null ? "Addr" : "Ptr";
@@ -217,22 +217,22 @@ public sealed class VectorType(DType elem, long count) : DType
     public override string OwnerName => "Vector";
 }
 
-/// `Callable<(params), ret>`, or `Callable<@callconv("fast"), (params), ret>`: a function pointer.
+/// `Callable<(params), ret>`, or `Callable<#callconv("fast"), (params), ret>`: a function pointer.
 public sealed class CallableType(string callConv, List<DType> parameters, DType ret) : DType
 {
     public string CallConv { get; } = callConv;
     public List<DType> Params { get; } = parameters;
     public DType Ret { get; } = ret;
     public override string Name =>
-        $"Callable<{(CallConv == "default" ? "" : $"@callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Name))}), {Ret.Name}>";
+        $"Callable<{(CallConv == "default" ? "" : $"#callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Name))}), {Ret.Name}>";
     public override string Key =>
-        $"Callable<{(CallConv == "default" ? "" : $"@callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Key))}), {Ret.Key}>";
+        $"Callable<{(CallConv == "default" ? "" : $"#callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Key))}), {Ret.Key}>";
     public override string Llvm => "ptr";
     public override string OwnerName => "Callable";
 }
 
 /// A user or library record, instantiated with concrete arguments. A record with exactly one field is transparent:
-/// it lowers to its field's type (`record Meters / value: U64` is an `i64`), unless it is marked `@aggregate`.
+/// it lowers to its field's type (`record Meters / value: U64` is an `i64`), unless it is marked `#aggregate`.
 public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordType, DType?> transparentField) : DType
 {
     public RecordDecl Decl { get; } = decl;
@@ -248,7 +248,7 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public static bool IsTupleDecl(RecordDecl d) =>
         d.Module == "Standard::Core" && d.Name is "Tuple2" or "Tuple3" or "Tuple4";
 
-    /// The type a transparent or library `@llvm("iN")` record lowers to, or null for an aggregate.
+    /// The type a transparent or library `#llvm("iN")` record lowers to, or null for an aggregate.
     public DType? TransparentField => transparentField(this);
 
     public override DType Repr => TransparentField?.Repr ?? this;
@@ -375,13 +375,13 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
     /// Whether the target has an operating system, which the hosted layer (Standard::Os) needs.
     public bool HasOs => Os != "none";
 
-    /// Evaluates one `@target(key: value)` predicate.
+    /// Evaluates one `#target(key: value)` predicate.
     public bool Matches(string key, string value) => key switch
     {
         "arch" => Arch == value,
         "os" => Os == value,
         "abi" => Abi == value,
         "size" => Size.ToString(CultureInfo.InvariantCulture) == value,
-        _ => throw new ArgumentException($"unknown @target key '{key}' (keys: arch, os, abi, size)"),
+        _ => throw new ArgumentException($"unknown #target key '{key}' (keys: arch, os, abi, size)"),
     };
 }

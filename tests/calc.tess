@@ -15,7 +15,7 @@
 //     payload-carrying choice; switches on the tag name every kind instead of
 //     using '_', so adding a kind is a compile error until each one handles it
 //   * error propagation: every call that can fail is followed by an explicit
-//     tag test and branch; Result<Ptr<Expr>, CalcError> is spelled out each time
+//     tag test and branch; Result<@Expr, CalcError> is spelled out each time
 //   * cleanup on failure paths: when the right operand fails to parse, the
 //     already-built left subtree has to be freed by hand
 //   * recursion: parse_binary, parse_primary, eval, and free_expr recurse
@@ -25,8 +25,8 @@ import Standard::Os
 
 // ── C FFI ─────────────────────────────────────────────────────────────────────
 
-@[external("c"), symbol("printf"), variadic]
-routine c_printf(%fmt: Ptr<Byte>) -> S32
+#[external("c"), symbol("printf"), variadic]
+routine c_printf(%fmt: @Byte) -> S32
 
 // ── Tokens ────────────────────────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ record Token
     end   : USize  // byte offset just past the token
 
 record CalcError
-    message : Ptr<Byte>
+    message : @Byte
     pos     : USize
 
 // ── Syntax tree ───────────────────────────────────────────────────────────────
@@ -71,22 +71,22 @@ choice ExprKind: U8
 record Expr
     kind  : ExprKind
     value : S64
-    lhs   : Ptr<Expr>
-    rhs   : Ptr<Expr>
+    lhs   : @Expr
+    rhs   : @Expr
     pos   : USize
 
-routine new_expr(%alloc: Ptr<Allocator>, %node: Expr) -> Ptr<Expr>
+routine new_expr(%alloc: @Allocator, %node: Expr) -> @Expr
     block entry():
-        %p      : Ptr<Expr> = allocate<Expr>(%alloc, 1)
-        %failed : Bool      = %p.is_null()
+        %p      : @Expr = allocate<Expr>(%alloc, 1)
+        %failed : Bool  = %p.is_null()
         branch %failed ? panic(TrapCode.AllocFailed) : store(%p)
 
-    block store(%p: Ptr<Expr>):
+    block store(%p: @Expr):
         %p.store(%node)
         return(%p)
 
 /// Frees e and its whole subtree.
-routine free_expr(%e: Ptr<Expr>, %alloc: Ptr<Allocator>) -> Void
+routine free_expr(%e: @Expr, %alloc: @Allocator) -> Void
     block entry():
         %kind : ExprKind = %e.kind.load()
         when %kind:
@@ -95,13 +95,13 @@ routine free_expr(%e: Ptr<Expr>, %alloc: Ptr<Allocator>) -> Void
             ExprKind.Add, ExprKind.Sub, ExprKind.Mul, ExprKind.Div, ExprKind.Rem -> free_both()
 
     block free_operand():
-        %operand : Ptr<Expr> = %e.lhs.load()
+        %operand : @Expr = %e.lhs.load()
         free_expr(%operand, %alloc)
         jump release()
 
     block free_both():
-        %lhs : Ptr<Expr> = %e.lhs.load()
-        %rhs : Ptr<Expr> = %e.rhs.load()
+        %lhs : @Expr = %e.lhs.load()
+        %rhs : @Expr = %e.rhs.load()
         free_expr(%lhs, %alloc)
         free_expr(%rhs, %alloc)
         jump release()
@@ -113,10 +113,10 @@ routine free_expr(%e: Ptr<Expr>, %alloc: Ptr<Allocator>) -> Void
 // ── Lexer ─────────────────────────────────────────────────────────────────────
 
 record Parser
-    src   : Ptr<Byte>
+    src   : @Byte
     len   : USize
     pos   : USize
-    alloc : Ptr<Allocator>
+    alloc : @Allocator
 
 routine is_digit(%c: Byte) -> Bool
     block entry():
@@ -127,7 +127,7 @@ routine is_digit(%c: Byte) -> Bool
 
 /// Reads the token at the current position without consuming it.
 /// Fails only on a number that doesn't fit in S64.
-routine Parser.peek(%self: Ptr<Self>) -> Result<Token, CalcError>
+routine Parser.peek(%self: @Self) -> Result<Token, CalcError>
     block entry():
         %start : USize = %self.pos.load()
         jump skip_space(%start)
@@ -138,9 +138,9 @@ routine Parser.peek(%self: Ptr<Self>) -> Result<Token, CalcError>
         branch %at_end ? end_token(%i) : check_space(%i)
 
     block check_space(%i: USize):
-        %src      : Ptr<Byte> = %self.src.load()
-        %c        : Byte      = %src.stride(%i).load()
-        %is_space : Bool      = %c.eq(b' ')
+        %src      : @Byte = %self.src.load()
+        %c        : Byte  = %src.stride(%i).load()
+        %is_space : Bool  = %c.eq(b' ')
         branch %is_space ? skip_space(%i.add(1)) : classify(%i, %c)
 
     block end_token(%i: USize):
@@ -176,9 +176,9 @@ routine Parser.peek(%self: Ptr<Self>) -> Result<Token, CalcError>
         branch %at_end ? number_done(%start, %j, %acc) : check_digit(%start, %j, %acc)
 
     block check_digit(%start: USize, %j: USize, %acc: S64):
-        %src   : Ptr<Byte> = %self.src.load()
-        %c     : Byte      = %src.stride(%j).load()
-        %digit : Bool      = is_digit(%c)
+        %src   : @Byte = %self.src.load()
+        %c     : Byte  = %src.stride(%j).load()
+        %digit : Bool  = is_digit(%c)
         branch %digit ? scale(%start, %j, %acc, %c) : number_done(%start, %j, %acc)
 
     block scale(%start: USize, %j: USize, %acc: S64, %c: Byte):
@@ -205,7 +205,7 @@ routine Parser.peek(%self: Ptr<Self>) -> Result<Token, CalcError>
         %r   : Result<Token, CalcError> = .Success(%tok)
         return(%r)
 
-routine Parser.advance(%self: Ptr<Self>, %tok: Token) -> Void
+routine Parser.advance(%self: @Self, %tok: Token) -> Void
     block entry():
         %end : USize = %tok.end
         %self.pos.store(%end)
@@ -242,63 +242,63 @@ routine operator_at(%kind: TokenKind, %level: S64) -> Option<ExprKind>
         return(%r)
 
 /// An operand of a level-level operator: the next level down, or a primary.
-routine Parser.parse_operand(%self: Ptr<Self>, %level: S64) -> Result<Ptr<Expr>, CalcError>
+routine Parser.parse_operand(%self: @Self, %level: S64) -> Result<@Expr, CalcError>
     block entry():
         %lowest : Bool = %level.eq(0)
         branch %lowest ? term() : primary()
 
     block term():
-        %r : Result<Ptr<Expr>, CalcError> = %self.parse_binary(1)
+        %r : Result<@Expr, CalcError> = %self.parse_binary(1)
         return(%r)
 
     block primary():
-        %r : Result<Ptr<Expr>, CalcError> = %self.parse_primary()
+        %r : Result<@Expr, CalcError> = %self.parse_primary()
         return(%r)
 
 /// operand (op operand)* at one precedence level, folded to the left.
-routine Parser.parse_binary(%self: Ptr<Self>, %level: S64) -> Result<Ptr<Expr>, CalcError>
+routine Parser.parse_binary(%self: @Self, %level: S64) -> Result<@Expr, CalcError>
     block entry():
-        %first : Result<Ptr<Expr>, CalcError> = %self.parse_operand(%level)
+        %first : Result<@Expr, CalcError> = %self.parse_operand(%level)
         when %first:
             .Success(%lhs) -> next_op(%lhs)
             .Failure       -> return(%first)
 
-    block next_op(%lhs: Ptr<Expr>):
+    block next_op(%lhs: @Expr):
         %peeked : Result<Token, CalcError> = %self.peek()
         when %peeked:
             .Success(%tok)   -> check_op(%lhs, %tok)
             .Failure(%error) -> abandon(%lhs, %error)
 
-    block check_op(%lhs: Ptr<Expr>, %tok: Token):
-        %tok_kind : TokenKind                    = %tok.kind
-        %op       : Option<ExprKind>             = operator_at(%tok_kind, %level)
-        %done     : Result<Ptr<Expr>, CalcError> = .Success(%lhs)
+    block check_op(%lhs: @Expr, %tok: Token):
+        %tok_kind : TokenKind                = %tok.kind
+        %op       : Option<ExprKind>         = operator_at(%tok_kind, %level)
+        %done     : Result<@Expr, CalcError> = .Success(%lhs)
         when %op:
             .Present(%kind) -> parse_rhs(%lhs, %tok, %kind)
             .Absent         -> return(%done)
 
-    block parse_rhs(%lhs: Ptr<Expr>, %tok: Token, %kind: ExprKind):
+    block parse_rhs(%lhs: @Expr, %tok: Token, %kind: ExprKind):
         %self.advance(%tok)
-        %rhs : Result<Ptr<Expr>, CalcError> = %self.parse_operand(%level)
-        %pos : USize                        = %tok.pos
+        %rhs : Result<@Expr, CalcError> = %self.parse_operand(%level)
+        %pos : USize                    = %tok.pos
         when %rhs:
             .Success(%right) -> combine(%lhs, %right, %kind, %pos)
             .Failure(%error) -> abandon(%lhs, %error)
 
-    block combine(%lhs: Ptr<Expr>, %right: Ptr<Expr>, %kind: ExprKind, %pos: USize):
-        %alloc : Ptr<Allocator> = %self.alloc.load()
-        %node  : Expr           = Expr { kind: %kind, value: 0, lhs: %lhs, rhs: %right, pos: %pos }
-        %tree  : Ptr<Expr>      = new_expr(%alloc, %node)
+    block combine(%lhs: @Expr, %right: @Expr, %kind: ExprKind, %pos: USize):
+        %alloc : @Allocator = %self.alloc.load()
+        %node  : Expr       = Expr { kind: %kind, value: 0, lhs: %lhs, rhs: %right, pos: %pos }
+        %tree  : @Expr      = new_expr(%alloc, %node)
         jump next_op(%tree)
 
     // The left side parsed but what follows didn't: free it before failing.
-    block abandon(%lhs: Ptr<Expr>, %error: CalcError):
-        %alloc : Ptr<Allocator> = %self.alloc.load()
+    block abandon(%lhs: @Expr, %error: CalcError):
+        %alloc : @Allocator = %self.alloc.load()
         free_expr(%lhs, %alloc)
-        %r : Result<Ptr<Expr>, CalcError> = .Failure(%error)
+        %r : Result<@Expr, CalcError> = .Failure(%error)
         return(%r)
 
-routine Parser.parse_primary(%self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
+routine Parser.parse_primary(%self: @Self) -> Result<@Expr, CalcError>
     block entry():
         %peeked : Result<Token, CalcError> = %self.peek()
         when %peeked:
@@ -318,106 +318,106 @@ routine Parser.parse_primary(%self: Ptr<Self>) -> Result<Ptr<Expr>, CalcError>
 
     block number(%tok: Token):
         %self.advance(%tok)
-        %alloc : Ptr<Allocator>               = %self.alloc.load()
-        %value : S64                          = %tok.value
-        %pos   : USize                        = %tok.pos
-        %node  : Expr                         = Expr { kind: ExprKind.Num, value: %value, lhs: null,
+        %alloc : @Allocator               = %self.alloc.load()
+        %value : S64                      = %tok.value
+        %pos   : USize                    = %tok.pos
+        %node  : Expr                     = Expr { kind: ExprKind.Num, value: %value, lhs: null,
                 rhs: null, pos: %pos }
-        %leaf  : Ptr<Expr>                    = new_expr(%alloc, %node)
-        %r     : Result<Ptr<Expr>, CalcError> = .Success(%leaf)
+        %leaf  : @Expr                    = new_expr(%alloc, %node)
+        %r     : Result<@Expr, CalcError> = .Success(%leaf)
         return(%r)
 
     block negate(%tok: Token):
         %self.advance(%tok)
-        %inner : Result<Ptr<Expr>, CalcError> = %self.parse_primary()
-        %pos   : USize                        = %tok.pos
+        %inner : Result<@Expr, CalcError> = %self.parse_primary()
+        %pos   : USize                    = %tok.pos
         when %inner:
             .Success(%operand) -> wrap_neg(%operand, %pos)
             .Failure           -> return(%inner)
 
-    block wrap_neg(%operand: Ptr<Expr>, %pos: USize):
-        %alloc : Ptr<Allocator>               = %self.alloc.load()
-        %node  : Expr                         = Expr { kind: ExprKind.Neg, value: 0, lhs: %operand,
+    block wrap_neg(%operand: @Expr, %pos: USize):
+        %alloc : @Allocator               = %self.alloc.load()
+        %node  : Expr                     = Expr { kind: ExprKind.Neg, value: 0, lhs: %operand,
                 rhs: null, pos: %pos }
-        %tree  : Ptr<Expr>                    = new_expr(%alloc, %node)
-        %r     : Result<Ptr<Expr>, CalcError> = .Success(%tree)
+        %tree  : @Expr                    = new_expr(%alloc, %node)
+        %r     : Result<@Expr, CalcError> = .Success(%tree)
         return(%r)
 
     // "(" expr ")"
     block group(%open: Token):
         %self.advance(%open)
-        %inner : Result<Ptr<Expr>, CalcError> = %self.parse_binary(0)
+        %inner : Result<@Expr, CalcError> = %self.parse_binary(0)
         when %inner:
             .Success(%tree) -> expect_close(%tree)
             .Failure        -> return(%inner)
 
-    block expect_close(%tree: Ptr<Expr>):
+    block expect_close(%tree: @Expr):
         %peeked : Result<Token, CalcError> = %self.peek()
         when %peeked:
             .Success(%close) -> check_close(%tree, %close)
             .Failure(%error) -> abandon(%tree, %error)
 
-    block check_close(%tree: Ptr<Expr>, %close: Token):
+    block check_close(%tree: @Expr, %close: Token):
         %kind   : TokenKind = %close.kind
         %closed : Bool      = %kind.eq(TokenKind.RParen)
         %pos    : USize     = %close.pos
         %e      : CalcError = CalcError { message: "expected ')'", pos: %pos }
         branch %closed ? close(%tree, %close) : abandon(%tree, %e)
 
-    block close(%tree: Ptr<Expr>, %close: Token):
+    block close(%tree: @Expr, %close: Token):
         %self.advance(%close)
-        %r : Result<Ptr<Expr>, CalcError> = .Success(%tree)
+        %r : Result<@Expr, CalcError> = .Success(%tree)
         return(%r)
 
-    block abandon(%tree: Ptr<Expr>, %error: CalcError):
-        %alloc : Ptr<Allocator> = %self.alloc.load()
+    block abandon(%tree: @Expr, %error: CalcError):
+        %alloc : @Allocator = %self.alloc.load()
         free_expr(%tree, %alloc)
         jump fail(%error)
 
-    block fail_at(%message: Ptr<Byte>, %pos: USize):
+    block fail_at(%message: @Byte, %pos: USize):
         %e : CalcError = CalcError { message: %message, pos: %pos }
         jump fail(%e)
 
     block fail(%error: CalcError):
-        %r : Result<Ptr<Expr>, CalcError> = .Failure(%error)
+        %r : Result<@Expr, CalcError> = .Failure(%error)
         return(%r)
 
 /// Parses all of source; anything left after the expression is an error.
-routine parse(%source: Bytes, %alloc: Ptr<Allocator>) -> Result<Ptr<Expr>, CalcError>
+routine parse(%source: Bytes, %alloc: @Allocator) -> Result<@Expr, CalcError>
     block entry():
-        %src   : Ptr<Byte> = %source.data
-        %len   : USize     = %source.length
-        %state : Parser    = Parser { src: %src, len: %len, pos: 0, alloc: %alloc }
-        claim %self : Ptr<Parser>
+        %src   : @Byte  = %source.data
+        %len   : USize  = %source.length
+        %state : Parser = Parser { src: %src, len: %len, pos: 0, alloc: %alloc }
+        claim %self : @Parser
         %self.store(%state)
-        %parsed : Result<Ptr<Expr>, CalcError> = %self.parse_binary(0)
+        %parsed : Result<@Expr, CalcError> = %self.parse_binary(0)
         when %parsed:
             .Success(%tree) -> expect_end(%self, %tree)
             .Failure        -> return(%parsed)
 
-    block expect_end(%self: Ptr<Parser>, %tree: Ptr<Expr>):
+    block expect_end(%self: @Parser, %tree: @Expr):
         %peeked : Result<Token, CalcError> = %self.peek()
         // a lex error here is still "something after the expression"
         when %peeked:
             .Success(%tok)   -> check_end(%tree, %tok)
             .Failure(%error) -> trailing(%tree, %error.pos)
 
-    block check_end(%tree: Ptr<Expr>, %tok: Token):
-        %kind   : TokenKind                    = %tok.kind
-        %at_end : Bool                         = %kind.eq(TokenKind.End)
-        %done   : Result<Ptr<Expr>, CalcError> = .Success(%tree)
+    block check_end(%tree: @Expr, %tok: Token):
+        %kind   : TokenKind                = %tok.kind
+        %at_end : Bool                     = %kind.eq(TokenKind.End)
+        %done   : Result<@Expr, CalcError> = .Success(%tree)
         branch %at_end ? return(%done) : trailing(%tree, %tok.pos)
 
-    block trailing(%tree: Ptr<Expr>, %pos: USize):
+    block trailing(%tree: @Expr, %pos: USize):
         free_expr(%tree, %alloc)
-        %e : CalcError                    = CalcError {
-                message: "unexpected input after expression", pos: %pos }
-        %r : Result<Ptr<Expr>, CalcError> = .Failure(%e)
+        %e : CalcError                = CalcError { message: "unexpected input after expression",
+                pos: %pos }
+        %r : Result<@Expr, CalcError> = .Failure(%e)
         return(%r)
 
 // ── Evaluator ─────────────────────────────────────────────────────────────────
 
-routine eval(%e: Ptr<Expr>) -> Result<S64, CalcError>
+routine eval(%e: @Expr) -> Result<S64, CalcError>
     block entry():
         %kind : ExprKind = %e.kind.load()
         %pos  : USize    = %e.pos.load()
@@ -433,21 +433,21 @@ routine eval(%e: Ptr<Expr>) -> Result<S64, CalcError>
         return(%r)
 
     block negate(%pos: USize):
-        %operand : Ptr<Expr>              = %e.lhs.load()
+        %operand : @Expr                  = %e.lhs.load()
         %inner   : Result<S64, CalcError> = eval(%operand)
         when %inner:
             .Success(%x) -> checked(%x.neg_checked(), %pos)
             .Failure     -> return(%inner)
 
     block binary(%kind: ExprKind, %pos: USize):
-        %lhs  : Ptr<Expr>              = %e.lhs.load()
+        %lhs  : @Expr                  = %e.lhs.load()
         %left : Result<S64, CalcError> = eval(%lhs)
         when %left:
             .Success(%a) -> eval_rhs(%kind, %pos, %a)
             .Failure     -> return(%left)
 
     block eval_rhs(%kind: ExprKind, %pos: USize, %a: S64):
-        %rhs   : Ptr<Expr>              = %e.rhs.load()
+        %rhs   : @Expr                  = %e.rhs.load()
         %right : Result<S64, CalcError> = eval(%rhs)
         when %right:
             .Success(%b) -> apply(%kind, %pos, %a, %b)
@@ -486,16 +486,16 @@ routine eval(%e: Ptr<Expr>) -> Result<S64, CalcError>
 
 // ── Driver ────────────────────────────────────────────────────────────────────
 
-routine calculate(%source: Bytes, %alloc: Ptr<Allocator>) -> Void
+routine calculate(%source: Bytes, %alloc: @Allocator) -> Void
     block entry():
-        %src : Ptr<Byte> = %source.data
+        %src : @Byte = %source.data
         c_printf("%-34s ", %src)
-        %parsed : Result<Ptr<Expr>, CalcError> = parse(%source, %alloc)
+        %parsed : Result<@Expr, CalcError> = parse(%source, %alloc)
         when %parsed:
             .Success(%tree)  -> evaluate(%tree)
             .Failure(%error) -> report(%error)
 
-    block evaluate(%tree: Ptr<Expr>):
+    block evaluate(%tree: @Expr):
         %result : Result<S64, CalcError> = eval(%tree)
         free_expr(%tree, %alloc)
         when %result:
@@ -507,15 +507,15 @@ routine calculate(%source: Bytes, %alloc: Ptr<Allocator>) -> Void
         return()
 
     block report(%error: CalcError):
-        %pos     : USize     = %error.pos
-        %message : Ptr<Byte> = %error.message
+        %pos     : USize = %error.pos
+        %message : @Byte = %error.message
         c_printf("error at column %zu: %s\n", %pos.add(1), %message)
         return()
 
 routine main() -> S32
     block entry():
         %heap : Allocator = make_heap_allocator()
-        claim %alloc : Ptr<Allocator>
+        claim %alloc : @Allocator
         %alloc.store(%heap)
 
         calculate("1 + 2 * 3", %alloc)

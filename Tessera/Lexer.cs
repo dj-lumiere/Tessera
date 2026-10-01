@@ -7,8 +7,8 @@ public enum TokenKind
 {
     Ident,       // routine, S64, entry, add, ...
     Value,       // %name
-    Pointer,     // #name
-    At,          // @
+    Hash,        // # (starts an attribute)
+    At,          // @ (a pointer type: @T is Ptr<T>)
     Int,         // 42, -5, 0xFF
     Byte,        // b'A': a Byte
     Char,        // 'A': a Char, a Unicode scalar value
@@ -132,14 +132,13 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 continue;
             }
 
-            if (c == '%' || c == '#')
+            if (c == '%')
             {
-                // `%` marks a value (`%count`, `%list`, pointers included). `#` has no meaning: it may start an
-                // ordinary name.
+                // `%` marks a value (`%count`, `%list`, pointers included).
                 Advance();
                 string name = ReadIdent();
-                if (name.Length == 0) throw new CompileError(pos, $"expected a name after '{c}'");
-                _tokens.Add(new Token(c == '%' ? TokenKind.Value : TokenKind.Ident, c + name, pos));
+                if (name.Length == 0) throw new CompileError(pos, "expected a name after '%'");
+                _tokens.Add(new Token(TokenKind.Value, c + name, pos));
                 continue;
             }
 
@@ -193,6 +192,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 case '?': kind = TokenKind.Question; break;
                 case '.': kind = TokenKind.Dot; break;
                 case '@': kind = TokenKind.At; break;
+                case '#': kind = TokenKind.Hash; break;
                 case '_': kind = TokenKind.Underscore; break;
                 case '=': kind = TokenKind.Eq; break;
                 case ':':

@@ -4,14 +4,15 @@ namespace Tessera;
 
 // ── Types as written ────────────────────────────────────────────────────────
 
-/// A type as written in source: `S64`, `Ptr<Byte>`, `Array<T, 8>`, `Callable<(Ptr, USize), Ptr>`.
+/// A type as written in source: `S64`, `@Byte` (a `Ptr<Byte>`), `Array<T, 8>`, `Callable<(Addr, USize), Addr>`.
 public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 {
     /// The module a qualified name was written with: `Standard::Collections` in `Standard::Collections::List<T>`.
     public string? Path { get; init; }
 
     public override string ToString() =>
-        (Path is null ? "" : Path + "::") + (Args.Count == 0 ? Name : $"{Name}<{string.Join(", ", Args)}>");
+        Path is null && Name == "Ptr" && Args is [TypeArgType inner] ? $"@{inner}"
+        : (Path is null ? "" : Path + "::") + (Args.Count == 0 ? Name : $"{Name}<{string.Join(", ", Args)}>");
     public static TypeRef Simple(string name, Pos pos) => new(name, [], pos);
 }
 
@@ -23,8 +24,8 @@ public sealed record TypeArgTuple(List<TypeRef> Types) : TypeArg
 {
     public override string ToString() => $"({string.Join(", ", Types)})";
 }
-/// `@callconv("fast")` inside a Callable.
-public sealed record TypeArgAttr(Attribute Attr) : TypeArg { public override string ToString() => $"@{Attr.Name}"; }
+/// `#callconv("fast")` inside a Callable.
+public sealed record TypeArgAttr(Attribute Attr) : TypeArg { public override string ToString() => $"#{Attr.Name}"; }
 /// A compile-time integer expression as a generic argument: `max(sizeof<A>(), sizeof<B>())` in `Array<Byte, …>`.
 public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string ToString() => "(expr)"; }
 
@@ -170,7 +171,7 @@ public sealed record FloatLit(double Value, Pos Pos) : Expr(Pos);
 public sealed record StrLit(string Value, Pos Pos) : Expr(Pos);
 public sealed record BoolLit(bool Value, Pos Pos) : Expr(Pos);
 public sealed record NullLit(Pos Pos) : Expr(Pos);
-public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos); // %x or #p
+public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos); // %x
 
 /// `name(args)` or `name<T>(args)` — a free routine call.
 public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos)
@@ -204,13 +205,13 @@ public sealed record MethodCallExpr(Expr Receiver, string Name, List<TypeRef> Ty
 /// `base.field` — a field of a value record, or (behind a pointer) a place.
 public sealed record FieldExpr(Expr Base, string Name, Pos Pos) : Expr(Pos);
 
-/// `#p[i]` — a place. As a binding value it is an address; with `:=` or as a store target it is memory.
+/// `%p[i]` — a place. As a binding value it is an address; with `:=` or as a store target it is memory.
 public sealed record IndexExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
 
 /// `%cond ? a : b` — value select.
 public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) : Expr(Pos);
 
-/// The slot of `claim #p : Ptr<T>`, which parses as a binding of this: an uninitialized stack slot for one T. Lowers
+/// The slot of `claim %p : @T`, which parses as a binding of this: an uninitialized stack slot for one T. Lowers
 /// to an LLVM alloca.
 public sealed record ClaimExpr(Pos Pos) : Expr(Pos);
 
@@ -234,13 +235,13 @@ public abstract record Terminator(Pos Pos);
 /// A target in a jump / branch / select / switch position.
 public abstract record Target(Pos Pos);
 
-/// `name(args)` — a block call, or (resolved later) a call to a @noreturn routine.
+/// `name(args)` — a block call, or (resolved later) a call to a #noreturn routine.
 public sealed record CallTarget(string Name, List<Expr> Args, Pos Pos) : Target(Pos);
 public sealed record ReturnTarget(Expr? Value, Pos Pos) : Target(Pos);
 public sealed record UnreachableTarget(Pos Pos) : Target(Pos);
 /// `continue` as an arm: go on with the next line of the same block.
 public sealed record ContinueTarget(Pos Pos) : Target(Pos);
-/// Any other @noreturn call used as a target, such as `Panic.now()`.
+/// Any other #noreturn call used as a target, such as `Panic.now()`.
 public sealed record ExprTarget(Expr Call, Pos Pos) : Target(Pos);
 
 public sealed record JumpTerm(CallTarget Target, Pos Pos) : Terminator(Pos);
@@ -249,5 +250,5 @@ public sealed record WhenCondTerm(List<(Expr? Cond, Target Target)> Arms, Pos Po
 /// `when %v:` arms: one or more constants (`1, 2 -> ...`), or `_` (null).
 public sealed record WhenValueTerm(Expr Value, List<(List<Expr>? Cases, Target Target)> Arms, Pos Pos) : Terminator(Pos);
 
-/// A terminator written as a bare target: `return(x)`, `unreachable`, or a @noreturn call such as `trap()`.
+/// A terminator written as a bare target: `return(x)`, `unreachable`, or a #noreturn call such as `trap()`.
 public sealed record TargetTerm(Target Target, Pos Pos) : Terminator(Pos);

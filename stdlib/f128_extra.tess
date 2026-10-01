@@ -126,7 +126,7 @@ routine wide_pi_trig(%d: F128, %pick: PiPick) -> F128Extended
 // -- exact tier: 384-bit fixed point on BigNat ---------------------------------
 
 /// self = a × b (self must be neither).
-routine BigNat<N>.set_product(%self: Ptr<Self>, %a: Ptr<Self>, %b: Ptr<Self>) -> Void
+routine BigNat<N>.set_product(%self: @Self, %a: @Self, %b: @Self) -> Void
 require N: USize
     block entry():
         %a_length : USize = %a.length.load()
@@ -180,7 +180,7 @@ require N: USize
         return()
 
 /// The 128 bits of self from bit %pos up (zeros past the top).
-routine BigNat<N>.bits128(%self: Ptr<Self>, %pos: USize) -> U128
+routine BigNat<N>.bits128(%self: @Self, %pos: USize) -> U128
 require N: USize
     block entry():
         %at     : USize = %pos.div(64)
@@ -194,7 +194,7 @@ require N: USize
         %r    : U128 = %low.bitor(%high)
         return(%r)
 
-routine BigNat<N>.limb_or_zero(%self: Ptr<Self>, %i: USize) -> U64
+routine BigNat<N>.limb_or_zero(%self: @Self, %i: USize) -> U64
 require N: USize
     block entry():
         %length : USize = %self.length.load()
@@ -206,7 +206,7 @@ require N: USize
         return(%limb)
 
 /// n × 2^e rounded once to F128 (n > 0).
-routine big_to_f128(%n: Ptr<BigNat<24>>, %e: S64, %negative: Bool) -> F128
+routine big_to_f128(%n: @BigNat<24>, %e: S64, %negative: Bool) -> F128
     block entry():
         %length   : USize = %n.bit_length()
         %shift    : USize = %length.sub_clamp(125)
@@ -220,7 +220,7 @@ routine big_to_f128(%n: Ptr<BigNat<24>>, %e: S64, %negative: Bool) -> F128
 
 /// (num × 2^num_e) / (den × 2^den_e) rounded once to F128: a 126- or 127-bit
 /// quotient with the remainder as the sticky bit. Both operands are consumed.
-routine big_quotient_to_f128(%num: Ptr<BigNat<24>>, %num_e: S64, %den: Ptr<BigNat<24>>, %den_e: S64,
+routine big_quotient_to_f128(%num: @BigNat<24>, %num_e: S64, %den: @BigNat<24>, %den_e: S64,
         %negative: Bool) -> F128
     block entry():
         %den_bits : S64  = %den.bit_length().to_s64()
@@ -238,7 +238,7 @@ routine big_quotient_to_f128(%num: Ptr<BigNat<24>>, %num_e: S64, %den: Ptr<BigNa
         jump divide(%shift)
 
     block divide(%shift: S64):
-        claim %scratch : Ptr<BigNat<24>>
+        claim %scratch : @BigNat<24>
         %q        : U128 = %num.div_small(%den, %scratch, 127)
         %sticky   : Bool = %num.is_zero().bitnot()
         %sig      : U128 = %q.bitor(%sticky.to_u128())
@@ -250,11 +250,11 @@ routine big_quotient_to_f128(%num: Ptr<BigNat<24>>, %num_e: S64, %den: Ptr<BigNa
 /// Σ (-u)^k / (j0 (j0 + 1) … (j0 + 2k - 1)) in fixed point with 2^384 as 1:
 /// j0 = 2 gives sin θ / θ, j0 = 1 gives cos θ, for u = θ² <= (π/4)². Each term
 /// is off by under 1.5 units (one rounding, one truncation); about 50 terms.
-routine big_trig_series(%out: Ptr<BigNat<24>>, %u: Ptr<BigNat<24>>, %j0: U64) -> Void
+routine big_trig_series(%out: @BigNat<24>, %u: @BigNat<24>, %j0: U64) -> Void
     block entry():
-        claim %term    : Ptr<BigNat<24>>
-        claim %product : Ptr<BigNat<24>>
-        claim %minus   : Ptr<BigNat<24>>
+        claim %term    : @BigNat<24>
+        claim %product : @BigNat<24>
+        claim %minus   : @BigNat<24>
         %term.set(1)
         %term.shl(PI_FIXED_BITS.to_usize())
         %out.copy_from(%term)
@@ -262,8 +262,8 @@ routine big_trig_series(%out: Ptr<BigNat<24>>, %u: Ptr<BigNat<24>>, %j0: U64) ->
         jump next(%j0, true, %term, %product, %minus)
 
     // term ← term × u / (j (j + 1)); the signs alternate, starting with minus
-    block next(%j: U64, %subtract: Bool, %term: Ptr<BigNat<24>>, %product: Ptr<BigNat<24>>,
-            %minus: Ptr<BigNat<24>>):
+    block next(%j: U64, %subtract: Bool, %term: @BigNat<24>, %product: @BigNat<24>,
+            %minus: @BigNat<24>):
         %product.set_product(%term, %u)
         %product.shr_round_even(PI_FIXED_BITS.to_usize())
         %term.copy_from(%product)
@@ -272,19 +272,19 @@ routine big_trig_series(%out: Ptr<BigNat<24>>, %u: Ptr<BigNat<24>>, %j0: U64) ->
         %done    : Bool = %term.is_zero()
         branch %done ? finish(%minus) : accumulate(%j, %subtract, %term, %product, %minus)
 
-    block accumulate(%j: U64, %subtract: Bool, %term: Ptr<BigNat<24>>, %product: Ptr<BigNat<24>>,
-            %minus: Ptr<BigNat<24>>):
+    block accumulate(%j: U64, %subtract: Bool, %term: @BigNat<24>, %product: @BigNat<24>,
+            %minus: @BigNat<24>):
         branch %subtract ? take(%j, %term, %product, %minus) : give(%j, %term, %product, %minus)
 
-    block take(%j: U64, %term: Ptr<BigNat<24>>, %product: Ptr<BigNat<24>>, %minus: Ptr<BigNat<24>>):
+    block take(%j: U64, %term: @BigNat<24>, %product: @BigNat<24>, %minus: @BigNat<24>):
         %minus.add(%term)
         jump next(%j.add(2), false, %term, %product, %minus)
 
-    block give(%j: U64, %term: Ptr<BigNat<24>>, %product: Ptr<BigNat<24>>, %minus: Ptr<BigNat<24>>):
+    block give(%j: U64, %term: @BigNat<24>, %product: @BigNat<24>, %minus: @BigNat<24>):
         %out.add(%term)
         jump next(%j.add(2), true, %term, %product, %minus)
 
-    block finish(%minus: Ptr<BigNat<24>>):
+    block finish(%minus: @BigNat<24>):
         %out.sub(%minus)
         return()
 
@@ -294,27 +294,27 @@ routine big_trig_series(%out: Ptr<BigNat<24>>, %u: Ptr<BigNat<24>>, %j0: U64) ->
 routine f128_pi_trig_exact(%d: F128, %pick: PiPick) -> F128
     block entry():
         %p : F128Parts = f128_unpack(%d.bits())
-        claim %pi : Ptr<BigNat<24>>
+        claim %pi : @BigNat<24>
         %pi.set(0)
         jump load_pi(0, %p, %pi)
 
-    block load_pi(%i: USize, %p: F128Parts, %pi: Ptr<BigNat<24>>):
+    block load_pi(%i: USize, %p: F128Parts, %pi: @BigNat<24>):
         %done : Bool = %i.ge(7)
         branch %done ? series(%p, %pi) : load_limb(%i, %p, %pi)
 
-    block load_limb(%i: USize, %p: F128Parts, %pi: Ptr<BigNat<24>>):
+    block load_limb(%i: USize, %p: F128Parts, %pi: @BigNat<24>):
         %limb : U64 = PI_FIXED_384.get(%i)
         %pi.push_limb(%limb)
         jump load_pi(%i.add(1), %p, %pi)
 
-    block series(%p: F128Parts, %pi: Ptr<BigNat<24>>):
-        claim %m     : Ptr<BigNat<24>>
-        claim %t     : Ptr<BigNat<24>>
-        claim %theta : Ptr<BigNat<24>>
-        claim %u     : Ptr<BigNat<24>>
-        claim %s     : Ptr<BigNat<24>>
-        claim %c     : Ptr<BigNat<24>>
-        claim %sin   : Ptr<BigNat<24>>
+    block series(%p: F128Parts, %pi: @BigNat<24>):
+        claim %m     : @BigNat<24>
+        claim %t     : @BigNat<24>
+        claim %theta : @BigNat<24>
+        claim %u     : @BigNat<24>
+        claim %s     : @BigNat<24>
+        claim %c     : @BigNat<24>
+        claim %sin   : @BigNat<24>
         %m.set_u128(%p.sig)
         %t.set_product(%pi, %m)
         // θ in fixed point (for u only; its relative accuracy doesn't matter there)
@@ -339,19 +339,16 @@ routine f128_pi_trig_exact(%d: F128, %pick: PiPick) -> F128
             %over_sin -> return(big_to_f128(%sin, %sin_e, %negative))
             else      -> return(big_to_f128(%c, %cos_e, %negative))
 
-    block divide(%sin: Ptr<BigNat<24>>, %sin_e: S64, %c: Ptr<BigNat<24>>, %cos_e: S64,
-            %negative: Bool):
+    block divide(%sin: @BigNat<24>, %sin_e: S64, %c: @BigNat<24>, %cos_e: S64, %negative: Bool):
         %over_sin : Bool = %pick.over_sin
         branch %over_sin ? tangent(%sin, %sin_e, %c, %cos_e, %negative)
                               : cotangent(%sin, %sin_e, %c, %cos_e, %negative)
 
-    block tangent(%sin: Ptr<BigNat<24>>, %sin_e: S64, %c: Ptr<BigNat<24>>, %cos_e: S64,
-            %negative: Bool):
+    block tangent(%sin: @BigNat<24>, %sin_e: S64, %c: @BigNat<24>, %cos_e: S64, %negative: Bool):
         %r : F128 = big_quotient_to_f128(%sin, %sin_e, %c, %cos_e, %negative)
         return(%r)
 
-    block cotangent(%sin: Ptr<BigNat<24>>, %sin_e: S64, %c: Ptr<BigNat<24>>, %cos_e: S64,
-            %negative: Bool):
+    block cotangent(%sin: @BigNat<24>, %sin_e: S64, %c: @BigNat<24>, %cos_e: S64, %negative: Bool):
         %r : F128 = big_quotient_to_f128(%c, %cos_e, %sin, %sin_e, %negative)
         return(%r)
 

@@ -15,6 +15,8 @@ namespace Tessera;
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 8 spaces
 ///   further in; a line with nowhere to break (a comment, one long argument) stays as it is. A long `branch` puts its
 ///   `? target` and `: target` on their own lines, 4 spaces further in, first.
+/// - a pointer type is written `@T`, not `Ptr<T>`, except where routines are declared on or called through the record
+///   (`routine Ptr<T>.load`); comments and literals are left alone;
 /// - inside `routine Owner.name`, the owner type is written `Self` after the header names it (`List<T>` in a
 ///   `List<T>` routine, not `List<U>`); comments and literals are left alone.
 /// Formatting is idempotent: formatting formatted text changes nothing.
@@ -23,6 +25,7 @@ public static class Formatter
     public static string Format(string text)
     {
         var lines = text.Replace("\r\n", "\n").Split('\n').Select(Clean).ToList();
+        lines = lines.Select(UseAt).ToList();
         lines = UseSelf(lines);
         lines = JoinContinuations(lines);
         lines = Align(lines);
@@ -76,7 +79,7 @@ public static class Formatter
                 if (decl.StartsWith("record ")) context = "record";
                 else if (decl.StartsWith("choice ")) context = "choice";
                 else if (decl.StartsWith("variant ")) context = "variant";
-                else if (!(trimmed.StartsWith("conform ") || trimmed.StartsWith("require ") || trimmed.StartsWith("@")))
+                else if (!(trimmed.StartsWith("conform ") || trimmed.StartsWith("require ") || trimmed.StartsWith("#")))
                     context = null;
                 whenIndent = -1;
             }
@@ -169,8 +172,8 @@ public static class Formatter
         return (name, type, rest);
     }
 
-    /// A value's name starts with a letter or `_`; `%` and `#` may start one too (the old sigils).
-    private static bool IsNameStart(char c) => char.IsLetter(c) || c is '_' or '%' or '#';
+    /// A value's name starts with a letter or `_`; `%` may start one too.
+    private static bool IsNameStart(char c) => char.IsLetter(c) || c is '_' or '%';
 
     /// `claim name : Type`; a line with anything after the type (an initializer, which is an error) isn't one.
     private static (string Name, string Type)? SplitClaim(string s)
@@ -277,7 +280,7 @@ public static class Formatter
 
     private static bool IsDoc(string line) => line.TrimStart().StartsWith("///");
 
-    private static bool IsAttribute(string line) => line.TrimStart().StartsWith("@");
+    private static bool IsAttribute(string line) => line.TrimStart().StartsWith("#");
 
     private static List<string> Space(List<string> lines)
     {
@@ -358,7 +361,7 @@ public static class Formatter
 
     private static bool StartsDeclaration(string line) =>
         line.StartsWith("routine ") || line.StartsWith("record ") || line.StartsWith("choice ") ||
-        line.StartsWith("variant ") || line.StartsWith("concept ") || line.StartsWith("//") || line.StartsWith("@");
+        line.StartsWith("variant ") || line.StartsWith("concept ") || line.StartsWith("//") || line.StartsWith("#");
 
     /// The nearest line before `i` that isn't a comment, attribute, continuation, or blank.
     private static string PreviousCode(List<string> lines, List<bool> continued, int i)
@@ -368,7 +371,7 @@ public static class Formatter
             if (continued[j]) continue;
             string t = lines[j].TrimStart();
             if (t.Length == 0) return "";
-            if (!t.StartsWith("//") && !t.StartsWith("@")) return lines[j];
+            if (!t.StartsWith("//") && !t.StartsWith("#")) return lines[j];
         }
         return "";
     }
@@ -571,6 +574,54 @@ public static class Formatter
         return result;
     }
 
+    // ── @T ──────────────────────────────────────────────────────────────
+
+    /// Writes `Ptr<X>` as `@X` outside comments and literals. The record's own name stays where it is declared
+    /// (`record Ptr<T>`), where a routine is declared on or called through it (`Ptr<X>.name`), and when qualified
+    /// (`Standard::Core::Ptr<X>`).
+    private static string UseAt(string line)
+    {
+        var sb = new StringBuilder();
+        for (int i = 0; i < line.Length; i++)
+        {
+            char c = line[i];
+            if (c is '"' or '\'')
+            {
+                int end = SkipLiteral(line, i);
+                sb.Append(line, i, Math.Min(end + 1, line.Length) - i);
+                i = end;
+                continue;
+            }
+            if (c == '/' && i + 1 < line.Length && line[i + 1] == '/')
+            {
+                sb.Append(line, i, line.Length - i);
+                break;
+            }
+            bool boundaryBefore = i == 0 || !(char.IsLetterOrDigit(line[i - 1]) || line[i - 1] is '_' or '%' or '.' or ':');
+            if (boundaryBefore && string.CompareOrdinal(line, i, "Ptr<", 0, 4) == 0 && MatchingAngle(line, i + 3) is int close
+                && !(close + 1 < line.Length && line[close + 1] == '.') && !line[..i].TrimEnd().EndsWith("record", StringComparison.Ordinal))
+            {
+                sb.Append('@').Append(UseAt(line[(i + 4)..close]));
+                i = close;
+                continue;
+            }
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    /// The `>` that closes the `<` at `open`, or null if the line ends first.
+    private static int? MatchingAngle(string s, int open)
+    {
+        int depth = 0;
+        for (int i = open; i < s.Length; i++)
+        {
+            if (s[i] == '<') depth++;
+            else if (s[i] == '>' && !(i > 0 && s[i - 1] == '-') && --depth == 0) return i;
+        }
+        return null;
+    }
+
     // ── Self ────────────────────────────────────────────────────────────
 
     /// Rewrites the owner type as `Self` inside each routine declared on it.
@@ -590,19 +641,22 @@ public static class Formatter
             // `require T: typename`), so its header keeps T. `require` lines always name their types.
             bool typeParameter = Enumerable.Range(i + 1, end - i - 1).Any(j => result[j].StartsWith("require ")
                 && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^require |,\s*){owner}\s*:"));
+            // A routine on Ptr<T> meets its owner spelled `@T`.
+            string? atOwner = owner.StartsWith("Ptr<", StringComparison.Ordinal) ? "@" + owner[4..^1] : null;
+            string Replace(string line) => atOwner is null ? ReplaceType(line, owner) : ReplaceType(ReplaceType(line, owner), atOwner);
             if (!typeParameter)
             {
                 int ownerEnd = "routine ".Length + owner.Length + 1;
-                result[i] = result[i][..ownerEnd] + ReplaceType(result[i][ownerEnd..], owner);
+                result[i] = result[i][..ownerEnd] + Replace(result[i][ownerEnd..]);
             }
             for (int j = i + 1; j < end; j++)
             {
                 if (result[j].StartsWith("require ") || (typeParameter && result[j].StartsWith(' ') && j < FirstBodyLine(result, i, end)))
                     continue;
-                // `claim %p : Ptr<T>` spells its pointer type out, so a routine on Ptr<T> keeps it there.
-                if (owner.StartsWith("Ptr<", StringComparison.Ordinal) && result[j].TrimStart().StartsWith("claim ", StringComparison.Ordinal))
+                // `claim %p : @T` spells its pointer type out, so a routine on Ptr<T> keeps it there.
+                if (atOwner is not null && result[j].TrimStart().StartsWith("claim ", StringComparison.Ordinal))
                     continue;
-                result[j] = ReplaceType(result[j], owner);
+                result[j] = Replace(result[j]);
             }
         }
         return result;
@@ -658,7 +712,7 @@ public static class Formatter
                 sb.Append(line, i, line.Length - i);
                 break;
             }
-            bool boundaryBefore = i == 0 || !(char.IsLetterOrDigit(line[i - 1]) || line[i - 1] is '_' or '%' or '#' or '.');
+            bool boundaryBefore = i == 0 || !(char.IsLetterOrDigit(line[i - 1]) || line[i - 1] is '_' or '%' or '.');
             int after = i + type.Length;
             if (boundaryBefore && string.CompareOrdinal(line, i, type, 0, type.Length) == 0
                 && (after >= line.Length || !(char.IsLetterOrDigit(line[after]) || line[after] is '_' or '<')))

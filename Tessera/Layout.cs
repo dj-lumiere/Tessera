@@ -4,8 +4,8 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-// Compile-time layout: `sizeof` / `alignof` in presets and generic arguments, `@layout(align: N)` on records, and
-// `@aligned` on fields.
+// Compile-time layout: `sizeof` / `alignof` in presets and generic arguments, `#layout(align: N)` on records, and
+// `#aligned` on fields.
 public sealed partial class Compiler
 {
     private DataLayout? _dataLayout;
@@ -19,8 +19,8 @@ public sealed partial class Compiler
         public string Llvm => Type?.Llvm ?? $"[0 x <{Align} x i8>]";
     }
 
-    /// A record's LLVM members and, for each field, the index of its member. `@layout(align: N)` on the record puts
-    /// an alignment member first; `@aligned(N)` on a field puts one right before that field. A dense record's
+    /// A record's LLVM members and, for each field, the index of its member. `#layout(align: N)` on the record puts
+    /// an alignment member first; `#aligned(N)` on a field puts one right before that field. A dense record's
     /// members are packed (`<{ ... }>`); with `align: N` too, they sit inside `{ [0 x <N x i8>], <{ ... }> }`, so a
     /// field is one level deeper (WrapAlign is N then, else 0).
     public sealed record RecordShape(List<Member> Members, int[] FieldIndex, bool Dense = false, long WrapAlign = 0)
@@ -43,19 +43,19 @@ public sealed partial class Compiler
         {
             for (int i = 0; i < fields.Count; i++)
                 if (s.Decl.Fields[i].Attr("aligned") is { } a)
-                    throw new CompileError(a.Pos, "@aligned has no place in a @layout(dense) record: its fields have no padding");
-            long wrap = recordAlign is null ? 0 : AlignMember(recordAlign, s.Decl.Attr("layout")!.Pos, "@layout(align: N)", env).Align;
+                    throw new CompileError(a.Pos, "#aligned has no place in a #layout(dense) record: its fields have no padding");
+            long wrap = recordAlign is null ? 0 : AlignMember(recordAlign, s.Decl.Attr("layout")!.Pos, "#layout(align: N)", env).Align;
             return _shapes[s.Key] = new RecordShape(fields.Select(f => new Member(f.Type, 0)).ToList(),
                 Enumerable.Range(0, fields.Count).ToArray(), Dense: true, WrapAlign: wrap);
         }
-        if (recordAlign is not null) members.Add(AlignMember(recordAlign, s.Decl.Attr("layout")!.Pos, "@layout(align: N)", env));
+        if (recordAlign is not null) members.Add(AlignMember(recordAlign, s.Decl.Attr("layout")!.Pos, "#layout(align: N)", env));
         var index = new int[fields.Count];
         for (int i = 0; i < fields.Count; i++)
         {
             if (s.Decl.Fields[i].Attr("aligned") is { } fieldAlign)
             {
-                if (fieldAlign.Args is not [var arg]) throw new CompileError(fieldAlign.Pos, "@aligned takes one compile-time integer");
-                members.Add(AlignMember(arg, fieldAlign.Pos, "@aligned", env));
+                if (fieldAlign.Args is not [var arg]) throw new CompileError(fieldAlign.Pos, "#aligned takes one compile-time integer");
+                members.Add(AlignMember(arg, fieldAlign.Pos, "#aligned", env));
             }
             index[i] = members.Count;
             members.Add(new Member(fields[i].Type, 0));
@@ -63,12 +63,12 @@ public sealed partial class Compiler
         return _shapes[s.Key] = new RecordShape(members, index);
     }
 
-    /// A record's `@layout(...)`: `dense` packs the fields with no padding (alignment 1), and `align: N` raises the
+    /// A record's `#layout(...)`: `dense` packs the fields with no padding (alignment 1), and `align: N` raises the
     /// whole record's alignment, alone or with dense. Returns whether it's dense and the alignment argument.
     private static (bool Dense, AttrArg? Align) LayoutOf(RecordDecl d)
     {
         if (d.Attr("aligned") is { } misplaced)
-            throw new CompileError(misplaced.Pos, "@aligned goes on a field; a record's own alignment is @layout(align: N)");
+            throw new CompileError(misplaced.Pos, "#aligned goes on a field; a record's own alignment is #layout(align: N)");
         if (d.Attr("layout") is not { } layout) return (false, null);
         return layout.Args switch
         {
@@ -77,9 +77,9 @@ public sealed partial class Compiler
             [{ Key: null, Value: "dense" }, { Key: "align" } align] => (true, align),
             [{ Key: "align" } align, { Key: null, Value: "dense" }] => (true, align),
             [{ Key: null, Value: "std140" or "std430" } planned] =>
-                throw new CompileError(layout.Pos, $"@layout({planned.Value}) is planned but not implemented yet (Roadmap #56)"),
+                throw new CompileError(layout.Pos, $"#layout({planned.Value}) is planned but not implemented yet (Roadmap #56)"),
             _ => throw new CompileError(layout.Pos,
-                "@layout takes dense, align: N (a power of two), or both; std140 and std430 are planned"),
+                "#layout takes dense, align: N (a power of two), or both; std140 and std430 are planned"),
         };
     }
 

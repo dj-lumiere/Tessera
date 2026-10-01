@@ -21,7 +21,7 @@ preset SORT_RUN: USize = 32
 
 // -- insertion sort over a half-open range [lo, hi) ----------------------------
 
-routine sort_insertion<T>(%data: Ptr<T>, %lo: USize, %hi: USize) -> Void
+routine sort_insertion<T>(%data: @T, %lo: USize, %hi: USize) -> Void
 require T: typename, Compare<T>
     block entry():
         jump outer(%lo.add(1))
@@ -58,7 +58,7 @@ require T: typename, Compare<T>
 // Reads from %src, writes the merged result into %dst[lo..hi). Stable: when
 // elements compare equal, the one from the left run is taken first.
 
-routine sort_merge<T>(%src: Ptr<T>, %dst: Ptr<T>, %lo: USize, %mid: USize, %hi: USize) -> Void
+routine sort_merge<T>(%src: @T, %dst: @T, %lo: USize, %mid: USize, %hi: USize) -> Void
 require T: typename, Compare<T>
     block entry():
         jump loop(%lo, %mid, %lo)
@@ -106,7 +106,7 @@ require T: typename, Compare<T>
 
 // -- one bottom-up pass merging every pair of width-sized runs -----------------
 
-routine sort_merge_pass<T>(%src: Ptr<T>, %dst: Ptr<T>, %n: USize, %width: USize) -> Void
+routine sort_merge_pass<T>(%src: @T, %dst: @T, %n: USize, %width: USize) -> Void
 require T: typename, Compare<T>
     block entry():
         jump loop(0)
@@ -127,7 +127,7 @@ require T: typename, Compare<T>
 
 // -- public entry point --------------------------------------------------------
 
-routine List<T>.sort(%self: Ptr<Self>) -> Void
+routine List<T>.sort(%self: @Self) -> Void
 require T: typename, Compare<T>
     block entry():
         %n     : USize = %self.length.load()
@@ -135,51 +135,49 @@ require T: typename, Compare<T>
         branch %small ? small_sort(%n) : big_sort(%n)
 
     block small_sort(%n: USize):
-        %data : Ptr<T> = %self.data.load()
+        %data : @T = %self.data.load()
         sort_insertion<T>(%data, 0, %n)
         return()
 
     block big_sort(%n: USize):
-        %data    : Ptr<T>         = %self.data.load()
-        %alloc   : Ptr<Allocator> = %self.alloc.load()
-        %scratch : Ptr<T>         = allocate<T>(%alloc, %n)
-        %failed  : Bool           = %scratch.is_null()
+        %data    : @T         = %self.data.load()
+        %alloc   : @Allocator = %self.alloc.load()
+        %scratch : @T         = allocate<T>(%alloc, %n)
+        %failed  : Bool       = %scratch.is_null()
         branch %failed ? panic(TrapCode.AllocFailed) : run_loop(0, %n, %data, %scratch)
 
-    block run_loop(%lo: USize, %n: USize, %data: Ptr<T>, %scratch: Ptr<T>):
+    block run_loop(%lo: USize, %n: USize, %data: @T, %scratch: @T):
         %done : Bool = %lo.ge(%n)
         branch %done ? pass_start(%n, %data, %scratch) : run_step(%lo, %n, %data, %scratch)
 
-    block run_step(%lo: USize, %n: USize, %data: Ptr<T>, %scratch: Ptr<T>):
+    block run_step(%lo: USize, %n: USize, %data: @T, %scratch: @T):
         %hi_raw : USize = %lo.add(SORT_RUN)
         %hi_ok  : Bool  = %hi_raw.le(%n)
         %hi     : USize = %hi_ok ? %hi_raw : %n
         sort_insertion<T>(%data, %lo, %hi)
         jump run_loop(%hi_raw, %n, %data, %scratch)
 
-    block pass_start(%n: USize, %data: Ptr<T>, %scratch: Ptr<T>):
+    block pass_start(%n: USize, %data: @T, %scratch: @T):
         jump pass_loop(SORT_RUN, %data, %scratch, %n, %data, %scratch)
 
-    block pass_loop(%width: USize, %src: Ptr<T>, %dst: Ptr<T>, %n: USize, %data: Ptr<T>,
-            %scratch: Ptr<T>):
+    block pass_loop(%width: USize, %src: @T, %dst: @T, %n: USize, %data: @T, %scratch: @T):
         %done : Bool = %width.ge(%n)
         branch %done
             ? finish(%src, %n, %data, %scratch)
             : pass(%width, %src, %dst, %n, %data, %scratch)
 
-    block pass(%width: USize, %src: Ptr<T>, %dst: Ptr<T>, %n: USize, %data: Ptr<T>,
-            %scratch: Ptr<T>):
+    block pass(%width: USize, %src: @T, %dst: @T, %n: USize, %data: @T, %scratch: @T):
         sort_merge_pass<T>(%src, %dst, %n, %width)
         jump pass_loop(%width.mul(2), %dst, %src, %n, %data, %scratch)
 
-    block finish(%src: Ptr<T>, %n: USize, %data: Ptr<T>, %scratch: Ptr<T>):
+    block finish(%src: @T, %n: USize, %data: @T, %scratch: @T):
         %in_place : Bool = %src.ptr_eq(%data)
         branch %in_place ? release(%scratch) : copy_back(%src, %data, %scratch, %n)
 
-    block copy_back(%src: Ptr<T>, %data: Ptr<T>, %scratch: Ptr<T>, %n: USize):
+    block copy_back(%src: @T, %data: @T, %scratch: @T, %n: USize):
         copy<T>(%data, %src, %n)
         jump release(%scratch)
 
-    block release(%scratch: Ptr<T>):
+    block release(%scratch: @T):
         %scratch.free(%self.alloc.load())
         return()

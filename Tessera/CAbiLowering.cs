@@ -46,7 +46,7 @@ public sealed partial class Compiler
     /// consistent between Tessera routines but not C's.
     public bool AggregateAbiKnown => Target.Arch is "x86_64" or "x86" or "aarch64" or "arm" or "riscv64" or "riscv32";
 
-    /// The C ABI lowering of a routine's parameters and return value. `@callconv("fast")` routines keep LLVM's own
+    /// The C ABI lowering of a routine's parameters and return value. `#callconv("fast")` routines keep LLVM's own
     /// convention: every aggregate passes Direct.
     public AbiSig LowerSignature(IReadOnlyList<DType> ps, DType ret, string callConv, Pos pos)
     {

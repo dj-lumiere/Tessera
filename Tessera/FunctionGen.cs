@@ -133,7 +133,7 @@ public sealed class FunctionGen
         // A routine every solution may emit from the same source (a generic routine's instance, or a stdlib routine
         // compiled into each solution until the stdlib is prebuilt) is linkonce_odr: the linker keeps one copy. COFF
         // and ELF deduplicate through a comdat; Mach-O has none and relies on the weak definition. A stdlib routine
-        // with an @export is weak instead, so the program's own export of that name wins at link time too.
+        // with an #export is weak instead, so the program's own export of that name wins at link time too.
         string linkage = "", comdat = "";
         bool shared = _c.IsGenericInstance(_inst) || _decl.IsLibrary;
         bool exported = _decl.Attr("export") is not null;
@@ -241,7 +241,7 @@ public sealed class FunctionGen
     private string LocalOp(string name) => $"%v.{_blockName}.{IrName(name)}";
 
     /// A value's name in IR: `%count` becomes `count`. A `#` inside a name, which LLVM names can't hold, becomes `$`.
-    private static string IrName(string name) => name.TrimStart('%').Replace("#", "$");
+    private static string IrName(string name) => name.TrimStart('%');
 
     /// Where a `continue` arm goes: the LLVM block that holds the lines after the guard.
     private string? _continueLabel;
@@ -326,7 +326,7 @@ public sealed class FunctionGen
         _ => null,
     };
 
-    /// Is `e` a place chain rooted at a pointer: `#p.f`, `#p[i]`, `#p.f[i].g`?
+    /// Is `e` a place chain rooted at a pointer: `%p.f`, `%p[i]`, `%p.f[i].g`?
     private bool IsPlaceChain(Expr e) => AsStride(e) switch
     {
         FieldExpr f => AsStride(f.Base) is FieldExpr or IndexExpr ? IsPlaceChain(f.Base) : Infer(f.Base) is PtrType,
@@ -409,7 +409,7 @@ public sealed class FunctionGen
                     (baseAddr, baseType) = (p.Op, pointee);
                 }
                 if (baseType is PtrType)
-                    throw Err(f.Pos, "this field holds a pointer; load it into a #value first");
+                    throw Err(f.Pos, "this field holds a pointer; load it into a value first");
                 if (baseType is not RecordType s)
                     throw Err(f.Pos, $"{baseType} has no fields");
                 var (idx, ft) = FieldOf(s, f.Name, f.Pos);
@@ -431,7 +431,7 @@ public sealed class FunctionGen
                 {
                     var (baseAddr, baseType) = PlaceAddress(ix.Base);
                     if (baseType is PtrType)
-                        throw Err(ix.Pos, "this field holds a pointer; load it into a #value before stepping it");
+                        throw Err(ix.Pos, "this field holds a pointer; load it into a value before stepping it");
                     if (baseType is ArrayType)
                         throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .at(i), .get(i) / .set(i, v), or .to_ptr().stride(i)");
                     var i = EvalIndex(ix.Index);
@@ -448,7 +448,7 @@ public sealed class FunctionGen
                 }
                 var b = EvalAny(ix.Base);
                 if (b.Type is not PtrType bp) throw Err(ix.Pos, $"only pointers have stride; this is {b.Type}");
-                if (bp.Pointee is null) throw Err(ix.Pos, "an Addr has no element type to stride over: cast it to Ptr<T> first, or step bytes with offset");
+                if (bp.Pointee is null) throw Err(ix.Pos, "an Addr has no element type to stride over: cast it to @T first, or step bytes with offset");
                 var idx = EvalIndex(ix.Index);
                 _c.EnsureTypeDefined(bp.Pointee);
                 // `Ptr<X>.stride(i)` is the i-th X, whatever X is: on a Ptr<Array<T, N>> it steps over whole arrays
@@ -471,7 +471,7 @@ public sealed class FunctionGen
         return i;
     }
 
-    /// The address of a place (`#p`, `#p.f`, `#p[i]`) and the type stored there. `opaqueAs` types an opaque `Ptr`.
+    /// The address of a place (`%p`, `%p.f`, `%p[i]`) and the type stored there. `opaqueAs` types an opaque `Ptr`.
     private (string Addr, DType Pointee) Address(Expr place, DType opaqueAs)
     {
         if (AsStride(place) is FieldExpr or IndexExpr && IsPlaceChain(place)) return PlaceAddress(place);
@@ -701,7 +701,7 @@ public sealed class FunctionGen
     private Val EvalClaim(ClaimExpr a, DType expected)
     {
         if (expected is not PtrType { Pointee: { } t })
-            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim %p : Ptr<T>; found {expected}");
+            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim %p : @T; found {expected}");
         _c.EnsureTypeDefined(t);
         string slot = $"%s{_allocas.Count}";
         _allocas.Add($"{slot} = alloca {t.Llvm}");
@@ -883,8 +883,8 @@ public sealed class FunctionGen
     private bool IsTemplateCall(CallExpr c) =>
         FormatCalls.ContainsKey(c.Name) && _c.FindFree(c.Name, _env.File, c.Pos) is null;
 
-    /// `write(#out, "x = {%x}\n")` expands in place, in order: `write_str(#out, "x = ")`, `%x.represent(#out)`,
-    /// `write_str(#out, "\n")`. A brace holds one expression; `{{` and `}}` are literal braces. Nothing is
+    /// `write(%out, "x = {%x}\n")` expands in place, in order: `write_str(%out, "x = ")`, `%x.represent(%out)`,
+    /// `write_str(%out, "\n")`. A brace holds one expression; `{{` and `}}` are literal braces. Nothing is
     /// allocated: each piece goes straight to the writer. `print("...")` / `eprint("...")` are the same with
     /// the stateless `StdoutWriter.shared()` / `StderrWriter.shared()` as the writer.
     private Val EvalTemplateCall(CallExpr c)
@@ -908,7 +908,7 @@ public sealed class FunctionGen
             template = given;
         }
         else
-            throw Err(c.Pos, "write takes a named writer and a string literal: write(#out, \"x = {%x}\\n\")");
+            throw Err(c.Pos, "write takes a named writer and a string literal: write(%out, \"x = {%x}\\n\")");
         var text = new StringBuilder();
         void Flush()
         {
@@ -1115,7 +1115,7 @@ public sealed class FunctionGen
     };
 
     /// A call through a Callable value: `%fn.call(args)`. A Callable stored in memory is loaded first
-    /// (`%fn: Callable<…> = #alloc.alloc_fn.load()`); calling the field directly would hide that load.
+    /// (`%fn: Callable<…> = %alloc.alloc_fn.load()`); calling the field directly would hide that load.
     private (Expr Callee, CallableType Callable, List<Expr> Args)? IndirectCall(Expr e)
     {
         if (e is not MethodCallExpr m) return null;
@@ -1203,7 +1203,7 @@ public sealed class FunctionGen
         if (rt is null)
         {
             // An untyped literal receiver takes its type from the arguments: through the parameters of a routine on
-            // every type (`7.store_into(#p)` with `#dest: Ptr<T>`), or else as the first typed argument
+            // every type (`7.store_into(%p)` with `%dest: @T`), or else as the first typed argument
             // (`0.sub(%x)`); then from context.
             // The result's type says the receiver's only for a routine that returns Self (`%x : U64 = 1.shl(3)`), so it
             // is borrowed only when it's a type the literal could have.
@@ -1217,7 +1217,7 @@ public sealed class FunctionGen
             }
         }
 
-        // Receivers behind a pointer: `#p.m()` finds T.m(#self: Ptr<Self>) first, then Ptr<T>.m(#self: Self).
+        // Receivers behind a pointer: `%p.m()` finds T.m(%self: @Self) first, then Ptr<T>.m(%self: Self).
         var candidates = new List<(DType Owner, bool PassesPointer)>();
         if (rt is PtrType { Pointee: { } pointee })
         {
@@ -1239,8 +1239,8 @@ public sealed class FunctionGen
             }
             var env = BindOwner(r, owner, m.Pos);
             var selfType = _c.ResolveType(r.Params[0].Type, env);
-            // Through a pointer, T's method must take exactly that pointer: `#slot: Ptr<Addr>` doesn't make
-            // `#slot.load()` an Addr method on the slot.
+            // Through a pointer, T's method must take exactly that pointer: `%slot: Ptr<Addr>` doesn't make
+            // `%slot.load()` an Addr method on the slot.
             if (passesPointer ? !selfType.Equals(rt) : !Compatible(rt, selfType)) continue;
             BindExplicit(r, env, m.TypeArgs, m.Pos);
             InferTypeArgs(r, env, m.Args, expected, 1);
@@ -1260,7 +1260,7 @@ public sealed class FunctionGen
         if (typewise is not null)
             throw Err(m.Pos, $"'{typewise.DisplayName}' has no %self, so it isn't a method; call it by its type: "
                 + $"{typewise.Owner!.Name}.{m.Name}(...)");
-        // `#p.eq(#q)` where T.eq takes values: the load is written, not implied.
+        // `%p.eq(%q)` where T.eq takes values: the load is written, not implied.
         if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held) || Derived) is not null)
             throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; load it: .load().{m.Name}(...)");
         // Memory is read through a typed pointer only; an Addr says where, not what.
@@ -1562,7 +1562,7 @@ public sealed class FunctionGen
     private Val AbiResult(string op, DType t, bool bf16AsBits) =>
         bf16AsBits && Instance.IsBf16(t) ? new Val(EmitTmp($"bitcast i16 {op} to bfloat"), t) : new Val(op, t);
 
-    /// Expands an `@external("llvm")` routine's `@template` in place.
+    /// Expands an `#external("llvm")` routine's `#template` in place.
     private Val ExpandTemplate(Instance sig, List<Val> args, Pos pos, string suffix = "")
     {
         string text = sig.Decl.Attr("template")!.First! + suffix;
@@ -1895,7 +1895,7 @@ public sealed class FunctionGen
         if (call is CallExpr c && _c.FindFree(c.Name, _env.File, c.Pos) is null)
             throw Err(pos, $"no block or routine named '{c.Name}'");
         if (!IsNoReturn(call))
-            throw Err(pos, "only a @noreturn routine (such as trap()) can end a block; this one returns");
+            throw Err(pos, "only a #noreturn routine (such as trap()) can end a block; this one returns");
         EvalAny(call);
         Terminate("unreachable");
     }

@@ -6,7 +6,7 @@ namespace Tessera;
 /// The CPU a build targets and its feature set, as clang resolves them for the triple, `--cpu`, and `--feature`.
 /// Without `--cpu` it's the triple's default: x86-64 (v1, SSE2) on x86_64, pentium4 on x86, generic on AArch64,
 /// arm1176jzf-s on 32-bit ARM, and so on. Every routine Tessera defines carries the result as its `target-cpu` and
-/// `target-features`, and `@feature` reads the same set, so the code a declaration selects is the code LLVM gets.
+/// `target-features`, and `#feature` reads the same set, so the code a declaration selects is the code LLVM gets.
 public sealed class CpuModel
 {
     private static readonly Dictionary<string, CpuModel> Cache = [];

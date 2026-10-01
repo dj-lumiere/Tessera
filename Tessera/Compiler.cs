@@ -222,7 +222,7 @@ public sealed partial class Compiler
             {
                 foreach (var arg in a.Args)
                 {
-                    if (arg.Key is null) throw new CompileError(a.Pos, "@target arguments are written key: value");
+                    if (arg.Key is null) throw new CompileError(a.Pos, "#target arguments are written key: value");
                     bool m;
                     try { m = Target.Matches(arg.Key, arg.Value); }
                     catch (ArgumentException e) { throw new CompileError(a.Pos, e.Message); }
@@ -234,7 +234,7 @@ public sealed partial class Compiler
                 var cpu = CpuModel.For(Target, a.Pos);
                 foreach (var arg in a.Args)
                 {
-                    if (arg.Key is not null) throw new CompileError(a.Pos, "@feature takes feature names, as in @feature(\"avx2\")");
+                    if (arg.Key is not null) throw new CompileError(a.Pos, "#feature takes feature names, as in #feature(\"avx2\")");
                     if (cpu.Has(arg.Value, a.Pos) == arg.Negated) return false;
                 }
             }
@@ -328,7 +328,7 @@ public sealed partial class Compiler
         var o = new StringBuilder();
         o.AppendLine($"target triple = \"{Target.LlvmTriple}\"");
         o.AppendLine();
-        // An external routine that an `@export` in this solution defines (the panic handler) is that definition,
+        // An external routine that an `#export` in this solution defines (the panic handler) is that definition,
         // not a declaration.
         var declares = new StringBuilder();
         foreach (var (symbol, line) in _declares)
@@ -691,11 +691,11 @@ public sealed partial class Compiler
         return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), ResolveType(ret.Type, env, allowVoid: true));
     }
 
-    /// `@callconv("fast")` or `@callconv("cold")`; every other routine uses the default, the C convention.
+    /// `#callconv("fast")` or `#callconv("cold")`; every other routine uses the default, the C convention.
     public static string CheckCallConv(Attribute attr) => attr.First switch
     {
         "fast" or "cold" => attr.First,
-        _ => throw new CompileError(attr.Pos, $"@callconv takes \"fast\" or \"cold\", not {(attr.First is null ? "nothing" : $"\"{attr.First}\"")}"),
+        _ => throw new CompileError(attr.Pos, $"#callconv takes \"fast\" or \"cold\", not {(attr.First is null ? "nothing" : $"\"{attr.First}\"")}"),
     };
 
     /// The integer value of an Array length or other integer generic argument.
@@ -763,21 +763,21 @@ public sealed partial class Compiler
     private readonly HashSet<string> _resolvingTransparent = [];
     private readonly HashSet<string> _definingTypes = [];
 
-    /// A record with exactly one field lowers to that field's type, unless it is `@aggregate` (for C structs with one
+    /// A record with exactly one field lowers to that field's type, unless it is `#aggregate` (for C structs with one
     /// member, which some ABIs pass differently from the member alone). Returns null for an aggregate.
-    /// A library `@llvm("iN")` record with no fields lowers to an N-bit integer the same way.
+    /// A library `#llvm("iN")` record with no fields lowers to an N-bit integer the same way.
     private DType? TransparentField(RecordType s)
     {
         var d = s.Decl;
-        // A library `@llvm("iN")` record (F128) is an integer of that width underneath. Built-in names never get here.
+        // A library `#llvm("iN")` record (F128) is an integer of that width underneath. Built-in names never get here.
         if (d.Attr("llvm") is { } llvm)
             return llvm.First is ['i', .. var digits] && int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
                 ? IntType.U(bits)
-                : throw new CompileError(d.Pos, $"@llvm on a library record takes an integer type (\"i128\"), got \"{llvm.First}\"");
+                : throw new CompileError(d.Pos, $"#llvm on a library record takes an integer type (\"i128\"), got \"{llvm.First}\"");
         if (d.Attr("aggregate") is not null || d.Fields.Count != 1) return null;
         if (_transparent.TryGetValue(s.Key, out var cached)) return cached;
         if (d.Attr("layout") is not null || d.Fields[0].Attr("aligned") is not null)
-            throw new CompileError(d.Pos, $"record '{d.Name}' has one field, so it lowers to that field's type; a layout or @aligned needs it to be @aggregate");
+            throw new CompileError(d.Pos, $"record '{d.Name}' has one field, so it lowers to that field's type; a layout or #aligned needs it to be #aggregate");
         if (!_resolvingTransparent.Add(s.Key)) throw new CompileError(d.Pos, $"{s} contains itself");
         try
         {

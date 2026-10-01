@@ -1,8 +1,8 @@
 namespace Tessera;
 
 /// The C calling convention's demands on a routine's signature, per target, mirroring what clang emits for the same
-/// C types. Every routine uses it except `@callconv("fast")` ones, so a Tessera routine can be a C callback, an
-/// `@export`, or the far side of a prebuilt boundary.
+/// C types. Every routine uses it except `#callconv("fast")` ones, so a Tessera routine can be a C callback, an
+/// `#export`, or the far side of a prebuilt boundary.
 public static class CAbi
 {
     /// The extension attribute a narrow integer or Bool parameter or return value carries (`signext` / `zeroext`,

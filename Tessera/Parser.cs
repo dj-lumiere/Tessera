@@ -157,7 +157,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     /// True at the start of the next top-level declaration (or the end of the file).
     private bool AtDeclStart() =>
-        Is(TokenKind.Eof) || Is(TokenKind.At)
+        Is(TokenKind.Eof) || Is(TokenKind.Hash)
         || (Cur.Kind == TokenKind.Ident && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "private" or "internal"));
 
     // ── Attributes and clauses ──────────────────────────────────────────────
@@ -165,7 +165,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private List<Attribute> ParseAttributes()
     {
         var attrs = new List<Attribute>();
-        while (Is(TokenKind.At))
+        while (Is(TokenKind.Hash))
         {
             Next();
             if (Accept(TokenKind.LBracket))
@@ -330,7 +330,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (inConcept)
             return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos);
 
-        // Only an @external routine is declared without a body; every other one starts with `block entry():`.
+        // Only an #external routine is declared without a body; every other one starts with `block entry():`.
         string display = owner is null ? name : $"{owner}.{name}";
         if (!IsIdent("block"))
         {
@@ -506,6 +506,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private TypeRef ParseType()
     {
+        // `@T` is `Ptr<T>`.
+        if (Is(TokenKind.At))
+        {
+            var at = Next().Pos;
+            return new TypeRef("Ptr", [new TypeArgType(ParseType())], at);
+        }
         if (Is(TokenKind.LParen))
         {
             var pos = Next().Pos;
@@ -577,7 +583,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private TypeArg ParseTypeArg()
     {
         if (Is(TokenKind.Int)) return new TypeArgInt(Low64(Next().IntValue));
-        if (Accept(TokenKind.At)) return new TypeArgAttr(ParseAttribute());
+        if (Accept(TokenKind.Hash)) return new TypeArgAttr(ParseAttribute());
         if (Accept(TokenKind.LParen))
         {
             // A one-element tuple is written `(T,)`, so a trailing comma is allowed.
@@ -631,7 +637,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             var stmt = ParseStmt();
             ExpectLineEnd();
 
-            // A bare call as the last line of a block is a @noreturn terminator, such as `trap()`.
+            // A bare call as the last line of a block is a #noreturn terminator, such as `trap()`.
             if (AtBlockEnd() && stmt is ExprStmt e)
                 return new BlockDecl(name.Text, parameters, stmts, new TargetTerm(new ExprTarget(e.Value, e.Pos), e.Pos), pos);
 
@@ -964,20 +970,20 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new RecordLit(type, fields, type.Pos);
     }
 
-    /// `claim #p : Ptr<T>`: a stack slot bound to a pointer name. It takes no initializer; the value goes in with a
+    /// `claim %p : @T`: a stack slot bound to a pointer name. It takes no initializer; the value goes in with a
     /// store.
     private Stmt ParseClaim()
     {
         var pos = Next().Pos;
         if (Cur.Kind != TokenKind.Value)
-            throw new CompileError(pos, "claim binds a value: claim %p : Ptr<T>");
+            throw new CompileError(pos, "claim binds a value: claim %p : @T");
         string name = Next().Text;
         Expect(TokenKind.Colon, "':'");
         var type = ParseType();
         if (type is not { Name: "Ptr", Args.Count: 1 })
-            throw new CompileError(type.Pos, $"claim takes a typed pointer written Ptr<T>: claim %p : Ptr<T>; found {type}");
+            throw new CompileError(type.Pos, $"claim takes a typed pointer: claim %p : @T; found {type}");
         if (Is(TokenKind.Eq))
-            throw new CompileError(pos, "claim takes no initializer: claim %p : Ptr<T>, then %p.store(%value)");
+            throw new CompileError(pos, "claim takes no initializer: claim %p : @T, then %p.store(%value)");
         return new BindStmt(name, type, new ClaimExpr(pos), pos);
     }
 

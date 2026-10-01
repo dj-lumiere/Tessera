@@ -11,7 +11,7 @@ import Standard::Os
 record Rng
     state : U64
 
-routine Rng.below(%self: Ptr<Self>, %bound: USize) -> USize
+routine Rng.below(%self: @Self, %bound: USize) -> USize
     block entry():
         %state : U64 = %self.state.load()
         %next  : U64 = %state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
@@ -24,33 +24,33 @@ routine mix(%hash: S64, %value: S64) -> S64
         %mixed : S64 = %hash.mul_wrap(1000003).add_wrap(%value)
         return(%mixed)
 
-routine labeled<W>(%out: Ptr<W>, %label: Bytes, %value: S64) -> Void
+routine labeled<W>(%out: @W, %label: Bytes, %value: S64) -> Void
 require W: typename, Writer<W>
     block entry():
         write(%out, " {%label} {%value}")
         return()
 
 // Folds every (key, value) pair in iteration order.
-routine iteration_hash(%map: Ptr<Dict<S64, S64>>) -> S64
+routine iteration_hash(%map: @Dict<S64, S64>) -> S64
     block entry():
         %iter_val : DictIter<S64, S64> = .construct(%map)
-        claim %iter : Ptr<DictIter<S64, S64>>
+        claim %iter : @DictIter<S64, S64>
         %iter.store(%iter_val)
         jump next(%iter, 0)
 
-    block next(%iter: Ptr<DictIter<S64, S64>>, %hash: S64):
+    block next(%iter: @DictIter<S64, S64>, %hash: S64):
         %item : Option<KVPair<S64, S64>> = %iter.next()
         when %item:
             .Present(%pair) -> fold(%iter, %hash, %pair)
             .Absent         -> return(%hash)
 
-    block fold(%iter: Ptr<DictIter<S64, S64>>, %hash: S64, %pair: KVPair<S64, S64>):
+    block fold(%iter: @DictIter<S64, S64>, %hash: S64, %pair: KVPair<S64, S64>):
         %key   : S64 = %pair.key
         %value : S64 = %pair.value
         jump next(%iter, mix(mix(%hash, %key), %value))
 
-routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<Dict<S64, S64>>, %phase: USize,
-        %op: USize, %results: S64) -> Void
+routine checkpoint(%out: @BufWriter<FdWriter>, %map: @Dict<S64, S64>, %phase: USize, %op: USize,
+        %results: S64) -> Void
     block entry():
         write(%out, "phase {%phase}")
         labeled(%out, "op", %op.to_s64())
@@ -61,8 +61,8 @@ routine checkpoint(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<Dict<S64, S64>>, %p
         return()
 
 // Runs ops random operations on keys below keys. Returns the updated results checksum.
-routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<Dict<S64, S64>>, %rng: Ptr<Rng>,
-        %phase: USize, %ops: USize, %keys: USize, %results: S64) -> S64
+routine run_phase(%out: @BufWriter<FdWriter>, %map: @Dict<S64, S64>, %rng: @Rng, %phase: USize,
+        %ops: USize, %keys: USize, %results: S64) -> S64
     block entry():
         jump next(0, %results)
 
@@ -109,7 +109,7 @@ routine run_phase(%out: Ptr<BufWriter<FdWriter>>, %map: Ptr<Dict<S64, S64>>, %rn
 
 // Copies from into to in iteration order, but starting from its second half, so the two maps hold the same pairs in
 // a different insertion order.
-routine copy_rotated(%from: Ptr<Dict<S64, S64>>, %to: Ptr<Dict<S64, S64>>) -> Void
+routine copy_rotated(%from: @Dict<S64, S64>, %to: @Dict<S64, S64>) -> Void
     block entry():
         %half : USize = %from.load().length().div(2)
         jump pass(0, %half, true)
@@ -117,18 +117,18 @@ routine copy_rotated(%from: Ptr<Dict<S64, S64>>, %to: Ptr<Dict<S64, S64>>) -> Vo
     block pass(%pass: USize, %half: USize, %second: Bool):
         %done     : Bool               = %pass.eq(2)
         %iter_val : DictIter<S64, S64> = .construct(%from)
-        claim %iter : Ptr<DictIter<S64, S64>>
+        claim %iter : @DictIter<S64, S64>
         %iter.store(%iter_val)
         branch %done ? return() : next(%pass, %half, %second, %iter, 0)
 
-    block next(%pass: USize, %half: USize, %second: Bool, %iter: Ptr<DictIter<S64, S64>>,
+    block next(%pass: USize, %half: USize, %second: Bool, %iter: @DictIter<S64, S64>,
             %index: USize):
         %item : Option<KVPair<S64, S64>> = %iter.next()
         when %item:
             .Present(%pair) -> consider(%pass, %half, %second, %iter, %index, %pair)
             .Absent         -> pass(%pass.add(1), %half, %second.bitnot())
 
-    block consider(%pass: USize, %half: USize, %second: Bool, %iter: Ptr<DictIter<S64, S64>>,
+    block consider(%pass: USize, %half: USize, %second: Bool, %iter: @DictIter<S64, S64>,
             %index: USize, %pair: KVPair<S64, S64>):
         %in_second : Bool = %index.ge(%half)
         %wanted    : Bool = %in_second.eq(%second)
@@ -136,12 +136,12 @@ routine copy_rotated(%from: Ptr<Dict<S64, S64>>, %to: Ptr<Dict<S64, S64>>) -> Vo
             ? copy(%pass, %half, %second, %iter, %index, %pair)
             : next(%pass, %half, %second, %iter, %index.add(1))
 
-    block copy(%pass: USize, %half: USize, %second: Bool, %iter: Ptr<DictIter<S64, S64>>,
-            %index: USize, %pair: KVPair<S64, S64>):
+    block copy(%pass: USize, %half: USize, %second: Bool, %iter: @DictIter<S64, S64>, %index: USize,
+            %pair: KVPair<S64, S64>):
         %to.put(%pair.key, %pair.value)
         jump next(%pass, %half, %second, %iter, %index.add(1))
 
-routine report_eq(%out: Ptr<BufWriter<FdWriter>>, %label: Bytes, %equal: Bool) -> Void
+routine report_eq(%out: @BufWriter<FdWriter>, %label: Bytes, %equal: Bool) -> Void
     block entry():
         write(%out, "{%label} {%equal}\n")
         return()
@@ -149,18 +149,18 @@ routine report_eq(%out: Ptr<BufWriter<FdWriter>>, %label: Bytes, %equal: Bool) -
 routine main() -> S32
     block entry():
         %fd_val : FdWriter = .stdout()
-        claim %fd : Ptr<FdWriter>
+        claim %fd : @FdWriter
         %fd.store(%fd_val)
-        claim %out : Ptr<BufWriter<FdWriter>>
+        claim %out : @BufWriter<FdWriter>
         %out.construct(%fd)
         %heap : Allocator = make_heap_allocator()
-        claim %alloc : Ptr<Allocator>
+        claim %alloc : @Allocator
         %alloc.store(%heap)
         %rng_val : Rng = Rng { state: 1 }
-        claim %rng : Ptr<Rng>
+        claim %rng : @Rng
         %rng.store(%rng_val)
         %map_val : Dict<S64, S64> = .construct(%alloc)
-        claim %map : Ptr<Dict<S64, S64>>
+        claim %map : @Dict<S64, S64>
         %map.store(%map_val)
 
         %r1 : S64 = run_phase(%out, %map, %rng, 1, 3000, 64, 0)
@@ -168,7 +168,7 @@ routine main() -> S32
         %r3 : S64 = run_phase(%out, %map, %rng, 3, 4000, 300, %r2)
 
         %copied_val : Dict<S64, S64> = .construct(%alloc)
-        claim %copied : Ptr<Dict<S64, S64>>
+        claim %copied : @Dict<S64, S64>
         %copied.store(%copied_val)
         report_eq(%out, "empty copy equal", %map.load().eq(%copied.load()))
         copy_rotated(%map, %copied)
@@ -179,7 +179,7 @@ routine main() -> S32
         %copied.remove(-1)
         report_eq(%out, "extra key removed equal", %map.load().eq(%copied.load()))
         %iter_val : DictIter<S64, S64> = .construct(%map)
-        claim %iter : Ptr<DictIter<S64, S64>>
+        claim %iter : @DictIter<S64, S64>
         %iter.store(%iter_val)
         %first : KVPair<S64, S64> = %iter.next().unwrap()
         %copied.put(%first.key, %first.value.add(1))

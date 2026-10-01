@@ -17,8 +17,8 @@ import Standard::Os
 
 // ── C FFI ─────────────────────────────────────────────────────────────────────
 
-@[external("c"), symbol("printf"), variadic]
-routine c_printf(%fmt: Ptr<Byte>) -> S32
+#[external("c"), symbol("printf"), variadic]
+routine c_printf(%fmt: @Byte) -> S32
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,10 +29,10 @@ record Edge
     weight : S64
 
 /// adj[u] is a separately heap-allocated List<Edge> reached through a pointer
-/// slot.  Storing Ptr<List<Edge>> (not List<Edge>) means loading adj[u] gives a
+/// slot.  Storing @List<Edge> (not List<Edge>) means loading adj[u] gives a
 /// callable method receiver directly — no address-of-element operation needed.
 record Graph
-    adj       : Ptr<List<Ptr<List<Edge>>>>
+    adj       : @List<@List<Edge>>
     num_nodes : USize
 
 record DijkstraEntry
@@ -52,57 +52,57 @@ routine DijkstraEntry.less(%self: Self, %other: Self) -> Bool
 
 // ── Graph ─────────────────────────────────────────────────────────────────────
 
-routine Graph.construct(%num_nodes: USize, %alloc: Ptr<Allocator>) -> Self
+routine Graph.construct(%num_nodes: USize, %alloc: @Allocator) -> Self
     block entry():
-        %adj      : Ptr<List<Ptr<List<Edge>>>> = allocate<List<Ptr<List<Edge>>>>(%alloc, 1)
-        %adj_null : Bool                       = %adj.is_null()
+        %adj      : @List<@List<Edge>> = allocate<List<@List<Edge>>>(%alloc, 1)
+        %adj_null : Bool               = %adj.is_null()
         branch %adj_null ? panic(TrapCode.AllocFailed) : continue
-        %adj_val : List<Ptr<List<Edge>>> = .construct(%alloc)
+        %adj_val : List<@List<Edge>> = .construct(%alloc)
         %adj.store(%adj_val)
         jump init_loop(0, %adj)
 
-    block init_loop(%i: USize, %adj: Ptr<List<Ptr<List<Edge>>>>):
+    block init_loop(%i: USize, %adj: @List<@List<Edge>>):
         %done : Bool = %i.ge(%num_nodes)
         branch %done ? build(%adj) : make_list(%i, %adj)
 
-    block make_list(%i: USize, %adj: Ptr<List<Ptr<List<Edge>>>>):
-        %list      : Ptr<List<Edge>> = allocate<List<Edge>>(%alloc, 1)
-        %list_null : Bool            = %list.is_null()
+    block make_list(%i: USize, %adj: @List<@List<Edge>>):
+        %list      : @List<Edge> = allocate<List<Edge>>(%alloc, 1)
+        %list_null : Bool        = %list.is_null()
         branch %list_null ? panic(TrapCode.AllocFailed) : continue
         %empty : List<Edge> = .construct(%alloc)
         %list.store(%empty)
         %adj.push(%list)
         jump init_loop(%i.add(1), %adj)
 
-    block build(%adj: Ptr<List<Ptr<List<Edge>>>>):
+    block build(%adj: @List<@List<Edge>>):
         %g : Self = Self { adj: %adj, num_nodes: %num_nodes }
         return(%g)
 
-routine Graph.add_edge(%self: Ptr<Self>, %from: USize, %to: USize, %weight: S64) -> Void
+routine Graph.add_edge(%self: @Self, %from: USize, %to: USize, %weight: S64) -> Void
     block entry():
-        %adj  : Ptr<List<Ptr<List<Edge>>>> = %self.adj.load()
-        %list : Ptr<List<Edge>>            = %adj.load().get(%from)
-        %edge : Edge                       = Edge { to: %to, weight: %weight }
+        %adj  : @List<@List<Edge>> = %self.adj.load()
+        %list : @List<Edge>        = %adj.load().get(%from)
+        %edge : Edge               = Edge { to: %to, weight: %weight }
         %list.push(%edge)
         return()
 
-routine Graph.destruct(%self: Ptr<Self>, %alloc: Ptr<Allocator>) -> Void
+routine Graph.destruct(%self: @Self, %alloc: @Allocator) -> Void
     block entry():
-        %n   : USize                      = %self.num_nodes.load()
-        %adj : Ptr<List<Ptr<List<Edge>>>> = %self.adj.load()
+        %n   : USize              = %self.num_nodes.load()
+        %adj : @List<@List<Edge>> = %self.adj.load()
         jump free_loop(0, %n, %adj)
 
-    block free_loop(%i: USize, %n: USize, %adj: Ptr<List<Ptr<List<Edge>>>>):
+    block free_loop(%i: USize, %n: USize, %adj: @List<@List<Edge>>):
         %done : Bool = %i.ge(%n)
         branch %done ? free_outer(%adj) : free_one(%i, %n, %adj)
 
-    block free_one(%i: USize, %n: USize, %adj: Ptr<List<Ptr<List<Edge>>>>):
-        %list : Ptr<List<Edge>> = %adj.load().get(%i)
+    block free_one(%i: USize, %n: USize, %adj: @List<@List<Edge>>):
+        %list : @List<Edge> = %adj.load().get(%i)
         %list.destruct()
         %list.free(%alloc)
         jump free_loop(%i.add(1), %n, %adj)
 
-    block free_outer(%adj: Ptr<List<Ptr<List<Edge>>>>):
+    block free_outer(%adj: @List<@List<Edge>>):
         %adj.destruct()
         %adj.free(%alloc)
         return()
@@ -113,37 +113,36 @@ routine Graph.destruct(%self: Ptr<Self>, %alloc: Ptr<Allocator>) -> Void
 // Fills it with shortest distances from source (INF where unreachable).
 // Owns and frees the priority queue before returning.
 
-routine dijkstra(%graph:  Ptr<Graph>, %source: USize, %dist:   Ptr<S64>,
-        %alloc:  Ptr<Allocator>) -> Void
+routine dijkstra(%graph:  @Graph, %source: USize, %dist:   @S64, %alloc:  @Allocator) -> Void
     block entry():
         %n      : USize                        = %graph.num_nodes.load()
         %pq_val : PriorityQueue<DijkstraEntry> = .construct(%alloc)
-        claim %pq : Ptr<PriorityQueue<DijkstraEntry>>
+        claim %pq : @PriorityQueue<DijkstraEntry>
         %pq.store(%pq_val)
         jump fill_inf(0, %n, %pq)
 
     // Phase 1 — initialise every distance slot to INF.
-    block fill_inf(%i: USize, %n: USize, %pq: Ptr<PriorityQueue<DijkstraEntry>>):
+    block fill_inf(%i: USize, %n: USize, %pq: @PriorityQueue<DijkstraEntry>):
         %done : Bool = %i.ge(%n)
         branch %done ? seed(%pq) : write_inf(%i, %n, %pq)
 
-    block write_inf(%i: USize, %n: USize, %pq: Ptr<PriorityQueue<DijkstraEntry>>):
+    block write_inf(%i: USize, %n: USize, %pq: @PriorityQueue<DijkstraEntry>):
         %dist.stride(%i).store(INF)
         jump fill_inf(%i.add(1), %n, %pq)
 
     // Phase 2 — set the source distance to 0 and seed the queue.
-    block seed(%pq: Ptr<PriorityQueue<DijkstraEntry>>):
+    block seed(%pq: @PriorityQueue<DijkstraEntry>):
         %dist.stride(%source).store(0)
         %first : DijkstraEntry = DijkstraEntry { dist: 0, node: %source }
         %pq.push(%first)
         jump main_loop(%pq)
 
     // Phase 3 — drain the queue, relaxing edges on each settled node.
-    block main_loop(%pq: Ptr<PriorityQueue<DijkstraEntry>>):
+    block main_loop(%pq: @PriorityQueue<DijkstraEntry>):
         %empty : Bool = %pq.load().is_empty()
         branch %empty ? done(%pq) : dequeue(%pq)
 
-    block dequeue(%pq: Ptr<PriorityQueue<DijkstraEntry>>):
+    block dequeue(%pq: @PriorityQueue<DijkstraEntry>):
         %entry : DijkstraEntry = %pq.pop()
         %d     : S64           = %entry.dist
         %u     : USize         = %entry.node
@@ -152,19 +151,19 @@ routine dijkstra(%graph:  Ptr<Graph>, %source: USize, %dist:   Ptr<S64>,
         // re-push instead of decrease-key produces stale entries — drop them.
         branch %stale ? main_loop(%pq) : scan(%u, %d, %pq)
 
-    block scan(%u: USize, %d: S64, %pq: Ptr<PriorityQueue<DijkstraEntry>>):
-        %adj  : Ptr<List<Ptr<List<Edge>>>> = %graph.adj.load()
-        %list : Ptr<List<Edge>>            = %adj.load().get(%u)
-        %len  : USize                      = %list.load().length()
+    block scan(%u: USize, %d: S64, %pq: @PriorityQueue<DijkstraEntry>):
+        %adj  : @List<@List<Edge>> = %graph.adj.load()
+        %list : @List<Edge>        = %adj.load().get(%u)
+        %len  : USize              = %list.load().length()
         jump edge_loop(0, %len, %d, %list, %pq)
 
-    block edge_loop(%i: USize, %len: USize, %d: S64, %list: Ptr<List<Edge>>,
-            %pq: Ptr<PriorityQueue<DijkstraEntry>>):
+    block edge_loop(%i: USize, %len: USize, %d: S64, %list: @List<Edge>,
+            %pq: @PriorityQueue<DijkstraEntry>):
         %done : Bool = %i.ge(%len)
         branch %done ? main_loop(%pq) : relax(%i, %len, %d, %list, %pq)
 
-    block relax(%i: USize, %len: USize, %d: S64, %list: Ptr<List<Edge>>,
-            %pq: Ptr<PriorityQueue<DijkstraEntry>>):
+    block relax(%i: USize, %len: USize, %d: S64, %list: @List<Edge>,
+            %pq: @PriorityQueue<DijkstraEntry>):
         %edge     : Edge  = %list.load().get(%i)
         %v        : USize = %edge.to
         %w        : S64   = %edge.weight
@@ -174,14 +173,14 @@ routine dijkstra(%graph:  Ptr<Graph>, %source: USize, %dist:   Ptr<S64>,
         branch %better ? improve(%i, %len, %d, %list, %pq, %v, %new_dist) \
                        : edge_loop(%i.add(1), %len, %d, %list, %pq)
 
-    block improve(%i: USize, %len: USize, %d: S64, %list: Ptr<List<Edge>>,
-            %pq:   Ptr<PriorityQueue<DijkstraEntry>>, %v: USize, %new_dist: S64):
+    block improve(%i: USize, %len: USize, %d: S64, %list: @List<Edge>,
+            %pq:   @PriorityQueue<DijkstraEntry>, %v: USize, %new_dist: S64):
         %dist.stride(%v).store(%new_dist)
         %entry : DijkstraEntry = DijkstraEntry { dist: %new_dist, node: %v }
         %pq.push(%entry)
         jump edge_loop(%i.add(1), %len, %d, %list, %pq)
 
-    block done(%pq: Ptr<PriorityQueue<DijkstraEntry>>):
+    block done(%pq: @PriorityQueue<DijkstraEntry>):
         %pq.destruct()
         return()
 
@@ -209,11 +208,11 @@ routine dijkstra(%graph:  Ptr<Graph>, %source: USize, %dist:   Ptr<S64>,
 routine main() -> S32
     block entry():
         %alloc_val : Allocator = make_heap_allocator()
-        claim %alloc : Ptr<Allocator>
+        claim %alloc : @Allocator
         %alloc.store(%alloc_val)
 
         %g : Graph = .construct(6, %alloc)
-        claim %graph : Ptr<Graph>
+        claim %graph : @Graph
         %graph.store(%g)
 
         %graph.add_edge(0, 1,  7)
@@ -226,22 +225,22 @@ routine main() -> S32
         %graph.add_edge(3, 4,  6)
         %graph.add_edge(4, 5,  9)
 
-        %dist : Ptr<S64> = allocate<S64>(%alloc, 6)
+        %dist : @S64 = allocate<S64>(%alloc, 6)
         dijkstra(%graph, 0, %dist, %alloc)
 
         c_printf("Shortest distances from node 0:\n")
         jump print_loop(0, %dist, %graph, %alloc)
 
-    block print_loop(%i: USize, %dist: Ptr<S64>, %graph: Ptr<Graph>, %alloc: Ptr<Allocator>):
+    block print_loop(%i: USize, %dist: @S64, %graph: @Graph, %alloc: @Allocator):
         %done : Bool = %i.ge(6)
         branch %done ? cleanup(%dist, %graph, %alloc) : print_one(%i, %dist, %graph, %alloc)
 
-    block print_one(%i: USize, %dist: Ptr<S64>, %graph: Ptr<Graph>, %alloc: Ptr<Allocator>):
+    block print_one(%i: USize, %dist: @S64, %graph: @Graph, %alloc: @Allocator):
         %d : S64 = %dist.stride(%i).load()
         c_printf("  node %zu  dist %lld\n", %i, %d)
         jump print_loop(%i.add(1), %dist, %graph, %alloc)
 
-    block cleanup(%dist: Ptr<S64>, %graph: Ptr<Graph>, %alloc: Ptr<Allocator>):
+    block cleanup(%dist: @S64, %graph: @Graph, %alloc: @Allocator):
         %graph.destruct(%alloc)
         %dist.free(%alloc)
         return(0)

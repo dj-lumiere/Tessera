@@ -2,13 +2,13 @@ using System.Text;
 
 namespace Tessera;
 
-/// `@derive(Represent, Diagnose, Equal, Hash, Compare)` on a record, choice, or variant: the compiler declares the
+/// `#derive(Represent, Diagnose, Equal, Hash, Compare)` on a record, choice, or variant: the compiler declares the
 /// conformance and writes the routine. Each routine is generated as Tessera source, parsed in the type's file (so it sees private
 /// fields), and checked like any other routine.
 ///
-/// A choice or variant without `@derive` derives all five, except what it declares itself (a routine of the name, or a
+/// A choice or variant without `#derive` derives all five, except what it declares itself (a routine of the name, or a
 /// `conform`). Those conformances hold only when the payloads have them (`Compare<Shape> when Compare<Circle>`), and
-/// their routines are checked only when something uses them, as library routines are. `@derive()` derives nothing.
+/// their routines are checked only when something uses them, as library routines are. `#derive()` derives nothing.
 /// Generated code names Standard::Format by its path, and finds its fields' and payloads' methods whatever module
 /// declares them, so it needs no import.
 public static class Derive
@@ -49,7 +49,7 @@ public static class Derive
                     string concept = arg.Value;
                     if (!Methods.TryGetValue(concept, out var method))
                         throw new CompileError(attr.Pos,
-                            $"@derive can't derive '{concept}'; it derives {string.Join(", ", Methods.Keys)}");
+                            $"#derive can't derive '{concept}'; it derives {string.Join(", ", Methods.Keys)}");
                     Check(type, concept, method, declared, attr.Pos);
                     derived.AddRange(Parse(type, Source(type, concept, method, implicitly: false), implicitly: false));
                 }
@@ -66,7 +66,7 @@ public static class Derive
         _ => "",
     };
 
-    /// Whether a choice or variant without `@derive` gets this concept: not when it declares the routine or the
+    /// Whether a choice or variant without `#derive` gets this concept: not when it declares the routine or the
     /// conformance itself, nor what can't hold (a pointer payload compares only by address, through ptr_eq; a choice
     /// with no members has nothing to write).
     private static bool Implicit(Decl type, string concept, string method, HashSet<(string, string)> declared,
@@ -113,7 +113,7 @@ public static class Derive
         }
         if (type is not RecordDecl r) return;
         if (r.Attr("llvm") is not null)
-            throw new CompileError(at, $"{name} is an @llvm record, so it has no fields to derive {concept} from");
+            throw new CompileError(at, $"{name} is an #llvm record, so it has no fields to derive {concept} from");
         if (r.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
             throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}<...>'");
         // A pointer compares by address only through ptr_eq, on purpose (see Type-System, Ptr<T> and T's API),
@@ -123,13 +123,13 @@ public static class Derive
             throw new CompileError(at, $"{name} can't derive {concept}: field '{pointer.Name}' is a pointer; declare '{method}'");
     }
 
-    /// Parses generated source in the type's file. Each routine is marked `@derived` (`@derived(implicit)` when the
+    /// Parses generated source in the type's file. Each routine is marked `#derived` (`#derived(implicit)` when the
     /// type didn't ask), which lets it find methods in any module and, when implicit, keeps it from being checked
     /// until something uses it.
     private static IEnumerable<Decl> Parse(Decl type, string source, bool implicitly)
     {
         var tokens = new Lexer(type.File, source, type.Pos.Line, type.Pos.Col).Lex();
-        // The type's @target / @feature carry over, so the derived code exists exactly where the type does.
+        // The type's #target / #feature carry over, so the derived code exists exactly where the type does.
         var selection = type.Attributes.Where(a => a.Name is "target" or "feature").ToList();
         var mark = new Attribute("derived", implicitly ? [new AttrArg(null, "implicit", false)] : [], type.Pos);
         foreach (var g in new Parser(tokens, type.File, type.IsLibrary).ParseModule().Decls)
@@ -140,7 +140,7 @@ public static class Derive
             };
     }
 
-    /// Whether a routine was derived without the type asking (a choice or variant with no `@derive`).
+    /// Whether a routine was derived without the type asking (a choice or variant with no `#derive`).
     public static bool IsImplicit(Decl d) => d.Attr("derived") is { Args: [{ Value: "implicit" }] };
 
     // ── Records ─────────────────────────────────────────────────────────────
@@ -174,7 +174,7 @@ public static class Derive
         switch (method)
         {
             case "represent" or "diagnose":
-                sb.Append($"routine {self}.{method}<W>(%self: Self, %out: Ptr<W>) -> Void\n");
+                sb.Append($"routine {self}.{method}<W>(%self: Self, %out: @W) -> Void\n");
                 sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append(Fmt + "Writer<W>"))}\n");
                 WriteBody(sb, r);
                 break;
@@ -318,7 +318,7 @@ public static class Derive
             case "represent" or "diagnose":
             {
                 string prefix = method == "diagnose" ? $"{v.Name}." : "";
-                sb.Append($"routine {self}.{method}<W>(%self: Self, %out: Ptr<W>) -> Void\n");
+                sb.Append($"routine {self}.{method}<W>(%self: Self, %out: @W) -> Void\n");
                 sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append(Fmt + "Writer<W>"))}\n");
                 sb.Append("    block entry():\n        when %self:\n");
                 for (int i = 0; i < cases.Count; i++)
@@ -413,7 +413,7 @@ public static class Derive
                 if (c.Members.Count == 0)
                     throw new CompileError(c.Pos, $"{c.Name} has no members to {method}");
                 string prefix = method == "diagnose" ? $"{c.Name}." : "";
-                sb.Append($"routine {c.Name}.{method}<W>(%self: Self, %out: Ptr<W>) -> Void\n");
+                sb.Append($"routine {c.Name}.{method}<W>(%self: Self, %out: @W) -> Void\n");
                 sb.Append($"require W: typename, {Fmt}Writer<W>\n");
                 sb.Append("    block entry():\n");
                 sb.Append("        when %self:\n");

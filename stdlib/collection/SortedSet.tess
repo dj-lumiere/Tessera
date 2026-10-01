@@ -19,7 +19,7 @@ require T: typename
     length        : USize
     subtree_count : USize
     keys          : Array<T, NODE_KEYS>
-    children      : Array<Ptr<SortedSetNode<T>>, NODE_CHILDREN>
+    children      : Array<@SortedSetNode<T>, NODE_CHILDREN>
 
 record SortedSet<T>
 conform Destruct<SortedSet<T>>
@@ -27,11 +27,11 @@ conform Represent<SortedSet<T>> when T: typename, Compare<T>, Diagnose<T>
 conform Diagnose<SortedSet<T>>  when T: typename, Compare<T>, Diagnose<T>
 conform Equal<SortedSet<T>>     when T: typename, Compare<T>
 require T: typename, Compare<T>
-    root   : Ptr<SortedSetNode<T>>
+    root   : @SortedSetNode<T>
     length : USize
-    alloc  : Ptr<Allocator>
+    alloc  : @Allocator
 
-routine SortedSet<T>.construct(%alloc: Ptr<Allocator>) -> Self
+routine SortedSet<T>.construct(%alloc: @Allocator) -> Self
 require T: typename, Compare<T>
     block entry():
         %set : Self = Self { root: null, length: 0, alloc: %alloc }
@@ -51,30 +51,30 @@ require T: typename
         return(%empty)
 
 /// A new empty node, or null when the allocator fails.
-routine SortedSetNode<T>.construct(%leaf: Bool, %alloc: Ptr<Allocator>) -> Ptr<Self>
+routine SortedSetNode<T>.construct(%leaf: Bool, %alloc: @Allocator) -> @Self
 require T: typename
     block entry():
-        %node   : Ptr<Self> = allocate<Self>(%alloc, 1)
-        %failed : Bool      = %node.is_null()
+        %node   : @Self = allocate<Self>(%alloc, 1)
+        %failed : Bool  = %node.is_null()
         branch %failed ? return(%node) : init(%node, %leaf)
 
-    block init(%node: Ptr<Self>, %leaf: Bool):
+    block init(%node: @Self, %leaf: Bool):
         %node.leaf.store(%leaf)
         %node.length.store(0)
         %node.subtree_count.store(0)
         return(%node)
 
-routine SortedSetNode<T>.count(%self: Ptr<Self>) -> USize
+routine SortedSetNode<T>.count(%self: @Self) -> USize
 require T: typename
     block entry():
         %empty : Bool = %self.is_null()
         branch %empty ? return(0): count(%self)
 
-    block count(%self: Ptr<Self>):
+    block count(%self: @Self):
         %count : USize = %self.subtree_count.load()
         return(%count)
 
-routine SortedSetNode<T>.recount(%self: Ptr<Self>) -> Void
+routine SortedSetNode<T>.recount(%self: @Self) -> Void
 require T: typename
     block entry():
         %leaf   : Bool  = %self.leaf.load()
@@ -93,18 +93,18 @@ require T: typename
         branch %done ? finish(%sum) : add_child(%i, %sum, %length)
 
     block add_child(%i: USize, %sum: USize, %length: USize):
-        %child       : Ptr<Self> = %self.children.get(%i)
-        %child_count : USize     = %child.count()
-        %with_child  : USize     = %sum.add(%child_count)
-        %has_key     : Bool      = %i.lt(%length)
-        %next_sum    : USize     = %has_key ? %with_child.add(1) : %with_child
+        %child       : @Self = %self.children.get(%i)
+        %child_count : USize = %child.count()
+        %with_child  : USize = %sum.add(%child_count)
+        %has_key     : Bool  = %i.lt(%length)
+        %next_sum    : USize = %has_key ? %with_child.add(1) : %with_child
         jump loop(%i.add(1), %next_sum, %length)
 
     block finish(%sum: USize):
         %self.subtree_count.store(%sum)
         return()
 
-routine SortedSetNode<T>.find_index(%self: Ptr<Self>, %key: T) -> USize
+routine SortedSetNode<T>.find_index(%self: @Self, %key: T) -> USize
 require T: typename
     block entry():
         jump loop(0)
@@ -125,15 +125,15 @@ require T: typename
 routine SortedSet<T>.eq(%self: Self, %other: Self) -> Bool
 require T: typename, Compare<T>
     block entry():
-        claim %a : Ptr<Self>
-        claim %b : Ptr<Self>
+        claim %a : @Self
+        claim %b : @Self
         %a.store(%self)
         %b.store(%other)
         %equal : Bool = %a.eq_at(%b)
         return(%equal)
 
 /// eq, through pointers to the two SortedSets.
-private routine SortedSet<T>.eq_at(%self: Ptr<Self>, %other: Ptr<Self>) -> Bool
+private routine SortedSet<T>.eq_at(%self: @Self, %other: @Self) -> Bool
 require T: typename, Compare<T>
     block entry():
         %la       : USize = %self.length.load()
@@ -142,21 +142,21 @@ require T: typename, Compare<T>
         branch %same_len ? continue : return(false)
         %a_val : SortedSetIter<T> = .construct(%self)
         %b_val : SortedSetIter<T> = .construct(%other)
-        claim %a : Ptr<SortedSetIter<T>>
-        claim %b : Ptr<SortedSetIter<T>>
+        claim %a : @SortedSetIter<T>
+        claim %b : @SortedSetIter<T>
         %a.store(%a_val)
         %b.store(%b_val)
         jump loop(%a, %b)
 
     // both have the same length, so both run out together
-    block loop(%a: Ptr<SortedSetIter<T>>, %b: Ptr<SortedSetIter<T>>):
+    block loop(%a: @SortedSetIter<T>, %b: @SortedSetIter<T>):
         %x : Option<T> = %a.next()
         %y : Option<T> = %b.next()
         when %x:
             .Present(%x_item) -> compare(%a, %b, %x_item, %y.unwrap())
             .Absent           -> return(true)
 
-    block compare(%a: Ptr<SortedSetIter<T>>, %b: Ptr<SortedSetIter<T>>, %x: T, %y: T):
+    block compare(%a: @SortedSetIter<T>, %b: @SortedSetIter<T>, %x: T, %y: T):
         %cmp : S32  = %x.compare(%y)
         %eq  : Bool = %cmp.eq(0)
         branch %eq ? loop(%a, %b) : return(false)
@@ -164,28 +164,28 @@ require T: typename, Compare<T>
 routine SortedSet<T>.contains(%self: Self, %key: T) -> Bool
 require T: typename
     block entry():
-        %root  : Ptr<SortedSetNode<T>> = %self.root
-        %empty : Bool                  = %root.is_null()
+        %root  : @SortedSetNode<T> = %self.root
+        %empty : Bool              = %root.is_null()
         branch %empty ? return(false): search(%root, %key)
 
-    block search(%node: Ptr<SortedSetNode<T>>, %key: T):
+    block search(%node: @SortedSetNode<T>, %key: T):
         %i      : USize = %node.find_index(%key)
         %length : USize = %node.length.load()
         %inside : Bool  = %i.lt(%length)
         branch %inside ? maybe_match(%node, %i, %key) : descend_or_missing(%node, %i, %key)
 
-    block maybe_match(%node: Ptr<SortedSetNode<T>>, %i: USize, %key: T):
+    block maybe_match(%node: @SortedSetNode<T>, %i: USize, %key: T):
         %node_key : T    = %node.keys.get(%i)
         %cmp      : S32  = %key.compare(%node_key)
         %equal    : Bool = %cmp.eq(0)
         branch %equal ? return(true): descend_or_missing(%node, %i, %key)
 
-    block descend_or_missing(%node: Ptr<SortedSetNode<T>>, %i: USize, %key: T):
+    block descend_or_missing(%node: @SortedSetNode<T>, %i: USize, %key: T):
         %leaf : Bool = %node.leaf.load()
         branch %leaf ? return(false): descend(%node, %i, %key)
 
-    block descend(%node: Ptr<SortedSetNode<T>>, %i: USize, %key: T):
-        %child : Ptr<SortedSetNode<T>> = %node.children.get(%i)
+    block descend(%node: @SortedSetNode<T>, %i: USize, %key: T):
+        %child : @SortedSetNode<T> = %node.children.get(%i)
         jump search(%child, %key)
 
 /// The %rank-th smallest element (0 is the smallest). Traps if %rank >= length.
@@ -197,58 +197,57 @@ require T: typename
         branch %in_bounds ? select_root(%rank) : panic(TrapCode.Bounds)
 
     block select_root(%rank: USize):
-        %root : Ptr<SortedSetNode<T>> = %self.root
+        %root : @SortedSetNode<T> = %self.root
         jump select_node(%root, %rank)
 
-    block select_node(%node: Ptr<SortedSetNode<T>>, %rank: USize):
+    block select_node(%node: @SortedSetNode<T>, %rank: USize):
         jump scan(%node, %rank, 0)
 
-    block scan(%node: Ptr<SortedSetNode<T>>, %rank: USize, %i: USize):
+    block scan(%node: @SortedSetNode<T>, %rank: USize, %i: USize):
         %length : USize = %node.length.load()
         %done   : Bool  = %i.ge(%length)
         branch %done ? last_child(%node, %rank, %i) : check_child(%node, %rank, %i)
 
-    block check_child(%node: Ptr<SortedSetNode<T>>, %rank: USize, %i: USize):
+    block check_child(%node: @SortedSetNode<T>, %rank: USize, %i: USize):
         %leaf : Bool = %node.leaf.load()
         branch %leaf ? leaf_key(%node, %rank, %i) : internal_child(%node, %rank, %i)
 
-    block leaf_key(%node: Ptr<SortedSetNode<T>>, %rank: USize, %i: USize):
+    block leaf_key(%node: @SortedSetNode<T>, %rank: USize, %i: USize):
         %match : Bool = %rank.eq(%i)
         branch %match ? load_key(%node, %i) : scan(%node, %rank, %i.add(1))
 
-    block internal_child(%node: Ptr<SortedSetNode<T>>, %rank: USize, %i: USize):
-        %child       : Ptr<SortedSetNode<T>> = %node.children.get(%i)
-        %child_count : USize                 = %child.count()
-        %in_child    : Bool                  = %rank.lt(%child_count)
+    block internal_child(%node: @SortedSetNode<T>, %rank: USize, %i: USize):
+        %child       : @SortedSetNode<T> = %node.children.get(%i)
+        %child_count : USize             = %child.count()
+        %in_child    : Bool              = %rank.lt(%child_count)
         branch %in_child ? select_node(%child, %rank) : check_key(%node, %rank, %i, %child_count)
 
-    block check_key(%node: Ptr<SortedSetNode<T>>, %rank: USize, %i: USize, %child_count: USize):
+    block check_key(%node: @SortedSetNode<T>, %rank: USize, %i: USize, %child_count: USize):
         %after_child : USize = %rank.sub(%child_count)
         %is_key      : Bool  = %after_child.eq(0)
         branch %is_key ? load_key(%node, %i) : scan(%node, %after_child.sub(1), %i.add(1))
 
-    block last_child(%node: Ptr<SortedSetNode<T>>, %rank: USize, %i: USize):
+    block last_child(%node: @SortedSetNode<T>, %rank: USize, %i: USize):
         %leaf : Bool = %node.leaf.load()
         branch %leaf ? panic(TrapCode.Unreachable) : descend_last(%node, %rank, %i)
 
-    block descend_last(%node: Ptr<SortedSetNode<T>>, %rank: USize, %i: USize):
-        %child : Ptr<SortedSetNode<T>> = %node.children.get(%i)
+    block descend_last(%node: @SortedSetNode<T>, %rank: USize, %i: USize):
+        %child : @SortedSetNode<T> = %node.children.get(%i)
         jump select_node(%child, %rank)
 
-    block load_key(%node: Ptr<SortedSetNode<T>>, %i: USize):
+    block load_key(%node: @SortedSetNode<T>, %i: USize):
         %key : T = %node.keys.get(%i)
         return(%key)
 
 /// Splits the full child at %index around its middle. Returns false when the
 /// allocator fails, before anything has moved.
-routine SortedSetNode<T>.split_child(%self: Ptr<Self>, %index: USize,
-        %alloc: Ptr<Allocator>) -> Bool
+routine SortedSetNode<T>.split_child(%self: @Self, %index: USize, %alloc: @Allocator) -> Bool
 require T: typename
     block entry():
-        %left     : Ptr<Self> = %self.children.get(%index)
-        %leaf     : Bool      = %left.leaf.load()
-        %right    : Ptr<Self> = Self.construct(%leaf, %alloc)
-        %no_right : Bool      = %right.is_null()
+        %left     : @Self = %self.children.get(%index)
+        %leaf     : Bool  = %left.leaf.load()
+        %right    : @Self = Self.construct(%leaf, %alloc)
+        %no_right : Bool  = %right.is_null()
         branch %no_right ? return(false) : continue
         %mid         : USize = NODE_KEYS.div(2)
         %right_start : USize = %mid.add(1)
@@ -259,39 +258,37 @@ require T: typename
             ? promote(%left, %right, %mid)
             : copy_children(%left, %right, %mid, %right_count)
 
-    block copy_children(%left: Ptr<Self>, %right: Ptr<Self>, %mid: USize, %right_count: USize):
+    block copy_children(%left: @Self, %right: @Self, %mid: USize, %right_count: USize):
         jump child_loop(0, %left, %right, %mid, %right_count)
 
-    block child_loop(%i: USize, %left: Ptr<Self>, %right: Ptr<Self>, %mid: USize,
-            %right_count: USize):
+    block child_loop(%i: USize, %left: @Self, %right: @Self, %mid: USize, %right_count: USize):
         %done : Bool = %i.gt(%right_count)
         branch %done
             ? promote(%left, %right, %mid)
             : child_copy(%i, %left, %right, %mid, %right_count)
 
-    block child_copy(%i: USize, %left: Ptr<Self>, %right: Ptr<Self>, %mid: USize,
-            %right_count: USize):
-        %src   : USize     = %mid.add(1).add(%i)
-        %child : Ptr<Self> = %left.children.get(%src)
+    block child_copy(%i: USize, %left: @Self, %right: @Self, %mid: USize, %right_count: USize):
+        %src   : USize = %mid.add(1).add(%i)
+        %child : @Self = %left.children.get(%src)
         %right.children.set(%i, %child)
         jump child_loop(%i.add(1), %left, %right, %mid, %right_count)
 
-    block promote(%left: Ptr<Self>, %right: Ptr<Self>, %mid: USize):
+    block promote(%left: @Self, %right: @Self, %mid: USize):
         %parent_length : USize = %self.length.load()
         %self.keys.shift_right(%index, %parent_length)
         jump shift_children(%parent_length, %left, %right, %mid)
 
-    block shift_children(%i: USize, %left: Ptr<Self>, %right: Ptr<Self>, %mid: USize):
+    block shift_children(%i: USize, %left: @Self, %right: @Self, %mid: USize):
         %stop : USize = %index.add(1)
         %done : Bool  = %i.lt(%stop)
         branch %done ? install(%left, %right, %mid) : move_child(%i, %left, %right, %mid)
 
-    block move_child(%i: USize, %left: Ptr<Self>, %right: Ptr<Self>, %mid: USize):
-        %child : Ptr<Self> = %self.children.get(%i)
+    block move_child(%i: USize, %left: @Self, %right: @Self, %mid: USize):
+        %child : @Self = %self.children.get(%i)
         %self.children.set(%i.add(1), %child)
         jump shift_children(%i.sub(1), %left, %right, %mid)
 
-    block install(%left: Ptr<Self>, %right: Ptr<Self>, %mid: USize):
+    block install(%left: @Self, %right: @Self, %mid: USize):
         %middle_key : T = %left.keys.get(%mid)
         %self.keys.set(%index, %middle_key)
         %self.children.set(%index.add(1), %right)
@@ -304,7 +301,7 @@ require T: typename
 
 /// Inserts below a node that isn't full. Returns false when a split fails to
 /// allocate; the tree then holds the same elements, some nodes already split.
-routine SortedSetNode<T>.insert_nonfull(%self: Ptr<Self>, %key: T, %alloc: Ptr<Allocator>) -> Bool
+routine SortedSetNode<T>.insert_nonfull(%self: @Self, %key: T, %alloc: @Allocator) -> Bool
 require T: typename
     block entry():
         %leaf : Bool = %self.leaf.load()
@@ -321,29 +318,29 @@ require T: typename
         return(true)
 
     block insert_internal():
-        %slot         : USize     = %self.find_index(%key)
-        %child        : Ptr<Self> = %self.children.get(%slot)
-        %child_length : USize     = %child.length.load()
-        %full         : Bool      = %child_length.eq(NODE_KEYS)
+        %slot         : USize = %self.find_index(%key)
+        %child        : @Self = %self.children.get(%slot)
+        %child_length : USize = %child.length.load()
+        %full         : Bool  = %child_length.eq(NODE_KEYS)
         branch %full ? split_then_insert(%slot, %child) : descend(%slot, %child)
 
-    block split_then_insert(%slot: USize, %child: Ptr<Self>):
+    block split_then_insert(%slot: USize, %child: @Self):
         %split : Bool = %self.split_child(%slot, %alloc)
         branch %split ? continue : return(false)
-        %pivot      : T         = %self.keys.get(%slot)
-        %cmp        : S32       = %key.compare(%pivot)
-        %go_right   : Bool      = %cmp.gt(0)
-        %next_slot  : USize     = %go_right ? %slot.add(1) : %slot
-        %next_child : Ptr<Self> = %self.children.get(%next_slot)
+        %pivot      : T     = %self.keys.get(%slot)
+        %cmp        : S32   = %key.compare(%pivot)
+        %go_right   : Bool  = %cmp.gt(0)
+        %next_slot  : USize = %go_right ? %slot.add(1) : %slot
+        %next_child : @Self = %self.children.get(%next_slot)
         jump descend(%next_slot, %next_child)
 
-    block descend(%slot: USize, %child: Ptr<Self>):
+    block descend(%slot: USize, %child: @Self):
         %inserted : Bool = %child.insert_nonfull(%key, %alloc)
         branch %inserted ? continue : return(false)
         %self.recount()
         return(true)
 
-routine SortedSet<T>.add(%self: Ptr<Self>, %key: T) -> Bool
+routine SortedSet<T>.add(%self: @Self, %key: T) -> Bool
 require T: typename
     block entry():
         %added : Result<Bool, AllocFailed> = %self.add_result(%key)
@@ -353,21 +350,21 @@ require T: typename
 
 /// `add`, returning a Failure instead of trapping when the allocator fails. The
 /// Success holds whether %key was new.
-routine SortedSet<T>.add_result(%self: Ptr<Self>, %key: T) -> Result<Bool, AllocFailed>
+routine SortedSet<T>.add_result(%self: @Self, %key: T) -> Result<Bool, AllocFailed>
 require T: typename
     block entry():
         %exists : Bool = %self.load().contains(%key)
         branch %exists ? return(.Success(false)) : insert()
 
     block insert():
-        %alloc : Ptr<Allocator>        = %self.alloc.load()
-        %root  : Ptr<SortedSetNode<T>> = %self.root.load()
-        %empty : Bool                  = %root.is_null()
+        %alloc : @Allocator        = %self.alloc.load()
+        %root  : @SortedSetNode<T> = %self.root.load()
+        %empty : Bool              = %root.is_null()
         branch %empty ? first_root(%alloc) : insert_root(%root, %alloc)
 
-    block first_root(%alloc: Ptr<Allocator>):
-        %root    : Ptr<SortedSetNode<T>> = SortedSetNode<T>.construct(true, %alloc)
-        %no_root : Bool                  = %root.is_null()
+    block first_root(%alloc: @Allocator):
+        %root    : @SortedSetNode<T> = SortedSetNode<T>.construct(true, %alloc)
+        %no_root : Bool              = %root.is_null()
         branch %no_root ? return(.Failure(AllocFailed {})) : continue
         %root.keys.set(0, %key)
         %root.length.store(1)
@@ -376,34 +373,34 @@ require T: typename
         %self.length.store(1)
         return(.Success(true))
 
-    block insert_root(%root: Ptr<SortedSetNode<T>>, %alloc: Ptr<Allocator>):
+    block insert_root(%root: @SortedSetNode<T>, %alloc: @Allocator):
         %root_length : USize = %root.length.load()
         %full        : Bool  = %root_length.eq(NODE_KEYS)
         branch %full ? split_root(%root, %alloc) : insert_nonfull(%root, %alloc)
 
-    block split_root(%old_root: Ptr<SortedSetNode<T>>, %alloc: Ptr<Allocator>):
-        %new_root : Ptr<SortedSetNode<T>> = SortedSetNode<T>.construct(false, %alloc)
-        %no_root  : Bool                  = %new_root.is_null()
+    block split_root(%old_root: @SortedSetNode<T>, %alloc: @Allocator):
+        %new_root : @SortedSetNode<T> = SortedSetNode<T>.construct(false, %alloc)
+        %no_root  : Bool              = %new_root.is_null()
         branch %no_root ? return(.Failure(AllocFailed {})) : continue
         %new_root.children.set(0, %old_root)
         %split : Bool = %new_root.split_child(0, %alloc)
         branch %split ? install_root(%new_root, %alloc) : discard_root(%new_root, %alloc)
 
-    block install_root(%new_root: Ptr<SortedSetNode<T>>, %alloc: Ptr<Allocator>):
+    block install_root(%new_root: @SortedSetNode<T>, %alloc: @Allocator):
         %self.root.store(%new_root)
         jump insert_nonfull(%new_root, %alloc)
 
-    block discard_root(%new_root: Ptr<SortedSetNode<T>>, %alloc: Ptr<Allocator>):
+    block discard_root(%new_root: @SortedSetNode<T>, %alloc: @Allocator):
         %new_root.free(%alloc)
         return(.Failure(AllocFailed {}))
 
-    block insert_nonfull(%root: Ptr<SortedSetNode<T>>, %alloc: Ptr<Allocator>):
+    block insert_nonfull(%root: @SortedSetNode<T>, %alloc: @Allocator):
         %inserted : Bool = %root.insert_nonfull(%key, %alloc)
         branch %inserted ? continue : return(.Failure(AllocFailed {}))
         %self.length.load().add(1).store_into(%self.length)
         return(.Success(true))
 
-routine SortedSetNode<T>.remove_leaf_at(%self: Ptr<Self>, %index: USize) -> T
+routine SortedSetNode<T>.remove_leaf_at(%self: @Self, %index: USize) -> T
 require T: typename
     block entry():
         %old    : T     = %self.keys.get(%index)
@@ -419,14 +416,14 @@ require T: typename
 // Helpers below ensure a child has length >= NODE_MIN_KEYS (= t) before any deletion
 // descent so the child can absorb a one-key drop without underflowing.
 
-routine SortedSetNode<T>.borrow_from_left(%self: Ptr<Self>, %i: USize) -> Void
+routine SortedSetNode<T>.borrow_from_left(%self: @Self, %i: USize) -> Void
 require T: typename
     block entry():
-        %separator    : USize     = %i.sub(1)
-        %left         : Ptr<Self> = %self.children.get(%separator)
-        %child        : Ptr<Self> = %self.children.get(%i)
-        %left_length  : USize     = %left.length.load()
-        %child_length : USize     = %child.length.load()
+        %separator    : USize = %i.sub(1)
+        %left         : @Self = %self.children.get(%separator)
+        %child        : @Self = %self.children.get(%i)
+        %left_length  : USize = %left.length.load()
+        %child_length : USize = %child.length.load()
         %child.keys.shift_right(0, %child_length)
         %pivot : T = %self.keys.get(%separator)
         %child.keys.set(0, %pivot)
@@ -437,15 +434,14 @@ require T: typename
             ? finalize(%left, %child, %left_length, %child_length)
             : move_child(%left, %child, %left_length, %child_length)
 
-    block move_child(%left: Ptr<Self>, %child: Ptr<Self>, %left_length: USize,
-            %child_length: USize):
+    block move_child(%left: @Self, %child: @Self, %left_length: USize, %child_length: USize):
         %child_count : USize = %child_length.add(1)
         %child.children.shift_right(0, %child_count)
-        %moved : Ptr<Self> = %left.children.get(%left_length)
+        %moved : @Self = %left.children.get(%left_length)
         %child.children.set(0, %moved)
         jump finalize(%left, %child, %left_length, %child_length)
 
-    block finalize(%left: Ptr<Self>, %child: Ptr<Self>, %left_length: USize, %child_length: USize):
+    block finalize(%left: @Self, %child: @Self, %left_length: USize, %child_length: USize):
         %left.length.store(%left_length.sub(1))
         %child.length.store(%child_length.add(1))
         %left.recount()
@@ -453,14 +449,14 @@ require T: typename
         %self.recount()
         return()
 
-routine SortedSetNode<T>.borrow_from_right(%self: Ptr<Self>, %i: USize) -> Void
+routine SortedSetNode<T>.borrow_from_right(%self: @Self, %i: USize) -> Void
 require T: typename
     block entry():
-        %child        : Ptr<Self> = %self.children.get(%i)
-        %right        : Ptr<Self> = %self.children.get(%i.add(1))
-        %child_length : USize     = %child.length.load()
-        %right_length : USize     = %right.length.load()
-        %pivot        : T         = %self.keys.get(%i)
+        %child        : @Self = %self.children.get(%i)
+        %right        : @Self = %self.children.get(%i.add(1))
+        %child_length : USize = %child.length.load()
+        %right_length : USize = %right.length.load()
+        %pivot        : T     = %self.keys.get(%i)
         %child.keys.set(%child_length, %pivot)
         %new_pivot : T = %right.keys.get(0)
         %self.keys.set(%i, %new_pivot)
@@ -470,15 +466,13 @@ require T: typename
             ? finalize(%child, %right, %child_length, %right_length)
             : move_child(%child, %right, %child_length, %right_length)
 
-    block move_child(%child: Ptr<Self>, %right: Ptr<Self>, %child_length: USize,
-            %right_length: USize):
-        %moved : Ptr<Self> = %right.children.get(0)
+    block move_child(%child: @Self, %right: @Self, %child_length: USize, %right_length: USize):
+        %moved : @Self = %right.children.get(0)
         %child.children.set(%child_length.add(1), %moved)
         %right.children.shift_left(0, %right_length.add(1))
         jump finalize(%child, %right, %child_length, %right_length)
 
-    block finalize(%child: Ptr<Self>, %right: Ptr<Self>, %child_length: USize,
-            %right_length: USize):
+    block finalize(%child: @Self, %right: @Self, %child_length: USize, %right_length: USize):
         %child.length.store(%child_length.add(1))
         %right.length.store(%right_length.sub(1))
         %child.recount()
@@ -486,14 +480,14 @@ require T: typename
         %self.recount()
         return()
 
-routine SortedSetNode<T>.merge_children(%self: Ptr<Self>, %i: USize, %alloc: Ptr<Allocator>) -> Void
+routine SortedSetNode<T>.merge_children(%self: @Self, %i: USize, %alloc: @Allocator) -> Void
 require T: typename
     block entry():
-        %left         : Ptr<Self> = %self.children.get(%i)
-        %right        : Ptr<Self> = %self.children.get(%i.add(1))
-        %left_length  : USize     = %left.length.load()
-        %right_length : USize     = %right.length.load()
-        %pivot        : T         = %self.keys.get(%i)
+        %left         : @Self = %self.children.get(%i)
+        %right        : @Self = %self.children.get(%i.add(1))
+        %left_length  : USize = %left.length.load()
+        %right_length : USize = %right.length.load()
+        %pivot        : T     = %self.keys.get(%i)
         %left.keys.set(%left_length, %pivot)
         %dst_start : USize = %left_length.add(1)
         %left.keys.copy(%dst_start, %right.keys, 0, %right_length)
@@ -502,12 +496,11 @@ require T: typename
             ? finalize(%left, %right, %left_length, %right_length)
             : copy_children(%left, %right, %left_length, %right_length)
 
-    block copy_children(%left: Ptr<Self>, %right: Ptr<Self>, %left_length: USize,
-            %right_length: USize):
+    block copy_children(%left: @Self, %right: @Self, %left_length: USize, %right_length: USize):
         %left.children.copy(%left_length.add(1), %right.children, 0, %right_length.add(1))
         jump finalize(%left, %right, %left_length, %right_length)
 
-    block finalize(%left: Ptr<Self>, %right: Ptr<Self>, %left_length: USize, %right_length: USize):
+    block finalize(%left: @Self, %right: @Self, %left_length: USize, %right_length: USize):
         %left.length.store(%left_length.add(1).add(%right_length))
         %parent_length : USize = %self.length.load()
         %self.keys.shift_left(%i, %parent_length)
@@ -518,12 +511,12 @@ require T: typename
         %self.recount()
         return()
 
-routine SortedSetNode<T>.ensure_min(%self: Ptr<Self>, %i: USize, %alloc: Ptr<Allocator>) -> USize
+routine SortedSetNode<T>.ensure_min(%self: @Self, %i: USize, %alloc: @Allocator) -> USize
 require T: typename
     block entry():
-        %child        : Ptr<Self> = %self.children.get(%i)
-        %child_length : USize     = %child.length.load()
-        %ok           : Bool      = %child_length.ge(NODE_MIN_KEYS)
+        %child        : @Self = %self.children.get(%i)
+        %child_length : USize = %child.length.load()
+        %ok           : Bool  = %child_length.ge(NODE_MIN_KEYS)
         branch %ok ? return(%i): try_left()
 
     block try_left():
@@ -531,9 +524,9 @@ require T: typename
         branch %has_left ? check_left() : try_right(false)
 
     block check_left():
-        %left        : Ptr<Self> = %self.children.get(%i.sub(1))
-        %left_length : USize     = %left.length.load()
-        %left_ok     : Bool      = %left_length.ge(NODE_MIN_KEYS)
+        %left        : @Self = %self.children.get(%i.sub(1))
+        %left_length : USize = %left.length.load()
+        %left_ok     : Bool  = %left_length.ge(NODE_MIN_KEYS)
         branch %left_ok ? do_borrow_left() : try_right(true)
 
     block do_borrow_left():
@@ -546,9 +539,9 @@ require T: typename
         branch %has_right ? check_right(%has_left) : pick_merge_no_right(%has_left)
 
     block check_right(%has_left: Bool):
-        %right        : Ptr<Self> = %self.children.get(%i.add(1))
-        %right_length : USize     = %right.length.load()
-        %right_ok     : Bool      = %right_length.ge(NODE_MIN_KEYS)
+        %right        : @Self = %self.children.get(%i.add(1))
+        %right_length : USize = %right.length.load()
+        %right_ok     : Bool  = %right_length.ge(NODE_MIN_KEYS)
         branch %right_ok ? do_borrow_right() : pick_merge(%has_left)
 
     block do_borrow_right():
@@ -570,7 +563,7 @@ require T: typename
         %self.merge_children(%i, %alloc)
         return(%i)
 
-routine SortedSetNode<T>.take_max(%self: Ptr<Self>, %alloc: Ptr<Allocator>) -> T
+routine SortedSetNode<T>.take_max(%self: @Self, %alloc: @Allocator) -> T
 require T: typename
     block entry():
         %leaf : Bool = %self.leaf.load()
@@ -583,14 +576,14 @@ require T: typename
         return(%key)
 
     block descend():
-        %length : USize     = %self.length.load()
-        %actual : USize     = %self.ensure_min(%length, %alloc)
-        %child  : Ptr<Self> = %self.children.get(%actual)
-        %key    : T         = %child.take_max(%alloc)
+        %length : USize = %self.length.load()
+        %actual : USize = %self.ensure_min(%length, %alloc)
+        %child  : @Self = %self.children.get(%actual)
+        %key    : T     = %child.take_max(%alloc)
         %self.recount()
         return(%key)
 
-routine SortedSetNode<T>.take_min(%self: Ptr<Self>, %alloc: Ptr<Allocator>) -> T
+routine SortedSetNode<T>.take_min(%self: @Self, %alloc: @Allocator) -> T
 require T: typename
     block entry():
         %leaf : Bool = %self.leaf.load()
@@ -601,13 +594,13 @@ require T: typename
         return(%key)
 
     block descend():
-        %actual : USize     = %self.ensure_min(0, %alloc)
-        %child  : Ptr<Self> = %self.children.get(%actual)
-        %key    : T         = %child.take_min(%alloc)
+        %actual : USize = %self.ensure_min(0, %alloc)
+        %child  : @Self = %self.children.get(%actual)
+        %key    : T     = %child.take_min(%alloc)
         %self.recount()
         return(%key)
 
-routine SortedSetNode<T>.remove(%self: Ptr<Self>, %key: T, %alloc: Ptr<Allocator>) -> Bool
+routine SortedSetNode<T>.remove(%self: @Self, %key: T, %alloc: @Allocator) -> Bool
 require T: typename
     block entry():
         %slot   : USize = %self.find_index(%key)
@@ -630,35 +623,35 @@ require T: typename
         return(true)
 
     block remove_internal(%slot: USize):
-        %left        : Ptr<Self> = %self.children.get(%slot)
-        %left_length : USize     = %left.length.load()
-        %left_ok     : Bool      = %left_length.ge(NODE_MIN_KEYS)
+        %left        : @Self = %self.children.get(%slot)
+        %left_length : USize = %left.length.load()
+        %left_ok     : Bool  = %left_length.ge(NODE_MIN_KEYS)
         branch %left_ok ? take_pred(%slot) : try_succ(%slot)
 
     block take_pred(%slot: USize):
-        %left        : Ptr<Self> = %self.children.get(%slot)
-        %replacement : T         = %left.take_max(%alloc)
+        %left        : @Self = %self.children.get(%slot)
+        %replacement : T     = %left.take_max(%alloc)
         %self.keys.set(%slot, %replacement)
         %self.recount()
         return(true)
 
     block try_succ(%slot: USize):
-        %right        : Ptr<Self> = %self.children.get(%slot.add(1))
-        %right_length : USize     = %right.length.load()
-        %right_ok     : Bool      = %right_length.ge(NODE_MIN_KEYS)
+        %right        : @Self = %self.children.get(%slot.add(1))
+        %right_length : USize = %right.length.load()
+        %right_ok     : Bool  = %right_length.ge(NODE_MIN_KEYS)
         branch %right_ok ? take_succ(%slot) : merge_and_recurse(%slot)
 
     block take_succ(%slot: USize):
-        %right       : Ptr<Self> = %self.children.get(%slot.add(1))
-        %replacement : T         = %right.take_min(%alloc)
+        %right       : @Self = %self.children.get(%slot.add(1))
+        %replacement : T     = %right.take_min(%alloc)
         %self.keys.set(%slot, %replacement)
         %self.recount()
         return(true)
 
     block merge_and_recurse(%slot: USize):
         %self.merge_children(%slot, %alloc)
-        %merged  : Ptr<Self> = %self.children.get(%slot)
-        %removed : Bool      = %merged.remove(%key, %alloc)
+        %merged  : @Self = %self.children.get(%slot)
+        %removed : Bool  = %merged.remove(%key, %alloc)
         %self.recount()
         return(%removed)
 
@@ -667,49 +660,49 @@ require T: typename
         branch %leaf ? return(false): descend(%slot)
 
     block descend(%slot: USize):
-        %actual  : USize     = %self.ensure_min(%slot, %alloc)
-        %child   : Ptr<Self> = %self.children.get(%actual)
-        %removed : Bool      = %child.remove(%key, %alloc)
+        %actual  : USize = %self.ensure_min(%slot, %alloc)
+        %child   : @Self = %self.children.get(%actual)
+        %removed : Bool  = %child.remove(%key, %alloc)
         %self.recount()
         return(%removed)
 
-routine SortedSet<T>.remove(%self: Ptr<Self>, %key: T) -> Bool
+routine SortedSet<T>.remove(%self: @Self, %key: T) -> Bool
 require T: typename
     block entry():
-        %root  : Ptr<SortedSetNode<T>> = %self.root.load()
-        %empty : Bool                  = %root.is_null()
+        %root  : @SortedSetNode<T> = %self.root.load()
+        %empty : Bool              = %root.is_null()
         branch %empty ? return(false) : remove_root(%root)
 
-    block remove_root(%root: Ptr<SortedSetNode<T>>):
-        %alloc   : Ptr<Allocator> = %self.alloc.load()
-        %removed : Bool           = %root.remove(%key, %alloc)
+    block remove_root(%root: @SortedSetNode<T>):
+        %alloc   : @Allocator = %self.alloc.load()
+        %removed : Bool       = %root.remove(%key, %alloc)
         branch %removed ? after_remove(%root) : return(false)
 
-    block after_remove(%root: Ptr<SortedSetNode<T>>):
+    block after_remove(%root: @SortedSetNode<T>):
         %self.length.load().sub(1).store_into(%self.length)
         %root_length : USize = %root.length.load()
         %empty_root  : Bool  = %root_length.eq(0)
         branch %empty_root ? maybe_shrink(%root) : return(true)
 
-    block maybe_shrink(%root: Ptr<SortedSetNode<T>>):
+    block maybe_shrink(%root: @SortedSetNode<T>):
         %leaf : Bool = %root.leaf.load()
         branch %leaf ? clear_root(%root) : shrink(%root)
 
-    block clear_root(%root: Ptr<SortedSetNode<T>>):
-        %alloc : Ptr<Allocator> = %self.alloc.load()
+    block clear_root(%root: @SortedSetNode<T>):
+        %alloc : @Allocator = %self.alloc.load()
         %root.free(%alloc)
         %self.root.store(null)
         return(true)
 
-    block shrink(%root: Ptr<SortedSetNode<T>>):
-        %alloc    : Ptr<Allocator>        = %self.alloc.load()
-        %new_root : Ptr<SortedSetNode<T>> = %root.children.get(0)
+    block shrink(%root: @SortedSetNode<T>):
+        %alloc    : @Allocator        = %self.alloc.load()
+        %new_root : @SortedSetNode<T> = %root.children.get(0)
         %root.free(%alloc)
         %self.root.store(%new_root)
         return(true)
 
 /// Internal nodes store `length` separator keys and `length + 1` children.
-routine SortedSetNode<T>.free_recursive(%self: Ptr<Self>, %alloc: Ptr<Allocator>) -> Void
+routine SortedSetNode<T>.free_recursive(%self: @Self, %alloc: @Allocator) -> Void
 require T: typename
     block entry():
         %leaf : Bool = %self.leaf.load()
@@ -724,7 +717,7 @@ require T: typename
         branch %done ? free_self() : free_child(%i, %child_count)
 
     block free_child(%i: USize, %child_count: USize):
-        %child : Ptr<Self> = %self.children.get(%i)
+        %child : @Self = %self.children.get(%i)
         %child.free_recursive(%alloc)
         jump child_loop(%i.add(1), %child_count)
 
@@ -732,15 +725,15 @@ require T: typename
         %self.free(%alloc)
         return()
 
-routine SortedSet<T>.destruct(%self: Ptr<Self>) -> Void
+routine SortedSet<T>.destruct(%self: @Self) -> Void
 require T: typename
     block entry():
-        %root  : Ptr<SortedSetNode<T>> = %self.root.load()
-        %empty : Bool                  = %root.is_null()
+        %root  : @SortedSetNode<T> = %self.root.load()
+        %empty : Bool              = %root.is_null()
         branch %empty ? reset() : free_root(%root)
 
-    block free_root(%root: Ptr<SortedSetNode<T>>):
-        %alloc : Ptr<Allocator> = %self.alloc.load()
+    block free_root(%root: @SortedSetNode<T>):
+        %alloc : @Allocator = %self.alloc.load()
         %root.free_recursive(%alloc)
         jump reset()
 
@@ -751,22 +744,22 @@ require T: typename
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
 /// Elements that are only borrowed (a `Ptr` to memory owned elsewhere) must not be destructed this way.
-routine SortedSet<T>.destruct_all(%self: Ptr<Self>) -> Void
+routine SortedSet<T>.destruct_all(%self: @Self) -> Void
 require T: typename, Compare<T>, Destruct<T>
     block entry():
         %iter_val : SortedSetIter<T> = .construct(%self)
-        claim %iter : Ptr<SortedSetIter<T>>
+        claim %iter : @SortedSetIter<T>
         %iter.store(%iter_val)
-        claim %slot : Ptr<T>
+        claim %slot : @T
         jump next(%iter, %slot)
 
-    block next(%iter: Ptr<SortedSetIter<T>>, %slot: Ptr<T>):
+    block next(%iter: @SortedSetIter<T>, %slot: @T):
         %item : Option<T> = %iter.next()
         when %item:
             .Present(%value) -> element(%iter, %slot, %value)
             .Absent          -> finish()
 
-    block element(%iter: Ptr<SortedSetIter<T>>, %slot: Ptr<T>, %value: T):
+    block element(%iter: @SortedSetIter<T>, %slot: @T, %value: T):
         %slot.store(%value)
         %slot.destruct()
         jump next(%iter, %slot)
@@ -778,25 +771,25 @@ require T: typename, Compare<T>, Destruct<T>
 // -- text -----------------------------------------------------------------------
 
 /// The elements in sorted order, each diagnosed (strings quoted): {1, 2, 3}.
-routine SortedSet<T>.represent<W>(%self: Self, %out: Ptr<W>) -> Void
+routine SortedSet<T>.represent<W>(%self: Self, %out: @W) -> Void
 require T: typename, Compare<T>, Diagnose<T>, W: typename, Writer<W>
     block entry():
-        claim %whole : Ptr<Self>
+        claim %whole : @Self
         %whole.store(%self)
         %iter_val : SortedSetIter<T> = .construct(%whole)
-        claim %iter : Ptr<SortedSetIter<T>>
+        claim %iter : @SortedSetIter<T>
         %iter.store(%iter_val)
         diagnose_items<T, SortedSetIter<T>, W>(%out, %iter, "{", "}")
         return()
 
 /// The elements in sorted order, each diagnosed: {1, 2, 3}.
-routine SortedSet<T>.diagnose<W>(%self: Self, %out: Ptr<W>) -> Void
+routine SortedSet<T>.diagnose<W>(%self: Self, %out: @W) -> Void
 require T: typename, Compare<T>, Diagnose<T>, W: typename, Writer<W>
     block entry():
-        claim %whole : Ptr<Self>
+        claim %whole : @Self
         %whole.store(%self)
         %iter_val : SortedSetIter<T> = .construct(%whole)
-        claim %iter : Ptr<SortedSetIter<T>>
+        claim %iter : @SortedSetIter<T>
         %iter.store(%iter_val)
         diagnose_items<T, SortedSetIter<T>, W>(%out, %iter, "{", "}")
         return()
