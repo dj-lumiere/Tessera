@@ -31,6 +31,7 @@ public sealed class FunctionGen
     private readonly Dictionary<string, List<(string Pred, List<string> Ops)>> _incoming = [];
     private readonly List<LBlock> _lblocks = [];
     private readonly List<string> _allocas = [];
+    private AbiSig _sig = null!;
     private readonly Dictionary<string, Val> _routineParams = [];
     private Dictionary<string, Val> _values = [];
     private LBlock _cur = null!;
@@ -58,6 +59,7 @@ public sealed class FunctionGen
 
     public void Emit()
     {
+        _sig = _c.LowerSignature(_inst);
         var blocks = _decl.Blocks!;   // the parser guarantees a leading `block entry():`
 
         for (int i = 0; i < _decl.Params.Count; i++)
@@ -87,12 +89,38 @@ public sealed class FunctionGen
         foreach (var b in blocks) EmitBlock(b);
 
         // A BF16 parameter arrives as its i16 bits (see Instance.PassesBf16AsBits) and is bitcast back on entry.
+        // An aggregate the C ABI coerces arrives as its parts, stored into a buffer and loaded back as the value; one
+        // passed by pointer is loaded from it. With `sret`, the result goes through %ret.slot (see ReturnTarget).
         var ps = new List<string>();
         var unpack = new List<string>();
+        if (_sig.Sret) ps.Add($"{_sig.Ret.Parts[0].Llvm} %ret.slot");
         for (int i = 0; i < _decl.Params.Count; i++)
         {
             string name = $"%a.{IrName(_decl.Params[i].Name)}";
-            if (_inst.PassesBf16AsBits && Instance.IsBf16(_inst.Params[i]))
+            var info = _sig.Params[i];
+            if (info.Pass == AbiPass.Coerce)
+            {
+                string buffer = NewBuffer(_inst.Params[i]);
+                for (int k = 0; k < info.Parts.Count; k++)
+                {
+                    var part = info.Parts[k];
+                    ps.Add($"{part.Llvm}{part.Attrs} {name}.c{k}");
+                    string at = buffer;
+                    if (part.Offset != 0)
+                    {
+                        at = $"{name}.c{k}.at";
+                        unpack.Add($"{at} = getelementptr inbounds i8, ptr {buffer}, i64 {part.Offset}");
+                    }
+                    unpack.Add($"store {part.Llvm} {name}.c{k}, ptr {at}");
+                }
+                unpack.Add($"{name} = load {_inst.Params[i].Llvm}, ptr {buffer}");
+            }
+            else if (info.Pass != AbiPass.Direct)
+            {
+                ps.Add($"{info.Parts[0].Llvm} {name}.p");
+                unpack.Add($"{name} = load {_inst.Params[i].Llvm}, ptr {name}.p");
+            }
+            else if (_inst.PassesBf16AsBits && Instance.IsBf16(_inst.Params[i]))
             {
                 ps.Add($"i16 {name}.bits");
                 unpack.Add($"{name} = bitcast i16 {name}.bits to bfloat");
@@ -115,7 +143,7 @@ public sealed class FunctionGen
                 comdat = " comdat";
             }
         }
-        _out.AppendLine($"define {linkage}{_inst.CcPrefix}{_inst.RetExt(_c.Target)}{_inst.LlvmRet} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat} {{");
+        _out.AppendLine($"define {linkage}{_inst.CcPrefix}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
         foreach (var u in unpack) _out.AppendLine($"  {u}");
@@ -642,6 +670,21 @@ public sealed class FunctionGen
         _allocas.Add($"{slot} = alloca {t.Llvm}");
         return new Val(slot, new PtrType(t));
     }
+
+    /// An entry-block buffer that holds a value and any form the C ABI coerces it to (at most 16 bytes, or the
+    /// value's own size).
+    private string NewBuffer(DType t)
+    {
+        _c.EnsureTypeDefined(t);
+        var (size, align) = _c.SizeAlign(t, _decl.Pos);
+        string slot = $"%s{_allocas.Count}";
+        _allocas.Add($"{slot} = alloca [{Math.Max(size, 16)} x i8], align {Math.Max(align, 16)}");
+        return slot;
+    }
+
+    /// The address `offset` bytes into a buffer.
+    private string BufferAt(string buffer, long offset) =>
+        offset == 0 ? buffer : EmitTmp($"getelementptr inbounds i8, ptr {buffer}, i64 {offset}");
 
     private string NewSlot(DType t)
     {
@@ -1337,15 +1380,76 @@ public sealed class FunctionGen
         }
 
         var inst = _c.RequireInstance(plan.Decl, plan.Env);
-        string argList = string.Join(", ", args.Select((a, i) => AbiArg(a, inst.PassesBf16AsBits, inst.ParamExt(_c.Target, i))));
-        string fnType = inst.IsExternalC ? $"{inst.LlvmRet} ({inst.LlvmParamTypes}) " : $"{inst.LlvmRet} ";
-        string call = $"call {inst.CcPrefix}{inst.RetExt(_c.Target)}{fnType}@{Compiler.Quote(inst.Symbol)}({argList})";
-        if (inst.Ret is VoidType)
+        var abi = _c.LowerSignature(inst);
+        // An external C routine's call names its function type, so the variadic part is typed.
+        string fnType = inst.IsExternalC
+            ? $"{_c.AbiRet(inst, withAttrs: false)} ({string.Join(", ", _c.AbiParams(inst, withAttrs: false))}) "
+            : $"{_c.AbiRet(inst, withAttrs: false)} ";
+        return EmitAbiCall($"{inst.CcPrefix}{RetExtOf(abi, inst.RetExt(_c.Target))}{fnType}@{Compiler.Quote(inst.Symbol)}", abi,
+            args, inst.Params, inst.Ret, inst.PassesBf16AsBits, i => inst.ParamExt(_c.Target, i));
+    }
+
+    /// The return value's extension attribute, which only a Direct return carries.
+    private static string RetExtOf(AbiSig sig, string ext) => sig.Ret.Pass == AbiPass.Direct ? ext : "";
+
+    /// Emits a call through the C ABI lowering: coerced arguments go through a buffer as their parts, indirect ones as
+    /// a pointer to a copy, an `sret` result through a slot passed first, and a coerced result back through a
+    /// buffer. `head` is everything between `call` and the argument list.
+    private Val EmitAbiCall(string head, AbiSig sig, List<Val> args, IReadOnlyList<DType> paramTypes, DType ret,
+        bool bf16AsBits, Func<int, string> ext)
+    {
+        var argList = new List<string>();
+        string? slot = null;
+        if (sig.Sret)
+        {
+            slot = NewBuffer(ret);
+            argList.Add($"{sig.Ret.Parts[0].Llvm} {slot}");
+        }
+        for (int i = 0; i < args.Count; i++)
+        {
+            var a = args[i];
+            var info = i < sig.Params.Count ? sig.Params[i] : null;
+            switch (info?.Pass)
+            {
+                case AbiPass.Coerce:
+                {
+                    string buffer = NewBuffer(paramTypes[i]);
+                    Line($"store {a.Type.Llvm} {a.Op}, ptr {buffer}");
+                    foreach (var part in info.Parts)
+                        argList.Add($"{part.Llvm}{part.Attrs} {EmitTmp($"load {part.Llvm}, ptr {BufferAt(buffer, part.Offset)}")}");
+                    break;
+                }
+                case AbiPass.Indirect or AbiPass.ByVal:
+                {
+                    string copy = NewBuffer(paramTypes[i]);
+                    Line($"store {a.Type.Llvm} {a.Op}, ptr {copy}");
+                    argList.Add($"{info.Parts[0].Llvm} {copy}");
+                    break;
+                }
+                default:
+                    argList.Add(AbiArg(a, bf16AsBits, info is null ? "" : ext(i)));
+                    break;
+            }
+        }
+        string call = $"call {head}({string.Join(", ", argList)})";
+        if (sig.Sret)
+        {
+            Line(call);
+            return new Val(EmitTmp($"load {ret.Llvm}, ptr {slot}"), ret);
+        }
+        if (ret is VoidType)
         {
             Line(call);
             return new Val("", VoidType.Instance);
         }
-        return AbiResult(EmitTmp(call), inst.Ret, inst.PassesBf16AsBits);
+        if (sig.Ret.Pass == AbiPass.Coerce)
+        {
+            string part = sig.Ret.Parts[0].Llvm;
+            string buffer = NewBuffer(ret);
+            Line($"store {part} {EmitTmp(call)}, ptr {buffer}");
+            return new Val(EmitTmp($"load {ret.Llvm}, ptr {buffer}"), ret);
+        }
+        return AbiResult(EmitTmp(call), ret, bf16AsBits);
     }
 
     /// An argument in the `...` part of a C variadic call gets C's default promotions: untyped integer literals
@@ -1383,16 +1487,11 @@ public sealed class FunctionGen
         string cc = ct.CallConv switch { "fast" => "fastcc ", "cold" => "coldcc ", _ => "" };
         const bool bits = true;
         bool c = ct.CallConv != "fast";
-        string argList = string.Join(", ", args.Select((a, i) => AbiArg(a, bits, c ? CAbi.Ext(_c.Target, ct.Params[i], isReturn: false) : "")));
-        string ret = bits && Instance.IsBf16(ct.Ret) ? "i16" : ct.Ret.Llvm;
+        var sig = _c.LowerSignature(ct.Params, ct.Ret, ct.CallConv, pos);
+        string ret = Compiler.AbiRetType(sig, bits && Instance.IsBf16(ct.Ret) ? "i16" : ct.Ret.Llvm);
         string retExt = c ? CAbi.Ext(_c.Target, ct.Ret, isReturn: true).TrimStart() : "";
-        string call = $"call {cc}{(retExt.Length > 0 ? retExt + " " : "")}{ret} {fp.Op}({argList})";
-        if (ct.Ret is VoidType)
-        {
-            Line(call);
-            return new Val("", VoidType.Instance);
-        }
-        return AbiResult(EmitTmp(call), ct.Ret, bits);
+        string head = $"{cc}{RetExtOf(sig, retExt.Length > 0 ? retExt + " " : "")}{ret} {fp.Op}";
+        return EmitAbiCall(head, sig, args, ct.Params, ct.Ret, bits, i => c ? CAbi.Ext(_c.Target, ct.Params[i], isReturn: false) : "");
     }
 
     /// A call argument as the callee's ABI wants it: a BF16 goes to a Tessera routine as its i16 bits.
@@ -1619,6 +1718,20 @@ public sealed class FunctionGen
                 {
                     if (r.Value is null) throw Err(r.Pos, $"'{_decl.DisplayName}' must return a {_inst.Ret}");
                     var v = Eval(r.Value, _inst.Ret);
+                    if (_sig.Sret)
+                    {
+                        Line($"store {_inst.Ret.Llvm} {v.Op}, ptr %ret.slot");
+                        Terminate("ret void");
+                        break;
+                    }
+                    if (_sig.Ret.Pass == AbiPass.Coerce)
+                    {
+                        string buffer = NewBuffer(_inst.Ret);
+                        Line($"store {_inst.Ret.Llvm} {v.Op}, ptr {buffer}");
+                        string part = _sig.Ret.Parts[0].Llvm;
+                        Terminate($"ret {part} {EmitTmp($"load {part}, ptr {buffer}")}");
+                        break;
+                    }
                     if (_inst.PassesBf16AsBits && Instance.IsBf16(_inst.Ret))
                         v = new Val(EmitTmp($"bitcast bfloat {v.Op} to i16"), IntType.U(16));
                     Terminate($"ret {_inst.LlvmRet} {v.Op}");

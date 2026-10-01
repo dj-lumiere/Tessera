@@ -152,17 +152,29 @@ public sealed partial class Compiler
 
         foreach (var p in sig.Params) EnsureTypeDefined(p);
         EnsureTypeDefined(sig.Ret);
+        CheckCBoundary(sig);
 
         if (sig.IsExternalC)
         {
             if (_declaredSymbols.Add(sig.Symbol))
-                _declares.Add((sig.Symbol, $"declare {sig.CcPrefix}{sig.RetExt(Target)}{sig.LlvmRet} @{Quote(sig.Symbol)}({sig.LlvmParamDecls(Target)}){sig.FnAttrs}"));
+                _declares.Add((sig.Symbol, $"declare {sig.CcPrefix}{AbiRet(sig, withAttrs: true)} @{Quote(sig.Symbol)}({string.Join(", ", AbiParams(sig, withAttrs: true))}){sig.FnAttrs}"));
         }
         else if (!sig.IsTemplate)
         {
             _pending.Enqueue(sig);
         }
         return sig;
+    }
+
+    /// Where the target's C ABI for aggregates isn't implemented yet, a record can still pass by value between Tessera
+    /// routines (as an LLVM value), but not across a C boundary, where C would expect the ABI's own convention.
+    private void CheckCBoundary(Instance sig)
+    {
+        if (AggregateAbiKnown || sig.CallConv == "fast" || (!sig.IsExternalC && sig.Decl.Attr("export") is null)) return;
+        foreach (var t in sig.Params.Append(sig.Ret))
+            if (IsAggregate(t))
+                throw new CompileError(sig.Decl.Pos,
+                    $"passing {t} by value across the C ABI isn't implemented for {Target.Arch} yet; pass a Ptr<{t}>");
     }
 
     private void EmitInstance(Instance inst)
@@ -175,7 +187,7 @@ public sealed partial class Compiler
             _exported.Add(name);
             // A stdlib export is a default the program may replace, so its name is weak.
             string weak = inst.Decl.IsLibrary ? "weak " : "";
-            _functions.AppendLine($"@{Quote(name)} = {weak}alias {inst.LlvmRet} ({inst.LlvmParamTypes}), ptr @{Quote(inst.Symbol)}");
+            _functions.AppendLine($"@{Quote(name)} = {weak}alias {AbiRet(inst, withAttrs: false)} ({string.Join(", ", AbiParams(inst, withAttrs: false))}), ptr @{Quote(inst.Symbol)}");
             _functions.AppendLine();
         }
     }
