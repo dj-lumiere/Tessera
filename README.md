@@ -22,31 +22,30 @@ pieces of the level below.
 | **solution** | The code compiled together to make one application. |
 
 ```tessera
-record IndexPair
-    left  : USize
-    right : USize
-
-routine two_sum(%list: @List<S32>, %target: S32) -> Option<IndexPair>
+routine two_sum(%list: @S32, %length: USize, %target: S32) -> Option<(USize, USize)>
     block entry():
         jump search_left(0)
 
     block search_left(%left_idx: USize):
-        branch %left_idx.ge(%list.length.load())
+        branch %left_idx.ge(%length)
             ? return(.Absent)
             : search_right(%left_idx, %left_idx.add(1))
 
     block search_right(%left_idx: USize, %right_idx: USize):
-        branch %right_idx.ge(%list.length.load()) ? search_left(%left_idx.add(1)) : continue
-        %left_val  : S32 = %list.get(%left_idx)
-        %right_val : S32 = %list.get(%right_idx)
+        branch %right_idx.ge(%length)
+            ? search_left(%left_idx.add(1))
+            : continue
+        %left_val  : S32 = %list.stride(%left_idx).load()
+        %right_val : S32 = %list.stride(%right_idx).load()
         branch %left_val.add(%right_val).eq(%target)
-            ? return(.Present(IndexPair { left: %left_idx, right: %right_idx }))
+            ? return(.Present({ %left_idx, %right_idx }))
             : search_right(%left_idx, %right_idx.add(1))
 ```
 
 Two blocks make the two loops of an O(n²) search. Each loop's state travels as block parameters, `continue` goes on
-with the next line when the inner loop isn't done, and the list is held by pointer: `%list.length` is the address of
-a field, read with `load`, while `get` takes the pointer itself.
+with the next line when the inner loop isn't done, and the numbers come as a pointer and a length: `stride` is the
+address of one, read with an explicit `load`. The answer is an `Option` of a tuple, built with `{ ... }` from where
+it goes.
 
 What sets it apart:
 
