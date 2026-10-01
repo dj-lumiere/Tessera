@@ -9,7 +9,7 @@ namespace Tessera;
 /// - a doc comment sits directly on its declaration, above any attribute lines;
 /// - a top-level section comment (a group of `//` lines with a `// --`, `// ==`, or `// ──` divider) has a blank line
 ///   before and after it;
-/// - `:`, `=`, and `->` have one space on each side, and consecutive lines of one kind (bindings, claims, record
+/// - `:`, `=`, `->`, and `<-` have one space on each side, and consecutive lines of one kind (bindings, claims, record
 ///   fields, choice members, variant cases, `when` arms) align them.
 /// - an inline comment sits exactly two spaces after its code; comments are never aligned with each other.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 8 spaces
@@ -58,7 +58,7 @@ public static class Formatter
 
     private enum Kind { Binding, Claim, Field, Arm, Conform }
 
-    /// One alignable line split into its columns: `name : type = rest`, `claim name : rest`, `name : rest`,
+    /// One alignable line split into its columns: `name : type = rest`, `claim name : type <- rest`, `name : rest`,
     /// `left -> rest`, or `conform C<X> when rest`.
     private sealed record Row(int Index, Kind Kind, int Indent, string Name, string? Type, string Rest);
 
@@ -93,7 +93,7 @@ public static class Formatter
             else if (SplitBinding(trimmed) is { } b)
                 row = new Row(i, Kind.Binding, indent, b.Name, b.Type, b.Tail);
             else if (SplitClaim(trimmed) is { } c)
-                row = new Row(i, Kind.Claim, indent, c.Name, null, c.Type);
+                row = new Row(i, Kind.Claim, indent, c.Name, c.Type, c.Contents);
             else if (context is not null && indent == 4 && SplitField(trimmed) is { } f)
                 row = new Row(i, Kind.Field, indent, f.Name, null, f.Tail);
             else if (indent == 0 && SplitConformWhen(trimmed) is { } cw)
@@ -131,7 +131,9 @@ public static class Formatter
                 result[r.Index] = r.Kind switch
                 {
                     Kind.Binding => $"{pad}{r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} = {r.Rest}",
-                    Kind.Claim => $"{pad}claim {r.Name.PadRight(nameWidth)} : {r.Rest}",
+                    Kind.Claim => r.Rest.Length == 0
+                        ? $"{pad}claim {r.Name.PadRight(nameWidth)} : {r.Type}"
+                        : $"{pad}claim {r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} <- {r.Rest}",
                     Kind.Field => $"{pad}{r.Name.PadRight(nameWidth)} : {r.Rest}",
                     Kind.Conform => $"{pad}{r.Name.PadRight(nameWidth)} when {r.Rest}",
                     _ => $"{pad}{r.Name.PadRight(nameWidth)} -> {r.Rest}",
@@ -175,8 +177,9 @@ public static class Formatter
     /// A value's name starts with a letter or `_`; `%` may start one too.
     private static bool IsNameStart(char c) => char.IsLetter(c) || c is '_' or '%';
 
-    /// `claim name : Type`; a line with anything after the type (an initializer, which is an error) isn't one.
-    private static (string Name, string Type)? SplitClaim(string s)
+    /// `claim name : Type <- contents`, or `claim name : Type` (an error the builder reports, kept as written); a line
+    /// with `=` after the type (also an error) isn't one.
+    private static (string Name, string Type, string Contents)? SplitClaim(string s)
     {
         if (!s.StartsWith("claim ")) return null;
         string body = s[6..].TrimStart();
@@ -188,7 +191,12 @@ public static class Formatter
             return null;
         string type = body[(colon + 1)..].Trim();
         if (type.Length == 0 || TopLevelIndex(type, 0, "=") >= 0) return null;
-        return (body[..i], type);
+        int arrow = TopLevelIndex(type, 0, "<-");
+        if (arrow < 0) return (body[..i], type, "");
+        string contents = type[(arrow + 2)..].Trim();
+        type = type[..arrow].Trim();
+        if (type.Length == 0 || contents.Length == 0) return null;
+        return (body[..i], type, contents);
     }
 
     /// `name: rest` inside a record, choice, or variant (a field and its type, a member and its value, or a case and its
@@ -233,7 +241,7 @@ public static class Formatter
                 continue;
             }
             if (c == '/' && i + 1 < s.Length && s[i + 1] == '/') return -1;
-            if (c is '(' or '[' or '{' or '<') depth++;
+            if (c is '(' or '[' or '{' || IsOpenAngle(s, i)) depth++;
             else if (c is ')' or ']' or '}') depth--;
             else if (c == '>' && !(i > 0 && s[i - 1] == '-')) depth--;
             else if (depth == 0 && string.CompareOrdinal(s, i, token, 0, token.Length) == 0)
@@ -489,12 +497,14 @@ public static class Formatter
     }
 
     /// `<` or `>` of a type argument list (`Dict<K, V>`), whose commas are not break points. Tessera has no comparison
-    /// operators, so every angle bracket is one, except the `>` of `->`.
+    /// operators, so every angle bracket is one, except the `>` of `->` and the `<` of `<-`.
     private static bool IsAngle(string s, int i, out int step)
     {
-        step = s[i] == '<' ? 1 : s[i] == '>' && !(i > 0 && s[i - 1] == '-') ? -1 : 0;
+        step = IsOpenAngle(s, i) ? 1 : s[i] == '>' && !(i > 0 && s[i - 1] == '-') ? -1 : 0;
         return step != 0;
     }
+
+    private static bool IsOpenAngle(string s, int i) => s[i] == '<' && !(i + 1 < s.Length && s[i + 1] == '-');
 
     /// The first `(`, `[`, or `{` group at the line's top level whose own depth holds a comma: its bounds and commas.
     private static (int Open, int Close, List<int> Commas)? FirstCommaList(string s)
@@ -616,7 +626,7 @@ public static class Formatter
         int depth = 0;
         for (int i = open; i < s.Length; i++)
         {
-            if (s[i] == '<') depth++;
+            if (IsOpenAngle(s, i)) depth++;
             else if (s[i] == '>' && !(i > 0 && s[i - 1] == '-') && --depth == 0) return i;
         }
         return null;

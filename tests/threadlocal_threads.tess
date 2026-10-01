@@ -1,0 +1,81 @@
+// #threadlocal gives each thread its own copy of a global, starting from the declared value: a second thread sees
+// that value, not what the first thread stored, while a plain global is shared. The worker starts through the OS
+// (pthread_create, or CreateThread with #callconv("stdcall") on Windows).
+
+import Standard::Format
+
+#threadlocal
+global COUNTER: @U64 <- 100
+
+global SHARED: @U64
+
+/// What the worker saw, written back through its argument.
+record Seen
+    counter : U64
+    after   : U64
+    shared  : U64
+
+routine work(%seen: @Seen) -> Void
+    block entry():
+        %seen.counter.store(COUNTER.load())
+        COUNTER.load().add(5).store_into(COUNTER)
+        %seen.after.store(COUNTER.load())
+        %seen.shared.store(SHARED.load())
+        return()
+
+#[target(os: not "windows"), external("c"), symbol("pthread_create")]
+routine pthread_create(%thread: @Addr, %attr: Addr, %start: Callable<(Addr,), Addr>,
+        %arg: Addr) -> CInt
+
+#[target(os: not "windows"), external("c"), symbol("pthread_join")]
+routine pthread_join(%thread: Addr, %result: Addr) -> CInt
+
+#target(os: not "windows")
+routine posix_worker(%arg: Addr) -> Addr
+    block entry():
+        work(%arg.cast<Seen>())
+        return(null)
+
+#target(os: not "windows")
+routine run_worker(%seen: @Seen) -> Void
+    block entry():
+        claim %thread : @Addr <- uninit
+        %created : CInt = pthread_create(%thread, null, posix_worker, %seen)
+        %joined  : CInt = pthread_join(%thread.load(), null)
+        return()
+
+#[target(os: "windows"), external("c"), symbol("CreateThread"), callconv("stdcall")]
+routine create_thread(%attrs: Addr, %stack: USize,
+        %start: Callable<#callconv("stdcall"), (Addr,), U32>, %arg: Addr, %flags: U32,
+        %id: Addr) -> Addr
+
+#[target(os: "windows"), external("c"), symbol("WaitForSingleObject"), callconv("stdcall")]
+routine wait_for_single_object(%handle: Addr, %millis: U32) -> U32
+
+#[target(os: "windows"), external("c"), symbol("CloseHandle"), callconv("stdcall")]
+routine close_handle(%handle: Addr) -> S32
+
+#[target(os: "windows"), callconv("stdcall")]
+routine windows_worker(%arg: Addr) -> U32
+    block entry():
+        work(%arg.cast<Seen>())
+        return(0)
+
+#target(os: "windows")
+routine run_worker(%seen: @Seen) -> Void
+    block entry():
+        %thread : Addr = create_thread(null, 0, windows_worker, %seen, 0, null)
+        %waited : U32  = wait_for_single_object(%thread, U32.MAX)
+        %closed : S32  = close_handle(%thread)
+        return()
+
+routine main() -> S32
+    block entry():
+        1.store_into(COUNTER)
+        7.store_into(SHARED)
+        claim %seen : @Seen <- { counter: 0, after: 0, shared: 0 }
+        run_worker(%seen)
+        print("worker saw COUNTER {%seen.counter.load()}, left it at {%seen.after.load()}\n")
+        print("worker saw SHARED {%seen.shared.load()}\n")
+        print("main still has COUNTER {COUNTER.load()}\n")
+        return(0)

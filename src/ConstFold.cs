@@ -172,11 +172,11 @@ public sealed partial class Compiler
         string ownerName = owner?.OwnerName ?? r.Owner?.Name ?? "";
         var c = FindPreset(ownerName, r.Name, env.File, r.Pos, r.Path)
                 ?? throw new CompileError(r.Pos, $"unknown preset '{(ownerName == "" ? r.Name : ownerName + "." + r.Name)}'");
-        if (c.IsGlobal) throw new CompileError(r.Pos, $"'{c.Name}' is a global, not a compile-time constant");
+        if (c.IsStorage)
+            throw new CompileError(r.Pos, $"'{c.Name}' is in memory, not a buildtime constant: its name is an address");
         var cenv = new TypeEnv(c.File);
         if (owner is not null) cenv.Bind("Self", owner);
         var t = ResolveType(c.Type, cenv);
-        if (t is ArrayType) throw new CompileError(r.Pos, $"'{c.Name}' is an array, not a single constant");
         return PresetConst(c, t, owner, r.Pos);
     }
 
@@ -191,7 +191,7 @@ public sealed partial class Compiler
     {
         // `N.add(1)` with N a preset is a method call on that preset.
         if (n.Owner.Args.Count == 0 && env.Get(n.Owner.Name) is null
-            && FindPreset("", n.Owner.Name, env.File, n.Pos, n.Owner.Path) is { IsGlobal: false })
+            && FindPreset("", n.Owner.Name, env.File, n.Pos, n.Owner.Path) is { IsStorage: false })
             return FoldMethod(new PresetRef(null, n.Owner.Name, n.Owner.Pos) { Path = n.Owner.Path }, n.Name, n.Args, hint, env, n.Pos);
         var owner = TryResolveType(n.Owner, env);
         if (owner is null) throw new CompileError(n.Owner.Pos, $"unknown type '{n.Owner.Name}'");

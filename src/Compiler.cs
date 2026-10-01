@@ -294,6 +294,7 @@ public sealed partial class Compiler
     /// constant is an error where it's written. Presets on a generic owner are folded where they're used.
     private void CheckPreset(PresetDecl c)
     {
+        if (c.Attr("threadlocal") is { } tl) CheckThreadLocal(c, tl);
         var env = new TypeEnv(c.File);
         DType? self = null;
         if (c.Owner is not null)
@@ -304,11 +305,26 @@ public sealed partial class Compiler
             env.Bind("Self", self);
         }
         var t = ResolveType(c.Type, env);
-        if (c.IsGlobal || t is ArrayType)
+        if (!c.IsStorage && t is ArrayType)
+            throw new CompileError(c.Pos, $"an array preset lives in memory: preset {c.Name}: @{t} <- {{ ... }}");
+        if (c.IsStorage)
         {
             if (c.Value is not null) PresetInitializer(c.Value, t, env);
         }
         else PresetConst(c, t, self, c.Pos);
+    }
+
+    /// `#threadlocal` gives each thread its own copy of a global. A preset is read-only, so the threads can share one,
+    /// and a target without an operating system has no threads to give copies to.
+    private void CheckThreadLocal(PresetDecl c, Attribute tl)
+    {
+        if (!c.IsGlobal)
+            throw new CompileError(tl.Pos, $"#threadlocal marks a global; '{c.Name}' is a preset, which is read-only, so every thread can share it");
+        if (tl.Args.Count != 0)
+            throw new CompileError(tl.Pos, "#threadlocal takes no arguments");
+        if (!Target.HasOs)
+            throw new CompileError(tl.Pos,
+                $"'{c.Name}' is #threadlocal, and target {Target.Arch}-{Target.Os}-{Target.Abi} has no operating system to run threads");
     }
 
     /// Instantiates a routine that needs no type arguments: user code is always checked, even if unused.
@@ -671,7 +687,7 @@ public sealed partial class Compiler
             return new ChoiceType(e, it);
         }
 
-        if (t.Args.Count == 0 && FindPreset("", t.Name, env.File, t.Pos, t.Path) is { IsGlobal: false })
+        if (t.Args.Count == 0 && FindPreset("", t.Name, env.File, t.Pos, t.Path) is { IsStorage: false })
             return new ConstArg(ConstInt(new TypeArgType(t), env, t.Pos));
 
         throw new CompileError(t.Pos, $"unknown type '{t}'");
@@ -691,11 +707,23 @@ public sealed partial class Compiler
         return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), ResolveType(ret.Type, env, allowVoid: true));
     }
 
-    /// `#callconv("fast")` or `#callconv("cold")`; every other routine uses the default, the C convention.
+    /// `#callconv("fast")`, `#callconv("cold")`, or `#callconv("stdcall")`; every other routine uses the default, the C
+    /// convention.
     public static string CheckCallConv(Attribute attr) => attr.First switch
     {
-        "fast" or "cold" => attr.First,
-        _ => throw new CompileError(attr.Pos, $"#callconv takes \"fast\" or \"cold\", not {(attr.First is null ? "nothing" : $"\"{attr.First}\"")}"),
+        "fast" or "cold" or "stdcall" => attr.First,
+        _ => throw new CompileError(attr.Pos,
+            $"#callconv takes \"fast\", \"cold\", or \"stdcall\", not {(attr.First is null ? "nothing" : $"\"{attr.First}\"")}"),
+    };
+
+    /// The LLVM convention a call or definition is written with. `stdcall` is the Windows API's: callee-popped on 32-bit
+    /// x86, and the C convention on every other target, as C compilers treat it.
+    public static string CcPrefix(string callConv, BuildTarget target) => callConv switch
+    {
+        "fast" => "fastcc ",
+        "cold" => "coldcc ",
+        "stdcall" when target.Arch == "x86" => "x86_stdcallcc ",
+        _ => "",
     };
 
     /// The integer value of an Array length or other integer generic argument.
@@ -889,7 +917,8 @@ public sealed partial class Compiler
 
     private readonly Dictionary<string, string> _globalVars = [];
 
-    /// A global is a private mutable global variable, emitted once on first use: its value, or all-zero bytes.
+    /// A global is a private mutable global variable, emitted once on first use: its value, or all-zero bytes. A
+    /// `#threadlocal` one is LLVM's `thread_local`: each thread starts from a copy of that value.
     public string GlobalVariable(PresetDecl c, DType t, TypeEnv env)
     {
         string symbol = MangleVariable(c, null);
@@ -898,12 +927,14 @@ public sealed partial class Compiler
         name = "@" + symbol;
         _globalVars[symbol] = name;
         string init = c.Value is null ? "zeroinitializer" : PresetInitializer(c.Value, t, env);
-        _globals.AppendLine($"{name} = internal global {t.Llvm} {init}");
+        string threadLocal = c.Attr("threadlocal") is null ? "" : "thread_local ";
+        _globals.AppendLine($"{name} = internal {threadLocal}global {t.Llvm} {init}");
         return name;
     }
 
-    /// A const of Array type is read-only static data: a private constant global, emitted once on first use.
-    public string PresetArrayGlobal(PresetDecl c, ArrayType t, TypeEnv env)
+    /// A preset in memory (`preset K: @T <- value`) is read-only static data: a private constant global, emitted once
+    /// on first use.
+    public string PresetStorageGlobal(PresetDecl c, DType t, TypeEnv env)
     {
         string key = MangleVariable(c, c.Owner is null ? null : env.Get("Self"));
         if (_presetArrays.TryGetValue(key, out var name)) return name;
@@ -927,9 +958,33 @@ public sealed partial class Compiler
                 throw new CompileError(lit.Pos, $"{a} needs {a.Count} element(s), got {lit.Elements.Count}");
             return "[" + string.Join(", ", lit.Elements.Select(x => $"{a.Elem.Llvm} {PresetInitializer(x, a.Elem, env)}")) + "]";
         }
+        if (t is PtrType or CallableType) return PointerInitializer(e, t, env);
         if (t is not (IntType or BoolType or FloatType or ChoiceType) && BitRecordWidth(t) is null)
             throw new CompileError(e.Pos, $"a preset array element or global initializer can't be a {t.Name}");
         return ConstLlvm(Typed(Fold(e, t, env), t, e.Pos));
+    }
+
+    /// A pointer known when the program is linked: `null`, or the name of another global or preset in memory (its
+    /// address). A thread-local's address differs per thread, so it isn't one.
+    private string PointerInitializer(Expr e, DType t, TypeEnv env)
+    {
+        if (e is NullLit) return "null";
+        if (t is PtrType && e is PresetRef { Owner: null } r
+            && FindPreset("", r.Name, env.File, r.Pos, r.Path) is { } target
+            && target.IsStorage)
+        {
+            if (target.Attr("threadlocal") is not null)
+                throw new CompileError(e.Pos, $"'{target.Name}' is #threadlocal: its address differs per thread, so it can't initialize a global");
+            var targetEnv = new TypeEnv(target.File);
+            var pointee = ResolveType(target.Type, targetEnv);
+            var address = new PtrType(pointee);
+            if (!address.Equals(t) && t is not PtrType { Pointee: null })
+                throw new CompileError(e.Pos, $"expected {t}, found {address}");
+            return target.IsGlobal
+                ? GlobalVariable(target, pointee, targetEnv)
+                : PresetStorageGlobal(target, pointee, targetEnv);
+        }
+        throw new CompileError(e.Pos, $"a {t.Name} in memory starts as null or as the address of a global or preset in memory");
     }
 
     // ── String literals ─────────────────────────────────────────────────────

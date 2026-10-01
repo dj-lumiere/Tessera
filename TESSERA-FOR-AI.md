@@ -37,18 +37,14 @@ import Standard::Os
 
 routine main() -> S32
     block entry():
-        claim %fd : @FdWriter
-        FdWriter.stdout().store_into(%fd)
-        claim %out : @BufWriter<FdWriter>
+        claim %fd  : @FdWriter            <- FdWriter.stdout()
+        claim %out : @BufWriter<FdWriter> <- uninit
         %out.construct(%fd)
-        claim %alloc : @Allocator
-        make_heap_allocator().store_into(%alloc)
-
-        claim %list : @List<S64>
-        List<S64>.construct(%alloc).store_into(%list)
+        claim %alloc : @Allocator <- make_heap_allocator()
+        claim %list  : @List<S64> <- .construct(%alloc)
         %list.push(42)
         write_str(%out, "first: ")
-        %list.get(0).represent(%out)
+        %list.load().get(0).represent(%out)
         write_line(%out)
 
         %list.destruct()
@@ -85,22 +81,40 @@ routine main() -> S32
   `%free_fn: Callable<…> = %alloc.free_fn.load()`, then `%free_fn.call(%state, %raw)`. `%alloc.free_fn(...)` is an
   error.
 - A field of an SSA record value is read with plain `=`: `%key: K = %pair.key`.
-- `claim %p : @T` claims an uninitialized slot for the routine call (a stack slot in practice); its type comes from the binding, which must be written `@T` (anything else is a parse error), and the value goes in
-  with `%p.store(%v)`, or `%v.store_into(%p)` at the end of the chain that makes it:
-  `List<S64>.construct(%alloc).store_into(%list)` (no `%list_val` for a single store). An array value comes from `Array<T, N> { 1, 2, %x }` or `Array<T, N>.from_ptr(%first)`;
+- `claim %p : @T <- %v` claims a slot for the routine call (a stack slot in practice) and stores `%v` in it where the
+  claim stands; its type comes from the binding, which must be written `@T` (anything else is a parse error). The
+  contents are required: `claim %list : @List<S64> <- .construct(%alloc)`, no `%list_val` and no separate store. A
+  slot that a routine fills later (an out parameter, `%out.construct(...)`, an iterator's slot) says so:
+  `claim %p : @T <- uninit`, a word that means something only there. A claim without `<-` is an error, so no slot is
+  left unfilled by accident. `<-` fills memory and `=` only binds a name to a value, so `claim %p : @T = %v` is an
+  error too. An array value comes from `Array<T, N> { 1, 2, %x }` or `Array<T, N>.from_ptr(%first)`;
   a bare `[1, 2]` isn't a value. Where the type is known from where the value goes (a typed binding, a `preset` or
   `global`, an argument, an element of an outer literal, the pointer of `store_into`), the type can be left off:
-  `preset SORTED: Array<S64, 3> = { -8, 0, 7 }`, `%p : Point = { x: 1, y: 2 }`, like `.absent()`. Write the type
+  `preset SORTED: @Array<S64, 3> <- { -8, 0, 7 }`, `%p : Point = { x: 1, y: 2 }`, like `.absent()`. Write the type
   where it isn't on the same line: `sum2({ 7, 8 })` compiles, but prefer `sum2(Array<S64, 2> { 7, 8 })`. A receiver
   gives it no type: `{ 1, 2 }.eq(...)` is an error. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot.
 - Heap memory goes through an allocator: `allocate<T>(%alloc, %count)`, `%p.free(%alloc)`.
-- `global NAME: T [= literal]` is mutable static storage (all-zero without a value). Its name is a `@T`:
-  `TICKS.load()`, `STATS.calls.store(%n)`. A `preset` is read-only; a global isn't a compile-time constant.
-- A `preset` is folded by the compiler, and only from literals, other presets, integer and `Bool` arithmetic and
+- **Memory is declared `@T`, and its contents go in with `<-`.** A name that is an address is written with its
+  pointer type, and the declared type is the name's type everywhere:
+  `claim %p : @T <- %v` (a stack slot, `<- uninit` if a routine fills it), `global NAME: @T [<- value]` (mutable, all-zero without a value),
+  `preset NAME: @T <- value` (read-only). `preset NAME: T = value` is a value, not memory: folded at build time, with
+  no address. A global or a preset in memory is part of the program image, there before `main` runs, so its contents
+  are known at build time: literals, presets, `null`, `{ ... }`, or the name of another global or preset in memory (its
+  address; a global holding a pointer is `@@T`: `global HEAD: @@Node <- null`). Use them as `TICKS.load()`,
+  `STATS.calls.store(%n)`, `K.get(%i)`; writing a preset's memory is a build error. Neither kind is a buildtime
+  constant: a preset value is (`Array<S64, N>` with `preset N: USize = 4`). An array preset is always in memory.
+- `#threadlocal global NAME: @T [<- value]` gives each thread its own copy, starting from the value; the name is the
+  running thread's copy, so don't hand it to another thread expecting that thread's copy. A preset can't be
+  thread-local (read-only, so one copy serves every thread), a thread-local's address can't initialize another
+  global, and a target without an OS has no thread-locals. `#threadlocal` takes no arguments yet.
+- Every routine uses the C calling convention unless `#callconv` says `"fast"`, `"cold"`, or `"stdcall"`. `stdcall` is
+  the Windows API's (`CreateThread`, its thread routine): callee-popped on 32-bit x86, the C convention elsewhere,
+  so one declaration serves every target. A `Callable` carries it: `Callable<#callconv("stdcall"), (Addr,), U32>`.
+- A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
   conversions (`add`, `shl`, `bitor`, `to_u128`, `to_u8_wrap`, …), F32/F64 `add`/`sub`/`mul`/`div`/`neg`,
   `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and F128. A routine call is an error; nothing
-  runs at compile time. Overflow or an out-of-range conversion in a preset is a compile error.
+  runs at build time. Overflow or an out-of-range conversion in a preset is a build error.
 - `%p.cast<U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
   (`Bool`, `Char`, choices). Pointers may alias.
 
@@ -255,8 +269,7 @@ Iterating a collection (`next` returns `Option<T>`):
 ```tessera
 routine sum_list(%list: @List<S64>) -> S64
     block entry():
-        claim %iter : @ListIter<S64>
-        ListIter<S64>.construct(%list).store_into(%iter)
+        claim %iter : @ListIter<S64> <- .construct(%list)
         jump next(%iter, 0)
 
     block next(%iter: @ListIter<S64>, %total: S64):
@@ -352,7 +365,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 `@Array<T, N>` that is the i-th whole array, so array elements are `%arr.get(%i)` / `%arr.set(%i, %v)` / `%arr.at(%i)`
 (bounds checked), or `%arr.to_ptr().stride(%i).load()` unchecked. Literals name their type: `Array<S32, 3> { 1, 2, 3 }`,
 `Vector<F32, 4> { ... }`. The same holds for array fields (`%node.keys.get(%i)`) and
-preset arrays (`K.get(%i)`).
+array presets (`K.get(%i)`, with `preset K: @Array<T, N> <- { ... }`).
 
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
 `destruct`:

@@ -13,16 +13,10 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     public bool IsTemplate => Decl.Attr("template") is not null;
     public bool NoReturn => Decl.Attr("noreturn") is not null;
     public bool Variadic => Decl.Attr("variadic") is not null;
-    /// "default" (the C convention, which every routine uses unless it asks otherwise), "fast", or "cold".
+    /// "default" (the C convention, which every routine uses unless it asks otherwise), "fast", "cold", or "stdcall".
     public string CallConv => Decl.Attr("callconv")?.First ?? "default";
 
-    /// `fastcc ` / `coldcc ` / empty for the default.
-    public string CcPrefix => CallConv switch
-    {
-        "fast" => "fastcc ",
-        "cold" => "coldcc ",
-        _ => "",
-    };
+    public string CcPrefix(BuildTarget target) => Compiler.CcPrefix(CallConv, target);
 
     public string FnAttrs
     {
@@ -157,7 +151,7 @@ public sealed partial class Compiler
         if (sig.IsExternalC)
         {
             if (_declaredSymbols.Add(sig.Symbol))
-                _declares.Add((sig.Symbol, $"declare {sig.CcPrefix}{AbiRet(sig, withAttrs: true)} @{Quote(sig.Symbol)}({string.Join(", ", AbiParams(sig, withAttrs: true))}){sig.FnAttrs}"));
+                _declares.Add((sig.Symbol, $"declare {sig.CcPrefix(Target)}{AbiRet(sig, withAttrs: true)} @{Quote(sig.Symbol)}({string.Join(", ", AbiParams(sig, withAttrs: true))}){sig.FnAttrs}"));
         }
         else if (!sig.IsTemplate)
         {

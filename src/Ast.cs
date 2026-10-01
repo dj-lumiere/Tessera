@@ -103,13 +103,16 @@ public sealed record VariantDecl(
 
 public sealed record VariantCase(string Name, TypeRef? Payload, Pos Pos);
 
-/// `preset NAME: T = value`, or with `IsGlobal`, `global NAME: T [= value]`: mutable static storage whose name is a
-/// `Ptr<T>`, all-zero when it has no value.
+/// `preset NAME: T = value`, a value; `preset NAME: @T <- value`, read-only memory; or with `IsGlobal`,
+/// `global NAME: @T [<- value]`, mutable memory, all-zero without a value. In memory (`IsStorage`), Type is the
+/// pointee T and the name is its address; the contents are part of the program image, there before `main` runs.
 public sealed record PresetDecl(
     string File, List<Attribute> Attributes, TypeRef? Owner, string Name, TypeRef Type, Expr? Value, Pos Pos)
     : Decl(File, Attributes, Pos)
 {
     public bool IsGlobal { get; init; }
+    /// A global, or a preset declared `@T`: the name is an address, not a value.
+    public bool IsStorage { get; init; }
 }
 
 /// A top-level `conform C<X, ...> [when ...]`, with `require` clauses naming its type parameters. It declares a
@@ -213,7 +216,11 @@ public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) :
 
 /// The slot of `claim %p : @T`, which parses as a binding of this: an uninitialized stack slot for one T. Lowers
 /// to an LLVM alloca.
-public sealed record ClaimExpr(Pos Pos) : Expr(Pos);
+public sealed record ClaimExpr(Pos Pos) : Expr(Pos)
+{
+    /// `claim %p : @T <- value`: stored into the slot where the claim stands; null for `<- uninit`.
+    public Expr? Contents { get; init; }
+}
 
 /// `Type { field: value, ... }`, or `{ field: value, ... }` typed by where the value goes (Type is null).
 public sealed record RecordLit(TypeRef? Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);

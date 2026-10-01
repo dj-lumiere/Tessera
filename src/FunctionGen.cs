@@ -146,7 +146,7 @@ public sealed class FunctionGen
                 comdat = " comdat";
             }
         }
-        _out.AppendLine($"define {linkage}{_inst.CcPrefix}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat} {{");
+        _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
         foreach (var u in unpack) _out.AppendLine($"  {u}");
@@ -273,6 +273,9 @@ public sealed class FunctionGen
                 else
                     Line($"{op} = {Copy(v, t)}");
                 Define(b.Name, new Val(op, t), b.Pos);
+                // `claim %p : @T <- value` is the claim, then `%p.store(value)`.
+                if (b.Value is ClaimExpr { Contents: { } contents })
+                    EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "store", [], [contents], contents.Pos), VoidType.Instance);
                 break;
             }
             case DestructureStmt d:
@@ -317,12 +320,12 @@ public sealed class FunctionGen
 
     // ── Places ──────────────────────────────────────────────────────────────
 
-    /// The preset array a place chain starts from (`K`, `K[i]`, `K[i].f`), if any.
+    /// The preset in memory a place chain starts from (`K`, `K[i]`, `K[i].f`), if any.
     private PresetRef? PresetArrayRoot(Expr place) => AsStride(place) switch
     {
         FieldExpr f => PresetArrayRoot(f.Base),
         IndexExpr ix => PresetArrayRoot(ix.Base),
-        PresetRef r when ResolvePreset(r) is { Type: PtrType { Pointee: ArrayType }, IsGlobal: false } => r,
+        PresetRef r when ResolvePreset(r) is { IsReadOnly: true } => r,
         _ => null,
     };
 
@@ -1028,7 +1031,7 @@ public sealed class FunctionGen
 
     // ── Consts, choice members, routine values ────────────────────────────────
 
-    private sealed record PresetInfo(DType Type, Func<DType, Val> Emit, bool IsGlobal = false);
+    private sealed record PresetInfo(DType Type, Func<DType, Val> Emit, bool IsGlobal = false, bool IsReadOnly = false);
 
     private PresetInfo? ResolvePreset(PresetRef r)
     {
@@ -1064,15 +1067,20 @@ public sealed class FunctionGen
         if (c.IsGlobal)
         {
             var slot = new PtrType(t);
+            // A thread-local's address is the running thread's copy, so each use asks for it: LLVM may not reuse an
+            // address taken on another thread.
+            if (c.Attr("threadlocal") is not null)
+                return new PresetInfo(slot, _ => new Val(
+                    EmitTmp($"call ptr @llvm.threadlocal.address.p0(ptr {_c.GlobalVariable(c, t, env)})"), slot), IsGlobal: true);
             return new PresetInfo(slot, _ => new Val(_c.GlobalVariable(c, t, env), slot), IsGlobal: true);
         }
-        // A preset array is read-only static data; its name is the address.
-        if (t is ArrayType at)
+        // A preset in memory is read-only static data; its name is the address.
+        if (c.IsStorage)
         {
-            var ptr = new PtrType(at);
-            return new PresetInfo(ptr, _ => new Val(_c.PresetArrayGlobal(c, at, env), ptr));
+            var ptr = new PtrType(t);
+            return new PresetInfo(ptr, _ => new Val(_c.PresetStorageGlobal(c, t, env), ptr), IsReadOnly: true);
         }
-        // Every other preset is a constant the compiler folded (ConstFold.cs), the same at each use.
+        // Every other preset is a constant the builder folded (ConstFold.cs), the same at each use.
         return new PresetInfo(t, _ => new Val(Compiler.ConstLlvm(_c.PresetConst(c, t, self, c.Pos)), t));
     }
 
@@ -1436,13 +1444,13 @@ public sealed class FunctionGen
         for (int i = fixedCount; i < plan.Args.Count; i++) args.Add(VariadicArg(plan.Args[i]));
 
         _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);
-        // A preset array is read-only static data, and pointers carry no read-only marker, so the routines that write
-        // through their receiver are refused on one by name.
+        // A preset in memory is read-only static data, and pointers carry no read-only marker, so the routines that
+        // write through their receiver are refused on one by name.
         if (sig.Decl.Name is "store" or "volatile_store" or "set" or "shift_left" or "shift_right" or "copy"
             && plan.Receiver is { } place && PresetArrayRoot(place) is { } root)
-            throw Err(plan.Pos, $"'{root.Name}' is a preset array; it's read-only");
+            throw Err(plan.Pos, $"'{root.Name}' is a preset; its memory is read-only");
         if (sig.Decl.Name == "store_into" && plan.Args.Count == 1 && PresetArrayRoot(plan.Args[0]) is { } destRoot)
-            throw Err(plan.Pos, $"'{destRoot.Name}' is a preset array; it's read-only");
+            throw Err(plan.Pos, $"'{destRoot.Name}' is a preset; its memory is read-only");
         if (sig.IsTemplate)
         {
             // A template isn't instantiated, so the types it names (a record read by `load`) are defined here.
@@ -1457,7 +1465,7 @@ public sealed class FunctionGen
         string fnType = inst.IsExternalC
             ? $"{_c.AbiRet(inst, withAttrs: false)} ({string.Join(", ", _c.AbiParams(inst, withAttrs: false))}) "
             : $"{_c.AbiRet(inst, withAttrs: false)} ";
-        return EmitAbiCall($"{inst.CcPrefix}{RetExtOf(abi, inst.RetExt(_c.Target))}{fnType}@{Compiler.Quote(inst.Symbol)}", abi,
+        return EmitAbiCall($"{inst.CcPrefix(_c.Target)}{RetExtOf(abi, inst.RetExt(_c.Target))}{fnType}@{Compiler.Quote(inst.Symbol)}", abi,
             args, inst.Params, inst.Ret, inst.PassesBf16AsBits, i => inst.ParamExt(_c.Target, i));
     }
 
@@ -1556,7 +1564,7 @@ public sealed class FunctionGen
             throw Err(pos, $"this Callable takes {ct.Params.Count} argument(s), got {argExprs.Count}");
         Val fp = Eval(callee, ct);
         var args = argExprs.Select((a, i) => EvalArg(a, ct.Params[i])).ToList();
-        string cc = ct.CallConv switch { "fast" => "fastcc ", "cold" => "coldcc ", _ => "" };
+        string cc = Compiler.CcPrefix(ct.CallConv, _c.Target);
         const bool bits = true;
         bool c = ct.CallConv != "fast";
         var sig = _c.LowerSignature(ct.Params, ct.Ret, ct.CallConv, pos);

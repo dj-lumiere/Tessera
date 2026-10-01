@@ -446,25 +446,46 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
         Expect(TokenKind.Colon, "':' and the preset's type");
         var type = ParseType();
+        // `preset NAME: @T <- value` is read-only memory, whose name is its address; `preset NAME: T = value` is a value.
+        if (PointeeOf(type) is { } pointee)
+        {
+            if (Is(TokenKind.Eq))
+                throw Error($"a preset in memory takes its contents with '<-': preset {name}: {type} <- value");
+            Expect(TokenKind.LeftArrow, $"'<-' and the contents: preset {name}: {type} <- value");
+            var contents = ParseExpr();
+            ExpectLineEnd();
+            return new PresetDecl(file, attrs, owner, name, pointee, contents, pos) { IsStorage = true };
+        }
+        if (Is(TokenKind.LeftArrow))
+            throw Error($"'<-' fills memory, and a preset of type {type} is a value: preset {name}: {type} = value, "
+                        + $"or preset {name}: @{type} <- value to put it in memory");
         Expect(TokenKind.Eq, "'='");
         var value = ParseExpr();
         ExpectLineEnd();
         return new PresetDecl(file, attrs, owner, name, type, value, pos);
     }
 
-    /// `global NAME: T` (all-zero) or `global NAME: T = value`.
+    /// `global NAME: @T` (all-zero) or `global NAME: @T <- value`: the name is the address of the memory.
     private PresetDecl ParseGlobal(List<Attribute> attrs)
     {
         var pos = Cur.Pos;
         ExpectIdent("global");
         var name = Expect(TokenKind.Ident, "a global name");
-        if (Is(TokenKind.Dot)) throw Error("a global belongs to its module, not to a type: global NAME: T");
+        if (Is(TokenKind.Dot)) throw Error("a global belongs to its module, not to a type: global NAME: @T");
         Expect(TokenKind.Colon, "':' and the global's type");
         var type = ParseType();
-        Expr? value = Accept(TokenKind.Eq) ? ParseExpr() : null;
+        var pointee = PointeeOf(type)
+                      ?? throw new CompileError(type.Pos, $"a global's name is the address of its memory: global {name.Text}: @{type}");
+        if (Is(TokenKind.Eq))
+            throw Error($"a global takes its contents with '<-': global {name.Text}: {type} <- value");
+        Expr? value = Accept(TokenKind.LeftArrow) ? ParseExpr() : null;
         ExpectLineEnd();
-        return new PresetDecl(file, attrs, null, name.Text, type, value, pos) { IsGlobal = true };
+        return new PresetDecl(file, attrs, null, name.Text, pointee, value, pos) { IsGlobal = true, IsStorage = true };
     }
+
+    /// `T` in `@T`, or null if the type isn't a pointer.
+    private static TypeRef? PointeeOf(TypeRef type) =>
+        type is { Name: "Ptr", Path: null, Args: [TypeArgType inner] } ? inner.Type : null;
 
     private ConceptDecl ParseConcept(List<Attribute> attrs)
     {
@@ -986,8 +1007,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (type is not { Name: "Ptr", Args.Count: 1 })
             throw new CompileError(type.Pos, $"claim takes a typed pointer: claim %p : @T; found {type}");
         if (Is(TokenKind.Eq))
-            throw new CompileError(pos, "claim takes no initializer: claim %p : @T, then %p.store(%value)");
-        return new BindStmt(name, type, new ClaimExpr(pos), pos);
+            throw new CompileError(pos, $"a claim takes its contents with '<-': claim {name} : {type} <- value");
+        // `claim %p : @T <- value` claims the slot and stores the value in it, where the claim stands. A slot never
+        // goes unfilled by accident: one a routine fills later (an out parameter, `construct`) says so with `uninit`.
+        if (!Is(TokenKind.LeftArrow))
+            throw new CompileError(pos,
+                $"a claim says what the slot starts with: claim {name} : {type} <- value, or <- uninit when a routine it's passed to fills it");
+        Next();
+        if (IsIdent("uninit") && PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof)
+        {
+            Next();
+            return new BindStmt(name, type, new ClaimExpr(pos), pos);
+        }
+        return new BindStmt(name, type, new ClaimExpr(pos) { Contents = ParseExpr() }, pos);
     }
 
     private List<TypeRef> ParseTypeArgsOpt()
