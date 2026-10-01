@@ -25,6 +25,8 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
             var attrs = new List<string>();
             if (NoReturn) attrs.Add("noreturn");
             if (Decl.Attr("nounwind") is not null) attrs.Add("nounwind");
+            if (Decl.Attr("inline") is not null) attrs.Add("alwaysinline");
+            if (Decl.Attr("noinline") is not null) attrs.Add("noinline");
             return attrs.Count == 0 ? "" : " " + string.Join(" ", attrs);
         }
     }
@@ -62,7 +64,7 @@ public sealed partial class Compiler
 {
     private static readonly HashSet<string> KnownAttributes =
         ["external", "symbol", "callconv", "noreturn", "nounwind", "variadic", "template", "target", "feature", "llvm",
-         "export", "derived"];
+         "export", "derived", "inline", "noinline"];
 
     /// Resolves a routine's signature in `env` and gives it a symbol. Does not emit anything.
     public Instance Signature(RoutineDecl r, TypeEnv env)
@@ -71,6 +73,7 @@ public sealed partial class Compiler
             if (!KnownAttributes.Contains(a.Name))
                 throw new CompileError(a.Pos, $"attribute '@{a.Name}' is not supported by this compiler yet");
         if (r.Attr("callconv") is { } callconv) CheckCallConv(callconv);
+        CheckInlining(r);
 
         var needed = new HashSet<string>(OwnerTypeParams(r).Concat(r.TypeParams));
         foreach (var n in needed)

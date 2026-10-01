@@ -1088,6 +1088,10 @@ public sealed class FunctionGen
         {
             if (expected is not CallableType ct)
                 throw Err(r.Pos, $"'{r.Name}' is a routine; it can only be used as a value where a Callable is expected");
+            // An #inline routine is inlined at every call, so there's no call of its own for a pointer to name.
+            if (routine.Attr("inline") is not null)
+                throw Err(r.Pos, $"'{r.Name}' is #inline, so it can't be a Callable value: it's inlined at every call, "
+                                 + "and a call through a pointer can't be; wrap it in a routine without #inline");
             var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
             if (!inst.Ret.Equals(ct.Ret) || inst.Params.Count != ct.Params.Count
                 || inst.Params.Zip(ct.Params).Any(p => !p.First.Equals(p.Second)) || inst.CallConv != ct.CallConv)
@@ -1455,6 +1459,7 @@ public sealed class FunctionGen
         }
 
         var inst = _c.RequireInstance(plan.Decl, plan.Env);
+        _c.RecordCall(_inst, inst);
         var abi = _c.LowerSignature(inst);
         // An external C routine's call names its function type, so the variadic part is typed.
         string fnType = inst.IsExternalC

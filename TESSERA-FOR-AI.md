@@ -111,6 +111,10 @@ routine main() -> S32
 - Every routine uses the C calling convention unless `#callconv` says `"fast"`, `"cold"`, or `"stdcall"`. `stdcall` is
   the Windows API's (`CreateThread`, its thread routine): callee-popped on 32-bit x86, the C convention elsewhere,
   so one declaration serves every target. A `Callable` carries it: `Callable<#callconv("stdcall"), (Addr,), U32>`.
+- `#inline` inlines a routine at every call (LLVM `alwaysinline`, not a hint). Put it on small routines in hot loops
+  (a hash round, a generator step), not on large ones. It's a build error on an `#external` routine (no body), on a
+  recursive one (directly or through other routines), and on one used as a `Callable` value. `#noinline` (LLVM
+  `noinline`) keeps a cold path out of a hot loop; a routine can't be both.
 - A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
   conversions (`add`, `shl`, `bitor`, `to_u128`, `to_u8_wrap`, …), F32/F64 `add`/`sub`/`mul`/`div`/`neg`,
   `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and F128. A routine call is an error; nothing

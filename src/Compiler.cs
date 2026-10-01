@@ -257,6 +257,7 @@ public sealed partial class Compiler
         foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.Attr("export") is { } e && !programExports.Contains(e.First)))
             CheckRoot(r);
         while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
+        if (InlineRecursion() is [var recursive, ..]) throw recursive;
         if (VerifyFixedConformances() is [var first, ..]) throw first;
         return Output();
     }
@@ -286,6 +287,7 @@ public sealed partial class Compiler
                 errors.Add(e);
             }
         }
+        errors.AddRange(InlineRecursion());
         errors.AddRange(VerifyFixedConformances());
         return errors;
     }
@@ -330,6 +332,7 @@ public sealed partial class Compiler
     /// Instantiates a routine that needs no type arguments: user code is always checked, even if unused.
     private void CheckRoot(RoutineDecl r)
     {
+        CheckInlining(r);
         if (r.Attr("external") is { First: "llvm" }) return;
         if (r.Blocks is null) { CheckExternal(r); return; }
         if (r.TypeParams.Count != 0 || (r.Owner is not null && OwnerTypeParams(r).Count != 0)) return;
@@ -715,6 +718,67 @@ public sealed partial class Compiler
         _ => throw new CompileError(attr.Pos,
             $"#callconv takes \"fast\", \"cold\", or \"stdcall\", not {(attr.First is null ? "nothing" : $"\"{attr.First}\"")}"),
     };
+
+    private readonly Dictionary<string, HashSet<string>> _calls = [];
+
+    /// Records a direct call, for finding the #inline routines that reach themselves.
+    public void RecordCall(Instance caller, Instance callee)
+    {
+        if (!_calls.TryGetValue(caller.Symbol, out var callees)) _calls[caller.Symbol] = callees = [];
+        callees.Add(callee.Symbol);
+    }
+
+    /// An #inline routine that calls itself, directly or through other routines, can't be inlined at every call: the
+    /// inlining never ends. One error per such routine, naming the cycle.
+    private List<CompileError> InlineRecursion()
+    {
+        var errors = new List<CompileError>();
+        foreach (var inst in _instances.Values.Where(i => i.Decl.Attr("inline") is not null).OrderBy(i => i.Symbol))
+        {
+            var from = new Dictionary<string, string> { [inst.Symbol] = "" };
+            var queue = new Queue<string>([inst.Symbol]);
+            string? closing = null;
+            while (closing is null && queue.Count > 0)
+            {
+                string at = queue.Dequeue();
+                foreach (var next in _calls.GetValueOrDefault(at) ?? [])
+                {
+                    if (next == inst.Symbol)
+                    {
+                        closing = at;
+                        break;
+                    }
+                    if (from.TryAdd(next, at)) queue.Enqueue(next);
+                }
+            }
+            if (closing is null) continue;
+            var path = new List<string> { inst.Decl.DisplayName };
+            for (string at = closing; at != inst.Symbol; at = from[at]) path.Insert(1, _instances[at].Decl.DisplayName);
+            path.Add(inst.Decl.DisplayName);
+            errors.Add(new CompileError(inst.Decl.Attr("inline")!.Pos,
+                $"'{inst.Decl.DisplayName}' is #inline, and it calls itself ({string.Join(" -> ", path)}); "
+                + "a recursive routine can't be inlined at every call"));
+        }
+        return errors;
+    }
+
+    /// `#inline` asks LLVM to inline the routine at every call (`alwaysinline`), `#noinline` never to (`noinline`).
+    /// Neither takes arguments, a routine can't ask for both, and both need a body here: an `#external` routine has none.
+    private static void CheckInlining(RoutineDecl r)
+    {
+        var inline = r.Attr("inline");
+        var noinline = r.Attr("noinline");
+        if (inline is not null && noinline is not null)
+            throw new CompileError(noinline.Pos, $"'{r.DisplayName}' is #inline and #noinline; it can only be one");
+        foreach (var a in new[] { inline, noinline })
+        {
+            if (a is null) continue;
+            if (a.Args.Count != 0)
+                throw new CompileError(a.Pos, $"#{a.Name} takes no arguments");
+            if (r.Attr("external") is not null)
+                throw new CompileError(a.Pos, $"#{a.Name} needs a body, and '{r.DisplayName}' is #external");
+        }
+    }
 
     /// The LLVM convention a call or definition is written with. `stdcall` is the Windows API's: callee-popped on 32-bit
     /// x86, and the C convention on every other target, as C compilers treat it.
