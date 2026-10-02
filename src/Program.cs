@@ -14,6 +14,7 @@ static class Cli
           tessera test  [<target>] [--mode <mode>] <dir-or-file.tess>...
           tessera check [<target>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
+          tessera fmt   -               format the source on standard input to standard output (for an editor)
           tessera version               print the builder's version
           tessera help                  print this text
 
@@ -94,6 +95,15 @@ static class Cli
         bool check = args.Contains("--check");
         var paths = args.Where(a => a != "--check").ToList();
         if (paths.Count == 0) return Fail("fmt: give files or directories to format");
+        if (paths is ["-"] && !check)
+        {
+            // An editor formats the buffer it holds, which may be unsaved: UTF-8 in, UTF-8 out, no file touched.
+            var utf8 = new System.Text.UTF8Encoding(false);
+            string source = new StreamReader(Console.OpenStandardInput(), utf8).ReadToEnd();
+            using var output = new StreamWriter(Console.OpenStandardOutput(), utf8);
+            output.Write(Formatter.Format(source));
+            return 0;
+        }
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
             : [p]).Order().ToList();
@@ -211,9 +221,11 @@ static class Cli
             files.Add(args[i]);
         }
         var target = targetArgs.Build();
-        var compiler = new Compiler(target, LoadDecls([.. files], target));
+        var decls = LoadDecls([.. files], target);
+        var compiler = new Compiler(target, decls);
         var errors = compiler.CheckAll();
         foreach (var e in errors) Console.Error.WriteLine(e.Message);
+        if (errors.Count == 0) Lint(decls, files);
         Console.Error.WriteLine($"{compiler.InstanceCount} routine instance(s) checked, {errors.Count} error(s)");
         if (errors.Count > 0) return 1;
 
@@ -246,10 +258,11 @@ static class Cli
     /// Compiles the inputs to LLVM IR. An executable needs `routine main() -> S32`; checking for it here gives a
     /// clear error instead of the platform linker's (lld-link says "subsystem must be defined").
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
-        IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true)
+        IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true)
     {
         var inputs = files.ToList();
-        var compiler = new Compiler(target, LoadDecls(inputs, target))
+        var decls = LoadDecls(inputs, target);
+        var compiler = new Compiler(target, decls)
         {
             FileTagPaths = FileTagPaths(inputs, roots),
             DebugInfo = true,
@@ -258,10 +271,20 @@ static class Cli
             StdlibParent = Path.GetDirectoryName(StdlibDir()),
         };
         string ir = compiler.Generate();
+        if (lint) Lint(decls, inputs);
         if (executable && !compiler.HasMain)
             throw new CompileError(new Pos(ShownPath(Path.GetFullPath(inputs[0])), 1, 1),
                 "no entry point: an executable needs 'routine main() -> S32' (use 'tessera check' to type-check a file without one)");
         return ir;
+    }
+
+    /// Prints the style warnings (ChainLint) for the program's own files, the inputs; the standard library's are its own
+    /// business.
+    private static void Lint(List<Decl> decls, IEnumerable<string> inputs)
+    {
+        var own = inputs.Select(f => ShownPath(Path.GetFullPath(f))).ToHashSet();
+        foreach (var w in ChainLint.Check(decls.Where(d => own.Contains(d.File))))
+            Console.Error.WriteLine(w);
     }
 
     /// Each input as private symbols name it: relative to its package root, the deepest of `roots` that holds it
@@ -622,7 +645,7 @@ static class Cli
                 manifest = Manifest.Load(only, target);
                 (sources, target) = ([.. manifest.Sources], manifest.Target);
             }
-            ir = Compile(sources, target, mode: manifest?.Mode ?? _testMode);
+            ir = Compile(sources, target, mode: manifest?.Mode ?? _testMode, lint: false);
         }
         catch (ManifestError e)
         {

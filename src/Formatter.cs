@@ -12,8 +12,9 @@ namespace Tessera;
 /// - `:`, `=`, `->`, and `<-` have one space on each side, and consecutive lines of one kind (bindings, claims, record
 ///   fields, choice members, variant cases, `when` arms) align them.
 /// - an inline comment sits exactly two spaces after its code; comments are never aligned with each other.
-/// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 8 spaces
-///   further in; a line with nowhere to break (a comment, one long argument) stays as it is;
+/// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 4 spaces
+///   further in (every continuation line sits 4 further in, whatever made the line long); a line with nowhere to break
+///   (a comment, one long argument) stays as it is;
 /// - a `branch`, and a select that is a binding's or a claim's whole value, always put `? a` and `: b` on their own
 ///   lines, 4 spaces further in, so the two outcomes sit one above the other; a select inside an argument stays.
 /// - a pointer type is written `@T`, not `Ptr<T>`, except where routines are declared on or called through the record
@@ -398,6 +399,9 @@ public static class Formatter
 
     public const int MaxWidth = 100;
 
+    /// How much further in a continuation line sits than the line it continues.
+    public const int ContinuationIndent = 4;
+
     /// Breaks a line longer than MaxWidth after commas inside its first bracketed list that has any, packing as
     /// many items per line as fit. The lexer ignores line breaks inside brackets, so the meaning doesn't change.
     private static IEnumerable<string> Wrap(string line)
@@ -417,7 +421,7 @@ public static class Formatter
         string head = line[..(open + 1)];
         // a record literal keeps its inner spaces, `Self { a: 1, b: 2 }`, which trimming the items dropped
         string tail = line[open] == '{' ? " " + line[close..] : line[close..];
-        string pad = new(' ', Indent(line) + 8);
+        string pad = new(' ', Indent(line) + ContinuationIndent);
 
         var result = new List<string>();
         string current = head;
@@ -624,7 +628,13 @@ public static class Formatter
             bool commented = group.Any(l => TopLevelComment(l) >= 0 || l.TrimStart().StartsWith("//"));
             if (commented || group.Any(l => l.Length == 0))
             {
-                result.AddRange(group);
+                // kept as written, except that a continuation sits 4 further in, so one 8 further in comes back to 4
+                int indent = Indent(group[0]);
+                result.Add(group[0]);
+                foreach (var next in group.Skip(1))
+                    result.Add(next.Length > 0 && Indent(next) == indent + 2 * ContinuationIndent
+                        ? next[ContinuationIndent..]
+                        : next);
                 i = end;
                 continue;
             }

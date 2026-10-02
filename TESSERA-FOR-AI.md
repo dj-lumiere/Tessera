@@ -152,6 +152,9 @@ routine main() -> S32
 **Operations**
 
 - There are no operators. Everything is a method, and pure calls chain: `i.add(1).bitand(mask)`.
+- A chain holds at most two calls. Everything call-shaped counts (`x.f()`, `T.f()`, `f()`, `.stride(i)`,
+  `.to<T>()`), a field doesn't, and each argument and each `{...}` write-template hole is its own chain. A third
+  call gets a binding instead. `check`/`build`/`run` warn (not an error) for the program's own files.
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
   `add`, `div`, `mod`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more
   shifts every bit out (0, or -1 for a negative S value shifted right).
@@ -438,7 +441,7 @@ array presets (`K.get(i)`, with `preset K: @Array<T, N> <- { ... }`).
 ## Style
 
 Run `tessera fmt` on what you write: it aligns `name : T = value` runs, spaces blocks and routines, joins broken
-lists and wraps lines over 100 characters at commas, and writes a routine's owner type as `Self` after it's declared
+lists and wraps lines over 100 characters at commas (continuation lines 4 spaces further in), and writes a routine's owner type as `Self` after it's declared
 (not in `require` lines). It also orders the top-level declarations: module, sorted imports, defines, globals,
 presets, types, concepts, standalone conformances, routines (in your order), and `main` last. Follow `../Tessera-Wiki/docs/Style-Guide.md`. In short: one purpose per block, blocks named for what they do (`grow`,
 `scan`, `sift_up`), values named for what they mean (`in_bounds`, not `t1`), boolean names that read as
