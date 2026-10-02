@@ -1,0 +1,709 @@
+// Tessera stdlib: the console: the process's standard input, output, and error
+//
+// Three types, one per stream, so a stream is only read or only written. Out and Err are Writers:
+// Out.write("x = {x}\n") writes formatted text (the builder expands it, as for any Writer), write_all writes bytes,
+// and nothing is buffered (a BufWriter<Out> is the caller's choice). In is read through one buffer the whole process
+// shares, behind a lock: standard input is one stream, and two buffers over it would each take bytes the other
+// should have had, so In.read, read_count, read_word, read_line, and read_all all draw on that one. In is a Reader,
+// so code that reads a file or standard input alike takes a @R and gets In.shared().
+//
+// On Linux and macOS these are file descriptors 0, 1, and 2. On Windows a console is a different thing from a pipe:
+// text for a console goes in as UTF-16 (WriteConsoleW, ReadConsoleW), so UTF-8 shows right whatever the console's code
+// page, while a pipe or a file gets the bytes as they are (WriteFile, ReadFile), with no "\n" to "\r\n" change. A
+// UTF-8 sequence split across two writes to a console is held until the rest comes.
+
+module Standard::Os
+
+import Standard::Alloc
+import Standard::Format
+
+/// Standard input. Every value is the same stream, so the routines are called on the type; shared() is the pointer
+/// a Reader parameter takes.
+record In
+conform Reader<In>
+
+/// Standard output, a Writer: Out.write("x = {x}\n").
+record Out
+conform Writer<Out>
+/// Standard error, a Writer: Err.write("...").
+record Err
+conform Writer<Err>
+
+internal choice StdStream: U8
+    Input
+    Output
+    Error
+
+/// What reads bytes: standard input, an open file.
+concept Reader<R>
+require R: typename
+    /// Reads up to length bytes into buffer: how many, 0 at the end.
+    routine Self.read_bytes(self: @Self, buffer: @Byte, length: USize) -> Result<USize, FsError>
+
+// -- In ----------------------------------------------------------------------------------
+
+global STDIN_BUFFER: @InputBuffer
+
+preset IN_BUFFER: USize = 8192
+
+/// Standard input's one buffer: bytes read from the OS and not handed out yet, in bytes[start, end).
+private record InputBuffer
+    lock  : Mutex
+    bytes : Array<Byte, IN_BUFFER>
+    start : USize
+    end   : USize
+
+/// Fills the empty buffer from the OS: false at the end of the input (or on a failure, which reads as the end).
+private routine InputBuffer.fill(self: @Self) -> Bool
+    block entry():
+        got : Result<USize, FsError> = stdin_read(self.bytes.to<@Byte>(), IN_BUFFER)
+        when got:
+            .Success(n) -> filled(n)
+            .Failure    -> filled(0)
+
+    block filled(n: USize):
+        self.start.store(0)
+        self.end.store(n)
+        return(n.gt(0))
+
+/// The next byte, or Absent at the end of the input. The lock is held.
+private routine InputBuffer.next(self: @Self) -> Option<Byte>
+    block entry():
+        branch self.start.load().lt(self.end.load())
+            ? take()
+            : continue
+        branch self.fill()
+            ? take()
+            : return(.Absent)
+
+    block take():
+        at : USize = self.start.load()
+        self.start.store(at.add(1))
+        return(.Present(self.bytes.to<@Byte>().stride(at).load()))
+
+/// Puts back the byte next just handed out. The lock is held.
+private routine InputBuffer.unread(self: @Self) -> Void
+    block entry():
+        self.start.load().sub(1).store_into(self.start)
+        return()
+
+routine In.shared() -> @Self
+    block entry():
+        none : @Self = null
+        return(none)
+
+/// Reads up to length bytes: what the buffer holds first, else one read from the OS. How many, 0 at the end.
+routine In.read(buffer: @Byte, length: USize) -> Result<USize, FsError>
+    block entry():
+        b : @InputBuffer = STDIN_BUFFER
+        b.lock.lock()
+        branch b.start.load().lt(b.end.load())
+            ? held(b)
+            : continue
+        // Nothing held: a read that wants a bufferful or more goes straight to the caller's buffer.
+        branch length.ge(IN_BUFFER)
+            ? direct(b)
+            : continue
+        branch b.fill()
+            ? held(b)
+            : ended(b)
+
+    block held(b: @InputBuffer):
+        n : USize = b.end.load().sub(b.start.load()).min(length)
+        copy<Byte>(buffer, b.bytes.to<@Byte>().stride(b.start.load()), n)
+        b.start.load().add(n).store_into(b.start)
+        b.lock.unlock()
+        return(.Success(n))
+
+    block direct(b: @InputBuffer):
+        got : Result<USize, FsError> = stdin_read(buffer, length)
+        b.lock.unlock()
+        return(got)
+
+    block ended(b: @InputBuffer):
+        b.lock.unlock()
+        return(.Success(0))
+
+/// The Reader side: In.read.
+routine In.read_bytes(self: @Self, buffer: @Byte, length: USize) -> Result<USize, FsError>
+    block entry():
+        return(Self.read(buffer, length))
+
+/// Up to count bytes, in memory from alloc: fewer only at the end of the input.
+routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
+    block entry():
+        buffer : @Byte = allocate<Byte>(alloc, count.max(1))
+        branch buffer.is_null()
+            ? return(Bytes.empty())
+            : more(buffer, 0)
+
+    block more(buffer: @Byte, n: USize):
+        branch n.eq(count)
+            ? return(Bytes.from_ptr(buffer, n))
+            : continue
+        got : Result<USize, FsError> = Self.read(buffer.stride(n), count.sub(n))
+        when got:
+            .Success(k) -> advance(buffer, n, k)
+            .Failure    -> return(Bytes.from_ptr(buffer, n))
+
+    block advance(buffer: @Byte, n: USize, k: USize):
+        branch k.eq(0)
+            ? return(Bytes.from_ptr(buffer, n))
+            : more(buffer, n.add(k))
+
+/// What the rest of the input is, in memory from alloc.
+routine In.read_all(alloc: @Allocator) -> Bytes
+    block entry():
+        claim text  : @CaptureBuffer     <- CaptureBuffer.empty()
+        claim chunk : @Array<Byte, 4096> <- uninit
+        jump more(text, chunk.to<@Byte>())
+
+    block more(text: @CaptureBuffer, chunk: @Byte):
+        got : Result<USize, FsError> = Self.read(chunk, 4096)
+        when got:
+            .Success(n) -> add(text, chunk, n)
+            .Failure    -> return(text.load().bytes())
+
+    block add(text: @CaptureBuffer, chunk: @Byte, n: USize):
+        branch n.eq(0)
+            ? return(text.load().bytes())
+            : continue
+        text.append(alloc, chunk, n)
+        jump more(text, chunk)
+
+/// The next line, without its "\n" (or "\r\n"), in memory from alloc; Absent at the end of the input. A last line
+/// with no "\n" still counts.
+routine In.read_line(alloc: @Allocator) -> Option<Bytes>
+    block entry():
+        b : @InputBuffer = STDIN_BUFFER
+        b.lock.lock()
+        claim text : @CaptureBuffer <- CaptureBuffer.empty()
+        jump next(b, text, false)
+
+    block next(b: @InputBuffer, text: @CaptureBuffer, any: Bool):
+        c : Option<Byte> = b.next()
+        when c:
+            .Present(byte) -> one(b, text, byte)
+            .Absent        -> ended(b, text, any)
+
+    block one(b: @InputBuffer, text: @CaptureBuffer, byte: Byte):
+        branch byte.eq(b'\n')
+            ? done(b, text)
+            : continue
+        claim single : @Byte <- byte
+        text.append(alloc, single, 1)
+        jump next(b, text, true)
+
+    block ended(b: @InputBuffer, text: @CaptureBuffer, any: Bool):
+        b.lock.unlock()
+        branch any
+            ? return(.Present(trim_cr(text.load().bytes())))
+            : return(.Absent)
+
+    block done(b: @InputBuffer, text: @CaptureBuffer):
+        b.lock.unlock()
+        return(.Present(trim_cr(text.load().bytes())))
+
+/// line without a "\r" at its end.
+private routine trim_cr(line: Bytes) -> Bytes
+    block entry():
+        branch line.ends_with("\r")
+            ? return(Bytes.from_ptr(line.data, line.length().sub(1)))
+            : return(line)
+
+private routine is_space(c: Byte) -> Bool
+    block entry():
+        return(c.eq(b' ').bitor(c.eq(b'\t')).bitor(c.eq(b'\n')).bitor(c.eq(b'\r')))
+
+/// The next word (spaces, tabs, and line ends separate words), in memory from alloc; Absent at the end of the
+/// input. The space after the word stays in the input.
+routine In.read_word(alloc: @Allocator) -> Option<Bytes>
+    block entry():
+        b : @InputBuffer = STDIN_BUFFER
+        b.lock.lock()
+        jump skip(b)
+
+    block skip(b: @InputBuffer):
+        c : Option<Byte> = b.next()
+        when c:
+            .Present(byte) -> first(b, byte)
+            .Absent        -> nothing(b)
+
+    block nothing(b: @InputBuffer):
+        b.lock.unlock()
+        return(.Absent)
+
+    block first(b: @InputBuffer, byte: Byte):
+        branch is_space(byte)
+            ? skip(b)
+            : continue
+        claim text   : @CaptureBuffer <- CaptureBuffer.empty()
+        claim single : @Byte          <- byte
+        text.append(alloc, single, 1)
+        jump next(b, text, single)
+
+    block next(b: @InputBuffer, text: @CaptureBuffer, single: @Byte):
+        c : Option<Byte> = b.next()
+        when c:
+            .Present(byte) -> one(b, text, single, byte)
+            .Absent        -> done(b, text)
+
+    block one(b: @InputBuffer, text: @CaptureBuffer, single: @Byte, byte: Byte):
+        branch is_space(byte)
+            ? put_back(b, text)
+            : continue
+        single.store(byte)
+        text.append(alloc, single, 1)
+        jump next(b, text, single)
+
+    block put_back(b: @InputBuffer, text: @CaptureBuffer):
+        b.unread()
+        jump done(b, text)
+
+    block done(b: @InputBuffer, text: @CaptureBuffer):
+        b.lock.unlock()
+        return(.Present(text.load().bytes()))
+
+/// Whether standard input is a terminal (not a pipe or a file).
+routine In.is_terminal() -> Bool
+    block entry():
+        return(stream_is_terminal(StdStream.Input))
+
+// -- Out and Err -------------------------------------------------------------------------
+
+routine Out.shared() -> @Self
+    block entry():
+        none : @Self = null
+        return(none)
+
+/// Writes all length bytes: Other if the OS refused (or the process has no standard output).
+routine Out.write_all(data: @Byte, length: USize) -> Result<Unit, FsError>
+    block entry():
+        branch stream_write(StdStream.Output, data, length)
+            ? return(.Success(Unit.value()))
+            : return(.Failure(FsError.Other))
+
+/// The Writer side: a failed write is dropped (write_all reports it).
+routine Out.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
+    block entry():
+        stream_write(StdStream.Output, data, length)
+        return()
+
+routine Out.is_terminal() -> Bool
+    block entry():
+        return(stream_is_terminal(StdStream.Output))
+
+/// Whether ANSI color sequences work: a terminal takes them (on Windows once this turns them on), a pipe or a file
+/// can't show them.
+routine Out.enable_colors() -> Bool
+    block entry():
+        return(stream_enable_colors(StdStream.Output))
+
+routine Err.shared() -> @Self
+    block entry():
+        none : @Self = null
+        return(none)
+
+routine Err.write_all(data: @Byte, length: USize) -> Result<Unit, FsError>
+    block entry():
+        branch stream_write(StdStream.Error, data, length)
+            ? return(.Success(Unit.value()))
+            : return(.Failure(FsError.Other))
+
+routine Err.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
+    block entry():
+        stream_write(StdStream.Error, data, length)
+        return()
+
+routine Err.is_terminal() -> Bool
+    block entry():
+        return(stream_is_terminal(StdStream.Error))
+
+routine Err.enable_colors() -> Bool
+    block entry():
+        return(stream_enable_colors(StdStream.Error))
+
+// -- Linux and macOS -------------------------------------------------------------------
+
+#[external("c"), symbol("isatty"), target(os: not "windows")]
+private routine c_isatty(fd: CInt) -> CInt
+
+#[external("c"), symbol("__errno_location"), target(os: "linux")]
+private routine c_errno_place() -> @CInt
+
+#[external("c"), symbol("__error"), target(os: "macos")]
+private routine c_errno_place() -> @CInt
+
+#target(os: not "windows")
+private routine fd_of(stream: StdStream) -> CInt
+    block entry():
+        when stream:
+            StdStream.Input  -> return(0)
+            StdStream.Output -> return(1)
+            StdStream.Error  -> return(2)
+
+/// Whether the stream is a terminal (not a pipe or a file).
+#target(os: not "windows")
+internal routine stream_is_terminal(stream: StdStream) -> Bool
+    block entry():
+        return(c_isatty(fd_of(stream)).ne(0))
+
+/// Writes all length bytes to standard output or error: false if the OS refused.
+#target(os: not "windows")
+internal routine stream_write(stream: StdStream, data: @Byte, length: USize) -> Bool
+    block entry():
+        fd : CInt = fd_of(stream)
+        jump write(data, length)
+
+    block write(at: @Byte, remaining: USize):
+        branch remaining.eq(0)
+            ? return(true)
+            : continue
+        wrote : SSize = c_write(fd_of(stream), at, remaining.min(1073741824))
+        branch wrote.gt(0)
+            ? write(at.stride(wrote.to<USize>()), remaining.sub(wrote.to<USize>()))
+            : continue
+        // EINTR: a signal came first, so try again
+        branch wrote.lt(0).bitand(c_errno_place().load().eq(4))
+            ? write(at, remaining)
+            : return(false)
+
+/// Reads up to length bytes of standard input: how many, 0 at its end.
+#target(os: not "windows")
+internal routine stdin_read(buffer: @Byte, length: USize) -> Result<USize, FsError>
+    block entry():
+        got : SSize = c_read(0, buffer, length.min(1073741824))
+        branch got.ge(0)
+            ? return(.Success(got.to<USize>()))
+            : continue
+        branch c_errno_place().load().eq(4)
+            ? return(stdin_read(buffer, length))
+            : return(.Failure(FsError.Other))
+
+/// Whether ANSI color sequences work on the stream: a terminal takes them as it is.
+#target(os: not "windows")
+internal routine stream_enable_colors(stream: StdStream) -> Bool
+    block entry():
+        return(stream_is_terminal(stream))
+
+// -- Windows -----------------------------------------------------------------------------
+
+#target(os: "windows")
+global PENDING_OUTPUT: @PendingUtf8
+#target(os: "windows")
+global PENDING_ERROR: @PendingUtf8
+#target(os: "windows")
+global CONSOLE_INPUT: @ConsoleReadBuffer
+
+/// The start of a UTF-8 sequence a write to the console ended in the middle of, for standard output and error.
+#target(os: "windows")
+private record PendingUtf8
+    bytes : Array<Byte, 4>
+    count : USize
+
+/// ReadConsoleW's text as UTF-8, not yet handed out, and a high surrogate whose low half hasn't come.
+#target(os: "windows")
+private record ConsoleReadBuffer
+    bytes : Array<Byte, 16384>
+    start : USize
+    end   : USize
+    high  : U16
+
+#[external("c"), symbol("GetStdHandle"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_std_handle(which: U32) -> Addr
+
+#[external("c"), symbol("GetConsoleMode"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_console_mode(console: Addr, mode: @U32) -> CInt
+
+#[external("c"), symbol("SetConsoleMode"), callconv("stdcall"), target(os: "windows")]
+private routine c_set_console_mode(console: Addr, mode: U32) -> CInt
+
+#[external("c"), symbol("WriteConsoleW"), callconv("stdcall"), target(os: "windows")]
+private routine c_write_console(console: Addr, units: @U16, count: U32, written: @U32,
+        reserved: Addr) -> CInt
+
+#[external("c"), symbol("ReadConsoleW"), callconv("stdcall"), target(os: "windows")]
+private routine c_read_console(console: Addr, units: @U16, count: U32, read: @U32,
+        control: Addr) -> CInt
+
+#[external("c"), symbol("WriteFile"), callconv("stdcall"), target(os: "windows")]
+private routine c_write_file(file: Addr, data: @Byte, count: U32, written: @U32,
+        overlapped: Addr) -> CInt
+
+#[external("c"), symbol("ReadFile"), callconv("stdcall"), target(os: "windows")]
+private routine c_read_file(file: Addr, buffer: @Byte, count: U32, read: @U32,
+        overlapped: Addr) -> CInt
+
+#[external("c"), symbol("GetLastError"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_last_error() -> U32
+
+#target(os: "windows")
+private routine handle_of(stream: StdStream) -> Addr
+    block entry():
+        // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+        when stream:
+            StdStream.Input  -> return(c_get_std_handle(0xFFFFFFF6))
+            StdStream.Output -> return(c_get_std_handle(0xFFFFFFF5))
+            StdStream.Error  -> return(c_get_std_handle(0xFFFFFFF4))
+
+#target(os: "windows")
+private routine usable(h: Addr) -> Bool
+    block entry():
+        return(h.is_not_null().bitand(ptrtoint<Addr, USize>(h).ne(USize.MAX)))
+
+#target(os: "windows")
+private routine is_console(h: Addr) -> Bool
+    block entry():
+        claim mode : @U32 <- 0
+        return(c_get_console_mode(h, mode).ne(0))
+
+/// Whether the stream is a terminal (a console, not a pipe or a file).
+#target(os: "windows")
+internal routine stream_is_terminal(stream: StdStream) -> Bool
+    block entry():
+        h : Addr = handle_of(stream)
+        branch usable(h)
+            ? return(is_console(h))
+            : return(false)
+
+/// Whether ANSI color sequences work on the stream: a console needs virtual terminal processing turned on, which
+/// this does; a pipe or a file can't show them.
+#target(os: "windows")
+internal routine stream_enable_colors(stream: StdStream) -> Bool
+    block entry():
+        h : Addr = handle_of(stream)
+        branch usable(h)
+            ? continue
+            : return(false)
+        claim mode : @U32 <- 0
+        branch c_get_console_mode(h, mode).ne(0)
+            ? continue
+            : return(false)
+        // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        return(c_set_console_mode(h, mode.load().bitor(4)).ne(0))
+
+/// Writes all length bytes to standard output or error: false if the OS refused (or the process has no such
+/// stream).
+#target(os: "windows")
+internal routine stream_write(stream: StdStream, data: @Byte, length: USize) -> Bool
+    block entry():
+        h : Addr = handle_of(stream)
+        branch usable(h)
+            ? continue
+            : return(false)
+        branch is_console(h)
+            ? return(console_write(stream, h, data, length))
+            : return(file_write(h, data, length))
+
+#target(os: "windows")
+private routine file_write(h: Addr, data: @Byte, length: USize) -> Bool
+    block entry():
+        claim wrote : @U32 <- 0
+        jump write(data, length, wrote)
+
+    block write(at: @Byte, remaining: USize, wrote: @U32):
+        branch remaining.eq(0)
+            ? return(true)
+            : continue
+        ok : CInt  = c_write_file(h, at, remaining.min(1073741824).to<U32>(), wrote, null)
+        n  : USize = wrote.load().to<USize>()
+        branch ok.ne(0).bitand(n.gt(0))
+            ? write(at.stride(n), remaining.sub(n), wrote)
+            : return(false)
+
+/// How many bytes a UTF-8 sequence starting with b has (1 for a byte that can't start one).
+#target(os: "windows")
+private routine sequence_length(b: Byte) -> USize
+    block entry():
+        u : U8 = U8.from_byte(b)
+        when:
+            u.lt(0xC0) -> return(1)
+            u.lt(0xE0) -> return(2)
+            u.lt(0xF0) -> return(3)
+            u.lt(0xF8) -> return(4)
+            else       -> return(1)
+
+/// Where the last complete sequence of the length bytes ends: before a sequence the bytes stop in the middle of.
+#target(os: "windows")
+private routine complete_end(data: @Byte, length: USize) -> USize
+    block entry():
+        jump back(length, 0)
+
+    block back(i: USize, seen: USize):
+        branch i.eq(0).bitor(seen.eq(3))
+            ? return(length)
+            : continue
+        b : Byte = data.stride(i.sub(1)).load()
+        // a continuation byte: 10xxxxxx
+        branch U8.from_byte(b).bitand(0xC0).eq(0x80)
+            ? back(i.sub(1), seen.add(1))
+            : continue
+        branch i.sub(1).add(sequence_length(b)).gt(length)
+            ? return(i.sub(1))
+            : return(length)
+
+#target(os: "windows")
+private routine pending_of(stream: StdStream) -> @PendingUtf8
+    block entry():
+        branch stream.eq(StdStream.Error)
+            ? return(PENDING_ERROR)
+            : return(PENDING_OUTPUT)
+
+/// Writes UTF-8 to a console as UTF-16, finishing a sequence an earlier write left open and holding one this
+/// write leaves open.
+#target(os: "windows")
+private routine console_write(stream: StdStream, h: Addr, data: @Byte, length: USize) -> Bool
+    block entry():
+        pending : @PendingUtf8 = pending_of(stream)
+        held    : USize        = pending.count.load()
+        branch held.eq(0)
+            ? body(pending, data, length)
+            : finish_held(pending, held)
+
+    // The bytes the held sequence still needs come first.
+    block finish_held(pending: @PendingUtf8, held: USize):
+        need  : USize = sequence_length(pending.bytes.get(0)).sub(held)
+        taken : USize = need.min(length)
+        copy<Byte>(pending.bytes.to<@Byte>().stride(held), data, taken)
+        branch taken.lt(need)
+            ? still_open(pending, held.add(taken))
+            : continue
+        pending.count.store(0)
+        branch console_text(h, pending.bytes.to<@Byte>(), held.add(taken))
+            ? body(pending, data.stride(taken), length.sub(taken))
+            : return(false)
+
+    block still_open(pending: @PendingUtf8, count: USize):
+        pending.count.store(count)
+        return(true)
+
+    block body(pending: @PendingUtf8, at: @Byte, n: USize):
+        cut : USize = complete_end(at, n)
+        copy<Byte>(pending.bytes.to<@Byte>(), at.stride(cut), n.sub(cut))
+        pending.count.store(n.sub(cut))
+        return(console_text(h, at, cut))
+
+/// Writes complete UTF-8 text to a console, a bufferful of UTF-16 at a time.
+#target(os: "windows")
+private routine console_text(h: Addr, data: @Byte, length: USize) -> Bool
+    block entry():
+        claim units   : @Array<U16, 2048> <- uninit
+        claim written : @U32              <- 0
+        claim iter    : @BytesCharsIter   <- Bytes.from_ptr(data, length).chars()
+        jump fill(units.to<@U16>(), written, iter, 0)
+
+    block fill(units: @U16, written: @U32, iter: @BytesCharsIter, n: USize):
+        branch n.ge(2046)
+            ? flush(units, written, iter, n)
+            : continue
+        c : Option<Char> = iter.next()
+        when c:
+            .Present(char) -> put(units, written, iter, n, char.to<U32>())
+            .Absent        -> last(units, written, n)
+
+    block put(units: @U16, written: @U32, iter: @BytesCharsIter, n: USize, cp: U32):
+        branch cp.lt(0x10000)
+            ? single(units, written, iter, n, cp)
+            : continue
+        v : U32 = cp.sub(0x10000)
+        units.stride(n).store(v.shr(10).add(0xD800).to<U16>())
+        units.stride(n.add(1)).store(v.bitand(0x3FF).add(0xDC00).to<U16>())
+        jump fill(units, written, iter, n.add(2))
+
+    block single(units: @U16, written: @U32, iter: @BytesCharsIter, n: USize, cp: U32):
+        units.stride(n).store(cp.to<U16>())
+        jump fill(units, written, iter, n.add(1))
+
+    block flush(units: @U16, written: @U32, iter: @BytesCharsIter, n: USize):
+        branch write_units(h, units, n, written)
+            ? fill(units, written, iter, 0)
+            : return(false)
+
+    block last(units: @U16, written: @U32, n: USize):
+        return(write_units(h, units, n, written))
+
+/// Writes n UTF-16 units to a console, however many calls that takes.
+#target(os: "windows")
+private routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Bool
+    block entry():
+        branch n.eq(0)
+            ? return(true)
+            : continue
+        ok : CInt  = c_write_console(h, units, n.to<U32>(), written, null)
+        w  : USize = written.load().to<USize>()
+        branch ok.ne(0).bitand(w.gt(0))
+            ? return(write_units(h, units.stride(w), n.sub(w), written))
+            : return(false)
+
+/// Reads up to length bytes of standard input: how many, 0 at its end (Ctrl+Z at the start of a console line).
+#target(os: "windows")
+internal routine stdin_read(buffer: @Byte, length: USize) -> Result<USize, FsError>
+    block entry():
+        h : Addr = handle_of(StdStream.Input)
+        branch usable(h)
+            ? continue
+            : return(.Success(0))
+        branch is_console(h)
+            ? return(console_read(h, buffer, length))
+            : continue
+        claim got : @U32 <- 0
+        branch c_read_file(h, buffer, length.min(1073741824).to<U32>(), got, null).ne(0)
+            ? return(.Success(got.load().to<USize>()))
+            : continue
+        // ERROR_BROKEN_PIPE: the writing end closed, which is the end
+        branch c_get_last_error().eq(109)
+            ? return(.Success(0))
+            : return(.Failure(FsError.Other))
+
+/// Hands out UTF-8 from CONSOLE_INPUT, reading the console (as UTF-16) when it is empty.
+#target(os: "windows")
+private routine console_read(h: Addr, buffer: @Byte, length: USize) -> Result<USize, FsError>
+    block entry():
+        input : @ConsoleReadBuffer = CONSOLE_INPUT
+        branch input.start.load().lt(input.end.load())
+            ? hand_out(input)
+            : continue
+        claim units : @Array<U16, 4096> <- uninit
+        claim got   : @U32              <- 0
+        branch c_read_console(h, units.to<@U16>(), 4096, got, null).ne(0)
+            ? continue
+            : return(.Failure(FsError.Other))
+        n : USize = got.load().to<USize>()
+        branch n.eq(0)
+            ? return(.Success(0))
+            : continue
+        // Ctrl+Z first: the end of the input
+        branch units.get(0).eq(0x1A)
+            ? return(.Success(0))
+            : convert(input, units.to<@U16>(), n)
+
+    // A high surrogate at the end waits for its low half; one held from the last read goes in front.
+    block convert(input: @ConsoleReadBuffer, units: @U16, n: USize):
+        claim joined : @Array<U16, 4097> <- uninit
+        high : U16   = input.high.load()
+        lead : USize = high.eq(0)
+            ? 0
+            : 1
+        joined.to<@U16>().store(high)
+        copy<U16>(joined.to<@U16>().stride(lead), units, n)
+        total : USize = n.add(lead)
+        last  : U16   = joined.to<@U16>().stride(total.sub(1)).load()
+        branch last.between(0xD800, 0xDBFF)
+            ? hold(input, joined.to<@U16>(), total.sub(1), last)
+            : hold(input, joined.to<@U16>(), total, 0)
+
+    block hold(input: @ConsoleReadBuffer, joined: @U16, count: USize, high: U16):
+        input.high.store(high)
+        made : USize = narrow(joined, count, input.bytes.to<@Byte>())
+        input.start.store(0)
+        input.end.store(made)
+        branch made.eq(0)
+            ? return(console_read(h, buffer, length))
+            : hand_out(input)
+
+    block hand_out(input: @ConsoleReadBuffer):
+        start : USize = input.start.load()
+        n     : USize = input.end.load().sub(start).min(length)
+        copy<Byte>(buffer, input.bytes.to<@Byte>().stride(start), n)
+        input.start.store(start.add(n))
+        return(.Success(n))

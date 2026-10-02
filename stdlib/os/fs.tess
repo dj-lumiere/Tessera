@@ -1,4 +1,4 @@
-// Tessera stdlib: files and the filesystem
+// Tessera stdlib: files and the filesystem, the parts file.tess (File, Directory) is built on
 //
 // Paths are Bytes, UTF-8 by convention, as every Tessera text is. Each call copies its path into a stack buffer with
 // the terminator the OS wants (UTF-16 on Windows), so nothing allocates for a path; a path too long for that buffer
@@ -13,6 +13,7 @@
 module Standard::Os
 
 import Standard::Alloc
+import Standard::Format
 
 /// The longest path a call takes, in bytes (UTF-16 units on Windows), not counting the terminator.
 preset PATH_CAPACITY: USize = 4096
@@ -90,27 +91,20 @@ internal routine path_error(path: Bytes) -> FsError
 // -- built on the per-OS calls ---------------------------------------------------------
 
 /// Whether something is at path (a link counts as what it points at).
-routine exists(path: Bytes) -> Bool
+internal routine exists(path: Bytes) -> Bool
     block entry():
         m : Result<Metadata, FsError> = metadata(path)
         return(m.is_success())
 
-routine is_file(path: Bytes) -> Bool
+internal routine is_kind(path: Bytes, kind: FileKind) -> Bool
     block entry():
         m : Result<Metadata, FsError> = metadata(path)
         when m:
-            .Success(info) -> return(info.kind.eq(FileKind.File))
-            .Failure       -> return(false)
-
-routine is_dir(path: Bytes) -> Bool
-    block entry():
-        m : Result<Metadata, FsError> = metadata(path)
-        when m:
-            .Success(info) -> return(info.kind.eq(FileKind.Directory))
+            .Success(info) -> return(info.kind.eq(kind))
             .Failure       -> return(false)
 
 /// Like mkdir -p: every missing directory on the way, then path. A directory already there is fine.
-routine create_dir_all(path: Bytes) -> Result<Unit, FsError>
+internal routine create_dir_all(path: Bytes) -> Result<Unit, FsError>
     block entry():
         jump scan(1)
 
@@ -134,12 +128,12 @@ routine create_dir_all(path: Bytes) -> Result<Unit, FsError>
             .Failure(error) -> check(error)
 
     block check(error: FsError):
-        branch error.eq(FsError.AlreadyExists).bitand(is_dir(path))
+        branch error.eq(FsError.AlreadyExists).bitand(is_kind(path, FileKind.Directory))
             ? return(fs_done())
             : return(.Failure(error))
 
 /// path and everything in it. A link is removed, not followed. Child paths are built in memory from alloc.
-routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, FsError>
+internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, FsError>
     block entry():
         m : Result<Metadata, FsError> = symlink_metadata(path)
         when m:
@@ -151,7 +145,7 @@ routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, FsError>
             ? continue
             : return(remove_file(path))
         claim iter : @DirIter <- uninit
-        opened : Result<Unit, FsError> = iter.open(path)
+        opened : Result<Unit, FsError> = iter.open_path(path)
         when opened:
             .Success        -> next(iter)
             .Failure(error) -> return(.Failure(error))
@@ -179,78 +173,85 @@ routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, FsError>
         return(remove_dir(path))
 
 /// The whole file, in memory from alloc (free it with `data.free(alloc)`).
-routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry():
-        opened : Result<File, FsError> = File.open(path, OpenMode.Read)
+        opened : Result<FileHandle, FsError> = FileHandle.open(path, OpenMode.Read)
         when opened:
             .Success(f)     -> sized(f)
             .Failure(error) -> return(.Failure(error))
 
     // The size is a first guess: a file that grows while it's read, or reports 0 (Linux's /proc), still reads whole.
-    block sized(f: File):
+    block sized(opened: FileHandle):
+        claim f : @FileHandle <- opened
         size : Result<U64, FsError> = f.size()
         when size:
             .Success(n) -> start(f, n.to<USize>().add(1).max(64))
             .Failure    -> start(f, 64)
 
-    block start(f: File, capacity: USize):
+    block start(f: @FileHandle, capacity: USize):
         buffer : @Byte = allocate<Byte>(alloc, capacity)
         branch buffer.is_null()
             ? out_of_memory(f)
             : fill(f, buffer, capacity, 0)
 
-    block fill(f: File, buffer: @Byte, capacity: USize, length: USize):
+    block fill(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize):
         branch length.eq(capacity)
             ? grow(f, buffer, capacity, length)
             : continue
-        got : Result<USize, FsError> = f.read(buffer.stride(length), capacity.sub(length))
+        got : Result<USize, FsError> = f.read_bytes(buffer.stride(length), capacity.sub(length))
         when got:
             .Success(n)     -> advance(f, buffer, capacity, length, n)
             .Failure(error) -> read_failed(f, buffer, error)
 
-    block advance(f: File, buffer: @Byte, capacity: USize, length: USize, n: USize):
+    block advance(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize, n: USize):
         branch n.eq(0)
             ? finish(f, buffer, length)
             : fill(f, buffer, capacity, length.add(n))
 
-    block grow(f: File, buffer: @Byte, capacity: USize, length: USize):
+    block grow(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize):
         bigger : @Byte = reallocate<Byte>(alloc, buffer, capacity.mul(2))
         branch bigger.is_null()
             ? grow_failed(f, buffer)
             : fill(f, bigger, capacity.mul(2), length)
 
-    block grow_failed(f: File, buffer: @Byte):
+    block grow_failed(f: @FileHandle, buffer: @Byte):
         buffer.free(alloc)
         jump out_of_memory(f)
 
-    block out_of_memory(f: File):
+    block out_of_memory(f: @FileHandle):
         f.close()
         return(.Failure(FsError.OutOfMemory))
 
-    block read_failed(f: File, buffer: @Byte, error: FsError):
+    block read_failed(f: @FileHandle, buffer: @Byte, error: FsError):
         buffer.free(alloc)
         f.close()
         return(.Failure(error))
 
-    block finish(f: File, buffer: @Byte, length: USize):
+    block finish(f: @FileHandle, buffer: @Byte, length: USize):
         f.close()
         return(.Success(Bytes.from_ptr(buffer, length)))
 
 /// Writes data as the whole file: made if missing, replaced if not.
-routine write_file(path: Bytes, data: Bytes) -> Result<Unit, FsError>
+internal routine write_file(path: Bytes, data: Bytes) -> Result<Unit, FsError>
     block entry():
-        opened : Result<File, FsError> = File.open(path, OpenMode.Write)
+        opened : Result<FileHandle, FsError> = FileHandle.open(path, OpenMode.Write)
         when opened:
             .Success(f)     -> write(f)
             .Failure(error) -> return(.Failure(error))
 
-    block write(f: File):
+    block write(opened: FileHandle):
+        claim f : @FileHandle <- opened
         wrote : Result<Unit, FsError> = f.write_all(data.data, data.length())
         f.close()
         return(wrote)
 
+// -- FileHandle: what both halves share ------------------------------------------------------
+
+conform Reader<FileHandle>
+conform Writer<FileHandle>
+
 /// Writes all length bytes, however many calls that takes.
-routine File.write_all(self: Self, data: @Byte, length: USize) -> Result<Unit, FsError>
+routine FileHandle.write_all(self: @Self, data: @Byte, length: USize) -> Result<Unit, FsError>
     block entry():
         jump write(data, length)
 
@@ -258,7 +259,7 @@ routine File.write_all(self: Self, data: @Byte, length: USize) -> Result<Unit, F
         branch remaining.eq(0)
             ? return(fs_done())
             : continue
-        wrote : Result<USize, FsError> = self.write(at, remaining)
+        wrote : Result<USize, FsError> = self.write_some(at, remaining)
         when wrote:
             .Success(n)     -> advance(at, remaining, n)
             .Failure(error) -> return(.Failure(error))
@@ -267,6 +268,21 @@ routine File.write_all(self: Self, data: @Byte, length: USize) -> Result<Unit, F
         branch n.eq(0)
             ? return(.Failure(FsError.Other))
             : write(at.stride(n), remaining.sub(n))
+
+/// The Writer side, behind handle.write("x = {x}\n"): a failure is kept for has_failed, and the bytes are dropped.
+routine FileHandle.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
+    block entry():
+        wrote : Result<Unit, FsError> = self.write_all(data, length)
+        branch wrote.is_success()
+            ? return()
+            : continue
+        self.failed.store(true)
+        return()
+
+/// Whether a write through the Writer side (write_bytes) failed.
+routine FileHandle.has_failed(self: @Self) -> Bool
+    block entry():
+        return(self.failed.load())
 
 // -- paths (no OS calls) -----------------------------------------------------------------
 //

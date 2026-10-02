@@ -479,7 +479,7 @@ private routine path_mode(cpath: @Byte) -> Option<U32>
 
 /// path's metadata, a link followed to what it points at.
 #target(os: not "windows")
-routine metadata(path: Bytes) -> Result<Metadata, FsError>
+internal routine metadata(path: Bytes) -> Result<Metadata, FsError>
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
@@ -488,22 +488,23 @@ routine metadata(path: Bytes) -> Result<Metadata, FsError>
 
 /// path's metadata; a link describes itself (kind Symlink).
 #target(os: not "windows")
-routine symlink_metadata(path: Bytes) -> Result<Metadata, FsError>
+internal routine symlink_metadata(path: Bytes) -> Result<Metadata, FsError>
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
             ? return(metadata_of(cpath.to<@Byte>(), false))
             : return(.Failure(path_error(path)))
 
-// -- files ---------------------------------------------------------------------------
+// -- file handles ------------------------------------------------------------------------
 
-/// An open file. close it when done.
+/// An open file, from a File's open_read and the like: a Reader and a Writer. claim it, and close it when done.
 #target(os: not "windows")
-record File
-    fd : CInt
+record FileHandle
+    fd     : CInt
+    failed : Bool  // a write_bytes failed (write_all reports each failure itself)
 
 #target(os: not "windows")
-routine File.open(path: Bytes, mode: OpenMode) -> Result<Self, FsError>
+internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, FsError>
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
@@ -524,42 +525,44 @@ routine File.open(path: Bytes, mode: OpenMode) -> Result<Self, FsError>
         fd : CInt = c_open(cpath, flags, 0o666)
         branch fd.lt(0)
             ? return(failed<Self>())
-            : return(.Success(Self { fd: fd }))
+            : return(.Success(Self { fd: fd, failed: false }))
 
 /// Reads up to length bytes into buffer: how many, 0 at the end of the file.
 #target(os: not "windows")
-routine File.read(self: Self, buffer: @Byte, length: USize) -> Result<USize, FsError>
+routine FileHandle.read_bytes(self: @Self, buffer: @Byte, length: USize) -> Result<USize, FsError>
     block entry():
-        got : SSize = c_read(self.fd, buffer, length.min(1073741824))
+        got : SSize = c_read(self.fd.load(), buffer, length.min(1073741824))
         branch got.ge(0)
             ? return(.Success(got.to<USize>()))
             : continue
         // EINTR: a signal came first, so ask again
         branch errno().eq(4)
-            ? return(self.read(buffer, length))
+            ? return(self.read_bytes(buffer, length))
             : return(failed<USize>())
 
 /// Writes up to length bytes: how many it did.
 #target(os: not "windows")
-routine File.write(self: Self, data: @Byte, length: USize) -> Result<USize, FsError>
+internal routine FileHandle.write_some(self: @Self, data: @Byte,
+        length: USize) -> Result<USize, FsError>
     block entry():
-        wrote : SSize = c_write(self.fd, data, length.min(1073741824))
+        wrote : SSize = c_write(self.fd.load(), data, length.min(1073741824))
         branch wrote.ge(0)
             ? return(.Success(wrote.to<USize>()))
             : continue
         branch errno().eq(4)
-            ? return(self.write(data, length))
+            ? return(self.write_some(data, length))
             : return(failed<USize>())
 
 /// Moves the position: the new one, from the start.
 #target(os: not "windows")
-routine File.seek(self: Self, offset: S64, from: SeekFrom) -> Result<U64, FsError>
+routine FileHandle.seek(self: @Self, offset: S64, from: SeekFrom) -> Result<U64, FsError>
     block entry():
+        fd : CInt = self.fd.load()
         // SEEK_SET, SEEK_CUR, SEEK_END
         when from:
-            SeekFrom.Start   -> moved(c_lseek(self.fd, offset, 0))
-            SeekFrom.Current -> moved(c_lseek(self.fd, offset, 1))
-            SeekFrom.End     -> moved(c_lseek(self.fd, offset, 2))
+            SeekFrom.Start   -> moved(c_lseek(fd, offset, 0))
+            SeekFrom.Current -> moved(c_lseek(fd, offset, 1))
+            SeekFrom.End     -> moved(c_lseek(fd, offset, 2))
 
     block moved(at: S64):
         branch at.ge(0)
@@ -567,34 +570,34 @@ routine File.seek(self: Self, offset: S64, from: SeekFrom) -> Result<U64, FsErro
             : return(failed<U64>())
 
 #target(os: not "windows")
-routine File.metadata(self: Self) -> Result<Metadata, FsError>
+routine FileHandle.metadata(self: @Self) -> Result<Metadata, FsError>
     block entry():
-        return(fd_metadata(self.fd))
+        return(fd_metadata(self.fd.load()))
 
 #target(os: not "windows")
-routine File.size(self: Self) -> Result<U64, FsError>
+routine FileHandle.size(self: @Self) -> Result<U64, FsError>
     block entry():
-        m : Result<Metadata, FsError> = fd_metadata(self.fd)
+        m : Result<Metadata, FsError> = fd_metadata(self.fd.load())
         when m:
             .Success(info)  -> return(.Success(info.size))
             .Failure(error) -> return(.Failure(error))
 
 /// Truncates or extends (with zeros) the file to size bytes; the position stays.
 #target(os: not "windows")
-routine File.set_size(self: Self, size: U64) -> Result<Unit, FsError>
+routine FileHandle.set_size(self: @Self, size: U64) -> Result<Unit, FsError>
     block entry():
-        return(checked(c_ftruncate(self.fd, size.to<S64>())))
+        return(checked(c_ftruncate(self.fd.load(), size.to<S64>())))
 
 /// Waits until what was written is on the storage device.
 #target(os: not "windows")
-routine File.sync(self: Self) -> Result<Unit, FsError>
+routine FileHandle.sync(self: @Self) -> Result<Unit, FsError>
     block entry():
-        return(checked(c_fsync(self.fd)))
+        return(checked(c_fsync(self.fd.load())))
 
 #target(os: not "windows")
-routine File.close(self: Self) -> Void
+routine FileHandle.close(self: @Self) -> Void
     block entry():
-        c_close(self.fd)
+        c_close(self.fd.load())
         return()
 
 // -- directories and names -------------------------------------------------------------
@@ -611,7 +614,7 @@ private routine make_dir(cpath: @Byte) -> CInt
 
 /// Makes the directory path (its parent must exist).
 #target(os: not "windows")
-routine create_dir(path: Bytes) -> Result<Unit, FsError>
+internal routine create_dir(path: Bytes) -> Result<Unit, FsError>
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
@@ -620,7 +623,7 @@ routine create_dir(path: Bytes) -> Result<Unit, FsError>
 
 /// Removes a file (or a link), not a directory.
 #target(os: not "windows")
-routine remove_file(path: Bytes) -> Result<Unit, FsError>
+internal routine remove_file(path: Bytes) -> Result<Unit, FsError>
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
@@ -629,7 +632,7 @@ routine remove_file(path: Bytes) -> Result<Unit, FsError>
 
 /// Removes an empty directory.
 #target(os: not "windows")
-routine remove_dir(path: Bytes) -> Result<Unit, FsError>
+internal routine remove_dir(path: Bytes) -> Result<Unit, FsError>
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
@@ -638,7 +641,7 @@ routine remove_dir(path: Bytes) -> Result<Unit, FsError>
 
 /// Renames from to to, replacing what is at to. Between filesystems it fails with CrossDevice.
 #target(os: not "windows")
-routine rename(from: Bytes, to: Bytes) -> Result<Unit, FsError>
+internal routine rename(from: Bytes, to: Bytes) -> Result<Unit, FsError>
     block entry():
         claim a : @Array<Byte, PATH_CAPACITY> <- uninit
         claim b : @Array<Byte, PATH_CAPACITY> <- uninit
@@ -664,7 +667,7 @@ private routine rename_exclusive(a: @Byte, b: @Byte) -> CInt
 /// Renames from to to, failing with AlreadyExists if something is at to. On a filesystem that can't do that in one
 /// step, it looks first, so another process could slip a file in between.
 #target(os: not "windows")
-routine rename_no_replace(from: Bytes, to: Bytes) -> Result<Unit, FsError>
+internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result<Unit, FsError>
     block entry():
         claim a : @Array<Byte, PATH_CAPACITY> <- uninit
         claim b : @Array<Byte, PATH_CAPACITY> <- uninit
@@ -690,35 +693,37 @@ routine rename_no_replace(from: Bytes, to: Bytes) -> Result<Unit, FsError>
 
 /// Copies from's bytes and permissions into to (made, or replaced): the bytes copied.
 #target(os: not "windows")
-routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
+internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
     block entry():
-        source : Result<File, FsError> = File.open(from, OpenMode.Read)
+        source : Result<FileHandle, FsError> = FileHandle.open(from, OpenMode.Read)
         when source:
             .Success(f)     -> target(f)
             .Failure(error) -> return(.Failure(error))
 
-    block target(src: File):
-        dest : Result<File, FsError> = File.open(to, OpenMode.Write)
+    block target(opened: FileHandle):
+        claim src : @FileHandle <- opened
+        dest : Result<FileHandle, FsError> = FileHandle.open(to, OpenMode.Write)
         when dest:
             .Success(f)     -> copy(src, f)
             .Failure(error) -> failed_with(src, error)
 
-    block failed_with(src: File, error: FsError):
+    block failed_with(src: @FileHandle, error: FsError):
         src.close()
         return(.Failure(error))
 
-    block copy(src: File, dst: File):
-        set_mode(dst.fd, fd_mode(src.fd))
+    block copy(src: @FileHandle, made: FileHandle):
+        claim dst : @FileHandle <- made
+        set_mode(dst.fd.load(), fd_mode(src.fd.load()))
         claim buffer : @Array<Byte, 16384> <- uninit
         jump chunk(src, dst, buffer.to<@Byte>(), 0)
 
-    block chunk(src: File, dst: File, buffer: @Byte, total: U64):
-        got : Result<USize, FsError> = src.read(buffer, 16384)
+    block chunk(src: @FileHandle, dst: @FileHandle, buffer: @Byte, total: U64):
+        got : Result<USize, FsError> = src.read_bytes(buffer, 16384)
         when got:
             .Success(n)     -> put(src, dst, buffer, total, n)
             .Failure(error) -> stop(src, dst, error)
 
-    block put(src: File, dst: File, buffer: @Byte, total: U64, n: USize):
+    block put(src: @FileHandle, dst: @FileHandle, buffer: @Byte, total: U64, n: USize):
         branch n.eq(0)
             ? done(src, dst, total)
             : continue
@@ -727,12 +732,12 @@ routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
             .Success        -> chunk(src, dst, buffer, total.add(n.to<U64>()))
             .Failure(error) -> stop(src, dst, error)
 
-    block stop(src: File, dst: File, error: FsError):
+    block stop(src: @FileHandle, dst: @FileHandle, error: FsError):
         src.close()
         dst.close()
         return(.Failure(error))
 
-    block done(src: File, dst: File, total: U64):
+    block done(src: @FileHandle, dst: @FileHandle, total: U64):
         src.close()
         dst.close()
         return(.Success(total))
@@ -761,7 +766,7 @@ private routine change_mode(cpath: @Byte, mode: U32) -> CInt
 
 /// Read-only takes every write permission away; writable gives the owner's back.
 #target(os: not "windows")
-routine set_readonly(path: Bytes, readonly: Bool) -> Result<Unit, FsError>
+internal routine set_readonly(path: Bytes, readonly: Bool) -> Result<Unit, FsError>
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
@@ -780,7 +785,7 @@ routine set_readonly(path: Bytes, readonly: Bool) -> Result<Unit, FsError>
 
 /// Whether this process may read, write, or execute path.
 #target(os: not "windows")
-routine can_access(path: Bytes, access: Access) -> Bool
+internal routine can_access(path: Bytes, access: Access) -> Bool
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
@@ -794,7 +799,7 @@ routine can_access(path: Bytes, access: Access) -> Bool
 
 /// Makes the file if it's missing, and sets its access and modification times to now.
 #target(os: not "windows")
-routine touch(path: Bytes) -> Result<Unit, FsError>
+internal routine touch(path: Bytes) -> Result<Unit, FsError>
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
@@ -810,8 +815,8 @@ routine touch(path: Bytes) -> Result<Unit, FsError>
 
 // -- directory listings ------------------------------------------------------------------
 
-/// The entries of a directory, "." and ".." left out, in the order the OS gives them. claim one, open it, call
-/// next until Absent, and close it.
+/// The entries of a directory, "." and ".." left out, in the order the OS gives them. claim one, open it on a
+/// Directory, call next until Absent, and close it.
 #target(os: not "windows")
 record DirIter
     dir    : Addr
@@ -820,7 +825,7 @@ record DirIter
     name   : @Byte  // the last entry's name, in readdir's buffer
 
 #target(os: not "windows")
-routine DirIter.open(self: @Self, path: Bytes) -> Result<Unit, FsError>
+internal routine DirIter.open_path(self: @Self, path: Bytes) -> Result<Unit, FsError>
     block entry():
         self.dir.store(null)
         branch c_path(path, self.path.to<@Byte>())
@@ -933,7 +938,7 @@ private routine nonempty_env(name: CStr) -> Option<@Byte>
 
 /// The working directory, in memory from alloc.
 #target(os: not "windows")
-routine current_dir(alloc: @Allocator) -> Result<Bytes, FsError>
+internal routine current_dir(alloc: @Allocator) -> Result<Bytes, FsError>
     block entry():
         jump attempt(256)
 
@@ -953,7 +958,7 @@ routine current_dir(alloc: @Allocator) -> Result<Bytes, FsError>
             : return(.Failure(error_of(e)))
 
 #target(os: not "windows")
-routine set_current_dir(path: Bytes) -> Result<Unit, FsError>
+internal routine set_current_dir(path: Bytes) -> Result<Unit, FsError>
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
@@ -962,7 +967,7 @@ routine set_current_dir(path: Bytes) -> Result<Unit, FsError>
 
 /// TMPDIR, or /tmp, in memory from alloc.
 #target(os: not "windows")
-routine temp_dir(alloc: @Allocator) -> Result<Bytes, FsError>
+internal routine temp_dir(alloc: @Allocator) -> Result<Bytes, FsError>
     block entry():
         t : Option<@Byte> = nonempty_env("TMPDIR")
         when t:
@@ -971,7 +976,7 @@ routine temp_dir(alloc: @Allocator) -> Result<Bytes, FsError>
 
 /// HOME, in memory from alloc; NotFound when it isn't set.
 #target(os: not "windows")
-routine home_dir(alloc: @Allocator) -> Result<Bytes, FsError>
+internal routine home_dir(alloc: @Allocator) -> Result<Bytes, FsError>
     block entry():
         h : Option<@Byte> = nonempty_env("HOME")
         when h:
@@ -980,7 +985,7 @@ routine home_dir(alloc: @Allocator) -> Result<Bytes, FsError>
 
 /// path made absolute by the text alone: the working directory in front of a relative path, nothing resolved.
 #target(os: not "windows")
-routine absolute_path(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+internal routine absolute_path(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry():
         branch path.starts_with("/")
             ? return(owned(path.data, path.length(), alloc))
@@ -997,7 +1002,7 @@ routine absolute_path(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
 
 /// The absolute path with every link, ".", and ".." resolved; path must exist.
 #target(os: not "windows")
-routine canonical_path(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
@@ -1022,7 +1027,8 @@ private routine map_failed(p: Addr) -> Bool
 /// Maps length bytes of path from offset (USize.MAX: to the end), clamped to the file; past the end, or an empty
 /// file, gives an empty mapping. write maps it shared, so stores reach the file; otherwise it's read-only.
 #target(os: not "windows")
-routine Mapping.map(path: Bytes, write: Bool, offset: U64, length: USize) -> Result<Self, FsError>
+internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
+        length: USize) -> Result<Self, FsError>
     block entry():
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())

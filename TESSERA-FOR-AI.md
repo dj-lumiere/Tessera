@@ -317,9 +317,11 @@ routine parse_or_zero(text: Bytes) -> F64
 Format through `stdlib/format.tess`, not printf. printf is for C interop demos only: it can't print `S128`, `F16`,
 `BF16`, or `F128`, and a mismatched format is undefined behavior.
 
-- Writers: `FdWriter.stdout()` / `.stderr()` (unbuffered), `BufWriter<W>` (`out.construct(inner)`, then
-  `flush()`), `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `write(buf, ...)`, then
-  `buf.to_bytes()`; there's no string builder type).
+- Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.shared()` is the pointer a
+  Writer parameter takes), a `FileHandle`, `FdWriter`, `BufWriter<W>` (`out.construct(inner)`, then `flush()`),
+  `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `buf.write("...")`, then `buf.to_bytes()`; it is
+  the string builder). Standard input is `In`: `In.read_line(alloc)`, `read_word`, `read_count(n, alloc)`,
+  `read_all`, `read(buffer, n)`, all through one buffer the process shares.
 - `write_str(out, "text")`, `write_line(out)`, `v.represent(out)` for every integer, float, `Bool`, and `Bytes`,
   and `p.represent(out)` for a pointer's address (`0x7ffd5e8c1a40`); `represent_hex`, `represent_fixed(out, digits)`;
   `represent_with(out, v, spec)` with a `FormatSpec`.
@@ -330,8 +332,9 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
 - `write(out, "x = {x}\n")` writes text and values in one line: it expands at build time into
   `write_str` / `.represent` calls, a brace holds one expression (loads and chains allowed, and literals with their own braces:
   `"{sum2(Array<S64, 2> { 7, 8 })}"`), `{{` is a literal brace,
-  and there are no format options. `print("...")` / `eprint("...")` do the same on stdout / stderr without
-  setting up a writer. The old `println_slice` / `print_int` helpers are gone.
+  and there are no format options. The same template is a method on any Writer: `out.write("...")` on a pointer
+  to one (`buf.write(...)`, `handle.write(...)`), and `Out.write("x = {x}\n")` / `Err.write(...)` on a stateless
+  one (it writes to `T.shared()`). There is no `print` / `eprint`.
 
 ## Collections
 
@@ -383,13 +386,16 @@ another thread at a yield. A call that may block goes through `sched.run_blockin
 with `park()` (until `wake(handle)`, the handle from `current()`; it may return early, so loop on the condition),
 `sleep(ns)`, or `join(j)` on a fiber from `spawn_joinable` (every `Join` is joined once). Fibers run on x86_64 and AArch64 (not on Windows) only.
 
-**Files.** `Standard::Os` takes paths as `Bytes` (UTF-8; the W calls on Windows) and returns `Result<T, FsError>`:
-`File.open(path, OpenMode.Read)` then `read` / `write` / `write_all` / `seek` / `size` / `set_size` / `close`;
-`read_file(path, alloc)` / `write_file(path, data)`; `metadata` / `symlink_metadata` (a `Metadata` with `kind`, `size`,
-times in ns); `create_dir(_all)`, `remove_file`, `remove_dir`, `remove_dir_all(path, alloc)`, `rename`, `copy_file`;
-a `DirIter` (`claim`, `open(path)`, `next()` until Absent, `close()`); `Mapping.map(path, write, offset, length)`;
-and path text with no OS calls (`join_path`, `parent_path`, `file_name`, `file_stem`, `file_extension`). A routine
-that hands text back takes an allocator; free it with `data.free(alloc)`.
+**Files.** `File.at(path)` and `Directory.at(path)` are paths (`Bytes`, UTF-8; the W calls on Windows); each
+routine on them is one thing done there now, returning `Result<T, FsError>`. A File: `open_read` / `open_write` /
+`open_append` / `open_read_write` / `create_new` give a `FileHandle` (claim it: `read_bytes`, `write_all`,
+`h.write("...")`, `seek`, `size`, `set_size`, `sync`, `close`); `read_all(alloc)` / `write_all(data)`, `exists`,
+`metadata` (`kind`, `size`, times in ns), `copy_to`, `move_to`, `move_to_if_absent`, `delete`, `touch`, `map(write,
+offset, length)`, `name` / `stem` / `extension` / `parent`. A Directory: `create` / `create_all`, `delete` /
+`delete_all(alloc)`, `file(name, alloc)` / `subdir(name, alloc)`, `Directory.current` / `temp` / `home`, and a
+`DirIter` (`claim`, `open(dir)`, `next()` until Absent, `close()`). Path text needs no OS: `join_path`,
+`parent_path`, `file_name`, `file_stem`, `file_extension`. A routine that hands text or a path back takes an
+allocator; free it with `data.free(alloc)`.
 
 **Processes.** `run_process(program, args, arg_count, options, alloc)` (looked up on PATH) and `run_shell(command,
 options, alloc)` return `Result<ProcessOutput, ProcessError>`: an `ExitStatus` (`.code()`, `.is_success()`) and the

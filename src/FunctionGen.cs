@@ -684,6 +684,8 @@ public sealed class FunctionGen
                 return RoutineValue(rr).Type;
             case CallExpr wf when IsTemplateCall(wf):
                 return VoidType.Instance;
+            case NsCallExpr or MethodCallExpr when TemplateWriter(e) is not null:
+                return VoidType.Instance;
             case CallExpr or NsCallExpr or MethodCallExpr:
                 return InferCall(e, null);
             default:
@@ -759,6 +761,8 @@ public sealed class FunctionGen
                 $"'.{m.Name}' isn't a case of {expected}: a leading '.' without arguments names a variant case; a typewise call is .{m.Name}(...)"),
             ImplicitCallExpr => EvalCall(e, expected),
             CallExpr wf when IsTemplateCall(wf) => EvalTemplateCall(wf),
+            NsCallExpr or MethodCallExpr when TemplateWriter(e) is { } writer =>
+                ExpandTemplate(writer, (StrLit)(e is NsCallExpr ns ? ns.Args[0] : ((MethodCallExpr)e).Args[0])),
             PresetRef r => EvalPresetRef(r, expected),
             RoutineRef rr => RoutineValue(rr),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),
@@ -1013,45 +1017,51 @@ public sealed class FunctionGen
         return label;
     }
 
-    /// Where write / print find write_str and the standard streams, whatever the file imports.
+    /// Where a write template finds write_str, whatever the file imports.
     private const string FormatModule = "Standard::Format";
-    private const string OsModule = "Standard::Os";
 
-    private static readonly Dictionary<string, string?> FormatCalls = new()
+    /// `write`, unless the program declares a routine by that name.
+    private bool IsTemplateCall(CallExpr c) => c.Name == "write" && _c.FindFree(c.Name, _env.File, c.Pos) is null;
+
+    /// The writer a `.write("x = {x}\n")` writes to, or null when the call is an ordinary one: on a type, a stateless
+    /// Writer (`ConsoleOutput.write("...")` writes to `ConsoleOutput.shared()`); on a value, the Writer it points at
+    /// (`handle.write("...")`). A type with a `write` routine of its own keeps it.
+    private Expr? TemplateWriter(Expr e)
     {
-        ["write"] = null, ["print"] = "StdoutWriter", ["eprint"] = "StderrWriter",
-    };
-
-    /// `write`, `print`, and `eprint`, unless the program declares a routine by that name.
-    private bool IsTemplateCall(CallExpr c) =>
-        FormatCalls.ContainsKey(c.Name) && _c.FindFree(c.Name, _env.File, c.Pos) is null;
+        switch (e)
+        {
+            case NsCallExpr { Name: "write", TypeArgs.Count: 0, Args: [StrLit] } ns:
+            {
+                if (TryResolveOwner(ns.Owner) is not { } owner) return null;
+                if (_c.FindMethod(owner, "write", _env.File, ns.Pos) is not null) return null;
+                if (_c.FindMethod(owner, "shared", _env.File, ns.Pos) is null) return null;
+                return new NsCallExpr(ns.Owner, "shared", [], [], ns.Pos);
+            }
+            case MethodCallExpr { Name: "write", TypeArgs.Count: 0, Args: [StrLit] } mc:
+            {
+                if (Infer(mc.Receiver) is not PtrType { Pointee: { } pointee }) return null;
+                if (_c.FindMethod(pointee, "write", _env.File, mc.Pos) is not null) return null;
+                if (_c.FindMethod(pointee, "write_bytes", _env.File, mc.Pos) is null) return null;
+                return mc.Receiver;
+            }
+            default:
+                return null;
+        }
+    }
 
     /// `write(out, "x = {x}\n")` expands in place, in order: `write_str(out, "x = ")`, `x.represent(out)`,
     /// `write_str(out, "\n")`. A brace holds one expression; `{{` and `}}` are literal braces. Nothing is
-    /// allocated: each piece goes straight to the writer. `print("...")` / `eprint("...")` are the same with
-    /// the stateless `StdoutWriter.shared()` / `StderrWriter.shared()` as the writer.
+    /// allocated: each piece goes straight to the writer. `T.write("...")` and `w.write("...")` are the same with
+    /// the writer TemplateWriter finds.
     private Val EvalTemplateCall(CallExpr c)
     {
-        Expr writer;
-        StrLit template;
-        if (FormatCalls[c.Name] is { } stream)
-        {
-            if (c.Args is not [StrLit only])
-                throw Err(c.Pos, $"{c.Name} takes a string literal: {c.Name}(\"x = {{x}}\\n\")");
-            if (!_c.Target.HasOs)
-                throw Err(c.Pos, $"{c.Name} writes to standard {(c.Name == "print" ? "output" : "error")}, which is in "
-                    + $"{OsModule}, and target {_c.Target.Arch}-{_c.Target.Os}-{_c.Target.Abi} has no operating system; "
-                    + "write(out, ...) to a Writer of your own instead");
-            writer = new NsCallExpr(new TypeRef(stream, [], c.Pos) { Path = OsModule }, "shared", [], [], c.Pos);
-            template = only;
-        }
-        else if (c.Args is [ValueRef named, StrLit given])
-        {
-            writer = named;
-            template = given;
-        }
-        else
+        if (c.Args is not [ValueRef writer, StrLit template])
             throw Err(c.Pos, "write takes a named writer and a string literal: write(out, \"x = {x}\\n\")");
+        return ExpandTemplate(writer, template);
+    }
+
+    private Val ExpandTemplate(Expr writer, StrLit template)
+    {
         var text = new StringBuilder();
         void Flush()
         {
@@ -1072,7 +1082,7 @@ public sealed class FunctionGen
                 i++;
                 continue;
             }
-            if (ch == '}') throw Err(template.Pos, "a '}' in a write or print string is written '}}'");
+            if (ch == '}') throw Err(template.Pos, "a '}' in a write string is written '}}'");
             if (ch != '{')
             {
                 text.Append(ch);
@@ -1080,7 +1090,7 @@ public sealed class FunctionGen
             }
             // The hole ends at its matching '}', so a literal inside it keeps its braces: "{sum2({ 7, 8 })}".
             int end = MatchingBrace(s, i);
-            if (end < 0) throw Err(template.Pos, "a '{' in a write or print string is never closed; a literal brace is '{{'");
+            if (end < 0) throw Err(template.Pos, "a '{' in a write string is never closed; a literal brace is '{{'");
             string source = s[(i + 1)..end];
             if (string.IsNullOrWhiteSpace(source)) throw Err(template.Pos, "'{}' holds no expression; a literal brace is '{{'");
             var at = new Pos(template.Pos.File, template.Pos.Line, template.Pos.Col + 2 + i);
@@ -1276,6 +1286,7 @@ public sealed class FunctionGen
 
     private bool IsNoReturn(Expr e) => AddrOfCallable(e) is null && e switch
     {
+        NsCallExpr or MethodCallExpr when TemplateWriter(e) is not null => false,
         CallExpr or NsCallExpr or MethodCallExpr => PlanCall(e, null) is { } p && p.Decl.Attr("noreturn") is not null,
         ImplicitCallExpr => false,
         _ => false,

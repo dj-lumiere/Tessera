@@ -1,6 +1,6 @@
-// Standard::Os files and the filesystem, in a directory of its own under the temporary directory: directories made
-// and removed, files written, read, appended, sized, copied, and renamed, listings (a non-ASCII name too), the
-// working directory, path text, and memory mappings.
+// Standard::Os files and directories, in a directory of its own under the temporary directory: directories made and
+// deleted, files written (bytes and formatted text through a FileHandle), read, appended, sized, copied, and moved,
+// listings (a non-ASCII name too), the working directory, path text, and memory mappings.
 
 import Standard::Alloc
 import Standard::Format
@@ -31,24 +31,24 @@ routine report(what: Bytes, r: Result<Unit, FsError>) -> Void
             .Failure(error) -> failed(error)
 
     block ok():
-        print("{what}: ok\n")
+        Out.write("{what}: ok\n")
         return()
 
     block failed(error: FsError):
-        print("{what}: {error_name(error)}\n")
+        Out.write("{what}: {error_name(error)}\n")
         return()
 
 /// The file's text, or the error's name.
-routine contents(path: Bytes, alloc: @Allocator) -> Bytes
+routine contents(f: File, alloc: @Allocator) -> Bytes
     block entry():
-        r : Result<Bytes, FsError> = read_file(path, alloc)
+        r : Result<Bytes, FsError> = f.read_all(alloc)
         when r:
             .Success(text)  -> return(text)
             .Failure(error) -> return(error_name(error))
 
-routine size_of(path: Bytes) -> U64
+routine size_of(f: File) -> U64
     block entry():
-        m : Result<Metadata, FsError> = metadata(path)
+        m : Result<Metadata, FsError> = f.metadata()
         when m:
             .Success(info) -> return(info.size)
             .Failure       -> return(U64.MAX)
@@ -56,130 +56,125 @@ routine size_of(path: Bytes) -> U64
 routine main() -> S32
     block entry():
         claim alloc : @Allocator <- make_heap_allocator()
-        tmp  : Bytes = temp_dir(alloc).unwrap()
-        root : Bytes = join_path(tmp, "tessera_fs_basic", alloc)
-        remove_dir_all(root, alloc)
-        deep : Bytes = join_path(root, "a/b/c", alloc)
-        report("create_dir_all", create_dir_all(deep))
-        report("create_dir_all again", create_dir_all(deep))
-        print("is_dir: {is_dir(deep)}, is_file: {is_file(deep)}\n")
+        tmp  : Directory = Directory.temp(alloc).unwrap()
+        root : Directory = tmp.subdir("tessera_fs_basic", alloc)
+        root.delete_all(alloc)
+        deep : Directory = root.subdir("a/b/c", alloc)
+        report("create_all", deep.create_all())
+        report("create_all again", deep.create_all())
+        as_file : Bool = File.at(deep.path).is_file()
+        Out.write("directory exists: {deep.exists()}, is a file: {as_file}\n")
         jump files(alloc, tmp, root)
 
-    block files(alloc: @Allocator, tmp: Bytes, root: Bytes):
-        a     : Bytes = join_path(root, "a", alloc)
-        hello : Bytes = join_path(a, "hello.txt", alloc)
-        report("write_file", write_file(hello, "hello, 세계\n"))
-        print("read_file: {contents(hello, alloc)}")
-        print("size: {size_of(hello)}\n")
-        appended : File  = File.open(hello, OpenMode.Append).unwrap()
-        more     : Bytes = "more"
-        report("append", appended.write_all(more.data, more.length()))
+    block files(alloc: @Allocator, tmp: Directory, root: Directory):
+        a     : Directory = root.subdir("a", alloc)
+        hello : File      = a.file("hello.txt", alloc)
+        report("write_all", hello.write_all("hello, 세계\n"))
+        Out.write("read_all: {contents(hello, alloc)}")
+        Out.write("size: {size_of(hello)}\n")
+        claim appended : @FileHandle <- hello.open_append().unwrap()
+        appended.write("more")
+        Out.write("formatted write failed: {appended.has_failed()}\n")
         appended.close()
-        print("size after append: {size_of(hello)}\n")
-        both : File = File.open(hello, OpenMode.ReadWrite).unwrap()
-        at   : U64  = both.seek(-4, SeekFrom.End).unwrap()
-        print("seek to end - 4: {at}\n")
+        Out.write("size after append: {size_of(hello)}\n")
+        claim both : @FileHandle <- hello.open_read_write().unwrap()
+        at : U64 = both.seek(-4, SeekFrom.End).unwrap()
+        Out.write("seek to end - 4: {at}\n")
         claim tail : @Array<Byte, 8> <- uninit
-        got  : USize = both.read(tail.to<@Byte>(), 8).unwrap()
+        got  : USize = both.read_bytes(tail.to<@Byte>(), 8).unwrap()
         back : Bytes = Bytes.from_ptr(tail.to<@Byte>(), got)
-        print("read back: {back}\n")
+        Out.write("read back: {back}\n")
         report("set_size 5", both.set_size(5))
         size : U64 = both.size().unwrap()
-        print("size: {size}\n")
+        Out.write("size: {size}\n")
         both.close()
         jump names(alloc, tmp, root, a, hello)
 
-    block names(alloc: @Allocator, tmp: Bytes, root: Bytes, a: Bytes, hello: Bytes):
-        copied  : Bytes = join_path(a, "copy.txt", alloc)
-        renamed : Bytes = join_path(a, "renamed.txt", alloc)
-        bytes   : U64   = copy_file(hello, copied).unwrap()
-        print("copy_file: {bytes} bytes, {contents(copied, alloc)}\n")
-        report("rename", rename(copied, renamed))
-        print("old there: {exists(copied)}, new there: {exists(renamed)}\n")
-        report("rename_no_replace onto a file", rename_no_replace(renamed, hello))
-        new_file : Result<File, FsError> = File.open(hello, OpenMode.CreateNew)
-        print("CreateNew on a file: {error_name(new_file.unwrap_failure())}\n")
-        missing : Result<File, FsError> = File.open(join_path(a, "missing.txt", alloc),
-                OpenMode.Read)
-        print("open missing: {error_name(missing.unwrap_failure())}\n")
-        report("set_readonly", set_readonly(renamed, true))
-        ro : Bool = metadata(renamed).unwrap().readonly
-        print("readonly: {ro}\n")
-        report("set_readonly off", set_readonly(renamed, false))
-        rw : Bool = metadata(renamed).unwrap().readonly
-        print("readonly: {rw}\n")
-        touched : Bytes = join_path(a, "파일.txt", alloc)
-        report("touch", touch(touched))
-        print("touched: {is_file(touched)}, size {size_of(touched)}\n")
+    block names(alloc: @Allocator, tmp: Directory, root: Directory, a: Directory, hello: File):
+        copied  : File = a.file("copy.txt", alloc)
+        renamed : File = a.file("renamed.txt", alloc)
+        bytes   : U64  = hello.copy_to(copied).unwrap()
+        Out.write("copy_to: {bytes} bytes, {contents(copied, alloc)}\n")
+        report("move_to", copied.move_to(renamed))
+        Out.write("old there: {copied.exists()}, new there: {renamed.exists()}\n")
+        report("move_to_if_absent onto a file", renamed.move_to_if_absent(hello))
+        new_file : Result<FileHandle, FsError> = hello.create_new()
+        Out.write("create_new on a file: {error_name(new_file.unwrap_failure())}\n")
+        missing : Result<FileHandle, FsError> = a.file("missing.txt", alloc).open_read()
+        Out.write("open missing: {error_name(missing.unwrap_failure())}\n")
+        report("set_readonly", renamed.set_readonly(true))
+        ro : Bool = renamed.metadata().unwrap().readonly
+        Out.write("readonly: {ro}\n")
+        report("set_readonly off", renamed.set_readonly(false))
+        rw : Bool = renamed.metadata().unwrap().readonly
+        Out.write("readonly: {rw}\n")
+        touched : File = a.file("파일.txt", alloc)
+        report("touch", touched.touch())
+        Out.write("touched: {touched.is_file()}, size {size_of(touched)}\n")
         jump listing(alloc, tmp, root, a, hello)
 
-    block listing(alloc: @Allocator, tmp: Bytes, root: Bytes, a: Bytes, hello: Bytes):
+    block listing(alloc: @Allocator, tmp: Directory, root: Directory, a: Directory, hello: File):
         claim iter : @DirIter <- uninit
         report("open listing", iter.open(a))
         jump next(alloc, tmp, root, hello, iter, 0, 0, false)
 
-    block next(alloc: @Allocator, tmp: Bytes, root: Bytes, hello: Bytes, iter: @DirIter, count: U64,
-            dirs: U64, korean: Bool):
+    block next(alloc: @Allocator, tmp: Directory, root: Directory, hello: File, iter: @DirIter,
+            count: U64, dirs: U64, korean: Bool):
         e : Option<DirEntry> = iter.next()
         when e:
             .Present(d) -> counted(alloc, tmp, root, hello, iter, count, dirs, korean, d)
             .Absent     -> listed(alloc, tmp, root, hello, iter, count, dirs, korean)
 
-    block counted(alloc: @Allocator, tmp: Bytes, root: Bytes, hello: Bytes, iter: @DirIter,
+    block counted(alloc: @Allocator, tmp: Directory, root: Directory, hello: File, iter: @DirIter,
             count: U64, dirs: U64, korean: Bool, d: DirEntry):
         is_d  : Bool = d.kind.eq(FileKind.Directory)
         found : Bool = korean.bitor(d.name.eq("파일.txt"))
         jump next(alloc, tmp, root, hello, iter, count.add(1), dirs.add(is_d.to<U64>()), found)
 
-    block listed(alloc: @Allocator, tmp: Bytes, root: Bytes, hello: Bytes, iter: @DirIter,
+    block listed(alloc: @Allocator, tmp: Directory, root: Directory, hello: File, iter: @DirIter,
             count: U64, dirs: U64, korean: Bool):
         iter.close()
-        print("entries: {count}, directories: {dirs}, Korean name listed: {korean}\n")
+        Out.write("entries: {count}, directories: {dirs}, Korean name listed: {korean}\n")
         jump paths(alloc, tmp, root, hello)
 
-    block paths(alloc: @Allocator, tmp: Bytes, root: Bytes, hello: Bytes):
-        n1 : Bytes = file_name("/a/b/file.txt")
-        n2 : Bytes = file_name("/a/b/")
-        print("file_name: {n1}, {n2}\n")
-        p1 : Bytes = parent_path("/a/b/c")
-        p2 : Bytes = parent_path("a/b")
-        p3 : Bytes = parent_path("file.txt")
-        p4 : Bytes = parent_path("/")
-        p5 : Bytes = parent_path("/a")
-        print("parent_path: [{p1}] [{p2}] [{p3}] [{p4}] [{p5}]\n")
-        s1 : Bytes = file_stem("archive.tar.gz")
-        s2 : Bytes = file_stem(".hidden")
-        print("file_stem: {s1}, {s2}\n")
-        e1 : Bytes = file_extension("archive.tar.gz")
-        e2 : Bytes = file_extension(".hidden")
-        e3 : Bytes = file_extension("file")
-        print("file_extension: [{e1}] [{e2}] [{e3}]\n")
-        report("set_current_dir", set_current_dir(root))
-        cwd          : Bytes = current_dir(alloc).unwrap()
-        canonical    : Bytes = canonical_path(root, alloc).unwrap()
-        absolute     : Bytes = absolute_path("x.txt", alloc).unwrap()
-        cwd_ok       : Bool  = cwd.ends_with("tessera_fs_basic")
-        canonical_ok : Bool  = canonical.ends_with("tessera_fs_basic")
-        absolute_ok  : Bool  = absolute.ends_with("x.txt")
-        print("ends right: current_dir {cwd_ok}, canonical {canonical_ok}, absolute {absolute_ok}\n")
-        report("set_current_dir back", set_current_dir(tmp))
+    block paths(alloc: @Allocator, tmp: Directory, root: Directory, hello: File):
+        f : File = File.at("/a/b/archive.tar.gz")
+        Out.write("name {f.name()}, stem {f.stem()}, extension {f.extension()}, parent {f.parent().path}\n")
+        p1 : Bytes = parent_path("a/b")
+        p2 : Bytes = parent_path("file.txt")
+        p3 : Bytes = parent_path("/")
+        p4 : Bytes = parent_path("/a")
+        Out.write("parent_path: [{p1}] [{p2}] [{p3}] [{p4}]\n")
+        e1 : Bytes = file_extension(".hidden")
+        e2 : Bytes = file_extension("file")
+        s1 : Bytes = file_stem(".hidden")
+        Out.write("hidden: stem [{s1}], extension [{e1}]; no extension: [{e2}]\n")
+        report("set_current", root.set_current())
+        cwd          : Directory = Directory.current(alloc).unwrap()
+        canonical    : Directory = root.canonical(alloc).unwrap()
+        absolute     : File      = File.at("x.txt").absolute(alloc).unwrap()
+        cwd_ok       : Bool      = cwd.name().eq("tessera_fs_basic")
+        canonical_ok : Bool      = canonical.name().eq("tessera_fs_basic")
+        absolute_ok  : Bool      = absolute.name().eq("x.txt")
+        Out.write("names right: current {cwd_ok}, canonical {canonical_ok}, absolute {absolute_ok}\n")
+        report("set_current back", tmp.set_current())
         jump mapped(alloc, root, hello)
 
-    block mapped(alloc: @Allocator, root: Bytes, hello: Bytes):
-        whole : Mapping = Mapping.map(hello, false, 0, USize.MAX).unwrap()
+    block mapped(alloc: @Allocator, root: Directory, hello: File):
+        whole : Mapping = hello.map(false, 0, USize.MAX).unwrap()
         w     : Bytes   = Bytes.from_ptr(whole.data(), whole.length())
-        print("map: {w}\n")
+        Out.write("map: {w}\n")
         whole.unmap()
-        part : Mapping = Mapping.map(hello, false, 1, 3).unwrap()
+        part : Mapping = hello.map(false, 1, 3).unwrap()
         p    : Bytes   = Bytes.from_ptr(part.data(), part.length())
-        print("map 1..4: {p}\n")
+        Out.write("map 1..4: {p}\n")
         part.unmap()
-        past : Mapping = Mapping.map(hello, false, 100, 3).unwrap()
-        print("map past the end: {past.length()}\n")
-        rw : Mapping = Mapping.map(hello, true, 0, USize.MAX).unwrap()
+        past : Mapping = hello.map(false, 100, 3).unwrap()
+        Out.write("map past the end: {past.length()}\n")
+        rw : Mapping = hello.map(true, 0, USize.MAX).unwrap()
         rw.data().store(b'J')
         rw.unmap()
-        print("after a mapped store: {contents(hello, alloc)}\n")
-        report("remove_dir_all", remove_dir_all(root, alloc))
-        print("root there: {exists(root)}\n")
+        Out.write("after a mapped store: {contents(hello, alloc)}\n")
+        report("delete_all", root.delete_all(alloc))
+        Out.write("root there: {root.exists()}\n")
         return(0)

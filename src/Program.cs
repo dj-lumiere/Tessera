@@ -30,7 +30,7 @@ static class Cli
         test: every <name>.tess in each <dir>, and every subdirectory <name>/ (its files compiled together), is
               built and run. Its stdout must equal <name>.expected (if present), and its exit code must equal
               the number in <name>.exit (default 0). If <name>.error exists, the build must fail with a message
-              containing its text.
+              containing its text. <name>.input, if present, is its standard input (else it reads an empty one).
         """;
 
     private static int Help()
@@ -475,11 +475,14 @@ static class Cli
         return Builtins[target.LlvmTriple] = builtins;
     }
 
-    private static (int Code, string Stdout, string Stderr) Exec(string exe, bool captureOutput)
+    /// Runs exe. With captureOutput (a test), its standard input is input's bytes, or empty: a test never waits on
+    /// the terminal.
+    private static (int Code, string Stdout, string Stderr) Exec(string exe, bool captureOutput, byte[]? input = null)
     {
         var psi = new ProcessStartInfo(exe)
         {
             UseShellExecute = false,
+            RedirectStandardInput = captureOutput,
             RedirectStandardOutput = captureOutput,
             RedirectStandardError = captureOutput,
             // Programs write UTF-8; without this the output is decoded in the console's code page.
@@ -490,6 +493,15 @@ static class Cli
         string stdout = "", stderr = "";
         if (captureOutput)
         {
+            var feed = Task.Run(() =>
+            {
+                try
+                {
+                    if (input is not null) p.StandardInput.BaseStream.Write(input);
+                    p.StandardInput.Close();
+                }
+                catch (IOException) { } // the program ended without reading it all
+            });
             var errTask = p.StandardError.ReadToEndAsync();
             stdout = p.StandardOutput.ReadToEnd();
             stderr = errTask.Result;
@@ -630,7 +642,8 @@ static class Cli
             try { Link(ir, exe, target, manifest?.Mode ?? _testMode, manifest?.LinkArguments()); }
             catch (ToolError e) { return e.Message; }
 
-            var (code, stdout, stderr) = Exec(exe, captureOutput: true);
+            byte[]? input = File.Exists(stem + ".input") ? File.ReadAllBytes(stem + ".input") : null;
+            var (code, stdout, stderr) = Exec(exe, captureOutput: true, input);
             int expectedCode = File.Exists(stem + ".exit") ? int.Parse(File.ReadAllText(stem + ".exit").Trim()) : 0;
             if (code != expectedCode) return $"exit code {code}, expected {expectedCode}{(stderr.Length > 0 ? $"; stderr: {stderr}" : "")}";
 
