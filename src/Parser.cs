@@ -735,9 +735,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var stmts = new List<Stmt>();
         while (true)
         {
-            // `block : S64 = 1` binds a value named like a keyword, which needs backticks.
-            if (IsKeyword(Cur) && Cur.Text != "when" && ReservedValueNames.Contains(Cur.Text) && PeekTok(1).Kind == TokenKind.Colon)
-                ValueName("a value name");
+            KeywordBinding();
             // Attributes on the line before a line of the block: `#source(...)` on any, and `#asm_prefix("lock")` on an
             // instruction of an assembly routine.
             if (AtBlockEnd())
@@ -769,6 +767,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 // a `continue` arm goes on with the next line, so the block isn't over
                 if (term is not (BranchTerm or WhenCondTerm or WhenValueTerm))
                     throw new CompileError(term.Pos, "continue is an arm of branch or when");
+                KeywordBinding();
                 if (AtBlockEnd())
                     throw new CompileError(term.Pos, "a continue arm needs lines after it; the block still ends with a terminator");
                 stmts.Add(new GuardStmt(term, term.Pos) { Source = lineSource });
@@ -794,6 +793,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
             stmts.Add(stmt);
         }
+    }
+
+    /// `block : S64 = 1` or `record : Addr = ...` binds a value named like a keyword, which needs backticks: said so
+    /// here, before the keyword is read as the next block or declaration.
+    private void KeywordBinding()
+    {
+        if (IsKeyword(Cur) && Cur.Text != "when" && ReservedValueNames.Contains(Cur.Text) && PeekTok(1).Kind == TokenKind.Colon)
+            ValueName("a value name");
     }
 
     /// Whether the block is over: a declaration or another block comes next. Attribute lines end it when one of
