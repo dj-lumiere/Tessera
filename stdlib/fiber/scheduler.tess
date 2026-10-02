@@ -1,30 +1,41 @@
 // Tessera stdlib: fibers
 //
-// A Scheduler runs fibers on the thread that calls run. Each fiber has a stack
-// of its own, from the stack Allocator the scheduler was given, and runs until
-// it yields or returns: nothing preempts it. run takes the fibers in the order
-// they became ready and returns when none is left.
+// A Scheduler runs fibers on a number of worker threads: the thread that calls
+// run is the first, and run starts the others. Each fiber has a stack of its
+// own, from the stack Allocator the scheduler was given, and runs until it
+// yields or returns: nothing preempts it. run returns when every fiber has.
 //
 //     claim %stacks : @Allocator <- make_stack_allocator()   // guard pages
-//     claim %sched  : @Scheduler <- .construct(%alloc, %stacks)
+//     claim %sched  : @Scheduler <- .construct(%alloc, %stacks, 0)   // 0: a worker per processor
 //     %sched.spawn(worker, %state, 65536)
 //     %sched.run()
 //     %sched.destruct()
 //
 // A fiber's routine takes one Addr, the state it works on (the state record is
 // the capture list, as for a thread), and that state must outlive the fiber.
-// Inside, %sched.yield() lets the other ready fibers run first. Every switch
-// goes through the scheduler's own stack: a fiber that yields returns to run,
-// which resumes the next one.
+// Inside, %sched.yield() lets other fibers run first. A fiber may go on on a
+// different thread after it yields, so a #threadlocal global read on both
+// sides of a yield may be two threads' copies.
+//
+// Each worker keeps the fibers ready to go on in a queue of its own and takes
+// them from its front, so a yielding fiber waits behind the others there. A
+// fiber spawned inside a fiber goes in that worker's queue, and one spawned
+// outside in the workers' queues in turn. A worker with an empty queue takes
+// from the back of another's, and with nothing anywhere waits until a fiber is
+// spawned or yields. Every switch
+// goes through the worker's own stack: a fiber that yields returns to its
+// worker, which queues it and resumes the next one, so a fiber is in a queue
+// only once it is off its stack.
 
 module Standard::Fiber
 
 import Standard::Alloc
 import Standard::Collections
+import Standard::Os
 
-/// The scheduler whose run is on this thread, for the first routine of a new fiber.
+/// The worker whose loop or fiber runs on this thread, or null.
 #[threadlocal, target(os: not "none")]
-global RUNNING: @@Scheduler
+global WORKER: @@Worker
 
 /// One fiber, from spawn until it returns.
 record FiberState
@@ -34,100 +45,363 @@ record FiberState
     arg      : Addr
     finished : Bool
 
-record Scheduler
-    alloc   : @Allocator  // the FiberState records and the ready queue
-    stacks  : @Allocator  // the fibers' stacks
-    ready   : CircularList<@FiberState>
-    home    : Addr  // run's stack pointer while a fiber runs
-    current : @FiberState  // the fiber running, or null in run
+/// A worker thread of a Scheduler.
+record Worker
+    sched   : @Scheduler
+    index   : USize
+    home    : Addr  // the worker loop's stack pointer while a fiber runs
+    current : @FiberState  // the fiber running, or null in the worker loop
+    lock    : Mutex
+    queue   : CircularList<@FiberState>
+    thread  : Thread  // for every worker but the first, which is run's own thread
 
-#target(os: not "none")
-routine Scheduler.construct(%alloc: @Allocator, %stacks: @Allocator) -> Self
+record Scheduler
+    alloc    : @Allocator  // FiberState records, the workers, and the queues
+    stacks   : @Allocator  // the fibers' stacks
+    count    : USize  // workers
+    workers  : @Worker
+    next     : USize  // the worker the next fiber spawned outside a fiber goes to
+    live     : U64  // fibers spawned and not yet returned
+    epoch    : U32  // changes when there is work to look for, or none left; idle workers wait on it
+    sleepers : U32  // workers waiting on epoch
+
+/// This thread's worker, read again at every call: a fiber may be on another thread after it yields, and a
+/// thread-local address kept across the switch would be the old thread's.
+#[noinline, target(os: not "none")]
+private routine current_worker() -> @Worker
     block entry():
-        %ready : CircularList<@FiberState> = .construct(%alloc)
-        %s     : Self                      = Self { alloc: %alloc, stacks: %stacks, ready: %ready,
-                home: null, current: null }
+        %w : @Worker = WORKER.load()
+        return(%w)
+
+/// A scheduler with %workers worker threads, or one per processor for 0.
+#target(os: not "none")
+routine Scheduler.construct(%alloc: @Allocator, %stacks: @Allocator, %workers: USize) -> Self
+    block entry():
+        %none : Bool = %workers.eq(0)
+        branch %none
+            ? make(%alloc, %stacks, cpu_count())
+            : make(%alloc, %stacks, %workers)
+
+    block make(%alloc: @Allocator, %stacks: @Allocator, %count: USize):
+        %array : @Worker = allocate<Worker>(%alloc, %count)
+        jump init(%alloc, %stacks, %count, %array, 0)
+
+    block init(%alloc: @Allocator, %stacks: @Allocator, %count: USize, %array: @Worker, %i: USize):
+        %done : Bool = %i.eq(%count)
+        branch %done
+            ? finish(%alloc, %stacks, %count, %array)
+            : one(%alloc, %stacks, %count, %array, %i)
+
+    block one(%alloc: @Allocator, %stacks: @Allocator, %count: USize, %array: @Worker, %i: USize):
+        %queue : CircularList<@FiberState> = .construct(%alloc)
+        %array.stride(%i).store(Worker { sched: null, index: %i, home: null, current: null,
+                lock: .construct(), queue: %queue, thread: Thread { handle: null } })
+        jump init(%alloc, %stacks, %count, %array, %i.add(1))
+
+    block finish(%alloc: @Allocator, %stacks: @Allocator, %count: USize, %array: @Worker):
+        %s : Self = Self { alloc: %alloc, stacks: %stacks, count: %count, workers: %array, next: 0,
+                live: 0, epoch: 0, sleepers: 0 }
         return(%s)
 
-/// Starts %entry(%arg) on a stack of %stack_size bytes, from inside a fiber or out: it first runs when run gets to
-/// it, after the fibers ready before it.
+/// Starts %entry(%arg) on a stack of %stack_size bytes, from inside a fiber or out. From inside one of this
+/// scheduler's fibers it goes in that worker's queue, else in the workers' queues in turn.
 #target(os: not "none")
 routine Scheduler.spawn(%self: @Self, %entry: Callable<(Addr,), Void>, %arg: Addr,
         %stack_size: USize) -> Void
     block entry():
-        %stacks : @Allocator  = %self.stacks.load()
-        %stack  : @Byte       = allocate<Byte>(%stacks, %stack_size)
-        %sp     : Addr        = initial_stack(%stack, %stack_size, fiber_start.addr())
-        %alloc  : @Allocator  = %self.alloc.load()
-        %fiber  : @FiberState = allocate<FiberState>(%alloc, 1)
+        %stack : @Byte       = allocate<Byte>(%self.stacks.load(), %stack_size)
+        %sp    : Addr        = initial_stack(%stack, %stack_size, fiber_start.addr())
+        %fiber : @FiberState = allocate<FiberState>(%self.alloc.load(), 1)
         %fiber.store(FiberState { sp: %sp, stack: %stack, entry: %entry, arg: %arg,
                 finished: false })
-        %self.ready.push_back(%fiber)
+        %self.live.atomic_fetch_add(1)
+        %w       : @Worker = current_worker()
+        %outside : Bool    = %w.is_null()
+        branch %outside
+            ? shared(%fiber)
+            : check(%w, %fiber)
+
+    block check(%w: @Worker, %fiber: @FiberState):
+        %ours : Bool = %w.sched.load().ptr_eq(%self)
+        branch %ours
+            ? local(%w, %fiber)
+            : shared(%fiber)
+
+    block local(%w: @Worker, %fiber: @FiberState):
+        push_ready(%w, %fiber)
+        notify(%self)
         return()
 
-/// Inside a fiber: lets the fibers ready now run first, then goes on. Outside one it does nothing.
+    block shared(%fiber: @FiberState):
+        %turn : USize   = %self.next.atomic_fetch_add(1)
+        %w    : @Worker = %self.workers.load().stride(%turn.mod(%self.count.load()))
+        push_ready(%w, %fiber)
+        notify(%self)
+        return()
+
+/// Inside a fiber: lets other fibers run first, then goes on, maybe on another thread. Outside one it does
+/// nothing.
 #target(os: not "none")
 routine Scheduler.yield(%self: @Self) -> Void
     block entry():
-        %fiber   : @FiberState = %self.current.load()
-        %outside : Bool        = %fiber.is_null()
+        %w       : @Worker = current_worker()
+        %outside : Bool    = %w.is_null()
         branch %outside
             ? return()
-            : give_way(%fiber)
+            : inside(%w)
 
-    block give_way(%fiber: @FiberState):
-        %self.ready.push_back(%fiber)
-        switch_stack(%fiber.sp, %self.home.load())
+    block inside(%w: @Worker):
+        %fiber : @FiberState = %w.current.load()
+        %loop  : Bool        = %fiber.is_null()
+        branch %loop
+            ? return()
+            : give_way(%w, %fiber)
+
+    // The worker queues the fiber once it is back on its own stack (see resume).
+    block give_way(%w: @Worker, %fiber: @FiberState):
+        switch_stack(%fiber.sp, %w.home.load())
         return()
 
-/// Runs the ready fibers, and those they spawn, until every one has returned.
+/// Runs the fibers, and those they spawn, on the workers until every one has returned. This thread is the first
+/// worker.
 #target(os: not "none")
 routine Scheduler.run(%self: @Self) -> Void
     block entry():
-        RUNNING.store(%self)
-        jump next()
+        jump start(1)
 
-    block next():
-        %empty : Bool = %self.ready.load().is_empty()
-        branch %empty
-            ? return()
-            : resume()
-
-    block resume():
-        %fiber : @FiberState = %self.ready.pop_front()
-        %self.current.store(%fiber)
-        switch_stack(%self.home, %fiber.sp.load())
-        %self.current.store(null)
-        %done : Bool = %fiber.finished.load()
+    block start(%i: USize):
+        %done : Bool = %i.ge(%self.count.load())
         branch %done
-            ? finish(%fiber)
-            : next()
+            ? own()
+            : one(%i)
 
-    // A fiber's stack is freed here, on run's stack: it can't free the one it runs on.
-    block finish(%fiber: @FiberState):
-        free_fiber(%self, %fiber)
-        jump next()
+    block one(%i: USize):
+        %w : @Worker = %self.workers.load().stride(%i)
+        %w.sched.store(%self)
+        %w.thread.store(Thread.spawn(worker_main, %w, %self.alloc.load()))
+        jump start(%i.add(1))
 
-/// Frees the fibers that never got to return, then the ready queue.
+    block own():
+        %w     : @Worker = %self.workers.load()
+        %outer : @Worker = WORKER.load()
+        %w.sched.store(%self)
+        worker_loop(%w)
+        WORKER.store(%outer)
+        jump join(1)
+
+    block join(%i: USize):
+        %done : Bool = %i.ge(%self.count.load())
+        branch %done
+            ? return()
+            : wait_for(%i)
+
+    block wait_for(%i: USize):
+        %self.workers.load().stride(%i).thread.load().join()
+        jump join(%i.add(1))
+
+/// Frees the fibers that never got to return, the queues, and the workers.
 #target(os: not "none")
 routine Scheduler.destruct(%self: @Self) -> Void
+    block entry():
+        jump worker(0)
+
+    block worker(%i: USize):
+        %done : Bool = %i.eq(%self.count.load())
+        branch %done
+            ? finish()
+            : one(%i)
+
+    block one(%i: USize):
+        %w : @Worker = %self.workers.load().stride(%i)
+        drain(%self, %w.queue)
+        %w.queue.destruct()
+        jump worker(%i.add(1))
+
+    block finish():
+        %self.workers.load().free(%self.alloc.load())
+        return()
+
+// -- the workers ---------------------------------------------------------------------
+
+#target(os: not "none")
+private routine worker_main(%raw: Addr) -> Void
+    block entry():
+        worker_loop(%raw.to<@Worker>())
+        return()
+
+/// A worker's loop: resumes ready fibers until none is left anywhere.
+#target(os: not "none")
+private routine worker_loop(%w: @Worker) -> Void
+    block entry():
+        WORKER.store(%w)
+        jump look()
+
+    block look():
+        %fiber : @FiberState = find_work(%w)
+        %none  : Bool        = %fiber.is_null()
+        branch %none
+            ? idle()
+            : run_one(%fiber)
+
+    block run_one(%fiber: @FiberState):
+        resume(%w, %fiber)
+        jump look()
+
+    // Reads the epoch before looking again, so work that arrives in between changes it and the wait returns.
+    block idle():
+        %sched : @Scheduler = %w.sched.load()
+        %over  : Bool       = %sched.live.atomic_load().eq(0)
+        branch %over
+            ? return()
+            : recheck(%sched, %sched.epoch.atomic_load())
+
+    block recheck(%sched: @Scheduler, %seen: U32):
+        %fiber : @FiberState = find_work(%w)
+        %none  : Bool        = %fiber.is_null()
+        branch %none
+            ? sleep(%sched, %seen)
+            : run_one(%fiber)
+
+    block sleep(%sched: @Scheduler, %seen: U32):
+        %over : Bool = %sched.live.atomic_load().eq(0)
+        branch %over
+            ? return()
+            : continue
+        %sched.sleepers.atomic_fetch_add(1)
+        wait_on(%sched.epoch, %seen)
+        %sched.sleepers.atomic_fetch_sub(1)
+        jump look()
+
+/// The next fiber for %w: from the front of its own queue, else from the back of another worker's.
+#target(os: not "none")
+private routine find_work(%w: @Worker) -> @FiberState
+    block entry():
+        %own   : @FiberState = pop_front_locked(%w.lock, %w.queue)
+        %found : Bool        = %own.is_not_null()
+        branch %found
+            ? return(%own)
+            : steal(%w.sched.load(), 1)
+
+    block steal(%sched: @Scheduler, %k: USize):
+        %count : USize = %sched.count.load()
+        %done  : Bool  = %k.ge(%count)
+        branch %done
+            ? return(null)
+            : victim(%sched, %k, %count)
+
+    block victim(%sched: @Scheduler, %k: USize, %count: USize):
+        %other : @Worker     = %sched.workers.load().stride(%w.index.load().add(%k).mod(%count))
+        %fiber : @FiberState = pop_back_locked(%other.lock, %other.queue)
+        %found : Bool        = %fiber.is_not_null()
+        branch %found
+            ? return(%fiber)
+            : steal(%sched, %k.add(1))
+
+/// Runs %fiber on %w until it yields or returns. A fiber that yielded goes back in %w's queue; one that returned is
+/// freed here, on the worker's stack, since it can't free the one it runs on.
+#target(os: not "none")
+private routine resume(%w: @Worker, %fiber: @FiberState) -> Void
+    block entry():
+        %w.current.store(%fiber)
+        switch_stack(%w.home, %fiber.sp.load())
+        %w.current.store(null)
+        %done : Bool = %fiber.finished.load()
+        branch %done
+            ? finished()
+            : yielded()
+
+    block yielded():
+        push_ready(%w, %fiber)
+        notify(%w.sched.load())
+        return()
+
+    block finished():
+        %sched : @Scheduler = %w.sched.load()
+        free_fiber(%sched, %fiber)
+        %left : U64  = %sched.live.atomic_fetch_sub(1)
+        %last : Bool = %left.eq(1)
+        branch %last
+            ? wake_everyone(%sched)
+            : return()
+
+    // The last fiber returned: every waiting worker looks once more and finds there's nothing left.
+    block wake_everyone(%sched: @Scheduler):
+        %sched.epoch.atomic_fetch_add(1)
+        wake_all(%sched.epoch)
+        return()
+
+/// There is a fiber to look for: a waiting worker, if any, looks.
+#target(os: not "none")
+private routine notify(%sched: @Scheduler) -> Void
+    block entry():
+        %sched.epoch.atomic_fetch_add(1)
+        %waiting : Bool = %sched.sleepers.atomic_load().ne(0)
+        branch %waiting
+            ? wake()
+            : return()
+
+    block wake():
+        wake_one(%sched.epoch)
+        return()
+
+#target(os: not "none")
+private routine push_ready(%w: @Worker, %fiber: @FiberState) -> Void
+    block entry():
+        %w.lock.lock()
+        %w.queue.push_back(%fiber)
+        %w.lock.unlock()
+        return()
+
+#target(os: not "none")
+private routine pop_front_locked(%lock: @Mutex, %queue: @CircularList<@FiberState>) -> @FiberState
+    block entry():
+        %lock.lock()
+        %empty : Bool = %queue.load().is_empty()
+        branch %empty
+            ? none(%lock)
+            : take(%lock, %queue)
+
+    block none(%lock: @Mutex):
+        %lock.unlock()
+        return(null)
+
+    block take(%lock: @Mutex, %queue: @CircularList<@FiberState>):
+        %fiber : @FiberState = %queue.pop_front()
+        %lock.unlock()
+        return(%fiber)
+
+#target(os: not "none")
+private routine pop_back_locked(%lock: @Mutex, %queue: @CircularList<@FiberState>) -> @FiberState
+    block entry():
+        %lock.lock()
+        %empty : Bool = %queue.load().is_empty()
+        branch %empty
+            ? none(%lock)
+            : take(%lock, %queue)
+
+    block none(%lock: @Mutex):
+        %lock.unlock()
+        return(null)
+
+    block take(%lock: @Mutex, %queue: @CircularList<@FiberState>):
+        %fiber : @FiberState = %queue.pop_back()
+        %lock.unlock()
+        return(%fiber)
+
+#target(os: not "none")
+private routine drain(%sched: @Scheduler, %queue: @CircularList<@FiberState>) -> Void
     block entry():
         jump next()
 
     block next():
-        %empty : Bool = %self.ready.load().is_empty()
+        %empty : Bool = %queue.load().is_empty()
         branch %empty
-            ? done()
+            ? return()
             : drop()
 
     block drop():
-        %fiber : @FiberState = %self.ready.pop_front()
-        free_fiber(%self, %fiber)
+        free_fiber(%sched, %queue.pop_front())
         jump next()
-
-    block done():
-        %self.ready.destruct()
-        return()
 
 #target(os: not "none")
 private routine free_fiber(%sched: @Scheduler, %fiber: @FiberState) -> Void
@@ -138,14 +412,14 @@ private routine free_fiber(%sched: @Scheduler, %fiber: @FiberState) -> Void
         return()
 
 /// A new fiber's first routine: switch_stack returns into it on the fiber's new stack. It runs the fiber's routine,
-/// marks it finished, and goes back to run for the last time.
+/// marks it finished, and goes back to the worker it is on now, for the last time.
 #[noreturn, target(os: not "none")]
 private routine fiber_start() -> Void
     block entry():
-        %sched : @Scheduler              = RUNNING.load()
-        %fiber : @FiberState             = %sched.current.load()
+        %fiber : @FiberState             = current_worker().current.load()
         %entry : Callable<(Addr,), Void> = %fiber.entry.load()
         %entry.call(%fiber.arg.load())
         %fiber.finished.store(true)
-        switch_stack(%fiber.sp, %sched.home.load())
+        %w : @Worker = current_worker()
+        switch_stack(%fiber.sp, %w.home.load())
         unreachable
