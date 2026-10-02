@@ -383,6 +383,14 @@ another thread at a yield. A call that may block goes through `sched.run_blockin
 with `park()` (until `wake(handle)`, the handle from `current()`; it may return early, so loop on the condition),
 `sleep(ns)`, or `join(j)` on a fiber from `spawn_joinable` (every `Join` is joined once). Fibers run on x86_64 and AArch64 (not on Windows) only.
 
+**Files.** `Standard::Os` takes paths as `Bytes` (UTF-8; the W calls on Windows) and returns `Result<T, FsError>`:
+`File.open(path, OpenMode.Read)` then `read` / `write` / `write_all` / `seek` / `size` / `set_size` / `close`;
+`read_file(path, alloc)` / `write_file(path, data)`; `metadata` / `symlink_metadata` (a `Metadata` with `kind`, `size`,
+times in ns); `create_dir(_all)`, `remove_file`, `remove_dir`, `remove_dir_all(path, alloc)`, `rename`, `copy_file`;
+a `DirIter` (`claim`, `open(path)`, `next()` until Absent, `close()`); `Mapping.map(path, write, offset, length)`;
+and path text with no OS calls (`join_path`, `parent_path`, `file_name`, `file_stem`, `file_extension`). A routine
+that hands text back takes an allocator; free it with `data.free(alloc)`.
+
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.
 

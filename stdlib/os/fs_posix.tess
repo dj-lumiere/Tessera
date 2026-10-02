@@ -1,0 +1,1112 @@
+// Tessera stdlib: files and the filesystem on Linux and macOS (see fs.tess)
+//
+// Metadata on Linux comes from statx, whose struct is the same on every architecture and word size and has the
+// creation time; on macOS from the 64-bit-inode stat ($INODE64 on x86-64). Linux's calls are the 64-bit-offset ones
+// (open64, lseek64, ...), so a 32-bit build handles files past 2 GiB too.
+
+module Standard::Os
+
+import Standard::Alloc
+
+// -- the C library -------------------------------------------------------------------
+
+#[external("c"), symbol("__errno_location"), target(os: "linux")]
+private routine c_errno_place() -> @CInt
+
+#[external("c"), symbol("__error"), target(os: "macos")]
+private routine c_errno_place() -> @CInt
+
+#[external("c"), symbol("open64"), variadic, target(os: "linux")]
+private routine c_open(path: @Byte, flags: CInt, mode: CInt) -> CInt
+
+#[external("c"), symbol("open"), variadic, target(os: "macos")]
+private routine c_open(path: @Byte, flags: CInt, mode: CInt) -> CInt
+
+#[external("c"), symbol("close"), target(os: not "windows")]
+private routine c_close(fd: CInt) -> CInt
+
+#[external("c"), symbol("lseek64"), target(os: "linux")]
+private routine c_lseek(fd: CInt, offset: S64, whence: CInt) -> S64
+
+#[external("c"), symbol("lseek"), target(os: "macos")]
+private routine c_lseek(fd: CInt, offset: S64, whence: CInt) -> S64
+
+#[external("c"), symbol("ftruncate64"), target(os: "linux")]
+private routine c_ftruncate(fd: CInt, size: S64) -> CInt
+
+#[external("c"), symbol("ftruncate"), target(os: "macos")]
+private routine c_ftruncate(fd: CInt, size: S64) -> CInt
+
+#[external("c"), symbol("fsync"), target(os: not "windows")]
+private routine c_fsync(fd: CInt) -> CInt
+
+#[external("c"), symbol("mkdir"), target(os: "linux")]
+private routine c_mkdir(path: @Byte, mode: U32) -> CInt
+
+#[external("c"), symbol("mkdir"), target(os: "macos")]
+private routine c_mkdir(path: @Byte, mode: U16) -> CInt
+
+#[external("c"), symbol("chmod"), target(os: "linux")]
+private routine c_chmod(path: @Byte, mode: U32) -> CInt
+
+#[external("c"), symbol("chmod"), target(os: "macos")]
+private routine c_chmod(path: @Byte, mode: U16) -> CInt
+
+#[external("c"), symbol("fchmod"), target(os: "linux")]
+private routine c_fchmod(fd: CInt, mode: U32) -> CInt
+
+#[external("c"), symbol("fchmod"), target(os: "macos")]
+private routine c_fchmod(fd: CInt, mode: U16) -> CInt
+
+#[external("c"), symbol("rmdir"), target(os: not "windows")]
+private routine c_rmdir(path: @Byte) -> CInt
+
+#[external("c"), symbol("unlink"), target(os: not "windows")]
+private routine c_unlink(path: @Byte) -> CInt
+
+#[external("c"), symbol("rename"), target(os: not "windows")]
+private routine c_rename(from: @Byte, to: @Byte) -> CInt
+
+#[external("c"), symbol("renameat2"), target(os: "linux")]
+private routine c_renameat2(from_dir: CInt, from: @Byte, to_dir: CInt, to: @Byte,
+        flags: U32) -> CInt
+
+#[external("c"), symbol("renamex_np"), target(os: "macos")]
+private routine c_renamex_np(from: @Byte, to: @Byte, flags: U32) -> CInt
+
+#[external("c"), symbol("access"), target(os: not "windows")]
+private routine c_access(path: @Byte, mode: CInt) -> CInt
+
+#[external("c"), symbol("utimes"), target(os: not "windows")]
+private routine c_utimes(path: @Byte, times: Addr) -> CInt
+
+#[external("c"), symbol("getcwd"), target(os: not "windows")]
+private routine c_getcwd(buf: @Byte, size: USize) -> @Byte
+
+#[external("c"), symbol("chdir"), target(os: not "windows")]
+private routine c_chdir(path: @Byte) -> CInt
+
+#[external("c"), symbol("getenv"), target(os: not "windows")]
+private routine c_getenv(name: CStr) -> @Byte
+
+#[external("c"), symbol("realpath"), target(os: not "windows")]
+private routine c_realpath(path: @Byte, resolved: Addr) -> @Byte
+
+#[external("c"), symbol("free"), target(os: not "windows")]
+private routine c_free(ptr: Addr) -> Void
+
+#[external("c"), symbol("opendir"), target(os: "linux")]
+private routine c_opendir(path: @Byte) -> Addr
+
+#[external("c"), symbol("opendir$INODE64"), target(os: "macos", arch: "x86_64")]
+private routine c_opendir(path: @Byte) -> Addr
+
+#[external("c"), symbol("opendir"), target(os: "macos", arch: not "x86_64")]
+private routine c_opendir(path: @Byte) -> Addr
+
+#[external("c"), symbol("readdir64"), target(os: "linux")]
+private routine c_readdir(dir: Addr) -> @Byte
+
+#[external("c"), symbol("readdir$INODE64"), target(os: "macos", arch: "x86_64")]
+private routine c_readdir(dir: Addr) -> @Byte
+
+#[external("c"), symbol("readdir"), target(os: "macos", arch: not "x86_64")]
+private routine c_readdir(dir: Addr) -> @Byte
+
+#[external("c"), symbol("closedir"), target(os: not "windows")]
+private routine c_closedir(dir: Addr) -> CInt
+
+#[external("c"), symbol("mmap64"), target(os: "linux")]
+private routine c_mmap(addr: Addr, length: USize, prot: CInt, flags: CInt, fd: CInt,
+        offset: S64) -> Addr
+
+#[external("c"), symbol("mmap"), target(os: "macos")]
+private routine c_mmap(addr: Addr, length: USize, prot: CInt, flags: CInt, fd: CInt,
+        offset: S64) -> Addr
+
+#[external("c"), symbol("munmap"), target(os: not "windows")]
+private routine c_munmap(addr: Addr, length: USize) -> CInt
+
+#[external("c"), symbol("msync"), target(os: not "windows")]
+private routine c_msync(addr: Addr, length: USize, flags: CInt) -> CInt
+
+#[external("c"), symbol("madvise"), target(os: not "windows")]
+private routine c_madvise(addr: Addr, length: USize, advice: CInt) -> CInt
+
+// -- the numbers that differ between Linux and macOS --------------------------------------
+
+/// O_CREAT, O_TRUNC, O_APPEND, O_EXCL, O_CLOEXEC (O_RDONLY 0, O_WRONLY 1, O_RDWR 2 everywhere).
+private record OpenFlags
+    create   : CInt
+    truncate : CInt
+    append   : CInt
+    exclude  : CInt
+    cloexec  : CInt
+
+/// ENAMETOOLONG, ENOTEMPTY, ELOOP, and what renameat2 / renamex_np fail with when the filesystem can't do it.
+private record ErrnoNumbers
+    name_too_long : CInt
+    not_empty     : CInt
+    loop          : CInt
+    unsupported   : CInt
+
+#target(os: "linux")
+private routine open_flags() -> OpenFlags
+    block entry():
+        return(OpenFlags { create: 0x40, truncate: 0x200, append: 0x400, exclude: 0x80,
+                cloexec: 0x80000 })
+
+#target(os: "macos")
+private routine open_flags() -> OpenFlags
+    block entry():
+        return(OpenFlags { create: 0x200, truncate: 0x400, append: 0x8, exclude: 0x800,
+                cloexec: 0x1000000 })
+
+#target(os: "linux")
+private routine errno_numbers() -> ErrnoNumbers
+    block entry():
+        // ENOSYS for unsupported (EINVAL is checked too)
+        return(ErrnoNumbers { name_too_long: 36, not_empty: 39, loop: 40, unsupported: 38 })
+
+#target(os: "macos")
+private routine errno_numbers() -> ErrnoNumbers
+    block entry():
+        // ENOTSUP for unsupported
+        return(ErrnoNumbers { name_too_long: 63, not_empty: 66, loop: 62, unsupported: 45 })
+
+#target(os: "linux")
+private routine ms_sync() -> CInt
+    block entry():
+        return(4)
+
+#target(os: "macos")
+private routine ms_sync() -> CInt
+    block entry():
+        return(0x10)
+
+/// Where a struct dirent has d_type and d_name (readdir64's on Linux).
+#target(os: "linux")
+private routine dirent_type_at() -> USize
+    block entry():
+        return(18)
+
+#target(os: "macos")
+private routine dirent_type_at() -> USize
+    block entry():
+        return(20)
+
+#target(os: "linux")
+private routine dirent_name_at() -> USize
+    block entry():
+        return(19)
+
+#target(os: "macos")
+private routine dirent_name_at() -> USize
+    block entry():
+        return(21)
+
+// -- errors and paths ----------------------------------------------------------------
+
+#target(os: not "windows")
+private routine errno() -> CInt
+    block entry():
+        return(c_errno_place().load())
+
+/// The FsError for errno.
+#target(os: not "windows")
+private routine error_of(e: CInt) -> FsError
+    block entry():
+        n : ErrnoNumbers = errno_numbers()
+        when:
+            e.eq(2)                      -> return(FsError.NotFound)
+            e.eq(1).bitor(e.eq(13))      -> return(FsError.PermissionDenied)
+            e.eq(17)                     -> return(FsError.AlreadyExists)
+            e.eq(20)                     -> return(FsError.NotADirectory)
+            e.eq(21)                     -> return(FsError.IsADirectory)
+            e.eq(n.not_empty)            -> return(FsError.DirectoryNotEmpty)
+            e.eq(18)                     -> return(FsError.CrossDevice)
+            e.eq(n.name_too_long)        -> return(FsError.NameTooLong)
+            e.eq(22).bitor(e.eq(n.loop)) -> return(FsError.InvalidPath)
+            e.eq(28)                     -> return(FsError.NoSpace)
+            e.eq(30)                     -> return(FsError.ReadOnly)
+            e.eq(16).bitor(e.eq(26))     -> return(FsError.Busy)
+            e.eq(12)                     -> return(FsError.OutOfMemory)
+            else                         -> return(FsError.Other)
+
+#target(os: not "windows")
+private routine last_error() -> FsError
+    block entry():
+        return(error_of(errno()))
+
+#target(os: not "windows")
+private routine failed<T>() -> Result<T, FsError>
+require T: typename
+    block entry():
+        return(.Failure(last_error()))
+
+/// 0 is success, anything else the last error.
+#target(os: not "windows")
+private routine checked(rc: CInt) -> Result<Unit, FsError>
+    block entry():
+        branch rc.eq(0)
+            ? return(fs_done())
+            : return(failed<Unit>())
+
+/// path with a NUL after it in out (PATH_CAPACITY bytes): false if path has a NUL or doesn't fit.
+#target(os: not "windows")
+private routine c_path(path: Bytes, out: @Byte) -> Bool
+    block entry():
+        n : USize = path.length()
+        branch n.ge(PATH_CAPACITY)
+            ? return(false)
+            : continue
+        branch path.contains("\x00")
+            ? return(false)
+            : continue
+        copy<Byte>(out, path.data, n)
+        out.stride(n).store(0x00)
+        return(true)
+
+/// dir, a '/', and name (NUL-terminated) in out: false if it doesn't fit.
+#target(os: not "windows")
+private routine c_child_path(dir: @Byte, dir_length: USize, name: @Byte, out: @Byte) -> Bool
+    block entry():
+        name_length : USize = CStr.from_ptr(name).length()
+        total       : USize = dir_length.add(1).add(name_length)
+        branch total.ge(PATH_CAPACITY)
+            ? return(false)
+            : continue
+        copy<Byte>(out, dir, dir_length)
+        out.stride(dir_length).store(b'/')
+        copy<Byte>(out.stride(dir_length.add(1)), name, name_length)
+        out.stride(total).store(0x00)
+        return(true)
+
+// -- metadata ------------------------------------------------------------------------
+
+// AT_FDCWD, AT_SYMLINK_NOFOLLOW, AT_EMPTY_PATH, and STATX_BASIC_STATS | STATX_BTIME
+preset AT_FDCWD:            CInt = -100
+preset AT_SYMLINK_NOFOLLOW: CInt = 0x100
+preset AT_EMPTY_PATH:       CInt = 0x1000
+preset STATX_WANTED:        U32  = 0xFFF
+preset STATX_BTIME:         U32  = 0x800
+
+/// struct statx_timestamp
+#target(os: "linux")
+private record StatxTime
+    sec      : S64
+    nsec     : U32
+    reserved : S32
+
+/// struct statx: 256 bytes on every architecture.
+#target(os: "linux")
+private record Statx
+    mask            : U32
+    blksize         : U32
+    attributes      : U64
+    nlink           : U32
+    uid             : U32
+    gid             : U32
+    mode            : U16
+    spare0          : U16
+    ino             : U64
+    size            : U64
+    blocks          : U64
+    attributes_mask : U64
+    atime           : StatxTime
+    btime           : StatxTime
+    ctime           : StatxTime
+    mtime           : StatxTime
+    spare           : Array<U64, 16>
+
+/// struct stat with 64-bit inodes.
+#target(os: "macos")
+private record DarwinStat
+    dev       : S32
+    mode      : U16
+    nlink     : U16
+    ino       : U64
+    uid       : U32
+    gid       : U32
+    rdev      : S32
+    atime     : Timespec
+    mtime     : Timespec
+    ctime     : Timespec
+    birthtime : Timespec
+    size      : S64
+    blocks    : S64
+    blksize   : S32
+    flags     : U32
+    gen       : U32
+    lspare    : S32
+    qspare    : Array<S64, 2>
+
+#target(os: not "windows")
+private routine mode_kind(mode: U32) -> FileKind
+    block entry():
+        // S_IFMT
+        when mode.bitand(0o170000):
+            0o100000 -> return(FileKind.File)
+            0o040000 -> return(FileKind.Directory)
+            0o120000 -> return(FileKind.Symlink)
+            else     -> return(FileKind.Other)
+
+#target(os: not "windows")
+private routine ns_of(sec: S64, nsec: S64) -> S64
+    block entry():
+        return(sec.mul_wrap(1000000000).add_wrap(nsec))
+
+#[external("c"), symbol("statx"), target(os: "linux")]
+private routine c_statx(dir: CInt, path: @Byte, flags: CInt, mask: U32, out: @Statx) -> CInt
+
+#target(os: "linux")
+private routine from_statx(s: Statx) -> Metadata
+    block entry():
+        mode     : U32         = s.mode.to<U32>()
+        modified : S64         = ns_of(s.mtime.sec, s.mtime.nsec.to<S64>())
+        born     : Bool        = s.mask.bitand(STATX_BTIME).ne(0)
+        created  : Option<S64> = born
+            ? Option<S64>.Present(ns_of(s.btime.sec, s.btime.nsec.to<S64>()))
+            : .Absent
+        return(Metadata { kind: mode_kind(mode), size: s.size, modified_ns: modified,
+                created_ns: created, readonly: mode.bitand(0o200).eq(0) })
+
+/// statx of dir + path with flags: the raw struct.
+#target(os: "linux")
+private routine stat_raw(dir: CInt, cpath: @Byte, flags: CInt, out: @Statx) -> Bool
+    block entry():
+        return(c_statx(dir, cpath, flags, STATX_WANTED, out).eq(0))
+
+#target(os: "linux")
+private routine metadata_of(cpath: @Byte, follow: Bool) -> Result<Metadata, FsError>
+    block entry():
+        claim st : @Statx <- uninit
+        flags : CInt = follow
+            ? 0
+            : AT_SYMLINK_NOFOLLOW
+        branch stat_raw(AT_FDCWD, cpath, flags, st)
+            ? return(.Success(from_statx(st.load())))
+            : return(failed<Metadata>())
+
+#target(os: "linux")
+private routine fd_metadata(fd: CInt) -> Result<Metadata, FsError>
+    block entry():
+        claim st : @Statx <- uninit
+        branch stat_raw(fd, "", AT_EMPTY_PATH, st)
+            ? return(.Success(from_statx(st.load())))
+            : return(failed<Metadata>())
+
+/// The permission bits, or 0o666 when they can't be read.
+#target(os: "linux")
+private routine fd_mode(fd: CInt) -> U32
+    block entry():
+        claim st : @Statx <- uninit
+        branch stat_raw(fd, "", AT_EMPTY_PATH, st)
+            ? return(st.mode.load().to<U32>().bitand(0o7777))
+            : return(0o666)
+
+#target(os: "linux")
+private routine path_mode(cpath: @Byte) -> Option<U32>
+    block entry():
+        claim st : @Statx <- uninit
+        branch stat_raw(AT_FDCWD, cpath, 0, st)
+            ? return(.Present(st.mode.load().to<U32>()))
+            : return(.Absent)
+
+#[external("c"), symbol("stat$INODE64"), target(os: "macos", arch: "x86_64")]
+private routine c_stat(path: @Byte, out: @DarwinStat) -> CInt
+
+#[external("c"), symbol("stat"), target(os: "macos", arch: not "x86_64")]
+private routine c_stat(path: @Byte, out: @DarwinStat) -> CInt
+
+#[external("c"), symbol("lstat$INODE64"), target(os: "macos", arch: "x86_64")]
+private routine c_lstat(path: @Byte, out: @DarwinStat) -> CInt
+
+#[external("c"), symbol("lstat"), target(os: "macos", arch: not "x86_64")]
+private routine c_lstat(path: @Byte, out: @DarwinStat) -> CInt
+
+#[external("c"), symbol("fstat$INODE64"), target(os: "macos", arch: "x86_64")]
+private routine c_fstat(fd: CInt, out: @DarwinStat) -> CInt
+
+#[external("c"), symbol("fstat"), target(os: "macos", arch: not "x86_64")]
+private routine c_fstat(fd: CInt, out: @DarwinStat) -> CInt
+
+#target(os: "macos")
+private routine from_stat(s: DarwinStat) -> Metadata
+    block entry():
+        mode     : U32 = s.mode.to<U32>()
+        modified : S64 = ns_of(s.mtime.sec, s.mtime.nsec)
+        created  : S64 = ns_of(s.birthtime.sec, s.birthtime.nsec)
+        return(Metadata { kind: mode_kind(mode), size: s.size.to_wrap<U64>(), modified_ns: modified,
+                created_ns: .Present(created), readonly: mode.bitand(0o200).eq(0) })
+
+#target(os: "macos")
+private routine metadata_of(cpath: @Byte, follow: Bool) -> Result<Metadata, FsError>
+    block entry():
+        claim st : @DarwinStat <- uninit
+        branch follow
+            ? got(st, c_stat(cpath, st))
+            : got(st, c_lstat(cpath, st))
+
+    block got(st: @DarwinStat, rc: CInt):
+        branch rc.eq(0)
+            ? return(.Success(from_stat(st.load())))
+            : return(failed<Metadata>())
+
+#target(os: "macos")
+private routine fd_metadata(fd: CInt) -> Result<Metadata, FsError>
+    block entry():
+        claim st : @DarwinStat <- uninit
+        branch c_fstat(fd, st).eq(0)
+            ? return(.Success(from_stat(st.load())))
+            : return(failed<Metadata>())
+
+#target(os: "macos")
+private routine fd_mode(fd: CInt) -> U32
+    block entry():
+        claim st : @DarwinStat <- uninit
+        branch c_fstat(fd, st).eq(0)
+            ? return(st.mode.load().to<U32>().bitand(0o7777))
+            : return(0o666)
+
+#target(os: "macos")
+private routine path_mode(cpath: @Byte) -> Option<U32>
+    block entry():
+        claim st : @DarwinStat <- uninit
+        branch c_stat(cpath, st).eq(0)
+            ? return(.Present(st.mode.load().to<U32>()))
+            : return(.Absent)
+
+/// path's metadata, a link followed to what it points at.
+#target(os: not "windows")
+routine metadata(path: Bytes) -> Result<Metadata, FsError>
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? return(metadata_of(cpath.to<@Byte>(), true))
+            : return(.Failure(path_error(path)))
+
+/// path's metadata; a link describes itself (kind Symlink).
+#target(os: not "windows")
+routine symlink_metadata(path: Bytes) -> Result<Metadata, FsError>
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? return(metadata_of(cpath.to<@Byte>(), false))
+            : return(.Failure(path_error(path)))
+
+// -- files ---------------------------------------------------------------------------
+
+/// An open file. close it when done.
+#target(os: not "windows")
+record File
+    fd : CInt
+
+#target(os: not "windows")
+routine File.open(path: Bytes, mode: OpenMode) -> Result<Self, FsError>
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        f : OpenFlags = open_flags()
+        when mode:
+            OpenMode.Read      -> open(cpath.to<@Byte>(), f.cloexec)
+            OpenMode.Write     -> open(cpath.to<@Byte>(),
+                    f.cloexec.bitor(1).bitor(f.create).bitor(f.truncate))
+            OpenMode.Append    -> open(cpath.to<@Byte>(),
+                    f.cloexec.bitor(1).bitor(f.create).bitor(f.append))
+            OpenMode.ReadWrite -> open(cpath.to<@Byte>(), f.cloexec.bitor(2))
+            OpenMode.CreateNew -> open(cpath.to<@Byte>(),
+                    f.cloexec.bitor(1).bitor(f.create).bitor(f.exclude))
+
+    block open(cpath: @Byte, flags: CInt):
+        fd : CInt = c_open(cpath, flags, 0o666)
+        branch fd.lt(0)
+            ? return(failed<Self>())
+            : return(.Success(Self { fd: fd }))
+
+/// Reads up to length bytes into buffer: how many, 0 at the end of the file.
+#target(os: not "windows")
+routine File.read(self: Self, buffer: @Byte, length: USize) -> Result<USize, FsError>
+    block entry():
+        got : SSize = c_read(self.fd, buffer, length.min(1073741824))
+        branch got.ge(0)
+            ? return(.Success(got.to<USize>()))
+            : continue
+        // EINTR: a signal came first, so ask again
+        branch errno().eq(4)
+            ? return(self.read(buffer, length))
+            : return(failed<USize>())
+
+/// Writes up to length bytes: how many it did.
+#target(os: not "windows")
+routine File.write(self: Self, data: @Byte, length: USize) -> Result<USize, FsError>
+    block entry():
+        wrote : SSize = c_write(self.fd, data, length.min(1073741824))
+        branch wrote.ge(0)
+            ? return(.Success(wrote.to<USize>()))
+            : continue
+        branch errno().eq(4)
+            ? return(self.write(data, length))
+            : return(failed<USize>())
+
+/// Moves the position: the new one, from the start.
+#target(os: not "windows")
+routine File.seek(self: Self, offset: S64, from: SeekFrom) -> Result<U64, FsError>
+    block entry():
+        // SEEK_SET, SEEK_CUR, SEEK_END
+        when from:
+            SeekFrom.Start   -> moved(c_lseek(self.fd, offset, 0))
+            SeekFrom.Current -> moved(c_lseek(self.fd, offset, 1))
+            SeekFrom.End     -> moved(c_lseek(self.fd, offset, 2))
+
+    block moved(at: S64):
+        branch at.ge(0)
+            ? return(.Success(at.to<U64>()))
+            : return(failed<U64>())
+
+#target(os: not "windows")
+routine File.metadata(self: Self) -> Result<Metadata, FsError>
+    block entry():
+        return(fd_metadata(self.fd))
+
+#target(os: not "windows")
+routine File.size(self: Self) -> Result<U64, FsError>
+    block entry():
+        m : Result<Metadata, FsError> = fd_metadata(self.fd)
+        when m:
+            .Success(info)  -> return(.Success(info.size))
+            .Failure(error) -> return(.Failure(error))
+
+/// Truncates or extends (with zeros) the file to size bytes; the position stays.
+#target(os: not "windows")
+routine File.set_size(self: Self, size: U64) -> Result<Unit, FsError>
+    block entry():
+        return(checked(c_ftruncate(self.fd, size.to<S64>())))
+
+/// Waits until what was written is on the storage device.
+#target(os: not "windows")
+routine File.sync(self: Self) -> Result<Unit, FsError>
+    block entry():
+        return(checked(c_fsync(self.fd)))
+
+#target(os: not "windows")
+routine File.close(self: Self) -> Void
+    block entry():
+        c_close(self.fd)
+        return()
+
+// -- directories and names -------------------------------------------------------------
+
+#target(os: "linux")
+private routine make_dir(cpath: @Byte) -> CInt
+    block entry():
+        return(c_mkdir(cpath, 0o777))
+
+#target(os: "macos")
+private routine make_dir(cpath: @Byte) -> CInt
+    block entry():
+        return(c_mkdir(cpath, 0o777))
+
+/// Makes the directory path (its parent must exist).
+#target(os: not "windows")
+routine create_dir(path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? return(checked(make_dir(cpath.to<@Byte>())))
+            : return(.Failure(path_error(path)))
+
+/// Removes a file (or a link), not a directory.
+#target(os: not "windows")
+routine remove_file(path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? return(checked(c_unlink(cpath.to<@Byte>())))
+            : return(.Failure(path_error(path)))
+
+/// Removes an empty directory.
+#target(os: not "windows")
+routine remove_dir(path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? return(checked(c_rmdir(cpath.to<@Byte>())))
+            : return(.Failure(path_error(path)))
+
+/// Renames from to to, replacing what is at to. Between filesystems it fails with CrossDevice.
+#target(os: not "windows")
+routine rename(from: Bytes, to: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim a : @Array<Byte, PATH_CAPACITY> <- uninit
+        claim b : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(from, a.to<@Byte>())
+            ? continue
+            : return(.Failure(path_error(from)))
+        branch c_path(to, b.to<@Byte>())
+            ? return(checked(c_rename(a.to<@Byte>(), b.to<@Byte>())))
+            : return(.Failure(path_error(to)))
+
+#target(os: "linux")
+private routine rename_exclusive(a: @Byte, b: @Byte) -> CInt
+    block entry():
+        // RENAME_NOREPLACE
+        return(c_renameat2(AT_FDCWD, a, AT_FDCWD, b, 1))
+
+#target(os: "macos")
+private routine rename_exclusive(a: @Byte, b: @Byte) -> CInt
+    block entry():
+        // RENAME_EXCL
+        return(c_renamex_np(a, b, 4))
+
+/// Renames from to to, failing with AlreadyExists if something is at to. On a filesystem that can't do that in one
+/// step, it looks first, so another process could slip a file in between.
+#target(os: not "windows")
+routine rename_no_replace(from: Bytes, to: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim a : @Array<Byte, PATH_CAPACITY> <- uninit
+        claim b : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(from, a.to<@Byte>())
+            ? continue
+            : return(.Failure(path_error(from)))
+        branch c_path(to, b.to<@Byte>())
+            ? continue
+            : return(.Failure(path_error(to)))
+        branch rename_exclusive(a.to<@Byte>(), b.to<@Byte>()).eq(0)
+            ? return(fs_done())
+            : continue
+        e : CInt = errno()
+        branch e.eq(22).bitor(e.eq(errno_numbers().unsupported))
+            ? look(a.to<@Byte>(), b.to<@Byte>())
+            : return(.Failure(error_of(e)))
+
+    block look(a: @Byte, b: @Byte):
+        there : Option<U32> = path_mode(b)
+        branch there.is_present()
+            ? return(.Failure(FsError.AlreadyExists))
+            : return(checked(c_rename(a, b)))
+
+/// Copies from's bytes and permissions into to (made, or replaced): the bytes copied.
+#target(os: not "windows")
+routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
+    block entry():
+        source : Result<File, FsError> = File.open(from, OpenMode.Read)
+        when source:
+            .Success(f)     -> target(f)
+            .Failure(error) -> return(.Failure(error))
+
+    block target(src: File):
+        dest : Result<File, FsError> = File.open(to, OpenMode.Write)
+        when dest:
+            .Success(f)     -> copy(src, f)
+            .Failure(error) -> failed_with(src, error)
+
+    block failed_with(src: File, error: FsError):
+        src.close()
+        return(.Failure(error))
+
+    block copy(src: File, dst: File):
+        set_mode(dst.fd, fd_mode(src.fd))
+        claim buffer : @Array<Byte, 16384> <- uninit
+        jump chunk(src, dst, buffer.to<@Byte>(), 0)
+
+    block chunk(src: File, dst: File, buffer: @Byte, total: U64):
+        got : Result<USize, FsError> = src.read(buffer, 16384)
+        when got:
+            .Success(n)     -> put(src, dst, buffer, total, n)
+            .Failure(error) -> stop(src, dst, error)
+
+    block put(src: File, dst: File, buffer: @Byte, total: U64, n: USize):
+        branch n.eq(0)
+            ? done(src, dst, total)
+            : continue
+        wrote : Result<Unit, FsError> = dst.write_all(buffer, n)
+        when wrote:
+            .Success        -> chunk(src, dst, buffer, total.add(n.to<U64>()))
+            .Failure(error) -> stop(src, dst, error)
+
+    block stop(src: File, dst: File, error: FsError):
+        src.close()
+        dst.close()
+        return(.Failure(error))
+
+    block done(src: File, dst: File, total: U64):
+        src.close()
+        dst.close()
+        return(.Success(total))
+
+#target(os: "linux")
+private routine set_mode(fd: CInt, mode: U32) -> Void
+    block entry():
+        c_fchmod(fd, mode)
+        return()
+
+#target(os: "macos")
+private routine set_mode(fd: CInt, mode: U32) -> Void
+    block entry():
+        c_fchmod(fd, mode.to_wrap<U16>())
+        return()
+
+#target(os: "linux")
+private routine change_mode(cpath: @Byte, mode: U32) -> CInt
+    block entry():
+        return(c_chmod(cpath, mode))
+
+#target(os: "macos")
+private routine change_mode(cpath: @Byte, mode: U32) -> CInt
+    block entry():
+        return(c_chmod(cpath, mode.to_wrap<U16>()))
+
+/// Read-only takes every write permission away; writable gives the owner's back.
+#target(os: not "windows")
+routine set_readonly(path: Bytes, readonly: Bool) -> Result<Unit, FsError>
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        there : Option<U32> = path_mode(cpath.to<@Byte>())
+        when there:
+            .Present(mode) -> change(cpath.to<@Byte>(), mode.bitand(0o7777))
+            .Absent        -> return(failed<Unit>())
+
+    block change(cpath: @Byte, mode: U32):
+        // S_IWUSR | S_IWGRP | S_IWOTH, or S_IWUSR
+        branch readonly
+            ? return(checked(change_mode(cpath, mode.bitand(0o222.bitnot()))))
+            : return(checked(change_mode(cpath, mode.bitor(0o200))))
+
+/// Whether this process may read, write, or execute path.
+#target(os: not "windows")
+routine can_access(path: Bytes, access: Access) -> Bool
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? continue
+            : return(false)
+        // R_OK, W_OK, X_OK
+        when access:
+            Access.Read    -> return(c_access(cpath.to<@Byte>(), 4).eq(0))
+            Access.Write   -> return(c_access(cpath.to<@Byte>(), 2).eq(0))
+            Access.Execute -> return(c_access(cpath.to<@Byte>(), 1).eq(0))
+
+/// Makes the file if it's missing, and sets its access and modification times to now.
+#target(os: not "windows")
+routine touch(path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        f  : OpenFlags = open_flags()
+        fd : CInt      = c_open(cpath.to<@Byte>(), f.cloexec.bitor(1).bitor(f.create), 0o666)
+        branch fd.lt(0)
+            ? return(failed<Unit>())
+            : continue
+        c_close(fd)
+        return(checked(c_utimes(cpath.to<@Byte>(), null)))
+
+// -- directory listings ------------------------------------------------------------------
+
+/// The entries of a directory, "." and ".." left out, in the order the OS gives them. claim one, open it, call
+/// next until Absent, and close it.
+#target(os: not "windows")
+record DirIter
+    dir    : Addr
+    path   : Array<Byte, PATH_CAPACITY>  // the directory, NUL-terminated
+    length : USize  // the directory's length
+    name   : @Byte  // the last entry's name, in readdir's buffer
+
+#target(os: not "windows")
+routine DirIter.open(self: @Self, path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        self.dir.store(null)
+        branch c_path(path, self.path.to<@Byte>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        self.length.store(path.length())
+        self.name.store(null)
+        dir : Addr = c_opendir(self.path.to<@Byte>())
+        branch dir.is_null()
+            ? return(failed<Unit>())
+            : continue
+        self.dir.store(dir)
+        return(fs_done())
+
+/// Whether name is "." or "..".
+#target(os: not "windows")
+private routine is_dot_name(name: @Byte) -> Bool
+    block entry():
+        branch name.load().eq(b'.')
+            ? continue
+            : return(false)
+        second : Byte = name.stride(1).load()
+        branch second.eq(0x00)
+            ? return(true)
+            : continue
+        branch second.eq(b'.')
+            ? return(name.stride(2).load().eq(0x00))
+            : return(false)
+
+/// The next entry, or Absent at the end (a failure partway reads as the end).
+#target(os: not "windows")
+routine DirIter.next(self: @Self) -> Option<DirEntry>
+    block entry():
+        entry : @Byte = c_readdir(self.dir.load())
+        branch entry.is_null()
+            ? return(.Absent)
+            : continue
+        name : @Byte = entry.stride(dirent_name_at())
+        branch is_dot_name(name)
+            ? return(self.next())
+            : continue
+        self.name.store(name)
+        // DT_DIR, DT_REG, DT_LNK; DT_UNKNOWN (some filesystems) asks lstat
+        when entry.stride(dirent_type_at()).load().to<U8>():
+            4    -> found(name, FileKind.Directory)
+            8    -> found(name, FileKind.File)
+            10   -> found(name, FileKind.Symlink)
+            0    -> unknown(name)
+            else -> found(name, FileKind.Other)
+
+    block unknown(name: @Byte):
+        m : Result<Metadata, FsError> = self.entry_metadata_of(false)
+        when m:
+            .Success(info) -> found(name, info.kind)
+            .Failure       -> found(name, FileKind.Other)
+
+    block found(name: @Byte, kind: FileKind):
+        return(.Present(DirEntry { name: CStr.from_ptr(name).to_bytes(), kind: kind }))
+
+/// The metadata of the entry next last returned, a link followed.
+#target(os: not "windows")
+routine DirIter.entry_metadata(self: @Self) -> Result<Metadata, FsError>
+    block entry():
+        return(self.entry_metadata_of(true))
+
+#target(os: not "windows")
+private routine DirIter.entry_metadata_of(self: @Self, follow: Bool) -> Result<Metadata, FsError>
+    block entry():
+        claim full : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_child_path(self.path.to<@Byte>(), self.length.load(), self.name.load(),
+                full.to<@Byte>())
+            ? return(metadata_of(full.to<@Byte>(), follow))
+            : return(.Failure(FsError.NameTooLong))
+
+#target(os: not "windows")
+routine DirIter.close(self: @Self) -> Void
+    block entry():
+        dir : Addr = self.dir.load()
+        branch dir.is_null()
+            ? return()
+            : continue
+        c_closedir(dir)
+        self.dir.store(null)
+        return()
+
+// -- the working directory and well-known directories -------------------------------------
+
+/// A copy of the n bytes at p, in memory from alloc.
+#target(os: not "windows")
+private routine owned(p: @Byte, n: USize, alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        buffer : @Byte = allocate<Byte>(alloc, n.max(1))
+        branch buffer.is_null()
+            ? return(.Failure(FsError.OutOfMemory))
+            : continue
+        copy<Byte>(buffer, p, n)
+        return(.Success(Bytes.from_ptr(buffer, n)))
+
+/// The value of the environment variable name, when it is set and not empty.
+#target(os: not "windows")
+private routine nonempty_env(name: CStr) -> Option<@Byte>
+    block entry():
+        value : @Byte = c_getenv(name)
+        branch value.is_null()
+            ? return(.Absent)
+            : continue
+        branch value.load().eq(0x00)
+            ? return(.Absent)
+            : return(.Present(value))
+
+/// The working directory, in memory from alloc.
+#target(os: not "windows")
+routine current_dir(alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        jump attempt(256)
+
+    block attempt(capacity: USize):
+        buffer : @Byte = allocate<Byte>(alloc, capacity)
+        branch buffer.is_null()
+            ? return(.Failure(FsError.OutOfMemory))
+            : continue
+        branch c_getcwd(buffer, capacity).is_not_null()
+            ? return(.Success(Bytes.from_ptr(buffer, CStr.from_ptr(buffer).length())))
+            : continue
+        e : CInt = errno()
+        buffer.free(alloc)
+        // ERANGE: a bigger buffer
+        branch e.eq(34)
+            ? attempt(capacity.mul(2))
+            : return(.Failure(error_of(e)))
+
+#target(os: not "windows")
+routine set_current_dir(path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? return(checked(c_chdir(cpath.to<@Byte>())))
+            : return(.Failure(path_error(path)))
+
+/// TMPDIR, or /tmp, in memory from alloc.
+#target(os: not "windows")
+routine temp_dir(alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        t : Option<@Byte> = nonempty_env("TMPDIR")
+        when t:
+            .Present(dir) -> return(owned(dir, CStr.from_ptr(dir).length(), alloc))
+            .Absent       -> return(owned("/tmp", 4, alloc))
+
+/// HOME, in memory from alloc; NotFound when it isn't set.
+#target(os: not "windows")
+routine home_dir(alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        h : Option<@Byte> = nonempty_env("HOME")
+        when h:
+            .Present(dir) -> return(owned(dir, CStr.from_ptr(dir).length(), alloc))
+            .Absent       -> return(.Failure(FsError.NotFound))
+
+/// path made absolute by the text alone: the working directory in front of a relative path, nothing resolved.
+#target(os: not "windows")
+routine absolute_path(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        branch path.starts_with("/")
+            ? return(owned(path.data, path.length(), alloc))
+            : continue
+        cwd : Result<Bytes, FsError> = current_dir(alloc)
+        when cwd:
+            .Success(dir)   -> join(dir)
+            .Failure(error) -> return(.Failure(error))
+
+    block join(dir: Bytes):
+        full : Bytes = join_path(dir, path, alloc)
+        dir.data.free(alloc)
+        return(.Success(full))
+
+/// The absolute path with every link, ".", and ".." resolved; path must exist.
+#target(os: not "windows")
+routine canonical_path(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        resolved : @Byte = c_realpath(cpath.to<@Byte>(), null)
+        branch resolved.is_null()
+            ? return(failed<Bytes>())
+            : continue
+        copied : Result<Bytes, FsError> = owned(resolved, CStr.from_ptr(resolved).length(), alloc)
+        c_free(resolved)
+        return(copied)
+
+// -- memory-mapped files -----------------------------------------------------------------
+
+#target(os: not "windows")
+private routine map_failed(p: Addr) -> Bool
+    block entry():
+        // MAP_FAILED, (void*)-1
+        return(ptrtoint<Addr, USize>(p).eq(USize.MAX))
+
+/// Maps length bytes of path from offset (USize.MAX: to the end), clamped to the file; past the end, or an empty
+/// file, gives an empty mapping. write maps it shared, so stores reach the file; otherwise it's read-only.
+#target(os: not "windows")
+routine Mapping.map(path: Bytes, write: Bool, offset: U64, length: USize) -> Result<Self, FsError>
+    block entry():
+        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
+        branch c_path(path, cpath.to<@Byte>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        flags : CInt = write
+            ? 2
+            : 0
+        fd : CInt = c_open(cpath.to<@Byte>(), flags.bitor(open_flags().cloexec), 0)
+        branch fd.lt(0)
+            ? return(failed<Self>())
+            : continue
+        m : Result<Metadata, FsError> = fd_metadata(fd)
+        when m:
+            .Success(info)  -> sized(fd, info.size)
+            .Failure(error) -> closed(fd, error)
+
+    block closed(fd: CInt, error: FsError):
+        c_close(fd)
+        return(.Failure(error))
+
+    block sized(fd: CInt, size: U64):
+        branch offset.ge(size)
+            ? empty(fd)
+            : continue
+        want    : USize = length.to<U64>().min(size.sub(offset)).to<USize>()
+        page    : U64   = map_granularity().to<U64>()
+        aligned : U64   = offset.sub(offset.mod(page))
+        delta   : USize = offset.sub(aligned).to<USize>()
+        // PROT_READ | PROT_WRITE and MAP_SHARED, or PROT_READ and MAP_PRIVATE
+        prot : CInt = write
+            ? 3
+            : 1
+        share : CInt = write
+            ? 1
+            : 2
+        p : Addr = c_mmap(null, want.add(delta), prot, share, fd, aligned.to<S64>())
+        e : CInt = errno()
+        c_close(fd)
+        branch map_failed(p)
+            ? return(.Failure(error_of(e)))
+            : return(.Success(Self { base: p, delta: delta, length: want }))
+
+    block empty(fd: CInt):
+        c_close(fd)
+        return(.Success(Self.empty()))
+
+/// Writes changed pages back to the file.
+#target(os: not "windows")
+routine Mapping.flush(self: Self) -> Result<Unit, FsError>
+    block entry():
+        branch self.base.is_null()
+            ? return(fs_done())
+            : return(checked(c_msync(self.base, self.delta.add(self.length), ms_sync())))
+
+/// Writes changed pages back and unmaps.
+#target(os: not "windows")
+routine Mapping.unmap(self: Self) -> Void
+    block entry():
+        branch self.base.is_null()
+            ? return()
+            : continue
+        c_msync(self.base, self.delta.add(self.length), ms_sync())
+        c_munmap(self.base, self.delta.add(self.length))
+        return()
+
+/// Asks the OS to read the whole mapping in now.
+#target(os: not "windows")
+routine Mapping.prefetch(self: Self) -> Void
+    block entry():
+        branch self.base.is_null()
+            ? return()
+            : continue
+        // MADV_WILLNEED
+        c_madvise(self.base, self.delta.add(self.length), 3)
+        return()
+
+/// Tells the OS the mapping will be read front to back.
+#target(os: not "windows")
+routine Mapping.advise_sequential(self: Self) -> Void
+    block entry():
+        branch self.base.is_null()
+            ? return()
+            : continue
+        // MADV_SEQUENTIAL
+        c_madvise(self.base, self.delta.add(self.length), 2)
+        return()

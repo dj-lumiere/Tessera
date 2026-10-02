@@ -1,0 +1,107 @@
+// Tessera stdlib: what the machine has
+//
+// The memory page size, what a mapping's offset aligns to, and the physical memory, for code that sizes its work by
+// them (a reader decides how much to prefetch from the memory there is).
+
+module Standard::Os
+
+/// SYSTEM_INFO
+#target(os: "windows")
+private record SystemInfo
+    architecture   : U16
+    reserved       : U16
+    page_size      : U32
+    min_address    : Addr
+    max_address    : Addr
+    processor_mask : USize
+    processors     : U32
+    processor_type : U32
+    granularity    : U32
+    level          : U16
+    revision       : U16
+
+/// MEMORYSTATUSEX
+#target(os: "windows")
+private record MemoryStatus
+    length         : U32
+    load           : U32
+    total_phys     : U64
+    avail_phys     : U64
+    total_file     : U64
+    avail_file     : U64
+    total_virtual  : U64
+    avail_virtual  : U64
+    avail_extended : U64
+
+#[external("c"), symbol("sysconf"), target(os: not "windows")]
+private routine c_sysconf(name: CInt) -> CLong
+
+/// _SC_PAGESIZE and _SC_PHYS_PAGES, whose numbers differ between Linux and macOS.
+#target(os: "linux")
+private routine sc_numbers() -> (CInt, CInt)
+    block entry():
+        return({ 30, 85 })
+
+#target(os: "macos")
+private routine sc_numbers() -> (CInt, CInt)
+    block entry():
+        return({ 29, 200 })
+
+/// The memory page size.
+#target(os: not "windows")
+routine page_size() -> USize
+    block entry():
+        page, phys = sc_numbers()
+        size : CLong = c_sysconf(page)
+        branch size.gt(0)
+            ? return(size.to<USize>())
+            : return(4096)
+
+/// What a memory mapping's file offset must be a multiple of: the page size.
+#target(os: not "windows")
+routine map_granularity() -> USize
+    block entry():
+        return(page_size())
+
+/// The physical memory in bytes, or 0 when it can't be told.
+#target(os: not "windows")
+routine physical_memory() -> U64
+    block entry():
+        page, phys = sc_numbers()
+        pages : CLong = c_sysconf(phys)
+        branch pages.gt(0)
+            ? return(pages.to<U64>().mul_wrap(page_size().to<U64>()))
+            : return(0)
+
+#[external("c"), symbol("GetSystemInfo"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_system_info(info: @SystemInfo) -> Void
+
+#[external("c"), symbol("GlobalMemoryStatusEx"), callconv("stdcall"), target(os: "windows")]
+private routine c_global_memory_status_ex(status: @MemoryStatus) -> CInt
+
+/// The memory page size.
+#target(os: "windows")
+routine page_size() -> USize
+    block entry():
+        claim info : @SystemInfo <- uninit
+        c_get_system_info(info)
+        return(info.page_size.load().to<USize>())
+
+/// What a memory mapping's file offset must be a multiple of: the allocation granularity (64 KiB), coarser than the
+/// page.
+#target(os: "windows")
+routine map_granularity() -> USize
+    block entry():
+        claim info : @SystemInfo <- uninit
+        c_get_system_info(info)
+        return(info.granularity.load().to<USize>())
+
+/// The physical memory in bytes, or 0 when it can't be told.
+#target(os: "windows")
+routine physical_memory() -> U64
+    block entry():
+        claim status : @MemoryStatus <- uninit
+        status.length.store(sizeof<MemoryStatus>().to<U32>())
+        branch c_global_memory_status_ex(status).ne(0)
+            ? return(status.total_phys.load())
+            : return(0)
