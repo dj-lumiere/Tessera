@@ -3,9 +3,9 @@ using Tomlyn.Model;
 
 namespace Tessera;
 
-/// A solution's `config.toml`: what it builds, for which target, from which sources. `tessera build` and
-/// `tessera run` without files read it from the working directory or the nearest directory above; with a manifest
-/// the build takes no flags, since the manifest is the build configuration.
+/// A solution's `config.toml`: what it builds, for which target. `tessera build` and `tessera run` without files read
+/// it from the working directory or the nearest directory above; with a manifest the build takes no flags, since the
+/// manifest is the build configuration. The layout is RazorForge's and Suflae's.
 ///
 /// ```toml
 /// [package]
@@ -13,12 +13,11 @@ namespace Tessera;
 /// version = "0.1.0"
 ///
 /// [target]
-/// executable = "blinky"               # the output's name (default: the package name)
-/// triple = "arm-none-eabi"            # default: the host
+/// executable = "src/main.tess"        # the entry file (it has main); the output is build/main
+/// library = ["../shared"]             # source directories of other solutions this one builds with
 /// mode = "release"                    # "debug" (-O0, the default), "release" (-O2), "release-time" (-O3),
 ///                                     # or "release-space" (-Os); every mode has debug information
-/// sources = ["src", "board/stm32f4"]  # directories or files (default: the manifest's directory)
-/// library = ["../shared"]             # source directories of other solutions this one builds with
+/// triple = "arm-none-eabi"            # default: the host
 /// c-libraries = ["m"]                 # -l names
 /// library-paths = ["vendor/lib"]      # -L directories
 /// link-script = "board/stm32f4/memory.ld"
@@ -26,11 +25,17 @@ namespace Tessera;
 /// [debug]
 /// emit-llvm = true                    # keep the IR next to the output
 /// ```
+///
+/// The build is the entry file and what it imports, found as RazorForge finds modules: the files under the
+/// manifest's directory and the library directories that declare an imported module (`module Greeting`), and in
+/// turn what those import. So a directory may hold several programs, each its own entry, and a file only one of them
+/// imports isn't built into the others. The standard library is always there.
 public sealed record Manifest(
     string Path,
     string Directory,
     string Name,
     string? Version,
+    string Entry,
     string Executable,
     BuildTarget Target,
     BuildMode Mode,
@@ -66,7 +71,7 @@ public sealed record Manifest(
     private static readonly Dictionary<string, HashSet<string>> Keys = new()
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
-        ["target"] = ["executable", "triple", "cpu", "features", "mode", "sources", "library", "c-libraries", "library-paths", "link-script"],
+        ["target"] = ["executable", "triple", "cpu", "features", "mode", "library", "c-libraries", "library-paths", "link-script"],
         ["debug"] = ["emit-llvm"],
     };
 
@@ -96,9 +101,6 @@ public sealed record Manifest(
         var debug = Section(root, "debug", path) ?? new TomlTable();
 
         string name = Str(package, "name", path) ?? throw new ManifestError(path, "[package] needs a name");
-        string executable = Str(target, "executable", path) ?? name;
-        if (executable.Length == 0 || executable.IndexOfAny(['/', '\\']) >= 0)
-            throw new ManifestError(path, $"[target] executable is a file name, not a path: '{executable}'");
 
         BuildTarget triple;
         try { triple = Str(target, "triple", path) is { } t ? BuildTarget.Parse(t) : defaultTarget ?? BuildTarget.Host(); }
@@ -114,30 +116,86 @@ public sealed record Manifest(
 
         string Resolve(string p) => System.IO.Path.GetFullPath(System.IO.Path.Combine(dir, p));
 
-        var sources = new List<string>();
+        string entryName = Str(target, "executable", path)
+                           ?? throw new ManifestError(path, "[target] needs the entry file: executable = \"main.tess\"");
+        string entry = Resolve(entryName);
+        if (!File.Exists(entry)) throw new ManifestError(path, $"[target] executable: no such file: {entryName}");
+        if (!entry.EndsWith(".tess", StringComparison.OrdinalIgnoreCase))
+            throw new ManifestError(path, $"[target] executable is a .tess file: {entryName}");
+
         var roots = new List<string> { dir };
-        roots.AddRange((Strs(target, "library", path) ?? []).Select(Resolve).Where(System.IO.Directory.Exists));
-        foreach (var entry in (Strs(target, "sources", path) ?? ["."]).Concat(Strs(target, "library", path) ?? []))
+        foreach (var lib in Strs(target, "library", path) ?? [])
         {
-            string full = Resolve(entry);
-            if (File.Exists(full)) sources.Add(full);
-            else if (System.IO.Directory.Exists(full))
-                sources.AddRange(System.IO.Directory.GetFiles(full, "*.tess", SearchOption.AllDirectories)
-                    .Where(f => !IsUnder(f, System.IO.Path.Combine(dir, "build"))).Order(StringComparer.Ordinal));
-            else throw new ManifestError(path, $"no such source file or directory: {entry}");
+            string full = Resolve(lib);
+            if (!System.IO.Directory.Exists(full)) throw new ManifestError(path, $"[target] library: no such directory: {lib}");
+            roots.Add(full);
         }
-        sources = sources.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        if (sources.Count == 0) throw new ManifestError(path, "the sources hold no .tess files");
+        var sources = ImportClosure(entry, roots, System.IO.Path.Combine(dir, "build"));
 
         string? linkScript = Str(target, "link-script", path) is { } ls ? Resolve(ls) : null;
         if (linkScript is not null && !File.Exists(linkScript))
             throw new ManifestError(path, $"no such link script: {linkScript}");
 
-        return new Manifest(path, dir, name, Str(package, "version", path), executable, triple, mode, sources,
+        return new Manifest(path, dir, name, Str(package, "version", path), entry,
+            System.IO.Path.GetFileNameWithoutExtension(entry), triple, mode, sources,
             Strs(target, "c-libraries", path) ?? [],
             (Strs(target, "library-paths", path) ?? []).Select(Resolve).ToList(),
             linkScript,
             Bool(debug, "emit-llvm", path) ?? false) { Roots = roots };
+    }
+
+    /// The entry and every file the build needs from the roots: those declaring a module the entry imports, then
+    /// those declaring what they import, and so on. Standard:: modules are the standard library's, always built in;
+    /// a module no root declares is left for the build to report where it is imported.
+    private static List<string> ImportClosure(string entry, List<string> roots, string buildDir)
+    {
+        var byModule = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var root in roots)
+            foreach (var file in System.IO.Directory.GetFiles(root, "*.tess", SearchOption.AllDirectories)
+                         .Where(f => !IsUnder(f, buildDir)).Order(StringComparer.Ordinal))
+                if (Header(file).Module is { } module)
+                {
+                    if (!byModule.TryGetValue(module, out var files)) byModule[module] = files = [];
+                    files.Add(System.IO.Path.GetFullPath(file));
+                }
+
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pending = new Queue<string>();
+        void Add(string file)
+        {
+            if (seen.Add(file)) { result.Add(file); pending.Enqueue(file); }
+        }
+        Add(System.IO.Path.GetFullPath(entry));
+        while (pending.Count > 0)
+        {
+            var (own, imports) = Header(pending.Dequeue());
+            // The rest of the file's own module comes along: a module may span files.
+            foreach (var module in own is null ? imports : imports.Prepend(own))
+                if (!module.StartsWith("Standard::", StringComparison.Ordinal) && byModule.TryGetValue(module, out var files))
+                    foreach (var file in files) Add(file);
+        }
+        return result;
+    }
+
+    /// A file's `module` line and `import` lines: the lines before its first declaration.
+    private static (string? Module, List<string> Imports) Header(string file)
+    {
+        string? module = null;
+        var imports = new List<string>();
+        foreach (var raw in File.ReadLines(file))
+        {
+            string line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith("//", StringComparison.Ordinal)) continue;
+            string? Word(string keyword) =>
+                line.StartsWith(keyword + " ", StringComparison.Ordinal)
+                    ? line[(keyword.Length + 1)..].Split("//")[0].Trim()
+                    : null;
+            if (Word("module") is { } m) module = m;
+            else if (Word("import") is { } i) imports.Add(i);
+            else if (!line.StartsWith("define ", StringComparison.Ordinal)) break;
+        }
+        return (module, imports);
     }
 
     private static bool IsUnder(string file, string dir) =>

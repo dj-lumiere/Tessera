@@ -13,7 +13,7 @@ dotnet run -- run --mode release file.tess   # the same at -O2 (also release-tim
 dotnet run -- check file.tess        # type-check only
 dotnet run -- test tests examples             # golden tests
 dotnet run -- fmt <files or dirs>        # format in place (--check to only list)
-dotnet run -- build                      # build the solution in config.toml (here or above) into build/
+dotnet run -- build                      # build config.toml's entry (executable = "main.tess") and its imports into build/
 dotnet run -- version                    # the builder's version; help prints every command
 ```
 
