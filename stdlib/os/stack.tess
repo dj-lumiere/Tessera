@@ -1,0 +1,155 @@
+// Tessera stdlib: the stack allocator
+//
+// An Allocator for stacks, such as a fiber's: whole pages from the operating
+// system, with one page below them that may not be touched. A stack grows
+// down, so a stack that runs out reaches that page and the program stops
+// there, instead of writing over whatever lies below.
+//
+// The Allocator interface frees without a size, so the size of the mapping is
+// written at the start of the guard page, which is opened again to read it
+// when the stack is freed. It doesn't grow stacks: realloc returns null, as an
+// allocator out of memory does.
+
+module Standard::Os
+
+import Standard::Alloc
+
+// -- pages, POSIX ------------------------------------------------------------------
+
+#[external("c"), symbol("getpagesize"), target(os: not "windows")]
+private routine c_getpagesize() -> CInt
+
+#[external("c"), symbol("mmap"), target(os: not "windows")]
+private routine c_mmap(%addr: Addr, %length: USize, %prot: CInt, %flags: CInt, %fd: CInt,
+        %offset: SSize) -> Addr
+
+#[external("c"), symbol("mprotect"), target(os: not "windows")]
+private routine c_mprotect(%addr: Addr, %length: USize, %prot: CInt) -> CInt
+
+#[external("c"), symbol("munmap"), target(os: not "windows")]
+private routine c_munmap(%addr: Addr, %length: USize) -> CInt
+
+/// MAP_PRIVATE | MAP_ANONYMOUS, whose second bit differs between Linux and the BSDs.
+#target(os: "macos")
+private routine map_private_anonymous() -> CInt
+    block entry():
+        return(0x1002)
+
+#target(os: not "macos", os: not "windows")
+private routine map_private_anonymous() -> CInt
+    block entry():
+        return(0x22)
+
+#target(os: not "windows")
+private routine page_size() -> USize
+    block entry():
+        %size : USize = c_getpagesize().to<USize>()
+        return(%size)
+
+/// Read and write pages, or null.
+#target(os: not "windows")
+private routine pages_map(%length: USize) -> Addr
+    block entry():
+        // PROT_READ | PROT_WRITE, no file
+        %at     : Addr = c_mmap(null, %length, 3, map_private_anonymous(), -1, 0)
+        %failed : Bool = ptrtoint<Addr, SSize>(%at).eq(-1)
+        branch %failed
+            ? return(null)
+            : return(%at)
+
+#target(os: not "windows")
+private routine pages_protect(%at: Addr, %length: USize, %open: Bool) -> Void
+    block entry():
+        %prot : CInt = %open.to<CInt>().mul(3)
+        c_mprotect(%at, %length, %prot)
+        return()
+
+#target(os: not "windows")
+private routine pages_release(%at: Addr, %length: USize) -> Void
+    block entry():
+        c_munmap(%at, %length)
+        return()
+
+// -- pages, Windows ----------------------------------------------------------------
+
+#[external("c"), symbol("VirtualAlloc"), callconv("stdcall"), target(os: "windows")]
+private routine c_virtual_alloc(%addr: Addr, %size: USize, %type: U32, %protect: U32) -> Addr
+
+#[external("c"), symbol("VirtualProtect"), callconv("stdcall"), target(os: "windows")]
+private routine c_virtual_protect(%addr: Addr, %size: USize, %protect: U32, %old: @U32) -> CInt
+
+#[external("c"), symbol("VirtualFree"), callconv("stdcall"), target(os: "windows")]
+private routine c_virtual_free(%addr: Addr, %size: USize, %type: U32) -> CInt
+
+/// Windows' pages are 4 KiB on every architecture it runs on.
+#target(os: "windows")
+private routine page_size() -> USize
+    block entry():
+        return(4096)
+
+#target(os: "windows")
+private routine pages_map(%length: USize) -> Addr
+    block entry():
+        // MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE
+        %at : Addr = c_virtual_alloc(null, %length, 0x3000, 4)
+        return(%at)
+
+#target(os: "windows")
+private routine pages_protect(%at: Addr, %length: USize, %open: Bool) -> Void
+    block entry():
+        // PAGE_READWRITE, or PAGE_NOACCESS
+        %protect : U32 = %open.to<U32>().mul(3).add(1)
+        claim %old : @U32 <- 0
+        c_virtual_protect(%at, %length, %protect, %old)
+        return()
+
+#target(os: "windows")
+private routine pages_release(%at: Addr, %length: USize) -> Void
+    block entry():
+        // MEM_RELEASE frees the whole reservation, whatever its size
+        c_virtual_free(%at, 0, 0x8000)
+        return()
+
+// -- the allocator -----------------------------------------------------------------
+
+#target(os: not "none")
+private routine stack_alloc_fn(%state: Addr, %size: USize) -> Addr
+    block entry():
+        %page   : USize = page_size()
+        %pages  : USize = %size.add(%page).sub(1).div(%page)
+        %length : USize = %pages.add(1).mul(%page)
+        %base   : Addr  = pages_map(%length)
+        %failed : Bool  = %base.is_null()
+        branch %failed
+            ? return(null)
+            : guard(%base, %page, %length)
+
+    // The mapping's size goes at the start of the guard page, which is then closed.
+    block guard(%base: Addr, %page: USize, %length: USize):
+        %length.store_into(%base.to<@USize>())
+        pages_protect(%base, %page, false)
+        %stack : Addr = %base.offset(%page.to<SSize>())
+        return(%stack)
+
+#target(os: not "none")
+private routine stack_realloc_fn(%state: Addr, %old_ptr: Addr, %size: USize) -> Addr
+    block entry():
+        return(null)
+
+#target(os: not "none")
+private routine stack_free_fn(%state: Addr, %ptr: Addr) -> Void
+    block entry():
+        %page : USize = page_size()
+        %base : Addr  = %ptr.offset(%page.to<SSize>().neg())
+        pages_protect(%base, %page, true)
+        %length : USize = %base.to<@USize>().load()
+        pages_release(%base, %length)
+        return()
+
+/// An Allocator for stacks: whole pages, with a guard page below that stops the program when a stack overflows.
+#target(os: not "none")
+routine make_stack_allocator() -> Allocator
+    block entry():
+        %alloc : Allocator = Allocator { alloc_fn: stack_alloc_fn, realloc_fn: stack_realloc_fn,
+                free_fn: stack_free_fn, state: null }
+        return(%alloc)

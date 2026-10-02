@@ -1,0 +1,58 @@
+// Fibers on one thread: two workers take turns through yield, one spawns a third from inside, and run returns when
+// all three have. The stacks come from the stack allocator, with a guard page below each.
+
+import Standard::Alloc
+import Standard::Fiber
+import Standard::Format
+import Standard::Os
+
+/// A worker's state: its name, how many steps it takes, and the scheduler it yields to.
+record Worker
+    name  : Bytes
+    steps : S64
+    sched : @Scheduler
+
+routine worker(%raw: Addr) -> Void
+    block entry():
+        %self : @Worker = %raw.to<@Worker>()
+        jump step(%self, 1)
+
+    block step(%self: @Worker, %i: S64):
+        %done : Bool = %i.gt(%self.steps.load())
+        branch %done
+            ? finish(%self)
+            : work(%self, %i)
+
+    block work(%self: @Worker, %i: S64):
+        print("{%self.name.load()} {%i}\n")
+        %self.sched.load().yield()
+        jump step(%self, %i.add(1))
+
+    block finish(%self: @Worker):
+        print("{%self.name.load()} done\n")
+        return()
+
+/// Spawns a late worker from inside a fiber, then returns.
+routine spawner(%raw: Addr) -> Void
+    block entry():
+        %late  : @Worker    = %raw.to<@Worker>()
+        %sched : @Scheduler = %late.sched.load()
+        print("spawner\n")
+        %sched.spawn(worker, %late, 65536)
+        return()
+
+routine main() -> S32
+    block entry():
+        claim %alloc  : @Allocator <- make_heap_allocator()
+        claim %stacks : @Allocator <- make_stack_allocator()
+        claim %sched  : @Scheduler <- .construct(%alloc, %stacks)
+        claim %a      : @Worker    <- Worker { name: "a", steps: 3, sched: %sched }
+        claim %b      : @Worker    <- Worker { name: "b", steps: 2, sched: %sched }
+        claim %c      : @Worker    <- Worker { name: "c", steps: 1, sched: %sched }
+        %sched.spawn(worker, %a, 65536)
+        %sched.spawn(worker, %b, 65536)
+        %sched.spawn(spawner, %c, 65536)
+        %sched.run()
+        print("all done\n")
+        %sched.destruct()
+        return(0)

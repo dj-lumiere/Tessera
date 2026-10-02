@@ -1,0 +1,151 @@
+// Tessera stdlib: fibers
+//
+// A Scheduler runs fibers on the thread that calls run. Each fiber has a stack
+// of its own, from the stack Allocator the scheduler was given, and runs until
+// it yields or returns: nothing preempts it. run takes the fibers in the order
+// they became ready and returns when none is left.
+//
+//     claim %stacks : @Allocator <- make_stack_allocator()   // guard pages
+//     claim %sched  : @Scheduler <- .construct(%alloc, %stacks)
+//     %sched.spawn(worker, %state, 65536)
+//     %sched.run()
+//     %sched.destruct()
+//
+// A fiber's routine takes one Addr, the state it works on (the state record is
+// the capture list, as for a thread), and that state must outlive the fiber.
+// Inside, %sched.yield() lets the other ready fibers run first. Every switch
+// goes through the scheduler's own stack: a fiber that yields returns to run,
+// which resumes the next one.
+
+module Standard::Fiber
+
+import Standard::Alloc
+import Standard::Collections
+
+/// The scheduler whose run is on this thread, for the first routine of a new fiber.
+#[threadlocal, target(os: not "none")]
+global RUNNING: @@Scheduler
+
+/// One fiber, from spawn until it returns.
+record FiberState
+    sp       : Addr  // its stack pointer while it isn't running
+    stack    : Addr  // the bottom of its stack, from the scheduler's stack allocator
+    entry    : Callable<(Addr,), Void>
+    arg      : Addr
+    finished : Bool
+
+record Scheduler
+    alloc   : @Allocator  // the FiberState records and the ready queue
+    stacks  : @Allocator  // the fibers' stacks
+    ready   : CircularList<@FiberState>
+    home    : Addr  // run's stack pointer while a fiber runs
+    current : @FiberState  // the fiber running, or null in run
+
+#target(os: not "none")
+routine Scheduler.construct(%alloc: @Allocator, %stacks: @Allocator) -> Self
+    block entry():
+        %ready : CircularList<@FiberState> = .construct(%alloc)
+        %s     : Self                      = Self { alloc: %alloc, stacks: %stacks, ready: %ready,
+                home: null, current: null }
+        return(%s)
+
+/// Starts %entry(%arg) on a stack of %stack_size bytes, from inside a fiber or out: it first runs when run gets to
+/// it, after the fibers ready before it.
+#target(os: not "none")
+routine Scheduler.spawn(%self: @Self, %entry: Callable<(Addr,), Void>, %arg: Addr,
+        %stack_size: USize) -> Void
+    block entry():
+        %stacks : @Allocator  = %self.stacks.load()
+        %stack  : @Byte       = allocate<Byte>(%stacks, %stack_size)
+        %sp     : Addr        = initial_stack(%stack, %stack_size, fiber_start.addr())
+        %alloc  : @Allocator  = %self.alloc.load()
+        %fiber  : @FiberState = allocate<FiberState>(%alloc, 1)
+        %fiber.store(FiberState { sp: %sp, stack: %stack, entry: %entry, arg: %arg,
+                finished: false })
+        %self.ready.push_back(%fiber)
+        return()
+
+/// Inside a fiber: lets the fibers ready now run first, then goes on. Outside one it does nothing.
+#target(os: not "none")
+routine Scheduler.yield(%self: @Self) -> Void
+    block entry():
+        %fiber   : @FiberState = %self.current.load()
+        %outside : Bool        = %fiber.is_null()
+        branch %outside
+            ? return()
+            : give_way(%fiber)
+
+    block give_way(%fiber: @FiberState):
+        %self.ready.push_back(%fiber)
+        switch_stack(%fiber.sp, %self.home.load())
+        return()
+
+/// Runs the ready fibers, and those they spawn, until every one has returned.
+#target(os: not "none")
+routine Scheduler.run(%self: @Self) -> Void
+    block entry():
+        RUNNING.store(%self)
+        jump next()
+
+    block next():
+        %empty : Bool = %self.ready.load().is_empty()
+        branch %empty
+            ? return()
+            : resume()
+
+    block resume():
+        %fiber : @FiberState = %self.ready.pop_front()
+        %self.current.store(%fiber)
+        switch_stack(%self.home, %fiber.sp.load())
+        %self.current.store(null)
+        %done : Bool = %fiber.finished.load()
+        branch %done
+            ? finish(%fiber)
+            : next()
+
+    // A fiber's stack is freed here, on run's stack: it can't free the one it runs on.
+    block finish(%fiber: @FiberState):
+        free_fiber(%self, %fiber)
+        jump next()
+
+/// Frees the fibers that never got to return, then the ready queue.
+#target(os: not "none")
+routine Scheduler.destruct(%self: @Self) -> Void
+    block entry():
+        jump next()
+
+    block next():
+        %empty : Bool = %self.ready.load().is_empty()
+        branch %empty
+            ? done()
+            : drop()
+
+    block drop():
+        %fiber : @FiberState = %self.ready.pop_front()
+        free_fiber(%self, %fiber)
+        jump next()
+
+    block done():
+        %self.ready.destruct()
+        return()
+
+#target(os: not "none")
+private routine free_fiber(%sched: @Scheduler, %fiber: @FiberState) -> Void
+    block entry():
+        %stack : @Byte = %fiber.stack.load().to<@Byte>()
+        %stack.free(%sched.stacks.load())
+        %fiber.free(%sched.alloc.load())
+        return()
+
+/// A new fiber's first routine: switch_stack returns into it on the fiber's new stack. It runs the fiber's routine,
+/// marks it finished, and goes back to run for the last time.
+#[noreturn, target(os: not "none")]
+private routine fiber_start() -> Void
+    block entry():
+        %sched : @Scheduler              = RUNNING.load()
+        %fiber : @FiberState             = %sched.current.load()
+        %entry : Callable<(Addr,), Void> = %fiber.entry.load()
+        %entry.call(%fiber.arg.load())
+        %fiber.finished.store(true)
+        switch_stack(%fiber.sp, %sched.home.load())
+        unreachable

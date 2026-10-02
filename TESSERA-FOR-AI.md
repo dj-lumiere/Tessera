@@ -367,6 +367,11 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 - Every routine with a body starts with `block entry():`, which takes no parameters. A routine without blocks must
   be `#external`.
 
+**Fibers.** `Standard::Fiber`'s `Scheduler` runs fibers on one thread: `.construct(%alloc, %stacks)`, then
+`spawn(routine, %state, stack_size)` (the routine takes the state as an `Addr`), `yield()` inside a fiber, `run()`
+until all return, `destruct()`. Pass `make_stack_allocator()` (`Standard::Os`) as `%stacks` for guard pages.
+x86_64 and AArch64 (not on Windows) only.
+
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.
 
