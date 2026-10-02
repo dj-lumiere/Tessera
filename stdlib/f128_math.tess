@@ -92,294 +92,294 @@ record F128Extended
 
 routine wide_zero() -> F128Extended
     block entry():
-        %w : F128Extended = F128Extended { negative: false, exponent: 0, hi: 0, lo: 0 }
-        return(%w)
+        w : F128Extended = F128Extended { negative: false, exponent: 0, hi: 0, lo: 0 }
+        return(w)
 
-routine F128Extended.is_zero(%self: Self) -> Bool
+routine F128Extended.is_zero(self: Self) -> Bool
     block entry():
-        %r : Bool = %self.hi.eq(0).bitand(%self.lo.eq(0))
-        return(%r)
+        r : Bool = self.hi.eq(0).bitand(self.lo.eq(0))
+        return(r)
 
-routine F128Extended.neg(%self: Self) -> Self
+routine F128Extended.neg(self: Self) -> Self
     block entry():
-        %r : Self = Self { negative: %self.negative.bitnot(), exponent: %self.exponent,
-                hi: %self.hi, lo: %self.lo }
-        return(%r)
+        r : Self = Self { negative: self.negative.bitnot(), exponent: self.exponent, hi: self.hi,
+                lo: self.lo }
+        return(r)
 
-routine F128Extended.ldexp(%self: Self, %k: S64) -> Self
+routine F128Extended.ldexp(self: Self, k: S64) -> Self
     block entry():
-        %r : Self = Self { negative: %self.negative, exponent: %self.exponent.add(%k), hi: %self.hi,
-                lo: %self.lo }
-        return(%r)
+        r : Self = Self { negative: self.negative, exponent: self.exponent.add(k), hi: self.hi,
+                lo: self.lo }
+        return(r)
 
-/// Entry %i of one of the constant tables.
-routine wide_table(%hi: @U128, %lo: @U64, %exponent: @S64, %i: USize) -> F128Extended
+/// Entry i of one of the constant tables.
+routine wide_table(hi: @U128, lo: @U64, exponent: @S64, i: USize) -> F128Extended
     block entry():
-        %h : U128         = %hi.stride(%i).load()
-        %l : U64          = %lo.stride(%i).load()
-        %e : S64          = %exponent.stride(%i).load()
-        %w : F128Extended = F128Extended { negative: false, exponent: %e, hi: %h, lo: %l }
-        return(%w)
+        h : U128         = hi.stride(i).load()
+        l : U64          = lo.stride(i).load()
+        e : S64          = exponent.stride(i).load()
+        w : F128Extended = F128Extended { negative: false, exponent: e, hi: h, lo: l }
+        return(w)
 
-routine wide_const(%i: USize) -> F128Extended
+routine wide_const(i: USize) -> F128Extended
     block entry():
-        %w : F128Extended = wide_table(WIDE_CONST_HI.to<@U128>(), WIDE_CONST_LO.to<@U64>(),
-                WIDE_CONST_EXP.to<@S64>(), %i)
-        return(%w)
+        w : F128Extended = wide_table(WIDE_CONST_HI.to<@U128>(), WIDE_CONST_LO.to<@U64>(),
+                WIDE_CONST_EXP.to<@S64>(), i)
+        return(w)
 
 /// Shifts the mantissa up until bit 191 is set.
-routine wide_normalize(%negative: Bool, %exponent: S64, %hi: U128, %lo: U64) -> F128Extended
+routine wide_normalize(negative: Bool, exponent: S64, hi: U128, lo: U64) -> F128Extended
     block entry():
-        %zero    : Bool         = %hi.eq(0).bitand(%lo.eq(0))
-        %nothing : F128Extended = wide_zero()
-        branch %zero
-            ? return(%nothing)
-            : count(%exponent, %hi, %lo)
+        zero    : Bool         = hi.eq(0).bitand(lo.eq(0))
+        nothing : F128Extended = wide_zero()
+        branch zero
+            ? return(nothing)
+            : count(exponent, hi, lo)
 
     // a whole empty top limb moves in 64 bits at a time
-    block count(%exponent: S64, %hi: U128, %lo: U64):
-        %empty : Bool = %hi.shr(64).eq(0)
-        branch %empty
-            ? limb(%exponent, %hi, %lo)
-            : bits(%exponent, %hi, %lo)
+    block count(exponent: S64, hi: U128, lo: U64):
+        empty : Bool = hi.shr(64).eq(0)
+        branch empty
+            ? limb(exponent, hi, lo)
+            : bits(exponent, hi, lo)
 
-    block limb(%exponent: S64, %hi: U128, %lo: U64):
-        %new_hi : U128 = %hi.shl(64).bitor(%lo.to<U128>())
-        jump count(%exponent.sub(64), %new_hi, 0)
+    block limb(exponent: S64, hi: U128, lo: U64):
+        new_hi : U128 = hi.shl(64).bitor(lo.to<U128>())
+        jump count(exponent.sub(64), new_hi, 0)
 
-    block bits(%exponent: S64, %hi: U128, %lo: U64):
-        %s     : S64  = %hi.leading_zeros().to<S64>()
-        %some  : Bool = %s.gt(0)
-        %carry : U128 = %some
-            ? %lo.to<U128>().shr(64.sub(%s).to<U128>())
+    block bits(exponent: S64, hi: U128, lo: U64):
+        s     : S64  = hi.leading_zeros().to<S64>()
+        some  : Bool = s.gt(0)
+        carry : U128 = some
+            ? lo.to<U128>().shr(64.sub(s).to<U128>())
             : 0
-        %new_hi : U128         = %hi.shl(%s.to<U128>()).bitor(%carry)
-        %new_lo : U64          = %lo.shl(%s.to<U64>())
-        %w      : F128Extended = F128Extended { negative: %negative, exponent: %exponent.sub(%s),
-                hi: %new_hi, lo: %new_lo }
-        return(%w)
+        new_hi : U128         = hi.shl(s.to<U128>()).bitor(carry)
+        new_lo : U64          = lo.shl(s.to<U64>())
+        w      : F128Extended = F128Extended { negative: negative, exponent: exponent.sub(s),
+                hi: new_hi, lo: new_lo }
+        return(w)
 
-routine wide_from_f128(%x: F128) -> F128Extended
+routine wide_from_f128(x: F128) -> F128Extended
     block entry():
-        %zero    : Bool         = f128_is_zero_bits(%x.bits())
-        %nothing : F128Extended = wide_zero()
-        branch %zero
-            ? return(%nothing)
+        zero    : Bool         = f128_is_zero_bits(x.bits())
+        nothing : F128Extended = wide_zero()
+        branch zero
+            ? return(nothing)
             : continue
-        %p : F128Parts    = f128_unpack(%x.bits())
-        %w : F128Extended = F128Extended { negative: f128_is_negative_bits(%x.bits()),
-                exponent: %p.exponent, hi: %p.sig.shl(15), lo: 0 }
-        return(%w)
+        p : F128Parts    = f128_unpack(x.bits())
+        w : F128Extended = F128Extended { negative: f128_is_negative_bits(x.bits()),
+                exponent: p.exponent, hi: p.sig.shl(15), lo: 0 }
+        return(w)
 
-routine wide_from_i64(%n: S64) -> F128Extended
+routine wide_from_i64(n: S64) -> F128Extended
     block entry():
-        %w : F128Extended = wide_from_f128(%n.to<F128>())
-        return(%w)
+        w : F128Extended = wide_from_f128(n.to<F128>())
+        return(w)
 
 /// Rounds once to F128 (overflow, subnormals, and underflow included).
-routine F128Extended.to<F128>(%self: Self) -> F128
+routine F128Extended.to<F128>(self: Self) -> F128
     block entry():
-        %zero      : Bool = %self.is_zero()
-        %plus_zero : F128 = f128_of(0)
-        branch %zero
-            ? return(%plus_zero)
+        zero      : Bool = self.is_zero()
+        plus_zero : F128 = f128_of(0)
+        branch zero
+            ? return(plus_zero)
             : round()
 
     // value ~ hi × 2^(exponent - 127): f128_round_pack wants sig × 2^(biased - 16383 - 115)
     block round():
-        %sticky : U128 = %self.lo.ne(0).to<U128>()
-        %sig    : U128 = %self.hi.bitor(%sticky)
-        %bits   : U128 = f128_round_pack(%self.negative, %self.exponent.add(16371), %sig)
-        %r      : F128 = f128_of(%bits)
-        return(%r)
+        sticky : U128 = self.lo.ne(0).to<U128>()
+        sig    : U128 = self.hi.bitor(sticky)
+        bits   : U128 = f128_round_pack(self.negative, self.exponent.add(16371), sig)
+        r      : F128 = f128_of(bits)
+        return(r)
 
 /// mantissa >> n (bits shifted out are dropped)
-routine wide_shift_right(%hi: U128, %lo: U64, %n: S64) -> F128Extended
+routine wide_shift_right(hi: U128, lo: U64, n: S64) -> F128Extended
     block entry():
-        %none  : Bool = %n.eq(0)
-        %small : Bool = %n.lt(64)
-        %mid   : Bool = %n.lt(192)
+        none  : Bool = n.eq(0)
+        small : Bool = n.lt(64)
+        mid   : Bool = n.lt(192)
         when:
-            %none  -> done(%hi, %lo)
-            %small -> small()
-            %mid   -> big()
-            else   -> done(0, 0)
+            none  -> done(hi, lo)
+            small -> small()
+            mid   -> big()
+            else  -> done(0, 0)
 
     block small():
-        %new_lo : U64  = %lo.shr(%n.to<U64>()).bitor(%hi.to_wrap<U64>().shl(64.sub(%n).to<U64>()))
-        %new_hi : U128 = %hi.shr(%n.to<U128>())
-        jump done(%new_hi, %new_lo)
+        new_lo : U64  = lo.shr(n.to<U64>()).bitor(hi.to_wrap<U64>().shl(64.sub(n).to<U64>()))
+        new_hi : U128 = hi.shr(n.to<U128>())
+        jump done(new_hi, new_lo)
 
     // 64 <= n < 192: lo comes from hi, and hi keeps what's left above bit 128 + n - 64
     block big():
-        %new_lo : U64  = %hi.shr(%n.sub(64).to<U128>()).to_wrap<U64>()
-        %new_hi : U128 = %n.ge(128)
+        new_lo : U64  = hi.shr(n.sub(64).to<U128>()).to_wrap<U64>()
+        new_hi : U128 = n.ge(128)
             ? 0
-            : %hi.shr(%n.min(127).to<U128>())
-        jump done(%new_hi, %new_lo)
+            : hi.shr(n.min(127).to<U128>())
+        jump done(new_hi, new_lo)
 
-    block done(%h: U128, %l: U64):
-        %w : F128Extended = F128Extended { negative: false, exponent: 0, hi: %h, lo: %l }
-        return(%w)
+    block done(h: U128, l: U64):
+        w : F128Extended = F128Extended { negative: false, exponent: 0, hi: h, lo: l }
+        return(w)
 
-routine F128Extended.add(%self: Self, %other: Self) -> Self
+routine F128Extended.add(self: Self, other: Self) -> Self
     block entry():
-        %a_zero : Bool = %self.is_zero()
-        %b_zero : Bool = %other.is_zero()
+        a_zero : Bool = self.is_zero()
+        b_zero : Bool = other.is_zero()
         when:
-            %a_zero -> return(%other)
-            %b_zero -> return(%self)
-            else    -> order()
+            a_zero -> return(other)
+            b_zero -> return(self)
+            else   -> order()
 
     // big has the larger magnitude: larger exponent, or the same and a larger mantissa
     block order():
-        %a_hi_more : Bool = %self.hi.gt(%other.hi).bitor(%self.hi.eq(%other.hi).bitand(%self.lo.ge(%other.lo)))
-        %a_first   : Bool = %self.exponent.gt(%other.exponent).bitor(%self.exponent.eq(%other.exponent).bitand(%a_hi_more))
-        %big       : Self = %a_first
-            ? %self
-            : %other
-        %small : Self = %a_first
-            ? %other
-            : %self
-        %aligned : Self = wide_shift_right(%small.hi, %small.lo, %big.exponent.sub(%small.exponent))
-        %same    : Bool = %big.negative.eq(%small.negative)
-        branch %same
-            ? sum(%big, %aligned)
-            : difference(%big, %aligned)
+        a_hi_more : Bool = self.hi.gt(other.hi).bitor(self.hi.eq(other.hi).bitand(self.lo.ge(other.lo)))
+        a_first   : Bool = self.exponent.gt(other.exponent).bitor(self.exponent.eq(other.exponent).bitand(a_hi_more))
+        big       : Self = a_first
+            ? self
+            : other
+        small : Self = a_first
+            ? other
+            : self
+        aligned : Self = wide_shift_right(small.hi, small.lo, big.exponent.sub(small.exponent))
+        same    : Bool = big.negative.eq(small.negative)
+        branch same
+            ? sum(big, aligned)
+            : difference(big, aligned)
 
-    block sum(%big: Self, %s: Self):
-        %lo      : U64  = %big.lo.add_wrap(%s.lo)
-        %c0      : U128 = %lo.lt(%big.lo).to<U128>()
-        %hi_part : U128 = %big.hi.add_wrap(%s.hi)
-        %c1      : Bool = %hi_part.lt(%big.hi)
-        %hi      : U128 = %hi_part.add_wrap(%c0)
-        %c2      : Bool = %hi.lt(%hi_part)
-        %carry   : Bool = %c1.bitor(%c2)
-        branch %carry
-            ? overflow(%big, %hi, %lo)
-            : done(%big.negative, %big.exponent, %hi, %lo)
+    block sum(big: Self, s: Self):
+        lo      : U64  = big.lo.add_wrap(s.lo)
+        c0      : U128 = lo.lt(big.lo).to<U128>()
+        hi_part : U128 = big.hi.add_wrap(s.hi)
+        c1      : Bool = hi_part.lt(big.hi)
+        hi      : U128 = hi_part.add_wrap(c0)
+        c2      : Bool = hi.lt(hi_part)
+        carry   : Bool = c1.bitor(c2)
+        branch carry
+            ? overflow(big, hi, lo)
+            : done(big.negative, big.exponent, hi, lo)
 
     // the 193rd bit: shift right once, the carry becoming bit 191
-    block overflow(%big: Self, %hi: U128, %lo: U64):
-        %new_lo : U64  = %lo.shr(1).bitor(%hi.to_wrap<U64>().shl(63))
-        %new_hi : U128 = %hi.shr(1).bitor(F128_SIGN)
-        jump done(%big.negative, %big.exponent.add(1), %new_hi, %new_lo)
+    block overflow(big: Self, hi: U128, lo: U64):
+        new_lo : U64  = lo.shr(1).bitor(hi.to_wrap<U64>().shl(63))
+        new_hi : U128 = hi.shr(1).bitor(F128_SIGN)
+        jump done(big.negative, big.exponent.add(1), new_hi, new_lo)
 
-    block difference(%big: Self, %s: Self):
-        %lo     : U64  = %big.lo.sub_wrap(%s.lo)
-        %borrow : U128 = %big.lo.lt(%s.lo).to<U128>()
-        %hi     : U128 = %big.hi.sub_wrap(%s.hi).sub_wrap(%borrow)
-        %r      : Self = wide_normalize(%big.negative, %big.exponent, %hi, %lo)
-        return(%r)
+    block difference(big: Self, s: Self):
+        lo     : U64  = big.lo.sub_wrap(s.lo)
+        borrow : U128 = big.lo.lt(s.lo).to<U128>()
+        hi     : U128 = big.hi.sub_wrap(s.hi).sub_wrap(borrow)
+        r      : Self = wide_normalize(big.negative, big.exponent, hi, lo)
+        return(r)
 
-    block done(%negative: Bool, %exponent: S64, %hi: U128, %lo: U64):
-        %r : Self = Self { negative: %negative, exponent: %exponent, hi: %hi, lo: %lo }
-        return(%r)
+    block done(negative: Bool, exponent: S64, hi: U128, lo: U64):
+        r : Self = Self { negative: negative, exponent: exponent, hi: hi, lo: lo }
+        return(r)
 
-routine F128Extended.sub(%self: Self, %other: Self) -> Self
+routine F128Extended.sub(self: Self, other: Self) -> Self
     block entry():
-        %r : Self = %self.add(%other.neg())
-        return(%r)
+        r : Self = self.add(other.neg())
+        return(r)
 
 /// The top 192 bits of the 384-bit product (the rest dropped).
-routine F128Extended.mul(%self: Self, %other: Self) -> Self
+routine F128Extended.mul(self: Self, other: Self) -> Self
     block entry():
-        %a_zero  : Bool = %self.is_zero()
-        %b_zero  : Bool = %other.is_zero()
-        %zero    : Bool = %a_zero.bitor(%b_zero)
-        %nothing : Self = wide_zero()
-        branch %zero
-            ? return(%nothing)
+        a_zero  : Bool = self.is_zero()
+        b_zero  : Bool = other.is_zero()
+        zero    : Bool = a_zero.bitor(b_zero)
+        nothing : Self = wide_zero()
+        branch zero
+            ? return(nothing)
             : product()
 
     block product():
-        %a2 : U128 = %self.hi.shr(64)
-        %a1 : U128 = %self.hi.bitand(0xFFFFFFFFFFFFFFFF)
-        %a0 : U128 = %self.lo.to<U128>()
-        %b2 : U128 = %other.hi.shr(64)
-        %b1 : U128 = %other.hi.bitand(0xFFFFFFFFFFFFFFFF)
-        %b0 : U128 = %other.lo.to<U128>()
+        a2 : U128 = self.hi.shr(64)
+        a1 : U128 = self.hi.bitand(0xFFFFFFFFFFFFFFFF)
+        a0 : U128 = self.lo.to<U128>()
+        b2 : U128 = other.hi.shr(64)
+        b1 : U128 = other.hi.bitand(0xFFFFFFFFFFFFFFFF)
+        b0 : U128 = other.lo.to<U128>()
         // columns 1..5 of the schoolbook product; column 0 only feeds carries into 1
-        %c0  : U128 = %a0.mul_wrap(%b0).shr(64)
-        %t1  : U128 = %a0.mul_wrap(%b1)
-        %t1b : U128 = %a1.mul_wrap(%b0)
-        %s1  : U128 = %c0.add(%t1.bitand(0xFFFFFFFFFFFFFFFF)).add(%t1b.bitand(0xFFFFFFFFFFFFFFFF))
-        %k1  : U128 = %s1.shr(64).add(%t1.shr(64)).add(%t1b.shr(64))
-        %t2a : U128 = %a0.mul_wrap(%b2)
-        %t2b : U128 = %a1.mul_wrap(%b1)
-        %t2c : U128 = %a2.mul_wrap(%b0)
-        %s2  : U128 = %k1.add(%t2a.bitand(0xFFFFFFFFFFFFFFFF)).add(%t2b.bitand(0xFFFFFFFFFFFFFFFF)).add(%t2c.bitand(0xFFFFFFFFFFFFFFFF))
-        %k2  : U128 = %s2.shr(64).add(%t2a.shr(64)).add(%t2b.shr(64)).add(%t2c.shr(64))
-        %t3a : U128 = %a1.mul_wrap(%b2)
-        %t3b : U128 = %a2.mul_wrap(%b1)
-        %s3  : U128 = %k2.add(%t3a.bitand(0xFFFFFFFFFFFFFFFF)).add(%t3b.bitand(0xFFFFFFFFFFFFFFFF))
-        %k3  : U128 = %s3.shr(64).add(%t3a.shr(64)).add(%t3b.shr(64))
-        %t4  : U128 = %a2.mul_wrap(%b2)
-        %s4  : U128 = %k3.add(%t4.bitand(0xFFFFFFFFFFFFFFFF))
-        %k4  : U128 = %s4.shr(64).add(%t4.shr(64))
+        c0  : U128 = a0.mul_wrap(b0).shr(64)
+        t1  : U128 = a0.mul_wrap(b1)
+        t1b : U128 = a1.mul_wrap(b0)
+        s1  : U128 = c0.add(t1.bitand(0xFFFFFFFFFFFFFFFF)).add(t1b.bitand(0xFFFFFFFFFFFFFFFF))
+        k1  : U128 = s1.shr(64).add(t1.shr(64)).add(t1b.shr(64))
+        t2a : U128 = a0.mul_wrap(b2)
+        t2b : U128 = a1.mul_wrap(b1)
+        t2c : U128 = a2.mul_wrap(b0)
+        s2  : U128 = k1.add(t2a.bitand(0xFFFFFFFFFFFFFFFF)).add(t2b.bitand(0xFFFFFFFFFFFFFFFF)).add(t2c.bitand(0xFFFFFFFFFFFFFFFF))
+        k2  : U128 = s2.shr(64).add(t2a.shr(64)).add(t2b.shr(64)).add(t2c.shr(64))
+        t3a : U128 = a1.mul_wrap(b2)
+        t3b : U128 = a2.mul_wrap(b1)
+        s3  : U128 = k2.add(t3a.bitand(0xFFFFFFFFFFFFFFFF)).add(t3b.bitand(0xFFFFFFFFFFFFFFFF))
+        k3  : U128 = s3.shr(64).add(t3a.shr(64)).add(t3b.shr(64))
+        t4  : U128 = a2.mul_wrap(b2)
+        s4  : U128 = k3.add(t4.bitand(0xFFFFFFFFFFFFFFFF))
+        k4  : U128 = s4.shr(64).add(t4.shr(64))
         // limbs r5 r4 r3 (and r2 for the shift): product = r5..r0 × 2^(64 i)
-        %r2      : U64  = %s2.to_wrap<U64>()
-        %r3      : U64  = %s3.to_wrap<U64>()
-        %r4      : U64  = %s4.to_wrap<U64>()
-        %r5      : U64  = %k4.to_wrap<S64>().to_wrap<U64>()
-        %top     : Bool = %r5.shr(63).eq(1)  // bit 383 set
-        %hi_full : U128 = %r5.to<U128>().shl(64).bitor(%r4.to<U128>())
-        %hi      : U128 = %top
-            ? %hi_full
-            : %hi_full.shl(1).bitor(%r3.to<U128>().shr(63))
-        %lo : U64 = %top
-            ? %r3
-            : %r3.shl(1).bitor(%r2.shr(63))
-        %exponent : S64  = %self.exponent.add(%other.exponent).add(%top.to<S64>())
-        %negative : Bool = %self.negative.bitxor(%other.negative)
-        %r        : Self = Self { negative: %negative, exponent: %exponent, hi: %hi, lo: %lo }
-        return(%r)
+        r2      : U64  = s2.to_wrap<U64>()
+        r3      : U64  = s3.to_wrap<U64>()
+        r4      : U64  = s4.to_wrap<U64>()
+        r5      : U64  = k4.to_wrap<S64>().to_wrap<U64>()
+        top     : Bool = r5.shr(63).eq(1)  // bit 383 set
+        hi_full : U128 = r5.to<U128>().shl(64).bitor(r4.to<U128>())
+        hi      : U128 = top
+            ? hi_full
+            : hi_full.shl(1).bitor(r3.to<U128>().shr(63))
+        lo : U64 = top
+            ? r3
+            : r3.shl(1).bitor(r2.shr(63))
+        exponent : S64  = self.exponent.add(other.exponent).add(top.to<S64>())
+        negative : Bool = self.negative.bitxor(other.negative)
+        r        : Self = Self { negative: negative, exponent: exponent, hi: hi, lo: lo }
+        return(r)
 
 /// self / other by Newton's method on the reciprocal: y ← y + y(1 - other·y),
 /// from an F64 seed (53 bits → 106 → 212).
-routine F128Extended.div(%self: Self, %other: Self) -> Self
+routine F128Extended.div(self: Self, other: Self) -> Self
     block entry():
-        %e     : S64  = %other.exponent
-        %unit  : Self = %other.ldexp(0.sub(%e))  // in [1, 2)
-        %seed  : F64  = %unit.to<F128>().to<F64>()
-        %one64 : F64  = 1.0
-        %y0    : Self = wide_from_f128(%one64.div(%seed).to<F128>())
-        %one   : Self = wide_from_i64(1)
-        %y1    : Self = %y0.add(%y0.mul(%one.sub(%unit.mul(%y0))))
-        %y2    : Self = %y1.add(%y1.mul(%one.sub(%unit.mul(%y1))))
-        %r     : Self = %self.mul(%y2).ldexp(0.sub(%e))
-        return(%r)
+        e     : S64  = other.exponent
+        unit  : Self = other.ldexp(0.sub(e))  // in [1, 2)
+        seed  : F64  = unit.to<F128>().to<F64>()
+        one64 : F64  = 1.0
+        y0    : Self = wide_from_f128(one64.div(seed).to<F128>())
+        one   : Self = wide_from_i64(1)
+        y1    : Self = y0.add(y0.mul(one.sub(unit.mul(y0))))
+        y2    : Self = y1.add(y1.mul(one.sub(unit.mul(y1))))
+        r     : Self = self.mul(y2).ldexp(0.sub(e))
+        return(r)
 
 /// round to the nearest integer, for |self| < 2^62
-routine F128Extended.to_i64_nearest(%self: Self) -> S64
+routine F128Extended.to_i64_nearest(self: Self) -> S64
     block entry():
-        %r : S64 = %self.to<F128>().round_ties_even().to_clamp<S64>()
-        return(%r)
+        r : S64 = self.to<F128>().round_ties_even().to_clamp<S64>()
+        return(r)
 
 // -- exponent -----------------------------------------------------------------------
 
 /// e^x for finite x with |x| below the overflow range (the caller clamps).
 /// x = q ln2 + d with |d| <= ln2/2, e^d by its Taylor series (27th degree; the
 /// first dropped term is below 2^-141), then × 2^q.
-routine wide_exp(%x: F128Extended) -> F128Extended
+routine wide_exp(x: F128Extended) -> F128Extended
     block entry():
-        %ln2     : F128Extended = wide_const(0)
-        %inv_ln2 : F128Extended = wide_const(1)
-        %q       : S64          = %x.mul(%inv_ln2).to_i64_nearest()
-        %d       : F128Extended = %x.sub(wide_from_i64(%q).mul(%ln2))
-        %last    : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(),
+        ln2     : F128Extended = wide_const(0)
+        inv_ln2 : F128Extended = wide_const(1)
+        q       : S64          = x.mul(inv_ln2).to_i64_nearest()
+        d       : F128Extended = x.sub(wide_from_i64(q).mul(ln2))
+        last    : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(),
                 WIDE_EXP_COEF_LO.to<@U64>(), WIDE_EXP_COEF_EXP.to<@S64>(), 27)
-        jump horner(26, %last, %d, %q)
+        jump horner(26, last, d, q)
 
-    block horner(%i: S64, %s: F128Extended, %d: F128Extended, %q: S64):
-        %done   : Bool         = %i.lt(0)
-        %scaled : F128Extended = %s.ldexp(%q)
-        branch %done
-            ? return(%scaled)
+    block horner(i: S64, s: F128Extended, d: F128Extended, q: S64):
+        done   : Bool         = i.lt(0)
+        scaled : F128Extended = s.ldexp(q)
+        branch done
+            ? return(scaled)
             : continue
-        %c : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(), WIDE_EXP_COEF_LO.to<@U64>(),
-                WIDE_EXP_COEF_EXP.to<@S64>(), %i.to<USize>())
-        jump horner(%i.sub(1), %s.mul(%d).add(%c), %d, %q)
+        c : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(), WIDE_EXP_COEF_LO.to<@U64>(),
+                WIDE_EXP_COEF_EXP.to<@S64>(), i.to<USize>())
+        jump horner(i.sub(1), s.mul(d).add(c), d, q)
 
 // -- log -----------------------------------------------------------------------
 
@@ -500,39 +500,39 @@ preset WIDE_COS_COEF_EXP: @Array<S64, 18> <- { 0, -1, -5, -10, -16, -22, -29, -3
 /// ln x for finite x > 0: x = fr × 2^e with fr in [sqrt(1/2), sqrt(2)); then
 /// ln fr = 2 atanh(t) = 2 (t + t^3/3 + t^5/5 + …) with t = (fr - 1) / (fr + 1),
 /// |t| <= 0.172, 26 terms (the first dropped one is below 2^-135).
-routine wide_log(%x: F128Extended) -> F128Extended
+routine wide_log(x: F128Extended) -> F128Extended
     block entry():
-        %sqrt_half : F128Extended = wide_const(2)
-        %fr0       : F128Extended = %x.ldexp(0.sub(%x.exponent))  // in [1, 2)
-        %low       : Bool         = %fr0.hi.lt(%sqrt_half.ldexp(1).hi)  // below sqrt(2)?
-        %fr        : F128Extended = %low
-            ? %fr0
-            : %fr0.ldexp(-1)
-        %e : S64 = %low
-            ? %x.exponent
-            : %x.exponent.add(1)
-        %one  : F128Extended = wide_from_i64(1)
-        %t    : F128Extended = %fr.sub(%one).div(%fr.add(%one))
-        %tt   : F128Extended = %t.mul(%t)
-        %last : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
+        sqrt_half : F128Extended = wide_const(2)
+        fr0       : F128Extended = x.ldexp(0.sub(x.exponent))  // in [1, 2)
+        low       : Bool         = fr0.hi.lt(sqrt_half.ldexp(1).hi)  // below sqrt(2)?
+        fr        : F128Extended = low
+            ? fr0
+            : fr0.ldexp(-1)
+        e : S64 = low
+            ? x.exponent
+            : x.exponent.add(1)
+        one  : F128Extended = wide_from_i64(1)
+        t    : F128Extended = fr.sub(one).div(fr.add(one))
+        tt   : F128Extended = t.mul(t)
+        last : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
                 WIDE_LOG_COEF_EXP.to<@S64>(), 25)
-        jump horner(24, %last, %tt, %t, %e)
+        jump horner(24, last, tt, t, e)
 
-    block horner(%i: S64, %s: F128Extended, %tt: F128Extended, %t: F128Extended, %e: S64):
-        %done : Bool = %i.lt(0)
-        branch %done
-            ? finish(%s, %t, %e)
-            : step(%i, %s, %tt, %t, %e)
+    block horner(i: S64, s: F128Extended, tt: F128Extended, t: F128Extended, e: S64):
+        done : Bool = i.lt(0)
+        branch done
+            ? finish(s, t, e)
+            : step(i, s, tt, t, e)
 
-    block step(%i: S64, %s: F128Extended, %tt: F128Extended, %t: F128Extended, %e: S64):
-        %c : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
-                WIDE_LOG_COEF_EXP.to<@S64>(), %i.to<USize>())
-        jump horner(%i.sub(1), %s.mul(%tt).add(%c), %tt, %t, %e)
+    block step(i: S64, s: F128Extended, tt: F128Extended, t: F128Extended, e: S64):
+        c : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
+                WIDE_LOG_COEF_EXP.to<@S64>(), i.to<USize>())
+        jump horner(i.sub(1), s.mul(tt).add(c), tt, t, e)
 
-    block finish(%s: F128Extended, %t: F128Extended, %e: S64):
-        %ln_fr : F128Extended = %s.mul(%t).ldexp(1)
-        %r     : F128Extended = wide_from_i64(%e).mul(wide_const(0)).add(%ln_fr)
-        return(%r)
+    block finish(s: F128Extended, t: F128Extended, e: S64):
+        ln_fr : F128Extended = s.mul(t).ldexp(1)
+        r     : F128Extended = wide_from_i64(e).mul(wide_const(0)).add(ln_fr)
+        return(r)
 
 // -- argument reduction (Payne-Hanek) ------------------------------------------
 
@@ -541,20 +541,20 @@ record Reduced
     quadrant : U64
     theta    : F128Extended
 
-/// 64 bits of the little-endian limbs at %p starting at bit %pos (pos >= 0).
-routine limbs_bits64(%p: @U64, %pos: S64) -> U64
+/// 64 bits of the little-endian limbs at p starting at bit pos (pos >= 0).
+routine limbs_bits64(p: @U64, pos: S64) -> U64
     block entry():
-        %i       : USize = %pos.shr(6).to<USize>()
-        %off     : S64   = %pos.bitand(63)
-        %low     : U64   = %p.stride(%i).load()
-        %aligned : Bool  = %off.eq(0)
-        branch %aligned
-            ? return(%low)
+        i       : USize = pos.shr(6).to<USize>()
+        off     : S64   = pos.bitand(63)
+        low     : U64   = p.stride(i).load()
+        aligned : Bool  = off.eq(0)
+        branch aligned
+            ? return(low)
             : continue
-        %j    : USize = %i.add(1)
-        %high : U64   = %p.stride(%j).load()
-        %r    : U64   = %low.shr(%off.to<U64>()).bitor(%high.shl(64.sub(%off).to<U64>()))
-        return(%r)
+        j    : USize = i.add(1)
+        high : U64   = p.stride(j).load()
+        r    : U64   = low.shr(off.to<U64>()).bitor(high.shl(64.sub(off).to<U64>()))
+        return(r)
 
 /// Reduces |x| (finite, nonzero). With x = m × 2^(e - 112), x × 2/π keeps only
 /// the bits of 2/π that land below 4: a 512-bit window W of them, so x × 2/π
@@ -563,131 +563,131 @@ routine limbs_bits64(%p: @U64, %pos: S64) -> U64
 /// only the 256 bits under sh, so θ is good to about 2^-256 absolute: relative
 /// 2^-133 at worst, where x sits closest to a multiple of π/2 (|θ| = 2^-123.3),
 /// which is why tan sends |θ| < 2^-90 to its exact tier (f128_tan.tess).
-routine f128_reduce(%x: F128) -> Reduced
+routine f128_reduce(x: F128) -> Reduced
     block entry():
-        %p     : F128Parts = f128_unpack(%x.bits())
-        %small : Bool      = %p.exponent.lt(-1)  // |x| < 0.5 < π/4
-        branch %small
+        p     : F128Parts = f128_unpack(x.bits())
+        small : Bool      = p.exponent.lt(-1)  // |x| < 0.5 < π/4
+        branch small
             ? near_zero()
-            : window(%p)
+            : window(p)
 
     block near_zero():
-        %r : Reduced = Reduced { quadrant: 0, theta: wide_from_f128(%x.abs()) }
-        return(%r)
+        r : Reduced = Reduced { quadrant: 0, theta: wide_from_f128(x.abs()) }
+        return(r)
 
-    block window(%p: F128Parts):
-        %start : S64 = %p.exponent.sub(114).max(0).div(64)  // first 2/π limb used
-        %sh    : S64 = %start.add(8).mul(64).sub(%p.exponent).add(112)
-        claim %prod : @Array<S64, 12> <- uninit
-        %limbs : @U64 = %prod.to<@U64>()
-        %limbs.zeroinit(12)
-        %m0 : U128 = %p.sig.bitand(0xFFFFFFFFFFFFFFFF)
-        %m1 : U128 = %p.sig.shr(64)
-        jump multiply(0, %start, %sh, %m0, %m1, %limbs)
+    block window(p: F128Parts):
+        start : S64 = p.exponent.sub(114).max(0).div(64)  // first 2/π limb used
+        sh    : S64 = start.add(8).mul(64).sub(p.exponent).add(112)
+        claim prod : @Array<S64, 12> <- uninit
+        limbs : @U64 = prod.to<@U64>()
+        limbs.zeroinit(12)
+        m0 : U128 = p.sig.bitand(0xFFFFFFFFFFFFFFFF)
+        m1 : U128 = p.sig.shr(64)
+        jump multiply(0, start, sh, m0, m1, limbs)
 
     // limb k of W (little-endian) is TWO_OVER_PI[start + 7 - k]; add m × w_k at limb k
-    block multiply(%k: USize, %start: S64, %sh: S64, %m0: U128, %m1: U128, %limbs: @U64):
-        %done : Bool = %k.ge(8)
-        branch %done
-            ? extract(%sh, %limbs)
-            : term(%k, %start.to<USize>(), %sh, %m0, %m1, %limbs)
+    block multiply(k: USize, start: S64, sh: S64, m0: U128, m1: U128, limbs: @U64):
+        done : Bool = k.ge(8)
+        branch done
+            ? extract(sh, limbs)
+            : term(k, start.to<USize>(), sh, m0, m1, limbs)
 
-    block term(%k: USize, %start: USize, %sh: S64, %m0: U128, %m1: U128, %limbs: @U64):
-        %index : USize = %start.add(7).sub(%k)
-        %w     : U64   = TWO_OVER_PI.get(%index)
-        %wide  : U128  = %w.to<U128>()
-        %lo_p  : U128  = %m0.mul_wrap(%wide)
-        %hi_p  : U128  = %m1.mul_wrap(%wide)
-        %k1    : USize = %k.add(1)
-        %k2    : USize = %k.add(2)
-        %r0    : U64   = %limbs.stride(%k).load()
-        %r1    : U64   = %limbs.stride(%k1).load()
-        %r2    : U64   = %limbs.stride(%k2).load()
+    block term(k: USize, start: USize, sh: S64, m0: U128, m1: U128, limbs: @U64):
+        index : USize = start.add(7).sub(k)
+        w     : U64   = TWO_OVER_PI.get(index)
+        wide  : U128  = w.to<U128>()
+        lo_p  : U128  = m0.mul_wrap(wide)
+        hi_p  : U128  = m1.mul_wrap(wide)
+        k1    : USize = k.add(1)
+        k2    : USize = k.add(2)
+        r0    : U64   = limbs.stride(k).load()
+        r1    : U64   = limbs.stride(k1).load()
+        r2    : U64   = limbs.stride(k2).load()
         // limb k gets lo_p's low half; limb k+1 lo_p's high half and hi_p's low; k+2 the rest
-        %s0 : U128 = %r0.to<U128>().add(%lo_p.bitand(0xFFFFFFFFFFFFFFFF))
-        %s1 : U128 = %r1.to<U128>().add(%lo_p.shr(64)).add(%hi_p.bitand(0xFFFFFFFFFFFFFFFF)).add(%s0.shr(64))
-        %s2 : U128 = %r2.to<U128>().add(%hi_p.shr(64)).add(%s1.shr(64))
-        %limbs.stride(%k).store(%s0.to_wrap<U64>())
-        %limbs.stride(%k1).store(%s1.to_wrap<U64>())
-        %limbs.stride(%k2).store(%s2.to<U64>())
-        %carry : U64 = %s2.shr(64).to<U64>()
-        jump spill(%k.add(3), %carry, %k, %start, %sh, %m0, %m1, %limbs)
+        s0 : U128 = r0.to<U128>().add(lo_p.bitand(0xFFFFFFFFFFFFFFFF))
+        s1 : U128 = r1.to<U128>().add(lo_p.shr(64)).add(hi_p.bitand(0xFFFFFFFFFFFFFFFF)).add(s0.shr(64))
+        s2 : U128 = r2.to<U128>().add(hi_p.shr(64)).add(s1.shr(64))
+        limbs.stride(k).store(s0.to_wrap<U64>())
+        limbs.stride(k1).store(s1.to_wrap<U64>())
+        limbs.stride(k2).store(s2.to<U64>())
+        carry : U64 = s2.shr(64).to<U64>()
+        jump spill(k.add(3), carry, k, start, sh, m0, m1, limbs)
 
     // carry on up the limbs
-    block spill(%j: USize, %carry: U64, %k: USize, %start: USize, %sh: S64, %m0: U128, %m1: U128,
-            %limbs: @U64):
-        %none : Bool = %carry.eq(0).bitor(%j.ge(12))
-        branch %none
-            ? multiply(%k.add(1), %start.to<S64>(), %sh, %m0, %m1, %limbs)
-            : spill_one(%j, %carry, %k, %start, %sh, %m0, %m1, %limbs)
+    block spill(j: USize, carry: U64, k: USize, start: USize, sh: S64, m0: U128, m1: U128,
+            limbs: @U64):
+        none : Bool = carry.eq(0).bitor(j.ge(12))
+        branch none
+            ? multiply(k.add(1), start.to<S64>(), sh, m0, m1, limbs)
+            : spill_one(j, carry, k, start, sh, m0, m1, limbs)
 
-    block spill_one(%j: USize, %carry: U64, %k: USize, %start: USize, %sh: S64, %m0: U128,
-            %m1: U128, %limbs: @U64):
-        %r : U64  = %limbs.stride(%j).load()
-        %s : U128 = %r.to<U128>().add_wrap(%carry.to<U128>())
-        %limbs.stride(%j).store(%s.to_wrap<U64>())
-        jump spill(%j.add_wrap(1), %s.shr(64).to<U64>(), %k, %start, %sh, %m0, %m1, %limbs)
+    block spill_one(j: USize, carry: U64, k: USize, start: USize, sh: S64, m0: U128, m1: U128,
+            limbs: @U64):
+        r : U64  = limbs.stride(j).load()
+        s : U128 = r.to<U128>().add_wrap(carry.to<U128>())
+        limbs.stride(j).store(s.to_wrap<U64>())
+        jump spill(j.add_wrap(1), s.shr(64).to<U64>(), k, start, sh, m0, m1, limbs)
 
     // quadrant: bits sh and sh+1; fraction: the 256 bits under sh, normalized
-    block extract(%sh: S64, %limbs: @U64):
-        %q    : U64  = limbs_bits64(%limbs, %sh).bitand(3)
-        %a    : U64  = limbs_bits64(%limbs, %sh.sub(64))
-        %b    : U64  = limbs_bits64(%limbs, %sh.sub(128))
-        %c    : U64  = limbs_bits64(%limbs, %sh.sub(192))
-        %d    : U64  = limbs_bits64(%limbs, %sh.sub(256))
-        %x_hi : U128 = %a.to<U128>().shl(64).bitor(%b.to<U128>())
-        %x_lo : U128 = %c.to<U128>().shl(64).bitor(%d.to<U128>())
+    block extract(sh: S64, limbs: @U64):
+        q    : U64  = limbs_bits64(limbs, sh).bitand(3)
+        a    : U64  = limbs_bits64(limbs, sh.sub(64))
+        b    : U64  = limbs_bits64(limbs, sh.sub(128))
+        c    : U64  = limbs_bits64(limbs, sh.sub(192))
+        d    : U64  = limbs_bits64(limbs, sh.sub(256))
+        x_hi : U128 = a.to<U128>().shl(64).bitor(b.to<U128>())
+        x_lo : U128 = c.to<U128>().shl(64).bitor(d.to<U128>())
         // f = X × 2^-256 in [0, 1). Past 1/2, count the next quadrant and use
         // f - 1 = -(2^256 - X) × 2^-256, complemented on all 256 bits before
         // normalizing: f can be 1 - 2^-120, and f - 1 taken after cutting f to
         // 192 bits would keep only its last 72.
-        %past_half : Bool = %a.shr(63).eq(1)
-        %neg_lo    : U128 = 0.sub_wrap(%x_lo)
-        %borrow    : U128 = %x_lo.ne(0).to<U128>()
-        %neg_hi    : U128 = 0.sub_wrap(%x_hi).sub_wrap(%borrow)
-        %use_hi    : U128 = %past_half
-            ? %neg_hi
-            : %x_hi
-        %use_lo : U128 = %past_half
-            ? %neg_lo
-            : %x_lo
-        %magnitude : F128Extended = wide_from_256(%use_hi, %use_lo)
-        %g         : F128Extended = %past_half
-            ? %magnitude.neg()
-            : %magnitude
-        %k : U64 = %past_half
-            ? %q.add_wrap(1).bitand(3)
-            : %q
-        %theta : F128Extended = %g.mul(wide_table(WIDE_HALF_PI_HI.to<@U128>(),
+        past_half : Bool = a.shr(63).eq(1)
+        neg_lo    : U128 = 0.sub_wrap(x_lo)
+        borrow    : U128 = x_lo.ne(0).to<U128>()
+        neg_hi    : U128 = 0.sub_wrap(x_hi).sub_wrap(borrow)
+        use_hi    : U128 = past_half
+            ? neg_hi
+            : x_hi
+        use_lo : U128 = past_half
+            ? neg_lo
+            : x_lo
+        magnitude : F128Extended = wide_from_256(use_hi, use_lo)
+        g         : F128Extended = past_half
+            ? magnitude.neg()
+            : magnitude
+        k : U64 = past_half
+            ? q.add_wrap(1).bitand(3)
+            : q
+        theta : F128Extended = g.mul(wide_table(WIDE_HALF_PI_HI.to<@U128>(),
                 WIDE_HALF_PI_LO.to<@U64>(), WIDE_HALF_PI_EXP.to<@S64>(), 0))
-        %r     : Reduced      = Reduced { quadrant: %k, theta: %theta }
-        return(%r)
+        r     : Reduced      = Reduced { quadrant: k, theta: theta }
+        return(r)
 
 /// (hi × 2^128 + lo) × 2^-256 as a F128Extended, keeping its top 192 bits.
-routine wide_from_256(%hi: U128, %lo: U128) -> F128Extended
+routine wide_from_256(hi: U128, lo: U128) -> F128Extended
     block entry():
-        jump shift(%hi, %lo, -1)
+        jump shift(hi, lo, -1)
 
-    block shift(%hi: U128, %lo: U128, %exponent: S64):
-        %empty   : Bool         = %hi.eq(0)
-        %all     : Bool         = %empty.bitand(%lo.eq(0))
-        %nothing : F128Extended = wide_zero()
+    block shift(hi: U128, lo: U128, exponent: S64):
+        empty   : Bool         = hi.eq(0)
+        all     : Bool         = empty.bitand(lo.eq(0))
+        nothing : F128Extended = wide_zero()
         when:
-            %all   -> return(%nothing)
-            %empty -> shift(%lo, 0, %exponent.sub_wrap(128))
-            else   -> bits(%hi, %lo, %exponent)
+            all   -> return(nothing)
+            empty -> shift(lo, 0, exponent.sub_wrap(128))
+            else  -> bits(hi, lo, exponent)
 
-    block bits(%hi: U128, %lo: U128, %exponent: S64):
-        %s     : S64  = %hi.leading_zeros().to<S64>()
-        %some  : Bool = %s.gt(0)
-        %carry : U128 = %some
-            ? %lo.shr(128.sub(%s).to<U128>())
+    block bits(hi: U128, lo: U128, exponent: S64):
+        s     : S64  = hi.leading_zeros().to<S64>()
+        some  : Bool = s.gt(0)
+        carry : U128 = some
+            ? lo.shr(128.sub(s).to<U128>())
             : 0
-        %new_hi : U128         = %hi.shl(%s.to<U128>()).bitor(%carry)
-        %new_lo : U128         = %lo.shl(%s.to<U128>())
-        %w      : F128Extended = F128Extended { negative: false, exponent: %exponent.sub(%s),
-                hi: %new_hi, lo: %new_lo.shr(64).to<U64>() }
-        return(%w)
+        new_hi : U128         = hi.shl(s.to<U128>()).bitor(carry)
+        new_lo : U128         = lo.shl(s.to<U128>())
+        w      : F128Extended = F128Extended { negative: false, exponent: exponent.sub(s),
+                hi: new_hi, lo: new_lo.shr(64).to<U64>() }
+        return(w)
 
 // -- sin, cos, tan -------------------------------------------------------------
 
@@ -698,208 +698,208 @@ choice TrigKind: U8
 
 /// sin θ = θ Σ (-θ²)^k / (2k+1)!  and  cos θ = Σ (-θ²)^k / (2k)!, 18 terms each,
 /// for |θ| <= π/4 (the first dropped term is below 2^-139).
-routine wide_sin_core(%t: F128Extended) -> F128Extended
+routine wide_sin_core(t: F128Extended) -> F128Extended
     block entry():
-        %u    : F128Extended = %t.mul(%t).neg()
-        %last : F128Extended = wide_table(WIDE_SIN_COEF_HI.to<@U128>(), WIDE_SIN_COEF_LO.to<@U64>(),
+        u    : F128Extended = t.mul(t).neg()
+        last : F128Extended = wide_table(WIDE_SIN_COEF_HI.to<@U128>(), WIDE_SIN_COEF_LO.to<@U64>(),
                 WIDE_SIN_COEF_EXP.to<@S64>(), 17)
-        jump horner(16, %last, %u, %t)
+        jump horner(16, last, u, t)
 
-    block horner(%i: S64, %s: F128Extended, %u: F128Extended, %t: F128Extended):
-        %done : Bool         = %i.lt(0)
-        %r    : F128Extended = %s.mul(%t)
-        branch %done
-            ? return(%r)
+    block horner(i: S64, s: F128Extended, u: F128Extended, t: F128Extended):
+        done : Bool         = i.lt(0)
+        r    : F128Extended = s.mul(t)
+        branch done
+            ? return(r)
             : continue
-        %c : F128Extended = wide_table(WIDE_SIN_COEF_HI.to<@U128>(), WIDE_SIN_COEF_LO.to<@U64>(),
-                WIDE_SIN_COEF_EXP.to<@S64>(), %i.to<USize>())
-        jump horner(%i.sub(1), %s.mul(%u).add(%c), %u, %t)
+        c : F128Extended = wide_table(WIDE_SIN_COEF_HI.to<@U128>(), WIDE_SIN_COEF_LO.to<@U64>(),
+                WIDE_SIN_COEF_EXP.to<@S64>(), i.to<USize>())
+        jump horner(i.sub(1), s.mul(u).add(c), u, t)
 
-routine wide_cos_core(%t: F128Extended) -> F128Extended
+routine wide_cos_core(t: F128Extended) -> F128Extended
     block entry():
-        %u    : F128Extended = %t.mul(%t).neg()
-        %last : F128Extended = wide_table(WIDE_COS_COEF_HI.to<@U128>(), WIDE_COS_COEF_LO.to<@U64>(),
+        u    : F128Extended = t.mul(t).neg()
+        last : F128Extended = wide_table(WIDE_COS_COEF_HI.to<@U128>(), WIDE_COS_COEF_LO.to<@U64>(),
                 WIDE_COS_COEF_EXP.to<@S64>(), 17)
-        jump horner(16, %last, %u)
+        jump horner(16, last, u)
 
-    block horner(%i: S64, %s: F128Extended, %u: F128Extended):
-        %done : Bool = %i.lt(0)
-        branch %done
-            ? return(%s)
+    block horner(i: S64, s: F128Extended, u: F128Extended):
+        done : Bool = i.lt(0)
+        branch done
+            ? return(s)
             : continue
-        %c : F128Extended = wide_table(WIDE_COS_COEF_HI.to<@U128>(), WIDE_COS_COEF_LO.to<@U64>(),
-                WIDE_COS_COEF_EXP.to<@S64>(), %i.to<USize>())
-        jump horner(%i.sub(1), %s.mul(%u).add(%c), %u)
+        c : F128Extended = wide_table(WIDE_COS_COEF_HI.to<@U128>(), WIDE_COS_COEF_LO.to<@U64>(),
+                WIDE_COS_COEF_EXP.to<@S64>(), i.to<USize>())
+        jump horner(i.sub(1), s.mul(u).add(c), u)
 
 /// sin and cos of NaN (a quiet NaN) and of the infinities (NaN).
-routine f128_trig_nonfinite(%x: F128) -> F128
+routine f128_trig_nonfinite(x: F128) -> F128
     block entry():
-        %is_nan : Bool = %x.is_nan()
-        %quiet  : F128 = f128_of(f128_quiet(%x.bits()))
-        %r      : F128 = %is_nan
-            ? %quiet
+        is_nan : Bool = x.is_nan()
+        quiet  : F128 = f128_of(f128_quiet(x.bits()))
+        r      : F128 = is_nan
+            ? quiet
             : F128.NAN
-        return(%r)
+        return(r)
 
 // -- more F128Extended -----------------------------------------------------------------
 
-routine F128Extended.abs(%self: Self) -> Self
+routine F128Extended.abs(self: Self) -> Self
     block entry():
-        %r : Self = Self { negative: false, exponent: %self.exponent, hi: %self.hi, lo: %self.lo }
-        return(%r)
+        r : Self = Self { negative: false, exponent: self.exponent, hi: self.hi, lo: self.lo }
+        return(r)
 
 /// sqrt for self > 0: Newton's method on 1/sqrt, y ← y (3 - a y²) / 2, from an
 /// F64 seed (53 bits → 106 → 212), then × a.
-routine F128Extended.sqrt(%self: Self) -> Self
+routine F128Extended.sqrt(self: Self) -> Self
     block entry():
-        %zero : Bool = %self.is_zero()
-        branch %zero
-            ? return(%self)
+        zero : Bool = self.is_zero()
+        branch zero
+            ? return(self)
             : continue
-        %half_e : S64  = %self.exponent.shr(1)  // floor(e / 2)
-        %unit   : Self = %self.ldexp(0.sub(%half_e).mul(2))  // in [1, 4)
-        %seed64 : F64  = %unit.to<F128>().to<F64>().sqrt()
-        %one64  : F64  = 1.0
-        %y0     : Self = wide_from_f128(%one64.div(%seed64).to<F128>())
-        %three  : Self = wide_from_i64(3)
-        %y1     : Self = %y0.mul(%three.sub(%unit.mul(%y0).mul(%y0))).ldexp(-1)
-        %y2     : Self = %y1.mul(%three.sub(%unit.mul(%y1).mul(%y1))).ldexp(-1)
-        %r      : Self = %unit.mul(%y2).ldexp(%half_e)
-        return(%r)
+        half_e : S64  = self.exponent.shr(1)  // floor(e / 2)
+        unit   : Self = self.ldexp(0.sub(half_e).mul(2))  // in [1, 4)
+        seed64 : F64  = unit.to<F128>().to<F64>().sqrt()
+        one64  : F64  = 1.0
+        y0     : Self = wide_from_f128(one64.div(seed64).to<F128>())
+        three  : Self = wide_from_i64(3)
+        y1     : Self = y0.mul(three.sub(unit.mul(y0).mul(y0))).ldexp(-1)
+        y2     : Self = y1.mul(three.sub(unit.mul(y1).mul(y1))).ldexp(-1)
+        r      : Self = unit.mul(y2).ldexp(half_e)
+        return(r)
 
 /// |self| > 1?
-routine F128Extended.above_one(%self: Self) -> Bool
+routine F128Extended.above_one(self: Self) -> Bool
     block entry():
-        %big   : Bool = %self.exponent.gt(0)
-        %one_e : Bool = %self.exponent.eq(0)
-        %more  : Bool = %self.hi.ne(F128_SIGN).bitor(%self.lo.ne(0))
-        %zero  : Bool = %self.is_zero()
-        %r     : Bool = %big.bitor(%one_e.bitand(%more)).bitand(%zero.bitnot())
-        return(%r)
+        big   : Bool = self.exponent.gt(0)
+        one_e : Bool = self.exponent.eq(0)
+        more  : Bool = self.hi.ne(F128_SIGN).bitor(self.lo.ne(0))
+        zero  : Bool = self.is_zero()
+        r     : Bool = big.bitor(one_e.bitand(more)).bitand(zero.bitnot())
+        return(r)
 
 routine wide_one() -> F128Extended
     block entry():
-        %r : F128Extended = wide_from_i64(1)
-        return(%r)
+        r : F128Extended = wide_from_i64(1)
+        return(r)
 
 routine wide_half_pi() -> F128Extended
     block entry():
-        %r : F128Extended = wide_table(WIDE_HALF_PI_HI.to<@U128>(), WIDE_HALF_PI_LO.to<@U64>(),
+        r : F128Extended = wide_table(WIDE_HALF_PI_HI.to<@U128>(), WIDE_HALF_PI_LO.to<@U64>(),
                 WIDE_HALF_PI_EXP.to<@S64>(), 0)
-        return(%r)
+        return(r)
 
 // -- exp_m1, ln_1p ---------------------------------------------------------------
 
 /// e^x - 1 without cancellation: below |x| = 1/2 the series x Σ x^j / (j+1)!
 /// (35 terms, the first dropped one under 2^-150 relative), else e^x - 1.
-routine wide_exp_m1(%x: F128Extended) -> F128Extended
+routine wide_exp_m1(x: F128Extended) -> F128Extended
     block entry():
-        %small : Bool = %x.exponent.lt(-1)
-        branch %small
-            ? series(%x)
-            : direct(%x)
+        small : Bool = x.exponent.lt(-1)
+        branch small
+            ? series(x)
+            : direct(x)
 
-    block direct(%x: F128Extended):
-        %r : F128Extended = wide_exp(%x).sub(wide_one())
-        return(%r)
+    block direct(x: F128Extended):
+        r : F128Extended = wide_exp(x).sub(wide_one())
+        return(r)
 
-    block series(%x: F128Extended):
-        %last : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(), WIDE_EXP_COEF_LO.to<@U64>(),
+    block series(x: F128Extended):
+        last : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(), WIDE_EXP_COEF_LO.to<@U64>(),
                 WIDE_EXP_COEF_EXP.to<@S64>(), 35)
-        jump horner(34, %last, %x)
+        jump horner(34, last, x)
 
-    block horner(%i: USize, %s: F128Extended, %x: F128Extended):
-        %done : Bool         = %i.lt(1)
-        %r    : F128Extended = %s.mul(%x)
-        branch %done
-            ? return(%r)
+    block horner(i: USize, s: F128Extended, x: F128Extended):
+        done : Bool         = i.lt(1)
+        r    : F128Extended = s.mul(x)
+        branch done
+            ? return(r)
             : continue
-        %c : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(), WIDE_EXP_COEF_LO.to<@U64>(),
-                WIDE_EXP_COEF_EXP.to<@S64>(), %i)
-        jump horner(%i.sub(1), %s.mul(%x).add(%c), %x)
+        c : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(), WIDE_EXP_COEF_LO.to<@U64>(),
+                WIDE_EXP_COEF_EXP.to<@S64>(), i)
+        jump horner(i.sub(1), s.mul(x).add(c), x)
 
 /// ln(1 + x) for x > -1: below |x| = 1/4, 2 atanh(t) with t = x / (2 + x)
 /// (|t| < 0.143, inside the log series' reach); else ln of 1 + x, which is exact.
-routine wide_ln_1p(%x: F128Extended) -> F128Extended
+routine wide_ln_1p(x: F128Extended) -> F128Extended
     block entry():
-        %small : Bool = %x.exponent.lt(-2)
-        branch %small
-            ? series(%x)
-            : direct(%x)
+        small : Bool = x.exponent.lt(-2)
+        branch small
+            ? series(x)
+            : direct(x)
 
-    block direct(%x: F128Extended):
-        %r : F128Extended = wide_log(%x.add(wide_one()))
-        return(%r)
+    block direct(x: F128Extended):
+        r : F128Extended = wide_log(x.add(wide_one()))
+        return(r)
 
-    block series(%x: F128Extended):
-        %t    : F128Extended = %x.div(%x.add(wide_from_i64(2)))
-        %tt   : F128Extended = %t.mul(%t)
-        %last : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
+    block series(x: F128Extended):
+        t    : F128Extended = x.div(x.add(wide_from_i64(2)))
+        tt   : F128Extended = t.mul(t)
+        last : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
                 WIDE_LOG_COEF_EXP.to<@S64>(), 25)
-        jump horner(24, %last, %tt, %t)
+        jump horner(24, last, tt, t)
 
-    block horner(%i: S64, %s: F128Extended, %tt: F128Extended, %t: F128Extended):
-        %done : Bool         = %i.lt(0)
-        %r    : F128Extended = %s.mul(%t).ldexp(1)
-        branch %done
-            ? return(%r)
+    block horner(i: S64, s: F128Extended, tt: F128Extended, t: F128Extended):
+        done : Bool         = i.lt(0)
+        r    : F128Extended = s.mul(t).ldexp(1)
+        branch done
+            ? return(r)
             : continue
-        %c : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
-                WIDE_LOG_COEF_EXP.to<@S64>(), %i.to<USize>())
-        jump horner(%i.sub(1), %s.mul(%tt).add(%c), %tt, %t)
+        c : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
+                WIDE_LOG_COEF_EXP.to<@S64>(), i.to<USize>())
+        jump horner(i.sub(1), s.mul(tt).add(c), tt, t)
 
 // -- atan ----------------------------------------------------------------------
 
 /// atan x = x Σ (-x²)^k / (2k+1), 26 terms, for |x| < 0.1.
-routine wide_atan_series(%x: F128Extended) -> F128Extended
+routine wide_atan_series(x: F128Extended) -> F128Extended
     block entry():
-        %u    : F128Extended = %x.mul(%x).neg()
-        %last : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
+        u    : F128Extended = x.mul(x).neg()
+        last : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
                 WIDE_LOG_COEF_EXP.to<@S64>(), 25)
-        jump horner(24, %last, %u, %x)
+        jump horner(24, last, u, x)
 
-    block horner(%i: S64, %s: F128Extended, %u: F128Extended, %x: F128Extended):
-        %done : Bool         = %i.lt(0)
-        %r    : F128Extended = %s.mul(%x)
-        branch %done
-            ? return(%r)
+    block horner(i: S64, s: F128Extended, u: F128Extended, x: F128Extended):
+        done : Bool         = i.lt(0)
+        r    : F128Extended = s.mul(x)
+        branch done
+            ? return(r)
             : continue
-        %c : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
-                WIDE_LOG_COEF_EXP.to<@S64>(), %i.to<USize>())
-        jump horner(%i.sub_wrap(1), %s.mul(%u).add(%c), %u, %x)
+        c : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
+                WIDE_LOG_COEF_EXP.to<@S64>(), i.to<USize>())
+        jump horner(i.sub_wrap(1), s.mul(u).add(c), u, x)
 
 /// atan x for any finite x: past |x| = 1, π/2 - atan(1/|x|); then three
 /// half-angle steps x ← x / (1 + sqrt(1 + x²)) bring |x| <= 1 under 0.1.
-routine wide_atan(%x: F128Extended) -> F128Extended
+routine wide_atan(x: F128Extended) -> F128Extended
     block entry():
-        %a     : F128Extended = %x.abs()
-        %big   : Bool         = %a.above_one()
-        %inv   : F128Extended = wide_one().div(%a)
-        %small : F128Extended = %big
-            ? %inv
-            : %a
-        jump halve(0, %small, %big)
+        a     : F128Extended = x.abs()
+        big   : Bool         = a.above_one()
+        inv   : F128Extended = wide_one().div(a)
+        small : F128Extended = big
+            ? inv
+            : a
+        jump halve(0, small, big)
 
-    block halve(%n: S64, %t: F128Extended, %big: Bool):
-        %done : Bool = %n.ge(3)
-        branch %done
-            ? finish(%t, %big)
-            : step(%n, %t, %big)
+    block halve(n: S64, t: F128Extended, big: Bool):
+        done : Bool = n.ge(3)
+        branch done
+            ? finish(t, big)
+            : step(n, t, big)
 
-    block step(%n: S64, %t: F128Extended, %big: Bool):
-        %one  : F128Extended = wide_one()
-        %next : F128Extended = %t.div(%one.add(%one.add(%t.mul(%t)).sqrt()))
-        jump halve(%n.add_wrap(1), %next, %big)
+    block step(n: S64, t: F128Extended, big: Bool):
+        one  : F128Extended = wide_one()
+        next : F128Extended = t.div(one.add(one.add(t.mul(t)).sqrt()))
+        jump halve(n.add_wrap(1), next, big)
 
-    block finish(%t: F128Extended, %big: Bool):
-        %r0 : F128Extended = wide_atan_series(%t).ldexp(3)
-        %r1 : F128Extended = %big
-            ? wide_half_pi().sub(%r0)
-            : %r0
-        %r : F128Extended = %x.negative
-            ? %r1.neg()
-            : %r1
-        return(%r)
+    block finish(t: F128Extended, big: Bool):
+        r0 : F128Extended = wide_atan_series(t).ldexp(3)
+        r1 : F128Extended = big
+            ? wide_half_pi().sub(r0)
+            : r0
+        r : F128Extended = x.negative
+            ? r1.neg()
+            : r1
+        return(r)
 
 // -- F128 methods --------------------------------------------------------------
 
@@ -908,37 +908,37 @@ routine wide_atan(%x: F128Extended) -> F128Extended
 // -- exponentials and logarithms -----------------------------------------------
 
 /// log of self to the given base: ln self / ln base
-routine F128.log(%self: Self, %base: Self) -> Self
+routine F128.log(self: Self, base: Self) -> Self
     block entry():
-        %num   : Self = %self.ln()
-        %den   : Self = %base.ln()
-        %plain : Bool = %num.is_finite().bitand(%den.is_finite()).bitand(f128_is_zero_bits(%num.bits()).bitnot())
-        %div0  : Bool = f128_is_zero_bits(%den.bits())
-        %naive : Self = %num.div(%den)
-        branch %plain
+        num   : Self = self.ln()
+        den   : Self = base.ln()
+        plain : Bool = num.is_finite().bitand(den.is_finite()).bitand(f128_is_zero_bits(num.bits()).bitnot())
+        div0  : Bool = f128_is_zero_bits(den.bits())
+        naive : Self = num.div(den)
+        branch plain
             ? continue
-            : return(%naive)
-        branch %div0
-            ? return(%naive)
+            : return(naive)
+        branch div0
+            ? return(naive)
             : continue
-        %r : Self = wide_log(wide_from_f128(%self)).div(wide_log(wide_from_f128(%base))).to<Self>()
-        return(%r)
+        r : Self = wide_log(wide_from_f128(self)).div(wide_log(wide_from_f128(base))).to<Self>()
+        return(r)
 
 // -- powers and roots ----------------------------------------------------------
 
 /// Is x an integer, and if so an odd one? (|x| >= 2^113 is always even.)
-routine f128_is_integer(%x: F128) -> Bool
+routine f128_is_integer(x: F128) -> Bool
     block entry():
-        %r : Bool = %x.trunc().eq(%x).bitand(%x.is_finite())
-        return(%r)
+        r : Bool = x.trunc().eq(x).bitand(x.is_finite())
+        return(r)
 
-routine f128_is_odd_integer(%x: F128) -> Bool
+routine f128_is_odd_integer(x: F128) -> Bool
     block entry():
-        %int : Bool = f128_is_integer(%x)
-        %big : Bool = %x.abs().ge(f128_of(0x40700000000000000000000000000000))  // 2^113
-        %odd : Bool = %x.to_clamp<S128>().bitand(1).eq(1)
-        %r   : Bool = %int.bitand(%big.bitnot()).bitand(%odd)
-        return(%r)
+        int : Bool = f128_is_integer(x)
+        big : Bool = x.abs().ge(f128_of(0x40700000000000000000000000000000))  // 2^113
+        odd : Bool = x.to_clamp<S128>().bitand(1).eq(1)
+        r   : Bool = int.bitand(big.bitnot()).bitand(odd)
+        return(r)
 
 // -- angles --------------------------------------------------------------------
 
@@ -952,29 +952,29 @@ preset WIDE_SPECIAL_CONST_LO: @Array<U64, 4> <- { 1443862089616487703, 0xCFB08F8
 
 preset WIDE_SPECIAL_CONST_EXP: @Array<S64, 4> <- { -1, 0, 0, 1 }
 
-routine f128_scale_angle(%x: F128, %which: USize) -> F128
+routine f128_scale_angle(x: F128, which: USize) -> F128
     block entry():
-        %keep : Bool = f128_is_zero_bits(%x.bits()).bitor(%x.is_finite().bitnot())
-        branch %keep
-            ? return(%x)
+        keep : Bool = f128_is_zero_bits(x.bits()).bitor(x.is_finite().bitnot())
+        branch keep
+            ? return(x)
             : continue
-        %r : F128 = wide_from_f128(%x).mul(wide_const(%which)).to<F128>()
-        return(%r)
+        r : F128 = wide_from_f128(x).mul(wide_const(which)).to<F128>()
+        return(r)
 
-routine F128.to_degrees(%self: Self) -> Self
+routine F128.to_degrees(self: Self) -> Self
     block entry():
-        %r : Self = f128_scale_angle(%self, 4)
-        return(%r)
+        r : Self = f128_scale_angle(self, 4)
+        return(r)
 
-routine F128.to_radians(%self: Self) -> Self
+routine F128.to_radians(self: Self) -> Self
     block entry():
-        %r : Self = f128_scale_angle(%self, 5)
-        return(%r)
+        r : Self = f128_scale_angle(self, 5)
+        return(r)
 
 // -- constants of erf and gamma -------------------------------------------------
 
-routine wide_special(%i: USize) -> F128Extended
+routine wide_special(i: USize) -> F128Extended
     block entry():
-        %w : F128Extended = wide_table(WIDE_SPECIAL_CONST_HI.to<@U128>(),
-                WIDE_SPECIAL_CONST_LO.to<@U64>(), WIDE_SPECIAL_CONST_EXP.to<@S64>(), %i)
-        return(%w)
+        w : F128Extended = wide_table(WIDE_SPECIAL_CONST_HI.to<@U128>(),
+                WIDE_SPECIAL_CONST_LO.to<@U64>(), WIDE_SPECIAL_CONST_EXP.to<@S64>(), i)
+        return(w)

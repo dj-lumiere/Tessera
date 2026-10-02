@@ -11,168 +11,167 @@ import Standard::Os
 record Rng
     state : U64
 
-routine Rng.below(%self: @Self, %bound: USize) -> USize
+routine Rng.below(self: @Self, bound: USize) -> USize
     block entry():
-        %state : U64 = %self.state.load()
-        %next  : U64 = %state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
-        %self.state.store(%next)
-        %value : USize = %next.shr(33).mod(%bound.to<U64>()).to<USize>()
-        return(%value)
+        state : U64 = self.state.load()
+        next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+        self.state.store(next)
+        value : USize = next.shr(33).mod(bound.to<U64>()).to<USize>()
+        return(value)
 
-routine mix(%hash: S64, %value: S64) -> S64
+routine mix(hash: S64, value: S64) -> S64
     block entry():
-        %mixed : S64 = %hash.mul_wrap(1000003).add_wrap(%value)
-        return(%mixed)
+        mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
+        return(mixed)
 
-routine labeled<W>(%out: @W, %label: Bytes, %value: S64) -> Void
+routine labeled<W>(out: @W, label: Bytes, value: S64) -> Void
 require W: typename, Writer<W>
     block entry():
-        write(%out, " {%label} {%value}")
+        write(out, " {label} {value}")
         return()
 
 // Folds every element in iteration order.
-routine iteration_hash(%set: @Set<S64>) -> S64
+routine iteration_hash(set: @Set<S64>) -> S64
     block entry():
-        %iter_val : SetIter<S64> = .construct(%set)
-        claim %iter : @SetIter<S64> <- %iter_val
-        jump next(%iter, 0)
+        iter_val : SetIter<S64> = .construct(set)
+        claim iter : @SetIter<S64> <- iter_val
+        jump next(iter, 0)
 
-    block next(%iter: @SetIter<S64>, %hash: S64):
-        %item : Option<S64> = %iter.next()
-        when %item:
-            .Present(%key) -> next(%iter, mix(%hash, %key))
-            .Absent        -> return(%hash)
+    block next(iter: @SetIter<S64>, hash: S64):
+        item : Option<S64> = iter.next()
+        when item:
+            .Present(key) -> next(iter, mix(hash, key))
+            .Absent       -> return(hash)
 
-routine checkpoint(%out: @BufWriter<FdWriter>, %set: @Set<S64>, %phase: USize, %op: USize,
-        %results: S64) -> Void
+routine checkpoint(out: @BufWriter<FdWriter>, set: @Set<S64>, phase: USize, op: USize,
+        results: S64) -> Void
     block entry():
-        write(%out, "phase {%phase}")
-        labeled(%out, "op", %op.to<S64>())
-        labeled(%out, "length", %set.load().length().to<S64>())
-        labeled(%out, "results", %results)
-        labeled(%out, "iteration", iteration_hash(%set))
-        write(%out, "\n")
+        write(out, "phase {phase}")
+        labeled(out, "op", op.to<S64>())
+        labeled(out, "length", set.load().length().to<S64>())
+        labeled(out, "results", results)
+        labeled(out, "iteration", iteration_hash(set))
+        write(out, "\n")
         return()
 
 // Runs ops random operations on keys below keys. Returns the updated results checksum.
-routine run_phase(%out: @BufWriter<FdWriter>, %set: @Set<S64>, %rng: @Rng, %phase: USize,
-        %ops: USize, %keys: USize, %results: S64) -> S64
+routine run_phase(out: @BufWriter<FdWriter>, set: @Set<S64>, rng: @Rng, phase: USize, ops: USize,
+        keys: USize, results: S64) -> S64
     block entry():
-        jump next(0, %results)
+        jump next(0, results)
 
-    block next(%op: USize, %results: S64):
-        %done : Bool = %op.ge(%ops)
-        branch %done
-            ? return(%results)
-            : pick(%op, %results)
+    block next(op: USize, results: S64):
+        done : Bool = op.ge(ops)
+        branch done
+            ? return(results)
+            : pick(op, results)
 
-    block pick(%op: USize, %results: S64):
-        %key       : S64   = %rng.below(%keys).to<S64>()
-        %kind      : USize = %rng.below(10)
-        %is_add    : Bool  = %kind.lt(5)
-        %is_remove : Bool  = %kind.lt(7)
+    block pick(op: USize, results: S64):
+        key       : S64   = rng.below(keys).to<S64>()
+        kind      : USize = rng.below(10)
+        is_add    : Bool  = kind.lt(5)
+        is_remove : Bool  = kind.lt(7)
         when:
-            %is_add    -> add(%op, %results, %key)
-            %is_remove -> remove(%op, %results, %key)
-            else       -> lookup(%op, %results, %key)
+            is_add    -> add(op, results, key)
+            is_remove -> remove(op, results, key)
+            else      -> lookup(op, results, key)
 
-    block add(%op: USize, %results: S64, %key: S64):
-        %added : Bool = %set.add(%key)
-        jump record(%op, %results, %added.to<S64>())
+    block add(op: USize, results: S64, key: S64):
+        added : Bool = set.add(key)
+        jump record(op, results, added.to<S64>())
 
-    block remove(%op: USize, %results: S64, %key: S64):
-        %removed : Bool = %set.remove(%key)
-        jump record(%op, %results, %removed.to<S64>())
+    block remove(op: USize, results: S64, key: S64):
+        removed : Bool = set.remove(key)
+        jump record(op, results, removed.to<S64>())
 
-    block lookup(%op: USize, %results: S64, %key: S64):
-        %found : Bool = %set.load().contains(%key)
-        jump record(%op, %results, %found.to<S64>())
+    block lookup(op: USize, results: S64, key: S64):
+        found : Bool = set.load().contains(key)
+        jump record(op, results, found.to<S64>())
 
-    block record(%op: USize, %results: S64, %result: S64):
-        %mixed   : S64   = mix(%results, %result)
-        %op_next : USize = %op.add(1)
-        %report  : Bool  = %op_next.mod(500).eq(0)
-        branch %report
-            ? report(%op_next, %mixed)
-            : next(%op_next, %mixed)
+    block record(op: USize, results: S64, result: S64):
+        mixed   : S64   = mix(results, result)
+        op_next : USize = op.add(1)
+        report  : Bool  = op_next.mod(500).eq(0)
+        branch report
+            ? report(op_next, mixed)
+            : next(op_next, mixed)
 
-    block report(%op: USize, %results: S64):
-        checkpoint(%out, %set, %phase, %op, %results)
-        jump next(%op, %results)
+    block report(op: USize, results: S64):
+        checkpoint(out, set, phase, op, results)
+        jump next(op, results)
 
 // Copies from into to in iteration order, but starting from its second half, so the two sets hold the same elements
 // in a different insertion order.
-routine copy_rotated(%from: @Set<S64>, %to: @Set<S64>) -> Void
+routine copy_rotated(from: @Set<S64>, to: @Set<S64>) -> Void
     block entry():
-        %half : USize = %from.load().length().div(2)
-        jump pass(0, %half, true)
+        half : USize = from.load().length().div(2)
+        jump pass(0, half, true)
 
-    block pass(%pass: USize, %half: USize, %second: Bool):
-        %done     : Bool         = %pass.eq(2)
-        %iter_val : SetIter<S64> = .construct(%from)
-        claim %iter : @SetIter<S64> <- %iter_val
-        branch %done
+    block pass(pass: USize, half: USize, second: Bool):
+        done     : Bool         = pass.eq(2)
+        iter_val : SetIter<S64> = .construct(from)
+        claim iter : @SetIter<S64> <- iter_val
+        branch done
             ? return()
-            : next(%pass, %half, %second, %iter, 0)
+            : next(pass, half, second, iter, 0)
 
-    block next(%pass: USize, %half: USize, %second: Bool, %iter: @SetIter<S64>, %index: USize):
-        %item : Option<S64> = %iter.next()
-        when %item:
-            .Present(%key) -> consider(%pass, %half, %second, %iter, %index, %key)
-            .Absent        -> pass(%pass.add(1), %half, %second.bitnot())
+    block next(pass: USize, half: USize, second: Bool, iter: @SetIter<S64>, index: USize):
+        item : Option<S64> = iter.next()
+        when item:
+            .Present(key) -> consider(pass, half, second, iter, index, key)
+            .Absent       -> pass(pass.add(1), half, second.bitnot())
 
-    block consider(%pass: USize, %half: USize, %second: Bool, %iter: @SetIter<S64>, %index: USize,
-            %key: S64):
-        %in_second : Bool = %index.ge(%half)
-        %wanted    : Bool = %in_second.eq(%second)
-        branch %wanted
-            ? copy(%pass, %half, %second, %iter, %index, %key)
-            : next(%pass, %half, %second, %iter, %index.add(1))
+    block consider(pass: USize, half: USize, second: Bool, iter: @SetIter<S64>, index: USize,
+            key: S64):
+        in_second : Bool = index.ge(half)
+        wanted    : Bool = in_second.eq(second)
+        branch wanted
+            ? copy(pass, half, second, iter, index, key)
+            : next(pass, half, second, iter, index.add(1))
 
-    block copy(%pass: USize, %half: USize, %second: Bool, %iter: @SetIter<S64>, %index: USize,
-            %key: S64):
-        %to.add(%key)
-        jump next(%pass, %half, %second, %iter, %index.add(1))
+    block copy(pass: USize, half: USize, second: Bool, iter: @SetIter<S64>, index: USize, key: S64):
+        to.add(key)
+        jump next(pass, half, second, iter, index.add(1))
 
-routine report_eq(%out: @BufWriter<FdWriter>, %label: Bytes, %equal: Bool) -> Void
+routine report_eq(out: @BufWriter<FdWriter>, label: Bytes, equal: Bool) -> Void
     block entry():
-        write(%out, "{%label} {%equal}\n")
+        write(out, "{label} {equal}\n")
         return()
 
 routine main() -> S32
     block entry():
-        claim %fd  : @FdWriter            <- .stdout()
-        claim %out : @BufWriter<FdWriter> <- uninit
-        %out.construct(%fd)
-        claim %alloc : @Allocator <- make_heap_allocator()
-        claim %rng   : @Rng       <- Rng { state: 1 }
-        claim %set   : @Set<S64>  <- .construct(%alloc)
+        claim fd  : @FdWriter            <- .stdout()
+        claim out : @BufWriter<FdWriter> <- uninit
+        out.construct(fd)
+        claim alloc : @Allocator <- make_heap_allocator()
+        claim rng   : @Rng       <- Rng { state: 1 }
+        claim set   : @Set<S64>  <- .construct(alloc)
 
-        %r1 : S64 = run_phase(%out, %set, %rng, 1, 3000, 64, 0)
-        %r2 : S64 = run_phase(%out, %set, %rng, 2, 8000, 5000, %r1)
-        %r3 : S64 = run_phase(%out, %set, %rng, 3, 4000, 300, %r2)
+        r1 : S64 = run_phase(out, set, rng, 1, 3000, 64, 0)
+        r2 : S64 = run_phase(out, set, rng, 2, 8000, 5000, r1)
+        r3 : S64 = run_phase(out, set, rng, 3, 4000, 300, r2)
 
-        claim %copied : @Set<S64> <- .construct(%alloc)
-        report_eq(%out, "empty copy equal", %set.load().eq(%copied.load()))
-        copy_rotated(%set, %copied)
-        report_eq(%out, "rotated copy equal", %set.load().eq(%copied.load()))
-        report_eq(%out, "rotated copy same order", iteration_hash(%set).eq(iteration_hash(%copied)))
-        %copied.add(-1)
-        report_eq(%out, "extra element equal", %set.load().eq(%copied.load()))
-        %copied.remove(-1)
-        report_eq(%out, "extra element removed equal", %set.load().eq(%copied.load()))
-        %iter_val : SetIter<S64> = .construct(%set)
-        claim %iter : @SetIter<S64> <- %iter_val
-        %first : S64 = %iter.next().unwrap()
-        %copied.remove(%first)
-        report_eq(%out, "missing element equal", %set.load().eq(%copied.load()))
-        report_eq(%out, "missing element equal reversed", %copied.load().eq(%set.load()))
-        %copied.add(%first)
-        report_eq(%out, "re-added element equal", %set.load().eq(%copied.load()))
-        report_eq(%out, "re-added element same order",
-                iteration_hash(%set).eq(iteration_hash(%copied)))
-        %copied.destruct()
-        %set.destruct()
-        report_eq(%out, "freed is empty", %set.load().is_empty())
-        %out.flush()
+        claim copied : @Set<S64> <- .construct(alloc)
+        report_eq(out, "empty copy equal", set.load().eq(copied.load()))
+        copy_rotated(set, copied)
+        report_eq(out, "rotated copy equal", set.load().eq(copied.load()))
+        report_eq(out, "rotated copy same order", iteration_hash(set).eq(iteration_hash(copied)))
+        copied.add(-1)
+        report_eq(out, "extra element equal", set.load().eq(copied.load()))
+        copied.remove(-1)
+        report_eq(out, "extra element removed equal", set.load().eq(copied.load()))
+        iter_val : SetIter<S64> = .construct(set)
+        claim iter : @SetIter<S64> <- iter_val
+        first : S64 = iter.next().unwrap()
+        copied.remove(first)
+        report_eq(out, "missing element equal", set.load().eq(copied.load()))
+        report_eq(out, "missing element equal reversed", copied.load().eq(set.load()))
+        copied.add(first)
+        report_eq(out, "re-added element equal", set.load().eq(copied.load()))
+        report_eq(out, "re-added element same order",
+                iteration_hash(set).eq(iteration_hash(copied)))
+        copied.destruct()
+        set.destruct()
+        report_eq(out, "freed is empty", set.load().is_empty())
+        out.flush()
         return(0)

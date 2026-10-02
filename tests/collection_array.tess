@@ -13,160 +13,160 @@ preset N: USize = 16
 record Rng
     state : U64
 
-routine Rng.below(%self: @Self, %bound: USize) -> USize
+routine Rng.below(self: @Self, bound: USize) -> USize
     block entry():
-        %state : U64 = %self.state.load()
-        %next  : U64 = %state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
-        %self.state.store(%next)
-        %value : USize = %next.shr(33).mod(%bound.to<U64>()).to<USize>()
-        return(%value)
+        state : U64 = self.state.load()
+        next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+        self.state.store(next)
+        value : USize = next.shr(33).mod(bound.to<U64>()).to<USize>()
+        return(value)
 
-routine mix(%hash: S64, %value: S64) -> S64
+routine mix(hash: S64, value: S64) -> S64
     block entry():
-        %mixed : S64 = %hash.mul_wrap(1000003).add_wrap(%value)
-        return(%mixed)
+        mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
+        return(mixed)
 
-routine labeled<W>(%out: @W, %label: Bytes, %value: S64) -> Void
+routine labeled<W>(out: @W, label: Bytes, value: S64) -> Void
 require W: typename, Writer<W>
     block entry():
-        write(%out, " {%label} {%value}")
+        write(out, " {label} {value}")
         return()
 
 // Folds every element in index order.
-routine iteration_hash(%array: @Array<S64, 16>) -> S64
+routine iteration_hash(array: @Array<S64, 16>) -> S64
     block entry():
-        claim %iter : @ArrayIter<S64, 16> <- .construct(%array)
-        jump next(%iter, 0)
+        claim iter : @ArrayIter<S64, 16> <- .construct(array)
+        jump next(iter, 0)
 
-    block next(%iter: @ArrayIter<S64, 16>, %hash: S64):
-        %item : Option<S64> = %iter.next()
-        when %item:
-            .Present(%value) -> next(%iter, mix(%hash, %value))
-            .Absent          -> return(%hash)
+    block next(iter: @ArrayIter<S64, 16>, hash: S64):
+        item : Option<S64> = iter.next()
+        when item:
+            .Present(value) -> next(iter, mix(hash, value))
+            .Absent         -> return(hash)
 
 // Sets element i to base + i.
-routine fill(%array: @Array<S64, 16>, %base: S64) -> Void
+routine fill(array: @Array<S64, 16>, base: S64) -> Void
     block entry():
         jump next(0)
 
-    block next(%index: USize):
-        %done : Bool = %index.ge(N)
-        branch %done
+    block next(index: USize):
+        done : Bool = index.ge(N)
+        branch done
             ? return()
-            : store(%index)
+            : store(index)
 
-    block store(%index: USize):
-        %array.set(%index, %base.add(%index.to<S64>()))
-        jump next(%index.add(1))
+    block store(index: USize):
+        array.set(index, base.add(index.to<S64>()))
+        jump next(index.add(1))
 
-routine checkpoint(%out: @BufWriter<FdWriter>, %array: @Array<S64, 16>, %op: USize,
-        %results: S64) -> Void
+routine checkpoint(out: @BufWriter<FdWriter>, array: @Array<S64, 16>, op: USize,
+        results: S64) -> Void
     block entry():
-        write(%out, "op {%op}")
-        labeled(%out, "length", Array<S64, 16>.length().to<S64>())
-        labeled(%out, "results", %results)
-        labeled(%out, "iteration", iteration_hash(%array))
-        write(%out, "\n")
+        write(out, "op {op}")
+        labeled(out, "length", Array<S64, 16>.length().to<S64>())
+        labeled(out, "results", results)
+        labeled(out, "iteration", iteration_hash(array))
+        write(out, "\n")
         return()
 
-routine run(%out: @BufWriter<FdWriter>, %array: @Array<S64, 16>, %other: @Array<S64, 16>,
-        %rng: @Rng, %ops: USize) -> Void
+routine run(out: @BufWriter<FdWriter>, array: @Array<S64, 16>, other: @Array<S64, 16>, rng: @Rng,
+        ops: USize) -> Void
     block entry():
         jump next(0, 0)
 
-    block next(%op: USize, %results: S64):
-        %done : Bool = %op.ge(%ops)
-        branch %done
+    block next(op: USize, results: S64):
+        done : Bool = op.ge(ops)
+        branch done
             ? return()
-            : pick(%op, %results)
+            : pick(op, results)
 
-    block pick(%op: USize, %results: S64):
-        %kind           : USize = %rng.below(100)
-        %is_set         : Bool  = %kind.lt(20)
-        %is_set_other   : Bool  = %kind.lt(30)
-        %is_get         : Bool  = %kind.lt(45)
-        %is_shift_right : Bool  = %kind.lt(57)
-        %is_shift_left  : Bool  = %kind.lt(69)
-        %is_copy        : Bool  = %kind.lt(79)
-        %is_copy_self   : Bool  = %kind.lt(85)
-        %is_eq          : Bool  = %kind.lt(92)
+    block pick(op: USize, results: S64):
+        kind           : USize = rng.below(100)
+        is_set         : Bool  = kind.lt(20)
+        is_set_other   : Bool  = kind.lt(30)
+        is_get         : Bool  = kind.lt(45)
+        is_shift_right : Bool  = kind.lt(57)
+        is_shift_left  : Bool  = kind.lt(69)
+        is_copy        : Bool  = kind.lt(79)
+        is_copy_self   : Bool  = kind.lt(85)
+        is_eq          : Bool  = kind.lt(92)
         when:
-            %is_set         -> set(%op, %results, %array)
-            %is_set_other   -> set(%op, %results, %other)
-            %is_get         -> get(%op, %results)
-            %is_shift_right -> shift_right(%op, %results)
-            %is_shift_left  -> shift_left(%op, %results)
-            %is_copy        -> copy(%op, %results, %other)
-            %is_copy_self   -> copy(%op, %results, %array)
-            %is_eq          -> eq(%op, %results)
-            else            -> read_raw(%op, %results)
+            is_set         -> set(op, results, array)
+            is_set_other   -> set(op, results, other)
+            is_get         -> get(op, results)
+            is_shift_right -> shift_right(op, results)
+            is_shift_left  -> shift_left(op, results)
+            is_copy        -> copy(op, results, other)
+            is_copy_self   -> copy(op, results, array)
+            is_eq          -> eq(op, results)
+            else           -> read_raw(op, results)
 
-    block set(%op: USize, %results: S64, %target: @Array<S64, 16>):
-        %index : USize = %rng.below(N)
-        %value : S64   = %rng.below(1000).to<S64>()
-        %target.set(%index, %value)
-        jump record(%op, %results, %value)
+    block set(op: USize, results: S64, target: @Array<S64, 16>):
+        index : USize = rng.below(N)
+        value : S64   = rng.below(1000).to<S64>()
+        target.set(index, value)
+        jump record(op, results, value)
 
-    block get(%op: USize, %results: S64):
-        %index : USize = %rng.below(N)
-        jump record(%op, %results, %array.get(%index))
+    block get(op: USize, results: S64):
+        index : USize = rng.below(N)
+        jump record(op, results, array.get(index))
 
-    block shift_right(%op: USize, %results: S64):
-        %start : USize = %rng.below(N)
-        %end   : USize = %start.add(%rng.below(N.sub(%start)))
-        %array.shift_right(%start, %end)
-        jump record(%op, %results, %end.to<S64>())
+    block shift_right(op: USize, results: S64):
+        start : USize = rng.below(N)
+        end   : USize = start.add(rng.below(N.sub(start)))
+        array.shift_right(start, end)
+        jump record(op, results, end.to<S64>())
 
-    block shift_left(%op: USize, %results: S64):
-        %start : USize = %rng.below(N)
-        %end   : USize = %start.add(1).add(%rng.below(N.sub(%start)))
-        %array.shift_left(%start, %end)
-        jump record(%op, %results, %end.to<S64>())
+    block shift_left(op: USize, results: S64):
+        start : USize = rng.below(N)
+        end   : USize = start.add(1).add(rng.below(N.sub(start)))
+        array.shift_left(start, end)
+        jump record(op, results, end.to<S64>())
 
-    block copy(%op: USize, %results: S64, %source: @Array<S64, 16>):
-        %count : USize = %rng.below(N.add(1))
-        %room  : USize = N.sub(%count).add(1)
-        %dst   : USize = %rng.below(%room)
-        %src   : USize = %rng.below(%room)
-        %array.copy(%dst, %source, %src, %count)
-        jump record(%op, %results, %count.to<S64>())
+    block copy(op: USize, results: S64, source: @Array<S64, 16>):
+        count : USize = rng.below(N.add(1))
+        room  : USize = N.sub(count).add(1)
+        dst   : USize = rng.below(room)
+        src   : USize = rng.below(room)
+        array.copy(dst, source, src, count)
+        jump record(op, results, count.to<S64>())
 
-    block eq(%op: USize, %results: S64):
-        %equal : Bool = %array.load().eq(%other.load())
-        jump record(%op, %results, %equal.to<S64>())
+    block eq(op: USize, results: S64):
+        equal : Bool = array.load().eq(other.load())
+        jump record(op, results, equal.to<S64>())
 
-    block read_raw(%op: USize, %results: S64):
-        %data  : @S64  = %array.to<@S64>()
-        %index : USize = %rng.below(N)
-        %value : S64   = %data.stride(%index).load()
-        jump record(%op, %results, %value)
+    block read_raw(op: USize, results: S64):
+        data  : @S64  = array.to<@S64>()
+        index : USize = rng.below(N)
+        value : S64   = data.stride(index).load()
+        jump record(op, results, value)
 
-    block record(%op: USize, %results: S64, %result: S64):
-        %mixed   : S64   = mix(%results, %result)
-        %op_next : USize = %op.add(1)
-        %report  : Bool  = %op_next.mod(100).eq(0)
-        branch %report
-            ? report(%op_next, %mixed)
-            : next(%op_next, %mixed)
+    block record(op: USize, results: S64, result: S64):
+        mixed   : S64   = mix(results, result)
+        op_next : USize = op.add(1)
+        report  : Bool  = op_next.mod(100).eq(0)
+        branch report
+            ? report(op_next, mixed)
+            : next(op_next, mixed)
 
-    block report(%op: USize, %results: S64):
-        checkpoint(%out, %array, %op, %results)
-        jump next(%op, %results)
+    block report(op: USize, results: S64):
+        checkpoint(out, array, op, results)
+        jump next(op, results)
 
 routine main() -> S32
     block entry():
-        claim %fd  : @FdWriter            <- .stdout()
-        claim %out : @BufWriter<FdWriter> <- uninit
-        %out.construct(%fd)
-        claim %rng   : @Rng            <- Rng { state: 5 }
-        claim %array : @Array<S64, 16> <- uninit
-        claim %other : @Array<S64, 16> <- uninit
-        fill(%array, 0)
-        fill(%other, 0)
-        write(%out, "same fill equal {%array.load().eq(%other.load())}\n")
-        fill(%other, 100)
-        run(%out, %array, %other, %rng, 2000)
-        %other.copy(0, %array, 0, N)
-        write(%out, "full copy equal {%array.load().eq(%other.load())}\n")
-        %out.flush()
+        claim fd  : @FdWriter            <- .stdout()
+        claim out : @BufWriter<FdWriter> <- uninit
+        out.construct(fd)
+        claim rng   : @Rng            <- Rng { state: 5 }
+        claim array : @Array<S64, 16> <- uninit
+        claim other : @Array<S64, 16> <- uninit
+        fill(array, 0)
+        fill(other, 0)
+        write(out, "same fill equal {array.load().eq(other.load())}\n")
+        fill(other, 100)
+        run(out, array, other, rng, 2000)
+        other.copy(0, array, 0, N)
+        write(out, "full copy equal {array.load().eq(other.load())}\n")
+        out.flush()
         return(0)

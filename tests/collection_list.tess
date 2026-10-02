@@ -11,192 +11,192 @@ import Standard::Os
 record Rng
     state : U64
 
-routine Rng.below(%self: @Self, %bound: USize) -> USize
+routine Rng.below(self: @Self, bound: USize) -> USize
     block entry():
-        %state : U64 = %self.state.load()
-        %next  : U64 = %state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
-        %self.state.store(%next)
-        %value : USize = %next.shr(33).mod(%bound.to<U64>()).to<USize>()
-        return(%value)
+        state : U64 = self.state.load()
+        next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+        self.state.store(next)
+        value : USize = next.shr(33).mod(bound.to<U64>()).to<USize>()
+        return(value)
 
-routine mix(%hash: S64, %value: S64) -> S64
+routine mix(hash: S64, value: S64) -> S64
     block entry():
-        %mixed : S64 = %hash.mul_wrap(1000003).add_wrap(%value)
-        return(%mixed)
+        mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
+        return(mixed)
 
-routine labeled<W>(%out: @W, %label: Bytes, %value: S64) -> Void
+routine labeled<W>(out: @W, label: Bytes, value: S64) -> Void
 require W: typename, Writer<W>
     block entry():
-        write(%out, " {%label} {%value}")
+        write(out, " {label} {value}")
         return()
 
 // Folds every element in iteration order.
-routine iteration_hash(%list: @List<S64>) -> S64
+routine iteration_hash(list: @List<S64>) -> S64
     block entry():
-        claim %iter : @ListIter<S64> <- .construct(%list)
-        jump next(%iter, 0)
+        claim iter : @ListIter<S64> <- .construct(list)
+        jump next(iter, 0)
 
-    block next(%iter: @ListIter<S64>, %hash: S64):
-        %item : Option<S64> = %iter.next()
-        when %item:
-            .Present(%value) -> next(%iter, mix(%hash, %value))
-            .Absent          -> return(%hash)
+    block next(iter: @ListIter<S64>, hash: S64):
+        item : Option<S64> = iter.next()
+        when item:
+            .Present(value) -> next(iter, mix(hash, value))
+            .Absent         -> return(hash)
 
-routine checkpoint(%out: @BufWriter<FdWriter>, %list: @List<S64>, %phase: USize, %op: USize,
-        %results: S64) -> Void
+routine checkpoint(out: @BufWriter<FdWriter>, list: @List<S64>, phase: USize, op: USize,
+        results: S64) -> Void
     block entry():
-        write(%out, "phase {%phase}")
-        labeled(%out, "op", %op.to<S64>())
-        labeled(%out, "length", %list.load().length().to<S64>())
-        labeled(%out, "results", %results)
-        labeled(%out, "iteration", iteration_hash(%list))
-        write(%out, "\n")
+        write(out, "phase {phase}")
+        labeled(out, "op", op.to<S64>())
+        labeled(out, "length", list.load().length().to<S64>())
+        labeled(out, "results", results)
+        labeled(out, "iteration", iteration_hash(list))
+        write(out, "\n")
         return()
 
 // Runs ops random operations; push is the percentage of pushes, pop takes the next 25. Returns the updated results
 // checksum.
-routine run_phase(%out: @BufWriter<FdWriter>, %list: @List<S64>, %rng: @Rng, %phase: USize,
-        %ops: USize, %push: USize, %results: S64) -> S64
+routine run_phase(out: @BufWriter<FdWriter>, list: @List<S64>, rng: @Rng, phase: USize, ops: USize,
+        push: USize, results: S64) -> S64
     block entry():
-        jump next(0, %results)
+        jump next(0, results)
 
-    block next(%op: USize, %results: S64):
-        %done : Bool = %op.ge(%ops)
-        branch %done
-            ? return(%results)
-            : pick(%op, %results)
+    block next(op: USize, results: S64):
+        done : Bool = op.ge(ops)
+        branch done
+            ? return(results)
+            : pick(op, results)
 
-    block pick(%op: USize, %results: S64):
-        %kind       : USize = %rng.below(1000)
-        %pop_end    : USize = %push.add(25).mul(10)
-        %is_push    : Bool  = %kind.lt(%push.mul(10))
-        %is_pop     : Bool  = %kind.lt(%pop_end)
-        %is_get     : Bool  = %kind.lt(%pop_end.add(200))
-        %is_clear   : Bool  = %kind.eq(999)
-        %is_reserve : Bool  = %kind.eq(998)
+    block pick(op: USize, results: S64):
+        kind       : USize = rng.below(1000)
+        pop_end    : USize = push.add(25).mul(10)
+        is_push    : Bool  = kind.lt(push.mul(10))
+        is_pop     : Bool  = kind.lt(pop_end)
+        is_get     : Bool  = kind.lt(pop_end.add(200))
+        is_clear   : Bool  = kind.eq(999)
+        is_reserve : Bool  = kind.eq(998)
         when:
-            %is_push    -> push(%op, %results)
-            %is_pop     -> pop(%op, %results)
-            %is_get     -> get(%op, %results)
-            %is_clear   -> clear(%op, %results)
-            %is_reserve -> reserve(%op, %results)
-            else        -> set(%op, %results)
+            is_push    -> push(op, results)
+            is_pop     -> pop(op, results)
+            is_get     -> get(op, results)
+            is_clear   -> clear(op, results)
+            is_reserve -> reserve(op, results)
+            else       -> set(op, results)
 
-    block push(%op: USize, %results: S64):
-        %value : S64 = %rng.below(1000000).to<S64>()
-        %list.push(%value)
-        jump record(%op, %results, %value)
+    block push(op: USize, results: S64):
+        value : S64 = rng.below(1000000).to<S64>()
+        list.push(value)
+        jump record(op, results, value)
 
-    block pop(%op: USize, %results: S64):
-        %empty : Bool = %list.load().is_empty()
-        branch %empty
-            ? record(%op, %results, -1)
-            : pop_one(%op, %results)
+    block pop(op: USize, results: S64):
+        empty : Bool = list.load().is_empty()
+        branch empty
+            ? record(op, results, -1)
+            : pop_one(op, results)
 
-    block pop_one(%op: USize, %results: S64):
-        %value : S64 = %list.pop()
-        jump record(%op, %results, %value)
+    block pop_one(op: USize, results: S64):
+        value : S64 = list.pop()
+        jump record(op, results, value)
 
-    block get(%op: USize, %results: S64):
-        %empty : Bool = %list.load().is_empty()
-        branch %empty
-            ? record(%op, %results, -2)
-            : get_one(%op, %results)
+    block get(op: USize, results: S64):
+        empty : Bool = list.load().is_empty()
+        branch empty
+            ? record(op, results, -2)
+            : get_one(op, results)
 
-    block get_one(%op: USize, %results: S64):
-        %index : USize = %rng.below(%list.load().length())
-        %value : S64   = %list.load().get(%index)
-        jump record(%op, %results, %value)
+    block get_one(op: USize, results: S64):
+        index : USize = rng.below(list.load().length())
+        value : S64   = list.load().get(index)
+        jump record(op, results, value)
 
-    block set(%op: USize, %results: S64):
-        %empty : Bool = %list.load().is_empty()
-        branch %empty
-            ? record(%op, %results, -3)
-            : set_one(%op, %results)
+    block set(op: USize, results: S64):
+        empty : Bool = list.load().is_empty()
+        branch empty
+            ? record(op, results, -3)
+            : set_one(op, results)
 
-    block set_one(%op: USize, %results: S64):
-        %index : USize = %rng.below(%list.load().length())
-        %value : S64   = %rng.below(1000000).to<S64>()
-        %list.set(%index, %value)
-        jump record(%op, %results, %index.to<S64>())
+    block set_one(op: USize, results: S64):
+        index : USize = rng.below(list.load().length())
+        value : S64   = rng.below(1000000).to<S64>()
+        list.set(index, value)
+        jump record(op, results, index.to<S64>())
 
-    block clear(%op: USize, %results: S64):
-        %list.clear()
-        jump record(%op, %results, -4)
+    block clear(op: USize, results: S64):
+        list.clear()
+        jump record(op, results, -4)
 
-    block reserve(%op: USize, %results: S64):
-        %extra : USize = %rng.below(3000)
-        %list.reserve(%list.load().length().add(%extra))
-        jump record(%op, %results, %extra.to<S64>())
+    block reserve(op: USize, results: S64):
+        extra : USize = rng.below(3000)
+        list.reserve(list.load().length().add(extra))
+        jump record(op, results, extra.to<S64>())
 
-    block record(%op: USize, %results: S64, %result: S64):
-        %mixed   : S64   = mix(%results, %result)
-        %op_next : USize = %op.add(1)
-        %report  : Bool  = %op_next.mod(500).eq(0)
-        branch %report
-            ? report(%op_next, %mixed)
-            : next(%op_next, %mixed)
+    block record(op: USize, results: S64, result: S64):
+        mixed   : S64   = mix(results, result)
+        op_next : USize = op.add(1)
+        report  : Bool  = op_next.mod(500).eq(0)
+        branch report
+            ? report(op_next, mixed)
+            : next(op_next, mixed)
 
-    block report(%op: USize, %results: S64):
-        checkpoint(%out, %list, %phase, %op, %results)
-        jump next(%op, %results)
+    block report(op: USize, results: S64):
+        checkpoint(out, list, phase, op, results)
+        jump next(op, results)
 
 // Pushes every element of from onto to.
-routine copy_into(%from: @List<S64>, %to: @List<S64>) -> Void
+routine copy_into(from: @List<S64>, to: @List<S64>) -> Void
     block entry():
-        %length : USize = %from.load().length()
-        jump next(0, %length)
+        length : USize = from.load().length()
+        jump next(0, length)
 
-    block next(%index: USize, %length: USize):
-        %done : Bool = %index.ge(%length)
-        branch %done
+    block next(index: USize, length: USize):
+        done : Bool = index.ge(length)
+        branch done
             ? return()
-            : copy(%index, %length)
+            : copy(index, length)
 
-    block copy(%index: USize, %length: USize):
-        %to.push(%from.load().get(%index))
-        jump next(%index.add(1), %length)
+    block copy(index: USize, length: USize):
+        to.push(from.load().get(index))
+        jump next(index.add(1), length)
 
-routine report_eq(%out: @BufWriter<FdWriter>, %label: Bytes, %equal: Bool) -> Void
+routine report_eq(out: @BufWriter<FdWriter>, label: Bytes, equal: Bool) -> Void
     block entry():
-        write(%out, "{%label} {%equal}\n")
+        write(out, "{label} {equal}\n")
         return()
 
 routine main() -> S32
     block entry():
-        claim %fd  : @FdWriter            <- .stdout()
-        claim %out : @BufWriter<FdWriter> <- uninit
-        %out.construct(%fd)
-        claim %alloc : @Allocator <- make_heap_allocator()
-        claim %rng   : @Rng       <- Rng { state: 2 }
-        claim %list  : @List<S64> <- .construct(%alloc)
+        claim fd  : @FdWriter            <- .stdout()
+        claim out : @BufWriter<FdWriter> <- uninit
+        out.construct(fd)
+        claim alloc : @Allocator <- make_heap_allocator()
+        claim rng   : @Rng       <- Rng { state: 2 }
+        claim list  : @List<S64> <- .construct(alloc)
 
-        %r1 : S64 = run_phase(%out, %list, %rng, 1, 4000, 50, 0)
-        %r2 : S64 = run_phase(%out, %list, %rng, 2, 4000, 25, %r1)
-        %r3 : S64 = run_phase(%out, %list, %rng, 3, 3000, 15, %r2)
-        %r4 : S64 = run_phase(%out, %list, %rng, 4, 3000, 45, %r3)
+        r1 : S64 = run_phase(out, list, rng, 1, 4000, 50, 0)
+        r2 : S64 = run_phase(out, list, rng, 2, 4000, 25, r1)
+        r3 : S64 = run_phase(out, list, rng, 3, 3000, 15, r2)
+        r4 : S64 = run_phase(out, list, rng, 4, 3000, 45, r3)
 
-        claim %copied : @List<S64> <- .construct(%alloc)
-        %empty_copy : List<S64> = %copied.load()
-        %full       : List<S64> = %list.load()
-        report_eq(%out, "empty copy equal", %full.eq(%empty_copy))
-        copy_into(%list, %copied)
-        %same : List<S64> = %copied.load()
-        report_eq(%out, "copy equal", %full.eq(%same))
-        %last_index : USize = %copied.load().length().sub(1)
-        %last       : S64   = %copied.load().get(%last_index)
-        %copied.set(%last_index, %last.add(1))
-        %changed : List<S64> = %copied.load()
-        report_eq(%out, "changed last equal", %full.eq(%changed))
-        %copied.set(%last_index, %last)
-        %copied.push(0)
-        %longer : List<S64> = %copied.load()
-        report_eq(%out, "longer equal", %full.eq(%longer))
-        %copied.pop()
-        %restored : List<S64> = %copied.load()
-        report_eq(%out, "restored equal", %full.eq(%restored))
-        %copied.destruct()
-        %list.destruct()
-        report_eq(%out, "freed is empty", %list.load().is_empty())
-        %out.flush()
+        claim copied : @List<S64> <- .construct(alloc)
+        empty_copy : List<S64> = copied.load()
+        full       : List<S64> = list.load()
+        report_eq(out, "empty copy equal", full.eq(empty_copy))
+        copy_into(list, copied)
+        same : List<S64> = copied.load()
+        report_eq(out, "copy equal", full.eq(same))
+        last_index : USize = copied.load().length().sub(1)
+        last       : S64   = copied.load().get(last_index)
+        copied.set(last_index, last.add(1))
+        changed : List<S64> = copied.load()
+        report_eq(out, "changed last equal", full.eq(changed))
+        copied.set(last_index, last)
+        copied.push(0)
+        longer : List<S64> = copied.load()
+        report_eq(out, "longer equal", full.eq(longer))
+        copied.pop()
+        restored : List<S64> = copied.load()
+        report_eq(out, "restored equal", full.eq(restored))
+        copied.destruct()
+        list.destruct()
+        report_eq(out, "freed is empty", list.load().is_empty())
+        out.flush()
         return(0)

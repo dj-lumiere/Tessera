@@ -1,9 +1,9 @@
 // Tessera stdlib: threads
 //
-// Thread.spawn starts %entry(%arg) on a new OS thread, and join waits for it to
-// return. As for a fiber, %arg is the state the thread works on (the state
+// Thread.spawn starts entry(arg) on a new OS thread, and join waits for it to
+// return. As for a fiber, arg is the state the thread works on (the state
 // record is the capture list) and must outlive it. The thread starts from a
-// small record allocated from %alloc, which the new thread frees.
+// small record allocated from alloc, which the new thread frees.
 
 module Standard::Os
 
@@ -20,59 +20,59 @@ private record ThreadStart
     alloc : @Allocator
 
 /// Every new thread's first Tessera routine, whatever the OS's entry signature.
-private routine thread_body(%raw: Addr) -> Void
+private routine thread_body(raw: Addr) -> Void
     block entry():
-        %start : @ThreadStart            = %raw.to<@ThreadStart>()
-        %entry : Callable<(Addr,), Void> = %start.entry.load()
-        %arg   : Addr                    = %start.arg.load()
-        %start.free(%start.alloc.load())
-        %entry.call(%arg)
+        start : @ThreadStart            = raw.to<@ThreadStart>()
+        entry : Callable<(Addr,), Void> = start.entry.load()
+        arg   : Addr                    = start.arg.load()
+        start.free(start.alloc.load())
+        entry.call(arg)
         return()
 
-private routine thread_start(%entry: Callable<(Addr,), Void>, %arg: Addr,
-        %alloc: @Allocator) -> @ThreadStart
+private routine thread_start(entry: Callable<(Addr,), Void>, arg: Addr,
+        alloc: @Allocator) -> @ThreadStart
     block entry():
-        %start : @ThreadStart = allocate<ThreadStart>(%alloc, 1)
-        %start.store(ThreadStart { entry: %entry, arg: %arg, alloc: %alloc })
-        return(%start)
+        start : @ThreadStart = allocate<ThreadStart>(alloc, 1)
+        start.store(ThreadStart { entry: entry, arg: arg, alloc: alloc })
+        return(start)
 
 // -- POSIX ----------------------------------------------------------------------------
 
 #[external("c"), symbol("pthread_create"), target(os: not "windows")]
-private routine c_pthread_create(%thread: @Addr, %attr: Addr, %start: Callable<(Addr,), Addr>,
-        %arg: Addr) -> CInt
+private routine c_pthread_create(thread: @Addr, attr: Addr, start: Callable<(Addr,), Addr>,
+        arg: Addr) -> CInt
 
 #[external("c"), symbol("pthread_join"), target(os: not "windows")]
-private routine c_pthread_join(%thread: Addr, %result: Addr) -> CInt
+private routine c_pthread_join(thread: Addr, result: Addr) -> CInt
 
 #[external("c"), symbol("sysconf"), target(os: not "windows")]
-private routine c_sysconf(%name: CInt) -> CLong
+private routine c_sysconf(name: CInt) -> CLong
 
 #target(os: not "windows")
-private routine posix_thread_main(%arg: Addr) -> Addr
+private routine posix_thread_main(arg: Addr) -> Addr
     block entry():
-        thread_body(%arg)
+        thread_body(arg)
         return(null)
 
-/// Starts %entry(%arg) on a new thread.
+/// Starts entry(arg) on a new thread.
 #[target(os: not "windows"), track_caller]
-routine Thread.spawn(%entry: Callable<(Addr,), Void>, %arg: Addr, %alloc: @Allocator) -> Self
+routine Thread.spawn(entry: Callable<(Addr,), Void>, arg: Addr, alloc: @Allocator) -> Self
     block entry():
-        %start : @ThreadStart = thread_start(%entry, %arg, %alloc)
-        claim %handle : @Addr <- null
-        %result : CInt = c_pthread_create(%handle, null, posix_thread_main, %start)
-        %failed : Bool = %result.ne(0)
-        branch %failed
+        start : @ThreadStart = thread_start(entry, arg, alloc)
+        claim handle : @Addr <- null
+        result : CInt = c_pthread_create(handle, null, posix_thread_main, start)
+        failed : Bool = result.ne(0)
+        branch failed
             ? panic(TrapCode.ThreadFailed)
             : continue
-        %thread : Self = Self { handle: %handle.load() }
-        return(%thread)
+        thread : Self = Self { handle: handle.load() }
+        return(thread)
 
 /// Waits for the thread to return.
 #target(os: not "windows")
-routine Thread.join(%self: Self) -> Void
+routine Thread.join(self: Self) -> Void
     block entry():
-        c_pthread_join(%self.handle, null)
+        c_pthread_join(self.handle, null)
         return()
 
 /// _SC_NPROCESSORS_ONLN, whose number differs between Linux and macOS.
@@ -90,54 +90,55 @@ private routine sc_nprocessors_onln() -> CInt
 #target(os: not "windows")
 routine cpu_count() -> USize
     block entry():
-        %n    : CLong = c_sysconf(sc_nprocessors_onln())
-        %none : Bool  = %n.lt(1)
-        branch %none
+        n    : CLong = c_sysconf(sc_nprocessors_onln())
+        none : Bool  = n.lt(1)
+        branch none
             ? return(1)
-            : return(%n.to<USize>())
+            : return(n.to<USize>())
 
 // -- Windows --------------------------------------------------------------------------
 
 #[external("c"), symbol("CreateThread"), callconv("stdcall"), target(os: "windows")]
-private routine c_create_thread(%attrs: Addr, %stack: USize,
-        %start: Callable<#callconv("stdcall"), (Addr,), U32>, %arg: Addr, %flags: U32,
-        %id: Addr) -> Addr
+private routine c_create_thread(attrs: Addr, stack: USize,
+        start: Callable<#callconv("stdcall"), (Addr,), U32>, arg: Addr, flags: U32,
+        id: Addr) -> Addr
 
 #[external("c"), symbol("WaitForSingleObject"), callconv("stdcall"), target(os: "windows")]
-private routine c_wait_for_single_object(%handle: Addr, %millis: U32) -> U32
+private routine c_wait_for_single_object(handle: Addr, millis: U32) -> U32
 
 #[external("c"), symbol("CloseHandle"), callconv("stdcall"), target(os: "windows")]
-private routine c_close_handle(%handle: Addr) -> CInt
+private routine c_close_handle(handle: Addr) -> CInt
 
 #[external("c"), symbol("GetActiveProcessorCount"), callconv("stdcall"), target(os: "windows")]
-private routine c_get_active_processor_count(%group: U16) -> U32
+private routine c_get_active_processor_count(group: U16) -> U32
 
 #[target(os: "windows"), callconv("stdcall")]
-private routine windows_thread_main(%arg: Addr) -> U32
+private routine windows_thread_main(arg: Addr) -> U32
     block entry():
-        thread_body(%arg)
+        thread_body(arg)
         return(0)
 
-/// Starts %entry(%arg) on a new thread.
+/// Starts entry(arg) on a new thread.
 #[target(os: "windows"), track_caller]
-routine Thread.spawn(%entry: Callable<(Addr,), Void>, %arg: Addr, %alloc: @Allocator) -> Self
+routine Thread.spawn(entry: Callable<(Addr,), Void>, arg: Addr, alloc: @Allocator) -> Self
     block entry():
-        %start  : @ThreadStart = thread_start(%entry, %arg, %alloc)
-        %handle : Addr         = c_create_thread(null, 0, windows_thread_main, %start, 0, null)
-        %failed : Bool         = %handle.is_null()
-        branch %failed
+        start  : @ThreadStart = thread_start(entry, arg, alloc)
+        handle : Addr         = c_create_thread(null, 0, windows_thread_main.to<Callable>(), start,
+                0, null)
+        failed : Bool         = handle.is_null()
+        branch failed
             ? panic(TrapCode.ThreadFailed)
             : continue
-        %thread : Self = Self { handle: %handle }
-        return(%thread)
+        thread : Self = Self { handle: handle }
+        return(thread)
 
 /// Waits for the thread to return.
 #target(os: "windows")
-routine Thread.join(%self: Self) -> Void
+routine Thread.join(self: Self) -> Void
     block entry():
         // INFINITE
-        c_wait_for_single_object(%self.handle, U32.MAX)
-        c_close_handle(%self.handle)
+        c_wait_for_single_object(self.handle, U32.MAX)
+        c_close_handle(self.handle)
         return()
 
 /// The number of processors the system has online, at least 1.
@@ -145,8 +146,8 @@ routine Thread.join(%self: Self) -> Void
 routine cpu_count() -> USize
     block entry():
         // ALL_PROCESSOR_GROUPS
-        %n    : U32  = c_get_active_processor_count(0xFFFF)
-        %none : Bool = %n.lt(1)
-        branch %none
+        n    : U32  = c_get_active_processor_count(0xFFFF)
+        none : Bool = n.lt(1)
+        branch none
             ? return(1)
-            : return(%n.to<USize>())
+            : return(n.to<USize>())

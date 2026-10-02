@@ -21,854 +21,851 @@ record CmExpm1Scaled
     el  : U64
     sig : U128
 
-routine F128.exp_m1(%self: Self) -> Self
+routine F128.exp_m1(self: Self) -> Self
     block entry():
-        %nan      : Bool = %self.is_nan()
-        %zero     : Bool = f128_is_zero_bits(%self.bits())
-        %over     : Bool = %self.gt(f128_of(0x400C6300000000000000000000000000))  // 11360
-        %quiet    : Self = f128_of(f128_quiet(%self.bits()))
-        %infinity : Self = Self.INFINITY
+        nan      : Bool = self.is_nan()
+        zero     : Bool = f128_is_zero_bits(self.bits())
+        over     : Bool = self.gt(f128_of(0x400C6300000000000000000000000000))  // 11360
+        quiet    : Self = f128_of(f128_quiet(self.bits()))
+        infinity : Self = Self.INFINITY
         when:
-            %nan  -> return(%quiet)
-            %zero -> return(%self)
-            %over -> return(%infinity)
-            else  -> compute()
+            nan  -> return(quiet)
+            zero -> return(self)
+            over -> return(infinity)
+            else -> compute()
 
     block compute():
-        %u     : U128 = %self.bits()
-        %uh    : U64  = cm_wide_hi(%u)
-        %ul    : U64  = cm_wide_lo(%u)
-        %b1    : U64  = %uh.bitand(0x7FFFFFFFFFFFFFFF)
-        %small : Bool = %b1.lt(0x3FFE000000000000)
-        %large : Bool = %b1.ge(0x400C62E42FEFA39E)
+        u     : U128 = self.bits()
+        uh    : U64  = cm_wide_hi(u)
+        ul    : U64  = cm_wide_lo(u)
+        b1    : U64  = uh.bitand(0x7FFFFFFFFFFFFFFF)
+        small : Bool = b1.lt(0x3FFE000000000000)
+        large : Bool = b1.ge(0x400C62E42FEFA39E)
         when:
-            %small -> small(%u)
-            %large -> large(%u, %uh.to_wrap<S64>(), %ul, %b1)
-            else   -> moderate(%u)
+            small -> small(u)
+            large -> large(u, uh.to_wrap<S64>(), ul, b1)
+            else  -> moderate(u)
 
-    block small(%u: U128):
-        %r : Self = cm_expm1_small(%u)
-        return(%r)
+    block small(u: U128):
+        r : Self = cm_expm1_small(u)
+        return(r)
 
     // NaN, infinity, overflow, or a large negative x
-    block large(%u: U128, %uh: S64, %ul: U64, %b1: U64):
-        %inf       : Bool = %b1.eq(0x7FFF000000000000).bitand(%ul.eq(0))
-        %nan_exp   : Bool = %b1.gt(0x7FFF000000000000)
-        %nan_frac  : Bool = %b1.eq(0x7FFF000000000000).bitand(%ul.ne(0))
-        %nan       : Bool = %nan_exp.bitor(%nan_frac)
-        %positive  : Bool = %uh.lt(0).bitnot()
-        %overflows : Bool = %positive.bitand(%u.ge(0x400C62E42FEFA39EF35793C7673007E6))
-        %quiet     : Self = f128_of(cm_wide_u128(%uh.bitor(0x0000800000000000).to_wrap<U64>(), %ul))
-        %minus_one : Self = f128_of(0xBFFF0000000000000000000000000000)
-        %limit     : Self = %positive
-            ? %self
-            : %minus_one
-        %infinity : Self = Self.INFINITY
+    block large(u: U128, uh: S64, ul: U64, b1: U64):
+        inf       : Bool = b1.eq(0x7FFF000000000000).bitand(ul.eq(0))
+        nan_exp   : Bool = b1.gt(0x7FFF000000000000)
+        nan_frac  : Bool = b1.eq(0x7FFF000000000000).bitand(ul.ne(0))
+        nan       : Bool = nan_exp.bitor(nan_frac)
+        positive  : Bool = uh.lt(0).bitnot()
+        overflows : Bool = positive.bitand(u.ge(0x400C62E42FEFA39EF35793C7673007E6))
+        quiet     : Self = f128_of(cm_wide_u128(uh.bitor(0x0000800000000000).to_wrap<U64>(), ul))
+        minus_one : Self = f128_of(0xBFFF0000000000000000000000000000)
+        limit     : Self = positive
+            ? self
+            : minus_one
+        infinity : Self = Self.INFINITY
         when:
-            %inf       -> return(%limit)
-            %nan       -> return(%quiet)
-            %overflows -> return(%infinity)
-            else       -> moderate(%u)
+            inf       -> return(limit)
+            nan       -> return(quiet)
+            overflows -> return(infinity)
+            else      -> moderate(u)
 
     // below about -77.7, e^x - 1 rounds to -1
-    block moderate(%u: U128):
-        %saturates : Bool = %u.ge(0xC0053C133AB16DB990B9FF9D97E6C709)
-        %minus_one : Self = f128_of(0xBFFF0000000000000000000000000000)
-        branch %saturates
-            ? return(%minus_one)
+    block moderate(u: U128):
+        saturates : Bool = u.ge(0xC0053C133AB16DB990B9FF9D97E6C709)
+        minus_one : Self = f128_of(0xBFFF0000000000000000000000000000)
+        branch saturates
+            ? return(minus_one)
             : continue
-        %r : Self = cm_expm1_general(%u)
-        return(%r)
+        r : Self = cm_expm1_general(u)
+        return(r)
 
 /// sig + ((el << 48 | sign << 63) << 64) + round: the exponent and sign fields added to the significand.
-/// %sign is 0, 1, or all ones (only its lowest bit counts).
-routine cm_expm1_pack(%sig: U128, %el: U64, %sign: U64, %round: U64) -> F128
+/// sign is 0, 1, or all ones (only its lowest bit counts).
+routine cm_expm1_pack(sig: U128, el: U64, sign: U64, round: U64) -> F128
     block entry():
-        %dh    : U64  = %el.shl(48).bitor(%sign.shl(63))
-        %field : U128 = cm_wide_u128(%dh, %round)
-        %r     : F128 = f128_of(%sig.add_wrap(%field))
-        return(%r)
+        dh    : U64  = el.shl(48).bitor(sign.shl(63))
+        field : U128 = cm_wide_u128(dh, round)
+        r     : F128 = f128_of(sig.add_wrap(field))
+        return(r)
 
 /// Word pair (i, i + 1) of a table stored as (lo, hi) words, as one 128-bit value.
-routine cm_expm1_pair(%table: @U64, %i: USize) -> U128
+routine cm_expm1_pair(table: @U64, i: USize) -> U128
     block entry():
-        %lo : U64  = %table.stride(%i).load()
-        %hi : U64  = %table.stride(%i.add(1)).load()
-        %r  : U128 = cm_wide_u128(%hi, %lo)
-        return(%r)
+        lo : U64  = table.stride(i).load()
+        hi : U64  = table.stride(i.add(1)).load()
+        r  : U128 = cm_wide_u128(hi, lo)
+        return(r)
 
 // -- 0.5 <= |x| < overflow -----------------------------------------------------
 
 /// e^x - 1 for |x| >= 0.5 or so: x / ln 2 = el + (i0 i1 i2 i3 in 5-bit steps) + z, e^x = 2^el * the four
 /// table entries * 2^z.
-routine cm_expm1_general(%u: U128) -> F128
+routine cm_expm1_general(u: U128) -> F128
     block entry():
-        %uh     : U64     = cm_wide_hi(%u)
-        %ul     : U64     = cm_wide_lo(%u)
-        %sm     : U64     = cm_sign_mask64(%uh)
-        %mh     : U64     = %uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        %l4     : U64     = CM_WIDE_ILN2.get(4)
-        %l5     : U64     = CM_WIDE_ILN2.get(5)
-        %l6     : U64     = CM_WIDE_ILN2.get(6)
-        %iln2   : CmWide3 = CmWide3 { w0: %l4, w1: %l5, w2: %l6 }
-        %p      : CmWide3 = cm_expm1_mulhi_3x2(%iln2, cm_wide_u128(%mh, %ul))
-        %signed : CmWide3 = CmWide3 { w0: %p.w0.bitxor(%sm), w1: %p.w1.bitxor(%sm),
-                w2: %p.w2.bitxor(%sm) }
-        %shift  : U64     = 0x401A.sub(%uh.shr(48).bitand(0x7FFF))
-        %fs     : CmWide3 = cm_expm1_ashr3(%signed, %shift)
-        %top    : U64     = %fs.w2
-        %el     : S64     = %top.to_wrap<S64>().shr(20).to<S32>().to<S64>()
-        %i0     : USize   = %top.shr(15).bitand(31).to<USize>()
-        %i1     : USize   = %top.shr(10).bitand(31).to<USize>()
-        %i2     : USize   = %top.shr(5).bitand(31).to<USize>()
-        %i3     : USize   = %top.bitand(31).to<USize>()
-        %poly   : U128    = cm_expm1_exp2_poly(%fs.w1)
-        %m      : U128    = cm_expm1_exp2_tables(%i0, %i1, %i2, %i3)
-        %k      : U64     = cm_wide_mulhi_64x64(0xB17217F7D1CF79AC, %fs.w0)
-        %fix    : U128    = cm_wide_mul_64x64(cm_wide_hi(%m), %k).shr(84)
-        %res    : U128    = cm_wide_mulhi_128x128(%poly, %m.add_wrap(%fix))
-        %s      : S64     = -5.sub(%el)
-        %big    : Bool    = %s.lt(0)
-        branch %big
-            ? big(%res, %el, %sm)
-            : tiny(%res, %s, %sm)
+        uh     : U64     = cm_wide_hi(u)
+        ul     : U64     = cm_wide_lo(u)
+        sm     : U64     = cm_sign_mask64(uh)
+        mh     : U64     = uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        l4     : U64     = CM_WIDE_ILN2.get(4)
+        l5     : U64     = CM_WIDE_ILN2.get(5)
+        l6     : U64     = CM_WIDE_ILN2.get(6)
+        iln2   : CmWide3 = CmWide3 { w0: l4, w1: l5, w2: l6 }
+        p      : CmWide3 = cm_expm1_mulhi_3x2(iln2, cm_wide_u128(mh, ul))
+        signed : CmWide3 = CmWide3 { w0: p.w0.bitxor(sm), w1: p.w1.bitxor(sm), w2: p.w2.bitxor(sm) }
+        shift  : U64     = 0x401A.sub(uh.shr(48).bitand(0x7FFF))
+        fs     : CmWide3 = cm_expm1_ashr3(signed, shift)
+        top    : U64     = fs.w2
+        el     : S64     = top.to_wrap<S64>().shr(20).to<S32>().to<S64>()
+        i0     : USize   = top.shr(15).bitand(31).to<USize>()
+        i1     : USize   = top.shr(10).bitand(31).to<USize>()
+        i2     : USize   = top.shr(5).bitand(31).to<USize>()
+        i3     : USize   = top.bitand(31).to<USize>()
+        poly   : U128    = cm_expm1_exp2_poly(fs.w1)
+        m      : U128    = cm_expm1_exp2_tables(i0, i1, i2, i3)
+        k      : U64     = cm_wide_mulhi_64x64(0xB17217F7D1CF79AC, fs.w0)
+        fix    : U128    = cm_wide_mul_64x64(cm_wide_hi(m), k).shr(84)
+        res    : U128    = cm_wide_mulhi_128x128(poly, m.add_wrap(fix))
+        s      : S64     = -5.sub(el)
+        big    : Bool    = s.lt(0)
+        branch big
+            ? big(res, el, sm)
+            : tiny(res, s, sm)
 
     // x > 0.5 or -2.77 < x < -0.5: subtract the 1 and normalize
-    block big(%res: U128, %el: S64, %sm: U64):
-        %one_at  : S64  = 123.sub(%el)
-        %has_one : Bool = %one_at.ge(0)
-        %one     : U128 = 1.shl(%one_at.max(0).to<U128>())
-        %minus   : U128 = %has_one
-            ? %res.sub_wrap(%one)
-            : %res
-        %smm    : U128 = cm_wide_u128(%sm, %sm)
-        %signed : U128 = %minus.bitxor(%smm).sub_wrap(%smm)
-        %nz     : S64  = cm_wide_hi(%signed).leading_zeros().to<S64>().min(14)
-        %bias   : U64  = %sm.bitnot().bitand(6)
-        %z0     : U128 = %signed.add_wrap(1.shl(14.sub(%nz).to<U128>())).add_wrap(%bias.to<U128>())
-        %tail   : U128 = 1.shl(15.sub(%nz).to<U128>()).sub_wrap(1).bitand(%z0)
-        %hard   : Bool = %tail.le(6)
-        branch %hard
-            ? big_exact(%el, %sm)
-            : big_fast(%signed, %el, %nz, %sm)
+    block big(res: U128, el: S64, sm: U64):
+        one_at  : S64  = 123.sub(el)
+        has_one : Bool = one_at.ge(0)
+        one     : U128 = 1.shl(one_at.max(0).to<U128>())
+        minus   : U128 = has_one
+            ? res.sub_wrap(one)
+            : res
+        smm    : U128 = cm_wide_u128(sm, sm)
+        signed : U128 = minus.bitxor(smm).sub_wrap(smm)
+        nz     : S64  = cm_wide_hi(signed).leading_zeros().to<S64>().min(14)
+        bias   : U64  = sm.bitnot().bitand(6)
+        z0     : U128 = signed.add_wrap(1.shl(14.sub(nz).to<U128>())).add_wrap(bias.to<U128>())
+        tail   : U128 = 1.shl(15.sub(nz).to<U128>()).sub_wrap(1).bitand(z0)
+        hard   : Bool = tail.le(6)
+        branch hard
+            ? big_exact(el, sm)
+            : big_fast(signed, el, nz, sm)
 
-    block big_fast(%res: U128, %el: S64, %nz: S64, %sm: U64):
-        %rnd : U64  = cm_wide_lo(%res).shr(14.sub(%nz).to<U64>()).bitand(1)
-        %sig : U128 = %res.shr(15.sub(%nz).to<U128>())
-        %e   : S64  = %el.sub(%nz.sub(4)).add(16382)
-        %r   : F128 = cm_expm1_pack(%sig, %e.to<U64>(), %sm, %rnd)
-        return(%r)
+    block big_fast(res: U128, el: S64, nz: S64, sm: U64):
+        rnd : U64  = cm_wide_lo(res).shr(14.sub(nz).to<U64>()).bitand(1)
+        sig : U128 = res.shr(15.sub(nz).to<U128>())
+        e   : S64  = el.sub(nz.sub(4)).add(16382)
+        r   : F128 = cm_expm1_pack(sig, e.to<U64>(), sm, rnd)
+        return(r)
 
-    block big_exact(%el: S64, %sm: U64):
-        %a : CmExpm1Scaled = cm_expm1_accurate(%el, %u)
-        %r : F128          = cm_expm1_round15(%a, %sm)
-        return(%r)
+    block big_exact(el: S64, sm: U64):
+        a : CmExpm1Scaled = cm_expm1_accurate(el, u)
+        r : F128          = cm_expm1_round15(a, sm)
+        return(r)
 
     // x < -2.77 or e^x < 1/16: the result is -(1 - e^x), with its leading bit at a fixed place
-    block tiny(%res: U128, %s: S64, %sm: U64):
-        %neg     : U128 = 0.sub_wrap(%res)
-        %rb_fits : Bool = %s.add(14).le(127)
-        %tm_fits : Bool = %s.add(15).le(127)
-        %rb_bit  : U128 = 1.shl(%s.add(14).min(127).to<U128>())
-        %tm_bits : U128 = 1.shl(%s.add(15).min(127).to<U128>()).sub_wrap(1)
-        %rb      : U128 = %rb_fits
-            ? %rb_bit
+    block tiny(res: U128, s: S64, sm: U64):
+        neg     : U128 = 0.sub_wrap(res)
+        rb_fits : Bool = s.add(14).le(127)
+        tm_fits : Bool = s.add(15).le(127)
+        rb_bit  : U128 = 1.shl(s.add(14).min(127).to<U128>())
+        tm_bits : U128 = 1.shl(s.add(15).min(127).to<U128>()).sub_wrap(1)
+        rb      : U128 = rb_fits
+            ? rb_bit
             : 0
-        %tm_in : U128 = %tm_fits
-            ? %tm_bits
+        tm_in : U128 = tm_fits
+            ? tm_bits
             : 0
-        %tm : U128 = %rb_fits
-            ? %tm_in
+        tm : U128 = rb_fits
+            ? tm_in
             : U128.MAX
-        %tail : U128 = %tm.bitand(%neg.add_wrap(%rb))
-        %hard : Bool = %tail.le(6)
-        branch %hard
-            ? tiny_exact(%sm)
-            : tiny_fast(%neg.to_wrap<S128>(), %s, %sm)
+        tail : U128 = tm.bitand(neg.add_wrap(rb))
+        hard : Bool = tail.le(6)
+        branch hard
+            ? tiny_exact(sm)
+            : tiny_fast(neg.to_wrap<S128>(), s, sm)
 
-    block tiny_fast(%neg: S128, %s: S64, %sm: U64):
-        %in_range : Bool = %s.lt(128)
-        %shifted  : S128 = %neg.shr(%s.min(127).to<S128>())
-        %res      : S128 = %in_range
-            ? %shifted
+    block tiny_fast(neg: S128, s: S64, sm: U64):
+        in_range : Bool = s.lt(128)
+        shifted  : S128 = neg.shr(s.min(127).to<S128>())
+        res      : S128 = in_range
+            ? shifted
             : -1
-        %scaled : CmExpm1Scaled = CmExpm1Scaled { el: U64.MAX, sig: %res.to_wrap<U128>() }
-        %r      : F128          = cm_expm1_round15(%scaled, %sm)
-        return(%r)
+        scaled : CmExpm1Scaled = CmExpm1Scaled { el: U64.MAX, sig: res.to_wrap<U128>() }
+        r      : F128          = cm_expm1_round15(scaled, sm)
+        return(r)
 
-    block tiny_exact(%sm: U64):
-        %a : CmExpm1Scaled = cm_expm1_accurate(-1, %u)
-        %r : F128          = cm_expm1_round15(%a, %sm)
-        return(%r)
+    block tiny_exact(sm: U64):
+        a : CmExpm1Scaled = cm_expm1_accurate(-1, u)
+        r : F128          = cm_expm1_round15(a, sm)
+        return(r)
 
 /// Rounds a result whose round bit is bit 14 of the significand.
-routine cm_expm1_round15(%a: CmExpm1Scaled, %sign: U64) -> F128
+routine cm_expm1_round15(a: CmExpm1Scaled, sign: U64) -> F128
     block entry():
-        %rnd : U64  = cm_wide_lo(%a.sig).shr(14).bitand(1)
-        %r   : F128 = cm_expm1_pack(%a.sig.shr(15), %a.el.add_wrap(16382), %sign, %rnd)
-        return(%r)
+        rnd : U64  = cm_wide_lo(a.sig).shr(14).bitand(1)
+        r   : F128 = cm_expm1_pack(a.sig.shr(15), a.el.add_wrap(16382), sign, rnd)
+        return(r)
 
 /// 2^z - 1 scaled, for the fraction word z: the fast-path polynomial.
-routine cm_expm1_exp2_poly(%z: U64) -> U128
+routine cm_expm1_exp2_poly(z: U64) -> U128
     block entry():
-        %c   : @U64 = CM_EXPM1_C.to<@U64>()
-        %c6  : U64  = %c.stride(6).load()
-        %c8  : U64  = %c.stride(8).load()
-        %c10 : U64  = %c.stride(10).load()
-        %t10 : U64  = cm_wide_mulhi_64x64(%z, %c10)
-        %t8  : U64  = cm_wide_mulhi_64x64(%z, %c8.add_wrap(%t10))
-        %t6  : U64  = cm_wide_mulhi_64x64(%z, %c6.add_wrap(%t8))
-        %p2  : U128 = cm_expm1_pair(%c, 4).add(%t6.to<U128>())
-        %p1  : U128 = cm_expm1_mulhi_add_64x128(%z, %p2, cm_expm1_pair(%c, 2))
-        %p0  : U128 = cm_expm1_mulhi_add_64x128(%z, %p1, cm_expm1_pair(%c, 0))
-        return(%p0)
+        c   : @U64 = CM_EXPM1_C.to<@U64>()
+        c6  : U64  = c.stride(6).load()
+        c8  : U64  = c.stride(8).load()
+        c10 : U64  = c.stride(10).load()
+        t10 : U64  = cm_wide_mulhi_64x64(z, c10)
+        t8  : U64  = cm_wide_mulhi_64x64(z, c8.add_wrap(t10))
+        t6  : U64  = cm_wide_mulhi_64x64(z, c6.add_wrap(t8))
+        p2  : U128 = cm_expm1_pair(c, 4).add(t6.to<U128>())
+        p1  : U128 = cm_expm1_mulhi_add_64x128(z, p2, cm_expm1_pair(c, 2))
+        p0  : U128 = cm_expm1_mulhi_add_64x128(z, p1, cm_expm1_pair(c, 0))
+        return(p0)
 
 /// The product of the four 2^(i/32^k) table entries.
-routine cm_expm1_exp2_tables(%i0: USize, %i1: USize, %i2: USize, %i3: USize) -> U128
+routine cm_expm1_exp2_tables(i0: USize, i1: USize, i2: USize, i3: USize) -> U128
     block entry():
-        %t0  : U128 = cm_expm1_pair(CM_EXPM1_R0.to<@U64>(), %i0.mul(2))
-        %t1  : U128 = cm_expm1_pair(CM_EXPM1_R1.to<@U64>(), %i1.mul(2))
-        %t2  : U128 = cm_expm1_pair(CM_EXPM1_R2.to<@U64>(), %i2.mul(2))
-        %t3  : U128 = cm_expm1_pair(CM_EXPM1_R3.to<@U64>(), %i3.mul(2))
-        %t01 : U128 = cm_wide_mulhi_128x128(%t0, %t1)
-        %t23 : U128 = cm_wide_mulhi_128x128(%t2, %t3)
-        %r   : U128 = cm_wide_mulhi_128x128(%t01, %t23)
-        return(%r)
+        t0  : U128 = cm_expm1_pair(CM_EXPM1_R0.to<@U64>(), i0.mul(2))
+        t1  : U128 = cm_expm1_pair(CM_EXPM1_R1.to<@U64>(), i1.mul(2))
+        t2  : U128 = cm_expm1_pair(CM_EXPM1_R2.to<@U64>(), i2.mul(2))
+        t3  : U128 = cm_expm1_pair(CM_EXPM1_R3.to<@U64>(), i3.mul(2))
+        t01 : U128 = cm_wide_mulhi_128x128(t0, t1)
+        t23 : U128 = cm_wide_mulhi_128x128(t2, t3)
+        r   : U128 = cm_wide_mulhi_128x128(t01, t23)
+        return(r)
 
 /// mahuUU: ((a * b) >> 64) + c for a 64-bit a and 128-bit b and c.
-routine cm_expm1_mulhi_add_64x128(%a: U64, %b: U128, %c: U128) -> U128
+routine cm_expm1_mulhi_add_64x128(a: U64, b: U128, c: U128) -> U128
     block entry():
-        %low  : U128 = cm_wide_mul_64x64(%a, cm_wide_lo(%b)).shr(64)
-        %high : U128 = %a.to<U128>().mul_wrap(%b.shr(64))
-        %r    : U128 = %high.add_wrap(%c.add_wrap(%low))
-        return(%r)
+        low  : U128 = cm_wide_mul_64x64(a, cm_wide_lo(b)).shr(64)
+        high : U128 = a.to<U128>().mul_wrap(b.shr(64))
+        r    : U128 = high.add_wrap(c.add_wrap(low))
+        return(r)
 
 /// mhu3xu2: the words at or above word 2 of the 3x2-word product a * b.
-routine cm_expm1_mulhi_3x2(%a: CmWide3, %b: U128) -> CmWide3
+routine cm_expm1_mulhi_3x2(a: CmWide3, b: U128) -> CmWide3
     block entry():
-        %b0   : U64     = cm_wide_lo(%b)
-        %b1   : U64     = cm_wide_hi(%b)
-        %a1b0 : U128    = cm_wide_mul_64x64(%a.w1, %b0)
-        %a2b0 : U128    = cm_wide_mul_64x64(%a.w2, %b0)
-        %a0b1 : U128    = cm_wide_mul_64x64(%a.w0, %b1)
-        %a1b1 : U128    = cm_wide_mul_64x64(%a.w1, %b1)
-        %a2b1 : U128    = cm_wide_mul_64x64(%a.w2, %b1)
-        %lo64 : U128    = 0xFFFFFFFFFFFFFFFF
-        %s0a  : U128    = %a1b1.bitand(%lo64).add(%a0b1.shr(64))
-        %s0b  : U128    = %a2b0.bitand(%lo64).add(%a1b0.shr(64))
-        %s0   : U128    = %s0a.add(%s0b)
-        %s1a  : U128    = %a2b1.bitand(%lo64).add(%a1b1.shr(64))
-        %s1   : U128    = %s1a.add(%a2b0.shr(64)).add(%s0.shr(64))
-        %w2   : U64     = cm_wide_hi(%a2b1).add_wrap(cm_wide_hi(%s1))
-        %r    : CmWide3 = CmWide3 { w0: cm_wide_lo(%s0), w1: cm_wide_lo(%s1), w2: %w2 }
-        return(%r)
+        b0   : U64     = cm_wide_lo(b)
+        b1   : U64     = cm_wide_hi(b)
+        a1b0 : U128    = cm_wide_mul_64x64(a.w1, b0)
+        a2b0 : U128    = cm_wide_mul_64x64(a.w2, b0)
+        a0b1 : U128    = cm_wide_mul_64x64(a.w0, b1)
+        a1b1 : U128    = cm_wide_mul_64x64(a.w1, b1)
+        a2b1 : U128    = cm_wide_mul_64x64(a.w2, b1)
+        lo64 : U128    = 0xFFFFFFFFFFFFFFFF
+        s0a  : U128    = a1b1.bitand(lo64).add(a0b1.shr(64))
+        s0b  : U128    = a2b0.bitand(lo64).add(a1b0.shr(64))
+        s0   : U128    = s0a.add(s0b)
+        s1a  : U128    = a2b1.bitand(lo64).add(a1b1.shr(64))
+        s1   : U128    = s1a.add(a2b0.shr(64)).add(s0.shr(64))
+        w2   : U64     = cm_wide_hi(a2b1).add_wrap(cm_wide_hi(s1))
+        r    : CmWide3 = CmWide3 { w0: cm_wide_lo(s0), w1: cm_wide_lo(s1), w2: w2 }
+        return(r)
 
 /// arsu3: arithmetic right shift of a 3-word number by n bits (n < 192).
-routine cm_expm1_ashr3(%o: CmWide3, %n: U64) -> CmWide3
+routine cm_expm1_ashr3(o: CmWide3, n: U64) -> CmWide3
     block entry():
-        %sign  : S64  = %o.w2.to_wrap<S64>().shr(63)
-        %rk    : U64  = %n.bitand(63)
-        %lk    : U64  = 64.sub_wrap(%rk).bitand(63)
-        %none  : Bool = %n.eq(0)
-        %one   : Bool = %n.lt(64)
-        %two   : Bool = %n.lt(128)
-        %whole : Bool = %rk.eq(0)
+        sign  : S64  = o.w2.to_wrap<S64>().shr(63)
+        rk    : U64  = n.bitand(63)
+        lk    : U64  = 64.sub_wrap(rk).bitand(63)
+        none  : Bool = n.eq(0)
+        one   : Bool = n.lt(64)
+        two   : Bool = n.lt(128)
+        whole : Bool = rk.eq(0)
         when:
-            %none -> return(%o)
-            %one  -> within_word(%rk, %lk)
-            %two  -> one_word(%rk, %lk, %sign, %whole)
-            else  -> two_words(%rk, %sign, %whole)
+            none -> return(o)
+            one  -> within_word(rk, lk)
+            two  -> one_word(rk, lk, sign, whole)
+            else -> two_words(rk, sign, whole)
 
-    block within_word(%rk: U64, %lk: U64):
-        %w0 : U64     = %o.w1.shl(%lk).bitor(%o.w0.shr(%rk))
-        %w1 : U64     = %o.w2.shl(%lk).bitor(%o.w1.shr(%rk))
-        %r  : CmWide3 = CmWide3 { w0: %w0, w1: %w1, w2: cm_sar64(%o.w2, %rk) }
-        return(%r)
+    block within_word(rk: U64, lk: U64):
+        w0 : U64     = o.w1.shl(lk).bitor(o.w0.shr(rk))
+        w1 : U64     = o.w2.shl(lk).bitor(o.w1.shr(rk))
+        r  : CmWide3 = CmWide3 { w0: w0, w1: w1, w2: cm_sar64(o.w2, rk) }
+        return(r)
 
-    block one_word(%rk: U64, %lk: U64, %sign: S64, %whole: Bool):
-        %moved   : CmWide3 = CmWide3 { w0: %o.w1, w1: %o.w2, w2: %sign.to_wrap<U64>() }
-        %w0      : U64     = %o.w2.shl(%lk).bitor(%o.w1.shr(%rk))
-        %shifted : CmWide3 = CmWide3 { w0: %w0, w1: cm_sar64(%o.w2, %rk), w2: %sign.to_wrap<U64>() }
-        %r       : CmWide3 = %whole
-            ? %moved
-            : %shifted
-        return(%r)
+    block one_word(rk: U64, lk: U64, sign: S64, whole: Bool):
+        moved   : CmWide3 = CmWide3 { w0: o.w1, w1: o.w2, w2: sign.to_wrap<U64>() }
+        w0      : U64     = o.w2.shl(lk).bitor(o.w1.shr(rk))
+        shifted : CmWide3 = CmWide3 { w0: w0, w1: cm_sar64(o.w2, rk), w2: sign.to_wrap<U64>() }
+        r       : CmWide3 = whole
+            ? moved
+            : shifted
+        return(r)
 
-    block two_words(%rk: U64, %sign: S64, %whole: Bool):
-        %r : CmWide3 = CmWide3 { w0: cm_sar64(%o.w2, %rk), w1: %sign.to_wrap<U64>(),
-                w2: %sign.to_wrap<U64>() }
-        return(%r)
+    block two_words(rk: U64, sign: S64, whole: Bool):
+        r : CmWide3 = CmWide3 { w0: cm_sar64(o.w2, rk), w1: sign.to_wrap<U64>(),
+                w2: sign.to_wrap<U64>() }
+        return(r)
 
 // -- |x| < 0.5 -----------------------------------------------------------------
 
 /// e^x - 1 for |x| < 0.5 or so.
-routine cm_expm1_small(%x: U128) -> F128
+routine cm_expm1_small(x: U128) -> F128
     block entry():
-        %uh    : U64  = cm_wide_hi(%x)
-        %b1    : U64  = %uh.bitand(0x7FFFFFFFFFFFFFFF)
-        %sm    : U64  = %uh.shr(63)
-        %e     : U64  = %b1.shr(48).sub_wrap(16383)
-        %sj    : U64  = 37.sub_wrap(%e)
-        %table : Bool = %sj.lt(49)
-        %exact : Bool = %b1.lt(0x3F8E6A09E667F3BC)
-        %same  : F128 = f128_of(%x)
+        uh    : U64  = cm_wide_hi(x)
+        b1    : U64  = uh.bitand(0x7FFFFFFFFFFFFFFF)
+        sm    : U64  = uh.shr(63)
+        e     : U64  = b1.shr(48).sub_wrap(16383)
+        sj    : U64  = 37.sub_wrap(e)
+        table : Bool = sj.lt(49)
+        exact : Bool = b1.lt(0x3F8E6A09E667F3BC)
+        same  : F128 = f128_of(x)
         when:
-            %table -> finish(cm_expm1_small_table(%x, %sm, %e, %sj), %sm)
-            %exact -> return(%same)
-            else   -> polynomial(%sm, %e)
+            table -> finish(cm_expm1_small_table(x, sm, e, sj), sm)
+            exact -> return(same)
+            else  -> polynomial(sm, e)
 
-    block polynomial(%sm: U64, %e: U64):
-        %a : CmExpm1Scaled = cm_expm1_small_poly(%x, %sm, %e.to_wrap<S64>())
-        jump finish(%a, %sm)
+    block polynomial(sm: U64, e: U64):
+        a : CmExpm1Scaled = cm_expm1_small_poly(x, sm, e.to_wrap<S64>())
+        jump finish(a, sm)
 
     // the leading bit is at 127 or 126: round at bit 14 or 13, exactly when too close to a midpoint
-    block finish(%a: CmExpm1Scaled, %sm: U64):
-        %off     : U64  = 4.sub(%sm)
-        %lo      : U64  = cm_wide_lo(%a.sig)
-        %top_set : Bool = %a.sig.shr(127).eq(1)
-        branch %top_set
-            ? top(%a, %sm, %off, %lo)
-            : below(%a, %sm, %off, %lo)
+    block finish(a: CmExpm1Scaled, sm: U64):
+        off     : U64  = 4.sub(sm)
+        lo      : U64  = cm_wide_lo(a.sig)
+        top_set : Bool = a.sig.shr(127).eq(1)
+        branch top_set
+            ? top(a, sm, off, lo)
+            : below(a, sm, off, lo)
 
-    block top(%a: CmExpm1Scaled, %sm: U64, %off: U64, %lo: U64):
-        %tail : U64  = %lo.add_wrap(0x4000).add_wrap(%off).bitand(0x7FFF)
-        %hard : Bool = %tail.le(6)
-        branch %hard
-            ? exact(%a.el, %sm)
-            : round15(%a, %sm)
+    block top(a: CmExpm1Scaled, sm: U64, off: U64, lo: U64):
+        tail : U64  = lo.add_wrap(0x4000).add_wrap(off).bitand(0x7FFF)
+        hard : Bool = tail.le(6)
+        branch hard
+            ? exact(a.el, sm)
+            : round15(a, sm)
 
-    block below(%a: CmExpm1Scaled, %sm: U64, %off: U64, %lo: U64):
-        %el   : U64  = %a.el.sub_wrap(1)
-        %tail : U64  = %lo.add_wrap(0x2000).add_wrap(%off).bitand(0x3FFF)
-        %hard : Bool = %tail.le(6)
-        branch %hard
-            ? exact(%el, %sm)
-            : round14(%a.sig, %el, %sm, %lo)
+    block below(a: CmExpm1Scaled, sm: U64, off: U64, lo: U64):
+        el   : U64  = a.el.sub_wrap(1)
+        tail : U64  = lo.add_wrap(0x2000).add_wrap(off).bitand(0x3FFF)
+        hard : Bool = tail.le(6)
+        branch hard
+            ? exact(el, sm)
+            : round14(a.sig, el, sm, lo)
 
-    block round14(%sig: U128, %el: U64, %sm: U64, %lo: U64):
-        %rnd : U64  = %lo.shr(13).bitand(1)
-        %r   : F128 = cm_expm1_pack(%sig.shr(14), %el.add_wrap(16382), %sm, %rnd)
-        return(%r)
+    block round14(sig: U128, el: U64, sm: U64, lo: U64):
+        rnd : U64  = lo.shr(13).bitand(1)
+        r   : F128 = cm_expm1_pack(sig.shr(14), el.add_wrap(16382), sm, rnd)
+        return(r)
 
-    block round15(%a: CmExpm1Scaled, %sm: U64):
-        %r : F128 = cm_expm1_round15(%a, %sm)
-        return(%r)
+    block round15(a: CmExpm1Scaled, sm: U64):
+        r : F128 = cm_expm1_round15(a, sm)
+        return(r)
 
-    block exact(%el: U64, %sm: U64):
-        %a : CmExpm1Scaled = cm_expm1_accurate(%el.to_wrap<S64>(), %x)
-        %r : F128          = cm_expm1_round15(%a, %sm)
-        return(%r)
+    block exact(el: U64, sm: U64):
+        a : CmExpm1Scaled = cm_expm1_accurate(el.to_wrap<S64>(), x)
+        r : F128          = cm_expm1_round15(a, sm)
+        return(r)
 
 /// 2^-11 < |x| < 0.5 or so: two 5-bit indices j0, j1 of |x| pick exp(x_j) - 1 from the tables, and a
 /// polynomial in the rest combines with them.
-routine cm_expm1_small_table(%x: U128, %sm: U64, %e: U64, %sj: U64) -> CmExpm1Scaled
+routine cm_expm1_small_table(x: U128, sm: U64, e: U64, sj: U64) -> CmExpm1Scaled
     block entry():
-        %uh     : U64   = cm_wide_hi(%x)
-        %ml     : U64   = cm_wide_lo(%x)
-        %mh     : U64   = %uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        %j      : U64   = %mh.shr(%sj)
-        %j0     : USize = %j.shr(5).to<USize>()
-        %j1     : USize = %j.bitand(31).to<USize>()
-        %row0   : USize = %sm.to<USize>().mul(32).add(%j0)
-        %row1   : USize = %sm.to<USize>().mul(32).add(%j1)
-        %e0     : S64   = CM_EXPM1_E0Z.get(%row0)
-        %e1     : S64   = CM_EXPM1_E1Z.get(%row1)
-        %has_j0 : Bool  = %j0.ne(0)
-        %el     : S64   = %has_j0
-            ? %e0
-            : %e1
-        %st : S64 = %has_j0
-            ? %e1.sub(%e0)
+        uh     : U64   = cm_wide_hi(x)
+        ml     : U64   = cm_wide_lo(x)
+        mh     : U64   = uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        j      : U64   = mh.shr(sj)
+        j0     : USize = j.shr(5).to<USize>()
+        j1     : USize = j.bitand(31).to<USize>()
+        row0   : USize = sm.to<USize>().mul(32).add(j0)
+        row1   : USize = sm.to<USize>().mul(32).add(j1)
+        e0     : S64   = CM_EXPM1_E0Z.get(row0)
+        e1     : S64   = CM_EXPM1_E1Z.get(row1)
+        has_j0 : Bool  = j0.ne(0)
+        el     : S64   = has_j0
+            ? e0
+            : e1
+        st : S64 = has_j0
+            ? e1.sub(e0)
             : 0
-        %r0 : U128 = cm_expm1_pair(CM_EXPM1_R0Z.to<@U64>(), %row0.mul(2))
-        %r1 : U128 = cm_expm1_pair(CM_EXPM1_R1Z.to<@U64>(), %row1.mul(2))
+        r0 : U128 = cm_expm1_pair(CM_EXPM1_R0Z.to<@U64>(), row0.mul(2))
+        r1 : U128 = cm_expm1_pair(CM_EXPM1_R1Z.to<@U64>(), row1.mul(2))
         // pp = (r0 * r1) >> e1 and tt = r1 >> st, each shifted the way the original's x86 shifts do
-        %prod : U128          = cm_wide_mulhi_128x128(%r0, %r1)
-        %ph   : U64           = cm_wide_hi(%prod)
-        %pl   : U64           = cm_wide_lo(%prod)
-        %pl2  : U64           = %pl.shr(%e1.to<U64>()).bitor(%ph.shl(64.sub(%e1).bitand(63).to<U64>()))
-        %pp   : U128          = cm_wide_u128(%ph.shr(%e1.to<U64>()), %pl2)
-        %th   : U64           = cm_wide_hi(%r1)
-        %tl   : U64           = cm_wide_lo(%r1)
-        %st_r : S64           = %st.bitand(63)
-        %st_l : S64           = %st.bitxor(-1).bitand(63)
-        %tl2  : U64           = %tl.shr(%st_r.to<U64>()).bitor(%th.shl(1).shl(%st_l.to<U64>()))
-        %tt   : U128          = cm_wide_u128(%th.shr(%st_r.to<U64>()), %tl2)
-        %up   : U64           = %e.add_wrap(27)
-        %mh2  : U64           = %mh.shl(%up).bitor(%ml.shr(%sj))
-        %ml2  : U64           = %ml.shl(%up)
-        %cb   : USize         = %sm.to<USize>().mul(18)
-        %neg  : Bool          = %sm.ne(0)
-        %sig  : U128          = cm_expm1_small_table_sum(%r0, %tt, %pp, %mh2, %ml2, %cb, %el, %neg)
-        %r    : CmExpm1Scaled = CmExpm1Scaled { el: 0.sub(%el).sub(1).to_wrap<U64>(), sig: %sig }
-        return(%r)
+        prod : U128          = cm_wide_mulhi_128x128(r0, r1)
+        ph   : U64           = cm_wide_hi(prod)
+        pl   : U64           = cm_wide_lo(prod)
+        pl2  : U64           = pl.shr(e1.to<U64>()).bitor(ph.shl(64.sub(e1).bitand(63).to<U64>()))
+        pp   : U128          = cm_wide_u128(ph.shr(e1.to<U64>()), pl2)
+        th   : U64           = cm_wide_hi(r1)
+        tl   : U64           = cm_wide_lo(r1)
+        st_r : S64           = st.bitand(63)
+        st_l : S64           = st.bitxor(-1).bitand(63)
+        tl2  : U64           = tl.shr(st_r.to<U64>()).bitor(th.shl(1).shl(st_l.to<U64>()))
+        tt   : U128          = cm_wide_u128(th.shr(st_r.to<U64>()), tl2)
+        up   : U64           = e.add_wrap(27)
+        mh2  : U64           = mh.shl(up).bitor(ml.shr(sj))
+        ml2  : U64           = ml.shl(up)
+        cb   : USize         = sm.to<USize>().mul(18)
+        neg  : Bool          = sm.ne(0)
+        sig  : U128          = cm_expm1_small_table_sum(r0, tt, pp, mh2, ml2, cb, el, neg)
+        r    : CmExpm1Scaled = CmExpm1Scaled { el: 0.sub(el).sub(1).to_wrap<U64>(), sig: sig }
+        return(r)
 
 /// The table entry r0 (+/-) tt (+/-) pp, plus the polynomial in the remaining bits (mh, ml) and its product
 /// with that sum: + for x > 0, - for x < 0.
-routine cm_expm1_small_table_sum(%r0: U128, %tt: U128, %pp: U128, %mh: U64, %ml: U64, %cb: USize,
-        %el: S64, %neg: Bool) -> U128
+routine cm_expm1_small_table_sum(r0: U128, tt: U128, pp: U128, mh: U64, ml: U64, cb: USize, el: S64,
+        neg: Bool) -> U128
     block entry():
-        %c     : @U64 = CM_EXPM1_CB9.to<@U64>()
-        %terms : U128 = %neg
-            ? %tt.sub_wrap(%pp)
-            : %tt.add_wrap(%pp)
-        %res   : U128 = %r0.add_wrap(%terms)
-        %v     : U64  = cm_expm1_chain64(%c, %cb.add(16), %cb.add(10), %mh, %neg)
-        %t     : U64  = cm_wide_mulhi_64x64(%v, %mh)
-        %c8    : U128 = cm_expm1_pair(%c, %cb.add(8))
-        %f_neg : U128 = %c8.sub_wrap(%t.to<U128>())
-        %c9    : U64  = %c.stride(%cb.add(9)).load()
-        %c8lo  : U64  = %c.stride(%cb.add(8)).load()
-        %f_pos : U128 = cm_wide_u128(%c9, %c8lo.add_wrap(%t))
-        %f4    : U128 = %neg
-            ? %f_neg
-            : %f_pos
-        %f0   : U128 = cm_expm1_horner_64x128(%c, %cb, %mh, %f4, %neg)
-        %f    : U128 = cm_wide_mulhi_64x128(%mh, %f0)
-        %hl   : U64  = cm_wide_mulhi_64x64(%ml, cm_wide_hi(%f))
-        %half : U64  = %ml.shr(1)
-        %low  : U64  = %neg
-            ? %half.sub_wrap(%hl.shr(11))
-            : %half.add_wrap(%hl.shr(11))
-        %f2    : U128 = %f.add_wrap(%low.to<U128>())
-        %lead  : U128 = %f2.shr(10.sub(%el).to<U128>())
-        %cross : U128 = cm_wide_mulhi_128x128(%res, %f2).shr(10)
-        %delta : U128 = %neg
-            ? %lead.sub_wrap(%cross)
-            : %lead.add_wrap(%cross)
-        %r : U128 = %res.add_wrap(%delta)
-        return(%r)
+        c     : @U64 = CM_EXPM1_CB9.to<@U64>()
+        terms : U128 = neg
+            ? tt.sub_wrap(pp)
+            : tt.add_wrap(pp)
+        res   : U128 = r0.add_wrap(terms)
+        v     : U64  = cm_expm1_chain64(c, cb.add(16), cb.add(10), mh, neg)
+        t     : U64  = cm_wide_mulhi_64x64(v, mh)
+        c8    : U128 = cm_expm1_pair(c, cb.add(8))
+        f_neg : U128 = c8.sub_wrap(t.to<U128>())
+        c9    : U64  = c.stride(cb.add(9)).load()
+        c8lo  : U64  = c.stride(cb.add(8)).load()
+        f_pos : U128 = cm_wide_u128(c9, c8lo.add_wrap(t))
+        f4    : U128 = neg
+            ? f_neg
+            : f_pos
+        f0   : U128 = cm_expm1_horner_64x128(c, cb, mh, f4, neg)
+        f    : U128 = cm_wide_mulhi_64x128(mh, f0)
+        hl   : U64  = cm_wide_mulhi_64x64(ml, cm_wide_hi(f))
+        half : U64  = ml.shr(1)
+        low  : U64  = neg
+            ? half.sub_wrap(hl.shr(11))
+            : half.add_wrap(hl.shr(11))
+        f2    : U128 = f.add_wrap(low.to<U128>())
+        lead  : U128 = f2.shr(10.sub(el).to<U128>())
+        cross : U128 = cm_wide_mulhi_128x128(res, f2).shr(10)
+        delta : U128 = neg
+            ? lead.sub_wrap(cross)
+            : lead.add_wrap(cross)
+        r : U128 = res.add_wrap(delta)
+        return(r)
 
 /// v = c[top], then v = c[i] +/- (v * mh) >> 64 for i = top - 2 down to bottom in steps of 2.
-routine cm_expm1_chain64(%c: @U64, %top: USize, %bottom: USize, %mh: U64, %neg: Bool) -> U64
+routine cm_expm1_chain64(c: @U64, top: USize, bottom: USize, mh: U64, neg: Bool) -> U64
     block entry():
-        %v : U64 = %c.stride(%top).load()
-        jump step(%top.sub(2), %v)
+        v : U64 = c.stride(top).load()
+        jump step(top.sub(2), v)
 
-    block step(%i: USize, %v: U64):
-        %done : Bool = %i.lt(%bottom)
-        branch %done
-            ? return(%v)
+    block step(i: USize, v: U64):
+        done : Bool = i.lt(bottom)
+        branch done
+            ? return(v)
             : continue
-        %ci   : U64 = %c.stride(%i).load()
-        %t    : U64 = cm_wide_mulhi_64x64(%v, %mh)
-        %next : U64 = %neg
-            ? %ci.sub_wrap(%t)
-            : %ci.add_wrap(%t)
-        jump step(%i.sub(2), %next)
+        ci   : U64 = c.stride(i).load()
+        t    : U64 = cm_wide_mulhi_64x64(v, mh)
+        next : U64 = neg
+            ? ci.sub_wrap(t)
+            : ci.add_wrap(t)
+        jump step(i.sub(2), next)
 
 /// f = pair(base + 2i) +/- (mh * f) >> 64 for i = 3 down to 0.
-routine cm_expm1_horner_64x128(%c: @U64, %base: USize, %mh: U64, %f: U128, %neg: Bool) -> U128
+routine cm_expm1_horner_64x128(c: @U64, base: USize, mh: U64, f: U128, neg: Bool) -> U128
     block entry():
-        jump step(3, %f)
+        jump step(3, f)
 
-    block step(%i: S64, %f: U128):
-        %done : Bool = %i.lt(0)
-        branch %done
-            ? return(%f)
-            : term(%i.to<USize>(), %f)
+    block step(i: S64, f: U128):
+        done : Bool = i.lt(0)
+        branch done
+            ? return(f)
+            : term(i.to<USize>(), f)
 
-    block term(%i: USize, %f: U128):
-        %coef : U128 = cm_expm1_pair(%c, %base.add(%i.mul(2)))
-        %t    : U128 = cm_wide_mulhi_64x128(%mh, %f)
-        %next : U128 = %neg
-            ? %coef.sub_wrap(%t)
-            : %coef.add_wrap(%t)
-        jump step(%i.to<S64>().sub(1), %next)
+    block term(i: USize, f: U128):
+        coef : U128 = cm_expm1_pair(c, base.add(i.mul(2)))
+        t    : U128 = cm_wide_mulhi_64x128(mh, f)
+        next : U128 = neg
+            ? coef.sub_wrap(t)
+            : coef.add_wrap(t)
+        jump step(i.to<S64>().sub(1), next)
 
 /// f = pair(base + 2i) +/- mhUU(m, f) for i = 3 down to 0.
-routine cm_expm1_horner_128x128(%c: @U64, %base: S64, %m: U128, %f: U128, %neg: Bool) -> U128
+routine cm_expm1_horner_128x128(c: @U64, base: S64, m: U128, f: U128, neg: Bool) -> U128
     block entry():
-        jump step(3, %f)
+        jump step(3, f)
 
-    block step(%i: S64, %f: U128):
-        %done : Bool = %i.lt(0)
-        branch %done
-            ? return(%f)
+    block step(i: S64, f: U128):
+        done : Bool = i.lt(0)
+        branch done
+            ? return(f)
             : continue
-        %coef : U128 = cm_expm1_pair(%c, %base.add(%i.mul(2)).to<USize>())
-        %t    : U128 = cm_wide_mulhi_128x128(%m, %f)
-        %next : U128 = %neg
-            ? %coef.sub_wrap(%t)
-            : %coef.add_wrap(%t)
-        jump step(%i.sub(1), %next)
+        coef : U128 = cm_expm1_pair(c, base.add(i.mul(2)).to<USize>())
+        t    : U128 = cm_wide_mulhi_128x128(m, f)
+        next : U128 = neg
+            ? coef.sub_wrap(t)
+            : coef.add_wrap(t)
+        jump step(i.sub(1), next)
 
 /// |x| < 2^-11 (and not so small that the result is x): x + x^2 * P(x).
-routine cm_expm1_small_poly(%x: U128, %sm: U64, %e: S64) -> CmExpm1Scaled
+routine cm_expm1_small_poly(x: U128, sm: U64, e: S64) -> CmExpm1Scaled
     block entry():
-        %c   : @U64  = CM_EXPM1_CB8.to<@U64>()
-        %uh  : U64   = cm_wide_hi(%x)
-        %mh  : U64   = %uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        %m0  : U128  = cm_wide_u128(%mh, cm_wide_lo(%x)).shl(15)
-        %m2  : U128  = %m0.mul_wide(%m0).shr(128).to<U128>()
-        %m   : U128  = %m0.shr(0.sub(%e.add(12)).to<U128>())
-        %mh2 : U64   = cm_wide_hi(%m)
-        %cb  : USize = %sm.to<USize>().mul(16)
-        %neg : Bool  = %sm.ne(0)
-        %v   : U64   = cm_expm1_chain64(%c, %cb.add(14), %cb.add(10), %mh2, %neg)
-        %t   : U64   = cm_wide_mulhi_64x64(%v, %mh2)
-        %c8  : U64   = %c.stride(%cb.add(8)).load()
-        %c9  : U64   = %c.stride(%cb.add(9)).load()
-        %f0  : U64   = %neg
-            ? %c8.sub_wrap(%t)
-            : %c8.add_wrap(%t)
-        %f4   : U128 = cm_wide_u128(%c9, %f0)
-        %poly : U128 = cm_expm1_horner_128x128(%c, %cb.to<S64>(), %m, %f4, %neg)
-        %f    : U128 = cm_wide_mulhi_128x128(%m2, %poly).shr(0.sub(%e).sub(1).to<U128>())
-        branch %neg
-            ? negative(%m0, %f)
-            : positive(%m0, %f)
+        c   : @U64  = CM_EXPM1_CB8.to<@U64>()
+        uh  : U64   = cm_wide_hi(x)
+        mh  : U64   = uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        m0  : U128  = cm_wide_u128(mh, cm_wide_lo(x)).shl(15)
+        m2  : U128  = m0.mul_wide(m0).shr(128).to<U128>()
+        m   : U128  = m0.shr(0.sub(e.add(12)).to<U128>())
+        mh2 : U64   = cm_wide_hi(m)
+        cb  : USize = sm.to<USize>().mul(16)
+        neg : Bool  = sm.ne(0)
+        v   : U64   = cm_expm1_chain64(c, cb.add(14), cb.add(10), mh2, neg)
+        t   : U64   = cm_wide_mulhi_64x64(v, mh2)
+        c8  : U64   = c.stride(cb.add(8)).load()
+        c9  : U64   = c.stride(cb.add(9)).load()
+        f0  : U64   = neg
+            ? c8.sub_wrap(t)
+            : c8.add_wrap(t)
+        f4   : U128 = cm_wide_u128(c9, f0)
+        poly : U128 = cm_expm1_horner_128x128(c, cb.to<S64>(), m, f4, neg)
+        f    : U128 = cm_wide_mulhi_128x128(m2, poly).shr(0.sub(e).sub(1).to<U128>())
+        branch neg
+            ? negative(m0, f)
+            : positive(m0, f)
 
-    block negative(%m0: U128, %f: U128):
-        %r : CmExpm1Scaled = CmExpm1Scaled { el: %e.to_wrap<U64>(), sig: %m0.sub_wrap(%f) }
-        return(%r)
+    block negative(m0: U128, f: U128):
+        r : CmExpm1Scaled = CmExpm1Scaled { el: e.to_wrap<U64>(), sig: m0.sub_wrap(f) }
+        return(r)
 
     // x + x^2 * P(x) may carry into a new top bit
-    block positive(%m0: U128, %f: U128):
-        %sum     : U128 = %f.add_wrap(%m0)
-        %carried : Bool = %sum.lt(%f)
-        %halved  : U128 = %sum.shr(1).bitor(0x80000000000000000000000000000000)
-        %sig     : U128 = %carried
-            ? %halved
-            : %sum
-        %el : S64           = %e.add(%carried.to<S64>())
-        %r  : CmExpm1Scaled = CmExpm1Scaled { el: %el.to_wrap<U64>(), sig: %sig }
-        return(%r)
+    block positive(m0: U128, f: U128):
+        sum     : U128 = f.add_wrap(m0)
+        carried : Bool = sum.lt(f)
+        halved  : U128 = sum.shr(1).bitor(0x80000000000000000000000000000000)
+        sig     : U128 = carried
+            ? halved
+            : sum
+        el : S64           = e.add(carried.to<S64>())
+        r  : CmExpm1Scaled = CmExpm1Scaled { el: el.to_wrap<U64>(), sig: sig }
+        return(r)
 
 // -- accurate steps ------------------------------------------------------------
 
-/// arsu4: arithmetic right shift of the 4-word %x by %n bits (n < 256), in place.
-routine cm_expm1_ashr4(%x: @U64, %n: U64) -> Void
+/// arsu4: arithmetic right shift of the 4-word x by n bits (n < 256), in place.
+routine cm_expm1_ashr4(x: @U64, n: U64) -> Void
     block entry():
-        %rk   : U64   = %n.bitand(63)
-        %qk   : USize = %n.shr(6).to<USize>()
-        %top  : U64   = %x.stride(3).load()
-        %sign : S64   = %top.to_wrap<S64>().shr(63)
-        jump move(0, %rk, %qk, %top.to_wrap<S64>(), %sign)
+        rk   : U64   = n.bitand(63)
+        qk   : USize = n.shr(6).to<USize>()
+        top  : U64   = x.stride(3).load()
+        sign : S64   = top.to_wrap<S64>().shr(63)
+        jump move(0, rk, qk, top.to_wrap<S64>(), sign)
 
-    block move(%i: USize, %rk: U64, %qk: USize, %top: S64, %sign: S64):
-        %src  : USize = %qk.add(%i)
-        %done : Bool  = %src.gt(3)
-        branch %done
-            ? fill(%i, %sign)
-            : move_word(%i, %rk, %qk, %top.to_wrap<U64>(), %sign.to_wrap<U64>())
+    block move(i: USize, rk: U64, qk: USize, top: S64, sign: S64):
+        src  : USize = qk.add(i)
+        done : Bool  = src.gt(3)
+        branch done
+            ? fill(i, sign)
+            : move_word(i, rk, qk, top.to_wrap<U64>(), sign.to_wrap<U64>())
 
     // the word above src (the sign past the top), shifted into word src
-    block move_word(%i: USize, %rk: U64, %qk: USize, %top: U64, %sign: U64):
-        %src    : USize = %qk.add(%i)
-        %is_top : Bool  = %src.eq(3)
-        %lower  : U64   = %x.stride(%src).load()
-        %upper  : U64   = %x.stride(%src.add(1).min(3)).load()
-        %above  : U64   = %is_top
-            ? %sign
-            : %upper
-        %combined : U64  = %above.shl(64.sub_wrap(%rk).bitand(63)).bitor(%lower.shr(%rk))
-        %aligned  : Bool = %rk.eq(0)
-        %moved    : U64  = %aligned
-            ? %lower
-            : %combined
-        %x.stride(%i).store(%is_top ? cm_sar64(%top, %rk) : %moved)
-        jump move(%i.add(1), %rk, %qk, %top.to_wrap<S64>(), %sign.to_wrap<S64>())
+    block move_word(i: USize, rk: U64, qk: USize, top: U64, sign: U64):
+        src    : USize = qk.add(i)
+        is_top : Bool  = src.eq(3)
+        lower  : U64   = x.stride(src).load()
+        upper  : U64   = x.stride(src.add(1).min(3)).load()
+        above  : U64   = is_top
+            ? sign
+            : upper
+        combined : U64  = above.shl(64.sub_wrap(rk).bitand(63)).bitor(lower.shr(rk))
+        aligned  : Bool = rk.eq(0)
+        moved    : U64  = aligned
+            ? lower
+            : combined
+        x.stride(i).store(is_top ? cm_sar64(top, rk) : moved)
+        jump move(i.add(1), rk, qk, top.to_wrap<S64>(), sign.to_wrap<S64>())
 
-    block fill(%i: USize, %sign: S64):
-        %done : Bool = %i.ge(4)
-        branch %done
+    block fill(i: USize, sign: S64):
+        done : Bool = i.ge(4)
+        branch done
             ? return()
             : continue
-        %x.stride(%i).store(%sign.to_wrap<U64>())
-        jump fill(%i.add(1), %sign)
+        x.stride(i).store(sign.to_wrap<U64>())
+        jump fill(i.add(1), sign)
 
 /// mhu3u3u3: the approximate high 3 words of the 3x3-word product a * b (every partial-product half at or
 /// above word 3, summed exactly modulo 2^192).
-routine cm_expm1_mulhi_3x3(%b: CmWide3, %a: CmWide3) -> CmWide3
+routine cm_expm1_mulhi_3x3(b: CmWide3, a: CmWide3) -> CmWide3
     block entry():
-        %a0b2 : U128    = cm_wide_mul_64x64(%a.w0, %b.w2)
-        %a1b1 : U128    = cm_wide_mul_64x64(%a.w1, %b.w1)
-        %a2b0 : U128    = cm_wide_mul_64x64(%a.w2, %b.w0)
-        %a1b2 : U128    = cm_wide_mul_64x64(%a.w1, %b.w2)
-        %a2b1 : U128    = cm_wide_mul_64x64(%a.w2, %b.w1)
-        %a2b2 : U128    = cm_wide_mul_64x64(%a.w2, %b.w2)
-        %lo64 : U128    = 0xFFFFFFFFFFFFFFFF
-        %h0   : U128    = %a0b2.shr(64).add(%a1b1.shr(64)).add(%a2b0.shr(64))
-        %s0   : U128    = %h0.add(%a1b2.bitand(%lo64)).add(%a2b1.bitand(%lo64))
-        %h1   : U128    = %a1b2.shr(64).add(%a2b1.shr(64)).add(%a2b2.bitand(%lo64))
-        %s1   : U128    = %h1.add(%s0.shr(64))
-        %s2   : U128    = %a2b2.shr(64).add(%s1.shr(64))
-        %r    : CmWide3 = CmWide3 { w0: cm_wide_lo(%s0), w1: cm_wide_lo(%s1), w2: cm_wide_lo(%s2) }
-        return(%r)
+        a0b2 : U128    = cm_wide_mul_64x64(a.w0, b.w2)
+        a1b1 : U128    = cm_wide_mul_64x64(a.w1, b.w1)
+        a2b0 : U128    = cm_wide_mul_64x64(a.w2, b.w0)
+        a1b2 : U128    = cm_wide_mul_64x64(a.w1, b.w2)
+        a2b1 : U128    = cm_wide_mul_64x64(a.w2, b.w1)
+        a2b2 : U128    = cm_wide_mul_64x64(a.w2, b.w2)
+        lo64 : U128    = 0xFFFFFFFFFFFFFFFF
+        h0   : U128    = a0b2.shr(64).add(a1b1.shr(64)).add(a2b0.shr(64))
+        s0   : U128    = h0.add(a1b2.bitand(lo64)).add(a2b1.bitand(lo64))
+        h1   : U128    = a1b2.shr(64).add(a2b1.shr(64)).add(a2b2.bitand(lo64))
+        s1   : U128    = h1.add(s0.shr(64))
+        s2   : U128    = a2b2.shr(64).add(s1.shr(64))
+        r    : CmWide3 = CmWide3 { w0: cm_wide_lo(s0), w1: cm_wide_lo(s1), w2: cm_wide_lo(s2) }
+        return(r)
 
-/// Subtracts 2^bit from the %n-word %f at word %idx, propagating the borrow upward.
-routine cm_expm1_sub_bit(%f: @U64, %n: USize, %idx: USize, %bit: S64) -> Void
+/// Subtracts 2^bit from the n-word f at word idx, propagating the borrow upward.
+routine cm_expm1_sub_bit(f: @U64, n: USize, idx: USize, bit: S64) -> Void
     block entry():
-        %w   : U64 = %f.stride(%idx).load()
-        %sub : U64 = 1.shl(%bit).to_wrap<U64>()
-        %f.stride(%idx).store(%w.sub_wrap(%sub))
-        jump borrow(%idx.add(1), %w.lt(%sub).to<S64>())
+        w   : U64 = f.stride(idx).load()
+        sub : U64 = 1.shl(bit).to_wrap<U64>()
+        f.stride(idx).store(w.sub_wrap(sub))
+        jump borrow(idx.add(1), w.lt(sub).to<S64>())
 
-    block borrow(%i: USize, %br: S64):
-        %done : Bool = %i.ge(%n)
-        branch %done
+    block borrow(i: USize, br: S64):
+        done : Bool = i.ge(n)
+        branch done
             ? return()
-            : borrow_word(%i, %br.to_wrap<U64>())
+            : borrow_word(i, br.to_wrap<U64>())
 
-    block borrow_word(%i: USize, %br: U64):
-        %w : U64 = %f.stride(%i).load()
-        %f.stride(%i).store(%w.sub_wrap(%br))
-        jump borrow(%i.add_wrap(1), %w.lt(%br).to<S64>())
+    block borrow_word(i: USize, br: U64):
+        w : U64 = f.stride(i).load()
+        f.stride(i).store(w.sub_wrap(br))
+        jump borrow(i.add_wrap(1), w.lt(br).to<S64>())
 
-/// The index of the highest nonzero word of the %n-word %f (0 when all are zero).
-routine cm_expm1_top_word(%f: @U64, %n: USize) -> USize
+/// The index of the highest nonzero word of the n-word f (0 when all are zero).
+routine cm_expm1_top_word(f: @U64, n: USize) -> USize
     block entry():
-        jump scan(%n.sub(1))
+        jump scan(n.sub(1))
 
-    block scan(%i: USize):
-        %w    : U64  = %f.stride(%i).load()
-        %done : Bool = %w.ne(0).bitor(%i.eq(0))
-        branch %done
-            ? return(%i)
-            : scan(%i.sub(1))
+    block scan(i: USize):
+        w    : U64  = f.stride(i).load()
+        done : Bool = w.ne(0).bitor(i.eq(0))
+        branch done
+            ? return(i)
+            : scan(i.sub(1))
 
 /// The significand words (m1, m0) of an accurate result, and its exponent.
-routine cm_expm1_scaled(%el: U64, %m1: U64, %m0: U64) -> CmExpm1Scaled
+routine cm_expm1_scaled(el: U64, m1: U64, m0: U64) -> CmExpm1Scaled
     block entry():
-        %r : CmExpm1Scaled = CmExpm1Scaled { el: %el, sig: cm_wide_u128(%m1, %m0) }
-        return(%r)
+        r : CmExpm1Scaled = CmExpm1Scaled { el: el, sig: cm_wide_u128(m1, m0) }
+        return(r)
 
 /// The accurate step (about 190 bits), used when the fast path can't decide the rounding. Returns the new
 /// exponent and the significand with the round bit and sticky information in its low bits.
-routine cm_expm1_accurate(%el: S64, %x0: U128) -> CmExpm1Scaled
+routine cm_expm1_accurate(el: S64, x0: U128) -> CmExpm1Scaled
     block entry():
-        claim %a_buf : @Array<U64, 7> <- Array<U64, 7> { 0, 0, 0, 0, 0, 0, 0 }
-        %a : @U64 = %a_buf.to<@U64>()
-        claim %x_buf : @Array<U64, 7> <- uninit
-        %x    : @U64 = %x_buf.to<@U64>()
-        %iln2 : @U64 = CM_WIDE_ILN2.to<@U64>()
-        %top4 : @U64 = %iln2.stride(3)
-        copy<U64>(%a, %top4, 4)
-        %xh : U64  = cm_wide_hi(%x0)
-        %sm : S64  = %xh.to_wrap<S64>().shr(63)
-        %t  : U128 = %x0.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF).bitor(0x10000000000000000000000000000)
-        cm_wide_mulhi_7x2(%a, %t, %x)
-        cm_wide_xor_words(%x, 4, %sm.to_wrap<U64>())
-        cm_expm1_ashr4(%x, 0x402E.sub(%xh.shr(48).bitand(0x7FFF)))
-        %x0w : U64           = %x.stride(0).load()
-        %x1w : U64           = %x.stride(1).load()
-        %x2w : U64           = %x.stride(2).load()
-        %x3w : U64           = %x.stride(3).load()
-        %e   : S64           = %x3w.to_wrap<S32>().to<S64>()
-        %jt0 : USize         = %x2w.shr(60).to<USize>()
-        %jt1 : USize         = %x2w.shr(56).bitand(15).to<USize>()
-        %r   : U64           = %x2w.bitand(0x00FFFFFFFFFFFFFF)
-        %t0  : CmWide3       = cm_wide_row3(CM_EXPM1_ATBL0.to<@U64>(), %jt0)
-        %t1  : CmWide3       = cm_wide_row3(CM_EXPM1_ATBL1.to<@U64>(), %jt1)
-        %ft  : CmWide3       = cm_expm1_mulhi_3x3(%t0, %t1)
-        %p   : CmWide3       = cm_expm1_accurate_poly(%r)
-        %ft2 : CmWide3       = cm_expm1_mulhi_3x3(%p, %ft)
-        %ac  : @U64          = CM_EXPM1_AC.to<@U64>()
-        %c8  : U64           = %ac.stride(8).load()
-        %c2  : U64           = %ac.stride(2).load()
-        %c1  : U128          = cm_expm1_pair(%ac,
-                4).add_wrap(cm_wide_mulhi_64x64(%c8, %x1w).to<U128>())
-        %f2  : U128          = cm_wide_mulhi_128x128(cm_wide_u128(%x1w, %x0w), %c1)
-        %f1  : CmWide3       = CmWide3 { w0: cm_wide_lo(%f2), w1: cm_wide_hi(%f2), w2: %c2 }
-        %f   : CmWide3       = cm_expm1_mulhi_3x3(%ft2, %f1)
-        %r3  : CmExpm1Scaled = cm_expm1_accurate_scale(%f, %e, %el, %sm, %x0)
-        return(%r3)
+        claim a_buf : @Array<U64, 7> <- Array<U64, 7> { 0, 0, 0, 0, 0, 0, 0 }
+        a : @U64 = a_buf.to<@U64>()
+        claim x_buf : @Array<U64, 7> <- uninit
+        x    : @U64 = x_buf.to<@U64>()
+        iln2 : @U64 = CM_WIDE_ILN2.to<@U64>()
+        top4 : @U64 = iln2.stride(3)
+        copy<U64>(a, top4, 4)
+        xh : U64  = cm_wide_hi(x0)
+        sm : S64  = xh.to_wrap<S64>().shr(63)
+        t  : U128 = x0.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF).bitor(0x10000000000000000000000000000)
+        cm_wide_mulhi_7x2(a, t, x)
+        cm_wide_xor_words(x, 4, sm.to_wrap<U64>())
+        cm_expm1_ashr4(x, 0x402E.sub(xh.shr(48).bitand(0x7FFF)))
+        x0w : U64           = x.stride(0).load()
+        x1w : U64           = x.stride(1).load()
+        x2w : U64           = x.stride(2).load()
+        x3w : U64           = x.stride(3).load()
+        e   : S64           = x3w.to_wrap<S32>().to<S64>()
+        jt0 : USize         = x2w.shr(60).to<USize>()
+        jt1 : USize         = x2w.shr(56).bitand(15).to<USize>()
+        r   : U64           = x2w.bitand(0x00FFFFFFFFFFFFFF)
+        t0  : CmWide3       = cm_wide_row3(CM_EXPM1_ATBL0.to<@U64>(), jt0)
+        t1  : CmWide3       = cm_wide_row3(CM_EXPM1_ATBL1.to<@U64>(), jt1)
+        ft  : CmWide3       = cm_expm1_mulhi_3x3(t0, t1)
+        p   : CmWide3       = cm_expm1_accurate_poly(r)
+        ft2 : CmWide3       = cm_expm1_mulhi_3x3(p, ft)
+        ac  : @U64          = CM_EXPM1_AC.to<@U64>()
+        c8  : U64           = ac.stride(8).load()
+        c2  : U64           = ac.stride(2).load()
+        c1  : U128          = cm_expm1_pair(ac, 4).add_wrap(cm_wide_mulhi_64x64(c8, x1w).to<U128>())
+        f2  : U128          = cm_wide_mulhi_128x128(cm_wide_u128(x1w, x0w), c1)
+        f1  : CmWide3       = CmWide3 { w0: cm_wide_lo(f2), w1: cm_wide_hi(f2), w2: c2 }
+        f   : CmWide3       = cm_expm1_mulhi_3x3(ft2, f1)
+        r3  : CmExpm1Scaled = cm_expm1_accurate_scale(f, e, el, sm, x0)
+        return(r3)
 
 /// The 2^r polynomial of the accurate step: Horner over the 15 coefficient rows.
-routine cm_expm1_accurate_poly(%r: U64) -> CmWide3
+routine cm_expm1_accurate_poly(r: U64) -> CmWide3
     block entry():
-        %ac : @U64    = CM_EXPM1_AC.to<@U64>()
-        %f  : CmWide3 = cm_wide_mulhi_add3(%r, cm_wide_row3(%ac, 14), cm_wide_row3(%ac, 13))
-        jump step(12, %f, %ac)
+        ac : @U64    = CM_EXPM1_AC.to<@U64>()
+        f  : CmWide3 = cm_wide_mulhi_add3(r, cm_wide_row3(ac, 14), cm_wide_row3(ac, 13))
+        jump step(12, f, ac)
 
-    block step(%i: USize, %f: CmWide3, %ac: @U64):
-        %c    : CmWide3 = cm_wide_row3(%ac, %i)
-        %next : CmWide3 = cm_wide_mulhi_add3(%r, %f, %c)
-        %done : Bool    = %i.eq(0)
-        branch %done
-            ? return(%next)
-            : step(%i.sub(1), %next, %ac)
+    block step(i: USize, f: CmWide3, ac: @U64):
+        c    : CmWide3 = cm_wide_row3(ac, i)
+        next : CmWide3 = cm_wide_mulhi_add3(r, f, c)
+        done : Bool    = i.eq(0)
+        branch done
+            ? return(next)
+            : step(i.sub(1), next, ac)
 
 /// Turns the accurate 2^(x / ln 2) f (3 words, the integer part e of x / ln 2 apart) into e^x - 1: subtract
 /// the 1, normalize, and check the result can be rounded, falling back to the super-accurate step.
-routine cm_expm1_accurate_scale(%wide: CmWide3, %e: S64, %el: S64, %sm: S64,
-        %x0: U128) -> CmExpm1Scaled
+routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, el: S64, sm: S64, x0: U128) -> CmExpm1Scaled
     block entry():
-        claim %f_buf : @Array<U64, 3> <- Array<U64, 3> { %wide.w0, %wide.w1, %wide.w2 }
-        %f       : @U64 = %f_buf.to<@U64>()
-        %s       : S64  = 60.sub(%e)
-        %sl      : S64  = %s.bitand(63)
-        %sg      : S64  = %s.shr(6)
-        %big     : Bool = %sg.le(0)
-        %has_one : Bool = %sg.ge(-2)
+        claim f_buf : @Array<U64, 3> <- Array<U64, 3> { wide.w0, wide.w1, wide.w2 }
+        f       : @U64 = f_buf.to<@U64>()
+        s       : S64  = 60.sub(e)
+        sl      : S64  = s.bitand(63)
+        sg      : S64  = s.shr(6)
+        big     : Bool = sg.le(0)
+        has_one : Bool = sg.ge(-2)
         when:
-            %big -> big(%f, %sl, %sg, %has_one)
-            else -> tiny(%f, %sl, %sg)
+            big  -> big(f, sl, sg, has_one)
+            else -> tiny(f, sl, sg)
 
     // the 1 sits inside the 3 words: subtract it, then normalize
-    block big(%f: @U64, %sl: S64, %sg: S64, %has_one: Bool):
-        branch %has_one
-            ? subtract(%f, %sl, %sg)
-            : normalize(%f)
+    block big(f: @U64, sl: S64, sg: S64, has_one: Bool):
+        branch has_one
+            ? subtract(f, sl, sg)
+            : normalize(f)
 
-    block subtract(%f: @U64, %sl: S64, %sg: S64):
-        cm_expm1_sub_bit(%f, 3, %sg.add(2).to<USize>(), %sl)
-        jump normalize(%f)
+    block subtract(f: @U64, sl: S64, sg: S64):
+        cm_expm1_sub_bit(f, 3, sg.add(2).to<USize>(), sl)
+        jump normalize(f)
 
-    block normalize(%f: @U64):
-        cm_wide_xor_words(%f, 3, %sm.to_wrap<U64>())
-        %top  : USize = cm_expm1_top_word(%f, 3)
-        %ftop : U64   = %f.stride(%top).load()
-        %nz   : S64   = %ftop.leading_zeros().add(2.sub(%top).mul(64).to<U64>()).to<S64>()
-        %nel  : S64   = %e.sub(%nz.sub(3))
-        %mm   : U128  = cm_wide_u128(0x3FFF, U64.MAX).shr(%nz.min(127).to<U128>())
-        %w0   : U64   = %f.stride(0).load()
-        %w1   : U64   = %f.stride(1).load()
-        %w2   : U64   = %f.stride(2).load()
-        %t0   : U128  = cm_wide_u128(%w1, %w0).add_wrap(8)
-        %hard : Bool  = %t0.bitand(%mm).le(16)
-        branch %hard
-            ? super(%nel)
-            : extract(%nel, %nz.to<U64>(), %w0, %w1, %w2)
+    block normalize(f: @U64):
+        cm_wide_xor_words(f, 3, sm.to_wrap<U64>())
+        top  : USize = cm_expm1_top_word(f, 3)
+        ftop : U64   = f.stride(top).load()
+        nz   : S64   = ftop.leading_zeros().add(2.sub(top).mul(64).to<U64>()).to<S64>()
+        nel  : S64   = e.sub(nz.sub(3))
+        mm   : U128  = cm_wide_u128(0x3FFF, U64.MAX).shr(nz.min(127).to<U128>())
+        w0   : U64   = f.stride(0).load()
+        w1   : U64   = f.stride(1).load()
+        w2   : U64   = f.stride(2).load()
+        t0   : U128  = cm_wide_u128(w1, w0).add_wrap(8)
+        hard : Bool  = t0.bitand(mm).le(16)
+        branch hard
+            ? super(nel)
+            : extract(nel, nz.to<U64>(), w0, w1, w2)
 
-    block extract(%nel: S64, %nz: U64, %w0: U64, %w1: U64, %w2: U64):
-        %k     : U64  = %nz.shr(6)
-        %ls    : U64  = %nz.bitand(63)
-        %rs    : U64  = %nz.bitxor(U64.MAX).bitand(63)
-        %first : Bool = %k.eq(0)
-        %mid   : U64  = %first
-            ? %w1
-            : %w0
-        %high : U64 = %first
-            ? %w2
-            : %w1
-        %below : U64 = %w0.shr(1).shr(%rs)
-        %m0    : U64 = %first
-            ? %mid.shl(%ls).bitor(%below)
-            : %mid.shl(%ls)
-        %m1 : U64           = %high.shl(%ls).bitor(%mid.shr(1).shr(%rs))
-        %r  : CmExpm1Scaled = cm_expm1_scaled(%nel.to_wrap<U64>(), %m1, %m0)
-        return(%r)
+    block extract(nel: S64, nz: U64, w0: U64, w1: U64, w2: U64):
+        k     : U64  = nz.shr(6)
+        ls    : U64  = nz.bitand(63)
+        rs    : U64  = nz.bitxor(U64.MAX).bitand(63)
+        first : Bool = k.eq(0)
+        mid   : U64  = first
+            ? w1
+            : w0
+        high : U64 = first
+            ? w2
+            : w1
+        below : U64 = w0.shr(1).shr(rs)
+        m0    : U64 = first
+            ? mid.shl(ls).bitor(below)
+            : mid.shl(ls)
+        m1 : U64           = high.shl(ls).bitor(mid.shr(1).shr(rs))
+        r  : CmExpm1Scaled = cm_expm1_scaled(nel.to_wrap<U64>(), m1, m0)
+        return(r)
 
     // the 1 lies above the 3 words: the result is -1 plus f, complemented
-    block tiny(%f: @U64, %sl: S64, %sg: S64):
-        %w0       : U64  = %f.stride(0).load()
-        %w1       : U64  = %f.stride(1).load()
-        %w2       : U64  = %f.stride(2).load()
-        %n0       : U64  = %w0.bitnot()
-        %n1       : U64  = %w1.bitnot()
-        %n2       : U64  = %w2.bitnot()
-        %s0       : U128 = %n0.to<U128>().add_wrap(8)
-        %s1       : U128 = %n1.to<U128>().add_wrap(%s0.shr(64))
-        %t00      : U64  = cm_wide_lo(%s0)
-        %t01      : S64  = cm_wide_lo(%s1).to_wrap<S64>()
-        %t02      : S64  = %n2.add_wrap(cm_wide_hi(%s1)).to_wrap<S64>()
-        %w        : S64  = 74.sub_wrap(%e)
-        %wl       : S64  = %w.bitand(63)
-        %wg       : S64  = %w.shr(6)
-        %low_bits : S64  = 1.shl(%wl).sub_wrap(1)
-        %tm1      : S64  = %wg.eq(1)
-            ? %low_bits
+    block tiny(f: @U64, sl: S64, sg: S64):
+        w0       : U64  = f.stride(0).load()
+        w1       : U64  = f.stride(1).load()
+        w2       : U64  = f.stride(2).load()
+        n0       : U64  = w0.bitnot()
+        n1       : U64  = w1.bitnot()
+        n2       : U64  = w2.bitnot()
+        s0       : U128 = n0.to<U128>().add_wrap(8)
+        s1       : U128 = n1.to<U128>().add_wrap(s0.shr(64))
+        t00      : U64  = cm_wide_lo(s0)
+        t01      : S64  = cm_wide_lo(s1).to_wrap<S64>()
+        t02      : S64  = n2.add_wrap(cm_wide_hi(s1)).to_wrap<S64>()
+        w        : S64  = 74.sub_wrap(e)
+        wl       : S64  = w.bitand(63)
+        wg       : S64  = w.shr(6)
+        low_bits : S64  = 1.shl(wl).sub_wrap(1)
+        tm1      : S64  = wg.eq(1)
+            ? low_bits
             : -1
-        %tm2 : S64 = %wg.eq(2)
-            ? %low_bits
+        tm2 : S64 = wg.eq(2)
+            ? low_bits
             : 0
-        %hard_hi   : Bool          = %t02.bitand(%tm2).eq(0).bitand(%t01.bitand(%tm1).eq(0))
-        %hard      : Bool          = %hard_hi.bitand(%t00.le(16))
-        %one_word  : Bool          = %sg.eq(1)
-        %two_words : Bool          = %sg.eq(2)
-        %all_ones  : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, U64.MAX, U64.MAX)
+        hard_hi   : Bool          = t02.bitand(tm2).eq(0).bitand(t01.bitand(tm1).eq(0))
+        hard      : Bool          = hard_hi.bitand(t00.le(16))
+        one_word  : Bool          = sg.eq(1)
+        two_words : Bool          = sg.eq(2)
+        all_ones  : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, U64.MAX, U64.MAX)
         when:
-            %hard      -> super(-1)
-            %one_word  -> tiny_one(%sl, %n1, %n2)
-            %two_words -> tiny_two(%sl, %n2.to_wrap<S64>())
-            else       -> return(%all_ones)
+            hard      -> super(-1)
+            one_word  -> tiny_one(sl, n1, n2)
+            two_words -> tiny_two(sl, n2.to_wrap<S64>())
+            else      -> return(all_ones)
 
-    block tiny_one(%sl: S64, %n1: U64, %n2: U64):
-        %m0 : U64           = %n2.shl(1).shl(%sl.bitxor(-1).bitand(63).to<U64>()).bitor(%n1.shr(%sl.to<U64>()))
-        %r  : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, cm_sar64(%n2, %sl.to<U64>()), %m0)
-        return(%r)
+    block tiny_one(sl: S64, n1: U64, n2: U64):
+        m0 : U64           = n2.shl(1).shl(sl.bitxor(-1).bitand(63).to<U64>()).bitor(n1.shr(sl.to<U64>()))
+        r  : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, cm_sar64(n2, sl.to<U64>()), m0)
+        return(r)
 
-    block tiny_two(%sl: S64, %n2: S64):
-        %r : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, U64.MAX, %n2.shr(%sl).to_wrap<U64>())
-        return(%r)
+    block tiny_two(sl: S64, n2: S64):
+        r : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, U64.MAX, n2.shr(sl).to_wrap<U64>())
+        return(r)
 
-    block super(%nel: S64):
-        %r : CmExpm1Scaled = cm_expm1_superaccurate(%nel, %x0)
-        return(%r)
+    block super(nel: S64):
+        r : CmExpm1Scaled = cm_expm1_superaccurate(nel, x0)
+        return(r)
 
 /// The super-accurate step (about 380 bits), used when even the accurate step can't decide the rounding.
-routine cm_expm1_superaccurate(%el: S64, %x0: U128) -> CmExpm1Scaled
+routine cm_expm1_superaccurate(el: S64, x0: U128) -> CmExpm1Scaled
     block entry():
-        claim %x_buf : @Array<U64, 7> <- uninit
-        %x : @U64 = %x_buf.to<@U64>()
-        claim %ft_buf : @Array<U64, 6> <- uninit
-        %ft : @U64 = %ft_buf.to<@U64>()
-        %xh : U64  = cm_wide_hi(%x0)
-        %sm : S64  = %xh.to_wrap<S64>().shr(63)
-        %t  : U128 = %x0.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF).bitor(0x10000000000000000000000000000)
-        cm_wide_mulhi_7x2(CM_WIDE_ILN2.to<@U64>(), %t, %x)
-        cm_wide_xor_words(%x, 7, %sm.to_wrap<U64>())
-        cm_wide_ashr7(%x, 0x402E.sub(%xh.shr(48).bitand(0x7FFF)))
-        %x6 : U64 = %x.stride(6).load()
-        %e  : S64 = %x6.to_wrap<S32>().to<S64>()
-        cm_wide_exp2_frac(%x, %ft)
-        %s       : S64  = 60.sub(%e)
-        %sl      : S64  = %s.bitand(63)
-        %sg      : S64  = %s.shr(6)
-        %big     : Bool = %sg.le(0)
-        %has_one : Bool = %sg.ge(-5)
-        branch %big
-            ? big(%ft, %sl, %sg, %has_one, %sm, %e)
-            : tiny(%ft, %sl, %sg)
+        claim x_buf : @Array<U64, 7> <- uninit
+        x : @U64 = x_buf.to<@U64>()
+        claim ft_buf : @Array<U64, 6> <- uninit
+        ft : @U64 = ft_buf.to<@U64>()
+        xh : U64  = cm_wide_hi(x0)
+        sm : S64  = xh.to_wrap<S64>().shr(63)
+        t  : U128 = x0.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF).bitor(0x10000000000000000000000000000)
+        cm_wide_mulhi_7x2(CM_WIDE_ILN2.to<@U64>(), t, x)
+        cm_wide_xor_words(x, 7, sm.to_wrap<U64>())
+        cm_wide_ashr7(x, 0x402E.sub(xh.shr(48).bitand(0x7FFF)))
+        x6 : U64 = x.stride(6).load()
+        e  : S64 = x6.to_wrap<S32>().to<S64>()
+        cm_wide_exp2_frac(x, ft)
+        s       : S64  = 60.sub(e)
+        sl      : S64  = s.bitand(63)
+        sg      : S64  = s.shr(6)
+        big     : Bool = sg.le(0)
+        has_one : Bool = sg.ge(-5)
+        branch big
+            ? big(ft, sl, sg, has_one, sm, e)
+            : tiny(ft, sl, sg)
 
-    block big(%ft: @U64, %sl: S64, %sg: S64, %has_one: Bool, %sm: S64, %e: S64):
-        branch %has_one
-            ? subtract(%ft, %sl, %sg, %sm, %e)
-            : normalize(%ft, %sm, %e.to_wrap<U64>())
+    block big(ft: @U64, sl: S64, sg: S64, has_one: Bool, sm: S64, e: S64):
+        branch has_one
+            ? subtract(ft, sl, sg, sm, e)
+            : normalize(ft, sm, e.to_wrap<U64>())
 
-    block subtract(%ft: @U64, %sl: S64, %sg: S64, %sm: S64, %e: S64):
-        cm_expm1_sub_bit(%ft, 6, %sg.add(5).to<USize>(), %sl)
-        jump normalize(%ft, %sm, %e.to_wrap<U64>())
+    block subtract(ft: @U64, sl: S64, sg: S64, sm: S64, e: S64):
+        cm_expm1_sub_bit(ft, 6, sg.add(5).to<USize>(), sl)
+        jump normalize(ft, sm, e.to_wrap<U64>())
 
-    block normalize(%ft: @U64, %sm: S64, %e: U64):
-        cm_wide_xor_words(%ft, 6, %sm.to_wrap<U64>())
-        %top  : USize         = cm_expm1_top_word(%ft, 6)
-        %ftop : U64           = %ft.stride(%top).load()
-        %nz   : U64           = %ftop.leading_zeros().add_wrap(5.sub_wrap(%top).mul_wrap(64).to<U64>())
-        %nel  : U64           = %e.sub_wrap(%nz.sub_wrap(3))
-        %k    : USize         = %nz.shr(6).to<USize>()
-        %rs   : U64           = %nz.bitxor(U64.MAX).bitand(63)
-        %ls   : U64           = %nz.bitand(63)
-        %w5   : U64           = %ft.stride(5.sub_clamp(%k)).load()
-        %w4   : U64           = %ft.stride(4.sub_clamp(%k)).load()
-        %w3   : U64           = %ft.stride(3.sub_clamp(%k)).load()
-        %m0   : U64           = %w4.shl(%ls).bitor(%w3.shr(1).shr(%rs))
-        %m1   : U64           = %w5.shl(%ls).bitor(%w4.shr(1).shr(%rs))
-        %r    : CmExpm1Scaled = cm_expm1_scaled(%nel, %m1, %m0)
-        return(%r)
+    block normalize(ft: @U64, sm: S64, e: U64):
+        cm_wide_xor_words(ft, 6, sm.to_wrap<U64>())
+        top  : USize         = cm_expm1_top_word(ft, 6)
+        ftop : U64           = ft.stride(top).load()
+        nz   : U64           = ftop.leading_zeros().add_wrap(5.sub_wrap(top).mul_wrap(64).to<U64>())
+        nel  : U64           = e.sub_wrap(nz.sub_wrap(3))
+        k    : USize         = nz.shr(6).to<USize>()
+        rs   : U64           = nz.bitxor(U64.MAX).bitand(63)
+        ls   : U64           = nz.bitand(63)
+        w5   : U64           = ft.stride(5.sub_clamp(k)).load()
+        w4   : U64           = ft.stride(4.sub_clamp(k)).load()
+        w3   : U64           = ft.stride(3.sub_clamp(k)).load()
+        m0   : U64           = w4.shl(ls).bitor(w3.shr(1).shr(rs))
+        m1   : U64           = w5.shl(ls).bitor(w4.shr(1).shr(rs))
+        r    : CmExpm1Scaled = cm_expm1_scaled(nel, m1, m0)
+        return(r)
 
     // the 1 lies above the 6 words: complement the top two
-    block tiny(%ft: @U64, %sl: S64, %sg: S64):
-        %f5        : U64           = %ft.stride(5).load()
-        %f4        : U64           = %ft.stride(4).load()
-        %n5        : U64           = %f5.bitnot()
-        %n4        : U64           = %f4.bitnot()
-        %ls        : S64           = %sl.bitxor(-1).bitand(63)
-        %ones_up   : U64           = -2.shl(%ls).to_wrap<U64>()  // (~0 << 1) << ls
-        %one_word  : Bool          = %sg.eq(1)
-        %two_words : Bool          = %sg.eq(2)
-        %m0_one    : U64           = %n5.shl(1).shl(%ls.to<U64>()).bitor(%n4.shr(%sl.to<U64>()))
-        %m1_one    : U64           = %ones_up.bitor(%n5.shr(%sl.to<U64>()))
-        %m0_two    : U64           = %ones_up.bitor(%n5.shr(%sl.to<U64>()))
-        %one       : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, %m1_one, %m0_one)
-        %two       : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, U64.MAX, %m0_two)
-        %all       : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, U64.MAX, U64.MAX)
+    block tiny(ft: @U64, sl: S64, sg: S64):
+        f5        : U64           = ft.stride(5).load()
+        f4        : U64           = ft.stride(4).load()
+        n5        : U64           = f5.bitnot()
+        n4        : U64           = f4.bitnot()
+        ls        : S64           = sl.bitxor(-1).bitand(63)
+        ones_up   : U64           = -2.shl(ls).to_wrap<U64>()  // (~0 << 1) << ls
+        one_word  : Bool          = sg.eq(1)
+        two_words : Bool          = sg.eq(2)
+        m0_one    : U64           = n5.shl(1).shl(ls.to<U64>()).bitor(n4.shr(sl.to<U64>()))
+        m1_one    : U64           = ones_up.bitor(n5.shr(sl.to<U64>()))
+        m0_two    : U64           = ones_up.bitor(n5.shr(sl.to<U64>()))
+        one       : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, m1_one, m0_one)
+        two       : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, U64.MAX, m0_two)
+        all       : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, U64.MAX, U64.MAX)
         when:
-            %one_word  -> return(%one)
-            %two_words -> return(%two)
-            else       -> return(%all)
+            one_word  -> return(one)
+            two_words -> return(two)
+            else      -> return(all)
 
 // -- tables --------------------------------------------------------------------
 

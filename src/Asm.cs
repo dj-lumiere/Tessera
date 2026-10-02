@@ -147,7 +147,7 @@ internal sealed class AsmLowering
     // ── #naked ──────────────────────────────────────────────────────────────
 
     /// A #naked routine is entered by a call, so each parameter is where the C calling convention puts it, and the
-    /// result goes where it expects one. Each parameter names that register (`%from: @Addr = REG7`), and the builder
+    /// result goes where it expects one. Each parameter names that register (`from: @Addr = REG7`), and the builder
     /// checks it against the convention, since the routine itself can't move anything.
     private void CheckNakedRegisters(List<Result> results)
     {
@@ -283,7 +283,7 @@ internal sealed class AsmLowering
         return null;
     }
 
-    /// The register after a parameter's '=': `%hi: U64 = REG2`.
+    /// The register after a parameter's '=': `hi: U64 = REG2`.
     private Reg ParamRegister(int param)
     {
         var placed = _r.Params[param].Register!;
@@ -497,7 +497,7 @@ internal sealed class AsmLowering
                 return new Result(-1, reg, t);
             }
             default:
-                throw new CompileError(e.Pos, "a result is a register (REG0) or a parameter's register (%a)");
+                throw new CompileError(e.Pos, "a result is a register (REG0) or a parameter's register (a)");
         }
     }
 
@@ -646,11 +646,11 @@ internal sealed class AsmLowering
     /// `$` is LLVM's operand marker, so a written one is doubled.
     private static string Escape(string written) => written.Replace("$", "$$");
 
-    /// How an operand reads in a message: a register by its name, a parameter as %name.
+    /// How an operand reads in a message: a register or a parameter by its name.
     private static string OperandName(Expr e) => e switch
     {
         PresetRef r => r.Name,
-        ValueRef v => "%" + v.Name,
+        ValueRef v => v.Name,
         NsCallExpr { Owner: var o } ns => $"{o.Name}.{ns.Name}(…)",
         MethodCallExpr { Receiver: var r } m => $"{OperandName(r)}.{m.Name}(…)",
         _ => "…",
@@ -800,7 +800,7 @@ internal sealed class AsmLowering
 
     // ── Branches ────────────────────────────────────────────────────────────
 
-    /// A jump to %label when %cond holds, or with %negate when it doesn't.
+    /// A jump to label when cond holds, or with negate when it doesn't.
     private string ConditionalJump(Expr cond, string label, bool negate = false)
     {
         switch (cond)
@@ -899,7 +899,7 @@ internal sealed class AsmLowering
     }
 
     /// The condition code of a comparison of the flags: x86's (`jb`) or aarch64's (`b.lo`).
-    /// The condition code that holds exactly when %code doesn't (x86's and AArch64's spellings).
+    /// The condition code that holds exactly when code doesn't (x86's and AArch64's spellings).
     private static string Opposite(string code) => code switch
     {
         "e" => "ne", "ne" => "e", "l" => "ge", "ge" => "l", "le" => "g", "g" => "le",

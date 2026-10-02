@@ -11,432 +11,433 @@ import Standard::Format
 conform Priority<S64>
 
 #[external("c"), symbol("malloc")]
-routine c_malloc(%size: USize) -> Addr
+routine c_malloc(size: USize) -> Addr
 
 #[external("c"), symbol("realloc")]
-routine c_realloc(%ptr: Addr, %size: USize) -> Addr
+routine c_realloc(ptr: Addr, size: USize) -> Addr
 
 #[external("c"), symbol("free")]
-routine c_free(%ptr: Addr) -> Void
+routine c_free(ptr: Addr) -> Void
 
-routine S64.less(%self: Self, %other: Self) -> Bool
+routine S64.less(self: Self, other: Self) -> Bool
     block entry():
-        return(%self.lt(%other))
+        return(self.lt(other))
 
-// -- the budgeted allocator: %state points at the number of calls still allowed --------------------------------------
+// -- the budgeted allocator: state points at the number of calls still allowed --------------------------------------
 
-routine take_budget(%state: Addr) -> Bool
+routine take_budget(state: Addr) -> Bool
     block entry():
-        %budget : @USize = %state.to<@USize>()
-        %left   : USize  = %budget.load()
-        %spent  : Bool   = %left.eq(0)
-        branch %spent
+        budget : @USize = state.to<@USize>()
+        left   : USize  = budget.load()
+        spent  : Bool   = left.eq(0)
+        branch spent
             ? return(false)
             : continue
-        %left.sub(1).store_into(%budget)
+        left.sub(1).store_into(budget)
         return(true)
 
-routine budget_alloc(%state: Addr, %size: USize) -> Addr
+routine budget_alloc(state: Addr, size: USize) -> Addr
     block entry():
-        %allowed : Bool = take_budget(%state)
-        branch %allowed
-            ? return(c_malloc(%size))
+        allowed : Bool = take_budget(state)
+        branch allowed
+            ? return(c_malloc(size))
             : return(null)
 
-routine budget_realloc(%state: Addr, %old: Addr, %size: USize) -> Addr
+routine budget_realloc(state: Addr, old: Addr, size: USize) -> Addr
     block entry():
-        %allowed : Bool = take_budget(%state)
-        branch %allowed
-            ? return(c_realloc(%old, %size))
+        allowed : Bool = take_budget(state)
+        branch allowed
+            ? return(c_realloc(old, size))
             : return(null)
 
-routine budget_free(%state: Addr, %ptr: Addr) -> Void
+routine budget_free(state: Addr, ptr: Addr) -> Void
     block entry():
-        c_free(%ptr)
+        c_free(ptr)
         return()
 
 // -- sequences ------------------------------------------------------------------------------------------------------
 
-routine list_case(%alloc: @Allocator, %budget: @USize, %grant: USize) -> Void
+routine list_case(alloc: @Allocator, budget: @USize, grant: USize) -> Void
     block entry():
-        %budget.store(%grant)
-        %list_val : List<S64> = .construct(%alloc)
-        claim %list : @List<S64> <- %list_val
-        jump fill(%list, 0)
+        budget.store(grant)
+        list_val : List<S64> = .construct(alloc)
+        claim list : @List<S64> <- list_val
+        jump fill(list, 0)
 
-    block fill(%list: @List<S64>, %i: S64):
-        %pushed : Result<Unit, AllocFailed> = %list.push_result(%i)
-        when %pushed:
-            .Success -> fill(%list, %i.add(1))
-            .Failure -> failed(%list)
+    block fill(list: @List<S64>, i: S64):
+        pushed : Result<Unit, AllocFailed> = list.push_result(i)
+        when pushed:
+            .Success -> fill(list, i.add(1))
+            .Failure -> failed(list)
 
-    block failed(%list: @List<S64>):
-        print("List, budget {%grant}: {%list.load()}\n")
-        %budget.store(1)
-        %list.push(99)
-        print("  then push: {%list.load()}\n")
-        %list.destruct()
+    block failed(list: @List<S64>):
+        print("List, budget {grant}: {list.load()}\n")
+        budget.store(1)
+        list.push(99)
+        print("  then push: {list.load()}\n")
+        list.destruct()
         return()
 
-routine circular_case(%alloc: @Allocator, %budget: @USize, %grant: USize) -> Void
+routine circular_case(alloc: @Allocator, budget: @USize, grant: USize) -> Void
     block entry():
-        %budget.store(%grant)
-        %deque_val : CircularList<S64> = .construct(%alloc)
-        claim %deque : @CircularList<S64> <- %deque_val
-        jump fill(%deque, 0)
+        budget.store(grant)
+        deque_val : CircularList<S64> = .construct(alloc)
+        claim deque : @CircularList<S64> <- deque_val
+        jump fill(deque, 0)
 
     // Alternates ends, so both push_front_result and push_back_result reach the allocator.
-    block fill(%deque: @CircularList<S64>, %i: S64):
-        %front : Bool = %i.mod(2).eq(1)
-        branch %front
-            ? push_front(%deque, %i)
-            : push_back(%deque, %i)
+    block fill(deque: @CircularList<S64>, i: S64):
+        front : Bool = i.mod(2).eq(1)
+        branch front
+            ? push_front(deque, i)
+            : push_back(deque, i)
 
-    block push_front(%deque: @CircularList<S64>, %i: S64):
-        %pushed : Result<Unit, AllocFailed> = %deque.push_front_result(%i)
-        jump pushed(%deque, %i, %pushed)
+    block push_front(deque: @CircularList<S64>, i: S64):
+        pushed : Result<Unit, AllocFailed> = deque.push_front_result(i)
+        jump pushed(deque, i, pushed)
 
-    block push_back(%deque: @CircularList<S64>, %i: S64):
-        %pushed : Result<Unit, AllocFailed> = %deque.push_back_result(%i)
-        jump pushed(%deque, %i, %pushed)
+    block push_back(deque: @CircularList<S64>, i: S64):
+        pushed : Result<Unit, AllocFailed> = deque.push_back_result(i)
+        jump pushed(deque, i, pushed)
 
-    block pushed(%deque: @CircularList<S64>, %i: S64, %pushed: Result<Unit, AllocFailed>):
-        when %pushed:
-            .Success -> fill(%deque, %i.add(1))
-            .Failure -> failed(%deque)
+    block pushed(deque: @CircularList<S64>, i: S64, pushed: Result<Unit, AllocFailed>):
+        when pushed:
+            .Success -> fill(deque, i.add(1))
+            .Failure -> failed(deque)
 
-    block failed(%deque: @CircularList<S64>):
-        print("CircularList, budget {%grant}: {%deque.load()}\n")
-        %budget.store(1)
-        %deque.push_front(99)
-        print("  then push_front: {%deque.load()}\n")
-        %deque.destruct()
+    block failed(deque: @CircularList<S64>):
+        print("CircularList, budget {grant}: {deque.load()}\n")
+        budget.store(1)
+        deque.push_front(99)
+        print("  then push_front: {deque.load()}\n")
+        deque.destruct()
         return()
 
-routine queue_case(%alloc: @Allocator, %budget: @USize, %grant: USize) -> Void
+routine queue_case(alloc: @Allocator, budget: @USize, grant: USize) -> Void
     block entry():
-        %budget.store(%grant)
-        %queue_val : PriorityQueue<S64> = .construct(%alloc)
-        claim %queue : @PriorityQueue<S64> <- %queue_val
-        jump fill(%queue, 0)
+        budget.store(grant)
+        queue_val : PriorityQueue<S64> = .construct(alloc)
+        claim queue : @PriorityQueue<S64> <- queue_val
+        jump fill(queue, 0)
 
     // Pushes 100, 99, 98, ..., so each push sifts to the top.
-    block fill(%queue: @PriorityQueue<S64>, %i: S64):
-        %pushed : Result<Unit, AllocFailed> = %queue.push_result(S64.sub(100, %i))
-        when %pushed:
-            .Success -> fill(%queue, %i.add(1))
-            .Failure -> failed(%queue)
+    block fill(queue: @PriorityQueue<S64>, i: S64):
+        pushed : Result<Unit, AllocFailed> = queue.push_result(S64.sub(100, i))
+        when pushed:
+            .Success -> fill(queue, i.add(1))
+            .Failure -> failed(queue)
 
-    block failed(%queue: @PriorityQueue<S64>):
-        print("PriorityQueue, budget {%grant}: {%queue.load().length()} elements, top {%queue.load().peek_checked()}\n")
-        %budget.store(1)
-        %queue.push(0)
-        print("  then push: top {%queue.pop()}, next {%queue.pop_checked()}\n")
-        %queue.destruct()
+    block failed(queue: @PriorityQueue<S64>):
+        print("PriorityQueue, budget {grant}: {queue.load().length()} elements, top {queue.load().peek_checked()}\n")
+        budget.store(1)
+        queue.push(0)
+        print("  then push: top {queue.pop()}, next {queue.pop_checked()}\n")
+        queue.destruct()
         return()
 
 // -- hash collections -----------------------------------------------------------------------------------------------
 
-// Every key below %count maps to ten times itself.
-routine dict_intact(%map: @Dict<S64, S64>, %count: S64) -> Bool
+// Every key below count maps to ten times itself.
+routine dict_intact(map: @Dict<S64, S64>, count: S64) -> Bool
     block entry():
-        %length : S64  = %map.load().length().to<S64>()
-        %same   : Bool = %length.eq(%count)
-        branch %same
+        length : S64  = map.load().length().to<S64>()
+        same   : Bool = length.eq(count)
+        branch same
             ? check(0)
             : return(false)
 
-    block check(%i: S64):
-        %done : Bool = %i.ge(%count)
-        branch %done
+    block check(i: S64):
+        done : Bool = i.ge(count)
+        branch done
             ? return(true)
             : continue
-        %value : S64  = %map.load().get(%i)
-        %right : Bool = %value.eq(%i.mul(10))
-        branch %right
-            ? check(%i.add(1))
+        value : S64  = map.load().get(i)
+        right : Bool = value.eq(i.mul(10))
+        branch right
+            ? check(i.add(1))
             : return(false)
 
-routine dict_case(%alloc: @Allocator, %budget: @USize, %grant: USize) -> Void
+routine dict_case(alloc: @Allocator, budget: @USize, grant: USize) -> Void
     block entry():
-        %budget.store(%grant)
-        %map_val : Dict<S64, S64> = .construct(%alloc)
-        claim %map : @Dict<S64, S64> <- %map_val
-        jump fill(%map, 0)
+        budget.store(grant)
+        map_val : Dict<S64, S64> = .construct(alloc)
+        claim map : @Dict<S64, S64> <- map_val
+        jump fill(map, 0)
 
-    block fill(%map: @Dict<S64, S64>, %i: S64):
-        %put : Result<Unit, AllocFailed> = %map.put_result(%i, %i.mul(10))
-        when %put:
-            .Success -> fill(%map, %i.add(1))
-            .Failure -> failed(%map, %i)
+    block fill(map: @Dict<S64, S64>, i: S64):
+        put : Result<Unit, AllocFailed> = map.put_result(i, i.mul(10))
+        when put:
+            .Success -> fill(map, i.add(1))
+            .Failure -> failed(map, i)
 
-    block failed(%map: @Dict<S64, S64>, %count: S64):
-        print("Dict, budget {%grant}: {%count} entries, intact {dict_intact(%map, %count)}")
-        %budget.store(5)
-        %map.put(%count, %count.mul(10))
-        print(", then put: intact {dict_intact(%map, %count.add(1))}\n")
-        %map.destruct()
+    block failed(map: @Dict<S64, S64>, count: S64):
+        print("Dict, budget {grant}: {count} entries, intact {dict_intact(map, count)}")
+        budget.store(5)
+        map.put(count, count.mul(10))
+        print(", then put: intact {dict_intact(map, count.add(1))}\n")
+        map.destruct()
         return()
 
-routine set_intact(%set: @Set<S64>, %count: S64) -> Bool
+routine set_intact(set: @Set<S64>, count: S64) -> Bool
     block entry():
-        %length : S64  = %set.load().length().to<S64>()
-        %same   : Bool = %length.eq(%count)
-        branch %same
+        length : S64  = set.load().length().to<S64>()
+        same   : Bool = length.eq(count)
+        branch same
             ? check(0)
             : return(false)
 
-    block check(%i: S64):
-        %done : Bool = %i.ge(%count)
-        branch %done
+    block check(i: S64):
+        done : Bool = i.ge(count)
+        branch done
             ? return(true)
             : continue
-        %has : Bool = %set.load().contains(%i)
-        branch %has
-            ? check(%i.add(1))
+        has : Bool = set.load().contains(i)
+        branch has
+            ? check(i.add(1))
             : return(false)
 
-routine set_case(%alloc: @Allocator, %budget: @USize, %grant: USize) -> Void
+routine set_case(alloc: @Allocator, budget: @USize, grant: USize) -> Void
     block entry():
-        %budget.store(%grant)
-        %set_val : Set<S64> = .construct(%alloc)
-        claim %set : @Set<S64> <- %set_val
-        jump fill(%set, 0)
+        budget.store(grant)
+        set_val : Set<S64> = .construct(alloc)
+        claim set : @Set<S64> <- set_val
+        jump fill(set, 0)
 
-    block fill(%set: @Set<S64>, %i: S64):
-        %added : Result<Bool, AllocFailed> = %set.add_result(%i)
-        when %added:
-            .Success -> fill(%set, %i.add(1))
-            .Failure -> failed(%set, %i)
+    block fill(set: @Set<S64>, i: S64):
+        added : Result<Bool, AllocFailed> = set.add_result(i)
+        when added:
+            .Success -> fill(set, i.add(1))
+            .Failure -> failed(set, i)
 
-    block failed(%set: @Set<S64>, %count: S64):
-        print("Set, budget {%grant}: {%count} keys, intact {set_intact(%set, %count)}")
-        %budget.store(4)
-        %added : Bool                      = %set.add(%count)
-        %again : Result<Bool, AllocFailed> = %set.add_result(%count)
-        print(", then add: {%added}, again {%again}, intact {set_intact(%set, %count.add(1))}\n")
-        %set.destruct()
+    block failed(set: @Set<S64>, count: S64):
+        print("Set, budget {grant}: {count} keys, intact {set_intact(set, count)}")
+        budget.store(4)
+        added : Bool                      = set.add(count)
+        again : Result<Bool, AllocFailed> = set.add_result(count)
+        print(", then add: {added}, again {again}, intact {set_intact(set, count.add(1))}\n")
+        set.destruct()
         return()
 
 // -- B-trees --------------------------------------------------------------------------------------------------------
 
 // Rank i holds key i and value ten times i, and get finds each key.
-routine sorted_dict_intact(%map: @SortedDict<S64, S64>, %count: S64) -> Bool
+routine sorted_dict_intact(map: @SortedDict<S64, S64>, count: S64) -> Bool
     block entry():
-        %length : S64  = %map.load().length().to<S64>()
-        %same   : Bool = %length.eq(%count)
-        branch %same
+        length : S64  = map.load().length().to<S64>()
+        same   : Bool = length.eq(count)
+        branch same
             ? check(0)
             : return(false)
 
-    block check(%i: S64):
-        %done : Bool = %i.ge(%count)
-        branch %done
+    block check(i: S64):
+        done : Bool = i.ge(count)
+        branch done
             ? return(true)
             : continue
-        %pair  : KVPair<S64, S64> = %map.load().get_by_rank(%i.to<USize>())
-        %key   : S64              = %pair.key
-        %value : S64              = %pair.value
-        %found : S64              = %map.load().get(%i)
-        %tens  : S64              = %i.mul(10)
-        %right : Bool             = %key.eq(%i).bitand(%value.eq(%tens)).bitand(%found.eq(%tens))
-        branch %right
-            ? check(%i.add(1))
+        pair  : KVPair<S64, S64> = map.load().get_by_rank(i.to<USize>())
+        key   : S64              = pair.key
+        value : S64              = pair.value
+        found : S64              = map.load().get(i)
+        tens  : S64              = i.mul(10)
+        right : Bool             = key.eq(i).bitand(value.eq(tens)).bitand(found.eq(tens))
+        branch right
+            ? check(i.add(1))
             : return(false)
 
-routine sorted_dict_case(%alloc: @Allocator, %budget: @USize, %grant: USize) -> Void
+routine sorted_dict_case(alloc: @Allocator, budget: @USize, grant: USize) -> Void
     block entry():
-        %budget.store(%grant)
-        %map_val : SortedDict<S64, S64> = .construct(%alloc)
-        claim %map : @SortedDict<S64, S64> <- %map_val
-        jump fill(%map, 0)
+        budget.store(grant)
+        map_val : SortedDict<S64, S64> = .construct(alloc)
+        claim map : @SortedDict<S64, S64> <- map_val
+        jump fill(map, 0)
 
-    block fill(%map: @SortedDict<S64, S64>, %i: S64):
-        %put : Result<Unit, AllocFailed> = %map.put_result(%i, %i.mul(10))
-        when %put:
-            .Success -> fill(%map, %i.add(1))
-            .Failure -> failed(%map, %i)
+    block fill(map: @SortedDict<S64, S64>, i: S64):
+        put : Result<Unit, AllocFailed> = map.put_result(i, i.mul(10))
+        when put:
+            .Success -> fill(map, i.add(1))
+            .Failure -> failed(map, i)
 
-    block failed(%map: @SortedDict<S64, S64>, %count: S64):
-        print("SortedDict, budget {%grant}: {%count} entries, intact {sorted_dict_intact(%map, %count)}")
-        %budget.store(3)
-        %map.put(%count, %count.mul(10))
-        print(", then put: intact {sorted_dict_intact(%map, %count.add(1))}\n")
-        %map.destruct()
+    block failed(map: @SortedDict<S64, S64>, count: S64):
+        print("SortedDict, budget {grant}: {count} entries, intact {sorted_dict_intact(map, count)}")
+        budget.store(3)
+        map.put(count, count.mul(10))
+        print(", then put: intact {sorted_dict_intact(map, count.add(1))}\n")
+        map.destruct()
         return()
 
-routine sorted_set_intact(%set: @SortedSet<S64>, %count: S64) -> Bool
+routine sorted_set_intact(set: @SortedSet<S64>, count: S64) -> Bool
     block entry():
-        %length : S64  = %set.load().length().to<S64>()
-        %same   : Bool = %length.eq(%count)
-        branch %same
+        length : S64  = set.load().length().to<S64>()
+        same   : Bool = length.eq(count)
+        branch same
             ? check(0)
             : return(false)
 
-    block check(%i: S64):
-        %done : Bool = %i.ge(%count)
-        branch %done
+    block check(i: S64):
+        done : Bool = i.ge(count)
+        branch done
             ? return(true)
             : continue
-        %key   : S64  = %set.load().get_by_rank(%i.to<USize>())
-        %right : Bool = %key.eq(%i).bitand(%set.load().contains(%i))
-        branch %right
-            ? check(%i.add(1))
+        key   : S64  = set.load().get_by_rank(i.to<USize>())
+        right : Bool = key.eq(i).bitand(set.load().contains(i))
+        branch right
+            ? check(i.add(1))
             : return(false)
 
-routine sorted_set_case(%alloc: @Allocator, %budget: @USize, %grant: USize) -> Void
+routine sorted_set_case(alloc: @Allocator, budget: @USize, grant: USize) -> Void
     block entry():
-        %budget.store(%grant)
-        %set_val : SortedSet<S64> = .construct(%alloc)
-        claim %set : @SortedSet<S64> <- %set_val
-        jump fill(%set, 0)
+        budget.store(grant)
+        set_val : SortedSet<S64> = .construct(alloc)
+        claim set : @SortedSet<S64> <- set_val
+        jump fill(set, 0)
 
-    block fill(%set: @SortedSet<S64>, %i: S64):
-        %added : Result<Bool, AllocFailed> = %set.add_result(%i)
-        when %added:
-            .Success -> fill(%set, %i.add(1))
-            .Failure -> failed(%set, %i)
+    block fill(set: @SortedSet<S64>, i: S64):
+        added : Result<Bool, AllocFailed> = set.add_result(i)
+        when added:
+            .Success -> fill(set, i.add(1))
+            .Failure -> failed(set, i)
 
-    block failed(%set: @SortedSet<S64>, %count: S64):
-        print("SortedSet, budget {%grant}: {%count} keys, intact {sorted_set_intact(%set, %count)}")
-        %budget.store(3)
-        %added : Bool = %set.add(%count)
-        print(", then add: {%added}, intact {sorted_set_intact(%set, %count.add(1))}\n")
-        %set.destruct()
+    block failed(set: @SortedSet<S64>, count: S64):
+        print("SortedSet, budget {grant}: {count} keys, intact {sorted_set_intact(set, count)}")
+        budget.store(3)
+        added : Bool = set.add(count)
+        print(", then add: {added}, intact {sorted_set_intact(set, count.add(1))}\n")
+        set.destruct()
         return()
 
-routine sorted_list_intact(%list: @SortedList<S64>, %count: S64) -> Bool
+routine sorted_list_intact(list: @SortedList<S64>, count: S64) -> Bool
     block entry():
-        %length : S64  = %list.load().length().to<S64>()
-        %same   : Bool = %length.eq(%count)
-        branch %same
+        length : S64  = list.load().length().to<S64>()
+        same   : Bool = length.eq(count)
+        branch same
             ? check(0)
             : return(false)
 
-    block check(%i: S64):
-        %done : Bool = %i.ge(%count)
-        branch %done
+    block check(i: S64):
+        done : Bool = i.ge(count)
+        branch done
             ? return(true)
             : continue
-        %value : S64  = %list.load().get(%i.to<USize>())
-        %rank  : S64  = %list.load().rank(%i).to<S64>()
-        %right : Bool = %value.eq(%i).bitand(%rank.eq(%i))
-        branch %right
-            ? check(%i.add(1))
+        value : S64  = list.load().get(i.to<USize>())
+        rank  : S64  = list.load().rank(i).to<S64>()
+        right : Bool = value.eq(i).bitand(rank.eq(i))
+        branch right
+            ? check(i.add(1))
             : return(false)
 
-routine sorted_list_case(%alloc: @Allocator, %budget: @USize, %grant: USize) -> Void
+routine sorted_list_case(alloc: @Allocator, budget: @USize, grant: USize) -> Void
     block entry():
-        %budget.store(%grant)
-        %list_val : SortedList<S64> = .construct(%alloc)
-        claim %list : @SortedList<S64> <- %list_val
-        jump fill(%list, 0)
+        budget.store(grant)
+        list_val : SortedList<S64> = .construct(alloc)
+        claim list : @SortedList<S64> <- list_val
+        jump fill(list, 0)
 
-    block fill(%list: @SortedList<S64>, %i: S64):
-        %pushed : Result<Unit, AllocFailed> = %list.push_result(%i)
-        when %pushed:
-            .Success -> fill(%list, %i.add(1))
-            .Failure -> failed(%list, %i)
+    block fill(list: @SortedList<S64>, i: S64):
+        pushed : Result<Unit, AllocFailed> = list.push_result(i)
+        when pushed:
+            .Success -> fill(list, i.add(1))
+            .Failure -> failed(list, i)
 
-    block failed(%list: @SortedList<S64>, %count: S64):
-        print("SortedList, budget {%grant}: {%count} elements, intact {sorted_list_intact(%list, %count)}")
-        %budget.store(3)
-        %list.push(%count)
-        print(", then push: intact {sorted_list_intact(%list, %count.add(1))}\n")
-        %list.destruct()
+    block failed(list: @SortedList<S64>, count: S64):
+        print("SortedList, budget {grant}: {count} elements, intact {sorted_list_intact(list, count)}")
+        budget.store(3)
+        list.push(count)
+        print(", then push: intact {sorted_list_intact(list, count.add(1))}\n")
+        list.destruct()
         return()
 
 // -- the _checked forms -----------------------------------------------------------------------------------------------
 
-routine checked_forms(%alloc: @Allocator, %budget: @USize) -> Void
+routine checked_forms(alloc: @Allocator, budget: @USize) -> Void
     block entry():
-        %budget.store(100)
-        %list_val : List<S64> = .construct(%alloc)
-        claim %list : @List<S64> <- %list_val
-        print("List: pop_checked {%list.pop_checked()}")
-        %list.push(7)
-        print(", get_checked(0) {%list.load().get_checked(0)}, get_checked(1) {%list.load().get_checked(1)}")
-        print(", pop_checked {%list.pop_checked()}\n")
-        %list.destruct()
+        budget.store(100)
+        list_val : List<S64> = .construct(alloc)
+        claim list : @List<S64> <- list_val
+        print("List: pop_checked {list.pop_checked()}")
+        list.push(7)
+        print(", get_checked(0) {list.load().get_checked(0)}, get_checked(1) {list.load().get_checked(1)}")
+        print(", pop_checked {list.pop_checked()}\n")
+        list.destruct()
 
-        %deque_val : CircularList<S64> = .construct(%alloc)
-        claim %deque : @CircularList<S64> <- %deque_val
-        print("CircularList: pop_front_checked {%deque.pop_front_checked()}")
-        print(", pop_back_checked {%deque.pop_back_checked()}")
-        %deque.push_back(1)
-        %deque.push_back(2)
-        print(", get_checked(1) {%deque.load().get_checked(1)}, get_checked(2) {%deque.load().get_checked(2)}")
-        print(", pop_front_checked {%deque.pop_front_checked()}, pop_checked {%deque.pop_checked()}\n")
-        %deque.destruct()
+        deque_val : CircularList<S64> = .construct(alloc)
+        claim deque : @CircularList<S64> <- deque_val
+        print("CircularList: pop_front_checked {deque.pop_front_checked()}")
+        print(", pop_back_checked {deque.pop_back_checked()}")
+        deque.push_back(1)
+        deque.push_back(2)
+        print(", get_checked(1) {deque.load().get_checked(1)}, get_checked(2) {deque.load().get_checked(2)}")
+        print(", pop_front_checked {deque.pop_front_checked()}, pop_checked {deque.pop_checked()}\n")
+        deque.destruct()
 
-        %queue_val : PriorityQueue<S64> = .construct(%alloc)
-        claim %queue : @PriorityQueue<S64> <- %queue_val
-        print("PriorityQueue: peek_checked {%queue.load().peek_checked()}, pop_checked {%queue.pop_checked()}")
-        %queue.push(5)
-        %queue.push(3)
-        print(", peek_checked {%queue.load().peek_checked()}, pop_checked {%queue.pop_checked()}\n")
-        %queue.destruct()
+        queue_val : PriorityQueue<S64> = .construct(alloc)
+        claim queue : @PriorityQueue<S64> <- queue_val
+        print("PriorityQueue: peek_checked {queue.load().peek_checked()}, pop_checked {queue.pop_checked()}")
+        queue.push(5)
+        queue.push(3)
+        print(", peek_checked {queue.load().peek_checked()}, pop_checked {queue.pop_checked()}\n")
+        queue.destruct()
 
-        %map_val : Dict<S64, S64> = .construct(%alloc)
-        claim %map : @Dict<S64, S64> <- %map_val
-        print("Dict: get_checked(1) {%map.load().get_checked(1)}")
-        %map.put(1, 10)
-        print(", after put {%map.load().get_checked(1)}, get_checked(2) {%map.load().get_checked(2)}\n")
-        %map.destruct()
+        map_val : Dict<S64, S64> = .construct(alloc)
+        claim map : @Dict<S64, S64> <- map_val
+        print("Dict: get_checked(1) {map.load().get_checked(1)}")
+        map.put(1, 10)
+        print(", after put {map.load().get_checked(1)}, get_checked(2) {map.load().get_checked(2)}\n")
+        map.destruct()
 
-        claim %sorted : @SortedDict<S64, S64> <- .construct(%alloc)
-        print("SortedDict: get_checked(1) {%sorted.load().get_checked(1)}")
-        %sorted.put(1, 10)
-        print(", after put {%sorted.load().get_checked(1)}, get_checked(2) {%sorted.load().get_checked(2)}\n")
-        %sorted.destruct()
+        claim sorted : @SortedDict<S64, S64> <- .construct(alloc)
+        print("SortedDict: get_checked(1) {sorted.load().get_checked(1)}")
+        sorted.put(1, 10)
+        print(", after put {sorted.load().get_checked(1)}, get_checked(2) {sorted.load().get_checked(2)}\n")
+        sorted.destruct()
 
-        claim %ordered : @SortedList<S64> <- .construct(%alloc)
-        print("SortedList: get_checked(0) {%ordered.load().get_checked(0)}")
-        %ordered.push(4)
-        print(", after push {%ordered.load().get_checked(0)}\n")
-        %ordered.destruct()
+        claim ordered : @SortedList<S64> <- .construct(alloc)
+        print("SortedList: get_checked(0) {ordered.load().get_checked(0)}")
+        ordered.push(4)
+        print(", after push {ordered.load().get_checked(0)}\n")
+        ordered.destruct()
         return()
 
 routine main() -> S32
     block entry():
-        claim %budget : @USize <- 0
-        %budgeted : Allocator = Allocator { alloc_fn: budget_alloc, realloc_fn: budget_realloc,
-                free_fn: budget_free, state: %budget }
-        claim %alloc : @Allocator <- %budgeted
-        jump sequences(%alloc, %budget, 0)
+        claim budget : @USize <- 0
+        budgeted : Allocator = Allocator { alloc_fn: budget_alloc.to<Callable>(),
+                realloc_fn: budget_realloc.to<Callable>(), free_fn: budget_free.to<Callable>(),
+                state: budget }
+        claim alloc : @Allocator <- budgeted
+        jump sequences(alloc, budget, 0)
 
-    block sequences(%alloc: @Allocator, %budget: @USize, %grant: USize):
-        %done : Bool = %grant.gt(2)
-        branch %done
-            ? hashes(%alloc, %budget, 0)
+    block sequences(alloc: @Allocator, budget: @USize, grant: USize):
+        done : Bool = grant.gt(2)
+        branch done
+            ? hashes(alloc, budget, 0)
             : continue
-        list_case(%alloc, %budget, %grant)
-        circular_case(%alloc, %budget, %grant)
-        queue_case(%alloc, %budget, %grant)
-        jump sequences(%alloc, %budget, %grant.add(1))
+        list_case(alloc, budget, grant)
+        circular_case(alloc, budget, grant)
+        queue_case(alloc, budget, grant)
+        jump sequences(alloc, budget, grant.add(1))
 
     // Dict rehashes into 5 arrays and Set into 4, so the budgets stop partway through a rehash too.
-    block hashes(%alloc: @Allocator, %budget: @USize, %grant: USize):
-        %done : Bool = %grant.gt(12)
-        branch %done
-            ? trees(%alloc, %budget, 0)
+    block hashes(alloc: @Allocator, budget: @USize, grant: USize):
+        done : Bool = grant.gt(12)
+        branch done
+            ? trees(alloc, budget, 0)
             : continue
-        dict_case(%alloc, %budget, %grant)
-        set_case(%alloc, %budget, %grant)
-        jump hashes(%alloc, %budget, %grant.add(1))
+        dict_case(alloc, budget, grant)
+        set_case(alloc, budget, grant)
+        jump hashes(alloc, budget, grant.add(1))
 
     // Ascending keys fill a root leaf (1 node), split it (2 more), add leaves until the root is full (6 more), then
     // split the root again (2) above one more leaf split: budgets up to 12 fail at each of those steps.
-    block trees(%alloc: @Allocator, %budget: @USize, %grant: USize):
-        %done : Bool = %grant.gt(12)
-        branch %done
-            ? checked(%alloc, %budget)
+    block trees(alloc: @Allocator, budget: @USize, grant: USize):
+        done : Bool = grant.gt(12)
+        branch done
+            ? checked(alloc, budget)
             : continue
-        sorted_dict_case(%alloc, %budget, %grant)
-        sorted_set_case(%alloc, %budget, %grant)
-        sorted_list_case(%alloc, %budget, %grant)
-        jump trees(%alloc, %budget, %grant.add(1))
+        sorted_dict_case(alloc, budget, grant)
+        sorted_set_case(alloc, budget, grant)
+        sorted_list_case(alloc, budget, grant)
+        jump trees(alloc, budget, grant.add(1))
 
-    block checked(%alloc: @Allocator, %budget: @USize):
-        checked_forms(%alloc, %budget)
+    block checked(alloc: @Allocator, budget: @USize):
+        checked_forms(alloc, budget)
         return(0)

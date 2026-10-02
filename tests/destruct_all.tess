@@ -9,97 +9,97 @@ import Standard::Os
 record Counts
     live : S64
 
-routine counting_alloc(%state: Addr, %size: USize) -> Addr
+routine counting_alloc(state: Addr, size: USize) -> Addr
     block entry():
-        %counts : @Counts = %state.to<@Counts>()
-        %counts.live.load().add(1).store_into(%counts.live)
-        %heap : Allocator = make_heap_allocator()
-        %r    : Addr      = %heap.alloc_fn.call(null, %size)
-        return(%r)
+        counts : @Counts = state.to<@Counts>()
+        counts.live.load().add(1).store_into(counts.live)
+        heap : Allocator = make_heap_allocator()
+        r    : Addr      = heap.alloc_fn.call(null, size)
+        return(r)
 
-routine counting_realloc(%state: Addr, %old: Addr, %size: USize) -> Addr
+routine counting_realloc(state: Addr, old: Addr, size: USize) -> Addr
     block entry():
-        %was_null : Bool = %old.is_null()
-        branch %was_null
+        was_null : Bool = old.is_null()
+        branch was_null
             ? fresh()
             : resize()
 
     block fresh():
-        %counts : @Counts = %state.to<@Counts>()
-        %counts.live.load().add(1).store_into(%counts.live)
+        counts : @Counts = state.to<@Counts>()
+        counts.live.load().add(1).store_into(counts.live)
         jump resize()
 
     block resize():
-        %heap : Allocator = make_heap_allocator()
-        %r    : Addr      = %heap.realloc_fn.call(null, %old, %size)
-        return(%r)
+        heap : Allocator = make_heap_allocator()
+        r    : Addr      = heap.realloc_fn.call(null, old, size)
+        return(r)
 
-routine counting_free(%state: Addr, %block: Addr) -> Void
+routine counting_free(state: Addr, memory: Addr) -> Void
     block entry():
-        %was_null : Bool = %block.is_null()
-        branch %was_null
+        was_null : Bool = memory.is_null()
+        branch was_null
             ? return()
             : release()
 
     block release():
-        %counts : @Counts = %state.to<@Counts>()
-        %counts.live.load().sub(1).store_into(%counts.live)
-        %heap : Allocator = make_heap_allocator()
-        %heap.free_fn.call(null, %block)
+        counts : @Counts = state.to<@Counts>()
+        counts.live.load().sub(1).store_into(counts.live)
+        heap : Allocator = make_heap_allocator()
+        heap.free_fn.call(null, memory)
         return()
 
-routine show(%label: Bytes, %counts: @Counts) -> Void
+routine show(label: Bytes, counts: @Counts) -> Void
     block entry():
-        print("{%label}")
-        %live : S64 = %counts.live.load()
-        print("{%live}\n")
+        print("{label}")
+        live : S64 = counts.live.load()
+        print("{live}\n")
         return()
 
 // A list of three inner lists, each with a few elements.
-routine fill(%outer: @List<List<S64>>, %alloc: @Allocator) -> Void
+routine fill(outer: @List<List<S64>>, alloc: @Allocator) -> Void
     block entry():
         jump loop(0)
 
-    block loop(%i: USize):
-        %done : Bool = %i.eq(3)
-        branch %done
+    block loop(i: USize):
+        done : Bool = i.eq(3)
+        branch done
             ? return()
-            : add(%i)
+            : add(i)
 
-    block add(%i: USize):
-        claim %inner : @List<S64> <- .construct(%alloc)
-        %inner.push(%i.to<S64>())
-        %inner.push(7)
-        %filled : List<S64> = %inner.load()
-        %outer.push(%filled)
-        jump loop(%i.add(1))
+    block add(i: USize):
+        claim inner : @List<S64> <- .construct(alloc)
+        inner.push(i.to<S64>())
+        inner.push(7)
+        filled : List<S64> = inner.load()
+        outer.push(filled)
+        jump loop(i.add(1))
 
 routine main() -> S32
     block entry():
-        claim %counts : @Counts <- { live: 0 }
-        %counting : Allocator = Allocator { alloc_fn:   counting_alloc,
-                realloc_fn: counting_realloc, free_fn:    counting_free,
-                state:      %counts.to<@Byte>() }
-        claim %alloc : @Allocator <- %counting
+        claim counts : @Counts <- { live: 0 }
+        counting : Allocator = Allocator { alloc_fn:   counting_alloc.to<Callable>(),
+                realloc_fn: counting_realloc.to<Callable>(),
+                free_fn:    counting_free.to<Callable>(), state:      counts.to<@Byte>() }
+        claim alloc : @Allocator <- counting
 
-        claim %a : @List<List<S64>> <- .construct(%alloc)
-        fill(%a, %alloc)
-        show("filled: ", %counts)
-        %a.destruct()
-        show("after destruct (inner lists leak): ", %counts)
+        claim a : @List<List<S64>> <- .construct(alloc)
+        fill(a, alloc)
+        show("filled: ", counts)
+        a.destruct()
+        show("after destruct (inner lists leak): ", counts)
 
-        %counts.live.store(0)
-        claim %b : @List<List<S64>> <- .construct(%alloc)
-        fill(%b, %alloc)
-        %b.destruct_all()
-        show("after destruct_all: ", %counts)
+        counts.live.store(0)
+        claim b : @List<List<S64>> <- .construct(alloc)
+        fill(b, alloc)
+        b.destruct_all()
+        show("after destruct_all: ", counts)
 
-        %counts.live.store(0)
-        claim %d : @Dict<S64, List<S64>> <- .construct(%alloc)
-        claim %v : @List<S64>            <- .construct(%alloc)
-        %v.push(1)
-        %v_loaded : List<S64> = %v.load()
-        %d.put(5, %v_loaded)
-        %d.destruct_all_values()
-        show("dict after destruct_all_values: ", %counts)
+        counts.live.store(0)
+        claim d : @Dict<S64, List<S64>> <- .construct(alloc)
+        claim v : @List<S64>            <- .construct(alloc)
+        v.push(1)
+        v_loaded : List<S64> = v.load()
+        d.put(5, v_loaded)
+        d.destruct_all_values()
+        show("dict after destruct_all_values: ", counts)
         return(0)

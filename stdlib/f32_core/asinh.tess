@@ -83,72 +83,71 @@ preset CM_F32_ASINH_LIX: @Array<U64, 129> <- { 0x0000000000000000, 0x3F7FE02A6B1
         0x3FE5EE02A9241E75, 0x3FE60E32F447A8D9, 0x3FE62E42FEFA39EF }
 
 /// asinh(self), correctly rounded.
-routine F32.asinh(%self: Self) -> Self
+routine F32.asinh(self: Self) -> Self
     block entry():
-        %tu    : U32  = %self.bits().bitand(0x7FFFFFFF)
-        %xs    : F64  = %self.to<F64>()
-        %small : Bool = %tu.le(0x3E815667)  // |x| <= 0x1.02accep-2
-        %tiny  : Bool = %tu.le(0x39DDB3D7)  // |x| <= 0x1.bb67aep-12
-        %zero  : Bool = %tu.eq(0)
-        %big   : Bool = %tu.ge(0x7F800000)  // ±inf or NaN
+        tu    : U32  = self.bits().bitand(0x7FFFFFFF)
+        xs    : F64  = self.to<F64>()
+        small : Bool = tu.le(0x3E815667)  // |x| <= 0x1.02accep-2
+        tiny  : Bool = tu.le(0x39DDB3D7)  // |x| <= 0x1.bb67aep-12
+        zero  : Bool = tu.eq(0)
+        big   : Bool = tu.ge(0x7F800000)  // ±inf or NaN
         when:
-            %zero  -> return(%self)
-            %tiny  -> return(%self.mul_add(-0x1p-25, %self))
-            %small -> poly(%xs)
-            %big   -> return(%self.add(%self))
-            else   -> general(%xs)
+            zero  -> return(self)
+            tiny  -> return(self.mul_add(-0x1p-25, self))
+            small -> poly(xs)
+            big   -> return(self.add(self))
+            else  -> general(xs)
 
-    block poly(%xs: F64):
-        %x2  : F64 = %xs.mul(%xs)
-        %x4  : F64 = %x2.mul(%x2)
-        %x8  : F64 = %x4.mul(%x4)
-        %p01 : F64 = %x2.mul(-0x1.3333333330e9dp-4).add(0x1.5555555555553p-3)
-        %p23 : F64 = %x2.mul(-0x1.f1c71699375dp-6).add(0x1.6db6db67cb37ap-5)
-        %p45 : F64 = %x2.mul(-0x1.1c1e98f9d01e1p-6).add(0x1.6e8a374c39ff9p-6)
-        %p67 : F64 = %x2.mul(-0x1.329ff5faf02abp-7).add(0x1.c277e96d84026p-7)
-        %p03 : F64 = %x4.mul(%p23).add(%p01)
-        %p47 : F64 = %x4.mul(%p67).add(%p45)
-        %f   : F64 = %x8.mul(%p47).add(%p03).mul(%x2)
-        return(%xs.sub(%xs.mul(%f)).to<Self>())
+    block poly(xs: F64):
+        x2  : F64 = xs.mul(xs)
+        x4  : F64 = x2.mul(x2)
+        x8  : F64 = x4.mul(x4)
+        p01 : F64 = x2.mul(-0x1.3333333330e9dp-4).add(0x1.5555555555553p-3)
+        p23 : F64 = x2.mul(-0x1.f1c71699375dp-6).add(0x1.6db6db67cb37ap-5)
+        p45 : F64 = x2.mul(-0x1.1c1e98f9d01e1p-6).add(0x1.6e8a374c39ff9p-6)
+        p67 : F64 = x2.mul(-0x1.329ff5faf02abp-7).add(0x1.c277e96d84026p-7)
+        p03 : F64 = x4.mul(p23).add(p01)
+        p47 : F64 = x4.mul(p67).add(p45)
+        f   : F64 = x8.mul(p47).add(p03).mul(x2)
+        return(xs.sub(xs.mul(f)).to<Self>())
 
-    block general(%xs: F64):
-        %xd : F64 = %xs.abs()
-        %tp : F64 = %xd.add(%xd.mul(%xd).add(1.0).sqrt())
-        %r  : F64 = cm_f32_asinh_log(%tp)
-        return(%r.copysign(%xs).to<Self>())
+    block general(xs: F64):
+        xd : F64 = xs.abs()
+        tp : F64 = xd.add(xd.mul(xd).add(1.0).sqrt())
+        r  : F64 = cm_f32_asinh_log(tp)
+        return(r.copysign(xs).to<Self>())
 
 /// log(tp) for tp >= 1, accurate enough to round correctly to F32.
-routine cm_f32_asinh_log(%tp: F64) -> F64
+routine cm_f32_asinh_log(tp: F64) -> F64
     block entry():
-        %tb   : U64   = %tp.bits()
-        %m    : U64   = %tb.bitand(0x000FFFFFFFFFFFFF)
-        %j    : USize = %m.add_wrap(U64.shl(1, 44)).shr(45).to<USize>()
-        %e    : F64   = %tb.shr(52).to<S64>().sub(0x3FF).to<F64>()
-        %w    : F64   = F64.from_bits(%m.bitor(0x3FF0000000000000))
-        %lix  : F64   = F64.from_bits(CM_F32_ASINH_LIX.get(%j))
-        %z    : F64   = %w.mul(F64.from_bits(CM_F32_ASINH_IX.get(%j))).sub(1.0)
-        %z2   : F64   = %z.mul(%z)
-        %head : F64   = F64.mul(0x1.62e42fefa39efp-1,
-                %e).add(%lix).add(%z.mul(0x1.0000000066947p+0))
-        %r    : F64   = %head.add(%z2.mul(%z.mul(0x1.555280111d914p-2).add(-0x1.00007f053d8cbp-1)))
-        %hard : Bool  = %r.bits().add_wrap(259000).bitand(0xFFFFFFF).lt(260000)
-        branch %hard
-            ? accurate(%z, %e, %lix)
-            : return(%r)
+        tb   : U64   = tp.bits()
+        m    : U64   = tb.bitand(0x000FFFFFFFFFFFFF)
+        j    : USize = m.add_wrap(U64.shl(1, 44)).shr(45).to<USize>()
+        e    : F64   = tb.shr(52).to<S64>().sub(0x3FF).to<F64>()
+        w    : F64   = F64.from_bits(m.bitor(0x3FF0000000000000))
+        lix  : F64   = F64.from_bits(CM_F32_ASINH_LIX.get(j))
+        z    : F64   = w.mul(F64.from_bits(CM_F32_ASINH_IX.get(j))).sub(1.0)
+        z2   : F64   = z.mul(z)
+        head : F64   = F64.mul(0x1.62e42fefa39efp-1, e).add(lix).add(z.mul(0x1.0000000066947p+0))
+        r    : F64   = head.add(z2.mul(z.mul(0x1.555280111d914p-2).add(-0x1.00007f053d8cbp-1)))
+        hard : Bool  = r.bits().add_wrap(259000).bitand(0xFFFFFFF).lt(260000)
+        branch hard
+            ? accurate(z, e, lix)
+            : return(r)
 
-    block accurate(%z: F64, %e: F64, %lix: F64):
-        %z2  : F64  = %z.mul(%z)
-        %c0  : F64  = %z.mul(-0.5).add(1.0)
-        %c2  : F64  = %z.mul(-0x1.ffffffff2b4e5p-3).add(0x1.55555555030bcp-2)
-        %c4  : F64  = %z.mul(-0x1.55570c45a647dp-3).add(0x1.999b5076a42f2p-3)
-        %c   : F64  = %z2.mul(%z2.mul(%c4).add(%c2)).add(%c0)
-        %lh  : F64  = F64.mul(0x1.62e4p-1, %e)
-        %ll  : F64  = F64.mul(0x1.7f7d1cf79abcap-20, %e)
-        %low : F64  = %z.mul(%c).add(%ll.add(%lix))
-        %r   : F64  = %low.add(%lh)
-        %tie : Bool = %r.bits().bitand(0xFFFFFFF).eq(0)
-        branch %tie
+    block accurate(z: F64, e: F64, lix: F64):
+        z2  : F64  = z.mul(z)
+        c0  : F64  = z.mul(-0.5).add(1.0)
+        c2  : F64  = z.mul(-0x1.ffffffff2b4e5p-3).add(0x1.55555555030bcp-2)
+        c4  : F64  = z.mul(-0x1.55570c45a647dp-3).add(0x1.999b5076a42f2p-3)
+        c   : F64  = z2.mul(z2.mul(c4).add(c2)).add(c0)
+        lh  : F64  = F64.mul(0x1.62e4p-1, e)
+        ll  : F64  = F64.mul(0x1.7f7d1cf79abcap-20, e)
+        low : F64  = z.mul(c).add(ll.add(lix))
+        r   : F64  = low.add(lh)
+        tie : Bool = r.bits().bitand(0xFFFFFFF).eq(0)
+        branch tie
             ? continue
-            : return(%r)
-        %h : F64 = %low.add(%lh.sub(%r))
-        return(%r.add(F64.mul(64.0, %h)))
+            : return(r)
+        h : F64 = low.add(lh.sub(r))
+        return(r.add(F64.mul(64.0, h)))

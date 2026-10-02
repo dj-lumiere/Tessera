@@ -17,90 +17,90 @@ preset CM_EXP10_OVERFLOW:  U128 = 0x400B34413509F79FEF311F12B35816FA
 preset CM_EXP10_UNDERFLOW: U128 = 0xC00B3657D621F4E96893F84497C723C1
 
 /// 10^x, a CORE-MATH port; exact for integer powers
-routine F128.exp10(%self: Self) -> Self
+routine F128.exp10(self: Self) -> Self
     block entry():
-        %nan   : Bool = %self.is_nan()
-        %quiet : Self = f128_of(f128_quiet(%self.bits()))
-        branch %nan
-            ? return(%quiet)
+        nan   : Bool = self.is_nan()
+        quiet : Self = f128_of(f128_quiet(self.bits()))
+        branch nan
+            ? return(quiet)
             : continue
-        %u      : U128 = %self.bits()
-        %hi     : U64  = cm_exp_hi(%u)
-        %mag_hi : U64  = %hi.bitand(0x7FFFFFFFFFFFFFFF)
-        %tiny   : Bool = %mag_hi.lt(0x3F8BBCB7B1526E50)  // 10^x rounds to 1
-        %large  : Bool = %mag_hi.ge(0x400B34413509F79F)
+        u      : U128 = self.bits()
+        hi     : U64  = cm_exp_hi(u)
+        mag_hi : U64  = hi.bitand(0x7FFFFFFFFFFFFFFF)
+        tiny   : Bool = mag_hi.lt(0x3F8BBCB7B1526E50)  // 10^x rounds to 1
+        large  : Bool = mag_hi.ge(0x400B34413509F79F)
         when:
-            %tiny  -> return(CM_EXP_ONE)
-            %large -> edge(%u)
-            else   -> integer_check(%u.to_wrap<S128>())
+            tiny  -> return(CM_EXP_ONE)
+            large -> edge(u)
+            else  -> integer_check(u.to_wrap<S128>())
 
     // NaN, infinities, and the overflow and underflow thresholds
-    block edge(%u: U128):
-        %is_nan    : Bool = f128_is_nan_bits(%u)
-        %overflow  : Bool = f128_is_negative_bits(%u).bitnot().bitand(%u.ge(CM_EXP10_OVERFLOW))
-        %underflow : Bool = %u.ge(CM_EXP10_UNDERFLOW)
-        %quiet     : Self = f128_of(%u.bitor(F128_QUIET_BIT))
+    block edge(u: U128):
+        is_nan    : Bool = f128_is_nan_bits(u)
+        overflow  : Bool = f128_is_negative_bits(u).bitnot().bitand(u.ge(CM_EXP10_OVERFLOW))
+        underflow : Bool = u.ge(CM_EXP10_UNDERFLOW)
+        quiet     : Self = f128_of(u.bitor(F128_QUIET_BIT))
         when:
-            %is_nan    -> return(%quiet)
-            %overflow  -> return(Self.INFINITY)
-            %underflow -> return(CM_EXP_ZERO)
-            else       -> integer_check(%u.to_wrap<S128>())
+            is_nan    -> return(quiet)
+            overflow  -> return(Self.INFINITY)
+            underflow -> return(CM_EXP_ZERO)
+            else      -> integer_check(u.to_wrap<S128>())
 
     // positive x >= 1 with no fraction bits in the low word
-    block integer_check(%u: S128):
-        %e         : S64  = f128_exponent(%u.to_wrap<U128>())
-        %positive  : Bool = %u.ge(0)
-        %candidate : Bool = %positive.bitand(%e.ge(16383)).bitand(%u.to_wrap<S64>().eq(0))
-        branch %candidate
-            ? integer_test(%u, %e)
-            : reduce(%u.to_wrap<U128>())
+    block integer_check(u: S128):
+        e         : S64  = f128_exponent(u.to_wrap<U128>())
+        positive  : Bool = u.ge(0)
+        candidate : Bool = positive.bitand(e.ge(16383)).bitand(u.to_wrap<S64>().eq(0))
+        branch candidate
+            ? integer_test(u, e)
+            : reduce(u.to_wrap<U128>())
 
     // the high word has 16 sign and exponent bits, then e - 16383 integer bits
-    block integer_test(%u: S128, %e: S64):
-        %hi       : U64  = cm_exp_hi(%u.to_wrap<U128>())
-        %fraction : U64  = %hi.shl(%e.sub(16367).to<U64>())
-        %sig_hi   : U64  = %hi.bitand(0xFFFFFFFFFFFF).bitor(0x1000000000000)
-        %n        : U64  = %sig_hi.shr(16431.sub(%e).to<U64>())
-        %exact    : Bool = %fraction.eq(0).bitand(%n.le(48))
-        branch %exact
-            ? power(%n)
-            : reduce(%u.to_wrap<U128>())
+    block integer_test(u: S128, e: S64):
+        hi       : U64  = cm_exp_hi(u.to_wrap<U128>())
+        fraction : U64  = hi.shl(e.sub(16367).to<U64>())
+        sig_hi   : U64  = hi.bitand(0xFFFFFFFFFFFF).bitor(0x1000000000000)
+        n        : U64  = sig_hi.shr(16431.sub(e).to<U64>())
+        exact    : Bool = fraction.eq(0).bitand(n.le(48))
+        branch exact
+            ? power(n)
+            : reduce(u.to_wrap<U128>())
 
-    block power(%n: U64):
-        %r : Self = cm_exp10_exact(%n)
-        return(%r)
+    block power(n: U64):
+        r : Self = cm_exp10_exact(n)
+        return(r)
 
     // x × log2(10): the significand times log2(10), one's-complemented for negative x
-    block reduce(%u: U128):
-        %hi        : S64         = cm_exp_hi(%u).to_wrap<S64>()
-        %sign_mask : S64         = %hi.shr(63)
-        %sig       : U128        = %u.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
-        %k4        : U64         = CM_EXP_ILN102.get(4)
-        %k5        : U64         = CM_EXP_ILN102.get(5)
-        %k6        : U64         = CM_EXP_ILN102.get(6)
-        %scaled    : CmExpWords3 = cm_exp_mul3x2_high(%k4, %k5, %k6, %sig)
-        %shift     : S64         = 0x4019.sub(f128_exponent(%u))
-        %reduced   : CmExpWords3 = cm_exp_ashr3(cm_exp_flip3(%scaled, %sign_mask.to_wrap<U64>()),
-                %shift.to<U64>())
-        %r         : Self        = cm_exp_finish(%reduced, %u, CM_EXP_KIND_TEN)
-        return(%r)
+    block reduce(u: U128):
+        hi        : S64         = cm_exp_hi(u).to_wrap<S64>()
+        sign_mask : S64         = hi.shr(63)
+        sig       : U128        = u.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
+        k4        : U64         = CM_EXP_ILN102.get(4)
+        k5        : U64         = CM_EXP_ILN102.get(5)
+        k6        : U64         = CM_EXP_ILN102.get(6)
+        scaled    : CmExpWords3 = cm_exp_mul3x2_high(k4, k5, k6, sig)
+        shift     : S64         = 0x4019.sub(f128_exponent(u))
+        reduced   : CmExpWords3 = cm_exp_ashr3(cm_exp_flip3(scaled, sign_mask.to_wrap<U64>()),
+                shift.to<U64>())
+        r         : Self        = cm_exp_finish(reduced, u, CM_EXP_KIND_TEN)
+        return(r)
 
 /// 10^n for an integer n in 1..48, exact: 5^n fits 112 bits, so it is normalized to
 /// the significand and scaled by 2^n.
-routine cm_exp10_exact(%n: U64) -> F128
+routine cm_exp10_exact(n: U64) -> F128
     block entry():
-        jump power(0, 1, %n)
+        jump power(0, 1, n)
 
-    block power(%i: U64, %p: U128, %n: U64):
-        %done : Bool = %i.ge(%n)
-        branch %done
-            ? pack(%p, %n.to<S64>())
-            : power(%i.add(1), %p.mul_wrap(5), %n)
+    block power(i: U64, p: U128, n: U64):
+        done : Bool = i.ge(n)
+        branch done
+            ? pack(p, n.to<S64>())
+            : power(i.add(1), p.mul_wrap(5), n)
 
-    block pack(%p: U128, %n: S64):
-        %lz       : S64  = %p.leading_zeros().to<S64>()
-        %sig      : U128 = %p.shl(%lz.sub(15).to<U128>())
-        %exponent : S64  = 16509.sub(%lz).add(%n)
-        %bits     : U128 = %sig.add_wrap(%exponent.to<U128>().shl(112))
-        %r        : F128 = f128_of(%bits)
-        return(%r)
+    block pack(p: U128, n: S64):
+        lz       : S64  = p.leading_zeros().to<S64>()
+        sig      : U128 = p.shl(lz.sub(15).to<U128>())
+        exponent : S64  = 16509.sub(lz).add(n)
+        bits     : U128 = sig.add_wrap(exponent.to<U128>().shl(112))
+        r        : F128 = f128_of(bits)
+        return(r)

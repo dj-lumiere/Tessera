@@ -8,9 +8,9 @@ import Standard::Format
 global MAIN_SP: @Addr
 global FIBER_SP: @Addr
 
-/// System V x86-64: %from arrives in RDI, %to in RSI. RBX, RBP and R12 to R15 are the caller's.
+/// System V x86-64: from arrives in RDI, to in RSI. RBX, RBP and R12 to R15 are the caller's.
 #[target(arch: "x86_64", os: not "windows"), external("asm"), naked]
-routine swap(%from: @Addr = REG7, %to: Addr = REG6) -> Void
+routine swap(from: @Addr = REG7, to: Addr = REG6) -> Void
     block entry():
         push<U64>(REG5)
         push<U64>(REG3)
@@ -18,8 +18,8 @@ routine swap(%from: @Addr = REG7, %to: Addr = REG6) -> Void
         push<U64>(REG13)
         push<U64>(REG14)
         push<U64>(REG15)
-        mov<U64, U64>(%from.offset(0), SP)
-        mov<U64, U64>(SP, %to)
+        mov<U64, U64>(from.offset(0), SP)
+        mov<U64, U64>(SP, to)
         pop<U64>(REG15)
         pop<U64>(REG14)
         pop<U64>(REG13)
@@ -28,10 +28,10 @@ routine swap(%from: @Addr = REG7, %to: Addr = REG6) -> Void
         pop<U64>(REG5)
         return()
 
-/// Windows x64: %from arrives in RCX, %to in RDX. RBX, RBP, RDI, RSI, R12 to R15 and XMM6 to XMM15 are the
+/// Windows x64: from arrives in RCX, to in RDX. RBX, RBP, RDI, RSI, R12 to R15 and XMM6 to XMM15 are the
 /// caller's, and the thread block's stack base and limit (GS:[8], GS:[16]) follow the stack.
 #[target(arch: "x86_64", os: "windows"), external("asm"), naked]
-routine swap(%from: @Addr = REG1, %to: Addr = REG2) -> Void
+routine swap(from: @Addr = REG1, to: Addr = REG2) -> Void
     block entry():
         push<U64>(REG5)
         push<U64>(REG3)
@@ -56,8 +56,8 @@ routine swap(%from: @Addr = REG1, %to: Addr = REG2) -> Void
         movdqu<Vector<U8, 16>, Vector<U8, 16>>(SP.offset(112), VREG13)
         movdqu<Vector<U8, 16>, Vector<U8, 16>>(SP.offset(128), VREG14)
         movdqu<Vector<U8, 16>, Vector<U8, 16>>(SP.offset(144), VREG15)
-        mov<U64, U64>(%from.offset(0), SP)
-        mov<U64, U64>(SP, %to)
+        mov<U64, U64>(from.offset(0), SP)
+        mov<U64, U64>(SP, to)
         movdqu<Vector<U8, 16>, Vector<U8, 16>>(VREG6, SP.offset(0))
         movdqu<Vector<U8, 16>, Vector<U8, 16>>(VREG7, SP.offset(16))
         movdqu<Vector<U8, 16>, Vector<U8, 16>>(VREG8, SP.offset(32))
@@ -83,10 +83,10 @@ routine swap(%from: @Addr = REG1, %to: Addr = REG2) -> Void
         pop<U64>(REG5)
         return()
 
-/// AArch64: %from arrives in X0, %to in X1. X19 to X28, the frame pointer, the link register (the return address)
+/// AArch64: from arrives in X0, to in X1. X19 to X28, the frame pointer, the link register (the return address)
 /// and D8 to D15 are the caller's.
 #[target(arch: "aarch64"), external("asm"), naked]
-routine swap(%from: @Addr = REG0, %to: Addr = REG1) -> Void
+routine swap(from: @Addr = REG0, to: Addr = REG1) -> Void
     block entry():
         stp<F64, F64, U64>(VREG8, VREG9, SP.offset(-16).update())
         stp<F64, F64, U64>(VREG10, VREG11, SP.offset(-16).update())
@@ -99,8 +99,8 @@ routine swap(%from: @Addr = REG0, %to: Addr = REG1) -> Void
         stp<U64, U64, U64>(REG27, REG28, SP.offset(-16).update())
         stp<U64, U64, U64>(FP, LR, SP.offset(-16).update())
         mov<U64, U64>(REG9, SP)
-        str<U64, U64>(REG9, %from.offset(0))
-        mov<U64, U64>(SP, %to)
+        str<U64, U64>(REG9, from.offset(0))
+        mov<U64, U64>(SP, to)
         ldp<U64, U64, U64>(FP, LR, SP.after_offset(16))
         ldp<U64, U64, U64>(REG27, REG28, SP.after_offset(16))
         ldp<U64, U64, U64>(REG25, REG26, SP.after_offset(16))
@@ -147,48 +147,48 @@ routine entry_word() -> USize
     block entry():
         return(1)
 
-/// A new stack in `%words` U64s at `%stack`: its stack pointer, at a frame that returns into `%entry`.
-routine fiber_stack(%stack: @U64, %words: USize, %entry: Addr) -> Addr
+/// A new stack in `words` U64s at `stack`: its stack pointer, at a frame that returns into `entry`.
+routine fiber_stack(stack: @U64, words: USize, entry: Addr) -> Addr
     block entry():
-        %end   : U64   = ptrtoint<@U64, U64>(%stack.stride(%words))
-        %top   : U64   = %end.bitand(0xFFFFFFFFFFFFFFF0)
-        %frame : USize = frame_words()
-        %sp    : @U64  = inttoptr<U64, @U64>(%top.sub(%frame.mul(8).to<U64>()))
-        jump clear(%sp, %frame, 0)
+        end   : U64   = ptrtoint<@U64, U64>(stack.stride(words))
+        top   : U64   = end.bitand(0xFFFFFFFFFFFFFFF0)
+        frame : USize = frame_words()
+        sp    : @U64  = inttoptr<U64, @U64>(top.sub(frame.mul(8).to<U64>()))
+        jump clear(sp, frame, 0)
 
-    block clear(%sp: @U64, %frame: USize, %i: USize):
-        %done : Bool = %i.eq(%frame)
-        branch %done
-            ? fill(%sp)
-            : store_zero(%sp, %frame, %i)
+    block clear(sp: @U64, frame: USize, i: USize):
+        done : Bool = i.eq(frame)
+        branch done
+            ? fill(sp)
+            : store_zero(sp, frame, i)
 
-    block store_zero(%sp: @U64, %frame: USize, %i: USize):
-        %sp.stride(%i).store(0)
-        jump clear(%sp, %frame, %i.add(1))
+    block store_zero(sp: @U64, frame: USize, i: USize):
+        sp.stride(i).store(0)
+        jump clear(sp, frame, i.add(1))
 
-    block fill(%sp: @U64):
-        %sp.stride(entry_word()).store(ptrtoint<Addr, U64>(%entry))
-        %base : U64 = ptrtoint<@U64, U64>(%stack.stride(%words)).bitand(0xFFFFFFFFFFFFFFF0)
-        store_bounds(%sp, ptrtoint<@U64, U64>(%stack), %base)
-        %sp_addr : Addr = inttoptr<U64, Addr>(ptrtoint<@U64, U64>(%sp))
-        return(%sp_addr)
+    block fill(sp: @U64):
+        sp.stride(entry_word()).store(ptrtoint<Addr, U64>(entry))
+        base : U64 = ptrtoint<@U64, U64>(stack.stride(words)).bitand(0xFFFFFFFFFFFFFFF0)
+        store_bounds(sp, ptrtoint<@U64, U64>(stack), base)
+        sp_addr : Addr = inttoptr<U64, Addr>(ptrtoint<@U64, U64>(sp))
+        return(sp_addr)
 
 /// Windows checks a stack against the thread block's base and limit, which swap restores from the 21st and 22nd
 /// words of the frame. Elsewhere nothing follows the stack.
 #target(arch: "x86_64", os: "windows")
-routine store_bounds(%sp: @U64, %limit: U64, %base: U64) -> Void
+routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
     block entry():
-        %limit.store_into(%sp.stride(20))
-        %base.store_into(%sp.stride(21))
+        limit.store_into(sp.stride(20))
+        base.store_into(sp.stride(21))
         return()
 
 #target(arch: not "x86_64", os: not "windows")
-routine store_bounds(%sp: @U64, %limit: U64, %base: U64) -> Void
+routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
     block entry():
         return()
 
 #target(arch: "x86_64", os: not "windows")
-routine store_bounds(%sp: @U64, %limit: U64, %base: U64) -> Void
+routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
     block entry():
         return()
 
@@ -203,9 +203,9 @@ routine fiber_main() -> Void
 
 routine main() -> S32
     block entry():
-        claim %stack : @Array<U64, 8192> <- uninit
-        %sp : Addr = fiber_stack(%stack.to<@U64>(), 8192, fiber_main.addr())
-        %sp.store_into(FIBER_SP)
+        claim stack : @Array<U64, 8192> <- uninit
+        sp : Addr = fiber_stack(stack.to<@U64>(), 8192, fiber_main.to<Callable>().addr())
+        sp.store_into(FIBER_SP)
         print("main: start\n")
         swap(MAIN_SP, FIBER_SP.load())
         print("main: back once\n")

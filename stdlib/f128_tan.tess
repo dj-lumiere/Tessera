@@ -33,108 +33,108 @@ preset F128_TAN_BAND: S64 = 145
 preset F128_TAN_LOOSE: S64 = 90
 
 /// tan x, correctly rounded (round to nearest, ties to even): ±0 for ±0, a quiet NaN for NaN, NaN for infinities.
-routine F128.tan(%self: Self) -> Self
+routine F128.tan(self: Self) -> Self
     block entry():
-        %r : Self = f128_tan(%self, false)
-        return(%r)
+        r : Self = f128_tan(self, false)
+        return(r)
 
-/// %exact skips the fast tier (the tests use it to check the exact tier on its own).
-routine f128_tan(%x: F128, %exact: Bool) -> F128
+/// exact skips the fast tier (the tests use it to check the exact tier on its own).
+routine f128_tan(x: F128, exact: Bool) -> F128
     block entry():
-        %bits     : U128 = %x.bits()
-        %nan      : Bool = f128_is_nan_bits(%bits)
-        %infinite : Bool = %x.is_infinite()
-        %tiny     : Bool = f128_exponent(%bits).lt(F128_BIAS.sub(57))  // |x| < 2^-57, zeros too
+        bits     : U128 = x.bits()
+        nan      : Bool = f128_is_nan_bits(bits)
+        infinite : Bool = x.is_infinite()
+        tiny     : Bool = f128_exponent(bits).lt(F128_BIAS.sub(57))  // |x| < 2^-57, zeros too
         when:
-            %nan      -> return(f128_of(f128_quiet(%bits)))
-            %infinite -> return(F128.NAN)
-            %tiny     -> return(%x)
-            else      -> general()
+            nan      -> return(f128_of(f128_quiet(bits)))
+            infinite -> return(F128.NAN)
+            tiny     -> return(x)
+            else     -> general()
 
     block general():
-        %r : F128 = f128_tan_general(%x, %exact)
-        return(%r)
+        r : F128 = f128_tan_general(x, exact)
+        return(r)
 
 /// tan x for a finite x with |x| >= 2^-57.
-routine f128_tan_general(%x: F128, %exact: Bool) -> F128
+routine f128_tan_general(x: F128, exact: Bool) -> F128
     block entry():
-        branch %exact
+        branch exact
             ? slow()
             : fast()
 
     block fast():
-        %red   : Reduced = f128_reduce(%x)
-        %loose : Bool    = wide_theta_loose(%x, %red.theta)
-        branch %loose
+        red   : Reduced = f128_reduce(x)
+        loose : Bool    = wide_theta_loose(x, red.theta)
+        branch loose
             ? slow()
-            : estimate(%red)
+            : estimate(red)
 
-    block estimate(%red: Reduced):
-        %w       : F128Extended = wide_tan(%x, %red)
-        %rounded : WideRounding = wide_round_within(%w, F128_TAN_BAND)
-        branch %rounded.ok
-            ? return(%rounded.value)
+    block estimate(red: Reduced):
+        w       : F128Extended = wide_tan(x, red)
+        rounded : WideRounding = wide_round_within(w, F128_TAN_BAND)
+        branch rounded.ok
+            ? return(rounded.value)
             : slow()
 
     block slow():
-        %r : F128 = big_tan(%x)
-        return(%r)
+        r : F128 = big_tan(x)
+        return(r)
 
 /// Whether f128_reduce's θ is too coarse for the fast tier: |x| >= 1/2 (below it θ is |x| exactly) and θ is zero or
 /// under 2^-F128_TAN_LOOSE.
-routine wide_theta_loose(%x: F128, %theta: F128Extended) -> Bool
+routine wide_theta_loose(x: F128, theta: F128Extended) -> Bool
     block entry():
-        %reduced : Bool = f128_exponent(%x.bits()).ge(F128_BIAS.sub(1))
-        %small   : Bool = %theta.is_zero().bitor(%theta.exponent.lt(0.sub(F128_TAN_LOOSE)))
-        %r       : Bool = %reduced.bitand(%small)
-        return(%r)
+        reduced : Bool = f128_exponent(x.bits()).ge(F128_BIAS.sub(1))
+        small   : Bool = theta.is_zero().bitor(theta.exponent.lt(0.sub(F128_TAN_LOOSE)))
+        r       : Bool = reduced.bitand(small)
+        return(r)
 
 /// The fast tier's tan x before rounding, from |x| = k π/2 + θ with θ nonzero.
-routine wide_tan(%x: F128, %red: Reduced) -> F128Extended
+routine wide_tan(x: F128, red: Reduced) -> F128Extended
     block entry():
-        %s   : F128Extended = wide_sin_core(%red.theta)
-        %c   : F128Extended = wide_cos_core(%red.theta)
-        %odd : Bool         = %red.quadrant.bitand(1).eq(1)
-        branch %odd
-            ? cotangent(%s, %c)
-            : tangent(%s, %c)
+        s   : F128Extended = wide_sin_core(red.theta)
+        c   : F128Extended = wide_cos_core(red.theta)
+        odd : Bool         = red.quadrant.bitand(1).eq(1)
+        branch odd
+            ? cotangent(s, c)
+            : tangent(s, c)
 
-    block tangent(%s: F128Extended, %c: F128Extended):
-        jump signed(%s.div(%c))
+    block tangent(s: F128Extended, c: F128Extended):
+        jump signed(s.div(c))
 
     // tan(θ + π/2) = -cot θ
-    block cotangent(%s: F128Extended, %c: F128Extended):
-        jump signed(%c.div(%s).neg())
+    block cotangent(s: F128Extended, c: F128Extended):
+        jump signed(c.div(s).neg())
 
     // tan is odd, and the reduction took |x|
-    block signed(%t: F128Extended):
-        %negative : Bool         = f128_is_negative_bits(%x.bits())
-        %r        : F128Extended = %negative
-            ? %t.neg()
-            : %t
-        return(%r)
+    block signed(t: F128Extended):
+        negative : Bool         = f128_is_negative_bits(x.bits())
+        r        : F128Extended = negative
+            ? t.neg()
+            : t
+        return(r)
 
 /// The exact tier: the same formulas in F128Big, rounded once.
-routine big_tan(%x: F128) -> F128
+routine big_tan(x: F128) -> F128
     block entry():
-        %red : BigReduced = big_reduce(%x)
-        %s   : F128Big    = big_sin_core(%red.theta)
-        %c   : F128Big    = big_cos_core(%red.theta)
-        %odd : Bool       = %red.quadrant.bitand(1).eq(1)
-        branch %odd
-            ? cotangent(%s, %c)
-            : tangent(%s, %c)
+        red : BigReduced = big_reduce(x)
+        s   : F128Big    = big_sin_core(red.theta)
+        c   : F128Big    = big_cos_core(red.theta)
+        odd : Bool       = red.quadrant.bitand(1).eq(1)
+        branch odd
+            ? cotangent(s, c)
+            : tangent(s, c)
 
-    block tangent(%s: F128Big, %c: F128Big):
-        jump signed(%s.div(%c))
+    block tangent(s: F128Big, c: F128Big):
+        jump signed(s.div(c))
 
-    block cotangent(%s: F128Big, %c: F128Big):
-        jump signed(%c.div(%s).neg())
+    block cotangent(s: F128Big, c: F128Big):
+        jump signed(c.div(s).neg())
 
-    block signed(%t: F128Big):
-        %negative : Bool    = f128_is_negative_bits(%x.bits())
-        %v        : F128Big = %negative
-            ? %t.neg()
-            : %t
-        %r : F128 = %v.to<F128>()
-        return(%r)
+    block signed(t: F128Big):
+        negative : Bool    = f128_is_negative_bits(x.bits())
+        v        : F128Big = negative
+            ? t.neg()
+            : t
+        r : F128 = v.to<F128>()
+        return(r)

@@ -602,6 +602,7 @@ public sealed partial class Compiler
 
     private DType ResolveTypeInner(TypeRef t, TypeEnv env)
     {
+        if (t.Known is { } known) return known;
         void NoArgs()
         {
             if (t.Args.Count != 0) throw new CompileError(t.Pos, $"type '{t.Name}' takes no generic arguments");
@@ -1001,8 +1002,6 @@ public sealed partial class Compiler
         }
     }
 
-    /// The sigil must match the type: `#` for pointers, `%` for everything else. A value declared with a bare type
-    /// parameter (`%val: From`) may hold any type, so generic code such as the prelude's casts is exempt.
     // ── Const arrays ────────────────────────────────────────────────────────
 
     private readonly Dictionary<string, string> _presetArrays = [];

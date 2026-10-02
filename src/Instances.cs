@@ -154,22 +154,22 @@ public sealed partial class Compiler
     public bool IsGenericInstance(Instance inst) =>
         inst.Decl.TypeParams.Count != 0 || OwnerTypeParams(inst.Decl).Count != 0;
 
-    /// Whether a routine is a method: its first parameter is `%self`, the receiver of `%x.name(...)`.
-    public static bool HasReceiver(RoutineDecl r) => r.Params.Count > 0 && r.Params[0].Name == "%self";
+    /// Whether a routine is a method: its first parameter is `self`, the receiver of `x.name(...)`.
+    public static bool HasReceiver(RoutineDecl r) => r.Params.Count > 0 && r.Params[0].Name == "self";
 
-    /// `%self` is the receiver: the first parameter of a routine on a type, and the type itself or a pointer to it.
+    /// `self` is the receiver: the first parameter of a routine on a type, and the type itself or a pointer to it.
     private static void CheckReceiver(RoutineDecl r, TypeEnv env, List<DType> ps)
     {
         for (int i = 0; i < r.Params.Count; i++)
         {
-            if (r.Params[i].Name != "%self") continue;
+            if (r.Params[i].Name != "self") continue;
             if (r.Owner is null)
-                throw new CompileError(r.Params[i].Pos, $"%self is the receiver of a routine on a type; '{r.Name}' is on none");
+                throw new CompileError(r.Params[i].Pos, $"self is the receiver of a routine on a type; '{r.Name}' is on none");
             if (i != 0)
-                throw new CompileError(r.Params[i].Pos, "%self is the receiver, so it's the first parameter");
+                throw new CompileError(r.Params[i].Pos, "self is the receiver, so it's the first parameter");
             var self = env.Get("Self") ?? env.Get(r.Owner.Name);
             if (self is not null && !ps[0].Equals(self) && !(ps[0] is PtrType { Pointee: { } pointee } && pointee.Equals(self)))
-                throw new CompileError(r.Params[i].Pos, $"%self is Self or @Self ({self} or @{self}), not {ps[0]}");
+                throw new CompileError(r.Params[i].Pos, $"self is Self or @Self ({self} or @{self}), not {ps[0]}");
         }
     }
 

@@ -24,93 +24,93 @@ preset CM_F32_SINH_TB: @Array<U64, 32> <- { 0x3FE0000000000000, 0x3FE059B0D31585
         0x3FEEA4AFA2A490DA, 0x3FEF50765B6E4540 }
 
 /// sinh self, correctly rounded.
-routine F32.sinh(%self: Self) -> Self
+routine F32.sinh(self: Self) -> Self
     block entry():
-        %ux    : U32  = %self.bits().shl(1)
-        %large : Bool = %ux.gt(0x8565A9F8)
-        %small : Bool = %ux.lt(0x7C000000)
+        ux    : U32  = self.bits().shl(1)
+        large : Bool = ux.gt(0x8565A9F8)
+        small : Bool = ux.lt(0x7C000000)
         when:
-            %large -> large(%ux)
-            %small -> small(%ux)
-            else   -> return(cm_f32_sinh_main(%self.to<F64>()))
+            large -> large(ux)
+            small -> small(ux)
+            else  -> return(cm_f32_sinh_main(self.to<F64>()))
 
     // |x| > 0x1.65a9f8p+6: NaN, infinities, or overflow
-    block large(%ux: U32):
-        %nan      : Bool = %ux.gt(0xFF000000)
-        %infinite : Bool = %ux.eq(0xFF000000)
+    block large(ux: U32):
+        nan      : Bool = ux.gt(0xFF000000)
+        infinite : Bool = ux.eq(0xFF000000)
         when:
-            %nan      -> return(%self.add(%self))
-            %infinite -> return(%self)
-            else      -> return(Self.INFINITY.copysign(%self))
+            nan      -> return(self.add(self))
+            infinite -> return(self)
+            else     -> return(Self.INFINITY.copysign(self))
 
     // |x| < 0.125
-    block small(%ux: U32):
-        %tiny  : Bool = %ux.lt(0x66000000)
-        %hard  : Bool = %ux.eq(0x74250BFE)
-        %cubic : Bool = %ux.lt(0x74250BFE)  // |x| < 0x1.250bfep-11
+    block small(ux: U32):
+        tiny  : Bool = ux.lt(0x66000000)
+        hard  : Bool = ux.eq(0x74250BFE)
+        cubic : Bool = ux.lt(0x74250BFE)  // |x| < 0x1.250bfep-11
         when:
-            %tiny  -> return(%self.mul_add(%self.abs(), %self))
-            %hard  -> hard()
-            %cubic -> return(%self.mul(0x1.555556p-3).mul(%self.mul(%self)).add(%self))
-            else   -> series()
+            tiny  -> return(self.mul_add(self.abs(), self))
+            hard  -> hard()
+            cubic -> return(self.mul(0x1.555556p-3).mul(self.mul(self)).add(self))
+            else  -> series()
 
     // |x| = 0x1.250bfep-11, which the cubic rounds the wrong way
     block hard():
-        %sgn : Self = Self.copysign(1.0, %self)
-        %r   : Self = %sgn.mul(0x1.250bfep-11).add(%sgn.mul(0x1p-36))
-        return(%r)
+        sgn : Self = Self.copysign(1.0, self)
+        r   : Self = sgn.mul(0x1.250bfep-11).add(sgn.mul(0x1p-36))
+        return(r)
 
     block series():
-        %z  : F64 = %self.to<F64>()
-        %z2 : F64 = %z.mul(%z)
-        %z4 : F64 = %z2.mul(%z2)
-        %p0 : F64 = %z2.mul(0x1.11111111146e1p-7).add(0x1.5555555555555p-3)
-        %p1 : F64 = %z2.mul(0x1.71f92198aa6e9p-19).add(0x1.a01a00930dda6p-13)
-        %p  : F64 = %z4.mul(%p1).add(%p0)
-        %r  : F64 = %z2.mul(%z).mul(%p).add(%z)
-        return(%r.to<Self>())
+        z  : F64 = self.to<F64>()
+        z2 : F64 = z.mul(z)
+        z4 : F64 = z2.mul(z2)
+        p0 : F64 = z2.mul(0x1.11111111146e1p-7).add(0x1.5555555555555p-3)
+        p1 : F64 = z2.mul(0x1.71f92198aa6e9p-19).add(0x1.a01a00930dda6p-13)
+        p  : F64 = z4.mul(p1).add(p0)
+        r  : F64 = z2.mul(z).mul(p).add(z)
+        return(r.to<Self>())
 
-/// 2^(k/32) / 2 for k = ia, or k = -ia when %minus, where ia is an integer held in an F64.
-routine cm_f32_sinh_scale(%ia: F64, %minus: Bool) -> F64
+/// 2^(k/32) / 2 for k = ia, or k = -ia when minus, where ia is an integer held in an F64.
+routine cm_f32_sinh_scale(ia: F64, minus: Bool) -> F64
     block entry():
-        %j  : S64 = %ia.add(0x1.8p+52).bits().to_wrap<S64>()
-        %jp : S64 = %minus
-            ? %j.neg_wrap()
-            : %j
-        %index : U64 = %jp.bitand(31).to_wrap<U64>()
-        %shift : U64 = %jp.shr(5).to_wrap<U64>().shl(52)
-        return(F64.from_bits(CM_F32_SINH_TB.get(%index.to<USize>()).add_wrap(%shift)))
+        j  : S64 = ia.add(0x1.8p+52).bits().to_wrap<S64>()
+        jp : S64 = minus
+            ? j.neg_wrap()
+            : j
+        index : U64 = jp.bitand(31).to_wrap<U64>()
+        shift : U64 = jp.shr(5).to_wrap<U64>().shl(52)
+        return(F64.from_bits(CM_F32_SINH_TB.get(index.to<USize>()).add_wrap(shift)))
 
 /// The main path of sinh, for 0.125 <= |x| without overflow: e^x / 2 - e^-x / 2 from a 2^(k/32) table.
-private routine cm_f32_sinh_main(%z: F64) -> F32
+private routine cm_f32_sinh_main(z: F64) -> F32
     block entry():
-        %a    : F64  = %z.mul(0x1.71547652b82fep+5)  // 32 x / ln(2)
-        %ia   : F64  = %a.round_ties_even()
-        %h    : F64  = %a.sub(%ia)
-        %h2   : F64  = %h.mul(%h)
-        %sp   : F64  = cm_f32_sinh_scale(%ia, false)
-        %sm   : F64  = cm_f32_sinh_scale(%ia, true)
-        %tev  : F64  = %h2.mul(0x1.ebfd1b232f475p-13).add(1.0)
-        %tod  : F64  = %h2.mul(0x1.c6b19384ecd93p-20).add(0x1.62e42fef4c4e7p-6)
-        %rp   : F64  = %sp.mul(%h.mul(%tod).add(%tev))
-        %rm   : F64  = %sm.mul(%tev.sub(%h.mul(%tod)))
-        %r    : F64  = %rp.sub(%rm)
-        %ub   : F32  = %r.to<F32>()
-        %lb   : F32  = %r.sub(%r.mul(0x1.4e406496685f4p-33)).to<F32>()
-        %sure : Bool = %ub.eq(%lb)
-        branch %sure
-            ? return(%ub)
-            : slow(%ia, %sp, %sm)
+        a    : F64  = z.mul(0x1.71547652b82fep+5)  // 32 x / ln(2)
+        ia   : F64  = a.round_ties_even()
+        h    : F64  = a.sub(ia)
+        h2   : F64  = h.mul(h)
+        sp   : F64  = cm_f32_sinh_scale(ia, false)
+        sm   : F64  = cm_f32_sinh_scale(ia, true)
+        tev  : F64  = h2.mul(0x1.ebfd1b232f475p-13).add(1.0)
+        tod  : F64  = h2.mul(0x1.c6b19384ecd93p-20).add(0x1.62e42fef4c4e7p-6)
+        rp   : F64  = sp.mul(h.mul(tod).add(tev))
+        rm   : F64  = sm.mul(tev.sub(h.mul(tod)))
+        r    : F64  = rp.sub(rm)
+        ub   : F32  = r.to<F32>()
+        lb   : F32  = r.sub(r.mul(0x1.4e406496685f4p-33)).to<F32>()
+        sure : Bool = ub.eq(lb)
+        branch sure
+            ? return(ub)
+            : slow(ia, sp, sm)
 
     // too close to a rounding boundary: redo it with a split 32 / ln(2) and a longer polynomial
-    block slow(%ia: F64, %sp: F64, %sm: F64):
-        %h   : F64 = %z.mul(0x1.7154765p+5).sub(%ia).add(%z.mul(0x1.5c17f0bbbe88p-26))
-        %h2  : F64 = %h.mul(%h)
-        %te4 : F64 = %h2.mul(0x1.430976b8ce6efp-43).add(0x1.3b2ab6fb92e5ep-27)
-        %tev : F64 = %h2.mul(0x1.ebfbdff82c58fp-13).add(1.0).add(%h2.mul(%h2).mul(%te4))
-        %to2 : F64 = %h2.mul(0x1.5d886e6d54203p-35).add(0x1.c6b08d702e0edp-20)
-        %tod : F64 = %h2.mul(%to2).add(0x1.62e42fefa39efp-6)
-        %rp  : F64 = %sp.mul(%h.mul(%tod).add(%tev))
-        %rm  : F64 = %sm.mul(%tev.sub(%h.mul(%tod)))
-        %r   : F64 = %rp.sub(%rm)
-        return(%r.to<F32>())
+    block slow(ia: F64, sp: F64, sm: F64):
+        h   : F64 = z.mul(0x1.7154765p+5).sub(ia).add(z.mul(0x1.5c17f0bbbe88p-26))
+        h2  : F64 = h.mul(h)
+        te4 : F64 = h2.mul(0x1.430976b8ce6efp-43).add(0x1.3b2ab6fb92e5ep-27)
+        tev : F64 = h2.mul(0x1.ebfbdff82c58fp-13).add(1.0).add(h2.mul(h2).mul(te4))
+        to2 : F64 = h2.mul(0x1.5d886e6d54203p-35).add(0x1.c6b08d702e0edp-20)
+        tod : F64 = h2.mul(to2).add(0x1.62e42fefa39efp-6)
+        rp  : F64 = sp.mul(h.mul(tod).add(tev))
+        rm  : F64 = sm.mul(tev.sub(h.mul(tod)))
+        r   : F64 = rp.sub(rm)
+        return(r.to<F32>())

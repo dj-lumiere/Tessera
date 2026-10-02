@@ -237,11 +237,11 @@ public sealed partial class Compiler
 
             if (method.Params.Count != req.Params.Count)
                 throw new CompileError(conf.Source.Pos, $"{claim}: {where} takes {method.Params.Count} parameter(s); the concept wants {req.Params.Count}");
-            // Generic code calls a method as `%x.name(...)`, so a receiver in the concept needs one in the routine.
+            // Generic code calls a method as `x.name(...)`, so a receiver in the concept needs one in the routine.
             if (HasReceiver(req) != HasReceiver(method))
                 throw new CompileError(conf.Source.Pos, HasReceiver(req)
-                    ? $"{claim}: {where} has no %self; the concept calls it as a method, %x.{req.Name}(...)"
-                    : $"{claim}: {where} takes %self; the concept calls it by its type, {owner.Name}.{req.Name}(...)");
+                    ? $"{claim}: {where} has no self; the concept calls it as a method, x.{req.Name}(...)"
+                    : $"{claim}: {where} takes self; the concept calls it by its type, {owner.Name}.{req.Name}(...)");
             bool ownTypeParams = req.TypeParams.Count > 0 || method.TypeParams.Count > 0;
             if (req.TypeParams.Count != method.TypeParams.Count)
                 throw new CompileError(conf.Source.Pos, $"{claim}: {where} takes {method.TypeParams.Count} type parameter(s); the concept wants {req.TypeParams.Count}");

@@ -18,8 +18,8 @@ namespace Tessera;
 ///   lines, 4 spaces further in, so the two outcomes sit one above the other; a select inside an argument stays.
 /// - a pointer type is written `@T`, not `Ptr<T>`, except where routines are declared on or called through the record
 ///   (`routine Ptr<T>.load`); comments and literals are left alone;
-/// - parentheses around one value, which group nothing in a language without operators, are dropped: `(%x).add(1)` is
-///   `%x.add(1)`; a call's arguments, a tuple type, and `(a, b)` (an error the builder reports) stay;
+/// - parentheses around one value, which group nothing in a language without operators, are dropped: `(x).add(1)` is
+///   `x.add(1)`; a call's arguments, a tuple type, and `(a, b)` (an error the builder reports) stay;
 /// - top-level declarations come in one order: module, imports (sorted), defines, globals, presets, types (records,
 ///   choices, variants), concepts, standalone conformances, routines, and `main` last. Within a kind the written order
 ///   stays, a declaration keeps the comments and attributes above it, and a file divided by section comments is
@@ -448,7 +448,7 @@ public static class Formatter
         return result;
     }
 
-    /// A long `branch %c ? a(...) : b(...)` puts each target on its own line, 4 spaces further in, rather than breaking
+    /// A long `branch c ? a(...) : b(...)` puts each target on its own line, 4 spaces further in, rather than breaking
     /// inside the first target's arguments.
     private static string[]? SplitBranch(string line)
     {
@@ -465,7 +465,7 @@ public static class Formatter
 
     // ── Selects and branches ─────────────────────────────────────────────
 
-    /// Writes every `branch %c ? a : b`, and every `%x : T = %c ? a : b` / `claim %p : @T <- %c ? a : b`, on three
+    /// Writes every `branch c ? a : b`, and every `x : T = c ? a : b` / `claim p : @T <- c ? a : b`, on three
     /// lines: the condition, then `? a` and `: b` 4 spaces further in. Arms already on their own lines are joined first,
     /// so every such statement comes out the same way. The lexer reads a line starting with `?` or `:` as the end of
     /// the one above, so the meaning doesn't change.
@@ -923,7 +923,7 @@ public static class Formatter
             while (end < result.Count && (result[end].Length == 0 || result[end].StartsWith(' ') || result[end].StartsWith("require ")))
                 end++;
             // `Self` starts where the owner is declared. A concrete owner is declared by the header (`U64.` in
-            // `routine U64.min`); a type parameter by its `require` line (`routine T.bitcast<U>(%self: T)` with
+            // `routine U64.min`); a type parameter by its `require` line (`routine T.bitcast<U>(self: T)` with
             // `require T: typename`), so its header keeps T. `require` lines always name their types.
             bool typeParameter = Enumerable.Range(i + 1, end - i - 1).Any(j => result[j].StartsWith("require ")
                 && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^require |,\s*){owner}\s*:"));
@@ -939,7 +939,7 @@ public static class Formatter
             {
                 if (result[j].StartsWith("require ") || (typeParameter && result[j].StartsWith(' ') && j < FirstBodyLine(result, i, end)))
                     continue;
-                // `claim %p : @T` spells its pointer type out, so a routine on Ptr<T> keeps it there.
+                // `claim p : @T` spells its pointer type out, so a routine on Ptr<T> keeps it there.
                 if (atOwner is not null && result[j].TrimStart().StartsWith("claim ", StringComparison.Ordinal))
                     continue;
                 result[j] = Replace(result[j]);

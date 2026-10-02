@@ -37,70 +37,70 @@ preset CM_F16_ASINH_P: @Array<U32, 133> <- { 0x3F800001, 0xBE2AAA6B, 0x3D996252,
         0xA1616939, 0x18C3F197, 0x8F92748B }
 
 /// asinh(self), correctly rounded.
-routine F16.asinh(%self: Self) -> Self
+routine F16.asinh(self: Self) -> Self
     block entry():
-        %v       : F32  = %self.to<F32>()
-        %u       : U32  = %v.bits()
-        %au      : U32  = %u.bitand(0x7FFFFFFF)
-        %special : Bool = %au.ge(0x7F800000)
-        %e       : U32  = %au.shr(23)  // 2^(e-127) <= |x| < 2^(e-126)
-        %tt      : F32  = %v.mul(%v)
+        v       : F32  = self.to<F32>()
+        u       : U32  = v.bits()
+        au      : U32  = u.bitand(0x7FFFFFFF)
+        special : Bool = au.ge(0x7F800000)
+        e       : U32  = au.shr(23)  // 2^(e-127) <= |x| < 2^(e-126)
+        tt      : F32  = v.mul(v)
         when:
-            %special   -> special(%u, %au)
-            %e.le(124) -> small(%v, %u, %au, %tt)
-            else       -> binade(%v, %u, %au, %tt, %e.sub(124).to<USize>())
+            special   -> special(u, au)
+            e.le(124) -> small(v, u, au, tt)
+            else      -> binade(v, u, au, tt, e.sub(124).to<USize>())
 
     // +inf or NaN: x + x (quiets a signaling NaN), and -inf maps to itself
-    block special(%u: U32, %au: U32):
-        %quiet : Bool = %u.eq(0x7F800000).bitor(%au.bitand(0x7FFFFF).ne(0))
-        branch %quiet
-            ? return(%self.add(%self))
-            : return(%self)
+    block special(u: U32, au: U32):
+        quiet : Bool = u.eq(0x7F800000).bitor(au.bitand(0x7FFFFF).ne(0))
+        branch quiet
+            ? return(self.add(self))
+            : return(self)
 
     // |x| < 2^-2
-    block small(%v: F32, %u: U32, %au: U32, %tt: F32):
-        %rounds_to_x : Bool = %au.le(0x3D38A000)  // for |x| <= 0x1.714p-5, asinh(x) rounds to x
-        branch %rounds_to_x
-            ? tiny(%v, %u, %au)
+    block small(v: F32, u: U32, au: U32, tt: F32):
+        rounds_to_x : Bool = au.le(0x3D38A000)  // for |x| <= 0x1.714p-5, asinh(x) rounds to x
+        branch rounds_to_x
+            ? tiny(v, u, au)
             : continue
         // an odd degree-7 polynomial
-        %c5 : F32 = cm_f16_asinh_p(0, 3).mul_add(%tt, cm_f16_asinh_p(0, 2))
-        %c1 : F32 = cm_f16_asinh_p(0, 1).mul_add(%tt, cm_f16_asinh_p(0, 0))
-        %c  : F32 = %c5.mul_add(%tt.mul(%tt), %c1)
-        return(%v.mul(%c).to<Self>())
+        c5 : F32 = cm_f16_asinh_p(0, 3).mul_add(tt, cm_f16_asinh_p(0, 2))
+        c1 : F32 = cm_f16_asinh_p(0, 1).mul_add(tt, cm_f16_asinh_p(0, 0))
+        c  : F32 = c5.mul_add(tt.mul(tt), c1)
+        return(v.mul(c).to<Self>())
 
-    block tiny(%v: F32, %u: U32, %au: U32):
-        %zero     : Bool = %au.eq(0)
-        %positive : Bool = %au.eq(%u)
+    block tiny(v: F32, u: U32, au: U32):
+        zero     : Bool = au.eq(0)
+        positive : Bool = au.eq(u)
         when:
-            %zero     -> return(%self)
-            %positive -> return(%v.sub(0x1p-26).to<Self>())
-            else      -> return(%v.add(0x1p-26).to<Self>())
+            zero     -> return(self)
+            positive -> return(v.sub(0x1p-26).to<Self>())
+            else     -> return(v.add(0x1p-26).to<Self>())
 
     // |x| >= 2^-2: the polynomials are not odd, so evaluate on |x| and restore the sign
-    block binade(%v: F32, %u: U32, %au: U32, %tt: F32, %i: USize):
-        %s : F32 = %u.shr(31).eq(1)
+    block binade(v: F32, u: U32, au: U32, tt: F32, i: USize):
+        s : F32 = u.shr(31).eq(1)
             ? -1.0
             : 1.0
-        %t  : F32 = %v.mul(%s)
-        %c4 : F32 = cm_f16_asinh_p(%i, 5).mul_add(%t, cm_f16_asinh_p(%i, 4))
-        %c2 : F32 = cm_f16_asinh_p(%i, 3).mul_add(%t, cm_f16_asinh_p(%i, 2))
-        %c0 : F32 = cm_f16_asinh_p(%i, 1).mul_add(%t, cm_f16_asinh_p(%i, 0))
-        %d4 : F32 = cm_f16_asinh_p(%i, 6).mul_add(%tt, %c4)
-        %d0 : F32 = %c2.mul_add(%tt, %c0)
-        %y  : F32 = %d4.mul_add(%tt.mul(%tt), %d0)
+        t  : F32 = v.mul(s)
+        c4 : F32 = cm_f16_asinh_p(i, 5).mul_add(t, cm_f16_asinh_p(i, 4))
+        c2 : F32 = cm_f16_asinh_p(i, 3).mul_add(t, cm_f16_asinh_p(i, 2))
+        c0 : F32 = cm_f16_asinh_p(i, 1).mul_add(t, cm_f16_asinh_p(i, 0))
+        d4 : F32 = cm_f16_asinh_p(i, 6).mul_add(tt, c4)
+        d0 : F32 = c2.mul_add(tt, c0)
+        y  : F32 = d4.mul_add(tt.mul(tt), d0)
         // the inputs the polynomials round wrongly (each au fixes its binade i)
         when:
-            %au.eq(0x41936000) -> finish(0x1.cdbffep+1, %s)  // i = 7
-            %au.eq(0x436CC000) -> finish(0x1.8a4002p+2, %s)  // i = 10
-            %au.eq(0x43F10000) -> finish(0x1.b7bffap+2, %s)  // i = 11
-            %au.eq(0x44588000) -> finish(0x1.dd4004p+2, %s)  // i = 12
-            else               -> finish(%y, %s)
+            au.eq(0x41936000) -> finish(0x1.cdbffep+1, s)  // i = 7
+            au.eq(0x436CC000) -> finish(0x1.8a4002p+2, s)  // i = 10
+            au.eq(0x43F10000) -> finish(0x1.b7bffap+2, s)  // i = 11
+            au.eq(0x44588000) -> finish(0x1.dd4004p+2, s)  // i = 12
+            else              -> finish(y, s)
 
-    block finish(%y: F32, %s: F32):
-        return(%y.mul(%s).to<Self>())
+    block finish(y: F32, s: F32):
+        return(y.mul(s).to<Self>())
 
 /// Coefficient k of the asinh polynomial for binade index i.
-private routine cm_f16_asinh_p(%i: USize, %k: USize) -> F32
+private routine cm_f16_asinh_p(i: USize, k: USize) -> F32
     block entry():
-        return(F32.from_bits(CM_F16_ASINH_P.get(%i.mul(7).add(%k))))
+        return(F32.from_bits(CM_F16_ASINH_P.get(i.mul(7).add(k))))

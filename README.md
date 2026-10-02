@@ -25,24 +25,24 @@ it painful to write by hand. Nothing happens between the lines: phi nodes become
 become typed values, and hand-rolled loops over memory become collections.
 
 ```tessera
-routine two_sum(%list: @S32, %length: USize, %target: S32) -> Option<(USize, USize)>
+routine two_sum(list: @S32, length: USize, target: S32) -> Option<(USize, USize)>
     block entry():
         jump search_left(0)
 
-    block search_left(%left_idx: USize):
-        branch %left_idx.ge(%length)
+    block search_left(left_idx: USize):
+        branch left_idx.ge(length)
             ? return(.Absent)
-            : search_right(%left_idx, %left_idx.add(1))
+            : search_right(left_idx, left_idx.add(1))
 
-    block search_right(%left_idx: USize, %right_idx: USize):
-        branch %right_idx.ge(%length)
-            ? search_left(%left_idx.add(1))
+    block search_right(left_idx: USize, right_idx: USize):
+        branch right_idx.ge(length)
+            ? search_left(left_idx.add(1))
             : continue
-        %left_val  : S32 = %list.stride(%left_idx).load()
-        %right_val : S32 = %list.stride(%right_idx).load()
-        branch %left_val.add(%right_val).eq(%target)
-            ? return(.Present({ %left_idx, %right_idx }))
-            : search_right(%left_idx, %right_idx.add(1))
+        left_val  : S32 = list.stride(left_idx).load()
+        right_val : S32 = list.stride(right_idx).load()
+        branch left_val.add(right_val).eq(target)
+            ? return(.Present({ left_idx, right_idx }))
+            : search_right(left_idx, right_idx.add(1))
 ```
 
 Two blocks make the two loops of an O(n²) search. Each loop's state travels as block parameters, `continue` goes on
@@ -61,7 +61,7 @@ way: each level is made of whole pieces of the level below.
 
 | Level         | What it is                                                                                                                                                                                 |
 |---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **operation** | One explicit step: a named method (`%a.add(%b)`), a load (`%p.load()`), a store (`%p.store(%v)`), a stack slot (`claim`), a call. There are no operators, so every operation says what it does and what it costs. |
+| **operation** | One explicit step: a named method (`a.add(b)`), a load (`p.load()`), a store (`p.store(v)`), a stack slot (`claim`), a call. There are no operators, so every operation says what it does and what it costs. |
 | **block**     | A straight run of operations. Values come in as block parameters (no phi nodes), and the block ends in exactly one terminator: `jump`, `branch`, `when`, or `return`.                      |
 | **routine**   | A set of blocks with one entry. Control moves between its blocks only through terminators, and every value is SSA.                                                                         |
 | **module**    | A namespace for routines, types, and constants (`Standard::Format`). It's declared in the source, not tied to files.                                                                       |
@@ -70,14 +70,14 @@ way: each level is made of whole pieces of the level below.
 **No operators.** Every step is a named call, so `add` and `add_wrap`, or `shr` on a signed and an unsigned value,
 never look alike.
 
-**Block parameters instead of phi nodes.** A loop passes its state forward (`search_right(%left_idx,
-%right_idx.add(1))`) instead of collecting it from predecessors.
+**Block parameters instead of phi nodes.** A loop passes its state forward (`search_right(left_idx,
+right_idx.add(1))`) instead of collecting it from predecessors.
 
 **`=` only binds.** Memory is read and written by `load` and `store` calls, and every binding states its type.
 
 **Sum types are variants.** `Option` and `Result` are variants, read with a `when` whose arms bind the payload;
 choices and variants print, compare, and hash without being asked. Tuples of two to four values
-(`-> (U64, U64)`, `%q, %r = div_rem(%a, %b)`) cover results that are just several values; a record names the parts
+(`-> (U64, U64)`, `q, r = div_rem(a, b)`) cover results that are just several values; a record names the parts
 when they mean something.
 
 **Nothing hidden.** No implicit conversions, destructors, exceptions, vtables, or allocations: every runtime

@@ -51,64 +51,64 @@ preset CM_F32_LOG2_LIX: @Array<U64, 65> <- { 0x0000000000000000, 0xBF96E7966EAD8
         0xBFEF45E08C87B090, 0xBFEFA34E117D8785, 0xBFF0000000000000 }
 
 /// log2 self, correctly rounded.
-routine F32.log2(%self: Self) -> Self
+routine F32.log2(self: Self) -> Self
     block entry():
-        %ux      : U32  = %self.bits()
-        %special : Bool = %ux.ge(0x7F800000)  // x <= -0, +inf, or NaN
-        %small   : Bool = %ux.lt(0x00800000)
+        ux      : U32  = self.bits()
+        special : Bool = ux.ge(0x7F800000)  // x <= -0, +inf, or NaN
+        small   : Bool = ux.lt(0x00800000)
         when:
-            %special -> return(cm_f32_log2_special(%self))
-            %small   -> small(%ux)
-            else     -> normal(%ux)
+            special -> return(cm_f32_log2_special(self))
+            small   -> small(ux)
+            else    -> normal(ux)
 
     // +0 or a subnormal
-    block small(%ux: U32):
-        %zero : Bool = %ux.eq(0)
-        branch %zero
-            ? return(cm_f32_log2_special(%self))
+    block small(ux: U32):
+        zero : Bool = ux.eq(0)
+        branch zero
+            ? return(cm_f32_log2_special(self))
             : continue
-        %n : U32 = %ux.leading_zeros().sub(8)
-        jump normal(%ux.shl(%n).sub_wrap(%n.shl(23)))
+        n : U32 = ux.leading_zeros().sub(8)
+        jump normal(ux.shl(n).sub_wrap(n.shl(23)))
 
     // ux is a normalized positive pattern (the exponent field may be below 1 for a subnormal x)
-    block normal(%ux: U32):
-        %e     : S64  = %ux.to_wrap<S32>().shr(23).to<S64>().sub(127)
-        %m     : U32  = %ux.bitand(0x7FFFFF)
-        %power : Bool = %m.eq(0)
-        branch %power
-            ? return(%e.to<Self>())
+    block normal(ux: U32):
+        e     : S64  = ux.to_wrap<S32>().shr(23).to<S64>().sub(127)
+        m     : U32  = ux.bitand(0x7FFFFF)
+        power : Bool = m.eq(0)
+        branch power
+            ? return(e.to<Self>())
             : continue
-        %j    : USize = %m.add(0x10000).shr(17).to<USize>()
-        %xd   : F64   = F64.from_bits(%m.to<U64>().shl(29).bitor(0x3FF0000000000000))
-        %z    : F64   = %xd.mul(F64.from_bits(CM_F32_LOG2_IX.get(%j))).sub(1.0)
-        %z2   : F64   = %z.mul(%z)
-        %el   : F64   = %e.to<F64>().sub(F64.from_bits(CM_F32_LOG2_LIX.get(%j)))
-        %tail : F64   = %z.mul(0x1.ec60b584ca47fp-2).add(-0x1.71574d6939f6cp-1)
-        %f    : F64   = %el.add(%z.mul(0x1.7154765bab2b5p+0)).add(%z2.mul(%tail))
-        %lb   : Self  = %f.to<Self>()
-        %ub   : Self  = %f.add(0x1.661p-32).to<Self>()
-        %sure : Bool  = %lb.eq(%ub)
-        branch %sure
-            ? return(%lb)
-            : slow(%z, %z2, %el)
+        j    : USize = m.add(0x10000).shr(17).to<USize>()
+        xd   : F64   = F64.from_bits(m.to<U64>().shl(29).bitor(0x3FF0000000000000))
+        z    : F64   = xd.mul(F64.from_bits(CM_F32_LOG2_IX.get(j))).sub(1.0)
+        z2   : F64   = z.mul(z)
+        el   : F64   = e.to<F64>().sub(F64.from_bits(CM_F32_LOG2_LIX.get(j)))
+        tail : F64   = z.mul(0x1.ec60b584ca47fp-2).add(-0x1.71574d6939f6cp-1)
+        f    : F64   = el.add(z.mul(0x1.7154765bab2b5p+0)).add(z2.mul(tail))
+        lb   : Self  = f.to<Self>()
+        ub   : Self  = f.add(0x1.661p-32).to<Self>()
+        sure : Bool  = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : slow(z, z2, el)
 
     // The fast path can't decide the rounding: a longer polynomial.
-    block slow(%z: F64, %z2: F64, %el: F64):
-        %c0 : F64 = F64.sub(0x1.71547652b8314p+0, %z.mul(0x1.71547652b7f67p-1))
-        %c2 : F64 = F64.sub(0x1.ec709db872c63p-2, %z.mul(0x1.715476b064cdfp-2))
-        %c4 : F64 = F64.sub(0x1.277c72c15441fp-2, %z.mul(0x1.ec4ff35b64c31p-3))
-        %c  : F64 = %c0.add(%z2.mul(%c2.add(%z2.mul(%c4))))
-        return(%el.add(%z.mul(%c)).to<Self>())
+    block slow(z: F64, z2: F64, el: F64):
+        c0 : F64 = F64.sub(0x1.71547652b8314p+0, z.mul(0x1.71547652b7f67p-1))
+        c2 : F64 = F64.sub(0x1.ec709db872c63p-2, z.mul(0x1.715476b064cdfp-2))
+        c4 : F64 = F64.sub(0x1.277c72c15441fp-2, z.mul(0x1.ec4ff35b64c31p-3))
+        c  : F64 = c0.add(z2.mul(c2.add(z2.mul(c4))))
+        return(el.add(z.mul(c)).to<Self>())
 
 /// log2 of +-0 (-inf), +inf (itself), NaN (itself, quiet) or a negative input (NaN).
-private routine cm_f32_log2_special(%x: F32) -> F32
+private routine cm_f32_log2_special(x: F32) -> F32
     block entry():
-        %ux   : U32  = %x.bits()
-        %zero : Bool = %ux.shl(1).eq(0)
-        %inf  : Bool = %ux.eq(0x7F800000)
-        %nan  : Bool = %ux.shl(1).gt(0xFF000000)
+        ux   : U32  = x.bits()
+        zero : Bool = ux.shl(1).eq(0)
+        inf  : Bool = ux.eq(0x7F800000)
+        nan  : Bool = ux.shl(1).gt(0xFF000000)
         when:
-            %zero -> return(F32.from_bits(0xFF800000))
-            %inf  -> return(%x)
-            %nan  -> return(%x.add(%x))
-            else  -> return(F32.from_bits(0xFFC00000))
+            zero -> return(F32.from_bits(0xFF800000))
+            inf  -> return(x)
+            nan  -> return(x.add(x))
+            else -> return(F32.from_bits(0xFFC00000))

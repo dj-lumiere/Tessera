@@ -37,488 +37,486 @@ record F128Big
 
 // -- making one ----------------------------------------------------------------
 
-/// m × 2^exponent with m brought to BIG_BITS bits (rounded to nearest, ties to even, when longer). Uses %m.
-routine big_make(%negative: Bool, %exponent: S64, %m: @BigNat<16>) -> F128Big
+/// m × 2^exponent with m brought to BIG_BITS bits (rounded to nearest, ties to even, when longer). Uses m.
+routine big_make(negative: Bool, exponent: S64, m: @BigNat<16>) -> F128Big
     block entry():
-        %zero : Bool = %m.is_zero()
-        branch %zero
+        zero : Bool = m.is_zero()
+        branch zero
             ? zero()
-            : fit(%exponent)
+            : fit(exponent)
 
     block zero():
-        %r : F128Big = F128Big { negative: false, exponent: 0, mant: %m.load() }
-        return(%r)
+        r : F128Big = F128Big { negative: false, exponent: 0, mant: m.load() }
+        return(r)
 
-    block fit(%exponent: S64):
-        %length : USize = %m.bit_length()
-        %long   : Bool  = %length.gt(BIG_BITS)
-        %short  : Bool  = %length.lt(BIG_BITS)
+    block fit(exponent: S64):
+        length : USize = m.bit_length()
+        long   : Bool  = length.gt(BIG_BITS)
+        short  : Bool  = length.lt(BIG_BITS)
         when:
-            %long  -> shrink(%exponent, %length.sub(BIG_BITS))
-            %short -> grow(%exponent, BIG_BITS.sub(%length))
-            else   -> done(%exponent)
+            long  -> shrink(exponent, length.sub(BIG_BITS))
+            short -> grow(exponent, BIG_BITS.sub(length))
+            else  -> done(exponent)
 
     // rounding up can carry to 2^BIG_BITS, which the next pass shifts down
-    block shrink(%exponent: S64, %n: USize):
-        %m.shr_round_even(%n)
-        jump fit(%exponent.add(%n.to<S64>()))
+    block shrink(exponent: S64, n: USize):
+        m.shr_round_even(n)
+        jump fit(exponent.add(n.to<S64>()))
 
-    block grow(%exponent: S64, %n: USize):
-        %m.shl(%n)
-        jump fit(%exponent.sub(%n.to<S64>()))
+    block grow(exponent: S64, n: USize):
+        m.shl(n)
+        jump fit(exponent.sub(n.to<S64>()))
 
-    block done(%exponent: S64):
-        %r : F128Big = F128Big { negative: %negative, exponent: %exponent, mant: %m.load() }
-        return(%r)
+    block done(exponent: S64):
+        r : F128Big = F128Big { negative: negative, exponent: exponent, mant: m.load() }
+        return(r)
 
 routine big_zero() -> F128Big
     block entry():
-        claim %m : @BigNat<16> <- uninit
-        %m.set(0)
-        %r : F128Big = big_make(false, 0, %m)
-        return(%r)
+        claim m : @BigNat<16> <- uninit
+        m.set(0)
+        r : F128Big = big_make(false, 0, m)
+        return(r)
 
-routine big_from_u128(%negative: Bool, %value: U128, %exponent: S64) -> F128Big
+routine big_from_u128(negative: Bool, value: U128, exponent: S64) -> F128Big
     block entry():
-        claim %m : @BigNat<16> <- uninit
-        %m.set_u128(%value)
-        %r : F128Big = big_make(%negative, %exponent, %m)
-        return(%r)
+        claim m : @BigNat<16> <- uninit
+        m.set_u128(value)
+        r : F128Big = big_make(negative, exponent, m)
+        return(r)
 
-routine big_from_s64(%n: S64) -> F128Big
+routine big_from_s64(n: S64) -> F128Big
     block entry():
-        %r : F128Big = big_from_u128(%n.lt(0), %n.abs_diff(0).to<U128>(), 0)
-        return(%r)
+        r : F128Big = big_from_u128(n.lt(0), n.abs_diff(0).to<U128>(), 0)
+        return(r)
 
 routine big_one() -> F128Big
     block entry():
-        %r : F128Big = big_from_u128(false, 1, 0)
-        return(%r)
+        r : F128Big = big_from_u128(false, 1, 0)
+        return(r)
 
 /// An F128, exactly.
-routine big_from_f128(%x: F128) -> F128Big
+routine big_from_f128(x: F128) -> F128Big
     block entry():
-        %zero : Bool = f128_is_zero_bits(%x.bits())
-        branch %zero
+        zero : Bool = f128_is_zero_bits(x.bits())
+        branch zero
             ? return(big_zero())
             : continue
-        %p : F128Parts = f128_unpack(%x.bits())
-        %r : F128Big   = big_from_u128(f128_is_negative_bits(%x.bits()), %p.sig,
-                %p.exponent.sub(112))
-        return(%r)
+        p : F128Parts = f128_unpack(x.bits())
+        r : F128Big   = big_from_u128(f128_is_negative_bits(x.bits()), p.sig, p.exponent.sub(112))
+        return(r)
 
 /// An F128Extended, exactly.
-routine big_from_wide(%w: F128Extended) -> F128Big
+routine big_from_wide(w: F128Extended) -> F128Big
     block entry():
-        claim %m   : @BigNat<16> <- uninit
-        claim %low : @BigNat<16> <- uninit
-        %m.set_u128(%w.hi)
-        %m.shl(64)
-        %low.set(%w.lo)
-        %m.add(%low)
-        %r : F128Big = big_make(%w.negative, %w.exponent.sub(191), %m)
-        return(%r)
+        claim m   : @BigNat<16> <- uninit
+        claim low : @BigNat<16> <- uninit
+        m.set_u128(w.hi)
+        m.shl(64)
+        low.set(w.lo)
+        m.add(low)
+        r : F128Big = big_make(w.negative, w.exponent.sub(191), m)
+        return(r)
 
 /// limbs (7 of them, least significant first) × 2^exponent.
-routine big_from_limbs(%limbs: @U64, %exponent: S64) -> F128Big
+routine big_from_limbs(limbs: @U64, exponent: S64) -> F128Big
     block entry():
-        claim %m : @BigNat<16> <- uninit
-        %m.set(0)
-        jump load(0, %m)
+        claim m : @BigNat<16> <- uninit
+        m.set(0)
+        jump load(0, m)
 
-    block load(%i: USize, %m: @BigNat<16>):
-        %done : Bool = %i.ge(7)
-        branch %done
-            ? finish(%m)
-            : one(%i, %m)
+    block load(i: USize, m: @BigNat<16>):
+        done : Bool = i.ge(7)
+        branch done
+            ? finish(m)
+            : one(i, m)
 
-    block one(%i: USize, %m: @BigNat<16>):
-        %limb : U64 = %limbs.stride(%i).load()
-        %m.push_limb(%limb)
-        jump load(%i.add(1), %m)
+    block one(i: USize, m: @BigNat<16>):
+        limb : U64 = limbs.stride(i).load()
+        m.push_limb(limb)
+        jump load(i.add(1), m)
 
-    block finish(%m: @BigNat<16>):
-        %r : F128Big = big_make(false, %exponent, %m)
-        return(%r)
+    block finish(m: @BigNat<16>):
+        r : F128Big = big_make(false, exponent, m)
+        return(r)
 
 routine big_ln2_hi() -> F128Big
     block entry():
-        %r : F128Big = big_from_limbs(BIG_LN2_HI.to<@U64>(), -448)
-        return(%r)
+        r : F128Big = big_from_limbs(BIG_LN2_HI.to<@U64>(), -448)
+        return(r)
 
 routine big_ln2_lo() -> F128Big
     block entry():
-        %r : F128Big = big_from_limbs(BIG_LN2_LO.to<@U64>(), -898)
-        return(%r)
+        r : F128Big = big_from_limbs(BIG_LN2_LO.to<@U64>(), -898)
+        return(r)
 
 /// ln 2 to 448 bits
 routine big_ln2() -> F128Big
     block entry():
-        %r : F128Big = big_ln2_hi()
-        return(%r)
+        r : F128Big = big_ln2_hi()
+        return(r)
 
 /// π/2 to 448 bits
 routine big_half_pi() -> F128Big
     block entry():
-        %r : F128Big = big_from_limbs(BIG_HALF_PI_HI.to<@U64>(), -447)
-        return(%r)
+        r : F128Big = big_from_limbs(BIG_HALF_PI_HI.to<@U64>(), -447)
+        return(r)
 
 /// π to 448 bits
 routine big_pi() -> F128Big
     block entry():
-        %r : F128Big = big_half_pi().ldexp(1)
-        return(%r)
+        r : F128Big = big_half_pi().ldexp(1)
+        return(r)
 
 // -- reading one ---------------------------------------------------------------
 
-routine F128Big.is_zero(%self: Self) -> Bool
+routine F128Big.is_zero(self: Self) -> Bool
     block entry():
-        %r : Bool = %self.mant.length.eq(0)
-        return(%r)
+        r : Bool = self.mant.length.eq(0)
+        return(r)
 
 /// floor(log2 |self|) for a nonzero self: |self| is in [2^top, 2^(top + 1)).
-routine F128Big.top(%self: Self) -> S64
+routine F128Big.top(self: Self) -> S64
     block entry():
-        %r : S64 = %self.exponent.add(BIG_BITS.to<S64>()).sub(1)
-        return(%r)
+        r : S64 = self.exponent.add(BIG_BITS.to<S64>()).sub(1)
+        return(r)
 
 /// Rounded once to F128, to nearest, ties to even (overflow, subnormals, and underflow included). Zero is +0.
-routine F128Big.to<F128>(%self: Self) -> F128
+routine F128Big.to<F128>(self: Self) -> F128
     block entry():
-        %zero : Bool = %self.is_zero()
-        branch %zero
+        zero : Bool = self.is_zero()
+        branch zero
             ? return(f128_of(0))
             : round()
 
     // the top 125 bits with a sticky bit, as big_to_f128 hands them to f128_round_pack
     block round():
-        claim %m : @BigNat<16> <- %self.mant
-        %shift    : USize = BIG_BITS.sub(125)
-        %sticky   : Bool  = %m.any_below(%shift)
-        %top      : U128  = %m.bits128(%shift)
-        %sig      : U128  = %top.bitor(%sticky.to<U128>())
-        %exponent : S64   = %self.exponent.add(%shift.to<S64>()).add(F128_BIAS).add(115)
-        %bits     : U128  = f128_round_pack(%self.negative, %exponent, %sig)
-        %r        : F128  = f128_of(%bits)
-        return(%r)
+        claim m : @BigNat<16> <- self.mant
+        shift    : USize = BIG_BITS.sub(125)
+        sticky   : Bool  = m.any_below(shift)
+        top      : U128  = m.bits128(shift)
+        sig      : U128  = top.bitor(sticky.to<U128>())
+        exponent : S64   = self.exponent.add(shift.to<S64>()).add(F128_BIAS).add(115)
+        bits     : U128  = f128_round_pack(self.negative, exponent, sig)
+        r        : F128  = f128_of(bits)
+        return(r)
 
 /// The top 192 bits, truncated: seeds for Newton's method and for reductions.
-routine F128Big.to_wide(%self: Self) -> F128Extended
+routine F128Big.to_wide(self: Self) -> F128Extended
     block entry():
-        %zero : Bool = %self.is_zero()
-        branch %zero
+        zero : Bool = self.is_zero()
+        branch zero
             ? return(wide_zero())
             : continue
-        claim %m : @BigNat<16> <- %self.mant
-        %shift : USize        = BIG_BITS.sub(192)
-        %hi    : U128         = %m.bits128(%shift.add(64))
-        %lo    : U64          = %m.bits128(%shift).to_wrap<U64>()
-        %w     : F128Extended = F128Extended { negative: %self.negative,
-                exponent: %self.exponent.add(%shift.to<S64>()).add(191), hi: %hi, lo: %lo }
-        return(%w)
+        claim m : @BigNat<16> <- self.mant
+        shift : USize        = BIG_BITS.sub(192)
+        hi    : U128         = m.bits128(shift.add(64))
+        lo    : U64          = m.bits128(shift).to_wrap<U64>()
+        w     : F128Extended = F128Extended { negative: self.negative,
+                exponent: self.exponent.add(shift.to<S64>()).add(191), hi: hi, lo: lo }
+        return(w)
 
 /// -1, 0, or 1 as |self| is below, equal to, or above |other|.
-routine F128Big.compare_magnitude(%self: Self, %other: Self) -> S32
+routine F128Big.compare_magnitude(self: Self, other: Self) -> S32
     block entry():
-        %a_zero : Bool = %self.is_zero()
-        %b_zero : Bool = %other.is_zero()
-        %low    : S32  = %b_zero
+        a_zero : Bool = self.is_zero()
+        b_zero : Bool = other.is_zero()
+        low    : S32  = b_zero
             ? 0
             : -1
         when:
-            %a_zero -> return(%low)
-            %b_zero -> return(1)
-            else    -> both()
+            a_zero -> return(low)
+            b_zero -> return(1)
+            else   -> both()
 
     block both():
-        %lower  : Bool = %self.exponent.lt(%other.exponent)
-        %higher : Bool = %self.exponent.gt(%other.exponent)
+        lower  : Bool = self.exponent.lt(other.exponent)
+        higher : Bool = self.exponent.gt(other.exponent)
         when:
-            %lower  -> return(-1)
-            %higher -> return(1)
-            else    -> mantissas()
+            lower  -> return(-1)
+            higher -> return(1)
+            else   -> mantissas()
 
     block mantissas():
-        claim %a : @BigNat<16> <- %self.mant
-        claim %b : @BigNat<16> <- %other.mant
-        %r : S32 = %a.compare(%b)
-        return(%r)
+        claim a : @BigNat<16> <- self.mant
+        claim b : @BigNat<16> <- other.mant
+        r : S32 = a.compare(b)
+        return(r)
 
 // -- arithmetic ----------------------------------------------------------------
 
-routine F128Big.neg(%self: Self) -> Self
+routine F128Big.neg(self: Self) -> Self
     block entry():
-        %zero : Bool = %self.is_zero()
-        branch %zero
-            ? return(%self)
+        zero : Bool = self.is_zero()
+        branch zero
+            ? return(self)
             : continue
-        %r : Self = Self { negative: %self.negative.bitnot(), exponent: %self.exponent,
-                mant: %self.mant }
-        return(%r)
+        r : Self = Self { negative: self.negative.bitnot(), exponent: self.exponent,
+                mant: self.mant }
+        return(r)
 
-routine F128Big.abs(%self: Self) -> Self
+routine F128Big.abs(self: Self) -> Self
     block entry():
-        %r : Self = Self { negative: false, exponent: %self.exponent, mant: %self.mant }
-        return(%r)
+        r : Self = Self { negative: false, exponent: self.exponent, mant: self.mant }
+        return(r)
 
 /// self × 2^k, exactly.
-routine F128Big.ldexp(%self: Self, %k: S64) -> Self
+routine F128Big.ldexp(self: Self, k: S64) -> Self
     block entry():
-        %zero : Bool = %self.is_zero()
-        branch %zero
-            ? return(%self)
+        zero : Bool = self.is_zero()
+        branch zero
+            ? return(self)
             : continue
-        %r : Self = Self { negative: %self.negative, exponent: %self.exponent.add(%k),
-                mant: %self.mant }
-        return(%r)
+        r : Self = Self { negative: self.negative, exponent: self.exponent.add(k), mant: self.mant }
+        return(r)
 
 /// The sum, rounded once. Both mantissas get 64 guard bits; the smaller is shifted exactly when it's within 64
 /// bits of the larger, else rounded, which only happens when it can't cancel.
-routine F128Big.add(%self: Self, %other: Self) -> Self
+routine F128Big.add(self: Self, other: Self) -> Self
     block entry():
-        %a_zero : Bool = %self.is_zero()
-        %b_zero : Bool = %other.is_zero()
+        a_zero : Bool = self.is_zero()
+        b_zero : Bool = other.is_zero()
         when:
-            %a_zero -> return(%other)
-            %b_zero -> return(%self)
-            else    -> order()
+            a_zero -> return(other)
+            b_zero -> return(self)
+            else   -> order()
 
     block order():
-        %a_first : Bool = %self.compare_magnitude(%other).ge(0)
-        %big     : Self = %a_first
-            ? %self
-            : %other
-        %small : Self = %a_first
-            ? %other
-            : %self
-        %d   : S64  = %big.exponent.sub(%small.exponent)
-        %far : Bool = %d.gt(BIG_BITS.to<S64>().add(66))
-        branch %far
-            ? return(%big)
-            : align(%big, %small, %d)
+        a_first : Bool = self.compare_magnitude(other).ge(0)
+        big     : Self = a_first
+            ? self
+            : other
+        small : Self = a_first
+            ? other
+            : self
+        d   : S64  = big.exponent.sub(small.exponent)
+        far : Bool = d.gt(BIG_BITS.to<S64>().add(66))
+        branch far
+            ? return(big)
+            : align(big, small, d)
 
-    block align(%big: Self, %small: Self, %d: S64):
-        claim %x : @BigNat<16> <- %big.mant
-        claim %y : @BigNat<16> <- %small.mant
-        %x.shl(64)
-        %near : Bool = %d.le(64)
-        branch %near
-            ? up(%big, %small, %d, %x, %y)
-            : down(%big, %small, %d, %x, %y)
+    block align(big: Self, small: Self, d: S64):
+        claim x : @BigNat<16> <- big.mant
+        claim y : @BigNat<16> <- small.mant
+        x.shl(64)
+        near : Bool = d.le(64)
+        branch near
+            ? up(big, small, d, x, y)
+            : down(big, small, d, x, y)
 
-    block up(%big: Self, %small: Self, %d: S64, %x: @BigNat<16>, %y: @BigNat<16>):
-        %y.shl(64.sub(%d).to<USize>())
-        jump combine(%big, %small, %x, %y)
+    block up(big: Self, small: Self, d: S64, x: @BigNat<16>, y: @BigNat<16>):
+        y.shl(64.sub(d).to<USize>())
+        jump combine(big, small, x, y)
 
-    block down(%big: Self, %small: Self, %d: S64, %x: @BigNat<16>, %y: @BigNat<16>):
-        %y.shr_round_even(%d.sub(64).to<USize>())
-        jump combine(%big, %small, %x, %y)
+    block down(big: Self, small: Self, d: S64, x: @BigNat<16>, y: @BigNat<16>):
+        y.shr_round_even(d.sub(64).to<USize>())
+        jump combine(big, small, x, y)
 
-    block combine(%big: Self, %small: Self, %x: @BigNat<16>, %y: @BigNat<16>):
-        %same : Bool = %big.negative.eq(%small.negative)
-        branch %same
-            ? plus(%big, %x, %y)
-            : minus(%big, %x, %y)
+    block combine(big: Self, small: Self, x: @BigNat<16>, y: @BigNat<16>):
+        same : Bool = big.negative.eq(small.negative)
+        branch same
+            ? plus(big, x, y)
+            : minus(big, x, y)
 
-    block plus(%big: Self, %x: @BigNat<16>, %y: @BigNat<16>):
-        %x.add(%y)
-        jump finish(%big, %x)
+    block plus(big: Self, x: @BigNat<16>, y: @BigNat<16>):
+        x.add(y)
+        jump finish(big, x)
 
-    block minus(%big: Self, %x: @BigNat<16>, %y: @BigNat<16>):
-        %x.sub(%y)
-        jump finish(%big, %x)
+    block minus(big: Self, x: @BigNat<16>, y: @BigNat<16>):
+        x.sub(y)
+        jump finish(big, x)
 
-    block finish(%big: Self, %x: @BigNat<16>):
-        %r : Self = big_make(%big.negative, %big.exponent.sub(64), %x)
-        return(%r)
+    block finish(big: Self, x: @BigNat<16>):
+        r : Self = big_make(big.negative, big.exponent.sub(64), x)
+        return(r)
 
-routine F128Big.sub(%self: Self, %other: Self) -> Self
+routine F128Big.sub(self: Self, other: Self) -> Self
     block entry():
-        %r : Self = %self.add(%other.neg())
-        return(%r)
+        r : Self = self.add(other.neg())
+        return(r)
 
 /// The product, rounded once.
-routine F128Big.mul(%self: Self, %other: Self) -> Self
+routine F128Big.mul(self: Self, other: Self) -> Self
     block entry():
-        claim %a : @BigNat<16> <- %self.mant
-        claim %b : @BigNat<16> <- %other.mant
-        claim %p : @BigNat<16> <- uninit
-        %p.set_product(%a, %b)
-        %negative : Bool = %self.negative.bitxor(%other.negative)
-        %r        : Self = big_make(%negative, %self.exponent.add(%other.exponent), %p)
-        return(%r)
+        claim a : @BigNat<16> <- self.mant
+        claim b : @BigNat<16> <- other.mant
+        claim p : @BigNat<16> <- uninit
+        p.set_product(a, b)
+        negative : Bool = self.negative.bitxor(other.negative)
+        r        : Self = big_make(negative, self.exponent.add(other.exponent), p)
+        return(r)
 
 /// self × n, rounded once.
-routine F128Big.mul_u64(%self: Self, %n: U64) -> Self
+routine F128Big.mul_u64(self: Self, n: U64) -> Self
     block entry():
-        claim %a : @BigNat<16> <- %self.mant
-        %a.mul_add(%n, 0)
-        %a.trim()  // n = 0 leaves zero limbs
-        %r : Self = big_make(%self.negative, %self.exponent, %a)
-        return(%r)
+        claim a : @BigNat<16> <- self.mant
+        a.mul_add(n, 0)
+        a.trim()  // n = 0 leaves zero limbs
+        r : Self = big_make(self.negative, self.exponent, a)
+        return(r)
 
 /// self × n for a signed n, rounded once.
-routine F128Big.mul_s64(%self: Self, %n: S64) -> Self
+routine F128Big.mul_s64(self: Self, n: S64) -> Self
     block entry():
-        %m : Self = %self.mul_u64(%n.abs_diff(0))
-        %r : Self = %n.lt(0)
-            ? %m.neg()
-            : %m
-        return(%r)
+        m : Self = self.mul_u64(n.abs_diff(0))
+        r : Self = n.lt(0)
+            ? m.neg()
+            : m
+        return(r)
 
 /// self / n (n > 0), rounded once: 64 more bits go into the division.
-routine F128Big.div_u64(%self: Self, %n: U64) -> Self
+routine F128Big.div_u64(self: Self, n: U64) -> Self
     block entry():
-        claim %a : @BigNat<16> <- %self.mant
-        %a.shl(64)
-        %dropped : U64  = %a.div_limb(%n)
-        %sticky  : Bool = %dropped.ne(0)
+        claim a : @BigNat<16> <- self.mant
+        a.shl(64)
+        dropped : U64  = a.div_limb(n)
+        sticky  : Bool = dropped.ne(0)
         // a remainder only matters as a sticky bit below the 64 extra bits
-        %a.shl(1)
-        %bit : U64 = %sticky.to<U64>()
-        claim %s : @BigNat<16> <- uninit
-        %s.set(%bit)
-        %a.add(%s)
-        %r : Self = big_make(%self.negative, %self.exponent.sub(65), %a)
-        return(%r)
+        a.shl(1)
+        bit : U64 = sticky.to<U64>()
+        claim s : @BigNat<16> <- uninit
+        s.set(bit)
+        a.add(s)
+        r : Self = big_make(self.negative, self.exponent.sub(65), a)
+        return(r)
 
 /// 1 / self for a nonzero self: two Newton steps y ← y + y (1 - self y) from F128Extended's 190 bits.
-routine F128Big.recip(%self: Self) -> Self
+routine F128Big.recip(self: Self) -> Self
     block entry():
-        %seed : F128Extended = wide_one().div(%self.to_wide())
-        %y0   : Self         = big_from_wide(%seed)
-        %one  : Self         = big_one()
-        %y1   : Self         = %y0.add(%y0.mul(%one.sub(%self.mul(%y0))))
-        %y2   : Self         = %y1.add(%y1.mul(%one.sub(%self.mul(%y1))))
-        return(%y2)
+        seed : F128Extended = wide_one().div(self.to_wide())
+        y0   : Self         = big_from_wide(seed)
+        one  : Self         = big_one()
+        y1   : Self         = y0.add(y0.mul(one.sub(self.mul(y0))))
+        y2   : Self         = y1.add(y1.mul(one.sub(self.mul(y1))))
+        return(y2)
 
-routine F128Big.div(%self: Self, %other: Self) -> Self
+routine F128Big.div(self: Self, other: Self) -> Self
     block entry():
-        %r : Self = %self.mul(%other.recip())
-        return(%r)
+        r : Self = self.mul(other.recip())
+        return(r)
 
 /// sqrt for self >= 0: two Newton steps s ← (s + self / s) / 2 from F128Extended's 190 bits.
-routine F128Big.sqrt(%self: Self) -> Self
+routine F128Big.sqrt(self: Self) -> Self
     block entry():
-        %zero : Bool = %self.is_zero()
-        branch %zero
-            ? return(%self)
+        zero : Bool = self.is_zero()
+        branch zero
+            ? return(self)
             : continue
-        %s0 : Self = big_from_wide(%self.to_wide().sqrt())
-        %s1 : Self = %s0.add(%self.div(%s0)).ldexp(-1)
-        %s2 : Self = %s1.add(%self.div(%s1)).ldexp(-1)
-        return(%s2)
+        s0 : Self = big_from_wide(self.to_wide().sqrt())
+        s1 : Self = s0.add(self.div(s0)).ldexp(-1)
+        s2 : Self = s1.add(self.div(s1)).ldexp(-1)
+        return(s2)
 
 // -- series --------------------------------------------------------------------
 
 /// Whether a term no longer moves a sum: |term| < 2^-(BIG_BITS + 8) |sum|.
-routine big_negligible(%term: F128Big, %sum: F128Big) -> Bool
+routine big_negligible(term: F128Big, sum: F128Big) -> Bool
     block entry():
-        %zero  : Bool = %term.is_zero()
-        %floor : S64  = %sum.top().sub(BIG_BITS.to<S64>()).sub(8)
-        %tiny  : Bool = %term.top().lt(%floor)
-        %r     : Bool = %zero.bitor(%sum.is_zero().bitnot().bitand(%tiny))
-        return(%r)
+        zero  : Bool = term.is_zero()
+        floor : S64  = sum.top().sub(BIG_BITS.to<S64>()).sub(8)
+        tiny  : Bool = term.top().lt(floor)
+        r     : Bool = zero.bitor(sum.is_zero().bitnot().bitand(tiny))
+        return(r)
 
 // -- exp, exp_m1 ---------------------------------------------------------------
 
 /// e^x for |x| < 2^15: x = q ln 2 + r with ln 2 in two parts, then e^(r / 256) by its Taylor series and 8
 /// squarings (each doubles the relative error, to about 2^-438 in all).
-routine big_exp(%x: F128Big) -> F128Big
+routine big_exp(x: F128Big) -> F128Big
     block entry():
-        %q     : S64     = %x.to_wide().mul(wide_const(1)).to_i64_nearest()
-        %r     : F128Big = %x.sub(big_ln2_hi().mul_s64(%q)).sub(big_ln2_lo().mul_s64(%q))
-        %small : F128Big = %r.ldexp(-8)
-        %one   : F128Big = big_one()
-        jump series(1, %small, %one.add(%small), %small, %q)
+        q     : S64     = x.to_wide().mul(wide_const(1)).to_i64_nearest()
+        r     : F128Big = x.sub(big_ln2_hi().mul_s64(q)).sub(big_ln2_lo().mul_s64(q))
+        small : F128Big = r.ldexp(-8)
+        one   : F128Big = big_one()
+        jump series(1, small, one.add(small), small, q)
 
     // term = small^j / j!
-    block series(%j: U64, %term: F128Big, %sum: F128Big, %small: F128Big, %q: S64):
-        %next : F128Big = %term.mul(%small).div_u64(%j.add(1))
-        %done : Bool    = big_negligible(%next, %sum)
-        branch %done
-            ? square(0, %sum, %q)
-            : series(%j.add(1), %next, %sum.add(%next), %small, %q)
+    block series(j: U64, term: F128Big, sum: F128Big, small: F128Big, q: S64):
+        next : F128Big = term.mul(small).div_u64(j.add(1))
+        done : Bool    = big_negligible(next, sum)
+        branch done
+            ? square(0, sum, q)
+            : series(j.add(1), next, sum.add(next), small, q)
 
-    block square(%i: S64, %e: F128Big, %q: S64):
-        %done : Bool = %i.ge(8)
-        branch %done
-            ? return(%e.ldexp(%q))
-            : square(%i.add(1), %e.mul(%e), %q)
+    block square(i: S64, e: F128Big, q: S64):
+        done : Bool = i.ge(8)
+        branch done
+            ? return(e.ldexp(q))
+            : square(i.add(1), e.mul(e), q)
 
 /// e^x - 1 without cancellation: below 2^-20 its own series x Σ x^j / (j+1)!; else e^x - 1, which loses at most
 /// 21 of the 448 bits.
-routine big_exp_m1(%x: F128Big) -> F128Big
+routine big_exp_m1(x: F128Big) -> F128Big
     block entry():
-        %zero  : Bool = %x.is_zero()
-        %small : Bool = %x.top().lt(-20)
+        zero  : Bool = x.is_zero()
+        small : Bool = x.top().lt(-20)
         when:
-            %zero  -> return(%x)
-            %small -> series(1, %x, %x)
-            else   -> return(big_exp(%x).sub(big_one()))
+            zero  -> return(x)
+            small -> series(1, x, x)
+            else  -> return(big_exp(x).sub(big_one()))
 
     // term = x^j / j!
-    block series(%j: U64, %term: F128Big, %sum: F128Big):
-        %next : F128Big = %term.mul(%x).div_u64(%j.add(1))
-        %done : Bool    = big_negligible(%next, %sum)
-        branch %done
-            ? return(%sum)
-            : series(%j.add(1), %next, %sum.add(%next))
+    block series(j: U64, term: F128Big, sum: F128Big):
+        next : F128Big = term.mul(x).div_u64(j.add(1))
+        done : Bool    = big_negligible(next, sum)
+        branch done
+            ? return(sum)
+            : series(j.add(1), next, sum.add(next))
 
 // -- ln, ln_1p -----------------------------------------------------------------
 
 /// ln x for x > 0: x = m 2^e with m in [sqrt(1/2), sqrt(2)); ln m from F128Extended's log (about 135 bits), then
 /// two Newton steps y ← y + m e^-y - 1. Near 1, where ln m is small, ln_1p of m - 1 keeps it accurate.
-routine big_ln(%x: F128Big) -> F128Big
+routine big_ln(x: F128Big) -> F128Big
     block entry():
-        %top      : S64          = %x.top()
-        %m0       : F128Big      = %x.ldexp(0.sub(%top))  // in [1, 2)
-        %sqrt_two : F128Extended = wide_const(2).ldexp(1)
-        %high     : Bool         = %m0.to_wide().hi.ge(%sqrt_two.hi)
-        %m        : F128Big      = %high
-            ? %m0.ldexp(-1)
-            : %m0
-        %e : S64 = %high
-            ? %top.add(1)
-            : %top
-        %one  : F128Big = big_one()
-        %u    : F128Big = %m.sub(%one)  // exact
-        %near : Bool    = %e.eq(0).bitand(%u.is_zero().bitor(%u.top().lt(-20)))
-        branch %near
-            ? return(big_ln_1p(%u))
-            : newton(%m, %e)
+        top      : S64          = x.top()
+        m0       : F128Big      = x.ldexp(0.sub(top))  // in [1, 2)
+        sqrt_two : F128Extended = wide_const(2).ldexp(1)
+        high     : Bool         = m0.to_wide().hi.ge(sqrt_two.hi)
+        m        : F128Big      = high
+            ? m0.ldexp(-1)
+            : m0
+        e : S64 = high
+            ? top.add(1)
+            : top
+        one  : F128Big = big_one()
+        u    : F128Big = m.sub(one)  // exact
+        near : Bool    = e.eq(0).bitand(u.is_zero().bitor(u.top().lt(-20)))
+        branch near
+            ? return(big_ln_1p(u))
+            : newton(m, e)
 
-    block newton(%m: F128Big, %e: S64):
-        %one : F128Big = big_one()
-        %y0  : F128Big = big_from_wide(wide_log(%m.to_wide()))
-        %y1  : F128Big = %y0.add(%m.mul(big_exp(%y0.neg())).sub(%one))
-        %y2  : F128Big = %y1.add(%m.mul(big_exp(%y1.neg())).sub(%one))
-        %k   : F128Big = big_ln2_hi().mul_s64(%e).add(big_ln2_lo().mul_s64(%e))
-        %r   : F128Big = %y2.add(%k)
-        return(%r)
+    block newton(m: F128Big, e: S64):
+        one : F128Big = big_one()
+        y0  : F128Big = big_from_wide(wide_log(m.to_wide()))
+        y1  : F128Big = y0.add(m.mul(big_exp(y0.neg())).sub(one))
+        y2  : F128Big = y1.add(m.mul(big_exp(y1.neg())).sub(one))
+        k   : F128Big = big_ln2_hi().mul_s64(e).add(big_ln2_lo().mul_s64(e))
+        r   : F128Big = y2.add(k)
+        return(r)
 
 /// ln(1 + u) for u > -1: below 2^-20 its series u - u²/2 + u³/3 - …; else ln of 1 + u.
-routine big_ln_1p(%u: F128Big) -> F128Big
+routine big_ln_1p(u: F128Big) -> F128Big
     block entry():
-        %zero  : Bool = %u.is_zero()
-        %small : Bool = %u.top().lt(-20)
+        zero  : Bool = u.is_zero()
+        small : Bool = u.top().lt(-20)
         when:
-            %zero  -> return(%u)
-            %small -> series(1, %u, %u)
-            else   -> return(big_ln(big_one().add(%u)))
+            zero  -> return(u)
+            small -> series(1, u, u)
+            else  -> return(big_ln(big_one().add(u)))
 
     // power = u^j; the next term is (-1)^j u^(j+1) / (j+1)
-    block series(%j: U64, %power: F128Big, %sum: F128Big):
-        %next_power : F128Big = %power.mul(%u)
-        %term       : F128Big = %next_power.div_u64(%j.add(1))
-        %odd        : Bool    = %j.bitand(1).eq(1)
-        %signed     : F128Big = %odd
-            ? %term.neg()
-            : %term
-        %done : Bool = big_negligible(%term, %sum)
-        branch %done
-            ? return(%sum)
-            : series(%j.add(1), %next_power, %sum.add(%signed))
+    block series(j: U64, power: F128Big, sum: F128Big):
+        next_power : F128Big = power.mul(u)
+        term       : F128Big = next_power.div_u64(j.add(1))
+        odd        : Bool    = j.bitand(1).eq(1)
+        signed     : F128Big = odd
+            ? term.neg()
+            : term
+        done : Bool = big_negligible(term, sum)
+        branch done
+            ? return(sum)
+            : series(j.add(1), next_power, sum.add(signed))
 
 // -- sin, cos ------------------------------------------------------------------
 
@@ -528,125 +526,124 @@ record BigReduced
     theta    : F128Big
 
 /// sin θ = θ Σ (-θ²)^k / (2k+1)! for |θ| <= π/4.
-routine big_sin_core(%t: F128Big) -> F128Big
+routine big_sin_core(t: F128Big) -> F128Big
     block entry():
-        %zero : Bool = %t.is_zero()
-        branch %zero
-            ? return(%t)
+        zero : Bool = t.is_zero()
+        branch zero
+            ? return(t)
             : continue
-        %u : F128Big = %t.mul(%t).neg()
-        jump series(1, %t, %t, %u)
+        u : F128Big = t.mul(t).neg()
+        jump series(1, t, t, u)
 
     // term = θ (-θ²)^k / (2k+1)!, and j = 2k + 1
-    block series(%j: U64, %term: F128Big, %sum: F128Big, %u: F128Big):
-        %next : F128Big = %term.mul(%u).div_u64(%j.add(1).mul(%j.add(2)))
-        %done : Bool    = big_negligible(%next, %sum)
-        branch %done
-            ? return(%sum)
-            : series(%j.add(2), %next, %sum.add(%next), %u)
+    block series(j: U64, term: F128Big, sum: F128Big, u: F128Big):
+        next : F128Big = term.mul(u).div_u64(j.add(1).mul(j.add(2)))
+        done : Bool    = big_negligible(next, sum)
+        branch done
+            ? return(sum)
+            : series(j.add(2), next, sum.add(next), u)
 
 /// cos θ = Σ (-θ²)^k / (2k)! for |θ| <= π/4.
-routine big_cos_core(%t: F128Big) -> F128Big
+routine big_cos_core(t: F128Big) -> F128Big
     block entry():
-        %one  : F128Big = big_one()
-        %zero : Bool    = %t.is_zero()
-        branch %zero
-            ? return(%one)
+        one  : F128Big = big_one()
+        zero : Bool    = t.is_zero()
+        branch zero
+            ? return(one)
             : continue
-        %u : F128Big = %t.mul(%t).neg()
-        jump series(0, %one, %one, %u)
+        u : F128Big = t.mul(t).neg()
+        jump series(0, one, one, u)
 
     // term = (-θ²)^k / (2k)!, and j = 2k
-    block series(%j: U64, %term: F128Big, %sum: F128Big, %u: F128Big):
-        %next : F128Big = %term.mul(%u).div_u64(%j.add(1).mul(%j.add(2)))
-        %done : Bool    = big_negligible(%next, %sum)
-        branch %done
-            ? return(%sum)
-            : series(%j.add(2), %next, %sum.add(%next), %u)
+    block series(j: U64, term: F128Big, sum: F128Big, u: F128Big):
+        next : F128Big = term.mul(u).div_u64(j.add(1).mul(j.add(2)))
+        done : Bool    = big_negligible(next, sum)
+        branch done
+            ? return(sum)
+            : series(j.add(2), next, sum.add(next), u)
 
 /// Reduces |x| by π/2 (Payne-Hanek). With |x| = m × 2^(e - 112), the bits of 2/π that land below 4 are a window W
 /// of 14 limbs (896 bits) from limb s on: |x| × 2/π mod 4 = m W × 2^-sh. The bits above sh give the quadrant, the
 /// ones below it the fraction, accurate to about 2^-650 absolute: far past any F128's distance to a multiple of
 /// π/2, so θ keeps its 448 bits.
-routine big_reduce(%x: F128) -> BigReduced
+routine big_reduce(x: F128) -> BigReduced
     block entry():
-        %p     : F128Parts = f128_unpack(%x.bits())
-        %small : Bool      = %p.exponent.lt(-1)  // |x| < 1/2 < π/4
-        branch %small
+        p     : F128Parts = f128_unpack(x.bits())
+        small : Bool      = p.exponent.lt(-1)  // |x| < 1/2 < π/4
+        branch small
             ? near_zero()
-            : window(%p)
+            : window(p)
 
     block near_zero():
-        %r : BigReduced = BigReduced { quadrant: 0, theta: big_from_f128(%x.abs()) }
-        return(%r)
+        r : BigReduced = BigReduced { quadrant: 0, theta: big_from_f128(x.abs()) }
+        return(r)
 
-    block window(%p: F128Parts):
-        %s  : USize = %p.exponent.sub(114).max(0).div(64).to<USize>()
-        %sh : S64   = %s.add(14).mul(64).to<S64>().sub(%p.exponent).add(112)
-        claim %w : @BigNat<24> <- uninit
-        %w.set(0)
-        jump load(0, %s, %sh, %p, %w)
+    block window(p: F128Parts):
+        s  : USize = p.exponent.sub(114).max(0).div(64).to<USize>()
+        sh : S64   = s.add(14).mul(64).to<S64>().sub(p.exponent).add(112)
+        claim w : @BigNat<24> <- uninit
+        w.set(0)
+        jump load(0, s, sh, p, w)
 
     // limb k of W, least significant first, is TWO_OVER_PI[s + 13 - k]
-    block load(%k: USize, %s: USize, %sh: S64, %p: F128Parts, %w: @BigNat<24>):
-        %done : Bool = %k.ge(14)
-        branch %done
-            ? multiply(%sh, %p, %w)
-            : load_one(%k, %s, %sh, %p, %w)
+    block load(k: USize, s: USize, sh: S64, p: F128Parts, w: @BigNat<24>):
+        done : Bool = k.ge(14)
+        branch done
+            ? multiply(sh, p, w)
+            : load_one(k, s, sh, p, w)
 
-    block load_one(%k: USize, %s: USize, %sh: S64, %p: F128Parts, %w: @BigNat<24>):
-        %limb : U64 = TWO_OVER_PI.get(%s.add(13).sub(%k))
-        %w.push_limb(%limb)
-        jump load(%k.add(1), %s, %sh, %p, %w)
+    block load_one(k: USize, s: USize, sh: S64, p: F128Parts, w: @BigNat<24>):
+        limb : U64 = TWO_OVER_PI.get(s.add(13).sub(k))
+        w.push_limb(limb)
+        jump load(k.add(1), s, sh, p, w)
 
-    block multiply(%sh: S64, %p: F128Parts, %w: @BigNat<24>):
-        claim %m    : @BigNat<24> <- uninit
-        claim %prod : @BigNat<24> <- uninit
-        %w.trim()
-        %m.set_u128(%p.sig)
-        %prod.set_product(%m, %w)
-        %at        : USize = %sh.to<USize>()
-        %q         : U64   = %prod.bits128(%at).to_wrap<U64>().bitand(3)
-        %past_half : Bool  = %prod.bit(%at.sub(1))
+    block multiply(sh: S64, p: F128Parts, w: @BigNat<24>):
+        claim m    : @BigNat<24> <- uninit
+        claim prod : @BigNat<24> <- uninit
+        w.trim()
+        m.set_u128(p.sig)
+        prod.set_product(m, w)
+        at        : USize = sh.to<USize>()
+        q         : U64   = prod.bits128(at).to_wrap<U64>().bitand(3)
+        past_half : Bool  = prod.bit(at.sub(1))
         // f = F × 2^-sh with F the bits under sh; past 1/2, count the next quadrant and use f - 1
-        claim %f : @BigNat<16> <- uninit
-        %f.set(0)
-        jump fraction(0, %at, %prod, %f, %q, %past_half)
+        claim f : @BigNat<16> <- uninit
+        f.set(0)
+        jump fraction(0, at, prod, f, q, past_half)
 
     // copy the bits under sh into f, 64 at a time from the bottom (sh is a whole number of limbs past any
     // leftover bits, which bits128 reads across)
-    block fraction(%i: USize, %at: USize, %prod: @BigNat<24>, %f: @BigNat<16>, %q: U64,
-            %past_half: Bool):
-        %pos  : USize = %i.mul(64)
-        %done : Bool  = %pos.ge(%at)
-        branch %done
-            ? finish(%at, %f, %q, %past_half)
-            : fraction_one(%i, %at, %prod, %f, %q, %past_half)
+    block fraction(i: USize, at: USize, prod: @BigNat<24>, f: @BigNat<16>, q: U64, past_half: Bool):
+        pos  : USize = i.mul(64)
+        done : Bool  = pos.ge(at)
+        branch done
+            ? finish(at, f, q, past_half)
+            : fraction_one(i, at, prod, f, q, past_half)
 
-    block fraction_one(%i: USize, %at: USize, %prod: @BigNat<24>, %f: @BigNat<16>, %q: U64,
-            %past_half: Bool):
-        %pos  : USize = %i.mul(64)
-        %left : USize = %at.sub(%pos)
-        %word : U64   = %prod.bits128(%pos).to_wrap<U64>()
-        %mask : U64   = U64.MAX.shr(64.sub(%left.min(64)).to<U64>())
-        %f.push_limb(%word.bitand(%mask))
-        jump fraction(%i.add(1), %at, %prod, %f, %q, %past_half)
+    block fraction_one(i: USize, at: USize, prod: @BigNat<24>, f: @BigNat<16>, q: U64,
+            past_half: Bool):
+        pos  : USize = i.mul(64)
+        left : USize = at.sub(pos)
+        word : U64   = prod.bits128(pos).to_wrap<U64>()
+        mask : U64   = U64.MAX.shr(64.sub(left.min(64)).to<U64>())
+        f.push_limb(word.bitand(mask))
+        jump fraction(i.add(1), at, prod, f, q, past_half)
 
-    block finish(%at: USize, %f: @BigNat<16>, %q: U64, %past_half: Bool):
-        %f.trim()
-        branch %past_half
-            ? complement(%at, %f, %q)
-            : scale(false, %at, %f, %q)
+    block finish(at: USize, f: @BigNat<16>, q: U64, past_half: Bool):
+        f.trim()
+        branch past_half
+            ? complement(at, f, q)
+            : scale(false, at, f, q)
 
     // f - 1 = -(2^sh - F) × 2^-sh, taken exactly before any rounding
-    block complement(%at: USize, %f: @BigNat<16>, %q: U64):
-        claim %c : @BigNat<16> <- uninit
-        %c.set(1)
-        %c.shl(%at)
-        %c.sub(%f)
-        jump scale(true, %at, %c, %q.add_wrap(1).bitand(3))
+    block complement(at: USize, f: @BigNat<16>, q: U64):
+        claim c : @BigNat<16> <- uninit
+        c.set(1)
+        c.shl(at)
+        c.sub(f)
+        jump scale(true, at, c, q.add_wrap(1).bitand(3))
 
-    block scale(%negative: Bool, %at: USize, %g: @BigNat<16>, %k: U64):
-        %frac : F128Big    = big_make(%negative, 0.sub(%at.to<S64>()), %g)
-        %r    : BigReduced = BigReduced { quadrant: %k, theta: %frac.mul(big_half_pi()) }
-        return(%r)
+    block scale(negative: Bool, at: USize, g: @BigNat<16>, k: U64):
+        frac : F128Big    = big_make(negative, 0.sub(at.to<S64>()), g)
+        r    : BigReduced = BigReduced { quadrant: k, theta: frac.mul(big_half_pi()) }
+        return(r)

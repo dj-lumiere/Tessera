@@ -117,260 +117,258 @@ record CmF64ExpDd
     lo : F64
 
 /// e^self
-routine F64.exp(%self: Self) -> Self
+routine F64.exp(self: Self) -> Self
     block entry():
-        %ux   : U64  = %self.bits()
-        %aix  : U64  = %ux.bitand(0x7FFFFFFFFFFFFFFF)
-        %tiny : Bool = %aix.le(0x3C90000000000000)  // |x| <= 2^-54: e^x rounds to 1
-        %edge : Bool = %aix.ge(0x40862E42FEFA39F0)
+        ux   : U64  = self.bits()
+        aix  : U64  = ux.bitand(0x7FFFFFFFFFFFFFFF)
+        tiny : Bool = aix.le(0x3C90000000000000)  // |x| <= 2^-54: e^x rounds to 1
+        edge : Bool = aix.ge(0x40862E42FEFA39F0)
         when:
-            %tiny -> return(Self.add(1.0, %self))
-            %edge -> edge(%ux, %aix)
-            else  -> fast(%ux)
+            tiny -> return(Self.add(1.0, self))
+            edge -> edge(ux, aix)
+            else -> fast(ux)
 
     // |x| >= 0x1.62e42fefa39fp+9, infinite or NaN
-    block edge(%ux: U64, %aix: U64):
-        %nan      : Bool = %aix.gt(0x7FF0000000000000)
-        %inf      : Bool = %aix.eq(0x7FF0000000000000)
-        %positive : Bool = %ux.shr(63).eq(0)
-        %under    : Bool = %aix.ge(0x40874910D52D3052)  // x <= -0x1.74910d52d3052p+9
+    block edge(ux: U64, aix: U64):
+        nan      : Bool = aix.gt(0x7FF0000000000000)
+        inf      : Bool = aix.eq(0x7FF0000000000000)
+        positive : Bool = ux.shr(63).eq(0)
+        under    : Bool = aix.ge(0x40874910D52D3052)  // x <= -0x1.74910d52d3052p+9
         when:
-            %nan      -> return(%self.add(%self))
-            %inf      -> infinite(%positive)
-            %positive -> return(Self.INFINITY)
-            %under    -> return(0.0)
-            else      -> fast(%ux)
+            nan      -> return(self.add(self))
+            inf      -> infinite(positive)
+            positive -> return(Self.INFINITY)
+            under    -> return(0.0)
+            else     -> fast(ux)
 
-    block infinite(%positive: Bool):
-        branch %positive
-            ? return(%self)
+    block infinite(positive: Bool):
+        branch positive
+            ? return(self)
             : return(0.0)
 
-    block fast(%ux: U64):
-        %t  : Self       = %self.mul(0x1.71547652b82fep+12).round_ties_even()
-        %jt : S64        = %t.to<S64>()
-        %ie : S64        = %jt.shr(12)
-        %tt : CmF64ExpDd = cm_f64_exp_table_2pow(%jt.to_wrap<U64>())
+    block fast(ux: U64):
+        t  : Self       = self.mul(0x1.71547652b82fep+12).round_ties_even()
+        jt : S64        = t.to<S64>()
+        ie : S64        = jt.shr(12)
+        tt : CmF64ExpDd = cm_f64_exp_table_2pow(jt.to_wrap<U64>())
         // Cody-Waite reduction: |t| < 2^23 and the high part of log(2)/2^12 fits in 29 bits, so its product is exact
-        %dx  : Self = %self.sub(%t.mul(0x1.62e42ffp-13)).add(%t.mul(0x1.718432a1b0e26p-47))
-        %dx2 : Self = %dx.mul(%dx)
+        dx  : Self = self.sub(t.mul(0x1.62e42ffp-13)).add(t.mul(0x1.718432a1b0e26p-47))
+        dx2 : Self = dx.mul(dx)
         // 1 + dx (c0 + c1 dx + c2 dx^2 + c3 dx^3) approximates e^dx with absolute error below 2^-76.173
-        %p01 : Self = Self.add(1.0, %dx.mul(0x1p-1))
-        %p23 : Self = Self.add(0x1.55555557e54ffp-3, %dx.mul(0x1.55555553a12f4p-5))
-        %p   : Self = %p01.add(%dx2.mul(%p23))
-        %tx  : Self = %tt.hi.mul(%dx)
-        %fl  : Self = %tt.lo.add(%tx.mul(%p))
-        %sub : Bool = %ux.gt(0xC086232BDD7ABCD2)  // x < -0x1.6232bdd7abcd2p+9: subnormal result
-        branch %sub
-            ? subnormal(%tt.hi, %fl, %ie)
-            : normal(%tt.hi, %fl, %ie)
+        p01 : Self = Self.add(1.0, dx.mul(0x1p-1))
+        p23 : Self = Self.add(0x1.55555557e54ffp-3, dx.mul(0x1.55555553a12f4p-5))
+        p   : Self = p01.add(dx2.mul(p23))
+        tx  : Self = tt.hi.mul(dx)
+        fl  : Self = tt.lo.add(tx.mul(p))
+        sub : Bool = ux.gt(0xC086232BDD7ABCD2)  // x < -0x1.6232bdd7abcd2p+9: subnormal result
+        branch sub
+            ? subnormal(tt.hi, fl, ie)
+            : normal(tt.hi, fl, ie)
 
-    block normal(%fh: Self, %fl: Self, %ie: S64):
-        %ub   : Self = %fh.add(%fl.add(1.64e-19))
-        %lb   : Self = %fh.add(%fl.sub(1.64e-19))
-        %sure : Bool = %ub.eq(%lb)
-        branch %sure
-            ? return(cm_f64_exp_ldexp(%lb, %ie))
-            : return(cm_f64_exp_accurate(%self))
+    block normal(fh: Self, fl: Self, ie: S64):
+        ub   : Self = fh.add(fl.add(1.64e-19))
+        lb   : Self = fh.add(fl.sub(1.64e-19))
+        sure : Bool = ub.eq(lb)
+        branch sure
+            ? return(cm_f64_exp_ldexp(lb, ie))
+            : return(cm_f64_exp_accurate(self))
 
-    block subnormal(%fh: Self, %fl: Self, %ie: S64):
-        %bias : Self       = Self.from_bits(S64.sub(1, %ie).to_wrap<U64>().shl(52))
-        %s    : CmF64ExpDd = cm_f64_exp_fasttwosum(%bias, %fh)
-        %sl   : Self       = %fl.add(%s.lo)
-        %ub   : Self       = %s.hi.add(%sl.add(1.64e-19))
-        %lb   : Self       = %s.hi.add(%sl.sub(1.64e-19))
-        %sure : Bool       = %ub.eq(%lb)
-        branch %sure
-            ? return(Self.from_bits(%lb.bits().bitand(0x000FFFFFFFFFFFFF)))
-            : return(cm_f64_exp_accurate(%self))
+    block subnormal(fh: Self, fl: Self, ie: S64):
+        bias : Self       = Self.from_bits(S64.sub(1, ie).to_wrap<U64>().shl(52))
+        s    : CmF64ExpDd = cm_f64_exp_fasttwosum(bias, fh)
+        sl   : Self       = fl.add(s.lo)
+        ub   : Self       = s.hi.add(sl.add(1.64e-19))
+        lb   : Self       = s.hi.add(sl.sub(1.64e-19))
+        sure : Bool       = ub.eq(lb)
+        branch sure
+            ? return(Self.from_bits(lb.bits().bitand(0x000FFFFFFFFFFFFF)))
+            : return(cm_f64_exp_accurate(self))
 
 /// The slow accurate path of exp, for finite x with |x| in (2^-54, 0x1.74910d52d3052p+9).
-private routine cm_f64_exp_accurate(%x: F64) -> F64
+private routine cm_f64_exp_accurate(x: F64) -> F64
     block entry():
-        %ux   : U64  = %x.bits()
-        %tiny : Bool = %ux.shr(52).bitand(0x7FF).lt(0x3C9)
-        branch %tiny
-            ? return(F64.add(1.0, %x))
+        ux   : U64  = x.bits()
+        tiny : Bool = ux.shr(52).bitand(0x7FF).lt(0x3C9)
+        branch tiny
+            ? return(F64.add(1.0, x))
             : continue
-        %t  : F64        = %x.mul(0x1.71547652b82fep+12).round_ties_even()
-        %jt : S64        = %t.to<S64>()
-        %ie : S64        = %jt.shr(12)
-        %tt : CmF64ExpDd = cm_f64_exp_table_2pow(%jt.to_wrap<U64>())
+        t  : F64        = x.mul(0x1.71547652b82fep+12).round_ties_even()
+        jt : S64        = t.to<S64>()
+        ie : S64        = jt.shr(12)
+        tt : CmF64ExpDd = cm_f64_exp_table_2pow(jt.to_wrap<U64>())
         // Cody-Waite reduction with a triple-double log(2)/2^12
-        %dx   : F64        = %x.sub(%t.mul(0x1.62e42ffp-13))
-        %dxl  : F64        = F64.mul(0x1.718432a1b0e26p-47, %t)
-        %dxl3 : F64        = F64.mul(0x1.9ff0342542fc3p-102, %t)
-        %dxle : F64        = F64.mul_add(0x1.718432a1b0e26p-47, %t,
-                %dxl.neg())  // the rounding error of dxl
-        %dxll : F64        = %dxl3.add(%dxle)
-        %dxh  : F64        = %dx.add(%dxl)
-        %dxlo : F64        = %dx.sub(%dxh).add(%dxl).add(%dxll)
-        %p    : CmF64ExpDd = cm_f64_exp_poly_acc(%dxh, %dxlo)
-        %f    : CmF64ExpDd = cm_f64_exp_muldd(%dxh, %dxlo, %p.hi, %p.lo)
-        %sub  : Bool       = %ux.gt(0xC086232BDD7ABCD2)  // x < -0x1.6232bdd7abcd2p+9: subnormal result
-        %one  : Bool       = %tt.hi.eq(1.0)
+        dx   : F64        = x.sub(t.mul(0x1.62e42ffp-13))
+        dxl  : F64        = F64.mul(0x1.718432a1b0e26p-47, t)
+        dxl3 : F64        = F64.mul(0x1.9ff0342542fc3p-102, t)
+        dxle : F64        = F64.mul_add(0x1.718432a1b0e26p-47, t,
+                dxl.neg())  // the rounding error of dxl
+        dxll : F64        = dxl3.add(dxle)
+        dxh  : F64        = dx.add(dxl)
+        dxlo : F64        = dx.sub(dxh).add(dxl).add(dxll)
+        p    : CmF64ExpDd = cm_f64_exp_poly_acc(dxh, dxlo)
+        f    : CmF64ExpDd = cm_f64_exp_muldd(dxh, dxlo, p.hi, p.lo)
+        sub  : Bool       = ux.gt(0xC086232BDD7ABCD2)  // x < -0x1.6232bdd7abcd2p+9: subnormal result
+        one  : Bool       = tt.hi.eq(1.0)
         when:
-            %sub -> subnormal(%f, %tt, %ie)
-            %one -> at_one(%f, %tt.hi, %ie)
-            else -> scale(%f, %tt, %ie)
+            sub  -> subnormal(f, tt, ie)
+            one  -> at_one(f, tt.hi, ie)
+            else -> scale(f, tt, ie)
 
-    block subnormal(%f: CmF64ExpDd, %tt: CmF64ExpDd, %ie: S64):
-        %bias : F64        = F64.from_bits(S64.sub(1, %ie).to_wrap<U64>().shl(52))
-        %g    : CmF64ExpDd = cm_f64_exp_muldd(%f.hi, %f.lo, %tt.hi, %tt.lo)
-        %h    : CmF64ExpDd = cm_f64_exp_fastsum(%tt.hi, %tt.lo, %g.hi, %g.lo)
-        %s    : CmF64ExpDd = cm_f64_exp_fasttwosum(%bias, %h.hi)
-        %fl   : F64        = %h.lo.add(%s.lo)
-        return(F64.from_bits(%s.hi.add(%fl).bits().bitand(0x000FFFFFFFFFFFFF)))
+    block subnormal(f: CmF64ExpDd, tt: CmF64ExpDd, ie: S64):
+        bias : F64        = F64.from_bits(S64.sub(1, ie).to_wrap<U64>().shl(52))
+        g    : CmF64ExpDd = cm_f64_exp_muldd(f.hi, f.lo, tt.hi, tt.lo)
+        h    : CmF64ExpDd = cm_f64_exp_fastsum(tt.hi, tt.lo, g.hi, g.lo)
+        s    : CmF64ExpDd = cm_f64_exp_fasttwosum(bias, h.hi)
+        fl   : F64        = h.lo.add(s.lo)
+        return(F64.from_bits(s.hi.add(fl).bits().bitand(0x000FFFFFFFFFFFFF)))
 
     // 2^(k/2^12) is exactly 1: add it in without a product
-    block at_one(%f: CmF64ExpDd, %th: F64, %ie: S64):
-        %s    : CmF64ExpDd = cm_f64_exp_fasttwosum(%th, %f.hi)
-        %s2   : CmF64ExpDd = cm_f64_exp_fasttwosum(%s.lo, %f.lo)
-        %ul   : U64        = %s2.hi.bits()
-        %pow2 : Bool       = %ul.bitand(0x000FFFFFFFFFFFFF).eq(0)
-        branch %pow2
-            ? nudge(%s.hi, %ul, %s2.lo, %ie)
-            : finish(%s.hi, %s2.hi, %ie)
+    block at_one(f: CmF64ExpDd, th: F64, ie: S64):
+        s    : CmF64ExpDd = cm_f64_exp_fasttwosum(th, f.hi)
+        s2   : CmF64ExpDd = cm_f64_exp_fasttwosum(s.lo, f.lo)
+        ul   : U64        = s2.hi.bits()
+        pow2 : Bool       = ul.bitand(0x000FFFFFFFFFFFFF).eq(0)
+        branch pow2
+            ? nudge(s.hi, ul, s2.lo, ie)
+            : finish(s.hi, s2.hi, ie)
 
     // the low part is a power of 2: nudge it one ulp toward the sign of the tail
-    block nudge(%fh: F64, %ul: U64, %tail: F64, %ie: S64):
-        %same : Bool = %ul.shr(63).eq(%tail.bits().shr(63))
-        %u    : U64  = %same
-            ? %ul.add_wrap(1)
-            : %ul.sub_wrap(1)
-        jump finish(%fh, F64.from_bits(%u), %ie)
+    block nudge(fh: F64, ul: U64, tail: F64, ie: S64):
+        same : Bool = ul.shr(63).eq(tail.bits().shr(63))
+        u    : U64  = same
+            ? ul.add_wrap(1)
+            : ul.sub_wrap(1)
+        jump finish(fh, F64.from_bits(u), ie)
 
-    block scale(%f: CmF64ExpDd, %tt: CmF64ExpDd, %ie: S64):
-        %g : CmF64ExpDd = cm_f64_exp_muldd(%f.hi, %f.lo, %tt.hi, %tt.lo)
-        %h : CmF64ExpDd = cm_f64_exp_fastsum(%tt.hi, %tt.lo, %g.hi, %g.lo)
-        jump finish(%h.hi, %h.lo, %ie)
+    block scale(f: CmF64ExpDd, tt: CmF64ExpDd, ie: S64):
+        g : CmF64ExpDd = cm_f64_exp_muldd(f.hi, f.lo, tt.hi, tt.lo)
+        h : CmF64ExpDd = cm_f64_exp_fastsum(tt.hi, tt.lo, g.hi, g.lo)
+        jump finish(h.hi, h.lo, ie)
 
-    block finish(%fh: F64, %fl: F64, %ie: S64):
-        %s    : CmF64ExpDd = cm_f64_exp_fasttwosum(%fh, %fl)
-        %d    : U64        = %s.lo.bits().add_wrap(2).bitand(0x000FFFFFFFFFFFFF)
-        %hard : Bool       = %d.le(2)
-        branch %hard
-            ? return(cm_f64_exp_ldexp(cm_f64_exp_database(%x, %s.hi), %ie))
-            : return(cm_f64_exp_ldexp(%s.hi, %ie))
+    block finish(fh: F64, fl: F64, ie: S64):
+        s    : CmF64ExpDd = cm_f64_exp_fasttwosum(fh, fl)
+        d    : U64        = s.lo.bits().add_wrap(2).bitand(0x000FFFFFFFFFFFFF)
+        hard : Bool       = d.le(2)
+        branch hard
+            ? return(cm_f64_exp_ldexp(cm_f64_exp_database(x, s.hi), ie))
+            : return(cm_f64_exp_ldexp(s.hi, ie))
 
 /// The degree-6 double-double polynomial of the accurate path at xh + xl, by
 /// Horner's rule with fused double-word multiply-adds.
-private routine cm_f64_exp_poly_acc(%xh: F64, %xl: F64) -> CmF64ExpDd
+private routine cm_f64_exp_poly_acc(xh: F64, xl: F64) -> CmF64ExpDd
     block entry():
         jump loop(6, F64.from_bits(CM_F64_EXP_ACC_CH.get(12)),
                 F64.from_bits(CM_F64_EXP_ACC_CH.get(13)))
 
-    block loop(%i: USize, %ch: F64, %cl: F64):
-        %done : Bool = %i.eq(0)
-        branch %done
-            ? return(CmF64ExpDd { hi: %ch, lo: %cl })
-            : step(%i.sub(1), %ch, %cl)
+    block loop(i: USize, ch: F64, cl: F64):
+        done : Bool = i.eq(0)
+        branch done
+            ? return(CmF64ExpDd { hi: ch, lo: cl })
+            : step(i.sub(1), ch, cl)
 
-    block step(%i: USize, %ch: F64, %cl: F64):
-        %c0 : F64        = F64.from_bits(CM_F64_EXP_ACC_CH.get(%i.mul(2)))
-        %c1 : F64        = F64.from_bits(CM_F64_EXP_ACC_CH.get(%i.mul(2).add(1)))
-        %r  : CmF64ExpDd = cm_f64_exp_fastfma_dw(%xh, %xl, %ch, %cl, %c0, %c1)
-        jump loop(%i, %r.hi, %r.lo)
+    block step(i: USize, ch: F64, cl: F64):
+        c0 : F64        = F64.from_bits(CM_F64_EXP_ACC_CH.get(i.mul(2)))
+        c1 : F64        = F64.from_bits(CM_F64_EXP_ACC_CH.get(i.mul(2).add(1)))
+        r  : CmF64ExpDd = cm_f64_exp_fastfma_dw(xh, xl, ch, cl, c0, c1)
+        jump loop(i, r.hi, r.lo)
 
 /// Looks x up among the arguments whose e^x lies too close to a rounding
 /// boundary for the accurate path, and returns the correctly rounded
 /// (unscaled) result for them, or f unchanged otherwise.
-private routine cm_f64_exp_database(%x: F64, %f: F64) -> F64
+private routine cm_f64_exp_database(x: F64, f: F64) -> F64
     block entry():
         jump search(0, 50)
 
-    block search(%a: S64, %b: S64):
-        %open : Bool = %a.le(%b)
-        branch %open
-            ? probe(%a, %b)
-            : return(%f)
+    block search(a: S64, b: S64):
+        open : Bool = a.le(b)
+        branch open
+            ? probe(a, b)
+            : return(f)
 
-    block probe(%a: S64, %b: S64):
-        %m     : S64  = %a.add(%b).shr(1)
-        %cm    : U64  = CM_F64_EXP_DB.get(%m.to<USize>())
-        %ux    : U64  = %x.bits()
-        %below : Bool = %cm.lt(%ux)
-        %found : Bool = %cm.eq(%ux)
+    block probe(a: S64, b: S64):
+        m     : S64  = a.add(b).shr(1)
+        cm    : U64  = CM_F64_EXP_DB.get(m.to<USize>())
+        ux    : U64  = x.bits()
+        below : Bool = cm.lt(ux)
+        found : Bool = cm.eq(ux)
         when:
-            %below -> search(%m.add(1), %b)
-            %found -> found(%m.to_wrap<U64>())
-            else   -> search(%a, %m.sub(1))
+            below -> search(m.add(1), b)
+            found -> found(m.to_wrap<U64>())
+            else  -> search(a, m.sub(1))
 
-    block found(%um: U64):
-        %dr    : F64  = F64.from_bits(U64.shr(333811522313371,
-                %um).shl(63).bitor(0x3C90000000000000))
-        %upper : Bool = %um.shr(5).eq(1)
-        %s2    : U64  = %upper
+    block found(um: U64):
+        dr    : F64  = F64.from_bits(U64.shr(333811522313371, um).shl(63).bitor(0x3C90000000000000))
+        upper : Bool = um.shr(5).eq(1)
+        s2    : U64  = upper
             ? 0x3C1F16B8ED
             : 0x57F5FE2E5BDE4075
-        %t : U64 = %s2.shr(%um.shl(1).bitand(63)).bitand(3)
-        return(cm_f64_exp_pick(%f, %t, %dr))
+        t : U64 = s2.shr(um.shl(1).bitand(63)).bitand(3)
+        return(cm_f64_exp_pick(f, t, dr))
 
 /// Picks, among f - 1ulp, f, f + 1ulp, the one whose two low bits equal t, and
 /// adds the tiny correction dr to it (the databases' encoding of a
 /// hard-to-round result). Returns f when no neighbour matches.
-routine cm_f64_exp_pick(%f: F64, %t: U64, %dr: F64) -> F64
+routine cm_f64_exp_pick(f: F64, t: U64, dr: F64) -> F64
     block entry():
-        %jf    : U64  = %f.bits()
-        %r0    : U64  = %jf.sub_wrap(1)
-        %r2    : U64  = %jf.add_wrap(1)
-        %below : Bool = %r0.bitand(3).eq(%t)
-        %same  : Bool = %jf.bitand(3).eq(%t)
-        %above : Bool = %r2.bitand(3).eq(%t)
+        jf    : U64  = f.bits()
+        r0    : U64  = jf.sub_wrap(1)
+        r2    : U64  = jf.add_wrap(1)
+        below : Bool = r0.bitand(3).eq(t)
+        same  : Bool = jf.bitand(3).eq(t)
+        above : Bool = r2.bitand(3).eq(t)
         when:
-            %below -> return(F64.from_bits(%r0).add(%dr))
-            %same  -> return(F64.from_bits(%jf).add(%dr))
-            %above -> return(F64.from_bits(%r2).add(%dr))
-            else   -> return(%f)
+            below -> return(F64.from_bits(r0).add(dr))
+            same  -> return(F64.from_bits(jf).add(dr))
+            above -> return(F64.from_bits(r2).add(dr))
+            else  -> return(f)
 
 /// The double-double value of 2^((j mod 2^12) / 2^12), as the product of the
 /// table entries 2^(i0/2^6) and 2^(i1/2^12), where i0, i1 are bits 6..11 and
 /// 0..5 of j.
-routine cm_f64_exp_table_2pow(%j: U64) -> CmF64ExpDd
+routine cm_f64_exp_table_2pow(j: U64) -> CmF64ExpDd
     block entry():
-        %i0 : USize = %j.shr(6).bitand(0x3F).to<USize>()
-        %i1 : USize = %j.bitand(0x3F).to<USize>()
-        %xh : F64   = F64.from_bits(CM_F64_EXP_T0.get(%i0.mul(2).add(1)))
-        %xl : F64   = F64.from_bits(CM_F64_EXP_T0.get(%i0.mul(2)))
-        %ch : F64   = F64.from_bits(CM_F64_EXP_T1.get(%i1.mul(2).add(1)))
-        %cl : F64   = F64.from_bits(CM_F64_EXP_T1.get(%i1.mul(2)))
-        return(cm_f64_exp_muldd(%xh, %xl, %ch, %cl))
+        i0 : USize = j.shr(6).bitand(0x3F).to<USize>()
+        i1 : USize = j.bitand(0x3F).to<USize>()
+        xh : F64   = F64.from_bits(CM_F64_EXP_T0.get(i0.mul(2).add(1)))
+        xl : F64   = F64.from_bits(CM_F64_EXP_T0.get(i0.mul(2)))
+        ch : F64   = F64.from_bits(CM_F64_EXP_T1.get(i1.mul(2).add(1)))
+        cl : F64   = F64.from_bits(CM_F64_EXP_T1.get(i1.mul(2)))
+        return(cm_f64_exp_muldd(xh, xl, ch, cl))
 
 /// x 2^e by integer addition on the exponent field of x (no range checks):
 /// right only when the result stays normal.
-routine cm_f64_exp_ldexp(%x: F64, %e: S64) -> F64
+routine cm_f64_exp_ldexp(x: F64, e: S64) -> F64
     block entry():
-        return(F64.from_bits(%x.bits().add_wrap(%e.to_wrap<U64>().shl(52))))
+        return(F64.from_bits(x.bits().add_wrap(e.to_wrap<U64>().shl(52))))
 
 /// Fast two-sum: s = x + y and its exact error, for |x| >= |y| (or x = 0).
-routine cm_f64_exp_fasttwosum(%x: F64, %y: F64) -> CmF64ExpDd
+routine cm_f64_exp_fasttwosum(x: F64, y: F64) -> CmF64ExpDd
     block entry():
-        %s : F64 = %x.add(%y)
-        %z : F64 = %s.sub(%x)
-        return(CmF64ExpDd { hi: %s, lo: %y.sub(%z) })
+        s : F64 = x.add(y)
+        z : F64 = s.sub(x)
+        return(CmF64ExpDd { hi: s, lo: y.sub(z) })
 
 /// Double-double sum (xh + xl) + (yh + yl), for |xh| >= |yh|.
-routine cm_f64_exp_fastsum(%xh: F64, %xl: F64, %yh: F64, %yl: F64) -> CmF64ExpDd
+routine cm_f64_exp_fastsum(xh: F64, xl: F64, yh: F64, yl: F64) -> CmF64ExpDd
     block entry():
-        %s : CmF64ExpDd = cm_f64_exp_fasttwosum(%xh, %yh)
-        return(CmF64ExpDd { hi: %s.hi, lo: %xl.add(%yl).add(%s.lo) })
+        s : CmF64ExpDd = cm_f64_exp_fasttwosum(xh, yh)
+        return(CmF64ExpDd { hi: s.hi, lo: xl.add(yl).add(s.lo) })
 
 /// Double-double product (xh + xl) (ch + cl).
-routine cm_f64_exp_muldd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64ExpDd
+routine cm_f64_exp_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64ExpDd
     block entry():
-        %ahhh : F64 = %ch.mul(%xh)
-        %lo   : F64 = %ch.mul(%xl).add(%cl.mul(%xh)).add(%ch.mul_add(%xh, %ahhh.neg()))
-        return(CmF64ExpDd { hi: %ahhh, lo: %lo })
+        ahhh : F64 = ch.mul(xh)
+        lo   : F64 = ch.mul(xl).add(cl.mul(xh)).add(ch.mul_add(xh, ahhh.neg()))
+        return(CmF64ExpDd { hi: ahhh, lo: lo })
 
 /// Double-word fused multiply-add (ah + al) (bh + bl) + (ch + cl) (Jeannerod,
 /// Joldes, Louvet and Muller, Algorithm 4, with its last two FMAs split into a
 /// product and a sum as in CORE-MATH).
-routine cm_f64_exp_fastfma_dw(%ah: F64, %al: F64, %bh: F64, %bl: F64, %ch: F64,
-        %cl: F64) -> CmF64ExpDd
+routine cm_f64_exp_fastfma_dw(ah: F64, al: F64, bh: F64, bl: F64, ch: F64, cl: F64) -> CmF64ExpDd
     block entry():
-        %dh : F64 = %ah.mul_add(%bh, %ch)
-        %t  : F64 = %ch.sub(%dh)
-        %e  : F64 = %ah.mul_add(%bh, %t)
-        %f  : F64 = %e.add(%cl)
-        %g  : F64 = %ah.mul(%bl).add(%f)
-        return(CmF64ExpDd { hi: %dh, lo: %al.mul(%bh).add(%g) })
+        dh : F64 = ah.mul_add(bh, ch)
+        t  : F64 = ch.sub(dh)
+        e  : F64 = ah.mul_add(bh, t)
+        f  : F64 = e.add(cl)
+        g  : F64 = ah.mul(bl).add(f)
+        return(CmF64ExpDd { hi: dh, lo: al.mul(bh).add(g) })

@@ -56,82 +56,82 @@ preset CM_F32_LOG10_ST: @Array<U32, 16> <- { 0x501502F9, 0x41200000, 0x42C80000,
         0x3F800000 }
 
 /// log10 self, correctly rounded.
-routine F32.log10(%self: Self) -> Self
+routine F32.log10(self: Self) -> Self
     block entry():
-        %ux      : U32  = %self.bits()
-        %special : Bool = %ux.ge(0x7F800000)  // x <= -0, +inf, or NaN
-        %power   : Bool = %ux.eq(CM_F32_LOG10_ST.get(%ux.shr(24).bitand(0xF).to<USize>()))
-        %small   : Bool = %ux.lt(0x00800000)
+        ux      : U32  = self.bits()
+        special : Bool = ux.ge(0x7F800000)  // x <= -0, +inf, or NaN
+        power   : Bool = ux.eq(CM_F32_LOG10_ST.get(ux.shr(24).bitand(0xF).to<USize>()))
+        small   : Bool = ux.lt(0x00800000)
         when:
-            %special -> return(cm_f32_log10_special(%self))
-            %power   -> power(%ux)
-            %small   -> small(%ux)
-            else     -> normal(%ux)
+            special -> return(cm_f32_log10_special(self))
+            power   -> power(ux)
+            small   -> small(ux)
+            else    -> normal(ux)
 
     // x = 10^n: n = floor((e + 1) log10(2)) for the biased exponent e
-    block power(%ux: U32):
-        %je : U32 = %ux.shr(23).sub_wrap(126).mul_wrap(0x4D104D4).shr(28)
-        return(%je.to<Self>())
+    block power(ux: U32):
+        je : U32 = ux.shr(23).sub_wrap(126).mul_wrap(0x4D104D4).shr(28)
+        return(je.to<Self>())
 
     // +0 or a subnormal
-    block small(%ux: U32):
-        %zero : Bool = %ux.eq(0)
-        branch %zero
-            ? return(cm_f32_log10_special(%self))
+    block small(ux: U32):
+        zero : Bool = ux.eq(0)
+        branch zero
+            ? return(cm_f32_log10_special(self))
             : continue
-        %n : U32 = %ux.leading_zeros().sub(8)
-        jump normal(%ux.shl(%n).sub_wrap(%n.shl(23)))
+        n : U32 = ux.leading_zeros().sub(8)
+        jump normal(ux.shl(n).sub_wrap(n.shl(23)))
 
     // ux is a normalized positive pattern (the exponent field may be below 1 for a subnormal x)
-    block normal(%ux: U32):
-        %e    : S64   = %ux.to_wrap<S32>().shr(23).to<S64>().sub(127)
-        %ed   : F64   = %e.to<F64>()
-        %m    : U64   = %ux.bitand(0x7FFFFF).to<U64>()
-        %j    : USize = %m.add(0x10000).shr(17).to<USize>()
-        %tz   : F64   = F64.from_bits(%m.shl(29).bitor(0x3FF0000000000000))
-        %tlj  : F64   = F64.from_bits(CM_F32_LOG10_TL.get(%j))
-        %z    : F64   = %tz.mul(F64.from_bits(CM_F32_LOG10_TR.get(%j))).sub(1.0)
-        %z2   : F64   = %z.mul(%z)
-        %head : F64   = %ed.mul(0x1.34413509f79ffp-2).add(%tlj).add(%z.mul(0x1.bcb7b15d35067p-2))
-        %tail : F64   = %z.mul(0x1.2870e2624ce4ep-3).add(-0x1.bcbb1cd29cbafp-3)
-        %r    : F64   = %head.add(%z2.mul(%tail))
-        %ub   : Self  = %r.to<Self>()
-        %lb   : Self  = %r.add(0x1.af23fp-34).to<Self>()
-        %sure : Bool  = %ub.eq(%lb)
-        branch %sure
-            ? return(%ub)
-            : slow(%z, %z2, %ed, %tlj)
+    block normal(ux: U32):
+        e    : S64   = ux.to_wrap<S32>().shr(23).to<S64>().sub(127)
+        ed   : F64   = e.to<F64>()
+        m    : U64   = ux.bitand(0x7FFFFF).to<U64>()
+        j    : USize = m.add(0x10000).shr(17).to<USize>()
+        tz   : F64   = F64.from_bits(m.shl(29).bitor(0x3FF0000000000000))
+        tlj  : F64   = F64.from_bits(CM_F32_LOG10_TL.get(j))
+        z    : F64   = tz.mul(F64.from_bits(CM_F32_LOG10_TR.get(j))).sub(1.0)
+        z2   : F64   = z.mul(z)
+        head : F64   = ed.mul(0x1.34413509f79ffp-2).add(tlj).add(z.mul(0x1.bcb7b15d35067p-2))
+        tail : F64   = z.mul(0x1.2870e2624ce4ep-3).add(-0x1.bcbb1cd29cbafp-3)
+        r    : F64   = head.add(z2.mul(tail))
+        ub   : Self  = r.to<Self>()
+        lb   : Self  = r.add(0x1.af23fp-34).to<Self>()
+        sure : Bool  = ub.eq(lb)
+        branch sure
+            ? return(ub)
+            : slow(z, z2, ed, tlj)
 
     // The fast path can't decide the rounding: a longer polynomial and a two-part log10(2).
-    block slow(%z: F64, %z2: F64, %ed: F64, %tlj: F64):
-        %c01      : F64  = F64.sub(0x1.bcb7b1526e50ep-2, %z.mul(0x1.bcb7b1526e53dp-3))
-        %c23      : F64  = F64.sub(0x1.287a7636f3fa2p-3, %z.mul(0x1.bcb7b146a14b3p-4))
-        %c46      : F64  = F64.sub(0x1.63c627d5219cbp-4,
-                %z.mul(0x1.2880736c8762dp-4)).add(%z2.mul(0x1.fc1ecf913961ap-5))
-        %f        : F64  = %z.mul(%c01.add(%z2.mul(%c23.add(%z2.mul(%c46)))))
-        %f1       : F64  = %f.sub(%ed.mul(0x1.0cee0ed4ca7e9p-54))
-        %f2       : F64  = %f1.add(%tlj.sub(F64.from_bits(CM_F32_LOG10_TL.get(0))))
-        %el       : F64  = %ed.mul(0x1.34413509f7ap-2)
-        %r        : F64  = %el.add(%f2)
-        %boundary : Bool = %r.bits().bitand(0x0FFFFFFF).eq(0)
-        branch %boundary
-            ? nudge(%el, %f2, %r)
-            : return(%r.to<Self>())
+    block slow(z: F64, z2: F64, ed: F64, tlj: F64):
+        c01      : F64  = F64.sub(0x1.bcb7b1526e50ep-2, z.mul(0x1.bcb7b1526e53dp-3))
+        c23      : F64  = F64.sub(0x1.287a7636f3fa2p-3, z.mul(0x1.bcb7b146a14b3p-4))
+        c46      : F64  = F64.sub(0x1.63c627d5219cbp-4,
+                z.mul(0x1.2880736c8762dp-4)).add(z2.mul(0x1.fc1ecf913961ap-5))
+        f        : F64  = z.mul(c01.add(z2.mul(c23.add(z2.mul(c46)))))
+        f1       : F64  = f.sub(ed.mul(0x1.0cee0ed4ca7e9p-54))
+        f2       : F64  = f1.add(tlj.sub(F64.from_bits(CM_F32_LOG10_TL.get(0))))
+        el       : F64  = ed.mul(0x1.34413509f7ap-2)
+        r        : F64  = el.add(f2)
+        boundary : Bool = r.bits().bitand(0x0FFFFFFF).eq(0)
+        branch boundary
+            ? nudge(el, f2, r)
+            : return(r.to<Self>())
 
     // r lies on an F32 rounding boundary: nudge it by the rounding error of el + f
-    block nudge(%el: F64, %f: F64, %r: F64):
-        %dr : F64 = %el.sub(%r).add(%f)
-        return(%r.add(%dr.mul(32.0)).to<Self>())
+    block nudge(el: F64, f: F64, r: F64):
+        dr : F64 = el.sub(r).add(f)
+        return(r.add(dr.mul(32.0)).to<Self>())
 
 /// log10 of +-0 (-inf), +inf (itself), NaN (itself, quiet) or a negative input (NaN).
-private routine cm_f32_log10_special(%x: F32) -> F32
+private routine cm_f32_log10_special(x: F32) -> F32
     block entry():
-        %ux   : U32  = %x.bits()
-        %zero : Bool = %ux.shl(1).eq(0)
-        %inf  : Bool = %ux.eq(0x7F800000)
-        %nan  : Bool = %ux.shl(1).gt(0xFF000000)
+        ux   : U32  = x.bits()
+        zero : Bool = ux.shl(1).eq(0)
+        inf  : Bool = ux.eq(0x7F800000)
+        nan  : Bool = ux.shl(1).gt(0xFF000000)
         when:
-            %zero -> return(F32.from_bits(0xFF800000))
-            %inf  -> return(%x)
-            %nan  -> return(%x.add(%x))
-            else  -> return(F32.from_bits(0xFFC00000))
+            zero -> return(F32.from_bits(0xFF800000))
+            inf  -> return(x)
+            nan  -> return(x.add(x))
+            else -> return(F32.from_bits(0xFFC00000))

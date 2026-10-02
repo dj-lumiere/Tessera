@@ -94,115 +94,114 @@ record CmF64HypDd
     lo : F64
 
 /// x + y as hi + lo exactly, when |x| >= |y| (or x = 0).
-routine cm_f64_hyp_fasttwosum(%x: F64, %y: F64) -> CmF64HypDd
+routine cm_f64_hyp_fasttwosum(x: F64, y: F64) -> CmF64HypDd
     block entry():
-        %s : F64 = %x.add(%y)
-        %z : F64 = %s.sub(%x)
-        %e : F64 = %y.sub(%z)
-        return(CmF64HypDd { hi: %s, lo: %e })
+        s : F64 = x.add(y)
+        z : F64 = s.sub(x)
+        e : F64 = y.sub(z)
+        return(CmF64HypDd { hi: s, lo: e })
 
 /// The double-double product (xh + xl) (ch + cl), not renormalized.
-routine cm_f64_hyp_muldd(%xh: F64, %xl: F64, %ch: F64, %cl: F64) -> CmF64HypDd
+routine cm_f64_hyp_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64HypDd
     block entry():
-        %h : F64 = %xh.mul(%ch)
-        %l : F64 = %xh.mul_add(%ch, %h.neg()).add(%xh.mul(%cl)).add(%xl.mul(%ch))
-        return(CmF64HypDd { hi: %h, lo: %l })
+        h : F64 = xh.mul(ch)
+        l : F64 = xh.mul_add(ch, h.neg()).add(xh.mul(cl)).add(xl.mul(ch))
+        return(CmF64HypDd { hi: h, lo: l })
 
 /// The double-double times double product (xh + xl) ch, not renormalized.
-routine cm_f64_hyp_mulddd(%xh: F64, %xl: F64, %ch: F64) -> CmF64HypDd
+routine cm_f64_hyp_mulddd(xh: F64, xl: F64, ch: F64) -> CmF64HypDd
     block entry():
-        %h : F64 = %xh.mul(%ch)
-        %l : F64 = %xh.mul_add(%ch, %h.neg()).add(%xl.mul(%ch))
-        return(CmF64HypDd { hi: %h, lo: %l })
+        h : F64 = xh.mul(ch)
+        l : F64 = xh.mul_add(ch, h.neg()).add(xl.mul(ch))
+        return(CmF64HypDd { hi: h, lo: l })
 
 /// The first Horner step of a double-double polynomial: (c_hi + c_lo) + l, with l the higher-degree tail
 /// evaluated in double precision.
-routine cm_f64_hyp_polydd_init(%l: F64, %c_hi: F64, %c_lo: F64) -> CmF64HypDd
+routine cm_f64_hyp_polydd_init(l: F64, c_hi: F64, c_lo: F64) -> CmF64HypDd
     block entry():
-        %s : CmF64HypDd = cm_f64_hyp_fasttwosum(%c_hi, %l)
-        return(CmF64HypDd { hi: %s.hi, lo: %s.lo.add(%c_lo) })
+        s : CmF64HypDd = cm_f64_hyp_fasttwosum(c_hi, l)
+        return(CmF64HypDd { hi: s.hi, lo: s.lo.add(c_lo) })
 
 /// One Horner step of a double-double polynomial: (ch + cl) (xh + xl) + (c_hi + c_lo).
-routine cm_f64_hyp_polydd_step(%xh: F64, %xl: F64, %ch: F64, %cl: F64, %c_hi: F64,
-        %c_lo: F64) -> CmF64HypDd
+routine cm_f64_hyp_polydd_step(xh: F64, xl: F64, ch: F64, cl: F64, c_hi: F64,
+        c_lo: F64) -> CmF64HypDd
     block entry():
-        %p : CmF64HypDd = cm_f64_hyp_muldd(%xh, %xl, %ch, %cl)
-        %s : CmF64HypDd = cm_f64_hyp_fasttwosum(%c_hi, %p.hi)
-        %l : F64        = %p.lo.add(%c_lo).add(%s.lo)
-        return(CmF64HypDd { hi: %s.hi, lo: %l })
+        p : CmF64HypDd = cm_f64_hyp_muldd(xh, xl, ch, cl)
+        s : CmF64HypDd = cm_f64_hyp_fasttwosum(c_hi, p.hi)
+        l : F64        = p.lo.add(c_lo).add(s.lo)
+        return(CmF64HypDd { hi: s.hi, lo: l })
 
 /// Accurate exp(x) as a double-double, given t = round(x 2^12 / log 2) as an F64 and the table value
 /// th + tl of 2^(t/2^12), already scaled; the result is scaled like th.
-routine cm_f64_hyp_exp_accurate(%x: F64, %t: F64, %th: F64, %tl: F64) -> CmF64HypDd
+routine cm_f64_hyp_exp_accurate(x: F64, t: F64, th: F64, tl: F64) -> CmF64HypDd
     block entry():
         // log(2) / 2^12 as a triple-double l2h + l2l + l2ll, with l2h t exact
-        %dx   : F64        = %x.sub(%t.mul(0x1.62e42ffp-13))
-        %dxl0 : F64        = %t.mul(0x1.718432a1b0e26p-47)
-        %dxll : F64        = %t.mul(0x1.9ff0342542fc3p-102).add(%t.mul_add(0x1.718432a1b0e26p-47,
-                %dxl0.neg()))
-        %dxh  : F64        = %dx.add(%dxl0)
-        %dxl  : F64        = %dx.sub(%dxh).add(%dxl0).add(%dxll)
-        %tail : F64        = %dxh.mul(0x1.6c16c169400a7p-10).add(0x1.11111113e93e9p-7)
-        %fl   : F64        = %dxh.mul(%dxh.mul(%tail).add(0x1.5555555555555p-5))
-        %p3   : CmF64HypDd = cm_f64_hyp_polydd_init(%fl, 0x1.5555555555555p-3,
-                0x1.53e93e9f26e62p-57)
-        %p2   : CmF64HypDd = cm_f64_hyp_polydd_step(%dxh, %dxl, %p3.hi, %p3.lo, 0x1p-1,
+        dx   : F64        = x.sub(t.mul(0x1.62e42ffp-13))
+        dxl0 : F64        = t.mul(0x1.718432a1b0e26p-47)
+        dxll : F64        = t.mul(0x1.9ff0342542fc3p-102).add(t.mul_add(0x1.718432a1b0e26p-47,
+                dxl0.neg()))
+        dxh  : F64        = dx.add(dxl0)
+        dxl  : F64        = dx.sub(dxh).add(dxl0).add(dxll)
+        tail : F64        = dxh.mul(0x1.6c16c169400a7p-10).add(0x1.11111113e93e9p-7)
+        fl   : F64        = dxh.mul(dxh.mul(tail).add(0x1.5555555555555p-5))
+        p3   : CmF64HypDd = cm_f64_hyp_polydd_init(fl, 0x1.5555555555555p-3, 0x1.53e93e9f26e62p-57)
+        p2   : CmF64HypDd = cm_f64_hyp_polydd_step(dxh, dxl, p3.hi, p3.lo, 0x1p-1,
                 -0x1.8259d904fd34fp-93)
-        %p1   : CmF64HypDd = cm_f64_hyp_polydd_step(%dxh, %dxl, %p2.hi, %p2.lo, 0x1p+0,
+        p1   : CmF64HypDd = cm_f64_hyp_polydd_step(dxh, dxl, p2.hi, p2.lo, 0x1p+0,
                 0x1.6c16bd194535dp-94)
-        %p0   : CmF64HypDd = cm_f64_hyp_muldd(%dxh, %dxl, %p1.hi, %p1.lo)
-        %f    : CmF64HypDd = cm_f64_hyp_muldd(%th, %tl, %p0.hi, %p0.lo)
+        p0   : CmF64HypDd = cm_f64_hyp_muldd(dxh, dxl, p1.hi, p1.lo)
+        f    : CmF64HypDd = cm_f64_hyp_muldd(th, tl, p0.hi, p0.lo)
         // th + tl + fh + fl, renormalized
-        %zh : F64 = %th.add(%f.hi)
-        %zl : F64 = %th.sub(%zh).add(%f.hi)
-        %uh : F64 = %zh.add(%tl)
-        %ul : F64 = %zh.sub(%uh).add(%tl).add(%zl)
-        %vh : F64 = %uh.add(%f.lo)
-        %vl : F64 = %uh.sub(%vh).add(%f.lo).add(%ul)
-        return(CmF64HypDd { hi: %vh, lo: %vl })
+        zh : F64 = th.add(f.hi)
+        zl : F64 = th.sub(zh).add(f.hi)
+        uh : F64 = zh.add(tl)
+        ul : F64 = zh.sub(uh).add(tl).add(zl)
+        vh : F64 = uh.add(f.lo)
+        vl : F64 = uh.sub(vh).add(f.lo).add(ul)
+        return(CmF64HypDd { hi: vh, lo: vl })
 
 /// 2^(e - 1023) as an F64, from the biased exponent e (the bits e << 52).
-routine cm_f64_hyp_scale(%e: S64) -> F64
+routine cm_f64_hyp_scale(e: S64) -> F64
     block entry():
-        return(F64.from_bits(%e.to_wrap<U64>().shl(52)))
+        return(F64.from_bits(e.to_wrap<U64>().shl(52)))
 
 /// 2^(i0/64) 2^(i1/2^12) as a double-double, from the two tables.
-routine cm_f64_hyp_table(%i0: USize, %i1: USize) -> CmF64HypDd
+routine cm_f64_hyp_table(i0: USize, i1: USize) -> CmF64HypDd
     block entry():
-        %t0h : F64 = F64.from_bits(CM_F64_HYP_T0_HI.get(%i0))
-        %t0l : F64 = F64.from_bits(CM_F64_HYP_T0_LO.get(%i0))
-        %t1h : F64 = F64.from_bits(CM_F64_HYP_T1_HI.get(%i1))
-        %t1l : F64 = F64.from_bits(CM_F64_HYP_T1_LO.get(%i1))
-        %th  : F64 = %t0h.mul(%t1h)
-        %tl  : F64 = %t0h.mul(%t1l).add(%t1h.mul(%t0l)).add(%t0h.mul_add(%t1h, %th.neg()))
-        return(CmF64HypDd { hi: %th, lo: %tl })
+        t0h : F64 = F64.from_bits(CM_F64_HYP_T0_HI.get(i0))
+        t0l : F64 = F64.from_bits(CM_F64_HYP_T0_LO.get(i0))
+        t1h : F64 = F64.from_bits(CM_F64_HYP_T1_HI.get(i1))
+        t1l : F64 = F64.from_bits(CM_F64_HYP_T1_LO.get(i1))
+        th  : F64 = t0h.mul(t1h)
+        tl  : F64 = t0h.mul(t1l).add(t1h.mul(t0l)).add(t0h.mul_add(t1h, th.neg()))
+        return(CmF64HypDd { hi: th, lo: tl })
 
 /// The fast-path polynomial exp(d) - 1 ~ d ((1 + d/2) + d2 (c2 + d c3)) of sinh and cosh, with d2 = dx^2
 /// passed in (d is dx or -dx).
-routine cm_f64_hyp_poly(%d: F64, %d2: F64) -> F64
+routine cm_f64_hyp_poly(d: F64, d2: F64) -> F64
     block entry():
-        %a : F64 = %d.mul(0x1p-1).add(0x1p+0)
-        %b : F64 = %d.mul(0x1.55555551c98cp-5).add(0x1.5555555aaaaaep-3)
-        return(%d.mul(%d2.mul(%b).add(%a)))
+        a : F64 = d.mul(0x1p-1).add(0x1p+0)
+        b : F64 = d.mul(0x1.55555551c98cp-5).add(0x1.5555555aaaaaep-3)
+        return(d.mul(d2.mul(b).add(a)))
 
 /// True when the accurate result h + l (h = round(h + l)) may still round the wrong way: the last bits of l
 /// are within 8 of zero, or the exponent gap between h and l exceeds 103. sinh and cosh then look the
 /// argument up in their database.
-routine cm_f64_hyp_is_hard(%h: F64, %l: F64) -> Bool
+routine cm_f64_hyp_is_hard(h: F64, l: F64) -> Bool
     block entry():
-        %eh : U64 = %h.bits().shr(52).bitand(0x7FF)
-        %el : U64 = %l.bits().shr(52).bitand(0x7FF)
-        %ml : U64 = %l.bits().add_wrap(8).bitand(0x000FFFFFFFFFFFFF)
-        return(%ml.le(16).bitor(%eh.gt(%el.add(103))))
+        eh : U64 = h.bits().shr(52).bitand(0x7FF)
+        el : U64 = l.bits().shr(52).bitand(0x7FF)
+        ml : U64 = l.bits().add_wrap(8).bitand(0x000FFFFFFFFFFFFF)
+        return(ml.le(16).bitor(eh.gt(el.add(103))))
 
 /// y1 for the final sum y0 + y1: when y1 is a power of two, it moves one ulp toward y2 so that the rounding
 /// of y0 + y1 sees the sticky bits of y2.
-routine cm_f64_hyp_nudge(%y1: F64, %y2: F64) -> F64
+routine cm_f64_hyp_nudge(y1: F64, y2: F64) -> F64
     block entry():
-        %tu     : U64  = %y1.bits()
-        %pow2   : Bool = %tu.bitand(0x000FFFFFFFFFFFFF).eq(0)
-        %toward : Bool = %y2.bits().bitxor(%tu).shr(63).eq(1)
-        %moved  : U64  = %toward
-            ? %tu.sub_wrap(1)
-            : %tu.add_wrap(1)
-        return(F64.from_bits(%pow2 ? %moved : %tu))
+        tu     : U64  = y1.bits()
+        pow2   : Bool = tu.bitand(0x000FFFFFFFFFFFFF).eq(0)
+        toward : Bool = y2.bits().bitxor(tu).shr(63).eq(1)
+        moved  : U64  = toward
+            ? tu.sub_wrap(1)
+            : tu.add_wrap(1)
+        return(F64.from_bits(pow2 ? moved : tu))

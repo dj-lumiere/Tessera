@@ -12,169 +12,169 @@ import Standard::Os
 record Rng
     state : U64
 
-routine Rng.below(%self: @Self, %bound: USize) -> USize
+routine Rng.below(self: @Self, bound: USize) -> USize
     block entry():
-        %state : U64 = %self.state.load()
-        %next  : U64 = %state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
-        %self.state.store(%next)
-        %value : USize = %next.shr(33).mod(%bound.to<U64>()).to<USize>()
-        return(%value)
+        state : U64 = self.state.load()
+        next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+        self.state.store(next)
+        value : USize = next.shr(33).mod(bound.to<U64>()).to<USize>()
+        return(value)
 
-routine mix(%hash: S64, %value: S64) -> S64
+routine mix(hash: S64, value: S64) -> S64
     block entry():
-        %mixed : S64 = %hash.mul_wrap(1000003).add_wrap(%value)
-        return(%mixed)
+        mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
+        return(mixed)
 
-routine labeled<W>(%out: @W, %label: Bytes, %value: S64) -> Void
+routine labeled<W>(out: @W, label: Bytes, value: S64) -> Void
 require W: typename, Writer<W>
     block entry():
-        write(%out, " {%label} {%value}")
+        write(out, " {label} {value}")
         return()
 
 // Folds every element in iteration order.
-routine iteration_hash(%list: @SortedList<S64>) -> S64
+routine iteration_hash(list: @SortedList<S64>) -> S64
     block entry():
-        %iter_val : SortedListIter<S64> = .construct(%list)
-        claim %iter : @SortedListIter<S64> <- %iter_val
-        jump next(%iter, 0)
+        iter_val : SortedListIter<S64> = .construct(list)
+        claim iter : @SortedListIter<S64> <- iter_val
+        jump next(iter, 0)
 
-    block next(%iter: @SortedListIter<S64>, %hash: S64):
-        %item : Option<S64> = %iter.next()
-        when %item:
-            .Present(%value) -> next(%iter, mix(%hash, %value))
-            .Absent          -> return(%hash)
+    block next(iter: @SortedListIter<S64>, hash: S64):
+        item : Option<S64> = iter.next()
+        when item:
+            .Present(value) -> next(iter, mix(hash, value))
+            .Absent         -> return(hash)
 
-routine checkpoint(%out: @BufWriter<FdWriter>, %list: @SortedList<S64>, %phase: USize, %op: USize,
-        %results: S64) -> Void
+routine checkpoint(out: @BufWriter<FdWriter>, list: @SortedList<S64>, phase: USize, op: USize,
+        results: S64) -> Void
     block entry():
-        write(%out, "phase {%phase}")
-        labeled(%out, "op", %op.to<S64>())
-        labeled(%out, "length", %list.load().length().to<S64>())
-        labeled(%out, "results", %results)
-        labeled(%out, "iteration", iteration_hash(%list))
-        write(%out, "\n")
+        write(out, "phase {phase}")
+        labeled(out, "op", op.to<S64>())
+        labeled(out, "length", list.load().length().to<S64>())
+        labeled(out, "results", results)
+        labeled(out, "iteration", iteration_hash(list))
+        write(out, "\n")
         return()
 
 // Runs ops random operations. An operation kind is drawn below 10: below pushes it's a push, below ranks a rank,
 // below contains a contains (both of a random value), below removes a remove at a random index, otherwise a get.
 // Values are below 1000, so duplicates are common. Remove and get on an empty list record -1. Returns the updated
 // results checksum.
-routine run_phase(%out: @BufWriter<FdWriter>, %list: @SortedList<S64>, %rng: @Rng, %phase: USize,
-        %ops: USize, %pushes: USize, %ranks: USize, %contains: USize, %removes: USize,
-        %results: S64) -> S64
+routine run_phase(out: @BufWriter<FdWriter>, list: @SortedList<S64>, rng: @Rng, phase: USize,
+        ops: USize, pushes: USize, ranks: USize, contains: USize, removes: USize,
+        results: S64) -> S64
     block entry():
-        jump next(0, %results)
+        jump next(0, results)
 
-    block next(%op: USize, %results: S64):
-        %done : Bool = %op.ge(%ops)
-        branch %done
-            ? return(%results)
-            : pick(%op, %results)
+    block next(op: USize, results: S64):
+        done : Bool = op.ge(ops)
+        branch done
+            ? return(results)
+            : pick(op, results)
 
-    block pick(%op: USize, %results: S64):
-        %kind        : USize = %rng.below(10)
-        %is_push     : Bool  = %kind.lt(%pushes)
-        %is_rank     : Bool  = %kind.lt(%ranks)
-        %is_contains : Bool  = %kind.lt(%contains)
-        %empty       : Bool  = %list.load().is_empty()
+    block pick(op: USize, results: S64):
+        kind        : USize = rng.below(10)
+        is_push     : Bool  = kind.lt(pushes)
+        is_rank     : Bool  = kind.lt(ranks)
+        is_contains : Bool  = kind.lt(contains)
+        empty       : Bool  = list.load().is_empty()
         when:
-            %is_push     -> push(%op, %results)
-            %is_rank     -> rank(%op, %results)
-            %is_contains -> contains(%op, %results)
-            %empty       -> record(%op, %results, -1)
-            else         -> pick_indexed(%op, %results, %kind)
+            is_push     -> push(op, results)
+            is_rank     -> rank(op, results)
+            is_contains -> contains(op, results)
+            empty       -> record(op, results, -1)
+            else        -> pick_indexed(op, results, kind)
 
-    block pick_indexed(%op: USize, %results: S64, %kind: USize):
-        %index     : USize = %rng.below(%list.load().length())
-        %is_remove : Bool  = %kind.lt(%removes)
-        branch %is_remove
-            ? remove(%op, %results, %index)
-            : get(%op, %results, %index)
+    block pick_indexed(op: USize, results: S64, kind: USize):
+        index     : USize = rng.below(list.load().length())
+        is_remove : Bool  = kind.lt(removes)
+        branch is_remove
+            ? remove(op, results, index)
+            : get(op, results, index)
 
-    block push(%op: USize, %results: S64):
-        %value : S64 = %rng.below(1000).to<S64>()
-        %list.push(%value)
-        jump record(%op, %results, %value)
+    block push(op: USize, results: S64):
+        value : S64 = rng.below(1000).to<S64>()
+        list.push(value)
+        jump record(op, results, value)
 
-    block rank(%op: USize, %results: S64):
-        %value : S64   = %rng.below(1000).to<S64>()
-        %rank  : USize = %list.load().rank(%value)
-        jump record(%op, %results, %rank.to<S64>())
+    block rank(op: USize, results: S64):
+        value : S64   = rng.below(1000).to<S64>()
+        rank  : USize = list.load().rank(value)
+        jump record(op, results, rank.to<S64>())
 
-    block contains(%op: USize, %results: S64):
-        %value : S64  = %rng.below(1000).to<S64>()
-        %found : Bool = %list.load().contains(%value)
-        jump record(%op, %results, %found.to<S64>())
+    block contains(op: USize, results: S64):
+        value : S64  = rng.below(1000).to<S64>()
+        found : Bool = list.load().contains(value)
+        jump record(op, results, found.to<S64>())
 
-    block remove(%op: USize, %results: S64, %index: USize):
-        %value : S64 = %list.remove(%index)
-        jump record(%op, %results, %value)
+    block remove(op: USize, results: S64, index: USize):
+        value : S64 = list.remove(index)
+        jump record(op, results, value)
 
-    block get(%op: USize, %results: S64, %index: USize):
-        %value : S64 = %list.load().get(%index)
-        jump record(%op, %results, %value)
+    block get(op: USize, results: S64, index: USize):
+        value : S64 = list.load().get(index)
+        jump record(op, results, value)
 
-    block record(%op: USize, %results: S64, %result: S64):
-        %mixed   : S64   = mix(%results, %result)
-        %op_next : USize = %op.add(1)
-        %report  : Bool  = %op_next.mod(500).eq(0)
-        branch %report
-            ? report(%op_next, %mixed)
-            : next(%op_next, %mixed)
+    block record(op: USize, results: S64, result: S64):
+        mixed   : S64   = mix(results, result)
+        op_next : USize = op.add(1)
+        report  : Bool  = op_next.mod(500).eq(0)
+        branch report
+            ? report(op_next, mixed)
+            : next(op_next, mixed)
 
-    block report(%op: USize, %results: S64):
-        checkpoint(%out, %list, %phase, %op, %results)
-        jump next(%op, %results)
+    block report(op: USize, results: S64):
+        checkpoint(out, list, phase, op, results)
+        jump next(op, results)
 
 // Pushes every element of from onto to, in iteration order.
-routine copy_all(%from: @SortedList<S64>, %to: @SortedList<S64>) -> Void
+routine copy_all(from: @SortedList<S64>, to: @SortedList<S64>) -> Void
     block entry():
-        %iter_val : SortedListIter<S64> = .construct(%from)
-        claim %iter : @SortedListIter<S64> <- %iter_val
-        jump next(%iter)
+        iter_val : SortedListIter<S64> = .construct(from)
+        claim iter : @SortedListIter<S64> <- iter_val
+        jump next(iter)
 
-    block next(%iter: @SortedListIter<S64>):
-        %item : Option<S64> = %iter.next()
-        when %item:
-            .Present(%value) -> copy(%iter, %value)
-            .Absent          -> return()
+    block next(iter: @SortedListIter<S64>):
+        item : Option<S64> = iter.next()
+        when item:
+            .Present(value) -> copy(iter, value)
+            .Absent         -> return()
 
-    block copy(%iter: @SortedListIter<S64>, %value: S64):
-        %to.push(%value)
-        jump next(%iter)
+    block copy(iter: @SortedListIter<S64>, value: S64):
+        to.push(value)
+        jump next(iter)
 
-routine report_eq(%out: @BufWriter<FdWriter>, %label: Bytes, %equal: Bool) -> Void
+routine report_eq(out: @BufWriter<FdWriter>, label: Bytes, equal: Bool) -> Void
     block entry():
-        write(%out, "{%label} {%equal}\n")
+        write(out, "{label} {equal}\n")
         return()
 
 routine main() -> S32
     block entry():
-        claim %fd  : @FdWriter            <- .stdout()
-        claim %out : @BufWriter<FdWriter> <- uninit
-        %out.construct(%fd)
-        claim %alloc : @Allocator       <- make_heap_allocator()
-        claim %rng   : @Rng             <- Rng { state: 1 }
-        claim %list  : @SortedList<S64> <- .construct(%alloc)
+        claim fd  : @FdWriter            <- .stdout()
+        claim out : @BufWriter<FdWriter> <- uninit
+        out.construct(fd)
+        claim alloc : @Allocator       <- make_heap_allocator()
+        claim rng   : @Rng             <- Rng { state: 1 }
+        claim list  : @SortedList<S64> <- .construct(alloc)
 
-        %r1 : S64 = run_phase(%out, %list, %rng, 1, 3000, 4, 5, 6, 8, 0)
-        %r2 : S64 = run_phase(%out, %list, %rng, 2, 10000, 5, 6, 7, 8, %r1)
+        r1 : S64 = run_phase(out, list, rng, 1, 3000, 4, 5, 6, 8, 0)
+        r2 : S64 = run_phase(out, list, rng, 2, 10000, 5, 6, 7, 8, r1)
 
-        claim %copied : @SortedList<S64> <- .construct(%alloc)
-        report_eq(%out, "empty copy equal", %list.load().eq(%copied.load()))
-        copy_all(%list, %copied)
-        report_eq(%out, "copy equal", %list.load().eq(%copied.load()))
-        %middle : USize = %list.load().length().div(2)
-        %old    : S64   = %copied.remove(%middle)
-        report_eq(%out, "removed element equal", %list.load().eq(%copied.load()))
-        %copied.push(%old)
-        report_eq(%out, "restored element equal", %list.load().eq(%copied.load()))
-        %copied.push(0)
-        report_eq(%out, "extra element equal", %list.load().eq(%copied.load()))
-        %copied.destruct()
+        claim copied : @SortedList<S64> <- .construct(alloc)
+        report_eq(out, "empty copy equal", list.load().eq(copied.load()))
+        copy_all(list, copied)
+        report_eq(out, "copy equal", list.load().eq(copied.load()))
+        middle : USize = list.load().length().div(2)
+        old    : S64   = copied.remove(middle)
+        report_eq(out, "removed element equal", list.load().eq(copied.load()))
+        copied.push(old)
+        report_eq(out, "restored element equal", list.load().eq(copied.load()))
+        copied.push(0)
+        report_eq(out, "extra element equal", list.load().eq(copied.load()))
+        copied.destruct()
 
-        %r3 : S64 = run_phase(%out, %list, %rng, 3, 19000, 1, 2, 3, 9, %r2)
-        %list.destruct()
-        report_eq(%out, "freed is empty", %list.load().is_empty())
-        %out.flush()
+        r3 : S64 = run_phase(out, list, rng, 3, 19000, 1, 2, 3, 9, r2)
+        list.destruct()
+        report_eq(out, "freed is empty", list.load().is_empty())
+        out.flush()
         return(0)

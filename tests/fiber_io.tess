@@ -12,59 +12,59 @@ record Pipe
     fds   : Array<CInt, 2>  // the read end, then the write end
 
 #[external("c"), symbol("pipe"), target(os: not "windows")]
-routine c_pipe(%fds: @CInt) -> CInt
+routine c_pipe(fds: @CInt) -> CInt
 
 #[external("c"), symbol("_pipe"), target(os: "windows")]
-routine c_win_pipe(%fds: @CInt, %size: U32, %mode: CInt) -> CInt
+routine c_win_pipe(fds: @CInt, size: U32, mode: CInt) -> CInt
 
 #target(os: not "windows")
-routine make_pipe(%fds: @CInt) -> Void
+routine make_pipe(fds: @CInt) -> Void
     block entry():
-        c_pipe(%fds)
+        c_pipe(fds)
         return()
 
 /// _O_BINARY, so the bytes go through as they are.
 #target(os: "windows")
-routine make_pipe(%fds: @CInt) -> Void
+routine make_pipe(fds: @CInt) -> Void
     block entry():
-        c_win_pipe(%fds, 4096, 0x8000)
+        c_win_pipe(fds, 4096, 0x8000)
         return()
 
-routine reader(%raw: Addr) -> Void
+routine reader(raw: Addr) -> Void
     block entry():
-        %pipe  : @Pipe      = %raw.to<@Pipe>()
-        %sched : @Scheduler = %pipe.sched.load()
-        claim %buf : @Array<Byte, 16> <- uninit
+        pipe  : @Pipe      = raw.to<@Pipe>()
+        sched : @Scheduler = pipe.sched.load()
+        claim buf : @Array<Byte, 16> <- uninit
         print("reader: waiting\n")
-        %n    : SSize = %sched.read(%pipe.fds.get(0), %buf.to<@Byte>(), 16)
-        %text : Bytes = Bytes { data: %buf.to<@Byte>(), length: %n.to<USize>() }
-        print("reader: got {%text}\n")
+        n    : SSize = sched.read(pipe.fds.get(0), buf.to<@Byte>(), 16)
+        text : Bytes = Bytes { data: buf.to<@Byte>(), length: n.to<USize>() }
+        print("reader: got {text}\n")
         return()
 
-routine writer(%raw: Addr) -> Void
+routine writer(raw: Addr) -> Void
     block entry():
-        %pipe  : @Pipe      = %raw.to<@Pipe>()
-        %sched : @Scheduler = %pipe.sched.load()
+        pipe  : @Pipe      = raw.to<@Pipe>()
+        sched : @Scheduler = pipe.sched.load()
         print("writer: step 1\n")
-        %sched.yield()
+        sched.yield()
         print("writer: step 2\n")
-        %sched.yield()
+        sched.yield()
         print("writer: writing\n")
-        %hello : Bytes = "hello"
-        %sched.write(%pipe.fds.get(1), %hello.data, %hello.length)
+        hello : Bytes = "hello"
+        sched.write(pipe.fds.get(1), hello.data, hello.length)
         return()
 
 routine main() -> S32
     block entry():
-        claim %alloc  : @Allocator      <- make_heap_allocator()
-        claim %stacks : @Allocator      <- make_stack_allocator()
-        claim %sched  : @Scheduler      <- .construct(%alloc, %stacks, 1)
-        claim %fds    : @Array<CInt, 2> <- uninit
-        make_pipe(%fds.to<@CInt>())
-        claim %pipe : @Pipe <- Pipe { sched: %sched, fds: %fds.load() }
-        %sched.spawn(reader, %pipe, 65536)
-        %sched.spawn(writer, %pipe, 65536)
-        %sched.run()
+        claim alloc  : @Allocator      <- make_heap_allocator()
+        claim stacks : @Allocator      <- make_stack_allocator()
+        claim sched  : @Scheduler      <- .construct(alloc, stacks, 1)
+        claim fds    : @Array<CInt, 2> <- uninit
+        make_pipe(fds.to<@CInt>())
+        claim pipe : @Pipe <- Pipe { sched: sched, fds: fds.load() }
+        sched.spawn(reader.to<Callable>(), pipe, 65536)
+        sched.spawn(writer.to<Callable>(), pipe, 65536)
+        sched.run()
         print("all done\n")
-        %sched.destruct()
+        sched.destruct()
         return(0)

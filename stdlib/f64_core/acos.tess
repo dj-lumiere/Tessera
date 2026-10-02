@@ -16,153 +16,152 @@
 module Standard::Core
 
 /// arccos(self), correctly rounded.
-routine F64.acos(%self: Self) -> Self
+routine F64.acos(self: Self) -> Self
     block entry():
-        %xu    : U64  = %self.bits()
-        %ax    : U64  = %xu.shl(1)
-        %large : Bool = %ax.gt(0x7FC0000000000000)  // |x| > 1/2
-        %tiny  : Bool = %ax.le(0x7E00000000000000)  // |x| < 2^-15
+        xu    : U64  = self.bits()
+        ax    : U64  = xu.shl(1)
+        large : Bool = ax.gt(0x7FC0000000000000)  // |x| > 1/2
+        tiny  : Bool = ax.le(0x7E00000000000000)  // |x| < 2^-15
         when:
-            %large -> large(%xu, %ax)
-            %tiny  -> tiny(%ax)
-            else   -> small()
+            large -> large(xu, ax)
+            tiny  -> tiny(ax)
+            else  -> small()
 
-    block large(%xu: U64, %ax: U64):
-        %neg : Bool = %xu.shr(63).ne(0)
-        %f0h : Self = %neg
+    block large(xu: U64, ax: U64):
+        neg : Bool = xu.shr(63).ne(0)
+        f0h : Self = neg
             ? 0x1.921fb54442d18p+1
             : 0.0
-        %f0l : Self = %neg
+        f0l : Self = neg
             ? 0x1.1a62633145c07p-53
             : 0.0
-        %edge : Bool = %ax.ge(0x7FE0000000000000)  // |x| >= 1
-        branch %edge
-            ? edge(%ax, %f0h, %f0l)
+        edge : Bool = ax.ge(0x7FE0000000000000)  // |x| >= 1
+        branch edge
+            ? edge(ax, f0h, f0l)
             : continue
         // acos(x) = 2 asin(sqrt((1 - x)/2)) for x > 1/2, and pi - 2 asin(sqrt((1 + x)/2)) for x < -1/2
-        %t   : Self = Self.sub(2.0, Self.mul(2.0, %self.abs()))
-        %jd  : Self = %t.mul(0x1p5).round_ties_even()
-        %z   : Self = %t.sqrt().copysign(%self)
-        %zl  : Self = %z.mul_add(%z, %t.neg()).mul(Self.div(-0.5, %t).mul(%z))
-        %tr  : Self = Self.mul(0.25, %t).sub(%jd.mul(0x1p-7))
-        %eps : Self = %z.mul(%tr).abs().mul(0x1.8cp-52).add(0x1p-105)
-        jump poly(%z, %zl, %tr, %jd, %f0h, %f0l, %eps)
+        t   : Self = Self.sub(2.0, Self.mul(2.0, self.abs()))
+        jd  : Self = t.mul(0x1p5).round_ties_even()
+        z   : Self = t.sqrt().copysign(self)
+        zl  : Self = z.mul_add(z, t.neg()).mul(Self.div(-0.5, t).mul(z))
+        tr  : Self = Self.mul(0.25, t).sub(jd.mul(0x1p-7))
+        eps : Self = z.mul(tr).abs().mul(0x1.8cp-52).add(0x1p-105)
+        jump poly(z, zl, tr, jd, f0h, f0l, eps)
 
     // |x| = 1, |x| > 1 or NaN
-    block edge(%ax: U64, %f0h: Self, %f0l: Self):
-        %one : Bool = %ax.eq(0x7FE0000000000000)
-        %nan : Bool = %ax.gt(0xFFE0000000000000)
+    block edge(ax: U64, f0h: Self, f0l: Self):
+        one : Bool = ax.eq(0x7FE0000000000000)
+        nan : Bool = ax.gt(0xFFE0000000000000)
         when:
-            %one -> return(%f0h.add(%f0l))
-            %nan -> return(%self.add(%self))
+            one  -> return(f0h.add(f0l))
+            nan  -> return(self.add(self))
             else -> return(Self.from_bits(0xFFF8000000000000))
 
     // pi/2 - x - x^3/6; for |x| <= 0x1.cb3b3869747f4p-55 the cubic term is dropped (the bounds agree there)
-    block tiny(%ax: U64):
-        %cubic : Bool = %ax.gt(0x791967670D2E8FE8)
-        %v     : Self = %cubic
-            ? %self.mul(%self).mul(Self.mul(-0x1.5555555555555p-3, %self))
+    block tiny(ax: U64):
+        cubic : Bool = ax.gt(0x791967670D2E8FE8)
+        v     : Self = cubic
+            ? self.mul(self).mul(Self.mul(-0x1.5555555555555p-3, self))
             : 0.0
-        %hw   : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(0x1.921fb54442d18p+0, %self.neg())
-        %l    : Self           = %v.add(%hw.lo.add(0x1.1a62633145c07p-54))
-        %lb   : Self           = %hw.hi.add(%l.sub(0x1.34p-79))
-        %ub   : Self           = %hw.hi.add(%l.add(0x1.34p-79))
-        %sure : Bool           = %lb.eq(%ub)
-        branch %sure
-            ? return(%lb)
-            : return(cm_f64_acos_accurate(%self, %lb))
+        hw   : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(0x1.921fb54442d18p+0, self.neg())
+        l    : Self           = v.add(hw.lo.add(0x1.1a62633145c07p-54))
+        lb   : Self           = hw.hi.add(l.sub(0x1.34p-79))
+        ub   : Self           = hw.hi.add(l.add(0x1.34p-79))
+        sure : Bool           = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : return(cm_f64_acos_accurate(self, lb))
 
     // 2^-15 <= |x| <= 1/2: pi/2 - asin(x), sharing the arc sine's tables
     block small():
-        %t2  : Self = %self.mul(%self)
-        %jd  : Self = %t2.mul(0x1p7).round_ties_even()
-        %t   : Self = %self.mul_add(%self, Self.mul(-0x1p-7, %jd))
-        %z   : Self = %self.neg()
-        %eps : Self = %z.mul(%t).mul(0x1.81p-52)  // negative for x > 0, but the rounding test still holds
-        jump poly(%z, 0.0, %t, %jd, 0x1.921fb54442d18p+0, 0x1.1a62633145c07p-54, %eps)
+        t2  : Self = self.mul(self)
+        jd  : Self = t2.mul(0x1p7).round_ties_even()
+        t   : Self = self.mul_add(self, Self.mul(-0x1p-7, jd))
+        z   : Self = self.neg()
+        eps : Self = z.mul(t).mul(0x1.81p-52)  // negative for x > 0, but the rounding test still holds
+        jump poly(z, 0.0, t, jd, 0x1.921fb54442d18p+0, 0x1.1a62633145c07p-54, eps)
 
     // asin(z + zl) from the piece j = round(128 z^2), t = z^2 - j/128, plus f0h + f0l
-    block poly(%z: Self, %zl: Self, %t: Self, %jd: Self, %f0h: Self, %f0l: Self, %eps: Self):
-        %j8   : USize          = %jd.to<U64>().to<USize>().mul(8)
-        %f    : CmF64InvtrigDD = cm_f64_invtrig_asin_poly(%z, %zl, %t, %j8, %f0h, %f0l)
-        %lb   : Self           = %f.hi.add(%f.lo.sub(%eps))
-        %ub   : Self           = %f.hi.add(%f.lo.add(%eps))
-        %sure : Bool           = %lb.eq(%ub)
-        branch %sure
-            ? return(%lb)
-            : return(cm_f64_acos_accurate(%self, %lb))
+    block poly(z: Self, zl: Self, t: Self, jd: Self, f0h: Self, f0l: Self, eps: Self):
+        j8   : USize          = jd.to<U64>().to<USize>().mul(8)
+        f    : CmF64InvtrigDD = cm_f64_invtrig_asin_poly(z, zl, t, j8, f0h, f0l)
+        lb   : Self           = f.hi.add(f.lo.sub(eps))
+        ub   : Self           = f.hi.add(f.lo.add(eps))
+        sure : Bool           = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : return(cm_f64_acos_accurate(self, lb))
 
 /// The accurate path, for the inputs the fast path can't round: with x = cos(phi),
 /// rotates the angle by a multiple of pi/64 close to phi and evaluates the arc sine of
 /// the small remainder in double-double. phi is the fast-path approximation of acos(x).
-routine cm_f64_acos_accurate(%x: F64, %phi: F64) -> F64
+routine cm_f64_acos_accurate(x: F64, phi: F64) -> F64
     block entry():
         // jf = round(|phi - pi/2| 64/pi), 0 <= jf <= 32
-        %jfd  : F64            = %phi.sub(0x1.921fb54442d18p+0).abs().mul(0x1.45f306dc9c883p+4).round_ties_even()
-        %r    : CmF64InvtrigDD = cm_f64_invtrig_rotate(%x, %jfd.to<U64>().to<USize>())
-        %sgn  : F64            = F64.copysign(1.0, %x)
-        %jt   : F64            = F64.sub(32.0,
-                %jfd.mul(%sgn))  // pi/2 -+ jf pi/64 = jt pi/64, 0 <= jt <= 64
-        %sq   : CmF64InvtrigDD = cm_f64_invtrig_muldd(%r.hi, %r.lo, %r.hi, %r.lo)
-        %nsgn : F64            = %sgn.neg()
-        %f    : CmF64InvtrigDD = cm_f64_invtrig_asin_dd(%r.hi.mul(%nsgn), %r.lo.mul(%nsgn), %sq.hi,
-                %sq.lo)
+        jfd  : F64            = phi.sub(0x1.921fb54442d18p+0).abs().mul(0x1.45f306dc9c883p+4).round_ties_even()
+        r    : CmF64InvtrigDD = cm_f64_invtrig_rotate(x, jfd.to<U64>().to<USize>())
+        sgn  : F64            = F64.copysign(1.0, x)
+        jt   : F64            = F64.sub(32.0,
+                jfd.mul(sgn))  // pi/2 -+ jf pi/64 = jt pi/64, 0 <= jt <= 64
+        sq   : CmF64InvtrigDD = cm_f64_invtrig_muldd(r.hi, r.lo, r.hi, r.lo)
+        nsgn : F64            = sgn.neg()
+        f    : CmF64InvtrigDD = cm_f64_invtrig_asin_dd(r.hi.mul(nsgn), r.lo.mul(nsgn), sq.hi, sq.lo)
         // now f approximates -delta; jt pi/64 in three parts, ph and pl exact since 0 <= jt <= 64
-        %ph0 : F64            = %jt.mul(0x1.921fb54442dp-5)
-        %pl0 : F64            = F64.mul(0x1.8469898cc518p-53, %jt)
-        %ps0 : F64            = F64.mul(-0x1.fc8f8cbb5bf6cp-102, %jt)
-        %q1  : CmF64InvtrigDD = cm_f64_acos_twosum(%f.hi, %pl0)
-        %ps1 : F64            = %f.lo.add(%ps0).add(%q1.lo)
-        %q2  : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(%ph0, %q1.hi)
-        %q3  : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(%q2.lo, %ps1)
-        %q4  : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(%q2.hi, %q3.hi)
-        %q5  : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(%q4.lo, %q3.lo)
-        %ph  : F64            = %q4.hi
-        %pl  : F64            = %q5.hi
-        %ps  : F64            = %q5.lo
+        ph0 : F64            = jt.mul(0x1.921fb54442dp-5)
+        pl0 : F64            = F64.mul(0x1.8469898cc518p-53, jt)
+        ps0 : F64            = F64.mul(-0x1.fc8f8cbb5bf6cp-102, jt)
+        q1  : CmF64InvtrigDD = cm_f64_acos_twosum(f.hi, pl0)
+        ps1 : F64            = f.lo.add(ps0).add(q1.lo)
+        q2  : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(ph0, q1.hi)
+        q3  : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(q2.lo, ps1)
+        q4  : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(q2.hi, q3.hi)
+        q5  : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(q4.lo, q3.lo)
+        ph  : F64            = q4.hi
+        pl  : F64            = q5.hi
+        ps  : F64            = q5.lo
         // is pl within 2^-107 ph-relative of a rounding boundary of ph + pl?
-        %tu : U64 = %pl.bits()
-        %e0 : S64 = %tu.shr(52).bitand(0x7FF).to<S64>().sub(1023)
-        %e  : S64 = S64.sub(52, %e0.add(107)).clamp(0, 52)
-        %eu : U64 = %e.to<U64>()
-        %m  : U64 = U64.shl(1, 52).sub_wrap(U64.shl(1, %eu))
-        %eh : U64 = %eu.eq(0)
+        tu : U64 = pl.bits()
+        e0 : S64 = tu.shr(52).bitand(0x7FF).to<S64>().sub(1023)
+        e  : S64 = S64.sub(52, e0.add(107)).clamp(0, 52)
+        eu : U64 = e.to<U64>()
+        m  : U64 = U64.shl(1, 52).sub_wrap(U64.shl(1, eu))
+        eh : U64 = eu.eq(0)
             ? 64
-            : %eu
-        %hard : Bool = %tu.add_wrap(U64.shl(1, %eh.sub(1))).bitand(%m).eq(0)
-        branch %hard
-            ? boundary(%ph, %pl, %ps, %tu)
-            : return(%ph.add(%pl))
+            : eu
+        hard : Bool = tu.add_wrap(U64.shl(1, eh.sub(1))).bitand(m).eq(0)
+        branch hard
+            ? boundary(ph, pl, ps, tu)
+            : return(ph.add(pl))
 
     // the result lies too close to a rounding boundary
-    block boundary(%ph: F64, %pl: F64, %ps: F64, %tu: U64):
-        %h1 : Bool = %x.eq(0x1.ffffffffffdc0p-1)
-        %h2 : Bool = %x.eq(0x1.53ea6c7255e88p-4)
-        %h3 : Bool = %x.eq(0x1.fd737be914578p-11)
-        %h4 : Bool = %x.eq(0x1.fffffffffff70p-1)
-        %h5 : Bool = %x.eq(0x1.390e6939cd1a6p-5)
+    block boundary(ph: F64, pl: F64, ps: F64, tu: U64):
+        h1 : Bool = x.eq(0x1.ffffffffffdc0p-1)
+        h2 : Bool = x.eq(0x1.53ea6c7255e88p-4)
+        h3 : Bool = x.eq(0x1.fd737be914578p-11)
+        h4 : Bool = x.eq(0x1.fffffffffff70p-1)
+        h5 : Bool = x.eq(0x1.390e6939cd1a6p-5)
         when:
-            %h1  -> return(F64.add(0x1.8000000000024p-22, 0x1p-76))
-            %h2  -> return(F64.add(0x1.7cdacb6bbe707p+0, 0x1p-54))
-            %h3  -> return(F64.add(0x1.91e006d41d8d8p+0, 0x1.8p-53))
-            %h4  -> return(F64.add(0x1.8000000000009p-23, 0x1p-77))
-            %h5  -> return(F64.sub(0x1.8856a5d3296a4p+0, 0x1p-109))
-            else -> nudge(%ph, %ps, %tu)
+            h1   -> return(F64.add(0x1.8000000000024p-22, 0x1p-76))
+            h2   -> return(F64.add(0x1.7cdacb6bbe707p+0, 0x1p-54))
+            h3   -> return(F64.add(0x1.91e006d41d8d8p+0, 0x1.8p-53))
+            h4   -> return(F64.add(0x1.8000000000009p-23, 0x1p-77))
+            h5   -> return(F64.sub(0x1.8856a5d3296a4p+0, 0x1p-109))
+            else -> nudge(ph, ps, tu)
 
     // move pl one ulp toward ps so ph + pl rounds the right way
-    block nudge(%ph: F64, %ps: F64, %tu: U64):
-        %opposite : Bool = %ps.bits().bitxor(%tu).shr(63).ne(0)
-        %t        : U64  = %opposite
-            ? %tu.sub_wrap(1)
-            : %tu.add_wrap(1)
-        return(%ph.add(F64.from_bits(%t)))
+    block nudge(ph: F64, ps: F64, tu: U64):
+        opposite : Bool = ps.bits().bitxor(tu).shr(63).ne(0)
+        t        : U64  = opposite
+            ? tu.sub_wrap(1)
+            : tu.add_wrap(1)
+        return(ph.add(F64.from_bits(t)))
 
 /// a + b as a double-double (the rounded sum and its error), for any a and b.
-routine cm_f64_acos_twosum(%a: F64, %b: F64) -> CmF64InvtrigDD
+routine cm_f64_acos_twosum(a: F64, b: F64) -> CmF64InvtrigDD
     block entry():
-        %s  : F64 = %a.add(%b)
-        %ap : F64 = %s.sub(%b)
-        %bp : F64 = %s.sub(%ap)
-        %da : F64 = %a.sub(%ap)
-        %db : F64 = %b.sub(%bp)
-        return(CmF64InvtrigDD { hi: %s, lo: %da.add(%db) })
+        s  : F64 = a.add(b)
+        ap : F64 = s.sub(b)
+        bp : F64 = s.sub(ap)
+        da : F64 = a.sub(ap)
+        db : F64 = b.sub(bp)
+        return(CmF64InvtrigDD { hi: s, lo: da.add(db) })

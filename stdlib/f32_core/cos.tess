@@ -11,81 +11,81 @@
 module Standard::Core
 
 /// In radians.
-routine F32.cos(%self: Self) -> Self
+routine F32.cos(self: Self) -> Self
     block entry():
-        %ax      : U32  = %self.bits().shl(1)
-        %outside : Bool = %ax.gt(0x99000000).bitor(%ax.lt(0x74000000))
-        branch %outside
-            ? edge(%ax)
-            : reduce(%ax)
+        ax      : U32  = self.bits().shl(1)
+        outside : Bool = ax.gt(0x99000000).bitor(ax.lt(0x74000000))
+        branch outside
+            ? edge(ax)
+            : reduce(ax)
 
     // |x| > 0x1p+26, x is NaN, or |x| < 0x1p-11, where cos(x) rounds like 1 - x^2/2
-    block edge(%ax: U32):
-        %tiny : Bool = %ax.lt(0x74000000)
-        branch %tiny
-            ? return(%self.mul_add(%self.neg(), 2.0).mul(0.5))
-            : return(cm_f32_cos_big(%self))
+    block edge(ax: U32):
+        tiny : Bool = ax.lt(0x74000000)
+        branch tiny
+            ? return(self.mul_add(self.neg(), 2.0).mul(0.5))
+            : return(cm_f32_cos_big(self))
 
-    block reduce(%ax: U32):
-        %z0    : F64  = %self.to<F64>()
-        %small : Bool = %ax.lt(0x82A41896)
-        %hard  : Bool = %ax.eq(0x812D97C8)
+    block reduce(ax: U32):
+        z0    : F64  = self.to<F64>()
+        small : Bool = ax.lt(0x82A41896)
+        hard  : Bool = ax.eq(0x812D97C8)
         when:
-            %hard  -> return(cm_f32_cos_database(%self, 0.0))
-            %small -> fast(cm_f32_trig_reduce_small(%z0))
-            else   -> fast(cm_f32_trig_reduce_medium(%z0))
+            hard  -> return(cm_f32_cos_database(self, 0.0))
+            small -> fast(cm_f32_trig_reduce_small(z0))
+            else  -> fast(cm_f32_trig_reduce_medium(z0))
 
-    block fast(%red: CmF32TrigReduced):
-        %z  : F64 = %red.z
-        %ia : U64 = %red.q
-        %z2 : F64 = %z.mul(%z)
-        %z4 : F64 = %z2.mul(%z2)
-        %aa : F64 = cm_f32_trig_poly_a(%z2, %z4)
-        %bb : F64 = cm_f32_trig_poly_b(%z2, %z4)
-        %c0 : F64 = cm_f32_trig_sin_tb(%ia.add_wrap(8))
-        %s0 : F64 = cm_f32_trig_sin_tb(%ia.add_wrap(16))
-        %r  : F64 = %aa.mul(%z.mul(%s0)).add(%c0).sub(%bb.mul(%z2.mul(%c0)))
-        return(%r.to<Self>())
+    block fast(red: CmF32TrigReduced):
+        z  : F64 = red.z
+        ia : U64 = red.q
+        z2 : F64 = z.mul(z)
+        z4 : F64 = z2.mul(z2)
+        aa : F64 = cm_f32_trig_poly_a(z2, z4)
+        bb : F64 = cm_f32_trig_poly_b(z2, z4)
+        c0 : F64 = cm_f32_trig_sin_tb(ia.add_wrap(8))
+        s0 : F64 = cm_f32_trig_sin_tb(ia.add_wrap(16))
+        r  : F64 = aa.mul(z.mul(s0)).add(c0).sub(bb.mul(z2.mul(c0)))
+        return(r.to<Self>())
 
 /// The cosine of the arguments whose fast path isn't correctly rounded, as rh + rl; any other x gives r.
-private routine cm_f32_cos_database(%x: F32, %r: F64) -> F32
+private routine cm_f32_cos_database(x: F32, r: F64) -> F32
     block entry():
-        %ax : U32 = %x.bits().bitand(0x7FFFFFFF)
-        when %ax:
+        ax : U32 = x.bits().bitand(0x7FFFFFFF)
+        when ax:
             0x4096CBE4 -> return(F32.add(0x1.99bc5cp-27, -0x1p-52))
             0x5922AA80 -> return(F32.add(0x1.115d7ep-1, -0x1p-26))
             0x5AA4542C -> return(F32.add(0x1.f48148p-2, 0x1p-27))
             0x5F18B878 -> return(F32.add(0x1.fe2976p-1, 0x1p-26))
             0x6115CB11 -> return(F32.add(0x1.f0285ep-1, -0x1p-26))
-            else       -> return(%r.to<F32>())
+            else       -> return(r.to<F32>())
 
 /// The cosine for |x| > 2^26, infinities and NaN.
-private routine cm_f32_cos_big(%x: F32) -> F32
+private routine cm_f32_cos_big(x: F32) -> F32
     block entry():
-        %t       : U32  = %x.bits()
-        %special : Bool = %t.shl(1).ge(0xFF000000)
-        branch %special
-            ? special(%t)
+        t       : U32  = x.bits()
+        special : Bool = t.shl(1).ge(0xFF000000)
+        branch special
+            ? special(t)
             : continue
-        %red  : CmF32TrigReduced = cm_f32_trig_reduce_big(%t, 147)
-        %z    : F64              = %red.z
-        %ia   : U64              = %red.q
-        %z2   : F64              = %z.mul(%z)
-        %z4   : F64              = %z2.mul(%z2)
-        %aa   : F64              = cm_f32_trig_poly_a(%z2, %z4)
-        %bb   : F64              = cm_f32_trig_poly_b(%z2, %z4)
-        %s0   : F64              = cm_f32_trig_sin_tb(%ia.add_wrap(16))
-        %c0   : F64              = cm_f32_trig_sin_tb(%ia.add_wrap(8))
-        %r    : F64              = %aa.mul(%s0).sub(%bb.mul(%z.mul(%c0))).mul(%z).add(%c0)
-        %tail : U64              = %r.bits().add_wrap(6).bitand(0xFFFFFFF)
-        %near : Bool             = %tail.le(12)  // close to a rounding boundary: only a few known arguments
-        branch %near
-            ? return(cm_f32_cos_database(%x, %r))
-            : return(%r.to<F32>())
+        red  : CmF32TrigReduced = cm_f32_trig_reduce_big(t, 147)
+        z    : F64              = red.z
+        ia   : U64              = red.q
+        z2   : F64              = z.mul(z)
+        z4   : F64              = z2.mul(z2)
+        aa   : F64              = cm_f32_trig_poly_a(z2, z4)
+        bb   : F64              = cm_f32_trig_poly_b(z2, z4)
+        s0   : F64              = cm_f32_trig_sin_tb(ia.add_wrap(16))
+        c0   : F64              = cm_f32_trig_sin_tb(ia.add_wrap(8))
+        r    : F64              = aa.mul(s0).sub(bb.mul(z.mul(c0))).mul(z).add(c0)
+        tail : U64              = r.bits().add_wrap(6).bitand(0xFFFFFFF)
+        near : Bool             = tail.le(12)  // close to a rounding boundary: only a few known arguments
+        branch near
+            ? return(cm_f32_cos_database(x, r))
+            : return(r.to<F32>())
 
     // NaN comes back quiet with its sign and payload, an infinity gives a NaN
-    block special(%t: U32):
-        %nan : Bool = %t.shl(9).ne(0)
-        branch %nan
-            ? return(%x.add(%x))
+    block special(t: U32):
+        nan : Bool = t.shl(9).ne(0)
+        branch nan
+            ? return(x.add(x))
             : return(F32.from_bits(0xFFC00000))

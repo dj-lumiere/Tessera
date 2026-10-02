@@ -214,7 +214,7 @@ public sealed partial class Compiler
     {
         bool conversion = IsConversion(name, typeArgs);
         var receiver = Fold(receiverExpr, conversion ? null : hint, env);
-        // An untyped literal takes its type from the argument: `1.shl(%n)`-style chains of presets.
+        // An untyped literal takes its type from the argument: `1.shl(n)`-style chains of presets.
         if (receiver.Type is null && args.Count == 1 && !conversion)
         {
             var arg = Fold(args[0], null, env);

@@ -10,6 +10,9 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
     /// The module a qualified name was written with: `Standard::Collections` in `Standard::Collections::List<T>`.
     public string? Path { get; init; }
 
+    /// A type the builder filled in rather than one written: `x.to()` takes the type its value goes to.
+    public DType? Known { get; init; }
+
     public override string ToString() =>
         Path is null && Name == "Ptr" && Args is [TypeArgType inner] ? $"@{inner}"
         : (Path is null ? "" : Path + "::") + (Args.Count == 0 ? Name : $"{Name}<{string.Join(", ", Args)}>");
@@ -40,9 +43,9 @@ public sealed record Attribute(string Name, List<AttrArg> Args, Pos Pos)
     public string? First => Args.Count > 0 ? Args[0].Value : null;
 }
 
-public sealed record Param(string Name, TypeRef Type, Pos Pos) // Name includes its sigil
+public sealed record Param(string Name, TypeRef Type, Pos Pos)
 {
-    /// `%hi: U64 = REG2`: the register an assembly routine's parameter arrives in, as written.
+    /// `hi: U64 = REG2`: the register an assembly routine's parameter arrives in, as written.
     public Token? Register { get; init; }
 }
 
@@ -163,7 +166,7 @@ public abstract record Stmt(Pos Pos)
     public Pos? Source { get; init; }
 }
 
-/// `%x: T = expr` — a binding. The expression is evaluated; memory is not read.
+/// `x: T = expr` — a binding. The expression is evaluated; memory is not read.
 public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : Stmt(Pos);
 
 
@@ -175,7 +178,7 @@ public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos)
     public List<Attribute> Attributes { get; init; } = [];
 }
 
-/// `%q, %r = div_rem(%a, %b)`: binds every item of a tuple, each with the item's type. Tuples are the only values
+/// `q, r = div_rem(a, b)`: binds every item of a tuple, each with the item's type. Tuples are the only values
 /// taken apart this way.
 public sealed record DestructureStmt(List<(string Name, Pos Pos)> Names, Expr Value, Pos Pos) : Stmt(Pos);
 /// A `branch` or `when` with a `continue` arm, in the middle of a block: the other arms leave, and `continue` goes
@@ -198,7 +201,16 @@ public sealed record FloatLit(double Value, Pos Pos) : Expr(Pos);
 public sealed record StrLit(string Value, Pos Pos) : Expr(Pos);
 public sealed record BoolLit(bool Value, Pos Pos) : Expr(Pos);
 public sealed record NullLit(Pos Pos) : Expr(Pos);
-public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos); // %x
+/// A value: a parameter, a block parameter, or a binding.
+public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos);
+
+/// `name.to<Callable>()` or `name.to<Callable<(Params), Ret>>()`: the routine `name` as a value, typed by its own
+/// signature, or by the one written.
+public sealed record RoutineRef(string Name, TypeRef? Callable, Pos Pos) : Expr(Pos)
+{
+    /// The module of a qualified routine: `Standard::Os` in `Standard::Os::wake_one.to<Callable>()`.
+    public string? Path { get; init; }
+}
 
 /// `name(args)` or `name<T>(args)` — a free routine call.
 public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos)
@@ -207,12 +219,12 @@ public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Ar
     public string? Path { get; init; }
 }
 
-/// `Type.name(args)` — a call through a type's namespace: `S64.add(%a, %b)`, `Option<T>.absent()`, `K.hash(%k)`.
+/// `Type.name(args)` — a call through a type's namespace: `S64.add(a, b)`, `Option<T>.absent()`, `K.hash(k)`.
 /// If `Owner` turns out to name a preset rather than a type, this is a method call on that preset.
 public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
     : Expr(Pos);
 
-/// `.name(args)`: a typewise call whose type is the expected one (`%n: Option<T> = .absent()`).
+/// `.name(args)`: a typewise call whose type is the expected one (`n: Option<T> = .absent()`).
 public sealed record ImplicitCallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos);
 
 /// `.Nothing`: a variant case without a payload, of the variant the value goes to.
@@ -232,21 +244,21 @@ public sealed record MethodCallExpr(Expr Receiver, string Name, List<TypeRef> Ty
 /// `base.field` — a field of a value record, or (behind a pointer) a place.
 public sealed record FieldExpr(Expr Base, string Name, Pos Pos) : Expr(Pos);
 
-/// `%p[i]` — a place. As a binding value it is an address; with `:=` or as a store target it is memory.
+/// `p[i]` — a place. As a binding value it is an address; with `:=` or as a store target it is memory.
 public sealed record IndexExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
 
 /// `eq`, `lt<U64>`: an assembly `branch` condition, the comparison the flags of the last instruction show. Type gives an
 /// ordered comparison its signedness.
 public sealed record AsmCondExpr(string Name, TypeRef? Type, Pos Pos) : Expr(Pos);
 
-/// `%cond ? a : b` — value select.
+/// `cond ? a : b` — value select.
 public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) : Expr(Pos);
 
-/// The slot of `claim %p : @T`, which parses as a binding of this: an uninitialized stack slot for one T. Lowers
+/// The slot of `claim p : @T`, which parses as a binding of this: an uninitialized stack slot for one T. Lowers
 /// to an LLVM alloca.
 public sealed record ClaimExpr(Pos Pos) : Expr(Pos)
 {
-    /// `claim %p : @T <- value`: stored into the slot where the claim stands; null for `<- uninit`.
+    /// `claim p : @T <- value`: stored into the slot where the claim stands; null for `<- uninit`.
     public Expr? Contents { get; init; }
 }
 
@@ -284,7 +296,7 @@ public sealed record ExprTarget(Expr Call, Pos Pos) : Target(Pos);
 public sealed record JumpTerm(CallTarget Target, Pos Pos) : Terminator(Pos);
 public sealed record BranchTerm(Expr Cond, Target IfTrue, Target IfFalse, Pos Pos) : Terminator(Pos);
 public sealed record WhenCondTerm(List<(Expr? Cond, Target Target)> Arms, Pos Pos) : Terminator(Pos);
-/// `when %v:` arms: one or more constants (`1, 2 -> ...`), or `_` (null).
+/// `when v:` arms: one or more constants (`1, 2 -> ...`), or `_` (null).
 public sealed record WhenValueTerm(Expr Value, List<(List<Expr>? Cases, Target Target)> Arms, Pos Pos) : Terminator(Pos);
 
 /// A terminator written as a bare target: `return(x)`, `unreachable`, or a #noreturn call such as `trap()`.

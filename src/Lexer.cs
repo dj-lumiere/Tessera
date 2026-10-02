@@ -5,8 +5,7 @@ namespace Tessera;
 
 public enum TokenKind
 {
-    Ident,       // routine, S64, entry, add, ...
-    Value,       // %name
+    Ident,       // routine, S64, entry, add, count, ...
     Hash,        // # (starts an attribute)
     At,          // @ (a pointer type: @T is Ptr<T>)
     Int,         // 42, -5, 0xFF
@@ -141,15 +140,8 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 continue;
             }
 
-            if (c == '%')
-            {
-                // `%` marks a value (`%count`, `%list`, pointers included).
-                Advance();
-                string name = ReadIdent();
-                if (name.Length == 0) throw new CompileError(pos, "expected a name after '%'");
-                _tokens.Add(new Token(TokenKind.Value, c + name, pos));
-                continue;
-            }
+            if (c == '%' && IsIdentChar(Peek(1)))
+                throw new CompileError(pos, "a value is written without '%': count, not %count");
 
             if (c == '`')
             {

@@ -274,7 +274,7 @@ public sealed class FunctionGen
         yield return $"#dbg_declare(ptr {slot}, !{variable}, !DIExpression(), !{location})";
     }
 
-    /// Records a binding: `%x : T = ...` names `op` as the variable x from here on.
+    /// Records a binding: `x : T = ...` names `op` as the variable x from here on.
     private void DescribeValue(string name, string op, DType t, Pos pos)
     {
         if (!Debug || t is VoidType || _cur.Terminated) return;
@@ -357,8 +357,8 @@ public sealed class FunctionGen
 
     private string LocalOp(string name) => $"%v.{_blockName}.{IrName(name)}";
 
-    /// A value's name in IR: `%count` becomes `count`. A `#` inside a name, which LLVM names can't hold, becomes `$`.
-    private static string IrName(string name) => name.TrimStart('%');
+    /// A value's name in IR: the name as written. A `#` inside a name, which LLVM names can't hold, becomes `$`.
+    private static string IrName(string name) => name;
 
     /// Where a `continue` arm goes: the LLVM block that holds the lines after the guard.
     private string? _continueLabel;
@@ -399,7 +399,7 @@ public sealed class FunctionGen
                     Line($"{op} = {Copy(v, t)}");
                 Define(b.Name, new Val(op, t), b.Pos);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
-                // `claim %p : @T <- value` is the claim, then `%p.store(value)`.
+                // `claim p : @T <- value` is the claim, then `p.store(value)`.
                 if (b.Value is ClaimExpr { Contents: { } contents })
                     EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "store", [], [contents], contents.Pos), VoidType.Instance);
                 break;
@@ -456,7 +456,7 @@ public sealed class FunctionGen
         _ => null,
     };
 
-    /// Is `e` a place chain rooted at a pointer: `%p.f`, `%p[i]`, `%p.f[i].g`?
+    /// Is `e` a place chain rooted at a pointer: `p.f`, `p[i]`, `p.f[i].g`?
     private bool IsPlaceChain(Expr e) => AsStride(e) switch
     {
         FieldExpr f => AsStride(f.Base) is FieldExpr or IndexExpr ? IsPlaceChain(f.Base) : Infer(f.Base) is PtrType,
@@ -601,7 +601,7 @@ public sealed class FunctionGen
         return i;
     }
 
-    /// The address of a place (`%p`, `%p.f`, `%p[i]`) and the type stored there. `opaqueAs` types an opaque `Ptr`.
+    /// The address of a place (`p`, `p.f`, `p[i]`) and the type stored there. `opaqueAs` types an opaque `Ptr`.
     private (string Addr, DType Pointee) Address(Expr place, DType opaqueAs)
     {
         if (AsStride(place) is FieldExpr or IndexExpr && IsPlaceChain(place)) return PlaceAddress(place);
@@ -619,6 +619,18 @@ public sealed class FunctionGen
         if (!BoundInRoutine(r.Name))
             throw Err(r.Pos, $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
         throw Err(r.Pos, $"'{r.Name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block arguments");
+    }
+
+    /// `b.store(20)` where `b` names no type, preset, global, or routine: a value that isn't there.
+    private void UnknownReceiver(TypeRef owner)
+    {
+        if (TryResolveOwner(owner) is not null || _c.FindPreset("", owner.Name, _env.File, owner.Pos, null) is not null
+            || _c.FindFree(owner.Name, _env.File, owner.Pos) is not null)
+            return;
+        if (BoundInRoutine(owner.Name))
+            throw Err(owner.Pos, $"'{owner.Name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block arguments, "
+                                 + "and a binding is visible from the line after it");
+        throw Err(owner.Pos, $"'{owner.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
     }
 
     /// Whether some block of this routine binds `name`: a parameter, a block parameter, or a binding.
@@ -639,9 +651,9 @@ public sealed class FunctionGen
             ? new FieldExpr(new PresetRef(null, o.Name, o.Pos) { Path = o.Path }, r.Name, r.Pos)
             : e;
 
-    /// `%p.stride(%n)` on a pointer is built in: the address %n Ts past %p (LLVM GEP's first index; on a
-    /// `Ptr<Array<T, N>>` that's %n whole arrays). It's a place like `%p.f`, so it chains (`%p.stride(%i).f`) and a
-    /// load or store through it keeps a dense record's real alignment. %n is a USize or an SSize (negative moves back).
+    /// `p.stride(n)` on a pointer is built in: the address n Ts past p (LLVM GEP's first index; on a
+    /// `Ptr<Array<T, N>>` that's n whole arrays). It's a place like `p.f`, so it chains (`p.stride(i).f`) and a
+    /// load or store through it keeps a dense record's real alignment. n is a USize or an SSize (negative moves back).
     private Expr AsStride(Expr e) =>
         e is MethodCallExpr { Name: "stride", TypeArgs.Count: 0, Args: [var n] } m && Infer(m.Receiver) is PtrType
             ? new IndexExpr(m.Receiver, n, m.Pos)
@@ -668,6 +680,8 @@ public sealed class FunctionGen
                 return vc.Type;
             case PresetRef r:
                 return InferPresetRef(r);
+            case RoutineRef rr:
+                return RoutineValue(rr).Type;
             case CallExpr wf when IsTemplateCall(wf):
                 return VoidType.Instance;
             case CallExpr or NsCallExpr or MethodCallExpr:
@@ -746,6 +760,7 @@ public sealed class FunctionGen
             ImplicitCallExpr => EvalCall(e, expected),
             CallExpr wf when IsTemplateCall(wf) => EvalTemplateCall(wf),
             PresetRef r => EvalPresetRef(r, expected),
+            RoutineRef rr => RoutineValue(rr),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),
             _ => throw new InvalidOperationException(e.GetType().Name),
         };
@@ -829,7 +844,7 @@ public sealed class FunctionGen
     private Val EvalClaim(ClaimExpr a, DType expected)
     {
         if (expected is not PtrType { Pointee: { } t })
-            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim %p : @T; found {expected}");
+            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim p : @T; found {expected}");
         _c.EnsureTypeDefined(t);
         string slot = $"%s{_allocas.Count}";
         _allocas.Add($"{slot} = alloca {t.Llvm}");
@@ -902,7 +917,7 @@ public sealed class FunctionGen
         return new Val(EmitTmp($"load {v.Llvm}, ptr {slot}"), v);
     }
 
-    /// One case pattern of a `when` on a variant: `Expr.Number(%n)` binds the payload, `Expr.Number` and
+    /// One case pattern of a `when` on a variant: `Expr.Number(n)` binds the payload, `Expr.Number` and
     /// `Expr.Empty` don't.
     private (int Index, ValueRef? Binding) VariantPattern(Expr e, VariantType v)
     {
@@ -927,7 +942,7 @@ public sealed class FunctionGen
             case [ValueRef]:
                 throw Err(e.Pos, $"{v.Decl.Name}.{name} carries no payload to bind");
             default:
-                throw Err(e.Pos, $"bind the payload to a name: {v.Decl.Name}.{name}(%value)");
+                throw Err(e.Pos, $"bind the payload to a name: {v.Decl.Name}.{name}(value)");
         }
     }
 
@@ -1011,8 +1026,8 @@ public sealed class FunctionGen
     private bool IsTemplateCall(CallExpr c) =>
         FormatCalls.ContainsKey(c.Name) && _c.FindFree(c.Name, _env.File, c.Pos) is null;
 
-    /// `write(%out, "x = {%x}\n")` expands in place, in order: `write_str(%out, "x = ")`, `%x.represent(%out)`,
-    /// `write_str(%out, "\n")`. A brace holds one expression; `{{` and `}}` are literal braces. Nothing is
+    /// `write(out, "x = {x}\n")` expands in place, in order: `write_str(out, "x = ")`, `x.represent(out)`,
+    /// `write_str(out, "\n")`. A brace holds one expression; `{{` and `}}` are literal braces. Nothing is
     /// allocated: each piece goes straight to the writer. `print("...")` / `eprint("...")` are the same with
     /// the stateless `StdoutWriter.shared()` / `StderrWriter.shared()` as the writer.
     private Val EvalTemplateCall(CallExpr c)
@@ -1022,11 +1037,11 @@ public sealed class FunctionGen
         if (FormatCalls[c.Name] is { } stream)
         {
             if (c.Args is not [StrLit only])
-                throw Err(c.Pos, $"{c.Name} takes a string literal: {c.Name}(\"x = {{%x}}\\n\")");
+                throw Err(c.Pos, $"{c.Name} takes a string literal: {c.Name}(\"x = {{x}}\\n\")");
             if (!_c.Target.HasOs)
                 throw Err(c.Pos, $"{c.Name} writes to standard {(c.Name == "print" ? "output" : "error")}, which is in "
                     + $"{OsModule}, and target {_c.Target.Arch}-{_c.Target.Os}-{_c.Target.Abi} has no operating system; "
-                    + "write(%out, ...) to a Writer of your own instead");
+                    + "write(out, ...) to a Writer of your own instead");
             writer = new NsCallExpr(new TypeRef(stream, [], c.Pos) { Path = OsModule }, "shared", [], [], c.Pos);
             template = only;
         }
@@ -1036,7 +1051,7 @@ public sealed class FunctionGen
             template = given;
         }
         else
-            throw Err(c.Pos, "write takes a named writer and a string literal: write(%out, \"x = {%x}\\n\")");
+            throw Err(c.Pos, "write takes a named writer and a string literal: write(out, \"x = {x}\\n\")");
         var text = new StringBuilder();
         void Flush()
         {
@@ -1069,7 +1084,8 @@ public sealed class FunctionGen
             string source = s[(i + 1)..end];
             if (string.IsNullOrWhiteSpace(source)) throw Err(template.Pos, "'{}' holds no expression; a literal brace is '{{'");
             var at = new Pos(template.Pos.File, template.Pos.Line, template.Pos.Col + 2 + i);
-            var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File).ParseLoneExpr();
+            var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File, values: _values.Keys)
+                .ParseLoneExpr();
             Flush();
             EvalCall(new MethodCallExpr(value, "represent", [], [writer], at), VoidType.Instance);
             i = end;
@@ -1111,7 +1127,7 @@ public sealed class FunctionGen
         return new Val(EmitTmp($"select i1 {c.Op}, {expected.Llvm} {a.Op}, {expected.Llvm} {b.Op}"), expected);
     }
 
-    /// `{ %a, %b }` where a tuple is expected: each item takes the type the tuple has in its place.
+    /// `{ a, b }` where a tuple is expected: each item takes the type the tuple has in its place.
     private Val EvalTupleLit(ArrayLit lit, RecordType s)
     {
         if (s.Args.Count != lit.Elements.Count)
@@ -1214,26 +1230,36 @@ public sealed class FunctionGen
     {
         if (ResolvePreset(r) is { } c) return c.Emit(expected);
 
-        // A routine named as a value is a function pointer.
-        if (r.Owner is null && _c.FindFree(r.Name, _env.File, r.Pos) is { } routine)
-        {
-            if (expected is not CallableType ct)
-                throw Err(r.Pos, $"'{r.Name}' is a routine; it can only be used as a value where a Callable is expected");
-            // An #inline routine is inlined at every call, so there's no call of its own for a pointer to name.
-            if (routine.Attr("inline") is not null)
-                throw Err(r.Pos, $"'{r.Name}' is #inline, so it can't be a Callable value: it's inlined at every call, "
-                                 + "and a call through a pointer can't be; wrap it in a routine without #inline");
-            var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
-            if (!inst.Ret.Equals(ct.Ret) || inst.Params.Count != ct.Params.Count
-                || inst.Params.Zip(ct.Params).Any(p => !p.First.Equals(p.Second)) || inst.CallConv != ct.CallConv)
-                throw Err(r.Pos, $"routine '{r.Name}' does not match {ct}");
-            // A call through a Callable passes BF16 as its i16 bits, as Tessera routines do; an external C routine
-            // takes a real bfloat, so it can't sit behind one.
-            if (!inst.PassesBf16AsBits && (Instance.IsBf16(inst.Ret) || inst.Params.Any(Instance.IsBf16)))
-                throw Err(r.Pos, $"routine '{r.Name}' passes BF16 the C way, so it can't be a Callable; wrap it in a Tessera routine");
-            return new Val($"@{Compiler.Quote(inst.Symbol)}", ct);
-        }
+        // A bare name is a value, or else a preset or a global: a routine becomes a value only when the code says so.
+        if (r.Owner is null && _c.FindFree(r.Name, _env.File, r.Pos, r.Path) is not null)
+            throw Err(r.Pos, $"'{r.Name}' is a routine; as a value it is written {r.Name}.to<Callable>()");
+        if (r.Owner is null && r.Path is null && BoundInRoutine(r.Name))
+            throw Err(r.Pos, $"'{r.Name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block arguments, "
+                             + "and a binding is visible from the line after it");
         throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
+    }
+
+    /// `name.to<Callable>()`: the routine as a function pointer, typed by its own signature, or by the Callable
+    /// written, which then has to match it.
+    private Val RoutineValue(RoutineRef r)
+    {
+        var routine = _c.FindFree(r.Name, _env.File, r.Pos, r.Path)
+                      ?? throw Err(r.Pos, $"'{r.Name}' isn't a routine; to<Callable>() makes a routine a value");
+        // An #inline routine is inlined at every call, so there's no call of its own for a pointer to name.
+        if (routine.Attr("inline") is not null)
+            throw Err(r.Pos, $"'{r.Name}' is #inline, so it can't be a Callable value: it's inlined at every call, "
+                             + "and a call through a pointer can't be; wrap it in a routine without #inline");
+        if (routine.TypeParams.Count != 0)
+            throw Err(r.Pos, $"'{r.Name}' is generic, so it has no one address to take; wrap an instance in a routine");
+        var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
+        var own = new CallableType(inst.CallConv, inst.Params, inst.Ret);
+        if (r.Callable is { } written && Resolve(written) is var ct && !ct.Equals(own))
+            throw Err(r.Pos, $"routine '{r.Name}' is {own}, not {ct}");
+        // A call through a Callable passes BF16 as its i16 bits, as Tessera routines do; an external C routine
+        // takes a real bfloat, so it can't sit behind one.
+        if (!inst.PassesBf16AsBits && (Instance.IsBf16(inst.Ret) || inst.Params.Any(Instance.IsBf16)))
+            throw Err(r.Pos, $"routine '{r.Name}' passes BF16 the C way, so it can't be a Callable; wrap it in a Tessera routine");
+        return new Val($"@{Compiler.Quote(inst.Symbol)}", own);
     }
 
 
@@ -1254,7 +1280,7 @@ public sealed class FunctionGen
         _ => false,
     };
 
-    /// The code address of a Callable: `%fn.addr()`, or `routine_name.addr()` (typed by the routine's own
+    /// The code address of a Callable: `fn.addr()`, or `routine_name.addr()` (typed by the routine's own
     /// signature). An `Addr` for C code that takes a function as `void*`; calling it again needs a `Callable`.
     /// A call through an address passes no place, so a `#track_caller` routine has none.
     private void NotThroughAddress(RoutineDecl r, Pos pos)
@@ -1271,7 +1297,7 @@ public sealed class FunctionGen
         {
             NotThroughAddress(named, owner.Pos);
             var namedInst = _c.RequireInstance(named, new Compiler.TypeEnv(named.File));
-            return (new PresetRef(null, owner.Name, owner.Pos),
+            return (new RoutineRef(owner.Name, null, owner.Pos),
                 new CallableType(namedInst.CallConv, namedInst.Params, namedInst.Ret));
         }
 
@@ -1282,14 +1308,15 @@ public sealed class FunctionGen
         {
             NotThroughAddress(routine, r.Pos);
             var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
-            return (m.Receiver, new CallableType(inst.CallConv, inst.Params, inst.Ret));
+            return (new RoutineRef(r.Name, null, r.Pos) { Path = r.Path },
+                new CallableType(inst.CallConv, inst.Params, inst.Ret));
         }
 
         return null;
     }
 
-    /// A call through a Callable value: `%fn.call(args)`. A Callable stored in memory is loaded first
-    /// (`%fn: Callable<…> = %alloc.alloc_fn.load()`); calling the field directly would hide that load.
+    /// A call through a Callable value: `fn.call(args)`. A Callable stored in memory is loaded first
+    /// (`fn: Callable<…> = alloc.alloc_fn.load()`); calling the field directly would hide that load.
     private (Expr Callee, CallableType Callable, List<Expr> Args)? IndirectCall(Expr e)
     {
         if (e is not MethodCallExpr m) return null;
@@ -1313,6 +1340,7 @@ public sealed class FunctionGen
     /// Works out which routine a call refers to and binds its type parameters.
     private CallPlan? PlanCall(Expr e, DType? expected)
     {
+        if (e is NsCallExpr { Owner: { Args.Count: 0, Path: null } receiver }) UnknownReceiver(receiver);
         switch (e)
         {
             case CallExpr c:
@@ -1376,13 +1404,17 @@ public sealed class FunctionGen
     {
         if (IndirectCall(m) is not null || AddrOfCallable(m) is not null) return null;
 
+        // `elems : @@S32 = arr.to()`: a conversion without its type takes the type its value goes to.
+        if (m is { Name: "to" or "to_wrap" or "to_clamp", TypeArgs.Count: 0, Args.Count: 0 } && expected is not null)
+            m = m with { TypeArgs = [new TypeRef(expected.Name, [], m.Pos) { Known = expected }] };
+
         var rt = Infer(m.Receiver);
         if (rt is null)
         {
             // An untyped literal receiver takes its type from the arguments: through the parameters of a routine on
-            // every type (`7.store_into(%p)` with `%dest: @T`), or else as the first typed argument
-            // (`0.sub(%x)`); then from context.
-            // The result's type says the receiver's only for a routine that returns Self (`%x : U64 = 1.shl(3)`), so it
+            // every type (`7.store_into(p)` with `dest: @T`), or else as the first typed argument
+            // (`0.sub(x)`); then from context.
+            // The result's type says the receiver's only for a routine that returns Self (`x : U64 = 1.shl(3)`), so it
             // is borrowed only when it's a type the literal could have.
             rt = BlanketReceiverType(m) ?? m.Args.Select(Infer).FirstOrDefault(t => t is not null)
                  ?? (LiteralCanBe(m.Receiver, expected) ? expected : null);
@@ -1401,7 +1433,7 @@ public sealed class FunctionGen
             }
         }
 
-        // Receivers behind a pointer: `%p.m()` finds T.m(%self: @Self) first, then Ptr<T>.m(%self: Self).
+        // Receivers behind a pointer: `p.m()` finds T.m(self: @Self) first, then Ptr<T>.m(self: Self).
         var candidates = new List<(DType Owner, bool PassesPointer)>();
         if (rt is PtrType { Pointee: { } pointee })
         {
@@ -1416,7 +1448,7 @@ public sealed class FunctionGen
             var r = _c.FindMethod(owner, m.Name, _env.File, m.Pos, FromTypeParameter(owner) || Derived,
                 d => d.Fixed.Count == 0 || FixedFits(d, owner, m.TypeArgs, m.Pos));
             if (r is null) continue;
-            // Only a routine whose first parameter is %self is a method; the rest are called by their type.
+            // Only a routine whose first parameter is self is a method; the rest are called by their type.
             if (!Compiler.HasReceiver(r))
             {
                 typewise ??= r;
@@ -1424,8 +1456,8 @@ public sealed class FunctionGen
             }
             var env = BindOwner(r, owner, m.Pos);
             var selfType = _c.ResolveType(r.Params[0].Type, env);
-            // Through a pointer, T's method must take exactly that pointer: `%slot: Ptr<Addr>` doesn't make
-            // `%slot.load()` an Addr method on the slot.
+            // Through a pointer, T's method must take exactly that pointer: `slot: Ptr<Addr>` doesn't make
+            // `slot.load()` an Addr method on the slot.
             if (passesPointer ? !selfType.Equals(rt) : !Compatible(rt, selfType)) continue;
             BindExplicit(r, env, m.TypeArgs, m.Pos);
             InferTypeArgs(r, env, m.Args, expected, 1);
@@ -1442,7 +1474,7 @@ public sealed class FunctionGen
             env.Bind("T", en);
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
-        // `%x.to<S64>()`: the routines are defined per type argument, and none is for these.
+        // `x.to<S64>()`: the routines are defined per type argument, and none is for these.
         foreach (var (owner, _) in candidates)
             if (_c.MethodsNamed(owner, m.Name) is { Count: > 0 } defined && defined.All(d => d.Fixed.Count > 0))
             {
@@ -1452,9 +1484,9 @@ public sealed class FunctionGen
                     : $"{owner} has no {m.Name}<{string.Join(", ", m.TypeArgs)}>; it has {forms}");
             }
         if (typewise is not null)
-            throw Err(m.Pos, $"'{typewise.DisplayName}' has no %self, so it isn't a method; call it by its type: "
+            throw Err(m.Pos, $"'{typewise.DisplayName}' has no self, so it isn't a method; call it by its type: "
                 + $"{typewise.Owner!.Name}.{m.Name}(...)");
-        // `%p.eq(%q)` where T.eq takes values: the load is written, not implied.
+        // `p.eq(q)` where T.eq takes values: the load is written, not implied.
         if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held) || Derived) is not null)
             throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; load it: .load().{m.Name}(...)");
         // Memory is read through a typed pointer only; an Addr says where, not what.
@@ -2090,7 +2122,7 @@ public sealed class FunctionGen
                     break;
                 }
                 if (v.Type is not (IntType or ChoiceType))
-                    throw Err(sw.Value.Pos, $"when %v: needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
+                    throw Err(sw.Value.Pos, $"when v: needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
                 string? defaultLabel = null;
                 var cases = new List<string>();
                 var seen = new HashSet<string>();

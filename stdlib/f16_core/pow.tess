@@ -75,213 +75,212 @@ preset CM_F16_POW_EXP_TB: @Array<U64, 64> <- { 0x3FF0000000000000, 0x3FF02C9A3E7
         0x3FFF50765B6E4541, 0x3FFFA7C1819E90D8 }
 
 /// self^exponent, correctly rounded.
-routine F16.powf(%self: Self, %exponent: Self) -> Self
+routine F16.powf(self: Self, exponent: Self) -> Self
     block entry():
-        %xu : U32 = %self.bits().to<U32>()
-        %yu : U32 = %exponent.bits().to<U32>()
-        %xa : U32 = %xu.bitand(0x7FFF)
-        %ya : U32 = %yu.bitand(0x7FFF)
+        xu : U32 = self.bits().to<U32>()
+        yu : U32 = exponent.bits().to<U32>()
+        xa : U32 = xu.bitand(0x7FFF)
+        ya : U32 = yu.bitand(0x7FFF)
         when:
-            %xa.eq(0x3C00) -> unit_base(%xu, %yu, %ya)  // |x| = 1
-            %ya.eq(0)      -> zero_exponent(%xa, %xu)
-            %ya.ge(0x7C00) -> special_exponent(%xa, %yu, %ya)  // y = ±inf or NaN
-            %xa.eq(0)      -> zero_base(%xu, %yu)
-            %xu.ge(0x7C00) -> special_base(%xa, %xu, %yu)  // x = ±inf, NaN, or x < 0
-            else           -> listed(%xu, %yu, 0)
+            xa.eq(0x3C00) -> unit_base(xu, yu, ya)  // |x| = 1
+            ya.eq(0)      -> zero_exponent(xa, xu)
+            ya.ge(0x7C00) -> special_exponent(xa, yu, ya)  // y = ±inf or NaN
+            xa.eq(0)      -> zero_base(xu, yu)
+            xu.ge(0x7C00) -> special_base(xa, xu, yu)  // x = ±inf, NaN, or x < 0
+            else          -> listed(xu, yu, 0)
 
-    block unit_base(%xu: U32, %yu: U32, %ya: U32):
-        %minus_one : Bool = %xu.shr(15).eq(1)
-        branch %minus_one
-            ? minus_one(%yu, %ya)
-            : plus_one(%yu, %ya)
+    block unit_base(xu: U32, yu: U32, ya: U32):
+        minus_one : Bool = xu.shr(15).eq(1)
+        branch minus_one
+            ? minus_one(yu, ya)
+            : plus_one(yu, ya)
 
     // (-1)^y: ±1 for an integer y, NaN otherwise
-    block minus_one(%yu: U32, %ya: U32):
+    block minus_one(yu: U32, ya: U32):
         when:
-            %ya.gt(0x7C00)        -> return(%exponent.add(%exponent))
-            cm_f16_pow_isint(%yu) -> minus_one_int(%yu)
-            else                  -> return(Self.from_bits(0xFE00))
+            ya.gt(0x7C00)        -> return(exponent.add(exponent))
+            cm_f16_pow_isint(yu) -> minus_one_int(yu)
+            else                 -> return(Self.from_bits(0xFE00))
 
-    block minus_one_int(%yu: U32):
-        %odd : Bool = cm_f16_pow_isodd(%yu)
-        branch %odd
-            ? return(%self)
-            : return(%self.neg())
+    block minus_one_int(yu: U32):
+        odd : Bool = cm_f16_pow_isodd(yu)
+        branch odd
+            ? return(self)
+            : return(self.neg())
 
     // 1^y = 1, except for a signaling NaN y
-    block plus_one(%yu: U32, %ya: U32):
-        %snan : Bool = %ya.gt(0x7C00).bitand(%yu.bitand(0x0200).eq(0))
-        branch %snan
-            ? return(%exponent.add(%exponent))
-            : return(%self)
+    block plus_one(yu: U32, ya: U32):
+        snan : Bool = ya.gt(0x7C00).bitand(yu.bitand(0x0200).eq(0))
+        branch snan
+            ? return(exponent.add(exponent))
+            : return(self)
 
     // x^0 = 1, except for a signaling NaN x
-    block zero_exponent(%xa: U32, %xu: U32):
-        %snan : Bool = %xa.gt(0x7C00).bitand(%xu.bitand(0x0200).eq(0))
-        branch %snan
-            ? return(%self.add(%self))
+    block zero_exponent(xa: U32, xu: U32):
+        snan : Bool = xa.gt(0x7C00).bitand(xu.bitand(0x0200).eq(0))
+        branch snan
+            ? return(self.add(self))
             : return(1.0)
 
     // |x| = 1 was handled above
-    block special_exponent(%xa: U32, %yu: U32, %ya: U32):
+    block special_exponent(xa: U32, yu: U32, ya: U32):
         when:
-            %xa.gt(0x7C00) -> return(%self.add(%self))
-            %ya.eq(0x7C00) -> infinite_exponent(%xa, %yu)
-            else           -> return(%exponent.add(%exponent))
+            xa.gt(0x7C00) -> return(self.add(self))
+            ya.eq(0x7C00) -> infinite_exponent(xa, yu)
+            else          -> return(exponent.add(exponent))
 
     // 0 when |x| < 1 and y = +inf or |x| > 1 and y = -inf, else +inf
-    block infinite_exponent(%xa: U32, %yu: U32):
-        %small : Bool = %xa.lt(0x3C00)
-        %neg   : Bool = %yu.shr(15).eq(1)
-        %zero  : Bool = %small.ne(%neg)
-        branch %zero
+    block infinite_exponent(xa: U32, yu: U32):
+        small : Bool = xa.lt(0x3C00)
+        neg   : Bool = yu.shr(15).eq(1)
+        zero  : Bool = small.ne(neg)
+        branch zero
             ? return(Self.from_bits(0x0000))
             : return(Self.INFINITY)
 
     // x = ±0: a signed zero or infinity, negative only for -0 and an odd integer y
-    block zero_base(%xu: U32, %yu: U32):
-        %odd_neg : Bool = cm_f16_pow_isodd(%yu).bitand(%xu.shr(15).ne(0))
-        %neg_y   : Bool = %yu.shr(15).eq(1)
+    block zero_base(xu: U32, yu: U32):
+        odd_neg : Bool = cm_f16_pow_isodd(yu).bitand(xu.shr(15).ne(0))
+        neg_y   : Bool = yu.shr(15).eq(1)
         when:
-            %neg_y.bitand(%odd_neg) -> return(Self.NEG_INFINITY)
-            %neg_y                  -> return(Self.INFINITY)
-            %odd_neg                -> return(Self.from_bits(0x8000))
-            else                    -> return(Self.from_bits(0x0000))
+            neg_y.bitand(odd_neg) -> return(Self.NEG_INFINITY)
+            neg_y                 -> return(Self.INFINITY)
+            odd_neg               -> return(Self.from_bits(0x8000))
+            else                  -> return(Self.from_bits(0x0000))
 
-    block special_base(%xa: U32, %xu: U32, %yu: U32):
+    block special_base(xa: U32, xu: U32, yu: U32):
         when:
-            %xa.eq(0x7C00) -> infinite_base(%xu, %yu)
-            %xa.gt(0x7C00) -> return(%self.add(%self))
-            else           -> negative_base(%xa, %yu)
+            xa.eq(0x7C00) -> infinite_base(xu, yu)
+            xa.gt(0x7C00) -> return(self.add(self))
+            else          -> negative_base(xa, yu)
 
     // ±inf: the sign survives only for an odd y, and a negative y gives a zero
-    block infinite_base(%xu: U32, %yu: U32):
-        %odd    : Bool = cm_f16_pow_isodd(%yu)
-        %signed : U32  = %odd
-            ? %xu
-            : %xu.bitand(0x7FFF)
-        %neg_y : Bool = %yu.shr(15).eq(1)
-        %r     : U32  = %neg_y
-            ? %signed.bitand(0x8000)
-            : %signed
-        return(Self.from_bits(%r.to<U16>()))
+    block infinite_base(xu: U32, yu: U32):
+        odd    : Bool = cm_f16_pow_isodd(yu)
+        signed : U32  = odd
+            ? xu
+            : xu.bitand(0x7FFF)
+        neg_y : Bool = yu.shr(15).eq(1)
+        r     : U32  = neg_y
+            ? signed.bitand(0x8000)
+            : signed
+        return(Self.from_bits(r.to<U16>()))
 
     // x < 0: NaN for a non-integer y, else |x|^y with the sign of an odd y
-    block negative_base(%xa: U32, %yu: U32):
-        %int : Bool = cm_f16_pow_isint(%yu)
-        branch %int
+    block negative_base(xa: U32, yu: U32):
+        int : Bool = cm_f16_pow_isint(yu)
+        branch int
             ? continue
             : return(Self.from_bits(0xFE00))
-        %odd  : Bool = cm_f16_pow_isodd(%yu)
-        %sign : U64  = %odd
+        odd  : Bool = cm_f16_pow_isodd(yu)
+        sign : U64  = odd
             ? 0x8000000000000000
             : 0
-        jump listed(%xa, %yu, %sign)
+        jump listed(xa, yu, sign)
 
     // the inputs the approximation rounds wrongly (xu = |x| from here on)
-    block listed(%xu: U32, %yu: U32, %sign: U64):
+    block listed(xu: U32, yu: U32, sign: U64):
         when:
-            %xu.eq(0x1C94).bitand(%yu.eq(0x31BC)) -> return(F32.sub(0x1.848p-2, 0x1p-14).to<Self>())
-            %xu.eq(0x537B).bitand(%yu.eq(0x25BF)) -> return(F32.sub(0x1.18cp+0, 0x1p-12).to<Self>())
-            %xu.eq(0x756B).bitand(%yu.eq(0x112E)) -> return(F32.sub(0x1.01cp+0, 0x1p-12).to<Self>())
-            %xu.eq(0x0D36).bitand(%yu.eq(0x2316)) -> return(F32.add(0x1.cap-1, 0x1p-13).to<Self>())
-            %xu.eq(0x273B).bitand(%yu.eq(0x38B3)) -> return(F32.add(0x1.f8p-4, 0x1p-16).to<Self>())
-            %xu.eq(0x32BB).bitand(%yu.eq(0x4242)) -> return(F32.add(0x1.f2cp-8, 0x1p-20).to<Self>())
-            %xu.eq(0x4D47).bitand(%yu.eq(0x9D5F)) -> return(F64.sub(0x1.f8p-1, 0x1p-13).to<Self>())
-            %xu.eq(0x2E27).bitand(%yu.eq(0xC107)) -> return(F64.sub(0x1.688p+8, 0x1p-4).to<Self>())
-            %xu.eq(0x14CB).bitand(%yu.eq(0xBE46)) -> return(F64.sub(0x1.35cp+15, 0x1p-3).to<Self>())
-            %xu.eq(0x7ABF).bitand(%yu.eq(0x8CC5)) -> return(F64.sub(0x1.fe8p-1, 0x1p-13).to<Self>())
-            %xu.eq(0x650C).bitand(%yu.eq(0x9BED)) -> return(F64.add(0x1.f2p-1, 0x1p-13).to<Self>())
-            %xu.eq(0x29A0).bitand(%yu.eq(0xB5CF)) -> return(F64.add(0x1.8ep+1, 0x1p-11).to<Self>())
-            %xu.eq(0x17E9).bitand(%yu.eq(0xB1CF)) -> return(F64.add(0x1.8ep+1, 0x1p-11).to<Self>())
-            %xu.eq(0x5988).bitand(%yu.eq(0x9443)) -> return(F64.add(0x1.fd4p-1, 0x1p-13).to<Self>())
-            else                                  -> classify(%xu, %yu, %sign)
+            xu.eq(0x1C94).bitand(yu.eq(0x31BC)) -> return(F32.sub(0x1.848p-2, 0x1p-14).to<Self>())
+            xu.eq(0x537B).bitand(yu.eq(0x25BF)) -> return(F32.sub(0x1.18cp+0, 0x1p-12).to<Self>())
+            xu.eq(0x756B).bitand(yu.eq(0x112E)) -> return(F32.sub(0x1.01cp+0, 0x1p-12).to<Self>())
+            xu.eq(0x0D36).bitand(yu.eq(0x2316)) -> return(F32.add(0x1.cap-1, 0x1p-13).to<Self>())
+            xu.eq(0x273B).bitand(yu.eq(0x38B3)) -> return(F32.add(0x1.f8p-4, 0x1p-16).to<Self>())
+            xu.eq(0x32BB).bitand(yu.eq(0x4242)) -> return(F32.add(0x1.f2cp-8, 0x1p-20).to<Self>())
+            xu.eq(0x4D47).bitand(yu.eq(0x9D5F)) -> return(F64.sub(0x1.f8p-1, 0x1p-13).to<Self>())
+            xu.eq(0x2E27).bitand(yu.eq(0xC107)) -> return(F64.sub(0x1.688p+8, 0x1p-4).to<Self>())
+            xu.eq(0x14CB).bitand(yu.eq(0xBE46)) -> return(F64.sub(0x1.35cp+15, 0x1p-3).to<Self>())
+            xu.eq(0x7ABF).bitand(yu.eq(0x8CC5)) -> return(F64.sub(0x1.fe8p-1, 0x1p-13).to<Self>())
+            xu.eq(0x650C).bitand(yu.eq(0x9BED)) -> return(F64.add(0x1.f2p-1, 0x1p-13).to<Self>())
+            xu.eq(0x29A0).bitand(yu.eq(0xB5CF)) -> return(F64.add(0x1.8ep+1, 0x1p-11).to<Self>())
+            xu.eq(0x17E9).bitand(yu.eq(0xB1CF)) -> return(F64.add(0x1.8ep+1, 0x1p-11).to<Self>())
+            xu.eq(0x5988).bitand(yu.eq(0x9443)) -> return(F64.add(0x1.fd4p-1, 0x1p-13).to<Self>())
+            else                                -> classify(xu, yu, sign)
 
-    block classify(%xu: U32, %yu: U32, %sign: U64):
-        %xd   : F64  = Self.from_bits(%xu.to<U16>()).to<F64>()
-        %isex : U64  = cm_f16_pow_is_exact(%xu, %yu, %exponent)
-        %pow2 : Bool = %isex.gt(0xFF)
+    block classify(xu: U32, yu: U32, sign: U64):
+        xd   : F64  = Self.from_bits(xu.to<U16>()).to<F64>()
+        isex : U64  = cm_f16_pow_is_exact(xu, yu, exponent)
+        pow2 : Bool = isex.gt(0xFF)
         // x = 2^E with an integer y E in range: the exact power of two
-        branch %pow2
-            ? done(%isex, %sign)
+        branch pow2
+            ? done(isex, sign)
             : continue
-        %ret      : U64  = cm_f16_pow_exp(cm_f16_pow_log(%xd).mul(%exponent.to<F64>())).bits()
-        %may_snap : Bool = %isex.ne(0)
-        branch %may_snap
-            ? snap(%xd, %isex, %ret, %sign)
-            : done(%ret, %sign)
+        ret      : U64  = cm_f16_pow_exp(cm_f16_pow_log(xd).mul(exponent.to<F64>())).bits()
+        may_snap : Bool = isex.ne(0)
+        branch may_snap
+            ? snap(xd, isex, ret, sign)
+            : done(ret, sign)
 
     // y = n / 2^F in a small set: when the result is exact, round away the approximation error
-    block snap(%xd: F64, %isex: U64, %ret: U64, %sign: U64):
-        %rounded : U64  = %ret.add_wrap(0x0000010000000000).bitand(0xFFFFFE0000000000)
-        %test1   : U64  = cm_f16_pow_fast(%xd, %isex.shr(4)).bits()
-        %test2   : U64  = cm_f16_pow_fast(F64.from_bits(%rounded), %isex.bitand(0xF)).bits()
-        %exact   : Bool = %test1.eq(%test2)
-        %r       : U64  = %exact
-            ? %rounded
-            : %ret
-        jump done(%r, %sign)
+    block snap(xd: F64, isex: U64, ret: U64, sign: U64):
+        rounded : U64  = ret.add_wrap(0x0000010000000000).bitand(0xFFFFFE0000000000)
+        test1   : U64  = cm_f16_pow_fast(xd, isex.shr(4)).bits()
+        test2   : U64  = cm_f16_pow_fast(F64.from_bits(rounded), isex.bitand(0xF)).bits()
+        exact   : Bool = test1.eq(test2)
+        r       : U64  = exact
+            ? rounded
+            : ret
+        jump done(r, sign)
 
-    block done(%ret: U64, %sign: U64):
-        return(F64.from_bits(%ret.add_wrap(%sign)).to<Self>())
+    block done(ret: U64, sign: U64):
+        return(F64.from_bits(ret.add_wrap(sign)).to<Self>())
 
 // Whether the F16 value with bits u is an integer (zero counts).
-private routine cm_f16_pow_isint(%u: U32) -> Bool
+private routine cm_f16_pow_isint(u: U32) -> Bool
     block entry():
-        %zero : Bool = %u.bitand(0x7FFF).eq(0)
-        %int  : Bool = %u.bitand(0x7FFF).shr(10).ge(U32.sub(25, %u.bitor(0x400).trailing_zeros()))
-        return(%zero.bitor(%int))
+        zero : Bool = u.bitand(0x7FFF).eq(0)
+        int  : Bool = u.bitand(0x7FFF).shr(10).ge(U32.sub(25, u.bitor(0x400).trailing_zeros()))
+        return(zero.bitor(int))
 
 // Whether the F16 value with bits u is an odd integer.
-private routine cm_f16_pow_isodd(%u: U32) -> Bool
+private routine cm_f16_pow_isodd(u: U32) -> Bool
     block entry():
-        %nonzero : Bool = %u.bitand(0x7FFF).ne(0)
-        %odd     : Bool = %u.bitand(0x7FFF).shr(10).eq(U32.sub(25,
-                %u.bitor(0x400).trailing_zeros()))
-        return(%nonzero.bitand(%odd))
+        nonzero : Bool = u.bitand(0x7FFF).ne(0)
+        odd     : Bool = u.bitand(0x7FFF).shr(10).eq(U32.sub(25, u.bitor(0x400).trailing_zeros()))
+        return(nonzero.bitand(odd))
 
 // Classifies the inputs whose power may be exactly representable: a power of
 // two x = 2^E with -25 <= y E <= 15 and y E an integer (returns the F64 bits
 // of 2^(y E)), or y in {1/4, 1/2, 3/4, 1, 5/4, 3/2, 7/4, 2, 5/2, 3, 7/2, 4, 5,
 // 6, 7} (returns (n << 4) + 2^F for y = n / 2^F), else 0. xu holds the bits
 // of |x|.
-private routine cm_f16_pow_is_exact(%xu: U32, %yu: U32, %y: F16) -> U64
+private routine cm_f16_pow_is_exact(xu: U32, yu: U32, y: F16) -> U64
     block entry():
-        %yexp_tz : U32  = %yu.shr(10).bitand(0x1F).add(%yu.bitor(0x400).trailing_zeros())
-        %normal  : Bool = %xu.bitand(0x3FF).eq(0)
-        branch %normal
-            ? normal(%yexp_tz)
-            : subnormal(%yexp_tz)
+        yexp_tz : U32  = yu.shr(10).bitand(0x1F).add(yu.bitor(0x400).trailing_zeros())
+        normal  : Bool = xu.bitand(0x3FF).eq(0)
+        branch normal
+            ? normal(yexp_tz)
+            : subnormal(yexp_tz)
 
     // x = 2^E with E >= -14
-    block normal(%yexp_tz: U32):
-        %e : S32 = %xu.shr(10).to<S32>().sub(15)
-        jump power_of_two(%yexp_tz, %e)
+    block normal(yexp_tz: U32):
+        e : S32 = xu.shr(10).to<S32>().sub(15)
+        jump power_of_two(yexp_tz, e)
 
     // x = 2^E with E < -14 when x has a single bit set
-    block subnormal(%yexp_tz: U32):
-        %single : Bool = %xu.trailing_zeros().add(%xu.leading_zeros()).eq(31)
-        branch %single
+    block subnormal(yexp_tz: U32):
+        single : Bool = xu.trailing_zeros().add(xu.leading_zeros()).eq(31)
+        branch single
             ? continue
             : exponent_table()
-        %e : S32 = %xu.trailing_zeros().to<S32>().sub(24)
-        jump power_of_two(%yexp_tz, %e)
+        e : S32 = xu.trailing_zeros().to<S32>().sub(24)
+        jump power_of_two(yexp_tz, e)
 
-    block power_of_two(%yexp_tz: U32, %e: S32):
-        %ye       : S32  = %e.to<F32>().mul(%y.to<F32>()).to<S32>()
-        %integral : Bool = %yexp_tz.add(%e.to_wrap<U32>().trailing_zeros()).ge(25)
-        %in_range : Bool = %ye.between(-25, 15)
-        %exact    : Bool = %integral.bitand(%in_range)
-        branch %exact
-            ? return(S64.add(0x3FF, %ye.to<S64>()).to_wrap<U64>().shl(52))
+    block power_of_two(yexp_tz: U32, e: S32):
+        ye       : S32  = e.to<F32>().mul(y.to<F32>()).to<S32>()
+        integral : Bool = yexp_tz.add(e.to_wrap<U32>().trailing_zeros()).ge(25)
+        in_range : Bool = ye.between(-25, 15)
+        exact    : Bool = integral.bitand(in_range)
+        branch exact
+            ? return(S64.add(0x3FF, ye.to<S64>()).to_wrap<U64>().shl(52))
             : exponent_table()
 
     block exponent_table():
-        %low_clear : Bool = %yu.bitand(0xFF).eq(0)
-        branch %low_clear
+        low_clear : Bool = yu.bitand(0xFF).eq(0)
+        branch low_clear
             ? continue
             : return(0)
-        when %yu:
+        when yu:
             0x3400 -> return(0x14)
             0x3800 -> return(0x12)
             0x3A00 -> return(0x34)
@@ -300,65 +299,65 @@ private routine cm_f16_pow_is_exact(%xu: U32, %yu: U32, %y: F16) -> U64
             else   -> return(0)
 
 // x^y for 0 <= y < 8 by square-and-multiply (three bits of y, as in the original).
-private routine cm_f16_pow_fast(%x: F64, %y: U64) -> F64
+private routine cm_f16_pow_fast(x: F64, y: U64) -> F64
     block entry():
-        %r0 : F64 = 1.0
-        %m4 : F64 = %r0.mul(%x)
-        %r1 : F64 = %y.bitand(4).ne(0)
-            ? %m4
-            : %r0
-        %s1 : F64 = %r1.mul(%r1)
-        %m2 : F64 = %s1.mul(%x)
-        %r2 : F64 = %y.bitand(2).ne(0)
-            ? %m2
-            : %s1
-        %s2 : F64 = %r2.mul(%r2)
-        %m1 : F64 = %s2.mul(%x)
-        %r  : F64 = %y.bitand(1).ne(0)
-            ? %m1
-            : %s2
-        return(%r)
+        r0 : F64 = 1.0
+        m4 : F64 = r0.mul(x)
+        r1 : F64 = y.bitand(4).ne(0)
+            ? m4
+            : r0
+        s1 : F64 = r1.mul(r1)
+        m2 : F64 = s1.mul(x)
+        r2 : F64 = y.bitand(2).ne(0)
+            ? m2
+            : s1
+        s2 : F64 = r2.mul(r2)
+        m1 : F64 = s2.mul(x)
+        r  : F64 = y.bitand(1).ne(0)
+            ? m1
+            : s2
+        return(r)
 
 // ln(x) for a positive normal F64 x.
-private routine cm_f16_pow_log(%x: F64) -> F64
+private routine cm_f16_pow_log(x: F64) -> F64
     block entry():
-        %u    : U64   = %x.bits()
-        %expo : S64   = %u.shr(52).to<S64>().sub(1023)
-        %i    : USize = %u.bitand(0x000FC00000000000).shr(46).to<USize>()
-        %r0   : F64   = %u.bitand(0x3FFFFFFFFFFF).to<F64>().mul(F64.from_bits(CM_F16_POW_LOG_TL.get(%i)))
-        %p3   : F64   = F64.mul_add(0x1.999999999999ap-3, %r0, -0.25)
-        %p2   : F64   = %p3.mul_add(%r0, 0x1.5555555555555p-2)
-        %p1   : F64   = %p2.mul_add(%r0, -0.5)
-        %p0   : F64   = %p1.mul_add(%r0, 1.0)
-        %r    : F64   = %r0.mul(%p0)
-        %tb   : F64   = F64.from_bits(CM_F16_POW_LOG_TB.get(%i))
-        return(F64.mul_add(0x1.62e42fefa39efp-1, %expo.to<F64>(), %tb.add(%r)))
+        u    : U64   = x.bits()
+        expo : S64   = u.shr(52).to<S64>().sub(1023)
+        i    : USize = u.bitand(0x000FC00000000000).shr(46).to<USize>()
+        r0   : F64   = u.bitand(0x3FFFFFFFFFFF).to<F64>().mul(F64.from_bits(CM_F16_POW_LOG_TL.get(i)))
+        p3   : F64   = F64.mul_add(0x1.999999999999ap-3, r0, -0.25)
+        p2   : F64   = p3.mul_add(r0, 0x1.5555555555555p-2)
+        p1   : F64   = p2.mul_add(r0, -0.5)
+        p0   : F64   = p1.mul_add(r0, 1.0)
+        r    : F64   = r0.mul(p0)
+        tb   : F64   = F64.from_bits(CM_F16_POW_LOG_TB.get(i))
+        return(F64.mul_add(0x1.62e42fefa39efp-1, expo.to<F64>(), tb.add(r)))
 
 // e^x, saturated below at 2^-25 and above at 2^16 (both beyond the F16 range).
-private routine cm_f16_pow_exp(%x: F64) -> F64
+private routine cm_f16_pow_exp(x: F64) -> F64
     block entry():
-        %u       : U64  = %x.bits()
-        %special : Bool = %u.bitand(0x7FF0000000000000).eq(0x7FF0000000000000)  // NaN or infinity
+        u       : U64  = x.bits()
+        special : Bool = u.bitand(0x7FF0000000000000).eq(0x7FF0000000000000)  // NaN or infinity
         when:
-            %special                    -> special(%u)
-            %u.gt(0xC031542457337D44)   -> return(0x1p-25)  // x < -0x1.1542457337d44p+4
-            %x.gt(0x1.62e42fefa39efp+3) -> return(F64.add(0x1.ffcp+15, 0x1p+5))
-            else                        -> core()
+            special                    -> special(u)
+            u.gt(0xC031542457337D44)   -> return(0x1p-25)  // x < -0x1.1542457337d44p+4
+            x.gt(0x1.62e42fefa39efp+3) -> return(F64.add(0x1.ffcp+15, 0x1p+5))
+            else                       -> core()
 
     // the original's -inf test compares against 0xff << 25, which never matches
-    block special(%u: U64):
-        %never : Bool = %u.eq(0x1FE000000)
-        branch %never
+    block special(u: U64):
+        never : Bool = u.eq(0x1FE000000)
+        branch never
             ? return(0.0)
-            : return(%x.add(%x))
+            : return(x.add(x))
 
     block core():
-        %j    : F64   = F64.mul(0x1.71547652b82fep+6, %x).round_ties_even()
-        %jint : S64   = %j.to<S64>()
-        %i    : USize = %jint.to_wrap<U64>().bitand(0x3F).to<USize>()
-        %xp   : F64   = F64.mul_add(-0x1.62e42fefa39efp-7, %j, %x)
-        %p2   : F64   = F64.mul_add(0x1.55555555555p-3, %xp, 0.5)
-        %p1   : F64   = %p2.mul_add(%xp, 1.0)
-        %p0   : F64   = %p1.mul_add(%xp, 1.0)
-        %ret  : U64   = %p0.mul(F64.from_bits(CM_F16_POW_EXP_TB.get(%i))).bits()
-        return(F64.from_bits(%ret.add_wrap(%jint.shr(6).to_wrap<U64>().shl(52))))
+        j    : F64   = F64.mul(0x1.71547652b82fep+6, x).round_ties_even()
+        jint : S64   = j.to<S64>()
+        i    : USize = jint.to_wrap<U64>().bitand(0x3F).to<USize>()
+        xp   : F64   = F64.mul_add(-0x1.62e42fefa39efp-7, j, x)
+        p2   : F64   = F64.mul_add(0x1.55555555555p-3, xp, 0.5)
+        p1   : F64   = p2.mul_add(xp, 1.0)
+        p0   : F64   = p1.mul_add(xp, 1.0)
+        ret  : U64   = p0.mul(F64.from_bits(CM_F16_POW_EXP_TB.get(i))).bits()
+        return(F64.from_bits(ret.add_wrap(jint.shr(6).to_wrap<U64>().shl(52))))

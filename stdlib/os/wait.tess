@@ -1,7 +1,7 @@
 // Tessera stdlib: waiting on an address
 //
-// wait_on(%at, %expected) puts the thread to sleep while the U32 at %at still
-// holds %expected, until another thread calls wake_one or wake_all on %at. It
+// wait_on(at, expected) puts the thread to sleep while the U32 at at still
+// holds expected, until another thread calls wake_one or wake_all on at. It
 // may also return without a wake, so a caller checks its condition again in a
 // loop. wait_on_for gives up after a number of nanoseconds too (it may wait a
 // little longer, never forever). This is the one way a thread waits for another in the stdlib (Mutex,
@@ -14,7 +14,7 @@ module Standard::Os
 // -- Linux: futex --------------------------------------------------------------------
 
 #[external("c"), symbol("syscall"), variadic, target(os: "linux")]
-private routine c_syscall(%number: CLong) -> CLong
+private routine c_syscall(number: CLong) -> CLong
 
 /// SYS_futex, whose number depends on the architecture.
 #target(os: "linux", arch: "x86_64")
@@ -38,110 +38,110 @@ private routine sys_futex() -> CLong
         return(240)
 
 #target(os: "linux")
-routine wait_on(%at: @U32, %expected: U32) -> Void
+routine wait_on(at: @U32, expected: U32) -> Void
     block entry():
-        %op   : CInt = 128  // FUTEX_WAIT_PRIVATE
-        %none : Addr = null  // no timeout
-        c_syscall(sys_futex(), %at, %op, %expected, %none)
+        op   : CInt = 128  // FUTEX_WAIT_PRIVATE
+        none : Addr = null  // no timeout
+        c_syscall(sys_futex(), at, op, expected, none)
         return()
 
 #target(os: "linux")
-routine wait_on_for(%at: @U32, %expected: U32, %timeout_ns: U64) -> Void
+routine wait_on_for(at: @U32, expected: U32, timeout_ns: U64) -> Void
     block entry():
-        %op : CInt = 128  // FUTEX_WAIT_PRIVATE, its timeout relative
-        claim %ts : @Timespec <- Timespec { sec: %timeout_ns.div(1000000000).to_clamp<CLong>(),
-                nsec: %timeout_ns.mod(1000000000).to<CLong>() }
-        c_syscall(sys_futex(), %at, %op, %expected, %ts)
+        op : CInt = 128  // FUTEX_WAIT_PRIVATE, its timeout relative
+        claim ts : @Timespec <- Timespec { sec: timeout_ns.div(1000000000).to_clamp<CLong>(),
+                nsec: timeout_ns.mod(1000000000).to<CLong>() }
+        c_syscall(sys_futex(), at, op, expected, ts)
         return()
 
 #target(os: "linux")
-routine wake_one(%at: @U32) -> Void
+routine wake_one(at: @U32) -> Void
     block entry():
-        %op    : CInt = 129  // FUTEX_WAKE_PRIVATE
-        %count : CInt = 1
-        c_syscall(sys_futex(), %at, %op, %count)
+        op    : CInt = 129  // FUTEX_WAKE_PRIVATE
+        count : CInt = 1
+        c_syscall(sys_futex(), at, op, count)
         return()
 
 #target(os: "linux")
-routine wake_all(%at: @U32) -> Void
+routine wake_all(at: @U32) -> Void
     block entry():
-        %op    : CInt = 129  // FUTEX_WAKE_PRIVATE
-        %count : CInt = 2147483647
-        c_syscall(sys_futex(), %at, %op, %count)
+        op    : CInt = 129  // FUTEX_WAKE_PRIVATE
+        count : CInt = 2147483647
+        c_syscall(sys_futex(), at, op, count)
         return()
 
 // -- macOS: __ulock ------------------------------------------------------------------
 
 #[external("c"), symbol("__ulock_wait"), target(os: "macos")]
-private routine c_ulock_wait(%operation: U32, %addr: Addr, %value: U64, %timeout_us: U32) -> CInt
+private routine c_ulock_wait(operation: U32, addr: Addr, value: U64, timeout_us: U32) -> CInt
 
 #[external("c"), symbol("__ulock_wake"), target(os: "macos")]
-private routine c_ulock_wake(%operation: U32, %addr: Addr, %wake_value: U64) -> CInt
+private routine c_ulock_wake(operation: U32, addr: Addr, wake_value: U64) -> CInt
 
 #target(os: "macos")
-routine wait_on(%at: @U32, %expected: U32) -> Void
+routine wait_on(at: @U32, expected: U32) -> Void
     block entry():
         // UL_COMPARE_AND_WAIT | ULF_NO_ERRNO, no timeout
-        c_ulock_wait(0x1000001, %at, %expected.to<U64>(), 0)
+        c_ulock_wait(0x1000001, at, expected.to<U64>(), 0)
         return()
 
 /// __ulock_wait takes microseconds, and 0 means no timeout, so a wait is at least one.
 #target(os: "macos")
-routine wait_on_for(%at: @U32, %expected: U32, %timeout_ns: U64) -> Void
+routine wait_on_for(at: @U32, expected: U32, timeout_ns: U64) -> Void
     block entry():
-        %us : U32 = %timeout_ns.div_ceil(1000).max(1).to_clamp<U32>()
-        c_ulock_wait(0x1000001, %at, %expected.to<U64>(), %us)
+        us : U32 = timeout_ns.div_ceil(1000).max(1).to_clamp<U32>()
+        c_ulock_wait(0x1000001, at, expected.to<U64>(), us)
         return()
 
 #target(os: "macos")
-routine wake_one(%at: @U32) -> Void
+routine wake_one(at: @U32) -> Void
     block entry():
-        c_ulock_wake(0x1000001, %at, 0)
+        c_ulock_wake(0x1000001, at, 0)
         return()
 
 #target(os: "macos")
-routine wake_all(%at: @U32) -> Void
+routine wake_all(at: @U32) -> Void
     block entry():
         // ULF_WAKE_ALL too
-        c_ulock_wake(0x1000101, %at, 0)
+        c_ulock_wake(0x1000101, at, 0)
         return()
 
 // -- Windows: WaitOnAddress ----------------------------------------------------------
 
 #[external("c"), symbol("WaitOnAddress"), callconv("stdcall"), target(os: "windows")]
-private routine c_wait_on_address(%addr: Addr, %compare: Addr, %size: USize, %millis: U32) -> CInt
+private routine c_wait_on_address(addr: Addr, compare: Addr, size: USize, millis: U32) -> CInt
 
 #[external("c"), symbol("WakeByAddressSingle"), callconv("stdcall"), target(os: "windows")]
-private routine c_wake_by_address_single(%addr: Addr) -> Void
+private routine c_wake_by_address_single(addr: Addr) -> Void
 
 #[external("c"), symbol("WakeByAddressAll"), callconv("stdcall"), target(os: "windows")]
-private routine c_wake_by_address_all(%addr: Addr) -> Void
+private routine c_wake_by_address_all(addr: Addr) -> Void
 
 #target(os: "windows")
-routine wait_on(%at: @U32, %expected: U32) -> Void
+routine wait_on(at: @U32, expected: U32) -> Void
     block entry():
-        claim %compare : @U32 <- %expected
+        claim compare : @U32 <- expected
         // INFINITE
-        c_wait_on_address(%at, %compare, 4, U32.MAX)
+        c_wait_on_address(at, compare, 4, U32.MAX)
         return()
 
 /// WaitOnAddress takes milliseconds, and U32.MAX means no timeout, so a wait is at most one less.
 #target(os: "windows")
-routine wait_on_for(%at: @U32, %expected: U32, %timeout_ns: U64) -> Void
+routine wait_on_for(at: @U32, expected: U32, timeout_ns: U64) -> Void
     block entry():
-        claim %compare : @U32 <- %expected
-        %ms : U32 = %timeout_ns.div_ceil(1000000).min(0xFFFFFFFE).to<U32>()
-        c_wait_on_address(%at, %compare, 4, %ms)
+        claim compare : @U32 <- expected
+        ms : U32 = timeout_ns.div_ceil(1000000).min(0xFFFFFFFE).to<U32>()
+        c_wait_on_address(at, compare, 4, ms)
         return()
 
 #target(os: "windows")
-routine wake_one(%at: @U32) -> Void
+routine wake_one(at: @U32) -> Void
     block entry():
-        c_wake_by_address_single(%at)
+        c_wake_by_address_single(at)
         return()
 
 #target(os: "windows")
-routine wake_all(%at: @U32) -> Void
+routine wake_all(at: @U32) -> Void
     block entry():
-        c_wake_by_address_all(%at)
+        c_wake_by_address_all(at)
         return()

@@ -72,978 +72,975 @@ record CmTrigSquares
 // -- entry points --------------------------------------------------------------
 
 /// The bits of the correctly rounded sine (cosine false) or cosine (cosine true) of the argument bits.
-routine cm_trig(%bits: U128, %cosine: Bool) -> U128
+routine cm_trig(bits: U128, cosine: Bool) -> U128
     block entry():
-        %magnitude  : U128 = %bits.bitand(F128_SIGN.bitnot())
-        %not_finite : Bool = %magnitude.ge(F128_INF)
-        %tiny       : Bool = %magnitude.lt(CM_TRIG_TINY)
+        magnitude  : U128 = bits.bitand(F128_SIGN.bitnot())
+        not_finite : Bool = magnitude.ge(F128_INF)
+        tiny       : Bool = magnitude.lt(CM_TRIG_TINY)
         when:
-            %not_finite -> not_finite(%bits, %magnitude)
-            %tiny       -> tiny(%bits, %cosine)
-            else        -> finite(%bits, %magnitude, %cosine)
+            not_finite -> not_finite(bits, magnitude)
+            tiny       -> tiny(bits, cosine)
+            else       -> finite(bits, magnitude, cosine)
 
     // ±infinity gives the default quiet NaN; a NaN is quieted, keeping its sign and payload
-    block not_finite(%bits: U128, %magnitude: U128):
-        %infinite    : Bool = %magnitude.eq(F128_INF)
-        %default_nan : U128 = F128_QNAN
-        %quieted     : U128 = %bits.bitor(F128_QUIET_BIT)
-        branch %infinite
-            ? return(%default_nan)
-            : return(%quieted)
+    block not_finite(bits: U128, magnitude: U128):
+        infinite    : Bool = magnitude.eq(F128_INF)
+        default_nan : U128 = F128_QNAN
+        quieted     : U128 = bits.bitor(F128_QUIET_BIT)
+        branch infinite
+            ? return(default_nan)
+            : return(quieted)
 
     // |x| < 2^-57: sin(x) rounds to x, cos(x) to 1
-    block tiny(%bits: U128, %cosine: Bool):
-        %one : U128 = F128_ONE
-        branch %cosine
-            ? return(%one)
-            : return(%bits)
+    block tiny(bits: U128, cosine: Bool):
+        one : U128 = F128_ONE
+        branch cosine
+            ? return(one)
+            : return(bits)
 
-    block finite(%bits: U128, %magnitude: U128, %cosine: Bool):
-        %m        : U128 = cm_trig_significand(%magnitude)
-        %e        : S64  = cm_trig_exponent(%magnitude)
-        %sign_bit : U128 = %bits.bitand(F128_SIGN)
-        %positive : U128 = 0
-        %sign     : U128 = %cosine
-            ? %positive
-            : %sign_bit
-        %fast : CmTrigFast = cm_trig_fast(%m, %e, %cosine)
-        %r    : U128       = cm_trig_finish(%fast, %m, %e, %cosine, %sign)
-        return(%r)
+    block finite(bits: U128, magnitude: U128, cosine: Bool):
+        m        : U128 = cm_trig_significand(magnitude)
+        e        : S64  = cm_trig_exponent(magnitude)
+        sign_bit : U128 = bits.bitand(F128_SIGN)
+        positive : U128 = 0
+        sign     : U128 = cosine
+            ? positive
+            : sign_bit
+        fast : CmTrigFast = cm_trig_fast(m, e, cosine)
+        r    : U128       = cm_trig_finish(fast, m, e, cosine, sign)
+        return(r)
 
 /// Both correctly rounded results, sharing the argument reduction (the expensive part) between them.
-routine cm_trig_both(%bits: U128) -> F128SinCos
+routine cm_trig_both(bits: U128) -> F128SinCos
     block entry():
-        %magnitude  : U128 = %bits.bitand(F128_SIGN.bitnot())
-        %not_finite : Bool = %magnitude.ge(F128_INF)
-        %tiny       : Bool = %magnitude.lt(CM_TRIG_TINY)
-        %separate   : Bool = %not_finite.bitor(%tiny)
-        branch %separate
-            ? separate(%bits)
-            : finite(%bits, %magnitude)
+        magnitude  : U128 = bits.bitand(F128_SIGN.bitnot())
+        not_finite : Bool = magnitude.ge(F128_INF)
+        tiny       : Bool = magnitude.lt(CM_TRIG_TINY)
+        separate   : Bool = not_finite.bitor(tiny)
+        branch separate
+            ? separate(bits)
+            : finite(bits, magnitude)
 
     // special and tiny arguments have nothing to share
-    block separate(%bits: U128):
-        %sin_bits : U128       = cm_trig(%bits, false)
-        %cos_bits : U128       = cm_trig(%bits, true)
-        %r        : F128SinCos = cm_trig_pair(%sin_bits, %cos_bits)
-        return(%r)
+    block separate(bits: U128):
+        sin_bits : U128       = cm_trig(bits, false)
+        cos_bits : U128       = cm_trig(bits, true)
+        r        : F128SinCos = cm_trig_pair(sin_bits, cos_bits)
+        return(r)
 
-    block finite(%bits: U128, %magnitude: U128):
-        %m     : U128 = cm_trig_significand(%magnitude)
-        %e     : S64  = cm_trig_exponent(%magnitude)
-        %sign  : U128 = %bits.bitand(F128_SIGN)
-        %small : Bool = %e.lt(-8)
-        branch %small
-            ? small(%m, %e, %sign)
-            : reduce(%m, %e, %sign)
+    block finite(bits: U128, magnitude: U128):
+        m     : U128 = cm_trig_significand(magnitude)
+        e     : S64  = cm_trig_exponent(magnitude)
+        sign  : U128 = bits.bitand(F128_SIGN)
+        small : Bool = e.lt(-8)
+        branch small
+            ? small(m, e, sign)
+            : reduce(m, e, sign)
 
     // below 2^-8 there is no reduction to share
-    block small(%m: U128, %e: S64, %sign: U128):
-        %sin_fast : CmTrigFast = cm_trig_fast(%m, %e, false)
-        %cos_fast : CmTrigFast = cm_trig_fast(%m, %e, true)
-        %sin_bits : U128       = cm_trig_finish(%sin_fast, %m, %e, false, %sign)
-        %cos_bits : U128       = cm_trig_finish(%cos_fast, %m, %e, true, 0)
-        %r        : F128SinCos = cm_trig_pair(%sin_bits, %cos_bits)
-        return(%r)
+    block small(m: U128, e: S64, sign: U128):
+        sin_fast : CmTrigFast = cm_trig_fast(m, e, false)
+        cos_fast : CmTrigFast = cm_trig_fast(m, e, true)
+        sin_bits : U128       = cm_trig_finish(sin_fast, m, e, false, sign)
+        cos_bits : U128       = cm_trig_finish(cos_fast, m, e, true, 0)
+        r        : F128SinCos = cm_trig_pair(sin_bits, cos_bits)
+        return(r)
 
-    block reduce(%m: U128, %e: S64, %sign: U128):
-        %red : CmTrigReduced = cm_trig_reduce(%m, %e)
-        %ok  : Bool          = %red.ok
-        branch %ok
-            ? shared(%red, %m, %e, %sign)
-            : accurate(%m, %e, %sign)
+    block reduce(m: U128, e: S64, sign: U128):
+        red : CmTrigReduced = cm_trig_reduce(m, e)
+        ok  : Bool          = red.ok
+        branch ok
+            ? shared(red, m, e, sign)
+            : accurate(m, e, sign)
 
-    block shared(%red: CmTrigReduced, %m: U128, %e: S64, %sign: U128):
-        %t1         : U128          = %red.t1
-        %et         : S64           = %red.et
-        %sq         : CmTrigSquares = cm_trig_squares(%t1, %et)
-        %sine_theta : U128          = cm_trig_sin_frac(%t1, %sq.u, %sq.v)
-        %sin_fast   : CmTrigFast    = cm_trig_fast_tail(%red, %sq, %sine_theta, false)
-        %cos_fast   : CmTrigFast    = cm_trig_fast_tail(%red, %sq, %sine_theta, true)
-        %sin_bits   : U128          = cm_trig_finish(%sin_fast, %m, %e, false, %sign)
-        %cos_bits   : U128          = cm_trig_finish(%cos_fast, %m, %e, true, 0)
-        %r          : F128SinCos    = cm_trig_pair(%sin_bits, %cos_bits)
-        return(%r)
+    block shared(red: CmTrigReduced, m: U128, e: S64, sign: U128):
+        t1         : U128          = red.t1
+        et         : S64           = red.et
+        sq         : CmTrigSquares = cm_trig_squares(t1, et)
+        sine_theta : U128          = cm_trig_sin_frac(t1, sq.u, sq.v)
+        sin_fast   : CmTrigFast    = cm_trig_fast_tail(red, sq, sine_theta, false)
+        cos_fast   : CmTrigFast    = cm_trig_fast_tail(red, sq, sine_theta, true)
+        sin_bits   : U128          = cm_trig_finish(sin_fast, m, e, false, sign)
+        cos_bits   : U128          = cm_trig_finish(cos_fast, m, e, true, 0)
+        r          : F128SinCos    = cm_trig_pair(sin_bits, cos_bits)
+        return(r)
 
-    block accurate(%m: U128, %e: S64, %sign: U128):
-        %sin_bits : U128       = cm_trig_accurate(%m, %e, false, %sign)
-        %cos_bits : U128       = cm_trig_accurate(%m, %e, true, 0)
-        %r        : F128SinCos = cm_trig_pair(%sin_bits, %cos_bits)
-        return(%r)
+    block accurate(m: U128, e: S64, sign: U128):
+        sin_bits : U128       = cm_trig_accurate(m, e, false, sign)
+        cos_bits : U128       = cm_trig_accurate(m, e, true, 0)
+        r        : F128SinCos = cm_trig_pair(sin_bits, cos_bits)
+        return(r)
 
-routine cm_trig_pair(%sin_bits: U128, %cos_bits: U128) -> F128SinCos
+routine cm_trig_pair(sin_bits: U128, cos_bits: U128) -> F128SinCos
     block entry():
-        %sin : F128       = f128_of(%sin_bits)
-        %cos : F128       = f128_of(%cos_bits)
-        %r   : F128SinCos = F128SinCos { sin: %sin, cos: %cos }
-        return(%r)
+        sin : F128       = f128_of(sin_bits)
+        cos : F128       = f128_of(cos_bits)
+        r   : F128SinCos = F128SinCos { sin: sin, cos: cos }
+        return(r)
 
 /// The 113-bit significand of a finite normal magnitude.
-routine cm_trig_significand(%magnitude: U128) -> U128
+routine cm_trig_significand(magnitude: U128) -> U128
     block entry():
-        %r : U128 = %magnitude.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
-        return(%r)
+        r : U128 = magnitude.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
+        return(r)
 
 /// The unbiased exponent of a finite normal magnitude: x = m × 2^(e - 112).
-routine cm_trig_exponent(%magnitude: U128) -> S64
+routine cm_trig_exponent(magnitude: U128) -> S64
     block entry():
-        %r : S64 = %magnitude.shr(112).to<S64>().sub(F128_BIAS)
-        return(%r)
+        r : S64 = magnitude.shr(112).to<S64>().sub(F128_BIAS)
+        return(r)
 
 /// Rounds a fast-path result on its 15-bit guard, or runs the accurate path when the fast one cannot vouch
 /// for it or the guard sits within 16 units of the rounding midpoint.
-routine cm_trig_finish(%fast: CmTrigFast, %m: U128, %e: S64, %cosine: Bool, %sign: U128) -> U128
+routine cm_trig_finish(fast: CmTrigFast, m: U128, e: S64, cosine: Bool, sign: U128) -> U128
     block entry():
-        %frac     : U128 = %fast.frac
-        %vouched  : Bool = %fast.vouched
-        %rest     : U64  = %frac.to_wrap<U64>().bitand(0x7FFF)
-        %distance : U64  = %rest.add(16).sub_wrap(0x4000).bitand(0x7FFF)
-        %clear    : Bool = %distance.gt(32)
-        %decided  : Bool = %vouched.bitand(%clear)
-        branch %decided
-            ? round(%fast, %rest, %sign)
-            : accurate(%m, %e, %cosine, %sign)
+        frac     : U128 = fast.frac
+        vouched  : Bool = fast.vouched
+        rest     : U64  = frac.to_wrap<U64>().bitand(0x7FFF)
+        distance : U64  = rest.add(16).sub_wrap(0x4000).bitand(0x7FFF)
+        clear    : Bool = distance.gt(32)
+        decided  : Bool = vouched.bitand(clear)
+        branch decided
+            ? round(fast, rest, sign)
+            : accurate(m, e, cosine, sign)
 
-    block round(%fast: CmTrigFast, %rest: U64, %sign: U128):
-        %frac      : U128 = %fast.frac
-        %exponent  : U64  = %fast.exponent
-        %fast_sign : U128 = %fast.sign
-        %up        : U128 = %rest.gt(0x4000).to<U128>()
-        %biased    : U128 = %exponent.add_wrap(16382).to<U128>().shl(112)
-        %mantissa  : U128 = %frac.shr(15)
-        %magnitude : U128 = %biased.add_wrap(%mantissa).sub_wrap(F128_IMPLICIT).add_wrap(%up)
-        %r         : U128 = %sign.bitxor(%fast_sign).bitor(%magnitude)
-        return(%r)
+    block round(fast: CmTrigFast, rest: U64, sign: U128):
+        frac      : U128 = fast.frac
+        exponent  : U64  = fast.exponent
+        fast_sign : U128 = fast.sign
+        up        : U128 = rest.gt(0x4000).to<U128>()
+        biased    : U128 = exponent.add_wrap(16382).to<U128>().shl(112)
+        mantissa  : U128 = frac.shr(15)
+        magnitude : U128 = biased.add_wrap(mantissa).sub_wrap(F128_IMPLICIT).add_wrap(up)
+        r         : U128 = sign.bitxor(fast_sign).bitor(magnitude)
+        return(r)
 
-    block accurate(%m: U128, %e: S64, %cosine: Bool, %sign: U128):
-        %r : U128 = cm_trig_accurate(%m, %e, %cosine, %sign)
-        return(%r)
+    block accurate(m: U128, e: S64, cosine: Bool, sign: U128):
+        r : U128 = cm_trig_accurate(m, e, cosine, sign)
+        return(r)
 
 // -- wide integer helpers ------------------------------------------------------
 
 /// The low 64 bits of (high:low) >> shift, for 0 <= shift < 64.
-routine cm_trig_funnel(%low: U64, %high: U64, %shift: S64) -> U64
+routine cm_trig_funnel(low: U64, high: U64, shift: S64) -> U64
     block entry():
-        %low_part  : U64 = %low.shr(%shift.to<U64>())
-        %high_part : U64 = %high.shl(1).shl(63.sub(%shift).to<U64>())
-        %r         : U64 = %low_part.bitor(%high_part)
-        return(%r)
+        low_part  : U64 = low.shr(shift.to<U64>())
+        high_part : U64 = high.shl(1).shl(63.sub(shift).to<U64>())
+        r         : U64 = low_part.bitor(high_part)
+        return(r)
 
 /// The high 128 bits of (high:low) << shift, for 0 <= shift < 128.
-routine cm_trig_shl_join(%low: U128, %high: U128, %shift: S64) -> U128
+routine cm_trig_shl_join(low: U128, high: U128, shift: S64) -> U128
     block entry():
-        %s         : S128 = %shift.to<S128>()
-        %high_part : U128 = %high.shl(%s.to<U128>())
-        %low_part  : U128 = %low.shr(1).shr(127.sub(%s).to<U128>())
-        %r         : U128 = %high_part.bitor(%low_part)
-        return(%r)
+        s         : S128 = shift.to<S128>()
+        high_part : U128 = high.shl(s.to<U128>())
+        low_part  : U128 = low.shr(1).shr(127.sub(s).to<U128>())
+        r         : U128 = high_part.bitor(low_part)
+        return(r)
 
 /// The low 128 bits of (high:low) >> shift, for 0 <= shift < 128.
-routine cm_trig_shr_join(%low: U128, %high: U128, %shift: S64) -> U128
+routine cm_trig_shr_join(low: U128, high: U128, shift: S64) -> U128
     block entry():
-        %s         : S128 = %shift.to<S128>()
-        %low_part  : U128 = %low.shr(%s.to<U128>())
-        %high_part : U128 = %high.shl(1).shl(127.sub(%s).to<U128>())
-        %r         : U128 = %low_part.bitor(%high_part)
-        return(%r)
+        s         : S128 = shift.to<S128>()
+        low_part  : U128 = low.shr(s.to<U128>())
+        high_part : U128 = high.shl(1).shl(127.sub(s).to<U128>())
+        r         : U128 = low_part.bitor(high_part)
+        return(r)
 
 /// Leading zeros of a 128-bit value, 128 when it is zero.
-routine cm_trig_clz(%x: U128) -> S64
+routine cm_trig_clz(x: U128) -> S64
     block entry():
-        %r : S64 = %x.leading_zeros().to<S64>()
-        return(%r)
+        r : S64 = x.leading_zeros().to<S64>()
+        return(r)
 
 /// A 256-bit value from its 128-bit halves.
-routine cm_trig_join(%high: U128, %low: U128) -> U256
+routine cm_trig_join(high: U128, low: U128) -> U256
     block entry():
-        %r : U256 = %high.to<U256>().shl(128).bitor(%low.to<U256>())
-        return(%r)
+        r : U256 = high.to<U256>().shl(128).bitor(low.to<U256>())
+        return(r)
 
 /// The high 128 bits of a 256-bit value.
-routine cm_trig_high(%x: U256) -> U128
+routine cm_trig_high(x: U256) -> U128
     block entry():
-        %r : U128 = %x.shr(128).to<U128>()
-        return(%r)
+        r : U128 = x.shr(128).to<U128>()
+        return(r)
 
 /// The high half of a 128×128-bit product from three 64-bit products: up to two units short of the exact
 /// high half, never over.
-routine cm_trig_mhi(%x: U128, %y: U128) -> U128
+routine cm_trig_mhi(x: U128, y: U128) -> U128
     block entry():
-        %xh : U128 = %x.shr(64)
-        %xl : U128 = %x.bitand(0xFFFFFFFFFFFFFFFF)
-        %yh : U128 = %y.shr(64)
-        %yl : U128 = %y.bitand(0xFFFFFFFFFFFFFFFF)
-        %hh : U128 = %xh.mul_wrap(%yh)
-        %hl : U128 = %xh.mul_wrap(%yl).shr(64)
-        %lh : U128 = %xl.mul_wrap(%yh).shr(64)
-        %r  : U128 = %hh.add_wrap(%hl).add_wrap(%lh)
-        return(%r)
+        xh : U128 = x.shr(64)
+        xl : U128 = x.bitand(0xFFFFFFFFFFFFFFFF)
+        yh : U128 = y.shr(64)
+        yl : U128 = y.bitand(0xFFFFFFFFFFFFFFFF)
+        hh : U128 = xh.mul_wrap(yh)
+        hl : U128 = xh.mul_wrap(yl).shr(64)
+        lh : U128 = xl.mul_wrap(yh).shr(64)
+        r  : U128 = hh.add_wrap(hl).add_wrap(lh)
+        return(r)
 
 /// f << shift in the 256-bit frame, for 0 <= shift < 128. Two 128-bit shifts are cheaper than a U256
 /// shift by a variable amount.
-routine cm_trig_place256(%f: U128, %shift: S64) -> U256
+routine cm_trig_place256(f: U128, shift: S64) -> U256
     block entry():
-        %low  : U128 = %f.shl(%shift.to<U128>())
-        %high : U128 = cm_trig_shl_join(%f, 0, %shift)
-        %r    : U256 = cm_trig_join(%high, %low)
-        return(%r)
+        low  : U128 = f.shl(shift.to<U128>())
+        high : U128 = cm_trig_shl_join(f, 0, shift)
+        r    : U256 = cm_trig_join(high, low)
+        return(r)
 
 /// The top 128 bits of s << shift, for 0 <= shift < 128.
-routine cm_trig_top256(%s: U256, %shift: S64) -> U128
+routine cm_trig_top256(s: U256, shift: S64) -> U128
     block entry():
-        %low  : U128 = %s.to_wrap<U128>()
-        %high : U128 = cm_trig_high(%s)
-        %r    : U128 = cm_trig_shl_join(%low, %high, %shift)
-        return(%r)
+        low  : U128 = s.to_wrap<U128>()
+        high : U128 = cm_trig_high(s)
+        r    : U128 = cm_trig_shl_join(low, high, shift)
+        return(r)
 
-routine cm_trig_add384(%a: CmTrigU384, %b: CmTrigU384) -> CmTrigU384
+routine cm_trig_add384(a: CmTrigU384, b: CmTrigU384) -> CmTrigU384
     block entry():
-        %r0  : U128       = %a.l0.add_wrap(%b.l0)
-        %c0  : U128       = %r0.lt(%a.l0).to<U128>()
-        %r1  : U128       = %a.l1.add_wrap(%b.l1)
-        %c1  : U128       = %r1.lt(%a.l1).to<U128>()
-        %r1b : U128       = %r1.add_wrap(%c0)
-        %c2  : U128       = %r1b.lt(%r1).to<U128>()
-        %r2  : U128       = %a.l2.add_wrap(%b.l2).add_wrap(%c1).add_wrap(%c2)
-        %r   : CmTrigU384 = CmTrigU384 { l0: %r0, l1: %r1b, l2: %r2 }
-        return(%r)
+        r0  : U128       = a.l0.add_wrap(b.l0)
+        c0  : U128       = r0.lt(a.l0).to<U128>()
+        r1  : U128       = a.l1.add_wrap(b.l1)
+        c1  : U128       = r1.lt(a.l1).to<U128>()
+        r1b : U128       = r1.add_wrap(c0)
+        c2  : U128       = r1b.lt(r1).to<U128>()
+        r2  : U128       = a.l2.add_wrap(b.l2).add_wrap(c1).add_wrap(c2)
+        r   : CmTrigU384 = CmTrigU384 { l0: r0, l1: r1b, l2: r2 }
+        return(r)
 
-routine cm_trig_sub384(%a: CmTrigU384, %b: CmTrigU384) -> CmTrigU384
+routine cm_trig_sub384(a: CmTrigU384, b: CmTrigU384) -> CmTrigU384
     block entry():
-        %c0  : U128       = %a.l0.lt(%b.l0).to<U128>()
-        %r0  : U128       = %a.l0.sub_wrap(%b.l0)
-        %r1  : U128       = %a.l1.sub_wrap(%b.l1)
-        %c1  : U128       = %a.l1.lt(%b.l1).to<U128>()
-        %c2  : U128       = %r1.lt(%c0).to<U128>()
-        %r1b : U128       = %r1.sub_wrap(%c0)
-        %r2  : U128       = %a.l2.sub_wrap(%b.l2).sub_wrap(%c1).sub_wrap(%c2)
-        %r   : CmTrigU384 = CmTrigU384 { l0: %r0, l1: %r1b, l2: %r2 }
-        return(%r)
+        c0  : U128       = a.l0.lt(b.l0).to<U128>()
+        r0  : U128       = a.l0.sub_wrap(b.l0)
+        r1  : U128       = a.l1.sub_wrap(b.l1)
+        c1  : U128       = a.l1.lt(b.l1).to<U128>()
+        c2  : U128       = r1.lt(c0).to<U128>()
+        r1b : U128       = r1.sub_wrap(c0)
+        r2  : U128       = a.l2.sub_wrap(b.l2).sub_wrap(c1).sub_wrap(c2)
+        r   : CmTrigU384 = CmTrigU384 { l0: r0, l1: r1b, l2: r2 }
+        return(r)
 
 /// x << shift, discarding whatever leaves the window, for 0 <= shift < 384.
-routine cm_trig_shl384(%x: CmTrigU384, %shift: S64) -> CmTrigU384
+routine cm_trig_shl384(x: CmTrigU384, shift: S64) -> CmTrigU384
     block entry():
-        %word : S64 = %shift.shr(7)
-        %bits : S64 = %shift.bitand(127)
-        when %word:
-            0    -> word0(%x, %bits)
-            1    -> word1(%x, %bits)
-            else -> word2(%x, %bits)
+        word : S64 = shift.shr(7)
+        bits : S64 = shift.bitand(127)
+        when word:
+            0    -> word0(x, bits)
+            1    -> word1(x, bits)
+            else -> word2(x, bits)
 
-    block word0(%x: CmTrigU384, %bits: S64):
-        %l0 : U128       = %x.l0.shl(%bits.to<U128>())
-        %l1 : U128       = cm_trig_shl_join(%x.l0, %x.l1, %bits)
-        %l2 : U128       = cm_trig_shl_join(%x.l1, %x.l2, %bits)
-        %r  : CmTrigU384 = CmTrigU384 { l0: %l0, l1: %l1, l2: %l2 }
-        return(%r)
+    block word0(x: CmTrigU384, bits: S64):
+        l0 : U128       = x.l0.shl(bits.to<U128>())
+        l1 : U128       = cm_trig_shl_join(x.l0, x.l1, bits)
+        l2 : U128       = cm_trig_shl_join(x.l1, x.l2, bits)
+        r  : CmTrigU384 = CmTrigU384 { l0: l0, l1: l1, l2: l2 }
+        return(r)
 
-    block word1(%x: CmTrigU384, %bits: S64):
-        %l1 : U128       = %x.l0.shl(%bits.to<U128>())
-        %l2 : U128       = cm_trig_shl_join(%x.l0, %x.l1, %bits)
-        %r  : CmTrigU384 = CmTrigU384 { l0: 0, l1: %l1, l2: %l2 }
-        return(%r)
+    block word1(x: CmTrigU384, bits: S64):
+        l1 : U128       = x.l0.shl(bits.to<U128>())
+        l2 : U128       = cm_trig_shl_join(x.l0, x.l1, bits)
+        r  : CmTrigU384 = CmTrigU384 { l0: 0, l1: l1, l2: l2 }
+        return(r)
 
-    block word2(%x: CmTrigU384, %bits: S64):
-        %l2 : U128       = %x.l0.shl(%bits.to<U128>())
-        %r  : CmTrigU384 = CmTrigU384 { l0: 0, l1: 0, l2: %l2 }
-        return(%r)
+    block word2(x: CmTrigU384, bits: S64):
+        l2 : U128       = x.l0.shl(bits.to<U128>())
+        r  : CmTrigU384 = CmTrigU384 { l0: 0, l1: 0, l2: l2 }
+        return(r)
 
 /// x >> shift, saturating to zero past the window.
-routine cm_trig_shr384(%x: CmTrigU384, %shift: S64) -> CmTrigU384
+routine cm_trig_shr384(x: CmTrigU384, shift: S64) -> CmTrigU384
     block entry():
-        %gone : Bool       = %shift.ge(384)
-        %zero : CmTrigU384 = CmTrigU384 { l0: 0, l1: 0, l2: 0 }
-        %word : S64        = %shift.shr(7)
-        %bits : S64        = %shift.bitand(127)
-        branch %gone
-            ? return(%zero)
+        gone : Bool       = shift.ge(384)
+        zero : CmTrigU384 = CmTrigU384 { l0: 0, l1: 0, l2: 0 }
+        word : S64        = shift.shr(7)
+        bits : S64        = shift.bitand(127)
+        branch gone
+            ? return(zero)
             : continue
-        when %word:
-            0    -> word0(%x, %bits)
-            1    -> word1(%x, %bits)
-            else -> word2(%x, %bits)
+        when word:
+            0    -> word0(x, bits)
+            1    -> word1(x, bits)
+            else -> word2(x, bits)
 
-    block word0(%x: CmTrigU384, %bits: S64):
-        %l0 : U128       = cm_trig_shr_join(%x.l0, %x.l1, %bits)
-        %l1 : U128       = cm_trig_shr_join(%x.l1, %x.l2, %bits)
-        %l2 : U128       = %x.l2.shr(%bits.to<U128>())
-        %r  : CmTrigU384 = CmTrigU384 { l0: %l0, l1: %l1, l2: %l2 }
-        return(%r)
+    block word0(x: CmTrigU384, bits: S64):
+        l0 : U128       = cm_trig_shr_join(x.l0, x.l1, bits)
+        l1 : U128       = cm_trig_shr_join(x.l1, x.l2, bits)
+        l2 : U128       = x.l2.shr(bits.to<U128>())
+        r  : CmTrigU384 = CmTrigU384 { l0: l0, l1: l1, l2: l2 }
+        return(r)
 
-    block word1(%x: CmTrigU384, %bits: S64):
-        %l0 : U128       = cm_trig_shr_join(%x.l1, %x.l2, %bits)
-        %l1 : U128       = %x.l2.shr(%bits.to<U128>())
-        %r  : CmTrigU384 = CmTrigU384 { l0: %l0, l1: %l1, l2: 0 }
-        return(%r)
+    block word1(x: CmTrigU384, bits: S64):
+        l0 : U128       = cm_trig_shr_join(x.l1, x.l2, bits)
+        l1 : U128       = x.l2.shr(bits.to<U128>())
+        r  : CmTrigU384 = CmTrigU384 { l0: l0, l1: l1, l2: 0 }
+        return(r)
 
-    block word2(%x: CmTrigU384, %bits: S64):
-        %l0 : U128       = %x.l2.shr(%bits.to<U128>())
-        %r  : CmTrigU384 = CmTrigU384 { l0: %l0, l1: 0, l2: 0 }
-        return(%r)
+    block word2(x: CmTrigU384, bits: S64):
+        l0 : U128       = x.l2.shr(bits.to<U128>())
+        r  : CmTrigU384 = CmTrigU384 { l0: l0, l1: 0, l2: 0 }
+        return(r)
 
 /// Leading zeros of a 384-bit value, 384 when it is zero.
-routine cm_trig_lz384(%x: CmTrigU384) -> S64
+routine cm_trig_lz384(x: CmTrigU384) -> S64
     block entry():
-        %top       : Bool = %x.l2.ne(0)
-        %middle    : Bool = %x.l1.ne(0)
-        %in_top    : S64  = cm_trig_clz(%x.l2)
-        %in_middle : S64  = cm_trig_clz(%x.l1).add(128)
-        %in_bottom : S64  = cm_trig_clz(%x.l0).add(256)
+        top       : Bool = x.l2.ne(0)
+        middle    : Bool = x.l1.ne(0)
+        in_top    : S64  = cm_trig_clz(x.l2)
+        in_middle : S64  = cm_trig_clz(x.l1).add(128)
+        in_bottom : S64  = cm_trig_clz(x.l0).add(256)
         when:
-            %top    -> return(%in_top)
-            %middle -> return(%in_middle)
-            else    -> return(%in_bottom)
+            top    -> return(in_top)
+            middle -> return(in_middle)
+            else   -> return(in_bottom)
 
 /// The high 384 bits of a 384×384-bit product: the dropped tail leaves it up to four units short of the
 /// exact value, never over.
-routine cm_trig_mul384(%a: CmTrigU384, %b: CmTrigU384) -> CmTrigU384
+routine cm_trig_mul384(a: CmTrigU384, b: CmTrigU384) -> CmTrigU384
     block entry():
-        %p02 : U256 = %a.l0.mul_wide(%b.l2)
-        %p11 : U256 = %a.l1.mul_wide(%b.l1)
-        %p20 : U256 = %a.l2.mul_wide(%b.l0)
-        %p12 : U256 = %a.l1.mul_wide(%b.l2)
-        %p21 : U256 = %a.l2.mul_wide(%b.l1)
-        %p22 : U256 = %a.l2.mul_wide(%b.l2)
+        p02 : U256 = a.l0.mul_wide(b.l2)
+        p11 : U256 = a.l1.mul_wide(b.l1)
+        p20 : U256 = a.l2.mul_wide(b.l0)
+        p12 : U256 = a.l1.mul_wide(b.l2)
+        p21 : U256 = a.l2.mul_wide(b.l1)
+        p22 : U256 = a.l2.mul_wide(b.l2)
         // the diagonal one limb below the window contributes its sum from bit 128 up, in 130 bits
-        %sum   : U256       = %p02.add_wrap(%p11)
-        %over1 : U128       = %sum.lt(%p02).to<U128>()
-        %sum2  : U256       = %sum.add_wrap(%p20)
-        %over2 : U128       = %sum2.lt(%sum).to<U128>()
-        %diag  : U128       = cm_trig_high(%sum2)
-        %over  : U128       = %over1.add(%over2)
-        %a12   : CmTrigU384 = CmTrigU384 { l0: %p12.to_wrap<U128>(), l1: cm_trig_high(%p12), l2: 0 }
-        %a21   : CmTrigU384 = CmTrigU384 { l0: %p21.to_wrap<U128>(), l1: cm_trig_high(%p21), l2: 0 }
-        %a22   : CmTrigU384 = CmTrigU384 { l0: 0, l1: %p22.to_wrap<U128>(), l2: cm_trig_high(%p22) }
-        %ad    : CmTrigU384 = CmTrigU384 { l0: %diag, l1: %over, l2: 0 }
-        %t12   : CmTrigU384 = cm_trig_add384(%a12, %a21)
-        %t34   : CmTrigU384 = cm_trig_add384(%a22, %ad)
-        %r     : CmTrigU384 = cm_trig_add384(%t12, %t34)
-        return(%r)
+        sum   : U256       = p02.add_wrap(p11)
+        over1 : U128       = sum.lt(p02).to<U128>()
+        sum2  : U256       = sum.add_wrap(p20)
+        over2 : U128       = sum2.lt(sum).to<U128>()
+        diag  : U128       = cm_trig_high(sum2)
+        over  : U128       = over1.add(over2)
+        a12   : CmTrigU384 = CmTrigU384 { l0: p12.to_wrap<U128>(), l1: cm_trig_high(p12), l2: 0 }
+        a21   : CmTrigU384 = CmTrigU384 { l0: p21.to_wrap<U128>(), l1: cm_trig_high(p21), l2: 0 }
+        a22   : CmTrigU384 = CmTrigU384 { l0: 0, l1: p22.to_wrap<U128>(), l2: cm_trig_high(p22) }
+        ad    : CmTrigU384 = CmTrigU384 { l0: diag, l1: over, l2: 0 }
+        t12   : CmTrigU384 = cm_trig_add384(a12, a21)
+        t34   : CmTrigU384 = cm_trig_add384(a22, ad)
+        r     : CmTrigU384 = cm_trig_add384(t12, t34)
+        return(r)
 
 /// The high 256 bits of a 256×256-bit product: the dropped tail leaves it up to one unit short of the exact
 /// value, never over.
-routine cm_trig_mul256(%a: U256, %b: U256) -> U256
+routine cm_trig_mul256(a: U256, b: U256) -> U256
     block entry():
-        %a_hi  : U128 = cm_trig_high(%a)
-        %a_lo  : U128 = %a.to_wrap<U128>()
-        %b_hi  : U128 = cm_trig_high(%b)
-        %b_lo  : U128 = %b.to_wrap<U128>()
-        %hh    : U256 = %a_hi.mul_wide(%b_hi)
-        %cross : U256 = %a_hi.mul_wide(%b_lo)
-        %other : U256 = %a_lo.mul_wide(%b_hi)
-        %ll_hi : U128 = cm_trig_mhi(%a_lo, %b_lo)
+        a_hi  : U128 = cm_trig_high(a)
+        a_lo  : U128 = a.to_wrap<U128>()
+        b_hi  : U128 = cm_trig_high(b)
+        b_lo  : U128 = b.to_wrap<U128>()
+        hh    : U256 = a_hi.mul_wide(b_hi)
+        cross : U256 = a_hi.mul_wide(b_lo)
+        other : U256 = a_lo.mul_wide(b_hi)
+        ll_hi : U128 = cm_trig_mhi(a_lo, b_lo)
         // the two cross terms and the top of a.lo*b.lo sit one limb below the window: only their sum from
         // bit 128 up survives, in 130 bits
-        %middle  : U256 = %cross.add_wrap(%other)
-        %over1   : U64  = %middle.lt(%cross).to<U64>()
-        %middle2 : U256 = %middle.add_wrap(%ll_hi.to<U256>())
-        %over2   : U64  = %middle2.lt(%middle).to<U64>()
-        %carried : U256 = %over1.add(%over2).to<U256>().shl(128)
-        %shifted : U256 = %middle2.shr(128).add(%carried)
-        %r       : U256 = %hh.add_wrap(%shifted)
-        return(%r)
+        middle  : U256 = cross.add_wrap(other)
+        over1   : U64  = middle.lt(cross).to<U64>()
+        middle2 : U256 = middle.add_wrap(ll_hi.to<U256>())
+        over2   : U64  = middle2.lt(middle).to<U64>()
+        carried : U256 = over1.add(over2).to<U256>().shl(128)
+        shifted : U256 = middle2.shr(128).add(carried)
+        r       : U256 = hh.add_wrap(shifted)
+        return(r)
 
 // -- tables --------------------------------------------------------------------
 
 /// Limb `limb` (0 = least significant) of sin(j*pi/256) (w = 0) or cos(j*pi/256) (w = 1) × 2^384.
-routine cm_trig_sincos(%j: USize, %w: USize, %limb: USize) -> U128
+routine cm_trig_sincos(j: USize, w: USize, limb: USize) -> U128
     block entry():
-        %index : USize = %j.mul(2).add(%w).mul(3).add(%limb)
-        %r     : U128  = CM_TRIG_SINCOS.get(%index)
-        return(%r)
+        index : USize = j.mul(2).add(w).mul(3).add(limb)
+        r     : U128  = CM_TRIG_SINCOS.get(index)
+        return(r)
 
-routine cm_trig_sincos384(%j: USize, %w: USize) -> CmTrigU384
+routine cm_trig_sincos384(j: USize, w: USize) -> CmTrigU384
     block entry():
-        %l0 : U128       = cm_trig_sincos(%j, %w, 0)
-        %l1 : U128       = cm_trig_sincos(%j, %w, 1)
-        %l2 : U128       = cm_trig_sincos(%j, %w, 2)
-        %r  : CmTrigU384 = CmTrigU384 { l0: %l0, l1: %l1, l2: %l2 }
-        return(%r)
+        l0 : U128       = cm_trig_sincos(j, w, 0)
+        l1 : U128       = cm_trig_sincos(j, w, 1)
+        l2 : U128       = cm_trig_sincos(j, w, 2)
+        r  : CmTrigU384 = CmTrigU384 { l0: l0, l1: l1, l2: l2 }
+        return(r)
 
 /// Limb `limb` of Taylor coefficient k in CM_TRIG_SIN_COEF or CM_TRIG_COS_COEF.
-routine cm_trig_coef(%coef: @U128, %k: USize, %limb: USize) -> U128
+routine cm_trig_coef(coef: @U128, k: USize, limb: USize) -> U128
     block entry():
-        %index : USize = %k.mul(3).add(%limb)
-        %r     : U128  = %coef.stride(%index).load()
-        return(%r)
+        index : USize = k.mul(3).add(limb)
+        r     : U128  = coef.stride(index).load()
+        return(r)
 
 // -- argument reduction --------------------------------------------------------
 
 /// Bits of 2/pi above position e-114 contribute multiples of 4 to x*2/pi (x = m × 2^(e-112)), so the window
 /// starts at the limb holding bit e-113.
-routine cm_trig_window(%e: S64) -> CmTrigWindow
+routine cm_trig_window(e: S64) -> CmTrigWindow
     block entry():
-        %big  : S64          = %e.sub(114)
-        %huge : Bool         = %big.ge(0)
-        %top  : CmTrigWindow = CmTrigWindow { first: 0, offset: %big }
-        branch %huge
+        big  : S64          = e.sub(114)
+        huge : Bool         = big.ge(0)
+        top  : CmTrigWindow = CmTrigWindow { first: 0, offset: big }
+        branch huge
             ? continue
-            : return(%top)
-        %first  : S64          = %big.shr(6)
-        %offset : S64          = %big.bitand(63)
-        %r      : CmTrigWindow = CmTrigWindow { first: %first, offset: %offset }
-        return(%r)
+            : return(top)
+        first  : S64          = big.shr(6)
+        offset : S64          = big.bitand(63)
+        r      : CmTrigWindow = CmTrigWindow { first: first, offset: offset }
+        return(r)
 
 /// Limb k (most significant first) of the window of `count` limbs of 2/pi starting at `first`; zero outside it.
-routine cm_trig_window_limb(%first: S64, %count: S64, %k: S64) -> U128
+routine cm_trig_window_limb(first: S64, count: S64, k: S64) -> U128
     block entry():
-        %inside  : Bool = %k.in_range(0, %count)
-        %outside : U128 = 0
-        branch %inside
+        inside  : Bool = k.in_range(0, count)
+        outside : U128 = 0
+        branch inside
             ? continue
-            : return(%outside)
-        %index : USize = %first.add(%k).to<USize>()
-        %limb  : U64   = TWO_OVER_PI.get(%index)
-        %r     : U128  = %limb.to<U128>()
-        return(%r)
+            : return(outside)
+        index : USize = first.add(k).to<USize>()
+        limb  : U64   = TWO_OVER_PI.get(index)
+        r     : U128  = limb.to<U128>()
+        return(r)
 
-/// m × window as count+3 little-endian 64-bit limbs at %p, for the window of `count` limbs of 2/pi starting at
+/// m × window as count+3 little-endian 64-bit limbs at p, for the window of `count` limbs of 2/pi starting at
 /// `first`: the product fills count+2 of them and the spare top limb stays zero.
-routine cm_trig_product(%m: U128, %first: S64, %count: USize, %p: @U64) -> Void
+routine cm_trig_product(m: U128, first: S64, count: USize, p: @U64) -> Void
     block entry():
-        %low  : U128 = %m.bitand(0xFFFFFFFFFFFFFFFF)
-        %high : U128 = %m.shr(64)
-        jump column(0, 0, %low, %high, %first, %count, %p)
+        low  : U128 = m.bitand(0xFFFFFFFFFFFFFFFF)
+        high : U128 = m.shr(64)
+        jump column(0, 0, low, high, first, count, p)
 
-    block column(%c: USize, %carry: U128, %low: U128, %high: U128, %first: S64, %count: USize,
-            %p: @U64):
-        %done : Bool = %c.ge(%count.add(3))
-        branch %done
+    block column(c: USize, carry: U128, low: U128, high: U128, first: S64, count: USize, p: @U64):
+        done : Bool = c.ge(count.add(3))
+        branch done
             ? return()
-            : step(%c, %carry, %low, %high, %first, %count, %p)
+            : step(c, carry, low, high, first, count, p)
 
     // column c is (high*prev + carry) + low*cur, with cur and prev the window limbs under the two halves of m
-    block step(%c: USize, %carry: U128, %low: U128, %high: U128, %first: S64, %count: USize,
-            %p: @U64):
-        %cur  : U128 = cm_trig_window_limb(%first, %count.to<S64>(),
-                %count.to<S64>().sub(1).sub(%c.to<S64>()))
-        %prev : U128 = cm_trig_window_limb(%first, %count.to<S64>(),
-                %count.to<S64>().sub(%c.to<S64>()))
+    block step(c: USize, carry: U128, low: U128, high: U128, first: S64, count: USize, p: @U64):
+        cur  : U128 = cm_trig_window_limb(first, count.to<S64>(),
+                count.to<S64>().sub(1).sub(c.to<S64>()))
+        prev : U128 = cm_trig_window_limb(first, count.to<S64>(), count.to<S64>().sub(c.to<S64>()))
         // high < 2^49 keeps the first sum under 2^114, only the second can spill
-        %acc   : U128 = %high.mul_wrap(%prev).add_wrap(%carry)
-        %t     : U128 = %acc.add_wrap(%low.mul_wrap(%cur))
-        %spill : U128 = %t.lt(%acc).to<U128>().shl(64)
-        %p.stride(%c).store(%t.to_wrap<U64>())
-        %next_carry : U128 = %t.shr(64).bitor(%spill)
-        jump column(%c.add(1), %next_carry, %low, %high, %first, %count, %p)
+        acc   : U128 = high.mul_wrap(prev).add_wrap(carry)
+        t     : U128 = acc.add_wrap(low.mul_wrap(cur))
+        spill : U128 = t.lt(acc).to<U128>().shl(64)
+        p.stride(c).store(t.to_wrap<U64>())
+        next_carry : U128 = t.shr(64).bitor(spill)
+        jump column(c.add(1), next_carry, low, high, first, count, p)
 
 /// n = round(256*x/pi) mod 512 from the two quadrant bits and the top 64 bits of the fraction.
-routine cm_trig_nearest(%quadrant: U64, %top_limb: U64) -> U64
+routine cm_trig_nearest(quadrant: U64, top_limb: U64) -> U64
     block entry():
-        %top : U128 = %quadrant.to<U128>().shl(64).bitor(%top_limb.to<U128>())
-        %r   : U64  = %top.add(0x100000000000000).shr(57).to<U64>().bitand(511)
-        return(%r)
+        top : U128 = quadrant.to<U128>().shl(64).bitor(top_limb.to<U128>())
+        r   : U64  = top.add(0x100000000000000).shr(57).to<U64>().bitand(511)
+        return(r)
 
 /// Payne-Hanek on six limbs of 2/pi.
-routine cm_trig_reduce(%m: U128, %e: S64) -> CmTrigReduced
+routine cm_trig_reduce(m: U128, e: S64) -> CmTrigReduced
     block entry():
-        %window : CmTrigWindow = cm_trig_window(%e)
-        %first  : S64          = %window.first
-        %offset : S64          = %window.offset
-        claim %product : @Array<U64, 13> <- uninit
-        %p : @U64 = %product.to<@U64>()
-        cm_trig_product(%m, %first, 6, %p)
+        window : CmTrigWindow = cm_trig_window(e)
+        first  : S64          = window.first
+        offset : S64          = window.offset
+        claim product : @Array<U64, 13> <- uninit
+        p : @U64 = product.to<@U64>()
+        cm_trig_product(m, first, 6, p)
         // the fraction is the 192 bits below the units bit, the quadrant the two above: limbs i ..= i+4
-        %base     : S64   = 190.sub(%offset)
-        %i        : USize = %base.shr(6).bitand(7).to<USize>()
-        %bits     : S64   = %base.bitand(63)
-        %a0       : U64   = %p.stride(%i).load()
-        %a1       : U64   = %p.stride(%i.add(1)).load()
-        %a2       : U64   = %p.stride(%i.add(2)).load()
-        %a3       : U64   = %p.stride(%i.add(3)).load()
-        %a4       : U64   = %p.stride(%i.add(4)).load()
-        %f0       : U64   = cm_trig_funnel(%a0, %a1, %bits)
-        %f1       : U64   = cm_trig_funnel(%a1, %a2, %bits)
-        %f2       : U64   = cm_trig_funnel(%a2, %a3, %bits)
-        %quadrant : U64   = cm_trig_funnel(%a3, %a4, %bits).bitand(3)
+        base     : S64   = 190.sub(offset)
+        i        : USize = base.shr(6).bitand(7).to<USize>()
+        bits     : S64   = base.bitand(63)
+        a0       : U64   = p.stride(i).load()
+        a1       : U64   = p.stride(i.add(1)).load()
+        a2       : U64   = p.stride(i.add(2)).load()
+        a3       : U64   = p.stride(i.add(3)).load()
+        a4       : U64   = p.stride(i.add(4)).load()
+        f0       : U64   = cm_trig_funnel(a0, a1, bits)
+        f1       : U64   = cm_trig_funnel(a1, a2, bits)
+        f2       : U64   = cm_trig_funnel(a2, a3, bits)
+        quadrant : U64   = cm_trig_funnel(a3, a4, bits).bitand(3)
         // the residual's top limb becomes signed once n is taken out
-        %n        : U64  = cm_trig_nearest(%quadrant, %f2)
-        %g_top    : U64  = %f2.sub_wrap(%n.bitand(127).shl(57))
-        %negative : Bool = %g_top.shr(63).eq(1)
+        n        : U64  = cm_trig_nearest(quadrant, f2)
+        g_top    : U64  = f2.sub_wrap(n.bitand(127).shl(57))
+        negative : Bool = g_top.shr(63).eq(1)
         // |g|: complement and add one when negative
-        %all_ones : U64 = U64.MAX
-        %no_bits  : U64 = 0
-        %mask     : U64 = %negative
-            ? %all_ones
-            : %no_bits
-        %add_one : U64           = %negative.to<S64>().to<U64>()
-        %g0      : U64           = %f0.bitxor(%mask).add_wrap(%add_one)
-        %carry0  : U64           = %g0.lt(%add_one).to<S64>().to<U64>()
-        %g1      : U64           = %f1.bitxor(%mask).add_wrap(%carry0)
-        %carry1  : U64           = %g1.lt(%carry0).to<S64>().to<U64>()
-        %g2      : U64           = %g_top.bitxor(%mask).add_wrap(%carry1)
-        %lz      : S64           = %g2.leading_zeros().to<S64>()
-        %lost    : Bool          = %lz.gt(56)
-        %failed  : CmTrigReduced = CmTrigReduced { ok: false, n: 0, negative: false, t1: 0, et: 0 }
-        branch %lost
-            ? return(%failed)
-            : normalize(%n, %negative, %g0, %g1, %g2, %lz)
+        all_ones : U64 = U64.MAX
+        no_bits  : U64 = 0
+        mask     : U64 = negative
+            ? all_ones
+            : no_bits
+        add_one : U64           = negative.to<S64>().to<U64>()
+        g0      : U64           = f0.bitxor(mask).add_wrap(add_one)
+        carry0  : U64           = g0.lt(add_one).to<S64>().to<U64>()
+        g1      : U64           = f1.bitxor(mask).add_wrap(carry0)
+        carry1  : U64           = g1.lt(carry0).to<S64>().to<U64>()
+        g2      : U64           = g_top.bitxor(mask).add_wrap(carry1)
+        lz      : S64           = g2.leading_zeros().to<S64>()
+        lost    : Bool          = lz.gt(56)
+        failed  : CmTrigReduced = CmTrigReduced { ok: false, n: 0, negative: false, t1: 0, et: 0 }
+        branch lost
+            ? return(failed)
+            : normalize(n, negative, g0, g1, g2, lz)
 
     // |g| <= 1/256 leaves at least seven leading zeros, so every shift below is in range
-    block normalize(%n: U64, %negative: Bool, %g0: U64, %g1: U64, %g2: U64, %lz: S64):
-        %back    : S64           = 64.sub(%lz)
-        %high    : U64           = %g2.shl(%lz.to<U64>()).bitor(%g1.shr(%back.to<U64>()))
-        %low     : U64           = %g1.shl(%lz.to<U64>()).bitor(%g0.shr(%back.to<U64>()))
-        %g       : U128          = %high.to<U128>().shl(64).bitor(%low.to<U128>())
-        %product : U256          = %g.mul_wide(CM_TRIG_PI_4)
-        %lzt     : S64           = cm_trig_clz(cm_trig_high(%product))
-        %t1      : U128          = cm_trig_top256(%product, %lzt)
-        %et      : S64           = 1.sub(%lz.add(%lzt))
-        %r       : CmTrigReduced = CmTrigReduced { ok: true, n: %n, negative: %negative, t1: %t1,
-                et: %et }
-        return(%r)
+    block normalize(n: U64, negative: Bool, g0: U64, g1: U64, g2: U64, lz: S64):
+        back    : S64           = 64.sub(lz)
+        high    : U64           = g2.shl(lz.to<U64>()).bitor(g1.shr(back.to<U64>()))
+        low     : U64           = g1.shl(lz.to<U64>()).bitor(g0.shr(back.to<U64>()))
+        g       : U128          = high.to<U128>().shl(64).bitor(low.to<U128>())
+        product : U256          = g.mul_wide(CM_TRIG_PI_4)
+        lzt     : S64           = cm_trig_clz(cm_trig_high(product))
+        t1      : U128          = cm_trig_top256(product, lzt)
+        et      : S64           = 1.sub(lz.add(lzt))
+        r       : CmTrigReduced = CmTrigReduced { ok: true, n: n, negative: negative, t1: t1,
+                et: et }
+        return(r)
 
 /// cm_trig_reduce on ten limbs of 2/pi and a 448-bit fraction.
-routine cm_trig_reduce_wide(%m: U128, %e: S64) -> CmTrigWideReduced
+routine cm_trig_reduce_wide(m: U128, e: S64) -> CmTrigWideReduced
     block entry():
-        %window : CmTrigWindow = cm_trig_window(%e)
-        %first  : S64          = %window.first
-        %offset : S64          = %window.offset
-        claim %product : @Array<U64, 13> <- uninit
-        %p : @U64 = %product.to<@U64>()
-        cm_trig_product(%m, %first, 10, %p)
+        window : CmTrigWindow = cm_trig_window(e)
+        first  : S64          = window.first
+        offset : S64          = window.offset
+        claim product : @Array<U64, 13> <- uninit
+        p : @U64 = product.to<@U64>()
+        cm_trig_product(m, first, 10, p)
         // the fraction is the 448 bits below the units bit, the quadrant the two above: limbs i ..= i+8
-        %base : S64   = 190.sub(%offset)
-        %i    : USize = %base.shr(6).bitand(7).to<USize>()
-        %bits : S64   = %base.bitand(63)
-        claim %fraction : @Array<U64, 7> <- uninit
-        %f : @U64 = %fraction.to<@U64>()
-        cm_trig_cut(%p, %i, %bits, %f)
-        %i7       : USize = %i.add(7)
-        %i8       : USize = %i.add(8)
-        %a7       : U64   = %p.stride(%i7).load()
-        %a8       : U64   = %p.stride(%i8).load()
-        %quadrant : U64   = cm_trig_funnel(%a7, %a8, %bits).bitand(3)
-        %f6       : U64   = %f.stride(6).load()
-        %n        : U64   = cm_trig_nearest(%quadrant, %f6)
-        %g_top    : S64   = %f6.sub_wrap(%n.bitand(127).shl(57)).to_wrap<S64>()
-        %f.stride(6).store(%g_top.to_wrap<U64>())
-        %negative : Bool = %g_top.lt(0)
-        cm_trig_magnitude448(%f, %negative)
+        base : S64   = 190.sub(offset)
+        i    : USize = base.shr(6).bitand(7).to<USize>()
+        bits : S64   = base.bitand(63)
+        claim fraction : @Array<U64, 7> <- uninit
+        f : @U64 = fraction.to<@U64>()
+        cm_trig_cut(p, i, bits, f)
+        i7       : USize = i.add(7)
+        i8       : USize = i.add(8)
+        a7       : U64   = p.stride(i7).load()
+        a8       : U64   = p.stride(i8).load()
+        quadrant : U64   = cm_trig_funnel(a7, a8, bits).bitand(3)
+        f6       : U64   = f.stride(6).load()
+        n        : U64   = cm_trig_nearest(quadrant, f6)
+        g_top    : S64   = f6.sub_wrap(n.bitand(127).shl(57)).to_wrap<S64>()
+        f.stride(6).store(g_top.to_wrap<U64>())
+        negative : Bool = g_top.lt(0)
+        cm_trig_magnitude448(f, negative)
         // no binary128 comes within 2^-124 of a multiple of pi/2, so the residual keeps over 300 of its bits
-        %lz    : S64               = cm_trig_lz448(%f)
-        %g     : CmTrigU384        = cm_trig_top448(%f, %lz)
-        %pio2  : CmTrigU384        = CmTrigU384 { l0: 0x514A08798E3404DDEF9519B3CD3A431B,
+        lz    : S64               = cm_trig_lz448(f)
+        g     : CmTrigU384        = cm_trig_top448(f, lz)
+        pio2  : CmTrigU384        = CmTrigU384 { l0: 0x514A08798E3404DDEF9519B3CD3A431B,
                 l1: 0x29024E088A67CC74020BBEA63B139B22, l2: 0xC90FDAA22168C234C4C6628B80DC1CD1 }
-        %theta : CmTrigU384        = cm_trig_mul384(%g, %pio2)
-        %lzt   : S64               = cm_trig_clz(%theta.l2)
-        %t     : CmTrigU384        = cm_trig_shl384(%theta, %lzt)
-        %et    : S64               = 1.sub(%lz.add(%lzt))
-        %r     : CmTrigWideReduced = CmTrigWideReduced { n: %n, negative: %negative, t: %t, et: %et}
-        return(%r)
+        theta : CmTrigU384        = cm_trig_mul384(g, pio2)
+        lzt   : S64               = cm_trig_clz(theta.l2)
+        t     : CmTrigU384        = cm_trig_shl384(theta, lzt)
+        et    : S64               = 1.sub(lz.add(lzt))
+        r     : CmTrigWideReduced = CmTrigWideReduced { n: n, negative: negative, t: t, et: et}
+        return(r)
 
-/// f[k] = the 64 bits of the product %p starting at bit `bits` of limb i+k, for k = 0..6.
-routine cm_trig_cut(%p: @U64, %i: USize, %bits: S64, %f: @U64) -> Void
+/// f[k] = the 64 bits of the product p starting at bit `bits` of limb i+k, for k = 0..6.
+routine cm_trig_cut(p: @U64, i: USize, bits: S64, f: @U64) -> Void
     block entry():
-        jump cut(0, %p, %i, %bits, %f)
+        jump cut(0, p, i, bits, f)
 
-    block cut(%k: USize, %p: @U64, %i: USize, %bits: S64, %f: @U64):
-        %done : Bool = %k.ge(7)
-        branch %done
+    block cut(k: USize, p: @U64, i: USize, bits: S64, f: @U64):
+        done : Bool = k.ge(7)
+        branch done
             ? return()
-            : cut_one(%k, %p, %i, %bits, %f)
+            : cut_one(k, p, i, bits, f)
 
-    block cut_one(%k: USize, %p: @U64, %i: USize, %bits: S64, %f: @U64):
-        %at    : USize = %i.add(%k)
-        %above : USize = %at.add(1)
-        %low   : U64   = %p.stride(%at).load()
-        %high  : U64   = %p.stride(%above).load()
-        %f.stride(%k).store(cm_trig_funnel(%low, %high, %bits))
-        jump cut(%k.add(1), %p, %i, %bits, %f)
+    block cut_one(k: USize, p: @U64, i: USize, bits: S64, f: @U64):
+        at    : USize = i.add(k)
+        above : USize = at.add(1)
+        low   : U64   = p.stride(at).load()
+        high  : U64   = p.stride(above).load()
+        f.stride(k).store(cm_trig_funnel(low, high, bits))
+        jump cut(k.add(1), p, i, bits, f)
 
-/// Replaces the seven-limb two's-complement fraction at %f by its magnitude when it is negative.
-routine cm_trig_magnitude448(%f: @U64, %negative: Bool) -> Void
+/// Replaces the seven-limb two's-complement fraction at f by its magnitude when it is negative.
+routine cm_trig_magnitude448(f: @U64, negative: Bool) -> Void
     block entry():
-        %all_ones : U64 = U64.MAX
-        %no_bits  : U64 = 0
-        %mask     : U64 = %negative
-            ? %all_ones
-            : %no_bits
-        jump flip(0, %negative.to<U64>(), %mask, %f)
+        all_ones : U64 = U64.MAX
+        no_bits  : U64 = 0
+        mask     : U64 = negative
+            ? all_ones
+            : no_bits
+        jump flip(0, negative.to<U64>(), mask, f)
 
-    block flip(%k: USize, %carry: U64, %mask: U64, %f: @U64):
-        %done : Bool = %k.ge(7)
-        branch %done
+    block flip(k: USize, carry: U64, mask: U64, f: @U64):
+        done : Bool = k.ge(7)
+        branch done
             ? return()
             : continue
-        %limb    : U64 = %f.stride(%k).load()
-        %flipped : U64 = %limb.bitxor(%mask).add_wrap(%carry)
-        %f.stride(%k).store(%flipped)
-        %next_carry : U64 = %flipped.lt(%carry).to<U64>()
-        jump flip(%k.add(1), %next_carry, %mask, %f)
+        limb    : U64 = f.stride(k).load()
+        flipped : U64 = limb.bitxor(mask).add_wrap(carry)
+        f.stride(k).store(flipped)
+        next_carry : U64 = flipped.lt(carry).to<U64>()
+        jump flip(k.add(1), next_carry, mask, f)
 
-/// Leading zeros of the 448-bit fraction at %f (seven limbs, least significant first), 448 when it is zero.
-routine cm_trig_lz448(%f: @U64) -> S64
+/// Leading zeros of the 448-bit fraction at f (seven limbs, least significant first), 448 when it is zero.
+routine cm_trig_lz448(f: @U64) -> S64
     block entry():
-        jump scan(6, %f)
+        jump scan(6, f)
 
-    block scan(%k: SSize, %f: @U64):
-        %exhausted : Bool = %k.lt(0)
-        %all       : S64  = 448
-        branch %exhausted
-            ? return(%all)
-            : scan_one(%k.to<USize>(), %f)
+    block scan(k: SSize, f: @U64):
+        exhausted : Bool = k.lt(0)
+        all       : S64  = 448
+        branch exhausted
+            ? return(all)
+            : scan_one(k.to<USize>(), f)
 
-    block scan_one(%k: USize, %f: @U64):
-        %limb  : U64  = %f.stride(%k).load()
-        %empty : Bool = %limb.eq(0)
-        %above : U64  = 6.sub(%k).mul(64).to<U64>()
-        %lz    : U64  = %above.add(%limb.leading_zeros())
-        branch %empty
-            ? scan(%k.sub(1).to<SSize>(), %f)
-            : return(%lz.to<S64>())
+    block scan_one(k: USize, f: @U64):
+        limb  : U64  = f.stride(k).load()
+        empty : Bool = limb.eq(0)
+        above : U64  = 6.sub(k).mul(64).to<U64>()
+        lz    : U64  = above.add(limb.leading_zeros())
+        branch empty
+            ? scan(k.sub(1).to<SSize>(), f)
+            : return(lz.to<S64>())
 
-/// The top 384 bits of the 448-bit fraction at %f shifted left by lz (limbs 1..6 of the shifted value).
-routine cm_trig_top448(%f: @U64, %lz: S64) -> CmTrigU384
+/// The top 384 bits of the 448-bit fraction at f shifted left by lz (limbs 1..6 of the shifted value).
+routine cm_trig_top448(f: @U64, lz: S64) -> CmTrigU384
     block entry():
-        claim %shifted : @Array<U64, 7> <- uninit
-        %s : @U64 = %shifted.to<@U64>()
-        %s.zeroinit(7)
-        %word  : USize = %lz.shr(6).to<USize>()
-        %wbits : S64   = %lz.bitand(63)
-        jump shift(%word, 0, %word, %wbits, %f, %s)
+        claim shifted : @Array<U64, 7> <- uninit
+        s : @U64 = shifted.to<@U64>()
+        s.zeroinit(7)
+        word  : USize = lz.shr(6).to<USize>()
+        wbits : S64   = lz.bitand(63)
+        jump shift(word, 0, word, wbits, f, s)
 
     // s[q] = f[q - word] << wbits with the bits carried up from the limb below it
-    block shift(%q: USize, %below: U64, %word: USize, %wbits: S64, %f: @U64, %s: @U64):
-        %done : Bool = %q.ge(7)
-        branch %done
-            ? assemble(%s)
-            : shift_one(%q, %below, %word, %wbits, %f, %s)
+    block shift(q: USize, below: U64, word: USize, wbits: S64, f: @U64, s: @U64):
+        done : Bool = q.ge(7)
+        branch done
+            ? assemble(s)
+            : shift_one(q, below, word, wbits, f, s)
 
-    block shift_one(%q: USize, %below: U64, %word: USize, %wbits: S64, %f: @U64, %s: @U64):
-        %from    : USize = %q.sub(%word)
-        %limb    : U64   = %f.stride(%from).load()
-        %carried : U64   = %below.shr(1).shr(63.sub(%wbits).to<U64>())
-        %s.stride(%q).store(%limb.shl(%wbits.to<U64>()).bitor(%carried))
-        jump shift(%q.add(1), %limb, %word, %wbits, %f, %s)
+    block shift_one(q: USize, below: U64, word: USize, wbits: S64, f: @U64, s: @U64):
+        from    : USize = q.sub(word)
+        limb    : U64   = f.stride(from).load()
+        carried : U64   = below.shr(1).shr(63.sub(wbits).to<U64>())
+        s.stride(q).store(limb.shl(wbits.to<U64>()).bitor(carried))
+        jump shift(q.add(1), limb, word, wbits, f, s)
 
-    block assemble(%s: @U64):
-        %s1 : U64        = %s.stride(1).load()
-        %s2 : U64        = %s.stride(2).load()
-        %s3 : U64        = %s.stride(3).load()
-        %s4 : U64        = %s.stride(4).load()
-        %s5 : U64        = %s.stride(5).load()
-        %s6 : U64        = %s.stride(6).load()
-        %l0 : U128       = %s2.to<U128>().shl(64).bitor(%s1.to<U128>())
-        %l1 : U128       = %s4.to<U128>().shl(64).bitor(%s3.to<U128>())
-        %l2 : U128       = %s6.to<U128>().shl(64).bitor(%s5.to<U128>())
-        %r  : CmTrigU384 = CmTrigU384 { l0: %l0, l1: %l1, l2: %l2 }
-        return(%r)
+    block assemble(s: @U64):
+        s1 : U64        = s.stride(1).load()
+        s2 : U64        = s.stride(2).load()
+        s3 : U64        = s.stride(3).load()
+        s4 : U64        = s.stride(4).load()
+        s5 : U64        = s.stride(5).load()
+        s6 : U64        = s.stride(6).load()
+        l0 : U128       = s2.to<U128>().shl(64).bitor(s1.to<U128>())
+        l1 : U128       = s4.to<U128>().shl(64).bitor(s3.to<U128>())
+        l2 : U128       = s6.to<U128>().shl(64).bitor(s5.to<U128>())
+        r  : CmTrigU384 = CmTrigU384 { l0: l0, l1: l1, l2: l2 }
+        return(r)
 
 // -- fast path -----------------------------------------------------------------
 
-routine cm_trig_squares(%t1: U128, %et: S64) -> CmTrigSquares
+routine cm_trig_squares(t1: U128, et: S64) -> CmTrigSquares
     block entry():
-        %u1      : U128          = cm_trig_mhi(%t1, %t1)
-        %s       : S64           = 0.sub(%et.add(%et))
-        %shifted : U128          = %u1.shr(%s.to<U128>())
-        %sticky  : U128          = %u1.shr(%s.sub(1).to<U128>()).bitand(1)
-        %u       : U128          = %shifted.bitor(%sticky)
-        %v       : U128          = cm_trig_mhi(%u, %u)
-        %r       : CmTrigSquares = CmTrigSquares { u: %u, v: %v, u1: %u1 }
-        return(%r)
+        u1      : U128          = cm_trig_mhi(t1, t1)
+        s       : S64           = 0.sub(et.add(et))
+        shifted : U128          = u1.shr(s.to<U128>())
+        sticky  : U128          = u1.shr(s.sub(1).to<U128>()).bitand(1)
+        u       : U128          = shifted.bitor(sticky)
+        v       : U128          = cm_trig_mhi(u, u)
+        r       : CmTrigSquares = CmTrigSquares { u: u, v: v, u1: u1 }
+        return(r)
 
 /// sin(theta) in theta's own floating form: t1*(1 - u*(A - u*B)) with the even and odd halves of a
 /// degree-four minimax for (1 - sin(sqrt(u))/sqrt(u))/u in v.
-routine cm_trig_sin_frac(%t1: U128, %u: U128, %v: U128) -> U128
+routine cm_trig_sin_frac(t1: U128, u: U128, v: U128) -> U128
     block entry():
-        %s0        : U128 = 0x2AAAAAAAAAAAAAAAAAAAAAAAAAAA8B20
-        %s1        : U128 = 0x02222222222222222222221FA2FD1243
-        %s2        : U128 = 0x000D00D00D00D00D00C7F4BE42E1A641
-        %s3        : U128 = 0x00002E3BC74AAD85378E3E9D9C3058A3
-        %s4        : U128 = 0x0000006B99115EA3FD77EEA5743FF7BE
-        %even_tail : U128 = %s2.add_wrap(cm_trig_mhi(%v, %s4))
-        %even      : U128 = %s0.add_wrap(cm_trig_mhi(%v, %even_tail))
-        %odd       : U128 = %s1.add_wrap(cm_trig_mhi(%v, %s3))
-        %poly      : U128 = %even.sub_wrap(cm_trig_mhi(%u, %odd))
-        %t1_u      : U128 = cm_trig_mhi(%t1, %u)
-        %r         : U128 = %t1.sub_wrap(cm_trig_mhi(%t1_u, %poly))
-        return(%r)
+        s0        : U128 = 0x2AAAAAAAAAAAAAAAAAAAAAAAAAAA8B20
+        s1        : U128 = 0x02222222222222222222221FA2FD1243
+        s2        : U128 = 0x000D00D00D00D00D00C7F4BE42E1A641
+        s3        : U128 = 0x00002E3BC74AAD85378E3E9D9C3058A3
+        s4        : U128 = 0x0000006B99115EA3FD77EEA5743FF7BE
+        even_tail : U128 = s2.add_wrap(cm_trig_mhi(v, s4))
+        even      : U128 = s0.add_wrap(cm_trig_mhi(v, even_tail))
+        odd       : U128 = s1.add_wrap(cm_trig_mhi(v, s3))
+        poly      : U128 = even.sub_wrap(cm_trig_mhi(u, odd))
+        t1_u      : U128 = cm_trig_mhi(t1, u)
+        r         : U128 = t1.sub_wrap(cm_trig_mhi(t1_u, poly))
+        return(r)
 
 /// 1 - cos(theta) as the floating fraction c1 × 2^(2*et - 128): theta^2*(1/2 - u*W) with W the even and odd
 /// halves of sum (-1)^k u^k/(2k+4)! in v, six terms.
-routine cm_trig_cos_corr(%u1: U128, %u: U128, %v: U128) -> U128
+routine cm_trig_cos_corr(u1: U128, u: U128, v: U128) -> U128
     block entry():
-        %c0        : U128 = CM_TRIG_COS_COEF.get(2)
-        %c1        : U128 = CM_TRIG_COS_COEF.get(5)
-        %c2        : U128 = CM_TRIG_COS_COEF.get(8)
-        %c3        : U128 = CM_TRIG_COS_COEF.get(11)
-        %c4        : U128 = CM_TRIG_COS_COEF.get(14)
-        %c5        : U128 = CM_TRIG_COS_COEF.get(17)
-        %even_tail : U128 = %c3.add_wrap(cm_trig_mhi(%v, %c5))
-        %even      : U128 = %c1.add_wrap(cm_trig_mhi(%v, %even_tail))
-        %odd       : U128 = %c2.add_wrap(cm_trig_mhi(%v, %c4))
-        %inner     : U128 = %even.sub_wrap(cm_trig_mhi(%u, %odd))
-        %outer     : U128 = %c0.sub_wrap(cm_trig_mhi(%u, %inner))
-        %r         : U128 = cm_trig_mhi(%u1, %outer)
-        return(%r)
+        c0        : U128 = CM_TRIG_COS_COEF.get(2)
+        c1        : U128 = CM_TRIG_COS_COEF.get(5)
+        c2        : U128 = CM_TRIG_COS_COEF.get(8)
+        c3        : U128 = CM_TRIG_COS_COEF.get(11)
+        c4        : U128 = CM_TRIG_COS_COEF.get(14)
+        c5        : U128 = CM_TRIG_COS_COEF.get(17)
+        even_tail : U128 = c3.add_wrap(cm_trig_mhi(v, c5))
+        even      : U128 = c1.add_wrap(cm_trig_mhi(v, even_tail))
+        odd       : U128 = c2.add_wrap(cm_trig_mhi(v, c4))
+        inner     : U128 = even.sub_wrap(cm_trig_mhi(u, odd))
+        outer     : U128 = c0.sub_wrap(cm_trig_mhi(u, inner))
+        r         : U128 = cm_trig_mhi(u1, outer)
+        return(r)
 
 routine cm_trig_unvouched() -> CmTrigFast
     block entry():
-        %r : CmTrigFast = CmTrigFast { vouched: false, frac: 0, exponent: 0, sign: 0 }
-        return(%r)
+        r : CmTrigFast = CmTrigFast { vouched: false, frac: 0, exponent: 0, sign: 0 }
+        return(r)
 
 /// The fast path: sin or cos of |x| as a 128-bit floating fraction, or unvouched.
-routine cm_trig_fast(%m: U128, %e: S64, %cosine: Bool) -> CmTrigFast
+routine cm_trig_fast(m: U128, e: S64, cosine: Bool) -> CmTrigFast
     block entry():
-        %small : Bool = %e.lt(-8)
-        branch %small
-            ? unreduced(%m, %e, %cosine)
-            : reduced(%m, %e, %cosine)
+        small : Bool = e.lt(-8)
+        branch small
+            ? unreduced(m, e, cosine)
+            : reduced(m, e, cosine)
 
     // below 2^-8 the argument is its own reduced angle
-    block unreduced(%m: U128, %e: S64, %cosine: Bool):
-        %t1 : U128          = %m.shl(15)
-        %et : S64           = %e.add(1)
-        %sq : CmTrigSquares = cm_trig_squares(%t1, %et)
-        branch %cosine
-            ? small_cosine(%sq, %et)
-            : small_sine(%t1, %sq, %et)
+    block unreduced(m: U128, e: S64, cosine: Bool):
+        t1 : U128          = m.shl(15)
+        et : S64           = e.add(1)
+        sq : CmTrigSquares = cm_trig_squares(t1, et)
+        branch cosine
+            ? small_cosine(sq, et)
+            : small_sine(t1, sq, et)
 
     // cos(theta) = 1 - (1 - cos(theta)), just under 1
-    block small_cosine(%sq: CmTrigSquares, %et: S64):
-        %correction : U128       = cm_trig_cos_corr(%sq.u1, %sq.u, %sq.v)
-        %placed     : U256       = cm_trig_place256(%correction, %et.mul(2).add(128))
-        %near_one   : U256       = %placed.bitnot()  // 2^256 - 1 - placed
-        %frac       : U128       = cm_trig_high(%near_one)
-        %r          : CmTrigFast = CmTrigFast { vouched: true, frac: %frac, exponent: 0, sign: 0 }
-        return(%r)
+    block small_cosine(sq: CmTrigSquares, et: S64):
+        correction : U128       = cm_trig_cos_corr(sq.u1, sq.u, sq.v)
+        placed     : U256       = cm_trig_place256(correction, et.mul(2).add(128))
+        near_one   : U256       = placed.bitnot()  // 2^256 - 1 - placed
+        frac       : U128       = cm_trig_high(near_one)
+        r          : CmTrigFast = CmTrigFast { vouched: true, frac: frac, exponent: 0, sign: 0 }
+        return(r)
 
     // sin(theta) < theta drops a leading bit when t1 starts a binade
-    block small_sine(%t1: U128, %sq: CmTrigSquares, %et: S64):
-        %sine : U128       = cm_trig_sin_frac(%t1, %sq.u, %sq.v)
-        %lz   : S64        = cm_trig_clz(%sine)
-        %frac : U128       = %sine.shl(%lz.to<U128>())
-        %r    : CmTrigFast = CmTrigFast { vouched: true, frac: %frac,
-                exponent: %et.sub(%lz).to_wrap<U64>(), sign: 0 }
-        return(%r)
+    block small_sine(t1: U128, sq: CmTrigSquares, et: S64):
+        sine : U128       = cm_trig_sin_frac(t1, sq.u, sq.v)
+        lz   : S64        = cm_trig_clz(sine)
+        frac : U128       = sine.shl(lz.to<U128>())
+        r    : CmTrigFast = CmTrigFast { vouched: true, frac: frac,
+                exponent: et.sub(lz).to_wrap<U64>(), sign: 0 }
+        return(r)
 
-    block reduced(%m: U128, %e: S64, %cosine: Bool):
-        %red       : CmTrigReduced = cm_trig_reduce(%m, %e)
-        %ok        : Bool          = %red.ok
-        %unvouched : CmTrigFast    = cm_trig_unvouched()
-        branch %ok
+    block reduced(m: U128, e: S64, cosine: Bool):
+        red       : CmTrigReduced = cm_trig_reduce(m, e)
+        ok        : Bool          = red.ok
+        unvouched : CmTrigFast    = cm_trig_unvouched()
+        branch ok
             ? continue
-            : return(%unvouched)
-        %t1         : U128          = %red.t1
-        %sq         : CmTrigSquares = cm_trig_squares(%t1, %red.et)
-        %sine_theta : U128          = cm_trig_sin_frac(%t1, %sq.u, %sq.v)
-        %r          : CmTrigFast    = cm_trig_fast_tail(%red, %sq, %sine_theta, %cosine)
-        return(%r)
+            : return(unvouched)
+        t1         : U128          = red.t1
+        sq         : CmTrigSquares = cm_trig_squares(t1, red.et)
+        sine_theta : U128          = cm_trig_sin_frac(t1, sq.u, sq.v)
+        r          : CmTrigFast    = cm_trig_fast_tail(red, sq, sine_theta, cosine)
+        return(r)
 
 /// The fast path after the reduction: sin or cos of A ± theta (A = j*pi/256) from the table and theta's
 /// series.
-routine cm_trig_fast_tail(%red: CmTrigReduced, %sq: CmTrigSquares, %sine_theta: U128,
-        %cosine: Bool) -> CmTrigFast
+routine cm_trig_fast_tail(red: CmTrigReduced, sq: CmTrigSquares, sine_theta: U128,
+        cosine: Bool) -> CmTrigFast
     block entry():
         // the cosine is the sine a quadrant on: the top bit of the quadrant is the sign, the low bit which of
         // sin A and cos A is wanted
-        %n        : S64  = %red.n.to<S64>()
-        %quadrant : S64  = %n.shr(7).add(%cosine.to<S64>())
-        %want_cos : S64  = %quadrant.bitand(1)
-        %j        : S64  = %n.bitand(127)
-        %flipped  : Bool = %quadrant.bitand(2).ne(0)
-        %sign_bit : U128 = F128_SIGN
-        %no_sign  : U128 = 0
-        %flip     : U128 = %flipped
-            ? %sign_bit
-            : %no_sign
-        %pure_sine : Bool = %j.eq(0).bitand(%want_cos.eq(0))
-        branch %pure_sine
-            ? pure(%red, %sine_theta, %flip)
-            : combine(%red, %sq, %sine_theta, %want_cos, %j, %flip)
+        n        : S64  = red.n.to<S64>()
+        quadrant : S64  = n.shr(7).add(cosine.to<S64>())
+        want_cos : S64  = quadrant.bitand(1)
+        j        : S64  = n.bitand(127)
+        flipped  : Bool = quadrant.bitand(2).ne(0)
+        sign_bit : U128 = F128_SIGN
+        no_sign  : U128 = 0
+        flip     : U128 = flipped
+            ? sign_bit
+            : no_sign
+        pure_sine : Bool = j.eq(0).bitand(want_cos.eq(0))
+        branch pure_sine
+            ? pure(red, sine_theta, flip)
+            : combine(red, sq, sine_theta, want_cos, j, flip)
 
     // A = 0: the result is ±sin(theta) itself
-    block pure(%red: CmTrigReduced, %sine_theta: U128, %flip: U128):
-        %lz       : S64  = cm_trig_clz(%sine_theta)
-        %frac     : U128 = %sine_theta.shl(%lz.to<U128>())
-        %exponent : S64  = %red.et.sub(%lz)
-        %negative : Bool = %red.negative
-        %sign_bit : U128 = F128_SIGN
-        %no_sign  : U128 = 0
-        %g_sign   : U128 = %negative
-            ? %sign_bit
-            : %no_sign
-        %sign : U128       = %flip.bitxor(%g_sign)
-        %r    : CmTrigFast = CmTrigFast { vouched: true, frac: %frac,
-                exponent: %exponent.to_wrap<U64>(), sign: %sign }
-        return(%r)
+    block pure(red: CmTrigReduced, sine_theta: U128, flip: U128):
+        lz       : S64  = cm_trig_clz(sine_theta)
+        frac     : U128 = sine_theta.shl(lz.to<U128>())
+        exponent : S64  = red.et.sub(lz)
+        negative : Bool = red.negative
+        sign_bit : U128 = F128_SIGN
+        no_sign  : U128 = 0
+        g_sign   : U128 = negative
+            ? sign_bit
+            : no_sign
+        sign : U128       = flip.bitxor(g_sign)
+        r    : CmTrigFast = CmTrigFast { vouched: true, frac: frac,
+                exponent: exponent.to_wrap<U64>(), sign: sign }
+        return(r)
 
     // T1*cos(theta) ± T2*sin(theta), with T1 the wanted one of sin A and cos A and T2 the other
-    block combine(%red: CmTrigReduced, %sq: CmTrigSquares, %sine_theta: U128, %want_cos: S64,
-            %j: S64, %flip: U128):
-        %et         : S64  = %red.et
-        %correction : U128 = cm_trig_cos_corr(%sq.u1, %sq.u, %sq.v)
-        %first1     : U128 = cm_trig_sincos(%j.to<USize>(), %want_cos.to<USize>(), 1)
-        %first2     : U128 = cm_trig_sincos(%j.to<USize>(), %want_cos.to<USize>(), 2)
-        %second2    : U128 = cm_trig_sincos(%j.to<USize>(), 1.sub(%want_cos).to<USize>(), 2)
-        %c_frac     : U128 = cm_trig_mhi(%first2, %correction)
-        %s_frac     : U128 = cm_trig_mhi(%second2, %sine_theta)
-        %c          : U256 = cm_trig_place256(%c_frac, %et.mul(2).add(128))
-        %s          : U256 = cm_trig_place256(%s_frac, %et.add(128))
-        %first      : U256 = cm_trig_join(%first2, %first1)
-        %base       : U256 = %first.sub_wrap(%c)
-        %negative   : Bool = %red.negative
-        %subtract   : Bool = %negative.ne(%want_cos.ne(0))
-        %sum        : U256 = %base.add_wrap(%s)
-        %difference : U256 = %base.sub_wrap(%s)
-        %f          : U256 = %subtract
-            ? %difference
-            : %sum
-        %lz   : S64        = cm_trig_clz(cm_trig_high(%f))
-        %frac : U128       = cm_trig_top256(%f, %lz)
-        %r    : CmTrigFast = CmTrigFast { vouched: true, frac: %frac,
-                exponent: 0.sub(%lz).to_wrap<U64>(), sign: %flip }
-        return(%r)
+    block combine(red: CmTrigReduced, sq: CmTrigSquares, sine_theta: U128, want_cos: S64, j: S64,
+            flip: U128):
+        et         : S64  = red.et
+        correction : U128 = cm_trig_cos_corr(sq.u1, sq.u, sq.v)
+        first1     : U128 = cm_trig_sincos(j.to<USize>(), want_cos.to<USize>(), 1)
+        first2     : U128 = cm_trig_sincos(j.to<USize>(), want_cos.to<USize>(), 2)
+        second2    : U128 = cm_trig_sincos(j.to<USize>(), 1.sub(want_cos).to<USize>(), 2)
+        c_frac     : U128 = cm_trig_mhi(first2, correction)
+        s_frac     : U128 = cm_trig_mhi(second2, sine_theta)
+        c          : U256 = cm_trig_place256(c_frac, et.mul(2).add(128))
+        s          : U256 = cm_trig_place256(s_frac, et.add(128))
+        first      : U256 = cm_trig_join(first2, first1)
+        base       : U256 = first.sub_wrap(c)
+        negative   : Bool = red.negative
+        subtract   : Bool = negative.ne(want_cos.ne(0))
+        sum        : U256 = base.add_wrap(s)
+        difference : U256 = base.sub_wrap(s)
+        f          : U256 = subtract
+            ? difference
+            : sum
+        lz   : S64        = cm_trig_clz(cm_trig_high(f))
+        frac : U128       = cm_trig_top256(f, lz)
+        r    : CmTrigFast = CmTrigFast { vouched: true, frac: frac,
+                exponent: 0.sub(lz).to_wrap<U64>(), sign: flip }
+        return(r)
 
 // -- accurate path -------------------------------------------------------------
 
 /// sum_{k>=0} (-1)^k coef[k]*u^k, eighteen terms by Horner in three tiers: terms 11..17 at 128 bits, 2..10
 /// at 256 and 0..1 at 384. Every step stays positive because u*coef[k+1] < coef[k].
-routine cm_trig_alternating(%u: CmTrigU384, %coef: @U128) -> CmTrigU384
+routine cm_trig_alternating(u: CmTrigU384, coef: @U128) -> CmTrigU384
     block entry():
-        %last : U128 = cm_trig_coef(%coef, 17, 2)
-        jump narrow(16, %last, %u, %coef)
+        last : U128 = cm_trig_coef(coef, 17, 2)
+        jump narrow(16, last, u, coef)
 
-    block narrow(%k: USize, %acc: U128, %u: CmTrigU384, %coef: @U128):
-        %done : Bool = %k.lt(11)
-        branch %done
-            ? middle(10, cm_trig_join(%acc, 0), %u, %coef)
-            : narrow_step(%k, %acc, %u, %coef)
+    block narrow(k: USize, acc: U128, u: CmTrigU384, coef: @U128):
+        done : Bool = k.lt(11)
+        branch done
+            ? middle(10, cm_trig_join(acc, 0), u, coef)
+            : narrow_step(k, acc, u, coef)
 
-    block narrow_step(%k: USize, %acc: U128, %u: CmTrigU384, %coef: @U128):
-        %c    : U128 = cm_trig_coef(%coef, %k, 2)
-        %next : U128 = %c.sub_wrap(cm_trig_mhi(%u.l2, %acc))
-        jump narrow(%k.sub(1), %next, %u, %coef)
+    block narrow_step(k: USize, acc: U128, u: CmTrigU384, coef: @U128):
+        c    : U128 = cm_trig_coef(coef, k, 2)
+        next : U128 = c.sub_wrap(cm_trig_mhi(u.l2, acc))
+        jump narrow(k.sub(1), next, u, coef)
 
-    block middle(%k: USize, %acc: U256, %u: CmTrigU384, %coef: @U128):
-        %done : Bool = %k.lt(2)
-        branch %done
-            ? widen_to_384(%acc, %u, %coef)
-            : middle_step(%k, %acc, %u, %coef)
+    block middle(k: USize, acc: U256, u: CmTrigU384, coef: @U128):
+        done : Bool = k.lt(2)
+        branch done
+            ? widen_to_384(acc, u, coef)
+            : middle_step(k, acc, u, coef)
 
-    block middle_step(%k: USize, %acc: U256, %u: CmTrigU384, %coef: @U128):
-        %c_lo    : U128 = cm_trig_coef(%coef, %k, 1)
-        %c_hi    : U128 = cm_trig_coef(%coef, %k, 2)
-        %c       : U256 = cm_trig_join(%c_hi, %c_lo)
-        %u_top   : U256 = cm_trig_join(%u.l2, %u.l1)
-        %product : U256 = cm_trig_mul256(%u_top, %acc)
-        %next    : U256 = %c.sub_wrap(%product)
-        jump middle(%k.sub(1), %next, %u, %coef)
+    block middle_step(k: USize, acc: U256, u: CmTrigU384, coef: @U128):
+        c_lo    : U128 = cm_trig_coef(coef, k, 1)
+        c_hi    : U128 = cm_trig_coef(coef, k, 2)
+        c       : U256 = cm_trig_join(c_hi, c_lo)
+        u_top   : U256 = cm_trig_join(u.l2, u.l1)
+        product : U256 = cm_trig_mul256(u_top, acc)
+        next    : U256 = c.sub_wrap(product)
+        jump middle(k.sub(1), next, u, coef)
 
-    block widen_to_384(%acc: U256, %u: CmTrigU384, %coef: @U128):
-        %high : U128       = cm_trig_high(%acc)
-        %wide : CmTrigU384 = CmTrigU384 { l0: 0, l1: %acc.to_wrap<U128>(), l2: %high }
-        jump full(1, %wide, %u, %coef)
+    block widen_to_384(acc: U256, u: CmTrigU384, coef: @U128):
+        high : U128       = cm_trig_high(acc)
+        wide : CmTrigU384 = CmTrigU384 { l0: 0, l1: acc.to_wrap<U128>(), l2: high }
+        jump full(1, wide, u, coef)
 
-    block full(%k: S64, %acc: CmTrigU384, %u: CmTrigU384, %coef: @U128):
-        %done : Bool = %k.lt(0)
-        branch %done
-            ? return(%acc)
+    block full(k: S64, acc: CmTrigU384, u: CmTrigU384, coef: @U128):
+        done : Bool = k.lt(0)
+        branch done
+            ? return(acc)
             : continue
-        %c0   : U128       = cm_trig_coef(%coef, %k.to<USize>(), 0)
-        %c1   : U128       = cm_trig_coef(%coef, %k.to<USize>(), 1)
-        %c2   : U128       = cm_trig_coef(%coef, %k.to<USize>(), 2)
-        %c    : CmTrigU384 = CmTrigU384 { l0: %c0, l1: %c1, l2: %c2 }
-        %next : CmTrigU384 = cm_trig_sub384(%c, cm_trig_mul384(%u, %acc))
-        jump full(%k.sub(1), %next, %u, %coef)
+        c0   : U128       = cm_trig_coef(coef, k.to<USize>(), 0)
+        c1   : U128       = cm_trig_coef(coef, k.to<USize>(), 1)
+        c2   : U128       = cm_trig_coef(coef, k.to<USize>(), 2)
+        c    : CmTrigU384 = CmTrigU384 { l0: c0, l1: c1, l2: c2 }
+        next : CmTrigU384 = cm_trig_sub384(c, cm_trig_mul384(u, acc))
+        jump full(k.sub(1), next, u, coef)
 
 /// Rounds a normalized 384-bit fraction frac × 2^(e2 - 384) to binary128, to nearest with ties to even. The
 /// result is never subnormal here: |x| >= 2^-57 keeps it above 2^-124.
-routine cm_trig_round384(%frac: CmTrigU384, %e2: U64, %sign: U128) -> U128
+routine cm_trig_round384(frac: CmTrigU384, e2: U64, sign: U128) -> U128
     block entry():
-        %top       : U128 = %frac.l2
-        %mantissa  : U128 = %top.shr(15)
-        %round_bit : Bool = %top.shr(14).bitand(1).ne(0)
-        %below     : U128 = %top.bitand(0x3FFF).bitor(%frac.l1).bitor(%frac.l0)
-        %sticky    : Bool = %below.ne(0)
-        %odd       : Bool = %mantissa.bitand(1).ne(0)
-        %up        : U128 = %round_bit.bitand(%sticky.bitor(%odd)).to<U128>()
-        %biased    : U128 = %e2.add_wrap(16382).to<U128>().shl(112)
-        %magnitude : U128 = %biased.add_wrap(%mantissa.sub_wrap(F128_IMPLICIT)).add_wrap(%up)
-        %r         : U128 = %sign.bitor(%magnitude)
-        return(%r)
+        top       : U128 = frac.l2
+        mantissa  : U128 = top.shr(15)
+        round_bit : Bool = top.shr(14).bitand(1).ne(0)
+        below     : U128 = top.bitand(0x3FFF).bitor(frac.l1).bitor(frac.l0)
+        sticky    : Bool = below.ne(0)
+        odd       : Bool = mantissa.bitand(1).ne(0)
+        up        : U128 = round_bit.bitand(sticky.bitor(odd)).to<U128>()
+        biased    : U128 = e2.add_wrap(16382).to<U128>().shl(112)
+        magnitude : U128 = biased.add_wrap(mantissa.sub_wrap(F128_IMPLICIT)).add_wrap(up)
+        r         : U128 = sign.bitor(magnitude)
+        return(r)
 
 /// The 384-bit path: everything the fast path would not decide.
-routine cm_trig_accurate(%m: U128, %e: S64, %cosine: Bool, %sign: U128) -> U128
+routine cm_trig_accurate(m: U128, e: S64, cosine: Bool, sign: U128) -> U128
     block entry():
-        %small : Bool = %e.lt(-8)
-        branch %small
-            ? unreduced(%m, %e, %cosine, %sign)
-            : reduced(%m, %e, %cosine, %sign)
+        small : Bool = e.lt(-8)
+        branch small
+            ? unreduced(m, e, cosine, sign)
+            : reduced(m, e, cosine, sign)
 
     // below 2^-8 the argument is its own reduced angle
-    block unreduced(%m: U128, %e: S64, %cosine: Bool, %sign: U128):
-        %t   : CmTrigU384        = CmTrigU384 { l0: 0, l1: 0, l2: %m.shl(15) }
-        %red : CmTrigWideReduced = CmTrigWideReduced { n: 0, negative: false, t: %t, et: %e.add(1) }
-        %r   : U128              = cm_trig_evaluate(%red, %cosine, %sign)
-        return(%r)
+    block unreduced(m: U128, e: S64, cosine: Bool, sign: U128):
+        t   : CmTrigU384        = CmTrigU384 { l0: 0, l1: 0, l2: m.shl(15) }
+        red : CmTrigWideReduced = CmTrigWideReduced { n: 0, negative: false, t: t, et: e.add(1) }
+        r   : U128              = cm_trig_evaluate(red, cosine, sign)
+        return(r)
 
-    block reduced(%m: U128, %e: S64, %cosine: Bool, %sign: U128):
-        %red : CmTrigWideReduced = cm_trig_reduce_wide(%m, %e)
-        %r   : U128              = cm_trig_evaluate(%red, %cosine, %sign)
-        return(%r)
+    block reduced(m: U128, e: S64, cosine: Bool, sign: U128):
+        red : CmTrigWideReduced = cm_trig_reduce_wide(m, e)
+        r   : U128              = cm_trig_evaluate(red, cosine, sign)
+        return(r)
 
 /// sin or cos of A ± theta at 384 bits, rounded.
-routine cm_trig_evaluate(%red: CmTrigWideReduced, %cosine: Bool, %sign: U128) -> U128
+routine cm_trig_evaluate(red: CmTrigWideReduced, cosine: Bool, sign: U128) -> U128
     block entry():
-        %t         : CmTrigU384 = %red.t
-        %et        : S64        = %red.et
-        %square    : CmTrigU384 = cm_trig_mul384(%t, %t)
-        %u         : CmTrigU384 = cm_trig_shr384(%square, 0.sub(%et.add(%et)))
-        %n         : S64        = %red.n.to<S64>()
-        %quadrant  : S64        = %n.shr(7).add(%cosine.to<S64>())
-        %want_cos  : S64        = %quadrant.bitand(1)
-        %j         : S64        = %n.bitand(127)
-        %flipped   : Bool       = %quadrant.bitand(2).ne(0)
-        %flip_sign : U128       = %sign.bitxor(F128_SIGN)
-        %sg        : U128       = %flipped
-            ? %flip_sign
-            : %sign
+        t         : CmTrigU384 = red.t
+        et        : S64        = red.et
+        square    : CmTrigU384 = cm_trig_mul384(t, t)
+        u         : CmTrigU384 = cm_trig_shr384(square, 0.sub(et.add(et)))
+        n         : S64        = red.n.to<S64>()
+        quadrant  : S64        = n.shr(7).add(cosine.to<S64>())
+        want_cos  : S64        = quadrant.bitand(1)
+        j         : S64        = n.bitand(127)
+        flipped   : Bool       = quadrant.bitand(2).ne(0)
+        flip_sign : U128       = sign.bitxor(F128_SIGN)
+        sg        : U128       = flipped
+            ? flip_sign
+            : sign
         // sin(theta) = theta*(1 - u*Q) keeps theta's floating form, at most one bit short
-        %q         : CmTrigU384 = cm_trig_alternating(%u, CM_TRIG_SIN_COEF.to<@U128>())
-        %uq        : CmTrigU384 = cm_trig_mul384(%u, %q)
-        %t_uq      : CmTrigU384 = cm_trig_mul384(%t, %uq)
-        %sine_raw  : CmTrigU384 = cm_trig_sub384(%t, %t_uq)
-        %lzs       : S64        = cm_trig_lz384(%sine_raw)
-        %sine      : CmTrigU384 = cm_trig_shl384(%sine_raw, %lzs)
-        %es        : S64        = %et.sub(%lzs)
-        %negative  : Bool       = %red.negative
-        %pure_sine : Bool       = %j.eq(0).bitand(%want_cos.eq(0))
-        branch %pure_sine
-            ? pure(%sine, %es, %sg, %negative)
-            : combine(%u, %sine, %es, %want_cos, %j, %sg, %negative)
+        q         : CmTrigU384 = cm_trig_alternating(u, CM_TRIG_SIN_COEF.to<@U128>())
+        uq        : CmTrigU384 = cm_trig_mul384(u, q)
+        t_uq      : CmTrigU384 = cm_trig_mul384(t, uq)
+        sine_raw  : CmTrigU384 = cm_trig_sub384(t, t_uq)
+        lzs       : S64        = cm_trig_lz384(sine_raw)
+        sine      : CmTrigU384 = cm_trig_shl384(sine_raw, lzs)
+        es        : S64        = et.sub(lzs)
+        negative  : Bool       = red.negative
+        pure_sine : Bool       = j.eq(0).bitand(want_cos.eq(0))
+        branch pure_sine
+            ? pure(sine, es, sg, negative)
+            : combine(u, sine, es, want_cos, j, sg, negative)
 
     // A = 0: the result is ±sin(theta) itself
-    block pure(%sine: CmTrigU384, %es: S64, %sg: U128, %negative: Bool):
-        %flip_sign : U128 = %sg.bitxor(F128_SIGN)
-        %sign_out  : U128 = %negative
-            ? %flip_sign
-            : %sg
-        %r : U128 = cm_trig_round384(%sine, %es.to_wrap<U64>(), %sign_out)
-        return(%r)
+    block pure(sine: CmTrigU384, es: S64, sg: U128, negative: Bool):
+        flip_sign : U128 = sg.bitxor(F128_SIGN)
+        sign_out  : U128 = negative
+            ? flip_sign
+            : sg
+        r : U128 = cm_trig_round384(sine, es.to_wrap<U64>(), sign_out)
+        return(r)
 
     // 1 - cos(theta) = u*Q, so T*cos(theta) = T - T*(u*Q) never overflows the frame
-    block combine(%u: CmTrigU384, %sine: CmTrigU384, %es: S64, %want_cos: S64, %j: S64, %sg: U128,
-            %negative: Bool):
-        %q          : CmTrigU384 = cm_trig_alternating(%u, CM_TRIG_COS_COEF.to<@U128>())
-        %one_minus  : CmTrigU384 = cm_trig_mul384(%u, %q)
-        %first      : CmTrigU384 = cm_trig_sincos384(%j.to<USize>(), %want_cos.to<USize>())
-        %second     : CmTrigU384 = cm_trig_sincos384(%j.to<USize>(), 1.sub(%want_cos).to<USize>())
-        %first_c    : CmTrigU384 = cm_trig_mul384(%first, %one_minus)
-        %base       : CmTrigU384 = cm_trig_sub384(%first, %first_c)
-        %second_s   : CmTrigU384 = cm_trig_mul384(%second, %sine)
-        %term       : CmTrigU384 = cm_trig_shr384(%second_s, 0.sub(%es))
-        %subtract   : Bool       = %negative.ne(%want_cos.ne(0))
-        %sum        : CmTrigU384 = cm_trig_add384(%base, %term)
-        %difference : CmTrigU384 = cm_trig_sub384(%base, %term)
-        %f          : CmTrigU384 = %subtract
-            ? %difference
-            : %sum
-        %lz         : S64        = cm_trig_lz384(%f)
-        %normalized : CmTrigU384 = cm_trig_shl384(%f, %lz)
-        %r          : U128       = cm_trig_round384(%normalized, 0.sub(%lz).to_wrap<U64>(), %sg)
-        return(%r)
+    block combine(u: CmTrigU384, sine: CmTrigU384, es: S64, want_cos: S64, j: S64, sg: U128,
+            negative: Bool):
+        q          : CmTrigU384 = cm_trig_alternating(u, CM_TRIG_COS_COEF.to<@U128>())
+        one_minus  : CmTrigU384 = cm_trig_mul384(u, q)
+        first      : CmTrigU384 = cm_trig_sincos384(j.to<USize>(), want_cos.to<USize>())
+        second     : CmTrigU384 = cm_trig_sincos384(j.to<USize>(), 1.sub(want_cos).to<USize>())
+        first_c    : CmTrigU384 = cm_trig_mul384(first, one_minus)
+        base       : CmTrigU384 = cm_trig_sub384(first, first_c)
+        second_s   : CmTrigU384 = cm_trig_mul384(second, sine)
+        term       : CmTrigU384 = cm_trig_shr384(second_s, 0.sub(es))
+        subtract   : Bool       = negative.ne(want_cos.ne(0))
+        sum        : CmTrigU384 = cm_trig_add384(base, term)
+        difference : CmTrigU384 = cm_trig_sub384(base, term)
+        f          : CmTrigU384 = subtract
+            ? difference
+            : sum
+        lz         : S64        = cm_trig_lz384(f)
+        normalized : CmTrigU384 = cm_trig_shl384(f, lz)
+        r          : U128       = cm_trig_round384(normalized, 0.sub(lz).to_wrap<U64>(), sg)
+        return(r)
 
 // -- tables --------------------------------------------------------------------
 
