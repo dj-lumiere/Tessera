@@ -9,7 +9,7 @@ static class Cli
         usage:
           tessera build                 build the solution its config.toml describes (here or above)
           tessera run                   build it and run it
-          tessera build <file.tess>... [-o <out>] [--emit-llvm] [<target>] [--mode <mode>]
+          tessera build <file.tess>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [<target>] [--mode <mode>]
           tessera run   <file.tess>... [<target>] [--mode <mode>]
           tessera test  [<target>] [--mode <mode>] <dir-or-file.tess>...
           tessera check [<target>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
@@ -17,6 +17,8 @@ static class Cli
           tessera version               print the builder's version
           tessera help                  print this text
 
+        --no-stdlib-exports: leave out the standard library's #export routines (the default panic handler, the F16 and
+                BF16 conversion helpers), for a library that is linked into a program which has them already.
         <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), as a
                 manifest's mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a
                 debugger shows Tessera lines, routine parameters, bindings and block parameters.
@@ -158,7 +160,8 @@ static class Cli
         public BuildTarget Build() => _target with { Cpu = _cpu, Features = _features };
     }
 
-    private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode);
+    private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode,
+        bool StdlibExports);
 
     /// `--mode <name>`: one of the four build modes.
     private static BuildMode ParseMode(string[] args, ref int i)
@@ -172,7 +175,7 @@ static class Cli
     {
         var inputs = new List<string>();
         string? output = null;
-        bool emit = false;
+        bool emit = false, stdlibExports = true;
         var mode = BuildMode.Debug;
         var targetArgs = new TargetArgs();
         for (int i = 0; i < args.Length; i++)
@@ -182,6 +185,7 @@ static class Cli
             {
                 case "-o" when i + 1 < args.Length: output = args[++i]; break;
                 case "--emit-llvm": emit = true; break;
+                case "--no-stdlib-exports": stdlibExports = false; break;
                 case "--mode": mode = ParseMode(args, ref i); break;
                 default:
                     if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
@@ -190,7 +194,7 @@ static class Cli
             }
         }
         if (inputs.Count == 0) throw new ToolError("no input files");
-        return new Options(inputs, output, emit, targetArgs.Build(), mode);
+        return new Options(inputs, output, emit, targetArgs.Build(), mode, stdlibExports);
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -242,7 +246,7 @@ static class Cli
     /// Compiles the inputs to LLVM IR. An executable needs `routine main() -> S32`; checking for it here gives a
     /// clear error instead of the platform linker's (lld-link says "subsystem must be defined").
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
-        IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug)
+        IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true)
     {
         var inputs = files.ToList();
         var compiler = new Compiler(target, LoadDecls(inputs, target))
@@ -250,6 +254,7 @@ static class Cli
             FileTagPaths = FileTagPaths(inputs, roots),
             DebugInfo = true,
             Optimized = mode.IsOptimized(),
+            EmitLibraryExports = stdlibExports,
             StdlibParent = Path.GetDirectoryName(StdlibDir()),
         };
         string ir = compiler.Generate();
@@ -356,7 +361,7 @@ static class Cli
             return 0;
         }
         var o = ParseOptions(args);
-        string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm, mode: o.Mode);
+        string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm, mode: o.Mode, stdlibExports: o.StdlibExports);
         string stem = Path.ChangeExtension(o.Inputs[0], null);
 
         if (o.EmitLlvm)

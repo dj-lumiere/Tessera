@@ -33,7 +33,9 @@ routine switch_stack(%from: @Addr = REG7, %to: Addr = REG6) -> Void
         return()  // ret
 
 /// Windows x64: %from arrives in RCX, %to in RDX. RBX, RBP, RDI, RSI, R12 to R15 and XMM6 to XMM15 are the
-/// caller's, and the thread block's stack base and limit (GS:[8], GS:[16]) follow the stack.
+/// caller's, and the thread block's stack fields follow the stack: its base and limit (GS:[8], GS:[16]), which
+/// probes of a large frame check, and the bottom of its reservation (DeallocationStack, GS:[0x1478]), which Windows
+/// checks when the stack grows into its guard page. A pad word keeps the frame's alignment.
 #[target(arch: "x86_64", os: "windows"), external("asm"), naked]
 routine switch_stack(%from: @Addr = REG1, %to: Addr = REG2) -> Void
     block entry():
@@ -49,6 +51,9 @@ routine switch_stack(%from: @Addr = REG1, %to: Addr = REG2) -> Void
         push<U64>(REG0)  // push rax
         mov<U64, U64>(REG0, GS.offset(16))  // mov rax, gs:[16]
         push<U64>(REG0)  // push rax
+        mov<U64, U64>(REG0, GS.offset(0x1478))  // mov rax, gs:[0x1478]
+        push<U64>(REG0)  // push rax
+        push<U64>(REG0)  // push rax (the pad)
         sub<U64>(SP, 160)  // sub rsp, 160
         movdqu<Vector<U8, 16>, Vector<U8, 16>>(SP.offset(0), VREG6)  // movdqu [rsp], xmm6
         movdqu<Vector<U8, 16>, Vector<U8, 16>>(SP.offset(16), VREG7)  // movdqu [rsp + 16], xmm7
@@ -73,6 +78,9 @@ routine switch_stack(%from: @Addr = REG1, %to: Addr = REG2) -> Void
         movdqu<Vector<U8, 16>, Vector<U8, 16>>(VREG14, SP.offset(128))  // movdqu xmm14, [rsp + 128]
         movdqu<Vector<U8, 16>, Vector<U8, 16>>(VREG15, SP.offset(144))  // movdqu xmm15, [rsp + 144]
         add<U64>(SP, 160)  // add rsp, 160
+        pop<U64>(REG0)  // pop rax (the pad)
+        pop<U64>(REG0)  // pop rax
+        mov<U64, U64>(GS.offset(0x1478), REG0)  // mov gs:[0x1478], rax
         pop<U64>(REG0)  // pop rax
         mov<U64, U64>(GS.offset(16), REG0)  // mov gs:[16], rax
         pop<U64>(REG0)  // pop rax
@@ -128,6 +136,20 @@ routine switch_stack(%from: @Addr, %to: Addr) -> Void
 
 // -- a new stack ---------------------------------------------------------------------
 
+/// What VirtualQuery says about a range of pages (MEMORY_BASIC_INFORMATION on 64-bit Windows).
+#target(arch: "x86_64", os: "windows")
+private record PageRange
+    base               : Addr
+    allocation_base    : Addr
+    allocation_protect : U32
+    partition          : U16
+    pad                : U16
+    size               : USize
+    state              : U32
+    protect            : U32
+    type               : U32
+    pad2               : U32
+
 /// The words a new stack starts with, below its 16-byte aligned top, as switch_stack restores them: the saved
 /// registers (zero), the fiber's first routine where switch_stack returns, and on x86 the room above a return
 /// address that a routine's entry expects (its own return address slot, and Windows' 32-byte home area).
@@ -139,7 +161,7 @@ private routine frame_words() -> USize
 #target(arch: "x86_64", os: "windows")
 private routine frame_words() -> USize
     block entry():
-        return(36)
+        return(38)
 
 #target(arch: not "x86_64")
 private routine frame_words() -> USize
@@ -155,20 +177,29 @@ private routine entry_word() -> USize
 #target(arch: "x86_64", os: "windows")
 private routine entry_word() -> USize
     block entry():
-        return(30)
+        return(32)
 
 #target(arch: not "x86_64")
 private routine entry_word() -> USize
     block entry():
         return(1)
 
-/// Windows checks a stack against the thread block's base and limit, which switch_stack restores from the 21st and
-/// 22nd words of the frame. Elsewhere nothing follows the stack.
+#[external("c"), symbol("VirtualQuery"), callconv("stdcall"), target(arch: "x86_64", os: "windows")]
+private routine c_virtual_query(%addr: Addr, %info: @PageRange, %length: USize) -> USize
+
+/// Windows checks a stack against the thread block's fields, which switch_stack restores from the frame: the
+/// reservation's bottom (word 21), the limit (word 22), and the base (word 23). The limit is the bottom of the pages
+/// committed at the top, which VirtualQuery gives: below it a stack allocator's guard page lets Windows grow the
+/// stack, and memory committed all at once (another allocator) reads as one range. Elsewhere nothing follows the
+/// stack.
 #target(arch: "x86_64", os: "windows")
 private routine store_bounds(%sp: @U64, %limit: U64, %base: U64) -> Void
     block entry():
-        %limit.store_into(%sp.stride(20))
-        %base.store_into(%sp.stride(21))
+        claim %info : @PageRange <- uninit
+        c_virtual_query(inttoptr<U64, Addr>(%base.sub(1)), %info, 48)
+        ptrtoint<Addr, U64>(%info.allocation_base.load()).store_into(%sp.stride(21))
+        ptrtoint<Addr, U64>(%info.base.load()).store_into(%sp.stride(22))
+        %base.store_into(%sp.stride(23))
         return()
 
 #target(arch: not "x86_64")

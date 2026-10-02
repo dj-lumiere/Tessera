@@ -5,10 +5,17 @@
 // down, so a stack that runs out reaches that page and the program stops
 // there, instead of writing over whatever lies below.
 //
+// The pages are reserved, not committed up front, so a stack costs the memory
+// it has touched and a great many can coexist: Linux and macOS commit a page
+// when it is first touched (mmap, MAP_NORESERVE on Linux), and on Windows the
+// top two pages are committed with a guard page below them, which Windows moves
+// down as the stack grows into it, as for a thread's own stack (the fiber
+// switch keeps the thread block's stack fields in step, see switch_stack).
+//
 // The Allocator interface frees without a size, so the size of the mapping is
-// written at the start of the guard page, which is opened again to read it
-// when the stack is freed. It doesn't grow stacks: realloc returns null, as an
-// allocator out of memory does.
+// written at the start of the bottom page, which is opened again to read it
+// when the stack is freed. It doesn't grow a stack past its size: realloc
+// returns null, as an allocator out of memory does.
 
 module Standard::Os
 
@@ -29,7 +36,8 @@ private routine c_mprotect(%addr: Addr, %length: USize, %prot: CInt) -> CInt
 #[external("c"), symbol("munmap"), target(os: not "windows")]
 private routine c_munmap(%addr: Addr, %length: USize) -> CInt
 
-/// MAP_PRIVATE | MAP_ANONYMOUS, whose second bit differs between Linux and the BSDs.
+/// MAP_PRIVATE | MAP_ANONYMOUS, whose second bit differs between Linux and the BSDs, and on Linux MAP_NORESERVE:
+/// the pages are counted against memory only once touched.
 #target(os: "macos")
 private routine map_private_anonymous() -> CInt
     block entry():
@@ -38,7 +46,7 @@ private routine map_private_anonymous() -> CInt
 #target(os: not "macos", os: not "windows")
 private routine map_private_anonymous() -> CInt
     block entry():
-        return(0x22)
+        return(0x4022)
 
 #target(os: not "windows")
 private routine page_size() -> USize
@@ -46,16 +54,21 @@ private routine page_size() -> USize
         %size : USize = c_getpagesize().to<USize>()
         return(%size)
 
-/// Read and write pages, or null.
+/// %length bytes of pages for a stack, the bottom one closed with the length written in it, or null.
 #target(os: not "windows")
-private routine pages_map(%length: USize) -> Addr
+private routine stack_map(%length: USize, %page: USize) -> Addr
     block entry():
         // PROT_READ | PROT_WRITE, no file
         %at     : Addr = c_mmap(null, %length, 3, map_private_anonymous(), -1, 0)
         %failed : Bool = ptrtoint<Addr, SSize>(%at).eq(-1)
         branch %failed
             ? return(null)
-            : return(%at)
+            : close(%at)
+
+    block close(%at: Addr):
+        %length.store_into(%at.to<@USize>())
+        pages_protect(%at, %page, false)
+        return(%at)
 
 #target(os: not "windows")
 private routine pages_protect(%at: Addr, %length: USize, %open: Bool) -> Void
@@ -87,11 +100,40 @@ private routine page_size() -> USize
     block entry():
         return(4096)
 
+/// %length bytes reserved for a stack: the bottom page committed and closed with the length written in it, the top
+/// two committed, and below them a guard page Windows moves down as the stack grows into it. Null if the space
+/// can't be reserved.
 #target(os: "windows")
-private routine pages_map(%length: USize) -> Addr
+private routine stack_map(%length: USize, %page: USize) -> Addr
     block entry():
-        // MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE
-        %at : Addr = c_virtual_alloc(null, %length, 0x3000, 4)
+        // MEM_RESERVE, PAGE_NOACCESS
+        %at     : Addr = c_virtual_alloc(null, %length, 0x2000, 1)
+        %failed : Bool = %at.is_null()
+        branch %failed
+            ? return(null)
+            : bottom(%at)
+
+    // MEM_COMMIT, PAGE_READWRITE
+    block bottom(%at: Addr):
+        c_virtual_alloc(%at, %page, 0x1000, 4)
+        %length.store_into(%at.to<@USize>())
+        pages_protect(%at, %page, false)
+        %pages : USize = %length.div(%page).sub(1)
+        %small : Bool  = %pages.lt(3)
+        branch %small
+            ? whole(%at, %pages)
+            : top(%at)
+
+    // Too small to grow: all of it committed.
+    block whole(%at: Addr, %pages: USize):
+        c_virtual_alloc(%at.offset(%page.to<SSize>()), %pages.mul(%page), 0x1000, 4)
+        return(%at)
+
+    // PAGE_READWRITE | PAGE_GUARD for the page below the top two
+    block top(%at: Addr):
+        %two : USize = %page.mul(2)
+        c_virtual_alloc(%at.offset(%length.sub(%two).to<SSize>()), %two, 0x1000, 4)
+        c_virtual_alloc(%at.offset(%length.sub(%two).sub(%page).to<SSize>()), %page, 0x1000, 0x104)
         return(%at)
 
 #target(os: "windows")
@@ -118,16 +160,13 @@ private routine stack_alloc_fn(%state: Addr, %size: USize) -> Addr
         %page   : USize = page_size()
         %pages  : USize = %size.add(%page).sub(1).div(%page)
         %length : USize = %pages.add(1).mul(%page)
-        %base   : Addr  = pages_map(%length)
+        %base   : Addr  = stack_map(%length, %page)
         %failed : Bool  = %base.is_null()
         branch %failed
             ? return(null)
-            : guard(%base, %page, %length)
+            : done(%base, %page)
 
-    // The mapping's size goes at the start of the guard page, which is then closed.
-    block guard(%base: Addr, %page: USize, %length: USize):
-        %length.store_into(%base.to<@USize>())
-        pages_protect(%base, %page, false)
+    block done(%base: Addr, %page: USize):
         %stack : Addr = %base.offset(%page.to<SSize>())
         return(%stack)
 
