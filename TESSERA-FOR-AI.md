@@ -317,6 +317,9 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
   `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `buf.write("...")`, then `buf.to_bytes()`; it is
   the string builder). Standard input is `In`: `In.read_line(alloc)`, `read_word`, `read_count(n, alloc)`,
   `read_all`, `read(buffer, n)`, all through one buffer the process shares.
+- Reading numbers back: `S32.parse(text)` (every integer type) gives `Result<T, ParseIntError>` (`Empty`,
+  `Invalid`, `OutOfRange`) for an optional sign and decimal digits; `F64.parse` / `F32.parse` give
+  `Result<T, ParseFloatError>`. Two numbers from a line: `In.read_word(alloc)` twice, then `S32.parse`.
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
   `Bytes`, and `p.represent_into(out)` for a pointer's address (`0x7ffd5e8c1a40`); `represent_hex`,
   `represent_fixed(out, digits)`; `represent_with(out, v, spec)` with a `FormatSpec`.
