@@ -35,8 +35,8 @@ public sealed partial class Compiler
     }
 }
 
-/// Reads an assembly routine's body literally: the method is the mnemonic, the receiver the first operand, the
-/// arguments the rest, and the type arguments the destination's type and the sources'.
+/// Reads an assembly routine's body literally: each instruction is written like a routine call, the mnemonic its name,
+/// its operands the arguments in the assembler's order, and its type arguments one per register operand.
 internal sealed class AsmLowering
 {
     private enum Arch { X86, A64, Rv }
@@ -588,7 +588,7 @@ internal sealed class AsmLowering
     private string Instruction(Stmt s)
     {
         if (s is not ExprStmt es)
-            throw new CompileError(s.Pos, "an assembly body holds instructions, one per line: REG0.add<U64, U64>(REG3)");
+            throw new CompileError(s.Pos, "an assembly body holds instructions, one per line: add<U64, U64>(REG0, REG3)");
         string prefix = "";
         foreach (var a in es.Attributes)
         {
@@ -597,15 +597,17 @@ internal sealed class AsmLowering
             prefix += Escape(p.Value) + " ";
         }
 
-        (string mnemonic, Expr? receiver, List<TypeRef> typeArgs, List<Expr> args) = es.Value switch
+        // An instruction is written like a routine, its operands in the assembler's order: push<U64>(REG5),
+        // add<U64, U64>(REG0, REG3), rdtsc().
+        (string mnemonic, List<TypeRef> typeArgs, List<Expr> operands) = es.Value switch
         {
-            CallExpr { Path: null } c => (c.Name, (Expr?)null, c.TypeArgs, c.Args),
-            NsCallExpr { Owner: { Args.Count: 0, Path: null } o } ns =>
-                (ns.Name, new PresetRef(null, o.Name, ns.Pos), ns.TypeArgs, ns.Args),
-            MethodCallExpr m => (m.Name, m.Receiver, m.TypeArgs, m.Args),
-            _ => throw new CompileError(es.Pos, "an instruction is written REG0.mnemonic<T, U>(operands), %a.mnemonic<…>(…) or mnemonic()"),
+            CallExpr { Path: null } c => (c.Name, c.TypeArgs, c.Args),
+            NsCallExpr { Owner: { Args.Count: 0, Path: null } o } ns => throw new CompileError(ns.Pos,
+                $"an instruction is written like a routine, its operands in order: {ns.Name}<…>({o.Name}{(ns.Args.Count > 0 ? ", …" : "")})"),
+            MethodCallExpr m => throw new CompileError(m.Pos,
+                $"an instruction is written like a routine, its operands in order: {m.Name}<…>({OperandName(m.Receiver)}{(m.Args.Count > 0 ? ", …" : "")})"),
+            _ => throw new CompileError(es.Pos, "an instruction is written like a routine, its operands in order: add<U64, U64>(REG0, REG3), rdtsc()"),
         };
-        var operands = receiver is null ? args : [receiver, .. args];
         // One type per register, in order: a register, a parameter's register, or the memory a memory operand
         // reads (its size). An immediate and a condition take none.
         int wanted = operands.Count(IsTyped);
@@ -624,6 +626,16 @@ internal sealed class AsmLowering
 
     /// `$` is LLVM's operand marker, so a written one is doubled.
     private static string Escape(string written) => written.Replace("$", "$$");
+
+    /// How an operand reads in a message: a register by its name, a parameter as %name.
+    private static string OperandName(Expr e) => e switch
+    {
+        PresetRef r => r.Name,
+        ValueRef v => "%" + v.Name,
+        NsCallExpr { Owner: var o } ns => $"{o.Name}.{ns.Name}(…)",
+        MethodCallExpr { Receiver: var r } m => $"{OperandName(r)}.{m.Name}(…)",
+        _ => "…",
+    };
 
     /// Whether an operand takes a type: a register or memory does, an immediate or a condition doesn't.
     private static bool IsTyped(Expr e) => e is not (IntLit or AsmCondExpr or PresetRef { Owner.Name: "FLAGS" });
@@ -776,21 +788,20 @@ internal sealed class AsmLowering
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" } when _arch != Arch.Rv:
                 return (_arch == Arch.X86 ? "j" : "b.") + ConditionCode(cond) + " " + label;
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" }:
-                throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch REG10.lt<U64>(REG11) ? … : …");
+                throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt<U64>(REG10, REG11) ? … : …");
             case NsCallExpr or MethodCallExpr when _arch == Arch.Rv:
+                throw new CompileError(cond.Pos, "a RISC-V branch compares two registers, written like a call: lt<U64>(REG10, REG11)");
+            case CallExpr { Path: null } c when _arch == Arch.Rv:
             {
-                var (left, name, types, args, pos) = cond switch
-                {
-                    NsCallExpr { Owner: { Args.Count: 0, Path: null } o } ns =>
-                        ((Expr)new PresetRef(null, o.Name, ns.Pos), ns.Name, ns.TypeArgs, ns.Args, ns.Pos),
-                    MethodCallExpr { Receiver: ValueRef } m => (m.Receiver, m.Name, m.TypeArgs, m.Args, m.Pos),
-                    _ => throw new CompileError(cond.Pos, "a RISC-V branch compares two registers: REG10.lt<U64>(REG11)"),
-                };
-                if (args.Count != 1 || types.Count > 1)
-                    throw new CompileError(pos, $"a RISC-V branch compares two registers: REG10.{name}<U64>(REG11)");
+                var (name, types, pos) = (c.Name, c.TypeArgs, c.Pos);
+                if (!Parser.AsmComparisons.Contains(name))
+                    throw new CompileError(pos, $"'{name}' isn't a comparison: eq, ne, lt, le, gt, ge");
+                if (c.Args.Count != 2 || types.Count > 1)
+                    throw new CompileError(pos, $"a RISC-V branch compares two registers: {name}<U64>(REG10, REG11)");
+                var (left, right) = (c.Args[0], c.Args[1]);
                 bool? signed = Signedness(name, types.Count == 1 ? types[0] : null, pos);
                 var operandType = types.Count == 1 ? _c.ResolveType(types[0], _sig.Env) : _c.USize;
-                string a = CompareOperand(left, operandType), b = CompareOperand(args[0], operandType);
+                string a = CompareOperand(left, operandType), b = CompareOperand(right, operandType);
                 string u = signed == false ? "u" : "";
                 return name switch
                 {
@@ -804,7 +815,7 @@ internal sealed class AsmLowering
             }
             default:
                 throw new CompileError(cond.Pos, _arch == Arch.Rv
-                    ? "a RISC-V branch compares two registers: REG10.lt<U64>(REG11)"
+                    ? "a RISC-V branch compares two registers: lt<U64>(REG10, REG11)"
                     : "an assembly branch tests the flags: eq, ne, lt<U64> … or a FLAGS field such as FLAGS.Carry");
         }
     }
@@ -837,7 +848,7 @@ internal sealed class AsmLowering
         Arch.A64 => ConditionCode(cond),
         Arch.X86 => throw new CompileError(cond.Pos,
             "x86 spells a condition in the mnemonic (setc, cmovb), so it isn't an operand; a branch tests it"),
-        _ => throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch REG10.lt<U64>(REG11) ? … : …"),
+        _ => throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt<U64>(REG10, REG11) ? … : …"),
     };
 
     private string CompareOperand(Expr e, DType t) => e switch

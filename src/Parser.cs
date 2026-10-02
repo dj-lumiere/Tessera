@@ -824,7 +824,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
-    private static readonly HashSet<string> AsmComparisons = ["eq", "ne", "lt", "le", "gt", "ge"];
+    internal static readonly HashSet<string> AsmComparisons = ["eq", "ne", "lt", "le", "gt", "ge"];
 
     /// `eq` or `lt<U64>` as an assembly `branch` condition or condition operand (`csel<U64, U64>(REG1, REG2, lt<U64>)`):
     /// a comparison of the flags the last instruction left. `lt<U64>(…)` is a call instead, RISC-V's comparison.
