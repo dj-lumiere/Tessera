@@ -923,7 +923,7 @@ public static class Formatter
             while (end < result.Count && (result[end].Length == 0 || result[end].StartsWith(' ') || result[end].StartsWith("require ")))
                 end++;
             // `Self` starts where the owner is declared. A concrete owner is declared by the header (`U64.` in
-            // `routine U64.min`); a type parameter by its `require` line (`routine T.trunc<U>(%self: T)` with
+            // `routine U64.min`); a type parameter by its `require` line (`routine T.bitcast<U>(%self: T)` with
             // `require T: typename`), so its header keeps T. `require` lines always name their types.
             bool typeParameter = Enumerable.Range(i + 1, end - i - 1).Any(j => result[j].StartsWith("require ")
                 && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^require |,\s*){owner}\s*:"));
