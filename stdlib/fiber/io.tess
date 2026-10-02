@@ -1,0 +1,53 @@
+// Tessera stdlib: reading and writing from fibers
+//
+// read and write are read(2) and write(2) through run_blocking: inside a
+// fiber the call runs on one of the scheduler's I/O threads while the fiber
+// waits and the worker goes on with the others, and outside a fiber they are
+// the plain call.
+
+module Standard::Fiber
+
+import Standard::Os
+
+/// A read or write, on the waiting fiber's stack.
+private record IoCall
+    fd     : CInt
+    buf    : @Byte
+    count  : USize
+    result : SSize
+
+#target(os: not "none")
+private routine read_call(%raw: Addr) -> Void
+    block entry():
+        %call : @IoCall = %raw.to<@IoCall>()
+        %n    : SSize   = c_read(%call.fd.load(), %call.buf.load(), %call.count.load())
+        %call.result.store(%n)
+        return()
+
+#target(os: not "none")
+private routine write_call(%raw: Addr) -> Void
+    block entry():
+        %call : @IoCall = %raw.to<@IoCall>()
+        %n    : SSize   = c_write(%call.fd.load(), %call.buf.load(), %call.count.load())
+        %call.result.store(%n)
+        return()
+
+/// Reads up to %count bytes from %fd into %buf without stopping the other fibers: the number read, 0 at the end of
+/// the input, or negative on an error.
+#target(os: not "none")
+routine Scheduler.read(%self: @Self, %fd: CInt, %buf: @Byte, %count: USize) -> SSize
+    block entry():
+        claim %call : @IoCall <- IoCall { fd: %fd, buf: %buf, count: %count, result: 0 }
+        %self.run_blocking(read_call, %call)
+        %n : SSize = %call.result.load()
+        return(%n)
+
+/// Writes up to %count bytes from %buf to %fd without stopping the other fibers: the number written, or negative on
+/// an error.
+#target(os: not "none")
+routine Scheduler.write(%self: @Self, %fd: CInt, %buf: @Byte, %count: USize) -> SSize
+    block entry():
+        claim %call : @IoCall <- IoCall { fd: %fd, buf: %buf, count: %count, result: 0 }
+        %self.run_blocking(write_call, %call)
+        %n : SSize = %call.result.load()
+        return(%n)

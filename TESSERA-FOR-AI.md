@@ -372,7 +372,8 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 runs fibers over worker threads: `.construct(%alloc, %stacks, %workers)` (0 = one per processor), then
 `spawn(routine, %state, stack_size)` (the routine takes the state as an `Addr`), `yield()` inside a fiber, `run()`
 until all return, `destruct()`. Pass `make_stack_allocator()` as `%stacks` for guard pages. A fiber may move to
-another thread at a yield. Fibers run on x86_64 and AArch64 (not on Windows) only.
+another thread at a yield. A call that may block goes through `%sched.run_blocking(routine, %state)`, or
+`%sched.read` / `%sched.write`, so the worker runs other fibers meanwhile. Fibers run on x86_64 and AArch64 (not on Windows) only.
 
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.

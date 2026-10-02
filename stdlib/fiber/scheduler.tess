@@ -26,6 +26,13 @@
 // goes through the worker's own stack: a fiber that yields returns to its
 // worker, which queues it and resumes the next one, so a fiber is in a queue
 // only once it is off its stack.
+//
+// A call that may block the thread it runs on (reading a pipe, a socket, a
+// file) would stop every fiber of that worker. run_blocking hands it to one of
+// the scheduler's I/O threads instead and parks the fiber until it is done, so
+// the worker goes on with other fibers; read and write (stdlib/fiber/io.tess)
+// are built on it. The same on every operating system: the call itself runs as
+// it would anywhere, on a thread of its own.
 
 module Standard::Fiber
 
@@ -44,6 +51,9 @@ record FiberState
     entry    : Callable<(Addr,), Void>
     arg      : Addr
     finished : Bool
+    parked   : Bool  // waiting for its blocking call (work) on an I/O thread
+    work     : Callable<(Addr,), Void>
+    work_arg : Addr
 
 /// A worker thread of a Scheduler.
 record Worker
@@ -56,14 +66,19 @@ record Worker
     thread  : Thread  // for every worker but the first, which is run's own thread
 
 record Scheduler
-    alloc    : @Allocator  // FiberState records, the workers, and the queues
-    stacks   : @Allocator  // the fibers' stacks
-    count    : USize  // workers
-    workers  : @Worker
-    next     : USize  // the worker the next fiber spawned outside a fiber goes to
-    live     : U64  // fibers spawned and not yet returned
-    epoch    : U32  // changes when there is work to look for, or none left; idle workers wait on it
-    sleepers : U32  // workers waiting on epoch
+    alloc      : @Allocator  // FiberState records, the workers, and the queues
+    stacks     : @Allocator  // the fibers' stacks
+    count      : USize  // workers
+    workers    : @Worker
+    next       : USize  // the worker the next fiber spawned outside a fiber goes to
+    live       : U64  // fibers spawned and not yet returned
+    epoch      : U32  // changes when there is work to look for, or none left; idle workers wait on it
+    sleepers   : U32  // workers waiting on epoch
+    io_threads : @Thread  // IO_THREADS threads running the fibers' blocking calls
+    io_lock    : Mutex
+    io_queue   : CircularList<@FiberState>  // parked fibers whose call hasn't started
+    io_epoch   : U32  // changes when a call is queued or the I/O threads should stop; they wait on it
+    io_stop    : U32  // 1 once run is over
 
 /// This thread's worker, read again at every call: a fiber may be on another thread after it yields, and a
 /// thread-local address kept across the switch would be the old thread's.
@@ -99,8 +114,12 @@ routine Scheduler.construct(%alloc: @Allocator, %stacks: @Allocator, %workers: U
         jump init(%alloc, %stacks, %count, %array, %i.add(1))
 
     block finish(%alloc: @Allocator, %stacks: @Allocator, %count: USize, %array: @Worker):
-        %s : Self = Self { alloc: %alloc, stacks: %stacks, count: %count, workers: %array, next: 0,
-                live: 0, epoch: 0, sleepers: 0 }
+        %io_threads : @Thread                   = allocate<Thread>(%alloc, IO_THREADS)
+        %io_queue   : CircularList<@FiberState> = .construct(%alloc)
+        %s          : Self                      = Self { alloc: %alloc, stacks: %stacks,
+                count: %count, workers: %array, next: 0, live: 0, epoch: 0, sleepers: 0,
+                io_threads: %io_threads, io_lock: .construct(), io_queue: %io_queue, io_epoch: 0,
+                io_stop: 0 }
         return(%s)
 
 /// Starts %entry(%arg) on a stack of %stack_size bytes, from inside a fiber or out. From inside one of this
@@ -112,8 +131,8 @@ routine Scheduler.spawn(%self: @Self, %entry: Callable<(Addr,), Void>, %arg: Add
         %stack : @Byte       = allocate<Byte>(%self.stacks.load(), %stack_size)
         %sp    : Addr        = initial_stack(%stack, %stack_size, fiber_start.addr())
         %fiber : @FiberState = allocate<FiberState>(%self.alloc.load(), 1)
-        %fiber.store(FiberState { sp: %sp, stack: %stack, entry: %entry, arg: %arg,
-                finished: false })
+        %fiber.store(FiberState { sp: %sp, stack: %stack, entry: %entry, arg: %arg, finished: false,
+                parked: false, work: no_work, work_arg: null })
         %self.live.atomic_fetch_add(1)
         %w       : @Worker = current_worker()
         %outside : Bool    = %w.is_null()
@@ -167,7 +186,18 @@ routine Scheduler.yield(%self: @Self) -> Void
 #target(os: not "none")
 routine Scheduler.run(%self: @Self) -> Void
     block entry():
-        jump start(1)
+        %self.io_stop.atomic_store(0)
+        jump io_start(0)
+
+    block io_start(%i: USize):
+        %done : Bool = %i.eq(IO_THREADS)
+        branch %done
+            ? start(1)
+            : io_one(%i)
+
+    block io_one(%i: USize):
+        %self.io_threads.load().stride(%i).store(Thread.spawn(io_main, %self, %self.alloc.load()))
+        jump io_start(%i.add(1))
 
     block start(%i: USize):
         %done : Bool = %i.ge(%self.count.load())
@@ -192,12 +222,29 @@ routine Scheduler.run(%self: @Self) -> Void
     block join(%i: USize):
         %done : Bool = %i.ge(%self.count.load())
         branch %done
-            ? return()
+            ? io_stop()
             : wait_for(%i)
 
     block wait_for(%i: USize):
         %self.workers.load().stride(%i).thread.load().join()
         jump join(%i.add(1))
+
+    // Every fiber has returned, so no call is left: the I/O threads stop.
+    block io_stop():
+        %self.io_stop.atomic_store(1)
+        %self.io_epoch.atomic_fetch_add(1)
+        wake_all(%self.io_epoch)
+        jump io_join(0)
+
+    block io_join(%i: USize):
+        %done : Bool = %i.eq(IO_THREADS)
+        branch %done
+            ? return()
+            : io_wait_for(%i)
+
+    block io_wait_for(%i: USize):
+        %self.io_threads.load().stride(%i).load().join()
+        jump io_join(%i.add(1))
 
 /// Frees the fibers that never got to return, the queues, and the workers.
 #target(os: not "none")
@@ -218,8 +265,90 @@ routine Scheduler.destruct(%self: @Self) -> Void
         jump worker(%i.add(1))
 
     block finish():
+        drain(%self, %self.io_queue)
+        %self.io_queue.destruct()
+        %self.io_threads.load().free(%self.alloc.load())
         %self.workers.load().free(%self.alloc.load())
         return()
+
+/// Runs %work(%arg), a call that may block the thread it runs on, without stopping the other fibers: inside a fiber
+/// it runs on one of the scheduler's I/O threads while the fiber waits, and the fiber goes on once it returns,
+/// maybe on another worker. Outside a fiber it is just called. %arg may point into the fiber's stack: the fiber
+/// waits until the call is over.
+#target(os: not "none")
+routine Scheduler.run_blocking(%self: @Self, %work: Callable<(Addr,), Void>, %arg: Addr) -> Void
+    block entry():
+        %w       : @Worker = current_worker()
+        %outside : Bool    = %w.is_null()
+        branch %outside
+            ? direct()
+            : inside(%w)
+
+    block inside(%w: @Worker):
+        %fiber : @FiberState = %w.current.load()
+        %loop  : Bool        = %fiber.is_null()
+        branch %loop
+            ? direct()
+            : park(%w, %fiber)
+
+    block direct():
+        %work.call(%arg)
+        return()
+
+    // The worker hands the fiber to the I/O threads once it is back on its own stack (see resume).
+    block park(%w: @Worker, %fiber: @FiberState):
+        %fiber.work.store(%work)
+        %fiber.work_arg.store(%arg)
+        %fiber.parked.store(true)
+        switch_stack(%fiber.sp, %w.home.load())
+        return()
+
+// -- the I/O threads -----------------------------------------------------------------
+
+/// How many I/O threads run blocking calls, as libuv's thread pool has.
+preset IO_THREADS: USize = 4
+
+/// The work of a fiber that has none.
+#target(os: not "none")
+private routine no_work(%arg: Addr) -> Void
+    block entry():
+        return()
+
+#target(os: not "none")
+private routine io_main(%raw: Addr) -> Void
+    block entry():
+        %sched : @Scheduler = %raw.to<@Scheduler>()
+        jump look(%sched)
+
+    // Reads the epoch before looking, so a call queued in between changes it and the wait returns.
+    block look(%sched: @Scheduler):
+        %seen  : U32         = %sched.io_epoch.atomic_load()
+        %fiber : @FiberState = pop_front_locked(%sched.io_lock, %sched.io_queue)
+        %none  : Bool        = %fiber.is_null()
+        branch %none
+            ? idle(%sched, %seen)
+            : call(%sched, %fiber)
+
+    block idle(%sched: @Scheduler, %seen: U32):
+        %stop : Bool = %sched.io_stop.atomic_load().eq(1)
+        branch %stop
+            ? return()
+            : sleep(%sched, %seen)
+
+    block sleep(%sched: @Scheduler, %seen: U32):
+        wait_on(%sched.io_epoch, %seen)
+        jump look(%sched)
+
+    // The call is over: the fiber is ready again, in the workers' queues in turn.
+    block call(%sched: @Scheduler, %fiber: @FiberState):
+        %work : Callable<(Addr,), Void> = %fiber.work.load()
+        %work.call(%fiber.work_arg.load())
+        %fiber.parked.store(false)
+        %turn : USize   = %sched.next.atomic_fetch_add(1)
+        %w    : @Worker = %sched.workers.load().stride(%turn.mod(%sched.count.load()))
+        push_ready(%w, %fiber)
+        notify(%sched)
+        jump look(%sched)
 
 // -- the workers ---------------------------------------------------------------------
 
@@ -308,7 +437,24 @@ private routine resume(%w: @Worker, %fiber: @FiberState) -> Void
         %done : Bool = %fiber.finished.load()
         branch %done
             ? finished()
+            : waiting()
+
+    // A fiber that parked goes to the I/O threads now that it is off its stack, not before: its call may finish at
+    // once, and the fiber must not be resumed while it still runs.
+    block waiting():
+        %parked : Bool = %fiber.parked.load()
+        branch %parked
+            ? to_io()
             : yielded()
+
+    block to_io():
+        %sched : @Scheduler = %w.sched.load()
+        %sched.io_lock.lock()
+        %sched.io_queue.push_back(%fiber)
+        %sched.io_lock.unlock()
+        %sched.io_epoch.atomic_fetch_add(1)
+        wake_one(%sched.io_epoch)
+        return()
 
     block yielded():
         push_ready(%w, %fiber)
