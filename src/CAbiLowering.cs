@@ -53,7 +53,7 @@ public sealed partial class Compiler
         string key = $"{callConv}|{ret.Key}|{string.Join(",", ps.Select(p => p.Key))}";
         if (_abiSigs.TryGetValue(key, out var cached)) return cached;
         AbiSig sig;
-        if (callConv == "fast" || !AggregateAbiKnown || (!IsAggregate(ret) && !ps.Any(IsAggregate)))
+        if (callConv == "fast" || !AggregateAbiKnown || (!IsAggregate(ret) && !ps.Any(IsAggregate) && !IsWin64Wide(ret) && !ps.Any(IsWin64Wide)))
             sig = new AbiSig(AbiValue.Direct(ret), ps.Select(AbiValue.Direct).ToList());
         else
             sig = (Target.Arch, Target.Os) switch
@@ -272,15 +272,23 @@ public sealed partial class Compiler
 
     // ── Win64 ───────────────────────────────────────────────────────────────
 
+    /// A 128-bit integer on Win64: what clang does for `__int128` and LLVM for its own calls (`__udivti3` and the
+    /// rest), which LLVM's plain i128 doesn't (it would use a register pair).
+    private bool IsWin64Wide(DType t) =>
+        Target is { Arch: "x86_64", Os: "windows" } && t.Repr is IntType { Bits: 128 };
+
     /// An aggregate of 1, 2, 4, or 8 bytes passes and returns as an integer that size; any other size passes as a
-    /// pointer to the caller's copy and returns through `sret`.
+    /// pointer to the caller's copy and returns through `sret`. A 128-bit integer passes as a pointer to the
+    /// caller's copy too, and returns in XMM0 (as `<2 x i64>`).
     private AbiSig Win64(IReadOnlyList<DType> ps, DType ret, Pos pos)
     {
         AbiValue Small(DType t) => Coerce(new AbiPart($"i{SizeAlign(t, pos).Size * 8}", 0));
         bool small(DType t) => SizeAlign(t, pos).Size is 1 or 2 or 4 or 8;
-        var r = !IsAggregate(ret) ? AbiValue.Direct(ret) : small(ret) ? Small(ret) : SretValue(ret, pos);
-        var outParams = ps.Select(p => !IsAggregate(p) ? AbiValue.Direct(p) : small(p) ? Small(p) : IndirectCopy(p, pos)).ToList();
-        return new AbiSig(r, outParams);
+        AbiValue Param(DType p) =>
+            IsWin64Wide(p) ? IndirectCopy(p, pos) : !IsAggregate(p) ? AbiValue.Direct(p) : small(p) ? Small(p) : IndirectCopy(p, pos);
+        var r = IsWin64Wide(ret) ? Coerce(new AbiPart("<2 x i64>", 0))
+            : !IsAggregate(ret) ? AbiValue.Direct(ret) : small(ret) ? Small(ret) : SretValue(ret, pos);
+        return new AbiSig(r, ps.Select(Param).ToList());
     }
 
     // ── AArch64 (AAPCS64; Apple's differs only in stack alignment) ──────────
