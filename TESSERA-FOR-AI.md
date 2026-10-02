@@ -9,7 +9,7 @@ answer.
 
 ```sh
 dotnet run -- run   file.tess        # build and run (the whole stdlib is always available)
-dotnet run -- run -O file.tess       # the same at -O2
+dotnet run -- run --mode release file.tess   # the same at -O2 (also release-time -O3, release-space -Os)
 dotnet run -- check file.tess        # type-check only
 dotnet run -- test tests examples             # golden tests
 dotnet run -- fmt <files or dirs>        # format in place (--check to only list)

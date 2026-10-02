@@ -117,14 +117,17 @@ starting points.
 tessera build                                 Build the solution its config.toml describes (here or above)
 tessera run                                   Build it and run it
 tessera build <file.tess>... [-o <out>]       Build an executable from these files
-              [--emit-llvm] [<target>] [-O]     (--emit-llvm writes LLVM IR instead)
-tessera run   <file.tess>... [<target>] [-O]  Build and run these files
-tessera test  [<target>] <dir-or-file>...     Run golden tests
+              [--emit-llvm] [<target>] [--mode <mode>]  (--emit-llvm writes LLVM IR instead)
+tessera run   <file.tess>... [<target>] [--mode <mode>]  Build and run these files
+tessera test  [<target>] [--mode <mode>] <dir-or-file>...  Run golden tests
 tessera check [<target>] [<file.tess>...]     Type-check every non-generic routine, the stdlib included
 tessera fmt   [--check] <file-or-dir>...      Format .tess files in place
 tessera help | version
 ```
 
+`<mode>` is `debug` (-O0, the default), `release` (-O2), `release-time` (-O3), or `release-space` (-Os), as a
+`config.toml`'s `mode`. Every mode carries debug information, DWARF or CodeView and a `.pdb` on Windows MSVC: a
+debugger stops on Tessera lines and shows routine parameters, bindings, and block parameters by name.
 From a checkout, run it as `dotnet run -- <command>`. `<target>` is `--target <arch-os-abi>` (default: this
 machine), `--cpu <name>`, and `--feature <name>[,...]`. With files, all of them form one solution. Without files,
 `build` and `run` read the nearest `config.toml`, which names the package and sets the target, mode, sources,

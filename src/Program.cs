@@ -9,14 +9,17 @@ static class Cli
         usage:
           tessera build                 build the solution its config.toml describes (here or above)
           tessera run                   build it and run it
-          tessera build <file.tess>... [-o <out>] [--emit-llvm] [<target>] [-O]
-          tessera run   <file.tess>... [<target>] [-O]
-          tessera test  [<target>] <dir-or-file.tess>...
+          tessera build <file.tess>... [-o <out>] [--emit-llvm] [<target>] [--mode <mode>]
+          tessera run   <file.tess>... [<target>] [--mode <mode>]
+          tessera test  [<target>] [--mode <mode>] <dir-or-file.tess>...
           tessera check [<target>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
           tessera version               print the builder's version
           tessera help                  print this text
 
+        <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), as a
+                manifest's mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a
+                debugger shows Tessera lines, routine parameters, bindings and block parameters.
         <target>: --target <arch-os-abi> (default: this machine), --cpu <name> (default: the triple's baseline, such
                   as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). #feature reads the result.
 
@@ -155,13 +158,22 @@ static class Cli
         public BuildTarget Build() => _target with { Cpu = _cpu, Features = _features };
     }
 
-    private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, bool Optimize);
+    private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode);
+
+    /// `--mode <name>`: one of the four build modes.
+    private static BuildMode ParseMode(string[] args, ref int i)
+    {
+        if (i + 1 >= args.Length) throw new ToolError($"--mode takes {BuildModes.Names}");
+        string name = args[++i];
+        return BuildModes.Parse(name) ?? throw new ToolError($"--mode is {BuildModes.Names}, not \"{name}\"");
+    }
 
     private static Options ParseOptions(string[] args)
     {
         var inputs = new List<string>();
         string? output = null;
-        bool emit = false, opt = false;
+        bool emit = false;
+        var mode = BuildMode.Debug;
         var targetArgs = new TargetArgs();
         for (int i = 0; i < args.Length; i++)
         {
@@ -170,7 +182,7 @@ static class Cli
             {
                 case "-o" when i + 1 < args.Length: output = args[++i]; break;
                 case "--emit-llvm": emit = true; break;
-                case "-O": opt = true; break;
+                case "--mode": mode = ParseMode(args, ref i); break;
                 default:
                     if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
                     inputs.Add(args[i]);
@@ -178,7 +190,7 @@ static class Cli
             }
         }
         if (inputs.Count == 0) throw new ToolError("no input files");
-        return new Options(inputs, output, emit, targetArgs.Build(), opt);
+        return new Options(inputs, output, emit, targetArgs.Build(), mode);
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -230,10 +242,16 @@ static class Cli
     /// Compiles the inputs to LLVM IR. An executable needs `routine main() -> S32`; checking for it here gives a
     /// clear error instead of the platform linker's (lld-link says "subsystem must be defined").
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
-        IReadOnlyList<string>? roots = null)
+        IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug)
     {
         var inputs = files.ToList();
-        var compiler = new Compiler(target, LoadDecls(inputs, target)) { FileTagPaths = FileTagPaths(inputs, roots) };
+        var compiler = new Compiler(target, LoadDecls(inputs, target))
+        {
+            FileTagPaths = FileTagPaths(inputs, roots),
+            DebugInfo = true,
+            Optimized = mode.IsOptimized(),
+            StdlibParent = Path.GetDirectoryName(StdlibDir()),
+        };
         string ir = compiler.Generate();
         if (executable && !compiler.HasMain)
             throw new CompileError(new Pos(ShownPath(Path.GetFullPath(inputs[0])), 1, 1),
@@ -323,10 +341,10 @@ static class Cli
 
     private static string BuildManifest(Manifest m)
     {
-        string ir = Compile(m.Sources, m.Target, roots: m.Roots);
+        string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode);
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
-        Link(ir, m.ExecutablePath, m.Target, m.Optimize, m.LinkArguments());
+        Link(ir, m.ExecutablePath, m.Target, m.Mode, m.LinkArguments());
         return m.ExecutablePath;
     }
 
@@ -338,7 +356,7 @@ static class Cli
             return 0;
         }
         var o = ParseOptions(args);
-        string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm);
+        string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm, mode: o.Mode);
         string stem = Path.ChangeExtension(o.Inputs[0], null);
 
         if (o.EmitLlvm)
@@ -349,7 +367,7 @@ static class Cli
         }
 
         string exe = o.Output ?? stem + (OperatingSystem.IsWindows() ? ".exe" : "");
-        Link(ir, exe, o.Target, o.Optimize);
+        Link(ir, exe, o.Target, o.Mode);
         return 0;
     }
 
@@ -365,7 +383,7 @@ static class Cli
         string exe = TempExe();
         try
         {
-            Link(Compile(o.Inputs, o.Target), exe, o.Target, o.Optimize);
+            Link(Compile(o.Inputs, o.Target, mode: o.Mode), exe, o.Target, o.Mode);
             var (code, _, _) = Exec(exe, captureOutput: false);
             return code;
         }
@@ -384,7 +402,7 @@ static class Cli
     }
 
     /// Hands the IR to clang, which runs the LLVM backend and the platform linker.
-    private static void Link(string ir, string exe, BuildTarget target, bool optimize, IEnumerable<string>? extra = null)
+    private static void Link(string ir, string exe, BuildTarget target, BuildMode mode, IEnumerable<string>? extra = null)
     {
         string ll = Path.ChangeExtension(TempExe(), ".ll");
         File.WriteAllText(ll, ir);
@@ -396,7 +414,7 @@ static class Cli
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
             };
-            foreach (var a in new[] { "-Wno-override-module", optimize ? "-O2" : "-O0", "--target=" + target.LlvmTriple, ll, "-o", exe })
+            foreach (var a in new[] { "-Wno-override-module", mode.OptLevel(), "--target=" + target.LlvmTriple, ll, "-o", exe })
                 psi.ArgumentList.Add(a);
             // U128 / S128 division, F16 / BF16 arithmetic and similar operations lower to compiler-rt routines. GNU
             // toolchains get them from libgcc; the MSVC toolchain has no equivalent, so link clang's builtins.
@@ -406,6 +424,8 @@ static class Cli
             // The UCRT defines printf and its family inline in the headers; 32-bit x86 has no exported symbol for
             // them, so an IR-level call needs the out-of-line copies.
             if (target is { Os: "windows", Arch: "x86" }) psi.ArgumentList.Add("-llegacy_stdio_definitions");
+            // The linker keeps the debug information (on Windows, lld-link writes it to a .pdb next to the exe).
+            psi.ArgumentList.Add("-g");
             foreach (var a in extra ?? []) psi.ArgumentList.Add(a);
 
             Process p;
@@ -475,6 +495,10 @@ static class Cli
         return (p.ExitCode, stdout, stderr);
     }
 
+    /// `test --mode`: the mode every test without a manifest is built in (debug by default). A test's output must be
+    /// the same in all four.
+    private static BuildMode _testMode = BuildMode.Debug;
+
     private static int Test(string[] args)
     {
         var targetArgs = new TargetArgs();
@@ -482,7 +506,8 @@ static class Cli
         for (int i = 0; i < args.Length; i++)
         {
             if (targetArgs.TryTake(args, ref i)) continue;
-            dirs.Add(args[i]);
+            if (args[i] == "--mode") _testMode = ParseMode(args, ref i);
+            else dirs.Add(args[i]);
         }
         var target = targetArgs.Build();
         args = [.. dirs];
@@ -578,7 +603,7 @@ static class Cli
                 manifest = Manifest.Load(only, target);
                 (sources, target) = ([.. manifest.Sources], manifest.Target);
             }
-            ir = Compile(sources, target);
+            ir = Compile(sources, target, mode: manifest?.Mode ?? _testMode);
         }
         catch (ManifestError e)
         {
@@ -595,7 +620,7 @@ static class Cli
         string exe = TempExe();
         try
         {
-            try { Link(ir, exe, target, manifest?.Optimize ?? false, manifest?.LinkArguments()); }
+            try { Link(ir, exe, target, manifest?.Mode ?? _testMode, manifest?.LinkArguments()); }
             catch (ToolError e) { return e.Message; }
 
             var (code, stdout, stderr) = Exec(exe, captureOutput: true);

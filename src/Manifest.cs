@@ -15,7 +15,8 @@ namespace Tessera;
 /// [target]
 /// executable = "blinky"               # the output's name (default: the package name)
 /// triple = "arm-none-eabi"            # default: the host
-/// mode = "release"                    # "debug" (-O0, the default) or "release" (-O2)
+/// mode = "release"                    # "debug" (-O0, the default), "release" (-O2), "release-time" (-O3),
+///                                     # or "release-space" (-Os); every mode has debug information
 /// sources = ["src", "board/stm32f4"]  # directories or files (default: the manifest's directory)
 /// library = ["../shared"]             # source directories of other solutions this one builds with
 /// c-libraries = ["m"]                 # -l names
@@ -32,7 +33,7 @@ public sealed record Manifest(
     string? Version,
     string Executable,
     BuildTarget Target,
-    bool Optimize,
+    BuildMode Mode,
     List<string> Sources,
     List<string> CLibraries,
     List<string> LibraryPaths,
@@ -107,12 +108,9 @@ public sealed record Manifest(
         if (Strs(target, "features", path) is { } features)
             triple = triple with { Features = features.Select(f => f.Length > 0 && f[0] is '+' or '-' ? f : "+" + f).ToList() };
 
-        bool optimize = (Str(target, "mode", path) ?? "debug") switch
-        {
-            "debug" => false,
-            "release" => true,
-            var m => throw new ManifestError(path, $"[target] mode is \"debug\" or \"release\", not \"{m}\""),
-        };
+        string modeName = Str(target, "mode", path) ?? "debug";
+        var mode = BuildModes.Parse(modeName)
+                   ?? throw new ManifestError(path, $"[target] mode is {BuildModes.Names}, not \"{modeName}\"");
 
         string Resolve(string p) => System.IO.Path.GetFullPath(System.IO.Path.Combine(dir, p));
 
@@ -135,7 +133,7 @@ public sealed record Manifest(
         if (linkScript is not null && !File.Exists(linkScript))
             throw new ManifestError(path, $"no such link script: {linkScript}");
 
-        return new Manifest(path, dir, name, Str(package, "version", path), executable, triple, optimize, sources,
+        return new Manifest(path, dir, name, Str(package, "version", path), executable, triple, mode, sources,
             Strs(target, "c-libraries", path) ?? [],
             (Strs(target, "library-paths", path) ?? []).Select(Resolve).ToList(),
             linkScript,

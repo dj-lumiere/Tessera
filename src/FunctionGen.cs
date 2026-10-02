@@ -14,6 +14,8 @@ public sealed class FunctionGen
     {
         public string Label { get; } = label;
         public List<string> Lines { get; } = [];
+        /// Each line's `, !dbg !N`, or null (a debug record, or no debug information).
+        public List<string?> Dbg { get; } = [];
         public bool Terminated { get; set; }
     }
 
@@ -41,6 +43,14 @@ public sealed class FunctionGen
     private string _blockName = "";
     private int _tmp;
     private int _labels;
+
+    // Debug information (Compiler.DebugInfo): the routine's DISubprogram, the current block's DILexicalBlock, the
+    // location the next operation gets, and each block's records for its parameters, written after its phis.
+    private bool Debug => _c.DebugInfo;
+    private int _sp;
+    private int _scope;
+    private string? _loc;
+    private readonly Dictionary<string, List<string>> _blockRecords = [];
 
     public FunctionGen(Compiler c, Instance inst, StringBuilder output)
     {
@@ -94,6 +104,7 @@ public sealed class FunctionGen
             _incoming[b.Name] = [];
         }
 
+        if (Debug) BeginSubprogram();
         foreach (var b in blocks) EmitBlock(b);
 
         // A BF16 parameter arrives as its i16 bits (see Instance.PassesBf16AsBits) and is bitcast back on entry.
@@ -136,17 +147,24 @@ public sealed class FunctionGen
             else ps.Add($"{_inst.Params[i].Llvm}{_inst.ParamExt(_c.Target, i)} {name}");
         }
         var (linkage, comdat) = Linkage();
-        _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat} {{");
+        string dbg = Debug ? $" !dbg !{_sp}" : "";
+        var paramRecords = Debug ? ParamRecords() : [];
+        _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat}{dbg} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
         foreach (var u in unpack) _out.AppendLine($"  {u}");
+        foreach (var r in paramRecords) _out.AppendLine($"  {r}");
         _out.AppendLine("  br label %b.entry");
         foreach (var lb in _lblocks)
         {
             _out.AppendLine();
             _out.AppendLine($"{lb.Label}:");
-            if (lb.Label.StartsWith("b.") && _blocks.TryGetValue(lb.Label[2..], out var bd)) EmitPhis(bd);
-            foreach (var line in lb.Lines) _out.AppendLine($"  {line}");
+            if (lb.Label.StartsWith("b.") && _blocks.TryGetValue(lb.Label[2..], out var bd))
+            {
+                EmitPhis(bd);
+                foreach (var r in _blockRecords.GetValueOrDefault(bd.Name) ?? []) _out.AppendLine($"  {r}");
+            }
+            for (int i = 0; i < lb.Lines.Count; i++) _out.AppendLine($"  {lb.Lines[i]}{lb.Dbg[i]}");
         }
         _out.AppendLine("}");
         _out.AppendLine();
@@ -185,6 +203,73 @@ public sealed class FunctionGen
     {
         if (_cur.Terminated) throw new InvalidOperationException("emitting into a terminated block");
         _cur.Lines.Add(s);
+        _cur.Dbg.Add(_loc);
+    }
+
+    // ── Debug information ───────────────────────────────────────────────────
+
+    /// The routine's DISubprogram, with its signature's debug types.
+    private void BeginSubprogram()
+    {
+        int file = _c.DiFile(_decl.File);
+        var types = new[] { _c.DiTypeRef(_inst.Ret) }.Concat(_inst.Params.Select(_c.DiTypeRef));
+        int fnType = _c.MetaUnique($"!DISubroutineType(types: !{{{string.Join(", ", types)}}})");
+        // No linkageName: a debugger then shows the Tessera name (`S32.to<S64>`) instead of the mangled symbol.
+        _sp = _c.Meta($"distinct !DISubprogram(name: {Compiler.MetaString(_decl.DisplayName)}, "
+            + $"scope: !{file}, file: !{file}, line: {_decl.Pos.Line}, "
+            + $"type: !{fnType}, scopeLine: {_decl.Pos.Line}, spFlags: {(_c.Optimized ? "DISPFlagDefinition | DISPFlagOptimized" : "DISPFlagDefinition")}, unit: !{_c.DiUnit()}, retainedNodes: !{{}})");
+        _scope = _sp;
+    }
+
+    /// A DILocation in the current scope.
+    private int Location(Pos pos) =>
+        _c.MetaUnique($"!DILocation(line: {pos.Line}, column: {pos.Col}, scope: !{_scope})");
+
+    /// The location the operations emitted from now on carry.
+    private void At(Pos pos)
+    {
+        if (Debug) _loc = $", !dbg !{Location(pos)}";
+    }
+
+    private int _debugSlots;
+
+    /// The lines that make a named value a variable a debugger shows: the value is stored in a stack slot of its own
+    /// and declared there, as clang does. Unoptimized, a value only in a register is gone by the next line, and the
+    /// debugger would say "optimized out". Optimized, SROA puts the slot back in a register and turns the declaration
+    /// into records that follow the value.
+    private IEnumerable<string> ValueRecords(string name, string op, DType t, Pos pos, int arg = 0)
+    {
+        string argPart = arg > 0 ? $"arg: {arg}, " : "";
+        int variable = _c.Meta($"!DILocalVariable(name: {Compiler.MetaString(IrName(name))}, {argPart}scope: !{_scope}, "
+            + $"file: !{_c.DiFile(_decl.File)}, line: {pos.Line}, type: !{_c.DiType(t)})");
+        int location = Location(pos);
+        string slot = $"%dbg.{_debugSlots++}";
+        _allocas.Add($"{slot} = alloca {t.Llvm}");
+        yield return $"store {t.Llvm} {op}, ptr {slot}";
+        yield return $"#dbg_declare(ptr {slot}, !{variable}, !DIExpression(), !{location})";
+    }
+
+    /// Records a binding: `%x : T = ...` names `op` as the variable x from here on.
+    private void DescribeValue(string name, string op, DType t, Pos pos)
+    {
+        if (!Debug || t is VoidType || _cur.Terminated) return;
+        foreach (var line in ValueRecords(name, op, t, pos))
+        {
+            _cur.Lines.Add(line);
+            _cur.Dbg.Add(null);
+        }
+    }
+
+    /// The routine's parameters as variables, after they're unpacked from the C ABI.
+    private List<string> ParamRecords()
+    {
+        _scope = _sp;
+        var lines = new List<string>();
+        for (int i = 0; i < _decl.Params.Count; i++)
+            if (_inst.Params[i] is not VoidType)
+                lines.AddRange(ValueRecords(_decl.Params[i].Name, $"%a.{IrName(_decl.Params[i].Name)}", _inst.Params[i],
+                    _decl.Params[i].Pos, arg: i + 1));
+        return lines;
     }
 
     private void Terminate(string s)
@@ -209,12 +294,21 @@ public sealed class FunctionGen
         _blockName = b.Name;
         _cur = new LBlock($"b.{b.Name}");
         _lblocks.Add(_cur);
+        if (Debug)
+        {
+            // A block is a naming scope: its values are variables of a lexical block of the routine.
+            _scope = _c.Meta($"distinct !DILexicalBlock(scope: !{_sp}, file: !{_c.DiFile(_decl.File)}, line: {b.Pos.Line}, column: {b.Pos.Col})");
+            At(b.Pos);
+        }
 
         _values = new Dictionary<string, Val>(_routineParams);
         var types = _blockParamTypes[b.Name];
         for (int i = 0; i < b.Params.Count; i++)
         {
             _values[b.Params[i].Name] = new Val(ParamOp(b.Name, b.Params[i].Name), types[i]);
+            if (Debug && types[i] is not VoidType)
+                (_blockRecords.TryGetValue(b.Name, out var records) ? records : _blockRecords[b.Name] = [])
+                    .AddRange(ValueRecords(b.Params[i].Name, ParamOp(b.Name, b.Params[i].Name), types[i], b.Params[i].Pos));
         }
 
         foreach (var s in b.Stmts) EmitStmt(s);
@@ -238,6 +332,7 @@ public sealed class FunctionGen
 
     private void EmitStmt(Stmt s)
     {
+        At(s.Pos);
         switch (s)
         {
             case GuardStmt g:
@@ -263,6 +358,7 @@ public sealed class FunctionGen
                 else
                     Line($"{op} = {Copy(v, t)}");
                 Define(b.Name, new Val(op, t), b.Pos);
+                DescribeValue(b.Name, op, t, b.Pos);
                 // `claim %p : @T <- value` is the claim, then `%p.store(value)`.
                 if (b.Value is ClaimExpr { Contents: { } contents })
                     EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "store", [], [contents], contents.Pos), VoidType.Instance);
@@ -283,6 +379,7 @@ public sealed class FunctionGen
                     string op = LocalOp(name);
                     Line($"{op} = extractvalue {tuple.Llvm} {v.Op}, {shape.ValuePath(i)}");
                     Define(name, new Val(op, tuple.Args[i]), pos);
+                    DescribeValue(name, op, tuple.Args[i], pos);
                 }
                 break;
             }
@@ -1861,6 +1958,7 @@ public sealed class FunctionGen
 
     private void EmitTerminator(Terminator term)
     {
+        At(term.Pos);
         switch (term)
         {
             case JumpTerm j:

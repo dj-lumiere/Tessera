@@ -370,6 +370,7 @@ public sealed partial class Compiler
         foreach (var sb in new[] { _typeDefs, _globals, declares })
             if (sb.Length > 0) o.Append(sb).AppendLine();
         o.Append(_functions);
+        o.Append(DebugTrailer());
         return o.ToString();
     }
 
