@@ -11,6 +11,8 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
 
     public bool IsExternalC => Decl.Attr("external") is { First: "c" };
     public bool IsTemplate => Decl.Attr("template") is not null;
+    /// An `#external("asm")` routine: its body is put in place at each call as inline assembly.
+    public bool IsAsm => Compiler.IsAsm(Decl);
     public bool NoReturn => Decl.Attr("noreturn") is not null;
     public bool Variadic => Decl.Attr("variadic") is not null;
     /// "default" (the C convention, which every routine uses unless it asks otherwise), "fast", "cold", or "stdcall".
@@ -64,7 +66,10 @@ public sealed partial class Compiler
 {
     private static readonly HashSet<string> KnownAttributes =
         ["external", "symbol", "callconv", "noreturn", "nounwind", "variadic", "template", "target", "feature", "llvm",
-         "export", "derived", "inline", "noinline"];
+         "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure"];
+
+    /// Attributes that describe an assembly routine and mean nothing on another.
+    private static readonly string[] AsmAttributes = ["clobbers", "readonly", "pure"];
 
     /// Resolves a routine's signature in `env` and gives it a symbol. Does not emit anything.
     public Instance Signature(RoutineDecl r, TypeEnv env)
@@ -73,6 +78,14 @@ public sealed partial class Compiler
             if (!KnownAttributes.Contains(a.Name))
                 throw new CompileError(a.Pos, $"attribute '@{a.Name}' is not supported by this builder yet");
         if (r.Attr("callconv") is { } callconv) CheckCallConv(callconv);
+        bool asm = IsAsm(r);
+        foreach (var a in r.Attributes)
+            if (!asm && AsmAttributes.Contains(a.Name))
+                throw new CompileError(a.Pos, $"#{a.Name} describes an assembly routine, and '{r.DisplayName}' is not #external(\"asm\")");
+        foreach (var p in r.Params)
+            if (p.Register is { } placed && !asm)
+                throw new CompileError(placed.Pos,
+                    $"'= {placed.Text}' places a parameter of an assembly routine in a register, and '{r.DisplayName}' is not #external(\"asm\")");
         CheckInlining(r);
 
         var needed = new HashSet<string>(OwnerTypeParams(r).Concat(r.TypeParams));
@@ -90,17 +103,20 @@ public sealed partial class Compiler
         var ret = ResolveType(r.ReturnType, env, allowVoid: true);
 
         var external = r.Attr("external");
-        if (external is not null && external.First is not ("c" or "llvm"))
-            throw new CompileError(external.Pos, "only #external(\"c\") and #external(\"llvm\") are supported");
+        if (external is not null && external.First is not ("c" or "llvm" or "asm"))
+            throw new CompileError(external.Pos, "only #external(\"c\"), #external(\"llvm\") and #external(\"asm\") are supported");
+        if (asm && r.Blocks is null)
+            throw new CompileError(r.Pos, $"assembly routine '{r.DisplayName}' needs its instructions: a 'block entry():'");
         if (external is { First: "llvm" } && r.Attr("template") is null)
             throw new CompileError(r.Pos, $"#external(\"llvm\") routine '{r.DisplayName}' needs a #template");
-        if (external is not null && r.Blocks is not null)
+        if (external is not null && !asm && r.Blocks is not null)
             throw new CompileError(r.Pos, $"external routine '{r.DisplayName}' cannot have a body");
         if (external is null && r.Blocks is null)
             throw new CompileError(r.Pos, $"routine '{r.DisplayName}' has no body (mark it #external to declare it)");
 
         string symbol;
-        if (external is not null) symbol = r.Attr("symbol")?.First ?? r.Name;
+        if (asm) symbol = MangleRoutine(r, env, ps, ret);
+        else if (external is not null) symbol = r.Attr("symbol")?.First ?? r.Name;
         // `#export("name")` defines the routine under that plain C name: Tessera's own calls use it too, so a caller in
         // another module and one here reach the same definition, which LLVM can inline (an alias it can't see through).
         else if (r.Attr("export") is { } export)
@@ -166,6 +182,10 @@ public sealed partial class Compiler
             if (_declaredSymbols.Add(sig.Symbol))
                 _declares.Add((sig.Symbol, $"declare {sig.CcPrefix(Target)}{AbiRet(sig, withAttrs: true)} @{Quote(sig.Symbol)}({string.Join(", ", AbiParams(sig, withAttrs: true))}){sig.FnAttrs}"));
         }
+        else if (sig.IsAsm)
+        {
+            PlanAsm(sig);
+        }
         else if (!sig.IsTemplate)
         {
             _pending.Enqueue(sig);
@@ -195,9 +215,16 @@ public sealed partial class Compiler
         if (inst.Decl.Attr("export") is not null) _exported.Add(inst.Symbol);
     }
 
-    public static string Quote(string symbol) =>
-        symbol.Length > 0 && !char.IsAsciiDigit(symbol[0])
-                          && symbol.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '.' or '$')
-            ? symbol
-            : $"\"{symbol}\"";
+    /// An LLVM name: bare when LLVM's spelling allows it, otherwise quoted, with a quote, a backslash, and every byte
+    /// outside printable ASCII as a `\XX` escape (a backtick name may hold any character).
+    public static string Quote(string symbol)
+    {
+        if (symbol.Length > 0 && !char.IsAsciiDigit(symbol[0])
+                              && symbol.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '.' or '$'))
+            return symbol;
+        var sb = new System.Text.StringBuilder("\"");
+        foreach (byte b in System.Text.Encoding.UTF8.GetBytes(symbol))
+            sb.Append(b is (byte)'"' or (byte)'\\' or < 0x20 or >= 0x7F ? $"\\{b:X2}" : ((char)b).ToString());
+        return sb.Append('"').ToString();
+    }
 }

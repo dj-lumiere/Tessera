@@ -7,6 +7,9 @@ namespace Tessera;
 public sealed class Parser(List<Token> tokens, string file, bool isLibrary = false)
 {
     private int _i;
+    /// Inside an `#external("asm")` routine: a statement may carry `#asm_prefix`, and a `branch` may test a bare
+    /// comparison name (`eq`, `lt<U64>`).
+    private bool _inAsm;
 
     private static readonly HashSet<string> TerminatorKeywords =
         ["jump", "branch", "when", "return", "unreachable"];
@@ -43,7 +46,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             bool isPrivate = IsIdent("private");
             bool isInternal = IsIdent("internal");
             if (isPrivate || isInternal) Next();
-            if (Cur.Kind != TokenKind.Ident || !DeclKeywords.Contains(Cur.Text))
+            if (!IsKeyword(Cur) || !DeclKeywords.Contains(Cur.Text))
                 throw Error($"expected a declaration (routine, record, choice, variant, preset, global, concept, conform, define), found {Describe(Cur)}");
             Decl d = Cur.Text switch
             {
@@ -103,7 +106,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     }
 
     private bool Is(TokenKind k) => Cur.Kind == k;
-    private bool IsIdent(string text) => Cur.Kind == TokenKind.Ident && Cur.Text == text;
+    private bool IsIdent(string text) => IsKeyword(Cur) && Cur.Text == text;
+
+    /// A name that can be a keyword: an identifier not written between backticks.
+    private static bool IsKeyword(Token t) => t is { Kind: TokenKind.Ident, Escaped: false };
 
     private Token Expect(TokenKind k, string what)
     {
@@ -158,7 +164,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// True at the start of the next top-level declaration (or the end of the file).
     private bool AtDeclStart() =>
         Is(TokenKind.Eof) || Is(TokenKind.Hash)
-        || (Cur.Kind == TokenKind.Ident && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "private" or "internal"));
+        || (IsKeyword(Cur) && (DeclKeywords.Contains(Cur.Text) || Cur.Text is "private" or "internal"));
 
     // ── Attributes and clauses ──────────────────────────────────────────────
 
@@ -196,7 +202,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                         Next();
                     }
                     // `not "windows"`: the value must not match
-                    bool negated = Is(TokenKind.Ident) && PeekTok(0).Text == "not"
+                    bool negated = IsIdent("not")
                                    && PeekTok(1).Kind is TokenKind.Str or TokenKind.Int or TokenKind.Ident;
                     if (negated) Next();
                     if (Is(TokenKind.Ident) && PeekTok(1).Kind is TokenKind.LParen or TokenKind.Lt)
@@ -321,6 +327,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 : throw new CompileError(first.Pos, "routine type parameters must be plain names")).ToList();
         }
 
+        _inAsm = attrs.Any(a => a is { Name: "external", First: "asm" });
         var parameters = ParseParams();
         Expect(TokenKind.Arrow, "'->' and a return type");
         var ret = ParseType();
@@ -341,6 +348,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
         var blocks = new List<BlockDecl>();
         while (IsIdent("block")) blocks.Add(ParseBlock());
+        _inAsm = false;
         if (blocks[0].Name != "entry")
             throw new CompileError(blocks[0].Pos, $"the first block of routine '{display}' must be 'entry'");
         if (blocks[0].Params.Count != 0)
@@ -518,7 +526,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 if (n.Kind != TokenKind.Value) throw Error($"a parameter is a value, named with %: found {Describe(n)}");
                 Next();
                 Expect(TokenKind.Colon, "':'");
-                list.Add(new Param(n.Text, ParseType(), n.Pos));
+                var type = ParseType();
+                // `%hi: U64 = REG2`: the register an assembly routine's parameter arrives in.
+                Token? register = Accept(TokenKind.Eq) ? Expect(TokenKind.Ident, "a register after '='") : null;
+                list.Add(new Param(n.Text, type, n.Pos) { Register = register });
             } while (Accept(TokenKind.Comma));
         }
         Expect(TokenKind.RParen, "')'");
@@ -639,10 +650,22 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var stmts = new List<Stmt>();
         while (true)
         {
+            // `#asm_prefix("lock")` on the line before an instruction of an assembly routine.
+            if (_inAsm && Is(TokenKind.Hash) && PeekTok(1) is { Kind: TokenKind.Ident, Text: "asm_prefix" })
+            {
+                var attrs = ParseAttributes();
+                var at = Cur.Pos;
+                if (AtBlockEnd() || IsKeyword(Cur) && TerminatorKeywords.Contains(Cur.Text)
+                    || ParseStmt() is not ExprStmt annotated)
+                    throw new CompileError(at, "#asm_prefix goes on the line before an instruction");
+                ExpectLineEnd();
+                stmts.Add(annotated with { Attributes = attrs });
+                continue;
+            }
             if (AtBlockEnd())
                 throw new CompileError(pos, $"block '{name.Text}' does not end with a terminator");
 
-            if (Cur.Kind == TokenKind.Ident && TerminatorKeywords.Contains(Cur.Text))
+            if (IsKeyword(Cur) && TerminatorKeywords.Contains(Cur.Text))
             {
                 var term = ParseTerminator();
                 if (!HasContinue(term)) return new BlockDecl(name.Text, parameters, stmts, term, pos);
@@ -743,7 +766,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             case "branch":
             {
                 Next();
-                var cond = ParsePostfix();
+                var cond = _inAsm && AsmCondition() is { } named ? named : ParsePostfix();
                 Expect(TokenKind.Question, "'?'");
                 var a = ParseTarget();
                 Expect(TokenKind.Colon, "':'");
@@ -799,6 +822,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 return new TargetTerm(t, pos);
             }
         }
+    }
+
+    private static readonly HashSet<string> AsmComparisons = ["eq", "ne", "lt", "le", "gt", "ge"];
+
+    /// `eq` or `lt<U64>` as an assembly `branch` condition: a comparison of the flags the last instruction left.
+    private AsmCondExpr? AsmCondition()
+    {
+        if (!IsKeyword(Cur) || !AsmComparisons.Contains(Cur.Text) || PeekTok(1).Kind is not (TokenKind.Lt or TokenKind.Question))
+            return null;
+        var name = Next();
+        var types = ParseTypeArgsOpt();
+        if (types.Count > 1) throw new CompileError(name.Pos, $"'{name.Text}' takes one type, the operands': {name.Text}<U64>");
+        return new AsmCondExpr(name.Text, types.Count == 1 ? types[0] : null, name.Pos);
     }
 
     /// `else`, the default arm of `when`.
@@ -926,7 +962,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             case TokenKind.LBracket:
                 throw Error("an array literal is written with braces: Array<S32, 3> { 1, 2, 3 }, or { 1, 2, 3 } where the type is known");
             case TokenKind.Ident:
-                switch (t.Text)
+                switch (t.Escaped ? "" : t.Text)
                 {
                     case "true": Next(); return new BoolLit(true, t.Pos);
                     case "false": Next(); return new BoolLit(false, t.Pos);

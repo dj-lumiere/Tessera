@@ -74,8 +74,9 @@ public static class SourceText
 }
 
 /// IntValue holds an integer literal (a magnitude up to 256 bits, with its sign), a character's code, or a float's
-/// IEEE double bits.
-public sealed record Token(TokenKind Kind, string Text, Pos Pos, BigInteger IntValue = default);
+/// IEEE double bits. Escaped marks a name written between backticks: its Text is the name without them, and it is
+/// never a keyword.
+public sealed record Token(TokenKind Kind, string Text, Pos Pos, BigInteger IntValue = default, bool Escaped = false);
 
 public sealed class CompileError(Pos pos, string message) : Exception($"{pos}: error: {message}")
 {
@@ -140,6 +141,13 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 string name = ReadIdent();
                 if (name.Length == 0) throw new CompileError(pos, "expected a name after '%'");
                 _tokens.Add(new Token(TokenKind.Value, c + name, pos));
+                continue;
+            }
+
+            if (c == '`')
+            {
+                // `fadd.d`: a name holding characters Tessera's own spelling can't, never a keyword.
+                _tokens.Add(new Token(TokenKind.Ident, ReadEscapedName(pos), pos, Escaped: true));
                 continue;
             }
 
@@ -282,6 +290,19 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         int start = _i;
         while (_i < src.Length && IsIdentChar(src[_i])) Advance();
         return src[start.._i];
+    }
+
+    /// The name between backticks: any characters but a backtick or a line break, at least one.
+    private string ReadEscapedName(Pos pos)
+    {
+        Advance();
+        int start = _i;
+        while (_i < src.Length && src[_i] is not ('`' or '\n' or '\r')) Advance();
+        if (Peek() != '`') throw new CompileError(pos, "a name between backticks ends on the same line, with a backtick");
+        string name = src[start.._i];
+        Advance();
+        if (name.Length == 0) throw new CompileError(pos, "a name between backticks holds at least one character");
+        return name;
     }
 
     private Token ReadNumber(Pos pos)

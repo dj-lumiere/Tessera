@@ -341,6 +341,14 @@ public sealed partial class Compiler
         CheckInlining(r);
         if (r.Attr("external") is { First: "llvm" }) return;
         if (r.Blocks is null) { CheckExternal(r); return; }
+        // An assembly routine's body is checked as assembly, whether or not anything calls it.
+        if (IsAsm(r) && r.TypeParams.Count == 0 && (r.Owner is null || OwnerTypeParams(r).Count == 0))
+        {
+            var asmEnv = new TypeEnv(r.File);
+            if (r.Owner is not null) asmEnv.Bind("Self", ResolveType(r.Owner, asmEnv));
+            RequireInstance(r, asmEnv);
+            return;
+        }
         if (r.TypeParams.Count != 0 || (r.Owner is not null && OwnerTypeParams(r).Count != 0)) return;
         var env = new TypeEnv(r.File);
         if (r.Owner is not null) env.Bind("Self", ResolveType(r.Owner, env));

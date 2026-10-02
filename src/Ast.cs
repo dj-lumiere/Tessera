@@ -40,7 +40,11 @@ public sealed record Attribute(string Name, List<AttrArg> Args, Pos Pos)
     public string? First => Args.Count > 0 ? Args[0].Value : null;
 }
 
-public sealed record Param(string Name, TypeRef Type, Pos Pos); // Name includes its sigil
+public sealed record Param(string Name, TypeRef Type, Pos Pos) // Name includes its sigil
+{
+    /// `%hi: U64 = REG2`: the register an assembly routine's parameter arrives in, as written.
+    public Token? Register { get; init; }
+}
 
 /// `require T: typename, N: U64, Equal<T>` or `conform Equal<Option<T>> when Equal<T>`. Tokens keeps the raw text;
 /// the parsed parts are below.
@@ -149,7 +153,11 @@ public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : 
 
 
 /// `call(...)` evaluated for its side effect.
-public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos);
+public sealed record ExprStmt(Expr Value, Pos Pos) : Stmt(Pos)
+{
+    /// Written on the line before: `#asm_prefix("lock")` on an instruction of an assembly routine.
+    public List<Attribute> Attributes { get; init; } = [];
+}
 
 /// `%q, %r = div_rem(%a, %b)`: binds every item of a tuple, each with the item's type. Tuples are the only values
 /// taken apart this way.
@@ -210,6 +218,10 @@ public sealed record FieldExpr(Expr Base, string Name, Pos Pos) : Expr(Pos);
 
 /// `%p[i]` — a place. As a binding value it is an address; with `:=` or as a store target it is memory.
 public sealed record IndexExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
+
+/// `eq`, `lt<U64>`: an assembly `branch` condition, the comparison the flags of the last instruction show. Type gives an
+/// ordered comparison its signedness.
+public sealed record AsmCondExpr(string Name, TypeRef? Type, Pos Pos) : Expr(Pos);
 
 /// `%cond ? a : b` — value select.
 public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) : Expr(Pos);

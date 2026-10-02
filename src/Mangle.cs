@@ -50,7 +50,9 @@ public sealed partial class Compiler
     /// arguments and the key of the name with them.
     private sealed record Step(string Text, string Key, Action? Args, string? ArgsKey);
 
-    private static string Source(string name) => name.Length.ToString(CultureInfo.InvariantCulture) + name;
+    /// A source name is its length in bytes, then its bytes: a backtick name may hold any character.
+    private static string Source(string name) =>
+        Encoding.UTF8.GetByteCount(name).ToString(CultureInfo.InvariantCulture) + name;
 
     /// A name's source form, with its file (from its package root) as an ABI tag when it's private.
     private string UnqualifiedName(string name, Decl d) =>

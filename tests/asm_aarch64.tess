@@ -1,0 +1,72 @@
+// AArch64 assembly: w/x views from the type, ZERO and SP, the four kinds of address, a scalar view of a vector
+// register, and a loop branching on a signed comparison.
+
+import Standard::Format
+
+#[target(arch: "aarch64"), external("asm"), clobbers(FLAGS), pure]
+routine add_carry(%a: U64, %b: U64) -> (U64, U64)
+    block entry():
+        REG0.adds<U64, U64>(%a, %b)
+        REG1.adc<U64, U64>(ZERO, ZERO)
+        return({ REG0, REG1 })
+
+#[target(arch: "aarch64"), external("asm"), readonly]
+routine addresses(%p: @U64) -> U64
+    block entry():
+        REG2.ldr<U64, U64>(%p.offset(8))  // 2
+        REG3.ldr<U64, U64>(%p.after_offset(8))  // 1, then %p is one element further
+        REG4.ldr<U64, U64>(%p.offset(8).update())  // 3, and %p is at element 2
+        REG5.ldr<U64, U64>(%p.index(REG2, 8))  // element 2 + 2: 5
+        REG0.add<U64, U64>(REG2, REG3)
+        REG0.add<U64, U64>(REG0, REG4)
+        REG0.add<U32, U32>(REG0, REG5)
+        REG6.mov<U64, U64>(SP)
+        return(REG0)
+
+#[target(arch: "aarch64"), external("asm"), pure]
+routine from_bits(%x: U64) -> F64
+    block entry():
+        VREG0.fmov<F64, U64>(%x)
+        return(VREG0)
+
+#[target(arch: "aarch64"), external("asm"), pure]
+routine fsum(%a: F64, %b: F64) -> F64
+    block entry():
+        %a.fadd<F64, F64>(%a, %b)
+        return(%a)
+
+#[target(arch: "aarch64"), external("asm"), clobbers(FLAGS)]
+routine count_down(%count: S64 = REG1) -> U64
+    block entry():
+        REG0.mov<U64, U64>(ZERO)
+        jump check()
+
+    block check():
+        REG1.cmp<U64, U64>(0)
+        branch le<S64>
+            ? done()
+            : body()
+
+    block body():
+        yield()
+        REG0.add<U64, U64>(REG0, 1)
+        REG1.sub<U64, U64>(REG1, 1)
+        jump check()
+
+    block done():
+        return(REG0)
+
+routine main() -> S32
+    block entry():
+        %s, %c = add_carry(U64.MAX, 2)
+        print("add {%s} carry {%c}\n")
+        claim %cells : @Array<U64, 6> <- { 1, 2, 3, 4, 5, 6 }
+        %sum : U64 = addresses(%cells.cast<U64>())
+        print("addresses {%sum}\n")
+        %f : F64 = from_bits(0x3FF8000000000000)
+        %g : F64 = fsum(%f, 0.25)
+        print("fmov {%f} fadd {%g}\n")
+        %n : U64 = count_down(4)
+        %m : U64 = count_down(-2)
+        print("count {%n} {%m}\n")
+        return(0)

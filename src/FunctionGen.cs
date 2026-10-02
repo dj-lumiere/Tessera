@@ -1477,6 +1477,12 @@ public sealed class FunctionGen
             throw Err(plan.Pos, $"'{root.Name}' is a preset; its memory is read-only");
         if (sig.Decl.Name == "store_into" && plan.Args.Count == 1 && PresetArrayRoot(plan.Args[0]) is { } destRoot)
             throw Err(plan.Pos, $"'{destRoot.Name}' is a preset; its memory is read-only");
+        if (sig.IsAsm)
+        {
+            foreach (var p in sig.Params) _c.EnsureTypeDefined(p);
+            _c.EnsureTypeDefined(sig.Ret);
+            return EmitAsm(sig, args);
+        }
         if (sig.IsTemplate)
         {
             // A template isn't instantiated, so the types it names (a record read by `load`) are defined here.
@@ -1607,6 +1613,54 @@ public sealed class FunctionGen
 
     private Val AbiResult(string op, DType t, bool bf16AsBits) =>
         bf16AsBits && Instance.IsBf16(t) ? new Val(EmitTmp($"bitcast i16 {op} to bfloat"), t) : new Val(op, t);
+
+    /// An assembly routine's body as one inline-assembly call: the outputs come back as one value (a struct of them
+    /// when there are several), and the results are taken from it.
+    private Val EmitAsm(Instance sig, List<Val> args)
+    {
+        var plan = _c.PlanAsm(sig);
+        string retType = plan.Outputs.Count switch
+        {
+            0 => "void",
+            1 => plan.Outputs[0].Type.Llvm,
+            _ => $"{{ {string.Join(", ", plan.Outputs.Select(o => o.Type.Llvm))} }}",
+        };
+        string constraints = string.Join(",", plan.Outputs.Select(o => o.Constraint)
+            .Concat(plan.Inputs.Select(i => i.Constraint)).Concat(plan.Clobbers));
+        string operands = string.Join(", ", plan.Inputs.Select(i => $"{args[i.Param].Type.Llvm} {args[i.Param].Op}"));
+        string kind = (plan.SideEffect ? "sideeffect " : "") + (plan.Intel ? "inteldialect " : "");
+        var attrs = new List<string>();
+        if (plan.Memory is { } memory) attrs.Add($"memory({memory})");
+        if (sig.NoReturn) attrs.Add("noreturn");
+        attrs.Add("nounwind");
+        string call = $"call {retType} asm {kind}\"{LlvmAsmString(plan.Text)}\", \"{constraints}\"({operands}) {string.Join(" ", attrs)}";
+        if (plan.Outputs.Count == 0)
+        {
+            Line(call);
+            return new Val("", VoidType.Instance);
+        }
+        string all = EmitTmp(call);
+        string Output(int index) => plan.Outputs.Count == 1 ? all : EmitTmp($"extractvalue {retType} {all}, {index}");
+        if (sig.Ret is VoidType) return new Val("", VoidType.Instance);
+        if (sig.Ret is RecordType { IsTuple: true } tuple)
+        {
+            var shape = _c.Shape(tuple);
+            string acc = "poison";
+            for (int i = 0; i < plan.Results.Count; i++)
+                acc = EmitTmp($"insertvalue {tuple.Llvm} {acc}, {tuple.Args[i].Llvm} {Output(plan.Results[i])}, {shape.ValuePath(i)}");
+            return new Val(acc, tuple);
+        }
+        return new Val(Output(plan.Results[0]), sig.Ret);
+    }
+
+    /// Assembly text as an LLVM string constant: quotes, backslashes, and control characters as `\XX` escapes.
+    private static string LlvmAsmString(string text)
+    {
+        var sb = new StringBuilder();
+        foreach (char ch in text)
+            sb.Append(ch is '"' or '\\' || ch < ' ' ? $"\\{(int)ch:X2}" : ch.ToString());
+        return sb.ToString();
+    }
 
     /// Expands an `#external("llvm")` routine's `#template` in place.
     private Val ExpandTemplate(Instance sig, List<Val> args, Pos pos, string suffix = "")
