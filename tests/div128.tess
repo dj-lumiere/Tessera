@@ -1,0 +1,78 @@
+// U128 / S128 division (div128.tess: Knuth's algorithm D on U64 limbs) against LLVM's own division, on operands of
+// every bit length so each path runs: both in one limb, a one-limb divisor (normalized by 0 to 63 bits), and a
+// two-limb divisor.
+
+import Standard::Format
+
+/// xorshift64*
+routine next(state: @U64) -> U64
+    block entry():
+        x0 : U64 = state.load()
+        x1 : U64 = x0.bitxor(x0.shr(12))
+        x2 : U64 = x1.bitxor(x1.shl(25))
+        x3 : U64 = x2.bitxor(x2.shr(27))
+        state.store(x3)
+        return(x3.mul_wrap(0x2545F4914F6CDD1D))
+
+/// A random U128 of a random bit length (1 to 128), so small, one-limb, and two-limb values all come up.
+routine operand(state: @U64) -> U128
+    block entry():
+        hi   : U128 = next(state).to<U128>().shl(64)
+        full : U128 = hi.bitor(next(state).to<U128>())
+        keep : U64  = next(state).mod(128).add(1)
+        return(full.shr(128.sub(keep).to<U128>()).bitor(1))
+
+routine main() -> S32
+    block entry():
+        claim state : @U64 <- 0x9E3779B97F4A7C15
+        jump step(state, 0, 0)
+
+    block step(state: @U64, i: U64, wrong: U64):
+        branch i.eq(20000)
+            ? done(wrong)
+            : continue
+        a  : U128 = operand(state)
+        b  : U128 = operand(state)
+        sa : S128 = bitcast<U128, S128>(a)
+        sb : S128 = bitcast<U128, S128>(b)
+        u_ok : Bool = a.div(b).eq(udiv<U128>(a, b)).bitand(a.mod(b).eq(urem<U128>(a, b)))
+        // MIN / -1 overflows and panics in both; skip it.
+        min_neg_one : Bool = sa.eq(S128.MIN).bitand(sb.eq(-1))
+        branch min_neg_one
+            ? step(state, i.add(1), wrong)
+            : continue
+        s_ok : Bool = sa.div(sb).eq(sdiv<S128>(sa, sb)).bitand(sa.mod(sb).eq(srem<S128>(sa, sb)))
+        branch u_ok.bitand(s_ok)
+            ? step(state, i.add(1), wrong)
+            : step(state, i.add(1), wrong.add(1))
+
+    block done(wrong: U64):
+        edges : U64 = edge_cases()
+        print("U128 / S128: 20000 random cases, {wrong} wrong; edge cases {edges} wrong\n")
+        return(0)
+
+/// Divisors at the limb boundary and of every normalization shift, and S128.MIN.
+routine edge_cases() -> U64
+    block entry():
+        jump shift(0, 0)
+
+    block shift(k: U64, wrong: U64):
+        branch k.eq(128)
+            ? signed(wrong)
+            : continue
+        d  : U128 = U128.MIN.add(1).shl(k.to<U128>())
+        a  : U128 = U128.MAX
+        d1 : U128 = d.sub_wrap(1).bitor(1)
+        ok : Bool = a.div(d).eq(udiv<U128>(a, d)).bitand(a.mod(d1).eq(urem<U128>(a, d1)))
+        branch ok
+            ? shift(k.add(1), wrong)
+            : shift(k.add(1), wrong.add(1))
+
+    block signed(wrong: U64):
+        m  : S128 = S128.MIN
+        low  : Bool = m.div(3).eq(sdiv<S128>(m, 3)).bitand(m.mod(-7).eq(srem<S128>(m, -7)))
+        high : Bool = m.div(m).eq(1).bitand(S128.MAX.mod(m).eq(S128.MAX))
+        ok   : Bool = low.bitand(high)
+        branch ok
+            ? return(wrong)
+            : return(wrong.add(1))
