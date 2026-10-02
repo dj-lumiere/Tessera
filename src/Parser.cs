@@ -826,11 +826,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private static readonly HashSet<string> AsmComparisons = ["eq", "ne", "lt", "le", "gt", "ge"];
 
-    /// `eq` or `lt<U64>` as an assembly `branch` condition: a comparison of the flags the last instruction left.
+    /// `eq` or `lt<U64>` as an assembly `branch` condition or condition operand (`csel<U64, U64>(REG1, REG2, lt<U64>)`):
+    /// a comparison of the flags the last instruction left. `lt<U64>(…)` is a call instead, RISC-V's comparison.
     private AsmCondExpr? AsmCondition()
     {
-        if (!IsKeyword(Cur) || !AsmComparisons.Contains(Cur.Text) || PeekTok(1).Kind is not (TokenKind.Lt or TokenKind.Question))
-            return null;
+        if (!IsKeyword(Cur) || !AsmComparisons.Contains(Cur.Text)) return null;
+        bool bare = PeekTok(1).Kind is TokenKind.Question or TokenKind.Comma or TokenKind.RParen;
+        bool typed = PeekTok(1).Kind == TokenKind.Lt && PeekTok(2).Kind == TokenKind.Ident
+                     && PeekTok(3).Kind == TokenKind.Gt && PeekTok(4).Kind != TokenKind.LParen;
+        if (!bare && !typed) return null;
         var name = Next();
         var types = ParseTypeArgsOpt();
         if (types.Count > 1) throw new CompileError(name.Pos, $"'{name.Text}' takes one type, the operands': {name.Text}<U64>");
@@ -961,6 +965,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 return ParseRecordLit(null, t.Pos);
             case TokenKind.LBracket:
                 throw Error("an array literal is written with braces: Array<S32, 3> { 1, 2, 3 }, or { 1, 2, 3 } where the type is known");
+            case TokenKind.Ident when _inAsm && AsmCondition() is { } condition:
+                return condition;
             case TokenKind.Ident:
                 switch (t.Escaped ? "" : t.Text)
                 {

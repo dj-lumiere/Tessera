@@ -512,24 +512,31 @@ internal sealed class AsmLowering
             _ => throw new CompileError(es.Pos, "an instruction is written REG0.mnemonic<T, U>(operands), %a.mnemonic<…>(…) or mnemonic()"),
         };
         var operands = receiver is null ? args : [receiver, .. args];
-        int wanted = Math.Min(operands.Count, 2);
+        // One type per register, in order: a register, a parameter's register, or the memory a memory operand
+        // reads (its size). An immediate and a condition take none.
+        int wanted = operands.Count(IsTyped);
         if (typeArgs.Count != wanted)
-            throw new CompileError(es.Pos, operands.Count switch
+            throw new CompileError(es.Pos, wanted switch
             {
-                0 => $"'{mnemonic}' has no operands, so it takes no types",
-                1 => $"'{mnemonic}' has one operand, so it takes its type: {mnemonic}<U64>",
-                _ => $"'{mnemonic}' has a destination and sources, so it takes both types: {mnemonic}<U64, U64>",
+                0 => $"'{mnemonic}' has no register operand, so it takes no types",
+                1 => $"'{mnemonic}' has one register operand, so it takes its type: {mnemonic}<U64>",
+                _ => $"'{mnemonic}' has {wanted} register operands, so it takes {wanted} types, one each: "
+                     + $"{mnemonic}<{string.Join(", ", Enumerable.Repeat("U64", wanted))}>",
             });
-        var types = typeArgs.Select(t => _c.ResolveType(t, _sig.Env)).ToList();
-        var texts = operands.Select((o, i) => Operand(o, types[Math.Min(i, 1)])).ToList();
+        var types = new Queue<DType>(typeArgs.Select(t => _c.ResolveType(t, _sig.Env)));
+        var texts = operands.Select(o => Operand(o, IsTyped(o) ? types.Dequeue() : null)).ToList();
         return prefix + Escape(mnemonic) + (texts.Count == 0 ? "" : " " + string.Join(", ", texts));
     }
 
     /// `$` is LLVM's operand marker, so a written one is doubled.
     private static string Escape(string written) => written.Replace("$", "$$");
 
-    private string Operand(Expr e, DType t)
+    /// Whether an operand takes a type: a register or memory does, an immediate or a condition doesn't.
+    private static bool IsTyped(Expr e) => e is not (IntLit or AsmCondExpr or PresetRef { Owner.Name: "FLAGS" });
+
+    private string Operand(Expr e, DType? type)
     {
+        DType t = type!;
         switch (e)
         {
             case PresetRef { Owner: null, Path: null } p:
@@ -548,8 +555,8 @@ internal sealed class AsmLowering
                 return ParamText(ParamIndex(v), t, v.Pos);
             case IntLit lit:
                 return _arch == Arch.A64 ? "#" + lit.Value : lit.Value.ToString();
-            case PresetRef { Owner.Name: "FLAGS" } f:
-                throw new CompileError(f.Pos, $"FLAGS.{f.Name} is a branch condition, not an operand");
+            case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" }:
+                return ConditionOperand(e);
             case NsCallExpr or MethodCallExpr:
                 return Memory(e, t);
             default:
@@ -672,32 +679,10 @@ internal sealed class AsmLowering
     {
         switch (cond)
         {
-            case AsmCondExpr c when _arch != Arch.Rv:
-            {
-                _flagsTested = true;
-                bool? signed = Signedness(c.Name, c.Type, c.Pos);
-                return (_arch == Arch.X86 ? "j" : "b.") + FlagCondition(c.Name, signed) + " " + label;
-            }
-            case AsmCondExpr c:
-                throw new CompileError(c.Pos, $"RISC-V has no flags: compare two registers, branch REG10.{c.Name}<U64>(REG11) ? … : …");
-            case PresetRef { Owner: { Name: "FLAGS", Args.Count: 0 } } f when _arch != Arch.Rv:
-            {
-                _flagsTested = true;
-                string? cc = (f.Name, _arch) switch
-                {
-                    ("Carry", Arch.X86) => "c", ("Carry", _) => "cs",
-                    ("Overflow", Arch.X86) => "o", ("Overflow", _) => "vs",
-                    ("Sign", Arch.X86) => "s", ("Sign", _) => "mi",
-                    ("Zero" or "Equal", Arch.X86) => "e", ("Zero" or "Equal", _) => "eq",
-                    ("Parity", Arch.X86) => "p",
-                    _ => null,
-                };
-                if (cc is null)
-                    throw new CompileError(f.Pos, $"{_c.Target.Arch}'s FLAGS has no {f.Name}: Carry, Overflow, Sign, Zero (Equal){(_arch == Arch.X86 ? ", Parity" : "")}");
-                return (_arch == Arch.X86 ? "j" : "b.") + cc + " " + label;
-            }
-            case PresetRef { Owner.Name: "FLAGS" } f:
-                throw new CompileError(f.Pos, "RISC-V has no flags: compare two registers, branch REG10.lt<U64>(REG11) ? … : …");
+            case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" } when _arch != Arch.Rv:
+                return (_arch == Arch.X86 ? "j" : "b.") + ConditionCode(cond) + " " + label;
+            case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" }:
+                throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch REG10.lt<U64>(REG11) ? … : …");
             case NsCallExpr or MethodCallExpr when _arch == Arch.Rv:
             {
                 var (left, name, types, args, pos) = cond switch
@@ -729,6 +714,37 @@ internal sealed class AsmLowering
                     : "an assembly branch tests the flags: eq, ne, lt<U64> … or a FLAGS field such as FLAGS.Carry");
         }
     }
+
+    /// The architecture's code for a condition on the flags, `lt<U64>` or `FLAGS.Carry`: x86's `b` / `c`, aarch64's
+    /// `lo` / `cs`. Reading the flags means an instruction here set them.
+    private string ConditionCode(Expr cond)
+    {
+        _flagsTested = true;
+        if (cond is AsmCondExpr c) return FlagCondition(c.Name, Signedness(c.Name, c.Type, c.Pos));
+        var f = (PresetRef)cond;
+        if (f.Owner!.Args.Count != 0 || f.Owner.Path is not null)
+            throw new CompileError(f.Pos, $"FLAGS.{f.Name} names a flag of the last instruction");
+        return (f.Name, _arch) switch
+        {
+            ("Carry", Arch.X86) => "c", ("Carry", _) => "cs",
+            ("Overflow", Arch.X86) => "o", ("Overflow", _) => "vs",
+            ("Sign", Arch.X86) => "s", ("Sign", _) => "mi",
+            ("Zero" or "Equal", Arch.X86) => "e", ("Zero" or "Equal", _) => "eq",
+            ("Parity", Arch.X86) => "p",
+            _ => throw new CompileError(f.Pos,
+                $"{_c.Target.Arch}'s FLAGS has no {f.Name}: Carry, Overflow, Sign, Zero (Equal){(_arch == Arch.X86 ? ", Parity" : "")}"),
+        };
+    }
+
+    /// A condition as an operand, as aarch64's `cset x1, cs` and `csel x0, x1, x2, lo` take one. x86 and RISC-V have
+    /// no such operand: x86 spells the condition in the mnemonic (`setc`, `cmovb`), RISC-V has no flags.
+    private string ConditionOperand(Expr cond) => _arch switch
+    {
+        Arch.A64 => ConditionCode(cond),
+        Arch.X86 => throw new CompileError(cond.Pos,
+            "x86 spells a condition in the mnemonic (setc, cmovb), so it isn't an operand; a branch tests it"),
+        _ => throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch REG10.lt<U64>(REG11) ? … : …"),
+    };
 
     private string CompareOperand(Expr e, DType t) => e switch
     {
