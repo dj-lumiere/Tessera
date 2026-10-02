@@ -368,12 +368,15 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   be `#external`.
 
 **Threads and fibers.** `Standard::Os` has `Thread.spawn(routine, %state, %alloc)` / `join()`, `Mutex`
-(`lock` / `unlock` / `try_lock`), and `wait_on` / `wake_one` / `wake_all` on a `@U32`. `Standard::Fiber`'s `Scheduler`
+(`lock` / `unlock` / `try_lock`), `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32`, and
+`monotonic_ns()`. `Standard::Fiber`'s `Scheduler`
 runs fibers over worker threads: `.construct(%alloc, %stacks, %workers)` (0 = one per processor), then
 `spawn(routine, %state, stack_size)` (the routine takes the state as an `Addr`), `yield()` inside a fiber, `run()`
 until all return, `destruct()`. Pass `make_stack_allocator()` as `%stacks` for guard pages. A fiber may move to
 another thread at a yield. A call that may block goes through `%sched.run_blocking(routine, %state)`, or
-`%sched.read` / `%sched.write`, so the worker runs other fibers meanwhile. Fibers run on x86_64 and AArch64 (not on Windows) only.
+`%sched.read` / `%sched.write`, so the worker runs other fibers meanwhile. A fiber waits without holding its worker
+with `park()` (until `wake(%handle)`, the handle from `current()`; it may return early, so loop on the condition),
+`sleep(%ns)`, or `join(%j)` on a fiber from `spawn_joinable` (every `Join` is joined once). Fibers run on x86_64 and AArch64 (not on Windows) only.
 
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.

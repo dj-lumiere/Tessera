@@ -1,0 +1,61 @@
+// Tessera stdlib: a monotonic clock
+//
+// monotonic_ns() reads a clock that only goes forward, in nanoseconds from an
+// unspecified start: for measuring time and for deadlines, not for the date.
+// CLOCK_MONOTONIC on Linux and macOS, QueryPerformanceCounter on Windows.
+
+module Standard::Os
+
+/// struct timespec, with C's long for both fields as Linux and macOS have it.
+record Timespec
+    sec  : CLong
+    nsec : CLong
+
+// -- POSIX: clock_gettime ------------------------------------------------------------
+
+#[external("c"), symbol("clock_gettime"), target(os: not "windows")]
+private routine c_clock_gettime(%clock: CInt, %out: @Timespec) -> CInt
+
+/// CLOCK_MONOTONIC, whose number depends on the operating system.
+#target(os: "macos")
+private routine clock_monotonic() -> CInt
+    block entry():
+        return(6)
+
+#target(os: not "macos", os: not "windows")
+private routine clock_monotonic() -> CInt
+    block entry():
+        return(1)
+
+#target(os: not "windows")
+routine monotonic_ns() -> U64
+    block entry():
+        claim %ts : @Timespec <- Timespec { sec: 0, nsec: 0 }
+        c_clock_gettime(clock_monotonic(), %ts)
+        %sec  : U64 = %ts.sec.load().to_wrap<U64>()
+        %nsec : U64 = %ts.nsec.load().to_wrap<U64>()
+        %ns   : U64 = %sec.mul_wrap(1000000000).add_wrap(%nsec)
+        return(%ns)
+
+// -- Windows: QueryPerformanceCounter ------------------------------------------------
+
+#[external("c"), symbol("QueryPerformanceCounter"), callconv("stdcall"), target(os: "windows")]
+private routine c_query_performance_counter(%count: @S64) -> CInt
+
+#[external("c"), symbol("QueryPerformanceFrequency"), callconv("stdcall"), target(os: "windows")]
+private routine c_query_performance_frequency(%frequency: @S64) -> CInt
+
+/// The counter's whole seconds and its remainder are scaled apart, so the product never overflows.
+#target(os: "windows")
+routine monotonic_ns() -> U64
+    block entry():
+        claim %count     : @S64 <- 0
+        claim %frequency : @S64 <- 1
+        c_query_performance_counter(%count)
+        c_query_performance_frequency(%frequency)
+        %c    : U64 = %count.load().to_wrap<U64>()
+        %f    : U64 = %frequency.load().to_wrap<U64>()
+        %sec  : U64 = %c.div(%f)
+        %part : U64 = %c.mod(%f).mul_wrap(1000000000).div(%f)
+        %ns   : U64 = %sec.mul_wrap(1000000000).add_wrap(%part)
+        return(%ns)

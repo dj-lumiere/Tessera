@@ -1,0 +1,194 @@
+// Fibers that wait without holding up their worker, over four worker threads: two fibers hand a turn back and forth
+// a thousand times with park and wake; eight fibers sleep until different times and wake in that order; a fiber starts
+// ten joinable ones and joins each. Outside a fiber, sleep waits the thread, and join of a fiber that has returned
+// returns at once.
+
+import Standard::Alloc
+import Standard::Fiber
+import Standard::Format
+import Standard::Os
+
+preset ROUNDS: U64 = 1000
+
+record PingPong
+    sched   : @Scheduler
+    turn    : U32  // 0: ping's, 1: pong's
+    ping    : @FiberState
+    pong    : @FiberState
+    handoffs : U64
+
+/// One side of the ping-pong: waits for %mine, hands the turn to the other, ROUNDS times.
+routine play(%game: @PingPong, %mine: U32, %me: @@FiberState, %other: @@FiberState) -> Void
+    block entry():
+        %sched : @Scheduler = %game.sched.load()
+        %me.atomic_store(%sched.current())
+        jump round(%sched, 0)
+
+    block round(%sched: @Scheduler, %i: U64):
+        %done : Bool = %i.eq(ROUNDS)
+        branch %done
+            ? return()
+            : wait(%sched, %i)
+
+    // park may return without a wake, so the turn is checked again.
+    block wait(%sched: @Scheduler, %i: U64):
+        %ours : Bool = %game.turn.atomic_load().eq(%mine)
+        branch %ours
+            ? hand_over(%sched, %i)
+            : continue
+        %sched.park()
+        jump wait(%sched, %i)
+
+    // The other side may not have its handle in yet: then it hasn't checked the turn either, and will see it.
+    block hand_over(%sched: @Scheduler, %i: U64):
+        %game.handoffs.atomic_fetch_add(1)
+        %game.turn.atomic_store(%mine.bitxor(1))
+        %peer : @FiberState = %other.atomic_load()
+        %none : Bool        = %peer.is_null()
+        branch %none
+            ? round(%sched, %i.add(1))
+            : continue
+        %sched.wake(%peer)
+        jump round(%sched, %i.add(1))
+
+routine ping(%raw: Addr) -> Void
+    block entry():
+        %game : @PingPong = %raw.to<@PingPong>()
+        play(%game, 0, %game.ping, %game.pong)
+        return()
+
+routine pong(%raw: Addr) -> Void
+    block entry():
+        %game : @PingPong = %raw.to<@PingPong>()
+        play(%game, 1, %game.pong, %game.ping)
+        return()
+
+record Sleepers
+    sched : @Scheduler
+    order : Array<U64, 8>  // the sleepers' numbers in the order they woke
+    next  : USize
+    short : U64  // sleepers that woke too early
+    base  : U64  // the time their wake-up times count from, in monotonic_ns
+
+record Sleeper
+    all : @Sleepers
+    id  : U64
+
+/// Sleeper n sleeps until (8 - n) * 30 ms after the base, so they wake from the last to the first. The times are
+/// far enough apart for a coarse system timer (15.6 ms on Windows by default).
+routine sleeper(%raw: Addr) -> Void
+    block entry():
+        %s     : @Sleeper  = %raw.to<@Sleeper>()
+        %all   : @Sleepers = %s.all.load()
+        %id    : U64       = %s.id.load()
+        %until : U64       = 8.sub(%id).mul(30000000).add(%all.base.load())
+        %all.sched.load().sleep(%until.sub_clamp(monotonic_ns()))
+        %early : Bool = monotonic_ns().lt(%until)
+        %slot  : USize = %all.next.atomic_fetch_add(1)
+        %all.order.to<@U64>().stride(%slot).store(%id)
+        branch %early
+            ? short(%all)
+            : return()
+
+    block short(%all: @Sleepers):
+        %all.short.atomic_fetch_add(1)
+        return()
+
+record Family
+    sched    : @Scheduler
+    sum      : U64
+    children : Array<@Join, 10>
+
+/// A child adds its share, sleeping and yielding on the way so the parent waits on children still running.
+routine child(%raw: Addr) -> Void
+    block entry():
+        %family : @Family    = %raw.to<@Family>()
+        %sched  : @Scheduler = %family.sched.load()
+        %sched.sleep(1000000)
+        %family.sum.atomic_fetch_add(1)
+        %sched.yield()
+        %family.sum.atomic_fetch_add(9)
+        return()
+
+routine parent(%raw: Addr) -> Void
+    block entry():
+        %family : @Family    = %raw.to<@Family>()
+        %sched  : @Scheduler = %family.sched.load()
+        %kids   : @@Join     = %family.children.to<@@Join>()
+        jump spawn(%family, %sched, %kids, 0)
+
+    block spawn(%family: @Family, %sched: @Scheduler, %kids: @@Join, %i: USize):
+        %done : Bool = %i.eq(10)
+        branch %done
+            ? join(%family, %sched, %kids, 0)
+            : continue
+        %kids.stride(%i).store(%sched.spawn_joinable(child, %family, 65536))
+        jump spawn(%family, %sched, %kids, %i.add(1))
+
+    block join(%family: @Family, %sched: @Scheduler, %kids: @@Join, %i: USize):
+        %done : Bool = %i.eq(10)
+        branch %done
+            ? report(%family)
+            : continue
+        %sched.join(%kids.stride(%i).load())
+        jump join(%family, %sched, %kids, %i.add(1))
+
+    block report(%family: @Family):
+        print("joined: sum {%family.sum.atomic_load()}\n")
+        return()
+
+routine main() -> S32
+    block entry():
+        claim %alloc  : @Allocator <- make_heap_allocator()
+        claim %stacks : @Allocator <- make_stack_allocator()
+        claim %sched  : @Scheduler <- .construct(%alloc, %stacks, 4)
+
+        // Outside a fiber, sleep waits the thread.
+        %before : U64 = monotonic_ns()
+        %sched.sleep(5000000)
+        %waited : Bool = monotonic_ns().sub(%before).ge(5000000)
+        print("thread slept: {%waited}\n")
+
+        claim %game : @PingPong <- PingPong { sched: %sched, turn: 0, ping: null, pong: null, handoffs: 0 }
+        %sched.spawn(ping, %game, 65536)
+        %sched.spawn(pong, %game, 65536)
+
+        claim %sleepers : @Sleepers <- Sleepers { sched: %sched, order: { 0, 0, 0, 0, 0, 0, 0, 0 }, next: 0,
+                short: 0, base: monotonic_ns() }
+        claim %each : @Array<Sleeper, 8> <- uninit
+        jump sleepers(%sched, %game, %sleepers, %each.to<@Sleeper>(), 0)
+
+    block sleepers(%sched: @Scheduler, %game: @PingPong, %sleepers: @Sleepers, %each: @Sleeper, %i: USize):
+        %done : Bool = %i.eq(8)
+        branch %done
+            ? family(%sched, %game, %sleepers)
+            : continue
+        %s : @Sleeper = %each.stride(%i)
+        %s.store(Sleeper { all: %sleepers, id: %i.to<U64>() })
+        %sched.spawn(sleeper, %s, 65536)
+        jump sleepers(%sched, %game, %sleepers, %each, %i.add(1))
+
+    block family(%sched: @Scheduler, %game: @PingPong, %sleepers: @Sleepers):
+        claim %family : @Family <- Family { sched: %sched, sum: 0, children: { null, null, null, null, null, null, null, null, null, null } }
+        %sched.spawn(parent, %family, 65536)
+        claim %alone : @Family <- Family { sched: %sched, sum: 0, children: { null, null, null, null, null, null, null, null, null, null } }
+        %lone : @Join = %sched.spawn_joinable(child, %alone, 65536)
+        %sched.run()
+        print("handoffs: {%game.handoffs.load()}\n")
+        jump order(%sched, %sleepers, %lone, 0)
+
+    block order(%sched: @Scheduler, %sleepers: @Sleepers, %lone: @Join, %i: USize):
+        %done : Bool = %i.eq(8)
+        branch %done
+            ? finish(%sched, %sleepers, %lone)
+            : continue
+        print("{%sleepers.order.to<@U64>().stride(%i).load()} ")
+        jump order(%sched, %sleepers, %lone, %i.add(1))
+
+    // The lone child returned during run: join just frees its Join.
+    block finish(%sched: @Scheduler, %sleepers: @Sleepers, %lone: @Join):
+        print("\nwoke early: {%sleepers.short.load()}\n")
+        %sched.join(%lone)
+        print("lone joined\n")
+        %sched.destruct()
+        return(0)
