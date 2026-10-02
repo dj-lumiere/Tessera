@@ -130,7 +130,7 @@ routine F128.acos(%self: Self) -> Self
             : inside(%self)
 
     block outside(%self: Self, %xb1: U64):
-        %bits     : S128 = %self.bits().to_s128_wrap()
+        %bits     : S128 = %self.bits().to_wrap<S128>()
         %xb0      : U64  = cm_asin_lo(%bits)
         %negative : Bool = %bits.lt(0)
         %is_one   : Bool = %xb0.eq(0).bitand(%xb1.eq(0x3FFF000000000000))
@@ -169,7 +169,7 @@ routine cm_acos_fast(%x: F128) -> F128
             : small(%x, %arg, %nz)
 
     block root(%x: F128, %arg: CmAsinArg, %nz: S64):
-        %x0   : U64         = cm_asin_lo(%arg.xa.to_s128_wrap())
+        %x0   : U64         = cm_asin_lo(%arg.xa.to_wrap<S128>())
         %x1   : U64         = cm_asin_hi(%arg.xa)
         %root : CmAsinRoot3 = cm_asin_fast_sqrt(%x0, %x1, %nz, 1)
         %via  : Bool        = cm_acos_via_half_pi(%arg)
@@ -181,7 +181,7 @@ routine cm_acos_fast(%x: F128) -> F128
     block reduce(%x: F128, %arg: CmAsinArg, %root: CmAsinRoot3):
         %nz : S64      = 16383.sub(%arg.xn)
         %d  : CmAsinW3 = cm_asin_reduce3(%arg.xa, %nz, %arg.j, %root)
-        %dz : S64      = %d.w2.leading_zeros().to_s64()
+        %dz : S64      = %d.w2.leading_zeros().to<S64>()
         %t  : U128     = cm_asin_top128(%d, %dz)
         jump via_half_pi(%x, %arg, %d, %t, %dz)
 
@@ -213,9 +213,9 @@ routine cm_acos_fast(%x: F128) -> F128
 /// The 128-bit mantissa xa shifted right by nz into three words (the fast path's |x| < 0.022).
 routine cm_acos_align_x(%xa: U128, %nz: S64) -> CmAsinW3
     block entry():
-        %xb0     : U64      = cm_asin_lo(%xa.to_s128_wrap())
+        %xb0     : U64      = cm_asin_lo(%xa.to_wrap<S128>())
         %xb1     : U64      = cm_asin_hi(%xa)
-        %s       : S64      = cm_asin_sh(%nz).to_s64()
+        %s       : S64      = cm_asin_sh(%nz).to<S64>()
         %in_word : Bool     = %nz.lt(64)
         %in_one  : Bool     = %nz.lt(128)
         %in_two  : Bool     = %nz.lt(192)
@@ -227,19 +227,19 @@ routine cm_acos_align_x(%xa: U128, %nz: S64) -> CmAsinW3
             else     -> return(%gone)
 
     block within_word(%xb0: U64, %xb1: U64, %s: S64):
-        %back : S64      = cm_asin_sh(0.sub(%s)).to_s64()
-        %w0   : U64      = %xb0.shl(%back.to_u64())
-        %w1   : U64      = %xb1.shl(%back.to_u64()).bitor(%xb0.shr(%s.to_u64()))
-        %r    : CmAsinW3 = CmAsinW3 { w0: %w0, w1: %w1, w2: %xb1.shr(%s.to_u64()) }
+        %back : S64      = cm_asin_sh(0.sub(%s)).to<S64>()
+        %w0   : U64      = %xb0.shl(%back.to<U64>())
+        %w1   : U64      = %xb1.shl(%back.to<U64>()).bitor(%xb0.shr(%s.to<U64>()))
+        %r    : CmAsinW3 = CmAsinW3 { w0: %w0, w1: %w1, w2: %xb1.shr(%s.to<U64>()) }
         return(%r)
 
     block one_word(%xb0: U64, %xb1: U64, %s: S64):
-        %w0 : U64      = %xb1.shl(1).shl(cm_asin_sh(%s.bitnot())).bitor(%xb0.shr(%s.to_u64()))
-        %r  : CmAsinW3 = CmAsinW3 { w0: %w0, w1: %xb1.shr(%s.to_u64()), w2: 0 }
+        %w0 : U64      = %xb1.shl(1).shl(cm_asin_sh(%s.bitnot())).bitor(%xb0.shr(%s.to<U64>()))
+        %r  : CmAsinW3 = CmAsinW3 { w0: %w0, w1: %xb1.shr(%s.to<U64>()), w2: 0 }
         return(%r)
 
     block two_words(%xb1: U64, %s: S64):
-        %r : CmAsinW3 = CmAsinW3 { w0: %xb1.shr(%s.to_u64()), w1: 0, w2: 0 }
+        %r : CmAsinW3 = CmAsinW3 { w0: %xb1.shr(%s.to<U64>()), w1: 0, w2: 0 }
         return(%r)
 
 /// Finishes the fast path as pi/2 -/+ (asin(s_j) + d + t^3*P(t^2)) at half scale. The value is
@@ -252,20 +252,20 @@ routine cm_acos_fast_half_pi(%arg: CmAsinArg, %xc: CmAsinW3, %t: U128, %nz: S64)
         %h0    : U64      = %xc.w0.shr(1).bitor(%xc.w1.shl(63))
         %h1    : U64      = %xc.w1.shr(1).bitor(%xc.w2.shl(63))
         %half  : CmAsinW3 = CmAsinW3 { w0: %h0, w1: %h1, w2: %xc.w2.shr(1) }
-        %phi0  : @U64     = CM_ACOS_PHI0.to_ptr()
+        %phi0  : @U64     = CM_ACOS_PHI0.to<@U64>()
         %phi_j : CmAsinW3 = cm_asin_load3(%phi0, %arg.j.mul(5).add(2))
         %asin  : CmAsinW3 = cm_asin_add3(cm_asin_add3(%half, %phi_j), %fs)
         // pi/2 - asin(x) for x >= 0; for x < 0 the complement gives pi/2 + asin(|x|) - 1 ulp
         %m    : S64          = %arg.xsgn.shr(63)
-        %flip : CmAsinW3     = cm_asin_xor3(%asin, %m.to_u64_wrap())
+        %flip : CmAsinW3     = cm_asin_xor3(%asin, %m.to_wrap<U64>())
         %pi4  : CmAsinW3     = cm_asin_load3(%phi0, 362)
         %s    : CmAsinW3     = cm_asin_sub3(%pi4, %flip)
-        %k    : S64          = %s.w2.leading_zeros().to_s64()
+        %k    : S64          = %s.w2.leading_zeros().to<S64>()
         %rnd  : U64          = %s.w1.shr(cm_asin_sh(14.sub(%k))).bitand(1)
         %eps  : U64          = 1.shl(cm_asin_sh(69.sub(%sf.min(60))))
-        %sh   : S64          = cm_asin_sh(15.sub(%k)).to_s64()
-        %v_lo : U64          = %s.w1.shr(%sh.to_u64()).bitor(%s.w2.shl(cm_asin_sh(%k.add(49))))
-        %v    : U128         = cm_asin_join(%s.w2.shr(%sh.to_u64()), %v_lo)
+        %sh   : S64          = cm_asin_sh(15.sub(%k)).to<S64>()
+        %v_lo : U64          = %s.w1.shr(%sh.to<U64>()).bitor(%s.w2.shl(cm_asin_sh(%k.add(49))))
+        %v    : U128         = cm_asin_join(%s.w2.shr(%sh.to<U64>()), %v_lo)
         %y    : F128         = cm_asin_pack(%v, 16383.sub(%k), 0, %rnd)
         %r    : Option<F128> = cm_acos_checked(%y, %s, %k, %eps)
         return(%r)
@@ -278,7 +278,7 @@ routine cm_acos_fast_direct(%arg: CmAsinArg, %xc: CmAsinW3, %t: U128, %nz: S64) 
         %sf    : S64          = %nz.mul(2)
         %fs    : CmAsinW3     = cm_asin_shift_poly3(%f, %sf)
         %s     : CmAsinW3     = cm_asin_add3(%xc, %fs)
-        %k     : S64          = %s.w2.shr(63).to_s64()
+        %k     : S64          = %s.w2.shr(63).to<S64>()
         %rnd   : U64          = %s.w1.shr(cm_asin_sh(%k.add(13))).bitand(1)
         %v_all : U128         = cm_asin_join(%s.w2, %s.w1).shr(cm_asin_sh7(%k.add(14)))
         %v     : U128         = %v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
@@ -294,8 +294,8 @@ routine cm_acos_checked(%y: F128, %s: CmAsinW3, %k: S64, %eps: U64) -> Option<F1
     block entry():
         %top    : U64          = 0xFFFFFFFFFFFFFFFF.shr(cm_asin_sh(%k.add(50)))
         %msk    : U128         = cm_asin_join(%top, 0xFFFFFFFFFFFFFFFF)
-        %tail   : U128         = cm_asin_join(%s.w1, %s.w0).add_wrap(%eps.to_u128()).bitand(%msk)
-        %unsafe : Bool         = %tail.lt(%eps.mul_wrap(2).to_u128())
+        %tail   : U128         = cm_asin_join(%s.w1, %s.w0).add_wrap(%eps.to<U128>()).bitand(%msk)
+        %unsafe : Bool         = %tail.lt(%eps.mul_wrap(2).to<U128>())
         %none   : Option<F128> = .Absent
         %some   : Option<F128> = .Present(%y)
         %r      : Option<F128> = %unsafe
@@ -308,7 +308,7 @@ routine cm_acos_accurate(%x: F128) -> F128
     block entry():
         %arg     : CmAsinArg = cm_asin_unpack(%x)
         %nz      : S64       = 16383.sub(%arg.xn)
-        %x0      : U64       = cm_asin_lo(%arg.xa.to_s128_wrap())
+        %x0      : U64       = cm_asin_lo(%arg.xa.to_wrap<S128>())
         %x1      : U64       = cm_asin_hi(%arg.xa)
         %xw      : CmAsinW5  = CmAsinW5 { w0: 0, w1: 0, w2: 0, w3: %x0, w4: %x1 }
         %reduced : Bool      = %arg.j.ne(0)
@@ -335,10 +335,10 @@ routine cm_acos_accurate(%x: F128) -> F128
         %p     : CmAsinW5 = cm_asin_poly5(%root.root, %dz)
         %f     : CmAsinW5 = cm_asin_shift5(%p, %dz.mul(2))
         %s     : CmAsinW5 = cm_asin_add5(%root.root, %f)
-        %k     : S64      = %s.w4.shr(63).to_s64()
+        %k     : S64      = %s.w4.shr(63).to<S64>()
         %rnd   : U64      = %s.w3.shr(cm_asin_sh(%k.add(13))).bitand(1)
         %v_all : U128     = cm_asin_join(%s.w4,
-                %s.w3).shr(cm_asin_sh(%k.add(14)).to_s64_wrap().to_u128())
+                %s.w3).shr(cm_asin_sh(%k.add(14)).to_wrap<S64>().to<U128>())
         %v     : U128     = %v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
         %xn    : S64      = %arg.xn.add(%k).sub(%dz)
         %r     : F128     = cm_asin_pack(%v, %xn, 0, %rnd)
@@ -355,7 +355,7 @@ routine cm_acos_accurate_half_pi(%arg: CmAsinArg, %xc: CmAsinW5, %t: CmAsinW5, %
         %p     : CmAsinW5 = cm_asin_poly5(%t, %nz)
         %f     : CmAsinW5 = cm_asin_shift5(%p, %nz.mul(3).add(1))
         %half  : CmAsinW5 = cm_asin_shift5(%xc, 1)
-        %phi0  : @U64     = CM_ACOS_PHI0.to_ptr()
+        %phi0  : @U64     = CM_ACOS_PHI0.to<@U64>()
         %phi_j : CmAsinW5 = cm_asin_load5(%phi0, %arg.j.mul(5))
         %asin  : CmAsinW5 = cm_asin_add5(cm_asin_add5(%phi_j, %half), %f)
         %pi4   : CmAsinW5 = cm_asin_load5(%phi0, 360)
@@ -364,10 +364,10 @@ routine cm_acos_accurate_half_pi(%arg: CmAsinArg, %xc: CmAsinW5, %t: CmAsinW5, %
         %s     : CmAsinW5 = %arg.xsgn.ne(0)
             ? %above
             : %below
-        %k    : S64  = %s.w4.leading_zeros().to_s64()
+        %k    : S64  = %s.w4.leading_zeros().to<S64>()
         %rnd  : U64  = %s.w3.shr(cm_asin_sh(14.sub(%k))).bitand(1)
-        %sh   : S64  = cm_asin_sh(15.sub(%k)).to_s64()
-        %v_lo : U64  = %s.w3.shr(%sh.to_u64()).bitor(%s.w4.shl(cm_asin_sh(%k.add(49))))
-        %v    : U128 = cm_asin_join(%s.w4.shr(%sh.to_u64()), %v_lo)
+        %sh   : S64  = cm_asin_sh(15.sub(%k)).to<S64>()
+        %v_lo : U64  = %s.w3.shr(%sh.to<U64>()).bitor(%s.w4.shl(cm_asin_sh(%k.add(49))))
+        %v    : U128 = cm_asin_join(%s.w4.shr(%sh.to<U64>()), %v_lo)
         %r    : F128 = cm_asin_pack(%v, 16383.sub(%k), 0, %rnd)
         return(%r)

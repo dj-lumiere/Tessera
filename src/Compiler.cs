@@ -102,7 +102,8 @@ public sealed partial class Compiler
         RejectDuplicates(_presets.Values, d => $"preset '{(d.Owner is null ? d.Name : $"{d.Owner.Name}.{d.Name}")}'",
             (a, b) => a.Owner is null ? a.Module == b.Module : OwnerDecl(a.Owner, a.File) == OwnerDecl(b.Owner!, b.File));
         RejectDuplicates(_free.Values, d => $"routine '{d.Name}'", SameModule);
-        RejectDuplicates(_methods.Values, d => $"routine '{d.DisplayName}'", (a, b) => OwnerDecl(a) == OwnerDecl(b));
+        RejectDuplicates(_methods.Values, d => $"routine '{d.DisplayName}'",
+            (a, b) => OwnerDecl(a) == OwnerDecl(b) && SameFixed(a, b));
         RejectDuplicates(_blanket.Values, d => $"routine '{d.DisplayName}'", (_, _) => true);
         CheckAliases();
     }
@@ -512,11 +513,14 @@ public sealed partial class Compiler
     /// A routine on a type. One declared in the type's own module goes wherever the type goes; one another module adds
     /// needs that module imported, like any other name. `anyModule` skips that check, for a call on a value whose
     /// type came from a type parameter: the routine's concept constraints already vouch for the method.
-    public RoutineDecl? FindMethod(DType ownerType, string name, string file, Pos pos, bool anyModule = false)
+    /// `fits` picks among routines defined for different type arguments (`S32.to<S64>`, `S32.to<U8>`).
+    public RoutineDecl? FindMethod(DType ownerType, string name, string file, Pos pos, bool anyModule = false,
+        Func<RoutineDecl, bool>? fits = null)
     {
         string owner = ownerType.OwnerName;
         var ownerDecl = DeclOf(ownerType);
-        if (_methods.GetValueOrDefault((owner, name))?.Where(m => OwnerDecl(m) == ownerDecl).ToList() is { Count: > 0 } methods)
+        if (_methods.GetValueOrDefault((owner, name))?.Where(m => OwnerDecl(m) == ownerDecl && (fits?.Invoke(m) ?? m.Fixed.Count == 0))
+                .ToList() is { Count: > 0 } methods)
         {
             string home = ownerDecl?.Module ?? CoreModule;
             var visible = methods.Where(m =>
@@ -532,6 +536,17 @@ public sealed partial class Compiler
         }
         return Pick(_blanket.GetValueOrDefault(name)?.Where(b => anyModule || Visible(b, file, null) || !b.IsPrivate && !b.IsInternal).ToList(),
             file, pos, $"routine 'T.{name}'");
+    }
+
+    /// Whether two routines on a type are defined for the same type arguments: none, or the same `<S64>`.
+    private static bool SameFixed(RoutineDecl a, RoutineDecl b) =>
+        a.Fixed.Select(t => t.ToString()).SequenceEqual(b.Fixed.Select(t => t.ToString()));
+
+    /// The routines on a type with this name, whatever type arguments they are defined for.
+    public List<RoutineDecl> MethodsNamed(DType ownerType, string name)
+    {
+        var ownerDecl = DeclOf(ownerType);
+        return _methods.GetValueOrDefault((ownerType.OwnerName, name))?.Where(m => OwnerDecl(m) == ownerDecl).ToList() ?? [];
     }
 
     /// Whether some record, variant, or choice has this name, visible from here or not.

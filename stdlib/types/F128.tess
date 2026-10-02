@@ -19,7 +19,7 @@ preset F128_EXP_MAX:   S64  = F128_BIAS.mul(2).add(1)  // all-ones exponent
 preset F128_IMPLICIT:  U128 = 0x10000000000000000000000000000  // 2^112
 preset F128_FRAC_MASK: U128 = F128_IMPLICIT.sub(1)
 preset F128_SIGN:      U128 = 0x80000000000000000000000000000000
-preset F128_INF:       U128 = F128_EXP_MAX.to_u128().shl(112)
+preset F128_INF:       U128 = F128_EXP_MAX.to<U128>().shl(112)
 preset F128_QNAN:      U128 = F128_INF.bitor(F128_QUIET_BIT)
 preset F128_QUIET_BIT: U128 = F128_IMPLICIT.shr(1)  // 2^111
 preset F128.INFINITY:     F128 = F128.from_bits(F128_INF)
@@ -61,7 +61,7 @@ routine f128_is_negative_bits(%bits: U128) -> Bool
 
 routine f128_exponent(%bits: U128) -> S64
     block entry():
-        %r : S64 = %bits.shr(112).to_s64().bitand(32767)
+        %r : S64 = %bits.shr(112).to<S64>().bitand(32767)
         return(%r)
 
 routine f128_fraction(%bits: U128) -> U128
@@ -136,14 +136,14 @@ routine f128_shr_sticky(%value: U128, %n: S64) -> U128
         %all  : Bool = %n.ge(128)
         when:
             %none -> return(%value)
-            %all  -> return(%value.ne(0).to_u128())
+            %all  -> return(%value.ne(0).to<U128>())
             else  -> part()
 
     block part():
-        %amount  : U128 = %n.to_u128()
+        %amount  : U128 = %n.to<U128>()
         %mask    : U128 = 1.shl(%amount).sub(1)
         %lost    : Bool = %value.bitand(%mask).ne(0)
-        %shifted : U128 = %value.shr(%amount).bitor(%lost.to_u128())
+        %shifted : U128 = %value.shr(%amount).bitor(%lost.to<U128>())
         return(%shifted)
 
 /// Packs sig × 2^(exponent - 16383 - 115) into binary128 bits, rounding to nearest
@@ -162,7 +162,7 @@ routine f128_round_pack(%negative: Bool, %exponent: S64, %sig: U128) -> U128
     // Put the leading bit at 115 (12 leading zeros), unless that would push
     // the exponent below 1: then the value is subnormal at exponent 1.
     block normalize(%sign: U128):
-        %lz        : S64  = %sig.leading_zeros().to_s64()
+        %lz        : S64  = %sig.leading_zeros().to<S64>()
         %shift     : S64  = 12.sub(%lz)  // > 0: right, < 0: left
         %new_exp   : S64  = %exponent.add(%shift)
         %subnormal : Bool = %new_exp.lt(1)
@@ -182,7 +182,7 @@ routine f128_round_pack(%negative: Bool, %exponent: S64, %sig: U128) -> U128
         jump round(%sign, %s, %e)
 
     block shift_left(%sign: U128, %amount: S64, %e: S64):
-        %s : U128 = %sig.shl(0.sub(%amount).to_u128())
+        %s : U128 = %sig.shl(0.sub(%amount).to<U128>())
         jump round(%sign, %s, %e)
 
     block round(%sign: U128, %s: U128, %e: S64):
@@ -192,18 +192,18 @@ routine f128_round_pack(%negative: Bool, %exponent: S64, %sig: U128) -> U128
         %tie     : Bool = %extra.eq(4)
         %odd     : Bool = %kept.bitand(1).eq(1)
         %up      : Bool = %above.bitor(%tie.bitand(%odd))
-        %rounded : U128 = %kept.add(%up.to_u128())
+        %rounded : U128 = %kept.add(%up.to<U128>())
         %carry   : Bool = %rounded.eq(0x20000000000000000000000000000)  // 2^113
         %final   : U128 = %carry
             ? %rounded.shr(1)
             : %rounded
-        %e2     : S64  = %e.add(%carry.to_s64())
+        %e2     : S64  = %e.add(%carry.to<S64>())
         %normal : Bool = %final.ge(F128_IMPLICIT)
         %biased : S64  = %normal
             ? %e2
             : 0
         %overflow : Bool = %biased.ge(F128_EXP_MAX)
-        %field    : U128 = %biased.to_u128().shl(112)
+        %field    : U128 = %biased.to<U128>().shl(112)
         %bits     : U128 = %sign.bitor(%field).bitor(%final.bitand(F128_FRAC_MASK))
         branch %overflow
             ? return(%sign.bitor(F128_INF))
@@ -224,8 +224,8 @@ routine f128_unpack(%bits: U128) -> F128Parts
         return(%p)
 
     block subnormal(%fraction: U128):
-        %shift : S64       = %fraction.leading_zeros().to_s64().sub(15)
-        %p     : F128Parts = F128Parts { sig: %fraction.shl(%shift.to_u128()),
+        %shift : S64       = %fraction.leading_zeros().to<S64>().sub(15)
+        %p     : F128Parts = F128Parts { sig: %fraction.shl(%shift.to<U128>()),
                 exponent: -16382.sub(%shift) }
         return(%p)
 
@@ -382,11 +382,11 @@ routine f128_mul_bits(%a: U128, %b: U128) -> U128
         %mid      : U128      = %a0.mul(%b1).add(%a1.mul(%b0))
         %p11      : U128      = %a1.mul(%b1)
         %lo       : U128      = %p00.add_wrap(%mid.shl(64))
-        %lo_carry : U128      = %lo.lt(%p00).to_u128()
+        %lo_carry : U128      = %lo.lt(%p00).to<U128>()
         %hi       : U128      = %p11.add(%mid.shr(64)).add(%lo_carry)
         %top      : U128      = %hi.shl(19).bitor(%lo.shr(109))
         %sticky   : Bool      = %lo.bitand(0x1FFFFFFFFFFFFFFFFFFFFFFFFFFF).ne(0)  // low 109 bits
-        %sig      : U128      = %top.bitor(%sticky.to_u128())
+        %sig      : U128      = %top.bitor(%sticky.to<U128>())
         %exponent : S64       = %pa.exponent.add(%pb.exponent).add(F128_BIAS)
         %negative : Bool      = %sign.ne(0)
         %r        : U128      = f128_round_pack(%negative, %exponent, %sig)
@@ -427,16 +427,16 @@ routine f128_div_bits(%a: U128, %b: U128) -> U128
         %pa       : F128Parts = f128_unpack(%a)
         %pb       : F128Parts = f128_unpack(%b)
         %d        : U128      = %pb.sig.shl(15)
-        %d1       : U64       = %d.shr(64).to_u64()
-        %d0       : U64       = %d.to_u64_wrap()
+        %d1       : U64       = %d.shr(64).to<U64>()
+        %d0       : U64       = %d.to_wrap<U64>()
         %v        : U64       = div_3by2_prepare(%d1, %d0)
         %n        : U128      = %pa.sig.shl(3)
-        %high     : Div3By2   = div_3by2(%n.shr(64).to_u64(), %n.to_u64_wrap(), 0, %d1, %d0, %v)
+        %high     : Div3By2   = div_3by2(%n.shr(64).to<U64>(), %n.to_wrap<U64>(), 0, %d1, %d0, %v)
         %r        : U128      = %high.remainder
-        %low      : Div3By2   = div_3by2(%r.shr(64).to_u64(), %r.to_u64_wrap(), 0, %d1, %d0, %v)
-        %q        : U128      = %high.quotient.to_u128().shl(64).bitor(%low.quotient.to_u128())
+        %low      : Div3By2   = div_3by2(%r.shr(64).to<U64>(), %r.to_wrap<U64>(), 0, %d1, %d0, %v)
+        %q        : U128      = %high.quotient.to<U128>().shl(64).bitor(%low.quotient.to<U128>())
         %sticky   : Bool      = %low.remainder.ne(0)
-        %sig      : U128      = %q.bitor(%sticky.to_u128())
+        %sig      : U128      = %q.bitor(%sticky.to<U128>())
         %exponent : S64       = %pa.exponent.sub(%pb.exponent).sub(1).add(F128_BIAS)
         %negative : Bool      = %sign.ne(0)
         %bits     : U128      = f128_round_pack(%negative, %exponent, %sig)
@@ -472,7 +472,7 @@ routine f128_sqrt_bits(%a: U128) -> U128
         %root     : U128 = isqrt_256(%hi, %lo)
         // the root is exact exactly when root^2 = radicand; otherwise set the sticky bit
         %exact : Bool = square_equals(%root, %hi, %lo)
-        %sig   : U128 = %root.bitor(%exact.bitnot().to_u128())
+        %sig   : U128 = %root.bitor(%exact.bitnot().to<U128>())
         %bits  : U128 = f128_round_pack(false, %exponent, %sig)
         return(%bits)
 
@@ -480,23 +480,23 @@ routine f128_sqrt_bits(%a: U128) -> U128
 /// hi < x (after normalizing, the 3-by-2 steps need it). x must be nonzero.
 routine div_256_by_128(%hi: U128, %lo: U128, %x: U128) -> U128
     block entry():
-        %s     : S64  = %x.leading_zeros().to_s64()
-        %d     : U128 = %x.shl(%s.to_u128())
-        %spill : U128 = %lo.shr(128.sub(%s).min(127).to_u128())
+        %s     : S64  = %x.leading_zeros().to<S64>()
+        %d     : U128 = %x.shl(%s.to<U128>())
+        %spill : U128 = %lo.shr(128.sub(%s).min(127).to<U128>())
         %carry : U128 = %s.eq(0)
             ? 0
             : %spill
-        %n_hi : U128    = %hi.shl(%s.to_u128()).bitor(%carry)
-        %n_lo : U128    = %lo.shl(%s.to_u128())
-        %d1   : U64     = %d.shr(64).to_u64()
-        %d0   : U64     = %d.to_u64_wrap()
+        %n_hi : U128    = %hi.shl(%s.to<U128>()).bitor(%carry)
+        %n_lo : U128    = %lo.shl(%s.to<U128>())
+        %d1   : U64     = %d.shr(64).to<U64>()
+        %d0   : U64     = %d.to_wrap<U64>()
         %v    : U64     = div_3by2_prepare(%d1, %d0)
-        %high : Div3By2 = div_3by2(%n_hi.shr(64).to_u64(), %n_hi.to_u64_wrap(),
-                %n_lo.shr(64).to_u64(), %d1, %d0, %v)
+        %high : Div3By2 = div_3by2(%n_hi.shr(64).to<U64>(), %n_hi.to_wrap<U64>(),
+                %n_lo.shr(64).to<U64>(), %d1, %d0, %v)
         %r    : U128    = %high.remainder
-        %low  : Div3By2 = div_3by2(%r.shr(64).to_u64(), %r.to_u64_wrap(), %n_lo.to_u64_wrap(), %d1,
+        %low  : Div3By2 = div_3by2(%r.shr(64).to<U64>(), %r.to_wrap<U64>(), %n_lo.to_wrap<U64>(), %d1,
                 %d0, %v)
-        %q    : U128    = %high.quotient.to_u128().shl(64).bitor(%low.quotient.to_u128())
+        %q    : U128    = %high.quotient.to<U128>().shl(64).bitor(%low.quotient.to<U128>())
         return(%q)
 
 /// floor(sqrt(n)) for n = hi × 2^128 + lo with 2^230 <= n < 2^232: Newton's
@@ -504,13 +504,13 @@ routine div_256_by_128(%hi: U128, %lo: U128, %x: U128) -> U128
 /// bits, stops at the first step that doesn't go down.
 routine isqrt_256(%hi: U128, %lo: U128) -> U128
     block entry():
-        %bits  : S64 = 256.sub(%hi.leading_zeros().to_s64())
+        %bits  : S64 = 256.sub(%hi.leading_zeros().to<S64>())
         %shift : S64 = %bits.sub(64)
         %even  : S64 = %shift.add(%shift.bitand(1))
-        %top   : U64 = %hi.shr(%even.sub(128).to_u128()).to_u64()
+        %top   : U64 = %hi.shr(%even.sub(128).to<U128>()).to<U64>()
         // F64's root of top is within 2^-50 relative: + 2 makes the seed an overestimate
-        %guess : U64  = %top.to_f64().sqrt().to_u64().add(2)
-        %seed  : U128 = %guess.to_u128().shl(%even.div(2).to_u128())
+        %guess : U64  = %top.to<F64>().sqrt().to<U64>().add(2)
+        %seed  : U128 = %guess.to<U128>().shl(%even.div(2).to<U128>())
         jump step(%seed)
 
     block step(%x: U128):
@@ -529,7 +529,7 @@ routine square_equals(%x: U128, %hi: U128, %lo: U128) -> Bool
         %low   : U128 = %x0.mul(%x0)
         %cross : U128 = %x0.mul(%x1).shl(1)
         %sq_lo : U128 = %low.add_wrap(%cross.shl(64))
-        %carry : U128 = %sq_lo.lt(%low).to_u128()
+        %carry : U128 = %sq_lo.lt(%low).to<U128>()
         %sq_hi : U128 = %x1.mul(%x1).add(%cross.shr(64)).add(%carry)
         %r     : Bool = %sq_hi.eq(%hi).bitand(%sq_lo.eq(%lo))
         return(%r)
@@ -624,7 +624,7 @@ routine f128_widen(%bits: U64, %width: U64, %mantissa_bits: U64, %bias: S64,
             : 0
         %exponent  : U64  = %bits.shr(%mantissa_bits).bitand(%exponent_max)
         %fraction  : U64  = %bits.bitand(1.shl(%mantissa_bits).sub(1))
-        %top       : U128 = %fraction.to_u128().shl(112.sub(%mantissa_bits).to_u128())
+        %top       : U128 = %fraction.to<U128>().shl(112.sub(%mantissa_bits).to<U128>())
         %special   : Bool = %exponent.eq(%exponent_max)
         %zero      : Bool = %exponent.eq(0).bitand(%fraction.eq(0))
         %subnormal : Bool = %exponent.eq(0)
@@ -632,7 +632,7 @@ routine f128_widen(%bits: U64, %width: U64, %mantissa_bits: U64, %bias: S64,
             %special   -> done(%sign.bitor(F128_INF).bitor(%top))
             %zero      -> done(%sign)
             %subnormal -> sub(%sign, %top)
-            else       -> done(%sign.bitor(%exponent.to_s64().sub(%bias).add(F128_BIAS).to_u128().shl(112)).bitor(%top))
+            else       -> done(%sign.bitor(%exponent.to<S64>().sub(%bias).add(F128_BIAS).to<U128>().shl(112)).bitor(%top))
 
     // value = fraction × 2^(1 - bias - mantissa_bits): exact after normalizing
     block sub(%sign: U128, %top: U128):
@@ -668,7 +668,7 @@ routine f128_narrow(%value: F128, %width: U64, %mantissa_bits: U64, %bias: S64,
 
     // keep the top payload bits and force the quiet bit
     block nan(%bits: U128, %sign: U64, %infinity: U64):
-        %payload : U64 = f128_fraction(%bits).shr(112.sub(%mantissa_bits).to_u128()).to_u64()
+        %payload : U64 = f128_fraction(%bits).shr(112.sub(%mantissa_bits).to<U128>()).to<U64>()
         %quiet   : U64 = 1.shl(%mantissa_bits.sub(1))
         %r       : U64 = %sign.bitor(%infinity).bitor(%payload).bitor(%quiet)
         return(%r)
@@ -679,84 +679,84 @@ routine f128_narrow(%value: F128, %width: U64, %mantissa_bits: U64, %bias: S64,
         %p      : F128Parts = f128_unpack(%bits)
         %min_e  : S64       = 1.sub(%bias)
         %e_used : S64       = %p.exponent.max(%min_e)
-        %shift  : S64       = 112.sub(%mantissa_bits.to_s64()).add(%e_used.sub(%p.exponent))
+        %shift  : S64       = 112.sub(%mantissa_bits.to<S64>()).add(%e_used.sub(%p.exponent))
         %sticky : U128      = f128_shr_sticky(%p.sig, %shift.sub(2).max(0))
         // two extra bits (half, rest) under the kept ones
         %grs : U128 = %shift.lt(2)
-            ? %p.sig.shl(2.sub(%shift).max(0).to_u128())
+            ? %p.sig.shl(2.sub(%shift).max(0).to<U128>())
             : %sticky
         %kept  : U128 = %grs.shr(2)
         %low   : U128 = %grs.bitand(3)
         %up    : Bool = %low.gt(2).bitor(%low.eq(2).bitand(%kept.bitand(1).eq(1)))
-        %q     : U64  = %kept.add(%up.to_u128()).to_u64()
+        %q     : U64  = %kept.add(%up.to<U128>()).to<U64>()
         %carry : Bool = %q.eq(1.shl(%mantissa_bits.add(1)))
         %q2    : U64  = %carry
             ? %q.shr(1)
             : %q
-        %e2     : S64  = %e_used.add(%carry.to_s64())
+        %e2     : S64  = %e_used.add(%carry.to<S64>())
         %hidden : U64  = 1.shl(%mantissa_bits)
         %normal : Bool = %q2.ge(%hidden)
         %biased : S64  = %normal
             ? %e2.add(%bias)
             : 0
-        %overflow : Bool = %biased.ge(%exponent_max.to_s64())
-        %r        : U64  = %sign.bitor(%biased.to_u64().shl(%mantissa_bits)).bitor(%q2.bitand(%hidden.sub(1)))
+        %overflow : Bool = %biased.ge(%exponent_max.to<S64>())
+        %r        : U64  = %sign.bitor(%biased.to<U64>().shl(%mantissa_bits)).bitor(%q2.bitand(%hidden.sub(1)))
         branch %overflow
             ? return(%sign.bitor(%infinity))
             : return(%r)
 
-routine F64.to_f128(%self: Self) -> F128
+routine F64.to<F128>(%self: Self) -> F128
     block entry():
         %r : F128 = f128_widen(%self.bits(), 64, 52, 1023, 2047)
         return(%r)
 
-routine F32.to_f128(%self: Self) -> F128
+routine F32.to<F128>(%self: Self) -> F128
     block entry():
-        %r : F128 = f128_widen(%self.bits().to_u64(), 32, 23, 127, 255)
+        %r : F128 = f128_widen(%self.bits().to<U64>(), 32, 23, 127, 255)
         return(%r)
 
-routine F16.to_f128(%self: Self) -> F128
+routine F16.to<F128>(%self: Self) -> F128
     block entry():
-        %r : F128 = f128_widen(%self.bits().to_u64(), 16, 10, 15, 31)
+        %r : F128 = f128_widen(%self.bits().to<U64>(), 16, 10, 15, 31)
         return(%r)
 
-routine BF16.to_f128(%self: Self) -> F128
+routine BF16.to<F128>(%self: Self) -> F128
     block entry():
-        %r : F128 = f128_widen(%self.bits().to_u64(), 16, 7, 127, 255)
+        %r : F128 = f128_widen(%self.bits().to<U64>(), 16, 7, 127, 255)
         return(%r)
 
-routine F128.to_f64(%self: Self) -> F64
+routine F128.to<F64>(%self: Self) -> F64
     block entry():
         %r : F64 = .from_bits(f128_narrow(%self, 64, 52, 1023, 2047))
         return(%r)
 
-routine F128.to_f32(%self: Self) -> F32
+routine F128.to<F32>(%self: Self) -> F32
     block entry():
-        %r : F32 = .from_bits(f128_narrow(%self, 32, 23, 127, 255).to_u32())
+        %r : F32 = .from_bits(f128_narrow(%self, 32, 23, 127, 255).to<U32>())
         return(%r)
 
-routine F128.to_f16(%self: Self) -> F16
+routine F128.to<F16>(%self: Self) -> F16
     block entry():
-        %r : F16 = .from_bits(f128_narrow(%self, 16, 10, 15, 31).to_u16())
+        %r : F16 = .from_bits(f128_narrow(%self, 16, 10, 15, 31).to<U16>())
         return(%r)
 
-routine F128.to_bf16(%self: Self) -> BF16
+routine F128.to<BF16>(%self: Self) -> BF16
     block entry():
-        %r : BF16 = .from_bits(f128_narrow(%self, 16, 7, 127, 255).to_u16())
+        %r : BF16 = .from_bits(f128_narrow(%self, 16, 7, 127, 255).to<U16>())
         return(%r)
 
-routine F128.to_f128(%self: Self) -> Self
+routine F128.to<F128>(%self: Self) -> Self
     block entry():
         return(%self)
 
 /// Rounded to nearest even when it needs more than 113 bits.
-routine U128.to_f128(%self: Self) -> F128
+routine U128.to<F128>(%self: Self) -> F128
     block entry():
         %bits : Self = f128_round_pack(false, F128_BIAS.add(115), %self)
         %r    : F128 = f128_of(%bits)
         return(%r)
 
-routine S128.to_f128(%self: Self) -> F128
+routine S128.to<F128>(%self: Self) -> F128
     block entry():
         %negative  : Bool = %self.lt(0)
         %magnitude : U128 = %self.abs_diff(0)
@@ -764,24 +764,24 @@ routine S128.to_f128(%self: Self) -> F128
         %r         : F128 = f128_of(%bits)
         return(%r)
 
-routine U64.to_f128(%self: Self) -> F128
+routine U64.to<F128>(%self: Self) -> F128
     block entry():
-        %r : F128 = %self.to_u128().to_f128()
+        %r : F128 = %self.to<U128>().to<F128>()
         return(%r)
 
-routine S64.to_f128(%self: Self) -> F128
+routine S64.to<F128>(%self: Self) -> F128
     block entry():
-        %r : F128 = %self.to_s128().to_f128()
+        %r : F128 = %self.to<S128>().to<F128>()
         return(%r)
 
-routine U32.to_f128(%self: Self) -> F128
+routine U32.to<F128>(%self: Self) -> F128
     block entry():
-        %r : F128 = %self.to_u128().to_f128()
+        %r : F128 = %self.to<U128>().to<F128>()
         return(%r)
 
-routine S32.to_f128(%self: Self) -> F128
+routine S32.to<F128>(%self: Self) -> F128
     block entry():
-        %r : F128 = %self.to_s128().to_f128()
+        %r : F128 = %self.to<S128>().to<F128>()
         return(%r)
 
 /// |self| rounded toward zero, saturating at U128.MAX; NaN and values below 1
@@ -806,8 +806,8 @@ routine f128_whole_magnitude(%bits: U128) -> U128
 
     block whole(%p: F128Parts):
         %up    : Bool = %p.exponent.ge(112)
-        %left  : U128 = %p.sig.shl(%p.exponent.sub(112).max(0).to_u128())
-        %right : U128 = %p.sig.shr(112.sub(%p.exponent).max(0).to_u128())
+        %left  : U128 = %p.sig.shl(%p.exponent.sub(112).max(0).to<U128>())
+        %right : U128 = %p.sig.shr(112.sub(%p.exponent).max(0).to<U128>())
         %r     : U128 = %up
             ? %left
             : %right
@@ -874,7 +874,7 @@ routine f128_round_int(%bits: U128, %mode: F128Rounding) -> U128
             F128Rounding.NearestEven -> return(%even)
 
     block split(%e: S64):
-        %frac_bits : U128 = 112.sub(%e).to_u128()
+        %frac_bits : U128 = 112.sub(%e).to<U128>()
         %unit      : U128 = 1.shl(%frac_bits)
         %mask      : U128 = %unit.sub(1)
         %kept      : U128 = %bits.bitand(%mask.bitnot())
@@ -971,14 +971,14 @@ routine f128_shr_sticky256(%x: U256, %n: S64) -> U256
             : some()
 
     block all():
-        %any : U256 = %x.ne(0).to_u64().to_u256()
+        %any : U256 = %x.ne(0).to<U64>().to<U256>()
         return(%any)
 
     block some():
-        %shift : U256 = %n.to_u256()
+        %shift : U256 = %n.to<U256>()
         %mask  : U256 = 1.shl(%shift).sub(1)
         %lost  : Bool = %x.bitand(%mask).ne(0)
-        %r     : U256 = %x.shr(%shift).bitor(%lost.to_u64().to_u256())
+        %r     : U256 = %x.shr(%shift).bitor(%lost.to<U64>().to<U256>())
         return(%r)
 
 /// self × a + b with a single rounding: the 226-bit product is exact, c is
@@ -1040,7 +1040,7 @@ routine f128_fma_bits(%x: U128, %y: U128, %c: U128) -> U128
         %pc      : F128Parts = f128_unpack(%c)
         %p       : U256      = %px.sig.mul_wide(%py.sig).shl(29)
         %p_e     : S64       = %px.exponent.add(%py.exponent).sub(253)
-        %cc      : U256      = %pc.sig.to_u256().shl(142)
+        %cc      : U256      = %pc.sig.to<U256>().shl(142)
         %c_e     : S64       = %pc.exponent.sub(254)
         %p_neg   : Bool      = %sign.ne(0)
         %c_neg   : Bool      = f128_is_negative_bits(%c)
@@ -1089,10 +1089,10 @@ routine f128_fma_bits(%x: U128, %y: U128, %c: U128) -> U128
         branch %zero
             ? return(0)
             : continue
-        %lz       : S64  = %r.leading_zeros().to_s64()
-        %n        : U256 = %r.shl(%lz.to_u256())
-        %high     : U128 = %n.shr(128).to_u128()
-        %sig      : U128 = %high.bitor(%n.to_u128_wrap().ne(0).to_u128())
+        %lz       : S64  = %r.leading_zeros().to<S64>()
+        %n        : U256 = %r.shl(%lz.to<U256>())
+        %high     : U128 = %n.shr(128).to<U128>()
+        %sig      : U128 = %high.bitor(%n.to_wrap<U128>().ne(0).to<U128>())
         %exponent : S64  = %e.sub(%lz).add(128).add(F128_BIAS).add(115)
         %bits     : U128 = f128_round_pack(%negative, %exponent, %sig)
         return(%bits)
@@ -1117,7 +1117,7 @@ preset F128.LN_2:          F128 = F128.from_bits(0x3FFE62E42FEFA39EF35793C767300
 preset F128.LN_10:         F128 = F128.from_bits(0x400026BB1BBB5551582DD4ADAC5705A6)  // ln(10)
 preset F128.LOG2_E:        F128 = F128.from_bits(0x3FFF71547652B82FE1777D0FFDA0D23A)  // log2(e)
 preset F128.LOG10_E:       F128 = F128.from_bits(0x3FFDBCB7B1526E50E32A6AB7555F5A68)  // log10(e)
-preset F128_ONE: U128 = F128_BIAS.to_u128().shl(112)
+preset F128_ONE: U128 = F128_BIAS.to<U128>().shl(112)
 
 // -- hashing, reciprocal ------------------------------------------------------
 
@@ -1474,7 +1474,7 @@ routine F128.logb(%self: Self) -> Self
 
     block finite():
         %p : F128Parts = f128_unpack(%self.bits())
-        %r : Self      = %p.exponent.to_f128()
+        %r : Self      = %p.exponent.to<F128>()
         return(%r)
 
 /// Splits self into a signed fraction with 0.5 <= |fraction| < 1 and a power of
@@ -1507,7 +1507,7 @@ routine F128.frexp(%self: Self) -> F128Frexp
 /// 2^k, for |k| within the normal range.
 routine f128_pow2(%k: S64) -> F128
     block entry():
-        %r : F128 = f128_of(F128_BIAS.add(%k).to_u128().shl(112))
+        %r : F128 = f128_of(F128_BIAS.add(%k).to<U128>().shl(112))
         return(%r)
 
 /// Whether self, rounded toward zero, lies in [-2^%lo_bits, 2^%hi_bits) (a
@@ -1532,7 +1532,7 @@ routine F128.fits_int(%self: Self, %lo_bits: S64, %hi_bits: S64) -> Bool
         return(%r)
 
 /// Toward zero, saturating at U128.MAX; NaN and negative values give 0.
-routine F128.to_u128_clamp(%self: Self) -> U128
+routine F128.to_clamp<U128>(%self: Self) -> U128
     block entry():
         %negative  : Bool = f128_is_negative_bits(%self.bits())
         %magnitude : U128 = f128_whole_magnitude(%self.bits())
@@ -1542,7 +1542,7 @@ routine F128.to_u128_clamp(%self: Self) -> U128
         return(%r)
 
 /// Toward zero, saturating at S128.MIN / S128.MAX; NaN gives 0.
-routine F128.to_s128_clamp(%self: Self) -> S128
+routine F128.to_clamp<S128>(%self: Self) -> S128
     block entry():
         %negative  : Bool = f128_is_negative_bits(%self.bits())
         %magnitude : U128 = f128_whole_magnitude(%self.bits())
@@ -1554,209 +1554,209 @@ routine F128.to_s128_clamp(%self: Self) -> S128
         %over : Bool = %magnitude.ge(0x80000000000000000000000000000000)
         %r    : S128 = %over
             ? S128.MIN
-            : %magnitude.to_s128_wrap().neg_wrap()
+            : %magnitude.to_wrap<S128>().neg_wrap()
         return(%r)
 
     block positive(%magnitude: U128):
-        %r : S128 = %magnitude.to_s128_clamp()
+        %r : S128 = %magnitude.to_clamp<S128>()
         return(%r)
 
-routine F128.to_s8(%self: Self) -> S8
+routine F128.to<S8>(%self: Self) -> S8
     block entry():
         %fits : Bool = %self.fits_int(7, 7)
         branch %fits
             ? continue
             : panic(TrapCode.Overflow)
-        %r : S8 = %self.to_s8_clamp()
+        %r : S8 = %self.to_clamp<S8>()
         return(%r)
 
-routine F128.to_s8_checked(%self: Self) -> Option<S8>
+routine F128.to_checked<S8>(%self: Self) -> Option<S8>
     block entry():
         %fits  : Bool       = %self.fits_int(7, 7)
-        %value : S8         = %self.to_s8_clamp()
+        %value : S8         = %self.to_clamp<S8>()
         %r     : Option<S8> = %fits.then_present(%value)
         return(%r)
 
-routine F128.to_s8_clamp(%self: Self) -> S8
+routine F128.to_clamp<S8>(%self: Self) -> S8
     block entry():
-        %r : S8 = %self.to_s128_clamp().to_s8_clamp()
+        %r : S8 = %self.to_clamp<S128>().to_clamp<S8>()
         return(%r)
 
-routine F128.to_s16(%self: Self) -> S16
+routine F128.to<S16>(%self: Self) -> S16
     block entry():
         %fits : Bool = %self.fits_int(15, 15)
         branch %fits
             ? continue
             : panic(TrapCode.Overflow)
-        %r : S16 = %self.to_s16_clamp()
+        %r : S16 = %self.to_clamp<S16>()
         return(%r)
 
-routine F128.to_s16_checked(%self: Self) -> Option<S16>
+routine F128.to_checked<S16>(%self: Self) -> Option<S16>
     block entry():
         %fits  : Bool        = %self.fits_int(15, 15)
-        %value : S16         = %self.to_s16_clamp()
+        %value : S16         = %self.to_clamp<S16>()
         %r     : Option<S16> = %fits.then_present(%value)
         return(%r)
 
-routine F128.to_s16_clamp(%self: Self) -> S16
+routine F128.to_clamp<S16>(%self: Self) -> S16
     block entry():
-        %r : S16 = %self.to_s128_clamp().to_s16_clamp()
+        %r : S16 = %self.to_clamp<S128>().to_clamp<S16>()
         return(%r)
 
-routine F128.to_s32(%self: Self) -> S32
+routine F128.to<S32>(%self: Self) -> S32
     block entry():
         %fits : Bool = %self.fits_int(31, 31)
         branch %fits
             ? continue
             : panic(TrapCode.Overflow)
-        %r : S32 = %self.to_s32_clamp()
+        %r : S32 = %self.to_clamp<S32>()
         return(%r)
 
-routine F128.to_s32_checked(%self: Self) -> Option<S32>
+routine F128.to_checked<S32>(%self: Self) -> Option<S32>
     block entry():
         %fits  : Bool        = %self.fits_int(31, 31)
-        %value : S32         = %self.to_s32_clamp()
+        %value : S32         = %self.to_clamp<S32>()
         %r     : Option<S32> = %fits.then_present(%value)
         return(%r)
 
-routine F128.to_s32_clamp(%self: Self) -> S32
+routine F128.to_clamp<S32>(%self: Self) -> S32
     block entry():
-        %r : S32 = %self.to_s128_clamp().to_s32_clamp()
+        %r : S32 = %self.to_clamp<S128>().to_clamp<S32>()
         return(%r)
 
-routine F128.to_s64(%self: Self) -> S64
+routine F128.to<S64>(%self: Self) -> S64
     block entry():
         %fits : Bool = %self.fits_int(63, 63)
         branch %fits
             ? continue
             : panic(TrapCode.Overflow)
-        %r : S64 = %self.to_s64_clamp()
+        %r : S64 = %self.to_clamp<S64>()
         return(%r)
 
-routine F128.to_s64_checked(%self: Self) -> Option<S64>
+routine F128.to_checked<S64>(%self: Self) -> Option<S64>
     block entry():
         %fits  : Bool        = %self.fits_int(63, 63)
-        %value : S64         = %self.to_s64_clamp()
+        %value : S64         = %self.to_clamp<S64>()
         %r     : Option<S64> = %fits.then_present(%value)
         return(%r)
 
-routine F128.to_s64_clamp(%self: Self) -> S64
+routine F128.to_clamp<S64>(%self: Self) -> S64
     block entry():
-        %r : S64 = %self.to_s128_clamp().to_s64_clamp()
+        %r : S64 = %self.to_clamp<S128>().to_clamp<S64>()
         return(%r)
 
-routine F128.to_s128(%self: Self) -> S128
+routine F128.to<S128>(%self: Self) -> S128
     block entry():
         %fits : Bool = %self.fits_int(127, 127)
         branch %fits
             ? continue
             : panic(TrapCode.Overflow)
-        %r : S128 = %self.to_s128_clamp()
+        %r : S128 = %self.to_clamp<S128>()
         return(%r)
 
-routine F128.to_s128_checked(%self: Self) -> Option<S128>
+routine F128.to_checked<S128>(%self: Self) -> Option<S128>
     block entry():
         %fits  : Bool         = %self.fits_int(127, 127)
-        %value : S128         = %self.to_s128_clamp()
+        %value : S128         = %self.to_clamp<S128>()
         %r     : Option<S128> = %fits.then_present(%value)
         return(%r)
 
-routine F128.to_u8(%self: Self) -> U8
+routine F128.to<U8>(%self: Self) -> U8
     block entry():
         %fits : Bool = %self.fits_int(-1, 8)
         branch %fits
             ? continue
             : panic(TrapCode.Overflow)
-        %r : U8 = %self.to_u8_clamp()
+        %r : U8 = %self.to_clamp<U8>()
         return(%r)
 
-routine F128.to_u8_checked(%self: Self) -> Option<U8>
+routine F128.to_checked<U8>(%self: Self) -> Option<U8>
     block entry():
         %fits  : Bool       = %self.fits_int(-1, 8)
-        %value : U8         = %self.to_u8_clamp()
+        %value : U8         = %self.to_clamp<U8>()
         %r     : Option<U8> = %fits.then_present(%value)
         return(%r)
 
-routine F128.to_u8_clamp(%self: Self) -> U8
+routine F128.to_clamp<U8>(%self: Self) -> U8
     block entry():
-        %r : U8 = %self.to_u128_clamp().to_u8_clamp()
+        %r : U8 = %self.to_clamp<U128>().to_clamp<U8>()
         return(%r)
 
-routine F128.to_u16(%self: Self) -> U16
+routine F128.to<U16>(%self: Self) -> U16
     block entry():
         %fits : Bool = %self.fits_int(-1, 16)
         branch %fits
             ? continue
             : panic(TrapCode.Overflow)
-        %r : U16 = %self.to_u16_clamp()
+        %r : U16 = %self.to_clamp<U16>()
         return(%r)
 
-routine F128.to_u16_checked(%self: Self) -> Option<U16>
+routine F128.to_checked<U16>(%self: Self) -> Option<U16>
     block entry():
         %fits  : Bool        = %self.fits_int(-1, 16)
-        %value : U16         = %self.to_u16_clamp()
+        %value : U16         = %self.to_clamp<U16>()
         %r     : Option<U16> = %fits.then_present(%value)
         return(%r)
 
-routine F128.to_u16_clamp(%self: Self) -> U16
+routine F128.to_clamp<U16>(%self: Self) -> U16
     block entry():
-        %r : U16 = %self.to_u128_clamp().to_u16_clamp()
+        %r : U16 = %self.to_clamp<U128>().to_clamp<U16>()
         return(%r)
 
-routine F128.to_u32(%self: Self) -> U32
+routine F128.to<U32>(%self: Self) -> U32
     block entry():
         %fits : Bool = %self.fits_int(-1, 32)
         branch %fits
             ? continue
             : panic(TrapCode.Overflow)
-        %r : U32 = %self.to_u32_clamp()
+        %r : U32 = %self.to_clamp<U32>()
         return(%r)
 
-routine F128.to_u32_checked(%self: Self) -> Option<U32>
+routine F128.to_checked<U32>(%self: Self) -> Option<U32>
     block entry():
         %fits  : Bool        = %self.fits_int(-1, 32)
-        %value : U32         = %self.to_u32_clamp()
+        %value : U32         = %self.to_clamp<U32>()
         %r     : Option<U32> = %fits.then_present(%value)
         return(%r)
 
-routine F128.to_u32_clamp(%self: Self) -> U32
+routine F128.to_clamp<U32>(%self: Self) -> U32
     block entry():
-        %r : U32 = %self.to_u128_clamp().to_u32_clamp()
+        %r : U32 = %self.to_clamp<U128>().to_clamp<U32>()
         return(%r)
 
-routine F128.to_u64(%self: Self) -> U64
+routine F128.to<U64>(%self: Self) -> U64
     block entry():
         %fits : Bool = %self.fits_int(-1, 64)
         branch %fits
             ? continue
             : panic(TrapCode.Overflow)
-        %r : U64 = %self.to_u64_clamp()
+        %r : U64 = %self.to_clamp<U64>()
         return(%r)
 
-routine F128.to_u64_checked(%self: Self) -> Option<U64>
+routine F128.to_checked<U64>(%self: Self) -> Option<U64>
     block entry():
         %fits  : Bool        = %self.fits_int(-1, 64)
-        %value : U64         = %self.to_u64_clamp()
+        %value : U64         = %self.to_clamp<U64>()
         %r     : Option<U64> = %fits.then_present(%value)
         return(%r)
 
-routine F128.to_u64_clamp(%self: Self) -> U64
+routine F128.to_clamp<U64>(%self: Self) -> U64
     block entry():
-        %r : U64 = %self.to_u128_clamp().to_u64_clamp()
+        %r : U64 = %self.to_clamp<U128>().to_clamp<U64>()
         return(%r)
 
-routine F128.to_u128(%self: Self) -> U128
+routine F128.to<U128>(%self: Self) -> U128
     block entry():
         %fits : Bool = %self.fits_int(-1, 128)
         branch %fits
             ? continue
             : panic(TrapCode.Overflow)
-        %r : U128 = %self.to_u128_clamp()
+        %r : U128 = %self.to_clamp<U128>()
         return(%r)
 
-routine F128.to_u128_checked(%self: Self) -> Option<U128>
+routine F128.to_checked<U128>(%self: Self) -> Option<U128>
     block entry():
         %fits  : Bool         = %self.fits_int(-1, 128)
-        %value : U128         = %self.to_u128_clamp()
+        %value : U128         = %self.to_clamp<U128>()
         %r     : Option<U128> = %fits.then_present(%value)
         return(%r)

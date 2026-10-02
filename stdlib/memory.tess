@@ -45,7 +45,7 @@ require T: typename
         %alloc_fn  : Callable<(Addr, USize), Addr> = %alloc.alloc_fn.load()
         %state     : Addr                          = %alloc.state.load()
         %raw       : Addr                          = %alloc_fn.call(%state, %size)
-        %typed     : @T                            = %raw.cast<T>()
+        %typed     : @T                            = %raw.to<@T>()
         return(%typed)
 
 routine reallocate<T>(%alloc: @Allocator, %ptr: @T, %new_count: USize) -> @T
@@ -58,7 +58,7 @@ require T: typename
         %state      : Addr                                = %alloc.state.load()
         %raw        : Addr                                = %realloc_fn.call(%state, %raw_old,
                 %size)
-        %typed      : @T                                  = %raw.cast<T>()
+        %typed      : @T                                  = %raw.to<@T>()
         return(%typed)
 
 routine copy<T>(%dst: @T, %src: @T, %count: USize) -> Void
@@ -81,7 +81,7 @@ private routine copy_bytes(%dst: Addr, %src: Addr, %bytes: USize) -> Void
 // ============================================================
 
 /// Copies %self into memory from %alloc and ends it with a NUL. Free it with
-/// %c.to_ptr().free(%alloc).
+/// %c.to<@Byte>().free(%alloc).
 routine Bytes.to_cstr(%self: Self, %alloc: @Allocator) -> CStr
     block entry():
         %length : USize = %self.length
@@ -95,7 +95,7 @@ routine Bytes.to_cstr(%self: Self, %alloc: @Allocator) -> CStr
         return(.from_ptr(%buffer))
 
 /// Converts %self to wide characters in memory from %alloc, ending with a 0:
-/// UTF-16 on Windows, UTF-32 elsewhere. Free it with %w.to_ptr().free(%alloc).
+/// UTF-16 on Windows, UTF-32 elsewhere. Free it with %w.to<@CWChar>().free(%alloc).
 /// A UTF-8 byte count bounds both unit counts, so one allocation is enough.
 routine Bytes.to_cwstr(%self: Self, %alloc: @Allocator) -> CWStr
     block entry():
@@ -126,20 +126,20 @@ routine Bytes.to_cwstr(%self: Self, %alloc: @Allocator) -> CWStr
 #target(os: "windows")
 private routine encode_cwchar(%char: Char, %out: @CWChar) -> USize
     block entry():
-        %cp  : U32  = %char.to_u32()
+        %cp  : U32  = %char.to<U32>()
         %bmp : Bool = %cp.lt(0x10000)
         branch %bmp
             ? single(%cp)
             : pair(%cp)
 
     block single(%cp: U32):
-        %out.store(%cp.to_u16())
+        %out.store(%cp.to<U16>())
         return(1)
 
     block pair(%cp: U32):
         %v : U32 = %cp.sub(0x10000)
-        %out.store(%v.shr(10).add(0xD800).to_u16())
-        %out.stride(1).store(%v.bitand(0x3FF).add(0xDC00).to_u16())
+        %out.store(%v.shr(10).add(0xD800).to<U16>())
+        %out.stride(1).store(%v.bitand(0x3FF).add(0xDC00).to<U16>())
         return(2)
 
 /// Writes %char at %out as one UTF-32 unit. CWChar is S32 on some targets and U32 on others (ARM and AArch64 outside
@@ -147,6 +147,6 @@ private routine encode_cwchar(%char: Char, %out: @CWChar) -> USize
 #target(os: not "windows")
 private routine encode_cwchar(%char: Char, %out: @CWChar) -> USize
     block entry():
-        %unit : @U32 = %out.cast<U32>()
-        %unit.store(%char.to_u32())
+        %unit : @U32 = %out.to<@U32>()
+        %unit.store(%char.to<U32>())
         return(1)

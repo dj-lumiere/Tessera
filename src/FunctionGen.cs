@@ -426,7 +426,7 @@ public sealed class FunctionGen
                     if (baseType is PtrType)
                         throw Err(ix.Pos, "this field holds a pointer; load it into a value before stepping it");
                     if (baseType is ArrayType)
-                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .at(i), .get(i) / .set(i, v), or .to_ptr().stride(i)");
+                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .at(i), .get(i) / .set(i, v), or .to<@T>().stride(i)");
                     var i = EvalIndex(ix.Index);
                     _c.EnsureTypeDefined(baseType);
                     string elemAddr = EmitTmp($"getelementptr {baseType.Llvm}, ptr {baseAddr}, {i.Type.Llvm} {i.Op}");
@@ -445,7 +445,7 @@ public sealed class FunctionGen
                 var idx = EvalIndex(ix.Index);
                 _c.EnsureTypeDefined(bp.Pointee);
                 // `Ptr<X>.stride(i)` is the i-th X, whatever X is: on a Ptr<Array<T, N>> it steps over whole arrays
-                // (elements are .at / .get / .set, or .to_ptr().stride(i)).
+                // (elements are .at / .get / .set, or .to<@T>().stride(i)).
                 return (EmitTmp($"getelementptr {bp.Pointee.Llvm}, ptr {b.Op}, {idx.Type.Llvm} {idx.Op}"), bp.Pointee);
             }
             default:
@@ -1182,7 +1182,7 @@ public sealed class FunctionGen
                 // The type the value is going to is the owner: `.absent()` where an Option<T> is expected.
                 var owner = expected ?? throw Err(ic.Pos,
                     $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
-                var r = _c.FindMethod(owner, ic.Name, _env.File, ic.Pos)
+                var r = _c.FindMethod(owner, ic.Name, _env.File, ic.Pos, fits: d => d.Fixed.Count == 0 || FixedFits(d, owner, ic.TypeArgs, ic.Pos))
                         ?? throw Err(ic.Pos, $"{owner} has no routine '{ic.Name}'");
                 var env = BindOwner(r, owner, ic.Pos);
                 BindExplicit(r, env, ic.TypeArgs, ic.Pos);
@@ -1198,7 +1198,7 @@ public sealed class FunctionGen
                     var asMethod = new MethodCallExpr(new PresetRef(null, n.Owner.Name, n.Owner.Pos), n.Name, n.TypeArgs, n.Args, n.Pos);
                     return PlanCall(asMethod, expected);
                 }
-                var r = _c.FindMethod(owner, n.Name, _env.File, n.Pos)
+                var r = _c.FindMethod(owner, n.Name, _env.File, n.Pos, fits: d => d.Fixed.Count == 0 || FixedFits(d, owner, n.TypeArgs, n.Pos))
                         ?? throw Err(n.Pos, $"{owner} has no routine '{n.Name}'");
                 var env = BindOwner(r, owner, n.Pos);
                 BindExplicit(r, env, n.TypeArgs, n.Pos);
@@ -1239,12 +1239,13 @@ public sealed class FunctionGen
                  ?? (LiteralCanBe(m.Receiver, expected) ? expected : null);
             if (rt is null)
             {
+                string call = m.Name + (m.TypeArgs.Count == 0 ? "" : $"<{string.Join(", ", m.TypeArgs)}>");
                 string fix = m.Receiver switch
                 {
                     ArrayLit => "Array<T, N> { ... }",
                     RecordLit => "Type { ... }",
-                    FloatLit => $"F64.{m.Name}(...)",
-                    _ => $"S64.{m.Name}(...)",
+                    FloatLit => $"F64.{call}(...)",
+                    _ => $"S64.{call}(...)",
                 };
                 throw Err(m.Receiver.Pos,
                     $"nothing says this literal's type (its arguments are untyped too); name the type: {fix}");
@@ -1263,7 +1264,8 @@ public sealed class FunctionGen
         RoutineDecl? typewise = null;
         foreach (var (owner, passesPointer) in candidates)
         {
-            var r = _c.FindMethod(owner, m.Name, _env.File, m.Pos, FromTypeParameter(owner) || Derived);
+            var r = _c.FindMethod(owner, m.Name, _env.File, m.Pos, FromTypeParameter(owner) || Derived,
+                d => d.Fixed.Count == 0 || FixedFits(d, owner, m.TypeArgs, m.Pos));
             if (r is null) continue;
             // Only a routine whose first parameter is %self is a method; the rest are called by their type.
             if (!Compiler.HasReceiver(r))
@@ -1291,6 +1293,15 @@ public sealed class FunctionGen
             env.Bind("T", en);
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
+        // `%x.to<S64>()`: the routines are defined per type argument, and none is for these.
+        foreach (var (owner, _) in candidates)
+            if (_c.MethodsNamed(owner, m.Name) is { Count: > 0 } defined && defined.All(d => d.Fixed.Count > 0))
+            {
+                string forms = string.Join(", ", defined.Select(d => $"{m.Name}<{string.Join(", ", d.Fixed)}>"));
+                throw Err(m.Pos, m.TypeArgs.Count == 0
+                    ? $"{owner}.{m.Name} takes the type it goes to: {forms}"
+                    : $"{owner} has no {m.Name}<{string.Join(", ", m.TypeArgs)}>; it has {forms}");
+            }
         if (typewise is not null)
             throw Err(m.Pos, $"'{typewise.DisplayName}' has no %self, so it isn't a method; call it by its type: "
                 + $"{typewise.Owner!.Name}.{m.Name}(...)");
@@ -1299,7 +1310,7 @@ public sealed class FunctionGen
             throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; load it: .load().{m.Name}(...)");
         // Memory is read through a typed pointer only; an Addr says where, not what.
         if (rt is PtrType { Pointee: null } && m.Name is "load" or "store" or "volatile_load" or "volatile_store")
-            throw Err(m.Pos, $"an Addr has no pointee type to {m.Name}; cast it first: .cast<T>().{m.Name}(...)");
+            throw Err(m.Pos, $"an Addr has no pointee type to {m.Name}; cast it first: .to<@T>().{m.Name}(...)");
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }
 
@@ -1350,8 +1361,36 @@ public sealed class FunctionGen
         || name is "F16" or "BF16" or "F32" or "F64" or "Bool" or "Void" or "Ptr" or "Addr" or "Array" or "Vector"
         || _c.DeclaresType(name);
 
+    /// Whether a routine defined for type arguments (`S32.to<S64>`, `Ptr<T>.to<@U>`) is the one these name.
+    private bool FixedFits(RoutineDecl r, DType owner, List<TypeRef> typeArgs, Pos pos)
+    {
+        if (typeArgs.Count != r.Fixed.Count) return false;
+        var env = BindOwner(r, owner, pos);
+        try
+        {
+            BindFixed(r, env, typeArgs.Select(t => Resolve(t, allowVoid: true)).ToList());
+            return true;
+        }
+        catch (CompileError) { return false; }
+    }
+
+    /// Binds the routine's own parameters inside its fixed type arguments and checks that each one is the type given.
+    private void BindFixed(RoutineDecl r, Compiler.TypeEnv env, List<DType> given)
+    {
+        var unbound = r.TypeParams.Where(p => !env.Has(p)).ToHashSet();
+        for (int i = 0; i < r.Fixed.Count; i++) Unify(r.Fixed[i], given[i], env, unbound);
+        for (int i = 0; i < r.Fixed.Count; i++)
+            if (!_c.ResolveType(r.Fixed[i], env, allowVoid: true).Equals(given[i]))
+                throw new CompileError(r.Fixed[i].Pos, $"'{r.DisplayName}' isn't for {given[i]}");
+    }
+
     private void BindExplicit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, Pos pos)
     {
+        if (r.Fixed.Count > 0)
+        {
+            BindFixed(r, env, typeArgs.Select(t => Resolve(t, allowVoid: true)).ToList());
+            return;
+        }
         if (typeArgs.Count == 0) return;
         if (typeArgs.Count != r.TypeParams.Count)
             throw Err(pos, $"'{r.DisplayName}' takes {r.TypeParams.Count} type argument(s), got {typeArgs.Count}");

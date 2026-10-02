@@ -131,15 +131,15 @@ private routine cm_f64_hypot_nan_add(%x: F64, %y: F64) -> F64
 /// and rounded to nearest (a midpoint is impossible here).
 private routine cm_f64_hypot_denorm(%a: U64, %b: U64) -> F64
     block entry():
-        %af  : F64 = %a.to_f64()
-        %bf  : F64 = %b.to_f64()
+        %af  : F64 = %a.to<F64>()
+        %bf  : F64 = %b.to<F64>()
         %a2  : U64 = %a.shl(1)
         %b2  : U64 = %b.shl(1)
-        %rm  : U64 = %af.mul(%af).add(%bf.mul(%bf)).sqrt().to_u64()
+        %rm  : U64 = %af.mul(%af).add(%bf.mul(%bf)).sqrt().to<U64>()
         %tmu : U64 = %rm.shl(1)
         // D = a^2 + b^2 - tm^2 (all doubled), exact modulo 2^64 and small in magnitude
-        %d : S64 = %a2.mul_wrap(%a2).add_wrap(%b2.mul_wrap(%b2)).sub_wrap(%tmu.mul_wrap(%tmu)).to_s64_wrap()
-        jump up(%d, %tmu.to_s64_wrap())
+        %d : S64 = %a2.mul_wrap(%a2).add_wrap(%b2.mul_wrap(%b2)).sub_wrap(%tmu.mul_wrap(%tmu)).to_wrap<S64>()
+        jump up(%d, %tmu.to_wrap<S64>())
 
     // tm too small: (tm + 1)^2 = tm^2 + 2 tm + 1
     block up(%d: S64, %tm: S64):
@@ -157,7 +157,7 @@ private routine cm_f64_hypot_denorm(%a: U64, %b: U64) -> F64
 
     // tm = floor(sqrt(a^2 + b^2)) (doubled) and 0 <= D < 2 tm + 1: round with the low bit of tm
     block round(%d: S64, %tm: S64):
-        %tmb     : U64  = %tm.to_u64_wrap()
+        %tmb     : U64  = %tm.to_wrap<U64>()
         %inexact : Bool = %d.ne(0)
         branch %inexact
             ? return(F64.from_bits(%tmb.shr(1).add(%tmb.bitand(1))))
@@ -173,11 +173,11 @@ private routine cm_f64_hypot_hard(%x: F64, %y: F64) -> F64
         %yu : U64 = %y.bits()
         %bm : U64 = %xu.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
         %lm : U64 = %yu.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
-        %be : S64 = %xu.shr(52).to_s64_wrap()
-        %le : S64 = %yu.shr(52).to_s64_wrap()
+        %be : S64 = %xu.shr(52).to_wrap<S64>()
+        %le : S64 = %yu.shr(52).to_wrap<S64>()
         %ri : U64 = %x.mul(%x).add(%y.mul(%y)).sqrt().bits()
         %rm : U64 = %ri.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
-        %re : S64 = %ri.shr(52).to_s64_wrap().sub(0x3FF)
+        %re : S64 = %ri.shr(52).to_wrap<S64>().sub(0x3FF)
         %m2 : U64 = cm_f64_hypot_sum_squares(%bm, %lm, %be.sub(%le))
         jump back(0, %rm, %re, %be, %m2)
 
@@ -193,7 +193,7 @@ private routine cm_f64_hypot_hard(%x: F64, %y: F64) -> F64
             : back(%i.add(1), %rm.sub(1), %re, %be, %m2)
 
     block search(%rm: U64, %re: S64, %be: S64, %m2: U64):
-        %k : U64 = S64.add(2, %re).to_u64_wrap()
+        %k : U64 = S64.add(2, %re).to_wrap<U64>()
         jump step(%rm, %k, %re, %be, %m2)
 
     // move the candidate up until its square reaches x^2 + y^2
@@ -203,7 +203,7 @@ private routine cm_f64_hypot_hard(%x: F64, %y: F64) -> F64
             ? %rm0.add(2)
             : %rm0.add(1)
         %tm    : U64  = %rm.shl(%k)
-        %d     : S64  = %m2.sub_wrap(%tm.mul_wrap(%tm)).to_s64_wrap()
+        %d     : S64  = %m2.sub_wrap(%tm.mul_wrap(%tm)).to_wrap<S64>()
         %above : Bool = %d.le(0)
         branch %above
             ? found(%rm, %k, %re, %be, %m2, %d)
@@ -220,7 +220,7 @@ private routine cm_f64_hypot_hard(%x: F64, %y: F64) -> F64
             ? %k.sub(1)
             : %k
         %tm    : U64  = %rm.shl(%k).sub_wrap(U64.shl(1, %sh))
-        %dm    : S64  = %m2.sub_wrap(%tm.mul_wrap(%tm)).to_s64_wrap()
+        %dm    : S64  = %m2.sub_wrap(%tm.mul_wrap(%tm)).to_wrap<S64>()
         %tie   : Bool = %dm.eq(0)
         %below : Bool = %dm.lt(0)
         %bit   : U64  = %narrow
@@ -240,7 +240,7 @@ private routine cm_f64_hypot_hard(%x: F64, %y: F64) -> F64
             ? %re.add(1)
             : %re
         %e : S64 = %be.sub(1).add(%r)
-        return(F64.from_bits(%e.to_u64_wrap().shl(52).add_wrap(%m)))
+        return(F64.from_bits(%e.to_wrap<U64>().shl(52).add_wrap(%m)))
 
 /// (4 bm)^2 + (lm 2^(2 - de))^2 modulo 2^64, for the hard case of hypot: bm
 /// and lm are the full mantissas of the larger and smaller leg, de >= 0 the
@@ -256,15 +256,15 @@ private routine cm_f64_hypot_sum_squares(%bm: U64, %lm: U64, %de: S64) -> U64
             : wide(%m2, %ls)
 
     block shifted(%m2: U64, %ls: S64):
-        %l : U64 = %lm.shl(%ls.to_u64_wrap())
+        %l : U64 = %lm.shl(%ls.to_wrap<U64>())
         return(%m2.add_wrap(%l.mul_wrap(%l)))
 
     block wide(%m2: U64, %ls: S64):
-        %l      : U128 = %lm.to_u128()
+        %l      : U128 = %lm.to<U128>()
         %l2     : U128 = %l.mul_wrap(%l)
         %ls2    : S64  = %ls.mul(2)
-        %sum    : U64  = %m2.add_wrap(%l2.shr(%ls2.neg().to_u128_wrap()).to_u64_wrap())
-        %sticky : Bool = %l2.shl(S64.add(128, %ls2).to_u128_wrap()).ne(0)
+        %sum    : U64  = %m2.add_wrap(%l2.shr(%ls2.neg().to_wrap<U128>()).to_wrap<U64>())
+        %sticky : Bool = %l2.shl(S64.add(128, %ls2).to_wrap<U128>()).ne(0)
         branch %sticky
             ? return(%sum.bitor(1))
             : return(%sum)

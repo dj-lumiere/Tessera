@@ -64,12 +64,12 @@ routine main() -> S32
 
 - Every value is written with `%`, pointers included: `%x: S64 = ...`, `claim %p : @S64`. The type says
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
-  passes where an `Addr` is expected; the other way takes `%a.cast<T>()`. `@T` is how the record `Ptr<T>` is
+  passes where an `Addr` is expected; the other way takes `%a.to<@T>()`. `@T` is how the record `Ptr<T>` is
   written (`@@Byte`, `@Array<@S32, 3>`); it keeps its name only where routines are declared on it or called through
   it (`routine Ptr<T>.load`). Attributes start with `#`: `#target(os: "windows")`, `#[external("c"), noreturn]`.
 - `=` only binds. Memory is read and written with methods: `%v: S64 = %p.load()`, `%p.store(%v)`,
   `%f: T = %p.field.load()`, `%p.field.store(%v)`, `%e: T = %p.stride(%i).load()`, `%p.stride(%i).store(%v)`. Places
-  (`%p.field`, `%p.stride(%i)`) are addresses. An `Addr` has no `load` or `store`: cast it to say what's there, `%a.cast<U32>().load()`. Registers:
+  (`%p.field`, `%p.stride(%i)`) are addresses. An `Addr` has no `load` or `store`: convert it to say what's there, `%a.to<@U32>().load()`. Registers:
   `volatile_load()` / `volatile_store(...)`. (`:=` and `%p = %v` are gone and rejected.) From the value's side,
   `%v.store_into(%p)` is `%p.store(%v)`, so a chain can end in memory: `%a.add(%b).store_into(%sum)`. A
   read-modify-write on one place reads left to right: `%self.length.load().add(1).store_into(%self.length)`, not
@@ -120,10 +120,10 @@ routine main() -> S32
   recursive one (directly or through other routines), and on one used as a `Callable` value. `#noinline` (LLVM
   `noinline`) keeps a cold path out of a hot loop; a routine can't be both.
 - A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
-  conversions (`add`, `shl`, `bitor`, `to_u128`, `to_u8_wrap`, …), F32/F64 `add`/`sub`/`mul`/`div`/`neg`,
+  conversions (`add`, `shl`, `bitor`, `to<U128>()`, `to_wrap<U8>()`, …), F32/F64 `add`/`sub`/`mul`/`div`/`neg`,
   `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and F128. A routine call is an error; nothing
   runs at build time. Overflow or an out-of-range conversion in a preset is a build error.
-- `%p.cast<U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
+- `%p.to<@U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
   (`Bool`, `Char`, choices). Pointers may alias.
 
 **Blocks and control flow**
@@ -136,7 +136,7 @@ routine main() -> S32
   (first condition that holds), `when %v:` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
   `when` names a block, or is an
   inline `return(...)` or a call to a `#noreturn` routine (`trap()`, `panic(TrapCode.X)`). Block arguments and the
-  returned value may be expressions (`loop(%i.add(1))`, `return(%x.to_s32())`), evaluated only when that arm is
+  returned value may be expressions (`loop(%i.add(1))`, `return(%x.to<S32>())`), evaluated only when that arm is
   taken. An ordinary routine call can't be an arm by itself: call it inside a block.
 - There are no `for` / `while` / `if`. A loop is a block that jumps to itself with new arguments.
 - `continue` as an arm of `branch` / `when` goes on with the next line of the same block:
@@ -155,9 +155,9 @@ routine main() -> S32
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
   `add`, `div`, `mod`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more
   shifts every bit out (0, or -1 for a negative S value shifted right).
-- Arithmetic panics on overflow: `add`, `sub`, `mul`, `div`, `neg`, `abs`, `pow`, and a lossy `to_X`. Each has
+- Arithmetic panics on overflow: `add`, `sub`, `mul`, `div`, `neg`, `abs`, `pow`, and a lossy `to<T>()`. Each has
   `_checked` (returns `Option`), `_wrap` (modular), and `_clamp` (saturating) forms: `%h.mul_wrap(PRIME)`,
-  `%n.to_u8_clamp()`. Hashes, PRNGs, and bit tricks want `_wrap`.
+  `%n.to_clamp<U8>()`. Hashes, PRNGs, and bit tricks want `_wrap`.
 - Subtraction that can underflow panics even if the result is unused later, so don't compute `%len.sub(1)` before
   the branch that knows it's safe: pass it as a branch-arm argument (arm arguments are evaluated lazily), or compute
   it in the arm's block. The same goes for a value select (`%c ? %a : %b`), which evaluates both sides; the
@@ -166,17 +166,18 @@ routine main() -> S32
   `[lo, end)`, on every integer, float, `Byte`, and `Char`.
 - Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `USize`; integer generic parameters are `N: USize`.
   `USize` / `SSize` are the pointer-width integers (C's `size_t` / `ssize_t`), types of their own that never mix with
-  `U64` / `S64`: convert with `%n.to_u64()` / `%x.to_usize()`. Hashes stay `U64`.
+  `U64` / `S64`: convert with `%n.to<U64>()` / `%x.to<USize>()`. Hashes stay `U64`.
 - `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`, `abs_diff` returns the unsigned type.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `%x.bits()` and `U8.from_byte(%b)` /
-  `S8.from_byte(%b)` move between it and the numbers, and `S64` <-> `U64` is `to_u64_wrap` / `to_s64_wrap`. It has
-  comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, `shl` / `shr`, and `to_u8`. Memory and text are `@Byte`;
+  `S8.from_byte(%b)` move between it and the numbers, and `S64` <-> `U64` is `to_wrap<U64>()` / `to_wrap<S64>()`. It has
+  comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, `shl` / `shr`, and `to<U8>()`. Memory and text are `@Byte`;
   a byte literal `b'A'` is a `Byte`, and a `Byte` hex literal has exactly two digits (`0x0A`).
-- `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `%c.to_u32()` and `%n.to_char()`
+- `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `%c.to<U32>()` and `%n.to<Char>()`
   convert.
-- Conversions are methods: `%n.to_s64()`, `%b.to_u64()` (Bool to 0/1), `%x.to_f64()`. Float to integer is
-  `to_s64` (panics on NaN or out of range), `to_s64_checked`, or `to_s64_clamp`.
+- Conversions are methods: `%n.to<S64>()`, `%b.to<U64>()` (Bool to 0/1), `%x.to<F64>()`. Float to integer is
+  `to<S64>()` (panics on NaN or out of range), `to_checked<S64>()`, or `to_clamp<S64>()`. A conversion names the type
+  it goes to as a type argument, so `%x.to<T>()` works in generic code.
 - Floats are `F16`, `BF16`, `F32`, `F64`, and software `F128` (an `i128`; stdlib code reads it with `f128_bits`):
   `add`, `mul`, `div`, `mod`, and so on. `%x.bits()` gives the bits as the same-width `U`, `F64.from_bits(%u)` goes back.
 - Value select: `%r: T = %cond ? %a : %b`. Both sides are evaluated.
@@ -194,7 +195,7 @@ routine main() -> S32
   compound-assignment methods (`add_assign` and the like): change a value in memory by load, act, store —
   `%p.load().add(1).store_into(%p)`.
 - **Methods through a pointer.** `%p.m()` finds `T.m(%self: @Self)` first, then `Ptr`'s own methods (`is_null`,
-  `offset`, `cast`, ...). Value methods (`%self: Self`, such as every collection's `eq`) aren't reachable through a
+  `offset`, `to<@U>`, ...). Value methods (`%self: Self`, such as every collection's `eq`) aren't reachable through a
   pointer, because that would hide a load: load first (`%a.load().eq(%b.load())`). Don't name your own pointer methods after `Ptr`'s.
 - **Collection methods that change the collection take `%self: @Self`**, so it must live in memory (`claim` a
   slot) before you call them; read-only ones (`length`, `is_empty`, `get`, `contains`, ...) take `%self: Self`: call
@@ -364,8 +365,9 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 - Every routine with a body starts with `block entry():`, which takes no parameters. A routine without blocks must
   be `#external`.
 
-**Naming conversions.** A conversion is `to_<type>`: `%n.to_s64()`, `%x.to_u8_wrap()`, `%arr.to_ptr()`,
-`%out.to_bytes()`. There is no `as_<type>`. Other ways to make a value are named for what they make.
+**Naming conversions.** A conversion to a type is `to<T>()`: `%n.to<S64>()`, `%x.to_wrap<U8>()`, `%arr.to<@T>()`,
+`%p.to<@U>()` (each pair of types is its own routine, `routine S32.to<S64>`). There is no `to_s64` or `as_<type>`.
+Other ways to make a value are named for what they make (`%out.to_bytes()`).
 
 **Name case.** Types, concepts, modules, and choice / variant cases are `PascalCase` (`TrapCode.DivByZero`,
 `.Absent`), with acronyms written as words (`Eof`, `FdWriter`, `Nan`). Routines, fields, blocks, and values are
@@ -374,7 +376,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 **Arrays and `stride`.** There is no `[]`. `%p.stride(%i)` is the address of the i-th `T` of a `@T` (a
 `USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `%p.stride(%i).f` works. On a
 `@Array<T, N>` that is the i-th whole array, so array elements are `%arr.get(%i)` / `%arr.set(%i, %v)` / `%arr.at(%i)`
-(bounds checked), or `%arr.to_ptr().stride(%i).load()` unchecked. Literals name their type: `Array<S32, 3> { 1, 2, 3 }`,
+(bounds checked), or `%arr.to<@T>().stride(%i).load()` unchecked. Literals name their type: `Array<S32, 3> { 1, 2, 3 }`,
 `Vector<F32, 4> { ... }`. The same holds for array fields (`%node.keys.get(%i)`) and
 array presets (`K.get(%i)`, with `preset K: @Array<T, N> <- { ... }`).
 

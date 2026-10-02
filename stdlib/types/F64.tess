@@ -151,7 +151,7 @@ require To: typename
 
 // -- named narrowing conversion ------------------------------------------------
 
-routine F64.to_f32(%self: Self) -> F32
+routine F64.to<F32>(%self: Self) -> F32
     block entry():
         %result : F32 = fptrunc<Self, F32>(%self)
         return(%result)
@@ -209,13 +209,13 @@ routine F64.signum(%self: Self) -> Self
 /// Reads the sign bit, so it is true for +0.0 and for NaNs with the bit clear.
 routine F64.is_sign_positive(%self: Self) -> Bool
     block entry():
-        %bits : S64  = %self.bits().to_s64_wrap()
+        %bits : S64  = %self.bits().to_wrap<S64>()
         %r    : Bool = %bits.ge(0)
         return(%r)
 
 routine F64.is_sign_negative(%self: Self) -> Bool
     block entry():
-        %bits : S64  = %self.bits().to_s64_wrap()
+        %bits : S64  = %self.bits().to_wrap<S64>()
         %r    : Bool = %bits.lt(0)
         return(%r)
 
@@ -272,7 +272,7 @@ routine F64.mod(%self: Self, %other: Self) -> Self
             ? return(Self.copysign(0.0, %self))
             : continue
         %lz        : U64  = %rest.leading_zeros()
-        %magnitude : Self = f64_round_pack(false, %eb.sub(%lz.to_s64()).add(11), %rest.shl(%lz))
+        %magnitude : Self = f64_round_pack(false, %eb.sub(%lz.to<S64>()).add(11), %rest.shl(%lz))
         %r         : Self = %magnitude.copysign(%self)
         return(%r)
 
@@ -334,7 +334,7 @@ private routine F64.mul_add_soft(%self: Self, %a: Self, %b: Self) -> Self
         %pc      : F64Parts = f64_unpack(%b)
         %p       : U128     = %px.sig.mul_wide(%py.sig).shl(20)
         %p_e     : S64      = %px.exponent.add(%py.exponent).sub(2170)
-        %cc      : U128     = %pc.sig.to_u128().shl(73)
+        %cc      : U128     = %pc.sig.to<U128>().shl(73)
         %c_e     : S64      = %pc.exponent.sub(1148)
         %p_neg   : Bool     = %self.is_sign_negative().ne(%a.is_sign_negative())
         %c_neg   : Bool     = %b.is_sign_negative()
@@ -384,9 +384,9 @@ private routine F64.mul_add_soft(%self: Self, %a: Self, %b: Self) -> Self
             : continue
         %lz       : U128 = %r.leading_zeros()
         %n        : U128 = %r.shl(%lz)
-        %high     : U64  = %n.shr(64).to_u64()
-        %sig      : U64  = %high.bitor(%n.to_u64_wrap().ne(0).to_u64())
-        %exponent : S64  = %e.sub(%lz.to_s64()).add(1150)
+        %high     : U64  = %n.shr(64).to<U64>()
+        %sig      : U64  = %high.bitor(%n.to_wrap<U64>().ne(0).to<U64>())
+        %exponent : S64  = %e.sub(%lz.to<S64>()).add(1150)
         %result   : Self = f64_round_pack(%negative, %exponent, %sig)
         return(%result)
 
@@ -491,8 +491,8 @@ routine F64.in_range(%self: Self, %lo: Self, %end: Self) -> Bool
 /// IEEE 754 totalOrder: -NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN.
 routine F64.total_compare(%self: Self, %other: Self) -> S32
     block entry():
-        %a : S64 = %self.bits().to_s64_wrap()
-        %b : S64 = %other.bits().to_s64_wrap()
+        %a : S64 = %self.bits().to_wrap<S64>()
+        %b : S64 = %other.bits().to_wrap<S64>()
         // Flipping every bit but the sign of negative values makes the bits order like signed integers.
         %a_key : S64 = %a.bitxor(%a.shr(63).bitand(S64.MAX))
         %b_key : S64 = %b.bitxor(%b.shr(63).bitand(S64.MAX))
@@ -628,7 +628,7 @@ routine F64.sqrt(%self: Self) -> Self
 /// self raised to an integer power, correctly rounded: powf with n converted, which is exact.
 routine F64.powi(%self: Self, %n: S32) -> Self
     block entry():
-        %r : Self = %self.powf(%n.to_f64())
+        %r : Self = %self.powf(%n.to<F64>())
         return(%r)
 
 /// The logarithm with an arbitrary base.
@@ -716,13 +716,13 @@ routine f64_unpack(%x: F64) -> F64Parts
 
     block normal(%field: U64, %fraction: U64):
         %sig   : U64      = %fraction.bitor(0x0010000000000000)
-        %parts : F64Parts = F64Parts { sig: %sig, exponent: %field.to_s64() }
+        %parts : F64Parts = F64Parts { sig: %sig, exponent: %field.to<S64>() }
         return(%parts)
 
     block subnormal(%fraction: U64):
         %shift : U64      = %fraction.leading_zeros().sub(11)
         %sig   : U64      = %fraction.shl(%shift)
-        %parts : F64Parts = F64Parts { sig: %sig, exponent: S64.sub(1, %shift.to_s64()) }
+        %parts : F64Parts = F64Parts { sig: %sig, exponent: S64.sub(1, %shift.to<S64>()) }
         return(%parts)
 
 /// x >> n with everything shifted out ORed into bit 0.
@@ -734,14 +734,14 @@ routine f64_shr_sticky128(%x: U128, %n: S64) -> U128
             : some()
 
     block all():
-        %any : U128 = %x.ne(0).to_u64().to_u128()
+        %any : U128 = %x.ne(0).to<U64>().to<U128>()
         return(%any)
 
     block some():
-        %shift : U128 = %n.to_u128()
+        %shift : U128 = %n.to<U128>()
         %mask  : U128 = 1.shl(%shift).sub(1)
         %lost  : Bool = %x.bitand(%mask).ne(0)
-        %r     : U128 = %x.shr(%shift).bitor(%lost.to_u64().to_u128())
+        %r     : U128 = %x.shr(%shift).bitor(%lost.to<U64>().to<U128>())
         return(%r)
 
 /// sig × 2^(exponent - 1086) rounded to nearest, ties to even, where sig has its top bit (63) set and exponent
@@ -763,14 +763,14 @@ routine f64_round_pack(%negative: Bool, %exponent: S64, %sig: U64) -> F64
     block subnormal(%sign: U64, %exponent: S64, %sig: U64):
         %shift : S64  = S64.sub(1, %exponent)
         %all   : Bool = %shift.ge(64)
-        %some  : U64  = %sig.shr(%shift.min(63).to_u64())
+        %some  : U64  = %sig.shr(%shift.min(63).to<U64>())
         %lost  : Bool = %all
             ? %sig.ne(0)
-            : %sig.ne(%some.shl(%shift.min(63).to_u64()))
+            : %sig.ne(%some.shl(%shift.min(63).to<U64>()))
         %shifted : U64 = %all
             ? 0
             : %some
-        jump round(%sign, 1, %shifted.bitor(%lost.to_u64()))
+        jump round(%sign, 1, %shifted.bitor(%lost.to<U64>()))
 
     // a carry out of the 53 kept bits bumps the exponent, up to infinity
     block round(%sign: U64, %exponent: S64, %sig: U64):
@@ -778,8 +778,8 @@ routine f64_round_pack(%negative: Bool, %exponent: S64, %sig: U64) -> F64
         %rest      : U64  = %sig.bitand(0x7FF)
         %odd       : Bool = %kept.bitand(1).eq(1)
         %up        : Bool = %rest.gt(0x400).bitor(%rest.eq(0x400).bitand(%odd))
-        %rounded   : U64  = %kept.add(%up.to_u64())
-        %magnitude : U64  = %exponent.sub(1).to_u64().shl(52).add(%rounded)
+        %rounded   : U64  = %kept.add(%up.to<U64>())
+        %magnitude : U64  = %exponent.sub(1).to<U64>().shl(52).add(%rounded)
         %r         : F64  = F64.from_bits(%sign.bitor(%magnitude))
         return(%r)
 
@@ -820,40 +820,40 @@ routine f64_add_round_to_odd(%a: F64, %b: F64) -> F64
 
 /// Narrows to F32 with round-to-odd, then rounds that to F16; F32's 24 bits are
 /// enough (2 * 11 + 2) for the second rounding to be exact.
-routine F64.to_f16(%self: Self) -> F16
+routine F64.to<F16>(%self: Self) -> F16
     block entry():
         %narrow  : F32  = fptrunc<Self, F32>(%self)
-        %back    : Self = %narrow.to_f64()
+        %back    : Self = %narrow.to<F64>()
         %inexact : Bool = %back.ne(%self)
         %finite  : Bool = %narrow.is_finite()
         %sticky  : Bool = %inexact.bitand(%finite)
         // Round-to-odd truncates, then sets the low bit: where fptrunc rounded away from zero, step back one ulp.
         %away  : Bool = %sticky.bitand(%back.abs().gt(%self.abs()))
-        %trunc : U32  = %narrow.bits().sub(%away.to_u32())
-        %bits  : U32  = %trunc.bitor(%sticky.to_u32())
+        %trunc : U32  = %narrow.bits().sub(%away.to<U32>())
+        %bits  : U32  = %trunc.bitor(%sticky.to<U32>())
         %odd   : F32  = .from_bits(%bits)
-        %r     : F16  = %odd.to_f16()
+        %r     : F16  = %odd.to<F16>()
         return(%r)
 
 /// Narrows to F32 with round-to-odd (an inexact result gets its lowest bit set),
 /// then rounds that to BF16. Round-to-odd keeps the second rounding from
 /// double-rounding, because F32 has more than twice BF16's precision.
-routine F64.to_bf16(%self: Self) -> BF16
+routine F64.to<BF16>(%self: Self) -> BF16
     block entry():
         %narrow  : F32  = fptrunc<Self, F32>(%self)
-        %back    : Self = %narrow.to_f64()
+        %back    : Self = %narrow.to<F64>()
         %inexact : Bool = %back.ne(%self)
         %finite  : Bool = %narrow.is_finite()
         %sticky  : Bool = %inexact.bitand(%finite)
         // Round-to-odd truncates, then sets the low bit: where fptrunc rounded away from zero, step back one ulp.
         %away  : Bool = %sticky.bitand(%back.abs().gt(%self.abs()))
-        %trunc : U32  = %narrow.bits().sub(%away.to_u32())
-        %bits  : U32  = %trunc.bitor(%sticky.to_u32())
+        %trunc : U32  = %narrow.bits().sub(%away.to<U32>())
+        %bits  : U32  = %trunc.bitor(%sticky.to<U32>())
         %odd   : F32  = .from_bits(%bits)
-        %r     : BF16 = %odd.to_bf16()
+        %r     : BF16 = %odd.to<BF16>()
         return(%r)
 
-routine F64.to_f64(%self: Self) -> Self
+routine F64.to<F64>(%self: Self) -> Self
     block entry():
         return(%self)
 
@@ -863,7 +863,7 @@ routine F64.to_f64(%self: Self) -> Self
 // range; to_<int>_checked returns None instead, and to_<int>_clamp saturates
 // (NaN gives 0).
 
-routine F64.to_s8(%self: Self) -> S8
+routine F64.to<S8>(%self: Self) -> S8
     block entry():
         %fits : Bool = %self.fits_int(-128.0, 128.0)
         branch %fits
@@ -872,19 +872,19 @@ routine F64.to_s8(%self: Self) -> S8
         %r : S8 = fptosi_sat<Self, S8>(%self)
         return(%r)
 
-routine F64.to_s8_checked(%self: Self) -> Option<S8>
+routine F64.to_checked<S8>(%self: Self) -> Option<S8>
     block entry():
         %fits  : Bool       = %self.fits_int(-128.0, 128.0)
         %value : S8         = fptosi_sat<Self, S8>(%self)
         %r     : Option<S8> = %fits.then_present(%value)
         return(%r)
 
-routine F64.to_s8_clamp(%self: Self) -> S8
+routine F64.to_clamp<S8>(%self: Self) -> S8
     block entry():
         %r : S8 = fptosi_sat<Self, S8>(%self)
         return(%r)
 
-routine F64.to_s16(%self: Self) -> S16
+routine F64.to<S16>(%self: Self) -> S16
     block entry():
         %fits : Bool = %self.fits_int(-32768.0, 32768.0)
         branch %fits
@@ -893,19 +893,19 @@ routine F64.to_s16(%self: Self) -> S16
         %r : S16 = fptosi_sat<Self, S16>(%self)
         return(%r)
 
-routine F64.to_s16_checked(%self: Self) -> Option<S16>
+routine F64.to_checked<S16>(%self: Self) -> Option<S16>
     block entry():
         %fits  : Bool        = %self.fits_int(-32768.0, 32768.0)
         %value : S16         = fptosi_sat<Self, S16>(%self)
         %r     : Option<S16> = %fits.then_present(%value)
         return(%r)
 
-routine F64.to_s16_clamp(%self: Self) -> S16
+routine F64.to_clamp<S16>(%self: Self) -> S16
     block entry():
         %r : S16 = fptosi_sat<Self, S16>(%self)
         return(%r)
 
-routine F64.to_s32(%self: Self) -> S32
+routine F64.to<S32>(%self: Self) -> S32
     block entry():
         %fits : Bool = %self.fits_int(-2147483648.0, 2147483648.0)
         branch %fits
@@ -914,19 +914,19 @@ routine F64.to_s32(%self: Self) -> S32
         %r : S32 = fptosi_sat<Self, S32>(%self)
         return(%r)
 
-routine F64.to_s32_checked(%self: Self) -> Option<S32>
+routine F64.to_checked<S32>(%self: Self) -> Option<S32>
     block entry():
         %fits  : Bool        = %self.fits_int(-2147483648.0, 2147483648.0)
         %value : S32         = fptosi_sat<Self, S32>(%self)
         %r     : Option<S32> = %fits.then_present(%value)
         return(%r)
 
-routine F64.to_s32_clamp(%self: Self) -> S32
+routine F64.to_clamp<S32>(%self: Self) -> S32
     block entry():
         %r : S32 = fptosi_sat<Self, S32>(%self)
         return(%r)
 
-routine F64.to_s64(%self: Self) -> S64
+routine F64.to<S64>(%self: Self) -> S64
     block entry():
         %fits : Bool = %self.fits_int(-9223372036854775808.0, 9223372036854775808.0)
         branch %fits
@@ -935,19 +935,19 @@ routine F64.to_s64(%self: Self) -> S64
         %r : S64 = fptosi_sat<Self, S64>(%self)
         return(%r)
 
-routine F64.to_s64_checked(%self: Self) -> Option<S64>
+routine F64.to_checked<S64>(%self: Self) -> Option<S64>
     block entry():
         %fits  : Bool        = %self.fits_int(-9223372036854775808.0, 9223372036854775808.0)
         %value : S64         = fptosi_sat<Self, S64>(%self)
         %r     : Option<S64> = %fits.then_present(%value)
         return(%r)
 
-routine F64.to_s64_clamp(%self: Self) -> S64
+routine F64.to_clamp<S64>(%self: Self) -> S64
     block entry():
         %r : S64 = fptosi_sat<Self, S64>(%self)
         return(%r)
 
-routine F64.to_s128(%self: Self) -> S128
+routine F64.to<S128>(%self: Self) -> S128
     block entry():
         %fits : Bool = %self.fits_int(-170141183460469231731687303715884105728.0,
                 170141183460469231731687303715884105728.0)
@@ -957,7 +957,7 @@ routine F64.to_s128(%self: Self) -> S128
         %r : S128 = fptosi_sat<Self, S128>(%self)
         return(%r)
 
-routine F64.to_s128_checked(%self: Self) -> Option<S128>
+routine F64.to_checked<S128>(%self: Self) -> Option<S128>
     block entry():
         %fits  : Bool         = %self.fits_int(-170141183460469231731687303715884105728.0,
                 170141183460469231731687303715884105728.0)
@@ -965,12 +965,12 @@ routine F64.to_s128_checked(%self: Self) -> Option<S128>
         %r     : Option<S128> = %fits.then_present(%value)
         return(%r)
 
-routine F64.to_s128_clamp(%self: Self) -> S128
+routine F64.to_clamp<S128>(%self: Self) -> S128
     block entry():
         %r : S128 = fptosi_sat<Self, S128>(%self)
         return(%r)
 
-routine F64.to_u8(%self: Self) -> U8
+routine F64.to<U8>(%self: Self) -> U8
     block entry():
         %fits : Bool = %self.fits_int(0.0, 256.0)
         branch %fits
@@ -979,19 +979,19 @@ routine F64.to_u8(%self: Self) -> U8
         %r : U8 = fptoui_sat<Self, U8>(%self)
         return(%r)
 
-routine F64.to_u8_checked(%self: Self) -> Option<U8>
+routine F64.to_checked<U8>(%self: Self) -> Option<U8>
     block entry():
         %fits  : Bool       = %self.fits_int(0.0, 256.0)
         %value : U8         = fptoui_sat<Self, U8>(%self)
         %r     : Option<U8> = %fits.then_present(%value)
         return(%r)
 
-routine F64.to_u8_clamp(%self: Self) -> U8
+routine F64.to_clamp<U8>(%self: Self) -> U8
     block entry():
         %r : U8 = fptoui_sat<Self, U8>(%self)
         return(%r)
 
-routine F64.to_u16(%self: Self) -> U16
+routine F64.to<U16>(%self: Self) -> U16
     block entry():
         %fits : Bool = %self.fits_int(0.0, 65536.0)
         branch %fits
@@ -1000,19 +1000,19 @@ routine F64.to_u16(%self: Self) -> U16
         %r : U16 = fptoui_sat<Self, U16>(%self)
         return(%r)
 
-routine F64.to_u16_checked(%self: Self) -> Option<U16>
+routine F64.to_checked<U16>(%self: Self) -> Option<U16>
     block entry():
         %fits  : Bool        = %self.fits_int(0.0, 65536.0)
         %value : U16         = fptoui_sat<Self, U16>(%self)
         %r     : Option<U16> = %fits.then_present(%value)
         return(%r)
 
-routine F64.to_u16_clamp(%self: Self) -> U16
+routine F64.to_clamp<U16>(%self: Self) -> U16
     block entry():
         %r : U16 = fptoui_sat<Self, U16>(%self)
         return(%r)
 
-routine F64.to_u32(%self: Self) -> U32
+routine F64.to<U32>(%self: Self) -> U32
     block entry():
         %fits : Bool = %self.fits_int(0.0, 4294967296.0)
         branch %fits
@@ -1021,19 +1021,19 @@ routine F64.to_u32(%self: Self) -> U32
         %r : U32 = fptoui_sat<Self, U32>(%self)
         return(%r)
 
-routine F64.to_u32_checked(%self: Self) -> Option<U32>
+routine F64.to_checked<U32>(%self: Self) -> Option<U32>
     block entry():
         %fits  : Bool        = %self.fits_int(0.0, 4294967296.0)
         %value : U32         = fptoui_sat<Self, U32>(%self)
         %r     : Option<U32> = %fits.then_present(%value)
         return(%r)
 
-routine F64.to_u32_clamp(%self: Self) -> U32
+routine F64.to_clamp<U32>(%self: Self) -> U32
     block entry():
         %r : U32 = fptoui_sat<Self, U32>(%self)
         return(%r)
 
-routine F64.to_u64(%self: Self) -> U64
+routine F64.to<U64>(%self: Self) -> U64
     block entry():
         %fits : Bool = %self.fits_int(0.0, 18446744073709551616.0)
         branch %fits
@@ -1042,19 +1042,19 @@ routine F64.to_u64(%self: Self) -> U64
         %r : U64 = fptoui_sat<Self, U64>(%self)
         return(%r)
 
-routine F64.to_u64_checked(%self: Self) -> Option<U64>
+routine F64.to_checked<U64>(%self: Self) -> Option<U64>
     block entry():
         %fits  : Bool        = %self.fits_int(0.0, 18446744073709551616.0)
         %value : U64         = fptoui_sat<Self, U64>(%self)
         %r     : Option<U64> = %fits.then_present(%value)
         return(%r)
 
-routine F64.to_u64_clamp(%self: Self) -> U64
+routine F64.to_clamp<U64>(%self: Self) -> U64
     block entry():
         %r : U64 = fptoui_sat<Self, U64>(%self)
         return(%r)
 
-routine F64.to_u128(%self: Self) -> U128
+routine F64.to<U128>(%self: Self) -> U128
     block entry():
         %fits : Bool = %self.fits_int(0.0, 340282366920938463463374607431768211456.0)
         branch %fits
@@ -1063,14 +1063,14 @@ routine F64.to_u128(%self: Self) -> U128
         %r : U128 = fptoui_sat<Self, U128>(%self)
         return(%r)
 
-routine F64.to_u128_checked(%self: Self) -> Option<U128>
+routine F64.to_checked<U128>(%self: Self) -> Option<U128>
     block entry():
         %fits  : Bool         = %self.fits_int(0.0, 340282366920938463463374607431768211456.0)
         %value : U128         = fptoui_sat<Self, U128>(%self)
         %r     : Option<U128> = %fits.then_present(%value)
         return(%r)
 
-routine F64.to_u128_clamp(%self: Self) -> U128
+routine F64.to_clamp<U128>(%self: Self) -> U128
     block entry():
         %r : U128 = fptoui_sat<Self, U128>(%self)
         return(%r)

@@ -64,7 +64,7 @@ preset CM_F16_ERFC_CT: @Array<U64, 32> <- { 0x3FEC162355429B28, 0x400D9999999999
 /// 1 - erf(self), accurate where erf is near 1.
 routine F16.erfc(%self: Self) -> Self
     block entry():
-        %xf   : F32  = %self.to_f32()
+        %xf   : F32  = %self.to<F32>()
         %tu   : U32  = %xf.bits()
         %at   : U32  = %tu.bitand(0x7FFFFFFF)
         %two  : Bool = %tu.gt(0xC07547CA)  // for x < -0x1.ea8f94p+1, erfc(x) rounds to 2
@@ -79,43 +79,43 @@ routine F16.erfc(%self: Self) -> Self
     block rounds_to_two(%xf: F32, %tu: U32):
         when:
             %tu.eq(0xFF800000) -> return(Self.from_bits(0x4000))  // erfc(-inf) = 2
-            %tu.gt(0xFF800000) -> return(%xf.add(%xf).to_f16())
-            else               -> return(F32.sub(2.0, 0x1p-25).to_f16())
+            %tu.gt(0xFF800000) -> return(%xf.add(%xf).to<F16>())
+            else               -> return(F32.sub(2.0, 0x1p-25).to<F16>())
 
     block rounds_to_zero(%xf: F32, %at: U32):
         when:
             %at.eq(0x7F800000) -> return(Self.from_bits(0))  // erfc(+inf) = +0
-            %at.gt(0x7F800000) -> return(%xf.add(%xf).to_f16())
-            else               -> return(F32.mul(0x1p-149, 0.25).to_f16())
+            %at.gt(0x7F800000) -> return(%xf.add(%xf).to<F16>())
+            else               -> return(F32.mul(0x1p-149, 0.25).to<F16>())
 
     // |x| <= 0x1.7p-4
     block near_zero(%xf: F32, %tu: U32, %at: U32):
         %one : Bool = %at.le(0x32E2DFC4)  // for |x| <= 0x1.c5bf88p-26, erfc(x) rounds to 1
         when:
-            %tu.eq(0xB76C9F62) -> return(F32.add(0x1.00010ap+0, 0x1p-25).to_f16())
+            %tu.eq(0xB76C9F62) -> return(F32.add(0x1.00010ap+0, 0x1p-25).to<F16>())
             %one               -> rounds_to_one(%tu, %at)
             else               -> continue
         // around 0, erfc(x) behaves as 1 - (odd polynomial)
-        %axd : F64 = %xf.abs().to_f64()
+        %axd : F64 = %xf.abs().to<F64>()
         %x2  : F64 = %axd.mul(%axd)
         %p0  : F64 = %x2.mul(0x1.553af09b8008ep-8).add(-0x1.b82c609607dcbp-6)
         %p1  : F64 = %x2.mul(%p0).add(0x1.ce2f218831d2fp-4)
         %p2  : F64 = %x2.mul(%p1).add(-0x1.812746b03610bp-2)
         %p3  : F64 = %x2.mul(%p2).add(0x1.20dd750429b6dp+0)
-        %f0  : F64 = %xf.to_f64().mul(%p3)
-        return(F64.sub(1.0, %f0).to_f16())
+        %f0  : F64 = %xf.to<F64>().mul(%p3)
+        return(F64.sub(1.0, %f0).to<F16>())
 
     block rounds_to_one(%tu: U32, %at: U32):
         %zero     : Bool = %at.eq(0)
         %positive : Bool = %tu.shr(31).eq(0)
         when:
             %zero     -> return(Self.from_bits(0x3C00))  // erfc(+-0) = 1
-            %positive -> return(F32.add(1.0, -0x1p-26).to_f16())
-            else      -> return(F32.add(1.0, 0x1p-25).to_f16())
+            %positive -> return(F32.add(1.0, -0x1p-26).to<F16>())
+            else      -> return(F32.add(1.0, 0x1p-25).to<F16>())
 
     // -0x1.ea8f94p+1 <= x < 0x1.41bbf8p+3 with |x| > 0x1.7p-4: erfc(|x|) = exp(-x^2) poly(z)
     block general(%xf: F32, %tu: U32, %at: U32):
-        %axd : F64   = %xf.abs().to_f64()
+        %axd : F64   = %xf.abs().to<F64>()
         %x2  : F64   = %axd.mul(%axd)
         %sgn : U32   = %tu.shr(31)
         %row : USize = %at.gt(0x40051000)
@@ -123,15 +123,15 @@ routine F16.erfc(%self: Self) -> Self
             : 0
         // exp(-x^2) = 2^(-x^2/log(2)) = sc 2^(i/128) exp(-d)
         %jt    : F64 = %x2.mul_add(0x1.71547652b82fep+0, -0x1.00004p+10)  // -(1024 + 2^-8)
-        %j     : S64 = %jt.bits().shl(12).to_s64_wrap().shr(48)
-        %bias  : S64 = %sgn.to_u64().shl(11).bitor(0x3FF).to_s64()
-        %sbits : U64 = %j.shr(7).add(%bias).to_u64_wrap()
+        %j     : S64 = %jt.bits().shl(12).to_wrap<S64>().shr(48)
+        %bias  : S64 = %sgn.to<U64>().shl(11).bitor(0x3FF).to<S64>()
+        %sbits : U64 = %j.shr(7).add(%bias).to_wrap<U64>()
         %sc    : F64 = F64.from_bits(%sbits.shl(52))
-        %jd    : F64 = %j.to_f64()
+        %jd    : F64 = %j.to<F64>()
         %dh    : F64 = %x2.add(F64.mul(0x1.62e42fefap-8, %jd))  // x^2 - j log(2)/128, in two parts
         %d     : F64 = %dh.add(F64.mul(0x1.cf79abd6f5dc8p-47, %jd))
         %d2    : F64 = %d.mul(%d)
-        %e0    : F64 = F64.from_bits(CM_F16_ERFC_E.get(%j.to_u64_wrap().bitand(127).to_usize()))
+        %e0    : F64 = F64.from_bits(CM_F16_ERFC_E.get(%j.to_wrap<U64>().bitand(127).to<USize>()))
         %q0    : F64 = %d.mul(0x1.5555555556a14p-3).add(-0x1.ffffffffff333p-2)
         %q2    : F64 = %d.mul(0x1.1111074cc7b22p-7).add(-0x1.55556666659b4p-5)
         %f     : F64 = %d.add(%d2.mul(%q0.add(%d2.mul(%q2))))
@@ -150,7 +150,7 @@ routine F16.erfc(%self: Self) -> Self
         %off  : F64 = %sgn.eq(1)
             ? 2.0
             : 0.0
-        return(%off.add(%r).to_f16())
+        return(%off.add(%r).to<F16>())
 
 /// Entry k of the CM_F16_ERFC_CT row starting at row.
 private routine cm_f16_erfc_ct(%row: USize, %k: USize) -> F64

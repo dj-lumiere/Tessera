@@ -17,8 +17,8 @@ routine F32.cbrt(%self: Self) -> Self
     block entry():
         %u      : U32  = %self.bits()
         %au     : U32  = %u.shl(1)
-        %sgn    : U64  = %u.shr(31).to_u64()
-        %e      : S64  = %au.shr(24).to_s64()
+        %sgn    : U64  = %u.shr(31).to<U64>()
+        %e      : S64  = %au.shr(24).to<S64>()
         %normal : Bool = %au.ge(0x01000000).bitand(%au.lt(0xFF000000))
         branch %normal
             ? reduce(%au, %e, %sgn)
@@ -36,17 +36,17 @@ routine F32.cbrt(%self: Self) -> Self
     // normalize the mantissa
     block subnormal(%au: U32, %e: S64, %sgn: U64):
         %nz : U32 = %au.leading_zeros().sub(7)
-        jump reduce(%au.shl(%nz), %e.sub(%nz.to_s64().sub(1)), %sgn)
+        jump reduce(%au.shl(%nz), %e.sub(%nz.to<S64>().sub(1)), %sgn)
 
     // cbrt(x) = cbrt(z) scale with 1 <= z < 2 and scale = ±2^(it/3) 2^(et-342)
     block reduce(%au: U32, %e: S64, %sgn: U64):
-        %mant  : U64  = %au.bitand(0x00FFFFFF).to_u64()
+        %mant  : U64  = %au.bitand(0x00FFFFFF).to<U64>()
         %z     : F64  = F64.from_bits(%mant.shl(28).bitor(U64.shl(0x3FF, 52)))
         %eb    : S64  = %e.add(899)
         %et    : S64  = %eb.div(3)
         %it    : S64  = %eb.mod(3)
         %isc0  : U64  = cm_f32_cbrt_escale(%it).bits()
-        %isc1  : U64  = %isc0.add_wrap(%et.sub(342).to_u64_wrap().shl(52))
+        %isc1  : U64  = %isc0.add_wrap(%et.sub(342).to_wrap<U64>().shl(52))
         %scale : F64  = F64.from_bits(%isc1.bitor(%sgn.shl(63)))
         %r0    : F64  = F64.div(-0x1.9931c6c2d19d1p-6, %z)
         %z2    : F64  = %z.mul(%z)
@@ -59,8 +59,8 @@ routine F32.cbrt(%self: Self) -> Self
         %hi    : F64  = %z2.mul(%p3).add(%p2)
         %f     : F64  = %z4.mul(%hi).add(%lo).add(%r0)
         %r     : F64  = %f.mul(%scale)
-        %ub    : Self = %r.to_f32()
-        %lb    : Self = %r.sub(%scale.mul(0x1.85d4f3f7556ecp-30)).to_f32()
+        %ub    : Self = %r.to<F32>()
+        %lb    : Self = %r.sub(%scale.mul(0x1.85d4f3f7556ecp-30)).to<F32>()
         %sure  : Bool = %ub.eq(%lb)
         branch %sure
             ? return(%ub)
@@ -72,17 +72,17 @@ routine F32.cbrt(%self: Self) -> Self
         %f     : F64  = %f0.sub(%f0.mul(%r0).mul(-0x1.ab16ec65d138fp+3).mul(%h))
         %r     : F64  = %f.mul(%scale)
         %bits  : U64  = %r.bits()
-        %m0    : S64  = %bits.shl(19).to_s64_wrap()
+        %m0    : S64  = %bits.shl(19).to_wrap<S64>()
         %m1    : S64  = %m0.shr(63)
         %exact : Bool = %m0.bitxor(%m1).lt(S64.shl(1, 31))
         branch %exact
             ? exact(%bits)
-            : return(%r.to_f32())
+            : return(%r.to<F32>())
 
     // an exact cube root: clear the rounding noise below the F32 precision
     block exact(%bits: U64):
         %cleared : U64 = %bits.add_wrap(U64.shl(1, 31)).bitand(0xFFFFFFFF00000000)
-        return(F64.from_bits(%cleared).to_f32())
+        return(F64.from_bits(%cleared).to<F32>())
 
 /// The scale 2^(it/3) of the cube root reduction, for it in 0..2.
 private routine cm_f32_cbrt_escale(%it: S64) -> F64

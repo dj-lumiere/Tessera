@@ -292,6 +292,21 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new ConformDecl(file, attrs, clauses, pos);
     }
 
+    /// Every type name a type is written with: `Ptr`, `U` in `@U`, `Array`, `T` and `N` in `Array<T, N>`.
+    private static IEnumerable<string> NamesIn(TypeRef t) =>
+        new[] { t.Name }.Concat(t.Args.OfType<TypeArgType>().SelectMany(a => NamesIn(a.Type)));
+
+    /// The names a routine's `require` clauses declare (`T: typename`, `N: USize`).
+    private static HashSet<string> RequiredNames(List<Clause> clauses)
+    {
+        var names = new HashSet<string>();
+        foreach (var c in clauses.Where(c => c.Kind == "require"))
+            for (int i = 0; i + 1 < c.Tokens.Count; i++)
+                if (c.Tokens[i].Kind == TokenKind.Ident && c.Tokens[i + 1].Kind == TokenKind.Colon)
+                    names.Add(c.Tokens[i].Text);
+        return names;
+    }
+
     private List<string> ParseTypeParamNames()
     {
         var names = new List<string>();
@@ -313,11 +328,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         TypeRef? owner = null;
         string name;
         List<string> typeParams;
+        List<TypeRef> ownArgs = [];
         if (Accept(TokenKind.Dot))
         {
             owner = first;
             name = Expect(TokenKind.Ident, "a routine name").Text;
-            typeParams = ParseTypeParamNames();
+            ownArgs = ParseTypeArgsOpt();
+            typeParams = [];
         }
         else
         {
@@ -333,16 +350,33 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var ret = ParseType();
         ExpectLineEnd();
         var clauses = ParseClauses();
+        // `T.bitcast<U>` declares U in its `require`. `S32.to<S64>` names the type it is defined for instead, and
+        // `Ptr<T>.to<@U>` a pattern of one: its own parameters there (U) are bound by matching a call's type arguments.
+        List<TypeRef> fixedArgs = [];
+        if (ownArgs.Count != 0)
+        {
+            var declared = RequiredNames(clauses);
+            bool IsParam(TypeRef t) => t is { Args.Count: 0, Path: null } && declared.Contains(t.Name);
+            // A concept's routine declares its parameters without a require of its own: `Self.represent<W>`.
+            if (inConcept || ownArgs.All(IsParam)) typeParams = ownArgs.Select(t => t.Name).ToList();
+            else
+            {
+                fixedArgs = ownArgs;
+                var ownerNames = owner is null ? new HashSet<string>() : NamesIn(owner).ToHashSet();
+                typeParams = fixedArgs.SelectMany(NamesIn).Where(n => declared.Contains(n) && !ownerNames.Contains(n))
+                    .Distinct().ToList();
+            }
+        }
 
         if (inConcept)
-            return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos);
+            return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
 
         // Only an #external routine is declared without a body; every other one starts with `block entry():`.
         string display = owner is null ? name : $"{owner}.{name}";
         if (!IsIdent("block"))
         {
             if (attrs.Any(a => a.Name == "external"))
-                return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos);
+                return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
             throw new CompileError(pos, $"routine '{display}' has no body: it needs a 'block entry():'");
         }
 
@@ -353,7 +387,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             throw new CompileError(blocks[0].Pos, $"the first block of routine '{display}' must be 'entry'");
         if (blocks[0].Params.Count != 0)
             throw new CompileError(blocks[0].Pos, "the entry block takes no parameters");
-        return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, blocks, pos);
+        return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, blocks, pos) { Fixed = fixedArgs };
     }
 
     private RecordDecl ParseRecord(List<Attribute> attrs)

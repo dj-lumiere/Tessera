@@ -83,7 +83,12 @@ public sealed record RoutineDecl(
     List<BlockDecl>? Blocks,     // null for an external or concept declaration
     Pos Pos) : Decl(File, Attributes, Pos)
 {
-    public string DisplayName => Owner is null ? Name : $"{Owner}.{Name}";
+    /// The type arguments a routine on a type is defined for, when its `<...>` names types its `require` doesn't
+    /// declare: `S64` in `S32.to<S64>`, `@T` in `Array<T, N>.to<@T>`. A call picks the one its type arguments match.
+    public List<TypeRef> Fixed { get; init; } = [];
+
+    public string DisplayName => (Owner is null ? Name : $"{Owner}.{Name}")
+        + (Fixed.Count == 0 ? "" : $"<{string.Join(", ", Fixed)}>");
 }
 
 public sealed record FieldDecl(string Name, TypeRef Type, List<Attribute> Attributes, Pos Pos, bool IsPrivate = false,

@@ -80,7 +80,7 @@ routine F128.sqrt(%self: Self) -> Self
 
     block compute():
         %bits    : U128 = %self.bits()
-        %top     : S64  = %bits.shr(112).to_s64()  // sign and biased exponent
+        %top     : S64  = %bits.shr(112).to<S64>()  // sign and biased exponent
         %tiny    : Bool = %top.eq(0)  // +0 or positive subnormal
         %special : Bool = %top.ge(0x7FFF)  // negative, infinite, or NaN
         when:
@@ -96,19 +96,19 @@ routine F128.sqrt(%self: Self) -> Self
 
     // Moves the leading bit up to the implicit bit's place; the exponent drops below 1 to match.
     block normalize(%bits: U128):
-        %shift : S64 = %bits.leading_zeros().to_s64().sub(15)
-        jump root(%bits.shl(%shift.to_u128()), 1.sub(%shift))
+        %shift : S64 = %bits.leading_zeros().to<S64>().sub(15)
+        jump root(%bits.shl(%shift.to<U128>()), 1.sub(%shift))
 
     // x = 1.frac × 2^(exponent - 16383). The root's biased exponent is floor((exponent + 1) / 2) + 8191:
     // the field gets one less, since the significand's leading bit lands on bit 112 and adds 1.
     block root(%bits: U128, %exponent: S64):
         %exp1      : S64  = %exponent.add(1)
         %odd       : S64  = %exp1.bitand(1)
-        %exp_field : U128 = %exp1.shr(1).add(8190).to_u128().shl(112)
+        %exp_field : U128 = %exp1.shr(1).add(8190).to<U128>().shl(112)
         %frac      : U128 = %bits.shl(16)  // the fraction alone, at the top
         %radicand  : U128 = cm_sqrt_radicand(%frac, %odd)
         %approx    : U128 = cm_sqrt_approx(%frac, %radicand, %odd)
-        %slack     : S16  = %approx.shl(2).to_s16_wrap()  // the bits under the rounding point
+        %slack     : S16  = %approx.shl(2).to_wrap<S16>()  // the bits under the rounding point
         %close     : Bool = %slack.between(-37, 13)
         branch %close
             ? settle(%approx, %radicand, %exp_field)
@@ -119,9 +119,9 @@ routine F128.sqrt(%self: Self) -> Self
     block settle(%approx: U128, %radicand: U128, %exp_field: U128):
         %candidate : U128 = %approx.add_wrap(0x2000)
         %m         : U128 = %candidate.shr(14)
-        %excess    : S128 = %m.mul_wrap(%m).sub_wrap(%radicand.shl(100)).to_s128_wrap()
-        %above     : U128 = %excess.gt(0).to_u128()
-        %below     : U128 = %excess.lt(0).to_u128()
+        %excess    : S128 = %m.mul_wrap(%m).sub_wrap(%radicand.shl(100)).to_wrap<S128>()
+        %above     : U128 = %excess.gt(0).to<U128>()
+        %below     : U128 = %excess.lt(0).to<U128>()
         %cleared   : U128 = %candidate.bitand(0x3FFF.bitnot())
         %v         : U128 = %cleared.sub_wrap(%above).add_wrap(%below)
         jump round(%v, %exp_field)
@@ -158,8 +158,8 @@ routine cm_sqrt_special(%x: F128) -> F128
 routine cm_sqrt_radicand(%frac: U128, %odd: S64) -> U128
     block entry():
         %one     : U128 = 1
-        %shifted : U128 = %frac.shr(2.sub(%odd).to_u128())
-        %leading : U128 = %one.shl(126.add(%odd).to_u128())
+        %shifted : U128 = %frac.shr(2.sub(%odd).to<U128>())
+        %leading : U128 = %one.shl(126.add(%odd).to<U128>())
         %r       : U128 = %shifted.bitor(%leading)
         return(%r)
 
@@ -168,16 +168,16 @@ routine cm_sqrt_radicand(%frac: U128, %odd: S64) -> U128
 /// v = 2 sx - sx·h, with h = r·sx·4 - 2 the (signed) residual.
 routine cm_sqrt_approx(%frac: U128, %radicand: U128, %odd: S64) -> U128
     block entry():
-        %seed     : U64  = cm_sqrt_rsqrt9(%frac.shr(64).to_u64())
+        %seed     : U64  = cm_sqrt_rsqrt9(%frac.shr(64).to<U64>())
         %odd_exp  : Bool = %odd.ne(0)
         %all_ones : U64  = U64.MAX
         %scale    : U64  = %odd_exp
             ? CM_SQRT_RSQRT2
             : %all_ones
-        %r       : U64  = %seed.to_u128().mul_wrap(%scale.to_u128()).shr(64).to_u64()
+        %r       : U64  = %seed.to<U128>().mul_wrap(%scale.to<U128>()).shr(64).to<U64>()
         %sx      : U128 = cm_sqrt_mul_hi_64x128(%r, %radicand)
-        %h       : S128 = cm_sqrt_mul_hi_64x128(%r, %sx).shl(2).to_s128_wrap()
-        %ds_high : U128 = cm_sqrt_mul_hi_128x128(%sx, %h.to_u128_wrap())
+        %h       : S128 = cm_sqrt_mul_hi_64x128(%r, %sx).shl(2).to_wrap<S128>()
+        %ds_high : U128 = cm_sqrt_mul_hi_128x128(%sx, %h.to_wrap<U128>())
         %h_neg   : Bool = %h.lt(0)
         %ds      : U128 = %h_neg  // (signed h) × sx
             ? %ds_high.sub_wrap(%sx)
@@ -189,8 +189,8 @@ routine cm_sqrt_approx(%frac: U128, %radicand: U128, %odd: S64) -> U128
 /// subrange, then one Newton-Raphson step r1 = r0 - r0 (r0² x - 1) / 2.
 routine cm_sqrt_rsqrt9(%m: U64) -> U64
     block entry():
-        %table  : @U64  = CM_SQRT_RSQRT9.to_ptr()
-        %i0     : USize = %m.shr(58).to_usize().mul(4)
+        %table  : @U64  = CM_SQRT_RSQRT9.to<@U64>()
+        %i0     : USize = %m.shr(58).to<USize>().mul(4)
         %c0_raw : U64   = %table.stride(%i0).load()
         %c1_raw : U64   = %table.stride(%i0.add(1)).load()
         %c2     : U64   = %table.stride(%i0.add(2)).load()
@@ -205,9 +205,9 @@ routine cm_sqrt_rsqrt9(%m: U64) -> U64
         %r0     : U64   = %even.sub_wrap(%odd)
         %r0_sq  : U64   = cm_sqrt_mul_hi_64x64(%r0, %r0)
         %resid  : S64   = cm_sqrt_mul_hi_64x64(%m,
-                %r0_sq).add_wrap(%r0_sq).to_s64_wrap()  // r0² x - 1, signed
-        %half   : S64   = %r0.shr(1).to_s64()
-        %step   : U64   = %resid.to_s128().mul_wrap(%half.to_s128()).shr(64).to_u64_wrap()
+                %r0_sq).add_wrap(%r0_sq).to_wrap<S64>()  // r0² x - 1, signed
+        %half   : S64   = %r0.shr(1).to<S64>()
+        %step   : U64   = %resid.to<S128>().mul_wrap(%half.to<S128>()).shr(64).to_wrap<U64>()
         %r1     : U64   = %r0.sub_wrap(%step)
         %zero   : Bool  = %r1.eq(0)
         %max    : U64   = U64.MAX
@@ -219,14 +219,14 @@ routine cm_sqrt_rsqrt9(%m: U64) -> U64
 /// High 64 bits of the unsigned product a·b.
 routine cm_sqrt_mul_hi_64x64(%a: U64, %b: U64) -> U64
     block entry():
-        %r : U64 = %a.to_u128().mul_wrap(%b.to_u128()).shr(64).to_u64()
+        %r : U64 = %a.to<U128>().mul_wrap(%b.to<U128>()).shr(64).to<U64>()
         return(%r)
 
 /// High 128 bits of the unsigned 64×128-bit product y·x, without the low partial product's
 /// low half.
 routine cm_sqrt_mul_hi_64x128(%y: U64, %x: U128) -> U128
     block entry():
-        %y2  : U128 = %y.to_u128()
+        %y2  : U128 = %y.to<U128>()
         %xy0 : U128 = %x.bitand(0xFFFFFFFFFFFFFFFF).mul_wrap(%y2)
         %xy1 : U128 = %x.shr(64).mul_wrap(%y2)
         %r   : U128 = %xy1.add_wrap(%xy0.shr(64))

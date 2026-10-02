@@ -481,12 +481,12 @@ routine F64.gamma(%self: Self) -> Self
         branch %unsure
             ? return(cm_f64_tgamma_accurate(%self))
             : continue
-        return(Self.from_bits(%ub.bits().add_wrap(%f.sc.to_u64_wrap().shl(52))))
+        return(Self.from_bits(%ub.bits().add_wrap(%f.sc.to_wrap<U64>().shl(52))))
 
     // reflection whose result may be subnormal: hi + lo is the value times 2^e, e = -sc
     block reflected(%f: CmF64TgammaFast):
         %e         : S64  = %f.sc.neg()
-        %re        : S64  = %f.hi.bits().shr(52).bitand(0x7FF).to_s64()
+        %re        : S64  = %f.hi.bits().shr(52).bitand(0x7FF).to<S64>()
         %subnormal : Bool = %re.sub(%e).le(0)
         branch %subnormal
             ? subnormal(%f, %e, %re)
@@ -494,7 +494,7 @@ routine F64.gamma(%self: Self) -> Self
 
     // round at the subnormal quantum: add a power of two that fixes the exponent, then strip it
     block subnormal(%f: CmF64TgammaFast, %e: S64, %re: S64):
-        %th     : U64          = %f.hi.bits().add_wrap(%e.sub(%re).add(1).to_u64_wrap().shl(52))
+        %th     : U64          = %f.hi.bits().add_wrap(%e.sub(%re).add(1).to_wrap<U64>().shl(52))
         %s      : CmF64GammaDD = cm_f64_gamma_fasttwosum(
                 Self.from_bits(%th.bitand(0xFFF0000000000000)), %f.hi)
         %rl     : Self         = %f.lo.add(%s.lo)
@@ -511,7 +511,7 @@ routine F64.gamma(%self: Self) -> Self
         %unsure : Bool = %ub.ne(%lb)
         branch %unsure
             ? return(cm_f64_tgamma_accurate(%self))
-            : return(Self.from_bits(%ub.bits().sub_wrap(%e.to_u64_wrap().shl(52))))
+            : return(Self.from_bits(%ub.bits().sub_wrap(%e.to_wrap<U64>().shl(52))))
 
 /// gamma(x) for the inputs the fast phase leaves out: NaN, infinities, |x| < 2^-112,
 /// overflow, integers, and x <= -184.
@@ -560,7 +560,7 @@ private routine cm_f64_tgamma_special(%x: F64) -> F64
         when:
             %zero     -> return(F64.div(1.0, %x))
             %negative -> return(F64.from_bits(0xFFF8000000000000))
-            else      -> factorial(%fx.to_s64(), 1, 1.0, 0.0, 1.0)
+            else      -> factorial(%fx.to<S64>(), 1, 1.0, 0.0, 1.0)
 
     block factorial(%k: S64, %i: S64, %th: F64, %tl: F64, %x0: F64):
         %more : Bool = %i.lt(%k)
@@ -576,7 +576,7 @@ private routine cm_f64_tgamma_special(%x: F64) -> F64
     block under(%fx: F64):
         %fits : Bool = %fx.ge(-0x1p+62)
         branch %fits
-            ? parity(%fx.to_s64())
+            ? parity(%fx.to<S64>())
             : parity(0)
 
     block parity(%kk: S64):
@@ -632,7 +632,7 @@ private routine cm_f64_tgamma_reflect(%x: F64) -> CmF64TgammaFast
         %lg  : CmF64GammaDD   = cm_f64_tgamma_lgamma_asym(%s.hi, %s.lo)
         %ex  : CmF64TgammaExp = cm_f64_tgamma_expd(%lg.hi, %lg.lo)
         %ix  : F64            = %x.floor()
-        %ip  : S64            = %ix.to_s64()
+        %ip  : S64            = %ix.to<S64>()
         %sp  : CmF64GammaDD   = cm_f64_tgamma_sinpid(%x.sub(%ix))
         %m   : CmF64GammaDD   = cm_f64_gamma_muldd(%sp.hi, %sp.lo, %ex.hi, %ex.lo)
         %rcp : F64            = F64.div(1.0, %m.hi)
@@ -673,7 +673,7 @@ private routine cm_f64_tgamma_mid(%x: F64) -> CmF64TgammaFast
         %hi   : F64          = cm_f64_tgamma_pair4(%d, %d2, 965)
         %fl   : F64          = %d.mul(%lo.add(%d4.mul(%hi)))
         %f    : CmF64GammaDD = cm_f64_tgamma_polyddd(%d, 10, 915, %fl)
-        %jm   : S64          = %ri.abs().to_s64()
+        %jm   : S64          = %ri.abs().to<S64>()
         %none : Bool         = %jm.eq(0)
         branch %none
             ? finish(%f, 1.0, 0.0)
@@ -727,7 +727,7 @@ private routine cm_f64_tgamma_database(%x: F64, %f: F64) -> F64
 
     block probe(%a: S64, %b: S64):
         %m    : S64   = %a.add(%b).div(2)
-        %base : USize = %m.mul(3).to_usize()
+        %base : USize = %m.mul(3).to<USize>()
         %key  : F64   = cm_f64_tgamma_t(%base)
         when:
             %key.lt(%x) -> search(%m.add(1), %b)
@@ -743,7 +743,7 @@ private routine cm_f64_tgamma_accurate(%x: F64) -> F64
             : continue
         %ix   : F64          = %x.floor()
         %d    : F64          = F64.mul(2.0, %x.sub(%ix.add(0.5)))
-        %i    : S64          = %ix.to_s64()
+        %i    : S64          = %ix.to<S64>()
         %k    : USize        = cm_f64_tgamma_range(%i)
         %pf   : CmF64GammaDD = cm_f64_tgamma_poly3(%d, CM_F64_TGAMMA_BR_NCH.get(%k),
                 CM_F64_TGAMMA_BR_CH.get(%k), CM_F64_TGAMMA_BR_NCL.get(%k),
@@ -814,7 +814,7 @@ private routine cm_f64_tgamma_accurate(%x: F64) -> F64
         %c1  : F64 = F64.add(0x1p-54, 0x1p-107).sub(0x1p-54)
         %c2  : F64 = F64.sub(0x1p-53, 0x1p-107).sub(0x1p-53)
         %crr : F64 = %c1.add(%c2)
-        jump round(%fh, %fl.add(%fh.mul(%jm.to_f64().mul(%crr))), %eoff)
+        jump round(%fh, %fl.add(%fh.mul(%jm.to<F64>().mul(%crr))), %eoff)
 
     block correct_above(%fh: F64, %fl: F64, %jm: S64, %eoff: S64):
         %op   : F64  = F64.sub(0x1p-53, 0x1p-107)
@@ -823,7 +823,7 @@ private routine cm_f64_tgamma_accurate(%x: F64) -> F64
         %crr  : F64  = %same
             ? F64.sub(0x1p-53, %op)
             : 0.0
-        %corr : F64 = %jm.sub(5).to_f64().mul(%crr).mul(0x1.0a3d70a3d70a4p+0)
+        %corr : F64 = %jm.sub(5).to<F64>().mul(%crr).mul(0x1.0a3d70a3d70a4p+0)
         jump round(%fh, %fl.sub(%fh.mul(%corr)), %eoff)
 
     // (fh + fl) 2^eoff, rounded at the subnormal quantum when it falls there
@@ -832,14 +832,14 @@ private routine cm_f64_tgamma_accurate(%x: F64) -> F64
         %ub        : F64  = %fh.add(%fl.add(%eps))
         %lb        : F64  = %fh.add(%fl.sub(%eps))
         %res       : U64  = %fh.add(%fl).bits()
-        %re        : S64  = %res.shr(52).bitand(0x7FF).to_s64()
+        %re        : S64  = %res.shr(52).bitand(0x7FF).to<S64>()
         %subnormal : Bool = %re.add(%eoff).le(0)
         branch %subnormal
             ? subnormal(%fh, %fl, %eoff, %re, %res, %ub, %lb)
-            : done(%ub, %lb, %res.add_wrap(%eoff.to_u64_wrap().shl(52)))
+            : done(%ub, %lb, %res.add_wrap(%eoff.to_wrap<U64>().shl(52)))
 
     block subnormal(%fh: F64, %fl: F64, %eoff: S64, %re: S64, %res: U64, %ub: F64, %lb: F64):
-        %th : U64          = %res.sub_wrap(%eoff.add(%re).sub(1).to_u64_wrap().shl(52)).bitand(0xFFF0000000000000)
+        %th : U64          = %res.sub_wrap(%eoff.add(%re).sub(1).to_wrap<U64>().shl(52)).bitand(0xFFF0000000000000)
         %s  : CmF64GammaDD = cm_f64_gamma_fasttwosum(F64.from_bits(%th), %fh)
         %r  : U64          = %s.hi.add(%fl.add(%s.lo)).bits().bitand(0x800FFFFFFFFFFFFF)
         jump done(%ub, %lb, %r)
@@ -1002,7 +1002,7 @@ private routine cm_f64_tgamma_sinpid(%x: F64) -> CmF64GammaDD
         %ix      : F64          = %y.round_ties_even()
         %d       : F64          = %ix.sub(%y)
         %d2      : F64          = %d.mul(%d)
-        %ky      : USize        = %ix.to_s64().to_usize()
+        %ky      : USize        = %ix.to<S64>().to<USize>()
         %kx      : USize        = USize.sub(64, %ky)
         %sh      : F64          = cm_f64_tgamma_t(%kx.mul(2).add(1170))
         %sl      : F64          = cm_f64_tgamma_t(%kx.mul(2).add(1169))
@@ -1030,9 +1030,9 @@ private routine cm_f64_tgamma_expd(%x: F64, %l: F64) -> CmF64TgammaExp
                 0x1.777d0ffda0d24p-46)
         %ix : F64          = %m.hi.round_ties_even()
         %s  : CmF64GammaDD = cm_f64_gamma_fasttwosum(%m.hi.sub(%ix), %m.lo)
-        %k  : S64          = %ix.to_s64()
-        %i0 : USize        = %k.shr(5).bitand(31).to_usize()
-        %i1 : USize        = %k.bitand(31).to_usize()
+        %k  : S64          = %ix.to<S64>()
+        %i0 : USize        = %k.shr(5).bitand(31).to<USize>()
+        %i1 : USize        = %k.bitand(31).to<USize>()
         %r  : CmF64GammaDD = cm_f64_gamma_muldd(cm_f64_tgamma_t(%i0.mul(2).add(1300)),
                 cm_f64_tgamma_t(%i0.mul(2).add(1299)), cm_f64_tgamma_t(%i1.mul(2).add(1364)),
                 cm_f64_tgamma_t(%i1.mul(2).add(1363)))
@@ -1101,21 +1101,21 @@ routine cm_f64_gamma_log_arg(%x: F64) -> CmF64GammaLogArg
         %sn : Bool = %ex.eq(0)
         branch %sn
             ? normalize(%t)
-            : reduce(%t, %ex.to_s64())
+            : reduce(%t, %ex.to<S64>())
 
     block normalize(%t: U64):
         %k : U64 = %t.leading_zeros()
-        jump reduce(%t.shl(%k.sub(11)), S64.sub(12, %k.to_s64()))
+        jump reduce(%t.shl(%k.sub(11)), S64.sub(12, %k.to<S64>()))
 
     block reduce(%t: U64, %ex: S64):
         %m    : U64   = %t.bitand(0x000FFFFFFFFFFFFF)
-        %i    : USize = %m.shr(47).to_usize()
+        %i    : USize = %m.shr(47).to<USize>()
         %d    : U64   = %m.bitand(0x00007FFFFFFFFFFF)
-        %prod : S64   = CM_F64_GAMMA_LOGD_B1.get(%i).mul(%d.shr(16).to_s64())
-        %j    : U64   = %m.add_wrap(CM_F64_GAMMA_LOGD_B0.get(%i).shl(33)).add_wrap(%prod.to_u64_wrap()).shr(42)
+        %prod : S64   = CM_F64_GAMMA_LOGD_B1.get(%i).mul(%d.shr(16).to<S64>())
+        %j    : U64   = %m.add_wrap(CM_F64_GAMMA_LOGD_B0.get(%i).shl(33)).add_wrap(%prod.to_wrap<U64>()).shr(42)
         %tf   : F64   = F64.from_bits(%m.bitor(0x3FF0000000000000))
-        return(CmF64GammaLogArg { tf: %tf, ed: %ex.sub(0x3FF).to_f64(), i1: %j.shr(5).to_usize(),
-                i2: %j.bitand(0x1F).to_usize() })
+        return(CmF64GammaLogArg { tf: %tf, ed: %ex.sub(0x3FF).to<F64>(), i1: %j.shr(5).to<USize>(),
+                i2: %j.bitand(0x1F).to<USize>() })
 
 /// ln(x) as a double-double, for a positive finite x (subnormals included).
 routine cm_f64_gamma_logd(%x: F64) -> CmF64GammaDD

@@ -108,7 +108,7 @@ public sealed class IntType(int bits, IntKind kind, bool isSize = false) : DType
         }
         if (Kind is IntKind.Char)
         {
-            error = "a Char is written as a character literal ('A'), or converted with U32.to_char()";
+            error = "a Char is written as a character literal ('A'), or converted with U32.to<Char>()";
             return null;
         }
         if (value < min || value > max)

@@ -40,8 +40,8 @@ routine F128.atan(%self: Self) -> Self
             : continue
         %bits : U128 = %self.bits()
         %sign : U128 = %bits.bitand(F128_SIGN)
-        %hi   : U64  = %bits.shr(64).to_u64().bitand(0x7FFFFFFFFFFFFFFF)
-        %lo   : U64  = %bits.to_u64_wrap()
+        %hi   : U64  = %bits.shr(64).to<U64>().bitand(0x7FFFFFFFFFFFFFFF)
+        %lo   : U64  = %bits.to_wrap<U64>()
         %xn   : U64  = %hi.shr(48)
         // for |x| < 2^-57 the difference atan(x) - x is under half an ulp (this covers ±0)
         %tiny : Bool = %xn.lt(0x3FC6)  // 0x3FFF - 57
@@ -77,9 +77,9 @@ routine F128.atan(%self: Self) -> Self
     // atan|x| = PHI0[isct] + f, or π/2 - that past 1
     block with_table(%red: CmAtanReduction, %f: U128, %sign: U128):
         %placed    : CmAtanU192 = cm_atan_place(%f, %red.dn.add(1))
-        %phi       : CmAtanU192 = cm_atan_row_top(CM_ATAN_PHI0.to_ptr(), %red.isct)
+        %phi       : CmAtanU192 = cm_atan_row_top(CM_ATAN_PHI0.to<@U64>(), %red.isct)
         %angle     : CmAtanU192 = cm_atan_u192_add(%phi, %placed)
-        %half_pi   : CmAtanU192 = cm_atan_row_top(CM_ATAN_QOFF.to_ptr(), 1)
+        %half_pi   : CmAtanU192 = cm_atan_row_top(CM_ATAN_QOFF.to<@U64>(), 1)
         %reflected : CmAtanU192 = cm_atan_u192_sub(%half_pi, %angle)
         %final     : CmAtanU192 = %red.g
             ? %reflected
@@ -117,34 +117,34 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
         %far : Bool = %e.gt(7)
         branch %far
             ? small(%e)
-            : table_below(%e.to_s64())
+            : table_below(%e.to<S64>())
 
     // |x| < 2^-7: kn / kd = |x| itself
     block small(%e: U64):
         %kn : U128            = cm_atan_join(%mant, %lo).shl(15)
-        %r  : CmAtanReduction = CmAtanReduction { zero: false, g: false, isct: 0, dn: %e.to_s64(),
+        %r  : CmAtanReduction = CmAtanReduction { zero: false, g: false, isct: 0, dn: %e.to<S64>(),
                 kn: %kn, kd0: 0, kd1: 0, kd2: 0x8000000000000000 }
         return(%r)
 
     // kn = |x| - t, kd = 1 + |x| t
     block table_below(%e: S64):
-        %guess_at : USize      = %mant.shr(%e.add(41).to_u64()).to_usize()
-        %guess    : USize      = CM_ATAN_INDL.get(%guess_at).to_usize()
+        %guess_at : USize      = %mant.shr(%e.add(41).to<U64>()).to<USize>()
+        %guess    : USize      = CM_ATAN_INDL.get(%guess_at).to<USize>()
         %next_at  : USize      = %guess.add(1)
         %next_tn  : U64        = CM_ATAN_TN.get(%next_at)
-        %bump     : Bool       = %next_tn.le(%mant.shr(%e.add(33).to_u64()))
-        %isct     : USize      = %guess.add(%bump.to_usize())
+        %bump     : Bool       = %next_tn.le(%mant.shr(%e.add(33).to<U64>()))
+        %isct     : USize      = %guess.add(%bump.to<USize>())
         %tn       : U64        = CM_ATAN_TN.get(%isct)
-        %tt       : U64        = %tn.shl(%e.add(33).to_u64())
+        %tt       : U64        = %tn.shl(%e.add(33).to<U64>())
         %norm     : CmAtanNorm = cm_atan_normalize(%mant.sub_wrap(%tt), %lo)
-        %xa       : U128       = cm_atan_join(%mant, %lo).mul_wrap(%tn.to_u128())
+        %xa       : U128       = cm_atan_join(%mant, %lo).mul_wrap(%tn.to<U128>())
         // kd = 1 + xa >> e: the leading one and xa's bits under it
-        %kd  : U128            = %xa.shr(%e.to_u128())
-        %kd0 : S64             = %xa.to_s64_wrap().shl(0.sub(%e).bitand(63))
-        %kd2 : U64             = %kd.shr(64).to_u64().bitor(0x8000000000000000)
+        %kd  : U128            = %xa.shr(%e.to<U128>())
+        %kd0 : S64             = %xa.to_wrap<S64>().shl(0.sub(%e).bitand(63))
+        %kd2 : U64             = %kd.shr(64).to<U64>().bitor(0x8000000000000000)
         %dn  : S64             = %e.add(%norm.shift).sub(15)
         %r   : CmAtanReduction = CmAtanReduction { zero: false, g: false, isct: %isct, dn: %dn,
-                kn: %norm.kn, kd0: %kd0, kd1: %kd.to_u64_wrap(), kd2: %kd2 }
+                kn: %norm.kn, kd0: %kd0, kd1: %kd.to_wrap<U64>(), kd2: %kd2 }
         return(%r)
 
     block above_one():
@@ -152,43 +152,43 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
         %far : Bool = %e.gt(6)
         branch %far
             ? large(%e)
-            : table_above(%e.to_s64())
+            : table_above(%e.to<S64>())
 
     // |x| >= 2^7: kn / kd = 1 / |x|
     block large(%e: U64):
         %kd  : U128            = cm_atan_join(%mant, %lo).shl(15)
         %one : U128            = 0x80000000000000000000000000000000
-        %r   : CmAtanReduction = CmAtanReduction { zero: false, g: true, isct: 0, dn: %e.to_s64(),
-                kn: %one, kd0: 0, kd1: %kd.to_u64_wrap(), kd2: %kd.shr(64).to_u64() }
+        %r   : CmAtanReduction = CmAtanReduction { zero: false, g: true, isct: 0, dn: %e.to<S64>(),
+                kn: %one, kd0: 0, kd1: %kd.to_wrap<U64>(), kd2: %kd.shr(64).to<U64>() }
         return(%r)
 
     // kn = 1 - |x| t, kd = |x| + t, the index guess moved down one when |x| t passes 1
     block table_above(%e: S64):
         %xa       : U128  = cm_atan_join(%mant, %lo)
-        %guess_at : USize = %mant.bitxor(0x0000FFFFFFFFFFFF).shr(%e.add(42).to_u64()).to_usize()
-        %guess    : USize = CM_ATAN_INDH.get(%guess_at).to_usize()
+        %guess_at : USize = %mant.bitxor(0x0000FFFFFFFFFFFF).shr(%e.add(42).to<U64>()).to<USize>()
+        %guess    : USize = CM_ATAN_INDH.get(%guess_at).to<USize>()
         %next_at  : USize = %guess.add(1)
         %next_tn  : U64   = CM_ATAN_TN.get(%next_at)
-        %limit    : U64   = 1.shl(63.sub(%e)).to_u64_wrap()
+        %limit    : U64   = 1.shl(63.sub(%e)).to_wrap<U64>()
         %bump     : Bool  = %next_tn.mul_wrap(%mant).lt(%limit)
-        %first    : USize = %guess.add(%bump.to_usize())
+        %first    : USize = %guess.add(%bump.to<USize>())
         %first_tn : U64   = CM_ATAN_TN.get(%first)
-        %past     : U128  = %xa.mul_wrap(%first_tn.to_u128())
-        %over     : Bool  = %past.shr(64).to_u64().bitand(%limit).ne(0)
+        %past     : U128  = %xa.mul_wrap(%first_tn.to<U128>())
+        %over     : Bool  = %past.shr(64).to<U64>().bitand(%limit).ne(0)
         %isct     : USize = %over
             ? %first.sub_wrap(1)
             : %first
         %tn : U64  = CM_ATAN_TN.get(%isct)
-        %t  : U128 = %xa.mul_wrap(%tn.to_u128())
+        %t  : U128 = %xa.mul_wrap(%tn.to<U128>())
         // kn = -(t << e) with its top bit flipped, normalized
-        %neg    : U128            = 0.sub_wrap(%t.shl(%e.to_u128()))
-        %knh    : U64             = %neg.shr(64).to_u64().bitxor(0x8000000000000000)
-        %norm   : CmAtanNorm      = cm_atan_normalize(%knh, %neg.to_u64_wrap())
-        %sum_hi : U64             = %mant.add_wrap(%tn.shl(33.sub(%e).to_u64()))
-        %nzd    : S64             = %sum_hi.leading_zeros().to_s64()
-        %spill  : U64             = %lo.shr(0.sub(%nzd).bitand(63).to_u64())
-        %kd2    : U64             = %sum_hi.shl(%nzd.to_u64()).bitor(%spill)
-        %kd1    : U64             = %lo.shl(%nzd.to_u64())
+        %neg    : U128            = 0.sub_wrap(%t.shl(%e.to<U128>()))
+        %knh    : U64             = %neg.shr(64).to<U64>().bitxor(0x8000000000000000)
+        %norm   : CmAtanNorm      = cm_atan_normalize(%knh, %neg.to_wrap<U64>())
+        %sum_hi : U64             = %mant.add_wrap(%tn.shl(33.sub(%e).to<U64>()))
+        %nzd    : S64             = %sum_hi.leading_zeros().to<S64>()
+        %spill  : U64             = %lo.shr(0.sub(%nzd).bitand(63).to<U64>())
+        %kd2    : U64             = %sum_hi.shl(%nzd.to<U64>()).bitor(%spill)
+        %kd1    : U64             = %lo.shl(%nzd.to<U64>())
         %dn     : S64             = %e.add(%norm.shift).sub(%nzd).add(15)
         %r      : CmAtanReduction = CmAtanReduction { zero: false, g: true, isct: %isct, dn: %dn,
                 kn: %norm.kn, kd0: 0, kd1: %kd1, kd2: %kd2 }
@@ -198,7 +198,7 @@ routine cm_atan_reduce(%mant: U64, %lo: U64, %xn: U64) -> CmAtanReduction
 routine cm_atan_accurate(%red: CmAtanReduction, %sign: U128) -> F128
     block entry():
         claim %f_buf : @Array<S64, 8> <- uninit
-        %f : @U64 = %f_buf.cast<U64>()
+        %f : @U64 = %f_buf.to<@U64>()
         cm_atan_accurate_core(%red, %f)
         %table : Bool = %red.isct.ne(0).bitor(%red.g)
         branch %table
@@ -209,7 +209,7 @@ routine cm_atan_accurate(%red: CmAtanReduction, %sign: U128) -> F128
         %dn : S64 = %red.dn
         cm_atan_limbs_shr(%f, 6, %dn.add(1))
         %row : USize = %red.isct.mul(6)
-        %phi : @U64  = CM_ATAN_PHI0.to_ptr().stride(%row)
+        %phi : @U64  = CM_ATAN_PHI0.to<@U64>().stride(%row)
         cm_atan_limbs_add(%f, %phi, %f, 6)
         %inverted : Bool = %red.g
         branch %inverted
@@ -218,7 +218,7 @@ routine cm_atan_accurate(%red: CmAtanReduction, %sign: U128) -> F128
 
     // π/2 - f
     block reflect(%f: @U64):
-        %half_pi : @U64 = CM_ATAN_QOFF.to_ptr().offset(48)
+        %half_pi : @U64 = CM_ATAN_QOFF.to<@U64>().offset(48)
         cm_atan_limbs_sub(%f, %half_pi, %f, 6)
         jump finish(%f, -1)
 

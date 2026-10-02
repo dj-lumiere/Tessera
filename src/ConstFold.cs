@@ -10,7 +10,7 @@ public sealed record ConstVal(DType? Type, BigInteger Value);
 public sealed partial class Compiler
 {
     // Presets fold to constants here, and only these forms fold: literals; other presets; add, sub, mul, div, mod,
-    // min, max, the bitwise operations and shifts, neg, and the checked and _wrap conversions of integers; the
+    // min, max, the bitwise operations and shifts, neg, and the integer conversions to<T>() and to_wrap<T>(); the
     // bitwise operations of Bool; add, sub, mul, div, and neg of F32 and F64; max, min, sizeof, and alignof; and
     // T.from_bits(...) for a float or a bit-pattern record. Each follows the stdlib routine's meaning, and what would
     // panic at run time (overflow, a zero divisor, a value out of range) is a build error. Nothing else runs at
@@ -132,7 +132,7 @@ public sealed partial class Compiler
             case PresetRef r:
                 return FoldPresetRef(r, env);
             case MethodCallExpr m:
-                return FoldMethod(m.Receiver, m.Name, m.Args, hint, env, m.Pos);
+                return FoldMethod(m.Receiver, m.Name, m.TypeArgs, m.Args, hint, env, m.Pos);
             case NsCallExpr n:
                 return FoldNsCall(n, hint, env);
             case CallExpr { Name: "max" or "min", Args.Count: > 0 } c:
@@ -192,7 +192,7 @@ public sealed partial class Compiler
         // `N.add(1)` with N a preset is a method call on that preset.
         if (n.Owner.Args.Count == 0 && env.Get(n.Owner.Name) is null
             && FindPreset("", n.Owner.Name, env.File, n.Pos, n.Owner.Path) is { IsStorage: false })
-            return FoldMethod(new PresetRef(null, n.Owner.Name, n.Owner.Pos) { Path = n.Owner.Path }, n.Name, n.Args, hint, env, n.Pos);
+            return FoldMethod(new PresetRef(null, n.Owner.Name, n.Owner.Pos) { Path = n.Owner.Path }, n.Name, n.TypeArgs, n.Args, hint, env, n.Pos);
         var owner = TryResolveType(n.Owner, env);
         if (owner is null) throw new CompileError(n.Owner.Pos, $"unknown type '{n.Owner.Name}'");
         if (n.Name == "from_bits" && n.Args.Count == 1)
@@ -209,11 +209,13 @@ public sealed partial class Compiler
         return Apply(receiver, n.Name, n.Args.Skip(1).ToList(), env, n.Pos);
     }
 
-    private ConstVal FoldMethod(Expr receiverExpr, string name, List<Expr> args, DType? hint, TypeEnv env, Pos pos)
+    private ConstVal FoldMethod(Expr receiverExpr, string name, List<TypeRef> typeArgs, List<Expr> args, DType? hint,
+        TypeEnv env, Pos pos)
     {
-        var receiver = Fold(receiverExpr, IsConversion(name) ? null : hint, env);
+        bool conversion = IsConversion(name, typeArgs);
+        var receiver = Fold(receiverExpr, conversion ? null : hint, env);
         // An untyped literal takes its type from the argument: `1.shl(%n)`-style chains of presets.
-        if (receiver.Type is null && args.Count == 1 && !IsConversion(name))
+        if (receiver.Type is null && args.Count == 1 && !conversion)
         {
             var arg = Fold(args[0], null, env);
             if (arg.Type is not null) receiver = Typed(receiver, arg.Type, receiverExpr.Pos);
@@ -221,10 +223,14 @@ public sealed partial class Compiler
         }
         if (receiver.Type is null)
             throw new CompileError(receiverExpr.Pos, $"nothing says this literal's type; name it: U64.{name}(...)");
+        if (conversion && receiver.Type is IntType { IsNumber: true } from && args.Count == 0)
+            return Convert(receiver.Value, from, name, typeArgs[0], env, pos);
         return Apply(receiver, name, args, env, pos);
     }
 
-    private static bool IsConversion(string name) => name.StartsWith("to_", StringComparison.Ordinal);
+    /// `to<T>()` and `to_wrap<T>()`, the conversions a preset can fold.
+    private static bool IsConversion(string name, List<TypeRef> typeArgs) =>
+        name is "to" or "to_wrap" && typeArgs.Count == 1;
 
     /// Arithmetic on two untyped literals, which has no range until a type is known.
     private static BigInteger Untyped(BigInteger a, string name, BigInteger b, Pos pos) => name switch
@@ -254,7 +260,6 @@ public sealed partial class Compiler
 
     private ConstVal ApplyInt(BigInteger a, IntType it, string name, List<Expr> args, TypeEnv env, Pos pos)
     {
-        if (IsConversion(name) && args.Count == 0) return Convert(a, it, name, pos);
         if (args.Count == 0)
         {
             switch (name)
@@ -304,22 +309,14 @@ public sealed partial class Compiler
         if (v < min || v > max) throw new CompileError(pos, $"{it.Name}.{name} overflows in this preset ({v})");
     }
 
-    /// to_uN / to_sN / to_usize / to_ssize (checked, like the routines that panic) and their _wrap forms.
-    private ConstVal Convert(BigInteger a, IntType from, string name, Pos pos)
+    /// `to<T>()` (checked, like the routine that panics) and `to_wrap<T>()` from one integer type to another.
+    private ConstVal Convert(BigInteger a, IntType from, string name, TypeRef target, TypeEnv env, Pos pos)
     {
-        bool wrap = name.EndsWith("_wrap", StringComparison.Ordinal);
-        string target = wrap ? name[3..^5] : name[3..];
-        IntType? to = target switch
-        {
-            "usize" => USize,
-            "ssize" => new IntType(Target.Size, IntKind.Signed, isSize: true),
-            _ => IntType.FromName(target.ToUpperInvariant()) is { IsNumber: true } t ? t : null,
-        };
-        if (to is null)
-            throw new CompileError(pos, $"{from.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
-        if (wrap) return new ConstVal(to, Wrap(a, to));
+        if (TryResolveType(target, env) is not IntType { IsNumber: true } to)
+            throw new CompileError(pos, $"{from.Name}.{name}<{target}> can't run at build time; a preset is made of {PresetForms}");
+        if (name == "to_wrap") return new ConstVal(to, Wrap(a, to));
         var (min, max) = Range(to);
-        if (a < min || a > max) throw new CompileError(pos, $"{a} doesn't fit in {to.Name} ({from.Name}.{name} in a preset)");
+        if (a < min || a > max) throw new CompileError(pos, $"{a} doesn't fit in {to.Name} ({from.Name}.to<{to.Name}> in a preset)");
         return new ConstVal(to, a);
     }
 

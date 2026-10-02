@@ -19,6 +19,17 @@ public sealed partial class Compiler
         var m = new Mangler(this);
         m.Out("_Z");
         var steps = r.Owner is null ? ModuleSteps(r.Module) : m.TypeSteps(env.Get("Self") ?? env.Get(r.Owner.Name)!);
+        // A routine defined for type arguments is an explicit specialization: its name carries them, then the
+        // concrete return and parameter types.
+        if (r.Fixed.Count > 0)
+        {
+            var fixedArgs = r.Fixed.Select(t => ResolveType(t, env, allowVoid: true)).ToList();
+            steps.Add(new Step(UnqualifiedName(r.Name, r), "FP:" + r.DisplayName + "@" + r.Module, () => m.TemplateArgs(fixedArgs), null));
+            m.Name(steps, function: true);
+            m.Type(ret);
+            m.Params(ps);
+            return m.Result;
+        }
         var fnParams = r.TypeParams.Select((p, i) => (p, i)).ToDictionary(x => x.p, x => x.i);
         Action? targs = r.TypeParams.Count == 0 ? null : () => m.TemplateArgs(r.TypeParams.Select(p => env.Get(p)!).ToList());
         steps.Add(new Step(UnqualifiedName(r.Name, r), "FP:" + r.DisplayName + "@" + r.Module, targs, null));

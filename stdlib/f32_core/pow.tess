@@ -84,8 +84,8 @@ record CmF32PowDd
 /// self^exponent, correctly rounded.
 routine F32.powf(%self: Self, %exponent: Self) -> Self
     block entry():
-        %tx      : U64  = %self.to_f64().bits()
-        %ty      : U64  = %exponent.to_f64().bits()
+        %tx      : U64  = %self.to<F64>().bits()
+        %ty      : U64  = %exponent.to<F64>().bits()
         %tx2     : U64  = %tx.shl(1)
         %ty2     : U64  = %ty.shl(1)
         %unit_x  : Bool = %tx2.eq(0x7FE0000000000000)  // |x| = 1
@@ -151,7 +151,7 @@ routine F32.powf(%self: Self, %exponent: Self) -> Self
     block unusual_base(%tx: U64, %tx2: U64, %ty: U64):
         %inf_x    : Bool = %tx2.eq(0xFFE0000000000000)
         %nan_x    : Bool = %tx2.gt(0xFFE0000000000000)
-        %nonzero  : Bool = %self.to_f64().ne(0.0)
+        %nonzero  : Bool = %self.to<F64>().ne(0.0)
         %fraction : Bool = cm_f32_pow_isint(%exponent).bitnot()
         %invalid  : Bool = %tx.gt(0x7FF0000000000000).bitand(%fraction).bitand(%nonzero)
         when:
@@ -190,13 +190,13 @@ routine F32.powf(%self: Self, %exponent: Self) -> Self
     // |x| = 2^e xd, with 1/xd approximated from a 32-entry table
     block reduce(%tx: U64, %ty: U64):
         %m  : U64 = %tx.bitand(0x000FFFFFFFFFFFFF)
-        %e0 : S64 = %tx.shr(52).bitand(0x7FF).to_s64().sub(0x3FF)
+        %e0 : S64 = %tx.shr(52).bitand(0x7FF).to<S64>().sub(0x3FF)
         %j  : U64 = %m.add(U64.shl(1, 46)).shr(47)
         %e  : S64 = %j.gt(13)
             ? %e0.add(1)
             : %e0
         %xd    : F64   = F64.from_bits(%m.bitor(0x3FF0000000000000))
-        %z     : F64   = %xd.mul_add(F64.from_bits(CM_F32_POW_IX.get(%j.to_usize())), -1.0)
+        %z     : F64   = %xd.mul_add(F64.from_bits(CM_F32_POW_IX.get(%j.to<USize>())), -1.0)
         %z2    : F64   = %z.mul(%z)
         %z4    : F64   = %z2.mul(%z2)
         %c6    : F64   = %z.mul(-0x1.717d824a520f7p-3).add(0x1.a6406efd4b877p-3)
@@ -206,10 +206,10 @@ routine F32.powf(%self: Self, %exponent: Self) -> Self
         %c02   : F64   = %z2.mul(%c2).add(%c0)
         %c46   : F64   = %z2.mul(%c6).add(%c4)
         %poly  : F64   = %z4.mul(%c46).add(%c02)
-        %j2    : USize = %j.to_usize().mul(2)
+        %j2    : USize = %j.to<USize>().mul(2)
         %l     : F64   = %z.mul(%poly).sub(F64.from_bits(CM_F32_POW_LIX.get(%j2.add(1))))
-        %y16   : F64   = %exponent.to_f64().mul(16.0)
-        %zt    : F64   = %e.to_f64().sub(F64.from_bits(CM_F32_POW_LIX.get(%j2))).mul(%y16)
+        %y16   : F64   = %exponent.to<F64>().mul(16.0)
+        %zt    : F64   = %e.to<F64>().sub(F64.from_bits(CM_F32_POW_LIX.get(%j2))).mul(%y16)
         %t     : F64   = %l.mul(%y16).add(%zt)  // 16 y log2(x)
         %over  : Bool  = %t.gt(2048.0)
         %under : Bool  = %t.lt(-2400.0)
@@ -217,7 +217,7 @@ routine F32.powf(%self: Self, %exponent: Self) -> Self
         when:
             %over  -> overflow()
             %under -> underflow()
-            %near1 -> return(%t.add(1.0).to_f32())
+            %near1 -> return(%t.add(1.0).to<F32>())
             else   -> exp2(%l, %y16, %zt, %t, %ty)
 
     block overflow():
@@ -236,11 +236,11 @@ routine F32.powf(%self: Self, %exponent: Self) -> Self
     block exp2(%l: F64, %y16: F64, %zt: F64, %t: F64, %ty: U64):
         %ia   : F64  = %t.floor()
         %h    : F64  = %l.mul_add(%y16, %zt.sub(%ia))
-        %il   : S64  = %ia.to_s64()
+        %il   : S64  = %ia.to<S64>()
         %jl   : S64  = %il.bitand(0xF)
         %el   : S64  = %il.sub(%jl).shr(4)
-        %s0   : F64  = F64.from_bits(CM_F32_POW_TB.get(%jl.to_usize()))
-        %s    : F64  = %s0.mul(F64.from_bits(%el.to_u64_wrap().add_wrap(0x3FF).shl(52)))
+        %s0   : F64  = F64.from_bits(CM_F32_POW_TB.get(%jl.to<USize>()))
+        %s    : F64  = %s0.mul(F64.from_bits(%el.to_wrap<U64>().add_wrap(0x3FF).shl(52)))
         %h2   : F64  = %h.mul(%h)
         %d0   : F64  = %h.mul(0x1.ebfbdff84555ap-11).add(0x1.62e42fefa398bp-5)
         %d2   : F64  = %h.mul(0x1.3b2ad1b1716a2p-23).add(0x1.c6b08d4ad86d3p-17)
@@ -255,26 +255,26 @@ routine F32.powf(%self: Self, %exponent: Self) -> Self
 
     // an odd integer y keeps the sign of x: kk has the units bit of y on top
     block sign(%rr: F64, %ty: U64):
-        %et    : S64  = %ty.shr(52).bitand(0x7FF).to_s64().sub(0x3FF)
+        %et    : S64  = %ty.shr(52).bitand(0x7FF).to<S64>().sub(0x3FF)
         %left  : Bool = %et.ge(-11).bitand(%et.lt(53))
         %right : Bool = %et.lt(-11).bitand(%et.gt(-75))
         when:
-            %left  -> parity(%rr, %ty.shl(%et.add(11).to_u64_wrap()))
-            %right -> parity(%rr, %ty.shr(S64.sub(-11, %et).to_u64_wrap()))
+            %left  -> parity(%rr, %ty.shl(%et.add(11).to_wrap<U64>()))
+            %right -> parity(%rr, %ty.shr(S64.sub(-11, %et).to_wrap<U64>()))
             else   -> parity(%rr, 0)
 
     block parity(%rr: F64, %kk: U64):
         %odd : Bool = %kk.shl(1).eq(0).bitand(%kk.ne(0))
         %r   : F64  = %odd
-            ? %rr.copysign(%self.to_f64())
+            ? %rr.copysign(%self.to<F64>())
             : %rr
-        return(%r.to_f32())
+        return(%r.to<F32>())
 
 /// True when y is an integer (or ±0).
 private routine cm_f32_pow_isint(%y: F32) -> Bool
     block entry():
         %wy    : U32  = %y.bits()
-        %ey    : S64  = %wy.shr(23).bitand(0xFF).to_s64().sub(127)
+        %ey    : S64  = %wy.shr(23).bitand(0xFF).to<S64>().sub(127)
         %s     : S64  = %ey.add(9)
         %whole : Bool = %ey.ge(0)
         branch %whole
@@ -285,13 +285,13 @@ private routine cm_f32_pow_isint(%y: F32) -> Bool
         %wide : Bool = %s.ge(32)
         branch %wide
             ? return(true)
-            : return(%wy.shl(%s.to_u32_wrap()).eq(0))
+            : return(%wy.shl(%s.to_wrap<U32>()).eq(0))
 
 /// True when y is an odd integer.
 private routine cm_f32_pow_isodd(%y: F32) -> Bool
     block entry():
         %wy     : U32  = %y.bits()
-        %ey     : S64  = %wy.shr(23).bitand(0xFF).to_s64().sub(127)
+        %ey     : S64  = %wy.shr(23).bitand(0xFF).to<S64>().sub(127)
         %s      : S64  = %ey.add(9)
         %inside : Bool = %ey.ge(0).bitand(%s.lt(32))
         %last   : Bool = %ey.ge(0).bitand(%s.eq(32))
@@ -302,13 +302,13 @@ private routine cm_f32_pow_isodd(%y: F32) -> Bool
 
     // the units bit sits inside the mantissa: y is odd if nothing follows it and it is set
     block fraction(%wy: U32, %s: S64):
-        %integer : Bool = %wy.shl(%s.to_u32_wrap()).eq(0)
+        %integer : Bool = %wy.shl(%s.to_wrap<U32>()).eq(0)
         branch %integer
             ? units(%wy, %s)
             : return(false)
 
     block units(%wy: U32, %s: S64):
-        %bit : U32 = %wy.shr(S64.sub(32, %s).to_u32_wrap()).bitand(1)
+        %bit : U32 = %wy.shr(S64.sub(32, %s).to_wrap<U32>()).bitand(1)
         return(%bit.eq(1))
 
 /// True when x is a signaling NaN.
@@ -382,9 +382,9 @@ private routine cm_f32_pow_poly_exp(%xh: F64, %xl: F64) -> CmF32PowDd
 /// finite, positive or a negative base with an integer exponent, not ±0 or ±1; y is finite and nonzero.
 private routine cm_f32_pow_accurate(%x0: F32, %y0: F32) -> F32
     block entry():
-        %yd  : F64  = %y0.to_f64()
-        %t0  : U64  = %x0.to_f64().bits()
-        %e0  : S64  = %t0.shr(52).bitand(0x7FF).to_s64().sub(0x3FF)
+        %yd  : F64  = %y0.to<F64>()
+        %t0  : U64  = %x0.to<F64>().bits()
+        %e0  : S64  = %t0.shr(52).bitand(0x7FF).to<S64>().sub(0x3FF)
         %t   : U64  = %t0.bitand(0x000FFFFFFFFFFFFF)
         %big : Bool = %t.gt(0x6A09E667F3BCD)  // mantissa above sqrt(2)
         %e   : S64  = %big
@@ -403,22 +403,22 @@ private routine cm_f32_pow_accurate(%x0: F32, %y0: F32) -> F32
         %p2 : CmF32PowDd = cm_f32_pow_poly_log(%z2.hi, %z2.lo)
         %q  : CmF32PowDd = cm_f32_pow_muldd(%zh, %zl, %p2.hi, %p2.lo)
         %r  : CmF32PowDd = cm_f32_pow_mulddd(%q.hi, %q.lo, %yd)
-        %ey : F64        = %e.to_f64().mul(%yd)
+        %ey : F64        = %e.to<F64>().mul(%yd)
         %eh : F64        = %ey.add(%r.hi)
         %el : F64        = %ey.sub(%eh).add(%r.hi).add(%r.lo)
         %ee : F64        = %eh.round_ties_even()
         %s  : CmF32PowDd = cm_f32_pow_poly_exp(%eh.sub(%ee), %el)
-        %sc : F64        = F64.from_bits(%ee.to_s64().to_u64_wrap().add_wrap(0x3FF).shl(52))
+        %sc : F64        = F64.from_bits(%ee.to<S64>().to_wrap<U64>().add_wrap(0x3FF).shl(52))
         // kk keeps the bits of y from its units bit down; a shift of 32 or more clears it (y is then an even
         // integer), where C's unguarded shift is undefined.
         %ty    : U32  = %y0.bits()
-        %et    : S64  = %ty.shr(23).bitand(0xFF).to_s64().sub(0x7F)
+        %et    : S64  = %ty.shr(23).bitand(0xFF).to<S64>().sub(0x7F)
         %sh    : S64  = %et.add(8)
         %left  : Bool = %sh.ge(0).bitand(%sh.lt(32))
         %right : Bool = %sh.lt(0).bitand(S64.sub(-8, %et).lt(32))
         when:
-            %left  -> parity(%s.hi, %s.lo, %sc, %et, %ty.shl(%sh.to_u32_wrap()))
-            %right -> parity(%s.hi, %s.lo, %sc, %et, %ty.shr(S64.sub(-8, %et).to_u32_wrap()))
+            %left  -> parity(%s.hi, %s.lo, %sc, %et, %ty.shl(%sh.to_wrap<U32>()))
+            %right -> parity(%s.hi, %s.lo, %sc, %et, %ty.shr(S64.sub(-8, %et).to_wrap<U32>()))
             else   -> parity(%s.hi, %s.lo, %sc, %et, 0)
 
     block parity(%eh: F64, %el: F64, %sc: F64, %et: S64, %kk: U32):
@@ -474,6 +474,6 @@ private routine cm_f32_pow_accurate(%x0: F32, %y0: F32) -> F32
     block scale(%eh: F64, %sc: F64, %odd: Bool):
         %v : F64 = %eh.mul(%sc)
         %r : F64 = %odd
-            ? %v.copysign(%x0.to_f64())
+            ? %v.copysign(%x0.to<F64>())
             : %v
-        return(%r.to_f32())
+        return(%r.to<F32>())

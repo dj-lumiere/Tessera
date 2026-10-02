@@ -544,17 +544,17 @@ record CmF64TrigSplit
 /// hi 2^64 + lo.
 routine cm_f64_trig_u128(%hi: U64, %lo: U64) -> U128
     block entry():
-        return(%hi.to_u128().shl(64).bitor(%lo.to_u128()))
+        return(%hi.to<U128>().shl(64).bitor(%lo.to<U128>()))
 
 /// The high 64 bits of r.
 routine cm_f64_trig_hi(%r: U128) -> U64
     block entry():
-        return(%r.shr(64).to_u64())
+        return(%r.shr(64).to<U64>())
 
 /// The low 64 bits of r.
 routine cm_f64_trig_lo(%r: U128) -> U64
     block entry():
-        return(%r.to_u64_wrap())
+        return(%r.to_wrap<U64>())
 
 /// The dint with fields hi 2^64 + lo, ex, sgn.
 routine cm_f64_trig_dint(%hi: U64, %lo: U64, %ex: S64, %sgn: U64) -> CmF64TrigDint
@@ -590,8 +590,8 @@ private routine cm_f64_trig_dint_cmp_abs(%a: CmF64TrigDint, %b: CmF64TrigDint) -
         %by_ex : S32  = %a.ex.compare(%b.ex)
         %tie   : Bool = %by_ex.eq(0)
         branch %tie
-            ? return(%a.r.compare(%b.r).to_s64())
-            : return(%by_ex.to_s64())
+            ? return(%a.r.compare(%b.r).to<S64>())
+            : return(%by_ex.to<S64>())
 
 /// a0 + b0, with error bounded by 2 ulps (exact in the Sterbenz case).
 routine cm_f64_trig_dint_add(%a0: CmF64TrigDint, %b0: CmF64TrigDint) -> CmF64TrigDint
@@ -617,7 +617,7 @@ routine cm_f64_trig_dint_add(%a0: CmF64TrigDint, %b0: CmF64TrigDint) -> CmF64Tri
     // |a| > |b|, so a.ex >= b.ex (or b is zero); a shift of 128 or more, or a negative one, leaves 0
     block ordered(%a: CmF64TrigDint, %b: CmF64TrigDint):
         %k        : S64  = %a.ex.sub(%b.ex)
-        %bb       : U128 = %b.r.shr(%k.to_u128_wrap())
+        %bb       : U128 = %b.r.shr(%k.to_wrap<U128>())
         %opposite : Bool = %a.sgn.bitxor(%b.sgn).ne(0)
         branch %opposite
             ? subtract(%a, %b, %k, %bb)
@@ -647,9 +647,9 @@ routine cm_f64_trig_dint_add(%a0: CmF64TrigDint, %b0: CmF64TrigDint) -> CmF64Tri
         %cc  : U128 = %adj
             ? %aa.sub_wrap(%b.r.shl(%ex.sub(1)))
             : %aa.sub_wrap(%bb.shl(%ex))
-        %rex : S64 = %a.ex.sub(%ex.to_s64())
+        %rex : S64 = %a.ex.sub(%ex.to<S64>())
         %ex2 : U64 = cm_f64_trig_hi(%cc).leading_zeros()
-        return(CmF64TrigDint { r: %cc.shl(%ex2.to_u128()), ex: %rex.sub(%ex2.to_s64()),
+        return(CmF64TrigDint { r: %cc.shl(%ex2.to<U128>()), ex: %rex.sub(%ex2.to<S64>()),
                 sgn: %a.sgn })
 
 /// Normalizes a product significand r (one of its two top bits set) and builds the dint.
@@ -659,7 +659,7 @@ private routine cm_f64_trig_dint_mul_finish(%r: U128, %ex: S64, %sgn: U64) -> Cm
         %shifted : U128 = %top.eq(0)
             ? %r.shl(1)
             : %r
-        return(CmF64TrigDint { r: %shifted, ex: %ex.add(%top.to_s64()).sub(1), sgn: %sgn })
+        return(CmF64TrigDint { r: %shifted, ex: %ex.add(%top.to<S64>()).sub(1), sgn: %sgn })
 
 /// a b, with error bounded by 6 ulps.
 routine cm_f64_trig_dint_mul(%a: CmF64TrigDint, %b: CmF64TrigDint) -> CmF64TrigDint
@@ -691,14 +691,14 @@ private routine cm_f64_trig_dint_from_f64(%b: F64) -> CmF64TrigDint
         %m    : U64 = %e.ne(0)
             ? %frac.add(U64.shl(1, 52))
             : %frac
-        %ex  : S64 = %e.to_s64().sub(0x3FE)
+        %ex  : S64 = %e.to<S64>().sub(0x3FE)
         %t   : U64 = %m.leading_zeros()
         %sgn : U64 = %b.lt(0.0)
             ? 1
             : 0
         %hi      : U64  = %m.shl(%t)
         %subnorm : Bool = %t.gt(11)
-        %ex_sub  : S64  = %ex.sub(%t.to_s64().sub(12))
+        %ex_sub  : S64  = %ex.sub(%t.to<S64>().sub(12))
         return(CmF64TrigDint { r: cm_f64_trig_u128(%hi, 0), ex: %subnorm ? %ex_sub : %ex,
                 sgn: %sgn })
 
@@ -714,7 +714,7 @@ routine cm_f64_trig_dint_to_f64(%a: CmF64TrigDint) -> F64
 
     // round the significand to the precision a subnormal result has
     block subnormal(%hi: U64, %lo: U64):
-        %sh     : U64  = S64.sub(-1011, %a.ex).to_u64()
+        %sh     : U64  = S64.sub(-1011, %a.ex).to<U64>()
         %h      : U64  = %hi.shr(%sh)
         %md     : U64  = %hi.shr(%sh.sub(1)).bitand(1)
         %sticky : Bool = %hi.bitand(U64.MAX.shr(%sh)).ne(0).bitor(%lo.ne(0))
@@ -747,9 +747,9 @@ routine cm_f64_trig_dint_to_f64(%a: CmF64TrigDint) -> F64
         %tiny   : Bool = %aex.lt(-1073)
         when:
             %big    -> overflow(%r, %aex)
-            %normal -> return(%r.mul(F64.from_bits(%aex.add(1022).to_u64_wrap().bitand(0x7FF).shl(52))))
+            %normal -> return(%r.mul(F64.from_bits(%aex.add(1022).to_wrap<U64>().bitand(0x7FF).shl(52))))
             %tiny   -> underflow(%r, %aex)
-            else    -> return(%r.mul(F64.from_bits(U64.shl(1, %aex.add(1073).to_u64()))))
+            else    -> return(%r.mul(F64.from_bits(U64.shl(1, %aex.add(1073).to<U64>()))))
 
     block overflow(%r: F64, %aex: S64):
         %edge : Bool = %aex.eq(1025)
@@ -847,7 +847,7 @@ private routine cm_f64_trig_normalize(%x: CmF64TrigDint) -> CmF64TrigDint
     block entry():
         %cnt  : U128 = %x.r.leading_zeros()
         %r    : U128 = %x.r.shl(%cnt)
-        %ex   : S64  = %x.ex.sub(%cnt.to_s64())
+        %ex   : S64  = %x.ex.sub(%cnt.to<S64>())
         %zero : Bool = %x.r.eq(0)
         branch %zero
             ? return(%x)
@@ -856,7 +856,7 @@ private routine cm_f64_trig_normalize(%x: CmF64TrigDint) -> CmF64TrigDint
 /// Word j of the 1/(2pi) table: 1/(2pi) ~ sum of T[j] / 2^(64(j+1)).
 private routine cm_f64_trig_t(%j: U64) -> U64
     block entry():
-        return(CM_F64_TRIG_T.get(%j.to_usize()))
+        return(CM_F64_TRIG_T.get(%j.to<USize>()))
 
 /// X/(2pi) mod 1 for a normalized non-negative dint X, with relative error below 2^-126.67, normalized.
 private routine cm_f64_trig_reduce(%x: CmF64TrigDint) -> CmF64TrigDint
@@ -874,52 +874,52 @@ private routine cm_f64_trig_reduce(%x: CmF64TrigDint) -> CmF64TrigDint
         %u0    : U128          = %xhi.mul_wide(cm_f64_trig_t(0))
         %u0_lo : U64           = cm_f64_trig_lo(%u0)
         %lo    : U64           = cm_f64_trig_hi(%u1).add_wrap(%u0_lo)
-        %carry : U64           = %lo.lt(%u0_lo).to_u64()
+        %carry : U64           = %lo.lt(%u0_lo).to<U64>()
         %hi    : U64           = cm_f64_trig_hi(%u0).add_wrap(%carry)
         %y     : CmF64TrigDint = cm_f64_trig_normalize(CmF64TrigDint {
                 r: cm_f64_trig_u128(%hi, %lo), ex: %x.ex, sgn: %x.sgn })
         // put the upper d bits of tiny into the low word (a shift by 64 leaves nothing for d = 0)
         %d     : S64 = %x.ex.sub(%y.ex)
-        %extra : U64 = %tiny.shr(S64.sub(64, %d).to_u64_wrap())
-        return(CmF64TrigDint { r: %y.r.bitor(%extra.to_u128()), ex: %y.ex, sgn: %y.sgn })
+        %extra : U64 = %tiny.shr(S64.sub(64, %d).to_wrap<U64>())
+        return(CmF64TrigDint { r: %y.r.bitor(%extra.to<U128>()), ex: %y.ex, sgn: %y.sgn })
 
     // 2 <= e <= 1024: only T[i] .. T[i+4] contribute
     block large(%xhi: U64):
         %e   : S64  = %x.ex
         %far : Bool = %e.ge(127)
         %i   : U64  = %far
-            ? %e.sub(127).add(64).sub(1).div(64).to_u64_wrap()
+            ? %e.sub(127).add(64).sub(1).div(64).to_wrap<U64>()
             : 0
         %u3  : U128 = %xhi.mul_wide(cm_f64_trig_t(%i.add(3)))
         %c0  : U64  = cm_f64_trig_lo(%u3)
         %u2  : U128 = %xhi.mul_wide(cm_f64_trig_t(%i.add(2)))
         %c1  : U64  = cm_f64_trig_hi(%u3).add_wrap(cm_f64_trig_lo(%u2))
-        %c2a : U64  = cm_f64_trig_hi(%u2).add_wrap(%c1.lt(cm_f64_trig_lo(%u2)).to_u64())
+        %c2a : U64  = cm_f64_trig_hi(%u2).add_wrap(%c1.lt(cm_f64_trig_lo(%u2)).to<U64>())
         %u1  : U128 = %xhi.mul_wide(cm_f64_trig_t(%i.add(1)))
         %c2  : U64  = %c2a.add_wrap(cm_f64_trig_lo(%u1))
-        %c3a : U64  = cm_f64_trig_hi(%u1).add_wrap(%c2.lt(cm_f64_trig_lo(%u1)).to_u64())
+        %c3a : U64  = cm_f64_trig_hi(%u1).add_wrap(%c2.lt(cm_f64_trig_lo(%u1)).to<U64>())
         %u0  : U128 = %xhi.mul_wide(cm_f64_trig_t(%i))
         %c3  : U64  = %c3a.add_wrap(cm_f64_trig_lo(%u0))
-        %c4  : U64  = cm_f64_trig_hi(%u0).add_wrap(%c3.lt(cm_f64_trig_lo(%u0)).to_u64())
+        %c4  : U64  = cm_f64_trig_hi(%u0).add_wrap(%c3.lt(cm_f64_trig_lo(%u0)).to<U64>())
         // xhi T[i]/2^128 is multiplied by 2^f
-        %f    : S64  = %e.sub(S64.mul(64, %i.to_s64()))
+        %f    : S64  = %e.sub(S64.mul(64, %i.to<S64>()))
         %near : Bool = %f.lt(64)
         %even : Bool = %f.eq(64)
         when:
-            %near -> finish(%c4, %c3, %c2, %c1, %f.to_u64())
+            %near -> finish(%c4, %c3, %c2, %c1, %f.to<U64>())
             %even -> finish(%c3, %c2, %c1, 0, 0)
-            else  -> extra_term(%xhi, %i, %c3, %c2, %c1, %c0, %f.sub(64).to_u64())
+            else  -> extra_term(%xhi, %i, %c3, %c2, %c1, %c0, %f.sub(64).to<U64>())
 
     // 65 <= f <= 127: one more term, carried into c1 .. c3
     block extra_term(%xhi: U64, %i: U64, %c3: U64, %c2: U64, %c1: U64, %c0: U64, %g: U64):
         %w      : U64  = cm_f64_trig_hi(%xhi.mul_wide(cm_f64_trig_t(%i.add(4))))
         %c0n    : U64  = %c0.add_wrap(%w)
         %carry0 : Bool = %c0n.lt(%w)
-        %c1n    : U64  = %c1.add_wrap(%carry0.to_u64())
+        %c1n    : U64  = %c1.add_wrap(%carry0.to<U64>())
         %carry1 : Bool = %carry0.bitand(%c1n.eq(0))
-        %c2n    : U64  = %c2.add_wrap(%carry1.to_u64())
+        %c2n    : U64  = %c2.add_wrap(%carry1.to<U64>())
         %carry2 : Bool = %carry1.bitand(%c2n.eq(0))
-        %c3n    : U64  = %c3.add_wrap(%carry2.to_u64())
+        %c3n    : U64  = %c3.add_wrap(%carry2.to<U64>())
         jump finish(%c3n, %c2n, %c1n, %c0n, %g)
 
     // the words w3 .. w0 shifted left by s (0 <= s < 64; a shift by 64 leaves nothing for s = 0)
@@ -931,8 +931,8 @@ private routine cm_f64_trig_reduce(%x: CmF64TrigDint) -> CmF64TrigDint
         %y    : CmF64TrigDint = cm_f64_trig_normalize(CmF64TrigDint { r: cm_f64_trig_u128(%hi, %lo),
                 ex: 0, sgn: %x.sgn })
         // put the upper -ex bits of tiny into the low word
-        %extra : U64 = %tiny.shr(S64.add(64, %y.ex).to_u64_wrap())
-        return(CmF64TrigDint { r: %y.r.bitor(%extra.to_u128()), ex: %y.ex, sgn: %y.sgn })
+        %extra : U64 = %tiny.shr(S64.add(64, %y.ex).to_wrap<U64>())
+        return(CmF64TrigDint { r: %y.r.bitor(%extra.to<U128>()), ex: %y.ex, sgn: %y.sgn })
 
 /// Splits 0 <= X < 1 exactly as i/2^11 + X' with 0 <= X' < 2^-11, X' normalized.
 private routine cm_f64_trig_reduce2(%x: CmF64TrigDint) -> CmF64TrigSplit
@@ -941,7 +941,7 @@ private routine cm_f64_trig_reduce2(%x: CmF64TrigDint) -> CmF64TrigSplit
         branch %tiny
             ? return(CmF64TrigSplit { i: 0, x: %x })
             : continue
-        %sh   : U64           = S64.sub(53, %x.ex).to_u64()
+        %sh   : U64           = S64.sub(53, %x.ex).to<U64>()
         %hi   : U64           = cm_f64_trig_hi(%x.r)
         %i    : U64           = %hi.shr(%sh)
         %rest : U64           = %hi.bitand(U64.shl(1, %sh).sub(1))
@@ -1013,10 +1013,10 @@ private routine cm_f64_trig_reduce_fast_large(%x: F64, %with_t2: Bool) -> U128
             ? cm_f64_trig_hi(%m.mul_wide(cm_f64_trig_t(2)))
             : 0
         %c0  : U64  = cm_f64_trig_lo(%u1).add_wrap(%t2)
-        %c1a : U64  = cm_f64_trig_hi(%u1).add_wrap(%c0.lt(cm_f64_trig_lo(%u1)).to_u64())
+        %c1a : U64  = cm_f64_trig_hi(%u1).add_wrap(%c0.lt(cm_f64_trig_lo(%u1)).to<U64>())
         %u0  : U128 = %m.mul_wide(cm_f64_trig_t(0))
         %c1  : U64  = %c1a.add_wrap(cm_f64_trig_lo(%u0))
-        %c2  : U64  = cm_f64_trig_hi(%u0).add_wrap(%c1.lt(cm_f64_trig_lo(%u0)).to_u64())
+        %c2  : U64  = cm_f64_trig_hi(%u0).add_wrap(%c1.lt(cm_f64_trig_lo(%u0)).to<U64>())
         jump finish(%c2, %c1, %c0, U64.sub(1075, %e))
 
     // 2^52 <= x < 2^1024
@@ -1027,10 +1027,10 @@ private routine cm_f64_trig_reduce_fast_large(%x: F64, %with_t2: Bool) -> U128
             ? cm_f64_trig_hi(%m.mul_wide(cm_f64_trig_t(%i.add(3))))
             : 0
         %c0  : U64  = cm_f64_trig_lo(%u2).add_wrap(%t3)
-        %c1a : U64  = cm_f64_trig_hi(%u2).add_wrap(%c0.lt(cm_f64_trig_lo(%u2)).to_u64())
+        %c1a : U64  = cm_f64_trig_hi(%u2).add_wrap(%c0.lt(cm_f64_trig_lo(%u2)).to<U64>())
         %u1  : U128 = %m.mul_wide(cm_f64_trig_t(%i.add(1)))
         %c1  : U64  = %c1a.add_wrap(cm_f64_trig_lo(%u1))
-        %c2a : U64  = cm_f64_trig_hi(%u1).add_wrap(%c1.lt(cm_f64_trig_lo(%u1)).to_u64())
+        %c2a : U64  = cm_f64_trig_hi(%u1).add_wrap(%c1.lt(cm_f64_trig_lo(%u1)).to<U64>())
         %u0  : U128 = %m.mul_wide(cm_f64_trig_t(%i))
         %c2  : U64  = %c2a.add_wrap(cm_f64_trig_lo(%u0))
         jump finish(%c2, %c1, %c0, U64.add(1139, %i.shl(6)).sub(%e))
@@ -1064,12 +1064,12 @@ routine cm_f64_trig_reduce_fast(%x: F64, %with_t2: Bool) -> CmF64TrigFast
     block split(%h: F64, %l: F64, %err: F64):
         %fi : F64 = %h.mul(0x1p+11).floor()
         %hr : F64 = %fi.mul_add(-0x1p-11, %h)
-        return(CmF64TrigFast { i: %fi.to_u64(), hi: %hr, lo: %l, err: %err })
+        return(CmF64TrigFast { i: %fi.to<U64>(), hi: %hr, lo: %l, err: %err })
 
 /// The dint sin2pi(i/2^11), 0 <= i < 256.
 routine cm_f64_trig_s(%i: U64) -> CmF64TrigDint
     block entry():
-        %k  : USize = %i.to_usize()
+        %k  : USize = %i.to<USize>()
         %hi : U64   = CM_F64_TRIG_S.get(%k.mul(2))
         %lo : U64   = CM_F64_TRIG_S.get(%k.mul(2).add(1))
         return(cm_f64_trig_dint(%hi, %lo, CM_F64_TRIG_S_EX.get(%k), 0))
@@ -1077,7 +1077,7 @@ routine cm_f64_trig_s(%i: U64) -> CmF64TrigDint
 /// The dint cos2pi(i/2^11), 0 <= i < 256.
 routine cm_f64_trig_c(%i: U64) -> CmF64TrigDint
     block entry():
-        %k  : USize = %i.to_usize()
+        %k  : USize = %i.to<USize>()
         %hi : U64   = CM_F64_TRIG_C.get(%k.mul(2))
         %lo : U64   = CM_F64_TRIG_C.get(%k.mul(2).add(1))
         return(cm_f64_trig_dint(%hi, %lo, CM_F64_TRIG_C_EX.get(%k), 0))
