@@ -1,6 +1,6 @@
 // An #external("asm") routine's body is put in place at each call: registers, parameters placed by the
 // builder or in a register (%hi: U64 = REG2), tuples of results, blocks and branches on the flags, memory
-// operands and #asm_prefix.
+// operands, #asm_prefix, and a branch whose other arm is continue (one conditional jump, no new block).
 
 import Standard::Format
 
@@ -59,6 +59,38 @@ routine carries(%a: U64, %b: U64) -> Bool
         xor<U32, U32>(REG0, REG0)
         return(REG0)
 
+#[target(arch: "x86_64"), external("asm"), clobbers(FLAGS)]
+routine count_down_inline(%count: U64 = REG1) -> U64
+    block entry():
+        xor<U32, U32>(REG0, REG0)
+        jump check()
+
+    block check():
+        test<U64, U64>(REG1, REG1)
+        branch eq
+            ? done()
+            : continue
+        inc<U64>(REG0)
+        dec<U64>(REG1)
+        jump check()
+
+    block done():
+        return(REG0)
+
+#[target(arch: "x86_64"), external("asm"), pure]
+routine carries_inline(%a: U64, %b: U64) -> Bool
+    block entry():
+        add<U64, U64>(%a, %b)
+        branch FLAGS.Carry
+            ? continue
+            : no()
+        mov<U32>(REG0, 1)
+        return(REG0)
+
+    block no():
+        xor<U32, U32>(REG0, REG0)
+        return(REG0)
+
 #[target(arch: "x86_64"), external("asm"), pure]
 routine int_to_f64(%x: S64) -> F64
     block entry():
@@ -97,6 +129,10 @@ routine main() -> S32
         %c1 : Bool = carries(U64.MAX, 1)
         %c2 : Bool = carries(1, 1)
         print("carry {%c1} {%c2}\n")
+        %n2 : U64 = count_down_inline(3)
+        %c3 : Bool = carries_inline(U64.MAX, 1)
+        %c4 : Bool = carries_inline(1, 1)
+        print("inline {%n2} {%c3} {%c4}\n")
         %f : F64 = int_to_f64(-3)
         print("f64 {%f}\n")
         %lb : U32 = low_byte(0x1234)

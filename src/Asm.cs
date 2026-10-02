@@ -441,7 +441,8 @@ internal sealed class AsmLowering
     {
         List<Result>? found = null;
         string? foundKey = null;
-        foreach (var target in _r.Blocks!.SelectMany(b => Targets(b.Terminator)))
+        foreach (var target in _r.Blocks!.SelectMany(b => Targets(b.Terminator)
+                     .Concat(b.Stmts.OfType<GuardStmt>().SelectMany(g => Targets(g.Term)))))
         {
             if (target is not ReturnTarget ret) continue;
             var items = ResultItems(ret);
@@ -526,7 +527,6 @@ internal sealed class AsmLowering
             var b = blocks[k];
             string? next = k + 1 < blocks.Count ? blocks[k + 1].Name : null;
             if (k > 0) lines.Add(Label(b.Name) + ":");
-            foreach (var s in b.Stmts) lines.Add(Instruction(s));
 
             // Where a target goes, and whether that is the next line anyway: the block that follows, or the end.
             (string Label, bool FallsThrough) Where(Target t, Pos pos)
@@ -549,6 +549,25 @@ internal sealed class AsmLowering
             }
             // A jump to the block that follows is left out, as is a return from the last one.
             string? JumpText(Target t, Pos pos) => Where(t, pos) is (var l, false) ? l : null;
+
+            // A branch with a continue arm is one conditional jump to its other target, and the next line is the
+            // continue: `? done() : continue` jumps when the condition holds, `? continue : done()` when it doesn't.
+            foreach (var s in b.Stmts)
+            {
+                if (s is not GuardStmt guard)
+                {
+                    lines.Add(Instruction(s));
+                    continue;
+                }
+                if (guard.Term is not BranchTerm gb)
+                    throw new CompileError(guard.Pos, "an assembly block goes on after a branch, not a when");
+                bool trueGoesOn = gb.IfTrue is ContinueTarget, falseGoesOn = gb.IfFalse is ContinueTarget;
+                if (trueGoesOn == falseGoesOn)
+                    throw new CompileError(gb.Pos, "one arm of the branch is continue, the other a block or a return");
+                var (label, _) = Where(trueGoesOn ? gb.IfFalse : gb.IfTrue, gb.Pos);
+                if (label == Label(EndLabel)) endUsed = true;
+                lines.Add(ConditionalJump(gb.Cond, label, negate: trueGoesOn));
+            }
 
             switch (b.Terminator)
             {
@@ -781,12 +800,16 @@ internal sealed class AsmLowering
 
     // ── Branches ────────────────────────────────────────────────────────────
 
-    private string ConditionalJump(Expr cond, string label)
+    /// A jump to %label when %cond holds, or with %negate when it doesn't.
+    private string ConditionalJump(Expr cond, string label, bool negate = false)
     {
         switch (cond)
         {
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" } when _arch != Arch.Rv:
-                return (_arch == Arch.X86 ? "j" : "b.") + ConditionCode(cond) + " " + label;
+            {
+                string code = ConditionCode(cond);
+                return (_arch == Arch.X86 ? "j" : "b.") + (negate ? Opposite(code) : code) + " " + label;
+            }
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" }:
                 throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt<U64>(REG10, REG11) ? … : …");
             case NsCallExpr or MethodCallExpr when _arch == Arch.Rv:
@@ -796,6 +819,8 @@ internal sealed class AsmLowering
                 var (name, types, pos) = (c.Name, c.TypeArgs, c.Pos);
                 if (!Parser.AsmComparisons.Contains(name))
                     throw new CompileError(pos, $"'{name}' isn't a comparison: eq, ne, lt, le, gt, ge");
+                if (negate)
+                    name = name switch { "eq" => "ne", "ne" => "eq", "lt" => "ge", "ge" => "lt", "gt" => "le", _ => "gt" };
                 if (c.Args.Count != 2 || types.Count > 1)
                     throw new CompileError(pos, $"a RISC-V branch compares two registers: {name}<U64>(REG10, REG11)");
                 var (left, right) = (c.Args[0], c.Args[1]);
@@ -874,6 +899,18 @@ internal sealed class AsmLowering
     }
 
     /// The condition code of a comparison of the flags: x86's (`jb`) or aarch64's (`b.lo`).
+    /// The condition code that holds exactly when %code doesn't (x86's and AArch64's spellings).
+    private static string Opposite(string code) => code switch
+    {
+        "e" => "ne", "ne" => "e", "l" => "ge", "ge" => "l", "le" => "g", "g" => "le",
+        "b" => "ae", "ae" => "b", "be" => "a", "a" => "be",
+        "c" => "nc", "o" => "no", "s" => "ns", "p" => "np",
+        "eq" => "ne", "lt" => "ge", "gt" => "le",
+        "lo" => "hs", "hs" => "lo", "ls" => "hi", "hi" => "ls",
+        "cs" => "cc", "vs" => "vc", "mi" => "pl",
+        _ => throw new InvalidOperationException(code),
+    };
+
     private string FlagCondition(string name, bool? signed) => (_arch, name, signed) switch
     {
         (Arch.X86, "eq", _) => "e", (Arch.X86, "ne", _) => "ne",
