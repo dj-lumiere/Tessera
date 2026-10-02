@@ -1049,7 +1049,7 @@ public sealed class FunctionGen
         }
     }
 
-    /// `write(out, "x = {x}\n")` expands in place, in order: `write_str(out, "x = ")`, `x.represent(out)`,
+    /// `write(out, "x = {x}\n")` expands in place, in order: `write_str(out, "x = ")`, `x.represent_into(out)`,
     /// `write_str(out, "\n")`. A brace holds one expression; `{{` and `}}` are literal braces. Nothing is
     /// allocated: each piece goes straight to the writer. `T.write("...")` and `w.write("...")` are the same with
     /// the writer TemplateWriter finds.
@@ -1097,7 +1097,7 @@ public sealed class FunctionGen
             var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File, values: _values.Keys)
                 .ParseLoneExpr();
             Flush();
-            EvalCall(new MethodCallExpr(value, "represent", [], [writer], at), VoidType.Instance);
+            EvalCall(new MethodCallExpr(value, "represent_into", [], [writer], at), VoidType.Instance);
             i = end;
         }
         Flush();

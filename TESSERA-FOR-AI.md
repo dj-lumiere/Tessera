@@ -22,7 +22,7 @@ modules: a file sees its own module, `Standard::Core` (always imported: the buil
 `Bytes`), and what it imports, so printing a number needs `import Standard::Format`, a `List` needs
 `import Standard::Collections`, and `make_heap_allocator` / `FdWriter` need `import Standard::Os` (the hosted layer,
 the only one that calls libc; a target with OS `none` has none of it). A routine declared in its type's module comes with the type; one another module adds
-to it (like `S64.represent` from `Standard::Format`) needs that module imported. A qualified path
+to it (like `S64.represent_into` from `Standard::Format`) needs that module imported. A qualified path
 (`Standard::Format::write_str`) reaches any public name without an import. Two modules may declare the same name:
 the file's own module wins over its imports, and two imports offering it need the path. `define Fmt =
 Standard::Format` shortens a path (`Fmt::write_str`) without importing; `define Map = Standard::Collections::Dict` names
@@ -38,18 +38,13 @@ import Standard::Os
 
 routine main() -> S32
     block entry():
-        claim fd  : @FdWriter            <- FdWriter.stdout()
-        claim out : @BufWriter<FdWriter> <- uninit
-        out.construct(fd)
         claim alloc : @Allocator <- make_heap_allocator()
         claim list  : @List<S64> <- .construct(alloc)
         list.push(42)
-        write_str(out, "first: ")
-        list.load().get(0).represent(out)
-        write_line(out)
+        first : S64 = list.load().get(0)
+        Out.write("first: {first}, as source: {first.diagnose()}\n")
 
         list.destruct()
-        out.flush()  // BufWriter output appears only on flush
         return(0)
 ```
 
@@ -322,15 +317,17 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
   `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `buf.write("...")`, then `buf.to_bytes()`; it is
   the string builder). Standard input is `In`: `In.read_line(alloc)`, `read_word`, `read_count(n, alloc)`,
   `read_all`, `read(buffer, n)`, all through one buffer the process shares.
-- `write_str(out, "text")`, `write_line(out)`, `v.represent(out)` for every integer, float, `Bool`, and `Bytes`,
-  and `p.represent(out)` for a pointer's address (`0x7ffd5e8c1a40`); `represent_hex`, `represent_fixed(out, digits)`;
-  `represent_with(out, v, spec)` with a `FormatSpec`.
-- `v.diagnose(out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.Present(3)`, `[1, 2]`. A record or
+- `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
+  `Bytes`, and `p.represent_into(out)` for a pointer's address (`0x7ffd5e8c1a40`); `represent_hex`,
+  `represent_fixed(out, digits)`; `represent_with(out, v, spec)` with a `FormatSpec`.
+- `v.diagnose_into(out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.Present(3)`, `[1, 2]`. A record or
   record gets routines written for it with `#derive(Represent, Diagnose, Equal, Hash, Compare)` (any subset), which
   also declares the conformance; choices and variants get all five without asking. Otherwise declare the routine: a
-  bare `conform` never generates one.
+  bare `conform` never generates one. In a template, `{v}` writes `v.represent_into(out)`, and `{v.diagnose()}`
+  writes the Tessera-source form: `v.diagnose()` hands back an adapter (`Diagnosed<T>`) that writes `v` with
+  `diagnose_into` wherever it goes.
 - `write(out, "x = {x}\n")` writes text and values in one line: it expands at build time into
-  `write_str` / `.represent` calls, a brace holds one expression (loads and chains allowed, and literals with their own braces:
+  `write_str` / `.represent_into` calls, a brace holds one expression (loads and chains allowed, and literals with their own braces:
   `"{sum2(Array<S64, 2> { 7, 8 })}"`), `{{` is a literal brace,
   and there are no format options. The same template is a method on any Writer: `out.write("...")` on a pointer
   to one (`buf.write(...)`, `handle.write(...)`), and `Out.write("x = {x}\n")` / `Err.write(...)` on a stateless

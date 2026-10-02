@@ -15,7 +15,7 @@ public static class Derive
 {
     private static readonly Dictionary<string, string> Methods = new()
     {
-        ["Represent"] = "represent", ["Diagnose"] = "diagnose", ["Equal"] = "eq", ["Hash"] = "hash",
+        ["Represent"] = "represent_into", ["Diagnose"] = "diagnose_into", ["Equal"] = "eq", ["Hash"] = "hash",
         ["Compare"] = "compare",
     };
 
@@ -78,7 +78,7 @@ public static class Derive
         if (clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept))) return false;
         return type switch
         {
-            ChoiceDecl c => c.Members.Count > 0 || method is not ("represent" or "diagnose"),
+            ChoiceDecl c => c.Members.Count > 0 || method is not ("represent_into" or "diagnose_into"),
             VariantDecl v => concept is not ("Equal" or "Hash" or "Compare")
                              || v.Cases.All(c => c.Payload?.Name is not ("Ptr" or "Addr")),
             _ => false,
@@ -173,7 +173,7 @@ public static class Derive
         sb.Append("\n\n");
         switch (method)
         {
-            case "represent" or "diagnose":
+            case "represent_into" or "diagnose_into":
                 sb.Append($"routine {self}.{method}<W>(self: Self, out: @W) -> Void\n");
                 sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append(Fmt + "Writer<W>"))}\n");
                 WriteBody(sb, r);
@@ -212,7 +212,7 @@ public static class Derive
             string value = $"f{i}";
             sb.Append($"        Standard::Format::write_str(out, \"{before}{f.Name}: \")\n");
             sb.Append($"        {value} : {f.Type} = self.{f.Name}\n");
-            sb.Append($"        {value}.diagnose(out)\n");
+            sb.Append($"        {value}.diagnose_into(out)\n");
         }
         if (r.Fields.Count > 0) sb.Append("        Standard::Format::write_str(out, \" }\")\n");
         sb.Append("        return()\n");
@@ -315,9 +315,9 @@ public static class Derive
         var cases = v.Cases;
         switch (method)
         {
-            case "represent" or "diagnose":
+            case "represent_into" or "diagnose_into":
             {
-                string prefix = method == "diagnose" ? $"{v.Name}." : "";
+                string prefix = method == "diagnose_into" ? $"{v.Name}." : "";
                 sb.Append($"routine {self}.{method}<W>(self: Self, out: @W) -> Void\n");
                 sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append(Fmt + "Writer<W>"))}\n");
                 sb.Append("    block entry():\n        when self:\n");
@@ -331,7 +331,7 @@ public static class Derive
                     string p = Payload(cases[i], "p");
                     sb.Append($"\n    block case{i}({p}: {cases[i].Payload}):\n");
                     sb.Append($"        Standard::Format::write_str(out, \"{prefix}{cases[i].Name}(\")\n");
-                    sb.Append($"        {p}.diagnose(out)\n");
+                    sb.Append($"        {p}.diagnose_into(out)\n");
                     sb.Append("        Standard::Format::write_str(out, \")\")\n        return()\n");
                 }
                 sb.Append("\n    block named(text: Bytes):\n        Standard::Format::write_str(out, text)\n        return()\n");
@@ -409,10 +409,10 @@ public static class Derive
         sb.Append($"conform {Qualified(concept)}<{c.Name}>\n\n");
         switch (method)
         {
-            case "represent" or "diagnose":
+            case "represent_into" or "diagnose_into":
                 if (c.Members.Count == 0)
                     throw new CompileError(c.Pos, $"{c.Name} has no members to {method}");
-                string prefix = method == "diagnose" ? $"{c.Name}." : "";
+                string prefix = method == "diagnose_into" ? $"{c.Name}." : "";
                 sb.Append($"routine {c.Name}.{method}<W>(self: Self, out: @W) -> Void\n");
                 sb.Append($"require W: typename, {Fmt}Writer<W>\n");
                 sb.Append("    block entry():\n");
