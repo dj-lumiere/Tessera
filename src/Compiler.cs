@@ -282,7 +282,10 @@ public sealed partial class Compiler
             catch (CompileError e) { errors.Add(e); }
         }
         // A routine derived without being asked for holds only when its payloads allow it, so it's checked when used.
-        foreach (var r in _allRoutines.Where(r => !Tessera.Derive.IsImplicit(r)))
+        // A library export the program replaces (its own panic handler) isn't part of the program.
+        var programExports = _userRoutines.Select(r => r.Attr("export")?.First).Where(n => n is not null).ToHashSet();
+        foreach (var r in _allRoutines.Where(r => !Tessera.Derive.IsImplicit(r)
+                     && !(r.IsLibrary && r.Attr("export") is { } e && programExports.Contains(e.First))))
         {
             try
             {
@@ -304,6 +307,7 @@ public sealed partial class Compiler
     private void CheckPreset(PresetDecl c)
     {
         if (c.Attr("threadlocal") is { } tl) CheckThreadLocal(c, tl);
+        if (c.Attr("external") is { } ext) CheckExternalVariable(c, ext);
         var env = new TypeEnv(c.File);
         DType? self = null;
         if (c.Owner is not null)
@@ -335,6 +339,21 @@ public sealed partial class Compiler
             throw new CompileError(tl.Pos,
                 $"'{c.Name}' is #threadlocal, and target {Target.Arch}-{Target.Os}-{Target.Abi} has no operating system to run threads");
     }
+
+    /// `#[external("c"), symbol("environ")] global ENVIRON: @@@Byte` is a C variable the program links against: C's
+    /// `extern char** environ;`. Its contents are the C side's, so it takes none here.
+    private static void CheckExternalVariable(PresetDecl c, Attribute ext)
+    {
+        if (!c.IsGlobal)
+            throw new CompileError(ext.Pos, $"an external variable is a global: #[external(\"c\"), symbol(\"{c.Name}\")] global {c.Name}: @T");
+        if (ext.First != "c")
+            throw new CompileError(ext.Pos, $"a global can only be #external(\"c\"), a C variable; found #external(\"{ext.First}\")");
+        if (c.Value is not null)
+            throw new CompileError(c.Value.Pos, $"'{c.Name}' is a C variable: its contents are the C side's, so it takes no '<-'");
+    }
+
+    /// The symbol of a C variable: its #symbol, or its own name.
+    private static string ExternalSymbol(PresetDecl c) => c.Attr("symbol")?.First ?? c.Name;
 
     /// Instantiates a routine that needs no type arguments: user code is always checked, even if unused.
     private void CheckRoot(RoutineDecl r)
@@ -1011,16 +1030,28 @@ public sealed partial class Compiler
     private readonly Dictionary<string, string> _globalVars = [];
 
     /// A global is a private mutable global variable, emitted once on first use: its value, or all-zero bytes. A
-    /// `#threadlocal` one is LLVM's `thread_local`: each thread starts from a copy of that value.
+    /// `#threadlocal` one is LLVM's `thread_local`: each thread starts from a copy of that value. An
+    /// `#external("c")` one is declared, not defined: the C variable of its #symbol.
     public string GlobalVariable(PresetDecl c, DType t, TypeEnv env)
     {
-        string symbol = MangleVariable(c, null);
+        var external = c.Attr("external");
+        string symbol = external is null ? MangleVariable(c, null) : ExternalSymbol(c);
         if (_globalVars.TryGetValue(symbol, out var name)) return name;
         EnsureTypeDefined(t);
+        string threadLocal = c.Attr("threadlocal") is null ? "" : "thread_local ";
+        if (external is not null)
+        {
+            CheckExternalVariable(c, external);
+            name = "@" + Quote(symbol);
+            _globalVars[symbol] = name;
+            // On Windows a variable a DLL exports is reached through its import table.
+            string import = Target.Os == "windows" ? "dllimport " : "";
+            _globals.AppendLine($"{name} = external {import}{threadLocal}global {t.Llvm}");
+            return name;
+        }
         name = "@" + symbol;
         _globalVars[symbol] = name;
         string init = c.Value is null ? "zeroinitializer" : PresetInitializer(c.Value, t, env);
-        string threadLocal = c.Attr("threadlocal") is null ? "" : "thread_local ";
         _globals.AppendLine($"{name} = internal {threadLocal}global {t.Llvm} {init}");
         return name;
     }

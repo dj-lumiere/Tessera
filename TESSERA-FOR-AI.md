@@ -111,6 +111,8 @@ routine main() -> S32
   address; a global holding a pointer is `@@T`: `global HEAD: @@Node <- null`). Use them as `TICKS.load()`,
   `STATS.calls.store(n)`, `K.get(i)`; writing a preset's memory is a build error. Neither kind is a buildtime
   constant: a preset value is (`Array<S64, N>` with `preset N: USize = 4`). An array preset is always in memory.
+- `#[external("c"), symbol("environ")] global ENVIRON: @@@Byte` declares a C variable (C's `extern`): no `<-`, read and
+  written like any global; dllimport on Windows.
 - `#threadlocal global NAME: @T [<- value]` gives each thread its own copy, starting from the value; the name is the
   running thread's copy, so don't hand it to another thread expecting that thread's copy. A preset can't be
   thread-local (read-only, so one copy serves every thread), a thread-local's address can't initialize another
