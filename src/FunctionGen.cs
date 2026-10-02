@@ -47,6 +47,12 @@ public sealed class FunctionGen
     // Debug information (Compiler.DebugInfo): the routine's DISubprogram, the current block's DILexicalBlock, the
     // location the next operation gets, and each block's records for its parameters, written after its phis.
     private bool Debug => _c.DebugInfo;
+
+    /// A `#track_caller` routine's hidden parameter: the place it was called from.
+    private const string CallerParam = "%a.caller";
+
+    /// The `#source` of the statement or terminator being emitted, the place a call there reports.
+    private Pos? _lineSource;
     private int _sp;
     private int _spFile;
     private int _scope;
@@ -126,9 +132,9 @@ public sealed class FunctionGen
         var ps = new List<string>();
         var unpack = new List<string>();
         if (_sig.Sret) ps.Add($"{_sig.Ret.Parts[0].Llvm} %ret.slot");
-        for (int i = 0; i < _decl.Params.Count; i++)
+        for (int i = 0; i < _inst.Params.Count; i++)
         {
-            string name = $"%a.{IrName(_decl.Params[i].Name)}";
+            string name = i < _decl.Params.Count ? $"%a.{IrName(_decl.Params[i].Name)}" : CallerParam;
             var info = _sig.Params[i];
             if (info.Pass == AbiPass.Coerce)
             {
@@ -365,6 +371,7 @@ public sealed class FunctionGen
 
     private void EmitStmtCore(Stmt s)
     {
+        _lineSource = s.Source;
         At(s.Source ?? s.Pos);
         switch (s)
         {
@@ -681,6 +688,9 @@ public sealed class FunctionGen
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } c
             && _c.FindFree(c.Name, _env.File, c.Pos) is null)
             return _c.USize;
+        if (e is CallExpr { Name: "caller_location", TypeArgs.Count: 0, Args.Count: 0 } cl
+            && _c.FindFree(cl.Name, _env.File, cl.Pos) is null)
+            return SourceLocationPtr(cl.Pos);
         if (AddrOfCallable(e) is not null) return new PtrType(null);
         if (IndirectCall(e) is { } ind) return ind.Callable.Ret;
         var plan = PlanCall(e, expected);
@@ -1246,12 +1256,20 @@ public sealed class FunctionGen
 
     /// The code address of a Callable: `%fn.addr()`, or `routine_name.addr()` (typed by the routine's own
     /// signature). An `Addr` for C code that takes a function as `void*`; calling it again needs a `Callable`.
+    /// A call through an address passes no place, so a `#track_caller` routine has none.
+    private void NotThroughAddress(RoutineDecl r, Pos pos)
+    {
+        if (Compiler.IsTrackCaller(r))
+            throw Err(pos, $"'{r.DisplayName}' is #track_caller: each call passes the place it's made from, so it has no address to call through");
+    }
+
     private (Expr Callee, CallableType Callable)? AddrOfCallable(Expr e)
     {
         // A bare routine name parses like a namespace: `twice.addr()`.
         if (e is NsCallExpr { Name: "addr", Args.Count: 0, TypeArgs.Count: 0, Owner: { Args.Count: 0 } owner }
             && TryResolveOwner(owner) is null && _c.FindFree(owner.Name, _env.File, owner.Pos) is { } named)
         {
+            NotThroughAddress(named, owner.Pos);
             var namedInst = _c.RequireInstance(named, new Compiler.TypeEnv(named.File));
             return (new PresetRef(null, owner.Name, owner.Pos),
                 new CallableType(namedInst.CallConv, namedInst.Params, namedInst.Ret));
@@ -1262,6 +1280,7 @@ public sealed class FunctionGen
         if (m.Receiver is PresetRef { Owner: null } r && ResolvePreset(r) is null
             && _c.FindFree(r.Name, _env.File, r.Pos) is { } routine)
         {
+            NotThroughAddress(routine, r.Pos);
             var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
             return (m.Receiver, new CallableType(inst.CallConv, inst.Params, inst.Ret));
         }
@@ -1577,6 +1596,9 @@ public sealed class FunctionGen
         if (e is CallExpr { Name: "sizeof" or "alignof", TypeArgs.Count: 1, Args.Count: 0 } sz
             && _c.FindFree(sz.Name, _env.File, sz.Pos) is null)
             return SizeOrAlign(sz);
+        if (e is CallExpr { Name: "caller_location", TypeArgs.Count: 0, Args.Count: 0 } cl
+            && _c.FindFree(cl.Name, _env.File, cl.Pos) is null)
+            return CallerLocation(cl.Pos);
 
         if (AddrOfCallable(e) is { } addr) return new Val(Eval(addr.Callee, addr.Callable).Op, new PtrType(null));
         if (IndirectCall(e) is { } ind) return EmitIndirect(ind.Callee, ind.Callable, ind.Args, e.Pos);
@@ -1604,7 +1626,7 @@ public sealed class FunctionGen
     {
         var sig = _c.Signature(plan.Decl, plan.Env);
         int offset = plan.Receiver is null ? 0 : 1;
-        int fixedCount = sig.Params.Count - offset;
+        int fixedCount = sig.Params.Count - offset - (sig.IsTrackCaller ? 1 : 0);
         bool arityOk = sig.Variadic && sig.IsExternalC ? plan.Args.Count >= fixedCount : plan.Args.Count == fixedCount;
         if (!arityOk)
             throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' takes {(sig.Variadic ? "at least " : "")}{fixedCount} argument(s), got {plan.Args.Count}");
@@ -1627,6 +1649,7 @@ public sealed class FunctionGen
             args.Add(plan.Receiver == access ? Address(plan.Receiver, sig.Params[0]) : EvalReceiver(plan.Receiver, sig.Params[0]));
         for (int i = 0; i < fixedCount; i++) args.Add(Address(plan.Args[i], sig.Params[i + offset]));
         for (int i = fixedCount; i < plan.Args.Count; i++) args.Add(VariadicArg(plan.Args[i]));
+        if (sig.IsTrackCaller) args.Add(CallerPlace(plan.Pos));
 
         _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);
         // A preset in memory is read-only static data, and pointers carry no read-only marker, so the routines that
@@ -1659,6 +1682,25 @@ public sealed class FunctionGen
             : $"{_c.AbiRet(inst, withAttrs: false)} ";
         return EmitAbiCall($"{inst.CcPrefix(_c.Target)}{RetExtOf(abi, inst.RetExt(_c.Target))}{fnType}@{Compiler.Quote(inst.Symbol)}", abi,
             args, inst.Params, inst.Ret, inst.PassesBf16AsBits, i => inst.ParamExt(_c.Target, i));
+    }
+
+    /// The place a call to a `#track_caller` routine passes: a `#track_caller` routine passes on the place it was
+    /// called from, so a panic deep in the stdlib reports the line that called into it; any other passes its own
+    /// line, the `#source` one if it has one.
+    private Val CallerPlace(Pos callPos) =>
+        _inst.IsTrackCaller
+            ? new Val(CallerParam, new PtrType(null))
+            : new Val(_c.PlaceGlobal(_lineSource ?? callPos), new PtrType(null));
+
+    /// `caller_location()`: inside a `#track_caller` routine, where it was called from.
+    private DType SourceLocationPtr(Pos pos) =>
+        new PtrType(_c.ResolveType(TypeRef.Simple("SourceLocation", pos), _env));
+
+    private Val CallerLocation(Pos pos)
+    {
+        if (!_inst.IsTrackCaller)
+            throw Err(pos, $"caller_location() is the place a #track_caller routine was called from, and '{_decl.DisplayName}' isn't one");
+        return new Val(CallerParam, SourceLocationPtr(pos));
     }
 
     /// The return value's extension attribute, which only a Direct return carries.
@@ -1997,6 +2039,7 @@ public sealed class FunctionGen
 
     private void EmitTerminatorCore(Terminator term)
     {
+        _lineSource = term.Source;
         At(term.Source ?? term.Pos);
         switch (term)
         {

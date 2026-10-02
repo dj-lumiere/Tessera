@@ -15,6 +15,9 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     public bool IsAsm => Compiler.IsAsm(Decl);
     /// A `#naked` assembly routine: emitted as a function of its own, called like any routine.
     public bool IsNaked => Compiler.IsNaked(Decl);
+
+    /// `#track_caller`: its last parameter is the place it was called from, which the routine doesn't declare.
+    public bool IsTrackCaller => Compiler.IsTrackCaller(Decl);
     public bool NoReturn => Decl.Attr("noreturn") is not null;
     public bool Variadic => Decl.Attr("variadic") is not null;
     /// "default" (the C convention, which every routine uses unless it asks otherwise), "fast", "cold", or "stdcall".
@@ -70,7 +73,7 @@ public sealed partial class Compiler
 {
     private static readonly HashSet<string> KnownAttributes =
         ["external", "symbol", "callconv", "noreturn", "nounwind", "variadic", "template", "target", "feature", "llvm",
-         "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source"];
+         "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source", "track_caller"];
 
     /// Attributes that describe an assembly routine and mean nothing on another.
     private static readonly string[] AsmAttributes = ["clobbers", "readonly", "pure", "naked"];
@@ -104,6 +107,13 @@ public sealed partial class Compiler
             ps.Add(t);
         }
         CheckReceiver(r, env, ps);
+        // `#track_caller`: the place of each call comes in as a last, hidden parameter (see caller_location()).
+        if (IsTrackCaller(r))
+        {
+            if (r.Blocks is null || r.Attr("external") is not null)
+                throw new CompileError(r.Attr("track_caller")!.Pos, $"#track_caller needs a routine with a body, and '{r.DisplayName}' has none");
+            ps.Add(new PtrType(null));
+        }
         var ret = ResolveType(r.ReturnType, env, allowVoid: true);
 
         var external = r.Attr("external");

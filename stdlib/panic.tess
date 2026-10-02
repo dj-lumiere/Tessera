@@ -8,6 +8,10 @@
 // by exporting its own routine under that name, which is how a target without
 // an operating system gets one.
 //
+// panic and the stdlib routines that panic on a caller's mistake (an index out
+// of bounds, an overflowing add) are #track_caller: the handler gets the place
+// of the call in the caller's code, not a line inside the stdlib.
+//
 // There is no unwinding and no recovery. Failures a caller is expected to
 // handle return Result or Option instead. trap() stays in the prelude as the
 // runtime-free way to stop: it needs no handler and prints nothing.
@@ -30,14 +34,20 @@ choice TrapCode: U8
     Overflow
     DivByZero
 
+/// A place in the source: the file as the build named it, the line, and the column (0 when a #source gave none).
+record SourceLocation
+    file   : Bytes
+    line   : U32
+    column : U32
+
 /// Stops the program at once, with no message: LLVM's trap instruction.
 #[external("llvm"), template("call void @llvm.trap()"), noreturn]
 routine trap() -> Void
 
 /// The program's panic handler. Export a routine with this signature as "tessera_panic_handler" to replace the
-/// default; %message is empty for panic.
+/// default; %message is empty for panic, and %place is the call that panicked.
 #[external("c"), symbol("tessera_panic_handler"), noreturn]
-private routine panic_handler(%code: TrapCode, %message: Bytes) -> Void
+private routine panic_handler(%code: TrapCode, %message: Bytes, %place: @SourceLocation) -> Void
 
 routine TrapCode.description(%self: Self) -> Bytes
     block entry():
@@ -59,12 +69,12 @@ routine TrapCode.description(%self: Self) -> Bytes
     block describe(%text: Bytes):
         return(%text)
 
-#noreturn
+#[noreturn, track_caller]
 routine panic(%code: TrapCode) -> Void
     block entry():
-        panic_handler(%code, "")
+        panic_handler(%code, "", caller_location())
 
-#noreturn
+#[noreturn, track_caller]
 routine panic_msg(%code: TrapCode, %message: Bytes) -> Void
     block entry():
-        panic_handler(%code, %message)
+        panic_handler(%code, %message, caller_location())

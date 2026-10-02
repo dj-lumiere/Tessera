@@ -220,8 +220,10 @@ routine main() -> S32
 **Errors**
 
 - Bugs trap: `trap()`, or `panic(TrapCode.X)` / `panic_msg(...)` for a message. Those call the panic handler; the
-  default (Standard::Os) prints one line and exits with status 101, and a program replaces it with
-  `#[export("tessera_panic_handler"), noreturn] routine my_handler(%code: TrapCode, %message: Bytes) -> Void`.
+  default (Standard::Os) prints the reason and the caller's place and exits with status 101, and a program replaces it
+  with `#[export("tessera_panic_handler"), noreturn] routine my_handler(%code: TrapCode, %message: Bytes, %place:
+  @SourceLocation) -> Void`. A stdlib routine that panics on its caller's mistake is `#track_caller`, so the place is
+  the caller's line; mark a routine of your own the same way when its panics are its caller's fault.
 - Expected failures return `Result<T, E>`. There's no `?`: `when %r:` with `.Success(%v)` / `.Failure(%e)` arms.
 
 **Records**

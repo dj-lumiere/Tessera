@@ -24,6 +24,25 @@ public sealed partial class Compiler
     private readonly Dictionary<string, int> _diTypes = [];
     private int _diUnit = -1;
 
+    public static bool IsTrackCaller(RoutineDecl r) => r.Attr("track_caller") is not null;
+
+    private readonly Dictionary<string, string> _places = [];
+
+    /// The constant SourceLocation of a place in the source, for a call to a `#track_caller` routine: its file as
+    /// Bytes, its line, and its column (0 when a `#source` gives none).
+    public string PlaceGlobal(Pos pos)
+    {
+        string file = pos.File.Replace('\\', '/');
+        string key = $"{file}:{pos.Line}:{pos.Col}";
+        if (_places.TryGetValue(key, out var name)) return name;
+        name = $"@.place.{_places.Count}";
+        _places[key] = name;
+        string text = StringGlobal(file), usize = USize.Llvm;
+        _globals.AppendLine($"{name} = private unnamed_addr constant {{ {{ ptr, {usize} }}, i32, i32 }} "
+            + $"{{ {{ ptr, {usize} }} {{ ptr {text}, {usize} {Utf8Length(file)} }}, i32 {pos.Line}, i32 {pos.Col} }}");
+        return name;
+    }
+
     /// A new metadata node: `!N = body`. Returns N.
     public int Meta(string body)
     {
