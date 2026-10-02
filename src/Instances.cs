@@ -13,6 +13,8 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     public bool IsTemplate => Decl.Attr("template") is not null;
     /// An `#external("asm")` routine: its body is put in place at each call as inline assembly.
     public bool IsAsm => Compiler.IsAsm(Decl);
+    /// A `#naked` assembly routine: emitted as a function of its own, called like any routine.
+    public bool IsNaked => Compiler.IsNaked(Decl);
     public bool NoReturn => Decl.Attr("noreturn") is not null;
     public bool Variadic => Decl.Attr("variadic") is not null;
     /// "default" (the C convention, which every routine uses unless it asks otherwise), "fast", "cold", or "stdcall".
@@ -26,6 +28,8 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
         {
             var attrs = new List<string>();
             if (NoReturn) attrs.Add("noreturn");
+            // A naked function is its assembly alone: no prologue, never inlined into a caller.
+            if (IsNaked) attrs.AddRange(["naked", "noinline"]);
             if (Decl.Attr("nounwind") is not null) attrs.Add("nounwind");
             if (Decl.Attr("inline") is not null) attrs.Add("alwaysinline");
             if (Decl.Attr("noinline") is not null) attrs.Add("noinline");
@@ -66,10 +70,10 @@ public sealed partial class Compiler
 {
     private static readonly HashSet<string> KnownAttributes =
         ["external", "symbol", "callconv", "noreturn", "nounwind", "variadic", "template", "target", "feature", "llvm",
-         "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure"];
+         "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked"];
 
     /// Attributes that describe an assembly routine and mean nothing on another.
-    private static readonly string[] AsmAttributes = ["clobbers", "readonly", "pure"];
+    private static readonly string[] AsmAttributes = ["clobbers", "readonly", "pure", "naked"];
 
     /// Resolves a routine's signature in `env` and gives it a symbol. Does not emit anything.
     public Instance Signature(RoutineDecl r, TypeEnv env)
@@ -115,8 +119,8 @@ public sealed partial class Compiler
             throw new CompileError(r.Pos, $"routine '{r.DisplayName}' has no body (mark it #external to declare it)");
 
         string symbol;
-        if (asm) symbol = MangleRoutine(r, env, ps, ret);
-        else if (external is not null) symbol = r.Attr("symbol")?.First ?? r.Name;
+        if (asm && r.Attr("export") is null) symbol = MangleRoutine(r, env, ps, ret);
+        else if (external is not null && !asm) symbol = r.Attr("symbol")?.First ?? r.Name;
         // `#export("name")` defines the routine under that plain C name: Tessera's own calls use it too, so a caller in
         // another module and one here reach the same definition, which LLVM can inline (an alias it can't see through).
         else if (r.Attr("export") is { } export)
@@ -185,6 +189,7 @@ public sealed partial class Compiler
         else if (sig.IsAsm)
         {
             PlanAsm(sig);
+            if (sig.IsNaked) _pending.Enqueue(sig);
         }
         else if (!sig.IsTemplate)
         {

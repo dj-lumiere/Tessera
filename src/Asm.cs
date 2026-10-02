@@ -14,13 +14,17 @@ public sealed record AsmPlan(
     List<string> Clobbers,
     List<int> Results,
     bool SideEffect,
-    string? Memory);
+    string? Memory,
+    bool Naked = false);
 
 public sealed partial class Compiler
 {
     private readonly Dictionary<string, AsmPlan> _asmPlans = [];
 
     public static bool IsAsm(RoutineDecl r) => r.Attr("external") is { First: "asm" };
+
+    /// A `#naked` assembly routine: a function of its own whose whole body is the assembly, not put in place.
+    public static bool IsNaked(RoutineDecl r) => IsAsm(r) && r.Attr("naked") is not null;
 
     /// The plan of an assembly routine's instance, built once and checked even if the routine is never called.
     public AsmPlan PlanAsm(Instance sig)
@@ -67,6 +71,8 @@ internal sealed class AsmLowering
     /// Every fixed register the body names, by LLVM register name: each counts as changed.
     private readonly Dictionary<string, Pos> _named = [];
     private bool _flagsTested;
+    /// `#naked`: the body is a whole function, entered by a call under the C convention and left by `ret`.
+    private readonly bool _naked;
 
     public AsmLowering(Compiler c, Instance sig)
     {
@@ -85,12 +91,18 @@ internal sealed class AsmLowering
                 $"assembly is written for x86_64, aarch64, riscv64 and riscv32; '{_r.DisplayName}' is built for {other}"),
         };
         _paramOutput = new int[_r.Params.Count];
+        _naked = _r.Attr("naked") is not null;
     }
 
     public AsmPlan Plan()
     {
         CheckDeclaration();
         var results = Results();
+        if (_naked)
+        {
+            CheckNakedRegisters(results);
+            return new AsmPlan(Body(), _arch == Arch.X86, [], [], [], [], SideEffect: true, Memory: null, Naked: true);
+        }
 
         // Every parameter is an output tied to its input, in its own register or the one after its '='.
         var inputs = new List<(string, int)>();
@@ -132,6 +144,73 @@ internal sealed class AsmLowering
             Memory: _r.Attr("pure") is not null ? "none" : _r.Attr("readonly") is not null ? "read" : null);
     }
 
+    // ── #naked ──────────────────────────────────────────────────────────────
+
+    /// A #naked routine is entered by a call, so each parameter is where the C calling convention puts it, and the
+    /// result goes where it expects one. Each parameter names that register (`%from: @Addr = REG7`), and the builder
+    /// checks it against the convention, since the routine itself can't move anything.
+    private void CheckNakedRegisters(List<Result> results)
+    {
+        int ints = 0, floats = 0;
+        for (int i = 0; i < _r.Params.Count; i++)
+        {
+            var p = _r.Params[i];
+            var cls = ClassOf(_sig.Params[i], p.Pos);
+            if (_sig.Params[i].Repr is VectorType)
+                throw new CompileError(p.Pos, "a #naked routine takes integers, pointers and floats, which arrive in registers");
+            var abi = cls == RegClass.Gpr ? ArgRegister(true, ints++, i, p.Pos) : ArgRegister(false, floats++, i, p.Pos);
+            if (p.Register is not { } placed)
+                throw new CompileError(p.Pos,
+                    $"a #naked routine names where each parameter arrives: {p.Name}: {_sig.Params[i]} = {abi.Written}");
+            var reg = ParamRegister(i);
+            if (reg.Class != abi.Class || reg.Index != abi.Index)
+                throw new CompileError(placed.Pos,
+                    $"{_c.Target.Arch}-{_c.Target.Os}'s calling convention passes {p.Name} in {Shown(abi)}, not {Shown(reg)}: "
+                    + $"{p.Name}: {_sig.Params[i]} = {abi.Written}");
+        }
+        foreach (var item in results)
+        {
+            if (item.Reg is null)
+                throw new CompileError(_r.Pos, "a #naked routine returns in the convention's result register, not a parameter's");
+            bool isInt = ClassOf(item.Type, _r.Pos) == RegClass.Gpr;
+            var abi = new Reg(isInt ? RegClass.Gpr : _arch == Arch.Rv ? RegClass.Fpr : RegClass.Vec,
+                _arch == Arch.Rv ? 10 : 0, "");
+            abi = abi with { Written = WrittenName(abi) };
+            if (results.Count > 1 || item.Reg.Class != abi.Class || item.Reg.Index != abi.Index)
+                throw new CompileError(_r.Pos, $"a #naked routine returns its {item.Type} in {Shown(abi)}: return({abi.Written})");
+        }
+    }
+
+    /// The register the C calling convention passes the n-th integer (or float) argument in. `position` is the
+    /// parameter's place among all of them, which Windows x64 counts instead.
+    private Reg ArgRegister(bool integer, int n, int position, Pos pos)
+    {
+        int[] sysV = [7, 6, 2, 1, 8, 9], win64 = [1, 2, 8, 9];
+        bool windows = _arch == Arch.X86 && _c.Target.Os == "windows";
+        int index = windows ? position : n;
+        int count = (_arch, integer) switch
+        {
+            (Arch.X86, true) => windows ? 4 : 6,
+            (Arch.X86, false) => windows ? 4 : 8,
+            _ => 8,
+        };
+        if (index >= count)
+            throw new CompileError(pos, "this parameter goes on the stack, and a #naked routine reads only parameters in registers");
+        var reg = (_arch, integer) switch
+        {
+            (Arch.X86, true) => new Reg(RegClass.Gpr, windows ? win64[index] : sysV[index], ""),
+            (Arch.X86, false) => new Reg(RegClass.Vec, index, ""),
+            (Arch.A64, true) => new Reg(RegClass.Gpr, index, ""),
+            (Arch.A64, false) => new Reg(RegClass.Vec, index, ""),
+            (_, true) => new Reg(RegClass.Gpr, 10 + index, ""),
+            _ => new Reg(RegClass.Fpr, 10 + index, ""),
+        };
+        return reg with { Written = WrittenName(reg) };
+    }
+
+    private static string WrittenName(Reg r) =>
+        (r.Class switch { RegClass.Vec => "VREG", RegClass.Fpr => "FREG", _ => "REG" }) + r.Index;
+
     private int AddOutput(string constraint, DType type)
     {
         _outputs.Add((constraint, type));
@@ -144,7 +223,15 @@ internal sealed class AsmLowering
             throw new CompileError(_r.Pos, $"an assembly routine takes no type parameters, and '{_r.DisplayName}' has some");
         if (_r.Attr("pure") is not null && _r.Attr("readonly") is not null)
             throw new CompileError(_r.Pos, "#pure already touches no memory; #readonly says less, so write one of them");
-        if (_r.Attr("inline") is not null || _r.Attr("noinline") is not null || _r.Attr("export") is not null)
+        if (_naked)
+        {
+            foreach (var name in new[] { "clobbers", "pure", "readonly", "inline", "callconv" })
+                if (_r.Attr(name) is { } a)
+                    throw new CompileError(a.Pos, name == "inline"
+                        ? "a #naked routine is called, never put in place"
+                        : $"a #naked routine keeps the C calling convention by itself, so it takes no #{name}");
+        }
+        else if (_r.Attr("inline") is not null || _r.Attr("noinline") is not null || _r.Attr("export") is not null)
             throw new CompileError(_r.Pos, "an assembly routine is put in place at each call; it has no function to inline, keep, or export");
         foreach (var b in _r.Blocks!)
             if (b.Params.Count != 0)
@@ -450,6 +537,9 @@ internal sealed class AsmLowering
                         if (!names.Contains(ct.Name)) throw new CompileError(ct.Pos, $"no block named '{ct.Name}'");
                         if (ct.Args.Count != 0) throw new CompileError(ct.Pos, "an assembly block takes no arguments");
                         return (Label(ct.Name), ct.Name == next);
+                    case ReturnTarget when _naked:
+                        endUsed = true;
+                        return (Label(EndLabel), false);
                     case ReturnTarget:
                         endUsed |= next is not null;
                         return (Label(EndLabel), next is null);
@@ -474,6 +564,9 @@ internal sealed class AsmLowering
                     if (JumpText(br.IfFalse, br.Pos) is { } other) lines.Add($"{Jump()} {other}");
                     break;
                 }
+                case TargetTerm { Target: ReturnTarget } when _naked:
+                    lines.Add("ret");
+                    break;
                 case TargetTerm { Target: ReturnTarget r }:
                     if (JumpText(r, r.Pos) is { } rl) lines.Add($"{Jump()} {rl}");
                     break;
@@ -486,6 +579,7 @@ internal sealed class AsmLowering
             }
         }
         if (endUsed) lines.Add(Label(EndLabel) + ":");
+        if (endUsed && _naked) lines.Add("ret");
         return string.Join("\n\t", lines);
     }
 

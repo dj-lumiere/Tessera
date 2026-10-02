@@ -171,15 +171,16 @@ routine div_2by1_mg(%u1: U64, %u0: U64, %d: U64, %v: U64) -> Div2By1
 
 // -- divq ----------------------------------------------------------------------
 
-/// floor((hi × 2^64 + lo) / d) with x86's divq. Needs hi < d: divq faults (#DE)
-/// when the quotient doesn't fit in 64 bits. Not #pure: div_3by2_divq guards it
-/// with a branch, and a faulting instruction moved ahead of that branch would
-/// fault on the path that never runs it.
+/// (hi × 2^64 + lo) / d with x86's divq: the quotient and the remainder, which
+/// one instruction gives together. Needs hi < d: divq faults (#DE) when the
+/// quotient doesn't fit in 64 bits. Not #pure: div_3by2_divq guards it with a
+/// branch, and a faulting instruction moved ahead of that branch would fault on
+/// the path that never runs it.
 #[target(arch: "x86_64"), external("asm"), clobbers(FLAGS)]
-routine divq_quotient(%hi: U64 = REG2, %lo: U64 = REG0, %d: U64) -> U64
+routine divq(%hi: U64 = REG2, %lo: U64 = REG0, %d: U64) -> (U64, U64)
     block entry():
-        %d.div<U64>()  // div <d's register>: RDX:RAX / d, the quotient in RAX
-        return(REG0)
+        %d.div<U64>()  // div <d's register>: RDX:RAX / d
+        return({ REG0, REG2 })  // RAX = quotient, RDX = remainder
 
 #target(arch: "x86_64")
 routine div_3by2_divq(%u2: U64, %u1: U64, %u0: U64, %d1: U64, %d0: U64) -> Div3By2
@@ -191,8 +192,8 @@ routine div_3by2_divq(%u2: U64, %u1: U64, %u0: U64, %d1: U64, %d0: U64) -> Div3B
             : estimate()
 
     block estimate():
-        %q    : U64 = divq_quotient(%u2, %u1, %d1)
-        %rhat : U64 = %u1.sub_wrap(%q.mul_wrap(%d1))
+        // rhat = (u2, u1) - q × d1, the remainder divq gives with q
+        %q, %rhat = divq(%u2, %u1, %d1)
         jump check(%q, %rhat.to_u128())
 
     // q = 2^64 - 1, and rhat = (u2, u1) - q × d1 = u1 + d1, which may carry
@@ -221,8 +222,7 @@ routine div_3by2_divq(%u2: U64, %u1: U64, %u0: U64, %d1: U64, %d0: U64) -> Div3B
 #target(arch: "x86_64")
 routine div_2by1_divq(%u1: U64, %u0: U64, %d: U64) -> Div2By1
     block entry():
-        %q   : U64     = divq_quotient(%u1, %u0, %d)
-        %r   : U64     = %u0.sub_wrap(%q.mul_wrap(%d))
+        %q, %r = divq(%u1, %u0, %d)
         %res : Div2By1 = Div2By1 { quotient: %q, remainder: %r }
         return(%res)
 

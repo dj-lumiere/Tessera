@@ -63,6 +63,11 @@ public sealed class FunctionGen
     public void Emit()
     {
         _sig = _c.LowerSignature(_inst);
+        if (_inst.IsNaked)
+        {
+            EmitNaked();
+            return;
+        }
         var blocks = _decl.Blocks!;   // the parser guarantees a leading `block entry():`
 
         for (int i = 0; i < _decl.Params.Count; i++)
@@ -130,22 +135,7 @@ public sealed class FunctionGen
             }
             else ps.Add($"{_inst.Params[i].Llvm}{_inst.ParamExt(_c.Target, i)} {name}");
         }
-        // A routine every solution may emit from the same source (a generic routine's instance, or a stdlib routine
-        // compiled into each solution until the stdlib is prebuilt) is linkonce_odr: the linker keeps one copy. COFF
-        // and ELF deduplicate through a comdat; Mach-O has none and relies on the weak definition. A stdlib routine
-        // with an #export is weak instead, so the program's own export of that name wins at link time too.
-        string linkage = "", comdat = "";
-        bool shared = _c.IsGenericInstance(_inst) || _decl.IsLibrary;
-        bool exported = _decl.Attr("export") is not null;
-        if (shared && (!exported || _decl.IsLibrary))
-        {
-            linkage = exported ? "weak " : "linkonce_odr ";
-            if (_c.Target.Os != "macos")
-            {
-                _out.AppendLine($"${Compiler.Quote(_inst.Symbol)} = comdat any");
-                comdat = " comdat";
-            }
-        }
+        var (linkage, comdat) = Linkage();
         _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
@@ -1477,7 +1467,7 @@ public sealed class FunctionGen
             throw Err(plan.Pos, $"'{root.Name}' is a preset; its memory is read-only");
         if (sig.Decl.Name == "store_into" && plan.Args.Count == 1 && PresetArrayRoot(plan.Args[0]) is { } destRoot)
             throw Err(plan.Pos, $"'{destRoot.Name}' is a preset; its memory is read-only");
-        if (sig.IsAsm)
+        if (sig.IsAsm && !sig.IsNaked)
         {
             foreach (var p in sig.Params) _c.EnsureTypeDefined(p);
             _c.EnsureTypeDefined(sig.Ret);
@@ -1613,6 +1603,36 @@ public sealed class FunctionGen
 
     private Val AbiResult(string op, DType t, bool bf16AsBits) =>
         bf16AsBits && Instance.IsBf16(t) ? new Val(EmitTmp($"bitcast i16 {op} to bfloat"), t) : new Val(op, t);
+
+    /// A routine every solution may emit from the same source (a generic routine's instance, or a stdlib routine
+    /// compiled into each solution until the stdlib is prebuilt) is linkonce_odr: the linker keeps one copy. COFF and
+    /// ELF deduplicate through a comdat; Mach-O has none and relies on the weak definition. A stdlib routine with an
+    /// #export is weak instead, so the program's own export of that name wins at link time too.
+    private (string Linkage, string Comdat) Linkage()
+    {
+        bool shared = _c.IsGenericInstance(_inst) || _decl.IsLibrary;
+        bool exported = _decl.Attr("export") is not null;
+        if (!shared || (exported && !_decl.IsLibrary)) return ("", "");
+        if (_c.Target.Os == "macos") return (exported ? "weak " : "linkonce_odr ", "");
+        _out.AppendLine($"${Compiler.Quote(_inst.Symbol)} = comdat any");
+        return (exported ? "weak " : "linkonce_odr ", " comdat");
+    }
+
+    /// A #naked assembly routine: a function whose whole body is the assembly. Its parameters stay where the call put
+    /// them (the assembly names their registers), and the assembly returns by itself, so `unreachable` follows it.
+    private void EmitNaked()
+    {
+        var plan = _c.PlanAsm(_inst);
+        var (linkage, comdat) = Linkage();
+        string kind = "sideeffect " + (plan.Intel ? "inteldialect " : "");
+        _out.AppendLine($"define {linkage}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}"
+                        + $"({_inst.LlvmParamDecls(_c.Target)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _decl.Pos).FnAttrs}{comdat} {{");
+        _out.AppendLine("entry:");
+        _out.AppendLine($"  call void asm {kind}\"{LlvmAsmString(plan.Text)}\", \"\"() nounwind");
+        _out.AppendLine("  unreachable");
+        _out.AppendLine("}");
+        _out.AppendLine();
+    }
 
     /// An assembly routine's body as one inline-assembly call: the outputs come back as one value (a struct of them
     /// when there are several), and the results are taken from it.
