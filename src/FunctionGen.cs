@@ -448,7 +448,7 @@ public sealed class FunctionGen
     // ── Places ──────────────────────────────────────────────────────────────
 
     /// The preset in memory a place chain starts from (`K`, `K[i]`, `K[i].f`), if any.
-    private PresetRef? PresetArrayRoot(Expr place) => AsStride(place) switch
+    private PresetRef? PresetArrayRoot(Expr place) => AsStride(AsField(place)) switch
     {
         FieldExpr f => PresetArrayRoot(f.Base),
         IndexExpr ix => PresetArrayRoot(ix.Base),
