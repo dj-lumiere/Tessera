@@ -1195,6 +1195,7 @@ public sealed class FunctionGen
             return new PresetInfo(et, _ => IntConst(lit.Value, r.Pos, et));
         }
         string ownerName = ownerType?.OwnerName ?? r.Owner.Name;
+        if (ownerType is null && r.Owner is { Args.Count: 0, Path: null }) UnknownReceiver(r.Owner);
         var oc = _c.FindPreset(ownerName, r.Name, file, r.Pos)
                  ?? throw Err(r.Pos, $"unknown preset '{r.Owner}.{r.Name}'");
         return PresetValue(oc, ownerType);
