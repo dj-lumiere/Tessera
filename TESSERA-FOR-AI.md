@@ -391,6 +391,12 @@ a `DirIter` (`claim`, `open(path)`, `next()` until Absent, `close()`); `Mapping.
 and path text with no OS calls (`join_path`, `parent_path`, `file_name`, `file_stem`, `file_extension`). A routine
 that hands text back takes an allocator; free it with `data.free(alloc)`.
 
+**Processes.** `run_process(program, args, arg_count, options, alloc)` (looked up on PATH) and `run_shell(command,
+options, alloc)` return `Result<ProcessOutput, ProcessError>`: an `ExitStatus` (`.code()`, `.is_success()`) and the
+captured `stdout` / `stderr`. `ProcessOptions.default()` captures both and gives the child the null device as input;
+set `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
+`env_var(name, alloc)` reads a variable, `exit(status)` ends the process.
+
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.
 

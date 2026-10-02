@@ -1,0 +1,112 @@
+// Standard::Os subprocesses: output and error captured, exit codes, arguments quoted for the child, environment
+// overrides merged in, the working directory, a missing program, and env_var. The commands differ between cmd.exe
+// and sh, so each OS gets its own; what is printed is the same.
+
+import Standard::Alloc
+import Standard::Format
+import Standard::Os
+
+/// text without the line ending a shell's echo adds ("\n", or "\r\n" on Windows).
+routine line(text: Bytes) -> Bytes
+    block entry():
+        branch text.ends_with("\r\n")
+            ? return(text.slice(0, text.length().sub(2)))
+            : continue
+        branch text.ends_with("\n")
+            ? return(text.slice(0, text.length().sub(1)))
+            : return(text)
+
+routine error_name(e: ProcessError) -> Bytes
+    block entry():
+        when e:
+            ProcessError.NotFound         -> return("NotFound")
+            ProcessError.PermissionDenied -> return("PermissionDenied")
+            ProcessError.InvalidArgument  -> return("InvalidArgument")
+            ProcessError.OutOfMemory      -> return("OutOfMemory")
+            ProcessError.Other            -> return("Other")
+
+#target(os: "windows")
+routine show_var() -> Bytes
+    block entry():
+        return("echo %TESSERA_PROBE%")
+
+#target(os: not "windows")
+routine show_var() -> Bytes
+    block entry():
+        return("echo \"$TESSERA_PROBE\"")
+
+#target(os: "windows")
+routine show_dir() -> Bytes
+    block entry():
+        return("cd")
+
+#target(os: not "windows")
+routine show_dir() -> Bytes
+    block entry():
+        return("pwd")
+
+/// Runs a program that prints its arguments back, given "a b", c"d, and "": whether they arrived as given.
+#target(os: "windows")
+routine quoting_ok(alloc: @Allocator) -> Bool
+    block entry():
+        // cmd's echo prints its command line as it is, so the quoting itself shows
+        claim args : @Array<Bytes, 5> <- { "/c", "echo", "a b", "c\"d", "" }
+        r : ProcessOutput = run_process("cmd.exe", args.to<@Bytes>(), 5, ProcessOptions.default(),
+                alloc).unwrap()
+        return(line(r.stdout).eq("\"a b\" \"c\\\"d\" \"\""))
+
+#target(os: not "windows")
+routine quoting_ok(alloc: @Allocator) -> Bool
+    block entry():
+        claim args : @Array<Bytes, 6> <- { "-c", "printf '%s|' \"$@\"", "sh", "a b", "c\"d", "" }
+        r : ProcessOutput = run_process("/bin/sh", args.to<@Bytes>(), 6, ProcessOptions.default(),
+                alloc).unwrap()
+        return(r.stdout.eq("a b|c\"d||"))
+
+routine options() -> ProcessOptions
+    block entry():
+        return(ProcessOptions.default())
+
+routine main() -> S32
+    block entry():
+        claim alloc : @Allocator <- make_heap_allocator()
+        options : ProcessOptions = ProcessOptions.default()
+        hello   : ProcessOutput  = run_shell("echo hello", options, alloc).unwrap()
+        print("echo: [{line(hello.stdout)}], status {hello.status.code()}, success {hello.status.is_success()}\n")
+        three : ProcessOutput = run_shell("exit 3", options, alloc).unwrap()
+        print("exit 3: status {three.status.code()}, success {three.status.is_success()}\n")
+        oops : ProcessOutput = run_shell("echo oops>&2", options, alloc).unwrap()
+        print("stderr: [{line(oops.stderr)}], stdout empty {oops.stdout.is_empty()}\n")
+        print("arguments as given: {quoting_ok(alloc)}\n")
+        jump environment(alloc)
+
+    block environment(alloc: @Allocator):
+        claim vars : @Array<EnvVar, 1> <- { EnvVar { name: "TESSERA_PROBE",
+                value: "a value, with commas" } }
+        with_env : ProcessOptions = ProcessOptions { directory: .Absent, env: vars.to<@EnvVar>(),
+                env_count: 1, stdin: InputMode.Null, stdout: OutputMode.Capture,
+                stderr: OutputMode.Capture }
+        r        : ProcessOutput  = run_shell(show_var(), with_env, alloc).unwrap()
+        print("override: [{line(r.stdout)}]\n")
+        path : Option<Bytes> = env_var("PATH", alloc)
+        none : Option<Bytes> = env_var("TESSERA_NO_SUCH_VARIABLE", alloc)
+        print("PATH set: {path.is_present()}, unset: {none.is_absent()}\n")
+        jump directory(alloc)
+
+    block directory(alloc: @Allocator):
+        tmp    : Bytes          = temp_dir(alloc).unwrap()
+        name   : Bytes          = file_name(tmp)
+        in_tmp : ProcessOptions = ProcessOptions { directory: .Present(tmp), env: null,
+                env_count: 0, stdin: InputMode.Null, stdout: OutputMode.Capture,
+                stderr: OutputMode.Capture }
+        r      : ProcessOutput  = run_shell(show_dir(), in_tmp, alloc).unwrap()
+        here   : Bool           = line(r.stdout).ends_with(name)
+        print("directory: {here}\n")
+        quiet : ProcessOptions = ProcessOptions { directory: .Absent, env: null, env_count: 0,
+                stdin: InputMode.Null, stdout: OutputMode.Null, stderr: OutputMode.Capture }
+        q     : ProcessOutput  = run_shell("echo dropped", quiet, alloc).unwrap()
+        print("discarded output: empty {q.stdout.is_empty()}, status {q.status.code()}\n")
+        missing : Result<ProcessOutput, ProcessError> = run_process("tessera-no-such-program", null,
+                0, options(), alloc)
+        print("missing program: {error_name(missing.unwrap_failure())}\n")
+        return(0)

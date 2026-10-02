@@ -234,12 +234,12 @@ private routine invalid_handle(h: Addr) -> Bool
         // INVALID_HANDLE_VALUE, (HANDLE)-1
         return(ptrtoint<Addr, USize>(h).eq(USize.MAX))
 
-/// path as UTF-16 with a 0 after it in out (PATH_CAPACITY units): its length in units, or Absent if path has a NUL or
-/// doesn't fit.
+/// text as UTF-16 with a 0 after it in out, which has room for capacity units: its length in units, or Absent if
+/// text has a NUL or doesn't fit. (A UTF-8 byte count bounds the unit count, so length + 1 units always fit.)
 #target(os: "windows")
-private routine wide(path: Bytes, out: @U16) -> Option<USize>
+internal routine encode_utf16(text: Bytes, out: @U16, capacity: USize) -> Option<USize>
     block entry():
-        claim iter : @BytesCharsIter <- path.chars()
+        claim iter : @BytesCharsIter <- text.chars()
         jump next(iter, 0)
 
     block next(iter: @BytesCharsIter, n: USize):
@@ -257,14 +257,14 @@ private routine wide(path: Bytes, out: @U16) -> Option<USize>
             : pair(iter, n, cp)
 
     block single(iter: @BytesCharsIter, n: USize, cp: U32):
-        branch n.add(1).ge(PATH_CAPACITY)
+        branch n.add(1).ge(capacity)
             ? return(.Absent)
             : continue
         out.stride(n).store(cp.to<U16>())
         jump next(iter, n.add(1))
 
     block pair(iter: @BytesCharsIter, n: USize, cp: U32):
-        branch n.add(2).ge(PATH_CAPACITY)
+        branch n.add(2).ge(capacity)
             ? return(.Absent)
             : continue
         v : U32 = cp.sub(0x10000)
@@ -276,6 +276,13 @@ private routine wide(path: Bytes, out: @U16) -> Option<USize>
         out.stride(n).store(0)
         return(.Present(n))
 
+/// path as UTF-16 with a 0 after it in out (PATH_CAPACITY units): its length in units, or Absent if path has a NUL or
+/// doesn't fit.
+#target(os: "windows")
+private routine wide(path: Bytes, out: @U16) -> Option<USize>
+    block entry():
+        return(encode_utf16(path, out, PATH_CAPACITY))
+
 /// path as UTF-16 in out: whether it fit.
 #target(os: "windows")
 private routine wide_path(path: Bytes, out: @U16) -> Bool
@@ -285,7 +292,7 @@ private routine wide_path(path: Bytes, out: @U16) -> Bool
 
 /// count UTF-16 units at units as UTF-8 at out (room for 3 bytes a unit): the bytes written.
 #target(os: "windows")
-private routine narrow(units: @U16, count: USize, out: @Byte) -> USize
+internal routine narrow(units: @U16, count: USize, out: @Byte) -> USize
     block entry():
         jump next(0, 0)
 
@@ -315,7 +322,7 @@ private routine narrow(units: @U16, count: USize, out: @Byte) -> USize
 
 /// The units before the first 0 at units.
 #target(os: "windows")
-private routine wide_length(units: @U16) -> USize
+internal routine wide_length(units: @U16) -> USize
     block entry():
         jump scan(0)
 
@@ -326,7 +333,7 @@ private routine wide_length(units: @U16) -> USize
 
 /// count UTF-16 units as UTF-8, in memory from alloc.
 #target(os: "windows")
-private routine owned_wide(units: @U16, count: USize, alloc: @Allocator) -> Result<Bytes, FsError>
+internal routine owned_wide(units: @U16, count: USize, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry():
         buffer : @Byte = allocate<Byte>(alloc, count.mul(3).max(1))
         branch buffer.is_null()

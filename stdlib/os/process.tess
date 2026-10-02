@@ -1,0 +1,192 @@
+// Tessera stdlib: running another program, the environment, and leaving this one
+//
+// run_process starts a program (looked up on PATH as a shell would) with its arguments, waits for it, and hands
+// back how it ended and what it wrote. Its standard input is the null device unless the options say to share this
+// process's; its output and error are captured (read to the end, both at once, so a child that fills one while the
+// other waits can't deadlock), shared, or discarded. Environment overrides are merged into this process's
+// environment, so PATH and the rest stay. run_shell runs a command line through the platform shell (sh -c, or
+// cmd.exe /c) for pipes and globs, at the cost of the shell's quoting.
+//
+// The per-OS halves are process_posix.tess (fork and execvp) and process_windows.tess (CreateProcessW).
+
+module Standard::Os
+
+import Standard::Alloc
+
+/// Why a program couldn't start.
+choice ProcessError: U8
+    NotFound  // no such program
+    PermissionDenied
+    InvalidArgument  // a NUL inside the program, an argument, the directory, or a variable
+    OutOfMemory
+    Other
+
+/// What the child's standard input is.
+choice InputMode: U8
+    Null  // the null device: it reads end-of-file at once
+    Inherit  // this process's standard input
+
+/// What becomes of the child's standard output or error.
+choice OutputMode: U8
+    Capture  // read into the ProcessOutput
+    Inherit  // this process's
+    Null  // discarded
+
+/// How a program ended.
+variant ExitStatus
+    Exited   : S32  // its exit code
+    Signaled : S32  // the signal that stopped it (POSIX only)
+
+/// One environment variable for the child.
+record EnvVar
+    name  : Bytes
+    value : Bytes
+
+record ProcessOptions
+    directory : Option<Bytes>  // where it starts: Absent for this process's working directory
+    env       : @EnvVar  // env_count overrides of this process's environment
+    env_count : USize
+    stdin     : InputMode
+    stdout    : OutputMode
+    stderr    : OutputMode
+
+/// What run_process hands back. A captured stream is in memory from the allocator (free it with `data.free(alloc)`);
+/// one not captured is empty and holds nothing.
+record ProcessOutput
+    status : ExitStatus
+    stdout : Bytes
+    stderr : Bytes
+
+/// No directory and no overrides, the null device as input, and both output streams captured.
+routine ProcessOptions.default() -> Self
+    block entry():
+        return(Self { directory: .Absent, env: null, env_count: 0, stdin: InputMode.Null,
+                stdout: OutputMode.Capture, stderr: OutputMode.Capture })
+
+/// The exit code, or for a program a signal stopped, 128 plus the signal (as a POSIX shell reports it).
+routine ExitStatus.code(self: Self) -> S32
+    block entry():
+        when self:
+            .Exited(c)   -> return(c)
+            .Signaled(s) -> return(s.add_wrap(128))
+
+/// Whether it exited with code 0.
+routine ExitStatus.is_success(self: Self) -> Bool
+    block entry():
+        when self:
+            .Exited(c) -> return(c.eq(0))
+            .Signaled  -> return(false)
+
+/// command through the platform shell: sh -c on Linux and macOS, cmd.exe /c on Windows.
+routine run_shell(command: Bytes, options: ProcessOptions,
+        alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
+    block entry():
+        claim args : @Array<Bytes, 2> <- { shell_flag(), command }
+        return(run_process(shell_program(), args.to<@Bytes>(), 2, options, alloc))
+
+#target(os: "windows")
+private routine shell_program() -> Bytes
+    block entry():
+        return("cmd.exe")
+
+#target(os: "windows")
+private routine shell_flag() -> Bytes
+    block entry():
+        return("/c")
+
+#target(os: not "windows")
+private routine shell_program() -> Bytes
+    block entry():
+        return("/bin/sh")
+
+#target(os: not "windows")
+private routine shell_flag() -> Bytes
+    block entry():
+        return("-c")
+
+/// Ends this process with status, without returning. (Nothing is flushed but what the C library flushes.)
+#noreturn
+routine exit(status: S32) -> Void
+    block entry():
+        c_exit(status.to<CInt>())
+
+// -- what both halves share ------------------------------------------------------------
+
+/// A captured stream as it grows, in memory from an allocator.
+internal record CaptureBuffer
+    data     : @Byte
+    length   : USize
+    capacity : USize
+    failed   : Bool  // an allocation failed: what came after was dropped
+
+internal routine CaptureBuffer.empty() -> Self
+    block entry():
+        return(Self { data: null, length: 0, capacity: 0, failed: false })
+
+/// Appends n bytes, growing the buffer; an allocation failure drops them and marks the buffer.
+internal routine CaptureBuffer.append(self: @Self, alloc: @Allocator, chunk: @Byte,
+        n: USize) -> Void
+    block entry():
+        need : USize = self.length.load().add(n)
+        branch need.gt(self.capacity.load())
+            ? grow(self.capacity.load().mul(2).max(need).max(256))
+            : put()
+
+    block grow(capacity: USize):
+        old : @Byte = self.data.load()
+        branch old.is_null()
+            ? grown(capacity, allocate<Byte>(alloc, capacity))
+            : grown(capacity, reallocate<Byte>(alloc, old, capacity))
+
+    block grown(capacity: USize, bigger: @Byte):
+        branch bigger.is_null()
+            ? lost()
+            : continue
+        self.data.store(bigger)
+        self.capacity.store(capacity)
+        jump put()
+
+    block lost():
+        self.failed.store(true)
+        return()
+
+    block put():
+        copy<Byte>(self.data.load().stride(self.length.load()), chunk, n)
+        self.length.load().add(n).store_into(self.length)
+        return()
+
+/// What was captured, as Bytes the caller frees.
+internal routine CaptureBuffer.bytes(self: Self) -> Bytes
+    block entry():
+        return(Bytes.from_ptr(self.data, self.length))
+
+/// Whether name's bytes equal the start of entry up to its '=' (a "NAME=VALUE" entry), ASCII letters in any case
+/// when fold is set.
+internal routine env_key_matches(name: Bytes, entry: Bytes, fold: Bool) -> Bool
+    block entry():
+        n : USize = name.length()
+        branch entry.length().gt(n)
+            ? continue
+            : return(false)
+        branch entry.byte_at(n).eq(61)
+            ? compare(0)
+            : return(false)
+
+    block compare(i: USize):
+        branch i.eq(name.length())
+            ? return(true)
+            : continue
+        a : U8 = name.byte_at(i)
+        b : U8 = entry.byte_at(i)
+        branch a.eq(b)
+            ? compare(i.add(1))
+            : continue
+        branch fold.bitand(ascii_lower(a).eq(ascii_lower(b)))
+            ? compare(i.add(1))
+            : return(false)
+
+internal routine ascii_lower(c: U8) -> U8
+    block entry():
+        branch c.between(65, 90)
+            ? return(c.add(32))
+            : return(c)
