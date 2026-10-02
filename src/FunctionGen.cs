@@ -48,7 +48,9 @@ public sealed class FunctionGen
     // location the next operation gets, and each block's records for its parameters, written after its phis.
     private bool Debug => _c.DebugInfo;
     private int _sp;
+    private int _spFile;
     private int _scope;
+    private int _scopeFile;
     private string? _loc;
     private readonly Dictionary<string, List<string>> _blockRecords = [];
 
@@ -71,6 +73,17 @@ public sealed class FunctionGen
     // ── Function skeleton ───────────────────────────────────────────────────
 
     public void Emit()
+    {
+        try { EmitRoutine(); }
+        catch (CompileError e) when (_decl.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
+    }
+
+    /// A build error inside something a `#source` names is reported at that place, with the generated line after it:
+    /// the generator's input is what its author reads.
+    private static CompileError FromSource(CompileError e, Pos source) =>
+        new(source, $"{e.Text} (in the generated Tessera at {e.Pos})") { Final = e.Final, FromSource = true };
+
+    private void EmitRoutine()
     {
         _sig = _c.LowerSignature(_inst);
         if (_inst.IsNaked)
@@ -211,19 +224,25 @@ public sealed class FunctionGen
     /// The routine's DISubprogram, with its signature's debug types.
     private void BeginSubprogram()
     {
-        int file = _c.DiFile(_decl.File);
+        var at = _decl.Source ?? _decl.Pos;
+        int file = _c.DiFile(at.File);
         var types = new[] { _c.DiTypeRef(_inst.Ret) }.Concat(_inst.Params.Select(_c.DiTypeRef));
         int fnType = _c.MetaUnique($"!DISubroutineType(types: !{{{string.Join(", ", types)}}})");
         // No linkageName: a debugger then shows the Tessera name (`S32.to<S64>`) instead of the mangled symbol.
         _sp = _c.Meta($"distinct !DISubprogram(name: {Compiler.MetaString(_decl.DisplayName)}, "
-            + $"scope: !{file}, file: !{file}, line: {_decl.Pos.Line}, "
-            + $"type: !{fnType}, scopeLine: {_decl.Pos.Line}, spFlags: {(_c.Optimized ? "DISPFlagDefinition | DISPFlagOptimized" : "DISPFlagDefinition")}, unit: !{_c.DiUnit()}, retainedNodes: !{{}})");
-        _scope = _sp;
+            + $"scope: !{file}, file: !{file}, line: {at.Line}, "
+            + $"type: !{fnType}, scopeLine: {at.Line}, spFlags: {(_c.Optimized ? "DISPFlagDefinition | DISPFlagOptimized" : "DISPFlagDefinition")}, unit: !{_c.DiUnit()}, retainedNodes: !{{}})");
+        (_scope, _spFile, _scopeFile) = (_sp, file, file);
     }
 
-    /// A DILocation in the current scope.
-    private int Location(Pos pos) =>
-        _c.MetaUnique($"!DILocation(line: {pos.Line}, column: {pos.Col}, scope: !{_scope})");
+    /// A DILocation in the current scope. A place in another file (a `#source`) is in that file's view of the scope.
+    private int Location(Pos pos)
+    {
+        int file = _c.DiFile(pos.File);
+        int scope = file == _scopeFile ? _scope
+            : _c.MetaUnique($"!DILexicalBlockFile(scope: !{_scope}, file: !{file}, discriminator: 0)");
+        return _c.MetaUnique($"!DILocation(line: {pos.Line}, column: {pos.Col}, scope: !{scope})");
+    }
 
     /// The location the operations emitted from now on carry.
     private void At(Pos pos)
@@ -241,7 +260,7 @@ public sealed class FunctionGen
     {
         string argPart = arg > 0 ? $"arg: {arg}, " : "";
         int variable = _c.Meta($"!DILocalVariable(name: {Compiler.MetaString(IrName(name))}, {argPart}scope: !{_scope}, "
-            + $"file: !{_c.DiFile(_decl.File)}, line: {pos.Line}, type: !{_c.DiType(t)})");
+            + $"file: !{_c.DiFile(pos.File)}, line: {pos.Line}, type: !{_c.DiType(t)})");
         int location = Location(pos);
         string slot = $"%dbg.{_debugSlots++}";
         _allocas.Add($"{slot} = alloca {t.Llvm}");
@@ -263,12 +282,12 @@ public sealed class FunctionGen
     /// The routine's parameters as variables, after they're unpacked from the C ABI.
     private List<string> ParamRecords()
     {
-        _scope = _sp;
+        (_scope, _scopeFile) = (_sp, _spFile);
         var lines = new List<string>();
         for (int i = 0; i < _decl.Params.Count; i++)
             if (_inst.Params[i] is not VoidType)
                 lines.AddRange(ValueRecords(_decl.Params[i].Name, $"%a.{IrName(_decl.Params[i].Name)}", _inst.Params[i],
-                    _decl.Params[i].Pos, arg: i + 1));
+                    _decl.Source ?? _decl.Params[i].Pos, arg: i + 1));
         return lines;
     }
 
@@ -291,14 +310,22 @@ public sealed class FunctionGen
 
     private void EmitBlock(BlockDecl b)
     {
+        try { EmitBlockCore(b); }
+        catch (CompileError e) when (b.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
+    }
+
+    private void EmitBlockCore(BlockDecl b)
+    {
         _blockName = b.Name;
         _cur = new LBlock($"b.{b.Name}");
         _lblocks.Add(_cur);
         if (Debug)
         {
             // A block is a naming scope: its values are variables of a lexical block of the routine.
-            _scope = _c.Meta($"distinct !DILexicalBlock(scope: !{_sp}, file: !{_c.DiFile(_decl.File)}, line: {b.Pos.Line}, column: {b.Pos.Col})");
-            At(b.Pos);
+            var at = b.Source ?? b.Pos;
+            _scopeFile = _c.DiFile(at.File);
+            _scope = _c.Meta($"distinct !DILexicalBlock(scope: !{_sp}, file: !{_scopeFile}, line: {at.Line}, column: {at.Col})");
+            At(at);
         }
 
         _values = new Dictionary<string, Val>(_routineParams);
@@ -308,7 +335,7 @@ public sealed class FunctionGen
             _values[b.Params[i].Name] = new Val(ParamOp(b.Name, b.Params[i].Name), types[i]);
             if (Debug && types[i] is not VoidType)
                 (_blockRecords.TryGetValue(b.Name, out var records) ? records : _blockRecords[b.Name] = [])
-                    .AddRange(ValueRecords(b.Params[i].Name, ParamOp(b.Name, b.Params[i].Name), types[i], b.Params[i].Pos));
+                    .AddRange(ValueRecords(b.Params[i].Name, ParamOp(b.Name, b.Params[i].Name), types[i], b.Source ?? b.Params[i].Pos));
         }
 
         foreach (var s in b.Stmts) EmitStmt(s);
@@ -332,7 +359,13 @@ public sealed class FunctionGen
 
     private void EmitStmt(Stmt s)
     {
-        At(s.Pos);
+        try { EmitStmtCore(s); }
+        catch (CompileError e) when (s.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
+    }
+
+    private void EmitStmtCore(Stmt s)
+    {
+        At(s.Source ?? s.Pos);
         switch (s)
         {
             case GuardStmt g:
@@ -358,7 +391,7 @@ public sealed class FunctionGen
                 else
                     Line($"{op} = {Copy(v, t)}");
                 Define(b.Name, new Val(op, t), b.Pos);
-                DescribeValue(b.Name, op, t, b.Pos);
+                DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
                 // `claim %p : @T <- value` is the claim, then `%p.store(value)`.
                 if (b.Value is ClaimExpr { Contents: { } contents })
                     EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "store", [], [contents], contents.Pos), VoidType.Instance);
@@ -379,7 +412,7 @@ public sealed class FunctionGen
                     string op = LocalOp(name);
                     Line($"{op} = extractvalue {tuple.Llvm} {v.Op}, {shape.ValuePath(i)}");
                     Define(name, new Val(op, tuple.Args[i]), pos);
-                    DescribeValue(name, op, tuple.Args[i], pos);
+                    DescribeValue(name, op, tuple.Args[i], d.Source ?? pos);
                 }
                 break;
             }
@@ -1958,7 +1991,13 @@ public sealed class FunctionGen
 
     private void EmitTerminator(Terminator term)
     {
-        At(term.Pos);
+        try { EmitTerminatorCore(term); }
+        catch (CompileError e) when (term.Source is { } source && !e.FromSource) { throw FromSource(e, source); }
+    }
+
+    private void EmitTerminatorCore(Terminator term)
+    {
+        At(term.Source ?? term.Pos);
         switch (term)
         {
             case JumpTerm j:

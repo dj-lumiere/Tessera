@@ -292,6 +292,40 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new ConformDecl(file, attrs, clauses, pos);
     }
 
+    /// `#source("gcd.mini", 5, 9)`: a place in a generator's input, the column optional. A relative file is relative
+    /// to this file's directory.
+    private Pos SourceOf(Attribute a)
+    {
+        if (a.Args.Count is < 2 or > 3 || a.Args.Any(x => x.Key is not null || x.Expr is not null))
+            throw new CompileError(a.Pos, "#source takes a file, a line and an optional column: #source(\"gcd.mini\", 5, 9)");
+        if (!int.TryParse(a.Args[1].Value, out int line) || line < 1)
+            throw new CompileError(a.Pos, $"#source's line is a number from 1, not {a.Args[1].Value}");
+        int col = 0;
+        if (a.Args.Count == 3 && (!int.TryParse(a.Args[2].Value, out col) || col < 1))
+            throw new CompileError(a.Pos, $"#source's column is a number from 1, not {a.Args[2].Value}");
+        string path = a.Args[0].Value;
+        if (!Path.IsPathRooted(path)) path = Path.Combine(Path.GetDirectoryName(file) ?? "", path);
+        return new Pos(path, line, col);
+    }
+
+    /// Whether a block comes next, and the `#source` on the line before it if any. Attributes that aren't followed
+    /// by a block belong to the next declaration, so they're left for it.
+    private (bool IsBlock, Pos? Source) NextBlockSource()
+    {
+        if (!Is(TokenKind.Hash)) return (IsIdent("block"), null);
+        int start = _i;
+        var attrs = ParseAttributes();
+        if (!IsIdent("block"))
+        {
+            _i = start;
+            return (false, null);
+        }
+        Pos? source = null;
+        foreach (var a in attrs)
+            source = a.Name == "source" ? SourceOf(a) : throw new CompileError(a.Pos, $"a block takes #source, not #{a.Name}");
+        return (true, source);
+    }
+
     /// Every type name a type is written with: `Ptr`, `U` in `@U`, `Array`, `T` and `N` in `Array<T, N>`.
     private static IEnumerable<string> NamesIn(TypeRef t) =>
         new[] { t.Name }.Concat(t.Args.OfType<TypeArgType>().SelectMany(a => NamesIn(a.Type)));
@@ -368,6 +402,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             }
         }
 
+        var source = attrs.FirstOrDefault(a => a.Name == "source") is { } src ? SourceOf(src) : (Pos?)null;
         if (inConcept)
             return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
 
@@ -376,18 +411,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (!IsIdent("block"))
         {
             if (attrs.Any(a => a.Name == "external"))
-                return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
+                return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs, Source = source };
             throw new CompileError(pos, $"routine '{display}' has no body: it needs a 'block entry():'");
         }
 
         var blocks = new List<BlockDecl>();
-        while (IsIdent("block")) blocks.Add(ParseBlock());
+        while (NextBlockSource() is var (isBlock, blockSource) && isBlock)
+            blocks.Add(ParseBlock() with { Source = blockSource });
         _inAsm = false;
         if (blocks[0].Name != "entry")
             throw new CompileError(blocks[0].Pos, $"the first block of routine '{display}' must be 'entry'");
         if (blocks[0].Params.Count != 0)
             throw new CompileError(blocks[0].Pos, "the entry block takes no parameters");
-        return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, blocks, pos) { Fixed = fixedArgs };
+        return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, blocks, pos) { Fixed = fixedArgs, Source = source };
     }
 
     private RecordDecl ParseRecord(List<Attribute> attrs)
@@ -684,46 +720,79 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var stmts = new List<Stmt>();
         while (true)
         {
-            // `#asm_prefix("lock")` on the line before an instruction of an assembly routine.
-            if (_inAsm && Is(TokenKind.Hash) && PeekTok(1) is { Kind: TokenKind.Ident, Text: "asm_prefix" })
+            // Attributes on the line before a line of the block: `#source(...)` on any, and `#asm_prefix("lock")` on an
+            // instruction of an assembly routine.
+            if (AtBlockEnd())
+                throw new CompileError(pos, $"block '{name.Text}' does not end with a terminator");
+            Pos? lineSource = null;
+            List<Attribute> prefixes = [];
+            if (Is(TokenKind.Hash))
             {
-                var attrs = ParseAttributes();
-                var at = Cur.Pos;
-                if (AtBlockEnd() || IsKeyword(Cur) && TerminatorKeywords.Contains(Cur.Text)
-                    || ParseStmt() is not ExprStmt annotated)
-                    throw new CompileError(at, "#asm_prefix goes on the line before an instruction");
-                ExpectLineEnd();
-                stmts.Add(annotated with { Attributes = attrs });
-                continue;
+                foreach (var a in ParseAttributes())
+                {
+                    if (a.Name == "source") lineSource = SourceOf(a);
+                    else if (a.Name == "asm_prefix" && _inAsm) prefixes.Add(a);
+                    else
+                        throw new CompileError(a.Pos, _inAsm
+                            ? $"a line of a block takes #source or #asm_prefix, not #{a.Name}"
+                            : $"a line of a block takes #source, not #{a.Name}");
+                }
+                if (AtBlockEnd())
+                    throw new CompileError(Cur.Pos, "an attribute goes on the line before the line it describes");
             }
             if (AtBlockEnd())
                 throw new CompileError(pos, $"block '{name.Text}' does not end with a terminator");
 
             if (IsKeyword(Cur) && TerminatorKeywords.Contains(Cur.Text))
             {
-                var term = ParseTerminator();
+                if (prefixes.Count > 0) throw new CompileError(prefixes[0].Pos, "#asm_prefix goes on the line before an instruction");
+                var term = ParseTerminator() with { Source = lineSource };
                 if (!HasContinue(term)) return new BlockDecl(name.Text, parameters, stmts, term, pos);
                 // a `continue` arm goes on with the next line, so the block isn't over
                 if (term is not (BranchTerm or WhenCondTerm or WhenValueTerm))
                     throw new CompileError(term.Pos, "continue is an arm of branch or when");
                 if (AtBlockEnd())
                     throw new CompileError(term.Pos, "a continue arm needs lines after it; the block still ends with a terminator");
-                stmts.Add(new GuardStmt(term, term.Pos));
+                stmts.Add(new GuardStmt(term, term.Pos) { Source = lineSource });
                 continue;
             }
 
-            var stmt = ParseStmt();
+            var stmt = ParseStmt() with { Source = lineSource };
             ExpectLineEnd();
+            if (prefixes.Count > 0)
+                stmt = stmt is ExprStmt instruction
+                    ? instruction with { Attributes = prefixes }
+                    : throw new CompileError(prefixes[0].Pos, "#asm_prefix goes on the line before an instruction");
 
             // A bare call as the last line of a block is a #noreturn terminator, such as `trap()`.
             if (AtBlockEnd() && stmt is ExprStmt e)
-                return new BlockDecl(name.Text, parameters, stmts, new TargetTerm(new ExprTarget(e.Value, e.Pos), e.Pos), pos);
+                return new BlockDecl(name.Text, parameters, stmts,
+                    new TargetTerm(new ExprTarget(e.Value, e.Pos), e.Pos) { Source = e.Source }, pos);
 
             stmts.Add(stmt);
         }
     }
 
-    private bool AtBlockEnd() => AtDeclStart() || IsIdent("block");
+    /// Whether the block is over: a declaration or another block comes next. Attribute lines end it when one of
+    /// those follows them; before a line of the block (`#source(...)`) they don't.
+    private bool AtBlockEnd()
+    {
+        if (!Is(TokenKind.Hash)) return AtDeclStart() || IsIdent("block");
+        int start = _i;
+        try
+        {
+            ParseAttributes();
+            return AtDeclStart() || IsIdent("block");
+        }
+        catch (CompileError)
+        {
+            return false;   // the line's own parse reports it
+        }
+        finally
+        {
+            _i = start;
+        }
+    }
 
     /// Whether the current line is a `when` arm: it has a `->` before its end. Layout doesn't matter, so this is
     /// how the arms end when lines follow a `when` with a `continue` arm.

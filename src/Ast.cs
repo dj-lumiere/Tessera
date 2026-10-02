@@ -87,6 +87,9 @@ public sealed record RoutineDecl(
     /// declare: `S64` in `S32.to<S64>`, `@T` in `Array<T, N>.to<@T>`. A call picks the one its type arguments match.
     public List<TypeRef> Fixed { get; init; } = [];
 
+    /// `#source("gcd.mini", 5, 9)` among its attributes: the place in a generator's input it came from.
+    public Pos? Source { get; init; }
+
     public string DisplayName => (Owner is null ? Name : $"{Owner}.{Name}")
         + (Fixed.Count == 0 ? "" : $"<{string.Join(", ", Fixed)}>");
 }
@@ -133,7 +136,11 @@ public sealed record ConceptDecl(
     string File, List<Attribute> Attributes, string Name, List<string> TypeParams, List<Clause> Clauses,
     List<RoutineDecl> Routines, Pos Pos) : Decl(File, Attributes, Pos);
 
-public sealed record BlockDecl(string Name, List<Param> Params, List<Stmt> Stmts, Terminator Terminator, Pos Pos);
+public sealed record BlockDecl(string Name, List<Param> Params, List<Stmt> Stmts, Terminator Terminator, Pos Pos)
+{
+    /// `#source("gcd.mini", 5, 9)` on the line before: the place in a generator's input this block came from.
+    public Pos? Source { get; init; }
+}
 
 public sealed record Module(List<Decl> Decls);
 
@@ -150,7 +157,11 @@ public sealed record AliasDecl(string File, List<Attribute> Attributes, TypeRef 
 
 // ── Statements ──────────────────────────────────────────────────────────────
 
-public abstract record Stmt(Pos Pos);
+public abstract record Stmt(Pos Pos)
+{
+    /// `#source("gcd.mini", 5, 9)` on the line before: the place in a generator's input this line came from.
+    public Pos? Source { get; init; }
+}
 
 /// `%x: T = expr` — a binding. The expression is evaluated; memory is not read.
 public sealed record BindStmt(string Name, TypeRef Type, Expr Value, Pos Pos) : Stmt(Pos);
@@ -252,7 +263,11 @@ public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
 
 // ── Terminators ─────────────────────────────────────────────────────────────
 
-public abstract record Terminator(Pos Pos);
+public abstract record Terminator(Pos Pos)
+{
+    /// `#source("gcd.mini", 5, 9)` on the line before: the place in a generator's input this line came from.
+    public Pos? Source { get; init; }
+}
 
 /// A target in a jump / branch / select / switch position.
 public abstract record Target(Pos Pos);

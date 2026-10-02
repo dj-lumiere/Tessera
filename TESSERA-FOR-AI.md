@@ -365,6 +365,9 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 - Every routine with a body starts with `block entry():`, which takes no parameters. A routine without blocks must
   be `#external`.
 
+**Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
+routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.
+
 **Naming conversions.** A conversion to a type is `to<T>()`: `%n.to<S64>()`, `%x.to_wrap<U8>()`, `%arr.to<@T>()`,
 `%p.to<@U>()` (each pair of types is its own routine, `routine S32.to<S64>`). There is no `to_s64` or `as_<type>`.
 Other ways to make a value are named for what they make (`%out.to_bytes()`).

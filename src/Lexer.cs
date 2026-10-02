@@ -23,7 +23,8 @@ public enum TokenKind
 
 public readonly record struct Pos(string File, int Line, int Col)
 {
-    public override string ToString() => $"{File}:{Line}:{Col}";
+    /// `file:line:col`, or `file:line` for a place with no column (a `#source` that gives none).
+    public override string ToString() => Col > 0 ? $"{File}:{Line}:{Col}" : $"{File}:{Line}";
 }
 
 /// Source files are UTF-8 (a BOM is allowed); anything else is an error at the first byte that doesn't decode,
@@ -81,6 +82,12 @@ public sealed record Token(TokenKind Kind, string Text, Pos Pos, BigInteger IntV
 public sealed class CompileError(Pos pos, string message) : Exception($"{pos}: error: {message}")
 {
     public Pos Pos { get; } = pos;
+
+    /// The message without its place.
+    public string Text { get; } = message;
+
+    /// Already moved to the place a `#source` names, so an enclosing one leaves it.
+    public bool FromSource { get; init; }
 
     /// An error no fallback may swallow: a lookup that tries a name as a type and then as something else still
     /// reports it (a module the target doesn't have).
