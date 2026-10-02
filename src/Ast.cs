@@ -45,7 +45,7 @@ public sealed record Attribute(string Name, List<AttrArg> Args, Pos Pos)
 
 public sealed record Param(string Name, TypeRef Type, Pos Pos)
 {
-    /// `hi: U64 = REG2`: the register an assembly routine's parameter arrives in, as written.
+    /// `hi: U64 = R2`: the register an assembly routine's parameter arrives in, as written.
     public Token? Register { get; init; }
 }
 

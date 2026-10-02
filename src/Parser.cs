@@ -611,7 +611,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 var n = ValueName("a parameter name");
                 Expect(TokenKind.Colon, "':'");
                 var type = ParseType();
-                // `hi: U64 = REG2`: the register an assembly routine's parameter arrives in.
+                // `hi: U64 = R2`: the register an assembly routine's parameter arrives in.
                 Token? register = Accept(TokenKind.Eq) ? Expect(TokenKind.Ident, "a register after '='") : null;
                 list.Add(new Param(n.Text, type, n.Pos) { Register = register });
             } while (Accept(TokenKind.Comma));
@@ -950,7 +950,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     internal static readonly HashSet<string> AsmComparisons = ["eq", "ne", "lt", "le", "gt", "ge"];
 
-    /// `eq` or `lt<U64>` as an assembly `branch` condition or condition operand (`csel<U64, U64>(REG1, REG2, lt<U64>)`):
+    /// `eq` or `lt<U64>` as an assembly `branch` condition or condition operand (`csel<U64, U64>(R1, R2, lt<U64>)`):
     /// a comparison of the flags the last instruction left. `lt<U64>(…)` is a call instead, RISC-V's comparison.
     private AsmCondExpr? AsmCondition()
     {

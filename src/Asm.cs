@@ -147,7 +147,7 @@ internal sealed class AsmLowering
     // ── #naked ──────────────────────────────────────────────────────────────
 
     /// A #naked routine is entered by a call, so each parameter is where the C calling convention puts it, and the
-    /// result goes where it expects one. Each parameter names that register (`from: @Addr = REG7`), and the builder
+    /// result goes where it expects one. Each parameter names that register (`from: @Addr = R7`), and the builder
     /// checks it against the convention, since the routine itself can't move anything.
     private void CheckNakedRegisters(List<Result> results)
     {
@@ -209,7 +209,7 @@ internal sealed class AsmLowering
     }
 
     private static string WrittenName(Reg r) =>
-        (r.Class switch { RegClass.Vec => "VREG", RegClass.Fpr => "FREG", _ => "REG" }) + r.Index;
+        (r.Class switch { RegClass.Vec => "V", RegClass.Fpr => "F", _ => "R" }) + r.Index;
 
     private int AddOutput(string constraint, DType type)
     {
@@ -264,7 +264,7 @@ internal sealed class AsmLowering
 
     private Reg? Numbered(string name)
     {
-        foreach (var (prefix, cls) in new[] { ("REG", RegClass.Gpr), ("VREG", RegClass.Vec), ("FREG", RegClass.Fpr) })
+        foreach (var (prefix, cls) in new[] { ("R", RegClass.Gpr), ("V", RegClass.Vec), ("F", RegClass.Fpr) })
         {
             if (!name.StartsWith(prefix, StringComparison.Ordinal) || name.Length == prefix.Length) continue;
             string digits = name[prefix.Length..];
@@ -283,7 +283,7 @@ internal sealed class AsmLowering
         return null;
     }
 
-    /// The register after a parameter's '=': `hi: U64 = REG2`.
+    /// The register after a parameter's '=': `hi: U64 = R2`.
     private Reg ParamRegister(int param)
     {
         var placed = _r.Params[param].Register!;
@@ -338,14 +338,14 @@ internal sealed class AsmLowering
         _ => throw new CompileError(_r.Pos, $"{r.Written} isn't a register a value can be in"),
     };
 
-    /// `RDX=REG2`: the architecture's name next to Tessera's, as a build error shows a register.
+    /// `RDX=R2`: the architecture's name next to Tessera's, as a build error shows a register.
     private string Shown(Reg r) => r.Class switch
     {
         RegClass.Gpr or RegClass.Vec or RegClass.Fpr => $"{LlvmName(r, null).ToUpperInvariant()}={r.Written}",
         _ => r.Written,
     };
 
-    /// The register as the assembler writes it, viewed at this type: `eax` for a U32 in REG0.
+    /// The register as the assembler writes it, viewed at this type: `eax` for a U32 in R0.
     private string RegText(Reg r, DType t, Pos pos)
     {
         int bits = Bits(t, pos);
@@ -467,12 +467,12 @@ internal sealed class AsmLowering
     {
         var rt = _sig.Ret;
         if (ret.Value is null)
-            return rt is VoidType ? [] : throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns {rt}: name its register, return(REG0)");
+            return rt is VoidType ? [] : throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns {rt}: name its register, return(R0)");
         if (rt is VoidType) throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns nothing: return()");
         if (rt is RecordType { IsTuple: true } tuple)
         {
             if (ret.Value is not ArrayLit { Type: null } lit || lit.Elements.Count != tuple.Args.Count)
-                throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns {rt}: name {tuple.Args.Count} registers, return({{ REG0, REG2 }})");
+                throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns {rt}: name {tuple.Args.Count} registers, return({{ R0, R2 }})");
             return lit.Elements.Select((e, i) => ResultItem(e, tuple.Args[i])).ToList();
         }
         return [ResultItem(ret.Value, rt)];
@@ -497,7 +497,7 @@ internal sealed class AsmLowering
                 return new Result(-1, reg, t);
             }
             default:
-                throw new CompileError(e.Pos, "a result is a register (REG0) or a parameter's register (a)");
+                throw new CompileError(e.Pos, "a result is a register (R0) or a parameter's register (a)");
         }
     }
 
@@ -607,7 +607,7 @@ internal sealed class AsmLowering
     private string Instruction(Stmt s)
     {
         if (s is not ExprStmt es)
-            throw new CompileError(s.Pos, "an assembly body holds instructions, one per line: add<U64, U64>(REG0, REG3)");
+            throw new CompileError(s.Pos, "an assembly body holds instructions, one per line: add<U64, U64>(R0, R3)");
         string prefix = "";
         foreach (var a in es.Attributes)
         {
@@ -616,8 +616,8 @@ internal sealed class AsmLowering
             prefix += Escape(p.Value) + " ";
         }
 
-        // An instruction is written like a routine, its operands in the assembler's order: push<U64>(REG5),
-        // add<U64, U64>(REG0, REG3), rdtsc().
+        // An instruction is written like a routine, its operands in the assembler's order: push<U64>(R5),
+        // add<U64, U64>(R0, R3), rdtsc().
         (string mnemonic, List<TypeRef> typeArgs, List<Expr> operands) = es.Value switch
         {
             CallExpr { Path: null } c => (c.Name, c.TypeArgs, c.Args),
@@ -625,7 +625,7 @@ internal sealed class AsmLowering
                 $"an instruction is written like a routine, its operands in order: {ns.Name}<…>({o.Name}{(ns.Args.Count > 0 ? ", …" : "")})"),
             MethodCallExpr m => throw new CompileError(m.Pos,
                 $"an instruction is written like a routine, its operands in order: {m.Name}<…>({OperandName(m.Receiver)}{(m.Args.Count > 0 ? ", …" : "")})"),
-            _ => throw new CompileError(es.Pos, "an instruction is written like a routine, its operands in order: add<U64, U64>(REG0, REG3), rdtsc()"),
+            _ => throw new CompileError(es.Pos, "an instruction is written like a routine, its operands in order: add<U64, U64>(R0, R3), rdtsc()"),
         };
         // One type per register, in order: a register, a parameter's register, or the memory a memory operand
         // reads (its size). An immediate and a condition take none.
@@ -700,7 +700,7 @@ internal sealed class AsmLowering
             NsCallExpr { Owner: { Args.Count: 0, Path: null } o, TypeArgs.Count: 0 } ns =>
                 ((Expr?)new PresetRef(null, o.Name, ns.Pos), ns.Name, ns.Args, ns.Pos),
             MethodCallExpr { TypeArgs.Count: 0 } m => (m.Receiver, m.Name, m.Args, m.Pos),
-            _ => throw new CompileError(e.Pos, "a memory operand is built from its base register: REG3.offset(8)"),
+            _ => throw new CompileError(e.Pos, "a memory operand is built from its base register: R3.offset(8)"),
         };
         BigInteger Literal(Expr x) => x is IntLit l ? l.Value
             : throw new CompileError(x.Pos, "an offset or a scale is an integer literal");
@@ -811,9 +811,9 @@ internal sealed class AsmLowering
                 return (_arch == Arch.X86 ? "j" : "b.") + (negate ? Opposite(code) : code) + " " + label;
             }
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" }:
-                throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt<U64>(REG10, REG11) ? … : …");
+                throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt<U64>(R10, R11) ? … : …");
             case NsCallExpr or MethodCallExpr when _arch == Arch.Rv:
-                throw new CompileError(cond.Pos, "a RISC-V branch compares two registers, written like a call: lt<U64>(REG10, REG11)");
+                throw new CompileError(cond.Pos, "a RISC-V branch compares two registers, written like a call: lt<U64>(R10, R11)");
             case CallExpr { Path: null } c when _arch == Arch.Rv:
             {
                 var (name, types, pos) = (c.Name, c.TypeArgs, c.Pos);
@@ -822,7 +822,7 @@ internal sealed class AsmLowering
                 if (negate)
                     name = name switch { "eq" => "ne", "ne" => "eq", "lt" => "ge", "ge" => "lt", "gt" => "le", _ => "gt" };
                 if (c.Args.Count != 2 || types.Count > 1)
-                    throw new CompileError(pos, $"a RISC-V branch compares two registers: {name}<U64>(REG10, REG11)");
+                    throw new CompileError(pos, $"a RISC-V branch compares two registers: {name}<U64>(R10, R11)");
                 var (left, right) = (c.Args[0], c.Args[1]);
                 bool? signed = Signedness(name, types.Count == 1 ? types[0] : null, pos);
                 var operandType = types.Count == 1 ? _c.ResolveType(types[0], _sig.Env) : _c.USize;
@@ -840,7 +840,7 @@ internal sealed class AsmLowering
             }
             default:
                 throw new CompileError(cond.Pos, _arch == Arch.Rv
-                    ? "a RISC-V branch compares two registers: lt<U64>(REG10, REG11)"
+                    ? "a RISC-V branch compares two registers: lt<U64>(R10, R11)"
                     : "an assembly branch tests the flags: eq, ne, lt<U64> … or a FLAGS field such as FLAGS.Carry");
         }
     }
@@ -873,7 +873,7 @@ internal sealed class AsmLowering
         Arch.A64 => ConditionCode(cond),
         Arch.X86 => throw new CompileError(cond.Pos,
             "x86 spells a condition in the mnemonic (setc, cmovb), so it isn't an operand; a branch tests it"),
-        _ => throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt<U64>(REG10, REG11) ? … : …"),
+        _ => throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt<U64>(R10, R11) ? … : …"),
     };
 
     private string CompareOperand(Expr e, DType t) => e switch
@@ -942,7 +942,7 @@ internal sealed class AsmLowering
             foreach (var a in attr.Args)
             {
                 if (a.Key is not null || a.Negated || a.Expr is not null)
-                    throw new CompileError(attr.Pos, "#clobbers lists registers, FLAGS and MEMORY: #clobbers(REG2, FLAGS)");
+                    throw new CompileError(attr.Pos, "#clobbers lists registers, FLAGS and MEMORY: #clobbers(R2, FLAGS)");
                 if (a.Value == "MEMORY") { Add("~{memory}"); continue; }
                 if (a.Value == "FLAGS")
                 {
