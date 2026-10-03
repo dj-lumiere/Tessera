@@ -121,7 +121,8 @@ routine main() -> S32
   `#target(os: ("linux", "macos"))`, `#target(arch: not ("x86_64", "aarch64"))`. Say the set you mean: POSIX code is
   `os: ("linux", "macos")`, not `os: not "windows"`, which a target without an OS (`none`) matches too.
 - Every routine is LLVM `nounwind` (Tessera has no unwinding); there's no attribute for it. `#no_builtins` stops LLVM
-  from turning a routine's loops into C library calls: only for a routine that is one (the stdlib's `memcpy`).
+  from turning a routine's loops into C library calls: only for a routine that is one (the stdlib's `memcpy`, its
+  soft-float runtime).
 - `#inline` inlines a routine at every call (LLVM `alwaysinline`, not a hint). Put it on small routines in hot loops
   (a hash round, a generator step), not on large ones. It's a build error on an `#external` routine (no body), on a
   recursive one (directly or through other routines), and on one used as a `Callable` value. `#noinline` (LLVM
@@ -250,7 +251,6 @@ routine main() -> S32
   `#[export("tessera_crash_handler"), noreturn] routine my_handler(name: Bytes, message: Bytes, place:
   @SourceLocation) -> Void`. A stdlib routine that crashes on its caller's mistake is `#track_caller`, so the place is
   the caller's line; mark a routine of your own the same way when its crashes are its caller's fault.
-- Expected failures return `Result<T, E>`. There's no `?`: `when r` with `.Success(v)` / `.Failure(e)` arms.
 - The crash trace: the builder keeps a shadow stack of the program's routines (not the stdlib's, not `#inline` or
   `#untraced` ones, not the handler), and the default handler prints it after the place, innermost first:
   `Stack trace:` then `  0: at fill (grid.tess:12:9)`, and `  ... (40 frames total)` past the 32 it keeps. A handler
@@ -259,6 +259,7 @@ routine main() -> S32
   `TRACE_CAPACITY`). It's on in debug and release, off in release-time and release-space; `--no-trace` / `--trace`
   or `[debug] trace = false|true` in config.toml override that. Thread-local with an OS, a plain global without.
   A handler's own helper routines should be `#untraced` (they'd push onto the trace it's reading).
+- Expected failures return `Result<T, E>`. There's no `?`: `when r` with `.Success(v)` / `.Failure(e)` arms.
 
 **Records**
 
@@ -445,8 +446,13 @@ build error ("Standard::Os needs an operating system ..."); there's no `Out`, fi
 `make_heap_allocator`. The program exports its own crash handler (`#[export("tessera_crash_handler"), noreturn]`, which
 may loop forever), passes its own `Allocator` if it allocates, and brings its startup code and link script. The
 stdlib supplies `memcpy` / `memmove` / `memset` / `memcmp` (and ARM's `__aeabi_mem*`) there, weak, from
-`Standard/Freestanding.tess`; soft-float helpers come from compiler-rt or libgcc. `tests/freestanding` is such a
-program (CI builds it; the golden run skips it).
+`Standard/Freestanding.tess`, and the whole compiler runtime from `Standard/SoftFloat/`, so nothing needs compiler-rt
+or libgcc: the soft-float routines LLVM calls for F16 / BF16 / F32 / F64 without a floating-point unit (`__addsf3`,
+`__aeabi_dmul`, `__truncsfhf2`, `sqrtf`, ...), integer division (`__udivdi3`, `__aeabi_uldivmod`, ...), and
+`__clzsi2`, written with integer operations only, weak and `#no_builtins`. Each export wraps an ordinary routine
+(`soft_f32_add(a, b)` on the bits) that any target can call, which is how `tests/soft_float` checks them against the
+host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them and requires
+that nothing is left undefined; the golden run skips them).
 
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.

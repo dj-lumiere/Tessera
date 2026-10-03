@@ -1,0 +1,212 @@
+// Tessera stdlib: rounding and unpacking for the soft-float routines
+//
+// A target without a floating-point unit (32-bit ARM's arm-none-eabi, riscv32-none-elf) has LLVM call a routine for
+// every float operation: __addsf3, __aeabi_dmul, __truncsfhf2, and so on. A hosted target links compiler-rt or libgcc
+// for them; a target without an operating system gets them from the stdlib, written with integer operations only
+// (Standard/SoftFloat/). Every one of them ends the same way: an exact significand, possibly with a sticky bit for
+// what fell off below it, is rounded to nearest, ties to even, and packed with an exponent. The two routines here do
+// that for the formats whose bits fit in a U32 (F16, BF16, F32) and for F64.
+//
+// The significand m may sit at any bit position: the value is m × 2^(exponent - bias - sig_bits - 3), so a
+// significand whose leading bit is at sig_bits + 3 (the format's fraction bits plus three below them) has exponent
+// as its biased exponent. The rounding normalizes it, shifts it into the subnormals below exponent 1, overflows to
+// infinity at the all-ones exponent, and rounds on the three bits below the kept ones (half, then the rest).
+
+module Standard::Core
+
+/// A finite, nonzero value split for soft-float arithmetic: `value = sig × 2^(exponent - bias - sig_bits)` with
+/// the leading bit of `sig` at `sig_bits`, so a subnormal's exponent is 0 or below.
+record SoftParts32
+    sig      : U32
+    exponent : S32
+
+/// The F64 form of {SoftParts32}.
+record SoftParts64
+    sig      : U64
+    exponent : S32
+
+/// Rounds `m × 2^(exponent - bias - sig_bits - 3)` to nearest, ties to even, into a binary format whose bits fit in
+/// a U32 (F16, BF16, F32).
+/// :param sign: The sign bit, already in place (bit 15 or bit 31), or 0.
+/// :param exponent: The biased exponent the result has when `m`'s leading bit is at `sig_bits + 3`.
+/// :param m: The significand, nonzero; its lowest bit may be a sticky bit for nonzero bits below it.
+/// :param sig_bits: The format's stored fraction bits (10, 7, or 23).
+/// :param max_exponent: The format's all-ones exponent field (31 or 255).
+/// :returns: The bits of the rounded value: infinity beyond the format's range, a subnormal or zero below it.
+#inline
+routine soft_round_pack32(sign: U32, exponent: S32, m: U32, sig_bits: U32, max_exponent: S32) -> U32
+    block entry()
+        top   : U32  = sig_bits.add(3)
+        zeros : U32  = m.leading_zeros()
+        lead  : U32  = U32.sub(31, zeros)
+        wide  : Bool = lead.gt(top)
+        branch wide
+            ? narrow(lead.sub(top))
+            : widen(top.sub(lead))
+
+    // more bits than the format keeps: shift right, folding what falls off into the sticky bit
+    block narrow(shift: U32)
+        kept   : U32  = m.shr(shift)
+        lost   : Bool = kept.shl(shift).ne(m)
+        sticky : U32  = kept.bitor(lost.to<U32>())
+        jump place(sticky, exponent.add(shift.to<S32>()))
+
+    block widen(shift: U32)
+        jump place(m.shl(shift), exponent.sub(shift.to<S32>()))
+
+    block place(sig: U32, biased: S32)
+        overflow : Bool = biased.ge(max_exponent)
+        tiny     : Bool = biased.lt(1)
+        infinity : U32  = max_exponent.to<U32>().shl(sig_bits)
+        when
+            overflow -> return(sign.bitor(infinity))
+            tiny     -> subnormal(sig, biased)
+            else     -> round(sig, biased.to<U32>())
+
+    // below the smallest normal: shift to exponent 1's scale, which the field 0 encodes; a shift of 32 or more keeps
+    // only the sticky bit
+    block subnormal(sig: U32, biased: S32)
+        shift  : U32  = S32.sub(1, biased).to<U32>()
+        kept   : U32  = sig.shr(shift)
+        lost   : Bool = kept.shl(shift).ne(sig)
+        sticky : U32  = kept.bitor(lost.to<U32>())
+        jump round(sticky, 0)
+
+    // a carry out of the fraction bumps the exponent, up to infinity
+    block round(sig: U32, field: U32)
+        rest     : U32  = sig.bitand(7)
+        mask     : U32  = U32.shl(1, sig_bits).sub(1)
+        fraction : U32  = sig.shr(3).bitand(mask)
+        packed   : U32  = sign.bitor(field.shl(sig_bits)).bitor(fraction)
+        odd      : Bool = packed.bitand(1).eq(1)
+        up       : Bool = rest.gt(4).bitor(rest.eq(4).bitand(odd))
+        r        : U32  = packed.add(up.to<U32>())
+        return(r)
+
+/// Rounds `m × 2^(exponent - 1023 - 52 - 3)` to nearest, ties to even, into F64 bits: {soft_round_pack32} for F64.
+/// :param sign: The sign bit, already in place (bit 63), or 0.
+/// :param exponent: The biased exponent the result has when `m`'s leading bit is at 55.
+/// :param m: The significand, nonzero; its lowest bit may be a sticky bit for nonzero bits below it.
+/// :returns: The bits of the rounded F64: infinity beyond its range, a subnormal or zero below it.
+#inline
+routine soft_round_pack64(sign: U64, exponent: S32, m: U64) -> U64
+    block entry()
+        zeros : U64  = m.leading_zeros()
+        lead  : U64  = U64.sub(63, zeros)
+        wide  : Bool = lead.gt(55)
+        branch wide
+            ? narrow(lead.sub(55))
+            : widen(U64.sub(55, lead))
+
+    block narrow(shift: U64)
+        kept   : U64  = m.shr(shift)
+        lost   : Bool = kept.shl(shift).ne(m)
+        sticky : U64  = kept.bitor(lost.to<U64>())
+        jump place(sticky, exponent.add(shift.to_wrap<S32>()))
+
+    block widen(shift: U64)
+        jump place(m.shl(shift), exponent.sub(shift.to_wrap<S32>()))
+
+    block place(sig: U64, biased: S32)
+        overflow : Bool = biased.ge(0x7FF)
+        tiny     : Bool = biased.lt(1)
+        when
+            overflow -> return(sign.bitor(0x7FF0000000000000))
+            tiny     -> subnormal(sig, biased)
+            else     -> round(sig, biased.to<U64>())
+
+    block subnormal(sig: U64, biased: S32)
+        shift  : U64  = S32.sub(1, biased).to<U64>()
+        kept   : U64  = sig.shr(shift)
+        lost   : Bool = kept.shl(shift).ne(sig)
+        sticky : U64  = kept.bitor(lost.to<U64>())
+        jump round(sticky, 0)
+
+    block round(sig: U64, field: U64)
+        rest     : U64  = sig.bitand(7)
+        fraction : U64  = sig.shr(3).bitand(0x000FFFFFFFFFFFFF)
+        packed   : U64  = sign.bitor(field.shl(52)).bitor(fraction)
+        odd      : Bool = packed.bitand(1).eq(1)
+        up       : Bool = rest.gt(4).bitor(rest.eq(4).bitand(odd))
+        r        : U64  = packed.add(up.to<U64>())
+        return(r)
+
+/// Splits the magnitude of a finite, nonzero value of a format whose bits fit in a U32 into its significand and
+/// biased exponent, normalizing a subnormal so that its leading bit is at `sig_bits` too.
+/// :param magnitude: The value's bits without the sign bit; not zero, infinity, or NaN.
+/// :param sig_bits: The format's stored fraction bits.
+/// :returns: {SoftParts32}: `sig` in [2^sig_bits, 2^(sig_bits + 1)), and an exponent of 0 or below for a subnormal.
+#inline
+routine soft_unpack32(magnitude: U32, sig_bits: U32) -> SoftParts32
+    block entry()
+        implicit : U32  = U32.shl(1, sig_bits)
+        fraction : U32  = magnitude.bitand(implicit.sub(1))
+        field    : U32  = magnitude.shr(sig_bits)
+        normal   : Bool = field.ne(0)
+        branch normal
+            ? return(SoftParts32 { sig: fraction.bitor(implicit), exponent: field.to<S32>() })
+            : subnormal(fraction)
+
+    block subnormal(fraction: U32)
+        zeros    : U32         = fraction.leading_zeros()
+        shift    : U32         = zeros.sub(U32.sub(31, sig_bits))
+        exponent : S32         = S32.sub(1, shift.to<S32>())
+        parts    : SoftParts32 = SoftParts32 { sig: fraction.shl(shift), exponent: exponent }
+        return(parts)
+
+/// {soft_unpack32} for F64.
+/// :param magnitude: The F64's bits without the sign bit; not zero, infinity, or NaN.
+/// :returns: {SoftParts64}: `sig` in [2^52, 2^53), and an exponent of 0 or below for a subnormal.
+#inline
+routine soft_unpack64(magnitude: U64) -> SoftParts64
+    block entry()
+        fraction : U64  = magnitude.bitand(0x000FFFFFFFFFFFFF)
+        field    : U64  = magnitude.shr(52)
+        normal   : Bool = field.ne(0)
+        branch normal
+            ? return(SoftParts64 { sig: fraction.bitor(0x0010000000000000),
+                exponent: field.to_wrap<S32>() })
+            : subnormal(fraction)
+
+    block subnormal(fraction: U64)
+        zeros    : U64         = fraction.leading_zeros()
+        shift    : U64         = zeros.sub(11)
+        exponent : S32         = S32.sub(1, shift.to_wrap<S32>())
+        parts    : SoftParts64 = SoftParts64 { sig: fraction.shl(shift), exponent: exponent }
+        return(parts)
+
+/// `x >> shift` with the bits shifted out ORed into bit 0, the sticky bit; a shift of 32 or more leaves only it.
+/// :param x: The value to shift.
+/// :param shift: The shift amount.
+/// :returns: The shifted value with its sticky bit.
+#inline
+routine soft_shr_sticky32(x: U32, shift: U32) -> U32
+    block entry()
+        kept : U32  = x.shr(shift)
+        lost : Bool = kept.shl(shift).ne(x)
+        r    : U32  = kept.bitor(lost.to<U32>())
+        return(r)
+
+/// {soft_shr_sticky32} for a U64.
+/// :param x: The value to shift.
+/// :param shift: The shift amount.
+/// :returns: The shifted value with its sticky bit.
+#inline
+routine soft_shr_sticky64(x: U64, shift: U64) -> U64
+    block entry()
+        kept : U64  = x.shr(shift)
+        lost : Bool = kept.shl(shift).ne(x)
+        r    : U64  = kept.bitor(lost.to<U64>())
+        return(r)
+
+/// {soft_shr_sticky64} for a U128.
+/// :param x: The value to shift.
+/// :param shift: The shift amount.
+/// :returns: The shifted value with its sticky bit.
+#inline
+routine soft_shr_sticky128(x: U128, shift: U128) -> U128
+    block entry()
+        kept : U128 = x.shr(shift)
+        lost : Bool = kept.shl(shift).ne(x)
+        r    : U128 = kept.bitor(lost.to<U128>())
+        return(r)

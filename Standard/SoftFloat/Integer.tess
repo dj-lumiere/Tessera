@@ -1,0 +1,303 @@
+// Tessera stdlib: integer helpers in software
+//
+// What LLVM calls a routine for on a core without the instruction: division on 32-bit ARM before ARMv7-M's divide
+// (and on RISC-V without the M extension), 64-bit division on every 32-bit target, 128-bit division where LLVM
+// doesn't expand it inline (riscv32, and the 64-bit targets), multiplication without the M extension, 64-bit shifts
+// and multiplication on Thumb-1, and counting leading zeros before ARMv5. Exports.tess and Aeabi.tess export them.
+//
+// Each one is written without the operation it stands in for: division by shifting and subtracting, multiplication
+// by shifting and adding, 64-bit shifts from 32-bit ones, and the leading-zero count by halving. So none of them can
+// reach itself, whichever of them LLVM calls from the others.
+//
+// Division by zero is the caller's to rule out (Tessera's div crashes first); here it gives a quotient of all ones
+// and the dividend as the remainder.
+
+module Standard::Core
+
+// -- division ------------------------------------------------------------------
+
+/// U32 division and remainder by shifting and subtracting: compiler-rt's `__udivsi3` and `__umodsi3`.
+/// :param n: The dividend.
+/// :param d: The divisor.
+/// :returns: The quotient and the remainder.
+#no_builtins
+routine soft_u32_divmod(n: U32, d: U32) -> (U32, U32)
+    block entry()
+        when
+            d.eq(0) -> return({ U32.MAX, n })
+            n.lt(d) -> return({ 0, n })
+            else    -> start()
+
+    // the divisor's leading bit lines up with the dividend's, then one quotient bit a step
+    block start()
+        shift : U32 = d.leading_zeros().sub(n.leading_zeros())
+        jump step(n, d.shl(shift), 0, shift.add(1))
+
+    block step(rem: U32, div: U32, quotient: U32, left: U32)
+        done : Bool = left.eq(0)
+        branch done
+            ? return({ quotient, rem })
+            : continue
+        fits : Bool = rem.ge(div)
+        rest : U32  = fits
+            ? rem.sub_wrap(div)
+            : rem
+        next : U32 = quotient.shl(1).bitor(fits.to<U32>())
+        jump step(rest, div.shr(1), next, left.sub(1))
+
+/// U64 division and remainder by shifting and subtracting: compiler-rt's `__udivdi3` and `__umoddi3`.
+/// :param n: The dividend.
+/// :param d: The divisor.
+/// :returns: The quotient and the remainder.
+#no_builtins
+routine soft_u64_divmod(n: U64, d: U64) -> (U64, U64)
+    block entry()
+        when
+            d.eq(0) -> return({ U64.MAX, n })
+            n.lt(d) -> return({ 0, n })
+            else    -> start()
+
+    block start()
+        shift : U64 = d.leading_zeros().sub(n.leading_zeros())
+        jump step(n, d.shl(shift), 0, shift.add(1))
+
+    block step(rem: U64, div: U64, quotient: U64, left: U64)
+        done : Bool = left.eq(0)
+        branch done
+            ? return({ quotient, rem })
+            : continue
+        fits : Bool = rem.ge(div)
+        rest : U64  = fits
+            ? rem.sub_wrap(div)
+            : rem
+        next : U64 = quotient.shl(1).bitor(fits.to<U64>())
+        jump step(rest, div.shr(1), next, left.sub(1))
+
+/// U128 division and remainder by shifting and subtracting: compiler-rt's `__udivti3` and `__umodti3`.
+/// :param n: The dividend.
+/// :param d: The divisor.
+/// :returns: The quotient and the remainder.
+#no_builtins
+routine soft_u128_divmod(n: U128, d: U128) -> (U128, U128)
+    block entry()
+        when
+            d.eq(0) -> return({ U128.MAX, n })
+            n.lt(d) -> return({ 0, n })
+            else    -> start()
+
+    block start()
+        shift : U128 = d.leading_zeros().sub(n.leading_zeros())
+        jump step(n, d.shl(shift), 0, shift.add(1))
+
+    block step(rem: U128, div: U128, quotient: U128, left: U128)
+        done : Bool = left.eq(0)
+        branch done
+            ? return({ quotient, rem })
+            : continue
+        fits : Bool = rem.ge(div)
+        rest : U128 = fits
+            ? rem.sub_wrap(div)
+            : rem
+        next : U128 = quotient.shl(1).bitor(fits.to<U128>())
+        jump step(rest, div.shr(1), next, left.sub(1))
+
+/// S32 division and remainder, rounding toward zero: compiler-rt's `__divsi3` and `__modsi3`. The remainder has the
+/// dividend's sign; S32.MIN / -1 wraps to S32.MIN.
+/// :param n: The dividend.
+/// :param d: The divisor.
+/// :returns: The quotient and the remainder.
+#no_builtins
+routine soft_s32_divmod(n: S32, d: S32) -> (S32, S32)
+    block entry()
+        q, r = soft_u32_divmod(n.abs_diff(0), d.abs_diff(0))
+        q_negative : Bool = n.lt(0).ne(d.lt(0))
+        q_bits     : U32  = q_negative
+            ? U32.sub_wrap(0, q)
+            : q
+        r_bits : U32 = n.lt(0)
+            ? U32.sub_wrap(0, r)
+            : r
+        return({ q_bits.to_wrap<S32>(), r_bits.to_wrap<S32>() })
+
+/// S64 division and remainder, rounding toward zero: compiler-rt's `__divdi3` and `__moddi3`.
+/// :param n: The dividend.
+/// :param d: The divisor.
+/// :returns: The quotient and the remainder (with the dividend's sign).
+#no_builtins
+routine soft_s64_divmod(n: S64, d: S64) -> (S64, S64)
+    block entry()
+        q, r = soft_u64_divmod(n.abs_diff(0), d.abs_diff(0))
+        q_negative : Bool = n.lt(0).ne(d.lt(0))
+        q_bits     : U64  = q_negative
+            ? U64.sub_wrap(0, q)
+            : q
+        r_bits : U64 = n.lt(0)
+            ? U64.sub_wrap(0, r)
+            : r
+        return({ q_bits.to_wrap<S64>(), r_bits.to_wrap<S64>() })
+
+/// S128 division and remainder, rounding toward zero: compiler-rt's `__divti3` and `__modti3`.
+/// :param n: The dividend.
+/// :param d: The divisor.
+/// :returns: The quotient and the remainder (with the dividend's sign).
+#no_builtins
+routine soft_s128_divmod(n: S128, d: S128) -> (S128, S128)
+    block entry()
+        q, r = soft_u128_divmod(n.abs_diff(0), d.abs_diff(0))
+        q_negative : Bool = n.lt(0).ne(d.lt(0))
+        q_bits     : U128 = q_negative
+            ? U128.sub_wrap(0, q)
+            : q
+        r_bits : U128 = n.lt(0)
+            ? U128.sub_wrap(0, r)
+            : r
+        return({ q_bits.to_wrap<S128>(), r_bits.to_wrap<S128>() })
+
+// -- multiplication and shifts ---------------------------------------------------
+
+/// The low 32 bits of `a × b` by shifting and adding: compiler-rt's `__mulsi3`, for RISC-V without the M extension.
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :returns: The product, wrapped to 32 bits.
+#no_builtins
+routine soft_u32_mul(a: U32, b: U32) -> U32
+    block entry()
+        jump step(a, b, 0)
+
+    block step(x: U32, y: U32, sum: U32)
+        done : Bool = y.eq(0)
+        branch done
+            ? return(sum)
+            : continue
+        odd  : Bool = y.bitand(1).eq(1)
+        next : U32  = odd
+            ? sum.add_wrap(x)
+            : sum
+        jump step(x.shl(1), y.shr(1), next)
+
+/// The low 64 bits of `a × b` by shifting and adding: compiler-rt's `__muldi3` (and ARM's `__aeabi_lmul`).
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :returns: The product, wrapped to 64 bits.
+#no_builtins
+routine soft_u64_mul(a: U64, b: U64) -> U64
+    block entry()
+        jump step(a, b, 0)
+
+    block step(x: U64, y: U64, sum: U64)
+        done : Bool = y.eq(0)
+        branch done
+            ? return(sum)
+            : continue
+        odd  : Bool = y.bitand(1).eq(1)
+        next : U64  = odd
+            ? sum.add_wrap(x)
+            : sum
+        jump step(x.shl(1), y.shr(1), next)
+
+/// `x << n` from 32-bit shifts: ARM's `__aeabi_llsl`. A shift of 64 or more gives 0.
+/// :param x: The value.
+/// :param n: The shift amount.
+/// :returns: The shifted value.
+#no_builtins
+routine soft_u64_shl(x: U64, n: U32) -> U64
+    block entry()
+        low  : U32 = x.to_wrap<U32>()
+        high : U32 = soft_u64_high(x)
+        when
+            n.eq(0)  -> return(x)
+            n.ge(32) -> return(soft_u64_join(low.shl(n.sub(32)), 0))
+            else     -> return(soft_u64_join(high.shl(n).bitor(low.shr(U32.sub(32, n))),
+                low.shl(n)))
+
+/// `x >> n`, filling with zeros, from 32-bit shifts: ARM's `__aeabi_llsr`. A shift of 64 or more gives 0.
+/// :param x: The value.
+/// :param n: The shift amount.
+/// :returns: The shifted value.
+#no_builtins
+routine soft_u64_shr(x: U64, n: U32) -> U64
+    block entry()
+        low  : U32 = x.to_wrap<U32>()
+        high : U32 = soft_u64_high(x)
+        when
+            n.eq(0)  -> return(x)
+            n.ge(32) -> return(soft_u64_join(0, high.shr(n.sub(32))))
+            else     -> return(soft_u64_join(high.shr(n),
+                low.shr(n).bitor(high.shl(U32.sub(32, n)))))
+
+/// `x >> n`, filling with the sign, from 32-bit shifts: ARM's `__aeabi_lasr`. A shift of 64 or more gives 0 or -1.
+/// :param x: The value.
+/// :param n: The shift amount.
+/// :returns: The shifted value.
+#no_builtins
+routine soft_s64_shr(x: S64, n: U32) -> S64
+    block entry()
+        bits : U64 = x.to_wrap<U64>()
+        low  : U32 = bits.to_wrap<U32>()
+        high : S32 = soft_u64_high(bits).to_wrap<S32>()
+        fill : U32 = high.shr(31).to_wrap<U32>()
+        when
+            n.eq(0)  -> return(x)
+            n.ge(32) -> far(high, fill)
+            else     -> near(low, high)
+
+    block far(high: S32, fill: U32)
+        shift : S32 = n.sub(32).to_wrap<S32>()
+        moved : U32 = high.shr(shift).to_wrap<U32>()
+        r     : U64 = soft_u64_join(fill, moved)
+        return(r.to_wrap<S64>())
+
+    block near(low: U32, high: S32)
+        top    : U32 = high.shr(n.to<S32>()).to_wrap<U32>()
+        spill  : U32 = high.to_wrap<U32>().shl(U32.sub(32, n))
+        bottom : U32 = low.shr(n).bitor(spill)
+        r      : U64 = soft_u64_join(top, bottom)
+        return(r.to_wrap<S64>())
+
+// The halves move with LLVM's own shift by a constant 32, which every target does inline: U64.shl and U64.shr take
+// any amount, and on Thumb-1 an unoptimized build calls __aeabi_llsl / __aeabi_llsr for them, which are these.
+
+/// Two 32-bit halves as a U64.
+#inline
+private routine soft_u64_join(high: U32, low: U32) -> U64
+    block entry()
+        top : U64 = shl<U64>(high.to<U64>(), 32)
+        r   : U64 = top.bitor(low.to<U64>())
+        return(r)
+
+/// The high 32 bits of a U64.
+#inline
+private routine soft_u64_high(x: U64) -> U32
+    block entry()
+        r : U32 = lshr<U64>(x, 32).to_wrap<U32>()
+        return(r)
+
+// -- bits ----------------------------------------------------------------------
+
+/// The number of leading zero bits by halving, without a count-leading-zeros instruction: compiler-rt's
+/// `__clzsi2`, which LLVM calls on ARM cores before ARMv5.
+/// :param x: The value.
+/// :returns: The count, 32 for 0.
+#no_builtins
+routine soft_u32_leading_zeros(x: U32) -> U32
+    block entry()
+        top16 : Bool = x.le(0x0000FFFF)
+        n16   : U32  = top16.to<U32>().shl(4)
+        x16   : U32  = x.shl(n16)
+        top8  : Bool = x16.le(0x00FFFFFF)
+        n8    : U32  = top8.to<U32>().shl(3)
+        x8    : U32  = x16.shl(n8)
+        top4  : Bool = x8.le(0x0FFFFFFF)
+        n4    : U32  = top4.to<U32>().shl(2)
+        x4    : U32  = x8.shl(n4)
+        top2  : Bool = x4.le(0x3FFFFFFF)
+        n2    : U32  = top2.to<U32>().shl(1)
+        x2    : U32  = x4.shl(n2)
+        top1  : Bool = x2.le(0x7FFFFFFF)
+        n1    : U32  = top1.to<U32>()
+        x1    : U32  = x2.shl(n1)
+        empty : U32  = x1.eq(0).to<U32>()
+        high  : U32  = n16.add(n8).add(n4)
+        low   : U32  = n2.add(n1).add(empty)
+        r     : U32  = high.add(low)
+        return(r)

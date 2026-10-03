@@ -1,0 +1,386 @@
+// Tessera stdlib: F64 arithmetic in software
+//
+// The F64 operations LLVM calls a routine for on a target without a floating-point unit (Exports.tess and Aeabi.tess
+// export them under those names), on the bits, with integer operations only. They round to nearest, ties to even,
+// handle subnormals, signed zeros, and infinities, and treat NaN as compiler-rt does: a NaN operand comes back
+// quieted (its payload and sign kept, the first operand's when both are NaN), and an invalid operation gives the
+// positive quiet NaN 0x7FF8000000000000. Each routine is callable on any target, so a hosted test can check it against the
+// hardware.
+
+module Standard::Core
+
+private preset SIGN:      U64 = 0x8000000000000000
+private preset MAGNITUDE: U64 = 0x7FFFFFFFFFFFFFFF
+private preset INFINITY:  U64 = 0x7FF0000000000000
+private preset QUIET:     U64 = 0x0008000000000000
+private preset NAN:       U64 = 0x7FF8000000000000
+private preset ONE:       U64 = 0x3FF0000000000000
+
+// -- addition ------------------------------------------------------------------
+
+/// F64 addition on the bits, rounded to nearest (ties to even): compiler-rt's `__adddf3`.
+/// :param a: The first addend's bits.
+/// :param b: The second addend's bits.
+/// :returns: The bits of `a + b`: a NaN operand comes back quieted, `inf + -inf` is NaN, and a sum of two zeros is
+/// -0 only when both are -0 (an exact zero sum of nonzero values is +0).
+#no_builtins
+routine soft_f64_add(a: U64, b: U64) -> U64
+    block entry()
+        a_size : U64 = a.bitand(MAGNITUDE)
+        b_size : U64 = b.bitand(MAGNITUDE)
+        when
+            a_size.gt(INFINITY) -> return(a.bitor(QUIET))
+            b_size.gt(INFINITY) -> return(b.bitor(QUIET))
+            a_size.eq(INFINITY) -> infinite()
+            b_size.eq(INFINITY) -> return(b)
+            a_size.eq(0)        -> zero(b_size)
+            b_size.eq(0)        -> return(a)
+            else                -> order(a_size, b_size)
+
+    // inf + inf keeps the sign; inf - inf is NaN
+    block infinite()
+        opposite : Bool = a.bitxor(b).eq(SIGN)
+        branch opposite
+            ? return(NAN)
+            : return(a)
+
+    block zero(b_size: U64)
+        both : Bool = b_size.eq(0)
+        branch both
+            ? return(a.bitand(b))
+            : return(b)
+
+    // the larger magnitude first, so the result takes its sign
+    block order(a_size: U64, b_size: U64)
+        swap   : Bool = b_size.gt(a_size)
+        larger : U64  = swap
+            ? b
+            : a
+        smaller : U64 = swap
+            ? a
+            : b
+        jump align(larger, smaller)
+
+    // each significand gets three bits below it (half, and the rest), and the smaller one shifts right to the larger
+    // one's exponent with the bits it loses folded into a sticky bit
+    block align(x: U64, y: U64)
+        x_parts : SoftParts64 = soft_unpack64(x.bitand(MAGNITUDE))
+        y_parts : SoftParts64 = soft_unpack64(y.bitand(MAGNITUDE))
+        x_sig   : U64         = x_parts.sig.shl(3)
+        y_sig   : U64         = y_parts.sig.shl(3)
+        apart   : U64         = x_parts.exponent.sub(y_parts.exponent).to<U64>()
+        aligned : U64         = soft_shr_sticky64(y_sig, apart)
+        sign    : U64         = x.bitand(SIGN)
+        same    : Bool        = x.bitxor(y).lt(SIGN)
+        branch same
+            ? return(soft_round_pack64(sign, x_parts.exponent, x_sig.add(aligned)))
+            : difference(sign, x_sig.sub(aligned), x_parts.exponent)
+
+    // the larger magnitude came first, so the difference isn't negative; an exact zero is +0
+    block difference(sign: U64, sig: U64, exponent: S32)
+        cancelled : Bool = sig.eq(0)
+        branch cancelled
+            ? return(0)
+            : return(soft_round_pack64(sign, exponent, sig))
+
+/// F64 subtraction on the bits: `a + (-b)`, as compiler-rt's `__subdf3` computes it (so a NaN `b` comes back with its
+/// sign flipped).
+/// :param a: The minuend's bits.
+/// :param b: The subtrahend's bits.
+/// :returns: The bits of `a - b`.
+#no_builtins
+routine soft_f64_sub(a: U64, b: U64) -> U64
+    block entry()
+        r : U64 = soft_f64_add(a, b.bitxor(SIGN))
+        return(r)
+
+// -- multiplication ------------------------------------------------------------
+
+/// F64 multiplication on the bits, rounded to nearest (ties to even): compiler-rt's `__muldf3`.
+/// :param a: The first factor's bits.
+/// :param b: The second factor's bits.
+/// :returns: The bits of `a * b`: a NaN operand comes back quieted, `inf * 0` is NaN, and the sign is the XOR of the
+/// signs.
+#no_builtins
+routine soft_f64_mul(a: U64, b: U64) -> U64
+    block entry()
+        sign   : U64 = a.bitxor(b).bitand(SIGN)
+        a_size : U64 = a.bitand(MAGNITUDE)
+        b_size : U64 = b.bitand(MAGNITUDE)
+        when
+            a_size.gt(INFINITY) -> return(a.bitor(QUIET))
+            b_size.gt(INFINITY) -> return(b.bitor(QUIET))
+            a_size.eq(INFINITY) -> infinite(sign, b_size)
+            b_size.eq(INFINITY) -> infinite(sign, a_size)
+            a_size.eq(0)        -> return(sign)
+            b_size.eq(0)        -> return(sign)
+            else                -> finite(sign, a_size, b_size)
+
+    // infinity times zero is NaN, times anything else infinity
+    block infinite(sign: U64, other: U64)
+        nothing : Bool = other.eq(0)
+        branch nothing
+            ? return(NAN)
+            : return(sign.bitor(INFINITY))
+
+    // the 106-bit product of two 53-bit significands, its leading bit at 104 or 105; shifted down by 50 with a
+    // sticky bit, it is a significand for an exponent of the two exponents' sum minus 1022
+    block finite(sign: U64, a_size: U64, b_size: U64)
+        x       : SoftParts64 = soft_unpack64(a_size)
+        y       : SoftParts64 = soft_unpack64(b_size)
+        product : U128        = x.sig.to<U128>().mul_wrap(y.sig.to<U128>())
+        sig     : U128        = soft_shr_sticky128(product, 50)
+        sum     : S32         = x.exponent.add(y.exponent)
+        r       : U64         = soft_round_pack64(sign, sum.sub(1022), sig.to_wrap<U64>())
+        return(r)
+
+// -- division ------------------------------------------------------------------
+
+/// F64 division on the bits, rounded to nearest (ties to even): compiler-rt's `__divdf3`, computed by long division.
+/// :param a: The dividend's bits.
+/// :param b: The divisor's bits.
+/// :returns: The bits of `a / b`: a NaN operand comes back quieted, `0 / 0` and `inf / inf` are NaN, and a nonzero
+/// value over zero is a signed infinity.
+#no_builtins
+routine soft_f64_div(a: U64, b: U64) -> U64
+    block entry()
+        sign   : U64 = a.bitxor(b).bitand(SIGN)
+        a_size : U64 = a.bitand(MAGNITUDE)
+        b_size : U64 = b.bitand(MAGNITUDE)
+        when
+            a_size.gt(INFINITY) -> return(a.bitor(QUIET))
+            b_size.gt(INFINITY) -> return(b.bitor(QUIET))
+            a_size.eq(INFINITY) -> infinite(sign, b_size)
+            b_size.eq(INFINITY) -> return(sign)
+            a_size.eq(0)        -> zero(sign, b_size)
+            b_size.eq(0)        -> return(sign.bitor(INFINITY))
+            else                -> finite(sign, a_size, b_size)
+
+    block infinite(sign: U64, b_size: U64)
+        both : Bool = b_size.eq(INFINITY)
+        branch both
+            ? return(NAN)
+            : return(sign.bitor(INFINITY))
+
+    block zero(sign: U64, b_size: U64)
+        both : Bool = b_size.eq(0)
+        branch both
+            ? return(NAN)
+            : return(sign)
+
+    // a dividend below the divisor doubles, so the quotient is in [1, 2)
+    block finite(sign: U64, a_size: U64, b_size: U64)
+        x     : SoftParts64 = soft_unpack64(a_size)
+        y     : SoftParts64 = soft_unpack64(b_size)
+        apart : S32         = x.exponent.sub(y.exponent)
+        below : Bool        = x.sig.lt(y.sig)
+        num   : U64         = below
+            ? x.sig.shl(1)
+            : x.sig
+        exponent : S32 = below
+            ? apart.add(1022)
+            : apart.add(1023)
+        jump divide(sign, exponent, num, y.sig, 0, 0)
+
+    // 55 quotient bits, one a step: the 53 the result keeps and two below them, then the remainder's sticky bit
+    block divide(sign: U64, exponent: S32, rem: U64, den: U64, quotient: U64, step: U64)
+        done : Bool = step.eq(55)
+        branch done
+            ? finish(sign, exponent, rem, quotient)
+            : continue
+        fits : Bool = rem.ge(den)
+        left : U64  = fits
+            ? rem.sub_wrap(den)
+            : rem
+        q_bit : U64 = fits.to<U64>()
+        next  : U64 = quotient.shl(1).bitor(q_bit)
+        jump divide(sign, exponent, left.shl(1), den, next, step.add(1))
+
+    block finish(sign: U64, exponent: S32, rem: U64, quotient: U64)
+        sticky : U64 = rem.ne(0).to<U64>()
+        sig    : U64 = quotient.shl(1).bitor(sticky)
+        r      : U64 = soft_round_pack64(sign, exponent, sig)
+        return(r)
+
+// -- square root and remainder ---------------------------------------------------
+
+/// The F64 square root on the bits, correctly rounded: C's `sqrt`, which LLVM calls for `F64.sqrt` on a target
+/// without a floating-point unit. The root comes from a bit-by-bit integer square root.
+/// :param a: The radicand's bits.
+/// :returns: The bits of sqrt(a): the same zero for ±0, +inf for +inf, a quieted NaN for NaN, and NaN (0x7FF8000000000000)
+/// for any other negative value.
+#no_builtins
+routine soft_f64_sqrt(a: U64) -> U64
+    block entry()
+        size : U64 = a.bitand(MAGNITUDE)
+        when
+            size.gt(INFINITY) -> return(a.bitor(QUIET))
+            size.eq(0)        -> return(a)
+            a.ge(SIGN)        -> return(NAN)
+            size.eq(INFINITY) -> return(a)
+            else              -> finite(size)
+
+    // an odd unbiased exponent moves one bit into the significand, so the root's exponent is a whole half; the
+    // significand scaled by 2^56 has a 55-bit root, the 53 kept bits and two below them
+    block finite(size: U64)
+        parts    : SoftParts64 = soft_unpack64(size)
+        unbiased : S32         = parts.exponent.sub(1023)
+        odd      : Bool        = unbiased.bitand(1).eq(1)
+        sig      : U64         = odd
+            ? parts.sig.shl(1)
+            : parts.sig
+        even     : S32  = unbiased.sub(odd.to<S32>())
+        radicand : U128 = sig.to<U128>().shl(56)
+        jump root(even.shr(1), radicand, 0, 0x1000000000000000000000000000)
+
+    block root(half: S32, rem: U128, res: U128, bit: U128)
+        done : Bool = bit.eq(0)
+        branch done
+            ? finish(half, rem, res)
+            : continue
+        trial : U128 = res.add(bit)
+        fits  : Bool = rem.ge(trial)
+        left  : U128 = fits
+            ? rem.sub_wrap(trial)
+            : rem
+        shifted : U128 = res.shr(1)
+        next    : U128 = fits
+            ? shifted.add(bit)
+            : shifted
+        jump root(half, left, next, bit.shr(2))
+
+    block finish(half: S32, rem: U128, res: U128)
+        sticky : U64 = rem.ne(0).to<U64>()
+        root   : U64 = res.to_wrap<U64>()
+        sig    : U64 = root.shl(1).bitor(sticky)
+        r      : U64 = soft_round_pack64(0, half.add(1023), sig)
+        return(r)
+
+/// The F64 remainder on the bits, exact: C's `fmod`, which LLVM calls for `frem`. The result has the sign of `a`
+/// and a magnitude below `|b|`.
+/// :param a: The dividend's bits.
+/// :param b: The divisor's bits.
+/// :returns: The bits of `fmod(a, b)`: a NaN operand comes back quieted, NaN for an infinite `a` or a zero `b`, `a`
+/// itself when `|a| < |b|`, and a zero with `a`'s sign when the division is exact.
+#no_builtins
+routine soft_f64_mod(a: U64, b: U64) -> U64
+    block entry()
+        sign   : U64 = a.bitand(SIGN)
+        a_size : U64 = a.bitand(MAGNITUDE)
+        b_size : U64 = b.bitand(MAGNITUDE)
+        when
+            a_size.gt(INFINITY) -> return(a.bitor(QUIET))
+            b_size.gt(INFINITY) -> return(b.bitor(QUIET))
+            a_size.eq(INFINITY) -> return(NAN)
+            b_size.eq(0)        -> return(NAN)
+            a_size.lt(b_size)   -> return(a)
+            a_size.eq(b_size)   -> return(sign)
+            else                -> finite(sign, a_size, b_size)
+
+    // long division one exponent step at a time, keeping only the remainder (below 2 × den throughout)
+    block finite(sign: U64, a_size: U64, b_size: U64)
+        x : SoftParts64 = soft_unpack64(a_size)
+        y : SoftParts64 = soft_unpack64(b_size)
+        jump reduce(sign, x.sig, x.exponent, y.sig, y.exponent)
+
+    block reduce(sign: U64, rem: U64, exponent: S32, den: U64, den_exponent: S32)
+        fits : Bool = rem.ge(den)
+        left : U64  = fits
+            ? rem.sub_wrap(den)
+            : rem
+        exact : Bool = left.eq(0)
+        last  : Bool = exponent.eq(den_exponent)
+        when
+            exact -> return(sign)
+            last  -> finish(sign, left, exponent)
+            else  -> reduce(sign, left.shl(1), exponent.sub(1), den, den_exponent)
+
+    // the remainder is exact and fits the format, so the packing doesn't round
+    block finish(sign: U64, rem: U64, exponent: S32)
+        r : U64 = soft_round_pack64(sign, exponent, rem.shl(3))
+        return(r)
+
+/// F64 raised to an integer power by repeated squaring: compiler-rt's `__powidf2`, with the same multiplications in
+/// the same order (so it rounds at each step, as compiler-rt does, rather than once).
+/// :param a: The base's bits.
+/// :param n: The exponent; a negative one takes the reciprocal of the positive power at the end.
+/// :returns: The bits of the result.
+#no_builtins
+routine soft_f64_powi(a: U64, n: S32) -> U64
+    block entry()
+        count : U32 = n.abs_diff(0)
+        jump step(a, count, ONE)
+
+    block step(base: U64, left: U32, result: U64)
+        odd : Bool = left.bitand(1).eq(1)
+        branch odd
+            ? advance(base, left, soft_f64_mul(result, base))
+            : advance(base, left, result)
+
+    block advance(base: U64, left: U32, result: U64)
+        rest : U32  = left.shr(1)
+        done : Bool = rest.eq(0)
+        branch done
+            ? finish(result)
+            : step(soft_f64_mul(base, base), rest, result)
+
+    block finish(result: U64)
+        negative : Bool = n.lt(0)
+        branch negative
+            ? return(soft_f64_div(ONE, result))
+            : return(result)
+
+// -- comparison ----------------------------------------------------------------
+
+/// Orders two F64 values as compiler-rt's `__ledf2` (and its aliases `__eqdf2`, `__ltdf2`, `__nedf2`) does.
+/// :param a: The first operand's bits.
+/// :param b: The second operand's bits.
+/// :returns: -1 when `a < b`, 0 when they are equal (+0 equals -0), 1 when `a > b` or either is NaN.
+#no_builtins
+routine soft_f64_le(a: U64, b: U64) -> S32
+    block entry()
+        unordered : Bool = soft_f64_unordered(a, b)
+        branch unordered
+            ? return(1)
+            : return(soft_f64_order(a, b))
+
+/// Orders two F64 values as compiler-rt's `__gedf2` (and its alias `__gtdf2`) does.
+/// :param a: The first operand's bits.
+/// :param b: The second operand's bits.
+/// :returns: -1 when `a < b` or either is NaN, 0 when they are equal (+0 equals -0), 1 when `a > b`.
+#no_builtins
+routine soft_f64_ge(a: U64, b: U64) -> S32
+    block entry()
+        unordered : Bool = soft_f64_unordered(a, b)
+        branch unordered
+            ? return(-1)
+            : return(soft_f64_order(a, b))
+
+/// Whether either F64 is NaN: compiler-rt's `__unorddf2`.
+/// :param a: The first operand's bits.
+/// :param b: The second operand's bits.
+/// :returns: True when `a` or `b` is NaN.
+#no_builtins
+routine soft_f64_unordered(a: U64, b: U64) -> Bool
+    block entry()
+        a_nan : Bool = a.bitand(MAGNITUDE).gt(INFINITY)
+        b_nan : Bool = b.bitand(MAGNITUDE).gt(INFINITY)
+        r     : Bool = a_nan.bitor(b_nan)
+        return(r)
+
+/// Two numbers (not NaN) in order: equal zeros first, then as sign-magnitude integers, whose order flips when both
+/// are negative.
+private routine soft_f64_order(a: U64, b: U64) -> S32
+    block entry()
+        both  : U64  = a.bitor(b)
+        zeros : Bool = both.bitand(MAGNITUDE).eq(0)
+        branch zeros
+            ? return(0)
+            : continue
+        x        : S64  = a.to_wrap<S64>()
+        y        : S64  = b.to_wrap<S64>()
+        negative : Bool = x.bitand(y).lt(0)
+        order    : S32  = x.compare(y)
+        branch negative
+            ? return(order.neg())
+            : return(order)

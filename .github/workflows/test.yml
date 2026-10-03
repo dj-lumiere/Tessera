@@ -108,6 +108,24 @@ jobs:
       - name: Check the stdlib
         run: dotnet bin/Release/net10.0/tessera.dll check --target ${{ matrix.target }}
 
+      # An untraced build's own declarations stand in for the trace's; check them too.
+      - name: Check the stdlib (untraced)
+        run: dotnet bin/Release/net10.0/tessera.dll check --target ${{ matrix.target }} --no-trace
+
+      # The crash trace costs an untraced build nothing: no trace storage, and no calls to the routines a traced build
+      # places. A traced build has both, so the names searched for are the right ones.
+      - name: An untraced build has no trace
+        if: matrix.target == 'x86_64-linux-gnu'
+        run: |
+          trace='5TRACEB|trace_(push|at|pop)'
+          dotnet bin/Release/net10.0/tessera.dll build --emit-llvm examples/fizzbuzz.tess -o traced.ll
+          dotnet bin/Release/net10.0/tessera.dll build --emit-llvm --no-trace examples/fizzbuzz.tess -o untraced.ll
+          grep -Eq "$trace" traced.ll || { echo 'the traced build has no trace: the names searched for are stale'; exit 1; }
+          if grep -En "$trace" untraced.ll; then
+            echo 'the untraced build has trace storage or calls (above)'
+            exit 1
+          fi
+
       # Every build mode: a test's output must not depend on the optimization level or the debug information. Each
       # mode runs even when another fails, so one run shows which modes break.
       - name: Golden tests (debug)
@@ -162,11 +180,11 @@ jobs:
       - name: Check the stdlib
         run: dotnet bin/Release/net10.0/tessera.dll check --target ${{ matrix.target }}
 
-  # Targets without an operating system: the stdlib checks there (Standard::Os drops out), and a program built for
-  # one (tests/freestanding, which the golden run skips) leaves nothing undefined that a bare-metal link can't
-  # supply: no C++ unwinding personality (every routine is nounwind) and no C memory routines (the stdlib exports
-  # memcpy, memset, memmove, memcmp, and ARM's __aeabi_mem* there). Soft-float and other compiler-rt / libgcc helpers
-  # may stay undefined.
+  # Targets without an operating system: the stdlib checks there (Standard::Os drops out), and the programs built for
+  # one (tests/freestanding, and tests/freestanding_float, which uses every float operation and integer division; the
+  # golden run skips both) leave nothing undefined: no C++ unwinding personality (every routine is nounwind), and no
+  # C memory routine, soft-float routine, or other compiler-rt / libgcc helper (the stdlib exports memcpy, memset,
+  # memmove, memcmp, ARM's __aeabi_mem*, and Standard/SoftFloat's runtime there).
   freestanding:
     name: freestanding (${{ matrix.target }})
     runs-on: ubuntu-latest
@@ -210,21 +228,64 @@ jobs:
       - name: Check the stdlib
         run: dotnet bin/Release/net10.0/tessera.dll check --target ${{ matrix.target }}
 
-      - name: Build a program and look for undefined symbols
+      # Nothing at all may stay undefined: the programs export their crash handler, and the stdlib supplies the rest.
+      # That rules out an unwinding personality (__aeabi_unwind_cpp_pr0), a thread pointer (__tls_get_addr,
+      # __aeabi_read_tp, __emutls_get_address: the crash trace is a plain global here), the C memory routines, and
+      # every compiler-rt / libgcc helper. A release build compiles at -O2, as `tessera build` does, so LLVM's
+      # optimizations get their chance to call something too.
+      - name: Build the programs and require that nothing is undefined
         run: |
-          for mode in debug release; do
-            ll="freestanding-$mode.ll"
-            obj="freestanding-$mode.o"
-            dotnet bin/Release/net10.0/tessera.dll build --target ${{ matrix.target }} --mode $mode --emit-llvm \
-              tests/freestanding/main.tess -o "$ll"
-            clang --target=${{ matrix.clang-target }} -c -Wno-override-module "$ll" -o "$obj"
-            echo "undefined in $obj ($mode):"
-            llvm-nm -u "$obj"
-            if llvm-nm -u "$obj" | grep -Ew '__aeabi_unwind_cpp_pr[0-9]|memcpy|memset|memmove|memcmp|__aeabi_mem[a-z0-9]+'; then
-              echo "a program for ${{ matrix.target }} needs symbols no bare-metal link supplies (above)"
-              exit 1
-            fi
+          for program in freestanding freestanding_float; do
+            for mode in debug release; do
+              ll="$program-$mode.ll"
+              obj="$program-$mode.o"
+              level=-O0
+              if [ "$mode" = release ]; then level=-O2; fi
+              dotnet bin/Release/net10.0/tessera.dll build --target ${{ matrix.target }} --mode $mode --emit-llvm \
+                tests/$program/main.tess -o "$ll"
+              clang --target=${{ matrix.clang-target }} $level -c -Wno-override-module "$ll" -o "$obj"
+              undefined=$(llvm-nm -u "$obj")
+              if [ -n "$undefined" ]; then
+                echo "tests/$program for ${{ matrix.target }} ($mode) leaves symbols undefined that no bare-metal link supplies:"
+                echo "$undefined"
+                exit 1
+              fi
+              echo "tests/$program ($mode): nothing undefined"
+            done
           done
+
+  # The long check of the soft-float runtime (tests/soft_float_exhaustive; tests/soft_float is the golden run's sample):
+  # every F32 bit pattern through square root and every conversion out of F32, every S32 / U32 into F32 and F64, every
+  # F16, and millions of random operand pairs, against the hardware and libgcc's conversions. It runs on every core
+  # in release mode and fails on any mismatch.
+  soft-float-exhaustive:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install LLVM 21
+        run: |
+          # A failed download must fail the step: piped into bash, an empty script would succeed and leave the
+          # runner's own clang (18) in place, which crashes on some targets.
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 21
+          test -x /usr/bin/clang-21
+          sudo ln -sf /usr/bin/clang-21 /usr/local/bin/clang
+          sudo ln -sf /usr/bin/ld.lld-21 /usr/local/bin/ld.lld
+          clang --version | grep -q 'clang version 21' || { clang --version; echo 'clang is not LLVM 21'; exit 1; }
+
+      - name: Build
+        run: dotnet build Tessera.csproj --configuration Release
+
+      - name: Run the exhaustive check
+        run: dotnet bin/Release/net10.0/tessera.dll run --mode release tests/soft_float_exhaustive/main.tess
 
   # SonarQube analysis of the C# builder, with coverage from the golden tests. Whether the tests pass is the test
   # job's call, so a failing test doesn't stop the analysis here. SonarQube lives inside the tailnet; the runner joins it as an ephemeral node (a Tailscale OAuth client with scope auth_keys and the ACL tag tag:ci).

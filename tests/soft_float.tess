@@ -1,0 +1,670 @@
+// The soft-float routines (Standard/SoftFloat) against the host: arithmetic, comparison, square root, and remainder
+// against the hardware's F32 / F64 operations; conversions against the hardware or the stdlib's own; integer
+// division and the bit helpers against the integer types. Every special-value pair, then random operands from three
+// mixes: any bits, operands a few exponents apart (cancellation, alignment), and tiny ones (subnormals). A NaN result
+// is checked against compiler-rt's rule (the first NaN operand quieted, else 0x7FC00000) rather than the hardware's
+// NaN, which differs between x86 and ARM. Each line counts the mismatches; tests/soft_float_exhaustive is the long
+// check (every F32 bit pattern, and millions of random pairs).
+
+import Standard::Format
+import Standard::Os
+
+global SEED: @U64 <- 0x2545F4914F6CDD1D
+
+/// F32 values that exercise every path: zeros, subnormals, the normal range's ends, infinities, NaNs (quiet,
+/// signaling, negative, with a payload), and values around the integer conversions' limits.
+preset SPECIAL32: @Array<U32, 32> <- { 0x00000000, 0x80000000, 0x00000001, 0x80000001, 0x007FFFFF,
+    0x807FFFFF, 0x00800000, 0x80800000, 0x3F800000, 0xBF800000, 0x3FC00000, 0x40490FDB, 0x7F7FFFFF,
+    0xFF7FFFFF, 0x7F800000, 0xFF800000, 0x7FC00000, 0xFFC00000, 0x7F800001, 0x7FA00005, 0x4B800000,
+    0x4B800001, 0x4F000000, 0xCF000000, 0x4F800000, 0x5F000000, 0xDF000000, 0x5F800000, 0x3F801000,
+    0x00400000, 0x34000000, 0x3F808000 }
+
+/// The F64 versions of {SPECIAL32}'s values.
+preset SPECIAL64: @Array<U64, 32> <- { 0x0000000000000000, 0x8000000000000000, 0x0000000000000001,
+    0x8000000000000001, 0x000FFFFFFFFFFFFF, 0x800FFFFFFFFFFFFF, 0x0010000000000000,
+    0x8010000000000000, 0x3FF0000000000000, 0xBFF0000000000000, 0x3FF8000000000000,
+    0x400921FB54442D18, 0x7FEFFFFFFFFFFFFF, 0xFFEFFFFFFFFFFFFF, 0x7FF0000000000000,
+    0xFFF0000000000000, 0x7FF8000000000000, 0xFFF8000000000000, 0x7FF0000000000001,
+    0x7FF4000000000005, 0x4340000000000000, 0x4340000000000001, 0x41E0000000000000,
+    0xC1E0000000000000, 0x43E0000000000000, 0xC3E0000000000000, 0x47F0000000000000,
+    0x3810000000000000, 0x47EFFFFFE0000000, 0x0008000000000000, 0x3FF0020000000000,
+    0x3FF0000010000000 }
+
+// -- operands ------------------------------------------------------------------
+
+/// splitmix64.
+routine random() -> U64
+    block entry()
+        s : U64 = SEED.load().add_wrap(0x9E3779B97F4A7C15)
+        s.store_into(SEED)
+        z1 : U64 = s.bitxor(s.shr(30)).mul_wrap(0xBF58476D1CE4E5B9)
+        z2 : U64 = z1.bitxor(z1.shr(27)).mul_wrap(0x94D049BB133111EB)
+        r  : U64 = z2.bitxor(z2.shr(31))
+        return(r)
+
+/// Two F32 operands' bits, packed in a U64 (a in the high half): any bits for mix 0, `b` a few exponents from `a`
+/// for mix 1, two tiny values (subnormals and the smallest normals) for mix 2.
+routine operands32(mix: U32) -> U64
+    block entry()
+        bits : U64 = random()
+        a    : U32 = bits.shr(32).to_wrap<U32>()
+        b    : U32 = bits.to_wrap<U32>()
+        when mix
+            1    -> return(pack32(a, a.bitxor(b.bitand(0x87FFFFFF))))
+            2    -> return(pack32(a.bitand(0x80FFFFFF), b.bitand(0x80FFFFFF)))
+            else -> return(bits)
+
+/// {operands32} for F64: two calls' worth of bits, `b` within a few exponents of `a`, or two tiny values.
+routine operands64(mix: U32, second: @U64) -> U64
+    block entry()
+        a    : U64  = random()
+        b    : U64  = random()
+        tiny : Bool = mix.eq(2)
+        low  : U64  = b.bitand(0x801FFFFFFFFFFFFF)
+        near : U64  = mix.eq(1)
+            ? low.bitxor(a)
+            : b
+        other : U64 = tiny
+            ? low
+            : near
+        other.store_into(second)
+        r : U64 = tiny
+            ? a.bitand(0x801FFFFFFFFFFFFF)
+            : a
+        return(r)
+
+routine pack64(a: U64, b: U64) -> U128
+    block entry()
+        high : U128 = a.to<U128>().shl(64)
+        r    : U128 = high.bitor(b.to<U128>())
+        return(r)
+
+routine pack32(a: U32, b: U32) -> U64
+    block entry()
+        high : U64 = a.to<U64>().shl(32)
+        r    : U64 = high.bitor(b.to<U64>())
+        return(r)
+
+// -- checks: F32 ---------------------------------------------------------------
+
+routine nan32(x: U32) -> Bool
+    block entry()
+        r : Bool = x.bitand(0x7FFFFFFF).gt(0x7F800000)
+        return(r)
+
+/// The NaN compiler-rt gives for a binary operation: the first NaN operand, quieted; else the default NaN.
+routine crt_nan32(a: U32, b: U32) -> U32
+    block entry()
+        when
+            nan32(a) -> return(a.bitor(0x00400000))
+            nan32(b) -> return(b.bitor(0x00400000))
+            else     -> return(0x7FC00000)
+
+/// Whether a soft result matches the hardware's: the same bits, or for a NaN, compiler-rt's NaN.
+routine agree32(soft: U32, hard: U32, nan: U32) -> Bool
+    block entry()
+        branch nan32(hard)
+            ? return(soft.eq(nan))
+            : return(soft.eq(hard))
+
+/// One F32 binary operation, soft against hard: 0 add, 1 sub, 2 mul, 3 div, 4 mod, 5 comparisons, 6 powi.
+routine check32(op: U32, a: U32, b: U32) -> Bool
+    block entry()
+        x : F32 = .from_bits(a)
+        y : F32 = .from_bits(b)
+        when op
+            0    -> return(agree32(soft_f32_add(a, b), x.add(y).bits(), crt_nan32(a, b)))
+            1    -> return(agree32(soft_f32_sub(a, b), x.sub(y).bits(),
+                crt_nan32(a, b.bitxor(0x80000000))))
+            2    -> return(agree32(soft_f32_mul(a, b), x.mul(y).bits(), crt_nan32(a, b)))
+            3    -> return(agree32(soft_f32_div(a, b), x.div(y).bits(), crt_nan32(a, b)))
+            4    -> return(agree32(soft_f32_mod(a, b), frem<F32>(x, y).bits(), crt_nan32(a, b)))
+            5    -> compare(x, y)
+            else -> power(x)
+
+    block compare(x: F32, y: F32)
+        unordered : Bool = x.is_nan().bitor(y.is_nan())
+        order     : S32  = x.compare(y)
+        le_want   : S32  = unordered
+            ? 1
+            : order
+        ge_want : S32 = unordered
+            ? -1
+            : order
+        le_ok : Bool = soft_f32_le(a, b).eq(le_want)
+        ge_ok : Bool = soft_f32_ge(a, b).eq(ge_want)
+        un_ok : Bool = soft_f32_unordered(a, b).eq(unordered)
+        r     : Bool = le_ok.bitand(ge_ok).bitand(un_ok)
+        return(r)
+
+    // compiler-rt's repeated squaring, on the hardware, with the same exponent; a NaN comes from a NaN base, which
+    // compiler-rt passes on quieted (the hardware may pass on either operand of a product of two NaNs)
+    block power(x: F32)
+        low  : S32  = b.bitand(0x3F).to_wrap<S32>()
+        n    : S32  = low.sub(32)
+        want : F32  = powi_model32(x, n)
+        r    : Bool = agree32(soft_f32_powi(a, n), want.bits(), a.bitor(0x00400000))
+        return(r)
+
+routine powi_model32(x: F32, n: S32) -> F32
+    block entry()
+        jump step(x, n.abs_diff(0), 1.0)
+
+    block step(base: F32, left: U32, result: F32)
+        odd  : Bool = left.bitand(1).eq(1)
+        next : F32  = odd
+            ? result.mul(base)
+            : result
+        rest : U32 = left.shr(1)
+        branch rest.eq(0)
+            ? finish(next)
+            : step(base.mul(base), rest, next)
+
+    block finish(result: F32)
+        branch n.lt(0)
+            ? return(F32.div(1.0, result))
+            : return(result)
+
+/// The F32 unary operations: square root, widening, narrowing to F16 and BF16, and every integer conversion.
+routine unary32(a: U32) -> Bool
+    block entry()
+        x      : F32  = .from_bits(a)
+        root   : Bool = agree32(soft_f32_sqrt(a), x.sqrt().bits(), crt_nan32(a, a))
+        wide   : Bool = widen_ok(a)
+        half   : Bool = soft_f32_to_f16(a).eq(x.to<F16>().bits())
+        brain  : Bool = soft_f32_to_bf16(a).eq(x.to<BF16>().bits())
+        ints   : Bool = fix_ok32(a, x.to<F64>())
+        floats : Bool = root.bitand(wide).bitand(half)
+        r      : Bool = floats.bitand(brain).bitand(ints)
+        return(r)
+
+/// Widening is exact; a NaN keeps its payload as it is, quiet or not, which the hardware doesn't.
+routine widen_ok(a: U32) -> Bool
+    block entry()
+        soft : U64 = soft_f32_to_f64(a)
+        branch nan32(a)
+            ? continue
+            : return(soft.eq(f64_bits(F32.from_bits(a))))
+        sign     : U64 = a.bitand(0x80000000).to<U64>()
+        fraction : U64 = a.bitand(0x007FFFFF).to<U64>()
+        signed   : U64 = sign.shl(32).bitor(0x7FF0000000000000)
+        want     : U64 = signed.bitor(fraction.shl(29))
+        return(soft.eq(want))
+
+/// The six integer conversions of an F32, against {fix_model} on its exact F64 value.
+routine fix_ok32(a: U32, x: F64) -> Bool
+    block entry()
+        s32  : Bool = from_s32(soft_f32_to_s32(a)).eq(fix_model(x, 32, true))
+        u32  : Bool = from_u32(soft_f32_to_u32(a)).eq(fix_model(x, 32, false))
+        s64  : Bool = from_s64(soft_f32_to_s64(a)).eq(fix_model(x, 64, true))
+        u64  : Bool = from_u64(soft_f32_to_u64(a)).eq(fix_model(x, 64, false))
+        s128 : Bool = from_s128(soft_f32_to_s128(a)).eq(fix_model(x, 128, true))
+        u128 : Bool = soft_f32_to_u128(a).eq(fix_model(x, 128, false))
+        low  : Bool = s32.bitand(u32).bitand(s64)
+        high : Bool = u64.bitand(s128).bitand(u128)
+        return(low.bitand(high))
+
+/// An S32's bits, zero-extended.
+routine from_s32(x: S32) -> U128
+    block entry()
+        r : U128 = x.to_wrap<U32>().to<U128>()
+        return(r)
+
+/// A U32, zero-extended.
+routine from_u32(x: U32) -> U128
+    block entry()
+        r : U128 = x.to<U128>()
+        return(r)
+
+/// A U64, zero-extended.
+routine from_u64(x: U64) -> U128
+    block entry()
+        r : U128 = x.to<U128>()
+        return(r)
+
+/// An S128's bits.
+routine from_s128(x: S128) -> U128
+    block entry()
+        r : U128 = x.to_wrap<U128>()
+        return(r)
+
+/// An F32 widened to F64, as bits.
+routine f64_bits(x: F32) -> U64
+    block entry()
+        r : U64 = x.to<F64>().bits()
+        return(r)
+
+/// An S64's bits, zero-extended.
+routine from_s64(x: S64) -> U128
+    block entry()
+        r : U128 = x.to_wrap<U64>().to<U128>()
+        return(r)
+
+/// compiler-rt's float-to-integer result, as `width` bits: truncation in range (from the hardware's saturating
+/// conversion); saturation by the sign for NaN, infinity, and from 2^width up; 0 for a negative value converted
+/// to unsigned; and, signed, a magnitude from 2^(width - 1) up wrapped as compiler-rt's arithmetic wraps it.
+routine fix_model(x: F64, width: U32, signed: Bool) -> U128
+    block entry()
+        mask     : U128 = U128.MAX.shr(U32.sub(128, width).to<U128>())
+        negative : Bool = x.is_sign_negative()
+        field    : U64  = width.add(1023).to<U64>()
+        limit    : F64  = F64.from_bits(field.shl(52))
+        huge     : Bool = x.is_nan().bitor(x.abs().ge(limit))
+        when
+            signed.bitnot().bitand(negative) -> return(0)
+            huge.bitand(signed.bitnot())     -> return(mask)
+            huge                             -> return(negative ? mask.shr(1).add(1) : mask.shr(1))
+            else                             -> exact(mask, negative)
+
+    block exact(mask: U128, negative: Bool)
+        magnitude : U128 = x.abs().to_clamp<U128>()
+        value     : U128 = negative
+            ? U128.sub_wrap(0, magnitude)
+            : magnitude
+        return(value.bitand(mask))
+
+// -- checks: F64 ---------------------------------------------------------------
+
+routine nan64(x: U64) -> Bool
+    block entry()
+        r : Bool = x.bitand(0x7FFFFFFFFFFFFFFF).gt(0x7FF0000000000000)
+        return(r)
+
+routine crt_nan64(a: U64, b: U64) -> U64
+    block entry()
+        when
+            nan64(a) -> return(a.bitor(0x0008000000000000))
+            nan64(b) -> return(b.bitor(0x0008000000000000))
+            else     -> return(0x7FF8000000000000)
+
+routine agree64(soft: U64, hard: U64, nan: U64) -> Bool
+    block entry()
+        branch nan64(hard)
+            ? return(soft.eq(nan))
+            : return(soft.eq(hard))
+
+/// {check32} for F64.
+routine check64(op: U32, a: U64, b: U64) -> Bool
+    block entry()
+        x : F64 = .from_bits(a)
+        y : F64 = .from_bits(b)
+        when op
+            0    -> return(agree64(soft_f64_add(a, b), x.add(y).bits(), crt_nan64(a, b)))
+            1    -> return(agree64(soft_f64_sub(a, b), x.sub(y).bits(),
+                crt_nan64(a, b.bitxor(0x8000000000000000))))
+            2    -> return(agree64(soft_f64_mul(a, b), x.mul(y).bits(), crt_nan64(a, b)))
+            3    -> return(agree64(soft_f64_div(a, b), x.div(y).bits(), crt_nan64(a, b)))
+            4    -> return(agree64(soft_f64_mod(a, b), frem<F64>(x, y).bits(), crt_nan64(a, b)))
+            5    -> compare(x, y)
+            else -> power(x)
+
+    block compare(x: F64, y: F64)
+        unordered : Bool = x.is_nan().bitor(y.is_nan())
+        order     : S32  = x.compare(y)
+        le_want   : S32  = unordered
+            ? 1
+            : order
+        ge_want : S32 = unordered
+            ? -1
+            : order
+        le_ok : Bool = soft_f64_le(a, b).eq(le_want)
+        ge_ok : Bool = soft_f64_ge(a, b).eq(ge_want)
+        un_ok : Bool = soft_f64_unordered(a, b).eq(unordered)
+        r     : Bool = le_ok.bitand(ge_ok).bitand(un_ok)
+        return(r)
+
+    block power(x: F64)
+        low  : S32  = b.bitand(0x3F).to_wrap<S32>()
+        n    : S32  = low.sub(32)
+        want : F64  = powi_model64(x, n)
+        r    : Bool = agree64(soft_f64_powi(a, n), want.bits(), a.bitor(0x0008000000000000))
+        return(r)
+
+routine powi_model64(x: F64, n: S32) -> F64
+    block entry()
+        jump step(x, n.abs_diff(0), 1.0)
+
+    block step(base: F64, left: U32, result: F64)
+        odd  : Bool = left.bitand(1).eq(1)
+        next : F64  = odd
+            ? result.mul(base)
+            : result
+        rest : U32 = left.shr(1)
+        branch rest.eq(0)
+            ? finish(next)
+            : step(base.mul(base), rest, next)
+
+    block finish(result: F64)
+        branch n.lt(0)
+            ? return(F64.div(1.0, result))
+            : return(result)
+
+/// The F64 unary operations: square root, narrowing to F32, F16, and BF16, and every integer conversion.
+routine unary64(a: U64) -> Bool
+    block entry()
+        x      : F64  = .from_bits(a)
+        root   : Bool = agree64(soft_f64_sqrt(a), x.sqrt().bits(), crt_nan64(a, a))
+        narrow : Bool = soft_f64_to_f32(a).eq(x.to<F32>().bits())
+        half   : Bool = soft_f64_to_f16(a).eq(x.to<F16>().bits())
+        brain  : Bool = soft_f64_to_bf16(a).eq(x.to<BF16>().bits())
+        ints   : Bool = fix_ok64(a, x)
+        floats : Bool = root.bitand(narrow).bitand(half)
+        r      : Bool = floats.bitand(brain).bitand(ints)
+        return(r)
+
+routine fix_ok64(a: U64, x: F64) -> Bool
+    block entry()
+        s32  : Bool = from_s32(soft_f64_to_s32(a)).eq(fix_model(x, 32, true))
+        u32  : Bool = from_u32(soft_f64_to_u32(a)).eq(fix_model(x, 32, false))
+        s64  : Bool = from_s64(soft_f64_to_s64(a)).eq(fix_model(x, 64, true))
+        u64  : Bool = from_u64(soft_f64_to_u64(a)).eq(fix_model(x, 64, false))
+        s128 : Bool = from_s128(soft_f64_to_s128(a)).eq(fix_model(x, 128, true))
+        u128 : Bool = soft_f64_to_u128(a).eq(fix_model(x, 128, false))
+        low  : Bool = s32.bitand(u32).bitand(s64)
+        high : Bool = u64.bitand(s128).bitand(u128)
+        return(low.bitand(high))
+
+// -- checks: integers to floats --------------------------------------------------
+
+/// Every integer-to-float conversion of one random value, cut to each width: the 32-bit ones against the hardware,
+/// the wider ones against the stdlib's F128 (exact for 64 bits, and a single extra rounding at 113 bits for 128,
+/// which a random value doesn't meet).
+routine int_to_float(bits: U64, more: U64) -> Bool
+    block entry()
+        s32     : S32  = bits.to_wrap<U32>().to_wrap<S32>()
+        u32     : U32  = bits.to_wrap<U32>()
+        s64     : S64  = bits.to_wrap<S64>()
+        f_s32   : Bool = soft_s32_to_f32(s32).eq(s32.to<F32>().bits())
+        f_u32   : Bool = soft_u32_to_f32(u32).eq(u32.to<F32>().bits())
+        d_s32   : Bool = soft_s32_to_f64(s32).eq(s32.to<F64>().bits())
+        d_u32   : Bool = soft_u32_to_f64(u32).eq(u32.to<F64>().bits())
+        f_s64   : Bool = soft_s64_to_f32(s64).eq(f32_of(s64.to<F128>()))
+        f_u64   : Bool = soft_u64_to_f32(bits).eq(f32_of(bits.to<F128>()))
+        d_s64   : Bool = soft_s64_to_f64(s64).eq(f64_of(s64.to<F128>()))
+        d_u64   : Bool = soft_u64_to_f64(bits).eq(f64_of(bits.to<F128>()))
+        wide_ok : Bool = wide_to_float(pack64(bits, more))
+        narrow  : Bool = f_s32.bitand(f_u32).bitand(d_s32)
+        middle  : Bool = d_u32.bitand(f_s64).bitand(f_u64)
+        wide    : Bool = d_s64.bitand(d_u64).bitand(wide_ok)
+        r       : Bool = narrow.bitand(middle).bitand(wide)
+        return(r)
+
+routine wide_to_float(wide: U128) -> Bool
+    block entry()
+        signed : S128 = wide.to_wrap<S128>()
+        f_s    : Bool = soft_s128_to_f32(signed).eq(f32_of(signed.to<F128>()))
+        f_u    : Bool = soft_u128_to_f32(wide).eq(f32_of(wide.to<F128>()))
+        d_s    : Bool = soft_s128_to_f64(signed).eq(f64_of(signed.to<F128>()))
+        d_u    : Bool = soft_u128_to_f64(wide).eq(f64_of(wide.to<F128>()))
+        small  : S128 = signed.shr(100)  // |small| below 2^28, exact in F64
+        top    : U128 = wide.shr(100)
+        h_s    : Bool = soft_s128_to_f16(small).eq(f16_of(small.to<F64>()))
+        h_u    : Bool = soft_u128_to_f16(top).eq(f16_of(top.to<F64>()))
+        floats : Bool = f_s.bitand(f_u).bitand(d_s)
+        halves : Bool = d_u.bitand(h_s).bitand(h_u)
+        r      : Bool = floats.bitand(halves)
+        return(r)
+
+/// The bits of an F128 rounded to F32.
+routine f32_of(x: F128) -> U32
+    block entry()
+        r : U32 = x.to<F32>().bits()
+        return(r)
+
+/// The bits of an F128 rounded to F64.
+routine f64_of(x: F128) -> U64
+    block entry()
+        r : U64 = x.to<F64>().bits()
+        return(r)
+
+/// The bits of an F64 rounded to F16.
+routine f16_of(x: F64) -> U16
+    block entry()
+        r : U16 = x.to<F16>().bits()
+        return(r)
+
+// -- checks: integers ------------------------------------------------------------
+
+/// Division, multiplication, shifts, and the leading-zero count on one random pair, cut to each width, against the
+/// integer types' own operations. The divisor keeps a random number of bits, so every quotient length comes up.
+routine integer_ops(a: U64, b: U64, c: U64) -> Bool
+    block entry()
+        keep    : U64  = c.bitand(63)
+        divisor : U64  = b.shr(keep).bitor(1)
+        d32     : U32  = divisor.to_wrap<U32>().bitor(1)
+        wide_n  : U128 = pack64(a, c)
+        lift    : U128 = c.bitand(64).to<U128>()
+        wide_d  : U128 = divisor.to<U128>().shl(lift)
+        u32_ok  : Bool = divmod32(a.to_wrap<U32>(), d32)
+        u64_ok  : Bool = divmod64(a, divisor)
+        u128_ok : Bool = divmod128(wide_n, wide_d)
+        mul_ok  : Bool = mul_shift(a, b, c.bitand(127).to_wrap<U32>())
+        r       : Bool = u32_ok.bitand(u64_ok).bitand(u128_ok.bitand(mul_ok))
+        return(r)
+
+routine divmod32(n: U32, d: U32) -> Bool
+    block entry()
+        q, r = soft_u32_divmod(n, d)
+        sn : S32 = n.to_wrap<S32>()
+        sd : S32 = d.to_wrap<S32>()
+        sq, sr = soft_s32_divmod(sn, sd)
+        overflow : Bool = sn.eq(S32.MIN).bitand(sd.eq(-1))
+        unsigned : Bool = q.eq(n.div(d)).bitand(r.eq(n.mod(d)))
+        branch overflow
+            ? return(unsigned)
+            : continue
+        signed : Bool = sq.eq(sn.div(sd)).bitand(sr.eq(sn.mod(sd)))
+        return(unsigned.bitand(signed))
+
+routine divmod64(n: U64, d: U64) -> Bool
+    block entry()
+        q, r = soft_u64_divmod(n, d)
+        sn : S64 = n.to_wrap<S64>()
+        sd : S64 = d.to_wrap<S64>()
+        sq, sr = soft_s64_divmod(sn, sd)
+        overflow : Bool = sn.eq(S64.MIN).bitand(sd.eq(-1))
+        unsigned : Bool = q.eq(n.div(d)).bitand(r.eq(n.mod(d)))
+        branch overflow
+            ? return(unsigned)
+            : continue
+        signed : Bool = sq.eq(sn.div(sd)).bitand(sr.eq(sn.mod(sd)))
+        return(unsigned.bitand(signed))
+
+routine divmod128(n: U128, d: U128) -> Bool
+    block entry()
+        q, r = soft_u128_divmod(n, d)
+        sn : S128 = n.to_wrap<S128>()
+        sd : S128 = d.to_wrap<S128>()
+        sq, sr = soft_s128_divmod(sn, sd)
+        overflow : Bool = sn.eq(S128.MIN).bitand(sd.eq(-1))
+        unsigned : Bool = q.eq(n.div(d)).bitand(r.eq(n.mod(d)))
+        branch overflow
+            ? return(unsigned)
+            : continue
+        signed : Bool = sq.eq(sn.div(sd)).bitand(sr.eq(sn.mod(sd)))
+        return(unsigned.bitand(signed))
+
+routine mul_shift(a: U64, b: U64, n: U32) -> Bool
+    block entry()
+        a32    : U32  = a.to_wrap<U32>()
+        b32    : U32  = b.to_wrap<U32>()
+        mul32  : Bool = soft_u32_mul(a32, b32).eq(a32.mul_wrap(b32))
+        mul64  : Bool = soft_u64_mul(a, b).eq(a.mul_wrap(b))
+        amount : U64  = n.to<U64>()
+        shl    : Bool = soft_u64_shl(a, n).eq(a.shl(amount))
+        shr    : Bool = soft_u64_shr(a, n).eq(a.shr(amount))
+        signed : S64  = a.to_wrap<S64>()
+        sar    : Bool = soft_s64_shr(signed, n).eq(signed.shr(amount.to_wrap<S64>()))
+        lead   : U32  = a32.shr(n.bitand(31))
+        clz    : Bool = soft_u32_leading_zeros(lead).eq(lead.leading_zeros())
+        r      : Bool = mul32.bitand(mul64).bitand(shl.bitand(shr).bitand(sar.bitand(clz)))
+        return(r)
+
+// -- F16 -------------------------------------------------------------------------
+
+/// An F16 widened to F32 by the stdlib, as bits; a NaN by compiler-rt's rule (the payload kept as it is), since a
+/// 32-bit x86 returns an F32 on the x87 stack, which quiets a signaling NaN.
+routine f16_widened(h: U16) -> U32
+    block entry()
+        x : F16 = .from_bits(h)
+        branch x.is_nan()
+            ? continue
+            : return(x.to<F32>().bits())
+        bits    : U32 = h.to<U32>()
+        sign    : U32 = bits.bitand(0x8000).shl(16)
+        payload : U32 = bits.bitand(0x03FF).shl(13)
+        r       : U32 = sign.bitor(0x7F800000).bitor(payload)
+        return(r)
+
+/// Every F16: widening to F32 against the stdlib's, and the 128-bit conversions of the finite ones against F32's.
+routine f16_all() -> U64
+    block entry()
+        jump step(0, 0)
+
+    block step(bits: U32, wrong: U64)
+        branch bits.eq(0x10000)
+            ? return(wrong)
+            : continue
+        h      : U16  = bits.to_wrap<U16>()
+        x      : F16  = .from_bits(h)
+        wide   : Bool = soft_f16_to_f32(h).eq(f16_widened(h))
+        finite : Bool = x.is_finite()
+        s128   : Bool = soft_f16_to_s128(h).eq(x.to<F32>().to_clamp<S128>())
+        u128   : Bool = soft_f16_to_u128(h).eq(x.to<F32>().to_clamp<U128>())
+        ints   : Bool = finite.bitnot().bitor(s128.bitand(u128))
+        ok     : Bool = wide.bitand(ints)
+        jump step(bits.add(1), wrong.add(ok.bitnot().to<U64>()))
+
+// -- runners -------------------------------------------------------------------
+
+/// Every pair of {SPECIAL32} values through one F32 operation.
+routine specials32(op: U32) -> U64
+    block entry()
+        jump step(0, 0)
+
+    block step(at: USize, wrong: U64)
+        branch at.eq(1024)
+            ? return(wrong)
+            : continue
+        a  : U32  = SPECIAL32.get(at.shr(5))
+        b  : U32  = SPECIAL32.get(at.bitand(31))
+        ok : Bool = check32(op, a, b)
+        jump step(at.add(1), wrong.add(ok.bitnot().to<U64>()))
+
+/// `count` random operand pairs of each mix through one F32 operation.
+routine random32(op: U32, count: U32) -> U64
+    block entry()
+        jump step(0, 0)
+
+    block step(at: U32, wrong: U64)
+        branch at.eq(count.mul(3))
+            ? return(wrong)
+            : continue
+        pair : U64  = operands32(at.mod(3))
+        a    : U32  = pair.shr(32).to_wrap<U32>()
+        ok   : Bool = check32(op, a, pair.to_wrap<U32>())
+        jump step(at.add(1), wrong.add(ok.bitnot().to<U64>()))
+
+routine specials64(op: U32) -> U64
+    block entry()
+        jump step(0, 0)
+
+    block step(at: USize, wrong: U64)
+        branch at.eq(1024)
+            ? return(wrong)
+            : continue
+        a  : U64  = SPECIAL64.get(at.shr(5))
+        b  : U64  = SPECIAL64.get(at.bitand(31))
+        ok : Bool = check64(op, a, b)
+        jump step(at.add(1), wrong.add(ok.bitnot().to<U64>()))
+
+routine random64(op: U32, count: U32) -> U64
+    block entry()
+        claim second : @U64 <- 0
+        jump step(second, 0, 0)
+
+    block step(second: @U64, at: U32, wrong: U64)
+        branch at.eq(count.mul(3))
+            ? return(wrong)
+            : continue
+        a  : U64  = operands64(at.mod(3), second)
+        ok : Bool = check64(op, a, second.load())
+        jump step(second, at.add(1), wrong.add(ok.bitnot().to<U64>()))
+
+/// The unary checks on every special value and `count` random values of each mix.
+routine unaries(count: U32) -> U64
+    block entry()
+        claim second : @U64 <- 0
+        jump special(second, 0, 0)
+
+    block special(second: @U64, at: USize, wrong: U64)
+        branch at.eq(32)
+            ? random(second, 0, wrong)
+            : continue
+        ok32 : Bool = unary32(SPECIAL32.get(at))
+        ok64 : Bool = unary64(SPECIAL64.get(at))
+        ok   : Bool = ok32.bitand(ok64)
+        jump special(second, at.add(1), wrong.add(ok.bitnot().to<U64>()))
+
+    block random(second: @U64, at: U32, wrong: U64)
+        branch at.eq(count.mul(3))
+            ? return(wrong)
+            : continue
+        pair : U64  = operands32(at.mod(3))
+        ok32 : Bool = unary32(pair.to_wrap<U32>())
+        ok64 : Bool = unary64(operands64(at.mod(3), second))
+        ok   : Bool = ok32.bitand(ok64)
+        jump random(second, at.add(1), wrong.add(ok.bitnot().to<U64>()))
+
+routine integers(count: U32) -> U64
+    block entry()
+        jump step(0, 0)
+
+    block step(at: U32, wrong: U64)
+        branch at.eq(count)
+            ? return(wrong)
+            : continue
+        a     : U64  = random()
+        b     : U64  = random()
+        c     : U64  = random()
+        ints  : Bool = integer_ops(a, b, c)
+        float : Bool = int_to_float(a.shr(c.bitand(63)), b)
+        ok    : Bool = ints.bitand(float)
+        jump step(at.add(1), wrong.add(ok.bitnot().to<U64>()))
+
+routine report(name: Bytes, wrong: U64) -> Void
+    block entry()
+        Out.write("{name}: {wrong} mismatches\n")
+        return()
+
+routine op_name(op: U32) -> Bytes
+    block entry()
+        when op
+            0    -> return("add")
+            1    -> return("sub")
+            2    -> return("mul")
+            3    -> return("div")
+            4    -> return("mod")
+            5    -> return("compare")
+            else -> return("powi")
+
+routine main() -> S32
+    block entry()
+        jump ops(0)
+
+    block ops(op: U32)
+        branch op.eq(7)
+            ? rest()
+            : continue
+        name : Bytes = op_name(op)
+        f32  : U64   = specials32(op).add(random32(op, 3000))
+        f64  : U64   = specials64(op).add(random64(op, 3000))
+        Out.write("f32 {name}: {f32} mismatches\n")
+        Out.write("f64 {name}: {f64} mismatches\n")
+        jump ops(op.add(1))
+
+    block rest()
+        report("unary (sqrt, conversions)", unaries(3000))
+        report("f16 (every value)", f16_all())
+        report("integers", integers(20000))
+        return(0)
