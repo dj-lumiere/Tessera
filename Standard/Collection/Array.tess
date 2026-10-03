@@ -44,7 +44,7 @@ require T: typename, N: USize
 /// :returns: A copy of the element at `index`.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= N`.
 #track_caller
-routine Array<T, N>.get(self: @Self, index: USize) -> T
+routine Array<T, N>.getitem(self: @Self, index: USize) -> T
 require T: typename, N: USize
     block entry()
         in_bounds : Bool = index.lt(N)
@@ -62,7 +62,7 @@ require T: typename, N: USize
 /// :param value: The value to store.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= N`.
 #track_caller
-routine Array<T, N>.set(self: @Self, index: USize, value: T) -> Void
+routine Array<T, N>.setitem(self: @Self, index: USize, value: T) -> Void
 require T: typename, N: USize
     block entry()
         in_bounds : Bool = index.lt(N)
@@ -75,7 +75,7 @@ require T: typename, N: USize
         base.stride(index).store(value)
         return()
 
-/// The address of element index, checked like get: a place to read or write in place (`a.at(i).store(v)`).
+/// The address of element index, checked like getitem: a place to read or write in place (`a.at(i).store(v)`).
 #track_caller
 routine Array<T, N>.at(self: @Self, index: USize) -> @T
 require T: typename, N: USize
@@ -135,6 +135,26 @@ require T: typename, N: USize
         base : @T = bitcast<@Self, @T>(self)
         return(base)
 
+// -- releasing elements --------------------------------------------------------
+
+// An array acquires nothing (its elements live inside it), so it has no destruct().
+
+/// Destructs every element: for elements that own something, such as lists. The array itself has nothing to release.
+/// Elements that only borrow (a `Ptr` to memory owned elsewhere) must not be destructed this way.
+routine Array<T, N>.destruct_all(self: @Self) -> Void
+require T: typename, N: USize, Destruct<T>
+    block entry()
+        first : @T = bitcast<@Self, @T>(self)
+        jump each(first, 0)
+
+    block each(first: @T, i: USize)
+        done : Bool = i.ge(N)
+        branch done
+            ? return()
+            : continue
+        first.stride(i).destruct()
+        jump each(first, i.add(1))
+
 /// Tessera stdlib collection: fixed array helpers
 ///
 /// These helpers operate on Array<T, N> fields inside larger structures. The
@@ -153,8 +173,8 @@ require T: typename, N: USize
 
     block move(i: USize)
         from  : USize = i.sub(1)
-        value : T     = self.get(from)
-        self.set(i, value)
+        value : T     = self.getitem(from)
+        self.setitem(i, value)
         jump loop(from)
 
 /// Closes the hole at start: moves elements [start + 1, end) one slot left, to [start, end - 1).
@@ -172,8 +192,8 @@ require T: typename, N: USize
 
     block move(i: USize)
         from  : USize = i.add(1)
-        value : T     = self.get(from)
-        self.set(i, value)
+        value : T     = self.getitem(from)
+        self.setitem(i, value)
         jump loop(from)
 
 /// Copies `count` elements from `src` starting at `src_start` into this array starting at `dst_start`, one element at a time from the front.
@@ -198,6 +218,6 @@ require T: typename, N: USize
     block copy_one(i: USize)
         src_index : USize = src_start.add(i)
         dst_index : USize = dst_start.add(i)
-        value     : T     = src.get(src_index)
-        self.set(dst_index, value)
+        value     : T     = src.getitem(src_index)
+        self.setitem(dst_index, value)
         jump loop(i.add(1))

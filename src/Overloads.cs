@@ -197,6 +197,24 @@ public sealed partial class Compiler
         return BlanketCandidates(name, file, pos, anyModule);
     }
 
+    /// For an error about a call to a routine on a type that takes `args` arguments: a routine of the same type and name
+    /// that does take that many but sits in a module `file` doesn't import, named so the error says where it is
+    /// (`List<T>.construct()` without an allocator is in Standard::Os). Empty when there is none.
+    public string HiddenOverloadHint(RoutineDecl seen, int args, string file)
+    {
+        if (seen.Owner is null || !_methods.TryGetValue((seen.Owner.Name, seen.Name), out var all)) return "";
+        var ownerDecl = OwnerDecl(seen);
+        foreach (var m in all)
+        {
+            if (m == seen || m.IsPrivate || m.IsInternal || OwnerDecl(m) != ownerDecl || Visible(m, file, null)) continue;
+            int count = m.Params.Count - (m.Params is [{ Name: "self" }, ..] ? 1 : 0);
+            if (count == args)
+                return $"; the '{seen.DisplayName}' that takes {args} argument(s) is in {m.Module}, "
+                       + $"which this file doesn't import (import {m.Module})";
+        }
+        return "";
+    }
+
     /// The routines on every type (`T.name`) with this name, as `file` sees them.
     public List<RoutineDecl> BlanketCandidates(string name, string file, Pos pos, bool anyModule = true)
     {

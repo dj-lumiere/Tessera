@@ -1,21 +1,23 @@
 // Tessera stdlib: CStr, CWStr — C strings at the FFI boundary
 //
-// CStr points at bytes that end with a NUL (C's char*). CWStr points at wide
-// characters that end with a 0 (C's wchar_t*): UTF-16 units on Windows, UTF-32
-// code points elsewhere, as CWChar says. Both are one-field records, so they
-// cost nothing over the pointer, and the type says the terminator is there.
+// CStr points at C chars that end with a NUL (C's char*), CChar units the way
+// CWStr points at CWChar units. CWStr points at wide characters that end with a
+// 0 (C's wchar_t*): UTF-16 units on Windows, UTF-32 code points elsewhere, as
+// CWChar says. Both are one-field records, so they cost nothing over the
+// pointer, and the type says the terminator is there. CChar is S8 or U8 as the
+// target's char is, so a Bytes view of a CStr reinterprets the same memory.
 //
 // A string literal becomes a CStr or CWStr where one is expected, terminator
-// included. Text built at run time becomes one explicitly: Bytes.to<CStr> and
-// Bytes.to<CWStr> copy through an allocator (Memory.tess), and a List<Byte>
-// ends itself with a NUL (List<Byte>.to<CStr>). A Bytes is a view with no
-// terminator, so it never converts implicitly.
+// included. Text built at run time becomes one explicitly: Bytes.to<OwnedCStr>
+// and Bytes.to<OwnedCWStr> copy through an allocator into an owner (Memory.tess),
+// and a List<Byte> ends itself with a NUL (List<Byte>.to<CStr>). A Bytes is a
+// view with no terminator, so it never converts implicitly.
 
 module Standard::Core
 
-/// A C string: a pointer to bytes that end with a NUL (C's `char*`). It is a one-field record, so it costs nothing over the pointer, and the type records that the terminator is there.
+/// A C string: a pointer to `CChar` units that end with a NUL (C's `char*`). It is a one-field record, so it costs nothing over the pointer, and the type records that the terminator is there.
 record CStr
-    data : @Byte
+    data : @CChar
 
 /// A C wide string: a pointer to `CWChar` units that end with a 0 (C's `wchar_t*`), UTF-16 units on Windows and UTF-32 code points elsewhere. It costs nothing over the pointer.
 record CWStr
@@ -23,44 +25,44 @@ record CWStr
 
 // -- CStr ------------------------------------------------------------------------
 
-/// data must point at bytes ending with a NUL, and nothing checks it.
-routine CStr.from_ptr(data: @Byte) -> Self
+/// data must point at C chars ending with a NUL, and nothing checks it. Memory typed as bytes is `p.to<@CChar>()`.
+routine CStr.from_ptr(data: @CChar) -> Self
     block entry()
         c : Self = Self { data: data }
         return(c)
 
-/// The pointer to the first byte.
-/// :returns: The underlying `@Byte`, still NUL-terminated.
-routine CStr.to<@Byte>(self: Self) -> @Byte
+/// The pointer to the first C char.
+/// :returns: The underlying `@CChar`, still NUL-terminated.
+routine CStr.to<@CChar>(self: Self) -> @CChar
     block entry()
-        data : @Byte = self.data
+        data : @CChar = self.data
         return(data)
 
-/// The number of bytes before the NUL, like strlen.
+/// The number of C chars before the NUL, like strlen.
 routine CStr.count(self: Self) -> USize
     block entry()
-        data : @Byte = self.data
+        data : @CChar = self.data
         jump scan(data, 0)
 
-    block scan(data: @Byte, i: USize)
-        current : Byte = data.stride(i).load()
-        at_end  : Bool = current.eq(0x00)
+    block scan(data: @CChar, i: USize)
+        current : CChar = data.stride(i).load()
+        at_end  : Bool  = current.eq(0)
         branch at_end
             ? return(i)
             : scan(data, i.add(1))
 
-/// A Bytes view of the bytes before the NUL, without copying: text a C
-/// function returned, for example. It's valid as long as the bytes are.
+/// A Bytes view of the C chars before the NUL, without copying: text a C
+/// function returned, for example. It's valid as long as the text is.
 routine CStr.to<Bytes>(self: Self) -> Bytes
     block entry()
-        data  : @Byte = self.data
+        data  : @Byte = self.data.to<@Byte>()
         count : USize = self.count()
         text  : Bytes = .from_ptr(data, count)
         return(text)
 
 // -- CWStr -----------------------------------------------------------------------
 
-/// data must point at wide characters ending with a 0; nothing checks it.
+/// data must point at wide characters ending with a 0, and nothing checks it.
 routine CWStr.from_ptr(data: @CWChar) -> Self
     block entry()
         c : Self = Self { data: data }

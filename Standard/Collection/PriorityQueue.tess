@@ -1,8 +1,8 @@
 // Tessera stdlib collection: PriorityQueue<T>
 //
 // Binary min-heap ordered by Priority<T>: a.less(b) returns true when a has
-// higher priority than b (sits closer to the top). The allocator is stored in
-// the record.
+// higher priority than b (sits closer to the top). The heap array is an
+// OwnedSpan<T> whose count is the capacity, and it keeps the allocator.
 
 module Standard::Collections
 
@@ -16,10 +16,8 @@ conform Destruct<PriorityQueue<T>>
 conform Represent<PriorityQueue<T>> when T: typename, Priority<T>, Diagnose<T>
 conform Diagnose<PriorityQueue<T>>  when T: typename, Priority<T>, Diagnose<T>
 require T: typename, Priority<T>
-    data     : @T
-    count    : USize
-    capacity : USize
-    alloc    : @Allocator
+    storage : OwnedSpan<T>
+    count   : USize
 
 /// Creates an empty PriorityQueue that draws its storage from `alloc`. Nothing is allocated until the first insertion.
 /// :param alloc: The allocator the queue stores and later frees its memory with.
@@ -27,7 +25,8 @@ require T: typename, Priority<T>
 routine PriorityQueue<T>.construct(alloc: @Allocator) -> Self
 require T: typename, Priority<T>
     block entry()
-        queue : Self = Self { data: null, count: 0, capacity: 0, alloc: alloc }
+        storage : OwnedSpan<T> = OwnedSpan<T>.construct(0, alloc)
+        queue   : Self         = Self { storage: storage, count: 0 }
         return(queue)
 
 /// The number of elements currently stored.
@@ -37,6 +36,22 @@ require T: typename
     block entry()
         count : USize = self.count
         return(count)
+
+/// The number of elements currently stored.
+/// :returns: The count of elements, `0` when the queue is empty.
+routine PriorityQueue<T>.count(self: @Self) -> USize
+require T: typename
+    block entry()
+        count : USize = self.load().count()
+        return(count)
+
+/// Whether the queue holds no elements.
+/// :returns: `true` when the count is `0`.
+routine PriorityQueue<T>.is_empty(self: @Self) -> Bool
+require T: typename
+    block entry()
+        empty : Bool = self.load().is_empty()
+        return(empty)
 
 /// Whether the queue holds no elements.
 /// :returns: `true` when the count is `0`.
@@ -73,32 +88,22 @@ require T: typename
 private routine PriorityQueue<T>.make_capacity(self: @Self, capacity: USize) -> Bool
 require T: typename
     block entry()
-        old_capacity : USize = self.capacity.load()
+        old_capacity : USize = self.storage.count.load()
         enough       : Bool  = old_capacity.ge(capacity)
         branch enough
             ? return(true)
-            : grow()
-
-    block grow()
-        alloc    : @Allocator = self.alloc.load()
-        old_data : @T         = self.data.load()
-        new_data : @T         = reallocate<T>(alloc, old_data, capacity)
-        failed   : Bool       = new_data.is_null()
-        branch failed
-            ? return(false)
-            : install(new_data)
-
-    block install(new_data: @T)
-        self.data.store(new_data)
-        self.capacity.store(capacity)
-        return(true)
+            : continue
+        resized : Result<Unit, AllocFailed> = self.storage.resize_result(capacity)
+        when resized
+            .Success -> return(true)
+            .Failure -> return(false)
 
 /// Makes room for wanted elements, doubling the capacity. Returns false when
 /// the allocator fails, leaving the queue as it was.
 private routine PriorityQueue<T>.make_room(self: @Self, wanted: USize) -> Bool
 require T: typename
     block entry()
-        capacity : USize = self.capacity.load()
+        capacity : USize = self.storage.count.load()
         enough   : Bool  = capacity.ge(wanted)
         branch enough
             ? return(true)
@@ -147,7 +152,7 @@ require T: typename
         branch room
             ? continue
             : return(.Failure(AllocFailed {}))
-        data : @T = self.data.load()
+        data : @T = self.storage.data.load()
         data.stride(count).store(value)
         self.count.store(wanted)
         jump sift_up(count)
@@ -160,7 +165,7 @@ require T: typename
 
     block compare_parent(index: USize)
         parent       : USize = index.sub(1).div(2)
-        data         : @T    = self.data.load()
+        data         : @T    = self.storage.data.load()
         child_value  : T     = data.stride(index).load()
         parent_value : T     = data.stride(parent).load()
         less         : Bool  = child_value.less(parent_value)
@@ -169,7 +174,7 @@ require T: typename
             : return(.Success(Unit.value()))
 
     block swap(index: USize, parent: USize, child_value: T, parent_value: T)
-        data : @T = self.data.load()
+        data : @T = self.storage.data.load()
         data.stride(parent).store(child_value)
         data.stride(index).store(parent_value)
         jump sift_up(parent)
@@ -186,6 +191,23 @@ require T: typename
             .Present(value) -> return(value)
             .Absent         -> crash_absent_value()
 
+/// Reads the highest-priority element without removing it.
+/// :returns: A copy of the top element.
+/// :throws: Crashes with `AbsentValueError` when the queue is empty. See {PriorityQueue<T>.peek_checked}.
+#track_caller
+routine PriorityQueue<T>.peek(self: @Self) -> T
+require T: typename
+    block entry()
+        value : T = self.load().peek()
+        return(value)
+
+/// `peek`, returning Absent instead of crashing on an empty queue.
+routine PriorityQueue<T>.peek_checked(self: @Self) -> Option<T>
+require T: typename
+    block entry()
+        value : Option<T> = self.load().peek_checked()
+        return(value)
+
 /// `peek`, returning Absent instead of crashing on an empty queue.
 routine PriorityQueue<T>.peek_checked(self: Self) -> Option<T>
 require T: typename
@@ -197,7 +219,7 @@ require T: typename
             : load()
 
     block load()
-        data  : @T = self.data
+        data  : @T = self.storage.data
         value : T  = data.stride(0).load()
         return(.Present(value))
 
@@ -224,7 +246,7 @@ require T: typename
             : remove_root(count)
 
     block remove_root(count: USize)
-        data      : @T    = self.data.load()
+        data      : @T    = self.storage.data.load()
         result    : T     = data.stride(0).load()
         new_count : USize = count.sub(1)
         self.count.store(new_count)
@@ -232,7 +254,7 @@ require T: typename
         branch now_empty ? return(.Present(result)): move_last(result, new_count)
 
     block move_last(result: T, new_count: USize)
-        data : @T = self.data.load()
+        data : @T = self.storage.data.load()
         last : T  = data.stride(new_count).load()
         data.stride(0).store(last)
         jump sift_down(0, result)
@@ -254,7 +276,7 @@ require T: typename
             : compare_with_child(index, left, result)
 
     block compare_children(index: USize, left: USize, right: USize, result: T)
-        data        : @T    = self.data.load()
+        data        : @T    = self.storage.data.load()
         left_value  : T     = data.stride(left).load()
         right_value : T     = data.stride(right).load()
         right_less  : Bool  = right_value.less(left_value)
@@ -264,7 +286,7 @@ require T: typename
         jump compare_with_child(index, child, result)
 
     block compare_with_child(index: USize, child: USize, result: T)
-        data        : @T   = self.data.load()
+        data        : @T   = self.storage.data.load()
         index_value : T    = data.stride(index).load()
         child_value : T    = data.stride(child).load()
         child_less  : Bool = child_value.less(index_value)
@@ -273,7 +295,7 @@ require T: typename
             : return(.Present(result))
 
     block swap_down(index: USize, child: USize, index_value: T, child_value: T, result: T)
-        data : @T = self.data.load()
+        data : @T = self.storage.data.load()
         data.stride(index).store(child_value)
         data.stride(child).store(index_value)
         jump sift_down(child, result)
@@ -285,26 +307,13 @@ require T: typename
         self.count.store(0)
         return()
 
-/// Frees the queue's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+/// Gives the queue's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
 /// :note: Safe to call on a never-filled instance, where it only resets the fields.
 routine PriorityQueue<T>.destruct(self: @Self) -> Void
 require T: typename
     block entry()
-        data  : @T   = self.data.load()
-        empty : Bool = data.is_null()
-        branch empty
-            ? reset()
-            : release(data)
-
-    block release(data: @T)
-        alloc : @Allocator = self.alloc.load()
-        data.free(alloc)
-        jump reset()
-
-    block reset()
-        self.data.store(null)
+        self.storage.destruct()
         self.count.store(0)
-        self.capacity.store(0)
         return()
 
 /// Destructs every element, then the queue itself: for elements the queue owns.
@@ -312,7 +321,7 @@ routine PriorityQueue<T>.destruct_all(self: @Self) -> Void
 require T: typename, Destruct<T>
     block entry()
         count : USize = self.count.load()
-        data  : @T    = self.data.load()
+        data  : @T    = self.storage.data.load()
         jump loop(0, count, data)
 
     block loop(i: USize, count: USize, data: @T)
@@ -358,7 +367,7 @@ require T: typename, Priority<T>, Diagnose<T>, W: typename, Writer<W>
         jump element(at)
 
     block element(at: USize)
-        data  : @T = self.data
+        data  : @T = self.storage.data
         value : T  = data.stride(at).load()
         value.diagnose_into(out)
         jump walk(at.add(1))
@@ -393,7 +402,7 @@ require T: typename, Priority<T>, Diagnose<T>, W: typename, Writer<W>
         jump element(at)
 
     block element(at: USize)
-        data  : @T = self.data
+        data  : @T = self.storage.data
         value : T  = data.stride(at).load()
         value.diagnose_into(out)
         jump walk(at.add(1))

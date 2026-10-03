@@ -42,7 +42,7 @@ routine main() -> S32
         claim alloc : @Allocator <- make_heap_allocator()
         claim list  : @List<S64> <- .construct(alloc)
         list.push(42)
-        first : S64 = list.load().get(0)
+        first : S64 = list.getitem(0)
         Out.write("first: {first}, as source: {first.diagnose()}\n")
 
         list.destruct()
@@ -97,15 +97,30 @@ routine main() -> S32
   where it isn't on the same line: `sum2({ 7, 8 })` compiles, but prefer `sum2(Array<S64, 2> { 7, 8 })`. A receiver
   gives it no type: `{ 1, 2 }.eq(...)` is an error. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot.
-- Heap memory goes through an allocator: `allocate<T>(alloc, count)`, `p.free(alloc)`.
+- **Where values are: `@T`, `Span<T>`, `OwnedSpan<T>`.** `@T` is an address (a claim slot, a field, an element,
+  memory from C) and frees nothing. `Span<T>` (Core) is an address and a count, borrowed: `at(i)` is the checked
+  address, and everything through it is `@T`'s own (`load`, `store`, `volatile_load`, `atomic_fetch_add`, ...),
+  `getitem(i)` / `setitem(i, v)` the value shortcuts, `getitem_checked(i)` an `Option`, `getspan(start, count)` a
+  checked range view. `OwnedSpan<T>` (Standard::Alloc) is an address, a count, and the allocator it came from:
+  `.construct(count, alloc)` (a count of 0 allocates nothing), the same access words as a Span, `resize(n)`,
+  `destruct()` (gives the memory back), `destruct_all()` (destructs the values first). Each lends the one below:
+  `owned.to<Span<T>>()`, `span.to<@T>()`, and `List` / `Array` / `Bytes` lend a `to<Span<T>>()` and a `getspan` too.
+  Heap memory reaches your code as an `OwnedSpan` (or a type built on one). The raw layer under it,
+  `allocate<T>(alloc, count)` / `reallocate<T>` / `deallocate(alloc, p)`, is for node-based structures and C
+  interop. `@T` has no `free`. Ownership is a convention the type names: nothing checks it.
+- **The default heap comes with `Standard::Os`**, like `Out`: there `DEFAULT_HEAP` is an `@Allocator` ready before
+  `main`, and every collection and `OwnedSpan` gets a `construct` without the allocator (`List<S64>.construct()`,
+  `OwnedSpan<U8>.construct(n)`). A file that doesn't import `Standard::Os`, and every program for a target without an
+  OS, passes an allocator.
 - **Memory is declared `@T`, and its contents go in with `<-`.** A name that is an address is written with its
   pointer type, and the declared type is the name's type everywhere:
   `claim p : @T <- v` (a stack slot, `<- uninit` if a routine fills it), `global NAME: @T [<- value]` (mutable, all-zero without a value),
   `preset NAME: @T <- value` (read-only). `preset NAME: T = value` is a value, not memory: folded at build time, with
   no address. A global or a preset in memory is part of the program image, there before `main` runs, so its contents
-  are known at build time: literals, presets, `null`, `{ ... }`, or the name of another global or preset in memory (its
+  are known at build time: literals, presets, `null`, `{ ... }` (an array, or a record field by field), a routine for
+  a `Callable` (`f.to<Callable>()`), or the name of another global or preset in memory (its
   address; a global holding a pointer is `@@T`: `global HEAD: @@Node <- null`). Use them as `TICKS.load()`,
-  `STATS.calls.store(n)`, `K.get(i)`; writing a preset's memory is a build error. Neither kind is a buildtime
+  `STATS.calls.store(n)`, `K.getitem(i)`; writing a preset's memory is a build error. Neither kind is a buildtime
   constant: a preset value is (`Array<S64, N>` with `preset N: USize = 4`). An array preset is always in memory.
 - `#[external("c"), symbol("environ")] global ENVIRON: @@@Byte` declares a C variable (C's `extern`): no `<-`, read and
   written like any global; dllimport on Windows.
@@ -217,8 +232,9 @@ routine main() -> S32
   `offset`, `to<@U>`, ...). Value methods (`self: Self`, such as every collection's `eq`) aren't reachable through a
   pointer, because that would hide a load: load first (`a.load().eq(b.load())`). Don't name your own pointer methods after `Ptr`'s.
 - **Collection methods that change the collection take `self: @Self`**, so it must live in memory (`claim` a
-  slot) before you call them; read-only ones (`count`, `is_empty`, `get`, `contains`, ...) take `self: Self`: call
-  them on a value, or load first (`list.load().count()`). You can't call a pointer method on a temporary: `DictIter<K, V>.construct(m).next()` fails with "has no
+  slot) before you call them. Read-only ones (`count`, `is_empty`, `getitem`, `contains`, `to<Span<T>>`, ...) take
+  either: a claimed collection reads directly (`list.count()`), a value too. Value-only routines such as `eq` need
+  a load (`a.load().eq(b.load())`). You can't call a pointer method on a temporary: `DictIter<K, V>.construct(m).next()` fails with "has no
   method 'next'"; claim a slot for the iterator first.
 - Generic routines repeat their constraints: `require T: typename, Compare<T>`. Concepts: `Equal`, `Hash`,
   `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Represent`. Constraints are checked: a type satisfies a
@@ -247,8 +263,11 @@ routine main() -> S32
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
 - String literals are `Bytes` where a `Bytes` is expected, `CStr` / `CWStr` (terminated C text) where one of those
-  is, and a NUL-terminated `@Byte` where a pointer is. Declare C string parameters as `s: CStr`. A `Bytes`
-  view has no terminator: pass `s.to<CStr>(alloc)` (a copy) or `buf.to<CStr>()` on a `List<Byte>`.
+  is, and a NUL-terminated `@Byte` where a pointer is. Declare C string parameters as `s: CStr`. A `CStr` is
+  `{ data: @CChar }` (C's `char`, `S8` or `U8` as the target has it), symmetric with `CWStr` over `@CWChar`, so
+  memory typed as bytes becomes one with `CStr.from_ptr(p.to<@CChar>())`. A `Bytes` view has no terminator: claim
+  `s.to<OwnedCStr>(alloc)` (a copy that lends `to<CStr>()` and is released with `destruct()`) or use
+  `buf.to<CStr>()` on a `List<Byte>`.
 
 **Errors**
 
@@ -365,7 +384,8 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   Writer parameter takes), a `FileHandle`, `BufWriter<W>` (`out.construct(inner)`, then `flush()`),
   `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `buf.write("...")`, then `buf.to<Bytes>()`; it is
   the string builder). Standard input is `In`: `In.read_line(alloc)`, `read_word`, `read_count(n, alloc)`,
-  `read_all`, `read(buffer, n)`, all through one buffer the process shares.
+  `read_all`, `read(buffer, n)`, all through one buffer the process shares. The text comes back as an
+  `OwnedSpan<Byte>` (`line.to<Bytes>()` to read it, `destruct()` to release it).
 - Reading numbers back: `S32.parse(text)` (every integer type) gives `Result<T, ParseIntError>` (`Empty`,
   `Invalid`, `OutOfRange`) for an optional sign and decimal digits; `F64.parse` / `F32.parse` give
   `Result<T, ParseFloatError>`. Two numbers from a line: `In.read_word(alloc)` twice, then `S32.parse`.
@@ -390,23 +410,26 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
 
 ## Collections
 
-All in `Standard/Collection/`, documented in `../Tessera-Wiki/docs/Collections.md`. `construct(alloc)` stores the allocator; `destruct()`
-releases storage. Out-of-range access, `pop` on empty, and `get` of a missing key crash; the `_checked` forms
-(`get_checked`, `pop_checked`, `peek_checked`) return `Option<T>` instead. Allocation failure crashes too; each
+All in `Standard/Collection/`, documented in `../Tessera-Wiki/docs/Collections.md`. They are built on
+`OwnedSpan<T>`: a `List` is `storage` (an OwnedSpan whose count is the capacity) and `count`. `construct(alloc)` keeps
+the allocator (`construct()` with `Standard::Os` uses the default heap), and `destruct()` releases storage. Element access is
+`getitem(i)` / `setitem(i, v)` (the name says what is fetched), `at(i)` the checked address. Out-of-range access, `pop`
+on empty, and `getitem` of a missing key crash; the `_checked` forms (`getitem_checked`, `pop_checked`,
+`peek_checked`) return `Option<T>` instead. Allocation failure crashes too; each
 insertion and `reserve` has a `_result` form (`push_result`, `put_result`, `add_result`) that returns
 `Result<T, AllocFailed>` and leaves the collection unchanged on a `Failure`. `_checked` always means `Option`, `_result`
 always `Result`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array<T, N>` | `Array<T, N> { a, b }` literal, `from_ptr`, `at`, `get`, `set`, `shift_left`, `shift_right`, `copy` | index |
-| `List<T>` | `push`, `pop`, `get`, `set`, `clear`, `reserve` | index |
-| `CircularList<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `get`, `set` | front to back |
-| `Dict<K, V>` | `put`, `get`, `contains`, `remove` | **insertion order (guaranteed)** |
+| `Array<T, N>` | `Array<T, N> { a, b }` literal, `from_ptr`, `at`, `getitem`, `setitem`, `getspan`, `to<Span<T>>`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
+| `List<T>` | `push`, `pop`, `getitem`, `setitem`, `getspan`, `to<Span<T>>`, `clear`, `reserve` | index |
+| `CircularList<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `getitem`, `setitem` | front to back |
+| `Dict<K, V>` | `put`, `getitem`, `contains`, `remove` | **insertion order (guaranteed)** |
 | `Set<T>` | `add`, `contains`, `remove` | **insertion order (guaranteed)** |
-| `SortedDict<K, V>` | `put`, `get`, `contains`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
+| `SortedDict<K, V>` | `put`, `getitem`, `contains`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
 | `SortedSet<T>` | `add`, `contains`, `remove`, `get_by_rank(rank)` | ascending |
-| `SortedList<T>` | `push` (sorted, after equals), `get` / `get_by_rank`, `rank(v)`, `contains`, `remove(i)` (`T: Compare<T>`) | ascending |
+| `SortedList<T>` | `push` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `contains`, `remove(i)` (`T: Compare<T>`) | ascending |
 | `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Priority<T>`) | none |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
@@ -448,20 +471,22 @@ routine on them is one thing done there now, returning `Result<T, FsError>`. A F
 offset, count)`, `name` / `stem` / `extension` / `parent`. A Directory: `create` / `create_all`, `delete` /
 `delete_all(alloc)`, `file(name, alloc)` / `subdir(name, alloc)`, `Directory.current` / `temp` / `home`, and a
 `DirIter` (`claim`, `open(dir)`, `next()` until Absent, `close()`). Path text needs no OS: `join_path`,
-`parent_path`, `file_name`, `file_stem`, `file_extension`. A routine that hands text or a path back takes an
-allocator; free it with `data.free(alloc)`.
+`parent_path`, `file_name`, `file_stem`, `file_extension`. A routine that hands text back takes an allocator and
+returns an `OwnedSpan<Byte>` (`read_all`, `join_path`, `env_var`): release it with `destruct()`. One that makes a
+path (`file`, `subdir`, `absolute`, `canonical`, `Directory.current` / `temp` / `home`) returns a `File` /
+`Directory` view whose text came from the allocator: give it back with `deallocate(alloc, dir.path.data)`.
 
 **Processes.** `run_process(program, args, arg_count, options, alloc)` (looked up on PATH) and `run_shell(command,
 options, alloc)` return `Result<ProcessOutput, ProcessError>`: an `ExitStatus` (`.code()`, `.is_success()`) and the
-captured `stdout` / `stderr`. `ProcessOptions.default()` captures both and gives the child the null device as input;
+captured `stdout` / `stderr` (`OwnedSpan<Byte>`s, released with the output's `destruct()`). `ProcessOptions.default()` captures both and gives the child the null device as input;
 set `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
 `env_var(name, alloc)` reads a variable, `exit(status)` ends the process.
 
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
 `x86_64-none-elf`) gets everything but `Standard::Os`: Core, Format (into a `SliceWriter` or `List<Byte>`), Alloc, and
 Collections all check there. `Standard::Os` drops out of the build, so importing it or naming anything in it is one
-build error ("Standard::Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, Fiber, or
-`make_heap_allocator`. The program exports its own crash handler (`#[export("tessera_crash_handler"), noreturn]`, which
+build error ("Standard::Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, Fiber,
+`make_heap_allocator`, `DEFAULT_HEAP`, or `construct()` without an allocator. The program exports its own crash handler (`#[export("tessera_crash_handler"), noreturn]`, which
 may loop forever), passes its own `Allocator` if it allocates, and brings its startup code and link script. The
 stdlib supplies `memcpy` / `memmove` / `memset` / `memcmp` (and ARM's `__aeabi_mem*`) there, weak, from
 `Standard/Freestanding.tess`, and the whole compiler runtime from `Standard/SoftFloat/`, so nothing needs compiler-rt
@@ -478,8 +503,8 @@ routine, block, statement, or terminator it wrote: debug information and build e
 **Naming conversions.** `to<T>` is the standard spelling of a type conversion: a routine whose job is turning a
 value into another type is the method `x.to<T>()` on the type it converts from, the target a fixed type argument
 (each pair of types is its own routine, `routine S32.to<S64>`): `n.to<S64>()`, `x.to_wrap<U8>()`, `arr.to<@T>()`,
-`p.to<@U>()`, `b.to<U8>()` on a `Byte`, `s.to<CStr>(alloc)` / `s.to<CWStr>(alloc)` on a `Bytes` (a conversion may take
-parameters), `buf.to<Bytes>()` on a `List<Byte>` or `SliceWriter`, `c.to<Bytes>()` on a `CStr`,
+`p.to<@U>()`, `b.to<U8>()` on a `Byte`, `s.to<OwnedCStr>(alloc)` / `s.to<OwnedCWStr>(alloc)` on a `Bytes` (a conversion may take
+parameters), `list.to<Span<T>>()`, `owned.to<Span<T>>()`, `buf.to<Bytes>()` on a `List<Byte>` or `SliceWriter`, `c.to<Bytes>()` on a `CStr`,
 `a.to<Vector<F32, 4>>()` on an `Array`, `n.to<F128Big>()`, `f.to<F128Extended>()`. Its variants keep the family
 (`to_wrap`, `to_clamp`, `to_checked`, `to_nearest<S64>()` on an `F128Extended`). There is no `to_s64`, `as_<type>`,
 `y_from_x`, or `x_to_y`, and a routine that differs from another only in the type it produces takes the type as a
@@ -496,10 +521,10 @@ that `to<T>`, which would call itself there. It keeps the shape under its own na
 
 **Arrays and `stride`.** There is no `[]`. `p.stride(i)` is the address of the i-th `T` of a `@T` (a
 `USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
-`@Array<T, N>` that is the i-th whole array, so array elements are `arr.get(i)` / `arr.set(i, v)` / `arr.at(i)`
+`@Array<T, N>` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(i, v)` / `arr.at(i)`
 (bounds checked), or `arr.to<@T>().stride(i).load()` unchecked. Literals name their type: `Array<S32, 3> { 1, 2, 3 }`,
-`Vector<F32, 4> { ... }`. The same holds for array fields (`node.keys.get(i)`) and
-array presets (`K.get(i)`, with `preset K: @Array<T, N> <- { ... }`).
+`Vector<F32, 4> { ... }`. The same holds for array fields (`node.keys.getitem(i)`) and
+array presets (`K.getitem(i)`, with `preset K: @Array<T, N> <- { ... }`).
 
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
 `destruct`:
@@ -510,10 +535,12 @@ array presets (`K.get(i)`, with `preset K: @Array<T, N> <- { ... }`).
 - `self.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
   and leaves the value empty. Call it yourself; nothing runs it for you. A collection's `destruct` doesn't touch its
   elements; `destruct_all()` destructs them first (elements must conform to `Destruct<T>`), and `Dict` / `SortedDict`
-  also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release.
+  also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release. `Array<T, N>` acquires
+  nothing, so it has no `destruct()`, only `destruct_all()` for elements that own something.
 - Other ways to make a value are named for what they make: `Out.shared()`, `Bytes.from_ptr(p, n)`,
   `Option<T>.Absent`, `FormatSpec.zero_padded(6)`.
-- `p.free(alloc)` is not a destructor: it hands a block of memory back to its allocator.
+- `deallocate(alloc, p)` (the raw layer) is not a destructor: it hands a block of memory back to its allocator.
+  `OwnedSpan<T>.destruct()` is the owner's way to do it.
 
 ## Style
 

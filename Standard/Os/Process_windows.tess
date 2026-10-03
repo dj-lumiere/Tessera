@@ -175,7 +175,7 @@ private routine utf16(text: Bytes, alloc: @Allocator) -> (@U16, USize)
             .Absent         -> failed(units)
 
     block failed(units: @U16)
-        units.free(alloc)
+        deallocate(alloc, units)
         return({ null, 0 })
 
 // -- the command line --------------------------------------------------------------------
@@ -312,11 +312,11 @@ private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
 
     block quote(line: @U16, at: @U16, i: USize, units: @U16, n: USize)
         end : @U16 = quote_arg(units, n, at)
-        units.free(alloc)
+        deallocate(alloc, units)
         jump append(line, end, i.add(1))
 
     block failed(line: @U16)
-        line.free(alloc)
+        deallocate(alloc, line)
         return(null)
 
     block finish(at: @U16, line: @U16)
@@ -396,10 +396,12 @@ private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Allo
         branch i.eq(options.env_count)
             ? return(true)
             : continue
-        v     : EnvVar = options.env.stride(i).load()
-        whole : Bytes  = Bytes.concat(Bytes.concat(v.name, "=", alloc), v.value, alloc)
-        units, n = utf16(whole, alloc)
-        whole.data.free(alloc)
+        v     : EnvVar          = options.env.stride(i).load()
+        named : OwnedSpan<Byte> = Bytes.concat(v.name, "=", alloc)
+        whole : OwnedSpan<Byte> = Bytes.concat(named.to<Bytes>(), v.value, alloc)
+        deallocate(alloc, named.data)
+        units, n = utf16(whole.to<Bytes>(), alloc)
+        deallocate(alloc, whole.data)
         branch units.is_null()
             ? undo(i)
             : continue
@@ -411,7 +413,7 @@ private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Allo
             ? return(false)
             : continue
         copy_slot : @@U16 = out.stride(i.sub(1))
-        copy_slot.load().free(alloc)
+        deallocate(alloc, copy_slot.load())
         jump undo(i.sub(1))
 
 /// This process's environment with the overrides applied, as a sorted block, in memory from alloc: null on a
@@ -430,7 +432,7 @@ private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
         jump count(own, parent, parent, 0)
 
     block free_own_array(own: @@U16)
-        own.free(alloc)
+        deallocate(alloc, own)
         return(null)
 
     // How many entries the parent block has: each ends with a 0, and an empty one ends the block.
@@ -529,15 +531,15 @@ private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
             ? arrays(own, all, result)
             : continue
         own_slot : @@U16 = own.stride(j)
-        own_slot.load().free(alloc)
+        deallocate(alloc, own_slot.load())
         jump release(own, all, result, j.add(1))
 
     block arrays(own: @@U16, all: @@U16, result: @U16)
-        own.free(alloc)
+        deallocate(alloc, own)
         branch all.is_null()
             ? return(result)
             : continue
-        all.free(alloc)
+        deallocate(alloc, all)
         return(result)
 
 /// Whether one of the m overrides ("NAME=VALUE" each) names the parent entry's variable.
@@ -747,7 +749,7 @@ routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: Pro
             : handles(line, directory, block_units)
 
     block bad(line: @U16, env: @U16)
-        line.free(alloc)
+        deallocate(alloc, line)
         return(.Failure(ProcessError.InvalidArgument))
 
     block handles(line: @U16, directory: @U16, env: @U16)
@@ -795,9 +797,9 @@ routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: Pro
         c_get_exit_code_process(pi.process.load(), code)
         c_close_handle(pi.thread.load())
         c_close_handle(pi.process.load())
-        error_text : Bytes = moved(err.buffer.load(), alloc)
+        error_text : OwnedSpan<Byte> = moved(err.buffer.load(), alloc)
         return(.Success(ProcessOutput { status: ExitStatus.Exited(code.load().to_wrap<S32>()),
-            stdout: out.load().bytes(), stderr: error_text }))
+            stdout: out.load().owned(alloc), stderr: error_text }))
 
 /// Frees the command line, and the environment block when there is one.
 /// :param line: The command line text.
@@ -806,14 +808,14 @@ routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: Pro
 #target(os: "windows")
 private routine free_texts(line: @U16, env: @U16, alloc: @Allocator) -> Void
     block entry()
-        line.free(alloc)
+        deallocate(alloc, line)
         branch env.is_null()
             ? return()
             : continue
-        env.free(alloc)
+        deallocate(alloc, env)
         return()
 
-/// Reads standard output here and standard error on a helper thread when both are captured; one alone here.
+/// Reads standard output here and standard error on a helper thread when both are captured, and one alone here.
 #target(os: "windows")
 private routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
     alloc: @Allocator) -> Void
@@ -861,24 +863,25 @@ private routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @Allocator)
         buffer.append(alloc, chunk, n.load().to<USize>())
         jump next(chunk, n)
 
-/// What a helper thread captured on the malloc heap, copied into alloc (and the heap copy freed).
+/// What a helper thread captured on the malloc heap, copied into alloc (and the heap copy given back).
 #target(os: "windows")
-private routine moved(b: CaptureBuffer, alloc: @Allocator) -> Bytes
+private routine moved(b: CaptureBuffer, alloc: @Allocator) -> OwnedSpan<Byte>
     block entry()
         branch b.data.is_null()
-            ? return(Bytes.empty())
+            ? return(OwnedSpan<Byte> { data: null, count: 0, alloc: alloc })
             : continue
         claim heap   : @Allocator     <- make_heap_allocator()
         claim copied : @CaptureBuffer <- CaptureBuffer.empty()
         copied.append(alloc, b.data, b.count)
-        b.data.free(heap)
-        return(copied.load().bytes())
+        deallocate(heap, b.data)
+        return(copied.load().owned(alloc))
 
 // -- the environment ---------------------------------------------------------------------
 
-/// The value of the environment variable name, in memory from alloc, or Absent when it isn't set.
+/// The value of the environment variable name, in memory from alloc, or Absent when it isn't set. Release it with
+/// destruct().
 #target(os: "windows")
-routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
+routine env_var(name: Bytes, alloc: @Allocator) -> Option<OwnedSpan<Byte>>
     block entry()
         claim key : @Array<U16, 256> <- uninit
         n : Option<USize> = encode_utf16(name, key.to<@U16>(), 256)
@@ -892,7 +895,7 @@ routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
             ? return(.Absent)
             : continue
         branch need.eq(0)
-            ? return(.Present(Bytes.empty()))
+            ? return(.Present(OwnedSpan<Byte> { data: null, count: 0, alloc: alloc }))
             : continue
         units : @U16 = allocate<U16>(alloc, need.to<USize>())
         branch units.is_null()
@@ -903,11 +906,15 @@ routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
             ? gone(units)
             : continue
         text : Result<Bytes, FsError> = owned_wide(units, got.to<USize>(), alloc)
-        units.free(alloc)
+        deallocate(alloc, units)
         when text
-            .Success(t) -> return(.Present(t))
+            .Success(t) -> found(t)
             .Failure    -> return(.Absent)
 
+    block found(t: Bytes)
+        value : OwnedSpan<Byte> = OwnedSpan<Byte> { data: t.data, count: t.count, alloc: alloc }
+        return(.Present(value))
+
     block gone(units: @U16)
-        units.free(alloc)
+        deallocate(alloc, units)
         return(.Absent)

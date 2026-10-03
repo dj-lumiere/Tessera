@@ -2,97 +2,94 @@
 //
 // Introduces:
 //   claim: a slot in memory for a value whose methods take a pointer, filled with <- where it's claimed
-//   heap memory through an Allocator: allocate<T>, zeroinit, free
+//   heap memory through an Allocator: an OwnedSpan<T> owns it and gives it back with destruct()
+//   a Span<T> lent to a routine that only reads and writes the values, getitem and setitem
 //   raw element access with stride (address arithmetic), load and store
-//   a routine that owns its memory and frees it before returning
+//   a routine that owns its memory and releases it before returning
 
 import Standard::Alloc
 import Standard::Format
 import Standard::Os
 
-/// Returns a table of limit + 1 flags where table[n] is true when n is composite (0 and 1 count as composite).
-/// The caller frees it.
-routine sieve(limit: USize, alloc: @Allocator) -> @Bool
+/// Marks every composite number below the span's count: composite.getitem(n) is true when n is composite (0 and 1
+/// count as composite). The span only lends the memory. Whoever owns it releases it.
+routine sieve(composite: Span<Bool>) -> Void
     block entry()
-        slots     : USize = limit.add(1)
-        composite : @Bool = allocate<Bool>(alloc, slots)
-        failed    : Bool  = composite.is_null()
-        branch failed
-            ? crash_allocation()
-            : clear(composite)
-
-    block clear(composite: @Bool)
-        composite.zeroinit(limit.add(1))
-        composite.stride(0).store(true)
-        composite.stride(1).store(true)
-        jump outer(composite, 2)
+        flags : @Bool = composite.to<@Bool>()
+        flags.zeroinit(composite.count)
+        composite.setitem(0, true)
+        composite.setitem(1, true)
+        limit : USize = composite.count.sub(1)
+        jump outer(flags, limit, 2)
 
     /// Only factors up to sqrt(limit) need crossing out.
-    block outer(composite: @Bool, p: USize)
+    block outer(flags: @Bool, limit: USize, p: USize)
         past_root : Bool = p.mul(p).gt(limit)
         branch past_root
-            ? return(composite)
+            ? return()
             : continue
-        crossed : Bool = composite.stride(p).load()
+        crossed : Bool = flags.stride(p).load()
         branch crossed
-            ? outer(composite, p.add(1))
-            : cross_out(composite, p, p.mul(p))
+            ? outer(flags, limit, p.add(1))
+            : cross_out(flags, limit, p, p.mul(p))
 
-    block cross_out(composite: @Bool, p: USize, multiple: USize)
+    block cross_out(flags: @Bool, limit: USize, p: USize, multiple: USize)
         done : Bool = multiple.gt(limit)
         branch done
-            ? outer(composite, p.add(1))
-            : mark(composite, p, multiple)
+            ? outer(flags, limit, p.add(1))
+            : mark(flags, limit, p, multiple)
 
-    block mark(composite: @Bool, p: USize, multiple: USize)
-        composite.stride(multiple).store(true)
-        jump cross_out(composite, p, multiple.add(p))
+    block mark(flags: @Bool, limit: USize, p: USize, multiple: USize)
+        flags.stride(multiple).store(true)
+        jump cross_out(flags, limit, p, multiple.add(p))
 
 routine print_primes(out: @Out, limit: USize, alloc: @Allocator) -> Void
     block entry()
-        composite : @Bool = sieve(limit, alloc)
+        claim composite : @OwnedSpan<Bool> <- .construct(limit.add(1), alloc)
+        sieve(composite.to<Span<Bool>>())
         out.write("primes up to {limit}:")
         jump loop(composite, 2)
 
-    block loop(composite: @Bool, n: USize)
+    block loop(composite: @OwnedSpan<Bool>, n: USize)
         done : Bool = n.gt(limit)
         branch done
             ? finish(composite)
             : check(composite, n)
 
-    block check(composite: @Bool, n: USize)
-        crossed : Bool = composite.stride(n).load()
+    block check(composite: @OwnedSpan<Bool>, n: USize)
+        crossed : Bool = composite.getitem(n)
         branch crossed
             ? loop(composite, n.add(1))
             : print_one(composite, n)
 
-    block print_one(composite: @Bool, n: USize)
+    block print_one(composite: @OwnedSpan<Bool>, n: USize)
         out.write(" {n}")
         jump loop(composite, n.add(1))
 
-    block finish(composite: @Bool)
+    block finish(composite: @OwnedSpan<Bool>)
         out.write("\n")
-        composite.free(alloc)
+        composite.destruct()
         return()
 
 routine count_primes(limit: USize, alloc: @Allocator) -> USize
     block entry()
-        composite : @Bool = sieve(limit, alloc)
+        claim composite : @OwnedSpan<Bool> <- .construct(limit.add(1), alloc)
+        sieve(composite.to<Span<Bool>>())
         jump loop(composite, 0, 0)
 
-    block loop(composite: @Bool, n: USize, count: USize)
+    block loop(composite: @OwnedSpan<Bool>, n: USize, count: USize)
         done : Bool = n.gt(limit)
         branch done
             ? finish(composite, count)
             : tally(composite, n, count)
 
-    block tally(composite: @Bool, n: USize, count: USize)
-        crossed  : Bool  = composite.stride(n).load()
+    block tally(composite: @OwnedSpan<Bool>, n: USize, count: USize)
+        crossed  : Bool  = composite.getitem(n)
         is_prime : USize = crossed.bitnot().to<USize>()
         jump loop(composite, n.add(1), count.add(is_prime))
 
-    block finish(composite: @Bool, count: USize)
-        composite.free(alloc)
+    block finish(composite: @OwnedSpan<Bool>, count: USize)
+        composite.destruct()
         return(count)
 
 routine main() -> S32

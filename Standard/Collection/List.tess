@@ -1,14 +1,15 @@
 // Tessera stdlib collection: List<T>
 //
-// Dynamic array. The allocator is stored in the record; callers do not pass it
-// to individual operations.
+// Dynamic array: an OwnedSpan<T> whose count is the capacity, and the number of
+// elements in use. The allocator lives in the OwnedSpan, so callers do not pass
+// it to individual operations.
 
 module Standard::Collections
 
 import Standard::Alloc
 import Standard::Format
 
-/// A growable array of `T` stored contiguously on the heap. The allocator is kept in the record, so operations do not take one. The buffer grows by doubling, and the list is released with `destruct`.
+/// A growable array of `T` stored contiguously on the heap: `storage` holds the capacity (an {OwnedSpan<T>}, which keeps the allocator) and `count` the elements in use. The buffer grows by doubling, and the list is released with `destruct`.
 /// :typeparam T: The element type.
 record List<T>
 conform Destruct<List<T>>
@@ -16,10 +17,8 @@ conform Equal<List<T>>     when T: typename, Equal<T>
 conform Represent<List<T>> when T: typename, Diagnose<T>
 conform Diagnose<List<T>>  when T: typename, Diagnose<T>
 require T: typename
-    data     : @T
-    count    : USize
-    capacity : USize
-    alloc    : @Allocator
+    storage : OwnedSpan<T>
+    count   : USize
 
 /// Creates an empty List that draws its storage from `alloc`. Nothing is allocated until the first insertion.
 /// :param alloc: The allocator the list stores and later frees its memory with.
@@ -27,7 +26,8 @@ require T: typename
 routine List<T>.construct(alloc: @Allocator) -> Self
 require T: typename
     block entry()
-        list : Self = Self { data: null, count: 0, capacity: 0, alloc: alloc }
+        storage : OwnedSpan<T> = OwnedSpan<T>.construct(0, alloc)
+        list    : Self         = Self { storage: storage, count: 0 }
         return(list)
 
 /// The number of elements currently stored.
@@ -38,6 +38,14 @@ require T: typename
         count : USize = self.count
         return(count)
 
+/// The number of elements currently stored.
+/// :returns: The count of elements, `0` when the list is empty.
+routine List<T>.count(self: @Self) -> USize
+require T: typename
+    block entry()
+        count : USize = self.count.load()
+        return(count)
+
 /// Whether the list holds no elements.
 /// :returns: `true` when the count is `0`.
 routine List<T>.is_empty(self: Self) -> Bool
@@ -45,6 +53,14 @@ require T: typename
     block entry()
         count : USize = self.count
         empty : Bool  = count.eq(0)
+        return(empty)
+
+/// Whether the list holds no elements.
+/// :returns: `true` when the count is `0`.
+routine List<T>.is_empty(self: @Self) -> Bool
+require T: typename
+    block entry()
+        empty : Bool = self.count.load().eq(0)
         return(empty)
 
 /// Grows the buffer to hold at least `capacity` elements without further allocation. A smaller request leaves the buffer unchanged.
@@ -73,25 +89,15 @@ require T: typename
 private routine List<T>.make_capacity(self: @Self, capacity: USize) -> Bool
 require T: typename
     block entry()
-        old_capacity : USize = self.capacity.load()
+        old_capacity : USize = self.storage.count.load()
         enough       : Bool  = old_capacity.ge(capacity)
         branch enough
             ? return(true)
-            : grow()
-
-    block grow()
-        alloc    : @Allocator = self.alloc.load()
-        old_data : @T         = self.data.load()
-        new_data : @T         = reallocate<T>(alloc, old_data, capacity)
-        failed   : Bool       = new_data.is_null()
-        branch failed
-            ? return(false)
-            : install(new_data)
-
-    block install(new_data: @T)
-        self.data.store(new_data)
-        self.capacity.store(capacity)
-        return(true)
+            : continue
+        resized : Result<Unit, AllocFailed> = self.storage.resize_result(capacity)
+        when resized
+            .Success -> return(true)
+            .Failure -> return(false)
 
 /// Makes room for `wanted` elements, starting at 4 slots and doubling until the request fits.
 /// :param wanted: The element count the buffer must hold.
@@ -110,7 +116,7 @@ require T: typename
 private routine List<T>.make_room(self: @Self, wanted: USize) -> Bool
 require T: typename
     block entry()
-        capacity : USize = self.capacity.load()
+        capacity : USize = self.storage.count.load()
         enough   : Bool  = capacity.ge(wanted)
         branch enough
             ? return(true)
@@ -159,7 +165,7 @@ require T: typename
         branch room
             ? continue
             : return(.Failure(AllocFailed {}))
-        data : @T = self.data.load()
+        data : @T = self.storage.data.load()
         data.stride(count).store(value)
         self.count.store(wanted)
         return(.Success(Unit.value()))
@@ -188,59 +194,63 @@ require T: typename
 
     block pop(count: USize)
         index : USize = count.sub(1)
-        data  : @T    = self.data.load()
+        data  : @T    = self.storage.data.load()
         value : T     = data.stride(index).load()
         self.count.store(index)
         return(.Present(value))
 
+// -- element access ------------------------------------------------------------
+
 /// Reads the element at `index`.
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element.
-/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {List<T>.get_checked}.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {List<T>.getitem_checked}.
 #track_caller
-routine List<T>.get(self: Self, index: USize) -> T
+routine List<T>.getitem(self: Self, index: USize) -> T
 require T: typename
     block entry()
-        count     : USize = self.count
-        in_bounds : Bool  = index.lt(count)
-        branch in_bounds
-            ? load()
-            : crash_out_of_bounds()
-
-    block load()
-        data  : @T = self.data
-        value : T  = data.stride(index).load()
+        value : T = self.to<Span<T>>().getitem(index)
         return(value)
 
-/// `get`, returning Absent instead of crashing on an index past the end.
-routine List<T>.get_checked(self: Self, index: USize) -> Option<T>
+/// Reads the element at `index`.
+/// :param index: The zero-based position to read.
+/// :returns: A copy of the element.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {List<T>.getitem_checked}.
+#track_caller
+routine List<T>.getitem(self: @Self, index: USize) -> T
 require T: typename
     block entry()
-        count     : USize = self.count
-        in_bounds : Bool  = index.lt(count)
-        branch in_bounds
-            ? load()
-            : return(.Absent)
+        value : T = self.to<Span<T>>().getitem(index)
+        return(value)
 
-    block load()
-        data  : @T = self.data
-        value : T  = data.stride(index).load()
-        return(.Present(value))
+/// `getitem`, returning Absent instead of crashing on an index past the end.
+routine List<T>.getitem_checked(self: Self, index: USize) -> Option<T>
+require T: typename
+    block entry()
+        value : Option<T> = self.to<Span<T>>().getitem_checked(index)
+        return(value)
 
-/// The address of element index, checked like get: a place to read or write in place. It stays valid until the list grows, shrinks, or is destructed.
+/// `getitem`, returning Absent instead of crashing on an index past the end.
+routine List<T>.getitem_checked(self: @Self, index: USize) -> Option<T>
+require T: typename
+    block entry()
+        value : Option<T> = self.to<Span<T>>().getitem_checked(index)
+        return(value)
+
+/// The address of element index, checked like getitem: a place to read or write in place. It stays valid until the list grows, shrinks, or is destructed.
 #track_caller
 routine List<T>.at(self: Self, index: USize) -> @T
 require T: typename
     block entry()
-        count     : USize = self.count
-        in_bounds : Bool  = index.lt(count)
-        branch in_bounds
-            ? address()
-            : crash_out_of_bounds()
+        element : @T = self.to<Span<T>>().at(index)
+        return(element)
 
-    block address()
-        data    : @T = self.data
-        element : @T = data.stride(index)
+/// The address of element index, checked like getitem: a place to read or write in place. It stays valid until the list grows, shrinks, or is destructed.
+#track_caller
+routine List<T>.at(self: @Self, index: USize) -> @T
+require T: typename
+    block entry()
+        element : @T = self.to<Span<T>>().at(index)
         return(element)
 
 /// `at`, returning Absent instead of crashing on an index past the end.
@@ -254,7 +264,7 @@ require T: typename
             : return(.Absent)
 
     block address()
-        data    : @T = self.data
+        data    : @T = self.storage.data
         element : @T = data.stride(index)
         return(.Present(element))
 
@@ -263,19 +273,44 @@ require T: typename
 /// :param value: The value to store.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 #track_caller
-routine List<T>.set(self: @Self, index: USize, value: T) -> Void
+routine List<T>.setitem(self: @Self, index: USize, value: T) -> Void
 require T: typename
     block entry()
-        count     : USize = self.count.load()
-        in_bounds : Bool  = index.lt(count)
-        branch in_bounds
-            ? store()
-            : crash_out_of_bounds()
-
-    block store()
-        data : @T = self.data.load()
-        data.stride(index).store(value)
+        view : Span<T> = self.to<Span<T>>()
+        view.setitem(index, value)
         return()
+
+/// The elements, borrowed: valid until the list grows, shrinks, or is destructed.
+routine List<T>.to<Span<T>>(self: Self) -> Span<T>
+require T: typename
+    block entry()
+        span : Span<T> = Span<T>.construct(self.storage.data, self.count)
+        return(span)
+
+/// The elements, borrowed: valid until the list grows, shrinks, or is destructed.
+routine List<T>.to<Span<T>>(self: @Self) -> Span<T>
+require T: typename
+    block entry()
+        span : Span<T> = self.load().to<Span<T>>()
+        return(span)
+
+/// The `count` elements from `start`, borrowed, checked against the list's count.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine List<T>.getspan(self: Self, start: USize, count: USize) -> Span<T>
+require T: typename
+    block entry()
+        part : Span<T> = self.to<Span<T>>().getspan(start, count)
+        return(part)
+
+/// The `count` elements from `start`, borrowed, checked against the list's count.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine List<T>.getspan(self: @Self, start: USize, count: USize) -> Span<T>
+require T: typename
+    block entry()
+        part : Span<T> = self.to<Span<T>>().getspan(start, count)
+        return(part)
 
 /// Removes every element by resetting the count to `0`. The buffer and its capacity are kept for reuse, and elements are not destructed.
 routine List<T>.clear(self: @Self) -> Void
@@ -298,8 +333,8 @@ require T: typename, Equal<T>
             : return(false)
 
     block scan(len: USize)
-        pa : @T = self.data
-        pb : @T = other.data
+        pa : @T = self.storage.data
+        pb : @T = other.storage.data
         jump loop(0, len, pa, pb)
 
     block loop(i: USize, len: USize, pa: @T, pb: @T)
@@ -316,26 +351,13 @@ require T: typename, Equal<T>
             ? loop(i.add(1), len, pa, pb)
             : return(false)
 
-/// Frees the list's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+/// Gives the list's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
 /// :note: Safe to call on a never-filled instance, where it only resets the fields.
 routine List<T>.destruct(self: @Self) -> Void
 require T: typename
     block entry()
-        data  : @T   = self.data.load()
-        empty : Bool = data.is_null()
-        branch empty
-            ? reset()
-            : release(data)
-
-    block release(data: @T)
-        alloc : @Allocator = self.alloc.load()
-        data.free(alloc)
-        jump reset()
-
-    block reset()
-        self.data.store(null)
+        self.storage.destruct()
         self.count.store(0)
-        self.capacity.store(0)
         return()
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
@@ -343,21 +365,17 @@ require T: typename
 routine List<T>.destruct_all(self: @Self) -> Void
 require T: typename, Destruct<T>
     block entry()
-        iter_val : ListIter<T> = .construct(self)
-        claim iter : @ListIter<T> <- iter_val
-        claim slot : @T           <- uninit
-        jump next(iter, slot)
+        first : @T    = self.storage.data.load()
+        count : USize = self.count.load()
+        jump each(first, count, 0)
 
-    block next(iter: @ListIter<T>, slot: @T)
-        item : Option<T> = iter.next()
-        when item
-            .Present(value) -> element(iter, slot, value)
-            .Absent         -> finish()
-
-    block element(iter: @ListIter<T>, slot: @T, value: T)
-        slot.store(value)
-        slot.destruct()
-        jump next(iter, slot)
+    block each(first: @T, count: USize, i: USize)
+        done : Bool = i.ge(count)
+        branch done
+            ? finish()
+            : continue
+        first.stride(i).destruct()
+        jump each(first, count, i.add(1))
 
     block finish()
         self.destruct()
@@ -366,7 +384,7 @@ require T: typename, Destruct<T>
 // -- text ----------------------------------------------------------------------
 //
 // A List<Byte> is the growable text buffer: it's a Writer, so buf.write("...")
-// appends to it, and to_string() views what it holds. The list's allocator is
+// appends to it, and to<Bytes>() views what it holds. The list's allocator is
 // the only place memory comes from.
 
 conform Writer<List<Byte>>
@@ -381,7 +399,7 @@ routine List<Byte>.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
         old : USize = self.count.load()
         new : USize = old.add(count)
         self.ensure_capacity(new)
-        base : @Byte = self.data.load()
+        base : @Byte = self.storage.data.load()
         copy<Byte>(base.stride(old), data, count)
         self.count.store(new)
         return()
@@ -390,9 +408,14 @@ routine List<Byte>.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
 /// list next grows or is destructed, and it isn't NUL-terminated.
 routine List<Byte>.to<Bytes>(self: Self) -> Bytes
     block entry()
-        data  : @Byte = self.data
-        count : USize = self.count
-        text  : Bytes = .from_ptr(data, count)
+        text : Bytes = .from_ptr(self.storage.data, self.count)
+        return(text)
+
+/// A view of the bytes written so far, without copying. It's valid until the
+/// list next grows or is destructed, and it isn't NUL-terminated.
+routine List<Byte>.to<Bytes>(self: @Self) -> Bytes
+    block entry()
+        text : Bytes = self.load().to<Bytes>()
         return(text)
 
 /// Ends the bytes with a NUL (not counted in `count`) and points at them,
@@ -401,9 +424,9 @@ routine List<Byte>.to<CStr>(self: @Self) -> CStr
     block entry()
         count : USize = self.count.load()
         self.ensure_capacity(count.add(1))
-        data : @Byte = self.data.load()
+        data : @Byte = self.storage.data.load()
         data.stride(count).store(0x00)
-        return(.from_ptr(data))
+        return(.from_ptr(data.to<@CChar>()))
 
 // -- text -----------------------------------------------------------------------
 

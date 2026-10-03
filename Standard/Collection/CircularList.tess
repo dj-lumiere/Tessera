@@ -1,10 +1,11 @@
 // Tessera stdlib collection: CircularList<T>
 //
 // Dynamic array with a centered start index — front and back both grow without
-// shifting. The allocator is stored in the record.
+// shifting. The buffer is an OwnedSpan<T> whose count is the capacity, and it
+// keeps the allocator.
 //
-// Logical element i lives at data[start + i]. Front growth consumes spare slots
-// before start; when either side runs out the live range is moved back to the
+// Logical element i lives at storage.data[start + i]. Front growth consumes spare slots
+// before start. When either side runs out the live range is moved back to the
 // center of a new buffer, twice as large if the circular_list is more than half full.
 
 module Standard::Collections
@@ -12,7 +13,7 @@ module Standard::Collections
 import Standard::Alloc
 import Standard::Format
 
-/// A growable sequence with spare room on both sides of its live range, so `push_front` and `push_back` are both amortized constant time without shifting elements. Logical element `i` lives at `data[start + i]`. When either side runs out, the live range is moved to the center of a new buffer.
+/// A growable sequence with spare room on both sides of its live range, so `push_front` and `push_back` are both amortized constant time without shifting elements. Logical element `i` lives at `storage.data[start + i]`. When either side runs out, the live range is moved to the center of a new buffer.
 /// :typeparam T: The element type.
 record CircularList<T>
 conform Destruct<CircularList<T>>
@@ -20,11 +21,9 @@ conform Represent<CircularList<T>> when T: typename, Diagnose<T>
 conform Diagnose<CircularList<T>>  when T: typename, Diagnose<T>
 conform Equal<CircularList<T>>     when T: typename, Equal<T>
 require T: typename
-    data     : @T
-    start    : USize
-    count    : USize
-    capacity : USize
-    alloc    : @Allocator
+    storage : OwnedSpan<T>
+    start   : USize
+    count   : USize
 
 /// Creates an empty CircularList that draws its storage from `alloc`. Nothing is allocated until the first insertion.
 /// :param alloc: The allocator the list stores and later frees its memory with.
@@ -32,7 +31,8 @@ require T: typename
 routine CircularList<T>.construct(alloc: @Allocator) -> Self
 require T: typename
     block entry()
-        circular_list : Self = Self { data: null, start: 0, count: 0, capacity: 0, alloc: alloc }
+        storage       : OwnedSpan<T> = OwnedSpan<T>.construct(0, alloc)
+        circular_list : Self         = Self { storage: storage, start: 0, count: 0 }
         return(circular_list)
 
 /// The number of elements currently stored.
@@ -42,6 +42,22 @@ require T: typename
     block entry()
         count : USize = self.count
         return(count)
+
+/// The number of elements currently stored.
+/// :returns: The count of elements, `0` when the list is empty.
+routine CircularList<T>.count(self: @Self) -> USize
+require T: typename
+    block entry()
+        count : USize = self.load().count()
+        return(count)
+
+/// Whether the list holds no elements.
+/// :returns: `true` when the count is `0`.
+routine CircularList<T>.is_empty(self: @Self) -> Bool
+require T: typename
+    block entry()
+        empty : Bool = self.load().is_empty()
+        return(empty)
 
 /// Whether the list holds no elements.
 /// :returns: `true` when the count is `0`.
@@ -57,35 +73,34 @@ require T: typename
 private routine CircularList<T>.recenter(self: @Self, new_capacity: USize) -> Bool
 require T: typename
     block entry()
-        count     : USize      = self.count.load()
-        slack     : USize      = new_capacity.sub(count)
-        new_start : USize      = slack.div(2)
-        alloc     : @Allocator = self.alloc.load()
-        new_data  : @T         = allocate<T>(alloc, new_capacity)
-        failed    : Bool       = new_data.is_null()
-        branch failed
-            ? return(false)
-            : move(new_data, new_start, count)
+        count     : USize                             = self.count.load()
+        slack     : USize                             = new_capacity.sub(count)
+        new_start : USize                             = slack.div(2)
+        alloc     : @Allocator                        = self.storage.alloc.load()
+        made      : Result<OwnedSpan<T>, AllocFailed> = OwnedSpan<T>.construct_result(new_capacity,
+            alloc)
+        when made
+            .Success(fresh) -> move(fresh, new_start, count)
+            .Failure        -> return(false)
 
-    block move(new_data: @T, new_start: USize, count: USize)
-        old_data : @T   = self.data.load()
+    block move(fresh: OwnedSpan<T>, new_start: USize, count: USize)
+        old_data : @T   = self.storage.data.load()
         old_null : Bool = old_data.is_null()
         branch old_null
-            ? install(new_data, new_start)
-            : copy_live(new_data, new_start, old_data, count)
+            ? install(fresh, new_start)
+            : copy_live(fresh, new_start, old_data, count)
 
-    block copy_live(new_data: @T, new_start: USize, old_data: @T, count: USize)
+    block copy_live(fresh: OwnedSpan<T>, new_start: USize, old_data: @T, count: USize)
         old_start : USize = self.start.load()
         src       : @T    = old_data.stride(old_start)
-        dst       : @T    = new_data.stride(new_start)
+        dst       : @T    = fresh.data.stride(new_start)
         copy<T>(dst, src, count)
-        old_data.free(self.alloc.load())
-        jump install(new_data, new_start)
+        self.storage.destruct()
+        jump install(fresh, new_start)
 
-    block install(new_data: @T, new_start: USize)
-        self.data.store(new_data)
+    block install(fresh: OwnedSpan<T>, new_start: USize)
+        self.storage.store(fresh)
         self.start.store(new_start)
-        self.capacity.store(new_capacity)
         return(true)
 
 /// The capacity to recenter into when one end runs out: double it only when the circular_list is more than half full.
@@ -111,7 +126,7 @@ require T: typename
             : choose()
 
     block choose()
-        capacity : USize = self.capacity.load()
+        capacity : USize = self.storage.count.load()
         empty    : Bool  = capacity.eq(0)
         branch empty
             ? initial()
@@ -128,7 +143,7 @@ require T: typename
     block entry()
         start          : USize = self.start.load()
         count          : USize = self.count.load()
-        capacity       : USize = self.capacity.load()
+        capacity       : USize = self.storage.count.load()
         has_back_space : Bool  = start.add(count).lt(capacity)
         branch has_back_space
             ? return(true)
@@ -166,7 +181,7 @@ require T: typename
         branch room
             ? continue
             : return(.Failure(AllocFailed {}))
-        data  : @T    = self.data.load()
+        data  : @T    = self.storage.data.load()
         start : USize = self.start.load()
         count : USize = self.count.load()
         index : USize = start.add(count)
@@ -209,7 +224,7 @@ require T: typename
         branch room
             ? continue
             : return(.Failure(AllocFailed {}))
-        data      : @T    = self.data.load()
+        data      : @T    = self.storage.data.load()
         start     : USize = self.start.load()
         new_start : USize = start.sub(1)
         data.stride(new_start).store(value)
@@ -242,7 +257,7 @@ require T: typename
 
     block pop(count: USize)
         new_count : USize = count.sub(1)
-        data      : @T    = self.data.load()
+        data      : @T    = self.storage.data.load()
         start     : USize = self.start.load()
         index     : USize = start.add(new_count)
         value     : T     = data.stride(index).load()
@@ -287,7 +302,7 @@ require T: typename
             : pop(count)
 
     block pop(count: USize)
-        data  : @T    = self.data.load()
+        data  : @T    = self.storage.data.load()
         start : USize = self.start.load()
         value : T     = data.stride(start).load()
         self.start.store(start.add(1))
@@ -299,7 +314,7 @@ require T: typename
 /// :returns: A copy of the element.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 #track_caller
-routine CircularList<T>.get(self: Self, index: USize) -> T
+routine CircularList<T>.getitem(self: Self, index: USize) -> T
 require T: typename
     block entry()
         count     : USize = self.count
@@ -309,13 +324,13 @@ require T: typename
             : crash_out_of_bounds()
 
     block load()
-        data  : @T    = self.data
+        data  : @T    = self.storage.data
         start : USize = self.start
         value : T     = data.stride(start.add(index)).load()
         return(value)
 
-/// `get`, returning Absent instead of crashing on an index past the end.
-routine CircularList<T>.get_checked(self: Self, index: USize) -> Option<T>
+/// `getitem`, returning Absent instead of crashing on an index past the end.
+routine CircularList<T>.getitem_checked(self: Self, index: USize) -> Option<T>
 require T: typename
     block entry()
         count     : USize = self.count
@@ -325,12 +340,12 @@ require T: typename
             : return(.Absent)
 
     block load()
-        data  : @T    = self.data
+        data  : @T    = self.storage.data
         start : USize = self.start
         value : T     = data.stride(start.add(index)).load()
         return(.Present(value))
 
-/// The address of element index, checked like get: a place to read or write in place. It stays valid until the
+/// The address of element index, checked like getitem: a place to read or write in place. It stays valid until the
 /// list grows, shrinks, or is destructed.
 #track_caller
 routine CircularList<T>.at(self: Self, index: USize) -> @T
@@ -343,7 +358,7 @@ require T: typename
             : crash_out_of_bounds()
 
     block address()
-        data    : @T    = self.data
+        data    : @T    = self.storage.data
         start   : USize = self.start
         element : @T    = data.stride(start.add(index))
         return(element)
@@ -359,10 +374,44 @@ require T: typename
             : return(.Absent)
 
     block address()
-        data    : @T    = self.data
+        data    : @T    = self.storage.data
         start   : USize = self.start
         element : @T    = data.stride(start.add(index))
         return(.Present(element))
+
+/// Reads the element at logical position `index`, counted from the front.
+/// :param index: The zero-based position to read.
+/// :returns: A copy of the element.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+#track_caller
+routine CircularList<T>.getitem(self: @Self, index: USize) -> T
+require T: typename
+    block entry()
+        value : T = self.load().getitem(index)
+        return(value)
+
+/// `getitem`, returning Absent instead of crashing on an index past the end.
+routine CircularList<T>.getitem_checked(self: @Self, index: USize) -> Option<T>
+require T: typename
+    block entry()
+        value : Option<T> = self.load().getitem_checked(index)
+        return(value)
+
+/// The address of element index, checked like getitem: a place to read or write in place. It stays valid until the
+/// list grows, shrinks, or is destructed.
+#track_caller
+routine CircularList<T>.at(self: @Self, index: USize) -> @T
+require T: typename
+    block entry()
+        element : @T = self.load().at(index)
+        return(element)
+
+/// `at`, returning Absent instead of crashing on an index past the end.
+routine CircularList<T>.at_checked(self: @Self, index: USize) -> Option<@T>
+require T: typename
+    block entry()
+        element : Option<@T> = self.load().at_checked(index)
+        return(element)
 
 /// Whether two lists hold equal elements in the same logical order, regardless of where each sits in its buffer.
 /// :param other: The list to compare with.
@@ -389,8 +438,8 @@ require T: typename, Equal<T>
     block scan(len: USize)
         sa : USize = self.start.load()
         sb : USize = other.start.load()
-        pa : @T    = self.data.load()
-        pb : @T    = other.data.load()
+        pa : @T    = self.storage.data.load()
+        pb : @T    = other.storage.data.load()
         jump loop(0, len, sa, sb, pa, pb)
 
     block loop(i: USize, len: USize, sa: USize, sb: USize, pa: @T, pb: @T)
@@ -412,7 +461,7 @@ require T: typename, Equal<T>
 /// :param value: The value to store.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 #track_caller
-routine CircularList<T>.set(self: @Self, index: USize, value: T) -> Void
+routine CircularList<T>.setitem(self: @Self, index: USize, value: T) -> Void
 require T: typename
     block entry()
         count     : USize = self.count.load()
@@ -422,7 +471,7 @@ require T: typename
             : crash_out_of_bounds()
 
     block store()
-        data  : @T    = self.data.load()
+        data  : @T    = self.storage.data.load()
         start : USize = self.start.load()
         data.stride(start.add(index)).store(value)
         return()
@@ -431,33 +480,20 @@ require T: typename
 routine CircularList<T>.clear(self: @Self) -> Void
 require T: typename
     block entry()
-        capacity : USize = self.capacity.load()
+        capacity : USize = self.storage.count.load()
         start    : USize = capacity.div(2)
         self.start.store(start)
         self.count.store(0)
         return()
 
-/// Frees the list's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+/// Gives the list's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
 /// :note: Safe to call on a never-filled instance, where it only resets the fields.
 routine CircularList<T>.destruct(self: @Self) -> Void
 require T: typename
     block entry()
-        data  : @T   = self.data.load()
-        empty : Bool = data.is_null()
-        branch empty
-            ? reset()
-            : release(data)
-
-    block release(data: @T)
-        alloc : @Allocator = self.alloc.load()
-        data.free(alloc)
-        jump reset()
-
-    block reset()
-        self.data.store(null)
+        self.storage.destruct()
         self.start.store(0)
         self.count.store(0)
-        self.capacity.store(0)
         return()
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.

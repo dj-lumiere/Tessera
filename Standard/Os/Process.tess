@@ -52,12 +52,20 @@ record ProcessOptions
     stdout    : OutputMode
     stderr    : OutputMode
 
-/// What run_process hands back. A captured stream is in memory from the allocator (free it with `data.free(alloc)`).
+/// What run_process hands back. A captured stream is in memory from the allocator, and `destruct()` releases both.
 /// One not captured is empty and holds nothing.
 record ProcessOutput
+conform Destruct<ProcessOutput>
     status : ExitStatus
-    stdout : Bytes
-    stderr : Bytes
+    stdout : OwnedSpan<Byte>
+    stderr : OwnedSpan<Byte>
+
+/// Gives both captured streams back to the allocator they came from.
+routine ProcessOutput.destruct(self: @Self) -> Void
+    block entry()
+        self.stdout.destruct()
+        self.stderr.destruct()
+        return()
 
 /// No directory and no overrides, the null device as input, and both output streams captured.
 routine ProcessOptions.default() -> Self
@@ -133,7 +141,7 @@ internal routine CaptureBuffer.empty() -> Self
     block entry()
         return(Self { data: null, count: 0, capacity: 0, failed: false })
 
-/// Appends n bytes, growing the buffer; an allocation failure drops them and marks the buffer.
+/// Appends n bytes, growing the buffer. An allocation failure drops them and marks the buffer.
 internal routine CaptureBuffer.append(self: @Self, alloc: @Allocator, chunk: @Byte,
     n: USize) -> Void
     block entry()
@@ -170,10 +178,12 @@ internal routine CaptureBuffer.append(self: @Self, alloc: @Allocator, chunk: @By
         next_count.store_into(self.count)
         return()
 
-/// What was captured, as Bytes the caller frees.
-internal routine CaptureBuffer.bytes(self: Self) -> Bytes
+/// What was captured, owned by the caller, who releases it with destruct(). alloc is the allocator it was filled from.
+internal routine CaptureBuffer.owned(self: Self, alloc: @Allocator) -> OwnedSpan<Byte>
     block entry()
-        return(Bytes.from_ptr(self.data, self.count))
+        owned : OwnedSpan<Byte> = OwnedSpan<Byte> { data: self.data, count: self.count,
+            alloc: alloc }
+        return(owned)
 
 /// Whether name's bytes equal the start of entry up to its '=' (a "NAME=VALUE" entry), ASCII letters in any case
 /// when fold is set.

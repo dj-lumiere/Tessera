@@ -1086,7 +1086,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     e = new FieldExpr(e, name.Text, pos);
             }
             else if (Is(TokenKind.LBracket))
-                throw Error("'[]' is gone: p.stride(i) is the address i Ts past p, and .at(i) / .get(i) reach an element");
+                throw Error("'[]' is gone: p.stride(i) is the address i Ts past p, and .at(i) / .getitem(i) reach an element");
             else return e;
         }
     }

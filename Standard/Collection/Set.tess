@@ -6,10 +6,10 @@
 //   - Slots is an index table: each cell is SLOT_EMPTY, SLOT_TOMBSTONE, or an
 //     entry index >= 0. Linear probing on the hash mod capacity.
 //
-// Both layers share `capacity`. Removal marks the entry dead and the slot a
-// tombstone; the entry's position in the entries array is retained so the
-// insertion order of surviving entries is preserved. Rehash compacts dead
-// entries away.
+// Every array is an OwnedSpan of the same count, the capacity, and each keeps
+// the allocator. Removal marks the entry dead and the slot a tombstone. The
+// entry's position in the entries array is retained so the insertion order of
+// surviving entries is preserved. Rehash compacts dead entries away.
 //
 // entry_state values: 0 = dead, 1 = live.
 
@@ -21,7 +21,7 @@ import Standard::Format
 private preset SLOT_EMPTY:     USize = USize.MAX
 private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
 
-/// An insertion-ordered hash set. Keys live in parallel arrays in the order they were first added, and an open-addressed slot table with linear probing maps a hash to its entry. Removal marks the entry dead, so surviving elements keep their order until the next rehash.
+/// An insertion-ordered hash set. Keys live in parallel arrays (each an {OwnedSpan<T>} holding the capacity and the allocator) in the order they were first added, and an open-addressed slot table with linear probing maps a hash to its entry. Removal marks the entry dead, so surviving elements keep their order until the next rehash.
 /// :typeparam T: The element type, which must provide hashing and equality.
 record Set<T>
 conform Destruct<Set<T>>
@@ -29,14 +29,12 @@ conform Represent<Set<T>> when T: typename, HashEqual<T>, Diagnose<T>
 conform Diagnose<Set<T>>  when T: typename, HashEqual<T>, Diagnose<T>
 conform Equal<Set<T>>     when T: typename, HashEqual<T>
 require T: typename, HashEqual<T>
-    keys          : @T
-    hashes        : @U64
-    entry_states  : @U8
-    slots         : @USize
+    keys          : OwnedSpan<T>
+    hashes        : OwnedSpan<U64>
+    entry_states  : OwnedSpan<U8>
+    slots         : OwnedSpan<USize>
     count         : USize
     entries_count : USize
-    capacity      : USize
-    alloc         : @Allocator
 
 /// Creates an empty Set that draws its storage from `alloc`. Nothing is allocated until the first insertion.
 /// :param alloc: The allocator the set stores and later frees its memory with.
@@ -44,8 +42,12 @@ require T: typename, HashEqual<T>
 routine Set<T>.construct(alloc: @Allocator) -> Self
 require T: typename, HashEqual<T>
     block entry()
-        set : Self = Self { keys: null, hashes: null, entry_states: null, slots: null, count: 0,
-            entries_count: 0, capacity: 0, alloc: alloc }
+        keys         : OwnedSpan<T>     = OwnedSpan<T>.construct(0, alloc)
+        hashes       : OwnedSpan<U64>   = OwnedSpan<U64>.construct(0, alloc)
+        entry_states : OwnedSpan<U8>    = OwnedSpan<U8>.construct(0, alloc)
+        slots        : OwnedSpan<USize> = OwnedSpan<USize>.construct(0, alloc)
+        set          : Self             = Self { keys: keys, hashes: hashes,
+            entry_states: entry_states, slots: slots, count: 0, entries_count: 0 }
         return(set)
 
 /// The number of elements currently stored.
@@ -54,6 +56,14 @@ routine Set<T>.count(self: Self) -> USize
 require T: typename
     block entry()
         count : USize = self.count
+        return(count)
+
+/// The number of elements currently stored.
+/// :returns: The count of elements, `0` when the set is empty.
+routine Set<T>.count(self: @Self) -> USize
+require T: typename
+    block entry()
+        count : USize = self.count.load()
         return(count)
 
 /// Whether the set holds no elements.
@@ -65,6 +75,14 @@ require T: typename
         empty : Bool  = count.eq(0)
         return(empty)
 
+/// Whether the set holds no elements.
+/// :returns: `true` when the count is `0`.
+routine Set<T>.is_empty(self: @Self) -> Bool
+require T: typename
+    block entry()
+        empty : Bool = self.load().is_empty()
+        return(empty)
+
 /// Probes the slot table for `key`, linearly from `hash` modulo capacity.
 /// :param key: The key being looked for.
 /// :param hash: The hash of `key`.
@@ -72,13 +90,13 @@ require T: typename
 routine Set<T>.slot(self: Self, key: T, hash: U64) -> USize
 require T: typename
     block entry()
-        capacity : USize = self.capacity
+        capacity : USize = self.slots.count
         mask     : USize = capacity.sub(1)
         start    : USize = hash.to_wrap<USize>().bitand(mask)
         jump probe(start, SLOT_EMPTY)
 
     block probe(index: USize, first_tombstone: USize)
-        slots        : @USize = self.slots
+        slots        : @USize = self.slots.data
         entry_idx    : USize  = slots.stride(index).load()
         is_empty     : Bool   = entry_idx.eq(SLOT_EMPTY)
         is_tombstone : Bool   = entry_idx.eq(SLOT_TOMBSTONE)
@@ -99,12 +117,12 @@ require T: typename
         next_tombstone : USize = seen
             ? first_tombstone
             : index
-        capacity : USize = self.capacity
+        capacity : USize = self.slots.count
         next     : USize = index.add(1).bitand(capacity.sub(1))
         jump probe(next, next_tombstone)
 
     block occupied_slot(index: USize, first_tombstone: USize, entry_idx: USize)
-        hashes     : @U64 = self.hashes
+        hashes     : @U64 = self.hashes.data
         entry_hash : U64  = hashes.stride(entry_idx).load()
         hash_match : Bool = entry_hash.eq(hash)
         branch hash_match
@@ -112,13 +130,13 @@ require T: typename
             : next(index, first_tombstone)
 
     block maybe_equal(index: USize, first_tombstone: USize, entry_idx: USize)
-        keys      : @T   = self.keys
+        keys      : @T   = self.keys.data
         entry_key : T    = keys.stride(entry_idx).load()
         equal     : Bool = entry_key.eq(key)
         branch equal ? return(index): next(index, first_tombstone)
 
     block next(index: USize, first_tombstone: USize)
-        capacity : USize = self.capacity
+        capacity : USize = self.slots.count
         next     : USize = index.add(1).bitand(capacity.sub(1))
         jump probe(next, first_tombstone)
 
@@ -126,14 +144,14 @@ require T: typename
 routine Set<T>.find(self: Self, key: T) -> USize
 require T: typename
     block entry()
-        capacity : USize = self.capacity
+        capacity : USize = self.slots.count
         empty    : Bool  = capacity.eq(0)
         branch empty ? return(SLOT_EMPTY): hash()
 
     block hash()
         hash      : U64    = key.hash()
         slot      : USize  = self.slot(key, hash)
-        slots     : @USize = self.slots
+        slots     : @USize = self.slots.data
         entry_idx : USize  = slots.stride(slot).load()
         found     : Bool   = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
@@ -147,6 +165,15 @@ routine Set<T>.contains(self: Self, key: T) -> Bool
 require T: typename
     block entry()
         found : Bool = self.find(key).ne(SLOT_EMPTY)
+        return(found)
+
+/// Whether `key` is in the set.
+/// :param key: The element to look for.
+/// :returns: `true` when an equal element is live.
+routine Set<T>.contains(self: @Self, key: T) -> Bool
+require T: typename
+    block entry()
+        found : Bool = self.load().contains(key)
         return(found)
 
 /// Two Sets are equal when they hold the same elements, regardless of
@@ -182,7 +209,7 @@ require T: typename, HashEqual<T>
             : check(i, n)
 
     block check(i: USize, n: USize)
-        entry_states : @U8  = self.entry_states.load()
+        entry_states : @U8  = self.entry_states.data.load()
         s            : U8   = entry_states.stride(i).load()
         live         : Bool = s.eq(1)
         branch live
@@ -190,7 +217,7 @@ require T: typename, HashEqual<T>
             : loop(i.add(1), n)
 
     block probe(i: USize, n: USize)
-        keys : @T   = self.keys.load()
+        keys : @T   = self.keys.data.load()
         key  : T    = keys.stride(i).load()
         has  : Bool = other.load().contains(key)
         branch has
@@ -198,103 +225,88 @@ require T: typename, HashEqual<T>
             : return(false)
 
 /// Moves the live entries into fresh arrays of new_capacity. Returns false when
-/// the allocator fails, leaving the set as it was.
+/// the allocator fails, leaving the set as it was. The new arrays are made in
+/// the order keys, hashes, entry states, slots, and a failure releases the ones
+/// already made.
 private routine Set<T>.rehash(self: @Self, new_capacity: USize) -> Bool
 require T: typename
     block entry()
-        alloc            : @Allocator = self.alloc.load()
-        old_keys         : @T         = self.keys.load()
-        old_hashes       : @U64       = self.hashes.load()
-        old_entry_states : @U8        = self.entry_states.load()
-        old_slots        : @USize     = self.slots.load()
-        old_count        : USize      = self.entries_count.load()
-        new_keys         : @T         = allocate<T>(alloc, new_capacity)
-        new_hashes       : @U64       = allocate<U64>(alloc, new_capacity)
-        new_entry_states : @U8        = allocate<U8>(alloc, new_capacity)
-        new_slots        : @USize     = allocate<USize>(alloc, new_capacity)
-        a                : Bool       = new_keys.is_null()
-        b                : Bool       = new_hashes.is_null()
-        c                : Bool       = new_entry_states.is_null()
-        d                : Bool       = new_slots.is_null()
-        f1               : Bool       = a.bitor(b)
-        f2               : Bool       = c.bitor(d)
-        failed           : Bool       = f1.bitor(f2)
-        branch failed
-            ? discard(alloc, new_keys, new_hashes, new_entry_states, new_slots)
-            : clear_loop(0, old_keys, old_hashes, old_entry_states, old_slots, old_count, new_keys,
-                new_hashes, new_entry_states, new_slots)
+        alloc : @Allocator = self.keys.alloc.load()
+        claim keys         : @OwnedSpan<T>     <- .construct(0, alloc)
+        claim hashes       : @OwnedSpan<U64>   <- .construct(0, alloc)
+        claim entry_states : @OwnedSpan<U8>    <- .construct(0, alloc)
+        claim slots        : @OwnedSpan<USize> <- .construct(0, alloc)
+        made_keys : Bool = make_array<T>(keys, new_capacity)
+        branch made_keys
+            ? continue
+            : discard(keys, hashes, entry_states, slots)
+        made_hashes : Bool = make_array<U64>(hashes, new_capacity)
+        branch made_hashes
+            ? continue
+            : discard(keys, hashes, entry_states, slots)
+        made_states : Bool = make_array<U8>(entry_states, new_capacity)
+        branch made_states
+            ? continue
+            : discard(keys, hashes, entry_states, slots)
+        made_slots : Bool = make_array<USize>(slots, new_capacity)
+        branch made_slots
+            ? clear_loop(0, keys, hashes, entry_states, slots)
+            : discard(keys, hashes, entry_states, slots)
 
-    block discard(alloc: @Allocator, new_keys: @T, new_hashes: @U64, new_entry_states: @U8,
-        new_slots: @USize)
-        free_unless_null<T>(new_keys, alloc)
-        free_unless_null<U64>(new_hashes, alloc)
-        free_unless_null<U8>(new_entry_states, alloc)
-        free_unless_null<USize>(new_slots, alloc)
+    block discard(keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>,
+        slots: @OwnedSpan<USize>)
+        destruct_set_arrays<T>(keys, hashes, entry_states, slots)
         return(false)
 
-    block clear_loop(i: USize, old_keys: @T, old_hashes: @U64, old_entry_states: @U8,
-        old_slots: @USize, old_count: USize, new_keys: @T, new_hashes: @U64, new_entry_states: @U8,
-        new_slots: @USize)
+    block clear_loop(i: USize, keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>,
+        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
         done : Bool = i.ge(new_capacity)
         branch done
-            ? install(old_keys, old_hashes, old_entry_states, old_slots, old_count, new_keys,
-                new_hashes, new_entry_states, new_slots)
-            : clear_one(i, old_keys, old_hashes, old_entry_states, old_slots, old_count, new_keys,
-                new_hashes, new_entry_states, new_slots)
+            ? install(keys, hashes, entry_states, slots)
+            : continue
+        slot_cells  : @USize = slots.data.load()
+        state_cells : @U8    = entry_states.data.load()
+        slot_cells.stride(i).store(SLOT_EMPTY)
+        state_cells.stride(i).store(0)
+        jump clear_loop(i.add(1), keys, hashes, entry_states, slots)
 
-    block clear_one(i: USize, old_keys: @T, old_hashes: @U64, old_entry_states: @U8,
-        old_slots: @USize, old_count: USize, new_keys: @T, new_hashes: @U64, new_entry_states: @U8,
-        new_slots: @USize)
-        new_slots.stride(i).store(SLOT_EMPTY)
-        new_entry_states.stride(i).store(0)
-        jump clear_loop(i.add(1), old_keys, old_hashes, old_entry_states, old_slots, old_count,
-            new_keys, new_hashes, new_entry_states, new_slots)
-
-    block install(old_keys: @T, old_hashes: @U64, old_entry_states: @U8, old_slots: @USize,
-        old_count: USize, new_keys: @T, new_hashes: @U64, new_entry_states: @U8, new_slots: @USize)
-        self.keys.store(new_keys)
-        self.hashes.store(new_hashes)
-        self.entry_states.store(new_entry_states)
-        self.slots.store(new_slots)
+    // Swaps the new arrays into the set, so the claimed spans hold the old ones from here on.
+    block install(keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>,
+        slots: @OwnedSpan<USize>)
+        old_count : USize = self.entries_count.load()
+        swap_spans<T>(self.keys, keys)
+        swap_spans<U64>(self.hashes, hashes)
+        swap_spans<U8>(self.entry_states, entry_states)
+        swap_spans<USize>(self.slots, slots)
         self.count.store(0)
         self.entries_count.store(0)
-        self.capacity.store(new_capacity)
-        jump move_loop(0, old_keys, old_hashes, old_entry_states, old_slots, old_count)
+        jump move_loop(0, old_count, keys, hashes, entry_states, slots)
 
-    block move_loop(i: USize, old_keys: @T, old_hashes: @U64, old_entry_states: @U8,
-        old_slots: @USize, old_count: USize)
+    block move_loop(i: USize, old_count: USize, keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>,
+        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
         done : Bool = i.ge(old_count)
         branch done
-            ? release_old(old_keys, old_hashes, old_entry_states, old_slots)
-            : move_one(i, old_keys, old_hashes, old_entry_states, old_slots, old_count)
-
-    block move_one(i: USize, old_keys: @T, old_hashes: @U64, old_entry_states: @U8,
-        old_slots: @USize, old_count: USize)
-        s    : U8   = old_entry_states.stride(i).load()
-        live : Bool = s.eq(1)
+            ? release_old(keys, hashes, entry_states, slots)
+            : continue
+        states : @U8  = entry_states.data.load()
+        s      : U8   = states.stride(i).load()
+        live   : Bool = s.eq(1)
         branch live
-            ? insert_old(i, old_keys, old_hashes, old_entry_states, old_slots, old_count)
-            : move_loop(i.add(1), old_keys, old_hashes, old_entry_states, old_slots, old_count)
+            ? insert_old(i, old_count, keys, hashes, entry_states, slots)
+            : move_loop(i.add(1), old_count, keys, hashes, entry_states, slots)
 
-    block insert_old(i: USize, old_keys: @T, old_hashes: @U64, old_entry_states: @U8,
-        old_slots: @USize, old_count: USize)
-        key  : T   = old_keys.stride(i).load()
-        hash : U64 = old_hashes.stride(i).load()
+    block insert_old(i: USize, old_count: USize, keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>,
+        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+        old_keys   : @T   = keys.data.load()
+        old_hashes : @U64 = hashes.data.load()
+        key        : T    = old_keys.stride(i).load()
+        hash       : U64  = old_hashes.stride(i).load()
         self.add_direct(key, hash)
-        jump move_loop(i.add(1), old_keys, old_hashes, old_entry_states, old_slots, old_count)
+        jump move_loop(i.add(1), old_count, keys, hashes, entry_states, slots)
 
-    block release_old(old_keys: @T, old_hashes: @U64, old_entry_states: @U8, old_slots: @USize)
-        has_old : Bool = old_slots.is_not_null()
-        branch has_old
-            ? free_old(old_keys, old_hashes, old_entry_states, old_slots)
-            : return(true)
-
-    block free_old(old_keys: @T, old_hashes: @U64, old_entry_states: @U8, old_slots: @USize)
-        alloc : @Allocator = self.alloc.load()
-        old_keys.free(alloc)
-        old_hashes.free(alloc)
-        old_entry_states.free(alloc)
-        old_slots.free(alloc)
+    block release_old(keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>,
+        slots: @OwnedSpan<USize>)
+        destruct_set_arrays<T>(keys, hashes, entry_states, slots)
         return(true)
 
 /// Makes room for one more entry. Returns false when the allocator fails,
@@ -302,7 +314,7 @@ require T: typename
 private routine Set<T>.ensure(self: @Self) -> Bool
 require T: typename
     block entry()
-        capacity : USize = self.capacity.load()
+        capacity : USize = self.slots.count.load()
         empty    : Bool  = capacity.eq(0)
         branch empty
             ? first()
@@ -329,7 +341,7 @@ routine Set<T>.add_direct(self: @Self, key: T, hash: U64) -> Bool
 require T: typename
     block entry()
         slot      : USize  = self.load().slot(key, hash)
-        slots     : @USize = self.slots.load()
+        slots     : @USize = self.slots.data.load()
         entry_idx : USize  = slots.stride(slot).load()
         exists    : Bool   = entry_idx.lt(SLOT_TOMBSTONE)
         branch exists
@@ -338,10 +350,10 @@ require T: typename
 
     block add(slot: USize)
         new_idx      : USize  = self.entries_count.load()
-        keys         : @T     = self.keys.load()
-        hashes       : @U64   = self.hashes.load()
-        entry_states : @U8    = self.entry_states.load()
-        slots        : @USize = self.slots.load()
+        keys         : @T     = self.keys.data.load()
+        hashes       : @U64   = self.hashes.data.load()
+        entry_states : @U8    = self.entry_states.data.load()
+        slots        : @USize = self.slots.data.load()
         keys.stride(new_idx).store(key)
         hashes.stride(new_idx).store(hash)
         entry_states.stride(new_idx).store(1)
@@ -382,7 +394,7 @@ require T: typename
 routine Set<T>.remove(self: @Self, key: T) -> Bool
 require T: typename
     block entry()
-        capacity : USize = self.capacity.load()
+        capacity : USize = self.slots.count.load()
         empty    : Bool  = capacity.eq(0)
         branch empty
             ? return(false)
@@ -391,7 +403,7 @@ require T: typename
     block hash()
         hash      : U64    = key.hash()
         slot      : USize  = self.load().slot(key, hash)
-        slots     : @USize = self.slots.load()
+        slots     : @USize = self.slots.data.load()
         entry_idx : USize  = slots.stride(slot).load()
         found     : Bool   = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
@@ -399,45 +411,22 @@ require T: typename
             : return(false)
 
     block remove(slot: USize, entry_idx: USize)
-        slots        : @USize = self.slots.load()
-        entry_states : @U8    = self.entry_states.load()
+        slots        : @USize = self.slots.data.load()
+        entry_states : @U8    = self.entry_states.data.load()
         slots.stride(slot).store(SLOT_TOMBSTONE)
         entry_states.stride(entry_idx).store(0)
         remaining_count : USize = self.count.load().sub(1)
         remaining_count.store_into(self.count)
         return(true)
 
-/// Frees the set's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+/// Gives the set's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
 /// :note: Safe to call on a never-filled instance, where it only resets the fields.
 routine Set<T>.destruct(self: @Self) -> Void
 require T: typename
     block entry()
-        slots : @USize = self.slots.load()
-        empty : Bool   = slots.is_null()
-        branch empty
-            ? reset()
-            : release()
-
-    block release()
-        alloc        : @Allocator = self.alloc.load()
-        keys         : @T         = self.keys.load()
-        hashes       : @U64       = self.hashes.load()
-        entry_states : @U8        = self.entry_states.load()
-        slots        : @USize     = self.slots.load()
-        keys.free(alloc)
-        hashes.free(alloc)
-        entry_states.free(alloc)
-        slots.free(alloc)
-        jump reset()
-
-    block reset()
-        self.keys.store(null)
-        self.hashes.store(null)
-        self.entry_states.store(null)
-        self.slots.store(null)
+        destruct_set_arrays<T>(self.keys, self.hashes, self.entry_states, self.slots)
         self.count.store(0)
         self.entries_count.store(0)
-        self.capacity.store(0)
         return()
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
@@ -487,13 +476,15 @@ require T: typename, HashEqual<T>, Diagnose<T>, W: typename, Writer<W>
         diagnose_items<T, SetIter<T>, W>(out, iter, "{", "}")
         return()
 
-/// Frees ptr unless it is null: a failed rehash releases the arrays it did get.
-private routine free_unless_null<T>(ptr: @T, alloc: @Allocator) -> Void
+// -- the arrays -----------------------------------------------------------------
+
+/// Gives the four arrays of a set back to their allocator, leaving each empty.
+private routine destruct_set_arrays<T>(keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>,
+    entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>) -> Void
 require T: typename
     block entry()
-        present : Bool = ptr.is_not_null()
-        branch present
-            ? continue
-            : return()
-        ptr.free(alloc)
+        keys.destruct()
+        hashes.destruct()
+        entry_states.destruct()
+        slots.destruct()
         return()

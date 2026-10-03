@@ -1,7 +1,7 @@
 // Tessera stdlib collection: SortedList<T>
 //
 // A sorted sequence that keeps duplicates: push puts a value after every equal
-// one, so equal values stay in the order they came. get(order) and
+// one, so equal values stay in the order they came. getitem(order) and
 // remove(order) work by position in that order, and rank finds where a value goes.
 //
 // The elements live in a B-tree keyed by position, with a fixed node value
@@ -9,7 +9,7 @@
 // in SortedList. Node helpers still receive it as a parameter. Internal nodes
 // use `count` as the child count (no separator keys: navigation is purely by
 // subtree_count). Leaf nodes use `count` as the value count. push finds its
-// position by binary search over get, so it costs O(log² n).
+// position by binary search over getitem, so it costs O(log² n).
 
 module Standard::Collections
 
@@ -30,7 +30,7 @@ require T: typename
     values        : Array<T, NODE_VALUES>
     children      : Array<@SortedListNode<T>, NODE_CHILDREN>
 
-/// A sorted sequence that keeps duplicates, stored as a B-tree indexed by position. `push` places a value after every equal one, so equal values stay in arrival order. `get` and `remove` work by position, and `rank` finds where a value belongs.
+/// A sorted sequence that keeps duplicates, stored as a B-tree indexed by position. `push` places a value after every equal one, so equal values stay in arrival order. `getitem` and `remove` work by position, and `rank` finds where a value belongs.
 /// :typeparam T: The element type, ordered by its `Compare` conformance.
 record SortedList<T>
 conform Destruct<SortedList<T>>
@@ -59,6 +59,14 @@ require T: typename
         count : USize = self.count
         return(count)
 
+/// The number of elements currently stored.
+/// :returns: The count of elements, `0` when the list is empty.
+routine SortedList<T>.count(self: @Self) -> USize
+require T: typename
+    block entry()
+        result : USize = self.load().count()
+        return(result)
+
 /// Whether the list holds no elements.
 /// :returns: `true` when the count is `0`.
 routine SortedList<T>.is_empty(self: Self) -> Bool
@@ -67,6 +75,14 @@ require T: typename
         count : USize = self.count
         empty : Bool  = count.eq(0)
         return(empty)
+
+/// Whether the list holds no elements.
+/// :returns: `true` when the count is `0`.
+routine SortedList<T>.is_empty(self: @Self) -> Bool
+require T: typename
+    block entry()
+        result : Bool = self.load().is_empty()
+        return(result)
 
 /// A new empty node, or null when the allocator fails.
 routine SortedListNode<T>.construct(leaf: Bool, alloc: @Allocator) -> @Self
@@ -122,7 +138,7 @@ require T: typename
             : add_child(i, sum, count)
 
     block add_child(i: USize, sum: USize, count: USize)
-        child       : @Self = self.children.get(i)
+        child       : @Self = self.children.getitem(i)
         child_count : USize = child.subtree_count()
         jump loop(i.add(1), sum.add(child_count), count)
 
@@ -174,18 +190,29 @@ require T: typename, Equal<T>
 /// Reads the element at position `order` in sorted order, where `0` is the smallest.
 /// :param order: The zero-based position in sorted order.
 /// :returns: A copy of the element.
-/// :throws: Crashes with `IndexOutOfBoundsError` when `order >= count`. See {SortedList<T>.get_checked}.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `order >= count`. See {SortedList<T>.getitem_checked}.
 #track_caller
-routine SortedList<T>.get(self: Self, order: USize) -> T
+routine SortedList<T>.getitem(self: Self, order: USize) -> T
 require T: typename
     block entry()
-        found : Option<T> = self.get_checked(order)
+        found : Option<T> = self.getitem_checked(order)
         when found
             .Present(value) -> return(value)
             .Absent         -> crash_out_of_bounds()
 
-/// `get`, returning Absent instead of crashing on a position past the end.
-routine SortedList<T>.get_checked(self: Self, order: USize) -> Option<T>
+/// Reads the element at position `order` in sorted order, where `0` is the smallest.
+/// :param order: The zero-based position in sorted order.
+/// :returns: A copy of the element.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `order >= count`. See {SortedList<T>.getitem_checked}.
+#track_caller
+routine SortedList<T>.getitem(self: @Self, order: USize) -> T
+require T: typename
+    block entry()
+        result : T = self.load().getitem(order)
+        return(result)
+
+/// `getitem`, returning Absent instead of crashing on a position past the end.
+routine SortedList<T>.getitem_checked(self: Self, order: USize) -> Option<T>
 require T: typename
     block entry()
         count     : USize = self.count
@@ -205,26 +232,41 @@ require T: typename
             : internal_get(node, remaining)
 
     block leaf_get(node: @SortedListNode<T>, remaining: USize)
-        value : T = node.values.get(remaining)
+        value : T = node.values.getitem(remaining)
         return(.Present(value))
 
     block internal_get(node: @SortedListNode<T>, remaining: USize)
         jump scan(node, remaining, 0)
 
     block scan(node: @SortedListNode<T>, remaining: USize, i: USize)
-        child       : @SortedListNode<T> = node.children.get(i)
+        child       : @SortedListNode<T> = node.children.getitem(i)
         child_count : USize              = child.subtree_count()
         in_child    : Bool               = remaining.lt(child_count)
         branch in_child
             ? select_node(child, remaining)
             : scan(node, remaining.sub(child_count), i.add(1))
 
-/// The element at rank, the same as get: a SortedList's rank is its position in sorted order. Crashes if
+/// `getitem`, returning Absent instead of crashing on a position past the end.
+routine SortedList<T>.getitem_checked(self: @Self, order: USize) -> Option<T>
+require T: typename
+    block entry()
+        result : Option<T> = self.load().getitem_checked(order)
+        return(result)
+
+/// The element at rank, the same as getitem: a SortedList's rank is its position in sorted order. Crashes if
 /// rank >= count.
 routine SortedList<T>.get_by_rank(self: Self, rank: USize) -> T
 require T: typename
     block entry()
-        return(self.get(rank))
+        return(self.getitem(rank))
+
+/// The element at rank, the same as getitem: a SortedList's rank is its position in sorted order. Crashes if
+/// rank >= count.
+routine SortedList<T>.get_by_rank(self: @Self, rank: USize) -> T
+require T: typename
+    block entry()
+        result : T = self.load().get_by_rank(rank)
+        return(result)
 
 /// Puts value in sorted order, after every element equal to it.
 #track_caller
@@ -254,6 +296,14 @@ require T: typename, Compare<T>
         rank : USize = self.bound(value, false)
         return(rank)
 
+/// The number of elements less than value: the position of its first copy if it's there, and where push would put
+/// it if not.
+routine SortedList<T>.rank(self: @Self, value: T) -> USize
+require T: typename, Compare<T>
+    block entry()
+        result : USize = self.load().rank(value)
+        return(result)
+
 /// Whether an element equal to `value` is in the list.
 /// :param value: The value to look for.
 /// :returns: `true` when an equal element is present.
@@ -268,11 +318,20 @@ require T: typename, Compare<T>
             : return(false)
 
     block check(rank: USize)
-        at   : T    = self.get(rank)
+        at   : T    = self.getitem(rank)
         same : Bool = at.compare(value).eq(0)
         return(same)
 
-/// The number of elements less than value, or with or_equal, less than or equal to it. Binary search over get.
+/// Whether an element equal to `value` is in the list.
+/// :param value: The value to look for.
+/// :returns: `true` when an equal element is present.
+routine SortedList<T>.contains(self: @Self, value: T) -> Bool
+require T: typename, Compare<T>
+    block entry()
+        result : Bool = self.load().contains(value)
+        return(result)
+
+/// The number of elements less than value, or with or_equal, less than or equal to it. Binary search over getitem.
 private routine SortedList<T>.bound(self: Self, value: T, or_equal: Bool) -> USize
 require T: typename, Compare<T>
     block entry()
@@ -287,7 +346,7 @@ require T: typename, Compare<T>
 
     block probe(lo: USize, hi: USize)
         mid     : USize = lo.add(hi.sub(lo).div(2))
-        at      : T     = self.get(mid)
+        at      : T     = self.getitem(mid)
         order   : S32   = at.compare(value)
         below   : Bool  = order.lt(0)
         equal   : Bool  = order.eq(0).bitand(or_equal)
@@ -301,7 +360,7 @@ require T: typename, Compare<T>
 routine SortedListNode<T>.split_child(self: @Self, index: USize, alloc: @Allocator) -> Bool
 require T: typename
     block entry()
-        left     : @Self = self.children.get(index)
+        left     : @Self = self.children.getitem(index)
         leaf     : Bool  = left.leaf.load()
         right    : @Self = Self.construct(leaf, alloc)
         no_right : Bool  = right.is_null()
@@ -330,8 +389,8 @@ require T: typename
 
     block child_copy(i: USize, left: @Self, right: @Self, mid: USize, right_count: USize)
         src   : USize = mid.add(i)
-        child : @Self = left.children.get(src)
-        right.children.set(i, child)
+        child : @Self = left.children.getitem(src)
+        right.children.setitem(i, child)
         jump child_loop(i.add(1), left, right, mid, right_count)
 
     block promote(left: @Self, right: @Self, mid: USize, right_count: USize)
@@ -346,12 +405,12 @@ require T: typename
             : move_child(i, left, right, mid, right_count)
 
     block move_child(i: USize, left: @Self, right: @Self, mid: USize, right_count: USize)
-        child : @Self = self.children.get(i)
-        self.children.set(i.add(1), child)
+        child : @Self = self.children.getitem(i)
+        self.children.setitem(i.add(1), child)
         jump shift_children(i.sub(1), left, right, mid, right_count)
 
     block install(left: @Self, right: @Self, mid: USize, right_count: USize)
-        self.children.set(index.add(1), right)
+        self.children.setitem(index.add(1), right)
         left.count.store(mid)
         right.count.store(right_count)
         next_count : USize = self.count.load().add(1)
@@ -370,7 +429,7 @@ require T: typename
         jump loop(0, order)
 
     block loop(i: USize, remaining: USize)
-        child    : @Self = self.children.get(i)
+        child    : @Self = self.children.getitem(i)
         count    : USize = child.subtree_count()
         in_child : Bool  = remaining.le(count)
         branch in_child
@@ -391,7 +450,7 @@ require T: typename
         jump loop(0, order)
 
     block loop(i: USize, remaining: USize)
-        child    : @Self = self.children.get(i)
+        child    : @Self = self.children.getitem(i)
         count    : USize = child.subtree_count()
         in_child : Bool  = remaining.lt(count)
         branch in_child
@@ -403,7 +462,7 @@ require T: typename
         return(i)
 
 /// Inserts below a node that isn't full. Returns false when a split fails to
-/// allocate; the tree then holds the same elements, some nodes already split.
+/// allocate. The tree then holds the same elements, some nodes already split.
 routine SortedListNode<T>.insert_nonfull(self: @Self, order: USize, value: T,
     alloc: @Allocator) -> Bool
 require T: typename
@@ -416,7 +475,7 @@ require T: typename
     block insert_leaf()
         count : USize = self.count.load()
         self.values.shift_right(order, count)
-        self.values.set(order, value)
+        self.values.setitem(order, value)
         new_count : USize = count.add(1)
         self.count.store(new_count)
         self.subtree_count.store(new_count)
@@ -426,7 +485,7 @@ require T: typename
         claim local_order : @USize <- uninit
         slot            : USize = self.find_child(order, local_order)
         local_order_val : USize = local_order.load()
-        child           : @Self = self.children.get(slot)
+        child           : @Self = self.children.getitem(slot)
         child_count     : USize = child.count.load()
         full            : Bool  = child_count.eq(NODE_VALUES)
         branch full
@@ -438,7 +497,7 @@ require T: typename
         branch split
             ? continue
             : return(false)
-        left       : @Self = self.children.get(slot)
+        left       : @Self = self.children.getitem(slot)
         left_count : USize = left.subtree_count()
         go_right   : Bool  = local_order.gt(left_count)
         branch go_right
@@ -446,13 +505,13 @@ require T: typename
             : descend_left(slot, local_order)
 
     block descend_left(slot: USize, local_order: USize)
-        child : @Self = self.children.get(slot)
+        child : @Self = self.children.getitem(slot)
         jump descend(slot, child, local_order)
 
     block descend_right(slot: USize, local_order: USize, left_count: USize)
         right_slot  : USize = slot.add(1)
         right_order : USize = local_order.sub(left_count)
-        child       : @Self = self.children.get(right_slot)
+        child       : @Self = self.children.getitem(right_slot)
         jump descend(right_slot, child, right_order)
 
     block descend(slot: USize, child: @Self, local_order: USize)
@@ -489,7 +548,7 @@ require T: typename
         branch no_root
             ? return(false)
             : continue
-        root.values.set(0, value)
+        root.values.setitem(0, value)
         root.count.store(1)
         root.subtree_count.store(1)
         self.root.store(root)
@@ -509,7 +568,7 @@ require T: typename
         branch no_root
             ? return(false)
             : continue
-        new_root.children.set(0, old_root)
+        new_root.children.setitem(0, old_root)
         new_root.count.store(1)
         split : Bool = new_root.split_child(0, alloc)
         branch split
@@ -521,7 +580,7 @@ require T: typename
         jump insert_nonfull(new_root, alloc)
 
     block discard_root(new_root: @SortedListNode<T>, alloc: @Allocator)
-        new_root.free(alloc)
+        deallocate<SortedListNode<T>>(alloc, new_root)
         return(false)
 
     block insert_nonfull(root: @SortedListNode<T>, alloc: @Allocator)
@@ -543,8 +602,8 @@ require T: typename
 routine SortedListNode<T>.borrow_from_left(self: @Self, i: USize) -> Void
 require T: typename
     block entry()
-        left        : @Self = self.children.get(i.sub(1))
-        child       : @Self = self.children.get(i)
+        left        : @Self = self.children.getitem(i.sub(1))
+        child       : @Self = self.children.getitem(i)
         left_count  : USize = left.count.load()
         child_count : USize = child.count.load()
         leaf        : Bool  = child.leaf.load()
@@ -554,14 +613,14 @@ require T: typename
 
     block leaf_borrow(left: @Self, child: @Self, left_count: USize, child_count: USize)
         child.values.shift_right(0, child_count)
-        v : T = left.values.get(left_count.sub(1))
-        child.values.set(0, v)
+        v : T = left.values.getitem(left_count.sub(1))
+        child.values.setitem(0, v)
         jump finalize(left, child, left_count, child_count)
 
     block internal_borrow(left: @Self, child: @Self, left_count: USize, child_count: USize)
         child.children.shift_right(0, child_count)
-        moved : @Self = left.children.get(left_count.sub(1))
-        child.children.set(0, moved)
+        moved : @Self = left.children.getitem(left_count.sub(1))
+        child.children.setitem(0, moved)
         jump finalize(left, child, left_count, child_count)
 
     block finalize(left: @Self, child: @Self, left_count: USize, child_count: USize)
@@ -577,8 +636,8 @@ require T: typename
 routine SortedListNode<T>.borrow_from_right(self: @Self, i: USize) -> Void
 require T: typename
     block entry()
-        child       : @Self = self.children.get(i)
-        right       : @Self = self.children.get(i.add(1))
+        child       : @Self = self.children.getitem(i)
+        right       : @Self = self.children.getitem(i.add(1))
         child_count : USize = child.count.load()
         right_count : USize = right.count.load()
         leaf        : Bool  = child.leaf.load()
@@ -587,14 +646,14 @@ require T: typename
             : internal_borrow(child, right, child_count, right_count)
 
     block leaf_borrow(child: @Self, right: @Self, child_count: USize, right_count: USize)
-        v : T = right.values.get(0)
-        child.values.set(child_count, v)
+        v : T = right.values.getitem(0)
+        child.values.setitem(child_count, v)
         right.values.shift_left(0, right_count)
         jump finalize(child, right, child_count, right_count)
 
     block internal_borrow(child: @Self, right: @Self, child_count: USize, right_count: USize)
-        moved : @Self = right.children.get(0)
-        child.children.set(child_count, moved)
+        moved : @Self = right.children.getitem(0)
+        child.children.setitem(child_count, moved)
         right.children.shift_left(0, right_count)
         jump finalize(child, right, child_count, right_count)
 
@@ -612,8 +671,8 @@ require T: typename
 routine SortedListNode<T>.merge_children(self: @Self, i: USize, alloc: @Allocator) -> Void
 require T: typename
     block entry()
-        left        : @Self = self.children.get(i)
-        right       : @Self = self.children.get(i.add(1))
+        left        : @Self = self.children.getitem(i)
+        right       : @Self = self.children.getitem(i.add(1))
         left_count  : USize = left.count.load()
         right_count : USize = right.count.load()
         leaf        : Bool  = left.leaf.load()
@@ -634,7 +693,7 @@ require T: typename
         parent_count : USize = self.count.load()
         self.children.shift_left(i.add(1), parent_count)
         self.count.store(parent_count.sub(1))
-        right.free(alloc)
+        deallocate<Self>(alloc, right)
         left.recount()
         self.recount()
         return()
@@ -653,7 +712,7 @@ require T: typename
             : remove_internal()
 
     block remove_leaf()
-        value : T     = self.values.get(order)
+        value : T     = self.values.getitem(order)
         count : USize = self.count.load()
         self.values.shift_left(order, count)
         new_count : USize = count.sub(1)
@@ -665,7 +724,7 @@ require T: typename
         claim local_order : @USize <- uninit
         slot            : USize = self.find_child_strict(order, local_order)
         local_order_val : USize = local_order.load()
-        child           : @Self = self.children.get(slot)
+        child           : @Self = self.children.getitem(slot)
         child_count     : USize = child.count.load()
         ok              : Bool  = child_count.ge(NODE_MIN)
         branch ok
@@ -673,7 +732,7 @@ require T: typename
             : rebalance(slot, local_order_val)
 
     block descend(slot: USize, local_order: USize)
-        child : @Self = self.children.get(slot)
+        child : @Self = self.children.getitem(slot)
         value : T     = child.remove(local_order, alloc)
         self.recount()
         return(value)
@@ -685,7 +744,7 @@ require T: typename
             : right_only(slot, local_order)
 
     block check_left(slot: USize, local_order: USize)
-        left       : @Self = self.children.get(slot.sub(1))
+        left       : @Self = self.children.getitem(slot.sub(1))
         left_count : USize = left.count.load()
         left_ok    : Bool  = left_count.ge(NODE_MIN)
         branch left_ok
@@ -698,7 +757,7 @@ require T: typename
     // moved value contributes 1) and internals (where the moved entry is a
     // whole child subtree of arbitrary count).
     block do_borrow_left(slot: USize, local_order: USize)
-        child     : @Self = self.children.get(slot)
+        child     : @Self = self.children.getitem(slot)
         old_count : USize = child.subtree_count()
         self.borrow_from_left(slot)
         new_local : USize = local_order.add(child.subtree_count().sub(old_count))
@@ -712,7 +771,7 @@ require T: typename
             : do_merge_left(slot, local_order)
 
     block check_right_after_left(slot: USize, local_order: USize)
-        right       : @Self = self.children.get(slot.add(1))
+        right       : @Self = self.children.getitem(slot.add(1))
         right_count : USize = right.count.load()
         right_ok    : Bool  = right_count.ge(NODE_MIN)
         branch right_ok
@@ -725,7 +784,7 @@ require T: typename
 
     block do_merge_left(slot: USize, local_order: USize)
         left_slot : USize = slot.sub(1)
-        left      : @Self = self.children.get(left_slot)
+        left      : @Self = self.children.getitem(left_slot)
         new_local : USize = left.subtree_count().add(local_order)
         self.merge_children(left_slot, alloc)
         jump descend(left_slot, new_local)
@@ -738,7 +797,7 @@ require T: typename
             : crash_logic_breached()
 
     block check_right_only(slot: USize, local_order: USize)
-        right       : @Self = self.children.get(slot.add(1))
+        right       : @Self = self.children.getitem(slot.add(1))
         right_count : USize = right.count.load()
         right_ok    : Bool  = right_count.ge(NODE_MIN)
         branch right_ok
@@ -790,14 +849,14 @@ require T: typename
 
     block clear_root(root: @SortedListNode<T>, value: T)
         alloc : @Allocator = self.alloc.load()
-        root.free(alloc)
+        deallocate<SortedListNode<T>>(alloc, root)
         self.root.store(null)
         return(value)
 
     block shrink(root: @SortedListNode<T>, value: T)
         alloc    : @Allocator         = self.alloc.load()
-        new_root : @SortedListNode<T> = root.children.get(0)
-        root.free(alloc)
+        new_root : @SortedListNode<T> = root.children.getitem(0)
+        deallocate<SortedListNode<T>>(alloc, root)
         self.root.store(new_root)
         return(value)
 
@@ -821,12 +880,12 @@ require T: typename
             : free_child(i, count)
 
     block free_child(i: USize, count: USize)
-        child : @Self = self.children.get(i)
+        child : @Self = self.children.getitem(i)
         child.free_recursive(alloc)
         jump child_loop(i.add(1), count)
 
     block free_self()
-        self.free(alloc)
+        deallocate<Self>(alloc, self)
         return()
 
 /// Frees every node of the tree through the allocator and resets the list to empty. The stored values themselves are not destructed.

@@ -9,8 +9,8 @@
 //     h.close()
 //
 // The path is a view, so its text must outlive the File (a literal does). A routine that makes a path (file, subdir,
-// absolute, the well-known directories) takes an allocator, and the caller frees the new path with
-// `path.data.free(alloc)`.
+// absolute, the well-known directories) takes an allocator, and the caller gives the new path back with
+// `deallocate(alloc, dir.path.data)`.
 
 module Standard::Os
 
@@ -78,8 +78,8 @@ routine File.create_new(self: Self) -> Result<FileHandle, FsError>
     block entry()
         return(FileHandle.open(self.path, OpenMode.CreateNew))
 
-/// The whole file, in memory from alloc (free it with `data.free(alloc)`).
-routine File.read_all(self: Self, alloc: @Allocator) -> Result<Bytes, FsError>
+/// The whole file, in memory from alloc (release it with destruct()).
+routine File.read_all(self: Self, alloc: @Allocator) -> Result<OwnedSpan<Byte>, FsError>
     block entry()
         return(read_file(self.path, alloc))
 
@@ -154,7 +154,8 @@ routine File.parent(self: Self) -> Directory
         return(Directory { path: parent_path(self.path) })
 
 /// The path made absolute by the text: the working directory in front of a relative one (on Windows "." and ".."
-/// taken out too), nothing looked up. The new path is in memory from alloc.
+/// taken out too), nothing looked up. The new path is in memory from alloc: give it back with
+/// `deallocate(alloc, file.path.data)`.
 routine File.absolute(self: Self, alloc: @Allocator) -> Result<Self, FsError>
     block entry()
         r : Result<Bytes, FsError> = absolute_path(self.path, alloc)
@@ -162,7 +163,8 @@ routine File.absolute(self: Self, alloc: @Allocator) -> Result<Self, FsError>
             .Success(p)     -> return(.Success(Self { path: p }))
             .Failure(error) -> return(.Failure(error))
 
-/// The absolute path with every link, ".", and ".." resolved. The file must exist. In memory from alloc.
+/// The absolute path with every link, ".", and ".." resolved. The file must exist. In memory from alloc: give it back
+/// with `deallocate(alloc, file.path.data)`.
 routine File.canonical(self: Self, alloc: @Allocator) -> Result<Self, FsError>
     block entry()
         r : Result<Bytes, FsError> = canonical_path(self.path, alloc)
@@ -247,20 +249,21 @@ routine Directory.parent(self: Self) -> Self
     block entry()
         return(Self { path: parent_path(self.path) })
 
-/// The file name in this directory, its path in memory from alloc.
+/// The file name in this directory, its path in memory from alloc (`deallocate(alloc, file.path.data)` gives it back).
 #track_caller
 routine Directory.file(self: Self, name: Bytes, alloc: @Allocator) -> File
     block entry()
-        return(File { path: join_path(self.path, name, alloc) })
+        return(File { path: join_path(self.path, name, alloc).to<Bytes>() })
 
-/// The directory name in this directory, its path in memory from alloc.
+/// The directory name in this directory, its path in memory from alloc (`deallocate(alloc, dir.path.data)` gives it
+/// back).
 #track_caller
 routine Directory.subdir(self: Self, name: Bytes, alloc: @Allocator) -> Self
     block entry()
-        return(Self { path: join_path(self.path, name, alloc) })
+        return(Self { path: join_path(self.path, name, alloc).to<Bytes>() })
 
 /// The path made absolute by its text: the working directory in front of a relative one, nothing else looked up. The
-/// new path is in memory from `alloc`. Free it with `path.data.free(alloc)`.
+/// new path is in memory from `alloc`. Give it back with `deallocate(alloc, dir.path.data)`.
 /// :param alloc: The allocator for the new path.
 /// :returns: The absolute {Directory}, or Failure with the {FsError} the OS reported.
 routine Directory.absolute(self: Self, alloc: @Allocator) -> Result<Self, FsError>
@@ -271,7 +274,7 @@ routine Directory.absolute(self: Self, alloc: @Allocator) -> Result<Self, FsErro
             .Failure(error) -> return(.Failure(error))
 
 /// The absolute path with every link, `.`, and `..` resolved. The directory must exist, and the new path is in memory
-/// from `alloc`. Free it with `path.data.free(alloc)`.
+/// from `alloc`. Give it back with `deallocate(alloc, dir.path.data)`.
 /// :param alloc: The allocator for the new path.
 /// :returns: The canonical {Directory}, or Failure with the {FsError} the OS reported (NotFound when it is missing).
 routine Directory.canonical(self: Self, alloc: @Allocator) -> Result<Self, FsError>
@@ -281,7 +284,7 @@ routine Directory.canonical(self: Self, alloc: @Allocator) -> Result<Self, FsErr
             .Success(p)     -> return(.Success(Self { path: p }))
             .Failure(error) -> return(.Failure(error))
 
-/// The working directory, its path in memory from alloc.
+/// The working directory, its path in memory from alloc (`deallocate(alloc, dir.path.data)` gives it back).
 routine Directory.current(alloc: @Allocator) -> Result<Self, FsError>
     block entry()
         return(directory_of(current_dir(alloc)))
@@ -291,12 +294,13 @@ routine Directory.set_current(self: Self) -> Result<Unit, FsError>
     block entry()
         return(set_current_dir(self.path))
 
-/// The temporary directory (TMPDIR or /tmp, on Windows GetTempPathW's), its path in memory from alloc.
+/// The temporary directory (TMPDIR or /tmp, on Windows GetTempPathW's), its path in memory from alloc
+/// (`deallocate(alloc, dir.path.data)` gives it back).
 routine Directory.temp(alloc: @Allocator) -> Result<Self, FsError>
     block entry()
         return(directory_of(temp_dir(alloc)))
 
-/// The user's home directory (HOME; on Windows USERPROFILE), its path in memory from alloc; NotFound when it can't
+/// The user's home directory (HOME, on Windows USERPROFILE), its path in memory from alloc. NotFound when it can't
 /// be told.
 routine Directory.home(alloc: @Allocator) -> Result<Self, FsError>
     block entry()

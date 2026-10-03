@@ -6,10 +6,10 @@
 //   - Slots is an index table: each cell is SLOT_EMPTY, SLOT_TOMBSTONE, or an
 //     entry index >= 0. Linear probing on the hash mod capacity.
 //
-// Both layers share `capacity`. Removal marks the entry dead and the slot a
-// tombstone; the entry's position in the entries array is retained so the
-// insertion order of surviving entries is preserved. Rehash compacts dead
-// entries away.
+// Every array is an OwnedSpan of the same count, the capacity, and each keeps
+// the allocator. Removal marks the entry dead and the slot a tombstone. The
+// entry's position in the entries array is retained so the insertion order of
+// surviving entries is preserved. Rehash compacts dead entries away.
 //
 // entry_state values: 0 = dead, 1 = live.
 
@@ -21,7 +21,7 @@ import Standard::Format
 private preset SLOT_EMPTY:     USize = USize.MAX
 private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
 
-/// An insertion-ordered hash map. Entries live in parallel arrays in the order they were first inserted, and an open-addressed slot table with linear probing maps a key hash to its entry. Removal marks the entry dead, so surviving entries keep their order until the next rehash.
+/// An insertion-ordered hash map. Entries live in parallel arrays (each an {OwnedSpan<T>} holding the capacity and the allocator) in the order they were first inserted, and an open-addressed slot table with linear probing maps a key hash to its entry. Removal marks the entry dead, so surviving entries keep their order until the next rehash.
 /// :typeparam K: The key type, which must provide hashing and equality.
 /// :typeparam V: The value type.
 record Dict<K, V>
@@ -30,15 +30,13 @@ conform Represent<Dict<K, V>> when K: typename, V: typename, HashEqual<K>, Diagn
 conform Diagnose<Dict<K, V>>  when K: typename, V: typename, HashEqual<K>, Diagnose<K>, Diagnose<V>
 conform Equal<Dict<K, V>>     when K: typename, V: typename, HashEqual<K>, Equal<V>
 require K: typename, V: typename, HashEqual<K>
-    keys          : @K
-    values        : @V
-    hashes        : @U64
-    entry_states  : @U8
-    slots         : @USize
+    keys          : OwnedSpan<K>
+    values        : OwnedSpan<V>
+    hashes        : OwnedSpan<U64>
+    entry_states  : OwnedSpan<U8>
+    slots         : OwnedSpan<USize>
     count         : USize
     entries_count : USize
-    capacity      : USize
-    alloc         : @Allocator
 
 /// Creates an empty Dict that draws its storage from `alloc`. Nothing is allocated until the first insertion.
 /// :param alloc: The allocator the dict stores and later frees its memory with.
@@ -46,8 +44,13 @@ require K: typename, V: typename, HashEqual<K>
 routine Dict<K, V>.construct(alloc: @Allocator) -> Self
 require K: typename, V: typename, HashEqual<K>
     block entry()
-        map : Self = Self { keys: null, values: null, hashes: null, entry_states: null, slots: null,
-            count: 0, entries_count: 0, capacity: 0, alloc: alloc }
+        keys         : OwnedSpan<K>     = OwnedSpan<K>.construct(0, alloc)
+        values       : OwnedSpan<V>     = OwnedSpan<V>.construct(0, alloc)
+        hashes       : OwnedSpan<U64>   = OwnedSpan<U64>.construct(0, alloc)
+        entry_states : OwnedSpan<U8>    = OwnedSpan<U8>.construct(0, alloc)
+        slots        : OwnedSpan<USize> = OwnedSpan<USize>.construct(0, alloc)
+        map          : Self             = Self { keys: keys, values: values, hashes: hashes,
+            entry_states: entry_states, slots: slots, count: 0, entries_count: 0 }
         return(map)
 
 /// The number of entries currently stored.
@@ -56,6 +59,14 @@ routine Dict<K, V>.count(self: Self) -> USize
 require K: typename, V: typename
     block entry()
         count : USize = self.count
+        return(count)
+
+/// The number of entries currently stored.
+/// :returns: The count of entries, `0` when the dict is empty.
+routine Dict<K, V>.count(self: @Self) -> USize
+require K: typename, V: typename
+    block entry()
+        count : USize = self.count.load()
         return(count)
 
 /// Whether the dict holds no entries.
@@ -67,19 +78,27 @@ require K: typename, V: typename
         empty : Bool  = count.eq(0)
         return(empty)
 
+/// Whether the dict holds no entries.
+/// :returns: `true` when the count is `0`.
+routine Dict<K, V>.is_empty(self: @Self) -> Bool
+require K: typename, V: typename
+    block entry()
+        empty : Bool = self.load().is_empty()
+        return(empty)
+
 /// Probe the slot table for key. Returns the slot index at which the key was
 /// found, or the slot at which a new entry should be installed (preferring the
 /// first tombstone seen, else the first empty slot).
 routine Dict<K, V>.slot(self: Self, key: K, hash: U64) -> USize
 require K: typename, V: typename
     block entry()
-        capacity : USize = self.capacity
+        capacity : USize = self.slots.count
         mask     : USize = capacity.sub(1)
         start    : USize = hash.to_wrap<USize>().bitand(mask)
         jump probe(start, SLOT_EMPTY)
 
     block probe(index: USize, first_tombstone: USize)
-        slots        : @USize = self.slots
+        slots        : @USize = self.slots.data
         entry_idx    : USize  = slots.stride(index).load()
         is_empty     : Bool   = entry_idx.eq(SLOT_EMPTY)
         is_tombstone : Bool   = entry_idx.eq(SLOT_TOMBSTONE)
@@ -100,12 +119,12 @@ require K: typename, V: typename
         next_tombstone : USize = seen
             ? first_tombstone
             : index
-        capacity : USize = self.capacity
+        capacity : USize = self.slots.count
         next     : USize = index.add(1).bitand(capacity.sub(1))
         jump probe(next, next_tombstone)
 
     block occupied_slot(index: USize, first_tombstone: USize, entry_idx: USize)
-        hashes     : @U64 = self.hashes
+        hashes     : @U64 = self.hashes.data
         entry_hash : U64  = hashes.stride(entry_idx).load()
         hash_match : Bool = entry_hash.eq(hash)
         branch hash_match
@@ -113,13 +132,13 @@ require K: typename, V: typename
             : next(index, first_tombstone)
 
     block maybe_equal(index: USize, first_tombstone: USize, entry_idx: USize)
-        keys      : @K   = self.keys
+        keys      : @K   = self.keys.data
         entry_key : K    = keys.stride(entry_idx).load()
         equal     : Bool = entry_key.eq(key)
         branch equal ? return(index): next(index, first_tombstone)
 
     block next(index: USize, first_tombstone: USize)
-        capacity : USize = self.capacity
+        capacity : USize = self.slots.count
         next     : USize = index.add(1).bitand(capacity.sub(1))
         jump probe(next, first_tombstone)
 
@@ -127,14 +146,14 @@ require K: typename, V: typename
 routine Dict<K, V>.find(self: Self, key: K) -> USize
 require K: typename, V: typename
     block entry()
-        capacity : USize = self.capacity
+        capacity : USize = self.slots.count
         empty    : Bool  = capacity.eq(0)
         branch empty ? return(SLOT_EMPTY): hash()
 
     block hash()
         hash      : U64    = K.hash(key)
         slot      : USize  = self.slot(key, hash)
-        slots     : @USize = self.slots
+        slots     : @USize = self.slots.data
         entry_idx : USize  = slots.stride(slot).load()
         found     : Bool   = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
@@ -148,6 +167,15 @@ routine Dict<K, V>.contains(self: Self, key: K) -> Bool
 require K: typename, V: typename
     block entry()
         found : Bool = self.find(key).ne(SLOT_EMPTY)
+        return(found)
+
+/// Whether `key` is present.
+/// :param key: The key to look for.
+/// :returns: `true` when an entry with an equal key is live.
+routine Dict<K, V>.contains(self: @Self, key: K) -> Bool
+require K: typename, V: typename
+    block entry()
+        found : Bool = self.load().contains(key)
         return(found)
 
 /// Two Dicts are equal when they hold the same key→value pairs, regardless
@@ -183,7 +211,7 @@ require K: typename, V: typename, HashEqual<K>, Equal<V>
             : check(i, n)
 
     block check(i: USize, n: USize)
-        entry_states : @U8  = self.entry_states.load()
+        entry_states : @U8  = self.entry_states.data.load()
         s            : U8   = entry_states.stride(i).load()
         live         : Bool = s.eq(1)
         branch live
@@ -191,7 +219,7 @@ require K: typename, V: typename, HashEqual<K>, Equal<V>
             : loop(i.add(1), n)
 
     block probe(i: USize, n: USize)
-        keys  : @K    = self.keys.load()
+        keys  : @K    = self.keys.data.load()
         key   : K     = keys.stride(i).load()
         eb    : USize = other.load().find(key)
         found : Bool  = eb.lt(SLOT_TOMBSTONE)
@@ -200,8 +228,8 @@ require K: typename, V: typename, HashEqual<K>, Equal<V>
             : return(false)
 
     block compare_value(i: USize, n: USize, eb: USize)
-        values_a : @V   = self.values.load()
-        values_b : @V   = other.values.load()
+        values_a : @V   = self.values.data.load()
+        values_b : @V   = other.values.data.load()
         va       : V    = values_a.stride(i).load()
         vb       : V    = values_b.stride(eb).load()
         eq       : Bool = va.eq(vb)
@@ -212,117 +240,96 @@ require K: typename, V: typename, HashEqual<K>, Equal<V>
 /// Allocate fresh arrays at new_capacity, walk the old entries in insertion
 /// order, and re-insert each live entry. Dead entries are dropped, so the
 /// entries array is compacted as a side effect. Returns false when the
-/// allocator fails, leaving the map as it was.
+/// allocator fails, leaving the map as it was. The new arrays are made in the
+/// order keys, values, hashes, entry states, slots, and a failure releases the
+/// ones already made.
 private routine Dict<K, V>.rehash(self: @Self, new_capacity: USize) -> Bool
 require K: typename, V: typename
     block entry()
-        alloc            : @Allocator = self.alloc.load()
-        old_keys         : @K         = self.keys.load()
-        old_values       : @V         = self.values.load()
-        old_hashes       : @U64       = self.hashes.load()
-        old_entry_states : @U8        = self.entry_states.load()
-        old_slots        : @USize     = self.slots.load()
-        old_count        : USize      = self.entries_count.load()
-        new_keys         : @K         = allocate<K>(alloc, new_capacity)
-        new_values       : @V         = allocate<V>(alloc, new_capacity)
-        new_hashes       : @U64       = allocate<U64>(alloc, new_capacity)
-        new_entry_states : @U8        = allocate<U8>(alloc, new_capacity)
-        new_slots        : @USize     = allocate<USize>(alloc, new_capacity)
-        a                : Bool       = new_keys.is_null()
-        b                : Bool       = new_values.is_null()
-        c                : Bool       = new_hashes.is_null()
-        d                : Bool       = new_entry_states.is_null()
-        e                : Bool       = new_slots.is_null()
-        f1               : Bool       = a.bitor(b)
-        f2               : Bool       = c.bitor(d)
-        f3               : Bool       = f1.bitor(f2)
-        failed           : Bool       = f3.bitor(e)
-        branch failed
-            ? discard(alloc, new_keys, new_values, new_hashes, new_entry_states, new_slots)
-            : clear_loop(0, old_keys, old_values, old_hashes, old_entry_states, old_slots,
-                old_count, new_keys, new_values, new_hashes, new_entry_states, new_slots)
+        alloc : @Allocator = self.keys.alloc.load()
+        claim keys         : @OwnedSpan<K>     <- .construct(0, alloc)
+        claim values       : @OwnedSpan<V>     <- .construct(0, alloc)
+        claim hashes       : @OwnedSpan<U64>   <- .construct(0, alloc)
+        claim entry_states : @OwnedSpan<U8>    <- .construct(0, alloc)
+        claim slots        : @OwnedSpan<USize> <- .construct(0, alloc)
+        made_keys : Bool = make_array<K>(keys, new_capacity)
+        branch made_keys
+            ? continue
+            : discard(keys, values, hashes, entry_states, slots)
+        made_values : Bool = make_array<V>(values, new_capacity)
+        branch made_values
+            ? continue
+            : discard(keys, values, hashes, entry_states, slots)
+        made_hashes : Bool = make_array<U64>(hashes, new_capacity)
+        branch made_hashes
+            ? continue
+            : discard(keys, values, hashes, entry_states, slots)
+        made_states : Bool = make_array<U8>(entry_states, new_capacity)
+        branch made_states
+            ? continue
+            : discard(keys, values, hashes, entry_states, slots)
+        made_slots : Bool = make_array<USize>(slots, new_capacity)
+        branch made_slots
+            ? clear_loop(0, keys, values, hashes, entry_states, slots)
+            : discard(keys, values, hashes, entry_states, slots)
 
-    block discard(alloc: @Allocator, new_keys: @K, new_values: @V, new_hashes: @U64,
-        new_entry_states: @U8, new_slots: @USize)
-        free_unless_null<K>(new_keys, alloc)
-        free_unless_null<V>(new_values, alloc)
-        free_unless_null<U64>(new_hashes, alloc)
-        free_unless_null<U8>(new_entry_states, alloc)
-        free_unless_null<USize>(new_slots, alloc)
+    block discard(keys: @OwnedSpan<K>, values: @OwnedSpan<V>, hashes: @OwnedSpan<U64>,
+        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+        destruct_arrays<K, V>(keys, values, hashes, entry_states, slots)
         return(false)
 
-    block clear_loop(i: USize, old_keys: @K, old_values: @V, old_hashes: @U64,
-        old_entry_states: @U8, old_slots: @USize, old_count: USize, new_keys: @K, new_values: @V,
-        new_hashes: @U64, new_entry_states: @U8, new_slots: @USize)
+    block clear_loop(i: USize, keys: @OwnedSpan<K>, values: @OwnedSpan<V>, hashes: @OwnedSpan<U64>,
+        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
         done : Bool = i.ge(new_capacity)
         branch done
-            ? install(old_keys, old_values, old_hashes, old_entry_states, old_slots, old_count,
-                new_keys, new_values, new_hashes, new_entry_states, new_slots)
-            : clear_one(i, old_keys, old_values, old_hashes, old_entry_states, old_slots, old_count,
-                new_keys, new_values, new_hashes, new_entry_states, new_slots)
+            ? install(keys, values, hashes, entry_states, slots)
+            : continue
+        slot_cells  : @USize = slots.data.load()
+        state_cells : @U8    = entry_states.data.load()
+        slot_cells.stride(i).store(SLOT_EMPTY)
+        state_cells.stride(i).store(0)
+        jump clear_loop(i.add(1), keys, values, hashes, entry_states, slots)
 
-    block clear_one(i: USize, old_keys: @K, old_values: @V, old_hashes: @U64, old_entry_states: @U8,
-        old_slots: @USize, old_count: USize, new_keys: @K, new_values: @V, new_hashes: @U64,
-        new_entry_states: @U8, new_slots: @USize)
-        new_slots.stride(i).store(SLOT_EMPTY)
-        new_entry_states.stride(i).store(0)
-        jump clear_loop(i.add(1), old_keys, old_values, old_hashes, old_entry_states, old_slots,
-            old_count, new_keys, new_values, new_hashes, new_entry_states, new_slots)
-
-    block install(old_keys: @K, old_values: @V, old_hashes: @U64, old_entry_states: @U8,
-        old_slots: @USize, old_count: USize, new_keys: @K, new_values: @V, new_hashes: @U64,
-        new_entry_states: @U8, new_slots: @USize)
-        self.keys.store(new_keys)
-        self.values.store(new_values)
-        self.hashes.store(new_hashes)
-        self.entry_states.store(new_entry_states)
-        self.slots.store(new_slots)
+    // Swaps the new arrays into the dict, so the claimed spans hold the old ones from here on.
+    block install(keys: @OwnedSpan<K>, values: @OwnedSpan<V>, hashes: @OwnedSpan<U64>,
+        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+        old_count : USize = self.entries_count.load()
+        swap_spans<K>(self.keys, keys)
+        swap_spans<V>(self.values, values)
+        swap_spans<U64>(self.hashes, hashes)
+        swap_spans<U8>(self.entry_states, entry_states)
+        swap_spans<USize>(self.slots, slots)
         self.count.store(0)
         self.entries_count.store(0)
-        self.capacity.store(new_capacity)
-        jump move_loop(0, old_keys, old_values, old_hashes, old_entry_states, old_slots, old_count)
+        jump move_loop(0, old_count, keys, values, hashes, entry_states, slots)
 
-    block move_loop(i: USize, old_keys: @K, old_values: @V, old_hashes: @U64, old_entry_states: @U8,
-        old_slots: @USize, old_count: USize)
+    block move_loop(i: USize, old_count: USize, keys: @OwnedSpan<K>, values: @OwnedSpan<V>,
+        hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
         done : Bool = i.ge(old_count)
         branch done
-            ? release_old(old_keys, old_values, old_hashes, old_entry_states, old_slots)
-            : move_one(i, old_keys, old_values, old_hashes, old_entry_states, old_slots, old_count)
-
-    block move_one(i: USize, old_keys: @K, old_values: @V, old_hashes: @U64, old_entry_states: @U8,
-        old_slots: @USize, old_count: USize)
-        s    : U8   = old_entry_states.stride(i).load()
-        live : Bool = s.eq(1)
+            ? release_old(keys, values, hashes, entry_states, slots)
+            : continue
+        states : @U8  = entry_states.data.load()
+        s      : U8   = states.stride(i).load()
+        live   : Bool = s.eq(1)
         branch live
-            ? insert_old(i, old_keys, old_values, old_hashes, old_entry_states, old_slots,
-                old_count)
-            : move_loop(i.add(1), old_keys, old_values, old_hashes, old_entry_states, old_slots,
-                old_count)
+            ? insert_old(i, old_count, keys, values, hashes, entry_states, slots)
+            : move_loop(i.add(1), old_count, keys, values, hashes, entry_states, slots)
 
-    block insert_old(i: USize, old_keys: @K, old_values: @V, old_hashes: @U64,
-        old_entry_states: @U8, old_slots: @USize, old_count: USize)
-        key   : K   = old_keys.stride(i).load()
-        value : V   = old_values.stride(i).load()
-        hash  : U64 = old_hashes.stride(i).load()
+    block insert_old(i: USize, old_count: USize, keys: @OwnedSpan<K>, values: @OwnedSpan<V>,
+        hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+        old_keys   : @K   = keys.data.load()
+        old_values : @V   = values.data.load()
+        old_hashes : @U64 = hashes.data.load()
+        key        : K    = old_keys.stride(i).load()
+        value      : V    = old_values.stride(i).load()
+        hash       : U64  = old_hashes.stride(i).load()
         self.put_direct(key, value, hash)
-        jump move_loop(i.add(1), old_keys, old_values, old_hashes, old_entry_states, old_slots,
-            old_count)
+        jump move_loop(i.add(1), old_count, keys, values, hashes, entry_states, slots)
 
-    block release_old(old_keys: @K, old_values: @V, old_hashes: @U64, old_entry_states: @U8,
-        old_slots: @USize)
-        has_old : Bool = old_slots.is_not_null()
-        branch has_old
-            ? free_old(old_keys, old_values, old_hashes, old_entry_states, old_slots)
-            : return(true)
-
-    block free_old(old_keys: @K, old_values: @V, old_hashes: @U64, old_entry_states: @U8,
-        old_slots: @USize)
-        alloc : @Allocator = self.alloc.load()
-        old_keys.free(alloc)
-        old_values.free(alloc)
-        old_hashes.free(alloc)
-        old_entry_states.free(alloc)
-        old_slots.free(alloc)
+    block release_old(keys: @OwnedSpan<K>, values: @OwnedSpan<V>, hashes: @OwnedSpan<U64>,
+        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+        destruct_arrays<K, V>(keys, values, hashes, entry_states, slots)
         return(true)
 
 /// Makes room for one more entry. Returns false when the allocator fails,
@@ -330,7 +337,7 @@ require K: typename, V: typename
 private routine Dict<K, V>.ensure(self: @Self) -> Bool
 require K: typename, V: typename
     block entry()
-        capacity : USize = self.capacity.load()
+        capacity : USize = self.slots.count.load()
         empty    : Bool  = capacity.eq(0)
         branch empty
             ? first()
@@ -359,7 +366,7 @@ routine Dict<K, V>.put_direct(self: @Self, key: K, value: V, hash: U64) -> Void
 require K: typename, V: typename
     block entry()
         slot      : USize  = self.load().slot(key, hash)
-        slots     : @USize = self.slots.load()
+        slots     : @USize = self.slots.data.load()
         entry_idx : USize  = slots.stride(slot).load()
         occupied  : Bool   = entry_idx.lt(SLOT_TOMBSTONE)
         branch occupied
@@ -367,17 +374,17 @@ require K: typename, V: typename
             : add(slot)
 
     block replace(entry_idx: USize)
-        values : @V = self.values.load()
+        values : @V = self.values.data.load()
         values.stride(entry_idx).store(value)
         return()
 
     block add(slot: USize)
         new_idx      : USize  = self.entries_count.load()
-        keys         : @K     = self.keys.load()
-        values       : @V     = self.values.load()
-        hashes       : @U64   = self.hashes.load()
-        entry_states : @U8    = self.entry_states.load()
-        slots        : @USize = self.slots.load()
+        keys         : @K     = self.keys.data.load()
+        values       : @V     = self.values.data.load()
+        hashes       : @U64   = self.hashes.data.load()
+        entry_states : @U8    = self.entry_states.data.load()
+        slots        : @USize = self.slots.data.load()
         keys.stride(new_idx).store(key)
         values.stride(new_idx).store(value)
         hashes.stride(new_idx).store(hash)
@@ -415,9 +422,9 @@ require K: typename, V: typename
 /// Reads the value stored under `key`.
 /// :param key: The key to look up.
 /// :returns: A copy of the value.
-/// :throws: Crashes with `KeyNotFoundError` when the key is absent. See {Dict<K, V>.get_checked}.
+/// :throws: Crashes with `KeyNotFoundError` when the key is absent. See {Dict<K, V>.getitem_checked}.
 #track_caller
-routine Dict<K, V>.get(self: Self, key: K) -> V
+routine Dict<K, V>.getitem(self: Self, key: K) -> V
 require K: typename, V: typename
     block entry()
         entry_idx : USize = self.find(key)
@@ -427,15 +434,23 @@ require K: typename, V: typename
             : crash_key_not_found()
 
     block load(entry_idx: USize)
-        values : @V = self.values
+        values : @V = self.values.data
         value  : V  = values.stride(entry_idx).load()
         return(value)
 
-/// Removal preserves the entries array's positional layout: we mark the entry
-/// dead and stamp the slot table with a tombstone. The entry's position is
-/// retained until the next rehash, so surviving entries keep their order.
-/// `get`, returning Absent instead of crashing on a missing key.
-routine Dict<K, V>.get_checked(self: Self, key: K) -> Option<V>
+/// Reads the value stored under `key`.
+/// :param key: The key to look up.
+/// :returns: A copy of the value.
+/// :throws: Crashes with `KeyNotFoundError` when the key is absent. See {Dict<K, V>.getitem_checked}.
+#track_caller
+routine Dict<K, V>.getitem(self: @Self, key: K) -> V
+require K: typename, V: typename
+    block entry()
+        value : V = self.load().getitem(key)
+        return(value)
+
+/// `getitem`, returning Absent instead of crashing on a missing key.
+routine Dict<K, V>.getitem_checked(self: Self, key: K) -> Option<V>
 require K: typename, V: typename
     block entry()
         entry_idx : USize = self.find(key)
@@ -445,11 +460,18 @@ require K: typename, V: typename
             : return(.Absent)
 
     block load(entry_idx: USize)
-        values : @V = self.values
+        values : @V = self.values.data
         value  : V  = values.stride(entry_idx).load()
         return(.Present(value))
 
-/// The address of key's value, checked like get: a place to update the value in place. Only the value: changing a
+/// `getitem`, returning Absent instead of crashing on a missing key.
+routine Dict<K, V>.getitem_checked(self: @Self, key: K) -> Option<V>
+require K: typename, V: typename
+    block entry()
+        value : Option<V> = self.load().getitem_checked(key)
+        return(value)
+
+/// The address of key's value, checked like getitem: a place to update the value in place. Only the value: changing a
 /// key in place would lose it. It stays valid until the dict grows, rehashes, or is destructed.
 #track_caller
 routine Dict<K, V>.at(self: Self, key: K) -> @V
@@ -462,8 +484,17 @@ require K: typename, V: typename
             : crash_key_not_found()
 
     block address(entry_idx: USize)
-        values : @V = self.values
+        values : @V = self.values.data
         value  : @V = values.stride(entry_idx)
+        return(value)
+
+/// The address of key's value, checked like getitem: a place to update the value in place. Only the value: changing a
+/// key in place would lose it. It stays valid until the dict grows, rehashes, or is destructed.
+#track_caller
+routine Dict<K, V>.at(self: @Self, key: K) -> @V
+require K: typename, V: typename
+    block entry()
+        value : @V = self.load().at(key)
         return(value)
 
 /// `at`, returning Absent instead of crashing on a missing key.
@@ -477,17 +508,25 @@ require K: typename, V: typename
             : return(.Absent)
 
     block address(entry_idx: USize)
-        values : @V = self.values
+        values : @V = self.values.data
         value  : @V = values.stride(entry_idx)
         return(.Present(value))
 
-/// Removes the entry for `key`. Its position in the entries array stays until the next rehash.
+/// `at`, returning Absent instead of crashing on a missing key.
+routine Dict<K, V>.at_checked(self: @Self, key: K) -> Option<@V>
+require K: typename, V: typename
+    block entry()
+        value : Option<@V> = self.load().at_checked(key)
+        return(value)
+
+/// Removes the entry for `key`. Removal keeps the entries array's layout: the entry is marked dead and its slot
+/// becomes a tombstone, so surviving entries keep their order until the next rehash.
 /// :param key: The key to remove.
 /// :returns: `true` when an entry was removed, `false` when the key was not present.
 routine Dict<K, V>.remove(self: @Self, key: K) -> Bool
 require K: typename, V: typename
     block entry()
-        capacity : USize = self.capacity.load()
+        capacity : USize = self.slots.count.load()
         empty    : Bool  = capacity.eq(0)
         branch empty
             ? return(false)
@@ -496,7 +535,7 @@ require K: typename, V: typename
     block hash()
         hash      : U64    = K.hash(key)
         slot      : USize  = self.load().slot(key, hash)
-        slots     : @USize = self.slots.load()
+        slots     : @USize = self.slots.data.load()
         entry_idx : USize  = slots.stride(slot).load()
         found     : Bool   = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
@@ -504,48 +543,22 @@ require K: typename, V: typename
             : return(false)
 
     block remove(slot: USize, entry_idx: USize)
-        slots        : @USize = self.slots.load()
-        entry_states : @U8    = self.entry_states.load()
+        slots        : @USize = self.slots.data.load()
+        entry_states : @U8    = self.entry_states.data.load()
         slots.stride(slot).store(SLOT_TOMBSTONE)
         entry_states.stride(entry_idx).store(0)
         remaining_count : USize = self.count.load().sub(1)
         remaining_count.store_into(self.count)
         return(true)
 
-/// Frees the dict's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+/// Gives the dict's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
 /// :note: Safe to call on a never-filled instance, where it only resets the fields.
 routine Dict<K, V>.destruct(self: @Self) -> Void
 require K: typename, V: typename
     block entry()
-        slots : @USize = self.slots.load()
-        empty : Bool   = slots.is_null()
-        branch empty
-            ? reset()
-            : release()
-
-    block release()
-        alloc        : @Allocator = self.alloc.load()
-        keys         : @K         = self.keys.load()
-        values       : @V         = self.values.load()
-        hashes       : @U64       = self.hashes.load()
-        entry_states : @U8        = self.entry_states.load()
-        slots        : @USize     = self.slots.load()
-        keys.free(alloc)
-        values.free(alloc)
-        hashes.free(alloc)
-        entry_states.free(alloc)
-        slots.free(alloc)
-        jump reset()
-
-    block reset()
-        self.keys.store(null)
-        self.values.store(null)
-        self.hashes.store(null)
-        self.entry_states.store(null)
-        self.slots.store(null)
+        destruct_arrays<K, V>(self.keys, self.values, self.hashes, self.entry_states, self.slots)
         self.count.store(0)
         self.entries_count.store(0)
-        self.capacity.store(0)
         return()
 
 /// Destructs every key and value, then the dictionary itself.
@@ -621,13 +634,41 @@ require K: typename, V: typename, HashEqual<K>, Diagnose<K>, Diagnose<V>, W: typ
         diagnose_entries<K, V, DictIter<K, V>, W>(out, iter)
         return()
 
-/// Frees ptr unless it is null: a failed rehash releases the arrays it did get.
-private routine free_unless_null<T>(ptr: @T, alloc: @Allocator) -> Void
+// -- the arrays -----------------------------------------------------------------
+
+/// Fills `into` (an empty span holding the allocator) with `count` new values from that allocator. Returns false when
+/// the allocator fails, leaving `into` empty. Set's rehash makes its arrays the same way.
+internal routine make_array<T>(into: @OwnedSpan<T>, count: USize) -> Bool
 require T: typename
     block entry()
-        present : Bool = ptr.is_not_null()
-        branch present
-            ? continue
-            : return()
-        ptr.free(alloc)
+        alloc : @Allocator                        = into.alloc.load()
+        made  : Result<OwnedSpan<T>, AllocFailed> = OwnedSpan<T>.construct_result(count, alloc)
+        when made
+            .Success(span) -> stored(span)
+            .Failure       -> return(false)
+
+    block stored(span: OwnedSpan<T>)
+        span.store_into(into)
+        return(true)
+
+/// Exchanges the spans at `a` and `b`.
+internal routine swap_spans<T>(a: @OwnedSpan<T>, b: @OwnedSpan<T>) -> Void
+require T: typename
+    block entry()
+        first  : OwnedSpan<T> = a.load()
+        second : OwnedSpan<T> = b.load()
+        second.store_into(a)
+        first.store_into(b)
+        return()
+
+/// Gives the five arrays of a dict back to their allocator, leaving each empty.
+private routine destruct_arrays<K, V>(keys: @OwnedSpan<K>, values: @OwnedSpan<V>,
+    hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>) -> Void
+require K: typename, V: typename
+    block entry()
+        keys.destruct()
+        values.destruct()
+        hashes.destruct()
+        entry_states.destruct()
+        slots.destruct()
         return()

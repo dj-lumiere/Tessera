@@ -1101,6 +1101,8 @@ public sealed partial class Compiler
             return "[" + string.Join(", ", lit.Elements.Select(x => $"{a.Elem.Llvm} {PresetInitializer(x, a.Elem, env)}")) + "]";
         }
         if (t is PtrType or CallableType) return PointerInitializer(e, t, env);
+        if (t is RecordType record && record.Decl.Attr("llvm") is null && e is RecordLit recordLit)
+            return RecordInitializer(recordLit, record, env);
         if (t is not (IntType or BoolType or FloatType or ChoiceType) && BitRecordWidth(t) is null)
             throw new CompileError(e.Pos, $"a preset array element or global initializer can't be a {t.Name}");
         return ConstLlvm(Typed(Fold(e, t, env), t, e.Pos));
@@ -1111,6 +1113,7 @@ public sealed partial class Compiler
     private string PointerInitializer(Expr e, DType t, TypeEnv env)
     {
         if (e is NullLit) return "null";
+        if (t is CallableType callable && e is RoutineRef routine) return RoutineAddress(routine, callable, env);
         if (t is PtrType && e is PresetRef { Owner: null } r
             && FindPreset("", r.Name, env.File, r.Pos, r.Path) is { } target
             && target.IsStorage)
@@ -1126,7 +1129,60 @@ public sealed partial class Compiler
                 ? GlobalVariable(target, pointee, targetEnv)
                 : PresetStorageGlobal(target, pointee, targetEnv);
         }
-        throw new CompileError(e.Pos, $"a {t.Name} in memory starts as null or as the address of a global or preset in memory");
+        throw new CompileError(e.Pos, t is CallableType
+            ? $"a {t.Name} in memory starts as null or as a routine: name.to<Callable>()"
+            : $"a {t.Name} in memory starts as null or as the address of a global or preset in memory");
+    }
+
+    /// A record literal in a global's or a preset's memory: every field from its own initializer, in the record's
+    /// layout. A record with one field is that field underneath, so its literal is the field's initializer.
+    private string RecordInitializer(RecordLit lit, RecordType s, TypeEnv env)
+    {
+        if (lit.Type is not null && !ResolveType(lit.Type, env).Equals(s))
+            throw new CompileError(lit.Pos, $"expected a literal for {s}, found one for {ResolveType(lit.Type, env)}");
+        var fields = Fields(s);
+        var given = new Dictionary<string, Expr>();
+        foreach (var (name, value, pos) in lit.Fields)
+        {
+            if (fields.All(f => f.Name != name)) throw new CompileError(pos, $"{s} has no field '{name}'");
+            if (!given.TryAdd(name, value)) throw new CompileError(pos, $"field '{name}' is given twice");
+        }
+        if (fields.FirstOrDefault(f => !given.ContainsKey(f.Name)) is { Name: not null } missing)
+            throw new CompileError(lit.Pos, $"the literal for {s} leaves out field '{missing.Name}'");
+        if (s.TransparentField is { } only) return PresetInitializer(given[fields[0].Name], only, env);
+        var shape = Shape(s);
+        var members = shape.Members.Select(m => $"{m.Llvm} zeroinitializer").ToArray();
+        for (int i = 0; i < fields.Count; i++)
+            members[shape.FieldIndex[i]] = $"{fields[i].Type.Llvm} {PresetInitializer(given[fields[i].Name], fields[i].Type, env)}";
+        string body = string.Join(", ", members);
+        if (!shape.Dense) return $"{{ {body} }}";
+        if (shape.WrapAlign == 0) return $"<{{ {body} }}>";
+        return $"{{ [0 x <{shape.WrapAlign} x i8>] zeroinitializer, %\"{s.Key}.dense\" <{{ {body} }}> }}";
+    }
+
+    /// `name.to<Callable>()` in a global's or a preset's memory: the routine's address, which the linker knows. Of an
+    /// overloaded name, the overload whose signature is the Callable the memory holds.
+    private string RoutineAddress(RoutineRef r, CallableType want, TypeEnv env)
+    {
+        var set = FreeCandidates(r.Name, env.File, r.Pos, r.Path);
+        if (set.Count == 0) throw new CompileError(r.Pos, $"'{r.Name}' isn't a routine; to<Callable>() makes a routine a value");
+        if (r.Callable is { } written && ResolveType(written, env) is var named && !named.Equals(want))
+            throw new CompileError(r.Pos, $"expected {want}, found {named}");
+        foreach (var routine in set.Where(o => o.TypeParams.Count == 0))
+        {
+            Instance sig;
+            try { sig = Signature(routine, new TypeEnv(routine.File)); }
+            catch (CompileError) { continue; }
+            if (!new CallableType(sig.CallConv, sig.Params, sig.Ret).Equals(want)) continue;
+            if (routine.Attr("inline") is not null)
+                throw new CompileError(r.Pos, $"'{r.Name}' is #inline, so it can't be a Callable value: it's inlined at every call");
+            if (!sig.PassesBf16AsBits && (Instance.IsBf16(sig.Ret) || sig.Params.Any(Instance.IsBf16)))
+                throw new CompileError(r.Pos, $"routine '{r.Name}' passes BF16 the C way, so it can't be a Callable; wrap it in a Tessera routine");
+            var inst = RequireInstance(routine, new TypeEnv(routine.File));
+            return $"@{Quote(inst.Symbol)}";
+        }
+        string list = string.Concat(set.Select(o => $"\n    {ShowSignature(o)} at {o.Pos}"));
+        throw new CompileError(r.Pos, $"no routine '{r.Name}' is {want}; the routines of that name are:{list}");
     }
 
     // ── String literals ─────────────────────────────────────────────────────

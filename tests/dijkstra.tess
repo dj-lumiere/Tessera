@@ -87,7 +87,7 @@ routine Graph.construct(num_nodes: USize, alloc: @Allocator) -> Self
 routine Graph.add_edge(self: @Self, from: USize, to: USize, weight: S64) -> Void
     block entry()
         adj  : @List<@List<Edge>> = self.adj.load()
-        list : @List<Edge>        = adj.load().get(from)
+        list : @List<Edge>        = adj.load().getitem(from)
         edge : Edge               = Edge { to: to, weight: weight }
         list.push(edge)
         return()
@@ -105,14 +105,14 @@ routine Graph.destruct(self: @Self, alloc: @Allocator) -> Void
             : free_one(i, n, adj)
 
     block free_one(i: USize, n: USize, adj: @List<@List<Edge>>)
-        list : @List<Edge> = adj.load().get(i)
+        list : @List<Edge> = adj.load().getitem(i)
         list.destruct()
-        list.free(alloc)
+        deallocate(alloc, list)
         jump free_loop(i.add(1), n, adj)
 
     block free_outer(adj: @List<@List<Edge>>)
         adj.destruct()
-        adj.free(alloc)
+        deallocate(alloc, adj)
         return()
 
 // ── Dijkstra ─────────────────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator
 
     block scan(u: USize, d: S64, pq: @PriorityQueue<DijkstraEntry>)
         adj  : @List<@List<Edge>> = graph.adj.load()
-        list : @List<Edge>        = adj.load().get(u)
+        list : @List<Edge>        = adj.load().getitem(u)
         len  : USize              = list.load().count()
         jump edge_loop(0, len, d, list, pq)
 
@@ -177,7 +177,7 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator
             : relax(i, len, d, list, pq)
 
     block relax(i: USize, len: USize, d: S64, list: @List<Edge>, pq: @PriorityQueue<DijkstraEntry>)
-        edge     : Edge  = list.load().get(i)
+        edge     : Edge  = list.load().getitem(i)
         v        : USize = edge.to
         w        : S64   = edge.weight
         new_dist : S64   = d.add(w)
@@ -236,24 +236,25 @@ routine main() -> S32
         graph.add_edge(3, 4,  6)
         graph.add_edge(4, 5,  9)
 
-        dist : @S64 = allocate<S64>(alloc, 6)
+        claim distances : @OwnedSpan<S64> <- .construct(6, alloc)
+        dist : @S64 = distances.to<@S64>()
         dijkstra(graph, 0, dist, alloc)
 
         c_printf("Shortest distances from node 0:\n")
-        jump print_loop(0, dist, graph, alloc)
+        jump print_loop(0, distances, graph, alloc)
 
-    block print_loop(i: USize, dist: @S64, graph: @Graph, alloc: @Allocator)
+    block print_loop(i: USize, distances: @OwnedSpan<S64>, graph: @Graph, alloc: @Allocator)
         done : Bool = i.ge(6)
         branch done
-            ? cleanup(dist, graph, alloc)
-            : print_one(i, dist, graph, alloc)
+            ? cleanup(distances, graph, alloc)
+            : print_one(i, distances, graph, alloc)
 
-    block print_one(i: USize, dist: @S64, graph: @Graph, alloc: @Allocator)
-        d : S64 = dist.stride(i).load()
+    block print_one(i: USize, distances: @OwnedSpan<S64>, graph: @Graph, alloc: @Allocator)
+        d : S64 = distances.getitem(i)
         c_printf("  node %zu  dist %lld\n", i, d)
-        jump print_loop(i.add(1), dist, graph, alloc)
+        jump print_loop(i.add(1), distances, graph, alloc)
 
-    block cleanup(dist: @S64, graph: @Graph, alloc: @Allocator)
+    block cleanup(distances: @OwnedSpan<S64>, graph: @Graph, alloc: @Allocator)
         graph.destruct(alloc)
-        dist.free(alloc)
+        distances.destruct()
         return(0)

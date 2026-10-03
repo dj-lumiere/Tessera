@@ -3,8 +3,9 @@
 // Paths are Bytes, UTF-8 by convention, as every Tessera text is. Each call copies its path into a stack buffer with
 // the terminator the OS wants (UTF-16 on Windows), so nothing allocates for a path. A path too long for that buffer
 // (4095 bytes, or 4095 UTF-16 units on Windows) fails with NameTooLong. Only routines that hand text back
-// (read_file, current_dir, ...) or build paths of their own (remove_dir_all) take an allocator, and the caller frees
-// what they return with `data.free(alloc)`.
+// (read_file, current_dir, ...) or build paths of their own (remove_dir_all) take an allocator. Text comes back as an
+// OwnedSpan<Byte> the caller releases with destruct(), and a path inside a File or Directory is given back with
+// deallocate(alloc, path.data).
 //
 // Expected failures are a Result with an FsError. The per-OS halves are Fs_posix.tess (Linux and macOS) and
 // Fs_windows.tess (the Win32 wide-character calls). Each defines the same routines and records, and this file holds
@@ -108,7 +109,7 @@ internal routine create_dir_all(path: Bytes) -> Result<Unit, FsError>
     block entry()
         jump scan(1)
 
-    // Each separator after the first byte ends a prefix to make; failures there show up in the last step.
+    // Each separator after the first byte ends a prefix to make. Failures there show up in the last step.
     block scan(i: USize)
         branch i.ge(path.count())
             ? last()
@@ -157,9 +158,9 @@ internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, 
             .Absent     -> emptied(iter)
 
     block child(iter: @DirIter, e: DirEntry)
-        full : Bytes                 = join_path(path, e.name, alloc)
-        gone : Result<Unit, FsError> = remove_dir_all(full, alloc)
-        full.data.free(alloc)
+        full : OwnedSpan<Byte>       = join_path(path, e.name, alloc)
+        gone : Result<Unit, FsError> = remove_dir_all(full.to<Bytes>(), alloc)
+        deallocate(alloc, full.data)
         when gone
             .Success        -> next(iter)
             .Failure(error) -> failed(iter, error)
@@ -172,8 +173,8 @@ internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, 
         iter.close()
         return(remove_dir(path))
 
-/// The whole file, in memory from alloc (free it with `data.free(alloc)`).
-internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+/// The whole file, in memory from alloc (release it with destruct()).
+internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<OwnedSpan<Byte>, FsError>
     block entry()
         opened : Result<FileHandle, FsError> = FileHandle.open(path, OpenMode.Read)
         when opened
@@ -219,7 +220,7 @@ internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsEr
             : fill(f, bigger, capacity.mul(2), count)
 
     block grow_failed(f: @FileHandle, buffer: @Byte)
-        buffer.free(alloc)
+        deallocate(alloc, buffer)
         jump out_of_memory(f)
 
     block out_of_memory(f: @FileHandle)
@@ -227,13 +228,14 @@ internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsEr
         return(.Failure(FsError.OutOfMemory))
 
     block read_failed(f: @FileHandle, buffer: @Byte, error: FsError)
-        buffer.free(alloc)
+        deallocate(alloc, buffer)
         f.close()
         return(.Failure(error))
 
     block finish(f: @FileHandle, buffer: @Byte, count: USize)
         f.close()
-        return(.Success(Bytes.from_ptr(buffer, count)))
+        text : OwnedSpan<Byte> = OwnedSpan<Byte> { data: buffer, count: count, alloc: alloc }
+        return(.Success(text))
 
 /// Writes data as the whole file: made if missing, replaced if not.
 internal routine write_file(path: Bytes, data: Bytes) -> Result<Unit, FsError>
@@ -313,9 +315,10 @@ routine path_separator() -> Byte
     block entry()
         return(b'/')
 
-/// a and b with a separator between them (none added after one a already ends with), in memory from alloc.
+/// a and b with a separator between them (none added after one a already ends with), in memory from alloc. Release it
+/// with destruct().
 #track_caller
-routine join_path(a: Bytes, b: Bytes, alloc: @Allocator) -> Bytes
+routine join_path(a: Bytes, b: Bytes, alloc: @Allocator) -> OwnedSpan<Byte>
     block entry()
         branch a.is_empty()
             ? build(true)
@@ -340,7 +343,8 @@ routine join_path(a: Bytes, b: Bytes, alloc: @Allocator) -> Bytes
 
     block tail(buffer: @Byte, sep: USize, count: USize)
         copy<Byte>(buffer.stride(a.count().add(sep)), b.data, b.count())
-        return(Bytes.from_ptr(buffer, count))
+        joined : OwnedSpan<Byte> = OwnedSpan<Byte> { data: buffer, count: count, alloc: alloc }
+        return(joined)
 
 /// Where path's last component ends, trailing separators left out.
 private routine name_end(path: Bytes) -> USize

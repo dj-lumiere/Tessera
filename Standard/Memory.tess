@@ -5,8 +5,11 @@
 // make_heap_allocator(), backed by libc malloc / realloc / free, is in
 // Standard::Os (Os/Heap.tess).
 //
-// Generic routines (alloc, realloc, free, zero, copy) form the prelude memory
-// surface used by every collection.  Sizes and counts are USize.
+// Heap memory reaches user code as an OwnedSpan (OwnedSpan.tess): an address, a
+// count, and this allocator, released with destruct(). allocate, reallocate, and
+// deallocate below are the raw layer under it, for the stdlib's own node-based
+// structures (B-tree nodes, thread and fiber records) and for memory that C code
+// hands over. Sizes and counts are USize.
 
 module Standard::Alloc
 
@@ -74,6 +77,21 @@ require T: typename
         typed      : @T                                  = raw.to<@T>()
         return(typed)
 
+/// Hands the block at `data` back to `alloc`, the allocator it came from. Not a destructor: whatever the values own is
+/// not released.
+/// :typeparam T: The element type.
+/// :param alloc: The allocator the block came from.
+/// :param data: The block, from `allocate` or `reallocate`.
+/// :note: The raw layer under {OwnedSpan<T>}, whose `destruct()` calls it. Code that holds an OwnedSpan never needs it.
+routine deallocate<T>(alloc: @Allocator, data: @T) -> Void
+require T: typename
+    block entry()
+        raw     : Addr                         = data
+        free_fn : Callable<(Addr, Addr), Void> = alloc.free_fn.load()
+        state   : Addr                         = alloc.state.load()
+        free_fn.call(state, raw)
+        return()
+
 /// Copies `count` values of `T` from `src` to `dst` as raw bytes (`llvm.memcpy`).
 /// :typeparam T: The element type.
 /// :param dst: The first value to write to.
@@ -104,48 +122,92 @@ private routine copy_bytes(dst: Addr, src: Addr, bytes: USize) -> Void
 // C strings (Types/CStr.tess)
 // ============================================================
 
-/// Copies self into memory from alloc and ends it with a NUL. Free it with
-/// c.to<@Byte>().free(alloc).
-#track_caller
-routine Bytes.to<CStr>(self: Self, alloc: @Allocator) -> CStr
-    block entry()
-        count  : USize = self.count
-        buffer : @Byte = allocate<Byte>(alloc, count.add(1))
-        failed : Bool  = buffer.is_null()
-        branch failed
-            ? crash_allocation()
-            : continue
-        copy<Byte>(buffer, self.data, count)
-        buffer.stride(count).store(0x00)
-        return(.from_ptr(buffer))
+/// A NUL-terminated copy of some text, for C, in memory from an allocator: `text.to<OwnedCStr>(alloc)`. It lends a
+/// `CStr` with `to<CStr>()` and gives the memory back with `destruct()`.
+record OwnedCStr
+conform Destruct<OwnedCStr>
+    storage : OwnedSpan<CChar>
 
-/// Converts self to wide characters in memory from alloc, ending with a 0:
-/// UTF-16 on Windows, UTF-32 elsewhere. Free it with w.to<@CWChar>().free(alloc).
-/// A UTF-8 byte count bounds both unit counts, so one allocation is enough.
-#track_caller
-routine Bytes.to<CWStr>(self: Self, alloc: @Allocator) -> CWStr
+/// A copy of some text in wide characters ending with a 0, for C, in memory from an allocator:
+/// `text.to<OwnedCWStr>(alloc)`. It lends a `CWStr` with `to<CWStr>()` and gives the memory back with `destruct()`.
+record OwnedCWStr
+conform Destruct<OwnedCWStr>
+    storage : OwnedSpan<CWChar>
+
+/// The text, borrowed: valid until `destruct()`.
+routine OwnedCStr.to<CStr>(self: Self) -> CStr
     block entry()
-        units  : @CWChar = allocate<CWChar>(alloc, self.count.add(1))
-        failed : Bool    = units.is_null()
-        branch failed
-            ? crash_allocation()
-            : continue
+        text : CStr = CStr.from_ptr(self.storage.data)
+        return(text)
+
+/// The text, borrowed: valid until `destruct()`.
+routine OwnedCStr.to<CStr>(self: @Self) -> CStr
+    block entry()
+        text : CStr = self.load().to<CStr>()
+        return(text)
+
+/// Gives the memory back to the allocator it came from.
+routine OwnedCStr.destruct(self: @Self) -> Void
+    block entry()
+        self.storage.destruct()
+        return()
+
+/// The text, borrowed: valid until `destruct()`.
+routine OwnedCWStr.to<CWStr>(self: Self) -> CWStr
+    block entry()
+        text : CWStr = CWStr.from_ptr(self.storage.data)
+        return(text)
+
+/// The text, borrowed: valid until `destruct()`.
+routine OwnedCWStr.to<CWStr>(self: @Self) -> CWStr
+    block entry()
+        text : CWStr = self.load().to<CWStr>()
+        return(text)
+
+/// Gives the memory back to the allocator it came from.
+routine OwnedCWStr.destruct(self: @Self) -> Void
+    block entry()
+        self.storage.destruct()
+        return()
+
+/// Copies self into memory from alloc and ends it with a NUL: an {OwnedCStr}, released with `destruct()`.
+/// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
+#track_caller
+routine Bytes.to<OwnedCStr>(self: Self, alloc: @Allocator) -> OwnedCStr
+    block entry()
+        count  : USize            = self.count
+        buffer : OwnedSpan<CChar> = OwnedSpan<CChar>.construct(count.add(1), alloc)
+        copy<Byte>(buffer.data.to<@Byte>(), self.data, count)
+        buffer.data.stride(count).store(0)
+        owned : OwnedCStr = OwnedCStr { storage: buffer }
+        return(owned)
+
+/// Converts self to wide characters in memory from alloc, ending with a 0: UTF-16 on Windows, UTF-32 elsewhere. An
+/// {OwnedCWStr}, released with `destruct()`. A UTF-8 byte count bounds both unit counts, so one allocation is enough.
+/// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
+#track_caller
+routine Bytes.to<OwnedCWStr>(self: Self, alloc: @Allocator) -> OwnedCWStr
+    block entry()
+        storage : OwnedSpan<CWChar> = OwnedSpan<CWChar>.construct(self.count.add(1), alloc)
+        units   : @CWChar           = storage.data
         claim iter : @BytesCharsIter <- self.chars()
-        jump next(iter, units, 0)
+        jump next(iter, storage, units, 0)
 
-    block next(iter: @BytesCharsIter, units: @CWChar, n: USize)
+    block next(iter: @BytesCharsIter, storage: OwnedSpan<CWChar>, units: @CWChar, n: USize)
         c : Option<Char> = iter.next()
         when c
-            .Present(char) -> put(iter, units, n, char)
-            .Absent        -> finish(units, n)
+            .Present(char) -> put(iter, storage, units, n, char)
+            .Absent        -> finish(storage, units, n)
 
-    block put(iter: @BytesCharsIter, units: @CWChar, n: USize, char: Char)
+    block put(iter: @BytesCharsIter, storage: OwnedSpan<CWChar>, units: @CWChar, n: USize,
+        char: Char)
         count : USize = encode_cwchar(char, units.stride(n))
-        jump next(iter, units, n.add(count))
+        jump next(iter, storage, units, n.add(count))
 
-    block finish(units: @CWChar, n: USize)
+    block finish(storage: OwnedSpan<CWChar>, units: @CWChar, n: USize)
         units.stride(n).store(0)
-        return(.from_ptr(units))
+        owned : OwnedCWStr = OwnedCWStr { storage: storage }
+        return(owned)
 
 /// Writes char at out as UTF-16, one unit or a surrogate pair, and returns
 /// how many units it wrote.
@@ -171,7 +233,7 @@ private routine encode_cwchar(char: Char, out: @CWChar) -> USize
         return(2)
 
 /// Writes char at out as one UTF-32 unit. CWChar is S32 on some targets and U32 on others (ARM and AArch64 outside
-/// Apple); the code point's bits are the same either way.
+/// Apple). The code point's bits are the same either way.
 #target(os: not "windows")
 private routine encode_cwchar(char: Char, out: @CWChar) -> USize
     block entry()

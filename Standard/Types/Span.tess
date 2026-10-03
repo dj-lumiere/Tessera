@@ -1,0 +1,155 @@
+// Tessera stdlib: Span<T>, values somewhere in memory
+//
+// Three levels say where values are. `@T` is an address (a claim slot, a field, an element, memory from C) and frees
+// nothing. `Span<T>` is an address and a count, borrowed: indexing is checked, and it frees nothing either.
+// `OwnedSpan<T>` (Standard::Alloc) is an address, a count, and the allocator it came from, released with destruct().
+// Each lends the one below with to<T>: owned.to<Span<T>>(), span.to<@T>().
+//
+// A Span adds only the count and the bounds check. `at(i)` is the checked address, and every access through it is
+// `@T`'s own: load, store, volatile_load, atomic_fetch_add, and the rest. getitem and setitem are the value shortcuts.
+
+module Standard::Core
+
+/// `count` values of `T` at `data`, borrowed: it reads and writes someone else's memory and frees nothing. It stays
+/// valid as long as that memory does.
+/// :typeparam T: The element type.
+record Span<T>
+require T: typename
+    data  : @T
+    count : USize
+
+/// The span of `count` values starting at `data`. The count is yours to get right.
+/// :param data: The first value.
+/// :param count: The number of values from `data` on.
+/// :returns: The span, which borrows the memory.
+routine Span<T>.construct(data: @T, count: USize) -> Self
+require T: typename
+    block entry()
+        span : Self = Self { data: data, count: count }
+        return(span)
+
+/// The number of values.
+routine Span<T>.count(self: Self) -> USize
+require T: typename
+    block entry()
+        count : USize = self.count
+        return(count)
+
+/// The address of the value at `index`, checked against the count. Everything else is `@T`'s own: `load`, `store`,
+/// `volatile_load`, `atomic_fetch_add`, ...
+/// :param index: The zero-based position.
+/// :returns: The address of the value.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+#track_caller
+routine Span<T>.at(self: Self, index: USize) -> @T
+require T: typename
+    block entry()
+        outside : Bool = index.ge(self.count)
+        branch outside
+            ? crash_out_of_bounds()
+            : continue
+        place : @T = self.data.stride(index)
+        return(place)
+
+/// The value at `index`, checked: `at(index).load()`.
+/// :param index: The zero-based position.
+/// :returns: A copy of the value.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {Span<T>.getitem_checked}.
+#track_caller
+routine Span<T>.getitem(self: Self, index: USize) -> T
+require T: typename
+    block entry()
+        value : T = self.at(index).load()
+        return(value)
+
+/// `getitem`, returning Absent instead of crashing on an index past the end.
+routine Span<T>.getitem_checked(self: Self, index: USize) -> Option<T>
+require T: typename
+    block entry()
+        inside : Bool = index.lt(self.count)
+        branch inside
+            ? continue
+            : return(.Absent)
+        value : T = self.data.stride(index).load()
+        return(.Present(value))
+
+/// Writes `value` at `index`, checked: `at(index).store(value)`.
+/// :param index: The zero-based position.
+/// :param value: The value to store.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+#track_caller
+routine Span<T>.setitem(self: Self, index: USize, value: T) -> Void
+require T: typename
+    block entry()
+        self.at(index).store(value)
+        return()
+
+/// The `count` values from `start`, borrowed like this span, checked against it.
+/// :param start: The position of the first value.
+/// :param count: The number of values.
+/// :returns: A span over that range.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine Span<T>.getspan(self: Self, start: USize, count: USize) -> Self
+require T: typename
+    block entry()
+        past_end : Bool = start.gt(self.count)
+        branch past_end
+            ? crash_out_of_bounds()
+            : continue
+        room     : USize = self.count.sub(start)
+        too_many : Bool  = count.gt(room)
+        branch too_many
+            ? crash_out_of_bounds()
+            : continue
+        first : @T   = self.data.stride(start)
+        part  : Self = Self { data: first, count: count }
+        return(part)
+
+/// The address of the first value.
+routine Span<T>.to<@T>(self: Self) -> @T
+require T: typename
+    block entry()
+        data : @T = self.data
+        return(data)
+
+// -- views of the built-in containers -------------------------------------------------------------------------
+
+/// The array's values, borrowed: valid as long as the array is.
+routine Array<T, N>.to<Span<T>>(self: @Self) -> Span<T>
+require T: typename, N: USize
+    block entry()
+        first : @T      = self.to<@T>()
+        span  : Span<T> = Span<T>.construct(first, N)
+        return(span)
+
+/// The `count` values from `start`, borrowed, checked against `N`.
+/// :param start: The position of the first value.
+/// :param count: The number of values.
+/// :returns: A span over that range.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine Array<T, N>.getspan(self: @Self, start: USize, count: USize) -> Span<T>
+require T: typename, N: USize
+    block entry()
+        whole : Span<T> = self.to<Span<T>>()
+        part  : Span<T> = whole.getspan(start, count)
+        return(part)
+
+/// The bytes, borrowed as a span: the same memory, element by element.
+routine Bytes.to<Span<Byte>>(self: Self) -> Span<Byte>
+    block entry()
+        span : Span<Byte> = Span<Byte>.construct(self.data, self.count)
+        return(span)
+
+/// The `count` bytes from `start`, borrowed, checked against the count.
+/// :param start: The position of the first byte.
+/// :param count: The number of bytes.
+/// :returns: A span over that range.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine Bytes.getspan(self: Self, start: USize, count: USize) -> Span<Byte>
+    block entry()
+        whole : Span<Byte> = self.to<Span<Byte>>()
+        part  : Span<Byte> = whole.getspan(start, count)
+        return(part)

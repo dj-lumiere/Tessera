@@ -618,7 +618,7 @@ public sealed class FunctionGen
                     if (baseType is PtrType)
                         throw Err(ix.Pos, "this field holds a pointer; load it into a value before stepping it");
                     if (baseType is ArrayType)
-                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .at(i), .get(i) / .set(i, v), or .to<@T>().stride(i)");
+                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .at(i), .getitem(i) / .setitem(i, v), or .to<@T>().stride(i)");
                     var i = EvalIndex(ix.Index);
                     _c.EnsureTypeDefined(baseType);
                     string elemAddr = EmitTmp($"getelementptr {baseType.Llvm}, ptr {baseAddr}, {i.Type.Llvm} {i.Op}");
@@ -1521,7 +1521,8 @@ public sealed class FunctionGen
         string shown = string.Join(", ", args.Select(DescribeArg));
         if (taking.Count == 0)
             throw Err(pos, $"no overload of '{what}' takes ({shown}); it has:"
-                + string.Concat(fits.Select(f => $"\n    {Compiler.ShowSignature(f.Decl)} at {f.Decl.Pos}: {f.Why}")));
+                + string.Concat(fits.Select(f => $"\n    {Compiler.ShowSignature(f.Decl)} at {f.Decl.Pos}: {f.Why}"))
+                + _c.HiddenOverloadHint(set[0].Decl, args.Count, _env.File));
         var tier = taking.Where(f => !f.Generic).ToList() is { Count: > 0 } concrete ? concrete : taking;
         if (tier.Count > 1 && tier.Where(f => f.Preferred).ToList() is { Count: > 0 } preferred) tier = preferred;
         if (tier.Count == 1) return tier[0];
@@ -1973,7 +1974,8 @@ public sealed class FunctionGen
         int fixedCount = sig.Params.Count - offset - (sig.IsTrackCaller ? 1 : 0);
         bool arityOk = sig.Variadic && sig.IsExternalC ? plan.Args.Count >= fixedCount : plan.Args.Count == fixedCount;
         if (!arityOk)
-            throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' takes {(sig.Variadic ? "at least " : "")}{fixedCount} argument(s), got {plan.Args.Count}");
+            throw Err(plan.Pos, $"'{plan.Decl.DisplayName}' takes {(sig.Variadic ? "at least " : "")}{fixedCount} argument(s), got {plan.Args.Count}"
+                + _c.HiddenOverloadHint(plan.Decl, plan.Args.Count, _env.File));
 
         // A load or store reads its address straight from a place chain, so a field of a dense record keeps the
         // alignment it really has (see PlaceAddress); anywhere else such an address is refused.
@@ -1998,7 +2000,7 @@ public sealed class FunctionGen
         _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);
         // A preset in memory is read-only static data, and pointers carry no read-only marker, so the routines that
         // write through their receiver are refused on one by name.
-        if (sig.Decl.Name is "store" or "volatile_store" or "set" or "shift_left" or "shift_right" or "copy"
+        if (sig.Decl.Name is "store" or "volatile_store" or "setitem" or "shift_left" or "shift_right" or "copy"
             && plan.Receiver is { } place && PresetArrayRoot(place) is { } root)
             throw Err(plan.Pos, $"'{root.Name}' is a preset; its memory is read-only");
         if (sig.Decl.Name == "store_into" && plan.Args.Count == 1 && PresetArrayRoot(plan.Args[0]) is { } destRoot)

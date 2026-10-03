@@ -138,30 +138,30 @@ routine In.read_bytes(self: @Self, buffer: @Byte, count: USize) -> Result<USize,
     block entry()
         return(Self.read(buffer, count))
 
-/// Up to count bytes, in memory from alloc: fewer only at the end of the input.
-routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
+/// Up to count bytes, in memory from alloc: fewer only at the end of the input. Release them with destruct().
+routine In.read_count(count: USize, alloc: @Allocator) -> OwnedSpan<Byte>
     block entry()
         buffer : @Byte = allocate<Byte>(alloc, count.max(1))
         branch buffer.is_null()
-            ? return(Bytes.empty())
+            ? return(OwnedSpan<Byte> { data: null, count: 0, alloc: alloc })
             : more(buffer, 0)
 
     block more(buffer: @Byte, n: USize)
         branch n.eq(count)
-            ? return(Bytes.from_ptr(buffer, n))
+            ? return(OwnedSpan<Byte> { data: buffer, count: n, alloc: alloc })
             : continue
         got : Result<USize, FsError> = Self.read(buffer.stride(n), count.sub(n))
         when got
             .Success(k) -> advance(buffer, n, k)
-            .Failure    -> return(Bytes.from_ptr(buffer, n))
+            .Failure    -> return(OwnedSpan<Byte> { data: buffer, count: n, alloc: alloc })
 
     block advance(buffer: @Byte, n: USize, k: USize)
         branch k.eq(0)
-            ? return(Bytes.from_ptr(buffer, n))
+            ? return(OwnedSpan<Byte> { data: buffer, count: n, alloc: alloc })
             : more(buffer, n.add(k))
 
-/// What the rest of the input is, in memory from alloc.
-routine In.read_all(alloc: @Allocator) -> Bytes
+/// What the rest of the input is, in memory from alloc. Release it with destruct().
+routine In.read_all(alloc: @Allocator) -> OwnedSpan<Byte>
     block entry()
         claim text  : @CaptureBuffer     <- CaptureBuffer.empty()
         claim chunk : @Array<Byte, 4096> <- uninit
@@ -171,18 +171,18 @@ routine In.read_all(alloc: @Allocator) -> Bytes
         got : Result<USize, FsError> = Self.read(chunk, 4096)
         when got
             .Success(n) -> add(text, chunk, n)
-            .Failure    -> return(text.load().bytes())
+            .Failure    -> return(text.load().owned(alloc))
 
     block add(text: @CaptureBuffer, chunk: @Byte, n: USize)
         branch n.eq(0)
-            ? return(text.load().bytes())
+            ? return(text.load().owned(alloc))
             : continue
         text.append(alloc, chunk, n)
         jump more(text, chunk)
 
 /// The next line, without its "\n" (or "\r\n"), in memory from alloc, or Absent at the end of the input. A last line
-/// with no "\n" still counts.
-routine In.read_line(alloc: @Allocator) -> Option<Bytes>
+/// with no "\n" still counts. Release it with destruct().
+routine In.read_line(alloc: @Allocator) -> Option<OwnedSpan<Byte>>
     block entry()
         b : @InputBuffer = STDIN_BUFFER
         b.lock.lock()
@@ -206,19 +206,23 @@ routine In.read_line(alloc: @Allocator) -> Option<Bytes>
     block ended(b: @InputBuffer, text: @CaptureBuffer, any: Bool)
         b.lock.unlock()
         branch any
-            ? return(.Present(trim_cr(text.load().bytes())))
+            ? return(.Present(trim_cr(text.load().owned(alloc))))
             : return(.Absent)
 
     block done(b: @InputBuffer, text: @CaptureBuffer)
         b.lock.unlock()
-        return(.Present(trim_cr(text.load().bytes())))
+        return(.Present(trim_cr(text.load().owned(alloc))))
 
-/// line without a "\r" at its end.
-private routine trim_cr(line: Bytes) -> Bytes
+/// line without a "\r" at its end. The memory stays the same, only the count drops.
+private routine trim_cr(line: OwnedSpan<Byte>) -> OwnedSpan<Byte>
     block entry()
-        branch line.ends_with("\r")
-            ? return(Bytes.from_ptr(line.data, line.count().sub(1)))
+        text : Bytes = line.to<Bytes>()
+        branch text.ends_with("\r")
+            ? continue
             : return(line)
+        trimmed : OwnedSpan<Byte> = OwnedSpan<Byte> { data: line.data, count: line.count.sub(1),
+            alloc: line.alloc }
+        return(trimmed)
 
 /// Whether `c` separates words: a space, tab, line feed, or carriage return.
 /// :param c: The byte to test.
@@ -230,8 +234,8 @@ private routine is_space(c: Byte) -> Bool
         return(blank.bitor(line_end))
 
 /// The next word (spaces, tabs, and line ends separate words), in memory from alloc, or Absent at the end of the
-/// input. The space after the word stays in the input.
-routine In.read_word(alloc: @Allocator) -> Option<Bytes>
+/// input. The space after the word stays in the input. Release it with destruct().
+routine In.read_word(alloc: @Allocator) -> Option<OwnedSpan<Byte>>
     block entry()
         b : @InputBuffer = STDIN_BUFFER
         b.lock.lock()
@@ -276,7 +280,7 @@ routine In.read_word(alloc: @Allocator) -> Option<Bytes>
 
     block done(b: @InputBuffer, text: @CaptureBuffer)
         b.lock.unlock()
-        return(.Present(text.load().bytes()))
+        return(.Present(text.load().owned(alloc)))
 
 /// Whether standard input is a terminal (not a pipe or a file).
 routine In.is_terminal() -> Bool
@@ -634,7 +638,7 @@ private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: US
 
     // The bytes the held sequence still needs come first.
     block finish_held(pending: @PendingUtf8, held: USize)
-        need  : USize = sequence_length(pending.bytes.get(0)).sub(held)
+        need  : USize = sequence_length(pending.bytes.getitem(0)).sub(held)
         taken : USize = need.min(count)
         copy<Byte>(pending.bytes.to<@Byte>().stride(held), data, taken)
         branch taken.lt(need)
@@ -747,11 +751,11 @@ private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result<USi
             ? return(.Success(0))
             : continue
         // Ctrl+Z first: the end of the input
-        branch units.get(0).eq(0x1A)
+        branch units.getitem(0).eq(0x1A)
             ? return(.Success(0))
             : convert(input, units.to<@U16>(), n)
 
-    // A high surrogate at the end waits for its low half; one held from the last read goes in front.
+    // A high surrogate at the end waits for its low half. One held from the last read goes in front.
     block convert(input: @ConsoleReadBuffer, units: @U16, n: USize)
         claim joined : @Array<U16, 4097> <- uninit
         high : U16   = input.high.load()

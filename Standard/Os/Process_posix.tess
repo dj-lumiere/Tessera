@@ -187,7 +187,7 @@ private routine env_entry(v: EnvVar, alloc: @Allocator) -> @Byte
 /// Frees every string and array a prepared start owns, whether it was made completely or not.
 /// :param alloc: The allocator they came from.
 #target(os: ("linux", "macos"))
-private routine Prepared.free(self: @Self, alloc: @Allocator) -> Void
+private routine Prepared.release(self: @Self, alloc: @Allocator) -> Void
     block entry()
         jump args(0)
 
@@ -196,7 +196,7 @@ private routine Prepared.free(self: @Self, alloc: @Allocator) -> Void
             ? env(0)
             : continue
         arg_slot : @@Byte = self.argv.load().stride(i)
-        arg_slot.load().free(alloc)
+        deallocate(alloc, arg_slot.load())
         jump args(i.add(1))
 
     block env(i: USize)
@@ -205,7 +205,7 @@ private routine Prepared.free(self: @Self, alloc: @Allocator) -> Void
             ? rest()
             : continue
         entry_slot : @@Byte = envp.stride(self.own_first.load().add(i))
-        entry_slot.load().free(alloc)
+        deallocate(alloc, entry_slot.load())
         jump env(i.add(1))
 
     block rest()
@@ -213,7 +213,7 @@ private routine Prepared.free(self: @Self, alloc: @Allocator) -> Void
         branch argv.is_null()
             ? arrays_done()
             : continue
-        argv.free(alloc)
+        deallocate(alloc, argv)
         jump arrays_done()
 
     block arrays_done()
@@ -221,7 +221,7 @@ private routine Prepared.free(self: @Self, alloc: @Allocator) -> Void
         branch envp.is_null()
             ? env_done()
             : continue
-        envp.free(alloc)
+        deallocate(alloc, envp)
         jump env_done()
 
     block env_done()
@@ -229,7 +229,7 @@ private routine Prepared.free(self: @Self, alloc: @Allocator) -> Void
         branch dir.is_null()
             ? return()
             : continue
-        dir.free(alloc)
+        deallocate(alloc, dir)
         return()
 
 /// Whether a NUL is inside any text the child would get.
@@ -347,7 +347,7 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
             ? own(envp, k, 0)
             : continue
         entry : @Byte = parent.stride(i).load()
-        branch overridden(CStr.from_ptr(entry).to<Bytes>(), options)
+        branch overridden(CStr.from_ptr(entry.to<@CChar>()).to<Bytes>(), options)
             ? keep(parent, n, envp, i.add(1), k)
             : continue
         envp.stride(k).store(entry)
@@ -513,16 +513,16 @@ private routine Plumbing.make(self: @Self, options: ProcessOptions) -> Bool
         branch cloexec_pipe(fds.to<@CInt>())
             ? continue
             : return(false)
-        self.exec_r.store(fds.get(0))
-        self.exec_w.store(fds.get(1))
+        self.exec_r.store(fds.getitem(0))
+        self.exec_w.store(fds.getitem(1))
         branch options.stdout.eq(OutputMode.Capture)
             ? continue
             : error_pipe(fds.to<@CInt>())
         branch cloexec_pipe(fds.to<@CInt>())
             ? continue
             : return(false)
-        self.out_r.store(fds.get(0))
-        self.out_w.store(fds.get(1))
+        self.out_r.store(fds.getitem(0))
+        self.out_w.store(fds.getitem(1))
         jump error_pipe(fds.to<@CInt>())
 
     block error_pipe(fds: @CInt)
@@ -609,13 +609,13 @@ routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: Pro
         jump started(p, pipes, pid, report)
 
     block out_of_memory(p: @Prepared)
-        p.free(alloc)
+        p.release(alloc)
         return(.Failure(ProcessError.OutOfMemory))
 
     block spawn_failed(p: @Prepared, pipes: @Plumbing)
         e : CInt = errno()
         pipes.close_all()
-        p.free(alloc)
+        p.release(alloc)
         return(.Failure(spawn_error(e)))
 
     // 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started program.
@@ -626,7 +626,7 @@ routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: Pro
             : continue
         c_close(pipes.exec_r.load())
         pipes.exec_r.store(-1)
-        p.free(alloc)
+        p.release(alloc)
         claim out : @CaptureBuffer <- CaptureBuffer.empty()
         claim err : @CaptureBuffer <- CaptureBuffer.empty()
         drain(pipes.out_r.load(), pipes.err_r.load(), out, err, alloc)
@@ -635,8 +635,8 @@ routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: Pro
             ? exec_failed(out, err, report.load())
             : continue
         when status
-            .Present(s) -> return(.Success(ProcessOutput { status: s, stdout: out.load().bytes(),
-                stderr: err.load().bytes() }))
+            .Present(s) -> return(.Success(ProcessOutput { status: s,
+                stdout: out.load().owned(alloc), stderr: err.load().owned(alloc) }))
             .Absent     -> lost(out, err)
 
     block exec_failed(out: @CaptureBuffer, err: @CaptureBuffer, e: CInt)
@@ -658,7 +658,7 @@ private routine release(b: CaptureBuffer, alloc: @Allocator) -> Void
         branch b.data.is_null()
             ? return()
             : continue
-        b.data.free(alloc)
+        deallocate(alloc, b.data)
         return()
 
 /// Reads both pipes (-1 for one not captured) to their end, whichever has data, and closes them.
@@ -666,7 +666,7 @@ private routine release(b: CaptureBuffer, alloc: @Allocator) -> Void
 private routine drain(out_fd: CInt, err_fd: CInt, out: @CaptureBuffer, err: @CaptureBuffer,
     alloc: @Allocator) -> Void
     block entry()
-        // POLLIN; poll skips a negative fd
+        // POLLIN, and poll skips a negative fd
         claim fds   : @Array<PollFd, 2>  <- { PollFd { fd: out_fd, events: 1, revents: 0 },
             PollFd { fd: err_fd, events: 1, revents: 0 } }
         claim chunk : @Array<Byte, 4096> <- uninit
@@ -745,9 +745,10 @@ private routine reap(pid: CInt) -> Option<ExitStatus>
 
 // -- the environment ---------------------------------------------------------------------
 
-/// The value of the environment variable name, in memory from alloc, or Absent when it isn't set.
+/// The value of the environment variable name, in memory from alloc, or Absent when it isn't set. Release it with
+/// destruct().
 #target(os: ("linux", "macos"))
-routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
+routine env_var(name: Bytes, alloc: @Allocator) -> Option<OwnedSpan<Byte>>
     block entry()
         claim key : @Array<Byte, 256> <- uninit
         too_long : Bool = name.count().ge(256)
@@ -761,10 +762,11 @@ routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
         branch value.is_null()
             ? return(.Absent)
             : continue
-        n     : USize = CStr.from_ptr(value).count()
+        n     : USize = CStr.from_ptr(value.to<@CChar>()).count()
         owned : @Byte = allocate<Byte>(alloc, n.max(1))
         branch owned.is_null()
             ? return(.Absent)
             : continue
         copy<Byte>(owned, value, n)
-        return(.Present(Bytes.from_ptr(owned, n)))
+        text : OwnedSpan<Byte> = OwnedSpan<Byte> { data: owned, count: n, alloc: alloc }
+        return(.Present(text))
