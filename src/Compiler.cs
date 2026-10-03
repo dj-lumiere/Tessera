@@ -10,7 +10,7 @@ public sealed partial class Compiler
 {
     public BuildTarget Target { get; }
 
-    /// Whether the standard library's exported routines (the panic handler, the half and bfloat conversions LLVM calls)
+    /// Whether the standard library's exported routines (the crash handler, the half and bfloat conversions LLVM calls)
     /// are emitted even when nothing here calls them. A program needs them; a library linked into another language's
     /// program doesn't, since that program brings its own runtime.
     public bool EmitLibraryExports { get; init; } = true;
@@ -258,7 +258,7 @@ public sealed partial class Compiler
         foreach (var r in _userRoutines) CheckRoot(r);
         // Exported library routines are always emitted: something outside Tessera (C code, or LLVM's own lowering)
         // may call them by their C name. A program's export of the same name replaces the library's, the way a
-        // program supplies its own panic handler.
+        // program supplies its own crash handler.
         var programExports = _userRoutines.Select(r => r.Attr("export")?.First).Where(n => n is not null).ToHashSet();
         if (EmitLibraryExports)
             foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.Attr("export") is { } e && !programExports.Contains(e.First)))
@@ -307,7 +307,7 @@ public sealed partial class Compiler
             catch (CompileError e) { errors.Add(e); }
         }
         // A routine derived without being asked for holds only when its payloads allow it, so it's checked when used.
-        // A library export the program replaces (its own panic handler) isn't part of the program.
+        // A library export the program replaces (its own crash handler) isn't part of the program.
         var programExports = _userRoutines.Select(r => r.Attr("export")?.First).Where(n => n is not null).ToHashSet();
         foreach (var r in _allRoutines.Where(r => !Tessera.Derive.IsImplicit(r)
                      && !(r.IsLibrary && r.Attr("export") is { } e && programExports.Contains(e.First))
@@ -407,7 +407,7 @@ public sealed partial class Compiler
         var o = new StringBuilder();
         o.AppendLine($"target triple = \"{Target.LlvmTriple}\"");
         o.AppendLine();
-        // An external routine that an `#export` in this solution defines (the panic handler) is that definition,
+        // An external routine that an `#export` in this solution defines (the crash handler) is that definition,
         // not a declaration.
         var declares = new StringBuilder();
         foreach (var (symbol, line) in _declares)

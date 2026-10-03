@@ -13,7 +13,7 @@ public sealed partial class Compiler
     // min, max, the bitwise operations and shifts, neg, and the integer conversions to<T>() and to_wrap<T>(); the
     // bitwise operations of Bool; add, sub, mul, div, and neg of F32 and F64; max, min, sizeof, and alignof; and
     // T.from_bits(...) for a float or a bit-pattern record. Each follows the stdlib routine's meaning, and what would
-    // panic at run time (overflow, a zero divisor, a value out of range) is a build error. Nothing else runs at
+    // crash at run time (overflow, a zero divisor, a value out of range) is a build error. Nothing else runs at
     // build time: a routine call in a preset is an error, not code at each use.
 
     private const string PresetForms =
@@ -309,7 +309,7 @@ public sealed partial class Compiler
         if (v < min || v > max) throw new CompileError(pos, $"{it.Name}.{name} overflows in this preset ({v})");
     }
 
-    /// `to<T>()` (checked, like the routine that panics) and `to_wrap<T>()` from one integer type to another.
+    /// `to<T>()` (checked, like the routine that crashes) and `to_wrap<T>()` from one integer type to another.
     private ConstVal Convert(BigInteger a, IntType from, string name, TypeRef target, TypeEnv env, Pos pos)
     {
         if (TryResolveType(target, env) is not IntType { IsNumber: true } to)

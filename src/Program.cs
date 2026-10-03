@@ -20,7 +20,7 @@ static class Cli
           tessera version               print the builder's version
           tessera help                  print this text
 
-        --no-stdlib-exports: leave out the standard library's #export routines (the default panic handler, the F16 and
+        --no-stdlib-exports: leave out the standard library's #export routines (the default crash handler, the F16 and
                 BF16 conversion helpers), for a library that is linked into a program which has them already.
         <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), as a
                 manifest's mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a

@@ -290,7 +290,7 @@ public sealed record ReturnTarget(Expr? Value, Pos Pos) : Target(Pos);
 public sealed record UnreachableTarget(Pos Pos) : Target(Pos);
 /// `continue` as an arm: go on with the next line of the same block.
 public sealed record ContinueTarget(Pos Pos) : Target(Pos);
-/// Any other #noreturn call used as a target, such as `Panic.now()`.
+/// Any other #noreturn call used as a target, such as `crash_allocation()`.
 public sealed record ExprTarget(Expr Call, Pos Pos) : Target(Pos);
 
 public sealed record JumpTerm(CallTarget Target, Pos Pos) : Terminator(Pos);
@@ -299,5 +299,5 @@ public sealed record WhenCondTerm(List<(Expr? Cond, Target Target)> Arms, Pos Po
 /// `when v` arms: one or more constants (`1, 2 -> ...`), or `_` (null).
 public sealed record WhenValueTerm(Expr Value, List<(List<Expr>? Cases, Target Target)> Arms, Pos Pos) : Terminator(Pos);
 
-/// A terminator written as a bare target: `return(x)`, `unreachable`, or a #noreturn call such as `panic_overflow()`.
+/// A terminator written as a bare target: `return(x)`, `unreachable`, or a #noreturn call such as `crash_overflow()`.
 public sealed record TargetTerm(Target Target, Pos Pos) : Terminator(Pos);

@@ -1757,7 +1757,7 @@ public sealed class FunctionGen
     }
 
     /// The place a call to a `#track_caller` routine passes: a `#track_caller` routine passes on the place it was
-    /// called from, so a panic deep in the stdlib reports the line that called into it; any other passes its own
+    /// called from, so a crash deep in the stdlib reports the line that called into it; any other passes its own
     /// line, the `#source` one if it has one.
     private Val CallerPlace(Pos callPos) =>
         _inst.IsTrackCaller
@@ -2212,7 +2212,7 @@ public sealed class FunctionGen
     }
 
     /// The label to branch to for an arm. A block call without arguments branches directly; anything else
-    /// (arguments to pass, an inline return/unreachable/panic) gets its own edge block.
+    /// (arguments to pass, an inline return/unreachable/crash) gets its own edge block.
     private string ArmLabel(Target target)
     {
         if (target is ContinueTarget cont)
@@ -2306,7 +2306,7 @@ public sealed class FunctionGen
         if (call is CallExpr c && _c.FindFree(c.Name, _env.File, c.Pos) is null)
             throw Err(pos, $"no block or routine named '{c.Name}'");
         if (!IsNoReturn(call))
-            throw Err(pos, "only a #noreturn routine (such as panic) can end a block; this one returns");
+            throw Err(pos, "only a #noreturn routine (such as crash) can end a block; this one returns");
         EvalAny(call);
         Terminate("unreachable");
     }

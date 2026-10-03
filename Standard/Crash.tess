@@ -1,0 +1,118 @@
+// Tessera stdlib: crash
+//
+// crash ends the program when a contract is broken: an index out of bounds,
+// unwrap of Absent, a failed allocation. It names its own kind, with the names
+// RazorForge's crashables use (IntegerOverflowError, IndexOutOfBoundsError,
+// ...), so a failure reads the same whichever language it happens in. It hands
+// the name, a message, and the place to tessera_crash_handler, a routine the
+// program links against and that never returns. Standard::Os exports the
+// default on hosted targets: the report on stderr, then exit status 101
+// (Os/Crash.tess). A program replaces it by exporting its own routine under
+// that name, which is how a target without an operating system gets one.
+//
+// The crash_<kind> routines below are the stdlib's own kinds with RazorForge's
+// default crash messages, so a check stays one short call (crash_overflow()).
+// A failure with a message of its own calls crash(name, message) directly.
+//
+// crash and the stdlib routines that crash on a caller's mistake (an index out
+// of bounds, an overflowing add) are #track_caller: the handler gets the place
+// of the call in the caller's code, not a line inside the stdlib.
+//
+// There is no unwinding and no recovery. Failures a caller is expected to
+// handle return Result or Option instead.
+
+module Standard::Core
+
+/// A place in the source: the file as the build named it, the line, and the column (0 when a #source gave none).
+record SourceLocation
+    file   : Bytes
+    line   : U32
+    column : U32
+
+/// The program's crash handler. Export a routine with this signature as "tessera_crash_handler" to replace the
+/// default; name is the kind of failure (`IntegerOverflowError`), message says what happened, and place is the call
+/// that crashed.
+#[external("c"), symbol("tessera_crash_handler"), noreturn]
+private routine crash_handler(name: Bytes, message: Bytes, place: @SourceLocation) -> Void
+
+/// Ends the program by calling the crash handler, which never returns.
+/// :param name: The kind of failure, named like a RazorForge crashable: `IntegerOverflowError`, or a program's own.
+/// :param message: What happened, in a sentence.
+/// :note: The handler receives the call site in the caller's code.
+#[noreturn, track_caller]
+routine crash(name: Bytes, message: Bytes) -> Void
+    block entry()
+        crash_handler(name, message, caller_location())
+
+/// Crashes with `IntegerOverflowError`: an arithmetic result or a conversion doesn't fit its type.
+#[noreturn, track_caller]
+routine crash_overflow() -> Void
+    block entry()
+        crash("IntegerOverflowError", "Integer overflow: value does not fit in the target type.")
+
+/// Crashes with `DivisionByZeroError`: a division or remainder by zero.
+#[noreturn, track_caller]
+routine crash_division_by_zero() -> Void
+    block entry()
+        crash("DivisionByZeroError", "You tried to divide by zero, which is not allowed.")
+
+/// Crashes with `IndexOutOfBoundsError`: an index or range outside the valid one.
+#[noreturn, track_caller]
+routine crash_out_of_bounds() -> Void
+    block entry()
+        crash("IndexOutOfBoundsError", "Index is out of bounds for the collection.")
+
+/// Crashes with `MemoryAllocationError`: the allocator returned null.
+#[noreturn, track_caller]
+routine crash_allocation() -> Void
+    block entry()
+        crash("MemoryAllocationError", "Failed to allocate memory.")
+
+/// Crashes with `InvalidValueError`: an argument outside what the routine accepts, such as clamp with min > max.
+#[noreturn, track_caller]
+routine crash_invalid_value() -> Void
+    block entry()
+        crash("InvalidValueError", "The value is not one the routine accepts.")
+
+/// Crashes with `NumericDomainError`: a numeric operation with no result for its argument, such as ilog2 of 0 or the
+/// square root of a negative number.
+#[noreturn, track_caller]
+routine crash_numeric_domain() -> Void
+    block entry()
+        crash("NumericDomainError", "The operation has no result for this value.")
+
+/// Crashes with `AbsentValueError`: unwrap of Absent, or pop / peek on an empty collection.
+#[noreturn, track_caller]
+routine crash_absent_value() -> Void
+    block entry()
+        crash("AbsentValueError", "Attempted to access a value that is absent.")
+
+/// Crashes with `KeyNotFoundError`: get of a key that isn't there.
+#[noreturn, track_caller]
+routine crash_key_not_found() -> Void
+    block entry()
+        crash("KeyNotFoundError", "Key not found.")
+
+/// Crashes with `UnwrapFailureError`: unwrap of a Result that holds a Failure.
+#[noreturn, track_caller]
+routine crash_unwrap_failure() -> Void
+    block entry()
+        crash("UnwrapFailureError", "Attempted to unwrap the value of a Failure.")
+
+/// Crashes with `UnwrapSuccessError`: unwrap_failure of a Result that holds a Success.
+#[noreturn, track_caller]
+routine crash_unwrap_success() -> Void
+    block entry()
+        crash("UnwrapSuccessError", "Attempted to unwrap the failure of a Success.")
+
+/// Crashes with `TaskSpawnError`: the operating system didn't start a thread.
+#[noreturn, track_caller]
+routine crash_task_spawn() -> Void
+    block entry()
+        crash("TaskSpawnError", "Failed to spawn a threaded task.")
+
+/// Crashes with `LogicBreachedError`: a state the code rules out was reached, a bug in the code that crashes.
+#[noreturn, track_caller]
+routine crash_logic_breached() -> Void
+    block entry()
+        crash("LogicBreachedError", "A logic breach was detected.")

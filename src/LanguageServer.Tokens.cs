@@ -850,7 +850,7 @@ public static partial class LanguageServer
                     foreach (var a in call.Args) Expr(a);
                     break;
                 case CallTarget call:
-                    // Or a routine that doesn't return (`panic(...)`).
+                    // Or a routine that doesn't return (`crash(...)`).
                     Mark(call.Pos, call.Name, "function",
                         CallHover(call.Pos, call.Name, FreeRoutine(new CallExpr(call.Name, [], call.Args, call.Pos))));
                     foreach (var a in call.Args) Expr(a);

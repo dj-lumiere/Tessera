@@ -791,7 +791,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     ? instruction with { Attributes = prefixes }
                     : throw new CompileError(prefixes[0].Pos, "#asm_prefix goes on the line before an instruction");
 
-            // A bare call as the last line of a block is a #noreturn terminator, such as `panic_overflow()`.
+            // A bare call as the last line of a block is a #noreturn terminator, such as `crash_overflow()`.
             if (AtBlockEnd() && stmt is ExprStmt e)
                 return new BlockDecl(name.Text, parameters, stmts,
                     new TargetTerm(new ExprTarget(e.Value, e.Pos), e.Pos) { Source = e.Source }, pos);

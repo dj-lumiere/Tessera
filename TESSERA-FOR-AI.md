@@ -139,12 +139,12 @@ routine main() -> S32
 - Every block ends with exactly one terminator: `jump b(...)`, `branch c ? a(...) : b(...)`, `when`
   (first condition that holds), `when v` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
   `when` names a block, or is an
-  inline `return(...)` or a call to a `#noreturn` routine (`panic(...)`, `panic_overflow()`). Block arguments and the
+  inline `return(...)` or a call to a `#noreturn` routine (`crash(...)`, `crash_overflow()`). Block arguments and the
   returned value may be expressions (`loop(i.add(1))`, `return(x.to<S32>())`), evaluated only when that arm is
   taken. An ordinary routine call can't be an arm by itself: call it inside a block.
 - There are no `for` / `while` / `if`. A loop is a block that jumps to itself with new arguments.
 - `continue` as an arm of `branch` / `when` goes on with the next line of the same block:
-  `branch failed ? panic_allocation() : continue`. Use it for guards instead of a block that only receives
+  `branch failed ? crash_allocation() : continue`. Use it for guards instead of a block that only receives
   the values the rest needs. It is not C's "next iteration" (that's `jump loop(...)`), and a block still ends with a
   real terminator.
 - A line that starts with `?` or `:` continues the one above. `fmt` writes every `branch`, and every select that is a
@@ -165,10 +165,10 @@ routine main() -> S32
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
   `add`, `div`, `mod`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more
   shifts every bit out (0, or -1 for a negative S value shifted right).
-- Arithmetic panics on overflow: `add`, `sub`, `mul`, `div`, `neg`, `abs`, `pow`, and a lossy `to<T>()`. Each has
+- Arithmetic crashes on overflow: `add`, `sub`, `mul`, `div`, `neg`, `abs`, `pow`, and a lossy `to<T>()`. Each has
   `_checked` (returns `Option`), `_wrap` (modular), and `_clamp` (saturating) forms: `h.mul_wrap(PRIME)`,
   `n.to_clamp<U8>()`. Hashes, PRNGs, and bit tricks want `_wrap`.
-- Subtraction that can underflow panics even if the result is unused later, so don't compute `len.sub(1)` before
+- Subtraction that can underflow crashes even if the result is unused later, so don't compute `len.sub(1)` before
   the branch that knows it's safe: pass it as a branch-arm argument (arm arguments are evaluated lazily), or compute
   it in the arm's block. The same goes for a value select (`c ? a : b`), which evaluates both sides; the
   `when` terminator runs its conditions in order and stops at the first that holds.
@@ -186,7 +186,7 @@ routine main() -> S32
 - `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `c.to<U32>()` and `n.to<Char>()`
   convert.
 - Conversions are methods: `n.to<S64>()`, `b.to<U64>()` (Bool to 0/1), `x.to<F64>()`. Float to integer is
-  `to<S64>()` (panics on NaN or out of range), `to_checked<S64>()`, or `to_clamp<S64>()`. A conversion names the type
+  `to<S64>()` (crashes on NaN or out of range), `to_checked<S64>()`, or `to_clamp<S64>()`. A conversion names the type
   it goes to as a type argument, so `x.to<T>()` works in generic code.
 - Floats are `F16`, `BF16`, `F32`, `F64`, and software `F128` (an `i128`; stdlib code reads it with `f128_bits`):
   `add`, `mul`, `div`, `mod`, and so on. `x.bits()` gives the bits as the same-width `U`, `F64.from_bits(u)` goes back.
@@ -229,19 +229,19 @@ routine main() -> S32
 
 **Errors**
 
-- Bugs panic, and a panic names its kind: `panic("ConfigurationError", "The configuration file is missing.")`.
+- Bugs crash, and a crash names its kind: `crash("ConfigurationError", "The configuration file is missing.")`.
   The names are RazorForge's crashables, so a failure reads the same in both languages. The stdlib's own kinds have
-  one short routine each with RazorForge's default message: `panic_overflow()` (IntegerOverflowError),
-  `panic_division_by_zero()`, `panic_out_of_bounds()`, `panic_allocation()` (MemoryAllocationError),
-  `panic_invalid_value()`, `panic_numeric_domain()` (`ilog2(0)`, `isqrt` of a negative), `panic_absent_value()`
-  (unwrap of Absent, pop on empty), `panic_key_not_found()`, `panic_unwrap_failure()` / `panic_unwrap_success()`
-  (UnwrapFailureError / UnwrapSuccessError), `panic_task_spawn()`, and `panic_logic_breached()` for a state the code
-  rules out. A failure with its own message calls `panic(name, message)`. There's no `trap()`: every stop is a panic.
-  A panic calls the panic handler; the default (Standard::Os) prints `tessera: Name: message` and the caller's place
+  one short routine each with RazorForge's default message: `crash_overflow()` (IntegerOverflowError),
+  `crash_division_by_zero()`, `crash_out_of_bounds()`, `crash_allocation()` (MemoryAllocationError),
+  `crash_invalid_value()`, `crash_numeric_domain()` (`ilog2(0)`, `isqrt` of a negative), `crash_absent_value()`
+  (unwrap of Absent, pop on empty), `crash_key_not_found()`, `crash_unwrap_failure()` / `crash_unwrap_success()`
+  (UnwrapFailureError / UnwrapSuccessError), `crash_task_spawn()`, and `crash_logic_breached()` for a state the code
+  rules out. A failure with its own message calls `crash(name, message)`. There's no `trap()`: every stop is a crash.
+  A crash calls the crash handler; the default (Standard::Os) prints `tessera: Name: message` and the caller's place
   and exits with status 101, and a program replaces it (a program on a target without an OS must) with
-  `#[export("tessera_panic_handler"), noreturn] routine my_handler(name: Bytes, message: Bytes, place:
-  @SourceLocation) -> Void`. A stdlib routine that panics on its caller's mistake is `#track_caller`, so the place is
-  the caller's line; mark a routine of your own the same way when its panics are its caller's fault.
+  `#[export("tessera_crash_handler"), noreturn] routine my_handler(name: Bytes, message: Bytes, place:
+  @SourceLocation) -> Void`. A stdlib routine that crashes on its caller's mistake is `#track_caller`, so the place is
+  the caller's line; mark a routine of your own the same way when its crashes are its caller's fault.
 - Expected failures return `Result<T, E>`. There's no `?`: `when r` with `.Success(v)` / `.Failure(e)` arms.
 
 **Records**
@@ -358,8 +358,8 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
 ## Collections
 
 All in `Standard/Collection/`, documented in `../Tessera-Wiki/docs/Collections.md`. `construct(alloc)` stores the allocator; `destruct()`
-releases storage. Out-of-range access, `pop` on empty, and `get` of a missing key panic; the `_checked` forms
-(`get_checked`, `pop_checked`, `peek_checked`) return `Option<T>` instead. Allocation failure panics too; each
+releases storage. Out-of-range access, `pop` on empty, and `get` of a missing key crash; the `_checked` forms
+(`get_checked`, `pop_checked`, `peek_checked`) return `Option<T>` instead. Allocation failure crashes too; each
 insertion and `reserve` has a `_result` form (`push_result`, `put_result`, `add_result`) that returns
 `Result<T, AllocFailed>` and leaves the collection unchanged on a `Failure`. `_checked` always means `Option`, `_result`
 always `Result`.
@@ -384,7 +384,7 @@ while iterating it.
 
 **You are responsible.** Tessera has no `unsafe` / `danger` blocks and no borrow checker: like C and Zig, every
 operation is available everywhere and its contract is the programmer's to keep. The language removes undefined
-behavior where it can do so cheaply (overflow panics, defined shifts, checked conversions, bounds-checked
+behavior where it can do so cheaply (overflow crashes, defined shifts, checked conversions, bounds-checked
 collections), and documents the rest: pointer lifetimes, casts (bounds, alignment, valid values), aliasing, and
 freeing what you allocated. Don't wrap things in ceremony to look safe; write the check where it matters.
 

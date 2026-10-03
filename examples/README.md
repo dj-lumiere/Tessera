@@ -9,7 +9,7 @@ Run one with `dotnet run -- run examples/<name>.tess`. Every program has a `<nam
 | [hello](hello.tess) | `main`, `block entry()`, printing a line with `Out.write`, and standard output as a Writer pointer: `out : @Out = Out.shared()` |
 | [fizzbuzz](fizzbuzz.tess) | A counted loop as a block that jumps to itself, `when`, and what a block can see |
 | [gcd](gcd.tess) | Helper routines, loop state in block parameters, dividing before multiplying to avoid overflow |
-| [fibonacci](fibonacci.tess) | Overflow: `add` panics, `add_checked` returns an `Option` |
+| [fibonacci](fibonacci.tess) | Overflow: `add` crashes, `add_checked` returns an `Option` |
 | [collatz](collatz.tess) | A nested loop split into two routines, best-so-far carried in block parameters |
 | [sieve](sieve.tess) | A `claim`ed slot, heap memory: `allocate<T>`, `zeroinit`, `stride` with `load` / `store`, `free` |
 | [binary_search](binary_search.tess) | A preset in memory (`preset SORTED: @Array<S64, 10> <- { ... }`), returning `Option<USize>`, a three-way `when` |
