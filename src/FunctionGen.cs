@@ -740,7 +740,10 @@ public sealed class FunctionGen
             case PresetRef r:
                 return InferPresetRef(r);
             case RoutineRef rr:
-                return RoutineValue(rr).Type;
+                // An overloaded routine's value is the overload the Callable it goes to names.
+                return rr.Callable is null && _c.FreeCandidates(rr.Name, _env.File, rr.Pos, rr.Path).Count > 1
+                    ? null
+                    : RoutineValue(rr, null).Type;
             case NsCallExpr or MethodCallExpr when TemplateWriter(e) is not null:
                 return VoidType.Instance;
             case CallExpr or NsCallExpr or MethodCallExpr:
@@ -779,6 +782,7 @@ public sealed class FunctionGen
         // A call to no routine at all says so, rather than that its type is unknown.
         if (e is CallExpr unknown && Infer(e) is null && PlanCall(e, null) is null)
             throw Err(unknown.Pos, $"unknown routine '{unknown.Name}'");
+        if (e is RoutineRef overloaded && Infer(e) is null) return RoutineValue(overloaded, null);
         var t = Infer(e) ?? throw Err(e.Pos, "cannot infer the type of this expression; bind it with a type annotation");
         return Eval(e, t);
     }
@@ -823,7 +827,7 @@ public sealed class FunctionGen
             NsCallExpr or MethodCallExpr when TemplateWriter(e) is { } writer =>
                 ExpandTemplate(writer, (StrLit)(e is NsCallExpr ns ? ns.Args[0] : ((MethodCallExpr)e).Args[0])),
             PresetRef r => EvalPresetRef(r, expected),
-            RoutineRef rr => RoutineValue(rr),
+            RoutineRef rr => RoutineValue(rr, expected),
             CallExpr or NsCallExpr or MethodCallExpr => EvalCall(e, expected),
             _ => throw new InvalidOperationException(e.GetType().Name),
         };
@@ -1324,10 +1328,12 @@ public sealed class FunctionGen
 
     /// `name.to<Callable>()`: the routine as a function pointer, typed by its own signature, or by the Callable
     /// written, which then has to match it.
-    private Val RoutineValue(RoutineRef r)
+    private Val RoutineValue(RoutineRef r, DType? expected)
     {
-        var routine = _c.FindFree(r.Name, _env.File, r.Pos, r.Path)
-                      ?? throw Err(r.Pos, $"'{r.Name}' isn't a routine; to<Callable>() makes a routine a value");
+        var set = _c.FreeCandidates(r.Name, _env.File, r.Pos, r.Path);
+        if (set.Count == 0) throw Err(r.Pos, $"'{r.Name}' isn't a routine; to<Callable>() makes a routine a value");
+        var routine = set.Count == 1 ? set[0] : OverloadForValue(r, set, expected);
+        if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(routine, []));
         // An #inline routine is inlined at every call, so there's no call of its own for a pointer to name.
         if (routine.Attr("inline") is not null)
             throw Err(r.Pos, $"'{r.Name}' is #inline, so it can't be a Callable value: it's inlined at every call, "
@@ -1379,6 +1385,7 @@ public sealed class FunctionGen
         if (e is NsCallExpr { Name: "addr", Args.Count: 0, TypeArgs.Count: 0, Owner: { Args.Count: 0 } owner }
             && TryResolveOwner(owner) is null && _c.FindFree(owner.Name, _env.File, owner.Pos) is { } named)
         {
+            NotOverloadedForAddr(owner.Name, null, owner.Pos);
             NotThroughAddress(named, owner.Pos);
             var namedInst = _c.RequireInstance(named, new Compiler.TypeEnv(named.File));
             return (new RoutineRef(owner.Name, null, owner.Pos),
@@ -1390,6 +1397,7 @@ public sealed class FunctionGen
         if (m.Receiver is PresetRef { Owner: null } r && ResolvePreset(r) is null
             && _c.FindFree(r.Name, _env.File, r.Pos) is { } routine)
         {
+            NotOverloadedForAddr(r.Name, r.Path, r.Pos);
             NotThroughAddress(routine, r.Pos);
             var inst = _c.RequireInstance(routine, new Compiler.TypeEnv(routine.File));
             return (new RoutineRef(r.Name, null, r.Pos) { Path = r.Path },
@@ -1429,10 +1437,17 @@ public sealed class FunctionGen
         {
             case CallExpr c:
             {
-                if (_blocks.ContainsKey(c.Name) && _c.FindFree(c.Name, _env.File, c.Pos, c.Path) is null)
+                var set = _c.FreeCandidates(c.Name, _env.File, c.Pos, c.Path);
+                if (_blocks.ContainsKey(c.Name) && set.Count == 0)
                     throw Err(c.Pos, $"'{c.Name}' is a block; blocks are entered with jump/branch, not called");
-                var r = _c.FindFree(c.Name, _env.File, c.Pos, c.Path);
-                if (r is null) return null;
+                if (set.Count == 0) return null;
+                if (set.Count > 1)
+                {
+                    var fit = ChooseOverload([.. set.Select(o => (o, new Compiler.TypeEnv(o.File)))], c.TypeArgs, c.Args, 0,
+                        expected, c.Pos, c.Name);
+                    return new CallPlan(fit.Decl, fit.Env, null, c.Args, c.Pos);
+                }
+                var r = set[0];
                 var env = new Compiler.TypeEnv(r.File);
                 BindExplicit(r, env, c.TypeArgs, c.Pos);
                 InferTypeArgs(r, env, c.Args, expected, 0);
@@ -1443,8 +1458,15 @@ public sealed class FunctionGen
                 // The type the value is going to is the owner: `.absent()` where an Option<T> is expected.
                 var owner = expected ?? throw Err(ic.Pos,
                     $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
-                var r = _c.FindMethod(owner, ic.Name, _env.File, ic.Pos, fits: d => d.Fixed.Count == 0 || FixedFits(d, owner, ic.TypeArgs, ic.Pos))
-                        ?? throw Err(ic.Pos, $"{owner} has no routine '{ic.Name}'");
+                var set = _c.MethodCandidates(owner, ic.Name, _env.File, ic.Pos, fits: d => d.Fixed.Count == 0 || FixedFits(d, owner, ic.TypeArgs, ic.Pos));
+                if (set.Count == 0) throw Err(ic.Pos, $"{owner} has no routine '{ic.Name}'");
+                if (set.Count > 1)
+                {
+                    var fit = ChooseOverload([.. set.Select(o => (o, BindOwner(o, owner, ic.Pos)))], ic.TypeArgs, ic.Args, 0,
+                        expected, ic.Pos, $"{owner}.{ic.Name}");
+                    return new CallPlan(fit.Decl, fit.Env, null, ic.Args, ic.Pos);
+                }
+                var r = set[0];
                 var env = BindOwner(r, owner, ic.Pos);
                 BindExplicit(r, env, ic.TypeArgs, ic.Pos);
                 InferTypeArgs(r, env, ic.Args, expected, 0);
@@ -1459,8 +1481,15 @@ public sealed class FunctionGen
                     var asMethod = new MethodCallExpr(new PresetRef(null, n.Owner.Name, n.Owner.Pos), n.Name, n.TypeArgs, n.Args, n.Pos);
                     return PlanCall(asMethod, expected);
                 }
-                var r = _c.FindMethod(owner, n.Name, _env.File, n.Pos, fits: d => d.Fixed.Count == 0 || FixedFits(d, owner, n.TypeArgs, n.Pos))
-                        ?? throw Err(n.Pos, $"{owner} has no routine '{n.Name}'");
+                var set = _c.MethodCandidates(owner, n.Name, _env.File, n.Pos, fits: d => d.Fixed.Count == 0 || FixedFits(d, owner, n.TypeArgs, n.Pos));
+                if (set.Count == 0) throw Err(n.Pos, $"{owner} has no routine '{n.Name}'");
+                if (set.Count > 1)
+                {
+                    var fit = ChooseOverload([.. set.Select(o => (o, BindOwner(o, owner, n.Pos)))], n.TypeArgs, n.Args, 0,
+                        expected, n.Pos, $"{owner}.{n.Name}");
+                    return new CallPlan(fit.Decl, fit.Env, null, n.Args, n.Pos);
+                }
+                var r = set[0];
                 var env = BindOwner(r, owner, n.Pos);
                 BindExplicit(r, env, n.TypeArgs, n.Pos);
                 InferTypeArgs(r, env, n.Args, expected, 0);
@@ -1471,6 +1500,183 @@ public sealed class FunctionGen
             default:
                 return null;
         }
+    }
+
+    // ── Overloads ───────────────────────────────────────────────────────────
+
+    /// How one overload takes a call's arguments: its environment with the type parameters the arguments bind, or why it
+    /// doesn't take them. `Generic`: it has type parameters of its own (or is on every type). `Preferred`: every
+    /// untyped integer literal among the arguments lands on a USize (an SSize when negative).
+    private sealed record Fit(RoutineDecl Decl, Compiler.TypeEnv Env, string? Why, bool Generic, bool Preferred);
+
+    /// Picks the overload a call means. An overload fits when each argument's type is its parameter's type exactly (an
+    /// implicit conversion such as `@T` to `Addr` doesn't count) and an untyped argument can be its parameter's type.
+    /// Of the ones that fit, one without type parameters of its own beats a generic one; then one where every untyped
+    /// integer literal is a USize (SSize if negative) beats the rest. Anything else that is left is ambiguous.
+    private Fit ChooseOverload(List<(RoutineDecl Decl, Compiler.TypeEnv Env)> set, List<TypeRef> typeArgs, List<Expr> args,
+        int firstArgParam, DType? expected, Pos pos, string what)
+    {
+        var fits = set.Select(c => TryFit(c.Decl, c.Env, typeArgs, args, firstArgParam, expected, pos)).ToList();
+        var taking = fits.Where(f => f.Why is null).ToList();
+        string shown = string.Join(", ", args.Select(DescribeArg));
+        if (taking.Count == 0)
+            throw Err(pos, $"no overload of '{what}' takes ({shown}); it has:"
+                + string.Concat(fits.Select(f => $"\n    {Compiler.ShowSignature(f.Decl)} at {f.Decl.Pos}: {f.Why}")));
+        var tier = taking.Where(f => !f.Generic).ToList() is { Count: > 0 } concrete ? concrete : taking;
+        if (tier.Count > 1 && tier.Where(f => f.Preferred).ToList() is { Count: > 0 } preferred) tier = preferred;
+        if (tier.Count == 1) return tier[0];
+        string hint = args.Any(a => a is IntLit)
+            ? "an untyped integer literal prefers USize (SSize when negative), and that doesn't settle it here; "
+              + "give the literal its type by binding it first (n : U8 = 1)"
+            : args.Any(a => a is FloatLit)
+                ? "a float literal can be any float type; give it its type by binding it first (x : F64 = 1.5)"
+            : tier.All(f => f.Generic)
+                ? "more than one generic overload fits; pass the type arguments, or add an overload for these types"
+                : "give the arguments the types of the overload you mean";
+        throw Err(pos, $"the call of '{what}' with ({shown}) is ambiguous; these overloads all take it:"
+            + string.Concat(tier.Select(f => $"\n    {Compiler.ShowSignature(f.Decl)} at {f.Decl.Pos}")) + $"\n{hint}");
+    }
+
+    private Fit TryFit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, List<Expr> args, int first, DType? expected, Pos pos)
+    {
+        bool generic = r.TypeParams.Count > 0 || Compiler.IsBlanket(r);
+        Fit No(string why) => new(r, env, why, generic, false);
+        try
+        {
+            int want = r.Params.Count - first;
+            bool variadic = r.Attr("variadic") is not null && r.Attr("external") is { First: "c" };
+            if (variadic ? args.Count < want : args.Count != want)
+                return No($"it takes {(variadic ? "at least " : "")}{want} argument(s), not {args.Count}");
+            if (r.Fixed.Count == 0 && typeArgs.Count != 0 && typeArgs.Count != r.TypeParams.Count)
+                return No($"it takes {r.TypeParams.Count} type argument(s), not {typeArgs.Count}");
+            BindExplicit(r, env, typeArgs, pos);
+            InferTypeArgs(r, env, args, expected, first);
+            var unbound = r.TypeParams.Where(p => !env.Has(p)).ToHashSet();
+            bool preferred = true;
+            for (int i = 0; i < want; i++)
+            {
+                var p = r.Params[i + first].Type;
+                if (MentionsAny(p, unbound)) continue;   // bound later by where the result goes, or not at all
+                var pt = _c.ResolveType(p, env);
+                if (InferQuiet(args[i]) is { } at)
+                {
+                    if (!at.Equals(pt)) return No($"argument {i + 1} is {at}, and the parameter is {pt}");
+                    continue;
+                }
+                if (UntypedMisfit(args[i], pt, ref preferred) is { } why) return No($"argument {i + 1}: {why}");
+            }
+            if (unbound.Count == 0 && _c.RequirementsFailure(r, env) is { } failed) return No(failed);
+            return new Fit(r, env, null, generic, preferred);
+        }
+        catch (CompileError e)
+        {
+            return No(e.Text);
+        }
+    }
+
+    private static bool MentionsAny(TypeRef t, HashSet<string> names) =>
+        names.Count > 0 && ((t.Path is null && names.Contains(t.Name))
+            || t.Args.Any(a => a is TypeArgType ta && MentionsAny(ta.Type, names)
+                               || a is TypeArgTuple tu && tu.Types.Any(x => MentionsAny(x, names))));
+
+    /// An argument's own type, or null when it takes the type of where it goes (or doesn't make sense on its own).
+    private DType? InferQuiet(Expr e)
+    {
+        try { return Infer(e); }
+        catch (CompileError) { return null; }
+    }
+
+    /// Why an argument without a type of its own can't be a `pt`, or null if it can. An integer literal not landing on a
+    /// USize (SSize when negative) clears `preferred`.
+    private string? UntypedMisfit(Expr arg, DType pt, ref bool preferred)
+    {
+        switch (arg)
+        {
+            case IntLit i:
+            {
+                var it = pt switch { IntType x => x, ChoiceType ch => ch.Underlying, _ => null };
+                if (it is null) return $"an integer literal can't be a {pt}";
+                if (it.Literal(i.Value, i.HexDigits, out var error) is null) return error;
+                bool size = pt is IntType { IsSize: true } && (i.Value.Sign < 0 ? it.IsSigned : it.IsUnsigned);
+                if (!size) preferred = false;
+                return null;
+            }
+            case FloatLit:
+                return pt is FloatType ? null : $"a float literal can't be a {pt}";
+            case NullLit:
+                return pt is PtrType or CallableType ? null : $"null can't be a {pt}";
+            case StrLit:
+                return pt is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } } or RecordType { Name: "Bytes" or "CStr" or "CWStr" }
+                    ? null
+                    : $"a string literal can't be a {pt}";
+            case ArrayLit { Type: null } a:
+                return pt switch
+                {
+                    ArrayType at when at.Count == a.Elements.Count => null,
+                    VectorType vt when vt.Count == a.Elements.Count => null,
+                    RecordType { IsTuple: true } tu when tu.Args.Count == a.Elements.Count => null,
+                    _ => $"{{ ... }} with {a.Elements.Count} element(s) can't be a {pt}",
+                };
+            case RecordLit { Type: null }:
+                return pt is RecordType { IsTuple: false } ? null : $"{{ name: ... }} can't be a {pt}";
+            case ImplicitMemberExpr m:
+                return pt is VariantType v && v.CaseIndex(m.Name) >= 0 ? null : $"{pt} has no case '{m.Name}'";
+            case ImplicitCallExpr ic:
+                if (pt is VariantType vc && vc.CaseIndex(ic.Name) >= 0) return null;
+                try
+                {
+                    return _c.MethodCandidates(pt, ic.Name, _env.File, ic.Pos).Count > 0 ? null : $"{pt} has no routine '{ic.Name}'";
+                }
+                catch (CompileError e) { return e.Text; }
+            case RoutineRef:
+                return pt is CallableType ? null : $"a routine value can't be a {pt}";
+            default:
+                return null;
+        }
+    }
+
+    /// An argument as an overload error lists it: its type, or what kind of untyped value it is.
+    private string DescribeArg(Expr a) => InferQuiet(a)?.ToString() ?? a switch
+    {
+        IntLit i => $"the integer literal {i.Value}",
+        FloatLit => "a float literal",
+        StrLit => "a string literal",
+        NullLit => "null",
+        ArrayLit => "{ ... }",
+        RecordLit => "{ name: ... }",
+        ImplicitMemberExpr m => $".{m.Name}",
+        ImplicitCallExpr ic => $".{ic.Name}(...)",
+        RoutineRef r => $"{r.Name}.to<Callable>()",
+        _ => "a value typed by where it goes",
+    };
+
+    /// The overload a routine value names: the one whose signature is the Callable written (`f.to<Callable<(S64,),
+    /// S64>>()`), or else the Callable the value goes to. Without either, which one is meant is unsaid.
+    private RoutineDecl OverloadForValue(RoutineRef r, List<RoutineDecl> set, DType? expected)
+    {
+        string list = string.Concat(set.Select(o => $"\n    {Compiler.ShowSignature(o)} at {o.Pos}"));
+        var want = r.Callable is { } written ? Resolve(written) : expected as CallableType;
+        if (want is not CallableType ct)
+            throw Err(r.Pos, $"'{r.Name}' is overloaded, so its value names the overload by its Callable type: "
+                + $"{r.Name}.to<Callable<(...), R>>(), or a place that expects that Callable; its overloads are:{list}");
+        foreach (var o in set.Where(o => o.TypeParams.Count == 0))
+        {
+            Instance sig;
+            try { sig = _c.Signature(o, new Compiler.TypeEnv(o.File)); }
+            catch (CompileError) { continue; }
+            if (new CallableType(sig.CallConv, sig.Params, sig.Ret).Equals(ct)) return o;
+        }
+        throw Err(r.Pos, $"no overload of '{r.Name}' is {ct}; its overloads are:{list}");
+    }
+
+    /// `f.addr()` has no Callable type to say which overload of `f` it means.
+    private void NotOverloadedForAddr(string name, string? path, Pos pos)
+    {
+        var set = _c.FreeCandidates(name, _env.File, pos, path);
+        if (set.Count > 1)
+            throw Err(pos, $"'{name}' is overloaded, so {name}.addr() doesn't say which one; name it by its type: "
+                + $"{name}.to<Callable<(...), R>>().addr(); its overloads are:"
+                + string.Concat(set.Select(o => $"\n    {Compiler.ShowSignature(o)} at {o.Pos}")));
     }
 
     /// Whether an untyped literal can take `t`: an integer literal a number type, a float literal a float type, a
@@ -1529,9 +1735,29 @@ public sealed class FunctionGen
         RoutineDecl? typewise = null;
         foreach (var (owner, passesPointer) in candidates)
         {
-            var r = _c.FindMethod(owner, m.Name, _env.File, m.Pos, FromTypeParameter(owner) || Derived,
+            var set = _c.MethodCandidates(owner, m.Name, _env.File, m.Pos, FromTypeParameter(owner) || Derived,
                 d => d.Fixed.Count == 0 || FixedFits(d, owner, m.TypeArgs, m.Pos));
-            if (r is null) continue;
+            if (set.Count == 0) continue;
+            if (set.Count > 1)
+            {
+                // Overloads: the ones whose receiver this is (exactly), then by the arguments.
+                var receivers = new List<(RoutineDecl, Compiler.TypeEnv)>();
+                foreach (var o in set)
+                {
+                    if (!Compiler.HasReceiver(o))
+                    {
+                        typewise ??= o;
+                        continue;
+                    }
+                    var oenv = BindOwner(o, owner, m.Pos);
+                    var oself = _c.ResolveType(o.Params[0].Type, oenv);
+                    if (passesPointer ? oself.Equals(rt) : Compatible(rt, oself)) receivers.Add((o, oenv));
+                }
+                if (receivers.Count == 0) continue;
+                var fit = ChooseOverload(receivers, m.TypeArgs, m.Args, 1, expected, m.Pos, $"{owner}.{m.Name}");
+                return new CallPlan(fit.Decl, fit.Env, m.Receiver, m.Args, m.Pos);
+            }
+            var r = set[0];
             // Only a routine whose first parameter is self is a method; the rest are called by their type.
             if (!Compiler.HasReceiver(r))
             {
@@ -1582,7 +1808,7 @@ public sealed class FunctionGen
     /// The receiver type a `T.name` routine gets from the other arguments, if there is such a routine and they fix T.
     private DType? BlanketReceiverType(MethodCallExpr m)
     {
-        if (_c.FindBlanket(m.Name, _env.File, m.Pos) is not { Owner: { } owner } r || !Compiler.HasReceiver(r)
+        if (_c.BlanketCandidates(m.Name, _env.File, m.Pos) is not [{ Owner: { } owner } r] || !Compiler.HasReceiver(r)
             || r.Params[0].Type is not { Args.Count: 0 } self || self.Name != owner.Name)
             return null;
         var env = new Compiler.TypeEnv(r.File);

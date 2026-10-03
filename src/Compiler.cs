@@ -104,10 +104,10 @@ public sealed partial class Compiler
         RejectDuplicates(_choices.Values, d => $"choice '{d.Name}'", SameModule);
         RejectDuplicates(_presets.Values, d => $"preset '{(d.Owner is null ? d.Name : $"{d.Owner.Name}.{d.Name}")}'",
             (a, b) => a.Owner is null ? a.Module == b.Module : OwnerDecl(a.Owner, a.File) == OwnerDecl(b.Owner!, b.File));
-        RejectDuplicates(_free.Values, d => $"routine '{d.Name}'", SameModule);
-        RejectDuplicates(_methods.Values, d => $"routine '{d.DisplayName}'",
-            (a, b) => OwnerDecl(a) == OwnerDecl(b) && SameFixed(a, b));
-        RejectDuplicates(_blanket.Values, d => $"routine '{d.DisplayName}'", (_, _) => true);
+        // Routines of one name under one parent may differ in their parameter types (Overloads.cs).
+        RejectOverloadClashes(_free.Values, SameModule);
+        RejectOverloadClashes(_methods.Values, (a, b) => OwnerDecl(a) == OwnerDecl(b) && SameFixed(a, b));
+        RejectOverloadClashes(_blanket.Values, (_, _) => true);
         CheckAliases();
     }
 
@@ -564,36 +564,17 @@ public sealed partial class Compiler
     public ChoiceDecl? FindChoice(string name, string file, Pos pos, string? path = null) =>
         Pick(_choices.GetValueOrDefault(name), file, pos, $"choice '{name}'", path);
 
+    /// A free routine of this name `file` sees, or null if none: the first of its overload set (FreeCandidates). A
+    /// call chooses among the set by its arguments (FunctionGen.ChooseOverload); this is for asking whether the name
+    /// is a routine at all.
     public RoutineDecl? FindFree(string name, string file, Pos pos, string? path = null) =>
-        Pick(_free.GetValueOrDefault(name), file, pos, $"routine '{name}'", path);
+        FreeCandidates(name, file, pos, path).FirstOrDefault();
 
-    /// A routine on a type. One declared in the type's own module goes wherever the type goes; one another module adds
-    /// needs that module imported, like any other name. `anyModule` skips that check, for a call on a value whose
-    /// type came from a type parameter: the routine's concept constraints already vouch for the method.
-    /// `fits` picks among routines defined for different type arguments (`S32.to<S64>`, `S32.to<U8>`).
+    /// A routine on a type with this name, or null: the first of its overload set (MethodCandidates), for asking
+    /// whether the type has the routine at all.
     public RoutineDecl? FindMethod(DType ownerType, string name, string file, Pos pos, bool anyModule = false,
-        Func<RoutineDecl, bool>? fits = null)
-    {
-        string owner = ownerType.OwnerName;
-        var ownerDecl = DeclOf(ownerType);
-        if (_methods.GetValueOrDefault((owner, name))?.Where(m => OwnerDecl(m) == ownerDecl && (fits?.Invoke(m) ?? m.Fixed.Count == 0))
-                .ToList() is { Count: > 0 } methods)
-        {
-            string home = ownerDecl?.Module ?? CoreModule;
-            var visible = methods.Where(m =>
-                m.IsPrivate ? m.File == file
-                : m.IsInternal ? m.Module == ModuleOf(file)
-                : anyModule || m.Module == home || Visible(m, file, null)).ToList();
-            if (visible.Count == 0)
-                throw new CompileError(pos, Hidden(methods[0], $"routine '{owner}.{name}'", null));
-            if (visible.Count == 1) return visible[0];
-            var local = visible.Where(m => m.File == file).ToList();
-            if (local.Count == 1) return local[0];
-            throw new CompileError(pos, $"routine '{owner}.{name}' is ambiguous: defined in {string.Join(", ", visible.Select(m => m.Pos))}");
-        }
-        return Pick(_blanket.GetValueOrDefault(name)?.Where(b => anyModule || Visible(b, file, null) || !b.IsPrivate && !b.IsInternal).ToList(),
-            file, pos, $"routine 'T.{name}'");
-    }
+        Func<RoutineDecl, bool>? fits = null) =>
+        MethodCandidates(ownerType, name, file, pos, anyModule, fits).FirstOrDefault();
 
     /// Whether two routines on a type are defined for the same type arguments: none, or the same `<S64>`.
     private static bool SameFixed(RoutineDecl a, RoutineDecl b) =>
@@ -613,7 +594,7 @@ public sealed partial class Compiler
 
     /// A routine on every type, `T.name`.
     public RoutineDecl? FindBlanket(string name, string file, Pos pos) =>
-        Pick(_blanket.GetValueOrDefault(name), file, pos, $"routine 'T.{name}'");
+        BlanketCandidates(name, file, pos).FirstOrDefault();
 
     public PresetDecl? FindPreset(string owner, string name, string file, Pos pos, string? path = null) =>
         Pick(_presets.GetValueOrDefault((owner, name)), file, pos, $"preset '{(owner == "" ? name : owner + "." + name)}'", path);

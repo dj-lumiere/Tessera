@@ -43,7 +43,8 @@ public static partial class LanguageServer
         while (wordStart > 0 && IsNameChar(before[wordStart - 1])) wordStart--;
         string head = before[..wordStart];
 
-        var seen = new HashSet<(string, int)>();
+        // Overloads share a name: a routine is one entry per signature.
+        var seen = new HashSet<(string, int, string?)>();
         // The order the editor lists them in: what the cursor's routine binds, then this file's declarations, this
         // module's, the imported modules', Standard::Core's, and the keywords last.
         int Rank(Decl d) =>
@@ -53,7 +54,7 @@ public static partial class LanguageServer
             : 4;
         void Add(string label, int kind, string? detail = null, Decl? doc = null, Pos? docAt = null, int rank = -1)
         {
-            if (label.Length == 0 || !seen.Add((label, kind))) return;
+            if (label.Length == 0 || !seen.Add((label, kind, kind is KindMethod or KindFunction ? detail : null))) return;
             if (rank < 0) rank = kind == KindKeyword ? 6 : doc is not null ? Rank(doc) : 1;
             var item = new JsonObject { ["label"] = label, ["kind"] = kind, ["sortText"] = $"{rank}{label}" };
             if (detail is not null) item["detail"] = detail;

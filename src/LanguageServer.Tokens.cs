@@ -560,7 +560,8 @@ public static partial class LanguageServer
         {
             try
             {
-                return analysis.Compiler.FindFree(call.Name, analysis.Shown, call.Pos, call.Path);
+                // An overloaded name means the overload the builder chose (CallUses); without that, none.
+                return analysis.Compiler.FreeCandidates(call.Name, analysis.Shown, call.Pos, call.Path) is [var only] ? only : null;
             }
             catch (CompileError)
             {
@@ -874,7 +875,7 @@ public static partial class LanguageServer
                     break;
                 case RoutineRef r:
                     if (r.Callable is not null) Type(r.Callable);
-                    Mark(r.Pos, r.Name, "function");
+                    Mark(r.Pos, r.Name, "function", CallHover(r.Pos, r.Name, null));
                     break;
                 case CallExpr call:
                     Mark(call.Pos, call.Name, "function", CallHover(call.Pos, call.Name, FreeRoutine(call)));

@@ -226,6 +226,16 @@ routine main() -> S32
   declared routines' signatures. Conditional conformance: `conform Equal<Box<T>> when T: typename, Equal<T>`. A
   record's own `require` applies to every use, so put element constraints on the routines that need them.
 - A bare literal doesn't bind a type parameter: bind it first (`n: S64 = 42`), then pass `n`.
+- **Overloads.** Routines of one name under one parent (a module's free routines, one type's routines) may differ in
+  their parameter types (`self` included); a call picks the one whose parameter types are its arguments' types
+  exactly. No implicit conversion counts there (a `@T` isn't an `Addr` overload's argument), and an untyped integer
+  literal prefers `USize` (`SSize` if negative) when several take it. An exact concrete overload beats a generic
+  one; anything else ambiguous, or nothing fitting, is an error listing the overloads. Same parameter types, or a
+  difference only in the return type, is an error. A free routine's set is one module's (the file's own module
+  hides an import's same name). A routine value of an overloaded name is picked by its Callable type
+  (`f.to<Callable<(S64,), S64>>()`, or where it goes); an overloaded `#export` / `#external("c")` names its C
+  symbol. Overload only for one operation over several types: a different behavior gets a different name
+  (`add_wrap`, not an `add` that wraps).
 - When every operand is a literal, name the type with a typewise call: `S64.eq(0, 1)`, `U128.shl(1, 100)`. There are
   no literal suffixes (`0u64`).
 - `Bytes` is the one text type: bytes, UTF-8 by convention, unchecked (`is_utf8` checks; `chars()` reads a bad
@@ -266,7 +276,7 @@ routine main() -> S32
 - `private` before a declaration or a record field hides it from other files (`private routine helper(...)`,
   `private count: U64`). Inside the declaring file it's used as usual.
 - A name is unique under its parent, wherever it's declared: you can add `routine U64.double(...)` to a stdlib type,
-  but not a second `U64.midpoint`. Private names don't count outside their file.
+  but not a second `U64.midpoint` with the same parameter types (one with other parameter types is an overload). Private names don't count outside their file.
 
 - A record with exactly one field has the same representation as that field (`F128` is an `i128`). Mark it
   `#aggregate` to keep it a one-member struct; `#layout(align: N)` on a one-field record (a record's alignment; `#aligned` is for fields) needs `#aggregate`.

@@ -236,38 +236,64 @@ public sealed partial class Compiler
             string ownerParam = req.Owner!.Name == "Self" ? concept.TypeParams[0] : req.Owner.Name;
             var owner = cenv.Get(ownerParam)!;
             string claim = $"{key} (declared at {conf.Source.Pos})";
-            var method = FindMethod(owner, req.Name, conf.Source.File, conf.Source.Pos)
-                         ?? throw new CompileError(conf.Source.Pos, $"{claim} needs routine '{owner.Name}.{req.Name}', which doesn't exist");
-
-            var renv = cenv.Clone();
-            renv.Bind("Self", owner);
-            var menv = OwnerEnv(method, owner, conf.Source.Pos);
-            string where = $"routine '{owner.Name}.{req.Name}' at {method.Pos}";
-
-            if (method.Params.Count != req.Params.Count)
-                throw new CompileError(conf.Source.Pos, $"{claim}: {where} takes {method.Params.Count} parameter(s); the concept wants {req.Params.Count}");
-            // Generic code calls a method as `x.name(...)`, so a receiver in the concept needs one in the routine.
-            if (HasReceiver(req) != HasReceiver(method))
-                throw new CompileError(conf.Source.Pos, HasReceiver(req)
-                    ? $"{claim}: {where} has no self; the concept calls it as a method, x.{req.Name}(...)"
-                    : $"{claim}: {where} takes self; the concept calls it by its type, {owner.Name}.{req.Name}(...)");
-            bool ownTypeParams = req.TypeParams.Count > 0 || method.TypeParams.Count > 0;
-            if (req.TypeParams.Count != method.TypeParams.Count)
-                throw new CompileError(conf.Source.Pos, $"{claim}: {where} takes {method.TypeParams.Count} type parameter(s); the concept wants {req.TypeParams.Count}");
-            for (int i = 0; i < req.Params.Count; i++)
+            var methods = MethodCandidates(owner, req.Name, conf.Source.File, conf.Source.Pos);
+            if (methods.Count == 0)
+                throw new CompileError(conf.Source.Pos, $"{claim} needs routine '{owner.Name}.{req.Name}', which doesn't exist");
+            // A type conforms through the one overload whose full signature is the requirement's.
+            var misses = new List<(RoutineDecl Method, CompileError Why)>();
+            foreach (var method in methods)
             {
-                if (ownTypeParams) continue;
-                var want = ResolveType(req.Params[i].Type, renv);
-                var have = ResolveType(method.Params[i].Type, menv);
-                if (!want.Equals(have))
-                    throw new CompileError(conf.Source.Pos, $"{claim}: parameter {i + 1} of {where} is {have}; the concept wants {want}");
+                try
+                {
+                    MatchRequirement(req, method, owner, cenv, claim, conf.Source.Pos);
+                    misses.Clear();
+                    break;
+                }
+                catch (CompileError e) { misses.Add((method, e)); }
             }
-            if (ownTypeParams) continue;
-            var wantRet = ResolveType(req.ReturnType, renv, allowVoid: true);
-            var haveRet = ResolveType(method.ReturnType, menv, allowVoid: true);
-            if (!wantRet.Equals(haveRet))
-                throw new CompileError(conf.Source.Pos, $"{claim}: {where} returns {haveRet}; the concept wants {wantRet}");
+            if (misses.Count == 1) throw misses[0].Why;
+            if (misses.Count > 1)
+                throw new CompileError(conf.Source.Pos, $"{claim}: none of the {misses.Count} routines '{owner.Name}.{req.Name}' has the "
+                    + $"signature the concept wants ({ShowSignature(req)}):"
+                    + string.Concat(misses.Select(m => $"\n    {ShowSignature(m.Method)} at {m.Method.Pos}: {Reason(m.Why.Text, claim)}")));
         }
+    }
+
+    /// The part of a requirement mismatch after the claim it starts with.
+    private static string Reason(string text, string claim) =>
+        text.StartsWith(claim + ": ", StringComparison.Ordinal) ? text[(claim.Length + 2)..] : text;
+
+    /// Checks one routine against one requirement of a concept, by its whole signature.
+    private void MatchRequirement(RoutineDecl req, RoutineDecl method, DType owner, TypeEnv cenv, string claim, Pos at)
+    {
+        var renv = cenv.Clone();
+        renv.Bind("Self", owner);
+        var menv = OwnerEnv(method, owner, at);
+        string where = $"routine '{owner.Name}.{req.Name}' at {method.Pos}";
+
+        if (method.Params.Count != req.Params.Count)
+            throw new CompileError(at, $"{claim}: {where} takes {method.Params.Count} parameter(s); the concept wants {req.Params.Count}");
+        // Generic code calls a method as `x.name(...)`, so a receiver in the concept needs one in the routine.
+        if (HasReceiver(req) != HasReceiver(method))
+            throw new CompileError(at, HasReceiver(req)
+                ? $"{claim}: {where} has no self; the concept calls it as a method, x.{req.Name}(...)"
+                : $"{claim}: {where} takes self; the concept calls it by its type, {owner.Name}.{req.Name}(...)");
+        bool ownTypeParams = req.TypeParams.Count > 0 || method.TypeParams.Count > 0;
+        if (req.TypeParams.Count != method.TypeParams.Count)
+            throw new CompileError(at, $"{claim}: {where} takes {method.TypeParams.Count} type parameter(s); the concept wants {req.TypeParams.Count}");
+        for (int i = 0; i < req.Params.Count; i++)
+        {
+            if (ownTypeParams) continue;
+            var want = ResolveType(req.Params[i].Type, renv);
+            var have = ResolveType(method.Params[i].Type, menv);
+            if (!want.Equals(have))
+                throw new CompileError(at, $"{claim}: parameter {i + 1} of {where} is {have}; the concept wants {want}");
+        }
+        if (ownTypeParams) return;
+        var wantRet = ResolveType(req.ReturnType, renv, allowVoid: true);
+        var haveRet = ResolveType(method.ReturnType, menv, allowVoid: true);
+        if (!wantRet.Equals(haveRet))
+            throw new CompileError(at, $"{claim}: {where} returns {haveRet}; the concept wants {wantRet}");
     }
 
     /// The environment of a method called on `owner`: its owner's type parameters bound from `owner`, and Self.
