@@ -392,7 +392,7 @@ public static class Derive
                     sb.Append($"        g : U64 = {a}.hash()\n");
                     sb.Append($"        h : U64 = xxh64_combine2({i}, g, 0)\n        return(h)\n");
                 }
-                sb.Append("\n    block bare(index: U64)\n        h : U64 = xxh64_hash_u64(index, 0)\n        return(h)\n");
+                sb.Append("\n    block bare(index: U64)\n        h : U64 = xxh64(index, 0)\n        return(h)\n");
                 break;
             }
         }

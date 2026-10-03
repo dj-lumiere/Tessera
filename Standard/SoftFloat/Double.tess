@@ -64,16 +64,16 @@ routine soft_f64_add(a: U64, b: U64) -> U64
     // each significand gets three bits below it (half, and the rest), and the smaller one shifts right to the larger
     // one's exponent with the bits it loses folded into a sticky bit
     block align(x: U64, y: U64)
-        x_parts : SoftParts64 = soft_unpack64(x.bitand(MAGNITUDE))
-        y_parts : SoftParts64 = soft_unpack64(y.bitand(MAGNITUDE))
+        x_parts : SoftParts64 = soft_unpack(x.bitand(MAGNITUDE))
+        y_parts : SoftParts64 = soft_unpack(y.bitand(MAGNITUDE))
         x_sig   : U64         = x_parts.sig.shl(3)
         y_sig   : U64         = y_parts.sig.shl(3)
         apart   : U64         = x_parts.exponent.sub(y_parts.exponent).to<U64>()
-        aligned : U64         = soft_shr_sticky64(y_sig, apart)
+        aligned : U64         = soft_shr_sticky(y_sig, apart)
         sign    : U64         = x.bitand(SIGN)
         same    : Bool        = x.bitxor(y).lt(SIGN)
         branch same
-            ? return(soft_round_pack64(sign, x_parts.exponent, x_sig.add(aligned)))
+            ? return(soft_round_pack(sign, x_parts.exponent, x_sig.add(aligned)))
             : difference(sign, x_sig.sub(aligned), x_parts.exponent)
 
     // the larger magnitude came first, so the difference isn't negative; an exact zero is +0
@@ -81,7 +81,7 @@ routine soft_f64_add(a: U64, b: U64) -> U64
         cancelled : Bool = sig.eq(0)
         branch cancelled
             ? return(0)
-            : return(soft_round_pack64(sign, exponent, sig))
+            : return(soft_round_pack(sign, exponent, sig))
 
 /// F64 subtraction on the bits: `a + (-b)`, as compiler-rt's `__subdf3` computes it (so a NaN `b` comes back with its
 /// sign flipped).
@@ -126,12 +126,12 @@ routine soft_f64_mul(a: U64, b: U64) -> U64
     // the 106-bit product of two 53-bit significands, its leading bit at 104 or 105; shifted down by 50 with a
     // sticky bit, it is a significand for an exponent of the two exponents' sum minus 1022
     block finite(sign: U64, a_size: U64, b_size: U64)
-        x       : SoftParts64 = soft_unpack64(a_size)
-        y       : SoftParts64 = soft_unpack64(b_size)
+        x       : SoftParts64 = soft_unpack(a_size)
+        y       : SoftParts64 = soft_unpack(b_size)
         product : U128        = x.sig.to<U128>().mul_wrap(y.sig.to<U128>())
-        sig     : U128        = soft_shr_sticky128(product, 50)
+        sig     : U128        = soft_shr_sticky(product, 50)
         sum     : S32         = x.exponent.add(y.exponent)
-        r       : U64         = soft_round_pack64(sign, sum.sub(1022), sig.to_wrap<U64>())
+        r       : U64         = soft_round_pack(sign, sum.sub(1022), sig.to_wrap<U64>())
         return(r)
 
 // -- division ------------------------------------------------------------------
@@ -170,8 +170,8 @@ routine soft_f64_div(a: U64, b: U64) -> U64
 
     // a dividend below the divisor doubles, so the quotient is in [1, 2)
     block finite(sign: U64, a_size: U64, b_size: U64)
-        x     : SoftParts64 = soft_unpack64(a_size)
-        y     : SoftParts64 = soft_unpack64(b_size)
+        x     : SoftParts64 = soft_unpack(a_size)
+        y     : SoftParts64 = soft_unpack(b_size)
         apart : S32         = x.exponent.sub(y.exponent)
         below : Bool        = x.sig.lt(y.sig)
         num   : U64         = below
@@ -199,7 +199,7 @@ routine soft_f64_div(a: U64, b: U64) -> U64
     block finish(sign: U64, exponent: S32, rem: U64, quotient: U64)
         sticky : U64 = rem.ne(0).to<U64>()
         sig    : U64 = quotient.shl(1).bitor(sticky)
-        r      : U64 = soft_round_pack64(sign, exponent, sig)
+        r      : U64 = soft_round_pack(sign, exponent, sig)
         return(r)
 
 // -- square root and remainder ---------------------------------------------------
@@ -223,7 +223,7 @@ routine soft_f64_sqrt(a: U64) -> U64
     // an odd unbiased exponent moves one bit into the significand, so the root's exponent is a whole half; the
     // significand scaled by 2^56 has a 55-bit root, the 53 kept bits and two below them
     block finite(size: U64)
-        parts    : SoftParts64 = soft_unpack64(size)
+        parts    : SoftParts64 = soft_unpack(size)
         unbiased : S32         = parts.exponent.sub(1023)
         odd      : Bool        = unbiased.bitand(1).eq(1)
         sig      : U64         = odd
@@ -253,7 +253,7 @@ routine soft_f64_sqrt(a: U64) -> U64
         sticky : U64 = rem.ne(0).to<U64>()
         root   : U64 = res.to_wrap<U64>()
         sig    : U64 = root.shl(1).bitor(sticky)
-        r      : U64 = soft_round_pack64(0, half.add(1023), sig)
+        r      : U64 = soft_round_pack(0, half.add(1023), sig)
         return(r)
 
 /// The F64 remainder on the bits, exact: C's `fmod`, which LLVM calls for `frem`. The result has the sign of `a`
@@ -279,8 +279,8 @@ routine soft_f64_mod(a: U64, b: U64) -> U64
 
     // long division one exponent step at a time, keeping only the remainder (below 2 × den throughout)
     block finite(sign: U64, a_size: U64, b_size: U64)
-        x : SoftParts64 = soft_unpack64(a_size)
-        y : SoftParts64 = soft_unpack64(b_size)
+        x : SoftParts64 = soft_unpack(a_size)
+        y : SoftParts64 = soft_unpack(b_size)
         jump reduce(sign, x.sig, x.exponent, y.sig, y.exponent)
 
     block reduce(sign: U64, rem: U64, exponent: S32, den: U64, den_exponent: S32)
@@ -297,7 +297,7 @@ routine soft_f64_mod(a: U64, b: U64) -> U64
 
     // the remainder is exact and fits the format, so the packing doesn't round
     block finish(sign: U64, rem: U64, exponent: S32)
-        r : U64 = soft_round_pack64(sign, exponent, rem.shl(3))
+        r : U64 = soft_round_pack(sign, exponent, rem.shl(3))
         return(r)
 
 /// F64 raised to an integer power by repeated squaring: compiler-rt's `__powidf2`, with the same multiplications in

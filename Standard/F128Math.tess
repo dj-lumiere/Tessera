@@ -159,21 +159,21 @@ routine wide_normalize(negative: Bool, exponent: S64, hi: U128, lo: U64) -> F128
             hi: new_hi, lo: new_lo }
         return(w)
 
-routine wide_from_f128(x: F128) -> F128Extended
+routine F128.to<F128Extended>(self: Self) -> F128Extended
     block entry()
-        zero    : Bool         = f128_is_zero_bits(x.bits())
+        zero    : Bool         = f128_is_zero_bits(self.bits())
         nothing : F128Extended = wide_zero()
         branch zero
             ? return(nothing)
             : continue
-        p : F128Parts    = f128_unpack(x.bits())
-        w : F128Extended = F128Extended { negative: f128_is_negative_bits(x.bits()),
+        p : F128Parts    = f128_unpack(self.bits())
+        w : F128Extended = F128Extended { negative: f128_is_negative_bits(self.bits()),
             exponent: p.exponent, hi: p.sig.shl(15), lo: 0 }
         return(w)
 
-routine wide_from_i64(n: S64) -> F128Extended
+routine S64.to<F128Extended>(self: Self) -> F128Extended
     block entry()
-        w : F128Extended = wide_from_f128(n.to<F128>())
+        w : F128Extended = self.to<F128>().to<F128Extended>()
         return(w)
 
 /// Rounds once to F128 (overflow, subnormals, and underflow included).
@@ -349,15 +349,15 @@ routine F128Extended.div(self: Self, other: Self) -> Self
         unit  : Self = other.ldexp(0.sub(e))  // in [1, 2)
         seed  : F64  = unit.to<F128>().to<F64>()
         one64 : F64  = 1.0
-        y0    : Self = wide_from_f128(one64.div(seed).to<F128>())
-        one   : Self = wide_from_i64(1)
+        y0    : Self = F128.to<Self>(one64.div(seed).to<F128>())
+        one   : Self = S64.to<Self>(1)
         y1    : Self = y0.add(y0.mul(one.sub(unit.mul(y0))))
         y2    : Self = y1.add(y1.mul(one.sub(unit.mul(y1))))
         r     : Self = self.mul(y2).ldexp(0.sub(e))
         return(r)
 
 /// round to the nearest integer, for |self| < 2^62
-routine F128Extended.to_i64_nearest(self: Self) -> S64
+routine F128Extended.to_nearest<S64>(self: Self) -> S64
     block entry()
         rounded : F128 = self.to<F128>().round_ties_even()
         r       : S64  = rounded.to_clamp<S64>()
@@ -372,8 +372,8 @@ routine wide_exp(x: F128Extended) -> F128Extended
     block entry()
         ln2     : F128Extended = wide_const(0)
         inv_ln2 : F128Extended = wide_const(1)
-        q       : S64          = x.mul(inv_ln2).to_i64_nearest()
-        d       : F128Extended = x.sub(wide_from_i64(q).mul(ln2))
+        q       : S64          = x.mul(inv_ln2).to_nearest<S64>()
+        d       : F128Extended = x.sub(q.to<F128Extended>().mul(ln2))
         last    : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(),
             WIDE_EXP_COEF_LO.to<@U64>(), WIDE_EXP_COEF_EXP.to<@S64>(), 27)
         jump horner(26, last, d, q)
@@ -518,7 +518,7 @@ routine wide_log(x: F128Extended) -> F128Extended
         e : S64 = low
             ? x.exponent
             : x.exponent.add(1)
-        one  : F128Extended = wide_from_i64(1)
+        one  : F128Extended = S64.to<F128Extended>(1)
         t    : F128Extended = fr.sub(one).div(fr.add(one))
         tt   : F128Extended = t.mul(t)
         last : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
@@ -538,7 +538,7 @@ routine wide_log(x: F128Extended) -> F128Extended
 
     block finish(s: F128Extended, t: F128Extended, e: S64)
         ln_fr : F128Extended = s.mul(t).ldexp(1)
-        e_ln2 : F128Extended = wide_from_i64(e).mul(wide_const(0))
+        e_ln2 : F128Extended = e.to<F128Extended>().mul(wide_const(0))
         r     : F128Extended = e_ln2.add(ln_fr)
         return(r)
 
@@ -580,7 +580,7 @@ routine f128_reduce(x: F128) -> Reduced
             : window(p)
 
     block near_zero()
-        r : Reduced = Reduced { quadrant: 0, theta: wide_from_f128(x.abs()) }
+        r : Reduced = Reduced { quadrant: 0, theta: F128.to<F128Extended>(x.abs()) }
         return(r)
 
     block window(p: F128Parts)
@@ -775,8 +775,8 @@ routine F128Extended.sqrt(self: Self) -> Self
         unit128 : F128 = unit.to<F128>()
         seed64  : F64  = unit128.to<F64>().sqrt()
         one64   : F64  = 1.0
-        y0      : Self = wide_from_f128(one64.div(seed64).to<F128>())
-        three   : Self = wide_from_i64(3)
+        y0      : Self = F128.to<Self>(one64.div(seed64).to<F128>())
+        three   : Self = S64.to<Self>(3)
         y1      : Self = y0.mul(three.sub(unit.mul(y0).mul(y0))).ldexp(-1)
         y2      : Self = y1.mul(three.sub(unit.mul(y1).mul(y1))).ldexp(-1)
         r       : Self = unit.mul(y2).ldexp(half_e)
@@ -794,7 +794,7 @@ routine F128Extended.above_one(self: Self) -> Bool
 
 routine wide_one() -> F128Extended
     block entry()
-        r : F128Extended = wide_from_i64(1)
+        r : F128Extended = S64.to<F128Extended>(1)
         return(r)
 
 routine wide_half_pi() -> F128Extended
@@ -847,7 +847,7 @@ routine wide_ln_1p(x: F128Extended) -> F128Extended
         return(r)
 
     block series()
-        t    : F128Extended = x.div(x.add(wide_from_i64(2)))
+        t    : F128Extended = x.div(x.add(S64.to<F128Extended>(2)))
         tt   : F128Extended = t.mul(t)
         last : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
             WIDE_LOG_COEF_EXP.to<@S64>(), 25)
@@ -937,7 +937,7 @@ routine F128.log(self: Self, base: Self) -> Self
         branch div0
             ? return(naive)
             : continue
-        ratio : F128Extended = wide_log(wide_from_f128(self)).div(wide_log(wide_from_f128(base)))
+        ratio : F128Extended = wide_log(self.to<F128Extended>()).div(wide_log(base.to<F128Extended>()))
         r     : Self         = ratio.to<Self>()
         return(r)
 
@@ -977,7 +977,7 @@ routine f128_scale_angle(x: F128, which: USize) -> F128
         branch keep
             ? return(x)
             : continue
-        scaled : F128Extended = wide_from_f128(x).mul(wide_const(which))
+        scaled : F128Extended = x.to<F128Extended>().mul(wide_const(which))
         r      : F128         = scaled.to<F128>()
         return(r)
 

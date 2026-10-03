@@ -401,15 +401,15 @@ private routine ns_of(sec: S64, nsec: S64) -> S64
 private routine c_statx(dir: CInt, path: @Byte, flags: CInt, mask: U32, out: @Statx) -> CInt
 
 #target(os: "linux")
-private routine from_statx(s: Statx) -> Metadata
+private routine Statx.to<Metadata>(self: Self) -> Metadata
     block entry()
-        mode     : U32         = s.mode.to<U32>()
-        modified : S64         = ns_of(s.mtime.sec, s.mtime.nsec.to<S64>())
-        born     : Bool        = s.mask.bitand(STATX_BTIME).ne(0)
+        mode     : U32         = self.mode.to<U32>()
+        modified : S64         = ns_of(self.mtime.sec, self.mtime.nsec.to<S64>())
+        born     : Bool        = self.mask.bitand(STATX_BTIME).ne(0)
         created  : Option<S64> = born
-            ? Option<S64>.Present(ns_of(s.btime.sec, s.btime.nsec.to<S64>()))
+            ? Option<S64>.Present(ns_of(self.btime.sec, self.btime.nsec.to<S64>()))
             : .Absent
-        return(Metadata { kind: mode_kind(mode), size: s.size, modified_ns: modified,
+        return(Metadata { kind: mode_kind(mode), size: self.size, modified_ns: modified,
             created_ns: created, readonly: mode.bitand(0o200).eq(0) })
 
 /// statx of dir + path with flags: the raw struct.
@@ -426,7 +426,7 @@ private routine metadata_of(cpath: @Byte, follow: Bool) -> Result<Metadata, FsEr
             ? 0
             : AT_SYMLINK_NOFOLLOW
         branch stat_raw(AT_FDCWD, cpath, flags, st)
-            ? return(.Success(from_statx(st.load())))
+            ? return(.Success(st.load().to<Metadata>()))
             : return(failed<Metadata>())
 
 #target(os: "linux")
@@ -434,7 +434,7 @@ private routine fd_metadata(fd: CInt) -> Result<Metadata, FsError>
     block entry()
         claim st : @Statx <- uninit
         branch stat_raw(fd, "", AT_EMPTY_PATH, st)
-            ? return(.Success(from_statx(st.load())))
+            ? return(.Success(st.load().to<Metadata>()))
             : return(failed<Metadata>())
 
 /// The permission bits, or 0o666 when they can't be read.
@@ -483,13 +483,14 @@ private routine c_fstat(fd: CInt, out: @DarwinStat) -> CInt
 private routine c_fstat(fd: CInt, out: @DarwinStat) -> CInt
 
 #target(os: "macos")
-private routine from_stat(s: DarwinStat) -> Metadata
+private routine DarwinStat.to<Metadata>(self: Self) -> Metadata
     block entry()
-        mode     : U32 = s.mode.to<U32>()
-        modified : S64 = ns_of(s.mtime.sec, s.mtime.nsec)
-        created  : S64 = ns_of(s.birthtime.sec, s.birthtime.nsec)
-        return(Metadata { kind: mode_kind(mode), size: s.size.to_wrap<U64>(), modified_ns: modified,
-            created_ns: .Present(created), readonly: mode.bitand(0o200).eq(0) })
+        mode     : U32 = self.mode.to<U32>()
+        modified : S64 = ns_of(self.mtime.sec, self.mtime.nsec)
+        created  : S64 = ns_of(self.birthtime.sec, self.birthtime.nsec)
+        return(Metadata { kind: mode_kind(mode), size: self.size.to_wrap<U64>(),
+            modified_ns: modified, created_ns: .Present(created),
+            readonly: mode.bitand(0o200).eq(0) })
 
 #target(os: "macos")
 private routine metadata_of(cpath: @Byte, follow: Bool) -> Result<Metadata, FsError>
@@ -501,7 +502,7 @@ private routine metadata_of(cpath: @Byte, follow: Bool) -> Result<Metadata, FsEr
 
     block got(st: @DarwinStat, rc: CInt)
         branch rc.eq(0)
-            ? return(.Success(from_stat(st.load())))
+            ? return(.Success(st.load().to<Metadata>()))
             : return(failed<Metadata>())
 
 #target(os: "macos")
@@ -509,7 +510,7 @@ private routine fd_metadata(fd: CInt) -> Result<Metadata, FsError>
     block entry()
         claim st : @DarwinStat <- uninit
         branch c_fstat(fd, st).eq(0)
-            ? return(.Success(from_stat(st.load())))
+            ? return(.Success(st.load().to<Metadata>()))
             : return(failed<Metadata>())
 
 #target(os: "macos")
@@ -945,7 +946,7 @@ routine DirIter.next(self: @Self) -> Option<DirEntry>
             .Failure       -> found(name, FileKind.Other)
 
     block found(name: @Byte, kind: FileKind)
-        return(.Present(DirEntry { name: CStr.from_ptr(name).to_bytes(), kind: kind }))
+        return(.Present(DirEntry { name: CStr.from_ptr(name).to<Bytes>(), kind: kind }))
 
 /// The metadata of the entry next last returned, a link followed.
 #target(os: ("linux", "macos"))

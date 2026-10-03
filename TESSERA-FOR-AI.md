@@ -75,8 +75,8 @@ routine main() -> S32
   `self.count.store(self.count.load().add(1))`. The load needn't come first: `x.sub(p.load()).store_into(p)`
   (for a commutative op, put the load first: `p.load().add(x).store_into(p)`). A literal receiver takes its type from the pointer
   (`0.store_into(count)`).
-- Memory is never read implicitly. A place passed as an argument is its address, so `U8.from_byte(p.stride(i))` is an
-  error: write `U8.from_byte(p.stride(i).load())`.
+- Memory is never read implicitly. A place passed as an argument is its address, so `Byte.to<U8>(p.stride(i))` is an
+  error: write `Byte.to<U8>(p.stride(i).load())`.
 - `.addr()` gives a `Callable`'s code address as an `Addr`, for C code that takes a function as `void*`:
   `fn.addr()`, or `my_routine.addr()` (typed by the routine's own signature). A `Callable` never widens to `Addr` on
   its own, and an `Addr` is not callable.
@@ -188,9 +188,9 @@ routine main() -> S32
   `U64` / `S64`: convert with `n.to<U64>()` / `x.to<USize>()`. Hashes stay `U64`.
 - `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`, `abs_diff` returns the unsigned type.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
-- `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `U8.from_byte(b)` /
-  `S8.from_byte(b)` move between it and the numbers, and `S64` <-> `U64` is `to_wrap<U64>()` / `to_wrap<S64>()`. It has
-  comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, `shl` / `shr`, and `to<U8>()`. Memory and text are `@Byte`;
+- `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to<U8>()` /
+  `b.to<S8>()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap<U64>()` / `to_wrap<S64>()`. It has
+  comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, and `shl` / `shr`. Memory and text are `@Byte`;
   a byte literal `b'A'` is a `Byte`, and a `Byte` hex literal has exactly two digits (`0x0A`).
 - `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `c.to<U32>()` and `n.to<Char>()`
   convert.
@@ -235,7 +235,11 @@ routine main() -> S32
   hides an import's same name). A routine value of an overloaded name is picked by its Callable type
   (`f.to<Callable<(S64,), S64>>()`, or where it goes); an overloaded `#export` / `#external("c")` names its C
   symbol. Overload only for one operation over several types: a different behavior gets a different name
-  (`add_wrap`, not an `add` that wraps).
+  (`add_wrap`, not an `add` that wraps). Don't put a parameter's type in a name the overloads already tell apart
+  (the stdlib's `wide_divrem(u, d)` for `U128` and `U256`, `soft_divmod`, `xxh64(data, len, seed)` beside
+  `xxh64(v, seed)`); a type that only passes through (the Writer, an element) is a type parameter instead. Most of
+  these sets have no `USize` overload, so a bare literal argument several overloads take is ambiguous: pass a typed
+  value (`m.set(U64.MIN)` on a `BigNat`, or bind `one : U64 = 1` first).
 - When every operand is a literal, name the type with a typewise call: `S64.eq(0, 1)`, `U128.shl(1, 100)`. There are
   no literal suffixes (`0u64`).
 - `Bytes` is the one text type: bytes, UTF-8 by convention, unchecked (`is_utf8` checks; `chars()` reads a bad
@@ -244,7 +248,7 @@ routine main() -> S32
   Source files must be UTF-8.
 - String literals are `Bytes` where a `Bytes` is expected, `CStr` / `CWStr` (terminated C text) where one of those
   is, and a NUL-terminated `@Byte` where a pointer is. Declare C string parameters as `s: CStr`. A `Bytes`
-  view has no terminator: pass `s.to_cstr(alloc)` (a copy) or `buf.to_cstr()` on a `List<Byte>`.
+  view has no terminator: pass `s.to<CStr>(alloc)` (a copy) or `buf.to<CStr>()` on a `List<Byte>`.
 
 **Errors**
 
@@ -359,15 +363,17 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
 
 - Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.shared()` is the pointer a
   Writer parameter takes), a `FileHandle`, `BufWriter<W>` (`out.construct(inner)`, then `flush()`),
-  `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `buf.write("...")`, then `buf.to_bytes()`; it is
+  `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `buf.write("...")`, then `buf.to<Bytes>()`; it is
   the string builder). Standard input is `In`: `In.read_line(alloc)`, `read_word`, `read_count(n, alloc)`,
   `read_all`, `read(buffer, n)`, all through one buffer the process shares.
 - Reading numbers back: `S32.parse(text)` (every integer type) gives `Result<T, ParseIntError>` (`Empty`,
   `Invalid`, `OutOfRange`) for an optional sign and decimal digits; `F64.parse` / `F32.parse` give
   `Result<T, ParseFloatError>`. Two numbers from a line: `In.read_word(alloc)` twice, then `S32.parse`.
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
-  `Bytes`, and `p.represent_into(out)` for a pointer's address (`0x7ffd5e8c1a40`); `represent_hex`,
-  `represent_fixed(out, digits)`; `represent_with(out, v, spec)` with a `FormatSpec`.
+  `Bytes`, and `p.represent_into(out)` for a pointer's address (`0x7ffd5e8c1a40`); `v.represent_hex(out)` for an
+  integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex(out,
+  min_digits)` (`U64`) zero-pad; `represent_fixed(out, digits)`; `represent_with(out, v, spec)` with a `FormatSpec`.
+  There are no `write_decimal_*` / `write_hex_*` helpers: the integer's own method is the writer.
 - `v.diagnose_into(out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.Present(3)`, `[1, 2]`. A record or
   record gets routines written for it with `#derive(Represent, Diagnose, Equal, Hash, Compare)` (any subset), which
   also declares the conformance; choices and variants get all five without asking. Otherwise declare the routine: a
@@ -462,16 +468,27 @@ stdlib supplies `memcpy` / `memmove` / `memset` / `memcmp` (and ARM's `__aeabi_m
 or libgcc: the soft-float routines LLVM calls for F16 / BF16 / F32 / F64 without a floating-point unit (`__addsf3`,
 `__aeabi_dmul`, `__truncsfhf2`, `sqrtf`, ...), integer division (`__udivdi3`, `__aeabi_uldivmod`, ...), and
 `__clzsi2`, written with integer operations only, weak and `#no_builtins`. Each export wraps an ordinary routine
-(`soft_f32_add(a, b)` on the bits) that any target can call, which is how `tests/soft_float` checks them against the
-host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them and requires
+(`soft_f32_add(a, b)` on the bits, `x.soft_to<F16>()` for a conversion) that any target can call, which is how
+`tests/soft_float` checks them against the host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them and requires
 that nothing is left undefined; the golden run skips them).
 
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.
 
-**Naming conversions.** A conversion to a type is `to<T>()`: `n.to<S64>()`, `x.to_wrap<U8>()`, `arr.to<@T>()`,
-`p.to<@U>()` (each pair of types is its own routine, `routine S32.to<S64>`). There is no `to_s64` or `as_<type>`.
-Other ways to make a value are named for what they make (`out.to_bytes()`).
+**Naming conversions.** `to<T>` is the standard spelling of a type conversion: a routine whose job is turning a
+value into another type is the method `x.to<T>()` on the type it converts from, the target a fixed type argument
+(each pair of types is its own routine, `routine S32.to<S64>`): `n.to<S64>()`, `x.to_wrap<U8>()`, `arr.to<@T>()`,
+`p.to<@U>()`, `b.to<U8>()` on a `Byte`, `s.to<CStr>(alloc)` / `s.to<CWStr>(alloc)` on a `Bytes` (a conversion may take
+parameters), `buf.to<Bytes>()` on a `List<Byte>` or `SliceWriter`, `c.to<Bytes>()` on a `CStr`,
+`a.to<Vector<F32, 4>>()` on an `Array`, `n.to<F128Big>()`, `f.to<F128Extended>()`. Its variants keep the family
+(`to_wrap`, `to_clamp`, `to_checked`, `to_nearest<S64>()` on an `F128Extended`). There is no `to_s64`, `as_<type>`,
+`y_from_x`, or `x_to_y`, and a routine that differs from another only in the type it produces takes the type as a
+type argument (`p.read_le<U64>(off)` on a `@Byte`). Not conversions: values built from raw parts
+(`Bytes.from_ptr(p, n)`, `CStr.from_ptr(p)`), bits seen as another type (`F64.from_bits(u)`, `x.bits()`), byte order
+(`to_be`, `from_le`). One exception: a routine that implements a conversion's C runtime call (LLVM lowers
+`F32.to<F16>()` to `__truncsfhf2` on x86, and every float conversion to a call on a target without an FPU) can't be
+that `to<T>`, which would call itself there. It keeps the shape under its own name, `x.soft_to<F16>()`
+(Standard/SoftFloat), and a shim that only exists to be exported is named for its symbol (`export_truncsfhf2`).
 
 **Name case.** Types, concepts, modules, and choice / variant cases are `PascalCase` (`FsError.NotFound`,
 `.Absent`), with acronyms written as words (`Eof`, `Utf8Decoded`, `Nan`). Routines, fields, blocks, and values are

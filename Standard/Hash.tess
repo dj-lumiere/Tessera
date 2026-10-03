@@ -6,7 +6,7 @@
 //
 // Public surface:
 //   xxh64(data, len, seed) -> U64    — one-shot byte hash
-//   xxh64_hash_u64(v, seed) -> U64    — fast path for an 8-byte integer
+//   xxh64(v, seed) -> U64    — fast path for an 8-byte integer
 //
 // All arithmetic is modulo 2^64, as the reference specifies: add_wrap and
 // mul_wrap, never the crashing add and mul.
@@ -28,9 +28,10 @@ preset XXH64_P5: U64 = 0x27D4EB2F165667C5
 
 // -- little-endian byte readers ------------------------------------------------
 
-/// Read 8 bytes starting at data[off] as a little-endian U64.
-/// Byte-by-byte so we don't depend on host endianness or alignment.
-routine xxh64_read_u64(data: @Byte, off: USize) -> U64
+/// Reads 8 bytes starting at `self.stride(off)` as a little-endian U64, byte by byte so it does not depend on host endianness or alignment.
+/// :param off: The offset of the first byte to read.
+/// :returns: The little-endian value of the 8 bytes.
+routine Ptr<Byte>.read_le<U64>(self: Self, off: USize) -> U64
     block entry()
         jump loop(0, 0, 0)
 
@@ -40,16 +41,15 @@ routine xxh64_read_u64(data: @Byte, off: USize) -> U64
             ? return(acc)
             : continue
         idx        : USize = off.add(i)
-        b          : Byte  = data.stride(idx).load()
-        byte_value : U64   = U8.from_byte(b).to<U64>()
+        b          : Byte  = self.stride(idx).load()
+        byte_value : U64   = b.to<U8>().to<U64>()
         next       : U64   = acc.bitor(byte_value.shl(shift))
         jump loop(i.add(1), next, shift.add(8))
 
-/// Reads 4 bytes starting at `data[off]` as a little-endian U32, byte by byte so it does not depend on host endianness or alignment.
-/// :param data: The buffer to read from.
+/// Reads 4 bytes starting at `self.stride(off)` as a little-endian U32, byte by byte so it does not depend on host endianness or alignment.
 /// :param off: The offset of the first byte to read.
 /// :returns: The little-endian value of the 4 bytes.
-routine xxh64_read_u32(data: @Byte, off: USize) -> U32
+routine Ptr<Byte>.read_le<U32>(self: Self, off: USize) -> U32
     block entry()
         jump loop(0, 0, 0)
 
@@ -59,8 +59,8 @@ routine xxh64_read_u32(data: @Byte, off: USize) -> U32
             ? return(acc)
             : continue
         idx        : USize = off.add(i)
-        b          : Byte  = data.stride(idx).load()
-        byte_value : U32   = U8.from_byte(b).to<U32>()
+        b          : Byte  = self.stride(idx).load()
+        byte_value : U32   = b.to<U8>().to<U32>()
         next       : U32   = acc.bitor(byte_value.shl(shift))
         jump loop(i.add(1), next, shift.add(8))
 
@@ -137,10 +137,10 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
             : big_finish(v1, v2, v3, v4, off)
 
     block big_step(v1: U64, v2: U64, v3: U64, v4: U64, off: USize)
-        k1  : U64 = xxh64_read_u64(data, off)
-        k2  : U64 = xxh64_read_u64(data, off.add(8))
-        k3  : U64 = xxh64_read_u64(data, off.add(16))
-        k4  : U64 = xxh64_read_u64(data, off.add(24))
+        k1  : U64 = data.read_le<U64>(off)
+        k2  : U64 = data.read_le<U64>(off.add(8))
+        k3  : U64 = data.read_le<U64>(off.add(16))
+        k4  : U64 = data.read_le<U64>(off.add(24))
         v1n : U64 = xxh64_round(v1, k1)
         v2n : U64 = xxh64_round(v2, k2)
         v3n : U64 = xxh64_round(v3, k3)
@@ -171,7 +171,7 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
             : tail4(h, off)
 
     block tail8_step(h: U64, off: USize)
-        k     : U64 = xxh64_read_u64(data, off)
+        k     : U64 = data.read_le<U64>(off)
         mixed : U64 = h.bitxor(xxh64_round(0, k)).rotl(27)
         h2    : U64 = mixed.mul_wrap(XXH64_P1).add_wrap(XXH64_P4)
         jump tail8_loop(h2, off.add(8))
@@ -184,7 +184,7 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
             : tail1_loop(h, off)
 
     block tail4_step(h: U64, off: USize)
-        k32   : U32 = xxh64_read_u32(data, off)
+        k32   : U32 = data.read_le<U32>(off)
         ku    : U64 = k32.to<U64>()
         mixed : U64 = h.bitxor(ku.mul_wrap(XXH64_P1)).rotl(23)
         h2    : U64 = mixed.mul_wrap(XXH64_P2).add_wrap(XXH64_P3)
@@ -199,7 +199,7 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
 
     block tail1_step(h: U64, off: USize)
         b     : Byte = data.stride(off).load()
-        bu    : U64  = U8.from_byte(b).to<U64>()
+        bu    : U64  = b.to<U8>().to<U64>()
         mixed : U64  = h.bitxor(bu.mul_wrap(XXH64_P5)).rotl(11)
         h2    : U64  = mixed.mul_wrap(XXH64_P1)
         jump tail1_loop(h2, off.add(1))
@@ -220,7 +220,7 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
 /// :param v: The integer to hash.
 /// :param seed: The seed of the hash.
 /// :returns: The 64-bit hash.
-routine xxh64_hash_u64(v: U64, seed: U64) -> U64
+routine xxh64(v: U64, seed: U64) -> U64
     block entry()
         h_len   : U64 = seed.add_wrap(XXH64_P5).add_wrap(8)
         k       : U64 = xxh64_round(0, v)
