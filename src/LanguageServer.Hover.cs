@@ -60,7 +60,8 @@ public static partial class LanguageServer
         // The fence names the language the Rider plugin registers for highlighting code in hover.
         var sb = new StringBuilder($"```tessera\n{code}\n```");
         var shown = (bindings ?? []).Where(b => b.Name != b.Type).ToList();
-        if (shown.Count > 0) sb.Append("\n\n").Append(string.Join("  \n", shown.Select(b => $"`{b.Name}` is `{b.Type}`")));
+        // One paragraph each: an editor drops a trailing-space line break, which would run them into one line.
+        if (shown.Count > 0) sb.Append("\n\n").Append(string.Join("\n\n", shown.Select(b => $"`{b.Name}` is `{b.Type}`")));
         if (!string.IsNullOrWhiteSpace(doc)) sb.Append("\n\n").Append(RenderDoc(doc));
         return sb.ToString();
     }

@@ -188,7 +188,8 @@ public static partial class LanguageServer
         string shown = Shown(file);
         try
         {
-            var (target, sources) = Solution(file);
+            var (target, sources, manifestProblem) = Solution(file);
+            if (manifestProblem is not null) diagnostics.Add(Diagnostic(text, 3, 1, 1, manifestProblem));
             var own = sources.Select(Shown).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var decls = new List<Decl>();
             foreach (var source in sources)
@@ -231,12 +232,22 @@ public static partial class LanguageServer
 
     /// The target and the files a document builds with: its `config.toml` solution's import closure from the document,
     /// or the document alone.
-    private static (BuildTarget Target, List<string> Sources) Solution(string file)
+    private static (BuildTarget Target, List<string> Sources, string? ManifestProblem) Solution(string file)
     {
-        if (Manifest.Find(Path.GetDirectoryName(file)!) is not { } path) return (BuildTarget.Host(), [file]);
-        var manifest = Manifest.Load(path);
-        if (!IsUnder(file, manifest.Directory)) return (manifest.Target, [file]);
-        return (manifest.Target, Manifest.ImportClosure(file, manifest.Roots, manifest.OutputDirectory));
+        if (Manifest.Find(Path.GetDirectoryName(file)!) is not { } path) return (BuildTarget.Host(), [file], null);
+        Manifest manifest;
+        try
+        {
+            manifest = Manifest.Load(path);
+        }
+        catch (ManifestError e)
+        {
+            // A config.toml it can't read, often another language's (a RazorForge folder that keeps its Tessera
+            // translation, main.tess, next to main.rf): the document is checked alone, and says why.
+            return (BuildTarget.Host(), [file], $"checked on its own: {e.Message}");
+        }
+        if (!IsUnder(file, manifest.Directory)) return (manifest.Target, [file], null);
+        return (manifest.Target, Manifest.ImportClosure(file, manifest.Roots, manifest.OutputDirectory), null);
     }
 
     private static readonly Dictionary<string, (DateTime Stamp, List<Decl> Decls)> Stdlib =

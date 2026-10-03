@@ -54,31 +54,34 @@ public static partial class LanguageServer
         }
         var data = new JsonArray();
         if (text is null) return new JsonObject { ["data"] = data };
+        string shown = analysis?.Shown ?? PathOf(uri);
 
-        List<Token> tokens;
-        try
-        {
-            tokens = new Lexer(analysis?.Shown ?? PathOf(uri), text).Lex();
-        }
-        catch (CompileError)
-        {
-            return new JsonObject { ["data"] = data };
-        }
-
-        var classifier = analysis is not null && analysis.Text == text ? new Classifier(tokens, analysis) : null;
-        var kinds = classifier?.Run() ?? [];
         var spans = new List<(int Line, int Col, int Length, string Kind)>();
-        for (int i = 0; i < tokens.Count; i++)
+        if (analysis is not null && analysis.Text == text)
         {
-            var t = tokens[i];
-            string? kind = kinds.GetValueOrDefault((t.Pos.Line, t.Pos.Col)) ?? Lexical(tokens, i);
-            if (kind is null || t.Pos.Line < 1 || t.Text.Length == 0) continue;
-            spans.Add((t.Pos.Line, t.Pos.Col, t.Kind == TokenKind.Hash && i + 1 < tokens.Count ? 1 : t.Text.Length, kind));
+            if (Lex(shown, text) is { } tokens)
+                spans.AddRange(Classified(tokens, analysis, line => line));
         }
-        foreach (var t in classifier?.Extra ?? [])
-            if (kinds.GetValueOrDefault((t.Pos.Line, t.Pos.Col)) is { } kind)
-                spans.Add((t.Pos.Line, t.Pos.Col, t.Text.Length, kind));
+        else
+        {
+            // While the text has changed since its last check (a line being typed that doesn't parse yet), the lines
+            // that haven't changed keep the colors that check gave them, and only the edited ones fall back to what
+            // their tokens say by themselves.
+            var kept = analysis is null ? [] : UnchangedLines(analysis.Text, text);
+            if (kept.Count > 0 && Lex(analysis!.Shown, analysis.Text) is { } before)
+                spans.AddRange(Classified(before, analysis, line => kept.GetValueOrDefault(line)));
+            var keptLines = kept.Values.ToHashSet();
+            if (Lex(shown, text) is { } now)
+                for (int i = 0; i < now.Count; i++)
+                {
+                    var t = now[i];
+                    if (keptLines.Contains(t.Pos.Line) || Lexical(now, i) is not { } kind || t.Pos.Line < 1 || t.Text.Length == 0)
+                        continue;
+                    spans.Add((t.Pos.Line, t.Pos.Col, t.Kind == TokenKind.Hash && i + 1 < now.Count ? 1 : t.Text.Length, kind));
+                }
+        }
         spans.AddRange(DocSpans(text, "///"));
+
         int prevLine = 0, prevChar = 0;
         foreach (var (spanLine, spanCol, length, kind) in spans.OrderBy(x => x.Line).ThenBy(x => x.Col))
         {
@@ -92,6 +95,56 @@ public static partial class LanguageServer
             prevChar = ch;
         }
         return new JsonObject { ["data"] = data };
+    }
+
+    private static List<Token>? Lex(string shown, string text)
+    {
+        try
+        {
+            return new Lexer(shown, text).Lex();
+        }
+        catch (CompileError)
+        {
+            return null;
+        }
+    }
+
+    /// The colored tokens of a checked text, each moved to the line `lineOf` gives it (0 drops it): what the check
+    /// resolved each name to, else what the token is by itself.
+    private static IEnumerable<(int Line, int Col, int Length, string Kind)> Classified(List<Token> tokens, Analysis analysis,
+        Func<int, int> lineOf)
+    {
+        var classifier = new Classifier(tokens, analysis);
+        var kinds = classifier.Run();
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            var t = tokens[i];
+            string? kind = kinds.GetValueOrDefault((t.Pos.Line, t.Pos.Col)) ?? Lexical(tokens, i);
+            int line = t.Pos.Line < 1 ? 0 : lineOf(t.Pos.Line);
+            if (kind is null || line <= 0 || t.Text.Length == 0) continue;
+            yield return (line, t.Pos.Col, t.Kind == TokenKind.Hash && i + 1 < tokens.Count ? 1 : t.Text.Length, kind);
+        }
+        foreach (var t in classifier.Extra)
+            if (kinds.GetValueOrDefault((t.Pos.Line, t.Pos.Col)) is { } kind && lineOf(t.Pos.Line) is > 0 and var line)
+                yield return (line, t.Pos.Col, t.Text.Length, kind);
+    }
+
+    /// Where each line of `before` that is still there, unchanged, sits in `after` (1-based): the lines above the
+    /// first difference and below the last one. An edit is one stretch of the text, so this keeps everything else.
+    private static Dictionary<int, int> UnchangedLines(string before, string after)
+    {
+        var a = before.Replace("\r\n", "\n").Split('\n');
+        var b = after.Replace("\r\n", "\n").Split('\n');
+        var map = new Dictionary<int, int>();
+        int head = 0;
+        while (head < a.Length && head < b.Length && a[head] == b[head])
+        {
+            map[head + 1] = head + 1;
+            head++;
+        }
+        for (int tail = 1; tail <= Math.Min(a.Length, b.Length) - head && a[^tail] == b[^tail]; tail++)
+            map[a.Length - tail + 1] = b.Length - tail + 1;
+        return map;
     }
 
     // A field: `:param name:` and `:typeparam Name:` name what they describe, the others (`:returns:`) don't.
