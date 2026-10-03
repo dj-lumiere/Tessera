@@ -12,6 +12,9 @@
 // register on x86_64). Each is weak, so a program's own definition, or a C library it links, wins; and #no_builtins,
 // so LLVM can't turn its body into a call. The bodies are Standard/SoftFloat's integer routines, which any target can
 // call (the hosted tests check them against the hardware).
+//
+// The 128-bit division and float conversion helpers are exported on hosted 32-bit targets too, whose C runtime may
+// lack them (libgcc builds them only for 64-bit targets).
 
 module Standard::Core
 
@@ -386,11 +389,19 @@ private routine export_floatuntihf(x: U128) -> F16
 
 // -- 128-bit conversions ---------------------------------------------------------
 //
-// On a 64-bit target without an operating system. Every 32-bit target, hosted or not, has them from
-// Standard/Int128Float.tess, since compiler-rt and libgcc build them only for 64-bit targets.
+// On a 64-bit target without an operating system, and on every 32-bit target, hosted or not: libgcc builds its
+// 128-bit routines only for 64-bit targets, and compiler-rt only for some 32-bit ones (riscv32, wasm32), so a hosted
+// 32-bit target's C runtime may not have them. A 64-bit hosted target takes them from its own.
 
 /// `__fixsfti`: F32 to S128, rounding toward zero.
 #[export("__fixsfti"), no_builtins, target(os: "none", size: 64)]
+private routine export_fixsfti(a: F32) -> S128
+    block entry()
+        r : S128 = soft_f32_to_s128(a.bits())
+        return(r)
+
+/// `__fixsfti`: F32 to S128, rounding toward zero.
+#[export("__fixsfti"), no_builtins, target(size: 32)]
 private routine export_fixsfti(a: F32) -> S128
     block entry()
         r : S128 = soft_f32_to_s128(a.bits())
@@ -403,8 +414,22 @@ private routine export_fixunssfti(a: F32) -> U128
         r : U128 = soft_f32_to_u128(a.bits())
         return(r)
 
+/// `__fixunssfti`: F32 to U128, rounding toward zero.
+#[export("__fixunssfti"), no_builtins, target(size: 32)]
+private routine export_fixunssfti(a: F32) -> U128
+    block entry()
+        r : U128 = soft_f32_to_u128(a.bits())
+        return(r)
+
 /// `__fixdfti`: F64 to S128, rounding toward zero.
 #[export("__fixdfti"), no_builtins, target(os: "none", size: 64)]
+private routine export_fixdfti(a: F64) -> S128
+    block entry()
+        r : S128 = soft_f64_to_s128(a.bits())
+        return(r)
+
+/// `__fixdfti`: F64 to S128, rounding toward zero.
+#[export("__fixdfti"), no_builtins, target(size: 32)]
 private routine export_fixdfti(a: F64) -> S128
     block entry()
         r : S128 = soft_f64_to_s128(a.bits())
@@ -417,8 +442,22 @@ private routine export_fixunsdfti(a: F64) -> U128
         r : U128 = soft_f64_to_u128(a.bits())
         return(r)
 
+/// `__fixunsdfti`: F64 to U128, rounding toward zero.
+#[export("__fixunsdfti"), no_builtins, target(size: 32)]
+private routine export_fixunsdfti(a: F64) -> U128
+    block entry()
+        r : U128 = soft_f64_to_u128(a.bits())
+        return(r)
+
 /// `__floattisf`: S128 to F32, rounding to nearest even.
 #[export("__floattisf"), no_builtins, target(os: "none", size: 64)]
+private routine export_floattisf(x: S128) -> F32
+    block entry()
+        r : F32 = .from_bits(soft_s128_to_f32(x))
+        return(r)
+
+/// `__floattisf`: S128 to F32, rounding to nearest even.
+#[export("__floattisf"), no_builtins, target(size: 32)]
 private routine export_floattisf(x: S128) -> F32
     block entry()
         r : F32 = .from_bits(soft_s128_to_f32(x))
@@ -431,6 +470,13 @@ private routine export_floatuntisf(x: U128) -> F32
         r : F32 = .from_bits(soft_u128_to_f32(x))
         return(r)
 
+/// `__floatuntisf`: U128 to F32, rounding to nearest even.
+#[export("__floatuntisf"), no_builtins, target(size: 32)]
+private routine export_floatuntisf(x: U128) -> F32
+    block entry()
+        r : F32 = .from_bits(soft_u128_to_f32(x))
+        return(r)
+
 /// `__floattidf`: S128 to F64, rounding to nearest even.
 #[export("__floattidf"), no_builtins, target(os: "none", size: 64)]
 private routine export_floattidf(x: S128) -> F64
@@ -438,8 +484,22 @@ private routine export_floattidf(x: S128) -> F64
         r : F64 = .from_bits(soft_s128_to_f64(x))
         return(r)
 
+/// `__floattidf`: S128 to F64, rounding to nearest even.
+#[export("__floattidf"), no_builtins, target(size: 32)]
+private routine export_floattidf(x: S128) -> F64
+    block entry()
+        r : F64 = .from_bits(soft_s128_to_f64(x))
+        return(r)
+
 /// `__floatuntidf`: U128 to F64, rounding to nearest even.
 #[export("__floatuntidf"), no_builtins, target(os: "none", size: 64)]
+private routine export_floatuntidf(x: U128) -> F64
+    block entry()
+        r : F64 = .from_bits(soft_u128_to_f64(x))
+        return(r)
+
+/// `__floatuntidf`: U128 to F64, rounding to nearest even.
+#[export("__floatuntidf"), no_builtins, target(size: 32)]
 private routine export_floatuntidf(x: U128) -> F64
     block entry()
         r : F64 = .from_bits(soft_u128_to_f64(x))
@@ -541,8 +601,21 @@ private routine export_moddi3(n: S64, d: S64) -> S64
         r : S64 = rem
         return(r)
 
+// The 128-bit division helpers, like the 128-bit conversions above, are on every 32-bit target too. The stdlib's own
+// U128 and S128 division never calls them (Div128.tess divides by limbs), but LLVM's udiv / sdiv on an i128, which
+// a program can write itself (`udiv<U128>(a, b)`), calls them on riscv32, wasm32, and x32, whose C runtime may not
+// have them.
+
 /// `__udivti3`: U128 division, rounding toward zero.
-#[export("__udivti3"), no_builtins, target(os: "none")]
+#[export("__udivti3"), no_builtins, target(os: "none", size: 64)]
+private routine export_udivti3(n: U128, d: U128) -> U128
+    block entry()
+        q, rem = soft_u128_divmod(n, d)
+        r : U128 = q
+        return(r)
+
+/// `__udivti3`: U128 division, rounding toward zero.
+#[export("__udivti3"), no_builtins, target(size: 32)]
 private routine export_udivti3(n: U128, d: U128) -> U128
     block entry()
         q, rem = soft_u128_divmod(n, d)
@@ -550,7 +623,15 @@ private routine export_udivti3(n: U128, d: U128) -> U128
         return(r)
 
 /// `__umodti3`: the U128 remainder.
-#[export("__umodti3"), no_builtins, target(os: "none")]
+#[export("__umodti3"), no_builtins, target(os: "none", size: 64)]
+private routine export_umodti3(n: U128, d: U128) -> U128
+    block entry()
+        quotient, rem = soft_u128_divmod(n, d)
+        r : U128 = rem
+        return(r)
+
+/// `__umodti3`: the U128 remainder.
+#[export("__umodti3"), no_builtins, target(size: 32)]
 private routine export_umodti3(n: U128, d: U128) -> U128
     block entry()
         quotient, rem = soft_u128_divmod(n, d)
@@ -558,7 +639,15 @@ private routine export_umodti3(n: U128, d: U128) -> U128
         return(r)
 
 /// `__divti3`: S128 division, rounding toward zero.
-#[export("__divti3"), no_builtins, target(os: "none")]
+#[export("__divti3"), no_builtins, target(os: "none", size: 64)]
+private routine export_divti3(n: S128, d: S128) -> S128
+    block entry()
+        q, rem = soft_s128_divmod(n, d)
+        r : S128 = q
+        return(r)
+
+/// `__divti3`: S128 division, rounding toward zero.
+#[export("__divti3"), no_builtins, target(size: 32)]
 private routine export_divti3(n: S128, d: S128) -> S128
     block entry()
         q, rem = soft_s128_divmod(n, d)
@@ -566,7 +655,15 @@ private routine export_divti3(n: S128, d: S128) -> S128
         return(r)
 
 /// `__modti3`: the S128 remainder, with the dividend's sign.
-#[export("__modti3"), no_builtins, target(os: "none")]
+#[export("__modti3"), no_builtins, target(os: "none", size: 64)]
+private routine export_modti3(n: S128, d: S128) -> S128
+    block entry()
+        quotient, rem = soft_s128_divmod(n, d)
+        r : S128 = rem
+        return(r)
+
+/// `__modti3`: the S128 remainder, with the dividend's sign.
+#[export("__modti3"), no_builtins, target(size: 32)]
 private routine export_modti3(n: S128, d: S128) -> S128
     block entry()
         quotient, rem = soft_s128_divmod(n, d)

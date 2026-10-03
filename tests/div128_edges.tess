@@ -1,0 +1,98 @@
+// U128 / S128 division and remainder at the edges. A 64-bit target divides with Knuth's algorithm D on U64 limbs
+// (Div128.tess), a 32-bit one with the same algorithm on 32-bit limbs (Div256.tess), and both must print the same:
+// divisors at every limb boundary, divisors larger than the dividend, steps that need Knuth's add-back, and S128.MIN
+// against 1, MAX, and itself. Each line also checks quotient * divisor + remainder = dividend and that the remainder
+// is smaller than the divisor (with the dividend's sign). The crashes, a zero divisor and MIN / -1, are
+// div128_by_zero.tess, div128_signed_by_zero.tess, and div128_min_neg_one.tess.
+
+import Standard::Format
+import Standard::Os
+
+routine verdict(ok: Bool) -> Bytes
+    block entry()
+        branch ok
+            ? return("ok")
+            : return("WRONG")
+
+routine unsigned(label: Bytes, u: U128, d: U128) -> Void
+    block entry()
+        q    : U128 = u.div(d)
+        r    : U128 = u.mod(d)
+        back : U128 = q.mul_wrap(d).add_wrap(r)
+        ok   : Bool = back.eq(u).bitand(r.lt(d))
+        Out.write("{label}: {q} rem {r} {verdict(ok)}\n")
+        return()
+
+routine signed(label: Bytes, u: S128, d: S128) -> Void
+    block entry()
+        q       : S128 = u.div(d)
+        r       : S128 = u.mod(d)
+        back    : S128 = q.mul_wrap(d).add_wrap(r)
+        smaller : Bool = r.abs_diff(0).lt(d.abs_diff(0))
+        r_sign  : Bool = r.lt(0).eq(u.lt(0))
+        same    : Bool = r_sign.bitor(r.eq(0))
+        exact   : Bool = back.eq(u).bitand(smaller)
+        ok      : Bool = exact.bitand(same)
+        Out.write("{label}: {q} rem {r} {verdict(ok)}\n")
+        return()
+
+routine main() -> S32
+    block entry()
+        unsigned("max / 1", 340282366920938463463374607431768211455, 1)
+        unsigned("max / max", 340282366920938463463374607431768211455,
+            340282366920938463463374607431768211455)
+        unsigned("max / 2", 340282366920938463463374607431768211455, 2)
+        unsigned("max / 3", 340282366920938463463374607431768211455, 3)
+        unsigned("max / (2^32 - 1)", 340282366920938463463374607431768211455, 4294967295)
+        unsigned("max / 2^32", 340282366920938463463374607431768211455, 4294967296)
+        unsigned("max / (2^32 + 1)", 340282366920938463463374607431768211455, 4294967297)
+        unsigned("max / (2^64 - 1)", 340282366920938463463374607431768211455, 18446744073709551615)
+        unsigned("max / 2^64", 340282366920938463463374607431768211455, 18446744073709551616)
+        unsigned("max / (2^64 + 1)", 340282366920938463463374607431768211455, 18446744073709551617)
+        unsigned("max / (2^96 + 12345)", 340282366920938463463374607431768211455,
+            79228162514264337593543962681)
+        unsigned("max / (2^127 + 1)", 340282366920938463463374607431768211455,
+            170141183460469231731687303715884105729)
+        unsigned("2^127 / (2^127 - 1)", 170141183460469231731687303715884105728,
+            170141183460469231731687303715884105727)
+        unsigned("2^96 / (2^64 - 1)", 79228162514264337593543950336, 18446744073709551615)
+        unsigned("(2^64 + 5) / 7", 18446744073709551621, 7)
+        unsigned("2^64 / (2^64 + 1)", 18446744073709551616, 18446744073709551617)
+        unsigned("5 / 7", 5, 7)
+        unsigned("0 / 7", 0, 7)
+        unsigned("(2^128 - 2^64) / (2^64 + 2^32)", 340282366920938463444927863358058659840,
+            18446744078004518912)
+        unsigned("add-back, three-limb divisor", 170141183420855150474555134919112130560,
+            39614081257132168796771975169)
+        unsigned("add-back, shifted", 170141183460469231731687303715884105731,
+            9903520314283042199192993793)
+        unsigned("knuth q-hat high", 340282366920938463426481119284349108224,
+            79228162514264337593543950335)
+        signed("min / 1", -170141183460469231731687303715884105728, 1)
+        signed("min / min", -170141183460469231731687303715884105728,
+            -170141183460469231731687303715884105728)
+        signed("min / max", -170141183460469231731687303715884105728,
+            170141183460469231731687303715884105727)
+        signed("max / min", 170141183460469231731687303715884105727,
+            -170141183460469231731687303715884105728)
+        signed("min / 2", -170141183460469231731687303715884105728, 2)
+        signed("min / -2", -170141183460469231731687303715884105728, -2)
+        signed("min / 3", -170141183460469231731687303715884105728, 3)
+        signed("min / -7", -170141183460469231731687303715884105728, -7)
+        signed("-7 / 2", -7, 2)
+        signed("7 / -2", 7, -2)
+        signed("-7 / -2", -7, -2)
+        signed("max / -1", 170141183460469231731687303715884105727, -1)
+        signed("-(2^64) / (2^64 + 1)", -18446744073709551616, 18446744073709551617)
+        signed("-2^100 / 2^33", -1267650600228229401496703205376, 8589934592)
+
+        // The forms that don't crash: Absent for a zero divisor or MIN / -1, and the wrapping quotient.
+        max  : U128 = U128.MAX
+        min  : S128 = S128.MIN
+        zero : U128 = 0
+        Out.write("max.div_checked(0): {max.div_checked(zero).diagnose()}\n")
+        Out.write("min.div_checked(-1): {min.div_checked(-1).diagnose()}\n")
+        Out.write("min.mod_checked(-1): {min.mod_checked(-1).diagnose()}\n")
+        Out.write("min.div_wrap(-1): {min.div_wrap(-1)}\n")
+        Out.write("min.mod_wrap(-1): {min.mod_wrap(-1)}\n")
+        return(0)

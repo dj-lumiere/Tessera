@@ -7,7 +7,11 @@
 //   both fit in 64 bits   one U64 divide
 //   divisor of one limb   two 2-by-1 steps, the remainder of the first feeding the second
 //   divisor of two limbs  one 3-by-2 step (the quotient fits in one limb)
-// A 32-bit target keeps LLVM's division, which it expands inline (there is no __udivti3 there).
+//
+// A target narrower than 64 bits never reaches LLVM's 128-bit udiv either: some of them expand it into a
+// bit-at-a-time loop, and riscv32 calls __udivti3 / __umodti3, which only compiler-rt has (libgcc builds its 128-bit
+// helpers for 64-bit targets alone). There the U128 widens to a U256 and goes through Div256.tess's algorithm D over
+// 32-bit limbs, told the dividend has four of them, so each digit is one U64 by U32 division.
 
 module Standard::Core
 
@@ -50,10 +54,46 @@ routine u128_divrem(u: U128, d: U128) -> U128DivRem
         r : U128DivRem = u128_divrem_by_two_limbs(u, d)
         return(r)
 
+/// u / d and u % d for d > 0.
 #target(size: not 64)
 routine u128_divrem(u: U128, d: U128) -> U128DivRem
     block entry()
-        return(U128DivRem { quotient: udiv<U128>(u, d), remainder: urem<U128>(u, d) })
+        below : Bool = u.lt(d)
+        branch below
+            ? return(U128DivRem { quotient: 0, remainder: u })
+            : narrow()
+
+    // d <= u, so when u fits in 64 bits, both do.
+    block narrow()
+        fits : Bool = u.shr(64).eq(0)
+        branch fits
+            ? by_u64()
+            : by_words()
+
+    block by_u64()
+        a : U64 = u.to_wrap<U64>()
+        b : U64 = d.to_wrap<U64>()
+        return(U128DivRem { quotient: a.div(b).to<U128>(), remainder: a.mod(b).to<U128>() })
+
+    block by_words()
+        wide     : U256 = u.to<U256>()
+        one_word : Bool = d.shr(32).eq(0)
+        branch one_word
+            ? by_one_word(wide)
+            : by_several_words(wide)
+
+    block by_one_word(wide: U256)
+        r : U256DivRem = divrem_by_word32(wide, d.to_wrap<U32>(), 4)
+        jump narrowed(r)
+
+    block by_several_words(wide: U256)
+        r : U256DivRem = divrem_knuth32(wide, d.to<U256>(), 4)
+        jump narrowed(r)
+
+    block narrowed(r: U256DivRem)
+        q   : U128 = r.quotient.to_wrap<U128>()
+        rem : U128 = r.remainder.to_wrap<U128>()
+        return(U128DivRem { quotient: q, remainder: rem })
 
 /// u / d for a nonzero one-limb d: normalized so d's top bit is set, then two 2-by-1 steps.
 #target(size: 64)

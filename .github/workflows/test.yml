@@ -254,6 +254,73 @@ jobs:
             done
           done
 
+  # Hosted 32-bit targets: their C runtime may lack the 128-bit helpers (libgcc builds __udivti3, __fixdfti, and the
+  # rest only for 64-bit targets; compiler-rt has them for riscv32 but not for 32-bit ARM or x86). The stdlib's U128 /
+  # S128 division divides by limbs there (Standard/Div128.tess), and Standard/SoftFloat/Exports.tess supplies every
+  # 128-bit helper LLVM may still call (a program's own udiv<U128>, the float conversions). tests/div128 (the stdlib's
+  # division and LLVM's own udiv / sdiv / urem / srem on i128) and tests/int128_float (every F32 / F64 <-> S128 / U128
+  # conversion) are built to objects, debug and release, and no 128-bit division or conversion helper may stay
+  # undefined. Other undefined symbols (the C library's) are the link's business and not checked here.
+  hosted-32-bit-int128:
+    name: hosted 32-bit 128-bit helpers (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: riscv32-linux-gnu
+            clang-target: riscv32-unknown-linux-gnu
+          - target: arm-linux-gnueabihf
+            clang-target: armv7-unknown-linux-gnueabihf
+          - target: x86-linux-gnu
+            clang-target: i686-unknown-linux-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install LLVM 21
+        run: |
+          # A failed download must fail the step: piped into bash, an empty script would succeed and leave the
+          # runner's own clang (18) in place, which crashes on some targets.
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 21
+          test -x /usr/bin/clang-21
+          sudo ln -sf /usr/bin/clang-21 /usr/local/bin/clang
+          sudo ln -sf /usr/bin/llvm-nm-21 /usr/local/bin/llvm-nm
+          clang --version | grep -q 'clang version 21' || { clang --version; echo 'clang is not LLVM 21'; exit 1; }
+          clang --version
+
+      - name: Build
+        run: dotnet build Tessera.csproj --configuration Release
+
+      # `-c` needs no sysroot: the objects are only inspected, never linked.
+      - name: Build the programs and require that no 128-bit helper is undefined
+        run: |
+          for program in div128 int128_float; do
+            for mode in debug release; do
+              ll="$program-$mode.ll"
+              obj="$program-$mode.o"
+              level=-O0
+              if [ "$mode" = release ]; then level=-O2; fi
+              dotnet bin/Release/net10.0/tessera.dll build --target ${{ matrix.target }} --mode $mode --emit-llvm \
+                tests/$program.tess -o "$ll"
+              clang --target=${{ matrix.clang-target }} $level -c -Wno-override-module "$ll" -o "$obj"
+              undefined=$(llvm-nm -u "$obj" | grep -E '__(u?(div|mod)ti3|fix(uns)?[sdh]fti|float(un)?ti[sdh]f)' || true)
+              if [ -n "$undefined" ]; then
+                echo "tests/$program for ${{ matrix.target }} ($mode) leaves 128-bit helpers undefined that its C runtime may lack:"
+                echo "$undefined"
+                exit 1
+              fi
+              echo "tests/$program ($mode): no 128-bit helper undefined"
+            done
+          done
+
   # The long check of the soft-float runtime (tests/soft_float_exhaustive; tests/soft_float is the golden run's sample):
   # every F32 bit pattern through square root and every conversion out of F32, every S32 / U32 into F32 and F64, every
   # F16, and millions of random operand pairs, against the hardware and libgcc's conversions. It runs on every core
