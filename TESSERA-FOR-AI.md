@@ -20,7 +20,7 @@ dotnet run -- version                    # the builder's version; help prints ev
 A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `Standard::Core` (always imported: the built-in types, `Option`, `Result`,
 `Bytes`), and what it imports, so printing a number needs `import Standard::Format`, a `List` needs
-`import Standard::Collections`, and `make_heap_allocator` / `FdWriter` need `import Standard::Os` (the hosted layer,
+`import Standard::Collections`, and `make_heap_allocator` / `Out` need `import Standard::Os` (the hosted layer,
 the only one that calls libc; a target with OS `none` has none of it). A routine declared in its type's module comes with the type; one another module adds
 to it (like `S64.represent_into` from `Standard::Format`) needs that module imported. A qualified path
 (`Standard::Format::write_str`) reaches any public name without an import. Two modules may declare the same name:
@@ -323,7 +323,7 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
 `BF16`, or `F128`, and a mismatched format is undefined behavior.
 
 - Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.shared()` is the pointer a
-  Writer parameter takes), a `FileHandle`, `FdWriter`, `BufWriter<W>` (`out.construct(inner)`, then `flush()`),
+  Writer parameter takes), a `FileHandle`, `BufWriter<W>` (`out.construct(inner)`, then `flush()`),
   `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `buf.write("...")`, then `buf.to_bytes()`; it is
   the string builder). Standard input is `In`: `In.read_line(alloc)`, `read_word`, `read_count(n, alloc)`,
   `read_all`, `read(buffer, n)`, all through one buffer the process shares.
@@ -422,7 +422,7 @@ routine, block, statement, or terminator it wrote: debug information and build e
 Other ways to make a value are named for what they make (`out.to_bytes()`).
 
 **Name case.** Types, concepts, modules, and choice / variant cases are `PascalCase` (`TrapCode.DivByZero`,
-`.Absent`), with acronyms written as words (`Eof`, `FdWriter`, `Nan`). Routines, fields, blocks, and values are
+`.Absent`), with acronyms written as words (`Eof`, `Utf8Decoded`, `Nan`). Routines, fields, blocks, and values are
 `snake_case`. Only presets and globals are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
 
 **Arrays and `stride`.** There is no `[]`. `p.stride(i)` is the address of the i-th `T` of a `@T` (a
@@ -437,12 +437,12 @@ array presets (`K.get(i)`, with `preset K: @Array<T, N> <- { ... }`).
 
 - `Type.construct(...) -> Self` is the constructor, a typewise routine: `List<S64>.construct(alloc)`,
   `ListIter<T>.construct(list)`, `CountWriter.construct()`. A type too large to return by value constructs in
-  place instead, through a pointer: `out.construct(fd)` for `BufWriter<W>`.
+  place instead, through a pointer: `out.construct(inner)` for `BufWriter<W>`.
 - `self.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
   and leaves the value empty. Call it yourself; nothing runs it for you. A collection's `destruct` doesn't touch its
   elements; `destruct_all()` destructs them first (elements must conform to `Destruct<T>`), and `Dict` / `SortedDict`
   also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release.
-- Other ways to make a value are named for what they make: `FdWriter.stdout()`, `Bytes.from_ptr(p, n)`,
+- Other ways to make a value are named for what they make: `Out.shared()`, `Bytes.from_ptr(p, n)`,
   `Option<T>.Absent`, `FormatSpec.zero_padded(6)`.
 - `p.free(alloc)` is not a destructor: it hands a block of memory back to its allocator.
 
