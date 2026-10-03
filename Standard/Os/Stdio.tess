@@ -37,8 +37,8 @@ internal choice StdStream: U8
 /// What reads bytes: standard input, an open file.
 concept Reader<R>
 require R: typename
-    /// Reads up to length bytes into buffer: how many, 0 at the end.
-    routine Self.read_bytes(self: @Self, buffer: @Byte, length: USize) -> Result<USize, FsError>
+    /// Reads up to count bytes into buffer: how many, 0 at the end.
+    routine Self.read_bytes(self: @Self, buffer: @Byte, count: USize) -> Result<USize, FsError>
 
 // -- In ----------------------------------------------------------------------------------
 
@@ -99,8 +99,8 @@ routine In.shared() -> @Self
         none : @Self = null
         return(none)
 
-/// Reads up to length bytes: what the buffer holds first, else one read from the OS. How many, 0 at the end.
-routine In.read(buffer: @Byte, length: USize) -> Result<USize, FsError>
+/// Reads up to count bytes: what the buffer holds first, else one read from the OS. How many, 0 at the end.
+routine In.read(buffer: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
         b : @InputBuffer = STDIN_BUFFER
         b.lock.lock()
@@ -108,7 +108,7 @@ routine In.read(buffer: @Byte, length: USize) -> Result<USize, FsError>
             ? held(b)
             : continue
         // Nothing held: a read that wants a bufferful or more goes straight to the caller's buffer.
-        branch length.ge(IN_BUFFER)
+        branch count.ge(IN_BUFFER)
             ? direct(b)
             : continue
         branch b.fill()
@@ -117,7 +117,7 @@ routine In.read(buffer: @Byte, length: USize) -> Result<USize, FsError>
 
     block held(b: @InputBuffer)
         available : USize = b.end.load().sub(b.start.load())
-        n         : USize = available.min(length)
+        n         : USize = available.min(count)
         copy<Byte>(buffer, b.bytes.to<@Byte>().stride(b.start.load()), n)
         next_start : USize = b.start.load().add(n)
         next_start.store_into(b.start)
@@ -125,7 +125,7 @@ routine In.read(buffer: @Byte, length: USize) -> Result<USize, FsError>
         return(.Success(n))
 
     block direct(b: @InputBuffer)
-        got : Result<USize, FsError> = stdin_read(buffer, length)
+        got : Result<USize, FsError> = stdin_read(buffer, count)
         b.lock.unlock()
         return(got)
 
@@ -134,9 +134,9 @@ routine In.read(buffer: @Byte, length: USize) -> Result<USize, FsError>
         return(.Success(0))
 
 /// The Reader side: In.read.
-routine In.read_bytes(self: @Self, buffer: @Byte, length: USize) -> Result<USize, FsError>
+routine In.read_bytes(self: @Self, buffer: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
-        return(Self.read(buffer, length))
+        return(Self.read(buffer, count))
 
 /// Up to count bytes, in memory from alloc: fewer only at the end of the input.
 routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
@@ -217,7 +217,7 @@ routine In.read_line(alloc: @Allocator) -> Option<Bytes>
 private routine trim_cr(line: Bytes) -> Bytes
     block entry()
         branch line.ends_with("\r")
-            ? return(Bytes.from_ptr(line.data, line.length().sub(1)))
+            ? return(Bytes.from_ptr(line.data, line.count().sub(1)))
             : return(line)
 
 /// Whether `c` separates words: a space, tab, line feed, or carriage return.
@@ -293,17 +293,17 @@ routine Out.shared() -> @Self
         none : @Self = null
         return(none)
 
-/// Writes all length bytes: Other if the OS refused (or the process has no standard output).
-routine Out.write_all(data: @Byte, length: USize) -> Result<Unit, FsError>
+/// Writes all count bytes: Other if the OS refused (or the process has no standard output).
+routine Out.write_all(data: @Byte, count: USize) -> Result<Unit, FsError>
     block entry()
-        branch stream_write(StdStream.Output, data, length)
+        branch stream_write(StdStream.Output, data, count)
             ? return(.Success(Unit.value()))
             : return(.Failure(FsError.Other))
 
 /// The Writer side: a failed write is dropped (write_all reports it).
-routine Out.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
+routine Out.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
     block entry()
-        stream_write(StdStream.Output, data, length)
+        stream_write(StdStream.Output, data, count)
         return()
 
 /// Whether standard output is a terminal (a console on Windows), not a pipe or a file.
@@ -326,22 +326,22 @@ routine Err.shared() -> @Self
         none : @Self = null
         return(none)
 
-/// Writes all `length` bytes to standard error.
+/// Writes all `count` bytes to standard error.
 /// :param data: The bytes to write.
-/// :param length: How many bytes there are.
+/// :param count: How many bytes there are.
 /// :returns: Success, or Failure with Other if the OS refused (or the process has no standard error).
-routine Err.write_all(data: @Byte, length: USize) -> Result<Unit, FsError>
+routine Err.write_all(data: @Byte, count: USize) -> Result<Unit, FsError>
     block entry()
-        branch stream_write(StdStream.Error, data, length)
+        branch stream_write(StdStream.Error, data, count)
             ? return(.Success(Unit.value()))
             : return(.Failure(FsError.Other))
 
 /// The Writer side of standard error: a failed write is dropped ({Err.write_all} reports it).
 /// :param data: The bytes to write.
-/// :param length: How many bytes there are.
-routine Err.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
+/// :param count: How many bytes there are.
+routine Err.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
     block entry()
-        stream_write(StdStream.Error, data, length)
+        stream_write(StdStream.Error, data, count)
         return()
 
 /// Whether standard error is a terminal (a console on Windows), not a pipe or a file.
@@ -388,12 +388,12 @@ internal routine stream_is_terminal(stream: StdStream) -> Bool
     block entry()
         return(c_isatty(fd_of(stream)).ne(0))
 
-/// Writes all length bytes to standard output or error: false if the OS refused.
+/// Writes all count bytes to standard output or error: false if the OS refused.
 #target(os: not "windows")
-internal routine stream_write(stream: StdStream, data: @Byte, length: USize) -> Bool
+internal routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Bool
     block entry()
         fd : CInt = fd_of(stream)
-        jump write(data, length)
+        jump write(data, count)
 
     block write(at: @Byte, remaining: USize)
         branch remaining.eq(0)
@@ -409,17 +409,17 @@ internal routine stream_write(stream: StdStream, data: @Byte, length: USize) -> 
             ? write(at, remaining)
             : return(false)
 
-/// Reads up to length bytes of standard input: how many, 0 at its end.
+/// Reads up to count bytes of standard input: how many, 0 at its end.
 #target(os: not "windows")
-internal routine stdin_read(buffer: @Byte, length: USize) -> Result<USize, FsError>
+internal routine stdin_read(buffer: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
-        got : SSize = c_read(0, buffer, length.min(1073741824))
+        got : SSize = c_read(0, buffer, count.min(1073741824))
         branch got.ge(0)
             ? return(.Success(got.to<USize>()))
             : continue
         errno : CInt = c_errno_place().load()
         branch errno.eq(4)
-            ? return(stdin_read(buffer, length))
+            ? return(stdin_read(buffer, count))
             : return(.Failure(FsError.Other))
 
 /// Whether ANSI color sequences work on the stream: a terminal takes them as it is.
@@ -544,29 +544,29 @@ internal routine stream_enable_colors(stream: StdStream) -> Bool
         // ENABLE_VIRTUAL_TERMINAL_PROCESSING
         return(c_set_console_mode(h, mode.load().bitor(4)).ne(0))
 
-/// Writes all length bytes to standard output or error: false if the OS refused (or the process has no such
+/// Writes all count bytes to standard output or error: false if the OS refused (or the process has no such
 /// stream).
 #target(os: "windows")
-internal routine stream_write(stream: StdStream, data: @Byte, length: USize) -> Bool
+internal routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Bool
     block entry()
         h : Addr = handle_of(stream)
         branch usable(h)
             ? continue
             : return(false)
         branch is_console(h)
-            ? return(console_write(stream, h, data, length))
-            : return(file_write(h, data, length))
+            ? return(console_write(stream, h, data, count))
+            : return(file_write(h, data, count))
 
-/// Writes all `length` bytes to a pipe or file handle with WriteFile as they are, looping over partial writes.
+/// Writes all `count` bytes to a pipe or file handle with WriteFile as they are, looping over partial writes.
 /// :param h: The handle.
 /// :param data: The bytes to write.
-/// :param length: How many bytes there are.
+/// :param count: How many bytes there are.
 /// :returns: `true` when every byte was written, `false` on the first failure.
 #target(os: "windows")
-private routine file_write(h: Addr, data: @Byte, length: USize) -> Bool
+private routine file_write(h: Addr, data: @Byte, count: USize) -> Bool
     block entry()
         claim wrote : @U32 <- 0
-        jump write(data, length, wrote)
+        jump write(data, count, wrote)
 
     block write(at: @Byte, remaining: USize, wrote: @U32)
         branch remaining.eq(0)
@@ -590,15 +590,15 @@ private routine sequence_length(b: Byte) -> USize
             u.lt(0xF8) -> return(4)
             else       -> return(1)
 
-/// Where the last complete sequence of the length bytes ends: before a sequence the bytes stop in the middle of.
+/// Where the last complete sequence of the count bytes ends: before a sequence the bytes stop in the middle of.
 #target(os: "windows")
-private routine complete_end(data: @Byte, length: USize) -> USize
+private routine complete_end(data: @Byte, count: USize) -> USize
     block entry()
-        jump back(length, 0)
+        jump back(count, 0)
 
     block back(i: USize, seen: USize)
         branch i.eq(0).bitor(seen.eq(3))
-            ? return(length)
+            ? return(count)
             : continue
         b        : Byte = data.stride(i.sub(1)).load()
         top_bits : U8   = U8.from_byte(b).bitand(0xC0)
@@ -607,9 +607,9 @@ private routine complete_end(data: @Byte, length: USize) -> USize
             ? back(i.sub(1), seen.add(1))
             : continue
         sequence_end : USize = i.sub(1).add(sequence_length(b))
-        branch sequence_end.gt(length)
+        branch sequence_end.gt(count)
             ? return(i.sub(1))
-            : return(length)
+            : return(count)
 
 /// The record holding the unfinished UTF-8 sequence of a stream's console writes.
 /// :param stream: Standard output or error.
@@ -624,29 +624,29 @@ private routine pending_of(stream: StdStream) -> @PendingUtf8
 /// Writes UTF-8 to a console as UTF-16, finishing a sequence an earlier write left open and holding one this
 /// write leaves open.
 #target(os: "windows")
-private routine console_write(stream: StdStream, h: Addr, data: @Byte, length: USize) -> Bool
+private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: USize) -> Bool
     block entry()
         pending : @PendingUtf8 = pending_of(stream)
         held    : USize        = pending.count.load()
         branch held.eq(0)
-            ? body(pending, data, length)
+            ? body(pending, data, count)
             : finish_held(pending, held)
 
     // The bytes the held sequence still needs come first.
     block finish_held(pending: @PendingUtf8, held: USize)
         need  : USize = sequence_length(pending.bytes.get(0)).sub(held)
-        taken : USize = need.min(length)
+        taken : USize = need.min(count)
         copy<Byte>(pending.bytes.to<@Byte>().stride(held), data, taken)
         branch taken.lt(need)
             ? still_open(pending, held.add(taken))
             : continue
         pending.count.store(0)
         branch console_text(h, pending.bytes.to<@Byte>(), held.add(taken))
-            ? body(pending, data.stride(taken), length.sub(taken))
+            ? body(pending, data.stride(taken), count.sub(taken))
             : return(false)
 
-    block still_open(pending: @PendingUtf8, count: USize)
-        pending.count.store(count)
+    block still_open(pending: @PendingUtf8, now_held: USize)
+        pending.count.store(now_held)
         return(true)
 
     block body(pending: @PendingUtf8, at: @Byte, n: USize)
@@ -657,11 +657,11 @@ private routine console_write(stream: StdStream, h: Addr, data: @Byte, length: U
 
 /// Writes complete UTF-8 text to a console, a bufferful of UTF-16 at a time.
 #target(os: "windows")
-private routine console_text(h: Addr, data: @Byte, length: USize) -> Bool
+private routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
     block entry()
         claim units   : @Array<U16, 2048> <- uninit
         claim written : @U32              <- 0
-        claim iter    : @BytesCharsIter   <- Bytes.from_ptr(data, length).chars()
+        claim iter    : @BytesCharsIter   <- Bytes.from_ptr(data, count).chars()
         jump fill(units.to<@U16>(), written, iter, 0)
 
     block fill(units: @U16, written: @U32, iter: @BytesCharsIter, n: USize)
@@ -709,19 +709,19 @@ private routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Bo
             ? return(write_units(h, units.stride(w), n.sub(w), written))
             : return(false)
 
-/// Reads up to length bytes of standard input: how many, 0 at its end (Ctrl+Z at the start of a console line).
+/// Reads up to count bytes of standard input: how many, 0 at its end (Ctrl+Z at the start of a console line).
 #target(os: "windows")
-internal routine stdin_read(buffer: @Byte, length: USize) -> Result<USize, FsError>
+internal routine stdin_read(buffer: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
         h : Addr = handle_of(StdStream.Input)
         branch usable(h)
             ? continue
             : return(.Success(0))
         branch is_console(h)
-            ? return(console_read(h, buffer, length))
+            ? return(console_read(h, buffer, count))
             : continue
         claim got : @U32 <- 0
-        branch c_read_file(h, buffer, length.min(1073741824).to<U32>(), got, null).ne(0)
+        branch c_read_file(h, buffer, count.min(1073741824).to<U32>(), got, null).ne(0)
             ? return(.Success(got.load().to<USize>()))
             : continue
         // ERROR_BROKEN_PIPE: the writing end closed, which is the end
@@ -731,7 +731,7 @@ internal routine stdin_read(buffer: @Byte, length: USize) -> Result<USize, FsErr
 
 /// Hands out UTF-8 from CONSOLE_INPUT, reading the console (as UTF-16) when it is empty.
 #target(os: "windows")
-private routine console_read(h: Addr, buffer: @Byte, length: USize) -> Result<USize, FsError>
+private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
         input : @ConsoleReadBuffer = CONSOLE_INPUT
         branch input.start.load().lt(input.end.load())
@@ -767,19 +767,19 @@ private routine console_read(h: Addr, buffer: @Byte, length: USize) -> Result<US
             ? hold(input, joined.to<@U16>(), total.sub(1), last)
             : hold(input, joined.to<@U16>(), total, 0)
 
-    block hold(input: @ConsoleReadBuffer, joined: @U16, count: USize, high: U16)
+    block hold(input: @ConsoleReadBuffer, joined: @U16, units: USize, high: U16)
         input.high.store(high)
-        made : USize = narrow(joined, count, input.bytes.to<@Byte>())
+        made : USize = narrow(joined, units, input.bytes.to<@Byte>())
         input.start.store(0)
         input.end.store(made)
         branch made.eq(0)
-            ? return(console_read(h, buffer, length))
+            ? return(console_read(h, buffer, count))
             : hand_out(input)
 
     block hand_out(input: @ConsoleReadBuffer)
         start     : USize = input.start.load()
         available : USize = input.end.load().sub(start)
-        n         : USize = available.min(length)
+        n         : USize = available.min(count)
         copy<Byte>(buffer, input.bytes.to<@Byte>().stride(start), n)
         input.start.store(start.add(n))
         return(.Success(n))

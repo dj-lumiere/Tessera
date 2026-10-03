@@ -73,9 +73,9 @@ record DirEntry
 
 /// Part of a file mapped into memory by Mapping.map. unmap it when done.
 record Mapping
-    base   : Addr  // what the OS mapped, from an aligned offset (null for an empty mapping)
-    delta  : USize  // from base to the first byte asked for
-    length : USize  // the bytes mapped from there
+    base  : Addr  // what the OS mapped, from an aligned offset (null for an empty mapping)
+    delta : USize  // from base to the first byte asked for
+    count : USize  // the bytes mapped from there
 
 internal routine fs_done() -> Result<Unit, FsError>
     block entry()
@@ -110,7 +110,7 @@ internal routine create_dir_all(path: Bytes) -> Result<Unit, FsError>
 
     // Each separator after the first byte ends a prefix to make; failures there show up in the last step.
     block scan(i: USize)
-        branch i.ge(path.length())
+        branch i.ge(path.count())
             ? last()
             : continue
         branch is_separator(path.byte_at(i).bits())
@@ -198,25 +198,25 @@ internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsEr
             ? out_of_memory(f)
             : fill(f, buffer, capacity, 0)
 
-    block fill(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize)
-        branch length.eq(capacity)
-            ? grow(f, buffer, capacity, length)
+    block fill(f: @FileHandle, buffer: @Byte, capacity: USize, count: USize)
+        branch count.eq(capacity)
+            ? grow(f, buffer, capacity, count)
             : continue
-        got : Result<USize, FsError> = f.read_bytes(buffer.stride(length), capacity.sub(length))
+        got : Result<USize, FsError> = f.read_bytes(buffer.stride(count), capacity.sub(count))
         when got
-            .Success(n)     -> advance(f, buffer, capacity, length, n)
+            .Success(n)     -> advance(f, buffer, capacity, count, n)
             .Failure(error) -> read_failed(f, buffer, error)
 
-    block advance(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize, n: USize)
+    block advance(f: @FileHandle, buffer: @Byte, capacity: USize, count: USize, n: USize)
         branch n.eq(0)
-            ? finish(f, buffer, length)
-            : fill(f, buffer, capacity, length.add(n))
+            ? finish(f, buffer, count)
+            : fill(f, buffer, capacity, count.add(n))
 
-    block grow(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize)
+    block grow(f: @FileHandle, buffer: @Byte, capacity: USize, count: USize)
         bigger : @Byte = reallocate<Byte>(alloc, buffer, capacity.mul(2))
         branch bigger.is_null()
             ? grow_failed(f, buffer)
-            : fill(f, bigger, capacity.mul(2), length)
+            : fill(f, bigger, capacity.mul(2), count)
 
     block grow_failed(f: @FileHandle, buffer: @Byte)
         buffer.free(alloc)
@@ -231,9 +231,9 @@ internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsEr
         f.close()
         return(.Failure(error))
 
-    block finish(f: @FileHandle, buffer: @Byte, length: USize)
+    block finish(f: @FileHandle, buffer: @Byte, count: USize)
         f.close()
-        return(.Success(Bytes.from_ptr(buffer, length)))
+        return(.Success(Bytes.from_ptr(buffer, count)))
 
 /// Writes data as the whole file: made if missing, replaced if not.
 internal routine write_file(path: Bytes, data: Bytes) -> Result<Unit, FsError>
@@ -245,7 +245,7 @@ internal routine write_file(path: Bytes, data: Bytes) -> Result<Unit, FsError>
 
     block write(opened: FileHandle)
         claim f : @FileHandle <- opened
-        wrote : Result<Unit, FsError> = f.write_all(data.data, data.length())
+        wrote : Result<Unit, FsError> = f.write_all(data.data, data.count())
         f.close()
         return(wrote)
 
@@ -254,10 +254,10 @@ internal routine write_file(path: Bytes, data: Bytes) -> Result<Unit, FsError>
 conform Reader<FileHandle>
 conform Writer<FileHandle>
 
-/// Writes all length bytes, however many calls that takes.
-routine FileHandle.write_all(self: @Self, data: @Byte, length: USize) -> Result<Unit, FsError>
+/// Writes all count bytes, however many calls that takes.
+routine FileHandle.write_all(self: @Self, data: @Byte, count: USize) -> Result<Unit, FsError>
     block entry()
-        jump write(data, length)
+        jump write(data, count)
 
     block write(at: @Byte, remaining: USize)
         branch remaining.eq(0)
@@ -274,9 +274,9 @@ routine FileHandle.write_all(self: @Self, data: @Byte, length: USize) -> Result<
             : write(at.stride(n), remaining.sub(n))
 
 /// The Writer side, behind handle.write("x = {x}\n"): a failure is kept for has_failed, and the bytes are dropped.
-routine FileHandle.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
+routine FileHandle.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
     block entry()
-        wrote : Result<Unit, FsError> = self.write_all(data, length)
+        wrote : Result<Unit, FsError> = self.write_all(data, count)
         branch wrote.is_success()
             ? return()
             : continue
@@ -319,33 +319,33 @@ routine join_path(a: Bytes, b: Bytes, alloc: @Allocator) -> Bytes
     block entry()
         branch a.is_empty()
             ? build(true)
-            : build(is_separator(a.byte_at(a.length().sub(1)).bits()))
+            : build(is_separator(a.byte_at(a.count().sub(1)).bits()))
 
     block build(ends: Bool)
         sep : USize = ends
             ? 0
             : 1
-        prefix_length : USize = a.length().add(sep)
-        length        : USize = prefix_length.add(b.length())
-        buffer        : @Byte = allocate<Byte>(alloc, length.max(1))
+        prefix_count : USize = a.count().add(sep)
+        count        : USize = prefix_count.add(b.count())
+        buffer       : @Byte = allocate<Byte>(alloc, count.max(1))
         branch buffer.is_null()
             ? crash_allocation()
             : continue
-        copy<Byte>(buffer, a.data, a.length())
+        copy<Byte>(buffer, a.data, a.count())
         branch ends
-            ? tail(buffer, sep, length)
+            ? tail(buffer, sep, count)
             : continue
-        buffer.stride(a.length()).store(path_separator())
-        jump tail(buffer, sep, length)
+        buffer.stride(a.count()).store(path_separator())
+        jump tail(buffer, sep, count)
 
-    block tail(buffer: @Byte, sep: USize, length: USize)
-        copy<Byte>(buffer.stride(a.length().add(sep)), b.data, b.length())
-        return(Bytes.from_ptr(buffer, length))
+    block tail(buffer: @Byte, sep: USize, count: USize)
+        copy<Byte>(buffer.stride(a.count().add(sep)), b.data, b.count())
+        return(Bytes.from_ptr(buffer, count))
 
 /// Where path's last component ends, trailing separators left out.
 private routine name_end(path: Bytes) -> USize
     block entry()
-        jump trim(path.length())
+        jump trim(path.count())
 
     block trim(end: USize)
         branch end.eq(0)
@@ -402,9 +402,9 @@ routine parent_path(path: Bytes) -> Bytes
 /// The last '.' of a name after its first character, or 0: a hidden file's leading dot isn't an extension.
 private routine last_dot(name: Bytes) -> USize
     block entry()
-        branch name.length().lt(2)
+        branch name.count().lt(2)
             ? return(0)
-            : look(name.length().sub(1))
+            : look(name.count().sub(1))
 
     block look(i: USize)
         branch i.eq(0)
@@ -430,14 +430,14 @@ routine file_extension(path: Bytes) -> Bytes
         dot  : USize = last_dot(name)
         branch dot.eq(0)
             ? return(name.slice(0, 0))
-            : return(name.slice(dot.add(1), name.length()))
+            : return(name.slice(dot.add(1), name.count()))
 
 // -- memory-mapped files -----------------------------------------------------------------
 
 /// A mapping of nothing: what an empty file, or a range past the end, maps to.
 routine Mapping.empty() -> Self
     block entry()
-        return(Self { base: null, delta: 0, length: 0 })
+        return(Self { base: null, delta: 0, count: 0 })
 
 /// The first byte asked for (null for an empty mapping).
 routine Mapping.data(self: Self) -> @Byte
@@ -446,6 +446,6 @@ routine Mapping.data(self: Self) -> @Byte
             ? return(null)
             : return(self.base.to<@Byte>().stride(self.delta))
 
-routine Mapping.length(self: Self) -> USize
+routine Mapping.count(self: Self) -> USize
     block entry()
-        return(self.length)
+        return(self.count)

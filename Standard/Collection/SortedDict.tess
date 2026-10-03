@@ -19,7 +19,7 @@ private preset NODE_MIN_KEYS: USize = NODE_KEYS.add(1).div(2)
 record SortedDictNode<K, V>
 require K: typename, V: typename
     leaf          : Bool
-    length        : USize
+    count         : USize
     subtree_count : USize
     keys          : Array<K, NODE_KEYS>
     values        : Array<V, NODE_KEYS>
@@ -34,9 +34,9 @@ conform Represent<SortedDict<K, V>> when K: typename, V: typename, Compare<K>, D
 conform Diagnose<SortedDict<K, V>>  when K: typename, V: typename, Compare<K>, Diagnose<K>, Diagnose<V>
 conform Equal<SortedDict<K, V>>     when K: typename, V: typename, Compare<K>, Equal<V>
 require K: typename, V: typename, Compare<K>
-    root   : @SortedDictNode<K, V>
-    length : USize
-    alloc  : @Allocator
+    root  : @SortedDictNode<K, V>
+    count : USize
+    alloc : @Allocator
 
 /// Where the entry of a rank lives: its node and its index there.
 private record SortedDictSpot<K, V>
@@ -50,24 +50,24 @@ require K: typename, V: typename
 routine SortedDict<K, V>.construct(alloc: @Allocator) -> Self
 require K: typename, V: typename, Compare<K>
     block entry()
-        map : Self = Self { root: null, length: 0, alloc: alloc }
+        map : Self = Self { root: null, count: 0, alloc: alloc }
         return(map)
 
 /// The number of entries currently stored.
 /// :returns: The count of entries, `0` when the dict is empty.
-routine SortedDict<K, V>.length(self: Self) -> USize
+routine SortedDict<K, V>.count(self: Self) -> USize
 require K: typename, V: typename
     block entry()
-        length : USize = self.length
-        return(length)
+        count : USize = self.count
+        return(count)
 
 /// Whether the dict holds no entries.
-/// :returns: `true` when the length is `0`.
+/// :returns: `true` when the count is `0`.
 routine SortedDict<K, V>.is_empty(self: Self) -> Bool
 require K: typename, V: typename
     block entry()
-        length : USize = self.length
-        empty  : Bool  = length.eq(0)
+        count : USize = self.count
+        empty : Bool  = count.eq(0)
         return(empty)
 
 /// A new empty node, or null when the allocator fails.
@@ -82,13 +82,13 @@ require K: typename, V: typename
 
     block init(node: @Self)
         node.leaf.store(leaf)
-        node.length.store(0)
+        node.count.store(0)
         node.subtree_count.store(0)
         return(node)
 
 /// The number of entries in the subtree below this node.
 /// :returns: The node's subtree count, or `0` for a null node.
-routine SortedDictNode<K, V>.count(self: @Self) -> USize
+routine SortedDictNode<K, V>.subtree_count(self: @Self) -> USize
 require K: typename, V: typename
     block entry()
         empty : Bool = self.is_null()
@@ -104,34 +104,34 @@ require K: typename, V: typename
 routine SortedDictNode<K, V>.recount(self: @Self) -> Void
 require K: typename, V: typename
     block entry()
-        leaf   : Bool  = self.leaf.load()
-        length : USize = self.length.load()
+        leaf  : Bool  = self.leaf.load()
+        count : USize = self.count.load()
         branch leaf
-            ? leaf_count(length)
-            : internal_count(length)
+            ? leaf_count(count)
+            : internal_count(count)
 
-    block leaf_count(length: USize)
-        self.subtree_count.store(length)
+    block leaf_count(count: USize)
+        self.subtree_count.store(count)
         return()
 
-    block internal_count(length: USize)
-        jump loop(0, 0, length)
+    block internal_count(count: USize)
+        jump loop(0, 0, count)
 
-    block loop(i: USize, sum: USize, length: USize)
-        done : Bool = i.gt(length)
+    block loop(i: USize, sum: USize, count: USize)
+        done : Bool = i.gt(count)
         branch done
             ? finish(sum)
-            : add_child(i, sum, length)
+            : add_child(i, sum, count)
 
-    block add_child(i: USize, sum: USize, length: USize)
+    block add_child(i: USize, sum: USize, count: USize)
         child       : @Self = self.children.get(i)
-        child_count : USize = child.count()
+        child_count : USize = child.subtree_count()
         with_child  : USize = sum.add(child_count)
-        has_key     : Bool  = i.lt(length)
+        has_key     : Bool  = i.lt(count)
         next_sum    : USize = has_key
             ? with_child.add(1)
             : with_child
-        jump loop(i.add(1), next_sum, length)
+        jump loop(i.add(1), next_sum, count)
 
     block finish(sum: USize)
         self.subtree_count.store(sum)
@@ -146,8 +146,8 @@ require K: typename, V: typename
         jump loop(0)
 
     block loop(i: USize)
-        length : USize = self.length.load()
-        done   : Bool  = i.ge(length)
+        count : USize = self.count.load()
+        done  : Bool  = i.ge(count)
         branch done
             ? return(i)
             : compare(i)
@@ -185,8 +185,8 @@ require K: typename, V: typename
 
     block search(node: @SortedDictNode<K, V>)
         i      : USize = node.find_index(key)
-        length : USize = node.length.load()
-        inside : Bool  = i.lt(length)
+        count  : USize = node.count.load()
+        inside : Bool  = i.lt(count)
         branch inside
             ? maybe_match(node, i)
             : descend_or_missing(node, i)
@@ -236,8 +236,8 @@ require K: typename, V: typename
 
     block search(node: @SortedDictNode<K, V>)
         i      : USize = node.find_index(key)
-        length : USize = node.length.load()
-        inside : Bool  = i.lt(length)
+        count  : USize = node.count.load()
+        inside : Bool  = i.lt(count)
         branch inside
             ? maybe_match(node, i)
             : descend_or_missing(node, i)
@@ -278,8 +278,8 @@ require K: typename, V: typename, Compare<K>, Equal<V>
 private routine SortedDict<K, V>.eq_at(self: @Self, other: @Self) -> Bool
 require K: typename, V: typename, Compare<K>, Equal<V>
     block entry()
-        la       : USize = self.length.load()
-        lb       : USize = other.length.load()
+        la       : USize = self.count.load()
+        lb       : USize = other.count.load()
         same_len : Bool  = la.eq(lb)
         branch same_len
             ? continue
@@ -290,7 +290,7 @@ require K: typename, V: typename, Compare<K>, Equal<V>
         claim b : @SortedDictIter<K, V> <- b_val
         jump loop(a, b)
 
-    // both have the same length, so both run out together
+    // both have the same count, so both run out together
     block loop(a: @SortedDictIter<K, V>, b: @SortedDictIter<K, V>)
         x : Option<KVPair<K, V>> = a.next()
         y : Option<KVPair<K, V>> = b.next()
@@ -324,8 +324,8 @@ require K: typename, V: typename
 
     block search(node: @SortedDictNode<K, V>)
         i      : USize = node.find_index(key)
-        length : USize = node.length.load()
-        inside : Bool  = i.lt(length)
+        count  : USize = node.count.load()
+        inside : Bool  = i.lt(count)
         branch inside
             ? maybe_match(node, i)
             : descend_or_missing(node, i)
@@ -348,13 +348,13 @@ require K: typename, V: typename
         child : @SortedDictNode<K, V> = node.children.get(i)
         jump search(child)
 
-/// The node and index of the rank-th smallest key. Crashes if rank >= length.
+/// The node and index of the rank-th smallest key. Crashes if rank >= count.
 #track_caller
 private routine SortedDict<K, V>.locate_rank(self: Self, rank: USize) -> SortedDictSpot<K, V>
 require K: typename, V: typename
     block entry()
-        length    : USize = self.length
-        in_bounds : Bool  = rank.lt(length)
+        count     : USize = self.count
+        in_bounds : Bool  = rank.lt(count)
         branch in_bounds
             ? select_root()
             : crash_out_of_bounds()
@@ -367,8 +367,8 @@ require K: typename, V: typename
         jump scan(node, remaining, 0)
 
     block scan(node: @SortedDictNode<K, V>, remaining: USize, i: USize)
-        length : USize = node.length.load()
-        done   : Bool  = i.ge(length)
+        count : USize = node.count.load()
+        done  : Bool  = i.ge(count)
         branch done
             ? last_child(node, remaining, i)
             : check_child(node, remaining, i)
@@ -387,7 +387,7 @@ require K: typename, V: typename
 
     block internal_child(node: @SortedDictNode<K, V>, remaining: USize, i: USize)
         child       : @SortedDictNode<K, V> = node.children.get(i)
-        child_count : USize                 = child.count()
+        child_count : USize                 = child.subtree_count()
         in_child    : Bool                  = remaining.lt(child_count)
         branch in_child
             ? select_node(child, remaining)
@@ -413,7 +413,7 @@ require K: typename, V: typename
     block found(node: @SortedDictNode<K, V>, i: USize)
         return(SortedDictSpot<K, V> { node: node, index: i })
 
-/// The rank-th smallest key and its value, copied (0 is the smallest). Crashes if rank >= length. A copy, because
+/// The rank-th smallest key and its value, copied (0 is the smallest). Crashes if rank >= count. A copy, because
 /// writing a key through a pointer would break the order.
 routine SortedDict<K, V>.get_by_rank(self: Self, rank: USize) -> KVPair<K, V>
 require K: typename, V: typename
@@ -424,7 +424,7 @@ require K: typename, V: typename
         value : V                     = node.values.get(spot.index)
         return(KVPair<K, V> { key: key, value: value })
 
-/// A pointer to the value of the rank-th smallest key, to change it in place. Crashes if rank >= length. Valid until
+/// A pointer to the value of the rank-th smallest key, to change it in place. Crashes if rank >= count. Valid until
 /// the next put or remove.
 routine SortedDict<K, V>.value_ptr_by_rank(self: Self, rank: USize) -> @V
 require K: typename, V: typename
@@ -451,7 +451,7 @@ require K: typename, V: typename
         right_count : USize = NODE_KEYS.sub(right_start)
         right.keys.copy(0, left.keys, right_start, right_count)
         right.values.copy(0, left.values, right_start, right_count)
-        right.length.store(right_count)
+        right.count.store(right_count)
         branch leaf
             ? promote(left, right, mid)
             : copy_children(left, right, mid, right_count)
@@ -472,10 +472,10 @@ require K: typename, V: typename
         jump child_loop(i.add(1), left, right, mid, right_count)
 
     block promote(left: @Self, right: @Self, mid: USize)
-        parent_length : USize = self.length.load()
-        self.keys.shift_right(index, parent_length)
-        self.values.shift_right(index, parent_length)
-        jump shift_children(parent_length, left, right, mid)
+        parent_count : USize = self.count.load()
+        self.keys.shift_right(index, parent_count)
+        self.values.shift_right(index, parent_count)
+        jump shift_children(parent_count, left, right, mid)
 
     block shift_children(i: USize, left: @Self, right: @Self, mid: USize)
         stop : USize = index.add(1)
@@ -495,9 +495,9 @@ require K: typename, V: typename
         self.keys.set(index, middle_key)
         self.values.set(index, middle_value)
         self.children.set(index.add(1), right)
-        left.length.store(mid)
-        next_length : USize = self.length.load().add(1)
-        next_length.store_into(self.length)
+        left.count.store(mid)
+        next_count : USize = self.count.load().add(1)
+        next_count.store_into(self.count)
         left.recount()
         right.recount()
         self.recount()
@@ -515,22 +515,22 @@ require K: typename, V: typename
             : insert_internal()
 
     block insert_leaf()
-        slot   : USize = self.find_index(key)
-        length : USize = self.length.load()
-        self.keys.shift_right(slot, length)
-        self.values.shift_right(slot, length)
+        slot  : USize = self.find_index(key)
+        count : USize = self.count.load()
+        self.keys.shift_right(slot, count)
+        self.values.shift_right(slot, count)
         self.keys.set(slot, key)
         self.values.set(slot, value)
-        new_length : USize = length.add(1)
-        self.length.store(new_length)
-        self.subtree_count.store(new_length)
+        new_count : USize = count.add(1)
+        self.count.store(new_count)
+        self.subtree_count.store(new_count)
         return(true)
 
     block insert_internal()
-        slot         : USize = self.find_index(key)
-        child        : @Self = self.children.get(slot)
-        child_length : USize = child.length.load()
-        full         : Bool  = child_length.eq(NODE_KEYS)
+        slot        : USize = self.find_index(key)
+        child       : @Self = self.children.get(slot)
+        child_count : USize = child.count.load()
+        full        : Bool  = child_count.eq(NODE_KEYS)
         branch full
             ? split_then_insert(slot, child)
             : descend(slot, child)
@@ -589,10 +589,10 @@ require K: typename, V: typename
             : continue
         root.keys.set(0, key)
         root.values.set(0, value)
-        root.length.store(1)
+        root.count.store(1)
         root.subtree_count.store(1)
         self.root.store(root)
-        self.length.store(1)
+        self.count.store(1)
         return(.Success(Unit.value()))
 
     block maybe_replace(root: @SortedDictNode<K, V>)
@@ -602,9 +602,9 @@ require K: typename, V: typename
             : insert_root(root)
 
     block insert_root(root: @SortedDictNode<K, V>)
-        alloc       : @Allocator = self.alloc.load()
-        root_length : USize      = root.length.load()
-        full        : Bool       = root_length.eq(NODE_KEYS)
+        alloc      : @Allocator = self.alloc.load()
+        root_count : USize      = root.count.load()
+        full       : Bool       = root_count.eq(NODE_KEYS)
         branch full
             ? split_root(root, alloc)
             : insert_nonfull(root, alloc)
@@ -634,8 +634,8 @@ require K: typename, V: typename
         branch inserted
             ? continue
             : return(.Failure(AllocFailed {}))
-        next_length : USize = self.length.load().add(1)
-        next_length.store_into(self.length)
+        next_count : USize = self.count.load().add(1)
+        next_count.store_into(self.count)
         return(.Success(Unit.value()))
 
 /// Replaces the value of `key` somewhere in this subtree, if the key is present.
@@ -646,8 +646,8 @@ routine SortedDictNode<K, V>.replace(self: @Self, key: K, value: V) -> Bool
 require K: typename, V: typename
     block entry()
         slot   : USize = self.find_index(key)
-        length : USize = self.length.load()
-        inside : Bool  = slot.lt(length)
+        count  : USize = self.count.load()
+        inside : Bool  = slot.lt(count)
         branch inside
             ? maybe_match(slot)
             : descend_or_missing(slot)
@@ -679,18 +679,18 @@ require K: typename, V: typename
 routine SortedDictNode<K, V>.remove_leaf_at(self: @Self, index: USize) -> V
 require K: typename, V: typename
     block entry()
-        old    : V     = self.values.get(index)
-        length : USize = self.length.load()
-        self.keys.shift_left(index, length)
-        self.values.shift_left(index, length)
-        new_length : USize = length.sub(1)
-        self.length.store(new_length)
-        self.subtree_count.store(new_length)
+        old   : V     = self.values.get(index)
+        count : USize = self.count.load()
+        self.keys.shift_left(index, count)
+        self.values.shift_left(index, count)
+        new_count : USize = count.sub(1)
+        self.count.store(new_count)
+        self.subtree_count.store(new_count)
         return(old)
 
 // Capacity = NODE_KEYS, t = NODE_MIN_KEYS. Non-root nodes maintain
-// length >= NODE_MIN_KEYS - 1.
-// Helpers below ensure a child has length >= NODE_MIN_KEYS (= t) before any deletion
+// count >= NODE_MIN_KEYS - 1.
+// Helpers below ensure a child has count >= NODE_MIN_KEYS (= t) before any deletion
 // descent so the child can absorb a one-key drop without underflowing.
 
 /// Rotates one entry from child `i - 1` through the parent into the front of child `i`, so child `i` gains an entry. Subtree counts are updated.
@@ -698,36 +698,36 @@ require K: typename, V: typename
 routine SortedDictNode<K, V>.borrow_from_left(self: @Self, i: USize) -> Void
 require K: typename, V: typename
     block entry()
-        separator    : USize = i.sub(1)
-        left         : @Self = self.children.get(separator)
-        child        : @Self = self.children.get(i)
-        left_length  : USize = left.length.load()
-        child_length : USize = child.length.load()
-        child.keys.shift_right(0, child_length)
-        child.values.shift_right(0, child_length)
+        separator   : USize = i.sub(1)
+        left        : @Self = self.children.get(separator)
+        child       : @Self = self.children.get(i)
+        left_count  : USize = left.count.load()
+        child_count : USize = child.count.load()
+        child.keys.shift_right(0, child_count)
+        child.values.shift_right(0, child_count)
         pivot_key   : K = self.keys.get(separator)
         pivot_value : V = self.values.get(separator)
         child.keys.set(0, pivot_key)
         child.values.set(0, pivot_value)
-        new_pivot_key   : K = left.keys.get(left_length.sub(1))
-        new_pivot_value : V = left.values.get(left_length.sub(1))
+        new_pivot_key   : K = left.keys.get(left_count.sub(1))
+        new_pivot_value : V = left.values.get(left_count.sub(1))
         self.keys.set(separator, new_pivot_key)
         self.values.set(separator, new_pivot_value)
         leaf : Bool = child.leaf.load()
         branch leaf
-            ? finalize(left, child, left_length, child_length)
-            : move_child(left, child, left_length, child_length)
+            ? finalize(left, child, left_count, child_count)
+            : move_child(left, child, left_count, child_count)
 
-    block move_child(left: @Self, child: @Self, left_length: USize, child_length: USize)
-        child_count : USize = child_length.add(1)
-        child.children.shift_right(0, child_count)
-        moved : @Self = left.children.get(left_length)
+    block move_child(left: @Self, child: @Self, left_count: USize, child_count: USize)
+        children : USize = child_count.add(1)
+        child.children.shift_right(0, children)
+        moved : @Self = left.children.get(left_count)
         child.children.set(0, moved)
-        jump finalize(left, child, left_length, child_length)
+        jump finalize(left, child, left_count, child_count)
 
-    block finalize(left: @Self, child: @Self, left_length: USize, child_length: USize)
-        left.length.store(left_length.sub(1))
-        child.length.store(child_length.add(1))
+    block finalize(left: @Self, child: @Self, left_count: USize, child_count: USize)
+        left.count.store(left_count.sub(1))
+        child.count.store(child_count.add(1))
         left.recount()
         child.recount()
         self.recount()
@@ -738,34 +738,34 @@ require K: typename, V: typename
 routine SortedDictNode<K, V>.borrow_from_right(self: @Self, i: USize) -> Void
 require K: typename, V: typename
     block entry()
-        child        : @Self = self.children.get(i)
-        right        : @Self = self.children.get(i.add(1))
-        child_length : USize = child.length.load()
-        right_length : USize = right.length.load()
-        pivot_key    : K     = self.keys.get(i)
-        pivot_value  : V     = self.values.get(i)
-        child.keys.set(child_length, pivot_key)
-        child.values.set(child_length, pivot_value)
+        child       : @Self = self.children.get(i)
+        right       : @Self = self.children.get(i.add(1))
+        child_count : USize = child.count.load()
+        right_count : USize = right.count.load()
+        pivot_key   : K     = self.keys.get(i)
+        pivot_value : V     = self.values.get(i)
+        child.keys.set(child_count, pivot_key)
+        child.values.set(child_count, pivot_value)
         new_pivot_key   : K = right.keys.get(0)
         new_pivot_value : V = right.values.get(0)
         self.keys.set(i, new_pivot_key)
         self.values.set(i, new_pivot_value)
-        right.keys.shift_left(0, right_length)
-        right.values.shift_left(0, right_length)
+        right.keys.shift_left(0, right_count)
+        right.values.shift_left(0, right_count)
         leaf : Bool = child.leaf.load()
         branch leaf
-            ? finalize(child, right, child_length, right_length)
-            : move_child(child, right, child_length, right_length)
+            ? finalize(child, right, child_count, right_count)
+            : move_child(child, right, child_count, right_count)
 
-    block move_child(child: @Self, right: @Self, child_length: USize, right_length: USize)
+    block move_child(child: @Self, right: @Self, child_count: USize, right_count: USize)
         moved : @Self = right.children.get(0)
-        child.children.set(child_length.add(1), moved)
-        right.children.shift_left(0, right_length.add(1))
-        jump finalize(child, right, child_length, right_length)
+        child.children.set(child_count.add(1), moved)
+        right.children.shift_left(0, right_count.add(1))
+        jump finalize(child, right, child_count, right_count)
 
-    block finalize(child: @Self, right: @Self, child_length: USize, right_length: USize)
-        child.length.store(child_length.add(1))
-        right.length.store(right_length.sub(1))
+    block finalize(child: @Self, right: @Self, child_count: USize, right_count: USize)
+        child.count.store(child_count.add(1))
+        right.count.store(right_count.sub(1))
         child.recount()
         right.recount()
         self.recount()
@@ -777,33 +777,33 @@ require K: typename, V: typename
 routine SortedDictNode<K, V>.merge_children(self: @Self, i: USize, alloc: @Allocator) -> Void
 require K: typename, V: typename
     block entry()
-        left         : @Self = self.children.get(i)
-        right        : @Self = self.children.get(i.add(1))
-        left_length  : USize = left.length.load()
-        right_length : USize = right.length.load()
-        pivot_key    : K     = self.keys.get(i)
-        pivot_value  : V     = self.values.get(i)
-        left.keys.set(left_length, pivot_key)
-        left.values.set(left_length, pivot_value)
-        dst_start : USize = left_length.add(1)
-        left.keys.copy(dst_start, right.keys, 0, right_length)
-        left.values.copy(dst_start, right.values, 0, right_length)
+        left        : @Self = self.children.get(i)
+        right       : @Self = self.children.get(i.add(1))
+        left_count  : USize = left.count.load()
+        right_count : USize = right.count.load()
+        pivot_key   : K     = self.keys.get(i)
+        pivot_value : V     = self.values.get(i)
+        left.keys.set(left_count, pivot_key)
+        left.values.set(left_count, pivot_value)
+        dst_start : USize = left_count.add(1)
+        left.keys.copy(dst_start, right.keys, 0, right_count)
+        left.values.copy(dst_start, right.values, 0, right_count)
         leaf : Bool = left.leaf.load()
         branch leaf
-            ? finalize(left, right, left_length, right_length)
-            : copy_children(left, right, left_length, right_length)
+            ? finalize(left, right, left_count, right_count)
+            : copy_children(left, right, left_count, right_count)
 
-    block copy_children(left: @Self, right: @Self, left_length: USize, right_length: USize)
-        left.children.copy(left_length.add(1), right.children, 0, right_length.add(1))
-        jump finalize(left, right, left_length, right_length)
+    block copy_children(left: @Self, right: @Self, left_count: USize, right_count: USize)
+        left.children.copy(left_count.add(1), right.children, 0, right_count.add(1))
+        jump finalize(left, right, left_count, right_count)
 
-    block finalize(left: @Self, right: @Self, left_length: USize, right_length: USize)
-        left.length.store(left_length.add(1).add(right_length))
-        parent_length : USize = self.length.load()
-        self.keys.shift_left(i, parent_length)
-        self.values.shift_left(i, parent_length)
-        self.children.shift_left(i.add(1), parent_length.add(1))
-        self.length.store(parent_length.sub(1))
+    block finalize(left: @Self, right: @Self, left_count: USize, right_count: USize)
+        left.count.store(left_count.add(1).add(right_count))
+        parent_count : USize = self.count.load()
+        self.keys.shift_left(i, parent_count)
+        self.values.shift_left(i, parent_count)
+        self.children.shift_left(i.add(1), parent_count.add(1))
+        self.count.store(parent_count.sub(1))
         right.free(alloc)
         left.recount()
         self.recount()
@@ -817,9 +817,9 @@ require K: typename, V: typename
 routine SortedDictNode<K, V>.ensure_min(self: @Self, i: USize, alloc: @Allocator) -> USize
 require K: typename, V: typename
     block entry()
-        child        : @Self = self.children.get(i)
-        child_length : USize = child.length.load()
-        ok           : Bool  = child_length.ge(NODE_MIN_KEYS)
+        child       : @Self = self.children.get(i)
+        child_count : USize = child.count.load()
+        ok          : Bool  = child_count.ge(NODE_MIN_KEYS)
         branch ok ? return(i): try_left()
 
     block try_left()
@@ -829,9 +829,9 @@ require K: typename, V: typename
             : try_right(false)
 
     block check_left()
-        left        : @Self = self.children.get(i.sub(1))
-        left_length : USize = left.length.load()
-        left_ok     : Bool  = left_length.ge(NODE_MIN_KEYS)
+        left       : @Self = self.children.get(i.sub(1))
+        left_count : USize = left.count.load()
+        left_ok    : Bool  = left_count.ge(NODE_MIN_KEYS)
         branch left_ok
             ? do_borrow_left()
             : try_right(true)
@@ -841,16 +841,16 @@ require K: typename, V: typename
         return(i)
 
     block try_right(has_left: Bool)
-        parent_length : USize = self.length.load()
-        has_right     : Bool  = i.lt(parent_length)
+        parent_count : USize = self.count.load()
+        has_right    : Bool  = i.lt(parent_count)
         branch has_right
             ? check_right(has_left)
             : pick_merge_no_right(has_left)
 
     block check_right(has_left: Bool)
-        right        : @Self = self.children.get(i.add(1))
-        right_length : USize = right.length.load()
-        right_ok     : Bool  = right_length.ge(NODE_MIN_KEYS)
+        right       : @Self = self.children.get(i.add(1))
+        right_count : USize = right.count.load()
+        right_ok    : Bool  = right_count.ge(NODE_MIN_KEYS)
         branch right_ok
             ? do_borrow_right()
             : pick_merge(has_left)
@@ -891,16 +891,16 @@ require K: typename, V: typename
             : descend()
 
     block leaf_take()
-        length : USize = self.length.load()
-        index  : USize = length.sub(1)
-        key    : K     = self.keys.get(index)
-        value  : V     = self.remove_leaf_at(index)
+        count : USize = self.count.load()
+        index : USize = count.sub(1)
+        key   : K     = self.keys.get(index)
+        value : V     = self.remove_leaf_at(index)
         out_value.store(value)
         return(key)
 
     block descend()
-        length : USize = self.length.load()
-        actual : USize = self.ensure_min(length, alloc)
+        count  : USize = self.count.load()
+        actual : USize = self.ensure_min(count, alloc)
         child  : @Self = self.children.get(actual)
         key    : K     = child.take_max_key(out_value, alloc)
         self.recount()
@@ -939,8 +939,8 @@ routine SortedDictNode<K, V>.remove(self: @Self, key: K, alloc: @Allocator) -> B
 require K: typename, V: typename
     block entry()
         slot   : USize = self.find_index(key)
-        length : USize = self.length.load()
-        inside : Bool  = slot.lt(length)
+        count  : USize = self.count.load()
+        inside : Bool  = slot.lt(count)
         branch inside
             ? maybe_match(slot)
             : descend_or_missing(slot)
@@ -964,9 +964,9 @@ require K: typename, V: typename
         return(true)
 
     block remove_internal(slot: USize)
-        left        : @Self = self.children.get(slot)
-        left_length : USize = left.length.load()
-        left_ok     : Bool  = left_length.ge(NODE_MIN_KEYS)
+        left       : @Self = self.children.get(slot)
+        left_count : USize = left.count.load()
+        left_ok    : Bool  = left_count.ge(NODE_MIN_KEYS)
         branch left_ok
             ? take_pred(slot)
             : try_succ(slot)
@@ -982,9 +982,9 @@ require K: typename, V: typename
         return(true)
 
     block try_succ(slot: USize)
-        right        : @Self = self.children.get(slot.add(1))
-        right_length : USize = right.length.load()
-        right_ok     : Bool  = right_length.ge(NODE_MIN_KEYS)
+        right       : @Self = self.children.get(slot.add(1))
+        right_count : USize = right.count.load()
+        right_ok    : Bool  = right_count.ge(NODE_MIN_KEYS)
         branch right_ok
             ? take_succ(slot)
             : merge_and_recurse(slot)
@@ -1037,10 +1037,10 @@ require K: typename, V: typename
             : return(false)
 
     block after_remove(root: @SortedDictNode<K, V>)
-        remaining_length : USize = self.length.load().sub(1)
-        remaining_length.store_into(self.length)
-        root_length : USize = root.length.load()
-        empty_root  : Bool  = root_length.eq(0)
+        remaining_count : USize = self.count.load().sub(1)
+        remaining_count.store_into(self.count)
+        root_count : USize = root.count.load()
+        empty_root : Bool  = root_count.eq(0)
         branch empty_root
             ? maybe_shrink(root)
             : return(true)
@@ -1064,7 +1064,7 @@ require K: typename, V: typename
         self.root.store(new_root)
         return(true)
 
-/// Internal nodes store `length` separator keys and `length + 1` children.
+/// Internal nodes store `count` separator keys and `count + 1` children.
 routine SortedDictNode<K, V>.free_recursive(self: @Self, alloc: @Allocator) -> Void
 require K: typename, V: typename
     block entry()
@@ -1074,8 +1074,8 @@ require K: typename, V: typename
             : free_children()
 
     block free_children()
-        length : USize = self.length.load()
-        jump child_loop(0, length.add(1))
+        count : USize = self.count.load()
+        jump child_loop(0, count.add(1))
 
     block child_loop(i: USize, child_count: USize)
         done : Bool = i.ge(child_count)
@@ -1110,7 +1110,7 @@ require K: typename, V: typename
 
     block reset()
         self.root.store(null)
-        self.length.store(0)
+        self.count.store(0)
         return()
 
 /// Destructs every key and value, then the dictionary itself.

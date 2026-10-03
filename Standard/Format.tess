@@ -24,8 +24,8 @@ import Standard::Collections
 /// :typeparam W: The type that accepts bytes.
 concept Writer<W>
 require W: typename
-    /// Write length bytes starting at data.
-    routine Self.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
+    /// Write count bytes starting at data.
+    routine Self.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
 
 /// A type that can write its program-output text into a Writer with `represent_into`. Integers write decimal (`represent_hex` gives hex), Bytes writes itself unquoted, and Bool writes `true` or `false`.
 /// :typeparam T: The type that can write its program-output text.
@@ -50,7 +50,7 @@ record SliceWriter
 conform Writer<SliceWriter>
     data       : @Byte
     capacity   : USize
-    length     : USize
+    count      : USize
     overflowed : Bool
 
 /// Creates a writer over `capacity` bytes starting at `data`. The buffer stays owned by the caller and must outlive the writer.
@@ -59,15 +59,15 @@ conform Writer<SliceWriter>
 /// :returns: A writer that appends into the buffer, with nothing written yet.
 routine SliceWriter.construct(data: @Byte, capacity: USize) -> Self
     block entry()
-        w : Self = Self { data: data, capacity: capacity, length: 0, overflowed: false }
+        w : Self = Self { data: data, capacity: capacity, count: 0, overflowed: false }
         return(w)
 
 /// The text written so far, a view into the buffer.
 routine SliceWriter.to_bytes(self: Self) -> Bytes
     block entry()
-        data   : @Byte = self.data
-        length : USize = self.length
-        s      : Bytes = .from_ptr(data, length)
+        data  : @Byte = self.data
+        count : USize = self.count
+        s     : Bytes = .from_ptr(data, count)
         return(s)
 
 /// True once some write did not fit in the buffer, meaning the text was cut off.
@@ -83,15 +83,15 @@ routine SliceWriter.has_overflowed(self: Self) -> Bool
 /// :note: Sets the overflow flag when anything was dropped, see {SliceWriter.has_overflowed}.
 routine SliceWriter.write_bytes(self: @Self, bytes: @Byte, count: USize) -> Void
     block entry()
-        length   : USize = self.length.load()
+        used     : USize = self.count.load()
         capacity : USize = self.capacity.load()
-        room     : USize = capacity.sub(length)
+        room     : USize = capacity.sub(used)
         fits     : Bool  = count.le(room)
         taken    : USize = count.min(room)
         data     : @Byte = self.data.load()
-        to       : @Byte = data.stride(length)
+        to       : @Byte = data.stride(used)
         copy<Byte>(to, bytes, taken)
-        self.length.store(length.add(taken))
+        self.count.store(used.add(taken))
         branch fits
             ? return()
             : continue
@@ -108,7 +108,7 @@ record BufWriter<W>
 require W: typename
 conform Writer<BufWriter<W>>
     private inner  : @W
-    private length : USize
+    private count : USize
     private data   : Array<Byte, 4096>
 
 /// Sets up the buffer to pass its writes on to `inner`, with nothing buffered yet. `inner` must outlive the writer.
@@ -118,25 +118,25 @@ routine BufWriter<W>.construct(self: @Self, inner: @W) -> Void
 require W: typename
     block entry()
         self.inner.store(inner)
-        self.length.store(0)
+        self.count.store(0)
         return()
 
 /// Writes out the buffered bytes.
 routine BufWriter<W>.flush(self: @Self) -> Void
 require W: typename, Writer<W>
     block entry()
-        length : USize              = self.length.load()
+        count  : USize              = self.count.load()
         inner  : @W                 = self.inner.load()
         buffer : @Array<Byte, 4096> = self.data
         data   : @Byte              = buffer.to<@Byte>()
-        self.length.store(0)
-        empty : Bool = length.eq(0)
+        self.count.store(0)
+        empty : Bool = count.eq(0)
         branch empty
             ? return()
-            : pass(inner, data, length)
+            : pass(inner, data, count)
 
-    block pass(inner: @W, data: @Byte, length: USize)
-        inner.write_bytes(data, length)
+    block pass(inner: @W, data: @Byte, count: USize)
+        inner.write_bytes(data, count)
         return()
 
 /// Appends to the buffer, flushing it first when the bytes would not fit. A write of 4 KiB or more goes straight to the inner Writer after that flush.
@@ -146,10 +146,10 @@ require W: typename, Writer<W>
 routine BufWriter<W>.write_bytes(self: @Self, bytes: @Byte, count: USize) -> Void
 require W: typename, Writer<W>
     block entry()
-        length : USize = self.length.load()
-        fits   : Bool  = length.add(count).le(4096)
+        buffered : USize = self.count.load()
+        fits     : Bool  = buffered.add(count).le(4096)
         branch fits
-            ? append(length)
+            ? append(buffered)
             : make_room()
 
     block make_room()
@@ -164,12 +164,12 @@ require W: typename, Writer<W>
         inner.write_bytes(bytes, count)
         return()
 
-    block append(length: USize)
+    block append(buffered: USize)
         buffer : @Array<Byte, 4096> = self.data
         data   : @Byte              = buffer.to<@Byte>()
-        to     : @Byte              = data.stride(length)
+        to     : @Byte              = data.stride(buffered)
         copy<Byte>(to, bytes, count)
-        self.length.store(length.add(count))
+        self.count.store(buffered.add(count))
         return()
 
 // -- CountWriter ---------------------------------------------------------------
@@ -189,26 +189,26 @@ routine CountWriter.construct() -> Self
 
 /// Adds the number of UTF-8 code points in the bytes (every byte that is not a `10xxxxxx` continuation byte) to `count`, without storing the bytes.
 /// :param bytes: The bytes to count.
-/// :param length: The number of bytes.
-routine CountWriter.write_bytes(self: @Self, bytes: @Byte, length: USize) -> Void
+/// :param count: The number of bytes.
+routine CountWriter.write_bytes(self: @Self, bytes: @Byte, count: USize) -> Void
     block entry()
-        count : USize = self.count.load()
-        jump loop(0, count)
+        total : USize = self.count.load()
+        jump loop(0, total)
 
-    block loop(i: USize, count: USize)
-        done : Bool = i.ge(length)
+    block loop(i: USize, total: USize)
+        done : Bool = i.ge(count)
         branch done
-            ? finish(count)
-            : step(i, count)
+            ? finish(total)
+            : step(i, total)
 
     // continuation bytes are 10xxxxxx
-    block step(i: USize, count: USize)
+    block step(i: USize, total: USize)
         byte   : U8   = .from_byte(bytes.stride(i).load())
         starts : Bool = byte.bitand(0xC0).ne(0x80)
-        jump loop(i.add(1), count.add(starts.to<USize>()))
+        jump loop(i.add(1), total.add(starts.to<USize>()))
 
-    block finish(count: USize)
-        self.count.store(count)
+    block finish(total: USize)
+        self.count.store(total)
         return()
 
 // -- text ----------------------------------------------------------------------
@@ -220,9 +220,9 @@ routine CountWriter.write_bytes(self: @Self, bytes: @Byte, length: USize) -> Voi
 routine write_str<W>(out: @W, text: Bytes) -> Void
 require W: typename, Writer<W>
     block entry()
-        data   : @Byte = text.data
-        length : USize = text.length
-        out.write_bytes(data, length)
+        data  : @Byte = text.data
+        count : USize = text.count
+        out.write_bytes(data, count)
         return()
 
 /// Writes a single `\n` to `out`.
@@ -1633,11 +1633,11 @@ require T: typename, W: typename, Writer<W>, Represent<T>
     block entry()
         claim counter : @CountWriter <- .construct()
         value.represent_into(counter)
-        length : USize = counter.count.load()
-        pad    : USize = spec.width.sub_clamp(length)
-        half   : USize = pad.div(2)
-        fill   : Bytes = spec.fill
-        align  : Align = spec.align
+        count : USize = counter.count.load()
+        pad   : USize = spec.width.sub_clamp(count)
+        half  : USize = pad.div(2)
+        fill  : Bytes = spec.fill
+        align : Align = spec.align
         when align
             Align.Left      -> padded(0, pad, fill)
             Align.Right     -> padded(pad, 0, fill)
@@ -1658,16 +1658,16 @@ require T: typename, W: typename, Writer<W>, Represent<T>
 /// Writes the first bytes after the padding, or after a leading `-` or `+`, and passes every later write straight through.
 /// :typeparam W: The inner Writer type.
 /// :param bytes: The bytes being written.
-/// :param length: The number of bytes.
-routine SignPadWriter<W>.write_bytes(self: @Self, bytes: @Byte, length: USize) -> Void
+/// :param count: The number of bytes.
+routine SignPadWriter<W>.write_bytes(self: @Self, bytes: @Byte, count: USize) -> Void
 require W: typename, Writer<W>
     block entry()
         inner : @W    = self.inner.load()
         pad   : USize = self.pad.load()
-        first : Bool  = pad.gt(0).bitand(length.gt(0))
+        first : Bool  = pad.gt(0).bitand(count.gt(0))
         branch first
             ? first(inner, pad)
-            : pass(inner, bytes, length)
+            : pass(inner, bytes, count)
 
     block first(inner: @W, pad: USize)
         fill : Bytes = self.fill.load()
@@ -1676,17 +1676,17 @@ require W: typename, Writer<W>
         signed : Bool = byte.eq(45).bitor(byte.eq(43))  // - or +
         branch signed
             ? sign(inner, pad, fill)
-            : pad(inner, pad, fill, bytes, length)
+            : pad(inner, pad, fill, bytes, count)
 
     block sign(inner: @W, pad: USize, fill: Bytes)
         inner.write_bytes(bytes, 1)
         rest : @Byte = bytes.stride(1)
-        jump pad(inner, pad, fill, rest, length.sub(1))
+        jump pad(inner, pad, fill, rest, count.sub(1))
 
-    block pad(inner: @W, pad: USize, fill: Bytes, from: @Byte, count: USize)
+    block pad(inner: @W, pad: USize, fill: Bytes, from: @Byte, left: USize)
         write_repeated(inner, fill, pad)
-        jump pass(inner, from, count)
+        jump pass(inner, from, left)
 
-    block pass(inner: @W, from: @Byte, count: USize)
-        inner.write_bytes(from, count)
+    block pass(inner: @W, from: @Byte, left: USize)
+        inner.write_bytes(from, left)
         return()

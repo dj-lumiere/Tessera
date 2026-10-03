@@ -550,12 +550,12 @@ internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, Fs
             ? return(failed<Self>())
             : return(.Success(Self { handle: h, failed: false }))
 
-/// Reads up to length bytes into buffer: how many, 0 at the end of the file.
+/// Reads up to count bytes into buffer: how many, 0 at the end of the file.
 #target(os: "windows")
-routine FileHandle.read_bytes(self: @Self, buffer: @Byte, length: USize) -> Result<USize, FsError>
+routine FileHandle.read_bytes(self: @Self, buffer: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
         claim got : @U32 <- 0
-        ok : CInt = c_read_file(self.handle.load(), buffer, length.min(1073741824).to<U32>(), got,
+        ok : CInt = c_read_file(self.handle.load(), buffer, count.min(1073741824).to<U32>(), got,
             null)
         branch ok.ne(0)
             ? return(.Success(got.load().to<USize>()))
@@ -566,13 +566,13 @@ routine FileHandle.read_bytes(self: @Self, buffer: @Byte, length: USize) -> Resu
             ? return(.Success(0))
             : return(.Failure(error_of(e)))
 
-/// Writes up to length bytes: how many it did.
+/// Writes up to count bytes: how many it did.
 #target(os: "windows")
 internal routine FileHandle.write_some(self: @Self, data: @Byte,
-    length: USize) -> Result<USize, FsError>
+    count: USize) -> Result<USize, FsError>
     block entry()
         claim wrote : @U32 <- 0
-        ok : CInt = c_write_file(self.handle.load(), data, length.min(1073741824).to<U32>(), wrote,
+        ok : CInt = c_write_file(self.handle.load(), data, count.min(1073741824).to<U32>(), wrote,
             null)
         branch ok.ne(0)
             ? return(.Success(wrote.load().to<USize>()))
@@ -736,7 +736,7 @@ internal routine set_readonly(path: Bytes, readonly: Bool) -> Result<Unit, FsErr
 #target(os: "windows")
 private routine is_program_extension(e: Bytes) -> Bool
     block entry()
-        branch e.length().eq(3)
+        branch e.count().eq(3)
             ? continue
             : return(false)
         // ASCII lowercase: setting bit 5 of a letter
@@ -816,23 +816,23 @@ internal routine DirIter.open_path(self: @Self, path: Bytes) -> Result<Unit, FsE
         claim pattern : @Array<U16, PATH_CAPACITY> <- uninit
         n : Option<USize> = wide(path, pattern.to<@U16>())
         when n
-            .Present(length) -> star(pattern.to<@U16>(), length)
-            .Absent          -> return(.Failure(path_error(path)))
+            .Present(count) -> star(pattern.to<@U16>(), count)
+            .Absent         -> return(.Failure(path_error(path)))
 
     // path, a separator unless it ends with one, and "*"
-    block star(pattern: @U16, length: USize)
-        branch length.add(2).ge(PATH_CAPACITY)
+    block star(pattern: @U16, count: USize)
+        branch count.add(2).ge(PATH_CAPACITY)
             ? return(.Failure(FsError.NameTooLong))
             : continue
-        branch length.eq(0)
+        branch count.eq(0)
             ? glob(pattern, 0)
             : continue
-        last : U16 = pattern.stride(length.sub(1)).load()
+        last : U16 = pattern.stride(count.sub(1)).load()
         branch last.eq(0x2F).bitor(last.eq(0x5C))
-            ? glob(pattern, length)
+            ? glob(pattern, count)
             : continue
-        pattern.stride(length).store(0x5C)
-        jump glob(pattern, length.add(1))
+        pattern.stride(count).store(0x5C)
+        jump glob(pattern, count.add(1))
 
     block glob(pattern: @U16, at: USize)
         pattern.stride(at).store(0x2A)
@@ -1072,7 +1072,7 @@ internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result<Bytes,
 
     // Moves the text from from down to keep, so the buffer's start (what free wants) stays where it is.
     block shift(t: Bytes, from: USize, keep: USize)
-        rest : USize = t.length().sub(from)
+        rest : USize = t.count().sub(from)
         jump move(t, from, keep, rest, 0)
 
     block move(t: Bytes, from: USize, keep: USize, rest: USize, i: USize)
@@ -1084,12 +1084,12 @@ internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result<Bytes,
 
 // -- memory-mapped files -----------------------------------------------------------------
 
-/// Maps length bytes of path from offset (USize.MAX: to the end), clamped to the file; past the end, or an empty
+/// Maps count bytes of path from offset (USize.MAX: to the end), clamped to the file; past the end, or an empty
 /// file, gives an empty mapping. write maps it so stores reach the file; otherwise it's read-only (opened for a
 /// front-to-back read).
 #target(os: "windows")
 internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
-    length: USize) -> Result<Self, FsError>
+    count: USize) -> Result<Self, FsError>
     block entry()
         claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
         branch wide_path(path, wpath.to<@U16>())
@@ -1118,7 +1118,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
         branch offset.ge(size)
             ? empty(h)
             : continue
-        want_bytes : U64   = length.to<U64>().min(size.sub(offset))
+        want_bytes : U64   = count.to<U64>().min(size.sub(offset))
         want       : USize = want_bytes.to<USize>()
         grain      : U64   = map_granularity().to<U64>()
         aligned    : U64   = offset.sub(offset.mod(grain))
@@ -1142,7 +1142,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
         c_close_handle(h)
         branch view.is_null()
             ? return(.Failure(error_of(e)))
-            : return(.Success(Self { base: view, delta: delta, length: want }))
+            : return(.Success(Self { base: view, delta: delta, count: want }))
 
     block empty(h: Addr)
         c_close_handle(h)
@@ -1175,7 +1175,7 @@ routine Mapping.prefetch(self: Self) -> Void
             ? return()
             : continue
         claim range : @MemoryRange <- MemoryRange { address: self.base,
-            size: self.delta.add(self.length) }
+            size: self.delta.add(self.count) }
         c_prefetch_virtual_memory(c_get_current_process(), 1, range, 0)
         return()
 

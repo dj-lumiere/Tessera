@@ -70,8 +70,8 @@ routine main() -> S32
   (`p.field`, `p.stride(i)`) are addresses. An `Addr` has no `load` or `store`: convert it to say what's there, `a.to<@U32>().load()`. Registers:
   `volatile_load()` / `volatile_store(...)`. (`:=` and `p = v` are gone and rejected.) From the value's side,
   `v.store_into(p)` is `p.store(v)`, so a chain can end in memory: `a.add(b).store_into(sum)`. A
-  read-modify-write on one place reads left to right: `self.length.load().add(1).store_into(self.length)`, not
-  `self.length.store(self.length.load().add(1))`. The load needn't come first: `x.sub(p.load()).store_into(p)`
+  read-modify-write on one place reads left to right: `self.count.load().add(1).store_into(self.count)`, not
+  `self.count.store(self.count.load().add(1))`. The load needn't come first: `x.sub(p.load()).store_into(p)`
   (for a commutative op, put the load first: `p.load().add(x).store_into(p)`). A literal receiver takes its type from the pointer
   (`0.store_into(count)`).
 - Memory is never read implicitly. A place passed as an argument is its address, so `U8.from_byte(p.stride(i))` is an
@@ -134,7 +134,7 @@ routine main() -> S32
   passed as a block argument. This is the most common error.
 - **A routine's parameters are there in every block, so a block parameter can't share a name with one.** Don't pass
   a routine parameter along to a block: use it. A value that starts from one and changes (a loop counter, a shrinking
-  length) gets its own name as a block parameter (`jump walk(start)` into `block walk(at: USize)`), or a `claim`ed
+  count) gets its own name as a block parameter (`jump walk(start)` into `block walk(at: USize)`), or a `claim`ed
   slot.
 - Every block ends with exactly one terminator: `jump b(...)`, `branch c ? a(...) : b(...)`, `when`
   (first condition that holds), `when v` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
@@ -208,8 +208,8 @@ routine main() -> S32
   `offset`, `to<@U>`, ...). Value methods (`self: Self`, such as every collection's `eq`) aren't reachable through a
   pointer, because that would hide a load: load first (`a.load().eq(b.load())`). Don't name your own pointer methods after `Ptr`'s.
 - **Collection methods that change the collection take `self: @Self`**, so it must live in memory (`claim` a
-  slot) before you call them; read-only ones (`length`, `is_empty`, `get`, `contains`, ...) take `self: Self`: call
-  them on a value, or load first (`list.load().length()`). You can't call a pointer method on a temporary: `DictIter<K, V>.construct(m).next()` fails with "has no
+  slot) before you call them; read-only ones (`count`, `is_empty`, `get`, `contains`, ...) take `self: Self`: call
+  them on a value, or load first (`list.load().count()`). You can't call a pointer method on a temporary: `DictIter<K, V>.construct(m).next()` fails with "has no
   method 'next'"; claim a slot for the iterator first.
 - Generic routines repeat their constraints: `require T: typename, Compare<T>`. Concepts: `Equal`, `Hash`,
   `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Represent`. Constraints are checked: a type satisfies a
@@ -410,7 +410,7 @@ routine on them is one thing done there now, returning `Result<T, FsError>`. A F
 `open_append` / `open_read_write` / `create_new` give a `FileHandle` (claim it: `read_bytes`, `write_all`,
 `h.write("...")`, `seek`, `size`, `set_size`, `sync`, `close`); `read_all(alloc)` / `write_all(data)`, `exists`,
 `metadata` (`kind`, `size`, times in ns), `copy_to`, `move_to`, `move_to_if_absent`, `delete`, `touch`, `map(write,
-offset, length)`, `name` / `stem` / `extension` / `parent`. A Directory: `create` / `create_all`, `delete` /
+offset, count)`, `name` / `stem` / `extension` / `parent`. A Directory: `create` / `create_all`, `delete` /
 `delete_all(alloc)`, `file(name, alloc)` / `subdir(name, alloc)`, `Directory.current` / `temp` / `home`, and a
 `DirIter` (`claim`, `open(dir)`, `next()` until Absent, `close()`). Path text needs no OS: `join_path`,
 `parent_path`, `file_name`, `file_stem`, `file_extension`. A routine that hands text or a path back takes an

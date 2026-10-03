@@ -12,19 +12,19 @@ preset POW10_U64: @Array<U64, 20> <- { 1, 10, 100, 1000, 10000, 100000, 1000000,
     100000000000000, 1000000000000000, 10000000000000000, 100000000000000000, 1000000000000000000,
     10000000000000000000 }
 
-/// A natural number in U64 limbs, least significant first. `length` limbs are
-/// in use and the top one is nonzero (zero has length 0). Fixed capacity:
+/// A natural number in U64 limbs, least significant first. `count` limbs are
+/// in use and the top one is nonzero (zero has count 0). Fixed capacity:
 /// growing past N limbs crashes with Overflow.
 record BigNat<N>
 require N: USize
-    limbs  : Array<U64, N>
-    length : USize
+    limbs : Array<U64, N>
+    count : USize
 
 routine BigNat<N>.set(self: @Self, value: U64) -> Void
 require N: USize
     block entry()
         self.limbs.set(0, value)
-        self.length.store(value.ne(0).to<USize>())
+        self.count.store(value.ne(0).to<USize>())
         return()
 
 routine BigNat<N>.set_u128(self: @Self, value: U128) -> Void
@@ -39,7 +39,7 @@ require N: USize
         used : USize = two
             ? 2
             : one.to<USize>()
-        self.length.store(used)
+        self.count.store(used)
         return()
 
 routine BigNat<N>.copy_from(self: @Self, other: @Self) -> Void
@@ -52,21 +52,21 @@ require N: USize
 routine BigNat<N>.is_zero(self: @Self) -> Bool
 require N: USize
     block entry()
-        length : USize = self.length.load()
-        zero   : Bool  = length.eq(0)
+        count : USize = self.count.load()
+        zero  : Bool  = count.eq(0)
         return(zero)
 
 routine BigNat<N>.bit_length(self: @Self) -> USize
 require N: USize
     block entry()
-        length : USize = self.length.load()
-        zero   : Bool  = length.eq(0)
+        count : USize = self.count.load()
+        zero  : Bool  = count.eq(0)
         branch zero
             ? return(0)
-            : count(length)
+            : count(count)
 
-    block count(length: USize)
-        top_at    : USize = length.sub(1)
+    block count(count: USize)
+        top_at    : USize = count.sub(1)
         top       : U64   = self.limbs.get(top_at)
         full_bits : USize = top_at.mul(64).add(64)
         bits      : USize = full_bits.sub(top.leading_zeros().to<USize>())
@@ -77,61 +77,61 @@ require N: USize
 routine BigNat<N>.push_limb(self: @Self, limb: U64) -> Void
 require N: USize
     block entry()
-        length : USize = self.length.load()
-        room   : Bool  = length.lt(N)
+        count : USize = self.count.load()
+        room  : Bool  = count.lt(N)
         branch room
-            ? store(length)
+            ? store(count)
             : crash_overflow()
 
-    block store(length: USize)
-        self.limbs.set(length, limb)
-        self.length.store(length.add(1))
+    block store(count: USize)
+        self.limbs.set(count, limb)
+        self.count.store(count.add(1))
         return()
 
 /// Drops zero limbs from the top.
 routine BigNat<N>.trim(self: @Self) -> Void
 require N: USize
     block entry()
-        length : USize = self.length.load()
-        jump check(length)
+        count : USize = self.count.load()
+        jump check(count)
 
-    block check(length: USize)
-        empty : Bool = length.eq(0)
+    block check(count: USize)
+        empty : Bool = count.eq(0)
         branch empty
-            ? store(length)
-            : look(length)
+            ? store(count)
+            : look(count)
 
-    block look(length: USize)
-        at   : USize = length.sub(1)
+    block look(count: USize)
+        at   : USize = count.sub(1)
         top  : U64   = self.limbs.get(at)
         zero : Bool  = top.eq(0)
         branch zero
             ? check(at)
-            : store(length)
+            : store(count)
 
-    block store(length: USize)
-        self.length.store(length)
+    block store(count: USize)
+        self.count.store(count)
         return()
 
 /// self = self × m + addend
 routine BigNat<N>.mul_add(self: @Self, m: U64, addend: U64) -> Void
 require N: USize
     block entry()
-        length : USize = self.length.load()
-        jump loop(0, addend.to<U128>(), length)
+        count : USize = self.count.load()
+        jump loop(0, addend.to<U128>(), count)
 
-    block loop(i: USize, carry: U128, length: USize)
-        done : Bool = i.ge(length)
+    block loop(i: USize, carry: U128, count: USize)
+        done : Bool = i.ge(count)
         branch done
             ? spill(carry)
-            : step(i, carry, length)
+            : step(i, carry, count)
 
     // limb × m + carry < 2^128, so the sum can't overflow
-    block step(i: USize, carry: U128, length: USize)
+    block step(i: USize, carry: U128, count: USize)
         limb    : U64  = self.limbs.get(i)
         product : U128 = limb.mul_wide(m).add(carry)
         self.limbs.set(i, product.to_wrap<U64>())
-        jump loop(i.add(1), product.shr(64), length)
+        jump loop(i.add(1), product.shr(64), count)
 
     block spill(carry: U128)
         high : U64  = carry.to<U64>()
@@ -172,23 +172,23 @@ require N: USize
     block entry()
         limb_shift : USize = bits.div(64)
         bit_shift  : U64   = bits.mod(64).to<U64>()
-        length     : USize = self.length.load()
+        count      : USize = self.count.load()
         whole      : Bool  = bit_shift.eq(0)
         branch whole
             ? move(limb_shift)
-            : shift_bits(0, 0, length, limb_shift, bit_shift)
+            : shift_bits(0, 0, count, limb_shift, bit_shift)
 
-    block shift_bits(i: USize, carry: U64, length: USize, limb_shift: USize, bit_shift: U64)
-        done : Bool = i.ge(length)
+    block shift_bits(i: USize, carry: U64, count: USize, limb_shift: USize, bit_shift: U64)
+        done : Bool = i.ge(count)
         branch done
             ? spill(carry, limb_shift)
-            : shift_one(i, carry, length, limb_shift, bit_shift)
+            : shift_one(i, carry, count, limb_shift, bit_shift)
 
-    block shift_one(i: USize, carry: U64, length: USize, limb_shift: USize, bit_shift: U64)
+    block shift_one(i: USize, carry: U64, count: USize, limb_shift: USize, bit_shift: U64)
         limb : U64 = self.limbs.get(i)
         self.limbs.set(i, limb.shl(bit_shift).bitor(carry))
         out : U64 = limb.shr(64.sub(bit_shift))
-        jump shift_bits(i.add(1), out, length, limb_shift, bit_shift)
+        jump shift_bits(i.add(1), out, count, limb_shift, bit_shift)
 
     block spill(carry: U64, limb_shift: USize)
         none : Bool = carry.eq(0)
@@ -202,47 +202,47 @@ require N: USize
 
     // Whole limbs move up by limb_shift, top first, and zeros fill the bottom.
     block move(limb_shift: USize)
-        length     : USize = self.length.load()
-        nothing    : Bool  = limb_shift.eq(0).bitor(length.eq(0))
-        new_length : USize = length.add(limb_shift)
-        room       : Bool  = new_length.le(N)
+        count     : USize = self.count.load()
+        nothing   : Bool  = limb_shift.eq(0).bitor(count.eq(0))
+        new_count : USize = count.add(limb_shift)
+        room      : Bool  = new_count.le(N)
         when
             nothing -> return()
-            room    -> move_loop(length, limb_shift, new_length)
+            room    -> move_loop(count, limb_shift, new_count)
             else    -> crash_overflow()
 
     // left limbs are still to move; the next one down is left - 1
-    block move_loop(left: USize, limb_shift: USize, new_length: USize)
+    block move_loop(left: USize, limb_shift: USize, new_count: USize)
         done : Bool = left.eq(0)
         branch done
-            ? zero_fill(0, limb_shift, new_length)
-            : move_one(left.sub(1), limb_shift, new_length)
+            ? zero_fill(0, limb_shift, new_count)
+            : move_one(left.sub(1), limb_shift, new_count)
 
-    block move_one(i: USize, limb_shift: USize, new_length: USize)
+    block move_one(i: USize, limb_shift: USize, new_count: USize)
         limb : U64 = self.limbs.get(i)
         self.limbs.set(i.add(limb_shift), limb)
-        jump move_loop(i, limb_shift, new_length)
+        jump move_loop(i, limb_shift, new_count)
 
-    block zero_fill(i: USize, limb_shift: USize, new_length: USize)
+    block zero_fill(i: USize, limb_shift: USize, new_count: USize)
         done : Bool = i.ge(limb_shift)
         branch done
-            ? finish(new_length)
-            : zero_one(i, limb_shift, new_length)
+            ? finish(new_count)
+            : zero_one(i, limb_shift, new_count)
 
-    block zero_one(i: USize, limb_shift: USize, new_length: USize)
+    block zero_one(i: USize, limb_shift: USize, new_count: USize)
         self.limbs.set(i, 0)
-        jump zero_fill(i.add(1), limb_shift, new_length)
+        jump zero_fill(i.add(1), limb_shift, new_count)
 
-    block finish(new_length: USize)
-        self.length.store(new_length)
+    block finish(new_count: USize)
+        self.count.store(new_count)
         return()
 
 /// self = self / 2, rounding down
 routine BigNat<N>.shr1(self: @Self) -> Void
 require N: USize
     block entry()
-        length : USize = self.length.load()
-        jump loop(length, 0)
+        count : USize = self.count.load()
+        jump loop(count, 0)
 
     // left limbs are still to shift, top first
     block loop(left: USize, carry: U64)
@@ -264,14 +264,14 @@ require N: USize
 routine BigNat<N>.compare(self: @Self, other: @Self) -> S32
 require N: USize
     block entry()
-        a_length : USize = self.length.load()
-        b_length : USize = other.length.load()
-        shorter  : Bool  = a_length.lt(b_length)
-        longer   : Bool  = a_length.gt(b_length)
+        a_count : USize = self.count.load()
+        b_count : USize = other.count.load()
+        shorter : Bool  = a_count.lt(b_count)
+        longer  : Bool  = a_count.gt(b_count)
         when
             shorter -> return(-1)
             longer  -> return(1)
-            else    -> loop(a_length)
+            else    -> loop(a_count)
 
     // left limbs are still to compare, top first
     block loop(left: USize)
@@ -294,20 +294,20 @@ require N: USize
 routine BigNat<N>.sub(self: @Self, other: @Self) -> Void
 require N: USize
     block entry()
-        a_length : USize = self.length.load()
-        b_length : USize = other.length.load()
-        jump loop(0, 0, a_length, b_length)
+        a_count : USize = self.count.load()
+        b_count : USize = other.count.load()
+        jump loop(0, 0, a_count, b_count)
 
-    block loop(i: USize, borrow: U64, a_length: USize, b_length: USize)
-        done : Bool = i.ge(a_length)
+    block loop(i: USize, borrow: U64, a_count: USize, b_count: USize)
+        done : Bool = i.ge(a_count)
         branch done
             ? finish()
-            : step(i, borrow, a_length, b_length)
+            : step(i, borrow, a_count, b_count)
 
-    block step(i: USize, borrow: U64, a_length: USize, b_length: USize)
+    block step(i: USize, borrow: U64, a_count: USize, b_count: USize)
         a      : U64  = self.limbs.get(i)
         b_limb : U64  = other.limbs.get(i)
-        in_b   : Bool = i.lt(b_length)
+        in_b   : Bool = i.lt(b_count)
         b      : U64  = in_b
             ? b_limb
             : 0
@@ -316,7 +316,7 @@ require N: USize
         under    : Bool = a.lt(b)
         even_out : Bool = a.eq(b).bitand(borrow.eq(1))
         next     : U64  = under.bitor(even_out).to<U64>()
-        jump loop(i.add(1), next, a_length, b_length)
+        jump loop(i.add(1), next, a_count, b_count)
 
     block finish()
         self.trim()
@@ -356,33 +356,33 @@ require N: USize
 routine BigNat<N>.add(self: @Self, other: @Self) -> Void
 require N: USize
     block entry()
-        a_length : USize = self.length.load()
-        b_length : USize = other.length.load()
-        length   : USize = a_length.max(b_length)
-        jump loop(0, 0, a_length, b_length, length)
+        a_count : USize = self.count.load()
+        b_count : USize = other.count.load()
+        count   : USize = a_count.max(b_count)
+        jump loop(0, 0, a_count, b_count, count)
 
-    block loop(i: USize, carry: U64, a_length: USize, b_length: USize, length: USize)
-        done : Bool = i.ge(length)
+    block loop(i: USize, carry: U64, a_count: USize, b_count: USize, count: USize)
+        done : Bool = i.ge(count)
         branch done
-            ? finish(carry, length)
-            : step(i, carry, a_length, b_length, length)
+            ? finish(carry, count)
+            : step(i, carry, a_count, b_count, count)
 
-    block step(i: USize, carry: U64, a_length: USize, b_length: USize, length: USize)
+    block step(i: USize, carry: U64, a_count: USize, b_count: USize, count: USize)
         a_limb : U64 = self.limbs.get(i)
         b_limb : U64 = other.limbs.get(i)
-        a      : U64 = i.lt(a_length)
+        a      : U64 = i.lt(a_count)
             ? a_limb
             : 0
-        b : U64 = i.lt(b_length)
+        b : U64 = i.lt(b_count)
             ? b_limb
             : 0
         limb_sum : U128 = a.to<U128>().add(b.to<U128>())
         sum      : U128 = limb_sum.add(carry.to<U128>())
         self.limbs.set(i, sum.to_wrap<U64>())
-        jump loop(i.add(1), sum.shr(64).to<U64>(), a_length, b_length, length)
+        jump loop(i.add(1), sum.shr(64).to<U64>(), a_count, b_count, count)
 
-    block finish(carry: U64, length: USize)
-        self.length.store(length)
+    block finish(carry: U64, count: USize)
+        self.count.store(count)
         none : Bool = carry.eq(0)
         branch none
             ? return()
@@ -396,9 +396,9 @@ require N: USize
 routine BigNat<N>.div_limb(self: @Self, d: U64) -> U64
 require N: USize
     block entry()
-        length  : USize = self.length.load()
+        count   : USize = self.count.load()
         divisor : U128  = d.to<U128>()
-        jump loop(length, 0, divisor)
+        jump loop(count, 0, divisor)
 
     // left limbs are still to divide, top first
     block loop(left: USize, rem: U128, divisor: U128)
@@ -421,9 +421,9 @@ require N: USize
 routine BigNat<N>.bit(self: @Self, i: USize) -> Bool
 require N: USize
     block entry()
-        length : USize = self.length.load()
+        count  : USize = self.count.load()
         at     : USize = i.div(64)
-        inside : Bool  = at.lt(length)
+        inside : Bool  = at.lt(count)
         branch inside
             ? read(at)
             : return(false)
@@ -438,25 +438,25 @@ require N: USize
 routine BigNat<N>.any_below(self: @Self, n: USize) -> Bool
 require N: USize
     block entry()
-        length : USize = self.length.load()
-        whole  : USize = n.div(64).min(length)
-        jump loop(0, whole, length)
+        count : USize = self.count.load()
+        whole : USize = n.div(64).min(count)
+        jump loop(0, whole, count)
 
-    block loop(i: USize, whole: USize, length: USize)
+    block loop(i: USize, whole: USize, count: USize)
         done : Bool = i.ge(whole)
         branch done
-            ? partial(whole, length)
-            : step(i, whole, length)
+            ? partial(whole, count)
+            : step(i, whole, count)
 
-    block step(i: USize, whole: USize, length: USize)
+    block step(i: USize, whole: USize, count: USize)
         limb : U64  = self.limbs.get(i)
         set  : Bool = limb.ne(0)
         branch set
             ? return(true)
-            : loop(i.add(1), whole, length)
+            : loop(i.add(1), whole, count)
 
-    block partial(whole: USize, length: USize)
-        inside : Bool = whole.lt(length)
+    block partial(whole: USize, count: USize)
+        inside : Bool = whole.lt(count)
         branch inside
             ? mask(whole)
             : return(false)
@@ -476,35 +476,35 @@ require N: USize
         sticky     : Bool  = self.any_below(half_at)
         limb_shift : USize = bits.div(64)
         bit_shift  : U64   = bits.mod(64).to<U64>()
-        length     : USize = self.length.load()
-        kept       : USize = length.sub_clamp(limb_shift)
-        jump loop(0, kept, length, limb_shift, bit_shift, half, sticky)
+        count      : USize = self.count.load()
+        kept       : USize = count.sub_clamp(limb_shift)
+        jump loop(0, kept, count, limb_shift, bit_shift, half, sticky)
 
     // limb i takes the bits of limbs i + shift and i + shift + 1
-    block loop(i: USize, kept: USize, length: USize, limb_shift: USize, bit_shift: U64, half: Bool,
+    block loop(i: USize, kept: USize, count: USize, limb_shift: USize, bit_shift: U64, half: Bool,
         sticky: Bool)
         done : Bool = i.ge(kept)
         branch done
             ? shifted(kept, half, sticky)
-            : step(i, kept, length, limb_shift, bit_shift, half, sticky)
+            : step(i, kept, count, limb_shift, bit_shift, half, sticky)
 
-    block step(i: USize, kept: USize, length: USize, limb_shift: USize, bit_shift: U64, half: Bool,
+    block step(i: USize, kept: USize, count: USize, limb_shift: USize, bit_shift: U64, half: Bool,
         sticky: Bool)
         from      : USize = i.add(limb_shift)
         low       : U64   = self.limbs.get(from)
         next_at   : USize = from.add(1)
-        has_next  : Bool  = next_at.lt(length)
-        next_limb : U64   = self.limbs.get(next_at.min(length.sub(1)))
+        has_next  : Bool  = next_at.lt(count)
+        next_limb : U64   = self.limbs.get(next_at.min(count.sub(1)))
         next      : U64   = has_next
             ? next_limb
             : 0
         // two shifts, so a zero bit shift never shifts by 64
         high : U64 = next.shl(63.sub(bit_shift)).shl(1)
         self.limbs.set(i, low.shr(bit_shift).bitor(high))
-        jump loop(i.add(1), kept, length, limb_shift, bit_shift, half, sticky)
+        jump loop(i.add(1), kept, count, limb_shift, bit_shift, half, sticky)
 
     block shifted(kept: USize, half: Bool, sticky: Bool)
-        self.length.store(kept)
+        self.count.store(kept)
         self.trim()
         odd   : Bool = self.bit(0)
         round : Bool = half.bitand(sticky.bitor(odd))

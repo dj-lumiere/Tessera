@@ -22,7 +22,7 @@ conform Equal<CircularList<T>>     when T: typename, Equal<T>
 require T: typename
     data     : @T
     start    : USize
-    length   : USize
+    count    : USize
     capacity : USize
     alloc    : @Allocator
 
@@ -32,24 +32,24 @@ require T: typename
 routine CircularList<T>.construct(alloc: @Allocator) -> Self
 require T: typename
     block entry()
-        circular_list : Self = Self { data: null, start: 0, length: 0, capacity: 0, alloc: alloc }
+        circular_list : Self = Self { data: null, start: 0, count: 0, capacity: 0, alloc: alloc }
         return(circular_list)
 
 /// The number of elements currently stored.
 /// :returns: The count of elements, `0` when the list is empty.
-routine CircularList<T>.length(self: Self) -> USize
+routine CircularList<T>.count(self: Self) -> USize
 require T: typename
     block entry()
-        length : USize = self.length
-        return(length)
+        count : USize = self.count
+        return(count)
 
 /// Whether the list holds no elements.
-/// :returns: `true` when the length is `0`.
+/// :returns: `true` when the count is `0`.
 routine CircularList<T>.is_empty(self: Self) -> Bool
 require T: typename
     block entry()
-        length : USize = self.length
-        empty  : Bool  = length.eq(0)
+        count : USize = self.count
+        empty : Bool  = count.eq(0)
         return(empty)
 
 /// Moves the elements into a new buffer of new_capacity, centered. Returns false
@@ -57,28 +57,28 @@ require T: typename
 private routine CircularList<T>.recenter(self: @Self, new_capacity: USize) -> Bool
 require T: typename
     block entry()
-        length    : USize      = self.length.load()
-        slack     : USize      = new_capacity.sub(length)
+        count     : USize      = self.count.load()
+        slack     : USize      = new_capacity.sub(count)
         new_start : USize      = slack.div(2)
         alloc     : @Allocator = self.alloc.load()
         new_data  : @T         = allocate<T>(alloc, new_capacity)
         failed    : Bool       = new_data.is_null()
         branch failed
             ? return(false)
-            : move(new_data, new_start, length)
+            : move(new_data, new_start, count)
 
-    block move(new_data: @T, new_start: USize, length: USize)
+    block move(new_data: @T, new_start: USize, count: USize)
         old_data : @T   = self.data.load()
         old_null : Bool = old_data.is_null()
         branch old_null
             ? install(new_data, new_start)
-            : copy_live(new_data, new_start, old_data, length)
+            : copy_live(new_data, new_start, old_data, count)
 
-    block copy_live(new_data: @T, new_start: USize, old_data: @T, length: USize)
+    block copy_live(new_data: @T, new_start: USize, old_data: @T, count: USize)
         old_start : USize = self.start.load()
         src       : @T    = old_data.stride(old_start)
         dst       : @T    = new_data.stride(new_start)
-        copy<T>(dst, src, length)
+        copy<T>(dst, src, count)
         old_data.free(self.alloc.load())
         jump install(new_data, new_start)
 
@@ -94,8 +94,8 @@ require T: typename
 routine CircularList<T>.grown_capacity(self: Self, capacity: USize) -> USize
 require T: typename
     block entry()
-        length       : USize = self.length
-        crowded      : Bool  = length.mul(2).gt(capacity)
+        count        : USize = self.count
+        crowded      : Bool  = count.mul(2).gt(capacity)
         new_capacity : USize = crowded
             ? capacity.mul(2)
             : capacity
@@ -127,9 +127,9 @@ private routine CircularList<T>.ensure_back(self: @Self) -> Bool
 require T: typename
     block entry()
         start          : USize = self.start.load()
-        length         : USize = self.length.load()
+        count          : USize = self.count.load()
         capacity       : USize = self.capacity.load()
-        has_back_space : Bool  = start.add(length).lt(capacity)
+        has_back_space : Bool  = start.add(count).lt(capacity)
         branch has_back_space
             ? return(true)
             : choose(capacity)
@@ -166,12 +166,12 @@ require T: typename
         branch room
             ? continue
             : return(.Failure(AllocFailed {}))
-        data   : @T    = self.data.load()
-        start  : USize = self.start.load()
-        length : USize = self.length.load()
-        index  : USize = start.add(length)
+        data  : @T    = self.data.load()
+        start : USize = self.start.load()
+        count : USize = self.count.load()
+        index : USize = start.add(count)
         data.stride(index).store(value)
-        self.length.store(length.add(1))
+        self.count.store(count.add(1))
         return(.Success(Unit.value()))
 
 /// Appends `value` after the last element, the same as {CircularList<T>.push_back}.
@@ -214,8 +214,8 @@ require T: typename
         new_start : USize = start.sub(1)
         data.stride(new_start).store(value)
         self.start.store(new_start)
-        next_length : USize = self.length.load().add(1)
-        next_length.store_into(self.length)
+        next_count : USize = self.count.load().add(1)
+        next_count.store_into(self.count)
         return(.Success(Unit.value()))
 
 /// Removes the last element and returns it.
@@ -234,19 +234,19 @@ require T: typename
 routine CircularList<T>.pop_back_checked(self: @Self) -> Option<T>
 require T: typename
     block entry()
-        length : USize = self.length.load()
-        empty  : Bool  = length.eq(0)
+        count : USize = self.count.load()
+        empty : Bool  = count.eq(0)
         branch empty
             ? return(.Absent)
-            : pop(length)
+            : pop(count)
 
-    block pop(length: USize)
-        new_length : USize = length.sub(1)
-        data       : @T    = self.data.load()
-        start      : USize = self.start.load()
-        index      : USize = start.add(new_length)
-        value      : T     = data.stride(index).load()
-        self.length.store(new_length)
+    block pop(count: USize)
+        new_count : USize = count.sub(1)
+        data      : @T    = self.data.load()
+        start     : USize = self.start.load()
+        index     : USize = start.add(new_count)
+        value     : T     = data.stride(index).load()
+        self.count.store(new_count)
         return(.Present(value))
 
 /// Removes the last element and returns it, the same as {CircularList<T>.pop_back}.
@@ -280,30 +280,30 @@ require T: typename
 routine CircularList<T>.pop_front_checked(self: @Self) -> Option<T>
 require T: typename
     block entry()
-        length : USize = self.length.load()
-        empty  : Bool  = length.eq(0)
+        count : USize = self.count.load()
+        empty : Bool  = count.eq(0)
         branch empty
             ? return(.Absent)
-            : pop(length)
+            : pop(count)
 
-    block pop(length: USize)
+    block pop(count: USize)
         data  : @T    = self.data.load()
         start : USize = self.start.load()
         value : T     = data.stride(start).load()
         self.start.store(start.add(1))
-        self.length.store(length.sub(1))
+        self.count.store(count.sub(1))
         return(.Present(value))
 
 /// Reads the element at logical position `index`, counted from the front.
 /// :param index: The zero-based position to read.
 /// :returns: A copy of the element.
-/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= length`.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 #track_caller
 routine CircularList<T>.get(self: Self, index: USize) -> T
 require T: typename
     block entry()
-        length    : USize = self.length
-        in_bounds : Bool  = index.lt(length)
+        count     : USize = self.count
+        in_bounds : Bool  = index.lt(count)
         branch in_bounds
             ? load()
             : crash_out_of_bounds()
@@ -318,8 +318,8 @@ require T: typename
 routine CircularList<T>.get_checked(self: Self, index: USize) -> Option<T>
 require T: typename
     block entry()
-        length    : USize = self.length
-        in_bounds : Bool  = index.lt(length)
+        count     : USize = self.count
+        in_bounds : Bool  = index.lt(count)
         branch in_bounds
             ? load()
             : return(.Absent)
@@ -336,8 +336,8 @@ require T: typename
 routine CircularList<T>.at(self: Self, index: USize) -> @T
 require T: typename
     block entry()
-        length    : USize = self.length
-        in_bounds : Bool  = index.lt(length)
+        count     : USize = self.count
+        in_bounds : Bool  = index.lt(count)
         branch in_bounds
             ? address()
             : crash_out_of_bounds()
@@ -352,8 +352,8 @@ require T: typename
 routine CircularList<T>.at_checked(self: Self, index: USize) -> Option<@T>
 require T: typename
     block entry()
-        length    : USize = self.length
-        in_bounds : Bool  = index.lt(length)
+        count     : USize = self.count
+        in_bounds : Bool  = index.lt(count)
         branch in_bounds
             ? address()
             : return(.Absent)
@@ -366,7 +366,7 @@ require T: typename
 
 /// Whether two lists hold equal elements in the same logical order, regardless of where each sits in its buffer.
 /// :param other: The list to compare with.
-/// :returns: `true` when the lengths match and every element pair is equal.
+/// :returns: `true` when the counts match and every element pair is equal.
 routine CircularList<T>.eq(self: Self, other: Self) -> Bool
 require T: typename, Equal<T>
     block entry()
@@ -379,8 +379,8 @@ require T: typename, Equal<T>
 private routine CircularList<T>.eq_at(self: @Self, other: @Self) -> Bool
 require T: typename, Equal<T>
     block entry()
-        la       : USize = self.length.load()
-        lb       : USize = other.length.load()
+        la       : USize = self.count.load()
+        lb       : USize = other.count.load()
         same_len : Bool  = la.eq(lb)
         branch same_len
             ? scan(la)
@@ -410,13 +410,13 @@ require T: typename, Equal<T>
 /// Overwrites the element at logical position `index` with `value`.
 /// :param index: The zero-based position to write.
 /// :param value: The value to store.
-/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= length`.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 #track_caller
 routine CircularList<T>.set(self: @Self, index: USize, value: T) -> Void
 require T: typename
     block entry()
-        length    : USize = self.length.load()
-        in_bounds : Bool  = index.lt(length)
+        count     : USize = self.count.load()
+        in_bounds : Bool  = index.lt(count)
         branch in_bounds
             ? store()
             : crash_out_of_bounds()
@@ -434,7 +434,7 @@ require T: typename
         capacity : USize = self.capacity.load()
         start    : USize = capacity.div(2)
         self.start.store(start)
-        self.length.store(0)
+        self.count.store(0)
         return()
 
 /// Frees the list's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
@@ -456,7 +456,7 @@ require T: typename
     block reset()
         self.data.store(null)
         self.start.store(0)
-        self.length.store(0)
+        self.count.store(0)
         self.capacity.store(0)
         return()
 

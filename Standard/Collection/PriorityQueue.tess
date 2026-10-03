@@ -17,7 +17,7 @@ conform Represent<PriorityQueue<T>> when T: typename, Priority<T>, Diagnose<T>
 conform Diagnose<PriorityQueue<T>>  when T: typename, Priority<T>, Diagnose<T>
 require T: typename, Priority<T>
     data     : @T
-    length   : USize
+    count    : USize
     capacity : USize
     alloc    : @Allocator
 
@@ -27,24 +27,24 @@ require T: typename, Priority<T>
 routine PriorityQueue<T>.construct(alloc: @Allocator) -> Self
 require T: typename, Priority<T>
     block entry()
-        queue : Self = Self { data: null, length: 0, capacity: 0, alloc: alloc }
+        queue : Self = Self { data: null, count: 0, capacity: 0, alloc: alloc }
         return(queue)
 
 /// The number of elements currently stored.
 /// :returns: The count of elements, `0` when the queue is empty.
-routine PriorityQueue<T>.length(self: Self) -> USize
+routine PriorityQueue<T>.count(self: Self) -> USize
 require T: typename
     block entry()
-        length : USize = self.length
-        return(length)
+        count : USize = self.count
+        return(count)
 
 /// Whether the queue holds no elements.
-/// :returns: `true` when the length is `0`.
+/// :returns: `true` when the count is `0`.
 routine PriorityQueue<T>.is_empty(self: Self) -> Bool
 require T: typename
     block entry()
-        length : USize = self.length
-        empty  : Bool  = length.eq(0)
+        count : USize = self.count
+        empty : Bool  = count.eq(0)
         return(empty)
 
 /// Grows the heap array to hold at least `capacity` elements without further allocation.
@@ -141,16 +141,16 @@ require T: typename
 routine PriorityQueue<T>.push_result(self: @Self, value: T) -> Result<Unit, AllocFailed>
 require T: typename
     block entry()
-        length : USize = self.length.load()
-        wanted : USize = length.add(1)
+        count  : USize = self.count.load()
+        wanted : USize = count.add(1)
         room   : Bool  = self.make_room(wanted)
         branch room
             ? continue
             : return(.Failure(AllocFailed {}))
         data : @T = self.data.load()
-        data.stride(length).store(value)
-        self.length.store(wanted)
-        jump sift_up(length)
+        data.stride(count).store(value)
+        self.count.store(wanted)
+        jump sift_up(count)
 
     block sift_up(index: USize)
         at_root : Bool = index.eq(0)
@@ -190,8 +190,8 @@ require T: typename
 routine PriorityQueue<T>.peek_checked(self: Self) -> Option<T>
 require T: typename
     block entry()
-        length : USize = self.length
-        empty  : Bool  = length.eq(0)
+        count : USize = self.count
+        empty : Bool  = count.eq(0)
         branch empty
             ? return(.Absent)
             : load()
@@ -217,38 +217,38 @@ require T: typename
 routine PriorityQueue<T>.pop_checked(self: @Self) -> Option<T>
 require T: typename
     block entry()
-        length : USize = self.length.load()
-        empty  : Bool  = length.eq(0)
+        count : USize = self.count.load()
+        empty : Bool  = count.eq(0)
         branch empty
             ? return(.Absent)
-            : remove_root(length)
+            : remove_root(count)
 
-    block remove_root(length: USize)
-        data       : @T    = self.data.load()
-        result     : T     = data.stride(0).load()
-        new_length : USize = length.sub(1)
-        self.length.store(new_length)
-        now_empty : Bool = new_length.eq(0)
-        branch now_empty ? return(.Present(result)): move_last(result, new_length)
+    block remove_root(count: USize)
+        data      : @T    = self.data.load()
+        result    : T     = data.stride(0).load()
+        new_count : USize = count.sub(1)
+        self.count.store(new_count)
+        now_empty : Bool = new_count.eq(0)
+        branch now_empty ? return(.Present(result)): move_last(result, new_count)
 
-    block move_last(result: T, new_length: USize)
+    block move_last(result: T, new_count: USize)
         data : @T = self.data.load()
-        last : T  = data.stride(new_length).load()
+        last : T  = data.stride(new_count).load()
         data.stride(0).store(last)
         jump sift_down(0, result)
 
     block sift_down(index: USize, result: T)
-        length   : USize = self.length.load()
+        count    : USize = self.count.load()
         left     : USize = index.mul(2).add(1)
         right    : USize = left.add(1)
-        has_left : Bool  = left.lt(length)
+        has_left : Bool  = left.lt(count)
         branch has_left
             ? choose_child(index, left, right, result)
             : return(.Present(result))
 
     block choose_child(index: USize, left: USize, right: USize, result: T)
-        length    : USize = self.length.load()
-        has_right : Bool  = right.lt(length)
+        count     : USize = self.count.load()
+        has_right : Bool  = right.lt(count)
         branch has_right
             ? compare_children(index, left, right, result)
             : compare_with_child(index, left, result)
@@ -278,11 +278,11 @@ require T: typename
         data.stride(child).store(index_value)
         jump sift_down(child, result)
 
-/// Removes every element by resetting the length to `0`. The array and its capacity are kept for reuse, and elements are not destructed.
+/// Removes every element by resetting the count to `0`. The array and its capacity are kept for reuse, and elements are not destructed.
 routine PriorityQueue<T>.clear(self: @Self) -> Void
 require T: typename
     block entry()
-        self.length.store(0)
+        self.count.store(0)
         return()
 
 /// Frees the queue's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
@@ -303,7 +303,7 @@ require T: typename
 
     block reset()
         self.data.store(null)
-        self.length.store(0)
+        self.count.store(0)
         self.capacity.store(0)
         return()
 
@@ -311,20 +311,20 @@ require T: typename
 routine PriorityQueue<T>.destruct_all(self: @Self) -> Void
 require T: typename, Destruct<T>
     block entry()
-        length : USize = self.length.load()
-        data   : @T    = self.data.load()
-        jump loop(0, length, data)
+        count : USize = self.count.load()
+        data  : @T    = self.data.load()
+        jump loop(0, count, data)
 
-    block loop(i: USize, length: USize, data: @T)
-        done : Bool = i.ge(length)
+    block loop(i: USize, count: USize, data: @T)
+        done : Bool = i.ge(count)
         branch done
             ? finish()
-            : element(i, length, data)
+            : element(i, count, data)
 
-    block element(i: USize, length: USize, data: @T)
+    block element(i: USize, count: USize, data: @T)
         item : @T = data.stride(i)
         item.destruct()
-        jump loop(i.add(1), length, data)
+        jump loop(i.add(1), count, data)
 
     block finish()
         self.destruct()
@@ -341,8 +341,8 @@ require T: typename, Priority<T>, Diagnose<T>, W: typename, Writer<W>
         jump walk(0)
 
     block walk(at: USize)
-        length : USize = self.length
-        more   : Bool  = at.lt(length)
+        count : USize = self.count
+        more  : Bool  = at.lt(count)
         branch more
             ? item(at)
             : close()
@@ -376,8 +376,8 @@ require T: typename, Priority<T>, Diagnose<T>, W: typename, Writer<W>
         jump walk(0)
 
     block walk(at: USize)
-        length : USize = self.length
-        more   : Bool  = at.lt(length)
+        count : USize = self.count
+        more  : Bool  = at.lt(count)
         branch more
             ? item(at)
             : close()

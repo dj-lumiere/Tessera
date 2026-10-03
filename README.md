@@ -25,17 +25,17 @@ it painful to write by hand. Nothing happens between the lines: phi nodes become
 become typed values, and hand-rolled loops over memory become collections.
 
 ```tessera
-routine two_sum(list: @S32, length: USize, target: S32) -> Option<(USize, USize)>
+routine two_sum(list: @S32, count: USize, target: S32) -> Option<(USize, USize)>
     block entry()
         jump search_left(0)
 
     block search_left(left_idx: USize)
-        branch left_idx.ge(length)
+        branch left_idx.ge(count)
             ? return(.Absent)
             : search_right(left_idx, left_idx.add(1))
 
     block search_right(left_idx: USize, right_idx: USize)
-        branch right_idx.ge(length)
+        branch right_idx.ge(count)
             ? search_left(left_idx.add(1))
             : continue
         left_val  : S32 = list.stride(left_idx).load()
@@ -46,7 +46,7 @@ routine two_sum(list: @S32, length: USize, target: S32) -> Option<(USize, USize)
 ```
 
 Two blocks make the two loops of an O(n²) search. Each loop's state travels as block parameters, `continue` goes on
-with the next line when the inner loop isn't done, and the numbers come as a pointer and a length: `stride` is the
+with the next line when the inner loop isn't done, and the numbers come as a pointer and a count: `stride` is the
 address of one, read with an explicit `load`. The answer is an `Option` of a tuple, built with `{ ... }` from where
 it goes.
 

@@ -688,7 +688,7 @@ public sealed partial class Compiler
                 };
             case "Array":
                 if (t.Args is not [TypeArgType elem, var count])
-                    throw new CompileError(t.Pos, "Array takes an element type and a length: Array<T, N>");
+                    throw new CompileError(t.Pos, "Array takes an element type and an element count: Array<T, N>");
                 return new ArrayType(ResolveType(elem.Type, env), ConstInt(count, env, t.Pos));
             case "Vector":
             {

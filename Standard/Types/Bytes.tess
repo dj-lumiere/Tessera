@@ -2,7 +2,7 @@
 //
 // Bytes is a non-owning immutable view over a byte sequence, UTF-8 by convention:
 //   data   — @Byte to the first byte (a literal's bytes are also NUL-terminated; other views aren't)
-//   length — USize byte count (not including the null terminator)
+//   count — USize byte count (not including the null terminator)
 //
 // Nothing checks that the bytes are UTF-8; is_utf8 does when it matters. The character operations read a malformed
 // sequence as U+FFFD and move on, so they are defined for any bytes. A string literal ("hello", "안녕") is a Bytes
@@ -19,44 +19,44 @@ module Standard::Core
 
 import Standard::Alloc
 
-/// A non-owning, immutable view over a byte sequence, UTF-8 by convention. `data` points at the first byte and `length` counts bytes without any terminator; the view never owns its bytes, so they must outlive it. A string literal is a `Bytes` constant.
+/// A non-owning, immutable view over a byte sequence, UTF-8 by convention. `data` points at the first byte and `count` counts bytes without any terminator; the view never owns its bytes, so they must outlive it. A string literal is a `Bytes` constant.
 record Bytes
 conform Equal<Bytes>, Compare<Bytes>, Hash<Bytes>
-    data   : @Byte
-    length : USize
+    data  : @Byte
+    count : USize
 
 // -- construction --------------------------------------------------------------
 
-/// The empty view: a null `data` pointer and a length of 0.
+/// The empty view: a null `data` pointer and a count of 0.
 /// :returns: An empty `Bytes`.
 routine Bytes.empty() -> Self
     block entry()
-        str : Self = Self { data: null, length: 0 }
+        str : Self = Self { data: null, count: 0 }
         return(str)
 
-/// Views `length` bytes starting at `data`, without copying. Nothing checks that the memory is valid or UTF-8.
+/// Views `count` bytes starting at `data`, without copying. Nothing checks that the memory is valid or UTF-8.
 /// :param data: A pointer to the first byte.
-/// :param length: The number of bytes in the view.
+/// :param count: The number of bytes in the view.
 /// :returns: A view over those bytes.
-routine Bytes.from_ptr(data: @Byte, length: USize) -> Self
+routine Bytes.from_ptr(data: @Byte, count: USize) -> Self
     block entry()
-        str : Self = Self { data: data, length: length }
+        str : Self = Self { data: data, count: count }
         return(str)
 
 // -- predicates ----------------------------------------------------------------
 
-/// The length in bytes of the UTF-8 text, not in characters (count those with chars()).
-routine Bytes.length(self: Self) -> USize
+/// The number of bytes of the UTF-8 text, not of characters (count those with chars()).
+routine Bytes.count(self: Self) -> USize
     block entry()
-        length : USize = self.length
-        return(length)
+        count : USize = self.count
+        return(count)
 
 /// Whether the view holds no bytes.
-/// :returns: `true` when the length is 0.
+/// :returns: `true` when the count is 0.
 routine Bytes.is_empty(self: Self) -> Bool
     block entry()
-        length : USize = self.length
-        result : Bool  = length.eq(0)
+        count  : USize = self.count
+        result : Bool  = count.eq(0)
         return(result)
 
 // -- element access ------------------------------------------------------------
@@ -64,12 +64,12 @@ routine Bytes.is_empty(self: Self) -> Bool
 /// Reads the byte at `index`.
 /// :param index: The zero-based byte position.
 /// :returns: The byte as a number from 0 to 255.
-/// :throws: Crashes with `IndexOutOfBoundsError` when `index` is not less than the length.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index` is not less than the count.
 #track_caller
 routine Bytes.byte_at(self: Self, index: USize) -> U8
     block entry()
-        length    : USize = self.length
-        in_bounds : Bool  = index.lt(length)
+        count     : USize = self.count
+        in_bounds : Bool  = index.lt(count)
         branch in_bounds
             ? load()
             : crash_out_of_bounds()
@@ -85,8 +85,8 @@ routine Bytes.byte_at(self: Self, index: USize) -> U8
 #track_caller
 routine Bytes.slice(self: Self, start: USize, end: USize) -> Self
     block entry()
-        length      : USize = self.length
-        valid_end   : Bool  = end.le(length)
+        count       : USize = self.count
+        valid_end   : Bool  = end.le(count)
         valid_order : Bool  = start.le(end)
         valid       : Bool  = valid_end.bitand(valid_order)
         branch valid
@@ -96,9 +96,9 @@ routine Bytes.slice(self: Self, start: USize, end: USize) -> Self
     block make()
         base      : @Byte = self.data
         from      : @Byte = base.stride(start)
-        length    : USize = self.length
+        count     : USize = self.count
         slice_len : USize = end.sub(start)
-        result    : Self  = Self { data: from, length: slice_len }
+        result    : Self  = Self { data: from, count: slice_len }
         return(result)
 
 // -- heap-allocating operations ------------------------------------------------
@@ -108,38 +108,38 @@ routine Bytes.slice(self: Self, start: USize, end: USize) -> Self
 #track_caller
 routine Bytes.concat(a: Self, b: Self, alloc: @Allocator) -> Self
     block entry()
-        la     : USize = a.length
-        lb     : USize = b.length
-        length : USize = la.add(lb)
-        data   : @Byte = allocate<Byte>(alloc, length.add(1))
+        la     : USize = a.count
+        lb     : USize = b.count
+        count  : USize = la.add(lb)
+        data   : @Byte = allocate<Byte>(alloc, count.add(1))
         failed : Bool  = data.is_null()
         branch failed
             ? crash_allocation()
             : continue
         src_a : @Byte = a.data
-        len_a : USize = a.length
+        len_a : USize = a.count
         copy<Byte>(data, src_a, len_a)
         jump copy_b(data, len_a)
 
     block copy_b(data: @Byte, offset: USize)
         dst   : @Byte = data.stride(offset)
         src_b : @Byte = b.data
-        len_b : USize = b.length
+        len_b : USize = b.count
         copy<Byte>(dst, src_b, len_b)
-        length : USize = offset.add(len_b)
-        data.stride(length).store(0x00)
-        result : Self = Self { data: data, length: length }
+        count : USize = offset.add(len_b)
+        data.stride(count).store(0x00)
+        result : Self = Self { data: data, count: count }
         return(result)
 
 // -- equality, ordering, hashing -----------------------------------------------
 
-/// Whether both views hold the same bytes: equal lengths and equal contents, not the same address.
+/// Whether both views hold the same bytes: equal counts and equal contents, not the same address.
 /// :param other: The right-hand operand.
 /// :returns: `true` when the contents are identical.
 routine Bytes.eq(self: Self, other: Self) -> Bool
     block entry()
-        la       : USize = self.length
-        lb       : USize = other.length
+        la       : USize = self.count
+        lb       : USize = other.count
         same_len : Bool  = la.eq(lb)
         branch same_len
             ? loop(0, la, self.data, other.data)
@@ -161,8 +161,8 @@ routine Bytes.eq(self: Self, other: Self) -> Bool
 /// Bytes are compared as U8, so this matches `memcmp` ordering.
 routine Bytes.compare(self: Self, other: Self) -> S32
     block entry()
-        la        : USize = self.length
-        lb        : USize = other.length
+        la        : USize = self.count
+        lb        : USize = other.count
         a_shorter : Bool  = la.le(lb)
         min       : USize = a_shorter
             ? la
@@ -174,7 +174,7 @@ routine Bytes.compare(self: Self, other: Self) -> S32
     block loop(i: USize, min: USize, la: USize, lb: USize, pa: @Byte, pb: @Byte)
         done : Bool = i.ge(min)
         branch done
-            ? lengths(la, lb)
+            ? counts(la, lb)
             : step(i, min, la, lb, pa, pb)
 
     block step(i: USize, min: USize, la: USize, lb: USize, pa: @Byte, pb: @Byte)
@@ -191,7 +191,7 @@ routine Bytes.compare(self: Self, other: Self) -> S32
             ? return(1)
             : loop(i.add(1), min, la, lb, pa, pb)
 
-    block lengths(la: USize, lb: USize)
+    block counts(la: USize, lb: USize)
         lt : Bool = la.lt(lb)
         branch lt
             ? return(-1)
@@ -205,7 +205,7 @@ routine Bytes.compare(self: Self, other: Self) -> S32
 routine Bytes.hash(self: Self) -> U64
     block entry()
         data : @Byte = self.data
-        len  : USize = self.length
+        len  : USize = self.count
         h    : U64   = xxh64(data, len, 0)
         return(h)
 
@@ -216,8 +216,8 @@ routine Bytes.hash(self: Self) -> U64
 /// :returns: `true` when `prefix` matches the first bytes; an empty `prefix` always matches.
 routine Bytes.starts_with(self: Self, prefix: Self) -> Bool
     block entry()
-        sl   : USize = self.length
-        pl   : USize = prefix.length
+        sl   : USize = self.count
+        pl   : USize = prefix.count
         fits : Bool  = pl.le(sl)
         branch fits
             ? loop(0, pl, self.data, prefix.data)
@@ -240,8 +240,8 @@ routine Bytes.starts_with(self: Self, prefix: Self) -> Bool
 /// :returns: `true` when `suffix` matches the last bytes; an empty `suffix` always matches.
 routine Bytes.ends_with(self: Self, suffix: Self) -> Bool
     block entry()
-        sl   : USize = self.length
-        fl   : USize = suffix.length
+        sl   : USize = self.count
+        fl   : USize = suffix.count
         fits : Bool  = fl.le(sl)
         branch fits
             ? loop(0, fl, sl.sub(fl), self.data, suffix.data)
@@ -264,8 +264,8 @@ routine Bytes.ends_with(self: Self, suffix: Self) -> Bool
 /// or Option<USize>.Absent when not found. An empty needle matches at 0.
 routine Bytes.find(self: Self, needle: Self) -> Option<USize>
     block entry()
-        nlen         : USize = needle.length
-        slen         : USize = self.length
+        nlen         : USize = needle.count
+        slen         : USize = self.count
         empty_needle : Bool  = nlen.eq(0)
         branch empty_needle
             ? hit(0)
@@ -330,13 +330,13 @@ routine Bytes.is_utf8(self: Self) -> Bool
         jump next(0)
 
     block next(pos: USize)
-        done : Bool = pos.ge(self.length)
+        done : Bool = pos.ge(self.count)
         branch done
             ? return(true)
             : decode(pos)
 
     block decode(pos: USize)
-        d : Utf8Decoded = utf8_decode(self.data, pos, self.length)
+        d : Utf8Decoded = utf8_decode(self.data, pos, self.count)
         branch d.ok
             ? next(d.next_pos)
             : return(false)
@@ -345,8 +345,8 @@ routine Bytes.is_utf8(self: Self) -> Bool
 /// false past it.
 routine Bytes.is_char_boundary(self: Self, index: USize) -> Bool
     block entry()
-        at_end : Bool = index.eq(self.length)
-        past   : Bool = index.gt(self.length)
+        at_end : Bool = index.eq(self.count)
+        past   : Bool = index.gt(self.count)
         when
             at_end -> return(true)
             past   -> return(false)
