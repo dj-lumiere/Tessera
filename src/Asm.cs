@@ -79,7 +79,7 @@ internal sealed class AsmLowering
         _c = c;
         _sig = sig;
         _r = sig.Decl;
-        if (_r.Attr("target") is not { } target || !target.Args.Any(a => a is { Key: "arch", Negated: false }))
+        if (_r.Attr("target") is not { } target || !target.Args.Any(a => a is { Key: "arch", Negated: false, Values: null or { Count: 1 } }))
             throw new CompileError(_r.Pos,
                 $"assembly belongs to one architecture: give '{_r.DisplayName}' #target(arch: \"{c.Target.Arch}\")");
         _arch = c.Target.Arch switch

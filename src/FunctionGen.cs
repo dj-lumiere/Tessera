@@ -177,7 +177,7 @@ public sealed class FunctionGen
         var (linkage, comdat) = Linkage();
         string dbg = Debug ? $" !dbg !{_sp}" : "";
         var paramRecords = Debug ? ParamRecords() : [];
-        _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat}{dbg} {{");
+        _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs}{_c.UnwindTable} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat}{dbg} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
         foreach (var u in unpack) _out.AppendLine($"  {u}");
@@ -1909,7 +1909,7 @@ public sealed class FunctionGen
         var (linkage, comdat) = Linkage();
         string kind = "sideeffect " + (plan.Intel ? "inteldialect " : "");
         _out.AppendLine($"define {linkage}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}"
-                        + $"({_inst.LlvmParamDecls(_c.Target)}){_inst.FnAttrs} {CpuModel.For(_c.Target, _decl.Pos).FnAttrs}{comdat} {{");
+                        + $"({_inst.LlvmParamDecls(_c.Target)}){_inst.FnAttrs}{_c.UnwindTable} {CpuModel.For(_c.Target, _decl.Pos).FnAttrs}{comdat} {{");
         _out.AppendLine("entry:");
         _out.AppendLine($"  call void asm {kind}\"{LlvmAsmString(plan.Text)}\", \"\"() nounwind");
         _out.AppendLine("  unreachable");

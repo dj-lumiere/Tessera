@@ -115,6 +115,12 @@ routine main() -> S32
 - Every routine uses the C calling convention unless `#callconv` says `"fast"`, `"cold"`, or `"stdcall"`. `stdcall` is
   the Windows API's (`CreateThread`, its thread routine): callee-popped on 32-bit x86, the C convention elsewhere,
   so one declaration serves every target. A `Callable` carries it: `Callable<#callconv("stdcall"), (Addr,), U32>`.
+- `#target(key: value)` keeps a declaration only on matching targets (keys `arch`, `os`, `abi`, `size`; several keys
+  must all hold). `not` negates a value, and a list in parentheses matches any of its values:
+  `#target(os: ("linux", "macos"))`, `#target(arch: not ("x86_64", "aarch64"))`. Say the set you mean: POSIX code is
+  `os: ("linux", "macos")`, not `os: not "windows"`, which a target without an OS (`none`) matches too.
+- Every routine is LLVM `nounwind` (Tessera has no unwinding); there's no attribute for it. `#no_builtins` stops LLVM
+  from turning a routine's loops into C library calls: only for a routine that is one (the stdlib's `memcpy`).
 - `#inline` inlines a routine at every call (LLVM `alwaysinline`, not a hint). Put it on small routines in hot loops
   (a hash round, a generator step), not on large ones. It's a build error on an `#external` routine (no body), on a
   recursive one (directly or through other routines), and on one used as a `Callable` value. `#noinline` (LLVM
@@ -421,6 +427,16 @@ options, alloc)` return `Result<ProcessOutput, ProcessError>`: an `ExitStatus` (
 captured `stdout` / `stderr`. `ProcessOptions.default()` captures both and gives the child the null device as input;
 set `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
 `env_var(name, alloc)` reads a variable, `exit(status)` ends the process.
+
+**Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
+`x86_64-none-elf`) gets everything but `Standard::Os`: Core, Format (into a `SliceWriter` or `List<Byte>`), Alloc, and
+Collections all check there. `Standard::Os` drops out of the build, so importing it or naming anything in it is one
+build error ("Standard::Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, Fiber, or
+`make_heap_allocator`. The program exports its own crash handler (`#[export("tessera_crash_handler"), noreturn]`, which
+may loop forever), passes its own `Allocator` if it allocates, and brings its startup code and link script. The
+stdlib supplies `memcpy` / `memmove` / `memset` / `memcmp` (and ARM's `__aeabi_mem*`) there, weak, from
+`Standard/Freestanding.tess`; soft-float helpers come from compiler-rt or libgcc. `tests/freestanding` is such a
+program (CI builds it; the golden run skips it).
 
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.

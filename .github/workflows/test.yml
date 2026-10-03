@@ -162,6 +162,70 @@ jobs:
       - name: Check the stdlib
         run: dotnet bin/Release/net10.0/tessera.dll check --target ${{ matrix.target }}
 
+  # Targets without an operating system: the stdlib checks there (Standard::Os drops out), and a program built for
+  # one (tests/freestanding, which the golden run skips) leaves nothing undefined that a bare-metal link can't
+  # supply: no C++ unwinding personality (every routine is nounwind) and no C memory routines (the stdlib exports
+  # memcpy, memset, memmove, memcmp, and ARM's __aeabi_mem* there). Soft-float and other compiler-rt / libgcc helpers
+  # may stay undefined.
+  freestanding:
+    name: freestanding (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: arm-none-eabi
+            clang-target: thumbv7m-none-eabi
+          - target: riscv32-none-elf
+            clang-target: riscv32-unknown-elf
+          - target: aarch64-none-elf
+            clang-target: aarch64-unknown-none-elf
+          - target: x86_64-none-elf
+            clang-target: x86_64-unknown-none-elf
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install LLVM 21
+        run: |
+          # A failed download must fail the step: piped into bash, an empty script would succeed and leave the
+          # runner's own clang (18) in place, which crashes on some targets.
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 21
+          test -x /usr/bin/clang-21
+          sudo ln -sf /usr/bin/clang-21 /usr/local/bin/clang
+          sudo ln -sf /usr/bin/llvm-nm-21 /usr/local/bin/llvm-nm
+          clang --version | grep -q 'clang version 21' || { clang --version; echo 'clang is not LLVM 21'; exit 1; }
+          clang --version
+
+      - name: Build
+        run: dotnet build Tessera.csproj --configuration Release
+
+      - name: Check the stdlib
+        run: dotnet bin/Release/net10.0/tessera.dll check --target ${{ matrix.target }}
+
+      - name: Build a program and look for undefined symbols
+        run: |
+          for mode in debug release; do
+            ll="freestanding-$mode.ll"
+            obj="freestanding-$mode.o"
+            dotnet bin/Release/net10.0/tessera.dll build --target ${{ matrix.target }} --mode $mode --emit-llvm \
+              tests/freestanding/main.tess -o "$ll"
+            clang --target=${{ matrix.clang-target }} -c -Wno-override-module "$ll" -o "$obj"
+            echo "undefined in $obj ($mode):"
+            llvm-nm -u "$obj"
+            if llvm-nm -u "$obj" | grep -Ew '__aeabi_unwind_cpp_pr[0-9]|memcpy|memset|memmove|memcmp|__aeabi_mem[a-z0-9]+'; then
+              echo "a program for ${{ matrix.target }} needs symbols no bare-metal link supplies (above)"
+              exit 1
+            fi
+          done
+
   # SonarQube analysis of the C# builder, with coverage from the golden tests. Whether the tests pass is the test
   # job's call, so a failing test doesn't stop the analysis here. SonarQube lives inside the tailnet; the runner joins it as an ephemeral node (a Tailscale OAuth client with scope auth_keys and the ACL tag tag:ci).
   # Secrets don't reach pull requests from forks, so it runs only for this repository's own branches.

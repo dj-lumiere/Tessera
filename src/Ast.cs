@@ -35,8 +35,10 @@ public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string T
 // ── Declarations ────────────────────────────────────────────────────────────
 
 /// An attribute argument: `"c"`, `64`, `size: 64`, `os: !"windows"`, or a buildtime expression such as
-/// `max(alignof<A>(), alignof<B>())` (then Expr is set and Value is empty).
-public sealed record AttrArg(string? Key, string Value, bool Negated, Expr? Expr = null);
+/// `max(alignof<A>(), alignof<B>())` (then Expr is set and Value is empty), or a key's list of values, `os: ("linux",
+/// "macos")` (then Values holds them and Value is the first), which #target matches when the target's value is any of
+/// them (with `not`, none of them).
+public sealed record AttrArg(string? Key, string Value, bool Negated, Expr? Expr = null, List<string>? Values = null);
 
 public sealed record Attribute(string Name, List<AttrArg> Args, Pos Pos)
 {

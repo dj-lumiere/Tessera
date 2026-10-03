@@ -29,14 +29,19 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
     {
         get
         {
-            var attrs = new List<string>();
+            // Tessera has no exceptions and no unwinding, so no routine unwinds: not its own, and not a C routine it
+            // calls either, since a frame unwound into would have nothing to run there. Without it, ARM gets unwind
+            // tables that need the C++ personality routine (__aeabi_unwind_cpp_pr0).
+            var attrs = new List<string> { "nounwind" };
             if (NoReturn) attrs.Add("noreturn");
             // A naked function is its assembly alone: no prologue, never inlined into a caller.
             if (IsNaked) attrs.AddRange(["naked", "noinline"]);
-            if (Decl.Attr("nounwind") is not null) attrs.Add("nounwind");
             if (Decl.Attr("inline") is not null) attrs.Add("alwaysinline");
             if (Decl.Attr("noinline") is not null) attrs.Add("noinline");
-            return attrs.Count == 0 ? "" : " " + string.Join(" ", attrs);
+            // A routine that is a C library routine (memcpy on a target without one): LLVM may not turn its loops
+            // into calls to the C library, which would be calls to itself.
+            if (Decl.Attr("no_builtins") is not null) attrs.Add("\"no-builtins\"");
+            return " " + string.Join(" ", attrs);
         }
     }
 
@@ -71,9 +76,15 @@ public sealed class Instance(RoutineDecl decl, Compiler.TypeEnv env, string symb
 
 public sealed partial class Compiler
 {
+    /// A definition's unwind table, which every routine has on a target with an operating system: debuggers,
+    /// profilers, and the system's own stack walks read it (Windows x64 needs one for every function that calls
+    /// another). Nothing reads one without an operating system, so a routine there has none.
+    public string UnwindTable => Target.HasOs ? " uwtable" : "";
+
     private static readonly HashSet<string> KnownAttributes =
-        ["external", "symbol", "callconv", "noreturn", "nounwind", "variadic", "template", "target", "feature", "llvm",
-         "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source", "track_caller"];
+        ["external", "symbol", "callconv", "noreturn", "variadic", "template", "target", "feature", "llvm",
+         "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source", "track_caller",
+         "no_builtins"];
 
     /// Attributes that describe an assembly routine and mean nothing on another.
     private static readonly string[] AsmAttributes = ["clobbers", "readonly", "pure", "naked"];

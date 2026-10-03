@@ -1,0 +1,199 @@
+// Tessera stdlib: the C memory routines on a target without an operating system
+//
+// LLVM lowers record copies and fills to calls to memcpy and memset, and may call memmove and memcmp too. A hosted
+// target links the C library's. A target without an operating system has no C library, so there the stdlib provides
+// the four under their C names, byte by byte.
+//
+// Each is #no_builtins: LLVM recognizes a byte-copy loop as memcpy (a fill as memset) and would turn the routine's
+// own loop into a call to itself. Each is exported weak, so a program's own (or a C library it links) replaces it.
+
+module Standard::Core
+
+/// Copies `count` bytes from `src` to `dest`: C's `memcpy`, on a target without an operating system.
+/// :param dest: The first byte to write.
+/// :param src: The first byte to read.
+/// :param count: The number of bytes.
+/// :returns: `dest`.
+/// :note: The ranges must not overlap; memmove allows that.
+#[export("memcpy"), no_builtins, target(os: "none")]
+private routine memcpy(dest: Addr, src: Addr, count: USize) -> Addr
+    block entry()
+        jump copy(dest.to<@Byte>(), src.to<@Byte>(), 0)
+
+    block copy(into: @Byte, from: @Byte, at: USize)
+        done : Bool = at.ge(count)
+        branch done
+            ? return(dest)
+            : continue
+        byte : Byte = from.stride(at).load()
+        into.stride(at).store(byte)
+        jump copy(into, from, at.add(1))
+
+/// Copies `count` bytes from `src` to `dest`, which may overlap: C's `memmove`, on a target without an operating
+/// system. It copies from the front when `dest` comes first and from the back otherwise, so every byte is read
+/// before it is written over.
+/// :param dest: The first byte to write.
+/// :param src: The first byte to read.
+/// :param count: The number of bytes.
+/// :returns: `dest`.
+#[export("memmove"), no_builtins, target(os: "none")]
+private routine memmove(dest: Addr, src: Addr, count: USize) -> Addr
+    block entry()
+        into     : @Byte = dest.to<@Byte>()
+        from     : @Byte = src.to<@Byte>()
+        dest_at  : USize = ptrtoint<Addr, USize>(dest)
+        src_at   : USize = ptrtoint<Addr, USize>(src)
+        backward : Bool  = dest_at.gt(src_at)
+        branch backward
+            ? down(into, from, count)
+            : up(into, from, 0)
+
+    block up(into: @Byte, from: @Byte, at: USize)
+        done : Bool = at.ge(count)
+        branch done
+            ? return(dest)
+            : continue
+        byte : Byte = from.stride(at).load()
+        into.stride(at).store(byte)
+        jump up(into, from, at.add(1))
+
+    block down(into: @Byte, from: @Byte, left: USize)
+        done : Bool = left.eq(0)
+        branch done
+            ? return(dest)
+            : continue
+        at   : USize = left.sub(1)
+        byte : Byte  = from.stride(at).load()
+        into.stride(at).store(byte)
+        jump down(into, from, at)
+
+/// Sets `count` bytes at `dest` to `value`'s low byte: C's `memset`, on a target without an operating system.
+/// :param dest: The first byte to write.
+/// :param value: The byte to write, in the low 8 bits.
+/// :param count: The number of bytes.
+/// :returns: `dest`.
+#[export("memset"), no_builtins, target(os: "none")]
+private routine memset(dest: Addr, value: CInt, count: USize) -> Addr
+    block entry()
+        byte : Byte = value.to_wrap<U8>().bits()
+        jump fill(dest.to<@Byte>(), byte, 0)
+
+    block fill(into: @Byte, byte: Byte, at: USize)
+        done : Bool = at.ge(count)
+        branch done
+            ? return(dest)
+            : continue
+        into.stride(at).store(byte)
+        jump fill(into, byte, at.add(1))
+
+/// Compares `count` bytes at `a` and `b` as unsigned bytes: C's `memcmp`, on a target without an operating system.
+/// :param a: The first range.
+/// :param b: The second range.
+/// :param count: The number of bytes.
+/// :returns: -1, 0, or 1 as the first differing byte of `a` is below, absent, or above `b`'s.
+#[export("memcmp"), no_builtins, target(os: "none")]
+private routine memcmp(a: Addr, b: Addr, count: USize) -> CInt
+    block entry()
+        jump scan(a.to<@Byte>(), b.to<@Byte>(), 0)
+
+    block scan(left: @Byte, right: @Byte, at: USize)
+        done : Bool = at.ge(count)
+        branch done
+            ? return(0)
+            : continue
+        x    : Byte = left.stride(at).load()
+        y    : Byte = right.stride(at).load()
+        same : Bool = x.eq(y)
+        branch same
+            ? scan(left, right, at.add(1))
+            : return(x.compare(y))
+
+// -- ARM's run-time ABI names ----------------------------------------------------
+//
+// On 32-bit ARM, LLVM calls the run-time ABI's names (__aeabi_memcpy, __aeabi_memclr, ...) instead of the C ones.
+// The 4 and 8 forms promise that the addresses are aligned to that many bytes, which a byte loop doesn't need.
+// They are #no_builtins too: the C routine they call may be inlined into them.
+
+/// `__aeabi_memcpy`: `memcpy` without the result.
+#[export("__aeabi_memcpy"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memcpy(dest: Addr, src: Addr, count: USize) -> Void
+    block entry()
+        discard : Addr = memcpy(dest, src, count)
+        return()
+
+/// `__aeabi_memcpy4`: `memcpy` for addresses aligned to 4 bytes.
+#[export("__aeabi_memcpy4"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memcpy4(dest: Addr, src: Addr, count: USize) -> Void
+    block entry()
+        discard : Addr = memcpy(dest, src, count)
+        return()
+
+/// `__aeabi_memcpy8`: `memcpy` for addresses aligned to 8 bytes.
+#[export("__aeabi_memcpy8"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memcpy8(dest: Addr, src: Addr, count: USize) -> Void
+    block entry()
+        discard : Addr = memcpy(dest, src, count)
+        return()
+
+/// `__aeabi_memmove`: `memmove` without the result.
+#[export("__aeabi_memmove"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memmove(dest: Addr, src: Addr, count: USize) -> Void
+    block entry()
+        discard : Addr = memmove(dest, src, count)
+        return()
+
+/// `__aeabi_memmove4`: `memmove` for addresses aligned to 4 bytes.
+#[export("__aeabi_memmove4"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memmove4(dest: Addr, src: Addr, count: USize) -> Void
+    block entry()
+        discard : Addr = memmove(dest, src, count)
+        return()
+
+/// `__aeabi_memmove8`: `memmove` for addresses aligned to 8 bytes.
+#[export("__aeabi_memmove8"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memmove8(dest: Addr, src: Addr, count: USize) -> Void
+    block entry()
+        discard : Addr = memmove(dest, src, count)
+        return()
+
+/// `__aeabi_memset`: `memset` with the count before the value, and without the result.
+#[export("__aeabi_memset"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memset(dest: Addr, count: USize, value: CInt) -> Void
+    block entry()
+        discard : Addr = memset(dest, value, count)
+        return()
+
+/// `__aeabi_memset4`: `aeabi_memset` for an address aligned to 4 bytes.
+#[export("__aeabi_memset4"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memset4(dest: Addr, count: USize, value: CInt) -> Void
+    block entry()
+        discard : Addr = memset(dest, value, count)
+        return()
+
+/// `__aeabi_memset8`: `aeabi_memset` for an address aligned to 8 bytes.
+#[export("__aeabi_memset8"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memset8(dest: Addr, count: USize, value: CInt) -> Void
+    block entry()
+        discard : Addr = memset(dest, value, count)
+        return()
+
+/// `__aeabi_memclr`: sets `count` bytes at `dest` to zero.
+#[export("__aeabi_memclr"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memclr(dest: Addr, count: USize) -> Void
+    block entry()
+        discard : Addr = memset(dest, 0, count)
+        return()
+
+/// `__aeabi_memclr4`: `aeabi_memclr` for an address aligned to 4 bytes.
+#[export("__aeabi_memclr4"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memclr4(dest: Addr, count: USize) -> Void
+    block entry()
+        discard : Addr = memset(dest, 0, count)
+        return()
+
+/// `__aeabi_memclr8`: `aeabi_memclr` for an address aligned to 8 bytes.
+#[export("__aeabi_memclr8"), no_builtins, target(arch: "arm", os: "none")]
+private routine aeabi_memclr8(dest: Addr, count: USize) -> Void
+    block entry()
+        discard : Addr = memset(dest, 0, count)
+        return()

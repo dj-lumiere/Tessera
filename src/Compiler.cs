@@ -222,15 +222,22 @@ public sealed partial class Compiler
 
     private bool Selected(Decl d)
     {
+        // The hosted layer exists only on a target with an operating system. Without one, its library declarations
+        // drop out as a whole; the module itself stays, so importing it or naming something in it can say why.
+        if (!Target.HasOs && d.IsLibrary && d is not ModuleDecl && IsOsModule(d.Module)) return false;
         foreach (var a in d.Attributes)
         {
+            if (a.Name != "target" && a.Args.FirstOrDefault(arg => arg.Values is not null) is { } listed)
+                throw new CompileError(a.Pos, $"only #target takes a list of values; #{a.Name}'s '{listed.Key}' takes one");
             if (a.Name == "target")
             {
                 foreach (var arg in a.Args)
                 {
                     if (arg.Key is null) throw new CompileError(a.Pos, "#target arguments are written key: value");
+                    // A list matches when any of its values does; `not` before it, when none does. Every value is
+                    // checked, so a misspelled key is an error whatever the target.
                     bool m;
-                    try { m = Target.Matches(arg.Key, arg.Value); }
+                    try { m = (arg.Values ?? [arg.Value]).Select(v => Target.Matches(arg.Key, v)).ToList().Contains(true); }
                     catch (ArgumentException e) { throw new CompileError(a.Pos, e.Message); }
                     if (m == arg.Negated) return false;
                 }
@@ -487,18 +494,18 @@ public sealed partial class Compiler
     /// nearest wins (Nearest), and two imports that both offer it make the name ambiguous.
     private T? Pick<T>(List<T>? candidates, string file, Pos pos, string what, string? path = null) where T : Decl
     {
-        if (candidates is null || candidates.Count == 0) return null;
         path = ExpandPath(path, file);
+        if (candidates is null || candidates.Count == 0)
+        {
+            // The hosted layer's declarations aren't there on a target without an operating system (Selected).
+            if (path is not null && IsOsModule(path) && !Target.HasOs)
+                throw new CompileError(pos, $"{what} is in {path}: {NoOs(path)}") { Final = true };
+            return null;
+        }
         var visible = candidates.Where(c => Visible(c, file, path)).ToList();
         if (visible.Count == 0) throw new CompileError(pos, Hidden(candidates[0], what, path));
         var nearest = Nearest(visible, file);
-        if (nearest.Count == 1)
-        {
-            // The hosted layer exists only on a target with an operating system; its own files may still name it.
-            if (IsOsModule(nearest[0].Module) && !Target.HasOs && !IsOsModule(ModuleOf(file)))
-                throw new CompileError(pos, $"{what} is in {nearest[0].Module}: {NoOs(nearest[0].Module)}") { Final = true };
-            return nearest[0];
-        }
+        if (nearest.Count == 1) return nearest[0];
         var modules = nearest.Select(c => c.Module).Distinct().ToList();
         if (modules.Count > 1)
             throw new CompileError(pos, $"{what} is ambiguous: it's in {string.Join(" and ", modules.Select(ShowModule))}; "

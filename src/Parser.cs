@@ -217,8 +217,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     }
                     // `not "windows"`: the value must not match
                     bool negated = IsIdent("not")
-                                   && PeekTok(1).Kind is TokenKind.Str or TokenKind.Int or TokenKind.Ident;
+                                   && PeekTok(1).Kind is TokenKind.Str or TokenKind.Int or TokenKind.Ident or TokenKind.LParen;
                     if (negated) Next();
+                    if (Is(TokenKind.LParen))
+                    {
+                        args.Add(ParseAttrValueList(key, negated));
+                        continue;
+                    }
                     if (Is(TokenKind.Ident) && PeekTok(1).Kind is TokenKind.LParen or TokenKind.Lt)
                     {
                         args.Add(new AttrArg(key, "", negated, ParseExpr()));
@@ -233,6 +238,29 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Expect(TokenKind.RParen, "')'");
         }
         return new Attribute(name.Text, args, name.Pos);
+    }
+
+    /// `os: ("linux", "macos")`, `arch: not ("x86", "arm")`: a key's list of values, any of which matches.
+    private AttrArg ParseAttrValueList(string? key, bool negated)
+    {
+        var open = Next();
+        if (key is null)
+            throw new CompileError(open.Pos, "a list of values follows a key, as in #target(os: (\"linux\", \"macos\"))");
+        var values = new List<string>();
+        if (!Is(TokenKind.RParen))
+        {
+            do
+            {
+                var v = Next();
+                if (v.Kind is not (TokenKind.Str or TokenKind.Int or TokenKind.Ident))
+                    throw new CompileError(v.Pos, "a list of attribute values holds literals");
+                values.Add(v.Kind == TokenKind.Int ? v.IntValue.ToString() : v.Text);
+            } while (Accept(TokenKind.Comma));
+        }
+        Expect(TokenKind.RParen, "')'");
+        if (values.Count == 0)
+            throw new CompileError(open.Pos, $"'{key}: ()' lists no values, so nothing could match; list at least one");
+        return new AttrArg(key, values[0], negated, Values: values);
     }
 
     /// `require ...` and `conform ...` lines after a declaration header. They follow it line by line: after a blank
