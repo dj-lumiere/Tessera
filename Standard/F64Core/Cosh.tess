@@ -1,0 +1,271 @@
+// Tessera stdlib: the correctly rounded hyperbolic cosine of F64
+//
+// For |x| < 1/8 an even polynomial, checked with an error bound and redone in double-double when the bound
+// can't decide the rounding. Otherwise cosh x = (e^|x| + e^-|x|) / 2 with both exponentials from the tables
+// and polynomial of HypShared.tess (e^-|x| is dropped past |x| ~ 36.7), again checked with an error bound;
+// the accurate path evaluates the exponentials in double-double and looks the few hardest arguments up in a
+// table of exact values.
+// Round to nearest only: overflow and ±inf give +inf, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary64/cosh/cosh.c via RazorForge's B64Cosh.rf.
+// Copyright (c) 2023-2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// Hard-to-round arguments |x| (sorted), as F64 bits.
+preset CM_F64_COSH_DB_X: @Array<U64, 21> <- { 0x3FB9A5E3CBE1985E, 0x3FC52A11832E847D,
+    0x3FCBF0305E2C6C37, 0x3FD17326FFC09F68, 0x3FD3D27BF16D8BDB, 0x3FE03923F2B47C07,
+    0x3FEA6031CD5F93BA, 0x3FF104B648F113A1, 0x3FF1585720F35CD9, 0x3FFE9CC7ED2E1A7E,
+    0x40043180EA854696, 0x401725811DCF6782, 0x4025AFD56F7D565B, 0x402759A2AD4C4D56,
+    0x4027FCE95EA5C653, 0x403743D5609348AC, 0x404E07E71BFCF06F, 0x4056474C604CC0D7,
+    0x40654CD1FEA7663A, 0x4072DA9E5E6AF0B0, 0x407D6479EBA7C971 }
+
+/// The high parts of cosh x for those arguments, as F64 bits.
+preset CM_F64_COSH_DB_H: @Array<U64, 21> <- { 0x3FF01492F72F984B, 0x3FF0381E68CAC923,
+    0x3FF061F4C39E16F2, 0x3FF099318A43AC80, 0x3FF0C6091056E06A, 0x3FF219C1989E3373,
+    0x3FF5BFF041B260FE, 0x3FF9EFDCA62B700A, 0x3FFA5BF3ACFDE4B2, 0x400BB0FF220D8EB5,
+    0x40191F1122B6B63A, 0x40645EA160DDC71F, 0x40D8FF8E0CCEA7C0, 0x40ECB62EEC26BD78,
+    0x40F3BF8009648DC0, 0x41F7A87A8BB7FA28, 0x45491EC4412C344F, 0x47E7A8F65AD009BD,
+    0x4F3C90810D354618, 0x5B127D6FE867D6F6, 0x6A462A88613629B6 }
+
+/// The low parts, as F64 bits.
+preset CM_F64_COSH_DB_L: @Array<U64, 21> <- { 0xB940000000000000, 0x3970000000000000,
+    0x3940000000000000, 0x3970000000000000, 0xB940000000000000, 0xBC90000000000000,
+    0xB940000000000000, 0xB920000000000000, 0x3960000000000000, 0xBCA0000000000000,
+    0x3990000000000000, 0xB9B0000000000000, 0x3A50000000000000, 0xBA30000000000000,
+    0x3A70000000000000, 0xBE90000000000000, 0x3E70000000000000, 0xC130000000000000,
+    0x4860000000000000, 0x5480000000000000, 0xE370000000000000 }
+
+/// cosh self, correctly rounded.
+routine F64.cosh(self: Self) -> Self
+    block entry():
+        ax    : Self = self.abs()
+        aix   : U64  = ax.bits()
+        small : Bool = aix.lt(0x3FC0000000000000)  // |x| < 1/8
+        large : Bool = aix.gt(0x408633CE8FB9F87D)  // |x| > 0x1.633ce8fb9f87dp+9 ~ 710.47586
+        when:
+            small -> small(ax, aix)
+            large -> large(ax, aix)
+            else  -> return(cm_f64_cosh_main(self))
+
+    block small(ax: Self, aix: U64):
+        tiny : Bool = aix.lt(0x3E50000000000000)  // |x| < 2^-26
+        branch tiny
+            ? return(ax.mul_add(0x1p-55, 1.0))
+            : continue
+        // 1 + p is a minimax approximation of cosh x on [2^-26, 1/8], |1 + p - cosh x| < 2^-67.518 x^2
+        x2   : Self = self.mul(self)
+        x4   : Self = x2.mul(x2)
+        c0   : Self = x2.mul(0x1.5555555555554p-5).add(0x1p-1)
+        c4   : Self = x2.mul(0x1.a01a0075066b4p-16).add(0x1.6c16c16c1d0cp-10)
+        c48  : Self = x4.mul(0x1.27faff8dcc1c8p-22).add(c4)
+        p    : Self = x2.mul(x4.mul(c48).add(c0))
+        e    : Self = x2.mul(0x1.84p-51)
+        lb   : Self = p.sub(e).add(1.0)
+        ub   : Self = p.add(e).add(1.0)
+        sure : Bool = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : return(cm_f64_cosh_zero(self))
+
+    // NaN, infinities, or overflow
+    block large(ax: Self, aix: U64):
+        nan      : Bool = aix.gt(0x7FF0000000000000)
+        infinite : Bool = aix.eq(0x7FF0000000000000)
+        when:
+            nan      -> return(self.add(self))
+            infinite -> return(ax)
+            else     -> return(Self.mul(0x1p+1023, 2.0))
+
+/// cosh x for 1/8 <= |x| <= 0x1.633ce8fb9f87dp+9.
+private routine cm_f64_cosh_main(x: F64) -> F64
+    block entry():
+        ax  : F64 = x.abs()
+        aix : U64 = ax.bits()
+        // t = round(|x| 2^12 / log 2), and its bits il = 2^12 ie + 2^6 i0 + i1
+        v0  : F64        = ax.mul_add(0x1.71547652b82fep+12, 0x1.8000002p+26)
+        jt  : U64        = v0.bits()
+        t   : F64        = F64.from_bits(jt.bitand(0xFFFFFFFFFC000000)).sub(0x1.8p+26)
+        ilu : U64        = jt.shl(14).shr(40)
+        il  : S64        = ilu.to<S64>()
+        i1  : USize      = il.bitand(0x3F).to<USize>()
+        i0s : S64        = il.shr(6).bitand(0x3F)
+        i0  : USize      = i0s.to<USize>()
+        ie  : S64        = il.shr(12)
+        sp  : F64        = cm_f64_hyp_scale(ie.add(1022))
+        tt  : CmF64HypDd = cm_f64_hyp_table(i0, i1)
+        // |x| = t log(2) / 2^12 + dx, with log(2) / 2^12 as l2h + l2l and l2h t exact
+        dx     : F64  = ax.sub(t.mul(0x1.62e42ffp-13)).add(t.mul(0x1.718432a1b0e26p-47))
+        dx2    : F64  = dx.mul(dx)
+        pp     : F64  = cm_f64_hyp_poly(dx, dx2)
+        jl     : S64  = il.neg()
+        above5 : Bool = aix.gt(0x4014000000000000)
+        huge   : Bool = aix.gt(0x40425E4F7B2737FA)  // |x| > ~36.736801: e^-|x| is negligible
+        when:
+            huge   -> huge(ax, t, ie, tt.hi, tt.lo, pp)
+            above5 -> mid(ax, aix, t, sp, tt.hi, tt.lo, dx, dx2, pp, jl)
+            else   -> low(ax, t, sp, tt.hi, tt.lo, dx, dx2, pp, jl)
+
+    // cosh x ~ e^|x| / 2
+    block huge(ax: F64, t: F64, ie: S64, th: F64, tl: F64, pp: F64):
+        sp   : F64  = cm_f64_hyp_scale(ie.add(1021))
+        rl   : F64  = tl.add(th.mul(pp))
+        e    : F64  = F64.mul(0x1.1b578c96db19bp-63, th)  // 0.12e-18 in the original
+        lb   : F64  = th.add(rl.sub(e))
+        ub   : F64  = th.add(rl.add(e))
+        sure : Bool = lb.eq(ub)
+        branch sure
+            ? return(lb.mul(sp).mul(2.0))
+            : huge_accurate(ax, t, sp, th, tl)
+
+    block huge_accurate(ax: F64, t: F64, sp: F64, th: F64, tl: F64):
+        a0   : CmF64HypDd = cm_f64_hyp_exp_accurate(ax, t, th, tl)
+        a    : CmF64HypDd = cm_f64_hyp_fasttwosum(a0.hi, a0.lo)
+        hard : Bool       = cm_f64_hyp_is_hard(a.hi, a.lo)
+        r0   : F64        = a.hi.add(a.lo).mul(2.0)
+        r    : F64        = r0.mul(sp)
+        branch hard
+            ? return(cm_f64_cosh_database(x, r))
+            : return(r)
+
+    // 5 < |x| <= ~36.736801: e^-|x| matters only to the low part
+    block mid(ax: F64, aix: U64, t: F64, sp: F64, th0: F64, tl0: F64, dx: F64, dx2: F64, pp: F64,
+        jl: S64):
+        j1   : USize      = jl.bitand(0x3F).to<USize>()
+        j0s  : S64        = jl.shr(6).bitand(0x3F)
+        j0   : USize      = j0s.to<USize>()
+        sm   : F64        = cm_f64_hyp_scale(jl.shr(12).add(1022))
+        q    : CmF64HypDd = cm_f64_hyp_table(j0, j1)
+        th   : F64        = th0.mul(sp)
+        tl   : F64        = tl0.mul(sp)
+        qh   : F64        = q.hi.mul(sm)
+        pm   : F64        = cm_f64_hyp_poly(dx.neg(), dx2)
+        em   : F64        = qh.mul(pm).add(qh)
+        rl   : F64        = tl.add(em).add(th.mul(pp))
+        e    : F64        = F64.mul(0x1.202p-63, th)
+        lb   : F64        = th.add(rl.sub(e))
+        ub   : F64        = th.add(rl.add(e))
+        sure : Bool       = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : mid_accurate(ax, aix, t, th, tl, qh, q, sm)
+
+    block mid_accurate(ax: F64, aix: U64, t: F64, th0: F64, tl0: F64, qh: F64, q: CmF64HypDd,
+        sm: F64):
+        a      : CmF64HypDd = cm_f64_hyp_exp_accurate(ax, t, th0, tl0)
+        beyond : Bool       = aix.gt(0x403F666666666666)  // |x| > 0x1.f666666666666p+4
+        branch beyond
+            ? far(a, qh)
+            : near(ax, t, a, q, sm)
+
+    // e^-|x| as the one F64 qh
+    block far(a: CmF64HypDd, qh: F64):
+        rh  : F64 = a.hi.add(qh)
+        err : F64 = a.hi.sub(rh).add(qh)
+        rl  : F64 = err.add(a.lo)
+        jump tail(rh, rl)
+
+    // e^-|x| in double-double
+    block near(ax: F64, t: F64, a: CmF64HypDd, q: CmF64HypDd, sm: F64):
+        m   : CmF64HypDd = cm_f64_hyp_exp_accurate(ax.neg(), t.neg(), q.hi.mul(sm), q.lo.mul(sm))
+        rh  : F64        = a.hi.add(m.hi)
+        err : F64        = a.hi.sub(rh).add(m.hi)
+        rl  : F64        = err.add(m.lo).add(a.lo)
+        jump tail(rh, rl)
+
+    // 1/8 <= |x| <= 5
+    block low(ax: F64, t: F64, sp: F64, th0: F64, tl0: F64, dx: F64, dx2: F64, pp: F64, jl: S64):
+        j1   : USize      = jl.bitand(0x3F).to<USize>()
+        j0s  : S64        = jl.shr(6).bitand(0x3F)
+        j0   : USize      = j0s.to<USize>()
+        sm   : F64        = cm_f64_hyp_scale(jl.shr(12).add(1022))
+        q    : CmF64HypDd = cm_f64_hyp_table(j0, j1)
+        th   : F64        = th0.mul(sp)
+        tl   : F64        = tl0.mul(sp)
+        qh   : F64        = q.hi.mul(sm)
+        ql   : F64        = q.lo.mul(sm)
+        pm   : F64        = cm_f64_hyp_poly(dx.neg(), dx2)
+        fpl  : F64        = tl.add(th.mul(pp))
+        fml  : F64        = ql.add(qh.mul(pm))
+        rh   : F64        = th.add(qh)
+        err  : F64        = th.sub(rh).add(qh)
+        rl   : F64        = err.add(fml).add(fpl)
+        e    : F64        = F64.mul(0x1.c0ap-62, rh)
+        lb   : F64        = rh.add(rl.sub(e))
+        ub   : F64        = rh.add(rl.add(e))
+        sure : Bool       = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : low_accurate(ax, t, th, tl, qh, ql)
+
+    block low_accurate(ax: F64, t: F64, th: F64, tl: F64, qh: F64, ql: F64):
+        a   : CmF64HypDd = cm_f64_hyp_exp_accurate(ax, t, th, tl)
+        m   : CmF64HypDd = cm_f64_hyp_exp_accurate(ax.neg(), t.neg(), qh, ql)
+        rh  : F64        = a.hi.add(m.hi)
+        err : F64        = a.hi.sub(rh).add(m.hi)
+        rl  : F64        = err.add(m.lo).add(a.lo)
+        jump tail(rh, rl)
+
+    block tail(rh: F64, rl: F64):
+        s    : CmF64HypDd = cm_f64_hyp_fasttwosum(rh, rl)
+        hard : Bool       = cm_f64_hyp_is_hard(s.hi, s.lo)
+        r    : F64        = s.hi.add(s.lo)
+        branch hard
+            ? return(cm_f64_cosh_database(x, r))
+            : return(r)
+
+/// The accurate path of cosh for 2^-26 <= |x| < 1/8: a double-double even polynomial.
+private routine cm_f64_cosh_zero(x: F64) -> F64
+    block entry():
+        x2     : F64        = x.mul(x)
+        x2l    : F64        = x.mul_add(x, x2.neg())
+        c      : F64        = x2.mul(0x1.ae9891efb6691p-45).add(0x1.939749ce13dadp-37)
+        c2     : F64        = x2.mul(c).add(0x1.1eed8eff9089cp-29)
+        y2     : F64        = x2.mul(x2.mul(c2).add(0x1.27e4fb7789f5cp-22))
+        p8     : CmF64HypDd = cm_f64_hyp_polydd_init(y2, 0x1.a01a01a01a01ap-16,
+            0x1.a4ffbe15316aap-76)
+        p6     : CmF64HypDd = cm_f64_hyp_polydd_step(x2, x2l, p8.hi, p8.lo, 0x1.6c16c16c16c17p-10,
+            -0x1.f49f4a6e838f2p-65)
+        p4     : CmF64HypDd = cm_f64_hyp_polydd_step(x2, x2l, p6.hi, p6.lo, 0x1.5555555555555p-5,
+            0x1.5555555556135p-59)
+        p2     : CmF64HypDd = cm_f64_hyp_polydd_step(x2, x2l, p4.hi, p4.lo, 0x1p-1,
+            -0x1.c7e8db669f624p-111)
+        p      : CmF64HypDd = cm_f64_hyp_muldd(p2.hi, p2.lo, x2, x2l)
+        s0     : CmF64HypDd = cm_f64_hyp_fasttwosum(1.0, p.hi)
+        s1     : CmF64HypDd = cm_f64_hyp_fasttwosum(s0.lo, p.lo)
+        y1     : F64        = cm_f64_hyp_nudge(s1.hi, s1.lo)
+        r      : F64        = s0.hi.add(y1)
+        m      : U64        = y1.bits().bitand(0x000FFFFFFFFFFFFF)
+        lookup : Bool       = m.eq(0x000FFFFFFFFFFFFF)
+        branch lookup
+            ? return(cm_f64_cosh_database(x, r))
+            : return(r)
+
+/// The exact cosh x for the arguments the fast and accurate paths can't round, or f for any other x.
+private routine cm_f64_cosh_database(x: F64, f: F64) -> F64
+    block entry():
+        jump search(0, 20)
+
+    block search(a: S64, b: S64):
+        open : Bool = a.le(b)
+        branch open
+            ? probe(a, b)
+            : return(f)
+
+    block probe(a: S64, b: S64):
+        m     : S64   = a.add(b).div(2)
+        mu    : USize = m.to<USize>()
+        key   : F64   = F64.from_bits(CM_F64_COSH_DB_X.get(mu))
+        ax    : F64   = x.abs()
+        below : Bool  = key.lt(ax)
+        found : Bool  = key.eq(ax)
+        when:
+            below -> search(m.add(1), b)
+            found -> hit(mu)
+            else  -> search(a, m.sub(1))
+
+    block hit(mu: USize):
+        h : F64 = F64.from_bits(CM_F64_COSH_DB_H.get(mu))
+        l : F64 = F64.from_bits(CM_F64_COSH_DB_L.get(mu))
+        return(h.add(l))

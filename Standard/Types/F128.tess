@@ -1,0 +1,1801 @@
+// Tessera stdlib: F128 — IEEE 754 binary128, in software
+//
+// Layout: sign (1 bit) | exponent (15 bits, bias 16383) | fraction (112 bits),
+// in an i128 that the code here reads as a U128 (bits, from_bits). No target
+// has to support LLVM's fp128: every operation is integer code here, so results
+// are bit-identical everywhere and need no compiler-rt routines. Arithmetic
+// rounds correctly (to nearest, ties to even).
+// The structure follows RazorForge's B128 and TLFloat (Naoki Shibata, Boost 1.0),
+// with 256-bit steps done in 64-bit pieces instead, and division by 3-by-2
+// limb steps (divq on x86_64, Möller–Granlund elsewhere).
+//
+// Internally a finite value is sig × 2^(exponent - 16383 - 115): the significand
+// carries three extra low bits (guard, round, sticky) under the 113 kept ones.
+
+module Standard::Core
+
+preset F128_BIAS:      S64  = 16383
+preset F128_EXP_MAX:   S64  = F128_BIAS.mul(2).add(1)  // all-ones exponent
+preset F128_IMPLICIT:  U128 = 0x10000000000000000000000000000  // 2^112
+preset F128_FRAC_MASK: U128 = F128_IMPLICIT.sub(1)
+preset F128_SIGN:      U128 = 0x80000000000000000000000000000000
+preset F128_INF:       U128 = F128_EXP_MAX.to<U128>().shl(112)
+preset F128_QNAN:      U128 = F128_INF.bitor(F128_QUIET_BIT)
+preset F128_QUIET_BIT: U128 = F128_IMPLICIT.shr(1)  // 2^111
+preset F128.INFINITY:     F128 = F128.from_bits(F128_INF)
+preset F128.NEG_INFINITY: F128 = F128.from_bits(F128_SIGN.bitor(F128_INF))
+preset F128.NAN:          F128 = F128.from_bits(F128_QNAN)
+preset F128.MAX:          F128 = F128.from_bits(F128_INF.sub(1))
+preset F128.MIN:          F128 = F128.from_bits(F128_SIGN.bitor(F128_INF.sub(1)))
+preset F128.MIN_POSITIVE: F128 = F128.from_bits(F128_IMPLICIT)
+preset F128.EPSILON:      F128 = F128.from_bits(0x3F8F0000000000000000000000000000)  // 2^-112
+
+#llvm("i128")
+record F128
+conform Equal<F128>, Compare<F128>, Hash<F128>
+
+// -- bits ----------------------------------------------------------------------
+
+routine F128.from_bits(bits: U128) -> Self
+    block entry():
+        r : Self = bitcast<U128, Self>(bits)
+        return(r)
+
+/// The raw IEEE 754 bits.
+routine F128.bits(self: Self) -> U128
+    block entry():
+        r : U128 = bitcast<Self, U128>(self)
+        return(r)
+
+/// F128.from_bits, short for the stdlib's own F128 code.
+routine f128_of(bits: U128) -> F128
+    block entry():
+        r : F128 = bitcast<U128, F128>(bits)
+        return(r)
+
+/// The sign bit.
+routine f128_is_negative_bits(bits: U128) -> Bool
+    block entry():
+        r : Bool = bits.ge(F128_SIGN)
+        return(r)
+
+routine f128_exponent(bits: U128) -> S64
+    block entry():
+        exponent_bits : U128 = bits.shr(112)
+        r             : S64  = exponent_bits.to<S64>().bitand(32767)
+        return(r)
+
+routine f128_fraction(bits: U128) -> U128
+    block entry():
+        r : U128 = bits.bitand(F128_FRAC_MASK)
+        return(r)
+
+routine f128_is_nan_bits(bits: U128) -> Bool
+    block entry():
+        all_ones : Bool = f128_exponent(bits).eq(F128_EXP_MAX)
+        payload  : Bool = f128_fraction(bits).ne(0)
+        r        : Bool = all_ones.bitand(payload)
+        return(r)
+
+routine f128_is_zero_bits(bits: U128) -> Bool
+    block entry():
+        r : Bool = bits.bitand(F128_SIGN.bitnot()).eq(0)
+        return(r)
+
+// -- classification ------------------------------------------------------------
+
+routine F128.is_nan(self: Self) -> Bool
+    block entry():
+        r : Bool = f128_is_nan_bits(self.bits())
+        return(r)
+
+routine F128.is_infinite(self: Self) -> Bool
+    block entry():
+        magnitude : U128 = self.bits().bitand(F128_SIGN.bitnot())
+        r         : Bool = magnitude.eq(F128_INF)
+        return(r)
+
+routine F128.is_finite(self: Self) -> Bool
+    block entry():
+        r : Bool = f128_exponent(self.bits()).ne(F128_EXP_MAX)
+        return(r)
+
+routine F128.is_sign_negative(self: Self) -> Bool
+    block entry():
+        r : Bool = f128_is_negative_bits(self.bits())
+        return(r)
+
+routine F128.neg(self: Self) -> Self
+    block entry():
+        r : Self = f128_of(self.bits().bitxor(F128_SIGN))
+        return(r)
+
+routine F128.abs(self: Self) -> Self
+    block entry():
+        r : Self = f128_of(self.bits().bitand(F128_SIGN.bitnot()))
+        return(r)
+
+routine F128.copysign(self: Self, sign: Self) -> Self
+    block entry():
+        magnitude : U128 = self.bits().bitand(F128_SIGN.bitnot())
+        signed    : U128 = sign.bits().bitand(F128_SIGN)
+        r         : Self = f128_of(magnitude.bitor(signed))
+        return(r)
+
+// -- shifting and rounding -----------------------------------------------------
+
+/// A finite, nonzero value as (significand with the implicit bit at 112, unbiased
+/// exponent). Subnormals are normalized, so their exponent drops below -16382.
+record F128Parts
+    sig      : U128
+    exponent : S64
+
+/// value >> n, with every bit shifted out ORed into bit 0 (0 <= n)
+routine f128_shr_sticky(value: U128, n: S64) -> U128
+    block entry():
+        none : Bool = n.eq(0)
+        all  : Bool = n.ge(128)
+        when:
+            none -> return(value)
+            all  -> return(value.ne(0).to<U128>())
+            else -> part()
+
+    block part():
+        amount  : U128 = n.to<U128>()
+        mask    : U128 = 1.shl(amount).sub(1)
+        lost    : Bool = value.bitand(mask).ne(0)
+        shifted : U128 = value.shr(amount).bitor(lost.to<U128>())
+        return(shifted)
+
+/// Packs sig × 2^(exponent - 16383 - 115) into binary128 bits, rounding to nearest
+/// even. sig may sit at any bit position; the lowest bit may be a sticky bit.
+/// Handles overflow to infinity, subnormals, and underflow to zero.
+routine f128_round_pack(negative: Bool, exponent: S64, sig: U128) -> U128
+    block entry():
+        sign : U128 = negative
+            ? F128_SIGN
+            : 0
+        zero : Bool = sig.eq(0)
+        branch zero
+            ? return(sign)
+            : normalize(sign)
+
+    // Put the leading bit at 115 (12 leading zeros), unless that would push
+    // the exponent below 1: then the value is subnormal at exponent 1.
+    block normalize(sign: U128):
+        lz        : S64  = sig.leading_zeros().to<S64>()
+        shift     : S64  = 12.sub(lz)  // > 0: right, < 0: left
+        new_exp   : S64  = exponent.add(shift)
+        subnormal : Bool = new_exp.lt(1)
+        amount    : S64  = subnormal
+            ? 1.sub(exponent)
+            : shift
+        final_exp : S64 = subnormal
+            ? 1
+            : new_exp
+        right : Bool = amount.gt(0)
+        branch right
+            ? shift_right(sign, amount, final_exp)
+            : shift_left(sign, amount, final_exp)
+
+    block shift_right(sign: U128, amount: S64, e: S64):
+        s : U128 = f128_shr_sticky(sig, amount)
+        jump round(sign, s, e)
+
+    block shift_left(sign: U128, amount: S64, e: S64):
+        s : U128 = sig.shl(0.sub(amount).to<U128>())
+        jump round(sign, s, e)
+
+    block round(sign: U128, s: U128, e: S64):
+        extra   : U128 = s.bitand(7)
+        kept    : U128 = s.shr(3)
+        above   : Bool = extra.gt(4)
+        tie     : Bool = extra.eq(4)
+        odd     : Bool = kept.bitand(1).eq(1)
+        up      : Bool = above.bitor(tie.bitand(odd))
+        rounded : U128 = kept.add(up.to<U128>())
+        carry   : Bool = rounded.eq(0x20000000000000000000000000000)  // 2^113
+        final   : U128 = carry
+            ? rounded.shr(1)
+            : rounded
+        e2     : S64  = e.add(carry.to<S64>())
+        normal : Bool = final.ge(F128_IMPLICIT)
+        biased : S64  = normal
+            ? e2
+            : 0
+        overflow : Bool = biased.ge(F128_EXP_MAX)
+        field    : U128 = biased.to<U128>().shl(112)
+        bits     : U128 = sign.bitor(field).bitor(final.bitand(F128_FRAC_MASK))
+        branch overflow
+            ? return(sign.bitor(F128_INF))
+            : return(bits)
+
+routine f128_unpack(bits: U128) -> F128Parts
+    block entry():
+        biased    : S64  = f128_exponent(bits)
+        fraction  : U128 = f128_fraction(bits)
+        subnormal : Bool = biased.eq(0)
+        branch subnormal
+            ? subnormal(fraction)
+            : normal(biased, fraction)
+
+    block normal(biased: S64, fraction: U128):
+        p : F128Parts = F128Parts { sig: fraction.bitor(F128_IMPLICIT),
+            exponent: biased.sub(F128_BIAS) }
+        return(p)
+
+    block subnormal(fraction: U128):
+        lz    : U128      = fraction.leading_zeros()
+        shift : S64       = lz.to<S64>().sub(15)
+        p     : F128Parts = F128Parts { sig: fraction.shl(shift.to<U128>()),
+            exponent: -16382.sub(shift) }
+        return(p)
+
+// -- arithmetic ----------------------------------------------------------------
+
+routine f128_quiet(bits: U128) -> U128
+    block entry():
+        r : U128 = bits.bitor(F128_QUIET_BIT)
+        return(r)
+
+routine F128.add(self: Self, other: Self) -> Self
+    block entry():
+        r : Self = f128_of(f128_add_bits(self.bits(), other.bits()))
+        return(r)
+
+routine F128.sub(self: Self, other: Self) -> Self
+    block entry():
+        r : Self = f128_of(f128_add_bits(self.bits(), other.bits().bitxor(F128_SIGN)))
+        return(r)
+
+routine f128_add_bits(a: U128, b: U128) -> U128
+    block entry():
+        a_nan  : Bool = f128_is_nan_bits(a)
+        b_nan  : Bool = f128_is_nan_bits(b)
+        a_inf  : Bool = f128_exponent(a).eq(F128_EXP_MAX)
+        b_inf  : Bool = f128_exponent(b).eq(F128_EXP_MAX)
+        a_zero : Bool = f128_is_zero_bits(a)
+        b_zero : Bool = f128_is_zero_bits(b)
+        when:
+            a_nan  -> return(f128_quiet(a))
+            b_nan  -> return(f128_quiet(b))
+            a_inf  -> infinities()
+            b_inf  -> return(b)
+            a_zero -> zero_a(b_zero)
+            b_zero -> return(a)
+            else   -> finite()
+
+    // inf + inf keeps the sign; inf - inf is NaN
+    block infinities():
+        b_inf : Bool = f128_exponent(b).eq(F128_EXP_MAX)
+        same  : Bool = f128_is_negative_bits(a.bitxor(b)).bitnot()
+        clash : Bool = b_inf.bitand(same.bitnot())
+        branch clash
+            ? return(F128_QNAN)
+            : return(a)
+
+    // -0 + -0 is -0; any other zero sum of zeros is +0
+    block zero_a(b_zero: Bool):
+        both_negative : Bool = f128_is_negative_bits(a.bitand(b))
+        zero          : U128 = both_negative
+            ? F128_SIGN
+            : 0
+        branch b_zero
+            ? return(zero)
+            : return(b)
+
+    block finite():
+        a_exp : S64  = f128_exponent(a)
+        b_exp : S64  = f128_exponent(b)
+        a_sub : Bool = a_exp.eq(0)
+        b_sub : Bool = b_exp.eq(0)
+        // subnormals sit at exponent 1 without the implicit bit
+        a_e : S64 = a_sub
+            ? 1
+            : a_exp
+        b_e : S64 = b_sub
+            ? 1
+            : b_exp
+        a_hid : U128 = a_sub
+            ? 0
+            : F128_IMPLICIT
+        b_hid : U128 = b_sub
+            ? 0
+            : F128_IMPLICIT
+        a_frac  : U128 = f128_fraction(a).bitor(a_hid)
+        a_sig   : U128 = a_frac.shl(3)
+        b_frac  : U128 = f128_fraction(b).bitor(b_hid)
+        b_sig   : U128 = b_frac.shl(3)
+        a_big   : Bool = a_e.ge(b_e)
+        big_sig : U128 = a_big
+            ? a_sig
+            : b_sig
+        small_sig : U128 = a_big
+            ? b_sig
+            : a_sig
+        big_e : S64 = a_big
+            ? a_e
+            : b_e
+        small_e : S64 = a_big
+            ? b_e
+            : a_e
+        big_neg   : Bool = f128_is_negative_bits(a_big ? a : b)
+        small_neg : Bool = f128_is_negative_bits(a_big ? b : a)
+        aligned   : U128 = f128_shr_sticky(small_sig, big_e.sub(small_e))
+        same      : Bool = big_neg.eq(small_neg)
+        branch same
+            ? sum(big_sig, aligned, big_e, big_neg)
+            : difference(big_sig, aligned, big_e, big_neg)
+
+    block sum(x: U128, y: U128, e: S64, negative: Bool):
+        r : U128 = f128_round_pack(negative, e, x.add(y))
+        return(r)
+
+    // x - y; an exact zero is +0
+    block difference(x: U128, y: U128, e: S64, x_negative: Bool):
+        x_larger : Bool = x.ge(y)
+        m        : U128 = x.abs_diff(y)
+        sign     : Bool = x_larger
+            ? x_negative
+            : x_negative.bitnot()
+        negative : Bool = sign.bitand(m.ne(0))
+        r        : U128 = f128_round_pack(negative, e, m)
+        return(r)
+
+routine F128.mul(self: Self, other: Self) -> Self
+    block entry():
+        r : Self = f128_of(f128_mul_bits(self.bits(), other.bits()))
+        return(r)
+
+routine f128_mul_bits(a: U128, b: U128) -> U128
+    block entry():
+        sign     : U128 = a.bitxor(b).bitand(F128_SIGN)
+        a_nan    : Bool = f128_is_nan_bits(a)
+        b_nan    : Bool = f128_is_nan_bits(b)
+        a_inf    : Bool = f128_exponent(a).eq(F128_EXP_MAX)
+        b_inf    : Bool = f128_exponent(b).eq(F128_EXP_MAX)
+        a_zero   : Bool = f128_is_zero_bits(a)
+        b_zero   : Bool = f128_is_zero_bits(b)
+        any_inf  : Bool = a_inf.bitor(b_inf)
+        any_zero : Bool = a_zero.bitor(b_zero)
+        when:
+            a_nan    -> return(f128_quiet(a))
+            b_nan    -> return(f128_quiet(b))
+            any_inf  -> infinite(sign, any_zero)
+            any_zero -> return(sign)
+            else     -> finite(sign)
+
+    block infinite(sign: U128, any_zero: Bool):
+        branch any_zero
+            ? return(F128_QNAN)
+            : return(sign.bitor(F128_INF))
+
+    // The 226-bit product of two 113-bit significands, from 64-bit halves:
+    // P = hi × 2^128 + lo. Then sig = P >> 109 with a sticky bit, so the
+    // leading bit lands at 115 or 116.
+    block finite(sign: U128):
+        pa       : F128Parts = f128_unpack(a)
+        pb       : F128Parts = f128_unpack(b)
+        ma       : U128      = pa.sig
+        mb       : U128      = pb.sig
+        a0       : U128      = ma.bitand(0xFFFFFFFFFFFFFFFF)
+        a1       : U128      = ma.shr(64)
+        b0       : U128      = mb.bitand(0xFFFFFFFFFFFFFFFF)
+        b1       : U128      = mb.shr(64)
+        p00      : U128      = a0.mul(b0)
+        mid      : U128      = a0.mul(b1).add(a1.mul(b0))
+        p11      : U128      = a1.mul(b1)
+        lo       : U128      = p00.add_wrap(mid.shl(64))
+        lo_carry : U128      = lo.lt(p00).to<U128>()
+        hi       : U128      = p11.add(mid.shr(64)).add(lo_carry)
+        top      : U128      = hi.shl(19).bitor(lo.shr(109))
+        sticky   : Bool      = lo.bitand(0x1FFFFFFFFFFFFFFFFFFFFFFFFFFF).ne(0)  // low 109 bits
+        sig      : U128      = top.bitor(sticky.to<U128>())
+        exponent : S64       = pa.exponent.add(pb.exponent).add(F128_BIAS)
+        negative : Bool      = sign.ne(0)
+        r        : U128      = f128_round_pack(negative, exponent, sig)
+        return(r)
+
+routine F128.div(self: Self, other: Self) -> Self
+    block entry():
+        r : Self = f128_of(f128_div_bits(self.bits(), other.bits()))
+        return(r)
+
+routine f128_div_bits(a: U128, b: U128) -> U128
+    block entry():
+        sign      : U128 = a.bitxor(b).bitand(F128_SIGN)
+        a_nan     : Bool = f128_is_nan_bits(a)
+        b_nan     : Bool = f128_is_nan_bits(b)
+        a_inf     : Bool = f128_exponent(a).eq(F128_EXP_MAX)
+        b_inf     : Bool = f128_exponent(b).eq(F128_EXP_MAX)
+        a_zero    : Bool = f128_is_zero_bits(a)
+        b_zero    : Bool = f128_is_zero_bits(b)
+        both_inf  : Bool = a_inf.bitand(b_inf)
+        both_zero : Bool = a_zero.bitand(b_zero)
+        invalid   : Bool = both_inf.bitor(both_zero)
+        to_inf    : Bool = a_inf.bitor(b_zero)
+        to_zero   : Bool = b_inf.bitor(a_zero)
+        when:
+            a_nan   -> return(f128_quiet(a))
+            b_nan   -> return(f128_quiet(b))
+            invalid -> return(F128_QNAN)
+            to_inf  -> return(sign.bitor(F128_INF))
+            to_zero -> return(sign)
+            else    -> finite(sign)
+
+    // q = floor(ma × 2^116 / mb) = floor(ma × 2^131 / d) with the divisor
+    // normalized to d = mb × 2^15 (two limbs, top bit set). ma × 2^131 is four
+    // limbs, (ma × 8, 0, 0), so the quotient takes two 3-by-2 steps
+    // (Standard/WideDiv.tess). The last remainder is the sticky bit.
+    block finite(sign: U128):
+        pa       : F128Parts = f128_unpack(a)
+        pb       : F128Parts = f128_unpack(b)
+        d        : U128      = pb.sig.shl(15)
+        d1       : U64       = d.shr(64).to<U64>()
+        d0       : U64       = d.to_wrap<U64>()
+        v        : U64       = div_3by2_prepare(d1, d0)
+        n        : U128      = pa.sig.shl(3)
+        high     : Div3By2   = div_3by2(n.shr(64).to<U64>(), n.to_wrap<U64>(), 0, d1, d0, v)
+        r        : U128      = high.remainder
+        low      : Div3By2   = div_3by2(r.shr(64).to<U64>(), r.to_wrap<U64>(), 0, d1, d0, v)
+        q_high   : U128      = high.quotient.to<U128>().shl(64)
+        q        : U128      = q_high.bitor(low.quotient.to<U128>())
+        sticky   : Bool      = low.remainder.ne(0)
+        sig      : U128      = q.bitor(sticky.to<U128>())
+        unbiased : S64       = pa.exponent.sub(pb.exponent).sub(1)
+        exponent : S64       = unbiased.add(F128_BIAS)
+        negative : Bool      = sign.ne(0)
+        bits     : U128      = f128_round_pack(negative, exponent, sig)
+        return(bits)
+
+routine f128_sqrt_bits(a: U128) -> U128
+    block entry():
+        nan      : Bool = f128_is_nan_bits(a)
+        zero     : Bool = f128_is_zero_bits(a)
+        negative : Bool = f128_is_negative_bits(a)
+        inf      : Bool = f128_exponent(a).eq(F128_EXP_MAX)
+        when:
+            nan      -> return(f128_quiet(a))
+            zero     -> return(a)  // sqrt(-0) is -0
+            negative -> return(F128_QNAN)
+            inf      -> return(a)
+            else     -> finite()
+
+    // With an even exponent e, sqrt(m × 2^(e-112)) = sqrt(m × 2^118) × 2^((e-230)/2),
+    // and the integer root of the 232-bit m × 2^118 has 116 bits (isqrt_256).
+    block finite():
+        p   : F128Parts = f128_unpack(a)
+        odd : Bool      = p.exponent.bitand(1).eq(1)
+        m   : U128      = odd
+            ? p.sig.shl(1)
+            : p.sig
+        e : S64 = odd
+            ? p.exponent.sub(1)
+            : p.exponent
+        hi       : U128 = m.shr(10)
+        lo       : U128 = m.shl(118)
+        exponent : S64  = e.div(2).add(F128_BIAS)
+        root     : U128 = isqrt_256(hi, lo)
+        // the root is exact exactly when root^2 = radicand; otherwise set the sticky bit
+        exact : Bool = square_equals(root, hi, lo)
+        sig   : U128 = root.bitor(exact.bitnot().to<U128>())
+        bits  : U128 = f128_round_pack(false, exponent, sig)
+        return(bits)
+
+/// floor(n / x) for n = hi × 2^128 + lo, when the quotient fits in 128 bits and
+/// hi < x (after normalizing, the 3-by-2 steps need it). x must be nonzero.
+routine div_256_by_128(hi: U128, lo: U128, x: U128) -> U128
+    block entry():
+        s           : S64  = x.leading_zeros().to<S64>()
+        d           : U128 = x.shl(s.to<U128>())
+        spill_shift : S64  = 128.sub(s).min(127)
+        spill       : U128 = lo.shr(spill_shift.to<U128>())
+        carry       : U128 = s.eq(0)
+            ? 0
+            : spill
+        n_hi   : U128    = hi.shl(s.to<U128>()).bitor(carry)
+        n_lo   : U128    = lo.shl(s.to<U128>())
+        d1     : U64     = d.shr(64).to<U64>()
+        d0     : U64     = d.to_wrap<U64>()
+        v      : U64     = div_3by2_prepare(d1, d0)
+        high   : Div3By2 = div_3by2(n_hi.shr(64).to<U64>(), n_hi.to_wrap<U64>(),
+            n_lo.shr(64).to<U64>(), d1, d0, v)
+        r      : U128    = high.remainder
+        low    : Div3By2 = div_3by2(r.shr(64).to<U64>(), r.to_wrap<U64>(), n_lo.to_wrap<U64>(), d1,
+            d0, v)
+        q_high : U128    = high.quotient.to<U128>().shl(64)
+        q      : U128    = q_high.bitor(low.quotient.to<U128>())
+        return(q)
+
+/// floor(sqrt(n)) for n = hi × 2^128 + lo with 2^230 <= n < 2^232: Newton's
+/// method on integers, started above the root from an F64 square root of n's top
+/// bits, stops at the first step that doesn't go down.
+routine isqrt_256(hi: U128, lo: U128) -> U128
+    block entry():
+        bits  : S64 = 256.sub(hi.leading_zeros().to<S64>())
+        shift : S64 = bits.sub(64)
+        even  : S64 = shift.add(shift.bitand(1))
+        top   : U64 = hi.shr(even.sub(128).to<U128>()).to<U64>()
+        // F64's root of top is within 2^-50 relative: + 2 makes the seed an overestimate
+        root  : F64  = top.to<F64>().sqrt()
+        guess : U64  = root.to<U64>().add(2)
+        seed  : U128 = guess.to<U128>().shl(even.div(2).to<U128>())
+        jump step(seed)
+
+    block step(x: U128):
+        q    : U128 = div_256_by_128(hi, lo, x)
+        next : U128 = x.add(q).shr(1)
+        done : Bool = next.ge(x)
+        branch done
+            ? return(x)
+            : step(next)
+
+/// Is x^2 = hi × 2^128 + lo? (x < 2^116)
+routine square_equals(x: U128, hi: U128, lo: U128) -> Bool
+    block entry():
+        x0    : U128 = x.bitand(0xFFFFFFFFFFFFFFFF)
+        x1    : U128 = x.shr(64)
+        low   : U128 = x0.mul(x0)
+        cross : U128 = x0.mul(x1).shl(1)
+        sq_lo : U128 = low.add_wrap(cross.shl(64))
+        carry : U128 = sq_lo.lt(low).to<U128>()
+        x1_sq : U128 = x1.mul(x1)
+        sq_hi : U128 = x1_sq.add(cross.shr(64)).add(carry)
+        r     : Bool = sq_hi.eq(hi).bitand(sq_lo.eq(lo))
+        return(r)
+
+// -- comparison ----------------------------------------------------------------
+
+/// Maps bits to an unsigned key that orders like the values (-0 below +0).
+routine f128_order_key(bits: U128) -> U128
+    block entry():
+        negative : Bool = f128_is_negative_bits(bits)
+        r        : U128 = negative
+            ? bits.bitnot()
+            : bits.bitor(F128_SIGN)
+        return(r)
+
+/// true unless a NaN is involved; +0 and -0 are equal
+routine f128_ordered(a: U128, b: U128) -> Bool
+    block entry():
+        either_nan : Bool = f128_is_nan_bits(a).bitor(f128_is_nan_bits(b))
+        r          : Bool = either_nan.bitnot()
+        return(r)
+
+routine F128.eq(self: Self, other: Self) -> Bool
+    block entry():
+        a     : U128 = self.bits()
+        b     : U128 = other.bits()
+        zeros : Bool = f128_is_zero_bits(a).bitand(f128_is_zero_bits(b))
+        same  : Bool = a.eq(b).bitor(zeros)
+        r     : Bool = same.bitand(f128_ordered(a, b))
+        return(r)
+
+routine F128.ne(self: Self, other: Self) -> Bool
+    block entry():
+        r : Bool = self.eq(other).bitnot()
+        return(r)
+
+routine F128.lt(self: Self, other: Self) -> Bool
+    block entry():
+        a     : U128 = self.bits()
+        b     : U128 = other.bits()
+        zeros : Bool = f128_is_zero_bits(a).bitand(f128_is_zero_bits(b))
+        below : Bool = f128_order_key(a).lt(f128_order_key(b))
+        r     : Bool = below.bitand(zeros.bitnot()).bitand(f128_ordered(a, b))
+        return(r)
+
+routine F128.gt(self: Self, other: Self) -> Bool
+    block entry():
+        r : Bool = other.lt(self)
+        return(r)
+
+routine F128.le(self: Self, other: Self) -> Bool
+    block entry():
+        r : Bool = self.lt(other).bitor(self.eq(other))
+        return(r)
+
+routine F128.ge(self: Self, other: Self) -> Bool
+    block entry():
+        r : Bool = other.le(self)
+        return(r)
+
+/// -1, 0, or 1; 0 also when either is NaN, as for the other float types
+routine F128.compare(self: Self, other: Self) -> S32
+    block entry():
+        lt : Bool = self.lt(other)
+        gt : Bool = self.gt(other)
+        when:
+            lt   -> return(-1)
+            gt   -> return(1)
+            else -> return(0)
+
+/// IEEE total order: -NaN < -inf < … < -0 < +0 < … < +inf < +NaN
+routine F128.total_compare(self: Self, other: Self) -> S32
+    block entry():
+        a  : U128 = f128_order_key(self.bits())
+        b  : U128 = f128_order_key(other.bits())
+        lt : Bool = a.lt(b)
+        gt : Bool = a.gt(b)
+        when:
+            lt   -> return(-1)
+            gt   -> return(1)
+            else -> return(0)
+
+// -- conversions ---------------------------------------------------------------
+
+/// Widens exactly from a binary format with mantissa_bits stored bits, bias
+/// bias, and all-ones exponent exponent_max. NaN payloads move to the top.
+routine f128_widen(bits: U64, width: U64, mantissa_bits: U64, bias: S64, exponent_max: U64) -> F128
+    block entry():
+        sign_bit : U64  = bits.shr(width.sub(1)).bitand(1)
+        negative : Bool = sign_bit.eq(1)
+        sign     : U128 = negative
+            ? F128_SIGN
+            : 0
+        exponent  : U64  = bits.shr(mantissa_bits).bitand(exponent_max)
+        fraction  : U64  = bits.bitand(1.shl(mantissa_bits).sub(1))
+        top       : U128 = fraction.to<U128>().shl(112.sub(mantissa_bits).to<U128>())
+        special   : Bool = exponent.eq(exponent_max)
+        zero      : Bool = exponent.eq(0).bitand(fraction.eq(0))
+        subnormal : Bool = exponent.eq(0)
+        when:
+            special   -> done(sign.bitor(F128_INF).bitor(top))
+            zero      -> done(sign)
+            subnormal -> sub(sign, top)
+            else      -> normal(sign, exponent, top)
+
+    block normal(sign: U128, exponent: U64, top: U128):
+        unbiased : S64  = exponent.to<S64>().sub(bias)
+        rebiased : S64  = unbiased.add(F128_BIAS)
+        field    : U128 = rebiased.to<U128>().shl(112)
+        jump done(sign.bitor(field).bitor(top))
+
+    // value = fraction × 2^(1 - bias - mantissa_bits): exact after normalizing
+    block sub(sign: U128, top: U128):
+        negative     : Bool = sign.ne(0)
+        min_exponent : S64  = 1.sub(bias).add(F128_BIAS)
+        exponent     : S64  = min_exponent.add(3)
+        r            : U128 = f128_round_pack(negative, exponent, top)
+        jump done(r)
+
+    block done(r: U128):
+        v : F128 = f128_of(r)
+        return(v)
+
+/// Rounds to nearest even into a format with mantissa_bits stored bits, bias
+/// bias, and all-ones exponent exponent_max; returns its bits (sign at bit
+/// width - 1). Rounds once, so F128 → F32 is not F128 → F64 → F32.
+routine f128_narrow(value: F128, width: U64, mantissa_bits: U64, bias: S64,
+    exponent_max: U64) -> U64
+    block entry():
+        bits    : U128 = value.bits()
+        top_bit : U64  = 1.shl(width.sub(1))
+        sign    : U64  = f128_is_negative_bits(bits)
+            ? top_bit
+            : 0
+        infinity : U64  = exponent_max.shl(mantissa_bits)
+        nan      : Bool = f128_is_nan_bits(bits)
+        inf      : Bool = f128_exponent(bits).eq(F128_EXP_MAX)
+        zero     : Bool = f128_is_zero_bits(bits)
+        when:
+            nan  -> nan(bits, sign, infinity)
+            inf  -> return(sign.bitor(infinity))
+            zero -> return(sign)
+            else -> finite(bits, sign, infinity)
+
+    // keep the top payload bits and force the quiet bit
+    block nan(bits: U128, sign: U64, infinity: U64):
+        top_fraction : U128 = f128_fraction(bits).shr(112.sub(mantissa_bits).to<U128>())
+        payload      : U64  = top_fraction.to<U64>()
+        quiet        : U64  = 1.shl(mantissa_bits.sub(1))
+        signed_inf   : U64  = sign.bitor(infinity)
+        r            : U64  = signed_inf.bitor(payload).bitor(quiet)
+        return(r)
+
+    // q = round(sig / 2^shift): the quantum is 2^(e - mantissa_bits), or the
+    // subnormal quantum when e is below the target's smallest normal exponent.
+    block finite(bits: U128, sign: U64, infinity: U64):
+        p         : F128Parts = f128_unpack(bits)
+        min_e     : S64       = 1.sub(bias)
+        e_used    : S64       = p.exponent.max(min_e)
+        shift     : S64       = 112.sub(mantissa_bits.to<S64>()).add(e_used.sub(p.exponent))
+        sticky    : U128      = f128_shr_sticky(p.sig, shift.sub(2).max(0))
+        grs_shift : S64       = 2.sub(shift).max(0)
+        // two extra bits (half, rest) under the kept ones
+        grs : U128 = shift.lt(2)
+            ? p.sig.shl(grs_shift.to<U128>())
+            : sticky
+        kept  : U128 = grs.shr(2)
+        low   : U128 = grs.bitand(3)
+        up    : Bool = low.gt(2).bitor(low.eq(2).bitand(kept.bitand(1).eq(1)))
+        q     : U64  = kept.add(up.to<U128>()).to<U64>()
+        carry : Bool = q.eq(1.shl(mantissa_bits.add(1)))
+        q2    : U64  = carry
+            ? q.shr(1)
+            : q
+        e2     : S64  = e_used.add(carry.to<S64>())
+        hidden : U64  = 1.shl(mantissa_bits)
+        normal : Bool = q2.ge(hidden)
+        biased : S64  = normal
+            ? e2.add(bias)
+            : 0
+        overflow : Bool = biased.ge(exponent_max.to<S64>())
+        r        : U64  = sign.bitor(biased.to<U64>().shl(mantissa_bits)).bitor(q2.bitand(hidden.sub(1)))
+        branch overflow
+            ? return(sign.bitor(infinity))
+            : return(r)
+
+routine F64.to<F128>(self: Self) -> F128
+    block entry():
+        r : F128 = f128_widen(self.bits(), 64, 52, 1023, 2047)
+        return(r)
+
+routine F32.to<F128>(self: Self) -> F128
+    block entry():
+        r : F128 = f128_widen(self.bits().to<U64>(), 32, 23, 127, 255)
+        return(r)
+
+routine F16.to<F128>(self: Self) -> F128
+    block entry():
+        r : F128 = f128_widen(self.bits().to<U64>(), 16, 10, 15, 31)
+        return(r)
+
+routine BF16.to<F128>(self: Self) -> F128
+    block entry():
+        r : F128 = f128_widen(self.bits().to<U64>(), 16, 7, 127, 255)
+        return(r)
+
+routine F128.to<F64>(self: Self) -> F64
+    block entry():
+        r : F64 = .from_bits(f128_narrow(self, 64, 52, 1023, 2047))
+        return(r)
+
+routine F128.to<F32>(self: Self) -> F32
+    block entry():
+        r : F32 = .from_bits(f128_narrow(self, 32, 23, 127, 255).to<U32>())
+        return(r)
+
+routine F128.to<F16>(self: Self) -> F16
+    block entry():
+        r : F16 = .from_bits(f128_narrow(self, 16, 10, 15, 31).to<U16>())
+        return(r)
+
+routine F128.to<BF16>(self: Self) -> BF16
+    block entry():
+        r : BF16 = .from_bits(f128_narrow(self, 16, 7, 127, 255).to<U16>())
+        return(r)
+
+routine F128.to<Self>(self: Self) -> Self
+    block entry():
+        return(self)
+
+/// Rounded to nearest even when it needs more than 113 bits.
+routine U128.to<F128>(self: Self) -> F128
+    block entry():
+        bits : Self = f128_round_pack(false, F128_BIAS.add(115), self)
+        r    : F128 = f128_of(bits)
+        return(r)
+
+routine S128.to<F128>(self: Self) -> F128
+    block entry():
+        negative  : Bool = self.lt(0)
+        magnitude : U128 = self.abs_diff(0)
+        bits      : U128 = f128_round_pack(negative, F128_BIAS.add(115), magnitude)
+        r         : F128 = f128_of(bits)
+        return(r)
+
+routine U64.to<F128>(self: Self) -> F128
+    block entry():
+        r : F128 = self.to<U128>().to<F128>()
+        return(r)
+
+routine S64.to<F128>(self: Self) -> F128
+    block entry():
+        r : F128 = self.to<S128>().to<F128>()
+        return(r)
+
+routine U32.to<F128>(self: Self) -> F128
+    block entry():
+        r : F128 = self.to<U128>().to<F128>()
+        return(r)
+
+routine S32.to<F128>(self: Self) -> F128
+    block entry():
+        r : F128 = self.to<S128>().to<F128>()
+        return(r)
+
+/// |self| rounded toward zero, saturating at U128.MAX; NaN and values below 1
+/// give 0.
+routine f128_whole_magnitude(bits: U128) -> U128
+    block entry():
+        nan  : Bool = f128_is_nan_bits(bits)
+        zero : Bool = f128_is_zero_bits(bits)
+        when:
+            nan  -> return(0)
+            zero -> return(0)
+            else -> finite(bits)
+
+    block finite(bits: U128):
+        p     : F128Parts = f128_unpack(bits)
+        small : Bool      = p.exponent.lt(0)
+        huge  : Bool      = p.exponent.ge(128)
+        when:
+            small -> return(0)
+            huge  -> return(U128.MAX)
+            else  -> whole(p)
+
+    block whole(p: F128Parts):
+        up          : Bool = p.exponent.ge(112)
+        left_shift  : S64  = p.exponent.sub(112).max(0)
+        left        : U128 = p.sig.shl(left_shift.to<U128>())
+        right_shift : S64  = 112.sub(p.exponent).max(0)
+        right       : U128 = p.sig.shr(right_shift.to<U128>())
+        r           : U128 = up
+            ? left
+            : right
+        return(r)
+
+// -- rounding to integers ------------------------------------------------------
+
+choice F128Rounding: U8
+    TowardZero
+    Down
+    Up
+    NearestAway
+    NearestEven
+
+/// Rounds to an integer by clearing the fraction bits of the encoding and, when
+/// the mode says so, adding one unit of the lowest integer bit. A carry out of
+/// the mantissa moves into the exponent, as the encoding is ordered.
+routine f128_round_int(bits: U128, mode: F128Rounding) -> U128
+    block entry():
+        biased  : S64  = f128_exponent(bits)
+        e       : S64  = biased.sub(F128_BIAS)
+        special : Bool = biased.eq(F128_EXP_MAX)
+        whole   : Bool = e.ge(112)
+        zero    : Bool = f128_is_zero_bits(bits)
+        below   : Bool = e.lt(0)
+        when:
+            special -> nan_or_inf()
+            whole   -> return(bits)
+            zero    -> return(bits)
+            below   -> below_one(e)
+            else    -> split(e)
+
+    block nan_or_inf():
+        nan : Bool = f128_is_nan_bits(bits)
+        branch nan
+            ? return(f128_quiet(bits))
+            : return(bits)
+
+    // |x| < 1: the result is ±0 or ±1 (1.0 is 0x3FFF << 112)
+    block below_one(e: S64):
+        sign       : U128 = bits.bitand(F128_SIGN)
+        one        : U128 = sign.bitor(0x3FFF0000000000000000000000000000)
+        negative   : Bool = sign.ne(0)
+        half_up    : Bool = e.eq(-1)  // |x| >= 0.5
+        exact_half : Bool = half_up.bitand(f128_fraction(bits).eq(0))
+        down       : U128 = negative
+            ? one
+            : sign
+        up : U128 = negative
+            ? sign
+            : one
+        away : U128 = half_up
+            ? one
+            : sign
+        over : Bool = half_up.bitand(exact_half.bitnot())
+        even : U128 = over
+            ? one
+            : sign
+        when mode:
+            F128Rounding.TowardZero  -> return(sign)
+            F128Rounding.Down        -> return(down)
+            F128Rounding.Up          -> return(up)
+            F128Rounding.NearestAway -> return(away)
+            F128Rounding.NearestEven -> return(even)
+
+    block split(e: S64):
+        frac_bits : U128 = 112.sub(e).to<U128>()
+        unit      : U128 = 1.shl(frac_bits)
+        mask      : U128 = unit.sub(1)
+        kept      : U128 = bits.bitand(mask.bitnot())
+        rest      : U128 = bits.bitand(mask)
+        half      : U128 = unit.shr(1)
+        negative  : Bool = f128_is_negative_bits(bits)
+        inexact   : Bool = rest.ne(0)
+        odd       : Bool = kept.bitand(unit).ne(0)
+        over_half : Bool = rest.gt(half)
+        at_half   : Bool = rest.eq(half)
+        away      : Bool = over_half.bitor(at_half)
+        even_up   : Bool = over_half.bitor(at_half.bitand(odd))
+        down      : Bool = negative.bitand(inexact)
+        up        : Bool = negative.bitnot().bitand(inexact)
+        when mode:
+            F128Rounding.TowardZero  -> done(kept, unit, false)
+            F128Rounding.Down        -> done(kept, unit, down)
+            F128Rounding.Up          -> done(kept, unit, up)
+            F128Rounding.NearestAway -> done(kept, unit, away)
+            F128Rounding.NearestEven -> done(kept, unit, even_up)
+
+    block done(kept: U128, unit: U128, bump: Bool):
+        r : U128 = bump
+            ? kept.add(unit)
+            : kept
+        return(r)
+
+routine F128.trunc(self: Self) -> Self
+    block entry():
+        r : Self = f128_of(f128_round_int(self.bits(), F128Rounding.TowardZero))
+        return(r)
+
+routine F128.floor(self: Self) -> Self
+    block entry():
+        r : Self = f128_of(f128_round_int(self.bits(), F128Rounding.Down))
+        return(r)
+
+routine F128.ceil(self: Self) -> Self
+    block entry():
+        r : Self = f128_of(f128_round_int(self.bits(), F128Rounding.Up))
+        return(r)
+
+/// Rounds half-way cases away from zero.
+routine F128.round(self: Self) -> Self
+    block entry():
+        r : Self = f128_of(f128_round_int(self.bits(), F128Rounding.NearestAway))
+        return(r)
+
+/// Rounds half-way cases to the even neighbor.
+routine F128.round_ties_even(self: Self) -> Self
+    block entry():
+        r : Self = f128_of(f128_round_int(self.bits(), F128Rounding.NearestEven))
+        return(r)
+
+/// self minus its integer part, with the sign of self.
+routine F128.fract(self: Self) -> Self
+    block entry():
+        whole : Self = self.trunc()
+        r     : Self = self.sub(whole)
+        return(r)
+
+/// The smaller value; if one operand is NaN, the other one.
+routine F128.min(self: Self, other: Self) -> Self
+    block entry():
+        self_nan  : Bool = self.is_nan()
+        other_nan : Bool = other.is_nan()
+        less      : Bool = other.lt(self)
+        when:
+            self_nan  -> return(other)
+            other_nan -> return(self)
+            less      -> return(other)
+            else      -> return(self)
+
+/// The larger value; if one operand is NaN, the other one.
+routine F128.max(self: Self, other: Self) -> Self
+    block entry():
+        self_nan  : Bool = self.is_nan()
+        other_nan : Bool = other.is_nan()
+        more      : Bool = other.gt(self)
+        when:
+            self_nan  -> return(other)
+            other_nan -> return(self)
+            more      -> return(other)
+            else      -> return(self)
+
+// -- fused multiply-add ----------------------------------------------------------
+
+/// x >> n with everything shifted out ORed into bit 0.
+routine f128_shr_sticky256(x: U256, n: S64) -> U256
+    block entry():
+        all : Bool = n.ge(256)
+        branch all
+            ? all()
+            : some()
+
+    block all():
+        nonzero : U64  = x.ne(0).to<U64>()
+        any     : U256 = nonzero.to<U256>()
+        return(any)
+
+    block some():
+        shift : U256 = n.to<U256>()
+        mask  : U256 = 1.shl(shift).sub(1)
+        lost  : Bool = x.bitand(mask).ne(0)
+        r     : U256 = x.shr(shift).bitor(lost.to<U64>().to<U256>())
+        return(r)
+
+/// self × a + b with a single rounding: the 226-bit product is exact, c is
+/// aligned to it in 256 bits (anything shifted further out becomes a sticky
+/// bit), and only the sum is rounded.
+routine F128.mul_add(self: Self, a: Self, b: Self) -> Self
+    block entry():
+        r : Self = f128_of(f128_fma_bits(self.bits(), a.bits(), b.bits()))
+        return(r)
+
+routine f128_fma_bits(x: U128, y: U128, c: U128) -> U128
+    block entry():
+        sign   : U128 = x.bitxor(y).bitand(F128_SIGN)
+        x_nan  : Bool = f128_is_nan_bits(x)
+        y_nan  : Bool = f128_is_nan_bits(y)
+        c_nan  : Bool = f128_is_nan_bits(c)
+        x_inf  : Bool = f128_exponent(x).eq(F128_EXP_MAX)
+        y_inf  : Bool = f128_exponent(y).eq(F128_EXP_MAX)
+        c_inf  : Bool = f128_exponent(c).eq(F128_EXP_MAX)
+        x_zero : Bool = f128_is_zero_bits(x)
+        y_zero : Bool = f128_is_zero_bits(y)
+        c_zero : Bool = f128_is_zero_bits(c)
+        p_inf  : Bool = x_inf.bitor(y_inf)
+        p_zero : Bool = x_zero.bitor(y_zero)
+        when:
+            x_nan  -> return(f128_quiet(x))
+            y_nan  -> return(f128_quiet(y))
+            c_nan  -> return(f128_quiet(c))
+            p_inf  -> infinite_product(sign, p_zero, c_inf)
+            c_inf  -> return(c)
+            p_zero -> zero_product(sign, c_zero)
+            c_zero -> return(f128_mul_bits(x, y))
+            else   -> finite(sign)
+
+    // inf × 0 and inf - inf are NaN
+    block infinite_product(sign: U128, p_zero: Bool, c_inf: Bool):
+        clash   : Bool = c_inf.bitand(c.bitand(F128_SIGN).ne(sign))
+        invalid : Bool = p_zero.bitor(clash)
+        inf     : U128 = sign.bitor(F128_INF)
+        branch invalid
+            ? return(F128_QNAN)
+            : return(inf)
+
+    // ±0 + c is c, except ±0 + ±0: -0 only when both are -0
+    block zero_product(sign: U128, c_zero: Bool):
+        both_neg : Bool = sign.ne(0).bitand(f128_is_negative_bits(c))
+        zero     : U128 = both_neg
+            ? F128_SIGN
+            : 0
+        branch c_zero
+            ? return(zero)
+            : return(c)
+
+    // P = mx my × 2^(ex + ey - 224) sits at bits ≤ 254 after << 29;
+    // C = mc × 2^(ec - 112) at bits ≤ 254 after << 142. One bit of headroom stays for a carry.
+    block finite(sign: U128):
+        px      : F128Parts = f128_unpack(x)
+        py      : F128Parts = f128_unpack(y)
+        pc      : F128Parts = f128_unpack(c)
+        p       : U256      = px.sig.mul_wide(py.sig).shl(29)
+        p_e     : S64       = px.exponent.add(py.exponent).sub(253)
+        cc      : U256      = pc.sig.to<U256>().shl(142)
+        c_e     : S64       = pc.exponent.sub(254)
+        p_neg   : Bool      = sign.ne(0)
+        c_neg   : Bool      = f128_is_negative_bits(c)
+        p_first : Bool      = p_e.ge(c_e)
+        big     : U256      = p_first
+            ? p
+            : cc
+        small : U256 = p_first
+            ? cc
+            : p
+        e : S64 = p_first
+            ? p_e
+            : c_e
+        diff : S64 = p_first
+            ? p_e.sub(c_e)
+            : c_e.sub(p_e)
+        big_neg : Bool = p_first
+            ? p_neg
+            : c_neg
+        small_neg : Bool = p_first
+            ? c_neg
+            : p_neg
+        aligned : U256 = f128_shr_sticky256(small, diff)
+        same    : Bool = big_neg.eq(small_neg)
+        branch same
+            ? sum(big, aligned, e, big_neg)
+            : difference(big, aligned, e, big_neg)
+
+    block sum(a: U256, b: U256, e: S64, negative: Bool):
+        total : U256 = a.add(b)
+        jump round(total, e, negative)
+
+    // an exact zero is +0
+    block difference(a: U256, b: U256, e: S64, a_negative: Bool):
+        a_larger : Bool = a.ge(b)
+        m        : U256 = a.abs_diff(b)
+        negative : Bool = a_larger
+            ? a_negative
+            : a_negative.bitnot()
+        jump round(m, e, negative)
+
+    // value = r × 2^e: bring the top bit to 255, then hand the high half (with
+    // a sticky bit for the low one) to f128_round_pack
+    block round(r: U256, e: S64, negative: Bool):
+        zero : Bool = r.eq(0)
+        branch zero
+            ? return(0)
+            : continue
+        lz         : S64  = r.leading_zeros().to<S64>()
+        n          : U256 = r.shl(lz.to<U256>())
+        high       : U128 = n.shr(128).to<U128>()
+        low_sticky : Bool = n.to_wrap<U128>().ne(0)
+        sig        : U128 = high.bitor(low_sticky.to<U128>())
+        unbiased   : S64  = e.sub(lz).add(128)
+        exponent   : S64  = unbiased.add(F128_BIAS).add(115)
+        bits       : U128 = f128_round_pack(negative, exponent, sig)
+        return(bits)
+
+// ============================================================
+// F64's surface, and IEEE operations on the encoding
+// ============================================================
+
+// -- constants (each the correctly rounded value) ------------------------------
+
+preset F128.PI:            F128 = F128.from_bits(0x4000921FB54442D18469898CC51701B8)  // pi
+preset F128.TAU:           F128 = F128.from_bits(0x4001921FB54442D18469898CC51701B8)  // 2 pi
+
+preset F128.E:             F128 = F128.from_bits(0x40005BF0A8B1457695355FB8AC404E7A)  // Euler's number
+
+preset F128.FRAC_PI_2:     F128 = F128.from_bits(0x3FFF921FB54442D18469898CC51701B8)  // pi / 2
+preset F128.FRAC_PI_4:     F128 = F128.from_bits(0x3FFE921FB54442D18469898CC51701B8)  // pi / 4
+preset F128.FRAC_1_PI:     F128 = F128.from_bits(0x3FFD45F306DC9C882A53F84EAFA3EA6A)  // 1 / pi
+preset F128.SQRT_2:        F128 = F128.from_bits(0x3FFF6A09E667F3BCC908B2FB1366EA95)  // sqrt(2)
+preset F128.FRAC_1_SQRT_2: F128 = F128.from_bits(0x3FFE6A09E667F3BCC908B2FB1366EA95)  // 1 / sqrt(2)
+preset F128.LN_2:          F128 = F128.from_bits(0x3FFE62E42FEFA39EF35793C7673007E6)  // ln(2)
+preset F128.LN_10:         F128 = F128.from_bits(0x400026BB1BBB5551582DD4ADAC5705A6)  // ln(10)
+preset F128.LOG2_E:        F128 = F128.from_bits(0x3FFF71547652B82FE1777D0FFDA0D23A)  // log2(e)
+preset F128.LOG10_E:       F128 = F128.from_bits(0x3FFDBCB7B1526E50E32A6AB7555F5A68)  // log10(e)
+preset F128_ONE: U128 = F128_BIAS.to<U128>().shl(112)
+
+// -- hashing, reciprocal ------------------------------------------------------
+
+/// Hashes the raw bits, like F64: +0 and -0 hash apart, and so do NaN payloads.
+routine F128.hash(self: Self) -> U64
+    block entry():
+        r : U64 = self.bits().hash()
+        return(r)
+
+routine F128.recip(self: Self) -> Self
+    block entry():
+        one : Self = f128_of(F128_ONE)
+        r   : Self = one.div(self)
+        return(r)
+
+// -- sign and classification ---------------------------------------------------
+
+/// 1.0 for +0.0 and positive values, -1.0 for -0.0 and negative values, NaN for NaN.
+routine F128.signum(self: Self) -> Self
+    block entry():
+        nan  : Bool = self.is_nan()
+        unit : Self = f128_of(F128_ONE).copysign(self)
+        r    : Self = nan
+            ? self
+            : unit
+        return(r)
+
+/// Reads the sign bit, so it is true for +0.0 and for NaNs with the bit clear.
+routine F128.is_sign_positive(self: Self) -> Bool
+    block entry():
+        r : Bool = f128_is_negative_bits(self.bits()).bitnot()
+        return(r)
+
+/// Not zero, subnormal, infinite, or NaN.
+routine F128.is_normal(self: Self) -> Bool
+    block entry():
+        exponent : S64  = f128_exponent(self.bits())
+        r        : Bool = exponent.ne(0).bitand(exponent.ne(F128_EXP_MAX))
+        return(r)
+
+routine F128.is_subnormal(self: Self) -> Bool
+    block entry():
+        exponent : S64  = f128_exponent(self.bits())
+        fraction : U128 = f128_fraction(self.bits())
+        r        : Bool = exponent.eq(0).bitand(fraction.ne(0))
+        return(r)
+
+// -- remainders ----------------------------------------------------------------
+
+/// |a| mod |b| for finite nonzero a and b, exact, with the parity of the
+/// truncated quotient: the part frem and remainder share.
+record F128Remainder
+    magnitude : F128
+    odd       : Bool
+
+/// Long division, one quotient bit per step: x = ma × 2^(ea - eb) mod mb. Up to
+/// 32877 steps (MAX mod the smallest subnormal), each a compare and a shift.
+routine f128_remainder_parts(a: U128, b: U128) -> F128Remainder
+    block entry():
+        pa        : F128Parts     = f128_unpack(a)
+        pb        : F128Parts     = f128_unpack(b)
+        same_exp  : Bool          = pa.exponent.eq(pb.exponent)
+        a_smaller : Bool          = pa.exponent.lt(pb.exponent).bitor(same_exp.bitand(pa.sig.lt(pb.sig)))
+        magnitude : F128          = f128_of(a.bitand(F128_SIGN.bitnot()))
+        as_is     : F128Remainder = F128Remainder { magnitude: magnitude, odd: false }
+        branch a_smaller
+            ? return(as_is)
+            : divide(pa.sig, pb.sig, pa.exponent.sub(pb.exponent), pb.exponent)
+
+    block divide(x: U128, mb: U128, steps: S64, eb: S64):
+        done : Bool = steps.eq(0)
+        branch done
+            ? last(x, mb, eb)
+            : step(x, mb, steps, eb)
+
+    block step(x: U128, mb: U128, steps: S64, eb: S64):
+        fits  : Bool = x.ge(mb)
+        taken : U128 = fits
+            ? mb
+            : 0
+        left : U128 = x.sub(taken)
+        jump divide(left.shl(1), mb, steps.sub(1), eb)
+
+    // x < 2 mb: one more subtraction gives the quotient's last bit; the rest is x × 2^(eb - 112)
+    block last(x: U128, mb: U128, eb: S64):
+        odd   : Bool = x.ge(mb)
+        taken : U128 = odd
+            ? mb
+            : 0
+        rest : U128          = x.sub(taken)
+        bits : U128          = f128_round_pack(false, eb.add(F128_BIAS), rest.shl(3))
+        r    : F128Remainder = F128Remainder { magnitude: f128_of(bits), odd: odd }
+        return(r)
+
+/// The remainder of self / other, with the sign of self (C fmod; Rust's %). Exact.
+routine F128.mod(self: Self, other: Self) -> Self
+    block entry():
+        a       : U128 = self.bits()
+        b       : U128 = other.bits()
+        a_nan   : Bool = f128_is_nan_bits(a)
+        b_nan   : Bool = f128_is_nan_bits(b)
+        invalid : Bool = self.is_infinite().bitor(f128_is_zero_bits(b))
+        keep    : Bool = other.is_infinite().bitor(f128_is_zero_bits(a))
+        when:
+            a_nan   -> return(f128_of(f128_quiet(a)))
+            b_nan   -> return(f128_of(f128_quiet(b)))
+            invalid -> return(Self.NAN)
+            keep    -> return(self)
+            else    -> finite()
+
+    block finite():
+        parts : F128Remainder = f128_remainder_parts(self.bits(), other.bits())
+        r     : Self          = parts.magnitude.copysign(self)
+        return(r)
+
+/// IEEE 754 remainder: self - n × other with n = self / other rounded to the
+/// nearest integer, ties to even (C remainder). Exact; |result| <= |other| / 2,
+/// and a zero result has the sign of self.
+routine F128.rem(self: Self, other: Self) -> Self
+    block entry():
+        a       : U128 = self.bits()
+        b       : U128 = other.bits()
+        a_nan   : Bool = f128_is_nan_bits(a)
+        b_nan   : Bool = f128_is_nan_bits(b)
+        invalid : Bool = self.is_infinite().bitor(f128_is_zero_bits(b))
+        keep    : Bool = other.is_infinite().bitor(f128_is_zero_bits(a))
+        when:
+            a_nan   -> return(f128_of(f128_quiet(a)))
+            b_nan   -> return(f128_of(f128_quiet(b)))
+            invalid -> return(Self.NAN)
+            keep    -> return(self)
+            else    -> finite()
+
+    // past half of |other|, or at half with an odd quotient, step down by |other|:
+    // r - |other| is exact, as |other| / 2 <= r < |other|
+    block finite():
+        parts   : F128Remainder = f128_remainder_parts(self.bits(), other.bits())
+        r       : Self          = parts.magnitude
+        divisor : Self          = other.abs()
+        twice   : Self          = r.add(r)
+        over    : Bool          = twice.gt(divisor)
+        tie     : Bool          = twice.eq(divisor).bitand(parts.odd)
+        nearest : Bool          = over.bitor(tie)
+        down    : Self          = r.sub(divisor)
+        m       : Self          = nearest
+            ? down
+            : r
+        negative : Bool = f128_is_negative_bits(self.bits())
+        result   : Self = negative
+            ? m.neg()
+            : m
+        return(result)
+
+/// The quotient q of Euclidean division, so that self = q * other + r with 0 <= r < |other|.
+routine F128.div_euclid(self: Self, other: Self) -> Self
+    block entry():
+        q            : Self = self.div(other).trunc()
+        rem          : Self = self.mod(other)
+        zero         : Self = f128_of(0)
+        rem_negative : Bool = rem.lt(zero)
+        branch rem_negative
+            ? adjust(q)
+            : return(q)
+
+    block adjust(q: Self):
+        one              : Self = f128_of(F128_ONE)
+        zero             : Self = f128_of(0)
+        positive_divisor : Bool = other.gt(zero)
+        down             : Self = q.sub(one)
+        up               : Self = q.add(one)
+        r                : Self = positive_divisor
+            ? down
+            : up
+        return(r)
+
+/// The least non-negative remainder of self / other.
+routine F128.mod_euclid(self: Self, other: Self) -> Self
+    block entry():
+        rem          : Self = self.mod(other)
+        zero         : Self = f128_of(0)
+        rem_negative : Bool = rem.lt(zero)
+        branch rem_negative
+            ? continue
+            : return(rem)
+        magnitude : Self = other.abs()
+        r         : Self = rem.add(magnitude)
+        return(r)
+
+/// The positive difference: self - other when self > other, else +0; NaN when
+/// either is NaN (C fdim).
+routine F128.fdim(self: Self, other: Self) -> Self
+    block entry():
+        unordered : Bool = f128_ordered(self.bits(), other.bits()).bitnot()
+        above     : Bool = self.gt(other)
+        subtract  : Bool = unordered.bitor(above)
+        zero      : Self = f128_of(0)
+        branch subtract
+            ? continue
+            : return(zero)
+        r : Self = self.sub(other)
+        return(r)
+
+/// (self + other) / 2 with one rounding and no intermediate overflow (Rust's
+/// midpoint): halving is exact except near the subnormals, where a tiny operand
+/// is added whole.
+routine F128.midpoint(self: Self, other: Self) -> Self
+    block entry():
+        lo      : Self = f128_of(0x00020000000000000000000000000000)  // 2 × MIN_POSITIVE
+        hi      : Self = f128_of(0x7FFDFFFFFFFFFFFFFFFFFFFFFFFFFFFF)  // MAX / 2
+        half    : Self = f128_of(0x3FFE0000000000000000000000000000)
+        abs_a   : Self = self.abs()
+        abs_b   : Self = other.abs()
+        small   : Bool = abs_a.le(hi).bitand(abs_b.le(hi))
+        a_tiny  : Bool = abs_a.lt(lo)
+        b_tiny  : Bool = abs_b.lt(lo)
+        sum     : Self = self.add(other)
+        a_half  : Self = self.mul(half)
+        b_half  : Self = other.mul(half)
+        both    : Self = sum.mul(half)
+        a_whole : Self = self.add(b_half)
+        b_whole : Self = a_half.add(other)
+        halves  : Self = a_half.add(b_half)
+        when:
+            small  -> return(both)
+            a_tiny -> return(a_whole)
+            b_tiny -> return(b_whole)
+            else   -> return(halves)
+
+// -- ordering ------------------------------------------------------------------
+
+/// The smaller value, NaN if either is NaN, and -0.0 below +0.0 (IEEE 754-2019 minimum).
+routine F128.minimum(self: Self, other: Self) -> Self
+    block entry():
+        a       : U128 = self.bits()
+        b       : U128 = other.bits()
+        a_nan   : Bool = f128_is_nan_bits(a)
+        b_nan   : Bool = f128_is_nan_bits(b)
+        a_first : Bool = f128_order_key(a).le(f128_order_key(b))
+        when:
+            a_nan   -> return(f128_of(f128_quiet(a)))
+            b_nan   -> return(f128_of(f128_quiet(b)))
+            a_first -> return(self)
+            else    -> return(other)
+
+/// The larger value, NaN if either is NaN, and +0.0 above -0.0 (IEEE 754-2019 maximum).
+routine F128.maximum(self: Self, other: Self) -> Self
+    block entry():
+        a       : U128 = self.bits()
+        b       : U128 = other.bits()
+        a_nan   : Bool = f128_is_nan_bits(a)
+        b_nan   : Bool = f128_is_nan_bits(b)
+        a_first : Bool = f128_order_key(a).ge(f128_order_key(b))
+        when:
+            a_nan   -> return(f128_of(f128_quiet(a)))
+            b_nan   -> return(f128_of(f128_quiet(b)))
+            a_first -> return(self)
+            else    -> return(other)
+
+/// Restricts self to lo ..= hi; NaN stays NaN. Traps unless lo <= hi.
+#track_caller
+routine F128.clamp(self: Self, lo: Self, hi: Self) -> Self
+    block entry():
+        valid : Bool = lo.le(hi)
+        branch valid
+            ? clamp()
+            : panic(TrapCode.InvalidArgument)
+
+    block clamp():
+        below : Bool = self.lt(lo)
+        above : Bool = self.gt(hi)
+        upper : Self = above
+            ? hi
+            : self
+        r : Self = below
+            ? lo
+            : upper
+        return(r)
+
+/// self in [lo, hi], both ends included. False when lo > hi.
+routine F128.between(self: Self, lo: Self, hi: Self) -> Bool
+    block entry():
+        r : Bool = self.ge(lo).bitand(self.le(hi))
+        return(r)
+
+/// self in [lo, end): lo included, end not. False when lo >= end.
+routine F128.in_range(self: Self, lo: Self, end: Self) -> Bool
+    block entry():
+        r : Bool = self.ge(lo).bitand(self.lt(end))
+        return(r)
+
+// -- stepping and scaling ------------------------------------------------------
+
+/// self = fraction × 2^exponent with 0.5 <= |fraction| < 1.
+record F128Frexp
+    fraction : F128
+    exponent : S64
+
+/// The least value above self (IEEE 754 nextUp): the smallest subnormal after
+/// ±0, +inf stays +inf, -tiny steps to -0, and a NaN comes back quieted.
+routine F128.next_up(self: Self) -> Self
+    block entry():
+        bits     : U128 = self.bits()
+        nan      : Bool = f128_is_nan_bits(bits)
+        top      : Bool = bits.eq(F128_INF)
+        zero     : Bool = f128_is_zero_bits(bits)
+        positive : Bool = f128_is_negative_bits(bits).bitnot()
+        tiny     : Self = f128_of(1)
+        when:
+            nan      -> return(f128_of(f128_quiet(bits)))
+            top      -> return(self)
+            zero     -> return(tiny)
+            positive -> return(f128_of(bits.add(1)))
+            else     -> return(f128_of(bits.sub(1)))
+
+/// The greatest value below self (IEEE 754 nextDown).
+routine F128.next_down(self: Self) -> Self
+    block entry():
+        negated_up : Self = self.neg().next_up()
+        r          : Self = negated_up.neg()
+        return(r)
+
+/// self × 2^n: exact unless it overflows (to ±inf) or lands among the
+/// subnormals, where it rounds once, to nearest even (C scalbn).
+routine F128.scalbn(self: Self, n: S64) -> Self
+    block entry():
+        bits : U128 = self.bits()
+        nan  : Bool = f128_is_nan_bits(bits)
+        keep : Bool = f128_is_zero_bits(bits).bitor(self.is_infinite())
+        when:
+            nan  -> return(f128_of(f128_quiet(bits)))
+            keep -> return(self)
+            else -> finite(bits)
+
+    // past ±40000 every finite value over- or underflows, and the sum can't wrap
+    block finite(bits: U128):
+        p        : F128Parts = f128_unpack(bits)
+        shift    : S64       = n.clamp(-40000, 40000)
+        negative : Bool      = f128_is_negative_bits(bits)
+        packed   : U128      = f128_round_pack(negative, p.exponent.add(shift).add(F128_BIAS),
+            p.sig.shl(3))
+        r        : Self      = f128_of(packed)
+        return(r)
+
+/// floor(log2 |self|) as a float: -inf for ±0, +inf for ±inf (IEEE 754 logB).
+routine F128.logb(self: Self) -> Self
+    block entry():
+        bits : U128 = self.bits()
+        nan  : Bool = f128_is_nan_bits(bits)
+        zero : Bool = f128_is_zero_bits(bits)
+        inf  : Bool = self.is_infinite()
+        when:
+            nan  -> return(f128_of(f128_quiet(bits)))
+            zero -> return(Self.NEG_INFINITY)
+            inf  -> return(Self.INFINITY)
+            else -> finite()
+
+    block finite():
+        p : F128Parts = f128_unpack(self.bits())
+        r : Self      = p.exponent.to<Self>()
+        return(r)
+
+/// Splits self into a signed fraction with 0.5 <= |fraction| < 1 and a power of
+/// two (C frexp). Zeros and infinities come back whole with exponent 0, a NaN
+/// quieted with exponent 0.
+routine F128.frexp(self: Self) -> F128Frexp
+    block entry():
+        bits  : U128      = self.bits()
+        nan   : Bool      = f128_is_nan_bits(bits)
+        keep  : Bool      = f128_is_zero_bits(bits).bitor(self.is_infinite())
+        quiet : F128Frexp = F128Frexp { fraction: f128_of(f128_quiet(bits)), exponent: 0 }
+        whole : F128Frexp = F128Frexp { fraction: self, exponent: 0 }
+        when:
+            nan  -> return(quiet)
+            keep -> return(whole)
+            else -> finite()
+
+    block finite():
+        p : F128Parts = f128_unpack(self.bits())
+        e : S64       = p.exponent.add(1)
+        r : F128Frexp = F128Frexp { fraction: self.scalbn(0.sub(e)), exponent: e }
+        return(r)
+
+// -- integer conversions ---------------------------------------------------------
+//
+// to_<int> rounds toward zero and panics on NaN or a value out of the integer's
+// range; to_<int>_checked returns None instead, and to_<int>_clamp saturates
+// (NaN gives 0).
+
+/// 2^k, for |k| within the normal range.
+routine f128_pow2(k: S64) -> F128
+    block entry():
+        biased : S64  = F128_BIAS.add(k)
+        r      : F128 = f128_of(biased.to<U128>().shl(112))
+        return(r)
+
+/// Whether self, rounded toward zero, lies in [-2^lo_bits, 2^hi_bits) (a
+/// negative lo_bits means a lower bound of 0). False for NaN.
+routine F128.fits_int(self: Self, lo_bits: S64, hi_bits: S64) -> Bool
+    block entry():
+        whole    : Self = self.trunc()
+        hi       : Self = f128_pow2(hi_bits)
+        unsigned : Bool = lo_bits.lt(0)
+        branch unsigned
+            ? unsigned(whole, hi)
+            : signed(whole, hi)
+
+    block unsigned(whole: Self, hi: Self):
+        zero : Self = f128_of(0)
+        r    : Bool = whole.in_range(zero, hi)
+        return(r)
+
+    block signed(whole: Self, hi: Self):
+        lo : Self = f128_pow2(lo_bits).neg()
+        r  : Bool = whole.in_range(lo, hi)
+        return(r)
+
+/// Toward zero, saturating at U128.MAX; NaN and negative values give 0.
+routine F128.to_clamp<U128>(self: Self) -> U128
+    block entry():
+        negative  : Bool = f128_is_negative_bits(self.bits())
+        magnitude : U128 = f128_whole_magnitude(self.bits())
+        r         : U128 = negative
+            ? 0
+            : magnitude
+        return(r)
+
+/// Toward zero, saturating at S128.MIN / S128.MAX; NaN gives 0.
+routine F128.to_clamp<S128>(self: Self) -> S128
+    block entry():
+        negative  : Bool = f128_is_negative_bits(self.bits())
+        magnitude : U128 = f128_whole_magnitude(self.bits())
+        branch negative
+            ? negative(magnitude)
+            : positive(magnitude)
+
+    block negative(magnitude: U128):
+        over : Bool = magnitude.ge(0x80000000000000000000000000000000)
+        r    : S128 = over
+            ? S128.MIN
+            : magnitude.to_wrap<S128>().neg_wrap()
+        return(r)
+
+    block positive(magnitude: U128):
+        r : S128 = magnitude.to_clamp<S128>()
+        return(r)
+
+#track_caller
+routine F128.to<S8>(self: Self) -> S8
+    block entry():
+        fits : Bool = self.fits_int(7, 7)
+        branch fits
+            ? continue
+            : panic(TrapCode.Overflow)
+        r : S8 = self.to_clamp<S8>()
+        return(r)
+
+routine F128.to_checked<S8>(self: Self) -> Option<S8>
+    block entry():
+        fits  : Bool       = self.fits_int(7, 7)
+        value : S8         = self.to_clamp<S8>()
+        r     : Option<S8> = fits.then_present(value)
+        return(r)
+
+routine F128.to_clamp<S8>(self: Self) -> S8
+    block entry():
+        r : S8 = self.to_clamp<S128>().to_clamp<S8>()
+        return(r)
+
+#track_caller
+routine F128.to<S16>(self: Self) -> S16
+    block entry():
+        fits : Bool = self.fits_int(15, 15)
+        branch fits
+            ? continue
+            : panic(TrapCode.Overflow)
+        r : S16 = self.to_clamp<S16>()
+        return(r)
+
+routine F128.to_checked<S16>(self: Self) -> Option<S16>
+    block entry():
+        fits  : Bool        = self.fits_int(15, 15)
+        value : S16         = self.to_clamp<S16>()
+        r     : Option<S16> = fits.then_present(value)
+        return(r)
+
+routine F128.to_clamp<S16>(self: Self) -> S16
+    block entry():
+        r : S16 = self.to_clamp<S128>().to_clamp<S16>()
+        return(r)
+
+#track_caller
+routine F128.to<S32>(self: Self) -> S32
+    block entry():
+        fits : Bool = self.fits_int(31, 31)
+        branch fits
+            ? continue
+            : panic(TrapCode.Overflow)
+        r : S32 = self.to_clamp<S32>()
+        return(r)
+
+routine F128.to_checked<S32>(self: Self) -> Option<S32>
+    block entry():
+        fits  : Bool        = self.fits_int(31, 31)
+        value : S32         = self.to_clamp<S32>()
+        r     : Option<S32> = fits.then_present(value)
+        return(r)
+
+routine F128.to_clamp<S32>(self: Self) -> S32
+    block entry():
+        r : S32 = self.to_clamp<S128>().to_clamp<S32>()
+        return(r)
+
+#track_caller
+routine F128.to<S64>(self: Self) -> S64
+    block entry():
+        fits : Bool = self.fits_int(63, 63)
+        branch fits
+            ? continue
+            : panic(TrapCode.Overflow)
+        r : S64 = self.to_clamp<S64>()
+        return(r)
+
+routine F128.to_checked<S64>(self: Self) -> Option<S64>
+    block entry():
+        fits  : Bool        = self.fits_int(63, 63)
+        value : S64         = self.to_clamp<S64>()
+        r     : Option<S64> = fits.then_present(value)
+        return(r)
+
+routine F128.to_clamp<S64>(self: Self) -> S64
+    block entry():
+        r : S64 = self.to_clamp<S128>().to_clamp<S64>()
+        return(r)
+
+#track_caller
+routine F128.to<S128>(self: Self) -> S128
+    block entry():
+        fits : Bool = self.fits_int(127, 127)
+        branch fits
+            ? continue
+            : panic(TrapCode.Overflow)
+        r : S128 = self.to_clamp<S128>()
+        return(r)
+
+routine F128.to_checked<S128>(self: Self) -> Option<S128>
+    block entry():
+        fits  : Bool         = self.fits_int(127, 127)
+        value : S128         = self.to_clamp<S128>()
+        r     : Option<S128> = fits.then_present(value)
+        return(r)
+
+#track_caller
+routine F128.to<U8>(self: Self) -> U8
+    block entry():
+        fits : Bool = self.fits_int(-1, 8)
+        branch fits
+            ? continue
+            : panic(TrapCode.Overflow)
+        r : U8 = self.to_clamp<U8>()
+        return(r)
+
+routine F128.to_checked<U8>(self: Self) -> Option<U8>
+    block entry():
+        fits  : Bool       = self.fits_int(-1, 8)
+        value : U8         = self.to_clamp<U8>()
+        r     : Option<U8> = fits.then_present(value)
+        return(r)
+
+routine F128.to_clamp<U8>(self: Self) -> U8
+    block entry():
+        r : U8 = self.to_clamp<U128>().to_clamp<U8>()
+        return(r)
+
+#track_caller
+routine F128.to<U16>(self: Self) -> U16
+    block entry():
+        fits : Bool = self.fits_int(-1, 16)
+        branch fits
+            ? continue
+            : panic(TrapCode.Overflow)
+        r : U16 = self.to_clamp<U16>()
+        return(r)
+
+routine F128.to_checked<U16>(self: Self) -> Option<U16>
+    block entry():
+        fits  : Bool        = self.fits_int(-1, 16)
+        value : U16         = self.to_clamp<U16>()
+        r     : Option<U16> = fits.then_present(value)
+        return(r)
+
+routine F128.to_clamp<U16>(self: Self) -> U16
+    block entry():
+        r : U16 = self.to_clamp<U128>().to_clamp<U16>()
+        return(r)
+
+#track_caller
+routine F128.to<U32>(self: Self) -> U32
+    block entry():
+        fits : Bool = self.fits_int(-1, 32)
+        branch fits
+            ? continue
+            : panic(TrapCode.Overflow)
+        r : U32 = self.to_clamp<U32>()
+        return(r)
+
+routine F128.to_checked<U32>(self: Self) -> Option<U32>
+    block entry():
+        fits  : Bool        = self.fits_int(-1, 32)
+        value : U32         = self.to_clamp<U32>()
+        r     : Option<U32> = fits.then_present(value)
+        return(r)
+
+routine F128.to_clamp<U32>(self: Self) -> U32
+    block entry():
+        r : U32 = self.to_clamp<U128>().to_clamp<U32>()
+        return(r)
+
+#track_caller
+routine F128.to<U64>(self: Self) -> U64
+    block entry():
+        fits : Bool = self.fits_int(-1, 64)
+        branch fits
+            ? continue
+            : panic(TrapCode.Overflow)
+        r : U64 = self.to_clamp<U64>()
+        return(r)
+
+routine F128.to_checked<U64>(self: Self) -> Option<U64>
+    block entry():
+        fits  : Bool        = self.fits_int(-1, 64)
+        value : U64         = self.to_clamp<U64>()
+        r     : Option<U64> = fits.then_present(value)
+        return(r)
+
+routine F128.to_clamp<U64>(self: Self) -> U64
+    block entry():
+        r : U64 = self.to_clamp<U128>().to_clamp<U64>()
+        return(r)
+
+#track_caller
+routine F128.to<U128>(self: Self) -> U128
+    block entry():
+        fits : Bool = self.fits_int(-1, 128)
+        branch fits
+            ? continue
+            : panic(TrapCode.Overflow)
+        r : U128 = self.to_clamp<U128>()
+        return(r)
+
+routine F128.to_checked<U128>(self: Self) -> Option<U128>
+    block entry():
+        fits  : Bool         = self.fits_int(-1, 128)
+        value : U128         = self.to_clamp<U128>()
+        r     : Option<U128> = fits.then_present(value)
+        return(r)

@@ -1,0 +1,546 @@
+// Tessera stdlib: F128 sin_pi, cos_pi, tan_pi
+//
+// sin(πx), cos(πx), and tan(πx), correctly rounded. The reduction is exact:
+// with r = 2x rounded to the nearest integer, d = 2x - r is an F128 in
+// [-1/2, 1/2] and πx = r π/2 + θ with θ = d π/2, |θ| <= π/4, so no multiple of
+// π is ever subtracted in floating point. Then two tiers, as in RazorForge's
+// B128 sinpi / cospi / tanpi:
+//
+// - fast: θ, sin θ, and cos θ in F128Extended (Standard/F128Math.tess). The result is
+//   kept when all of it × (1 ± 2^-F128_PI_BAND) rounds to the same F128.
+// - exact: otherwise the same formulas in 384-bit fixed point on BigNat
+//   (error below 2^-370 relative), rounded once.
+//
+// The band is measured, not proven: on 30000 random reduced angles (every
+// quadrant, all three functions, |d| from 2^-16382 to 1/2) the fast tier's
+// worst relative error against mpmath was 2^-150.2, the size of the F128Extended
+// series' first dropped term at |θ| = π/4, so 2^-145 leaves about 5 bits.
+// Results near a rounding boundary do occur: cos_pi(x) = 1 - (πx)²/2 + …
+// lies within 2^-226 of the midpoint below 1 for x near 2^-56.5 / π, where
+// the fast tier alone rounds the wrong way (tests/f128_extra.tess has them).
+
+module Standard::Core
+
+import Standard::Format
+
+preset F128_PI_BAND: S64 = 145
+
+/// floor(π × 2^384), least significant limb first (386 bits)
+preset PI_FIXED_384: @Array<U64, 7> <- { 0xBE5466CF34E90C6C, 4983270260364809079,
+    589684135938649225, 0xA4093822299F31D0, 1376283091369227076, 2611923443488327891, 3 }
+
+preset PI_FIXED_BITS: S64 = 384
+
+// -- the exact reduction -------------------------------------------------------
+
+/// πx = quadrant × π/2 + d × π/2, with quadrant = r mod 4 and d = 2x - r exact.
+record PiReduced
+    quadrant : S64
+    d        : F128
+
+/// Which of sin θ and cos θ gives the result, over which (tan), and its sign
+/// before θ's own sign is applied:
+///   sin: sin θ, cos θ, -sin θ, -cos θ  for quadrants 0..3
+///   cos: cos θ, -sin θ, -cos θ, sin θ
+///   tan: sin θ / cos θ in even quadrants, -cos θ / sin θ in odd ones
+record PiPick
+    over_sin : Bool  // the numerator is sin θ (else cos θ)
+    divide   : Bool  // tan: divide by the other one
+    negative : Bool
+
+/// For a finite x that is not an integer (so |x| < 2^112 and 2x can't overflow).
+routine f128_pi_reduce(x: F128) -> PiReduced
+    block entry():
+        twice       : F128      = x.add(x)
+        nearest     : F128      = twice.round_ties_even()
+        d           : F128      = twice.sub(nearest)
+        nearest_int : S128      = nearest.to_clamp<S128>()
+        q           : S64       = nearest_int.bitand(3).to<S64>()  // two's complement: mod 4 for negatives too
+        r           : PiReduced = PiReduced { quadrant: q, d: d }
+        return(r)
+
+/// Whether x (an integer) is odd; from 2^113 on every F128 is even.
+routine f128_integer_is_odd(x: F128) -> Bool
+    block entry():
+        big   : Bool = x.abs().ge(f128_of(0x40700000000000000000000000000000))  // 2^113
+        whole : S128 = x.to_clamp<S128>()
+        odd   : Bool = whole.bitand(1).eq(1)
+        r     : Bool = big.bitnot().bitand(odd)
+        return(r)
+
+routine f128_pi_pick(quadrant: S64, kind: TrigKind) -> PiPick
+    block entry():
+        odd    : Bool   = quadrant.bitand(1).eq(1)
+        even   : Bool   = odd.bitnot()
+        upper  : Bool   = quadrant.ge(2)
+        middle : Bool   = quadrant.eq(1).bitor(quadrant.eq(2))
+        sin    : PiPick = PiPick { over_sin: even, divide: false, negative: upper }
+        cos    : PiPick = PiPick { over_sin: odd, divide: false, negative: middle }
+        tan    : PiPick = PiPick { over_sin: even, divide: true, negative: odd }
+        when kind:
+            TrigKind.Sin -> return(sin)
+            TrigKind.Cos -> return(cos)
+            TrigKind.Tan -> return(tan)
+
+// -- fast tier: F128Extended -----------------------------------------------------------
+
+record WideRounding
+    ok    : Bool
+    value : F128
+
+/// u rounded to F128, and whether all of u × (1 ± 2^-k) rounds to the same value.
+routine wide_round_within(u: F128Extended, k: S64) -> WideRounding
+    block entry():
+        r         : F128         = u.to<F128>()
+        magnitude : F128Extended = u.abs()
+        delta     : F128Extended = F128Extended { negative: false, exponent: u.exponent.sub(k),
+            hi: u.hi, lo: u.lo }
+        low       : F128         = magnitude.sub(delta).to<F128>()
+        high      : F128         = magnitude.add(delta).to<F128>()
+        kept      : U128         = r.abs().bits()
+        low_kept  : Bool         = low.bits().eq(kept)
+        ok        : Bool         = low_kept.bitand(high.bits().eq(kept))
+        w         : WideRounding = WideRounding { ok: ok, value: r }
+        return(w)
+
+/// The result in F128Extended from θ = d π/2 (d nonzero, |d| <= 1/2).
+routine wide_pi_trig(d: F128, pick: PiPick) -> F128Extended
+    block entry():
+        theta    : F128Extended = wide_from_f128(d).mul(wide_half_pi())
+        tan      : Bool         = pick.divide
+        over_sin : Bool         = pick.over_sin
+        when:
+            tan      -> quotient(theta)
+            over_sin -> signed(wide_sin_core(theta))
+            else     -> signed(wide_cos_core(theta))
+
+    block quotient(theta: F128Extended):
+        s   : F128Extended = wide_sin_core(theta)
+        c   : F128Extended = wide_cos_core(theta)
+        top : F128Extended = pick.over_sin
+            ? s
+            : c
+        under : F128Extended = pick.over_sin
+            ? c
+            : s
+        q : F128Extended = top.div(under)
+        jump signed(q)
+
+    block signed(v: F128Extended):
+        negative : Bool         = pick.negative
+        r        : F128Extended = negative
+            ? v.neg()
+            : v
+        return(r)
+
+// -- exact tier: 384-bit fixed point on BigNat ---------------------------------
+
+/// self = a × b (self must be neither).
+#track_caller
+routine BigNat<N>.set_product(self: @Self, a: @Self, b: @Self) -> Void
+require N: USize
+    block entry():
+        a_length : USize = a.length.load()
+        b_length : USize = b.length.load()
+        length   : USize = a_length.add(b_length)
+        room     : Bool  = length.le(N)
+        branch room
+            ? clear(0, a_length, b_length, length)
+            : panic(TrapCode.Overflow)
+
+    block clear(i: USize, a_length: USize, b_length: USize, length: USize):
+        done : Bool = i.ge(length)
+        branch done
+            ? row(0, a_length, b_length, length)
+            : clear_one(i, a_length, b_length, length)
+
+    block clear_one(i: USize, a_length: USize, b_length: USize, length: USize):
+        self.limbs.set(i, 0)
+        jump clear(i.add(1), a_length, b_length, length)
+
+    // row i adds a[i] × b at limb i
+    block row(i: USize, a_length: USize, b_length: USize, length: USize):
+        done : Bool = i.ge(a_length)
+        branch done
+            ? finish(length)
+            : row_start(i, a_length, b_length, length)
+
+    block row_start(i: USize, a_length: USize, b_length: USize, length: USize):
+        a_limb : U64 = a.limbs.get(i)
+        jump column(i, 0, 0, a_limb, a_length, b_length, length)
+
+    block column(i: USize, j: USize, carry: U128, a_limb: U64, a_length: USize, b_length: USize,
+        length: USize):
+        done : Bool = j.ge(b_length)
+        branch done
+            ? row_end(i, carry, a_length, b_length, length)
+            : column_step(i, j, carry, a_limb, a_length, b_length, length)
+
+    // limb + a × b + carry < 2^128 for 64-bit a, b, limb, and carry
+    block column_step(i: USize, j: USize, carry: U128, a_limb: U64, a_length: USize,
+        b_length: USize, length: USize):
+        at      : USize = i.add(j)
+        b_limb  : U64   = b.limbs.get(j)
+        limb    : U64   = self.limbs.get(at)
+        product : U128  = a_limb.mul_wide(b_limb)
+        sum     : U128  = product.add(limb.to<U128>()).add(carry)
+        self.limbs.set(at, sum.to_wrap<U64>())
+        jump column(i, j.add(1), sum.shr(64), a_limb, a_length, b_length, length)
+
+    block row_end(i: USize, carry: U128, a_length: USize, b_length: USize, length: USize):
+        self.limbs.set(i.add(b_length), carry.to<U64>())
+        jump row(i.add(1), a_length, b_length, length)
+
+    block finish(length: USize):
+        self.length.store(length)
+        self.trim()
+        return()
+
+/// The 128 bits of self from bit pos up (zeros past the top).
+routine BigNat<N>.bits128(self: @Self, pos: USize) -> U128
+require N: USize
+    block entry():
+        at     : USize = pos.div(64)
+        offset : U128  = pos.mod(64).to<U128>()
+        l0     : U128  = self.limb_or_zero(at).to<U128>()
+        l1     : U128  = self.limb_or_zero(at.add(1)).to<U128>()
+        l2     : U128  = self.limb_or_zero(at.add(2)).to<U128>()
+        pair   : U128  = l1.shl(64).bitor(l0)
+        low    : U128  = pair.shr(offset)
+        // two shifts, so a zero offset never shifts by 128
+        high : U128 = l2.shl(127.sub(offset)).shl(1)
+        r    : U128 = low.bitor(high)
+        return(r)
+
+routine BigNat<N>.limb_or_zero(self: @Self, i: USize) -> U64
+require N: USize
+    block entry():
+        length : USize = self.length.load()
+        inside : Bool  = i.lt(length)
+        branch inside
+            ? read(i)
+            : return(0)
+
+    block read(i: USize):
+        limb : U64 = self.limbs.get(i)
+        return(limb)
+
+/// n × 2^e rounded once to F128 (n > 0).
+routine big_to_f128(n: @BigNat<24>, e: S64, negative: Bool) -> F128
+    block entry():
+        length   : USize = n.bit_length()
+        shift    : USize = length.sub_clamp(125)
+        sticky   : Bool  = n.any_below(shift)
+        top      : U128  = n.bits128(shift)
+        sig      : U128  = top.bitor(sticky.to<U128>())
+        shifted  : S64   = e.add(shift.to<S64>())
+        exponent : S64   = shifted.add(F128_BIAS).add(115)
+        bits     : U128  = f128_round_pack(negative, exponent, sig)
+        r        : F128  = f128_of(bits)
+        return(r)
+
+/// (num × 2^num_e) / (den × 2^den_e) rounded once to F128: a 126- or 127-bit
+/// quotient with the remainder as the sticky bit. Both operands are consumed.
+routine big_quotient_to_f128(num: @BigNat<24>, num_e: S64, den: @BigNat<24>, den_e: S64,
+    negative: Bool) -> F128
+    block entry():
+        den_bits : S64  = den.bit_length().to<S64>()
+        num_bits : S64  = num.bit_length().to<S64>()
+        shift    : S64  = 126.add(den_bits).sub(num_bits)
+        up       : Bool = shift.ge(0)
+        branch up
+            ? raise_num(shift)
+            : raise_den(shift)
+
+    block raise_num(shift: S64):
+        num.shl(shift.to<USize>())
+        jump divide(shift)
+
+    block raise_den(shift: S64):
+        den.shl(shift.abs_diff(0).to<USize>())
+        jump divide(shift)
+
+    block divide(shift: S64):
+        claim scratch : @BigNat<24> <- uninit
+        q          : U128 = num.div_small(den, scratch, 127)
+        sticky     : Bool = num.is_zero().bitnot()
+        sig        : U128 = q.bitor(sticky.to<U128>())
+        quotient_e : S64  = num_e.sub(den_e).sub(shift)
+        exponent   : S64  = quotient_e.add(F128_BIAS).add(115)
+        bits       : U128 = f128_round_pack(negative, exponent, sig)
+        r          : F128 = f128_of(bits)
+        return(r)
+
+/// Σ (-u)^k / (j0 (j0 + 1) … (j0 + 2k - 1)) in fixed point with 2^384 as 1:
+/// j0 = 2 gives sin θ / θ, j0 = 1 gives cos θ, for u = θ² <= (π/4)². Each term
+/// is off by under 1.5 units (one rounding, one truncation); about 50 terms.
+routine big_trig_series(out: @BigNat<24>, u: @BigNat<24>, j0: U64) -> Void
+    block entry():
+        claim term    : @BigNat<24> <- uninit
+        claim product : @BigNat<24> <- uninit
+        claim minus   : @BigNat<24> <- uninit
+        term.set(1)
+        term.shl(PI_FIXED_BITS.to<USize>())
+        out.copy_from(term)
+        minus.set(0)
+        jump next(j0, true, term, product, minus)
+
+    // term ← term × u / (j (j + 1)); the signs alternate, starting with minus
+    block next(j: U64, subtract: Bool, term: @BigNat<24>, product: @BigNat<24>, minus: @BigNat<24>):
+        product.set_product(term, u)
+        product.shr_round_even(PI_FIXED_BITS.to<USize>())
+        term.copy_from(product)
+        divisor : U64  = j.mul(j.add(1))
+        dropped : U64  = term.div_limb(divisor)
+        done    : Bool = term.is_zero()
+        branch done
+            ? finish(minus)
+            : accumulate(j, subtract, term, product, minus)
+
+    block accumulate(j: U64, subtract: Bool, term: @BigNat<24>, product: @BigNat<24>,
+        minus: @BigNat<24>):
+        branch subtract
+            ? take(j, term, product, minus)
+            : give(j, term, product, minus)
+
+    block take(j: U64, term: @BigNat<24>, product: @BigNat<24>, minus: @BigNat<24>):
+        minus.add(term)
+        jump next(j.add(2), false, term, product, minus)
+
+    block give(j: U64, term: @BigNat<24>, product: @BigNat<24>, minus: @BigNat<24>):
+        out.add(term)
+        jump next(j.add(2), true, term, product, minus)
+
+    block finish(minus: @BigNat<24>):
+        out.sub(minus)
+        return()
+
+/// The result from θ = d π/2 (d nonzero, |d| <= 1/2) in fixed point. With
+/// |d| = m × 2^(e - 112) and T = floor(π 2^384) × m, |θ| = T × 2^(e - 113 - 384);
+/// then sin θ = |θ| × S × 2^-384 and cos θ = C × 2^-384 for the series S and C.
+routine f128_pi_trig_exact(d: F128, pick: PiPick) -> F128
+    block entry():
+        p : F128Parts = f128_unpack(d.bits())
+        claim pi : @BigNat<24> <- uninit
+        pi.set(0)
+        jump load_pi(0, p, pi)
+
+    block load_pi(i: USize, p: F128Parts, pi: @BigNat<24>):
+        done : Bool = i.ge(7)
+        branch done
+            ? series(p, pi)
+            : load_limb(i, p, pi)
+
+    block load_limb(i: USize, p: F128Parts, pi: @BigNat<24>):
+        limb : U64 = PI_FIXED_384.get(i)
+        pi.push_limb(limb)
+        jump load_pi(i.add(1), p, pi)
+
+    block series(p: F128Parts, pi: @BigNat<24>):
+        claim m     : @BigNat<24> <- uninit
+        claim t     : @BigNat<24> <- uninit
+        claim theta : @BigNat<24> <- uninit
+        claim u     : @BigNat<24> <- uninit
+        claim s     : @BigNat<24> <- uninit
+        claim c     : @BigNat<24> <- uninit
+        claim sin   : @BigNat<24> <- uninit
+        m.set_u128(p.sig)
+        t.set_product(pi, m)
+        // θ in fixed point (for u only; its relative accuracy doesn't matter there)
+        theta.copy_from(t)
+        theta.shr_round_even(113.sub(p.exponent).to<USize>())
+        u.set_product(theta, theta)
+        u.shr_round_even(PI_FIXED_BITS.to<USize>())
+        big_trig_series(s, u, 2)
+        big_trig_series(c, u, 1)
+        sin.set_product(t, s)
+        sig_e : S64 = p.exponent.sub(113)
+        sin_e : S64 = sig_e.sub(PI_FIXED_BITS).sub(PI_FIXED_BITS)
+        cos_e : S64 = 0.sub(PI_FIXED_BITS)
+        // sin θ has θ's sign: it flips the result when sin θ is on top or below
+        theta_negative : Bool = f128_is_negative_bits(d.bits())
+        sin_used       : Bool = pick.over_sin.bitor(pick.divide)
+        flip           : Bool = theta_negative.bitand(sin_used)
+        negative       : Bool = pick.negative.bitxor(flip)
+        tan            : Bool = pick.divide
+        over_sin       : Bool = pick.over_sin
+        when:
+            tan      -> divide(sin, sin_e, c, cos_e, negative)
+            over_sin -> return(big_to_f128(sin, sin_e, negative))
+            else     -> return(big_to_f128(c, cos_e, negative))
+
+    block divide(sin: @BigNat<24>, sin_e: S64, c: @BigNat<24>, cos_e: S64, negative: Bool):
+        over_sin : Bool = pick.over_sin
+        branch over_sin
+            ? tangent(sin, sin_e, c, cos_e, negative)
+            : cotangent(sin, sin_e, c, cos_e, negative)
+
+    block tangent(sin: @BigNat<24>, sin_e: S64, c: @BigNat<24>, cos_e: S64, negative: Bool):
+        r : F128 = big_quotient_to_f128(sin, sin_e, c, cos_e, negative)
+        return(r)
+
+    block cotangent(sin: @BigNat<24>, sin_e: S64, c: @BigNat<24>, cos_e: S64, negative: Bool):
+        r : F128 = big_quotient_to_f128(c, cos_e, sin, sin_e, negative)
+        return(r)
+
+// -- the two tiers -------------------------------------------------------------
+
+/// sin, cos, or tan of π x for a finite non-integer x that is not a
+/// half-integer (and for tan not a quarter-integer). exact skips the fast tier
+/// (the tests use it to check the exact tier on its own).
+routine f128_pi_trig_general(red: PiReduced, kind: TrigKind, exact: Bool) -> F128
+    block entry():
+        pick : PiPick = f128_pi_pick(red.quadrant, kind)
+        branch exact
+            ? slow(pick)
+            : fast(pick)
+
+    block fast(pick: PiPick):
+        w       : F128Extended = wide_pi_trig(red.d, pick)
+        rounded : WideRounding = wide_round_within(w, F128_PI_BAND)
+        branch rounded.ok
+            ? return(rounded.value)
+            : slow(pick)
+
+    block slow(pick: PiPick):
+        r : F128 = f128_pi_trig_exact(red.d, pick)
+        return(r)
+
+// -- sin_pi, cos_pi, tan_pi ----------------------------------------------------
+
+/// sin(π self), correctly rounded: ±0 (self's sign) at the integers, ±1 at the
+/// half-integers, NaN for infinities.
+routine F128.sin_pi(self: Self) -> Self
+    block entry():
+        r : Self = f128_sin_pi(self, false)
+        return(r)
+
+/// cos(π self), correctly rounded: ±1 at the integers, +0 at the
+/// half-integers, NaN for infinities.
+routine F128.cos_pi(self: Self) -> Self
+    block entry():
+        r : Self = f128_cos_pi(self, false)
+        return(r)
+
+/// tan(π self), correctly rounded. At an integer n it is +0 for a positive even
+/// n or a negative odd one and -0 otherwise; at n + 1/2 it is +inf for an even
+/// n and -inf for an odd one (IEEE 754 tanPi, C23 tanpi); NaN for infinities.
+routine F128.tan_pi(self: Self) -> Self
+    block entry():
+        r : Self = f128_tan_pi(self, false)
+        return(r)
+
+routine f128_sin_pi(x: F128, exact: Bool) -> F128
+    block entry():
+        bits     : U128 = x.bits()
+        nan      : Bool = f128_is_nan_bits(bits)
+        infinite : Bool = x.is_infinite()
+        integer  : Bool = x.trunc().eq(x)  // zeros too
+        zero     : F128 = f128_of(bits.bitand(F128_SIGN))
+        when:
+            nan      -> return(f128_of(f128_quiet(bits)))
+            infinite -> return(F128.NAN)
+            integer  -> return(zero)
+            else     -> reduce()
+
+    block reduce():
+        red  : PiReduced = f128_pi_reduce(x)
+        half : Bool      = f128_is_zero_bits(red.d.bits())
+        branch half
+            ? unit(red.quadrant)
+            : general(red)
+
+    // sin at n + 1/2 is 1 in quadrant 1 and -1 in quadrant 3
+    block unit(quadrant: S64):
+        one : F128 = f128_of(F128_ONE)
+        r   : F128 = quadrant.eq(1)
+            ? one
+            : one.neg()
+        return(r)
+
+    block general(red: PiReduced):
+        r : F128 = f128_pi_trig_general(red, TrigKind.Sin, exact)
+        return(r)
+
+routine f128_cos_pi(x: F128, exact: Bool) -> F128
+    block entry():
+        bits     : U128 = x.bits()
+        nan      : Bool = f128_is_nan_bits(bits)
+        infinite : Bool = x.is_infinite()
+        integer  : Bool = x.trunc().eq(x)
+        when:
+            nan      -> return(f128_of(f128_quiet(bits)))
+            infinite -> return(F128.NAN)
+            integer  -> unit()
+            else     -> reduce()
+
+    block unit():
+        one : F128 = f128_of(F128_ONE)
+        odd : Bool = f128_integer_is_odd(x)
+        r   : F128 = odd
+            ? one.neg()
+            : one
+        return(r)
+
+    block reduce():
+        red  : PiReduced = f128_pi_reduce(x)
+        half : Bool      = f128_is_zero_bits(red.d.bits())
+        zero : F128      = f128_of(0)
+        branch half
+            ? return(zero)
+            : continue
+        r : F128 = f128_pi_trig_general(red, TrigKind.Cos, exact)
+        return(r)
+
+routine f128_tan_pi(x: F128, exact: Bool) -> F128
+    block entry():
+        bits     : U128 = x.bits()
+        nan      : Bool = f128_is_nan_bits(bits)
+        infinite : Bool = x.is_infinite()
+        integer  : Bool = x.trunc().eq(x)
+        when:
+            nan      -> return(f128_of(f128_quiet(bits)))
+            infinite -> return(F128.NAN)
+            integer  -> zero()
+            else     -> reduce()
+
+    // the sign of x, flipped for odd n
+    block zero():
+        odd      : Bool = f128_integer_is_odd(x)
+        negative : Bool = f128_is_negative_bits(x.bits()).bitxor(odd)
+        sign     : U128 = negative
+            ? F128_SIGN
+            : 0
+        r : F128 = f128_of(sign)
+        return(r)
+
+    block reduce():
+        red     : PiReduced = f128_pi_reduce(x)
+        half    : Bool      = f128_is_zero_bits(red.d.bits())
+        abs_d   : F128      = red.d.abs()
+        quarter : Bool      = abs_d.bits().eq(0x3FFE0000000000000000000000000000)  // |d| = 1/2
+        when:
+            half    -> pole(red.quadrant)
+            quarter -> unit(red)
+            else    -> general(red)
+
+    // n + 1/2 has 2x = 2n + 1: quadrant 1 for an even n, 3 for an odd one
+    block pole(quadrant: S64):
+        r : F128 = quadrant.eq(1)
+            ? F128.INFINITY
+            : F128.NEG_INFINITY
+        return(r)
+
+    // θ = ±π/4: tan θ = sign(d) in even quadrants, -cot θ = -sign(d) in odd ones
+    block unit(red: PiReduced):
+        one      : F128 = f128_of(F128_ONE)
+        odd      : Bool = red.quadrant.bitand(1).eq(1)
+        negative : Bool = f128_is_negative_bits(red.d.bits()).bitxor(odd)
+        r        : F128 = negative
+            ? one.neg()
+            : one
+        return(r)
+
+    block general(red: PiReduced):
+        r : F128 = f128_pi_trig_general(red, TrigKind.Tan, exact)
+        return(r)

@@ -15,7 +15,7 @@ public sealed partial class Compiler
     /// variable to be unavailable where the optimizer dropped it.
     public bool Optimized { get; init; }
 
-    /// The directory `stdlib/...` file names are relative to, so a debugger finds the stdlib's sources.
+    /// The directory `Standard/...` file names are relative to, so a debugger finds the stdlib's sources.
     public string? StdlibParent { get; init; }
 
     private readonly List<string> _meta = [];
@@ -94,7 +94,7 @@ public sealed partial class Compiler
         _rootFile ??= shown;
         if (_diFiles.TryGetValue(shown, out int id)) return id;
         string full = Path.IsPathRooted(shown) ? shown
-            : StdlibParent is not null && shown.StartsWith("stdlib", StringComparison.Ordinal)
+            : StdlibParent is not null && shown.StartsWith("Standard", StringComparison.Ordinal)
                 ? Path.Combine(StdlibParent, shown)
                 : Path.GetFullPath(shown);
         string dir = Path.GetDirectoryName(full) ?? "", name = Path.GetFileName(full);

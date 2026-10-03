@@ -1,0 +1,82 @@
+// Tessera stdlib: CStr, CWStr — C strings at the FFI boundary
+//
+// CStr points at bytes that end with a NUL (C's char*). CWStr points at wide
+// characters that end with a 0 (C's wchar_t*): UTF-16 units on Windows, UTF-32
+// code points elsewhere, as CWChar says. Both are one-field records, so they
+// cost nothing over the pointer, and the type says the terminator is there.
+//
+// A string literal becomes a CStr or CWStr where one is expected, terminator
+// included. Text built at run time becomes one explicitly: Bytes.to_cstr and
+// Bytes.to_cwstr copy through an allocator (Memory.tess), and a List<Byte>
+// ends itself with a NUL (List<Byte>.to_cstr). A Bytes is a view with no
+// terminator, so it never converts implicitly.
+
+module Standard::Core
+
+record CStr
+    data : @Byte
+
+record CWStr
+    data : @CWChar
+
+// -- CStr ------------------------------------------------------------------------
+
+/// data must point at bytes ending with a NUL; nothing checks it.
+routine CStr.from_ptr(data: @Byte) -> Self
+    block entry():
+        c : Self = Self { data: data }
+        return(c)
+
+routine CStr.to<@Byte>(self: Self) -> @Byte
+    block entry():
+        data : @Byte = self.data
+        return(data)
+
+/// The number of bytes before the NUL, like strlen.
+routine CStr.length(self: Self) -> USize
+    block entry():
+        data : @Byte = self.data
+        jump scan(data, 0)
+
+    block scan(data: @Byte, i: USize):
+        current : Byte = data.stride(i).load()
+        at_end  : Bool = current.eq(0x00)
+        branch at_end
+            ? return(i)
+            : scan(data, i.add(1))
+
+/// A Bytes view of the bytes before the NUL, without copying: text a C
+/// function returned, for example. It's valid as long as the bytes are.
+routine CStr.to_bytes(self: Self) -> Bytes
+    block entry():
+        data   : @Byte = self.data
+        length : USize = self.length()
+        text   : Bytes = .from_ptr(data, length)
+        return(text)
+
+// -- CWStr -----------------------------------------------------------------------
+
+/// data must point at wide characters ending with a 0; nothing checks it.
+routine CWStr.from_ptr(data: @CWChar) -> Self
+    block entry():
+        c : Self = Self { data: data }
+        return(c)
+
+routine CWStr.to<@CWChar>(self: Self) -> @CWChar
+    block entry():
+        data : @CWChar = self.data
+        return(data)
+
+/// The number of CWChar units before the 0, like wcslen: UTF-16 units on
+/// Windows, so a character outside the BMP counts twice there.
+routine CWStr.length(self: Self) -> USize
+    block entry():
+        data : @CWChar = self.data
+        jump scan(data, 0)
+
+    block scan(data: @CWChar, i: USize):
+        unit   : CWChar = data.stride(i).load()
+        at_end : Bool   = unit.eq(0)
+        branch at_end
+            ? return(i)
+            : scan(data, i.add(1))

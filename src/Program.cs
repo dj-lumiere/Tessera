@@ -350,12 +350,12 @@ static class Cli
             if (!File.Exists(f)) throw new ToolError($"no such file: {f}");
             decls.AddRange(ParseFile(f, isLibrary: false));
         }
-        // Stdlib files are named from the stdlib directory (stdlib/collection/List.tess) wherever the build runs, so
+        // Stdlib files are named from the stdlib directory (Standard/Collection/List.tess) wherever the build runs, so
         // the file tags in private symbols don't depend on the working directory.
         foreach (var f in Directory.GetFiles(StdlibDir(), "*.tess", SearchOption.AllDirectories).Order())
             if (!inputs.Contains(Path.GetFullPath(f)))
                 decls.AddRange(ParseFile(f, isLibrary: true,
-                    Path.Combine("stdlib", Path.GetRelativePath(StdlibDir(), f))));
+                    Path.Combine("Standard", Path.GetRelativePath(StdlibDir(), f))));
         return decls;
     }
 
@@ -375,7 +375,7 @@ static class Cli
 
     private static string? _stdlib;
 
-    /// The standard library: $TESSERA_STDLIB, or the nearest `stdlib/` (with a prelude.tess) above the working
+    /// The standard library: $TESSERA_STDLIB, or the nearest `Standard/` (with a Prelude.tess) above the working
     /// directory or the builder binary.
     private static string StdlibDir()
     {
@@ -384,8 +384,8 @@ static class Cli
             return _stdlib = env;
         foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
             for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
-                if (File.Exists(Path.Combine(dir.FullName, "stdlib", "prelude.tess")))
-                    return _stdlib = Path.Combine(dir.FullName, "stdlib");
+                if (File.Exists(Path.Combine(dir.FullName, "Standard", "Prelude.tess")))
+                    return _stdlib = Path.Combine(dir.FullName, "Standard");
         throw new ToolError("cannot find the standard library; set TESSERA_STDLIB to the stdlib directory");
     }
 
@@ -482,7 +482,7 @@ static class Cli
             if (target.Os == "windows" && BuiltinsLibrary(target) is { } builtins) psi.ArgumentList.Add(builtins);
             // lld-link reports in English whatever the system locale, and links faster than link.exe.
             if (target.Os == "windows") psi.ArgumentList.Add("-fuse-ld=lld");
-            // WaitOnAddress and WakeByAddress (stdlib/os/wait.tess) live in synchronization.lib, not kernel32.
+            // WaitOnAddress and WakeByAddress (Standard/Os/Wait.tess) live in synchronization.lib, not kernel32.
             if (target.Os == "windows") psi.ArgumentList.Add("-lsynchronization");
             // The UCRT defines printf and its family inline in the headers; 32-bit x86 has no exported symbol for
             // them, so an IR-level call needs the out-of-line copies.

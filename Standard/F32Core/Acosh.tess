@@ -1,0 +1,57 @@
+// Tessera stdlib: the correctly rounded inverse hyperbolic cosine of F32
+//
+// Near 1, acosh(x) = sqrt(2 z) (1 + z f(z)) with z = x - 1 and a polynomial f
+// in F64. Otherwise acosh(x) = log(x + sqrt(x^2 - 1)), with the logarithm
+// reduced through a 128-entry reciprocal table and a short polynomial; a
+// longer polynomial settles the cases the first can't round. The logarithm is
+// asinh's (cm_f32_asinh_log in Asinh.tess): the C sources carry identical copies. Round to nearest
+// only: acosh(1) = 0, +inf maps to itself, x < 1 gives NaN, and a NaN comes
+// back quiet.
+//
+// Ported from CORE-MATH, src/binary32/acosh/acoshf.c via RazorForge's B32Acosh.rf.
+// Copyright (c) 2023 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// acosh(self), correctly rounded.
+routine F32.acosh(self: Self) -> Self
+    block entry():
+        tu : U32 = self.bits()
+        when:
+            tu.le(0x3F800000) -> special(tu)  // x <= 1, or -0
+            tu.le(0x3F99DB23) -> near_one()  // 1 < x <= 0x1.33b646p+0
+            tu.lt(0x7F800000) -> general()
+            else              -> special(tu)
+
+    // x <= 1, a negative x, +inf, or NaN
+    block special(tu: U32):
+        one : Bool = tu.eq(0x3F800000)
+        nan : Bool = tu.shl(1).gt(0xFF000000)
+        inf : Bool = tu.eq(0x7F800000)
+        when:
+            one  -> return(0.0)
+            nan  -> return(self.add(self))  // quiets a signaling NaN
+            inf  -> return(self)
+            else -> return(Self.from_bits(0x7FC00000))
+
+    block near_one():
+        z          : F64 = self.sub(1.0).to<F64>()
+        a          : F64 = F64.mul(2.0, z).sqrt()
+        z2         : F64 = z.mul(z)
+        z4         : F64 = z2.mul(z2)
+        p01        : F64 = z.mul(0x1.333333319c2p-6).add(-0x1.555555555491ep-4)
+        p23        : F64 = z.mul(0x1.f1c698b7100cep-10).add(-0x1.6db6da26e5e0ep-8)
+        p45        : F64 = z.mul(0x1.1b4cf187158bdp-12).add(-0x1.6e7ca9e152dc2p-11)
+        p67        : F64 = z.mul(0x1.056c6c57152b2p-15).add(-0x1.b5137f11a88e5p-14)
+        p03        : F64 = z2.mul(p23).add(p01)
+        p47        : F64 = z2.mul(p67).add(p45)
+        f          : F64 = z4.mul(p47).add(p03)
+        correction : F64 = a.mul(z).mul(f)
+        return(correction.add(a).to<Self>())
+
+    block general():
+        xd   : F64 = self.to<F64>()
+        x2m1 : F64 = xd.mul(xd).sub(1.0)
+        tp   : F64 = xd.add(x2m1.sqrt())
+        return(cm_f32_asinh_log(tp).to<Self>())

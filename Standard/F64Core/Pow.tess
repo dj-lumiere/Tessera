@@ -1,0 +1,738 @@
+// Tessera stdlib: the correctly rounded power x^y of F64
+//
+// x^y = exp(y log(x)) in three phases. A double-double evaluation with a
+// rounding test settles almost every input. The rest go to a 128-bit
+// evaluation (CmF64PowDint, PowDint.tess) with its own rounding test, then an
+// exact/midpoint detector (x^y exactly representable, or exactly halfway
+// between two F64), and finally a 256-bit evaluation (CmF64PowQint,
+// PowQint.tess) for the hardest cases. Round to nearest only, with the IEEE
+// 754 pow special cases: overflow gives ±inf, a negative base with a
+// non-integer exponent gives NaN, x^±0 = 1 and 1^y = 1 for a quiet NaN too,
+// and a NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary64/pow/pow.c (with pow.h, dint.h and
+// qint.h) via RazorForge's B64Pow.rf. Where x is a power of two and y is so
+// large that the integer exponent g = y log2(x) does not fit in S64 (only
+// reachable for |y| >= 2^1014 when the 128-bit rounding test fails), the C
+// conversion is undefined; here g is clamped to ±2000, which still gives the
+// overflowed or underflowed result.
+// Copyright (c) 2022-2025 CERN and Inria
+// Authors: Tom Hubrecht and Paul Zimmermann
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// A double-double value hi + lo.
+record CmF64PowDd
+    hi : F64
+    lo : F64
+
+/// The phase-1 logarithm: h + l approximates log(x), and cancel tells whether
+/// the looser error bound for 1/sqrt(2) < x < sqrt(2) applies.
+record CmF64PowLog1
+    h      : F64
+    l      : F64
+    cancel : Bool
+
+/// self^exponent, correctly rounded.
+routine F64.powf(self: Self, exponent: Self) -> Self
+    block entry():
+        xu      : U64  = self.bits()
+        yu      : U64  = exponent.bits()
+        unusual : Bool = xu.ge(0x7FF0000000000000).bitor(yu.ge(0x7FF0000000000000))
+        branch unusual
+            ? unusual(xu, yu)
+            : finite(xu, yu)
+
+    // x or y is NaN or infinite, or x has its sign bit set
+    block unusual(xu: U64, yu: U64):
+        nan_x  : Bool = self.is_nan()
+        nan_y  : Bool = exponent.is_nan()
+        inf_x  : Bool = xu.eq(0x7FF0000000000000)
+        ninf_x : Bool = xu.eq(0xFFF0000000000000)
+        inf_y  : Bool = yu.eq(0x7FF0000000000000)
+        ninf_y : Bool = yu.eq(0xFFF0000000000000)
+        when:
+            nan_x  -> nan_base(xu)
+            nan_y  -> nan_exponent(yu)
+            inf_x  -> infinite_base()
+            ninf_x -> negative_infinite_base(xu, yu)
+            inf_y  -> infinite_exponent()
+            ninf_y -> negative_infinite_exponent()
+            else   -> finite(xu, yu)
+
+    // NaN^±0 = 1 for a quiet NaN; x + x quiets a signaling one
+    block nan_base(xu: U64):
+        one : Bool = exponent.eq(0.0).bitand(xu.bitand(0x0008000000000000).ne(0))
+        branch one
+            ? return(1.0)
+            : return(self.add(self))
+
+    // 1^NaN = 1 for a quiet NaN
+    block nan_exponent(yu: U64):
+        one : Bool = self.eq(1.0).bitand(yu.bitand(0x0008000000000000).ne(0))
+        branch one
+            ? return(1.0)
+            : return(exponent.add(exponent))
+
+    block infinite_base():
+        zero_y : Bool = exponent.eq(0.0)
+        neg_y  : Bool = exponent.lt(0.0)
+        when:
+            zero_y -> return(1.0)
+            neg_y  -> return(0.0)
+            else   -> return(Self.INFINITY)
+
+    // x = -inf; y = ±0 goes on to the finite code, which returns 1
+    block negative_infinite_base(xu: U64, yu: U64):
+        inf_y  : Bool = yu.eq(0x7FF0000000000000)
+        ninf_y : Bool = yu.eq(0xFFF0000000000000)
+        odd    : Bool = cm_f64_pow_is_odd(exponent)
+        neg_y  : Bool = exponent.lt(0.0)
+        pos_y  : Bool = exponent.gt(0.0)
+        signed : Self = neg_y
+            ? Self.from_bits(0x8000000000000000)
+            : Self.NEG_INFINITY
+        when:
+            inf_y  -> return(exponent)
+            ninf_y -> return(0.0)
+            odd    -> return(signed)
+            neg_y  -> return(0.0)
+            pos_y  -> return(Self.INFINITY)
+            else   -> finite(xu, yu)
+
+    // y = +inf, x finite
+    block infinite_exponent():
+        zero_x : Bool = self.eq(0.0)
+        unit_x : Bool = self.abs().eq(1.0)
+        small  : Bool = self.abs().lt(1.0)
+        when:
+            zero_x -> return(0.0)
+            unit_x -> return(1.0)
+            small  -> return(0.0)
+            else   -> return(Self.INFINITY)
+
+    // y = -inf, x finite
+    block negative_infinite_exponent():
+        zero_x : Bool = self.eq(0.0)
+        unit_x : Bool = self.abs().eq(1.0)
+        small  : Bool = self.abs().lt(1.0)
+        when:
+            zero_x -> return(Self.INFINITY)
+            unit_x -> return(1.0)
+            small  -> return(Self.INFINITY)
+            else   -> return(0.0)
+
+    // from here on x and y are finite
+    block finite(xu: U64, yu: U64):
+        nonpositive : Bool = self.le(0.0)
+        branch nonpositive
+            ? nonpositive(xu, yu)
+            : phase1(self, 1.0, yu)
+
+    block nonpositive(xu: U64, yu: U64):
+        zero_y   : Bool = exponent.eq(0.0)
+        pzero_x  : Bool = xu.eq(0)
+        nzero_x  : Bool = xu.eq(0x8000000000000000)
+        fraction : Bool = cm_f64_pow_is_int(exponent).bitnot()
+        when:
+            zero_y   -> return(1.0)
+            pzero_x  -> zero_base(Self.INFINITY, 0.0)
+            nzero_x  -> zero_base(Self.NEG_INFINITY, Self.from_bits(0x8000000000000000))
+            fraction -> return(Self.NAN)
+            else     -> negative_base(yu)
+
+    // x = ±0: an odd y keeps the sign of the zero (pole_odd, zero_odd); otherwise +inf or +0
+    block zero_base(pole_odd: Self, zero_odd: Self):
+        odd   : Bool = cm_f64_pow_is_odd(exponent)
+        neg_y : Bool = exponent.lt(0.0)
+        pos_y : Bool = exponent.gt(0.0)
+        r     : Self = neg_y
+            ? pole_odd
+            : zero_odd
+        when:
+            odd   -> return(r)
+            pos_y -> return(0.0)
+            else  -> return(Self.INFINITY)
+
+    // x < 0 and y an integer: the result is negative when y is odd
+    block negative_base(yu: U64):
+        small : Bool = exponent.abs().lt(0x1p53)
+        branch small
+            ? parity(yu)
+            : phase1(self.neg(), 1.0, yu)
+
+    block parity(yu: U64):
+        int_exponent : S64  = exponent.to<S64>()
+        odd          : Bool = int_exponent.bitand(1).ne(0)
+        s            : Self = odd
+            ? -1.0
+            : 1.0
+        jump phase1(self.neg(), s, yu)
+
+    // double-double s exp(y log(ax)), with ax = |x| and s the sign of the result; a tiny or huge y skips
+    // to the next phase, to avoid a spurious underflow or overflow in y log(x)
+    block phase1(ax: Self, s: Self, yu: U64):
+        lg      : CmF64PowLog1 = cm_f64_pow_log_1(ax)
+        ey      : U64          = yu.shr(52).bitand(0x7FF)
+        extreme : Bool         = ey.lt(0x36).bitor(ey.ge(0x7F5))
+        lh      : Self         = extreme
+            ? Self.NAN
+            : lg.h
+        ll : Self = extreme
+            ? Self.NAN
+            : lg.l
+        rh  : Self       = exponent.mul(lh)
+        rs  : Self       = exponent.mul_add(lh, rh.neg())
+        rl  : Self       = exponent.mul_add(ll, rs)
+        e   : CmF64PowDd = cm_f64_pow_exp_1(rh, rl, s)
+        err : Self       = lg.cancel
+            ? 0x1.57p-58
+            : 0x1.27p-64
+        res_min : Self = e.hi.add(err.mul_add(e.hi.neg(), e.lo))
+        res_max : Self = e.hi.add(err.mul_add(e.hi, e.lo))
+        settled : Bool = res_min.eq(res_max)
+        one     : Bool = exponent.eq(1.0)
+        two     : Bool = exponent.eq(2.0)
+        half    : Bool = exponent.eq(0.5)
+        zero    : Bool = exponent.eq(0.0)
+        when:
+            settled -> return(res_max)
+            one     -> return(s.mul(ax))
+            two     -> return(ax.mul(ax))
+            half    -> return(ax.sqrt())
+            zero    -> return(1.0)
+            else    -> return(cm_f64_pow_accurate(self, ax, exponent, s))
+
+/// True when x (finite) is an integer.
+private routine cm_f64_pow_is_int(x: F64) -> Bool
+    block entry():
+        return(x.eq(x.round_ties_even()))
+
+/// True when y (finite) is an odd integer.
+private routine cm_f64_pow_is_odd(y: F64) -> Bool
+    block entry():
+        whole : Bool = cm_f64_pow_is_int(y)
+        even  : Bool = cm_f64_pow_is_int(y.mul(0.5))
+        return(whole.bitand(even.bitnot()))
+
+/// a + b as a double-double, assuming |a| >= |b|.
+private routine cm_f64_pow_fast_two_sum(a: F64, b: F64) -> CmF64PowDd
+    block entry():
+        hi : F64 = a.add(b)
+        e  : F64 = hi.sub(a)
+        return(CmF64PowDd { hi: hi, lo: b.sub(e) })
+
+/// a + (bh + bl) as a double-double, assuming |a| >= |bh|.
+private routine cm_f64_pow_fast_sum(a: F64, bh: F64, bl: F64) -> CmF64PowDd
+    block entry():
+        t : CmF64PowDd = cm_f64_pow_fast_two_sum(a, bh)
+        return(CmF64PowDd { hi: t.hi, lo: t.lo.add(bl) })
+
+/// (ah + al) (bh + bl), ignoring al bl.
+private routine cm_f64_pow_d_mul(ah: F64, al: F64, bh: F64, bl: F64) -> CmF64PowDd
+    block entry():
+        hi : F64 = ah.mul(bh)
+        s  : F64 = ah.mul_add(bh, hi.neg())
+        t  : F64 = al.mul_add(bh, s)
+        return(CmF64PowDd { hi: hi, lo: ah.mul_add(bl, t) })
+
+/// Entry i of a table of F64 bit patterns.
+private routine cm_f64_pow_p1(i: USize) -> F64
+    block entry():
+        return(F64.from_bits(CM_F64_POW_P1.get(i)))
+
+/// log(1+z) - z for |z| <= 33 2^-13, z an integer multiple of 2^-61, as (ph, pl).
+private routine cm_f64_pow_p_1(z: F64) -> CmF64PowDd
+    block entry():
+        wh : F64 = z.mul(z)
+        wl : F64 = z.mul_add(z, wh.neg())
+        t  : F64 = cm_f64_pow_p1(5).mul_add(z, cm_f64_pow_p1(4))
+        u0 : F64 = cm_f64_pow_p1(3).mul_add(z, cm_f64_pow_p1(2))
+        v0 : F64 = cm_f64_pow_p1(1).mul_add(z, cm_f64_pow_p1(0))
+        u1 : F64 = t.mul_add(wh, u0)
+        v1 : F64 = u1.mul_add(wh, v0)
+        u  : F64 = v1.mul(wh)
+        return(CmF64PowDd { hi: wh.mul(-0.5), lo: u.mul_add(z, wl.mul(-0.5)) })
+
+/// Entry i of the phase-1 exp polynomial.
+private routine cm_f64_pow_q1(i: USize) -> F64
+    block entry():
+        return(F64.from_bits(CM_F64_POW_Q1.get(i)))
+
+/// exp(z) for |z| < 2^-12.905, as (qh, ql).
+private routine cm_f64_pow_q_1(z: F64) -> CmF64PowDd
+    block entry():
+        q0 : F64 = cm_f64_pow_q1(4).mul_add(z, cm_f64_pow_q1(3))
+        q  : F64 = q0.mul_add(z, cm_f64_pow_q1(2))
+        h0 : F64 = q.mul_add(z, cm_f64_pow_q1(1))
+        h1 : F64 = z.mul(h0)
+        l1 : F64 = z.mul_add(h0, h1.neg())
+        return(cm_f64_pow_fast_sum(cm_f64_pow_q1(0), h1, l1))
+
+/// log(x) as h + l, for 2^-1074 <= x <= F64 MAX, with the cancellation flag.
+private routine cm_f64_pow_log_1(x: F64) -> CmF64PowLog1
+    block entry():
+        xu        : U64  = x.bits()
+        m         : U64  = xu.bitand(0x000FFFFFFFFFFFFF)
+        exp_field : U64  = xu.shr(52).bitand(0x7FF)
+        e         : S64  = exp_field.to<S64>()
+        normal    : Bool = e.ne(0)
+        branch normal
+            ? reduce(m.add(0x0010000000000000), e.sub(0x3FF), m.bitor(0x3FF0000000000000))
+            : subnormal(m)
+
+    block subnormal(m: U64):
+        k  : U64 = m.leading_zeros().sub(11)
+        mk : U64 = m.shl(k)
+        jump reduce(mk, S64.sub(-1022, k.to<S64>()), mk.bitor(0x3FF0000000000000))
+
+    // x = 2^e t with 1 <= t < 2 and 2^52 <= m < 2^53; above sqrt(2), halve t so that 1/sqrt(2) < t < sqrt(2)
+    block reduce(m: U64, e0: S64, tu: U64):
+        t0  : F64  = F64.from_bits(tu)
+        big : Bool = m.ge(0x16A09E667F3BCD)
+        e   : S64  = big
+            ? e0.add(1)
+            : e0
+        i : U64 = big
+            ? m.shr(45)
+            : m.shr(44)
+        t : F64 = big
+            ? t0.mul(0.5)
+            : t0
+        big_e  : F64          = e.to<F64>()
+        j      : USize        = i.sub(181).to<USize>()
+        r      : F64          = F64.from_bits(CM_F64_POW_INVERSE.get(j))
+        l1     : F64          = F64.from_bits(CM_F64_POW_LOG_INV.get(j.mul(2)))
+        l2     : F64          = F64.from_bits(CM_F64_POW_LOG_INV.get(j.mul(2).add(1)))
+        z      : F64          = r.mul_add(t, -1.0)
+        th     : F64          = big_e.mul_add(0x1.62e42fefa38p-1, l1)
+        tl     : F64          = big_e.mul_add(0x1.ef35793c7673p-45, l2)
+        hl     : CmF64PowDd   = cm_f64_pow_fast_sum(th, z, tl)
+        p      : CmF64PowDd   = cm_f64_pow_p_1(z)
+        s      : CmF64PowDd   = cm_f64_pow_fast_sum(hl.hi, p.hi, hl.lo.add(p.lo))
+        cancel : Bool         = e.eq(0).bitand(s.lo.abs().gt(s.hi.abs().mul(0x1p-24)))
+        plain  : CmF64PowLog1 = CmF64PowLog1 { h: s.hi, l: s.lo, cancel: false }
+        branch cancel
+            ? cancel(s)
+            : return(plain)
+
+    block cancel(s: CmF64PowDd):
+        n : CmF64PowDd = cm_f64_pow_fast_two_sum(s.hi, s.lo)
+        return(CmF64PowLog1 { h: n.hi, l: n.lo, cancel: true })
+
+/// s exp(rh + rl) as a double-double; NaN when the result may underflow or overflow (left to the next phase).
+private routine cm_f64_pow_exp_1(rh: F64, rl: F64, s: F64) -> CmF64PowDd
+    block entry():
+        high : Bool = rh.is_nan().bitor(rh.gt(0x1.62e42e709a95bp+9))
+        low  : Bool = rh.lt(-0x1.483b8cca421afp+9)
+        when:
+            high -> high()
+            low  -> low()
+            else -> reduce()
+
+    block high():
+        over : Bool = rh.gt(0x1.62e4316ea5df9p+9)
+        branch over
+            ? overflow()
+            : return(CmF64PowDd { hi: F64.NAN, lo: F64.NAN })
+
+    // sure overflow
+    block overflow():
+        big : F64 = F64.mul(0x1.fffffffffffffp+1023, s)
+        return(CmF64PowDd { hi: big, lo: big })
+
+    block low():
+        under : Bool = rh.lt(-0x1.74910ee4e8a27p+9)
+        branch under
+            ? underflow()
+            : return(CmF64PowDd { hi: F64.NAN, lo: F64.NAN })
+
+    // sure underflow
+    block underflow():
+        lo : F64 = F64.from_bits(1).mul(F64.mul(0.5, s))
+        return(CmF64PowDd { hi: F64.mul(0.0, s), lo: lo })
+
+    // rh = k log(2)/2^12 + z, and 2^(k/2^12) = 2^(k >> 12) T2[k mod 64] T1[(k >> 6) mod 64]
+    block reduce():
+        k      : F64        = rh.mul(0x1.71547652b82fep+12).round_ties_even()
+        zh     : F64        = F64.mul_add(0x1.62e42fefa39efp-13, k.neg(), rh)
+        zl     : F64        = F64.mul_add(0x1.abc9e3b39803fp-68, k.neg(), rl)
+        big_k  : S64        = k.to<S64>()
+        big_m  : S64        = big_k.shr(12).add(0x3FF)
+        k_high : U64        = big_k.shr(6).to_wrap<U64>()
+        slot2  : U64        = k_high.bitand(0x3F)
+        i2     : USize      = slot2.to<USize>().mul(2)
+        slot1  : U64        = big_k.to_wrap<U64>().bitand(0x3F)
+        i1     : USize      = slot1.to<USize>().mul(2)
+        t2h    : F64        = F64.from_bits(CM_F64_POW_T2.get(i1))
+        t2l    : F64        = F64.from_bits(CM_F64_POW_T2.get(i1.add(1)))
+        t1h    : F64        = F64.from_bits(CM_F64_POW_T1.get(i2))
+        t1l    : F64        = F64.from_bits(CM_F64_POW_T1.get(i2.add(1)))
+        e0     : CmF64PowDd = cm_f64_pow_d_mul(t2h, t2l, t1h, t1l)
+        q      : CmF64PowDd = cm_f64_pow_q_1(zh.add(zl))
+        e      : CmF64PowDd = cm_f64_pow_d_mul(e0.hi, e0.lo, q.hi, q.lo)
+        d      : F64        = F64.from_bits(big_m.to_wrap<U64>().shl(52)).mul(s)
+        return(CmF64PowDd { hi: e.hi.mul(d), lo: e.lo.mul(d) })
+
+/// Phases 2 and 3 of pow, for inputs phase 1 could not round: x0 is the original base, x = |x0| (finite, nonzero),
+/// y finite and nonzero, s the sign of the result (1 or -1).
+private routine cm_f64_pow_accurate(x0: F64, x: F64, y: F64, s: F64) -> F64
+    block entry():
+        dx  : CmF64PowDint = cm_f64_pow_dint_fromd(x)
+        dy  : CmF64PowDint = cm_f64_pow_dint_fromd(y)
+        lx  : CmF64PowDint = cm_f64_pow_log_2(dx)
+        ylx : CmF64PowDint = cm_f64_pow_mul_dint_21(lx, dy)
+        br  : CmF64PowDint = cm_f64_pow_exp_2(ylx)
+        sgn : U64          = s.eq(-1.0)
+            ? 1
+            : 0
+        underflow : Bool = br.ex.lt(-1075)
+        subnormal : Bool = br.ex.lt(-1022)
+        when:
+            underflow -> return(F64.mul(0.5, s.mul(F64.from_bits(1))))
+            subnormal -> subnormal(br, sgn)
+            else      -> normal(br, sgn)
+
+    // rounding test: the significand has to be shifted right by 1 <= sh <= 53 bits
+    block subnormal(br: CmF64PowDint, sgn: U64):
+        sh         : U64 = S64.sub(0, br.ex.add(1022)).to_wrap<U64>()
+        lo_shifted : U64 = cm_f64_pow_lo(br.r).shr(sh.add(10))
+        m          : U64 = lo_shifted.bitor(cm_f64_pow_hi(br.r).shl(U64.sub(54, sh)))
+        jump round_test(br, sgn, m.add_wrap(14).gt(28))
+
+    // rounding test on the 64 bits after the round bit
+    block normal(br: CmF64PowDint, sgn: U64):
+        lo_tail : U64 = cm_f64_pow_lo(br.r).shr(10)
+        lo      : U64 = lo_tail.bitor(cm_f64_pow_hi(br.r).shl(54))
+        jump round_test(br, sgn, lo.add_wrap(28).gt(56))
+
+    block round_test(br: CmF64PowDint, sgn: U64, rounds: Bool):
+        z : CmF64PowDint = CmF64PowDint { r: br.r, ex: br.ex, sgn: sgn }
+        branch rounds
+            ? return(cm_f64_pow_dint_tod(z))
+            : continue
+        exact : Bool = cm_f64_pow_is_exact(x, y)
+        ep    : F64  = cm_f64_pow_exact_pow(x0, y, z, exact)
+        found : Bool = ep.is_nan().bitnot()
+        branch found
+            ? return(ep)
+            : phase3(sgn)
+
+    block phase3(sgn: U64):
+        qx       : CmF64PowQint = cm_f64_pow_qint_fromd(x)
+        qy       : CmF64PowQint = cm_f64_pow_qint_fromd(y)
+        lx       : CmF64PowQint = cm_f64_pow_log_3(qx)
+        qr       : CmF64PowQint = cm_f64_pow_mul_qint_41(lx, qy)
+        qz       : CmF64PowQint = cm_f64_pow_exp_3(qr)
+        hh       : U64          = cm_f64_pow_hi(qz.rh)
+        hl       : U64          = cm_f64_pow_lo(qz.rh)
+        lh       : U64          = cm_f64_pow_hi(qz.rl)
+        ll       : U64          = cm_f64_pow_lo(qz.rl)
+        r1       : U64          = hh.shl(54).bitor(hl.shr(10))
+        r2       : U64          = hl.shl(54).bitor(lh.shr(10))
+        r3       : U64          = lh.shl(54).bitor(ll.shr(10))
+        top_zero : Bool         = r1.eq(0).bitand(r2.eq(0))
+        low      : Bool         = top_zero.bitand(r3.le(60))
+        r1_ones  : Bool         = r1.bitnot().eq(0)
+        high     : Bool         = r1_ones.bitand(r2.bitnot().eq(0)).bitand(r3.add_wrap(120).le(60))
+        hard     : Bool         = low.bitor(high)
+        rl       : U128         = qz.rl.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC00)
+        qs       : CmF64PowQint = CmF64PowQint { rh: qz.rh, rl: rl, ex: qz.ex, sgn: sgn }
+        branch hard
+            ? hard(qr, qz)
+            : return(cm_f64_pow_qint_tod(qs))
+
+    // x^y very close to 1: exp(qr) rounds to 1 (the sign of qr picks the side, which rounds to 1 anyway);
+    // otherwise not reachable (CORE-MATH reports an unexpected worst case there)
+    block hard(qr: CmF64PowQint, qz: CmF64PowQint):
+        near_one : Bool = qr.ex.lt(-56)
+        above    : Bool = near_one.bitand(qr.sgn.eq(0))
+        when:
+            above    -> return(F64.add(1.0, 0x1p-100))
+            near_one -> return(F64.sub(1.0, 0x1p-100))
+            else     -> return(cm_f64_pow_qint_tod(qz))
+
+/// |v| = m 2^e with m odd, for the bits u of a nonzero finite F64.
+private routine cm_f64_pow_odd_part(u: U64) -> (U64, S64)
+    block entry():
+        m0        : U64  = u.bitand(0x000FFFFFFFFFFFFF)
+        exp_field : U64  = u.shl(1).shr(53)
+        e0        : S64  = exp_field.to<S64>().sub(0x433)
+        normal    : Bool = e0.ge(-1074)
+        m1        : U64  = normal
+            ? m0.bitor(0x0010000000000000)
+            : m0
+        e1 : S64 = normal
+            ? e0
+            : e0.add(1)
+        t : U64 = m1.trailing_zeros()
+        return({ m1.shr(t), e1.add(t.to<S64>()) })
+
+/// True when x^y is exactly representable, for x > 0 finite and y finite.
+private routine cm_f64_pow_is_exact(x: F64, y: F64) -> Bool
+    block entry():
+        vu    : U64  = x.bits()
+        wu    : U64  = y.bits()
+        unit  : Bool = vu.shl(1).eq(0x7FE0000000000000)
+        loose : Bool = wu.shl(22).ne(0)  // in all exact cases other than x = 1, the low 42 bits of y are zero
+        whole : Bool = y.ge(0.0).bitand(cm_f64_pow_is_int(y))
+        when:
+            unit  -> return(true)
+            loose -> return(false)
+            whole -> whole(vu)
+            else  -> fraction(vu, wu)
+
+    // y >= 0 an integer, x = m 2^e with m odd
+    block whole(vu: U64):
+        m, e = cm_f64_pow_odd_part(vu)
+        trivial      : Bool = y.eq(0.0).bitor(y.eq(1.0))
+        power_of_two : Bool = m.eq(1)
+        large        : Bool = y.lt(0.0).bitor(y.gt(33.0))
+        when:
+            trivial      -> return(true)
+            power_of_two -> power_of_two(e)
+            large        -> return(false)
+            else         -> small_power(m, e)
+
+    block power_of_two(e: S64):
+        ye : F64 = y.mul(e.to<F64>())
+        return(ye.ge(-1074.0).bitand(ye.lt(1024.0)))
+
+    // x^y is an odd multiple of 2^(e y)
+    block small_power(m: U64, e: S64):
+        y_int   : S64  = y.to<S64>()
+        too_big : Bool = m.gt(CM_F64_POW_XMAX.get(y_int.to<USize>()))
+        branch too_big
+            ? return(false)
+            : continue
+        tb  : S64  = U64.sub(64, m.leading_zeros()).to<S64>()
+        ey  : S64  = e.mul(y_int)
+        ez  : S64  = ey.add(tb)
+        out : Bool = ez.le(-1074).bitor(ez.gt(1024))
+        branch out
+            ? return(false)
+            : return(ey.ge(-1074))
+
+    // y < 0 or y not an integer: |y| = n 2^f and |x| = m 2^e with m, n odd
+    block fraction(vu: U64, wu: U64):
+        n, f = cm_f64_pow_odd_part(wu)
+        m, e = cm_f64_pow_odd_part(vu)
+        neg_y : Bool = y.lt(0.0)
+        branch neg_y
+            ? negative(n, f, m, e)
+            : root(n, f, m, e)
+
+    // the only exact case is x = 2^e with n e 2^f an integer
+    block negative(n: U64, f: S64, m: U64, e: S64):
+        not_pow2 : Bool = m.ne(1)
+        whole_y  : Bool = f.ge(0)
+        when:
+            not_pow2 -> return(false)
+            whole_y  -> negative_whole(n, f, e)
+            else     -> negative_fraction(n, f, e)
+
+    block negative_whole(n: U64, f: S64, e: S64):
+        small   : Bool = f.lt(12)
+        product : U64  = U64.sub_wrap(0, n).mul_wrap(e.to_wrap<U64>())
+        ez      : S64  = product.shl(f.to_wrap<U64>()).to_wrap<S64>()
+        branch small
+            ? check(ez)
+            : check(1024)
+
+    block negative_fraction(n: U64, f: S64, e: S64):
+        te          : U64  = e.to_wrap<U64>().trailing_zeros()
+        nf          : S64  = S64.sub(0, f)
+        indivisible : Bool = nf.to_wrap<U64>().gt(te)
+        branch indivisible
+            ? return(false)
+            : continue
+        quotient : S64 = S64.sub(0, e).shr(nf)
+        ez_bits  : U64 = quotient.to_wrap<U64>().mul_wrap(n)
+        ez       : S64 = ez_bits.to_wrap<S64>()
+        jump check(ez)
+
+    block check(ez: S64):
+        return(ez.ge(-1074).bitand(ez.lt(1024)))
+
+    // y > 0 is not an integer: f < 0, so x must be a (2^-f)th power
+    block root(n: U64, f: S64, m: U64, e: S64):
+        done : Bool = f.eq(0)
+        branch done
+            ? power(n, m, e)
+            : root_step(n, f, m, e)
+
+    block root_step(n: U64, f: S64, m: U64, e: S64):
+        odd_e : Bool = e.bitand(1).ne(0)
+        branch odd_e
+            ? return(false)
+            : continue
+        dm     : F64  = m.to<F64>()
+        sq     : F64  = dm.sqrt().round()
+        square : Bool = sq.mul(sq).eq(dm)
+        branch square
+            ? root(n, f.add(1), sq.to<U64>(), e.shr(1))
+            : return(false)
+
+    // now |x^y| = (m 2^e)^n with m and n odd
+    block power(n: U64, m: U64, e: S64):
+        wide_m  : Bool = m.gt(1)
+        many    : Bool = wide_m.bitand(n.gt(33))
+        too_big : Bool = wide_m.bitand(m.gt(CM_F64_POW_XMAX.get(n.min(33).to<USize>())))
+        when:
+            many    -> return(false)
+            too_big -> return(false)
+            else    -> multiply(m, n, n, m, e)
+
+    block multiply(my: U64, left: U64, n: U64, m: U64, e: S64):
+        more : Bool = left.gt(1)
+        branch more
+            ? multiply(my.mul_wrap(m), left.sub(1), n, m, e)
+            : finish(my, n, e)
+
+    block finish(my: U64, n: U64, e: S64):
+        tb : S64 = U64.sub(64, my.leading_zeros()).to<S64>()
+        en : S64 = e.mul(n.to<S64>())
+        return(en.ge(-1074).bitand(en.add(tb).le(1024)))
+
+/// x 2^e in two steps, so that the intermediate stays representable (|e| <= 2046).
+private routine cm_f64_pow_pow2(x: F64, e: S64) -> F64
+    block entry():
+        odd : Bool = e.bitand(1).ne(0)
+        r   : F64  = odd
+            ? x.mul(2.0)
+            : x
+        half_e          : U64 = e.shr(1).to_wrap<U64>()
+        biased_exponent : U64 = half_e.add_wrap(0x3FF).bitand(0x7FF)
+        e2              : F64 = F64.from_bits(biased_exponent.shl(52))
+        return(r.mul(e2).mul(e2))
+
+/// x^y exactly when it fits into 54 bits (the exact and midpoint cases, Algorithm detectRoundingBoundaryCase of
+/// Lauter and Lefevre), else NaN; z is the phase-2 approximation of |x|^y, with the sign of the result and a
+/// relative error below 2^-117.
+private routine cm_f64_pow_exact_pow(x: F64, y: F64, z: CmF64PowDint, exact: Bool) -> F64
+    block entry():
+        sg : S64 = z.sgn.ne(0)
+            ? -1
+            : 1
+        m, big_e = cm_f64_pow_odd_part(x.bits())
+        pow2 : Bool = m.eq(1)
+        out  : Bool = y.lt(0.0).bitor(y.gt(34.0))
+        when:
+            pow2 -> power_of_two(big_e)
+            out  -> return(F64.NAN)
+            else -> split(m, big_e, sg)
+
+    // x is a power of 2
+    block power_of_two(big_e: S64):
+        g     : F64  = big_e.to<F64>().mul(y)
+        whole : Bool = cm_f64_pow_is_int(g)
+        branch whole
+            ? continue
+            : return(F64.NAN)
+        r : F64 = z.sgn.ne(0)
+            ? -1.0
+            : 1.0
+        clamped : F64 = g.max(-2000.0).min(2000.0)
+        gi      : S64 = clamped.to<S64>()
+        return(cm_f64_pow_pow2(r, gi))
+
+    // y = n 2^big_f with n odd
+    block split(m: U64, big_e: S64, sg: S64):
+        n, big_f = cm_f64_pow_odd_part(y.bits())
+        bad  : Bool = n.gt(34).bitor(big_f.lt(-5))
+        root : Bool = big_f.lt(0)
+        when:
+            bad  -> return(F64.NAN)
+            root -> root(big_e, n, big_f, sg)
+            else -> whole(m, big_e, n, big_f, sg)
+
+    // -5 <= big_f < 0: big_e must be divisible by 2^-big_f; round z to 54 bits, k 2^big_g
+    block root(big_e: S64, n: U64, big_f: S64, sg: S64):
+        mask        : U64  = U64.shr(0xFFFFFFFFFFFFFFFF, big_f.add(64).to_wrap<U64>())
+        e_bits      : U64  = big_e.to_wrap<U64>()
+        indivisible : Bool = e_bits.bitand(mask).ne(0)
+        branch indivisible
+            ? return(F64.NAN)
+            : continue
+        root_e  : U64 = big_e.shr(S64.sub(0, big_f)).to_wrap<U64>()
+        g       : S64 = root_e.mul_wrap(n).to_wrap<S64>()
+        zh      : U64 = cm_f64_pow_hi(z.r)
+        big_g   : S64 = z.ex.sub(53)
+        rounded : U64 = zh.shr(10).add(zh.shr(9).bitand(1))
+        k       : S64 = rounded.to_wrap<S64>()
+        branch exact
+            ? place(g, big_g, k, sg)
+            : verify(g, big_g, k, sg)
+
+    // check that |2^big_g k - z| < 2^-116 z
+    block verify(g: S64, big_g: S64, k: S64, sg: S64):
+        cnt : U64          = k.to_wrap<U64>().leading_zeros()
+        r   : U128         = cm_f64_pow_join(k.to_wrap<U64>().shl(cnt), 0)
+        ex  : S64          = big_g.add(63).sub(cnt.to<S64>())
+        d0  : CmF64PowDint = CmF64PowDint { r: r, ex: ex, sgn: U64.sub(1, z.sgn) }
+        d1  : CmF64PowDint = cm_f64_pow_add_dint(z, d0)
+        d   : CmF64PowDint = CmF64PowDint { r: d1.r, ex: d1.ex.add(116), sgn: d1.sgn }
+        far : Bool         = cm_f64_pow_cmp_dint_abs(d, z).ge(0)
+        branch far
+            ? return(F64.NAN)
+            : place(g, big_g, k, sg)
+
+    // k must be an odd number times 2^(g - big_g)
+    block place(g: S64, big_g: S64, k: S64, sg: S64):
+        above : Bool = big_g.gt(g)
+        branch above
+            ? return(F64.NAN)
+            : continue
+        gg    : U64  = g.sub(big_g).to_wrap<U64>()
+        mask  : U64  = U64.shl(0xFFFFFFFFFFFFFFFE, gg).bitnot()
+        k_low : U64  = k.to_wrap<U64>().bitand(mask)
+        odd   : Bool = k_low.eq(U64.shl(1, gg))
+        branch odd
+            ? continue
+            : return(F64.NAN)
+        q : S64 = k.shr(gg.to_wrap<S64>()).mul(sg)
+        return(cm_f64_pow_pow2(q.to<F64>(), g))
+
+    // y an integer, 2 <= y <= 34: k = m^y by binary powering should fit into 54 bits
+    block whole(m: U64, big_e: S64, n: U64, big_f: S64, sg: S64):
+        t : U64 = n.shl(big_f.to_wrap<U64>())
+        jump powering(t, 1, m, big_e.mul(t.to<S64>()), sg)
+
+    block powering(t: U64, k: U64, mm: U64, ey: S64, sg: S64):
+        done : Bool = t.eq(0)
+        odd  : Bool = t.bitand(1).ne(0)
+        when:
+            done -> finish(k, ey, sg)
+            odd  -> multiply(t, k, mm, ey, sg)
+            else -> advance(t, k, mm, ey, sg)
+
+    block multiply(t: U64, k: U64, mm: U64, ey: S64, sg: S64):
+        p    : U128 = mm.mul_wide(k)
+        wide : Bool = p.gt(0x7FFFFFFFFFFFFFFF)
+        branch wide
+            ? return(F64.NAN)
+            : advance(t, p.to_wrap<U64>(), mm, ey, sg)
+
+    block advance(t: U64, k: U64, mm: U64, ey: S64, sg: S64):
+        next : U64  = t.shr(1)
+        more : Bool = next.ne(0)
+        branch more
+            ? square(next, k, mm, ey, sg)
+            : powering(next, k, mm, ey, sg)
+
+    block square(t: U64, k: U64, mm: U64, ey: S64, sg: S64):
+        p2   : U128 = mm.mul_wide(mm)
+        wide : Bool = p2.shr(64).ne(0)
+        branch wide
+            ? return(F64.NAN)
+            : powering(t, k, p2.to_wrap<U64>(), ey, sg)
+
+    block finish(k: U64, ey: S64, sg: S64):
+        wide : Bool = k.shr(54).ne(0)
+        branch wide
+            ? return(F64.NAN)
+            : continue
+        signed_k : S64 = k.to_wrap<S64>().mul(sg)
+        r        : F64 = signed_k.to<F64>()
+        return(cm_f64_pow_pow2(r, ey))

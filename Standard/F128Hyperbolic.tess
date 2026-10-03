@@ -1,0 +1,210 @@
+// Tessera stdlib: F128 sinh, cosh, tanh
+//
+// Correctly rounded (to nearest, ties to even). CORE-MATH has no binary128 versions, so these run in two tiers
+// like sin_pi (F128Extra.tess):
+//
+// - fast: the result in F128Extended (Standard/F128Math.tess) from e^a - 1 or e^a. It is kept when all of it
+//   × (1 ± 2^-F128_HYPER_BAND) rounds to the same F128.
+// - exact: otherwise the same formulas in F128Big (Standard/F128Big.tess, within about 2^-430 relative), rounded
+//   once.
+//
+// The band is measured, not proven: on 20000 inputs per function (random magnitudes from 2^-57 to the cutoffs,
+// plus both sides of the 1/2 and 1/4 switches, of 2^-57, 2^-56 and 2^-55, and of the cutoffs) the fast tier's worst
+// relative error against mpmath was 2^-140.3 for sinh and cosh and 2^-140.9 for tanh, about the size of the first
+// term wide_exp's series drops, so 2^-135 leaves about 5 bits. Results near a rounding boundary do occur: cosh x =
+// 1 + x²/2 + x⁴/24 + … lies within 2^-220 of a midpoint for x near n 2^-56 with odd n, sinh(21 × 2^-54) and
+// tanh(3 × 2^-56) within 2^-205 and 2^-220 of one, and tanh x just below F128_TANH_FLAT within 2^-200 of 1 - 2^-114;
+// the fast tier alone rounds some of those the wrong way (tests/f128_hyperbolic.tess has them).
+//
+// Only zero gives an exact result. For a nonzero F128 x, which is rational, e^x is transcendental (Lindemann-
+// Weierstrass), so sinh x = (e^x - e^-x) / 2, cosh x = (e^x + e^-x) / 2, and tanh x = (e^2x - 1) / (e^2x + 1) are
+// too: each would otherwise make e^x a root of a polynomial with rational coefficients. No F128 and no midpoint
+// between two F128 is transcendental, so no other input lands on either, and the tiers only have to be accurate
+// enough to see which side of a midpoint the result lies on. Two ranges need no computing at all:
+//
+// - |x| < 2^-57: sinh x = x + x³/6 + … and tanh x = x - x³/3 + … are within x³/3 < half an ulp of x (the half
+//   ulp below a power of two included), and 1 <= cosh x = 1 + x²/2 + … < 1 + 2^-115 rounds to 1.
+// - large |x|: sinh and cosh round to infinity from F128_HYPER_OVERFLOW on, and tanh to ±1 from F128_TANH_FLAT
+//   on (1 - tanh x < 2^-114, half the ulp below 1); both are the first F128 past the boundary, found with mpmath.
+
+module Standard::Core
+
+preset F128_HYPER_BAND: S64 = 135
+
+/// 2^-57: below it sinh and tanh round to x and cosh to 1.
+preset F128_HYPER_TINY: F128 = F128.from_bits(0x3FC60000000000000000000000000000)
+/// About 11357.2166: the least F128 whose sinh and cosh round to infinity (the one below gives MAX - 830 ulps).
+preset F128_HYPER_OVERFLOW: F128 = F128.from_bits(0x400C62E9BB80635D81D36125B64DA4A7)
+/// About 39.8560: the least F128 whose tanh rounds to 1.
+preset F128_TANH_FLAT: F128 = F128.from_bits(0x40043ED903114D00CEA0AEC526B52719)
+
+choice HyperKind: U8
+    Sinh
+    Cosh
+    Tanh
+
+// -- fast tier: F128Extended -----------------------------------------------------
+
+/// sinh, cosh, or tanh of a = |x| (2^-57 <= a below the cutoffs) in F128Extended.
+routine wide_hyper(a: F128, kind: HyperKind) -> F128Extended
+    block entry():
+        w : F128Extended = wide_from_f128(a)
+        when kind:
+            HyperKind.Sinh -> sinh(w)
+            HyperKind.Cosh -> cosh(w)
+            HyperKind.Tanh -> tanh(w)
+
+    // (m + m / (m + 1)) / 2 with m = e^a - 1 below 1/2, else (e^a - e^-a) / 2
+    block sinh(w: F128Extended):
+        small : Bool = w.exponent.lt(-1)
+        branch small
+            ? sinh_small(w)
+            : sinh_large(w)
+
+    block sinh_small(w: F128Extended):
+        m : F128Extended = wide_exp_m1(w)
+        r : F128Extended = m.add(m.div(m.add(wide_one()))).ldexp(-1)
+        return(r)
+
+    block sinh_large(w: F128Extended):
+        e : F128Extended = wide_exp(w)
+        r : F128Extended = e.sub(wide_one().div(e)).ldexp(-1)
+        return(r)
+
+    // (e^a + e^-a) / 2
+    block cosh(w: F128Extended):
+        e : F128Extended = wide_exp(w)
+        r : F128Extended = e.add(wide_one().div(e)).ldexp(-1)
+        return(r)
+
+    // m / (m + 2) with m = e^2a - 1
+    block tanh(w: F128Extended):
+        m : F128Extended = wide_exp_m1(w.ldexp(1))
+        r : F128Extended = m.div(m.add(wide_from_i64(2)))
+        return(r)
+
+// -- exact tier: F128Big ---------------------------------------------------------
+
+/// The same formulas in F128Big, rounded once: sinh a = (m + m / (m + 1)) / 2 with m = e^a - 1 throughout (no
+/// cancellation anywhere), cosh a = (e^a + e^-a) / 2, tanh a = m / (m + 2) with m = e^2a - 1.
+routine big_hyper(a: F128, kind: HyperKind) -> F128
+    block entry():
+        b : F128Big = big_from_f128(a)
+        when kind:
+            HyperKind.Sinh -> sinh(b)
+            HyperKind.Cosh -> cosh(b)
+            HyperKind.Tanh -> tanh(b)
+
+    block sinh(b: F128Big):
+        m : F128Big = big_exp_m1(b)
+        s : F128Big = m.add(m.div(m.add(big_one()))).ldexp(-1)
+        return(s.to<F128>())
+
+    block cosh(b: F128Big):
+        e : F128Big = big_exp(b)
+        c : F128Big = e.add(e.recip()).ldexp(-1)
+        return(c.to<F128>())
+
+    block tanh(b: F128Big):
+        m : F128Big = big_exp_m1(b.ldexp(1))
+        t : F128Big = m.div(m.add(big_from_s64(2)))
+        return(t.to<F128>())
+
+// -- the two tiers -----------------------------------------------------------------
+
+/// sinh, cosh, or tanh of a = |x| between the cutoffs. exact skips the fast tier (the tests use it to check the
+/// exact tier on its own).
+routine f128_hyper_general(a: F128, kind: HyperKind, exact: Bool) -> F128
+    block entry():
+        branch exact
+            ? slow()
+            : fast()
+
+    block fast():
+        w       : F128Extended = wide_hyper(a, kind)
+        rounded : WideRounding = wide_round_within(w, F128_HYPER_BAND)
+        branch rounded.ok
+            ? return(rounded.value)
+            : slow()
+
+    block slow():
+        r : F128 = big_hyper(a, kind)
+        return(r)
+
+// -- sinh, cosh, tanh --------------------------------------------------------------
+
+/// sinh, correctly rounded: ±0 and ±inf give themselves, and NaN a quiet NaN.
+routine F128.sinh(self: Self) -> Self
+    block entry():
+        r : Self = f128_sinh(self, false)
+        return(r)
+
+/// cosh, correctly rounded: 1 at ±0, +inf at ±inf, and a quiet NaN for NaN.
+routine F128.cosh(self: Self) -> Self
+    block entry():
+        r : Self = f128_cosh(self, false)
+        return(r)
+
+/// tanh, correctly rounded: ±0 gives itself, ±inf gives ±1, and NaN a quiet NaN.
+routine F128.tanh(self: Self) -> Self
+    block entry():
+        r : Self = f128_tanh(self, false)
+        return(r)
+
+routine f128_sinh(x: F128, exact: Bool) -> F128
+    block entry():
+        bits : U128 = x.bits()
+        nan  : Bool = f128_is_nan_bits(bits)
+        zero : Bool = f128_is_zero_bits(bits)
+        a    : F128 = x.abs()
+        tiny : Bool = a.lt(F128_HYPER_TINY)
+        over : Bool = a.ge(F128_HYPER_OVERFLOW)  // infinities too
+        when:
+            nan  -> return(f128_of(f128_quiet(bits)))
+            zero -> return(x)
+            tiny -> return(x)
+            over -> return(F128.INFINITY.copysign(x))
+            else -> general(a)
+
+    block general(a: F128):
+        r : F128 = f128_hyper_general(a, HyperKind.Sinh, exact).copysign(x)
+        return(r)
+
+routine f128_cosh(x: F128, exact: Bool) -> F128
+    block entry():
+        bits : U128 = x.bits()
+        nan  : Bool = f128_is_nan_bits(bits)
+        zero : Bool = f128_is_zero_bits(bits)
+        a    : F128 = x.abs()
+        tiny : Bool = a.lt(F128_HYPER_TINY)
+        over : Bool = a.ge(F128_HYPER_OVERFLOW)  // infinities too
+        one  : F128 = f128_of(F128_ONE)
+        when:
+            nan  -> return(f128_of(f128_quiet(bits)))
+            zero -> return(one)
+            tiny -> return(one)
+            over -> return(F128.INFINITY)
+            else -> general(a)
+
+    block general(a: F128):
+        r : F128 = f128_hyper_general(a, HyperKind.Cosh, exact)
+        return(r)
+
+routine f128_tanh(x: F128, exact: Bool) -> F128
+    block entry():
+        bits : U128 = x.bits()
+        nan  : Bool = f128_is_nan_bits(bits)
+        zero : Bool = f128_is_zero_bits(bits)
+        a    : F128 = x.abs()
+        tiny : Bool = a.lt(F128_HYPER_TINY)
+        flat : Bool = a.ge(F128_TANH_FLAT)  // infinities too
+        when:
+            nan  -> return(f128_of(f128_quiet(bits)))
+            zero -> return(x)
+            tiny -> return(x)
+            flat -> return(f128_of(F128_ONE).copysign(x))
+            else -> general(a)
+
+    block general(a: F128):
+        r : F128 = f128_hyper_general(a, HyperKind.Tanh, exact).copysign(x)
+        return(r)

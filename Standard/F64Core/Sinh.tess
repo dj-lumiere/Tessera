@@ -1,0 +1,299 @@
+// Tessera stdlib: the correctly rounded hyperbolic sine of F64
+//
+// For |x| < 1/4 an odd polynomial, checked with an error bound and redone in double-double when the bound
+// can't decide the rounding. Otherwise sinh x = (e^|x| - e^-|x|) / 2 with both exponentials from the tables
+// and polynomial of HypShared.tess (e^-|x| is dropped past |x| ~ 36.7), again checked with an error bound;
+// the accurate path evaluates the exponentials in double-double and looks the few hardest arguments up in a
+// table of exact values.
+// Round to nearest only: overflow gives a signed infinity, NaN comes back quiet, ±0 map to themselves.
+//
+// Ported from CORE-MATH, src/binary64/sinh/sinh.c via RazorForge's B64Sinh.rf.
+// Copyright (c) 2023-2026 Alexei Sibidanov and Paul Zimmermann
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// Hard-to-round arguments |x| (sorted), as F64 bits.
+preset CM_F64_SINH_DB_X: @Array<U64, 51> <- { 0x3FD364303E1AD8F6, 0x3FD4169F234F23B9,
+    0x3FD616CC75D49226, 0x3FDAE3773250E7D2, 0x3FDB7EFA91915C95, 0x3FDD68039861AB53,
+    0x3FDE90F16EB88C09, 0x3FEA3FC7E4DD47D1, 0x3FEAA3B649A96091, 0x3FEC13876341B62E,
+    0x3FF2F5D3B178914A, 0x3FF3FFC12B81CBC2, 0x3FF44F65DFF00782, 0x3FF7346E3C591A14,
+    0x3FFB6E2C73F41415, 0x3FFDC5059D4E507D, 0x3FFF737F1E8378C7, 0x4003359640329982,
+    0x40058A4FF5ADAC35, 0x4008C0A26D055288, 0x400BC3C2D0C95F52, 0x4020A19AEBB51E90,
+    0x4023EB8F61734227, 0x40243A81752EABE7, 0x40316369CD53BB69, 0x40320E29EA8B51E2,
+    0x40392A5C27AFBE82, 0x403A1E4F11B513D7, 0x403C089FCF166171, 0x403E42A98B3A0BE5,
+    0x40404DB52248CBB8, 0x40421BC021EEB97E, 0x40439FC4D3BB7110, 0x4043C895D86E96C9,
+    0x404E07E71BFCF06F, 0x404F7216C4B435C9, 0x4056474C604CC0D7, 0x4057A60EE15E3E9D,
+    0x4061F0DA93354198, 0x40654CD1FEA7663A, 0x406556C678D5E976, 0x4067945E34B18A9A,
+    0x4072DA9E5E6AF0B0, 0x40754CEBA01331D5, 0x4079E7B643238A14, 0x407C7206C1B753E4,
+    0x407D6479EBA7C971, 0x407EB9914D4AC1C8, 0x4080BC04AF1B09F5, 0x40826EE1A46D8C8B,
+    0x4084A869881F72AC }
+
+/// The high parts of sinh |x| for those arguments, as F64 bits.
+preset CM_F64_SINH_DB_H: @Array<U64, 51> <- { 0x3FD3B07E0C779DDA, 0x3FD46B7B3B358F99,
+    0x3FD687BD068C1C1E, 0x3FDBAFC3479FC9CC, 0x3FDC59869F17B483, 0x3FDE73B46ABB01E1,
+    0x3FDFBDD4A37760B7, 0x3FED4B21EBF542F0, 0x3FEDD32C5ED1E930, 0x3FEFD1D7F1C8170C,
+    0x3FF7B8516FFD2406, 0x3FF9A0FF413A1AF3, 0x3FFA38A3C3227609, 0x40001E9CFA77B855,
+    0x40057E377B3F0B4B, 0x4009168C60ED5256, 0x400BFFD3F94F40FB, 0x4015E40DF3F985BE,
+    0x401D671928665BDD, 0x4026056B06A21918, 0x40300FEF7383A978, 0x409FEE8F69C4CD25,
+    0x40C4AB1CF45E4E26, 0x40C81D364845ECFA, 0x4170FBC6C02B1C90, 0x41808B8ABBA28ABC,
+    0x4223C81F9A247253, 0x4239A65B6C2E2185, 0x4265C452E0E37569, 0x429938768CA4F8AA,
+    0x42D0794072349523, 0x4323065064A170FB, 0x4368A4E90733B95E, 0x4370F33837882A60,
+    0x45491EC4412C344F, 0x458A97E7BE23E65A, 0x47E7A8F65AD009BD, 0x48662E4DC3BBF53F,
+    0x4CD0BD73B73FC74C, 0x4F3C90810D354618, 0x4F437E7AC4E7F9B3, 0x50E1B0E4936A8C9B,
+    0x5B127D6FE867D6F6, 0x5E99A86785B5EF3E, 0x653F5DA7FE652978, 0x68E8670DE0B68CAD,
+    0x6A462A88613629B6, 0x6C32B67EFF65DCE8, 0x7027B1D97C902985, 0x750FBE20477DF4A7,
+    0x7B79EA7540A3D1F9 }
+
+/// The low parts, as F64 bits.
+preset CM_F64_SINH_DB_L: @Array<U64, 51> <- { 0xB95BC00000000000, 0xBC70000000000000,
+    0x390A000000000000, 0xB960000000000000, 0xB970000000000000, 0xB922000000000000,
+    0xB93F800000000000, 0x394E000000000000, 0x3958A00000000000, 0x3967200000000000,
+    0xB972800000000000, 0x394C000000000000, 0xB980000000000000, 0x3990000000000000,
+    0xB990000000000000, 0x397C600000000000, 0x397A400000000000, 0x3999700000000000,
+    0x3990000000000000, 0xB99BE00000000000, 0x39B6100000000000, 0x3A04800000000000,
+    0x3A50000000000000, 0xBA50000000000000, 0xBAE9000000000000, 0x3B09B00000000000,
+    0x3BC0000000000000, 0xBB9BC00000000000, 0x3BA4000000000000, 0x3C16D00000000000,
+    0x3C60E80000000000, 0x3CB0880000000000, 0x3CD6E00000000000, 0xBCE2800000000000,
+    0x3E70000000000000, 0xBF00000000000000, 0xC130800000000000, 0x41CB000000000000,
+    0x4655900000000000, 0x4862000000000000, 0x48C0200000000000, 0xCA5FA00000000000,
+    0x5480A00000000000, 0xD812200000000000, 0x5EC0000000000000, 0xE237800000000000,
+    0xE374000000000000, 0xE5A0200000000000, 0x6995600000000000, 0xEE85500000000000,
+    0xF4F2D00000000000 }
+
+/// sinh self, correctly rounded.
+routine F64.sinh(self: Self) -> Self
+    block entry():
+        aix   : U64  = self.abs().bits()
+        small : Bool = aix.lt(0x3FD0000000000000)  // |x| < 1/4
+        large : Bool = aix.gt(0x408633CE8FB9F87D)  // |x| > 0x1.633ce8fb9f87dp+9 ~ 710.47586
+        when:
+            small -> small(aix)
+            large -> large(aix)
+            else  -> return(cm_f64_sinh_main(self))
+
+    block small(aix: U64):
+        tiny : Bool = aix.lt(0x3E57137449123EF7)  // |x| < 0x1.7137449123ef7p-26
+        branch tiny
+            ? return(self.mul_add(0x1p-55, self))
+            : continue
+        // x + p is a minimax approximation of sinh x on [0x1.7137449123ef7p-26, 1/4] with
+        // |x + p - sinh x| / x^3 < 2^-56.584
+        x2   : Self = self.mul(self)
+        x3   : Self = x2.mul(self)
+        x4   : Self = x2.mul(x2)
+        c0   : Self = x2.mul(0x1.111111111151ep-7).add(0x1.5555555555555p-3)
+        c4   : Self = x2.mul(0x1.71de444a96e11p-19).add(0x1.a01a019d0c767p-13)
+        c48  : Self = x4.mul(0x1.ae8465375242p-26).add(c4)
+        p    : Self = x3.mul(x4.mul(c48).add(c0))
+        e    : Self = x3.mul(0x1.cp-53)
+        lb   : Self = self.add(p.sub(e))
+        ub   : Self = self.add(p.add(e))
+        sure : Bool = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : return(cm_f64_sinh_zero(self))
+
+    // NaN, infinities, or overflow
+    block large(aix: U64):
+        nonfinite : Bool = aix.ge(0x7FF0000000000000)
+        branch nonfinite
+            ? return(self.add(self))
+            : return(Self.copysign(0x1p+1023, self).mul(2.0))
+
+/// sinh x for 1/4 <= |x| <= 0x1.633ce8fb9f87dp+9.
+private routine cm_f64_sinh_main(x: F64) -> F64
+    block entry():
+        ax  : F64 = x.abs()
+        aix : U64 = ax.bits()
+        sgn : F64 = F64.copysign(1.0, x)
+        // t = round(|x| 2^12 / log 2), and its bits il = 2^12 ie + 2^6 i0 + i1
+        v0         : F64        = ax.mul_add(0x1.71547652b82fep+12, 0x1.8000002p+26)
+        jt         : U64        = v0.bits()
+        t          : F64        = F64.from_bits(jt.bitand(0xFFFFFFFFFC000000)).sub(0x1.8p+26)
+        index_bits : U64        = jt.shl(14).shr(40)
+        il         : S64        = index_bits.to<S64>()
+        i1         : USize      = il.bitand(0x3F).to<USize>()
+        slot0      : S64        = il.shr(6).bitand(0x3F)
+        i0         : USize      = slot0.to<USize>()
+        ie         : S64        = il.shr(12)
+        sp         : F64        = cm_f64_hyp_scale(ie.add(1022))
+        tt         : CmF64HypDd = cm_f64_hyp_table(i0, i1)
+        // |x| = t log(2) / 2^12 + dx, with log(2) / 2^12 as l2h + l2l and l2h t exact
+        dx     : F64  = ax.sub(t.mul(0x1.62e42ffp-13)).add(t.mul(0x1.718432a1b0e26p-47))
+        dx2    : F64  = dx.mul(dx)
+        pp     : F64  = cm_f64_hyp_poly(dx, dx2)
+        jl     : S64  = il.neg()
+        above5 : Bool = aix.gt(0x4014000000000000)
+        huge   : Bool = aix.gt(0x40425E4F7B2737FA)  // |x| > ~36.736801: e^-|x| is negligible
+        when:
+            huge   -> huge(ax, sgn, t, ie, tt.hi, tt.lo, pp)
+            above5 -> mid(ax, aix, sgn, t, sp, tt.hi, tt.lo, dx, dx2, pp, jl)
+            else   -> low(ax, sgn, t, sp, tt.hi, tt.lo, dx, dx2, pp, jl)
+
+    // sinh x ~ sgn e^|x| / 2
+    block huge(ax: F64, sgn: F64, t: F64, ie: S64, th: F64, tl: F64, pp: F64):
+        sp   : F64  = cm_f64_hyp_scale(ie.add(1021))
+        rh   : F64  = th.mul(sgn)
+        rl   : F64  = tl.add(th.mul(pp)).mul(sgn)
+        e    : F64  = th.mul(0x1.1b6p-63)
+        lb   : F64  = rh.add(rl.sub(e))
+        ub   : F64  = rh.add(rl.add(e))
+        sure : Bool = lb.eq(ub)
+        branch sure
+            ? return(lb.mul(sp).mul(2.0))
+            : huge_accurate(ax, sgn, t, sp, th, tl)
+
+    block huge_accurate(ax: F64, sgn: F64, t: F64, sp: F64, th: F64, tl: F64):
+        a0      : CmF64HypDd = cm_f64_hyp_exp_accurate(ax, t, th, tl)
+        a       : CmF64HypDd = cm_f64_hyp_fasttwosum(a0.hi, a0.lo)
+        bh      : F64        = a.hi.mul(sgn)
+        bl      : F64        = a.lo.mul(sgn)
+        hard    : Bool       = cm_f64_hyp_is_hard(bh, bl)
+        doubled : F64        = bh.add(bl).mul(2.0)
+        r       : F64        = doubled.mul(sp)
+        branch hard
+            ? return(cm_f64_sinh_database(x, r))
+            : return(r)
+
+    // 5 < |x| <= ~36.736801: e^-|x| matters only to the low part
+    block mid(ax: F64, aix: U64, sgn: F64, t: F64, sp: F64, th0: F64, tl0: F64, dx: F64, dx2: F64,
+        pp: F64, jl: S64):
+        j1    : USize      = jl.bitand(0x3F).to<USize>()
+        slot0 : S64        = jl.shr(6).bitand(0x3F)
+        j0    : USize      = slot0.to<USize>()
+        sm    : F64        = cm_f64_hyp_scale(jl.shr(12).add(1022))
+        q     : CmF64HypDd = cm_f64_hyp_table(j0, j1)
+        th    : F64        = th0.mul(sp)
+        tl    : F64        = tl0.mul(sp)
+        qh    : F64        = q.hi.mul(sm)
+        pm    : F64        = cm_f64_hyp_poly(dx.neg(), dx2)
+        em    : F64        = qh.mul(pm).add(qh)
+        rh    : F64        = th.mul(sgn)
+        rl0   : F64        = tl.sub(em).add(th.mul(pp))
+        rl    : F64        = rl0.mul(sgn)
+        e     : F64        = F64.mul(0x1.202p-63, rh)
+        lb    : F64        = rh.add(rl.sub(e))
+        ub    : F64        = rh.add(rl.add(e))
+        sure  : Bool       = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : mid_accurate(ax, aix, sgn, t, th, tl, qh, q, sm)
+
+    block mid_accurate(ax: F64, aix: U64, sgn: F64, t: F64, th0: F64, tl0: F64, qh: F64,
+        q: CmF64HypDd, sm: F64):
+        a      : CmF64HypDd = cm_f64_hyp_exp_accurate(ax, t, th0, tl0)
+        beyond : Bool       = aix.gt(0x403F666666666666)  // |x| > 31.4
+        branch beyond
+            ? far(sgn, a, qh)
+            : near(ax, sgn, t, a, q, sm)
+
+    // e^-|x| as the one F64 qh
+    block far(sgn: F64, a: CmF64HypDd, qh: F64):
+        rh     : F64 = a.hi.sub(qh)
+        rh_err : F64 = a.hi.sub(rh).sub(qh)
+        rl     : F64 = rh_err.add(a.lo)
+        jump tail(sgn, rh, rl)
+
+    // e^-|x| in double-double
+    block near(ax: F64, sgn: F64, t: F64, a: CmF64HypDd, q: CmF64HypDd, sm: F64):
+        m      : CmF64HypDd = cm_f64_hyp_exp_accurate(ax.neg(), t.neg(), q.hi.mul(sm), q.lo.mul(sm))
+        rh     : F64        = a.hi.sub(m.hi)
+        rh_err : F64        = a.hi.sub(rh).sub(m.hi)
+        rl     : F64        = rh_err.sub(m.lo).add(a.lo)
+        jump tail(sgn, rh, rl)
+
+    // 1/4 <= |x| <= 5
+    block low(ax: F64, sgn: F64, t: F64, sp: F64, th0: F64, tl0: F64, dx: F64, dx2: F64, pp: F64,
+        jl: S64):
+        j1      : USize      = jl.bitand(0x3F).to<USize>()
+        slot0   : S64        = jl.shr(6).bitand(0x3F)
+        j0      : USize      = slot0.to<USize>()
+        sm      : F64        = cm_f64_hyp_scale(jl.shr(12).add(1022))
+        q       : CmF64HypDd = cm_f64_hyp_table(j0, j1)
+        th      : F64        = th0.mul(sp)
+        tl      : F64        = tl0.mul(sp)
+        qh      : F64        = q.hi.mul(sm)
+        ql      : F64        = q.lo.mul(sm)
+        pm      : F64        = cm_f64_hyp_poly(dx.neg(), dx2)
+        fpl     : F64        = tl.add(th.mul(pp))
+        fml     : F64        = ql.add(qh.mul(pm))
+        rh0     : F64        = th.sub(qh)
+        rh0_err : F64        = th.sub(rh0).sub(qh)
+        rl0     : F64        = rh0_err.sub(fml).add(fpl)
+        rh      : F64        = rh0.mul(sgn)
+        rl      : F64        = rl0.mul(sgn)
+        e       : F64        = F64.mul(0x1.c0ap-62, rh)
+        lb      : F64        = rh.add(rl.sub(e))
+        ub      : F64        = rh.add(rl.add(e))
+        sure    : Bool       = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : low_accurate(ax, sgn, t, th, tl, qh, ql)
+
+    block low_accurate(ax: F64, sgn: F64, t: F64, th: F64, tl: F64, qh: F64, ql: F64):
+        a      : CmF64HypDd = cm_f64_hyp_exp_accurate(ax, t, th, tl)
+        m      : CmF64HypDd = cm_f64_hyp_exp_accurate(ax.neg(), t.neg(), qh, ql)
+        rh     : F64        = a.hi.sub(m.hi)
+        rh_err : F64        = a.hi.sub(rh).sub(m.hi)
+        rl     : F64        = rh_err.sub(m.lo).add(a.lo)
+        jump tail(sgn, rh, rl)
+
+    block tail(sgn: F64, rh: F64, rl: F64):
+        s    : CmF64HypDd = cm_f64_hyp_fasttwosum(rh, rl)
+        hard : Bool       = cm_f64_hyp_is_hard(s.hi, s.lo)
+        r    : F64        = s.hi.mul(sgn).add(s.lo.mul(sgn))
+        branch hard
+            ? return(cm_f64_sinh_database(x, r))
+            : return(r)
+
+/// The accurate path of sinh for 0x1.7137449123ef7p-26 <= |x| < 1/4: a double-double odd polynomial.
+private routine cm_f64_sinh_zero(x: F64) -> F64
+    block entry():
+        x2  : F64        = x.mul(x)
+        x2l : F64        = x.mul_add(x, x2.neg())
+        c   : F64        = x2.mul(0x1.95785063cd974p-49).add(0x1.ae7f36beea815p-41)
+        y2  : F64        = x2.mul(x2.mul(c).add(0x1.6124613aef206p-33))
+        p9  : CmF64HypDd = cm_f64_hyp_polydd_init(y2, 0x1.ae64567f54482p-26, -0x1.defcf17a6ab79p-81)
+        p7  : CmF64HypDd = cm_f64_hyp_polydd_step(x2, x2l, p9.hi, p9.lo, 0x1.71de3a556c734p-19,
+            -0x1.b4e2835532bcdp-73)
+        p5  : CmF64HypDd = cm_f64_hyp_polydd_step(x2, x2l, p7.hi, p7.lo, 0x1.a01a01a01a01ap-13,
+            0x1.a0011c925b85cp-73)
+        p3  : CmF64HypDd = cm_f64_hyp_polydd_step(x2, x2l, p5.hi, p5.lo, 0x1.1111111111111p-7,
+            0x1.11111115cf00dp-63)
+        p1  : CmF64HypDd = cm_f64_hyp_polydd_step(x2, x2l, p3.hi, p3.lo, 0x1.5555555555555p-3,
+            0x1.555555555552fp-57)
+        px  : CmF64HypDd = cm_f64_hyp_mulddd(p1.hi, p1.lo, x)
+        p   : CmF64HypDd = cm_f64_hyp_muldd(px.hi, px.lo, x2, x2l)
+        s0  : CmF64HypDd = cm_f64_hyp_fasttwosum(x, p.hi)
+        s1  : CmF64HypDd = cm_f64_hyp_fasttwosum(s0.lo, p.lo)
+        return(s0.hi.add(cm_f64_hyp_nudge(s1.hi, s1.lo)))
+
+/// The exact sinh x for the arguments the fast and accurate paths can't round, or f for any other x.
+private routine cm_f64_sinh_database(x: F64, f: F64) -> F64
+    block entry():
+        jump search(0, 50)
+
+    block search(a: S64, b: S64):
+        open : Bool = a.le(b)
+        branch open
+            ? probe(a, b)
+            : return(f)
+
+    block probe(a: S64, b: S64):
+        m     : S64   = a.add(b).div(2)
+        mu    : USize = m.to<USize>()
+        key   : F64   = F64.from_bits(CM_F64_SINH_DB_X.get(mu))
+        ax    : F64   = x.abs()
+        below : Bool  = key.lt(ax)
+        found : Bool  = key.eq(ax)
+        when:
+            below -> search(m.add(1), b)
+            found -> hit(mu)
+            else  -> search(a, m.sub(1))
+
+    block hit(mu: USize):
+        sgn : F64 = F64.copysign(1.0, x)
+        h   : F64 = F64.from_bits(CM_F64_SINH_DB_H.get(mu))
+        l   : F64 = F64.from_bits(CM_F64_SINH_DB_L.get(mu))
+        return(sgn.mul(h).add(sgn.mul(l)))

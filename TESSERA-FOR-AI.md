@@ -1,7 +1,7 @@
 # Tessera for AI Assistants
 
 A compact reference for writing correct Tessera on the first try. It covers the rules that are easy to get wrong
-coming from C, Rust, or LLVM IR. The full language is in `../Tessera-Wiki/`; when the wiki and `stdlib/` disagree, the
+coming from C, Rust, or LLVM IR. The full language is in `../Tessera-Wiki/`; when the wiki and `Standard/` disagree, the
 stdlib wins. Undecided questions live in `../Tessera-Wiki/docs/Roadmap.md#open-questions`: point to them, don't silently pick an
 answer.
 
@@ -315,7 +315,7 @@ routine parse_or_zero(text: Bytes) -> F64
 
 ## Output
 
-Format through `stdlib/format.tess`, not printf. printf is for C interop demos only: it can't print `S128`, `F16`,
+Format through `Standard/Format.tess`, not printf. printf is for C interop demos only: it can't print `S128`, `F16`,
 `BF16`, or `F128`, and a mismatched format is undefined behavior.
 
 - Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.shared()` is the pointer a
@@ -344,7 +344,7 @@ Format through `stdlib/format.tess`, not printf. printf is for C interop demos o
 
 ## Collections
 
-All in `stdlib/collection/`, documented in `../Tessera-Wiki/docs/Collections.md`. `construct(alloc)` stores the allocator; `destruct()`
+All in `Standard/Collection/`, documented in `../Tessera-Wiki/docs/Collections.md`. `construct(alloc)` stores the allocator; `destruct()`
 releases storage. Out-of-range access, `pop` on empty, and `get` of a missing key trap; the `_checked` forms
 (`get_checked`, `pop_checked`, `peek_checked`) return `Option<T>` instead. Allocation failure traps too; each
 insertion and `reserve` has a `_result` form (`push_result`, `put_result`, `add_result`) that returns

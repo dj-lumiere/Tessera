@@ -1,0 +1,167 @@
+// Tessera stdlib: the correctly rounded arc sine of F64
+//
+// For |x| <= 1/2 a piecewise polynomial in x^2 (33 pieces of width 1/128);
+// above, asin(x) = sign(x) pi/2 - 2 asin(sqrt((1 - |x|)/2)) with the same
+// polynomial. The fast path carries an error bound; when it can't decide the
+// rounding, the accurate path rotates the angle by a multiple of pi/64 and
+// evaluates the small remainder in double-double, with a table of the inputs
+// too close to a rounding boundary. Round to nearest only: |x| > 1 gives the
+// x86 default NaN, NaN comes back quiet. Tables and helpers in
+// InvtrigShared.tess.
+//
+// Ported from CORE-MATH, src/binary64/asin/asin.c via RazorForge's B64Asin.rf.
+// Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// The inputs |x| whose arc sine is too close to a rounding boundary, as F64 bits.
+preset CM_F64_ASIN_DB_X: @Array<U64, 29> <- { 0x3E57137449123EF6, 0x3E5D12ED0AF1A27E,
+    0x3E851C4B960778F5, 0x3E93CFC2A006A414, 0x3E9CBAA95DADB559, 0x3EBACD69F89AD8F1,
+    0x3EF2BFFFFFFC233B, 0x3EFFF0F3022B2E9D, 0x3F13217783D70D1D, 0x3F1C373FF4AAD79B,
+    0x3F6B3F28593CAD2F, 0x3F8E17B3F6BB5E6E, 0x3F941D60A76A82ED, 0x3F9921C0A0486537,
+    0x3F99C360A8DD681A, 0x3F9D6315F7EE7E01, 0x3F9EA6FDC56FC61A, 0x3FA2749DC4D19C6D,
+    0x3FA69768DC89BB00, 0x3FAA4816B2066707, 0x3FAD77B117F230D6, 0x3FAFC7A07B2549AA,
+    0x3FB2DF0542154F1B, 0x3FB51CF5DB1B1956, 0x3FCD0EF799001BA9, 0x3FD4A8E1A96E38E3,
+    0x3FDCEEE68154D1C9, 0x3FDDA4E0E6C717A5, 0x3FDE9950730C4696 }
+
+/// The high parts of their arc sines, as F64 bits.
+preset CM_F64_ASIN_DB_H: @Array<U64, 29> <- { 0x3E57137449123EF7, 0x3E5D12ED0AF1A27F,
+    0x3E851C4B9607790D, 0x3E93CFC2A006A465, 0x3E9CBAA95DADB650, 0x3EBACD69F89AE57A,
+    0x3EF2C00000006DDD, 0x3EFFF0F3024065E7, 0x3F132177841FFBEF, 0x3F1C373FF594D65B,
+    0x3F6B3F2BA40DBC66, 0x3F8E17FAEFAC7797, 0x3F941DB571D96126, 0x3F99226605233224,
+    0x3F99C412D62C1440, 0x3F9D641E6D5E769A, 0x3F9EA829E3E988E5, 0x3FA275A3D78C01EC,
+    0x3FA69949B3D51FB1, 0x3FAA4B0BFB0454D5, 0x3FAD7BDCD778049F, 0x3FAFCCDC252CAD1F,
+    0x3FB2E36813A98740, 0x3FB5231B416BA885, 0x3FCD5064E6FE82C5, 0x3FD50954B7BBF87B,
+    0x3FDE05B0E0A809BC, 0x3FDED25C5EB8C916, 0x3FDFE767739D0F6D }
+
+/// The low parts of their arc sines, as F64 bits.
+preset CM_F64_ASIN_DB_L: @Array<U64, 29> <- { 0xBAFFFFFFFFFFFFFF, 0xB7963676AA7969AA,
+    0x3B2FFFFFFFFFFFFF, 0xB7C1E68BC303367C, 0x37F742593EF4C3D3, 0x381B0DDFE3E29B3C,
+    0xB851C26F2054C230, 0xBB9FFFFFFFFFFFFE, 0xBBBFFFFFFFFFFFFF, 0xBBBFFFFFFFFFFFFF,
+    0xB8B27CA20C684481, 0xB8F15A1C95184D1B, 0xB8DDF34BCDACF353, 0xB9338E672F1696D5,
+    0x3911EDD261167BAF, 0xB92AF7DEC023F5B9, 0xB92F358E90326F9A, 0x39149AB71C17BD11,
+    0xB8E14B91318650E8, 0x3C4FFFFFFFFFFFFF, 0x38DAAFC31A59E093, 0xB92DC02FDAC5159A,
+    0xB9363ABAA885A4DA, 0xB93E1E3F45D0BEC3, 0xB9284B9ECB11E241, 0xB93B9F88CFB1EF42,
+    0x394117D6AECD2594, 0xB9289E120E5744A5, 0x38716376667A73F3 }
+
+/// arcsin(self), correctly rounded.
+routine F64.asin(self: Self) -> Self
+    block entry():
+        xu    : U64  = self.bits()
+        ax    : U64  = xu.shl(1)
+        large : Bool = ax.gt(0x7FC0000000000000)  // |x| > 1/2
+        branch large
+            ? large(xu, ax)
+            : small(ax)
+
+    block large(xu: U64, ax: U64):
+        neg : Bool = xu.shr(63).ne(0)
+        f0h : Self = neg
+            ? -0x1.921fb54442d18p+0
+            : 0x1.921fb54442d18p+0
+        f0l : Self = neg
+            ? -0x1.1a62633145c07p-54
+            : 0x1.1a62633145c07p-54
+        edge : Bool = ax.ge(0x7FE0000000000000)  // |x| >= 1
+        branch edge
+            ? edge(ax, f0h, f0l)
+            : continue
+        // asin(x) = pi/2 - 2 asin(sqrt((1 - x)/2)), and for x < -1/2 -pi/2 + 2 asin(sqrt((1 - |x|)/2))
+        t   : Self = Self.sub(2.0, Self.mul(2.0, self.abs()))
+        jd  : Self = t.mul(0x1p5).round_ties_even()
+        z   : Self = t.sqrt().copysign(self.neg())
+        zl  : Self = z.mul_add(z, t.neg()).mul(Self.div(-0.5, t).mul(z))
+        tr  : Self = Self.mul(0.25, t).sub(jd.mul(0x1p-7))
+        ztr : Self = z.mul(tr).abs()
+        eps : Self = ztr.mul(0x1.99p-52)
+        jump poly(z, zl, tr, jd, f0h, f0l, eps)
+
+    // |x| = 1, |x| > 1 or NaN
+    block edge(ax: U64, f0h: Self, f0l: Self):
+        one : Bool = ax.eq(0x7FE0000000000000)
+        nan : Bool = ax.gt(0xFFE0000000000000)
+        when:
+            one  -> return(f0h.add(f0l))
+            nan  -> return(self.add(self))
+            else -> return(Self.from_bits(0xFFF8000000000000))
+
+    // |x| <= 1/2: below 0x1.7137449123ef6p-26, |asin(x) - x| is under half an ulp of asin(x)
+    block small(ax: U64):
+        tiny : Bool = ax.lt(0x7CAE26E892247DEC)
+        branch tiny
+            ? return(Self.mul_add(0x1p-55, self, self))
+            : continue
+        t2  : Self = self.mul(self)
+        jd  : Self = t2.mul(0x1p7).round_ties_even()
+        t   : Self = self.mul_add(self, Self.mul(-0x1p-7, jd))
+        xt  : Self = self.mul(t).abs()
+        eps : Self = xt.mul(0x1.77p-52)
+        jump poly(self, 0.0, t, jd, 0.0, 0.0, eps)
+
+    // asin(z + zl) from the piece j = round(128 z^2), t = z^2 - j/128, plus f0h + f0l
+    block poly(z: Self, zl: Self, t: Self, jd: Self, f0h: Self, f0l: Self, eps: Self):
+        j    : USize          = jd.to<U64>().to<USize>()
+        j8   : USize          = j.mul(8)
+        f    : CmF64InvtrigDD = cm_f64_invtrig_asin_poly(z, zl, t, j8, f0h, f0l)
+        lb   : Self           = f.hi.add(f.lo.sub(eps))
+        ub   : Self           = f.hi.add(f.lo.add(eps))
+        sure : Bool           = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : return(cm_f64_asin_accurate(self, lb))
+
+/// The accurate path, for the inputs the fast path can't round: with |x| = sin(phi),
+/// rotates the angle by j pi/64 close to phi and evaluates the arc sine of the small
+/// remainder in double-double. phi is the fast-path approximation of asin(x).
+routine cm_f64_asin_accurate(x: F64, phi: F64) -> F64
+    block entry():
+        // jf = round(|phi| 64/pi), 0 <= jf <= 32
+        abs_phi : F64            = phi.abs()
+        jfd     : F64            = abs_phi.mul(0x1.45f306dc9c883p+4).round_ties_even()
+        r       : CmF64InvtrigDD = cm_f64_invtrig_rotate(x, jfd.to<U64>().to<USize>())
+        sgn     : F64            = F64.copysign(1.0, x)
+        jt      : F64            = jfd.mul(sgn)  // -32 <= jt <= 32
+        sq      : CmF64InvtrigDD = cm_f64_invtrig_muldd(r.hi, r.lo, r.hi, r.lo)
+        f       : CmF64InvtrigDD = cm_f64_invtrig_asin_dd(r.hi.mul(sgn), r.lo.mul(sgn), sq.hi,
+            sq.lo)
+        // jt pi/64 in three parts; since |jt| <= 32, ph and pl are exact
+        ph0  : F64            = jt.mul(0x1.921fb54442dp-5)
+        pl0  : F64            = F64.mul(0x1.8469898cc518p-53, jt)
+        ps0  : F64            = F64.mul(-0x1.fc8f8cbb5bf6cp-102, jt)
+        q1   : CmF64InvtrigDD = cm_f64_invtrig_fastsum(f.hi, f.lo, pl0, ps0)
+        q2   : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(ph0, q1.hi)
+        q3   : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(q2.lo, q1.lo)
+        q4   : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(q2.hi, q3.hi)
+        q5   : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(q4.lo, q3.lo)
+        ph   : F64            = q4.hi
+        pl   : F64            = q5.hi
+        th   : U64            = ph.bits()
+        tl   : U64            = pl.bits().bitand(0x7FFFFFFFFFFFFFFF)
+        tn   : U64            = th.bitand(0x7FF0000000000000).sub_wrap(0x0350000000000000)
+        dn   : S64            = tl.sub_wrap(tn).to_wrap<S64>()
+        de   : U64            = tn.sub_wrap(tl).shr(52)
+        res  : F64            = ph.add(pl)
+        hard : Bool           = dn.between(-2, 0).bitor(de.gt(47))
+        branch hard
+            ? database(x.abs(), res, 0)
+            : return(res)
+
+    // the inputs whose arc sine is too close to a rounding boundary
+    block database(ax: F64, res: F64, k: USize):
+        end : Bool = k.eq(29)
+        branch end
+            ? return(res)
+            : continue
+        hit : Bool = F64.from_bits(CM_F64_ASIN_DB_X.get(k)).eq(ax)
+        branch hit
+            ? found(k)
+            : database(ax, res, k.add(1))
+
+    block found(k: USize):
+        rh  : F64  = F64.from_bits(CM_F64_ASIN_DB_H.get(k))
+        rl  : F64  = F64.from_bits(CM_F64_ASIN_DB_L.get(k))
+        pos : Bool = x.gt(0.0)
+        branch pos
+            ? return(rh.add(rl))
+            : return(rh.neg().sub(rl))

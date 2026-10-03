@@ -1,0 +1,864 @@
+// Tessera stdlib: running another program on Windows (see Process.tess)
+//
+// CreateProcessW with a command line quoted so the child's CommandLineToArgvW reads back each argument as it was
+// given, and, with overrides, a Unicode environment block: this process's variables (from GetEnvironmentStringsW,
+// so nothing is lost to a code page) with the overridden ones replaced, names compared without case as Windows does,
+// sorted as Windows wants. The child's three standard handles are always given: a pipe, the null device, or a
+// duplicate of this process's own. When both output streams are captured, a helper thread reads standard error into
+// the malloc heap (the caller's allocator may not be safe to share between threads) while this thread reads standard
+// output.
+
+module Standard::Os
+
+import Standard::Alloc
+
+/// SECURITY_ATTRIBUTES
+#target(os: "windows")
+private record SecurityAttributes
+    length         : U32
+    descriptor     : Addr
+    inherit_handle : CInt
+
+/// STARTUPINFOW
+#target(os: "windows")
+private record StartupInfo
+    cb             : U32
+    reserved       : Addr
+    desktop        : Addr
+    title          : Addr
+    x              : U32
+    y              : U32
+    x_size         : U32
+    y_size         : U32
+    x_count_chars  : U32
+    y_count_chars  : U32
+    fill_attribute : U32
+    flags          : U32
+    show_window    : U16
+    cb_reserved2   : U16
+    reserved2      : Addr
+    std_input      : Addr
+    std_output     : Addr
+    std_error      : Addr
+
+/// PROCESS_INFORMATION
+#target(os: "windows")
+private record ProcessInformation
+    process    : Addr
+    thread     : Addr
+    process_id : U32
+    thread_id  : U32
+
+#[external("c"), symbol("GetLastError"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_last_error() -> U32
+
+#[external("c"), symbol("SetLastError"), callconv("stdcall"), target(os: "windows")]
+private routine c_set_last_error(code: U32) -> Void
+
+#[external("c"), symbol("CreateFileW"), callconv("stdcall"), target(os: "windows")]
+private routine c_create_file(name: @U16, access: U32, share: U32, security: @SecurityAttributes,
+    disposition: U32, flags: U32, template: Addr) -> Addr
+
+#[external("c"), symbol("CreatePipe"), callconv("stdcall"), target(os: "windows")]
+private routine c_create_pipe(read: @Addr, write: @Addr, security: @SecurityAttributes,
+    size: U32) -> CInt
+
+#[external("c"), symbol("SetHandleInformation"), callconv("stdcall"), target(os: "windows")]
+private routine c_set_handle_information(handle: Addr, mask: U32, flags: U32) -> CInt
+
+#[external("c"), symbol("GetStdHandle"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_std_handle(which: U32) -> Addr
+
+#[external("c"), symbol("GetCurrentProcess"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_current_process() -> Addr
+
+#[external("c"), symbol("DuplicateHandle"), callconv("stdcall"), target(os: "windows")]
+private routine c_duplicate_handle(from_process: Addr, handle: Addr, to_process: Addr, copy: @Addr,
+    access: U32, inherit: CInt, options: U32) -> CInt
+
+#[external("c"), symbol("CreateProcessW"), callconv("stdcall"), target(os: "windows")]
+private routine c_create_process(application: Addr, command_line: @U16, process_attrs: Addr,
+    thread_attrs: Addr, inherit: CInt, flags: U32, environment: Addr, directory: @U16,
+    startup: @StartupInfo, info: @ProcessInformation) -> CInt
+
+#[external("c"), symbol("ReadFile"), callconv("stdcall"), target(os: "windows")]
+private routine c_read_file(handle: Addr, buffer: @Byte, size: U32, read: @U32,
+    overlapped: Addr) -> CInt
+
+#[external("c"), symbol("WaitForSingleObject"), callconv("stdcall"), target(os: "windows")]
+private routine c_wait_for_single_object(handle: Addr, millis: U32) -> U32
+
+#[external("c"), symbol("GetExitCodeProcess"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_exit_code_process(process: Addr, code: @U32) -> CInt
+
+#[external("c"), symbol("CloseHandle"), callconv("stdcall"), target(os: "windows")]
+private routine c_close_handle(handle: Addr) -> CInt
+
+#[external("c"), symbol("GetEnvironmentStringsW"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_environment_strings() -> @U16
+
+#[external("c"), symbol("FreeEnvironmentStringsW"), callconv("stdcall"), target(os: "windows")]
+private routine c_free_environment_strings(strings: @U16) -> CInt
+
+#[external("c"), symbol("GetEnvironmentVariableW"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_environment_variable(name: @U16, buffer: @U16, size: U32) -> U32
+
+#target(os: "windows")
+private routine spawn_error(e: U32) -> ProcessError
+    block entry():
+        when e:
+            2, 3, 267 -> return(ProcessError.NotFound)
+            5         -> return(ProcessError.PermissionDenied)
+            8, 14     -> return(ProcessError.OutOfMemory)
+            123, 87   -> return(ProcessError.InvalidArgument)
+            else      -> return(ProcessError.Other)
+
+#target(os: "windows")
+private routine is_invalid(h: Addr) -> Bool
+    block entry():
+        return(h.is_null().bitor(ptrtoint<Addr, USize>(h).eq(USize.MAX)))
+
+#target(os: "windows")
+private routine same(a: Addr, b: Addr) -> Bool
+    block entry():
+        return(ptrtoint<Addr, USize>(a).eq(ptrtoint<Addr, USize>(b)))
+
+#target(os: "windows")
+private routine close_if_open(h: Addr) -> Void
+    block entry():
+        branch is_invalid(h)
+            ? return()
+            : continue
+        c_close_handle(h)
+        return()
+
+/// text as UTF-16 with a 0 after it, in memory from alloc: the units and their count, or null (a NUL inside, or no
+/// memory).
+#target(os: "windows")
+private routine utf16(text: Bytes, alloc: @Allocator) -> (@U16, USize)
+    block entry():
+        units : @U16 = allocate<U16>(alloc, text.length().add(1))
+        branch units.is_null()
+            ? return({ null, 0 })
+            : continue
+        n : Option<USize> = encode_utf16(text, units, text.length().add(1))
+        when n:
+            .Present(count) -> return({ units, count })
+            .Absent         -> failed(units)
+
+    block failed(units: @U16):
+        units.free(alloc)
+        return({ null, 0 })
+
+// -- the command line --------------------------------------------------------------------
+
+/// Whether one of the n units at s is a, b, or c.
+#target(os: "windows")
+private routine has_any(s: @U16, n: USize, a: U16, b: U16, c: U16) -> Bool
+    block entry():
+        jump look(0)
+
+    block look(i: USize):
+        branch i.eq(n)
+            ? return(false)
+            : continue
+        u          : U16  = s.stride(i).load()
+        matches_ab : Bool = u.eq(a).bitor(u.eq(b))
+        branch matches_ab.bitor(u.eq(c))
+            ? return(true)
+            : look(i.add(1))
+
+/// Writes one argument (n units at source) at target as CommandLineToArgvW reads it back, quoted only when it has
+/// to be (empty, or holding a space, a tab, or a quote): where it ends. target has room for 2 * n + 2 units.
+#target(os: "windows")
+private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
+    block entry():
+        branch n.eq(0)
+            ? empty()
+            : continue
+        // ' ', '\t', '"'
+        branch has_any(source, n, 32, 9, 34)
+            ? continue
+            : plain()
+        // '"', '\\'
+        branch has_any(source, n, 34, 92, 34)
+            ? escaped()
+            : quoted()
+
+    block empty():
+        target.store(34)
+        target.stride(1).store(34)
+        return(target.stride(2))
+
+    block plain():
+        copy<U16>(target, source, n)
+        return(target.stride(n))
+
+    block quoted():
+        target.store(34)
+        copy<U16>(target.stride(1), source, n)
+        target.stride(n.add(1)).store(34)
+        return(target.stride(n.add(2)))
+
+    // Backslashes before a quote, or before the closing quote, are doubled, and a quote gets a backslash: built
+    // backwards, then reversed.
+    block escaped():
+        target.store(34)
+        start : @U16 = target.stride(1)
+        jump back(n, start, start, true)
+
+    block back(i: USize, start: @U16, at: @U16, before_quote: Bool):
+        branch i.eq(0)
+            ? reverse(at, start, at.stride(-1))
+            : continue
+        u : U16 = source.stride(i.sub(1)).load()
+        at.store(u)
+        branch before_quote.bitand(u.eq(92))
+            ? doubled(i, start, at)
+            : continue
+        branch u.eq(34)
+            ? doubled(i, start, at)
+            : back(i.sub(1), start, at.stride(1), false)
+
+    block doubled(i: USize, start: @U16, at: @U16):
+        at.stride(1).store(92)
+        jump back(i.sub(1), start, at.stride(2), true)
+
+    block reverse(end: @U16, a: @U16, b: @U16):
+        branch ptrtoint<@U16, USize>(a).lt(ptrtoint<@U16, USize>(b))
+            ? continue
+            : close(end)
+        t : U16 = a.load()
+        a.store(b.load())
+        b.store(t)
+        jump reverse(end, a.stride(1), b.stride(-1))
+
+    block close(end: @U16):
+        end.store(34)
+        return(end.stride(1))
+
+/// The program and the arguments as one command line, in memory from alloc, or null.
+#target(os: "windows")
+private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
+    alloc: @Allocator) -> @U16
+    block entry():
+        program_bound : USize = program.length().mul(2)
+        jump size(0, program_bound.add(3))
+
+    // A UTF-8 byte count bounds the UTF-16 unit count, so 2 * bytes + 3 units bound an argument and its space.
+    block size(i: USize, capacity: USize):
+        branch i.eq(arg_count)
+            ? made(allocate<U16>(alloc, capacity.add(1)))
+            : count_arg(i, capacity)
+
+    block count_arg(i: USize, capacity: USize):
+        argument : Bytes = args.stride(i).load()
+        jump size(i.add(1), capacity.add(argument.length().mul(2)).add(3))
+
+    block made(line: @U16):
+        branch line.is_null()
+            ? return(null)
+            : append(line, line, 0)
+
+    // 0 is the program, i the argument i - 1.
+    block append(line: @U16, at: @U16, i: USize):
+        branch i.gt(arg_count)
+            ? finish(at, line)
+            : continue
+        branch i.eq(0)
+            ? one(line, at, i, program)
+            : one(line, at, i, args.stride(i.sub(1)).load())
+
+    block one(line: @U16, at: @U16, i: USize, arg: Bytes):
+        units, n = utf16(arg, alloc)
+        branch units.is_null()
+            ? failed(line)
+            : continue
+        branch i.eq(0)
+            ? quote(line, at, i, units, n)
+            : space(line, at, i, units, n)
+
+    block space(line: @U16, at: @U16, i: USize, units: @U16, n: USize):
+        at.store(32)
+        jump quote(line, at.stride(1), i, units, n)
+
+    block quote(line: @U16, at: @U16, i: USize, units: @U16, n: USize):
+        end : @U16 = quote_arg(units, n, at)
+        units.free(alloc)
+        jump append(line, end, i.add(1))
+
+    block failed(line: @U16):
+        line.free(alloc)
+        return(null)
+
+    block finish(at: @U16, line: @U16):
+        at.store(0)
+        return(line)
+
+// -- the environment block ---------------------------------------------------------------
+
+/// The units of a "NAME=VALUE" entry before its '=' (a leading '=' belongs to the name, as in "=C:=C:\\").
+#target(os: "windows")
+private routine key_units(entry: @U16) -> USize
+    block entry():
+        jump scan(1)
+
+    block scan(i: USize):
+        u : U16 = entry.stride(i).load()
+        branch u.eq(0).bitor(u.eq(61))
+            ? return(i)
+            : scan(i.add(1))
+
+#target(os: "windows")
+private routine fold16(u: U16) -> U16
+    block entry():
+        branch u.between(65, 90)
+            ? return(u.add(32))
+            : return(u)
+
+/// The order Windows keeps an environment block in: by name, ASCII letters in any case, then the rest.
+#target(os: "windows")
+private routine before(a: @U16, b: @U16) -> Bool
+    block entry():
+        jump compare(0)
+
+    block compare(i: USize):
+        x : U16 = fold16(a.stride(i).load())
+        y : U16 = fold16(b.stride(i).load())
+        branch x.ne(y)
+            ? return(x.lt(y))
+            : continue
+        branch x.eq(0)
+            ? return(false)
+            : compare(i.add(1))
+
+/// Whether the entry's name is the n units of name, ASCII letters in any case.
+#target(os: "windows")
+private routine names(entry: @U16, name: @U16, n: USize) -> Bool
+    block entry():
+        branch key_units(entry).eq(n)
+            ? compare(0)
+            : return(false)
+
+    block compare(i: USize):
+        branch i.eq(n)
+            ? return(true)
+            : continue
+        branch fold16(entry.stride(i).load()).eq(fold16(name.stride(i).load()))
+            ? compare(i.add(1))
+            : return(false)
+
+/// The units of a 0-terminated string, the 0 not counted.
+#target(os: "windows")
+private routine units_of(s: @U16) -> USize
+    block entry():
+        return(wide_length(s))
+
+/// The overrides as "NAME=VALUE" UTF-16 strings, in memory from alloc: false (all freed) on a failure.
+#target(os: "windows")
+private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Allocator) -> Bool
+    block entry():
+        jump next(0)
+
+    block next(i: USize):
+        branch i.eq(options.env_count)
+            ? return(true)
+            : continue
+        v     : EnvVar = options.env.stride(i).load()
+        whole : Bytes  = Bytes.concat(Bytes.concat(v.name, "=", alloc), v.value, alloc)
+        units, n = utf16(whole, alloc)
+        whole.data.free(alloc)
+        branch units.is_null()
+            ? undo(i)
+            : continue
+        out.stride(i).store(units)
+        jump next(i.add(1))
+
+    block undo(i: USize):
+        branch i.eq(0)
+            ? return(false)
+            : continue
+        copy_slot : @@U16 = out.stride(i.sub(1))
+        copy_slot.load().free(alloc)
+        jump undo(i.sub(1))
+
+/// This process's environment with the overrides applied, as a sorted block, in memory from alloc: null on a
+/// failure.
+#target(os: "windows")
+private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
+    block entry():
+        own : @@U16 = allocate<@U16>(alloc, options.env_count.max(1))
+        branch own.is_null()
+            ? return(null)
+            : continue
+        branch wide_overrides(options, own, alloc)
+            ? continue
+            : free_own_array(own)
+        parent : @U16 = c_get_environment_strings()
+        jump count(own, parent, parent, 0)
+
+    block free_own_array(own: @@U16):
+        own.free(alloc)
+        return(null)
+
+    // How many entries the parent block has: each ends with a 0, and an empty one ends the block.
+    block count(own: @@U16, parent: @U16, at: @U16, n: USize):
+        branch at.is_null()
+            ? collect(own, parent, n)
+            : continue
+        branch at.load().eq(0)
+            ? collect(own, parent, n)
+            : count(own, parent, at.stride(units_of(at).add(1)), n.add(1))
+
+    block collect(own: @@U16, parent: @U16, n: USize):
+        all : @@U16 = allocate<@U16>(alloc, n.add(options.env_count).max(1))
+        branch all.is_null()
+            ? done(own, parent, null, null)
+            : keep(own, parent, all, parent, 0)
+
+    // The parent's entries no override names.
+    block keep(own: @@U16, parent: @U16, all: @@U16, at: @U16, k: USize):
+        branch at.is_null()
+            ? add_own(own, parent, all, k, 0)
+            : continue
+        branch at.load().eq(0)
+            ? add_own(own, parent, all, k, 0)
+            : continue
+        next : @U16 = at.stride(units_of(at).add(1))
+        branch overridden(at, own, options.env_count)
+            ? keep(own, parent, all, next, k)
+            : continue
+        all.stride(k).store(at)
+        jump keep(own, parent, all, next, k.add(1))
+
+    block add_own(own: @@U16, parent: @U16, all: @@U16, k: USize, j: USize):
+        branch j.eq(options.env_count)
+            ? sort(own, parent, all, k.add(options.env_count), 1)
+            : continue
+        all.stride(k.add(j)).store(own.stride(j).load())
+        jump add_own(own, parent, all, k, j.add(1))
+
+    // Insertion sort.
+    block sort(own: @@U16, parent: @U16, all: @@U16, total: USize, i: USize):
+        branch i.ge(total)
+            ? measure(own, parent, all, total, 0, 1)
+            : sink(own, parent, all, total, i, i)
+
+    block sink(own: @@U16, parent: @U16, all: @@U16, total: USize, i: USize, j: USize):
+        branch j.eq(0)
+            ? sort(own, parent, all, total, i.add(1))
+            : continue
+        a : @U16 = all.stride(j.sub(1)).load()
+        b : @U16 = all.stride(j).load()
+        branch before(b, a)
+            ? continue
+            : sort(own, parent, all, total, i.add(1))
+        all.stride(j.sub(1)).store(b)
+        all.stride(j).store(a)
+        jump sink(own, parent, all, total, i, j.sub(1))
+
+    block measure(own: @@U16, parent: @U16, all: @@U16, total: USize, i: USize, units: USize):
+        branch i.eq(total)
+            ? build(own, parent, all, total, allocate<U16>(alloc, units))
+            : measure(own, parent, all, total, i.add(1),
+                units.add(units_of(all.stride(i).load())).add(1))
+
+    block build(own: @@U16, parent: @U16, all: @@U16, total: USize, block_units: @U16):
+        branch block_units.is_null()
+            ? done(own, parent, all, null)
+            : place(own, parent, all, total, block_units, block_units, 0)
+
+    block place(own: @@U16, parent: @U16, all: @@U16, total: USize, block_units: @U16, at: @U16,
+        i: USize):
+        branch i.eq(total)
+            ? terminate(own, parent, all, block_units, at)
+            : continue
+        entry : @U16  = all.stride(i).load()
+        n     : USize = units_of(entry).add(1)
+        copy<U16>(at, entry, n)
+        jump place(own, parent, all, total, block_units, at.stride(n), i.add(1))
+
+    block terminate(own: @@U16, parent: @U16, all: @@U16, block_units: @U16, at: @U16):
+        at.store(0)
+        jump done(own, parent, all, block_units)
+
+    block done(own: @@U16, parent: @U16, all: @@U16, result: @U16):
+        branch parent.is_null()
+            ? continue
+            : free_parent(own, all, result, parent)
+        jump release(own, all, result, 0)
+
+    block free_parent(own: @@U16, all: @@U16, result: @U16, parent: @U16):
+        c_free_environment_strings(parent)
+        jump release(own, all, result, 0)
+
+    block release(own: @@U16, all: @@U16, result: @U16, j: USize):
+        branch j.eq(options.env_count)
+            ? arrays(own, all, result)
+            : continue
+        own_slot : @@U16 = own.stride(j)
+        own_slot.load().free(alloc)
+        jump release(own, all, result, j.add(1))
+
+    block arrays(own: @@U16, all: @@U16, result: @U16):
+        own.free(alloc)
+        branch all.is_null()
+            ? return(result)
+            : continue
+        all.free(alloc)
+        return(result)
+
+/// Whether one of the m overrides ("NAME=VALUE" each) names the parent entry's variable.
+#target(os: "windows")
+private routine overridden(entry: @U16, own: @@U16, m: USize) -> Bool
+    block entry():
+        jump look(0)
+
+    block look(j: USize):
+        branch j.eq(m)
+            ? return(false)
+            : continue
+        o : @U16 = own.stride(j).load()
+        branch names(entry, o, key_units(o))
+            ? return(true)
+            : look(j.add(1))
+
+// -- running -----------------------------------------------------------------------------
+
+/// What a helper thread reads standard error into: a buffer on the malloc heap, safe to fill from another thread.
+#target(os: "windows")
+private record PipeReader
+    pipe   : Addr
+    buffer : CaptureBuffer
+
+/// The handles a run uses: null where it has none.
+#target(os: "windows")
+private record Handles
+    out_r  : Addr
+    out_w  : Addr
+    err_r  : Addr
+    err_w  : Addr
+    input  : Addr  // what the child gets as each standard handle (owned here: closed after the start)
+    output : Addr
+    error  : Addr
+    device : Addr  // the null device
+
+/// Reads the pipe to its end into the reader's buffer, from the malloc heap.
+#target(os: "windows")
+private routine read_pipe(raw: Addr) -> Void
+    block entry():
+        r : @PipeReader = raw.to<@PipeReader>()
+        claim heap  : @Allocator         <- make_heap_allocator()
+        claim chunk : @Array<Byte, 4096> <- uninit
+        claim n     : @U32               <- 0
+        jump next(r, heap, chunk.to<@Byte>(), n)
+
+    block next(r: @PipeReader, heap: @Allocator, chunk: @Byte, n: @U32):
+        ok : Bool = c_read_file(r.pipe.load(), chunk, 4096, n, null).ne(0)
+        branch ok.bitand(n.load().gt(0))
+            ? continue
+            : return()
+        r.buffer.append(heap, chunk, n.load().to<USize>())
+        jump next(r, heap, chunk, n)
+
+#target(os: "windows")
+private routine Handles.close_child_side(self: @Self) -> Void
+    block entry():
+        close_if_open(self.out_w.load())
+        close_if_open(self.err_w.load())
+        close_if_open(self.device.load())
+        own_input : Bool = same(self.input.load(), self.device.load()).bitnot()
+        branch own_input
+            ? continue
+            : outputs()
+        close_if_open(self.input.load())
+        jump outputs()
+
+    // The pipe ends and the device were closed above; the duplicates of this process's handles go here.
+    block outputs():
+        o : Addr = self.output.load()
+        branch same(o, self.out_w.load()).bitor(same(o, self.device.load()))
+            ? errors()
+            : continue
+        close_if_open(o)
+        jump errors()
+
+    block errors():
+        e : Addr = self.error.load()
+        branch same(e, self.err_w.load()).bitor(same(e, self.device.load()))
+            ? return()
+            : continue
+        close_if_open(e)
+        return()
+
+/// An inheritable duplicate of this process's standard handle which (STD_INPUT_HANDLE and so on), or null.
+#target(os: "windows")
+private routine inherited(which: U32) -> Addr
+    block entry():
+        h : Addr = c_get_std_handle(which)
+        branch is_invalid(h)
+            ? return(null)
+            : continue
+        claim copy : @Addr <- null
+        me : Addr = c_get_current_process()
+        // DUPLICATE_SAME_ACCESS
+        branch c_duplicate_handle(me, h, me, copy, 0, 1, 2).ne(0)
+            ? return(copy.load())
+            : return(null)
+
+/// The handles options call for: whether all were made.
+#target(os: "windows")
+private routine Handles.make(self: @Self, options: ProcessOptions, sa: @SecurityAttributes) -> Bool
+    block entry():
+        self.store(Handles { out_r: null, out_w: null, err_r: null, err_w: null, input: null,
+            output: null, error: null, device: null })
+        null_in  : Bool = options.stdin.eq(InputMode.Null)
+        null_out : Bool = options.stdout.eq(OutputMode.Null).bitor(options.stderr.eq(OutputMode.Null))
+        branch null_in.bitor(null_out)
+            ? continue
+            : pipes()
+        claim name : @Array<U16, 4> <- { 78, 85, 76, 0 }
+        // GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
+        device : Addr = c_create_file(name.to<@U16>(), 0xC0000000, 3, sa, 3, 0, null)
+        branch is_invalid(device)
+            ? return(false)
+            : continue
+        self.device.store(device)
+        jump pipes()
+
+    block pipes():
+        branch options.stdout.eq(OutputMode.Capture)
+            ? continue
+            : error_pipe()
+        branch c_create_pipe(self.out_r, self.out_w, sa, 0).ne(0)
+            ? continue
+            : return(false)
+        // HANDLE_FLAG_INHERIT off for the parent's end
+        c_set_handle_information(self.out_r.load(), 1, 0)
+        jump error_pipe()
+
+    block error_pipe():
+        branch options.stderr.eq(OutputMode.Capture)
+            ? continue
+            : standard()
+        branch c_create_pipe(self.err_r, self.err_w, sa, 0).ne(0)
+            ? continue
+            : return(false)
+        c_set_handle_information(self.err_r.load(), 1, 0)
+        jump standard()
+
+    // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+    block standard():
+        self.input.store(input_handle(options.stdin, self.device.load()))
+        self.output.store(output_handle(options.stdout, self.out_w.load(), self.device.load(),
+            0xFFFFFFF5))
+        self.error.store(output_handle(options.stderr, self.err_w.load(), self.device.load(),
+            0xFFFFFFF4))
+        return(true)
+
+/// The child's standard input: the null device, or a duplicate of this process's.
+#target(os: "windows")
+private routine input_handle(mode: InputMode, device: Addr) -> Addr
+    block entry():
+        when mode:
+            InputMode.Null    -> return(device)
+            InputMode.Inherit -> return(inherited(0xFFFFFFF6))
+
+/// One of the child's output handles: the pipe's write end, the null device, or a duplicate of this process's.
+#target(os: "windows")
+private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which: U32) -> Addr
+    block entry():
+        when mode:
+            OutputMode.Capture -> return(pipe)
+            OutputMode.Null    -> return(device)
+            OutputMode.Inherit -> return(inherited(which))
+
+#target(os: "windows")
+routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
+    alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
+    block entry():
+        line : @U16 = command_line(program, args, arg_count, alloc)
+        branch line.is_null()
+            ? return(.Failure(ProcessError.InvalidArgument))
+            : continue
+        claim directory : @Array<U16, PATH_CAPACITY> <- uninit
+        when options.directory:
+            .Present(d) -> in_directory(line, d, directory.to<@U16>())
+            .Absent     -> environment(line, null)
+
+    block in_directory(line: @U16, d: Bytes, directory: @U16):
+        n : Option<USize> = encode_utf16(d, directory, PATH_CAPACITY)
+        branch n.is_present()
+            ? environment(line, directory)
+            : bad(line, null)
+
+    block environment(line: @U16, directory: @U16):
+        branch options.env_count.eq(0)
+            ? handles(line, directory, null)
+            : continue
+        block_units : @U16 = env_block(options, alloc)
+        branch block_units.is_null()
+            ? bad(line, null)
+            : handles(line, directory, block_units)
+
+    block bad(line: @U16, env: @U16):
+        line.free(alloc)
+        return(.Failure(ProcessError.InvalidArgument))
+
+    block handles(line: @U16, directory: @U16, env: @U16):
+        claim sa : @SecurityAttributes <- SecurityAttributes {
+            length: sizeof<SecurityAttributes>().to<U32>(), descriptor: null, inherit_handle: 1 }
+        claim h  : @Handles            <- uninit
+        branch h.make(options, sa)
+            ? continue
+            : not_started(line, env, h, c_get_last_error())
+        claim pi : @ProcessInformation <- ProcessInformation { process: null, thread: null,
+            process_id: 0, thread_id: 0 }
+        // STARTF_USESTDHANDLES
+        claim si : @StartupInfo <- StartupInfo { cb: sizeof<StartupInfo>().to<U32>(),
+            reserved: null, desktop: null, title: null, x: 0, y: 0, x_size: 0, y_size: 0,
+            x_count_chars: 0, y_count_chars: 0, fill_attribute: 0, flags: 0x100, show_window: 0,
+            cb_reserved2: 0, reserved2: null, std_input: h.input.load(),
+            std_output: h.output.load(), std_error: h.error.load() }
+        // CREATE_UNICODE_ENVIRONMENT
+        made : Bool = c_create_process(null, line, null, null, 1, 0x400, env, directory, si,
+            pi).ne(0)
+        e    : U32  = c_get_last_error()
+        h.close_child_side()
+        branch made
+            ? started(line, env, h, pi)
+            : not_started(line, env, h, e)
+
+    block not_started(line: @U16, env: @U16, h: @Handles, e: U32):
+        h.close_child_side()
+        close_if_open(h.out_r.load())
+        close_if_open(h.err_r.load())
+        free_texts(line, env, alloc)
+        return(.Failure(spawn_error(e)))
+
+    block started(line: @U16, env: @U16, h: @Handles, pi: @ProcessInformation):
+        free_texts(line, env, alloc)
+        claim out : @CaptureBuffer <- CaptureBuffer.empty()
+        claim err : @PipeReader    <- PipeReader { pipe: h.err_r.load(),
+            buffer: CaptureBuffer.empty() }
+        read_both(h.out_r.load(), out, err, alloc)
+        close_if_open(h.out_r.load())
+        close_if_open(h.err_r.load())
+        // INFINITE
+        c_wait_for_single_object(pi.process.load(), U32.MAX)
+        claim code : @U32 <- 0
+        c_get_exit_code_process(pi.process.load(), code)
+        c_close_handle(pi.thread.load())
+        c_close_handle(pi.process.load())
+        error_text : Bytes = moved(err.buffer.load(), alloc)
+        return(.Success(ProcessOutput { status: ExitStatus.Exited(code.load().to_wrap<S32>()),
+            stdout: out.load().bytes(), stderr: error_text }))
+
+#target(os: "windows")
+private routine free_texts(line: @U16, env: @U16, alloc: @Allocator) -> Void
+    block entry():
+        line.free(alloc)
+        branch env.is_null()
+            ? return()
+            : continue
+        env.free(alloc)
+        return()
+
+/// Reads standard output here and standard error on a helper thread when both are captured; one alone here.
+#target(os: "windows")
+private routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
+    alloc: @Allocator) -> Void
+    block entry():
+        has_out : Bool = out_pipe.is_not_null()
+        has_err : Bool = err.pipe.load().is_not_null()
+        branch has_out.bitand(has_err)
+            ? both()
+            : continue
+        branch has_err
+            ? err_only()
+            : continue
+        branch has_out
+            ? out_only()
+            : return()
+
+    block both():
+        claim heap : @Allocator <- make_heap_allocator()
+        helper : Thread = Thread.spawn(read_pipe.to<Callable>(), err, heap)
+        read_into(out_pipe, out, alloc)
+        helper.join()
+        return()
+
+    block err_only():
+        read_pipe(err)
+        return()
+
+    block out_only():
+        read_into(out_pipe, out, alloc)
+        return()
+
+/// Reads a pipe to its end into buffer, from alloc.
+#target(os: "windows")
+private routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @Allocator) -> Void
+    block entry():
+        claim chunk : @Array<Byte, 4096> <- uninit
+        claim n     : @U32               <- 0
+        jump next(chunk.to<@Byte>(), n)
+
+    block next(chunk: @Byte, n: @U32):
+        ok : Bool = c_read_file(pipe, chunk, 4096, n, null).ne(0)
+        branch ok.bitand(n.load().gt(0))
+            ? continue
+            : return()
+        buffer.append(alloc, chunk, n.load().to<USize>())
+        jump next(chunk, n)
+
+/// What a helper thread captured on the malloc heap, copied into alloc (and the heap copy freed).
+#target(os: "windows")
+private routine moved(b: CaptureBuffer, alloc: @Allocator) -> Bytes
+    block entry():
+        branch b.data.is_null()
+            ? return(Bytes.empty())
+            : continue
+        claim heap   : @Allocator     <- make_heap_allocator()
+        claim copied : @CaptureBuffer <- CaptureBuffer.empty()
+        copied.append(alloc, b.data, b.length)
+        b.data.free(heap)
+        return(copied.load().bytes())
+
+// -- the environment ---------------------------------------------------------------------
+
+/// The value of the environment variable name, in memory from alloc, or Absent when it isn't set.
+#target(os: "windows")
+routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
+    block entry():
+        claim key : @Array<U16, 256> <- uninit
+        n : Option<USize> = encode_utf16(name, key.to<@U16>(), 256)
+        branch n.is_present()
+            ? continue
+            : return(.Absent)
+        c_set_last_error(0)
+        need : U32 = c_get_environment_variable(key.to<@U16>(), null, 0)
+        // ERROR_ENVVAR_NOT_FOUND
+        branch need.eq(0).bitand(c_get_last_error().eq(203))
+            ? return(.Absent)
+            : continue
+        branch need.eq(0)
+            ? return(.Present(Bytes.empty()))
+            : continue
+        units : @U16 = allocate<U16>(alloc, need.to<USize>())
+        branch units.is_null()
+            ? return(.Absent)
+            : continue
+        got : U32 = c_get_environment_variable(key.to<@U16>(), units, need)
+        branch got.eq(0).bitor(got.ge(need))
+            ? gone(units)
+            : continue
+        text : Result<Bytes, FsError> = owned_wide(units, got.to<USize>(), alloc)
+        units.free(alloc)
+        when text:
+            .Success(t) -> return(.Present(t))
+            .Failure    -> return(.Absent)
+
+    block gone(units: @U16):
+        units.free(alloc)
+        return(.Absent)

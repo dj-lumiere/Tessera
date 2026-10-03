@@ -1,0 +1,62 @@
+// Tessera stdlib: a writer over a file descriptor. It calls write(2), so it's in
+// the hosted layer; the formatting itself (Standard::Format) needs no operating
+// system. Standard output and error are Out and Err
+// (Stdio.tess).
+
+module Standard::Os
+
+import Standard::Format
+
+// -- FdWriter ------------------------------------------------------------------
+
+/// Writes straight to a file descriptor with write(2): no buffer, so nothing is
+/// lost if the program stops, and every call is a system call. A failed write
+/// sets `failed` and drops the rest; check has_failed() when it matters.
+record FdWriter
+conform Writer<FdWriter>
+    private fd:     S32
+    private failed: Bool
+
+routine FdWriter.stdout() -> Self
+    block entry():
+        w : Self = Self { fd: 1, failed: false }
+        return(w)
+
+routine FdWriter.stderr() -> Self
+    block entry():
+        w : Self = Self { fd: 2, failed: false }
+        return(w)
+
+routine FdWriter.has_failed(self: Self) -> Bool
+    block entry():
+        failed : Bool = self.failed
+        return(failed)
+
+/// write(2) may write fewer bytes than asked, so this loops. Each call asks for
+/// at most 2^30 bytes and reads the result as a 32-bit count: the binding in
+/// Os/Io.tess declares SSize, but the Windows CRT returns int (open question #18).
+routine FdWriter.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
+    block entry():
+        fd : S32 = self.fd.load()
+        jump write_loop(data, length, fd)
+
+    block write_loop(at: @Byte, remaining: USize, fd: S32):
+        done : Bool = remaining.eq(0)
+        branch done
+            ? return()
+            : continue
+        chunk    : USize = remaining.min(1073741824)
+        wrote_c  : SSize = c_write(fd, at, chunk)
+        wrote_32 : S32   = wrote_c.to_wrap<S32>()
+        progress : Bool  = wrote_32.gt(0)
+        branch progress
+            ? advance(at, remaining, fd, wrote_32.to<USize>())
+            : fail()
+
+    block advance(at: @Byte, remaining: USize, fd: S32, wrote: USize):
+        next : @Byte = at.stride(wrote)
+        jump write_loop(next, remaining.sub(wrote), fd)
+
+    block fail():
+        self.failed.store(true)
+        return()

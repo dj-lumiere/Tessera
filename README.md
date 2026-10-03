@@ -184,7 +184,7 @@ The documentation lives at [tessera.lumi-dev.xyz](https://tessera.lumi-dev.xyz/)
 ```
 Tessera/
 ├── src/                 # The builder, in C#: emits LLVM IR text and links through clang
-├── stdlib/              # The standard library (.tess), the source of truth for the current design
+├── Standard/              # The standard library (.tess), the source of truth for the current design
 ├── tests/               # Golden tests, including Dijkstra, a lazy segment tree, SHA-256, and a calculator
 │   └── Tessera.Tests.csproj  # runs each golden test and example as its own xUnit case
 ├── examples/            # Introductory programs, one idea each, in reading order
@@ -211,5 +211,5 @@ disagree, the stdlib wins. Report bugs at
 
 ## License
 
-MIT; see [`LICENSE`](LICENSE). The float math in `stdlib/f16_core/`, `f32_core/`, `f64_core/`, and `f128_core/` is
+MIT; see [`LICENSE`](LICENSE). The float math in `Standard/F16Core/`, `F32Core/`, `F64Core/`, and `F128Core/` is
 based on CORE-MATH, also MIT; each of those directories carries its `LICENSE-CORE-MATH`.

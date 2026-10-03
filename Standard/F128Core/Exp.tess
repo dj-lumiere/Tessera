@@ -1,0 +1,75 @@
+// Tessera stdlib: the correctly rounded exponential e^x of F128
+//
+// x / ln(2) in 3-word fixed point, then the shared 2^x engine (ExpShared.tess).
+// Round to nearest only: overflow gives +inf, underflow a correctly rounded
+// subnormal or +0, NaN comes back quiet with its sign and payload.
+//
+// Ported from CORE-MATH, src/binary128/exponent/expq.c via RazorForge's B128Exp.rf.
+// Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// x >= 0x1.62e42fefa39ef35793c7673007e6p+13 overflows
+preset CM_EXP_E_OVERFLOW:  U128 = 0x400C62E42FEFA39EF35793C7673007E6
+/// x <= -0x1.654bb3b2c73ebb059fabb506ff34p+13 rounds to +0
+preset CM_EXP_E_UNDERFLOW: U128 = 0xC00C654BB3B2C73EBB059FABB506FF34
+
+routine F128.exp(self: Self) -> Self
+    block entry():
+        nan      : Bool = self.is_nan()
+        bits     : S128 = self.bits().to_wrap<S128>()
+        negative : Bool = bits.lt(0)
+        // e^x overflows past x = 11356.52 and is below half the smallest subnormal
+        // before x = -11433.4; beyond those the answer needs no series.
+        big       : Self = f128_of(0x400C6300000000000000000000000000)  // 11360
+        small     : Self = f128_of(0xC00C6700000000000000000000000000)  // -11488
+        over      : Bool = self.gt(big)
+        under     : Bool = self.lt(small)
+        quiet     : Self = f128_of(f128_quiet(bits.to_wrap<U128>()))
+        infinity  : Self = Self.INFINITY
+        plus_zero : Self = f128_of(0)
+        when:
+            nan   -> return(quiet)
+            over  -> return(infinity)
+            under -> return(plus_zero)
+            else  -> compute()
+
+    block compute():
+        u      : U128 = self.bits()
+        hi     : U64  = cm_exp_hi(u)
+        mag_hi : U64  = hi.bitand(0x7FFFFFFFFFFFFFFF)
+        tiny   : Bool = mag_hi.lt(0x3F8D000000000000)  // |x| < 2^-114: e^x rounds to 1
+        large  : Bool = mag_hi.ge(0x400C62E42FEFA39E)
+        when:
+            tiny  -> return(CM_EXP_ONE)
+            large -> edge(u)
+            else  -> reduce(u)
+
+    // NaN, infinities, and the overflow and underflow thresholds
+    block edge(u: U128):
+        is_nan      : Bool = f128_is_nan_bits(u)
+        nonnegative : Bool = f128_is_negative_bits(u).bitnot()
+        overflow    : Bool = nonnegative.bitand(u.ge(CM_EXP_E_OVERFLOW))
+        underflow   : Bool = u.ge(CM_EXP_E_UNDERFLOW)
+        quiet       : Self = f128_of(u.bitor(F128_QUIET_BIT))
+        when:
+            is_nan    -> return(quiet)
+            overflow  -> return(Self.INFINITY)
+            underflow -> return(CM_EXP_ZERO)
+            else      -> reduce(u)
+
+    // x / ln(2): the significand times 1/ln(2), one's-complemented for negative x
+    block reduce(u: U128):
+        hi        : S64         = cm_exp_hi(u).to_wrap<S64>()
+        sign_mask : S64         = hi.shr(63)
+        sig       : U128        = u.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
+        k4        : U64         = CM_EXP_ILN2.get(4)
+        k5        : U64         = CM_EXP_ILN2.get(5)
+        k6        : U64         = CM_EXP_ILN2.get(6)
+        scaled    : CmExpWords3 = cm_exp_mul3x2_high(k4, k5, k6, sig)
+        shift     : S64         = 0x401A.sub(f128_exponent(u))
+        reduced   : CmExpWords3 = cm_exp_ashr3(cm_exp_flip3(scaled, sign_mask.to_wrap<U64>()),
+            shift.to<U64>())
+        r         : Self        = cm_exp_finish(reduced, u, CM_EXP_KIND_E)
+        return(r)

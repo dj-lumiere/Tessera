@@ -1,0 +1,1151 @@
+// Tessera stdlib: files and the filesystem on Windows (see Fs.tess)
+//
+// The wide-character (W) calls: a path's UTF-8 becomes UTF-16 on the way in, and text from the OS (a directory
+// entry, the working directory) becomes UTF-8 on the way out, an unpaired surrogate as U+FFFD. So any path the
+// filesystem holds works, whatever the code page.
+
+module Standard::Os
+
+import Standard::Alloc
+
+preset GENERIC_READ:                 U32 = 0x80000000
+preset GENERIC_WRITE:                U32 = 0x40000000
+preset FILE_APPEND_ONLY:             U32 = 0x120114  // FILE_GENERIC_WRITE without FILE_WRITE_DATA
+preset FILE_WRITE_ATTRIBUTES:        U32 = 0x100
+preset FILE_SHARE_ALL:               U32 = 7  // read, write, and delete
+preset CREATE_NEW:                   U32 = 1
+preset CREATE_ALWAYS:                U32 = 2
+preset OPEN_EXISTING:                U32 = 3
+preset OPEN_ALWAYS:                  U32 = 4
+preset FILE_ATTRIBUTE_READONLY:      U32 = 0x1
+preset FILE_ATTRIBUTE_DIRECTORY:     U32 = 0x10
+preset FILE_ATTRIBUTE_NORMAL:        U32 = 0x80
+preset FILE_ATTRIBUTE_REPARSE_POINT: U32 = 0x400
+preset INVALID_FILE_ATTRIBUTES:      U32 = 0xFFFFFFFF
+preset FILE_FLAG_BACKUP_SEMANTICS:   U32 = 0x02000000
+preset FILE_FLAG_OPEN_REPARSE_POINT: U32 = 0x00200000
+preset FILE_FLAG_SEQUENTIAL_SCAN:    U32 = 0x08000000
+preset IO_REPARSE_TAG_SYMLINK:       U32 = 0xA000000C
+preset IO_REPARSE_TAG_MOUNT_POINT:   U32 = 0xA0000003
+
+/// WIN32_FIND_DATAW: the attributes, the creation and last-write times, the size, the reparse tag, then the name.
+preset FIND_DATA_WORDS:  USize = 148
+
+preset FIND_CREATED:     USize = 4
+preset FIND_WRITTEN:     USize = 20
+preset FIND_SIZE_HIGH:   USize = 28
+preset FIND_SIZE_LOW:    USize = 32
+preset FIND_REPARSE_TAG: USize = 36
+preset FIND_NAME:        USize = 44
+
+/// FILETIME: 100-nanosecond ticks since 1601-01-01 UTC.
+#target(os: "windows")
+private record FileTime
+    low  : U32
+    high : U32
+
+/// WIN32_FILE_ATTRIBUTE_DATA
+#target(os: "windows")
+private record AttributeData
+    attributes : U32
+    created    : FileTime
+    accessed   : FileTime
+    written    : FileTime
+    size_high  : U32
+    size_low   : U32
+
+/// BY_HANDLE_FILE_INFORMATION
+#target(os: "windows")
+private record HandleInfo
+    attributes    : U32
+    created       : FileTime
+    accessed      : FileTime
+    written       : FileTime
+    volume_serial : U32
+    size_high     : U32
+    size_low      : U32
+    links         : U32
+    index_high    : U32
+    index_low     : U32
+
+#target(os: "windows")
+private record MemoryRange
+    address : Addr
+    size    : USize
+
+#[external("c"), symbol("GetLastError"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_last_error() -> U32
+
+#[external("c"), symbol("CreateFileW"), callconv("stdcall"), target(os: "windows")]
+private routine c_create_file(name: @U16, access: U32, share: U32, security: Addr, disposition: U32,
+    flags: U32, template: Addr) -> Addr
+
+#[external("c"), symbol("CloseHandle"), callconv("stdcall"), target(os: "windows")]
+private routine c_close_handle(handle: Addr) -> CInt
+
+#[external("c"), symbol("ReadFile"), callconv("stdcall"), target(os: "windows")]
+private routine c_read_file(file: Addr, buffer: @Byte, count: U32, read: @U32,
+    overlapped: Addr) -> CInt
+
+#[external("c"), symbol("WriteFile"), callconv("stdcall"), target(os: "windows")]
+private routine c_write_file(file: Addr, data: @Byte, count: U32, written: @U32,
+    overlapped: Addr) -> CInt
+
+#[external("c"), symbol("SetFilePointerEx"), callconv("stdcall"), target(os: "windows")]
+private routine c_set_file_pointer_ex(file: Addr, distance: S64, position: @S64,
+    method: U32) -> CInt
+
+#[external("c"), symbol("GetFileSizeEx"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_file_size_ex(file: Addr, size: @S64) -> CInt
+
+#[external("c"), symbol("SetFileInformationByHandle"), callconv("stdcall"), target(os: "windows")]
+private routine c_set_file_information_by_handle(file: Addr, class: CInt, info: Addr,
+    size: U32) -> CInt
+
+#[external("c"), symbol("GetFileInformationByHandle"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_file_information_by_handle(file: Addr, info: @HandleInfo) -> CInt
+
+#[external("c"), symbol("FlushFileBuffers"), callconv("stdcall"), target(os: "windows")]
+private routine c_flush_file_buffers(file: Addr) -> CInt
+
+#[external("c"), symbol("GetFileAttributesW"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_file_attributes(path: @U16) -> U32
+
+#[external("c"), symbol("GetFileAttributesExW"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_file_attributes_ex(path: @U16, level: CInt, data: @AttributeData) -> CInt
+
+#[external("c"), symbol("SetFileAttributesW"), callconv("stdcall"), target(os: "windows")]
+private routine c_set_file_attributes(path: @U16, attributes: U32) -> CInt
+
+#[external("c"), symbol("CreateDirectoryW"), callconv("stdcall"), target(os: "windows")]
+private routine c_create_directory(path: @U16, security: Addr) -> CInt
+
+#[external("c"), symbol("RemoveDirectoryW"), callconv("stdcall"), target(os: "windows")]
+private routine c_remove_directory(path: @U16) -> CInt
+
+#[external("c"), symbol("DeleteFileW"), callconv("stdcall"), target(os: "windows")]
+private routine c_delete_file(path: @U16) -> CInt
+
+#[external("c"), symbol("CopyFileW"), callconv("stdcall"), target(os: "windows")]
+private routine c_copy_file(from: @U16, to: @U16, fail_if_exists: CInt) -> CInt
+
+#[external("c"), symbol("MoveFileExW"), callconv("stdcall"), target(os: "windows")]
+private routine c_move_file_ex(from: @U16, to: @U16, flags: U32) -> CInt
+
+#[external("c"), symbol("FindFirstFileW"), callconv("stdcall"), target(os: "windows")]
+private routine c_find_first_file(pattern: @U16, data: @Byte) -> Addr
+
+#[external("c"), symbol("FindNextFileW"), callconv("stdcall"), target(os: "windows")]
+private routine c_find_next_file(find: Addr, data: @Byte) -> CInt
+
+#[external("c"), symbol("FindClose"), callconv("stdcall"), target(os: "windows")]
+private routine c_find_close(find: Addr) -> CInt
+
+#[external("c"), symbol("GetCurrentDirectoryW"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_current_directory(size: U32, buffer: @U16) -> U32
+
+#[external("c"), symbol("SetCurrentDirectoryW"), callconv("stdcall"), target(os: "windows")]
+private routine c_set_current_directory(path: @U16) -> CInt
+
+#[external("c"), symbol("GetTempPathW"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_temp_path(size: U32, buffer: @U16) -> U32
+
+#[external("c"), symbol("GetFullPathNameW"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_full_path_name(path: @U16, size: U32, buffer: @U16, part: Addr) -> U32
+
+#[external("c"), symbol("GetFinalPathNameByHandleW"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_final_path_name_by_handle(file: Addr, buffer: @U16, size: U32,
+    flags: U32) -> U32
+
+#[external("c"), symbol("GetEnvironmentVariableW"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_environment_variable(name: CWStr, buffer: @U16, size: U32) -> U32
+
+#[external("c"), symbol("GetSystemTimeAsFileTime"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_system_time_as_file_time(time: @FileTime) -> Void
+
+#[external("c"), symbol("SetFileTime"), callconv("stdcall"), target(os: "windows")]
+private routine c_set_file_time(file: Addr, created: Addr, accessed: @FileTime,
+    written: @FileTime) -> CInt
+
+#[external("c"), symbol("CreateFileMappingW"), callconv("stdcall"), target(os: "windows")]
+private routine c_create_file_mapping(file: Addr, security: Addr, protect: U32, size_high: U32,
+    size_low: U32, name: Addr) -> Addr
+
+#[external("c"), symbol("MapViewOfFile"), callconv("stdcall"), target(os: "windows")]
+private routine c_map_view_of_file(mapping: Addr, access: U32, offset_high: U32, offset_low: U32,
+    size: USize) -> Addr
+
+#[external("c"), symbol("UnmapViewOfFile"), callconv("stdcall"), target(os: "windows")]
+private routine c_unmap_view_of_file(view: Addr) -> CInt
+
+#[external("c"), symbol("FlushViewOfFile"), callconv("stdcall"), target(os: "windows")]
+private routine c_flush_view_of_file(view: Addr, size: USize) -> CInt
+
+#[external("c"), symbol("GetCurrentProcess"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_current_process() -> Addr
+
+#[external("c"), symbol("PrefetchVirtualMemory"), callconv("stdcall"), target(os: "windows")]
+private routine c_prefetch_virtual_memory(process: Addr, count: USize, ranges: @MemoryRange,
+    flags: U32) -> CInt
+
+// -- errors and paths ----------------------------------------------------------------
+
+/// The FsError for a Win32 error code.
+#target(os: "windows")
+private routine error_of(e: U32) -> FsError
+    block entry():
+        when e:
+            2, 3     -> return(FsError.NotFound)
+            5        -> return(FsError.PermissionDenied)
+            80, 183  -> return(FsError.AlreadyExists)
+            267      -> return(FsError.NotADirectory)
+            145      -> return(FsError.DirectoryNotEmpty)
+            17       -> return(FsError.CrossDevice)
+            206      -> return(FsError.NameTooLong)
+            123, 161 -> return(FsError.InvalidPath)
+            39, 112  -> return(FsError.NoSpace)
+            19       -> return(FsError.ReadOnly)
+            32, 33   -> return(FsError.Busy)
+            8, 14    -> return(FsError.OutOfMemory)
+            else     -> return(FsError.Other)
+
+#target(os: "windows")
+private routine last_error() -> FsError
+    block entry():
+        return(error_of(c_get_last_error()))
+
+#target(os: "windows")
+private routine failed<T>() -> Result<T, FsError>
+require T: typename
+    block entry():
+        return(.Failure(last_error()))
+
+/// A nonzero BOOL is success, 0 the last error.
+#target(os: "windows")
+private routine checked(ok: CInt) -> Result<Unit, FsError>
+    block entry():
+        branch ok.ne(0)
+            ? return(fs_done())
+            : return(failed<Unit>())
+
+#target(os: "windows")
+private routine invalid_handle(h: Addr) -> Bool
+    block entry():
+        // INVALID_HANDLE_VALUE, (HANDLE)-1
+        return(ptrtoint<Addr, USize>(h).eq(USize.MAX))
+
+/// text as UTF-16 with a 0 after it in out, which has room for capacity units: its length in units, or Absent if
+/// text has a NUL or doesn't fit. (A UTF-8 byte count bounds the unit count, so length + 1 units always fit.)
+#target(os: "windows")
+internal routine encode_utf16(text: Bytes, out: @U16, capacity: USize) -> Option<USize>
+    block entry():
+        claim iter : @BytesCharsIter <- text.chars()
+        jump next(iter, 0)
+
+    block next(iter: @BytesCharsIter, n: USize):
+        c : Option<Char> = iter.next()
+        when c:
+            .Present(char) -> put(iter, n, char.to<U32>())
+            .Absent        -> end(n)
+
+    block put(iter: @BytesCharsIter, n: USize, cp: U32):
+        branch cp.eq(0)
+            ? return(.Absent)
+            : continue
+        branch cp.lt(0x10000)
+            ? single(iter, n, cp)
+            : pair(iter, n, cp)
+
+    block single(iter: @BytesCharsIter, n: USize, cp: U32):
+        branch n.add(1).ge(capacity)
+            ? return(.Absent)
+            : continue
+        out.stride(n).store(cp.to<U16>())
+        jump next(iter, n.add(1))
+
+    block pair(iter: @BytesCharsIter, n: USize, cp: U32):
+        branch n.add(2).ge(capacity)
+            ? return(.Absent)
+            : continue
+        v              : U32 = cp.sub(0x10000)
+        high_surrogate : U32 = v.shr(10).add(0xD800)
+        out.stride(n).store(high_surrogate.to<U16>())
+        low_surrogate : U32 = v.bitand(0x3FF).add(0xDC00)
+        out.stride(n.add(1)).store(low_surrogate.to<U16>())
+        jump next(iter, n.add(2))
+
+    block end(n: USize):
+        out.stride(n).store(0)
+        return(.Present(n))
+
+/// path as UTF-16 with a 0 after it in out (PATH_CAPACITY units): its length in units, or Absent if path has a NUL or
+/// doesn't fit.
+#target(os: "windows")
+private routine wide(path: Bytes, out: @U16) -> Option<USize>
+    block entry():
+        return(encode_utf16(path, out, PATH_CAPACITY))
+
+/// path as UTF-16 in out: whether it fit.
+#target(os: "windows")
+private routine wide_path(path: Bytes, out: @U16) -> Bool
+    block entry():
+        n : Option<USize> = wide(path, out)
+        return(n.is_present())
+
+/// count UTF-16 units at units as UTF-8 at out (room for 3 bytes a unit): the bytes written.
+#target(os: "windows")
+internal routine narrow(units: @U16, count: USize, out: @Byte) -> USize
+    block entry():
+        jump next(0, 0)
+
+    block next(i: USize, n: USize):
+        branch i.ge(count)
+            ? return(n)
+            : continue
+        unit : U16 = units.stride(i).load()
+        u    : U32 = unit.to<U32>()
+        branch u.between(0xD800, 0xDBFF)
+            ? high(i, n, u)
+            : continue
+        branch u.between(0xDC00, 0xDFFF)
+            ? put(i.add(1), n, 0xFFFD)
+            : put(i.add(1), n, u)
+
+    block high(i: USize, n: USize, u: U32):
+        branch i.add(1).lt(count)
+            ? continue
+            : put(i.add(1), n, 0xFFFD)
+        low_unit : U16 = units.stride(i.add(1)).load()
+        low      : U32 = low_unit.to<U32>()
+        branch low.between(0xDC00, 0xDFFF)
+            ? surrogate_pair(i, n, u, low)
+            : put(i.add(1), n, 0xFFFD)
+
+    block surrogate_pair(i: USize, n: USize, u: U32, low: U32):
+        high_half : U32 = u.sub(0xD800).shl(10)
+        cp_offset : U32 = high_half.add(low.sub(0xDC00))
+        jump put(i.add(2), n, cp_offset.add(0x10000))
+
+    block put(i: USize, n: USize, cp: U32):
+        jump next(i, n.add(utf8_encode(cp.to<Char>(), out.stride(n))))
+
+/// The units before the first 0 at units.
+#target(os: "windows")
+internal routine wide_length(units: @U16) -> USize
+    block entry():
+        jump scan(0)
+
+    block scan(i: USize):
+        unit : U16 = units.stride(i).load()
+        branch unit.eq(0)
+            ? return(i)
+            : scan(i.add(1))
+
+/// count UTF-16 units as UTF-8, in memory from alloc.
+#target(os: "windows")
+internal routine owned_wide(units: @U16, count: USize, alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        buffer : @Byte = allocate<Byte>(alloc, count.mul(3).max(1))
+        branch buffer.is_null()
+            ? return(.Failure(FsError.OutOfMemory))
+            : return(.Success(Bytes.from_ptr(buffer, narrow(units, count, buffer))))
+
+// -- metadata ------------------------------------------------------------------------
+
+/// Nanoseconds since 1970 from a FILETIME.
+#target(os: "windows")
+private routine unix_ns(t: FileTime) -> S64
+    block entry():
+        high_ticks : U64 = t.high.to<U64>().shl(32)
+        ticks      : U64 = high_ticks.bitor(t.low.to<U64>())
+        // 100 ns ticks between 1601-01-01 and 1970-01-01
+        since_epoch : S64 = ticks.to_wrap<S64>().sub_wrap(116444736000000000)
+        return(since_epoch.mul_wrap(100))
+
+#target(os: "windows")
+private routine size_of(high: U32, low: U32) -> U64
+    block entry():
+        upper : U64 = high.to<U64>().shl(32)
+        return(upper.bitor(low.to<U64>()))
+
+/// A link (symbolic or a junction) by its attributes and reparse tag, else a directory or a file.
+#target(os: "windows")
+private routine kind_of(attributes: U32, tag: U32) -> FileKind
+    block entry():
+        reparse : Bool = attributes.bitand(FILE_ATTRIBUTE_REPARSE_POINT).ne(0)
+        link    : Bool = tag.eq(IO_REPARSE_TAG_SYMLINK).bitor(tag.eq(IO_REPARSE_TAG_MOUNT_POINT))
+        branch reparse.bitand(link)
+            ? return(FileKind.Symlink)
+            : continue
+        branch attributes.bitand(FILE_ATTRIBUTE_DIRECTORY).ne(0)
+            ? return(FileKind.Directory)
+            : return(FileKind.File)
+
+#target(os: "windows")
+private routine make_metadata(attributes: U32, tag: U32, size: U64, written: FileTime,
+    created: FileTime) -> Metadata
+    block entry():
+        return(Metadata { kind: kind_of(attributes, tag), size: size, modified_ns: unix_ns(written),
+            created_ns: .Present(unix_ns(created)),
+            readonly: attributes.bitand(FILE_ATTRIBUTE_READONLY).ne(0) })
+
+/// The metadata in a WIN32_FIND_DATAW.
+#target(os: "windows")
+private routine from_find_data(data: @Byte) -> Metadata
+    block entry():
+        attributes   : U32      = data.to<@U32>().load()
+        tag_at       : @Byte    = data.stride(FIND_REPARSE_TAG)
+        tag          : U32      = tag_at.to<@U32>().load()
+        size_high_at : @Byte    = data.stride(FIND_SIZE_HIGH)
+        size_low_at  : @Byte    = data.stride(FIND_SIZE_LOW)
+        size         : U64      = size_of(size_high_at.to<@U32>().load(),
+            size_low_at.to<@U32>().load())
+        written_at   : @Byte    = data.stride(FIND_WRITTEN)
+        written      : FileTime = written_at.to<@FileTime>().load()
+        created_at   : @Byte    = data.stride(FIND_CREATED)
+        created      : FileTime = created_at.to<@FileTime>().load()
+        return(make_metadata(attributes, tag, size, written, created))
+
+#target(os: "windows")
+private routine from_handle_info(i: HandleInfo) -> Metadata
+    block entry():
+        return(make_metadata(i.attributes, 0, size_of(i.size_high, i.size_low), i.written,
+            i.created))
+
+#target(os: "windows")
+private routine handle_metadata(h: Addr) -> Result<Metadata, FsError>
+    block entry():
+        claim info : @HandleInfo <- uninit
+        branch c_get_file_information_by_handle(h, info).ne(0)
+            ? return(.Success(from_handle_info(info.load())))
+            : return(failed<Metadata>())
+
+/// GetFileAttributesExW, for what can't be opened (a file another process holds exclusively).
+#target(os: "windows")
+private routine attribute_metadata(wpath: @U16) -> Result<Metadata, FsError>
+    block entry():
+        claim data : @AttributeData <- uninit
+        // GetFileExInfoStandard
+        branch c_get_file_attributes_ex(wpath, 0, data).eq(0)
+            ? return(failed<Metadata>())
+            : continue
+        d : AttributeData = data.load()
+        return(.Success(make_metadata(d.attributes, 0, size_of(d.size_high, d.size_low), d.written,
+            d.created)))
+
+/// A handle for asking about path (no read or write access): a directory too, and with link_itself, a link rather
+/// than what it points at.
+#target(os: "windows")
+private routine query_handle(wpath: @U16, link_itself: Bool) -> Addr
+    block entry():
+        flags : U32 = link_itself
+            ? FILE_FLAG_BACKUP_SEMANTICS.bitor(FILE_FLAG_OPEN_REPARSE_POINT)
+            : FILE_FLAG_BACKUP_SEMANTICS
+        return(c_create_file(wpath, 0, FILE_SHARE_ALL, null, OPEN_EXISTING, flags, null))
+
+/// path's metadata, a link followed to what it points at.
+#target(os: "windows")
+internal routine metadata(path: Bytes) -> Result<Metadata, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        h : Addr = query_handle(wpath.to<@U16>(), false)
+        branch invalid_handle(h)
+            ? unopened(wpath.to<@U16>())
+            : continue
+        m : Result<Metadata, FsError> = handle_metadata(h)
+        c_close_handle(h)
+        return(m)
+
+    // A missing file stays missing; anything else may be a file that can't be opened, which the attributes still
+    // describe.
+    block unopened(wpath: @U16):
+        error : FsError = last_error()
+        branch error.eq(FsError.NotFound)
+            ? return(.Failure(error))
+            : return(attribute_metadata(wpath))
+
+/// path's metadata; a link describes itself (kind Symlink), from its directory entry.
+#target(os: "windows")
+internal routine symlink_metadata(path: Bytes) -> Result<Metadata, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        claim data : @Array<U32, FIND_DATA_WORDS> <- uninit
+        find : Addr = c_find_first_file(wpath.to<@U16>(), data.to<@Byte>())
+        // A root ("C:\") has no directory entry: its attributes describe it
+        branch invalid_handle(find)
+            ? return(attribute_metadata(wpath.to<@U16>()))
+            : continue
+        c_find_close(find)
+        return(.Success(from_find_data(data.to<@Byte>())))
+
+// -- file handles --------------------------------------------------------------------------
+
+/// An open file, from a File's open_read and the like: a Reader and a Writer. claim it, and close it when
+/// done.
+#target(os: "windows")
+record FileHandle
+    handle : Addr
+    failed : Bool  // a write_bytes failed (write_all reports each failure itself)
+
+#target(os: "windows")
+internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        when mode:
+            OpenMode.Read      -> open(wpath.to<@U16>(), GENERIC_READ, OPEN_EXISTING)
+            OpenMode.Write     -> open(wpath.to<@U16>(), GENERIC_WRITE, CREATE_ALWAYS)
+            OpenMode.Append    -> open(wpath.to<@U16>(), FILE_APPEND_ONLY, OPEN_ALWAYS)
+            OpenMode.ReadWrite -> open(wpath.to<@U16>(), GENERIC_READ.bitor(GENERIC_WRITE),
+                OPEN_EXISTING)
+            OpenMode.CreateNew -> open(wpath.to<@U16>(), GENERIC_WRITE, CREATE_NEW)
+
+    block open(wpath: @U16, access: U32, disposition: U32):
+        h : Addr = c_create_file(wpath, access, FILE_SHARE_ALL, null, disposition,
+            FILE_ATTRIBUTE_NORMAL, null)
+        branch invalid_handle(h)
+            ? return(failed<Self>())
+            : return(.Success(Self { handle: h, failed: false }))
+
+/// Reads up to length bytes into buffer: how many, 0 at the end of the file.
+#target(os: "windows")
+routine FileHandle.read_bytes(self: @Self, buffer: @Byte, length: USize) -> Result<USize, FsError>
+    block entry():
+        claim got : @U32 <- 0
+        ok : CInt = c_read_file(self.handle.load(), buffer, length.min(1073741824).to<U32>(), got,
+            null)
+        branch ok.ne(0)
+            ? return(.Success(got.load().to<USize>()))
+            : continue
+        // ERROR_BROKEN_PIPE: the writing end closed, which is the end
+        e : U32 = c_get_last_error()
+        branch e.eq(109)
+            ? return(.Success(0))
+            : return(.Failure(error_of(e)))
+
+/// Writes up to length bytes: how many it did.
+#target(os: "windows")
+internal routine FileHandle.write_some(self: @Self, data: @Byte,
+    length: USize) -> Result<USize, FsError>
+    block entry():
+        claim wrote : @U32 <- 0
+        ok : CInt = c_write_file(self.handle.load(), data, length.min(1073741824).to<U32>(), wrote,
+            null)
+        branch ok.ne(0)
+            ? return(.Success(wrote.load().to<USize>()))
+            : return(failed<USize>())
+
+/// Moves the position: the new one, from the start.
+#target(os: "windows")
+routine FileHandle.seek(self: @Self, offset: S64, from: SeekFrom) -> Result<U64, FsError>
+    block entry():
+        claim at : @S64 <- 0
+        // FILE_BEGIN, FILE_CURRENT, FILE_END
+        when from:
+            SeekFrom.Start   -> moved(at, c_set_file_pointer_ex(self.handle.load(), offset, at, 0))
+            SeekFrom.Current -> moved(at, c_set_file_pointer_ex(self.handle.load(), offset, at, 1))
+            SeekFrom.End     -> moved(at, c_set_file_pointer_ex(self.handle.load(), offset, at, 2))
+
+    block moved(at: @S64, ok: CInt):
+        branch ok.ne(0)
+            ? return(.Success(at.load().to<U64>()))
+            : return(failed<U64>())
+
+#target(os: "windows")
+routine FileHandle.metadata(self: @Self) -> Result<Metadata, FsError>
+    block entry():
+        return(handle_metadata(self.handle.load()))
+
+#target(os: "windows")
+routine FileHandle.size(self: @Self) -> Result<U64, FsError>
+    block entry():
+        claim size : @S64 <- 0
+        branch c_get_file_size_ex(self.handle.load(), size).ne(0)
+            ? return(.Success(size.load().to<U64>()))
+            : return(failed<U64>())
+
+/// Truncates or extends (with zeros) the file to size bytes; the position stays.
+#target(os: "windows")
+routine FileHandle.set_size(self: @Self, size: U64) -> Result<Unit, FsError>
+    block entry():
+        claim end : @S64 <- size.to<S64>()
+        // FileEndOfFileInfo
+        return(checked(c_set_file_information_by_handle(self.handle.load(), 6, end, 8)))
+
+/// Waits until what was written is on the storage device.
+#target(os: "windows")
+routine FileHandle.sync(self: @Self) -> Result<Unit, FsError>
+    block entry():
+        return(checked(c_flush_file_buffers(self.handle.load())))
+
+#target(os: "windows")
+routine FileHandle.close(self: @Self) -> Void
+    block entry():
+        c_close_handle(self.handle.load())
+        return()
+
+// -- directories and names -------------------------------------------------------------
+
+/// Makes the directory path (its parent must exist).
+#target(os: "windows")
+internal routine create_dir(path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? return(checked(c_create_directory(wpath.to<@U16>(), null)))
+            : return(.Failure(path_error(path)))
+
+/// Removes a file (or a link, a directory link included), not a directory.
+#target(os: "windows")
+internal routine remove_file(path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        branch c_delete_file(wpath.to<@U16>()).ne(0)
+            ? return(fs_done())
+            : continue
+        // A link to a directory is a directory to DeleteFileW
+        error      : U32  = c_get_last_error()
+        attributes : U32  = c_get_file_attributes(wpath.to<@U16>())
+        link_bits  : U32  = FILE_ATTRIBUTE_DIRECTORY.bitor(FILE_ATTRIBUTE_REPARSE_POINT)
+        known      : Bool = attributes.ne(INVALID_FILE_ATTRIBUTES)
+        dir_link   : Bool = known.bitand(attributes.bitand(link_bits).eq(link_bits))
+        branch dir_link
+            ? return(checked(c_remove_directory(wpath.to<@U16>())))
+            : return(.Failure(error_of(error)))
+
+/// Removes an empty directory.
+#target(os: "windows")
+internal routine remove_dir(path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? return(checked(c_remove_directory(wpath.to<@U16>())))
+            : return(.Failure(path_error(path)))
+
+/// MoveFileExW with flags on two paths.
+#target(os: "windows")
+private routine move_file(from: Bytes, to: Bytes, flags: U32) -> Result<Unit, FsError>
+    block entry():
+        claim a : @Array<U16, PATH_CAPACITY> <- uninit
+        claim b : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(from, a.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(from)))
+        branch wide_path(to, b.to<@U16>())
+            ? return(checked(c_move_file_ex(a.to<@U16>(), b.to<@U16>(), flags)))
+            : return(.Failure(path_error(to)))
+
+/// Renames from to to, replacing what is at to. Between volumes it fails with CrossDevice.
+#target(os: "windows")
+internal routine rename(from: Bytes, to: Bytes) -> Result<Unit, FsError>
+    block entry():
+        // MOVEFILE_REPLACE_EXISTING
+        return(move_file(from, to, 1))
+
+/// Renames from to to, failing with AlreadyExists if something is at to.
+#target(os: "windows")
+internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result<Unit, FsError>
+    block entry():
+        return(move_file(from, to, 0))
+
+/// Copies from into to (made, or replaced): the bytes copied.
+#target(os: "windows")
+internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
+    block entry():
+        claim a : @Array<U16, PATH_CAPACITY> <- uninit
+        claim b : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(from, a.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(from)))
+        branch wide_path(to, b.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(to)))
+        branch c_copy_file(a.to<@U16>(), b.to<@U16>(), 0).ne(0)
+            ? continue
+            : return(failed<U64>())
+        m : Result<Metadata, FsError> = metadata(to)
+        when m:
+            .Success(info)  -> return(.Success(info.size))
+            .Failure(error) -> return(.Failure(error))
+
+/// Sets or clears the read-only attribute.
+#target(os: "windows")
+internal routine set_readonly(path: Bytes, readonly: Bool) -> Result<Unit, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        attributes : U32 = c_get_file_attributes(wpath.to<@U16>())
+        branch attributes.eq(INVALID_FILE_ATTRIBUTES)
+            ? return(failed<Unit>())
+            : continue
+        branch readonly
+            ? return(checked(c_set_file_attributes(wpath.to<@U16>(),
+                attributes.bitor(FILE_ATTRIBUTE_READONLY))))
+            : return(checked(c_set_file_attributes(wpath.to<@U16>(),
+                attributes.bitand(FILE_ATTRIBUTE_READONLY.bitnot()))))
+
+/// Whether e (an extension) is exe, com, cmd, or bat, in any case.
+#target(os: "windows")
+private routine is_program_extension(e: Bytes) -> Bool
+    block entry():
+        branch e.length().eq(3)
+            ? continue
+            : return(false)
+        // ASCII lowercase: setting bit 5 of a letter
+        a         : U8   = e.byte_at(0).bitor(0x20)
+        b         : U8   = e.byte_at(1).bitor(0x20)
+        c         : U8   = e.byte_at(2).bitor(0x20)
+        starts_ex : Bool = a.eq(101).bitand(b.eq(120))
+        exe       : Bool = starts_ex.bitand(c.eq(101))
+        starts_co : Bool = a.eq(99).bitand(b.eq(111))
+        com       : Bool = starts_co.bitand(c.eq(109))
+        starts_cm : Bool = a.eq(99).bitand(b.eq(109))
+        cmd       : Bool = starts_cm.bitand(c.eq(100))
+        starts_ba : Bool = a.eq(98).bitand(b.eq(97))
+        bat       : Bool = starts_ba.bitand(c.eq(116))
+        binary    : Bool = exe.bitor(com)
+        script    : Bool = cmd.bitor(bat)
+        return(binary.bitor(script))
+
+/// Whether path can be read (it exists), written (it exists and isn't read-only), or run (a file named .exe, .com,
+/// .cmd, or .bat). Windows checks permissions only when a file is opened.
+#target(os: "windows")
+internal routine can_access(path: Bytes, access: Access) -> Bool
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? continue
+            : return(false)
+        attributes : U32 = c_get_file_attributes(wpath.to<@U16>())
+        branch attributes.eq(INVALID_FILE_ATTRIBUTES)
+            ? return(false)
+            : continue
+        when access:
+            Access.Read    -> return(true)
+            Access.Write   -> return(attributes.bitand(FILE_ATTRIBUTE_READONLY).eq(0))
+            Access.Execute -> run(attributes)
+
+    block run(attributes: U32):
+        branch attributes.bitand(FILE_ATTRIBUTE_DIRECTORY).ne(0)
+            ? return(false)
+            : return(is_program_extension(file_extension(path)))
+
+/// Makes the file if it's missing, and sets its access and modification times to now.
+#target(os: "windows")
+internal routine touch(path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        h : Addr = c_create_file(wpath.to<@U16>(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_ALL, null,
+            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL.bitor(FILE_FLAG_BACKUP_SEMANTICS), null)
+        branch invalid_handle(h)
+            ? return(failed<Unit>())
+            : continue
+        claim now : @FileTime <- FileTime { low: 0, high: 0 }
+        c_get_system_time_as_file_time(now)
+        set : Result<Unit, FsError> = checked(c_set_file_time(h, null, now, now))
+        c_close_handle(h)
+        return(set)
+
+// -- directory listings ------------------------------------------------------------------
+
+/// The entries of a directory, "." and ".." left out, in the order the OS gives them. claim one, open it on a
+/// Directory, call next until Absent, and close it.
+#target(os: "windows")
+record DirIter
+    find    : Addr
+    data    : Array<U32, FIND_DATA_WORDS>  // WIN32_FIND_DATAW of the entry next returns or returned
+    pending : Bool  // data holds an entry next hasn't returned yet
+    name    : Array<Byte, 1024>  // the UTF-8 name next returned
+
+#target(os: "windows")
+internal routine DirIter.open_path(self: @Self, path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        self.find.store(inttoptr<USize, Addr>(USize.MAX))
+        self.pending.store(false)
+        claim pattern : @Array<U16, PATH_CAPACITY> <- uninit
+        n : Option<USize> = wide(path, pattern.to<@U16>())
+        when n:
+            .Present(length) -> star(pattern.to<@U16>(), length)
+            .Absent          -> return(.Failure(path_error(path)))
+
+    // path, a separator unless it ends with one, and "*"
+    block star(pattern: @U16, length: USize):
+        branch length.add(2).ge(PATH_CAPACITY)
+            ? return(.Failure(FsError.NameTooLong))
+            : continue
+        branch length.eq(0)
+            ? glob(pattern, 0)
+            : continue
+        last : U16 = pattern.stride(length.sub(1)).load()
+        branch last.eq(0x2F).bitor(last.eq(0x5C))
+            ? glob(pattern, length)
+            : continue
+        pattern.stride(length).store(0x5C)
+        jump glob(pattern, length.add(1))
+
+    block glob(pattern: @U16, at: USize):
+        pattern.stride(at).store(0x2A)
+        pattern.stride(at.add(1)).store(0)
+        find : Addr = c_find_first_file(pattern, self.data.to<@Byte>())
+        branch invalid_handle(find)
+            ? return(failed<Unit>())
+            : continue
+        self.find.store(find)
+        self.pending.store(true)
+        return(fs_done())
+
+/// Whether the UTF-16 name is "." or "..".
+#target(os: "windows")
+private routine is_dot_wide(name: @U16) -> Bool
+    block entry():
+        branch name.load().eq(0x2E)
+            ? continue
+            : return(false)
+        second : U16 = name.stride(1).load()
+        branch second.eq(0)
+            ? return(true)
+            : continue
+        branch second.eq(0x2E)
+            ? two_dots()
+            : return(false)
+
+    block two_dots():
+        third : U16 = name.stride(2).load()
+        return(third.eq(0))
+
+/// The next entry, or Absent at the end.
+#target(os: "windows")
+routine DirIter.next(self: @Self) -> Option<DirEntry>
+    block entry():
+        branch invalid_handle(self.find.load())
+            ? return(.Absent)
+            : continue
+        branch self.pending.load()
+            ? current()
+            : continue
+        branch c_find_next_file(self.find.load(), self.data.to<@Byte>()).ne(0)
+            ? current()
+            : return(.Absent)
+
+    block current():
+        self.pending.store(false)
+        data : @Byte = self.data.to<@Byte>()
+        name : @U16  = data.stride(FIND_NAME).to<@U16>()
+        branch is_dot_wide(name)
+            ? return(self.next())
+            : continue
+        n    : USize    = narrow(name, wide_length(name), self.name.to<@Byte>())
+        info : Metadata = from_find_data(data)
+        return(.Present(DirEntry { name: Bytes.from_ptr(self.name.to<@Byte>(), n),
+            kind: info.kind }))
+
+/// The metadata of the entry next last returned, from the listing itself (a link describes itself).
+#target(os: "windows")
+routine DirIter.entry_metadata(self: @Self) -> Result<Metadata, FsError>
+    block entry():
+        return(.Success(from_find_data(self.data.to<@Byte>())))
+
+#target(os: "windows")
+routine DirIter.close(self: @Self) -> Void
+    block entry():
+        find : Addr = self.find.load()
+        branch invalid_handle(find)
+            ? return()
+            : continue
+        c_find_close(find)
+        self.find.store(inttoptr<USize, Addr>(USize.MAX))
+        return()
+
+// -- the working directory and well-known directories -------------------------------------
+
+/// The working directory, in memory from alloc.
+#target(os: "windows")
+internal routine current_dir(alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        need : U32 = c_get_current_directory(0, null)
+        branch need.eq(0)
+            ? return(failed<Bytes>())
+            : continue
+        units : @U16 = allocate<U16>(alloc, need.to<USize>())
+        branch units.is_null()
+            ? return(.Failure(FsError.OutOfMemory))
+            : continue
+        got : U32 = c_get_current_directory(need, units)
+        branch got.eq(0).bitor(got.ge(need))
+            ? fail(units)
+            : continue
+        text : Result<Bytes, FsError> = owned_wide(units, got.to<USize>(), alloc)
+        units.free(alloc)
+        return(text)
+
+    block fail(units: @U16):
+        units.free(alloc)
+        return(failed<Bytes>())
+
+#target(os: "windows")
+internal routine set_current_dir(path: Bytes) -> Result<Unit, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? return(checked(c_set_current_directory(wpath.to<@U16>())))
+            : return(.Failure(path_error(path)))
+
+/// The temporary directory without its trailing separator (C:\Windows\Temp when it can't be told), in memory from
+/// alloc.
+#target(os: "windows")
+internal routine temp_dir(alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        claim units : @Array<U16, PATH_CAPACITY> <- uninit
+        got : U32 = c_get_temp_path(PATH_CAPACITY.to<U32>(), units.to<@U16>())
+        branch got.eq(0).bitor(got.to<USize>().ge(PATH_CAPACITY))
+            ? fallback()
+            : continue
+        path_units : @U16 = units.to<@U16>()
+        last       : U16  = path_units.stride(got.sub(1).to<USize>()).load()
+        branch last.eq(0x5C).bitor(last.eq(0x2F))
+            ? return(owned_wide(units.to<@U16>(), got.sub(1).to<USize>(), alloc))
+            : return(owned_wide(units.to<@U16>(), got.to<USize>(), alloc))
+
+    block fallback():
+        buffer : @Byte = allocate<Byte>(alloc, 15)
+        branch buffer.is_null()
+            ? return(.Failure(FsError.OutOfMemory))
+            : continue
+        copy<Byte>(buffer, "C:\\Windows\\Temp", 15)
+        return(.Success(Bytes.from_ptr(buffer, 15)))
+
+/// The environment variable name, as UTF-8 in memory from alloc, when it is set and not empty.
+#target(os: "windows")
+private routine env_dir(name: CWStr, alloc: @Allocator) -> Option<Bytes>
+    block entry():
+        claim units : @Array<U16, PATH_CAPACITY> <- uninit
+        got : U32 = c_get_environment_variable(name, units.to<@U16>(), PATH_CAPACITY.to<U32>())
+        branch got.eq(0).bitor(got.to<USize>().ge(PATH_CAPACITY))
+            ? return(.Absent)
+            : continue
+        text : Result<Bytes, FsError> = owned_wide(units.to<@U16>(), got.to<USize>(), alloc)
+        when text:
+            .Success(t) -> return(.Present(t))
+            .Failure    -> return(.Absent)
+
+/// USERPROFILE, or HOMEDRIVE and HOMEPATH, in memory from alloc; NotFound when neither is set.
+#target(os: "windows")
+internal routine home_dir(alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        profile : Option<Bytes> = env_dir("USERPROFILE", alloc)
+        when profile:
+            .Present(dir) -> return(.Success(dir))
+            .Absent       -> drive()
+
+    block drive():
+        d : Option<Bytes> = env_dir("HOMEDRIVE", alloc)
+        when d:
+            .Present(drive) -> home_path(drive)
+            .Absent         -> return(.Failure(FsError.NotFound))
+
+    block home_path(drive: Bytes):
+        p : Option<Bytes> = env_dir("HOMEPATH", alloc)
+        when p:
+            .Present(path) -> join(drive, path)
+            .Absent        -> missing(drive)
+
+    block missing(drive: Bytes):
+        drive.data.free(alloc)
+        return(.Failure(FsError.NotFound))
+
+    block join(drive: Bytes, path: Bytes):
+        both : Bytes = Bytes.concat(drive, path, alloc)
+        drive.data.free(alloc)
+        path.data.free(alloc)
+        return(.Success(both))
+
+/// path made absolute by the text: the working directory in front of a relative path, and "." and ".." taken out
+/// (GetFullPathNameW), nothing looked up.
+#target(os: "windows")
+internal routine absolute_path(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        claim full : @Array<U16, PATH_CAPACITY> <- uninit
+        got : U32 = c_get_full_path_name(wpath.to<@U16>(), PATH_CAPACITY.to<U32>(), full.to<@U16>(),
+            null)
+        branch got.eq(0)
+            ? return(failed<Bytes>())
+            : continue
+        branch got.to<USize>().ge(PATH_CAPACITY)
+            ? return(.Failure(FsError.NameTooLong))
+            : return(owned_wide(full.to<@U16>(), got.to<USize>(), alloc))
+
+/// The absolute path with every link, ".", and ".." resolved; path must exist. The "\\?\" prefix the OS gives is
+/// taken off ("\\?\UNC\server\share" becomes "\\server\share").
+#target(os: "windows")
+internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        h : Addr = query_handle(wpath.to<@U16>(), false)
+        branch invalid_handle(h)
+            ? return(failed<Bytes>())
+            : continue
+        claim full : @Array<U16, PATH_CAPACITY> <- uninit
+        // FILE_NAME_NORMALIZED | VOLUME_NAME_DOS
+        got : U32 = c_get_final_path_name_by_handle(h, full.to<@U16>(), PATH_CAPACITY.to<U32>(), 0)
+        e   : U32 = c_get_last_error()
+        c_close_handle(h)
+        branch got.eq(0)
+            ? return(.Failure(error_of(e)))
+            : continue
+        branch got.to<USize>().ge(PATH_CAPACITY)
+            ? return(.Failure(FsError.NameTooLong))
+            : continue
+        text : Result<Bytes, FsError> = owned_wide(full.to<@U16>(), got.to<USize>(), alloc)
+        when text:
+            .Success(t)     -> strip(t)
+            .Failure(error) -> return(.Failure(error))
+
+    block strip(t: Bytes):
+        branch t.starts_with("\\\\?\\UNC\\")
+            ? unc(t)
+            : continue
+        branch t.starts_with("\\\\?\\")
+            ? shift(t, 4, 0)
+            : return(.Success(t))
+
+    // "\\?\UNC\server" to "\\server": keep the first two backslashes, drop "?\UNC\"
+    block unc(t: Bytes):
+        jump shift(t, 8, 2)
+
+    // Moves the text from from down to keep, so the buffer's start (what free wants) stays where it is.
+    block shift(t: Bytes, from: USize, keep: USize):
+        rest : USize = t.length().sub(from)
+        jump move(t, from, keep, rest, 0)
+
+    block move(t: Bytes, from: USize, keep: USize, rest: USize, i: USize):
+        branch i.eq(rest)
+            ? return(.Success(Bytes.from_ptr(t.data, keep.add(rest))))
+            : continue
+        t.data.stride(keep.add(i)).store(t.data.stride(from.add(i)).load())
+        jump move(t, from, keep, rest, i.add(1))
+
+// -- memory-mapped files -----------------------------------------------------------------
+
+/// Maps length bytes of path from offset (USize.MAX: to the end), clamped to the file; past the end, or an empty
+/// file, gives an empty mapping. write maps it so stores reach the file; otherwise it's read-only (opened for a
+/// front-to-back read).
+#target(os: "windows")
+internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
+    length: USize) -> Result<Self, FsError>
+    block entry():
+        claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
+        branch wide_path(path, wpath.to<@U16>())
+            ? continue
+            : return(.Failure(path_error(path)))
+        branch write
+            ? opened(c_create_file(wpath.to<@U16>(), GENERIC_READ.bitor(GENERIC_WRITE),
+                FILE_SHARE_ALL, null, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null))
+            : opened(c_create_file(wpath.to<@U16>(), GENERIC_READ, FILE_SHARE_ALL, null,
+                OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, null))
+
+    block opened(h: Addr):
+        branch invalid_handle(h)
+            ? return(failed<Self>())
+            : continue
+        claim size : @S64 <- 0
+        branch c_get_file_size_ex(h, size).ne(0)
+            ? sized(h, size.load().to<U64>())
+            : closed(h, last_error())
+
+    block closed(h: Addr, error: FsError):
+        c_close_handle(h)
+        return(.Failure(error))
+
+    block sized(h: Addr, size: U64):
+        branch offset.ge(size)
+            ? empty(h)
+            : continue
+        want_bytes : U64   = length.to<U64>().min(size.sub(offset))
+        want       : USize = want_bytes.to<USize>()
+        grain      : U64   = map_granularity().to<U64>()
+        aligned    : U64   = offset.sub(offset.mod(grain))
+        delta      : USize = offset.sub(aligned).to<USize>()
+        // PAGE_READWRITE or PAGE_READONLY
+        protect : U32 = write
+            ? 4
+            : 2
+        mapping : Addr = c_create_file_mapping(h, null, protect, 0, 0, null)
+        branch mapping.is_null()
+            ? closed(h, last_error())
+            : continue
+        // FILE_MAP_WRITE or FILE_MAP_READ
+        access : U32 = write
+            ? 2
+            : 4
+        view : Addr = c_map_view_of_file(mapping, access, aligned.shr(32).to_wrap<U32>(),
+            aligned.to_wrap<U32>(), want.add(delta))
+        e    : U32  = c_get_last_error()
+        c_close_handle(mapping)
+        c_close_handle(h)
+        branch view.is_null()
+            ? return(.Failure(error_of(e)))
+            : return(.Success(Self { base: view, delta: delta, length: want }))
+
+    block empty(h: Addr):
+        c_close_handle(h)
+        return(.Success(Self.empty()))
+
+/// Writes changed pages back to the file.
+#target(os: "windows")
+routine Mapping.flush(self: Self) -> Result<Unit, FsError>
+    block entry():
+        branch self.base.is_null()
+            ? return(fs_done())
+            : return(checked(c_flush_view_of_file(self.base, 0)))
+
+/// Writes changed pages back and unmaps.
+#target(os: "windows")
+routine Mapping.unmap(self: Self) -> Void
+    block entry():
+        branch self.base.is_null()
+            ? return()
+            : continue
+        c_flush_view_of_file(self.base, 0)
+        c_unmap_view_of_file(self.base)
+        return()
+
+/// Asks the OS to read the whole mapping in now.
+#target(os: "windows")
+routine Mapping.prefetch(self: Self) -> Void
+    block entry():
+        branch self.base.is_null()
+            ? return()
+            : continue
+        claim range : @MemoryRange <- MemoryRange { address: self.base,
+            size: self.delta.add(self.length) }
+        c_prefetch_virtual_memory(c_get_current_process(), 1, range, 0)
+        return()
+
+/// Tells the OS the mapping will be read front to back: a read-only mapping's file was already opened that way.
+#target(os: "windows")
+routine Mapping.advise_sequential(self: Self) -> Void
+    block entry():
+        return()

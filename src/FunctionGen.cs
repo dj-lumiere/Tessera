@@ -115,7 +115,7 @@ public sealed class FunctionGen
             foreach (var p in b.Params)
             {
                 var t = Resolve(p.Type);
-                // A block parameter may shadow a routine parameter (stdlib/io.tess print_int does this).
+                // A block parameter may shadow a routine parameter (Standard/io.tess print_int does this).
                 if (!seen.Add(p.Name)) throw Err(p.Pos, $"block '{b.Name}' declares '{p.Name}' twice");
                 types.Add(t);
             }

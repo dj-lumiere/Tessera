@@ -1,0 +1,709 @@
+// Tessera stdlib: running another program on Linux and macOS (see Process.tess)
+//
+// Everything the child needs (the argument vector, the environment, the directory) is made in the parent before
+// fork, so the child only calls what is safe between fork and exec: dup2, chdir, execvp, write, _exit. If the
+// directory change or the exec fails, the child writes errno to a close-on-exec pipe; the parent reads that pipe to
+// its end, which comes at the exec or the child's exit, and so knows whether the program started.
+
+module Standard::Os
+
+import Standard::Alloc
+
+#[external("c"), symbol("environ"), target(os: "linux")]
+global ENVIRON: @@@Byte
+
+/// struct pollfd
+#target(os: not "windows")
+private record PollFd
+    fd      : CInt
+    events  : S16
+    revents : S16
+
+#[external("c"), symbol("pipe"), target(os: not "windows")]
+private routine c_pipe(fds: @CInt) -> CInt
+
+#[external("c"), symbol("fcntl"), variadic, target(os: not "windows")]
+private routine c_fcntl(fd: CInt, cmd: CInt, arg: CInt) -> CInt
+
+#[external("c"), symbol("open"), variadic, target(os: not "windows")]
+private routine c_open(path: CStr, flags: CInt) -> CInt
+
+#[external("c"), symbol("close"), target(os: not "windows")]
+private routine c_close(fd: CInt) -> CInt
+
+#[external("c"), symbol("fork"), target(os: not "windows")]
+private routine c_fork() -> CInt
+
+#[external("c"), symbol("dup2"), target(os: not "windows")]
+private routine c_dup2(from: CInt, to: CInt) -> CInt
+
+#[external("c"), symbol("chdir"), target(os: not "windows")]
+private routine c_chdir(path: @Byte) -> CInt
+
+#[external("c"), symbol("execvp"), target(os: not "windows")]
+private routine c_execvp(file: @Byte, argv: @@Byte) -> CInt
+
+#[external("c"), symbol("_exit"), noreturn, target(os: not "windows")]
+private routine c_exit_now(status: CInt) -> Void
+
+#[external("c"), symbol("waitpid"), target(os: not "windows")]
+private routine c_waitpid(pid: CInt, status: @CInt, options: CInt) -> CInt
+
+#[external("c"), symbol("getenv"), target(os: not "windows")]
+private routine c_getenv(name: @Byte) -> @Byte
+
+#[external("c"), symbol("__errno_location"), target(os: "linux")]
+private routine c_errno_place() -> @CInt
+
+#[external("c"), symbol("__error"), target(os: "macos")]
+private routine c_errno_place() -> @CInt
+
+#[external("c"), symbol("_NSGetEnviron"), target(os: "macos")]
+private routine c_ns_get_environ() -> @@@Byte
+
+// nfds_t: unsigned long on Linux, unsigned int on macOS
+#[external("c"), symbol("poll"), target(os: "linux")]
+private routine c_poll(fds: @PollFd, count: USize, timeout: CInt) -> CInt
+
+#[external("c"), symbol("poll"), target(os: "macos")]
+private routine c_poll(fds: @PollFd, count: U32, timeout: CInt) -> CInt
+
+#target(os: "linux")
+private routine poll_two(fds: @PollFd) -> CInt
+    block entry():
+        return(c_poll(fds, 2, -1))
+
+#target(os: "macos")
+private routine poll_two(fds: @PollFd) -> CInt
+    block entry():
+        return(c_poll(fds, 2, -1))
+
+/// Where C's environ lives: the variable on Linux, and through _NSGetEnviron on macOS (as a library must).
+#target(os: "linux")
+private routine environ_place() -> @@@Byte
+    block entry():
+        return(ENVIRON)
+
+#target(os: "macos")
+private routine environ_place() -> @@@Byte
+    block entry():
+        return(c_ns_get_environ())
+
+/// O_RDWR | O_CLOEXEC
+#target(os: "linux")
+private routine read_write_cloexec() -> CInt
+    block entry():
+        return(0x80002)
+
+#target(os: "macos")
+private routine read_write_cloexec() -> CInt
+    block entry():
+        return(0x1000002)
+
+#target(os: not "windows")
+private routine errno() -> CInt
+    block entry():
+        return(c_errno_place().load())
+
+#target(os: not "windows")
+private routine spawn_error(e: CInt) -> ProcessError
+    block entry():
+        when:
+            e.eq(2).bitor(e.eq(20)) -> return(ProcessError.NotFound)
+            e.eq(1).bitor(e.eq(13)) -> return(ProcessError.PermissionDenied)
+            e.eq(12)                -> return(ProcessError.OutOfMemory)
+            else                    -> return(ProcessError.Other)
+
+// -- what the child is given -----------------------------------------------------------
+
+/// The argument vector, the environment (null to inherit), and the directory (null to stay), in memory from alloc.
+#target(os: not "windows")
+private record Prepared
+    argv      : @@Byte  // the program and the arguments, then null
+    argc      : USize  // how many strings argv holds (made so far, when it couldn't finish)
+    envp      : @@Byte  // the parent's entries not overridden, the overrides, then null
+    own_first : USize  // where envp's own (allocated) entries start
+    own_count : USize
+    directory : @Byte
+
+/// text with a NUL after it, in memory from alloc, or null when that can't be had.
+#target(os: not "windows")
+private routine c_string(text: Bytes, alloc: @Allocator) -> @Byte
+    block entry():
+        n : USize = text.length()
+        p : @Byte = allocate<Byte>(alloc, n.add(1))
+        branch p.is_null()
+            ? return(null)
+            : continue
+        copy<Byte>(p, text.data, n)
+        p.stride(n).store(0x00)
+        return(p)
+
+/// "name=value" with a NUL after it, in memory from alloc, or null.
+#target(os: not "windows")
+private routine env_entry(v: EnvVar, alloc: @Allocator) -> @Byte
+    block entry():
+        n : USize = v.name.length()
+        m : USize = v.value.length()
+        p : @Byte = allocate<Byte>(alloc, n.add(m).add(2))
+        branch p.is_null()
+            ? return(null)
+            : continue
+        copy<Byte>(p, v.name.data, n)
+        p.stride(n).store(b'=')
+        copy<Byte>(p.stride(n.add(1)), v.value.data, m)
+        p.stride(n.add(m).add(1)).store(0x00)
+        return(p)
+
+#target(os: not "windows")
+private routine Prepared.free(self: @Self, alloc: @Allocator) -> Void
+    block entry():
+        jump args(0)
+
+    block args(i: USize):
+        branch i.eq(self.argc.load())
+            ? env(0)
+            : continue
+        arg_slot : @@Byte = self.argv.load().stride(i)
+        arg_slot.load().free(alloc)
+        jump args(i.add(1))
+
+    block env(i: USize):
+        envp : @@Byte = self.envp.load()
+        branch envp.is_null().bitor(i.eq(self.own_count.load()))
+            ? rest()
+            : continue
+        entry_slot : @@Byte = envp.stride(self.own_first.load().add(i))
+        entry_slot.load().free(alloc)
+        jump env(i.add(1))
+
+    block rest():
+        argv : @@Byte = self.argv.load()
+        branch argv.is_null()
+            ? arrays_done()
+            : continue
+        argv.free(alloc)
+        jump arrays_done()
+
+    block arrays_done():
+        envp : @@Byte = self.envp.load()
+        branch envp.is_null()
+            ? env_done()
+            : continue
+        envp.free(alloc)
+        jump env_done()
+
+    block env_done():
+        dir : @Byte = self.directory.load()
+        branch dir.is_null()
+            ? return()
+            : continue
+        dir.free(alloc)
+        return()
+
+/// Whether a NUL is inside any text the child would get.
+#target(os: not "windows")
+private routine has_nul(program: Bytes, args: @Bytes, arg_count: USize,
+    options: ProcessOptions) -> Bool
+    block entry():
+        branch program.contains("\x00")
+            ? return(true)
+            : arg(0)
+
+    block arg(i: USize):
+        branch i.eq(arg_count)
+            ? env(0)
+            : continue
+        argument : Bytes = args.stride(i).load()
+        branch argument.contains("\x00")
+            ? return(true)
+            : arg(i.add(1))
+
+    block env(i: USize):
+        branch i.eq(options.env_count)
+            ? directory()
+            : continue
+        v          : EnvVar = options.env.stride(i).load()
+        nul_inside : Bool   = v.name.contains("\x00").bitor(v.value.contains("\x00"))
+        branch nul_inside.bitor(v.name.contains("="))
+            ? return(true)
+            : env(i.add(1))
+
+    block directory():
+        when options.directory:
+            .Present(d) -> return(d.contains("\x00"))
+            .Absent     -> return(false)
+
+#target(os: not "windows")
+private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: USize,
+    options: ProcessOptions, alloc: @Allocator) -> Bool
+    block entry():
+        p.store(Prepared { argv: null, argc: 0, envp: null, own_first: 0, own_count: 0,
+            directory: null })
+        argv : @@Byte = allocate<@Byte>(alloc, arg_count.add(2))
+        branch argv.is_null()
+            ? return(false)
+            : continue
+        p.argv.store(argv)
+        jump string(argv, 0)
+
+    block string(argv: @@Byte, i: USize):
+        branch i.gt(arg_count)
+            ? args_done(argv, i)
+            : continue
+        branch i.eq(0)
+            ? made(argv, i, c_string(program, alloc))
+            : made(argv, i, c_string(args.stride(i.sub(1)).load(), alloc))
+
+    block made(argv: @@Byte, i: USize, s: @Byte):
+        branch s.is_null()
+            ? return(false)
+            : continue
+        argv.stride(i).store(s)
+        p.argc.store(i.add(1))
+        jump string(argv, i.add(1))
+
+    block args_done(argv: @@Byte, n: USize):
+        argv.stride(n).store(null)
+        when options.directory:
+            .Present(d) -> directory(c_string(d, alloc))
+            .Absent     -> environment()
+
+    block directory(d: @Byte):
+        branch d.is_null()
+            ? return(false)
+            : continue
+        p.directory.store(d)
+        jump environment()
+
+    block environment():
+        branch options.env_count.eq(0)
+            ? return(true)
+            : continue
+        parent : @@Byte = environ_place().load()
+        jump count(parent, 0)
+
+    block count(parent: @@Byte, n: USize):
+        branch parent.is_null()
+            ? merge(parent, n)
+            : continue
+        parent_entry : @Byte = parent.stride(n).load()
+        branch parent_entry.is_null()
+            ? merge(parent, n)
+            : count(parent, n.add(1))
+
+    // The parent's entries the overrides don't name, pointed at as they are (the child gets the same memory), then
+    // the overrides, made here.
+    block merge(parent: @@Byte, n: USize):
+        envp : @@Byte = allocate<@Byte>(alloc, n.add(options.env_count).add(1))
+        branch envp.is_null()
+            ? return(false)
+            : continue
+        p.envp.store(envp)
+        jump keep(parent, n, envp, 0, 0)
+
+    block keep(parent: @@Byte, n: USize, envp: @@Byte, i: USize, k: USize):
+        branch i.eq(n)
+            ? own(envp, k, 0)
+            : continue
+        entry : @Byte = parent.stride(i).load()
+        branch overridden(CStr.from_ptr(entry).to_bytes(), options)
+            ? keep(parent, n, envp, i.add(1), k)
+            : continue
+        envp.stride(k).store(entry)
+        jump keep(parent, n, envp, i.add(1), k.add(1))
+
+    block own(envp: @@Byte, first: USize, j: USize):
+        branch j.eq(options.env_count)
+            ? finish(envp, first, j)
+            : continue
+        e : @Byte = env_entry(options.env.stride(j).load(), alloc)
+        branch e.is_null()
+            ? finish_failed(envp, first, j)
+            : continue
+        envp.stride(first.add(j)).store(e)
+        jump own(envp, first, j.add(1))
+
+    block finish(envp: @@Byte, first: USize, count: USize):
+        envp.stride(first.add(count)).store(null)
+        p.own_first.store(first)
+        p.own_count.store(count)
+        return(true)
+
+    block finish_failed(envp: @@Byte, first: USize, count: USize):
+        p.own_first.store(first)
+        p.own_count.store(count)
+        return(false)
+
+/// Whether an override names entry's variable.
+#target(os: not "windows")
+private routine overridden(entry: Bytes, options: ProcessOptions) -> Bool
+    block entry():
+        jump look(0)
+
+    block look(j: USize):
+        branch j.eq(options.env_count)
+            ? return(false)
+            : continue
+        branch env_key_matches(options.env.stride(j).load().name, entry, false)
+            ? return(true)
+            : look(j.add(1))
+
+// -- the child ---------------------------------------------------------------------------
+
+/// The streams one child gets: each the fd to put in place, or -1 to leave what it inherits.
+#target(os: not "windows")
+private record ChildStreams
+    input  : CInt
+    output : CInt
+    error  : CInt
+    report : CInt
+
+#[noreturn, target(os: not "windows")]
+private routine child(p: @Prepared, s: ChildStreams) -> Void
+    block entry():
+        branch s.input.ge(0)
+            ? continue
+            : output()
+        c_dup2(s.input, 0)
+        jump output()
+
+    block output():
+        branch s.output.ge(0)
+            ? continue
+            : error()
+        c_dup2(s.output, 1)
+        jump error()
+
+    block error():
+        branch s.error.ge(0)
+            ? continue
+            : directory()
+        c_dup2(s.error, 2)
+        jump directory()
+
+    block directory():
+        dir : @Byte = p.directory.load()
+        branch dir.is_null()
+            ? environment()
+            : continue
+        branch c_chdir(dir).eq(0)
+            ? environment()
+            : failed()
+
+    block environment():
+        envp : @@Byte = p.envp.load()
+        branch envp.is_null()
+            ? exec()
+            : continue
+        environ_place().store(envp)
+        jump exec()
+
+    block exec():
+        argv : @@Byte = p.argv.load()
+        c_execvp(argv.load(), argv)
+        jump failed()
+
+    block failed():
+        claim e : @CInt <- errno()
+        c_write(s.report, e.to<@Byte>(), 4)
+        c_exit_now(127)
+
+// -- the parent --------------------------------------------------------------------------
+
+/// The pipes and the null device a run uses: -1 where it has none.
+#target(os: not "windows")
+private record Plumbing
+    out_r   : CInt
+    out_w   : CInt
+    err_r   : CInt
+    err_w   : CInt
+    exec_r  : CInt
+    exec_w  : CInt
+    devnull : CInt
+
+/// A pipe, both ends close-on-exec: whether it was made.
+#target(os: not "windows")
+private routine cloexec_pipe(fds: @CInt) -> Bool
+    block entry():
+        branch c_pipe(fds).eq(0)
+            ? continue
+            : return(false)
+        // F_SETFD, FD_CLOEXEC
+        c_fcntl(fds.load(), 2, 1)
+        c_fcntl(fds.stride(1).load(), 2, 1)
+        return(true)
+
+#target(os: not "windows")
+private routine close_if_open(fd: CInt) -> Void
+    block entry():
+        branch fd.ge(0)
+            ? continue
+            : return()
+        c_close(fd)
+        return()
+
+#target(os: not "windows")
+private routine Plumbing.close_all(self: @Self) -> Void
+    block entry():
+        close_if_open(self.out_r.load())
+        close_if_open(self.out_w.load())
+        close_if_open(self.err_r.load())
+        close_if_open(self.err_w.load())
+        close_if_open(self.exec_r.load())
+        close_if_open(self.exec_w.load())
+        close_if_open(self.devnull.load())
+        return()
+
+/// The pipes and the null device options call for: whether all were made.
+#target(os: not "windows")
+private routine Plumbing.make(self: @Self, options: ProcessOptions) -> Bool
+    block entry():
+        self.store(Plumbing { out_r: -1, out_w: -1, err_r: -1, err_w: -1, exec_r: -1, exec_w: -1,
+            devnull: -1 })
+        claim fds : @Array<CInt, 2> <- { -1, -1 }
+        branch cloexec_pipe(fds.to<@CInt>())
+            ? continue
+            : return(false)
+        self.exec_r.store(fds.get(0))
+        self.exec_w.store(fds.get(1))
+        branch options.stdout.eq(OutputMode.Capture)
+            ? continue
+            : error_pipe(fds.to<@CInt>())
+        branch cloexec_pipe(fds.to<@CInt>())
+            ? continue
+            : return(false)
+        self.out_r.store(fds.get(0))
+        self.out_w.store(fds.get(1))
+        jump error_pipe(fds.to<@CInt>())
+
+    block error_pipe(fds: @CInt):
+        branch options.stderr.eq(OutputMode.Capture)
+            ? continue
+            : null_device()
+        branch cloexec_pipe(fds)
+            ? continue
+            : return(false)
+        self.err_r.store(fds.load())
+        self.err_w.store(fds.stride(1).load())
+        jump null_device()
+
+    block null_device():
+        null_in  : Bool = options.stdin.eq(InputMode.Null)
+        null_out : Bool = options.stdout.eq(OutputMode.Null).bitor(options.stderr.eq(OutputMode.Null))
+        wanted   : Bool = null_in.bitor(null_out)
+        branch wanted
+            ? continue
+            : return(true)
+        fd : CInt = c_open("/dev/null", read_write_cloexec())
+        self.devnull.store(fd)
+        return(fd.ge(0))
+
+/// The fd one stream of the child gets: the pipe's write end, the null device, or -1 (inherit).
+#target(os: not "windows")
+private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
+    block entry():
+        when mode:
+            OutputMode.Capture -> return(pipe)
+            OutputMode.Null    -> return(null_fd)
+            OutputMode.Inherit -> return(-1)
+
+#target(os: not "windows")
+routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
+    alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
+    block entry():
+        branch has_nul(program, args, arg_count, options)
+            ? return(.Failure(ProcessError.InvalidArgument))
+            : continue
+        claim p : @Prepared <- uninit
+        branch prepare(p, program, args, arg_count, options, alloc)
+            ? continue
+            : out_of_memory(p)
+        claim pipes : @Plumbing <- uninit
+        branch pipes.make(options)
+            ? continue
+            : spawn_failed(p, pipes)
+        null_fd : CInt = pipes.devnull.load()
+        input   : CInt = options.stdin.eq(InputMode.Null)
+            ? null_fd
+            : -1
+        streams : ChildStreams = ChildStreams { input: input,
+            output: output_fd(options.stdout, pipes.out_w.load(), null_fd),
+            error: output_fd(options.stderr, pipes.err_w.load(), null_fd),
+            report: pipes.exec_w.load() }
+        pid     : CInt         = c_fork()
+        branch pid.eq(0)
+            ? child(p, streams)
+            : continue
+        branch pid.lt(0)
+            ? spawn_failed(p, pipes)
+            : continue
+        // The child's ends close here, so each pipe ends when the child is done with it.
+        close_if_open(pipes.out_w.load())
+        close_if_open(pipes.err_w.load())
+        close_if_open(pipes.exec_w.load())
+        close_if_open(null_fd)
+        pipes.out_w.store(-1)
+        pipes.err_w.store(-1)
+        pipes.exec_w.store(-1)
+        pipes.devnull.store(-1)
+        claim report : @CInt <- 0
+        jump started(p, pipes, pid, report)
+
+    block out_of_memory(p: @Prepared):
+        p.free(alloc)
+        return(.Failure(ProcessError.OutOfMemory))
+
+    block spawn_failed(p: @Prepared, pipes: @Plumbing):
+        e : CInt = errno()
+        pipes.close_all()
+        p.free(alloc)
+        return(.Failure(spawn_error(e)))
+
+    // 4 bytes on the report pipe are the errno of a failed exec; its end without them is a started program.
+    block started(p: @Prepared, pipes: @Plumbing, pid: CInt, report: @CInt):
+        got : SSize = c_read(pipes.exec_r.load(), report.to<@Byte>(), 4)
+        branch got.lt(0).bitand(errno().eq(4))
+            ? started(p, pipes, pid, report)
+            : continue
+        c_close(pipes.exec_r.load())
+        pipes.exec_r.store(-1)
+        p.free(alloc)
+        claim out : @CaptureBuffer <- CaptureBuffer.empty()
+        claim err : @CaptureBuffer <- CaptureBuffer.empty()
+        drain(pipes.out_r.load(), pipes.err_r.load(), out, err, alloc)
+        status : Option<ExitStatus> = reap(pid)
+        branch got.eq(4)
+            ? exec_failed(out, err, report.load())
+            : continue
+        when status:
+            .Present(s) -> return(.Success(ProcessOutput { status: s, stdout: out.load().bytes(),
+                stderr: err.load().bytes() }))
+            .Absent     -> lost(out, err)
+
+    block exec_failed(out: @CaptureBuffer, err: @CaptureBuffer, e: CInt):
+        release(out.load(), alloc)
+        release(err.load(), alloc)
+        return(.Failure(spawn_error(e)))
+
+    block lost(out: @CaptureBuffer, err: @CaptureBuffer):
+        release(out.load(), alloc)
+        release(err.load(), alloc)
+        return(.Failure(ProcessError.Other))
+
+#target(os: not "windows")
+private routine release(b: CaptureBuffer, alloc: @Allocator) -> Void
+    block entry():
+        branch b.data.is_null()
+            ? return()
+            : continue
+        b.data.free(alloc)
+        return()
+
+/// Reads both pipes (-1 for one not captured) to their end, whichever has data, and closes them.
+#target(os: not "windows")
+private routine drain(out_fd: CInt, err_fd: CInt, out: @CaptureBuffer, err: @CaptureBuffer,
+    alloc: @Allocator) -> Void
+    block entry():
+        // POLLIN; poll skips a negative fd
+        claim fds   : @Array<PollFd, 2>  <- { PollFd { fd: out_fd, events: 1, revents: 0 },
+            PollFd { fd: err_fd, events: 1, revents: 0 } }
+        claim chunk : @Array<Byte, 4096> <- uninit
+        out_open : U32 = out_fd.ge(0).to<U32>()
+        open     : U32 = out_open.add(err_fd.ge(0).to<U32>())
+        jump wait(fds.to<@PollFd>(), chunk.to<@Byte>(), open)
+
+    block wait(fds: @PollFd, chunk: @Byte, open: U32):
+        branch open.eq(0)
+            ? return()
+            : continue
+        branch poll_two(fds).lt(0)
+            ? interrupted(fds, chunk, open)
+            : stream(fds, chunk, open, 0)
+
+    block interrupted(fds: @PollFd, chunk: @Byte, open: U32):
+        branch errno().eq(4)
+            ? wait(fds, chunk, open)
+            : give_up(fds)
+
+    block give_up(fds: @PollFd):
+        close_if_open(fds.fd.load())
+        close_if_open(fds.stride(1).fd.load())
+        return()
+
+    block stream(fds: @PollFd, chunk: @Byte, open: U32, i: USize):
+        branch i.eq(2)
+            ? wait(fds, chunk, open)
+            : continue
+        p  : @PollFd = fds.stride(i)
+        fd : CInt    = p.fd.load()
+        branch fd.lt(0).bitor(p.revents.load().eq(0))
+            ? stream(fds, chunk, open, i.add(1))
+            : continue
+        n : SSize = c_read(fd, chunk, 4096)
+        branch n.gt(0)
+            ? keep(fds, chunk, open, i, n.to<USize>())
+            : continue
+        branch n.lt(0).bitand(errno().eq(4))
+            ? stream(fds, chunk, open, i.add(1))
+            : continue
+        c_close(fd)
+        p.fd.store(-1)
+        jump stream(fds, chunk, open.sub(1), i.add(1))
+
+    block keep(fds: @PollFd, chunk: @Byte, open: U32, i: USize, n: USize):
+        branch i.eq(0)
+            ? into(fds, chunk, open, i, n, out)
+            : into(fds, chunk, open, i, n, err)
+
+    block into(fds: @PollFd, chunk: @Byte, open: U32, i: USize, n: USize, buffer: @CaptureBuffer):
+        buffer.append(alloc, chunk, n)
+        jump stream(fds, chunk, open, i.add(1))
+
+/// Waits for the child: how it ended, or Absent if waitpid failed.
+#target(os: not "windows")
+private routine reap(pid: CInt) -> Option<ExitStatus>
+    block entry():
+        claim status : @CInt <- 0
+        jump wait(status)
+
+    block wait(status: @CInt):
+        rc : CInt = c_waitpid(pid, status, 0)
+        branch rc.lt(0).bitand(errno().eq(4))
+            ? wait(status)
+            : continue
+        branch rc.lt(0)
+            ? return(.Absent)
+            : continue
+        s   : CInt = status.load()
+        low : CInt = s.bitand(0x7F)
+        // WIFEXITED, else WIFSIGNALED (0x7F is a stop, which waitpid without WUNTRACED doesn't report)
+        branch low.eq(0)
+            ? return(.Present(ExitStatus.Exited(s.shr(8).bitand(0xFF))))
+            : return(.Present(ExitStatus.Signaled(low)))
+
+// -- the environment ---------------------------------------------------------------------
+
+/// The value of the environment variable name, in memory from alloc, or Absent when it isn't set.
+#target(os: not "windows")
+routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
+    block entry():
+        claim key : @Array<Byte, 256> <- uninit
+        too_long : Bool = name.length().ge(256)
+        branch too_long.bitor(name.contains("\x00"))
+            ? return(.Absent)
+            : continue
+        copy<Byte>(key.to<@Byte>(), name.data, name.length())
+        key_end : @Byte = key.to<@Byte>().stride(name.length())
+        key_end.store(0x00)
+        value : @Byte = c_getenv(key.to<@Byte>())
+        branch value.is_null()
+            ? return(.Absent)
+            : continue
+        n     : USize = CStr.from_ptr(value).length()
+        owned : @Byte = allocate<Byte>(alloc, n.max(1))
+        branch owned.is_null()
+            ? return(.Absent)
+            : continue
+        copy<Byte>(owned, value, n)
+        return(.Present(Bytes.from_ptr(owned, n)))

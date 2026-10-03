@@ -1,0 +1,250 @@
+// Tessera stdlib: correctly rounded F128 square root (CORE-MATH)
+//
+// Ported from CORE-MATH, src/binary128/sqrt/sqrtq.c via RazorForge's B128Sqrt.rf.
+// Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+//
+// Only round-to-nearest (ties to even) is kept; the original's rounding-mode probe, errno and
+// exception flags are dropped. Everything runs on 64- and 128-bit integers: a cubic
+// reciprocal-square-root seed for each 1/64 of [1, 2), one Newton step, a 128-bit refinement,
+// and, when the result lands within a few units of a rounding boundary, an exact comparison of
+// the candidate's square with the argument.
+//
+// The C helpers mhuu / mhuU / mhUU are cm_sqrt_mul_hi_64x64 / _64x128 / _128x128 here.
+// Hypot.tess reuses the seed and the refinement.
+
+module Standard::Core
+
+/// The IEEE default NaN of the original (x86's: sign set, quiet bit set, empty payload).
+preset CM_SQRT_DEFAULT_NAN: U128 = F128_SIGN.bitor(F128_QNAN)
+
+/// 2^64 / sqrt(2): the reciprocal root's scale for an odd exponent.
+preset CM_SQRT_RSQRT2: U64 = 0xB504F333F9DE6484
+
+/// The reciprocal-square-root seed table: for each of the 64 subranges of [1, 2), the cubic's
+/// four 32-bit coefficients c0 c1 c2 c3 (c0 without its implicit leading bit).
+preset CM_SQRT_RSQRT9: @Array<U64, 256> <- { 0xFFFFFFFF, 0xFFFFF780, 0xBFF55815, 0x9BB5B6E7,
+    0xFC0BD889, 0xFA1D6E7D, 0xB8A95A89, 0x938BF8F0, 0xF82EC882, 0xF473BEA9, 0xB1BF4705, 0x8BED0079,
+    0xF467F280, 0xEEFFF2A1, 0xAB309D4A, 0x84CDB431, 0xF0B6848C, 0xE9BF46F4, 0xA4F76232, 0x7E24037B,
+    0xED19B75E, 0xE4AF2628, 0x9F0E1340, 0x77E6CA62, 0xE990CDAD, 0xDFCD2521, 0x996F9B96, 0x720DB8DF,
+    0xE61B138E, 0xDB16FFDE, 0x94174A00, 0x6C913CFF, 0xE2B7DDDF, 0xD68A967B, 0x8F00C812, 0x676A6F92,
+    0xDF6689B7, 0xD225EA80, 0x8A281226, 0x62930308, 0xDC267BEA, 0xCDE71C63, 0x8589702C, 0x5E05343E,
+    0xD8F7208E, 0xC9CC6948, 0x81216F2E, 0x59BBBCF8, 0xD5D7EA91, 0xC5D428EE, 0x7CECDB76, 0x55B1C7D6,
+    0xD2C8534E, 0xC1FCCBC9, 0x78E8BB45, 0x51E2E592, 0xCFC7DA32, 0xBE44D94A, 0x75124A0A, 0x4E4B0369,
+    0xCCD6045F, 0xBAAAEE41, 0x7166F40F, 0x4AE66284, 0xC9F25C5C, 0xB72DBB69, 0x6DE45288, 0x47B19045,
+    0xC71C71C7, 0xB3CC040F, 0x6A882804, 0x44A95F5F, 0xC453D90F, 0xB0849CD4, 0x67505D2A, 0x41CAE1A0,
+    0xC1982B2E, 0xAD566A85, 0x643AFDC8, 0x3F13625C, 0xBEE9056F, 0xAA406113, 0x6146361F, 0x3C806169,
+    0xBC46092E, 0xA7418293, 0x5E70506D, 0x3A0F8E8E, 0xB9AEDBA5, 0xA458DE58, 0x5BB7B2B1, 0x37BEC572,
+    0xB72325B7, 0xA1859022, 0x591ADC9A, 0x358C09E2, 0xB4A293C2, 0x9EC6BF52, 0x569865A7, 0x33758476,
+    0xB22CD56D, 0x9C1B9E36, 0x542EFB6A, 0x31797F8A, 0xAFC19D86, 0x9983695C, 0x51DD5FFB, 0x2F96647A,
+    0xAD60A1D1, 0x96FD66F7, 0x4FA2687C, 0x2DCAB91F, 0xAB099AE9, 0x9488E64B, 0x4D7CFBC9, 0x2C151D8A,
+    0xA8BC441A, 0x92253F20, 0x4B6C1139, 0x2A7449EF, 0xA6785B42, 0x8FD1D14A, 0x496EAF82, 0x28E70CC3,
+    0xA43DA0AE, 0x8D8E042A, 0x4783EBA7, 0x276C4900, 0xA20BD701, 0x8B594648, 0x45AAE80A, 0x2602F493,
+    0x9FE2C315, 0x89330CE4, 0x43E2D382, 0x24AA16EC, 0x9DC22BE4, 0x871AD399, 0x422AE88C, 0x2360C7AF,
+    0x9BA9DA6C, 0x85101C05, 0x40826C88, 0x22262D7B, 0x99999999, 0x83126D70, 0x3EE8AF07, 0x20F97CD2,
+    0x97913630, 0x81215480, 0x3D5D0922, 0x1FD9F714, 0x95907EB8, 0x7F3C62EF, 0x3BDEDCE0, 0x1EC6E994,
+    0x93974369, 0x7D632F45, 0x3A6D94A9, 0x1DBFACBB, 0x91A55615, 0x7B955498, 0x3908A2BE, 0x1CC3A33B,
+    0x8FBA8A1C, 0x79D2724E, 0x37AF80BF, 0x1BD23960, 0x8DD6B456, 0x781A2BE4, 0x3661AF39, 0x1AEAE458,
+    0x8BF9AB07, 0x766C28BA, 0x351EB539, 0x1A0D21A2, 0x8A2345CC, 0x74C813DD, 0x33E61FEB, 0x19387676,
+    0x88535D90, 0x732D9BDC, 0x32B7823A, 0x186C6F3E, 0x8689CC7E, 0x719C7297, 0x3192747D, 0x17A89F21,
+    0x84C66DF1, 0x70144D19, 0x30769424, 0x16EC9F89, 0x83091E6A, 0x6E94E36C, 0x2F63836F, 0x16380FBF,
+    0x8151BB87, 0x6D1DF079, 0x2E58E925, 0x158A9484, 0x7FA023F1, 0x6BAF31DE, 0x2D567053, 0x14E3D7BA,
+    0x7DF43758, 0x6A4867D3, 0x2C5BC811, 0x1443880E, 0x7C4DD664, 0x68E95508, 0x2B68A346, 0x13A958AB,
+    0x7AACE2B0, 0x6791BE86, 0x2A7CB871, 0x131500EE, 0x79113EBC, 0x66416B95, 0x2997C17A, 0x12863C29,
+    0x777ACDE8, 0x64F825A1, 0x28B97B82, 0x11FCC95C, 0x75E9746A, 0x63B5B822, 0x27E1A6B4, 0x11786B03,
+    0x745D1746, 0x6279F081, 0x2710061D, 0x10F8E6DA, 0x72D59C46, 0x61449E06, 0x26445F86, 0x107E05AC,
+    0x7152E9F4, 0x601591BE, 0x257E7B4D, 0x10079327, 0x6FD4E793, 0x5EEC9E6B, 0x24BE2445, 0x0F955DA9,
+    0x6E5B7D16, 0x5DC9986E, 0x24032795, 0x0F273620, 0x6CE6931D, 0x5CAC55B7, 0x234D5496, 0x0EBCEFDB,
+    0x6B7612EC, 0x5B94ADB2, 0x229C7CBC, 0x0E56606E }
+
+// -- sqrt ----------------------------------------------------------------------
+
+/// NaN and negatives keep F128's own NaNs (CORE-MATH's default NaN has its sign
+/// bit set); everything else takes the CORE-MATH path below.
+routine F128.sqrt(self: Self) -> Self
+    block entry():
+        nan      : Bool = self.is_nan()
+        negative : Bool = f128_is_negative_bits(self.bits()).bitand(f128_is_zero_bits(self.bits()).bitnot())
+        special  : Bool = nan.bitor(negative)
+        branch special
+            ? special()
+            : compute()
+
+    block special():
+        r : Self = f128_of(f128_sqrt_bits(self.bits()))
+        return(r)
+
+    block compute():
+        bits    : U128 = self.bits()
+        top     : S64  = bits.shr(112).to<S64>()  // sign and biased exponent
+        tiny    : Bool = top.eq(0)  // +0 or positive subnormal
+        special : Bool = top.ge(0x7FFF)  // negative, infinite, or NaN
+        when:
+            tiny    -> subnormal(bits)
+            special -> return(cm_sqrt_special(self))
+            else    -> root(bits, top)
+
+    block subnormal(bits: U128):
+        zero : Bool = bits.eq(0)
+        branch zero
+            ? return(self)
+            : normalize(bits)
+
+    // Moves the leading bit up to the implicit bit's place; the exponent drops below 1 to match.
+    block normalize(bits: U128):
+        lz    : U128 = bits.leading_zeros()
+        shift : S64  = lz.to<S64>().sub(15)
+        jump root(bits.shl(shift.to<U128>()), 1.sub(shift))
+
+    // x = 1.frac × 2^(exponent - 16383). The root's biased exponent is floor((exponent + 1) / 2) + 8191:
+    // the field gets one less, since the significand's leading bit lands on bit 112 and adds 1.
+    block root(bits: U128, exponent: S64):
+        exp1            : S64  = exponent.add(1)
+        odd             : S64  = exp1.bitand(1)
+        biased_exponent : S64  = exp1.shr(1).add(8190)
+        exp_field       : U128 = biased_exponent.to<U128>().shl(112)
+        frac            : U128 = bits.shl(16)  // the fraction alone, at the top
+        radicand        : U128 = cm_sqrt_radicand(frac, odd)
+        approx          : U128 = cm_sqrt_approx(frac, radicand, odd)
+        slack           : S16  = approx.shl(2).to_wrap<S16>()  // the bits under the rounding point
+        close           : Bool = slack.between(-37, 13)
+        branch close
+            ? settle(approx, radicand, exp_field)
+            : round(approx, exp_field)
+
+    // approx is at most one unit (of its bit 14) off: square the candidate, compare it with the
+    // radicand, and leave bit 0 saying which way the true root lies.
+    block settle(approx: U128, radicand: U128, exp_field: U128):
+        candidate   : U128 = approx.add_wrap(0x2000)
+        m           : U128 = candidate.shr(14)
+        excess_bits : U128 = m.mul_wrap(m).sub_wrap(radicand.shl(100))
+        excess      : S128 = excess_bits.to_wrap<S128>()
+        above       : U128 = excess.gt(0).to<U128>()
+        below       : U128 = excess.lt(0).to<U128>()
+        cleared     : U128 = candidate.bitand(0x3FFF.bitnot())
+        v           : U128 = cleared.sub_wrap(above).add_wrap(below)
+        jump round(v, exp_field)
+
+    // Bit 14 is the round bit; a sqrt is never exactly halfway, so rounding it up is to nearest.
+    block round(v: U128, exp_field: U128):
+        round_bit : U128 = v.shr(14).bitand(1)
+        sig       : U128 = v.shr(15).add_wrap(round_bit)
+        r         : Self = f128_of(sig.add_wrap(exp_field))
+        return(r)
+
+/// Negative, infinite, or NaN (sign and exponent at least 0x7FFF): -0 and +inf are their own
+/// roots, other negatives give the default NaN, and a NaN is quieted.
+routine cm_sqrt_special(x: F128) -> F128
+    block entry():
+        bits      : U128 = x.bits()
+        neg_zero  : Bool = bits.shl(1).eq(0)
+        infinite  : Bool = bits.eq(F128_INF)
+        neg_most  : Bool = bits.le(0xFFFF0000000000000000000000000000)
+        neg_least : Bool = bits.gt(0x80000000000000000000000000000000)
+        negative  : Bool = neg_most.bitand(neg_least)
+        nan       : F128 = f128_of(CM_SQRT_DEFAULT_NAN)
+        quieted   : F128 = f128_of(bits.bitor(F128_QUIET_BIT))
+        when:
+            neg_zero -> return(x)
+            infinite -> return(x)
+            negative -> return(nan)
+            else     -> return(quieted)
+
+// -- shared with hypot ---------------------------------------------------------
+
+/// The fixed-point radicand: frac (the fraction at the top, implicit bit dropped) shifted down
+/// two places, one for an odd exponent, under its restored leading bit.
+routine cm_sqrt_radicand(frac: U128, odd: S64) -> U128
+    block entry():
+        one     : U128 = 1
+        shifted : U128 = frac.shr(2.sub(odd).to<U128>())
+        leading : U128 = one.shl(126.add(odd).to<U128>())
+        r       : U128 = shifted.bitor(leading)
+        return(r)
+
+/// The square root of the radicand, scaled so its leading bit is bit 127 and accurate to a
+/// few units of bit 14: the seed r ≈ 1/sqrt, then sx = r·x and one correction
+/// v = 2 sx - sx·h, with h = r·sx·4 - 2 the (signed) residual.
+routine cm_sqrt_approx(frac: U128, radicand: U128, odd: S64) -> U128
+    block entry():
+        seed     : U64  = cm_sqrt_rsqrt9(frac.shr(64).to<U64>())
+        odd_exp  : Bool = odd.ne(0)
+        all_ones : U64  = U64.MAX
+        scale    : U64  = odd_exp
+            ? CM_SQRT_RSQRT2
+            : all_ones
+        product : U128 = seed.to<U128>().mul_wrap(scale.to<U128>())
+        r       : U64  = product.shr(64).to<U64>()
+        sx      : U128 = cm_sqrt_mul_hi_64x128(r, radicand)
+        h_bits  : U128 = cm_sqrt_mul_hi_64x128(r, sx).shl(2)
+        h       : S128 = h_bits.to_wrap<S128>()
+        ds_high : U128 = cm_sqrt_mul_hi_128x128(sx, h.to_wrap<U128>())
+        h_neg   : Bool = h.lt(0)
+        ds      : U128 = h_neg  // (signed h) × sx
+            ? ds_high.sub_wrap(sx)
+            : ds_high
+        v : U128 = sx.shl(1).sub_wrap(ds)
+        return(v)
+
+/// 2^64 / sqrt(1 + m / 2^64) to almost 64 bits, for the fraction bits m: the cubic seed of m's
+/// subrange, then one Newton-Raphson step r1 = r0 - r0 (r0² x - 1) / 2.
+routine cm_sqrt_rsqrt9(m: U64) -> U64
+    block entry():
+        table      : @U64  = CM_SQRT_RSQRT9.to<@U64>()
+        row        : USize = m.shr(58).to<USize>()
+        i0         : USize = row.mul(4)
+        c0_raw     : U64   = table.stride(i0).load()
+        c1_raw     : U64   = table.stride(i0.add(1)).load()
+        c2         : U64   = table.stride(i0.add(2)).load()
+        c3         : U64   = table.stride(i0.add(3)).load()
+        c0         : U64   = c0_raw.shl(31).bitor(0x8000000000000000)
+        c1         : U64   = c1_raw.shl(25)
+        d          : U64   = m.shl(6).shr(32)  // position in the subrange, [0, 2^32)
+        d2         : U64   = d.mul_wrap(d).shr(32)
+        even       : U64   = c0.add_wrap(d2.mul_wrap(c2).shr(13))  // even terms (positive)
+        c13        : U64   = c1.add_wrap(d2.mul_wrap(c3).shr(19)).shr(26)
+        odd        : U64   = d.mul_wrap(c13).shr(6)  // odd terms (negative)
+        r0         : U64   = even.sub_wrap(odd)
+        r0_sq      : U64   = cm_sqrt_mul_hi_64x64(r0, r0)
+        resid_bits : U64   = cm_sqrt_mul_hi_64x64(m, r0_sq).add_wrap(r0_sq)
+        resid      : S64   = resid_bits.to_wrap<S64>()  // r0² x - 1, signed
+        half       : S64   = r0.shr(1).to<S64>()
+        step_wide  : S128  = resid.to<S128>().mul_wrap(half.to<S128>())
+        step       : U64   = step_wide.shr(64).to_wrap<U64>()
+        r1         : U64   = r0.sub_wrap(step)
+        zero       : Bool  = r1.eq(0)
+        max        : U64   = U64.MAX
+        r          : U64   = zero
+            ? max
+            : r1
+        return(r)
+
+/// High 64 bits of the unsigned product a·b.
+routine cm_sqrt_mul_hi_64x64(a: U64, b: U64) -> U64
+    block entry():
+        product : U128 = a.to<U128>().mul_wrap(b.to<U128>())
+        r       : U64  = product.shr(64).to<U64>()
+        return(r)
+
+/// High 128 bits of the unsigned 64×128-bit product y·x, without the low partial product's
+/// low half.
+routine cm_sqrt_mul_hi_64x128(y: U64, x: U128) -> U128
+    block entry():
+        y2  : U128 = y.to<U128>()
+        xy0 : U128 = x.bitand(0xFFFFFFFFFFFFFFFF).mul_wrap(y2)
+        xy1 : U128 = x.shr(64).mul_wrap(y2)
+        r   : U128 = xy1.add_wrap(xy0.shr(64))
+        return(r)
+
+/// Approximate high 128 bits of the unsigned 128×128-bit product a·b (low × low dropped).
+routine cm_sqrt_mul_hi_128x128(a: U128, b: U128) -> U128
+    block entry():
+        a0    : U128 = a.bitand(0xFFFFFFFFFFFFFFFF)
+        a1    : U128 = a.shr(64)
+        b0    : U128 = b.bitand(0xFFFFFFFFFFFFFFFF)
+        b1    : U128 = b.shr(64)
+        high  : U128 = a1.mul_wrap(b1)
+        mid_a : U128 = a1.mul_wrap(b0).shr(64)
+        mid_b : U128 = a0.mul_wrap(b1).shr(64)
+        r     : U128 = high.add_wrap(mid_a).add_wrap(mid_b)
+        return(r)
