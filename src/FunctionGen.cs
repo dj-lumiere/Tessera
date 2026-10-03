@@ -572,6 +572,12 @@ public sealed class FunctionGen
     /// whatever module declares it: the routine's constraints on the parameter vouch for it.
     private bool FromTypeParameter(DType t) => _env.All.Any(kv => kv.Key != "Self" && kv.Value.Equals(t));
 
+    /// A call whose type argument is one of the routine's type parameters (`self.to_result<T>()` in `Bytes.to<T>`) is
+    /// vouched for by the parameter's constraints, so it finds the routine defined for that type in any module, as a
+    /// call on a value of the parameter's type does.
+    private bool TypeArgFromParameter(List<TypeRef> typeArgs) =>
+        typeArgs.Any(t => t is { Args.Count: 0, Path: null } && t.Name != "Self" && _env.Has(t.Name));
+
     /// A derived routine calls its fields' and payloads' methods whatever module declares them: its constraints
     /// vouch for them, and the type's file needn't import Standard::Format for its represent.
     private bool Derived => _decl.Attr("derived") is not null;
@@ -768,6 +774,9 @@ public sealed class FunctionGen
         if (e is CallExpr { Name: "caller_location", TypeArgs.Count: 0, Args.Count: 0 } cl
             && _c.FindFree(cl.Name, _env.File, cl.Pos) is null)
             return SourceLocationPtr(cl.Pos);
+        if (e is CallExpr { Name: "type_name", TypeArgs.Count: 1, Args.Count: 0 } tn
+            && _c.FindFree(tn.Name, _env.File, tn.Pos) is null)
+            return BytesType(tn.Pos);
         if (AddrOfCallable(e) is not null) return new PtrType(null);
         if (IndirectCall(e) is { } ind) return ind.Callable.Ret;
         var plan = PlanCall(e, expected);
@@ -1422,7 +1431,9 @@ public sealed class FunctionGen
             _ => null,
         };
         if (s is null) return null;
-        if (_c.FindMethod(s, m.Name, _env.File, m.Pos) is not null) return null;
+        // Any routine of the name means a method call, whichever module it's in and whatever type arguments it's
+        // defined for (`Bytes.to<Span<Byte>>` beside a generic `Bytes.to<T>` another module adds).
+        if (_c.MethodsNamed(s, m.Name).Count > 0 || _c.FindMethod(s, m.Name, _env.File, m.Pos) is not null) return null;
         var field = _c.Fields(s).FirstOrDefault(f => f.Name == m.Name);
         if (field.Type is CallableType)
             throw Err(m.Pos, $"'{m.Name}' is a Callable field: load it (.{m.Name}.load()) and call the value "
@@ -1737,7 +1748,8 @@ public sealed class FunctionGen
         RoutineDecl? typewise = null;
         foreach (var (owner, passesPointer) in candidates)
         {
-            var set = _c.MethodCandidates(owner, m.Name, _env.File, m.Pos, FromTypeParameter(owner) || Derived,
+            var set = _c.MethodCandidates(owner, m.Name, _env.File, m.Pos,
+                FromTypeParameter(owner) || TypeArgFromParameter(m.TypeArgs) || Derived,
                 d => d.Fixed.Count == 0 || FixedFits(d, owner, m.TypeArgs, m.Pos));
             if (set.Count == 0) continue;
             if (set.Count > 1)
@@ -1951,6 +1963,11 @@ public sealed class FunctionGen
         if (e is CallExpr { Name: "caller_location", TypeArgs.Count: 0, Args.Count: 0 } cl
             && _c.FindFree(cl.Name, _env.File, cl.Pos) is null)
             return CallerLocation(cl.Pos);
+        // `type_name<T>()`: the type's name as the builder writes it (`S32`, `List<S64>`), a Bytes, so generic code
+        // can say which type a message is about.
+        if (e is CallExpr { Name: "type_name", TypeArgs.Count: 1, Args.Count: 0 } tn
+            && _c.FindFree(tn.Name, _env.File, tn.Pos) is null)
+            return StringLiteral(new StrLit(Resolve(tn.TypeArgs[0]).Name, tn.Pos), BytesType(tn.Pos));
 
         if (AddrOfCallable(e) is { } addr) return new Val(Eval(addr.Callee, addr.Callable).Op, new PtrType(null));
         if (IndirectCall(e) is { } ind) return EmitIndirect(ind.Callee, ind.Callable, ind.Args, e.Pos);
@@ -2047,6 +2064,9 @@ public sealed class FunctionGen
         _inst.IsTrackCaller
             ? new Val(CallerParam, new PtrType(null))
             : new Val(_c.PlaceGlobal(_lineSource ?? callPos), new PtrType(null));
+
+    /// The stdlib's Bytes, the type `type_name<T>()` gives.
+    private DType BytesType(Pos pos) => _c.ResolveType(TypeRef.Simple("Bytes", pos), _env);
 
     /// `caller_location()`: inside a `#track_caller` routine, where it was called from.
     private DType SourceLocationPtr(Pos pos) =>

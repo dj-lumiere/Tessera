@@ -236,10 +236,11 @@ routine main() -> S32
   either: a claimed collection reads directly (`list.count()`), a value too. Value-only routines such as `eq` need
   a load (`a.load().eq(b.load())`). You can't call a pointer method on a temporary: `DictIter<K, V>.construct(m).next()` fails with "has no
   method 'next'"; claim a slot for the iterator first.
-- Generic routines repeat their constraints: `require T: typename, Compare<T>`. Concepts: `Equal`, `Hash`,
-  `HashEqual`, `Compare`, `Priority`, `Iterator`, `Writer`, `Represent`. Constraints are checked: a type satisfies a
+- Generic routines repeat their constraints: `require T: typename, Comparable<T>`. Concepts: `Equatable`, `Hashable`,
+  `HashEquatable`, `Comparable`, `Ordered`, `Destructible`, `Representable`, `Diagnosable`, `Parsable` (a
+  capability is an `-able` adjective), and the roles `Iterator`, `Reader`, `Writer`. Constraints are checked: a type satisfies a
   concept only through a `conform` (on its record, or a top-level `conform C<X>` line), and the builder checks the
-  declared routines' signatures. Conditional conformance: `conform Equal<Box<T>> when T: typename, Equal<T>`. A
+  declared routines' signatures. Conditional conformance: `conform Equatable<Box<T>> when T: typename, Equatable<T>`. A
   record's own `require` applies to every use, so put element constraints on the routines that need them.
 - A bare literal doesn't bind a type parameter: bind it first (`n: S64 = 42`), then pass `n`.
 - **Overloads.** Routines of one name under one parent (a module's free routines, one type's routines) may differ in
@@ -265,7 +266,7 @@ routine main() -> S32
 - String literals are `Bytes` where a `Bytes` is expected, `CStr` / `CWStr` (terminated C text) where one of those
   is, and a NUL-terminated `@Byte` where a pointer is. Declare C string parameters as `s: CStr`. A `CStr` is
   `{ data: @CChar }` (C's `char`, `S8` or `U8` as the target has it), symmetric with `CWStr` over `@CWChar`, so
-  memory typed as bytes becomes one with `CStr.from_ptr(p.to<@CChar>())`. A `Bytes` view has no terminator: claim
+  a pointer becomes one with `p.to<CStr>()` (on a `@CChar` or a `@Byte`). A `Bytes` view has no terminator: claim
   `s.to<OwnedCStr>(alloc)` (a copy that lends `to<CStr>()` and is released with `destruct()`) or use
   `buf.to<CStr>()` on a `List<Byte>`.
 
@@ -326,7 +327,7 @@ routine main() -> S32
 - Read with `when e`; `Expr.Number(n) -> target(n)` binds the payload for that arm's target only, `Expr.Empty`
   or `.Present` matches without binding. Without `else`, list every case. There's no field access on a variant.
 - Payloads overlap; a payload arm reads through a stack slot (gone at `-O`).
-- A choice or variant without `#derive` derives Represent, Diagnose, Equal, Hash, and Compare (a variant's only when
+- A choice or variant without `#derive` derives Representable, Diagnosable, Equatable, Hashable, and Comparable (a variant's only when
   its payloads have them), skipping what it declares itself; `#derive(...)` lists exactly what to derive,
   `#derive()` nothing. A record derives only what it lists.
 
@@ -366,12 +367,12 @@ Propagating a `Result`:
 ```tessera
 routine parse_or_zero(text: Bytes) -> F64
     block entry()
-        r : Result<F64, ParseFloatError> = F64.parse(text)
+        r : Result<F64, ParseError> = text.to_result<F64>()
         when r
             .Success(value) -> return(value)
             .Failure(error) -> failed(error)
 
-    block failed(error: ParseFloatError)
+    block failed(error: ParseError)
         return(0.0)
 ```
 
@@ -383,19 +384,23 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
 - Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.shared()` is the pointer a
   Writer parameter takes), a `FileHandle`, `BufWriter<W>` (`out.construct(inner)`, then `flush()`),
   `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `buf.write("...")`, then `buf.to<Bytes>()`; it is
-  the string builder). Standard input is `In`: `In.read_line(alloc)`, `read_word`, `read_count(n, alloc)`,
-  `read_all`, `read(buffer, n)`, all through one buffer the process shares. The text comes back as an
-  `OwnedSpan<Byte>` (`line.to<Bytes>()` to read it, `destruct()` to release it).
-- Reading numbers back: `S32.parse(text)` (every integer type) gives `Result<T, ParseIntError>` (`Empty`,
-  `Invalid`, `OutOfRange`) for an optional sign and decimal digits; `F64.parse` / `F32.parse` give
-  `Result<T, ParseFloatError>`. Two numbers from a line: `In.read_word(alloc)` twice, then `S32.parse`.
+  the string builder). Standard input is `In`: `In.read<T>()`, `In.read_line(alloc)`, `read_word`,
+  `read_count(n, alloc)`, `read_all`, `read_into(buffer, n)`, all through one buffer the process shares. Text comes
+  back as an `OwnedSpan<Byte>` (`line.to<Bytes>()` to read it, `destruct()` to release it).
+- Reading numbers: text is converted like any value, `text.to<S32>()` (crashes with `InvalidValueError`, naming
+  the text and the type, on bad text) or `text.to_result<S32>()` (`Result<T, ParseError>`: `Empty`, `Invalid`,
+  `OutOfRange`), for every integer type (an optional sign and decimal digits) and every float type. There is no
+  `parse`. A type is readable from text when it conforms to `Parsable<T>`, which asks for one routine,
+  `routine Bytes.to_result<T>(self: Bytes) -> Result<T, ParseError>`, and `to<T>` comes with it. Numbers from
+  standard input: `a : S32 = In.read<S32>().unwrap()` reads the next word in place, without allocating (Absent at
+  the end of the input, a crash on a word that isn't a T); `In.read_result<T>()` gives the `ParseError` instead.
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
-  `Bytes`, and `p.represent_into(out)` for a pointer's address (`0x7ffd5e8c1a40`); `v.represent_hex(out)` for an
-  integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex(out,
-  min_digits)` (`U64`) zero-pad; `represent_fixed(out, digits)`; `represent_with(out, v, spec)` with a `FormatSpec`.
+  `Bytes`, and `p.represent_into(out)` for a pointer's address (`0x7ffd5e8c1a40`); `v.represent_hex_into(out)` for an
+  integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
+  min_digits)` (`U64`) zero-pad; `represent_fixed_into(out, digits)`; `represent_with_into(out, v, spec)` with a `FormatSpec`.
   There are no `write_decimal_*` / `write_hex_*` helpers: the integer's own method is the writer.
 - `v.diagnose_into(out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.Present(3)`, `[1, 2]`. A record or
-  record gets routines written for it with `#derive(Represent, Diagnose, Equal, Hash, Compare)` (any subset), which
+  record gets routines written for it with `#derive(Representable, Diagnosable, Equatable, Hashable, Comparable)` (any subset), which
   also declares the conformance; choices and variants get all five without asking. Otherwise declare the routine: a
   bare `conform` never generates one. In a template, `{v}` writes `v.represent_into(out)`, and `{v.diagnose()}`
   writes the Tessera-source form: `v.diagnose()` hands back an adapter (`Diagnosed<T>`) that writes `v` with
@@ -429,8 +434,8 @@ always `Result`.
 | `Set<T>` | `add`, `contains`, `remove` | **insertion order (guaranteed)** |
 | `SortedDict<K, V>` | `put`, `getitem`, `contains`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
 | `SortedSet<T>` | `add`, `contains`, `remove`, `get_by_rank(rank)` | ascending |
-| `SortedList<T>` | `push` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `contains`, `remove(i)` (`T: Compare<T>`) | ascending |
-| `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Priority<T>`) | none |
+| `SortedList<T>` | `push` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `contains`, `remove(i)` (`T: Comparable<T>`) | ascending |
+| `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Ordered<T>`) | none |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
 removing then re-adding moves it to the end. Iterators are `XIter<T>.construct(collection)`; don't mutate a collection
@@ -508,9 +513,22 @@ parameters), `list.to<Span<T>>()`, `owned.to<Span<T>>()`, `buf.to<Bytes>()` on a
 `a.to<Vector<F32, 4>>()` on an `Array`, `n.to<F128Big>()`, `f.to<F128Extended>()`. Its variants keep the family
 (`to_wrap`, `to_clamp`, `to_checked`, `to_nearest<S64>()` on an `F128Extended`). There is no `to_s64`, `as_<type>`,
 `y_from_x`, or `x_to_y`, and a routine that differs from another only in the type it produces takes the type as a
-type argument (`p.read_le<U64>(off)` on a `@Byte`). Not conversions: values built from raw parts
-(`Bytes.from_ptr(p, n)`, `CStr.from_ptr(p)`), bits seen as another type (`F64.from_bits(u)`, `x.bits()`), byte order
-(`to_be`, `from_le`). One exception: a routine that implements a conversion's C runtime call (LLVM lowers
+type argument (`p.read_le<U64>(off)` on a `@Byte`). Text to a value is a conversion too: `text.to<S32>()`, and a
+conversion that can fail on its input is `to_result<T>()`, returning `Result` (there is no `parse`). Not conversions:
+values built from raw parts (`Bytes.from_ptr(p, n)`), bits seen as another type (`F64.from_bits(u)`, `x.bits()`),
+byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`).
+
+**Naming rules for `to`, `_into`, and `from_`.**
+
+- `to<T>()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to<CStr>()`, not
+  `CStr.from_ptr(p)`). A conversion that can fail is `to_result<T>()`.
+- `_into` means the routine does its work into a pointer the caller passes: it writes its result to that destination
+  (`v.represent_into(out)`, `v.represent_hex_into(out)`, `x.store_into(p)`, `In.read_into(buffer, n)`). A routine
+  that writes into a caller's pointer carries `_into`, and one named `_into` takes such a destination.
+- `from_XXX` is rare: it's for building a value where `construct` alone would be ambiguous, several ways to make the
+  same type from similar inputs (`Bytes.from_ptr(data, count)`, `F64.from_bits(u)`). A `from_XXX` that is really a
+  one-value conversion is `to<T>` on the source type, and one that could be a `construct` overload without ambiguity
+  is `construct`. One exception: a routine that implements a conversion's C runtime call (LLVM lowers
 `F32.to<F16>()` to `__truncsfhf2` on x86, and every float conversion to a call on a target without an FPU) can't be
 that `to<T>`, which would call itself there. It keeps the shape under its own name, `x.soft_to<F16>()`
 (Standard/SoftFloat), and a shim that only exists to be exported is named for its symbol (`export_truncsfhf2`).
@@ -534,7 +552,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array<T, N> <- { ... }`).
   place instead, through a pointer: `out.construct(inner)` for `BufWriter<W>`.
 - `self.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
   and leaves the value empty. Call it yourself; nothing runs it for you. A collection's `destruct` doesn't touch its
-  elements; `destruct_all()` destructs them first (elements must conform to `Destruct<T>`), and `Dict` / `SortedDict`
+  elements; `destruct_all()` destructs them first (elements must conform to `Destructible<T>`), and `Dict` / `SortedDict`
   also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release. `Array<T, N>` acquires
   nothing, so it has no `destruct()`, only `destruct_all()` for elements that own something.
 - Other ways to make a value are named for what they make: `Out.shared()`, `Bytes.from_ptr(p, n)`,

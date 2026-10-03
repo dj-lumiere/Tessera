@@ -51,7 +51,7 @@ public sealed record Param(string Name, TypeRef Type, Pos Pos)
     public Token? Register { get; init; }
 }
 
-/// `require T: typename, N: U64, Equal<T>` or `conform Equal<Option<T>> when Equal<T>`. Tokens keeps the raw text;
+/// `require T: typename, N: U64, Equatable<T>` or `conform Equatable<Option<T>> when Equatable<T>`. Tokens keeps the raw text;
 /// the parsed parts are below.
 public sealed record Clause(string Kind, List<Token> Tokens)
 {

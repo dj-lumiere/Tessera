@@ -2,12 +2,12 @@ using System.Text;
 
 namespace Tessera;
 
-/// `#derive(Represent, Diagnose, Equal, Hash, Compare)` on a record, choice, or variant: the builder declares the
+/// `#derive(Representable, Diagnosable, Equatable, Hashable, Comparable)` on a record, choice, or variant: the builder declares the
 /// conformance and writes the routine. Each routine is generated as Tessera source, parsed in the type's file (so it sees private
 /// fields), and checked like any other routine.
 ///
 /// A choice or variant without `#derive` derives all five, except what it declares itself (a routine of the name, or a
-/// `conform`). Those conformances hold only when the payloads have them (`Compare<Shape> when Compare<Circle>`), and
+/// `conform`). Those conformances hold only when the payloads have them (`Comparable<Shape> when Comparable<Circle>`), and
 /// their routines are checked only when something uses them, as library routines are. `#derive()` derives nothing.
 /// Generated code names Standard::Format by its path, and finds its fields' and payloads' methods whatever module
 /// declares them, so it needs no import.
@@ -15,8 +15,8 @@ public static class Derive
 {
     private static readonly Dictionary<string, string> Methods = new()
     {
-        ["Represent"] = "represent_into", ["Diagnose"] = "diagnose_into", ["Equal"] = "eq", ["Hash"] = "hash",
-        ["Compare"] = "compare",
+        ["Representable"] = "represent_into", ["Diagnosable"] = "diagnose_into", ["Equatable"] = "eq", ["Hashable"] = "hash",
+        ["Comparable"] = "compare",
     };
 
     public static List<Decl> Routines(List<Decl> decls)
@@ -25,7 +25,7 @@ public static class Derive
             .Where(r => r.Owner is not null)
             .Select(r => (r.Owner!.Name, r.Name))
             .ToHashSet();
-        // Conformances declared by a top-level `conform Equal<Color>`, by concept and type name.
+        // Conformances declared by a top-level `conform Equatable<Color>`, by concept and type name.
         var conformed = decls.OfType<ConformDecl>()
             .SelectMany(c => c.Clauses.SelectMany(cl => cl.Concepts))
             .Where(c => c.Args is [TypeArgType])
@@ -79,7 +79,7 @@ public static class Derive
         return type switch
         {
             ChoiceDecl c => c.Members.Count > 0 || method is not ("represent_into" or "diagnose_into"),
-            VariantDecl v => concept is not ("Equal" or "Hash" or "Compare")
+            VariantDecl v => concept is not ("Equatable" or "Hashable" or "Comparable")
                              || v.Cases.All(c => c.Payload?.Name is not ("Ptr" or "Addr")),
             _ => false,
         };
@@ -88,7 +88,7 @@ public static class Derive
     /// Standard::Format's names, written with their path so generated code needs no import.
     private const string Fmt = "Standard::Format::";
 
-    private static string Qualified(string concept) => concept is "Represent" or "Diagnose" ? Fmt + concept : concept;
+    private static string Qualified(string concept) => concept is "Representable" or "Diagnosable" ? Fmt + concept : concept;
 
     private static string Name(Decl d) => d switch
     {
@@ -106,7 +106,7 @@ public static class Derive
         {
             if (v.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
                 throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}<...>'");
-            if (concept is "Equal" or "Hash" or "Compare"
+            if (concept is "Equatable" or "Hashable" or "Comparable"
                 && v.Cases.FirstOrDefault(c => c.Payload?.Name is "Ptr" or "Addr") is { } pointerCase)
                 throw new CompileError(at, $"{name} can't derive {concept}: case '{pointerCase.Name}' carries a pointer; declare '{method}'");
             return;
@@ -118,7 +118,7 @@ public static class Derive
             throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}<...>'");
         // A pointer compares by address only through ptr_eq, on purpose (see Type-System, Ptr<T> and T's API),
         // so there's nothing to derive.
-        if (concept is "Equal" or "Hash" or "Compare"
+        if (concept is "Equatable" or "Hashable" or "Comparable"
             && r.Fields.FirstOrDefault(f => f.Type.Name is "Ptr" or "Addr") is { } pointer)
             throw new CompileError(at, $"{name} can't derive {concept}: field '{pointer.Name}' is a pointer; declare '{method}'");
     }
@@ -145,13 +145,13 @@ public static class Derive
 
     // ── Records ─────────────────────────────────────────────────────────────
 
-    /// A generic type conforms when its type parameters do. Represent writes the parts with diagnose (strings keep
-    /// their quotes), so it needs Diagnose of them.
+    /// A generic type conforms when its type parameters do. Representable writes the parts with diagnose (strings keep
+    /// their quotes), so it needs Diagnosable of them.
     private static List<string> Constraints(List<Clause> clauses, string concept)
     {
         var requires = clauses.Where(c => c.Kind == "require").ToList();
         var parameters = requires.SelectMany(c => c.Params).ToList();
-        string partConcept = Qualified(concept == "Represent" ? "Diagnose" : concept);
+        string partConcept = Qualified(concept == "Representable" ? "Diagnosable" : concept);
         return parameters.Select(p => $"{p.Name}: {p.Kind}")
             .Concat(requires.SelectMany(c => c.Concepts).Select(c => c.ToString()))
             .Concat(parameters.Where(p => p.Kind.Name == "typename").Select(p => $"{partConcept}<{p.Name}>"))
@@ -302,7 +302,7 @@ public static class Derive
         // A derive nobody asked for holds only when every payload has the concept.
         if (implicitly)
         {
-            string part = Qualified(concept == "Represent" ? "Diagnose" : concept);
+            string part = Qualified(concept == "Representable" ? "Diagnosable" : concept);
             constraints = constraints.Concat(v.Cases.Where(c => c.Payload is not null).Select(c => $"{part}<{c.Payload}>"))
                 .Distinct().ToList();
         }

@@ -156,7 +156,7 @@ public static class Formatter
         return result;
     }
 
-    /// `conform Equal<Option<T>> when T: typename, Equal<T>`: the conformance, and its conditions after `when`.
+    /// `conform Equatable<Option<T>> when T: typename, Equatable<T>`: the conformance, and its conditions after `when`.
     private static (string Head, string Conditions)? SplitConformWhen(string s)
     {
         if (!s.StartsWith("conform ")) return null;

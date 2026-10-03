@@ -1,0 +1,88 @@
+// Tessera stdlib: values from text
+//
+// Text becomes a value the way any value becomes another type, with to<T>: text.to<S32>() is the number the text
+// writes, and it crashes when the text isn't one. text.to_result<S32>() is the same conversion with the failure in a
+// Result, for text that may be wrong (input, a file). A type that can be read from text conforms to Parsable<T> by
+// defining that conversion for itself, routine Bytes.to_result<T>, and text.to<T>() comes with it. Every integer
+// type (Standard/IntParse.tess) and every float type (Standard/FloatParse.tess) is Parsable.
+
+module Standard::Format
+
+/// Why text didn't convert to a value: `Empty` when there is nothing to read, `Invalid` when the text isn't written the way the type's values are, and `OutOfRange` when it names a value the type can't hold. Floats use only `Empty` and `Invalid`: a float too large for its type reads as an infinity.
+choice ParseError: U8
+    Empty  // no text, or a sign with no digits after it
+    Invalid  // something the type's grammar doesn't allow
+    OutOfRange  // a value the type can't hold
+
+/// Types that can be read from text: `text.to<T>()` crashes on bad text, and `text.to_result<T>()` returns why. A type conforms by defining the conversion from Bytes for itself, `routine Bytes.to_result<T>(self: Bytes) -> Result<T, ParseError>`.
+/// :typeparam T: The type read from text.
+concept Parsable<T>
+require T: typename
+    /// The text as a T, or why it isn't one.
+    routine Bytes.to_result<T>(self: Bytes) -> Result<T, ParseError>
+
+conform Parsable<S8>, Parsable<S16>, Parsable<S32>, Parsable<S64>, Parsable<S128>, Parsable<S256>
+conform Parsable<U8>, Parsable<U16>, Parsable<U32>, Parsable<U64>, Parsable<U128>, Parsable<U256>
+conform Parsable<SSize>, Parsable<USize>
+conform Parsable<F16>, Parsable<BF16>, Parsable<F32>, Parsable<F64>, Parsable<F128>
+
+/// The text as a T. A type's own rules say which text is one: decimal digits with an optional sign for an integer,
+/// decimal or `inf` / `nan` for a float.
+/// :typeparam T: The type to read, a Parsable one.
+/// :returns: The value the text writes.
+/// :throws: Crashes with `InvalidValueError`, naming the text and the type, when the text isn't a T. Use
+/// `to_result<T>()` for text that may be wrong.
+#track_caller
+routine Bytes.to<T>(self: Self) -> T
+require T: typename, Parsable<T>
+    block entry()
+        converted : Result<T, ParseError> = self.to_result<T>()
+        when converted
+            .Success(value) -> return(value)
+            .Failure(error) -> crash_conversion(self, type_name<T>(), error)
+
+/// Crashes with `InvalidValueError` for text that isn't a value of a type: `Can't convert "12a" to S32: the text
+/// isn't a valid S32.` Text past 64 bytes is cut short, with "..." after it.
+/// :param text: The text that didn't convert.
+/// :param target: The name of the type it was converted to.
+/// :param error: Why it didn't.
+#[noreturn, track_caller]
+private routine crash_conversion(text: Bytes, target: Bytes, error: ParseError) -> Void
+    block entry()
+        claim buffer  : @Array<Byte, 400> <- uninit
+        claim message : @SliceWriter      <- .construct(buffer.to<@Byte>(), 400)
+        message.write("Can't convert ")
+        branch text.count().gt(64)
+            ? long(message)
+            : short(message)
+
+    block long(message: @SliceWriter)
+        shown : Bytes = text.slice(0, 64)
+        message.write("{shown.diagnose()}...")
+        jump reason(message)
+
+    block short(message: @SliceWriter)
+        message.write("{text.diagnose()}")
+        jump reason(message)
+
+    block reason(message: @SliceWriter)
+        message.write(" to {target}: ")
+        when error
+            ParseError.Empty      -> empty(message)
+            ParseError.Invalid    -> invalid(message)
+            ParseError.OutOfRange -> out_of_range(message)
+
+    block empty(message: @SliceWriter)
+        message.write("the text is empty.")
+        jump report(message)
+
+    block invalid(message: @SliceWriter)
+        message.write("the text isn't a valid {target}.")
+        jump report(message)
+
+    block out_of_range(message: @SliceWriter)
+        message.write("the value is out of {target}'s range.")
+        jump report(message)
+
+    block report(message: @SliceWriter)
+        crash("InvalidValueError", message.load().to<Bytes>())

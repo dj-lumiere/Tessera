@@ -1,12 +1,13 @@
 // Tessera stdlib: parsing floats
 //
-// F64.parse, F32.parse, F16.parse, and BF16.parse read decimal text and round
-// it correctly (to nearest, ties to even), however many digits it has.
+// text.to_result<F64>() (and F32, F16, BF16, F128) reads decimal text and
+// rounds it correctly (to nearest, ties to even), however many digits it has.
+// text.to<F64>() is the same conversion, and it crashes on bad text.
 //
 //     [+-] digits [. digits] [(e|E) [+-] digits]      at least one mantissa digit
 //     [+-] inf | infinity | nan                        any letter case
 //
-// "5." and ".5" are accepted, whitespace is not. Errors are ParseFloatError:
+// "5." and ".5" are accepted, whitespace is not. Errors are ParseError:
 // Empty for "", Invalid for anything else that doesn't match.
 //
 // The method is exact, not fast: the value becomes a fraction N / D of big
@@ -18,11 +19,6 @@
 // BigNat<72>, and F128 keeps 11,600 in a BigNat<864> (Standard/BigNat.tess).
 
 module Standard::Format
-
-/// Why parsing float text failed: `Empty` for an empty string, `Invalid` for anything else that does not match the float grammar.
-choice ParseFloatError: U8
-    Empty
-    Invalid
 
 /// What kind of value a parsed decimal text denotes: an ordinary number, an infinity, or a NaN.
 choice DecimalKind: U8
@@ -73,14 +69,14 @@ routine matches_word(text: @Byte, count: USize, word: Bytes) -> Bool
 
 /// Reads text into DecimalParts, accumulating the kept digits in digits.
 routine parse_decimal<N>(text: Bytes, digits: @BigNat<N>,
-    max_kept: S64) -> Result<DecimalParts, ParseFloatError>
+    max_kept: S64) -> Result<DecimalParts, ParseError>
 require N: USize
     block entry()
         digits.set(U64.MIN)
         count : USize = text.count
         empty : Bool  = count.eq(0)
         branch empty
-            ? fail(ParseFloatError.Empty)
+            ? fail(ParseError.Empty)
             : sign()
 
     block sign()
@@ -103,9 +99,9 @@ require N: USize
             else -> int_loop(start, negative, 0, 0, false, false)
 
     block special(kind: DecimalKind, negative: Bool)
-        parts : DecimalParts                          = DecimalParts { kind: kind,
-            negative: negative, kept: 0, exponent: 0, sticky: false }
-        r     : Result<DecimalParts, ParseFloatError> = .Success(parts)
+        parts : DecimalParts                     = DecimalParts { kind: kind, negative: negative,
+            kept: 0, exponent: 0, sticky: false }
+        r     : Result<DecimalParts, ParseError> = .Success(parts)
         return(r)
 
     // Integer digits. Leading zeros are skipped. Digits past the cap raise the exponent.
@@ -178,12 +174,12 @@ require N: USize
         valid : Bool  = mark.bitand(seen)
         branch valid
             ? exponent_sign(i.add(1), negative, kept, exponent, sticky)
-            : fail(ParseFloatError.Invalid)
+            : fail(ParseError.Invalid)
 
     block exponent_sign(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool)
         at_end : Bool = i.ge(text.count)
         branch at_end
-            ? fail(ParseFloatError.Invalid)
+            ? fail(ParseError.Invalid)
             : read_sign(i, negative, kept, exponent, sticky)
 
     block read_sign(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool)
@@ -196,7 +192,7 @@ require N: USize
         has_digit : Bool  = first.lt(text.count)
         branch has_digit
             ? exp_loop(first, negative, kept, exponent, sticky, minus, 0)
-            : fail(ParseFloatError.Invalid)
+            : fail(ParseError.Invalid)
 
     // The exponent saturates at 1,000,000, far past any float's range.
     block exp_loop(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool,
@@ -213,7 +209,7 @@ require N: USize
         digit : Bool  = is_ascii_digit(c)
         branch digit
             ? exp_digit(i, negative, kept, exponent, sticky, exp_minus, value, c)
-            : fail(ParseFloatError.Invalid)
+            : fail(ParseError.Invalid)
 
     block exp_digit(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool,
         exp_minus: Bool, value: S64, c: Byte)
@@ -231,15 +227,15 @@ require N: USize
         jump done(negative, kept, exponent.add(signed), sticky, true)
 
     block done(negative: Bool, kept: S64, exponent: S64, sticky: Bool, seen: Bool)
-        parts : DecimalParts                          = DecimalParts { kind: DecimalKind.Finite,
+        parts : DecimalParts                     = DecimalParts { kind: DecimalKind.Finite,
             negative: negative, kept: kept, exponent: exponent, sticky: sticky }
-        r     : Result<DecimalParts, ParseFloatError> = .Success(parts)
+        r     : Result<DecimalParts, ParseError> = .Success(parts)
         branch seen
             ? return(r)
-            : fail(ParseFloatError.Invalid)
+            : fail(ParseError.Invalid)
 
-    block fail(error: ParseFloatError)
-        r : Result<DecimalParts, ParseFloatError> = .Failure(error)
+    block fail(error: ParseError)
+        r : Result<DecimalParts, ParseError> = .Failure(error)
         return(r)
 
 // -- rounding ------------------------------------------------------------------
@@ -362,17 +358,16 @@ require N: USize
             ? return(infinity)
             : return(bits)
 
-// -- parse ---------------------------------------------------------------------
+// -- to_result -----------------------------------------------------------------
 
-/// Parses decimal text into an F64, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
-/// :param text: The text to parse.
+/// Converts decimal text to an F64, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
 /// :returns: `Success` with the nearest float, or `Failure` with the reason the text did not match.
-/// :throws: Returns `Failure(ParseFloatError.Empty)` for an empty string and `Failure(ParseFloatError.Invalid)` for anything else that does not match.
+/// :throws: Returns `Failure(ParseError.Empty)` for an empty string and `Failure(ParseError.Invalid)` for anything else that does not match.
 /// :note: Overflow gives an infinity and underflow gives zero.
-routine F64.parse(text: Bytes) -> Result<Self, ParseFloatError>
+routine Bytes.to_result<F64>(self: Self) -> Result<F64, ParseError>
     block entry()
         claim digits : @BigNat<72> <- uninit
-        parsed : Result<DecimalParts, ParseFloatError> = parse_decimal(text, digits, 800)
+        parsed : Result<DecimalParts, ParseError> = parse_decimal(self, digits, 800)
         when parsed
             .Success(parts) -> build(parts, digits)
             .Failure(error) -> fail(error)
@@ -383,23 +378,22 @@ routine F64.parse(text: Bytes) -> Result<Self, ParseFloatError>
         sign      : U64  = negative
             ? 0x8000000000000000
             : 0
-        value : Self                          = .from_bits(magnitude.bitor(sign))
-        r     : Result<Self, ParseFloatError> = .Success(value)
+        value : F64                     = .from_bits(magnitude.bitor(sign))
+        r     : Result<F64, ParseError> = .Success(value)
         return(r)
 
-    block fail(error: ParseFloatError)
-        failed : Result<Self, ParseFloatError> = .Failure(error)
+    block fail(error: ParseError)
+        failed : Result<F64, ParseError> = .Failure(error)
         return(failed)
 
-/// Parses decimal text into an F32, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
-/// :param text: The text to parse.
+/// Converts decimal text to an F32, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
 /// :returns: `Success` with the nearest float, or `Failure` with the reason the text did not match.
-/// :throws: Returns `Failure(ParseFloatError.Empty)` for an empty string and `Failure(ParseFloatError.Invalid)` for anything else that does not match.
+/// :throws: Returns `Failure(ParseError.Empty)` for an empty string and `Failure(ParseError.Invalid)` for anything else that does not match.
 /// :note: Overflow gives an infinity and underflow gives zero.
-routine F32.parse(text: Bytes) -> Result<Self, ParseFloatError>
+routine Bytes.to_result<F32>(self: Self) -> Result<F32, ParseError>
     block entry()
         claim digits : @BigNat<72> <- uninit
-        parsed : Result<DecimalParts, ParseFloatError> = parse_decimal(text, digits, 800)
+        parsed : Result<DecimalParts, ParseError> = parse_decimal(self, digits, 800)
         when parsed
             .Success(parts) -> build(parts, digits)
             .Failure(error) -> fail(error)
@@ -410,23 +404,22 @@ routine F32.parse(text: Bytes) -> Result<Self, ParseFloatError>
         sign      : U32  = negative
             ? 0x80000000
             : 0
-        value : Self                          = .from_bits(magnitude.bitor(sign))
-        r     : Result<Self, ParseFloatError> = .Success(value)
+        value : F32                     = .from_bits(magnitude.bitor(sign))
+        r     : Result<F32, ParseError> = .Success(value)
         return(r)
 
-    block fail(error: ParseFloatError)
-        failed : Result<Self, ParseFloatError> = .Failure(error)
+    block fail(error: ParseError)
+        failed : Result<F32, ParseError> = .Failure(error)
         return(failed)
 
-/// Parses decimal text into an F16, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
-/// :param text: The text to parse.
+/// Converts decimal text to an F16, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
 /// :returns: `Success` with the nearest float, or `Failure` with the reason the text did not match.
-/// :throws: Returns `Failure(ParseFloatError.Empty)` for an empty string and `Failure(ParseFloatError.Invalid)` for anything else that does not match.
+/// :throws: Returns `Failure(ParseError.Empty)` for an empty string and `Failure(ParseError.Invalid)` for anything else that does not match.
 /// :note: Overflow gives an infinity and underflow gives zero.
-routine F16.parse(text: Bytes) -> Result<Self, ParseFloatError>
+routine Bytes.to_result<F16>(self: Self) -> Result<F16, ParseError>
     block entry()
         claim digits : @BigNat<72> <- uninit
-        parsed : Result<DecimalParts, ParseFloatError> = parse_decimal(text, digits, 800)
+        parsed : Result<DecimalParts, ParseError> = parse_decimal(self, digits, 800)
         when parsed
             .Success(parts) -> build(parts, digits)
             .Failure(error) -> fail(error)
@@ -437,23 +430,22 @@ routine F16.parse(text: Bytes) -> Result<Self, ParseFloatError>
         sign      : U16  = negative
             ? 0x8000
             : 0
-        value : Self                          = .from_bits(magnitude.bitor(sign))
-        r     : Result<Self, ParseFloatError> = .Success(value)
+        value : F16                     = .from_bits(magnitude.bitor(sign))
+        r     : Result<F16, ParseError> = .Success(value)
         return(r)
 
-    block fail(error: ParseFloatError)
-        failed : Result<Self, ParseFloatError> = .Failure(error)
+    block fail(error: ParseError)
+        failed : Result<F16, ParseError> = .Failure(error)
         return(failed)
 
-/// Parses decimal text into a BF16, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
-/// :param text: The text to parse.
+/// Converts decimal text to a BF16, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
 /// :returns: `Success` with the nearest float, or `Failure` with the reason the text did not match.
-/// :throws: Returns `Failure(ParseFloatError.Empty)` for an empty string and `Failure(ParseFloatError.Invalid)` for anything else that does not match.
+/// :throws: Returns `Failure(ParseError.Empty)` for an empty string and `Failure(ParseError.Invalid)` for anything else that does not match.
 /// :note: Overflow gives an infinity and underflow gives zero.
-routine BF16.parse(text: Bytes) -> Result<Self, ParseFloatError>
+routine Bytes.to_result<BF16>(self: Self) -> Result<BF16, ParseError>
     block entry()
         claim digits : @BigNat<72> <- uninit
-        parsed : Result<DecimalParts, ParseFloatError> = parse_decimal(text, digits, 800)
+        parsed : Result<DecimalParts, ParseError> = parse_decimal(self, digits, 800)
         when parsed
             .Success(parts) -> build(parts, digits)
             .Failure(error) -> fail(error)
@@ -464,23 +456,22 @@ routine BF16.parse(text: Bytes) -> Result<Self, ParseFloatError>
         sign      : U16  = negative
             ? 0x8000
             : 0
-        value : Self                          = .from_bits(magnitude.bitor(sign))
-        r     : Result<Self, ParseFloatError> = .Success(value)
+        value : BF16                     = .from_bits(magnitude.bitor(sign))
+        r     : Result<BF16, ParseError> = .Success(value)
         return(r)
 
-    block fail(error: ParseFloatError)
-        failed : Result<Self, ParseFloatError> = .Failure(error)
+    block fail(error: ParseError)
+        failed : Result<BF16, ParseError> = .Failure(error)
         return(failed)
 
-/// Parses decimal text into an F128, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
-/// :param text: The text to parse.
+/// Converts decimal text to an F128, rounded correctly (to nearest, ties to even) however many digits it has. Accepts an optional sign, digits with an optional point and exponent, `inf`, `infinity` or `nan` in any letter case, and no whitespace.
 /// :returns: `Success` with the nearest float, or `Failure` with the reason the text did not match.
-/// :throws: Returns `Failure(ParseFloatError.Empty)` for an empty string and `Failure(ParseFloatError.Invalid)` for anything else that does not match.
+/// :throws: Returns `Failure(ParseError.Empty)` for an empty string and `Failure(ParseError.Invalid)` for anything else that does not match.
 /// :note: Overflow gives an infinity and underflow gives zero.
-routine F128.parse(text: Bytes) -> Result<Self, ParseFloatError>
+routine Bytes.to_result<F128>(self: Self) -> Result<F128, ParseError>
     block entry()
         claim digits : @BigNat<864> <- uninit
-        parsed : Result<DecimalParts, ParseFloatError> = parse_decimal(text, digits, 11600)
+        parsed : Result<DecimalParts, ParseError> = parse_decimal(self, digits, 11600)
         when parsed
             .Success(parts) -> build(parts, digits)
             .Failure(error) -> fail(error)
@@ -492,19 +483,19 @@ routine F128.parse(text: Bytes) -> Result<Self, ParseFloatError>
         sign      : U128 = negative
             ? F128_SIGN
             : 0
-        value : Self                          = f128_of(magnitude.bitor(sign))
-        r     : Result<Self, ParseFloatError> = .Success(value)
+        value : F128                     = f128_of(magnitude.bitor(sign))
+        r     : Result<F128, ParseError> = .Success(value)
         return(r)
 
-    block fail(error: ParseFloatError)
-        failed : Result<Self, ParseFloatError> = .Failure(error)
+    block fail(error: ParseError)
+        failed : Result<F128, ParseError> = .Failure(error)
         return(failed)
 
 // -- F128, faithful ------------------------------------------------------------
 //
-// F128.parse_faithful trades correct rounding for speed and a small stack: the
+// text.to_faithful_result<F128>() trades correct rounding for speed and a small stack: the
 // result is one of the two F128 values around the decimal (error below 1 ulp),
-// and differs from F128.parse only when the decimal is within about 2^-7 ulp of
+// and differs from to_result<F128> only when the decimal is within about 2^-7 ulp of
 // a halfway point. No BigNat: the first 38 significant digits go into a U128,
 // and the power of ten is a product of 10^(±2^i) taken from a table of 128-bit
 // mantissas (each rounded to nearest), keeping the high 128 bits of every
@@ -567,14 +558,13 @@ routine f128_wide_mul(a: F128Wide, m: U128, e: S64) -> F128Wide
         r        : F128Wide = F128Wide { mant: mant, exponent: exponent }
         return(r)
 
-/// Parses decimal text into an F128 quickly and with little stack, accepting the same text as `F128.parse`. The result is one of the two F128 values around the decimal (error under 1 ulp), and differs from `F128.parse` only when the text lies within about 2^-7 ulp of a halfway point. Only the first 38 significant digits are used.
-/// :param text: The text to parse.
+/// Converts decimal text to an F128 quickly and with little stack, accepting the same text as `to_result<F128>`. The result is one of the two F128 values around the decimal (error under 1 ulp), and differs from `to_result<F128>` only when the text lies within about 2^-7 ulp of a halfway point. Only the first 38 significant digits are used.
 /// :returns: `Success` with a float within 1 ulp of the decimal, or `Failure` with the reason the text did not match.
 /// :note: Overflow gives an infinity and underflow gives zero.
-routine F128.parse_faithful(text: Bytes) -> Result<Self, ParseFloatError>
+routine Bytes.to_faithful_result<F128>(self: Self) -> Result<F128, ParseError>
     block entry()
         claim digits : @BigNat<3> <- uninit
-        parsed : Result<DecimalParts, ParseFloatError> = parse_decimal(text, digits, 38)
+        parsed : Result<DecimalParts, ParseError> = parse_decimal(self, digits, 38)
         when parsed
             .Success(parts) -> build(parts, digits)
             .Failure(error) -> fail(error)
@@ -652,10 +642,10 @@ routine F128.parse_faithful(text: Bytes) -> Result<Self, ParseFloatError>
         jump done(bits)
 
     block done(bits: U128)
-        value : Self                          = f128_of(bits)
-        r     : Result<Self, ParseFloatError> = .Success(value)
+        value : F128                     = f128_of(bits)
+        r     : Result<F128, ParseError> = .Success(value)
         return(r)
 
-    block fail(error: ParseFloatError)
-        failed : Result<Self, ParseFloatError> = .Failure(error)
+    block fail(error: ParseError)
+        failed : Result<F128, ParseError> = .Failure(error)
         return(failed)

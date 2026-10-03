@@ -1,10 +1,10 @@
 namespace Tessera;
 
 /// Concept checking. A concept names a set of required routines (`routine Self.eq(...)`), and may refine other
-/// concepts (`conform Equal<T>` inside it). A type satisfies a concept through a conformance: a `conform` clause on
+/// concepts (`conform Equatable<T>` inside it). A type satisfies a concept through a conformance: a `conform` clause on
 /// its record, or a top-level `conform` declaration. A conformance may hold only `when` other constraints hold
-/// (`conform Equal<Option<T>> when Equal<T>`). A concept with no routines of its own that only refines others
-/// (`HashEqual<T>`) is satisfied by satisfying them.
+/// (`conform Equatable<Option<T>> when Equatable<T>`). A concept with no routines of its own that only refines others
+/// (`HashEquatable<T>`) is satisfied by satisfying them.
 ///
 /// Constraints are checked where they apply: a routine's `require` concepts when a call instantiates it, a record's
 /// when its type is formed. Each conformance is checked against the concept's routines, by signature, the first time
@@ -232,13 +232,19 @@ public sealed partial class Compiler
 
         foreach (var req in concept.Routines)
         {
-            // `Self.name` belongs to the concept's first parameter; a multi-type concept names the owner.
+            // `Self.name` belongs to the concept's first parameter. A multi-type concept names the owner, and a routine
+            // on a fixed type (`Bytes.to_result<T>`) names that type, with the concept's parameters as its type
+            // arguments: the conforming routine is the one defined for them (`Bytes.to_result<S32>`).
             string ownerParam = req.Owner!.Name == "Self" ? concept.TypeParams[0] : req.Owner.Name;
-            var owner = cenv.Get(ownerParam)!;
+            var owner = req.Owner.Args.Count == 0 && cenv.Get(ownerParam) is { } bound ? bound : ResolveType(req.Owner, cenv);
             string claim = $"{key} (declared at {conf.Source.Pos})";
-            var methods = MethodCandidates(owner, req.Name, conf.Source.File, conf.Source.Pos);
+            var wanted = req.Fixed.Select(f => ResolveType(f, cenv, allowVoid: true)).ToList();
+            var methods = MethodCandidates(owner, req.Name, conf.Source.File, conf.Source.Pos,
+                fits: wanted.Count == 0 ? null : m => FixedFor(m, owner, wanted, conf.Source.Pos));
+            if (wanted.Count > 0) methods = methods.Where(m => m.Fixed.Count > 0).ToList();
+            string shownName = wanted.Count == 0 ? req.Name : $"{req.Name}<{string.Join(", ", wanted.Select(w => w.Name))}>";
             if (methods.Count == 0)
-                throw new CompileError(conf.Source.Pos, $"{claim} needs routine '{owner.Name}.{req.Name}', which doesn't exist");
+                throw new CompileError(conf.Source.Pos, $"{claim} needs routine '{owner.Name}.{shownName}', which doesn't exist");
             // A type conforms through the one overload whose full signature is the requirement's.
             var misses = new List<(RoutineDecl Method, CompileError Why)>();
             foreach (var method in methods)
@@ -257,6 +263,16 @@ public sealed partial class Compiler
                     + $"signature the concept wants ({ShowSignature(req)}):"
                     + string.Concat(misses.Select(m => $"\n    {ShowSignature(m.Method)} at {m.Method.Pos}: {Reason(m.Why.Text, claim)}")));
         }
+    }
+
+    /// Whether a routine defined for type arguments (`Bytes.to_result<S32>`) is the one for `wanted`.
+    private bool FixedFor(RoutineDecl m, DType owner, List<DType> wanted, Pos at)
+    {
+        if (m.Fixed.Count != wanted.Count) return false;
+        var env = OwnerEnv(m, owner, at);
+        for (int i = 0; i < wanted.Count; i++)
+            if (ResolveTypeQuiet(m.Fixed[i], env) is not { } have || !have.Equals(wanted[i])) return false;
+        return true;
     }
 
     /// The part of a requirement mismatch after the claim it starts with.
@@ -333,7 +349,7 @@ public sealed partial class Compiler
                 var env = new TypeEnv(conf.Source.File);
                 var decl = FindConcept(conf.Concept, conf.Source.File);
                 var args = ConceptArgs(conf.Concept, env);
-                // A conformance conditional on concrete types (`Equal<Shape> when Equal<Circle>`) just doesn't hold
+                // A conformance conditional on concrete types (`Equatable<Shape> when Equatable<Circle>`) just doesn't hold
                 // when its condition fails; only one that holds is checked.
                 if (conf.When.Any(w => Conforms(FindConcept(w, conf.Source.File), ConceptArgs(w, env), conf.Source.File,
                         conf.Source.Pos) is not null))

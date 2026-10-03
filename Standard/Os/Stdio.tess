@@ -4,7 +4,8 @@
 // Out.write("x = {x}\n") writes formatted text (the builder expands it, as for any Writer), write_all writes bytes,
 // and nothing is buffered (a BufWriter<Out> is the caller's choice). In is read through one buffer the whole process
 // shares, behind a lock: standard input is one stream, and two buffers over it would each take bytes the other
-// should have had, so In.read, read_count, read_word, read_line, and read_all all draw on that one. In is a Reader,
+// should have had, so In.read_into, read_count, read_word, read_line, and read_all all draw on that one. In.read<T>()
+// reads a number (any Parsable type) from the next word in place, without allocating. In is a Reader,
 // so code that reads a file or standard input alike takes a @R and gets In.shared().
 //
 // On Linux and macOS these are file descriptors 0, 1, and 2. On Windows a console is a different thing from a pipe:
@@ -91,6 +92,93 @@ private routine InputBuffer.unread(self: @Self) -> Void
         previous_start.store_into(self.start)
         return()
 
+/// Reads more input after what the buffer holds, into its free end: false at the end of the input (or on a failure,
+/// which reads as the end). The lock is held.
+/// :throws: Crashes with `InvalidValueError` when the buffer is full, a word longer than the buffer.
+private routine InputBuffer.fill_more(self: @Self) -> Bool
+    block entry()
+        end : USize = self.end.load()
+        branch end.lt(IN_BUFFER)
+            ? continue
+            : crash("InvalidValueError",
+                "A word of standard input is longer than the 8192-byte input buffer.")
+        free : @Byte                  = self.bytes.to<@Byte>().stride(end)
+        got  : Result<USize, FsError> = stdin_read(free, IN_BUFFER.sub(end))
+        when got
+            .Success(n) -> added(end, n)
+            .Failure    -> return(false)
+
+    block added(end: USize, n: USize)
+        self.end.store(end.add(n))
+        return(n.gt(0))
+
+/// Moves the bytes the buffer holds to its front, so the free space after them is as large as it can be. The lock is
+/// held.
+private routine InputBuffer.compact(self: @Self) -> Void
+    block entry()
+        from     : USize = self.start.load()
+        held     : USize = self.end.load().sub(from)
+        buffered : @Byte = self.bytes.to<@Byte>()
+        self.start.store(0)
+        self.end.store(held)
+        jump move(buffered, from, held, 0)
+
+    // front to back: each byte goes to a place the loop has already read
+    block move(buffered: @Byte, from: USize, held: USize, i: USize)
+        branch i.eq(held)
+            ? return()
+            : continue
+        byte : Byte = buffered.stride(from.add(i)).load()
+        buffered.stride(i).store(byte)
+        jump move(buffered, from, held, i.add(1))
+
+/// Skips white space and hands out the next word as a view of the buffer, moving it to the front of the buffer first
+/// when it runs past the end of what was read, so it comes out whole. Absent at the end of the input. The lock is held,
+/// and the view is good until the buffer is read into again.
+private routine InputBuffer.word(self: @Self) -> Option<Bytes>
+    block entry()
+        jump skip()
+
+    block skip()
+        c : Option<Byte> = self.next()
+        when c
+            .Present(byte) -> first(byte)
+            .Absent        -> return(.Absent)
+
+    block first(byte: Byte)
+        branch is_space(byte)
+            ? skip()
+            : continue
+        self.unread()
+        jump scan(1)
+
+    // length bytes of the word are known
+    block scan(length: USize)
+        at : USize = self.start.load().add(length)
+        branch at.lt(self.end.load())
+            ? look(length, at)
+            : more(length)
+
+    block look(length: USize, at: USize)
+        buffered : @Byte = self.bytes.to<@Byte>()
+        c        : Byte  = buffered.stride(at).load()
+        branch is_space(c)
+            ? found(length)
+            : scan(length.add(1))
+
+    block more(length: USize)
+        self.compact()
+        branch self.fill_more()
+            ? scan(length)
+            : found(length)
+
+    block found(length: USize)
+        from     : USize = self.start.load()
+        buffered : @Byte = self.bytes.to<@Byte>()
+        word     : Bytes = Bytes.from_ptr(buffered.stride(from), length)
+        self.start.store(from.add(length))
+        return(.Present(word))
+
 /// A pointer to standard input, for passing where a Reader is taken (`@R`). Every value of {In} is the same stream,
 /// so the pointer holds no state and is null.
 /// :returns: The pointer to hand to a reader parameter.
@@ -100,7 +188,7 @@ routine In.shared() -> @Self
         return(none)
 
 /// Reads up to count bytes: what the buffer holds first, else one read from the OS. How many, 0 at the end.
-routine In.read(buffer: @Byte, count: USize) -> Result<USize, FsError>
+routine In.read_into(buffer: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
         b : @InputBuffer = STDIN_BUFFER
         b.lock.lock()
@@ -133,10 +221,59 @@ routine In.read(buffer: @Byte, count: USize) -> Result<USize, FsError>
         b.lock.unlock()
         return(.Success(0))
 
-/// The Reader side: In.read.
+/// Skips white space and reads the next word (spaces, tabs, and line ends separate words) as a T, straight from the
+/// input buffer: nothing is allocated. The space after the word stays in the input.
+/// :typeparam T: The type to read, a Parsable one (every integer and float type).
+/// :returns: The value, or Absent at the end of the input.
+/// :throws: Crashes with `InvalidValueError`, naming the word and the type, when the word isn't a T.
+#track_caller
+routine In.read<T>() -> Option<T>
+require T: typename, Parsable<T>
+    block entry()
+        b : @InputBuffer = STDIN_BUFFER
+        b.lock.lock()
+        word : Option<Bytes> = b.word()
+        when word
+            .Present(text) -> convert(b, text)
+            .Absent        -> nothing(b)
+
+    block nothing(b: @InputBuffer)
+        b.lock.unlock()
+        return(.Absent)
+
+    // The word is a view of the buffer, so it's converted before the lock goes.
+    block convert(b: @InputBuffer, text: Bytes)
+        value : T = text.to<T>()
+        b.lock.unlock()
+        return(.Present(value))
+
+/// Skips white space and reads the next word as a T, like {In.read<T>}, with a word that isn't a T as a Failure instead
+/// of a crash. The word is gone from the input either way.
+/// :typeparam T: The type to read, a Parsable one.
+/// :returns: Success with the value or Failure with why the word isn't a T, or Absent at the end of the input.
+routine In.read_result<T>() -> Option<Result<T, ParseError>>
+require T: typename, Parsable<T>
+    block entry()
+        b : @InputBuffer = STDIN_BUFFER
+        b.lock.lock()
+        word : Option<Bytes> = b.word()
+        when word
+            .Present(text) -> convert(b, text)
+            .Absent        -> nothing(b)
+
+    block nothing(b: @InputBuffer)
+        b.lock.unlock()
+        return(.Absent)
+
+    block convert(b: @InputBuffer, text: Bytes)
+        converted : Result<T, ParseError> = text.to_result<T>()
+        b.lock.unlock()
+        return(.Present(converted))
+
+/// The Reader side: In.read_into.
 routine In.read_bytes(self: @Self, buffer: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
-        return(Self.read(buffer, count))
+        return(Self.read_into(buffer, count))
 
 /// Up to count bytes, in memory from alloc: fewer only at the end of the input. Release them with destruct().
 routine In.read_count(count: USize, alloc: @Allocator) -> OwnedSpan<Byte>
@@ -150,7 +287,7 @@ routine In.read_count(count: USize, alloc: @Allocator) -> OwnedSpan<Byte>
         branch n.eq(count)
             ? return(OwnedSpan<Byte> { data: buffer, count: n, alloc: alloc })
             : continue
-        got : Result<USize, FsError> = Self.read(buffer.stride(n), count.sub(n))
+        got : Result<USize, FsError> = Self.read_into(buffer.stride(n), count.sub(n))
         when got
             .Success(k) -> advance(buffer, n, k)
             .Failure    -> return(OwnedSpan<Byte> { data: buffer, count: n, alloc: alloc })
@@ -168,7 +305,7 @@ routine In.read_all(alloc: @Allocator) -> OwnedSpan<Byte>
         jump more(text, chunk.to<@Byte>())
 
     block more(text: @CaptureBuffer, chunk: @Byte)
-        got : Result<USize, FsError> = Self.read(chunk, 4096)
+        got : Result<USize, FsError> = Self.read_into(chunk, 4096)
         when got
             .Success(n) -> add(text, chunk, n)
             .Failure    -> return(text.load().owned(alloc))

@@ -277,7 +277,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return clauses;
     }
 
-    /// One clause line. `require` lists parameters (`T: typename`, `N: USize`) and concept constraints (`Equal<T>`);
+    /// One clause line. `require` lists parameters (`T: typename`, `N: USize`) and concept constraints (`Equatable<T>`);
     /// `conform` lists concepts, optionally followed by `when` and the constraints under which it holds.
     private Clause ParseClause()
     {
@@ -308,7 +308,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             do concepts.Add(ParseType()); while (Accept(TokenKind.Comma));
             if (IsIdent("require"))
-                throw Error("a conformance's conditions are written with 'when': conform Equal<Option<T>> when T: typename, Equal<T>");
+                throw Error("a conformance's conditions are written with 'when': conform Equatable<Option<T>> when T: typename, Equatable<T>");
             if (IsIdent("when"))
             {
                 Next();
@@ -394,7 +394,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     // ── Declarations ────────────────────────────────────────────────────────
 
-    private RoutineDecl ParseRoutine(List<Attribute> attrs, bool inConcept)
+    private RoutineDecl ParseRoutine(List<Attribute> attrs, bool inConcept, List<string>? conceptParams = null)
     {
         var pos = Cur.Pos;
         ExpectIdent("routine");
@@ -434,8 +434,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             var declared = RequiredNames(clauses);
             bool IsParam(TypeRef t) => t is { Args.Count: 0, Path: null } && declared.Contains(t.Name);
-            // A concept's routine declares its parameters without a require of its own: `Self.represent<W>`.
-            if (inConcept || ownArgs.All(IsParam)) typeParams = ownArgs.Select(t => t.Name).ToList();
+            // A concept's routine declares its parameters without a require of its own: `Self.represent<W>`. Type
+            // arguments that are the concept's own parameters fix it instead: `Bytes.to_result<T>` in Parsable<T>.
+            bool fixedByConcept = inConcept && conceptParams is not null
+                                  && ownArgs.Any(t => NamesIn(t).Any(conceptParams.Contains));
+            if (!fixedByConcept && (inConcept || ownArgs.All(IsParam))) typeParams = ownArgs.Select(t => t.Name).ToList();
+            else if (fixedByConcept) fixedArgs = ownArgs;
             else
             {
                 fixedArgs = ownArgs;
@@ -618,13 +622,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ExpectLineEnd();
         var clauses = ParseClauses();
 
-        // Required routines are written `routine Self.name(...)`, or `routine T.name(...)` with one of the
-        // concept's parameters (a multi-type concept), and have no body.
+        // Required routines are written `routine Self.name(...)`, `routine T.name(...)` with one of the concept's
+        // parameters (a multi-type concept), or, indented under the concept, on a fixed type with the concept's
+        // parameters as its type arguments (`routine Bytes.to_result<T>(...)`). They have no body.
         var routines = new List<RoutineDecl>();
         while (IsIdent("routine") && PeekTok(1) is { Kind: TokenKind.Ident } owner
-                                  && (owner.Text == "Self" || typeParams.Contains(owner.Text))
+                                  && (owner.Text == "Self" || typeParams.Contains(owner.Text) || Cur.Pos.Col > 1)
                                   && PeekTok(2).Kind == TokenKind.Dot)
-            routines.Add(ParseRoutine([], inConcept: true));
+            routines.Add(ParseRoutine([], inConcept: true, conceptParams: typeParams));
         return new ConceptDecl(file, attrs, name.Text, typeParams, clauses, routines, pos);
     }
 

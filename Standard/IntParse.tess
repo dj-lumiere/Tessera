@@ -1,22 +1,14 @@
 // Tessera stdlib: reading integers from text
 //
-// T.parse(text) reads a decimal integer for every built-in integer type: an optional '+' or '-', then one or more
-// digits, and nothing else (no spaces, no '_', no "0x"). The digits are gathered into a U256, so any text that
+// text.to_result<T>() reads a decimal integer for every built-in integer type: an optional '+' or '-', then one or
+// more digits, and nothing else (no spaces, no '_', no "0x"). The digits are gathered into a U256, so any text that
 // fits a U256 is read before the range is checked, and a type's most negative value reads too ("-128" as S8).
+// text.to<T>() (Standard/Parsable.tess) is the same conversion, and it crashes on bad text.
 //
-//     n : Result<S32, ParseIntError> = S32.parse("-42")    // .Success(-42)
-//     S8.parse("200")                                      // .Failure(.OutOfRange)
-//     U32.parse("-1")                                      // .Failure(.OutOfRange)
-//     U32.parse("")                                        // .Failure(.Empty)
-//     U32.parse("12a")                                     // .Failure(.Invalid)
+// For the text "-42", text.to_result<S32>() is .Success(-42). "200" as an S8 and "-1" as a U32 are
+// .Failure(.OutOfRange), "" is .Failure(.Empty), and "12a" is .Failure(.Invalid).
 
 module Standard::Format
-
-/// Why parsing integer text failed: `Empty` when there are no digits, `Invalid` for a character that is not a digit after the sign, and `OutOfRange` when the value does not fit the type.
-choice ParseIntError: U8
-    Empty  // no digits
-    Invalid  // something other than a digit, after the sign
-    OutOfRange  // a value the type can't hold
 
 /// The sign and the digits' value.
 private record IntParts
@@ -27,10 +19,10 @@ private record IntParts
 /// :param text: The text to read.
 /// :returns: `Success` with the sign and magnitude, or `Failure` with the reason.
 /// :throws: Fails with `Empty` for no digits, `Invalid` for any other character, and `OutOfRange` when the digits overflow a U256.
-private routine parse_int_parts(text: Bytes) -> Result<IntParts, ParseIntError>
+private routine parse_int_parts(text: Bytes) -> Result<IntParts, ParseError>
     block entry()
         branch text.is_empty()
-            ? return(.Failure(ParseIntError.Empty))
+            ? return(.Failure(ParseError.Empty))
             : continue
         first : U8 = text.byte_at(0)
         // '-' and '+'
@@ -41,7 +33,7 @@ private routine parse_int_parts(text: Bytes) -> Result<IntParts, ParseIntError>
 
     block digits(negative: Bool, start: USize)
         branch start.eq(text.count())
-            ? return(.Failure(ParseIntError.Empty))
+            ? return(.Failure(ParseError.Empty))
             : next(negative, start, 0)
 
     block next(negative: Bool, i: USize, value: U256)
@@ -51,30 +43,31 @@ private routine parse_int_parts(text: Bytes) -> Result<IntParts, ParseIntError>
         c : U8 = text.byte_at(i)
         branch c.between(48, 57)
             ? continue
-            : return(.Failure(ParseIntError.Invalid))
+            : return(.Failure(ParseError.Invalid))
         times : Option<U256> = value.mul_checked(10)
         when times
             .Present(t) -> add(negative, i, t, c.sub(48).to<U256>())
-            .Absent     -> return(.Failure(ParseIntError.OutOfRange))
+            .Absent     -> return(.Failure(ParseError.OutOfRange))
 
     block add(negative: Bool, i: USize, t: U256, digit: U256)
         sum : Option<U256> = t.add_checked(digit)
         when sum
             .Present(s) -> next(negative, i.add(1), s)
-            .Absent     -> return(.Failure(ParseIntError.OutOfRange))
+            .Absent     -> return(.Failure(ParseError.OutOfRange))
 
 /// value, or OutOfRange when it is Absent.
-private routine in_range<T>(value: Option<T>) -> Result<T, ParseIntError>
+private routine in_range<T>(value: Option<T>) -> Result<T, ParseError>
 require T: typename
     block entry()
         when value
             .Present(v) -> return(.Success(v))
-            .Absent     -> return(.Failure(ParseIntError.OutOfRange))
+            .Absent     -> return(.Failure(ParseError.OutOfRange))
 
-/// A decimal S8, with an optional sign.
-routine S8.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal S8, with an optional sign.
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<S8>(self: Self) -> Result<S8, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
@@ -82,19 +75,20 @@ routine S8.parse(text: Bytes) -> Result<Self, ParseIntError>
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
             ? negative(p.magnitude)
-            : return(in_range<Self>(p.magnitude.to_checked<Self>()))
+            : return(in_range<S8>(p.magnitude.to_checked<S8>()))
 
     // -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
     block negative(m: U256)
-        less : Option<Self> = m.sub(1).to_checked<Self>()
+        less : Option<S8> = m.sub(1).to_checked<S8>()
         when less
             .Present(v) -> return(.Success(v.neg().sub(1)))
-            .Absent     -> return(.Failure(ParseIntError.OutOfRange))
+            .Absent     -> return(.Failure(ParseError.OutOfRange))
 
-/// A decimal S16, with an optional sign.
-routine S16.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal S16, with an optional sign.
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<S16>(self: Self) -> Result<S16, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
@@ -102,19 +96,20 @@ routine S16.parse(text: Bytes) -> Result<Self, ParseIntError>
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
             ? negative(p.magnitude)
-            : return(in_range<Self>(p.magnitude.to_checked<Self>()))
+            : return(in_range<S16>(p.magnitude.to_checked<S16>()))
 
     // -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
     block negative(m: U256)
-        less : Option<Self> = m.sub(1).to_checked<Self>()
+        less : Option<S16> = m.sub(1).to_checked<S16>()
         when less
             .Present(v) -> return(.Success(v.neg().sub(1)))
-            .Absent     -> return(.Failure(ParseIntError.OutOfRange))
+            .Absent     -> return(.Failure(ParseError.OutOfRange))
 
-/// A decimal S32, with an optional sign.
-routine S32.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal S32, with an optional sign.
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<S32>(self: Self) -> Result<S32, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
@@ -122,19 +117,20 @@ routine S32.parse(text: Bytes) -> Result<Self, ParseIntError>
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
             ? negative(p.magnitude)
-            : return(in_range<Self>(p.magnitude.to_checked<Self>()))
+            : return(in_range<S32>(p.magnitude.to_checked<S32>()))
 
     // -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
     block negative(m: U256)
-        less : Option<Self> = m.sub(1).to_checked<Self>()
+        less : Option<S32> = m.sub(1).to_checked<S32>()
         when less
             .Present(v) -> return(.Success(v.neg().sub(1)))
-            .Absent     -> return(.Failure(ParseIntError.OutOfRange))
+            .Absent     -> return(.Failure(ParseError.OutOfRange))
 
-/// A decimal S64, with an optional sign.
-routine S64.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal S64, with an optional sign.
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<S64>(self: Self) -> Result<S64, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
@@ -142,19 +138,20 @@ routine S64.parse(text: Bytes) -> Result<Self, ParseIntError>
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
             ? negative(p.magnitude)
-            : return(in_range<Self>(p.magnitude.to_checked<Self>()))
+            : return(in_range<S64>(p.magnitude.to_checked<S64>()))
 
     // -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
     block negative(m: U256)
-        less : Option<Self> = m.sub(1).to_checked<Self>()
+        less : Option<S64> = m.sub(1).to_checked<S64>()
         when less
             .Present(v) -> return(.Success(v.neg().sub(1)))
-            .Absent     -> return(.Failure(ParseIntError.OutOfRange))
+            .Absent     -> return(.Failure(ParseError.OutOfRange))
 
-/// A decimal S128, with an optional sign.
-routine S128.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal S128, with an optional sign.
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<S128>(self: Self) -> Result<S128, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
@@ -162,19 +159,20 @@ routine S128.parse(text: Bytes) -> Result<Self, ParseIntError>
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
             ? negative(p.magnitude)
-            : return(in_range<Self>(p.magnitude.to_checked<Self>()))
+            : return(in_range<S128>(p.magnitude.to_checked<S128>()))
 
     // -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
     block negative(m: U256)
-        less : Option<Self> = m.sub(1).to_checked<Self>()
+        less : Option<S128> = m.sub(1).to_checked<S128>()
         when less
             .Present(v) -> return(.Success(v.neg().sub(1)))
-            .Absent     -> return(.Failure(ParseIntError.OutOfRange))
+            .Absent     -> return(.Failure(ParseError.OutOfRange))
 
-/// A decimal S256, with an optional sign.
-routine S256.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal S256, with an optional sign.
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<S256>(self: Self) -> Result<S256, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
@@ -182,105 +180,113 @@ routine S256.parse(text: Bytes) -> Result<Self, ParseIntError>
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
             ? negative(p.magnitude)
-            : return(in_range<Self>(p.magnitude.to_checked<Self>()))
+            : return(in_range<S256>(p.magnitude.to_checked<S256>()))
 
     // -(m - 1) - 1: the most negative value's magnitude is one past the most positive value.
     block negative(m: U256)
-        less : Option<Self> = m.sub(1).to_checked<Self>()
+        less : Option<S256> = m.sub(1).to_checked<S256>()
         when less
             .Present(v) -> return(.Success(v.neg().sub(1)))
-            .Absent     -> return(.Failure(ParseIntError.OutOfRange))
+            .Absent     -> return(.Failure(ParseError.OutOfRange))
 
-/// A decimal U8, with an optional '+' ("-0" reads as 0).
-routine U8.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal U8, with an optional '+' ("-0" reads as 0).
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<U8>(self: Self) -> Result<U8, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
 
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
-            ? return(.Failure(ParseIntError.OutOfRange))
-            : return(in_range<Self>(p.magnitude.to_checked<Self>()))
+            ? return(.Failure(ParseError.OutOfRange))
+            : return(in_range<U8>(p.magnitude.to_checked<U8>()))
 
-/// A decimal U16, with an optional '+' ("-0" reads as 0).
-routine U16.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal U16, with an optional '+' ("-0" reads as 0).
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<U16>(self: Self) -> Result<U16, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
 
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
-            ? return(.Failure(ParseIntError.OutOfRange))
-            : return(in_range<Self>(p.magnitude.to_checked<Self>()))
+            ? return(.Failure(ParseError.OutOfRange))
+            : return(in_range<U16>(p.magnitude.to_checked<U16>()))
 
-/// A decimal U32, with an optional '+' ("-0" reads as 0).
-routine U32.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal U32, with an optional '+' ("-0" reads as 0).
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<U32>(self: Self) -> Result<U32, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
 
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
-            ? return(.Failure(ParseIntError.OutOfRange))
-            : return(in_range<Self>(p.magnitude.to_checked<Self>()))
+            ? return(.Failure(ParseError.OutOfRange))
+            : return(in_range<U32>(p.magnitude.to_checked<U32>()))
 
-/// A decimal U64, with an optional '+' ("-0" reads as 0).
-routine U64.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal U64, with an optional '+' ("-0" reads as 0).
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<U64>(self: Self) -> Result<U64, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
 
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
-            ? return(.Failure(ParseIntError.OutOfRange))
-            : return(in_range<Self>(p.magnitude.to_checked<Self>()))
+            ? return(.Failure(ParseError.OutOfRange))
+            : return(in_range<U64>(p.magnitude.to_checked<U64>()))
 
-/// A decimal U128, with an optional '+' ("-0" reads as 0).
-routine U128.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal U128, with an optional '+' ("-0" reads as 0).
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<U128>(self: Self) -> Result<U128, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
 
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
-            ? return(.Failure(ParseIntError.OutOfRange))
-            : return(in_range<Self>(p.magnitude.to_checked<Self>()))
+            ? return(.Failure(ParseError.OutOfRange))
+            : return(in_range<U128>(p.magnitude.to_checked<U128>()))
 
-/// A decimal U256, with an optional '+' ("-0" reads as 0).
-routine U256.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal U256, with an optional '+' ("-0" reads as 0).
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<U256>(self: Self) -> Result<U256, ParseError>
     block entry()
-        parts : Result<IntParts, ParseIntError> = parse_int_parts(text)
+        parts : Result<IntParts, ParseError> = parse_int_parts(self)
         when parts
             .Success(p)     -> sign(p)
             .Failure(error) -> return(.Failure(error))
 
     block sign(p: IntParts)
         branch p.negative.bitand(p.magnitude.gt(0))
-            ? return(.Failure(ParseIntError.OutOfRange))
+            ? return(.Failure(ParseError.OutOfRange))
             : return(.Success(p.magnitude))
 
-/// A decimal SSize, with an optional sign: read as an S64, then narrowed.
-routine SSize.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal SSize, with an optional sign: read as an S64, then narrowed.
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<SSize>(self: Self) -> Result<SSize, ParseError>
     block entry()
-        wide : Result<S64, ParseIntError> = S64.parse(text)
+        wide : Result<S64, ParseError> = self.to_result<S64>()
         when wide
-            .Success(v)     -> return(in_range<Self>(v.to_checked<Self>()))
+            .Success(v)     -> return(in_range<SSize>(v.to_checked<SSize>()))
             .Failure(error) -> return(.Failure(error))
 
-/// A decimal USize, with an optional '+': read as a U64, then narrowed.
-routine USize.parse(text: Bytes) -> Result<Self, ParseIntError>
+/// The text as a decimal USize, with an optional '+': read as an U64, then narrowed.
+/// :returns: `Success` with the value, or `Failure` with `Empty`, `Invalid`, or `OutOfRange`.
+routine Bytes.to_result<USize>(self: Self) -> Result<USize, ParseError>
     block entry()
-        wide : Result<U64, ParseIntError> = U64.parse(text)
+        wide : Result<U64, ParseError> = self.to_result<U64>()
         when wide
-            .Success(v)     -> return(in_range<Self>(v.to_checked<Self>()))
+            .Success(v)     -> return(in_range<USize>(v.to_checked<USize>()))
             .Failure(error) -> return(.Failure(error))

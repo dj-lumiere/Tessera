@@ -551,7 +551,7 @@ public sealed partial class Compiler
         _ => _records.GetValueOrDefault(t.OwnerName)?.FirstOrDefault(r => r.Module == CoreModule),
     };
 
-    /// Whether a type pattern's name (`List` in `conform Equal<List<T>>`) means this declaration from `file`.
+    /// Whether a type pattern's name (`List` in `conform Equatable<List<T>>`) means this declaration from `file`.
     public bool NamesDecl(TypeRef pattern, Decl d, string file) =>
         TypeDeclQuiet(pattern.Name, file, pattern.Path) == d;
 

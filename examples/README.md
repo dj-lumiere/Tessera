@@ -17,7 +17,7 @@ Run one with `dotnet run -- run examples/<name>.tess`. Every program has a `<nam
 | [insertion_sort](insertion_sort.tess) | `Array<T, N>` copied from a preset into a slot, `getitem` / `setitem`, and `List<S64>.sort` from the stdlib |
 | [brackets](brackets.tess) | `List<T>` as a stack, a `choice` result, a `when` over every member, one cleanup exit |
 | [word_count](word_count.tess) | `Bytes` views, `Dict<Bytes, USize>` in insertion order, `DictIter` |
-| [temperature](temperature.tess) | `F64` arithmetic, integer ↔ float conversion, `represent` and `represent_fixed` |
+| [temperature](temperature.tess) | `F64` arithmetic, integer ↔ float conversion, `represent` and `represent_fixed_into` |
 
 Larger programs in [`tests/`](../tests) combine these: [Dijkstra](../tests/dijkstra.tess), a
 [lazy segment tree](../tests/segment_tree_lazy_iterative.tess), [SHA-256](../tests/sha256.tess), and a
