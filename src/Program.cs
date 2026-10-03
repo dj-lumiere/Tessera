@@ -7,18 +7,18 @@ static class Cli
 {
     private const string Usage = """
         usage:
+          tessera check [<target>] [<trace>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera build                 build the solution its config.toml describes (here or above)
-          tessera run                   build it and run it
           tessera build <file.tess>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [<target>] [--mode <mode>] [<trace>]
+          tessera run                   build it and run it
           tessera run   <file.tess>... [<target>] [--mode <mode>] [<trace>]
           tessera test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.tess>...
-          tessera check [<target>] [<trace>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
           tessera fmt   -               format the source on standard input to standard output (for an editor)
           tessera lsp                   run the language server on standard input and output (for an editor)
           tessera lint  <file-or-dir>...   print the style warnings (a chain of more than two calls), the stdlib's too
-          tessera version               print the builder's version
           tessera help                  print this text
+          tessera version               print the builder's version
 
         --no-stdlib-exports: leave out the standard library's #export routines (the default crash handler, the F16 and
                 BF16 conversion helpers), for a library that is linked into a program which has them already.
@@ -471,12 +471,19 @@ static class Cli
         }
         finally
         {
-            TryDelete(exe);
+            DeleteTempExe(exe);
         }
     }
 
     private static string TempExe() =>
         Path.Combine(Path.GetTempPath(), $"tessera-{Guid.NewGuid():N}" + (OperatingSystem.IsWindows() ? ".exe" : ""));
+
+    /// Deletes a temporary executable together with the debug database the Windows linker writes next to it.
+    private static void DeleteTempExe(string exe)
+    {
+        TryDelete(exe);
+        TryDelete(Path.ChangeExtension(exe, ".pdb"));
+    }
 
     private static void TryDelete(string path)
     {
@@ -739,7 +746,7 @@ static class Cli
         }
         finally
         {
-            TryDelete(exe);
+            DeleteTempExe(exe);
         }
     }
 }
