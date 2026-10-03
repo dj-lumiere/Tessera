@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using Tessera;
 
 return Cli.Execute(args);
@@ -363,19 +364,55 @@ static class Cli
 
     private static List<Decl> LoadDecls(IEnumerable<string> files, BuildTarget target)
     {
-        var decls = new List<Decl>();
+        // The clang runs that resolve the target's CPU and data layout don't depend on the sources, so they go on
+        // while the sources are parsed.
+        CpuModel.Prefetch(target);
+        DataLayout.Prefetch(target);
         var inputs = files.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var f in inputs)
-        {
-            if (!File.Exists(f)) throw new ToolError($"no such file: {f}");
-            decls.AddRange(ParseFile(f, isLibrary: false));
-        }
+        var jobs = inputs.Select(f => (Path: f, IsLibrary: false, ShownAs: (string?)null)).ToList();
         // Stdlib files are named from the stdlib directory (Standard/Collection/List.tess) wherever the build runs, so
-        // the file tags in private symbols don't depend on the working directory.
-        foreach (var f in Directory.GetFiles(StdlibDir(), "*.tess", SearchOption.AllDirectories).Order())
-            if (!inputs.Contains(Path.GetFullPath(f)))
-                decls.AddRange(ParseFile(f, isLibrary: true,
-                    Path.Combine("Standard", Path.GetRelativePath(StdlibDir(), f))));
+        // the file tags in private symbols don't depend on the working directory. A stdlib that can't be found is
+        // reported after the inputs' own errors, as when the inputs were read first.
+        ExceptionDispatchInfo? stdlibError = null;
+        try
+        {
+            foreach (var f in Directory.GetFiles(StdlibDir(), "*.tess", SearchOption.AllDirectories).Order())
+                if (!inputs.Contains(Path.GetFullPath(f)))
+                    jobs.Add((f, true, Path.Combine("Standard", Path.GetRelativePath(StdlibDir(), f))));
+        }
+        catch (Exception e)
+        {
+            stdlibError = ExceptionDispatchInfo.Capture(e);
+        }
+        if (stdlibError is not null) jobs.RemoveRange(inputs.Count, jobs.Count - inputs.Count);
+
+        // Each file is parsed on its own, in parallel, and the results are joined in the order above, so the
+        // declarations come out in the same order on every run. The first file in that order that fails is the one
+        // reported, as if they had been parsed one after another.
+        var parsed = new List<Decl>?[jobs.Count];
+        var failed = new ExceptionDispatchInfo?[jobs.Count];
+        Parallel.For(0, jobs.Count, i =>
+        {
+            var (path, isLibrary, shownAs) = jobs[i];
+            try
+            {
+                if (!isLibrary && !File.Exists(path)) throw new ToolError($"no such file: {path}");
+                parsed[i] = ParseFile(path, isLibrary, shownAs);
+            }
+            catch (Exception e)
+            {
+                failed[i] = ExceptionDispatchInfo.Capture(e);
+            }
+        });
+        var decls = new List<Decl>(parsed.Sum(p => p?.Count ?? 0));
+        for (int i = 0; i < jobs.Count; i++)
+        {
+            failed[i]?.Throw();
+            decls.AddRange(parsed[i]!);
+            if (i == inputs.Count - 1) stdlibError?.Throw();
+        }
+        stdlibError?.Throw();
+        CpuModel.PrefetchFeatures(target, CpuModel.FeaturesNamed(decls, target));
         return decls;
     }
 

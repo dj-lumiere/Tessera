@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
@@ -208,10 +209,20 @@ public sealed class DataLayout
     public static DataLayout For(BuildTarget target, Pos pos)
     {
         if (Cache.TryGetValue(target.LlvmTriple, out var cached)) return cached;
-        string text = QueryClang(target.LlvmTriple)
+        string text = Query(target.LlvmTriple).GetAwaiter().GetResult()
                       ?? throw new CompileError(pos, $"cannot get the data layout for {target.LlvmTriple} from clang");
         return Cache[target.LlvmTriple] = Parse(text);
     }
+
+    /// The clang query of each triple, started once: by the first For, or ahead of it by Prefetch.
+    private static readonly ConcurrentDictionary<string, Lazy<Task<string?>>> Queries = new();
+
+    private static Task<string?> Query(string triple) =>
+        Queries.GetOrAdd(triple, t => new Lazy<Task<string?>>(() => Task.Factory.StartNew(() => QueryClang(t),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default))).Value;
+
+    /// Starts the clang query for the target's data layout, so it goes on while the sources are read.
+    public static void Prefetch(BuildTarget target) => _ = Query(target.LlvmTriple);
 
     /// Compiles an empty C file for the triple and reads the `target datalayout` line.
     private static string? QueryClang(string triple)

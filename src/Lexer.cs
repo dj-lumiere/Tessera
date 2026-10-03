@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Numerics;
 using System.Text;
 
@@ -34,19 +35,50 @@ public static class SourceText
 
     public static string Read(string path, string shown)
     {
-        byte[] bytes = File.ReadAllBytes(path);
+        // The bytes go through a pooled buffer: a new array per file is garbage the moment the text is decoded.
+        using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read, FileOptions.SequentialScan);
+        long length = RandomAccess.GetLength(handle);
+        if (length > Array.MaxLength) return Decode(File.ReadAllBytes(path), shown);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(Math.Max((int)length, 4096));
+        try
+        {
+            int total = 0;
+            while (true)
+            {
+                if (total == buffer.Length)
+                {
+                    // The file grew, or it doesn't know its length.
+                    byte[] larger = ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
+                    buffer.AsSpan(0, total).CopyTo(larger);
+                    ArrayPool<byte>.Shared.Return(buffer);
+                    buffer = larger;
+                }
+                int n = RandomAccess.Read(handle, buffer.AsSpan(total), total);
+                if (n == 0) break;
+                total += n;
+            }
+            return Decode(buffer.AsSpan(0, total), shown);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static string Decode(ReadOnlySpan<byte> bytes, string shown)
+    {
         int start = bytes is [0xEF, 0xBB, 0xBF, ..] ? 3 : 0;
         try
         {
-            return Strict.GetString(bytes, start, bytes.Length - start);
+            return Strict.GetString(bytes[start..]);
         }
         catch (DecoderFallbackException e)
         {
             int bad = start + e.Index;
-            var before = bytes.AsSpan(start, bad - start);
+            var before = bytes[start..bad];
             int lineStart = start + before.LastIndexOf((byte)'\n') + 1;
             int line = 1 + before.Count((byte)'\n');
-            int col = 1 + Strict.GetString(bytes, lineStart, bad - lineStart).Length;
+            int col = 1 + Strict.GetString(bytes[lineStart..bad]).Length;
             throw new CompileError(new Pos(shown, line, col), "the source is not valid UTF-8 (save the file as UTF-8)");
         }
     }
@@ -106,7 +138,17 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
     private int _line = line;
     private int _col = col;
     private int _depth;
-    private readonly List<Token> _tokens = [];
+    private readonly List<Token> _tokens = new(src.Length / 5 + 8);
+
+    /// One string per distinct identifier on this thread, shared by every file it lexes: the standard library writes
+    /// the same few thousand names hundreds of thousands of times, and a substring for each is most of what lexing
+    /// allocates. The table is dropped when it grows past MaxNames, so a long-running language server doesn't keep
+    /// every name it ever saw.
+    [ThreadStatic] private static Dictionary<string, string>? _names;
+    private const int MaxNames = 1 << 16;
+
+    /// The text of a one-character token, without a new string for each.
+    private static readonly string[] CharText = Enumerable.Range(0, 128).Select(c => ((char)c).ToString()).ToArray();
 
     public List<Token> Lex()
     {
@@ -184,7 +226,8 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 continue;
             }
 
-            Advance();
+            _i++;
+            _col++;   // never a newline here
             TokenKind kind;
             switch (c)
             {
@@ -219,7 +262,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                     throw new CompileError(pos, $"unexpected character '{c}'");
             }
             if (_depth < 0) throw new CompileError(pos, $"unmatched '{c}'");
-            _tokens.Add(new Token(kind, c.ToString(), pos));
+            _tokens.Add(new Token(kind, CharText[c], pos));
         }
 
         if (_tokens.Count > 0 && _tokens[^1].Kind != TokenKind.Newline)
@@ -249,27 +292,50 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         while (_i < src.Length)
         {
             char c = src[_i];
-            if (c == ' ' || c == '\t' || c == '﻿') Advance();
-            else if (IsComment(_i)) { while (_i < src.Length && src[_i] != '\n' && src[_i] != '\r') Advance(); }
+            if (c == ' ' || c == '\t' || c == '﻿') { _i++; _col++; }
+            else if (IsComment(_i))
+            {
+                // A comment runs to the end of its line, so no newline is inside it.
+                int end = src.AsSpan(_i).IndexOfAny('\n', '\r');
+                end = end < 0 ? src.Length : _i + end;
+                _col += end - _i;
+                _i = end;
+            }
             else break;
         }
     }
 
+    /// The last scan NextLineContinues made: from where, to the first character that isn't layout or a comment, and
+    /// its answer. A run of comment lines asks once per line, and every line of the run gets the same answer, so it
+    /// is scanned once instead of once per line.
+    private int _scanFrom = -1, _scanTo = -1;
+    private bool _scanAnswer;
+
     private bool NextLineContinues()
     {
+        if (_scanFrom <= _i && _i <= _scanTo) return _scanAnswer;
         int j = _i;
+        // A line break inside a comment (a lone '\r' ends the lexer's comment but not this scan's) could start a line
+        // the scan read as comment, so such a scan isn't reused.
+        bool reusable = true;
+        bool answer = false;
         while (j < src.Length)
         {
             char c = src[j];
             if (c is ' ' or '\t' or '\r' or '\n') { j++; continue; }
             if (IsComment(j))
             {
-                while (j < src.Length && src[j] != '\n') j++;
+                int end = src.AsSpan(j).IndexOf('\n');
+                end = end < 0 ? src.Length : j + end;
+                if (src.AsSpan(j, end - j).Contains('\r')) reusable = false;
+                j = end;
                 continue;
             }
-            return c == '?' || (c == ':' && (j + 1 >= src.Length || src[j + 1] != '='));
+            answer = c == '?' || (c == ':' && (j + 1 >= src.Length || src[j + 1] != '='));
+            break;
         }
-        return false;
+        (_scanFrom, _scanTo, _scanAnswer) = reusable ? (_i, j, answer) : (-1, -1, false);
+        return answer;
     }
 
     private bool RestOfLineIsBlank(int from)
@@ -287,9 +353,24 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
     private string ReadIdent()
     {
         int start = _i;
-        while (_i < src.Length && IsIdentChar(src[_i])) Advance();
-        return src[start.._i];
+        while (_i < src.Length && IsIdentChar(src[_i])) _i++;
+        _col += _i - start;
+        return Intern(src.AsSpan(start, _i - start));
     }
+
+    private static string Intern(ReadOnlySpan<char> text)
+    {
+        var names = _names ??= new Dictionary<string, string>(StringComparer.Ordinal);
+        var lookup = names.GetAlternateLookup<ReadOnlySpan<char>>();
+        if (lookup.TryGetValue(text, out var known)) return known;
+        if (names.Count >= MaxNames) names.Clear();
+        string name = text.ToString();
+        names[name] = name;
+        return name;
+    }
+
+    /// The value of an ASCII hex digit, either case.
+    private static int HexValue(char c) => c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
 
     /// The name between backticks: any characters but a backtick or a line break, at least one.
     private string ReadEscapedName(Pos pos)
@@ -319,8 +400,11 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         }
 
         int digitsStart = _i;
-        Func<char, bool> isDigit = radix == 10 ? char.IsAsciiDigit : char.IsAsciiHexDigit;
-        while (_i < src.Length && (isDigit(src[_i]) || src[_i] == '_')) Advance();
+        if (radix == 10)
+            while (_i < src.Length && (char.IsAsciiDigit(src[_i]) || src[_i] == '_')) _i++;
+        else
+            while (_i < src.Length && (char.IsAsciiHexDigit(src[_i]) || src[_i] == '_')) _i++;
+        _col += _i - digitsStart;
         if (radix == 16 && IsHexFloatTail()) return ReadHexFloat(start, digitsStart, pos);
 
         // A float has a fraction (`1.5`) or an exponent (`1e10`). `0.sub(...)` is an integer and a method call.
@@ -329,19 +413,34 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                         && (char.IsAsciiDigit(Peek(1)) || (Peek(1) is '+' or '-' && char.IsAsciiDigit(Peek(2))));
         if (fraction || exponent) return ReadFloat(start, pos);
 
-        string digits = src[digitsStart.._i].Replace("_", "");
-        if (digits.Length == 0) throw new CompileError(pos, "malformed number");
+        var digits = src.AsSpan(digitsStart, _i - digitsStart);
+        if (digits.Length == digits.Count('_')) throw new CompileError(pos, "malformed number");
         if (_i < src.Length && char.IsAsciiLetterOrDigit(src[_i]))
             throw new CompileError(pos, $"unexpected '{src[_i]}' in a number");
 
+        // The digits gather in a ulong while it can't overflow (below 2^59, times 16 plus 15), then in a BigInteger.
+        ulong small = 0;
         BigInteger mag = BigInteger.Zero;
+        bool big = false;
         foreach (char d in digits)
         {
-            int dv = Convert.ToInt32(d.ToString(), 16);
+            if (d == '_') continue;
+            int dv = HexValue(d);
             if (dv >= radix) throw new CompileError(pos, $"digit '{d}' is invalid in base {radix}");
+            if (!big && small < 1UL << 59)
+            {
+                small = small * (ulong)radix + (ulong)dv;
+                continue;
+            }
+            if (!big)
+            {
+                mag = small;
+                big = true;
+            }
             mag = mag * radix + dv;
             if (mag > MaxLiteral) throw new CompileError(pos, $"integer literal overflows {MaxLiteralBits} bits");
         }
+        if (!big) mag = small;
         if (neg && mag > (MaxLiteral >> 1) + 1)
             throw new CompileError(pos, $"integer literal is below the {MaxLiteralBits}-bit range");
 

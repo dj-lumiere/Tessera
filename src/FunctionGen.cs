@@ -190,7 +190,7 @@ public sealed class FunctionGen
         {
             _out.AppendLine();
             _out.AppendLine($"{lb.Label}:");
-            if (lb.Label.StartsWith("b.") && _blocks.TryGetValue(lb.Label[2..], out var bd))
+            if (lb.Label.StartsWith("b.", StringComparison.Ordinal) && _blocks.TryGetValue(lb.Label[2..], out var bd))
             {
                 EmitPhis(bd);
                 foreach (var r in _blockRecords.GetValueOrDefault(bd.Name) ?? []) _out.AppendLine($"  {r}");
@@ -448,7 +448,8 @@ public sealed class FunctionGen
                 // Name the instruction that produced the value after the binding, so the IR reads like the
                 // source. Literals, parameters and earlier bindings need an explicit copy instead.
                 string produced = $"{v.Op} = ";
-                if (v.Op.StartsWith("%t") && _cur.Lines.Count > 0 && _cur.Lines[^1].StartsWith(produced))
+                if (v.Op.StartsWith("%t", StringComparison.Ordinal) && _cur.Lines.Count > 0
+                    && _cur.Lines[^1].StartsWith(produced, StringComparison.Ordinal))
                     _cur.Lines[^1] = $"{op} = {_cur.Lines[^1][produced.Length..]}";
                 else
                     Line($"{op} = {Copy(v, t)}");
@@ -1860,8 +1861,7 @@ public sealed class FunctionGen
         var env = BindOwner(r, owner, pos);
         try
         {
-            BindFixed(r, env, typeArgs.Select(t => Resolve(t, allowVoid: true)).ToList());
-            return true;
+            return FixedMismatch(r, env, typeArgs.Select(t => Resolve(t, allowVoid: true)).ToList()) < 0;
         }
         catch (CompileError) { return false; }
     }
@@ -1869,11 +1869,20 @@ public sealed class FunctionGen
     /// Binds the routine's own parameters inside its fixed type arguments and checks that each one is the type given.
     private void BindFixed(RoutineDecl r, Compiler.TypeEnv env, List<DType> given)
     {
+        int i = FixedMismatch(r, env, given);
+        if (i >= 0) throw new CompileError(r.Fixed[i].Pos, $"'{r.DisplayName}' isn't for {given[i]}");
+    }
+
+    /// BindFixed without the error: the first fixed type argument that isn't the type given, or -1 when all are. Overload
+    /// resolution tries every routine of a name this way, and most don't fit.
+    private int FixedMismatch(RoutineDecl r, Compiler.TypeEnv env, List<DType> given)
+    {
         var unbound = r.TypeParams.Where(p => !env.Has(p)).ToHashSet();
         for (int i = 0; i < r.Fixed.Count; i++) Unify(r.Fixed[i], given[i], env, unbound);
         for (int i = 0; i < r.Fixed.Count; i++)
             if (!_c.ResolveType(r.Fixed[i], env, allowVoid: true).Equals(given[i]))
-                throw new CompileError(r.Fixed[i].Pos, $"'{r.DisplayName}' isn't for {given[i]}");
+                return i;
+        return -1;
     }
 
     private void BindExplicit(RoutineDecl r, Compiler.TypeEnv env, List<TypeRef> typeArgs, Pos pos)

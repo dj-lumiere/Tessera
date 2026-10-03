@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 
@@ -65,22 +66,42 @@ public sealed class CpuModel
     /// x86 (where `-mcpu` only tunes) and `-mcpu` elsewhere; each feature goes to cc1 as `-target-feature`.
     private static (string Ir, string Err) QueryClang(BuildTarget target, IEnumerable<string> features, Pos pos)
     {
+        var run = Run(target, features).GetAwaiter().GetResult()
+                  ?? throw new CompileError(pos, "clang is needed to resolve the target's CPU features and isn't on PATH");
+        if (run.ExitCode != 0)
+            throw new CompileError(pos, $"clang rejected the CPU or features for {target.LlvmTriple}: {run.Err.Trim()}");
+        return (run.Ir, run.Err);
+    }
+
+    /// What one clang run printed, and how it exited.
+    private sealed record ClangRun(string Ir, string Err, int ExitCode);
+
+    /// Every clang run of this process by its arguments. A run is started once, possibly ahead of its use (Prefetch),
+    /// and whoever needs its result waits for it.
+    private static readonly ConcurrentDictionary<string, Lazy<Task<ClangRun?>>> Runs = new();
+
+    /// The clang run for the target and features, null when clang can't be started.
+    private static Task<ClangRun?> Run(BuildTarget target, IEnumerable<string> features)
+    {
+        var args = new List<string> { "--target=" + target.LlvmTriple };
+        if (target.Cpu is { } cpu)
+            args.Add((target.Arch is "x86_64" or "x86" ? "-march=" : "-mcpu=") + cpu);
+        foreach (var f in features)
+            args.AddRange(["-Xclang", "-target-feature", "-Xclang", f]);
+        args.AddRange(["-x", "c", "-S", "-emit-llvm", "-o", "-", "-"]);
+        return Runs.GetOrAdd(string.Join("\n", args), _ => new Lazy<Task<ClangRun?>>(() =>
+            Task.Factory.StartNew(() => Execute(args), CancellationToken.None, TaskCreationOptions.LongRunning,
+                TaskScheduler.Default))).Value;
+    }
+
+    private static ClangRun? Execute(List<string> args)
+    {
         var psi = new ProcessStartInfo("clang")
         {
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             UseShellExecute = false,
         };
-        psi.ArgumentList.Add("--target=" + target.LlvmTriple);
-        if (target.Cpu is { } cpu)
-            psi.ArgumentList.Add((target.Arch is "x86_64" or "x86" ? "-march=" : "-mcpu=") + cpu);
-        foreach (var f in features)
-        {
-            psi.ArgumentList.Add("-Xclang");
-            psi.ArgumentList.Add("-target-feature");
-            psi.ArgumentList.Add("-Xclang");
-            psi.ArgumentList.Add(f);
-        }
-        foreach (var a in new[] { "-x", "c", "-S", "-emit-llvm", "-o", "-", "-" }) psi.ArgumentList.Add(a);
+        foreach (var a in args) psi.ArgumentList.Add(a);
         try
         {
             using var p = Process.Start(psi)!;
@@ -90,13 +111,61 @@ public sealed class CpuModel
             string ir = p.StandardOutput.ReadToEnd();
             p.WaitForExit();
             err.Wait();
-            if (p.ExitCode != 0)
-                throw new CompileError(pos, $"clang rejected the CPU or features for {target.LlvmTriple}: {err.Result.Trim()}");
-            return (ir, err.Result);
+            return new ClangRun(ir, err.Result, p.ExitCode);
         }
         catch (System.ComponentModel.Win32Exception)
         {
-            throw new CompileError(pos, "clang is needed to resolve the target's CPU features and isn't on PATH");
+            return null;
         }
+    }
+
+    /// Starts the clang run that resolves the target's CPU, so it goes on while the sources are read. The build asks
+    /// for the result as before (For), and gets it without waiting for clang when it's done by then.
+    public static void Prefetch(BuildTarget target) => _ = Run(target, target.Features);
+
+    /// Starts the runs that `#feature` checks of these names would make (Has), for the names the target's CPU doesn't
+    /// list. Each starts once the CPU's own run is done, since that run says which names it lists.
+    public static void PrefetchFeatures(BuildTarget target, IEnumerable<string> names)
+    {
+        var wanted = names.Distinct().ToList();
+        if (wanted.Count == 0) return;
+        Run(target, target.Features).ContinueWith(cpuRun =>
+        {
+            if (cpuRun.Result is not { ExitCode: 0 } run) return;
+            var listed = Regex.Match(run.Ir, "\"target-features\"=\"([^\"]*)\"") is { Success: true } m
+                ? m.Groups[1].Value.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(f => f[1..]).ToHashSet()
+                : [];
+            foreach (var name in wanted.Where(n => !listed.Contains(n)))
+                _ = Run(target, [.. target.Features, "+" + name]);
+        }, TaskScheduler.Default);
+    }
+
+    /// The names `#feature` asks about in the declarations a build of the target can select: those whose `#target`
+    /// attributes before it match. Only a guess at what the build will ask (PrefetchFeatures), so an attribute it
+    /// can't read is passed over.
+    public static IEnumerable<string> FeaturesNamed(IEnumerable<Decl> decls, BuildTarget target)
+    {
+        foreach (var d in decls)
+            foreach (var a in d.Attributes)
+            {
+                if (a.Name == "target")
+                {
+                    bool matches;
+                    try
+                    {
+                        matches = a.Args.All(arg => arg.Key is not null
+                                                    && (arg.Values ?? [arg.Value]).Any(v => target.Matches(arg.Key, v)) != arg.Negated);
+                    }
+                    catch (ArgumentException)
+                    {
+                        matches = false;
+                    }
+                    if (!matches) break;
+                }
+                else if (a.Name == "feature")
+                    foreach (var arg in a.Args)
+                        if (arg.Key is null)
+                            yield return arg.Value;
+            }
     }
 }
