@@ -74,7 +74,8 @@ routine F128.cbrt(self: Self) -> Self
         branch is_zero
             ? return(self)
             : continue
-        shift    : S64  = magnitude.leading_zeros().to<S64>().sub(15)
+        lz       : U128 = magnitude.leading_zeros()
+        shift    : S64  = lz.to<S64>().sub(15)
         exponent : U64  = 121.sub(shift).to<U64>()
         e3       : U64  = exponent.div(3).add(10882)
         rem      : U64  = exponent.mod(3)
@@ -101,11 +102,12 @@ routine cm_cbrt_special(x: F128) -> F128
 /// bit carries into the exponent when rounding up overflows the fraction.
 routine cm_cbrt_finish(u: U128, rem: U64, e3: U64, sign: U64) -> F128
     block entry():
-        root   : U128 = cm_cbrt_icbrt(u.shl(16), rem.to<S64>())
-        round  : U128 = root.shr(15).bitand(1)
-        top    : U64  = e3.shl(48).bitor(sign.shl(63))
-        offset : U128 = top.to<U128>().shl(64).bitor(round)
-        r      : F128 = f128_of(root.shr(16).add_wrap(offset))
+        root        : U128 = cm_cbrt_icbrt(u.shl(16), rem.to<S64>())
+        round       : U128 = root.shr(15).bitand(1)
+        top         : U64  = e3.shl(48).bitor(sign.shl(63))
+        top_shifted : U128 = top.to<U128>().shl(64)
+        offset      : U128 = top_shifted.bitor(round)
+        r           : F128 = f128_of(root.shr(16).add_wrap(offset))
         return(r)
 
 // -- multiword products --------------------------------------------------------
@@ -113,13 +115,15 @@ routine cm_cbrt_finish(u: U128, rem: U64, e3: U64, sign: U64) -> F128
 /// high word of the unsigned 64x64-bit product
 routine cm_cbrt_mhuu(a: U64, b: U64) -> U64
     block entry():
-        r : U64 = a.to<U128>().mul_wrap(b.to<U128>()).shr(64).to<U64>()
+        product : U128 = a.to<U128>().mul_wrap(b.to<U128>())
+        r       : U64  = product.shr(64).to<U64>()
         return(r)
 
 /// high word of the signed 64x64-bit product
 routine cm_cbrt_mhii(a: S64, b: S64) -> U64
     block entry():
-        r : U64 = a.to<S128>().mul_wrap(b.to<S128>()).shr(64).to_wrap<U64>()
+        product : S128 = a.to<S128>().mul_wrap(b.to<S128>())
+        r       : U64  = product.shr(64).to_wrap<U64>()
         return(r)
 
 /// approximate high half of the unsigned 128x128-bit product (a0*b0 and the
@@ -170,11 +174,13 @@ routine cm_cbrt_rcbrt(m: U64) -> S64
     block refine(m: U64, r: S64):
         r2       : U64 = cm_cbrt_mhuu(r.to_wrap<U64>(), r.to_wrap<U64>())
         r3       : U64 = cm_cbrt_mhuu(r2, r.to_wrap<U64>())
-        err      : U64 = cm_cbrt_mhuu(m, r3).add_wrap(r3).shl(22)
+        err_raw  : U64 = cm_cbrt_mhuu(m, r3).add_wrap(r3)
+        err      : U64 = err_raw.shl(22)
         third    : U64 = cm_cbrt_mhii(err.to_wrap<S64>(), CM_CBRT_ONE_THIRD)
         third_sq : U64 = cm_cbrt_mhii(third.to_wrap<S64>(), third.to_wrap<S64>())
         h        : U64 = third.sub_wrap(third_sq.shr(21))
-        hr       : S64 = cm_cbrt_mhii(h.to_wrap<S64>(), r).add_wrap(h).to_wrap<S64>()
+        hr_bits  : U64 = cm_cbrt_mhii(h.to_wrap<S64>(), r).add_wrap(h)
+        hr       : S64 = hr_bits.to_wrap<S64>()
         result   : S64 = r.sub_wrap(hr.shr(22))
         return(result)
 
@@ -185,7 +191,8 @@ routine cm_cbrt_rcbrt(m: U64) -> S64
 /// the rounding is decided exactly.
 routine cm_cbrt_icbrt(x: U128, i: S64) -> U128
     block entry():
-        approx   : S64  = cm_cbrt_rcbrt(x.shr(64).to_wrap<S64>().to_wrap<U64>())
+        x_hi     : S64  = x.shr(64).to_wrap<S64>()
+        approx   : S64  = cm_cbrt_rcbrt(x_hi.to_wrap<U64>())
         is_small : Bool = approx.ge(0)
         clamped  : S64  = is_small
             ? -1
@@ -203,19 +210,21 @@ routine cm_cbrt_icbrt(x: U128, i: S64) -> U128
     // sx = r^2 x ~ cbrt(x); with h = r sx - 1, the Newton step is sx -= sx h / 3
     // (h3 = 2h/3, the product taken as signed, then shifted into place)
     block newton(xs: U128, r: U64, sx: U128):
-        h        : S64  = cm_cbrt_mhuU(r, sx).to_wrap<S64>()
-        h_neg    : U64  = h.shr(63).to_wrap<U64>()
-        h_fix    : U64  = h_neg.bitand(CM_CBRT_TWO_THIRD)
-        h3       : U64  = cm_cbrt_mhuu(h.to_wrap<U64>(), CM_CBRT_TWO_THIRD).sub_wrap(h_fix)
-        h3_wide  : U128 = h3.to<U128>()
-        mm       : U128 = h_neg.to_wrap<S64>().to_wrap<U128>()
-        xy1      : U128 = sx.shr(64).mul_wrap(h3_wide)
-        xy0      : U128 = sx.bitand(CM_CBRT_LOW64).mul_wrap(h3_wide)
-        t        : S128 = xy1.sub_wrap(mm.bitand(sx)).add_wrap(xy0.shr(64)).to_wrap<S128>()
-        ds       : U128 = t.shr(53).to_wrap<U128>()
-        sx1      : U128 = sx.shl(5).sub_wrap(ds)
-        dd       : U64  = sx1.to_wrap<U64>().shl(1).add_wrap(511).bitand(0xFFFF)
-        boundary : Bool = dd.lt(1023)
+        h           : S64  = cm_cbrt_mhuU(r, sx).to_wrap<S64>()
+        h_neg       : U64  = h.shr(63).to_wrap<U64>()
+        h_fix       : U64  = h_neg.bitand(CM_CBRT_TWO_THIRD)
+        h3          : U64  = cm_cbrt_mhuu(h.to_wrap<U64>(), CM_CBRT_TWO_THIRD).sub_wrap(h_fix)
+        h3_wide     : U128 = h3.to<U128>()
+        mm          : U128 = h_neg.to_wrap<S64>().to_wrap<U128>()
+        xy1         : U128 = sx.shr(64).mul_wrap(h3_wide)
+        xy0         : U128 = sx.bitand(CM_CBRT_LOW64).mul_wrap(h3_wide)
+        t_bits      : U128 = xy1.sub_wrap(mm.bitand(sx)).add_wrap(xy0.shr(64))
+        t           : S128 = t_bits.to_wrap<S128>()
+        ds          : U128 = t.shr(53).to_wrap<U128>()
+        sx1         : U128 = sx.shl(5).sub_wrap(ds)
+        sx1_doubled : U64  = sx1.to_wrap<U64>().shl(1)
+        dd          : U64  = sx1_doubled.add_wrap(511).bitand(0xFFFF)
+        boundary    : Bool = dd.lt(1023)
         branch boundary
             ? return(cm_cbrt_exact(sx1, xs))
             : return(sx1)
@@ -224,7 +233,8 @@ routine cm_cbrt_icbrt(x: U128, i: S64) -> U128
 /// shifted back, nudged by one so the caller's round bit goes the right way.
 routine cm_cbrt_exact(sx1: U128, xs: U128) -> U128
     block entry():
-        c : U128 = sx1.add_wrap(0x4000).shr(15).bitor(1.shl(113))
+        rounded : U128 = sx1.add_wrap(0x4000).shr(15)
+        c       : U128 = rounded.bitor(1.shl(113))
         // c^3 needs 342 bits, but c^3 - x × 2^214 is small, so modulo 2^256 its sign and zero test hold
         cube   : U256 = c.mul_wide(c).mul_wrap(c.to<U256>())
         target : U256 = xs.to<U256>().shl(214)

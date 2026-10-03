@@ -300,30 +300,36 @@ routine F128Extended.mul(self: Self, other: Self) -> Self
         b1 : U128 = other.hi.bitand(0xFFFFFFFFFFFFFFFF)
         b0 : U128 = other.lo.to<U128>()
         // columns 1..5 of the schoolbook product; column 0 only feeds carries into 1
-        c0  : U128 = a0.mul_wrap(b0).shr(64)
-        t1  : U128 = a0.mul_wrap(b1)
-        t1b : U128 = a1.mul_wrap(b0)
-        s1  : U128 = c0.add(t1.bitand(0xFFFFFFFFFFFFFFFF)).add(t1b.bitand(0xFFFFFFFFFFFFFFFF))
-        k1  : U128 = s1.shr(64).add(t1.shr(64)).add(t1b.shr(64))
-        t2a : U128 = a0.mul_wrap(b2)
-        t2b : U128 = a1.mul_wrap(b1)
-        t2c : U128 = a2.mul_wrap(b0)
-        s2  : U128 = k1.add(t2a.bitand(0xFFFFFFFFFFFFFFFF)).add(t2b.bitand(0xFFFFFFFFFFFFFFFF)).add(t2c.bitand(0xFFFFFFFFFFFFFFFF))
-        k2  : U128 = s2.shr(64).add(t2a.shr(64)).add(t2b.shr(64)).add(t2c.shr(64))
-        t3a : U128 = a1.mul_wrap(b2)
-        t3b : U128 = a2.mul_wrap(b1)
-        s3  : U128 = k2.add(t3a.bitand(0xFFFFFFFFFFFFFFFF)).add(t3b.bitand(0xFFFFFFFFFFFFFFFF))
-        k3  : U128 = s3.shr(64).add(t3a.shr(64)).add(t3b.shr(64))
-        t4  : U128 = a2.mul_wrap(b2)
-        s4  : U128 = k3.add(t4.bitand(0xFFFFFFFFFFFFFFFF))
-        k4  : U128 = s4.shr(64).add(t4.shr(64))
+        c0   : U128 = a0.mul_wrap(b0).shr(64)
+        t1   : U128 = a0.mul_wrap(b1)
+        t1b  : U128 = a1.mul_wrap(b0)
+        s1   : U128 = c0.add(t1.bitand(0xFFFFFFFFFFFFFFFF)).add(t1b.bitand(0xFFFFFFFFFFFFFFFF))
+        c1   : U128 = s1.shr(64)
+        k1   : U128 = c1.add(t1.shr(64)).add(t1b.shr(64))
+        t2a  : U128 = a0.mul_wrap(b2)
+        t2b  : U128 = a1.mul_wrap(b1)
+        t2c  : U128 = a2.mul_wrap(b0)
+        s2ab : U128 = k1.add(t2a.bitand(0xFFFFFFFFFFFFFFFF)).add(t2b.bitand(0xFFFFFFFFFFFFFFFF))
+        s2   : U128 = s2ab.add(t2c.bitand(0xFFFFFFFFFFFFFFFF))
+        c2   : U128 = s2.shr(64)
+        k2ab : U128 = c2.add(t2a.shr(64)).add(t2b.shr(64))
+        k2   : U128 = k2ab.add(t2c.shr(64))
+        t3a  : U128 = a1.mul_wrap(b2)
+        t3b  : U128 = a2.mul_wrap(b1)
+        s3   : U128 = k2.add(t3a.bitand(0xFFFFFFFFFFFFFFFF)).add(t3b.bitand(0xFFFFFFFFFFFFFFFF))
+        c3   : U128 = s3.shr(64)
+        k3   : U128 = c3.add(t3a.shr(64)).add(t3b.shr(64))
+        t4   : U128 = a2.mul_wrap(b2)
+        s4   : U128 = k3.add(t4.bitand(0xFFFFFFFFFFFFFFFF))
+        k4   : U128 = s4.shr(64).add(t4.shr(64))
         // limbs r5 r4 r3 (and r2 for the shift): product = r5..r0 × 2^(64 i)
         r2      : U64  = s2.to_wrap<U64>()
         r3      : U64  = s3.to_wrap<U64>()
         r4      : U64  = s4.to_wrap<U64>()
         r5      : U64  = k4.to_wrap<S64>().to_wrap<U64>()
         top     : Bool = r5.shr(63).eq(1)  // bit 383 set
-        hi_full : U128 = r5.to<U128>().shl(64).bitor(r4.to<U128>())
+        r5_high : U128 = r5.to<U128>().shl(64)
+        hi_full : U128 = r5_high.bitor(r4.to<U128>())
         hi      : U128 = top
             ? hi_full
             : hi_full.shl(1).bitor(r3.to<U128>().shr(63))
@@ -353,7 +359,8 @@ routine F128Extended.div(self: Self, other: Self) -> Self
 /// round to the nearest integer, for |self| < 2^62
 routine F128Extended.to_i64_nearest(self: Self) -> S64
     block entry():
-        r : S64 = self.to<F128>().round_ties_even().to_clamp<S64>()
+        rounded : F128 = self.to<F128>().round_ties_even()
+        r       : S64  = rounded.to_clamp<S64>()
         return(r)
 
 // -- exponent -----------------------------------------------------------------------
@@ -531,7 +538,8 @@ routine wide_log(x: F128Extended) -> F128Extended
 
     block finish(s: F128Extended, t: F128Extended, e: S64):
         ln_fr : F128Extended = s.mul(t).ldexp(1)
-        r     : F128Extended = wide_from_i64(e).mul(wide_const(0)).add(ln_fr)
+        e_ln2 : F128Extended = wide_from_i64(e).mul(wide_const(0))
+        r     : F128Extended = e_ln2.add(ln_fr)
         return(r)
 
 // -- argument reduction (Payne-Hanek) ------------------------------------------
@@ -576,8 +584,10 @@ routine f128_reduce(x: F128) -> Reduced
         return(r)
 
     block window(p: F128Parts):
-        start : S64 = p.exponent.sub(114).max(0).div(64)  // first 2/π limb used
-        sh    : S64 = start.add(8).mul(64).sub(p.exponent).add(112)
+        bits_above  : S64 = p.exponent.sub(114).max(0)
+        start       : S64 = bits_above.div(64)  // first 2/π limb used
+        window_bits : S64 = start.add(8).mul(64)
+        sh          : S64 = window_bits.sub(p.exponent).add(112)
         claim prod : @Array<S64, 12> <- uninit
         limbs : @U64 = prod.to<@U64>()
         limbs.zeroinit(12)
@@ -604,9 +614,11 @@ routine f128_reduce(x: F128) -> Reduced
         r1    : U64   = limbs.stride(k1).load()
         r2    : U64   = limbs.stride(k2).load()
         // limb k gets lo_p's low half; limb k+1 lo_p's high half and hi_p's low; k+2 the rest
-        s0 : U128 = r0.to<U128>().add(lo_p.bitand(0xFFFFFFFFFFFFFFFF))
-        s1 : U128 = r1.to<U128>().add(lo_p.shr(64)).add(hi_p.bitand(0xFFFFFFFFFFFFFFFF)).add(s0.shr(64))
-        s2 : U128 = r2.to<U128>().add(hi_p.shr(64)).add(s1.shr(64))
+        s0  : U128 = r0.to<U128>().add(lo_p.bitand(0xFFFFFFFFFFFFFFFF))
+        s1a : U128 = r1.to<U128>().add(lo_p.shr(64))
+        s1  : U128 = s1a.add(hi_p.bitand(0xFFFFFFFFFFFFFFFF)).add(s0.shr(64))
+        s2a : U128 = r2.to<U128>().add(hi_p.shr(64))
+        s2  : U128 = s2a.add(s1.shr(64))
         limbs.stride(k).store(s0.to_wrap<U64>())
         limbs.stride(k1).store(s1.to_wrap<U64>())
         limbs.stride(k2).store(s2.to<U64>())
@@ -630,13 +642,15 @@ routine f128_reduce(x: F128) -> Reduced
 
     // quadrant: bits sh and sh+1; fraction: the 256 bits under sh, normalized
     block extract(sh: S64, limbs: @U64):
-        q    : U64  = limbs_bits64(limbs, sh).bitand(3)
-        a    : U64  = limbs_bits64(limbs, sh.sub(64))
-        b    : U64  = limbs_bits64(limbs, sh.sub(128))
-        c    : U64  = limbs_bits64(limbs, sh.sub(192))
-        d    : U64  = limbs_bits64(limbs, sh.sub(256))
-        x_hi : U128 = a.to<U128>().shl(64).bitor(b.to<U128>())
-        x_lo : U128 = c.to<U128>().shl(64).bitor(d.to<U128>())
+        q      : U64  = limbs_bits64(limbs, sh).bitand(3)
+        a      : U64  = limbs_bits64(limbs, sh.sub(64))
+        b      : U64  = limbs_bits64(limbs, sh.sub(128))
+        c      : U64  = limbs_bits64(limbs, sh.sub(192))
+        d      : U64  = limbs_bits64(limbs, sh.sub(256))
+        a_high : U128 = a.to<U128>().shl(64)
+        x_hi   : U128 = a_high.bitor(b.to<U128>())
+        c_high : U128 = c.to<U128>().shl(64)
+        x_lo   : U128 = c_high.bitor(d.to<U128>())
         // f = X × 2^-256 in [0, 1). Past 1/2, count the next quadrant and use
         // f - 1 = -(2^256 - X) × 2^-256, complemented on all 256 bits before
         // normalizing: f can be 1 - 2^-120, and f - 1 taken after cutting f to
@@ -756,15 +770,16 @@ routine F128Extended.sqrt(self: Self) -> Self
         branch zero
             ? return(self)
             : continue
-        half_e : S64  = self.exponent.shr(1)  // floor(e / 2)
-        unit   : Self = self.ldexp(0.sub(half_e).mul(2))  // in [1, 4)
-        seed64 : F64  = unit.to<F128>().to<F64>().sqrt()
-        one64  : F64  = 1.0
-        y0     : Self = wide_from_f128(one64.div(seed64).to<F128>())
-        three  : Self = wide_from_i64(3)
-        y1     : Self = y0.mul(three.sub(unit.mul(y0).mul(y0))).ldexp(-1)
-        y2     : Self = y1.mul(three.sub(unit.mul(y1).mul(y1))).ldexp(-1)
-        r      : Self = unit.mul(y2).ldexp(half_e)
+        half_e  : S64  = self.exponent.shr(1)  // floor(e / 2)
+        unit    : Self = self.ldexp(0.sub(half_e).mul(2))  // in [1, 4)
+        unit128 : F128 = unit.to<F128>()
+        seed64  : F64  = unit128.to<F64>().sqrt()
+        one64   : F64  = 1.0
+        y0      : Self = wide_from_f128(one64.div(seed64).to<F128>())
+        three   : Self = wide_from_i64(3)
+        y1      : Self = y0.mul(three.sub(unit.mul(y0).mul(y0))).ldexp(-1)
+        y2      : Self = y1.mul(three.sub(unit.mul(y1).mul(y1))).ldexp(-1)
+        r       : Self = unit.mul(y2).ldexp(half_e)
         return(r)
 
 /// |self| > 1?
@@ -910,18 +925,20 @@ routine wide_atan(x: F128Extended) -> F128Extended
 /// log of self to the given base: ln self / ln base
 routine F128.log(self: Self, base: Self) -> Self
     block entry():
-        num   : Self = self.ln()
-        den   : Self = base.ln()
-        plain : Bool = num.is_finite().bitand(den.is_finite()).bitand(f128_is_zero_bits(num.bits()).bitnot())
-        div0  : Bool = f128_is_zero_bits(den.bits())
-        naive : Self = num.div(den)
+        num         : Self = self.ln()
+        den         : Self = base.ln()
+        both_finite : Bool = num.is_finite().bitand(den.is_finite())
+        plain       : Bool = both_finite.bitand(f128_is_zero_bits(num.bits()).bitnot())
+        div0        : Bool = f128_is_zero_bits(den.bits())
+        naive       : Self = num.div(den)
         branch plain
             ? continue
             : return(naive)
         branch div0
             ? return(naive)
             : continue
-        r : Self = wide_log(wide_from_f128(self)).div(wide_log(wide_from_f128(base))).to<Self>()
+        ratio : F128Extended = wide_log(wide_from_f128(self)).div(wide_log(wide_from_f128(base)))
+        r     : Self         = ratio.to<Self>()
         return(r)
 
 // -- powers and roots ----------------------------------------------------------
@@ -929,15 +946,17 @@ routine F128.log(self: Self, base: Self) -> Self
 /// Is x an integer, and if so an odd one? (|x| >= 2^113 is always even.)
 routine f128_is_integer(x: F128) -> Bool
     block entry():
-        r : Bool = x.trunc().eq(x).bitand(x.is_finite())
+        integral : Bool = x.trunc().eq(x)
+        r        : Bool = integral.bitand(x.is_finite())
         return(r)
 
 routine f128_is_odd_integer(x: F128) -> Bool
     block entry():
-        int : Bool = f128_is_integer(x)
-        big : Bool = x.abs().ge(f128_of(0x40700000000000000000000000000000))  // 2^113
-        odd : Bool = x.to_clamp<S128>().bitand(1).eq(1)
-        r   : Bool = int.bitand(big.bitnot()).bitand(odd)
+        int   : Bool = f128_is_integer(x)
+        big   : Bool = x.abs().ge(f128_of(0x40700000000000000000000000000000))  // 2^113
+        whole : S128 = x.to_clamp<S128>()
+        odd   : Bool = whole.bitand(1).eq(1)
+        r     : Bool = int.bitand(big.bitnot()).bitand(odd)
         return(r)
 
 // -- angles --------------------------------------------------------------------
@@ -958,7 +977,8 @@ routine f128_scale_angle(x: F128, which: USize) -> F128
         branch keep
             ? return(x)
             : continue
-        r : F128 = wide_from_f128(x).mul(wide_const(which)).to<F128>()
+        scaled : F128Extended = wide_from_f128(x).mul(wide_const(which))
+        r      : F128         = scaled.to<F128>()
         return(r)
 
 routine F128.to_degrees(self: Self) -> Self

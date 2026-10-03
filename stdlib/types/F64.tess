@@ -313,7 +313,8 @@ routine F64.mul_add(self: Self, a: Self, b: Self) -> Self
 /// aligns b to it (bits shifted out past the product become a sticky bit), and rounds only the sum.
 private routine F64.mul_add_soft(self: Self, a: Self, b: Self) -> Self
     block entry():
-        factor_special : Bool = self.is_finite().bitand(a.is_finite()).bitnot()
+        factors_finite : Bool = self.is_finite().bitand(a.is_finite())
+        factor_special : Bool = factors_finite.bitnot()
         addend_special : Bool = b.is_finite().bitnot()
         zero_product   : Bool = self.eq(0.0).bitor(a.eq(0.0))
         zero_addend    : Bool = b.eq(0.0)
@@ -382,12 +383,13 @@ private routine F64.mul_add_soft(self: Self, a: Self, b: Self) -> Self
         branch zero
             ? return(0.0)
             : continue
-        lz       : U128 = r.leading_zeros()
-        n        : U128 = r.shl(lz)
-        high     : U64  = n.shr(64).to<U64>()
-        sig      : U64  = high.bitor(n.to_wrap<U64>().ne(0).to<U64>())
-        exponent : S64  = e.sub(lz.to<S64>()).add(1150)
-        result   : Self = f64_round_pack(negative, exponent, sig)
+        lz         : U128 = r.leading_zeros()
+        n          : U128 = r.shl(lz)
+        high       : U64  = n.shr(64).to<U64>()
+        low_sticky : Bool = n.to_wrap<U64>().ne(0)
+        sig        : U64  = high.bitor(low_sticky.to<U64>())
+        exponent   : S64  = e.sub(lz.to<S64>()).add(1150)
+        result     : Self = f64_round_pack(negative, exponent, sig)
         return(result)
 
 /// The quotient q of Euclidean division, so that self = q * other + r with 0 <= r < |other|.
@@ -735,7 +737,8 @@ routine f64_shr_sticky128(x: U128, n: S64) -> U128
             : some()
 
     block all():
-        any : U128 = x.ne(0).to<U64>().to<U128>()
+        nonzero : U64  = x.ne(0).to<U64>()
+        any     : U128 = nonzero.to<U128>()
         return(any)
 
     block some():
@@ -775,13 +778,14 @@ routine f64_round_pack(negative: Bool, exponent: S64, sig: U64) -> F64
 
     // a carry out of the 53 kept bits bumps the exponent, up to infinity
     block round(sign: U64, exponent: S64, sig: U64):
-        kept      : U64  = sig.shr(11)
-        rest      : U64  = sig.bitand(0x7FF)
-        odd       : Bool = kept.bitand(1).eq(1)
-        up        : Bool = rest.gt(0x400).bitor(rest.eq(0x400).bitand(odd))
-        rounded   : U64  = kept.add(up.to<U64>())
-        magnitude : U64  = exponent.sub(1).to<U64>().shl(52).add(rounded)
-        r         : F64  = F64.from_bits(sign.bitor(magnitude))
+        kept            : U64  = sig.shr(11)
+        rest            : U64  = sig.bitand(0x7FF)
+        odd             : Bool = kept.bitand(1).eq(1)
+        up              : Bool = rest.gt(0x400).bitor(rest.eq(0x400).bitand(odd))
+        rounded         : U64  = kept.add(up.to<U64>())
+        biased_exponent : U64  = exponent.sub(1).to<U64>()
+        magnitude       : U64  = biased_exponent.shl(52).add(rounded)
+        r               : F64  = F64.from_bits(sign.bitor(magnitude))
         return(r)
 
 // -- float conversions -----------------------------------------------------------
@@ -804,7 +808,8 @@ routine f64_add_round_to_odd(a: F64, b: F64) -> F64
         av      : F64  = s.sub(bv)
         e       : F64  = a.sub(av).add(b.sub(bv))
         inexact : Bool = e.ne(0.0)
-        even    : Bool = s.bits().bitand(1).eq(0)
+        low_bit : U64  = s.bits().bitand(1)
+        even    : Bool = low_bit.eq(0)
         bump    : Bool = inexact.bitand(even)
         branch bump
             ? toward(s, e)

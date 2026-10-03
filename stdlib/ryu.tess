@@ -37,7 +37,8 @@ record RyuDigits
 /// floor(log2(5^e)) + 1, for 0 <= e <= 3528
 routine ryu_pow5bits(e: U64) -> U64
     block entry():
-        r : U64 = e.mul(1217359).shr(19).add(1)
+        log2_floor : U64 = e.mul(1217359).shr(19)
+        r          : U64 = log2_floor.add(1)
         return(r)
 
 /// floor(log10(2^e)), for 0 <= e <= 1650
@@ -238,9 +239,10 @@ routine ryu_double_decimal(mantissa: U64, exponent: S64) -> FloatDecimal
         biased : S64 = subnormal
             ? 1
             : exponent
-        e2     : S64  = biased.sub(1023).sub(52).sub(2)
-        accept : Bool = m2.bitand(1).eq(0)
-        mv     : U64  = m2.mul_wrap(4)
+        unbiased : S64  = biased.sub(1023).sub(52)
+        e2       : S64  = unbiased.sub(2)
+        accept   : Bool = m2.bitand(1).eq(0)
+        mv       : U64  = m2.mul_wrap(4)
         // the gap below is half as wide at the bottom of a binade
         mm_shift_b : Bool = mantissa.ne(0).bitor(exponent.le(1))
         mm_shift   : U64  = mm_shift_b.to<U64>()
@@ -252,8 +254,10 @@ routine ryu_double_decimal(mantissa: U64, exponent: S64) -> FloatDecimal
     // e2 >= 0: multiply by 2^e2 / 10^q through the inverse table.
     block scale_down(e2: S64, mv: U64, mm_shift: U64, accept: Bool):
         above3 : Bool  = e2.gt(3)
-        q      : S64   = ryu_log10_pow2(e2.to<U64>()).sub(above3.to<U64>()).to<S64>()
-        k      : S64   = 125.add(ryu_pow5bits(q.to<U64>())).sub(1).to<S64>()
+        q_u    : U64   = ryu_log10_pow2(e2.to<U64>()).sub(above3.to<U64>())
+        q      : S64   = q_u.to<S64>()
+        k_u    : U64   = 125.add(ryu_pow5bits(q.to<U64>())).sub(1)
+        k      : S64   = k_u.to<S64>()
         i      : S64   = q.add(k).sub(e2)
         lo_at  : USize = q.mul(2).to<USize>()
         hi_at  : USize = lo_at.add(1)
@@ -283,10 +287,12 @@ routine ryu_double_decimal(mantissa: U64, exponent: S64) -> FloatDecimal
     block scale_up(e2: S64, mv: U64, mm_shift: U64, accept: Bool):
         neg_e2 : S64   = 0.sub(e2)
         above1 : Bool  = neg_e2.gt(1)
-        q      : S64   = ryu_log10_pow5(neg_e2.to<U64>()).sub(above1.to<U64>()).to<S64>()
+        q_u    : U64   = ryu_log10_pow5(neg_e2.to<U64>()).sub(above1.to<U64>())
+        q      : S64   = q_u.to<S64>()
         e10    : S64   = q.add(e2)
         i      : S64   = neg_e2.sub(q)
-        k      : S64   = ryu_pow5bits(i.to<U64>()).sub_wrap(125).to_wrap<S64>()
+        k_u    : U64   = ryu_pow5bits(i.to<U64>()).sub_wrap(125)
+        k      : S64   = k_u.to_wrap<S64>()
         j      : S64   = q.sub(k)
         lo_at  : USize = i.mul(2).to<USize>()
         hi_at  : USize = lo_at.add(1)
@@ -339,7 +345,8 @@ routine ryu_float_decimal(mantissa: S64, exponent: S64, mantissa_bits: S64,
         biased : S64 = subnormal
             ? 1
             : exponent
-        e2         : S64  = biased.sub(bias).sub(mantissa_bits).sub(2)
+        unbiased   : S64  = biased.sub(bias).sub(mantissa_bits)
+        e2         : S64  = unbiased.sub(2)
         accept     : Bool = m2.bitand(1).eq(0)
         mv         : S64  = m2.mul(4)
         mm_shift_b : Bool = mantissa.ne(0).bitor(exponent.le(1))
@@ -351,9 +358,11 @@ routine ryu_float_decimal(mantissa: S64, exponent: S64, mantissa_bits: S64,
 
     block scale_down(e2: S64, mv: U64, mm_shift: U64, accept: Bool):
         q        : S64   = ryu_log10_pow2(e2.to<U64>()).to<S64>()
-        k        : S64   = 61.add(ryu_pow5bits(q.to<U64>())).sub(1).to<S64>()
+        k_u      : U64   = 61.add(ryu_pow5bits(q.to<U64>())).sub(1)
+        k        : S64   = k_u.to<S64>()
         i        : S64   = q.add(k).sub(e2)
-        hi_at    : USize = q.mul(2).add(1).to<USize>()
+        hi_index : S64   = q.mul(2).add(1)
+        hi_at    : USize = hi_index.to<USize>()
         hi       : U64   = RYU_POW5_INV.get(hi_at)
         factor   : U64   = hi.add_wrap(1)
         mp       : U64   = mv.add(2)
@@ -371,47 +380,54 @@ routine ryu_float_decimal(mantissa: S64, exponent: S64, mantissa_bits: S64,
         vp_exact : Bool  = mp_case.bitand(ryu_multiple_of_pow5(mp, q))
         vp_fixed : U64   = vp.sub(vp_exact.to<U64>())
         // f2s also needs the digit just below vr, in case nothing gets removed
-        narrow : Bool = q.ne(0).bitand(vp.sub(1).div(10).le(vm.div(10)))
+        vp_tens : U64  = vp.sub(1).div(10)
+        narrow  : Bool = q.ne(0).bitand(vp_tens.le(vm.div(10)))
         branch narrow
             ? down_digit(vr, vp_fixed, vm, q, e2, mv, vm_exact, vr_exact, accept)
             : shorten(vr, vp_fixed, vm, q, 0, vm_exact, vr_exact, accept)
 
     block down_digit(vr: U64, vp: U64, vm: U64, q: S64, e2: S64, mv: U64, vm_exact: Bool,
         vr_exact: Bool, accept: Bool):
-        q1    : S64   = q.sub(1)
-        l     : S64   = 61.add(ryu_pow5bits(q1.to<U64>())).sub(1).to<S64>()
-        hi_at : USize = q1.mul(2).add(1).to<USize>()
-        hi    : U64   = RYU_POW5_INV.get(hi_at)
-        shift : S64   = q1.add(l).sub(e2)
-        digit : U64   = ryu_mul_shift32(mv, hi.add_wrap(1), shift).mod(10)
+        q1       : S64   = q.sub(1)
+        l_u      : U64   = 61.add(ryu_pow5bits(q1.to<U64>())).sub(1)
+        l        : S64   = l_u.to<S64>()
+        hi_index : S64   = q1.mul(2).add(1)
+        hi_at    : USize = hi_index.to<USize>()
+        hi       : U64   = RYU_POW5_INV.get(hi_at)
+        shift    : S64   = q1.add(l).sub(e2)
+        digit    : U64   = ryu_mul_shift32(mv, hi.add_wrap(1), shift).mod(10)
         jump shorten(vr, vp, vm, q, digit, vm_exact, vr_exact, accept)
 
     block scale_up(e2: S64, mv: S64, mm_shift: S64, accept: Bool):
-        neg_e2 : S64   = 0.sub(e2)
-        q      : S64   = ryu_log10_pow5(neg_e2.to<U64>()).to<S64>()
-        e10    : S64   = q.add(e2)
-        i      : S64   = neg_e2.sub(q)
-        k      : S64   = ryu_pow5bits(i.to<U64>()).sub_wrap(61).to_wrap<S64>()
-        j      : S64   = q.sub(k)
-        hi_at  : USize = i.mul(2).add(1).to<USize>()
-        factor : U64   = RYU_POW5.get(hi_at)
-        mp     : S64   = mv.add(2)
-        mm     : S64   = mv.sub(1).sub(mm_shift)
-        vr     : U64   = ryu_mul_shift32(mv.to<U64>(), factor, j)
-        vp     : U64   = ryu_mul_shift32(mp.to<U64>(), factor, j)
-        vm     : U64   = ryu_mul_shift32(mm.to<U64>(), factor, j)
-        narrow : Bool  = q.ne(0).bitand(vp.sub(1).div(10).le(vm.div(10)))
+        neg_e2   : S64   = 0.sub(e2)
+        q        : S64   = ryu_log10_pow5(neg_e2.to<U64>()).to<S64>()
+        e10      : S64   = q.add(e2)
+        i        : S64   = neg_e2.sub(q)
+        k_u      : U64   = ryu_pow5bits(i.to<U64>()).sub_wrap(61)
+        k        : S64   = k_u.to_wrap<S64>()
+        j        : S64   = q.sub(k)
+        hi_index : S64   = i.mul(2).add(1)
+        hi_at    : USize = hi_index.to<USize>()
+        factor   : U64   = RYU_POW5.get(hi_at)
+        mp       : S64   = mv.add(2)
+        mm       : S64   = mv.sub(1).sub(mm_shift)
+        vr       : U64   = ryu_mul_shift32(mv.to<U64>(), factor, j)
+        vp       : U64   = ryu_mul_shift32(mp.to<U64>(), factor, j)
+        vm       : U64   = ryu_mul_shift32(mm.to<U64>(), factor, j)
+        vp_tens  : U64   = vp.sub(1).div(10)
+        narrow   : Bool  = q.ne(0).bitand(vp_tens.le(vm.div(10)))
         branch narrow
             ? up_digit(vr, vp, vm, q.to<U64>(), e10, i, mv, mm_shift, accept)
             : up_zeros(vr, vp, vm, q, e10, 0, mv, mm_shift, accept)
 
     block up_digit(vr: U64, vp: U64, vm: U64, q: U64, e10: S64, i: S64, mv: S64, mm_shift: S64,
         accept: Bool):
-        i1     : S64   = i.add(1)
-        shift  : U64   = q.sub(1).sub_wrap(ryu_pow5bits(i1.to<U64>()).sub_wrap(61))
-        hi_at  : USize = i1.mul(2).add(1).to<USize>()
-        factor : U64   = RYU_POW5.get(hi_at)
-        digit  : U64   = ryu_mul_shift32(mv.to<U64>(), factor, shift.to<S64>()).mod(10)
+        i1       : S64   = i.add(1)
+        shift    : U64   = q.sub(1).sub_wrap(ryu_pow5bits(i1.to<U64>()).sub_wrap(61))
+        hi_index : S64   = i1.mul(2).add(1)
+        hi_at    : USize = hi_index.to<USize>()
+        factor   : U64   = RYU_POW5.get(hi_at)
+        digit    : U64   = ryu_mul_shift32(mv.to<U64>(), factor, shift.to<S64>()).mod(10)
         jump up_zeros(vr, vp, vm, q.to<S64>(), e10, digit, mv, mm_shift, accept)
 
     block up_zeros(vr: U64, vp: U64, vm: U64, q: S64, e10: S64, digit: U64, mv: S64, mm_shift: S64,

@@ -154,7 +154,10 @@ routine main() -> S32
 - There are no operators. Everything is a method, and pure calls chain: `i.add(1).bitand(mask)`.
 - A chain holds at most two calls. Everything call-shaped counts (`x.f()`, `T.f()`, `f()`, `.stride(i)`,
   `.to<T>()`), a field doesn't, and each argument and each `{...}` write-template hole is its own chain. A third
-  call gets a binding instead. `check`/`build`/`run` warn (not an error) for the program's own files.
+  call gets a binding instead. `check`/`build`/`run` warn (not an error) for the program's own files, and
+  `tessera lint <files-or-dirs>` checks any file; CI holds `stdlib`, `tests`, and `examples` to 0 warnings. When
+  the chain sits in a `branch`/`when` arm or a later `when` condition, don't hoist it above (that would run it on
+  paths that didn't): give the arm its own block.
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
   `add`, `div`, `mod`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more
   shifts every bit out (0, or -1 for a negative S value shifted right).

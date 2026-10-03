@@ -272,7 +272,8 @@ record CmExpScaled
 /// A 128-bit value from its high and low words.
 routine cm_exp_join(hi: U64, lo: U64) -> U128
     block entry():
-        r : U128 = hi.to<U128>().shl(64).bitor(lo.to<U128>())
+        upper : U128 = hi.to<U128>().shl(64)
+        r     : U128 = upper.bitor(lo.to<U128>())
         return(r)
 
 /// The high word of a 128-bit value.
@@ -290,20 +291,22 @@ routine cm_exp_mul(a: U64, b: U64) -> U128
 /// The high word of the product of two words.
 routine cm_exp_mulhi(a: U64, b: U64) -> U64
     block entry():
-        r : U64 = cm_exp_mul(a, b).shr(64).to<U64>()
+        product : U128 = cm_exp_mul(a, b)
+        r       : U64  = product.shr(64).to<U64>()
         return(r)
 
 /// The approximate high half of a 128 × 128-bit product: the a0 × b0 word and the
 /// carries out of the low words are dropped.
 routine cm_exp_mulhi128(a: U128, b: U128) -> U128
     block entry():
-        a0     : U64  = a.to_wrap<U64>()
-        a1     : U64  = cm_exp_hi(a)
-        b0     : U64  = b.to_wrap<U64>()
-        b1     : U64  = cm_exp_hi(b)
-        cross1 : U64  = cm_exp_mulhi(a1, b0)
-        cross2 : U64  = cm_exp_mulhi(a0, b1)
-        r      : U128 = cm_exp_mul(a1, b1).add_wrap(cross1.to<U128>()).add_wrap(cross2.to<U128>())
+        a0      : U64  = a.to_wrap<U64>()
+        a1      : U64  = cm_exp_hi(a)
+        b0      : U64  = b.to_wrap<U64>()
+        b1      : U64  = cm_exp_hi(b)
+        cross1  : U64  = cm_exp_mulhi(a1, b0)
+        cross2  : U64  = cm_exp_mulhi(a0, b1)
+        partial : U128 = cm_exp_mul(a1, b1).add_wrap(cross1.to<U128>())
+        r       : U128 = partial.add_wrap(cross2.to<U128>())
         return(r)
 
 /// a × b / 2^64 + c for a word a and 128-bit b and c, the low product word truncated.
@@ -317,7 +320,8 @@ routine cm_exp_mul_add_hi(a: U64, b: U128, c: U128) -> U128
 /// The low word of (hi, lo) >> n for 0 <= n < 64: a funnel shift.
 routine cm_exp_funnel(hi: U64, lo: U64, n: S64) -> S64
     block entry():
-        r : S64 = cm_exp_join(hi, lo).shr(n.to<U128>()).to_wrap<S64>()
+        joined : U128 = cm_exp_join(hi, lo)
+        r      : S64  = joined.shr(n.to<U128>()).to_wrap<S64>()
         return(r)
 
 /// The words from position 2 up of the product of the 3-word a and the 2-word b, with
@@ -332,12 +336,13 @@ routine cm_exp_mul3x2_high(a0: U64, a1: U64, a2: U64, b: U128) -> CmExpWords3
         p20 : U128 = cm_exp_mul(a2, b0)
         p21 : U128 = cm_exp_mul(a2, b1)
         // column sums: word 2 of the product, then word 3 with word 2's carry
-        low2  : U128        = p11.bitand(CM_EXP_LOW).add(p20.bitand(CM_EXP_LOW))
-        col2  : U128        = low2.add(p01.shr(64)).add(p10.shr(64))
-        high3 : U128        = p11.shr(64).add(p20.shr(64)).add(p21.bitand(CM_EXP_LOW))
-        col3  : U128        = col2.shr(64).add(high3)
-        top   : U64         = cm_exp_hi(col3).add_wrap(cm_exp_hi(p21))
-        r     : CmExpWords3 = CmExpWords3 { w0: col2.to_wrap<S64>().to_wrap<U64>(),
+        low2    : U128        = p11.bitand(CM_EXP_LOW).add(p20.bitand(CM_EXP_LOW))
+        col2    : U128        = low2.add(p01.shr(64)).add(p10.shr(64))
+        carries : U128        = p11.shr(64).add(p20.shr(64))
+        high3   : U128        = carries.add(p21.bitand(CM_EXP_LOW))
+        col3    : U128        = col2.shr(64).add(high3)
+        top     : U64         = cm_exp_hi(col3).add_wrap(cm_exp_hi(p21))
+        r       : CmExpWords3 = CmExpWords3 { w0: col2.to_wrap<S64>().to_wrap<U64>(),
             w1: col3.to_wrap<S64>().to_wrap<U64>(), w2: top }
         return(r)
 
@@ -394,20 +399,23 @@ routine cm_exp_fast(fs: CmExpWords3) -> U128
         c8  : U64 = CM_EXP_C2.get(8)
         c10 : U64 = CM_EXP_C2.get(10)
         // the top terms in single words, the rest by 128-bit Horner steps
-        t4    : U64   = c8.add_wrap(cm_exp_mulhi(z, c10))
-        t3    : U64   = c6.add_wrap(cm_exp_mulhi(z, t4))
-        t2    : U128  = cm_exp_join(c5, c4).add(cm_exp_mulhi(z, t3).to<U128>())
-        t1    : U128  = cm_exp_mul_add_hi(z, t2, cm_exp_join(c3, c2))
-        poly  : U128  = cm_exp_mul_add_hi(z, t1, cm_exp_join(c1, c0))
-        i0    : USize = fs.w2.shr(15).bitand(31).to<USize>()
-        i1    : USize = fs.w2.shr(10).bitand(31).to<USize>()
-        i2    : USize = fs.w2.shr(5).bitand(31).to<USize>()
-        i3    : USize = fs.w2.bitand(31).to<USize>()
-        r0    : U128  = cm_exp_pair(CM_EXP_R0.to<@U64>(), i0)
-        r1    : U128  = cm_exp_pair(CM_EXP_R1.to<@U64>(), i1)
-        r2    : U128  = cm_exp_pair(CM_EXP_R2.to<@U64>(), i2)
-        r3    : U128  = cm_exp_pair(CM_EXP_R3.to<@U64>(), i3)
-        table : U128  = cm_exp_mulhi128(cm_exp_mulhi128(r0, r1), cm_exp_mulhi128(r2, r3))
+        t4      : U64   = c8.add_wrap(cm_exp_mulhi(z, c10))
+        t3      : U64   = c6.add_wrap(cm_exp_mulhi(z, t4))
+        t2      : U128  = cm_exp_join(c5, c4).add(cm_exp_mulhi(z, t3).to<U128>())
+        t1      : U128  = cm_exp_mul_add_hi(z, t2, cm_exp_join(c3, c2))
+        poly    : U128  = cm_exp_mul_add_hi(z, t1, cm_exp_join(c1, c0))
+        i0_bits : U64   = fs.w2.shr(15).bitand(31)
+        i0      : USize = i0_bits.to<USize>()
+        i1_bits : U64   = fs.w2.shr(10).bitand(31)
+        i1      : USize = i1_bits.to<USize>()
+        i2_bits : U64   = fs.w2.shr(5).bitand(31)
+        i2      : USize = i2_bits.to<USize>()
+        i3      : USize = fs.w2.bitand(31).to<USize>()
+        r0      : U128  = cm_exp_pair(CM_EXP_R0.to<@U64>(), i0)
+        r1      : U128  = cm_exp_pair(CM_EXP_R1.to<@U64>(), i1)
+        r2      : U128  = cm_exp_pair(CM_EXP_R2.to<@U64>(), i2)
+        r3      : U128  = cm_exp_pair(CM_EXP_R3.to<@U64>(), i3)
+        table   : U128  = cm_exp_mulhi128(cm_exp_mulhi128(r0, r1), cm_exp_mulhi128(r2, r3))
         // the lowest word of the argument, times ln(2)
         low_ln2    : U64  = cm_exp_mulhi(0xB17217F7D1CF79AC, fs.w0)
         correction : U128 = cm_exp_mul(cm_exp_hi(table), low_ln2).shr(84)
@@ -428,7 +436,8 @@ routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> F128
 
     // fall back when the 11 dropped bits are too close to a rounding boundary
     block normal(el: S64, sig: U128, x: U128, kind: U64):
-        dropped : U64  = sig.to_wrap<U64>().add_wrap(1030).bitand(0x7FF)
+        sig_low : U64  = sig.to_wrap<U64>()
+        dropped : U64  = sig_low.add_wrap(1030).bitand(0x7FF)
         close   : Bool = dropped.le(6)
         branch close
             ? normal_retry(x, kind)
@@ -440,10 +449,12 @@ routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> F128
 
     // the leading bit (at 112 after the shift) carries into the exponent field
     block normal_round(el: S64, sig: U128):
-        round_bit : U128 = sig.shr(10).bitand(1)
-        field     : U128 = el.add(16382).to<U128>().shl(112)
-        bits      : U128 = sig.shr(11).add_wrap(field).add_wrap(round_bit)
-        r         : F128 = f128_of(bits)
+        round_bit       : U128 = sig.shr(10).bitand(1)
+        biased_exponent : S64  = el.add(16382)
+        field           : U128 = biased_exponent.to<U128>().shl(112)
+        unrounded       : U128 = sig.shr(11).add_wrap(field)
+        bits            : U128 = unrounded.add_wrap(round_bit)
+        r               : F128 = f128_of(bits)
         return(r)
 
     block subnormal(el: S64, sig: U128, x: U128, kind: U64):
@@ -451,10 +462,11 @@ routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> F128
         branch some
             ? continue
             : return(CM_EXP_ZERO)
-        shift : U128 = -16372.sub(el).to<U128>()
-        half  : U128 = 1.shl(shift)
-        mask  : U128 = 2.shl(shift).sub_wrap(1)
-        close : Bool = sig.add_wrap(half).add_wrap(6).bitand(mask).le(6)
+        shift  : U128 = -16372.sub(el).to<U128>()
+        half   : U128 = 1.shl(shift)
+        mask   : U128 = 2.shl(shift).sub_wrap(1)
+        nudged : U128 = sig.add_wrap(half).add_wrap(6)
+        close  : Bool = nudged.bitand(mask).le(6)
         branch close
             ? subnormal_retry(x, kind)
             : subnormal_round(el, sig)
@@ -472,7 +484,8 @@ routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> F128
             ? return(CM_EXP_ZERO)
             : continue
         round_bit : U128 = sig.shr(shift.to<U128>()).bitand(1)
-        bits      : U128 = sig.shr(shift.to<U128>()).shr(1).add_wrap(round_bit)
+        aligned   : U128 = sig.shr(shift.to<U128>()).shr(1)
+        bits      : U128 = aligned.add_wrap(round_bit)
         r         : F128 = f128_of(bits)
         return(r)
 
@@ -521,10 +534,11 @@ routine cm_exp_mul_words(out: @U64, a: @U64, na: USize, b: @U64, nb: USize, p: U
             : product(i, j, lo, hi)
 
     block product(i: USize, j: USize, lo: @U64, hi: @U64):
-        ai   : U64  = a.stride(i).load()
-        bj   : U64  = b.stride(j).load()
-        prod : U128 = cm_exp_mul(ai, bj)
-        slot : S64  = i.add(j).to<S64>().sub(p.to<S64>())
+        ai     : U64   = a.stride(i).load()
+        bj     : U64   = b.stride(j).load()
+        prod   : U128  = cm_exp_mul(ai, bj)
+        column : USize = i.add(j)
+        slot   : S64   = column.to<S64>().sub(p.to<S64>())
         cm_exp_add_column(lo, hi, slot, count, prod.to_wrap<U64>())
         cm_exp_add_column(lo, hi, slot.add(1), count, cm_exp_hi(prod))
         jump column(i, j.add(1), lo, hi)
@@ -566,8 +580,9 @@ routine cm_exp_mul_add_words(out: @U64, a: U64, b: @U64, c: @U64, n: USize) -> V
         next    : U128 = has_next
             ? product
             : 0
-        ck  : U64  = c.stride(k).load()
-        sum : U128 = prev.shr(64).add(next.bitand(CM_EXP_LOW)).add(ck.to<U128>()).add(carry)
+        ck      : U64  = c.stride(k).load()
+        overlap : U128 = prev.shr(64).add(next.bitand(CM_EXP_LOW))
+        sum     : U128 = overlap.add(ck.to<U128>()).add(carry)
         out.stride(k).store(sum.to_wrap<S64>().to_wrap<U64>())
         jump step(next_k, next, sum.shr(64))
 
@@ -583,9 +598,10 @@ routine cm_exp_add_words(dst: @U64, src: @U64, n: USize) -> Void
             : add(k, carry)
 
     block add(k: USize, carry: U128):
-        d   : U64  = dst.stride(k).load()
-        s   : U64  = src.stride(k).load()
-        sum : U128 = d.to<U128>().add(s.to<U128>()).add(carry)
+        d    : U64  = dst.stride(k).load()
+        s    : U64  = src.stride(k).load()
+        pair : U128 = d.to<U128>().add(s.to<U128>())
+        sum  : U128 = pair.add(carry)
         dst.stride(k).store(sum.to_wrap<S64>().to_wrap<U64>())
         jump step(k.add(1), sum.shr(64))
 
@@ -666,7 +682,8 @@ routine cm_exp_reduce_wide(out: @U64, x: U128, kind: U64, len: USize) -> Void
         branch done
             ? return()
             : continue
-        out.stride(q).load().bitxor(sign_mask).store_into(out.stride(q))
+        word : U64 = out.stride(q).load()
+        word.bitxor(sign_mask).store_into(out.stride(q))
         jump flip(q.add(1), sign_mask)
 
 /// The reduced argument of the wide paths: len words (4 or 7) of x × log2(base),
@@ -722,10 +739,11 @@ routine cm_exp_accurate(x: U128, kind: U64) -> CmExpScaled
         x0      : U64 = arg.stride(0).load()
         x1      : U64 = arg.stride(1).load()
         // 2^(j0/16) × 2^(j1/256) from the top 8 fraction bits
-        j0 : USize = top.shr(60).to<USize>()
-        j1 : USize = top.shr(56).bitand(15).to<USize>()
-        t0 : @U64  = cm_exp_row(CM_EXP_TBL0.to<@U64>(), 3, j0)
-        t1 : @U64  = cm_exp_row(CM_EXP_TBL1.to<@U64>(), 3, j1)
+        j0      : USize = top.shr(60).to<USize>()
+        j1_bits : U64   = top.shr(56).bitand(15)
+        j1      : USize = j1_bits.to<USize>()
+        t0      : @U64  = cm_exp_row(CM_EXP_TBL0.to<@U64>(), 3, j0)
+        t1      : @U64  = cm_exp_row(CM_EXP_TBL1.to<@U64>(), 3, j1)
         cm_exp_mul_words(tab, t0, 3, t1, 3, 3, 3)
         // a degree-14 polynomial in the rest of the top fraction word
         c3   : @U64 = CM_EXP_C3.to<@U64>()

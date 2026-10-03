@@ -448,13 +448,15 @@ routine wide_ln_gamma_positive(a: F128Extended, floor: S64) -> LnGammaWide
 
     // (b - 1/2) ln b - b + ln(2π)/2 + series / b - ln |w|
     block assemble(s: F128Extended, b: F128Extended, w: F128Extended):
-        half  : F128Extended = wide_one().ldexp(-1)
-        main  : F128Extended = b.sub(half).mul(gamma_wide_ln(b))
-        ln_w  : F128Extended = gamma_wide_ln(w.abs())
-        tail  : F128Extended = wide_special(1).ldexp(-1).add(s.div(b))
-        value : F128Extended = main.sub(b).add(tail).sub(ln_w)
-        scale : S64          = main.exponent.max(b.exponent).max(ln_w.exponent)
-        r     : LnGammaWide  = LnGammaWide { value: value, scale: scale }
+        half           : F128Extended = wide_one().ldexp(-1)
+        main           : F128Extended = b.sub(half).mul(gamma_wide_ln(b))
+        ln_w           : F128Extended = gamma_wide_ln(w.abs())
+        half_ln_two_pi : F128Extended = wide_special(1).ldexp(-1)
+        tail           : F128Extended = half_ln_two_pi.add(s.div(b))
+        ln_gamma_b     : F128Extended = main.sub(b).add(tail)
+        value          : F128Extended = ln_gamma_b.sub(ln_w)
+        scale          : S64          = main.exponent.max(b.exponent).max(ln_w.exponent)
+        r              : LnGammaWide  = LnGammaWide { value: value, scale: scale }
         return(r)
 
 /// |sin πx| for a finite x that is not an integer: πx = r π/2 + θ exactly reduced (f128_pi_reduce),
@@ -462,14 +464,15 @@ routine wide_ln_gamma_positive(a: F128Extended, floor: S64) -> LnGammaWide
 /// term is below 2^-186.
 routine wide_abs_sin_pi(x: F128) -> F128Extended
     block entry():
-        red  : PiReduced    = f128_pi_reduce(x)
-        half : F128Extended = wide_from_f128(red.d).mul(wide_half_pi()).ldexp(-1)
-        s    : F128Extended = wide_sin_core(half)
-        c    : F128Extended = wide_cos_core(half)
-        odd  : Bool         = red.quadrant.bitand(1).eq(1)
-        sin  : F128Extended = s.mul(c).ldexp(1)
-        cos  : F128Extended = c.sub(s).mul(c.add(s))
-        r    : F128Extended = odd
+        red   : PiReduced    = f128_pi_reduce(x)
+        theta : F128Extended = wide_from_f128(red.d).mul(wide_half_pi())
+        half  : F128Extended = theta.ldexp(-1)
+        s     : F128Extended = wide_sin_core(half)
+        c     : F128Extended = wide_cos_core(half)
+        odd   : Bool         = red.quadrant.bitand(1).eq(1)
+        sin   : F128Extended = s.mul(c).ldexp(1)
+        cos   : F128Extended = c.sub(s).mul(c.add(s))
+        r     : F128Extended = odd
             ? cos.abs()
             : sin.abs()
         return(r)
@@ -487,14 +490,16 @@ routine wide_ln_gamma(x: F128) -> LnGammaWide
 
     // floor(1 - x) = 1 - ceil(x), exact for |x| < 2^112 (the larger ones are poles)
     block reflected():
-        a           : F128Extended = wide_one().sub(wide_from_f128(x))
-        floor       : S64          = f128_of(F128_ONE).sub(x.ceil()).to_clamp<S64>()
-        inner       : LnGammaWide  = wide_ln_gamma_positive(a, floor)
-        ln_sin      : F128Extended = gamma_wide_ln(wide_abs_sin_pi(x))
-        value       : F128Extended = wide_special(2).sub(ln_sin).sub(inner.value)
-        inner_scale : S64          = inner.scale.max(inner.value.exponent)
-        scale       : S64          = inner_scale.max(ln_sin.exponent).max(1)
-        r           : LnGammaWide  = LnGammaWide { value: value, scale: scale }
+        a              : F128Extended = wide_one().sub(wide_from_f128(x))
+        one_minus_ceil : F128         = f128_of(F128_ONE).sub(x.ceil())
+        floor          : S64          = one_minus_ceil.to_clamp<S64>()
+        inner          : LnGammaWide  = wide_ln_gamma_positive(a, floor)
+        ln_sin         : F128Extended = gamma_wide_ln(wide_abs_sin_pi(x))
+        reflection     : F128Extended = wide_special(2).sub(ln_sin)
+        value          : F128Extended = reflection.sub(inner.value)
+        inner_scale    : S64          = inner.scale.max(inner.value.exponent)
+        scale          : S64          = inner_scale.max(ln_sin.exponent).max(1)
+        r              : LnGammaWide  = LnGammaWide { value: value, scale: scale }
         return(r)
 
 /// The band left for the fast tier's value once cancellation took its bits: band minus how far the
@@ -551,9 +556,10 @@ routine big_stirling(b: F128Big) -> F128Big
             : series(i.add(1), power.mul(inv_sq), sum.add(term), inv_sq)
 
     block assemble(sum: F128Big):
-        half : F128Big = big_one().ldexp(-1)
-        main : F128Big = b.sub(half).mul(big_ln(b))
-        r    : F128Big = main.sub(b).add(big_half_ln_two_pi()).add(sum)
+        half    : F128Big = big_one().ldexp(-1)
+        main    : F128Big = b.sub(half).mul(big_ln(b))
+        leading : F128Big = main.sub(b).add(big_half_ln_two_pi())
+        r       : F128Big = leading.add(sum)
         return(r)
 
 /// ln |Γ(a)| for a > 0 or -1 < a < 0, floor = floor(a) (saturated): the recurrence up to a + n in
@@ -597,10 +603,12 @@ routine big_ln_gamma(x: F128) -> F128Big
         return(r)
 
     block reflected():
-        a     : F128Big = big_one().sub(big_from_f128(x))
-        floor : S64     = f128_of(F128_ONE).sub(x.ceil()).to_clamp<S64>()
-        inner : F128Big = big_ln_gamma_positive(a, floor)
-        r     : F128Big = big_ln_pi().sub(big_ln(big_abs_sin_pi(x))).sub(inner)
+        a              : F128Big = big_one().sub(big_from_f128(x))
+        one_minus_ceil : F128    = f128_of(F128_ONE).sub(x.ceil())
+        floor          : S64     = one_minus_ceil.to_clamp<S64>()
+        inner          : F128Big = big_ln_gamma_positive(a, floor)
+        reflection     : F128Big = big_ln_pi().sub(big_ln(big_abs_sin_pi(x)))
+        r              : F128Big = reflection.sub(inner)
         return(r)
 
 // -- ln_gamma ------------------------------------------------------------------
@@ -659,7 +667,8 @@ routine F128.gamma(self: Self) -> Self
 routine f128_gamma_is_negative(x: F128) -> Bool
     block entry():
         below : Bool = f128_is_negative_bits(x.bits())
-        even  : Bool = x.trunc().to_clamp<S128>().bitand(1).eq(0)
+        whole : S128 = x.trunc().to_clamp<S128>()
+        even  : Bool = whole.bitand(1).eq(0)
         r     : Bool = below.bitand(even)
         return(r)
 

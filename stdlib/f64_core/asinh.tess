@@ -132,7 +132,8 @@ routine F64.asinh(self: Self) -> Self
     // log(ah + al) (less log(2) when off = 0x3FE), from the tables
     block log_fast(ax: Self, ah: Self, al: Self, off: S64, x2h: Self, x2l: Self):
         tb  : U64   = ah.bits()
-        e   : S64   = tb.shr(52).to<S64>().sub(off)
+        eb  : S64   = tb.shr(52).to<S64>()
+        e   : S64   = eb.sub(off)
         tm  : U64   = tb.bitand(0x000FFFFFFFFFFFFF)
         ed  : Self  = e.to<Self>()
         j   : U64   = cm_f64_archyp_index(tm)
@@ -149,7 +150,9 @@ routine F64.asinh(self: Self) -> Self
         l1l   : Self = Self.from_bits(CM_F64_ARCHYP_L1_LO.get(i1))
         l2l   : Self = Self.from_bits(CM_F64_ARCHYP_L2_LO.get(i2))
         lh0   : Self = Self.mul(0x1.62e42fefa38p-1, ed).add(l1h.add(l2h))
-        ll1   : Self = Self.mul(0x1.ef35793c7673p-45, ed).add(l1l).add(l2l).add(al.div(ah)).add(f)
+        ll3   : Self = Self.mul(0x1.ef35793c7673p-45, ed).add(l1l)
+        ll2   : Self = ll3.add(l2l).add(al.div(ah))
+        ll1   : Self = ll2.add(f)
         ll0   : Self = ll1.add(dx)
         sgn   : Self = Self.copysign(1.0, self)
         lh    : Self = lh0.mul(sgn)
@@ -168,9 +171,10 @@ routine F64.asinh(self: Self) -> Self
 /// The double-double sum (xh + xl) + (ch + cl), the high parts with an exact two-sum.
 private routine cm_f64_asinh_adddd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64HypDd
     block entry():
-        s : F64 = xh.add(ch)
-        d : F64 = s.sub(xh)
-        l : F64 = ch.sub(d).add(xh.add(d.sub(s))).add(xl.add(cl))
+        s   : F64 = xh.add(ch)
+        d   : F64 = s.sub(xh)
+        err : F64 = ch.sub(d).add(xh.add(d.sub(s)))
+        l   : F64 = err.add(xl.add(cl))
         return(CmF64HypDd { hi: s, lo: l })
 
 /// The double-double product (xh + xl) (ch + cl), renormalized.
@@ -197,8 +201,9 @@ private routine cm_f64_asinh_mulddd(xh: F64, xl: F64, ch: F64) -> CmF64HypDd
 /// The first Horner step of a double-double polynomial: (c_hi + c_lo) + l.
 private routine cm_f64_asinh_polydd_init(l: F64, c_hi: F64, c_lo: F64) -> CmF64HypDd
     block entry():
-        ch : F64 = c_hi.add(l)
-        cl : F64 = c_hi.sub(ch).add(l).add(c_lo)
+        ch  : F64 = c_hi.add(l)
+        err : F64 = c_hi.sub(ch).add(l)
+        cl  : F64 = err.add(c_lo)
         return(CmF64HypDd { hi: ch, lo: cl })
 
 /// One Horner step of a double-double polynomial: (ch + cl) (xh + xl) + (c_hi + c_lo).
@@ -253,16 +258,22 @@ private routine cm_f64_asinh_refine(x: F64, zh: F64, zl: F64, a: F64) -> F64
     block entry():
         tb   : U64  = zh.bits()
         zero : Bool = zl.eq(0.0)
-        e0   : S64  = tb.shr(52).to<S64>().sub(0x3FF)
+        eb   : S64  = tb.shr(52).to<S64>()
+        e0   : S64  = eb.sub(0x3FF)
         e    : S64  = zero
             ? e0.add(1)
             : e0
         m    : F64           = F64.from_bits(tb.bitand(0x000FFFFFFFFFFFFF).bitor(0x3FF0000000000000))
         ed   : F64           = e.to<F64>()
-        i    : U64           = a.sub(ed).add(0x1.00008p+0).bits().sub_wrap(0x3FF0000000000000).shr(36)
-        i1   : USize         = i.shr(12).bitand(0x1F).to<USize>()
-        i2   : USize         = i.shr(8).bitand(0xF).to<USize>()
-        i3   : USize         = i.shr(4).bitand(0xF).to<USize>()
+        fr   : F64           = a.sub(ed).add(0x1.00008p+0)
+        fm   : U64           = fr.bits().sub_wrap(0x3FF0000000000000)
+        i    : U64           = fm.shr(36)
+        i1u  : U64           = i.shr(12).bitand(0x1F)
+        i1   : USize         = i1u.to<USize>()
+        i2u  : U64           = i.shr(8).bitand(0xF)
+        i2   : USize         = i2u.to<USize>()
+        i3u  : U64           = i.shr(4).bitand(0xF)
+        i3   : USize         = i3u.to<USize>()
         i4   : USize         = i.bitand(0xF).to<USize>()
         el2  : F64           = F64.mul(-0x1.9ff0342542fc3p-91, ed)
         el1  : F64           = F64.mul(0x1.ef35793c768p-46, ed)
@@ -294,18 +305,19 @@ private routine cm_f64_asinh_refine(x: F64, zh: F64, zl: F64, a: F64) -> F64
         pe   : CmF64HypDd = cm_f64_asinh_adddd(p0.hi, p0.lo, el1, el2)
         s    : CmF64HypDd = cm_f64_asinh_adddd(pe.hi, pe.lo, big.mid, big.lo)
         // big0 + s as a triple-double v0 + v1 + v2, renormalized
-        w0   : CmF64HypDd = cm_f64_hyp_fasttwosum(big0, s.hi)
-        w1   : CmF64HypDd = cm_f64_hyp_fasttwosum(w0.lo, s.lo)
-        w2   : CmF64HypDd = cm_f64_hyp_fasttwosum(w0.hi, w1.hi)
-        w3   : CmF64HypDd = cm_f64_hyp_fasttwosum(w2.lo, w1.lo)
-        two  : F64        = F64.copysign(2.0, x)
-        v0   : F64        = w2.hi.mul(two)
-        v1   : F64        = cm_f64_hyp_nudge(w3.hi.mul(two), w3.lo.mul(two))
-        tu   : U64        = v1.bits()
-        er   : U64        = tu.add_wrap(41).bitand(0x000FFFFFFFFFFFFF)
-        de   : U64        = v0.bits().shr(52).bitand(0x7FF).sub_wrap(tu.shr(52).bitand(0x7FF))
-        res  : F64        = v0.add(v1)
-        hard : Bool       = de.gt(99).bitor(er.lt(80))
+        w0     : CmF64HypDd = cm_f64_hyp_fasttwosum(big0, s.hi)
+        w1     : CmF64HypDd = cm_f64_hyp_fasttwosum(w0.lo, s.lo)
+        w2     : CmF64HypDd = cm_f64_hyp_fasttwosum(w0.hi, w1.hi)
+        w3     : CmF64HypDd = cm_f64_hyp_fasttwosum(w2.lo, w1.lo)
+        two    : F64        = F64.copysign(2.0, x)
+        v0     : F64        = w2.hi.mul(two)
+        v1     : F64        = cm_f64_hyp_nudge(w3.hi.mul(two), w3.lo.mul(two))
+        tu     : U64        = v1.bits()
+        er     : U64        = tu.add_wrap(41).bitand(0x000FFFFFFFFFFFFF)
+        v0_top : U64        = v0.bits().shr(52)
+        de     : U64        = v0_top.bitand(0x7FF).sub_wrap(tu.shr(52).bitand(0x7FF))
+        res    : F64        = v0.add(v1)
+        hard   : Bool       = de.gt(99).bitor(er.lt(80))
         branch hard
             ? return(cm_f64_asinh_database(x, res))
             : return(res)

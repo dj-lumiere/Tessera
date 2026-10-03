@@ -29,7 +29,8 @@ routine cm_f64_pow_lo(v: U128) -> U64
 /// hi 2^64 + lo.
 routine cm_f64_pow_join(hi: U64, lo: U64) -> U128
     block entry():
-        return(hi.to<U128>().shl(64).bitor(lo.to<U128>()))
+        hi_part : U128 = hi.to<U128>().shl(64)
+        return(hi_part.bitor(lo.to<U128>()))
 
 /// The zero CmF64PowDint.
 private routine cm_f64_pow_dint_zero() -> CmF64PowDint
@@ -264,11 +265,12 @@ private routine cm_f64_pow_mul_dint_int64(a: CmF64PowDint, b: S64) -> CmF64PowDi
 /// A nonzero finite F64 as a CmF64PowDint (exact).
 routine cm_f64_pow_dint_fromd(b: F64) -> CmF64PowDint
     block entry():
-        u      : U64  = b.bits()
-        e0     : S64  = u.shr(52).bitand(0x7FF).to<S64>()
-        m0     : U64  = u.bitand(0x000FFFFFFFFFFFFF)
-        normal : Bool = e0.ne(0)
-        m1     : U64  = normal
+        u         : U64  = b.bits()
+        exp_field : U64  = u.shr(52).bitand(0x7FF)
+        e0        : S64  = exp_field.to<S64>()
+        m0        : U64  = u.bitand(0x000FFFFFFFFFFFFF)
+        normal    : Bool = e0.ne(0)
+        m1        : U64  = normal
             ? m0.add(0x0010000000000000)
             : m0
         e1  : S64 = e0.sub(0x3FF)
@@ -288,8 +290,9 @@ private routine cm_f64_pow_dint_toi(a: CmF64PowDint) -> S64
         branch small
             ? return(0)
             : continue
-        r   : S64  = cm_f64_pow_hi(a.r).shr(S64.sub(63, a.ex).to_wrap<U64>()).to_wrap<S64>()
-        neg : Bool = a.sgn.ne(0)
+        integer_part : U64  = cm_f64_pow_hi(a.r).shr(S64.sub(63, a.ex).to_wrap<U64>())
+        r            : S64  = integer_part.to_wrap<S64>()
+        neg          : Bool = a.sgn.ne(0)
         branch neg
             ? return(S64.sub(0, r))
             : return(r)
@@ -382,8 +385,10 @@ routine cm_f64_pow_exp_2(x: CmF64PowDint) -> CmF64PowDint
             sgn: kk1.sgn.bitxor(1) }
         y        : CmF64PowDint = cm_f64_pow_add_dint(x, kk)
         big_m    : S64          = k.shr(12)
-        i2       : USize        = k.shr(6).to_wrap<U64>().bitand(0x3F).to<USize>()
-        i1       : USize        = k.to_wrap<U64>().bitand(0x3F).to<USize>()
+        k_high   : U64          = k.shr(6).to_wrap<U64>()
+        i2       : USize        = k_high.bitand(0x3F).to<USize>()
+        k_bits   : U64          = k.to_wrap<U64>()
+        i1       : USize        = k_bits.bitand(0x3F).to<USize>()
         r0       : CmF64PowDint = cm_f64_pow_q_2(y)
         r1       : CmF64PowDint = cm_f64_pow_mul_dint(cm_f64_pow_t1_2(i2), r0)
         r2       : CmF64PowDint = cm_f64_pow_mul_dint(cm_f64_pow_t2_2(i1), r1)
@@ -405,20 +410,22 @@ private routine cm_f64_pow_dint_tod_subnormal(a: CmF64PowDint) -> F64
         branch gone
             ? vanish(ah, al, ex)
             : continue
-        hi0    : U64  = ah.shr(ex)
-        rb     : U64  = ah.shr(ex.sub(1)).bitand(1)
-        sticky : Bool = ah.shl(U64.sub(65, ex)).ne(0).bitor(al.ne(0))
-        hi     : U64  = sticky
+        hi0       : U64  = ah.shr(ex)
+        rb        : U64  = ah.shr(ex.sub(1)).bitand(1)
+        ah_sticky : Bool = ah.shl(U64.sub(65, ex)).ne(0)
+        sticky    : Bool = ah_sticky.bitor(al.ne(0))
+        hi        : U64  = sticky
             ? hi0.add(rb)
             : hi0.add(hi0.bitand(rb))
         return(F64.from_bits(hi.bitor(a.sgn.shl(63))))
 
     // all bits disappear: |a| < 2^-1074
     block vanish(ah: U64, al: U64, ex: U64):
-        rb0  : U64  = ah.shr(63)
-        sb0  : U64  = ah.shl(1).bitor(al)
-        zero : Bool = ex.gt(64).bitor(rb0.eq(0)).bitor(sb0.eq(0))
-        ret  : F64  = zero
+        rb0      : U64  = ah.shr(63)
+        sb0      : U64  = ah.shl(1).bitor(al)
+        no_round : Bool = ex.gt(64).bitor(rb0.eq(0))
+        zero     : Bool = no_round.bitor(sb0.eq(0))
+        ret      : F64  = zero
             ? 0.0
             : F64.from_bits(1)
         neg : Bool = a.sgn.ne(0)
@@ -433,15 +440,17 @@ routine cm_f64_pow_dint_tod(a: CmF64PowDint) -> F64
         branch sub
             ? return(cm_f64_pow_dint_tod_subnormal(a))
             : continue
-        ah   : U64  = cm_f64_pow_hi(a.r)
-        al   : U64  = cm_f64_pow_lo(a.r)
-        r0   : F64  = F64.from_bits(ah.shr(11).bitor(0x3FF0000000000000))  // the significand in [1, 2)
-        half : Bool = ah.shr(10).bitand(1).ne(0)
-        rd0  : F64  = half
+        ah        : U64  = cm_f64_pow_hi(a.r)
+        al        : U64  = cm_f64_pow_lo(a.r)
+        r0        : F64  = F64.from_bits(ah.shr(11).bitor(0x3FF0000000000000))  // the significand in [1, 2)
+        round_bit : U64  = ah.shr(10).bitand(1)
+        half      : Bool = round_bit.ne(0)
+        rd0       : F64  = half
             ? F64.add(0.0, 0x1p-53)
             : 0.0
-        sticky : Bool = ah.bitand(0x3FF).ne(0).bitor(al.ne(0))
-        rd1    : F64  = sticky
+        ah_sticky : Bool = ah.bitand(0x3FF).ne(0)
+        sticky    : Bool = ah_sticky.bitor(al.ne(0))
+        rd1       : F64  = sticky
             ? rd0.add(0x1p-54)
             : rd0
         neg : Bool = a.sgn.ne(0)
@@ -461,7 +470,11 @@ routine cm_f64_pow_dint_tod(a: CmF64PowDint) -> F64
         when:
             edge -> return(r.mul(2.0).mul(0x1p+1023))
             over -> return(F64.mul(0x1.fffffffffffffp+1023, 0x1.fffffffffffffp+1023))
-            else -> return(r.mul(F64.from_bits(a.ex.add(1023).to_wrap<U64>().bitand(0x7FF).shl(52))))
+            else -> normal_range(r)
+
+    block normal_range(r: F64):
+        biased_exponent : U64 = a.ex.add(1023).to_wrap<U64>()
+        return(r.mul(F64.from_bits(biased_exponent.bitand(0x7FF).shl(52))))
 
     block low(r: F64):
         edge  : Bool = a.ex.eq(-1075)

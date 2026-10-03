@@ -402,8 +402,12 @@ private routine fd_mode(fd: CInt) -> U32
     block entry():
         claim st : @Statx <- uninit
         branch stat_raw(fd, "", AT_EMPTY_PATH, st)
-            ? return(st.mode.load().to<U32>().bitand(0o7777))
+            ? permission_bits(st)
             : return(0o666)
+
+    block permission_bits(st: @Statx):
+        mode : U32 = st.mode.load().to<U32>()
+        return(mode.bitand(0o7777))
 
 #target(os: "linux")
 private routine path_mode(cpath: @Byte) -> Option<U32>
@@ -466,8 +470,12 @@ private routine fd_mode(fd: CInt) -> U32
     block entry():
         claim st : @DarwinStat <- uninit
         branch c_fstat(fd, st).eq(0)
-            ? return(st.mode.load().to<U32>().bitand(0o7777))
+            ? permission_bits(st)
             : return(0o666)
+
+    block permission_bits(st: @DarwinStat):
+        mode : U32 = st.mode.load().to<U32>()
+        return(mode.bitand(0o7777))
 
 #target(os: "macos")
 private routine path_mode(cpath: @Byte) -> Option<U32>
@@ -513,13 +521,15 @@ internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, Fs
         f : OpenFlags = open_flags()
         when mode:
             OpenMode.Read      -> open(cpath.to<@Byte>(), f.cloexec)
-            OpenMode.Write     -> open(cpath.to<@Byte>(),
-                f.cloexec.bitor(1).bitor(f.create).bitor(f.truncate))
-            OpenMode.Append    -> open(cpath.to<@Byte>(),
-                f.cloexec.bitor(1).bitor(f.create).bitor(f.append))
+            OpenMode.Write     -> open_creating(cpath.to<@Byte>(), f, f.truncate)
+            OpenMode.Append    -> open_creating(cpath.to<@Byte>(), f, f.append)
             OpenMode.ReadWrite -> open(cpath.to<@Byte>(), f.cloexec.bitor(2))
-            OpenMode.CreateNew -> open(cpath.to<@Byte>(),
-                f.cloexec.bitor(1).bitor(f.create).bitor(f.exclude))
+            OpenMode.CreateNew -> open_creating(cpath.to<@Byte>(), f, f.exclude)
+
+    // Write-only and created if missing, plus how it opens (truncate, append, or exclude).
+    block open_creating(cpath: @Byte, f: OpenFlags, how: CInt):
+        creating : CInt = f.cloexec.bitor(1).bitor(f.create)
+        jump open(cpath, creating.bitor(how))
 
     block open(cpath: @Byte, flags: CInt):
         fd : CInt = c_open(cpath, flags, 0o666)
@@ -852,8 +862,12 @@ private routine is_dot_name(name: @Byte) -> Bool
             ? return(true)
             : continue
         branch second.eq(b'.')
-            ? return(name.stride(2).load().eq(0x00))
+            ? two_dots()
             : return(false)
+
+    block two_dots():
+        third : Byte = name.stride(2).load()
+        return(third.eq(0x00))
 
 /// The next entry, or Absent at the end (a failure partway reads as the end).
 #target(os: not "windows")
@@ -869,7 +883,8 @@ routine DirIter.next(self: @Self) -> Option<DirEntry>
             : continue
         self.name.store(name)
         // DT_DIR, DT_REG, DT_LNK; DT_UNKNOWN (some filesystems) asks lstat
-        when entry.stride(dirent_type_at()).load().to<U8>():
+        d_type : Byte = entry.stride(dirent_type_at()).load()
+        when d_type.to<U8>():
             4    -> found(name, FileKind.Directory)
             8    -> found(name, FileKind.File)
             10   -> found(name, FileKind.Symlink)
@@ -1054,10 +1069,11 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
         branch offset.ge(size)
             ? empty(fd)
             : continue
-        want    : USize = length.to<U64>().min(size.sub(offset)).to<USize>()
-        page    : U64   = map_granularity().to<U64>()
-        aligned : U64   = offset.sub(offset.mod(page))
-        delta   : USize = offset.sub(aligned).to<USize>()
+        want_bytes : U64   = length.to<U64>().min(size.sub(offset))
+        want       : USize = want_bytes.to<USize>()
+        page       : U64   = map_granularity().to<U64>()
+        aligned    : U64   = offset.sub(offset.mod(page))
+        delta      : USize = offset.sub(aligned).to<USize>()
         // PROT_READ | PROT_WRITE and MAP_SHARED, or PROT_READ and MAP_PRIVATE
         prot : CInt = write
             ? 3

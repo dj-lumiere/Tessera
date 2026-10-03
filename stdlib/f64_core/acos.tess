@@ -45,7 +45,8 @@ routine F64.acos(self: Self) -> Self
         z   : Self = t.sqrt().copysign(self)
         zl  : Self = z.mul_add(z, t.neg()).mul(Self.div(-0.5, t).mul(z))
         tr  : Self = Self.mul(0.25, t).sub(jd.mul(0x1p-7))
-        eps : Self = z.mul(tr).abs().mul(0x1.8cp-52).add(0x1p-105)
+        ztr : Self = z.mul(tr).abs()
+        eps : Self = ztr.mul(0x1.8cp-52).add(0x1p-105)
         jump poly(z, zl, tr, jd, f0h, f0l, eps)
 
     // |x| = 1, |x| > 1 or NaN
@@ -83,7 +84,8 @@ routine F64.acos(self: Self) -> Self
 
     // asin(z + zl) from the piece j = round(128 z^2), t = z^2 - j/128, plus f0h + f0l
     block poly(z: Self, zl: Self, t: Self, jd: Self, f0h: Self, f0l: Self, eps: Self):
-        j8   : USize          = jd.to<U64>().to<USize>().mul(8)
+        j    : USize          = jd.to<U64>().to<USize>()
+        j8   : USize          = j.mul(8)
         f    : CmF64InvtrigDD = cm_f64_invtrig_asin_poly(z, zl, t, j8, f0h, f0l)
         lb   : Self           = f.hi.add(f.lo.sub(eps))
         ub   : Self           = f.hi.add(f.lo.add(eps))
@@ -98,7 +100,8 @@ routine F64.acos(self: Self) -> Self
 routine cm_f64_acos_accurate(x: F64, phi: F64) -> F64
     block entry():
         // jf = round(|phi - pi/2| 64/pi), 0 <= jf <= 32
-        jfd  : F64            = phi.sub(0x1.921fb54442d18p+0).abs().mul(0x1.45f306dc9c883p+4).round_ties_even()
+        dist : F64            = phi.sub(0x1.921fb54442d18p+0).abs()
+        jfd  : F64            = dist.mul(0x1.45f306dc9c883p+4).round_ties_even()
         r    : CmF64InvtrigDD = cm_f64_invtrig_rotate(x, jfd.to<U64>().to<USize>())
         sgn  : F64            = F64.copysign(1.0, x)
         jt   : F64            = F64.sub(32.0,
@@ -120,15 +123,17 @@ routine cm_f64_acos_accurate(x: F64, phi: F64) -> F64
         pl  : F64            = q5.hi
         ps  : F64            = q5.lo
         // is pl within 2^-107 ph-relative of a rounding boundary of ph + pl?
-        tu : U64 = pl.bits()
-        e0 : S64 = tu.shr(52).bitand(0x7FF).to<S64>().sub(1023)
-        e  : S64 = S64.sub(52, e0.add(107)).clamp(0, 52)
-        eu : U64 = e.to<U64>()
-        m  : U64 = U64.shl(1, 52).sub_wrap(U64.shl(1, eu))
-        eh : U64 = eu.eq(0)
+        tu        : U64 = pl.bits()
+        biased_e0 : U64 = tu.shr(52).bitand(0x7FF)
+        e0        : S64 = biased_e0.to<S64>().sub(1023)
+        e         : S64 = S64.sub(52, e0.add(107)).clamp(0, 52)
+        eu        : U64 = e.to<U64>()
+        m         : U64 = U64.shl(1, 52).sub_wrap(U64.shl(1, eu))
+        eh        : U64 = eu.eq(0)
             ? 64
             : eu
-        hard : Bool = tu.add_wrap(U64.shl(1, eh.sub(1))).bitand(m).eq(0)
+        rounded : U64  = tu.add_wrap(U64.shl(1, eh.sub(1)))
+        hard    : Bool = rounded.bitand(m).eq(0)
         branch hard
             ? boundary(ph, pl, ps, tu)
             : return(ph.add(pl))
@@ -150,8 +155,9 @@ routine cm_f64_acos_accurate(x: F64, phi: F64) -> F64
 
     // move pl one ulp toward ps so ph + pl rounds the right way
     block nudge(ph: F64, ps: F64, tu: U64):
-        opposite : Bool = ps.bits().bitxor(tu).shr(63).ne(0)
-        t        : U64  = opposite
+        sign_diff : U64  = ps.bits().bitxor(tu)
+        opposite  : Bool = sign_diff.shr(63).ne(0)
+        t         : U64  = opposite
             ? tu.sub_wrap(1)
             : tu.add_wrap(1)
         return(ph.add(F64.from_bits(t)))

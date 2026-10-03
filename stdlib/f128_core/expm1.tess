@@ -103,31 +103,36 @@ routine cm_expm1_pair(table: @U64, i: USize) -> U128
 /// table entries * 2^z.
 routine cm_expm1_general(u: U128) -> F128
     block entry():
-        uh     : U64     = cm_wide_hi(u)
-        ul     : U64     = cm_wide_lo(u)
-        sm     : U64     = cm_sign_mask64(uh)
-        mh     : U64     = uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        l4     : U64     = CM_WIDE_ILN2.get(4)
-        l5     : U64     = CM_WIDE_ILN2.get(5)
-        l6     : U64     = CM_WIDE_ILN2.get(6)
-        iln2   : CmWide3 = CmWide3 { w0: l4, w1: l5, w2: l6 }
-        p      : CmWide3 = cm_expm1_mulhi_3x2(iln2, cm_wide_u128(mh, ul))
-        signed : CmWide3 = CmWide3 { w0: p.w0.bitxor(sm), w1: p.w1.bitxor(sm), w2: p.w2.bitxor(sm) }
-        shift  : U64     = 0x401A.sub(uh.shr(48).bitand(0x7FFF))
-        fs     : CmWide3 = cm_expm1_ashr3(signed, shift)
-        top    : U64     = fs.w2
-        el     : S64     = top.to_wrap<S64>().shr(20).to<S32>().to<S64>()
-        i0     : USize   = top.shr(15).bitand(31).to<USize>()
-        i1     : USize   = top.shr(10).bitand(31).to<USize>()
-        i2     : USize   = top.shr(5).bitand(31).to<USize>()
-        i3     : USize   = top.bitand(31).to<USize>()
-        poly   : U128    = cm_expm1_exp2_poly(fs.w1)
-        m      : U128    = cm_expm1_exp2_tables(i0, i1, i2, i3)
-        k      : U64     = cm_wide_mulhi_64x64(0xB17217F7D1CF79AC, fs.w0)
-        fix    : U128    = cm_wide_mul_64x64(cm_wide_hi(m), k).shr(84)
-        res    : U128    = cm_wide_mulhi_128x128(poly, m.add_wrap(fix))
-        s      : S64     = -5.sub(el)
-        big    : Bool    = s.lt(0)
+        uh      : U64     = cm_wide_hi(u)
+        ul      : U64     = cm_wide_lo(u)
+        sm      : U64     = cm_sign_mask64(uh)
+        mh      : U64     = uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        l4      : U64     = CM_WIDE_ILN2.get(4)
+        l5      : U64     = CM_WIDE_ILN2.get(5)
+        l6      : U64     = CM_WIDE_ILN2.get(6)
+        iln2    : CmWide3 = CmWide3 { w0: l4, w1: l5, w2: l6 }
+        p       : CmWide3 = cm_expm1_mulhi_3x2(iln2, cm_wide_u128(mh, ul))
+        signed  : CmWide3 = CmWide3 { w0: p.w0.bitxor(sm), w1: p.w1.bitxor(sm),
+            w2: p.w2.bitxor(sm) }
+        shift   : U64     = 0x401A.sub(uh.shr(48).bitand(0x7FFF))
+        fs      : CmWide3 = cm_expm1_ashr3(signed, shift)
+        top     : U64     = fs.w2
+        el_raw  : S64     = top.to_wrap<S64>().shr(20)
+        el      : S64     = el_raw.to<S32>().to<S64>()
+        i0_bits : U64     = top.shr(15).bitand(31)
+        i0      : USize   = i0_bits.to<USize>()
+        i1_bits : U64     = top.shr(10).bitand(31)
+        i1      : USize   = i1_bits.to<USize>()
+        i2_bits : U64     = top.shr(5).bitand(31)
+        i2      : USize   = i2_bits.to<USize>()
+        i3      : USize   = top.bitand(31).to<USize>()
+        poly    : U128    = cm_expm1_exp2_poly(fs.w1)
+        m       : U128    = cm_expm1_exp2_tables(i0, i1, i2, i3)
+        k       : U64     = cm_wide_mulhi_64x64(0xB17217F7D1CF79AC, fs.w0)
+        fix     : U128    = cm_wide_mul_64x64(cm_wide_hi(m), k).shr(84)
+        res     : U128    = cm_wide_mulhi_128x128(poly, m.add_wrap(fix))
+        s       : S64     = -5.sub(el)
+        big     : Bool    = s.lt(0)
         branch big
             ? big(res, el, sm)
             : tiny(res, s, sm)
@@ -140,22 +145,25 @@ routine cm_expm1_general(u: U128) -> F128
         minus   : U128 = has_one
             ? res.sub_wrap(one)
             : res
-        smm    : U128 = cm_wide_u128(sm, sm)
-        signed : U128 = minus.bitxor(smm).sub_wrap(smm)
-        nz     : S64  = cm_wide_hi(signed).leading_zeros().to<S64>().min(14)
-        bias   : U64  = sm.bitnot().bitand(6)
-        z0     : U128 = signed.add_wrap(1.shl(14.sub(nz).to<U128>())).add_wrap(bias.to<U128>())
-        tail   : U128 = 1.shl(15.sub(nz).to<U128>()).sub_wrap(1).bitand(z0)
-        hard   : Bool = tail.le(6)
+        smm      : U128 = cm_wide_u128(sm, sm)
+        signed   : U128 = minus.bitxor(smm).sub_wrap(smm)
+        lz_hi    : U64  = cm_wide_hi(signed).leading_zeros()
+        nz       : S64  = lz_hi.to<S64>().min(14)
+        bias     : U64  = sm.bitnot().bitand(6)
+        z0       : U128 = signed.add_wrap(1.shl(14.sub(nz).to<U128>())).add_wrap(bias.to<U128>())
+        tail_bit : U128 = 1.shl(15.sub(nz).to<U128>())
+        tail     : U128 = tail_bit.sub_wrap(1).bitand(z0)
+        hard     : Bool = tail.le(6)
         branch hard
             ? big_exact(el, sm)
             : big_fast(signed, el, nz, sm)
 
     block big_fast(res: U128, el: S64, nz: S64, sm: U64):
-        rnd : U64  = cm_wide_lo(res).shr(14.sub(nz).to<U64>()).bitand(1)
-        sig : U128 = res.shr(15.sub(nz).to<U128>())
-        e   : S64  = el.sub(nz.sub(4)).add(16382)
-        r   : F128 = cm_expm1_pack(sig, e.to<U64>(), sm, rnd)
+        res_lo : U64  = cm_wide_lo(res)
+        rnd    : U64  = res_lo.shr(14.sub(nz).to<U64>()).bitand(1)
+        sig    : U128 = res.shr(15.sub(nz).to<U128>())
+        e      : S64  = el.sub(nz.sub(4)).add(16382)
+        r      : F128 = cm_expm1_pack(sig, e.to<U64>(), sm, rnd)
         return(r)
 
     block big_exact(el: S64, sm: U64):
@@ -165,12 +173,14 @@ routine cm_expm1_general(u: U128) -> F128
 
     // x < -2.77 or e^x < 1/16: the result is -(1 - e^x), with its leading bit at a fixed place
     block tiny(res: U128, s: S64, sm: U64):
-        neg     : U128 = 0.sub_wrap(res)
-        rb_fits : Bool = s.add(14).le(127)
-        tm_fits : Bool = s.add(15).le(127)
-        rb_bit  : U128 = 1.shl(s.add(14).min(127).to<U128>())
-        tm_bits : U128 = 1.shl(s.add(15).min(127).to<U128>()).sub_wrap(1)
-        rb      : U128 = rb_fits
+        neg      : U128 = 0.sub_wrap(res)
+        rb_fits  : Bool = s.add(14).le(127)
+        tm_fits  : Bool = s.add(15).le(127)
+        rb_shift : S64  = s.add(14).min(127)
+        rb_bit   : U128 = 1.shl(rb_shift.to<U128>())
+        tm_shift : S64  = s.add(15).min(127)
+        tm_bits  : U128 = 1.shl(tm_shift.to<U128>()).sub_wrap(1)
+        rb       : U128 = rb_fits
             ? rb_bit
             : 0
         tm_in : U128 = tm_fits
@@ -203,8 +213,9 @@ routine cm_expm1_general(u: U128) -> F128
 /// Rounds a result whose round bit is bit 14 of the significand.
 routine cm_expm1_round15(a: CmExpm1Scaled, sign: U64) -> F128
     block entry():
-        rnd : U64  = cm_wide_lo(a.sig).shr(14).bitand(1)
-        r   : F128 = cm_expm1_pack(a.sig.shr(15), a.el.add_wrap(16382), sign, rnd)
+        sig_lo : U64  = cm_wide_lo(a.sig)
+        rnd    : U64  = sig_lo.shr(14).bitand(1)
+        r      : F128 = cm_expm1_pack(a.sig.shr(15), a.el.add_wrap(16382), sign, rnd)
         return(r)
 
 /// 2^z - 1 scaled, for the fraction word z: the fast-path polynomial.
@@ -330,16 +341,18 @@ routine cm_expm1_small(x: U128) -> F128
             : below(a, sm, off, lo)
 
     block top(a: CmExpm1Scaled, sm: U64, off: U64, lo: U64):
-        tail : U64  = lo.add_wrap(0x4000).add_wrap(off).bitand(0x7FFF)
-        hard : Bool = tail.le(6)
+        top_nudged : U64  = lo.add_wrap(0x4000).add_wrap(off)
+        tail       : U64  = top_nudged.bitand(0x7FFF)
+        hard       : Bool = tail.le(6)
         branch hard
             ? exact(a.el, sm)
             : round15(a, sm)
 
     block below(a: CmExpm1Scaled, sm: U64, off: U64, lo: U64):
-        el   : U64  = a.el.sub_wrap(1)
-        tail : U64  = lo.add_wrap(0x2000).add_wrap(off).bitand(0x3FFF)
-        hard : Bool = tail.le(6)
+        el           : U64  = a.el.sub_wrap(1)
+        below_nudged : U64  = lo.add_wrap(0x2000).add_wrap(off)
+        tail         : U64  = below_nudged.bitand(0x3FFF)
+        hard         : Bool = tail.le(6)
         branch hard
             ? exact(el, sm)
             : round14(a.sig, el, sm, lo)
@@ -362,18 +375,19 @@ routine cm_expm1_small(x: U128) -> F128
 /// polynomial in the rest combines with them.
 routine cm_expm1_small_table(x: U128, sm: U64, e: U64, sj: U64) -> CmExpm1Scaled
     block entry():
-        uh     : U64   = cm_wide_hi(x)
-        ml     : U64   = cm_wide_lo(x)
-        mh     : U64   = uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        j      : U64   = mh.shr(sj)
-        j0     : USize = j.shr(5).to<USize>()
-        j1     : USize = j.bitand(31).to<USize>()
-        row0   : USize = sm.to<USize>().mul(32).add(j0)
-        row1   : USize = sm.to<USize>().mul(32).add(j1)
-        e0     : S64   = CM_EXPM1_E0Z.get(row0)
-        e1     : S64   = CM_EXPM1_E1Z.get(row1)
-        has_j0 : Bool  = j0.ne(0)
-        el     : S64   = has_j0
+        uh       : U64   = cm_wide_hi(x)
+        ml       : U64   = cm_wide_lo(x)
+        mh       : U64   = uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        j        : U64   = mh.shr(sj)
+        j0       : USize = j.shr(5).to<USize>()
+        j1       : USize = j.bitand(31).to<USize>()
+        row_base : USize = sm.to<USize>().mul(32)
+        row0     : USize = row_base.add(j0)
+        row1     : USize = row_base.add(j1)
+        e0       : S64   = CM_EXPM1_E0Z.get(row0)
+        e1       : S64   = CM_EXPM1_E1Z.get(row1)
+        has_j0   : Bool  = j0.ne(0)
+        el       : S64   = has_j0
             ? e0
             : e1
         st : S64 = has_j0
@@ -382,24 +396,26 @@ routine cm_expm1_small_table(x: U128, sm: U64, e: U64, sj: U64) -> CmExpm1Scaled
         r0 : U128 = cm_expm1_pair(CM_EXPM1_R0Z.to<@U64>(), row0.mul(2))
         r1 : U128 = cm_expm1_pair(CM_EXPM1_R1Z.to<@U64>(), row1.mul(2))
         // pp = (r0 * r1) >> e1 and tt = r1 >> st, each shifted the way the original's x86 shifts do
-        prod : U128          = cm_wide_mulhi_128x128(r0, r1)
-        ph   : U64           = cm_wide_hi(prod)
-        pl   : U64           = cm_wide_lo(prod)
-        pl2  : U64           = pl.shr(e1.to<U64>()).bitor(ph.shl(64.sub(e1).bitand(63).to<U64>()))
-        pp   : U128          = cm_wide_u128(ph.shr(e1.to<U64>()), pl2)
-        th   : U64           = cm_wide_hi(r1)
-        tl   : U64           = cm_wide_lo(r1)
-        st_r : S64           = st.bitand(63)
-        st_l : S64           = st.bitxor(-1).bitand(63)
-        tl2  : U64           = tl.shr(st_r.to<U64>()).bitor(th.shl(1).shl(st_l.to<U64>()))
-        tt   : U128          = cm_wide_u128(th.shr(st_r.to<U64>()), tl2)
-        up   : U64           = e.add_wrap(27)
-        mh2  : U64           = mh.shl(up).bitor(ml.shr(sj))
-        ml2  : U64           = ml.shl(up)
-        cb   : USize         = sm.to<USize>().mul(18)
-        neg  : Bool          = sm.ne(0)
-        sig  : U128          = cm_expm1_small_table_sum(r0, tt, pp, mh2, ml2, cb, el, neg)
-        r    : CmExpm1Scaled = CmExpm1Scaled { el: 0.sub(el).sub(1).to_wrap<U64>(), sig: sig }
+        prod          : U128          = cm_wide_mulhi_128x128(r0, r1)
+        ph            : U64           = cm_wide_hi(prod)
+        pl            : U64           = cm_wide_lo(prod)
+        ph_shift      : S64           = 64.sub(e1).bitand(63)
+        pl2           : U64           = pl.shr(e1.to<U64>()).bitor(ph.shl(ph_shift.to<U64>()))
+        pp            : U128          = cm_wide_u128(ph.shr(e1.to<U64>()), pl2)
+        th            : U64           = cm_wide_hi(r1)
+        tl            : U64           = cm_wide_lo(r1)
+        st_r          : S64           = st.bitand(63)
+        st_l          : S64           = st.bitxor(-1).bitand(63)
+        tl2           : U64           = tl.shr(st_r.to<U64>()).bitor(th.shl(1).shl(st_l.to<U64>()))
+        tt            : U128          = cm_wide_u128(th.shr(st_r.to<U64>()), tl2)
+        up            : U64           = e.add_wrap(27)
+        mh2           : U64           = mh.shl(up).bitor(ml.shr(sj))
+        ml2           : U64           = ml.shl(up)
+        cb            : USize         = sm.to<USize>().mul(18)
+        neg           : Bool          = sm.ne(0)
+        sig           : U128          = cm_expm1_small_table_sum(r0, tt, pp, mh2, ml2, cb, el, neg)
+        el_complement : S64           = 0.sub(el).sub(1)
+        r             : CmExpm1Scaled = CmExpm1Scaled { el: el_complement.to_wrap<U64>(), sig: sig }
         return(r)
 
 /// The table entry r0 (+/-) tt (+/-) pp, plus the polynomial in the remaining bits (mh, ml) and its product
@@ -495,25 +511,27 @@ routine cm_expm1_horner_128x128(c: @U64, base: S64, m: U128, f: U128, neg: Bool)
 /// |x| < 2^-11 (and not so small that the result is x): x + x^2 * P(x).
 routine cm_expm1_small_poly(x: U128, sm: U64, e: S64) -> CmExpm1Scaled
     block entry():
-        c   : @U64  = CM_EXPM1_CB8.to<@U64>()
-        uh  : U64   = cm_wide_hi(x)
-        mh  : U64   = uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        m0  : U128  = cm_wide_u128(mh, cm_wide_lo(x)).shl(15)
-        m2  : U128  = m0.mul_wide(m0).shr(128).to<U128>()
-        m   : U128  = m0.shr(0.sub(e.add(12)).to<U128>())
-        mh2 : U64   = cm_wide_hi(m)
-        cb  : USize = sm.to<USize>().mul(16)
-        neg : Bool  = sm.ne(0)
-        v   : U64   = cm_expm1_chain64(c, cb.add(14), cb.add(10), mh2, neg)
-        t   : U64   = cm_wide_mulhi_64x64(v, mh2)
-        c8  : U64   = c.stride(cb.add(8)).load()
-        c9  : U64   = c.stride(cb.add(9)).load()
-        f0  : U64   = neg
+        c     : @U64  = CM_EXPM1_CB8.to<@U64>()
+        uh    : U64   = cm_wide_hi(x)
+        mh    : U64   = uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        m0    : U128  = cm_wide_u128(mh, cm_wide_lo(x)).shl(15)
+        m0_sq : U256  = m0.mul_wide(m0)
+        m2    : U128  = m0_sq.shr(128).to<U128>()
+        m     : U128  = m0.shr(0.sub(e.add(12)).to<U128>())
+        mh2   : U64   = cm_wide_hi(m)
+        cb    : USize = sm.to<USize>().mul(16)
+        neg   : Bool  = sm.ne(0)
+        v     : U64   = cm_expm1_chain64(c, cb.add(14), cb.add(10), mh2, neg)
+        t     : U64   = cm_wide_mulhi_64x64(v, mh2)
+        c8    : U64   = c.stride(cb.add(8)).load()
+        c9    : U64   = c.stride(cb.add(9)).load()
+        f0    : U64   = neg
             ? c8.sub_wrap(t)
             : c8.add_wrap(t)
-        f4   : U128 = cm_wide_u128(c9, f0)
-        poly : U128 = cm_expm1_horner_128x128(c, cb.to<S64>(), m, f4, neg)
-        f    : U128 = cm_wide_mulhi_128x128(m2, poly).shr(0.sub(e).sub(1).to<U128>())
+        f4      : U128 = cm_wide_u128(c9, f0)
+        poly    : U128 = cm_expm1_horner_128x128(c, cb.to<S64>(), m, f4, neg)
+        f_shift : S64  = 0.sub(e).sub(1)
+        f       : U128 = cm_wide_mulhi_128x128(m2, poly).shr(f_shift.to<U128>())
         branch neg
             ? negative(m0, f)
             : positive(m0, f)
@@ -581,19 +599,21 @@ routine cm_expm1_ashr4(x: @U64, n: U64) -> Void
 /// above word 3, summed exactly modulo 2^192).
 routine cm_expm1_mulhi_3x3(b: CmWide3, a: CmWide3) -> CmWide3
     block entry():
-        a0b2 : U128    = cm_wide_mul_64x64(a.w0, b.w2)
-        a1b1 : U128    = cm_wide_mul_64x64(a.w1, b.w1)
-        a2b0 : U128    = cm_wide_mul_64x64(a.w2, b.w0)
-        a1b2 : U128    = cm_wide_mul_64x64(a.w1, b.w2)
-        a2b1 : U128    = cm_wide_mul_64x64(a.w2, b.w1)
-        a2b2 : U128    = cm_wide_mul_64x64(a.w2, b.w2)
-        lo64 : U128    = 0xFFFFFFFFFFFFFFFF
-        h0   : U128    = a0b2.shr(64).add(a1b1.shr(64)).add(a2b0.shr(64))
-        s0   : U128    = h0.add(a1b2.bitand(lo64)).add(a2b1.bitand(lo64))
-        h1   : U128    = a1b2.shr(64).add(a2b1.shr(64)).add(a2b2.bitand(lo64))
-        s1   : U128    = h1.add(s0.shr(64))
-        s2   : U128    = a2b2.shr(64).add(s1.shr(64))
-        r    : CmWide3 = CmWide3 { w0: cm_wide_lo(s0), w1: cm_wide_lo(s1), w2: cm_wide_lo(s2) }
+        a0b2    : U128    = cm_wide_mul_64x64(a.w0, b.w2)
+        a1b1    : U128    = cm_wide_mul_64x64(a.w1, b.w1)
+        a2b0    : U128    = cm_wide_mul_64x64(a.w2, b.w0)
+        a1b2    : U128    = cm_wide_mul_64x64(a.w1, b.w2)
+        a2b1    : U128    = cm_wide_mul_64x64(a.w2, b.w1)
+        a2b2    : U128    = cm_wide_mul_64x64(a.w2, b.w2)
+        lo64    : U128    = 0xFFFFFFFFFFFFFFFF
+        h0_part : U128    = a0b2.shr(64).add(a1b1.shr(64))
+        h0      : U128    = h0_part.add(a2b0.shr(64))
+        s0      : U128    = h0.add(a1b2.bitand(lo64)).add(a2b1.bitand(lo64))
+        h1_part : U128    = a1b2.shr(64).add(a2b1.shr(64))
+        h1      : U128    = h1_part.add(a2b2.bitand(lo64))
+        s1      : U128    = h1.add(s0.shr(64))
+        s2      : U128    = a2b2.shr(64).add(s1.shr(64))
+        r       : CmWide3 = CmWide3 { w0: cm_wide_lo(s0), w1: cm_wide_lo(s1), w2: cm_wide_lo(s2) }
         return(r)
 
 /// Subtracts 2^bit from the n-word f at word idx, propagating the borrow upward.
@@ -650,27 +670,29 @@ routine cm_expm1_accurate(el: S64, x0: U128) -> CmExpm1Scaled
         cm_wide_mulhi_7x2(a, t, x)
         cm_wide_xor_words(x, 4, sm.to_wrap<U64>())
         cm_expm1_ashr4(x, 0x402E.sub(xh.shr(48).bitand(0x7FFF)))
-        x0w : U64           = x.stride(0).load()
-        x1w : U64           = x.stride(1).load()
-        x2w : U64           = x.stride(2).load()
-        x3w : U64           = x.stride(3).load()
-        e   : S64           = x3w.to_wrap<S32>().to<S64>()
-        jt0 : USize         = x2w.shr(60).to<USize>()
-        jt1 : USize         = x2w.shr(56).bitand(15).to<USize>()
-        r   : U64           = x2w.bitand(0x00FFFFFFFFFFFFFF)
-        t0  : CmWide3       = cm_wide_row3(CM_EXPM1_ATBL0.to<@U64>(), jt0)
-        t1  : CmWide3       = cm_wide_row3(CM_EXPM1_ATBL1.to<@U64>(), jt1)
-        ft  : CmWide3       = cm_expm1_mulhi_3x3(t0, t1)
-        p   : CmWide3       = cm_expm1_accurate_poly(r)
-        ft2 : CmWide3       = cm_expm1_mulhi_3x3(p, ft)
-        ac  : @U64          = CM_EXPM1_AC.to<@U64>()
-        c8  : U64           = ac.stride(8).load()
-        c2  : U64           = ac.stride(2).load()
-        c1  : U128          = cm_expm1_pair(ac, 4).add_wrap(cm_wide_mulhi_64x64(c8, x1w).to<U128>())
-        f2  : U128          = cm_wide_mulhi_128x128(cm_wide_u128(x1w, x0w), c1)
-        f1  : CmWide3       = CmWide3 { w0: cm_wide_lo(f2), w1: cm_wide_hi(f2), w2: c2 }
-        f   : CmWide3       = cm_expm1_mulhi_3x3(ft2, f1)
-        r3  : CmExpm1Scaled = cm_expm1_accurate_scale(f, e, el, sm, x0)
+        x0w      : U64           = x.stride(0).load()
+        x1w      : U64           = x.stride(1).load()
+        x2w      : U64           = x.stride(2).load()
+        x3w      : U64           = x.stride(3).load()
+        e        : S64           = x3w.to_wrap<S32>().to<S64>()
+        jt0      : USize         = x2w.shr(60).to<USize>()
+        jt1_bits : U64           = x2w.shr(56).bitand(15)
+        jt1      : USize         = jt1_bits.to<USize>()
+        r        : U64           = x2w.bitand(0x00FFFFFFFFFFFFFF)
+        t0       : CmWide3       = cm_wide_row3(CM_EXPM1_ATBL0.to<@U64>(), jt0)
+        t1       : CmWide3       = cm_wide_row3(CM_EXPM1_ATBL1.to<@U64>(), jt1)
+        ft       : CmWide3       = cm_expm1_mulhi_3x3(t0, t1)
+        p        : CmWide3       = cm_expm1_accurate_poly(r)
+        ft2      : CmWide3       = cm_expm1_mulhi_3x3(p, ft)
+        ac       : @U64          = CM_EXPM1_AC.to<@U64>()
+        c8       : U64           = ac.stride(8).load()
+        c2       : U64           = ac.stride(2).load()
+        c1       : U128          = cm_expm1_pair(ac,
+            4).add_wrap(cm_wide_mulhi_64x64(c8, x1w).to<U128>())
+        f2       : U128          = cm_wide_mulhi_128x128(cm_wide_u128(x1w, x0w), c1)
+        f1       : CmWide3       = CmWide3 { w0: cm_wide_lo(f2), w1: cm_wide_hi(f2), w2: c2 }
+        f        : CmWide3       = cm_expm1_mulhi_3x3(ft2, f1)
+        r3       : CmExpm1Scaled = cm_expm1_accurate_scale(f, e, el, sm, x0)
         return(r3)
 
 /// The 2^r polynomial of the accurate step: Horner over the 15 coefficient rows.
@@ -715,16 +737,18 @@ routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, el: S64, sm: S64, x0: U12
 
     block normalize(f: @U64):
         cm_wide_xor_words(f, 3, sm.to_wrap<U64>())
-        top  : USize = cm_expm1_top_word(f, 3)
-        ftop : U64   = f.stride(top).load()
-        nz   : S64   = ftop.leading_zeros().add(2.sub(top).mul(64).to<U64>()).to<S64>()
-        nel  : S64   = e.sub(nz.sub(3))
-        mm   : U128  = cm_wide_u128(0x3FFF, U64.MAX).shr(nz.min(127).to<U128>())
-        w0   : U64   = f.stride(0).load()
-        w1   : U64   = f.stride(1).load()
-        w2   : U64   = f.stride(2).load()
-        t0   : U128  = cm_wide_u128(w1, w0).add_wrap(8)
-        hard : Bool  = t0.bitand(mm).le(16)
+        top          : USize = cm_expm1_top_word(f, 3)
+        ftop         : U64   = f.stride(top).load()
+        skipped_bits : USize = 2.sub(top).mul(64)
+        nz_bits      : U64   = ftop.leading_zeros().add(skipped_bits.to<U64>())
+        nz           : S64   = nz_bits.to<S64>()
+        nel          : S64   = e.sub(nz.sub(3))
+        mm           : U128  = cm_wide_u128(0x3FFF, U64.MAX).shr(nz.min(127).to<U128>())
+        w0           : U64   = f.stride(0).load()
+        w1           : U64   = f.stride(1).load()
+        w2           : U64   = f.stride(2).load()
+        t0           : U128  = cm_wide_u128(w1, w0).add_wrap(8)
+        hard         : Bool  = t0.bitand(mm).le(16)
         branch hard
             ? super(nel)
             : extract(nel, nz.to<U64>(), w0, w1, w2)
@@ -771,7 +795,8 @@ routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, el: S64, sm: S64, x0: U12
         tm2 : S64 = wg.eq(2)
             ? low_bits
             : 0
-        hard_hi   : Bool          = t02.bitand(tm2).eq(0).bitand(t01.bitand(tm1).eq(0))
+        t02_clear : Bool          = t02.bitand(tm2).eq(0)
+        hard_hi   : Bool          = t02_clear.bitand(t01.bitand(tm1).eq(0))
         hard      : Bool          = hard_hi.bitand(t00.le(16))
         one_word  : Bool          = sg.eq(1)
         two_words : Bool          = sg.eq(2)
@@ -783,8 +808,10 @@ routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, el: S64, sm: S64, x0: U12
             else      -> return(all_ones)
 
     block tiny_one(sl: S64, n1: U64, n2: U64):
-        m0 : U64           = n2.shl(1).shl(sl.bitxor(-1).bitand(63).to<U64>()).bitor(n1.shr(sl.to<U64>()))
-        r  : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, cm_sar64(n2, sl.to<U64>()), m0)
+        n2_shift : S64           = sl.bitxor(-1).bitand(63)
+        n2_up    : U64           = n2.shl(1).shl(n2_shift.to<U64>())
+        m0       : U64           = n2_up.bitor(n1.shr(sl.to<U64>()))
+        r        : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, cm_sar64(n2, sl.to<U64>()), m0)
         return(r)
 
     block tiny_two(sl: S64, n2: S64):
@@ -831,19 +858,20 @@ routine cm_expm1_superaccurate(el: S64, x0: U128) -> CmExpm1Scaled
 
     block normalize(ft: @U64, sm: S64, e: U64):
         cm_wide_xor_words(ft, 6, sm.to_wrap<U64>())
-        top  : USize         = cm_expm1_top_word(ft, 6)
-        ftop : U64           = ft.stride(top).load()
-        nz   : U64           = ftop.leading_zeros().add_wrap(5.sub_wrap(top).mul_wrap(64).to<U64>())
-        nel  : U64           = e.sub_wrap(nz.sub_wrap(3))
-        k    : USize         = nz.shr(6).to<USize>()
-        rs   : U64           = nz.bitxor(U64.MAX).bitand(63)
-        ls   : U64           = nz.bitand(63)
-        w5   : U64           = ft.stride(5.sub_clamp(k)).load()
-        w4   : U64           = ft.stride(4.sub_clamp(k)).load()
-        w3   : U64           = ft.stride(3.sub_clamp(k)).load()
-        m0   : U64           = w4.shl(ls).bitor(w3.shr(1).shr(rs))
-        m1   : U64           = w5.shl(ls).bitor(w4.shr(1).shr(rs))
-        r    : CmExpm1Scaled = cm_expm1_scaled(nel, m1, m0)
+        top          : USize         = cm_expm1_top_word(ft, 6)
+        ftop         : U64           = ft.stride(top).load()
+        skipped_bits : USize         = 5.sub_wrap(top).mul_wrap(64)
+        nz           : U64           = ftop.leading_zeros().add_wrap(skipped_bits.to<U64>())
+        nel          : U64           = e.sub_wrap(nz.sub_wrap(3))
+        k            : USize         = nz.shr(6).to<USize>()
+        rs           : U64           = nz.bitxor(U64.MAX).bitand(63)
+        ls           : U64           = nz.bitand(63)
+        w5           : U64           = ft.stride(5.sub_clamp(k)).load()
+        w4           : U64           = ft.stride(4.sub_clamp(k)).load()
+        w3           : U64           = ft.stride(3.sub_clamp(k)).load()
+        m0           : U64           = w4.shl(ls).bitor(w3.shr(1).shr(rs))
+        m1           : U64           = w5.shl(ls).bitor(w4.shr(1).shr(rs))
+        r            : CmExpm1Scaled = cm_expm1_scaled(nel, m1, m0)
         return(r)
 
     // the 1 lies above the 6 words: complement the top two
@@ -856,7 +884,8 @@ routine cm_expm1_superaccurate(el: S64, x0: U128) -> CmExpm1Scaled
         ones_up   : U64           = -2.shl(ls).to_wrap<U64>()  // (~0 << 1) << ls
         one_word  : Bool          = sg.eq(1)
         two_words : Bool          = sg.eq(2)
-        m0_one    : U64           = n5.shl(1).shl(ls.to<U64>()).bitor(n4.shr(sl.to<U64>()))
+        n5_up     : U64           = n5.shl(1).shl(ls.to<U64>())
+        m0_one    : U64           = n5_up.bitor(n4.shr(sl.to<U64>()))
         m1_one    : U64           = ones_up.bitor(n5.shr(sl.to<U64>()))
         m0_two    : U64           = ones_up.bitor(n5.shr(sl.to<U64>()))
         one       : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, m1_one, m0_one)

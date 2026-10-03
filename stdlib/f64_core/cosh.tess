@@ -84,15 +84,17 @@ private routine cm_f64_cosh_main(x: F64) -> F64
         ax  : F64 = x.abs()
         aix : U64 = ax.bits()
         // t = round(|x| 2^12 / log 2), and its bits il = 2^12 ie + 2^6 i0 + i1
-        v0 : F64        = ax.mul_add(0x1.71547652b82fep+12, 0x1.8000002p+26)
-        jt : U64        = v0.bits()
-        t  : F64        = F64.from_bits(jt.bitand(0xFFFFFFFFFC000000)).sub(0x1.8p+26)
-        il : S64        = jt.shl(14).shr(40).to<S64>()
-        i1 : USize      = il.bitand(0x3F).to<USize>()
-        i0 : USize      = il.shr(6).bitand(0x3F).to<USize>()
-        ie : S64        = il.shr(12)
-        sp : F64        = cm_f64_hyp_scale(ie.add(1022))
-        tt : CmF64HypDd = cm_f64_hyp_table(i0, i1)
+        v0  : F64        = ax.mul_add(0x1.71547652b82fep+12, 0x1.8000002p+26)
+        jt  : U64        = v0.bits()
+        t   : F64        = F64.from_bits(jt.bitand(0xFFFFFFFFFC000000)).sub(0x1.8p+26)
+        ilu : U64        = jt.shl(14).shr(40)
+        il  : S64        = ilu.to<S64>()
+        i1  : USize      = il.bitand(0x3F).to<USize>()
+        i0s : S64        = il.shr(6).bitand(0x3F)
+        i0  : USize      = i0s.to<USize>()
+        ie  : S64        = il.shr(12)
+        sp  : F64        = cm_f64_hyp_scale(ie.add(1022))
+        tt  : CmF64HypDd = cm_f64_hyp_table(i0, i1)
         // |x| = t log(2) / 2^12 + dx, with log(2) / 2^12 as l2h + l2l and l2h t exact
         dx     : F64  = ax.sub(t.mul(0x1.62e42ffp-13)).add(t.mul(0x1.718432a1b0e26p-47))
         dx2    : F64  = dx.mul(dx)
@@ -121,7 +123,8 @@ private routine cm_f64_cosh_main(x: F64) -> F64
         a0   : CmF64HypDd = cm_f64_hyp_exp_accurate(ax, t, th, tl)
         a    : CmF64HypDd = cm_f64_hyp_fasttwosum(a0.hi, a0.lo)
         hard : Bool       = cm_f64_hyp_is_hard(a.hi, a.lo)
-        r    : F64        = a.hi.add(a.lo).mul(2.0).mul(sp)
+        r0   : F64        = a.hi.add(a.lo).mul(2.0)
+        r    : F64        = r0.mul(sp)
         branch hard
             ? return(cm_f64_cosh_database(x, r))
             : return(r)
@@ -130,7 +133,8 @@ private routine cm_f64_cosh_main(x: F64) -> F64
     block mid(ax: F64, aix: U64, t: F64, sp: F64, th0: F64, tl0: F64, dx: F64, dx2: F64, pp: F64,
         jl: S64):
         j1   : USize      = jl.bitand(0x3F).to<USize>()
-        j0   : USize      = jl.shr(6).bitand(0x3F).to<USize>()
+        j0s  : S64        = jl.shr(6).bitand(0x3F)
+        j0   : USize      = j0s.to<USize>()
         sm   : F64        = cm_f64_hyp_scale(jl.shr(12).add(1022))
         q    : CmF64HypDd = cm_f64_hyp_table(j0, j1)
         th   : F64        = th0.mul(sp)
@@ -157,21 +161,24 @@ private routine cm_f64_cosh_main(x: F64) -> F64
 
     // e^-|x| as the one F64 qh
     block far(a: CmF64HypDd, qh: F64):
-        rh : F64 = a.hi.add(qh)
-        rl : F64 = a.hi.sub(rh).add(qh).add(a.lo)
+        rh  : F64 = a.hi.add(qh)
+        err : F64 = a.hi.sub(rh).add(qh)
+        rl  : F64 = err.add(a.lo)
         jump tail(rh, rl)
 
     // e^-|x| in double-double
     block near(ax: F64, t: F64, a: CmF64HypDd, q: CmF64HypDd, sm: F64):
-        m  : CmF64HypDd = cm_f64_hyp_exp_accurate(ax.neg(), t.neg(), q.hi.mul(sm), q.lo.mul(sm))
-        rh : F64        = a.hi.add(m.hi)
-        rl : F64        = a.hi.sub(rh).add(m.hi).add(m.lo).add(a.lo)
+        m   : CmF64HypDd = cm_f64_hyp_exp_accurate(ax.neg(), t.neg(), q.hi.mul(sm), q.lo.mul(sm))
+        rh  : F64        = a.hi.add(m.hi)
+        err : F64        = a.hi.sub(rh).add(m.hi)
+        rl  : F64        = err.add(m.lo).add(a.lo)
         jump tail(rh, rl)
 
     // 1/8 <= |x| <= 5
     block low(ax: F64, t: F64, sp: F64, th0: F64, tl0: F64, dx: F64, dx2: F64, pp: F64, jl: S64):
         j1   : USize      = jl.bitand(0x3F).to<USize>()
-        j0   : USize      = jl.shr(6).bitand(0x3F).to<USize>()
+        j0s  : S64        = jl.shr(6).bitand(0x3F)
+        j0   : USize      = j0s.to<USize>()
         sm   : F64        = cm_f64_hyp_scale(jl.shr(12).add(1022))
         q    : CmF64HypDd = cm_f64_hyp_table(j0, j1)
         th   : F64        = th0.mul(sp)
@@ -182,7 +189,8 @@ private routine cm_f64_cosh_main(x: F64) -> F64
         fpl  : F64        = tl.add(th.mul(pp))
         fml  : F64        = ql.add(qh.mul(pm))
         rh   : F64        = th.add(qh)
-        rl   : F64        = th.sub(rh).add(qh).add(fml).add(fpl)
+        err  : F64        = th.sub(rh).add(qh)
+        rl   : F64        = err.add(fml).add(fpl)
         e    : F64        = F64.mul(0x1.c0ap-62, rh)
         lb   : F64        = rh.add(rl.sub(e))
         ub   : F64        = rh.add(rl.add(e))
@@ -192,10 +200,11 @@ private routine cm_f64_cosh_main(x: F64) -> F64
             : low_accurate(ax, t, th, tl, qh, ql)
 
     block low_accurate(ax: F64, t: F64, th: F64, tl: F64, qh: F64, ql: F64):
-        a  : CmF64HypDd = cm_f64_hyp_exp_accurate(ax, t, th, tl)
-        m  : CmF64HypDd = cm_f64_hyp_exp_accurate(ax.neg(), t.neg(), qh, ql)
-        rh : F64        = a.hi.add(m.hi)
-        rl : F64        = a.hi.sub(rh).add(m.hi).add(m.lo).add(a.lo)
+        a   : CmF64HypDd = cm_f64_hyp_exp_accurate(ax, t, th, tl)
+        m   : CmF64HypDd = cm_f64_hyp_exp_accurate(ax.neg(), t.neg(), qh, ql)
+        rh  : F64        = a.hi.add(m.hi)
+        err : F64        = a.hi.sub(rh).add(m.hi)
+        rl  : F64        = err.add(m.lo).add(a.lo)
         jump tail(rh, rl)
 
     block tail(rh: F64, rl: F64):

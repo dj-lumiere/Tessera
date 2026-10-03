@@ -17,11 +17,12 @@ module Standard::Core
 /// The cube root of self, correctly rounded.
 routine F64.cbrt(self: Self) -> Self
     block entry():
-        hx   : U64  = self.bits()
-        mant : U64  = hx.bitand(0x000FFFFFFFFFFFFF)
-        sign : U64  = hx.shr(63)
-        e    : S64  = hx.shr(52).bitand(0x7FF).to<S64>()
-        edge : Bool = e.eq(0).bitor(e.eq(0x7FF))
+        hx    : U64  = self.bits()
+        mant  : U64  = hx.bitand(0x000FFFFFFFFFFFFF)
+        sign  : U64  = hx.shr(63)
+        ebits : U64  = hx.shr(52).bitand(0x7FF)
+        e     : S64  = ebits.to<S64>()
+        edge  : Bool = e.eq(0).bitor(e.eq(0x7FF))
         branch edge
             ? edge(hx, mant, sign, e)
             : reduce(mant, sign, e)
@@ -46,13 +47,14 @@ routine F64.cbrt(self: Self) -> Self
         // cbrt(x) = cbrt(zz) 2^(et-1365) where 1 <= |zz| < 8
         zz : Self = Self.from_bits(cvt1.add(it.to_wrap<U64>().shl(52)).bitor(sign.shl(63)))
         // cbrt(zz) = cbrt(z) isc, where isc is ±1, ±2^(1/3) or ±2^(2/3), and 1 <= z < 2
-        isc : Self = Self.from_bits(cm_f64_cbrt_escale(it).bits().bitor(sign.shl(63)))
-        z   : Self = Self.from_bits(cvt1)
-        r   : Self = Self.div(1.0, z)
-        rr  : Self = r.mul(cm_f64_cbrt_rsc(it, sign))
-        z2  : Self = z.mul(z)
-        c0  : Self = Self.add(0x1.1b0babccfef9cp-1, z.mul(0x1.2c9a3e94d1da5p-1))
-        c2  : Self = Self.add(-0x1.4dc30b1a1ddbap-3, z.mul(0x1.7a8d3e4ec9b07p-6))
+        escale : Self = cm_f64_cbrt_escale(it)
+        isc    : Self = Self.from_bits(escale.bits().bitor(sign.shl(63)))
+        z      : Self = Self.from_bits(cvt1)
+        r      : Self = Self.div(1.0, z)
+        rr     : Self = r.mul(cm_f64_cbrt_rsc(it, sign))
+        z2     : Self = z.mul(z)
+        c0     : Self = Self.add(0x1.1b0babccfef9cp-1, z.mul(0x1.2c9a3e94d1da5p-1))
+        c2     : Self = Self.add(-0x1.4dc30b1a1ddbap-3, z.mul(0x1.7a8d3e4ec9b07p-6))
         // c0 + c1 z + c2 z^2 + c3 z^3 approximates z^(1/3) on [1, 2] with error < 9.2e-5
         y0  : Self = c0.add(z2.mul(c2))
         y02 : Self = y0.mul(y0)
@@ -62,14 +64,15 @@ routine F64.cbrt(self: Self) -> Self
         yz : Self = y0.sub(h0.mul(y0).mul(k))
         y  : Self = yz.mul(isc)
         // one more (linear) Newton iteration, with y^3 computed to about 106 bits
-        y2  : Self = y.mul(y)
-        y2l : Self = y.mul_add(y, y2.neg())
-        y3  : Self = y2.mul(y)
-        y3l : Self = y.mul_add(y2, y3.neg()).add(y.mul(y2l))
-        h   : Self = y3.sub(zz).add(y3l).mul(rr)
-        dy0 : Self = h.mul(y.mul(0x1.5555555555555p-2))
-        y1  : Self = y.sub(dy0)
-        dy  : Self = y.sub(y1).sub(dy0)
+        y2    : Self = y.mul(y)
+        y2l   : Self = y.mul_add(y, y2.neg())
+        y3    : Self = y2.mul(y)
+        y3l   : Self = y.mul_add(y2, y3.neg()).add(y.mul(y2l))
+        resid : Self = y3.sub(zz).add(y3l)
+        h     : Self = resid.mul(rr)
+        dy0   : Self = h.mul(y.mul(0x1.5555555555555p-2))
+        y1    : Self = y.sub(dy0)
+        dy    : Self = y.sub(y1).sub(dy0)
         // the cube root is now y1 + dy with |dy| < 1/2 ulp(y1): rounding is hard only when dy is close to
         // 1/2 ulp or 3/2 ulp
         hard : Bool = cm_f64_cbrt_near_boundary(dy, 0x1p-75)
@@ -78,15 +81,16 @@ routine F64.cbrt(self: Self) -> Self
             : finish(y1, dy, zz, et)
 
     block refine(y1: Self, zz: Self, rr: Self, et: S64):
-        y2   : Self = y1.mul(y1)
-        y2l  : Self = y1.mul_add(y1, y2.neg())
-        y3   : Self = y2.mul(y1)
-        y3l  : Self = y1.mul_add(y2, y3.neg()).add(y1.mul(y2l))
-        h    : Self = y3.sub(zz).add(y3l).mul(rr)
-        dy0  : Self = h.mul(y1.mul(0x1.5555555555555p-2))
-        y    : Self = y1.sub(dy0)
-        dy   : Self = y1.sub(y).sub(dy0)
-        hard : Bool = cm_f64_cbrt_near_boundary(dy, 0x1p-98)
+        y2    : Self = y1.mul(y1)
+        y2l   : Self = y1.mul_add(y1, y2.neg())
+        y3    : Self = y2.mul(y1)
+        y3l   : Self = y1.mul_add(y2, y3.neg()).add(y1.mul(y2l))
+        resid : Self = y3.sub(zz).add(y3l)
+        h     : Self = resid.mul(rr)
+        dy0   : Self = h.mul(y1.mul(0x1.5555555555555p-2))
+        y     : Self = y1.sub(dy0)
+        dy    : Self = y1.sub(y).sub(dy0)
+        hard  : Bool = cm_f64_cbrt_near_boundary(dy, 0x1p-98)
         branch hard
             ? known(y, dy, zz, et)
             : finish(y, dy, zz, et)
@@ -102,7 +106,8 @@ routine F64.cbrt(self: Self) -> Self
             else   -> finish(y1, dy, zz, et)
 
     block finish(y1: Self, dy: Self, zz: Self, et: S64):
-        bits : U64 = y1.bits().add_wrap(et.sub(342).sub(1023).to_wrap<U64>().shl(52))
+        out_e : S64 = et.sub(342).sub(1023)
+        bits  : U64 = y1.bits().add_wrap(out_e.to_wrap<U64>().shl(52))
         // exact cube roots have the low 34 mantissa bits all 0 or all 1
         m0    : U64  = bits.shl(30)
         m0neg : Bool = m0.shr(63).eq(1)
@@ -116,10 +121,12 @@ routine F64.cbrt(self: Self) -> Self
 
     // a cube root that may be exact: round the last bits away
     block exact(bits: U64, y1: Self, dy: Self, zz: Self):
-        cvt4  : Self = Self.from_bits(y1.bits().add_wrap(U64.shl(1, 15)).bitand(0xFFFFFFFFFFFF0000))
-        tight : Bool = cvt4.sub(y1).sub(dy).abs().lt(0x1p-60)
-        one   : Bool = zz.abs().eq(1.0)
-        clear : Bool = tight.bitor(one)
+        rounded_bits : U64  = y1.bits().add_wrap(U64.shl(1, 15))
+        cvt4         : Self = Self.from_bits(rounded_bits.bitand(0xFFFFFFFFFFFF0000))
+        diff         : Self = cvt4.sub(y1).sub(dy)
+        tight        : Bool = diff.abs().lt(0x1p-60)
+        one          : Bool = zz.abs().eq(1.0)
+        clear        : Bool = tight.bitor(one)
         branch clear
             ? return(Self.from_bits(bits.add_wrap(U64.shl(1, 15)).bitand(0xFFFFFFFFFFFF0000)))
             : return(Self.from_bits(bits))

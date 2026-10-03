@@ -441,8 +441,9 @@ private routine cm_f64_sin_fastsum(xh: F64, xl: F64, yh: F64, yl: F64) -> CmF64T
 /// (xh + xl) (ch + cl) in double-double.
 private routine cm_f64_sin_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64TrigDD
     block entry():
-        ahhh : F64 = xh.mul(ch)
-        lo   : F64 = xh.mul(cl).add(xl.mul(ch)).add(xh.mul_add(ch, ahhh.neg()))
+        ahhh  : F64 = xh.mul(ch)
+        cross : F64 = xh.mul(cl).add(xl.mul(ch))
+        lo    : F64 = cross.add(xh.mul_add(ch, ahhh.neg()))
         return(CmF64TrigDD { hi: ahhh, lo: lo })
 
 /// Word j of the 1/(2pi) table: 1/(2pi) ~ sum of T[j] / 2^(64j).
@@ -459,17 +460,20 @@ private routine cm_f64_sin_reduce_large(x: F64) -> CmF64SinReduced
         m  : U64 = U64.shl(1, 52).bitor(ux.bitand(0x000FFFFFFFFFFFFF))
         i  : U64 = e.sub(1011).div(64)
         // the table from bit f of word i on (a shift by 64 leaves nothing for f = 0)
-        f    : U64  = e.sub(1011).bitand(0x3F)
-        back : U64  = U64.sub(64, f)
-        v0   : U64  = cm_f64_sin_t(i).shl(f).bitor(cm_f64_sin_t(i.add(1)).shr(back))
-        v1   : U64  = cm_f64_sin_t(i.add(1)).shl(f).bitor(cm_f64_sin_t(i.add(2)).shr(back))
-        u0   : U128 = m.to<U128>().mul_wrap(cm_f64_trig_u128(v0, v1))
+        f     : U64  = e.sub(1011).bitand(0x3F)
+        back  : U64  = U64.sub(64, f)
+        v0_hi : U64  = cm_f64_sin_t(i).shl(f)
+        v0    : U64  = v0_hi.bitor(cm_f64_sin_t(i.add(1)).shr(back))
+        v1_hi : U64  = cm_f64_sin_t(i.add(1)).shl(f)
+        v1    : U64  = v1_hi.bitor(cm_f64_sin_t(i.add(2)).shr(back))
+        u0    : U128 = m.to<U128>().mul_wrap(cm_f64_trig_u128(v0, v1))
         // round r to nearest, where 0x810000000000000 = 2^59 + 2^52
         magic : U128 = cm_f64_trig_u128(0x0001000000000000, 0x0810000000000000)
         u     : U128 = u0.add_wrap(magic)
         // the next 53 bits of u after the first 15
-        t : F64 = u.shl(15).shr(75).to<F64>()
-        r : F64 = t.mul(0x1p-68).sub(0x1p-16)
+        next53 : U128 = u.shl(15).shr(75)
+        t      : F64  = next53.to<F64>()
+        r      : F64  = t.mul(0x1p-68).sub(0x1p-16)
         return(CmF64SinReduced { k: cm_f64_trig_lo(u.shr(113)), r: r })
 
 /// Sr with Sr/2^128 ~ sin(2 pi r) for 0 <= r < 2^-14, where u, u2 and u4 are r, r^2 and r^4 in 128-bit fixed
@@ -507,10 +511,11 @@ private routine cm_f64_sin_reduce_large_acc(x: F64) -> CmF64SinAccReduced
         e  : U64 = ux.shr(52).bitand(0x7FF)
         m  : U64 = U64.shl(1, 52).bitor(ux.bitand(0x000FFFFFFFFFFFFF))
         // i = ceil((e - 1074) / 64) - 1, possibly -1 (then the first word is 0)
-        ip1 : U64 = e.sub(947).div(64)
-        f   : U64 = e.add(64).sub(1011).bitand(0x3F)
-        w0  : U64 = cm_f64_sin_t(ip1.max(1).sub(1))
-        t0  : U64 = ip1.ge(1)
+        ip1   : U64 = e.sub(947).div(64)
+        e_off : U64 = e.add(64).sub(1011)
+        f     : U64 = e_off.bitand(0x3F)
+        w0    : U64 = cm_f64_sin_t(ip1.max(1).sub(1))
+        t0    : U64 = ip1.ge(1)
             ? w0
             : 0
         t1 : U64 = cm_f64_sin_t(ip1)

@@ -61,7 +61,8 @@ routine f128_is_negative_bits(bits: U128) -> Bool
 
 routine f128_exponent(bits: U128) -> S64
     block entry():
-        r : S64 = bits.shr(112).to<S64>().bitand(32767)
+        exponent_bits : U128 = bits.shr(112)
+        r             : S64  = exponent_bits.to<S64>().bitand(32767)
         return(r)
 
 routine f128_fraction(bits: U128) -> U128
@@ -224,7 +225,8 @@ routine f128_unpack(bits: U128) -> F128Parts
         return(p)
 
     block subnormal(fraction: U128):
-        shift : S64       = fraction.leading_zeros().to<S64>().sub(15)
+        lz    : U128      = fraction.leading_zeros()
+        shift : S64       = lz.to<S64>().sub(15)
         p     : F128Parts = F128Parts { sig: fraction.shl(shift.to<U128>()),
             exponent: -16382.sub(shift) }
         return(p)
@@ -300,8 +302,10 @@ routine f128_add_bits(a: U128, b: U128) -> U128
         b_hid : U128 = b_sub
             ? 0
             : F128_IMPLICIT
-        a_sig   : U128 = f128_fraction(a).bitor(a_hid).shl(3)
-        b_sig   : U128 = f128_fraction(b).bitor(b_hid).shl(3)
+        a_frac  : U128 = f128_fraction(a).bitor(a_hid)
+        a_sig   : U128 = a_frac.shl(3)
+        b_frac  : U128 = f128_fraction(b).bitor(b_hid)
+        b_sig   : U128 = b_frac.shl(3)
         a_big   : Bool = a_e.ge(b_e)
         big_sig : U128 = a_big
             ? a_sig
@@ -434,10 +438,12 @@ routine f128_div_bits(a: U128, b: U128) -> U128
         high     : Div3By2   = div_3by2(n.shr(64).to<U64>(), n.to_wrap<U64>(), 0, d1, d0, v)
         r        : U128      = high.remainder
         low      : Div3By2   = div_3by2(r.shr(64).to<U64>(), r.to_wrap<U64>(), 0, d1, d0, v)
-        q        : U128      = high.quotient.to<U128>().shl(64).bitor(low.quotient.to<U128>())
+        q_high   : U128      = high.quotient.to<U128>().shl(64)
+        q        : U128      = q_high.bitor(low.quotient.to<U128>())
         sticky   : Bool      = low.remainder.ne(0)
         sig      : U128      = q.bitor(sticky.to<U128>())
-        exponent : S64       = pa.exponent.sub(pb.exponent).sub(1).add(F128_BIAS)
+        unbiased : S64       = pa.exponent.sub(pb.exponent).sub(1)
+        exponent : S64       = unbiased.add(F128_BIAS)
         negative : Bool      = sign.ne(0)
         bits     : U128      = f128_round_pack(negative, exponent, sig)
         return(bits)
@@ -480,23 +486,25 @@ routine f128_sqrt_bits(a: U128) -> U128
 /// hi < x (after normalizing, the 3-by-2 steps need it). x must be nonzero.
 routine div_256_by_128(hi: U128, lo: U128, x: U128) -> U128
     block entry():
-        s     : S64  = x.leading_zeros().to<S64>()
-        d     : U128 = x.shl(s.to<U128>())
-        spill : U128 = lo.shr(128.sub(s).min(127).to<U128>())
-        carry : U128 = s.eq(0)
+        s           : S64  = x.leading_zeros().to<S64>()
+        d           : U128 = x.shl(s.to<U128>())
+        spill_shift : S64  = 128.sub(s).min(127)
+        spill       : U128 = lo.shr(spill_shift.to<U128>())
+        carry       : U128 = s.eq(0)
             ? 0
             : spill
-        n_hi : U128    = hi.shl(s.to<U128>()).bitor(carry)
-        n_lo : U128    = lo.shl(s.to<U128>())
-        d1   : U64     = d.shr(64).to<U64>()
-        d0   : U64     = d.to_wrap<U64>()
-        v    : U64     = div_3by2_prepare(d1, d0)
-        high : Div3By2 = div_3by2(n_hi.shr(64).to<U64>(), n_hi.to_wrap<U64>(),
+        n_hi   : U128    = hi.shl(s.to<U128>()).bitor(carry)
+        n_lo   : U128    = lo.shl(s.to<U128>())
+        d1     : U64     = d.shr(64).to<U64>()
+        d0     : U64     = d.to_wrap<U64>()
+        v      : U64     = div_3by2_prepare(d1, d0)
+        high   : Div3By2 = div_3by2(n_hi.shr(64).to<U64>(), n_hi.to_wrap<U64>(),
             n_lo.shr(64).to<U64>(), d1, d0, v)
-        r    : U128    = high.remainder
-        low  : Div3By2 = div_3by2(r.shr(64).to<U64>(), r.to_wrap<U64>(), n_lo.to_wrap<U64>(), d1,
+        r      : U128    = high.remainder
+        low    : Div3By2 = div_3by2(r.shr(64).to<U64>(), r.to_wrap<U64>(), n_lo.to_wrap<U64>(), d1,
             d0, v)
-        q    : U128    = high.quotient.to<U128>().shl(64).bitor(low.quotient.to<U128>())
+        q_high : U128    = high.quotient.to<U128>().shl(64)
+        q      : U128    = q_high.bitor(low.quotient.to<U128>())
         return(q)
 
 /// floor(sqrt(n)) for n = hi × 2^128 + lo with 2^230 <= n < 2^232: Newton's
@@ -509,7 +517,8 @@ routine isqrt_256(hi: U128, lo: U128) -> U128
         even  : S64 = shift.add(shift.bitand(1))
         top   : U64 = hi.shr(even.sub(128).to<U128>()).to<U64>()
         // F64's root of top is within 2^-50 relative: + 2 makes the seed an overestimate
-        guess : U64  = top.to<F64>().sqrt().to<U64>().add(2)
+        root  : F64  = top.to<F64>().sqrt()
+        guess : U64  = root.to<U64>().add(2)
         seed  : U128 = guess.to<U128>().shl(even.div(2).to<U128>())
         jump step(seed)
 
@@ -530,7 +539,8 @@ routine square_equals(x: U128, hi: U128, lo: U128) -> Bool
         cross : U128 = x0.mul(x1).shl(1)
         sq_lo : U128 = low.add_wrap(cross.shl(64))
         carry : U128 = sq_lo.lt(low).to<U128>()
-        sq_hi : U128 = x1.mul(x1).add(cross.shr(64)).add(carry)
+        x1_sq : U128 = x1.mul(x1)
+        sq_hi : U128 = x1_sq.add(cross.shr(64)).add(carry)
         r     : Bool = sq_hi.eq(hi).bitand(sq_lo.eq(lo))
         return(r)
 
@@ -548,7 +558,8 @@ routine f128_order_key(bits: U128) -> U128
 /// true unless a NaN is involved; +0 and -0 are equal
 routine f128_ordered(a: U128, b: U128) -> Bool
     block entry():
-        r : Bool = f128_is_nan_bits(a).bitor(f128_is_nan_bits(b)).bitnot()
+        either_nan : Bool = f128_is_nan_bits(a).bitor(f128_is_nan_bits(b))
+        r          : Bool = either_nan.bitnot()
         return(r)
 
 routine F128.eq(self: Self, other: Self) -> Bool
@@ -617,7 +628,8 @@ routine F128.total_compare(self: Self, other: Self) -> S32
 /// bias, and all-ones exponent exponent_max. NaN payloads move to the top.
 routine f128_widen(bits: U64, width: U64, mantissa_bits: U64, bias: S64, exponent_max: U64) -> F128
     block entry():
-        negative : Bool = bits.shr(width.sub(1)).bitand(1).eq(1)
+        sign_bit : U64  = bits.shr(width.sub(1)).bitand(1)
+        negative : Bool = sign_bit.eq(1)
         sign     : U128 = negative
             ? F128_SIGN
             : 0
@@ -631,13 +643,20 @@ routine f128_widen(bits: U64, width: U64, mantissa_bits: U64, bias: S64, exponen
             special   -> done(sign.bitor(F128_INF).bitor(top))
             zero      -> done(sign)
             subnormal -> sub(sign, top)
-            else      -> done(sign.bitor(exponent.to<S64>().sub(bias).add(F128_BIAS).to<U128>().shl(112)).bitor(top))
+            else      -> normal(sign, exponent, top)
+
+    block normal(sign: U128, exponent: U64, top: U128):
+        unbiased : S64  = exponent.to<S64>().sub(bias)
+        rebiased : S64  = unbiased.add(F128_BIAS)
+        field    : U128 = rebiased.to<U128>().shl(112)
+        jump done(sign.bitor(field).bitor(top))
 
     // value = fraction × 2^(1 - bias - mantissa_bits): exact after normalizing
     block sub(sign: U128, top: U128):
-        negative : Bool = sign.ne(0)
-        exponent : S64  = 1.sub(bias).add(F128_BIAS).add(3)
-        r        : U128 = f128_round_pack(negative, exponent, top)
+        negative     : Bool = sign.ne(0)
+        min_exponent : S64  = 1.sub(bias).add(F128_BIAS)
+        exponent     : S64  = min_exponent.add(3)
+        r            : U128 = f128_round_pack(negative, exponent, top)
         jump done(r)
 
     block done(r: U128):
@@ -667,22 +686,25 @@ routine f128_narrow(value: F128, width: U64, mantissa_bits: U64, bias: S64,
 
     // keep the top payload bits and force the quiet bit
     block nan(bits: U128, sign: U64, infinity: U64):
-        payload : U64 = f128_fraction(bits).shr(112.sub(mantissa_bits).to<U128>()).to<U64>()
-        quiet   : U64 = 1.shl(mantissa_bits.sub(1))
-        r       : U64 = sign.bitor(infinity).bitor(payload).bitor(quiet)
+        top_fraction : U128 = f128_fraction(bits).shr(112.sub(mantissa_bits).to<U128>())
+        payload      : U64  = top_fraction.to<U64>()
+        quiet        : U64  = 1.shl(mantissa_bits.sub(1))
+        signed_inf   : U64  = sign.bitor(infinity)
+        r            : U64  = signed_inf.bitor(payload).bitor(quiet)
         return(r)
 
     // q = round(sig / 2^shift): the quantum is 2^(e - mantissa_bits), or the
     // subnormal quantum when e is below the target's smallest normal exponent.
     block finite(bits: U128, sign: U64, infinity: U64):
-        p      : F128Parts = f128_unpack(bits)
-        min_e  : S64       = 1.sub(bias)
-        e_used : S64       = p.exponent.max(min_e)
-        shift  : S64       = 112.sub(mantissa_bits.to<S64>()).add(e_used.sub(p.exponent))
-        sticky : U128      = f128_shr_sticky(p.sig, shift.sub(2).max(0))
+        p         : F128Parts = f128_unpack(bits)
+        min_e     : S64       = 1.sub(bias)
+        e_used    : S64       = p.exponent.max(min_e)
+        shift     : S64       = 112.sub(mantissa_bits.to<S64>()).add(e_used.sub(p.exponent))
+        sticky    : U128      = f128_shr_sticky(p.sig, shift.sub(2).max(0))
+        grs_shift : S64       = 2.sub(shift).max(0)
         // two extra bits (half, rest) under the kept ones
         grs : U128 = shift.lt(2)
-            ? p.sig.shl(2.sub(shift).max(0).to<U128>())
+            ? p.sig.shl(grs_shift.to<U128>())
             : sticky
         kept  : U128 = grs.shr(2)
         low   : U128 = grs.bitand(3)
@@ -804,10 +826,12 @@ routine f128_whole_magnitude(bits: U128) -> U128
             else  -> whole(p)
 
     block whole(p: F128Parts):
-        up    : Bool = p.exponent.ge(112)
-        left  : U128 = p.sig.shl(p.exponent.sub(112).max(0).to<U128>())
-        right : U128 = p.sig.shr(112.sub(p.exponent).max(0).to<U128>())
-        r     : U128 = up
+        up          : Bool = p.exponent.ge(112)
+        left_shift  : S64  = p.exponent.sub(112).max(0)
+        left        : U128 = p.sig.shl(left_shift.to<U128>())
+        right_shift : S64  = 112.sub(p.exponent).max(0)
+        right       : U128 = p.sig.shr(right_shift.to<U128>())
+        r           : U128 = up
             ? left
             : right
         return(r)
@@ -970,7 +994,8 @@ routine f128_shr_sticky256(x: U256, n: S64) -> U256
             : some()
 
     block all():
-        any : U256 = x.ne(0).to<U64>().to<U256>()
+        nonzero : U64  = x.ne(0).to<U64>()
+        any     : U256 = nonzero.to<U256>()
         return(any)
 
     block some():
@@ -1088,12 +1113,14 @@ routine f128_fma_bits(x: U128, y: U128, c: U128) -> U128
         branch zero
             ? return(0)
             : continue
-        lz       : S64  = r.leading_zeros().to<S64>()
-        n        : U256 = r.shl(lz.to<U256>())
-        high     : U128 = n.shr(128).to<U128>()
-        sig      : U128 = high.bitor(n.to_wrap<U128>().ne(0).to<U128>())
-        exponent : S64  = e.sub(lz).add(128).add(F128_BIAS).add(115)
-        bits     : U128 = f128_round_pack(negative, exponent, sig)
+        lz         : S64  = r.leading_zeros().to<S64>()
+        n          : U256 = r.shl(lz.to<U256>())
+        high       : U128 = n.shr(128).to<U128>()
+        low_sticky : Bool = n.to_wrap<U128>().ne(0)
+        sig        : U128 = high.bitor(low_sticky.to<U128>())
+        unbiased   : S64  = e.sub(lz).add(128)
+        exponent   : S64  = unbiased.add(F128_BIAS).add(115)
+        bits       : U128 = f128_round_pack(negative, exponent, sig)
         return(bits)
 
 // ============================================================
@@ -1434,7 +1461,8 @@ routine F128.next_up(self: Self) -> Self
 /// The greatest value below self (IEEE 754 nextDown).
 routine F128.next_down(self: Self) -> Self
     block entry():
-        r : Self = self.neg().next_up().neg()
+        negated_up : Self = self.neg().next_up()
+        r          : Self = negated_up.neg()
         return(r)
 
 /// self × 2^n: exact unless it overflows (to ±inf) or lands among the
@@ -1507,7 +1535,8 @@ routine F128.frexp(self: Self) -> F128Frexp
 /// 2^k, for |k| within the normal range.
 routine f128_pow2(k: S64) -> F128
     block entry():
-        r : F128 = f128_of(F128_BIAS.add(k).to<U128>().shl(112))
+        biased : S64  = F128_BIAS.add(k)
+        r      : F128 = f128_of(biased.to<U128>().shl(112))
         return(r)
 
 /// Whether self, rounded toward zero, lies in [-2^lo_bits, 2^hi_bits) (a

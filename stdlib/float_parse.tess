@@ -113,11 +113,12 @@ require N: USize
     block int_char(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, seen: Bool):
         data  : @Byte = text.data
         c     : Byte  = data.stride(i).load()
+        code  : U8    = c.to<U8>()
         digit : Bool  = is_ascii_digit(c)
         point : Bool  = c.eq(b'.')
         when:
             digit -> int_digit(i, negative, kept, exponent, sticky,
-                c.to<U8>().sub(b'0'.to<U8>()).to<U64>())
+                code.sub(b'0'.to<U8>()).to<U64>())
             point -> frac_loop(i.add(1), negative, kept, exponent, sticky, seen)
             else  -> exponent_mark(i, negative, kept, exponent, sticky, seen)
 
@@ -144,10 +145,10 @@ require N: USize
     block frac_char(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, seen: Bool):
         data  : @Byte = text.data
         c     : Byte  = data.stride(i).load()
+        code  : U8    = c.to<U8>()
         digit : Bool  = is_ascii_digit(c)
         branch digit
-            ? frac_digit(i, negative, kept, exponent, sticky,
-                c.to<U8>().sub(b'0'.to<U8>()).to<U64>())
+            ? frac_digit(i, negative, kept, exponent, sticky, code.sub(b'0'.to<U8>()).to<U64>())
             : exponent_mark(i, negative, kept, exponent, sticky, seen)
 
     block frac_digit(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, d: U64):
@@ -211,8 +212,10 @@ require N: USize
 
     block exp_digit(i: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool,
         exp_minus: Bool, value: S64, c: Byte):
-        d    : S64 = c.to<U8>().sub(b'0'.to<U8>()).to<S64>()
-        next : S64 = value.mul(10).add(d).min(1000000)
+        code     : U8  = c.to<U8>()
+        d        : S64 = code.sub(b'0'.to<U8>()).to<S64>()
+        appended : S64 = value.mul(10).add(d)
+        next     : S64 = appended.min(1000000)
         jump exp_loop(i.add(1), negative, kept, exponent, sticky, exp_minus, next)
 
     block exp_done(negative: Bool, kept: S64, exponent: S64, sticky: Bool, exp_minus: Bool,
@@ -286,9 +289,11 @@ require N: USize
     // Pick the binary exponent e so that q = floor(value / 2^e) has
     // mantissa_bits + 1 bits, or fewer at the subnormal floor.
     block estimate(infinity: U128, d: @BigNat<N>):
-        log2  : S64 = digits.bit_length().to<S64>().sub(d.bit_length().to<S64>())
-        floor : S64 = 1.sub(bias).sub(mantissa_bits)
-        e     : S64 = log2.sub(mantissa_bits).sub(1).max(floor)
+        num_bits  : S64 = digits.bit_length().to<S64>()
+        log2      : S64 = num_bits.sub(d.bit_length().to<S64>())
+        floor     : S64 = 1.sub(bias).sub(mantissa_bits)
+        unclamped : S64 = log2.sub(mantissa_bits).sub(1)
+        e         : S64 = unclamped.max(floor)
         claim a : @BigNat<N> <- uninit
         claim b : @BigNat<N> <- uninit
         claim t : @BigNat<N> <- uninit
@@ -345,8 +350,9 @@ require N: USize
         biased : S64  = normal
             ? e2.add(mantissa_bits).add(bias)
             : 0
-        overflow : Bool = biased.ge(exponent_max)
-        bits     : U128 = biased.to<U128>().shl(mantissa_bits.to<U128>()).bitor(q2.bitand(hidden.sub(1)))
+        overflow       : Bool = biased.ge(exponent_max)
+        exponent_field : U128 = biased.to<U128>().shl(mantissa_bits.to<U128>())
+        bits           : U128 = exponent_field.bitor(q2.bitand(hidden.sub(1)))
         branch overflow
             ? return(infinity)
             : return(bits)
@@ -505,20 +511,22 @@ private record F128Wide
 /// two numbers in [2^127, 2^128) is in [2^254, 2^256).
 routine f128_wide_mul(a: F128Wide, m: U128, e: S64) -> F128Wide
     block entry():
-        x    : U128 = a.mant
-        x0   : U128 = x.bitand(0xFFFFFFFFFFFFFFFF)
-        x1   : U128 = x.shr(64)
-        y0   : U128 = m.bitand(0xFFFFFFFFFFFFFFFF)
-        y1   : U128 = m.shr(64)
-        p00  : U128 = x0.mul(y0)
-        p01  : U128 = x0.mul(y1)
-        p10  : U128 = x1.mul(y0)
-        p11  : U128 = x1.mul(y1)
-        mid  : U128 = p00.shr(64).add(p01.bitand(0xFFFFFFFFFFFFFFFF)).add(p10.bitand(0xFFFFFFFFFFFFFFFF))
-        hi   : U128 = p11.add(p01.shr(64)).add(p10.shr(64)).add(mid.shr(64))
-        next : U128 = mid.shr(63).bitand(1)  // bit 127 of the low half
-        top  : Bool = hi.shr(127).eq(1)  // bit 255 set
-        mant : U128 = top
+        x      : U128 = a.mant
+        x0     : U128 = x.bitand(0xFFFFFFFFFFFFFFFF)
+        x1     : U128 = x.shr(64)
+        y0     : U128 = m.bitand(0xFFFFFFFFFFFFFFFF)
+        y1     : U128 = m.shr(64)
+        p00    : U128 = x0.mul(y0)
+        p01    : U128 = x0.mul(y1)
+        p10    : U128 = x1.mul(y0)
+        p11    : U128 = x1.mul(y1)
+        carry0 : U128 = p00.shr(64)
+        mid    : U128 = carry0.add(p01.bitand(0xFFFFFFFFFFFFFFFF)).add(p10.bitand(0xFFFFFFFFFFFFFFFF))
+        hi_p   : U128 = p11.add(p01.shr(64)).add(p10.shr(64))
+        hi     : U128 = hi_p.add(mid.shr(64))
+        next   : U128 = mid.shr(63).bitand(1)  // bit 127 of the low half
+        top    : Bool = hi.shr(127).eq(1)  // bit 255 set
+        mant   : U128 = top
             ? hi
             : hi.shl(1).bitor(next)
         exponent : S64      = a.exponent.add(e).add(top ? 128 : 127)

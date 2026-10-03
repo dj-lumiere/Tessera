@@ -86,7 +86,8 @@ routine cm_asin_lo(u: S128) -> U64
 
 routine cm_asin_join(hi: U64, lo: U64) -> U128
     block entry():
-        r : U128 = hi.to<U128>().shl(64).bitor(lo.to<U128>())
+        upper : U128 = hi.to<U128>().shl(64)
+        r     : U128 = upper.bitor(lo.to<U128>())
         return(r)
 
 /// The high word of the unsigned product a*b.
@@ -111,15 +112,18 @@ routine cm_asin_mhii(a: S64, b: S64) -> S64
 /// a + b + c, with the carry out (0, 1 or 2).
 routine cm_asin_ac(a: U64, b: U64, c: U64) -> CmAsinCarry
     block entry():
-        s : U128        = a.to<U128>().add(b.to<U128>()).add(c.to<U128>())
-        r : CmAsinCarry = CmAsinCarry { sum: s.to_wrap<U64>(), carry: s.shr(64).to<U64>() }
+        ab : U128        = a.to<U128>().add(b.to<U128>())
+        s  : U128        = ab.add(c.to<U128>())
+        r  : CmAsinCarry = CmAsinCarry { sum: s.to_wrap<U64>(), carry: s.shr(64).to<U64>() }
         return(r)
 
 /// a - b - c, with the borrow out (0 or 1).
 routine cm_asin_sc(a: U64, b: U64, c: U64) -> CmAsinCarry
     block entry():
-        s      : U128        = a.to<U128>().sub_wrap(b.to<U128>()).sub_wrap(c.to<U128>())
-        borrow : U64         = s.shr(64).to<U64>().bitand(1)
+        ab     : U128        = a.to<U128>().sub_wrap(b.to<U128>())
+        s      : U128        = ab.sub_wrap(c.to<U128>())
+        s_hi   : U64         = s.shr(64).to<U64>()
+        borrow : U64         = s_hi.bitand(1)
         r      : CmAsinCarry = CmAsinCarry { sum: s.to_wrap<U64>(), carry: borrow }
         return(r)
 
@@ -291,22 +295,23 @@ routine cm_asin_mh3d(y0: U64, y1: U64, x: CmAsinW3) -> CmAsinW3
 /// a cubic from CM_ASIN_RSQRT, then one Newton step r1 = r0 - r0*(r0^2*m - 1)/2.
 routine cm_asin_rsqrt9(m: U64) -> U64
     block entry():
-        rsqrt : @U64     = CM_ASIN_RSQRT.to<@U64>()
-        ix    : USize    = m.shr(58).to<USize>().shl(2)
-        row   : CmAsinW4 = cm_asin_load4(rsqrt, ix)
-        c0    : U64      = row.w0.shl(31).bitor(0x8000000000000000)
-        c1    : U64      = row.w1.shl(25)
-        d     : U64      = m.shl(6).shr(32)
-        d2    : U64      = d.mul_wrap(d).shr(32)
-        even  : U64      = c0.add_wrap(d2.mul_wrap(row.w2).shr(13))
-        odd_c : U64      = c1.add_wrap(d2.mul_wrap(row.w3).shr(19))
-        odd   : U64      = d.mul_wrap(odd_c.shr(26)).shr(6)
-        r0    : U64      = even.sub_wrap(odd)
-        r0_sq : U64      = cm_asin_mhuu(r0, r0)
-        h     : U64      = cm_asin_mhuu(m, r0_sq).add_wrap(r0_sq)
-        step  : U64      = cm_asin_mhii(h.to_wrap<S64>(), r0.shr(1).to<S64>()).to_wrap<U64>()
-        r1    : U64      = r0.sub_wrap(step)
-        r     : U64      = r1.eq(0)
+        rsqrt   : @U64     = CM_ASIN_RSQRT.to<@U64>()
+        segment : USize    = m.shr(58).to<USize>()
+        ix      : USize    = segment.shl(2)
+        row     : CmAsinW4 = cm_asin_load4(rsqrt, ix)
+        c0      : U64      = row.w0.shl(31).bitor(0x8000000000000000)
+        c1      : U64      = row.w1.shl(25)
+        d       : U64      = m.shl(6).shr(32)
+        d2      : U64      = d.mul_wrap(d).shr(32)
+        even    : U64      = c0.add_wrap(d2.mul_wrap(row.w2).shr(13))
+        odd_c   : U64      = c1.add_wrap(d2.mul_wrap(row.w3).shr(19))
+        odd     : U64      = d.mul_wrap(odd_c.shr(26)).shr(6)
+        r0      : U64      = even.sub_wrap(odd)
+        r0_sq   : U64      = cm_asin_mhuu(r0, r0)
+        h       : U64      = cm_asin_mhuu(m, r0_sq).add_wrap(r0_sq)
+        step    : U64      = cm_asin_mhii(h.to_wrap<S64>(), r0.shr(1).to<S64>()).to_wrap<U64>()
+        r1      : U64      = r0.sub_wrap(step)
+        r       : U64      = r1.eq(0)
             ? U64.MAX
             : r1
         return(r)
@@ -325,12 +330,14 @@ routine cm_asin_jget(x: U64) -> USize
         e_norm : S64 = e_zero
             ? e.sub(nz.to<S64>())
             : e
-        lz_raw : S64   = e_norm.mul(16).add(mz_norm.shr(60).to<S64>()).add(161)
-        lz     : U64   = lz_raw.max(0).to<U64>()
-        ind    : @U64  = CM_ASIN_IND.to<@U64>()
-        slot   : USize = lz.min(255).to<USize>()
-        listed : USize = ind.stride(slot).load().to<USize>()
-        j      : USize = lz.lt(256)
+        lz_scaled  : S64   = e_norm.mul(16).add(mz_norm.shr(60).to<S64>())
+        lz_raw     : S64   = lz_scaled.add(161)
+        lz         : U64   = lz_raw.max(0).to<U64>()
+        ind        : @U64  = CM_ASIN_IND.to<@U64>()
+        slot       : USize = lz.min(255).to<USize>()
+        listed_raw : U64   = ind.stride(slot).load()
+        listed     : USize = listed_raw.to<USize>()
+        j          : USize = lz.lt(256)
             ? listed
             : 0
         tz    : S64   = e_norm.mul(2048).add(mz_norm.shr(53).to<S64>())
@@ -364,9 +371,12 @@ routine cm_asin_omx2(s: S64, x0: U64, x1: U64, mode: S64) -> CmAsinNorm
         q     : CmAsinW4 = cm_asin_sqru(x0, x1)
         ls    : S64      = cm_asin_sh(s.bitnot()).to<S64>()
         rs    : S64      = cm_asin_sh(s).to<S64>()
-        y0    : U64      = q.w1.shl(1).shl(ls.to<U64>()).bitor(q.w0.shr(rs.to<U64>()))
-        y1    : U64      = q.w2.shl(1).shl(ls.to<U64>()).bitor(q.w1.shr(rs.to<U64>()))
-        y2    : U64      = q.w3.shl(1).shl(ls.to<U64>()).bitor(q.w2.shr(rs.to<U64>()))
+        y0_hi : U64      = q.w1.shl(1).shl(ls.to<U64>())
+        y0    : U64      = y0_hi.bitor(q.w0.shr(rs.to<U64>()))
+        y1_hi : U64      = q.w2.shl(1).shl(ls.to<U64>())
+        y1    : U64      = y1_hi.bitor(q.w1.shr(rs.to<U64>()))
+        y2_hi : U64      = q.w3.shl(1).shl(ls.to<U64>())
+        y2    : U64      = y2_hi.bitor(q.w2.shr(rs.to<U64>()))
         y3    : U64      = q.w3.shr(rs.to<U64>())
         y     : CmAsinW4 = CmAsinW4 { w0: y0, w1: y1, w2: y2, w3: y3 }
         exact : Bool     = mode.eq(2)
@@ -435,14 +445,15 @@ routine cm_asin_fast_sqrt(x0: U64, x1: U64, nz: S64, mode: S64) -> CmAsinRoot3
         sx  : CmAsinW3   = cm_asin_mh3w(r, qhi)  // sqrt(1 - x^2), first try
         hq  : CmAsinW3   = cm_asin_mh3w(r, sx)
         // the Newton correction: sx - sx*(sx*r - 1)/2 with a cubic term
-        h0   : U64  = hq.w0.shr(2).bitor(hq.w1.shl(62))
-        h1   : U64  = hq.w1.shr(2).bitor(hq.w2.shl(62))
-        h2sq : U64  = cm_asin_mhii(h1.to_wrap<S64>(), h1.to_wrap<S64>()).to_wrap<U64>()
-        h2   : U64  = h2sq.add_wrap(h2sq.shr(1))
-        lk   : S64  = e.bitand(1).add(2)
-        rk   : S64  = cm_asin_sh(64.sub(lk)).to<S64>()
-        cube : U128 = cm_asin_join(h2.shr(rk.to<U64>()), h2.shl(lk.to<U64>()))
-        hh   : S128 = cm_asin_join(h1, h0).sub_wrap(cube).to_wrap<S128>()
+        h0     : U64  = hq.w0.shr(2).bitor(hq.w1.shl(62))
+        h1     : U64  = hq.w1.shr(2).bitor(hq.w2.shl(62))
+        h2sq   : U64  = cm_asin_mhii(h1.to_wrap<S64>(), h1.to_wrap<S64>()).to_wrap<U64>()
+        h2     : U64  = h2sq.add_wrap(h2sq.shr(1))
+        lk     : S64  = e.bitand(1).add(2)
+        rk     : S64  = cm_asin_sh(64.sub(lk)).to<S64>()
+        cube   : U128 = cm_asin_join(h2.shr(rk.to<U64>()), h2.shl(lk.to<U64>()))
+        h_full : U128 = cm_asin_join(h1, h0)
+        hh     : S128 = h_full.sub_wrap(cube).to_wrap<S128>()
         // d = high part of the (unsigned sx) x (signed hh) product
         sa : U128 = cm_asin_join(sx.w2, sx.w1)
         du : U128 = cm_asin_mhuu128(sa.to_wrap<S128>(), hh)
@@ -464,15 +475,16 @@ routine cm_asin_fast_sqrt(x0: U64, x1: U64, nz: S64, mode: S64) -> CmAsinRoot3
 /// 128-bit mantissa xa, nz = 0x3fff - exponent, the table point j and sqrt(1 - x^2) in root.
 routine cm_asin_reduce3(xa: U128, nz: S64, j: USize, root: CmAsinRoot3) -> CmAsinW3
     block entry():
-        xs    : U128     = xa.shr(cm_asin_sh(nz).to_wrap<S64>().to<U128>())
-        cth   : @U64     = CM_ASIN_CTH.to<@U64>()
-        cos_j : CmAsinW3 = cm_asin_load3(cth, j.mul(5).add(2))
-        p     : CmAsinW3 = cm_asin_mh3d(cm_asin_lo(xs.to_wrap<S128>()), cm_asin_hi(xs), cos_j)
-        pth   : @U64     = CM_ASIN_PTH.to<@U64>()
-        sin_j : U64      = pth.stride(j).load()
-        sp    : S64      = 43.sub(root.e.shr(1))
-        root3 : CmAsinW3 = CmAsinW3 { w0: root.w0, w1: root.w1, w2: root.w2 }
-        up    : Bool     = sp.ge(0)
+        nz_shift : S64      = cm_asin_sh(nz).to_wrap<S64>()
+        xs       : U128     = xa.shr(nz_shift.to<U128>())
+        cth      : @U64     = CM_ASIN_CTH.to<@U64>()
+        cos_j    : CmAsinW3 = cm_asin_load3(cth, j.mul(5).add(2))
+        p        : CmAsinW3 = cm_asin_mh3d(cm_asin_lo(xs.to_wrap<S128>()), cm_asin_hi(xs), cos_j)
+        pth      : @U64     = CM_ASIN_PTH.to<@U64>()
+        sin_j    : U64      = pth.stride(j).load()
+        sp       : S64      = 43.sub(root.e.shr(1))
+        root3    : CmAsinW3 = CmAsinW3 { w0: root.w0, w1: root.w1, w2: root.w2 }
+        up       : Bool     = sp.ge(0)
         branch up
             ? scaled_up(p, sin_j, sp, root3)
             : scaled_down(p, sin_j, sp, root3)
@@ -622,10 +634,14 @@ routine cm_asin_clz5(a: CmAsinW5, fallback: S64) -> S64
         has1 : Bool = a.w1.ne(0)
         has0 : Bool = a.w0.ne(0)
         z4   : S64  = a.w4.leading_zeros().to<S64>()
-        z3   : S64  = a.w3.leading_zeros().to<S64>().add(64)
-        z2   : S64  = a.w2.leading_zeros().to<S64>().add(128)
-        z1   : S64  = a.w1.leading_zeros().to<S64>().add(192)
-        z0   : S64  = a.w0.leading_zeros().to<S64>().add(256)
+        lz3  : U64  = a.w3.leading_zeros()
+        z3   : S64  = lz3.to<S64>().add(64)
+        lz2  : U64  = a.w2.leading_zeros()
+        z2   : S64  = lz2.to<S64>().add(128)
+        lz1  : U64  = a.w1.leading_zeros()
+        z1   : S64  = lz1.to<S64>().add(192)
+        lz0  : U64  = a.w0.leading_zeros()
+        z0   : S64  = lz0.to<S64>().add(256)
         when:
             has4 -> return(z4)
             has3 -> return(z3)
@@ -1005,15 +1021,16 @@ routine cm_asin_getcos(ex: S64, x0: U64, x1: U64) -> CmAsinRoot5
 /// the 128-bit mantissa xa, nz = 0x3fff - exponent, the table point j and sqrt(1 - x^2) in root.
 routine cm_asin_reduce5(xa: U128, nz: S64, j: USize, root: CmAsinRoot5) -> CmAsinW5
     block entry():
-        xs    : U128     = xa.shr(cm_asin_sh(nz).to_wrap<S64>().to<U128>())
-        cth   : @U64     = CM_ASIN_CTH.to<@U64>()
-        cos_j : CmAsinW5 = cm_asin_load5(cth, j.mul(5))
-        xc    : CmAsinW5 = cm_asin_mh5d(cm_asin_lo(xs.to_wrap<S128>()), cm_asin_hi(xs), cos_j)
-        pth   : @U64     = CM_ASIN_PTH.to<@U64>()
-        sin_j : U64      = pth.stride(j).load()
-        sp    : S64      = 43.sub(root.e.shr(1))
-        up    : Bool     = sp.ge(0)
-        sj    : U64      = up
+        nz_shift : S64      = cm_asin_sh(nz).to_wrap<S64>()
+        xs       : U128     = xa.shr(nz_shift.to<U128>())
+        cth      : @U64     = CM_ASIN_CTH.to<@U64>()
+        cos_j    : CmAsinW5 = cm_asin_load5(cth, j.mul(5))
+        xc       : CmAsinW5 = cm_asin_mh5d(cm_asin_lo(xs.to_wrap<S128>()), cm_asin_hi(xs), cos_j)
+        pth      : @U64     = CM_ASIN_PTH.to<@U64>()
+        sin_j    : U64      = pth.stride(j).load()
+        sp       : S64      = 43.sub(root.e.shr(1))
+        up       : Bool     = sp.ge(0)
+        sj       : U64      = up
             ? sin_j.shl(cm_asin_sh(sp))
             : sin_j
         sq      : CmAsinW5 = cm_asin_mh5w(sj, root.root)
@@ -1107,11 +1124,12 @@ routine cm_asin_evalpoly(t2: CmAsinW5) -> CmAsinW5
 /// odd polynomial part, before alignment).
 routine cm_asin_poly5(t: CmAsinW5, nz: S64) -> CmAsinW5
     block entry():
-        t2_full : CmAsinW5 = cm_asin_sqrh5(t)
-        t3      : CmAsinW5 = cm_asin_mh5(t, t2_full)
-        t2      : CmAsinW5 = cm_asin_shift5(t2_full, nz.sub(6).mul(2).sub(1))
-        p       : CmAsinW5 = cm_asin_evalpoly(t2)
-        r       : CmAsinW5 = cm_asin_mh5(t3, p)
+        t2_full  : CmAsinW5 = cm_asin_sqrh5(t)
+        t3       : CmAsinW5 = cm_asin_mh5(t, t2_full)
+        t2_shift : S64      = nz.sub(6).mul(2)
+        t2       : CmAsinW5 = cm_asin_shift5(t2_full, t2_shift.sub(1))
+        p        : CmAsinW5 = cm_asin_evalpoly(t2)
+        r        : CmAsinW5 = cm_asin_mh5(t3, p)
         return(r)
 
 // -- tables --------------------------------------------------------------------

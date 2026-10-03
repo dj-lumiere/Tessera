@@ -51,19 +51,21 @@ record PiPick
 /// For a finite x that is not an integer (so |x| < 2^112 and 2x can't overflow).
 routine f128_pi_reduce(x: F128) -> PiReduced
     block entry():
-        twice   : F128      = x.add(x)
-        nearest : F128      = twice.round_ties_even()
-        d       : F128      = twice.sub(nearest)
-        q       : S64       = nearest.to_clamp<S128>().bitand(3).to<S64>()  // two's complement: mod 4 for negatives too
-        r       : PiReduced = PiReduced { quadrant: q, d: d }
+        twice       : F128      = x.add(x)
+        nearest     : F128      = twice.round_ties_even()
+        d           : F128      = twice.sub(nearest)
+        nearest_int : S128      = nearest.to_clamp<S128>()
+        q           : S64       = nearest_int.bitand(3).to<S64>()  // two's complement: mod 4 for negatives too
+        r           : PiReduced = PiReduced { quadrant: q, d: d }
         return(r)
 
 /// Whether x (an integer) is odd; from 2^113 on every F128 is even.
 routine f128_integer_is_odd(x: F128) -> Bool
     block entry():
-        big : Bool = x.abs().ge(f128_of(0x40700000000000000000000000000000))  // 2^113
-        odd : Bool = x.to_clamp<S128>().bitand(1).eq(1)
-        r   : Bool = big.bitnot().bitand(odd)
+        big   : Bool = x.abs().ge(f128_of(0x40700000000000000000000000000000))  // 2^113
+        whole : S128 = x.to_clamp<S128>()
+        odd   : Bool = whole.bitand(1).eq(1)
+        r     : Bool = big.bitnot().bitand(odd)
         return(r)
 
 routine f128_pi_pick(quadrant: S64, kind: TrigKind) -> PiPick
@@ -96,7 +98,8 @@ routine wide_round_within(u: F128Extended, k: S64) -> WideRounding
         low       : F128         = magnitude.sub(delta).to<F128>()
         high      : F128         = magnitude.add(delta).to<F128>()
         kept      : U128         = r.abs().bits()
-        ok        : Bool         = low.bits().eq(kept).bitand(high.bits().eq(kept))
+        low_kept  : Bool         = low.bits().eq(kept)
+        ok        : Bool         = low_kept.bitand(high.bits().eq(kept))
         w         : WideRounding = WideRounding { ok: ok, value: r }
         return(w)
 
@@ -176,10 +179,11 @@ require N: USize
     // limb + a × b + carry < 2^128 for 64-bit a, b, limb, and carry
     block column_step(i: USize, j: USize, carry: U128, a_limb: U64, a_length: USize,
         b_length: USize, length: USize):
-        at     : USize = i.add(j)
-        b_limb : U64   = b.limbs.get(j)
-        limb   : U64   = self.limbs.get(at)
-        sum    : U128  = a_limb.mul_wide(b_limb).add(limb.to<U128>()).add(carry)
+        at      : USize = i.add(j)
+        b_limb  : U64   = b.limbs.get(j)
+        limb    : U64   = self.limbs.get(at)
+        product : U128  = a_limb.mul_wide(b_limb)
+        sum     : U128  = product.add(limb.to<U128>()).add(carry)
         self.limbs.set(at, sum.to_wrap<U64>())
         jump column(i, j.add(1), sum.shr(64), a_limb, a_length, b_length, length)
 
@@ -201,7 +205,8 @@ require N: USize
         l0     : U128  = self.limb_or_zero(at).to<U128>()
         l1     : U128  = self.limb_or_zero(at.add(1)).to<U128>()
         l2     : U128  = self.limb_or_zero(at.add(2)).to<U128>()
-        low    : U128  = l1.shl(64).bitor(l0).shr(offset)
+        pair   : U128  = l1.shl(64).bitor(l0)
+        low    : U128  = pair.shr(offset)
         // two shifts, so a zero offset never shifts by 128
         high : U128 = l2.shl(127.sub(offset)).shl(1)
         r    : U128 = low.bitor(high)
@@ -228,7 +233,8 @@ routine big_to_f128(n: @BigNat<24>, e: S64, negative: Bool) -> F128
         sticky   : Bool  = n.any_below(shift)
         top      : U128  = n.bits128(shift)
         sig      : U128  = top.bitor(sticky.to<U128>())
-        exponent : S64   = e.add(shift.to<S64>()).add(F128_BIAS).add(115)
+        shifted  : S64   = e.add(shift.to<S64>())
+        exponent : S64   = shifted.add(F128_BIAS).add(115)
         bits     : U128  = f128_round_pack(negative, exponent, sig)
         r        : F128  = f128_of(bits)
         return(r)
@@ -256,12 +262,13 @@ routine big_quotient_to_f128(num: @BigNat<24>, num_e: S64, den: @BigNat<24>, den
 
     block divide(shift: S64):
         claim scratch : @BigNat<24> <- uninit
-        q        : U128 = num.div_small(den, scratch, 127)
-        sticky   : Bool = num.is_zero().bitnot()
-        sig      : U128 = q.bitor(sticky.to<U128>())
-        exponent : S64  = num_e.sub(den_e).sub(shift).add(F128_BIAS).add(115)
-        bits     : U128 = f128_round_pack(negative, exponent, sig)
-        r        : F128 = f128_of(bits)
+        q          : U128 = num.div_small(den, scratch, 127)
+        sticky     : Bool = num.is_zero().bitnot()
+        sig        : U128 = q.bitor(sticky.to<U128>())
+        quotient_e : S64  = num_e.sub(den_e).sub(shift)
+        exponent   : S64  = quotient_e.add(F128_BIAS).add(115)
+        bits       : U128 = f128_round_pack(negative, exponent, sig)
+        r          : F128 = f128_of(bits)
         return(r)
 
 /// Σ (-u)^k / (j0 (j0 + 1) … (j0 + 2k - 1)) in fixed point with 2^384 as 1:
@@ -347,7 +354,8 @@ routine f128_pi_trig_exact(d: F128, pick: PiPick) -> F128
         big_trig_series(s, u, 2)
         big_trig_series(c, u, 1)
         sin.set_product(t, s)
-        sin_e : S64 = p.exponent.sub(113).sub(PI_FIXED_BITS).sub(PI_FIXED_BITS)
+        sig_e : S64 = p.exponent.sub(113)
+        sin_e : S64 = sig_e.sub(PI_FIXED_BITS).sub(PI_FIXED_BITS)
         cos_e : S64 = 0.sub(PI_FIXED_BITS)
         // sin θ has θ's sign: it flips the result when sin θ is on top or below
         theta_negative : Bool = f128_is_negative_bits(d.bits())
@@ -509,7 +517,8 @@ routine f128_tan_pi(x: F128, exact: Bool) -> F128
     block reduce():
         red     : PiReduced = f128_pi_reduce(x)
         half    : Bool      = f128_is_zero_bits(red.d.bits())
-        quarter : Bool      = red.d.abs().bits().eq(0x3FFE0000000000000000000000000000)  // |d| = 1/2
+        abs_d   : F128      = red.d.abs()
+        quarter : Bool      = abs_d.bits().eq(0x3FFE0000000000000000000000000000)  // |d| = 1/2
         when:
             half    -> pole(red.quadrant)
             quarter -> unit(red)

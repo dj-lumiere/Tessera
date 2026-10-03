@@ -129,12 +129,13 @@ routine sha256_round(v: Working, k: U32, w: U32) -> Working
         g : U32 = v.g
         h : U32 = v.h
 
-        sigma1 : U32 = big_sigma1(e)
-        ch     : U32 = choose(e, f, g)
-        t1     : U32 = h.add_wrap(sigma1).add_wrap(ch).add_wrap(k).add_wrap(w)
-        sigma0 : U32 = big_sigma0(a)
-        maj    : U32 = majority(a, b, c)
-        t2     : U32 = sigma0.add_wrap(maj)
+        sigma1     : U32 = big_sigma1(e)
+        ch         : U32 = choose(e, f, g)
+        h_sigma_ch : U32 = h.add_wrap(sigma1).add_wrap(ch)
+        t1         : U32 = h_sigma_ch.add_wrap(k).add_wrap(w)
+        sigma0     : U32 = big_sigma0(a)
+        maj        : U32 = majority(a, b, c)
+        t2         : U32 = sigma0.add_wrap(maj)
 
         new_a : U32     = t1.add_wrap(t2)
         new_e : U32     = d.add_wrap(t1)
@@ -146,15 +147,19 @@ routine sha256_round(v: Working, k: U32, w: U32) -> Working
 /// Reads 4 bytes as a big-endian word. Byte loads, so p needs no alignment.
 routine load_be32(p: @Byte) -> U32
     block entry():
-        b0     : Byte = p.stride(0).load()
-        b1     : Byte = p.stride(1).load()
-        b2     : Byte = p.stride(2).load()
-        b3     : Byte = p.stride(3).load()
-        w0     : U32  = b0.to<U8>().to<U32>().shl(24)
-        w1     : U32  = b1.to<U8>().to<U32>().shl(16)
-        w2     : U32  = b2.to<U8>().to<U32>().shl(8)
-        w3     : U32  = b3.to<U8>().to<U32>()
-        result : U32  = w0.bitor(w1).bitor(w2).bitor(w3)
+        b0        : Byte = p.stride(0).load()
+        b1        : Byte = p.stride(1).load()
+        b2        : Byte = p.stride(2).load()
+        b3        : Byte = p.stride(3).load()
+        octet0    : U8   = b0.to<U8>()
+        w0        : U32  = octet0.to<U32>().shl(24)
+        octet1    : U8   = b1.to<U8>()
+        w1        : U32  = octet1.to<U32>().shl(16)
+        octet2    : U8   = b2.to<U8>()
+        w2        : U32  = octet2.to<U32>().shl(8)
+        w3        : U32  = b3.to<U8>().to<U32>()
+        high_half : U32  = w0.bitor(w1)
+        result    : U32  = high_half.bitor(w2).bitor(w3)
         return(result)
 
 /// Writes value as 8 big-endian bytes.
@@ -167,8 +172,9 @@ routine store_be64(p: @Byte, value: U64) -> Void
         branch done
             ? return()
             : continue
-        shift : U64  = 56.sub(i.to<U64>().mul(8))
-        byte  : Byte = value.shr(shift).to_wrap<U8>().bits()
+        shift   : U64  = 56.sub(i.to<U64>().mul(8))
+        shifted : U64  = value.shr(shift)
+        byte    : Byte = shifted.to_wrap<U8>().bits()
         p.stride(i).store(byte)
         jump byte_loop(i.add(1))
 
@@ -203,13 +209,14 @@ routine sha256_compress(state: @U32, chunk: @Byte) -> Void
             : extend_word(t, w)
 
     block extend_word(t: USize, w: @U32):
-        w2  : U32 = w.stride(t.sub(2)).load()
-        w7  : U32 = w.stride(t.sub(7)).load()
-        w15 : U32 = w.stride(t.sub(15)).load()
-        w16 : U32 = w.stride(t.sub(16)).load()
-        s1  : U32 = small_sigma1(w2)
-        s0  : U32 = small_sigma0(w15)
-        w.stride(t).store(s1.add_wrap(w7).add_wrap(s0).add_wrap(w16))
+        w2           : U32 = w.stride(t.sub(2)).load()
+        w7           : U32 = w.stride(t.sub(7)).load()
+        w15          : U32 = w.stride(t.sub(15)).load()
+        w16          : U32 = w.stride(t.sub(16)).load()
+        s1           : U32 = small_sigma1(w2)
+        s0           : U32 = small_sigma0(w15)
+        partial_word : U32 = s1.add_wrap(w7).add_wrap(s0)
+        w.stride(t).store(partial_word.add_wrap(w16))
         jump extend(t.add(1), w)
 
     block rounds(w: @U32):

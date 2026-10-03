@@ -91,21 +91,23 @@ routine utf8_decode(bytes: @Byte, pos: USize, len: USize) -> Utf8Decoded
             : error(pos)
 
     block read_four(b0u: U32, pos: USize, next: USize):
-        n2    : USize = next.add(1)
-        n3    : USize = n2.add(1)
-        b1u   : U32   = utf8_continuation(bytes, next, len)
-        b2u   : U32   = utf8_continuation(bytes, n2, len)
-        b3u   : U32   = utf8_continuation(bytes, n3, len)
-        valid : Bool  = b1u.bitor(b2u).bitor(b3u).le(0x3F)
+        n2                : USize = next.add(1)
+        n3                : USize = n2.add(1)
+        b1u               : U32   = utf8_continuation(bytes, next, len)
+        b2u               : U32   = utf8_continuation(bytes, n2, len)
+        b3u               : U32   = utf8_continuation(bytes, n3, len)
+        continuation_bits : U32   = b1u.bitor(b2u).bitor(b3u)
+        valid             : Bool  = continuation_bits.le(0x3F)
         branch valid
             ? done_four(b0u, b1u, b2u, b3u, pos, n3)
             : error(pos)
 
     block done_four(b0u: U32, b1u: U32, b2u: U32, b3u: U32, pos: USize, n3: USize):
-        p0 : U32 = b0u.bitand(0x07).shl(18)
-        p1 : U32 = b1u.shl(12)
-        p2 : U32 = b2u.shl(6)
-        cp : U32 = p0.bitor(p1).bitor(p2).bitor(b3u)
+        p0    : U32 = b0u.bitand(0x07).shl(18)
+        p1    : U32 = b1u.shl(12)
+        p2    : U32 = b2u.shl(6)
+        upper : U32 = p0.bitor(p1).bitor(p2)
+        cp    : U32 = upper.bitor(b3u)
         jump done(cp, 0x10000, pos, n3.add(1))
 
     // An overlong form (below min, the smallest value that needs this many bytes), a surrogate, or a value
@@ -181,19 +183,22 @@ routine utf8_encode(char: Char, out: @Byte) -> USize
             : enc_four(cp)
 
     block enc_three(cp: U32):
-        b0 : U32 = cp.shr(12).bitor(0xE0)
-        b1 : U32 = cp.shr(6).bitand(0x3F).bitor(0x80)
-        b2 : U32 = cp.bitand(0x3F).bitor(0x80)
+        b0         : U32 = cp.shr(12).bitor(0xE0)
+        middle_six : U32 = cp.shr(6).bitand(0x3F)
+        b1         : U32 = middle_six.bitor(0x80)
+        b2         : U32 = cp.bitand(0x3F).bitor(0x80)
         out.stride(0).store(b0.to<U8>().bits())
         out.stride(1).store(b1.to<U8>().bits())
         out.stride(2).store(b2.to<U8>().bits())
         return(3)
 
     block enc_four(cp: U32):
-        b0 : U32 = cp.shr(18).bitor(0xF0)
-        b1 : U32 = cp.shr(12).bitand(0x3F).bitor(0x80)
-        b2 : U32 = cp.shr(6).bitand(0x3F).bitor(0x80)
-        b3 : U32 = cp.bitand(0x3F).bitor(0x80)
+        b0         : U32 = cp.shr(18).bitor(0xF0)
+        upper_six  : U32 = cp.shr(12).bitand(0x3F)
+        b1         : U32 = upper_six.bitor(0x80)
+        middle_six : U32 = cp.shr(6).bitand(0x3F)
+        b2         : U32 = middle_six.bitor(0x80)
+        b3         : U32 = cp.bitand(0x3F).bitor(0x80)
         out.stride(0).store(b0.to<U8>().bits())
         out.stride(1).store(b1.to<U8>().bits())
         out.stride(2).store(b2.to<U8>().bits())

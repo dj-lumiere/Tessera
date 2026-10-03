@@ -44,7 +44,7 @@ private routine cm_f64_pow_shift256(h: U128, l: U128, n: S64) -> (U128, U128)
         left : Bool = n.ge(0)
         branch left
             ? left(n.to_wrap<U64>().to<U128>())
-            : right(S64.sub(0, n).to_wrap<U64>().to<U128>())
+            : right(S64.sub(0, n).to_wrap<U64>())
 
     block left(k: U128):
         far : Bool = k.ge(128)
@@ -52,7 +52,8 @@ private routine cm_f64_pow_shift256(h: U128, l: U128, n: S64) -> (U128, U128)
             ? return({ l.shl(k.sub(128)), 0 })
             : return({ h.shl(k).bitor(l.shr(U128.sub(128, k))), l.shl(k) })
 
-    block right(k: U128):
+    block right(shift: U64):
+        k   : U128 = shift.to<U128>()
         far : Bool = k.ge(128)
         branch far
             ? return({ 0, h.shr(k.sub(128)) })
@@ -64,7 +65,11 @@ private routine cm_f64_pow_clz256(ch: U128, cl: U128) -> U64
         high : Bool = ch.ne(0)
         branch high
             ? return(ch.leading_zeros().to_wrap<U64>())
-            : return(cl.leading_zeros().to_wrap<U64>().add(128))
+            : low_half()
+
+    block low_half():
+        zeros : U64 = cl.leading_zeros().to_wrap<U64>()
+        return(zeros.add(128))
 
 /// Compares |a| and |b|: -1, 0 or 1.
 private routine cm_f64_pow_cmp_qint(a: CmF64PowQint, b: CmF64PowQint) -> S64
@@ -261,37 +266,38 @@ private routine cm_f64_pow_low64(v: U128) -> U128
 /// a b with error below 14 ulps.
 private routine cm_f64_pow_mul_qint(a: CmF64PowQint, b: CmF64PowQint) -> CmF64PowQint
     block entry():
-        ahh : U64  = cm_f64_pow_hi(a.rh)
-        ahl : U64  = cm_f64_pow_lo(a.rh)
-        alh : U64  = cm_f64_pow_hi(a.rl)
-        all : U64  = cm_f64_pow_lo(a.rl)
-        bhh : U64  = cm_f64_pow_hi(b.rh)
-        bhl : U64  = cm_f64_pow_lo(b.rh)
-        blh : U64  = cm_f64_pow_hi(b.rl)
-        bll : U64  = cm_f64_pow_lo(b.rl)
-        r33 : U128 = ahh.mul_wide(bhh)
-        r32 : U128 = ahh.mul_wide(bhl)
-        r23 : U128 = ahl.mul_wide(bhh)
-        r31 : U128 = ahh.mul_wide(blh)
-        r13 : U128 = alh.mul_wide(bhh)
-        r22 : U128 = ahl.mul_wide(bhl)
-        r30 : U128 = ahh.mul_wide(bll)
-        r03 : U128 = all.mul_wide(bhh)
-        r21 : U128 = ahl.mul_wide(blh)
-        r12 : U128 = alh.mul_wide(bhl)
-        t3  : U128 = r12.shr(64).add_wrap(r21.shr(64)).add_wrap(r03.shr(64)).add_wrap(r30.shr(64))
-        t4  : U128 = r22.add_wrap(t3)
-        c4a : U128 = cm_f64_pow_carry(t4, r22)
-        t4b : U128 = r13.add_wrap(t4)
-        c4b : U128 = c4a.add_wrap(cm_f64_pow_carry(t4b, r13))
-        t4c : U128 = r31.add_wrap(t4b)
-        c4  : U128 = c4b.add_wrap(cm_f64_pow_carry(t4c, r31))
-        t5  : U128 = r23.add_wrap(t4c.shr(64))
-        c5a : U128 = cm_f64_pow_carry(t5, r23)
-        t5b : U128 = r32.add_wrap(t5)
-        c5  : U128 = c5a.add_wrap(cm_f64_pow_carry(t5b, r32))
-        t6  : U128 = r33.add_wrap(c5.shl(64).bitor(t5b.shr(64))).add_wrap(c4)
-        t5f : U128 = t5b.shl(64).bitor(cm_f64_pow_low64(t4c))
+        ahh     : U64  = cm_f64_pow_hi(a.rh)
+        ahl     : U64  = cm_f64_pow_lo(a.rh)
+        alh     : U64  = cm_f64_pow_hi(a.rl)
+        all     : U64  = cm_f64_pow_lo(a.rl)
+        bhh     : U64  = cm_f64_pow_hi(b.rh)
+        bhl     : U64  = cm_f64_pow_lo(b.rh)
+        blh     : U64  = cm_f64_pow_hi(b.rl)
+        bll     : U64  = cm_f64_pow_lo(b.rl)
+        r33     : U128 = ahh.mul_wide(bhh)
+        r32     : U128 = ahh.mul_wide(bhl)
+        r23     : U128 = ahl.mul_wide(bhh)
+        r31     : U128 = ahh.mul_wide(blh)
+        r13     : U128 = alh.mul_wide(bhh)
+        r22     : U128 = ahl.mul_wide(bhl)
+        r30     : U128 = ahh.mul_wide(bll)
+        r03     : U128 = all.mul_wide(bhh)
+        r21     : U128 = ahl.mul_wide(blh)
+        r12     : U128 = alh.mul_wide(bhl)
+        t3_part : U128 = r12.shr(64).add_wrap(r21.shr(64))
+        t3      : U128 = t3_part.add_wrap(r03.shr(64)).add_wrap(r30.shr(64))
+        t4      : U128 = r22.add_wrap(t3)
+        c4a     : U128 = cm_f64_pow_carry(t4, r22)
+        t4b     : U128 = r13.add_wrap(t4)
+        c4b     : U128 = c4a.add_wrap(cm_f64_pow_carry(t4b, r13))
+        t4c     : U128 = r31.add_wrap(t4b)
+        c4      : U128 = c4b.add_wrap(cm_f64_pow_carry(t4c, r31))
+        t5      : U128 = r23.add_wrap(t4c.shr(64))
+        c5a     : U128 = cm_f64_pow_carry(t5, r23)
+        t5b     : U128 = r32.add_wrap(t5)
+        c5      : U128 = c5a.add_wrap(cm_f64_pow_carry(t5b, r32))
+        t6      : U128 = r33.add_wrap(c5.shl(64).bitor(t5b.shr(64))).add_wrap(c4)
+        t5f     : U128 = t5b.shl(64).bitor(cm_f64_pow_low64(t4c))
         return(cm_f64_pow_qint_norm(t6, t5f, a.ex.add(b.ex), a.sgn.bitxor(b.sgn)))
 
 /// a b using only the upper three limbs of a and b, with error below 6 ulps.
@@ -446,8 +452,9 @@ private routine cm_f64_pow_qint_toi(a: CmF64PowQint) -> S64
         branch small
             ? return(0)
             : continue
-        r   : S64  = cm_f64_pow_hi(a.rh).shr(S64.sub(63, a.ex).to_wrap<U64>()).to_wrap<S64>()
-        neg : Bool = a.sgn.ne(0)
+        integer_part : U64  = cm_f64_pow_hi(a.rh).shr(S64.sub(63, a.ex).to_wrap<U64>())
+        r            : S64  = integer_part.to_wrap<S64>()
+        neg          : Bool = a.sgn.ne(0)
         branch neg
             ? return(S64.sub(0, r))
             : return(r)
@@ -542,8 +549,10 @@ routine cm_f64_pow_exp_3(x: CmF64PowQint) -> CmF64PowQint
             sgn: kk1.sgn.bitxor(1) }
         y        : CmF64PowQint = cm_f64_pow_add_qint(x, kk)
         big_m    : S64          = k.shr(12)
-        i2       : USize        = k.shr(6).to_wrap<U64>().bitand(0x3F).to<USize>()
-        i1       : USize        = k.to_wrap<U64>().bitand(0x3F).to<USize>()
+        k_high   : U64          = k.shr(6).to_wrap<U64>()
+        i2       : USize        = k_high.bitand(0x3F).to<USize>()
+        k_bits   : U64          = k.to_wrap<U64>()
+        i1       : USize        = k_bits.bitand(0x3F).to<USize>()
         r0       : CmF64PowQint = cm_f64_pow_q_3(y)
         r1       : CmF64PowQint = cm_f64_pow_mul_qint(cm_f64_pow_t1_3(i2), r0)
         r2       : CmF64PowQint = cm_f64_pow_mul_qint(cm_f64_pow_t2_3(i1), r1)
@@ -582,8 +591,9 @@ routine cm_f64_pow_qint_tod(a: CmF64PowQint) -> F64
         rd0  : F64          = half
             ? F64.add(0.0, 0x1p-53)
             : 0.0
-        sticky : Bool = hh.bitand(0x3FF).ne(0).bitor(cm_f64_pow_lo(q.rh).ne(0)).bitor(q.rl.ne(0))
-        rd1    : F64  = sticky
+        hh_sticky : Bool = hh.bitand(0x3FF).ne(0)
+        sticky    : Bool = hh_sticky.bitor(cm_f64_pow_lo(q.rh).ne(0)).bitor(q.rl.ne(0))
+        rd1       : F64  = sticky
             ? rd0.add(0x1p-54)
             : rd0
         neg : Bool = q.sgn.ne(0)
@@ -603,7 +613,11 @@ routine cm_f64_pow_qint_tod(a: CmF64PowQint) -> F64
         when:
             edge -> return(r.mul(2.0).mul(0x1p+1023))
             over -> return(F64.mul(0x1.fffffffffffffp+1023, 0x1.fffffffffffffp+1023))
-            else -> return(r.mul(F64.from_bits(ex.add(1023).to_wrap<U64>().bitand(0x7FF).shl(52))))
+            else -> normal_range(r, ex)
+
+    block normal_range(r: F64, ex: S64):
+        biased_exponent : U64 = ex.add(1023).to_wrap<U64>()
+        return(r.mul(F64.from_bits(biased_exponent.bitand(0x7FF).shl(52))))
 
     block low(r: F64, ex: S64):
         edge  : Bool = ex.eq(-1075)

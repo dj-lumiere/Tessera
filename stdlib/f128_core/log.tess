@@ -100,9 +100,10 @@ routine cm_log_general(u: U128) -> F128
 
     // shift the leading bit up to bit 48 of the high word, lowering the exponent to match
     block normalize(hi: U64):
-        hi_zero : Bool = hi.eq(0)
-        lz_lo   : S64  = cm_wide_lo(u).leading_zeros().to<S64>().add(64)
-        nz      : S64  = hi_zero
+        hi_zero  : Bool = hi.eq(0)
+        lo_zeros : U64  = cm_wide_lo(u).leading_zeros()
+        lz_lo    : S64  = lo_zeros.to<S64>().add(64)
+        nz       : S64  = hi_zero
             ? lz_lo
             : hi.leading_zeros().to<S64>()
         m : U128 = u.shl(nz.sub(15).to<U128>())
@@ -119,20 +120,23 @@ routine cm_log_general(u: U128) -> F128
     // reduced argument can't hold (the original, CORE-MATH's logq.c, is off by about 2^-20 there: m just
     // below 2^(k / 2^20) for k = 29, 256, 285); then the index one lower is taken.
     block scale(mh: U64, ml: U64, e: U64, l: U64):
-        j0  : USize = l.shr(59).to<USize>()
-        j1  : USize = l.shr(54).bitand(31).to<USize>()
-        j2  : USize = l.shr(49).bitand(31).to<USize>()
-        j3  : USize = l.shr(44).bitand(31).to<USize>()
-        sig : U64   = mh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        rt0 : U64   = CM_LOG_RT0.get(j0)
-        rt1 : U64   = CM_LOG_RT1.get(j1)
-        rt2 : U64   = CM_LOG_RT2.get(j2)
-        rt3 : U64   = CM_LOG_RT3.get(j3)
-        r01 : U64   = rt1.mul_wrap(rt0)
-        r23 : U64   = rt2.mul_wrap(rt3)
-        r   : U128  = cm_wide_mul_64x64(r01, r23)
-        rr  : U256  = cm_wide_u128(sig, ml).mul_wide(r)
-        rhh : U64   = rr.shr(192).to<U64>()
+        j0      : USize = l.shr(59).to<USize>()
+        j1_bits : U64   = l.shr(54).bitand(31)
+        j1      : USize = j1_bits.to<USize>()
+        j2_bits : U64   = l.shr(49).bitand(31)
+        j2      : USize = j2_bits.to<USize>()
+        j3_bits : U64   = l.shr(44).bitand(31)
+        j3      : USize = j3_bits.to<USize>()
+        sig     : U64   = mh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        rt0     : U64   = CM_LOG_RT0.get(j0)
+        rt1     : U64   = CM_LOG_RT1.get(j1)
+        rt2     : U64   = CM_LOG_RT2.get(j2)
+        rt3     : U64   = CM_LOG_RT3.get(j3)
+        r01     : U64   = rt1.mul_wrap(rt0)
+        r23     : U64   = rt2.mul_wrap(rt3)
+        r       : U128  = cm_wide_mul_64x64(r01, r23)
+        rr      : U256  = cm_wide_u128(sig, ml).mul_wide(r)
+        rhh     : U64   = rr.shr(192).to<U64>()
         // m * r below 1: the product's leading bit (2^236) is clear
         below_one : Bool = rhh.shr(44).eq(0)
         branch below_one
@@ -202,7 +206,8 @@ routine cm_log_round(f: CmWide3, x: U128) -> F128
         half      : U64  = 63.sub_wrap(ns).bitand(63)
         rnd       : U64  = f0.shr(half).bitand(1)
         el        : U64  = 0x4029.sub_wrap(nz).bitor(mask.shl(15))
-        near_half : U64  = f0.add_wrap(1.shl(half)).add_wrap(12).bitand(tail)
+        nudged    : U64  = f0.add_wrap(1.shl(half)).add_wrap(12)
+        near_half : U64  = nudged.bitand(tail)
         hard      : Bool = near_half.le(24)
         branch hard
             ? exact(f0, f1, f2, nz, el)
@@ -246,19 +251,20 @@ routine cm_log_pack(sig: U128, el: U64, round: U64) -> F128
 /// Crude fixed-point log2 of the high significand word x, whose bits select the reciprocal tables.
 routine cm_log_log2(x: U64) -> U64
     block entry():
-        j    : USize = x.shr(43).bitand(31).to<USize>()
-        z    : U64   = x.shr(11).bitand(0xFFFFFFFF)
-        z2   : U64   = z.mul_wrap(z).shr(32)
-        k    : USize = j.mul(4)
-        c0   : U64   = CM_LOG_L2C.get(k)
-        c1   : U64   = CM_LOG_L2C.get(k.add(1))
-        c2   : U64   = CM_LOG_L2C.get(k.add(2))
-        c3   : U64   = CM_LOG_L2C.get(k.add(3))
-        t0   : U64   = c0.sub_wrap(z.mul_wrap(c1).shr(38)).bitand(0xFFFFFFFF)
-        t2   : U64   = c2.sub_wrap(z.mul_wrap(c3).shr(32)).bitand(0xFFFFFFFF)
-        t    : U64   = t0.add_wrap(z2.mul_wrap(t2).shr(44)).bitand(0xFFFFFFFF)
-        base : U64   = CM_LOG_L2C0.get(j)
-        r    : U64   = base.add_wrap(z.mul_wrap(t).shr(4))
+        j_bits : U64   = x.shr(43).bitand(31)
+        j      : USize = j_bits.to<USize>()
+        z      : U64   = x.shr(11).bitand(0xFFFFFFFF)
+        z2     : U64   = z.mul_wrap(z).shr(32)
+        k      : USize = j.mul(4)
+        c0     : U64   = CM_LOG_L2C.get(k)
+        c1     : U64   = CM_LOG_L2C.get(k.add(1))
+        c2     : U64   = CM_LOG_L2C.get(k.add(2))
+        c3     : U64   = CM_LOG_L2C.get(k.add(3))
+        t0     : U64   = c0.sub_wrap(z.mul_wrap(c1).shr(38)).bitand(0xFFFFFFFF)
+        t2     : U64   = c2.sub_wrap(z.mul_wrap(c3).shr(32)).bitand(0xFFFFFFFF)
+        t      : U64   = t0.add_wrap(z2.mul_wrap(t2).shr(44)).bitand(0xFFFFFFFF)
+        base   : U64   = CM_LOG_L2C0.get(j)
+        r      : U64   = base.add_wrap(z.mul_wrap(t).shr(4))
         return(r)
 
 /// (w2, w1, w0) >> s, logical, s < 192.
@@ -310,7 +316,8 @@ routine cm_log_near_one(x: U128) -> F128
         e : U64 = top_clear
             ? n.e.add(1)
             : n.e
-        rnd    : U64 = cm_wide_lo(sig.to_wrap<U128>()).shr(14).bitand(1)
+        sig_lo : U64 = cm_wide_lo(sig.to_wrap<U128>())
+        rnd    : U64 = sig_lo.shr(14).bitand(1)
         biased : U64 = 16381.sub(e)
         el     : U64 = biased.bitor(neg.shl(15))
         branch n.hard
@@ -448,16 +455,17 @@ routine cm_log_refine(el: U64, m: U128, x: U128) -> CmLogRounding
         cm_wide_xor_words(t, 7, sm)
         cm_wide_ashr7(t, 0x402E.sub(el.bitand(0x7FFF)))
         cm_wide_exp2_frac(t, ft)
-        w0      : U64  = ft.stride(0).load()
-        w1      : U64  = ft.stride(1).load()
-        w2      : U64  = ft.stride(2).load()
-        w3      : U64  = ft.stride(3).load()
-        w4      : U64  = ft.stride(4).load()
-        inexact : Bool = w0.bitor(w1).bitor(w2).bitor(w3).ne(0)
-        sticky  : U64  = w4.bitor(inexact.to<U64>())
-        d       : S64  = sticky.sub_wrap(cm_wide_lo(x).shl(12)).to_wrap<S64>()
-        above   : Bool = d.lt(0).bitnot()
-        down    : Bool = sm.ne(0)
+        w0       : U64  = ft.stride(0).load()
+        w1       : U64  = ft.stride(1).load()
+        w2       : U64  = ft.stride(2).load()
+        w3       : U64  = ft.stride(3).load()
+        w4       : U64  = ft.stride(4).load()
+        low_bits : U64  = w0.bitor(w1).bitor(w2)
+        inexact  : Bool = low_bits.bitor(w3).ne(0)
+        sticky   : U64  = w4.bitor(inexact.to<U64>())
+        d        : S64  = sticky.sub_wrap(cm_wide_lo(x).shl(12)).to_wrap<S64>()
+        above    : Bool = d.lt(0).bitnot()
+        down     : Bool = sm.ne(0)
             ? above.bitnot()
             : above
         doubled : U128 = m.shl(1)

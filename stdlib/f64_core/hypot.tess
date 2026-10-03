@@ -68,8 +68,9 @@ routine F64.hypot(self: Self, other: Self) -> Self
 
     // normalize the subnormal y: its exponent field goes below 0 (modulo 2^64)
     block normalize(u: Self, v: Self, xd: U64, yd: U64):
-        nz : U64 = yd.leading_zeros()
-        ey : U64 = yd.shl(nz.sub(11)).bitand(0x000FFFFFFFFFFFFF).sub_wrap(nz.sub(12).shl(52))
+        nz       : U64 = yd.leading_zeros()
+        mantissa : U64 = yd.shl(nz.sub(11)).bitand(0x000FFFFFFFFFFFFF)
+        ey       : U64 = mantissa.sub_wrap(nz.sub(12).shl(52))
         jump scale(u, v, xd, ey)
 
     // scale both legs by the power of two that brings u into [1, 2)
@@ -79,30 +80,34 @@ routine F64.hypot(self: Self, other: Self) -> Self
         branch far
             ? return(Self.mul_add(0x1p-27, v, u))
             : continue
-        off   : U64  = U64.sub_wrap(0x3FF0000000000000, xd.bitand(0x7FF0000000000000))
-        sx    : Self = Self.from_bits(xd.add_wrap(off))
-        sy    : Self = Self.from_bits(yd.add_wrap(off))
-        x2    : Self = sx.mul(sx)
-        dx2   : Self = sx.mul_add(sx, x2.neg())
-        y2    : Self = sy.mul(sy)
-        dy2   : Self = sy.mul_add(sy, y2.neg())
-        r2    : Self = x2.add(y2)
-        ir2   : Self = Self.div(0.5, r2)
-        dr2   : Self = x2.sub(r2).add(y2).add(dx2.add(dy2))
-        th    : Self = r2.sqrt()
-        rsqrt : Self = th.mul(ir2)
-        dz    : Self = dr2.sub(th.mul_add(th, r2.neg()))
-        tl    : Self = rsqrt.mul(dz)
-        s     : Self = th.add(tl)  // fast two-sum of th and tl
-        z     : Self = s.sub(th)
-        sl    : Self = tl.sub(z)
-        thu   : U64  = s.bits()
-        aidr  : U64  = sl.abs().bits().add_wrap(0x3FE0000000000000).sub_wrap(thu.bitand(0x7FF0000000000000))
-        mid   : U64  = aidr.sub_wrap(0x3C90000000000000).add_wrap(16).shr(5)
-        midm  : U64  = aidr.sub_wrap(0x3C80000000000000).add_wrap(16).shr(5)
-        near  : Bool = mid.eq(0).bitor(midm.eq(0))
-        odd   : Bool = aidr.lt(0x39B0000000000000).bitor(aidr.gt(0x3C9FFFFFFFFFFF80))
-        hard  : Bool = near.bitor(odd)
+        off      : U64  = U64.sub_wrap(0x3FF0000000000000, xd.bitand(0x7FF0000000000000))
+        sx       : Self = Self.from_bits(xd.add_wrap(off))
+        sy       : Self = Self.from_bits(yd.add_wrap(off))
+        x2       : Self = sx.mul(sx)
+        dx2      : Self = sx.mul_add(sx, x2.neg())
+        y2       : Self = sy.mul(sy)
+        dy2      : Self = sy.mul_add(sy, y2.neg())
+        r2       : Self = x2.add(y2)
+        ir2      : Self = Self.div(0.5, r2)
+        r2_err   : Self = x2.sub(r2).add(y2)
+        dr2      : Self = r2_err.add(dx2.add(dy2))
+        th       : Self = r2.sqrt()
+        rsqrt    : Self = th.mul(ir2)
+        dz       : Self = dr2.sub(th.mul_add(th, r2.neg()))
+        tl       : Self = rsqrt.mul(dz)
+        s        : Self = th.add(tl)  // fast two-sum of th and tl
+        z        : Self = s.sub(th)
+        sl       : Self = tl.sub(z)
+        thu      : U64  = s.bits()
+        slu      : U64  = sl.abs().bits()
+        aidr     : U64  = slu.add_wrap(0x3FE0000000000000).sub_wrap(thu.bitand(0x7FF0000000000000))
+        mid_off  : U64  = aidr.sub_wrap(0x3C90000000000000)
+        mid      : U64  = mid_off.add_wrap(16).shr(5)
+        midm_off : U64  = aidr.sub_wrap(0x3C80000000000000)
+        midm     : U64  = midm_off.add_wrap(16).shr(5)
+        near     : Bool = mid.eq(0).bitor(midm.eq(0))
+        odd      : Bool = aidr.lt(0x39B0000000000000).bitor(aidr.gt(0x3C9FFFFFFFFFFF80))
+        hard     : Bool = near.bitor(odd)
         branch hard
             ? unscale(cm_f64_hypot_hard(sx, sy).bits(), off)
             : unscale(thu, off)
@@ -131,14 +136,16 @@ private routine cm_f64_hypot_nan_add(x: F64, y: F64) -> F64
 /// and rounded to nearest (a midpoint is impossible here).
 private routine cm_f64_hypot_denorm(a: U64, b: U64) -> F64
     block entry():
-        af  : F64 = a.to<F64>()
-        bf  : F64 = b.to<F64>()
-        a2  : U64 = a.shl(1)
-        b2  : U64 = b.shl(1)
-        rm  : U64 = af.mul(af).add(bf.mul(bf)).sqrt().to<U64>()
-        tmu : U64 = rm.shl(1)
+        af     : F64 = a.to<F64>()
+        bf     : F64 = b.to<F64>()
+        a2     : U64 = a.shl(1)
+        b2     : U64 = b.shl(1)
+        sum_sq : F64 = af.mul(af).add(bf.mul(bf))
+        rm     : U64 = sum_sq.sqrt().to<U64>()
+        tmu    : U64 = rm.shl(1)
         // D = a^2 + b^2 - tm^2 (all doubled), exact modulo 2^64 and small in magnitude
-        d : S64 = a2.mul_wrap(a2).add_wrap(b2.mul_wrap(b2)).sub_wrap(tmu.mul_wrap(tmu)).to_wrap<S64>()
+        squares : U64 = a2.mul_wrap(a2).add_wrap(b2.mul_wrap(b2))
+        d       : S64 = squares.sub_wrap(tmu.mul_wrap(tmu)).to_wrap<S64>()
         jump up(d, tmu.to_wrap<S64>())
 
     // tm too small: (tm + 1)^2 = tm^2 + 2 tm + 1
@@ -169,16 +176,18 @@ private routine cm_f64_hypot_denorm(a: U64, b: U64) -> F64
 /// are small, so the modular results are exact).
 private routine cm_f64_hypot_hard(x: F64, y: F64) -> F64
     block entry():
-        xu : U64 = x.bits()
-        yu : U64 = y.bits()
-        bm : U64 = xu.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
-        lm : U64 = yu.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
-        be : S64 = xu.shr(52).to_wrap<S64>()
-        le : S64 = yu.shr(52).to_wrap<S64>()
-        ri : U64 = x.mul(x).add(y.mul(y)).sqrt().bits()
-        rm : U64 = ri.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
-        re : S64 = ri.shr(52).to_wrap<S64>().sub(0x3FF)
-        m2 : U64 = cm_f64_hypot_sum_squares(bm, lm, be.sub(le))
+        xu              : U64 = x.bits()
+        yu              : U64 = y.bits()
+        bm              : U64 = xu.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
+        lm              : U64 = yu.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
+        be              : S64 = xu.shr(52).to_wrap<S64>()
+        le              : S64 = yu.shr(52).to_wrap<S64>()
+        sum_sq          : F64 = x.mul(x).add(y.mul(y))
+        ri              : U64 = sum_sq.sqrt().bits()
+        rm              : U64 = ri.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
+        biased_exponent : S64 = ri.shr(52).to_wrap<S64>()
+        re              : S64 = biased_exponent.sub(0x3FF)
+        m2              : U64 = cm_f64_hypot_sum_squares(bm, lm, be.sub(le))
         jump back(0, rm, re, be, m2)
 
     // step the candidate three ulps down
@@ -239,8 +248,9 @@ private routine cm_f64_hypot_hard(x: F64, y: F64) -> F64
         r : S64 = wide
             ? re.add(1)
             : re
-        e : S64 = be.sub(1).add(r)
-        return(F64.from_bits(e.to_wrap<U64>().shl(52).add_wrap(m)))
+        e             : S64 = be.sub(1).add(r)
+        exponent_bits : U64 = e.to_wrap<U64>().shl(52)
+        return(F64.from_bits(exponent_bits.add_wrap(m)))
 
 /// (4 bm)^2 + (lm 2^(2 - de))^2 modulo 2^64, for the hard case of hypot: bm
 /// and lm are the full mantissas of the larger and smaller leg, de >= 0 the

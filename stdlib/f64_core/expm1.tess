@@ -100,7 +100,8 @@ routine F64.exp_m1(self: Self) -> Self
         fx   : Self       = sx.round_ties_even()
         z    : Self       = sx.sub(fx)
         z2   : Self       = z.mul(z)
-        i    : USize      = fx.to<S64>().add(32).to<USize>()
+        slot : S64        = fx.to<S64>().add(32)
+        i    : USize      = slot.to<USize>()
         th   : Self       = Self.from_bits(CM_F64_EXPM1_TZ.get(i.mul(2).add(1)))
         tl   : Self       = Self.from_bits(CM_F64_EXPM1_TZ.get(i.mul(2)))
         fh   : Self       = z.mul(0x1p-7)
@@ -171,9 +172,10 @@ routine F64.exp_m1(self: Self) -> Self
         fl  : Self       = tt.lo.add(tx.mul(p))
         eps : Self       = Self.mul(1.64e-19, tt.hi)
         // off = -2^-ie, so that 2^ie (fh + fl + off) = e^x - 1
-        off  : Self = Self.from_bits(S64.sub(3071, ie).to_wrap<U64>().shl(52))
-        lt53 : Bool = ie.lt(53)
-        lt75 : Bool = ie.lt(75)
+        off_bits : U64  = S64.sub(3071, ie).to_wrap<U64>()
+        off      : Self = Self.from_bits(off_bits.shl(52))
+        lt53     : Bool = ie.lt(53)
+        lt75     : Bool = ie.lt(75)
         when:
             lt53 -> off_first(tt.hi, fl, off, eps, ie)
             lt75 -> off_second(tt.hi, fl, off, eps, ie)
@@ -244,21 +246,23 @@ private routine cm_f64_expm1_accurate(x: F64) -> F64
         ie : S64        = jt.shr(12)
         tt : CmF64ExpDd = cm_f64_exp_table_2pow(jt.to_wrap<U64>())
         // Cody-Waite reduction with a triple-double log(2)/2^12
-        dx    : F64        = x.sub(t.mul(0x1.62e42ffp-13))
-        dxl   : F64        = F64.mul(0x1.718432a1b0e26p-47, t)
-        dxl3  : F64        = F64.mul(0x1.9ff0342542fc3p-102, t)
-        dxle  : F64        = F64.mul_add(0x1.718432a1b0e26p-47, t,
+        dx       : F64        = x.sub(t.mul(0x1.62e42ffp-13))
+        dxl      : F64        = F64.mul(0x1.718432a1b0e26p-47, t)
+        dxl3     : F64        = F64.mul(0x1.9ff0342542fc3p-102, t)
+        dxle     : F64        = F64.mul_add(0x1.718432a1b0e26p-47, t,
             dxl.neg())  // the rounding error of dxl
-        dxll  : F64        = dxl3.add(dxle)
-        dxh   : F64        = dx.add(dxl)
-        dxlo  : F64        = dx.sub(dxh).add(dxl).add(dxll)
-        p     : CmF64ExpDd = cm_f64_expm1_poly_exp(dxh, dxlo)
-        f1    : CmF64ExpDd = cm_f64_exp_muldd(dxh, dxlo, p.hi, p.lo)
-        f2    : CmF64ExpDd = cm_f64_exp_muldd(f1.hi, f1.lo, tt.hi, tt.lo)
-        f     : CmF64ExpDd = cm_f64_exp_fastsum(tt.hi, tt.lo, f2.hi, f2.lo)
-        off   : F64        = F64.from_bits(S64.sub(3071, ie).to_wrap<U64>().shl(52))  // -2^-ie
-        lt53  : Bool       = ie.lt(53)
-        lt104 : Bool       = ie.lt(104)
+        dxll     : F64        = dxl3.add(dxle)
+        dxh      : F64        = dx.add(dxl)
+        dxe      : F64        = dx.sub(dxh).add(dxl)
+        dxlo     : F64        = dxe.add(dxll)
+        p        : CmF64ExpDd = cm_f64_expm1_poly_exp(dxh, dxlo)
+        f1       : CmF64ExpDd = cm_f64_exp_muldd(dxh, dxlo, p.hi, p.lo)
+        f2       : CmF64ExpDd = cm_f64_exp_muldd(f1.hi, f1.lo, tt.hi, tt.lo)
+        f        : CmF64ExpDd = cm_f64_exp_fastsum(tt.hi, tt.lo, f2.hi, f2.lo)
+        off_bits : U64        = S64.sub(3071, ie).to_wrap<U64>()
+        off      : F64        = F64.from_bits(off_bits.shl(52))  // -2^-ie
+        lt53     : Bool       = ie.lt(53)
+        lt104    : Bool       = ie.lt(104)
         when:
             lt53  -> off_first(f.hi, f.lo, off, ie)
             lt104 -> off_second(f.hi, f.lo, off, ie)
@@ -273,9 +277,10 @@ private routine cm_f64_expm1_accurate(x: F64) -> F64
         jump round(s.hi, fl, s.lo, ie)
 
     block round(fh: F64, fl: F64, e: F64, ie: S64):
-        s    : CmF64ExpDd = cm_f64_exp_fasttwosum(fh, fl.add(e))
-        d    : U64        = s.lo.bits().add_wrap(8).bitand(0x000FFFFFFFFFFFFF)
-        hard : Bool       = d.le(8)
+        s       : CmF64ExpDd = cm_f64_exp_fasttwosum(fh, fl.add(e))
+        lo_bits : U64        = s.lo.bits()
+        d       : U64        = lo_bits.add_wrap(8).bitand(0x000FFFFFFFFFFFFF)
+        hard    : Bool       = d.le(8)
         branch hard
             ? return(cm_f64_exp_ldexp(cm_f64_expm1_database(x, s.hi), ie))
             : return(cm_f64_exp_ldexp(s.hi, ie))
@@ -361,12 +366,13 @@ private routine cm_f64_expm1_database(x: F64, f: F64) -> F64
             else  -> search(a, m.sub(1))
 
     block found(um: U64):
-        jf    : U64  = f.bits()
-        sign  : U64  = U64.shr(0x300E81651C, um).shl(63)
-        scale : U64  = jf.shr(52).bitand(0x7FF).sub_wrap(54).shl(52)  // 2^-54 times the binade of f
-        dr    : F64  = F64.from_bits(sign.bitor(scale))
-        upper : Bool = um.shr(5).eq(1)
-        s2    : U64  = upper
+        jf     : U64  = f.bits()
+        sign   : U64  = U64.shr(0x300E81651C, um).shl(63)
+        binade : U64  = jf.shr(52).bitand(0x7FF)
+        scale  : U64  = binade.sub_wrap(54).shl(52)  // 2^-54 times the binade of f
+        dr     : F64  = F64.from_bits(sign.bitor(scale))
+        upper  : Bool = um.shr(5).eq(1)
+        s2     : U64  = upper
             ? 0xC06
             : 0x76F58B0D65BD5553
         t : U64 = s2.shr(um.shl(1).bitand(63)).bitand(3)

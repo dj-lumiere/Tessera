@@ -169,12 +169,15 @@ routine F64.atan(self: Self) -> Self
 
     // 0x1.b21c475e6362ap-8 <= |x| <= 0x1.2ded8e34a9035p+7: reduce by tan(j pi/256), 1 <= i <= 30
     block table(tu: U64, at: U64):
-        i   : USize = at.shr(51).sub(2030).to<USize>()
+        iu  : U64   = at.shr(51).sub(2030)
+        i   : USize = iu.to<USize>()
         u   : U64   = tu.bitand(0x0007FFFFFFFFFFFF)
         ut  : U64   = u.shr(35)
         ut2 : U64   = ut.mul_wrap(ut).shr(16)
-        j0  : U64   = CM_F64_ATAN_C0.get(i).shl(16).add_wrap(ut.mul_wrap(CM_F64_ATAN_C1.get(i)))
-        j   : USize = j0.sub_wrap(ut2.mul_wrap(CM_F64_ATAN_C2.get(i))).shr(25).to<USize>()
+        c0  : U64   = CM_F64_ATAN_C0.get(i)
+        j0  : U64   = c0.shl(16).add_wrap(ut.mul_wrap(CM_F64_ATAN_C1.get(i)))
+        ju  : U64   = j0.sub_wrap(ut2.mul_wrap(CM_F64_ATAN_C2.get(i))).shr(25)
+        j   : USize = ju.to<USize>()
         sg  : Self  = Self.copysign(1.0, self)
         ta  : Self  = sg.mul(Self.from_bits(CM_F64_ATAN_AH.get(j)))
         id  : Self  = sg.mul(j.to<U64>().to<Self>())
@@ -204,9 +207,11 @@ routine F64.atan(self: Self) -> Self
 /// bits in double-double, with 2^-27 <= |x|; a is the fast-path approximation.
 routine cm_f64_atan_accurate(x: F64, a: F64) -> F64
     block entry():
-        phi : F64   = a.abs().mul(0x1.45f306dc9c883p6).add(256.5)
-        i   : USize = phi.bits().shr(44).bitand(0xFF).to<USize>()  // 256.5 < phi < 384.5, so 0 <= i <= 128
-        inf : Bool  = i.eq(128)
+        abs_a : F64   = a.abs()
+        phi   : F64   = abs_a.mul(0x1.45f306dc9c883p6).add(256.5)
+        ib    : U64   = phi.bits().shr(44)
+        i     : USize = ib.bitand(0xFF).to<USize>()  // 256.5 < phi < 384.5, so 0 <= i <= 128
+        inf   : Bool  = i.eq(128)
         branch inf
             ? reciprocal(i)
             : reduce(i)
@@ -224,9 +229,11 @@ routine cm_f64_atan_accurate(x: F64, a: F64) -> F64
         zmta : F64 = x.sub(ta)
         v    : F64 = F64.add(1.0, zta)
         d    : F64 = F64.sub(1.0, v)
-        ev   : F64 = d.add(zta).sub(d.add(v).sub(1.0)).add(ztal)
+        ev0  : F64 = d.add(zta).sub(d.add(v).sub(1.0))
+        ev   : F64 = ev0.add(ztal)
         r    : F64 = F64.div(1.0, v)
-        rl   : F64 = r.mul_add(v.neg(), 1.0).sub(ev.mul(r)).mul(r)
+        rem  : F64 = r.mul_add(v.neg(), 1.0).sub(ev.mul(r))
+        rl   : F64 = rem.mul(r)
         h    : F64 = r.mul(zmta)
         hl   : F64 = r.mul_add(zmta, h.neg()).add(rl.mul(zmta))
         jump poly(i, h, hl)
@@ -243,8 +250,8 @@ routine cm_f64_atan_accurate(x: F64, a: F64) -> F64
         fl  : F64            = h2.mul(a01.add(h4.mul(a23)))
         // the double-double polynomial over ch[0..2], Horner from the top coefficient
         ch3  : F64            = F64.add(-0x1.2492492492492p-3, fl)
-        cl3  : F64            = F64.sub(-0x1.2492492492492p-3,
-            ch3).add(fl).add(-0x1.249242093c016p-57)
+        tl3  : F64            = F64.sub(-0x1.2492492492492p-3, ch3).add(fl)
+        cl3  : F64            = tl3.add(-0x1.249242093c016p-57)
         m2   : CmF64InvtrigDD = cm_f64_atan_muldd(h2, h2l, ch3, cl3)
         th2  : F64            = m2.hi.add(0x1.999999999999ap-3)
         tl2  : F64            = F64.sub(0x1.999999999999ap-3, th2).add(m2.hi)
@@ -266,7 +273,8 @@ routine cm_f64_atan_accurate(x: F64, a: F64) -> F64
         df    : F64  = inner
             ? sg.mul(F64.from_bits(CM_F64_ATAN_AL.get(i)))
             : 0.0
-        id : F64            = i.to<U64>().to<F64>().copysign(x)
+        fi : F64            = i.to<U64>().to<F64>()
+        id : F64            = fi.copysign(x)
         ah : F64            = F64.mul(0x1.921fb54442dp-7, id)
         al : F64            = F64.mul(0x1.8469898cc518p-55, id)
         at : F64            = F64.mul(-0x1.fc8f8cbb5bf8p-104, id)
@@ -277,15 +285,17 @@ routine cm_f64_atan_accurate(x: F64, a: F64) -> F64
 
     // ah + al + at, with the inputs too close to a rounding boundary settled apart
     block round(ah: F64, al: F64, at: F64, sg: F64):
-        s0   : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(ah, al)
-        s1   : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(s0.lo, at)
-        v0   : F64            = s0.hi
-        v1   : F64            = s1.hi
-        t0   : U64            = v0.bits()
-        t1   : U64            = v1.bits()
-        near : Bool           = t1.add_wrap(1).bitand(0x000FFFFFFFFFFFFF).le(2)
-        gap  : Bool           = t0.shr(52).bitand(0x7FF).sub_wrap(t1.shr(52).bitand(0x7FF)).gt(103)
-        hard : Bool           = near.bitor(gap)
+        s0    : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(ah, al)
+        s1    : CmF64InvtrigDD = cm_f64_invtrig_fasttwosum(s0.lo, at)
+        v0    : F64            = s0.hi
+        v1    : F64            = s1.hi
+        t0    : U64            = v0.bits()
+        t1    : U64            = v1.bits()
+        frac1 : U64            = t1.add_wrap(1).bitand(0x000FFFFFFFFFFFFF)
+        near  : Bool           = frac1.le(2)
+        e0    : U64            = t0.shr(52).bitand(0x7FF)
+        gap   : Bool           = e0.sub_wrap(t1.shr(52).bitand(0x7FF)).gt(103)
+        hard  : Bool           = near.bitor(gap)
         branch hard
             ? database(x.abs(), v0, v1, s1.lo, sg, 0)
             : return(v1.add(v0))
@@ -312,8 +322,9 @@ routine cm_f64_atan_accurate(x: F64, a: F64) -> F64
         branch exact
             ? return(v1.add(v0))
             : continue
-        opposite : Bool = v2.bits().bitxor(t1).shr(63).ne(0)
-        t        : U64  = opposite
+        sign_diff : U64  = v2.bits().bitxor(t1)
+        opposite  : Bool = sign_diff.shr(63).ne(0)
+        t         : U64  = opposite
             ? t1.sub_wrap(1)
             : t1.add_wrap(1)
         return(F64.from_bits(t).add(v0))
@@ -321,9 +332,10 @@ routine cm_f64_atan_accurate(x: F64, a: F64) -> F64
 /// The double-double sum (xh + xl) + (ch + cl), for any operands.
 routine cm_f64_atan_adddd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64InvtrigDD
     block entry():
-        s : F64 = xh.add(ch)
-        d : F64 = s.sub(xh)
-        l : F64 = ch.sub(d).add(xh.add(d.sub(s))).add(xl.add(cl))
+        s   : F64 = xh.add(ch)
+        d   : F64 = s.sub(xh)
+        err : F64 = ch.sub(d).add(xh.add(d.sub(s)))
+        l   : F64 = err.add(xl.add(cl))
         return(CmF64InvtrigDD { hi: s, lo: l })
 
 /// The double-double product (xh + xl) (ch + cl), renormalized.

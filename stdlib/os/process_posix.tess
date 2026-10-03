@@ -164,7 +164,8 @@ private routine Prepared.free(self: @Self, alloc: @Allocator) -> Void
         branch i.eq(self.argc.load())
             ? env(0)
             : continue
-        self.argv.load().stride(i).load().free(alloc)
+        arg_slot : @@Byte = self.argv.load().stride(i)
+        arg_slot.load().free(alloc)
         jump args(i.add(1))
 
     block env(i: USize):
@@ -172,7 +173,8 @@ private routine Prepared.free(self: @Self, alloc: @Allocator) -> Void
         branch envp.is_null().bitor(i.eq(self.own_count.load()))
             ? rest()
             : continue
-        envp.stride(self.own_first.load().add(i)).load().free(alloc)
+        entry_slot : @@Byte = envp.stride(self.own_first.load().add(i))
+        entry_slot.load().free(alloc)
         jump env(i.add(1))
 
     block rest():
@@ -212,7 +214,8 @@ private routine has_nul(program: Bytes, args: @Bytes, arg_count: USize,
         branch i.eq(arg_count)
             ? env(0)
             : continue
-        branch args.stride(i).load().contains("\x00")
+        argument : Bytes = args.stride(i).load()
+        branch argument.contains("\x00")
             ? return(true)
             : arg(i.add(1))
 
@@ -220,8 +223,9 @@ private routine has_nul(program: Bytes, args: @Bytes, arg_count: USize,
         branch i.eq(options.env_count)
             ? directory()
             : continue
-        v : EnvVar = options.env.stride(i).load()
-        branch v.name.contains("\x00").bitor(v.value.contains("\x00")).bitor(v.name.contains("="))
+        v          : EnvVar = options.env.stride(i).load()
+        nul_inside : Bool   = v.name.contains("\x00").bitor(v.value.contains("\x00"))
+        branch nul_inside.bitor(v.name.contains("="))
             ? return(true)
             : env(i.add(1))
 
@@ -283,7 +287,8 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
         branch parent.is_null()
             ? merge(parent, n)
             : continue
-        branch parent.stride(n).load().is_null()
+        parent_entry : @Byte = parent.stride(n).load()
+        branch parent_entry.is_null()
             ? merge(parent, n)
             : count(parent, n.add(1))
 
@@ -604,7 +609,8 @@ private routine drain(out_fd: CInt, err_fd: CInt, out: @CaptureBuffer, err: @Cap
         claim fds   : @Array<PollFd, 2>  <- { PollFd { fd: out_fd, events: 1, revents: 0 },
             PollFd { fd: err_fd, events: 1, revents: 0 } }
         claim chunk : @Array<Byte, 4096> <- uninit
-        open : U32 = out_fd.ge(0).to<U32>().add(err_fd.ge(0).to<U32>())
+        out_open : U32 = out_fd.ge(0).to<U32>()
+        open     : U32 = out_open.add(err_fd.ge(0).to<U32>())
         jump wait(fds.to<@PollFd>(), chunk.to<@Byte>(), open)
 
     block wait(fds: @PollFd, chunk: @Byte, open: U32):
@@ -683,11 +689,13 @@ private routine reap(pid: CInt) -> Option<ExitStatus>
 routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
     block entry():
         claim key : @Array<Byte, 256> <- uninit
-        branch name.length().ge(256).bitor(name.contains("\x00"))
+        too_long : Bool = name.length().ge(256)
+        branch too_long.bitor(name.contains("\x00"))
             ? return(.Absent)
             : continue
         copy<Byte>(key.to<@Byte>(), name.data, name.length())
-        key.to<@Byte>().stride(name.length()).store(0x00)
+        key_end : @Byte = key.to<@Byte>().stride(name.length())
+        key_end.store(0x00)
         value : @Byte = c_getenv(key.to<@Byte>())
         branch value.is_null()
             ? return(.Absent)

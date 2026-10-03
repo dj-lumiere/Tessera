@@ -31,15 +31,16 @@ preset CM_F16_ACOSH_P: @Array<U32, 96> <- { 0x3FC8CA05, 0xBE50F729, 0x3D86E325, 
 /// acosh(self), correctly rounded.
 routine F16.acosh(self: Self) -> Self
     block entry():
-        v        : F32  = self.to<F32>()
-        u        : U32  = v.bits()
-        au       : U32  = u.bitand(0x7FFFFFFF)
-        special  : Bool = au.ge(0x7F800000)
-        at_most1 : Bool = u.ge(0x80000000).bitor(au.le(0x3F800000))  // x <= 1
+        v               : F32  = self.to<F32>()
+        u               : U32  = v.bits()
+        au              : U32  = u.bitand(0x7FFFFFFF)
+        special         : Bool = au.ge(0x7F800000)
+        at_most1        : Bool = u.ge(0x80000000).bitor(au.le(0x3F800000))  // x <= 1
+        biased_exponent : U32  = au.shr(23)
         when:
             special  -> special(u, au)
             at_most1 -> at_most_one(u)
-            else     -> binade(v, u, au.shr(23).sub(127).to<USize>())
+            else     -> binade(v, u, biased_exponent.sub(127).to<USize>())
 
     // +inf or NaN: x + x (quiets a signaling NaN), and -inf has no real result
     block special(u: U32, au: U32):
@@ -66,8 +67,12 @@ routine F16.acosh(self: Self) -> Self
         // for x < 32 the polynomial approximates acosh(x) / sqrt(x - 1)
         below32 : Bool = i.lt(5)
         branch below32
-            ? finish(u, t.sub(1.0).sqrt().mul(p))
+            ? scale_by_root(u, t, p)
             : finish(u, p)
+
+    block scale_by_root(u: U32, t: F32, p: F32):
+        root : F32 = t.sub(1.0).sqrt()
+        jump finish(u, root.mul(p))
 
     // the inputs the polynomials round wrongly
     block finish(u: U32, y: F32):

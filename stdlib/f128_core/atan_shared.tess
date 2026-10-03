@@ -49,7 +49,8 @@ record CmAtanNorm
 
 routine cm_atan_join(hi: U64, lo: U64) -> U128
     block entry():
-        r : U128 = hi.to<U128>().shl(64).bitor(lo.to<U128>())
+        upper : U128 = hi.to<U128>().shl(64)
+        r     : U128 = upper.bitor(lo.to<U128>())
         return(r)
 
 /// the full 64 × 64 -> 128-bit product
@@ -69,21 +70,23 @@ routine cm_atan_mul_high64x128(y: U64, x: U128) -> U128
 /// the approximate high 128 bits of a² (the low × low product is dropped)
 routine cm_atan_square_high(a: U128) -> U128
     block entry():
-        a1    : U64  = a.shr(64).to<U64>()
-        cross : U128 = cm_atan_mul(a1, a.to_wrap<U64>()).shr(64)
-        r     : U128 = cm_atan_mul(a1, a1).add_wrap(cross).add_wrap(cross)
+        a1      : U64  = a.shr(64).to<U64>()
+        cross   : U128 = cm_atan_mul(a1, a.to_wrap<U64>()).shr(64)
+        partial : U128 = cm_atan_mul(a1, a1).add_wrap(cross)
+        r       : U128 = partial.add_wrap(cross)
         return(r)
 
 /// the approximate high 128 bits of the 128 × 128-bit product
 routine cm_atan_mul_high256(a: U128, b: U128) -> U128
     block entry():
-        a0   : U64  = a.to_wrap<U64>()
-        a1   : U64  = a.shr(64).to<U64>()
-        b0   : U64  = b.to_wrap<U64>()
-        b1   : U64  = b.shr(64).to<U64>()
-        a1b0 : U128 = cm_atan_mul(a1, b0).shr(64)
-        a0b1 : U128 = cm_atan_mul(a0, b1).shr(64)
-        r    : U128 = cm_atan_mul(a1, b1).add_wrap(a1b0).add_wrap(a0b1)
+        a0      : U64  = a.to_wrap<U64>()
+        a1      : U64  = a.shr(64).to<U64>()
+        b0      : U64  = b.to_wrap<U64>()
+        b1      : U64  = b.shr(64).to<U64>()
+        a1b0    : U128 = cm_atan_mul(a1, b0).shr(64)
+        a0b1    : U128 = cm_atan_mul(a0, b1).shr(64)
+        partial : U128 = cm_atan_mul(a1, b1).add_wrap(a1b0)
+        r       : U128 = partial.add_wrap(a0b1)
         return(r)
 
 /// 2^255 / kd rounded to 128 bits, for a normalized kd (top bit set): a 64-bit quotient refined
@@ -101,10 +104,13 @@ routine cm_atan_reciprocal(kd: U128) -> U128
             : quot.to_wrap<U64>()
         rr     : U128 = r.to<U128>()
         hl     : U128 = kdl.mul_wrap(rr)
-        hh_raw : S128 = kdh.to<U128>().mul_wrap(rr).add_wrap(hl.shr(64)).to_wrap<S128>()
-        hl_top : S128 = hl.to_wrap<U64>().shr(7).to<S128>()
+        kdh_rr : U128 = kdh.to<U128>().mul_wrap(rr)
+        hh_raw : S128 = kdh_rr.add_wrap(hl.shr(64)).to_wrap<S128>()
+        hl_low : U64  = hl.to_wrap<U64>()
+        hl_top : S128 = hl_low.shr(7).to<S128>()
         hh     : S128 = hh_raw.shl(57).bitor(hl_top)
-        hh_neg : Bool = hh.shr(92).to<S64>().lt(0)
+        hh_top : S64  = hh.shr(92).to<S64>()
+        hh_neg : Bool = hh_top.lt(0)
         corr   : U128 = hh_neg
             ? rr.shl(64)
             : 0
@@ -115,12 +121,13 @@ routine cm_atan_reciprocal(kd: U128) -> U128
 /// class of a sign-stripped binary128: 0 a number, 1 infinity, 2 signaling NaN, 3 quiet NaN
 routine cm_atan_class(hi: U64, lo: U64) -> S64
     block entry():
-        rest  : Bool = hi.shl(32).bitor(lo).ne(0)
-        t     : U64  = hi.shr(32).bitor(rest.to<U64>())
-        inf   : S64  = t.ge(0x7FFF0000).to<S64>()
-        nan   : S64  = t.ge(0x7FFF0001).to<S64>()
-        quiet : S64  = t.ge(0x7FFF8000).to<S64>()
-        r     : S64  = inf.add(nan).add(quiet)
+        rest_bits : U64  = hi.shl(32).bitor(lo)
+        rest      : Bool = rest_bits.ne(0)
+        t         : U64  = hi.shr(32).bitor(rest.to<U64>())
+        inf       : S64  = t.ge(0x7FFF0000).to<S64>()
+        nan       : S64  = t.ge(0x7FFF0001).to<S64>()
+        quiet     : S64  = t.ge(0x7FFF8000).to<S64>()
+        r         : S64  = inf.add(nan).add(quiet)
         return(r)
 
 /// knh:knl shifted left until its top bit is set; 128 for zero
@@ -134,11 +141,12 @@ routine cm_atan_normalize(knh: U64, knl: U64) -> CmAtanNorm
             else     -> zero()
 
     block from_high():
-        nzn   : S64        = knh.leading_zeros().to<S64>()
-        spill : U64        = knl.shr(0.sub(nzn).bitand(63).to<U64>())
-        h     : U64        = knh.shl(nzn.to<U64>()).bitor(spill)
-        kn    : U128       = cm_atan_join(h, knl.shl(nzn.to<U64>()))
-        r     : CmAtanNorm = CmAtanNorm { kn: kn, shift: nzn }
+        nzn         : S64        = knh.leading_zeros().to<S64>()
+        spill_shift : S64        = 0.sub(nzn).bitand(63)
+        spill       : U64        = knl.shr(spill_shift.to<U64>())
+        h           : U64        = knh.shl(nzn.to<U64>()).bitor(spill)
+        kn          : U128       = cm_atan_join(h, knl.shl(nzn.to<U64>()))
+        r           : CmAtanNorm = CmAtanNorm { kn: kn, shift: nzn }
         return(r)
 
     block from_low():
@@ -196,9 +204,10 @@ routine cm_atan_place(f: U128, dn: S64) -> CmAtanU192
             : far()
 
     block near():
-        top : U64        = f.shr(64).to<U64>().shr(dn.to<U64>())
-        low : U128       = f.shl(64.sub(dn).to<U128>())
-        r   : CmAtanU192 = CmAtanU192 { top: top, low: low }
+        f_hi : U64        = f.shr(64).to<U64>()
+        top  : U64        = f_hi.shr(dn.to<U64>())
+        low  : U128       = f.shl(64.sub(dn).to<U128>())
+        r    : CmAtanU192 = CmAtanU192 { top: top, low: low }
         return(r)
 
     block far():
@@ -268,7 +277,8 @@ routine cm_atan_round_fixed(s: CmAtanU192) -> CmAtanRounded
         rnd  : U64           = f1.shr(14.sub(k)).bitand(1)
         t    : U128          = s.low.add_wrap(0x0CA2339C0EBEDFA4)
         mask : U64           = 1.shl(15.sub(k)).sub(1)
-        th   : U64           = t.shr(64).to<U64>().bitand(mask).bitxor(1.shl(14.sub(k)))
+        t_hi : U64           = t.shr(64).to<U64>()
+        th   : U64           = t_hi.bitand(mask).bitxor(1.shl(14.sub(k)))
         hard : Bool          = th.eq(0).bitand(t.to_wrap<U64>().lt(0x194467381D7DBF48))
         xn   : U64           = 0x3FFF.sub(k)
         v0   : U64           = f1.shr(15.sub(k)).bitor(f2.shl(49.add(k)))
@@ -291,16 +301,17 @@ routine cm_atan_round_direct(f: U128, dn: S64) -> CmAtanRounded
             : subnormal()
 
     block normal(w0: U64, w1: U64, k: U64, xn: S64):
-        ones : U64           = U64.MAX
-        mask : U64           = ones.shr(49.add(k))
-        tl   : U64           = w0.add_wrap(6).bitand(mask).bitxor(1.shl(14.sub(k)))
-        hard : Bool          = tl.le(15)
-        rnd  : U64           = w0.shr(14.sub(k)).bitand(1)
-        v0   : U64           = w0.shr(15.sub(k)).bitor(w1.shl(49.add(k)))
-        v1   : U64           = w1.shr(15.sub(k))
-        bits : U128          = cm_atan_join(v1,
+        ones    : U64           = U64.MAX
+        mask    : U64           = ones.shr(49.add(k))
+        w0_tail : U64           = w0.add_wrap(6).bitand(mask)
+        tl      : U64           = w0_tail.bitxor(1.shl(14.sub(k)))
+        hard    : Bool          = tl.le(15)
+        rnd     : U64           = w0.shr(14.sub(k)).bitand(1)
+        v0      : U64           = w0.shr(15.sub(k)).bitor(w1.shl(49.add(k)))
+        v1      : U64           = w1.shr(15.sub(k))
+        bits    : U128          = cm_atan_join(v1,
             v0).add_wrap(cm_atan_join(xn.shl(48).to_wrap<U64>(), rnd))
-        r    : CmAtanRounded = CmAtanRounded { hard: hard, bits: bits }
+        r       : CmAtanRounded = CmAtanRounded { hard: hard, bits: bits }
         return(r)
 
     block subnormal():
@@ -311,13 +322,14 @@ routine cm_atan_round_direct(f: U128, dn: S64) -> CmAtanRounded
             : gone(ks)
 
     block partial(ks: S64):
-        shift : U128          = ks.to<U128>()
-        below : U128          = 1.shl(shift).sub_wrap(1)
-        tt    : U128          = f.add_wrap(6).bitand(below).bitxor(1.shl(shift.sub(1)))
-        hard  : Bool          = tt.le(15)
-        rnd   : U128          = f.shr(shift.sub(1)).bitand(1)
-        bits  : U128          = f.shr(shift).add_wrap(rnd)
-        r     : CmAtanRounded = CmAtanRounded { hard: hard, bits: bits }
+        shift  : U128          = ks.to<U128>()
+        below  : U128          = 1.shl(shift).sub_wrap(1)
+        f_tail : U128          = f.add_wrap(6).bitand(below)
+        tt     : U128          = f_tail.bitxor(1.shl(shift.sub(1)))
+        hard   : Bool          = tt.le(15)
+        rnd    : U128          = f.shr(shift.sub(1)).bitand(1)
+        bits   : U128          = f.shr(shift).add_wrap(rnd)
+        r      : CmAtanRounded = CmAtanRounded { hard: hard, bits: bits }
         return(r)
 
     block gone(ks: S64):
@@ -361,7 +373,8 @@ routine cm_atan_limbs_add(dst: @U64, a: @U64, b: @U64, n: USize) -> Void
     block add(i: USize, carry: U128):
         ai : U64  = a.stride(i).load()
         bi : U64  = b.stride(i).load()
-        s  : U128 = ai.to<U128>().add(bi.to<U128>()).add(carry)
+        ab : U128 = ai.to<U128>().add(bi.to<U128>())
+        s  : U128 = ab.add(carry)
         dst.stride(i).store(s.to_wrap<S64>().to_wrap<U64>())
         jump limb(i.add(1), s.shr(64))
 
@@ -377,7 +390,8 @@ routine cm_atan_limbs_sub(dst: @U64, a: @U64, b: @U64, n: USize) -> Void
             : continue
         ai : U64  = a.stride(i).load()
         bi : U64  = b.stride(i).load()
-        s  : U128 = ai.to<U128>().sub_wrap(bi.to<U128>()).sub_wrap(borrow)
+        ab : U128 = ai.to<U128>().sub_wrap(bi.to<U128>())
+        s  : U128 = ab.sub_wrap(borrow)
         dst.stride(i).store(s.to_wrap<S64>().to_wrap<U64>())
         jump limb(i.add(1), s.shr(64).bitand(1))
 
@@ -391,7 +405,8 @@ routine cm_atan_limbs_not(a: @U64, n: USize) -> Void
         branch done
             ? return()
             : continue
-        a.stride(i).load().bitnot().store_into(a.stride(i))
+        limb : U64 = a.stride(i).load()
+        limb.bitnot().store_into(a.stride(i))
         jump limb(i.add(1))
 
 /// o = a × b exactly (na + nb limbs); o is neither a nor b
@@ -482,9 +497,12 @@ routine cm_atan_limbs_shl_pos(a: @U64, n: USize, k: S64) -> Void
             : last(dst.to<USize>(), c, s)
 
     block step(dst: USize, src: USize, c: S64, s: S64):
-        next  : U64 = a.stride(src).load()
-        under : S64 = next.shr(1).shr(k.bitnot().bitand(63).to<U64>()).to<S64>()
-        a.stride(dst).store(c.shl(s).bitor(under).to_wrap<U64>())
+        next        : U64 = a.stride(src).load()
+        under_shift : S64 = k.bitnot().bitand(63)
+        under_bits  : U64 = next.shr(1).shr(under_shift.to<U64>())
+        under       : S64 = under_bits.to<S64>()
+        limb_bits   : S64 = c.shl(s).bitor(under)
+        a.stride(dst).store(limb_bits.to_wrap<U64>())
         jump move(dst.sub(1).to<SSize>(), src.sub_wrap(1).to_wrap<SSize>(), next.to_wrap<S64>())
 
     block last(dst: USize, c: S64, s: S64):
@@ -524,10 +542,11 @@ routine cm_atan_limbs_shr_pos(a: @U64, n: USize, k: S64) -> Void
             : last(dst, c, s)
 
     block step(dst: USize, src: USize, c: U64, s: S64):
-        next    : U64  = a.stride(src).load()
-        aligned : Bool = s.eq(0)
-        over    : U64  = next.shl(0.sub(k).bitand(63).to<U64>())
-        above   : U64  = aligned
+        next       : U64  = a.stride(src).load()
+        aligned    : Bool = s.eq(0)
+        over_shift : S64  = 0.sub(k).bitand(63)
+        over       : U64  = next.shl(over_shift.to<U64>())
+        above      : U64  = aligned
             ? 0
             : over
         a.stride(dst).store(c.shr(s.to<U64>()).bitor(above))
@@ -579,8 +598,9 @@ routine cm_atan_limbs_sar(a: @U64, n: USize, k: S64) -> Void
             : last(dst, c.to_wrap<S64>(), s)
 
     block step(dst: USize, src: USize, c: U64, s: S64):
-        next  : U64 = a.stride(src).load()
-        above : U64 = next.shl(1).shl(k.bitnot().bitand(63).to<U64>())
+        next        : U64 = a.stride(src).load()
+        above_shift : S64 = k.bitnot().bitand(63)
+        above       : U64 = next.shl(1).shl(above_shift.to<U64>())
         a.stride(dst).store(c.shr(s.to<U64>()).bitor(above))
         jump move(dst.add(1), src.add(1), next)
 
@@ -648,10 +668,12 @@ routine cm_atan_accurate_reciprocal(kd0: S64, kd1: U64, kd2: U64, r: @U64) -> Vo
         cm_atan_limbs_mul(h2, sh, 3, sh, 3)
         sh_neg : Bool = sh2.shr(63).eq(1)
         fix.zeroinit(8)
-        tw3  : S64 = sh0.shl(1).to_wrap<S64>()
-        tw4  : S64 = sh1.shl(1).bitor(sh0.shr(63)).to_wrap<S64>()
-        tw5  : S64 = sh2.shl(1).bitor(sh1.shr(63)).to_wrap<S64>()
-        fix3 : S64 = sh_neg
+        tw3      : S64 = sh0.shl(1).to_wrap<S64>()
+        tw4_bits : U64 = sh1.shl(1).bitor(sh0.shr(63))
+        tw4      : S64 = tw4_bits.to_wrap<S64>()
+        tw5_bits : U64 = sh2.shl(1).bitor(sh1.shr(63))
+        tw5      : S64 = tw5_bits.to_wrap<S64>()
+        fix3     : S64 = sh_neg
             ? tw3
             : 0
         fix4 : S64 = sh_neg
@@ -799,8 +821,9 @@ routine cm_atan_round_limbs(f: @U64, dn: S64) -> U128
             : subnormal(v, 15.sub(xn))
 
     block normal(v: U128, xn: S64):
-        rnd  : U128 = v.shr(14).bitand(1)
-        bits : U128 = v.shr(15).add_wrap(cm_atan_join(xn.shl(48).to_wrap<U64>(), 0)).add_wrap(rnd)
+        rnd       : U128 = v.shr(14).bitand(1)
+        unrounded : U128 = v.shr(15).add_wrap(cm_atan_join(xn.shl(48).to_wrap<U64>(), 0))
+        bits      : U128 = unrounded.add_wrap(rnd)
         return(bits)
 
     block subnormal(v: U128, ks: S64):

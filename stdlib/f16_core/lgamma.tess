@@ -97,11 +97,12 @@ routine F16.ln_gamma(self: Self) -> Self
             xf.ge(0x1.ff4p+12) -> return(Self.from_bits(0x7BFF))
             else               -> continue
         // Stirling's series
-        lz  : F64 = cm_f16_lgamma_ln(z)
-        f   : F64 = z.sub(0.5).mul(lz.sub(1.0)).add(0x1.acfe390c97d69p-2)
-        iz  : F64 = F64.div(1.0, z)
-        iz2 : F64 = iz.mul(iz)
-        iz4 : F64 = iz2.mul(iz2)
+        lz            : F64 = cm_f16_lgamma_ln(z)
+        stirling_lead : F64 = z.sub(0.5).mul(lz.sub(1.0))
+        f             : F64 = stirling_lead.add(0x1.acfe390c97d69p-2)
+        iz            : F64 = F64.div(1.0, z)
+        iz2           : F64 = iz.mul(iz)
+        iz4           : F64 = iz2.mul(iz2)
         when:
             ax.gt(1198.0)        -> stirling1(xf, fx, lz, f, iz)
             ax.gt(0x1.279a7p+6)  -> stirling2(xf, fx, lz, f, iz, iz2)
@@ -144,9 +145,10 @@ routine F16.ln_gamma(self: Self) -> Self
 
     // a rational approximation with exact zeros at 1 and 2
     block mid(xf: F32, fx: F32, tu: U32, s: F64, z: F64):
-        num      : F64  = z.sub(1.0).mul(z.sub(2.0)).mul(0x1.3cc0e6a0106b3p+2).mul(cm_f16_lgamma_r7(z))
-        f        : F64  = num.div(cm_f16_lgamma_r8(z, 16))
-        negative : Bool = xf.lt(0.0)
+        zero_factors : F64  = z.sub(1.0).mul(z.sub(2.0))
+        num          : F64  = zero_factors.mul(0x1.3cc0e6a0106b3p+2).mul(cm_f16_lgamma_r7(z))
+        f            : F64  = num.div(cm_f16_lgamma_r8(z, 16))
+        negative     : Bool = xf.lt(0.0)
         branch negative
             ? continue
             : return(f.to<Self>())
@@ -248,17 +250,21 @@ private routine cm_f16_lgamma_sinpi(x: F64) -> F64
 /// An approximation of the natural logarithm of a positive normal F64.
 private routine cm_f16_lgamma_ln(x: F64) -> F64
     block entry():
-        tu : U64   = x.bits()
-        e  : S64   = tu.shr(52).to<S64>().sub(0x3FF)
-        i  : USize = tu.shr(48).bitand(0xF).to<USize>()
-        m  : F64   = F64.from_bits(tu.bitand(0x000FFFFFFFFFFFFF).bitor(0x3FF0000000000000))
-        z  : F64   = F64.from_bits(CM_F16_LGAMMA_IX.get(i)).mul(m).sub(1.0)
-        z2 : F64   = z.mul(z)
-        z4 : F64   = z2.mul(z2)
-        c0 : F64   = z.mul(-0x1.ffffffffd1d67p-2).add(0x1.fffffffffff24p-1)
-        c2 : F64   = z.mul(-0x1.ffffeca81b866p-3).add(0x1.55555537802dep-2)
-        c4 : F64   = z.mul(-0x1.54f3e581b61bfp-3).add(0x1.999611761d772p-3)
-        c6 : F64   = z.mul(-0x1.9115a5af1e1edp-4).add(0x1.1e642b4cb5143p-3)
-        p  : F64   = c0.add(z2.mul(c2)).add(z4.mul(c4.add(z2.mul(c6))))
-        il : F64   = F64.from_bits(CM_F16_LGAMMA_IL.get(i))
-        return(e.to<F64>().mul(0x1.62e42fefa39efp-1).add(il).add(z.mul(p)))
+        tu              : U64   = x.bits()
+        biased_exponent : U64   = tu.shr(52)
+        e               : S64   = biased_exponent.to<S64>().sub(0x3FF)
+        top_bits        : U64   = tu.shr(48).bitand(0xF)
+        i               : USize = top_bits.to<USize>()
+        m               : F64   = F64.from_bits(tu.bitand(0x000FFFFFFFFFFFFF).bitor(0x3FF0000000000000))
+        ix              : F64   = F64.from_bits(CM_F16_LGAMMA_IX.get(i))
+        z               : F64   = ix.mul(m).sub(1.0)
+        z2              : F64   = z.mul(z)
+        z4              : F64   = z2.mul(z2)
+        c0              : F64   = z.mul(-0x1.ffffffffd1d67p-2).add(0x1.fffffffffff24p-1)
+        c2              : F64   = z.mul(-0x1.ffffeca81b866p-3).add(0x1.55555537802dep-2)
+        c4              : F64   = z.mul(-0x1.54f3e581b61bfp-3).add(0x1.999611761d772p-3)
+        c6              : F64   = z.mul(-0x1.9115a5af1e1edp-4).add(0x1.1e642b4cb5143p-3)
+        p               : F64   = c0.add(z2.mul(c2)).add(z4.mul(c4.add(z2.mul(c6))))
+        il              : F64   = F64.from_bits(CM_F16_LGAMMA_IL.get(i))
+        e_ln2           : F64   = e.to<F64>().mul(0x1.62e42fefa39efp-1)
+        return(e_ln2.add(il).add(z.mul(p)))

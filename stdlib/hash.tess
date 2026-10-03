@@ -34,9 +34,10 @@ routine xxh64_read_u64(data: @Byte, off: USize) -> U64
         branch done
             ? return(acc)
             : continue
-        idx  : USize = off.add(i)
-        b    : Byte  = data.stride(idx).load()
-        next : U64   = acc.bitor(U8.from_byte(b).to<U64>().shl(shift))
+        idx        : USize = off.add(i)
+        b          : Byte  = data.stride(idx).load()
+        byte_value : U64   = U8.from_byte(b).to<U64>()
+        next       : U64   = acc.bitor(byte_value.shl(shift))
         jump loop(i.add(1), next, shift.add(8))
 
 routine xxh64_read_u32(data: @Byte, off: USize) -> U32
@@ -48,21 +49,24 @@ routine xxh64_read_u32(data: @Byte, off: USize) -> U32
         branch done
             ? return(acc)
             : continue
-        idx  : USize = off.add(i)
-        b    : Byte  = data.stride(idx).load()
-        next : U32   = acc.bitor(U8.from_byte(b).to<U32>().shl(shift))
+        idx        : USize = off.add(i)
+        b          : Byte  = data.stride(idx).load()
+        byte_value : U32   = U8.from_byte(b).to<U32>()
+        next       : U32   = acc.bitor(byte_value.shl(shift))
         jump loop(i.add(1), next, shift.add(8))
 
 // -- xxh64 internal mixers -----------------------------------------------------
 
 routine xxh64_round(acc: U64, input: U64) -> U64
     block entry():
-        result : U64 = acc.add_wrap(input.mul_wrap(XXH64_P2)).rotl(31).mul_wrap(XXH64_P1)
+        mixed  : U64 = acc.add_wrap(input.mul_wrap(XXH64_P2)).rotl(31)
+        result : U64 = mixed.mul_wrap(XXH64_P1)
         return(result)
 
 routine xxh64_merge(acc: U64, val: U64) -> U64
     block entry():
-        result : U64 = acc.bitxor(xxh64_round(0, val)).mul_wrap(XXH64_P1).add_wrap(XXH64_P4)
+        folded : U64 = acc.bitxor(xxh64_round(0, val)).mul_wrap(XXH64_P1)
+        result : U64 = folded.add_wrap(XXH64_P4)
         return(result)
 
 routine xxh64_finalize(h: U64) -> U64
@@ -141,8 +145,9 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
             : tail4(h, off)
 
     block tail8_step(h: U64, off: USize):
-        k  : U64 = xxh64_read_u64(data, off)
-        h2 : U64 = h.bitxor(xxh64_round(0, k)).rotl(27).mul_wrap(XXH64_P1).add_wrap(XXH64_P4)
+        k     : U64 = xxh64_read_u64(data, off)
+        mixed : U64 = h.bitxor(xxh64_round(0, k)).rotl(27)
+        h2    : U64 = mixed.mul_wrap(XXH64_P1).add_wrap(XXH64_P4)
         jump tail8_loop(h2, off.add(8))
 
     block tail4(h: U64, off: USize):
@@ -153,9 +158,10 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
             : tail1_loop(h, off)
 
     block tail4_step(h: U64, off: USize):
-        k32 : U32 = xxh64_read_u32(data, off)
-        ku  : U64 = k32.to<U64>()
-        h2  : U64 = h.bitxor(ku.mul_wrap(XXH64_P1)).rotl(23).mul_wrap(XXH64_P2).add_wrap(XXH64_P3)
+        k32   : U32 = xxh64_read_u32(data, off)
+        ku    : U64 = k32.to<U64>()
+        mixed : U64 = h.bitxor(ku.mul_wrap(XXH64_P1)).rotl(23)
+        h2    : U64 = mixed.mul_wrap(XXH64_P2).add_wrap(XXH64_P3)
         jump tail1_loop(h2, off.add(4))
 
     block tail1_loop(h: U64, off: USize):
@@ -166,9 +172,10 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
             : finalize(h)
 
     block tail1_step(h: U64, off: USize):
-        b  : Byte = data.stride(off).load()
-        bu : U64  = U8.from_byte(b).to<U64>()
-        h2 : U64  = h.bitxor(bu.mul_wrap(XXH64_P5)).rotl(11).mul_wrap(XXH64_P1)
+        b     : Byte = data.stride(off).load()
+        bu    : U64  = U8.from_byte(b).to<U64>()
+        mixed : U64  = h.bitxor(bu.mul_wrap(XXH64_P5)).rotl(11)
+        h2    : U64  = mixed.mul_wrap(XXH64_P1)
         jump tail1_loop(h2, off.add(1))
 
     block finalize(h: U64):
@@ -185,11 +192,12 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
 
 routine xxh64_hash_u64(v: U64, seed: U64) -> U64
     block entry():
-        h_len  : U64 = seed.add_wrap(XXH64_P5).add_wrap(8)
-        k      : U64 = xxh64_round(0, v)
-        x      : U64 = h_len.bitxor(k)
-        h2     : U64 = x.rotl(27).mul_wrap(XXH64_P1).add_wrap(XXH64_P4)
-        result : U64 = xxh64_finalize(h2)
+        h_len   : U64 = seed.add_wrap(XXH64_P5).add_wrap(8)
+        k       : U64 = xxh64_round(0, v)
+        x       : U64 = h_len.bitxor(k)
+        rotated : U64 = x.rotl(27)
+        h2      : U64 = rotated.mul_wrap(XXH64_P1).add_wrap(XXH64_P4)
+        result  : U64 = xxh64_finalize(h2)
         return(result)
 
 // -- 16-byte combiner (used by composite types) --------------------------------
@@ -200,12 +208,14 @@ routine xxh64_hash_u64(v: U64, seed: U64) -> U64
 
 routine xxh64_combine2(h1: U64, h2: U64, seed: U64) -> U64
     block entry():
-        h_len  : U64 = seed.add_wrap(XXH64_P5).add_wrap(16)
-        r1     : U64 = xxh64_round(0, h1)
-        x1     : U64 = h_len.bitxor(r1)
-        a1     : U64 = x1.rotl(27).mul_wrap(XXH64_P1).add_wrap(XXH64_P4)
-        r2     : U64 = xxh64_round(0, h2)
-        x2     : U64 = a1.bitxor(r2)
-        a2     : U64 = x2.rotl(27).mul_wrap(XXH64_P1).add_wrap(XXH64_P4)
-        result : U64 = xxh64_finalize(a2)
+        h_len    : U64 = seed.add_wrap(XXH64_P5).add_wrap(16)
+        r1       : U64 = xxh64_round(0, h1)
+        x1       : U64 = h_len.bitxor(r1)
+        rotated1 : U64 = x1.rotl(27)
+        a1       : U64 = rotated1.mul_wrap(XXH64_P1).add_wrap(XXH64_P4)
+        r2       : U64 = xxh64_round(0, h2)
+        x2       : U64 = a1.bitxor(r2)
+        rotated2 : U64 = x2.rotl(27)
+        a2       : U64 = rotated2.mul_wrap(XXH64_P1).add_wrap(XXH64_P4)
+        result   : U64 = xxh64_finalize(a2)
         return(result)

@@ -218,8 +218,9 @@ require W: typename, Writer<W>
     // Fills digits from the right: at least one digit, then until the value is
     // used up and min_digits are written.
     block digit(end: USize, rest: U64, digits: @Byte):
-        at    : USize = end.sub(1)
-        ascii : U8    = rest.mod(10).to<U8>().add(48)  // '0' = 48
+        at        : USize = end.sub(1)
+        low_digit : U8    = rest.mod(10).to<U8>()
+        ascii     : U8    = low_digit.add(48)  // '0' = 48
         digits.stride(at).store(ascii.bits())
         next       : U64   = rest.div(10)
         written    : USize = 20.sub(at)
@@ -702,8 +703,9 @@ require W: typename, Writer<W>
         jump fill(20, value, digits)
 
     block fill(end: USize, rest: U64, digits: @U8):
-        at : USize = end.sub(1)
-        digits.stride(at).store(rest.mod(10).to<U8>().add(48))
+        at        : USize = end.sub(1)
+        low_digit : U8    = rest.mod(10).to<U8>()
+        digits.stride(at).store(low_digit.add(48))
         next : U64  = rest.div(10)
         more : Bool = next.ne(0)
         branch more
@@ -720,7 +722,8 @@ require W: typename, Writer<W>
 routine write_decimal_digits<W>(out: @W, first: @U8, n: USize, exponent: S64) -> Void
 require W: typename, Writer<W>
     block entry():
-        x          : S64  = n.to<S64>().sub(1).add(exponent)
+        top_place  : S64  = n.to<S64>().sub(1)
+        x          : S64  = top_place.add(exponent)
         low_ok     : Bool = x.ge(-4)
         high_ok    : Bool = x.lt(16)
         positional : Bool = low_ok.bitand(high_ok)
@@ -746,7 +749,8 @@ require W: typename, Writer<W>
     // 1234 × 10^-6 → 0.001234
     block below_one(x: S64):
         write_str(out, "0.")
-        write_zeros(out, x.abs_diff(0).to<USize>().sub(1))
+        x_magnitude : USize = x.abs_diff(0).to<USize>()
+        write_zeros(out, x_magnitude.sub(1))
         write_digits(out, first, n)
         return()
 
@@ -1136,9 +1140,10 @@ require W: typename, Writer<W>
     block entry():
         claim n : @BigNat<864> <- uninit
         n.set_u128(f)
-        own    : USize = e.min(0).abs_diff(0).to<USize>()  // max(0, -e)
-        places : USize = digits.min(own)
-        up     : Bool  = e.ge(0)
+        below_zero : U64   = e.min(0).abs_diff(0)
+        own        : USize = below_zero.to<USize>()  // max(0, -e)
+        places     : USize = digits.min(own)
+        up         : Bool  = e.ge(0)
         branch up
             ? scale_up(n, places)
             : scale_down(n, places)
@@ -1176,8 +1181,9 @@ require W: typename, Writer<W>
             : put(n, chars, places, at, rest, left)
 
     block put(n: @BigNat<864>, chars: @U8, places: USize, at: USize, rest: U64, left: USize):
-        to : USize = at.sub(1)
-        chars.stride(to).store(rest.mod(10).to<U8>().add(48))
+        to        : USize = at.sub(1)
+        low_digit : U8    = rest.mod(10).to<U8>()
+        chars.stride(to).store(low_digit.add(48))
         jump digit(n, chars, places, to, rest.div(10), left.sub(1))
 
     // the top chunk is zero-padded to 19 digits
@@ -1268,40 +1274,44 @@ require W: typename, Writer<W>
 routine F64.represent_fixed<W>(self: Self, out: @W, digits: USize) -> Void
 require W: typename, Writer<W>
     block entry():
-        bits     : U64  = self.bits()
-        negative : Bool = bits.shr(63).eq(1)
-        fraction : U128 = bits.bitand(0x000FFFFFFFFFFFFF).to<U128>()  // 2^52 - 1
-        biased   : S64  = bits.shr(52).bitand(2047).to<S64>()
+        bits           : U64  = self.bits()
+        negative       : Bool = bits.shr(63).eq(1)
+        fraction       : U128 = bits.bitand(0x000FFFFFFFFFFFFF).to<U128>()  // 2^52 - 1
+        exponent_field : U64  = bits.shr(52).bitand(2047)
+        biased         : S64  = exponent_field.to<S64>()
         write_binary_fixed(out, negative, fraction, biased, 52, 1075, 2047, digits)
         return()
 
 routine F32.represent_fixed<W>(self: Self, out: @W, digits: USize) -> Void
 require W: typename, Writer<W>
     block entry():
-        bits     : U64  = self.bits().to<U64>()
-        negative : Bool = bits.shr(31).eq(1)
-        fraction : U128 = bits.bitand(0x7FFFFF).to<U128>()  // 2^23 - 1
-        biased   : S64  = bits.shr(23).bitand(255).to<S64>()
+        bits           : U64  = self.bits().to<U64>()
+        negative       : Bool = bits.shr(31).eq(1)
+        fraction       : U128 = bits.bitand(0x7FFFFF).to<U128>()  // 2^23 - 1
+        exponent_field : U64  = bits.shr(23).bitand(255)
+        biased         : S64  = exponent_field.to<S64>()
         write_binary_fixed(out, negative, fraction, biased, 23, 150, 255, digits)
         return()
 
 routine F16.represent_fixed<W>(self: Self, out: @W, digits: USize) -> Void
 require W: typename, Writer<W>
     block entry():
-        bits     : U64  = self.bits().to<U64>()
-        negative : Bool = bits.shr(15).eq(1)
-        fraction : U128 = bits.bitand(0x3FF).to<U128>()  // 2^10 - 1
-        biased   : S64  = bits.shr(10).bitand(31).to<S64>()
+        bits           : U64  = self.bits().to<U64>()
+        negative       : Bool = bits.shr(15).eq(1)
+        fraction       : U128 = bits.bitand(0x3FF).to<U128>()  // 2^10 - 1
+        exponent_field : U64  = bits.shr(10).bitand(31)
+        biased         : S64  = exponent_field.to<S64>()
         write_binary_fixed(out, negative, fraction, biased, 10, 25, 31, digits)
         return()
 
 routine BF16.represent_fixed<W>(self: Self, out: @W, digits: USize) -> Void
 require W: typename, Writer<W>
     block entry():
-        bits     : U64  = self.bits().to<U64>()
-        negative : Bool = bits.shr(15).eq(1)
-        fraction : U128 = bits.bitand(0x7F).to<U128>()  // 2^7 - 1
-        biased   : S64  = bits.shr(7).bitand(255).to<S64>()
+        bits           : U64  = self.bits().to<U64>()
+        negative       : Bool = bits.shr(15).eq(1)
+        fraction       : U128 = bits.bitand(0x7F).to<U128>()  // 2^7 - 1
+        exponent_field : U64  = bits.shr(7).bitand(255)
+        biased         : S64  = exponent_field.to<S64>()
         write_binary_fixed(out, negative, fraction, biased, 7, 134, 255, digits)
         return()
 

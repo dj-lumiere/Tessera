@@ -228,15 +228,17 @@ routine F16.powf(self: Self, exponent: Self) -> Self
 // Whether the F16 value with bits u is an integer (zero counts).
 private routine cm_f16_pow_isint(u: U32) -> Bool
     block entry():
-        zero : Bool = u.bitand(0x7FFF).eq(0)
-        int  : Bool = u.bitand(0x7FFF).shr(10).ge(U32.sub(25, u.bitor(0x400).trailing_zeros()))
+        zero     : Bool = u.bitand(0x7FFF).eq(0)
+        exponent : U32  = u.bitand(0x7FFF).shr(10)
+        int      : Bool = exponent.ge(U32.sub(25, u.bitor(0x400).trailing_zeros()))
         return(zero.bitor(int))
 
 // Whether the F16 value with bits u is an odd integer.
 private routine cm_f16_pow_isodd(u: U32) -> Bool
     block entry():
-        nonzero : Bool = u.bitand(0x7FFF).ne(0)
-        odd     : Bool = u.bitand(0x7FFF).shr(10).eq(U32.sub(25, u.bitor(0x400).trailing_zeros()))
+        nonzero  : Bool = u.bitand(0x7FFF).ne(0)
+        exponent : U32  = u.bitand(0x7FFF).shr(10)
+        odd      : Bool = exponent.eq(U32.sub(25, u.bitor(0x400).trailing_zeros()))
         return(nonzero.bitand(odd))
 
 // Classifies the inputs whose power may be exactly representable: a power of
@@ -246,7 +248,8 @@ private routine cm_f16_pow_isodd(u: U32) -> Bool
 // of |x|.
 private routine cm_f16_pow_is_exact(xu: U32, yu: U32, y: F16) -> U64
     block entry():
-        yexp_tz : U32  = yu.shr(10).bitand(0x1F).add(yu.bitor(0x400).trailing_zeros())
+        yexp    : U32  = yu.shr(10).bitand(0x1F)
+        yexp_tz : U32  = yexp.add(yu.bitor(0x400).trailing_zeros())
         normal  : Bool = xu.bitand(0x3FF).eq(0)
         branch normal
             ? normal(yexp_tz)
@@ -254,26 +257,34 @@ private routine cm_f16_pow_is_exact(xu: U32, yu: U32, y: F16) -> U64
 
     // x = 2^E with E >= -14
     block normal(yexp_tz: U32):
-        e : S32 = xu.shr(10).to<S32>().sub(15)
+        biased_exponent : U32 = xu.shr(10)
+        e               : S32 = biased_exponent.to<S32>().sub(15)
         jump power_of_two(yexp_tz, e)
 
     // x = 2^E with E < -14 when x has a single bit set
     block subnormal(yexp_tz: U32):
-        single : Bool = xu.trailing_zeros().add(xu.leading_zeros()).eq(31)
+        zero_count : U32  = xu.trailing_zeros().add(xu.leading_zeros())
+        single     : Bool = zero_count.eq(31)
         branch single
             ? continue
             : exponent_table()
-        e : S32 = xu.trailing_zeros().to<S32>().sub(24)
+        low_zeros : S32 = xu.trailing_zeros().to<S32>()
+        e         : S32 = low_zeros.sub(24)
         jump power_of_two(yexp_tz, e)
 
     block power_of_two(yexp_tz: U32, e: S32):
-        ye       : S32  = e.to<F32>().mul(y.to<F32>()).to<S32>()
+        ye_float : F32  = e.to<F32>().mul(y.to<F32>())
+        ye       : S32  = ye_float.to<S32>()
         integral : Bool = yexp_tz.add(e.to_wrap<U32>().trailing_zeros()).ge(25)
         in_range : Bool = ye.between(-25, 15)
         exact    : Bool = integral.bitand(in_range)
         branch exact
-            ? return(S64.add(0x3FF, ye.to<S64>()).to_wrap<U64>().shl(52))
+            ? power_bits(ye)
             : exponent_table()
+
+    block power_bits(ye: S32):
+        biased_power : S64 = S64.add(0x3FF, ye.to<S64>())
+        return(biased_power.to_wrap<U64>().shl(52))
 
     block exponent_table():
         low_clear : Bool = yu.bitand(0xFF).eq(0)
@@ -321,16 +332,19 @@ private routine cm_f16_pow_fast(x: F64, y: U64) -> F64
 // ln(x) for a positive normal F64 x.
 private routine cm_f16_pow_log(x: F64) -> F64
     block entry():
-        u    : U64   = x.bits()
-        expo : S64   = u.shr(52).to<S64>().sub(1023)
-        i    : USize = u.bitand(0x000FC00000000000).shr(46).to<USize>()
-        r0   : F64   = u.bitand(0x3FFFFFFFFFFF).to<F64>().mul(F64.from_bits(CM_F16_POW_LOG_TL.get(i)))
-        p3   : F64   = F64.mul_add(0x1.999999999999ap-3, r0, -0.25)
-        p2   : F64   = p3.mul_add(r0, 0x1.5555555555555p-2)
-        p1   : F64   = p2.mul_add(r0, -0.5)
-        p0   : F64   = p1.mul_add(r0, 1.0)
-        r    : F64   = r0.mul(p0)
-        tb   : F64   = F64.from_bits(CM_F16_POW_LOG_TB.get(i))
+        u               : U64   = x.bits()
+        biased_exponent : U64   = u.shr(52)
+        expo            : S64   = biased_exponent.to<S64>().sub(1023)
+        top_bits        : U64   = u.bitand(0x000FC00000000000).shr(46)
+        i               : USize = top_bits.to<USize>()
+        low_mantissa    : F64   = u.bitand(0x3FFFFFFFFFFF).to<F64>()
+        r0              : F64   = low_mantissa.mul(F64.from_bits(CM_F16_POW_LOG_TL.get(i)))
+        p3              : F64   = F64.mul_add(0x1.999999999999ap-3, r0, -0.25)
+        p2              : F64   = p3.mul_add(r0, 0x1.5555555555555p-2)
+        p1              : F64   = p2.mul_add(r0, -0.5)
+        p0              : F64   = p1.mul_add(r0, 1.0)
+        r               : F64   = r0.mul(p0)
+        tb              : F64   = F64.from_bits(CM_F16_POW_LOG_TB.get(i))
         return(F64.mul_add(0x1.62e42fefa39efp-1, expo.to<F64>(), tb.add(r)))
 
 // e^x, saturated below at 2^-25 and above at 2^16 (both beyond the F16 range).
@@ -352,12 +366,14 @@ private routine cm_f16_pow_exp(x: F64) -> F64
             : return(x.add(x))
 
     block core():
-        j    : F64   = F64.mul(0x1.71547652b82fep+6, x).round_ties_even()
-        jint : S64   = j.to<S64>()
-        i    : USize = jint.to_wrap<U64>().bitand(0x3F).to<USize>()
-        xp   : F64   = F64.mul_add(-0x1.62e42fefa39efp-7, j, x)
-        p2   : F64   = F64.mul_add(0x1.55555555555p-3, xp, 0.5)
-        p1   : F64   = p2.mul_add(xp, 1.0)
-        p0   : F64   = p1.mul_add(xp, 1.0)
-        ret  : U64   = p0.mul(F64.from_bits(CM_F16_POW_EXP_TB.get(i))).bits()
-        return(F64.from_bits(ret.add_wrap(jint.shr(6).to_wrap<U64>().shl(52))))
+        j              : F64   = F64.mul(0x1.71547652b82fep+6, x).round_ties_even()
+        jint           : S64   = j.to<S64>()
+        slot           : U64   = jint.to_wrap<U64>().bitand(0x3F)
+        i              : USize = slot.to<USize>()
+        xp             : F64   = F64.mul_add(-0x1.62e42fefa39efp-7, j, x)
+        p2             : F64   = F64.mul_add(0x1.55555555555p-3, xp, 0.5)
+        p1             : F64   = p2.mul_add(xp, 1.0)
+        p0             : F64   = p1.mul_add(xp, 1.0)
+        ret            : U64   = p0.mul(F64.from_bits(CM_F16_POW_EXP_TB.get(i))).bits()
+        scale_exponent : U64   = jint.shr(6).to_wrap<U64>()
+        return(F64.from_bits(ret.add_wrap(scale_exponent.shl(52))))

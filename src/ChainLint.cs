@@ -5,8 +5,8 @@ namespace Tessera;
 /// looks like a call counts: `x.f()`, `T.f()`, `f()`, `.stride(i)` and `.to<T>()` included; a field (`p.x`) doesn't.
 /// A call's arguments are chains of their own, and so is each `{...}` hole of a write template.
 ///
-/// It's a warning, not an error: `tessera check`, `build`, and `run` print it for the program's own files, never for
-/// the standard library's.
+/// It's a warning, not an error: `tessera check`, `build`, and `run` print it for the program's own files, and
+/// `tessera lint` for any file, the standard library's included (CI holds the stdlib, tests, and examples to it).
 public static class ChainLint
 {
     public const int MaxOperations = 2;

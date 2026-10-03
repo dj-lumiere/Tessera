@@ -162,8 +162,9 @@ private routine has_any(s: @U16, n: USize, a: U16, b: U16, c: U16) -> Bool
         branch i.eq(n)
             ? return(false)
             : continue
-        u : U16 = s.stride(i).load()
-        branch u.eq(a).bitor(u.eq(b)).bitor(u.eq(c))
+        u          : U16  = s.stride(i).load()
+        matches_ab : Bool = u.eq(a).bitor(u.eq(b))
+        branch matches_ab.bitor(u.eq(c))
             ? return(true)
             : look(i.add(1))
 
@@ -241,13 +242,18 @@ private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
 private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
     alloc: @Allocator) -> @U16
     block entry():
-        jump size(0, program.length().mul(2).add(3))
+        program_bound : USize = program.length().mul(2)
+        jump size(0, program_bound.add(3))
 
     // A UTF-8 byte count bounds the UTF-16 unit count, so 2 * bytes + 3 units bound an argument and its space.
     block size(i: USize, capacity: USize):
         branch i.eq(arg_count)
             ? made(allocate<U16>(alloc, capacity.add(1)))
-            : size(i.add(1), capacity.add(args.stride(i).load().length().mul(2)).add(3))
+            : count_arg(i, capacity)
+
+    block count_arg(i: USize, capacity: USize):
+        argument : Bytes = args.stride(i).load()
+        jump size(i.add(1), capacity.add(argument.length().mul(2)).add(3))
 
     block made(line: @U16):
         branch line.is_null()
@@ -372,7 +378,8 @@ private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Allo
         branch i.eq(0)
             ? return(false)
             : continue
-        out.stride(i.sub(1)).load().free(alloc)
+        copy_slot : @@U16 = out.stride(i.sub(1))
+        copy_slot.load().free(alloc)
         jump undo(i.sub(1))
 
 /// This process's environment with the overrides applied, as a sorted block, in memory from alloc: null on a
@@ -489,7 +496,8 @@ private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
         branch j.eq(options.env_count)
             ? arrays(own, all, result)
             : continue
-        own.stride(j).load().free(alloc)
+        own_slot : @@U16 = own.stride(j)
+        own_slot.load().free(alloc)
         jump release(own, all, result, j.add(1))
 
     block arrays(own: @@U16, all: @@U16, result: @U16):

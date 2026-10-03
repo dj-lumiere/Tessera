@@ -205,9 +205,10 @@ routine F64.ln_1p(self: Self) -> Self
 
     // |x| >= 0.0625: 1 + x = t + dt
     block large(ixu: U64, ax: U64):
-        near    : Bool = ixu.to_wrap<S64>().lt(0x4340000000000000).bitand(ixu.lt(0xBFF0000000000000))
-        big     : Bool = ixu.lt(0x4690000000000000)  // 2^53 <= x < 2^106
-        special : Bool = ixu.ge(0x7FF0000000000000)
+        under_2p53 : Bool = ixu.to_wrap<S64>().lt(0x4340000000000000)
+        near       : Bool = under_2p53.bitand(ixu.lt(0xBFF0000000000000))
+        big        : Bool = ixu.lt(0x4690000000000000)  // 2^53 <= x < 2^106
+        special    : Bool = ixu.ge(0x7FF0000000000000)
         when:
             near    -> near()  // 0.0625 < x < 2^53 or -1 < x < -0.0625
             big     -> reduce(self, 1.0)
@@ -219,11 +220,13 @@ routine F64.ln_1p(self: Self) -> Self
         jump reduce(s.hi, s.lo)
 
     block reduce(tf: Self, dtf: Self):
-        j   : S64   = tf.bits().sub_wrap(0x3FE6A00000000000).to_wrap<S64>()
-        j1  : USize = j.shr(46).bitand(0x3F).to<USize>()
-        je  : S64   = j.shr(52)
-        rf  : U64   = CM_F64_LOG1P_RF.get(j1)
-        low : Bool  = je.lt(1022)
+        offset_bits : U64   = tf.bits().sub_wrap(0x3FE6A00000000000)
+        j           : S64   = offset_bits.to_wrap<S64>()
+        slot        : S64   = j.shr(46).bitand(0x3F)
+        j1          : USize = slot.to<USize>()
+        je          : S64   = j.shr(52)
+        rf          : U64   = CM_F64_LOG1P_RF.get(j1)
+        low         : Bool  = je.lt(1022)
         branch low
             ? scaled(j1, je, Self.from_bits(rf.sub_wrap(je.to_wrap<U64>().shl(52))), tf, dtf)
             : continue
@@ -260,7 +263,8 @@ routine F64.ln_1p(self: Self) -> Self
 /// log1p x for |x| < 2^-53: x - |x| 2^-54 rounds like log1p x (and +-0 stays itself).
 private routine cm_f64_log1p_tiny(x: F64) -> F64
     block entry():
-        zero : Bool = x.bits().shl(1).eq(0)
+        magnitude_bits : U64  = x.bits().shl(1)
+        zero           : Bool = magnitude_bits.eq(0)
         branch zero
             ? return(x)
             : return(x.abs().mul_add(-0x1p-54, x))
@@ -334,27 +338,31 @@ private routine cm_f64_log1p_refine_near_zero(x: F64) -> F64
 /// a, and a polynomial with double-double coefficients.
 private routine cm_f64_log1p_refine_table(x: F64, a: F64) -> F64
     block entry():
-        ixu   : U64   = x.bits()
-        j     : S64   = a.mul(0x1.71547652b82fep+16).round_ties_even().to<S64>()
-        ii    : S64   = j.add(34952)
-        j1    : USize = ii.shr(12).bitand(0xF).to<USize>()
-        j2    : USize = ii.shr(8).bitand(0xF).to<USize>()
-        j3    : USize = ii.shr(4).bitand(0xF).to<USize>()
-        j4    : USize = ii.bitand(0xF).to<USize>()
-        je    : S64   = ii.shr(16)
-        k1    : USize = j1.mul(3)
-        k2    : USize = j2.add(16).mul(3)
-        k3    : USize = j3.add(32).mul(3)
-        k4    : USize = j4.add(48).mul(3)
-        ll0   : F64   = cm_f64_log1p_ln_sum(k1, k2, k3, k4)
-        ll1   : F64   = cm_f64_log1p_ln_sum(k1.add(1), k2.add(1), k3.add(1), k4.add(1))
-        ll2   : F64   = cm_f64_log1p_ln_sum(k1.add(2), k2.add(2), k3.add(2), k4.add(2))
-        t12   : F64   = cm_f64_log1p_rt(j1, 0).mul(cm_f64_log1p_rt(j2, 1))
-        t34   : F64   = cm_f64_log1p_rt(j3, 2).mul(cm_f64_log1p_rt(j4, 3))
-        th    : F64   = t12.mul(t34)
-        tl    : F64   = t12.mul_add(t34, th.neg())
-        below : Bool  = ixu.to_wrap<S64>().lt(0x4690000000000000)
-        split : Bool  = below.bitand(ixu.lt(0xBFE0000000000000))
+        ixu      : U64   = x.bits()
+        a_scaled : F64   = a.mul(0x1.71547652b82fep+16).round_ties_even()
+        j        : S64   = a_scaled.to<S64>()
+        ii       : S64   = j.add(34952)
+        nibble1  : S64   = ii.shr(12).bitand(0xF)
+        j1       : USize = nibble1.to<USize>()
+        nibble2  : S64   = ii.shr(8).bitand(0xF)
+        j2       : USize = nibble2.to<USize>()
+        nibble3  : S64   = ii.shr(4).bitand(0xF)
+        j3       : USize = nibble3.to<USize>()
+        j4       : USize = ii.bitand(0xF).to<USize>()
+        je       : S64   = ii.shr(16)
+        k1       : USize = j1.mul(3)
+        k2       : USize = j2.add(16).mul(3)
+        k3       : USize = j3.add(32).mul(3)
+        k4       : USize = j4.add(48).mul(3)
+        ll0      : F64   = cm_f64_log1p_ln_sum(k1, k2, k3, k4)
+        ll1      : F64   = cm_f64_log1p_ln_sum(k1.add(1), k2.add(1), k3.add(1), k4.add(1))
+        ll2      : F64   = cm_f64_log1p_ln_sum(k1.add(2), k2.add(2), k3.add(2), k4.add(2))
+        t12      : F64   = cm_f64_log1p_rt(j1, 0).mul(cm_f64_log1p_rt(j2, 1))
+        t34      : F64   = cm_f64_log1p_rt(j3, 2).mul(cm_f64_log1p_rt(j4, 3))
+        th       : F64   = t12.mul(t34)
+        tl       : F64   = t12.mul_add(t34, th.neg())
+        below    : Bool  = ixu.to_wrap<S64>().lt(0x4690000000000000)
+        split    : Bool  = below.bitand(ixu.lt(0xBFE0000000000000))
         // 1 + x = t + dt
         when:
             split -> split(je, ll0, ll1, ll2, th, tl)
@@ -453,8 +461,9 @@ private routine cm_f64_log1p_final(ln22: F64, ln21: F64, ln20: F64) -> F64
         branch power
             ? continue
             : return(w0.hi.add(w1.hi))
-        opposite : Bool = w1.lo.bits().bitxor(tb).shr(63).eq(1)
-        nudged   : U64  = opposite
+        sign_diff : U64  = w1.lo.bits().bitxor(tb)
+        opposite  : Bool = sign_diff.shr(63).eq(1)
+        nudged    : U64  = opposite
             ? tb.sub_wrap(1)
             : tb.add_wrap(1)
         return(w0.hi.add(F64.from_bits(nudged)))
@@ -488,8 +497,9 @@ private routine cm_f64_log1p_sum(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64Log
 /// The product of the double-doubles (xh, xl) and (ch, cl).
 private routine cm_f64_log1p_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64LogDd
     block entry():
-        ahhh : F64 = ch.mul(xh)
-        lo   : F64 = cl.mul(xh).add(ch.mul(xl)).add(ch.mul_add(xh, ahhh.neg()))
+        ahhh  : F64 = ch.mul(xh)
+        cross : F64 = cl.mul(xh).add(ch.mul(xl))
+        lo    : F64 = cross.add(ch.mul_add(xh, ahhh.neg()))
         return(CmF64LogDd { hi: ahhh, lo: lo })
 
 /// The product of the double x and the double-double (ch, cl).

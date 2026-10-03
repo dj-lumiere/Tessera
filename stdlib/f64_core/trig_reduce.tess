@@ -544,7 +544,8 @@ record CmF64TrigSplit
 /// hi 2^64 + lo.
 routine cm_f64_trig_u128(hi: U64, lo: U64) -> U128
     block entry():
-        return(hi.to<U128>().shl(64).bitor(lo.to<U128>()))
+        hi_part : U128 = hi.to<U128>().shl(64)
+        return(hi_part.bitor(lo.to<U128>()))
 
 /// The high 64 bits of r.
 routine cm_f64_trig_hi(r: U128) -> U64
@@ -712,11 +713,12 @@ routine cm_f64_trig_dint_to_f64(a: CmF64TrigDint) -> F64
 
     // round the significand to the precision a subnormal result has
     block subnormal(hi: U64, lo: U64):
-        sh     : U64  = S64.sub(-1011, a.ex).to<U64>()
-        h      : U64  = hi.shr(sh)
-        md     : U64  = hi.shr(sh.sub(1)).bitand(1)
-        sticky : Bool = hi.bitand(U64.MAX.shr(sh)).ne(0).bitor(lo.ne(0))
-        h1     : U64  = sticky
+        sh        : U64  = S64.sub(-1011, a.ex).to<U64>()
+        h         : U64  = hi.shr(sh)
+        md        : U64  = hi.shr(sh.sub(1)).bitand(1)
+        hi_sticky : Bool = hi.bitand(U64.MAX.shr(sh)).ne(0)
+        sticky    : Bool = hi_sticky.bitor(lo.ne(0))
+        h1        : U64  = sticky
             ? h.add(md)
             : h.add(h.bitand(md))
         hi1  : U64  = h1.shl(sh)
@@ -727,10 +729,12 @@ routine cm_f64_trig_dint_to_f64(a: CmF64TrigDint) -> F64
 
     // r in [1, 2) with the rounding bits folded into rd, then scaled by 2^(aex - 1)
     block assemble(hi: U64, lo: U64, aex: S64):
-        rbits  : U64  = hi.shr(11).bitor(U64.shl(0x3FF, 52))
-        round  : Bool = hi.shr(10).bitand(1).ne(0)
-        sticky : Bool = hi.bitand(0x3FF).ne(0).bitor(lo.ne(0))
-        rd0    : F64  = round
+        rbits     : U64  = hi.shr(11).bitor(U64.shl(0x3FF, 52))
+        round_bit : U64  = hi.shr(10).bitand(1)
+        round     : Bool = round_bit.ne(0)
+        hi_sticky : Bool = hi.bitand(0x3FF).ne(0)
+        sticky    : Bool = hi_sticky.bitor(lo.ne(0))
+        rd0       : F64  = round
             ? F64.add(0.0, 0x1p-53)
             : 0.0
         rd1 : F64 = sticky
@@ -745,9 +749,13 @@ routine cm_f64_trig_dint_to_f64(a: CmF64TrigDint) -> F64
         tiny   : Bool = aex.lt(-1073)
         when:
             big    -> overflow(r, aex)
-            normal -> return(r.mul(F64.from_bits(aex.add(1022).to_wrap<U64>().bitand(0x7FF).shl(52))))
+            normal -> normal_range(r, aex)
             tiny   -> underflow(r, aex)
             else   -> return(r.mul(F64.from_bits(U64.shl(1, aex.add(1073).to<U64>()))))
+
+    block normal_range(r: F64, aex: S64):
+        biased_exponent : U64 = aex.add(1022).to_wrap<U64>()
+        return(r.mul(F64.from_bits(biased_exponent.bitand(0x7FF).shl(52))))
 
     block overflow(r: F64, aex: S64):
         edge : Bool = aex.eq(1025)
@@ -883,10 +891,12 @@ private routine cm_f64_trig_reduce(x: CmF64TrigDint) -> CmF64TrigDint
 
     // 2 <= e <= 1024: only T[i] .. T[i+4] contribute
     block large(xhi: U64):
-        e   : S64  = x.ex
-        far : Bool = e.ge(127)
-        i   : U64  = far
-            ? e.sub(127).add(64).sub(1).div(64).to_wrap<U64>()
+        e      : S64  = x.ex
+        far    : Bool = e.ge(127)
+        excess : S64  = e.sub(127)
+        padded : S64  = excess.add(64).sub(1)
+        i      : U64  = far
+            ? padded.div(64).to_wrap<U64>()
             : 0
         u3  : U128 = xhi.mul_wide(cm_f64_trig_t(i.add(3)))
         c0  : U64  = cm_f64_trig_lo(u3)
@@ -971,9 +981,10 @@ private routine cm_f64_trig_set_dd(c: U128) -> CmF64TrigDD
         branch done
             ? return(CmF64TrigDD { hi: h, lo: 0.0 })
             : continue
-        g : U64 = rest.leading_zeros()
-        r : U64 = rest.shl(g)
-        l : F64 = F64.from_bits(f.sub_wrap(53).sub_wrap(g).shl(52).bitor(r.shl(1).shr(12)))
+        g     : U64 = rest.leading_zeros()
+        r     : U64 = rest.shl(g)
+        l_exp : U64 = f.sub_wrap(53).sub_wrap(g)
+        l     : F64 = F64.from_bits(l_exp.shl(52).bitor(r.shl(1).shr(12)))
         return(CmF64TrigDD { hi: h, lo: l })
 
     // c1 = 0, c0 != 0: the most significant bit is shifted out
@@ -987,10 +998,10 @@ private routine cm_f64_trig_set_dd(c: U128) -> CmF64TrigDD
         branch done
             ? return(CmF64TrigDD { hi: h, lo: 0.0 })
             : continue
-        g : U64 = rest.leading_zeros()
-        r : U64 = rest.shl(g.add(1))
-        return(CmF64TrigDD { hi: h,
-            lo: F64.from_bits(f.sub_wrap(64).sub_wrap(g).shl(52).bitor(r.shr(12))) })
+        g     : U64 = rest.leading_zeros()
+        r     : U64 = rest.shl(g.add(1))
+        l_exp : U64 = f.sub_wrap(64).sub_wrap(g)
+        return(CmF64TrigDD { hi: h, lo: F64.from_bits(l_exp.shl(52).bitor(r.shr(12))) })
 
 /// The first two words c1 2^64 + c0 of frac(x/(2pi)) for x > 0x1.921fb54442d17p+2. With with_t2, the upper
 /// part of the next table product is added in (as the tangent does), else it is dropped (as the cosine does).

@@ -15,6 +15,7 @@ static class Cli
           tessera check [<target>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
           tessera fmt   -               format the source on standard input to standard output (for an editor)
+          tessera lint  <file-or-dir>...   print the style warnings (a chain of more than two calls), the stdlib's too
           tessera version               print the builder's version
           tessera help                  print this text
 
@@ -68,6 +69,7 @@ static class Cli
                 "test" => Test(args[1..]),
                 "check" => Check(args[1..]),
                 "fmt" => Fmt(args[1..]),
+                "lint" => LintFiles(args[1..]),
                 "version" => Version(),
                 "help" => Help(),
                 _ => Fail($"unknown command '{args[0]}'\n{Usage}"),
@@ -129,6 +131,37 @@ static class Cli
         }
         if (!check) Console.WriteLine($"formatted {changed} of {files.Count} file(s)");
         return check && changed > 0 ? 1 : 0;
+    }
+
+    /// The style warnings for the files given, whoever's they are: what check, build, and run print for the
+    /// program's own files, here for any file, the stdlib included. Exits 1 when there is one, so CI can hold to it.
+    private static int LintFiles(string[] args)
+    {
+        if (args.Length == 0) return Fail("lint: give files or directories to lint");
+        var files = args.SelectMany(p => Directory.Exists(p)
+            ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
+            : [p]).Order().ToList();
+        int count = 0;
+        foreach (var file in files)
+        {
+            if (!File.Exists(file)) throw new ToolError($"no such file: {file}");
+            List<Decl> decls;
+            try
+            {
+                decls = ParseFile(Path.GetFullPath(file), isLibrary: false);
+            }
+            catch (CompileError)
+            {
+                continue;   // a file that doesn't parse is the build's to report (some tests are made not to)
+            }
+            foreach (var w in ChainLint.Check(decls))
+            {
+                Console.Error.WriteLine(w);
+                count++;
+            }
+        }
+        Console.Error.WriteLine($"{count} warning(s) in {files.Count} file(s)");
+        return count > 0 ? 1 : 0;
     }
 
     private static int Fail(string message)

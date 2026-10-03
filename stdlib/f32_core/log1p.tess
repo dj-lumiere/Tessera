@@ -57,7 +57,8 @@ routine F32.ln_1p(self: Self) -> Self
             : continue
         f        : F64  = cm_f32_log1p_poly(z, z.mul(z))
         r        : F64  = z.add(f)
-        boundary : Bool = r.bits().bitand(0xFFFFFFF).eq(0)
+        low_bits : U64  = r.bits().bitand(0xFFFFFFF)
+        boundary : Bool = low_bits.eq(0)
         branch boundary
             ? return(r.add(f.add(z.sub(r)).mul(0x1p+14)).to<Self>())
             : return(r.to<Self>())
@@ -70,38 +71,43 @@ routine F32.ln_1p(self: Self) -> Self
             : return(self.mul_add(self.neg(), self))
 
     block normal(z: F64):
-        tp   : U64   = z.add(1.0).bits()
-        e    : S64   = tp.shr(52).to<S64>().sub(0x3FF)
-        ed   : F64   = e.to<F64>()
-        m52  : U64   = tp.bitand(0x000FFFFFFFFFFFFF)
-        j    : USize = tp.shr(47).bitand(31).to<USize>()
-        xd   : F64   = F64.from_bits(m52.bitor(0x3FF0000000000000))
-        zj   : F64   = xd.mul(F64.from_bits(CM_F32_LOG1P_X0.get(j))).sub(1.0)  // exact for x < 0x1.0cp+30
-        lixj : F64   = F64.from_bits(CM_F32_LOG1P_LIX.get(j))
-        z2   : F64   = zj.mul(zj)
-        c01  : F64   = F64.sub(0x1.ffffffe1eac82p-1, zj.mul(0x1.ffffff7da1724p-2))
-        c23  : F64   = F64.sub(0x1.5564d8fa59d0cp-2, zj.mul(0x1.001219d3dba2ap-2))
-        r    : F64   = ed.mul(0x1.62e42fefa39efp-1).add(lixj).add(zj.mul(c01.add(z2.mul(c23))))
-        ub   : Self  = r.to<Self>()
-        lb   : Self  = r.sub(0x1.7b33170824155p-36).to<Self>()
-        sure : Bool  = ub.eq(lb)
+        tp              : U64   = z.add(1.0).bits()
+        biased_exponent : U64   = tp.shr(52)
+        e               : S64   = biased_exponent.to<S64>().sub(0x3FF)
+        ed              : F64   = e.to<F64>()
+        m52             : U64   = tp.bitand(0x000FFFFFFFFFFFFF)
+        top_bits        : U64   = tp.shr(47).bitand(31)
+        j               : USize = top_bits.to<USize>()
+        xd              : F64   = F64.from_bits(m52.bitor(0x3FF0000000000000))
+        zj              : F64   = xd.mul(F64.from_bits(CM_F32_LOG1P_X0.get(j))).sub(1.0)  // exact for x < 0x1.0cp+30
+        lixj            : F64   = F64.from_bits(CM_F32_LOG1P_LIX.get(j))
+        z2              : F64   = zj.mul(zj)
+        c01             : F64   = F64.sub(0x1.ffffffe1eac82p-1, zj.mul(0x1.ffffff7da1724p-2))
+        c23             : F64   = F64.sub(0x1.5564d8fa59d0cp-2, zj.mul(0x1.001219d3dba2ap-2))
+        e_log           : F64   = ed.mul(0x1.62e42fefa39efp-1).add(lixj)
+        r               : F64   = e_log.add(zj.mul(c01.add(z2.mul(c23))))
+        ub              : Self  = r.to<Self>()
+        lb              : Self  = r.sub(0x1.7b33170824155p-36).to<Self>()
+        sure            : Bool  = ub.eq(lb)
         branch sure
             ? return(ub)
             : slow(zj, z2, ed, lixj)
 
     // The fast path can't decide the rounding: a longer polynomial, a two-part log(2) and a double-float final sum.
     block slow(z: F64, z2: F64, ed: F64, lixj: F64):
-        f    : F64  = cm_f32_log1p_poly(z, z2)
-        lj   : F64  = lixj.sub(0x1.7654p-37)  // remove the offset
-        lh   : F64  = ed.mul(0x1.62e4p-1)
-        ll   : F64  = ed.mul(0x1.7f7d1cf79abcap-20).add(z)
-        rh   : F64  = lh.add(lj)
-        rl   : F64  = lh.sub(rh).add(lj).add(ll.add(f))
-        fh   : Self = rh.add(rl).to<Self>()
-        fl64 : F64  = rh.sub(fh.to<F64>()).add(rl)
-        fl   : Self = fl64.to<Self>()
-        tfl  : Self = fl.mul(2.0)
-        tie  : Bool = fh.add(tfl).sub(fh).eq(tfl)
+        f           : F64  = cm_f32_log1p_poly(z, z2)
+        lj          : F64  = lixj.sub(0x1.7654p-37)  // remove the offset
+        lh          : F64  = ed.mul(0x1.62e4p-1)
+        ll          : F64  = ed.mul(0x1.7f7d1cf79abcap-20).add(z)
+        rh          : F64  = lh.add(lj)
+        rh_err      : F64  = lh.sub(rh).add(lj)
+        rl          : F64  = rh_err.add(ll.add(f))
+        fh          : Self = rh.add(rl).to<Self>()
+        fl64        : F64  = rh.sub(fh.to<F64>()).add(rl)
+        fl          : Self = fl64.to<Self>()
+        tfl         : Self = fl.mul(2.0)
+        rounded_tfl : Self = fh.add(tfl).sub(fh)
+        tie         : Bool = rounded_tfl.eq(tfl)
         branch tie
             ? tie(fh, fl, fl64)
             : return(fh.add(fl))
@@ -118,8 +124,8 @@ private routine cm_f32_log1p_poly(z: F64, z2: F64) -> F64
         z4  : F64 = z2.mul(z2)
         c01 : F64 = z.mul(0x1.5555555556f6bp-2).add(-0.5)
         c23 : F64 = z.mul(0x1.9999988d176e4p-3).add(-0x1.00000000029b9p-2)
-        c46 : F64 = F64.sub(0x1.24adeca50e2bcp-3,
-            z.mul(0x1.001ba33bf57cfp-3)).mul(z).add(-0x1.55555418889a7p-3)
+        c56 : F64 = F64.sub(0x1.24adeca50e2bcp-3, z.mul(0x1.001ba33bf57cfp-3))
+        c46 : F64 = c56.mul(z).add(-0x1.55555418889a7p-3)
         return(z2.mul(c01.add(z2.mul(c23)).add(z4.mul(c46))))
 
 /// log1p of -1 (-inf), +inf (itself), NaN (itself, quiet) or an input below -1 (NaN).

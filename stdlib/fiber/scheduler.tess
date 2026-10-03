@@ -369,8 +369,8 @@ routine Scheduler.run(self: @Self) -> Void
             : io_one(i)
 
     block io_one(i: USize):
-        self.io_threads.load().stride(i).store(Thread.spawn(io_main.to<Callable>(), self,
-            self.alloc.load()))
+        io_slot : @Thread = self.io_threads.load().stride(i)
+        io_slot.store(Thread.spawn(io_main.to<Callable>(), self, self.alloc.load()))
         jump io_start(i.add(1))
 
     block start(i: USize):
@@ -400,7 +400,8 @@ routine Scheduler.run(self: @Self) -> Void
             : wait_for(i)
 
     block wait_for(i: USize):
-        self.workers.load().stride(i).thread.load().join()
+        worker : @Worker = self.workers.load().stride(i)
+        worker.thread.load().join()
         jump join(i.add(1))
 
     // Every fiber has returned, so no call is left: the I/O threads stop.
@@ -417,7 +418,8 @@ routine Scheduler.run(self: @Self) -> Void
             : io_wait_for(i)
 
     block io_wait_for(i: USize):
-        self.io_threads.load().stride(i).load().join()
+        io_thread : @Thread = self.io_threads.load().stride(i)
+        io_thread.load().join()
         jump io_join(i.add(1))
 
 /// Frees the fibers that never got to return, the queues, and the workers.
@@ -678,9 +680,10 @@ private routine find_work(w: @Worker) -> @FiberState
             : victim(sched, k, count)
 
     block victim(sched: @Scheduler, k: USize, count: USize):
-        other : @Worker     = sched.workers.load().stride(w.index.load().add(k).mod(count))
-        fiber : @FiberState = pop_back_locked(other.lock, other.queue)
-        found : Bool        = fiber.is_not_null()
+        rotated : USize       = w.index.load().add(k)
+        other   : @Worker     = sched.workers.load().stride(rotated.mod(count))
+        fiber   : @FiberState = pop_back_locked(other.lock, other.queue)
+        found   : Bool        = fiber.is_not_null()
         branch found
             ? return(fiber)
             : steal(sched, k.add(1))
@@ -705,7 +708,8 @@ private routine fire_timers(w: @Worker) -> Void
         branch empty
             ? done(sched, fired)
             : continue
-        due : Bool = sched.timers.load().peek().deadline.le(now)
+        earliest : TimerEntry = sched.timers.load().peek()
+        due      : Bool       = earliest.deadline.le(now)
         branch due
             ? fire(sched, now)
             : done(sched, fired)

@@ -267,9 +267,11 @@ internal routine encode_utf16(text: Bytes, out: @U16, capacity: USize) -> Option
         branch n.add(2).ge(capacity)
             ? return(.Absent)
             : continue
-        v : U32 = cp.sub(0x10000)
-        out.stride(n).store(v.shr(10).add(0xD800).to<U16>())
-        out.stride(n.add(1)).store(v.bitand(0x3FF).add(0xDC00).to<U16>())
+        v              : U32 = cp.sub(0x10000)
+        high_surrogate : U32 = v.shr(10).add(0xD800)
+        out.stride(n).store(high_surrogate.to<U16>())
+        low_surrogate : U32 = v.bitand(0x3FF).add(0xDC00)
+        out.stride(n.add(1)).store(low_surrogate.to<U16>())
         jump next(iter, n.add(2))
 
     block end(n: USize):
@@ -300,7 +302,8 @@ internal routine narrow(units: @U16, count: USize, out: @Byte) -> USize
         branch i.ge(count)
             ? return(n)
             : continue
-        u : U32 = units.stride(i).load().to<U32>()
+        unit : U16 = units.stride(i).load()
+        u    : U32 = unit.to<U32>()
         branch u.between(0xD800, 0xDBFF)
             ? high(i, n, u)
             : continue
@@ -312,10 +315,16 @@ internal routine narrow(units: @U16, count: USize, out: @Byte) -> USize
         branch i.add(1).lt(count)
             ? continue
             : put(i.add(1), n, 0xFFFD)
-        low : U32 = units.stride(i.add(1)).load().to<U32>()
+        low_unit : U16 = units.stride(i.add(1)).load()
+        low      : U32 = low_unit.to<U32>()
         branch low.between(0xDC00, 0xDFFF)
-            ? put(i.add(2), n, u.sub(0xD800).shl(10).add(low.sub(0xDC00)).add(0x10000))
+            ? surrogate_pair(i, n, u, low)
             : put(i.add(1), n, 0xFFFD)
+
+    block surrogate_pair(i: USize, n: USize, u: U32, low: U32):
+        high_half : U32 = u.sub(0xD800).shl(10)
+        cp_offset : U32 = high_half.add(low.sub(0xDC00))
+        jump put(i.add(2), n, cp_offset.add(0x10000))
 
     block put(i: USize, n: USize, cp: U32):
         jump next(i, n.add(utf8_encode(cp.to<Char>(), out.stride(n))))
@@ -327,7 +336,8 @@ internal routine wide_length(units: @U16) -> USize
         jump scan(0)
 
     block scan(i: USize):
-        branch units.stride(i).load().eq(0)
+        unit : U16 = units.stride(i).load()
+        branch unit.eq(0)
             ? return(i)
             : scan(i.add(1))
 
@@ -346,14 +356,17 @@ internal routine owned_wide(units: @U16, count: USize, alloc: @Allocator) -> Res
 #target(os: "windows")
 private routine unix_ns(t: FileTime) -> S64
     block entry():
-        ticks : U64 = t.high.to<U64>().shl(32).bitor(t.low.to<U64>())
+        high_ticks : U64 = t.high.to<U64>().shl(32)
+        ticks      : U64 = high_ticks.bitor(t.low.to<U64>())
         // 100 ns ticks between 1601-01-01 and 1970-01-01
-        return(ticks.to_wrap<S64>().sub_wrap(116444736000000000).mul_wrap(100))
+        since_epoch : S64 = ticks.to_wrap<S64>().sub_wrap(116444736000000000)
+        return(since_epoch.mul_wrap(100))
 
 #target(os: "windows")
 private routine size_of(high: U32, low: U32) -> U64
     block entry():
-        return(high.to<U64>().shl(32).bitor(low.to<U64>()))
+        upper : U64 = high.to<U64>().shl(32)
+        return(upper.bitor(low.to<U64>()))
 
 /// A link (symbolic or a junction) by its attributes and reparse tag, else a directory or a file.
 #target(os: "windows")
@@ -380,12 +393,17 @@ private routine make_metadata(attributes: U32, tag: U32, size: U64, written: Fil
 #target(os: "windows")
 private routine from_find_data(data: @Byte) -> Metadata
     block entry():
-        attributes : U32      = data.to<@U32>().load()
-        tag        : U32      = data.stride(FIND_REPARSE_TAG).to<@U32>().load()
-        size       : U64      = size_of(data.stride(FIND_SIZE_HIGH).to<@U32>().load(),
-            data.stride(FIND_SIZE_LOW).to<@U32>().load())
-        written    : FileTime = data.stride(FIND_WRITTEN).to<@FileTime>().load()
-        created    : FileTime = data.stride(FIND_CREATED).to<@FileTime>().load()
+        attributes   : U32      = data.to<@U32>().load()
+        tag_at       : @Byte    = data.stride(FIND_REPARSE_TAG)
+        tag          : U32      = tag_at.to<@U32>().load()
+        size_high_at : @Byte    = data.stride(FIND_SIZE_HIGH)
+        size_low_at  : @Byte    = data.stride(FIND_SIZE_LOW)
+        size         : U64      = size_of(size_high_at.to<@U32>().load(),
+            size_low_at.to<@U32>().load())
+        written_at   : @Byte    = data.stride(FIND_WRITTEN)
+        written      : FileTime = written_at.to<@FileTime>().load()
+        created_at   : @Byte    = data.stride(FIND_CREATED)
+        created      : FileTime = created_at.to<@FileTime>().load()
         return(make_metadata(attributes, tag, size, written, created))
 
 #target(os: "windows")
@@ -687,14 +705,20 @@ private routine is_program_extension(e: Bytes) -> Bool
             ? continue
             : return(false)
         // ASCII lowercase: setting bit 5 of a letter
-        a   : U8   = e.byte_at(0).bitor(0x20)
-        b   : U8   = e.byte_at(1).bitor(0x20)
-        c   : U8   = e.byte_at(2).bitor(0x20)
-        exe : Bool = a.eq(101).bitand(b.eq(120)).bitand(c.eq(101))
-        com : Bool = a.eq(99).bitand(b.eq(111)).bitand(c.eq(109))
-        cmd : Bool = a.eq(99).bitand(b.eq(109)).bitand(c.eq(100))
-        bat : Bool = a.eq(98).bitand(b.eq(97)).bitand(c.eq(116))
-        return(exe.bitor(com).bitor(cmd).bitor(bat))
+        a         : U8   = e.byte_at(0).bitor(0x20)
+        b         : U8   = e.byte_at(1).bitor(0x20)
+        c         : U8   = e.byte_at(2).bitor(0x20)
+        starts_ex : Bool = a.eq(101).bitand(b.eq(120))
+        exe       : Bool = starts_ex.bitand(c.eq(101))
+        starts_co : Bool = a.eq(99).bitand(b.eq(111))
+        com       : Bool = starts_co.bitand(c.eq(109))
+        starts_cm : Bool = a.eq(99).bitand(b.eq(109))
+        cmd       : Bool = starts_cm.bitand(c.eq(100))
+        starts_ba : Bool = a.eq(98).bitand(b.eq(97))
+        bat       : Bool = starts_ba.bitand(c.eq(116))
+        binary    : Bool = exe.bitor(com)
+        script    : Bool = cmd.bitor(bat)
+        return(binary.bitor(script))
 
 /// Whether path can be read (it exists), written (it exists and isn't read-only), or run (a file named .exe, .com,
 /// .cmd, or .bat). Windows checks permissions only when a file is opened.
@@ -798,8 +822,12 @@ private routine is_dot_wide(name: @U16) -> Bool
             ? return(true)
             : continue
         branch second.eq(0x2E)
-            ? return(name.stride(2).load().eq(0))
+            ? two_dots()
             : return(false)
+
+    block two_dots():
+        third : U16 = name.stride(2).load()
+        return(third.eq(0))
 
 /// The next entry, or Absent at the end.
 #target(os: "windows")
@@ -888,7 +916,8 @@ internal routine temp_dir(alloc: @Allocator) -> Result<Bytes, FsError>
         branch got.eq(0).bitor(got.to<USize>().ge(PATH_CAPACITY))
             ? fallback()
             : continue
-        last : U16 = units.to<@U16>().stride(got.sub(1).to<USize>()).load()
+        path_units : @U16 = units.to<@U16>()
+        last       : U16  = path_units.stride(got.sub(1).to<USize>()).load()
         branch last.eq(0x5C).bitor(last.eq(0x2F))
             ? return(owned_wide(units.to<@U16>(), got.sub(1).to<USize>(), alloc))
             : return(owned_wide(units.to<@U16>(), got.to<USize>(), alloc))
@@ -1054,10 +1083,11 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
         branch offset.ge(size)
             ? empty(h)
             : continue
-        want    : USize = length.to<U64>().min(size.sub(offset)).to<USize>()
-        grain   : U64   = map_granularity().to<U64>()
-        aligned : U64   = offset.sub(offset.mod(grain))
-        delta   : USize = offset.sub(aligned).to<USize>()
+        want_bytes : U64   = length.to<U64>().min(size.sub(offset))
+        want       : USize = want_bytes.to<USize>()
+        grain      : U64   = map_granularity().to<U64>()
+        aligned    : U64   = offset.sub(offset.mod(grain))
+        delta      : USize = offset.sub(aligned).to<USize>()
         // PAGE_READWRITE or PAGE_READONLY
         protect : U32 = write
             ? 4

@@ -86,11 +86,13 @@ routine sleeper(raw: Addr) -> Void
         s     : @Sleeper  = raw.to<@Sleeper>()
         all   : @Sleepers = s.all.load()
         id    : U64       = s.id.load()
-        until : U64       = 8.sub(id).mul(30000000).add(all.base.load())
+        delay : U64       = 8.sub(id).mul(30000000)
+        until : U64       = delay.add(all.base.load())
         all.sched.load().sleep(until.sub_clamp(monotonic_ns()))
-        early : Bool  = monotonic_ns().lt(until)
-        slot  : USize = all.next.atomic_fetch_add(1)
-        all.order.to<@U64>().stride(slot).store(id)
+        early       : Bool  = monotonic_ns().lt(until)
+        slot        : USize = all.next.atomic_fetch_add(1)
+        order_slots : @U64  = all.order.to<@U64>()
+        order_slots.stride(slot).store(id)
         branch early
             ? short(all)
             : return()
@@ -146,7 +148,8 @@ routine main() -> S32
         // Outside a fiber, sleep waits the thread.
         before : U64 = monotonic_ns()
         sched.sleep(5000000)
-        waited : Bool = monotonic_ns().sub(before).ge(5000000)
+        elapsed : U64  = monotonic_ns().sub(before)
+        waited  : Bool = elapsed.ge(5000000)
         Out.write("thread slept: {waited}\n")
 
         claim game : @PingPong <- PingPong { sched: sched, turn: 0, ping: null, pong: null,
@@ -186,7 +189,8 @@ routine main() -> S32
         branch done
             ? finish(sched, sleepers, lone)
             : continue
-        Out.write("{sleepers.order.to<@U64>().stride(i).load()} ")
+        order_slots : @U64 = sleepers.order.to<@U64>()
+        Out.write("{order_slots.stride(i).load()} ")
         jump order(sched, sleepers, lone, i.add(1))
 
     // The lone child returned during run: join just frees its Join.

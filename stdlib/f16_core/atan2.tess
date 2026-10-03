@@ -106,9 +106,10 @@ routine F16.atan2(self: Self, other: Self) -> Self
 
     // both zero: +-0 or +-pi by the signs
     block zeros(ux: U32, uy: U32):
-        iz   : USize = uy.shr(31).mul(4).add(ux.shr(31).mul(2)).to<USize>()
-        off  : F64   = F64.from_bits(CM_F16_ATAN2_OFF.get(iz))
-        xneg : Bool  = ux.shr(31).ne(0)
+        y_slot : U32   = uy.shr(31).mul(4)
+        iz     : USize = y_slot.add(ux.shr(31).mul(2)).to<USize>()
+        off    : F64   = F64.from_bits(CM_F16_ATAN2_OFF.get(iz))
+        xneg   : Bool  = ux.shr(31).ne(0)
         branch xneg
             ? return(off.add(F64.from_bits(CM_F16_ATAN2_OFFL.get(iz))).to<Self>())
             : return(off.to<Self>())
@@ -127,10 +128,12 @@ routine F16.atan2(self: Self, other: Self) -> Self
         sg : F64 = gt
             ? -1.0
             : 1.0
-        i   : USize = uy.shr(31).mul(4).add(ux.shr(31).mul(2)).add(gti).to<USize>()
-        off : F64   = F64.from_bits(CM_F16_ATAN2_OFF.get(i))
-        zx  : F64   = other.to<F32>().to<F64>()
-        zy  : F64   = self.to<F32>().to<F64>()
+        y_slot    : U32   = uy.shr(31).mul(4)
+        sign_slot : U32   = y_slot.add(ux.shr(31).mul(2))
+        i         : USize = sign_slot.add(gti).to<USize>()
+        off       : F64   = F64.from_bits(CM_F16_ATAN2_OFF.get(i))
+        zx        : F64   = other.to<F32>().to<F64>()
+        zy        : F64   = self.to<F32>().to<F64>()
         // z = x/y if |y| > |x|, and z = y/x otherwise
         num  : F64  = mg.mul(zx).add(mng.mul(zy))
         den  : F64  = mg.mul(zy).add(mng.mul(zx))
@@ -166,14 +169,17 @@ routine F16.atan2(self: Self, other: Self) -> Self
         jump combine(ax, ay, gt, i, off, sg, z, n.div(d))
 
     block combine(ax: U32, ay: U32, gt: Bool, i: USize, off: F64, sg: F64, z: F64, r: F64):
-        res  : F64  = z.mul(sg).mul(r).add(off)
-        hard : Bool = res.bits().add_wrap(8).bitand(0xFFFFFFF).le(16)
+        zr          : F64  = z.mul(sg).mul(r)
+        res         : F64  = zr.add(off)
+        biased_bits : U64  = res.bits().add_wrap(8)
+        hard        : Bool = biased_bits.bitand(0xFFFFFFF).le(16)
         branch hard
             ? check_tiny(ax, ay, gt, i, off, sg)
             : return(res.to<Self>())
 
     block check_tiny(ax: U32, ay: U32, gt: Bool, i: USize, off: F64, sg: F64):
-        tiny : Bool = ay.lt(ax).bitand(ax.sub_wrap(ay).shr(23).ge(25))  // the exponents differ by 25 or more
+        exponent_gap : U32  = ax.sub_wrap(ay).shr(23)
+        tiny         : Bool = ay.lt(ax).bitand(exponent_gap.ge(25))  // the exponents differ by 25 or more
         branch tiny
             ? return(cm_f16_atan2_tiny(self.to<F32>(), other.to<F32>()))
             : accurate(gt, i, off, sg)
@@ -188,26 +194,28 @@ routine F16.atan2(self: Self, other: Self) -> Self
         d : F64 = gt
             ? zy
             : zx
-        zh   : F64          = n.div(d)
-        zl   : F64          = zh.mul_add(d.neg(), n).div(d)
-        z2   : CmF16Atan2DD = cm_f16_atan2_muldd(zh, zl, zh, zl)
-        p0   : CmF16Atan2DD = cm_f16_atan2_polydd(z2.hi, z2.lo)
-        p    : CmF16Atan2DD = cm_f16_atan2_muldd(zh.mul(sg), zl.mul(sg), p0.hi, p0.lo)
-        offl : F64          = F64.from_bits(CM_F16_ATAN2_OFFL.get(i))
-        sh   : F64          = p.hi.add(off)
-        sl   : F64          = off.sub(sh).add(p.hi).add(p.lo).add(offl)
-        th   : F64          = sh.to<F32>().to<F64>()
-        tm   : F64          = sh.sub(th).add(sl)
-        wide : Bool         = th.add(th.mul(0x1p-60)).eq(th.sub(th.mul(0x1p-60)))
+        zh     : F64          = n.div(d)
+        zl     : F64          = zh.mul_add(d.neg(), n).div(d)
+        z2     : CmF16Atan2DD = cm_f16_atan2_muldd(zh, zl, zh, zl)
+        p0     : CmF16Atan2DD = cm_f16_atan2_polydd(z2.hi, z2.lo)
+        p      : CmF16Atan2DD = cm_f16_atan2_muldd(zh.mul(sg), zl.mul(sg), p0.hi, p0.lo)
+        offl   : F64          = F64.from_bits(CM_F16_ATAN2_OFFL.get(i))
+        sh     : F64          = p.hi.add(off)
+        sh_err : F64          = off.sub(sh).add(p.hi)
+        sl     : F64          = sh_err.add(p.lo).add(offl)
+        th     : F64          = sh.to<F32>().to<F64>()
+        tm     : F64          = sh.sub(th).add(sl)
+        wide   : Bool         = th.add(th.mul(0x1p-60)).eq(th.sub(th.mul(0x1p-60)))
         branch wide
             ? nudge(th, tm)
             : return(th.add(tm).to<Self>())
 
     // th is so large that th +- th 2^-60 rounds to th: scale tm away from the rounding boundary
     block nudge(th: F64, tm: F64):
-        tthu   : U64  = th.bits().bitand(0x7FF0000000000000).sub_wrap(0x0180000000000000)  // exponent of th, minus 24
-        beyond : Bool = tm.abs().gt(F64.from_bits(tthu))
-        scaled : F64  = beyond
+        th_exponent : U64  = th.bits().bitand(0x7FF0000000000000)
+        tthu        : U64  = th_exponent.sub_wrap(0x0180000000000000)  // exponent of th, minus 24
+        beyond      : Bool = tm.abs().gt(F64.from_bits(tthu))
+        scaled      : F64  = beyond
             ? tm.mul(1.25)
             : tm.mul(0.75)
         return(th.add(scaled).to<Self>())

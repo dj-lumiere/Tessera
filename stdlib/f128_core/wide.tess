@@ -106,25 +106,28 @@ routine cm_wide_row3(table: @U64, i: USize) -> CmWide3
 /// mahu1u3u3: ((a * b) >> 64) + c over 3 words.
 routine cm_wide_mulhi_add3(a: U64, b: CmWide3, c: CmWide3) -> CmWide3
     block entry():
-        ab0 : U128    = cm_wide_mul_64x64(a, b.w0)
-        ab1 : U128    = cm_wide_mul_64x64(a, b.w1)
-        ab2 : U128    = cm_wide_mul_64x64(a, b.w2)
-        t0  : U128    = ab1.bitand(0xFFFFFFFFFFFFFFFF).add(ab0.shr(64))
-        s0  : U128    = c.w0.to<U128>().add(t0.bitand(0xFFFFFFFFFFFFFFFF))
-        t1  : U128    = ab2.bitand(0xFFFFFFFFFFFFFFFF).add(ab1.shr(64)).add(t0.shr(64))
-        s1  : U128    = c.w1.to<U128>().add(t1.bitand(0xFFFFFFFFFFFFFFFF)).add(s0.shr(64))
-        t2  : U128    = ab2.shr(64).add(t1.shr(64))
-        w2  : U64     = c.w2.add_wrap(cm_wide_lo(t2)).add_wrap(cm_wide_hi(s1))
-        r   : CmWide3 = CmWide3 { w0: cm_wide_lo(s0), w1: cm_wide_lo(s1), w2: w2 }
+        ab0     : U128    = cm_wide_mul_64x64(a, b.w0)
+        ab1     : U128    = cm_wide_mul_64x64(a, b.w1)
+        ab2     : U128    = cm_wide_mul_64x64(a, b.w2)
+        t0      : U128    = ab1.bitand(0xFFFFFFFFFFFFFFFF).add(ab0.shr(64))
+        s0      : U128    = c.w0.to<U128>().add(t0.bitand(0xFFFFFFFFFFFFFFFF))
+        t1_part : U128    = ab2.bitand(0xFFFFFFFFFFFFFFFF).add(ab1.shr(64))
+        t1      : U128    = t1_part.add(t0.shr(64))
+        s1_part : U128    = c.w1.to<U128>().add(t1.bitand(0xFFFFFFFFFFFFFFFF))
+        s1      : U128    = s1_part.add(s0.shr(64))
+        t2      : U128    = ab2.shr(64).add(t1.shr(64))
+        w2      : U64     = c.w2.add_wrap(cm_wide_lo(t2)).add_wrap(cm_wide_hi(s1))
+        r       : CmWide3 = CmWide3 { w0: cm_wide_lo(s0), w1: cm_wide_lo(s1), w2: w2 }
         return(r)
 
 /// a + b over 3 words.
 routine cm_wide_add3(a: CmWide3, b: CmWide3) -> CmWide3
     block entry():
-        s0 : U128    = a.w0.to<U128>().add(b.w0.to<U128>())
-        s1 : U128    = a.w1.to<U128>().add(b.w1.to<U128>()).add(s0.shr(64))
-        w2 : U64     = a.w2.add_wrap(b.w2).add_wrap(cm_wide_hi(s1))
-        r  : CmWide3 = CmWide3 { w0: cm_wide_lo(s0), w1: cm_wide_lo(s1), w2: w2 }
+        s0      : U128    = a.w0.to<U128>().add(b.w0.to<U128>())
+        s1_part : U128    = a.w1.to<U128>().add(b.w1.to<U128>())
+        s1      : U128    = s1_part.add(s0.shr(64))
+        w2      : U64     = a.w2.add_wrap(b.w2).add_wrap(cm_wide_hi(s1))
+        r       : CmWide3 = CmWide3 { w0: cm_wide_lo(s0), w1: cm_wide_lo(s1), w2: w2 }
         return(r)
 
 /// a - b over 3 words.
@@ -150,7 +153,8 @@ routine cm_wide_xor_words(x: @U64, n: USize, mask: U64) -> Void
         branch done
             ? return()
             : continue
-        x.stride(i).load().bitxor(mask).store_into(x.stride(i))
+        word : U64 = x.stride(i).load()
+        word.bitxor(mask).store_into(x.stride(i))
         jump next(i.add(1))
 
 /// (a * b) >> 64 for a 7-word a, truncated to 7 words. out may be a.
@@ -209,9 +213,10 @@ routine cm_wide_mulhi_7x2(a: @U64, b: U128, out: @U64) -> Void
         branch done
             ? return()
             : continue
-        o : U64  = out.stride(i).load()
-        t : U64  = low.stride(i).load()
-        s : U128 = o.to<U128>().add(t.to<U128>()).add(carry.to<U128>())
+        o    : U64  = out.stride(i).load()
+        t    : U64  = low.stride(i).load()
+        pair : U128 = o.to<U128>().add(t.to<U128>())
+        s    : U128 = pair.add(carry.to<U128>())
         out.stride(i).store(cm_wide_lo(s))
         jump add(i.add(1), cm_wide_hi(s), low)
 
@@ -317,9 +322,10 @@ routine cm_wide_mulhi_add6(a: U64, b: @U64, c: @U64, out: @U64) -> Void
         p        : U128  = has_next
             ? product
             : 0
-        s  : U128 = p.bitand(0xFFFFFFFFFFFFFFFF).add(prev.to<U128>())
-        ci : U64  = c.stride(i).load()
-        s2 : U128 = ci.to<U128>().add(s.bitand(0xFFFFFFFFFFFFFFFF)).add(carry.to<U128>())
+        s       : U128 = p.bitand(0xFFFFFFFFFFFFFFFF).add(prev.to<U128>())
+        ci      : U64  = c.stride(i).load()
+        s2_part : U128 = ci.to<U128>().add(s.bitand(0xFFFFFFFFFFFFFFFF))
+        s2      : U128 = s2_part.add(carry.to<U128>())
         out.stride(i).store(cm_wide_lo(s2))
         next_prev : U64 = cm_wide_hi(p).add_wrap(cm_wide_hi(s))
         jump next(i.add(1), next_prev, cm_wide_hi(s2))
@@ -334,9 +340,10 @@ routine cm_wide_add6(a: @U64, b: @U64, out: @U64) -> Void
         branch done
             ? return()
             : continue
-        ai : U64  = a.stride(i).load()
-        bi : U64  = b.stride(i).load()
-        s  : U128 = ai.to<U128>().add(bi.to<U128>()).add(carry.to<U128>())
+        ai   : U64  = a.stride(i).load()
+        bi   : U64  = b.stride(i).load()
+        pair : U128 = ai.to<U128>().add(bi.to<U128>())
+        s    : U128 = pair.add(carry.to<U128>())
         out.stride(i).store(cm_wide_lo(s))
         jump next(i.add(1), cm_wide_hi(s))
 

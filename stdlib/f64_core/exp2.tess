@@ -100,9 +100,10 @@ routine F64.exp2(self: Self) -> Self
             : return(cm_f64_exp2_accurate(self))
 
     block subnormal(fh: Self, fl: Self, ie: S64, whole: Bool):
-        bias : Self       = Self.from_bits(S64.sub(1, ie).to_wrap<U64>().shl(52))
-        s    : CmF64ExpDd = cm_f64_exp_fasttwosum(bias, fh)
-        sl   : Self       = fl.add(s.lo)
+        bias_e : U64        = S64.sub(1, ie).to_wrap<U64>()
+        bias   : Self       = Self.from_bits(bias_e.shl(52))
+        s      : CmF64ExpDd = cm_f64_exp_fasttwosum(bias, fh)
+        sl     : Self       = fl.add(s.lo)
         branch whole
             ? return(Self.from_bits(s.hi.bits().bitand(0x000FFFFFFFFFFFFF)))
             : continue
@@ -150,7 +151,8 @@ private routine cm_f64_exp2_accurate(x: F64) -> F64
         s2       : CmF64ExpDd = cm_f64_exp_fasttwosum(s.lo, f.lo)
         ul       : U64        = s2.hi.bits()
         pow2     : Bool       = ul.bitand(0x000FFFFFFFFFFFFF).eq(0)
-        nonzero  : Bool       = ul.shr(52).bitand(0x7FF).ne(0)
+        ebits    : U64        = ul.shr(52).bitand(0x7FF)
+        nonzero  : Bool       = ebits.ne(0)
         adjusted : Bool       = pow2.bitand(nonzero)
         branch adjusted
             ? nudge(s.hi, ul, s2.lo, ie)
@@ -170,20 +172,23 @@ private routine cm_f64_exp2_accurate(x: F64) -> F64
         jump finish(h.hi, h.lo, ie)
 
     block finish(fh: F64, fl: F64, ie: S64):
-        s    : CmF64ExpDd = cm_f64_exp_fasttwosum(fh, fl)
-        d    : U64        = s.lo.bits().add_wrap(2).bitand(0x000FFFFFFFFFFFFF)
-        hard : Bool       = d.le(2)
+        s       : CmF64ExpDd = cm_f64_exp_fasttwosum(fh, fl)
+        lo_bits : U64        = s.lo.bits()
+        d       : U64        = lo_bits.add_wrap(2).bitand(0x000FFFFFFFFFFFFF)
+        hard    : Bool       = d.le(2)
         branch hard
             ? return(cm_f64_exp_ldexp(cm_f64_exp2_database(x, s.hi), ie))
             : return(cm_f64_exp_ldexp(s.hi, ie))
 
     block subnormal(f: CmF64ExpDd, tt: CmF64ExpDd, ie: S64):
-        bias : F64        = F64.from_bits(S64.sub(1, ie).to_wrap<U64>().shl(52))
-        g    : CmF64ExpDd = cm_f64_exp_muldd(f.hi, f.lo, tt.hi, tt.lo)
-        h    : CmF64ExpDd = cm_f64_exp_fastsum(tt.hi, tt.lo, g.hi, g.lo)
-        s    : CmF64ExpDd = cm_f64_exp_fasttwosum(bias, h.hi)
-        fl   : F64        = h.lo.add(s.lo)
-        return(F64.from_bits(s.hi.add(fl).bits().bitand(0x000FFFFFFFFFFFFF)))
+        bias_e : U64        = S64.sub(1, ie).to_wrap<U64>()
+        bias   : F64        = F64.from_bits(bias_e.shl(52))
+        g      : CmF64ExpDd = cm_f64_exp_muldd(f.hi, f.lo, tt.hi, tt.lo)
+        h      : CmF64ExpDd = cm_f64_exp_fastsum(tt.hi, tt.lo, g.hi, g.lo)
+        s      : CmF64ExpDd = cm_f64_exp_fasttwosum(bias, h.hi)
+        fl     : F64        = h.lo.add(s.lo)
+        res    : F64        = s.hi.add(fl)
+        return(F64.from_bits(res.bits().bitand(0x000FFFFFFFFFFFFF)))
 
 /// The degree-6 double-double polynomial (constant term 0) of the accurate
 /// path, divided by z, at z: Horner's rule on CM_F64_EXP2_ACC_CD.
@@ -238,9 +243,10 @@ private routine cm_f64_exp2_database(x: F64, f: F64) -> F64
             else  -> search(a, m.sub(1))
 
     block found(um: U64):
-        dr    : F64  = F64.from_bits(U64.shr(8677191773140, um).shl(63).bitor(0x3C90000000000000))
-        upper : Bool = um.shr(5).eq(1)
-        s2    : U64  = upper
+        sign_bit : U64  = U64.shr(8677191773140, um).shl(63)
+        dr       : F64  = F64.from_bits(sign_bit.bitor(0x3C90000000000000))
+        upper    : Bool = um.shr(5).eq(1)
+        s2       : U64  = upper
             ? 0x34C797
             : 0x3B216FBD5FD7665F
         t : U64 = s2.shr(um.shl(1).bitand(63)).bitand(3)

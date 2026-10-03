@@ -187,32 +187,36 @@ routine cm_trig_significand(magnitude: U128) -> U128
 /// The unbiased exponent of a finite normal magnitude: x = m × 2^(e - 112).
 routine cm_trig_exponent(magnitude: U128) -> S64
     block entry():
-        r : S64 = magnitude.shr(112).to<S64>().sub(F128_BIAS)
+        biased_exponent : U128 = magnitude.shr(112)
+        r               : S64  = biased_exponent.to<S64>().sub(F128_BIAS)
         return(r)
 
 /// Rounds a fast-path result on its 15-bit guard, or runs the accurate path when the fast one cannot vouch
 /// for it or the guard sits within 16 units of the rounding midpoint.
 routine cm_trig_finish(fast: CmTrigFast, m: U128, e: S64, cosine: Bool, sign: U128) -> U128
     block entry():
-        frac     : U128 = fast.frac
-        vouched  : Bool = fast.vouched
-        rest     : U64  = frac.to_wrap<U64>().bitand(0x7FFF)
-        distance : U64  = rest.add(16).sub_wrap(0x4000).bitand(0x7FFF)
-        clear    : Bool = distance.gt(32)
-        decided  : Bool = vouched.bitand(clear)
+        frac         : U128 = fast.frac
+        vouched      : Bool = fast.vouched
+        rest         : U64  = frac.to_wrap<U64>().bitand(0x7FFF)
+        shifted_rest : U64  = rest.add(16).sub_wrap(0x4000)
+        distance     : U64  = shifted_rest.bitand(0x7FFF)
+        clear        : Bool = distance.gt(32)
+        decided      : Bool = vouched.bitand(clear)
         branch decided
             ? round(fast, rest, sign)
             : accurate(m, e, cosine, sign)
 
     block round(fast: CmTrigFast, rest: U64, sign: U128):
-        frac      : U128 = fast.frac
-        exponent  : U64  = fast.exponent
-        fast_sign : U128 = fast.sign
-        up        : U128 = rest.gt(0x4000).to<U128>()
-        biased    : U128 = exponent.add_wrap(16382).to<U128>().shl(112)
-        mantissa  : U128 = frac.shr(15)
-        magnitude : U128 = biased.add_wrap(mantissa).sub_wrap(F128_IMPLICIT).add_wrap(up)
-        r         : U128 = sign.bitxor(fast_sign).bitor(magnitude)
+        frac            : U128 = fast.frac
+        exponent        : U64  = fast.exponent
+        fast_sign       : U128 = fast.sign
+        up              : U128 = rest.gt(0x4000).to<U128>()
+        biased_exponent : U64  = exponent.add_wrap(16382)
+        biased          : U128 = biased_exponent.to<U128>().shl(112)
+        mantissa        : U128 = frac.shr(15)
+        truncated       : U128 = biased.add_wrap(mantissa).sub_wrap(F128_IMPLICIT)
+        magnitude       : U128 = truncated.add_wrap(up)
+        r               : U128 = sign.bitxor(fast_sign).bitor(magnitude)
         return(r)
 
     block accurate(m: U128, e: S64, cosine: Bool, sign: U128):
@@ -256,7 +260,8 @@ routine cm_trig_clz(x: U128) -> S64
 /// A 256-bit value from its 128-bit halves.
 routine cm_trig_join(high: U128, low: U128) -> U256
     block entry():
-        r : U256 = high.to<U256>().shl(128).bitor(low.to<U256>())
+        upper : U256 = high.to<U256>().shl(128)
+        r     : U256 = upper.bitor(low.to<U256>())
         return(r)
 
 /// The high 128 bits of a 256-bit value.
@@ -298,26 +303,28 @@ routine cm_trig_top256(s: U256, shift: S64) -> U128
 
 routine cm_trig_add384(a: CmTrigU384, b: CmTrigU384) -> CmTrigU384
     block entry():
-        r0  : U128       = a.l0.add_wrap(b.l0)
-        c0  : U128       = r0.lt(a.l0).to<U128>()
-        r1  : U128       = a.l1.add_wrap(b.l1)
-        c1  : U128       = r1.lt(a.l1).to<U128>()
-        r1b : U128       = r1.add_wrap(c0)
-        c2  : U128       = r1b.lt(r1).to<U128>()
-        r2  : U128       = a.l2.add_wrap(b.l2).add_wrap(c1).add_wrap(c2)
-        r   : CmTrigU384 = CmTrigU384 { l0: r0, l1: r1b, l2: r2 }
+        r0         : U128       = a.l0.add_wrap(b.l0)
+        c0         : U128       = r0.lt(a.l0).to<U128>()
+        r1         : U128       = a.l1.add_wrap(b.l1)
+        c1         : U128       = r1.lt(a.l1).to<U128>()
+        r1b        : U128       = r1.add_wrap(c0)
+        c2         : U128       = r1b.lt(r1).to<U128>()
+        l2_partial : U128       = a.l2.add_wrap(b.l2).add_wrap(c1)
+        r2         : U128       = l2_partial.add_wrap(c2)
+        r          : CmTrigU384 = CmTrigU384 { l0: r0, l1: r1b, l2: r2 }
         return(r)
 
 routine cm_trig_sub384(a: CmTrigU384, b: CmTrigU384) -> CmTrigU384
     block entry():
-        c0  : U128       = a.l0.lt(b.l0).to<U128>()
-        r0  : U128       = a.l0.sub_wrap(b.l0)
-        r1  : U128       = a.l1.sub_wrap(b.l1)
-        c1  : U128       = a.l1.lt(b.l1).to<U128>()
-        c2  : U128       = r1.lt(c0).to<U128>()
-        r1b : U128       = r1.sub_wrap(c0)
-        r2  : U128       = a.l2.sub_wrap(b.l2).sub_wrap(c1).sub_wrap(c2)
-        r   : CmTrigU384 = CmTrigU384 { l0: r0, l1: r1b, l2: r2 }
+        c0         : U128       = a.l0.lt(b.l0).to<U128>()
+        r0         : U128       = a.l0.sub_wrap(b.l0)
+        r1         : U128       = a.l1.sub_wrap(b.l1)
+        c1         : U128       = a.l1.lt(b.l1).to<U128>()
+        c2         : U128       = r1.lt(c0).to<U128>()
+        r1b        : U128       = r1.sub_wrap(c0)
+        l2_partial : U128       = a.l2.sub_wrap(b.l2).sub_wrap(c1)
+        r2         : U128       = l2_partial.sub_wrap(c2)
+        r          : CmTrigU384 = CmTrigU384 { l0: r0, l1: r1b, l2: r2 }
         return(r)
 
 /// x << shift, discarding whatever leaves the window, for 0 <= shift < 384.
@@ -438,7 +445,8 @@ routine cm_trig_mul256(a: U256, b: U256) -> U256
         over1   : U64  = middle.lt(cross).to<U64>()
         middle2 : U256 = middle.add_wrap(ll_hi.to<U256>())
         over2   : U64  = middle2.lt(middle).to<U64>()
-        carried : U256 = over1.add(over2).to<U256>().shl(128)
+        over    : U64  = over1.add(over2)
+        carried : U256 = over.to<U256>().shl(128)
         shifted : U256 = middle2.shr(128).add(carried)
         r       : U256 = hh.add_wrap(shifted)
         return(r)
@@ -448,8 +456,9 @@ routine cm_trig_mul256(a: U256, b: U256) -> U256
 /// Limb `limb` (0 = least significant) of sin(j*pi/256) (w = 0) or cos(j*pi/256) (w = 1) × 2^384.
 routine cm_trig_sincos(j: USize, w: USize, limb: USize) -> U128
     block entry():
-        index : USize = j.mul(2).add(w).mul(3).add(limb)
-        r     : U128  = CM_TRIG_SINCOS.get(index)
+        word_row : USize = j.mul(2).add(w)
+        index    : USize = word_row.mul(3).add(limb)
+        r        : U128  = CM_TRIG_SINCOS.get(index)
         return(r)
 
 routine cm_trig_sincos384(j: USize, w: USize) -> CmTrigU384
@@ -513,13 +522,16 @@ routine cm_trig_product(m: U128, first: S64, count: USize, p: @U64) -> Void
 
     // column c is (high*prev + carry) + low*cur, with cur and prev the window limbs under the two halves of m
     block step(c: USize, carry: U128, low: U128, high: U128, first: S64, count: USize, p: @U64):
-        cur  : U128 = cm_trig_window_limb(first, count.to<S64>(),
-            count.to<S64>().sub(1).sub(c.to<S64>()))
-        prev : U128 = cm_trig_window_limb(first, count.to<S64>(), count.to<S64>().sub(c.to<S64>()))
+        last_column : S64  = count.to<S64>().sub(1)
+        cur         : U128 = cm_trig_window_limb(first, count.to<S64>(),
+            last_column.sub(c.to<S64>()))
+        prev        : U128 = cm_trig_window_limb(first, count.to<S64>(),
+            count.to<S64>().sub(c.to<S64>()))
         // high < 2^49 keeps the first sum under 2^114, only the second can spill
-        acc   : U128 = high.mul_wrap(prev).add_wrap(carry)
-        t     : U128 = acc.add_wrap(low.mul_wrap(cur))
-        spill : U128 = t.lt(acc).to<U128>().shl(64)
+        acc     : U128 = high.mul_wrap(prev).add_wrap(carry)
+        t       : U128 = acc.add_wrap(low.mul_wrap(cur))
+        wrapped : Bool = t.lt(acc)
+        spill   : U128 = wrapped.to<U128>().shl(64)
         p.stride(c).store(t.to_wrap<U64>())
         next_carry : U128 = t.shr(64).bitor(spill)
         jump column(c.add(1), next_carry, low, high, first, count, p)
@@ -527,8 +539,10 @@ routine cm_trig_product(m: U128, first: S64, count: USize, p: @U64) -> Void
 /// n = round(256*x/pi) mod 512 from the two quadrant bits and the top 64 bits of the fraction.
 routine cm_trig_nearest(quadrant: U64, top_limb: U64) -> U64
     block entry():
-        top : U128 = quadrant.to<U128>().shl(64).bitor(top_limb.to<U128>())
-        r   : U64  = top.add(0x100000000000000).shr(57).to<U64>().bitand(511)
+        quadrant_high : U128 = quadrant.to<U128>().shl(64)
+        top           : U128 = quadrant_high.bitor(top_limb.to<U128>())
+        rounded       : U128 = top.add(0x100000000000000).shr(57)
+        r             : U64  = rounded.to<U64>().bitand(511)
         return(r)
 
 /// Payne-Hanek on six limbs of 2/pi.
@@ -541,18 +555,19 @@ routine cm_trig_reduce(m: U128, e: S64) -> CmTrigReduced
         p : @U64 = product.to<@U64>()
         cm_trig_product(m, first, 6, p)
         // the fraction is the 192 bits below the units bit, the quadrant the two above: limbs i ..= i+4
-        base     : S64   = 190.sub(offset)
-        i        : USize = base.shr(6).bitand(7).to<USize>()
-        bits     : S64   = base.bitand(63)
-        a0       : U64   = p.stride(i).load()
-        a1       : U64   = p.stride(i.add(1)).load()
-        a2       : U64   = p.stride(i.add(2)).load()
-        a3       : U64   = p.stride(i.add(3)).load()
-        a4       : U64   = p.stride(i.add(4)).load()
-        f0       : U64   = cm_trig_funnel(a0, a1, bits)
-        f1       : U64   = cm_trig_funnel(a1, a2, bits)
-        f2       : U64   = cm_trig_funnel(a2, a3, bits)
-        quadrant : U64   = cm_trig_funnel(a3, a4, bits).bitand(3)
+        base       : S64   = 190.sub(offset)
+        word_index : S64   = base.shr(6).bitand(7)
+        i          : USize = word_index.to<USize>()
+        bits       : S64   = base.bitand(63)
+        a0         : U64   = p.stride(i).load()
+        a1         : U64   = p.stride(i.add(1)).load()
+        a2         : U64   = p.stride(i.add(2)).load()
+        a3         : U64   = p.stride(i.add(3)).load()
+        a4         : U64   = p.stride(i.add(4)).load()
+        f0         : U64   = cm_trig_funnel(a0, a1, bits)
+        f1         : U64   = cm_trig_funnel(a1, a2, bits)
+        f2         : U64   = cm_trig_funnel(a2, a3, bits)
+        quadrant   : U64   = cm_trig_funnel(a3, a4, bits).bitand(3)
         // the residual's top limb becomes signed once n is taken out
         n        : U64  = cm_trig_nearest(quadrant, f2)
         g_top    : U64  = f2.sub_wrap(n.bitand(127).shl(57))
@@ -563,15 +578,17 @@ routine cm_trig_reduce(m: U128, e: S64) -> CmTrigReduced
         mask     : U64 = negative
             ? all_ones
             : no_bits
-        add_one : U64           = negative.to<S64>().to<U64>()
-        g0      : U64           = f0.bitxor(mask).add_wrap(add_one)
-        carry0  : U64           = g0.lt(add_one).to<S64>().to<U64>()
-        g1      : U64           = f1.bitxor(mask).add_wrap(carry0)
-        carry1  : U64           = g1.lt(carry0).to<S64>().to<U64>()
-        g2      : U64           = g_top.bitxor(mask).add_wrap(carry1)
-        lz      : S64           = g2.leading_zeros().to<S64>()
-        lost    : Bool          = lz.gt(56)
-        failed  : CmTrigReduced = CmTrigReduced { ok: false, n: 0, negative: false, t1: 0, et: 0 }
+        add_one  : U64           = negative.to<S64>().to<U64>()
+        g0       : U64           = f0.bitxor(mask).add_wrap(add_one)
+        wrapped0 : Bool          = g0.lt(add_one)
+        carry0   : U64           = wrapped0.to<S64>().to<U64>()
+        g1       : U64           = f1.bitxor(mask).add_wrap(carry0)
+        wrapped1 : Bool          = g1.lt(carry0)
+        carry1   : U64           = wrapped1.to<S64>().to<U64>()
+        g2       : U64           = g_top.bitxor(mask).add_wrap(carry1)
+        lz       : S64           = g2.leading_zeros().to<S64>()
+        lost     : Bool          = lz.gt(56)
+        failed   : CmTrigReduced = CmTrigReduced { ok: false, n: 0, negative: false, t1: 0, et: 0 }
         branch lost
             ? return(failed)
             : normalize(n, negative, g0, g1, g2, lz)
@@ -581,7 +598,8 @@ routine cm_trig_reduce(m: U128, e: S64) -> CmTrigReduced
         back    : S64           = 64.sub(lz)
         high    : U64           = g2.shl(lz.to<U64>()).bitor(g1.shr(back.to<U64>()))
         low     : U64           = g1.shl(lz.to<U64>()).bitor(g0.shr(back.to<U64>()))
-        g       : U128          = high.to<U128>().shl(64).bitor(low.to<U128>())
+        upper   : U128          = high.to<U128>().shl(64)
+        g       : U128          = upper.bitor(low.to<U128>())
         product : U256          = g.mul_wide(CM_TRIG_PI_4)
         lzt     : S64           = cm_trig_clz(cm_trig_high(product))
         t1      : U128          = cm_trig_top256(product, lzt)
@@ -600,9 +618,10 @@ routine cm_trig_reduce_wide(m: U128, e: S64) -> CmTrigWideReduced
         p : @U64 = product.to<@U64>()
         cm_trig_product(m, first, 10, p)
         // the fraction is the 448 bits below the units bit, the quadrant the two above: limbs i ..= i+8
-        base : S64   = 190.sub(offset)
-        i    : USize = base.shr(6).bitand(7).to<USize>()
-        bits : S64   = base.bitand(63)
+        base       : S64   = 190.sub(offset)
+        word_index : S64   = base.shr(6).bitand(7)
+        i          : USize = word_index.to<USize>()
+        bits       : S64   = base.bitand(63)
         claim fraction : @Array<U64, 7> <- uninit
         f : @U64 = fraction.to<@U64>()
         cm_trig_cut(p, i, bits, f)
@@ -682,10 +701,11 @@ routine cm_trig_lz448(f: @U64) -> S64
             : scan_one(k.to<USize>(), f)
 
     block scan_one(k: USize, f: @U64):
-        limb  : U64  = f.stride(k).load()
-        empty : Bool = limb.eq(0)
-        above : U64  = 6.sub(k).mul(64).to<U64>()
-        lz    : U64  = above.add(limb.leading_zeros())
+        limb       : U64   = f.stride(k).load()
+        empty      : Bool  = limb.eq(0)
+        above_bits : USize = 6.sub(k).mul(64)
+        above      : U64   = above_bits.to<U64>()
+        lz         : U64   = above.add(limb.leading_zeros())
         branch empty
             ? scan(k.sub(1).to<SSize>(), f)
             : return(lz.to<S64>())
@@ -715,16 +735,19 @@ routine cm_trig_top448(f: @U64, lz: S64) -> CmTrigU384
         jump shift(q.add(1), limb, word, wbits, f, s)
 
     block assemble(s: @U64):
-        s1 : U64        = s.stride(1).load()
-        s2 : U64        = s.stride(2).load()
-        s3 : U64        = s.stride(3).load()
-        s4 : U64        = s.stride(4).load()
-        s5 : U64        = s.stride(5).load()
-        s6 : U64        = s.stride(6).load()
-        l0 : U128       = s2.to<U128>().shl(64).bitor(s1.to<U128>())
-        l1 : U128       = s4.to<U128>().shl(64).bitor(s3.to<U128>())
-        l2 : U128       = s6.to<U128>().shl(64).bitor(s5.to<U128>())
-        r  : CmTrigU384 = CmTrigU384 { l0: l0, l1: l1, l2: l2 }
+        s1      : U64        = s.stride(1).load()
+        s2      : U64        = s.stride(2).load()
+        s3      : U64        = s.stride(3).load()
+        s4      : U64        = s.stride(4).load()
+        s5      : U64        = s.stride(5).load()
+        s6      : U64        = s.stride(6).load()
+        s2_high : U128       = s2.to<U128>().shl(64)
+        l0      : U128       = s2_high.bitor(s1.to<U128>())
+        s4_high : U128       = s4.to<U128>().shl(64)
+        l1      : U128       = s4_high.bitor(s3.to<U128>())
+        s6_high : U128       = s6.to<U128>().shl(64)
+        l2      : U128       = s6_high.bitor(s5.to<U128>())
+        r       : CmTrigU384 = CmTrigU384 { l0: l0, l1: l1, l2: l2 }
         return(r)
 
 // -- fast path -----------------------------------------------------------------
@@ -949,16 +972,19 @@ routine cm_trig_alternating(u: CmTrigU384, coef: @U128) -> CmTrigU384
 /// result is never subnormal here: |x| >= 2^-57 keeps it above 2^-124.
 routine cm_trig_round384(frac: CmTrigU384, e2: U64, sign: U128) -> U128
     block entry():
-        top       : U128 = frac.l2
-        mantissa  : U128 = top.shr(15)
-        round_bit : Bool = top.shr(14).bitand(1).ne(0)
-        below     : U128 = top.bitand(0x3FFF).bitor(frac.l1).bitor(frac.l0)
-        sticky    : Bool = below.ne(0)
-        odd       : Bool = mantissa.bitand(1).ne(0)
-        up        : U128 = round_bit.bitand(sticky.bitor(odd)).to<U128>()
-        biased    : U128 = e2.add_wrap(16382).to<U128>().shl(112)
-        magnitude : U128 = biased.add_wrap(mantissa.sub_wrap(F128_IMPLICIT)).add_wrap(up)
-        r         : U128 = sign.bitor(magnitude)
+        top             : U128 = frac.l2
+        mantissa        : U128 = top.shr(15)
+        round_word      : U128 = top.shr(14).bitand(1)
+        round_bit       : Bool = round_word.ne(0)
+        top_below       : U128 = top.bitand(0x3FFF).bitor(frac.l1)
+        below           : U128 = top_below.bitor(frac.l0)
+        sticky          : Bool = below.ne(0)
+        odd             : Bool = mantissa.bitand(1).ne(0)
+        up              : U128 = round_bit.bitand(sticky.bitor(odd)).to<U128>()
+        biased_exponent : U64  = e2.add_wrap(16382)
+        biased          : U128 = biased_exponent.to<U128>().shl(112)
+        magnitude       : U128 = biased.add_wrap(mantissa.sub_wrap(F128_IMPLICIT)).add_wrap(up)
+        r               : U128 = sign.bitor(magnitude)
         return(r)
 
 /// The 384-bit path: everything the fast path would not decide.

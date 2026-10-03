@@ -79,12 +79,14 @@ private routine InputBuffer.next(self: @Self) -> Option<Byte>
     block take():
         at : USize = self.start.load()
         self.start.store(at.add(1))
-        return(.Present(self.bytes.to<@Byte>().stride(at).load()))
+        buffered : @Byte = self.bytes.to<@Byte>()
+        return(.Present(buffered.stride(at).load()))
 
 /// Puts back the byte next just handed out. The lock is held.
 private routine InputBuffer.unread(self: @Self) -> Void
     block entry():
-        self.start.load().sub(1).store_into(self.start)
+        previous_start : USize = self.start.load().sub(1)
+        previous_start.store_into(self.start)
         return()
 
 routine In.shared() -> @Self
@@ -109,9 +111,11 @@ routine In.read(buffer: @Byte, length: USize) -> Result<USize, FsError>
             : ended(b)
 
     block held(b: @InputBuffer):
-        n : USize = b.end.load().sub(b.start.load()).min(length)
+        available : USize = b.end.load().sub(b.start.load())
+        n         : USize = available.min(length)
         copy<Byte>(buffer, b.bytes.to<@Byte>().stride(b.start.load()), n)
-        b.start.load().add(n).store_into(b.start)
+        next_start : USize = b.start.load().add(n)
+        next_start.store_into(b.start)
         b.lock.unlock()
         return(.Success(n))
 
@@ -213,7 +217,9 @@ private routine trim_cr(line: Bytes) -> Bytes
 
 private routine is_space(c: Byte) -> Bool
     block entry():
-        return(c.eq(b' ').bitor(c.eq(b'\t')).bitor(c.eq(b'\n')).bitor(c.eq(b'\r')))
+        blank    : Bool = c.eq(b' ').bitor(c.eq(b'\t'))
+        line_end : Bool = c.eq(b'\n').bitor(c.eq(b'\r'))
+        return(blank.bitor(line_end))
 
 /// The next word (spaces, tabs, and line ends separate words), in memory from alloc; Absent at the end of the
 /// input. The space after the word stays in the input.
@@ -363,8 +369,9 @@ internal routine stream_write(stream: StdStream, data: @Byte, length: USize) -> 
         branch wrote.gt(0)
             ? write(at.stride(wrote.to<USize>()), remaining.sub(wrote.to<USize>()))
             : continue
+        errno : CInt = c_errno_place().load()
         // EINTR: a signal came first, so try again
-        branch wrote.lt(0).bitand(c_errno_place().load().eq(4))
+        branch wrote.lt(0).bitand(errno.eq(4))
             ? write(at, remaining)
             : return(false)
 
@@ -376,7 +383,8 @@ internal routine stdin_read(buffer: @Byte, length: USize) -> Result<USize, FsErr
         branch got.ge(0)
             ? return(.Success(got.to<USize>()))
             : continue
-        branch c_errno_place().load().eq(4)
+        errno : CInt = c_errno_place().load()
+        branch errno.eq(4)
             ? return(stdin_read(buffer, length))
             : return(.Failure(FsError.Other))
 
@@ -533,12 +541,14 @@ private routine complete_end(data: @Byte, length: USize) -> USize
         branch i.eq(0).bitor(seen.eq(3))
             ? return(length)
             : continue
-        b : Byte = data.stride(i.sub(1)).load()
+        b        : Byte = data.stride(i.sub(1)).load()
+        top_bits : U8   = U8.from_byte(b).bitand(0xC0)
         // a continuation byte: 10xxxxxx
-        branch U8.from_byte(b).bitand(0xC0).eq(0x80)
+        branch top_bits.eq(0x80)
             ? back(i.sub(1), seen.add(1))
             : continue
-        branch i.sub(1).add(sequence_length(b)).gt(length)
+        sequence_end : USize = i.sub(1).add(sequence_length(b))
+        branch sequence_end.gt(length)
             ? return(i.sub(1))
             : return(length)
 
@@ -605,9 +615,11 @@ private routine console_text(h: Addr, data: @Byte, length: USize) -> Bool
         branch cp.lt(0x10000)
             ? single(units, written, iter, n, cp)
             : continue
-        v : U32 = cp.sub(0x10000)
-        units.stride(n).store(v.shr(10).add(0xD800).to<U16>())
-        units.stride(n.add(1)).store(v.bitand(0x3FF).add(0xDC00).to<U16>())
+        v              : U32 = cp.sub(0x10000)
+        high_surrogate : U32 = v.shr(10).add(0xD800)
+        units.stride(n).store(high_surrogate.to<U16>())
+        low_surrogate : U32 = v.bitand(0x3FF).add(0xDC00)
+        units.stride(n.add(1)).store(low_surrogate.to<U16>())
         jump fill(units, written, iter, n.add(2))
 
     block single(units: @U16, written: @U32, iter: @BytesCharsIter, n: USize, cp: U32):
@@ -686,8 +698,9 @@ private routine console_read(h: Addr, buffer: @Byte, length: USize) -> Result<US
             : 1
         joined.to<@U16>().store(high)
         copy<U16>(joined.to<@U16>().stride(lead), units, n)
-        total : USize = n.add(lead)
-        last  : U16   = joined.to<@U16>().stride(total.sub(1)).load()
+        total        : USize = n.add(lead)
+        joined_units : @U16  = joined.to<@U16>()
+        last         : U16   = joined_units.stride(total.sub(1)).load()
         branch last.between(0xD800, 0xDBFF)
             ? hold(input, joined.to<@U16>(), total.sub(1), last)
             : hold(input, joined.to<@U16>(), total, 0)
@@ -702,8 +715,9 @@ private routine console_read(h: Addr, buffer: @Byte, length: USize) -> Result<US
             : hand_out(input)
 
     block hand_out(input: @ConsoleReadBuffer):
-        start : USize = input.start.load()
-        n     : USize = input.end.load().sub(start).min(length)
+        start     : USize = input.start.load()
+        available : USize = input.end.load().sub(start)
+        n         : USize = available.min(length)
         copy<Byte>(buffer, input.bytes.to<@Byte>().stride(start), n)
         input.start.store(start.add(n))
         return(.Success(n))

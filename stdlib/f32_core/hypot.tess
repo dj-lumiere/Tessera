@@ -26,11 +26,13 @@ routine F32.hypot(self: Self, other: Self) -> Self
 
     // x or y is infinite or NaN
     block special(ax: Self, ay: Self, tx: U32, ty: U32):
-        snan_x : Bool = tx.gt(0x7F800000).bitand(tx.shr(22).bitand(1).eq(0))
-        snan_y : Bool = ty.gt(0x7F800000).bitand(ty.shr(22).bitand(1).eq(0))
-        snan   : Bool = snan_x.bitor(snan_y)
-        inf_x  : Bool = tx.eq(0x7F800000)
-        inf_y  : Bool = ty.eq(0x7F800000)
+        quiet_x : U32  = tx.shr(22).bitand(1)
+        snan_x  : Bool = tx.gt(0x7F800000).bitand(quiet_x.eq(0))
+        quiet_y : U32  = ty.shr(22).bitand(1)
+        snan_y  : Bool = ty.gt(0x7F800000).bitand(quiet_y.eq(0))
+        snan    : Bool = snan_x.bitor(snan_y)
+        inf_x   : Bool = tx.eq(0x7F800000)
+        inf_y   : Bool = ty.eq(0x7F800000)
         when:
             snan  -> return(cm_f32_hypot_quiet_nan(self, other))
             inf_x -> return(ax)
@@ -61,7 +63,8 @@ routine F32.hypot(self: Self, other: Self) -> Self
         tu   : U64  = r.bits()
         c    : Self = r.to<Self>()
         huge : Bool = tu.gt(0x47EFFFFFE0000000)  // r > 0x1.fffffep+127: overflows or rounds down to the max
-        far  : Bool = tu.add_wrap(1).bitand(0xFFFFFFF).gt(2)  // r is far from a rounding boundary
+        tail : U64  = tu.add_wrap(1).bitand(0xFFFFFFF)
+        far  : Bool = tail.gt(2)  // r is far from a rounding boundary
         when:
             huge -> return(c)
             far  -> return(c)
@@ -69,8 +72,9 @@ routine F32.hypot(self: Self, other: Self) -> Self
 
     // r is close to a rounding boundary: c is exact, or the correction term decides.
     block check(x2: F64, y2: F64, r2: F64, r: F64, c: Self):
-        cd    : F64  = c.to<F64>()
-        exact : Bool = cd.mul(cd).sub(x2).sub(y2).eq(0.0)
+        cd       : F64  = c.to<F64>()
+        residual : F64  = cd.mul(cd).sub(x2)
+        exact    : Bool = residual.sub(y2).eq(0.0)
         branch exact
             ? return(c)
             : correct(x2, y2, r2, r)

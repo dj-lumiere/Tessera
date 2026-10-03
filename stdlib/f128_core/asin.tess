@@ -172,8 +172,9 @@ routine cm_asin_unpack(x: F128) -> CmAsinArg
 /// Packs the 113-bit mantissa v (implicit bit included), exponent xn, sign word and round bit.
 routine cm_asin_pack(v: U128, xn: S64, xsgn: S64, rnd: U64) -> F128
     block entry():
-        top : U128 = cm_asin_join(xn.shl(48).bitor(xsgn).to_wrap<U64>(), rnd)
-        r   : F128 = f128_of(v.add_wrap(top))
+        sign_exponent : S64  = xn.shl(48).bitor(xsgn)
+        top           : U128 = cm_asin_join(sign_exponent.to_wrap<U64>(), rnd)
+        r             : F128 = f128_of(v.add_wrap(top))
         return(r)
 
 /// The 128-bit fast path of asin; it falls back to cm_asin_accurate when its result could round
@@ -208,13 +209,14 @@ routine cm_asin_fast(x: F128) -> F128
         eps       : U64  = small_err
             ? 0x8000000000000000.shr(cm_asin_sh(err_sh))
             : 64
-        msk    : U128 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF.shr(cm_asin_sh7(k.add(50)))
-        tail   : U128 = cm_asin_join(sum.w1, sum.w0).add_wrap(eps.to<U128>()).bitand(msk)
-        unsafe : Bool = tail.lt(eps.mul_wrap(2).to<U128>())
-        s      : S64  = cm_asin_sh(15.sub(k)).to<S64>()
-        v_lo   : U64  = sum.w1.shr(s.to<U64>()).bitor(sum.w2.shl(cm_asin_sh(k.add(49))))
-        v      : U128 = cm_asin_join(sum.w2.shr(s.to<U64>()), v_lo)
-        r      : F128 = cm_asin_pack(v, 16382.sub(k), arg.xsgn, rnd)
+        msk       : U128 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF.shr(cm_asin_sh7(k.add(50)))
+        low_words : U128 = cm_asin_join(sum.w1, sum.w0)
+        tail      : U128 = low_words.add_wrap(eps.to<U128>()).bitand(msk)
+        unsafe    : Bool = tail.lt(eps.mul_wrap(2).to<U128>())
+        s         : S64  = cm_asin_sh(15.sub(k)).to<S64>()
+        v_lo      : U64  = sum.w1.shr(s.to<U64>()).bitor(sum.w2.shl(cm_asin_sh(k.add(49))))
+        v         : U128 = cm_asin_join(sum.w2.shr(s.to<U64>()), v_lo)
+        r         : F128 = cm_asin_pack(v, 16382.sub(k), arg.xsgn, rnd)
         branch unsafe
             ? accurate(x)
             : return(r)
@@ -231,15 +233,16 @@ routine cm_asin_fast(x: F128) -> F128
         v_all : U128        = cm_asin_join(a3.sum, a2.sum).shr(cm_asin_sh7(k.add(14)))
         v     : U128        = v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
         // the bits under the round bit, checked against the error bound
-        lk     : S64  = cm_asin_sh(51.sub(k)).to<S64>()
-        rk     : S64  = cm_asin_sh(k.add(13)).to<S64>()
-        th     : U64  = a2.sum.shl(lk.to<U64>()).bitor(g.w1.shr(rk.to<U64>()))
-        tlo    : U64  = g.w1.shl(lk.to<U64>()).bitor(g.w0.shr(rk.to<U64>()))
-        eps_sh : S64  = nz.mul(2).add(8).add(k)
-        eps    : U128 = 0x80000000000000000000000000000000.shr(cm_asin_sh7(eps_sh))
-        tt     : U128 = cm_asin_join(th, tlo).add_wrap(eps)
-        unsafe : Bool = tt.lt(eps)
-        r      : F128 = cm_asin_pack(v, arg.xn.add(k), arg.xsgn, rnd)
+        lk       : S64  = cm_asin_sh(51.sub(k)).to<S64>()
+        rk       : S64  = cm_asin_sh(k.add(13)).to<S64>()
+        th       : U64  = a2.sum.shl(lk.to<U64>()).bitor(g.w1.shr(rk.to<U64>()))
+        tlo      : U64  = g.w1.shl(lk.to<U64>()).bitor(g.w0.shr(rk.to<U64>()))
+        eps_base : S64  = nz.mul(2).add(8)
+        eps_sh   : S64  = eps_base.add(k)
+        eps      : U128 = 0x80000000000000000000000000000000.shr(cm_asin_sh7(eps_sh))
+        tt       : U128 = cm_asin_join(th, tlo).add_wrap(eps)
+        unsafe   : Bool = tt.lt(eps)
+        r        : F128 = cm_asin_pack(v, arg.xn.add(k), arg.xsgn, rnd)
         branch unsafe
             ? accurate(x)
             : return(r)
@@ -315,18 +318,18 @@ routine cm_asin_accurate(x: F128) -> F128
         return(r)
 
     block direct(arg: CmAsinArg, nz: S64):
-        x0    : U64         = cm_asin_lo(arg.xa.to_wrap<S128>())
-        x1    : U64         = cm_asin_hi(arg.xa)
-        t     : CmAsinW5    = CmAsinW5 { w0: 0, w1: 0, w2: 0, w3: x0, w4: x1 }
-        p     : CmAsinW5    = cm_asin_poly5(t, nz)
-        f     : CmAsinW5    = cm_asin_shift5(p, nz.mul(2).add(1))
-        xh    : U128        = arg.xa.shr(1)
-        a3    : CmAsinCarry = cm_asin_ac(cm_asin_lo(xh.to_wrap<S128>()), f.w3, 0)
-        a4    : CmAsinCarry = cm_asin_ac(cm_asin_hi(xh), f.w4, a3.carry)
-        k     : S64         = a4.sum.shr(63).to<S64>()
-        rnd   : U64         = a3.sum.shr(cm_asin_sh(k.add(13))).bitand(1)
-        v_all : U128        = cm_asin_join(a4.sum,
-            a3.sum).shr(cm_asin_sh(k.add(14)).to_wrap<S64>().to<U128>())
-        v     : U128        = v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
-        r     : F128        = cm_asin_pack(v, arg.xn.add(k), arg.xsgn, rnd)
+        x0      : U64         = cm_asin_lo(arg.xa.to_wrap<S128>())
+        x1      : U64         = cm_asin_hi(arg.xa)
+        t       : CmAsinW5    = CmAsinW5 { w0: 0, w1: 0, w2: 0, w3: x0, w4: x1 }
+        p       : CmAsinW5    = cm_asin_poly5(t, nz)
+        f       : CmAsinW5    = cm_asin_shift5(p, nz.mul(2).add(1))
+        xh      : U128        = arg.xa.shr(1)
+        a3      : CmAsinCarry = cm_asin_ac(cm_asin_lo(xh.to_wrap<S128>()), f.w3, 0)
+        a4      : CmAsinCarry = cm_asin_ac(cm_asin_hi(xh), f.w4, a3.carry)
+        k       : S64         = a4.sum.shr(63).to<S64>()
+        rnd     : U64         = a3.sum.shr(cm_asin_sh(k.add(13))).bitand(1)
+        v_shift : S64         = cm_asin_sh(k.add(14)).to_wrap<S64>()
+        v_all   : U128        = cm_asin_join(a4.sum, a3.sum).shr(v_shift.to<U128>())
+        v       : U128        = v_all.bitand(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        r       : F128        = cm_asin_pack(v, arg.xn.add(k), arg.xsgn, rnd)
         return(r)
