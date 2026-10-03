@@ -9,8 +9,10 @@ namespace Tessera;
 /// - a doc comment sits directly on its declaration, above any attribute lines;
 /// - a top-level section comment (a group of `//` lines with a `// --`, `// ==`, or `// ──` divider) has a blank line
 ///   before and after it;
-/// - `:`, `=`, `->`, and `<-` have one space on each side, and consecutive lines of one kind (bindings, claims, record
-///   fields, choice members, variant cases, `when` arms) align them.
+/// - `:`, `=`, `->`, and `<-` have one space on each side, and consecutive lines of one kind (bindings, claims, shared
+///   lines, record fields, choice members, variant cases, `when` arms) align them.
+/// - a routine's head, its `shared` lines, sits 4 spaces in right under the header (and its `require` lines), with no
+///   blank line inside it, and exactly one blank line between it and the first block.
 /// - an inline comment sits exactly two spaces after its code; comments are never aligned with each other.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 4 spaces
 ///   further in (every continuation line sits 4 further in, whatever made the line long); a line with nowhere to break
@@ -39,6 +41,7 @@ public static class Formatter
         lines = OrderDeclarations(lines);
         lines = SplitSelects(lines);
         lines = lines.Select(DropGroupingParens).ToList();
+        lines = HeadLayout(lines);
         lines = Align(lines);
         lines = Space(lines);
         lines = DocBeforeAttributes(lines);
@@ -67,7 +70,7 @@ public static class Formatter
 
     // ── Alignment ───────────────────────────────────────────────────────────
 
-    private enum Kind { Binding, Claim, Field, Arm, Conform }
+    private enum Kind { Binding, Claim, Shared, Field, Arm, Conform }
 
     /// One alignable line split into its columns: `name : type = rest`, `claim name : type <- rest`, `name : rest`,
     /// `left -> rest`, or `conform C<X> when rest`.
@@ -101,6 +104,8 @@ public static class Formatter
                 row = null;
             else if (whenIndent >= 0 && indent == whenIndent + 4 && SplitArm(trimmed) is { } arm)
                 row = new Row(i, Kind.Arm, indent, arm.Left, null, arm.Right);
+            else if (SplitShared(trimmed) is { } sh)
+                row = new Row(i, Kind.Shared, indent, sh.Name, sh.Type, sh.Tail);
             else if (SplitBinding(trimmed) is { } b)
                 row = new Row(i, Kind.Binding, indent, b.Name, b.Type, b.Tail);
             else if (SplitClaim(trimmed) is { } c)
@@ -145,6 +150,7 @@ public static class Formatter
                     Kind.Claim => r.Rest.Length == 0
                         ? $"{pad}claim {r.Name.PadRight(nameWidth)} : {r.Type}"
                         : $"{pad}claim {r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} <- {r.Rest}",
+                    Kind.Shared => $"{pad}shared {r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} {r.Rest}",
                     Kind.Field => $"{pad}{r.Name.PadRight(nameWidth)} : {r.Rest}",
                     Kind.Conform => $"{pad}{r.Name.PadRight(nameWidth)} when {r.Rest}",
                     _ => $"{pad}{r.Name.PadRight(nameWidth)} -> {r.Rest}",
@@ -184,6 +190,29 @@ public static class Formatter
         string rest = s[(eq + 1)..].Trim();
         if (type.Length == 0 || rest.Length == 0) return null;
         return (name, type, rest);
+    }
+
+    /// `shared name : Type = value` or `shared name : @Type <- contents`: the name, the type, and the rest with its `=`
+    /// or `<-` (value and slot lines align as one group).
+    private static (string Name, string Type, string Tail)? SplitShared(string s)
+    {
+        if (!s.StartsWith("shared ")) return null;
+        string body = s[7..].TrimStart();
+        if (body.Length == 0 || !IsNameStart(body[0])) return null;
+        int i = 1;
+        while (i < body.Length && (char.IsLetterOrDigit(body[i]) || body[i] == '_')) i++;
+        int colon = SkipSpaces(body, i);
+        if (colon >= body.Length || body[colon] != ':' || (colon + 1 < body.Length && body[colon + 1] is ':' or '='))
+            return null;
+        int arrow = TopLevelIndex(body, colon + 1, "<-");
+        int eq = TopLevelIndex(body, colon + 1, "=");
+        bool slot = arrow >= 0 && (eq < 0 || arrow < eq);
+        int at = slot ? arrow : eq;
+        if (at < 0) return null;
+        string type = body[(colon + 1)..at].Trim();
+        string rest = body[(at + (slot ? 2 : 1))..].Trim();
+        if (type.Length == 0 || rest.Length == 0) return null;
+        return (body[..i], type, (slot ? "<- " : "= ") + rest);
     }
 
     /// A value's name starts with a letter or `_`; `%` may start one too.
@@ -334,6 +363,34 @@ public static class Formatter
             resultContinued.Add(continued[i]);
         }
         return result;
+    }
+
+    /// A routine's head: its shared lines sit 4 spaces in, with no blank line between the header and them or among
+    /// them (Space puts one blank line between the head and the first block).
+    private static List<string> HeadLayout(List<string> lines)
+    {
+        var continued = Continuations(lines);
+        var drop = new HashSet<int>();
+        var result = new List<string>(lines);
+        for (int i = 0; i < lines.Count; i++)
+        {
+            if (!IsRoutineHeader(lines[i])) continue;
+            int lastShared = -1;
+            int j = i + 1;
+            for (; j < lines.Count; j++)
+            {
+                string t = lines[j].TrimStart();
+                if (continued[j] || t.Length == 0 || t.StartsWith("require ") || t.StartsWith("//") || t.StartsWith("#"))
+                    continue;
+                if (!t.StartsWith("shared ")) break;
+                lastShared = j;
+                result[j] = "    " + t;
+            }
+            for (int k = i + 1; k < lastShared; k++)
+                if (IsBlank(lines[k])) drop.Add(k);
+            i = j - 1;
+        }
+        return result.Where((_, k) => !drop.Contains(k)).ToList();
     }
 
     /// For each line, whether it starts inside a bracket opened on an earlier line (a wrapped continuation).
@@ -506,6 +563,8 @@ public static class Formatter
         int from;
         if (trimmed.StartsWith("branch ")) from = 0;
         else if (trimmed.StartsWith("claim ") && TopLevelIndex(code, 0, "<-") is var arrow and >= 0) from = arrow + 2;
+        else if (SplitShared(trimmed) is { } sh)
+            from = sh.Tail.StartsWith("<-") ? TopLevelIndex(code, 0, "<-") + 2 : TopLevelIndex(code, code.IndexOf(':'), "=") + 1;
         else if (SplitBinding(trimmed) is not null && TopLevelIndex(code, 0, "=") is var eq and >= 0) from = eq + 1;
         else return [line];
         int question = TopLevelIndex(code, from, " ? ");
@@ -950,8 +1009,9 @@ public static class Formatter
             {
                 if (result[j].StartsWith("require ") || (typeParameter && result[j].StartsWith(' ') && j < FirstBodyLine(result, i, end)))
                     continue;
-                // `claim p : @T` spells its pointer type out, so a routine on Ptr<T> keeps it there.
-                if (atOwner is not null && result[j].TrimStart().StartsWith("claim ", StringComparison.Ordinal))
+                // `claim p : @T` (and a shared slot) spells its pointer type out, so a routine on Ptr<T> keeps it there.
+                if (atOwner is not null && (result[j].TrimStart().StartsWith("claim ", StringComparison.Ordinal)
+                                            || result[j].TrimStart().StartsWith("shared ", StringComparison.Ordinal)))
                     continue;
                 result[j] = Replace(result[j]);
             }
@@ -959,11 +1019,11 @@ public static class Formatter
         return result;
     }
 
-    /// The routine's first `block` line: everything before it is the header (and its `require` lines).
+    /// The routine's first `block` or `shared` line: everything before it is the header (and its `require` lines).
     private static int FirstBodyLine(List<string> lines, int header, int end)
     {
         for (int j = header + 1; j < end; j++)
-            if (lines[j].StartsWith("    block ")) return j;
+            if (lines[j].StartsWith("    block ") || lines[j].TrimStart().StartsWith("shared ")) return j;
         return end;
     }
 

@@ -96,7 +96,8 @@ routine main() -> S32
   `preset SORTED: @Array<S64, 3> <- { -8, 0, 7 }`, `p : Point = { x: 1, y: 2 }`, like `.absent()`. Write the type
   where it isn't on the same line: `sum2({ 7, 8 })` compiles, but prefer `sum2(Array<S64, 2> { 7, 8 })`. A receiver
   gives it no type: `{ 1, 2 }.eq(...)` is an error. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
-  block reuses one slot.
+  block reuses one slot, but its `<-` runs every time the block runs: a claim can't carry a value from one pass to
+  the next. A slot that does is shared in the routine's head (below).
 - **Where values are: `@T` and `Slice<T>`.** `@T` is an address (a claim slot, a field, an element, memory from C)
   and frees nothing. `Slice<T>` (Core) is an address, a count, and `alloc`, the allocator the memory came from: `at(i)`
   is the checked address, and everything through it is `@T`'s own (`load`, `store`, `volatile_load`,
@@ -160,14 +161,87 @@ routine main() -> S32
 
 **Blocks and control flow**
 
-- A routine body is a list of blocks. The first is `block entry()`, and a routine without blocks must be
-  `#external`.
-- **A block sees only the routine's parameters, its own parameters, and values it defines.** Anything else must be
-  passed as a block argument. This is the most common error.
-- **A routine's parameters are there in every block, so a block parameter can't share a name with one.** Don't pass
-  a routine parameter along to a block: use it. A value that starts from one and changes (a loop counter, a shrinking
-  count) gets its own name as a block parameter (`jump walk(start)` into `block walk(at: USize)`), or a `claim`ed
-  slot.
+- A routine body is its head (optional `shared` lines) and a list of blocks. The first block is `block entry()`, and
+  a routine without blocks must be `#external`.
+- **A routine has two layers of names.** The routine layer, its parameters and the values its head shares, is
+  visible in every block. The block layer, the block's parameters, the values it binds and the slots it claims, is
+  visible only in that block. Anything else must be passed as a block argument. This is the most common error. No
+  name is bound twice anywhere: there is no reassignment.
+- **The head: `shared` lines.** Between the routine's header (and its `require` lines) and `block entry()`, a
+  routine may share values and slots with every block: `shared n : USize = values.count()` (a value) and
+  `shared sum : @U64 <- 0` or `<- uninit` (a slot, what `claim` makes in a block). The head holds only shared
+  lines, top to bottom, each seeing the routine's parameters, presets, globals, and the shared lines above it; its
+  expressions may call routines. It runs once when the routine starts, before `entry`, and `jump entry()` runs entry
+  again, never the head. `fmt` puts the head 4 spaces in right under the header, aligned like bindings, with one
+  blank line before `block entry()`. `shared` in a block, or in an assembly routine, is a build error, and
+  `shared` is a keyword (a value of that name is written `` `shared` ``).
+- **A routine's parameters and shared values are there in every block, so a block parameter or a block's binding
+  can't take one's name.** Don't pass a routine parameter or a shared value along to a block: use it. A value that
+  starts from one and changes (a loop counter, a shrinking count) gets its own name as a block parameter
+  (`jump walk(start)` into `block walk(at: USize)`), or a shared slot.
+- **What goes in the head.** A value or a slot made in entry that only travels unchanged through blocks goes in the
+  head, instead of being passed along every jump: when moving it there changes no order (it is among entry's first
+  bindings), or its initializer has no effect and costs nothing (a literal, `.empty()`, `uninit`, a field address).
+  Before, `first` and `count` ride along every jump:
+
+  ```tessera
+  routine List<T>.destruct_all(self: @Self) -> Void
+  require T: typename, Destructible<T>
+      block entry()
+          first : @T    = self.storage.data.load()
+          count : USize = self.count.load()
+          jump each(first, count, 0)
+
+      block each(first: @T, count: USize, i: USize)
+          done : Bool = i.ge(count)
+          ...
+          jump each(first, count, i.add(1))
+  ```
+
+  After, the head shares them and the loop passes only what changes:
+
+  ```tessera
+  routine List<T>.destruct_all(self: @Self) -> Void
+  require T: typename, Destructible<T>
+      shared first : @T    = self.storage.data.load()
+      shared count : USize = self.count.load()
+
+      block entry()
+          jump each(0)
+
+      block each(i: USize)
+          done : Bool = i.ge(count)
+          ...
+          jump each(i.add(1))
+  ```
+
+- **Accumulating state may live in a shared slot (recommended).** A sum, a count, or a position being advanced can be
+  a head slot updated with `load` / `store_into` instead of a block parameter threaded through every jump. The value
+  that decides where the loop goes next (the `i` of `jump add(i.add(1))`) stays a block parameter, so the jump line
+  shows how the loop advances. The optimizer keeps the slot in a register as long as it is only loaded and stored
+  (`load`, `store`, `store_into`) or passed to routines that get inlined. Passing it to a routine that isn't inlined
+  (`#noinline`, recursion, a C external, a routine too big to inline) keeps it in memory, measured about 4 times
+  slower in a hot loop. At -O0 it costs nothing extra: a block parameter gets a debug slot of its own anyway.
+
+  ```tessera
+  routine total(values: Slice<U32>) -> U64
+      shared n   : USize = values.count()
+      shared sum : @U64  <- 0
+
+      block entry()
+          jump add(0)
+
+      block add(i: USize)
+          done : Bool = i.ge(n)
+          branch done
+              ? return(sum.load())
+              : continue
+          value : U32 = values.getitem(i)
+          total : U64 = sum.load()
+          total.add(value.to<U64>()).store_into(sum)
+          jump add(i.add(1))
+  ```
+
 - Every block ends with exactly one terminator: `jump b(...)`, `branch c ? a(...) : b(...)`, `when`
   (first condition that holds), `when v` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
   `when` names a block, or is an
@@ -188,9 +262,11 @@ routine main() -> S32
 **Operations**
 
 - There are no operators. Everything is a method, and pure calls chain: `i.add(1).bitand(mask)`.
-- A chain holds at most two calls. Everything call-shaped counts (`x.f()`, `T.f()`, `f()`, `.stride(i)`,
-  `.to<T>()`), a field doesn't, and each argument and each `{...}` write-template hole is its own chain. A third
-  call gets a binding instead. `check`/`build`/`run` warn (not an error) for the program's own files, and
+- A chain holds at most three calls (`sum.load().add(x).store_into(sum)` is fine). Everything call-shaped counts
+  (`x.f()`, `T.f()`, `f()`, `.stride(i)`, `.to<T>()`), a field doesn't, and each argument and each `{...}`
+  write-template hole is its own chain. A fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`x.load().add(y).store_into(x)`): the basic
+  shape of an update, too common to warn about. The lint is there to stop a line from piling up conversions, not to
+  split ordinary updates. `check`/`build`/`run` warn (not an error) for the program's own files, and
   `tessera lint <files-or-dirs>` checks any file; CI holds `stdlib`, `tests`, and `examples` to 0 warnings. When
   the chain sits in a `branch`/`when` arm or a later `when` condition, don't hoist it above (that would run it on
   paths that didn't): give the arm its own block.
@@ -365,15 +441,16 @@ Iterating a collection (`next` returns `Option<T>`):
 
 ```tessera
 routine sum_list(list: @List<S64>) -> S64
-    block entry()
-        claim iter : @ListIter<S64> <- .construct(list)
-        jump next(iter, 0)
+    shared iter : @ListIter<S64> <- .construct(list)
 
-    block next(iter: @ListIter<S64>, total: S64)
+    block entry()
+        jump next(0)
+
+    block next(total: S64)
         item : Option<S64> = iter.next()
         when item
-            .Present(value) -> next(iter, total.add(value))
-            .Absent          -> return(total)
+            .Present(value) -> next(total.add(value))
+            .Absent         -> return(total)
 ```
 
 Propagating a `Result`:
@@ -395,7 +472,7 @@ routine parse_or_zero(text: Bytes) -> F64
 Format through `Standard/Format.tess`, not printf. printf is for C interop demos only: it can't print `S128`, `F16`,
 `BF16`, or `F128`, and a mismatched format is undefined behavior.
 
-- Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.shared()` is the pointer a
+- Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.writer()` is the pointer a
   Writer parameter takes), a `FileHandle`, `BufWriter<W>` (`out.construct(inner)`, then `flush()`),
   `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `buf.write("...")`, then `buf.to<Bytes>()`; it is
   the string builder). Standard input is `In`: `In.read<T>()`, `In.read_line(alloc)`, `read_word`,
@@ -428,7 +505,7 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   `"{sum2(Array<S64, 2> { 7, 8 })}"`), `{{` is a literal brace,
   and there are no format options. The template is a method on any Writer: `out.write("...")` on a pointer
   to one (`buf.write(...)`, `handle.write(...)`), and `Out.write("x = {x}\n")` / `Err.write(...)` on a stateless
-  one (it writes to `T.shared()`). It's only ever a method: there is no free `write(out, "...")`, and no
+  one (it writes to `T.writer()`). It's only ever a method: there is no free `write(out, "...")`, and no
   `print` / `eprint`.
 
 ## Collections
@@ -471,8 +548,8 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 **Routines every program has.**
 
 - `routine main() -> S32` is the entry point of an executable.
-- Every routine with a body starts with `block entry()`, which takes no parameters. A routine without blocks must
-  be `#external`.
+- Every routine with a body starts with `block entry()` (after its head's `shared` lines, if it has any), which
+  takes no parameters. A routine without blocks must be `#external`.
 
 **Threads and fibers.** `Standard::Os` has `Thread.spawn(routine, state, alloc)` / `join()`, `Mutex`
 (`lock` / `unlock` / `try_lock`), `Condition` (a condition variable for a Mutex: `wait(mutex)`,
@@ -587,7 +664,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array<T, N> <- { ... }`).
   elements; `destruct_all()` destructs them first (elements must conform to `Destructible<T>`), and `Dict` / `SortedDict`
   also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release. `Array<T, N>` acquires
   nothing, so it has no `destruct()`, only `destruct_all()` for elements that own something.
-- Other ways to make a value are named for what they make: `Out.shared()`, `Bytes.from_ptr(p, n)`,
+- Other ways to make a value are named for what they make: `Out.writer()`, `Bytes.from_ptr(p, n)`,
   `Option<T>.Absent`, `FormatSpec.zero_padded(6)`.
 - `deallocate(alloc, p)` (the raw layer) is not a destructor: it hands a block of memory back to its allocator.
   `Slice<T>.destruct()` / `Bytes.destruct()` are the way to do it for memory that carries its allocator.

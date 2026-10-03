@@ -14,10 +14,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private HashSet<string>? _values = values?.ToHashSet();
     private List<string> _routineValues = [];
 
+    /// The routine being parsed: its name as written, and its head's shared lines, for the errors that point there.
+    private string _routineDisplay = "";
+    private List<BindStmt> _routineShared = [];
+
     /// Names a value can only have between backticks: the words a statement, a target, or an expression starts with.
     internal static readonly HashSet<string> ReservedValueNames =
     [
-        "jump", "branch", "when", "return", "unreachable", "continue", "else", "block", "claim", "uninit",
+        "jump", "branch", "when", "return", "unreachable", "continue", "else", "block", "claim", "shared", "uninit",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
         "define", "private", "internal", "module", "import",
     ];
@@ -453,10 +457,19 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (inConcept)
             return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
 
-        // Only an #external routine is declared without a body; every other one starts with `block entry()`.
+        // Only an #external routine is declared without a body. Every other one starts with `block entry()`, after
+        // its head: the routine's shared lines, if it has any.
         string display = owner is null ? name : $"{owner}.{name}";
+        _routineDisplay = display;
+        var shared = ParseHead(display);
         if (!IsIdent("block"))
         {
+            if (!AtDeclStart())
+                throw Error($"only shared lines go between the header of routine '{display}' and its 'block entry()', "
+                            + $"and this is {Describe(Cur)}: a statement goes in a block");
+            if (shared.Count > 0)
+                throw new CompileError(shared[0].Pos,
+                    $"routine '{display}' shares values but has no blocks to share them with: a 'block entry()' follows its head");
             if (attrs.Any(a => a.Name == "external"))
                 return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs, Source = source };
             throw new CompileError(pos, $"routine '{display}' has no body: it needs a 'block entry()'");
@@ -471,7 +484,79 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             throw new CompileError(blocks[0].Pos, $"the first block of routine '{display}' must be 'entry'");
         if (blocks[0].Params.Count != 0)
             throw new CompileError(blocks[0].Pos, "the entry block takes no parameters");
-        return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, blocks, pos) { Fixed = fixedArgs, Source = source };
+        return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, blocks, pos)
+            { Fixed = fixedArgs, Source = source, Shared = shared };
+    }
+
+    /// The routine's head: its `shared` lines, between the header (and its `require` lines) and the first block.
+    /// Each sees the routine's parameters and the shared lines above it, and every block sees them all.
+    private List<BindStmt> ParseHead(string display)
+    {
+        var shared = new List<BindStmt>();
+        _values = [.. _routineValues];
+        while (true)
+        {
+            int start = _i;
+            Pos? lineSource = null;
+            if (Is(TokenKind.Hash))
+            {
+                var lineAttrs = ParseAttributes();
+                if (!IsIdent("shared"))
+                {
+                    _i = start;   // the attributes of the first block, or of the next declaration
+                    break;
+                }
+                foreach (var a in lineAttrs)
+                    lineSource = a.Name == "source"
+                        ? SourceOf(a)
+                        : throw new CompileError(a.Pos, $"a shared line takes #source, not #{a.Name}");
+            }
+            if (!IsIdent("shared")) break;
+            if (_inAsm)
+                throw Error($"assembly routine '{display}' has no shared values: its blocks pass registers, so each block "
+                            + "takes its values as parameters");
+            var line = ParseShared() with { Source = lineSource };
+            ExpectLineEnd();
+            if (_routineValues.Contains(line.Name))
+                throw new CompileError(line.Pos,
+                    $"'{line.Name}' is a parameter of routine '{display}', which every block already sees: use the "
+                    + "parameter itself, or share a value under a name of its own");
+            if (shared.FirstOrDefault(s => s.Name == line.Name) is { } earlier)
+                throw new CompileError(line.Pos,
+                    $"'{line.Name}' is shared twice in routine '{display}' (first on line {earlier.Pos.Line}): a name is bound once");
+            shared.Add(line);
+            _values.Add(line.Name);
+        }
+        _routineShared = shared;
+        _routineValues.AddRange(shared.Select(s => s.Name));
+        return shared;
+    }
+
+    /// `shared NAME : T = value` (a value) or `shared NAME : @T <- value` / `<- uninit` (a slot, what `claim` makes in
+    /// a block). Both parse as a BindStmt, the slot over a ClaimExpr: the shapes a block's lines have.
+    private BindStmt ParseShared()
+    {
+        var pos = Next().Pos;
+        string name = ValueName("the name of a shared value: shared x : T = value").Text;
+        Expect(TokenKind.Colon, "':'");
+        var type = ParseType();
+        if (Is(TokenKind.LeftArrow))
+        {
+            if (type is not { Name: "Ptr", Args.Count: 1 })
+                throw new CompileError(type.Pos,
+                    $"a shared slot is memory, so its type is a pointer: shared {name} : @{type} <- value, or shared {name} : {type} = value for a value");
+            Next();
+            if (IsIdent("uninit") && PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof)
+            {
+                Next();
+                return new BindStmt(name, type, new ClaimExpr(pos), pos);
+            }
+            return new BindStmt(name, type, new ClaimExpr(pos) { Contents = ParseExpr() }, pos);
+        }
+        if (!Is(TokenKind.Eq))
+            throw Error($"a shared line gives a value with '=' or a slot's contents with '<-': shared {name} : {type} = value");
+        Next();
+        return new BindStmt(name, type, ParseExpr(), pos);
     }
 
     private RecordDecl ParseRecord(List<Attribute> attrs)
@@ -764,9 +849,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         // A routine's parameters are values every block sees, so a block parameter can't take one's name: passing a
         // parameter along is passing what the block has already, and a value that changes is a different value.
         foreach (var p in parameters.Where(p => _routineValues.Contains(p.Name)))
-            throw new CompileError(p.Pos,
-                $"block '{name.Text}' has a parameter named '{p.Name}', like the routine's parameter, which every block "
-                + $"already sees: use '{p.Name}' itself, or give a value that changes its own name (or claim a slot for it)");
+            throw new CompileError(p.Pos, _routineShared.FirstOrDefault(s => s.Name == p.Name) is { } shared
+                ? $"block '{name.Text}' has a parameter named '{p.Name}', like the value shared in the head of routine "
+                  + $"'{_routineDisplay}' (line {shared.Pos.Line}), which every block already sees: use '{p.Name}' itself, "
+                  + "or give a value that changes its own name"
+                : $"block '{name.Text}' has a parameter named '{p.Name}', like the routine's parameter, which every block "
+                  + $"already sees: use '{p.Name}' itself, or give a value that changes its own name (or claim a slot for it)");
         ExpectLineEnd();
         _values = [.. _routineValues, .. parameters.Select(p => p.Name)];
 
@@ -887,6 +975,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var pos = Cur.Pos;
         if (IsIdent("claim")) return ParseClaim();
+        if (IsIdent("shared") && PeekTok(1).Kind == TokenKind.Ident)
+            throw Error($"a shared value is declared in the head of routine '{_routineDisplay}', between its header and "
+                        + "'block entry()', where every block sees it: move this line up there, or bind the value in this "
+                        + "block without 'shared'");
         if (Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon)
         {
             string name = ValueName("a value name").Text;

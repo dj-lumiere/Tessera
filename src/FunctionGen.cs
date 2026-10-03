@@ -38,6 +38,12 @@ public sealed class FunctionGen
     private readonly Dictionary<string, long> _placeAlign = [];
     private AbiSig _sig = null!;
     private readonly Dictionary<string, Val> _routineParams = [];
+
+    /// The routine's parameters and the values its head shares: what every block sees from its first line.
+    private Dictionary<string, Val> _routineValues = [];
+
+    /// The LLVM block the head is emitted into, the function's `start`, or null for a routine without shared lines.
+    private LBlock? _head;
     private Dictionary<string, Val> _values = [];
     private LBlock _cur = null!;
     private string _blockName = "";
@@ -134,6 +140,7 @@ public sealed class FunctionGen
         }
 
         if (Debug) BeginSubprogram();
+        EmitHead();
         foreach (var b in blocks) EmitBlock(b);
 
         // A BF16 parameter arrives as its i16 bits (see Instance.PassesBf16AsBits) and is bitcast back on entry.
@@ -185,11 +192,15 @@ public sealed class FunctionGen
         foreach (var u in unpack) _out.AppendLine($"  {u}");
         foreach (var r in paramRecords) _out.AppendLine($"  {r}");
         if (push is not null) _out.AppendLine($"  {push}");
-        _out.AppendLine("  br label %b.entry");
+        // The head's lines go on in the start block, after the parameters are unpacked and the frame is pushed.
+        if (_head is null) _out.AppendLine("  br label %b.entry");
         foreach (var lb in _lblocks)
         {
-            _out.AppendLine();
-            _out.AppendLine($"{lb.Label}:");
+            if (lb != _head)
+            {
+                _out.AppendLine();
+                _out.AppendLine($"{lb.Label}:");
+            }
             if (lb.Label.StartsWith("b.", StringComparison.Ordinal) && _blocks.TryGetValue(lb.Label[2..], out var bd))
             {
                 EmitPhis(bd);
@@ -367,6 +378,26 @@ public sealed class FunctionGen
 
     // ── Blocks and statements ───────────────────────────────────────────────
 
+    /// The head: the routine's shared lines, run once when it starts, in the start block before `entry`. Every block
+    /// is reached through `entry`, so these values dominate them all. A shared variable belongs to the routine's
+    /// DISubprogram, not to a block's lexical block, so a debugger shows it wherever the routine stops.
+    private void EmitHead()
+    {
+        _routineValues = new Dictionary<string, Val>(_routineParams);
+        if (_decl.Shared.Count == 0) return;
+        _head = new LBlock("start");
+        _lblocks.Add(_head);
+        _cur = _head;
+        _blockName = "";
+        _values = new Dictionary<string, Val>(_routineParams);
+        if (Debug) (_scope, _scopeFile) = (_sp, _spFile);
+        foreach (var s in _decl.Shared) EmitStmt(s);
+        _routineValues = _values;
+        Terminate("br label %b.entry");
+    }
+
+    private bool InHead => _head is not null && _blockName.Length == 0;
+
     private void EmitBlock(BlockDecl b)
     {
         try { EmitBlockCore(b); }
@@ -387,10 +418,14 @@ public sealed class FunctionGen
             At(at);
         }
 
-        _values = new Dictionary<string, Val>(_routineParams);
+        _values = new Dictionary<string, Val>(_routineValues);
         var types = _blockParamTypes[b.Name];
         for (int i = 0; i < b.Params.Count; i++)
         {
+            if (_values.ContainsKey(b.Params[i].Name))
+                throw Err(b.Params[i].Pos, $"block '{b.Name}' has a parameter named '{b.Params[i].Name}', like "
+                    + $"{RoutineValueKind(b.Params[i].Name)}, which every block already sees: use '{b.Params[i].Name}' itself, "
+                    + "or give a value that changes its own name");
             _values[b.Params[i].Name] = new Val(ParamOp(b.Name, b.Params[i].Name), types[i]);
             RecordValue(b.Params[i].Pos, types[i]);
             if (Debug && types[i] is not VoidType)
@@ -404,13 +439,28 @@ public sealed class FunctionGen
 
     private void Define(string name, Val v, Pos pos)
     {
+        if (InHead && _values.ContainsKey(name))
+            throw Err(pos, _routineParams.ContainsKey(name)
+                ? $"'{name}' is a parameter of routine '{_decl.DisplayName}', which every block already sees: use the "
+                  + "parameter itself, or share a value under a name of its own"
+                : $"'{name}' is shared twice in routine '{_decl.DisplayName}': a name is bound once");
+        if (_values.ContainsKey(name) && _routineValues.ContainsKey(name))
+            throw Err(pos, $"block '{_blockName}' binds '{name}', like {RoutineValueKind(name)}, which every block "
+                + "already sees: a name is bound once, so give this value its own name");
         if (_values.ContainsKey(name))
             throw Err(pos, $"'{name}' is already defined in block '{_blockName}' (SSA values are bound once)");
         _values[name] = v;
         RecordValue(pos, v.Type);
     }
 
-    private string LocalOp(string name) => $"%v.{_blockName}.{IrName(name)}";
+    /// What a name every block sees is: a routine parameter, or a value the head shares (and on which line).
+    private string RoutineValueKind(string name) =>
+        _routineParams.ContainsKey(name)
+            ? "the routine's parameter"
+            : $"the value shared in the head of routine '{_decl.DisplayName}'"
+              + (_decl.Shared.FirstOrDefault(s => s.Name == name) is { } shared ? $" (line {shared.Pos.Line})" : "");
+
+    private string LocalOp(string name) => InHead ? $"%h.{IrName(name)}" : $"%v.{_blockName}.{IrName(name)}";
 
     /// A value's name in IR: the name as written. A `#` inside a name, which LLVM names can't hold, becomes `$`.
     private static string IrName(string name) => name;
@@ -684,8 +734,16 @@ public sealed class FunctionGen
         }
         if (!BoundInRoutine(r.Name))
             throw Err(r.Pos, $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
-        throw Err(r.Pos, $"'{r.Name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block arguments");
+        throw Err(r.Pos, NotVisible(r.Name));
     }
+
+    /// A name bound in the routine, used where it isn't visible.
+    private string NotVisible(string name, bool fromNextLine = false) =>
+        InHead
+            ? $"'{name}' is not visible in the head of routine '{_decl.DisplayName}': a shared line sees the routine's "
+              + "parameters, presets and globals, and the shared lines above it"
+            : $"'{name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block "
+              + "arguments or shared in the routine head" + (fromNextLine ? ", and a binding is visible from the line after it" : "");
 
     /// `b.store(20)` where `b` names no type, preset, global, or routine: a value that isn't there.
     private void UnknownReceiver(TypeRef owner)
@@ -694,14 +752,13 @@ public sealed class FunctionGen
             || _c.FindFree(owner.Name, _env.File, owner.Pos) is not null)
             return;
         if (BoundInRoutine(owner.Name))
-            throw Err(owner.Pos, $"'{owner.Name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block arguments, "
-                                 + "and a binding is visible from the line after it");
+            throw Err(owner.Pos, NotVisible(owner.Name, fromNextLine: true));
         throw Err(owner.Pos, $"'{owner.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
     }
 
     /// Whether some block of this routine binds `name`: a parameter, a block parameter, or a binding.
     private bool BoundInRoutine(string name) =>
-        _decl.Params.Any(p => p.Name == name)
+        _decl.Params.Any(p => p.Name == name) || _decl.Shared.Any(s => s.Name == name)
         || _decl.Blocks!.Any(b => b.Params.Any(p => p.Name == name) || b.Stmts.Any(s => s switch
         {
             BindStmt bind => bind.Name == name,
@@ -1101,7 +1158,7 @@ public sealed class FunctionGen
     private const string FormatModule = "Standard::Format";
 
     /// The writer a `.write("x = {x}\n")` writes to, or null when the call is an ordinary one: on a type, a stateless
-    /// Writer (`ConsoleOutput.write("...")` writes to `ConsoleOutput.shared()`); on a value, the Writer it points at
+    /// Writer (`ConsoleOutput.write("...")` writes to `ConsoleOutput.writer()`); on a value, the Writer it points at
     /// (`handle.write("...")`). A type with a `write` routine of its own keeps it.
     private Expr? TemplateWriter(Expr e)
     {
@@ -1111,8 +1168,8 @@ public sealed class FunctionGen
             {
                 if (TryResolveOwner(ns.Owner) is not { } owner) return null;
                 if (_c.FindMethod(owner, "write", _env.File, ns.Pos) is not null) return null;
-                if (_c.FindMethod(owner, "shared", _env.File, ns.Pos) is null) return null;
-                return new NsCallExpr(ns.Owner, "shared", [], [], ns.Pos);
+                if (_c.FindMethod(owner, "writer", _env.File, ns.Pos) is null) return null;
+                return new NsCallExpr(ns.Owner, "writer", [], [], ns.Pos);
             }
             case MethodCallExpr { Name: "write", TypeArgs.Count: 0, Args: [StrLit] } mc:
             {
@@ -1131,7 +1188,7 @@ public sealed class FunctionGen
     /// are literal braces. Nothing is allocated: each piece goes straight to the writer.
     private Val ExpandTemplate(Expr writer, StrLit template)
     {
-        // The writer is evaluated once (`Out.shared()`, `files.stride(i)`), and every piece writes to that value, held
+        // The writer is evaluated once (`Out.writer()`, `files.stride(i)`), and every piece writes to that value, held
         // under a name no source can spell.
         if (writer is not ValueRef)
         {
@@ -1334,8 +1391,7 @@ public sealed class FunctionGen
         if (r.Owner is null && _c.FindFree(r.Name, _env.File, r.Pos, r.Path) is not null)
             throw Err(r.Pos, $"'{r.Name}' is a routine; as a value it is written {r.Name}.to<Callable>()");
         if (r.Owner is null && r.Path is null && BoundInRoutine(r.Name))
-            throw Err(r.Pos, $"'{r.Name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block arguments, "
-                             + "and a binding is visible from the line after it");
+            throw Err(r.Pos, NotVisible(r.Name, fromNextLine: true));
         throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
     }
 

@@ -92,6 +92,11 @@ public sealed record RoutineDecl(
     /// declare: `S64` in `S32.to<S64>`, `@T` in `Array<T, N>.to<@T>`. A call picks the one its type arguments match.
     public List<TypeRef> Fixed { get; init; } = [];
 
+    /// The head's `shared` lines, top to bottom: values and slots every block sees, made once when the routine starts,
+    /// before `entry`. `shared x : T = v` is a BindStmt of v, and `shared p : @T <- v` (or `<- uninit`) a BindStmt of
+    /// a ClaimExpr, the shapes a block's binding and claim have. Empty for a routine without a body.
+    public List<BindStmt> Shared { get; init; } = [];
+
     /// `#source("gcd.mini", 5, 9)` among its attributes: the place in a generator's input it came from.
     public Pos? Source { get; init; }
 

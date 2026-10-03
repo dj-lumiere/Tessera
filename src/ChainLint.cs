@@ -1,7 +1,8 @@
 namespace Tessera;
 
 /// The style warning for long chains: a chain (a value, then calls one after another on what each gives back) holds at
-/// most MaxOperations calls, so a reader follows one or two steps before a name says what came out. Everything that
+/// most MaxOperations calls, so a reader follows at most three steps before a name says what came out (a
+/// read-modify-write such as `sum.load().add(x).store_into(sum)` is one chain). Everything that
 /// looks like a call counts: `x.f()`, `T.f()`, `f()`, `.stride(i)` and `.to<T>()` included; a field (`p.x`) doesn't.
 /// A call's arguments are chains of their own, and so is each `{...}` hole of a write template.
 ///
@@ -9,7 +10,7 @@ namespace Tessera;
 /// `tessera lint` for any file, the standard library's included (CI holds the stdlib, tests, and examples to it).
 public static class ChainLint
 {
-    public const int MaxOperations = 2;
+    public const int MaxOperations = 3;
 
     public static List<string> Check(IEnumerable<Decl> decls)
     {
@@ -17,6 +18,7 @@ public static class ChainLint
         foreach (var r in decls.OfType<RoutineDecl>())
         {
             _values = ValueNames(r);
+            foreach (var s in r.Shared) Stmt(s, warnings);
             foreach (var b in r.Blocks ?? [])
             {
                 foreach (var s in b.Stmts) Stmt(s, warnings);
@@ -33,6 +35,7 @@ public static class ChainLint
     private static HashSet<string> ValueNames(RoutineDecl r)
     {
         var names = r.Params.Select(p => p.Name).ToHashSet();
+        names.UnionWith(r.Shared.Select(s => s.Name));
         foreach (var b in r.Blocks ?? [])
         {
             names.UnionWith(b.Params.Select(p => p.Name));

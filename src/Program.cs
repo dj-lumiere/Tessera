@@ -18,7 +18,7 @@ static class Cli
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
           tessera fmt   -               format the source on standard input to standard output (for an editor)
           tessera lsp                   run the language server on standard input and output (for an editor)
-          tessera lint  <file-or-dir>...   print the style warnings (a chain of more than two calls), the stdlib's too
+          tessera lint  <file-or-dir>...   print the style warnings (a chain of more than three calls), the stdlib's too
           tessera help                  print this text
           tessera version               print the builder's version
 
