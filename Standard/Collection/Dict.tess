@@ -21,6 +21,9 @@ import Standard::Format
 private preset SLOT_EMPTY:     USize = USize.MAX
 private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
 
+/// An insertion-ordered hash map. Entries live in parallel arrays in the order they were first inserted, and an open-addressed slot table with linear probing maps a key hash to its entry. Removal marks the entry dead, so surviving entries keep their order until the next rehash.
+/// :typeparam K: The key type, which must provide hashing and equality.
+/// :typeparam V: The value type.
 record Dict<K, V>
 conform Destruct<Dict<K, V>>
 conform Represent<Dict<K, V>> when K: typename, V: typename, HashEqual<K>, Diagnose<K>, Diagnose<V>
@@ -37,6 +40,9 @@ require K: typename, V: typename, HashEqual<K>
     capacity      : USize
     alloc         : @Allocator
 
+/// Creates an empty Dict that draws its storage from `alloc`. Nothing is allocated until the first insertion.
+/// :param alloc: The allocator the dict stores and later frees its memory with.
+/// :returns: A new empty Dict.
 routine Dict<K, V>.construct(alloc: @Allocator) -> Self
 require K: typename, V: typename, HashEqual<K>
     block entry():
@@ -44,12 +50,16 @@ require K: typename, V: typename, HashEqual<K>
             length: 0, entries_count: 0, capacity: 0, alloc: alloc }
         return(map)
 
+/// The number of entries currently stored.
+/// :returns: The count of entries, `0` when the dict is empty.
 routine Dict<K, V>.length(self: Self) -> USize
 require K: typename, V: typename
     block entry():
         length : USize = self.length
         return(length)
 
+/// Whether the dict holds no entries.
+/// :returns: `true` when the length is `0`.
 routine Dict<K, V>.is_empty(self: Self) -> Bool
 require K: typename, V: typename
     block entry():
@@ -131,6 +141,9 @@ require K: typename, V: typename
             ? return(entry_idx)
             : return(SLOT_EMPTY)
 
+/// Whether `key` is present.
+/// :param key: The key to look for.
+/// :returns: `true` when an entry with an equal key is live.
 routine Dict<K, V>.contains(self: Self, key: K) -> Bool
 require K: typename, V: typename
     block entry():
@@ -376,6 +389,10 @@ require K: typename, V: typename
         self.entries_count.store(new_idx.add(1))
         return()
 
+/// Stores `value` under `key`, inserting a new entry or replacing the value of an equal existing key.
+/// :param key: The key to store under.
+/// :param value: The value to store.
+/// :throws: Traps with `TrapCode.AllocFailed` when the tables must grow and the allocator fails. See {Dict<K, V>.put_result} for a recoverable form.
 #track_caller
 routine Dict<K, V>.put(self: @Self, key: K, value: V) -> Void
 require K: typename, V: typename
@@ -396,6 +413,10 @@ require K: typename, V: typename
         self.put_direct(key, value, K.hash(key))
         return(.Success(Unit.value()))
 
+/// Reads the value stored under `key`.
+/// :param key: The key to look up.
+/// :returns: A copy of the value.
+/// :throws: Traps with `TrapCode.MissingKey` when the key is absent. See {Dict<K, V>.get_checked}.
 #track_caller
 routine Dict<K, V>.get(self: Self, key: K) -> V
 require K: typename, V: typename
@@ -461,6 +482,9 @@ require K: typename, V: typename
         value  : @V = values.stride(entry_idx)
         return(.Present(value))
 
+/// Removes the entry for `key`. Its position in the entries array stays until the next rehash.
+/// :param key: The key to remove.
+/// :returns: `true` when an entry was removed, `false` when the key was not present.
 routine Dict<K, V>.remove(self: @Self, key: K) -> Bool
 require K: typename, V: typename
     block entry():
@@ -489,6 +513,8 @@ require K: typename, V: typename
         remaining_length.store_into(self.length)
         return(true)
 
+/// Frees the dict's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+/// :note: Safe to call on a never-filled instance, where it only resets the fields.
 routine Dict<K, V>.destruct(self: @Self) -> Void
 require K: typename, V: typename
     block entry():

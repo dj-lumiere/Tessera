@@ -49,60 +49,79 @@ private record ProcessInformation
     process_id : U32
     thread_id  : U32
 
+/// Binds the Win32 `GetLastError` function.
 #[external("c"), symbol("GetLastError"), callconv("stdcall"), target(os: "windows")]
 private routine c_get_last_error() -> U32
 
+/// Binds the Win32 `SetLastError` function.
 #[external("c"), symbol("SetLastError"), callconv("stdcall"), target(os: "windows")]
 private routine c_set_last_error(code: U32) -> Void
 
+/// Binds the Win32 `CreateFileW` function.
 #[external("c"), symbol("CreateFileW"), callconv("stdcall"), target(os: "windows")]
 private routine c_create_file(name: @U16, access: U32, share: U32, security: @SecurityAttributes,
     disposition: U32, flags: U32, template: Addr) -> Addr
 
+/// Binds the Win32 `CreatePipe` function.
 #[external("c"), symbol("CreatePipe"), callconv("stdcall"), target(os: "windows")]
 private routine c_create_pipe(read: @Addr, write: @Addr, security: @SecurityAttributes,
     size: U32) -> CInt
 
+/// Binds the Win32 `SetHandleInformation` function.
 #[external("c"), symbol("SetHandleInformation"), callconv("stdcall"), target(os: "windows")]
 private routine c_set_handle_information(handle: Addr, mask: U32, flags: U32) -> CInt
 
+/// Binds the Win32 `GetStdHandle` function.
 #[external("c"), symbol("GetStdHandle"), callconv("stdcall"), target(os: "windows")]
 private routine c_get_std_handle(which: U32) -> Addr
 
+/// Binds the Win32 `GetCurrentProcess` function.
 #[external("c"), symbol("GetCurrentProcess"), callconv("stdcall"), target(os: "windows")]
 private routine c_get_current_process() -> Addr
 
+/// Binds the Win32 `DuplicateHandle` function.
 #[external("c"), symbol("DuplicateHandle"), callconv("stdcall"), target(os: "windows")]
 private routine c_duplicate_handle(from_process: Addr, handle: Addr, to_process: Addr, copy: @Addr,
     access: U32, inherit: CInt, options: U32) -> CInt
 
+/// Binds the Win32 `CreateProcessW` function.
 #[external("c"), symbol("CreateProcessW"), callconv("stdcall"), target(os: "windows")]
 private routine c_create_process(application: Addr, command_line: @U16, process_attrs: Addr,
     thread_attrs: Addr, inherit: CInt, flags: U32, environment: Addr, directory: @U16,
     startup: @StartupInfo, info: @ProcessInformation) -> CInt
 
+/// Binds the Win32 `ReadFile` function.
 #[external("c"), symbol("ReadFile"), callconv("stdcall"), target(os: "windows")]
 private routine c_read_file(handle: Addr, buffer: @Byte, size: U32, read: @U32,
     overlapped: Addr) -> CInt
 
+/// Binds the Win32 `WaitForSingleObject` function.
 #[external("c"), symbol("WaitForSingleObject"), callconv("stdcall"), target(os: "windows")]
 private routine c_wait_for_single_object(handle: Addr, millis: U32) -> U32
 
+/// Binds the Win32 `GetExitCodeProcess` function.
 #[external("c"), symbol("GetExitCodeProcess"), callconv("stdcall"), target(os: "windows")]
 private routine c_get_exit_code_process(process: Addr, code: @U32) -> CInt
 
+/// Binds the Win32 `CloseHandle` function.
 #[external("c"), symbol("CloseHandle"), callconv("stdcall"), target(os: "windows")]
 private routine c_close_handle(handle: Addr) -> CInt
 
+/// Binds the Win32 `GetEnvironmentStringsW` function.
 #[external("c"), symbol("GetEnvironmentStringsW"), callconv("stdcall"), target(os: "windows")]
 private routine c_get_environment_strings() -> @U16
 
+/// Binds the Win32 `FreeEnvironmentStringsW` function.
 #[external("c"), symbol("FreeEnvironmentStringsW"), callconv("stdcall"), target(os: "windows")]
 private routine c_free_environment_strings(strings: @U16) -> CInt
 
+/// Binds the Win32 `GetEnvironmentVariableW` function.
 #[external("c"), symbol("GetEnvironmentVariableW"), callconv("stdcall"), target(os: "windows")]
 private routine c_get_environment_variable(name: @U16, buffer: @U16, size: U32) -> U32
 
+/// The {ProcessError} for the Win32 error code a failed start reported.
+/// :param e: The error code.
+/// :returns: NotFound, PermissionDenied, OutOfMemory, or InvalidArgument for those errors, else Other.
 #target(os: "windows")
 private routine spawn_error(e: U32) -> ProcessError
     block entry():
@@ -113,16 +132,25 @@ private routine spawn_error(e: U32) -> ProcessError
             123, 87   -> return(ProcessError.InvalidArgument)
             else      -> return(ProcessError.Other)
 
+/// Whether `h` is null or INVALID_HANDLE_VALUE.
+/// :param h: The handle to test.
+/// :returns: `true` when it holds no usable handle.
 #target(os: "windows")
 private routine is_invalid(h: Addr) -> Bool
     block entry():
         return(h.is_null().bitor(ptrtoint<Addr, USize>(h).eq(USize.MAX)))
 
+/// Whether two handles are the same value.
+/// :param a: One handle.
+/// :param b: The other.
+/// :returns: `true` when they are equal.
 #target(os: "windows")
 private routine same(a: Addr, b: Addr) -> Bool
     block entry():
         return(ptrtoint<Addr, USize>(a).eq(ptrtoint<Addr, USize>(b)))
 
+/// Closes `h` unless it holds no usable handle.
+/// :param h: The handle, or null or INVALID_HANDLE_VALUE for none.
 #target(os: "windows")
 private routine close_if_open(h: Addr) -> Void
     block entry():
@@ -309,6 +337,10 @@ private routine key_units(entry: @U16) -> USize
             ? return(i)
             : scan(i.add(1))
 
+/// A UTF-16 unit with ASCII capitals lowered, for comparing environment names the way Windows does (without regard to
+/// case).
+/// :param u: The unit.
+/// :returns: The lowered unit, or `u` when it isn't an ASCII capital.
 #target(os: "windows")
 private routine fold16(u: U16) -> U16
     block entry():
@@ -561,6 +593,8 @@ private routine read_pipe(raw: Addr) -> Void
         r.buffer.append(heap, chunk, n.load().to<USize>())
         jump next(r, heap, chunk, n)
 
+/// Closes this process's copies of the handles the child was given (its ends of the pipes, the null device, and any
+/// standard handle duplicated only for it), so end-of-file reaches the parent when the child exits.
 #target(os: "windows")
 private routine Handles.close_child_side(self: @Self) -> Void
     block entry():
@@ -673,6 +707,17 @@ private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which:
             OutputMode.Null    -> return(device)
             OutputMode.Inherit -> return(inherited(which))
 
+/// Starts `program` with CreateProcessW, waits for it, and returns how it ended and what it captured. The arguments
+/// are joined into one quoted command line, and when both streams are captured, standard error is read on a helper
+/// thread so neither pipe fills while the other is read. This is the Windows half; Linux and macOS use fork and
+/// execvp.
+/// :param program: The program to run.
+/// :param args: The arguments, not including the program name.
+/// :param arg_count: How many arguments `args` holds.
+/// :param options: The directory, environment overrides, and standard streams.
+/// :param alloc: The allocator for the captured output and the working memory.
+/// :returns: The {ProcessOutput}, or Failure with a {ProcessError} (InvalidArgument for a NUL in the command, the
+/// directory, or a variable).
 #target(os: "windows")
 routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
@@ -754,6 +799,10 @@ routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: Pro
         return(.Success(ProcessOutput { status: ExitStatus.Exited(code.load().to_wrap<S32>()),
             stdout: out.load().bytes(), stderr: error_text }))
 
+/// Frees the command line, and the environment block when there is one.
+/// :param line: The command line text.
+/// :param env: The environment block, or null.
+/// :param alloc: The allocator they came from.
 #target(os: "windows")
 private routine free_texts(line: @U16, env: @U16, alloc: @Allocator) -> Void
     block entry():

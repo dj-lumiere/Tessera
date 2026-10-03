@@ -5,14 +5,22 @@
 
 module Standard::Core
 
+/// A 16-bit bfloat16 floating-point number, mapped to LLVM `bfloat`: F32's 8-bit exponent with a 7-bit stored mantissa.
+/// It keeps F32's range (finite magnitudes up to about 3.4e38) with an 8-bit significand (2 to 3 significant decimal digits).
+/// :note: Targets without BF16 arithmetic (x86) compute in F32 and round back. The math functions compute in F32 and round once to BF16.
+/// :see: {F16} for more precision in a smaller range.
 #llvm("bfloat")
 record BF16
 conform Equal<BF16>, Compare<BF16>, Hash<BF16>
 
 // -- constants -----------------------------------------------------------------
 
+/// Positive infinity (bits `0x7F80`): the result of overflow and of dividing a positive value by +0.0.
 preset BF16.INFINITY:     BF16 = BF16.from_bits(0x7F80)  // +inf bits
+/// Negative infinity (bits `0xFF80`).
 preset BF16.NEG_INFINITY: BF16 = BF16.from_bits(0xFF80)  // -inf bits
+/// The canonical quiet NaN (bits `0x7FC0`).
+/// :note: NaN is unequal to everything, itself included, so test for it with {BF16.is_nan}, not `eq`.
 preset BF16.NAN:          BF16 = BF16.from_bits(0x7FC0)  // canonical quiet NaN bits
 
 // -- runtime support ---------------------------------------------------------
@@ -21,12 +29,19 @@ preset BF16.NAN:          BF16 = BF16.from_bits(0x7FC0)  // canonical quiet NaN 
 // calling these compiler-rt routines. The Windows builds of compiler-rt lack
 // them, so the stdlib provides them under their C names.
 
+/// Windows-only replacement for compiler-rt's `__truncsfbf2`, exported under that name: narrows F32 to BF16, rounding to nearest (ties to even).
+/// :param x: The F32 to narrow.
+/// :returns: The nearest BF16.
+/// :note: LLVM calls it on x86 to round BF16 arithmetic computed in F32; the Windows compiler-rt lacks it.
 #[export("__truncsfbf2"), target(os: "windows")]
 routine bf16_trunc_from_f32(x: F32) -> BF16
     block entry():
         r : BF16 = x.to<BF16>()
         return(r)
 
+/// Windows-only replacement for compiler-rt's `__truncdfbf2`, exported under that name: narrows F64 to BF16, rounding once to nearest (ties to even).
+/// :param x: The F64 to narrow.
+/// :returns: The nearest BF16.
 #[export("__truncdfbf2"), target(os: "windows")]
 routine bf16_trunc_from_f64(x: F64) -> BF16
     block entry():
@@ -55,16 +70,25 @@ routine BF16.max(self: Self, other: Self) -> Self
         r      : Self = larger.to<Self>()  // via F32 (exact)
         return(r)
 
+/// Adds `other` to `self`, rounded to nearest (ties to even).
+/// :param other: The value to add.
+/// :returns: `self + other`: infinity on overflow, NaN when either operand is NaN or for `inf + -inf`.
 routine BF16.add(self: Self, other: Self) -> Self
     block entry():
         r : Self = fadd<Self>(self, other)
         return(r)
 
+/// Subtracts `other` from `self`, rounded to nearest (ties to even).
+/// :param other: The value to subtract.
+/// :returns: `self - other`: infinity on overflow, NaN when either operand is NaN or for `inf - inf`.
 routine BF16.sub(self: Self, other: Self) -> Self
     block entry():
         r : Self = fsub<Self>(self, other)
         return(r)
 
+/// Multiplies `self` by `other`, rounded to nearest (ties to even).
+/// :param other: The factor.
+/// :returns: `self * other`: infinity on overflow, NaN when either operand is NaN or for `0 * inf`.
 routine BF16.mul(self: Self, other: Self) -> Self
     block entry():
         r : Self = fmul<Self>(self, other)
@@ -72,21 +96,33 @@ routine BF16.mul(self: Self, other: Self) -> Self
 
 // -- comparisons ---------------------------------------------------------------
 
+/// Whether `self` is less than `other`, as an ordered IEEE comparison.
+/// :param other: The value to compare against.
+/// :returns: `self < other`; false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine BF16.lt(self: Self, other: Self) -> Bool
     block entry():
         r : Bool = flt<Self>(self, other)
         return(r)
 
+/// Whether `self` is less than or equal to `other`, as an ordered IEEE comparison.
+/// :param other: The value to compare against.
+/// :returns: `self <= other`; false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine BF16.le(self: Self, other: Self) -> Bool
     block entry():
         r : Bool = fle<Self>(self, other)
         return(r)
 
+/// Whether `self` is greater than `other`, as an ordered IEEE comparison.
+/// :param other: The value to compare against.
+/// :returns: `self > other`; false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine BF16.gt(self: Self, other: Self) -> Bool
     block entry():
         r : Bool = fgt<Self>(self, other)
         return(r)
 
+/// Whether `self` is greater than or equal to `other`, as an ordered IEEE comparison.
+/// :param other: The value to compare against.
+/// :returns: `self >= other`; false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine BF16.ge(self: Self, other: Self) -> Bool
     block entry():
         r : Bool = fge<Self>(self, other)
@@ -94,6 +130,9 @@ routine BF16.ge(self: Self, other: Self) -> Bool
 
 // -- division ------------------------------------------------------------------
 
+/// Divides `self` by `other`, rounded to nearest (ties to even).
+/// :param other: The divisor.
+/// :returns: `self / other`: a signed infinity for a nonzero value divided by zero, NaN for `0 / 0`, `inf / inf`, or a NaN operand.
 routine BF16.div(self: Self, other: Self) -> Self
     block entry():
         r : Self = fdiv<Self>(self, other)
@@ -101,16 +140,27 @@ routine BF16.div(self: Self, other: Self) -> Self
 
 // -- equality, ordering, hashing -----------------------------------------------
 
+/// IEEE equality.
+/// :param other: The value to compare against.
+/// :returns: True when the values are equal: -0.0 equals +0.0, and NaN is unequal to everything, itself included.
 routine BF16.eq(self: Self, other: Self) -> Bool
     block entry():
         r : Bool = feq<Self>(self, other)
         return(r)
 
+/// Ordered inequality (LLVM `fcmp one`).
+/// :param other: The value to compare against.
+/// :returns: True when both operands are numbers and they differ; false for -0.0 against +0.0.
+/// :note: Also false when either operand is NaN, so for NaN this is not the negation of {BF16.eq}.
 routine BF16.ne(self: Self, other: Self) -> Bool
     block entry():
         r : Bool = fne<Self>(self, other)
         return(r)
 
+/// Three-way comparison for the `Compare` conformance.
+/// :param other: The value to compare against.
+/// :returns: -1 when `self < other`, 1 when `self > other`, and 0 otherwise, which includes -0.0 against +0.0 and any comparison with NaN.
+/// :see: {BF16.total_compare} for a total order that ranks NaN and the signed zeros.
 routine BF16.compare(self: Self, other: Self) -> S32
     block entry():
         lt : Bool = self.lt(other)
@@ -122,6 +172,9 @@ routine BF16.compare(self: Self, other: Self) -> S32
             ? return(1)
             : return(0)
 
+/// Hashes the raw IEEE bits with `xxh64_hash_u64` (seed 0), for the `Hash` conformance.
+/// :returns: The 64-bit hash.
+/// :note: -0.0 and +0.0 are `eq` but hash apart, and NaNs with different payloads hash apart.
 routine BF16.hash(self: Self) -> U64
     block entry():
         h : U64 = xxh64_hash_u64(self.bits().to<U64>(), 0)
@@ -129,6 +182,8 @@ routine BF16.hash(self: Self) -> U64
 
 // -- named widening conversion -------------------------------------------------
 
+/// Widens to F64, exactly.
+/// :returns: The same value as an F64; every BF16 is representable.
 routine BF16.to<F64>(self: Self) -> F64
     block entry():
         result : F64 = fpext<Self, F64>(self)
@@ -140,26 +195,44 @@ routine BF16.to<F64>(self: Self) -> F64
 
 // -- constants ------------------------------------------------------------------
 
+/// The largest finite BF16, about 3.3895314e38 (bits `0x7F7F`).
 preset BF16.MAX:          BF16 = BF16.from_bits(0x7F7F)  // largest finite value
+/// The most negative finite BF16, the negation of `BF16.MAX` (bits `0xFF7F`).
 preset BF16.MIN:          BF16 = BF16.from_bits(0xFF7F)  // most negative finite value
+/// The smallest positive normal BF16, 2^-126, about 1.1754944e-38 (bits `0x0080`). Subnormal values go below it.
 preset BF16.MIN_POSITIVE: BF16 = BF16.from_bits(0x0080)  // smallest positive normal value
+/// The gap between 1.0 and the next larger BF16, 2^-7, 0.0078125 (bits `0x3C00`).
 preset BF16.EPSILON:      BF16 = BF16.from_bits(0x3C00)  // the gap between 1.0 and the next value
 
+/// Pi, rounded to the nearest BF16.
 preset BF16.PI: BF16 = 3.14159265358979323846264338327950288  // pi
+/// Tau (2 pi), one full turn in radians, rounded to the nearest BF16.
 preset BF16.TAU: BF16 = 6.28318530717958647692528676655900577  // 2 pi
+/// Euler's number e, rounded to the nearest BF16.
 preset BF16.E: BF16 = 2.71828182845904523536028747135266250  // Euler's number
+/// Pi / 2, rounded to the nearest BF16.
 preset BF16.FRAC_PI_2: BF16 = 1.57079632679489661923132169163975144  // pi / 2
+/// Pi / 4, rounded to the nearest BF16.
 preset BF16.FRAC_PI_4: BF16 = 0.785398163397448309615660845819875721  // pi / 4
+/// 1 / pi, rounded to the nearest BF16.
 preset BF16.FRAC_1_PI: BF16 = 0.318309886183790671537767526745028724  // 1 / pi
+/// The square root of 2, rounded to the nearest BF16.
 preset BF16.SQRT_2: BF16 = 1.41421356237309504880168872420969808  // sqrt(2)
+/// 1 / sqrt(2), rounded to the nearest BF16.
 preset BF16.FRAC_1_SQRT_2: BF16 = 0.707106781186547524400844362104849039  // 1 / sqrt(2)
+/// The natural logarithm of 2, rounded to the nearest BF16.
 preset BF16.LN_2: BF16 = 0.693147180559945309417232121458176568  // ln(2)
+/// The natural logarithm of 10, rounded to the nearest BF16.
 preset BF16.LN_10: BF16 = 2.30258509299404568401799145468436421  // ln(10)
+/// Log2(e), rounded to the nearest BF16.
 preset BF16.LOG2_E: BF16 = 1.44269504088896340735992468100189214  // log2(e)
+/// Log10(e), rounded to the nearest BF16.
 preset BF16.LOG10_E: BF16 = 0.434294481903251827651128918916605082  // log10(e)
 
 // -- sign ----------------------------------------------------------------------
 
+/// Flips the sign bit, exactly.
+/// :returns: `-self`: 0.0 becomes -0.0, infinities swap sign, and NaN keeps its payload.
 routine BF16.neg(self: Self) -> Self
     block entry():
         r : Self = fneg<Self>(self)
@@ -188,6 +261,8 @@ routine BF16.is_sign_positive(self: Self) -> Bool
         r    : Bool = bits.ge(0)
         return(r)
 
+/// Reads the sign bit, so it is true for -0.0 and for NaNs with the bit set.
+/// :returns: Whether the sign bit is set.
 routine BF16.is_sign_negative(self: Self) -> Bool
     block entry():
         bits : S16  = self.bits().to_wrap<S16>()
@@ -204,6 +279,8 @@ routine BF16.mod(self: Self, other: Self) -> Self
         r         : Self = remainder.to<Self>()
         return(r)
 
+/// The reciprocal `1 / self`, rounded once.
+/// :returns: `1 / self`: a signed infinity for a signed zero, a signed zero for an infinity, NaN for NaN.
 routine BF16.recip(self: Self) -> Self
     block entry():
         r : Self = fdiv<Self>(1.0, self)
@@ -330,12 +407,16 @@ routine BF16.total_compare(self: Self, other: Self) -> S32
 
 // -- rounding ------------------------------------------------------------------
 
+/// Rounds toward negative infinity by widening to F32, rounding there, and narrowing back (exact).
+/// :returns: The largest integer value not above `self`; zeros, infinities and NaN come back unchanged.
 routine BF16.floor(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
         r    : Self = wide.floor().to<Self>()
         return(r)
 
+/// Rounds toward positive infinity by widening to F32, rounding there, and narrowing back (exact).
+/// :returns: The smallest integer value not below `self` (-0.5 gives -0.0); zeros, infinities and NaN come back unchanged.
 routine BF16.ceil(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
@@ -379,6 +460,9 @@ routine BF16.sqrt(self: Self) -> Self
         r    : Self = wide.sqrt().to<Self>()
         return(r)
 
+/// The cube root, defined for every input: negative values give negative roots. Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result.
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.cbrt(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
@@ -400,6 +484,10 @@ routine BF16.powi(self: Self, n: S32) -> Self
         r : F128 = self.to<F128>().powf(n.to<F128>())
         return(r.to<Self>())
 
+/// `self` raised to the power `exponent`, correctly rounded.
+/// Computed in F32 and rounded to BF16; when the F32 result lands exactly on a BF16 midpoint, the F64 power decides the rounding instead.
+/// :param exponent: The power to raise `self` to.
+/// :returns: The correctly rounded BF16 result, following C `pow` for the special cases (NaN for a negative base with a non-integer exponent).
 routine BF16.powf(self: Self, exponent: Self) -> Self
     block entry():
         narrow : F32  = self.to<F32>().powf(exponent.to<F32>())
@@ -442,12 +530,18 @@ routine BF16.ln(self: Self) -> Self
         r    : Self = wide.ln().to<Self>()
         return(r)
 
+/// The base-2 logarithm. Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result; -inf at +-0.0 and NaN below 0.
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.log2(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
         r    : Self = wide.log2().to<Self>()
         return(r)
 
+/// The base-10 logarithm. Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result; -inf at +-0.0 and NaN below 0.
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.log10(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
@@ -506,54 +600,81 @@ routine BF16.tan(self: Self) -> Self
         r    : Self = wide.tan().to<Self>()
         return(r)
 
+/// The arcsine, in radians in [-pi/2, pi/2]. Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result; NaN outside [-1, 1].
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.asin(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
         r    : Self = wide.asin().to<Self>()
         return(r)
 
+/// The arccosine, in radians in [0, pi]. Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result; NaN outside [-1, 1].
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.acos(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
         r    : Self = wide.acos().to<Self>()
         return(r)
 
+/// The arctangent, in radians in (-pi/2, pi/2). Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result.
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.atan(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
         r    : Self = wide.atan().to<Self>()
         return(r)
 
+/// The hyperbolic sine. Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result; infinity on overflow.
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.sinh(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
         r    : Self = wide.sinh().to<Self>()
         return(r)
 
+/// The hyperbolic cosine, at least 1. Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result; infinity on overflow.
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.cosh(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
         r    : Self = wide.cosh().to<Self>()
         return(r)
 
+/// The hyperbolic tangent, in [-1, 1]. Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result.
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.tanh(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
         r    : Self = wide.tanh().to<Self>()
         return(r)
 
+/// The inverse hyperbolic sine. Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result.
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.asinh(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
         r    : Self = wide.asinh().to<Self>()
         return(r)
 
+/// The inverse hyperbolic cosine. Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result; NaN below 1.
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.acosh(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
         r    : Self = wide.acosh().to<Self>()
         return(r)
 
+/// The inverse hyperbolic tangent. Computed with F32's correctly rounded CORE-MATH port and rounded once to BF16.
+/// :returns: The correctly rounded BF16 result; +-inf at +-1 and NaN outside [-1, 1].
+/// :note: No BF16 input rounds wrongly through F32: every one was checked against mpmath.
 routine BF16.atanh(self: Self) -> Self
     block entry():
         wide : F32  = self.to<F32>()
@@ -612,11 +733,15 @@ routine BF16.ln_gamma(self: Self) -> Self
         r    : Self = wide.ln_gamma().to<Self>()
         return(r)
 
+/// Converts an angle from radians to degrees by multiplying by 180 / pi (the constant rounded to BF16).
+/// :returns: `self` in degrees, rounded once.
 routine BF16.to_degrees(self: Self) -> Self
     block entry():
         r : Self = self.mul(57.2957795130823208767981548141051703)
         return(r)
 
+/// Converts an angle from degrees to radians by multiplying by pi / 180 (the constant rounded to BF16).
+/// :returns: `self` in radians, rounded once.
 routine BF16.to_radians(self: Self) -> Self
     block entry():
         r : Self = self.mul(0.0174532925199432957692369076848861271)
@@ -660,11 +785,15 @@ private routine bf16_on_midpoint_f64(r: F64) -> Bool
 
 // -- classification ------------------------------------------------------------
 
+/// Whether `self` is NaN, quiet or signaling.
+/// :returns: True for NaN, the only value unordered with itself.
 routine BF16.is_nan(self: Self) -> Bool
     block entry():
         r : Bool = funo<Self>(self, self)
         return(r)
 
+/// Whether `self` is +inf or -inf.
+/// :returns: True for either infinity; false for NaN and finite values.
 routine BF16.is_infinite(self: Self) -> Bool
     block entry():
         magnitude : Self = fabs<Self>(self)
@@ -685,6 +814,8 @@ routine BF16.is_normal(self: Self) -> Bool
         r        : Bool = exponent.ne(0).bitand(exponent.ne(0x7F80))
         return(r)
 
+/// Whether `self` is subnormal: a zero exponent field with a nonzero fraction, so its magnitude is below `BF16.MIN_POSITIVE`.
+/// :returns: True for subnormals; false for zero, normal values, infinities and NaN.
 routine BF16.is_subnormal(self: Self) -> Bool
     block entry():
         bits     : U16  = self.bits()
@@ -701,6 +832,10 @@ routine BF16.bits(self: Self) -> U16
         r : U16 = bitcast<Self, U16>(self)
         return(r)
 
+/// Reinterprets raw IEEE 754 bfloat16 bits as a BF16, exactly.
+/// :param bits: The encoding: sign bit at the top, then the exponent field, then the fraction.
+/// :returns: The value with that encoding; NaN payloads are kept.
+/// :see: {BF16.bits} for the inverse.
 routine BF16.from_bits(bits: U16) -> Self
     block entry():
         r : Self = bitcast<U16, Self>(bits)
@@ -708,16 +843,22 @@ routine BF16.from_bits(bits: U16) -> Self
 
 // -- float conversions -----------------------------------------------------------
 
+/// Converts to F16 by widening to F32 exactly and rounding once to nearest (ties to even).
+/// :returns: The nearest F16: infinity above F16's range (65504), a subnormal or zero for tiny values, NaN for NaN.
 routine BF16.to<F16>(self: Self) -> F16
     block entry():
         wide : F32 = self.to<F32>()
         r    : F16 = wide.to<F16>()
         return(r)
 
+/// The identity conversion, so generic code can call `to<T>()` when `T` is BF16.
+/// :returns: `self` unchanged.
 routine BF16.to<Self>(self: Self) -> Self
     block entry():
         return(self)
 
+/// Widens to F32, exactly: BF16 is the upper half of an F32 encoding.
+/// :returns: The same value as an F32.
 routine BF16.to<F32>(self: Self) -> F32
     block entry():
         r : F32 = fpext<Self, F32>(self)
@@ -729,6 +870,10 @@ routine BF16.to<F32>(self: Self) -> F32
 // range; to_<int>_checked returns None instead, and to_<int>_clamp saturates
 // (NaN gives 0).
 
+/// Converts to S8, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [-128, 127]; the panic reports the caller's location.
+/// :see: {BF16.to_checked<S8>} to get an absent value instead, {BF16.to_clamp<S8>} to saturate.
 #track_caller
 routine BF16.to<S8>(self: Self) -> S8
     block entry():
@@ -739,6 +884,10 @@ routine BF16.to<S8>(self: Self) -> S8
         r : S8 = fptosi_sat<Self, S8>(self)
         return(r)
 
+/// Converts to S8, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [-128, 127].
+/// :see: {BF16.to<S8>} to panic instead, {BF16.to_clamp<S8>} to saturate.
 routine BF16.to_checked<S8>(self: Self) -> Option<S8>
     block entry():
         fits  : Bool       = self.fits_int(-128.0, 128.0)
@@ -746,11 +895,18 @@ routine BF16.to_checked<S8>(self: Self) -> Option<S8>
         r     : Option<S8> = fits.then_present(value)
         return(r)
 
+/// Converts to S8, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [-128, 127]; infinities give the nearer end and NaN gives 0.
+/// :see: {BF16.to_checked<S8>} to detect values that do not fit.
 routine BF16.to_clamp<S8>(self: Self) -> S8
     block entry():
         r : S8 = fptosi_sat<Self, S8>(self)
         return(r)
 
+/// Converts to S16, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [-32768, 32767]; the panic reports the caller's location.
+/// :see: {BF16.to_checked<S16>} to get an absent value instead, {BF16.to_clamp<S16>} to saturate.
 #track_caller
 routine BF16.to<S16>(self: Self) -> S16
     block entry():
@@ -761,6 +917,10 @@ routine BF16.to<S16>(self: Self) -> S16
         r : S16 = fptosi_sat<Self, S16>(self)
         return(r)
 
+/// Converts to S16, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [-32768, 32767].
+/// :see: {BF16.to<S16>} to panic instead, {BF16.to_clamp<S16>} to saturate.
 routine BF16.to_checked<S16>(self: Self) -> Option<S16>
     block entry():
         fits  : Bool        = self.fits_int(-32768.0, 32768.0)
@@ -768,11 +928,18 @@ routine BF16.to_checked<S16>(self: Self) -> Option<S16>
         r     : Option<S16> = fits.then_present(value)
         return(r)
 
+/// Converts to S16, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [-32768, 32767]; infinities give the nearer end and NaN gives 0.
+/// :see: {BF16.to_checked<S16>} to detect values that do not fit.
 routine BF16.to_clamp<S16>(self: Self) -> S16
     block entry():
         r : S16 = fptosi_sat<Self, S16>(self)
         return(r)
 
+/// Converts to S32, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [-2^31, 2^31 - 1]; the panic reports the caller's location.
+/// :see: {BF16.to_checked<S32>} to get an absent value instead, {BF16.to_clamp<S32>} to saturate.
 #track_caller
 routine BF16.to<S32>(self: Self) -> S32
     block entry():
@@ -783,6 +950,10 @@ routine BF16.to<S32>(self: Self) -> S32
         r : S32 = fptosi_sat<Self, S32>(self)
         return(r)
 
+/// Converts to S32, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [-2^31, 2^31 - 1].
+/// :see: {BF16.to<S32>} to panic instead, {BF16.to_clamp<S32>} to saturate.
 routine BF16.to_checked<S32>(self: Self) -> Option<S32>
     block entry():
         fits  : Bool        = self.fits_int(-2147483648.0, 2147483648.0)
@@ -790,11 +961,18 @@ routine BF16.to_checked<S32>(self: Self) -> Option<S32>
         r     : Option<S32> = fits.then_present(value)
         return(r)
 
+/// Converts to S32, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [-2^31, 2^31 - 1]; infinities give the nearer end and NaN gives 0.
+/// :see: {BF16.to_checked<S32>} to detect values that do not fit.
 routine BF16.to_clamp<S32>(self: Self) -> S32
     block entry():
         r : S32 = fptosi_sat<Self, S32>(self)
         return(r)
 
+/// Converts to S64, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [-2^63, 2^63 - 1]; the panic reports the caller's location.
+/// :see: {BF16.to_checked<S64>} to get an absent value instead, {BF16.to_clamp<S64>} to saturate.
 #track_caller
 routine BF16.to<S64>(self: Self) -> S64
     block entry():
@@ -805,6 +983,10 @@ routine BF16.to<S64>(self: Self) -> S64
         r : S64 = fptosi_sat<Self, S64>(self)
         return(r)
 
+/// Converts to S64, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [-2^63, 2^63 - 1].
+/// :see: {BF16.to<S64>} to panic instead, {BF16.to_clamp<S64>} to saturate.
 routine BF16.to_checked<S64>(self: Self) -> Option<S64>
     block entry():
         fits  : Bool        = self.fits_int(-9223372036854775808.0, 9223372036854775808.0)
@@ -812,11 +994,18 @@ routine BF16.to_checked<S64>(self: Self) -> Option<S64>
         r     : Option<S64> = fits.then_present(value)
         return(r)
 
+/// Converts to S64, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [-2^63, 2^63 - 1]; infinities give the nearer end and NaN gives 0.
+/// :see: {BF16.to_checked<S64>} to detect values that do not fit.
 routine BF16.to_clamp<S64>(self: Self) -> S64
     block entry():
         r : S64 = fptosi_sat<Self, S64>(self)
         return(r)
 
+/// Converts to S128, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [-2^127, 2^127 - 1]; the panic reports the caller's location.
+/// :see: {BF16.to_checked<S128>} to get an absent value instead, {BF16.to_clamp<S128>} to saturate.
 #track_caller
 routine BF16.to<S128>(self: Self) -> S128
     block entry():
@@ -828,6 +1017,10 @@ routine BF16.to<S128>(self: Self) -> S128
         r : S128 = fptosi_sat<Self, S128>(self)
         return(r)
 
+/// Converts to S128, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [-2^127, 2^127 - 1].
+/// :see: {BF16.to<S128>} to panic instead, {BF16.to_clamp<S128>} to saturate.
 routine BF16.to_checked<S128>(self: Self) -> Option<S128>
     block entry():
         fits  : Bool         = self.fits_int(-170141183460469231731687303715884105728.0,
@@ -836,11 +1029,18 @@ routine BF16.to_checked<S128>(self: Self) -> Option<S128>
         r     : Option<S128> = fits.then_present(value)
         return(r)
 
+/// Converts to S128, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [-2^127, 2^127 - 1]; infinities give the nearer end and NaN gives 0.
+/// :see: {BF16.to_checked<S128>} to detect values that do not fit.
 routine BF16.to_clamp<S128>(self: Self) -> S128
     block entry():
         r : S128 = fptosi_sat<Self, S128>(self)
         return(r)
 
+/// Converts to U8, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [0, 255]; the panic reports the caller's location.
+/// :see: {BF16.to_checked<U8>} to get an absent value instead, {BF16.to_clamp<U8>} to saturate.
 #track_caller
 routine BF16.to<U8>(self: Self) -> U8
     block entry():
@@ -851,6 +1051,10 @@ routine BF16.to<U8>(self: Self) -> U8
         r : U8 = fptoui_sat<Self, U8>(self)
         return(r)
 
+/// Converts to U8, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [0, 255].
+/// :see: {BF16.to<U8>} to panic instead, {BF16.to_clamp<U8>} to saturate.
 routine BF16.to_checked<U8>(self: Self) -> Option<U8>
     block entry():
         fits  : Bool       = self.fits_int(0.0, 256.0)
@@ -858,11 +1062,18 @@ routine BF16.to_checked<U8>(self: Self) -> Option<U8>
         r     : Option<U8> = fits.then_present(value)
         return(r)
 
+/// Converts to U8, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [0, 255]; infinities give the nearer end and NaN gives 0.
+/// :see: {BF16.to_checked<U8>} to detect values that do not fit.
 routine BF16.to_clamp<U8>(self: Self) -> U8
     block entry():
         r : U8 = fptoui_sat<Self, U8>(self)
         return(r)
 
+/// Converts to U16, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [0, 65535]; the panic reports the caller's location.
+/// :see: {BF16.to_checked<U16>} to get an absent value instead, {BF16.to_clamp<U16>} to saturate.
 #track_caller
 routine BF16.to<U16>(self: Self) -> U16
     block entry():
@@ -873,6 +1084,10 @@ routine BF16.to<U16>(self: Self) -> U16
         r : U16 = fptoui_sat<Self, U16>(self)
         return(r)
 
+/// Converts to U16, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [0, 65535].
+/// :see: {BF16.to<U16>} to panic instead, {BF16.to_clamp<U16>} to saturate.
 routine BF16.to_checked<U16>(self: Self) -> Option<U16>
     block entry():
         fits  : Bool        = self.fits_int(0.0, 65536.0)
@@ -880,11 +1095,18 @@ routine BF16.to_checked<U16>(self: Self) -> Option<U16>
         r     : Option<U16> = fits.then_present(value)
         return(r)
 
+/// Converts to U16, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [0, 65535]; infinities give the nearer end and NaN gives 0.
+/// :see: {BF16.to_checked<U16>} to detect values that do not fit.
 routine BF16.to_clamp<U16>(self: Self) -> U16
     block entry():
         r : U16 = fptoui_sat<Self, U16>(self)
         return(r)
 
+/// Converts to U32, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [0, 2^32 - 1]; the panic reports the caller's location.
+/// :see: {BF16.to_checked<U32>} to get an absent value instead, {BF16.to_clamp<U32>} to saturate.
 #track_caller
 routine BF16.to<U32>(self: Self) -> U32
     block entry():
@@ -895,6 +1117,10 @@ routine BF16.to<U32>(self: Self) -> U32
         r : U32 = fptoui_sat<Self, U32>(self)
         return(r)
 
+/// Converts to U32, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [0, 2^32 - 1].
+/// :see: {BF16.to<U32>} to panic instead, {BF16.to_clamp<U32>} to saturate.
 routine BF16.to_checked<U32>(self: Self) -> Option<U32>
     block entry():
         fits  : Bool        = self.fits_int(0.0, 4294967296.0)
@@ -902,11 +1128,18 @@ routine BF16.to_checked<U32>(self: Self) -> Option<U32>
         r     : Option<U32> = fits.then_present(value)
         return(r)
 
+/// Converts to U32, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [0, 2^32 - 1]; infinities give the nearer end and NaN gives 0.
+/// :see: {BF16.to_checked<U32>} to detect values that do not fit.
 routine BF16.to_clamp<U32>(self: Self) -> U32
     block entry():
         r : U32 = fptoui_sat<Self, U32>(self)
         return(r)
 
+/// Converts to U64, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [0, 2^64 - 1]; the panic reports the caller's location.
+/// :see: {BF16.to_checked<U64>} to get an absent value instead, {BF16.to_clamp<U64>} to saturate.
 #track_caller
 routine BF16.to<U64>(self: Self) -> U64
     block entry():
@@ -917,6 +1150,10 @@ routine BF16.to<U64>(self: Self) -> U64
         r : U64 = fptoui_sat<Self, U64>(self)
         return(r)
 
+/// Converts to U64, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [0, 2^64 - 1].
+/// :see: {BF16.to<U64>} to panic instead, {BF16.to_clamp<U64>} to saturate.
 routine BF16.to_checked<U64>(self: Self) -> Option<U64>
     block entry():
         fits  : Bool        = self.fits_int(0.0, 18446744073709551616.0)
@@ -924,11 +1161,18 @@ routine BF16.to_checked<U64>(self: Self) -> Option<U64>
         r     : Option<U64> = fits.then_present(value)
         return(r)
 
+/// Converts to U64, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [0, 2^64 - 1]; infinities give the nearer end and NaN gives 0.
+/// :see: {BF16.to_checked<U64>} to detect values that do not fit.
 routine BF16.to_clamp<U64>(self: Self) -> U64
     block entry():
         r : U64 = fptoui_sat<Self, U64>(self)
         return(r)
 
+/// Converts to U128, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [0, 2^128 - 1]; the panic reports the caller's location.
+/// :see: {BF16.to_checked<U128>} to get an absent value instead, {BF16.to_clamp<U128>} to saturate.
 #track_caller
 routine BF16.to<U128>(self: Self) -> U128
     block entry():
@@ -939,6 +1183,10 @@ routine BF16.to<U128>(self: Self) -> U128
         r : U128 = fptoui_sat<Self, U128>(self)
         return(r)
 
+/// Converts to U128, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [0, 2^128 - 1].
+/// :see: {BF16.to<U128>} to panic instead, {BF16.to_clamp<U128>} to saturate.
 routine BF16.to_checked<U128>(self: Self) -> Option<U128>
     block entry():
         fits  : Bool         = self.fits_int(0.0, 340282366920938463463374607431768211456.0)
@@ -946,6 +1194,9 @@ routine BF16.to_checked<U128>(self: Self) -> Option<U128>
         r     : Option<U128> = fits.then_present(value)
         return(r)
 
+/// Converts to U128, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [0, 2^128 - 1]; infinities give the nearer end and NaN gives 0.
+/// :see: {BF16.to_checked<U128>} to detect values that do not fit.
 routine BF16.to_clamp<U128>(self: Self) -> U128
     block entry():
         r : U128 = fptoui_sat<Self, U128>(self)

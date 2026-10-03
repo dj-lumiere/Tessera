@@ -44,10 +44,12 @@ preset RECIPROCAL_TABLE: @Array<U64, 256> <- { 2045, 2037, 2029, 2021, 2013, 200
     1070, 1068, 1066, 1064, 1061, 1059, 1057, 1055, 1053, 1051, 1049, 1047, 1044, 1042, 1040, 1038,
     1036, 1034, 1032, 1030, 1028, 1026, 1024 }
 
+/// The result of a 3-by-2 limb division: a 64-bit quotient and the 128-bit remainder.
 record Div3By2
     quotient  : U64
     remainder : U128
 
+/// The result of a 2-by-1 limb division: a 64-bit quotient and the 64-bit remainder.
 record Div2By1
     quotient  : U64
     remainder : U64
@@ -121,6 +123,15 @@ routine reciprocal_3by2(d1: U64, d0: U64) -> U64
         r     : U64  = v.sub_wrap(down)
         return(r)
 
+/// Divides the 192-bit `(u2, u1, u0)` by the normalized 128-bit `(d1, d0)` by multiplying with the precomputed reciprocal `v` (Moller and Granlund).
+/// :param u2: The top limb of the dividend.
+/// :param u1: The middle limb of the dividend.
+/// :param u0: The low limb of the dividend.
+/// :param d1: The high limb of the normalized divisor, with its top bit set.
+/// :param d0: The low limb of the divisor.
+/// :param v: The reciprocal from `reciprocal_3by2(d1, d0)`.
+/// :returns: The 64-bit quotient and the 128-bit remainder.
+/// :note: Needs `d1` to have its top bit set and `(u2, u1) < (d1, d0)`. Defined on every target.
 routine div_3by2_mg(u2: U64, u1: U64, u0: U64, d1: U64, d0: U64, v: U64) -> Div3By2
     block entry():
         d_high   : U128 = d1.to<U128>().shl(64)
@@ -197,6 +208,14 @@ routine divq(hi: U64 = R2, lo: U64 = R0, d: U64) -> (U64, U64)
         div<U64>(d)  // div <d's register>: RDX:RAX / d
         return({ R0, R2 })  // RAX = quotient, RDX = remainder
 
+/// Divides the 192-bit `(u2, u1, u0)` by the normalized 128-bit `(d1, d0)` on x86_64: `divq` estimates the quotient from `(u2, u1)` and `d1`, and Knuth's test against `d0` corrects it.
+/// :param u2: The top limb of the dividend.
+/// :param u1: The middle limb of the dividend.
+/// :param u0: The low limb of the dividend.
+/// :param d1: The high limb of the normalized divisor, with its top bit set.
+/// :param d0: The low limb of the divisor.
+/// :returns: The 64-bit quotient and the 128-bit remainder.
+/// :note: Same preconditions as {div_3by2_mg}.
 #target(arch: "x86_64")
 routine div_3by2_divq(u2: U64, u1: U64, u0: U64, d1: U64, d0: U64) -> Div3By2
     block entry():
@@ -236,6 +255,12 @@ routine div_3by2_divq(u2: U64, u1: U64, u0: U64, d1: U64, d0: U64) -> Div3By2
         res     : Div3By2 = Div3By2 { quotient: q, remainder: r }
         return(res)
 
+/// Divides the 128-bit `(u1, u0)` by the 64-bit `d` with one `divq` on x86_64.
+/// :param u1: The high limb of the dividend, which must be below `d`.
+/// :param u0: The low limb of the dividend.
+/// :param d: The divisor.
+/// :returns: The 64-bit quotient and remainder.
+/// :note: Needs `u1 < d`, or the instruction faults.
 #target(arch: "x86_64")
 routine div_2by1_divq(u1: U64, u0: U64, d: U64) -> Div2By1
     block entry():
@@ -245,46 +270,92 @@ routine div_2by1_divq(u1: U64, u0: U64, d: U64) -> Div2By1
 
 // -- by target -----------------------------------------------------------------
 
+/// The per-divisor value to pass as `v` to `div_2by1` for the normalized divisor `d`: the reciprocal on targets without a 128 / 64 divide, and an unused 0 on x86_64.
+/// :param d: The normalized divisor, with its top bit set.
+/// :returns: The reciprocal to pass to `div_2by1`, or 0 on x86_64 where it is unused.
 #target(arch: "x86_64")
 routine div_2by1_prepare(d: U64) -> U64
     block entry():
         return(0)
 
+/// The per-divisor value to pass as `v` to `div_2by1` for the normalized divisor `d`: the reciprocal on targets without a 128 / 64 divide, and an unused 0 on x86_64.
+/// :param d: The normalized divisor, with its top bit set.
+/// :returns: The reciprocal to pass to `div_2by1`, or 0 on x86_64 where it is unused.
 #target(arch: not "x86_64")
 routine div_2by1_prepare(d: U64) -> U64
     block entry():
         v : U64 = reciprocal_2by1(d)
         return(v)
 
+/// Divides the 128-bit `(u1, u0)` by the normalized 64-bit `d`, with `v` from `div_2by1_prepare(d)`. Uses `divq` on x86_64 and the reciprocal elsewhere.
+/// :param u1: The high limb of the dividend, which must be below `d`.
+/// :param u0: The low limb of the dividend.
+/// :param d: The normalized divisor, with its top bit set.
+/// :param v: The value from `div_2by1_prepare(d)`.
+/// :returns: The 64-bit quotient and remainder.
+/// :note: Needs `u1 < d`.
 #target(arch: "x86_64")
 routine div_2by1(u1: U64, u0: U64, d: U64, v: U64) -> Div2By1
     block entry():
         r : Div2By1 = div_2by1_divq(u1, u0, d)
         return(r)
 
+/// Divides the 128-bit `(u1, u0)` by the normalized 64-bit `d`, with `v` from `div_2by1_prepare(d)`. Uses `divq` on x86_64 and the reciprocal elsewhere.
+/// :param u1: The high limb of the dividend, which must be below `d`.
+/// :param u0: The low limb of the dividend.
+/// :param d: The normalized divisor, with its top bit set.
+/// :param v: The value from `div_2by1_prepare(d)`.
+/// :returns: The 64-bit quotient and remainder.
+/// :note: Needs `u1 < d`.
 #target(arch: not "x86_64")
 routine div_2by1(u1: U64, u0: U64, d: U64, v: U64) -> Div2By1
     block entry():
         r : Div2By1 = div_2by1_mg(u1, u0, d, v)
         return(r)
 
+/// The per-divisor value to pass as `v` to `div_3by2` for the normalized divisor `(d1, d0)`: the reciprocal on targets without a 128 / 64 divide, and an unused 0 on x86_64.
+/// :param d1: The high limb of the divisor, with its top bit set.
+/// :param d0: The low limb of the divisor.
+/// :returns: The reciprocal to pass to `div_3by2`, or 0 on x86_64 where it is unused.
 #target(arch: "x86_64")
 routine div_3by2_prepare(d1: U64, d0: U64) -> U64
     block entry():
         return(0)
 
+/// The per-divisor value to pass as `v` to `div_3by2` for the normalized divisor `(d1, d0)`: the reciprocal on targets without a 128 / 64 divide, and an unused 0 on x86_64.
+/// :param d1: The high limb of the divisor, with its top bit set.
+/// :param d0: The low limb of the divisor.
+/// :returns: The reciprocal to pass to `div_3by2`, or 0 on x86_64 where it is unused.
 #target(arch: not "x86_64")
 routine div_3by2_prepare(d1: U64, d0: U64) -> U64
     block entry():
         v : U64 = reciprocal_3by2(d1, d0)
         return(v)
 
+/// Divides the 192-bit `(u2, u1, u0)` by the normalized 128-bit `(d1, d0)`, with `v` from `div_3by2_prepare(d1, d0)`. Uses `divq` on x86_64 and the reciprocal elsewhere.
+/// :param u2: The top limb of the dividend.
+/// :param u1: The middle limb of the dividend.
+/// :param u0: The low limb of the dividend.
+/// :param d1: The high limb of the normalized divisor, with its top bit set.
+/// :param d0: The low limb of the divisor.
+/// :param v: The value from `div_3by2_prepare(d1, d0)`.
+/// :returns: The 64-bit quotient and the 128-bit remainder.
+/// :note: Needs the top bit of `d1` set and `(u2, u1) < (d1, d0)`, so the quotient fits in 64 bits.
 #target(arch: "x86_64")
 routine div_3by2(u2: U64, u1: U64, u0: U64, d1: U64, d0: U64, v: U64) -> Div3By2
     block entry():
         r : Div3By2 = div_3by2_divq(u2, u1, u0, d1, d0)
         return(r)
 
+/// Divides the 192-bit `(u2, u1, u0)` by the normalized 128-bit `(d1, d0)`, with `v` from `div_3by2_prepare(d1, d0)`. Uses `divq` on x86_64 and the reciprocal elsewhere.
+/// :param u2: The top limb of the dividend.
+/// :param u1: The middle limb of the dividend.
+/// :param u0: The low limb of the dividend.
+/// :param d1: The high limb of the normalized divisor, with its top bit set.
+/// :param d0: The low limb of the divisor.
+/// :param v: The value from `div_3by2_prepare(d1, d0)`.
+/// :returns: The 64-bit quotient and the 128-bit remainder.
+/// :note: Needs the top bit of `d1` set and `(u2, u1) < (d1, d0)`, so the quotient fits in 64 bits.
 #target(arch: not "x86_64")
 routine div_3by2(u2: U64, u1: U64, u0: U64, d1: U64, d0: U64, v: U64) -> Div3By2
     block entry():

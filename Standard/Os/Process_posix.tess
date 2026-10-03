@@ -9,6 +9,8 @@ module Standard::Os
 
 import Standard::Alloc
 
+/// C's `environ`, the process's environment as a null-terminated array of `NAME=VALUE` strings (Linux; macOS goes
+/// through _NSGetEnviron).
 #[external("c"), symbol("environ"), target(os: "linux")]
 global ENVIRON: @@@Byte
 
@@ -19,60 +21,82 @@ private record PollFd
     events  : S16
     revents : S16
 
+/// Binds the C `pipe` function.
 #[external("c"), symbol("pipe"), target(os: not "windows")]
 private routine c_pipe(fds: @CInt) -> CInt
 
+/// Binds the C `fcntl` function.
 #[external("c"), symbol("fcntl"), variadic, target(os: not "windows")]
 private routine c_fcntl(fd: CInt, cmd: CInt) -> CInt
 
+/// Binds the C `open` function.
 #[external("c"), symbol("open"), variadic, target(os: not "windows")]
 private routine c_open(path: CStr, flags: CInt) -> CInt
 
+/// Binds the C `close` function.
 #[external("c"), symbol("close"), target(os: not "windows")]
 private routine c_close(fd: CInt) -> CInt
 
+/// Binds the C `fork` function.
 #[external("c"), symbol("fork"), target(os: not "windows")]
 private routine c_fork() -> CInt
 
+/// Binds the C `dup2` function.
 #[external("c"), symbol("dup2"), target(os: not "windows")]
 private routine c_dup2(from: CInt, to: CInt) -> CInt
 
+/// Binds the C `chdir` function.
 #[external("c"), symbol("chdir"), target(os: not "windows")]
 private routine c_chdir(path: @Byte) -> CInt
 
+/// Binds the C `execvp` function.
 #[external("c"), symbol("execvp"), target(os: not "windows")]
 private routine c_execvp(file: @Byte, argv: @@Byte) -> CInt
 
+/// Binds the C `_exit` function.
 #[external("c"), symbol("_exit"), noreturn, target(os: not "windows")]
 private routine c_exit_now(status: CInt) -> Void
 
+/// Binds the C `waitpid` function.
 #[external("c"), symbol("waitpid"), target(os: not "windows")]
 private routine c_waitpid(pid: CInt, status: @CInt, options: CInt) -> CInt
 
+/// Binds the C `getenv` function.
 #[external("c"), symbol("getenv"), target(os: not "windows")]
 private routine c_getenv(name: @Byte) -> @Byte
 
+/// Binds the C `__errno_location` function.
 #[external("c"), symbol("__errno_location"), target(os: "linux")]
 private routine c_errno_place() -> @CInt
 
+/// Binds the C `__error` function.
 #[external("c"), symbol("__error"), target(os: "macos")]
 private routine c_errno_place() -> @CInt
 
+/// Binds the C `_NSGetEnviron` function.
 #[external("c"), symbol("_NSGetEnviron"), target(os: "macos")]
 private routine c_ns_get_environ() -> @@@Byte
 
 // nfds_t: unsigned long on Linux, unsigned int on macOS
+/// Binds the C `poll` function.
 #[external("c"), symbol("poll"), target(os: "linux")]
 private routine c_poll(fds: @PollFd, count: USize, timeout: CInt) -> CInt
 
+/// Binds the C `poll` function.
 #[external("c"), symbol("poll"), target(os: "macos")]
 private routine c_poll(fds: @PollFd, count: U32, timeout: CInt) -> CInt
 
+/// Waits, without a time limit, until one of two descriptors is ready.
+/// :param fds: An array of two poll entries.
+/// :returns: The poll result, negative on failure.
 #target(os: "linux")
 private routine poll_two(fds: @PollFd) -> CInt
     block entry():
         return(c_poll(fds, 2, -1))
 
+/// Waits, without a time limit, until one of two descriptors is ready.
+/// :param fds: An array of two poll entries.
+/// :returns: The poll result, negative on failure.
 #target(os: "macos")
 private routine poll_two(fds: @PollFd) -> CInt
     block entry():
@@ -100,11 +124,16 @@ private routine read_write_cloexec() -> CInt
     block entry():
         return(0x1000002)
 
+/// The calling thread's current errno.
+/// :returns: The error number of the last failed call.
 #target(os: not "windows")
 private routine errno() -> CInt
     block entry():
         return(c_errno_place().load())
 
+/// The {ProcessError} for the errno a failed start reported.
+/// :param e: The error number.
+/// :returns: NotFound, PermissionDenied, or OutOfMemory for those errors, else Other.
 #target(os: not "windows")
 private routine spawn_error(e: CInt) -> ProcessError
     block entry():
@@ -155,6 +184,8 @@ private routine env_entry(v: EnvVar, alloc: @Allocator) -> @Byte
         p.stride(n.add(m).add(1)).store(0x00)
         return(p)
 
+/// Frees every string and array a prepared start owns, whether it was made completely or not.
+/// :param alloc: The allocator they came from.
 #target(os: not "windows")
 private routine Prepared.free(self: @Self, alloc: @Allocator) -> Void
     block entry():
@@ -234,6 +265,15 @@ private routine has_nul(program: Bytes, args: @Bytes, arg_count: USize,
             .Present(d) -> return(d.contains("\x00"))
             .Absent     -> return(false)
 
+/// Builds everything the child needs before fork, so the child allocates nothing: the argument vector, the merged
+/// environment, and the directory path.
+/// :param p: Where the result goes. It is valid to free even on failure.
+/// :param program: The program to run.
+/// :param args: `arg_count` arguments, not including the program.
+/// :param arg_count: How many arguments there are.
+/// :param options: The directory and environment overrides.
+/// :param alloc: The allocator for the strings and arrays.
+/// :returns: `true` on success, `false` when an allocation failed.
 #target(os: not "windows")
 private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: USize,
     options: ProcessOptions, alloc: @Allocator) -> Bool
@@ -359,6 +399,11 @@ private record ChildStreams
     error  : CInt
     report : CInt
 
+/// What the forked child does: connects its standard streams to the given descriptors (one below 0 stays as
+/// inherited), changes directory, installs the merged environment, and execs the program. If a step fails it writes
+/// the errno to the report pipe and exits with status 127 at once. It never returns.
+/// :param p: The prepared arguments, environment, and directory.
+/// :param s: The descriptors to use for standard input, output, and error, and the report pipe.
 #[noreturn, target(os: not "windows")]
 private routine child(p: @Prepared, s: ChildStreams) -> Void
     block entry():
@@ -434,6 +479,8 @@ private routine cloexec_pipe(fds: @CInt) -> Bool
         c_fcntl(fds.stride(1).load(), 2, 1)
         return(true)
 
+/// Closes `fd` unless it is negative (not open).
+/// :param fd: The descriptor, or a negative value for none.
 #target(os: not "windows")
 private routine close_if_open(fd: CInt) -> Void
     block entry():
@@ -443,6 +490,7 @@ private routine close_if_open(fd: CInt) -> Void
         c_close(fd)
         return()
 
+/// Closes every pipe end and descriptor still open.
 #target(os: not "windows")
 private routine Plumbing.close_all(self: @Self) -> Void
     block entry():
@@ -508,6 +556,16 @@ private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
             OutputMode.Null    -> return(null_fd)
             OutputMode.Inherit -> return(-1)
 
+/// Starts `program` (looked up on PATH) with fork and execvp, waits for it, and returns how it ended and what it
+/// captured. Captured output is read to the end from both pipes at once. This is the Linux and macOS half; Windows
+/// uses CreateProcessW.
+/// :param program: The program to run.
+/// :param args: The arguments, not including the program name.
+/// :param arg_count: How many arguments `args` holds.
+/// :param options: The directory, environment overrides, and standard streams.
+/// :param alloc: The allocator for the captured output and the working memory.
+/// :returns: The {ProcessOutput}, or Failure with a {ProcessError} (InvalidArgument for a NUL in the program, an
+/// argument, the directory, or a variable).
 #target(os: not "windows")
 routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
@@ -591,6 +649,9 @@ routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: Pro
         release(err.load(), alloc)
         return(.Failure(ProcessError.Other))
 
+/// Frees a capture buffer's memory if it has any.
+/// :param b: The buffer.
+/// :param alloc: The allocator it was filled from.
 #target(os: not "windows")
 private routine release(b: CaptureBuffer, alloc: @Allocator) -> Void
     block entry():

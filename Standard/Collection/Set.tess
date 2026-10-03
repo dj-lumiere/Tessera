@@ -21,6 +21,8 @@ import Standard::Format
 private preset SLOT_EMPTY:     USize = USize.MAX
 private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
 
+/// An insertion-ordered hash set. Keys live in parallel arrays in the order they were first added, and an open-addressed slot table with linear probing maps a hash to its entry. Removal marks the entry dead, so surviving elements keep their order until the next rehash.
+/// :typeparam T: The element type, which must provide hashing and equality.
 record Set<T>
 conform Destruct<Set<T>>
 conform Represent<Set<T>> when T: typename, HashEqual<T>, Diagnose<T>
@@ -36,6 +38,9 @@ require T: typename, HashEqual<T>
     capacity      : USize
     alloc         : @Allocator
 
+/// Creates an empty Set that draws its storage from `alloc`. Nothing is allocated until the first insertion.
+/// :param alloc: The allocator the set stores and later frees its memory with.
+/// :returns: A new empty Set.
 routine Set<T>.construct(alloc: @Allocator) -> Self
 require T: typename, HashEqual<T>
     block entry():
@@ -43,12 +48,16 @@ require T: typename, HashEqual<T>
             entries_count: 0, capacity: 0, alloc: alloc }
         return(set)
 
+/// The number of elements currently stored.
+/// :returns: The count of elements, `0` when the set is empty.
 routine Set<T>.length(self: Self) -> USize
 require T: typename
     block entry():
         length : USize = self.length
         return(length)
 
+/// Whether the set holds no elements.
+/// :returns: `true` when the length is `0`.
 routine Set<T>.is_empty(self: Self) -> Bool
 require T: typename
     block entry():
@@ -56,6 +65,10 @@ require T: typename
         empty  : Bool  = length.eq(0)
         return(empty)
 
+/// Probes the slot table for `key`, linearly from `hash` modulo capacity.
+/// :param key: The key being looked for.
+/// :param hash: The hash of `key`.
+/// :returns: The slot holding `key` if found, otherwise the slot where it should be installed: the first tombstone seen, else the first empty slot.
 routine Set<T>.slot(self: Self, key: T, hash: U64) -> USize
 require T: typename
     block entry():
@@ -127,6 +140,9 @@ require T: typename
             ? return(entry_idx)
             : return(SLOT_EMPTY)
 
+/// Whether `key` is in the set.
+/// :param key: The element to look for.
+/// :returns: `true` when an equal element is live.
 routine Set<T>.contains(self: Self, key: T) -> Bool
 require T: typename
     block entry():
@@ -336,6 +352,10 @@ require T: typename
         self.entries_count.store(new_idx.add(1))
         return(true)
 
+/// Adds `key` to the set unless an equal element is already present.
+/// :param key: The element to add.
+/// :returns: `true` when `key` was new, `false` when it was already present.
+/// :throws: Traps with `TrapCode.AllocFailed` when the tables must grow and the allocator fails. See {Set<T>.add_result} for a recoverable form.
 #track_caller
 routine Set<T>.add(self: @Self, key: T) -> Bool
 require T: typename
@@ -357,6 +377,9 @@ require T: typename
         added : Bool = self.add_direct(key, key.hash())
         return(.Success(added))
 
+/// Removes `key` from the set. Its position in the entries array stays until the next rehash.
+/// :param key: The element to remove.
+/// :returns: `true` when an element was removed, `false` when it was not present.
 routine Set<T>.remove(self: @Self, key: T) -> Bool
 require T: typename
     block entry():
@@ -385,6 +408,8 @@ require T: typename
         remaining_length.store_into(self.length)
         return(true)
 
+/// Frees the set's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+/// :note: Safe to call on a never-filled instance, where it only resets the fields.
 routine Set<T>.destruct(self: @Self) -> Void
 require T: typename
     block entry():

@@ -14,28 +14,52 @@
 
 module Standard::Core
 
+/// The exponent bias of binary128: a biased exponent field `e` encodes 2^(e - 16383).
 preset F128_BIAS:      S64  = 16383
+/// The all-ones exponent field, 32767, which marks infinities and NaNs.
 preset F128_EXP_MAX:   S64  = F128_BIAS.mul(2).add(1)  // all-ones exponent
+/// The implicit leading significand bit, 2^112, just above the 112 stored fraction bits.
 preset F128_IMPLICIT:  U128 = 0x10000000000000000000000000000  // 2^112
+/// A mask of the 112 stored fraction bits.
 preset F128_FRAC_MASK: U128 = F128_IMPLICIT.sub(1)
+/// The sign bit, bit 127.
 preset F128_SIGN:      U128 = 0x80000000000000000000000000000000
+/// The bits of +inf: the all-ones exponent with a zero fraction.
 preset F128_INF:       U128 = F128_EXP_MAX.to<U128>().shl(112)
+/// The bits of the canonical quiet NaN: +inf's bits with the quiet bit set.
 preset F128_QNAN:      U128 = F128_INF.bitor(F128_QUIET_BIT)
+/// The quiet bit of a NaN, the top fraction bit (2^111).
 preset F128_QUIET_BIT: U128 = F128_IMPLICIT.shr(1)  // 2^111
+/// Positive infinity: the result of overflow and of dividing a positive value by +0.0.
 preset F128.INFINITY:     F128 = F128.from_bits(F128_INF)
+/// Negative infinity.
 preset F128.NEG_INFINITY: F128 = F128.from_bits(F128_SIGN.bitor(F128_INF))
+/// The canonical quiet NaN.
+/// :note: NaN is unequal to everything, itself included, so test for it with {F128.is_nan}, not `eq`.
 preset F128.NAN:          F128 = F128.from_bits(F128_QNAN)
+/// The largest finite F128, about 1.1897314953572318e4932.
 preset F128.MAX:          F128 = F128.from_bits(F128_INF.sub(1))
+/// The most negative finite F128, the negation of `F128.MAX`.
 preset F128.MIN:          F128 = F128.from_bits(F128_SIGN.bitor(F128_INF.sub(1)))
+/// The smallest positive normal F128, 2^-16382, about 3.3621031431120935e-4932. Subnormal values go below it.
 preset F128.MIN_POSITIVE: F128 = F128.from_bits(F128_IMPLICIT)
+/// The gap between 1.0 and the next larger F128, 2^-112, about 1.9259299443872359e-34 (bits `0x3F8F0000000000000000000000000000`).
 preset F128.EPSILON:      F128 = F128.from_bits(0x3F8F0000000000000000000000000000)  // 2^-112
 
+/// A 128-bit IEEE 754 binary128 floating-point number (quadruple precision), implemented in software.
+/// It is stored as an LLVM `i128` (sign bit, 15-bit exponent with bias 16383, 112-bit fraction) and has a 113-bit significand, about 34 significant decimal digits.
+/// :note: Every operation is integer code, so results are bit-identical on every target and need no compiler-rt routines. Arithmetic rounds to nearest, ties to even.
+/// :see: {F64} for hardware speed.
 #llvm("i128")
 record F128
 conform Equal<F128>, Compare<F128>, Hash<F128>
 
 // -- bits ----------------------------------------------------------------------
 
+/// Reinterprets raw IEEE 754 binary128 bits as an F128, exactly.
+/// :param bits: The encoding: sign bit 127, a 15-bit exponent field, then 112 fraction bits.
+/// :returns: The value with that encoding; NaN payloads are kept.
+/// :see: {F128.bits} for the inverse.
 routine F128.from_bits(bits: U128) -> Self
     block entry():
         r : Self = bitcast<U128, Self>(bits)
@@ -59,17 +83,26 @@ routine f128_is_negative_bits(bits: U128) -> Bool
         r : Bool = bits.ge(F128_SIGN)
         return(r)
 
+/// Extracts the biased exponent field of binary128 bits.
+/// :param bits: The binary128 encoding.
+/// :returns: The 15-bit exponent field, 0 for zeros and subnormals and `F128_EXP_MAX` for infinities and NaNs.
 routine f128_exponent(bits: U128) -> S64
     block entry():
         exponent_bits : U128 = bits.shr(112)
         r             : S64  = exponent_bits.to<S64>().bitand(32767)
         return(r)
 
+/// Extracts the stored fraction of binary128 bits, without the implicit bit.
+/// :param bits: The binary128 encoding.
+/// :returns: The low 112 bits.
 routine f128_fraction(bits: U128) -> U128
     block entry():
         r : U128 = bits.bitand(F128_FRAC_MASK)
         return(r)
 
+/// Whether binary128 bits encode a NaN: the all-ones exponent with a nonzero fraction.
+/// :param bits: The binary128 encoding.
+/// :returns: True for quiet and signaling NaNs.
 routine f128_is_nan_bits(bits: U128) -> Bool
     block entry():
         all_ones : Bool = f128_exponent(bits).eq(F128_EXP_MAX)
@@ -77,6 +110,9 @@ routine f128_is_nan_bits(bits: U128) -> Bool
         r        : Bool = all_ones.bitand(payload)
         return(r)
 
+/// Whether binary128 bits encode +0.0 or -0.0.
+/// :param bits: The binary128 encoding.
+/// :returns: True when every bit but the sign is 0.
 routine f128_is_zero_bits(bits: U128) -> Bool
     block entry():
         r : Bool = bits.bitand(F128_SIGN.bitnot()).eq(0)
@@ -84,37 +120,52 @@ routine f128_is_zero_bits(bits: U128) -> Bool
 
 // -- classification ------------------------------------------------------------
 
+/// Whether `self` is NaN, quiet or signaling.
+/// :returns: True for NaN, the only value unordered with itself.
 routine F128.is_nan(self: Self) -> Bool
     block entry():
         r : Bool = f128_is_nan_bits(self.bits())
         return(r)
 
+/// Whether `self` is +inf or -inf.
+/// :returns: True for either infinity; false for NaN and finite values.
 routine F128.is_infinite(self: Self) -> Bool
     block entry():
         magnitude : U128 = self.bits().bitand(F128_SIGN.bitnot())
         r         : Bool = magnitude.eq(F128_INF)
         return(r)
 
+/// Neither infinite nor NaN.
+/// :returns: True for zeros, subnormals and normal values.
 routine F128.is_finite(self: Self) -> Bool
     block entry():
         r : Bool = f128_exponent(self.bits()).ne(F128_EXP_MAX)
         return(r)
 
+/// Reads the sign bit, so it is true for -0.0 and for NaNs with the bit set.
+/// :returns: Whether the sign bit is set.
 routine F128.is_sign_negative(self: Self) -> Bool
     block entry():
         r : Bool = f128_is_negative_bits(self.bits())
         return(r)
 
+/// Flips the sign bit, exactly.
+/// :returns: `-self`: 0.0 becomes -0.0, infinities swap sign, and NaN keeps its payload.
 routine F128.neg(self: Self) -> Self
     block entry():
         r : Self = f128_of(self.bits().bitxor(F128_SIGN))
         return(r)
 
+/// Clears the sign bit, so abs(-0.0) is 0.0 and NaN stays NaN.
+/// :returns: The magnitude of `self`.
 routine F128.abs(self: Self) -> Self
     block entry():
         r : Self = f128_of(self.bits().bitand(F128_SIGN.bitnot()))
         return(r)
 
+/// The magnitude of `self` with the sign of `sign`, exactly.
+/// :param sign: The value whose sign bit is taken, NaN included.
+/// :returns: `self` with its sign bit replaced.
 routine F128.copysign(self: Self, sign: Self) -> Self
     block entry():
         magnitude : U128 = self.bits().bitand(F128_SIGN.bitnot())
@@ -210,6 +261,9 @@ routine f128_round_pack(negative: Bool, exponent: S64, sig: U128) -> U128
             ? return(sign.bitor(F128_INF))
             : return(bits)
 
+/// Splits finite, nonzero binary128 bits into a significand and an unbiased exponent.
+/// :param bits: The encoding of a finite, nonzero value.
+/// :returns: {F128Parts} with the implicit bit at 112; a subnormal is normalized, so its exponent drops below -16382.
 routine f128_unpack(bits: U128) -> F128Parts
     block entry():
         biased    : S64  = f128_exponent(bits)
@@ -233,21 +287,35 @@ routine f128_unpack(bits: U128) -> F128Parts
 
 // -- arithmetic ----------------------------------------------------------------
 
+/// Makes a NaN quiet by setting its quiet bit, keeping the rest of the payload.
+/// :param bits: The bits of a NaN.
+/// :returns: The quiet NaN's bits.
 routine f128_quiet(bits: U128) -> U128
     block entry():
         r : U128 = bits.bitor(F128_QUIET_BIT)
         return(r)
 
+/// Adds `other` to `self` in software, rounded to nearest (ties to even).
+/// :param other: The value to add.
+/// :returns: `self + other`: infinity on overflow, NaN when either operand is NaN or for `inf + -inf`.
+/// :see: {f128_add_bits} for the algorithm.
 routine F128.add(self: Self, other: Self) -> Self
     block entry():
         r : Self = f128_of(f128_add_bits(self.bits(), other.bits()))
         return(r)
 
+/// Subtracts `other` from `self` in software: adds `other` with its sign flipped, rounded to nearest (ties to even).
+/// :param other: The value to subtract.
+/// :returns: `self - other`: infinity on overflow, NaN when either operand is NaN or for `inf - inf`.
 routine F128.sub(self: Self, other: Self) -> Self
     block entry():
         r : Self = f128_of(f128_add_bits(self.bits(), other.bits().bitxor(F128_SIGN)))
         return(r)
 
+/// Adds two binary128 values on their bits, rounded to nearest (ties to even); {F128.add} and {F128.sub} call it.
+/// :param a: The first addend's bits.
+/// :param b: The second addend's bits.
+/// :returns: The bits of `a + b`: a NaN operand comes back quieted, `inf + -inf` is NaN, and a sum of two zeros is -0 only when both are -0.
 routine f128_add_bits(a: U128, b: U128) -> U128
     block entry():
         a_nan  : Bool = f128_is_nan_bits(a)
@@ -342,11 +410,18 @@ routine f128_add_bits(a: U128, b: U128) -> U128
         r        : U128 = f128_round_pack(negative, e, m)
         return(r)
 
+/// Multiplies `self` by `other` in software, rounded to nearest (ties to even).
+/// :param other: The factor.
+/// :returns: `self * other`: infinity on overflow, NaN when either operand is NaN or for `0 * inf`.
 routine F128.mul(self: Self, other: Self) -> Self
     block entry():
         r : Self = f128_of(f128_mul_bits(self.bits(), other.bits()))
         return(r)
 
+/// Multiplies two binary128 values on their bits, rounded to nearest (ties to even): the 226-bit product is formed exactly from 64-bit halves.
+/// :param a: The first factor's bits.
+/// :param b: The second factor's bits.
+/// :returns: The bits of `a * b`: a NaN operand comes back quieted, `inf * 0` is NaN, and the sign is the XOR of the signs.
 routine f128_mul_bits(a: U128, b: U128) -> U128
     block entry():
         sign     : U128 = a.bitxor(b).bitand(F128_SIGN)
@@ -396,11 +471,18 @@ routine f128_mul_bits(a: U128, b: U128) -> U128
         r        : U128      = f128_round_pack(negative, exponent, sig)
         return(r)
 
+/// Divides `self` by `other` in software, rounded to nearest (ties to even).
+/// :param other: The divisor.
+/// :returns: `self / other`: a signed infinity for a nonzero value divided by zero, NaN for `0 / 0`, `inf / inf`, or a NaN operand.
 routine F128.div(self: Self, other: Self) -> Self
     block entry():
         r : Self = f128_of(f128_div_bits(self.bits(), other.bits()))
         return(r)
 
+/// Divides two binary128 values on their bits, rounded to nearest (ties to even), with two 3-by-2 limb division steps.
+/// :param a: The dividend's bits.
+/// :param b: The divisor's bits.
+/// :returns: The bits of `a / b`: a NaN operand comes back quieted, `0 / 0` and `inf / inf` are NaN, a nonzero value over zero is a signed infinity.
 routine f128_div_bits(a: U128, b: U128) -> U128
     block entry():
         sign      : U128 = a.bitxor(b).bitand(F128_SIGN)
@@ -448,6 +530,9 @@ routine f128_div_bits(a: U128, b: U128) -> U128
         bits     : U128      = f128_round_pack(negative, exponent, sig)
         return(bits)
 
+/// The square root of a binary128 value on its bits, correctly rounded, from a 256-bit integer square root.
+/// :param a: The radicand's bits.
+/// :returns: The bits of sqrt(a): -0 for -0, +inf for +inf, a quieted NaN for NaN, and NaN for any other negative value.
 routine f128_sqrt_bits(a: U128) -> U128
     block entry():
         nan      : Bool = f128_is_nan_bits(a)
@@ -562,6 +647,9 @@ routine f128_ordered(a: U128, b: U128) -> Bool
         r          : Bool = either_nan.bitnot()
         return(r)
 
+/// IEEE equality, on the bits.
+/// :param other: The value to compare against.
+/// :returns: True when the encodings match or both are zeros of either sign; false whenever either operand is NaN.
 routine F128.eq(self: Self, other: Self) -> Bool
     block entry():
         a     : U128 = self.bits()
@@ -571,11 +659,17 @@ routine F128.eq(self: Self, other: Self) -> Bool
         r     : Bool = same.bitand(f128_ordered(a, b))
         return(r)
 
+/// IEEE inequality: the negation of {F128.eq}.
+/// :param other: The value to compare against.
+/// :returns: True when the values differ or either operand is NaN; false for -0.0 against +0.0.
 routine F128.ne(self: Self, other: Self) -> Bool
     block entry():
         r : Bool = self.eq(other).bitnot()
         return(r)
 
+/// Whether `self` is less than `other`, as an ordered IEEE comparison on the bits.
+/// :param other: The value to compare against.
+/// :returns: `self < other`; false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine F128.lt(self: Self, other: Self) -> Bool
     block entry():
         a     : U128 = self.bits()
@@ -585,16 +679,25 @@ routine F128.lt(self: Self, other: Self) -> Bool
         r     : Bool = below.bitand(zeros.bitnot()).bitand(f128_ordered(a, b))
         return(r)
 
+/// Whether `self` is greater than `other`, as an ordered IEEE comparison.
+/// :param other: The value to compare against.
+/// :returns: `self > other`; false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine F128.gt(self: Self, other: Self) -> Bool
     block entry():
         r : Bool = other.lt(self)
         return(r)
 
+/// Whether `self` is less than or equal to `other`, as an ordered IEEE comparison.
+/// :param other: The value to compare against.
+/// :returns: `self <= other`; false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine F128.le(self: Self, other: Self) -> Bool
     block entry():
         r : Bool = self.lt(other).bitor(self.eq(other))
         return(r)
 
+/// Whether `self` is greater than or equal to `other`, as an ordered IEEE comparison.
+/// :param other: The value to compare against.
+/// :returns: `self >= other`; false when either operand is NaN. -0.0 and +0.0 compare equal.
 routine F128.ge(self: Self, other: Self) -> Bool
     block entry():
         r : Bool = other.le(self)
@@ -726,46 +829,64 @@ routine f128_narrow(value: F128, width: U64, mantissa_bits: U64, bias: S64,
             ? return(sign.bitor(infinity))
             : return(r)
 
+/// Widens to F128, exactly.
+/// :returns: The same value as an F128; NaN payloads move to the top of the fraction.
 routine F64.to<F128>(self: Self) -> F128
     block entry():
         r : F128 = f128_widen(self.bits(), 64, 52, 1023, 2047)
         return(r)
 
+/// Widens to F128, exactly.
+/// :returns: The same value as an F128; NaN payloads move to the top of the fraction.
 routine F32.to<F128>(self: Self) -> F128
     block entry():
         r : F128 = f128_widen(self.bits().to<U64>(), 32, 23, 127, 255)
         return(r)
 
+/// Widens to F128, exactly.
+/// :returns: The same value as an F128; NaN payloads move to the top of the fraction.
 routine F16.to<F128>(self: Self) -> F128
     block entry():
         r : F128 = f128_widen(self.bits().to<U64>(), 16, 10, 15, 31)
         return(r)
 
+/// Widens to F128, exactly.
+/// :returns: The same value as an F128; NaN payloads move to the top of the fraction.
 routine BF16.to<F128>(self: Self) -> F128
     block entry():
         r : F128 = f128_widen(self.bits().to<U64>(), 16, 7, 127, 255)
         return(r)
 
+/// Narrows to F64, rounding once to nearest (ties to even).
+/// :returns: The nearest F64: infinity beyond F64's range, a subnormal or zero for tiny values, NaN for NaN.
 routine F128.to<F64>(self: Self) -> F64
     block entry():
         r : F64 = .from_bits(f128_narrow(self, 64, 52, 1023, 2047))
         return(r)
 
+/// Narrows to F32, rounding once to nearest (ties to even), so it can differ from going through F64.
+/// :returns: The nearest F32: infinity beyond F32's range, a subnormal or zero for tiny values, NaN for NaN.
 routine F128.to<F32>(self: Self) -> F32
     block entry():
         r : F32 = .from_bits(f128_narrow(self, 32, 23, 127, 255).to<U32>())
         return(r)
 
+/// Narrows to F16, rounding once to nearest (ties to even).
+/// :returns: The nearest F16: infinity above 65504, a subnormal or zero for tiny values, NaN for NaN.
 routine F128.to<F16>(self: Self) -> F16
     block entry():
         r : F16 = .from_bits(f128_narrow(self, 16, 10, 15, 31).to<U16>())
         return(r)
 
+/// Narrows to BF16, rounding once to nearest (ties to even).
+/// :returns: The nearest BF16: infinity beyond BF16's range, a subnormal or zero for tiny values, NaN for NaN.
 routine F128.to<BF16>(self: Self) -> BF16
     block entry():
         r : BF16 = .from_bits(f128_narrow(self, 16, 7, 127, 255).to<U16>())
         return(r)
 
+/// The identity conversion, so generic code can call `to<T>()` when `T` is F128.
+/// :returns: `self` unchanged.
 routine F128.to<Self>(self: Self) -> Self
     block entry():
         return(self)
@@ -777,6 +898,8 @@ routine U128.to<F128>(self: Self) -> F128
         r    : F128 = f128_of(bits)
         return(r)
 
+/// Converts to F128, rounding to nearest (ties to even) when the magnitude needs more than 113 bits.
+/// :returns: The nearest F128; exact for magnitudes below 2^113.
 routine S128.to<F128>(self: Self) -> F128
     block entry():
         negative  : Bool = self.lt(0)
@@ -785,21 +908,29 @@ routine S128.to<F128>(self: Self) -> F128
         r         : F128 = f128_of(bits)
         return(r)
 
+/// Converts to F128, exactly: every U64 fits in F128's 113-bit significand.
+/// :returns: The same value as an F128.
 routine U64.to<F128>(self: Self) -> F128
     block entry():
         r : F128 = self.to<U128>().to<F128>()
         return(r)
 
+/// Converts to F128, exactly: every S64 fits in F128's 113-bit significand.
+/// :returns: The same value as an F128.
 routine S64.to<F128>(self: Self) -> F128
     block entry():
         r : F128 = self.to<S128>().to<F128>()
         return(r)
 
+/// Converts to F128, exactly.
+/// :returns: The same value as an F128.
 routine U32.to<F128>(self: Self) -> F128
     block entry():
         r : F128 = self.to<U128>().to<F128>()
         return(r)
 
+/// Converts to F128, exactly.
+/// :returns: The same value as an F128.
 routine S32.to<F128>(self: Self) -> F128
     block entry():
         r : F128 = self.to<S128>().to<F128>()
@@ -838,6 +969,8 @@ routine f128_whole_magnitude(bits: U128) -> U128
 
 // -- rounding to integers ------------------------------------------------------
 
+/// The rounding direction {f128_round_int} applies when it rounds an F128 to an integer value.
+/// :note: `TowardZero` backs {F128.trunc}, `Down` {F128.floor}, `Up` {F128.ceil}, `NearestAway` {F128.round}, and `NearestEven` {F128.round_ties_even}.
 choice F128Rounding: U8
     TowardZero
     Down
@@ -925,16 +1058,22 @@ routine f128_round_int(bits: U128, mode: F128Rounding) -> U128
             : kept
         return(r)
 
+/// Rounds toward zero on the encoding, exactly.
+/// :returns: The integer part of `self`, with its sign (-0.5 gives -0.0); infinities and NaN come back unchanged.
 routine F128.trunc(self: Self) -> Self
     block entry():
         r : Self = f128_of(f128_round_int(self.bits(), F128Rounding.TowardZero))
         return(r)
 
+/// Rounds toward negative infinity on the encoding (exact).
+/// :returns: The largest integer value not above `self`; zeros, infinities and NaN come back unchanged.
 routine F128.floor(self: Self) -> Self
     block entry():
         r : Self = f128_of(f128_round_int(self.bits(), F128Rounding.Down))
         return(r)
 
+/// Rounds toward positive infinity on the encoding (exact).
+/// :returns: The smallest integer value not below `self` (-0.5 gives -0.0); zeros, infinities and NaN come back unchanged.
 routine F128.ceil(self: Self) -> Self
     block entry():
         r : Self = f128_of(f128_round_int(self.bits(), F128Rounding.Up))
@@ -1013,6 +1152,11 @@ routine F128.mul_add(self: Self, a: Self, b: Self) -> Self
         r : Self = f128_of(f128_fma_bits(self.bits(), a.bits(), b.bits()))
         return(r)
 
+/// Fused multiply-add on binary128 bits: `x * y + c` with a single rounding, the exact product aligned with `c` in 256 bits.
+/// :param x: The first factor's bits.
+/// :param y: The second factor's bits.
+/// :param c: The addend's bits.
+/// :returns: The bits of the rounded result: NaN operands come back quieted, `inf * 0` and `inf - inf` are NaN, and a zero product plus a zero is -0 only when both are -0.
 routine f128_fma_bits(x: U128, y: U128, c: U128) -> U128
     block entry():
         sign   : U128 = x.bitxor(y).bitand(F128_SIGN)
@@ -1129,20 +1273,33 @@ routine f128_fma_bits(x: U128, y: U128, c: U128) -> U128
 
 // -- constants (each the correctly rounded value) ------------------------------
 
+/// Pi, rounded to the nearest F128.
 preset F128.PI:            F128 = F128.from_bits(0x4000921FB54442D18469898CC51701B8)  // pi
+/// Tau (2 pi), one full turn in radians, rounded to the nearest F128.
 preset F128.TAU:           F128 = F128.from_bits(0x4001921FB54442D18469898CC51701B8)  // 2 pi
 
+/// Euler's number e, rounded to the nearest F128.
 preset F128.E:             F128 = F128.from_bits(0x40005BF0A8B1457695355FB8AC404E7A)  // Euler's number
 
+/// Pi / 2, rounded to the nearest F128.
 preset F128.FRAC_PI_2:     F128 = F128.from_bits(0x3FFF921FB54442D18469898CC51701B8)  // pi / 2
+/// Pi / 4, rounded to the nearest F128.
 preset F128.FRAC_PI_4:     F128 = F128.from_bits(0x3FFE921FB54442D18469898CC51701B8)  // pi / 4
+/// 1 / pi, rounded to the nearest F128.
 preset F128.FRAC_1_PI:     F128 = F128.from_bits(0x3FFD45F306DC9C882A53F84EAFA3EA6A)  // 1 / pi
+/// The square root of 2, rounded to the nearest F128.
 preset F128.SQRT_2:        F128 = F128.from_bits(0x3FFF6A09E667F3BCC908B2FB1366EA95)  // sqrt(2)
+/// 1 / sqrt(2), rounded to the nearest F128.
 preset F128.FRAC_1_SQRT_2: F128 = F128.from_bits(0x3FFE6A09E667F3BCC908B2FB1366EA95)  // 1 / sqrt(2)
+/// The natural logarithm of 2, rounded to the nearest F128.
 preset F128.LN_2:          F128 = F128.from_bits(0x3FFE62E42FEFA39EF35793C7673007E6)  // ln(2)
+/// The natural logarithm of 10, rounded to the nearest F128.
 preset F128.LN_10:         F128 = F128.from_bits(0x400026BB1BBB5551582DD4ADAC5705A6)  // ln(10)
+/// Log2(e), rounded to the nearest F128.
 preset F128.LOG2_E:        F128 = F128.from_bits(0x3FFF71547652B82FE1777D0FFDA0D23A)  // log2(e)
+/// Log10(e), rounded to the nearest F128.
 preset F128.LOG10_E:       F128 = F128.from_bits(0x3FFDBCB7B1526E50E32A6AB7555F5A68)  // log10(e)
+/// The bits of 1.0: the biased exponent 16383 with a zero fraction.
 preset F128_ONE: U128 = F128_BIAS.to<U128>().shl(112)
 
 // -- hashing, reciprocal ------------------------------------------------------
@@ -1153,6 +1310,8 @@ routine F128.hash(self: Self) -> U64
         r : U64 = self.bits().hash()
         return(r)
 
+/// The reciprocal `1 / self`, rounded once.
+/// :returns: `1 / self`: a signed infinity for a signed zero, a signed zero for an infinity, NaN for NaN.
 routine F128.recip(self: Self) -> Self
     block entry():
         one : Self = f128_of(F128_ONE)
@@ -1184,6 +1343,8 @@ routine F128.is_normal(self: Self) -> Bool
         r        : Bool = exponent.ne(0).bitand(exponent.ne(F128_EXP_MAX))
         return(r)
 
+/// Whether `self` is subnormal: a zero exponent field with a nonzero fraction, so its magnitude is below `F128.MIN_POSITIVE`.
+/// :returns: True for subnormals; false for zero, normal values, infinities and NaN.
 routine F128.is_subnormal(self: Self) -> Bool
     block entry():
         exponent : S64  = f128_exponent(self.bits())
@@ -1590,6 +1751,10 @@ routine F128.to_clamp<S128>(self: Self) -> S128
         r : S128 = magnitude.to_clamp<S128>()
         return(r)
 
+/// Converts to S8, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [-128, 127]; the panic reports the caller's location.
+/// :see: {F128.to_checked<S8>} to get an absent value instead, {F128.to_clamp<S8>} to saturate.
 #track_caller
 routine F128.to<S8>(self: Self) -> S8
     block entry():
@@ -1600,6 +1765,10 @@ routine F128.to<S8>(self: Self) -> S8
         r : S8 = self.to_clamp<S8>()
         return(r)
 
+/// Converts to S8, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [-128, 127].
+/// :see: {F128.to<S8>} to panic instead, {F128.to_clamp<S8>} to saturate.
 routine F128.to_checked<S8>(self: Self) -> Option<S8>
     block entry():
         fits  : Bool       = self.fits_int(7, 7)
@@ -1607,11 +1776,18 @@ routine F128.to_checked<S8>(self: Self) -> Option<S8>
         r     : Option<S8> = fits.then_present(value)
         return(r)
 
+/// Converts to S8, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [-128, 127]; infinities give the nearer end and NaN gives 0.
+/// :see: {F128.to_checked<S8>} to detect values that do not fit.
 routine F128.to_clamp<S8>(self: Self) -> S8
     block entry():
         r : S8 = self.to_clamp<S128>().to_clamp<S8>()
         return(r)
 
+/// Converts to S16, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [-32768, 32767]; the panic reports the caller's location.
+/// :see: {F128.to_checked<S16>} to get an absent value instead, {F128.to_clamp<S16>} to saturate.
 #track_caller
 routine F128.to<S16>(self: Self) -> S16
     block entry():
@@ -1622,6 +1798,10 @@ routine F128.to<S16>(self: Self) -> S16
         r : S16 = self.to_clamp<S16>()
         return(r)
 
+/// Converts to S16, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [-32768, 32767].
+/// :see: {F128.to<S16>} to panic instead, {F128.to_clamp<S16>} to saturate.
 routine F128.to_checked<S16>(self: Self) -> Option<S16>
     block entry():
         fits  : Bool        = self.fits_int(15, 15)
@@ -1629,11 +1809,18 @@ routine F128.to_checked<S16>(self: Self) -> Option<S16>
         r     : Option<S16> = fits.then_present(value)
         return(r)
 
+/// Converts to S16, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [-32768, 32767]; infinities give the nearer end and NaN gives 0.
+/// :see: {F128.to_checked<S16>} to detect values that do not fit.
 routine F128.to_clamp<S16>(self: Self) -> S16
     block entry():
         r : S16 = self.to_clamp<S128>().to_clamp<S16>()
         return(r)
 
+/// Converts to S32, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [-2^31, 2^31 - 1]; the panic reports the caller's location.
+/// :see: {F128.to_checked<S32>} to get an absent value instead, {F128.to_clamp<S32>} to saturate.
 #track_caller
 routine F128.to<S32>(self: Self) -> S32
     block entry():
@@ -1644,6 +1831,10 @@ routine F128.to<S32>(self: Self) -> S32
         r : S32 = self.to_clamp<S32>()
         return(r)
 
+/// Converts to S32, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [-2^31, 2^31 - 1].
+/// :see: {F128.to<S32>} to panic instead, {F128.to_clamp<S32>} to saturate.
 routine F128.to_checked<S32>(self: Self) -> Option<S32>
     block entry():
         fits  : Bool        = self.fits_int(31, 31)
@@ -1651,11 +1842,18 @@ routine F128.to_checked<S32>(self: Self) -> Option<S32>
         r     : Option<S32> = fits.then_present(value)
         return(r)
 
+/// Converts to S32, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [-2^31, 2^31 - 1]; infinities give the nearer end and NaN gives 0.
+/// :see: {F128.to_checked<S32>} to detect values that do not fit.
 routine F128.to_clamp<S32>(self: Self) -> S32
     block entry():
         r : S32 = self.to_clamp<S128>().to_clamp<S32>()
         return(r)
 
+/// Converts to S64, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [-2^63, 2^63 - 1]; the panic reports the caller's location.
+/// :see: {F128.to_checked<S64>} to get an absent value instead, {F128.to_clamp<S64>} to saturate.
 #track_caller
 routine F128.to<S64>(self: Self) -> S64
     block entry():
@@ -1666,6 +1864,10 @@ routine F128.to<S64>(self: Self) -> S64
         r : S64 = self.to_clamp<S64>()
         return(r)
 
+/// Converts to S64, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [-2^63, 2^63 - 1].
+/// :see: {F128.to<S64>} to panic instead, {F128.to_clamp<S64>} to saturate.
 routine F128.to_checked<S64>(self: Self) -> Option<S64>
     block entry():
         fits  : Bool        = self.fits_int(63, 63)
@@ -1673,11 +1875,18 @@ routine F128.to_checked<S64>(self: Self) -> Option<S64>
         r     : Option<S64> = fits.then_present(value)
         return(r)
 
+/// Converts to S64, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [-2^63, 2^63 - 1]; infinities give the nearer end and NaN gives 0.
+/// :see: {F128.to_checked<S64>} to detect values that do not fit.
 routine F128.to_clamp<S64>(self: Self) -> S64
     block entry():
         r : S64 = self.to_clamp<S128>().to_clamp<S64>()
         return(r)
 
+/// Converts to S128, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [-2^127, 2^127 - 1]; the panic reports the caller's location.
+/// :see: {F128.to_checked<S128>} to get an absent value instead, {F128.to_clamp<S128>} to saturate.
 #track_caller
 routine F128.to<S128>(self: Self) -> S128
     block entry():
@@ -1688,6 +1897,10 @@ routine F128.to<S128>(self: Self) -> S128
         r : S128 = self.to_clamp<S128>()
         return(r)
 
+/// Converts to S128, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [-2^127, 2^127 - 1].
+/// :see: {F128.to<S128>} to panic instead, {F128.to_clamp<S128>} to saturate.
 routine F128.to_checked<S128>(self: Self) -> Option<S128>
     block entry():
         fits  : Bool         = self.fits_int(127, 127)
@@ -1695,6 +1908,10 @@ routine F128.to_checked<S128>(self: Self) -> Option<S128>
         r     : Option<S128> = fits.then_present(value)
         return(r)
 
+/// Converts to U8, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [0, 255]; the panic reports the caller's location.
+/// :see: {F128.to_checked<U8>} to get an absent value instead, {F128.to_clamp<U8>} to saturate.
 #track_caller
 routine F128.to<U8>(self: Self) -> U8
     block entry():
@@ -1705,6 +1922,10 @@ routine F128.to<U8>(self: Self) -> U8
         r : U8 = self.to_clamp<U8>()
         return(r)
 
+/// Converts to U8, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [0, 255].
+/// :see: {F128.to<U8>} to panic instead, {F128.to_clamp<U8>} to saturate.
 routine F128.to_checked<U8>(self: Self) -> Option<U8>
     block entry():
         fits  : Bool       = self.fits_int(-1, 8)
@@ -1712,11 +1933,18 @@ routine F128.to_checked<U8>(self: Self) -> Option<U8>
         r     : Option<U8> = fits.then_present(value)
         return(r)
 
+/// Converts to U8, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [0, 255]; infinities give the nearer end and NaN gives 0.
+/// :see: {F128.to_checked<U8>} to detect values that do not fit.
 routine F128.to_clamp<U8>(self: Self) -> U8
     block entry():
         r : U8 = self.to_clamp<U128>().to_clamp<U8>()
         return(r)
 
+/// Converts to U16, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [0, 65535]; the panic reports the caller's location.
+/// :see: {F128.to_checked<U16>} to get an absent value instead, {F128.to_clamp<U16>} to saturate.
 #track_caller
 routine F128.to<U16>(self: Self) -> U16
     block entry():
@@ -1727,6 +1955,10 @@ routine F128.to<U16>(self: Self) -> U16
         r : U16 = self.to_clamp<U16>()
         return(r)
 
+/// Converts to U16, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [0, 65535].
+/// :see: {F128.to<U16>} to panic instead, {F128.to_clamp<U16>} to saturate.
 routine F128.to_checked<U16>(self: Self) -> Option<U16>
     block entry():
         fits  : Bool        = self.fits_int(-1, 16)
@@ -1734,11 +1966,18 @@ routine F128.to_checked<U16>(self: Self) -> Option<U16>
         r     : Option<U16> = fits.then_present(value)
         return(r)
 
+/// Converts to U16, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [0, 65535]; infinities give the nearer end and NaN gives 0.
+/// :see: {F128.to_checked<U16>} to detect values that do not fit.
 routine F128.to_clamp<U16>(self: Self) -> U16
     block entry():
         r : U16 = self.to_clamp<U128>().to_clamp<U16>()
         return(r)
 
+/// Converts to U32, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [0, 2^32 - 1]; the panic reports the caller's location.
+/// :see: {F128.to_checked<U32>} to get an absent value instead, {F128.to_clamp<U32>} to saturate.
 #track_caller
 routine F128.to<U32>(self: Self) -> U32
     block entry():
@@ -1749,6 +1988,10 @@ routine F128.to<U32>(self: Self) -> U32
         r : U32 = self.to_clamp<U32>()
         return(r)
 
+/// Converts to U32, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [0, 2^32 - 1].
+/// :see: {F128.to<U32>} to panic instead, {F128.to_clamp<U32>} to saturate.
 routine F128.to_checked<U32>(self: Self) -> Option<U32>
     block entry():
         fits  : Bool        = self.fits_int(-1, 32)
@@ -1756,11 +1999,18 @@ routine F128.to_checked<U32>(self: Self) -> Option<U32>
         r     : Option<U32> = fits.then_present(value)
         return(r)
 
+/// Converts to U32, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [0, 2^32 - 1]; infinities give the nearer end and NaN gives 0.
+/// :see: {F128.to_checked<U32>} to detect values that do not fit.
 routine F128.to_clamp<U32>(self: Self) -> U32
     block entry():
         r : U32 = self.to_clamp<U128>().to_clamp<U32>()
         return(r)
 
+/// Converts to U64, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [0, 2^64 - 1]; the panic reports the caller's location.
+/// :see: {F128.to_checked<U64>} to get an absent value instead, {F128.to_clamp<U64>} to saturate.
 #track_caller
 routine F128.to<U64>(self: Self) -> U64
     block entry():
@@ -1771,6 +2021,10 @@ routine F128.to<U64>(self: Self) -> U64
         r : U64 = self.to_clamp<U64>()
         return(r)
 
+/// Converts to U64, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [0, 2^64 - 1].
+/// :see: {F128.to<U64>} to panic instead, {F128.to_clamp<U64>} to saturate.
 routine F128.to_checked<U64>(self: Self) -> Option<U64>
     block entry():
         fits  : Bool        = self.fits_int(-1, 64)
@@ -1778,11 +2032,18 @@ routine F128.to_checked<U64>(self: Self) -> Option<U64>
         r     : Option<U64> = fits.then_present(value)
         return(r)
 
+/// Converts to U64, rounding toward zero and saturating at the ends of its range.
+/// :returns: The integer part of `self`, clamped to [0, 2^64 - 1]; infinities give the nearer end and NaN gives 0.
+/// :see: {F128.to_checked<U64>} to detect values that do not fit.
 routine F128.to_clamp<U64>(self: Self) -> U64
     block entry():
         r : U64 = self.to_clamp<U128>().to_clamp<U64>()
         return(r)
 
+/// Converts to U128, rounding toward zero.
+/// :returns: The integer part of `self`.
+/// :throws: Panics with `TrapCode.Overflow` when `self` is NaN or its integer part lies outside [0, 2^128 - 1]; the panic reports the caller's location.
+/// :see: {F128.to_checked<U128>} to get an absent value instead, {F128.to_clamp<U128>} to saturate.
 #track_caller
 routine F128.to<U128>(self: Self) -> U128
     block entry():
@@ -1793,6 +2054,10 @@ routine F128.to<U128>(self: Self) -> U128
         r : U128 = self.to_clamp<U128>()
         return(r)
 
+/// Converts to U128, rounding toward zero, without panicking.
+/// :returns: The integer part of `self` when it fits.
+/// :absent: When `self` is NaN or its integer part lies outside [0, 2^128 - 1].
+/// :see: {F128.to<U128>} to panic instead, {F128.to_clamp<U128>} to saturate.
 routine F128.to_checked<U128>(self: Self) -> Option<U128>
     block entry():
         fits  : Bool         = self.fits_int(-1, 128)

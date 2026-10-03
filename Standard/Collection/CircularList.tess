@@ -12,6 +12,8 @@ module Standard::Collections
 import Standard::Alloc
 import Standard::Format
 
+/// A growable sequence with spare room on both sides of its live range, so `push_front` and `push_back` are both amortized constant time without shifting elements. Logical element `i` lives at `data[start + i]`. When either side runs out, the live range is moved to the center of a new buffer.
+/// :typeparam T: The element type.
 record CircularList<T>
 conform Destruct<CircularList<T>>
 conform Represent<CircularList<T>> when T: typename, Diagnose<T>
@@ -24,18 +26,25 @@ require T: typename
     capacity : USize
     alloc    : @Allocator
 
+/// Creates an empty CircularList that draws its storage from `alloc`. Nothing is allocated until the first insertion.
+/// :param alloc: The allocator the list stores and later frees its memory with.
+/// :returns: A new empty CircularList.
 routine CircularList<T>.construct(alloc: @Allocator) -> Self
 require T: typename
     block entry():
         circular_list : Self = Self { data: null, start: 0, length: 0, capacity: 0, alloc: alloc }
         return(circular_list)
 
+/// The number of elements currently stored.
+/// :returns: The count of elements, `0` when the list is empty.
 routine CircularList<T>.length(self: Self) -> USize
 require T: typename
     block entry():
         length : USize = self.length
         return(length)
 
+/// Whether the list holds no elements.
+/// :returns: `true` when the length is `0`.
 routine CircularList<T>.is_empty(self: Self) -> Bool
 require T: typename
     block entry():
@@ -138,6 +147,9 @@ require T: typename
     block grow(capacity: USize):
         return(self.recenter(self.load().grown_capacity(capacity)))
 
+/// Appends `value` after the last element.
+/// :param value: The element to add.
+/// :throws: Traps with `TrapCode.AllocFailed` when the buffer must grow and the allocator fails. See {CircularList<T>.push_back_result} for a recoverable form.
 #track_caller
 routine CircularList<T>.push_back(self: @Self, value: T) -> Void
 require T: typename
@@ -163,6 +175,9 @@ require T: typename
         self.length.store(length.add(1))
         return(.Success(Unit.value()))
 
+/// Appends `value` after the last element, the same as {CircularList<T>.push_back}.
+/// :param value: The element to add.
+/// :throws: Traps with `TrapCode.AllocFailed` when the buffer must grow and the allocator fails. See {CircularList<T>.push_result} for a recoverable form.
 routine CircularList<T>.push(self: @Self, value: T) -> Void
 require T: typename
     block entry():
@@ -175,6 +190,9 @@ require T: typename
     block entry():
         return(self.push_back_result(value))
 
+/// Prepends `value` before the first element, so it becomes index `0`.
+/// :param value: The element to add.
+/// :throws: Traps with `TrapCode.AllocFailed` when the buffer must grow and the allocator fails. See {CircularList<T>.push_front_result} for a recoverable form.
 #track_caller
 routine CircularList<T>.push_front(self: @Self, value: T) -> Void
 require T: typename
@@ -201,6 +219,9 @@ require T: typename
         next_length.store_into(self.length)
         return(.Success(Unit.value()))
 
+/// Removes the last element and returns it.
+/// :returns: The removed element.
+/// :throws: Traps with `TrapCode.Empty` when the list is empty. See {CircularList<T>.pop_back_checked}.
 #track_caller
 routine CircularList<T>.pop_back(self: @Self) -> T
 require T: typename
@@ -229,6 +250,9 @@ require T: typename
         self.length.store(new_length)
         return(.Present(value))
 
+/// Removes the last element and returns it, the same as {CircularList<T>.pop_back}.
+/// :returns: The removed element.
+/// :throws: Traps with `TrapCode.Empty` when the list is empty. See {CircularList<T>.pop_checked}.
 routine CircularList<T>.pop(self: @Self) -> T
 require T: typename
     block entry():
@@ -241,6 +265,9 @@ require T: typename
     block entry():
         return(self.pop_back_checked())
 
+/// Removes the first element and returns it. Every remaining element's index drops by one.
+/// :returns: The removed element.
+/// :throws: Traps with `TrapCode.Empty` when the list is empty. See {CircularList<T>.pop_front_checked}.
 #track_caller
 routine CircularList<T>.pop_front(self: @Self) -> T
 require T: typename
@@ -268,6 +295,10 @@ require T: typename
         self.length.store(length.sub(1))
         return(.Present(value))
 
+/// Reads the element at logical position `index`, counted from the front.
+/// :param index: The zero-based position to read.
+/// :returns: A copy of the element.
+/// :throws: Traps with `TrapCode.Bounds` when `index >= length`.
 #track_caller
 routine CircularList<T>.get(self: Self, index: USize) -> T
 require T: typename
@@ -334,6 +365,9 @@ require T: typename
         element : @T    = data.stride(start.add(index))
         return(.Present(element))
 
+/// Whether two lists hold equal elements in the same logical order, regardless of where each sits in its buffer.
+/// :param other: The list to compare with.
+/// :returns: `true` when the lengths match and every element pair is equal.
 routine CircularList<T>.eq(self: Self, other: Self) -> Bool
 require T: typename, Equal<T>
     block entry():
@@ -374,6 +408,10 @@ require T: typename, Equal<T>
             ? loop(i.add(1), len, sa, sb, pa, pb)
             : return(false)
 
+/// Overwrites the element at logical position `index` with `value`.
+/// :param index: The zero-based position to write.
+/// :param value: The value to store.
+/// :throws: Traps with `TrapCode.Bounds` when `index >= length`.
 #track_caller
 routine CircularList<T>.set(self: @Self, index: USize, value: T) -> Void
 require T: typename
@@ -390,6 +428,7 @@ require T: typename
         data.stride(start.add(index)).store(value)
         return()
 
+/// Removes every element and re-centers the start index. The buffer and its capacity are kept for reuse, and elements are not destructed.
 routine CircularList<T>.clear(self: @Self) -> Void
 require T: typename
     block entry():
@@ -399,6 +438,8 @@ require T: typename
         self.length.store(0)
         return()
 
+/// Frees the list's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+/// :note: Safe to call on a never-filled instance, where it only resets the fields.
 routine CircularList<T>.destruct(self: @Self) -> Void
 require T: typename
     block entry():

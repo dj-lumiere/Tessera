@@ -19,6 +19,7 @@ import Standard::Format
 // functions fit behind them.
 // ============================================================
 
+/// A manual vtable for heap allocation: the allocate, reallocate and free callbacks plus an opaque `state` passed to each. Callers pass `@Allocator` to any routine that allocates, so no allocation is hidden.
 record Allocator
     alloc_fn   : Callable<(Addr, USize), Addr>
     realloc_fn : Callable<(Addr, Addr, USize), Addr>
@@ -37,6 +38,12 @@ record AllocFailed
 // take.
 // ============================================================
 
+/// Allocates room for `count` values of `T` through `alloc` and returns a pointer to it, uninitialized.
+/// :typeparam T: The element type to allocate room for.
+/// :param alloc: The allocator to use.
+/// :param count: The number of values of `T` to make room for.
+/// :returns: A pointer to the new block, or a null pointer when the allocator fails.
+/// :note: The byte size is `sizeof<T>() * count` with checked multiplication. The memory is uninitialized, and a failed allocation returns a null pointer rather than panicking.
 routine allocate<T>(alloc: @Allocator, count: USize) -> @T
 require T: typename
     block entry():
@@ -48,6 +55,13 @@ require T: typename
         typed     : @T                            = raw.to<@T>()
         return(typed)
 
+/// Resizes the block at `ptr` to hold `new_count` values of `T` through `alloc` and returns the possibly moved pointer.
+/// :typeparam T: The element type.
+/// :param alloc: The allocator to use.
+/// :param ptr: The block to resize, from `allocate` or an earlier `reallocate`.
+/// :param new_count: The new number of values of `T`.
+/// :returns: A pointer to the resized block, which may have moved, or a null pointer when the allocator fails.
+/// :note: A failed reallocation returns a null pointer, and the old block stays valid.
 routine reallocate<T>(alloc: @Allocator, ptr: @T, new_count: USize) -> @T
 require T: typename
     block entry():
@@ -60,6 +74,12 @@ require T: typename
         typed      : @T                                  = raw.to<@T>()
         return(typed)
 
+/// Copies `count` values of `T` from `src` to `dst` as raw bytes (`llvm.memcpy`).
+/// :typeparam T: The element type.
+/// :param dst: The first value to write to.
+/// :param src: The first value to read.
+/// :param count: The number of values of `T` to copy.
+/// :note: The ranges must not overlap, and no destructor or copy hook runs.
 routine copy<T>(dst: @T, src: @T, count: USize) -> Void
 require T: typename
     block entry():
@@ -71,6 +91,11 @@ require T: typename
         return()
 
 // llvm.memcpy, so the alloc layer needs no libc (a freestanding target supplies memcpy itself).
+/// Copies `bytes` bytes from `src` to `dst` with `llvm.memcpy`.
+/// :param dst: The destination address.
+/// :param src: The source address.
+/// :param bytes: The number of bytes to copy.
+/// :note: The ranges must not overlap.
 #[external("llvm"),
     template("call void @llvm.memcpy.p0.p0.{USize}(ptr {dst}, ptr {src}, {USize} {bytes}, i1 false)")]
 private routine copy_bytes(dst: Addr, src: Addr, bytes: USize) -> Void

@@ -13,6 +13,8 @@ private preset NODE_KEYS: USize = 7
 private preset NODE_CHILDREN: USize = NODE_KEYS.add(1)
 private preset NODE_MIN_KEYS: USize = NODE_KEYS.add(1).div(2)
 
+/// One node of a {SortedSet<T>} B-tree: up to `NODE_KEYS` keys inline, and for internal nodes the child pointers between them. `subtree_count` is the total keys in the subtree.
+/// :typeparam T: The element type.
 record SortedSetNode<T>
 require T: typename
     leaf          : Bool
@@ -21,6 +23,8 @@ require T: typename
     keys          : Array<T, NODE_KEYS>
     children      : Array<@SortedSetNode<T>, NODE_CHILDREN>
 
+/// A set kept in sorted order, stored as an order-statistic B-tree. Elements are unique, lookup and insertion are `O(log n)`, and iteration is in ascending order.
+/// :typeparam T: The element type, ordered by its `Compare` conformance.
 record SortedSet<T>
 conform Destruct<SortedSet<T>>
 conform Represent<SortedSet<T>> when T: typename, Compare<T>, Diagnose<T>
@@ -31,18 +35,25 @@ require T: typename, Compare<T>
     length : USize
     alloc  : @Allocator
 
+/// Creates an empty SortedSet that draws its storage from `alloc`. Nothing is allocated until the first insertion.
+/// :param alloc: The allocator the set stores and later frees its memory with.
+/// :returns: A new empty SortedSet.
 routine SortedSet<T>.construct(alloc: @Allocator) -> Self
 require T: typename, Compare<T>
     block entry():
         set : Self = Self { root: null, length: 0, alloc: alloc }
         return(set)
 
+/// The number of elements currently stored.
+/// :returns: The count of elements, `0` when the set is empty.
 routine SortedSet<T>.length(self: Self) -> USize
 require T: typename
     block entry():
         length : USize = self.length
         return(length)
 
+/// Whether the set holds no elements.
+/// :returns: `true` when the length is `0`.
 routine SortedSet<T>.is_empty(self: Self) -> Bool
 require T: typename
     block entry():
@@ -66,6 +77,8 @@ require T: typename
         node.subtree_count.store(0)
         return(node)
 
+/// The number of keys in the subtree below this node.
+/// :returns: The node's subtree count, or `0` for a null node.
 routine SortedSetNode<T>.count(self: @Self) -> USize
 require T: typename
     block entry():
@@ -76,6 +89,7 @@ require T: typename
         count : USize = self.subtree_count.load()
         return(count)
 
+/// Recomputes this node's subtree count from its own keys and its children's counts. Call it after the node's contents change.
 routine SortedSetNode<T>.recount(self: @Self) -> Void
 require T: typename
     block entry():
@@ -112,6 +126,9 @@ require T: typename
         self.subtree_count.store(sum)
         return()
 
+/// Finds where `key` sits among this node's keys.
+/// :param key: The key to locate.
+/// :returns: The index of the first key not less than `key`, or the key count when every key is smaller. It is also the child to descend into.
 routine SortedSetNode<T>.find_index(self: @Self, key: T) -> USize
 require T: typename
     block entry():
@@ -169,6 +186,9 @@ require T: typename, Compare<T>
             ? loop(a, b)
             : return(false)
 
+/// Whether an element equal to `key` is in the set.
+/// :param key: The element to look for.
+/// :returns: `true` when an equal element is present.
 routine SortedSet<T>.contains(self: Self, key: T) -> Bool
 require T: typename
     block entry():
@@ -380,6 +400,10 @@ require T: typename
         self.recount()
         return(true)
 
+/// Adds `key` to the set in sorted position unless an equal element is already present.
+/// :param key: The element to add.
+/// :returns: `true` when `key` was new, `false` when it was already present.
+/// :throws: Traps with `TrapCode.AllocFailed` when a node cannot be allocated. See {SortedSet<T>.add_result} for a recoverable form.
 #track_caller
 routine SortedSet<T>.add(self: @Self, key: T) -> Bool
 require T: typename
@@ -456,6 +480,9 @@ require T: typename
         next_length.store_into(self.length)
         return(.Success(true))
 
+/// Removes the key at `index` from a leaf by shifting the later keys left.
+/// :param index: The position of the key within the leaf.
+/// :returns: The removed key.
 routine SortedSetNode<T>.remove_leaf_at(self: @Self, index: USize) -> T
 require T: typename
     block entry():
@@ -472,6 +499,8 @@ require T: typename
 // Helpers below ensure a child has length >= NODE_MIN_KEYS (= t) before any deletion
 // descent so the child can absorb a one-key drop without underflowing.
 
+/// Rotates one key from child `i - 1` through the parent into the front of child `i`, so child `i` gains a key. Subtree counts are updated.
+/// :param i: The index of the child that is short of keys.
 routine SortedSetNode<T>.borrow_from_left(self: @Self, i: USize) -> Void
 require T: typename
     block entry():
@@ -505,6 +534,8 @@ require T: typename
         self.recount()
         return()
 
+/// Rotates one key from child `i + 1` through the parent into the end of child `i`, so child `i` gains a key. Subtree counts are updated.
+/// :param i: The index of the child that is short of keys.
 routine SortedSetNode<T>.borrow_from_right(self: @Self, i: USize) -> Void
 require T: typename
     block entry():
@@ -536,6 +567,9 @@ require T: typename
         self.recount()
         return()
 
+/// Merges child `i + 1` and the separating key into child `i` and frees the emptied node, shrinking this node by one key.
+/// :param i: The index of the left child of the pair.
+/// :param alloc: The allocator that frees the merged node.
 routine SortedSetNode<T>.merge_children(self: @Self, i: USize, alloc: @Allocator) -> Void
 require T: typename
     block entry():
@@ -567,6 +601,10 @@ require T: typename
         self.recount()
         return()
 
+/// Makes sure child `i` has at least `NODE_MIN_KEYS` keys before a deletion descends into it, by borrowing from a sibling or merging with one.
+/// :param i: The index of the child about to be descended into.
+/// :param alloc: The allocator that frees a merged node.
+/// :returns: The index of the child to descend into, which differs from `i` when a merge with the left sibling happened.
 #track_caller
 routine SortedSetNode<T>.ensure_min(self: @Self, i: USize, alloc: @Allocator) -> USize
 require T: typename
@@ -632,6 +670,9 @@ require T: typename
         self.merge_children(i, alloc)
         return(i)
 
+/// Removes and returns the largest key in this subtree, rebalancing children on the way down.
+/// :param alloc: The allocator used when nodes merge.
+/// :returns: The removed largest key.
 routine SortedSetNode<T>.take_max(self: @Self, alloc: @Allocator) -> T
 require T: typename
     block entry():
@@ -654,6 +695,9 @@ require T: typename
         self.recount()
         return(key)
 
+/// Removes and returns the smallest key in this subtree, rebalancing children on the way down.
+/// :param alloc: The allocator used when nodes merge.
+/// :returns: The removed smallest key.
 routine SortedSetNode<T>.take_min(self: @Self, alloc: @Allocator) -> T
 require T: typename
     block entry():
@@ -673,6 +717,10 @@ require T: typename
         self.recount()
         return(key)
 
+/// Removes `key` from this subtree, rebalancing children on the way down so no node underflows.
+/// :param key: The key to remove.
+/// :param alloc: The allocator used when nodes merge.
+/// :returns: `true` when the key was found and removed, `false` otherwise.
 routine SortedSetNode<T>.remove(self: @Self, key: T, alloc: @Allocator) -> Bool
 require T: typename
     block entry():
@@ -749,6 +797,9 @@ require T: typename
         self.recount()
         return(removed)
 
+/// Removes `key` from the set, shrinking the tree when the root empties.
+/// :param key: The element to remove.
+/// :returns: `true` when an element was removed, `false` when it was not present.
 routine SortedSet<T>.remove(self: @Self, key: T) -> Bool
 require T: typename
     block entry():
@@ -821,6 +872,8 @@ require T: typename
         self.free(alloc)
         return()
 
+/// Frees the set's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+/// :note: Safe to call on a never-filled instance, where it only resets the fields.
 routine SortedSet<T>.destruct(self: @Self) -> Void
 require T: typename
     block entry():

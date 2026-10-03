@@ -13,6 +13,9 @@ private preset NODE_KEYS: USize = 7
 private preset NODE_CHILDREN: USize = NODE_KEYS.add(1)
 private preset NODE_MIN_KEYS: USize = NODE_KEYS.add(1).div(2)
 
+/// One node of a {SortedDict<K, V>} B-tree: up to `NODE_KEYS` keys and values inline, and for internal nodes the child pointers between them. `subtree_count` is the total entries in the subtree.
+/// :typeparam K: The key type.
+/// :typeparam V: The value type.
 record SortedDictNode<K, V>
 require K: typename, V: typename
     leaf          : Bool
@@ -22,6 +25,9 @@ require K: typename, V: typename
     values        : Array<V, NODE_KEYS>
     children      : Array<@SortedDictNode<K, V>, NODE_CHILDREN>
 
+/// A map kept in ascending key order, stored as an order-statistic B-tree. Keys are unique, lookup and insertion are `O(log n)`, and iteration is in ascending key order.
+/// :typeparam K: The key type, ordered by its `Compare` conformance.
+/// :typeparam V: The value type.
 record SortedDict<K, V>
 conform Destruct<SortedDict<K, V>>
 conform Represent<SortedDict<K, V>> when K: typename, V: typename, Compare<K>, Diagnose<K>, Diagnose<V>
@@ -38,18 +44,25 @@ require K: typename, V: typename
     node  : @SortedDictNode<K, V>
     index : USize
 
+/// Creates an empty SortedDict that draws its storage from `alloc`. Nothing is allocated until the first insertion.
+/// :param alloc: The allocator the dict stores and later frees its memory with.
+/// :returns: A new empty SortedDict.
 routine SortedDict<K, V>.construct(alloc: @Allocator) -> Self
 require K: typename, V: typename, Compare<K>
     block entry():
         map : Self = Self { root: null, length: 0, alloc: alloc }
         return(map)
 
+/// The number of entries currently stored.
+/// :returns: The count of entries, `0` when the dict is empty.
 routine SortedDict<K, V>.length(self: Self) -> USize
 require K: typename, V: typename
     block entry():
         length : USize = self.length
         return(length)
 
+/// Whether the dict holds no entries.
+/// :returns: `true` when the length is `0`.
 routine SortedDict<K, V>.is_empty(self: Self) -> Bool
 require K: typename, V: typename
     block entry():
@@ -73,6 +86,8 @@ require K: typename, V: typename
         node.subtree_count.store(0)
         return(node)
 
+/// The number of entries in the subtree below this node.
+/// :returns: The node's subtree count, or `0` for a null node.
 routine SortedDictNode<K, V>.count(self: @Self) -> USize
 require K: typename, V: typename
     block entry():
@@ -85,6 +100,7 @@ require K: typename, V: typename
         count : USize = self.subtree_count.load()
         return(count)
 
+/// Recomputes this node's subtree count from its own keys and its children's counts. Call it after the node's contents change.
 routine SortedDictNode<K, V>.recount(self: @Self) -> Void
 require K: typename, V: typename
     block entry():
@@ -121,6 +137,9 @@ require K: typename, V: typename
         self.subtree_count.store(sum)
         return()
 
+/// Finds where `key` sits among this node's keys.
+/// :param key: The key to locate.
+/// :returns: The index of the first key not less than `key`, or the key count when every key is smaller. It is also the child to descend into.
 routine SortedDictNode<K, V>.find_index(self: @Self, key: K) -> USize
 require K: typename, V: typename
     block entry():
@@ -141,6 +160,10 @@ require K: typename, V: typename
             ? return(i)
             : loop(i.add(1))
 
+/// Reads the value stored under `key`.
+/// :param key: The key to look up.
+/// :returns: A copy of the value.
+/// :throws: Traps with `TrapCode.MissingKey` when the key is absent. See {SortedDict<K, V>.get_checked}.
 #track_caller
 routine SortedDict<K, V>.get(self: Self, key: K) -> V
 require K: typename, V: typename
@@ -287,6 +310,9 @@ require K: typename, V: typename, Compare<K>, Equal<V>
             ? loop(a, b)
             : return(false)
 
+/// Whether `key` is present.
+/// :param key: The key to look for.
+/// :returns: `true` when an equal key is in the map.
 routine SortedDict<K, V>.contains(self: Self, key: K) -> Bool
 require K: typename, V: typename
     block entry():
@@ -531,6 +557,10 @@ require K: typename, V: typename
         self.recount()
         return(true)
 
+/// Stores `value` under `key`, inserting a new entry in sorted position or replacing the value of an equal existing key.
+/// :param key: The key to store under.
+/// :param value: The value to store.
+/// :throws: Traps with `TrapCode.AllocFailed` when a node cannot be allocated. See {SortedDict<K, V>.put_result} for a recoverable form.
 #track_caller
 routine SortedDict<K, V>.put(self: @Self, key: K, value: V) -> Void
 require K: typename, V: typename
@@ -608,6 +638,10 @@ require K: typename, V: typename
         next_length.store_into(self.length)
         return(.Success(Unit.value()))
 
+/// Replaces the value of `key` somewhere in this subtree, if the key is present.
+/// :param key: The key whose value to replace.
+/// :param value: The new value.
+/// :returns: `true` when the key was found and its value replaced, `false` when it is absent.
 routine SortedDictNode<K, V>.replace(self: @Self, key: K, value: V) -> Bool
 require K: typename, V: typename
     block entry():
@@ -639,6 +673,9 @@ require K: typename, V: typename
         replaced : Bool  = child.replace(key, value)
         return(replaced)
 
+/// Removes the key and value at `index` from a leaf by shifting the later entries left.
+/// :param index: The position of the entry within the leaf.
+/// :returns: The removed value.
 routine SortedDictNode<K, V>.remove_leaf_at(self: @Self, index: USize) -> V
 require K: typename, V: typename
     block entry():
@@ -656,6 +693,8 @@ require K: typename, V: typename
 // Helpers below ensure a child has length >= NODE_MIN_KEYS (= t) before any deletion
 // descent so the child can absorb a one-key drop without underflowing.
 
+/// Rotates one entry from child `i - 1` through the parent into the front of child `i`, so child `i` gains an entry. Subtree counts are updated.
+/// :param i: The index of the child that is short of keys.
 routine SortedDictNode<K, V>.borrow_from_left(self: @Self, i: USize) -> Void
 require K: typename, V: typename
     block entry():
@@ -694,6 +733,8 @@ require K: typename, V: typename
         self.recount()
         return()
 
+/// Rotates one entry from child `i + 1` through the parent into the end of child `i`, so child `i` gains an entry. Subtree counts are updated.
+/// :param i: The index of the child that is short of keys.
 routine SortedDictNode<K, V>.borrow_from_right(self: @Self, i: USize) -> Void
 require K: typename, V: typename
     block entry():
@@ -730,6 +771,9 @@ require K: typename, V: typename
         self.recount()
         return()
 
+/// Merges child `i + 1` and the separating entry into child `i` and frees the emptied node, shrinking this node by one key.
+/// :param i: The index of the left child of the pair.
+/// :param alloc: The allocator that frees the merged node.
 routine SortedDictNode<K, V>.merge_children(self: @Self, i: USize, alloc: @Allocator) -> Void
 require K: typename, V: typename
     block entry():
@@ -765,6 +809,10 @@ require K: typename, V: typename
         self.recount()
         return()
 
+/// Makes sure child `i` has at least `NODE_MIN_KEYS` keys before a deletion descends into it, by borrowing from a sibling or merging with one.
+/// :param i: The index of the child about to be descended into.
+/// :param alloc: The allocator that frees a merged node.
+/// :returns: The index of the child to descend into, which differs from `i` when a merge with the left sibling happened.
 #track_caller
 routine SortedDictNode<K, V>.ensure_min(self: @Self, i: USize, alloc: @Allocator) -> USize
 require K: typename, V: typename
@@ -830,6 +878,10 @@ require K: typename, V: typename
         self.merge_children(i, alloc)
         return(i)
 
+/// Removes the entry with the largest key in this subtree, rebalancing children on the way down.
+/// :param out_value: Receives the removed entry's value.
+/// :param alloc: The allocator used when nodes merge.
+/// :returns: The removed largest key.
 routine SortedDictNode<K, V>.take_max_key(self: @Self, out_value: @V, alloc: @Allocator) -> K
 require K: typename, V: typename
     block entry():
@@ -854,6 +906,10 @@ require K: typename, V: typename
         self.recount()
         return(key)
 
+/// Removes the entry with the smallest key in this subtree, rebalancing children on the way down.
+/// :param out_value: Receives the removed entry's value.
+/// :param alloc: The allocator used when nodes merge.
+/// :returns: The removed smallest key.
 routine SortedDictNode<K, V>.take_min_key(self: @Self, out_value: @V, alloc: @Allocator) -> K
 require K: typename, V: typename
     block entry():
@@ -875,6 +931,10 @@ require K: typename, V: typename
         self.recount()
         return(key)
 
+/// Removes the entry for `key` from this subtree, rebalancing children on the way down so no node underflows.
+/// :param key: The key to remove.
+/// :param alloc: The allocator used when nodes merge.
+/// :returns: `true` when the key was found and removed, `false` otherwise.
 routine SortedDictNode<K, V>.remove(self: @Self, key: K, alloc: @Allocator) -> Bool
 require K: typename, V: typename
     block entry():
@@ -957,6 +1017,9 @@ require K: typename, V: typename
         self.recount()
         return(removed)
 
+/// Removes the entry for `key`, shrinking the tree when the root empties.
+/// :param key: The key to remove.
+/// :returns: `true` when an entry was removed, `false` when the key was not present.
 routine SortedDict<K, V>.remove(self: @Self, key: K) -> Bool
 require K: typename, V: typename
     block entry():
@@ -1029,6 +1092,8 @@ require K: typename, V: typename
         self.free(alloc)
         return()
 
+/// Frees the dict's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+/// :note: Safe to call on a never-filled instance, where it only resets the fields.
 routine SortedDict<K, V>.destruct(self: @Self) -> Void
 require K: typename, V: typename
     block entry():

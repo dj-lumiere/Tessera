@@ -8,6 +8,8 @@ module Standard::Collections
 import Standard::Alloc
 import Standard::Format
 
+/// A growable array of `T` stored contiguously on the heap. The allocator is kept in the record, so operations do not take one. The buffer grows by doubling, and the list is released with `destruct`.
+/// :typeparam T: The element type.
 record List<T>
 conform Destruct<List<T>>
 conform Equal<List<T>>     when T: typename, Equal<T>
@@ -19,18 +21,25 @@ require T: typename
     capacity : USize
     alloc    : @Allocator
 
+/// Creates an empty List that draws its storage from `alloc`. Nothing is allocated until the first insertion.
+/// :param alloc: The allocator the list stores and later frees its memory with.
+/// :returns: A new empty List.
 routine List<T>.construct(alloc: @Allocator) -> Self
 require T: typename
     block entry():
         list : Self = Self { data: null, length: 0, capacity: 0, alloc: alloc }
         return(list)
 
+/// The number of elements currently stored.
+/// :returns: The count of elements, `0` when the list is empty.
 routine List<T>.length(self: Self) -> USize
 require T: typename
     block entry():
         length : USize = self.length
         return(length)
 
+/// Whether the list holds no elements.
+/// :returns: `true` when the length is `0`.
 routine List<T>.is_empty(self: Self) -> Bool
 require T: typename
     block entry():
@@ -38,6 +47,9 @@ require T: typename
         empty  : Bool  = length.eq(0)
         return(empty)
 
+/// Grows the buffer to hold at least `capacity` elements without further allocation. A smaller request leaves the buffer unchanged.
+/// :param capacity: The number of elements to make room for.
+/// :throws: Traps with `TrapCode.AllocFailed` when the allocator fails. See {List<T>.reserve_result} for a recoverable form.
 #track_caller
 routine List<T>.reserve(self: @Self, capacity: USize) -> Void
 require T: typename
@@ -81,6 +93,9 @@ require T: typename
         self.capacity.store(capacity)
         return(true)
 
+/// Makes room for `wanted` elements, starting at 4 slots and doubling until the request fits.
+/// :param wanted: The element count the buffer must hold.
+/// :throws: Traps with `TrapCode.AllocFailed` when the allocator fails.
 #track_caller
 routine List<T>.ensure_capacity(self: @Self, wanted: USize) -> Void
 require T: typename
@@ -122,6 +137,9 @@ require T: typename
             ? return(self.make_capacity(next))
             : double(next, wanted)
 
+/// Appends `value` after the last element, growing the buffer when it is full.
+/// :param value: The element to append.
+/// :throws: Traps with `TrapCode.AllocFailed` when the allocator fails. See {List<T>.push_result} for a recoverable form.
 #track_caller
 routine List<T>.push(self: @Self, value: T) -> Void
 require T: typename
@@ -146,6 +164,9 @@ require T: typename
         self.length.store(wanted)
         return(.Success(Unit.value()))
 
+/// Removes the last element and returns it.
+/// :returns: The removed element.
+/// :throws: Traps with `TrapCode.Empty` when the list is empty. See {List<T>.pop_checked}.
 #track_caller
 routine List<T>.pop(self: @Self) -> T
 require T: typename
@@ -172,6 +193,10 @@ require T: typename
         self.length.store(index)
         return(.Present(value))
 
+/// Reads the element at `index`.
+/// :param index: The zero-based position to read.
+/// :returns: A copy of the element.
+/// :throws: Traps with `TrapCode.Bounds` when `index >= length`. See {List<T>.get_checked}.
 #track_caller
 routine List<T>.get(self: Self, index: USize) -> T
 require T: typename
@@ -233,6 +258,10 @@ require T: typename
         element : @T = data.stride(index)
         return(.Present(element))
 
+/// Overwrites the element at `index` with `value`.
+/// :param index: The zero-based position to write.
+/// :param value: The value to store.
+/// :throws: Traps with `TrapCode.Bounds` when `index >= length`.
 #track_caller
 routine List<T>.set(self: @Self, index: USize, value: T) -> Void
 require T: typename
@@ -248,12 +277,16 @@ require T: typename
         data.stride(index).store(value)
         return()
 
+/// Removes every element by resetting the length to `0`. The buffer and its capacity are kept for reuse, and elements are not destructed.
 routine List<T>.clear(self: @Self) -> Void
 require T: typename
     block entry():
         self.length.store(0)
         return()
 
+/// Whether two lists hold equal elements in the same order.
+/// :param other: The list to compare with.
+/// :returns: `true` when the lengths match and every element pair is equal.
 routine List<T>.eq(self: Self, other: Self) -> Bool
 require T: typename, Equal<T>
     block entry():
@@ -283,6 +316,8 @@ require T: typename, Equal<T>
             ? loop(i.add(1), len, pa, pb)
             : return(false)
 
+/// Frees the list's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
+/// :note: Safe to call on a never-filled instance, where it only resets the fields.
 routine List<T>.destruct(self: @Self) -> Void
 require T: typename
     block entry():

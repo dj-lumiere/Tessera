@@ -42,8 +42,10 @@ require R: typename
 
 // -- In ----------------------------------------------------------------------------------
 
+/// The one buffer over standard input that the whole process shares.
 global STDIN_BUFFER: @InputBuffer
 
+/// The size in bytes of standard input's buffer, and the read size at or above which a read skips the buffer.
 preset IN_BUFFER: USize = 8192
 
 /// Standard input's one buffer: bytes read from the OS and not handed out yet, in bytes[start, end).
@@ -89,6 +91,9 @@ private routine InputBuffer.unread(self: @Self) -> Void
         previous_start.store_into(self.start)
         return()
 
+/// A pointer to standard input, for passing where a Reader is taken (`@R`). Every value of {In} is the same stream,
+/// so the pointer holds no state and is null.
+/// :returns: The pointer to hand to a reader parameter.
 routine In.shared() -> @Self
     block entry():
         none : @Self = null
@@ -215,6 +220,9 @@ private routine trim_cr(line: Bytes) -> Bytes
             ? return(Bytes.from_ptr(line.data, line.length().sub(1)))
             : return(line)
 
+/// Whether `c` separates words: a space, tab, line feed, or carriage return.
+/// :param c: The byte to test.
+/// :returns: `true` for white space.
 private routine is_space(c: Byte) -> Bool
     block entry():
         blank    : Bool = c.eq(b' ').bitor(c.eq(b'\t'))
@@ -277,6 +285,9 @@ routine In.is_terminal() -> Bool
 
 // -- Out and Err -------------------------------------------------------------------------
 
+/// A pointer to standard output, for passing where a Writer is taken. Every value of {Out} is the same stream, so the
+/// pointer holds no state and is null.
+/// :returns: The pointer to hand to a writer parameter.
 routine Out.shared() -> @Self
     block entry():
         none : @Self = null
@@ -295,6 +306,8 @@ routine Out.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
         stream_write(StdStream.Output, data, length)
         return()
 
+/// Whether standard output is a terminal (a console on Windows), not a pipe or a file.
+/// :returns: `true` for a terminal.
 routine Out.is_terminal() -> Bool
     block entry():
         return(stream_is_terminal(StdStream.Output))
@@ -305,41 +318,62 @@ routine Out.enable_colors() -> Bool
     block entry():
         return(stream_enable_colors(StdStream.Output))
 
+/// A pointer to standard error, for passing where a Writer is taken. Every value of {Err} is the same stream, so the
+/// pointer holds no state and is null.
+/// :returns: The pointer to hand to a writer parameter.
 routine Err.shared() -> @Self
     block entry():
         none : @Self = null
         return(none)
 
+/// Writes all `length` bytes to standard error.
+/// :param data: The bytes to write.
+/// :param length: How many bytes there are.
+/// :returns: Success, or Failure with Other if the OS refused (or the process has no standard error).
 routine Err.write_all(data: @Byte, length: USize) -> Result<Unit, FsError>
     block entry():
         branch stream_write(StdStream.Error, data, length)
             ? return(.Success(Unit.value()))
             : return(.Failure(FsError.Other))
 
+/// The Writer side of standard error: a failed write is dropped ({Err.write_all} reports it).
+/// :param data: The bytes to write.
+/// :param length: How many bytes there are.
 routine Err.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
     block entry():
         stream_write(StdStream.Error, data, length)
         return()
 
+/// Whether standard error is a terminal (a console on Windows), not a pipe or a file.
+/// :returns: `true` for a terminal.
 routine Err.is_terminal() -> Bool
     block entry():
         return(stream_is_terminal(StdStream.Error))
 
+/// Whether ANSI color sequences work on standard error: a terminal takes them (on Windows once this turns them on), a
+/// pipe or a file can't show them.
+/// :returns: `true` when colors can be used.
 routine Err.enable_colors() -> Bool
     block entry():
         return(stream_enable_colors(StdStream.Error))
 
 // -- Linux and macOS -------------------------------------------------------------------
 
+/// Binds the C `isatty` function.
 #[external("c"), symbol("isatty"), target(os: not "windows")]
 private routine c_isatty(fd: CInt) -> CInt
 
+/// Binds the C `__errno_location` function.
 #[external("c"), symbol("__errno_location"), target(os: "linux")]
 private routine c_errno_place() -> @CInt
 
+/// Binds the C `__error` function.
 #[external("c"), symbol("__error"), target(os: "macos")]
 private routine c_errno_place() -> @CInt
 
+/// The file descriptor of a standard stream: 0 for input, 1 for output, 2 for error.
+/// :param stream: The stream.
+/// :returns: The descriptor.
 #target(os: not "windows")
 private routine fd_of(stream: StdStream) -> CInt
     block entry():
@@ -396,10 +430,13 @@ internal routine stream_enable_colors(stream: StdStream) -> Bool
 
 // -- Windows -----------------------------------------------------------------------------
 
+/// The unfinished UTF-8 sequence of standard output's last console write.
 #target(os: "windows")
 global PENDING_OUTPUT: @PendingUtf8
+/// The unfinished UTF-8 sequence of standard error's last console write.
 #target(os: "windows")
 global PENDING_ERROR: @PendingUtf8
+/// The text read from the console and not handed out yet.
 #target(os: "windows")
 global CONSOLE_INPUT: @ConsoleReadBuffer
 
@@ -417,34 +454,45 @@ private record ConsoleReadBuffer
     end   : USize
     high  : U16
 
+/// Binds the Win32 `GetStdHandle` function.
 #[external("c"), symbol("GetStdHandle"), callconv("stdcall"), target(os: "windows")]
 private routine c_get_std_handle(which: U32) -> Addr
 
+/// Binds the Win32 `GetConsoleMode` function.
 #[external("c"), symbol("GetConsoleMode"), callconv("stdcall"), target(os: "windows")]
 private routine c_get_console_mode(console: Addr, mode: @U32) -> CInt
 
+/// Binds the Win32 `SetConsoleMode` function.
 #[external("c"), symbol("SetConsoleMode"), callconv("stdcall"), target(os: "windows")]
 private routine c_set_console_mode(console: Addr, mode: U32) -> CInt
 
+/// Binds the Win32 `WriteConsoleW` function.
 #[external("c"), symbol("WriteConsoleW"), callconv("stdcall"), target(os: "windows")]
 private routine c_write_console(console: Addr, units: @U16, count: U32, written: @U32,
     reserved: Addr) -> CInt
 
+/// Binds the Win32 `ReadConsoleW` function.
 #[external("c"), symbol("ReadConsoleW"), callconv("stdcall"), target(os: "windows")]
 private routine c_read_console(console: Addr, units: @U16, count: U32, read: @U32,
     control: Addr) -> CInt
 
+/// Binds the Win32 `WriteFile` function.
 #[external("c"), symbol("WriteFile"), callconv("stdcall"), target(os: "windows")]
 private routine c_write_file(file: Addr, data: @Byte, count: U32, written: @U32,
     overlapped: Addr) -> CInt
 
+/// Binds the Win32 `ReadFile` function.
 #[external("c"), symbol("ReadFile"), callconv("stdcall"), target(os: "windows")]
 private routine c_read_file(file: Addr, buffer: @Byte, count: U32, read: @U32,
     overlapped: Addr) -> CInt
 
+/// Binds the Win32 `GetLastError` function.
 #[external("c"), symbol("GetLastError"), callconv("stdcall"), target(os: "windows")]
 private routine c_get_last_error() -> U32
 
+/// The Windows handle of a standard stream.
+/// :param stream: The stream.
+/// :returns: The handle, null or INVALID_HANDLE_VALUE when the process has none.
 #target(os: "windows")
 private routine handle_of(stream: StdStream) -> Addr
     block entry():
@@ -454,11 +502,17 @@ private routine handle_of(stream: StdStream) -> Addr
             StdStream.Output -> return(c_get_std_handle(0xFFFFFFF5))
             StdStream.Error  -> return(c_get_std_handle(0xFFFFFFF4))
 
+/// Whether `h` is a real handle: not null and not INVALID_HANDLE_VALUE.
+/// :param h: The handle to test.
+/// :returns: `true` when it can be used.
 #target(os: "windows")
 private routine usable(h: Addr) -> Bool
     block entry():
         return(h.is_not_null().bitand(ptrtoint<Addr, USize>(h).ne(USize.MAX)))
 
+/// Whether `h` is a console (GetConsoleMode accepts it), not a pipe or a file.
+/// :param h: The handle to test.
+/// :returns: `true` for a console.
 #target(os: "windows")
 private routine is_console(h: Addr) -> Bool
     block entry():
@@ -503,6 +557,11 @@ internal routine stream_write(stream: StdStream, data: @Byte, length: USize) -> 
             ? return(console_write(stream, h, data, length))
             : return(file_write(h, data, length))
 
+/// Writes all `length` bytes to a pipe or file handle with WriteFile as they are, looping over partial writes.
+/// :param h: The handle.
+/// :param data: The bytes to write.
+/// :param length: How many bytes there are.
+/// :returns: `true` when every byte was written, `false` on the first failure.
 #target(os: "windows")
 private routine file_write(h: Addr, data: @Byte, length: USize) -> Bool
     block entry():
@@ -552,6 +611,9 @@ private routine complete_end(data: @Byte, length: USize) -> USize
             ? return(i.sub(1))
             : return(length)
 
+/// The record holding the unfinished UTF-8 sequence of a stream's console writes.
+/// :param stream: Standard output or error.
+/// :returns: The record for that stream.
 #target(os: "windows")
 private routine pending_of(stream: StdStream) -> @PendingUtf8
     block entry():

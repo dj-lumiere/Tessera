@@ -15,10 +15,15 @@ module Standard::Core
 
 // -- primes --------------------------------------------------------------------
 
+/// The xxHash64 prime 1 (`0x9E3779B185EBCA87`), as the reference specifies.
 preset XXH64_P1: U64 = 0x9E3779B185EBCA87
+/// The xxHash64 prime 2 (`0xC2B2AE3D27D4EB4F`), as the reference specifies.
 preset XXH64_P2: U64 = 0xC2B2AE3D27D4EB4F
+/// The xxHash64 prime 3 (`0x165667B19E3779F9`), as the reference specifies.
 preset XXH64_P3: U64 = 0x165667B19E3779F9
+/// The xxHash64 prime 4 (`0x85EBCA77C2B2AE63`), as the reference specifies.
 preset XXH64_P4: U64 = 0x85EBCA77C2B2AE63
+/// The xxHash64 prime 5 (`0x27D4EB2F165667C5`), as the reference specifies.
 preset XXH64_P5: U64 = 0x27D4EB2F165667C5
 
 // -- little-endian byte readers ------------------------------------------------
@@ -40,6 +45,10 @@ routine xxh64_read_u64(data: @Byte, off: USize) -> U64
         next       : U64   = acc.bitor(byte_value.shl(shift))
         jump loop(i.add(1), next, shift.add(8))
 
+/// Reads 4 bytes starting at `data[off]` as a little-endian U32, byte by byte so it does not depend on host endianness or alignment.
+/// :param data: The buffer to read from.
+/// :param off: The offset of the first byte to read.
+/// :returns: The little-endian value of the 4 bytes.
 routine xxh64_read_u32(data: @Byte, off: USize) -> U32
     block entry():
         jump loop(0, 0, 0)
@@ -57,18 +66,29 @@ routine xxh64_read_u32(data: @Byte, off: USize) -> U32
 
 // -- xxh64 internal mixers -----------------------------------------------------
 
+/// One xxh64 round: adds `input * P2` to `acc`, rotates left by 31, and multiplies by `P1`, all modulo 2^64.
+/// :param acc: The lane accumulator.
+/// :param input: The 8 input bytes read as a U64.
+/// :returns: The updated accumulator.
 routine xxh64_round(acc: U64, input: U64) -> U64
     block entry():
         mixed  : U64 = acc.add_wrap(input.mul_wrap(XXH64_P2)).rotl(31)
         result : U64 = mixed.mul_wrap(XXH64_P1)
         return(result)
 
+/// Folds one lane `val` into the accumulator when a long input's four lanes are combined: `(acc ^ round(0, val)) * P1 + P4`.
+/// :param acc: The accumulator.
+/// :param val: The lane value to fold in.
+/// :returns: The merged accumulator.
 routine xxh64_merge(acc: U64, val: U64) -> U64
     block entry():
         folded : U64 = acc.bitxor(xxh64_round(0, val)).mul_wrap(XXH64_P1)
         result : U64 = folded.add_wrap(XXH64_P4)
         return(result)
 
+/// The xxh64 avalanche step: xor-shifts by 33, 29 and 32 with multiplications by `P2` and `P3` in between, so every input bit affects every output bit.
+/// :param h: The accumulated hash.
+/// :returns: The mixed 64-bit hash.
 routine xxh64_finalize(h: U64) -> U64
     block entry():
         s1     : U64 = h.shr(33)
@@ -89,6 +109,12 @@ routine xxh64_finalize(h: U64) -> U64
 //   3. Drain remaining 8-byte chunks, then a 4-byte chunk, then trailing bytes.
 //   4. Apply the finalization mixer.
 
+/// Hashes `len` bytes starting at `data` with the xxHash64 algorithm and the given `seed`, matching the reference output.
+/// :param data: The first byte of the input.
+/// :param len: The number of bytes to hash.
+/// :param seed: The seed of the hash.
+/// :returns: The 64-bit hash.
+/// :note: Reads only the `len` bytes. An empty input (`len` of 0) is valid.
 routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
     block entry():
         big : Bool = len.ge(32)
@@ -190,6 +216,10 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
 // from a "true" len=4 hash, but saves the stack slot + memcpy round-trip and the
 // behavior is consistent across primitive widths.
 
+/// Hashes one U64 as if it were an 8-byte input of `xxh64` with the given `seed`, without a buffer. Smaller integers zero-extend and use this too.
+/// :param v: The integer to hash.
+/// :param seed: The seed of the hash.
+/// :returns: The 64-bit hash.
 routine xxh64_hash_u64(v: U64, seed: U64) -> U64
     block entry():
         h_len   : U64 = seed.add_wrap(XXH64_P5).add_wrap(8)
@@ -206,6 +236,11 @@ routine xxh64_hash_u64(v: U64, seed: U64) -> U64
 // with len=16 over the concatenation h1 || h2 — two iterations of the
 // 8-byte tail path, then finalize.
 
+/// Combines two sub-hashes into one, the same as `xxh64` over their 16 bytes `h1 || h2`, for hashing composite values.
+/// :param h1: The first sub-hash.
+/// :param h2: The second sub-hash.
+/// :param seed: The seed of the hash.
+/// :returns: The 64-bit combined hash.
 routine xxh64_combine2(h1: U64, h2: U64, seed: U64) -> U64
     block entry():
         h_len    : U64 = seed.add_wrap(XXH64_P5).add_wrap(16)
