@@ -15,6 +15,7 @@ namespace Tessera;
 /// [target]
 /// executable = "src/main.tess"        # the entry file (it has main); the output is build/main
 /// library = ["../shared"]             # source directories of other solutions this one builds with
+/// sources = ["../lib/hash.tess"]      # files (or directories of them) built in whatever the entry imports
 /// mode = "release"                    # "debug" (-O0, the default), "release" (-O2), "release-time" (-O3),
 ///                                     # or "release-space" (-Os); every mode has debug information
 /// triple = "arm-none-eabi"            # default: the host
@@ -31,7 +32,9 @@ namespace Tessera;
 /// The build is the entry file and what it imports, found as RazorForge finds modules: the files under the
 /// manifest's directory and the library directories that declare an imported module (`module Greeting`), and in
 /// turn what those import. So a directory may hold several programs, each its own entry, and a file only one of them
-/// imports isn't built into the others. The standard library is always there.
+/// imports isn't built into the others. The standard library is always there. `sources` adds files to the build as
+/// they are, imported or not: code that declares no module (a library llvm-linked into another language's programs,
+/// like Ingrid's), which no import can name.
 public sealed record Manifest(
     string Path,
     string Directory,
@@ -79,7 +82,7 @@ public sealed record Manifest(
     private static readonly Dictionary<string, HashSet<string>> Keys = new()
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
-        ["target"] = ["executable", "triple", "cpu", "features", "mode", "library", "c-libraries", "library-paths", "link-script"],
+        ["target"] = ["executable", "triple", "cpu", "features", "mode", "library", "sources", "c-libraries", "library-paths", "link-script"],
         ["debug"] = ["emit-llvm", "trace"],
     };
 
@@ -139,6 +142,17 @@ public sealed record Manifest(
             roots.Add(full);
         }
         var sources = ImportClosure(entry, roots, System.IO.Path.Combine(dir, "build"));
+        foreach (var extra in Strs(target, "sources", path) ?? [])
+        {
+            string full = Resolve(extra);
+            string[] files = System.IO.Directory.Exists(full)
+                ? System.IO.Directory.GetFiles(full, "*.tess", SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray()
+                : File.Exists(full) && full.EndsWith(".tess", StringComparison.OrdinalIgnoreCase)
+                    ? [full]
+                    : throw new ManifestError(path, $"[target] sources: no such .tess file or directory: {extra}");
+            foreach (var file in files)
+                if (!sources.Contains(file, StringComparer.OrdinalIgnoreCase)) sources.Add(file);
+        }
 
         string? linkScript = Str(target, "link-script", path) is { } ls ? Resolve(ls) : null;
         if (linkScript is not null && !File.Exists(linkScript))

@@ -22,6 +22,10 @@ public sealed partial class Compiler
     private readonly Dictionary<string, int> _metaUnique = [];
     private readonly Dictionary<string, int> _diFiles = [];
     private readonly Dictionary<string, int> _diTypes = [];
+    /// The types whose debug type is being built, outermost first, and those of them found on a cycle (a type that
+    /// reaches itself through its fields and pointers).
+    private readonly List<string> _inProgress = [];
+    private readonly HashSet<string> _onCycle = [];
     private int _diUnit = -1;
 
     public static bool IsTrackCaller(RoutineDecl r) => r.Attr("track_caller") is not null;
@@ -106,7 +110,12 @@ public sealed partial class Compiler
 
     public int DiType(DType t)
     {
-        if (_diTypes.TryGetValue(t.Key, out int id)) return id;
+        if (_diTypes.TryGetValue(t.Key, out int id))
+        {
+            int start = _inProgress.LastIndexOf(t.Key);
+            if (start >= 0) _onCycle.UnionWith(_inProgress.Skip(start));
+            return id;
+        }
         var pos = new Pos(_rootFile ?? "", 0, 0);
         switch (t)
         {
@@ -129,6 +138,7 @@ public sealed partial class Compiler
 
         // Types that may refer to themselves get their node first.
         id = _diTypes[t.Key] = MetaReserve();
+        _inProgress.Add(t.Key);
         long bits = SizeAlign(t, pos).Size * 8;
         switch (t)
         {
@@ -155,26 +165,20 @@ public sealed partial class Compiler
                     + $"line: {e.Decl.Pos.Line}, baseType: !{DiType(e.Underlying)})");
                 break;
             case RecordType { TransparentField: { } inner } r:
-                MetaSet(id, $"!DIDerivedType(tag: DW_TAG_typedef, name: {MetaString(t.Name)}, file: !{DiFile(r.Decl.File)}, "
-                    + $"line: {r.Decl.Pos.Line}, baseType: !{DiType(inner)})");
-                break;
-            case RecordType r:
             {
-                int file = DiFile(r.Decl.File);
-                var fields = Fields(r);
-                var offsets = FieldOffsets(r, r.Decl.Pos);
-                var members = new List<string>();
-                for (int i = 0; i < fields.Count; i++)
-                {
-                    long size = SizeAlign(fields[i].Type, r.Decl.Pos).Size * 8;
-                    int line = i < r.Decl.Fields.Count ? r.Decl.Fields[i].Pos.Line : r.Decl.Pos.Line;
-                    members.Add("!" + Meta($"!DIDerivedType(tag: DW_TAG_member, name: {MetaString(fields[i].Name)}, scope: !{id}, "
-                        + $"file: !{file}, line: {line}, baseType: !{DiType(fields[i].Type)}, size: {size}, offset: {offsets[i] * 8})"));
-                }
-                MetaSet(id, $"distinct !DICompositeType(tag: DW_TAG_structure_type, name: {MetaString(t.Name)}, file: !{file}, "
-                    + $"line: {r.Decl.Pos.Line}, size: {bits}, elements: !{{{string.Join(", ", members)}}})");
+                int innerId = DiType(inner);
+                // A field that points back at its record (`prev : @Node`) would make the typedef its own base type
+                // through the pointer, a cycle LLVM's debug-info writers recurse on until they crash: such a record is
+                // a structure of its one member instead.
+                if (_onCycle.Contains(t.Key)) MetaSet(id, StructureType(r, id, bits));
+                else
+                    MetaSet(id, $"!DIDerivedType(tag: DW_TAG_typedef, name: {MetaString(t.Name)}, file: !{DiFile(r.Decl.File)}, "
+                        + $"line: {r.Decl.Pos.Line}, baseType: !{innerId})");
                 break;
             }
+            case RecordType r:
+                MetaSet(id, StructureType(r, id, bits));
+                break;
             case VariantType v:
                 // The tag and the shared payload storage; a debugger shows its size and where it is.
                 MetaSet(id, $"distinct !DICompositeType(tag: DW_TAG_structure_type, name: {MetaString(t.Name)}, "
@@ -184,7 +188,27 @@ public sealed partial class Compiler
                 MetaSet(id, $"!DIBasicType(name: {MetaString(t.Name)}, size: {bits}, encoding: DW_ATE_unsigned)");
                 break;
         }
+        _inProgress.RemoveAt(_inProgress.Count - 1);
+        _onCycle.Remove(t.Key);
         return id;
+    }
+
+    /// A record's debug type as a structure of its fields, for the node `id`.
+    private string StructureType(RecordType r, int id, long bits)
+    {
+        int file = DiFile(r.Decl.File);
+        var fields = Fields(r);
+        var offsets = FieldOffsets(r, r.Decl.Pos);
+        var members = new List<string>();
+        for (int i = 0; i < fields.Count; i++)
+        {
+            long size = SizeAlign(fields[i].Type, r.Decl.Pos).Size * 8;
+            int line = i < r.Decl.Fields.Count ? r.Decl.Fields[i].Pos.Line : r.Decl.Pos.Line;
+            members.Add("!" + Meta($"!DIDerivedType(tag: DW_TAG_member, name: {MetaString(fields[i].Name)}, scope: !{id}, "
+                + $"file: !{file}, line: {line}, baseType: !{DiType(fields[i].Type)}, size: {size}, offset: {offsets[i] * 8})"));
+        }
+        return $"distinct !DICompositeType(tag: DW_TAG_structure_type, name: {MetaString(r.Name)}, file: !{file}, "
+            + $"line: {r.Decl.Pos.Line}, size: {bits}, elements: !{{{string.Join(", ", members)}}})";
     }
 
     /// The module's debug metadata: the compile unit, the flags that turn it on, and every node.
