@@ -339,12 +339,13 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   bare `conform` never generates one. In a template, `{v}` writes `v.represent_into(out)`, and `{v.diagnose()}`
   writes the Tessera-source form: `v.diagnose()` hands back an adapter (`Diagnosed<T>`) that writes `v` with
   `diagnose_into` wherever it goes.
-- `write(out, "x = {x}\n")` writes text and values in one line: it expands at build time into
+- `out.write("x = {x}\n")` writes text and values in one line: it expands at build time into
   `write_str` / `.represent_into` calls, a brace holds one expression (loads and chains allowed, and literals with their own braces:
   `"{sum2(Array<S64, 2> { 7, 8 })}"`), `{{` is a literal brace,
-  and there are no format options. The same template is a method on any Writer: `out.write("...")` on a pointer
+  and there are no format options. The template is a method on any Writer: `out.write("...")` on a pointer
   to one (`buf.write(...)`, `handle.write(...)`), and `Out.write("x = {x}\n")` / `Err.write(...)` on a stateless
-  one (it writes to `T.shared()`). There is no `print` / `eprint`.
+  one (it writes to `T.shared()`). It's only ever a method: there is no free `write(out, "...")`, and no
+  `print` / `eprint`.
 
 ## Collections
 

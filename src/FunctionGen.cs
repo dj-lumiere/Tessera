@@ -697,8 +697,6 @@ public sealed class FunctionGen
                 return InferPresetRef(r);
             case RoutineRef rr:
                 return RoutineValue(rr).Type;
-            case CallExpr wf when IsTemplateCall(wf):
-                return VoidType.Instance;
             case NsCallExpr or MethodCallExpr when TemplateWriter(e) is not null:
                 return VoidType.Instance;
             case CallExpr or NsCallExpr or MethodCallExpr:
@@ -734,6 +732,9 @@ public sealed class FunctionGen
             throw Err(ic.Pos, $"'.{ic.Name}(...)' needs a known type here; write the type: Type.{ic.Name}(...)");
         if (e is ImplicitMemberExpr im)
             throw Err(im.Pos, $"'.{im.Name}' needs a known variant type here; write the type: Type.{im.Name}");
+        // A call to no routine at all says so, rather than that its type is unknown.
+        if (e is CallExpr unknown && Infer(e) is null && PlanCall(e, null) is null)
+            throw Err(unknown.Pos, $"unknown routine '{unknown.Name}'");
         var t = Infer(e) ?? throw Err(e.Pos, "cannot infer the type of this expression; bind it with a type annotation");
         return Eval(e, t);
     }
@@ -775,7 +776,6 @@ public sealed class FunctionGen
             ImplicitMemberExpr m => throw Err(m.Pos,
                 $"'.{m.Name}' isn't a case of {expected}: a leading '.' without arguments names a variant case; a typewise call is .{m.Name}(...)"),
             ImplicitCallExpr => EvalCall(e, expected),
-            CallExpr wf when IsTemplateCall(wf) => EvalTemplateCall(wf),
             NsCallExpr or MethodCallExpr when TemplateWriter(e) is { } writer =>
                 ExpandTemplate(writer, (StrLit)(e is NsCallExpr ns ? ns.Args[0] : ((MethodCallExpr)e).Args[0])),
             PresetRef r => EvalPresetRef(r, expected),
@@ -1037,9 +1037,6 @@ public sealed class FunctionGen
     /// Where a write template finds write_str, whatever the file imports.
     private const string FormatModule = "Standard::Format";
 
-    /// `write`, unless the program declares a routine by that name.
-    private bool IsTemplateCall(CallExpr c) => c.Name == "write" && _c.FindFree(c.Name, _env.File, c.Pos) is null;
-
     /// The writer a `.write("x = {x}\n")` writes to, or null when the call is an ordinary one: on a type, a stateless
     /// Writer (`ConsoleOutput.write("...")` writes to `ConsoleOutput.shared()`); on a value, the Writer it points at
     /// (`handle.write("...")`). A type with a `write` routine of its own keeps it.
@@ -1066,18 +1063,30 @@ public sealed class FunctionGen
         }
     }
 
-    /// `write(out, "x = {x}\n")` expands in place, in order: `write_str(out, "x = ")`, `x.represent_into(out)`,
-    /// `write_str(out, "\n")`. A brace holds one expression; `{{` and `}}` are literal braces. Nothing is
-    /// allocated: each piece goes straight to the writer. `T.write("...")` and `w.write("...")` are the same with
-    /// the writer TemplateWriter finds.
-    private Val EvalTemplateCall(CallExpr c)
+    /// `out.write("x = {x}\n")` expands in place, in order: `write_str(out, "x = ")`, `x.represent_into(out)`,
+    /// `write_str(out, "\n")`, with the writer TemplateWriter finds. A brace holds one expression; `{{` and `}}`
+    /// are literal braces. Nothing is allocated: each piece goes straight to the writer.
+    private Val ExpandTemplate(Expr writer, StrLit template)
     {
-        if (c.Args is not [ValueRef writer, StrLit template])
-            throw Err(c.Pos, "write takes a named writer and a string literal: write(out, \"x = {x}\\n\")");
-        return ExpandTemplate(writer, template);
+        // The writer is evaluated once (`Out.shared()`, `files.stride(i)`), and every piece writes to that value, held
+        // under a name no source can spell.
+        if (writer is not ValueRef)
+        {
+            var once = new ValueRef("write writer", writer.Pos);
+            _values[once.Name] = EvalAny(writer);
+            writer = once;
+        }
+        try
+        {
+            return ExpandPieces(writer, template);
+        }
+        finally
+        {
+            _values.Remove("write writer");
+        }
     }
 
-    private Val ExpandTemplate(Expr writer, StrLit template)
+    private Val ExpandPieces(Expr writer, StrLit template)
     {
         var text = new StringBuilder();
         void Flush()
