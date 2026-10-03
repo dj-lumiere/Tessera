@@ -107,6 +107,7 @@ public sealed class FunctionGen
             return;
         }
         var blocks = _decl.Blocks!;   // the parser guarantees a leading `block entry()`
+        _traced = _c.IsTraced(_inst);
 
         for (int i = 0; i < _decl.Params.Count; i++)
         {
@@ -177,11 +178,13 @@ public sealed class FunctionGen
         var (linkage, comdat) = Linkage();
         string dbg = Debug ? $" !dbg !{_sp}" : "";
         var paramRecords = Debug ? ParamRecords() : [];
+        string? push = _traced ? TracePush() : null;
         _out.AppendLine($"define {linkage}{_inst.CcPrefix(_c.Target)}{_c.AbiRet(_inst, withAttrs: true)} @{Compiler.Quote(_inst.Symbol)}({string.Join(", ", ps)}){_inst.FnAttrs}{_c.UnwindTable} {CpuModel.For(_c.Target, _inst.Decl.Pos).FnAttrs}{comdat}{dbg} {{");
         _out.AppendLine("start:");
         foreach (var a in _allocas) _out.AppendLine($"  {a}");
         foreach (var u in unpack) _out.AppendLine($"  {u}");
         foreach (var r in paramRecords) _out.AppendLine($"  {r}");
+        if (push is not null) _out.AppendLine($"  {push}");
         _out.AppendLine("  br label %b.entry");
         foreach (var lb in _lblocks)
         {
@@ -310,6 +313,47 @@ public sealed class FunctionGen
     {
         Line(s);
         _cur.Terminated = true;
+    }
+
+    // ── Crash trace (Trace.cs) ──────────────────────────────────────────────
+
+    /// Whether this routine keeps a frame on the crash trace.
+    private bool _traced;
+
+    /// The place the frame last got in the LLVM block being written: a second call from the same place there needs
+    /// no second update.
+    private (LBlock Block, Pos Pos)? _tracedAt;
+
+    /// The routine's place, its `#source` if it has one: the frame names its file.
+    private Pos FramePlace => _decl.Source ?? _decl.Pos;
+
+    /// The entry's trace_push: the routine's name and its file, with the declaration's debug location (a call LLVM
+    /// inlines needs one).
+    private string TracePush()
+    {
+        var at = FramePlace;
+        string call = _c.TraceCall("trace_push", _c.StringGlobal(_decl.DisplayName), _c.StringGlobal(at.File.Replace('\\', '/')));
+        return Debug ? $"{call}, !dbg !{Location(at)}" : call;
+    }
+
+    /// Before a call: the frame's line and column become the call's, its statement's `#source` one if it has one. A
+    /// frame is only read while its routine is in a call, so this is the only place it gets them: a call placed in
+    /// another file than the frame's names the routine's own declaration instead.
+    private void TraceAt(Pos callPos)
+    {
+        if (!_traced) return;
+        var at = _lineSource is { } source && source.File == FramePlace.File ? source : callPos;
+        if (at.File != FramePlace.File) at = FramePlace;
+        if (_tracedAt is { } last && last.Block == _cur && last.Pos == at) return;
+        _tracedAt = (_cur, at);
+        Line(_c.TraceCall("trace_at", at.Line.ToString(CultureInfo.InvariantCulture), at.Col.ToString(CultureInfo.InvariantCulture)));
+    }
+
+    /// Ends the routine: its frame comes off the trace, then it returns.
+    private void Return(string ret)
+    {
+        if (_traced) Line(_c.TraceCall("trace_pop"));
+        Terminate(ret);
     }
 
     private string EmitTmp(string rhs)
@@ -866,7 +910,9 @@ public sealed class FunctionGen
             throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim p : @T; found {expected}");
         _c.EnsureTypeDefined(t);
         string slot = $"%s{_allocas.Count}";
-        _allocas.Add($"{slot} = alloca {t.Llvm}");
+        // The alignment is written out: the IR names no data layout, so LLVM would give a U128 slot 8 where an atomic
+        // access (cmpxchg16b) needs its 16.
+        _allocas.Add($"{slot} = alloca {t.Llvm}, align {_c.SizeAlign(t, a.Pos).Align}");
         return new Val(slot, new PtrType(t));
     }
 
@@ -1752,6 +1798,7 @@ public sealed class FunctionGen
         string fnType = inst.IsExternalC
             ? $"{_c.AbiRet(inst, withAttrs: false)} ({string.Join(", ", _c.AbiParams(inst, withAttrs: false))}) "
             : $"{_c.AbiRet(inst, withAttrs: false)} ";
+        TraceAt(plan.Pos);
         return EmitAbiCall($"{inst.CcPrefix(_c.Target)}{RetExtOf(abi, inst.RetExt(_c.Target))}{fnType}@{Compiler.Quote(inst.Symbol)}", abi,
             args, inst.Params, inst.Ret, inst.PassesBf16AsBits, i => inst.ParamExt(_c.Target, i));
     }
@@ -1877,6 +1924,7 @@ public sealed class FunctionGen
         string ret = Compiler.AbiRetType(sig, bits && Instance.IsBf16(ct.Ret) ? "i16" : ct.Ret.Llvm);
         string retExt = c ? CAbi.Ext(_c.Target, ct.Ret, isReturn: true).TrimStart() : "";
         string head = $"{cc}{RetExtOf(sig, retExt.Length > 0 ? retExt + " " : "")}{ret} {fp.Op}";
+        TraceAt(pos);
         return EmitAbiCall(head, sig, args, ct.Params, ct.Ret, bits, i => c ? CAbi.Ext(_c.Target, ct.Params[i], isReturn: false) : "");
     }
 
@@ -2264,7 +2312,7 @@ public sealed class FunctionGen
                 if (_inst.Ret is VoidType)
                 {
                     if (r.Value is not null) throw Err(r.Pos, $"'{_decl.DisplayName}' returns Void; write return()");
-                    Terminate("ret void");
+                    Return("ret void");
                 }
                 else
                 {
@@ -2273,7 +2321,7 @@ public sealed class FunctionGen
                     if (_sig.Sret)
                     {
                         Line($"store {_inst.Ret.Llvm} {v.Op}, ptr %ret.slot");
-                        Terminate("ret void");
+                        Return("ret void");
                         break;
                     }
                     if (_sig.Ret.Pass == AbiPass.Coerce)
@@ -2281,12 +2329,12 @@ public sealed class FunctionGen
                         string buffer = NewBuffer(_inst.Ret);
                         Line($"store {_inst.Ret.Llvm} {v.Op}, ptr {buffer}");
                         string part = _sig.Ret.Parts[0].Llvm;
-                        Terminate($"ret {part} {EmitTmp($"load {part}, ptr {buffer}")}");
+                        Return($"ret {part} {EmitTmp($"load {part}, ptr {buffer}")}");
                         break;
                     }
                     if (_inst.PassesBf16AsBits && Instance.IsBf16(_inst.Ret))
                         v = new Val(EmitTmp($"bitcast bfloat {v.Op} to i16"), IntType.U(16));
-                    Terminate($"ret {_inst.LlvmRet} {v.Op}");
+                    Return($"ret {_inst.LlvmRet} {v.Op}");
                 }
                 break;
             }

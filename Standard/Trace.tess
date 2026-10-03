@@ -1,0 +1,168 @@
+// Tessera stdlib: the crash trace
+//
+// A traced build keeps, for each thread, the program's routines it is in, so a
+// crash can say how the program got there. The builder calls trace_push when one
+// of the program's routines starts (its name and file), trace_at before each call
+// the routine makes (the call's line and column: a frame is read only while its
+// routine is in a call, so that's the place it has), and trace_pop just before it
+// returns. A crash handler reads the trace
+// through trace_depth and trace_frame, most recent frame first; the default
+// handler (Os/Crash.tess) prints it after the place:
+//
+//     tessera: IndexOutOfBoundsError: Index is out of bounds for the collection.
+//       at examples/grid.tess:12:9
+//     Stack trace:
+//       0: at fill (examples/grid.tess:12:9)
+//       1: at main (examples/grid.tess:30:5)
+//
+// The frames are a ring of TRACE_CAPACITY: a deeper trace keeps its innermost
+// frames, and trace_depth still says how deep it was. The standard library isn't
+// traced, so a crash inside it shows the line of the program that called it, and
+// neither is a routine marked #untraced or #inline, nor the crash handler.
+//
+// The trace is thread-local on a target with an operating system, so each thread
+// has its own. A target without one has no thread-locals: there the trace is a
+// plain global, which an interrupt handler's frames share (they come and go
+// before the code they interrupted goes on, so the depth stays right).
+//
+// Each storage declaration is #trace("on"), kept only in a traced build, and the
+// accessors have a #trace("off") twin that reads an empty trace. An untraced build
+// (--no-trace, [debug] trace = false, and release-time and release-space unless
+// told otherwise) calls none of the routines the builder uses, so it has no trace
+// storage or code at all.
+
+module Standard::Core
+
+/// The running thread's trace.
+#[threadlocal, target(os: not "none"), trace("on")]
+private global TRACE: @TraceStack
+/// The trace on a target without an operating system: one, shared with interrupt handlers.
+#[target(os: "none"), trace("on")]
+private global TRACE: @TraceStack
+
+/// The number of frames the trace keeps: the innermost ones, when the program is deeper.
+preset TRACE_CAPACITY: USize = 32
+/// The mask that turns a depth into a slot of the ring.
+private preset TRACE_MASK: USize = TRACE_CAPACITY.sub(1)
+
+/// One routine on the trace: its name and its source file, as C strings (RazorForge keeps its frames the same way),
+/// and the place it has reached: the line and column of the call it is in. The column is 0 where a `#source` gave
+/// none.
+record TraceFrame
+    name   : CStr
+    file   : CStr
+    line   : U32
+    column : U32
+
+/// A thread's trace: its innermost frames, a ring indexed by depth modulo TRACE_CAPACITY, and the number of frames it
+/// is in.
+private record TraceStack
+    frames : Array<TraceFrame, TRACE_CAPACITY>
+    depth  : USize
+
+/// Starts a traced routine's frame: the builder calls it on entry. The frame's line and column come from the routine's
+/// first trace_at, before any call that could read them. It uses the prelude's operations only, so a debug build
+/// makes no calls here either.
+/// :param name: The routine's name.
+/// :param file: Its source file.
+#[inline, trace("on")]
+private routine trace_push(name: CStr, file: CStr) -> Void
+    block entry()
+        stack  : @TraceStack = TRACE
+        depth  : USize       = stack.depth.load()
+        slot   : USize       = band<USize>(depth, TRACE_MASK)
+        frames : @TraceFrame = bitcast<@TraceStack, @TraceFrame>(stack)
+        frame  : @TraceFrame = frames.stride(slot)
+        name.store_into(frame.name)
+        file.store_into(frame.file)
+        add<USize>(depth, 1).store_into(stack.depth)
+        return()
+
+/// Moves the innermost frame to a call: the builder calls it before each call a traced routine makes.
+/// :param line: The call's line.
+/// :param column: The call's column.
+#[inline, trace("on")]
+private routine trace_at(line: U32, column: U32) -> Void
+    block entry()
+        stack  : @TraceStack = TRACE
+        depth  : USize       = stack.depth.load()
+        top    : USize       = sub<USize>(depth, 1)
+        slot   : USize       = band<USize>(top, TRACE_MASK)
+        frames : @TraceFrame = bitcast<@TraceStack, @TraceFrame>(stack)
+        frame  : @TraceFrame = frames.stride(slot)
+        line.store_into(frame.line)
+        column.store_into(frame.column)
+        return()
+
+/// Ends the innermost frame: the builder calls it just before a traced routine returns.
+#[inline, trace("on")]
+private routine trace_pop() -> Void
+    block entry()
+        stack : @TraceStack = TRACE
+        depth : USize       = stack.depth.load()
+        sub<USize>(depth, 1).store_into(stack.depth)
+        return()
+
+/// The number of frames the running thread is in: the traced routines that have started and not returned. It may be
+/// more than TRACE_CAPACITY, the frames the trace keeps.
+/// :returns: The depth, or 0 in an untraced build.
+#trace("on")
+routine trace_depth() -> USize
+    block entry()
+        stack : @TraceStack = TRACE
+        depth : USize       = stack.depth.load()
+        return(depth)
+
+/// The number of frames the running thread is in: always 0, since this build keeps no trace.
+/// :returns: 0.
+#trace("off")
+routine trace_depth() -> USize
+    block entry()
+        return(0)
+
+/// A frame of the running thread's trace, counting from the innermost: 0 is the routine that crashed, or that called
+/// the standard library routine that did, 1 its caller, and so on.
+/// :param back: How many frames out from the innermost, below both trace_depth() and TRACE_CAPACITY.
+/// :returns: The frame. Past those bounds it's what an older frame left in the ring: never a crash, since a crash
+/// handler reads it.
+#trace("on")
+routine trace_frame(back: USize) -> TraceFrame
+    block entry()
+        stack  : @TraceStack = TRACE
+        depth  : USize       = stack.depth.load()
+        newest : USize       = depth.sub_wrap(1)
+        at     : USize       = newest.sub_wrap(back)
+        slot   : USize       = at.bitand(TRACE_MASK)
+        frames : @TraceFrame = bitcast<@TraceStack, @TraceFrame>(stack)
+        frame  : TraceFrame  = frames.stride(slot).load()
+        return(frame)
+
+/// A frame of the running thread's trace: an empty one, since this build keeps no trace.
+/// :param back: How many frames out from the innermost.
+/// :returns: A frame with empty names and line 0.
+#trace("off")
+routine trace_frame(back: USize) -> TraceFrame
+    block entry()
+        frame : TraceFrame = { name: "", file: "", line: 0, column: 0 }
+        return(frame)
+
+/// Makes `depth` the running thread's trace depth: a scheduler that runs several call stacks on one thread
+/// (Standard::Fiber) swaps each one's depth in when it resumes it and out when it stops, so the depth stays right on
+/// every thread a stack runs on.
+/// :param depth: The depth of the stack about to run.
+/// :returns: The depth the thread had.
+#trace("on")
+routine trace_switch(depth: USize) -> USize
+    block entry()
+        stack : @TraceStack = TRACE
+        was   : USize       = stack.depth.load()
+        stack.depth.store(depth)
+        return(was)
+
+/// Makes `depth` the running thread's trace depth: nothing to do, since this build keeps no trace.
+/// :param depth: The depth of the stack about to run.
+/// :returns: 0.
+#trace("off")
+routine trace_switch(depth: USize) -> USize
+    block entry()
+        return(0)

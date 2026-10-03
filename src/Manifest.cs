@@ -24,6 +24,8 @@ namespace Tessera;
 ///
 /// [debug]
 /// emit-llvm = true                    # keep the IR next to the output
+/// trace = false                       # leave out the crash trace (default: kept in debug and release,
+///                                     # left out in release-time and release-space)
 /// ```
 ///
 /// The build is the entry file and what it imports, found as RazorForge finds modules: the files under the
@@ -51,6 +53,12 @@ public sealed record Manifest(
     /// directory (another package's root).
     public List<string> Roots { get; init; } = [];
 
+    /// `[debug] trace`: whether the program keeps the crash trace, or null for the mode's default.
+    public bool? Trace { get; init; }
+
+    /// Whether the build keeps the crash trace: `[debug] trace`, else the mode's default.
+    public bool Traced => Trace ?? Mode.TracedByDefault();
+
     /// Where the build writes its output: `build/` next to the manifest.
     public string OutputDirectory => System.IO.Path.Combine(Directory, "build");
 
@@ -72,7 +80,7 @@ public sealed record Manifest(
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
         ["target"] = ["executable", "triple", "cpu", "features", "mode", "library", "c-libraries", "library-paths", "link-script"],
-        ["debug"] = ["emit-llvm"],
+        ["debug"] = ["emit-llvm", "trace"],
     };
 
     /// <paramref name="defaultTarget"/> is the triple used when [target] names none (the host if null).
@@ -141,7 +149,7 @@ public sealed record Manifest(
             Strs(target, "c-libraries", path) ?? [],
             (Strs(target, "library-paths", path) ?? []).Select(Resolve).ToList(),
             linkScript,
-            Bool(debug, "emit-llvm", path) ?? false) { Roots = roots };
+            Bool(debug, "emit-llvm", path) ?? false) { Roots = roots, Trace = Bool(debug, "trace", path) };
     }
 
     /// The entry and every file the build needs from the roots: those declaring a module the entry imports, then

@@ -1,0 +1,50 @@
+// A crash 42 frames deep: the trace keeps the innermost TRACE_CAPACITY (32) of them, and trace_depth still says how
+// deep the program was. The crash handler writes them in the default handler's shape, on stdout.
+
+import Standard::Format
+import Standard::Os
+
+#[external("c"), symbol("exit"), noreturn]
+routine exit(status: CInt) -> Void
+
+/// Writes the trace as the default handler does, then exits with status 3.
+#[export("tessera_crash_handler"), noreturn]
+routine on_crash(name: Bytes, message: Bytes, place: @SourceLocation) -> Void
+    block entry()
+        depth : USize = trace_depth()
+        shown : USize = depth.min(TRACE_CAPACITY)
+        Out.write("{name}: {message}\nStack trace:\n")
+        jump frame(0, shown, depth)
+
+    block frame(back: USize, shown: USize, depth: USize)
+        done : Bool = back.ge(shown)
+        branch done
+            ? total(depth)
+            : continue
+        at     : TraceFrame = trace_frame(back)
+        label  : Bytes      = at.name.to_bytes()
+        file   : Bytes      = at.file.to_bytes()
+        line   : U32        = at.line
+        column : U32        = at.column
+        Out.write("  {back}: at {label} ({file}:{line}:{column})\n")
+        jump frame(back.add(1), shown, depth)
+
+    block total(depth: USize)
+        Out.write("  ... ({depth} frames total)\n")
+        exit(3)
+
+/// Recurses n more times, then crashes.
+routine descend(n: U32) -> U32
+    block entry()
+        bottom : Bool = n.eq(0)
+        branch bottom
+            ? crash("DepthReachedError", "The recursion reached the bottom.")
+            : deeper()
+
+    block deeper()
+        return(descend(n.sub(1)))
+
+routine main() -> S32
+    block entry()
+        reached : U32 = descend(40)
+        return(reached.to<S32>())

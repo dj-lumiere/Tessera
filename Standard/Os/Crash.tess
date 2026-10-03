@@ -2,10 +2,17 @@
 //
 // Standard::Core's crash calls tessera_crash_handler, a link-time symbol. This
 // is the hosted default: the crash's name and message, the place on a second
-// line, on stderr, then exit status 101.
+// line, then the crash trace (Trace.tess), most recent frame first, on stderr,
+// then exit status 101.
 //
 //     tessera: IndexOutOfBoundsError: Index is out of bounds for the collection.
 //       at examples/grid.tess:12:9
+//     Stack trace:
+//       0: at fill (examples/grid.tess:12:9)
+//       1: at main (examples/grid.tess:30:5)
+//
+// A trace deeper than the frames it keeps ends with "  ... (40 frames total)",
+// and an untraced build prints no trace.
 //
 // A program replaces it by exporting its own routine under the same name; a
 // target without an operating system has no default, so a program for one
@@ -16,8 +23,8 @@ module Standard::Os
 import Standard::Format
 
 /// The hosted default crash handler, exported under the link-time name the core crash calls. It writes `tessera:
-/// <name>: <message>` and the source location on a second line to standard error, then exits with status 101. A
-/// program replaces it by exporting its own routine under the same name.
+/// <name>: <message>`, the source location on a second line, and the crash trace to standard error, then exits with
+/// status 101. A program replaces it by exporting its own routine under the same name.
 /// :param name: The kind of failure, such as `IntegerOverflowError`.
 /// :param message: What happened.
 /// :param place: Where the crash happened: file, line, and column (0 when only the line is known).
@@ -46,4 +53,50 @@ routine default_crash_handler(name: Bytes, message: Bytes, place: @SourceLocatio
 
     block done()
         Err.write("\n")
+        write_trace()
         c_exit(101)
+
+/// Writes the running thread's crash trace to standard error, most recent frame first, in RazorForge's shape: `Stack
+/// trace:`, then `  0: at <routine> (<file>:<line>:<column>)` per frame, and `  ... (<n> frames total)` when there were
+/// more than the trace keeps. Writes nothing when the trace is empty (an untraced build).
+private routine write_trace() -> Void
+    block entry()
+        depth : USize = trace_depth()
+        empty : Bool  = depth.eq(0)
+        branch empty
+            ? return()
+            : continue
+        Err.write("Stack trace:\n")
+        shown : USize = depth.min(TRACE_CAPACITY)
+        jump frame(0, shown)
+
+    block frame(back: USize, shown: USize)
+        done : Bool = back.ge(shown)
+        branch done
+            ? total()
+            : continue
+        at   : TraceFrame = trace_frame(back)
+        name : Bytes      = at.name.to_bytes()
+        file : Bytes      = at.file.to_bytes()
+        line : U32        = at.line
+        Err.write("  {back}: at {name} ({file}:{line}")
+        column : U32  = at.column
+        whole  : Bool = column.eq(0)
+        branch whole
+            ? closed(back, shown)
+            : continue
+        Err.write(":{column}")
+        jump closed(back, shown)
+
+    block closed(back: USize, shown: USize)
+        Err.write(")\n")
+        jump frame(back.add(1), shown)
+
+    block total()
+        depth : USize = trace_depth()
+        more  : Bool  = depth.gt(TRACE_CAPACITY)
+        branch more
+            ? continue
+            : return()
+        Err.write("  ... ({depth} frames total)\n")
+        return()

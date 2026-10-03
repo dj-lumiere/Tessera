@@ -9,10 +9,10 @@ static class Cli
         usage:
           tessera build                 build the solution its config.toml describes (here or above)
           tessera run                   build it and run it
-          tessera build <file.tess>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [<target>] [--mode <mode>]
-          tessera run   <file.tess>... [<target>] [--mode <mode>]
-          tessera test  [<target>] [--mode <mode>] <dir-or-file.tess>...
-          tessera check [<target>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
+          tessera build <file.tess>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [<target>] [--mode <mode>] [<trace>]
+          tessera run   <file.tess>... [<target>] [--mode <mode>] [<trace>]
+          tessera test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.tess>...
+          tessera check [<target>] [<trace>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
           tessera fmt   -               format the source on standard input to standard output (for an editor)
           tessera lsp                   run the language server on standard input and output (for an editor)
@@ -25,6 +25,9 @@ static class Cli
         <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), as a
                 manifest's mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a
                 debugger shows Tessera lines, routine parameters, bindings and block parameters.
+        <trace>: --no-trace leaves out the crash trace (the program's routines on the crash report), --trace keeps it.
+                 Without either, debug and release builds keep it and release-time and release-space leave it out;
+                 check keeps it. A routine marked #untraced is left out of it in any build.
         <target>: --target <arch-os-abi> (default: this machine), --cpu <name> (default: the triple's baseline, such
                   as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). #feature reads the result.
 
@@ -206,7 +209,18 @@ static class Cli
     }
 
     private sealed record Options(List<string> Inputs, string? Output, bool EmitLlvm, BuildTarget Target, BuildMode Mode,
-        bool StdlibExports);
+        bool StdlibExports, bool? Trace);
+
+    /// `--trace` / `--no-trace`: whether the build keeps the crash trace; null when neither is given.
+    private static bool TryTrace(string arg, ref bool? trace)
+    {
+        switch (arg)
+        {
+            case "--trace": trace = true; return true;
+            case "--no-trace": trace = false; return true;
+            default: return false;
+        }
+    }
 
     /// `--mode <name>`: one of the four build modes.
     private static BuildMode ParseMode(string[] args, ref int i)
@@ -221,11 +235,12 @@ static class Cli
         var inputs = new List<string>();
         string? output = null;
         bool emit = false, stdlibExports = true;
+        bool? trace = null;
         var mode = BuildMode.Debug;
         var targetArgs = new TargetArgs();
         for (int i = 0; i < args.Length; i++)
         {
-            if (targetArgs.TryTake(args, ref i)) continue;
+            if (targetArgs.TryTake(args, ref i) || TryTrace(args[i], ref trace)) continue;
             switch (args[i])
             {
                 case "-o" when i + 1 < args.Length: output = args[++i]; break;
@@ -239,7 +254,7 @@ static class Cli
             }
         }
         if (inputs.Count == 0) throw new ToolError("no input files");
-        return new Options(inputs, output, emit, targetArgs.Build(), mode, stdlibExports);
+        return new Options(inputs, output, emit, targetArgs.Build(), mode, stdlibExports, trace);
     }
 
     /// Parses every input, plus the whole standard library, into one compilation and lowers it to LLVM IR.
@@ -249,15 +264,16 @@ static class Cli
     {
         var targetArgs = new TargetArgs();
         var files = new List<string>();
+        bool? trace = null;
         for (int i = 0; i < args.Length; i++)
         {
-            if (targetArgs.TryTake(args, ref i)) continue;
+            if (targetArgs.TryTake(args, ref i) || TryTrace(args[i], ref trace)) continue;
             if (args[i].StartsWith('-')) throw new ToolError($"unknown option '{args[i]}'");
             files.Add(args[i]);
         }
         var target = targetArgs.Build();
         var decls = LoadDecls([.. files], target);
-        var compiler = new Compiler(target, decls);
+        var compiler = new Compiler(target, decls, trace ?? true);
         var errors = compiler.CheckAll();
         foreach (var e in errors) Console.Error.WriteLine(e.Message);
         if (errors.Count == 0) Lint(decls, files);
@@ -292,12 +308,14 @@ static class Cli
 
     /// Compiles the inputs to LLVM IR. An executable needs `routine main() -> S32`; checking for it here gives a
     /// clear error instead of the platform linker's (lld-link says "subsystem must be defined").
+    /// <paramref name="trace"/>: whether the program keeps the crash trace, or null for the mode's default.
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
-        IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true)
+        IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true,
+        bool? trace = null)
     {
         var inputs = files.ToList();
         var decls = LoadDecls(inputs, target);
-        var compiler = new Compiler(target, decls)
+        var compiler = new Compiler(target, decls, trace ?? mode.TracedByDefault())
         {
             FileTagPaths = FileTagPaths(inputs, roots),
             DebugInfo = true,
@@ -404,7 +422,7 @@ static class Cli
 
     private static string BuildManifest(Manifest m)
     {
-        string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode);
+        string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced);
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
         Link(ir, m.ExecutablePath, m.Target, m.Mode, m.LinkArguments());
@@ -419,7 +437,8 @@ static class Cli
             return 0;
         }
         var o = ParseOptions(args);
-        string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm, mode: o.Mode, stdlibExports: o.StdlibExports);
+        string ir = Compile(o.Inputs, o.Target, executable: !o.EmitLlvm, mode: o.Mode, stdlibExports: o.StdlibExports,
+            trace: o.Trace);
         string stem = Path.ChangeExtension(o.Inputs[0], null);
 
         if (o.EmitLlvm)
@@ -446,7 +465,7 @@ static class Cli
         string exe = TempExe();
         try
         {
-            Link(Compile(o.Inputs, o.Target, mode: o.Mode), exe, o.Target, o.Mode);
+            Link(Compile(o.Inputs, o.Target, mode: o.Mode, trace: o.Trace), exe, o.Target, o.Mode);
             var (code, _, _) = Exec(exe, captureOutput: false);
             return code;
         }
@@ -576,13 +595,17 @@ static class Cli
     /// the same in all four.
     private static BuildMode _testMode = BuildMode.Debug;
 
+    /// `test --trace` / `--no-trace`: whether every test without a manifest keeps the crash trace (null: the mode's
+    /// default).
+    private static bool? _testTrace;
+
     private static int Test(string[] args)
     {
         var targetArgs = new TargetArgs();
         var dirs = new List<string>();
         for (int i = 0; i < args.Length; i++)
         {
-            if (targetArgs.TryTake(args, ref i)) continue;
+            if (targetArgs.TryTake(args, ref i) || TryTrace(args[i], ref _testTrace)) continue;
             if (args[i] == "--mode") _testMode = ParseMode(args, ref i);
             else dirs.Add(args[i]);
         }
@@ -680,7 +703,8 @@ static class Cli
                 manifest = Manifest.Load(only, target);
                 (sources, target) = ([.. manifest.Sources], manifest.Target);
             }
-            ir = Compile(sources, target, mode: manifest?.Mode ?? _testMode, lint: false);
+            ir = Compile(sources, target, mode: manifest?.Mode ?? _testMode, lint: false,
+                trace: manifest is null ? _testTrace : manifest.Traced);
         }
         catch (ManifestError e)
         {

@@ -1,0 +1,64 @@
+// The crash trace, read by the program's own crash handler through trace_depth and trace_frame: the frames come
+// innermost first, each at the line and column of the call it was making when the program crashed (the innermost at
+// the call into the standard library that crashed). An #untraced routine and an #inline one have no frame: the call
+// into them shows on their caller's. A routine that returns a call's value keeps its frame while the callee runs.
+
+import Standard::Alloc
+import Standard::Collections
+import Standard::Format
+import Standard::Os
+
+#[external("c"), symbol("exit"), noreturn]
+routine exit(status: CInt) -> Void
+
+/// Writes the crash and its trace on stdout, then exits with status 3.
+#[export("tessera_crash_handler"), noreturn]
+routine on_crash(name: Bytes, message: Bytes, place: @SourceLocation) -> Void
+    block entry()
+        depth : USize = trace_depth()
+        Out.write("crashed: {name}, {depth} frames\n")
+        jump frame(0, depth)
+
+    block frame(back: USize, depth: USize)
+        done : Bool = back.ge(depth)
+        branch done
+            ? exit(3)
+            : continue
+        at     : TraceFrame = trace_frame(back)
+        label  : Bytes      = at.name.to_bytes()
+        file   : Bytes      = at.file.to_bytes()
+        line   : U32        = at.line
+        column : U32        = at.column
+        Out.write("  {back}: at {label} ({file}:{line}:{column})\n")
+        jump frame(back.add(1), depth)
+
+/// Takes the last element of an empty list: AbsentValueError.
+routine take(list: @List<S64>) -> S64
+    block entry()
+        last : S64 = list.pop()
+        return(last)
+
+/// Off the trace: take's caller shows as relay, at its call to pass.
+#untraced
+routine quiet(list: @List<S64>) -> S64
+    block entry()
+        return(take(list))
+
+/// Part of each caller, like the standard library.
+#inline
+routine pass(list: @List<S64>) -> S64
+    block entry()
+        return(quiet(list))
+
+/// Returns a call's value: its frame is still there while the callee runs.
+routine relay(list: @List<S64>) -> S64
+    block entry()
+        Out.write("relaying\n")
+        return(pass(list))
+
+routine main() -> S32
+    block entry()
+        claim alloc : @Allocator <- make_heap_allocator()
+        claim list  : @List<S64> <- .construct(alloc)
+        value : S64 = relay(list)
+        return(value.to<S32>())

@@ -80,6 +80,7 @@ record FiberState
     waiting_for : @Join  // the Join it waits on in join
     work        : Callable<(Addr,), Void>  // its blocking call, on an I/O thread
     work_arg    : Addr
+    trace_depth : USize  // its crash trace depth while it isn't running (Trace.tess)
 
 /// A fiber from spawn_joinable, until join returns.
 record Join
@@ -761,7 +762,11 @@ private routine timer_wait(sched: @Scheduler) -> U64
 private routine resume(w: @Worker, fiber: @FiberState) -> Void
     block entry()
         w.current.store(fiber)
+        // The fiber's crash trace depth goes in while it runs and comes back out with it, so it stays right on every
+        // thread the fiber runs on, and the worker's own stays as it was.
+        own : USize = trace_switch(fiber.trace_depth.load())
         switch_stack(w.home, fiber.sp.load())
+        trace_switch(own).store_into(fiber.trace_depth)
         w.current.store(null)
         done : Bool = fiber.finished.load()
         branch done
@@ -851,7 +856,7 @@ private routine start_fiber(sched: @Scheduler, entry: Callable<(Addr,), Void>, a
         fiber : @FiberState = allocate<FiberState>(sched.alloc.load(), 1)
         fiber.store(FiberState { sp: sp, stack: stack, entry: entry, arg: arg, finished: false,
             then: requeue.to<Callable>(), wake_state: FIBER_RUNNING, deadline: 0, join: j,
-            waiting_for: null, work: no_work.to<Callable>(), work_arg: null })
+            waiting_for: null, work: no_work.to<Callable>(), work_arg: null, trace_depth: 0 })
         sched.live.atomic_fetch_add(1)
         place_ready(sched, fiber)
         return()

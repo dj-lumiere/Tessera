@@ -44,9 +44,12 @@ public sealed partial class Compiler
     private readonly Dictionary<string, string> _strings = [];
     private readonly Dictionary<string, string> _wideStrings = [];
 
-        public Compiler(BuildTarget target, IEnumerable<Decl> decls)
+    /// <paramref name="trace"/>: whether the program's routines keep the crash trace (Trace.cs). A builder that uses
+    /// Tessera as a library passes false unless it wants Tessera's trace in what it builds.
+    public Compiler(BuildTarget target, IEnumerable<Decl> decls, bool trace = false)
     {
         Target = target;
+        Trace = trace;
         foreach (var d in Derive.Routines(decls.ToList()))
         {
             if (!Selected(d)) continue;
@@ -225,6 +228,7 @@ public sealed partial class Compiler
         // The hosted layer exists only on a target with an operating system. Without one, its library declarations
         // drop out as a whole; the module itself stays, so importing it or naming something in it can say why.
         if (!Target.HasOs && d.IsLibrary && d is not ModuleDecl && IsOsModule(d.Module)) return false;
+        if (!TraceSelected(d)) return false;
         foreach (var a in d.Attributes)
         {
             if (a.Name != "target" && a.Args.FirstOrDefault(arg => arg.Values is not null) is { } listed)

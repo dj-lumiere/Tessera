@@ -10,6 +10,7 @@ answer.
 ```sh
 dotnet run -- run   file.tess        # build and run (the whole stdlib is always available)
 dotnet run -- run --mode release file.tess   # the same at -O2 (also release-time -O3, release-space -Os)
+dotnet run -- run --no-trace file.tess   # without the crash trace (--trace keeps it; build, run, test, check)
 dotnet run -- check file.tess        # type-check only
 dotnet run -- test tests examples             # golden tests
 dotnet run -- fmt <files or dirs>        # format in place (--check to only list)
@@ -124,7 +125,8 @@ routine main() -> S32
 - `#inline` inlines a routine at every call (LLVM `alwaysinline`, not a hint). Put it on small routines in hot loops
   (a hash round, a generator step), not on large ones. It's a build error on an `#external` routine (no body), on a
   recursive one (directly or through other routines), and on one used as a `Callable` value. `#noinline` (LLVM
-  `noinline`) keeps a cold path out of a hot loop; a routine can't be both.
+  `noinline`) keeps a cold path out of a hot loop; a routine can't be both. An `#inline` routine has no frame on the
+  crash trace (below); `#untraced` keeps a larger hot routine off it too.
 - A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
   conversions (`add`, `shl`, `bitor`, `to<U128>()`, `to_wrap<U8>()`, …), F32/F64 `add`/`sub`/`mul`/`div`/`neg`,
   `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and F128. A routine call is an error; nothing
@@ -249,6 +251,14 @@ routine main() -> S32
   @SourceLocation) -> Void`. A stdlib routine that crashes on its caller's mistake is `#track_caller`, so the place is
   the caller's line; mark a routine of your own the same way when its crashes are its caller's fault.
 - Expected failures return `Result<T, E>`. There's no `?`: `when r` with `.Success(v)` / `.Failure(e)` arms.
+- The crash trace: the builder keeps a shadow stack of the program's routines (not the stdlib's, not `#inline` or
+  `#untraced` ones, not the handler), and the default handler prints it after the place, innermost first:
+  `Stack trace:` then `  0: at fill (grid.tess:12:9)`, and `  ... (40 frames total)` past the 32 it keeps. A handler
+  of your own reads it with `trace_depth()` (`USize`, 0 in an untraced build) and `trace_frame(back)` (a
+  `TraceFrame`: `name` / `file` as `CStr`, `line` / `column`; 0 is the innermost, `back` below `trace_depth()` and
+  `TRACE_CAPACITY`). It's on in debug and release, off in release-time and release-space; `--no-trace` / `--trace`
+  or `[debug] trace = false|true` in config.toml override that. Thread-local with an OS, a plain global without.
+  A handler's own helper routines should be `#untraced` (they'd push onto the trace it's reading).
 
 **Records**
 
