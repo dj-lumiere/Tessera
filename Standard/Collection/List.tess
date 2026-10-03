@@ -185,14 +185,15 @@ require T: typename
 /// `pop`, returning Absent instead of crashing on an empty list.
 routine List<T>.pop_checked(self: @Self) -> Option<T>
 require T: typename
+    shared count : USize = self.count.load()
+
     block entry()
-        count : USize = self.count.load()
-        empty : Bool  = count.eq(0)
+        empty : Bool = count.eq(0)
         branch empty
             ? return(.Absent)
-            : pop(count)
+            : pop()
 
-    block pop(count: USize)
+    block pop()
         index : USize = count.sub(1)
         data  : @T    = self.storage.data.load()
         value : T     = data.stride(index).load()
@@ -324,31 +325,32 @@ require T: typename
 /// :returns: `true` when the counts match and every element pair is equal.
 routine List<T>.eq(self: Self, other: Self) -> Bool
 require T: typename, Equatable<T>
+    shared la : USize = self.count
+
     block entry()
-        la       : USize = self.count
         lb       : USize = other.count
         same_len : Bool  = la.eq(lb)
         branch same_len
-            ? scan(la)
+            ? scan()
             : return(false)
 
-    block scan(len: USize)
+    block scan()
         pa : @T = self.storage.data
         pb : @T = other.storage.data
-        jump loop(0, len, pa, pb)
+        jump loop(0, pa, pb)
 
-    block loop(i: USize, len: USize, pa: @T, pb: @T)
-        done : Bool = i.ge(len)
+    block loop(i: USize, pa: @T, pb: @T)
+        done : Bool = i.ge(la)
         branch done
             ? return(true)
-            : step(i, len, pa, pb)
+            : step(i, pa, pb)
 
-    block step(i: USize, len: USize, pa: @T, pb: @T)
+    block step(i: USize, pa: @T, pb: @T)
         x  : T    = pa.stride(i).load()
         y  : T    = pb.stride(i).load()
         eq : Bool = x.eq(y)
         branch eq
-            ? loop(i.add(1), len, pa, pb)
+            ? loop(i.add(1), pa, pb)
             : return(false)
 
 /// Gives the list's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
@@ -366,18 +368,19 @@ require T: typename
 #track_caller
 routine List<T>.destruct_all(self: @Self) -> Void
 require T: typename, Destructible<T>
-    block entry()
-        first : @T    = self.storage.data.load()
-        count : USize = self.count.load()
-        jump each(first, count, 0)
+    shared first : @T    = self.storage.data.load()
+    shared count : USize = self.count.load()
 
-    block each(first: @T, count: USize, i: USize)
+    block entry()
+        jump each(0)
+
+    block each(i: USize)
         done : Bool = i.ge(count)
         branch done
             ? finish()
             : continue
         first.stride(i).destruct()
-        jump each(first, count, i.add(1))
+        jump each(i.add(1))
 
     block finish()
         self.destruct()

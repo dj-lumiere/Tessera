@@ -369,16 +369,17 @@ routine F128Extended.to_nearest<S64>(self: Self) -> S64
 /// x = q ln2 + d with |d| <= ln2/2, e^d by its Taylor series (27th degree, and the
 /// first dropped term is below 2^-141), then × 2^q.
 routine wide_exp(x: F128Extended) -> F128Extended
-    block entry()
-        ln2     : F128Extended = wide_const(0)
-        inv_ln2 : F128Extended = wide_const(1)
-        q       : S64          = x.mul(inv_ln2).to_nearest<S64>()
-        d       : F128Extended = x.sub(q.to<F128Extended>().mul(ln2))
-        last    : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(),
-            WIDE_EXP_COEF_LO.to<@U64>(), WIDE_EXP_COEF_EXP.to<@S64>(), 27)
-        jump horner(26, last, d, q)
+    shared ln2     : F128Extended = wide_const(0)
+    shared inv_ln2 : F128Extended = wide_const(1)
+    shared q       : S64          = x.mul(inv_ln2).to_nearest<S64>()
+    shared d       : F128Extended = x.sub(q.to<F128Extended>().mul(ln2))
 
-    block horner(i: S64, s: F128Extended, d: F128Extended, q: S64)
+    block entry()
+        last : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(), WIDE_EXP_COEF_LO.to<@U64>(),
+            WIDE_EXP_COEF_EXP.to<@S64>(), 27)
+        jump horner(26, last)
+
+    block horner(i: S64, s: F128Extended)
         done   : Bool         = i.lt(0)
         scaled : F128Extended = s.ldexp(q)
         branch done
@@ -386,7 +387,7 @@ routine wide_exp(x: F128Extended) -> F128Extended
             : continue
         c : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(), WIDE_EXP_COEF_LO.to<@U64>(),
             WIDE_EXP_COEF_EXP.to<@S64>(), i.to<USize>())
-        jump horner(i.sub(1), s.mul(d).add(c), d, q)
+        jump horner(i.sub(1), s.mul(d).add(c))
 
 // -- log -----------------------------------------------------------------------
 
@@ -572,18 +573,19 @@ routine limbs_bits64(p: @U64, pos: S64) -> U64
 /// 2^-133 at worst, where x sits closest to a multiple of π/2 (|θ| = 2^-123.3),
 /// which is why tan sends |θ| < 2^-90 to its exact tier (F128Tan.tess).
 routine f128_reduce(x: F128) -> Reduced
+    shared p : F128Parts = f128_unpack(x.bits())
+
     block entry()
-        p     : F128Parts = f128_unpack(x.bits())
-        small : Bool      = p.exponent.lt(-1)  // |x| < 0.5 < π/4
+        small : Bool = p.exponent.lt(-1)  // |x| < 0.5 < π/4
         branch small
             ? near_zero()
-            : window(p)
+            : window()
 
     block near_zero()
         r : Reduced = Reduced { quadrant: 0, theta: F128.to<F128Extended>(x.abs()) }
         return(r)
 
-    block window(p: F128Parts)
+    block window()
         bits_above  : S64 = p.exponent.sub(114).max(0)
         start       : S64 = bits_above.div(64)  // first 2/π limb used
         window_bits : S64 = start.add(8).mul(64)
@@ -713,13 +715,14 @@ choice TrigKind: U8
 /// sin θ = θ Σ (-θ²)^k / (2k+1)!  and  cos θ = Σ (-θ²)^k / (2k)!, 18 terms each,
 /// for |θ| <= π/4 (the first dropped term is below 2^-139).
 routine wide_sin_core(t: F128Extended) -> F128Extended
+    shared u : F128Extended = t.mul(t).neg()
+
     block entry()
-        u    : F128Extended = t.mul(t).neg()
         last : F128Extended = wide_table(WIDE_SIN_COEF_HI.to<@U128>(), WIDE_SIN_COEF_LO.to<@U64>(),
             WIDE_SIN_COEF_EXP.to<@S64>(), 17)
-        jump horner(16, last, u)
+        jump horner(16, last)
 
-    block horner(i: S64, s: F128Extended, u: F128Extended)
+    block horner(i: S64, s: F128Extended)
         done : Bool         = i.lt(0)
         r    : F128Extended = s.mul(t)
         branch done
@@ -727,23 +730,24 @@ routine wide_sin_core(t: F128Extended) -> F128Extended
             : continue
         c : F128Extended = wide_table(WIDE_SIN_COEF_HI.to<@U128>(), WIDE_SIN_COEF_LO.to<@U64>(),
             WIDE_SIN_COEF_EXP.to<@S64>(), i.to<USize>())
-        jump horner(i.sub(1), s.mul(u).add(c), u)
+        jump horner(i.sub(1), s.mul(u).add(c))
 
 routine wide_cos_core(t: F128Extended) -> F128Extended
+    shared u : F128Extended = t.mul(t).neg()
+
     block entry()
-        u    : F128Extended = t.mul(t).neg()
         last : F128Extended = wide_table(WIDE_COS_COEF_HI.to<@U128>(), WIDE_COS_COEF_LO.to<@U64>(),
             WIDE_COS_COEF_EXP.to<@S64>(), 17)
-        jump horner(16, last, u)
+        jump horner(16, last)
 
-    block horner(i: S64, s: F128Extended, u: F128Extended)
+    block horner(i: S64, s: F128Extended)
         done : Bool = i.lt(0)
         branch done
             ? return(s)
             : continue
         c : F128Extended = wide_table(WIDE_COS_COEF_HI.to<@U128>(), WIDE_COS_COEF_LO.to<@U64>(),
             WIDE_COS_COEF_EXP.to<@S64>(), i.to<USize>())
-        jump horner(i.sub(1), s.mul(u).add(c), u)
+        jump horner(i.sub(1), s.mul(u).add(c))
 
 /// sin and cos of NaN (a quiet NaN) and of the infinities (NaN).
 routine f128_trig_nonfinite(x: F128) -> F128
@@ -867,13 +871,14 @@ routine wide_ln_1p(x: F128Extended) -> F128Extended
 
 /// atan x = x Σ (-x²)^k / (2k+1), 26 terms, for |x| < 0.1.
 routine wide_atan_series(x: F128Extended) -> F128Extended
+    shared u : F128Extended = x.mul(x).neg()
+
     block entry()
-        u    : F128Extended = x.mul(x).neg()
         last : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
             WIDE_LOG_COEF_EXP.to<@S64>(), 25)
-        jump horner(24, last, u)
+        jump horner(24, last)
 
-    block horner(i: S64, s: F128Extended, u: F128Extended)
+    block horner(i: S64, s: F128Extended)
         done : Bool         = i.lt(0)
         r    : F128Extended = s.mul(x)
         branch done
@@ -881,32 +886,33 @@ routine wide_atan_series(x: F128Extended) -> F128Extended
             : continue
         c : F128Extended = wide_table(WIDE_LOG_COEF_HI.to<@U128>(), WIDE_LOG_COEF_LO.to<@U64>(),
             WIDE_LOG_COEF_EXP.to<@S64>(), i.to<USize>())
-        jump horner(i.sub_wrap(1), s.mul(u).add(c), u)
+        jump horner(i.sub_wrap(1), s.mul(u).add(c))
 
 /// atan x for any finite x: past |x| = 1, π/2 - atan(1/|x|). Then three
 /// half-angle steps x ← x / (1 + sqrt(1 + x²)) bring |x| <= 1 under 0.1.
 routine wide_atan(x: F128Extended) -> F128Extended
+    shared a   : F128Extended = x.abs()
+    shared big : Bool         = a.above_one()
+
     block entry()
-        a     : F128Extended = x.abs()
-        big   : Bool         = a.above_one()
         inv   : F128Extended = wide_one().div(a)
         small : F128Extended = big
             ? inv
             : a
-        jump halve(0, small, big)
+        jump halve(0, small)
 
-    block halve(n: S64, t: F128Extended, big: Bool)
+    block halve(n: S64, t: F128Extended)
         done : Bool = n.ge(3)
         branch done
-            ? finish(t, big)
-            : step(n, t, big)
+            ? finish(t)
+            : step(n, t)
 
-    block step(n: S64, t: F128Extended, big: Bool)
+    block step(n: S64, t: F128Extended)
         one  : F128Extended = wide_one()
         next : F128Extended = t.div(one.add(one.add(t.mul(t)).sqrt()))
-        jump halve(n.add_wrap(1), next, big)
+        jump halve(n.add_wrap(1), next)
 
-    block finish(t: F128Extended, big: Bool)
+    block finish(t: F128Extended)
         r0 : F128Extended = wide_atan_series(t).ldexp(3)
         r1 : F128Extended = big
             ? wide_half_pi().sub(r0)

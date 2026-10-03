@@ -107,9 +107,10 @@ routine agree32(soft: U32, hard: U32, nan: U32) -> Bool
 
 /// One F32 binary operation: 0 add, 1 sub, 2 mul, 3 div, 4 mod, 5 the comparisons, 6 powi.
 routine check32(op: U64, a: U32, b: U32) -> Bool
+    shared x : F32 = .from_bits(a)
+    shared y : F32 = .from_bits(b)
+
     block entry()
-        x : F32 = .from_bits(a)
-        y : F32 = .from_bits(b)
         when op
             0    -> return(agree32(soft_f32_add(a, b), x.add(y).bits(), crt_nan32(a, b)))
             1    -> return(agree32(soft_f32_sub(a, b), x.sub(y).bits(),
@@ -117,10 +118,10 @@ routine check32(op: U64, a: U32, b: U32) -> Bool
             2    -> return(agree32(soft_f32_mul(a, b), x.mul(y).bits(), crt_nan32(a, b)))
             3    -> return(agree32(soft_f32_div(a, b), x.div(y).bits(), crt_nan32(a, b)))
             4    -> return(agree32(soft_f32_mod(a, b), frem<F32>(x, y).bits(), crt_nan32(a, b)))
-            5    -> compare(x, y)
-            else -> power(x)
+            5    -> compare()
+            else -> power()
 
-    block compare(x: F32, y: F32)
+    block compare()
         unordered : Bool = x.is_nan().bitor(y.is_nan())
         order     : S32  = x.compare(y)
         le_want   : S32  = unordered
@@ -135,7 +136,7 @@ routine check32(op: U64, a: U32, b: U32) -> Bool
         r     : Bool = le_ok.bitand(ge_ok).bitand(un_ok)
         return(r)
 
-    block power(x: F32)
+    block power()
         low  : S32  = b.bitand(0x3F).to_wrap<S32>()
         n    : S32  = low.sub(32)
         want : F32  = powi_model32(x, n)
@@ -179,19 +180,20 @@ routine widen_ok(a: U32) -> Bool
 
 /// compiler-rt's float-to-integer result as `width` bits (see tests/soft_float).
 routine fix_model(x: F64, width: U32, signed: Bool) -> U128
+    shared mask     : U128 = U128.MAX.shr(U32.sub(128, width).to<U128>())
+    shared negative : Bool = x.is_sign_negative()
+
     block entry()
-        mask     : U128 = U128.MAX.shr(U32.sub(128, width).to<U128>())
-        negative : Bool = x.is_sign_negative()
-        field    : U64  = width.add(1023).to<U64>()
-        limit    : F64  = F64.from_bits(field.shl(52))
-        huge     : Bool = x.is_nan().bitor(x.abs().ge(limit))
+        field : U64  = width.add(1023).to<U64>()
+        limit : F64  = F64.from_bits(field.shl(52))
+        huge  : Bool = x.is_nan().bitor(x.abs().ge(limit))
         when
             signed.bitnot().bitand(negative) -> return(0)
             huge.bitand(signed.bitnot())     -> return(mask)
             huge                             -> return(negative ? mask.shr(1).add(1) : mask.shr(1))
-            else                             -> exact(mask, negative)
+            else                             -> exact()
 
-    block exact(mask: U128, negative: Bool)
+    block exact()
         magnitude : U128 = x.abs().to_clamp<U128>()
         value     : U128 = negative
             ? U128.sub_wrap(0, magnitude)
@@ -339,9 +341,10 @@ routine agree64(soft: U64, hard: U64, nan: U64) -> Bool
             : return(soft.eq(hard))
 
 routine check64(op: U64, a: U64, b: U64) -> Bool
+    shared x : F64 = .from_bits(a)
+    shared y : F64 = .from_bits(b)
+
     block entry()
-        x : F64 = .from_bits(a)
-        y : F64 = .from_bits(b)
         when op
             0    -> return(agree64(soft_f64_add(a, b), x.add(y).bits(), crt_nan64(a, b)))
             1    -> return(agree64(soft_f64_sub(a, b), x.sub(y).bits(),
@@ -349,10 +352,10 @@ routine check64(op: U64, a: U64, b: U64) -> Bool
             2    -> return(agree64(soft_f64_mul(a, b), x.mul(y).bits(), crt_nan64(a, b)))
             3    -> return(agree64(soft_f64_div(a, b), x.div(y).bits(), crt_nan64(a, b)))
             4    -> return(agree64(soft_f64_mod(a, b), frem<F64>(x, y).bits(), crt_nan64(a, b)))
-            5    -> compare(x, y)
-            else -> power(x)
+            5    -> compare()
+            else -> power()
 
-    block compare(x: F64, y: F64)
+    block compare()
         unordered : Bool = x.is_nan().bitor(y.is_nan())
         order     : S32  = x.compare(y)
         le_want   : S32  = unordered
@@ -367,7 +370,7 @@ routine check64(op: U64, a: U64, b: U64) -> Bool
         r     : Bool = le_ok.bitand(ge_ok).bitand(un_ok)
         return(r)
 
-    block power(x: F64)
+    block power()
         low  : S32  = b.bitand(0x3F).to_wrap<S32>()
         n    : S32  = low.sub(32)
         want : F64  = powi_model64(x, n)
@@ -634,16 +637,17 @@ routine run_job(worker: @Worker, job: U64) -> Void
 
 /// A thread's body: its jobs, index, index + threads, and so on.
 routine work(raw: Addr) -> Void
-    block entry()
-        worker : @Worker = raw.to<@Worker>()
-        jump next(worker, worker.index.load())
+    shared worker : @Worker = raw.to<@Worker>()
 
-    block next(worker: @Worker, job: U64)
+    block entry()
+        jump next(worker.index.load())
+
+    block next(job: U64)
         branch job.ge(JOBS)
             ? return()
             : continue
         run_job(worker, job)
-        jump next(worker, job.add(worker.threads.load()))
+        jump next(job.add(worker.threads.load()))
 
 routine check_name(check: USize) -> Bytes
     block entry()
@@ -694,19 +698,20 @@ routine sum_fails(workers: @Worker, threads: U64, check: USize, first: @U64) -> 
         jump step(at.add(1), total)
 
 routine main() -> S32
-    block entry()
-        claim alloc : @Allocator <- make_heap_allocator()
-        threads : U64 = cpu_count().to<U64>()
-        claim worker_memory : @Slice<Worker> <- .construct(threads.to<USize>(), alloc)
-        claim handle_memory : @Slice<Thread> <- .construct(threads.to<USize>(), alloc)
-        workers : @Worker = worker_memory.to<@Worker>()
-        handles : @Thread = handle_memory.to<@Thread>()
-        Out.write("{threads} threads\n")
-        jump start(alloc, workers, handles, threads, 0)
+    shared alloc         : @Allocator     <- make_heap_allocator()
+    shared threads       : U64            = cpu_count().to<U64>()
+    shared worker_memory : @Slice<Worker> <- .construct(threads.to<USize>(), alloc)
+    shared handle_memory : @Slice<Thread> <- .construct(threads.to<USize>(), alloc)
+    shared workers       : @Worker        = worker_memory.to<@Worker>()
+    shared handles       : @Thread        = handle_memory.to<@Thread>()
 
-    block start(alloc: @Allocator, workers: @Worker, handles: @Thread, threads: U64, at: U64)
+    block entry()
+        Out.write("{threads} threads\n")
+        jump start(0)
+
+    block start(at: U64)
         branch at.eq(threads)
-            ? join(alloc, workers, handles, threads, 0)
+            ? join(0)
             : continue
         worker : @Worker = workers.stride(at.to<USize>())
         worker.zeroinit(1)
@@ -714,17 +719,17 @@ routine main() -> S32
         threads.store_into(worker.threads)
         handle : Thread = Thread.spawn(work.to<Callable>(), worker, alloc)
         handles.stride(at.to<USize>()).store(handle)
-        jump start(alloc, workers, handles, threads, at.add(1))
+        jump start(at.add(1))
 
-    block join(alloc: @Allocator, workers: @Worker, handles: @Thread, threads: U64, at: U64)
+    block join(at: U64)
         branch at.eq(threads)
-            ? report(workers, threads, 0, 0)
+            ? report(0, 0)
             : continue
         handle : Thread = handles.stride(at.to<USize>()).load()
         handle.join()
-        jump join(alloc, workers, handles, threads, at.add(1))
+        jump join(at.add(1))
 
-    block report(workers: @Worker, threads: U64, check: USize, total: U64)
+    block report(check: USize, total: U64)
         branch check.eq(CHECKS)
             ? done(total)
             : continue
@@ -733,17 +738,17 @@ routine main() -> S32
         name  : Bytes = check_name(check)
         Out.write("{name}: {fails} mismatches")
         branch fails.eq(0)
-            ? report_end(workers, threads, check, total)
-            : report_first(workers, threads, check, total.add(fails), first.load())
+            ? report_end(check, total)
+            : report_first(check, total.add(fails), first.load())
 
-    block report_first(workers: @Worker, threads: U64, check: USize, total: U64, input: U64)
+    block report_first(check: USize, total: U64, input: U64)
         Out.write(", first at input 0x")
         input.represent_hex_into(Out.writer())
-        jump report_end(workers, threads, check, total)
+        jump report_end(check, total)
 
-    block report_end(workers: @Worker, threads: U64, check: USize, total: U64)
+    block report_end(check: USize, total: U64)
         Out.write("\n")
-        jump report(workers, threads, check.add(1), total)
+        jump report(check.add(1), total)
 
     block done(total: U64)
         branch total.eq(0)

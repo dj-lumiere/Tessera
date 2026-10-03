@@ -174,62 +174,63 @@ require T: typename, Comparable<T>
 #track_caller
 routine List<T>.sort(self: @Self) -> Void
 require T: typename, Comparable<T>
-    block entry()
-        n     : USize = self.count.load()
-        small : Bool  = n.le(SORT_RUN)
-        branch small
-            ? small_sort(n)
-            : big_sort(n)
+    shared n : USize = self.count.load()
 
-    block small_sort(n: USize)
+    block entry()
+        small : Bool = n.le(SORT_RUN)
+        branch small
+            ? small_sort()
+            : big_sort()
+
+    block small_sort()
         data : @T = self.storage.data.load()
         sort_insertion<T>(data, 0, n)
         return()
 
-    block big_sort(n: USize)
+    block big_sort()
         data    : @T         = self.storage.data.load()
         alloc   : @Allocator = self.storage.alloc.load()
         scratch : @T         = allocate<T>(alloc, n)
         failed  : Bool       = scratch.is_null()
         branch failed
             ? crash_allocation()
-            : run_loop(0, n, data, scratch)
+            : run_loop(0, data, scratch)
 
-    block run_loop(lo: USize, n: USize, data: @T, scratch: @T)
+    block run_loop(lo: USize, data: @T, scratch: @T)
         done : Bool = lo.ge(n)
         branch done
-            ? pass_start(n, data, scratch)
-            : run_step(lo, n, data, scratch)
+            ? pass_start(data, scratch)
+            : run_step(lo, data, scratch)
 
-    block run_step(lo: USize, n: USize, data: @T, scratch: @T)
+    block run_step(lo: USize, data: @T, scratch: @T)
         hi_raw : USize = lo.add(SORT_RUN)
         hi_ok  : Bool  = hi_raw.le(n)
         hi     : USize = hi_ok
             ? hi_raw
             : n
         sort_insertion<T>(data, lo, hi)
-        jump run_loop(hi_raw, n, data, scratch)
+        jump run_loop(hi_raw, data, scratch)
 
-    block pass_start(n: USize, data: @T, scratch: @T)
-        jump pass_loop(SORT_RUN, data, scratch, n, data, scratch)
+    block pass_start(data: @T, scratch: @T)
+        jump pass_loop(SORT_RUN, data, scratch, data, scratch)
 
-    block pass_loop(width: USize, src: @T, dst: @T, n: USize, data: @T, scratch: @T)
+    block pass_loop(width: USize, src: @T, dst: @T, data: @T, scratch: @T)
         done : Bool = width.ge(n)
         branch done
-            ? finish(src, n, data, scratch)
-            : pass(width, src, dst, n, data, scratch)
+            ? finish(src, data, scratch)
+            : pass(width, src, dst, data, scratch)
 
-    block pass(width: USize, src: @T, dst: @T, n: USize, data: @T, scratch: @T)
+    block pass(width: USize, src: @T, dst: @T, data: @T, scratch: @T)
         sort_merge_pass<T>(src, dst, n, width)
-        jump pass_loop(width.mul(2), dst, src, n, data, scratch)
+        jump pass_loop(width.mul(2), dst, src, data, scratch)
 
-    block finish(src: @T, n: USize, data: @T, scratch: @T)
+    block finish(src: @T, data: @T, scratch: @T)
         in_place : Bool = src.ptr_eq(data)
         branch in_place
             ? release(scratch)
-            : copy_back(src, data, scratch, n)
+            : copy_back(src, data, scratch)
 
-    block copy_back(src: @T, data: @T, scratch: @T, n: USize)
+    block copy_back(src: @T, data: @T, scratch: @T)
         copy<T>(data, src, n)
         jump release(scratch)
 

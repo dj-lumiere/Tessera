@@ -24,23 +24,24 @@ module Standard::Core
 /// :returns: The same value as an F64. A NaN keeps its payload, moved to the top of the fraction.
 #[inline, no_builtins]
 routine F32.soft_to<F64>(self: Self) -> F64
-    block entry()
-        a    : U32 = self.bits()
-        high : U64 = a.bitand(0x80000000).to<U64>()
-        sign : U64 = high.shl(32)
-        size : U32 = a.bitand(0x7FFFFFFF)
-        when
-            size.ge(0x7F800000) -> special(sign, size)
-            size.eq(0)          -> return(bitcast<U64, F64>(sign))
-            else                -> finite(sign, size)
+    shared a    : U32 = self.bits()
+    shared high : U64 = a.bitand(0x80000000).to<U64>()
+    shared sign : U64 = high.shl(32)
+    shared size : U32 = a.bitand(0x7FFFFFFF)
 
-    block special(sign: U64, size: U32)
+    block entry()
+        when
+            size.ge(0x7F800000) -> special()
+            size.eq(0)          -> return(bitcast<U64, F64>(sign))
+            else                -> finite()
+
+    block special()
         fraction : U64 = size.bitand(0x007FFFFF).to<U64>()
         r        : U64 = sign.bitor(0x7FF0000000000000).bitor(fraction.shl(29))
         return(bitcast<U64, F64>(r))
 
     // a subnormal F32 is normal in F64
-    block finite(sign: U64, size: U32)
+    block finite()
         parts    : SoftParts32 = soft_unpack(size, 23)
         field    : U64         = parts.exponent.add(896).to<U64>()
         fraction : U64         = parts.sig.bitand(0x007FFFFF).to<U64>()
@@ -51,23 +52,24 @@ routine F32.soft_to<F64>(self: Self) -> F64
 /// :returns: The same value as an F32. A NaN keeps its payload, moved to the top of the fraction.
 #[inline, no_builtins]
 routine F16.soft_to<F32>(self: Self) -> F32
-    block entry()
-        a    : U16 = self.bits()
-        bits : U32 = a.to<U32>()
-        sign : U32 = bits.bitand(0x8000).shl(16)
-        size : U32 = bits.bitand(0x7FFF)
-        when
-            size.ge(0x7C00) -> special(sign, size)
-            size.eq(0)      -> return(bitcast<U32, F32>(sign))
-            else            -> finite(sign, size)
+    shared a    : U16 = self.bits()
+    shared bits : U32 = a.to<U32>()
+    shared sign : U32 = bits.bitand(0x8000).shl(16)
+    shared size : U32 = bits.bitand(0x7FFF)
 
-    block special(sign: U32, size: U32)
+    block entry()
+        when
+            size.ge(0x7C00) -> special()
+            size.eq(0)      -> return(bitcast<U32, F32>(sign))
+            else            -> finite()
+
+    block special()
         payload : U32 = size.bitand(0x03FF).shl(13)
         r       : U32 = sign.bitor(0x7F800000).bitor(payload)
         return(bitcast<U32, F32>(r))
 
     // a subnormal F16 is normal in F32
-    block finite(sign: U32, size: U32)
+    block finite()
         parts    : SoftParts32 = soft_unpack(size, 10)
         field    : U32         = parts.exponent.add(112).to<U32>()
         fraction : U32         = parts.sig.bitand(0x03FF)
@@ -130,21 +132,22 @@ routine F32.soft_to<BF16>(self: Self) -> BF16
 /// :returns: The format's bits, in the low bits of a U32.
 #inline
 routine soft_narrow(a: U64, sign_bit: U32, sig_bits: U32, bias: S32, max_exponent: S32) -> U32
+    shared negative : Bool = a.ge(0x8000000000000000)
+    shared sign     : U32  = negative
+        ? sign_bit
+        : 0
+    shared size : U64 = a.bitand(0x7FFFFFFFFFFFFFFF)
+
     block entry()
-        negative : Bool = a.ge(0x8000000000000000)
-        sign     : U32  = negative
-            ? sign_bit
-            : 0
-        size     : U64 = a.bitand(0x7FFFFFFFFFFFFFFF)
         infinity : U32 = max_exponent.to<U32>().shl(sig_bits)
         when
-            size.gt(0x7FF0000000000000) -> nan(sign.bitor(infinity), size)
+            size.gt(0x7FF0000000000000) -> nan(sign.bitor(infinity))
             size.eq(0x7FF0000000000000) -> return(sign.bitor(infinity))
             size.eq(0)                  -> return(sign)
-            else                        -> finite(sign, size)
+            else                        -> finite()
 
     // the top of the payload, made quiet
-    block nan(signed_infinity: U32, size: U64)
+    block nan(signed_infinity: U32)
         quiet   : U32 = U32.shl(1, sig_bits.sub(1))
         shift   : U64 = U32.sub(52, sig_bits).to<U64>()
         top     : U64 = size.bitand(0x000FFFFFFFFFFFFF).shr(shift)
@@ -154,7 +157,7 @@ routine soft_narrow(a: U64, sign_bit: U32, sig_bits: U32, bias: S32, max_exponen
 
     // a subnormal F64 sits at exponent 1 without the implicit bit. The significand drops to 27 bits with a sticky
     // bit, which the narrower format's rounding needs no more than
-    block finite(sign: U32, size: U64)
+    block finite()
         field    : U64  = size.shr(52)
         normal   : Bool = field.ne(0)
         fraction : U64  = size.bitand(0x000FFFFFFFFFFFFF)
@@ -179,23 +182,24 @@ routine soft_narrow(a: U64, sign_bit: U32, sig_bits: U32, bias: S32, max_exponen
 /// :returns: The format's bits, in the low 16 bits of a U32.
 #inline
 routine soft_narrow(a: U32, sig_bits: U32, bias: S32, max_exponent: S32) -> U32
+    shared sign : U32 = a.shr(16).bitand(0x8000)
+    shared size : U32 = a.bitand(0x7FFFFFFF)
+
     block entry()
-        sign     : U32 = a.shr(16).bitand(0x8000)
-        size     : U32 = a.bitand(0x7FFFFFFF)
         infinity : U32 = max_exponent.to<U32>().shl(sig_bits)
         when
-            size.gt(0x7F800000) -> nan(sign.bitor(infinity), size)
+            size.gt(0x7F800000) -> nan(sign.bitor(infinity))
             size.eq(0x7F800000) -> return(sign.bitor(infinity))
             size.eq(0)          -> return(sign)
-            else                -> finite(sign, size)
+            else                -> finite()
 
-    block nan(signed_infinity: U32, size: U32)
+    block nan(signed_infinity: U32)
         quiet   : U32 = U32.shl(1, sig_bits.sub(1))
         payload : U32 = size.bitand(0x007FFFFF).shr(U32.sub(23, sig_bits))
         r       : U32 = signed_infinity.bitor(quiet).bitor(payload)
         return(r)
 
-    block finite(sign: U32, size: U32)
+    block finite()
         field    : U32  = size.shr(23)
         normal   : Bool = field.ne(0)
         fraction : U32  = size.bitand(0x007FFFFF)
@@ -225,9 +229,10 @@ routine soft_narrow(a: U32, sig_bits: U32, bias: S32, max_exponent: S32) -> U32
 #inline
 routine soft_fix(negative: Bool, field: S32, sig: U64, bias: S32, sig_bits: S32, width: U64,
     signed: Bool) -> U64
+    shared all : U64 = U64.shl(1, width).sub_wrap(1)
+
     block entry()
         exponent : S32  = field.sub(bias)
-        all      : U64  = U64.shl(1, width).sub_wrap(1)
         largest  : U64  = all.shr(1)
         unsigned : Bool = signed.bitnot()
         huge     : Bool = exponent.ge(width.to_wrap<S32>())
@@ -236,21 +241,21 @@ routine soft_fix(negative: Bool, field: S32, sig: U64, bias: S32, sig_bits: S32,
             unsigned.bitand(negative) -> return(0)
             huge.bitand(signed)       -> return(negative ? largest.add(1) : largest)
             huge                      -> return(all)
-            exponent.lt(sig_bits)     -> down(sig_bits.sub(exponent).to<U64>(), all)
-            else                      -> up(exponent.sub(sig_bits).to<U64>(), all)
+            exponent.lt(sig_bits)     -> down(sig_bits.sub(exponent).to<U64>())
+            else                      -> up(exponent.sub(sig_bits).to<U64>())
 
-    block down(shift: U64, mask: U64)
-        jump done(sig.shr(shift), mask)
+    block down(shift: U64)
+        jump done(sig.shr(shift))
 
-    block up(shift: U64, mask: U64)
-        jump done(sig.shl(shift), mask)
+    block up(shift: U64)
+        jump done(sig.shl(shift))
 
-    block done(magnitude: U64, mask: U64)
+    block done(magnitude: U64)
         twos : U64 = U64.sub_wrap(0, magnitude)
         r    : U64 = negative
             ? twos
             : magnitude
-        return(r.bitand(mask))
+        return(r.bitand(all))
 
 /// {soft_fix} for 128-bit integers.
 /// :param negative: The float's sign.

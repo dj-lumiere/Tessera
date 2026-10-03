@@ -47,42 +47,43 @@ preset CM_F16_LGAMMA_IX: @Array<U64, 16> <- { 0x3FF0000000000000, 0x3FEE1E1E1E1E
 
 /// ln |Γ(self)|: +inf at 0 and the negative integers.
 routine F16.ln_gamma(self: Self) -> Self
+    shared xf : F32 = self.to<F32>()
+    shared fx : F32 = xf.floor()
+    shared ax : F32 = xf.abs()
+    shared tu : U32 = ax.bits()
+
     block entry()
-        xf      : F32  = self.to<F32>()
-        fx      : F32  = xf.floor()
-        ax      : F32  = xf.abs()
-        tu      : U32  = ax.bits()
         special : Bool = tu.ge(0x7F800000)
         integer : Bool = fx.eq(xf)
         when
-            special -> special(xf, tu)
-            integer -> integer(xf, fx, ax, tu)
-            else    -> body(xf, fx, ax, tu)
+            special -> special()
+            integer -> integer()
+            else    -> body()
 
-    block special(xf: F32, tu: U32)
+    block special()
         infinite : Bool = tu.eq(0x7F800000)
         branch infinite
             ? return(Self.from_bits(0x7C00))
             : return(xf.add(xf).to<Self>())
 
     // an integer: a pole at zero and the negative integers, and exact zeros at 1 and 2
-    block integer(xf: F32, fx: F32, ax: F32, tu: U32)
+    block integer()
         pole    : Bool = xf.le(0.0)
         one_two : Bool = xf.eq(1.0).bitor(xf.eq(2.0))
         when
             pole    -> return(Self.from_bits(0x7C00))
             one_two -> return(Self.from_bits(0))
-            else    -> body(xf, fx, ax, tu)
+            else    -> body()
 
-    block body(xf: F32, fx: F32, ax: F32, tu: U32)
+    block body()
         s     : F64  = xf.to<F64>()
         z     : F64  = ax.to<F64>()
         small : Bool = ax.lt(0x1.52p-1)
         large : Bool = ax.gt(0x1.afc1ap+1)
         when
             small -> small(s, z)
-            large -> large(xf, fx, ax, z)
-            else  -> mid(xf, fx, tu, s, z)
+            large -> large(z)
+            else  -> mid(s, z)
 
     // a rational approximation of lgamma(x) + log|x| near zero
     block small(s: F64, z: F64)
@@ -90,7 +91,7 @@ routine F16.ln_gamma(self: Self) -> Self
         f   : F64 = num.div(cm_f16_lgamma_r8(s, 8)).sub(cm_f16_lgamma_ln(z))
         return(f.to<Self>())
 
-    block large(xf: F32, fx: F32, ax: F32, z: F64)
+    block large(z: F64)
         // lgamma(0x1.ff4p+12) rounds to the largest finite F16, larger inputs overflow
         when
             xf.gt(0x1.ff4p+12) -> return(Self.from_bits(0x7C00))
@@ -104,25 +105,25 @@ routine F16.ln_gamma(self: Self) -> Self
         iz2           : F64 = iz.mul(iz)
         iz4           : F64 = iz2.mul(iz2)
         when
-            ax.gt(1198.0)        -> stirling1(xf, fx, lz, f, iz)
-            ax.gt(0x1.279a7p+6)  -> stirling2(xf, fx, lz, f, iz, iz2)
-            ax.gt(0x1.555556p+3) -> stirling4(xf, fx, lz, f, iz, iz2, iz4)
-            else                 -> stirling8(xf, fx, lz, f, iz, iz2, iz4)
+            ax.gt(1198.0)        -> stirling1(lz, f, iz)
+            ax.gt(0x1.279a7p+6)  -> stirling2(lz, f, iz, iz2)
+            ax.gt(0x1.555556p+3) -> stirling4(lz, f, iz, iz2, iz4)
+            else                 -> stirling8(lz, f, iz, iz2, iz4)
 
-    block stirling1(xf: F32, fx: F32, lz: F64, f: F64, iz: F64)
-        jump reflect_large(xf, fx, lz, f.add(iz.mul(0x1.5555555555555p-4)))
+    block stirling1(lz: F64, f: F64, iz: F64)
+        jump reflect_large(lz, f.add(iz.mul(0x1.5555555555555p-4)))
 
-    block stirling2(xf: F32, fx: F32, lz: F64, f: F64, iz: F64, iz2: F64)
+    block stirling2(lz: F64, f: F64, iz: F64, iz2: F64)
         p : F64 = iz2.mul(-0x1.6c0fd270c465p-9).add(0x1.555555547fbadp-4)
-        jump reflect_large(xf, fx, lz, f.add(iz.mul(p)))
+        jump reflect_large(lz, f.add(iz.mul(p)))
 
-    block stirling4(xf: F32, fx: F32, lz: F64, f: F64, iz: F64, iz2: F64, iz4: F64)
+    block stirling4(lz: F64, f: F64, iz: F64, iz2: F64, iz4: F64)
         p0 : F64 = iz2.mul(-0x1.6c16bdc45944fp-9).add(0x1.555555554de0bp-4)
         p2 : F64 = iz2.mul(-0x1.2e9cfff3b29c2p-11).add(0x1.a0077f300ecb3p-11)
         p  : F64 = p0.add(iz4.mul(p2))
-        jump reflect_large(xf, fx, lz, f.add(iz.mul(p)))
+        jump reflect_large(lz, f.add(iz.mul(p)))
 
-    block stirling8(xf: F32, fx: F32, lz: F64, f: F64, iz: F64, iz2: F64, iz4: F64)
+    block stirling8(lz: F64, f: F64, iz: F64, iz2: F64, iz4: F64)
         iz8 : F64 = iz4.mul(iz4)
         p0  : F64 = iz2.mul(-0x1.6c16c0e7c4cf4p-9).add(0x1.5555555551286p-4)
         p2  : F64 = iz2.mul(-0x1.37e87ec19cb45p-11).add(0x1.a0193267fe6f2p-11)
@@ -131,10 +132,10 @@ routine F16.ln_gamma(self: Self) -> Self
         q0  : F64 = p0.add(iz4.mul(p2))
         q4  : F64 = p4.add(iz4.mul(p6))
         p   : F64 = q0.add(iz8.mul(q4))
-        jump reflect_large(xf, fx, lz, f.add(iz.mul(p)))
+        jump reflect_large(lz, f.add(iz.mul(p)))
 
     // the reflection formula lgamma(x) = log(pi) - lgamma(-x) - log|x sin(pi x)|
-    block reflect_large(xf: F32, fx: F32, lz: F64, f: F64)
+    block reflect_large(lz: F64, f: F64)
         negative : Bool = xf.lt(0.0)
         branch negative
             ? continue
@@ -144,7 +145,7 @@ routine F16.ln_gamma(self: Self) -> Self
         return(g.sub(lp).to<Self>())
 
     // a rational approximation with exact zeros at 1 and 2
-    block mid(xf: F32, fx: F32, tu: U32, s: F64, z: F64)
+    block mid(s: F64, z: F64)
         zero_factors : F64  = z.sub(1.0).mul(z.sub(2.0))
         num          : F64  = zero_factors.mul(0x1.3cc0e6a0106b3p+2).mul(cm_f16_lgamma_r7(z))
         f            : F64  = num.div(cm_f16_lgamma_r8(z, 16))

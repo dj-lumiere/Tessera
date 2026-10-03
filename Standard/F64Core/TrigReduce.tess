@@ -574,15 +574,16 @@ private routine cm_f64_trig_dint_zero() -> CmF64TrigDint
 
 /// -1, 0 or 1 as |a| is less than, equal to or greater than |b|.
 private routine cm_f64_trig_dint_cmp_abs(a: CmF64TrigDint, b: CmF64TrigDint) -> S64
+    shared a_zero : Bool = cm_f64_trig_hi(a.r).eq(0)
+    shared b_zero : Bool = cm_f64_trig_hi(b.r).eq(0)
+
     block entry()
-        a_zero : Bool = cm_f64_trig_hi(a.r).eq(0)
-        b_zero : Bool = cm_f64_trig_hi(b.r).eq(0)
         when
-            a_zero -> a_zero(b_zero)
+            a_zero -> a_zero()
             b_zero -> return(1)
             else   -> compare()
 
-    block a_zero(b_zero: Bool)
+    block a_zero()
         branch b_zero
             ? return(0)
             : return(-1)
@@ -866,15 +867,16 @@ private routine cm_f64_trig_t(j: U64) -> U64
 
 /// X/(2pi) mod 1 for a normalized non-negative dint X, with relative error below 2^-126.67, normalized.
 private routine cm_f64_trig_reduce(x: CmF64TrigDint) -> CmF64TrigDint
+    shared xhi : U64 = cm_f64_trig_hi(x.r)
+
     block entry()
-        xhi   : U64  = cm_f64_trig_hi(x.r)
         small : Bool = x.ex.le(1)
         branch small
-            ? small(xhi)
-            : large(xhi)
+            ? small()
+            : large()
 
     // |X| < 2: multiply by T[0]/2^64 + T[1]/2^128
-    block small(xhi: U64)
+    block small()
         u1    : U128          = xhi.mul_wide(cm_f64_trig_t(1))
         tiny  : U64           = cm_f64_trig_lo(u1)
         u0    : U128          = xhi.mul_wide(cm_f64_trig_t(0))
@@ -890,7 +892,7 @@ private routine cm_f64_trig_reduce(x: CmF64TrigDint) -> CmF64TrigDint
         return(CmF64TrigDint { r: y.r.bitor(extra.to<U128>()), ex: y.ex, sgn: y.sgn })
 
     // 2 <= e <= 1024: only T[i] .. T[i+4] contribute
-    block large(xhi: U64)
+    block large()
         e      : S64  = x.ex
         far    : Bool = e.ge(127)
         excess : S64  = e.sub(127)
@@ -916,10 +918,10 @@ private routine cm_f64_trig_reduce(x: CmF64TrigDint) -> CmF64TrigDint
         when
             near -> finish(c4, c3, c2, c1, f.to<U64>())
             even -> finish(c3, c2, c1, 0, 0)
-            else -> extra_term(xhi, i, c3, c2, c1, c0, f.sub(64).to<U64>())
+            else -> extra_term(i, c3, c2, c1, c0, f.sub(64).to<U64>())
 
     // 65 <= f <= 127: one more term, carried into c1 .. c3
-    block extra_term(xhi: U64, i: U64, c3: U64, c2: U64, c1: U64, c0: U64, g: U64)
+    block extra_term(i: U64, c3: U64, c2: U64, c1: U64, c0: U64, g: U64)
         w      : U64  = cm_f64_trig_hi(xhi.mul_wide(cm_f64_trig_t(i.add(4))))
         c0n    : U64  = c0.add_wrap(w)
         carry0 : Bool = c0n.lt(w)
@@ -959,18 +961,19 @@ private routine cm_f64_trig_reduce2(x: CmF64TrigDint) -> CmF64TrigSplit
 
 /// c1/2^64 + c0/2^128 truncated to a double-double, where c = c1 2^64 + c0.
 private routine cm_f64_trig_set_dd(c: U128) -> CmF64TrigDD
+    shared c1 : U64 = cm_f64_trig_hi(c)
+    shared c0 : U64 = cm_f64_trig_lo(c)
+
     block entry()
-        c1        : U64  = cm_f64_trig_hi(c)
-        c0        : U64  = cm_f64_trig_lo(c)
         high_zero : Bool = c1.eq(0)
         zero      : Bool = c.eq(0)
         when
             zero      -> return(CmF64TrigDD { hi: 0.0, lo: 0.0 })
-            high_zero -> low_word(c0)
-            else      -> high_word(c1, c0)
+            high_zero -> low_word()
+            else      -> high_word()
 
     // c1 != 0: normalize so the top bit of c1 is set (a shift by 64 leaves nothing of c0 for e = 0)
-    block high_word(c1: U64, c0: U64)
+    block high_word()
         e    : U64  = c1.leading_zeros()
         n1   : U64  = c1.shl(e).bitor(c0.shr(U64.sub(64, e)))
         n0   : U64  = c0.shl(e)
@@ -988,7 +991,7 @@ private routine cm_f64_trig_set_dd(c: U128) -> CmF64TrigDD
         return(CmF64TrigDD { hi: h, lo: l })
 
     // c1 = 0, c0 != 0: the most significant bit is shifted out
-    block low_word(c0: U64)
+    block low_word()
         e    : U64  = c0.leading_zeros()
         f    : U64  = U64.sub_wrap(0x3FE, 64).sub_wrap(e)
         n0   : U64  = c0.shl(e.add(1))
@@ -1006,17 +1009,18 @@ private routine cm_f64_trig_set_dd(c: U128) -> CmF64TrigDD
 /// The first two words c1 2^64 + c0 of frac(x/(2pi)) for x > 0x1.921fb54442d17p+2. With with_t2, the upper
 /// part of the next table product is added in (as the tangent does), else it is dropped (as the cosine does).
 private routine cm_f64_trig_reduce_fast_large(x: F64, with_t2: Bool) -> U128
+    shared ux : U64 = x.bits()
+    shared e  : U64 = ux.shr(52).bitand(0x7FF)
+    shared m  : U64 = U64.shl(1, 52).bitor(ux.bitand(0x000FFFFFFFFFFFFF))
+
     block entry()
-        ux  : U64  = x.bits()
-        e   : U64  = ux.shr(52).bitand(0x7FF)
-        m   : U64  = U64.shl(1, 52).bitor(ux.bitand(0x000FFFFFFFFFFFFF))
         mid : Bool = e.le(1074)
         branch mid
-            ? mid(e, m)
-            : big(e, m)
+            ? mid()
+            : big()
 
     // 2^2 <= x < 2^52
-    block mid(e: U64, m: U64)
+    block mid()
         u1 : U128 = m.mul_wide(cm_f64_trig_t(1))
         t2 : U64  = with_t2
             ? cm_f64_trig_hi(m.mul_wide(cm_f64_trig_t(2)))
@@ -1029,7 +1033,7 @@ private routine cm_f64_trig_reduce_fast_large(x: F64, with_t2: Bool) -> U128
         jump finish(c2, c1, c0, U64.sub(1075, e))
 
     // 2^52 <= x < 2^1024
-    block big(e: U64, m: U64)
+    block big()
         i  : U64  = e.sub(1075).div(64)
         u2 : U128 = m.mul_wide(cm_f64_trig_t(i.add(2)))
         t3 : U64  = with_t2

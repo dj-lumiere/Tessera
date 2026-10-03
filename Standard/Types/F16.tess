@@ -493,21 +493,22 @@ routine F16.powi(self: Self, n: S32) -> Self
 
 /// Whether r lies exactly between two F16 values.
 private routine f16_on_midpoint_f64(r: F64) -> Bool
+    shared a : F64 = r.abs()
+
     block entry()
-        a   : F64  = r.abs()
         sub : Bool = a.lt(0x1p-14)
         branch sub
-            ? subnormal(a)
-            : normal(a)
+            ? subnormal()
+            : normal()
 
     // F16 keeps 10 fraction bits: a midpoint has bit 41 set and nothing below it.
-    block normal(a: F64)
+    block normal()
         low : U64  = a.bits().bitand(0x3FFFFFFFFFF)
         mid : Bool = a.is_finite().bitand(low.eq(0x20000000000))
         return(mid)
 
     // Below 2^-14 F16's quantum is 2^-24: a midpoint is an odd multiple of 2^-25.
-    block subnormal(a: F64)
+    block subnormal()
         t     : F64  = a.mul(0x1p25)
         whole : Bool = t.trunc().eq(t)
         odd   : Bool = t.mod(2.0).eq(1.0)
@@ -614,26 +615,27 @@ routine F16.to<BF16>(self: Self) -> BF16
 /// Exact. Written with integer operations instead of fpext, which calls
 /// compiler-rt's __extendhfsf2 (see the runtime support section).
 routine F16.to<F32>(self: Self) -> F32
-    block entry()
-        bits     : U32 = self.bits().to<U32>()
-        sign     : U32 = bits.bitand(0x8000).shl(16)
-        exponent : U32 = bits.shr(10).bitand(0x1F)
-        mantissa : U32 = bits.bitand(0x3FF)
-        when
-            exponent.eq(0x1F) -> special(sign, mantissa)
-            exponent.eq(0)    -> small(sign, mantissa)
-            else              -> normal(sign, exponent, mantissa)
+    shared bits     : U32 = self.bits().to<U32>()
+    shared sign     : U32 = bits.bitand(0x8000).shl(16)
+    shared exponent : U32 = bits.shr(10).bitand(0x1F)
+    shared mantissa : U32 = bits.bitand(0x3FF)
 
-    block special(sign: U32, mantissa: U32)
+    block entry()
+        when
+            exponent.eq(0x1F) -> special()
+            exponent.eq(0)    -> small()
+            else              -> normal()
+
+    block special()
         r : F32 = .from_bits(sign.bitor(0x7F800000).bitor(mantissa.shl(13)))
         return(r)
 
-    block normal(sign: U32, exponent: U32, mantissa: U32)
+    block normal()
         r : F32 = .from_bits(sign.bitor(exponent.add(112).shl(23)).bitor(mantissa.shl(13)))
         return(r)
 
     // Zero or subnormal: the value is mantissa * 2^-24, which F32 holds exactly.
-    block small(sign: U32, mantissa: U32)
+    block small()
         value     : F32 = mantissa.to<F32>().mul(0.000000059604644775390625)
         magnitude : U32 = value.bits()
         r         : F32 = .from_bits(magnitude.bitor(sign))

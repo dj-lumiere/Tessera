@@ -245,54 +245,52 @@ require K: typename, V: typename, HashEquatable<K>, Equatable<V>
 /// ones already made.
 private routine Dict<K, V>.rehash(self: @Self, new_capacity: USize) -> Bool
 require K: typename, V: typename
+    shared alloc        : @Allocator    = self.keys.alloc.load()
+    shared keys         : @Slice<K>     <- .construct(0, alloc)
+    shared values       : @Slice<V>     <- .construct(0, alloc)
+    shared hashes       : @Slice<U64>   <- .construct(0, alloc)
+    shared entry_states : @Slice<U8>    <- .construct(0, alloc)
+    shared slots        : @Slice<USize> <- .construct(0, alloc)
+
     block entry()
-        alloc : @Allocator = self.keys.alloc.load()
-        claim keys         : @Slice<K>     <- .construct(0, alloc)
-        claim values       : @Slice<V>     <- .construct(0, alloc)
-        claim hashes       : @Slice<U64>   <- .construct(0, alloc)
-        claim entry_states : @Slice<U8>    <- .construct(0, alloc)
-        claim slots        : @Slice<USize> <- .construct(0, alloc)
         made_keys : Bool = make_array<K>(keys, new_capacity)
         branch made_keys
             ? continue
-            : discard(keys, values, hashes, entry_states, slots)
+            : discard()
         made_values : Bool = make_array<V>(values, new_capacity)
         branch made_values
             ? continue
-            : discard(keys, values, hashes, entry_states, slots)
+            : discard()
         made_hashes : Bool = make_array<U64>(hashes, new_capacity)
         branch made_hashes
             ? continue
-            : discard(keys, values, hashes, entry_states, slots)
+            : discard()
         made_states : Bool = make_array<U8>(entry_states, new_capacity)
         branch made_states
             ? continue
-            : discard(keys, values, hashes, entry_states, slots)
+            : discard()
         made_slots : Bool = make_array<USize>(slots, new_capacity)
         branch made_slots
-            ? clear_loop(0, keys, values, hashes, entry_states, slots)
-            : discard(keys, values, hashes, entry_states, slots)
+            ? clear_loop(0)
+            : discard()
 
-    block discard(keys: @Slice<K>, values: @Slice<V>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
-        slots: @Slice<USize>)
+    block discard()
         destruct_arrays<K, V>(keys, values, hashes, entry_states, slots)
         return(false)
 
-    block clear_loop(i: USize, keys: @Slice<K>, values: @Slice<V>, hashes: @Slice<U64>,
-        entry_states: @Slice<U8>, slots: @Slice<USize>)
+    block clear_loop(i: USize)
         done : Bool = i.ge(new_capacity)
         branch done
-            ? install(keys, values, hashes, entry_states, slots)
+            ? install()
             : continue
         slot_cells  : @USize = slots.data.load()
         state_cells : @U8    = entry_states.data.load()
         slot_cells.stride(i).store(SLOT_EMPTY)
         state_cells.stride(i).store(0)
-        jump clear_loop(i.add(1), keys, values, hashes, entry_states, slots)
+        jump clear_loop(i.add(1))
 
     // Swaps the new arrays into the dict, so the claimed slices hold the old ones from here on.
-    block install(keys: @Slice<K>, values: @Slice<V>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
-        slots: @Slice<USize>)
+    block install()
         old_count : USize = self.entries_count.load()
         swap_slices<K>(self.keys, keys)
         swap_slices<V>(self.values, values)
@@ -301,23 +299,21 @@ require K: typename, V: typename
         swap_slices<USize>(self.slots, slots)
         self.count.store(0)
         self.entries_count.store(0)
-        jump move_loop(0, old_count, keys, values, hashes, entry_states, slots)
+        jump move_loop(0, old_count)
 
-    block move_loop(i: USize, old_count: USize, keys: @Slice<K>, values: @Slice<V>,
-        hashes: @Slice<U64>, entry_states: @Slice<U8>, slots: @Slice<USize>)
+    block move_loop(i: USize, old_count: USize)
         done : Bool = i.ge(old_count)
         branch done
-            ? release_old(keys, values, hashes, entry_states, slots)
+            ? release_old()
             : continue
         states : @U8  = entry_states.data.load()
         s      : U8   = states.stride(i).load()
         live   : Bool = s.eq(1)
         branch live
-            ? insert_old(i, old_count, keys, values, hashes, entry_states, slots)
-            : move_loop(i.add(1), old_count, keys, values, hashes, entry_states, slots)
+            ? insert_old(i, old_count)
+            : move_loop(i.add(1), old_count)
 
-    block insert_old(i: USize, old_count: USize, keys: @Slice<K>, values: @Slice<V>,
-        hashes: @Slice<U64>, entry_states: @Slice<U8>, slots: @Slice<USize>)
+    block insert_old(i: USize, old_count: USize)
         old_keys   : @K   = keys.data.load()
         old_values : @V   = values.data.load()
         old_hashes : @U64 = hashes.data.load()
@@ -325,10 +321,9 @@ require K: typename, V: typename
         value      : V    = old_values.stride(i).load()
         hash       : U64  = old_hashes.stride(i).load()
         self.put_direct(key, value, hash)
-        jump move_loop(i.add(1), old_count, keys, values, hashes, entry_states, slots)
+        jump move_loop(i.add(1), old_count)
 
-    block release_old(keys: @Slice<K>, values: @Slice<V>, hashes: @Slice<U64>,
-        entry_states: @Slice<U8>, slots: @Slice<USize>)
+    block release_old()
         destruct_arrays<K, V>(keys, values, hashes, entry_states, slots)
         return(true)
 
@@ -336,25 +331,26 @@ require K: typename, V: typename
 /// leaving the map as it was.
 private routine Dict<K, V>.ensure(self: @Self) -> Bool
 require K: typename, V: typename
+    shared capacity : USize = self.slots.count.load()
+
     block entry()
-        capacity : USize = self.slots.count.load()
-        empty    : Bool  = capacity.eq(0)
+        empty : Bool = capacity.eq(0)
         branch empty
             ? first()
-            : check(capacity)
+            : check()
 
     block first()
         return(self.rehash(8))
 
-    block check(capacity: USize)
+    block check()
         count : USize = self.entries_count.load()
         limit : USize = capacity.mul(3).div(4)
         full  : Bool  = count.add(1).ge(limit)
         branch full
-            ? grow(capacity)
+            ? grow()
             : return(true)
 
-    block grow(capacity: USize)
+    block grow()
         return(self.rehash(capacity.mul(2)))
 
 /// Insert without growing — used internally by rehash after new arrays are in place.
@@ -364,21 +360,22 @@ require K: typename, V: typename
 /// one instead of hashing every key again.
 routine Dict<K, V>.put_direct(self: @Self, key: K, value: V, hash: U64) -> Void
 require K: typename, V: typename
+    shared slot : USize = self.load().slot(key, hash)
+
     block entry()
-        slot      : USize  = self.load().slot(key, hash)
         slots     : @USize = self.slots.data.load()
         entry_idx : USize  = slots.stride(slot).load()
         occupied  : Bool   = entry_idx.lt(SLOT_TOMBSTONE)
         branch occupied
             ? replace(entry_idx)
-            : add(slot)
+            : add()
 
     block replace(entry_idx: USize)
         values : @V = self.values.data.load()
         values.stride(entry_idx).store(value)
         return()
 
-    block add(slot: USize)
+    block add()
         new_idx      : USize  = self.entries_count.load()
         keys         : @K     = self.keys.data.load()
         values       : @V     = self.values.data.load()
@@ -426,14 +423,15 @@ require K: typename, V: typename
 #track_caller
 routine Dict<K, V>.getitem(self: Self, key: K) -> V
 require K: typename, V: typename
+    shared entry_idx : USize = self.find(key)
+
     block entry()
-        entry_idx : USize = self.find(key)
-        found     : Bool  = entry_idx.lt(SLOT_TOMBSTONE)
+        found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
-            ? load(entry_idx)
+            ? load()
             : crash_key_not_found()
 
-    block load(entry_idx: USize)
+    block load()
         values : @V = self.values.data
         value  : V  = values.stride(entry_idx).load()
         return(value)
@@ -452,14 +450,15 @@ require K: typename, V: typename
 /// `getitem`, returning Absent instead of crashing on a missing key.
 routine Dict<K, V>.getitem_checked(self: Self, key: K) -> Option<V>
 require K: typename, V: typename
+    shared entry_idx : USize = self.find(key)
+
     block entry()
-        entry_idx : USize = self.find(key)
-        found     : Bool  = entry_idx.lt(SLOT_TOMBSTONE)
+        found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
-            ? load(entry_idx)
+            ? load()
             : return(.Absent)
 
-    block load(entry_idx: USize)
+    block load()
         values : @V = self.values.data
         value  : V  = values.stride(entry_idx).load()
         return(.Present(value))
@@ -476,14 +475,15 @@ require K: typename, V: typename
 #track_caller
 routine Dict<K, V>.at(self: Self, key: K) -> @V
 require K: typename, V: typename
+    shared entry_idx : USize = self.find(key)
+
     block entry()
-        entry_idx : USize = self.find(key)
-        found     : Bool  = entry_idx.lt(SLOT_TOMBSTONE)
+        found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
-            ? address(entry_idx)
+            ? address()
             : crash_key_not_found()
 
-    block address(entry_idx: USize)
+    block address()
         values : @V = self.values.data
         value  : @V = values.stride(entry_idx)
         return(value)
@@ -500,14 +500,15 @@ require K: typename, V: typename
 /// `at`, returning Absent instead of crashing on a missing key.
 routine Dict<K, V>.at_checked(self: Self, key: K) -> Option<@V>
 require K: typename, V: typename
+    shared entry_idx : USize = self.find(key)
+
     block entry()
-        entry_idx : USize = self.find(key)
-        found     : Bool  = entry_idx.lt(SLOT_TOMBSTONE)
+        found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
-            ? address(entry_idx)
+            ? address()
             : return(.Absent)
 
-    block address(entry_idx: USize)
+    block address()
         values : @V = self.values.data
         value  : @V = values.stride(entry_idx)
         return(.Present(value))
@@ -566,25 +567,26 @@ require K: typename, V: typename
 #track_caller
 routine Dict<K, V>.destruct_all(self: @Self) -> Void
 require K: typename, V: typename, Destructible<K>, Destructible<V>
-    block entry()
-        iter_val : DictIter<K, V> = .construct(self)
-        claim iter       : @DictIter<K, V> <- iter_val
-        claim key_slot   : @K              <- uninit
-        claim value_slot : @V              <- uninit
-        jump next(iter, key_slot, value_slot)
+    shared iter_val   : DictIter<K, V>  = .construct(self)
+    shared iter       : @DictIter<K, V> <- iter_val
+    shared key_slot   : @K              <- uninit
+    shared value_slot : @V              <- uninit
 
-    block next(iter: @DictIter<K, V>, key_slot: @K, value_slot: @V)
+    block entry()
+        jump next()
+
+    block next()
         item : Option<KVPair<K, V>> = iter.next()
         when item
-            .Present(entry) -> entry_found(iter, key_slot, value_slot, entry)
+            .Present(entry) -> entry_found(entry)
             .Absent         -> finish()
 
-    block entry_found(iter: @DictIter<K, V>, key_slot: @K, value_slot: @V, entry: KVPair<K, V>)
+    block entry_found(entry: KVPair<K, V>)
         key_slot.store(entry.key)
         key_slot.destruct()
         value_slot.store(entry.value)
         value_slot.destruct()
-        jump next(iter, key_slot, value_slot)
+        jump next()
 
     block finish()
         self.destruct()
@@ -594,22 +596,23 @@ require K: typename, V: typename, Destructible<K>, Destructible<V>
 #track_caller
 routine Dict<K, V>.destruct_all_values(self: @Self) -> Void
 require K: typename, V: typename, Destructible<V>
-    block entry()
-        iter_val : DictIter<K, V> = .construct(self)
-        claim iter       : @DictIter<K, V> <- iter_val
-        claim value_slot : @V              <- uninit
-        jump next(iter, value_slot)
+    shared iter_val   : DictIter<K, V>  = .construct(self)
+    shared iter       : @DictIter<K, V> <- iter_val
+    shared value_slot : @V              <- uninit
 
-    block next(iter: @DictIter<K, V>, value_slot: @V)
+    block entry()
+        jump next()
+
+    block next()
         item : Option<KVPair<K, V>> = iter.next()
         when item
-            .Present(entry) -> entry_found(iter, value_slot, entry)
+            .Present(entry) -> entry_found(entry)
             .Absent         -> finish()
 
-    block entry_found(iter: @DictIter<K, V>, value_slot: @V, entry: KVPair<K, V>)
+    block entry_found(entry: KVPair<K, V>)
         value_slot.store(entry.value)
         value_slot.destruct()
-        jump next(iter, value_slot)
+        jump next()
 
     block finish()
         self.destruct()

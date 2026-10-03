@@ -11,40 +11,42 @@ record Shared
     total : U64
 
 routine add_steps(raw: Addr) -> Void
-    block entry()
-        state : @Shared = raw.to<@Shared>()
-        jump step(state, 0)
+    shared state : @Shared = raw.to<@Shared>()
 
-    block step(state: @Shared, i: U64)
+    block entry()
+        jump step(0)
+
+    block step(i: U64)
         done : Bool = i.eq(1000)
         branch done
             ? return()
-            : add(state, i)
+            : add(i)
 
-    block add(state: @Shared, i: U64)
+    block add(i: U64)
         state.total.atomic_fetch_add(1)
         state.sched.load().yield()
-        jump step(state, i.add(1))
+        jump step(i.add(1))
 
 routine main() -> S32
-    block entry()
-        claim alloc  : @Allocator <- make_heap_allocator()
-        claim stacks : @Allocator <- make_stack_allocator()
-        claim sched  : @Scheduler <- .construct(alloc, stacks, 4)
-        claim state  : @Shared    <- Shared { sched: sched, total: 0 }
-        jump spawn(sched, state, 0)
+    shared alloc  : @Allocator <- make_heap_allocator()
+    shared stacks : @Allocator <- make_stack_allocator()
+    shared sched  : @Scheduler <- .construct(alloc, stacks, 4)
+    shared state  : @Shared    <- Shared { sched: sched, total: 0 }
 
-    block spawn(sched: @Scheduler, state: @Shared, i: U64)
+    block entry()
+        jump spawn(0)
+
+    block spawn(i: U64)
         done : Bool = i.eq(64)
         branch done
-            ? go(sched, state)
-            : one(sched, state, i)
+            ? go()
+            : one(i)
 
-    block one(sched: @Scheduler, state: @Shared, i: U64)
+    block one(i: U64)
         sched.spawn(add_steps.to<Callable>(), state, 65536)
-        jump spawn(sched, state, i.add(1))
+        jump spawn(i.add(1))
 
-    block go(sched: @Scheduler, state: @Shared)
+    block go()
         sched.run()
         Out.write("{state.total.load()}\n")
         sched.destruct()

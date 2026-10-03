@@ -25,25 +25,26 @@ preset CM_F32_ASIN_C: @Array<U64, 24> <- { 0x3FC555555555529C, 0x3FB333333337E0D
 
 /// arcsin(self), correctly rounded.
 routine F32.asin(self: Self) -> Self
+    shared xs : F64 = self.to<F64>()
+    shared ax : U32 = self.bits().shl(1)
+
     block entry()
-        xs      : F64  = self.to<F64>()
-        ax      : U32  = self.bits().shl(1)
         outside : Bool = ax.gt(0x7F000000)
         fast    : Bool = ax.lt(0x7EC29000)
         when
-            outside -> outside(ax)
-            fast    -> fast(ax, xs)
-            else    -> accurate(ax, xs)
+            outside -> outside()
+            fast    -> fast()
+            else    -> accurate()
 
     // |x| > 1 or NaN, which comes back quiet with its sign and payload
-    block outside(ax: U32)
+    block outside()
         nan : Bool = ax.gt(0xFF000000)
         branch nan
             ? return(self.add(self))
             : return(Self.from_bits(0xFFC00000))
 
     // |x| < 0x1.c29p-1
-    block fast(ax: U32, xs: F64)
+    block fast()
         tiny : Bool = ax.lt(0x73000000)  // |x| < 0x1p-12
         branch tiny
             ? return(self.mul_add(0x1p-25, self))
@@ -68,28 +69,28 @@ routine F32.asin(self: Self) -> Self
         sure : Bool = ub.eq(lb)
         branch sure
             ? return(ub)
-            : accurate(ax, xs)
+            : accurate()
 
     // The fast path can't decide the rounding, or |x| >= 0x1.c29p-1.
-    block accurate(ax: U32, xs: F64)
+    block accurate()
         half  : Bool = ax.lt(0x7E000000)  // |x| < 1/2
         hard1 : Bool = ax.eq(0x7E55688A)
         hard2 : Bool = ax.eq(0x7E107434)
         when
-            half  -> small(xs)
+            half  -> small()
             hard1 -> return(Self.copysign(0x1.75b8a2p-1, self).add(Self.copysign(0x1p-26, self)))
             hard2 -> return(Self.copysign(0x1.1f4b64p-1, self).add(Self.copysign(0x1p-26, self)))
-            else  -> large(xs)
+            else  -> large()
 
     // x + x^3 p(x^2)
-    block small(xs: F64)
+    block small()
         z2 : F64 = xs.mul(xs)
         x3 : F64 = xs.mul(z2)
         r  : F64 = x3.mul(cm_f32_asin_poly12(z2, 0)).add(xs)
         return(r.to<Self>())
 
     // sign(x) (pi/2 - sqrt(z) q(z)) with z = 1 - |x|
-    block large(xs: F64)
+    block large()
         z : F64 = F64.sub(1.0, xs.abs())
         s : F64 = z.sqrt()
         r : F64 = F64.sub(0x1.921fb54442d18p+0, s.mul(cm_f32_asin_poly12(z, 12)))

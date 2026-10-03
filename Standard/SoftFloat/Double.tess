@@ -25,17 +25,18 @@ private preset ONE:       U64 = 0x3FF0000000000000
 /// -0 only when both are -0 (an exact zero sum of nonzero values is +0).
 #no_builtins
 routine soft_f64_add(a: U64, b: U64) -> U64
+    shared a_size : U64 = a.bitand(MAGNITUDE)
+    shared b_size : U64 = b.bitand(MAGNITUDE)
+
     block entry()
-        a_size : U64 = a.bitand(MAGNITUDE)
-        b_size : U64 = b.bitand(MAGNITUDE)
         when
             a_size.gt(INFINITY) -> return(a.bitor(QUIET))
             b_size.gt(INFINITY) -> return(b.bitor(QUIET))
             a_size.eq(INFINITY) -> infinite()
             b_size.eq(INFINITY) -> return(b)
-            a_size.eq(0)        -> zero(b_size)
+            a_size.eq(0)        -> zero()
             b_size.eq(0)        -> return(a)
-            else                -> order(a_size, b_size)
+            else                -> order()
 
     // inf + inf keeps the sign, and inf - inf is NaN
     block infinite()
@@ -44,14 +45,14 @@ routine soft_f64_add(a: U64, b: U64) -> U64
             ? return(NAN)
             : return(a)
 
-    block zero(b_size: U64)
+    block zero()
         both : Bool = b_size.eq(0)
         branch both
             ? return(a.bitand(b))
             : return(b)
 
     // the larger magnitude first, so the result takes its sign
-    block order(a_size: U64, b_size: U64)
+    block order()
         swap   : Bool = b_size.gt(a_size)
         larger : U64  = swap
             ? b
@@ -103,21 +104,22 @@ routine soft_f64_sub(a: U64, b: U64) -> U64
 /// signs.
 #no_builtins
 routine soft_f64_mul(a: U64, b: U64) -> U64
+    shared sign   : U64 = a.bitxor(b).bitand(SIGN)
+    shared a_size : U64 = a.bitand(MAGNITUDE)
+    shared b_size : U64 = b.bitand(MAGNITUDE)
+
     block entry()
-        sign   : U64 = a.bitxor(b).bitand(SIGN)
-        a_size : U64 = a.bitand(MAGNITUDE)
-        b_size : U64 = b.bitand(MAGNITUDE)
         when
             a_size.gt(INFINITY) -> return(a.bitor(QUIET))
             b_size.gt(INFINITY) -> return(b.bitor(QUIET))
-            a_size.eq(INFINITY) -> infinite(sign, b_size)
-            b_size.eq(INFINITY) -> infinite(sign, a_size)
+            a_size.eq(INFINITY) -> infinite(b_size)
+            b_size.eq(INFINITY) -> infinite(a_size)
             a_size.eq(0)        -> return(sign)
             b_size.eq(0)        -> return(sign)
-            else                -> finite(sign, a_size, b_size)
+            else                -> finite()
 
     // infinity times zero is NaN, times anything else infinity
-    block infinite(sign: U64, other: U64)
+    block infinite(other: U64)
         nothing : Bool = other.eq(0)
         branch nothing
             ? return(NAN)
@@ -125,7 +127,7 @@ routine soft_f64_mul(a: U64, b: U64) -> U64
 
     // the 106-bit product of two 53-bit significands, its leading bit at 104 or 105. Shifted down by 50 with a
     // sticky bit, it is a significand for an exponent of the two exponents' sum minus 1022
-    block finite(sign: U64, a_size: U64, b_size: U64)
+    block finite()
         x       : SoftParts64 = soft_unpack(a_size)
         y       : SoftParts64 = soft_unpack(b_size)
         product : U128        = x.sig.to<U128>().mul_wrap(y.sig.to<U128>())
@@ -143,33 +145,34 @@ routine soft_f64_mul(a: U64, b: U64) -> U64
 /// value over zero is a signed infinity.
 #no_builtins
 routine soft_f64_div(a: U64, b: U64) -> U64
+    shared sign   : U64 = a.bitxor(b).bitand(SIGN)
+    shared a_size : U64 = a.bitand(MAGNITUDE)
+    shared b_size : U64 = b.bitand(MAGNITUDE)
+
     block entry()
-        sign   : U64 = a.bitxor(b).bitand(SIGN)
-        a_size : U64 = a.bitand(MAGNITUDE)
-        b_size : U64 = b.bitand(MAGNITUDE)
         when
             a_size.gt(INFINITY) -> return(a.bitor(QUIET))
             b_size.gt(INFINITY) -> return(b.bitor(QUIET))
-            a_size.eq(INFINITY) -> infinite(sign, b_size)
+            a_size.eq(INFINITY) -> infinite()
             b_size.eq(INFINITY) -> return(sign)
-            a_size.eq(0)        -> zero(sign, b_size)
+            a_size.eq(0)        -> zero()
             b_size.eq(0)        -> return(sign.bitor(INFINITY))
-            else                -> finite(sign, a_size, b_size)
+            else                -> finite()
 
-    block infinite(sign: U64, b_size: U64)
+    block infinite()
         both : Bool = b_size.eq(INFINITY)
         branch both
             ? return(NAN)
             : return(sign.bitor(INFINITY))
 
-    block zero(sign: U64, b_size: U64)
+    block zero()
         both : Bool = b_size.eq(0)
         branch both
             ? return(NAN)
             : return(sign)
 
     // a dividend below the divisor doubles, so the quotient is in [1, 2)
-    block finite(sign: U64, a_size: U64, b_size: U64)
+    block finite()
         x     : SoftParts64 = soft_unpack(a_size)
         y     : SoftParts64 = soft_unpack(b_size)
         apart : S32         = x.exponent.sub(y.exponent)
@@ -180,13 +183,13 @@ routine soft_f64_div(a: U64, b: U64) -> U64
         exponent : S32 = below
             ? apart.add(1022)
             : apart.add(1023)
-        jump divide(sign, exponent, num, y.sig, 0, 0)
+        jump divide(exponent, num, y.sig, 0, 0)
 
     // 55 quotient bits, one a step: the 53 the result keeps and two below them, then the remainder's sticky bit
-    block divide(sign: U64, exponent: S32, rem: U64, den: U64, quotient: U64, step: U64)
+    block divide(exponent: S32, rem: U64, den: U64, quotient: U64, step: U64)
         done : Bool = step.eq(55)
         branch done
-            ? finish(sign, exponent, rem, quotient)
+            ? finish(exponent, rem, quotient)
             : continue
         fits : Bool = rem.ge(den)
         left : U64  = fits
@@ -194,9 +197,9 @@ routine soft_f64_div(a: U64, b: U64) -> U64
             : rem
         q_bit : U64 = fits.to<U64>()
         next  : U64 = quotient.shl(1).bitor(q_bit)
-        jump divide(sign, exponent, left.shl(1), den, next, step.add(1))
+        jump divide(exponent, left.shl(1), den, next, step.add(1))
 
-    block finish(sign: U64, exponent: S32, rem: U64, quotient: U64)
+    block finish(exponent: S32, rem: U64, quotient: U64)
         sticky : U64 = rem.ne(0).to<U64>()
         sig    : U64 = quotient.shl(1).bitor(sticky)
         r      : U64 = soft_round_pack(sign, exponent, sig)
@@ -211,18 +214,19 @@ routine soft_f64_div(a: U64, b: U64) -> U64
 /// for any other negative value.
 #no_builtins
 routine soft_f64_sqrt(a: U64) -> U64
+    shared size : U64 = a.bitand(MAGNITUDE)
+
     block entry()
-        size : U64 = a.bitand(MAGNITUDE)
         when
             size.gt(INFINITY) -> return(a.bitor(QUIET))
             size.eq(0)        -> return(a)
             a.ge(SIGN)        -> return(NAN)
             size.eq(INFINITY) -> return(a)
-            else              -> finite(size)
+            else              -> finite()
 
     // an odd unbiased exponent moves one bit into the significand, so the root's exponent is a whole half. The
     // significand scaled by 2^56 has a 55-bit root, the 53 kept bits and two below them
-    block finite(size: U64)
+    block finite()
         parts    : SoftParts64 = soft_unpack(size)
         unbiased : S32         = parts.exponent.sub(1023)
         odd      : Bool        = unbiased.bitand(1).eq(1)
@@ -264,10 +268,11 @@ routine soft_f64_sqrt(a: U64) -> U64
 /// itself when `|a| < |b|`, and a zero with `a`'s sign when the division is exact.
 #no_builtins
 routine soft_f64_mod(a: U64, b: U64) -> U64
+    shared sign   : U64 = a.bitand(SIGN)
+    shared a_size : U64 = a.bitand(MAGNITUDE)
+    shared b_size : U64 = b.bitand(MAGNITUDE)
+
     block entry()
-        sign   : U64 = a.bitand(SIGN)
-        a_size : U64 = a.bitand(MAGNITUDE)
-        b_size : U64 = b.bitand(MAGNITUDE)
         when
             a_size.gt(INFINITY) -> return(a.bitor(QUIET))
             b_size.gt(INFINITY) -> return(b.bitor(QUIET))
@@ -275,15 +280,15 @@ routine soft_f64_mod(a: U64, b: U64) -> U64
             b_size.eq(0)        -> return(NAN)
             a_size.lt(b_size)   -> return(a)
             a_size.eq(b_size)   -> return(sign)
-            else                -> finite(sign, a_size, b_size)
+            else                -> finite()
 
     // long division one exponent step at a time, keeping only the remainder (below 2 × den throughout)
-    block finite(sign: U64, a_size: U64, b_size: U64)
+    block finite()
         x : SoftParts64 = soft_unpack(a_size)
         y : SoftParts64 = soft_unpack(b_size)
-        jump reduce(sign, x.sig, x.exponent, y.sig, y.exponent)
+        jump reduce(x.sig, x.exponent, y.sig, y.exponent)
 
-    block reduce(sign: U64, rem: U64, exponent: S32, den: U64, den_exponent: S32)
+    block reduce(rem: U64, exponent: S32, den: U64, den_exponent: S32)
         fits : Bool = rem.ge(den)
         left : U64  = fits
             ? rem.sub_wrap(den)
@@ -292,11 +297,11 @@ routine soft_f64_mod(a: U64, b: U64) -> U64
         last  : Bool = exponent.eq(den_exponent)
         when
             exact -> return(sign)
-            last  -> finish(sign, left, exponent)
-            else  -> reduce(sign, left.shl(1), exponent.sub(1), den, den_exponent)
+            last  -> finish(left, exponent)
+            else  -> reduce(left.shl(1), exponent.sub(1), den, den_exponent)
 
     // the remainder is exact and fits the format, so the packing doesn't round
-    block finish(sign: U64, rem: U64, exponent: S32)
+    block finish(rem: U64, exponent: S32)
         r : U64 = soft_round_pack(sign, exponent, rem.shl(3))
         return(r)
 

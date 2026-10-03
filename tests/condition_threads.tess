@@ -62,33 +62,34 @@ record Timed
 
 /// The producer: hands over 1 to ROUNDS, waiting for room before each.
 routine produce(raw: Addr) -> Void
-    block entry()
-        box : @Mailbox = raw.to<@Mailbox>()
-        jump next(box, 1)
+    shared box : @Mailbox = raw.to<@Mailbox>()
 
-    block next(box: @Mailbox, n: U64)
+    block entry()
+        jump next(1)
+
+    block next(n: U64)
         branch n.gt(ROUNDS)
             ? return()
             : continue
         box.lock.lock()
-        jump room(box, n)
+        jump room(n)
 
-    block room(box: @Mailbox, n: U64)
+    block room(n: U64)
         full : Bool = box.full.load()
         branch full
-            ? wait(box, n)
-            : put(box, n)
+            ? wait(n)
+            : put(n)
 
-    block wait(box: @Mailbox, n: U64)
+    block wait(n: U64)
         box.not_full.wait(box.lock)
-        jump room(box, n)
+        jump room(n)
 
-    block put(box: @Mailbox, n: U64)
+    block put(n: U64)
         box.value.store(n)
         box.full.store(true)
         box.not_empty.wake_one()
         box.lock.unlock()
-        jump next(box, n.add(1))
+        jump next(n.add(1))
 
 /// The main thread's side: takes ROUNDS values.
 /// :returns: Their sum, and whether they came in order.
@@ -132,23 +133,24 @@ routine arrive(gate: @Gate) -> Void
 
 /// A gate thread that waits for a token and takes it.
 routine take_token(raw: Addr) -> Void
+    shared gate : @Gate = raw.to<@Gate>()
+
     block entry()
-        gate : @Gate = raw.to<@Gate>()
         gate.lock.lock()
         arrive(gate)
-        jump look(gate)
+        jump look()
 
-    block look(gate: @Gate)
+    block look()
         left : USize = gate.tokens.load()
         branch left.gt(0)
-            ? take(gate, left)
-            : wait(gate)
+            ? take(left)
+            : wait()
 
-    block wait(gate: @Gate)
+    block wait()
         gate.cond.wait(gate.lock)
-        jump look(gate)
+        jump look()
 
-    block take(gate: @Gate, left: USize)
+    block take(left: USize)
         gate.tokens.store(left.sub(1))
         through : USize = gate.passed.load().add(1)
         through.store_into(gate.passed)
@@ -158,23 +160,24 @@ routine take_token(raw: Addr) -> Void
 
 /// A gate thread that waits for the gate to open and goes through.
 routine pass_open(raw: Addr) -> Void
+    shared gate : @Gate = raw.to<@Gate>()
+
     block entry()
-        gate : @Gate = raw.to<@Gate>()
         gate.lock.lock()
         arrive(gate)
-        jump look(gate)
+        jump look()
 
-    block look(gate: @Gate)
+    block look()
         open : Bool = gate.open.load()
         branch open
-            ? pass(gate)
-            : wait(gate)
+            ? pass()
+            : wait()
 
-    block wait(gate: @Gate)
+    block wait()
         gate.cond.wait(gate.lock)
-        jump look(gate)
+        jump look()
 
-    block pass(gate: @Gate)
+    block pass()
         through : USize = gate.passed.load().add(1)
         through.store_into(gate.passed)
         gate.lock.unlock()
@@ -263,80 +266,83 @@ routine count_in(counter: @USize) -> Void
 
 /// Waits SHORT_NS for something that never comes true, again after every wake, until the deadline passes.
 routine wait_never(raw: Addr) -> Void
+    shared timed : @Timed = raw.to<@Timed>()
+
     block entry()
-        timed : @Timed = raw.to<@Timed>()
         timed.lock.lock()
         arrive_timed(timed)
         deadline : U64 = monotonic_ns().add(SHORT_NS)
-        jump again(timed, deadline)
+        jump again(deadline)
 
-    block again(timed: @Timed, deadline: U64)
+    block again(deadline: U64)
         in_time : Bool = timed.cond.wait_until(timed.lock, deadline)
         branch in_time
-            ? again(timed, deadline)
-            : over(timed, deadline)
+            ? again(deadline)
+            : over(deadline)
 
-    block over(timed: @Timed, deadline: U64)
+    block over(deadline: U64)
         passed : Bool = monotonic_ns().ge(deadline)
         branch passed
-            ? gave_up(timed)
-            : early(timed)
+            ? gave_up()
+            : early()
 
-    block gave_up(timed: @Timed)
+    block gave_up()
         count_in(timed.timed_out)
         timed.lock.unlock()
         return()
 
-    block early(timed: @Timed)
+    block early()
         count_in(timed.wrong)
         timed.lock.unlock()
         return()
 
 /// Waits for ready, with a deadline it should never reach.
 routine wait_ready(raw: Addr) -> Void
+    shared timed : @Timed = raw.to<@Timed>()
+
     block entry()
-        timed : @Timed = raw.to<@Timed>()
         timed.lock.lock()
         arrive_timed(timed)
         deadline : U64 = monotonic_ns().add(LONG_NS)
-        jump look(timed, deadline)
+        jump look(deadline)
 
-    block look(timed: @Timed, deadline: U64)
+    block look(deadline: U64)
         ready : Bool = timed.ready.load()
         branch ready
-            ? seen(timed)
-            : wait(timed, deadline)
+            ? seen()
+            : wait(deadline)
 
-    block wait(timed: @Timed, deadline: U64)
+    block wait(deadline: U64)
         in_time : Bool = timed.cond.wait_until(timed.lock, deadline)
         branch in_time
-            ? look(timed, deadline)
-            : late(timed)
+            ? look(deadline)
+            : late()
 
-    block seen(timed: @Timed)
+    block seen()
         count_in(timed.in_time)
         timed.lock.unlock()
         return()
 
-    block late(timed: @Timed)
+    block late()
         count_in(timed.wrong)
         timed.lock.unlock()
         return()
 
 /// Takes the mutex and wakes every waiter, over and over, until stop.
 routine wake_everyone(raw: Addr) -> Void
-    block entry()
-        timed : @Timed = raw.to<@Timed>()
-        jump again(timed)
+    shared timed : @Timed = raw.to<@Timed>()
 
-    block again(timed: @Timed)
+    block entry()
+        jump again()
+
+    block again()
         timed.lock.lock()
         stop : Bool = timed.stop.load()
         timed.cond.wake_all()
         timed.lock.unlock()
         branch stop
             ? return()
-            : again(timed)
+            : again()
 
 /// Sets ready once every waiter waits, and wakes them all.
 routine make_ready(timed: @Timed) -> Void

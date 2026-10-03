@@ -180,16 +180,17 @@ routine cm_asin_pack(v: U128, xn: S64, xsgn: S64, rnd: U64) -> F128
 /// The 128-bit fast path of asin. It falls back to cm_asin_accurate when its result could round
 /// either way.
 routine cm_asin_fast(x: F128) -> F128
+    shared arg : CmAsinArg = cm_asin_unpack(x)
+    shared nz  : S64       = 16383.sub(arg.xn)
+
     block entry()
-        arg     : CmAsinArg = cm_asin_unpack(x)
-        nz      : S64       = 16383.sub(arg.xn)
-        reduced : Bool      = arg.j.ne(0)
+        reduced : Bool = arg.j.ne(0)
         branch reduced
-            ? reduce(arg, nz)
-            : direct(arg, nz)
+            ? reduce()
+            : direct()
 
     // asin(x) = asin(s_j) + asin(d) for the reduced argument d
-    block reduce(arg: CmAsinArg, nz: S64)
+    block reduce()
         x0    : U64         = cm_asin_lo(arg.xa.to_wrap<S128>())
         x1    : U64         = cm_asin_hi(arg.xa)
         root  : CmAsinRoot3 = cm_asin_fast_sqrt(x0, x1, nz, 0)
@@ -222,7 +223,7 @@ routine cm_asin_fast(x: F128) -> F128
             : return(r)
 
     // small |x|: asin(x) = x + x^3*P(x^2)
-    block direct(arg: CmAsinArg, nz: S64)
+    block direct()
         f     : U128        = cm_asin_fast_poly(arg.xa, nz.sub(6).mul(2))
         g     : CmAsinW4    = cm_asin_shift_poly4(f, nz.mul(2).add(1))
         xh    : U128        = arg.xa.shr(1)
@@ -254,50 +255,52 @@ routine cm_asin_fast(x: F128) -> F128
 /// A 128-bit f placed as the top two of four words and shifted right by sf (the small-argument
 /// alignment of the fast polynomial part), as the original's case split writes it.
 routine cm_asin_shift_poly4(f: U128, sf: S64) -> CmAsinW4
+    shared g3 : U64 = cm_asin_hi(f)
+    shared g2 : U64 = cm_asin_lo(f.to_wrap<S128>())
+    shared s  : S64 = cm_asin_sh(sf).to<S64>()
+
     block entry()
-        g3      : U64      = cm_asin_hi(f)
-        g2      : U64      = cm_asin_lo(f.to_wrap<S128>())
-        s       : S64      = cm_asin_sh(sf).to<S64>()
         in_word : Bool     = sf.lt(64)
         in_one  : Bool     = sf.lt(128)
         in_two  : Bool     = sf.lt(192)
         gone    : CmAsinW4 = CmAsinW4 { w0: 0, w1: 0, w2: 0, w3: 0 }
         when
-            in_word -> within_word(g2, g3, s)
-            in_one  -> one_word(g2, g3, s)
-            in_two  -> two_words(g2, g3, s)
+            in_word -> within_word()
+            in_one  -> one_word()
+            in_two  -> two_words()
             else    -> return(gone)
 
-    block within_word(g2: U64, g3: U64, s: S64)
+    block within_word()
         back : S64      = cm_asin_sh(0.sub(s)).to<S64>()
         w1   : U64      = g2.shl(back.to<U64>())
         w2   : U64      = g2.shr(s.to<U64>()).bitor(g3.shl(back.to<U64>()))
         r    : CmAsinW4 = CmAsinW4 { w0: 0, w1: w1, w2: w2, w3: g3.shr(s.to<U64>()) }
         return(r)
 
-    block one_word(g2: U64, g3: U64, s: S64)
+    block one_word()
         w0 : U64      = g2.shl(cm_asin_sh(0.sub(s)))
         w1 : U64      = g2.shr(s.to<U64>()).bitor(g3.shl(1).shl(cm_asin_sh(s.bitnot())))
         r  : CmAsinW4 = CmAsinW4 { w0: w0, w1: w1, w2: g3.shr(s.to<U64>()), w3: 0 }
         return(r)
 
     // unreachable for asin (|x| >= 2^-56 keeps sf below 128), but kept as the original writes it
-    block two_words(g2: U64, g3: U64, s: S64)
+    block two_words()
         w0 : U64      = g2.shr(s.to<U64>()).bitor(g3.shl(1).shl(cm_asin_sh(s.bitnot())))
         r  : CmAsinW4 = CmAsinW4 { w0: w0, w1: g2.shr(s.to<U64>()), w2: 0, w3: 0 }
         return(r)
 
 /// The 320-bit accurate path of F128.asin for 2^-57 <= |x| < 1 (the C as_asinq_accurate).
 routine cm_asin_accurate(x: F128) -> F128
-    block entry()
-        arg     : CmAsinArg = cm_asin_unpack(x)
-        nz      : S64       = 16383.sub(arg.xn)
-        reduced : Bool      = arg.j.ne(0)
-        branch reduced
-            ? reduce(arg, nz)
-            : direct(arg, nz)
+    shared arg : CmAsinArg = cm_asin_unpack(x)
+    shared nz  : S64       = 16383.sub(arg.xn)
 
-    block reduce(arg: CmAsinArg, nz: S64)
+    block entry()
+        reduced : Bool = arg.j.ne(0)
+        branch reduced
+            ? reduce()
+            : direct()
+
+    block reduce()
         x0    : U64         = cm_asin_lo(arg.xa.to_wrap<S128>())
         x1    : U64         = cm_asin_hi(arg.xa)
         root  : CmAsinRoot5 = cm_asin_getcos(nz, x0, x1)
@@ -317,7 +320,7 @@ routine cm_asin_accurate(x: F128) -> F128
         r     : F128        = cm_asin_pack(v, 16382.sub(k), arg.xsgn, rnd)
         return(r)
 
-    block direct(arg: CmAsinArg, nz: S64)
+    block direct()
         x0      : U64         = cm_asin_lo(arg.xa.to_wrap<S128>())
         x1      : U64         = cm_asin_hi(arg.xa)
         t       : CmAsinW5    = CmAsinW5 { w0: 0, w1: 0, w2: 0, w3: x0, w4: x1 }

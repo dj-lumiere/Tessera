@@ -184,31 +184,32 @@ routine cm_wide_mul7w(a: @U64, b: U64, out: @U64) -> Void
 
 /// mhu7xu2: the words at or above word 2 of the 7x2-word product a * b, as 7 words. out must not be a.
 routine cm_wide_mulhi_7x2(a: @U64, b: U128, out: @U64) -> Void
+    shared shifted_buf : @Array<U64, 7> <- Array<U64, 7> { 0, 0, 0, 0, 0, 0, 0 }
+    shared shifted     : @U64           = shifted_buf.to<@U64>()
+    shared low_buf     : @Array<U64, 7> <- uninit
+    shared low         : @U64           = low_buf.to<@U64>()
+
     block entry()
-        claim shifted_buf : @Array<U64, 7> <- Array<U64, 7> { 0, 0, 0, 0, 0, 0, 0 }
-        shifted : @U64 = shifted_buf.to<@U64>()
-        claim low_buf : @Array<U64, 7> <- uninit
-        low : @U64 = low_buf.to<@U64>()
         cm_wide_mul7w(a, cm_wide_hi(b), out)
-        jump shift(0, shifted, low)
+        jump shift(0)
 
     // shifted = a >> 64, the partner of b's low word
-    block shift(i: USize, shifted: @U64, low: @U64)
+    block shift(i: USize)
         done : Bool = i.eq(6)
         branch done
-            ? low(shifted, low)
-            : shift_word(i, shifted, low)
+            ? low()
+            : shift_word(i)
 
-    block shift_word(i: USize, shifted: @U64, low: @U64)
+    block shift_word(i: USize)
         w : U64 = a.stride(i.add(1)).load()
         shifted.stride(i).store(w)
-        jump shift(i.add(1), shifted, low)
+        jump shift(i.add(1))
 
-    block low(shifted: @U64, low: @U64)
+    block low()
         cm_wide_mul7w(shifted, cm_wide_lo(b), low)
-        jump add(0, 0, low)
+        jump add(0, 0)
 
-    block add(i: USize, carry: U64, low: @U64)
+    block add(i: USize, carry: U64)
         done : Bool = i.eq(7)
         branch done
             ? return()
@@ -218,35 +219,36 @@ routine cm_wide_mulhi_7x2(a: @U64, b: U128, out: @U64) -> Void
         pair : U128 = o.to<U128>().add(t.to<U128>())
         s    : U128 = pair.add(carry.to<U128>())
         out.stride(i).store(cm_wide_lo(s))
-        jump add(i.add(1), cm_wide_hi(s), low)
+        jump add(i.add(1), cm_wide_hi(s))
 
 /// arsu7: arithmetic right shift of the 7-word x by n bits (n < 192), in place.
 routine cm_wide_ashr7(x: @U64, n: U64) -> Void
+    shared rk : U64   = n.bitand(63)
+    shared lk : U64   = 64.sub_wrap(rk).bitand(63)
+    shared qk : USize = n.shr(6).to<USize>()
+
     block entry()
-        rk  : U64   = n.bitand(63)
-        lk  : U64   = 64.sub_wrap(rk).bitand(63)
-        qk  : USize = n.shr(6).to<USize>()
-        top : U64   = x.stride(6).load()
-        jump move(0, rk, lk, qk, top.to_wrap<S64>())
+        top : U64 = x.stride(6).load()
+        jump move(0, top.to_wrap<S64>())
 
     // words move down by qk and shift by rk. The top word is shifted in once the loop ends
-    block move(i: USize, rk: U64, lk: U64, qk: USize, top: S64)
+    block move(i: USize, top: S64)
         src  : USize = qk.add(i)
         done : Bool  = src.gt(5)
         branch done
-            ? fill(rk, qk, top)
-            : move_word(i, rk, lk, qk, top)
+            ? fill(top)
+            : move_word(i, top)
 
-    block move_word(i: USize, rk: U64, lk: U64, qk: USize, top: S64)
+    block move_word(i: USize, top: S64)
         src      : USize = qk.add(i)
         lower    : U64   = x.stride(src).load()
         upper    : U64   = x.stride(src.add(1)).load()
         combined : U64   = upper.shl(lk).bitor(lower.shr(rk))
         aligned  : Bool  = rk.eq(0)
         x.stride(i).store(aligned ? lower : combined)
-        jump move(i.add(1), rk, lk, qk, top)
+        jump move(i.add(1), top)
 
-    block fill(rk: U64, qk: USize, top: S64)
+    block fill(top: S64)
         k : USize = 6.sub(qk)
         x.stride(k).store(top.shr(rk.to<S64>()).to_wrap<U64>())
         jump sign(k.add(1), top.shr(63))
@@ -372,34 +374,35 @@ routine cm_wide_pol6(x: U64, out: @U64) -> Void
 /// The same polynomial on the second word x, keeping only the terms that still matter: row r enters shifted
 /// down by r words.
 routine cm_wide_pol6red(x: U64, out: @U64) -> Void
-    block entry()
-        claim row_buf : @Array<U64, 6> <- Array<U64, 6> { 0, 0, 0, 0, 0, 0 }
-        row : @U64 = row_buf.to<@U64>()
-        out.zeroinit(6)
-        jump step(5, row)
+    shared row_buf : @Array<U64, 6> <- Array<U64, 6> { 0, 0, 0, 0, 0, 0 }
+    shared row     : @U64           = row_buf.to<@U64>()
 
-    block step(r: USize, row: @U64)
+    block entry()
+        out.zeroinit(6)
+        jump step(5)
+
+    block step(r: USize)
         done : Bool = r.eq(0)
         branch done
             ? last()
-            : load_row(r, 0, row)
+            : load_row(r, 0)
 
     // row[k] = coefficient r's word r + k, for k <= 5 - r (the words above keep the zeros they started with)
-    block load_row(r: USize, k: USize, row: @U64)
+    block load_row(r: USize, k: USize)
         full : Bool = r.add(k).eq(6)
         branch full
-            ? horner(r, row)
-            : load_word(r, k, row)
+            ? horner(r)
+            : load_word(r, k)
 
-    block load_word(r: USize, k: USize, row: @U64)
+    block load_word(r: USize, k: USize)
         coefficient : @U64 = cm_wide_coefficient(r)
         w           : U64  = coefficient.stride(r.add(k)).load()
         row.stride(k).store(w)
-        jump load_row(r, k.add(1), row)
+        jump load_row(r, k.add(1))
 
-    block horner(r: USize, row: @U64)
+    block horner(r: USize)
         cm_wide_mulhi_add6(x, out, row, out)
-        jump step(r.sub(1), row)
+        jump step(r.sub(1))
 
     block last()
         cm_wide_mulhi_add6(x, out, cm_wide_coefficient(0), out)

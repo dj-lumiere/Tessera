@@ -18,18 +18,19 @@ module Standard::Core
 
 /// sqrt(self^2 + other^2) without intermediate overflow.
 routine F64.hypot(self: Self, other: Self) -> Self
+    shared xi : U64 = self.bits()
+    shared yi : U64 = other.bits()
+
     block entry()
-        xi      : U64  = self.bits()
-        yi      : U64  = other.bits()
         ex      : U64  = xi.bitand(0x7FF0000000000000)
         ey      : U64  = yi.bitand(0x7FF0000000000000)
         special : Bool = ex.eq(0x7FF0000000000000).bitor(ey.eq(0x7FF0000000000000))
         branch special
-            ? special(xi, yi)
+            ? special()
             : order(self.abs(), other.abs())
 
     // x or y is NaN or infinite
-    block special(xi: U64, yi: U64)
+    block special()
         wx    : U64  = xi.shl(1)
         wy    : U64  = yi.shl(1)
         xinf  : Bool = wx.eq(0xFFE0000000000000)
@@ -175,12 +176,13 @@ private routine cm_f64_hypot_denorm(a: U64, b: U64) -> F64
 /// compared with the square of each candidate modulo 2^64 (the differences
 /// are small, so the modular results are exact).
 private routine cm_f64_hypot_hard(x: F64, y: F64) -> F64
+    shared xu : U64 = x.bits()
+    shared be : S64 = xu.shr(52).to_wrap<S64>()
+
     block entry()
-        xu              : U64 = x.bits()
         yu              : U64 = y.bits()
         bm              : U64 = xu.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
         lm              : U64 = yu.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
-        be              : S64 = xu.shr(52).to_wrap<S64>()
         le              : S64 = yu.shr(52).to_wrap<S64>()
         sum_sq          : F64 = x.mul(x).add(y.mul(y))
         ri              : U64 = sum_sq.sqrt().bits()
@@ -188,25 +190,25 @@ private routine cm_f64_hypot_hard(x: F64, y: F64) -> F64
         biased_exponent : S64 = ri.shr(52).to_wrap<S64>()
         re              : S64 = biased_exponent.sub(0x3FF)
         m2              : U64 = cm_f64_hypot_sum_squares(bm, lm, be.sub(le))
-        jump back(0, rm, re, be, m2)
+        jump back(0, rm, re, m2)
 
     // step the candidate three ulps down
-    block back(i: U64, rm: U64, re: S64, be: S64, m2: U64)
+    block back(i: U64, rm: U64, re: S64, m2: U64)
         done : Bool = i.eq(3)
         branch done
-            ? search(rm, re, be, m2)
+            ? search(rm, re, m2)
             : continue
         bottom : Bool = rm.eq(0x0010000000000000)
         branch bottom
-            ? back(i.add(1), 0x001FFFFFFFFFFFFF, re.sub(1), be, m2)
-            : back(i.add(1), rm.sub(1), re, be, m2)
+            ? back(i.add(1), 0x001FFFFFFFFFFFFF, re.sub(1), m2)
+            : back(i.add(1), rm.sub(1), re, m2)
 
-    block search(rm: U64, re: S64, be: S64, m2: U64)
+    block search(rm: U64, re: S64, m2: U64)
         k : U64 = S64.add(2, re).to_wrap<U64>()
-        jump step(rm, k, re, be, m2)
+        jump step(rm, k, re, m2)
 
     // move the candidate up until its square reaches x^2 + y^2
-    block step(rm0: U64, k: U64, re: S64, be: S64, m2: U64)
+    block step(rm0: U64, k: U64, re: S64, m2: U64)
         wide : Bool = rm0.ge(0x0020000000000000)
         rm   : U64  = wide
             ? rm0.add(2)
@@ -215,13 +217,13 @@ private routine cm_f64_hypot_hard(x: F64, y: F64) -> F64
         d     : S64  = m2.sub_wrap(tm.mul_wrap(tm)).to_wrap<S64>()
         above : Bool = d.le(0)
         branch above
-            ? found(rm, k, re, be, m2, d)
-            : step(rm, k, re, be, m2)
+            ? found(rm, k, re, m2, d)
+            : step(rm, k, re, m2)
 
-    block found(rm: U64, k: U64, re: S64, be: S64, m2: U64, d: S64)
+    block found(rm: U64, k: U64, re: S64, m2: U64, d: S64)
         exact : Bool = d.eq(0)
         branch exact
-            ? finish(rm, re, be)
+            ? finish(rm, re)
             : continue
         // compare with the midpoint below the candidate
         narrow : Bool = rm.le(0x0020000000000000)
@@ -236,11 +238,11 @@ private routine cm_f64_hypot_hard(x: F64, y: F64) -> F64
             ? 1
             : 2
         when
-            tie   -> finish(rm.sub(rm.bitand(bit)), re, be)  // round to even
-            below -> finish(rm.sub(1), re, be)
-            else  -> finish(rm, re, be)
+            tie   -> finish(rm.sub(rm.bitand(bit)), re)  // round to even
+            below -> finish(rm.sub(1), re)
+            else  -> finish(rm, re)
 
-    block finish(rm: U64, re: S64, be: S64)
+    block finish(rm: U64, re: S64)
         wide : Bool = rm.ge(0x0020000000000000)
         m    : U64  = wide
             ? rm.shr(1)
@@ -256,20 +258,21 @@ private routine cm_f64_hypot_hard(x: F64, y: F64) -> F64
 /// and lm are the full mantissas of the larger and smaller leg, de >= 0 the
 /// difference of their exponents. Bits shifted out of lm^2 are kept sticky.
 private routine cm_f64_hypot_sum_squares(bm: U64, lm: U64, de: S64) -> U64
+    shared b4 : U64 = bm.shl(2)
+    shared m2 : U64 = b4.mul_wrap(b4)
+    shared ls : S64 = S64.sub(2, de)
+
     block entry()
-        b4  : U64  = bm.shl(2)
-        m2  : U64  = b4.mul_wrap(b4)
-        ls  : S64  = S64.sub(2, de)
         big : Bool = ls.ge(0)
         branch big
-            ? shifted(m2, ls)
-            : wide(m2, ls)
+            ? shifted()
+            : wide()
 
-    block shifted(m2: U64, ls: S64)
+    block shifted()
         l : U64 = lm.shl(ls.to_wrap<U64>())
         return(m2.add_wrap(l.mul_wrap(l)))
 
-    block wide(m2: U64, ls: S64)
+    block wide()
         l      : U128 = lm.to<U128>()
         l2     : U128 = l.mul_wrap(l)
         ls2    : S64  = ls.mul(2)

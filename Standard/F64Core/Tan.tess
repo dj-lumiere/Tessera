@@ -83,12 +83,13 @@ preset CM_F64_TAN_TINV: @Array<U64, 256> <- { 0xff00ff00ff00ff02, 0xfe03f80fe03f
 
 /// In radians.
 routine F64.tan(self: Self) -> Self
+    shared ux : U64 = self.bits()
+
     block entry()
-        ux        : U64  = self.bits()
         exp_field : U64  = ux.shr(52).bitand(0x7FF)
         special   : Bool = exp_field.eq(0x7FF)
         branch special
-            ? special(ux)
+            ? special()
             : continue
         // |x| <= 0x1.d12ed0af1a27ep-27: tan(x) rounds like x + x^3/3
         tiny : Bool = ux.bitand(0x7FFFFFFFFFFFFFFF).le(0x3E4D12ED0AF1A27E)
@@ -104,7 +105,7 @@ routine F64.tan(self: Self) -> Self
             : return(cm_f64_tan_accurate(self))
 
     // an infinity gives NaN (inf - inf), a NaN comes back quiet
-    block special(ux: U64)
+    block special()
         inf : Bool = ux.shl(1).eq(0xFFE0000000000000)
         branch inf
             ? return(self.sub(self))
@@ -128,34 +129,34 @@ private routine cm_f64_tan_fast_div(b: CmF64TrigDD, a: CmF64TrigDD) -> CmF64Trig
 
 /// The fast path for |x| > 0x1.d12ed0af1a27ep-27: hi + lo with |hi + lo - tan(x)| < |err|.
 private routine cm_f64_tan_fast(x: F64) -> CmF64TrigBound
+    shared neg0 : U64 = x.lt(0.0)
+        ? 1
+        : 0
+    shared red : CmF64TrigFast = cm_f64_trig_reduce_fast(x.abs(), true)
+    // i >= 2^10: pi <= x <= 2pi, tan(pi + x) = tan(x)
+    shared i0 : U64 = red.i.bitand(0x3FF)
+    // i >= 2^9: pi/2 <= x <= pi, tan(pi/2 + x) = -cot(x)
+    shared half : U64 = i0.shr(9)
+    shared neg  : U64 = neg0.bitxor(half)
+
     block entry()
-        neg0 : U64 = x.lt(0.0)
-            ? 1
-            : 0
-        red : CmF64TrigFast = cm_f64_trig_reduce_fast(x.abs(), true)
-        // i >= 2^10: pi <= x <= 2pi, tan(pi + x) = tan(x)
-        i0 : U64 = red.i.bitand(0x3FF)
-        // i >= 2^9: pi/2 <= x <= pi, tan(pi/2 + x) = -cot(x)
-        half   : U64 = i0.shr(9)
         is_tan : U64 = U64.bitxor(1, half)
-        neg    : U64 = neg0.bitxor(half)
         i1     : U64 = i0.bitand(0x1FF)
         // i >= 2^8: tan(pi/2 - x) = cot(x), and 2^-11 - h is exact
         mirror : Bool = i1.bitand(0x100).ne(0)
         branch mirror
-            ? check(neg, is_tan.bitxor(1), U64.sub(0x1FF, i1), F64.sub(0x1p-11, red.hi),
-                red.lo.neg())
-            : check(neg, is_tan, i1, red.hi, red.lo)
+            ? check(is_tan.bitxor(1), U64.sub(0x1FF, i1), F64.sub(0x1p-11, red.hi), red.lo.neg())
+            : check(is_tan, i1, red.hi, red.lo)
 
     // a tiny reduced argument is left to the accurate path
-    block check(neg: U64, is_tan: U64, i: U64, h: F64, l: F64)
+    block check(is_tan: U64, i: U64, h: F64, l: F64)
         tiny : Bool = i.eq(0).bitand(h.lt(0x1p-37))
         branch tiny
             ? return(CmF64TrigBound { hi: h, lo: l, err: 0x1p+0 })
-            : eval(neg, is_tan, i, h, l)
+            : eval(is_tan, i, h, l)
 
     // the SC table is evaluated at i/2^11 + SC[i][0], and h - SC[i][0] is exact
-    block eval(neg: U64, is_tan: U64, i: U64, h0: F64, l0: F64)
+    block eval(is_tan: U64, i: U64, h0: F64, l0: F64)
         k     : USize       = i.to<USize>().mul(3)
         hl    : CmF64TrigDD = cm_f64_trig_fast_two_sum(h0.sub(CM_F64_TRIG_SC.getitem(k)), l0)
         h     : F64         = hl.hi

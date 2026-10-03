@@ -121,23 +121,24 @@ routine F128Extended.to<F128Big>(self: Self) -> F128Big
 
 /// limbs (7 of them, least significant first) × 2^exponent.
 routine big_from_limbs(limbs: @U64, exponent: S64) -> F128Big
-    block entry()
-        claim m : @BigNat<16> <- uninit
-        m.set(U64.MIN)
-        jump load(0, m)
+    shared m : @BigNat<16> <- uninit
 
-    block load(i: USize, m: @BigNat<16>)
+    block entry()
+        m.set(U64.MIN)
+        jump load(0)
+
+    block load(i: USize)
         done : Bool = i.ge(7)
         branch done
-            ? finish(m)
-            : one(i, m)
+            ? finish()
+            : one(i)
 
-    block one(i: USize, m: @BigNat<16>)
+    block one(i: USize)
         limb : U64 = limbs.stride(i).load()
         m.push_limb(limb)
-        jump load(i.add(1), m)
+        jump load(i.add(1))
 
-    block finish(m: @BigNat<16>)
+    block finish()
         r : F128Big = big_make(false, exponent, m)
         return(r)
 
@@ -275,6 +276,9 @@ routine F128Big.ldexp(self: Self, k: S64) -> Self
 /// The sum, rounded once. Both mantissas get 64 guard bits. The smaller is shifted exactly when it's within 64
 /// bits of the larger, else rounded, which only happens when it can't cancel.
 routine F128Big.add(self: Self, other: Self) -> Self
+    shared x : @BigNat<16> <- uninit
+    shared y : @BigNat<16> <- uninit
+
     block entry()
         a_zero : Bool = self.is_zero()
         b_zero : Bool = other.is_zero()
@@ -298,37 +302,37 @@ routine F128Big.add(self: Self, other: Self) -> Self
             : align(big, small, d)
 
     block align(big: Self, small: Self, d: S64)
-        claim x : @BigNat<16> <- big.mant
-        claim y : @BigNat<16> <- small.mant
+        x.store(big.mant)
+        y.store(small.mant)
         x.shl(64)
         near : Bool = d.le(64)
         branch near
-            ? up(big, small, d, x, y)
-            : down(big, small, d, x, y)
+            ? up(big, small, d)
+            : down(big, small, d)
 
-    block up(big: Self, small: Self, d: S64, x: @BigNat<16>, y: @BigNat<16>)
+    block up(big: Self, small: Self, d: S64)
         y.shl(64.sub(d).to<USize>())
-        jump combine(big, small, x, y)
+        jump combine(big, small)
 
-    block down(big: Self, small: Self, d: S64, x: @BigNat<16>, y: @BigNat<16>)
+    block down(big: Self, small: Self, d: S64)
         y.shr_round_even(d.sub(64).to<USize>())
-        jump combine(big, small, x, y)
+        jump combine(big, small)
 
-    block combine(big: Self, small: Self, x: @BigNat<16>, y: @BigNat<16>)
+    block combine(big: Self, small: Self)
         same : Bool = big.negative.eq(small.negative)
         branch same
-            ? plus(big, x, y)
-            : minus(big, x, y)
+            ? plus(big)
+            : minus(big)
 
-    block plus(big: Self, x: @BigNat<16>, y: @BigNat<16>)
+    block plus(big: Self)
         x.add(y)
-        jump finish(big, x)
+        jump finish(big)
 
-    block minus(big: Self, x: @BigNat<16>, y: @BigNat<16>)
+    block minus(big: Self)
         x.sub(y)
-        jump finish(big, x)
+        jump finish(big)
 
-    block finish(big: Self, x: @BigNat<16>)
+    block finish(big: Self)
         r : Self = big_make(big.negative, big.exponent.sub(64), x)
         return(r)
 
@@ -427,27 +431,28 @@ routine big_negligible(term: F128Big, sum: F128Big) -> Bool
 /// e^x for |x| < 2^15: x = q ln 2 + r with ln 2 in two parts, then e^(r / 256) by its Taylor series and 8
 /// squarings (each doubles the relative error, to about 2^-438 in all).
 routine big_exp(x: F128Big) -> F128Big
+    shared x_over_ln2 : F128Extended = x.to<F128Extended>().mul(wide_const(1))
+    shared q          : S64          = x_over_ln2.to_nearest<S64>()
+    shared r          : F128Big      = x.sub(big_ln2_hi().mul(q)).sub(big_ln2_lo().mul(q))
+    shared small      : F128Big      = r.ldexp(-8)
+
     block entry()
-        x_over_ln2 : F128Extended = x.to<F128Extended>().mul(wide_const(1))
-        q          : S64          = x_over_ln2.to_nearest<S64>()
-        r          : F128Big      = x.sub(big_ln2_hi().mul(q)).sub(big_ln2_lo().mul(q))
-        small      : F128Big      = r.ldexp(-8)
-        one        : F128Big      = big_one()
-        jump series(1, small, one.add(small), small, q)
+        one : F128Big = big_one()
+        jump series(1, small, one.add(small))
 
     // term = small^j / j!
-    block series(j: U64, term: F128Big, sum: F128Big, small: F128Big, q: S64)
+    block series(j: U64, term: F128Big, sum: F128Big)
         next : F128Big = term.mul(small).div(j.add(1))
         done : Bool    = big_negligible(next, sum)
         branch done
-            ? square(0, sum, q)
-            : series(j.add(1), next, sum.add(next), small, q)
+            ? square(0, sum)
+            : series(j.add(1), next, sum.add(next))
 
-    block square(i: S64, e: F128Big, q: S64)
+    block square(i: S64, e: F128Big)
         done : Bool = i.ge(8)
         branch done
             ? return(e.ldexp(q))
-            : square(i.add(1), e.mul(e), q)
+            : square(i.add(1), e.mul(e))
 
 /// e^x - 1 without cancellation: below 2^-20 its own series x Σ x^j / (j+1)!, else e^x - 1, which loses at most
 /// 21 of the 448 bits.
@@ -473,25 +478,26 @@ routine big_exp_m1(x: F128Big) -> F128Big
 /// ln x for x > 0: x = m 2^e with m in [sqrt(1/2), sqrt(2)), ln m from F128Extended's log (about 135 bits), then
 /// two Newton steps y ← y + m e^-y - 1. Near 1, where ln m is small, ln_1p of m - 1 keeps it accurate.
 routine big_ln(x: F128Big) -> F128Big
+    shared top      : S64          = x.top()
+    shared m0       : F128Big      = x.ldexp(0.sub(top))  // in [1, 2)
+    shared sqrt_two : F128Extended = wide_const(2).ldexp(1)
+    shared high     : Bool         = m0.to<F128Extended>().hi.ge(sqrt_two.hi)
+    shared m        : F128Big      = high
+        ? m0.ldexp(-1)
+        : m0
+    shared e : S64 = high
+        ? top.add(1)
+        : top
+
     block entry()
-        top      : S64          = x.top()
-        m0       : F128Big      = x.ldexp(0.sub(top))  // in [1, 2)
-        sqrt_two : F128Extended = wide_const(2).ldexp(1)
-        high     : Bool         = m0.to<F128Extended>().hi.ge(sqrt_two.hi)
-        m        : F128Big      = high
-            ? m0.ldexp(-1)
-            : m0
-        e : S64 = high
-            ? top.add(1)
-            : top
         one  : F128Big = big_one()
         u    : F128Big = m.sub(one)  // exact
         near : Bool    = e.eq(0).bitand(u.is_zero().bitor(u.top().lt(-20)))
         branch near
             ? return(big_ln_1p(u))
-            : newton(m, e)
+            : newton()
 
-    block newton(m: F128Big, e: S64)
+    block newton()
         one  : F128Big = big_one()
         y0   : F128Big = F128Extended.to<F128Big>(wide_log(m.to<F128Extended>()))
         y1   : F128Big = y0.add(m.mul(big_exp(y0.neg())).sub(one))
@@ -573,42 +579,45 @@ routine big_cos_core(t: F128Big) -> F128Big
 /// ones below it the fraction, accurate to about 2^-650 absolute: far past any F128's distance to a multiple of
 /// π/2, so θ keeps its 448 bits.
 routine big_reduce(x: F128) -> BigReduced
+    shared p    : F128Parts   = f128_unpack(x.bits())
+    shared w    : @BigNat<24> <- uninit
+    shared prod : @BigNat<24> <- uninit
+    // f = F × 2^-sh with F the bits under sh. Past 1/2, count the next quadrant and use f - 1
+    shared f : @BigNat<16> <- uninit
+
     block entry()
-        p     : F128Parts = f128_unpack(x.bits())
-        small : Bool      = p.exponent.lt(-1)  // |x| < 1/2 < π/4
+        small : Bool = p.exponent.lt(-1)  // |x| < 1/2 < π/4
         branch small
             ? near_zero()
-            : window(p)
+            : window()
 
     block near_zero()
         r : BigReduced = BigReduced { quadrant: 0, theta: F128.to<F128Big>(x.abs()) }
         return(r)
 
-    block window(p: F128Parts)
+    block window()
         bits_above  : S64   = p.exponent.sub(114).max(0)
         s           : USize = bits_above.div(64).to<USize>()
         window_bits : USize = s.add(14).mul(64)
         window_gap  : S64   = window_bits.to<S64>().sub(p.exponent)
         sh          : S64   = window_gap.add(112)
-        claim w : @BigNat<24> <- uninit
         w.set(U64.MIN)
-        jump load(0, s, sh, p, w)
+        jump load(0, s, sh)
 
     // limb k of W, least significant first, is TWO_OVER_PI[s + 13 - k]
-    block load(k: USize, s: USize, sh: S64, p: F128Parts, w: @BigNat<24>)
+    block load(k: USize, s: USize, sh: S64)
         done : Bool = k.ge(14)
         branch done
-            ? multiply(sh, p, w)
-            : load_one(k, s, sh, p, w)
+            ? multiply(sh)
+            : load_one(k, s, sh)
 
-    block load_one(k: USize, s: USize, sh: S64, p: F128Parts, w: @BigNat<24>)
+    block load_one(k: USize, s: USize, sh: S64)
         limb : U64 = TWO_OVER_PI.getitem(s.add(13).sub(k))
         w.push_limb(limb)
-        jump load(k.add(1), s, sh, p, w)
+        jump load(k.add(1), s, sh)
 
-    block multiply(sh: S64, p: F128Parts, w: @BigNat<24>)
-        claim m    : @BigNat<24> <- uninit
-        claim prod : @BigNat<24> <- uninit
+    block multiply(sh: S64)
+        claim m : @BigNat<24> <- uninit
         w.trim()
         m.set(p.sig)
         prod.set_product(m, w)
@@ -616,37 +625,34 @@ routine big_reduce(x: F128) -> BigReduced
         whole_low : U64   = prod.bits128(at).to_wrap<U64>()
         q         : U64   = whole_low.bitand(3)
         past_half : Bool  = prod.bit(at.sub(1))
-        // f = F × 2^-sh with F the bits under sh. Past 1/2, count the next quadrant and use f - 1
-        claim f : @BigNat<16> <- uninit
         f.set(U64.MIN)
-        jump fraction(0, at, prod, f, q, past_half)
+        jump fraction(0, at, q, past_half)
 
     // copy the bits under sh into f, 64 at a time from the bottom (sh is a whole number of limbs past any
     // leftover bits, which bits128 reads across)
-    block fraction(i: USize, at: USize, prod: @BigNat<24>, f: @BigNat<16>, q: U64, past_half: Bool)
+    block fraction(i: USize, at: USize, q: U64, past_half: Bool)
         pos  : USize = i.mul(64)
         done : Bool  = pos.ge(at)
         branch done
-            ? finish(at, f, q, past_half)
-            : fraction_one(i, at, prod, f, q, past_half)
+            ? finish(at, q, past_half)
+            : fraction_one(i, at, q, past_half)
 
-    block fraction_one(i: USize, at: USize, prod: @BigNat<24>, f: @BigNat<16>, q: U64,
-        past_half: Bool)
+    block fraction_one(i: USize, at: USize, q: U64, past_half: Bool)
         pos  : USize = i.mul(64)
         left : USize = at.sub(pos)
         word : U64   = prod.bits128(pos).to_wrap<U64>()
         mask : U64   = U64.MAX.shr(64.sub(left.min(64)).to<U64>())
         f.push_limb(word.bitand(mask))
-        jump fraction(i.add(1), at, prod, f, q, past_half)
+        jump fraction(i.add(1), at, q, past_half)
 
-    block finish(at: USize, f: @BigNat<16>, q: U64, past_half: Bool)
+    block finish(at: USize, q: U64, past_half: Bool)
         f.trim()
         branch past_half
-            ? complement(at, f, q)
+            ? complement(at, q)
             : scale(false, at, f, q)
 
     // f - 1 = -(2^sh - F) × 2^-sh, taken exactly before any rounding
-    block complement(at: USize, f: @BigNat<16>, q: U64)
+    block complement(at: USize, q: U64)
         claim c : @BigNat<16> <- uninit
         one : U64 = 1
         c.set(one)

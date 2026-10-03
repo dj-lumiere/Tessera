@@ -238,23 +238,24 @@ routine Bytes.to<OwnedCStr>(self: Self, alloc: @Allocator) -> OwnedCStr
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 routine Bytes.to<OwnedCWStr>(self: Self, alloc: @Allocator) -> OwnedCWStr
-    block entry()
-        storage : Slice<CWChar> = Slice<CWChar>.construct(self.count.add(1), alloc)
-        units   : @CWChar       = storage.data
-        claim iter : @BytesCharsIter <- self.chars()
-        jump next(iter, storage, units, 0)
+    shared storage : Slice<CWChar>   = Slice<CWChar>.construct(self.count.add(1), alloc)
+    shared units   : @CWChar         = storage.data
+    shared iter    : @BytesCharsIter <- self.chars()
 
-    block next(iter: @BytesCharsIter, storage: Slice<CWChar>, units: @CWChar, n: USize)
+    block entry()
+        jump next(0)
+
+    block next(n: USize)
         c : Option<Char> = iter.next()
         when c
-            .Present(char) -> put(iter, storage, units, n, char)
-            .Absent        -> finish(storage, units, n)
+            .Present(char) -> put(n, char)
+            .Absent        -> finish(n)
 
-    block put(iter: @BytesCharsIter, storage: Slice<CWChar>, units: @CWChar, n: USize, char: Char)
+    block put(n: USize, char: Char)
         count : USize = encode_cwchar(char, units.stride(n))
-        jump next(iter, storage, units, n.add(count))
+        jump next(n.add(count))
 
-    block finish(storage: Slice<CWChar>, units: @CWChar, n: USize)
+    block finish(n: USize)
         units.stride(n).store(0)
         owned : OwnedCWStr = OwnedCWStr { storage: storage }
         return(owned)
@@ -263,18 +264,19 @@ routine Bytes.to<OwnedCWStr>(self: Self, alloc: @Allocator) -> OwnedCWStr
 /// how many units it wrote.
 #target(os: "windows")
 private routine encode_cwchar(char: Char, out: @CWChar) -> USize
+    shared cp : U32 = char.to<U32>()
+
     block entry()
-        cp  : U32  = char.to<U32>()
         bmp : Bool = cp.lt(0x10000)
         branch bmp
-            ? single(cp)
-            : pair(cp)
+            ? single()
+            : pair()
 
-    block single(cp: U32)
+    block single()
         out.store(cp.to<U16>())
         return(1)
 
-    block pair(cp: U32)
+    block pair()
         v         : U32 = cp.sub(0x10000)
         high_unit : U32 = v.shr(10).add(0xD800)
         out.store(high_unit.to<U16>())

@@ -14,52 +14,53 @@ module Standard::Core
 
 /// arctan(self), correctly rounded.
 routine F16.atan(self: Self) -> Self
+    shared v  : F32 = self.to<F32>()
+    shared u  : U32 = v.bits()
+    shared au : U32 = u.bitand(0x7FFFFFFF)
+    // for x < 0, atan(-x) = -atan(x)
+    shared neg : Bool = u.shr(31).eq(1)
+    shared s   : F32  = neg
+        ? -1.0
+        : 1.0
+
     block entry()
-        v       : F32  = self.to<F32>()
-        u       : U32  = v.bits()
-        au      : U32  = u.bitand(0x7FFFFFFF)
         special : Bool = au.ge(0x7F800000)  // NaN or infinity
         branch special
-            ? special(u, au)
+            ? special()
             : continue
-        // for x < 0, atan(-x) = -atan(x)
-        neg : Bool = u.shr(31).eq(1)
-        s   : F32  = neg
-            ? -1.0
-            : 1.0
         t      : F32  = v.mul(s)
         reduce : Bool = au.gt(0x3F800000)  // for x > 1, atan(x) = pi/2 - atan(1/x)
         branch reduce
-            ? reduced(u, au, s, F32.div(1.0, t), true)
-            : reduced(u, au, s, t, false)
+            ? reduced(F32.div(1.0, t), true)
+            : reduced(t, false)
 
-    block special(u: U32, au: U32)
+    block special()
         inf : Bool = au.eq(0x7F800000)
         branch inf
             ? signed(0x1.921fb6p+0, au.eq(u))
             : return(Self.from_bits(self.bits().bitor(0x0200)))
 
     // now 0 <= t <= 1
-    block reduced(u: U32, au: U32, s: F32, t: F32, reduce: Bool)
+    block reduced(t: F32, reduce: Bool)
         tt      : F32  = t.mul(t)
         quarter : Bool = t.le(0.25)
         half    : Bool = t.le(0.5)
         three   : Bool = t.le(0.75)
         when
-            quarter -> small(u, au, s, t, tt, reduce)
-            half    -> quartic(s, t, tt, reduce, 0x1.411612p-14, 0x1.ff076cp-1, 0x1.1ee64cp-6,
+            quarter -> small(t, tt, reduce)
+            half    -> quartic(t, tt, reduce, 0x1.411612p-14, 0x1.ff076cp-1, 0x1.1ee64cp-6,
                 -0x1.a6fc96p-2, 0x1.81dd3ep-3)
-            three   -> quartic(s, t, tt, reduce, -0x1.95964cp-8, 0x1.0bad76p+0, -0x1.e652e2p-4,
+            three   -> quartic(t, tt, reduce, -0x1.95964cp-8, 0x1.0bad76p+0, -0x1.e652e2p-4,
                 -0x1.e70ab4p-3, 0x1.a5eb88p-4)
-            else    -> quartic(s, t, tt, reduce, -0x1.f75b16p-6, 0x1.2d3d1p+0, -0x1.882376p-2,
+            else    -> quartic(t, tt, reduce, -0x1.f75b16p-6, 0x1.2d3d1p+0, -0x1.882376p-2,
                 0x1.d18c96p-13, 0x1.6aa268p-6)
 
     // t <= 0.25
-    block small(u: U32, au: U32, s: F32, t: F32, tt: F32, reduce: Bool)
+    block small(t: F32, tt: F32, reduce: Bool)
         rounds_to_x : Bool = reduce.bitnot().bitand(t.le(0x1.d14p-6))
         positive    : Bool = au.eq(u)
         when
-            rounds_to_x       -> tiny(au, s, t)
+            rounds_to_x       -> tiny(t)
             au.eq(0x3E56A000) -> signed(0x1.a72002p-3, positive)  // |x| = 0x1.ad4p-3
             au.eq(0x4115C000) -> signed(0x1.76dffep+0, positive)  // |x| = 0x1.2b8p+3
             au.eq(0x42C32000) -> signed(0x1.8f7ffep+0, positive)  // |x| = 0x1.864p+6
@@ -67,10 +68,10 @@ routine F16.atan(self: Self) -> Self
         c5 : F32 = F32.mul_add(-0x1.0c7c54p-3, tt, 0x1.98d0ep-3)
         c1 : F32 = F32.mul_add(-0x1.55546cp-2, tt, 0x1.fffffcp-1)
         c  : F32 = c5.mul_add(tt.mul(tt), c1)
-        jump finish(s, t.mul(c), reduce)
+        jump finish(t.mul(c), reduce)
 
     // for |x| < 0x1.d14p-6, atan(x) rounds to x
-    block tiny(au: U32, s: F32, t: F32)
+    block tiny(t: F32)
         zero : Bool = au.eq(0)
         branch zero
             ? return(self)
@@ -79,14 +80,13 @@ routine F16.atan(self: Self) -> Self
         return(st.mul_add(-0x1p-23, st).to<Self>())
 
     // the degree-4 polynomial p0 + p1 t + ... + p4 t^4 for the subinterval holding t
-    block quartic(s: F32, t: F32, tt: F32, reduce: Bool, p0: F32, p1: F32, p2: F32, p3: F32,
-        p4: F32)
+    block quartic(t: F32, tt: F32, reduce: Bool, p0: F32, p1: F32, p2: F32, p3: F32, p4: F32)
         c3 : F32 = p4.mul_add(t, p3)
         c2 : F32 = c3.mul_add(t, p2)
         y0 : F32 = p1.mul_add(t, p0)
-        jump finish(s, c2.mul_add(tt, y0), reduce)
+        jump finish(c2.mul_add(tt, y0), reduce)
 
-    block finish(s: F32, y: F32, reduce: Bool)
+    block finish(y: F32, reduce: Bool)
         r : F32 = reduce  // argument reconstruction
             ? F32.sub(0x1.921fb6p+0, y)
             : y

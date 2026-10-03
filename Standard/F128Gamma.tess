@@ -352,19 +352,20 @@ routine wide_exp_coef(i: USize) -> F128Extended
 /// and the first dropped term is below 2^-193, so the result is within about 2^-189 relative, plus
 /// 2^-191 |x| from the reduction. For |x| below about 12000 (the callers check).
 routine gamma_wide_exp(x: F128Extended) -> F128Extended
-    block entry()
-        q    : S64          = x.mul(wide_const(1)).to_nearest<S64>()
-        d    : F128Extended = x.sub(q.to<F128Extended>().mul(wide_const(0)))
-        last : F128Extended = wide_exp_coef(35)
-        jump horner(34, last, d, q)
+    shared q : S64          = x.mul(wide_const(1)).to_nearest<S64>()
+    shared d : F128Extended = x.sub(q.to<F128Extended>().mul(wide_const(0)))
 
-    block horner(i: S64, s: F128Extended, d: F128Extended, q: S64)
+    block entry()
+        last : F128Extended = wide_exp_coef(35)
+        jump horner(34, last)
+
+    block horner(i: S64, s: F128Extended)
         done : Bool = i.lt(0)
         branch done
             ? return(s.ldexp(q))
             : continue
         c : F128Extended = wide_exp_coef(i.to<USize>())
-        jump horner(i.sub(1), s.mul(d).add(c), d, q)
+        jump horner(i.sub(1), s.mul(d).add(c))
 
 /// ln a for a > 0: a = m 2^e with m in [1, 2), and ln m from F128's correctly rounded ln
 /// (CORE-MATH) refined by one Newton step y ← y + m e^-y - 1, which squares its 2^-113 error away.
@@ -415,23 +416,24 @@ routine wide_ln_gamma_near(z: F128Extended, two: Bool) -> LnGammaWide
 /// in [30, 31), and Stirling's series there, 36 terms in 1/b² (the first dropped one is below
 /// 2^-207 at b = 30).
 routine wide_ln_gamma_positive(a: F128Extended, floor: S64) -> LnGammaWide
+    shared z1     : F128Extended = a.sub(wide_one())
+    shared z2     : F128Extended = a.sub(S64.to<F128Extended>(2))
+    shared near_1 : Bool         = wide_is_small(z1)
+    shared near_2 : Bool         = wide_is_small(z2)
+    shared steps  : S64          = GAMMA_WIDE_LIFT.sub(floor).max(0)
+
     block entry()
-        z1     : F128Extended = a.sub(wide_one())
-        z2     : F128Extended = a.sub(S64.to<F128Extended>(2))
-        near_1 : Bool         = wide_is_small(z1)
-        near_2 : Bool         = wide_is_small(z2)
-        steps  : S64          = GAMMA_WIDE_LIFT.sub(floor).max(0)
         when
             near_1 -> return(wide_ln_gamma_near(z1, false))
             near_2 -> return(wide_ln_gamma_near(z2, true))
-            else   -> lift(0, steps, wide_one())
+            else   -> lift(0, wide_one())
 
     // w = a (a + 1) … (a + j - 1)
-    block lift(j: S64, steps: S64, w: F128Extended)
+    block lift(j: S64, w: F128Extended)
         done : Bool = j.ge(steps)
         branch done
             ? stirling(a.add(steps.to<F128Extended>()), w)
-            : lift(j.add(1), steps, w.mul(a.add(j.to<F128Extended>())))
+            : lift(j.add(1), w.mul(a.add(j.to<F128Extended>())))
 
     block stirling(b: F128Extended, w: F128Extended)
         inv_bb : F128Extended = wide_one().div(b.mul(b))
@@ -538,13 +540,14 @@ routine big_stirling_coef(i: USize) -> F128Big
 /// while k < π b. At b = 100 the 62nd is below 2^-470, so the sum stops at its first negligible
 /// term (big_negligible) within the 61 of the table.
 routine big_stirling(b: F128Big) -> F128Big
+    shared inv    : F128Big = b.recip()
+    shared inv_sq : F128Big = inv.mul(inv)
+
     block entry()
-        inv    : F128Big = b.recip()
-        inv_sq : F128Big = inv.mul(inv)
-        jump series(0, inv, big_zero(), inv_sq)
+        jump series(0, inv, big_zero())
 
     // power = 1 / b^(2i + 1)
-    block series(i: USize, power: F128Big, sum: F128Big, inv_sq: F128Big)
+    block series(i: USize, power: F128Big, sum: F128Big)
         full : Bool = i.ge(61)
         branch full
             ? assemble(sum)
@@ -553,7 +556,7 @@ routine big_stirling(b: F128Big) -> F128Big
         done : Bool    = big_negligible(term, sum)
         branch done
             ? assemble(sum)
-            : series(i.add(1), power.mul(inv_sq), sum.add(term), inv_sq)
+            : series(i.add(1), power.mul(inv_sq), sum.add(term))
 
     block assemble(sum: F128Big)
         half    : F128Big = big_one().ldexp(-1)
@@ -565,18 +568,19 @@ routine big_stirling(b: F128Big) -> F128Big
 /// ln |Γ(a)| for a > 0 or -1 < a < 0, floor = floor(a) (saturated): the recurrence up to a + n in
 /// [100, 101), then Stirling's series.
 routine big_ln_gamma_positive(a: F128Big, floor: S64) -> F128Big
+    shared steps : S64 = GAMMA_BIG_LIFT.sub(floor).max(0)
+
     block entry()
-        steps : S64 = GAMMA_BIG_LIFT.sub(floor).max(0)
-        jump lift(0, steps, big_one())
+        jump lift(0, big_one())
 
     // w = a (a + 1) … (a + j - 1)
-    block lift(j: S64, steps: S64, w: F128Big)
+    block lift(j: S64, w: F128Big)
         done : Bool = j.ge(steps)
         branch done
-            ? finish(steps, w)
-            : lift(j.add(1), steps, w.mul(a.add(j.to<F128Big>())))
+            ? finish(w)
+            : lift(j.add(1), w.mul(a.add(j.to<F128Big>())))
 
-    block finish(steps: S64, w: F128Big)
+    block finish(w: F128Big)
         b : F128Big = a.add(steps.to<F128Big>())
         r : F128Big = big_stirling(b).sub(big_ln(w.abs()))
         return(r)

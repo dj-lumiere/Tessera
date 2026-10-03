@@ -50,38 +50,39 @@ choice HyperKind: U8
 
 /// sinh, cosh, or tanh of a = |x| (2^-57 <= a below the cutoffs) in F128Extended.
 routine wide_hyper(a: F128, kind: HyperKind) -> F128Extended
+    shared w : F128Extended = a.to<F128Extended>()
+
     block entry()
-        w : F128Extended = a.to<F128Extended>()
         when kind
-            HyperKind.Sinh -> sinh(w)
-            HyperKind.Cosh -> cosh(w)
-            HyperKind.Tanh -> tanh(w)
+            HyperKind.Sinh -> sinh()
+            HyperKind.Cosh -> cosh()
+            HyperKind.Tanh -> tanh()
 
     // (m + m / (m + 1)) / 2 with m = e^a - 1 below 1/2, else (e^a - e^-a) / 2
-    block sinh(w: F128Extended)
+    block sinh()
         small : Bool = w.exponent.lt(-1)
         branch small
-            ? sinh_small(w)
-            : sinh_large(w)
+            ? sinh_small()
+            : sinh_large()
 
-    block sinh_small(w: F128Extended)
+    block sinh_small()
         m : F128Extended = wide_exp_m1(w)
         r : F128Extended = m.add(m.div(m.add(wide_one()))).ldexp(-1)
         return(r)
 
-    block sinh_large(w: F128Extended)
+    block sinh_large()
         e : F128Extended = wide_exp(w)
         r : F128Extended = e.sub(wide_one().div(e)).ldexp(-1)
         return(r)
 
     // (e^a + e^-a) / 2
-    block cosh(w: F128Extended)
+    block cosh()
         e : F128Extended = wide_exp(w)
         r : F128Extended = e.add(wide_one().div(e)).ldexp(-1)
         return(r)
 
     // m / (m + 2) with m = e^2a - 1
-    block tanh(w: F128Extended)
+    block tanh()
         m : F128Extended = wide_exp_m1(w.ldexp(1))
         r : F128Extended = m.div(m.add(S64.to<F128Extended>(2)))
         return(r)
@@ -91,24 +92,25 @@ routine wide_hyper(a: F128, kind: HyperKind) -> F128Extended
 /// The same formulas in F128Big, rounded once: sinh a = (m + m / (m + 1)) / 2 with m = e^a - 1 throughout (no
 /// cancellation anywhere), cosh a = (e^a + e^-a) / 2, tanh a = m / (m + 2) with m = e^2a - 1.
 routine big_hyper(a: F128, kind: HyperKind) -> F128
-    block entry()
-        b : F128Big = a.to<F128Big>()
-        when kind
-            HyperKind.Sinh -> sinh(b)
-            HyperKind.Cosh -> cosh(b)
-            HyperKind.Tanh -> tanh(b)
+    shared b : F128Big = a.to<F128Big>()
 
-    block sinh(b: F128Big)
+    block entry()
+        when kind
+            HyperKind.Sinh -> sinh()
+            HyperKind.Cosh -> cosh()
+            HyperKind.Tanh -> tanh()
+
+    block sinh()
         m : F128Big = big_exp_m1(b)
         s : F128Big = m.add(m.div(m.add(big_one()))).ldexp(-1)
         return(s.to<F128>())
 
-    block cosh(b: F128Big)
+    block cosh()
         e : F128Big = big_exp(b)
         c : F128Big = e.add(e.recip()).ldexp(-1)
         return(c.to<F128>())
 
-    block tanh(b: F128Big)
+    block tanh()
         m : F128Big = big_exp_m1(b.ldexp(1))
         t : F128Big = m.div(m.add(S64.to<F128Big>(2)))
         return(t.to<F128>())
@@ -159,11 +161,12 @@ routine F128.tanh(self: Self) -> Self
 /// :param exact: True to skip the fast F128Extended tier and compute in {F128Big} directly (the tests use it to check the exact tier on its own), or false for the normal two-tier path.
 /// :returns: x itself below 2^-57 in magnitude, a signed infinity from {F128_HYPER_OVERFLOW} on, ±0 for ±0, and a quiet NaN for NaN.
 routine f128_sinh(x: F128, exact: Bool) -> F128
+    shared bits : U128 = x.bits()
+    shared nan  : Bool = f128_is_nan_bits(bits)
+    shared zero : Bool = f128_is_zero_bits(bits)
+    shared a    : F128 = x.abs()
+
     block entry()
-        bits : U128 = x.bits()
-        nan  : Bool = f128_is_nan_bits(bits)
-        zero : Bool = f128_is_zero_bits(bits)
-        a    : F128 = x.abs()
         tiny : Bool = a.lt(F128_HYPER_TINY)
         over : Bool = a.ge(F128_HYPER_OVERFLOW)  // infinities too
         when
@@ -171,9 +174,9 @@ routine f128_sinh(x: F128, exact: Bool) -> F128
             zero -> return(x)
             tiny -> return(x)
             over -> return(F128.INFINITY.copysign(x))
-            else -> general(a)
+            else -> general()
 
-    block general(a: F128)
+    block general()
         r : F128 = f128_hyper_general(a, HyperKind.Sinh, exact).copysign(x)
         return(r)
 
@@ -182,11 +185,12 @@ routine f128_sinh(x: F128, exact: Bool) -> F128
 /// :param exact: True to skip the fast F128Extended tier and compute in {F128Big} directly (the tests use it to check the exact tier on its own), or false for the normal two-tier path.
 /// :returns: 1 below 2^-57 in magnitude (zeros included), +inf from {F128_HYPER_OVERFLOW} on, and a quiet NaN for NaN.
 routine f128_cosh(x: F128, exact: Bool) -> F128
+    shared bits : U128 = x.bits()
+    shared nan  : Bool = f128_is_nan_bits(bits)
+    shared zero : Bool = f128_is_zero_bits(bits)
+    shared a    : F128 = x.abs()
+
     block entry()
-        bits : U128 = x.bits()
-        nan  : Bool = f128_is_nan_bits(bits)
-        zero : Bool = f128_is_zero_bits(bits)
-        a    : F128 = x.abs()
         tiny : Bool = a.lt(F128_HYPER_TINY)
         over : Bool = a.ge(F128_HYPER_OVERFLOW)  // infinities too
         one  : F128 = f128_of(F128_ONE)
@@ -195,9 +199,9 @@ routine f128_cosh(x: F128, exact: Bool) -> F128
             zero -> return(one)
             tiny -> return(one)
             over -> return(F128.INFINITY)
-            else -> general(a)
+            else -> general()
 
-    block general(a: F128)
+    block general()
         r : F128 = f128_hyper_general(a, HyperKind.Cosh, exact)
         return(r)
 
@@ -206,11 +210,12 @@ routine f128_cosh(x: F128, exact: Bool) -> F128
 /// :param exact: True to skip the fast F128Extended tier and compute in {F128Big} directly (the tests use it to check the exact tier on its own), or false for the normal two-tier path.
 /// :returns: x itself below 2^-57 in magnitude, ±1 from {F128_TANH_FLAT} on (infinities included), ±0 for ±0, and a quiet NaN for NaN.
 routine f128_tanh(x: F128, exact: Bool) -> F128
+    shared bits : U128 = x.bits()
+    shared nan  : Bool = f128_is_nan_bits(bits)
+    shared zero : Bool = f128_is_zero_bits(bits)
+    shared a    : F128 = x.abs()
+
     block entry()
-        bits : U128 = x.bits()
-        nan  : Bool = f128_is_nan_bits(bits)
-        zero : Bool = f128_is_zero_bits(bits)
-        a    : F128 = x.abs()
         tiny : Bool = a.lt(F128_HYPER_TINY)
         flat : Bool = a.ge(F128_TANH_FLAT)  // infinities too
         when
@@ -218,8 +223,8 @@ routine f128_tanh(x: F128, exact: Bool) -> F128
             zero -> return(x)
             tiny -> return(x)
             flat -> return(f128_of(F128_ONE).copysign(x))
-            else -> general(a)
+            else -> general()
 
-    block general(a: F128)
+    block general()
         r : F128 = f128_hyper_general(a, HyperKind.Tanh, exact).copysign(x)
         return(r)

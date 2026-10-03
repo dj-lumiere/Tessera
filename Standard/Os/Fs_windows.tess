@@ -273,32 +273,33 @@ private routine invalid_handle(h: Addr) -> Bool
 /// text has a NUL or doesn't fit. (A UTF-8 byte count bounds the unit count, so length + 1 units always fit.)
 #target(os: "windows")
 internal routine encode_utf16(text: Bytes, out: @U16, capacity: USize) -> Option<USize>
-    block entry()
-        claim iter : @BytesCharsIter <- text.chars()
-        jump next(iter, 0)
+    shared iter : @BytesCharsIter <- text.chars()
 
-    block next(iter: @BytesCharsIter, n: USize)
+    block entry()
+        jump next(0)
+
+    block next(n: USize)
         c : Option<Char> = iter.next()
         when c
-            .Present(char) -> put(iter, n, char.to<U32>())
+            .Present(char) -> put(n, char.to<U32>())
             .Absent        -> end(n)
 
-    block put(iter: @BytesCharsIter, n: USize, cp: U32)
+    block put(n: USize, cp: U32)
         branch cp.eq(0)
             ? return(.Absent)
             : continue
         branch cp.lt(0x10000)
-            ? single(iter, n, cp)
-            : pair(iter, n, cp)
+            ? single(n, cp)
+            : pair(n, cp)
 
-    block single(iter: @BytesCharsIter, n: USize, cp: U32)
+    block single(n: USize, cp: U32)
         branch n.add(1).ge(capacity)
             ? return(.Absent)
             : continue
         out.stride(n).store(cp.to<U16>())
-        jump next(iter, n.add(1))
+        jump next(n.add(1))
 
-    block pair(iter: @BytesCharsIter, n: USize, cp: U32)
+    block pair(n: USize, cp: U32)
         branch n.add(2).ge(capacity)
             ? return(.Absent)
             : continue
@@ -307,7 +308,7 @@ internal routine encode_utf16(text: Bytes, out: @U16, capacity: USize) -> Option
         out.stride(n).store(high_surrogate.to<U16>())
         low_surrogate : U32 = v.bitand(0x3FF).add(0xDC00)
         out.stride(n.add(1)).store(low_surrogate.to<U16>())
-        jump next(iter, n.add(2))
+        jump next(n.add(2))
 
     block end(n: USize)
         out.stride(n).store(0)
@@ -584,15 +585,16 @@ internal routine FileHandle.write_some(self: @Self, data: @Byte,
 /// Moves the position: the new one, from the start.
 #target(os: "windows")
 routine FileHandle.seek_result(self: @Self, offset: S64, from: SeekFrom) -> Result<U64, FsError>
+    shared at : @S64 <- 0
+
     block entry()
-        claim at : @S64 <- 0
         // FILE_BEGIN, FILE_CURRENT, FILE_END
         when from
-            SeekFrom.Start   -> moved(at, c_set_file_pointer_ex(self.handle.load(), offset, at, 0))
-            SeekFrom.Current -> moved(at, c_set_file_pointer_ex(self.handle.load(), offset, at, 1))
-            SeekFrom.End     -> moved(at, c_set_file_pointer_ex(self.handle.load(), offset, at, 2))
+            SeekFrom.Start   -> moved(c_set_file_pointer_ex(self.handle.load(), offset, at, 0))
+            SeekFrom.Current -> moved(c_set_file_pointer_ex(self.handle.load(), offset, at, 1))
+            SeekFrom.End     -> moved(c_set_file_pointer_ex(self.handle.load(), offset, at, 2))
 
-    block moved(at: @S64, ok: CInt)
+    block moved(ok: CInt)
         branch ok.ne(0)
             ? return(.Success(at.load().to<U64>()))
             : return(failed<U64>())

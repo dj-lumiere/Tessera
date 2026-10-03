@@ -76,14 +76,15 @@ record Expr
     pos   : USize
 
 routine new_expr(alloc: @Allocator, node: Expr) -> @Expr
+    shared p : @Expr = allocate<Expr>(alloc, 1)
+
     block entry()
-        p      : @Expr = allocate<Expr>(alloc, 1)
-        failed : Bool  = p.is_null()
+        failed : Bool = p.is_null()
         branch failed
             ? crash_allocation()
-            : store(p)
+            : store()
 
-    block store(p: @Expr)
+    block store()
         p.store(node)
         return(p)
 
@@ -403,16 +404,17 @@ routine Parser.parse_primary(self: @Self) -> Result<@Expr, CalcError>
 
 /// Parses all of source. Anything left after the expression is an error.
 routine parse(source: Bytes, alloc: @Allocator) -> Result<@Expr, CalcError>
+    shared src  : @Byte   = source.data
+    shared len  : USize   = source.count
+    shared self : @Parser <- Parser { src: src, len: len, pos: 0, alloc: alloc }
+
     block entry()
-        src : @Byte = source.data
-        len : USize = source.count
-        claim self : @Parser <- Parser { src: src, len: len, pos: 0, alloc: alloc }
         parsed : Result<@Expr, CalcError> = self.parse_binary(0)
         when parsed
-            .Success(tree) -> expect_end(self, tree)
+            .Success(tree) -> expect_end(tree)
             .Failure       -> return(parsed)
 
-    block expect_end(self: @Parser, tree: @Expr)
+    block expect_end(tree: @Expr)
         peeked : Result<Token, CalcError> = self.peek()
         // a lex error here is still "something after the expression"
         when peeked
@@ -437,72 +439,72 @@ routine parse(source: Bytes, alloc: @Allocator) -> Result<@Expr, CalcError>
 // ── Evaluator ─────────────────────────────────────────────────────────────────
 
 routine eval(e: @Expr) -> Result<S64, CalcError>
+    shared kind : ExprKind = e.kind.load()
+    shared pos  : USize    = e.pos.load()
+
     block entry()
-        kind : ExprKind = e.kind.load()
-        pos  : USize    = e.pos.load()
         when kind
             ExprKind.Num                                                         -> number()
-            ExprKind.Neg                                                         -> negate(pos)
-            ExprKind.Add, ExprKind.Sub, ExprKind.Mul, ExprKind.Div, ExprKind.Rem -> binary(kind,
-                pos)
+            ExprKind.Neg                                                         -> negate()
+            ExprKind.Add, ExprKind.Sub, ExprKind.Mul, ExprKind.Div, ExprKind.Rem -> binary()
 
     block number()
         value : S64                    = e.value.load()
         r     : Result<S64, CalcError> = .Success(value)
         return(r)
 
-    block negate(pos: USize)
+    block negate()
         operand : @Expr                  = e.lhs.load()
         inner   : Result<S64, CalcError> = eval(operand)
         when inner
-            .Success(x) -> checked(x.neg_checked(), pos)
+            .Success(x) -> checked(x.neg_checked())
             .Failure    -> return(inner)
 
-    block binary(kind: ExprKind, pos: USize)
+    block binary()
         lhs  : @Expr                  = e.lhs.load()
         left : Result<S64, CalcError> = eval(lhs)
         when left
-            .Success(a) -> eval_rhs(kind, pos, a)
+            .Success(a) -> eval_rhs(a)
             .Failure    -> return(left)
 
-    block eval_rhs(kind: ExprKind, pos: USize, a: S64)
+    block eval_rhs(a: S64)
         rhs   : @Expr                  = e.rhs.load()
         right : Result<S64, CalcError> = eval(rhs)
         when right
-            .Success(b) -> apply(kind, pos, a, b)
+            .Success(b) -> apply(a, b)
             .Failure    -> return(right)
 
-    block apply(kind: ExprKind, pos: USize, a: S64, b: S64)
+    block apply(a: S64, b: S64)
         zero_divisor : Bool = b.eq(0)
         when kind
-            ExprKind.Add -> checked(a.add_checked(b), pos)
-            ExprKind.Sub -> checked(a.sub_checked(b), pos)
-            ExprKind.Mul -> checked(a.mul_checked(b), pos)
-            ExprKind.Div -> divide(pos, a, b, zero_divisor)
-            ExprKind.Rem -> remainder(pos, a, b, zero_divisor)
+            ExprKind.Add -> checked(a.add_checked(b))
+            ExprKind.Sub -> checked(a.sub_checked(b))
+            ExprKind.Mul -> checked(a.mul_checked(b))
+            ExprKind.Div -> divide(a, b, zero_divisor)
+            ExprKind.Rem -> remainder(a, b, zero_divisor)
             else         -> unreachable  // binary() only ever passes the five binary kinds
 
-    block divide(pos: USize, a: S64, b: S64, zero_divisor: Bool)
+    block divide(a: S64, b: S64, zero_divisor: Bool)
         quotient : Option<S64> = a.div_checked(b)
         branch zero_divisor
-            ? division_by_zero(pos)
-            : checked(quotient, pos)
+            ? division_by_zero()
+            : checked(quotient)
 
-    block remainder(pos: USize, a: S64, b: S64, zero_divisor: Bool)
+    block remainder(a: S64, b: S64, zero_divisor: Bool)
         rest : Option<S64> = a.mod_checked(b)
         branch zero_divisor
-            ? division_by_zero(pos)
-            : checked(rest, pos)
+            ? division_by_zero()
+            : checked(rest)
 
     // None from a checked operation with a nonzero divisor means overflow.
-    block checked(result: Option<S64>, pos: USize)
+    block checked(result: Option<S64>)
         error : CalcError              = CalcError { message: "overflow", pos: pos }
         fail  : Result<S64, CalcError> = .Failure(error)
         when result
             .Present(value) -> return(.Success(value))
             .Absent         -> return(fail)
 
-    block division_by_zero(pos: USize)
+    block division_by_zero()
         error : CalcError              = CalcError { message: "division by zero", pos: pos }
         r     : Result<S64, CalcError> = .Failure(error)
         return(r)

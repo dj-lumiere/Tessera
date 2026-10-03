@@ -177,28 +177,29 @@ record CmF64Atan2Sig
 
 /// The angle of the point (other, self): self is y and other is x.
 routine F64.atan2(self: Self, other: Self) -> Self
+    shared iy  : U64 = self.bits()
+    shared ix  : U64 = other.bits()
+    shared aiy : U64 = iy.bitand(0x7FFFFFFFFFFFFFFF)
+    shared aix : U64 = ix.bitand(0x7FFFFFFFFFFFFFFF)
+    shared sy  : U64 = iy.shr(63)
+    shared sx  : U64 = ix.shr(63)
+    shared gt  : U64 = aix.lt(aiy).to<U64>()
+
     block entry()
-        iy      : U64  = self.bits()
-        ix      : U64  = other.bits()
-        aiy     : U64  = iy.bitand(0x7FFFFFFFFFFFFFFF)
-        aix     : U64  = ix.bitand(0x7FFFFFFFFFFFFFFF)
         yodd    : Bool = aiy.eq(0).bitor(aiy.ge(0x7FF0000000000000))
         xodd    : Bool = aix.eq(0).bitor(aix.ge(0x7FF0000000000000))
         special : Bool = yodd.bitor(xodd)
         branch special
             ? return(cm_f64_atan2_special(self, other))
             : continue
-        sy  : U64  = iy.shr(63)
-        sx  : U64  = ix.shr(63)
-        gt  : U64  = aix.lt(aiy).to<U64>()
         dxy : U64  = aix.sub_wrap(aiy).bitxor(U64.sub_wrap(0, gt))
         far : Bool = dxy.ge(0x0350000000000000)  // the exponents differ by 53 or more
         branch far
             ? return(cm_f64_atan2_accurate(self, other))
-            : fast(sy, sx, gt)
+            : fast()
 
     // offset + atan(j/64) + atan((ym - xm j/64) / (xm + ym j/64)), with xm = max(|x|, |y|) and ym the other
-    block fast(sy: U64, sx: U64, gt: U64)
+    block fast()
         swap : Bool = self.abs().gt(other.abs())
         xm0  : Self = swap
             ? self.abs()
@@ -292,19 +293,20 @@ routine F64.atan2(self: Self, other: Self) -> Self
 
 /// atan2 when a coordinate is zero, infinite or NaN.
 routine cm_f64_atan2_special(y: F64, x: F64) -> F64
+    shared aiy  : U64  = y.bits().shl(1)
+    shared aix  : U64  = x.bits().shl(1)
+    shared yinf : Bool = aiy.eq(0xFFE0000000000000)
+
     block entry()
-        aiy  : U64  = y.bits().shl(1)
-        aix  : U64  = x.bits().shl(1)
         nan  : Bool = aiy.gt(0xFFE0000000000000).bitor(aix.gt(0xFFE0000000000000))
-        yinf : Bool = aiy.eq(0xFFE0000000000000)
         xinf : Bool = aix.eq(0xFFE0000000000000)
         zero : Bool = aiy.eq(0).bitor(aix.eq(0))
         when
             nan  -> nan()
-            xinf -> x_inf(yinf)
+            xinf -> x_inf()
             yinf -> return(F64.copysign(0x1.921fb54442d18p+0,
                 y).add(F64.copysign(0x1.1a62633145c07p-54, y)))
-            zero -> zero(aiy, aix)
+            zero -> zero()
             else -> return(0.0)
 
     // the first NaN operand wins, quiet, like x86's y + x
@@ -313,7 +315,7 @@ routine cm_f64_atan2_special(y: F64, x: F64) -> F64
             ? return(y.add(y))
             : return(x.add(x))
 
-    block x_inf(yinf: Bool)
+    block x_inf()
         xneg : Bool = x.lt(0.0)
         branch yinf
             ? both_inf(xneg)
@@ -329,7 +331,7 @@ routine cm_f64_atan2_special(y: F64, x: F64) -> F64
             ? return(F64.copysign(0x1.2d97c7f3321d2p+1, y).add(F64.copysign(0x1p-54, y)))
             : return(F64.copysign(0x1.921fb54442d18p-1, y).add(F64.copysign(0x1p-55, y)))
 
-    block zero(aiy: U64, aix: U64)
+    block zero()
         both : Bool = aiy.eq(0).bitand(aix.eq(0))
         yz   : Bool = aiy.eq(0)
         ypos : Bool = y.gt(0.0)
@@ -360,20 +362,21 @@ routine cm_f64_atan2_special(y: F64, x: F64) -> F64
 /// The accurate path: atan2(y, x) for finite non-zero y and x, from a degree-29/29
 /// rational approximation of atan in tint arithmetic.
 routine cm_f64_atan2_accurate(y: F64, x: F64) -> F64
+    shared t : F64 = y.div(x)
+
     block entry()
-        t    : F64  = y.div(x)
         zero : Bool = t.eq(0.0)
         branch zero
-            ? underflow(t)
+            ? underflow()
             : continue
         corr  : F64  = t.mul_add(x, y.neg())
         exact : Bool = corr.eq(0.0).bitand(x.gt(0.0))
         branch exact
-            ? exact(t)
+            ? exact()
             : general()
 
     // y/x underflows to zero
-    block underflow(t: F64)
+    block underflow()
         xpos : Bool = x.gt(0.0)
         ypos : Bool = y.gt(0.0)
         when
@@ -382,7 +385,7 @@ routine cm_f64_atan2_accurate(y: F64, x: F64) -> F64
             else -> return(F64.sub(-0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53))
 
     // t = y/x exactly, x > 0: for a tiny t, atan(t) is t minus a hair
-    block exact(t: F64)
+    block exact()
         small : Bool = t.abs().le(0x1.d12ed0af1a27fp-27)
         branch small
             ? continue
@@ -597,36 +600,38 @@ routine cm_f64_atan2_cmp_abs(a: CmF64Atan2Tint, b: CmF64Atan2Tint) -> S64
 
 /// A 192-bit significand shifted right by k bits.
 routine cm_f64_atan2_rshift(h: U128, l: U64, k: U64) -> CmF64Atan2Sig
+    shared k128 : U128 = k.to<U128>()
+
     block entry()
-        k128 : U128 = k.to<U128>()
         when
             k.eq(0)   -> return(CmF64Atan2Sig { h: h, l: l })
-            k.lt(64)  -> below64(k128)
+            k.lt(64)  -> below64()
             k.eq(64)  -> return(CmF64Atan2Sig { h: h.shr(64), l: h.to_wrap<U64>() })
             k.lt(128) -> return(CmF64Atan2Sig { h: h.shr(k128),
                 l: h.shr(k128.sub(64)).to_wrap<U64>() })
             k.lt(192) -> return(CmF64Atan2Sig { h: 0, l: h.shr(k128.sub(64)).to_wrap<U64>() })
             else      -> return(CmF64Atan2Sig { h: 0, l: 0 })
 
-    block below64(k128: U128)
+    block below64()
         hi_bits : U64 = h.shl(U128.sub(64, k128)).to_wrap<U64>()
         lo      : U64 = hi_bits.bitor(l.shr(k))
         return(CmF64Atan2Sig { h: h.shr(k128), l: lo })
 
 /// A 192-bit significand shifted left by k bits.
 routine cm_f64_atan2_lshift(h: U128, l: U64, k: U64) -> CmF64Atan2Sig
+    shared k128 : U128 = k.to<U128>()
+
     block entry()
-        k128 : U128 = k.to<U128>()
-        wl   : U128 = l.to<U128>()
+        wl : U128 = l.to<U128>()
         when
             k.eq(0)   -> return(CmF64Atan2Sig { h: h, l: l })
-            k.lt(64)  -> below64(k128)
+            k.lt(64)  -> below64()
             k.eq(64)  -> return(CmF64Atan2Sig { h: h.shl(64).bitor(wl), l: 0 })
             k.lt(128) -> return(CmF64Atan2Sig { h: h.shl(k128).bitor(wl.shl(k128.sub(64))), l: 0 })
             k.lt(192) -> return(CmF64Atan2Sig { h: wl.shl(k128.sub(64)), l: 0 })
             else      -> return(CmF64Atan2Sig { h: 0, l: 0 })
 
-    block below64(k128: U128)
+    block below64()
         hi : U128 = h.shl(k128).bitor(l.shr(U64.sub(64, k)).to<U128>())
         return(CmF64Atan2Sig { h: hi, l: l.shl(k) })
 
@@ -711,20 +716,21 @@ routine cm_f64_atan2_add(a: CmF64Atan2Tint, b: CmF64Atan2Tint) -> CmF64Atan2Tint
 
 /// The tint equal to a finite non-zero F64.
 routine F64.to<CmF64Atan2Tint>(self: Self) -> CmF64Atan2Tint
+    shared u   : U64 = self.bits()
+    shared sgn : U64 = u.shr(63)
+    shared ax  : U64 = u.bitand(0x7FFFFFFFFFFFFFFF)
+
     block entry()
-        u      : U64  = self.bits()
-        sgn    : U64  = u.shr(63)
-        ax     : U64  = u.bitand(0x7FFFFFFFFFFFFFFF)
         e      : U64  = ax.shr(52)
         normal : Bool = e.ne(0)
         branch normal
             ? continue
-            : subnormal(ax, sgn)
+            : subnormal()
         hn : U64 = ax.shl(11).bitor(0x8000000000000000)
         return(CmF64Atan2Tint { hm: hn.to<U128>().shl(64), l: 0, ex: e.to<S64>().sub(0x3FE),
             sgn: sgn })
 
-    block subnormal(ax: U64, sgn: U64)
+    block subnormal()
         lz : U64 = ax.leading_zeros()
         hs : U64 = ax.shl(lz)
         return(CmF64Atan2Tint { hm: hs.to<U128>().shl(64), l: 0, ex: S64.sub(-0x3F2, lz.to<S64>()),
@@ -733,8 +739,9 @@ routine F64.to<CmF64Atan2Tint>(self: Self) -> CmF64Atan2Tint
 /// A tint rounded to the nearest F64. err is 0 to convert a tint that holds an F64
 /// exactly, and otherwise a bound in ulps on the error of the low word.
 routine CmF64Atan2Tint.to<F64>(self: Self, err: U64) -> F64
+    shared sgn : U64 = self.sgn
+
     block entry()
-        sgn   : U64  = self.sgn
         ex    : S64  = self.ex
         hh    : U64  = self.hm.shr(64).to<U64>()
         mm    : U64  = self.hm.to_wrap<U64>()
@@ -744,12 +751,12 @@ routine CmF64Atan2Tint.to<F64>(self: Self, err: U64) -> F64
         sub   : Bool = ex.le(-1022)
         when
             over  -> return(F64.from_bits(sgn.shl(63).bitor(0x7FF0000000000000)))
-            under -> underflow(sgn, ex, hh, mm, ll)
-            sub   -> subnormal(sgn, ex, hh, mm, ll)
-            else  -> round(sgn, ex, hh, mm, ll)
+            under -> underflow(ex, hh, mm, ll)
+            sub   -> subnormal(ex, hh, mm, ll)
+            else  -> round(ex, hh, mm, ll)
 
     // below 2^-1075 to zero, exactly 2^-1075 to zero (ties to even), above to 2^-1074
-    block underflow(sgn: U64, ex: S64, hh: U64, mm: U64, ll: U64)
+    block underflow(ex: S64, hh: U64, mm: U64, ll: U64)
         small    : Bool = ex.lt(-1074)
         top_only : Bool = hh.eq(0x8000000000000000).bitand(mm.eq(0))
         mid      : Bool = top_only.bitand(ll.eq(0))
@@ -759,16 +766,16 @@ routine CmF64Atan2Tint.to<F64>(self: Self, err: U64) -> F64
             else  -> return(F64.from_bits(sgn.shl(63).bitor(1)))
 
     // shift the significand to the subnormal quantum, keeping a sticky bit
-    block subnormal(sgn: U64, ex: S64, hh: U64, mm: U64, ll: U64)
+    block subnormal(ex: S64, hh: U64, mm: U64, ll: U64)
         sh     : U64 = S64.sub(-1021, ex).to<U64>()  // 1 <= sh <= 52
         c      : U64 = U64.sub(64, sh)
         sticky : U64 = ll.gt(0).to<U64>()
         ll1    : U64 = mm.shl(c).bitor(ll.shr(sh))
         ll2    : U64 = ll1.bitor(sticky)
         mm2    : U64 = hh.shl(c).bitor(mm.shr(sh))
-        jump round(sgn, ex.add(sh.to<S64>()), hh.shr(sh), mm2, ll2)
+        jump round(ex.add(sh.to<S64>()), hh.shr(sh), mm2, ll2)
 
-    block round(sgn: U64, ex: S64, hh: U64, mm: U64, ll: U64)
+    block round(ex: S64, hh: U64, mm: U64, ll: U64)
         low    : U64  = hh.bitand(0x7FF)
         h      : F64  = hh.shr(11).to<F64>()
         zero   : Bool = err.eq(0)

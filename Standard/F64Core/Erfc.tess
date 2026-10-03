@@ -278,24 +278,25 @@ preset CM_F64_ERFC_POS_EXC: @Array<U64, 87> <- { 0x3C8C5BF891B4EF6B, 0x3FEFFFFFF
 
 /// 1 - erf(self), accurate where erf is near 1.
 routine F64.erfc(self: Self) -> Self
+    shared tu : U64 = self.bits()
+    shared at : U64 = tu.bitand(0x7FFFFFFFFFFFFFFF)
+
     block entry()
-        tu       : U64  = self.bits()
-        at       : U64  = tu.bitand(0x7FFFFFFFFFFFFFFF)
         negative : Bool = tu.ge(0x8000000000000000)
         branch negative
-            ? negative(tu)
-            : positive(at)
+            ? negative()
+            : positive()
 
     // x = -NaN or x <= 0, excluding +0
-    block negative(tu: U64)
+    block negative()
         two : Bool = tu.ge(0xC017744F8F74E94B)  // x <= -0x1.7744f8f74e94bp+2: erfc(x) rounds to 2
         one : Bool = self.ge(-0x1.c5bf891b4ef6ap-54)  // erfc(x) rounds to 1
         when
-            two  -> two(tu)
+            two  -> two()
             one  -> return(self.neg().mul_add(0x1p-54, 1.0))
             else -> general()
 
-    block two(tu: U64)
+    block two()
         infinite : Bool = tu.eq(0xFFF0000000000000)
         nan      : Bool = tu.gt(0xFFF0000000000000)
         when
@@ -304,15 +305,15 @@ routine F64.erfc(self: Self) -> Self
             else     -> return(Self.sub(2.0, 0x1p-54))
 
     // x = +NaN or x >= 0, excluding -0
-    block positive(at: U64)
+    block positive()
         zero : Bool = at.ge(0x403B39DC41E48BFD)  // x >= 0x1.b39dc41e48bfdp+4: erfc(x) < 2^-1075 rounds to 0
         one  : Bool = self.le(0x1.c5bf891b4ef6ap-55)  // erfc(x) rounds to 1
         when
-            zero -> zero(at)
+            zero -> zero()
             one  -> return(self.neg().mul_add(0x1p-54, 1.0))
             else -> general()
 
-    block zero(at: U64)
+    block zero()
         infinite : Bool = at.eq(0x7FF0000000000000)
         nan      : Bool = at.gt(0x7FF0000000000000)
         when
@@ -640,17 +641,18 @@ routine cm_f64_erfc_asympt_accurate(x: F64) -> F64
 
 /// exp(xh + xl) as 2^e (h + l) with about 104 bits of accuracy, for -742 <= xh + xl <= -2.92.
 routine cm_f64_erfc_exp_accurate(xh: F64, xl: F64) -> (F64, F64, S64)
+    // xh + xl ~ k log(2) + yh + yl
+    shared kd : F64 = xh.mul(0x1.71547652b82fep+0).round_ties_even()
+    shared k  : S64 = kd.to<S64>()
+    // log(2) as 0x1.62e42fefa39efp-1 + 0x1.abc9e3b398p-56 + 0x1.f97b57a079a19p-103: k times the
+    // middle part is exact, and yh is exact by Sterbenz
+    shared yh0 : F64        = kd.neg().mul_add(0x1.62e42fefa39efp-1, xh)
+    shared t   : CmF64ErfDd = cm_f64_erf_two_sum(kd.neg().mul(0x1.abc9e3b398p-56), xl)
+    shared y   : CmF64ErfDd = cm_f64_erf_fast_two_sum(yh0, t.hi)
+    shared yh  : F64        = y.hi
+    shared yl  : F64        = kd.neg().mul_add(0x1.f97b57a079a19p-103, y.lo.add(t.lo))
+
     block entry()
-        // xh + xl ~ k log(2) + yh + yl
-        kd : F64 = xh.mul(0x1.71547652b82fep+0).round_ties_even()
-        k  : S64 = kd.to<S64>()
-        // log(2) as 0x1.62e42fefa39efp-1 + 0x1.abc9e3b398p-56 + 0x1.f97b57a079a19p-103: k times the
-        // middle part is exact, and yh is exact by Sterbenz
-        yh0 : F64        = kd.neg().mul_add(0x1.62e42fefa39efp-1, xh)
-        t   : CmF64ErfDd = cm_f64_erf_two_sum(kd.neg().mul(0x1.abc9e3b398p-56), xl)
-        y   : CmF64ErfDd = cm_f64_erf_fast_two_sum(yh0, t.hi)
-        yh  : F64        = y.hi
-        yl  : F64        = kd.neg().mul_add(0x1.f97b57a079a19p-103, y.lo.add(t.lo))
         // degrees 19 down to 16 in double (yl is negligible there)
         h18 : F64 = cm_f64_erfc_e2(27).mul_add(yh, cm_f64_erfc_e2(26))
         h17 : F64 = h18.mul_add(yh, cm_f64_erfc_e2(25))
@@ -659,33 +661,33 @@ routine cm_f64_erfc_exp_accurate(xh: F64, xl: F64) -> (F64, F64, S64)
         m  : CmF64ErfDd = cm_f64_erf_a_mul(h16, yh)
         tl : F64        = h16.mul_add(yl, m.lo)
         s  : CmF64ErfDd = cm_f64_erf_fast_two_sum(cm_f64_erfc_e2(23), m.hi)
-        jump middle(k, yh, yl, 14, s.hi, s.lo.add(tl))
+        jump middle(14, s.hi, s.lo.add(tl))
 
     // degrees 14 down to 8: (h + l) (yh + yl) + E2[i+8]
-    block middle(k: S64, yh: F64, yl: F64, i: USize, h: F64, l: F64)
+    block middle(i: USize, h: F64, l: F64)
         m    : CmF64ErfDd = cm_f64_erf_a_mul(h, yh)
         tl0  : F64        = h.mul_add(yl, m.lo)
         tl   : F64        = l.mul_add(yh, tl0)
         s    : CmF64ErfDd = cm_f64_erf_fast_two_sum(cm_f64_erfc_e2(i.add(8)), m.hi)
         last : Bool       = i.eq(8)
         branch last
-            ? low(k, yh, yl, 8, s.hi, s.lo.add(tl))
-            : middle(k, yh, yl, i.sub(1), s.hi, s.lo.add(tl))
+            ? low(8, s.hi, s.lo.add(tl))
+            : middle(i.sub(1), s.hi, s.lo.add(tl))
 
     // degrees 7 down to 0 have double-double coefficients E2[2i] + E2[2i+1]
-    block low(k: S64, yh: F64, yl: F64, i: USize, h: F64, l: F64)
+    block low(i: USize, h: F64, l: F64)
         done : Bool = i.eq(0)
         branch done
             ? return({ h, l, k })
-            : low_step(k, yh, yl, i.sub(1), h, l)
+            : low_step(i.sub(1), h, l)
 
-    block low_step(k: S64, yh: F64, yl: F64, i: USize, h: F64, l: F64)
+    block low_step(i: USize, h: F64, l: F64)
         m   : CmF64ErfDd = cm_f64_erf_a_mul(h, yh)
         tl0 : F64        = h.mul_add(yl, m.lo)
         tl  : F64        = l.mul_add(yh, tl0)
         s   : CmF64ErfDd = cm_f64_erf_fast_two_sum(cm_f64_erfc_e2(i.mul(2)), m.hi)
         cl  : F64        = cm_f64_erfc_e2(i.mul(2).add(1))
-        jump low(k, yh, yl, i, s.hi, s.lo.add(tl.add(cl)))
+        jump low(i, s.hi, s.lo.add(tl.add(cl)))
 
 // -- table access --------------------------------------------------------------
 

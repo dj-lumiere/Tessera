@@ -519,14 +519,15 @@ routine cm_asin_top128(d: CmAsinW3, nz: S64) -> U128
 /// The fast path's odd polynomial part t^3*P(t^2) for the normalized t, with the shift s2 that
 /// aligns t^2.
 routine cm_asin_fast_poly(t: U128, s2: S64) -> U128
+    shared t2_full  : U128 = cm_asin_sqrhu128(t.to_wrap<S128>())
+    shared t3       : U128 = cm_asin_mhuu(t.to_wrap<S128>(), t2_full.to_wrap<S128>())
+    shared in_range : Bool = s2.lt(128)
+    shared t2_shift : U128 = t2_full.shr(cm_asin_sh7(s2))
+    shared t2       : U128 = in_range
+        ? t2_shift
+        : 0
+
     block entry()
-        t2_full  : U128 = cm_asin_sqrhu128(t.to_wrap<S128>())
-        t3       : U128 = cm_asin_mhuu(t.to_wrap<S128>(), t2_full.to_wrap<S128>())
-        in_range : Bool = s2.lt(128)
-        t2_shift : U128 = t2_full.shr(cm_asin_sh7(s2))
-        t2       : U128 = in_range
-            ? t2_shift
-            : 0
         t2h : U64  = cm_asin_hi(t2)
         c   : @U64 = CM_ASIN_C.to<@U64>()
         c18 : U64  = c.stride(18).load()
@@ -540,10 +541,10 @@ routine cm_asin_fast_poly(t: U128, s2: S64) -> U128
         f14 : U64  = c14.add_wrap(cm_asin_mhuu(t2h, f16))
         f12 : U64  = c12.add_wrap(cm_asin_mhuu(t2h, f14))
         f10 : U128 = cm_asin_join(c11, c10.add_wrap(cm_asin_mhuu(t2h, f12)))
-        jump horner(t2, t3, f10, 8)
+        jump horner(f10, 8)
 
     // f = C[i] + t^2*f for i = 8, 6, 4, 2, 0, two words per coefficient
-    block horner(t2: U128, t3: U128, f: U128, i: USize)
+    block horner(f: U128, i: USize)
         c    : @U64 = CM_ASIN_C.to<@U64>()
         c_lo : U64  = c.stride(i).load()
         c_hi : U64  = c.stride(i.add(1)).load()
@@ -551,31 +552,32 @@ routine cm_asin_fast_poly(t: U128, s2: S64) -> U128
             c_lo).add_wrap(cm_asin_mhuu(t2.to_wrap<S128>(), f.to_wrap<S128>()))
         done : Bool = i.eq(0)
         branch done
-            ? finish(t3, next)
-            : horner(t2, t3, next, i.sub(2))
+            ? finish(next)
+            : horner(next, i.sub(2))
 
-    block finish(t3: U128, f: U128)
+    block finish(f: U128)
         r : U128 = cm_asin_mhuu(t3.to_wrap<S128>(), f.to_wrap<S128>())
         return(r)
 
 /// A 128-bit f placed as the top two of three words and shifted right by sf (the fast path's
 /// alignment of the polynomial part). sf = 0 ORs words, as in the original.
 routine cm_asin_shift_poly3(f: U128, sf: S64) -> CmAsinW3
+    shared f2 : U64 = cm_asin_hi(f)
+    shared f1 : U64 = cm_asin_lo(f.to_wrap<S128>())
+    shared s  : S64 = cm_asin_sh(sf).to<S64>()
+
     block entry()
-        f2      : U64      = cm_asin_hi(f)
-        f1      : U64      = cm_asin_lo(f.to_wrap<S128>())
-        s       : S64      = cm_asin_sh(sf).to<S64>()
         in_word : Bool     = sf.lt(64)
         in_one  : Bool     = sf.lt(128)
         in_two  : Bool     = sf.lt(192)
         gone    : CmAsinW3 = CmAsinW3 { w0: 0, w1: 0, w2: 0 }
         when
-            in_word -> within_word(f1, f2, s)
-            in_one  -> one_word(f1, f2, s)
-            in_two  -> two_words(f2, s)
+            in_word -> within_word()
+            in_one  -> one_word()
+            in_two  -> two_words()
             else    -> return(gone)
 
-    block within_word(f1: U64, f2: U64, s: S64)
+    block within_word()
         back : S64      = cm_asin_sh(0.sub(s)).to<S64>()
         w0   : U64      = f1.shl(back.to<U64>())
         w1   : U64      = f1.shr(s.to<U64>()).bitor(f2.shl(back.to<U64>()))
@@ -583,14 +585,14 @@ routine cm_asin_shift_poly3(f: U128, sf: S64) -> CmAsinW3
         r    : CmAsinW3 = CmAsinW3 { w0: w0, w1: w1, w2: w2 }
         return(r)
 
-    block one_word(f1: U64, f2: U64, s: S64)
+    block one_word()
         back : S64      = cm_asin_sh(s.bitnot()).to<S64>()
         w0   : U64      = f1.shr(s.to<U64>()).bitor(f2.shl(1).shl(back.to<U64>()))
         w1   : U64      = f2.shr(s.to<U64>())
         r    : CmAsinW3 = CmAsinW3 { w0: w0, w1: w1, w2: 0 }
         return(r)
 
-    block two_words(f2: U64, s: S64)
+    block two_words()
         r : CmAsinW3 = CmAsinW3 { w0: f2.shr(s.to<U64>()), w1: 0, w2: 0 }
         return(r)
 

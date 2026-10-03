@@ -182,33 +182,34 @@ routine store_be64(p: @Byte, value: U64) -> Void
 
 /// Mixes one 64-byte block into the 8-word state.
 routine sha256_compress(state: @U32, chunk: @Byte) -> Void
+    shared schedule : @Array<U32, 64> <- uninit
+    shared w        : @U32            = schedule.to<@U32>()
+
     block entry()
-        claim schedule : @Array<U32, 64> <- uninit
-        w : @U32 = schedule.to<@U32>()
-        jump load_words(0, w)
+        jump load_words(0)
 
     // W[0..16) — the block's own words.
-    block load_words(t: USize, w: @U32)
+    block load_words(t: USize)
         done : Bool = t.ge(16)
         branch done
-            ? extend(16, w)
-            : load_word(t, w)
+            ? extend(16)
+            : load_word(t)
 
-    block load_word(t: USize, w: @U32)
+    block load_word(t: USize)
         offset : USize = t.mul(4)
         src    : @Byte = chunk.stride(offset)
         word   : U32   = load_be32(src)
         w.stride(t).store(word)
-        jump load_words(t.add(1), w)
+        jump load_words(t.add(1))
 
     // W[16..64) — W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16]
-    block extend(t: USize, w: @U32)
+    block extend(t: USize)
         done : Bool = t.ge(64)
         branch done
-            ? rounds(w)
-            : extend_word(t, w)
+            ? rounds()
+            : extend_word(t)
 
-    block extend_word(t: USize, w: @U32)
+    block extend_word(t: USize)
         w2           : U32 = w.stride(t.sub(2)).load()
         w7           : U32 = w.stride(t.sub(7)).load()
         w15          : U32 = w.stride(t.sub(15)).load()
@@ -217,9 +218,9 @@ routine sha256_compress(state: @U32, chunk: @Byte) -> Void
         s0           : U32 = small_sigma0(w15)
         partial_word : U32 = s1.add_wrap(w7).add_wrap(s0)
         w.stride(t).store(partial_word.add_wrap(w16))
-        jump extend(t.add(1), w)
+        jump extend(t.add(1))
 
-    block rounds(w: @U32)
+    block rounds()
         a     : U32     = state.stride(0).load()
         b     : U32     = state.stride(1).load()
         c     : U32     = state.stride(2).load()
@@ -229,19 +230,19 @@ routine sha256_compress(state: @U32, chunk: @Byte) -> Void
         g     : U32     = state.stride(6).load()
         h     : U32     = state.stride(7).load()
         start : Working = Working { a: a, b: b, c: c, d: d, e: e, f: f, g: g, h: h }
-        jump round_loop(0, start, w)
+        jump round_loop(0, start)
 
-    block round_loop(t: USize, v: Working, w: @U32)
+    block round_loop(t: USize, v: Working)
         done : Bool = t.ge(64)
         branch done
             ? finish(v)
-            : round(t, v, w)
+            : round(t, v)
 
-    block round(t: USize, v: Working, w: @U32)
+    block round(t: USize, v: Working)
         k_t  : U32     = K.getitem(t)
         w_t  : U32     = w.stride(t).load()
         next : Working = sha256_round(v, k_t, w_t)
-        jump round_loop(t.add(1), next, w)
+        jump round_loop(t.add(1), next)
 
     // H[i] += working variable i
     block finish(v: Working)
@@ -357,27 +358,29 @@ routine hash_string(label: @Byte, message: Bytes) -> Void
 // ── main ──────────────────────────────────────────────────────────────────────
 
 routine main() -> S32
+    shared many : @Slice<Byte> <- uninit
+
     block entry()
         hash_string("empty", "")
         hash_string("abc", "abc")
         hash_string("448-bit", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
 
         // One million 'a' bytes: 15,625 full blocks plus a two-block tail.
-        claim alloc : @Allocator   <- make_heap_allocator()
-        claim many  : @Slice<Byte> <- .construct(MILLION, alloc)
-        jump fill_loop(0, many)
+        claim alloc : @Allocator <- make_heap_allocator()
+        many.store(.construct(MILLION, alloc))
+        jump fill_loop(0)
 
-    block fill_loop(i: USize, many: @Slice<Byte>)
+    block fill_loop(i: USize)
         done : Bool = i.ge(MILLION)
         branch done
-            ? hash_many(many)
-            : fill_byte(i, many)
+            ? hash_many()
+            : fill_byte(i)
 
-    block fill_byte(i: USize, many: @Slice<Byte>)
+    block fill_byte(i: USize)
         many.setitem(i, b'a')
-        jump fill_loop(i.add(1), many)
+        jump fill_loop(i.add(1))
 
-    block hash_many(many: @Slice<Byte>)
+    block hash_many()
         hash_and_print("million-a", many.to<@Byte>(), MILLION)
         many.destruct()
         return(0)

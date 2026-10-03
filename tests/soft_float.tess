@@ -109,9 +109,10 @@ routine agree32(soft: U32, hard: U32, nan: U32) -> Bool
 
 /// One F32 binary operation, soft against hard: 0 add, 1 sub, 2 mul, 3 div, 4 mod, 5 comparisons, 6 powi.
 routine check32(op: U32, a: U32, b: U32) -> Bool
+    shared x : F32 = .from_bits(a)
+    shared y : F32 = .from_bits(b)
+
     block entry()
-        x : F32 = .from_bits(a)
-        y : F32 = .from_bits(b)
         when op
             0    -> return(agree32(soft_f32_add(a, b), x.add(y).bits(), crt_nan32(a, b)))
             1    -> return(agree32(soft_f32_sub(a, b), x.sub(y).bits(),
@@ -119,10 +120,10 @@ routine check32(op: U32, a: U32, b: U32) -> Bool
             2    -> return(agree32(soft_f32_mul(a, b), x.mul(y).bits(), crt_nan32(a, b)))
             3    -> return(agree32(soft_f32_div(a, b), x.div(y).bits(), crt_nan32(a, b)))
             4    -> return(agree32(soft_f32_mod(a, b), frem<F32>(x, y).bits(), crt_nan32(a, b)))
-            5    -> compare(x, y)
-            else -> power(x)
+            5    -> compare()
+            else -> power()
 
-    block compare(x: F32, y: F32)
+    block compare()
         unordered : Bool = x.is_nan().bitor(y.is_nan())
         order     : S32  = x.compare(y)
         le_want   : S32  = unordered
@@ -139,7 +140,7 @@ routine check32(op: U32, a: U32, b: U32) -> Bool
 
     // compiler-rt's repeated squaring, on the hardware, with the same exponent. A NaN comes from a NaN base, which
     // compiler-rt passes on quieted (the hardware may pass on either operand of a product of two NaNs)
-    block power(x: F32)
+    block power()
         low  : S32  = b.bitand(0x3F).to_wrap<S32>()
         n    : S32  = low.sub(32)
         want : F32  = powi_model32(x, n)
@@ -253,19 +254,20 @@ routine from_s64(x: S64) -> U128
 /// conversion). NaN, infinity, and values from 2^width up saturate by the sign. A negative value converted to
 /// unsigned gives 0, and a signed magnitude from 2^(width - 1) up wraps as compiler-rt's arithmetic wraps it.
 routine fix_model(x: F64, width: U32, signed: Bool) -> U128
+    shared mask     : U128 = U128.MAX.shr(U32.sub(128, width).to<U128>())
+    shared negative : Bool = x.is_sign_negative()
+
     block entry()
-        mask     : U128 = U128.MAX.shr(U32.sub(128, width).to<U128>())
-        negative : Bool = x.is_sign_negative()
-        field    : U64  = width.add(1023).to<U64>()
-        limit    : F64  = F64.from_bits(field.shl(52))
-        huge     : Bool = x.is_nan().bitor(x.abs().ge(limit))
+        field : U64  = width.add(1023).to<U64>()
+        limit : F64  = F64.from_bits(field.shl(52))
+        huge  : Bool = x.is_nan().bitor(x.abs().ge(limit))
         when
             signed.bitnot().bitand(negative) -> return(0)
             huge.bitand(signed.bitnot())     -> return(mask)
             huge                             -> return(negative ? mask.shr(1).add(1) : mask.shr(1))
-            else                             -> exact(mask, negative)
+            else                             -> exact()
 
-    block exact(mask: U128, negative: Bool)
+    block exact()
         magnitude : U128 = x.abs().to_clamp<U128>()
         value     : U128 = negative
             ? U128.sub_wrap(0, magnitude)
@@ -294,9 +296,10 @@ routine agree64(soft: U64, hard: U64, nan: U64) -> Bool
 
 /// {check32} for F64.
 routine check64(op: U32, a: U64, b: U64) -> Bool
+    shared x : F64 = .from_bits(a)
+    shared y : F64 = .from_bits(b)
+
     block entry()
-        x : F64 = .from_bits(a)
-        y : F64 = .from_bits(b)
         when op
             0    -> return(agree64(soft_f64_add(a, b), x.add(y).bits(), crt_nan64(a, b)))
             1    -> return(agree64(soft_f64_sub(a, b), x.sub(y).bits(),
@@ -304,10 +307,10 @@ routine check64(op: U32, a: U64, b: U64) -> Bool
             2    -> return(agree64(soft_f64_mul(a, b), x.mul(y).bits(), crt_nan64(a, b)))
             3    -> return(agree64(soft_f64_div(a, b), x.div(y).bits(), crt_nan64(a, b)))
             4    -> return(agree64(soft_f64_mod(a, b), frem<F64>(x, y).bits(), crt_nan64(a, b)))
-            5    -> compare(x, y)
-            else -> power(x)
+            5    -> compare()
+            else -> power()
 
-    block compare(x: F64, y: F64)
+    block compare()
         unordered : Bool = x.is_nan().bitor(y.is_nan())
         order     : S32  = x.compare(y)
         le_want   : S32  = unordered
@@ -322,7 +325,7 @@ routine check64(op: U32, a: U64, b: U64) -> Bool
         r     : Bool = le_ok.bitand(ge_ok).bitand(un_ok)
         return(r)
 
-    block power(x: F64)
+    block power()
         low  : S32  = b.bitand(0x3F).to_wrap<S32>()
         n    : S32  = low.sub(32)
         want : F64  = powi_model64(x, n)
@@ -614,34 +617,36 @@ routine specials64(op: U32) -> U64
         jump step(at.add(1), wrong.add(ok.bitnot().to<U64>()))
 
 routine random64(op: U32, count: U32) -> U64
-    block entry()
-        claim second : @U64 <- 0
-        jump step(second, 0, 0)
+    shared second : @U64 <- 0
 
-    block step(second: @U64, at: U32, wrong: U64)
+    block entry()
+        jump step(0, 0)
+
+    block step(at: U32, wrong: U64)
         branch at.eq(count.mul(3))
             ? return(wrong)
             : continue
         a  : U64  = operands64(at.mod(3), second)
         ok : Bool = check64(op, a, second.load())
-        jump step(second, at.add(1), wrong.add(ok.bitnot().to<U64>()))
+        jump step(at.add(1), wrong.add(ok.bitnot().to<U64>()))
 
 /// The unary checks on every special value and `count` random values of each mix.
 routine unaries(count: U32) -> U64
-    block entry()
-        claim second : @U64 <- 0
-        jump special(second, 0, 0)
+    shared second : @U64 <- 0
 
-    block special(second: @U64, at: USize, wrong: U64)
+    block entry()
+        jump special(0, 0)
+
+    block special(at: USize, wrong: U64)
         branch at.eq(32)
-            ? random(second, 0, wrong)
+            ? random(0, wrong)
             : continue
         ok32 : Bool = unary32(SPECIAL32.getitem(at))
         ok64 : Bool = unary64(SPECIAL64.getitem(at))
         ok   : Bool = ok32.bitand(ok64)
-        jump special(second, at.add(1), wrong.add(ok.bitnot().to<U64>()))
+        jump special(at.add(1), wrong.add(ok.bitnot().to<U64>()))
 
-    block random(second: @U64, at: U32, wrong: U64)
+    block random(at: U32, wrong: U64)
         branch at.eq(count.mul(3))
             ? return(wrong)
             : continue
@@ -649,7 +654,7 @@ routine unaries(count: U32) -> U64
         ok32 : Bool = unary32(pair.to_wrap<U32>())
         ok64 : Bool = unary64(operands64(at.mod(3), second))
         ok   : Bool = ok32.bitand(ok64)
-        jump random(second, at.add(1), wrong.add(ok.bitnot().to<U64>()))
+        jump random(at.add(1), wrong.add(ok.bitnot().to<U64>()))
 
 routine integers(count: U32) -> U64
     block entry()

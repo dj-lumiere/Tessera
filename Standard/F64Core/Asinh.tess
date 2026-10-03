@@ -51,29 +51,30 @@ preset CM_F64_ASINH_DB_L: @Array<U64, 35> <- { 0x3C60000000000000, 0x3C700000000
 
 /// asinh self, correctly rounded.
 routine F64.asinh(self: Self) -> Self
+    shared ax : Self = self.abs()
+    shared u  : U64  = ax.bits()
+
     block entry()
-        ax        : Self = self.abs()
-        u         : U64  = ax.bits()
         small     : Bool = u.lt(0x3FBB000000000000)  // |x| < 0x1.bp-4
         mid       : Bool = u.lt(0x4190000000000000)  // |x| < 2^26
         big       : Bool = u.lt(0x4330000000000000)  // |x| < 2^52
         nonfinite : Bool = u.ge(0x7FF0000000000000)
         when
-            small     -> small(u)
-            mid       -> moderate(ax, u)
-            big       -> log_fast(ax, Self.mul(2.0, ax), Self.div(0.5, ax), 0x3FF, 0.0, 0.0)
+            small     -> small()
+            mid       -> moderate()
+            big       -> log_fast(Self.mul(2.0, ax), Self.div(0.5, ax), 0x3FF, 0.0, 0.0)
             nonfinite -> return(self.add(self))
-            else      -> log_fast(ax, ax, 0.0, 0x3FE, 0.0, 0.0)  // log(2|x|) = log(|x|) + log(2)
+            else      -> log_fast(ax, 0.0, 0x3FE, 0.0, 0.0)  // log(2|x|) = log(|x|) + log(2)
 
-    block small(u: U64)
+    block small()
         zero : Bool = u.eq(0)
         tiny : Bool = u.lt(0x3E57137449123EF7)  // |x| < 0x1.7137449123ef7p-26: asinh x rounds to x
         when
             zero -> return(self)
             tiny -> return(Self.mul_add(-0x1p-60, self, self))
-            else -> series(u)
+            else -> series()
 
-    block series(u: U64)
+    block series()
         x2h  : Self = self.mul(self)
         x2l  : Self = self.mul_add(self, x2h.neg())
         x3h  : Self = x2h.mul(self)
@@ -114,7 +115,7 @@ routine F64.asinh(self: Self) -> Self
             : return(cm_f64_asinh_zero(self, x2h, x2l))
 
     // 0x1.bp-4 <= |x| < 2^26: ah + al = |x| + sqrt(x^2 + 1)
-    block moderate(ax: Self, u: U64)
+    block moderate()
         x2h   : Self       = self.mul(self)
         x2l   : Self       = self.mul_add(self, x2h.neg())
         below : Bool       = u.lt(0x3FF0000000000000)
@@ -127,10 +128,10 @@ routine F64.asinh(self: Self) -> Self
         rs : Self       = Self.div(0.5, th)
         sl : Self       = tl.sub(sh.mul_add(sh, th.neg())).mul(rs.mul(sh))
         a  : CmF64HypDd = cm_f64_hyp_fasttwosum(sh, ax)
-        jump log_fast(ax, a.hi, sl.add(a.lo), 0x3FF, x2h, x2l)
+        jump log_fast(a.hi, sl.add(a.lo), 0x3FF, x2h, x2l)
 
     // log(ah + al) (less log(2) when off = 0x3FE), from the tables
-    block log_fast(ax: Self, ah: Self, al: Self, off: S64, x2h: Self, x2l: Self)
+    block log_fast(ah: Self, al: Self, off: S64, x2h: Self, x2l: Self)
         tb  : U64   = ah.bits()
         eb  : S64   = tb.shr(52).to<S64>()
         e   : S64   = eb.sub(off)

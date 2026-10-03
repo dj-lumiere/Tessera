@@ -355,16 +355,17 @@ routine cm_exp_flip3(w: CmExpWords3, mask: U64) -> CmExpWords3
 
 /// Arithmetic right shift of the 3-word value by n bits (n < 192).
 routine cm_exp_ashr3(w: CmExpWords3, n: U64) -> CmExpWords3
+    shared bits : U64 = n.bitand(63)
+
     block entry()
         sign  : S64 = w.w2.to_wrap<S64>().shr(63)
-        bits  : U64 = n.bitand(63)
         words : U64 = n.shr(6)
         when words
-            0    -> shift_bits(w.w0, w.w1.to_wrap<S64>(), w.w2.to_wrap<S64>(), bits)
-            1    -> shift_bits(w.w1, w.w2.to_wrap<S64>(), sign, bits)
-            else -> shift_bits(w.w2, sign, sign, bits)
+            0    -> shift_bits(w.w0, w.w1.to_wrap<S64>(), w.w2.to_wrap<S64>())
+            1    -> shift_bits(w.w1, w.w2.to_wrap<S64>(), sign)
+            else -> shift_bits(w.w2, sign, sign)
 
-    block shift_bits(s0: U64, s1: S64, s2: S64, bits: U64)
+    block shift_bits(s0: U64, s1: S64, s2: S64)
         r0 : S64         = cm_exp_funnel(s1.to_wrap<U64>(), s0, bits.to<S64>())
         r1 : S64         = cm_exp_funnel(s2.to_wrap<U64>(), s1.to_wrap<U64>(), bits.to<S64>())
         r  : CmExpWords3 = CmExpWords3 { w0: r0.to_wrap<U64>(), w1: r1.to_wrap<U64>(),
@@ -512,28 +513,29 @@ routine cm_exp_add_column(lo: @U64, hi: @U64, slot: S64, count: S64, word: U64) 
 /// words and their carries are dropped). out may alias a or b.
 routine cm_exp_mul_words(out: @U64, a: @U64, na: USize, b: @U64, nb: USize, p: USize,
     count: S64) -> Void
+    shared lo_words : @Array<S64, 8> <- uninit
+    shared hi_words : @Array<S64, 8> <- uninit
+    shared lo       : @U64           = lo_words.to<@U64>()
+    shared hi       : @U64           = hi_words.to<@U64>()
+
     block entry()
-        claim lo_words : @Array<S64, 8> <- uninit
-        claim hi_words : @Array<S64, 8> <- uninit
-        lo : @U64 = lo_words.to<@U64>()
-        hi : @U64 = hi_words.to<@U64>()
         lo.zeroinit(8)
         hi.zeroinit(8)
-        jump row(0, lo, hi)
+        jump row(0)
 
-    block row(i: USize, lo: @U64, hi: @U64)
+    block row(i: USize)
         done : Bool = i.ge(na)
         branch done
-            ? carry(0, 0, lo, hi)
-            : column(i, 0, lo, hi)
+            ? carry(0, 0)
+            : column(i, 0)
 
-    block column(i: USize, j: USize, lo: @U64, hi: @U64)
+    block column(i: USize, j: USize)
         row_done : Bool = j.ge(nb)
         branch row_done
-            ? row(i.add(1), lo, hi)
-            : product(i, j, lo, hi)
+            ? row(i.add(1))
+            : product(i, j)
 
-    block product(i: USize, j: USize, lo: @U64, hi: @U64)
+    block product(i: USize, j: USize)
         ai     : U64   = a.stride(i).load()
         bj     : U64   = b.stride(j).load()
         prod   : U128  = cm_exp_mul(ai, bj)
@@ -541,20 +543,20 @@ routine cm_exp_mul_words(out: @U64, a: @U64, na: USize, b: @U64, nb: USize, p: U
         slot   : S64   = column.to<S64>().sub(p.to<S64>())
         cm_exp_add_column(lo, hi, slot, count, prod.to_wrap<U64>())
         cm_exp_add_column(lo, hi, slot.add(1), count, cm_exp_hi(prod))
-        jump column(i, j.add(1), lo, hi)
+        jump column(i, j.add(1))
 
-    block carry(q: S64, carry: U128, lo: @U64, hi: @U64)
+    block carry(q: S64, carry: U128)
         done : Bool = q.ge(count)
         branch done
             ? return()
-            : settle(q.to<USize>(), carry, lo, hi)
+            : settle(q.to<USize>(), carry)
 
-    block settle(q: USize, carry: U128, lo: @U64, hi: @U64)
+    block settle(q: USize, carry: U128)
         low  : U64  = lo.stride(q).load()
         high : U64  = hi.stride(q).load()
         sum  : U128 = low.to<U128>().add(carry)
         out.stride(q).store(sum.to_wrap<S64>().to_wrap<U64>())
-        jump carry(q.add(1).to<S64>(), sum.shr(64).add(high.to<U128>()), lo, hi)
+        jump carry(q.add(1).to<S64>(), sum.shr(64).add(high.to<U128>()))
 
 /// out = floor(a × b / 2^64) + c modulo 2^(64n), for a word a and n-word b and c.
 /// out may alias b or c.
@@ -620,15 +622,16 @@ routine cm_exp_word_or_sign(o: @U64, i: USize, len: USize, sign: U64) -> U64
 
 /// Arithmetic right shift of the len-word value at o by n bits, in place (n < 64 len).
 routine cm_exp_ashr_words(o: @U64, len: USize, n: U64) -> Void
+    shared top_index : USize = len.sub(1)
+    shared top       : U64   = o.stride(top_index).load()
+    shared sign      : S64   = top.to_wrap<S64>().shr(63)
+
     block entry()
-        top_index : USize = len.sub(1)
-        top       : U64   = o.stride(top_index).load()
-        sign      : S64   = top.to_wrap<S64>().shr(63)
-        jump step(0, n.shr(6).to<USize>(), n.bitand(63), sign)
+        jump step(0, n.shr(6).to<USize>(), n.bitand(63))
 
     // word j comes from words j + words and the one above it. Both are at or above
     // j, so shifting in place from the bottom up never reads a word already written
-    block step(j: USize, words: USize, bits: U64, sign: S64)
+    block step(j: USize, words: USize, bits: U64)
         done : Bool = j.ge(len)
         branch done
             ? return()
@@ -637,7 +640,7 @@ routine cm_exp_ashr_words(o: @U64, len: USize, n: U64) -> Void
         low  : U64   = cm_exp_word_or_sign(o, from, len, sign.to_wrap<U64>())
         high : U64   = cm_exp_word_or_sign(o, from.add(1), len, sign.to_wrap<U64>())
         o.stride(j).store(cm_exp_funnel(high, low, bits.to<S64>()).to_wrap<U64>())
-        jump step(j.add(1), words, bits, sign)
+        jump step(j.add(1), words, bits)
 
 // -- fallback paths --------------------------------------------------------------
 
@@ -645,17 +648,18 @@ routine cm_exp_ashr_words(o: @U64, len: USize, n: U64) -> Void
 /// words (4 or 7), before the exponent shift. The sign is applied as a one's
 /// complement after the product (exponent, exp10) or a two's complement (exp2).
 routine cm_exp_reduce_wide(out: @U64, x: U128, kind: U64, len: USize) -> Void
+    shared sign_mask : U64  = cm_sign_mask64(cm_exp_hi(x))
+    shared sig       : U128 = x.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
+
     block entry()
-        sign_mask : U64  = cm_sign_mask64(cm_exp_hi(x))
-        sig       : U128 = x.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
         out.zeroinit(len)
         is_two : Bool = kind.eq(CM_EXP_KIND_TWO)
         branch is_two
-            ? twos_complement(sign_mask, sig)
-            : scale(sign_mask, sig)
+            ? twos_complement()
+            : scale()
 
     // exp2: x itself is the multiple of log2(2)
-    block twos_complement(sign_mask: U64, sig: U128)
+    block twos_complement()
         mask2      : U128  = cm_exp_join(sign_mask, sign_mask)
         signed     : U128  = sig.bitxor(mask2).sub_wrap(mask2)
         low_index  : USize = len.sub(2)
@@ -664,7 +668,7 @@ routine cm_exp_reduce_wide(out: @U64, x: U128, kind: U64, len: USize) -> Void
         out.stride(high_index).store(cm_exp_hi(signed))
         return()
 
-    block scale(sign_mask: U64, sig: U128)
+    block scale()
         claim sig_words : @Array<S64, 2> <- uninit
         sig_ptr : @U64 = sig_words.to<@U64>()
         sig_ptr.stride(0).store(sig.to_wrap<S64>().to_wrap<U64>())
@@ -675,16 +679,16 @@ routine cm_exp_reduce_wide(out: @U64, x: U128, kind: U64, len: USize) -> Void
             : CM_EXP_ILN102.to<@U64>()
         coef : @U64 = table.stride(7.sub(len))
         cm_exp_mul_words(out, coef, len, sig_ptr, 2, 2, len.to<S64>())
-        jump flip(0, sign_mask)
+        jump flip(0)
 
-    block flip(q: USize, sign_mask: U64)
+    block flip(q: USize)
         done : Bool = q.ge(len)
         branch done
             ? return()
             : continue
         word : U64 = out.stride(q).load()
         word.bitxor(sign_mask).store_into(out.stride(q))
-        jump flip(q.add(1), sign_mask)
+        jump flip(q.add(1))
 
 /// The reduced argument of the wide paths: len words (4 or 7) of x × log2(base),
 /// shifted to put the integer part in the top word.
@@ -852,30 +856,31 @@ routine cm_exp_superaccurate(x: U128, kind: U64) -> CmExpScaled
 /// 2^y for the next fraction word y = arg[4]: the same series, each degree truncated
 /// to the words it can reach.
 routine cm_exp_superaccurate_next(out: @U64, arg: @U64, c6: @U64) -> Void
+    shared acc_words  : @Array<S64, 8> <- uninit
+    shared term_words : @Array<S64, 8> <- uninit
+    shared acc        : @U64           = acc_words.to<@U64>()
+    shared term       : @U64           = term_words.to<@U64>()
+    shared y          : U64            = arg.stride(4).load()
+
     block entry()
-        claim acc_words  : @Array<S64, 8> <- uninit
-        claim term_words : @Array<S64, 8> <- uninit
-        acc  : @U64 = acc_words.to<@U64>()
-        term : @U64 = term_words.to<@U64>()
-        y    : U64  = arg.stride(4).load()
         acc.zeroinit(8)
-        jump degree(5, y, acc, term)
+        jump degree(5)
 
     // degree r keeps the words r .. 5 of its coefficient's row, from its word r up
-    block degree(r: USize, y: U64, acc: @U64, term: @U64)
+    block degree(r: USize)
         done : Bool = r.eq(0)
         branch done
-            ? constant(y, acc)
-            : add_degree(r, y, acc, term)
+            ? constant()
+            : add_degree(r)
 
-    block add_degree(r: USize, y: U64, acc: @U64, term: @U64)
+    block add_degree(r: USize)
         term.zeroinit(8)
         coef : @U64 = c6.stride(r.mul(7))
         copy<U64>(term, coef, 6.sub(r))
         cm_exp_mul_add_words(acc, y, acc, term, 6)
-        jump degree(r.sub(1), y, acc, term)
+        jump degree(r.sub(1))
 
-    block constant(y: U64, acc: @U64)
+    block constant()
         cm_exp_mul_add_words(out, y, acc, c6, 6)
         return()
 

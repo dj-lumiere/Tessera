@@ -45,34 +45,36 @@ preset F128_ATANH_BAND: S64 = 133
 
 /// asinh a for a > 0.
 routine wide_asinh(a: F128Extended) -> F128Extended
+    shared aa   : F128Extended = a.mul(a)
+    shared root : F128Extended = aa.add(wide_one()).sqrt()
+
     block entry()
-        aa    : F128Extended = a.mul(a)
-        root  : F128Extended = aa.add(wide_one()).sqrt()
-        small : Bool         = a.exponent.lt(-1)
+        small : Bool = a.exponent.lt(-1)
         branch small
-            ? near(aa, root)
+            ? near()
             : return(wide_log(a.add(root)))
 
-    block near(aa: F128Extended, root: F128Extended)
+    block near()
         r : F128Extended = wide_ln_1p(a.add(aa.div(wide_one().add(root))))
         return(r)
 
 /// acosh x for x > 1. Here y = x - 1 is exact wherever it's used (below 1/2).
 routine wide_acosh(x: F128) -> F128Extended
-    block entry()
-        w     : F128Extended = x.to<F128Extended>()
-        y     : F128Extended = w.sub(wide_one())
-        small : Bool         = y.exponent.lt(-1)
-        branch small
-            ? near(y)
-            : far(w)
+    shared w : F128Extended = x.to<F128Extended>()
+    shared y : F128Extended = w.sub(wide_one())
 
-    block near(y: F128Extended)
+    block entry()
+        small : Bool = y.exponent.lt(-1)
+        branch small
+            ? near()
+            : far()
+
+    block near()
         root : F128Extended = y.mul(y.add(S64.to<F128Extended>(2))).sqrt()
         r    : F128Extended = wide_ln_1p(y.add(root))
         return(r)
 
-    block far(w: F128Extended)
+    block far()
         radicand : F128Extended = w.mul(w).sub(wide_one())
         root     : F128Extended = radicand.sqrt()
         r        : F128Extended = wide_log(w.add(root))
@@ -191,11 +193,12 @@ routine f128_acosh(x: F128, exact: Bool) -> F128
         return(r)
 
 routine f128_atanh(x: F128, exact: Bool) -> F128
+    shared bits : U128 = x.bits()
+    shared nan  : Bool = f128_is_nan_bits(bits)
+    shared zero : Bool = f128_is_zero_bits(bits)
+    shared a    : F128 = x.abs()
+
     block entry()
-        bits   : U128 = x.bits()
-        nan    : Bool = f128_is_nan_bits(bits)
-        zero   : Bool = f128_is_zero_bits(bits)
-        a      : F128 = x.abs()
         one    : F128 = f128_of(F128_ONE)
         at_one : Bool = a.eq(one)
         beyond : Bool = a.gt(one)
@@ -204,18 +207,18 @@ routine f128_atanh(x: F128, exact: Bool) -> F128
             zero   -> return(x)
             beyond -> return(F128.NAN)
             at_one -> return(F128.INFINITY.copysign(x))
-            else   -> tiers(a)
+            else   -> tiers()
 
-    block tiers(a: F128)
+    block tiers()
         branch exact
-            ? slow(a)
+            ? slow()
             : continue
         rounded : WideRounding = wide_round_within(wide_atanh(a), F128_ATANH_BAND)
         branch rounded.ok
             ? return(rounded.value.copysign(x))
-            : slow(a)
+            : slow()
 
-    block slow(a: F128)
+    block slow()
         magnitude : F128 = big_atanh(a).to<F128>()
         r         : F128 = magnitude.copysign(x)
         return(r)

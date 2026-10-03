@@ -164,17 +164,18 @@ private routine close_if_open(h: Addr) -> Void
 /// memory).
 #target(os: "windows")
 private routine utf16(text: Bytes, alloc: @Allocator) -> (@U16, USize)
+    shared units : @U16 = allocate<U16>(alloc, text.count().add(1))
+
     block entry()
-        units : @U16 = allocate<U16>(alloc, text.count().add(1))
         branch units.is_null()
             ? return({ null, 0 })
             : continue
         n : Option<USize> = encode_utf16(text, units, text.count().add(1))
         when n
             .Present(count) -> return({ units, count })
-            .Absent         -> failed(units)
+            .Absent         -> failed()
 
-    block failed(units: @U16)
+    block failed()
         deallocate(alloc, units)
         return({ null, 0 })
 
@@ -420,121 +421,121 @@ private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Allo
 /// failure.
 #target(os: "windows")
 private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
+    shared own : @@U16 = allocate<@U16>(alloc, options.env_count.max(1))
+
     block entry()
-        own : @@U16 = allocate<@U16>(alloc, options.env_count.max(1))
         branch own.is_null()
             ? return(null)
             : continue
         branch wide_overrides(options, own, alloc)
             ? continue
-            : free_own_array(own)
+            : free_own_array()
         parent : @U16 = c_get_environment_strings()
-        jump count(own, parent, parent, 0)
+        jump count(parent, parent, 0)
 
-    block free_own_array(own: @@U16)
+    block free_own_array()
         deallocate(alloc, own)
         return(null)
 
     // How many entries the parent block has: each ends with a 0, and an empty one ends the block.
-    block count(own: @@U16, parent: @U16, at: @U16, n: USize)
+    block count(parent: @U16, at: @U16, n: USize)
         branch at.is_null()
-            ? collect(own, parent, n)
+            ? collect(parent, n)
             : continue
         branch at.load().eq(0)
-            ? collect(own, parent, n)
-            : count(own, parent, at.stride(units_of(at).add(1)), n.add(1))
+            ? collect(parent, n)
+            : count(parent, at.stride(units_of(at).add(1)), n.add(1))
 
-    block collect(own: @@U16, parent: @U16, n: USize)
+    block collect(parent: @U16, n: USize)
         all : @@U16 = allocate<@U16>(alloc, n.add(options.env_count).max(1))
         branch all.is_null()
-            ? done(own, parent, null, null)
-            : keep(own, parent, all, parent, 0)
+            ? done(parent, null, null)
+            : keep(parent, all, parent, 0)
 
     // The parent's entries no override names.
-    block keep(own: @@U16, parent: @U16, all: @@U16, at: @U16, k: USize)
+    block keep(parent: @U16, all: @@U16, at: @U16, k: USize)
         branch at.is_null()
-            ? add_own(own, parent, all, k, 0)
+            ? add_own(parent, all, k, 0)
             : continue
         branch at.load().eq(0)
-            ? add_own(own, parent, all, k, 0)
+            ? add_own(parent, all, k, 0)
             : continue
         next : @U16 = at.stride(units_of(at).add(1))
         branch overridden(at, own, options.env_count)
-            ? keep(own, parent, all, next, k)
+            ? keep(parent, all, next, k)
             : continue
         all.stride(k).store(at)
-        jump keep(own, parent, all, next, k.add(1))
+        jump keep(parent, all, next, k.add(1))
 
-    block add_own(own: @@U16, parent: @U16, all: @@U16, k: USize, j: USize)
+    block add_own(parent: @U16, all: @@U16, k: USize, j: USize)
         branch j.eq(options.env_count)
-            ? sort(own, parent, all, k.add(options.env_count), 1)
+            ? sort(parent, all, k.add(options.env_count), 1)
             : continue
         all.stride(k.add(j)).store(own.stride(j).load())
-        jump add_own(own, parent, all, k, j.add(1))
+        jump add_own(parent, all, k, j.add(1))
 
     // Insertion sort.
-    block sort(own: @@U16, parent: @U16, all: @@U16, total: USize, i: USize)
+    block sort(parent: @U16, all: @@U16, total: USize, i: USize)
         branch i.ge(total)
-            ? measure(own, parent, all, total, 0, 1)
-            : sink(own, parent, all, total, i, i)
+            ? measure(parent, all, total, 0, 1)
+            : sink(parent, all, total, i, i)
 
-    block sink(own: @@U16, parent: @U16, all: @@U16, total: USize, i: USize, j: USize)
+    block sink(parent: @U16, all: @@U16, total: USize, i: USize, j: USize)
         branch j.eq(0)
-            ? sort(own, parent, all, total, i.add(1))
+            ? sort(parent, all, total, i.add(1))
             : continue
         a : @U16 = all.stride(j.sub(1)).load()
         b : @U16 = all.stride(j).load()
         branch before(b, a)
             ? continue
-            : sort(own, parent, all, total, i.add(1))
+            : sort(parent, all, total, i.add(1))
         all.stride(j.sub(1)).store(b)
         all.stride(j).store(a)
-        jump sink(own, parent, all, total, i, j.sub(1))
+        jump sink(parent, all, total, i, j.sub(1))
 
-    block measure(own: @@U16, parent: @U16, all: @@U16, total: USize, i: USize, units: USize)
+    block measure(parent: @U16, all: @@U16, total: USize, i: USize, units: USize)
         branch i.eq(total)
-            ? build(own, parent, all, total, allocate<U16>(alloc, units))
-            : measure(own, parent, all, total, i.add(1),
+            ? build(parent, all, total, allocate<U16>(alloc, units))
+            : measure(parent, all, total, i.add(1),
                 units.add(units_of(all.stride(i).load())).add(1))
 
-    block build(own: @@U16, parent: @U16, all: @@U16, total: USize, block_units: @U16)
+    block build(parent: @U16, all: @@U16, total: USize, block_units: @U16)
         branch block_units.is_null()
-            ? done(own, parent, all, null)
-            : place(own, parent, all, total, block_units, block_units, 0)
+            ? done(parent, all, null)
+            : place(parent, all, total, block_units, block_units, 0)
 
-    block place(own: @@U16, parent: @U16, all: @@U16, total: USize, block_units: @U16, at: @U16,
-        i: USize)
+    block place(parent: @U16, all: @@U16, total: USize, block_units: @U16, at: @U16, i: USize)
         branch i.eq(total)
-            ? terminate(own, parent, all, block_units, at)
+            ? terminate(parent, all, block_units, at)
             : continue
         entry : @U16  = all.stride(i).load()
         n     : USize = units_of(entry).add(1)
         copy<U16>(at, entry, n)
-        jump place(own, parent, all, total, block_units, at.stride(n), i.add(1))
+        jump place(parent, all, total, block_units, at.stride(n), i.add(1))
 
-    block terminate(own: @@U16, parent: @U16, all: @@U16, block_units: @U16, at: @U16)
+    block terminate(parent: @U16, all: @@U16, block_units: @U16, at: @U16)
         at.store(0)
-        jump done(own, parent, all, block_units)
+        jump done(parent, all, block_units)
 
-    block done(own: @@U16, parent: @U16, all: @@U16, result: @U16)
+    block done(parent: @U16, all: @@U16, result: @U16)
         branch parent.is_null()
             ? continue
-            : free_parent(own, all, result, parent)
-        jump release(own, all, result, 0)
+            : free_parent(all, result, parent)
+        jump release(all, result, 0)
 
-    block free_parent(own: @@U16, all: @@U16, result: @U16, parent: @U16)
+    block free_parent(all: @@U16, result: @U16, parent: @U16)
         c_free_environment_strings(parent)
-        jump release(own, all, result, 0)
+        jump release(all, result, 0)
 
-    block release(own: @@U16, all: @@U16, result: @U16, j: USize)
+    block release(all: @@U16, result: @U16, j: USize)
         branch j.eq(options.env_count)
-            ? arrays(own, all, result)
+            ? arrays(all, result)
             : continue
         own_slot : @@U16 = own.stride(j)
         deallocate(alloc, own_slot.load())
-        jump release(own, all, result, j.add(1))
+        jump release(all, result, j.add(1))
 
-    block arrays(own: @@U16, all: @@U16, result: @U16)
+    block arrays(all: @@U16, result: @U16)
         deallocate(alloc, own)
         branch all.is_null()
             ? return(result)
@@ -580,20 +581,21 @@ private record Handles
 /// Reads the pipe to its end into the reader's buffer, from the malloc heap.
 #target(os: "windows")
 private routine read_pipe(raw: Addr) -> Void
-    block entry()
-        r : @PipeReader = raw.to<@PipeReader>()
-        claim heap  : @Allocator         <- make_heap_allocator()
-        claim chunk : @Array<Byte, 4096> <- uninit
-        claim n     : @U32               <- 0
-        jump next(r, heap, chunk.to<@Byte>(), n)
+    shared r    : @PipeReader = raw.to<@PipeReader>()
+    shared heap : @Allocator  <- make_heap_allocator()
+    shared n    : @U32        <- 0
 
-    block next(r: @PipeReader, heap: @Allocator, chunk: @Byte, n: @U32)
+    block entry()
+        claim chunk : @Array<Byte, 4096> <- uninit
+        jump next(chunk.to<@Byte>())
+
+    block next(chunk: @Byte)
         ok : Bool = c_read_file(r.pipe.load(), chunk, 4096, n, null).ne(0)
         branch ok.bitand(n.load().gt(0))
             ? continue
             : return()
         r.buffer.append(heap, chunk, n.load().to<USize>())
-        jump next(r, heap, chunk, n)
+        jump next(chunk)
 
 /// Closes this process's copies of the handles the child was given (its ends of the pipes, the null device, and any
 /// standard handle duplicated only for it), so end-of-file reaches the parent when the child exits.
@@ -723,44 +725,45 @@ private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which:
 #target(os: "windows")
 routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
+    shared line : @U16                = command_line(program, args, arg_count, alloc)
+    shared h    : @Handles            <- uninit
+    shared pi   : @ProcessInformation <- ProcessInformation { process: null, thread: null,
+        process_id: 0, thread_id: 0 }
+
     block entry()
-        line : @U16 = command_line(program, args, arg_count, alloc)
         branch line.is_null()
             ? return(.Failure(ProcessError.InvalidArgument))
             : continue
         claim directory : @Array<U16, PATH_CAPACITY> <- uninit
         when options.directory
-            .Present(d) -> in_directory(line, d, directory.to<@U16>())
-            .Absent     -> environment(line, null)
+            .Present(d) -> in_directory(d, directory.to<@U16>())
+            .Absent     -> environment(null)
 
-    block in_directory(line: @U16, d: Bytes, directory: @U16)
+    block in_directory(d: Bytes, directory: @U16)
         n : Option<USize> = encode_utf16(d, directory, PATH_CAPACITY)
         branch n.is_present()
-            ? environment(line, directory)
-            : bad(line, null)
+            ? environment(directory)
+            : bad(null)
 
-    block environment(line: @U16, directory: @U16)
+    block environment(directory: @U16)
         branch options.env_count.eq(0)
-            ? handles(line, directory, null)
+            ? handles(directory, null)
             : continue
         block_units : @U16 = env_block(options, alloc)
         branch block_units.is_null()
-            ? bad(line, null)
-            : handles(line, directory, block_units)
+            ? bad(null)
+            : handles(directory, block_units)
 
-    block bad(line: @U16, env: @U16)
+    block bad(env: @U16)
         deallocate(alloc, line)
         return(.Failure(ProcessError.InvalidArgument))
 
-    block handles(line: @U16, directory: @U16, env: @U16)
+    block handles(directory: @U16, env: @U16)
         claim sa : @SecurityAttributes <- SecurityAttributes {
             length: sizeof<SecurityAttributes>().to<U32>(), descriptor: null, inherit_handle: 1 }
-        claim h  : @Handles            <- uninit
         branch h.make(options, sa)
             ? continue
-            : not_started(line, env, h, c_get_last_error())
-        claim pi : @ProcessInformation <- ProcessInformation { process: null, thread: null,
-            process_id: 0, thread_id: 0 }
+            : not_started(env, c_get_last_error())
         // STARTF_USESTDHANDLES
         claim si : @StartupInfo <- StartupInfo { cb: sizeof<StartupInfo>().to<U32>(),
             reserved: null, desktop: null, title: null, x: 0, y: 0, x_size: 0, y_size: 0,
@@ -773,17 +776,17 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
         e    : U32  = c_get_last_error()
         h.close_child_side()
         branch made
-            ? started(line, env, h, pi)
-            : not_started(line, env, h, e)
+            ? started(env)
+            : not_started(env, e)
 
-    block not_started(line: @U16, env: @U16, h: @Handles, e: U32)
+    block not_started(env: @U16, e: U32)
         h.close_child_side()
         close_if_open(h.out_r.load())
         close_if_open(h.err_r.load())
         free_texts(line, env, alloc)
         return(.Failure(spawn_error(e)))
 
-    block started(line: @U16, env: @U16, h: @Handles, pi: @ProcessInformation)
+    block started(env: @U16)
         free_texts(line, env, alloc)
         claim out : @CaptureBuffer <- CaptureBuffer.empty()
         claim err : @PipeReader    <- PipeReader { pipe: h.err_r.load(),
@@ -850,18 +853,19 @@ private routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
 /// Reads a pipe to its end into buffer, from alloc.
 #target(os: "windows")
 private routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @Allocator) -> Void
+    shared n : @U32 <- 0
+
     block entry()
         claim chunk : @Array<Byte, 4096> <- uninit
-        claim n     : @U32               <- 0
-        jump next(chunk.to<@Byte>(), n)
+        jump next(chunk.to<@Byte>())
 
-    block next(chunk: @Byte, n: @U32)
+    block next(chunk: @Byte)
         ok : Bool = c_read_file(pipe, chunk, 4096, n, null).ne(0)
         branch ok.bitand(n.load().gt(0))
             ? continue
             : return()
         buffer.append(alloc, chunk, n.load().to<USize>())
-        jump next(chunk, n)
+        jump next(chunk)
 
 /// What a helper thread captured on the malloc heap, copied into alloc (and the heap copy given back).
 #target(os: "windows")

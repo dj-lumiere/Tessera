@@ -184,20 +184,21 @@ private routine f128_odd_scaled(x: F128) -> OddScaled
 /// For a power of two, |E y| >= 2^20 overflows or underflows whatever it is. It is clamped to ±2^30, which
 /// f128_round_pack turns into inf or +0 as the real one would.
 routine f128_pow_dyadic(x: F128, y: F128) -> PowDyadic
+    shared bx         : OddScaled = f128_odd_scaled(x)
+    shared by         : OddScaled = f128_odd_scaled(y)
+    shared y_negative : Bool      = f128_is_negative_bits(y.bits())
+
     block entry()
-        bx         : OddScaled = f128_odd_scaled(x)
-        by         : OddScaled = f128_odd_scaled(y)
-        y_negative : Bool      = f128_is_negative_bits(y.bits())
-        two_power  : Bool      = bx.odd.eq(1)
-        integer    : Bool      = by.shift.ge(0)
+        two_power : Bool = bx.odd.eq(1)
+        integer   : Bool = by.shift.ge(0)
         when
-            two_power  -> two_power(bx.shift, by, y_negative)
+            two_power  -> two_power(bx.shift)
             y_negative -> return(pow_dyadic_none())
-            integer    -> integer_power(bx, by)
-            else       -> root_power(bx, by)
+            integer    -> integer_power()
+            else       -> root_power()
 
     // x = 2^E: 2^(E y) when E y is an integer, and then |E y| >= n 2^max(j, 0)
-    block two_power(e: S64, by: OddScaled, y_negative: Bool)
+    block two_power(e: S64)
         j     : S64  = by.shift
         k     : S64  = 0.sub(j)
         mask  : S64  = S64.shl(1, k.min(62)).sub(1)
@@ -211,9 +212,9 @@ routine f128_pow_dyadic(x: F128, y: F128) -> PowDyadic
         when
             partial -> return(pow_dyadic_none())
             huge    -> return(pow_dyadic_place(1, clamp))
-            else    -> two_power_exact(e, j, by.odd.to<S64>(), y_negative)
+            else    -> two_power_exact(e, j, by.odd.to<S64>())
 
-    block two_power_exact(e: S64, j: S64, n: S64, y_negative: Bool)
+    block two_power_exact(e: S64, j: S64, n: S64)
         scaled : S64 = j.ge(0)
             ? e.shl(j)
             : e.shr(0.sub(j))
@@ -224,7 +225,7 @@ routine f128_pow_dyadic(x: F128, y: F128) -> PowDyadic
         return(pow_dyadic_place(1, signed))
 
     // y = n 2^j > 0: m^y 2^(E y)
-    block integer_power(bx: OddScaled, by: OddScaled)
+    block integer_power()
         small : Bool = by.shift.lt(7).bitand(by.odd.lt(128))
         branch small
             ? continue
@@ -240,7 +241,7 @@ routine f128_pow_dyadic(x: F128, y: F128) -> PowDyadic
             .Absent         -> return(pow_dyadic_none())
 
     // y = n / 2^k > 0: a^n 2^(E n / 2^k) with m = a^(2^k)
-    block root_power(bx: OddScaled, by: OddScaled)
+    block root_power()
         k          : S64  = 0.sub(by.shift)
         mask       : S64  = S64.shl(1, k.min(62)).sub(1)
         small_root : Bool = k.le(6).bitand(by.odd.lt(128))
@@ -308,28 +309,29 @@ private routine u128_root_two_power(m: U128, k: S64) -> Option<U128>
 /// ln_1p's series, directly for |f - 1| < 1/8 (f - 1 is exact, and the series' argument is under 0.067) and else
 /// as 2 ln sqrt(f), which brings the argument under 0.087.
 routine wide_pow_ln(x: F128) -> F128Extended
+    shared w         : F128Extended = x.to<F128Extended>()
+    shared f0        : F128Extended = w.ldexp(0.sub(w.exponent))  // in [1, 2)
+    shared sqrt_half : F128Extended = wide_const(2)
+    shared low       : Bool         = f0.hi.lt(sqrt_half.hi)  // below sqrt(2): the same mantissa
+    shared f         : F128Extended = low
+        ? f0
+        : f0.ldexp(-1)
+    shared e : S64 = low
+        ? w.exponent
+        : w.exponent.add(1)
+
     block entry()
-        w         : F128Extended = x.to<F128Extended>()
-        f0        : F128Extended = w.ldexp(0.sub(w.exponent))  // in [1, 2)
-        sqrt_half : F128Extended = wide_const(2)
-        low       : Bool         = f0.hi.lt(sqrt_half.hi)  // below sqrt(2): the same mantissa
-        f         : F128Extended = low
-            ? f0
-            : f0.ldexp(-1)
-        e : S64 = low
-            ? w.exponent
-            : w.exponent.add(1)
         u    : F128Extended = f.sub(wide_one())  // exact
         near : Bool         = u.is_zero().bitor(u.exponent.lt(-3))
         branch near
-            ? finish(wide_ln_1p(u), e)
-            : halved(f, e)
+            ? finish(wide_ln_1p(u))
+            : halved()
 
-    block halved(f: F128Extended, e: S64)
+    block halved()
         root : F128Extended = f.sqrt()
-        jump finish(wide_ln_1p(root.sub(wide_one())).ldexp(1), e)
+        jump finish(wide_ln_1p(root.sub(wide_one())).ldexp(1))
 
-    block finish(ln_f: F128Extended, e: S64)
+    block finish(ln_f: F128Extended)
         e_ln2 : F128Extended = e.to<F128Extended>().mul(wide_const(0))
         r     : F128Extended = e_ln2.add(ln_f)
         return(r)

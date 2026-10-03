@@ -247,22 +247,23 @@ private routine cm_f16_pow_isodd(u: U32) -> Bool
 // 6, 7} (returns (n << 4) + 2^F for y = n / 2^F), else 0. xu holds the bits
 // of |x|.
 private routine cm_f16_pow_is_exact(xu: U32, yu: U32, y: F16) -> U64
+    shared yexp    : U32 = yu.shr(10).bitand(0x1F)
+    shared yexp_tz : U32 = yexp.add(yu.bitor(0x400).trailing_zeros())
+
     block entry()
-        yexp    : U32  = yu.shr(10).bitand(0x1F)
-        yexp_tz : U32  = yexp.add(yu.bitor(0x400).trailing_zeros())
-        normal  : Bool = xu.bitand(0x3FF).eq(0)
+        normal : Bool = xu.bitand(0x3FF).eq(0)
         branch normal
-            ? normal(yexp_tz)
-            : subnormal(yexp_tz)
+            ? normal()
+            : subnormal()
 
     // x = 2^E with E >= -14
-    block normal(yexp_tz: U32)
+    block normal()
         biased_exponent : U32 = xu.shr(10)
         e               : S32 = biased_exponent.to<S32>().sub(15)
-        jump power_of_two(yexp_tz, e)
+        jump power_of_two(e)
 
     // x = 2^E with E < -14 when x has a single bit set
-    block subnormal(yexp_tz: U32)
+    block subnormal()
         zero_count : U32  = xu.trailing_zeros().add(xu.leading_zeros())
         single     : Bool = zero_count.eq(31)
         branch single
@@ -270,9 +271,9 @@ private routine cm_f16_pow_is_exact(xu: U32, yu: U32, y: F16) -> U64
             : exponent_table()
         low_zeros : S32 = xu.trailing_zeros().to<S32>()
         e         : S32 = low_zeros.sub(24)
-        jump power_of_two(yexp_tz, e)
+        jump power_of_two(e)
 
-    block power_of_two(yexp_tz: U32, e: S32)
+    block power_of_two(e: S32)
         ye_float : F32  = e.to<F32>().mul(y.to<F32>())
         ye       : S32  = ye_float.to<S32>()
         integral : Bool = yexp_tz.add(e.to_wrap<U32>().trailing_zeros()).ge(25)
@@ -349,17 +350,18 @@ private routine cm_f16_pow_log(x: F64) -> F64
 
 // e^x, saturated below at 2^-25 and above at 2^16 (both beyond the F16 range).
 private routine cm_f16_pow_exp(x: F64) -> F64
+    shared u : U64 = x.bits()
+
     block entry()
-        u       : U64  = x.bits()
         special : Bool = u.bitand(0x7FF0000000000000).eq(0x7FF0000000000000)  // NaN or infinity
         when
-            special                    -> special(u)
+            special                    -> special()
             u.gt(0xC031542457337D44)   -> return(0x1p-25)  // x < -0x1.1542457337d44p+4
             x.gt(0x1.62e42fefa39efp+3) -> return(F64.add(0x1.ffcp+15, 0x1p+5))
             else                       -> core()
 
     // the original's -inf test compares against 0xff << 25, which never matches
-    block special(u: U64)
+    block special()
         never : Bool = u.eq(0x1FE000000)
         branch never
             ? return(0.0)

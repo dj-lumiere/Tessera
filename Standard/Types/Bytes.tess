@@ -151,6 +151,8 @@ routine Bytes.slice(self: Self, start: USize, end: USize) -> Self
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 routine Bytes.concat(a: Self, b: Self, alloc: @Allocator) -> Self
+    shared len_a : USize = a.count
+
     block entry()
         la     : USize = a.count
         lb     : USize = b.count
@@ -161,16 +163,15 @@ routine Bytes.concat(a: Self, b: Self, alloc: @Allocator) -> Self
             ? crash_allocation()
             : continue
         src_a : @Byte = a.data
-        len_a : USize = a.count
         copy<Byte>(data, src_a, len_a)
-        jump copy_b(data, len_a)
+        jump copy_b(data)
 
-    block copy_b(data: @Byte, offset: USize)
-        dst   : @Byte = data.stride(offset)
+    block copy_b(data: @Byte)
+        dst   : @Byte = data.stride(len_a)
         src_b : @Byte = b.data
         len_b : USize = b.count
         copy<Byte>(dst, src_b, len_b)
-        count : USize = offset.add(len_b)
+        count : USize = len_a.add(len_b)
         data.stride(count).store(0x00)
         result : Self = Self { data: data, count: count, alloc: alloc }
         return(result)
@@ -181,16 +182,17 @@ routine Bytes.concat(a: Self, b: Self, alloc: @Allocator) -> Self
 /// :param other: The right-hand operand.
 /// :returns: `true` when the contents are identical.
 routine Bytes.eq(self: Self, other: Self) -> Bool
+    shared la : USize = self.count
+
     block entry()
-        la       : USize = self.count
         lb       : USize = other.count
         same_len : Bool  = la.eq(lb)
         branch same_len
-            ? loop(0, la, self.data, other.data)
+            ? loop(0, self.data, other.data)
             : return(false)
 
-    block loop(i: USize, len: USize, pa: @Byte, pb: @Byte)
-        done : Bool = i.ge(len)
+    block loop(i: USize, pa: @Byte, pb: @Byte)
+        done : Bool = i.ge(la)
         branch done
             ? return(true)
             : continue
@@ -198,44 +200,45 @@ routine Bytes.eq(self: Self, other: Self) -> Bool
         bb : U8   = Byte.to<U8>(pb.stride(i).load())
         eq : Bool = ba.eq(bb)
         branch eq
-            ? loop(i.add(1), len, pa, pb)
+            ? loop(i.add(1), pa, pb)
             : return(false)
 
 /// Lexicographic byte-wise compare. Returns -1, 0, 1.
 /// Bytes are compared as U8, so this matches `memcmp` ordering. The allocator plays no part.
 routine Bytes.compare(self: Self, other: Self) -> S32
-    block entry()
-        la        : USize = self.count
-        lb        : USize = other.count
-        a_shorter : Bool  = la.le(lb)
-        min       : USize = a_shorter
-            ? la
-            : lb
-        pa : @Byte = self.data
-        pb : @Byte = other.data
-        jump loop(0, min, la, lb, pa, pb)
+    shared la        : USize = self.count
+    shared lb        : USize = other.count
+    shared a_shorter : Bool  = la.le(lb)
+    shared min       : USize = a_shorter
+        ? la
+        : lb
+    shared pa : @Byte = self.data
+    shared pb : @Byte = other.data
 
-    block loop(i: USize, min: USize, la: USize, lb: USize, pa: @Byte, pb: @Byte)
+    block entry()
+        jump loop(0)
+
+    block loop(i: USize)
         done : Bool = i.ge(min)
         branch done
-            ? counts(la, lb)
-            : step(i, min, la, lb, pa, pb)
+            ? counts()
+            : step(i)
 
-    block step(i: USize, min: USize, la: USize, lb: USize, pa: @Byte, pb: @Byte)
+    block step(i: USize)
         ba : U8   = Byte.to<U8>(pa.stride(i).load())
         bb : U8   = Byte.to<U8>(pb.stride(i).load())
         lt : Bool = ba.lt(bb)
         branch lt
             ? return(-1)
-            : maybe_gt(i, min, la, lb, ba, bb, pa, pb)
+            : maybe_gt(i, ba, bb)
 
-    block maybe_gt(i: USize, min: USize, la: USize, lb: USize, ba: U8, bb: U8, pa: @Byte, pb: @Byte)
+    block maybe_gt(i: USize, ba: U8, bb: U8)
         gt : Bool = ba.gt(bb)
         branch gt
             ? return(1)
-            : loop(i.add(1), min, la, lb, pa, pb)
+            : loop(i.add(1))
 
-    block counts(la: USize, lb: USize)
+    block counts()
         lt : Bool = la.lt(lb)
         branch lt
             ? return(-1)
@@ -259,15 +262,16 @@ routine Bytes.hash(self: Self) -> U64
 /// :param prefix: The bytes to look for at the start.
 /// :returns: `true` when `prefix` matches the first bytes. An empty `prefix` always matches.
 routine Bytes.starts_with(self: Self, prefix: Self) -> Bool
+    shared pl : USize = prefix.count
+
     block entry()
         sl   : USize = self.count
-        pl   : USize = prefix.count
         fits : Bool  = pl.le(sl)
         branch fits
-            ? loop(0, pl, self.data, prefix.data)
+            ? loop(0, self.data, prefix.data)
             : return(false)
 
-    block loop(i: USize, pl: USize, sd: @Byte, pd: @Byte)
+    block loop(i: USize, sd: @Byte, pd: @Byte)
         done : Bool = i.ge(pl)
         branch done
             ? return(true)
@@ -276,22 +280,23 @@ routine Bytes.starts_with(self: Self, prefix: Self) -> Bool
         b  : U8   = Byte.to<U8>(pd.stride(i).load())
         eq : Bool = a.eq(b)
         branch eq
-            ? loop(i.add(1), pl, sd, pd)
+            ? loop(i.add(1), sd, pd)
             : return(false)
 
 /// Whether the text ends with `suffix`.
 /// :param suffix: The bytes to look for at the end.
 /// :returns: `true` when `suffix` matches the last bytes. An empty `suffix` always matches.
 routine Bytes.ends_with(self: Self, suffix: Self) -> Bool
+    shared fl : USize = suffix.count
+
     block entry()
         sl   : USize = self.count
-        fl   : USize = suffix.count
         fits : Bool  = fl.le(sl)
         branch fits
-            ? loop(0, fl, sl.sub(fl), self.data, suffix.data)
+            ? loop(0, sl.sub(fl), self.data, suffix.data)
             : return(false)
 
-    block loop(i: USize, fl: USize, off: USize, sd: @Byte, fd: @Byte)
+    block loop(i: USize, off: USize, sd: @Byte, fd: @Byte)
         done : Bool = i.ge(fl)
         branch done
             ? return(true)
@@ -301,25 +306,26 @@ routine Bytes.ends_with(self: Self, suffix: Self) -> Bool
         b   : U8    = Byte.to<U8>(fd.stride(i).load())
         eq  : Bool  = a.eq(b)
         branch eq
-            ? loop(i.add(1), fl, off, sd, fd)
+            ? loop(i.add(1), off, sd, fd)
             : return(false)
 
 /// Naive O(n*m) substring search. Returns the byte index of the first match,
 /// or Option<USize>.Absent when not found. An empty needle matches at 0.
 routine Bytes.find(self: Self, needle: Self) -> Option<USize>
+    shared nlen : USize = needle.count
+    shared slen : USize = self.count
+
     block entry()
-        nlen         : USize = needle.count
-        slen         : USize = self.count
-        empty_needle : Bool  = nlen.eq(0)
+        empty_needle : Bool = nlen.eq(0)
         branch empty_needle
             ? hit(0)
-            : check_fits(nlen, slen)
+            : check_fits()
 
-    block check_fits(nlen: USize, slen: USize)
+    block check_fits()
         too_big : Bool = nlen.gt(slen)
         branch too_big
             ? miss()
-            : start(nlen, slen)
+            : start()
 
     block miss()
         r : Option<USize> = .Absent
@@ -329,32 +335,32 @@ routine Bytes.find(self: Self, needle: Self) -> Option<USize>
         r : Option<USize> = .Present(i)
         return(r)
 
-    block start(nlen: USize, slen: USize)
+    block start()
         sd   : @Byte = self.data
         nd   : @Byte = needle.data
         last : USize = slen.sub(nlen)
-        jump outer(0, last, nlen, sd, nd)
+        jump outer(0, last, sd, nd)
 
-    block outer(i: USize, last: USize, nlen: USize, sd: @Byte, nd: @Byte)
+    block outer(i: USize, last: USize, sd: @Byte, nd: @Byte)
         past : Bool = i.gt(last)
         branch past
             ? miss()
-            : inner(i, 0, last, nlen, sd, nd)
+            : inner(i, 0, last, sd, nd)
 
-    block inner(i: USize, j: USize, last: USize, nlen: USize, sd: @Byte, nd: @Byte)
+    block inner(i: USize, j: USize, last: USize, sd: @Byte, nd: @Byte)
         done : Bool = j.ge(nlen)
         branch done
             ? hit(i)
-            : check(i, j, last, nlen, sd, nd)
+            : check(i, j, last, sd, nd)
 
-    block check(i: USize, j: USize, last: USize, nlen: USize, sd: @Byte, nd: @Byte)
+    block check(i: USize, j: USize, last: USize, sd: @Byte, nd: @Byte)
         idx : USize = i.add(j)
         a   : U8    = Byte.to<U8>(sd.stride(idx).load())
         b   : U8    = Byte.to<U8>(nd.stride(j).load())
         eq  : Bool  = a.eq(b)
         branch eq
-            ? inner(i, j.add(1), last, nlen, sd, nd)
-            : outer(i.add(1), last, nlen, sd, nd)
+            ? inner(i, j.add(1), last, sd, nd)
+            : outer(i.add(1), last, sd, nd)
 
 /// Whether `needle` occurs anywhere in the text, using {Bytes.find}.
 /// :param needle: The bytes to look for.

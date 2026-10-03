@@ -32,37 +32,38 @@ preset CM_F32_EXP_TB: @Array<U64, 64> <- { 0x3FF0000000000000, 0x3FF02C9A3E77806
 
 /// e^self
 routine F32.exp(self: Self) -> Self
+    shared tu : U32 = self.bits()
+    shared z  : F64 = self.to<F64>()
+    shared a  : F64 = z.mul(0x1.71547652b82fep+0)  // x / ln(2)
+    shared ua : U64 = a.add(0x1.8p+46).bits()  // the low bits of the sum are round(64 a)
+    shared ux : U32 = tu.shl(1)
+
     block entry()
-        tu      : U32  = self.bits()
-        z       : F64  = self.to<F64>()
-        a       : F64  = z.mul(0x1.71547652b82fep+0)  // x / ln(2)
-        ua      : U64  = a.add(0x1.8p+46).bits()  // the low bits of the sum are round(64 a)
-        ux      : U32  = tu.shl(1)
         outside : Bool = ux.gt(0x8562E42E).bitor(ux.lt(0x6F93813E))
         branch outside
-            ? edge(tu, ux, z, a, ua)
-            : fast(z, a, ua)
+            ? edge()
+            : fast()
 
     // |x| > 0x1.62e42ep+6, x is NaN, or |x| < 0x1.93813ep-16
-    block edge(tu: U32, ux: U32, z: F64, a: F64, ua: U64)
+    block edge()
         tiny     : Bool = ux.lt(0x6F93813E)
         special  : Bool = ux.ge(0xFF000000)
         negative : Bool = tu.shr(31).eq(1)
         under    : Bool = tu.gt(0xC2CE8EC0)  // x < -0x1.9d1d8p+6
         when
-            tiny     -> tiny(z)
-            special  -> special(ux, negative)
-            under    -> underflow(z)
-            negative -> fast(z, a, ua)
-            else     -> big(tu, z, a, ua)
+            tiny     -> tiny()
+            special  -> special(negative)
+            under    -> underflow()
+            negative -> fast()
+            else     -> big()
 
-    block tiny(z: F64)
+    block tiny()
         inner : F64 = z.mul(0.5).add(1.0)
         r     : F64 = inner.mul(z).add(1.0)  // 1 + z (1 + z / 2)
         return(r.to<Self>())
 
     // infinities and NaN, which comes back quiet with its sign and payload
-    block special(ux: U32, negative: Bool)
+    block special(negative: Bool)
         nan : Bool = ux.gt(0xFF000000)
         when
             nan      -> return(self.add(self))
@@ -70,20 +71,20 @@ routine F32.exp(self: Self) -> Self
             else     -> return(Self.INFINITY)
 
     // the result underflows to a tiny subnormal or zero
-    block underflow(z: F64)
+    block underflow()
         scaled  : F64 = z.add(0x1.9d1d9fccf477p+6).mul(0x1.71547652b82edp-150)
         y       : F64 = scaled.add(0x1p-149)
         clamped : F64 = y.max(0x1p-151)
         return(clamped.to<Self>())
 
     // positive x near the top of the range: x > 0x1.62e42ep+6 overflows
-    block big(tu: U32, z: F64, a: F64, ua: U64)
+    block big()
         overflow : Bool = tu.gt(0x42B17217)
         branch overflow
             ? return(Self.INFINITY)
-            : fast(z, a, ua)
+            : fast()
 
-    block fast(z: F64, a: F64, ua: U64)
+    block fast()
         ia    : F64  = F64.sub(0x1.8p+46, F64.from_bits(ua))  // -round(64 a) / 64
         h     : F64  = a.add(ia)
         entry : U64  = CM_F32_EXP_TB.getitem(ua.bitand(0x3F).to<USize>())
@@ -98,10 +99,10 @@ routine F32.exp(self: Self) -> Self
         sure  : Bool = ub.eq(lb)
         branch sure
             ? return(ub)
-            : slow(z, ia, sv)
+            : slow(ia, sv)
 
     // The fast path can't decide the rounding: redo it with a longer reduction and polynomial.
-    block slow(z: F64, ia: F64, sv: F64)
+    block slow(ia: F64, sv: F64)
         h_hi : F64 = z.mul(0x1.7154765p+0).add(ia)
         h    : F64 = h_hi.add(z.mul(0x1.5c17f0bbbe88p-31))
         h2   : F64 = h.mul(h)

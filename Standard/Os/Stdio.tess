@@ -98,37 +98,39 @@ private routine InputBuffer.unread(self: @Self) -> Void
 /// Reads more input after what the buffer holds, into its free end: false at the end of the input (or on a failure,
 /// which reads as the end). The buffer must have room after what it holds. The lock is held.
 private routine InputBuffer.fill_more(self: @Self) -> Bool
+    shared end : USize = self.end.load()
+
     block entry()
-        end  : USize                  = self.end.load()
         free : @Byte                  = self.bytes.to<@Byte>().stride(end)
         got  : Result<USize, FsError> = stdin_read(free, IN_BUFFER.sub(end))
         when got
-            .Success(n) -> added(end, n)
+            .Success(n) -> added(n)
             .Failure    -> return(false)
 
-    block added(end: USize, n: USize)
+    block added(n: USize)
         self.end.store(end.add(n))
         return(n.gt(0))
 
 /// Moves the bytes the buffer holds to its front, so the free space after them is as large as it can be. The lock is
 /// held.
 private routine InputBuffer.compact(self: @Self) -> Void
+    shared from     : USize = self.start.load()
+    shared held     : USize = self.end.load().sub(from)
+    shared buffered : @Byte = self.bytes.to<@Byte>()
+
     block entry()
-        from     : USize = self.start.load()
-        held     : USize = self.end.load().sub(from)
-        buffered : @Byte = self.bytes.to<@Byte>()
         self.start.store(0)
         self.end.store(held)
-        jump move(buffered, from, held, 0)
+        jump move(0)
 
     // front to back: each byte goes to a place the loop has already read
-    block move(buffered: @Byte, from: USize, held: USize, i: USize)
+    block move(i: USize)
         branch i.eq(held)
             ? return()
             : continue
         byte : Byte = buffered.stride(from.add(i)).load()
         buffered.stride(i).store(byte)
-        jump move(buffered, from, held, i.add(1))
+        jump move(i.add(1))
 
 /// Skips white space and hands out the next word, Absent at the end of the input. A word that fits in the buffer is a
 /// view of it (moved to the front of the buffer first when it runs past the end of what was read, so it comes out
@@ -136,6 +138,8 @@ private routine InputBuffer.compact(self: @Self) -> Void
 /// DEFAULT_HEAP, and the Bytes carries that allocator. Either way the caller destructs the word when it's done with it
 /// (a no-op for a view). The lock is held.
 private routine InputBuffer.word(self: @Self) -> Option<Bytes>
+    shared text : @CaptureBuffer <- CaptureBuffer.empty()
+
     block entry()
         jump skip()
 
@@ -185,30 +189,29 @@ private routine InputBuffer.word(self: @Self) -> Option<Bytes>
 
     // The whole buffer is one word so far: it goes on in memory from the default heap.
     block spill(length: USize)
-        claim text : @CaptureBuffer <- CaptureBuffer.empty()
         text.append(DEFAULT_HEAP, self.bytes.to<@Byte>(), length)
         self.start.store(length)
-        jump spill_next(text)
+        jump spill_next()
 
-    block spill_next(text: @CaptureBuffer)
+    block spill_next()
         c : Option<Byte> = self.next()
         when c
-            .Present(byte) -> spill_byte(text, byte)
-            .Absent        -> spilled(text)
+            .Present(byte) -> spill_byte(byte)
+            .Absent        -> spilled()
 
-    block spill_byte(text: @CaptureBuffer, byte: Byte)
+    block spill_byte(byte: Byte)
         branch is_space(byte)
-            ? spill_end(text)
+            ? spill_end()
             : continue
         claim single : @Byte <- byte
         text.append(DEFAULT_HEAP, single, 1)
-        jump spill_next(text)
+        jump spill_next()
 
-    block spill_end(text: @CaptureBuffer)
+    block spill_end()
         self.unread()
-        jump spilled(text)
+        jump spilled()
 
-    block spilled(text: @CaptureBuffer)
+    block spilled()
         branch text.failed.load()
             ? crash_allocation()
             : continue
@@ -225,21 +228,22 @@ routine In.reader() -> @Self
 
 /// Reads up to count bytes: what the buffer holds first, else one read from the OS. How many, 0 at the end.
 routine In.read_into_result(buffer: @Byte, count: USize) -> Result<USize, FsError>
+    shared b : @InputBuffer = STDIN_BUFFER
+
     block entry()
-        b : @InputBuffer = STDIN_BUFFER
         b.lock.lock()
         branch b.start.load().lt(b.end.load())
-            ? held(b)
+            ? held()
             : continue
         // Nothing held: a read that wants a bufferful or more goes straight to the caller's buffer.
         branch count.ge(IN_BUFFER)
-            ? direct(b)
+            ? direct()
             : continue
         branch b.fill()
-            ? held(b)
-            : ended(b)
+            ? held()
+            : ended()
 
-    block held(b: @InputBuffer)
+    block held()
         available : USize = b.end.load().sub(b.start.load())
         n         : USize = available.min(count)
         copy<Byte>(buffer, b.bytes.to<@Byte>().stride(b.start.load()), n)
@@ -248,12 +252,12 @@ routine In.read_into_result(buffer: @Byte, count: USize) -> Result<USize, FsErro
         b.lock.unlock()
         return(.Success(n))
 
-    block direct(b: @InputBuffer)
+    block direct()
         got : Result<USize, FsError> = stdin_read(buffer, count)
         b.lock.unlock()
         return(got)
 
-    block ended(b: @InputBuffer)
+    block ended()
         b.lock.unlock()
         return(.Success(0))
 
@@ -267,20 +271,21 @@ routine In.read_into_result(buffer: @Byte, count: USize) -> Result<USize, FsErro
 #track_caller
 routine In.read<T>() -> T
 require T: typename, Parsable<T>
+    shared b : @InputBuffer = STDIN_BUFFER
+
     block entry()
-        b : @InputBuffer = STDIN_BUFFER
         b.lock.lock()
         word : Option<Bytes> = b.word()
         when word
-            .Present(text) -> convert(b, text)
-            .Absent        -> ended(b)
+            .Present(text) -> convert(text)
+            .Absent        -> ended()
 
-    block ended(b: @InputBuffer)
+    block ended()
         b.lock.unlock()
         crash("AbsentValueError", "The input ended before In.read<T>() found a word to read.")
 
     // The word may be a view of the buffer, so it's converted before the lock goes.
-    block convert(b: @InputBuffer, text: Bytes)
+    block convert(text: Bytes)
         claim word : @Bytes <- text
         value : T = text.to<T>()
         word.destruct()
@@ -305,19 +310,20 @@ require T: typename, Parsable<T>
 /// :returns: Success with the value, or Failure with a {ParseError}.
 routine In.read_result<T>() -> Result<T, ParseError>
 require T: typename, Parsable<T>
+    shared b : @InputBuffer = STDIN_BUFFER
+
     block entry()
-        b : @InputBuffer = STDIN_BUFFER
         b.lock.lock()
         word : Option<Bytes> = b.word()
         when word
-            .Present(text) -> convert(b, text)
-            .Absent        -> ended(b)
+            .Present(text) -> convert(text)
+            .Absent        -> ended()
 
-    block ended(b: @InputBuffer)
+    block ended()
         b.lock.unlock()
         return(.Failure(ParseError.Empty))
 
-    block convert(b: @InputBuffer, text: Bytes)
+    block convert(text: Bytes)
         claim word : @Bytes <- text
         converted : Result<T, ParseError> = text.to_result<T>()
         word.destruct()
@@ -331,45 +337,47 @@ routine In.read_bytes_result(self: @Self, buffer: @Byte, count: USize) -> Result
 
 /// Up to count bytes, in memory from alloc: fewer only at the end of the input. Release them with destruct().
 routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
+    shared buffer : @Byte = allocate<Byte>(alloc, count.max(1))
+
     block entry()
-        buffer : @Byte = allocate<Byte>(alloc, count.max(1))
         branch buffer.is_null()
             ? return(Bytes { data: null, count: 0, alloc: alloc })
-            : more(buffer, 0)
+            : more(0)
 
-    block more(buffer: @Byte, n: USize)
+    block more(n: USize)
         branch n.eq(count)
             ? return(Bytes { data: buffer, count: n, alloc: alloc })
             : continue
         got : Result<USize, FsError> = Self.read_into_result(buffer.stride(n), count.sub(n))
         when got
-            .Success(k) -> advance(buffer, n, k)
+            .Success(k) -> advance(n, k)
             .Failure    -> return(Bytes { data: buffer, count: n, alloc: alloc })
 
-    block advance(buffer: @Byte, n: USize, k: USize)
+    block advance(n: USize, k: USize)
         branch k.eq(0)
             ? return(Bytes { data: buffer, count: n, alloc: alloc })
-            : more(buffer, n.add(k))
+            : more(n.add(k))
 
 /// What the rest of the input is, in memory from alloc. Release it with destruct().
 routine In.read_all(alloc: @Allocator) -> Bytes
-    block entry()
-        claim text  : @CaptureBuffer     <- CaptureBuffer.empty()
-        claim chunk : @Array<Byte, 4096> <- uninit
-        jump more(text, chunk.to<@Byte>())
+    shared text : @CaptureBuffer <- CaptureBuffer.empty()
 
-    block more(text: @CaptureBuffer, chunk: @Byte)
+    block entry()
+        claim chunk : @Array<Byte, 4096> <- uninit
+        jump more(chunk.to<@Byte>())
+
+    block more(chunk: @Byte)
         got : Result<USize, FsError> = Self.read_into_result(chunk, 4096)
         when got
-            .Success(n) -> add(text, chunk, n)
+            .Success(n) -> add(chunk, n)
             .Failure    -> return(text.load().owned(alloc))
 
-    block add(text: @CaptureBuffer, chunk: @Byte, n: USize)
+    block add(chunk: @Byte, n: USize)
         branch n.eq(0)
             ? return(text.load().owned(alloc))
             : continue
         text.append(alloc, chunk, n)
-        jump more(text, chunk)
+        jump more(chunk)
 
 /// The next line, without its "\n" (or "\r\n"), in memory from alloc. A last line with no "\n" still counts, and a
 /// blank line is "". Release it with destruct().
@@ -386,33 +394,34 @@ routine In.read_line(alloc: @Allocator) -> Bytes
 /// The next line, without its "\n" (or "\r\n"), in memory from alloc, or Absent at the end of the input. A last line
 /// with no "\n" still counts, and a blank line is "". Release it with destruct().
 routine In.read_line_checked(alloc: @Allocator) -> Option<Bytes>
-    block entry()
-        b : @InputBuffer = STDIN_BUFFER
-        b.lock.lock()
-        claim text : @CaptureBuffer <- CaptureBuffer.empty()
-        jump next(b, text, false)
+    shared b    : @InputBuffer   = STDIN_BUFFER
+    shared text : @CaptureBuffer <- CaptureBuffer.empty()
 
-    block next(b: @InputBuffer, text: @CaptureBuffer, any: Bool)
+    block entry()
+        b.lock.lock()
+        jump next(false)
+
+    block next(any: Bool)
         c : Option<Byte> = b.next()
         when c
-            .Present(byte) -> one(b, text, byte)
-            .Absent        -> ended(b, text, any)
+            .Present(byte) -> one(byte)
+            .Absent        -> ended(any)
 
-    block one(b: @InputBuffer, text: @CaptureBuffer, byte: Byte)
+    block one(byte: Byte)
         branch byte.eq(b'\n')
-            ? done(b, text)
+            ? done()
             : continue
         claim single : @Byte <- byte
         text.append(alloc, single, 1)
-        jump next(b, text, true)
+        jump next(true)
 
-    block ended(b: @InputBuffer, text: @CaptureBuffer, any: Bool)
+    block ended(any: Bool)
         b.lock.unlock()
         branch any
             ? return(.Present(trim_cr(text.load().owned(alloc))))
             : return(.Absent)
 
-    block done(b: @InputBuffer, text: @CaptureBuffer)
+    block done()
         b.lock.unlock()
         return(.Present(trim_cr(text.load().owned(alloc))))
 
@@ -449,49 +458,51 @@ routine In.read_word(alloc: @Allocator) -> Bytes
 /// The next word (spaces, tabs, and line ends separate words), in memory from alloc, or Absent at the end of the
 /// input. The space after the word stays in the input. Release it with destruct().
 routine In.read_word_checked(alloc: @Allocator) -> Option<Bytes>
-    block entry()
-        b : @InputBuffer = STDIN_BUFFER
-        b.lock.lock()
-        jump skip(b)
+    shared b      : @InputBuffer   = STDIN_BUFFER
+    shared text   : @CaptureBuffer <- CaptureBuffer.empty()
+    shared single : @Byte          <- uninit
 
-    block skip(b: @InputBuffer)
+    block entry()
+        b.lock.lock()
+        jump skip()
+
+    block skip()
         c : Option<Byte> = b.next()
         when c
-            .Present(byte) -> first(b, byte)
-            .Absent        -> nothing(b)
+            .Present(byte) -> first(byte)
+            .Absent        -> nothing()
 
-    block nothing(b: @InputBuffer)
+    block nothing()
         b.lock.unlock()
         return(.Absent)
 
-    block first(b: @InputBuffer, byte: Byte)
+    block first(byte: Byte)
         branch is_space(byte)
-            ? skip(b)
-            : continue
-        claim text   : @CaptureBuffer <- CaptureBuffer.empty()
-        claim single : @Byte          <- byte
-        text.append(alloc, single, 1)
-        jump next(b, text, single)
-
-    block next(b: @InputBuffer, text: @CaptureBuffer, single: @Byte)
-        c : Option<Byte> = b.next()
-        when c
-            .Present(byte) -> one(b, text, single, byte)
-            .Absent        -> done(b, text)
-
-    block one(b: @InputBuffer, text: @CaptureBuffer, single: @Byte, byte: Byte)
-        branch is_space(byte)
-            ? put_back(b, text)
+            ? skip()
             : continue
         single.store(byte)
         text.append(alloc, single, 1)
-        jump next(b, text, single)
+        jump next()
 
-    block put_back(b: @InputBuffer, text: @CaptureBuffer)
+    block next()
+        c : Option<Byte> = b.next()
+        when c
+            .Present(byte) -> one(byte)
+            .Absent        -> done()
+
+    block one(byte: Byte)
+        branch is_space(byte)
+            ? put_back()
+            : continue
+        single.store(byte)
+        text.append(alloc, single, 1)
+        jump next()
+
+    block put_back()
         b.unread()
-        jump done(b, text)
+        jump done()
 
-    block done(b: @InputBuffer, text: @CaptureBuffer)
+    block done()
         b.lock.unlock()
         return(.Present(text.load().owned(alloc)))
 
@@ -781,18 +792,19 @@ internal routine stream_write(stream: StdStream, data: @Byte, count: USize) -> B
 /// :returns: `true` when every byte was written, `false` on the first failure.
 #target(os: "windows")
 private routine file_write(h: Addr, data: @Byte, count: USize) -> Bool
-    block entry()
-        claim wrote : @U32 <- 0
-        jump write(data, count, wrote)
+    shared wrote : @U32 <- 0
 
-    block write(at: @Byte, remaining: USize, wrote: @U32)
+    block entry()
+        jump write(data, count)
+
+    block write(at: @Byte, remaining: USize)
         branch remaining.eq(0)
             ? return(true)
             : continue
         ok : CInt  = c_write_file(h, at, remaining.min(1073741824).to<U32>(), wrote, null)
         n  : USize = wrote.load().to<USize>()
         branch ok.ne(0).bitand(n.gt(0))
-            ? write(at.stride(n), remaining.sub(n), wrote)
+            ? write(at.stride(n), remaining.sub(n))
             : return(false)
 
 /// How many bytes a UTF-8 sequence starting with b has (1 for a byte that can't start one).
@@ -842,31 +854,32 @@ private routine pending_of(stream: StdStream) -> @PendingUtf8
 /// write leaves open.
 #target(os: "windows")
 private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: USize) -> Bool
+    shared pending : @PendingUtf8 = pending_of(stream)
+    shared held    : USize        = pending.count.load()
+
     block entry()
-        pending : @PendingUtf8 = pending_of(stream)
-        held    : USize        = pending.count.load()
         branch held.eq(0)
-            ? body(pending, data, count)
-            : finish_held(pending, held)
+            ? body(data, count)
+            : finish_held()
 
     // The bytes the held sequence still needs come first.
-    block finish_held(pending: @PendingUtf8, held: USize)
+    block finish_held()
         need  : USize = sequence_length(pending.bytes.getitem(0)).sub(held)
         taken : USize = need.min(count)
         copy<Byte>(pending.bytes.to<@Byte>().stride(held), data, taken)
         branch taken.lt(need)
-            ? still_open(pending, held.add(taken))
+            ? still_open(held.add(taken))
             : continue
         pending.count.store(0)
         branch console_text(h, pending.bytes.to<@Byte>(), held.add(taken))
-            ? body(pending, data.stride(taken), count.sub(taken))
+            ? body(data.stride(taken), count.sub(taken))
             : return(false)
 
-    block still_open(pending: @PendingUtf8, now_held: USize)
+    block still_open(now_held: USize)
         pending.count.store(now_held)
         return(true)
 
-    block body(pending: @PendingUtf8, at: @Byte, n: USize)
+    block body(at: @Byte, n: USize)
         cut : USize = complete_end(at, n)
         copy<Byte>(pending.bytes.to<@Byte>(), at.stride(cut), n.sub(cut))
         pending.count.store(n.sub(cut))
@@ -875,42 +888,43 @@ private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: US
 /// Writes complete UTF-8 text to a console, a bufferful of UTF-16 at a time.
 #target(os: "windows")
 private routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
-    block entry()
-        claim units   : @Array<U16, 2048> <- uninit
-        claim written : @U32              <- 0
-        claim iter    : @BytesCharsIter   <- Bytes.from_ptr(data, count).chars()
-        jump fill(units.to<@U16>(), written, iter, 0)
+    shared written : @U32            <- 0
+    shared iter    : @BytesCharsIter <- Bytes.from_ptr(data, count).chars()
 
-    block fill(units: @U16, written: @U32, iter: @BytesCharsIter, n: USize)
+    block entry()
+        claim units : @Array<U16, 2048> <- uninit
+        jump fill(units.to<@U16>(), 0)
+
+    block fill(units: @U16, n: USize)
         branch n.ge(2046)
-            ? flush(units, written, iter, n)
+            ? flush(units, n)
             : continue
         c : Option<Char> = iter.next()
         when c
-            .Present(char) -> put(units, written, iter, n, char.to<U32>())
-            .Absent        -> last(units, written, n)
+            .Present(char) -> put(units, n, char.to<U32>())
+            .Absent        -> last(units, n)
 
-    block put(units: @U16, written: @U32, iter: @BytesCharsIter, n: USize, cp: U32)
+    block put(units: @U16, n: USize, cp: U32)
         branch cp.lt(0x10000)
-            ? single(units, written, iter, n, cp)
+            ? single(units, n, cp)
             : continue
         v              : U32 = cp.sub(0x10000)
         high_surrogate : U32 = v.shr(10).add(0xD800)
         units.stride(n).store(high_surrogate.to<U16>())
         low_surrogate : U32 = v.bitand(0x3FF).add(0xDC00)
         units.stride(n.add(1)).store(low_surrogate.to<U16>())
-        jump fill(units, written, iter, n.add(2))
+        jump fill(units, n.add(2))
 
-    block single(units: @U16, written: @U32, iter: @BytesCharsIter, n: USize, cp: U32)
+    block single(units: @U16, n: USize, cp: U32)
         units.stride(n).store(cp.to<U16>())
-        jump fill(units, written, iter, n.add(1))
+        jump fill(units, n.add(1))
 
-    block flush(units: @U16, written: @U32, iter: @BytesCharsIter, n: USize)
+    block flush(units: @U16, n: USize)
         branch write_units(h, units, n, written)
-            ? fill(units, written, iter, 0)
+            ? fill(units, 0)
             : return(false)
 
-    block last(units: @U16, written: @U32, n: USize)
+    block last(units: @U16, n: USize)
         return(write_units(h, units, n, written))
 
 /// Writes n UTF-16 units to a console, however many calls that takes.
@@ -949,10 +963,11 @@ internal routine stdin_read(buffer: @Byte, count: USize) -> Result<USize, FsErro
 /// Hands out UTF-8 from CONSOLE_INPUT, reading the console (as UTF-16) when it is empty.
 #target(os: "windows")
 private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result<USize, FsError>
+    shared input : @ConsoleReadBuffer = CONSOLE_INPUT
+
     block entry()
-        input : @ConsoleReadBuffer = CONSOLE_INPUT
         branch input.start.load().lt(input.end.load())
-            ? hand_out(input)
+            ? hand_out()
             : continue
         claim units : @Array<U16, 4096> <- uninit
         claim got   : @U32              <- 0
@@ -966,10 +981,10 @@ private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result<USi
         // Ctrl+Z first: the end of the input
         branch units.getitem(0).eq(0x1A)
             ? return(.Success(0))
-            : convert(input, units.to<@U16>(), n)
+            : convert(units.to<@U16>(), n)
 
     // A high surrogate at the end waits for its low half. One held from the last read goes in front.
-    block convert(input: @ConsoleReadBuffer, units: @U16, n: USize)
+    block convert(units: @U16, n: USize)
         claim joined : @Array<U16, 4097> <- uninit
         high : U16   = input.high.load()
         lead : USize = high.eq(0)
@@ -981,19 +996,19 @@ private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result<USi
         joined_units : @U16  = joined.to<@U16>()
         last         : U16   = joined_units.stride(total.sub(1)).load()
         branch last.between(0xD800, 0xDBFF)
-            ? hold(input, joined.to<@U16>(), total.sub(1), last)
-            : hold(input, joined.to<@U16>(), total, 0)
+            ? hold(joined.to<@U16>(), total.sub(1), last)
+            : hold(joined.to<@U16>(), total, 0)
 
-    block hold(input: @ConsoleReadBuffer, joined: @U16, units: USize, high: U16)
+    block hold(joined: @U16, units: USize, high: U16)
         input.high.store(high)
         made : USize = narrow(joined, units, input.bytes.to<@Byte>())
         input.start.store(0)
         input.end.store(made)
         branch made.eq(0)
             ? return(console_read(h, buffer, count))
-            : hand_out(input)
+            : hand_out()
 
-    block hand_out(input: @ConsoleReadBuffer)
+    block hand_out()
         start     : USize = input.start.load()
         available : USize = input.end.load().sub(start)
         n         : USize = available.min(count)

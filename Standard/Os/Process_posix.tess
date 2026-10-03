@@ -569,18 +569,22 @@ private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 #target(os: ("linux", "macos"))
 routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
+    shared p      : @Prepared      <- uninit
+    shared pipes  : @Plumbing      <- uninit
+    shared report : @CInt          <- 0
+    shared out    : @CaptureBuffer <- CaptureBuffer.empty()
+    shared err    : @CaptureBuffer <- CaptureBuffer.empty()
+
     block entry()
         branch has_nul(program, args, arg_count, options)
             ? return(.Failure(ProcessError.InvalidArgument))
             : continue
-        claim p : @Prepared <- uninit
         branch prepare(p, program, args, arg_count, options, alloc)
             ? continue
-            : out_of_memory(p)
-        claim pipes : @Plumbing <- uninit
+            : out_of_memory()
         branch pipes.make(options)
             ? continue
-            : spawn_failed(p, pipes)
+            : spawn_failed()
         null_fd : CInt = pipes.devnull.load()
         input   : CInt = options.stdin.eq(InputMode.Null)
             ? null_fd
@@ -594,7 +598,7 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
             ? child(p, streams)
             : continue
         branch pid.lt(0)
-            ? spawn_failed(p, pipes)
+            ? spawn_failed()
             : continue
         // The child's ends close here, so each pipe ends when the child is done with it.
         close_if_open(pipes.out_w.load())
@@ -605,46 +609,43 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
         pipes.err_w.store(-1)
         pipes.exec_w.store(-1)
         pipes.devnull.store(-1)
-        claim report : @CInt <- 0
-        jump started(p, pipes, pid, report)
+        jump started(pid)
 
-    block out_of_memory(p: @Prepared)
+    block out_of_memory()
         p.release(alloc)
         return(.Failure(ProcessError.OutOfMemory))
 
-    block spawn_failed(p: @Prepared, pipes: @Plumbing)
+    block spawn_failed()
         e : CInt = errno()
         pipes.close_all()
         p.release(alloc)
         return(.Failure(spawn_error(e)))
 
     // 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started program.
-    block started(p: @Prepared, pipes: @Plumbing, pid: CInt, report: @CInt)
+    block started(pid: CInt)
         got : SSize = c_read(pipes.exec_r.load(), report.to<@Byte>(), 4)
         branch got.lt(0).bitand(errno().eq(4))
-            ? started(p, pipes, pid, report)
+            ? started(pid)
             : continue
         c_close(pipes.exec_r.load())
         pipes.exec_r.store(-1)
         p.release(alloc)
-        claim out : @CaptureBuffer <- CaptureBuffer.empty()
-        claim err : @CaptureBuffer <- CaptureBuffer.empty()
         drain(pipes.out_r.load(), pipes.err_r.load(), out, err, alloc)
         status : Option<ExitStatus> = reap(pid)
         branch got.eq(4)
-            ? exec_failed(out, err, report.load())
+            ? exec_failed(report.load())
             : continue
         when status
             .Present(s) -> return(.Success(ProcessOutput { status: s,
                 stdout: out.load().owned(alloc), stderr: err.load().owned(alloc) }))
-            .Absent     -> lost(out, err)
+            .Absent     -> lost()
 
-    block exec_failed(out: @CaptureBuffer, err: @CaptureBuffer, e: CInt)
+    block exec_failed(e: CInt)
         release(out.load(), alloc)
         release(err.load(), alloc)
         return(.Failure(spawn_error(e)))
 
-    block lost(out: @CaptureBuffer, err: @CaptureBuffer)
+    block lost()
         release(out.load(), alloc)
         release(err.load(), alloc)
         return(.Failure(ProcessError.Other))
@@ -724,14 +725,15 @@ private routine drain(out_fd: CInt, err_fd: CInt, out: @CaptureBuffer, err: @Cap
 /// Waits for the child: how it ended, or Absent if waitpid failed.
 #target(os: ("linux", "macos"))
 private routine reap(pid: CInt) -> Option<ExitStatus>
-    block entry()
-        claim status : @CInt <- 0
-        jump wait(status)
+    shared status : @CInt <- 0
 
-    block wait(status: @CInt)
+    block entry()
+        jump wait()
+
+    block wait()
         rc : CInt = c_waitpid(pid, status, 0)
         branch rc.lt(0).bitand(errno().eq(4))
-            ? wait(status)
+            ? wait()
             : continue
         branch rc.lt(0)
             ? return(.Absent)

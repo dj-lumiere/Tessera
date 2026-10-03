@@ -54,19 +54,21 @@ routine size_of(f: File) -> U64
             .Failure       -> return(U64.MAX)
 
 routine main() -> S32
+    shared alloc : @Allocator <- make_heap_allocator()
+    shared tmp   : Directory  = Directory.temp_result(alloc).unwrap()
+    shared root  : Directory  = tmp.subdir("tessera_fs_basic", alloc)
+    shared iter  : @DirIter   <- uninit
+
     block entry()
-        claim alloc : @Allocator <- make_heap_allocator()
-        tmp  : Directory = Directory.temp_result(alloc).unwrap()
-        root : Directory = tmp.subdir("tessera_fs_basic", alloc)
         root.delete_all_result(alloc)
         deep : Directory = root.subdir("a/b/c", alloc)
         report("create_all", deep.create_all_result())
         report("create_all again", deep.create_all_result())
         as_file : Bool = File.at(deep.path).is_file()
         Out.write("directory exists: {deep.exists()}, is a file: {as_file}\n")
-        jump files(alloc, tmp, root)
+        jump files()
 
-    block files(alloc: @Allocator, tmp: Directory, root: Directory)
+    block files()
         a     : Directory = root.subdir("a", alloc)
         hello : File      = a.file("hello.txt", alloc)
         report("write_all", hello.write_all_result("hello, 세계\n"))
@@ -88,9 +90,9 @@ routine main() -> S32
         size : U64 = both.size_result().unwrap()
         Out.write("size: {size}\n")
         both.close()
-        jump names(alloc, tmp, root, a, hello)
+        jump names(a, hello)
 
-    block names(alloc: @Allocator, tmp: Directory, root: Directory, a: Directory, hello: File)
+    block names(a: Directory, hello: File)
         copied  : File = a.file("copy.txt", alloc)
         renamed : File = a.file("renamed.txt", alloc)
         bytes   : U64  = hello.copy_to_result(copied).unwrap()
@@ -111,33 +113,29 @@ routine main() -> S32
         touched : File = a.file("파일.txt", alloc)
         report("touch", touched.touch_result())
         Out.write("touched: {touched.is_file()}, size {size_of(touched)}\n")
-        jump listing(alloc, tmp, root, a, hello)
+        jump listing(a, hello)
 
-    block listing(alloc: @Allocator, tmp: Directory, root: Directory, a: Directory, hello: File)
-        claim iter : @DirIter <- uninit
+    block listing(a: Directory, hello: File)
         report("open listing", iter.open_result(a))
-        jump next(alloc, tmp, root, hello, iter, 0, 0, false)
+        jump next(hello, 0, 0, false)
 
-    block next(alloc: @Allocator, tmp: Directory, root: Directory, hello: File, iter: @DirIter,
-        count: U64, dirs: U64, korean: Bool)
+    block next(hello: File, count: U64, dirs: U64, korean: Bool)
         e : Option<DirEntry> = iter.next()
         when e
-            .Present(d) -> counted(alloc, tmp, root, hello, iter, count, dirs, korean, d)
-            .Absent     -> listed(alloc, tmp, root, hello, iter, count, dirs, korean)
+            .Present(d) -> counted(hello, count, dirs, korean, d)
+            .Absent     -> listed(hello, count, dirs, korean)
 
-    block counted(alloc: @Allocator, tmp: Directory, root: Directory, hello: File, iter: @DirIter,
-        count: U64, dirs: U64, korean: Bool, d: DirEntry)
+    block counted(hello: File, count: U64, dirs: U64, korean: Bool, d: DirEntry)
         is_d  : Bool = d.kind.eq(FileKind.Directory)
         found : Bool = korean.bitor(d.name.eq("파일.txt"))
-        jump next(alloc, tmp, root, hello, iter, count.add(1), dirs.add(is_d.to<U64>()), found)
+        jump next(hello, count.add(1), dirs.add(is_d.to<U64>()), found)
 
-    block listed(alloc: @Allocator, tmp: Directory, root: Directory, hello: File, iter: @DirIter,
-        count: U64, dirs: U64, korean: Bool)
+    block listed(hello: File, count: U64, dirs: U64, korean: Bool)
         iter.close()
         Out.write("entries: {count}, directories: {dirs}, Korean name listed: {korean}\n")
-        jump paths(alloc, tmp, root, hello)
+        jump paths(hello)
 
-    block paths(alloc: @Allocator, tmp: Directory, root: Directory, hello: File)
+    block paths(hello: File)
         f : File = File.at("/a/b/archive.tar.gz")
         Out.write("name {f.name()}, stem {f.stem()}, extension {f.extension()}, parent {f.parent().path}\n")
         p1 : Bytes = parent_path("a/b")
@@ -159,9 +157,9 @@ routine main() -> S32
         absolute_ok  : Bool      = absolute.name().eq("x.txt")
         Out.write("names right: current {cwd_ok}, canonical {canonical_ok}, absolute {absolute_ok}\n")
         report("set_current back", tmp.set_current_result())
-        jump mapped(alloc, root, hello)
+        jump mapped(hello)
 
-    block mapped(alloc: @Allocator, root: Directory, hello: File)
+    block mapped(hello: File)
         whole : Mapping = hello.map_result(false, 0, USize.MAX).unwrap()
         w     : Bytes   = Bytes.from_ptr(whole.data(), whole.count())
         Out.write("map: {w}\n")

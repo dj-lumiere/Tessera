@@ -290,17 +290,18 @@ routine cm_atan_round_fixed(s: CmAtanU192) -> CmAtanRounded
 /// Rounds a direct (no table angle) fast result f × 2^(-dn-128) to F128 magnitude bits, down to
 /// the subnormal range (atan2's y/x can underflow, but atan's never does).
 routine cm_atan_round_direct(f: U128, dn: S64) -> CmAtanRounded
+    shared w0 : U64 = f.to_wrap<U64>()
+    shared w1 : U64 = f.shr(64).to<U64>()
+
     block entry()
-        w0     : U64  = f.to_wrap<U64>()
-        w1     : U64  = f.shr(64).to<U64>()
         k      : S64  = w1.leading_zeros().to<S64>()
         xn     : S64  = 0x3FFE.sub(dn).sub(k)
         normal : Bool = xn.gt(0)
         branch normal
-            ? normal(w0, w1, k.to<U64>(), xn)
+            ? normal(k.to<U64>(), xn)
             : subnormal()
 
-    block normal(w0: U64, w1: U64, k: U64, xn: S64)
+    block normal(k: U64, xn: S64)
         ones    : U64           = U64.MAX
         mask    : U64           = ones.shr(49.add(k))
         w0_tail : U64           = w0.add_wrap(6).bitand(mask)
@@ -730,11 +731,12 @@ routine cm_atan_accurate_reciprocal(kd0: S64, kd1: U64, kd2: U64, r: @U64) -> Vo
 /// f = the 6-limb fixed-point atan(t × 2^-dn) × 2^dn for the 6-limb t: the odd series in 25
 /// terms, t - t³ Σ c_k t^2k, the working precision widening from 2 to 6 limbs as the terms grow.
 routine cm_atan_accurate_series(t: @U64, dn: S64, f: @U64) -> Void
+    shared t2_buf  : @Array<S64, 8> <- uninit
+    shared tmp_buf : @Array<S64, 8> <- uninit
+    shared t2      : @U64           = t2_buf.to<@U64>()
+    shared tmp     : @U64           = tmp_buf.to<@U64>()
+
     block entry()
-        claim t2_buf  : @Array<S64, 8> <- uninit
-        claim tmp_buf : @Array<S64, 8> <- uninit
-        t2  : @U64 = t2_buf.to<@U64>()
-        tmp : @U64 = tmp_buf.to<@U64>()
         cm_atan_limbs_mul_high(t2, t, t, 6)
         cm_atan_limbs_shr(t2, 6, dn.mul(2).sub(14))
         c0 : U64 = CM_ATAN_CP.getitem(0)
@@ -742,32 +744,32 @@ routine cm_atan_accurate_series(t: @U64, dn: S64, f: @U64) -> Void
         f.zeroinit(8)
         f.stride(0).store(c0)
         f.stride(1).store(c1)
-        jump term(2, 0, 5, t2, tmp)
+        jump term(2, 0, 5)
 
     // left terms remain at the n-limb precision. The coefficient of the last one began at ck
-    block term(n: USize, ck: USize, left: S64, t2: @U64, tmp: @U64)
+    block term(n: USize, ck: USize, left: S64)
         stage_done : Bool = left.eq(0)
         branch stage_done
-            ? widen(n, ck, t2, tmp)
-            : step(n, ck, left, t2, tmp)
+            ? widen(n, ck)
+            : step(n, ck, left)
 
     // f = CP[ck..] - f × t2 (the top n limbs of t2)
-    block step(n: USize, ck: USize, left: S64, t2: @U64, tmp: @U64)
+    block step(n: USize, ck: USize, left: S64)
         next_ck : USize = ck.add(n)
         t2_top  : @U64  = t2.stride(6.sub(n))
         coef    : @U64  = CM_ATAN_CP.to<@U64>().stride(next_ck)
         cm_atan_limbs_mul_high(tmp, f, t2_top, n)
         cm_atan_limbs_sub(f, coef, tmp, n)
-        jump term(n, next_ck, left.sub(1), t2, tmp)
+        jump term(n, next_ck, left.sub(1))
 
     // one more limb on top: CP holds it right after the last coefficient used
-    block widen(n: USize, ck: USize, t2: @U64, tmp: @U64)
+    block widen(n: USize, ck: USize)
         full : Bool = n.eq(6)
         branch full
-            ? finish(t2, tmp)
-            : grow(n, ck, t2, tmp)
+            ? finish()
+            : grow(n, ck)
 
-    block grow(n: USize, ck: USize, t2: @U64, tmp: @U64)
+    block grow(n: USize, ck: USize)
         top_at : USize = ck.add(n)
         top    : U64   = CM_ATAN_CP.getitem(top_at)
         f.stride(n).store(top)
@@ -776,10 +778,10 @@ routine cm_atan_accurate_series(t: @U64, dn: S64, f: @U64) -> Void
         terms : S64   = last
             ? 4
             : 5
-        jump term(wider, ck, terms, t2, tmp)
+        jump term(wider, ck, terms)
 
     // f = t - t × (f × t2)
-    block finish(t2: @U64, tmp: @U64)
+    block finish()
         cm_atan_limbs_mul_high(tmp, f, t2, 6)
         cm_atan_limbs_mul_high(t2, t, tmp, 6)
         cm_atan_limbs_sub(f, t, t2, 6)
@@ -809,35 +811,36 @@ routine cm_atan_accurate_core(red: CmAtanReduction, f: @U64) -> Void
 /// Rounds the 6-limb angle f × 2^(-dn - 384) to F128 magnitude bits, down to the subnormal range.
 /// No tie can occur, so the bit under the last kept one decides.
 routine cm_atan_round_limbs(f: @U64, dn: S64) -> U128
+    shared f5 : U64  = f.stride(5).load()
+    shared f4 : U64  = f.stride(4).load()
+    shared k  : S64  = f5.leading_zeros().to<S64>()
+    shared v  : U128 = cm_atan_join(f5, f4).shl(k.to<U128>())
+    shared xn : S64  = 0x3FFE.sub(dn).sub(k)
+
     block entry()
-        f5     : U64  = f.stride(5).load()
-        f4     : U64  = f.stride(4).load()
-        k      : S64  = f5.leading_zeros().to<S64>()
-        v      : U128 = cm_atan_join(f5, f4).shl(k.to<U128>())
-        xn     : S64  = 0x3FFE.sub(dn).sub(k)
         normal : Bool = xn.gt(0)
         branch normal
-            ? normal(v, xn)
-            : subnormal(v, 15.sub(xn))
+            ? normal()
+            : subnormal(15.sub(xn))
 
-    block normal(v: U128, xn: S64)
+    block normal()
         rnd       : U128 = v.shr(14).bitand(1)
         unrounded : U128 = v.shr(15).add_wrap(cm_atan_join(xn.shl(48).to_wrap<U64>(), 0))
         bits      : U128 = unrounded.add_wrap(rnd)
         return(bits)
 
-    block subnormal(v: U128, ks: S64)
+    block subnormal(ks: S64)
         inside : Bool = ks.lt(128)
         branch inside
-            ? partial(v, ks.to<S128>())
-            : gone(v, ks)
+            ? partial(ks.to<S128>())
+            : gone(ks)
 
-    block partial(v: U128, ks: S128)
+    block partial(ks: S128)
         rnd  : U128 = v.shr(ks.sub(1).to<U128>()).bitand(1)
         bits : U128 = v.shr(ks.to<U128>()).add_wrap(rnd)
         return(bits)
 
-    block gone(v: U128, ks: S64)
+    block gone(ks: S64)
         at_top : Bool = ks.eq(128)
         rnd    : U128 = at_top
             ? v.shr(127)

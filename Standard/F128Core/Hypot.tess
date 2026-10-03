@@ -171,22 +171,23 @@ routine cm_hypot_class(x: U128) -> S64
 /// Rounds v (leading bit at 127, sticky information in its low bits) times 2^(exponent - 16383) to
 /// the nearest F128, ties to even: a normal result, +inf on overflow, or a subnormal.
 routine cm_hypot_round(v: U128, exponent: S64) -> F128
+    shared e : S64 = exponent.sub(1)
+
     block entry()
-        e      : S64  = exponent.sub(1)
         normal : Bool = e.gt(0)
         branch normal
-            ? normal(e)
-            : subnormal(e)
+            ? normal()
+            : subnormal()
 
-    block normal(e: S64)
+    block normal()
         overflow : Bool = e.ge(32766)
         infinity : F128 = F128.INFINITY
         branch overflow
             ? return(infinity)
-            : pack(e)
+            : pack()
 
     // The leading bit lands on bit 112 and adds 1 to the exponent field e.
-    block pack(e: S64)
+    block pack()
         rest     : U128 = v.bitand(0x7FFF)
         tie      : Bool = rest.eq(0x4000)
         up       : U128 = rest.shr(14)
@@ -201,7 +202,7 @@ routine cm_hypot_round(v: U128, exponent: S64) -> F128
         return(r)
 
     // e <= 0: shift out 15 - e bits (at most 127) and round them.
-    block subnormal(e: S64)
+    block subnormal()
         one      : U128 = 1
         shift    : S128 = 15.sub(e).to<S128>()
         half     : U128 = one.shl(14.sub(e).to<U128>())
@@ -220,17 +221,18 @@ routine cm_hypot_round(v: U128, exponent: S64) -> F128
 /// at 127, b not yet aligned) and c the candidate root, all shifted down 13 bits. The sum is
 /// exact apart from a sticky bit for b's shifted-out part.
 routine cm_hypot_excess(c: U128, a_top: U128, b_top: U128, gap: S64) -> S128
+    shared c_sq : U128          = c.mul_wrap(c)
+    shared a_sq : CmHypotSquare = cm_hypot_sqr(a_top.shr(13))
+
     block entry()
-        c_sq    : U128          = c.mul_wrap(c)
-        a_sq    : CmHypotSquare = cm_hypot_sqr(a_top.shr(13))
         b_sq    : CmHypotSquare = cm_hypot_sqr(b_top.shr(13))
         aligned : Bool          = gap.eq(0)
         branch aligned
-            ? add(c_sq, a_sq, b_sq)
-            : align(c_sq, a_sq, b_sq)
+            ? add(b_sq)
+            : align(b_sq)
 
     // b² × 2^(-2 gap), with the bits shifted out kept as a sticky bit.
-    block align(c_sq: U128, a_sq: CmHypotSquare, b_sq: CmHypotSquare)
+    block align(b_sq: CmHypotSquare)
         k       : S128          = gap.mul(2).to<S128>()
         kc      : S128          = 128.sub(k)
         b_hi    : U128          = b_sq.hi
@@ -240,9 +242,9 @@ routine cm_hypot_excess(c: U128, a_top: U128, b_top: U128, gap: S64) -> S128
         aligned : U128          = b_lo.shr(k.to<U128>()).bitor(b_hi.shl(kc.to<U128>()))
         low     : U128          = aligned.bitor(sticky)
         shifted : CmHypotSquare = CmHypotSquare { hi: b_hi.shr(k.to<U128>()), lo: low }
-        jump add(c_sq, a_sq, shifted)
+        jump add(shifted)
 
-    block add(c_sq: U128, a_sq: CmHypotSquare, b_sq: CmHypotSquare)
+    block add(b_sq: CmHypotSquare)
         b_lo  : U128 = b_sq.lo
         lo    : U128 = a_sq.lo.add_wrap(b_lo)
         carry : U128 = lo.lt(b_lo).to<U128>()

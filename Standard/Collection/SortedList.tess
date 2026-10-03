@@ -87,14 +87,15 @@ require T: typename
 /// A new empty node, or null when the allocator fails.
 routine SortedListNode<T>.construct(leaf: Bool, alloc: @Allocator) -> @Self
 require T: typename
+    shared node : @Self = allocate<Self>(alloc, 1)
+
     block entry()
-        node   : @Self = allocate<Self>(alloc, 1)
-        failed : Bool  = node.is_null()
+        failed : Bool = node.is_null()
         branch failed
             ? return(node)
-            : init(node)
+            : init()
 
-    block init(node: @Self)
+    block init()
         node.leaf.store(leaf)
         node.count.store(0)
         node.subtree_count.store(0)
@@ -117,30 +118,31 @@ require T: typename
 /// Recomputes this node's subtree count from its own values or from its children's counts. Call it after the node's contents change.
 routine SortedListNode<T>.recount(self: @Self) -> Void
 require T: typename
-    block entry()
-        leaf  : Bool  = self.leaf.load()
-        count : USize = self.count.load()
-        branch leaf
-            ? leaf_count(count)
-            : internal_count(count)
+    shared leaf  : Bool  = self.leaf.load()
+    shared count : USize = self.count.load()
 
-    block leaf_count(count: USize)
+    block entry()
+        branch leaf
+            ? leaf_count()
+            : internal_count()
+
+    block leaf_count()
         self.subtree_count.store(count)
         return()
 
-    block internal_count(count: USize)
-        jump loop(0, 0, count)
+    block internal_count()
+        jump loop(0, 0)
 
-    block loop(i: USize, sum: USize, count: USize)
+    block loop(i: USize, sum: USize)
         done : Bool = i.ge(count)
         branch done
             ? finish(sum)
-            : add_child(i, sum, count)
+            : add_child(i, sum)
 
-    block add_child(i: USize, sum: USize, count: USize)
+    block add_child(i: USize, sum: USize)
         child       : @Self = self.children.getitem(i)
         child_count : USize = child.subtree_count()
-        jump loop(i.add(1), sum.add(child_count), count)
+        jump loop(i.add(1), sum.add(child_count))
 
     block finish(sum: USize)
         self.subtree_count.store(sum)
@@ -160,6 +162,9 @@ require T: typename, Equatable<T>
 /// eq, through pointers to the two SortedLists.
 private routine SortedList<T>.eq_at(self: @Self, other: @Self) -> Bool
 require T: typename, Equatable<T>
+    shared a : @SortedListIter<T> <- uninit
+    shared b : @SortedListIter<T> <- uninit
+
     block entry()
         la       : USize = self.count.load()
         lb       : USize = other.count.load()
@@ -169,22 +174,22 @@ require T: typename, Equatable<T>
             : return(false)
         a_val : SortedListIter<T> = .construct(self)
         b_val : SortedListIter<T> = .construct(other)
-        claim a : @SortedListIter<T> <- a_val
-        claim b : @SortedListIter<T> <- b_val
-        jump loop(a, b)
+        a.store(a_val)
+        b.store(b_val)
+        jump loop()
 
     // both have the same count, so both run out together
-    block loop(a: @SortedListIter<T>, b: @SortedListIter<T>)
+    block loop()
         x : Option<T> = a.next()
         y : Option<T> = b.next()
         when x
-            .Present(x_item) -> compare(a, b, x_item, y.unwrap())
+            .Present(x_item) -> compare(x_item, y.unwrap())
             .Absent          -> return(true)
 
-    block compare(a: @SortedListIter<T>, b: @SortedListIter<T>, x: T, y: T)
+    block compare(x: T, y: T)
         eq : Bool = x.eq(y)
         branch eq
-            ? loop(a, b)
+            ? loop()
             : return(false)
 
 /// Reads the element at position `order` in sorted order, where `0` is the smallest.
@@ -309,15 +314,16 @@ require T: typename, Comparable<T>
 /// :returns: `true` when an equal element is present.
 routine SortedList<T>.contains(self: Self, value: T) -> Bool
 require T: typename, Comparable<T>
+    shared rank : USize = self.rank(value)
+
     block entry()
-        rank   : USize = self.rank(value)
         count  : USize = self.count
         inside : Bool  = rank.lt(count)
         branch inside
-            ? check(rank)
+            ? check()
             : return(false)
 
-    block check(rank: USize)
+    block check()
         at   : T    = self.getitem(rank)
         same : Bool = at.compare(value).eq(0)
         return(same)
@@ -359,11 +365,12 @@ require T: typename, Comparable<T>
 /// allocator fails, before anything has moved.
 routine SortedListNode<T>.split_child(self: @Self, index: USize, alloc: @Allocator) -> Bool
 require T: typename
+    shared left  : @Self = self.children.getitem(index)
+    shared leaf  : Bool  = left.leaf.load()
+    shared right : @Self = Self.construct(leaf, alloc)
+
     block entry()
-        left     : @Self = self.children.getitem(index)
-        leaf     : Bool  = left.leaf.load()
-        right    : @Self = Self.construct(leaf, alloc)
-        no_right : Bool  = right.is_null()
+        no_right : Bool = right.is_null()
         branch no_right
             ? return(false)
             : continue
@@ -371,45 +378,45 @@ require T: typename
         mid         : USize = count.div(2)
         right_count : USize = count.sub(mid)
         branch leaf
-            ? copy_values(left, right, mid, right_count)
-            : copy_children(left, right, mid, right_count)
+            ? copy_values(mid, right_count)
+            : copy_children(mid, right_count)
 
-    block copy_values(left: @Self, right: @Self, mid: USize, right_count: USize)
+    block copy_values(mid: USize, right_count: USize)
         right.values.copy(0, left.values, mid, right_count)
-        jump promote(left, right, mid, right_count)
+        jump promote(mid, right_count)
 
-    block copy_children(left: @Self, right: @Self, mid: USize, right_count: USize)
-        jump child_loop(0, left, right, mid, right_count)
+    block copy_children(mid: USize, right_count: USize)
+        jump child_loop(0, mid, right_count)
 
-    block child_loop(i: USize, left: @Self, right: @Self, mid: USize, right_count: USize)
+    block child_loop(i: USize, mid: USize, right_count: USize)
         done : Bool = i.ge(right_count)
         branch done
-            ? promote(left, right, mid, right_count)
-            : child_copy(i, left, right, mid, right_count)
+            ? promote(mid, right_count)
+            : child_copy(i, mid, right_count)
 
-    block child_copy(i: USize, left: @Self, right: @Self, mid: USize, right_count: USize)
+    block child_copy(i: USize, mid: USize, right_count: USize)
         src   : USize = mid.add(i)
         child : @Self = left.children.getitem(src)
         right.children.setitem(i, child)
-        jump child_loop(i.add(1), left, right, mid, right_count)
+        jump child_loop(i.add(1), mid, right_count)
 
-    block promote(left: @Self, right: @Self, mid: USize, right_count: USize)
+    block promote(mid: USize, right_count: USize)
         parent_count : USize = self.count.load()
-        jump shift_children(parent_count, left, right, mid, right_count)
+        jump shift_children(parent_count, mid, right_count)
 
-    block shift_children(i: USize, left: @Self, right: @Self, mid: USize, right_count: USize)
+    block shift_children(i: USize, mid: USize, right_count: USize)
         stop : USize = index.add(1)
         done : Bool  = i.lt(stop)
         branch done
-            ? install(left, right, mid, right_count)
-            : move_child(i, left, right, mid, right_count)
+            ? install(mid, right_count)
+            : move_child(i, mid, right_count)
 
-    block move_child(i: USize, left: @Self, right: @Self, mid: USize, right_count: USize)
+    block move_child(i: USize, mid: USize, right_count: USize)
         child : @Self = self.children.getitem(i)
         self.children.setitem(i.add(1), child)
-        jump shift_children(i.sub(1), left, right, mid, right_count)
+        jump shift_children(i.sub(1), mid, right_count)
 
-    block install(left: @Self, right: @Self, mid: USize, right_count: USize)
+    block install(mid: USize, right_count: USize)
         self.children.setitem(index.add(1), right)
         left.count.store(mid)
         right.count.store(right_count)
@@ -601,29 +608,30 @@ require T: typename
 /// :param i: The index of the child that is short.
 routine SortedListNode<T>.borrow_from_left(self: @Self, i: USize) -> Void
 require T: typename
-    block entry()
-        left        : @Self = self.children.getitem(i.sub(1))
-        child       : @Self = self.children.getitem(i)
-        left_count  : USize = left.count.load()
-        child_count : USize = child.count.load()
-        leaf        : Bool  = child.leaf.load()
-        branch leaf
-            ? leaf_borrow(left, child, left_count, child_count)
-            : internal_borrow(left, child, left_count, child_count)
+    shared left        : @Self = self.children.getitem(i.sub(1))
+    shared child       : @Self = self.children.getitem(i)
+    shared left_count  : USize = left.count.load()
+    shared child_count : USize = child.count.load()
 
-    block leaf_borrow(left: @Self, child: @Self, left_count: USize, child_count: USize)
+    block entry()
+        leaf : Bool = child.leaf.load()
+        branch leaf
+            ? leaf_borrow()
+            : internal_borrow()
+
+    block leaf_borrow()
         child.values.shift_right(0, child_count)
         v : T = left.values.getitem(left_count.sub(1))
         child.values.setitem(0, v)
-        jump finalize(left, child, left_count, child_count)
+        jump finalize()
 
-    block internal_borrow(left: @Self, child: @Self, left_count: USize, child_count: USize)
+    block internal_borrow()
         child.children.shift_right(0, child_count)
         moved : @Self = left.children.getitem(left_count.sub(1))
         child.children.setitem(0, moved)
-        jump finalize(left, child, left_count, child_count)
+        jump finalize()
 
-    block finalize(left: @Self, child: @Self, left_count: USize, child_count: USize)
+    block finalize()
         left.count.store(left_count.sub(1))
         child.count.store(child_count.add(1))
         left.recount()
@@ -635,29 +643,30 @@ require T: typename
 /// :param i: The index of the child that is short.
 routine SortedListNode<T>.borrow_from_right(self: @Self, i: USize) -> Void
 require T: typename
-    block entry()
-        child       : @Self = self.children.getitem(i)
-        right       : @Self = self.children.getitem(i.add(1))
-        child_count : USize = child.count.load()
-        right_count : USize = right.count.load()
-        leaf        : Bool  = child.leaf.load()
-        branch leaf
-            ? leaf_borrow(child, right, child_count, right_count)
-            : internal_borrow(child, right, child_count, right_count)
+    shared child       : @Self = self.children.getitem(i)
+    shared right       : @Self = self.children.getitem(i.add(1))
+    shared child_count : USize = child.count.load()
+    shared right_count : USize = right.count.load()
 
-    block leaf_borrow(child: @Self, right: @Self, child_count: USize, right_count: USize)
+    block entry()
+        leaf : Bool = child.leaf.load()
+        branch leaf
+            ? leaf_borrow()
+            : internal_borrow()
+
+    block leaf_borrow()
         v : T = right.values.getitem(0)
         child.values.setitem(child_count, v)
         right.values.shift_left(0, right_count)
-        jump finalize(child, right, child_count, right_count)
+        jump finalize()
 
-    block internal_borrow(child: @Self, right: @Self, child_count: USize, right_count: USize)
+    block internal_borrow()
         moved : @Self = right.children.getitem(0)
         child.children.setitem(child_count, moved)
         right.children.shift_left(0, right_count)
-        jump finalize(child, right, child_count, right_count)
+        jump finalize()
 
-    block finalize(child: @Self, right: @Self, child_count: USize, right_count: USize)
+    block finalize()
         child.count.store(child_count.add(1))
         right.count.store(right_count.sub(1))
         child.recount()
@@ -670,25 +679,26 @@ require T: typename
 /// :param alloc: The allocator that frees the merged node.
 routine SortedListNode<T>.merge_children(self: @Self, i: USize, alloc: @Allocator) -> Void
 require T: typename
+    shared left        : @Self = self.children.getitem(i)
+    shared right       : @Self = self.children.getitem(i.add(1))
+    shared left_count  : USize = left.count.load()
+    shared right_count : USize = right.count.load()
+
     block entry()
-        left        : @Self = self.children.getitem(i)
-        right       : @Self = self.children.getitem(i.add(1))
-        left_count  : USize = left.count.load()
-        right_count : USize = right.count.load()
-        leaf        : Bool  = left.leaf.load()
+        leaf : Bool = left.leaf.load()
         branch leaf
-            ? leaf_merge(left, right, left_count, right_count)
-            : internal_merge(left, right, left_count, right_count)
+            ? leaf_merge()
+            : internal_merge()
 
-    block leaf_merge(left: @Self, right: @Self, left_count: USize, right_count: USize)
+    block leaf_merge()
         left.values.copy(left_count, right.values, 0, right_count)
-        jump finalize(left, right, left_count, right_count)
+        jump finalize()
 
-    block internal_merge(left: @Self, right: @Self, left_count: USize, right_count: USize)
+    block internal_merge()
         left.children.copy(left_count, right.children, 0, right_count)
-        jump finalize(left, right, left_count, right_count)
+        jump finalize()
 
-    block finalize(left: @Self, right: @Self, left_count: USize, right_count: USize)
+    block finalize()
         left.count.store(left_count.add(right_count))
         parent_count : USize = self.count.load()
         self.children.shift_left(i.add(1), parent_count)
@@ -892,14 +902,15 @@ require T: typename
 #track_caller
 routine SortedList<T>.destruct(self: @Self) -> Void
 require T: typename
+    shared root : @SortedListNode<T> = self.root.load()
+
     block entry()
-        root  : @SortedListNode<T> = self.root.load()
-        empty : Bool               = root.is_null()
+        empty : Bool = root.is_null()
         branch empty
             ? reset()
-            : free_root(root)
+            : free_root()
 
-    block free_root(root: @SortedListNode<T>)
+    block free_root()
         alloc : @Allocator = self.alloc.load()
         root.free_recursive(alloc)
         jump reset()
@@ -914,22 +925,23 @@ require T: typename
 #track_caller
 routine SortedList<T>.destruct_all(self: @Self) -> Void
 require T: typename, Destructible<T>
-    block entry()
-        iter_val : SortedListIter<T> = .construct(self)
-        claim iter : @SortedListIter<T> <- iter_val
-        claim slot : @T                 <- uninit
-        jump next(iter, slot)
+    shared iter_val : SortedListIter<T>  = .construct(self)
+    shared iter     : @SortedListIter<T> <- iter_val
+    shared slot     : @T                 <- uninit
 
-    block next(iter: @SortedListIter<T>, slot: @T)
+    block entry()
+        jump next()
+
+    block next()
         item : Option<T> = iter.next()
         when item
-            .Present(value) -> element(iter, slot, value)
+            .Present(value) -> element(value)
             .Absent         -> finish()
 
-    block element(iter: @SortedListIter<T>, slot: @T, value: T)
+    block element(value: T)
         slot.store(value)
         slot.destruct()
-        jump next(iter, slot)
+        jump next()
 
     block finish()
         self.destruct()

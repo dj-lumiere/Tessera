@@ -82,24 +82,25 @@ routine F128.ln(self: Self) -> Self
 
 /// ln(x) for positive finite x away from 1 (+0 included).
 routine cm_log_general(u: U128) -> F128
+    shared hi : U64 = cm_wide_hi(u)
+
     block entry()
-        hi        : U64  = cm_wide_hi(u)
         lo        : U64  = cm_wide_lo(u)
         e         : U64  = hi.bitand(0xFFFF000000000000)
         subnormal : Bool = e.eq(0)
         branch subnormal
-            ? subnormal(hi)
+            ? subnormal()
             : reduce(hi, lo, e)
 
-    block subnormal(hi: U64)
+    block subnormal()
         zero    : Bool = u.eq(0)
         neg_inf : F128 = f128_of(0xFFFF0000000000000000000000000000)
         branch zero
             ? return(neg_inf)
-            : normalize(hi)
+            : normalize()
 
     // shift the leading bit up to bit 48 of the high word, lowering the exponent to match
-    block normalize(hi: U64)
+    block normalize()
         hi_zero  : Bool = hi.eq(0)
         lo_zeros : U64  = cm_wide_lo(u).leading_zeros()
         lz_lo    : S64  = lo_zeros.to<S64>().add(64)
@@ -192,28 +193,29 @@ routine cm_log_table_sum(e: U64, j0: USize, j1: USize, j2: USize, j3: USize) -> 
 /// Rounds the 3-word fixed-point logarithm f to F128, checking exactly when it's too close to a midpoint.
 /// x is the input with its significand normalized.
 routine cm_log_round(f: CmWide3, x: U128) -> F128
+    shared mask     : U64  = cm_sign_mask64(f.w2)
+    shared f0       : U64  = f.w0.bitxor(mask)
+    shared f1       : U64  = f.w1.bitxor(mask)
+    shared f2       : U64  = f.w2.bitxor(mask)
+    shared top_zero : Bool = f2.eq(0)
+    shared nz       : U64  = top_zero
+        ? f1.leading_zeros().add(64)
+        : f2.leading_zeros()
+    shared ns   : U64 = nz.sub_wrap(15)
+    shared half : U64 = 63.sub_wrap(ns).bitand(63)
+    shared rnd  : U64 = f0.shr(half).bitand(1)
+    shared el   : U64 = 0x4029.sub_wrap(nz).bitor(mask.shl(15))
+
     block entry()
-        mask     : U64  = cm_sign_mask64(f.w2)
-        f0       : U64  = f.w0.bitxor(mask)
-        f1       : U64  = f.w1.bitxor(mask)
-        f2       : U64  = f.w2.bitxor(mask)
-        top_zero : Bool = f2.eq(0)
-        nz       : U64  = top_zero
-            ? f1.leading_zeros().add(64)
-            : f2.leading_zeros()
-        ns        : U64  = nz.sub_wrap(15)
         tail      : U64  = U64.MAX.shr(ns.bitand(63))
-        half      : U64  = 63.sub_wrap(ns).bitand(63)
-        rnd       : U64  = f0.shr(half).bitand(1)
-        el        : U64  = 0x4029.sub_wrap(nz).bitor(mask.shl(15))
         nudged    : U64  = f0.add_wrap(1.shl(half)).add_wrap(12)
         near_half : U64  = nudged.bitand(tail)
         hard      : Bool = near_half.le(24)
         branch hard
-            ? exact(f0, f1, f2, nz, el)
-            : fast(f0, f1, f2, ns, el, rnd)
+            ? exact()
+            : fast()
 
-    block fast(f0: U64, f1: U64, f2: U64, ns: U64, el: U64, rnd: U64)
+    block fast()
         ls  : U64  = ns.bitand(63)
         rs  : U64  = 64.sub_wrap(ns).bitand(63)
         sig : U128 = cm_log_shift_pair(f0, f1, f2, ls, rs)
@@ -221,7 +223,7 @@ routine cm_log_round(f: CmWide3, x: U128) -> F128
         return(r)
 
     // the rounding test failed: decide it exactly from 113 bits plus one
-    block exact(f0: U64, f1: U64, f2: U64, nz: U64, el: U64)
+    block exact()
         ls    : U64           = nz.sub_wrap(14)
         rs    : U64           = 64.sub_wrap(ls).bitand(63)
         sig   : U128          = cm_log_shift_pair(f0, f1, f2, ls.bitand(63), rs)
@@ -393,25 +395,26 @@ routine cm_log_below_one(x: U128) -> CmLogNear
 /// The near-one rounding test on z and the 128-bit significand to round. The rounding position sits point - e
 /// bits into the tail words while e <= last. Past that, the error bound eps shrinks as e grows.
 routine cm_log_near_test(z: CmWide3, e: S64, point: S64, last: S64) -> CmLogNear
+    shared tl   : U128 = cm_wide_u128(z.w1, z.w0)
+    shared zs   : S64  = z.w2.shr(63).to<S64>()
+    shared msk  : U128 = U128.MAX.shr(50.sub(zs).to<U128>())
+    shared nrnd : U128 = 1.shl(13.add(zs).to<U128>())
+
     block entry()
-        tl     : U128 = cm_wide_u128(z.w1, z.w0)
-        zs     : S64  = z.w2.shr(63).to<S64>()
-        msk    : U128 = U128.MAX.shr(50.sub(zs).to<U128>())
-        nrnd   : U128 = 1.shl(13.add(zs).to<U128>())
         inside : Bool = e.le(last)
         branch inside
-            ? short(tl, msk, nrnd)
-            : long(tl, msk, nrnd)
+            ? short()
+            : long()
 
     // e below the point: the tail shifts down to the rounding position
-    block short(tl: U128, msk: U128, nrnd: U128)
+    block short()
         gap   : S128 = point.sub(e).to<S128>()
         tail  : U128 = tl.shr(gap.to<U128>())
         mask  : U128 = msk.shr(gap.to<U128>())
         bound : U128 = nrnd.shl(e.to<U128>()).bitor(12)
         jump test(tail, mask, bound, 12)
 
-    block long(tl: U128, msk: U128, nrnd: U128)
+    block long()
         eps   : U64  = 12.shr(e.sub(point).to<U64>()).add(1)
         bound : U128 = nrnd.shl(point.to<U128>()).bitor(eps.to<U128>())
         jump test(tl, msk, bound, eps)

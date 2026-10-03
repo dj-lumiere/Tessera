@@ -440,13 +440,14 @@ private routine fd_metadata(fd: CInt) -> Result<Metadata, FsError>
 /// The permission bits, or 0o666 when they can't be read.
 #target(os: "linux")
 private routine fd_mode(fd: CInt) -> U32
+    shared st : @Statx <- uninit
+
     block entry()
-        claim st : @Statx <- uninit
         branch stat_raw(fd, "", AT_EMPTY_PATH, st)
-            ? permission_bits(st)
+            ? permission_bits()
             : return(0o666)
 
-    block permission_bits(st: @Statx)
+    block permission_bits()
         mode : U32 = st.mode.load().to<U32>()
         return(mode.bitand(0o7777))
 
@@ -494,13 +495,14 @@ private routine DarwinStat.to<Metadata>(self: Self) -> Metadata
 
 #target(os: "macos")
 private routine metadata_of(cpath: @Byte, follow: Bool) -> Result<Metadata, FsError>
-    block entry()
-        claim st : @DarwinStat <- uninit
-        branch follow
-            ? got(st, c_stat(cpath, st))
-            : got(st, c_lstat(cpath, st))
+    shared st : @DarwinStat <- uninit
 
-    block got(st: @DarwinStat, rc: CInt)
+    block entry()
+        branch follow
+            ? got(c_stat(cpath, st))
+            : got(c_lstat(cpath, st))
+
+    block got(rc: CInt)
         branch rc.eq(0)
             ? return(.Success(st.load().to<Metadata>()))
             : return(failed<Metadata>())
@@ -515,13 +517,14 @@ private routine fd_metadata(fd: CInt) -> Result<Metadata, FsError>
 
 #target(os: "macos")
 private routine fd_mode(fd: CInt) -> U32
+    shared st : @DarwinStat <- uninit
+
     block entry()
-        claim st : @DarwinStat <- uninit
         branch c_fstat(fd, st).eq(0)
-            ? permission_bits(st)
+            ? permission_bits()
             : return(0o666)
 
-    block permission_bits(st: @DarwinStat)
+    block permission_bits()
         mode : U32 = st.mode.load().to<U32>()
         return(mode.bitand(0o7777))
 
@@ -753,6 +756,9 @@ internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result<Unit, FsErr
 /// Copies from's bytes and permissions into to (made, or replaced): the bytes copied.
 #target(os: ("linux", "macos"))
 internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
+    shared src : @FileHandle <- uninit
+    shared dst : @FileHandle <- uninit
+
     block entry()
         source : Result<FileHandle, FsError> = FileHandle.open(from, OpenMode.Read)
         when source
@@ -760,43 +766,43 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
             .Failure(error) -> return(.Failure(error))
 
     block target(opened: FileHandle)
-        claim src : @FileHandle <- opened
+        src.store(opened)
         dest : Result<FileHandle, FsError> = FileHandle.open(to, OpenMode.Write)
         when dest
-            .Success(f)     -> copy(src, f)
-            .Failure(error) -> failed_with(src, error)
+            .Success(f)     -> copy(f)
+            .Failure(error) -> failed_with(error)
 
-    block failed_with(src: @FileHandle, error: FsError)
+    block failed_with(error: FsError)
         src.close()
         return(.Failure(error))
 
-    block copy(src: @FileHandle, made: FileHandle)
-        claim dst : @FileHandle <- made
+    block copy(made: FileHandle)
+        dst.store(made)
         set_mode(dst.fd.load(), fd_mode(src.fd.load()))
         claim buffer : @Array<Byte, 16384> <- uninit
-        jump chunk(src, dst, buffer.to<@Byte>(), 0)
+        jump chunk(buffer.to<@Byte>(), 0)
 
-    block chunk(src: @FileHandle, dst: @FileHandle, buffer: @Byte, total: U64)
+    block chunk(buffer: @Byte, total: U64)
         got : Result<USize, FsError> = src.read_bytes_result(buffer, 16384)
         when got
-            .Success(n)     -> put(src, dst, buffer, total, n)
-            .Failure(error) -> stop(src, dst, error)
+            .Success(n)     -> put(buffer, total, n)
+            .Failure(error) -> stop(error)
 
-    block put(src: @FileHandle, dst: @FileHandle, buffer: @Byte, total: U64, n: USize)
+    block put(buffer: @Byte, total: U64, n: USize)
         branch n.eq(0)
-            ? done(src, dst, total)
+            ? done(total)
             : continue
         wrote : Result<Unit, FsError> = dst.write_all_result(buffer, n)
         when wrote
-            .Success        -> chunk(src, dst, buffer, total.add(n.to<U64>()))
-            .Failure(error) -> stop(src, dst, error)
+            .Success        -> chunk(buffer, total.add(n.to<U64>()))
+            .Failure(error) -> stop(error)
 
-    block stop(src: @FileHandle, dst: @FileHandle, error: FsError)
+    block stop(error: FsError)
         src.close()
         dst.close()
         return(.Failure(error))
 
-    block done(src: @FileHandle, dst: @FileHandle, total: U64)
+    block done(total: U64)
         src.close()
         dst.close()
         return(.Success(total))

@@ -135,6 +135,8 @@ internal routine create_dir_all(path: Bytes) -> Result<Unit, FsError>
 
 /// path and everything in it. A link is removed, not followed. Child paths are built in memory from alloc.
 internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, FsError>
+    shared iter : @DirIter <- uninit
+
     block entry()
         m : Result<Metadata, FsError> = symlink_metadata(path)
         when m
@@ -145,31 +147,30 @@ internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, 
         branch k.eq(FileKind.Directory)
             ? continue
             : return(remove_file(path))
-        claim iter : @DirIter <- uninit
         opened : Result<Unit, FsError> = iter.open_path(path)
         when opened
-            .Success        -> next(iter)
+            .Success        -> next()
             .Failure(error) -> return(.Failure(error))
 
-    block next(iter: @DirIter)
+    block next()
         entry : Option<DirEntry> = iter.next()
         when entry
-            .Present(e) -> child(iter, e)
-            .Absent     -> emptied(iter)
+            .Present(e) -> child(e)
+            .Absent     -> emptied()
 
-    block child(iter: @DirIter, e: DirEntry)
+    block child(e: DirEntry)
         claim full : @Bytes <- join_path(path, e.name, alloc)
         gone : Result<Unit, FsError> = remove_dir_all(full.load(), alloc)
         full.destruct()
         when gone
-            .Success        -> next(iter)
-            .Failure(error) -> failed(iter, error)
+            .Success        -> next()
+            .Failure(error) -> failed(error)
 
-    block failed(iter: @DirIter, error: FsError)
+    block failed(error: FsError)
         iter.close()
         return(.Failure(error))
 
-    block emptied(iter: @DirIter)
+    block emptied()
         iter.close()
         return(remove_dir(path))
 
@@ -382,11 +383,12 @@ routine file_name(path: Bytes) -> Bytes
 
 /// The directory part: "/a/b/c" gives "/a/b", "a/b" gives "a", "file.txt" gives "", and "/" stays "/".
 routine parent_path(path: Bytes) -> Bytes
+    shared end : USize = name_end(path)
+
     block entry()
-        end   : USize = name_end(path)
         start : USize = name_start(path, end)
         branch start.eq(0)
-            ? root(end)
+            ? root()
             : trim(start)
 
     // Separators before the name go too, but a leading root separator stays.
@@ -399,7 +401,7 @@ routine parent_path(path: Bytes) -> Bytes
             : return(path.slice(0, i))
 
     // No separator before the name: the root if path is only separators, else nothing.
-    block root(end: USize)
+    block root()
         branch end.eq(0).bitand(path.is_empty().bitnot())
             ? return(path.slice(0, 1))
             : return(path.slice(0, 0))

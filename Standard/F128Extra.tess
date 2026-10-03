@@ -105,16 +105,17 @@ routine wide_round_within(u: F128Extended, k: S64) -> WideRounding
 
 /// The result in F128Extended from θ = d π/2 (d nonzero, |d| <= 1/2).
 routine wide_pi_trig(d: F128, pick: PiPick) -> F128Extended
+    shared theta : F128Extended = d.to<F128Extended>().mul(wide_half_pi())
+
     block entry()
-        theta    : F128Extended = d.to<F128Extended>().mul(wide_half_pi())
-        tan      : Bool         = pick.divide
-        over_sin : Bool         = pick.over_sin
+        tan      : Bool = pick.divide
+        over_sin : Bool = pick.over_sin
         when
-            tan      -> quotient(theta)
+            tan      -> quotient()
             over_sin -> signed(wide_sin_core(theta))
             else     -> signed(wide_cos_core(theta))
 
-    block quotient(theta: F128Extended)
+    block quotient()
         s   : F128Extended = wide_sin_core(theta)
         c   : F128Extended = wide_cos_core(theta)
         top : F128Extended = pick.over_sin
@@ -139,59 +140,58 @@ routine wide_pi_trig(d: F128, pick: PiPick) -> F128Extended
 #track_caller
 routine BigNat<N>.set_product(self: @Self, a: @Self, b: @Self) -> Void
 require N: USize
+    shared a_count : USize = a.count.load()
+    shared b_count : USize = b.count.load()
+    shared count   : USize = a_count.add(b_count)
+
     block entry()
-        a_count : USize = a.count.load()
-        b_count : USize = b.count.load()
-        count   : USize = a_count.add(b_count)
-        room    : Bool  = count.le(N)
+        room : Bool = count.le(N)
         branch room
-            ? clear(0, a_count, b_count, count)
+            ? clear(0)
             : crash_overflow()
 
-    block clear(i: USize, a_count: USize, b_count: USize, count: USize)
+    block clear(i: USize)
         done : Bool = i.ge(count)
         branch done
-            ? row(0, a_count, b_count, count)
-            : clear_one(i, a_count, b_count, count)
+            ? row(0)
+            : clear_one(i)
 
-    block clear_one(i: USize, a_count: USize, b_count: USize, count: USize)
+    block clear_one(i: USize)
         self.limbs.setitem(i, 0)
-        jump clear(i.add(1), a_count, b_count, count)
+        jump clear(i.add(1))
 
     // row i adds a[i] × b at limb i
-    block row(i: USize, a_count: USize, b_count: USize, count: USize)
+    block row(i: USize)
         done : Bool = i.ge(a_count)
         branch done
-            ? finish(count)
-            : row_start(i, a_count, b_count, count)
+            ? finish()
+            : row_start(i)
 
-    block row_start(i: USize, a_count: USize, b_count: USize, count: USize)
+    block row_start(i: USize)
         a_limb : U64 = a.limbs.getitem(i)
-        jump column(i, 0, 0, a_limb, a_count, b_count, count)
+        jump column(i, 0, 0, a_limb)
 
-    block column(i: USize, j: USize, carry: U128, a_limb: U64, a_count: USize, b_count: USize,
-        count: USize)
+    block column(i: USize, j: USize, carry: U128, a_limb: U64)
         done : Bool = j.ge(b_count)
         branch done
-            ? row_end(i, carry, a_count, b_count, count)
-            : column_step(i, j, carry, a_limb, a_count, b_count, count)
+            ? row_end(i, carry)
+            : column_step(i, j, carry, a_limb)
 
     // limb + a × b + carry < 2^128 for 64-bit a, b, limb, and carry
-    block column_step(i: USize, j: USize, carry: U128, a_limb: U64, a_count: USize, b_count: USize,
-        count: USize)
+    block column_step(i: USize, j: USize, carry: U128, a_limb: U64)
         at      : USize = i.add(j)
         b_limb  : U64   = b.limbs.getitem(j)
         limb    : U64   = self.limbs.getitem(at)
         product : U128  = a_limb.mul_wide(b_limb)
         sum     : U128  = product.add(limb.to<U128>()).add(carry)
         self.limbs.setitem(at, sum.to_wrap<U64>())
-        jump column(i, j.add(1), sum.shr(64), a_limb, a_count, b_count, count)
+        jump column(i, j.add(1), sum.shr(64), a_limb)
 
-    block row_end(i: USize, carry: U128, a_count: USize, b_count: USize, count: USize)
+    block row_end(i: USize, carry: U128)
         self.limbs.setitem(i.add(b_count), carry.to<U64>())
-        jump row(i.add(1), a_count, b_count, count)
+        jump row(i.add(1))
 
-    block finish(count: USize)
+    block finish()
         self.count.store(count)
         self.trim()
         return()
@@ -243,24 +243,25 @@ routine big_to_f128(n: @BigNat<24>, e: S64, negative: Bool) -> F128
 /// quotient with the remainder as the sticky bit. Both operands are consumed.
 routine big_quotient_to_f128(num: @BigNat<24>, num_e: S64, den: @BigNat<24>, den_e: S64,
     negative: Bool) -> F128
+    shared den_bits : S64 = den.bit_length().to<S64>()
+    shared num_bits : S64 = num.bit_length().to<S64>()
+    shared shift    : S64 = 126.add(den_bits).sub(num_bits)
+
     block entry()
-        den_bits : S64  = den.bit_length().to<S64>()
-        num_bits : S64  = num.bit_length().to<S64>()
-        shift    : S64  = 126.add(den_bits).sub(num_bits)
-        up       : Bool = shift.ge(0)
+        up : Bool = shift.ge(0)
         branch up
-            ? raise_num(shift)
-            : raise_den(shift)
+            ? raise_num()
+            : raise_den()
 
-    block raise_num(shift: S64)
+    block raise_num()
         num.shl(shift.to<USize>())
-        jump divide(shift)
+        jump divide()
 
-    block raise_den(shift: S64)
+    block raise_den()
         den.shl(shift.abs_diff(0).to<USize>())
-        jump divide(shift)
+        jump divide()
 
-    block divide(shift: S64)
+    block divide()
         claim scratch : @BigNat<24> <- uninit
         q          : U128 = num.div_small(den, scratch, 127)
         sticky     : Bool = num.is_zero().bitnot()
@@ -275,19 +276,20 @@ routine big_quotient_to_f128(num: @BigNat<24>, num_e: S64, den: @BigNat<24>, den
 /// j0 = 2 gives sin θ / θ, j0 = 1 gives cos θ, for u = θ² <= (π/4)². Each term
 /// is off by under 1.5 units (one rounding, one truncation). The sum takes about 50 terms.
 routine big_trig_series(out: @BigNat<24>, u: @BigNat<24>, j0: U64) -> Void
+    shared term    : @BigNat<24> <- uninit
+    shared product : @BigNat<24> <- uninit
+    shared minus   : @BigNat<24> <- uninit
+
     block entry()
-        claim term    : @BigNat<24> <- uninit
-        claim product : @BigNat<24> <- uninit
-        claim minus   : @BigNat<24> <- uninit
         one : U64 = 1
         term.set(one)
         term.shl(PI_FIXED_BITS.to<USize>())
         out.copy_from(term)
         minus.set(U64.MIN)
-        jump next(j0, true, term, product, minus)
+        jump next(j0, true)
 
     // term ← term × u / (j (j + 1)), and the signs alternate, starting with minus
-    block next(j: U64, subtract: Bool, term: @BigNat<24>, product: @BigNat<24>, minus: @BigNat<24>)
+    block next(j: U64, subtract: Bool)
         product.set_product(term, u)
         product.shr_round_even(PI_FIXED_BITS.to<USize>())
         term.copy_from(product)
@@ -295,24 +297,23 @@ routine big_trig_series(out: @BigNat<24>, u: @BigNat<24>, j0: U64) -> Void
         dropped : U64  = term.div_limb(divisor)
         done    : Bool = term.is_zero()
         branch done
-            ? finish(minus)
-            : accumulate(j, subtract, term, product, minus)
+            ? finish()
+            : accumulate(j, subtract)
 
-    block accumulate(j: U64, subtract: Bool, term: @BigNat<24>, product: @BigNat<24>,
-        minus: @BigNat<24>)
+    block accumulate(j: U64, subtract: Bool)
         branch subtract
-            ? take(j, term, product, minus)
-            : give(j, term, product, minus)
+            ? take(j)
+            : give(j)
 
-    block take(j: U64, term: @BigNat<24>, product: @BigNat<24>, minus: @BigNat<24>)
+    block take(j: U64)
         minus.add(term)
-        jump next(j.add(2), false, term, product, minus)
+        jump next(j.add(2), false)
 
-    block give(j: U64, term: @BigNat<24>, product: @BigNat<24>, minus: @BigNat<24>)
+    block give(j: U64)
         out.add(term)
-        jump next(j.add(2), true, term, product, minus)
+        jump next(j.add(2), true)
 
-    block finish(minus: @BigNat<24>)
+    block finish()
         out.sub(minus)
         return()
 
@@ -320,31 +321,32 @@ routine big_trig_series(out: @BigNat<24>, u: @BigNat<24>, j0: U64) -> Void
 /// |d| = m × 2^(e - 112) and T = floor(π 2^384) × m, |θ| = T × 2^(e - 113 - 384).
 /// Then sin θ = |θ| × S × 2^-384 and cos θ = C × 2^-384 for the series S and C.
 routine f128_pi_trig_exact(d: F128, pick: PiPick) -> F128
-    block entry()
-        p : F128Parts = f128_unpack(d.bits())
-        claim pi : @BigNat<24> <- uninit
-        pi.set(U64.MIN)
-        jump load_pi(0, p, pi)
+    shared p   : F128Parts   = f128_unpack(d.bits())
+    shared pi  : @BigNat<24> <- uninit
+    shared c   : @BigNat<24> <- uninit
+    shared sin : @BigNat<24> <- uninit
 
-    block load_pi(i: USize, p: F128Parts, pi: @BigNat<24>)
+    block entry()
+        pi.set(U64.MIN)
+        jump load_pi(0)
+
+    block load_pi(i: USize)
         done : Bool = i.ge(7)
         branch done
-            ? series(p, pi)
-            : load_limb(i, p, pi)
+            ? series()
+            : load_limb(i)
 
-    block load_limb(i: USize, p: F128Parts, pi: @BigNat<24>)
+    block load_limb(i: USize)
         limb : U64 = PI_FIXED_384.getitem(i)
         pi.push_limb(limb)
-        jump load_pi(i.add(1), p, pi)
+        jump load_pi(i.add(1))
 
-    block series(p: F128Parts, pi: @BigNat<24>)
+    block series()
         claim m     : @BigNat<24> <- uninit
         claim t     : @BigNat<24> <- uninit
         claim theta : @BigNat<24> <- uninit
         claim u     : @BigNat<24> <- uninit
         claim s     : @BigNat<24> <- uninit
-        claim c     : @BigNat<24> <- uninit
-        claim sin   : @BigNat<24> <- uninit
         m.set(p.sig)
         t.set_product(pi, m)
         // θ in fixed point (for u only, where its relative accuracy doesn't matter)
@@ -366,21 +368,21 @@ routine f128_pi_trig_exact(d: F128, pick: PiPick) -> F128
         tan            : Bool = pick.divide
         over_sin       : Bool = pick.over_sin
         when
-            tan      -> divide(sin, sin_e, c, cos_e, negative)
+            tan      -> divide(sin_e, cos_e, negative)
             over_sin -> return(big_to_f128(sin, sin_e, negative))
             else     -> return(big_to_f128(c, cos_e, negative))
 
-    block divide(sin: @BigNat<24>, sin_e: S64, c: @BigNat<24>, cos_e: S64, negative: Bool)
+    block divide(sin_e: S64, cos_e: S64, negative: Bool)
         over_sin : Bool = pick.over_sin
         branch over_sin
-            ? tangent(sin, sin_e, c, cos_e, negative)
-            : cotangent(sin, sin_e, c, cos_e, negative)
+            ? tangent(sin_e, cos_e, negative)
+            : cotangent(sin_e, cos_e, negative)
 
-    block tangent(sin: @BigNat<24>, sin_e: S64, c: @BigNat<24>, cos_e: S64, negative: Bool)
+    block tangent(sin_e: S64, cos_e: S64, negative: Bool)
         r : F128 = big_quotient_to_f128(sin, sin_e, c, cos_e, negative)
         return(r)
 
-    block cotangent(sin: @BigNat<24>, sin_e: S64, c: @BigNat<24>, cos_e: S64, negative: Bool)
+    block cotangent(sin_e: S64, cos_e: S64, negative: Bool)
         r : F128 = big_quotient_to_f128(c, cos_e, sin, sin_e, negative)
         return(r)
 
@@ -390,20 +392,21 @@ routine f128_pi_trig_exact(d: F128, pick: PiPick) -> F128
 /// half-integer (and for tan not a quarter-integer). exact skips the fast tier
 /// (the tests use it to check the exact tier on its own).
 routine f128_pi_trig_general(red: PiReduced, kind: TrigKind, exact: Bool) -> F128
-    block entry()
-        pick : PiPick = f128_pi_pick(red.quadrant, kind)
-        branch exact
-            ? slow(pick)
-            : fast(pick)
+    shared pick : PiPick = f128_pi_pick(red.quadrant, kind)
 
-    block fast(pick: PiPick)
+    block entry()
+        branch exact
+            ? slow()
+            : fast()
+
+    block fast()
         w       : F128Extended = wide_pi_trig(red.d, pick)
         rounded : WideRounding = wide_round_within(w, F128_PI_BAND)
         branch rounded.ok
             ? return(rounded.value)
-            : slow(pick)
+            : slow()
 
-    block slow(pick: PiPick)
+    block slow()
         r : F128 = f128_pi_trig_exact(red.d, pick)
         return(r)
 

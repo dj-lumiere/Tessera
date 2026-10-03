@@ -33,15 +33,16 @@ require W: typename, Writer<W>
 
 // Folds every element in iteration order.
 routine iteration_hash(set: @Set<S64>) -> S64
-    block entry()
-        iter_val : SetIter<S64> = .construct(set)
-        claim iter : @SetIter<S64> <- iter_val
-        jump next(iter, 0)
+    shared iter_val : SetIter<S64>  = .construct(set)
+    shared iter     : @SetIter<S64> <- iter_val
 
-    block next(iter: @SetIter<S64>, hash: S64)
+    block entry()
+        jump next(0)
+
+    block next(hash: S64)
         item : Option<S64> = iter.next()
         when item
-            .Present(key) -> next(iter, mix(hash, key))
+            .Present(key) -> next(mix(hash, key))
             .Absent       -> return(hash)
 
 routine checkpoint(out: @BufWriter<Out>, set: @Set<S64>, phase: USize, op: USize,
@@ -105,36 +106,37 @@ routine run_phase(out: @BufWriter<Out>, set: @Set<S64>, rng: @Rng, phase: USize,
 // Copies from into to in iteration order, but starting from its second half, so the two sets hold the same elements
 // in a different insertion order.
 routine copy_rotated(from: @Set<S64>, to: @Set<S64>) -> Void
-    block entry()
-        size : USize = from.load().count()
-        half : USize = size.div(2)
-        jump pass(0, half, true)
+    shared size : USize         = from.load().count()
+    shared half : USize         = size.div(2)
+    shared iter : @SetIter<S64> <- uninit
 
-    block pass(pass: USize, half: USize, second: Bool)
+    block entry()
+        jump pass(0, true)
+
+    block pass(pass: USize, second: Bool)
         done     : Bool         = pass.eq(2)
         iter_val : SetIter<S64> = .construct(from)
-        claim iter : @SetIter<S64> <- iter_val
+        iter.store(iter_val)
         branch done
             ? return()
-            : next(pass, half, second, iter, 0)
+            : next(pass, second, 0)
 
-    block next(pass: USize, half: USize, second: Bool, iter: @SetIter<S64>, index: USize)
+    block next(pass: USize, second: Bool, index: USize)
         item : Option<S64> = iter.next()
         when item
-            .Present(key) -> consider(pass, half, second, iter, index, key)
-            .Absent       -> pass(pass.add(1), half, second.bitnot())
+            .Present(key) -> consider(pass, second, index, key)
+            .Absent       -> pass(pass.add(1), second.bitnot())
 
-    block consider(pass: USize, half: USize, second: Bool, iter: @SetIter<S64>, index: USize,
-        key: S64)
+    block consider(pass: USize, second: Bool, index: USize, key: S64)
         in_second : Bool = index.ge(half)
         wanted    : Bool = in_second.eq(second)
         branch wanted
-            ? copy(pass, half, second, iter, index, key)
-            : next(pass, half, second, iter, index.add(1))
+            ? copy(pass, second, index, key)
+            : next(pass, second, index.add(1))
 
-    block copy(pass: USize, half: USize, second: Bool, iter: @SetIter<S64>, index: USize, key: S64)
+    block copy(pass: USize, second: Bool, index: USize, key: S64)
         to.add(key)
-        jump next(pass, half, second, iter, index.add(1))
+        jump next(pass, second, index.add(1))
 
 routine report_eq(out: @BufWriter<Out>, label: Bytes, equal: Bool) -> Void
     block entry()

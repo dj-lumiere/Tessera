@@ -230,49 +230,47 @@ require T: typename, HashEquatable<T>
 /// already made.
 private routine Set<T>.rehash(self: @Self, new_capacity: USize) -> Bool
 require T: typename
+    shared alloc        : @Allocator    = self.keys.alloc.load()
+    shared keys         : @Slice<T>     <- .construct(0, alloc)
+    shared hashes       : @Slice<U64>   <- .construct(0, alloc)
+    shared entry_states : @Slice<U8>    <- .construct(0, alloc)
+    shared slots        : @Slice<USize> <- .construct(0, alloc)
+
     block entry()
-        alloc : @Allocator = self.keys.alloc.load()
-        claim keys         : @Slice<T>     <- .construct(0, alloc)
-        claim hashes       : @Slice<U64>   <- .construct(0, alloc)
-        claim entry_states : @Slice<U8>    <- .construct(0, alloc)
-        claim slots        : @Slice<USize> <- .construct(0, alloc)
         made_keys : Bool = make_array<T>(keys, new_capacity)
         branch made_keys
             ? continue
-            : discard(keys, hashes, entry_states, slots)
+            : discard()
         made_hashes : Bool = make_array<U64>(hashes, new_capacity)
         branch made_hashes
             ? continue
-            : discard(keys, hashes, entry_states, slots)
+            : discard()
         made_states : Bool = make_array<U8>(entry_states, new_capacity)
         branch made_states
             ? continue
-            : discard(keys, hashes, entry_states, slots)
+            : discard()
         made_slots : Bool = make_array<USize>(slots, new_capacity)
         branch made_slots
-            ? clear_loop(0, keys, hashes, entry_states, slots)
-            : discard(keys, hashes, entry_states, slots)
+            ? clear_loop(0)
+            : discard()
 
-    block discard(keys: @Slice<T>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
-        slots: @Slice<USize>)
+    block discard()
         destruct_set_arrays<T>(keys, hashes, entry_states, slots)
         return(false)
 
-    block clear_loop(i: USize, keys: @Slice<T>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
-        slots: @Slice<USize>)
+    block clear_loop(i: USize)
         done : Bool = i.ge(new_capacity)
         branch done
-            ? install(keys, hashes, entry_states, slots)
+            ? install()
             : continue
         slot_cells  : @USize = slots.data.load()
         state_cells : @U8    = entry_states.data.load()
         slot_cells.stride(i).store(SLOT_EMPTY)
         state_cells.stride(i).store(0)
-        jump clear_loop(i.add(1), keys, hashes, entry_states, slots)
+        jump clear_loop(i.add(1))
 
     // Swaps the new arrays into the set, so the claimed slices hold the old ones from here on.
-    block install(keys: @Slice<T>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
-        slots: @Slice<USize>)
+    block install()
         old_count : USize = self.entries_count.load()
         swap_slices<T>(self.keys, keys)
         swap_slices<U64>(self.hashes, hashes)
@@ -280,32 +278,29 @@ require T: typename
         swap_slices<USize>(self.slots, slots)
         self.count.store(0)
         self.entries_count.store(0)
-        jump move_loop(0, old_count, keys, hashes, entry_states, slots)
+        jump move_loop(0, old_count)
 
-    block move_loop(i: USize, old_count: USize, keys: @Slice<T>, hashes: @Slice<U64>,
-        entry_states: @Slice<U8>, slots: @Slice<USize>)
+    block move_loop(i: USize, old_count: USize)
         done : Bool = i.ge(old_count)
         branch done
-            ? release_old(keys, hashes, entry_states, slots)
+            ? release_old()
             : continue
         states : @U8  = entry_states.data.load()
         s      : U8   = states.stride(i).load()
         live   : Bool = s.eq(1)
         branch live
-            ? insert_old(i, old_count, keys, hashes, entry_states, slots)
-            : move_loop(i.add(1), old_count, keys, hashes, entry_states, slots)
+            ? insert_old(i, old_count)
+            : move_loop(i.add(1), old_count)
 
-    block insert_old(i: USize, old_count: USize, keys: @Slice<T>, hashes: @Slice<U64>,
-        entry_states: @Slice<U8>, slots: @Slice<USize>)
+    block insert_old(i: USize, old_count: USize)
         old_keys   : @T   = keys.data.load()
         old_hashes : @U64 = hashes.data.load()
         key        : T    = old_keys.stride(i).load()
         hash       : U64  = old_hashes.stride(i).load()
         self.add_direct(key, hash)
-        jump move_loop(i.add(1), old_count, keys, hashes, entry_states, slots)
+        jump move_loop(i.add(1), old_count)
 
-    block release_old(keys: @Slice<T>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
-        slots: @Slice<USize>)
+    block release_old()
         destruct_set_arrays<T>(keys, hashes, entry_states, slots)
         return(true)
 
@@ -313,25 +308,26 @@ require T: typename
 /// leaving the set as it was.
 private routine Set<T>.ensure(self: @Self) -> Bool
 require T: typename
+    shared capacity : USize = self.slots.count.load()
+
     block entry()
-        capacity : USize = self.slots.count.load()
-        empty    : Bool  = capacity.eq(0)
+        empty : Bool = capacity.eq(0)
         branch empty
             ? first()
-            : check(capacity)
+            : check()
 
     block first()
         return(self.rehash(8))
 
-    block check(capacity: USize)
+    block check()
         count : USize = self.entries_count.load()
         limit : USize = capacity.mul(3).div(4)
         full  : Bool  = count.add(1).ge(limit)
         branch full
-            ? grow(capacity)
+            ? grow()
             : return(true)
 
-    block grow(capacity: USize)
+    block grow()
         return(self.rehash(capacity.mul(2)))
 
 /// Insert without growing — used internally by rehash after new arrays are in place.
@@ -339,16 +335,17 @@ require T: typename
 /// the stored one instead of hashing every key again.
 routine Set<T>.add_direct(self: @Self, key: T, hash: U64) -> Bool
 require T: typename
+    shared slot : USize = self.load().slot(key, hash)
+
     block entry()
-        slot      : USize  = self.load().slot(key, hash)
         slots     : @USize = self.slots.data.load()
         entry_idx : USize  = slots.stride(slot).load()
         exists    : Bool   = entry_idx.lt(SLOT_TOMBSTONE)
         branch exists
             ? return(false)
-            : add(slot)
+            : add()
 
-    block add(slot: USize)
+    block add()
         new_idx      : USize  = self.entries_count.load()
         keys         : @T     = self.keys.data.load()
         hashes       : @U64   = self.hashes.data.load()
@@ -435,22 +432,23 @@ require T: typename
 #track_caller
 routine Set<T>.destruct_all(self: @Self) -> Void
 require T: typename, HashEquatable<T>, Destructible<T>
-    block entry()
-        iter_val : SetIter<T> = .construct(self)
-        claim iter : @SetIter<T> <- iter_val
-        claim slot : @T          <- uninit
-        jump next(iter, slot)
+    shared iter_val : SetIter<T>  = .construct(self)
+    shared iter     : @SetIter<T> <- iter_val
+    shared slot     : @T          <- uninit
 
-    block next(iter: @SetIter<T>, slot: @T)
+    block entry()
+        jump next()
+
+    block next()
         item : Option<T> = iter.next()
         when item
-            .Present(value) -> element(iter, slot, value)
+            .Present(value) -> element(value)
             .Absent         -> finish()
 
-    block element(iter: @SetIter<T>, slot: @T, value: T)
+    block element(value: T)
         slot.store(value)
         slot.destruct()
-        jump next(iter, slot)
+        jump next()
 
     block finish()
         self.destruct()

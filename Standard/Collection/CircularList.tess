@@ -72,32 +72,33 @@ require T: typename
 /// when the allocator fails, leaving the list as it was.
 private routine CircularList<T>.recenter(self: @Self, new_capacity: USize) -> Bool
 require T: typename
+    shared count     : USize = self.count.load()
+    shared slack     : USize = new_capacity.sub(count)
+    shared new_start : USize = slack.div(2)
+
     block entry()
-        count     : USize                         = self.count.load()
-        slack     : USize                         = new_capacity.sub(count)
-        new_start : USize                         = slack.div(2)
-        alloc     : @Allocator                    = self.storage.alloc.load()
-        made      : Result<Slice<T>, AllocFailed> = Slice<T>.construct_result(new_capacity, alloc)
+        alloc : @Allocator                    = self.storage.alloc.load()
+        made  : Result<Slice<T>, AllocFailed> = Slice<T>.construct_result(new_capacity, alloc)
         when made
-            .Success(fresh) -> move(fresh, new_start, count)
+            .Success(fresh) -> move(fresh)
             .Failure        -> return(false)
 
-    block move(fresh: Slice<T>, new_start: USize, count: USize)
+    block move(fresh: Slice<T>)
         old_data : @T   = self.storage.data.load()
         old_null : Bool = old_data.is_null()
         branch old_null
-            ? install(fresh, new_start)
-            : copy_live(fresh, new_start, old_data, count)
+            ? install(fresh)
+            : copy_live(fresh, old_data)
 
-    block copy_live(fresh: Slice<T>, new_start: USize, old_data: @T, count: USize)
+    block copy_live(fresh: Slice<T>, old_data: @T)
         old_start : USize = self.start.load()
         src       : @T    = old_data.stride(old_start)
         dst       : @T    = fresh.data.stride(new_start)
         copy<T>(dst, src, count)
         self.storage.destruct()
-        jump install(fresh, new_start)
+        jump install(fresh)
 
-    block install(fresh: Slice<T>, new_start: USize)
+    block install(fresh: Slice<T>)
         self.storage.store(fresh)
         self.start.store(new_start)
         return(true)
@@ -139,25 +140,26 @@ require T: typename
 
 private routine CircularList<T>.ensure_back(self: @Self) -> Bool
 require T: typename
+    shared start    : USize = self.start.load()
+    shared count    : USize = self.count.load()
+    shared capacity : USize = self.storage.count.load()
+
     block entry()
-        start          : USize = self.start.load()
-        count          : USize = self.count.load()
-        capacity       : USize = self.storage.count.load()
-        has_back_space : Bool  = start.add(count).lt(capacity)
+        has_back_space : Bool = start.add(count).lt(capacity)
         branch has_back_space
             ? return(true)
-            : choose(capacity)
+            : choose()
 
-    block choose(capacity: USize)
+    block choose()
         empty : Bool = capacity.eq(0)
         branch empty
             ? initial()
-            : grow(capacity)
+            : grow()
 
     block initial()
         return(self.recenter(4))
 
-    block grow(capacity: USize)
+    block grow()
         return(self.recenter(self.load().grown_capacity(capacity)))
 
 /// Appends `value` after the last element.
@@ -247,14 +249,15 @@ require T: typename
 /// `pop_back`, returning Absent instead of crashing on an empty list.
 routine CircularList<T>.pop_back_checked(self: @Self) -> Option<T>
 require T: typename
+    shared count : USize = self.count.load()
+
     block entry()
-        count : USize = self.count.load()
-        empty : Bool  = count.eq(0)
+        empty : Bool = count.eq(0)
         branch empty
             ? return(.Absent)
-            : pop(count)
+            : pop()
 
-    block pop(count: USize)
+    block pop()
         new_count : USize = count.sub(1)
         data      : @T    = self.storage.data.load()
         start     : USize = self.start.load()
@@ -293,14 +296,15 @@ require T: typename
 /// `pop_front`, returning Absent instead of crashing on an empty list.
 routine CircularList<T>.pop_front_checked(self: @Self) -> Option<T>
 require T: typename
+    shared count : USize = self.count.load()
+
     block entry()
-        count : USize = self.count.load()
-        empty : Bool  = count.eq(0)
+        empty : Bool = count.eq(0)
         branch empty
             ? return(.Absent)
-            : pop(count)
+            : pop()
 
-    block pop(count: USize)
+    block pop()
         data  : @T    = self.storage.data.load()
         start : USize = self.start.load()
         value : T     = data.stride(start).load()
@@ -426,33 +430,34 @@ require T: typename, Equatable<T>
 /// eq, through pointers to the two CircularLists.
 private routine CircularList<T>.eq_at(self: @Self, other: @Self) -> Bool
 require T: typename, Equatable<T>
+    shared la : USize = self.count.load()
+
     block entry()
-        la       : USize = self.count.load()
         lb       : USize = other.count.load()
         same_len : Bool  = la.eq(lb)
         branch same_len
-            ? scan(la)
+            ? scan()
             : return(false)
 
-    block scan(len: USize)
+    block scan()
         sa : USize = self.start.load()
         sb : USize = other.start.load()
         pa : @T    = self.storage.data.load()
         pb : @T    = other.storage.data.load()
-        jump loop(0, len, sa, sb, pa, pb)
+        jump loop(0, sa, sb, pa, pb)
 
-    block loop(i: USize, len: USize, sa: USize, sb: USize, pa: @T, pb: @T)
-        done : Bool = i.ge(len)
+    block loop(i: USize, sa: USize, sb: USize, pa: @T, pb: @T)
+        done : Bool = i.ge(la)
         branch done
             ? return(true)
-            : step(i, len, sa, sb, pa, pb)
+            : step(i, sa, sb, pa, pb)
 
-    block step(i: USize, len: USize, sa: USize, sb: USize, pa: @T, pb: @T)
+    block step(i: USize, sa: USize, sb: USize, pa: @T, pb: @T)
         x  : T    = pa.stride(sa.add(i)).load()
         y  : T    = pb.stride(sb.add(i)).load()
         eq : Bool = x.eq(y)
         branch eq
-            ? loop(i.add(1), len, sa, sb, pa, pb)
+            ? loop(i.add(1), sa, sb, pa, pb)
             : return(false)
 
 /// Overwrites the element at logical position `index` with `value`.
@@ -501,22 +506,23 @@ require T: typename
 #track_caller
 routine CircularList<T>.destruct_all(self: @Self) -> Void
 require T: typename, Destructible<T>
-    block entry()
-        iter_val : CircularListIter<T> = .construct(self)
-        claim iter : @CircularListIter<T> <- iter_val
-        claim slot : @T                   <- uninit
-        jump next(iter, slot)
+    shared iter_val : CircularListIter<T>  = .construct(self)
+    shared iter     : @CircularListIter<T> <- iter_val
+    shared slot     : @T                   <- uninit
 
-    block next(iter: @CircularListIter<T>, slot: @T)
+    block entry()
+        jump next()
+
+    block next()
         item : Option<T> = iter.next()
         when item
-            .Present(value) -> element(iter, slot, value)
+            .Present(value) -> element(value)
             .Absent         -> finish()
 
-    block element(iter: @CircularListIter<T>, slot: @T, value: T)
+    block element(value: T)
         slot.store(value)
         slot.destruct()
-        jump next(iter, slot)
+        jump next()
 
     block finish()
         self.destruct()

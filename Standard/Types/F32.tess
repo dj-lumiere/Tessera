@@ -542,9 +542,10 @@ routine F32.trunc(self: Self) -> Self
 /// Rounds toward zero.
 #target(arch: not "aarch64")
 routine F32.trunc(self: Self) -> Self
+    shared bits  : U32 = self.bits()
+    shared field : U32 = bits.shr(23).bitand(0xFF)
+
     block entry()
-        bits      : U32  = self.bits()
-        field     : U32  = bits.shr(23).bitand(0xFF)
         special   : Bool = field.eq(0xFF)
         integral  : Bool = field.ge(150)
         below_one : Bool = field.lt(127)
@@ -552,10 +553,10 @@ routine F32.trunc(self: Self) -> Self
             special   -> return(self.add(self))
             integral  -> return(self)
             below_one -> return(Self.from_bits(bits.bitand(0x80000000)))
-            else      -> fraction(bits, field)
+            else      -> fraction()
 
     // 1 <= |self| < 2^23: the lowest 150 - field bits are the fraction
-    block fraction(bits: U32, field: U32)
+    block fraction()
         mask : U32  = 1.shl(U32.sub(150, field)).sub(1)
         r    : Self = Self.from_bits(bits.bitand(mask.bitnot()))
         return(r)
@@ -604,21 +605,22 @@ routine F32.powi(self: Self, n: S32) -> Self
 
 /// Whether r lies exactly between two F32 values.
 private routine f32_on_midpoint_f64(r: F64) -> Bool
+    shared a : F64 = r.abs()
+
     block entry()
-        a   : F64  = r.abs()
         sub : Bool = a.lt(0x1p-126)
         branch sub
-            ? subnormal(a)
-            : normal(a)
+            ? subnormal()
+            : normal()
 
     // F32 keeps 23 fraction bits: a midpoint has bit 28 set and nothing below it.
-    block normal(a: F64)
+    block normal()
         low : U64  = a.bits().bitand(0x1FFFFFFF)
         mid : Bool = a.is_finite().bitand(low.eq(0x10000000))
         return(mid)
 
     // Below 2^-126 F32's quantum is 2^-149: a midpoint is an odd multiple of 2^-150.
-    block subnormal(a: F64)
+    block subnormal()
         t     : F64  = a.mul(0x1p150)
         whole : Bool = t.trunc().eq(t)
         odd   : Bool = t.mod(2.0).eq(1.0)
@@ -711,23 +713,24 @@ routine F32.from_bits(bits: U32) -> Self
 /// Rounds to nearest, ties to even. Written with integer operations instead of
 /// fptrunc, which calls compiler-rt's __truncsfhf2 (see F16's runtime support).
 routine F32.to<F16>(self: Self) -> F16
-    block entry()
-        bits      : U32 = self.bits()
-        high_half : U16 = bits.shr(16).to<U16>()
-        sign      : U16 = high_half.bitand(0x8000)
-        magnitude : U32 = bits.bitand(0x7FFFFFFF)
-        when
-            magnitude.ge(0x7F800000) -> special(sign, magnitude)
-            magnitude.ge(0x477FF000) -> overflow(sign)
-            magnitude.lt(0x38800000) -> subnormal(sign, magnitude)
-            else                     -> normal(sign, magnitude)
+    shared bits      : U32 = self.bits()
+    shared high_half : U16 = bits.shr(16).to<U16>()
+    shared sign      : U16 = high_half.bitand(0x8000)
+    shared magnitude : U32 = bits.bitand(0x7FFFFFFF)
 
-    block overflow(sign: U16)
+    block entry()
+        when
+            magnitude.ge(0x7F800000) -> special()
+            magnitude.ge(0x477FF000) -> overflow()
+            magnitude.lt(0x38800000) -> subnormal()
+            else                     -> normal()
+
+    block overflow()
         r : F16 = .from_bits(sign.bitor(0x7C00))
         return(r)
 
     // Infinity stays infinity. NaN keeps its top payload bits and is made quiet.
-    block special(sign: U16, magnitude: U32)
+    block special()
         payload_bits : U32  = magnitude.bitand(0x7FFFFF).shr(13)
         payload      : U16  = payload_bits.to<U16>()
         is_nan       : Bool = magnitude.gt(0x7F800000)
@@ -741,7 +744,7 @@ routine F32.to<F16>(self: Self) -> F16
     // Below F16's smallest normal: scale so one F16 subnormal step is 1.0, and
     // round to an integer (exact in F32, ties to even). 0x400 carries into the
     // smallest normal, which is the right encoding.
-    block subnormal(sign: U16, magnitude: U32)
+    block subnormal()
         scaled : Self = Self.from_bits(magnitude).mul(16777216.0)
         steps  : U16  = scaled.round_ties_even().to<U16>()
         r      : F16  = .from_bits(sign.bitor(steps))
@@ -749,7 +752,7 @@ routine F32.to<F16>(self: Self) -> F16
 
     // Round the 13 dropped mantissa bits to even, then rebias the exponent from
     // 127 to 15. A carry out of the mantissa bumps the exponent, as it should.
-    block normal(sign: U16, magnitude: U32)
+    block normal()
         lowest_kept : U32 = magnitude.shr(13).bitand(1)
         rounded     : U32 = magnitude.add(0xFFF).add(lowest_kept)
         rebiased    : U32 = rounded.shr(13).sub(0x1C000)
@@ -759,21 +762,22 @@ routine F32.to<F16>(self: Self) -> F16
 /// Rounds to nearest, ties to even, by adding a bias below the kept 16 bits.
 /// Written out because the Windows compiler-rt has no __truncsfbf2.
 routine F32.to<BF16>(self: Self) -> BF16
+    shared bits : U32 = self.bits()
+
     block entry()
-        bits : U32  = self.bits()
-        nan  : Bool = self.is_nan()
+        nan : Bool = self.is_nan()
         branch nan
-            ? quiet_nan(bits)
-            : round(bits)
+            ? quiet_nan()
+            : round()
 
     // Keep the sign and top payload bits, and force the quiet bit.
-    block quiet_nan(bits: U32)
+    block quiet_nan()
         high_half : U16  = bits.shr(16).to<U16>()
         top       : U16  = high_half.bitor(0x0040)
         r         : BF16 = .from_bits(top)
         return(r)
 
-    block round(bits: U32)
+    block round()
         lowest_kept  : U32  = bits.shr(16).bitand(1)
         bias         : U32  = lowest_kept.add(0x7FFF)
         rounded_bits : U32  = bits.add(bias).shr(16)

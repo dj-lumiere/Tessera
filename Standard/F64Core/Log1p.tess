@@ -152,15 +152,16 @@ preset CM_F64_LOG1P_CY: @Array<U64, 10> <- { 0x3FF0000000000000, 0x0000000000000
 
 /// ln(1 + self), accurate near 0.
 routine F64.ln_1p(self: Self) -> Self
+    shared ixu : U64 = self.bits()
+    shared ax  : U64 = ixu.shl(1)
+
     block entry()
-        ixu   : U64  = self.bits()
-        ax    : U64  = ixu.shl(1)
         small : Bool = ax.lt(0x7F60000000000000)  // |x| < 0.0625
         branch small
-            ? small(ax)
-            : large(ixu, ax)
+            ? small()
+            : large()
 
-    block small(ax: U64)
+    block small()
         tiny : Bool = ax.lt(0x7940000000000000)  // |x| < 2^-53
         branch tiny
             ? return(cm_f64_log1p_tiny(self))
@@ -168,10 +169,10 @@ routine F64.ln_1p(self: Self) -> Self
         x2         : Self = self.mul(self)
         very_small : Bool = ax.lt(0x7E60000000000000)  // |x| < 2^-12
         branch very_small
-            ? very_small(ax, x2)
+            ? very_small(x2)
             : medium(x2)
 
-    block very_small(ax: U64, x2: Self)
+    block very_small(x2: Self)
         eps   : Self = Self.mul(0x1.ap-64, self)
         short : Bool = ax.lt(0x7D43360000000000)  // |x| < 0x1.19bp-21
         branch short
@@ -204,7 +205,7 @@ routine F64.ln_1p(self: Self) -> Self
         jump decide(ln1, ln0.add(x3.mul(f)), x3.mul(0x1.b6p-52))
 
     // |x| >= 0.0625: 1 + x = t + dt
-    block large(ixu: U64, ax: U64)
+    block large()
         under_2p53 : Bool = ixu.to_wrap<S64>().lt(0x4340000000000000)
         near       : Bool = under_2p53.bitand(ixu.lt(0xBFF0000000000000))
         big        : Bool = ixu.lt(0x4690000000000000)  // 2^53 <= x < 2^106
@@ -306,30 +307,31 @@ private routine cm_f64_log1p_refine(x: F64, a: F64) -> F64
 
 /// The accurate path for |x| < 2^-10: a polynomial with double-double coefficients.
 private routine cm_f64_log1p_refine_near_zero(x: F64) -> F64
+    shared x2h : F64        = x.mul(x)
+    shared x2l : F64        = x.mul_add(x, x2h.neg())
+    shared x3  : CmF64LogDd = cm_f64_log1p_mulddd(x, x2h, x2l)
+
     block entry()
-        x2h : F64        = x.mul(x)
-        x2l : F64        = x.mul_add(x, x2h.neg())
-        x3  : CmF64LogDd = cm_f64_log1p_mulddd(x, x2h, x2l)
-        c01 : F64        = x.mul(0x1.c71c71c7185aap-4).add(-0x1.fffffffffc555p-4)
-        c23 : F64        = x.mul(0x1.745d51f1817c7p-4).add(-0x1.9999d44449a31p-4)
-        sl  : F64        = x.mul(c01.add(x2h.mul(c23)))
+        c01 : F64 = x.mul(0x1.c71c71c7185aap-4).add(-0x1.fffffffffc555p-4)
+        c23 : F64 = x.mul(0x1.745d51f1817c7p-4).add(-0x1.9999d44449a31p-4)
+        sl  : F64 = x.mul(c01.add(x2h.mul(c23)))
         // Horner evaluation of the double-double coefficients cz, in the double x
         h0 : CmF64LogDd = cm_f64_log1p_fasttwosum(F64.from_bits(CM_F64_LOG1P_CZ.getitem(8)), sl)
-        jump horner(4, h0.hi, F64.from_bits(CM_F64_LOG1P_CZ.getitem(9)).add(h0.lo), x2h, x2l, x3)
+        jump horner(4, h0.hi, F64.from_bits(CM_F64_LOG1P_CZ.getitem(9)).add(h0.lo))
 
-    block horner(i: USize, ch: F64, cl: F64, x2h: F64, x2l: F64, x3: CmF64LogDd)
+    block horner(i: USize, ch: F64, cl: F64)
         done : Bool = i.eq(0)
         branch done
-            ? finish(ch, cl, x2h, x2l, x3)
+            ? finish(ch, cl)
             : continue
         k  : USize      = i.sub(1)
         m  : CmF64LogDd = cm_f64_log1p_mulddd(x, ch, cl)
         zh : F64        = F64.from_bits(CM_F64_LOG1P_CZ.getitem(k.mul(2)))
         zl : F64        = F64.from_bits(CM_F64_LOG1P_CZ.getitem(k.mul(2).add(1)))
         t  : CmF64LogDd = cm_f64_log1p_fastsum(zh, zl, m.hi, m.lo)
-        jump horner(k, t.hi, t.lo, x2h, x2l, x3)
+        jump horner(k, t.hi, t.lo)
 
-    block finish(ch: F64, cl: F64, x2h: F64, x2l: F64, x3: CmF64LogDd)
+    block finish(ch: F64, cl: F64)
         p : CmF64LogDd = cm_f64_log1p_muldd(ch, cl, x3.hi, x3.lo)
         q : CmF64LogDd = cm_f64_log1p_fastsum(x2h.mul(-0.5), x2l.mul(-0.5), p.hi, p.lo)
         return(cm_f64_log1p_final(x, q.hi, q.lo))

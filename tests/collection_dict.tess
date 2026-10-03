@@ -33,21 +33,22 @@ require W: typename, Writer<W>
 
 // Folds every (key, value) pair in iteration order.
 routine iteration_hash(map: @Dict<S64, S64>) -> S64
-    block entry()
-        iter_val : DictIter<S64, S64> = .construct(map)
-        claim iter : @DictIter<S64, S64> <- iter_val
-        jump next(iter, 0)
+    shared iter_val : DictIter<S64, S64>  = .construct(map)
+    shared iter     : @DictIter<S64, S64> <- iter_val
 
-    block next(iter: @DictIter<S64, S64>, hash: S64)
+    block entry()
+        jump next(0)
+
+    block next(hash: S64)
         item : Option<KVPair<S64, S64>> = iter.next()
         when item
-            .Present(pair) -> fold(iter, hash, pair)
+            .Present(pair) -> fold(hash, pair)
             .Absent        -> return(hash)
 
-    block fold(iter: @DictIter<S64, S64>, hash: S64, pair: KVPair<S64, S64>)
+    block fold(hash: S64, pair: KVPair<S64, S64>)
         key   : S64 = pair.key
         value : S64 = pair.value
-        jump next(iter, mix(mix(hash, key), value))
+        jump next(mix(mix(hash, key), value))
 
 routine checkpoint(out: @BufWriter<Out>, map: @Dict<S64, S64>, phase: USize, op: USize,
     results: S64) -> Void
@@ -117,37 +118,37 @@ routine run_phase(out: @BufWriter<Out>, map: @Dict<S64, S64>, rng: @Rng, phase: 
 // Copies from into to in iteration order, but starting from its second half, so the two maps hold the same pairs in
 // a different insertion order.
 routine copy_rotated(from: @Dict<S64, S64>, to: @Dict<S64, S64>) -> Void
-    block entry()
-        size : USize = from.load().count()
-        half : USize = size.div(2)
-        jump pass(0, half, true)
+    shared size : USize               = from.load().count()
+    shared half : USize               = size.div(2)
+    shared iter : @DictIter<S64, S64> <- uninit
 
-    block pass(pass: USize, half: USize, second: Bool)
+    block entry()
+        jump pass(0, true)
+
+    block pass(pass: USize, second: Bool)
         done     : Bool               = pass.eq(2)
         iter_val : DictIter<S64, S64> = .construct(from)
-        claim iter : @DictIter<S64, S64> <- iter_val
+        iter.store(iter_val)
         branch done
             ? return()
-            : next(pass, half, second, iter, 0)
+            : next(pass, second, 0)
 
-    block next(pass: USize, half: USize, second: Bool, iter: @DictIter<S64, S64>, index: USize)
+    block next(pass: USize, second: Bool, index: USize)
         item : Option<KVPair<S64, S64>> = iter.next()
         when item
-            .Present(pair) -> consider(pass, half, second, iter, index, pair)
-            .Absent        -> pass(pass.add(1), half, second.bitnot())
+            .Present(pair) -> consider(pass, second, index, pair)
+            .Absent        -> pass(pass.add(1), second.bitnot())
 
-    block consider(pass: USize, half: USize, second: Bool, iter: @DictIter<S64, S64>, index: USize,
-        pair: KVPair<S64, S64>)
+    block consider(pass: USize, second: Bool, index: USize, pair: KVPair<S64, S64>)
         in_second : Bool = index.ge(half)
         wanted    : Bool = in_second.eq(second)
         branch wanted
-            ? copy(pass, half, second, iter, index, pair)
-            : next(pass, half, second, iter, index.add(1))
+            ? copy(pass, second, index, pair)
+            : next(pass, second, index.add(1))
 
-    block copy(pass: USize, half: USize, second: Bool, iter: @DictIter<S64, S64>, index: USize,
-        pair: KVPair<S64, S64>)
+    block copy(pass: USize, second: Bool, index: USize, pair: KVPair<S64, S64>)
         to.put(pair.key, pair.value)
-        jump next(pass, half, second, iter, index.add(1))
+        jump next(pass, second, index.add(1))
 
 routine report_eq(out: @BufWriter<Out>, label: Bytes, equal: Bool) -> Void
     block entry()

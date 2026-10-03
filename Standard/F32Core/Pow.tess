@@ -83,30 +83,31 @@ record CmF32PowDd
 
 /// self^exponent, correctly rounded.
 routine F32.powf(self: Self, exponent: Self) -> Self
+    shared tx  : U64 = self.to<F64>().bits()
+    shared ty  : U64 = exponent.to<F64>().bits()
+    shared tx2 : U64 = tx.shl(1)
+    shared ty2 : U64 = ty.shl(1)
+
     block entry()
-        tx      : U64  = self.to<F64>().bits()
-        ty      : U64  = exponent.to<F64>().bits()
-        tx2     : U64  = tx.shl(1)
-        ty2     : U64  = ty.shl(1)
         unit_x  : Bool = tx2.eq(0x7FE0000000000000)  // |x| = 1
         zero_y  : Bool = ty2.eq(0)
         special : Bool = ty2.ge(0xFFE0000000000000)  // y is ±inf or NaN
         unusual : Bool = tx.ge(0x7FF0000000000000)  // x is ±inf, NaN, or has its sign bit set
         when
-            unit_x  -> unit_base(tx, ty2)
+            unit_x  -> unit_base()
             zero_y  -> zero_exponent()
-            special -> special_exponent(tx2, ty, ty2)
-            unusual -> unusual_base(tx, tx2, ty)
-            else    -> finite_base(tx, tx2, ty)
+            special -> special_exponent()
+            unusual -> unusual_base()
+            else    -> finite_base()
 
-    block unit_base(tx: U64, ty2: U64)
+    block unit_base()
         minus : Bool = tx.shr(63).eq(1)
         branch minus
-            ? minus_one(ty2)
+            ? minus_one()
             : plus_one()
 
     // x = -1
-    block minus_one(ty2: U64)
+    block minus_one()
         nan_y   : Bool = ty2.gt(0xFFE0000000000000)
         odd     : Bool = cm_f32_pow_isodd(exponent)
         integer : Bool = cm_f32_pow_isint(exponent)
@@ -131,15 +132,15 @@ routine F32.powf(self: Self, exponent: Self) -> Self
             : return(1.0)
 
     // y = ±inf or NaN
-    block special_exponent(tx2: U64, ty: U64, ty2: U64)
+    block special_exponent()
         nan_x : Bool = tx2.gt(0xFFE0000000000000)
         inf_y : Bool = ty2.eq(0xFFE0000000000000)
         when
             nan_x -> return(self.add(exponent))
-            inf_y -> infinite_exponent(tx2, ty)
+            inf_y -> infinite_exponent()
             else  -> return(self.add(exponent))
 
-    block infinite_exponent(tx2: U64, ty: U64)
+    block infinite_exponent()
         below_one : Bool = tx2.lt(0x7FE0000000000000)
         negative  : Bool = ty.shr(63).eq(1)
         vanishes  : Bool = below_one.ne(negative)
@@ -148,7 +149,7 @@ routine F32.powf(self: Self, exponent: Self) -> Self
             : return(Self.INFINITY)
 
     // x is ±inf, NaN, or has its sign bit set
-    block unusual_base(tx: U64, tx2: U64, ty: U64)
+    block unusual_base()
         inf_x             : Bool = tx2.eq(0xFFE0000000000000)
         nan_x             : Bool = tx2.gt(0xFFE0000000000000)
         nonzero           : Bool = self.to<F64>().ne(0.0)
@@ -156,12 +157,12 @@ routine F32.powf(self: Self, exponent: Self) -> Self
         negative_fraction : Bool = tx.gt(0x7FF0000000000000).bitand(fraction)
         invalid           : Bool = negative_fraction.bitand(nonzero)
         when
-            inf_x   -> infinite_base(ty)
+            inf_x   -> infinite_base()
             nan_x   -> return(self.add(self))
             invalid -> return(Self.from_bits(0xFFC00000))
-            else    -> finite_base(tx, tx2, ty)
+            else    -> finite_base()
 
-    block infinite_base(ty: U64)
+    block infinite_base()
         odd  : Bool = cm_f32_pow_isodd(exponent)
         base : Self = odd
             ? self
@@ -171,14 +172,14 @@ routine F32.powf(self: Self, exponent: Self) -> Self
             ? return(Self.div(1.0, base))
             : return(base)
 
-    block finite_base(tx: U64, tx2: U64, ty: U64)
+    block finite_base()
         zero_x : Bool = tx2.eq(0)
         branch zero_x
-            ? zero_base(ty)
-            : reduce(tx, ty)
+            ? zero_base()
+            : reduce()
 
     // x = ±0
-    block zero_base(ty: U64)
+    block zero_base()
         negative : Bool = ty.shr(63).eq(1)
         odd      : Bool = cm_f32_pow_isodd(exponent)
         pole     : Bool = negative.bitand(odd)
@@ -189,7 +190,7 @@ routine F32.powf(self: Self, exponent: Self) -> Self
             else     -> return(0.0)
 
     // |x| = 2^e xd, with 1/xd approximated from a 32-entry table
-    block reduce(tx: U64, ty: U64)
+    block reduce()
         m               : U64 = tx.bitand(0x000FFFFFFFFFFFFF)
         biased_exponent : U64 = tx.shr(52).bitand(0x7FF)
         e0              : S64 = biased_exponent.to<S64>().sub(0x3FF)
@@ -221,7 +222,7 @@ routine F32.powf(self: Self, exponent: Self) -> Self
             over  -> overflow()
             under -> underflow()
             near1 -> return(t.add(1.0).to<Self>())
-            else  -> exp2(l, y16, zt, t, ty)
+            else  -> exp2(l, y16, zt, t)
 
     block overflow()
         odd : Bool = cm_f32_pow_isodd(exponent)
@@ -236,7 +237,7 @@ routine F32.powf(self: Self, exponent: Self) -> Self
             : return(Self.mul(0x1p-126, 0x1p-126))
 
     // 2^(t/16) = 2^el 2^(jl/16) 2^(h/16) with t = 16 el + jl + h
-    block exp2(l: F64, y16: F64, zt: F64, t: F64, ty: U64)
+    block exp2(l: F64, y16: F64, zt: F64, t: F64)
         ia          : F64  = t.floor()
         h           : F64  = l.mul_add(y16, zt.sub(ia))
         il          : S64  = ia.to<S64>()
@@ -256,10 +257,10 @@ routine F32.powf(self: Self, exponent: Self) -> Self
         hard        : Bool = biased_bits.bitand(0xFFFFFFF).le(936)
         branch hard
             ? return(cm_f32_pow_accurate(self, exponent))
-            : sign(rr, ty)
+            : sign(rr)
 
     // an odd integer y keeps the sign of x: kk has the units bit of y on top
-    block sign(rr: F64, ty: U64)
+    block sign(rr: F64)
         biased_exponent : U64  = ty.shr(52).bitand(0x7FF)
         et              : S64  = biased_exponent.to<S64>().sub(0x3FF)
         left            : Bool = et.ge(-11).bitand(et.lt(53))
@@ -279,17 +280,18 @@ routine F32.powf(self: Self, exponent: Self) -> Self
 
 /// True when y is an integer (or ±0).
 private routine cm_f32_pow_isint(y: F32) -> Bool
+    shared wy              : U32 = y.bits()
+    shared biased_exponent : U32 = wy.shr(23).bitand(0xFF)
+    shared ey              : S64 = biased_exponent.to<S64>().sub(127)
+    shared s               : S64 = ey.add(9)
+
     block entry()
-        wy              : U32  = y.bits()
-        biased_exponent : U32  = wy.shr(23).bitand(0xFF)
-        ey              : S64  = biased_exponent.to<S64>().sub(127)
-        s               : S64  = ey.add(9)
-        whole           : Bool = ey.ge(0)
+        whole : Bool = ey.ge(0)
         branch whole
-            ? big(wy, s)
+            ? big()
             : return(wy.shl(1).eq(0))
 
-    block big(wy: U32, s: S64)
+    block big()
         wide : Bool = s.ge(32)
         branch wide
             ? return(true)
@@ -297,26 +299,27 @@ private routine cm_f32_pow_isint(y: F32) -> Bool
 
 /// True when y is an odd integer.
 private routine cm_f32_pow_isodd(y: F32) -> Bool
+    shared wy              : U32 = y.bits()
+    shared biased_exponent : U32 = wy.shr(23).bitand(0xFF)
+    shared ey              : S64 = biased_exponent.to<S64>().sub(127)
+    shared s               : S64 = ey.add(9)
+
     block entry()
-        wy              : U32  = y.bits()
-        biased_exponent : U32  = wy.shr(23).bitand(0xFF)
-        ey              : S64  = biased_exponent.to<S64>().sub(127)
-        s               : S64  = ey.add(9)
-        inside          : Bool = ey.ge(0).bitand(s.lt(32))
-        last            : Bool = ey.ge(0).bitand(s.eq(32))
+        inside : Bool = ey.ge(0).bitand(s.lt(32))
+        last   : Bool = ey.ge(0).bitand(s.eq(32))
         when
-            inside -> fraction(wy, s)
+            inside -> fraction()
             last   -> return(wy.bitand(1).eq(1))
             else   -> return(false)
 
     // the units bit sits inside the mantissa: y is odd if nothing follows it and it is set
-    block fraction(wy: U32, s: S64)
+    block fraction()
         integer : Bool = wy.shl(s.to_wrap<U32>()).eq(0)
         branch integer
-            ? units(wy, s)
+            ? units()
             : return(false)
 
-    block units(wy: U32, s: S64)
+    block units()
         bit : U32 = wy.shr(S64.sub(32, s).to_wrap<U32>()).bitand(1)
         return(bit.eq(1))
 

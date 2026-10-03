@@ -231,29 +231,30 @@ routine ryu_shorten(start: RyuDigits, accept: Bool, e10: S64) -> FloatDecimal
 
 /// mantissa and exponent are the raw IEEE fields of a finite, nonzero F64.
 routine ryu_double_decimal(mantissa: U64, exponent: S64) -> FloatDecimal
+    shared subnormal : Bool = exponent.eq(0)
+    shared normal_m2 : U64  = mantissa.bitor(4503599627370496)  // 2^52
+    shared m2        : U64  = subnormal
+        ? mantissa
+        : normal_m2
+    shared biased : S64 = subnormal
+        ? 1
+        : exponent
+    shared unbiased : S64  = biased.sub(1023).sub(52)
+    shared e2       : S64  = unbiased.sub(2)
+    shared accept   : Bool = m2.bitand(1).eq(0)
+    shared mv       : U64  = m2.mul_wrap(4)
+    // the gap below is half as wide at the bottom of a binade
+    shared mm_shift_b : Bool = mantissa.ne(0).bitor(exponent.le(1))
+    shared mm_shift   : U64  = mm_shift_b.to<U64>()
+
     block entry()
-        subnormal : Bool = exponent.eq(0)
-        normal_m2 : U64  = mantissa.bitor(4503599627370496)  // 2^52
-        m2        : U64  = subnormal
-            ? mantissa
-            : normal_m2
-        biased : S64 = subnormal
-            ? 1
-            : exponent
-        unbiased : S64  = biased.sub(1023).sub(52)
-        e2       : S64  = unbiased.sub(2)
-        accept   : Bool = m2.bitand(1).eq(0)
-        mv       : U64  = m2.mul_wrap(4)
-        // the gap below is half as wide at the bottom of a binade
-        mm_shift_b : Bool = mantissa.ne(0).bitor(exponent.le(1))
-        mm_shift   : U64  = mm_shift_b.to<U64>()
-        nonneg     : Bool = e2.ge(0)
+        nonneg : Bool = e2.ge(0)
         branch nonneg
-            ? scale_down(e2, mv, mm_shift, accept)
-            : scale_up(e2, mv, mm_shift, accept)
+            ? scale_down()
+            : scale_up()
 
     // e2 >= 0: multiply by 2^e2 / 10^q through the inverse table.
-    block scale_down(e2: S64, mv: U64, mm_shift: U64, accept: Bool)
+    block scale_down()
         above3 : Bool  = e2.gt(3)
         q_u    : U64   = ryu_log10_pow2(e2.to<U64>()).sub(above3.to<U64>())
         q      : S64   = q_u.to<S64>()
@@ -285,7 +286,7 @@ routine ryu_double_decimal(mantissa: U64, exponent: S64) -> FloatDecimal
         return(r)
 
     // e2 < 0: multiply by 5^-e2 / 2^j through the power table.
-    block scale_up(e2: S64, mv: U64, mm_shift: U64, accept: Bool)
+    block scale_up()
         neg_e2 : S64   = 0.sub(e2)
         above1 : Bool  = neg_e2.gt(1)
         q_u    : U64   = ryu_log10_pow5(neg_e2.to<U64>()).sub(above1.to<U64>())
@@ -306,11 +307,11 @@ routine ryu_double_decimal(mantissa: U64, exponent: S64) -> FloatDecimal
         vm     : U64   = ryu_mul_shift64(mm, lo, hi, j)
         tiny   : Bool  = q.le(1)
         branch tiny
-            ? tiny_q(vr, vp, vm, e10, mm_shift, accept)
-            : wide_q(vr, vp, vm, e10, mv, q, accept)
+            ? tiny_q(vr, vp, vm, e10)
+            : wide_q(vr, vp, vm, e10, q)
 
     // q <= 1: vr is exact, and vm is exact when the gap below is a full one.
-    block tiny_q(vr: U64, vp: U64, vm: U64, e10: S64, mm_shift: U64, accept: Bool)
+    block tiny_q(vr: U64, vp: U64, vm: U64, e10: S64)
         vm_exact : Bool = accept.bitand(mm_shift.eq(1))
         vp_fixed : U64  = accept
             ? vp
@@ -321,7 +322,7 @@ routine ryu_double_decimal(mantissa: U64, exponent: S64) -> FloatDecimal
         return(r)
 
     // vr is exact when mv has at least q trailing zero bits.
-    block wide_q(vr: U64, vp: U64, vm: U64, e10: S64, mv: U64, q: S64, accept: Bool)
+    block wide_q(vr: U64, vp: U64, vm: U64, e10: S64, q: S64)
         checkable : Bool         = q.lt(63)
         shift     : S64          = q.min(62)
         vr_exact  : Bool         = checkable.bitand(ryu_multiple_of_pow2(mv, shift.to<U64>()))

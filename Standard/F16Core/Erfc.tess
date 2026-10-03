@@ -63,37 +63,38 @@ preset CM_F16_ERFC_CT: @Array<U64, 32> <- { 0x3FEC162355429B28, 0x400D9999999999
 
 /// 1 - erf(self), accurate where erf is near 1.
 routine F16.erfc(self: Self) -> Self
+    shared xf : F32 = self.to<F32>()
+    shared tu : U32 = xf.bits()
+    shared at : U32 = tu.bitand(0x7FFFFFFF)
+
     block entry()
-        xf   : F32  = self.to<F32>()
-        tu   : U32  = xf.bits()
-        at   : U32  = tu.bitand(0x7FFFFFFF)
         two  : Bool = tu.gt(0xC07547CA)  // for x < -0x1.ea8f94p+1, erfc(x) rounds to 2
         big  : Bool = at.ge(0x4120DDFC)  // for |x| >= 0x1.41bbf8p+3, erfc(x) < 2^-150 rounds to 0
         tiny : Bool = at.le(0x3DB80000)  // |x| <= 0x1.7p-4
         when
-            two  -> rounds_to_two(xf, tu)
-            big  -> rounds_to_zero(xf, at)
-            tiny -> near_zero(xf, tu, at)
-            else -> general(xf, tu, at)
+            two  -> rounds_to_two()
+            big  -> rounds_to_zero()
+            tiny -> near_zero()
+            else -> general()
 
-    block rounds_to_two(xf: F32, tu: U32)
+    block rounds_to_two()
         when
             tu.eq(0xFF800000) -> return(Self.from_bits(0x4000))  // erfc(-inf) = 2
             tu.gt(0xFF800000) -> return(xf.add(xf).to<Self>())
             else              -> return(F32.sub(2.0, 0x1p-25).to<Self>())
 
-    block rounds_to_zero(xf: F32, at: U32)
+    block rounds_to_zero()
         when
             at.eq(0x7F800000) -> return(Self.from_bits(0))  // erfc(+inf) = +0
             at.gt(0x7F800000) -> return(xf.add(xf).to<Self>())
             else              -> return(F32.mul(0x1p-149, 0.25).to<Self>())
 
     // |x| <= 0x1.7p-4
-    block near_zero(xf: F32, tu: U32, at: U32)
+    block near_zero()
         one : Bool = at.le(0x32E2DFC4)  // for |x| <= 0x1.c5bf88p-26, erfc(x) rounds to 1
         when
             tu.eq(0xB76C9F62) -> return(F32.add(0x1.00010ap+0, 0x1p-25).to<Self>())
-            one               -> rounds_to_one(tu, at)
+            one               -> rounds_to_one()
             else              -> continue
         // around 0, erfc(x) behaves as 1 - (odd polynomial)
         axd : F64 = xf.abs().to<F64>()
@@ -105,7 +106,7 @@ routine F16.erfc(self: Self) -> Self
         f0  : F64 = xf.to<F64>().mul(p3)
         return(F64.sub(1.0, f0).to<Self>())
 
-    block rounds_to_one(tu: U32, at: U32)
+    block rounds_to_one()
         zero     : Bool = at.eq(0)
         positive : Bool = tu.shr(31).eq(0)
         when
@@ -114,7 +115,7 @@ routine F16.erfc(self: Self) -> Self
             else     -> return(F32.add(1.0, 0x1p-25).to<Self>())
 
     // -0x1.ea8f94p+1 <= x < 0x1.41bbf8p+3 with |x| > 0x1.7p-4: erfc(|x|) = exp(-x^2) poly(z)
-    block general(xf: F32, tu: U32, at: U32)
+    block general()
         axd : F64   = xf.abs().to<F64>()
         x2  : F64   = axd.mul(axd)
         sgn : U32   = tu.shr(31)

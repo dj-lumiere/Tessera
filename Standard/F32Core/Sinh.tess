@@ -25,17 +25,18 @@ preset CM_F32_SINH_TB: @Array<U64, 32> <- { 0x3FE0000000000000, 0x3FE059B0D31585
 
 /// sinh self, correctly rounded.
 routine F32.sinh(self: Self) -> Self
+    shared ux : U32 = self.bits().shl(1)
+
     block entry()
-        ux    : U32  = self.bits().shl(1)
         large : Bool = ux.gt(0x8565A9F8)
         small : Bool = ux.lt(0x7C000000)
         when
-            large -> large(ux)
-            small -> small(ux)
+            large -> large()
+            small -> small()
             else  -> return(cm_f32_sinh_main(self.to<F64>()))
 
     // |x| > 0x1.65a9f8p+6: NaN, infinities, or overflow
-    block large(ux: U32)
+    block large()
         nan      : Bool = ux.gt(0xFF000000)
         infinite : Bool = ux.eq(0xFF000000)
         when
@@ -44,7 +45,7 @@ routine F32.sinh(self: Self) -> Self
             else     -> return(Self.INFINITY.copysign(self))
 
     // |x| < 0.125
-    block small(ux: U32)
+    block small()
         tiny  : Bool = ux.lt(0x66000000)
         hard  : Bool = ux.eq(0x74250BFE)
         cubic : Bool = ux.lt(0x74250BFE)  // |x| < 0x1.250bfep-11
@@ -90,9 +91,10 @@ routine cm_f32_sinh_scale(ia: F64, minus: Bool) -> F64
 
 /// The main path of sinh, for 0.125 <= |x| without overflow: e^x / 2 - e^-x / 2 from a 2^(k/32) table.
 private routine cm_f32_sinh_main(z: F64) -> F32
+    shared a  : F64 = z.mul(0x1.71547652b82fep+5)  // 32 x / ln(2)
+    shared ia : F64 = a.round_ties_even()
+
     block entry()
-        a    : F64  = z.mul(0x1.71547652b82fep+5)  // 32 x / ln(2)
-        ia   : F64  = a.round_ties_even()
         h    : F64  = a.sub(ia)
         h2   : F64  = h.mul(h)
         sp   : F64  = cm_f32_sinh_scale(ia, false)
@@ -107,10 +109,10 @@ private routine cm_f32_sinh_main(z: F64) -> F32
         sure : Bool = ub.eq(lb)
         branch sure
             ? return(ub)
-            : slow(ia, sp, sm)
+            : slow(sp, sm)
 
     // too close to a rounding boundary: redo it with a split 32 / ln(2) and a longer polynomial
-    block slow(ia: F64, sp: F64, sm: F64)
+    block slow(sp: F64, sm: F64)
         h_hi : F64 = z.mul(0x1.7154765p+5).sub(ia)
         h    : F64 = h_hi.add(z.mul(0x1.5c17f0bbbe88p-26))
         h2   : F64 = h.mul(h)

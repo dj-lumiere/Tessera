@@ -465,16 +465,17 @@ record CmF64GammaLogArg
 
 /// Γ(self): ±inf at ±0, NaN at the negative integers and -inf.
 routine F64.gamma(self: Self) -> Self
+    shared f : CmF64TgammaFast = cm_f64_tgamma_dd(self)
+
     block entry()
-        f  : CmF64TgammaFast = cm_f64_tgamma_dd(self)
-        st : U64             = f.status
+        st : U64 = f.status
         when st
-            0    -> fast(f)
-            2    -> reflected(f)
+            0    -> fast()
+            2    -> reflected()
             else -> return(cm_f64_tgamma_special(self))
 
     // the fast phase decides unless the error bound straddles a rounding boundary
-    block fast(f: CmF64TgammaFast)
+    block fast()
         ub     : Self = f.hi.add(f.lo.add(f.eps))
         lb     : Self = f.hi.add(f.lo.sub(f.eps))
         unsure : Bool = ub.ne(lb)
@@ -484,17 +485,17 @@ routine F64.gamma(self: Self) -> Self
         return(Self.from_bits(ub.bits().add_wrap(f.sc.to_wrap<U64>().shl(52))))
 
     // reflection whose result may be subnormal: hi + lo is the value times 2^e, e = -sc
-    block reflected(f: CmF64TgammaFast)
+    block reflected()
         e         : S64  = f.sc.neg()
         sign_exp  : U64  = f.hi.bits().shr(52)
         re        : S64  = sign_exp.bitand(0x7FF).to<S64>()
         subnormal : Bool = re.sub(e).le(0)
         branch subnormal
-            ? subnormal(f, e, re)
-            : normal(f, e)
+            ? subnormal(e, re)
+            : normal(e)
 
     // round at the subnormal quantum: add a power of two that fixes the exponent, then strip it
-    block subnormal(f: CmF64TgammaFast, e: S64, re: S64)
+    block subnormal(e: S64, re: S64)
         shift_exp : S64          = e.sub(re).add(1)
         th        : U64          = f.hi.bits().add_wrap(shift_exp.to_wrap<U64>().shl(52))
         s         : CmF64GammaDD = cm_f64_gamma_fasttwosum(
@@ -507,7 +508,7 @@ routine F64.gamma(self: Self) -> Self
             ? return(cm_f64_tgamma_accurate(self))
             : return(Self.from_bits(ub.bits().bitand(0x800FFFFFFFFFFFFF)))
 
-    block normal(f: CmF64TgammaFast, e: S64)
+    block normal(e: S64)
         ub     : Self = f.hi.add(f.lo.add(f.eps))
         lb     : Self = f.hi.add(f.lo.sub(f.eps))
         unsure : Bool = ub.ne(lb)
@@ -518,19 +519,20 @@ routine F64.gamma(self: Self) -> Self
 /// gamma(x) for the inputs the fast phase leaves out: NaN, infinities, |x| < 2^-112,
 /// overflow, integers, and x <= -184.
 private routine cm_f64_tgamma_special(x: F64) -> F64
+    shared t  : U64 = x.bits()
+    shared ax : U64 = t.shl(1)
+    shared fx : F64 = x.floor()
+
     block entry()
-        t  : U64 = x.bits()
-        ax : U64 = t.shl(1)
-        fx : F64 = x.floor()
         when
-            ax.ge(0xFFE0000000000000)  -> non_finite(t, ax)
+            ax.ge(0xFFE0000000000000)  -> non_finite()
             ax.lt(0x71E0000000000000)  -> tiny()
             x.ge(0x1.573fae561f648p+7) -> return(F64.add(0x1.fp+1023, 0x1.fp+1023))
-            fx.eq(x)                   -> integer(fx)
-            else                       -> under(fx)
+            fx.eq(x)                   -> integer()
+            else                       -> under()
 
     // -inf has no gamma (the default NaN), +inf maps to itself, and x + x quiets a NaN
-    block non_finite(t: U64, ax: U64)
+    block non_finite()
         infinite : Bool = ax.eq(0xFFE0000000000000)
         minusinf : Bool = infinite.bitand(t.shr(63).eq(1))
         when
@@ -556,7 +558,7 @@ private routine cm_f64_tgamma_special(x: F64) -> F64
             : return(r)
 
     // an integer: +-0 is a pole of the sign of x, a negative integer a NaN pole, and k gives (k-1)!
-    block integer(fx: F64)
+    block integer()
         zero     : Bool = x.eq(0.0)
         negative : Bool = x.lt(0.0)
         when
@@ -575,7 +577,7 @@ private routine cm_f64_tgamma_special(x: F64) -> F64
         jump factorial(k, i.add(1), m.hi, m.lo, x0.add(1.0))
 
     // x <= -184, not an integer: |gamma(x)| < 2^-1078 rounds to a zero with the sign of gamma
-    block under(fx: F64)
+    block under()
         fits : Bool = fx.ge(-0x1p+62)
         branch fits
             ? parity(fx.to<S64>())
@@ -1059,21 +1061,23 @@ private routine cm_f64_tgamma_stride2(z: F64, q: USize) -> F64
 
 /// ln(gamma(x)) for x = xh + xl > 3 from Stirling's asymptotic series.
 private routine cm_f64_tgamma_lgamma_asym(xh: F64, xl: F64) -> CmF64GammaDD
-    block entry()
-        zh     : F64          = F64.div(1.0, xh)
-        dz     : F64          = xl.mul(zh)
-        zh_err : F64          = zh.mul_add(xh.neg(), 1.0).sub(dz)
-        zl     : F64          = zh_err.mul(zh)
-        lg     : CmF64GammaDD = cm_f64_gamma_logd(xh)
-        l      : CmF64GammaDD = cm_f64_gamma_muldd(xh.sub(0.5), xl, lg.hi.sub(1.0), lg.lo.add(dz))
-        z2     : CmF64GammaDD = cm_f64_gamma_muldd(zh, zl, zh, zl)
-        x2     : F64          = z2.hi.mul(z2.hi)
-        big    : Bool         = xh.gt(11.5)
-        branch big
-            ? large(zh, zl, l, z2, x2)
-            : small(zh, zl, l, z2, x2)
+    shared zh     : F64          = F64.div(1.0, xh)
+    shared dz     : F64          = xl.mul(zh)
+    shared zh_err : F64          = zh.mul_add(xh.neg(), 1.0).sub(dz)
+    shared zl     : F64          = zh_err.mul(zh)
+    shared lg     : CmF64GammaDD = cm_f64_gamma_logd(xh)
+    shared l      : CmF64GammaDD = cm_f64_gamma_muldd(xh.sub(0.5), xl, lg.hi.sub(1.0),
+        lg.lo.add(dz))
+    shared z2     : CmF64GammaDD = cm_f64_gamma_muldd(zh, zl, zh, zl)
+    shared x2     : F64          = z2.hi.mul(z2.hi)
 
-    block large(zh: F64, zl: F64, l: CmF64GammaDD, z2: CmF64GammaDD, x2: F64)
+    block entry()
+        big : Bool = xh.gt(11.5)
+        branch big
+            ? large()
+            : small()
+
+    block large()
         a : CmF64GammaDD = cm_f64_gamma_fastsum(l.hi, l.lo, cm_f64_tgamma_t(1437),
             cm_f64_tgamma_t(1438))
         // the high parts of the pairs 2..7
@@ -1081,9 +1085,9 @@ private routine cm_f64_tgamma_lgamma_asym(xh: F64, xl: F64) -> CmF64GammaDD
         q2 : F64 = cm_f64_tgamma_stride2(z2.hi, 1445)
         q4 : F64 = cm_f64_tgamma_stride2(z2.hi, 1449)
         fl : F64 = z2.hi.mul(q0.add(x2.mul(q2.add(x2.mul(q4)))))
-        jump finish(zh, zl, a, cm_f64_tgamma_polydd(z2.hi, z2.lo, 1, 1439, fl))
+        jump finish(a, cm_f64_tgamma_polydd(z2.hi, z2.lo, 1, 1439, fl))
 
-    block small(zh: F64, zl: F64, l: CmF64GammaDD, z2: CmF64GammaDD, x2: F64)
+    block small()
         a  : CmF64GammaDD = cm_f64_gamma_fastsum(l.hi, l.lo, cm_f64_tgamma_t(1453),
             cm_f64_tgamma_t(1454))
         x4 : F64          = x2.mul(x2)
@@ -1096,9 +1100,9 @@ private routine cm_f64_tgamma_lgamma_asym(xh: F64, xl: F64) -> CmF64GammaDD
         hi : F64 = q4.add(x2.mul(q6.add(x2.mul(q8))))
         lo : F64 = q0.add(x2.mul(q2))
         q  : F64 = lo.add(x4.mul(hi))
-        jump finish(zh, zl, a, cm_f64_tgamma_polydd(z2.hi, z2.lo, 2, 1455, z2.hi.mul(q)))
+        jump finish(a, cm_f64_tgamma_polydd(z2.hi, z2.lo, 2, 1455, z2.hi.mul(q)))
 
-    block finish(zh: F64, zl: F64, a: CmF64GammaDD, f: CmF64GammaDD)
+    block finish(a: CmF64GammaDD, f: CmF64GammaDD)
         g : CmF64GammaDD = cm_f64_gamma_muldd(zh, zl, f.hi, f.lo)
         return(cm_f64_gamma_fastsum(a.hi, a.lo, g.hi, g.lo))
 

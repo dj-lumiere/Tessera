@@ -197,14 +197,15 @@ routine Scheduler.spawn_joinable(self: @Self, entry: Callable<(Addr,), Void>, ar
 /// The fiber running this code, if it is one of this scheduler's, or null: its handle for wake.
 #target(os: not "none")
 routine Scheduler.current(self: @Self) -> @FiberState
+    shared w : @Worker = current_worker()
+
     block entry()
-        w       : @Worker = current_worker()
-        outside : Bool    = w.is_null()
+        outside : Bool = w.is_null()
         branch outside
             ? return(null)
-            : check(w)
+            : check()
 
-    block check(w: @Worker)
+    block check()
         ours : Bool = w.sched.load().ptr_eq(self)
         branch ours
             ? return(w.current.load())
@@ -214,22 +215,23 @@ routine Scheduler.current(self: @Self) -> @FiberState
 /// nothing.
 #target(os: not "none")
 routine Scheduler.yield(self: @Self) -> Void
+    shared w : @Worker = current_worker()
+
     block entry()
-        w       : @Worker = current_worker()
-        outside : Bool    = w.is_null()
+        outside : Bool = w.is_null()
         branch outside
             ? return()
-            : inside(w)
+            : inside()
 
-    block inside(w: @Worker)
+    block inside()
         fiber : @FiberState = w.current.load()
         loop  : Bool        = fiber.is_null()
         branch loop
             ? return()
-            : give_way(w, fiber)
+            : give_way(fiber)
 
     // The worker queues the fiber once it is back on its own stack (see resume).
-    block give_way(w: @Worker, fiber: @FiberState)
+    block give_way(fiber: @FiberState)
         switch_stack(fiber.sp, w.home.load())
         return()
 
@@ -237,26 +239,27 @@ routine Scheduler.yield(self: @Self) -> Void
 /// last park. It may also return without one, so a fiber checks what it waits for again. Outside a fiber it returns.
 #target(os: not "none")
 routine Scheduler.park(self: @Self) -> Void
+    shared fiber : @FiberState = self.current()
+
     block entry()
-        fiber : @FiberState = self.current()
-        none  : Bool        = fiber.is_null()
+        none : Bool = fiber.is_null()
         branch none
             ? return()
-            : inside(fiber)
+            : inside()
 
-    block inside(fiber: @FiberState)
+    block inside()
         parking : Bool = compare_exchange(fiber.wake_state, FIBER_RUNNING, FIBER_PARKING)
         branch parking
-            ? stop(fiber)
-            : notified(fiber)
+            ? stop()
+            : notified()
 
     // A wake came first: this park is over before it starts.
-    block notified(fiber: @FiberState)
+    block notified()
         fiber.wake_state.atomic_store(FIBER_RUNNING)
         return()
 
     // The worker decides, once the fiber is off its stack, whether a wake came meanwhile (see commit_park).
-    block stop(fiber: @FiberState)
+    block stop()
         fiber.then.store(commit_park.to<Callable>())
         switch_stack(fiber.sp, current_worker().home.load())
         return()
@@ -299,20 +302,21 @@ routine Scheduler.wake(self: @Self, fiber: @FiberState) -> Void
 /// thread waits.
 #target(os: not "none")
 routine Scheduler.sleep(self: @Self, ns: U64) -> Void
-    block entry()
-        deadline : U64         = monotonic_ns().add_clamp(ns)
-        fiber    : @FiberState = self.current()
-        none     : Bool        = fiber.is_null()
-        branch none
-            ? thread(deadline)
-            : inside(fiber, deadline)
+    shared deadline : U64         = monotonic_ns().add_clamp(ns)
+    shared fiber    : @FiberState = self.current()
 
-    block thread(deadline: U64)
+    block entry()
+        none : Bool = fiber.is_null()
+        branch none
+            ? thread()
+            : inside()
+
+    block thread()
         sleep_thread(deadline)
         return()
 
     // The worker puts it in the timers once it is off its stack (see to_timers).
-    block inside(fiber: @FiberState, deadline: U64)
+    block inside()
         fiber.deadline.store(deadline)
         fiber.then.store(to_timers.to<Callable>())
         switch_stack(fiber.sp, current_worker().home.load())
@@ -322,15 +326,16 @@ routine Scheduler.sleep(self: @Self, ns: U64) -> Void
 /// with other fibers meanwhile, and outside one the thread waits.
 #target(os: not "none")
 routine Scheduler.join(self: @Self, j: @Join) -> Void
+    shared fiber : @FiberState = self.current()
+
     block entry()
-        fiber : @FiberState = self.current()
-        none  : Bool        = fiber.is_null()
+        none : Bool = fiber.is_null()
         branch none
             ? thread()
-            : inside(fiber)
+            : inside()
 
     // The worker decides, once the fiber is off its stack, whether to wait (see commit_join).
-    block inside(fiber: @FiberState)
+    block inside()
         fiber.waiting_for.store(j)
         fiber.then.store(commit_join.to<Callable>())
         switch_stack(fiber.sp, current_worker().home.load())
@@ -464,19 +469,20 @@ routine Scheduler.destruct(self: @Self) -> Void
 /// waits until the call is over.
 #target(os: not "none")
 routine Scheduler.run_blocking(self: @Self, work: Callable<(Addr,), Void>, arg: Addr) -> Void
+    shared fiber : @FiberState = self.current()
+
     block entry()
-        fiber : @FiberState = self.current()
-        none  : Bool        = fiber.is_null()
+        none : Bool = fiber.is_null()
         branch none
             ? direct()
-            : park(fiber)
+            : park()
 
     block direct()
         work.call(arg)
         return()
 
     // The worker hands the fiber to the I/O threads once it is back on its own stack (see to_io).
-    block park(fiber: @FiberState)
+    block park()
         fiber.work.store(work)
         fiber.work_arg.store(arg)
         fiber.then.store(to_io.to<Callable>())
@@ -527,20 +533,21 @@ private routine to_timers(w: @Worker, fiber: @FiberState) -> Void
 /// A join: queued again if the fiber it waits for has returned, else that fiber's worker queues it when it does.
 #target(os: not "none")
 private routine commit_join(w: @Worker, fiber: @FiberState) -> Void
+    shared j : @Join = fiber.waiting_for.load()
+
     block entry()
-        j : @Join = fiber.waiting_for.load()
         j.lock.lock()
         done : Bool = j.done.atomic_load().eq(1)
         branch done
-            ? ready(j)
-            : wait(j)
+            ? ready()
+            : wait()
 
-    block ready(j: @Join)
+    block ready()
         j.lock.unlock()
         requeue(w, fiber)
         return()
 
-    block wait(j: @Join)
+    block wait()
         j.waiter.store(fiber)
         j.lock.unlock()
         return()
@@ -565,35 +572,36 @@ preset IO_THREADS: USize = 4
 
 #target(os: not "none")
 private routine io_main(raw: Addr) -> Void
+    shared sched : @Scheduler = raw.to<@Scheduler>()
+
     block entry()
-        sched : @Scheduler = raw.to<@Scheduler>()
-        jump look(sched)
+        jump look()
 
     // Reads the epoch before looking, so a call queued in between changes it and the wait returns.
-    block look(sched: @Scheduler)
+    block look()
         seen  : U32         = sched.io_epoch.atomic_load()
         fiber : @FiberState = pop_front_locked(sched.io_lock, sched.io_queue)
         none  : Bool        = fiber.is_null()
         branch none
-            ? idle(sched, seen)
-            : call(sched, fiber)
+            ? idle(seen)
+            : call(fiber)
 
-    block idle(sched: @Scheduler, seen: U32)
+    block idle(seen: U32)
         stop : Bool = sched.io_stop.atomic_load().eq(1)
         branch stop
             ? return()
-            : sleep(sched, seen)
+            : sleep(seen)
 
-    block sleep(sched: @Scheduler, seen: U32)
+    block sleep(seen: U32)
         wait_on(sched.io_epoch, seen)
-        jump look(sched)
+        jump look()
 
     // The call is over: the fiber is ready again, in the workers' queues in turn.
-    block call(sched: @Scheduler, fiber: @FiberState)
+    block call(fiber: @FiberState)
         work : Callable<(Addr,), Void> = fiber.work.load()
         work.call(fiber.work_arg.load())
         place_ready(sched, fiber)
-        jump look(sched)
+        jump look()
 
 // -- the workers ---------------------------------------------------------------------
 
@@ -692,37 +700,38 @@ private routine find_work(w: @Worker) -> @FiberState
 /// Moves the sleeping fibers that are due into w's queue.
 #target(os: not "none")
 private routine fire_timers(w: @Worker) -> Void
+    shared sched : @Scheduler = w.sched.load()
+
     block entry()
-        sched : @Scheduler = w.sched.load()
-        any   : Bool       = sched.timer_count.atomic_load().ne(0)
+        any : Bool = sched.timer_count.atomic_load().ne(0)
         branch any
-            ? check(sched)
+            ? check()
             : return()
 
-    block check(sched: @Scheduler)
+    block check()
         now : U64 = monotonic_ns()
         sched.timer_lock.lock()
-        jump next(sched, now, false)
+        jump next(now, false)
 
-    block next(sched: @Scheduler, now: U64, fired: Bool)
+    block next(now: U64, fired: Bool)
         empty : Bool = sched.timers.load().is_empty()
         branch empty
-            ? done(sched, fired)
+            ? done(fired)
             : continue
         earliest : TimerEntry = sched.timers.load().peek()
         due      : Bool       = earliest.deadline.le(now)
         branch due
-            ? fire(sched, now)
-            : done(sched, fired)
+            ? fire(now)
+            : done(fired)
 
-    block fire(sched: @Scheduler, now: U64)
+    block fire(now: U64)
         entry : TimerEntry = sched.timers.pop()
         sched.timer_count.atomic_fetch_sub(1)
         push_ready(w, entry.fiber)
-        jump next(sched, now, true)
+        jump next(now, true)
 
     // Others may take what this worker can't get to first.
-    block done(sched: @Scheduler, fired: Bool)
+    block done(fired: Bool)
         sched.timer_lock.unlock()
         branch fired
             ? continue
@@ -878,18 +887,19 @@ private routine notify(sched: @Scheduler) -> Void
 /// A thread outside a fiber waits until deadline.
 #target(os: not "none")
 private routine sleep_thread(deadline: U64) -> Void
-    block entry()
-        claim never : @U32 <- 0
-        jump look(never)
+    shared never : @U32 <- 0
 
-    block look(never: @U32)
+    block entry()
+        jump look()
+
+    block look()
         now  : U64  = monotonic_ns()
         done : Bool = now.ge(deadline)
         branch done
             ? return()
             : continue
         wait_on_for(never, 0, deadline.sub(now))
-        jump look(never)
+        jump look()
 
 /// Writes new at at if expected is there, and says whether it did.
 #target(os: not "none")

@@ -47,42 +47,43 @@ preset CM_F32_LGAMMA_EXC_DF: @Array<U32, 27> <- { 0xB5800000, 0xB5800000, 0x3500
 
 /// ln |Γ(self)|: +inf at 0 and the negative integers.
 routine F32.ln_gamma(self: Self) -> Self
+    shared fx : Self = self.floor()
+    shared ax : Self = self.abs()
+    shared tu : U32  = ax.bits()
+
     block entry()
-        fx      : Self = self.floor()
-        ax      : Self = self.abs()
-        tu      : U32  = ax.bits()
         special : Bool = tu.ge(0x7F800000)
         integer : Bool = fx.eq(self)
         when
-            special -> special(tu)
-            integer -> integer(fx, ax, tu)
-            else    -> general(fx, ax, tu)
+            special -> special()
+            integer -> integer()
+            else    -> general()
 
     // +-inf gives +inf, NaN comes back quiet
-    block special(tu: U32)
+    block special()
         infinite : Bool = tu.eq(0x7F800000)
         branch infinite
             ? return(self.mul(self))
             : return(self.add(self))
 
     // an integer: a pole at 0 and the negative integers, and log(gamma) = 0 at 1 and 2
-    block integer(fx: Self, ax: Self, tu: U32)
+    block integer()
         pole : Bool = self.le(0.0)
         zero : Bool = self.eq(1.0).bitor(self.eq(2.0))
         when
             pole -> return(Self.from_bits(0x7F800000))
             zero -> return(0.0)
-            else -> general(fx, ax, tu)
+            else -> general()
 
-    block general(fx: Self, ax: Self, tu: U32)
+    block general()
         z     : F64  = ax.to<F64>()
         s     : F64  = self.to<F64>()
         small : Bool = ax.lt(0x1.52p-1)
         large : Bool = ax.gt(0x1.afc1ap+1)
         when
             small -> small(z, s)
-            large -> large(fx, ax, z)
-            else  -> middle(fx, tu, z, s)
+            large -> large(z)
+            else  -> middle(z, s)
 
     // |x| < 0x1.52p-1: a rational approximation of log|gamma(x)| + log|x|
     block small(z: F64, s: F64)
@@ -99,13 +100,13 @@ routine F32.ln_gamma(self: Self) -> Self
         jump finish(num.div(den).sub(cm_f32_lgamma_ln(z)))
 
     // |x| > 0x1.afc1ap+1: Stirling's series
-    block large(fx: Self, ax: Self, z: F64)
+    block large(z: F64)
         huge : Bool = self.ge(0x1.895f1cp+121)
         branch huge
             ? return(self.mul_add(0x1.4d3398p+6, 0x1.10f35ep+103))
-            : stirling(fx, ax, z)
+            : stirling(z)
 
-    block stirling(fx: Self, ax: Self, z: F64)
+    block stirling(z: F64)
         lz            : F64  = cm_f32_lgamma_ln(z)
         stirling_lead : F64  = z.sub(0.5).mul(lz.sub(1.0))
         f             : F64  = stirling_lead.add(0x1.acfe390c97d69p-2)
@@ -116,24 +117,24 @@ routine F32.ln_gamma(self: Self) -> Self
         terms2        : Bool = ax.gt(0x1.279a7p+6)
         terms4        : Bool = ax.gt(0x1.555556p+3)
         when
-            exact  -> reflect_check(fx, f, lz)
-            terms1 -> reflect_check(fx, f.add(iz.mul(0x1.5555555555555p-4)), lz)
-            terms2 -> terms2(fx, f, lz, iz, iz2)
-            terms4 -> terms4(fx, f, lz, iz, iz2)
-            else   -> terms8(fx, f, lz, iz, iz2)
+            exact  -> reflect_check(f, lz)
+            terms1 -> reflect_check(f.add(iz.mul(0x1.5555555555555p-4)), lz)
+            terms2 -> terms2(f, lz, iz, iz2)
+            terms4 -> terms4(f, lz, iz, iz2)
+            else   -> terms8(f, lz, iz, iz2)
 
-    block terms2(fx: Self, f: F64, lz: F64, iz: F64, iz2: F64)
+    block terms2(f: F64, lz: F64, iz: F64, iz2: F64)
         p : F64 = iz2.mul(-0x1.6c0fd270c465p-9).add(0x1.555555547fbadp-4)
-        jump reflect_check(fx, f.add(iz.mul(p)), lz)
+        jump reflect_check(f.add(iz.mul(p)), lz)
 
-    block terms4(fx: Self, f: F64, lz: F64, iz: F64, iz2: F64)
+    block terms4(f: F64, lz: F64, iz: F64, iz2: F64)
         iz4 : F64 = iz2.mul(iz2)
         p0  : F64 = iz2.mul(-0x1.6c16bdc45944fp-9).add(0x1.555555554de0bp-4)
         p2  : F64 = iz2.mul(-0x1.2e9cfff3b29c2p-11).add(0x1.a0077f300ecb3p-11)
         p   : F64 = p0.add(iz4.mul(p2))
-        jump reflect_check(fx, f.add(iz.mul(p)), lz)
+        jump reflect_check(f.add(iz.mul(p)), lz)
 
-    block terms8(fx: Self, f: F64, lz: F64, iz: F64, iz2: F64)
+    block terms8(f: F64, lz: F64, iz: F64, iz2: F64)
         iz4 : F64 = iz2.mul(iz2)
         iz8 : F64 = iz4.mul(iz4)
         p0  : F64 = iz2.mul(-0x1.6c16c0e7c4cf4p-9).add(0x1.5555555551286p-4)
@@ -143,22 +144,22 @@ routine F32.ln_gamma(self: Self) -> Self
         lo  : F64 = p0.add(iz4.mul(p2))
         hi  : F64 = p4.add(iz4.mul(p6))
         p   : F64 = lo.add(iz8.mul(hi))
-        jump reflect_check(fx, f.add(iz.mul(p)), lz)
+        jump reflect_check(f.add(iz.mul(p)), lz)
 
-    block reflect_check(fx: Self, f: F64, lz: F64)
+    block reflect_check(f: F64, lz: F64)
         negative : Bool = self.lt(0.0)
         branch negative
-            ? reflect(fx, f, lz)
+            ? reflect(f, lz)
             : finish(f)
 
     // log|gamma(x)| = log(pi) - log|gamma(-x)| - log(-x) - log|sin(pi x)|
-    block reflect(fx: Self, f: F64, lz: F64)
+    block reflect(f: F64, lz: F64)
         g  : F64 = F64.sub(0x1.250d048e7a1bdp+0, f).sub(lz)
         lp : F64 = cm_f32_lgamma_ln(cm_f32_lgamma_sinpi(self.sub(fx).to<F64>()))
         jump finish(g.sub(lp))
 
     // 0x1.52p-1 <= |x| <= 0x1.afc1ap+1: a rational approximation of log(gamma(|x|))
-    block middle(fx: Self, tu: U32, z: F64, s: F64)
+    block middle(z: F64, s: F64)
         zero_factors : F64  = z.sub(1.0).mul(z.sub(2.0))
         n0           : F64  = zero_factors.mul(0x1.3cc0e6a0106b3p+2)
         n1           : F64  = z.add(0x1.667923ff14df7p+5).mul(z.add(0x1.2d35f25ad8f64p+3))
@@ -174,10 +175,10 @@ routine F32.ln_gamma(self: Self) -> Self
         f            : F64  = num.div(den)
         negative     : Bool = self.lt(0.0)
         branch negative
-            ? middle_negative(fx, tu, z, s, f)
+            ? middle_negative(z, s, f)
             : finish(f)
 
-    block middle_negative(fx: Self, tu: U32, z: F64, s: F64, f: F64)
+    block middle_negative(z: F64, s: F64, f: F64)
         near1 : Bool = tu.lt(0x40301B93).bitand(tu.gt(0x402F95C2))
         near2 : Bool = tu.gt(0x401CECCB).bitand(tu.lt(0x401D95CA))
         near3 : Bool = tu.gt(0x40492009).bitand(tu.lt(0x404940EF))
@@ -185,7 +186,7 @@ routine F32.ln_gamma(self: Self) -> Self
             near1 -> near1(s)
             near2 -> near2(s)
             near3 -> near3(s)
-            else  -> middle_reflect(fx, z, f)
+            else  -> middle_reflect(z, f)
 
     // near the zero of lgamma at about -2.7476
     block near1(s: F64)
@@ -222,7 +223,7 @@ routine F32.ln_gamma(self: Self) -> Self
         jump finish(h.mul(p))
 
     // log|gamma(x)| = log(pi) - log(gamma(|x|)) - log|x sin(pi x)|
-    block middle_reflect(fx: Self, z: F64, f: F64)
+    block middle_reflect(z: F64, f: F64)
         g  : F64 = F64.sub(0x1.250d048e7a1bdp+0, f)
         lp : F64 = cm_f32_lgamma_ln(cm_f32_lgamma_sinpi(self.sub(fx).to<F64>()).mul(z))
         jump finish(g.sub(lp))

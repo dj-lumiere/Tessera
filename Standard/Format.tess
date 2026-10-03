@@ -124,18 +124,19 @@ require W: typename
 /// Writes out the buffered bytes.
 routine BufWriter<W>.flush(self: @Self) -> Void
 require W: typename, Writer<W>
+    shared count  : USize              = self.count.load()
+    shared inner  : @W                 = self.inner.load()
+    shared buffer : @Array<Byte, 4096> = self.data
+    shared data   : @Byte              = buffer.to<@Byte>()
+
     block entry()
-        count  : USize              = self.count.load()
-        inner  : @W                 = self.inner.load()
-        buffer : @Array<Byte, 4096> = self.data
-        data   : @Byte              = buffer.to<@Byte>()
         self.count.store(0)
         empty : Bool = count.eq(0)
         branch empty
             ? return()
-            : pass(inner, data, count)
+            : pass()
 
-    block pass(inner: @W, data: @Byte, count: USize)
+    block pass()
         inner.write_bytes(data, count)
         return()
 
@@ -457,14 +458,15 @@ require W: typename, Writer<W>
 /// :param min_digits: The fewest digits to write. Shorter values get leading zeros.
 routine U64.represent_into<W>(self: Self, out: @W, min_digits: USize) -> Void
 require W: typename, Writer<W>
+    shared buf    : @Array<Byte, 20> <- uninit
+    shared digits : @Byte            = buf.to<@Byte>()
+
     block entry()
-        claim buf : @Array<Byte, 20> <- uninit
-        digits : @Byte = buf.to<@Byte>()
-        jump digit(20, self, digits)
+        jump digit(20, self)
 
     // Fills digits from the right: at least one digit, then until the value is
     // used up and min_digits are written.
-    block digit(end: USize, rest: Self, digits: @Byte)
+    block digit(end: USize, rest: Self)
         at        : USize = end.sub(1)
         low_digit : U8    = rest.mod(10).to<U8>()
         ascii     : U8    = low_digit.add(48)  // '0' = 48
@@ -475,10 +477,10 @@ require W: typename, Writer<W>
         more_width : Bool  = written.lt(min_digits)
         more       : Bool  = more_value.bitor(more_width)
         branch more
-            ? digit(at, next, digits)
-            : emit(at, digits)
+            ? digit(at, next)
+            : emit(at)
 
-    block emit(start: USize, digits: @Byte)
+    block emit(start: USize)
         first : @Byte = digits.stride(start)
         out.write_bytes(first, 20.sub(start))
         return()
@@ -498,12 +500,13 @@ require W: typename, Writer<W>
 /// :param min_digits: The fewest digits to write. Shorter values get leading zeros.
 routine U64.represent_hex_into<W>(self: Self, out: @W, min_digits: USize) -> Void
 require W: typename, Writer<W>
-    block entry()
-        claim buf : @Array<Byte, 16> <- uninit
-        digits : @Byte = buf.to<@Byte>()
-        jump digit(16, self, digits)
+    shared buf    : @Array<Byte, 16> <- uninit
+    shared digits : @Byte            = buf.to<@Byte>()
 
-    block digit(end: USize, rest: Self, digits: @Byte)
+    block entry()
+        jump digit(16, self)
+
+    block digit(end: USize, rest: Self)
         at      : USize = end.sub(1)
         nibble  : U8    = rest.bitand(15).to<U8>()
         decimal : Bool  = nibble.lt(10)
@@ -517,10 +520,10 @@ require W: typename, Writer<W>
         more_width : Bool  = written.lt(min_digits)
         more       : Bool  = more_value.bitor(more_width)
         branch more
-            ? digit(at, next, digits)
-            : emit(at, digits)
+            ? digit(at, next)
+            : emit(at)
 
-    block emit(start: USize, digits: @Byte)
+    block emit(start: USize)
         first : @Byte = digits.stride(start)
         out.write_bytes(first, 16.sub(start))
         return()
@@ -564,19 +567,20 @@ require W: typename, Writer<W>
 /// :param out: The Writer the text is written to.
 routine U128.represent_hex_into<W>(self: Self, out: @W) -> Void
 require W: typename, Writer<W>
+    shared high : U64 = self.shr(64).to<U64>()
+    shared low  : U64 = self.to_wrap<U64>()
+
     block entry()
-        high : U64  = self.shr(64).to<U64>()
-        low  : U64  = self.to_wrap<U64>()
         wide : Bool = high.ne(0)
         branch wide
-            ? both(high, low)
-            : low_only(low)
+            ? both()
+            : low_only()
 
-    block low_only(low: U64)
+    block low_only()
         low.represent_hex_into(out)
         return()
 
-    block both(high: U64, low: U64)
+    block both()
         high.represent_hex_into(out)
         low.represent_hex_into(out, 16)
         return()
@@ -620,19 +624,20 @@ require W: typename, Writer<W>
 /// :param out: The Writer the text is written to.
 routine U256.represent_hex_into<W>(self: Self, out: @W) -> Void
 require W: typename, Writer<W>
+    shared high : U128 = self.shr(128).to<U128>()
+    shared low  : U128 = self.to_wrap<U128>()
+
     block entry()
-        high : U128 = self.shr(128).to<U128>()
-        low  : U128 = self.to_wrap<U128>()
         wide : Bool = high.ne(0)
         branch wide
-            ? both(high, low)
-            : low_only(low)
+            ? both()
+            : low_only()
 
-    block low_only(low: U128)
+    block low_only()
         low.represent_hex_into(out)
         return()
 
-    block both(high: U128, low: U128)
+    block both()
         middle : U64 = low.shr(64).to<U64>()
         high.represent_hex_into(out)
         middle.represent_hex_into(out, 16)
@@ -743,31 +748,32 @@ require T: typename, W: typename, Writer<W>
 /// The elements, each diagnosed (so strings keep their quotes), as [1, 2, 3].
 routine Array<T, N>.represent_into<W>(self: Self, out: @W) -> Void
 require T: typename, N: USize, Diagnosable<T>, W: typename, Writer<W>
-    block entry()
-        claim slot : @Self <- self
-        write_str(out, "[")
-        jump walk(0, slot)
+    shared slot : @Self <- self
 
-    block walk(at: USize, slot: @Self)
+    block entry()
+        write_str(out, "[")
+        jump walk(0)
+
+    block walk(at: USize)
         more : Bool = at.lt(N)
         branch more
-            ? item(at, slot)
+            ? item(at)
             : close()
 
-    block item(at: USize, slot: @Self)
+    block item(at: USize)
         first : Bool = at.eq(0)
         branch first
-            ? element(at, slot)
-            : separate(at, slot)
+            ? element(at)
+            : separate(at)
 
-    block separate(at: USize, slot: @Self)
+    block separate(at: USize)
         write_str(out, ", ")
-        jump element(at, slot)
+        jump element(at)
 
-    block element(at: USize, slot: @Self)
+    block element(at: USize)
         value : T = slot.getitem(at)
         value.diagnose_into(out)
-        jump walk(at.add(1), slot)
+        jump walk(at.add(1))
 
     block close()
         write_str(out, "]")
@@ -808,23 +814,24 @@ require W: typename, Writer<W>
 /// Writes digits × 10^exponent (digits > 0, at most 19 digits).
 routine write_float_decimal<W>(out: @W, d: FloatDecimal) -> Void
 require W: typename, Writer<W>
-    block entry()
-        claim buf : @Array<U8, 20> <- uninit
-        digits : @U8 = buf.to<@U8>()
-        value  : U64 = d.digits
-        jump fill(20, value, digits)
+    shared buf    : @Array<U8, 20> <- uninit
+    shared digits : @U8            = buf.to<@U8>()
 
-    block fill(end: USize, rest: U64, digits: @U8)
+    block entry()
+        value : U64 = d.digits
+        jump fill(20, value)
+
+    block fill(end: USize, rest: U64)
         at        : USize = end.sub(1)
         low_digit : U8    = rest.mod(10).to<U8>()
         digits.stride(at).store(low_digit.add(48))
         next : U64  = rest.div(10)
         more : Bool = next.ne(0)
         branch more
-            ? fill(at, next, digits)
-            : layout(at, digits)
+            ? fill(at, next)
+            : layout(at)
 
-    block layout(start: USize, digits: @U8)
+    block layout(start: USize)
         first : @U8 = digits.stride(start)
         write_decimal_digits(out, first, 20.sub(start), d.exponent)
         return()
@@ -833,22 +840,23 @@ require W: typename, Writer<W>
 /// point goes after the first digit at scientific exponent x = n - 1 + exponent.
 routine write_decimal_digits<W>(out: @W, first: @U8, n: USize, exponent: S64) -> Void
 require W: typename, Writer<W>
+    shared top_place : S64 = n.to<S64>().sub(1)
+    shared x         : S64 = top_place.add(exponent)
+
     block entry()
-        top_place  : S64  = n.to<S64>().sub(1)
-        x          : S64  = top_place.add(exponent)
         low_ok     : Bool = x.ge(-4)
         high_ok    : Bool = x.lt(16)
         positional : Bool = low_ok.bitand(high_ok)
         branch positional
-            ? positional(x)
-            : scientific(x)
+            ? positional()
+            : scientific()
 
-    block positional(x: S64)
+    block positional()
         whole    : Bool = exponent.ge(0)
         fraction : Bool = x.lt(0)
         when
             whole    -> integral()
-            fraction -> below_one(x)
+            fraction -> below_one()
             else     -> split()
 
     // 1234 × 10^2 → 123400.0
@@ -859,7 +867,7 @@ require W: typename, Writer<W>
         return()
 
     // 1234 × 10^-6 → 0.001234
-    block below_one(x: S64)
+    block below_one()
         write_str(out, "0.")
         x_magnitude : USize = x.abs_diff(0).to<USize>()
         write_zeros(out, x_magnitude.sub(1))
@@ -877,32 +885,32 @@ require W: typename, Writer<W>
         return()
 
     // 1234 × 10^20 → 1.234e+23
-    block scientific(x: S64)
+    block scientific()
         write_digits(out, first, 1)
         more : Bool = n.gt(1)
         branch more
-            ? mantissa_tail(x)
-            : exponent_part(x)
+            ? mantissa_tail()
+            : exponent_part()
 
-    block mantissa_tail(x: S64)
+    block mantissa_tail()
         write_str(out, ".")
         rest : @U8 = first.stride(1)
         write_digits(out, rest, n.sub(1))
-        jump exponent_part(x)
+        jump exponent_part()
 
     // e+XX / e-XX, at least two digits
-    block exponent_part(x: S64)
+    block exponent_part()
         negative : Bool = x.lt(0)
         branch negative
-            ? minus_exponent(x)
-            : plus_exponent(x)
+            ? minus_exponent()
+            : plus_exponent()
 
-    block minus_exponent(x: S64)
+    block minus_exponent()
         write_str(out, "e-")
         x.abs_diff(0).represent_into(out, 2)
         return()
 
-    block plus_exponent(x: S64)
+    block plus_exponent()
         write_str(out, "e+")
         x.abs_diff(0).represent_into(out, 2)
         return()
@@ -1049,12 +1057,13 @@ routine floor_log10_pow2(x: S64) -> S64
 /// normal)// even says ties read back as this float (f is even).
 routine write_float_exact<W>(out: @W, f: U128, e: S64, boundary: Bool, even: Bool) -> Void
 require W: typename, Writer<W>
+    shared r     : @BigNat<320> <- uninit
+    shared s     : @BigNat<320> <- uninit
+    shared plus  : @BigNat<320> <- uninit
+    shared minus : @BigNat<320> <- uninit
+    shared t     : @BigNat<320> <- uninit
+
     block entry()
-        claim r     : @BigNat<320> <- uninit
-        claim s     : @BigNat<320> <- uninit
-        claim plus  : @BigNat<320> <- uninit
-        claim minus : @BigNat<320> <- uninit
-        claim t     : @BigNat<320> <- uninit
         one : U64 = 1
         r.set(f)
         s.set(one)
@@ -1070,50 +1079,44 @@ require W: typename, Writer<W>
         plus.shl(doubling.sub(1))
         up : Bool = e.ge(0)
         branch up
-            ? scale_up(r, s, plus, minus, t)
-            : scale_down(r, s, plus, minus, t)
+            ? scale_up()
+            : scale_down()
 
-    block scale_up(r: @BigNat<320>, s: @BigNat<320>, plus: @BigNat<320>, minus: @BigNat<320>,
-        t: @BigNat<320>)
+    block scale_up()
         up : USize = e.to<USize>()
         r.shl(up)
         plus.shl(up)
         minus.shl(up)
-        jump estimate(r, s, plus, minus, t)
+        jump estimate()
 
-    block scale_down(r: @BigNat<320>, s: @BigNat<320>, plus: @BigNat<320>, minus: @BigNat<320>,
-        t: @BigNat<320>)
+    block scale_down()
         s.shl(e.abs_diff(0).to<USize>())
-        jump estimate(r, s, plus, minus, t)
+        jump estimate()
 
     // k = floor((bits(f) - 1 + e) × log10 2) + 1 is at most ceil(log10 v)//
     // divide by 10^k (multiply s, or r and the margins).
-    block estimate(r: @BigNat<320>, s: @BigNat<320>, plus: @BigNat<320>, minus: @BigNat<320>,
-        t: @BigNat<320>)
+    block estimate()
         bits     : S64  = 128.sub(f.leading_zeros().to<S64>())
         k        : S64  = floor_log10_pow2(bits.sub(1).add(e)).add(1)
         positive : Bool = k.ge(0)
         branch positive
-            ? divide_s(k, r, s, plus, minus, t)
-            : multiply_r(k, r, s, plus, minus, t)
+            ? divide_s(k)
+            : multiply_r(k)
 
-    block divide_s(k: S64, r: @BigNat<320>, s: @BigNat<320>, plus: @BigNat<320>,
-        minus: @BigNat<320>, t: @BigNat<320>)
+    block divide_s(k: S64)
         s.mul_pow10(k.to<USize>())
-        jump fixup(k, r, s, plus, minus, t)
+        jump fixup(k)
 
-    block multiply_r(k: S64, r: @BigNat<320>, s: @BigNat<320>, plus: @BigNat<320>,
-        minus: @BigNat<320>, t: @BigNat<320>)
+    block multiply_r(k: S64)
         up : USize = k.abs_diff(0).to<USize>()
         r.mul_pow10(up)
         plus.mul_pow10(up)
         minus.mul_pow10(up)
-        jump fixup(k, r, s, plus, minus, t)
+        jump fixup(k)
 
     // Raise k while the top of the interval reaches 10^k, so every number in it
     // is below 10^k and the first digit is its leading one.
-    block fixup(k: S64, r: @BigNat<320>, s: @BigNat<320>, plus: @BigNat<320>, minus: @BigNat<320>,
-        t: @BigNat<320>)
+    block fixup(k: S64)
         t.copy_from(r)
         t.add(plus)
         cmp  : S32  = t.compare(s)
@@ -1121,44 +1124,38 @@ require W: typename, Writer<W>
             ? cmp.ge(0)
             : cmp.gt(0)
         branch high
-            ? raise(k, r, s, plus, minus, t)
-            : start(k, r, s, plus, minus, t)
+            ? raise(k)
+            : start(k)
 
-    block raise(k: S64, r: @BigNat<320>, s: @BigNat<320>, plus: @BigNat<320>, minus: @BigNat<320>,
-        t: @BigNat<320>)
+    block raise(k: S64)
         s.mul_add(10, 0)
-        jump fixup(k.add(1), r, s, plus, minus, t)
+        jump fixup(k.add(1))
 
-    block start(k: S64, r: @BigNat<320>, s: @BigNat<320>, plus: @BigNat<320>, minus: @BigNat<320>,
-        t: @BigNat<320>)
+    block start(k: S64)
         claim buf : @Array<U8, 48> <- uninit
         digits : @U8 = buf.to<@U8>()
-        jump next_digit(0, k, digits, r, s, plus, minus, t)
+        jump next_digit(0, k, digits)
 
     // d = floor(10r / s), r = 10r mod s, and the margins scale by 10 too.
-    block next_digit(n: USize, k: S64, digits: @U8, r: @BigNat<320>, s: @BigNat<320>,
-        plus: @BigNat<320>, minus: @BigNat<320>, t: @BigNat<320>)
+    block next_digit(n: USize, k: S64, digits: @U8)
         r.mul_add(10, 0)
         plus.mul_add(10, 0)
         minus.mul_add(10, 0)
-        jump take(0, n, k, digits, r, s, plus, minus, t)
+        jump take(0, n, k, digits)
 
-    block take(d: U8, n: USize, k: S64, digits: @U8, r: @BigNat<320>, s: @BigNat<320>,
-        plus: @BigNat<320>, minus: @BigNat<320>, t: @BigNat<320>)
+    block take(d: U8, n: USize, k: S64, digits: @U8)
         more : Bool = r.compare(s).ge(0)
         branch more
-            ? take_one(d, n, k, digits, r, s, plus, minus, t)
-            : judge(d, n, k, digits, r, s, plus, minus, t)
+            ? take_one(d, n, k, digits)
+            : judge(d, n, k, digits)
 
-    block take_one(d: U8, n: USize, k: S64, digits: @U8, r: @BigNat<320>, s: @BigNat<320>,
-        plus: @BigNat<320>, minus: @BigNat<320>, t: @BigNat<320>)
+    block take_one(d: U8, n: USize, k: S64, digits: @U8)
         r.sub(s)
-        jump take(d.add(1), n, k, digits, r, s, plus, minus, t)
+        jump take(d.add(1), n, k, digits)
 
     // low: the digits so far are already within m- of the value// high: rounding
     // this digit up is within m+. Either one ends the output.
-    block judge(d: U8, n: USize, k: S64, digits: @U8, r: @BigNat<320>, s: @BigNat<320>,
-        plus: @BigNat<320>, minus: @BigNat<320>, t: @BigNat<320>)
+    block judge(d: U8, n: USize, k: S64, digits: @U8)
         low_cmp : S32  = r.compare(minus)
         low     : Bool = even
             ? low_cmp.le(0)
@@ -1171,17 +1168,15 @@ require W: typename, Writer<W>
             : high_cmp.gt(0)
         either : Bool = low.bitor(high)
         branch either
-            ? last(d, n, k, low, high, digits, r, s, t)
-            : emit(d, n, k, digits, r, s, plus, minus, t)
+            ? last(d, n, k, low, high, digits)
+            : emit(d, n, k, digits)
 
-    block emit(d: U8, n: USize, k: S64, digits: @U8, r: @BigNat<320>, s: @BigNat<320>,
-        plus: @BigNat<320>, minus: @BigNat<320>, t: @BigNat<320>)
+    block emit(d: U8, n: USize, k: S64, digits: @U8)
         digits.stride(n).store(d.add(48))
-        jump next_digit(n.add(1), k, digits, r, s, plus, minus, t)
+        jump next_digit(n.add(1), k, digits)
 
     // Both ends reachable: the nearer one, and the even digit on an exact tie.
-    block last(d: U8, n: USize, k: S64, low: Bool, high: Bool, digits: @U8, r: @BigNat<320>,
-        s: @BigNat<320>, t: @BigNat<320>)
+    block last(d: U8, n: USize, k: S64, low: Bool, high: Bool, digits: @U8)
         t.copy_from(r)
         t.shl(1)
         half     : S32  = t.compare(s)
@@ -1202,17 +1197,18 @@ require W: typename, Writer<W>
 /// :param out: The Writer the text is written to.
 routine F128.represent_into<W>(self: Self, out: @W) -> Void
 require W: typename, Writer<W>
-    block entry()
-        bits     : U128 = self.bits()
-        negative : Bool = f128_is_negative_bits(bits)
-        biased   : S64  = f128_exponent(bits)
-        fraction : U128 = f128_fraction(bits)
-        special  : Bool = biased.eq(F128_EXP_MAX)
-        branch special
-            ? special(negative, fraction)
-            : sign(negative, biased, fraction)
+    shared bits     : U128 = self.bits()
+    shared negative : Bool = f128_is_negative_bits(bits)
+    shared biased   : S64  = f128_exponent(bits)
+    shared fraction : U128 = f128_fraction(bits)
 
-    block special(negative: Bool, fraction: U128)
+    block entry()
+        special : Bool = biased.eq(F128_EXP_MAX)
+        branch special
+            ? special()
+            : sign()
+
+    block special()
         nan : Bool = fraction.ne(0)
         when
             nan      -> text("NaN")
@@ -1223,22 +1219,22 @@ require W: typename, Writer<W>
         write_str(out, s)
         return()
 
-    block sign(negative: Bool, biased: S64, fraction: U128)
+    block sign()
         branch negative
-            ? minus(biased, fraction)
-            : magnitude(biased, fraction)
+            ? minus()
+            : magnitude()
 
-    block minus(biased: S64, fraction: U128)
+    block minus()
         write_str(out, "-")
-        jump magnitude(biased, fraction)
+        jump magnitude()
 
-    block magnitude(biased: S64, fraction: U128)
+    block magnitude()
         zero : Bool = biased.eq(0).bitand(fraction.eq(0))
         branch zero
             ? text("0.0")
-            : digits(biased, fraction)
+            : digits()
 
-    block digits(biased: S64, fraction: U128)
+    block digits()
         subnormal : Bool = biased.eq(0)
         f         : U128 = subnormal
             ? fraction
@@ -1265,93 +1261,94 @@ require W: typename, Writer<W>
 /// about 55,000 bits and prints at most 16,530 digits.
 routine write_float_fixed<W>(out: @W, f: U128, e: S64, digits: USize) -> Void
 require W: typename, Writer<W>
-    block entry()
-        claim n : @BigNat<864> <- uninit
-        n.set(f)
-        below_zero : U64   = e.min(0).abs_diff(0)
-        own        : USize = below_zero.to<USize>()  // max(0, -e)
-        places     : USize = digits.min(own)
-        up         : Bool  = e.ge(0)
-        branch up
-            ? scale_up(n, places)
-            : scale_down(n, places)
+    shared n          : @BigNat<864> <- uninit
+    shared below_zero : U64          = e.min(0).abs_diff(0)
+    shared own        : USize        = below_zero.to<USize>()  // max(0, -e)
+    shared places     : USize        = digits.min(own)
 
-    block scale_up(n: @BigNat<864>, places: USize)
+    block entry()
+        n.set(f)
+        up : Bool = e.ge(0)
+        branch up
+            ? scale_up()
+            : scale_down()
+
+    block scale_up()
         n.shl(e.to<USize>())
-        jump print(n, places)
+        jump print()
 
     // round(f × 10^places / 2^-e)
-    block scale_down(n: @BigNat<864>, places: USize)
+    block scale_down()
         n.mul_pow10(places)
         n.shr_round_even(e.abs_diff(0).to<USize>())
-        jump print(n, places)
+        jump print()
 
     // The digits of n fill chars from the right, 19 at a time.
-    block print(n: @BigNat<864>, places: USize)
+    block print()
         claim buf : @Array<U8, 16640> <- uninit
         chars : @U8 = buf.to<@U8>()
-        jump chunk(n, chars, places, 16640)
+        jump chunk(chars, 16640)
 
-    block chunk(n: @BigNat<864>, chars: @U8, places: USize, at: USize)
+    block chunk(chars: @U8, at: USize)
         done : Bool = n.is_zero()
         branch done
-            ? skip_zeros(chars, places, at)
-            : split(n, chars, places, at)
+            ? skip_zeros(chars, at)
+            : split(chars, at)
 
-    block split(n: @BigNat<864>, chars: @U8, places: USize, at: USize)
+    block split(chars: @U8, at: USize)
         low : U64 = n.div_limb(10000000000000000000)  // 10^19
-        jump digit(n, chars, places, at, low, 19)
+        jump digit(chars, at, low, 19)
 
-    block digit(n: @BigNat<864>, chars: @U8, places: USize, at: USize, rest: U64, left: USize)
+    block digit(chars: @U8, at: USize, rest: U64, left: USize)
         done : Bool = left.eq(0)
         branch done
-            ? chunk(n, chars, places, at)
-            : put(n, chars, places, at, rest, left)
+            ? chunk(chars, at)
+            : put(chars, at, rest, left)
 
-    block put(n: @BigNat<864>, chars: @U8, places: USize, at: USize, rest: U64, left: USize)
+    block put(chars: @U8, at: USize, rest: U64, left: USize)
         to        : USize = at.sub(1)
         low_digit : U8    = rest.mod(10).to<U8>()
         chars.stride(to).store(low_digit.add(48))
-        jump digit(n, chars, places, to, rest.div(10), left.sub(1))
+        jump digit(chars, to, rest.div(10), left.sub(1))
 
     // the top chunk is zero-padded to 19 digits
-    block skip_zeros(chars: @U8, places: USize, at: USize)
+    block skip_zeros(chars: @U8, at: USize)
         inside : Bool = at.lt(16640)
         branch inside
-            ? look(chars, places, at)
-            : lay_out(chars, places, at)
+            ? look(chars, at)
+            : lay_out(chars, at)
 
-    block look(chars: @U8, places: USize, at: USize)
+    block look(chars: @U8, at: USize)
         ascii : U8   = chars.stride(at).load()
         zero  : Bool = ascii.eq(48)
         branch zero
-            ? skip_zeros(chars, places, at.add(1))
-            : lay_out(chars, places, at)
+            ? skip_zeros(chars, at.add(1))
+            : lay_out(chars, at)
 
     // n has count digits at chars[first ..]// the last places of them follow the point
-    block lay_out(chars: @U8, places: USize, first: USize)
+    block lay_out(chars: @U8, first: USize)
         count   : USize = 16640.sub(first)
         has_int : Bool  = count.gt(places)
         branch has_int
-            ? int_part(chars, places, first, count.sub(places))
-            : zero_int(chars, places, first)
+            ? int_part(chars, first, count.sub(places))
+            : zero_int(chars, first)
 
-    block int_part(chars: @U8, places: USize, first: USize, int_count: USize)
+    block int_part(chars: @U8, first: USize, int_count: USize)
         from : @U8 = chars.stride(first)
         write_digits(out, from, int_count)
-        jump fraction(chars, places, first.add(int_count))
+        jump fraction(chars, first.add(int_count))
 
-    block zero_int(chars: @U8, places: USize, first: USize)
+    block zero_int(chars: @U8, first: USize)
         write_str(out, "0")
-        jump fraction(chars, places, first)
+        jump fraction(chars, first)
 
-    block fraction(chars: @U8, places: USize, from: USize)
+    block fraction(chars: @U8, from: USize)
         none : Bool = digits.eq(0)
         branch none
             ? return()
-            : point(chars, places, from)
+            : point(chars, from)
 
-    block point(chars: @U8, places: USize, from: USize)
+    block point(chars: @U8, from: USize)
         count : USize = 16640.sub(from)
         write_str(out, ".")
         write_zeros(out, places.sub(count))
@@ -1597,27 +1594,28 @@ require W: typename, Writer<W>
 /// :param spec: The width, fill and alignment to apply.
 routine represent_with_into<T, W>(out: @W, value: T, spec: FormatSpec) -> Void
 require T: typename, W: typename, Writer<W>, Representable<T>
+    shared fill : Bytes = spec.fill
+
     block entry()
         claim counter : @CountWriter <- .construct()
         value.represent_into(counter)
         count : USize = counter.count.load()
         pad   : USize = spec.width.sub_clamp(count)
         half  : USize = pad.div(2)
-        fill  : Bytes = spec.fill
         align : Align = spec.align
         when align
-            Align.Left      -> padded(0, pad, fill)
-            Align.Right     -> padded(pad, 0, fill)
-            Align.Center    -> padded(half, pad.sub(half), fill)
-            Align.AfterSign -> after_sign(pad, fill)
+            Align.Left      -> padded(0, pad)
+            Align.Right     -> padded(pad, 0)
+            Align.Center    -> padded(half, pad.sub(half))
+            Align.AfterSign -> after_sign(pad)
 
-    block padded(before: USize, after: USize, fill: Bytes)
+    block padded(before: USize, after: USize)
         write_repeated(out, fill, before)
         value.represent_into(out)
         write_repeated(out, fill, after)
         return()
 
-    block after_sign(pad: USize, fill: Bytes)
+    block after_sign(pad: USize)
         claim inner : @SignPadWriter<W> <- SignPadWriter<W> { inner: out, fill: fill, pad: pad}
         value.represent_into(inner)
         return()
@@ -1628,32 +1626,33 @@ require T: typename, W: typename, Writer<W>, Representable<T>
 /// :param count: The number of bytes.
 routine SignPadWriter<W>.write_bytes(self: @Self, bytes: @Byte, count: USize) -> Void
 require W: typename, Writer<W>
-    block entry()
-        inner : @W    = self.inner.load()
-        pad   : USize = self.pad.load()
-        first : Bool  = pad.gt(0).bitand(count.gt(0))
-        branch first
-            ? first(inner, pad)
-            : pass(inner, bytes, count)
+    shared inner : @W    = self.inner.load()
+    shared pad   : USize = self.pad.load()
 
-    block first(inner: @W, pad: USize)
+    block entry()
+        first : Bool = pad.gt(0).bitand(count.gt(0))
+        branch first
+            ? first()
+            : pass(bytes, count)
+
+    block first()
         fill : Bytes = self.fill.load()
         self.pad.store(0)
         byte   : U8   = Byte.to<U8>(bytes.stride(0).load())
         signed : Bool = byte.eq(45).bitor(byte.eq(43))  // - or +
         branch signed
-            ? sign(inner, pad, fill)
-            : pad(inner, pad, fill, bytes, count)
+            ? sign(fill)
+            : pad(fill, bytes, count)
 
-    block sign(inner: @W, pad: USize, fill: Bytes)
+    block sign(fill: Bytes)
         inner.write_bytes(bytes, 1)
         rest : @Byte = bytes.stride(1)
-        jump pad(inner, pad, fill, rest, count.sub(1))
+        jump pad(fill, rest, count.sub(1))
 
-    block pad(inner: @W, pad: USize, fill: Bytes, from: @Byte, left: USize)
+    block pad(fill: Bytes, from: @Byte, left: USize)
         write_repeated(inner, fill, pad)
-        jump pass(inner, from, left)
+        jump pass(from, left)
 
-    block pass(inner: @W, from: @Byte, left: USize)
+    block pass(from: @Byte, left: USize)
         inner.write_bytes(from, left)
         return()

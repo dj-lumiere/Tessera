@@ -272,18 +272,18 @@ preset CM_F16_TANH_S1: @Array<U32, 2048> <- { 0x00000000, 0x36000001, 0x36800001
 
 /// tanh(self), correctly rounded.
 routine F16.tanh(self: Self) -> Self
-    block entry()
-        u        : U16  = self.bits()
-        au       : U16  = u.bitand(0x7FFF)
-        positive : Bool = au.eq(u)
-        when
-            au.ge(0x4482) -> saturate(au,
-                positive)  // |x| >= 0x1.208p+2: tanh(x) rounds to sign(x)
-            au.le(0x2744) -> tiny(au)  // |x| <= 0x1.d1p-6: tanh(x) rounds to x
-            u.eq(0xBFD5)  -> return(F32.to<Self>(-0x1.ec002p-1))  // the one case the tables can't absorb
-            else          -> split(u)
+    shared u        : U16  = self.bits()
+    shared au       : U16  = u.bitand(0x7FFF)
+    shared positive : Bool = au.eq(u)
 
-    block saturate(au: U16, positive: Bool)
+    block entry()
+        when
+            au.ge(0x4482) -> saturate()  // |x| >= 0x1.208p+2: tanh(x) rounds to sign(x)
+            au.le(0x2744) -> tiny()  // |x| <= 0x1.d1p-6: tanh(x) rounds to x
+            u.eq(0xBFD5)  -> return(F32.to<Self>(-0x1.ec002p-1))  // the one case the tables can't absorb
+            else          -> split()
+
+    block saturate()
         near_one : F32 = 0x1.fffff2p-1
         signed   : F32 = positive
             ? near_one
@@ -296,7 +296,7 @@ routine F16.tanh(self: Self) -> Self
             au.eq(0x7C00) -> return(one)
             else          -> return(signed.to<Self>())
 
-    block tiny(au: U16)
+    block tiny()
         zero : Bool = au.eq(0)
         branch zero
             ? return(self)
@@ -305,7 +305,7 @@ routine F16.tanh(self: Self) -> Self
         return(t.mul_add(-0x1p-12, t).to<Self>())
 
     // tanh = sinh(x1 + x2) / cosh(x1 + x2)
-    block split(u: U16)
+    block split()
         i1            : USize = u.shr(5).to<USize>()
         sign_exponent : U16   = u.shr(10).shl(5)
         i2            : USize = sign_exponent.bitor(u.bitand(0x1F)).to<USize>()

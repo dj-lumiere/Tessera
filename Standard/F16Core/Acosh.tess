@@ -30,52 +30,53 @@ preset CM_F16_ACOSH_P: @Array<U32, 96> <- { 0x3FC8CA05, 0xBE50F729, 0x3D86E325, 
 
 /// acosh(self), correctly rounded.
 routine F16.acosh(self: Self) -> Self
+    shared v  : F32 = self.to<F32>()
+    shared u  : U32 = v.bits()
+    shared au : U32 = u.bitand(0x7FFFFFFF)
+
     block entry()
-        v               : F32  = self.to<F32>()
-        u               : U32  = v.bits()
-        au              : U32  = u.bitand(0x7FFFFFFF)
         special         : Bool = au.ge(0x7F800000)
         at_most1        : Bool = u.ge(0x80000000).bitor(au.le(0x3F800000))  // x <= 1
         biased_exponent : U32  = au.shr(23)
         when
-            special  -> special(u, au)
-            at_most1 -> at_most_one(u)
-            else     -> binade(v, u, biased_exponent.sub(127).to<USize>())
+            special  -> special()
+            at_most1 -> at_most_one()
+            else     -> binade(biased_exponent.sub(127).to<USize>())
 
     // +inf or NaN: x + x (quiets a signaling NaN), and -inf has no real result
-    block special(u: U32, au: U32)
+    block special()
         quiet : Bool = u.eq(0x7F800000).bitor(au.bitand(0x7FFFFF).ne(0))
         branch quiet
             ? return(self.add(self))
             : return(Self.from_bits(0xFE00))
 
     // acosh(1) = +0, and below 1 there is no real result (the default NaN of x86)
-    block at_most_one(u: U32)
+    block at_most_one()
         one : Bool = u.eq(0x3F800000)
         branch one
             ? return(Self.from_bits(0))
             : return(Self.from_bits(0xFE00))
 
     // 2^i <= x < 2^(i+1)
-    block binade(t: F32, u: U32, i: USize)
-        tt : F32 = t.mul(t)
-        c4 : F32 = cm_f16_acosh_p(i, 5).mul_add(t, cm_f16_acosh_p(i, 4))
-        c2 : F32 = cm_f16_acosh_p(i, 3).mul_add(t, cm_f16_acosh_p(i, 2))
+    block binade(i: USize)
+        tt : F32 = v.mul(v)
+        c4 : F32 = cm_f16_acosh_p(i, 5).mul_add(v, cm_f16_acosh_p(i, 4))
+        c2 : F32 = cm_f16_acosh_p(i, 3).mul_add(v, cm_f16_acosh_p(i, 2))
         d2 : F32 = c4.mul_add(tt, c2)
-        c0 : F32 = cm_f16_acosh_p(i, 1).mul_add(t, cm_f16_acosh_p(i, 0))
+        c0 : F32 = cm_f16_acosh_p(i, 1).mul_add(v, cm_f16_acosh_p(i, 0))
         p  : F32 = d2.mul_add(tt, c0)
         // for x < 32 the polynomial approximates acosh(x) / sqrt(x - 1)
         below32 : Bool = i.lt(5)
         branch below32
-            ? scale_by_root(u, t, p)
-            : finish(u, p)
+            ? scale_by_root(p)
+            : finish(p)
 
-    block scale_by_root(u: U32, t: F32, p: F32)
-        root : F32 = t.sub(1.0).sqrt()
-        jump finish(u, root.mul(p))
+    block scale_by_root(p: F32)
+        root : F32 = v.sub(1.0).sqrt()
+        jump finish(root.mul(p))
 
     // the inputs the polynomials round wrongly
-    block finish(u: U32, y: F32)
+    block finish(y: F32)
         when
             u.eq(0x40422000) -> return(F32.to<Self>(0x1.c63ffcp+0))
             u.eq(0x411C0000) -> return(F32.to<Self>(0x1.7be006p+1))

@@ -121,17 +121,18 @@ preset CM_F64_ATAN_DB_L: @Array<U64, 12> <- { 0x3C20000000000000, 0x3C1000000000
 
 /// arctan(self), correctly rounded.
 routine F64.atan(self: Self) -> Self
+    shared tu : U64 = self.bits()
+    shared at : U64 = tu.bitand(0x7FFFFFFFFFFFFFFF)  // |x|
+
     block entry()
-        tu    : U64  = self.bits()
-        at    : U64  = tu.bitand(0x7FFFFFFFFFFFFFFF)  // |x|
         small : Bool = at.lt(0x3F7B21C475E6362A)  // |x| < 0x1.b21c475e6362ap-8
         large : Bool = at.gt(0x4062DED8E34A9035)  // |x| > 0x1.2ded8e34a9035p+7
         when
-            small -> small(at)
-            large -> large(at)
-            else  -> table(tu, at)
+            small -> small()
+            large -> large()
+            else  -> table()
 
-    block small(at: U64)
+    block small()
         zero : Bool = at.eq(0)
         tiny : Bool = at.lt(0x3E40000000000000)  // |x| < 2^-27
         when
@@ -157,7 +158,7 @@ routine F64.atan(self: Self) -> Self
             : return(cm_f64_atan_accurate(self, ub))
 
     // sign(x) pi/2 + atan(-1/x). From 0x1.d02967c31cdb5p+53 on just sign(x) pi/2 rounded, or NaN
-    block large(at: U64)
+    block large()
         ah     : Self = Self.copysign(0x1.921fb54442d18p+0, self)
         al     : Self = Self.copysign(0x1.1a62633145c07p-54, self)
         nan    : Bool = at.gt(0x7FF0000000000000)
@@ -168,7 +169,7 @@ routine F64.atan(self: Self) -> Self
             else   -> finish(Self.div(-1.0, self), ah, al)
 
     // 0x1.b21c475e6362ap-8 <= |x| <= 0x1.2ded8e34a9035p+7: reduce by tan(j pi/256), 1 <= i <= 30
-    block table(tu: U64, at: U64)
+    block table()
         iu  : U64   = at.shr(51).sub(2030)
         i   : USize = iu.to<USize>()
         u   : U64   = tu.bitand(0x0007FFFFFFFFFFFF)
@@ -206,23 +207,24 @@ routine F64.atan(self: Self) -> Self
 /// The accurate path, for the inputs the fast path can't round: atan(x) to about 107
 /// bits in double-double, with 2^-27 <= |x|, and a is the fast-path approximation.
 routine cm_f64_atan_accurate(x: F64, a: F64) -> F64
+    shared abs_a : F64   = a.abs()
+    shared phi   : F64   = abs_a.mul(0x1.45f306dc9c883p6).add(256.5)
+    shared ib    : U64   = phi.bits().shr(44)
+    shared i     : USize = ib.bitand(0xFF).to<USize>()  // 256.5 < phi < 384.5, so 0 <= i <= 128
+
     block entry()
-        abs_a : F64   = a.abs()
-        phi   : F64   = abs_a.mul(0x1.45f306dc9c883p6).add(256.5)
-        ib    : U64   = phi.bits().shr(44)
-        i     : USize = ib.bitand(0xFF).to<USize>()  // 256.5 < phi < 384.5, so 0 <= i <= 128
-        inf   : Bool  = i.eq(128)
+        inf : Bool = i.eq(128)
         branch inf
-            ? reciprocal(i)
-            : reduce(i)
+            ? reciprocal()
+            : reduce()
 
     // h = -1/x
-    block reciprocal(i: USize)
+    block reciprocal()
         h : F64 = F64.div(-1.0, x)
-        jump poly(i, h, F64.mul_add(h, x, 1.0).mul(h))
+        jump poly(h, F64.mul_add(h, x, 1.0).mul(h))
 
     // h = (x - ta) / (1 + x ta) with ta = tan(i pi/256)
-    block reduce(i: USize)
+    block reduce()
         ta   : F64 = F64.from_bits(CM_F64_ATAN_AH.getitem(i)).copysign(x)
         zta  : F64 = x.mul(ta)
         ztal : F64 = x.mul_add(ta, zta.neg())
@@ -236,10 +238,10 @@ routine cm_f64_atan_accurate(x: F64, a: F64) -> F64
         rl   : F64 = rem.mul(r)
         h    : F64 = r.mul(zmta)
         hl   : F64 = r.mul_add(zmta, h.neg()).add(rl.mul(zmta))
-        jump poly(i, h, hl)
+        jump poly(h, hl)
 
     // atan(h + hl) = h + h^3 q(h^2) in double-double
-    block poly(i: USize, h: F64, hl: F64)
+    block poly(h: F64, hl: F64)
         p2  : CmF64InvtrigDD = cm_f64_atan_muldd(h, hl, h, hl)
         h2  : F64            = p2.hi
         h2l : F64            = p2.lo
@@ -265,10 +267,10 @@ routine cm_f64_atan_accurate(x: F64, a: F64) -> F64
         zero : Bool           = i.eq(0)
         branch zero
             ? round(h, f.hi, f.lo, sg)
-            : offset(i, h, hl, f, sg)
+            : offset(h, hl, f, sg)
 
     // add i pi/256 (three parts) and atan(tan(i pi/256)) - i pi/256
-    block offset(i: USize, h: F64, hl: F64, f: CmF64InvtrigDD, sg: F64)
+    block offset(h: F64, hl: F64, f: CmF64InvtrigDD, sg: F64)
         inner : Bool = i.lt(128)
         df    : F64  = inner
             ? sg.mul(F64.from_bits(CM_F64_ATAN_AL.getitem(i)))

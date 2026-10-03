@@ -63,15 +63,16 @@ private routine page_size() -> USize
 /// length bytes of pages for a stack, the bottom one closed with the length written in it, or null.
 #target(os: ("linux", "macos"))
 private routine stack_map(length: USize, page: USize) -> Addr
+    // PROT_READ | PROT_WRITE, no file
+    shared at : Addr = c_mmap(null, length, 3, map_private_anonymous(), -1, 0)
+
     block entry()
-        // PROT_READ | PROT_WRITE, no file
-        at     : Addr = c_mmap(null, length, 3, map_private_anonymous(), -1, 0)
         failed : Bool = ptrtoint<Addr, SSize>(at).eq(-1)
         branch failed
             ? return(null)
-            : close(at)
+            : close()
 
-    block close(at: Addr)
+    block close()
         length.store_into(at.to<@USize>())
         pages_protect(at, page, false)
         return(at)
@@ -121,32 +122,33 @@ private routine page_size() -> USize
 /// can't be reserved.
 #target(os: "windows")
 private routine stack_map(length: USize, page: USize) -> Addr
+    // MEM_RESERVE, PAGE_NOACCESS
+    shared at : Addr = c_virtual_alloc(null, length, 0x2000, 1)
+
     block entry()
-        // MEM_RESERVE, PAGE_NOACCESS
-        at     : Addr = c_virtual_alloc(null, length, 0x2000, 1)
         failed : Bool = at.is_null()
         branch failed
             ? return(null)
-            : bottom(at)
+            : bottom()
 
     // MEM_COMMIT, PAGE_READWRITE
-    block bottom(at: Addr)
+    block bottom()
         c_virtual_alloc(at, page, 0x1000, 4)
         length.store_into(at.to<@USize>())
         pages_protect(at, page, false)
         pages : USize = length.div(page).sub(1)
         small : Bool  = pages.lt(3)
         branch small
-            ? whole(at, pages)
-            : top(at)
+            ? whole(pages)
+            : top()
 
     // Too small to grow: all of it committed.
-    block whole(at: Addr, pages: USize)
+    block whole(pages: USize)
         c_virtual_alloc(at.offset(page.to<SSize>()), pages.mul(page), 0x1000, 4)
         return(at)
 
     // PAGE_READWRITE | PAGE_GUARD for the page below the top two
-    block top(at: Addr)
+    block top()
         two : USize = page.mul(2)
         c_virtual_alloc(at.offset(length.sub(two).to<SSize>()), two, 0x1000, 4)
         guard_offset : USize = length.sub(two).sub(page)
@@ -186,18 +188,19 @@ private routine pages_release(at: Addr, length: USize) -> Void
 /// reserved.
 #target(os: not "none")
 private routine stack_alloc_fn(state: Addr, size: USize) -> Addr
+    shared page        : USize = page_size()
+    shared padded_size : USize = size.add(page).sub(1)
+    shared pages       : USize = padded_size.div(page)
+    shared length      : USize = pages.add(1).mul(page)
+    shared base        : Addr  = stack_map(length, page)
+
     block entry()
-        page        : USize = page_size()
-        padded_size : USize = size.add(page).sub(1)
-        pages       : USize = padded_size.div(page)
-        length      : USize = pages.add(1).mul(page)
-        base        : Addr  = stack_map(length, page)
-        failed      : Bool  = base.is_null()
+        failed : Bool = base.is_null()
         branch failed
             ? return(null)
-            : done(base, page)
+            : done()
 
-    block done(base: Addr, page: USize)
+    block done()
         stack : Addr = base.offset(page.to<SSize>())
         return(stack)
 

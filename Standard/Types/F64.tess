@@ -688,9 +688,10 @@ routine F64.trunc(self: Self) -> Self
 /// Rounds toward zero.
 #target(arch: not "aarch64")
 routine F64.trunc(self: Self) -> Self
+    shared bits  : U64 = self.bits()
+    shared field : U64 = bits.shr(52).bitand(0x7FF)
+
     block entry()
-        bits      : U64  = self.bits()
-        field     : U64  = bits.shr(52).bitand(0x7FF)
         special   : Bool = field.eq(0x7FF)
         integral  : Bool = field.ge(1075)
         below_one : Bool = field.lt(1023)
@@ -698,10 +699,10 @@ routine F64.trunc(self: Self) -> Self
             special   -> return(self.add(self))
             integral  -> return(self)
             below_one -> return(Self.from_bits(bits.bitand(0x8000000000000000)))
-            else      -> fraction(bits, field)
+            else      -> fraction()
 
     // 1 <= |self| < 2^52: the lowest 1075 - field bits are the fraction
-    block fraction(bits: U64, field: U64)
+    block fraction()
         mask : U64  = 1.shl(U64.sub(1075, field)).sub(1)
         r    : Self = Self.from_bits(bits.bitand(mask.bitnot()))
         return(r)
@@ -822,21 +823,22 @@ routine F64.from_bits(bits: U64) -> Self
 /// :param x: A finite, nonzero F64. Zeros, infinities and NaN are not handled.
 /// :returns: {F64Parts} with `sig` in [2^52, 2^53). A subnormal is normalized, so its exponent drops to 0 or below.
 routine f64_unpack(x: F64) -> F64Parts
-    block entry()
-        bits     : U64  = x.bits()
-        field    : U64  = bits.shr(52).bitand(0x7FF)
-        fraction : U64  = bits.bitand(0x000FFFFFFFFFFFFF)
-        normal   : Bool = field.ne(0)
-        branch normal
-            ? normal(field, fraction)
-            : subnormal(fraction)
+    shared bits     : U64 = x.bits()
+    shared field    : U64 = bits.shr(52).bitand(0x7FF)
+    shared fraction : U64 = bits.bitand(0x000FFFFFFFFFFFFF)
 
-    block normal(field: U64, fraction: U64)
+    block entry()
+        normal : Bool = field.ne(0)
+        branch normal
+            ? normal()
+            : subnormal()
+
+    block normal()
         sig   : U64      = fraction.bitor(0x0010000000000000)
         parts : F64Parts = F64Parts { sig: sig, exponent: field.to<S64>() }
         return(parts)
 
-    block subnormal(fraction: U64)
+    block subnormal()
         shift : U64      = fraction.leading_zeros().sub(11)
         sig   : U64      = fraction.shl(shift)
         parts : F64Parts = F64Parts { sig: sig, exponent: S64.sub(1, shift.to<S64>()) }
@@ -846,19 +848,20 @@ routine f64_unpack(x: F64) -> F64Parts
 /// is the biased exponent the result has if it's normal. Rounds into the subnormals below 1 and overflows to
 /// infinity at 0x7FF.
 routine f64_round_pack(negative: Bool, exponent: S64, sig: U64) -> F64
+    shared sign : U64 = negative
+        ? 0x8000000000000000
+        : 0
+
     block entry()
-        sign : U64 = negative
-            ? 0x8000000000000000
-            : 0
         overflow : Bool = exponent.ge(0x7FF)
         tiny     : Bool = exponent.lt(1)
         when
             overflow -> return(F64.from_bits(sign.bitor(0x7FF0000000000000)))
-            tiny     -> subnormal(sign)
-            else     -> round(sign, exponent, sig)
+            tiny     -> subnormal()
+            else     -> round(exponent, sig)
 
     // shift to the scale of exponent 1, which encodes as the subnormal field 0
-    block subnormal(sign: U64)
+    block subnormal()
         shift : S64  = S64.sub(1, exponent)
         all   : Bool = shift.ge(64)
         some  : U64  = sig.shr(shift.min(63).to<U64>())
@@ -868,10 +871,10 @@ routine f64_round_pack(negative: Bool, exponent: S64, sig: U64) -> F64
         shifted : U64 = all
             ? 0
             : some
-        jump round(sign, 1, shifted.bitor(lost.to<U64>()))
+        jump round(1, shifted.bitor(lost.to<U64>()))
 
     // a carry out of the 53 kept bits bumps the exponent, up to infinity
-    block round(sign: U64, result_exponent: S64, result_sig: U64)
+    block round(result_exponent: S64, result_sig: U64)
         kept            : U64  = result_sig.shr(11)
         rest            : U64  = result_sig.bitand(0x7FF)
         odd             : Bool = kept.bitand(1).eq(1)
@@ -889,15 +892,16 @@ routine f64_round_pack(negative: Bool, exponent: S64, sig: U64) -> F64
 /// mul_add add their exact F64 product this way and narrow once. Finite inputs. An infinite or NaN sum is
 /// returned as the addition gives it.
 routine f64_add_round_to_odd(a: F64, b: F64) -> F64
+    shared s : F64 = a.add(b)
+
     block entry()
-        s      : F64  = a.add(b)
         finite : Bool = s.is_finite()
         branch finite
-            ? error(s)
+            ? error()
             : return(s)
 
     // TwoSum: e is exactly (a + b) - s.
-    block error(s: F64)
+    block error()
         bv      : F64  = s.sub(a)
         av      : F64  = s.sub(bv)
         e       : F64  = a.sub(av).add(b.sub(bv))
@@ -906,11 +910,11 @@ routine f64_add_round_to_odd(a: F64, b: F64) -> F64
         even    : Bool = low_bit.eq(0)
         bump    : Bool = inexact.bitand(even)
         branch bump
-            ? toward(s, e)
+            ? toward(e)
             : return(s)
 
     // s rounded to an even neighbour: the odd one is the other neighbour of the true sum, one ulp toward e.
-    block toward(s: F64, e: F64)
+    block toward(e: F64)
         outward : Bool = e.is_sign_negative().eq(s.is_sign_negative())
         bits    : U64  = s.bits()
         odd     : U64  = outward
