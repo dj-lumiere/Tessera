@@ -2,14 +2,14 @@
 //
 // Everything the child needs (the argument vector, the environment, the directory) is made in the parent before
 // fork, so the child only calls what is safe between fork and exec: dup2, chdir, execvp, write, _exit. If the
-// directory change or the exec fails, the child writes errno to a close-on-exec pipe; the parent reads that pipe to
+// directory change or the exec fails, the child writes errno to a close-on-exec pipe. The parent reads that pipe to
 // its end, which comes at the exec or the child's exit, and so knows whether the program started.
 
 module Standard::Os
 
 import Standard::Alloc
 
-/// C's `environ`, the process's environment as a null-terminated array of `NAME=VALUE` strings (Linux; macOS goes
+/// C's `environ`, the process's environment as a null-terminated array of `NAME=VALUE` strings (Linux, while macOS goes
 /// through _NSGetEnviron).
 #[external("c"), symbol("environ"), target(os: "linux")]
 global ENVIRON: @@@Byte
@@ -557,7 +557,7 @@ private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
             OutputMode.Inherit -> return(-1)
 
 /// Starts `program` (looked up on PATH) with fork and execvp, waits for it, and returns how it ended and what it
-/// captured. Captured output is read to the end from both pipes at once. This is the Linux and macOS half; Windows
+/// captured. Captured output is read to the end from both pipes at once. This is the Linux and macOS half. Windows
 /// uses CreateProcessW.
 /// :param program: The program to run.
 /// :param args: The arguments, not including the program name.
@@ -618,7 +618,7 @@ routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: Pro
         p.free(alloc)
         return(.Failure(spawn_error(e)))
 
-    // 4 bytes on the report pipe are the errno of a failed exec; its end without them is a started program.
+    // 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started program.
     block started(p: @Prepared, pipes: @Plumbing, pid: CInt, report: @CInt)
         got : SSize = c_read(pipes.exec_r.load(), report.to<@Byte>(), 4)
         branch got.lt(0).bitand(errno().eq(4))

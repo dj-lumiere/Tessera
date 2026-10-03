@@ -3,8 +3,8 @@
 // CORE-MATH has no binary128 gamma, so these run in two tiers, as sin_pi does (F128Extra.tess):
 //
 // - fast: ln |Γ(x)| in F128Extended (192 bits). Near 1 and 2 (|x - 1| or |x - 2| < 2^-5) by the
-//   Taylor series of ln Γ there; else the recurrence lifts x to [30, 31) and Stirling's series
-//   takes over; below -1, reflection with an exactly reduced sin πx. Γ is e^(ln |Γ|) with its sign.
+//   Taylor series of ln Γ there, else the recurrence lifts x to [30, 31) and Stirling's series
+//   takes over. Below -1, reflection with an exactly reduced sin πx. Γ is e^(ln |Γ|) with its sign.
 //   The result is kept when all of it × (1 ± 2^-band) rounds to one F128.
 // - exact: otherwise the same formulas in F128Big (448 bits, Standard/F128Big.tess), lifting to
 //   [100, 101), rounded once.
@@ -21,19 +21,19 @@
 //
 // The exact tier's error was at most 2^-429.9 max(1, |ln Γ|) on 1167 such inputs. The closest an
 // F128 comes to a zero of ln Γ gives |ln Γ| of about 2^-114 near 1 and 2 and 2^-111.5 near the
-// negative zeros (at x = -2.457…; from -31 on the zeros lie within one ulp of the integers), so
+// negative zeros (at x = -2.457…, and from -31 on the zeros lie within one ulp of the integers), so
 // even there the result is within 2^-319 relative (measured at x = 1 + 2^-112): far closer than any
 // F128 result is expected to lie to a rounding boundary. Some do lie close: Γ(2^-k (1 - 2^-113)) =
 // 2^k (1 + 2^-113) + 2^(k-226) - γ + …, within about 2^-226 of a midpoint, and the fast tier sends
 // those on (tests/f128_gamma.tess has them).
 //
 // Exact cases, handled first: Γ(n) = (n - 1)! for the integers 1 <= n <= 40, computed exactly and
-// rounded once. Up to n = 38 the odd part of (n - 1)! has at most 113 bits, so Γ(n) is an F128; 38!
-// has a 114-bit odd part, so Γ(39) is a midpoint and rounds to even; from 39! on the odd part is
-// longer, so no larger factorial is exact or a midpoint. ln Γ is +0 at 1 and 2; at any other
+// rounded once. Up to n = 38 the odd part of (n - 1)! has at most 113 bits, so Γ(n) is an F128. 38!
+// has a 114-bit odd part, so Γ(39) is a midpoint and rounds to even. From 39! on the odd part is
+// longer, so no larger factorial is exact or a midpoint. ln Γ is +0 at 1 and 2. At any other
 // integer n it is ln (n - 1)!, the logarithm of an integer other than 1, which is transcendental
 // (Lindemann), so not an F128 or a midpoint. At the other inputs no argument rules out an exact or
-// midpoint result (whether Γ at a non-integer dyadic rational can be one is open); none is known,
+// midpoint result (whether Γ at a non-integer dyadic rational can be one is open). None is known,
 // and the exact tier would round it correctly unless it lay within 2^-319 of a boundary without
 // being on one.
 
@@ -49,7 +49,7 @@ preset GAMMA_WIDE_LIFT: S64 = 30
 preset GAMMA_BIG_LIFT:  S64 = 100
 
 // ln Γ(1 + z) = Σ a_k z^k and ln Γ(2 + z) = Σ b_k z^k, k from 1, to 192 bits: a_1 = -γ, a_k =
-// (-1)^k ζ(k) / k; b_1 = 1 - γ, b_k = (-1)^k (ζ(k) - 1) / k (computed with mpmath)
+// (-1)^k ζ(k) / k, and b_1 = 1 - γ, b_k = (-1)^k (ζ(k) - 1) / k (computed with mpmath)
 preset LN_GAMMA_NEAR_ONE_HI: @Array<U128, 40> <- { 0x93C467E37DB0C7A4D1BE3F810152CB56,
     0xD28D3312983E991873D8912200BACE5E, 0xCD26AADF5596B7ACF64B92E699B5AA12,
     0x8A8991563EC241B5F91211196E5235FB, 0xD45CE0BD530A492E826A4FDAE19904DC,
@@ -171,7 +171,7 @@ preset WIDE_GAMMA_COEF_NEG: @Array<Bool, 36> <- { false, true, false, true, fals
     false, true, false, true, false, true, false, true, false, true, false, true, false, true }
 
 // The exact tier's Stirling coefficients c_k = B(2k) / (2k (2k - 1)), k = 1 .. 61, as F128Big
-// mantissas (7 limbs each, least significant first) × 2^exponent, the signs alternating from +;
+// mantissas (7 limbs each, least significant first) × 2^exponent, the signs alternating from +,
 // then ln(2π)/2 × 2^448 and ln π × 2^447, 448 bits each (computed with mpmath)
 preset BIG_STIRLING_LIMBS: @Array<U64, 427> <- { 0xAAAAAAAAAAAAAAAB, 0xAAAAAAAAAAAAAAAA,
     0xAAAAAAAAAAAAAAAA, 0xAAAAAAAAAAAAAAAA, 0xAAAAAAAAAAAAAAAA, 0xAAAAAAAAAAAAAAAA,
@@ -309,7 +309,7 @@ routine wide_gamma_coef(i: USize) -> F128Extended
 
 /// ln |Γ| in F128Extended, and the scale of its error: the largest exponent among the terms summed
 /// into it. Each term is off by about 2^-188 of itself, so the value is off by about 2^(scale -
-/// 188) however much of the sum cancels; the fast tier measures its band against that scale, not
+/// 188) however much of the sum cancels. The fast tier measures its band against that scale, not
 /// against the value.
 record LnGammaWide
     value : F128Extended
@@ -396,7 +396,7 @@ routine wide_ln_gamma_near(z: F128Extended, two: Bool) -> LnGammaWide
         last : F128Extended = ln_gamma_near_coef(two, count.sub(1))
         jump horner(count.sub(1), last)
 
-    // s ← s z + c_i, down to i = 0; the value is then s z
+    // s ← s z + c_i, down to i = 0, and the value is then s z
     block horner(i: USize, s: F128Extended)
         done : Bool = i.eq(0)
         branch done
@@ -411,7 +411,7 @@ routine wide_ln_gamma_near(z: F128Extended, two: Bool) -> LnGammaWide
         return(r)
 
 /// ln |Γ(a)| for a > 0 or -1 < a < 0 (a exact in F128Extended), floor = floor(a) (saturated): the
-/// series near 1 and 2; else the recurrence Γ(a) = Γ(a + n) / (a (a + 1) … (a + n - 1)) up to a + n
+/// series near 1 and 2, else the recurrence Γ(a) = Γ(a + n) / (a (a + 1) … (a + n - 1)) up to a + n
 /// in [30, 31), and Stirling's series there, 36 terms in 1/b² (the first dropped one is below
 /// 2^-207 at b = 30).
 routine wide_ln_gamma_positive(a: F128Extended, floor: S64) -> LnGammaWide
@@ -535,7 +535,7 @@ routine big_stirling_coef(i: USize) -> F128Big
 
 /// ln Γ(b) for b >= 100 by Stirling's series (b - 1/2) ln b - b + ln(2π)/2 + Σ c_k / b^(2k-1). For
 /// a real b > 0 the remainder after any term is below the first term left out, and the terms fall
-/// while k < π b; at b = 100 the 62nd is below 2^-470, so the sum stops at its first negligible
+/// while k < π b. At b = 100 the 62nd is below 2^-470, so the sum stops at its first negligible
 /// term (big_negligible) within the 61 of the table.
 routine big_stirling(b: F128Big) -> F128Big
     block entry()
@@ -656,7 +656,7 @@ routine f128_ln_gamma(x: F128, exact: Bool) -> F128
 
 // -- gamma ---------------------------------------------------------------------
 
-/// Γ(self), correctly rounded: ±inf at ±0, NaN at the negative integers and -inf; it overflows to
+/// Γ(self), correctly rounded: ±inf at ±0, NaN at the negative integers and -inf. It overflows to
 /// +inf past x = 1755.548.
 routine F128.gamma(self: Self) -> Self
     block entry()

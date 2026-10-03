@@ -3,7 +3,7 @@
 // F128Extended is a 192-bit-mantissa float. Code here computes in it and rounds once to F128. The 79 bits
 // beyond F128's 113 absorb the rounding of every intermediate step (each at most 2^-190 relative) and the
 // truncation of the series, so the results are faithful: within 1 ulp, and almost always the correctly rounded
-// value. The method follows RazorForge's B128Math and TLFloat (Naoki Shibata, Boost 1.0); the series
+// value. The method follows RazorForge's B128Math and TLFloat (Naoki Shibata, Boost 1.0). The series
 // coefficients and constants below were computed to 192 bits with exact rationals and mpmath. The correctly
 // rounded exp, ln, sin, cos, the atan family, cbrt, hypot, and sqrt are CORE-MATH ports, methods defined in
 // F128Core/.
@@ -80,8 +80,8 @@ preset WIDE_LOG_COEF_LO: @Array<U64, 26> <- { 0, 0xAAAAAAAAAAAAAAAB, 0xCCCCCCCCC
 preset WIDE_LOG_COEF_EXP: @Array<S64, 26> <- { 0, -2, -3, -3, -4, -4, -4, -4, -5, -5, -5, -5, -5,
     -5, -5, -5, -6, -6, -6, -6, -6, -6, -6, -6, -6, -6 }
 
-/// A finite float mant × 2^(exponent - 191) with the mantissa's top bit (191) set;
-/// zero has a zero mantissa. The mantissa is hi (bits 191..64) and lo (63..0).
+/// A finite float mant × 2^(exponent - 191) with the mantissa's top bit (191) set.
+/// Zero has a zero mantissa. The mantissa is hi (bits 191..64) and lo (63..0).
 record F128Extended
     negative : Bool
     exponent : S64
@@ -299,7 +299,7 @@ routine F128Extended.mul(self: Self, other: Self) -> Self
         b2 : U128 = other.hi.shr(64)
         b1 : U128 = other.hi.bitand(0xFFFFFFFFFFFFFFFF)
         b0 : U128 = other.lo.to<U128>()
-        // columns 1..5 of the schoolbook product; column 0 only feeds carries into 1
+        // columns 1..5 of the schoolbook product, and column 0 only feeds carries into 1
         c0   : U128 = a0.mul_wrap(b0).shr(64)
         t1   : U128 = a0.mul_wrap(b1)
         t1b  : U128 = a1.mul_wrap(b0)
@@ -366,7 +366,7 @@ routine F128Extended.to_nearest<S64>(self: Self) -> S64
 // -- exponent -----------------------------------------------------------------------
 
 /// e^x for finite x with |x| below the overflow range (the caller clamps).
-/// x = q ln2 + d with |d| <= ln2/2, e^d by its Taylor series (27th degree; the
+/// x = q ln2 + d with |d| <= ln2/2, e^d by its Taylor series (27th degree, and the
 /// first dropped term is below 2^-141), then × 2^q.
 routine wide_exp(x: F128Extended) -> F128Extended
     block entry()
@@ -504,7 +504,7 @@ preset WIDE_COS_COEF_LO: @Array<U64, 18> <- { 0, 0, 0xAAAAAAAAAAAAAAAB, 81985529
 preset WIDE_COS_COEF_EXP: @Array<S64, 18> <- { 0, -1, -5, -10, -16, -22, -29, -37, -45, -53, -62,
     -70, -80, -89, -98, -108, -118, -128 }
 
-/// ln x for finite x > 0: x = fr × 2^e with fr in [sqrt(1/2), sqrt(2)); then
+/// ln x for finite x > 0: x = fr × 2^e with fr in [sqrt(1/2), sqrt(2)), then
 /// ln fr = 2 atanh(t) = 2 (t + t^3/3 + t^5/5 + …) with t = (fr - 1) / (fr + 1),
 /// |t| <= 0.172, 26 terms (the first dropped one is below 2^-135).
 routine wide_log(x: F128Extended) -> F128Extended
@@ -595,7 +595,7 @@ routine f128_reduce(x: F128) -> Reduced
         m1 : U128 = p.sig.shr(64)
         jump multiply(0, start, sh, m0, m1, limbs)
 
-    // limb k of W (little-endian) is TWO_OVER_PI[start + 7 - k]; add m × w_k at limb k
+    // limb k of W (little-endian) is TWO_OVER_PI[start + 7 - k]. Add m × w_k at limb k
     block multiply(k: USize, start: S64, sh: S64, m0: U128, m1: U128, limbs: @U64)
         done : Bool = k.ge(8)
         branch done
@@ -613,7 +613,7 @@ routine f128_reduce(x: F128) -> Reduced
         r0    : U64   = limbs.stride(k).load()
         r1    : U64   = limbs.stride(k1).load()
         r2    : U64   = limbs.stride(k2).load()
-        // limb k gets lo_p's low half; limb k+1 lo_p's high half and hi_p's low; k+2 the rest
+        // limb k gets lo_p's low half, limb k+1 lo_p's high half and hi_p's low, and k+2 the rest
         s0  : U128 = r0.to<U128>().add(lo_p.bitand(0xFFFFFFFFFFFFFFFF))
         s1a : U128 = r1.to<U128>().add(lo_p.shr(64))
         s1  : U128 = s1a.add(hi_p.bitand(0xFFFFFFFFFFFFFFFF)).add(s0.shr(64))
@@ -640,7 +640,7 @@ routine f128_reduce(x: F128) -> Reduced
         limbs.stride(j).store(s.to_wrap<U64>())
         jump spill(j.add_wrap(1), s.shr(64).to<U64>(), k, start, sh, m0, m1, limbs)
 
-    // quadrant: bits sh and sh+1; fraction: the 256 bits under sh, normalized
+    // quadrant: bits sh and sh+1. Fraction: the 256 bits under sh, normalized
     block extract(sh: S64, limbs: @U64)
         q      : U64  = limbs_bits64(limbs, sh).bitand(3)
         a      : U64  = limbs_bits64(limbs, sh.sub(64))
@@ -834,7 +834,7 @@ routine wide_exp_m1(x: F128Extended) -> F128Extended
         jump horner(i.sub(1), s.mul(x).add(c))
 
 /// ln(1 + x) for x > -1: below |x| = 1/4, 2 atanh(t) with t = x / (2 + x)
-/// (|t| < 0.143, inside the log series' reach); else ln of 1 + x, which is exact.
+/// (|t| < 0.143, inside the log series' reach), else ln of 1 + x, which is exact.
 routine wide_ln_1p(x: F128Extended) -> F128Extended
     block entry()
         small : Bool = x.exponent.lt(-2)

@@ -7,27 +7,27 @@
 //   computed with integers first (f128_pow_dyadic, which says why the check is complete).
 // - fast: ln|x| and e^(y ln|x|) in F128Extended (192 bits). ln x = e ln 2 + ln f with f in [sqrt(1/2), sqrt(2)),
 //   ln f by ln_1p's 2 atanh series, directly for |f - 1| < 1/8 and else as 2 ln sqrt(f), so its first dropped
-//   term stays near 2^-190 or below; e^z = 2^q e^d with |d| <= ln 2 / 2 and e^d = 1 + expm1(d) by the 35-term
+//   term stays near 2^-190 or below. e^z = 2^q e^d with |d| <= ln 2 / 2 and e^d = 1 + expm1(d) by the 35-term
 //   series. The result is kept when all of it × (1 ± 2^-F128_POW_BAND) rounds to the same F128.
 // - exact tier: otherwise ln, y ln x, and exp in F128Big (448 bits, Standard/F128Big.tess), rounded once. With
 //   |y ln x| < 2^14 the result is off by under about 2^-415 relative.
 //
 // The band is measured, not proven. Over 489391 (x, y) pairs, 449558 of which reached the fast tier (random over
-// the whole domain; x near 1 with |y| up to 2^100; results near overflow and in the subnormals; integer, half,
-// quarter, and finer dyadic y; powers of two; and 120000 with f on the 2 ln sqrt(f) path and |y ln x| in
+// the whole domain, x near 1 with |y| up to 2^100, results near overflow and in the subnormals, dyadic y
+// (integer, half, quarter, and finer), powers of two, and 120000 with f on the 2 ln sqrt(f) path and |y ln x| in
 // [10000, 11356]), the fast tier's worst relative error against mpmath was 2^-172.8: y ln x off by about 2^-186
 // relative (f just past the 1 ± 1/8 switch), times |y ln x| near 2^13.5. So 2^-168 leaves about 5 bits. Values
 // that close to a midpoint without being one do occur: x = 1 + a 2^-112 and y = n / 2 (a n odd) give
 // 1 + a n 2^-113 + O(a² n² 2^-227), next to a midpoint, and the fast tier alone rounds some of those the wrong
 // way (tests/f128_pow.tess has them). The exact tier has no rounding test of its own: it is within about 2^-415 of
 // x^y, while the 2^256 inputs, over 2^113 rounding intervals, are expected to come within about 2^-(113 + 256) of
-// a midpoint at the closest; no hard-to-round bound is known for binary128 pow.
+// a midpoint at the closest. No hard-to-round bound is known for binary128 pow.
 
 module Standard::Core
 
 preset F128_POW_BAND: S64 = 168
 
-// e^z overflows past z = 11356.52 and is below half the smallest subnormal before z = -11433.4; beyond these two
+// e^z overflows past z = 11356.52 and is below half the smallest subnormal before z = -11433.4. Beyond these two
 // there is nothing to compute
 preset F128_POW_OVER:  F128 = F128.from_bits(0x400C6300000000000000000000000000)  // 11360
 preset F128_POW_UNDER: F128 = F128.from_bits(0xC00C6700000000000000000000000000)  // -11488
@@ -48,7 +48,7 @@ routine F128.powi(self: Self, n: S32) -> Self
         r : Self = self.powf(n.to<Self>())
         return(r)
 
-/// powf; exact skips the fast tier (the tests use it to check the exact tier on its own).
+/// powf, where exact skips the fast tier (the tests use it to check the exact tier on its own).
 routine f128_pow(x: F128, y: F128, exact: Bool) -> F128
     block entry()
         one    : F128 = f128_of(F128_ONE)
@@ -74,7 +74,7 @@ routine f128_pow(x: F128, y: F128, exact: Bool) -> F128
         minus_one : Bool = x.eq(one.neg())
         zero      : F128 = f128_of(0)
         infinity  : F128 = F128.INFINITY
-        // x = ±0: a pole for y < 0, zero for y > 0; odd integers keep x's sign
+        // x = ±0: a pole for y < 0, zero for y > 0. Odd integers keep x's sign
         at_zero : F128 = y_neg
             ? infinity
             : zero
@@ -89,7 +89,7 @@ routine f128_pow(x: F128, y: F128, exact: Bool) -> F128
         inf_r : F128 = minus_one
             ? one
             : growth
-        // x = ±inf: like 1/0 for y < 0; odd integers keep x's sign
+        // x = ±inf: like 1/0 for y < 0. Odd integers keep x's sign
         x_inf_r0 : F128 = y_neg
             ? zero
             : infinity
@@ -175,10 +175,10 @@ private routine f128_odd_scaled(x: F128) -> OddScaled
 ///
 /// - x^y is a dyadic rational only as follows. For an integer y (j >= 0), x^y = m^y 2^(E y), which for y < 0 has
 ///   the odd factor m^|y| in its denominator unless m = 1. For y = ±n / 2^k (k = -j >= 1), if x^y = r is dyadic
-///   then r^(2^k) = x^(±n); with m > 1 that needs y > 0 and 2^k dividing n times each prime's exponent in m, so
+///   then r^(2^k) = x^(±n). With m > 1 that needs y > 0 and 2^k dividing n times each prime's exponent in m, so
 ///   (n odd) m = a^(2^k) and 2^k divides E, and x^y = a^n 2^(E n / 2^k). With m = 1, x^y = 2^(E y) is dyadic
 ///   exactly when E y is an integer, that is when 2^k divides E.
-/// - Bounds: m^y < 2^128 with m >= 3 needs y < 81; a >= 3 with a^(2^k) = m < 2^113 needs 2^k <= 71, so k <= 6;
+/// - Bounds: m^y < 2^128 with m >= 3 needs y < 81, a >= 3 with a^(2^k) = m < 2^113 needs 2^k <= 71, so k <= 6,
 ///   and a^n < 2^128 needs n < 81. So an integer y >= 128, k > 6, or n >= 128 rules the case out at once.
 ///
 /// For a power of two, |E y| >= 2^20 overflows or underflows whatever it is; it is clamped to ±2^30, which
