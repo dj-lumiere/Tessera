@@ -20,7 +20,7 @@ namespace Tessera;
 /// - a pointer type is written `@T`, not `Ptr<T>`, except where routines are declared on or called through the record
 ///   (`routine Ptr<T>.load`); comments and literals are left alone;
 /// - parentheses around one value, which group nothing in a language without operators, are dropped: `(x).add(1)` is
-///   `x.add(1)`; a call's arguments, a tuple type, and `(a, b)` (an error the builder reports) stay;
+///   `x.add(1)`. A call's arguments, a tuple type, and `(a, b)` (an error the builder reports) stay.
 /// - top-level declarations come in one order: module, imports (sorted), defines, globals, presets, types (records,
 ///   choices, variants), concepts, standalone conformances, routines, and `main` last. Within a kind the written order
 ///   stays, a declaration keeps the comments and attributes above it, and a file divided by section comments is
@@ -807,7 +807,7 @@ public static class Formatter
 
     /// Drops the parentheses around a single value where an expression starts (after `(`, `,`, `=`, `<-`, `?`, or a
     /// `when` arm's `->`). A `(` right after a name, `>`, `)`, or `]` holds a call's arguments, and one after `:` or `<`
-    /// starts a type, so those stay; so does a group with a comma at its top level.
+    /// starts a type, so those stay. So does a group with a comma at its top level.
     private static string DropGroupingParens(string line)
     {
         string trimmed = line.TrimStart();

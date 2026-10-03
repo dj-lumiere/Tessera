@@ -26,7 +26,7 @@ public readonly record struct Pos(string File, int Line, int Col)
     public override string ToString() => Col > 0 ? $"{File}:{Line}:{Col}" : $"{File}:{Line}";
 }
 
-/// Source files are UTF-8 (a BOM is allowed); anything else is an error at the first byte that doesn't decode,
+/// Source files are UTF-8 (a BOM is allowed). Anything else is an error at the first byte that doesn't decode,
 /// never a silent U+FFFD.
 public static class SourceText
 {
@@ -195,7 +195,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 case '{': kind = TokenKind.LBrace; _depth++; break;
                 case '}': kind = TokenKind.RBrace; _depth--; break;
                 case '<':
-                    // `<-` fills memory; `<-1` is still a generic argument list starting with a negative literal.
+                    // `<-` fills memory. `<-1` is still a generic argument list starting with a negative literal.
                     if (Peek() == '-' && !char.IsAsciiDigit(Peek(1))) { Advance(); kind = TokenKind.LeftArrow; }
                     else kind = TokenKind.Lt;
                     break;

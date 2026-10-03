@@ -48,7 +48,7 @@ public sealed class CpuModel
         return Cache[key] = new CpuModel(target, cpu.Groups[1].Value, feats.Success ? feats.Groups[1].Value : "");
     }
 
-    /// Whether the build has the feature; a name LLVM doesn't know for the target's arch is an error.
+    /// Whether the build has the feature. A name LLVM doesn't know for the target's arch is an error.
     public bool Has(string feature, Pos pos)
     {
         if (_enabled.Contains(feature)) return true;

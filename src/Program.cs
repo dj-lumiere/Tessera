@@ -569,7 +569,7 @@ static class Cli
             RedirectStandardInput = captureOutput,
             RedirectStandardOutput = captureOutput,
             RedirectStandardError = captureOutput,
-            // Programs write UTF-8; without this the output is decoded in the console's code page.
+            // Programs write UTF-8. Without this the output is decoded in the console's code page.
             StandardOutputEncoding = captureOutput ? System.Text.Encoding.UTF8 : null,
             StandardErrorEncoding = captureOutput ? System.Text.Encoding.UTF8 : null,
         };

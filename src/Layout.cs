@@ -21,7 +21,7 @@ public sealed partial class Compiler
 
     /// A record's LLVM members and, for each field, the index of its member. `#layout(align: N)` on the record puts
     /// an alignment member first; `#aligned(N)` on a field puts one right before that field. A dense record's
-    /// members are packed (`<{ ... }>`); with `align: N` too, they sit inside `{ [0 x <N x i8>], <{ ... }> }`, so a
+    /// members are packed (`<{ ... }>`). With `align: N` too, they sit inside `{ [0 x <N x i8>], <{ ... }> }`, so a
     /// field is one level deeper (WrapAlign is N then, else 0).
     public sealed record RecordShape(List<Member> Members, int[] FieldIndex, bool Dense = false, long WrapAlign = 0)
     {

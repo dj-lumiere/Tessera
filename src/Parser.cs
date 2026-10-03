@@ -837,7 +837,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     }
 
     /// Whether the block is over: a declaration or another block comes next. Attribute lines end it when one of
-    /// those follows them; before a line of the block (`#source(...)`) they don't.
+    /// those follows them. Before a line of the block (`#source(...)`) they don't.
     private bool AtBlockEnd()
     {
         if (!Is(TokenKind.Hash)) return AtDeclStart() || IsIdent("block");

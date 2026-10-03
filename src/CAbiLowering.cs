@@ -291,7 +291,7 @@ public sealed partial class Compiler
         return new AbiSig(r, ps.Select(Param).ToList());
     }
 
-    // ── AArch64 (AAPCS64; Apple's differs only in stack alignment) ──────────
+    // ── AArch64 (AAPCS64, Apple's differs only in stack alignment) ──────────
 
     /// A homogeneous float aggregate (1 to 4 of one float type) passes as an array of it and returns as itself;
     /// other aggregates up to 16 bytes pass as one or two i64s and return as an integer that size or [2 x i64];
@@ -332,7 +332,7 @@ public sealed partial class Compiler
         return SizeAlign(t, pos).Size == leaves.Count * leaves[0].Size ? (leaves.Count, leaves[0].Llvm) : null;
     }
 
-    // ── 32-bit ARM (AAPCS; the VFP variant with eabihf) ──────────────────────
+    // ── 32-bit ARM (AAPCS, the VFP variant with eabihf) ──────────────────────
 
     /// With the hard-float ABI a homogeneous float aggregate (1 to 4 floats or doubles) passes and returns as itself.
     /// Any other aggregate passes as 32-bit words ([N x i32], or [N x i64] when 8-aligned), however large, and returns
@@ -439,8 +439,8 @@ public sealed partial class Compiler
     // ── i386 ────────────────────────────────────────────────────────────────
 
     /// Everything goes on the stack. An aggregate of 4- and 8-byte scalars with no padding, up to 16 bytes, passes
-    /// as those scalars; any other one byval. Linux returns every aggregate through `sret`; Windows returns one of
-    /// 1, 2, 4, or 8 bytes as an integer that size.
+    /// as those scalars, and any other one byval. Linux returns every aggregate through `sret`. Windows returns one
+    /// of 1, 2, 4, or 8 bytes as an integer that size.
     private AbiSig I386(IReadOnlyList<DType> ps, DType ret, Pos pos)
     {
         bool windows = Target.Os == "windows";

@@ -173,7 +173,7 @@ public sealed partial class Compiler
     }
 
     /// The routines on a type with this name that `file` may call: its overload set. One declared in the type's own
-    /// module goes wherever the type goes; one another module adds needs that module imported. `anyModule` skips that
+    /// module goes wherever the type goes. One that another module adds needs that module imported. `anyModule` skips that
     /// check (a call on a value whose type came from a type parameter). `fits` picks among routines defined for
     /// different type arguments (`S32.to<S64>`, `S32.to<U8>`). A type's own routines of a name hide the routines on
     /// every type (`T.name`) of that name; those are the set only when the type has none.

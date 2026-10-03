@@ -17,7 +17,7 @@ namespace Tessera;
 /// library = ["../shared"]             # source directories of other solutions this one builds with
 /// sources = ["../lib/hash.tess"]      # files (or directories of them) built in whatever the entry imports
 /// mode = "release"                    # "debug" (-O0, the default), "release" (-O2), "release-time" (-O3),
-///                                     # or "release-space" (-Os); every mode has debug information
+///                                     # or "release-space" (-Os). Every mode has debug information.
 /// triple = "arm-none-eabi"            # default: the host
 /// c-libraries = ["m"]                 # -l names
 /// library-paths = ["vendor/lib"]      # -L directories
