@@ -280,10 +280,11 @@ public sealed partial class Compiler
     /// A call the builder placed: the routine it calls and what each of that routine's type parameters stands for.
     public sealed record CallUse(RoutineDecl Decl, List<(string Name, DType Type)> Bindings);
 
-    /// The calls and the values of the routines that aren't generic, by the position the parser gave them: what the
-    /// language server shows on hover. A generic routine's body means something else in each instance, so it isn't
-    /// recorded.
-    public Dictionary<Pos, CallUse> CallUses { get; } = [];
+    /// The calls and the values of the routines that aren't generic, by the position the parser gave them (a call also
+    /// by the routine's name: `claim p : @T <- .make()` calls `make` and stores through `Ptr<T>.store` at one place):
+    /// what the language server shows on hover. A generic routine's body means something else in each instance, so it
+    /// isn't recorded.
+    public Dictionary<(Pos Pos, string Name), CallUse> CallUses { get; } = [];
     public Dictionary<Pos, DType> ValueTypes { get; } = [];
 
     /// The routines on the type `owner` names from `file` with this name, whatever type arguments they are defined for:

@@ -14,7 +14,7 @@ import javax.swing.Icon
  * Tessera's own colors. Each starts as the C# color of its counterpart (record as struct, concept as interface, routine
  * as method, SSA value as local variable, module path as namespace, preset as constant, terminator as control-flow
  * keyword), so Tessera reads like C# in any scheme until Settings | Editor | Color Scheme | Tessera says otherwise.
- * Blocks and attributes have no C# counterpart of their own: a block starts purple and an attribute yellow
+ * Blocks and attributes have no C# counterpart of their own: a block starts pink and an attribute yellow
  * (colorSchemes/).
  */
 object TesseraColors {
@@ -33,6 +33,8 @@ object TesseraColors {
     val KEYWORD = key("TESSERA_KEYWORD", DefaultLanguageHighlighterColors.KEYWORD)
     val NUMBER = key("TESSERA_NUMBER", DefaultLanguageHighlighterColors.NUMBER)
     val OPERATOR = key("TESSERA_OPERATOR", DefaultLanguageHighlighterColors.OPERATION_SIGN)
+    val DOC_TAG = key("TESSERA_DOC_TAG", DefaultLanguageHighlighterColors.DOC_COMMENT_TAG)
+    val DOC_VALUE = key("TESSERA_DOC_VALUE", DefaultLanguageHighlighterColors.DOC_COMMENT_TAG_VALUE)
 
     private fun key(name: String, csharp: TextAttributesKey) = TextAttributesKey.createTextAttributesKey(name, csharp)
 }
@@ -55,6 +57,8 @@ internal object TesseraSemanticTokens : LspSemanticTokensSupport() {
         "keyword" to TesseraColors.KEYWORD,
         "number" to TesseraColors.NUMBER,
         "operator" to TesseraColors.OPERATOR,
+        "docTag" to TesseraColors.DOC_TAG,
+        "docValue" to TesseraColors.DOC_VALUE,
     )
 
     override val tokenTypes: List<String> = (super.tokenTypes + keys.keys).distinct()
@@ -81,6 +85,8 @@ class TesseraColorSettingsPage : ColorSettingsPage {
         AttributesDescriptor("Keywords//Keyword", TesseraColors.KEYWORD),
         AttributesDescriptor("Number", TesseraColors.NUMBER),
         AttributesDescriptor("Operator", TesseraColors.OPERATOR),
+        AttributesDescriptor("Doc comment//Field (:param, :returns)", TesseraColors.DOC_TAG),
+        AttributesDescriptor("Doc comment//Field name, reference", TesseraColors.DOC_VALUE),
     )
 
     private val tags = mapOf(

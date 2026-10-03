@@ -53,6 +53,7 @@ public static partial class LanguageServer
                             ["documentFormattingProvider"] = true,
                             ["semanticTokensProvider"] = SemanticTokensLegend(),
                             ["hoverProvider"] = true,
+                            ["completionProvider"] = CompletionOptions(),
                             ["definitionProvider"] = true,
                             ["documentSymbolProvider"] = true,
                         },
@@ -88,6 +89,13 @@ public static partial class LanguageServer
                 case "textDocument/hover":
                     Reply(id, Hover(p!["textDocument"]!["uri"]!.GetValue<string>(), p["position"]!["line"]!.GetValue<int>(),
                         p["position"]!["character"]!.GetValue<int>()));
+                    break;
+                case "textDocument/completion":
+                    Reply(id, Completion(p!["textDocument"]!["uri"]!.GetValue<string>(), p["position"]!["line"]!.GetValue<int>(),
+                        p["position"]!["character"]!.GetValue<int>()));
+                    break;
+                case "completionItem/resolve":
+                    Reply(id, ResolveCompletion(p!.DeepClone()));
                     break;
                 case "textDocument/definition":
                     Reply(id, Definition(p!["textDocument"]!["uri"]!.GetValue<string>(), p["position"]!["line"]!.GetValue<int>(),

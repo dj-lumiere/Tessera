@@ -11,7 +11,7 @@ Reformat Code.
 The server colors what the builder resolved: types by kind, routines, blocks, SSA values, parameters, fields, presets
 and cases, module paths, attributes, and terminators. Each color starts as its C# counterpart's (record as struct,
 concept as interface, routine as method, SSA value as local variable, terminator as control-flow keyword); a block
-starts purple and an attribute yellow. Change them in Settings | Editor | Color Scheme | Tessera.
+starts pink and an attribute yellow. Change them in Settings | Editor | Color Scheme | Tessera.
 
 ## Which builder runs
 

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 
 namespace Tessera;
@@ -12,7 +13,7 @@ public static partial class LanguageServer
     private static readonly string[] TokenTypes =
     [
         "function", "variable", "parameter", "property", "namespace", "recordType", "interface", "typeParameter",
-        "constant", "block", "decorator", "controlKeyword", "keyword", "operator", "number",
+        "constant", "block", "decorator", "controlKeyword", "keyword", "operator", "number", "docTag", "docValue",
     ];
 
     private static readonly HashSet<string> ControlKeywords =
@@ -64,17 +65,24 @@ public static partial class LanguageServer
             return new JsonObject { ["data"] = data };
         }
 
-        var kinds = analysis is not null && analysis.Text == text
-            ? new Classifier(tokens, analysis).Run()
-            : [];
-        int prevLine = 0, prevChar = 0;
+        var classifier = analysis is not null && analysis.Text == text ? new Classifier(tokens, analysis) : null;
+        var kinds = classifier?.Run() ?? [];
+        var spans = new List<(int Line, int Col, int Length, string Kind)>();
         for (int i = 0; i < tokens.Count; i++)
         {
             var t = tokens[i];
             string? kind = kinds.GetValueOrDefault((t.Pos.Line, t.Pos.Col)) ?? Lexical(tokens, i);
             if (kind is null || t.Pos.Line < 1 || t.Text.Length == 0) continue;
-            int line = t.Pos.Line - 1, ch = t.Pos.Col - 1;
-            int length = t.Kind == TokenKind.Hash && i + 1 < tokens.Count ? 1 : t.Text.Length;
+            spans.Add((t.Pos.Line, t.Pos.Col, t.Kind == TokenKind.Hash && i + 1 < tokens.Count ? 1 : t.Text.Length, kind));
+        }
+        foreach (var t in classifier?.Extra ?? [])
+            if (kinds.GetValueOrDefault((t.Pos.Line, t.Pos.Col)) is { } kind)
+                spans.Add((t.Pos.Line, t.Pos.Col, t.Text.Length, kind));
+        spans.AddRange(DocSpans(text, "///"));
+        int prevLine = 0, prevChar = 0;
+        foreach (var (spanLine, spanCol, length, kind) in spans.OrderBy(x => x.Line).ThenBy(x => x.Col))
+        {
+            int line = spanLine - 1, ch = spanCol - 1;
             data.Add(line - prevLine);
             data.Add(line == prevLine ? ch - prevChar : ch);
             data.Add(length);
@@ -84,6 +92,34 @@ public static partial class LanguageServer
             prevChar = ch;
         }
         return new JsonObject { ["data"] = data };
+    }
+
+    // A field: `:param name:` and `:typeparam Name:` name what they describe, the others (`:returns:`) don't.
+    private static readonly Regex DocField = new(@"^\s*(:(?:param|typeparam)(?=\s)|:(?:returns|throws|absent|note|see)(?=:))(?:\s+(\S+?))?(:)");
+    private static readonly Regex DocReference = new(@"\{[^{}\s][^{}]*\}");
+
+    /// The parts of a doc comment that are its structure rather than its prose: a field (`:param alloc:`, `:returns:`)
+    /// and a reference in braces (`{List<T>.reserve_result}`), on each line opening with `marker`.
+    private static IEnumerable<(int Line, int Col, int Length, string Kind)> DocSpans(string text, string marker)
+    {
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            int at = line.IndexOf(marker, StringComparison.Ordinal);
+            if (at < 0 || line[..at].Trim().Length > 0) continue;
+            int start = at + marker.Length;
+            string content = line[start..];
+            if (DocField.Match(content) is { Success: true } field)
+            {
+                yield return (i + 1, start + field.Groups[1].Index + 1, field.Groups[1].Length, "docTag");
+                if (field.Groups[2].Success)
+                    yield return (i + 1, start + field.Groups[2].Index + 1, field.Groups[2].Length, "docValue");
+                yield return (i + 1, start + field.Groups[3].Index + 1, 1, "docTag");
+            }
+            foreach (Match reference in DocReference.Matches(content))
+                yield return (i + 1, start + reference.Index + 1, reference.Length, "docValue");
+        }
     }
 
     /// What a token is by itself: a keyword, a number, an operator, or the `#name` of an attribute.
@@ -109,6 +145,9 @@ public static partial class LanguageServer
     {
         private readonly Dictionary<(int Line, int Col), string> _kinds = [];
         public Dictionary<(int Line, int Col), Func<string?>> Hovers { get; } = [];
+
+        /// The name tokens inside the `{...}` holes of `write` strings, which the document's tokens hold as one string.
+        public List<Token> Extra { get; } = [];
 
         /// Where each name's declaration is: the place and the name there, for go-to-definition.
         public Dictionary<(int Line, int Col), (Pos Pos, string Name)> Definitions { get; } = [];
@@ -139,6 +178,12 @@ public static partial class LanguageServer
         /// The clause line that declares each type parameter in scope (`require T: typename, Equal<T>`), and where.
         private Dictionary<string, string> _typeParamLines = [];
         private Dictionary<string, Pos> _typeParamAt = [];
+
+        /// The concept being walked: what `Self` means in its routines.
+        private ConceptDecl? _concept;
+
+        /// The concepts each type parameter in scope is required to meet (`Equal<T>` for `T`).
+        private Dictionary<string, List<TypeRef>> _conceptsOf = [];
 
         /// Where each value of the routine is bound (a parameter, a block parameter, a statement's binding).
         private Dictionary<string, Pos> _definedAt = [];
@@ -180,7 +225,7 @@ public static partial class LanguageServer
 
         /// A routine as called at `call`: what the builder bound its type parameters to there, when it recorded it.
         private Func<string?> RoutineHover(RoutineDecl r, Pos call) =>
-            DeclHover(r, analysis.Compiler.CallUses.GetValueOrDefault(call)?.Bindings
+            DeclHover(r, analysis.Compiler.CallUses.GetValueOrDefault((call, r.Name))?.Bindings
                 .Where(b => b.Name != "Self").Select(b => (b.Name, b.Type.ToString())));
 
         /// A value: its type as the builder resolved it where it recorded one, else as written.
@@ -203,6 +248,8 @@ public static partial class LanguageServer
         /// A type name: its declaration, and what it binds the declaration's type parameters to (`List<S64>`).
         private Func<string?>? TypeHover(TypeRef t)
         {
+            if (t is { Name: "Self", Path: null } && _routine?.Owner is { } owner && owner.Name != "Self") return TypeHover(owner);
+            if (t is { Name: "Self", Path: null } && _concept is not null) return DeclHover(_concept);
             if (t.Path is null && _typeParamLines.TryGetValue(t.Name, out var clause))
                 return At(_typeParamAt[t.Name], t.Name, () => HoverText(clause, null));
             Decl? decl = analysis.Compiler.TypeDeclQuiet(t.Name, analysis.Shown, t.Path)
@@ -224,14 +271,139 @@ public static partial class LanguageServer
         {
             ValueRef v => Pointee(_written.GetValueOrDefault(v.Name)),
             FieldExpr f when Field(f.Base, f.Name) is { } field => Pointee(field.Field.Type),
+            PresetRef preset => Pointee(PresetType(preset.Owner?.Name ?? "", preset.Name)),
+            MethodCallExpr or CallExpr or NsCallExpr => Pointee(ResultType(e)),
             _ => null,
         };
 
+        /// The type a preset or a global is declared with.
+        private TypeRef? PresetType(string owner, string name)
+        {
+            try
+            {
+                return analysis.Compiler.FindPreset(owner, name, analysis.Shown, new Pos(analysis.Shown, 1, 1))?.Type;
+            }
+            catch (CompileError)
+            {
+                return null;
+            }
+        }
+
+        /// The type a call returns, as its declaration writes it with the receiver's type arguments put in: `p.load()`
+        /// on a `@Dict<K, V>` is a `Dict<K, V>`.
+        private readonly Dictionary<Expr, TypeRef?> _results = new(ReferenceEqualityComparer.Instance);
+
+        private TypeRef? ResultType(Expr e)
+        {
+            if (_results.TryGetValue(e, out var known)) return known;
+            return _results[e] = ResultTypeOf(e);
+        }
+
+        private TypeRef? ResultTypeOf(Expr e)
+        {
+            switch (e)
+            {
+                case MethodCallExpr { Name: "stride", Args.Count: 1 } stride:
+                    return ReceiverType(stride.Receiver);
+                case MethodCallExpr m:
+                    foreach (var receiver in new[] { ReceiverType(m.Receiver), WrittenType(m.Receiver) })
+                        if (receiver is not null && MethodOn(receiver, m.Name, m.TypeArgs) is { } r)
+                            return Substitute(r, receiver);
+                    return WrittenType(m.Receiver) is { } generic && ConceptMethod(generic, m.Name) is { } c
+                        ? Substitute(c, generic)
+                        : null;
+                case CallExpr call:
+                    return FreeRoutine(call)?.ReturnType;
+                case NsCallExpr ns:
+                    var owner = NsOwner(ns.Owner);
+                    return MethodOn(owner, ns.Name, ns.TypeArgs) is { } method ? Substitute(method, owner!) : null;
+                default:
+                    return null;
+            }
+        }
+
+        /// What `Owner.name(...)` is called on: a type, or the type of the preset the owner names (`SLOT_EMPTY.sub(1)`).
+        private TypeRef? NsOwner(TypeRef owner) =>
+            TypeKind(owner) is null && owner is { Path: null, Args.Count: 0 } && PresetType("", owner.Name) is { } preset
+                ? preset
+                : owner;
+
+        /// A routine's result type with its owner's type parameters as the receiver has them, and `Self` as the receiver.
+        private TypeRef Substitute(RoutineDecl r, TypeRef receiver)
+        {
+            var map = new Dictionary<string, TypeRef> { ["Self"] = receiver };
+            if (r.Owner is { } owner)
+            {
+                if (owner.Args.Count == 0 && owner.Name != receiver.Name) map[owner.Name] = receiver; // `T.name`, on anything
+                foreach (var (param, arg) in owner.Args.Zip(receiver.Args))
+                    if (param is TypeArgType { Type: { Path: null, Args.Count: 0 } name } && arg is TypeArgType given)
+                        map[name.Name] = given.Type;
+            }
+            return SelfIsOwner(Replace(r.ReturnType, map));
+        }
+
+        private static TypeRef Replace(TypeRef t, Dictionary<string, TypeRef> map) =>
+            t is { Path: null, Args.Count: 0 } && map.TryGetValue(t.Name, out var to)
+                ? to
+                : t with { Args = [.. t.Args.Select(a => a is TypeArgType inner ? new TypeArgType(Replace(inner.Type, map)) : a)] };
+
+        /// A type with the walked routine's `Self` written out as its owner, wherever it appears (`@Self`).
+        private TypeRef SelfIsOwner(TypeRef t) =>
+            _routine?.Owner is { Name: not "Self" } owner ? Replace(t, new Dictionary<string, TypeRef> { ["Self"] = owner }) : t;
+
         /// The written type of a call's receiver as it is, a pointer included (`data.stride(i)` on a `@S64`).
-        private TypeRef? ReceiverType(Expr e) =>
-            e is ValueRef v && _written.GetValueOrDefault(v.Name) is { } t
-                ? t is { Name: "Self", Path: null } ? _routine?.Owner : t
+        private TypeRef? ReceiverType(Expr e) => e switch
+        {
+            ValueRef v when _written.GetValueOrDefault(v.Name) is { } t => SelfIsOwner(t),
+            // A field reached through a pointer is a place: `self.capacity.load()` reads it.
+            FieldExpr f when IsPlace(f.Base) && Field(f.Base, f.Name) is { } field =>
+                new TypeRef("Ptr", [new TypeArgType(field.Field.Type)], f.Pos),
+            MethodCallExpr { Name: "stride", Args.Count: 1 } stride => ReceiverType(stride.Receiver),
+            MethodCallExpr or CallExpr or NsCallExpr => ResultType(e),
+            PresetRef preset => PresetType(preset.Owner?.Name ?? "", preset.Name),
+            _ => null,
+        };
+
+        /// Whether an expression is a place (an address the builder reads and writes through): a pointer value, a field
+        /// of a place, `p.stride(n)`.
+        private bool IsPlace(Expr e) => e switch
+        {
+            ValueRef => ReceiverType(e) is { Name: "Ptr", Path: null },
+            FieldExpr f => IsPlace(f.Base),
+            MethodCallExpr { Name: "stride", Args.Count: 1 } stride => IsPlace(stride.Receiver),
+            _ => false,
+        };
+
+        /// What the type a routine is on requires of its parameters (`record Dict<K, V>` with `HashEqual<K>`), under the
+        /// names the routine writes them with (`routine Dict<K, V>.find`).
+        private void OwnerConstraints(TypeRef owner)
+        {
+            var decl = analysis.Compiler.TypeDeclQuiet(owner.Name, analysis.Shown, owner.Path);
+            if (decl is not (RecordDecl or VariantDecl)) return;
+            var clauses = decl is RecordDecl record ? record.Clauses : ((VariantDecl)decl).Clauses;
+            var renamed = TypeParamsOf(decl).Zip(owner.Args)
+                .Where(x => x.Second is TypeArgType { Type: { Path: null, Args.Count: 0 } })
+                .ToDictionary(x => x.First, x => ((TypeArgType)x.Second).Type.Name);
+            foreach (var concept in clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts))
+                foreach (var arg in concept.Args.OfType<TypeArgType>().Where(a => a.Type is { Path: null, Args.Count: 0 }))
+                    if (renamed.TryGetValue(arg.Type.Name, out var name))
+                        (_conceptsOf.TryGetValue(name, out var list) ? list : _conceptsOf[name] = []).Add(concept);
+        }
+
+        /// The routine `name` of a concept a type parameter is required to meet: `x.eq(y)` on a `T: Equal<T>`.
+        private RoutineDecl? ConceptMethod(TypeRef? t, string name) =>
+            t is { Path: null, Args.Count: 0 } && _conceptsOf.TryGetValue(t.Name, out var concepts)
+                ? concepts.Select(c => ConceptRoutine(c, analysis.Shown, name, [])).FirstOrDefault(r => r is not null)
                 : null;
+
+        private RoutineDecl? ConceptRoutine(TypeRef concept, string file, string name, HashSet<ConceptDecl> seen)
+        {
+            if (analysis.Compiler.ConceptDeclQuiet(concept.Name, file, concept.Path) is not { } decl || !seen.Add(decl))
+                return null;
+            return decl.Routines.FirstOrDefault(r => r.Name == name)
+                   ?? decl.Clauses.SelectMany(c => c.Concepts).Select(c => ConceptRoutine(c, decl.File, name, seen))
+                       .FirstOrDefault(r => r is not null);
+        }
 
         /// `p.stride(n)`, which the builder has built in rather than declared.
         private Func<string?>? StrideHover(MethodCallExpr m)
@@ -242,10 +414,15 @@ public static partial class LanguageServer
                 : ReceiverType(m.Receiver) is { Name: "Ptr", Path: null, Args: [TypeArgType inner] } ? inner.Type.ToString()
                 : null;
             if (pointee is null) return null;
-            return () => HoverText("routine Ptr<T>.stride(self: Self, n: USize) -> Self",
+            string ptr = Path.Combine("Standard", "Types", "Ptr.tess");
+            var lines = LinesOf(analysis, ptr);
+            int at = Array.FindIndex(lines, l => l.Contains("`p.stride(n)`", StringComparison.Ordinal));
+            Pos? where = at < 0 ? null : new Pos(ptr, at + 1, lines[at].IndexOf("stride", StringComparison.Ordinal) + 1);
+            Func<string?> hover = () => HoverText("routine Ptr<T>.stride(self: Self, n: USize) -> Self",
                 "The address `n` `T`s past this one; an `SSize` moves back. Built into the builder: it is a place like a "
                 + "field, so it chains (`p.stride(i).f`), and a load or a store through it keeps a dense record's "
                 + "alignment.", [("T", pointee)]);
+            return where is null ? hover : At(where.Value, "stride", hover);
         }
 
         /// The field `name` of the record an expression is.
@@ -288,15 +465,96 @@ public static partial class LanguageServer
         }
 
         /// The routine a call on the type `owner` names, when it is the only one by that name.
-        private RoutineDecl? MethodOn(TypeRef? owner, string name) =>
-            owner is null ? null
-            : analysis.Compiler.MethodsNamedQuiet(owner, name, analysis.Shown) is [var only] ? only
-            : null;
+        private RoutineDecl? MethodOn(TypeRef? owner, string name, List<TypeRef>? typeArgs = null)
+        {
+            if (owner is null) return null;
+            if (analysis.Compiler.MethodsNamedQuiet(owner, name, analysis.Shown) is { Count: > 0 } methods)
+            {
+                if (methods.Count > 1 && typeArgs is { Count: > 0 })
+                    methods = methods.Where(m => m.Fixed.Select(t => t.ToString()).SequenceEqual(typeArgs.Select(t => t.ToString())))
+                        .ToList();
+                return methods.Count == 1 ? methods[0] : null;
+            }
+            try
+            {
+                return analysis.Compiler.FindBlanket(name, analysis.Shown, new Pos(analysis.Shown, 1, 1));
+            }
+            catch (CompileError)
+            {
+                return null;
+            }
+        }
 
-        private Func<string?>? CallHover(Pos call, RoutineDecl? fallback) =>
-            analysis.Compiler.CallUses.GetValueOrDefault(call)?.Decl is { } used ? RoutineHover(used, call)
+        private Func<string?>? CallHover(Pos call, string name, RoutineDecl? fallback) =>
+            analysis.Compiler.CallUses.GetValueOrDefault((call, name))?.Decl is { } used ? RoutineHover(used, call)
             : fallback is not null ? RoutineHover(fallback, call)
             : null;
+
+        /// `out.write("x = {x}\n")`, `Out.write("...")`: a template the builder expands in place, which no routine declares.
+        private Func<string?> TemplateHover()
+        {
+            Func<string?> hover = () => HoverText("out.write(template: Bytes) -> Void",
+                "Writes the string to the Writer, each `{expression}` in it through the value's `represent_into`, "
+                + "expanded in place by the builder: nothing is allocated. `{{` and `}}` are literal braces.");
+            // The pieces of text go out through write_str: the routine a template is made of.
+            RoutineDecl? writeStr;
+            try
+            {
+                writeStr = analysis.Compiler.FindFree("write_str", analysis.Shown, new Pos(analysis.Shown, 1, 1), "Standard::Format");
+            }
+            catch (CompileError)
+            {
+                writeStr = null;
+            }
+            return writeStr is null ? hover : At(writeStr.Pos, writeStr.Name, hover);
+        }
+
+        /// The holes of a `write` string: each `{...}` is an expression, walked like any other. Its names are found
+        /// in the source line, since the document's tokens hold the string whole.
+        private void TemplateHoles(StrLit template)
+        {
+            var lines = LinesOf(analysis, analysis.Shown);
+            if (template.Pos.Line < 1 || template.Pos.Line > lines.Length) return;
+            string line = lines[template.Pos.Line - 1];
+            int i = template.Pos.Col - 1;
+            if (i >= line.Length || line[i] != '"') return;
+            for (i++; i < line.Length && line[i] != '"'; i++)
+            {
+                if (line[i] == '\\')
+                {
+                    i++;
+                    continue;
+                }
+                if (line[i] != '{') continue;
+                if (i + 1 < line.Length && line[i + 1] == '{')
+                {
+                    i++;
+                    continue;
+                }
+                int depth = 0, end = i;
+                for (; end < line.Length; end++)
+                    if (line[end] == '{') depth++;
+                    else if (line[end] == '}' && --depth == 0) break;
+                if (end >= line.Length) return;
+                try
+                {
+                    var hole = new Lexer(analysis.Shown, line[(i + 1)..end], template.Pos.Line, i + 2).Lex();
+                    foreach (var t in hole.Where(t => t.Kind == TokenKind.Ident))
+                    {
+                        Extra.Add(t);
+                        if (!_byLine.TryGetValue(t.Pos.Line, out var onLine)) _byLine[t.Pos.Line] = onLine = [];
+                        onLine.Add(t);
+                        onLine.Sort((a, b) => a.Pos.Col.CompareTo(b.Pos.Col));
+                    }
+                    Expr(new Parser(hole, analysis.Shown, values: _definedAt.Keys).ParseLoneExpr());
+                }
+                catch (CompileError)
+                {
+                    // A hole that doesn't parse is the check's to report.
+                }
+                i = end;
+            }
+        }
 
         private RoutineDecl? FreeRoutine(CallExpr call)
         {
@@ -338,6 +596,9 @@ public static partial class LanguageServer
         {
             _typeParamLines = [];
             _typeParamAt = [];
+            _conceptsOf = [];
+            _routine = null;
+            _concept = null;
             Attributes(d.Attributes);
             switch (d)
             {
@@ -347,8 +608,8 @@ public static partial class LanguageServer
                 case RecordDecl rec:
                     _typeParams = [.. rec.TypeParams];
                     Mark(rec.Pos, rec.Name, "recordType", DeclHover(rec));
-                    TypeParamNames(rec.Pos, rec.TypeParams);
                     Clauses(rec.Clauses);
+                    TypeParamNames(rec.Pos, rec.TypeParams);
                     foreach (var f in rec.Fields)
                     {
                         Attributes(f.Attributes);
@@ -370,8 +631,8 @@ public static partial class LanguageServer
                 case VariantDecl variant:
                     _typeParams = [.. variant.TypeParams];
                     Mark(variant.Pos, variant.Name, "recordType", DeclHover(variant));
-                    TypeParamNames(variant.Pos, variant.TypeParams);
                     Clauses(variant.Clauses);
+                    TypeParamNames(variant.Pos, variant.TypeParams);
                     foreach (var c in variant.Cases)
                     {
                         Mark(c.Pos, c.Name, "constant", () => HoverText(
@@ -387,14 +648,16 @@ public static partial class LanguageServer
                     if (preset.Value is not null) Expr(preset.Value);
                     break;
                 case ConceptDecl concept:
+                    _concept = concept;
                     _typeParams = [.. concept.TypeParams, "Self"];
                     Mark(concept.Pos, concept.Name, "interface", DeclHover(concept));
-                    TypeParamNames(concept.Pos, concept.TypeParams);
                     Clauses(concept.Clauses);
+                    TypeParamNames(concept.Pos, concept.TypeParams);
                     foreach (var r in concept.Routines) Routine(r, _typeParams);
                     break;
                 case ConformDecl conform:
-                    _typeParams = [];
+                    // `conform Represent<@T> when T: typename` declares its own parameters.
+                    _typeParams = [.. conform.Clauses.SelectMany(c => c.Params).Select(p => p.Name)];
                     Clauses(conform.Clauses);
                     break;
                 case ModuleDecl or ImportDecl:
@@ -421,6 +684,8 @@ public static partial class LanguageServer
                         analysis.Compiler.TypeDeclQuiet(a.Type.Name, analysis.Shown) is null &&
                         analysis.Compiler.ConceptDeclQuiet(a.Type.Name, analysis.Shown) is null)
                         _typeParams.Add(a.Type.Name);
+                Clauses(r.Clauses);
+                OwnerConstraints(r.Owner);
                 Type(r.Owner);
             }
             _routine = r;
@@ -429,8 +694,8 @@ public static partial class LanguageServer
             _written = [];
             _definedAt = [];
             Mark(r.Owner?.Pos ?? r.Pos, r.Name, "function", DeclHover(r));
+            if (r.Owner is null) Clauses(r.Clauses);
             TypeParamNames(r.Pos, r.TypeParams);
-            Clauses(r.Clauses);
             _params = [];
             foreach (var p in r.Params)
             {
@@ -463,7 +728,15 @@ public static partial class LanguageServer
 
         private void TypeParamNames(Pos pos, IEnumerable<string> names)
         {
-            foreach (var n in names) Mark(pos, n, "typeParameter");
+            foreach (var n in names)
+                Mark(pos, n, "typeParameter",
+                    _typeParamLines.TryGetValue(n, out var clause)
+                        ? At(_typeParamAt[n], n, () => HoverText(clause, null))
+                        : At(pos, n, () => HoverText(n, "A type parameter.")));
+            // One with no `require` line is declared where it is written: its uses find it there.
+            foreach (var n in names)
+                if (_typeParamLines.TryAdd(n, n))
+                    _typeParamAt[n] = pos;
         }
 
         private void Clauses(List<Clause> clauses)
@@ -472,11 +745,15 @@ public static partial class LanguageServer
             foreach (var (name, _, pos) in clauses.OrderBy(c => c.Kind == "require" ? 0 : 1).SelectMany(c => c.Params))
                 if (_typeParamLines.TryAdd(name, LineAt(analysis, pos)))
                     _typeParamAt[name] = pos;
+            foreach (var concept in clauses.SelectMany(c => c.Concepts.Concat(c.When)))
+                foreach (var arg in concept.Args.OfType<TypeArgType>().Where(a => a.Type is { Path: null, Args.Count: 0 }))
+                    (_conceptsOf.TryGetValue(arg.Type.Name, out var list) ? list : _conceptsOf[arg.Type.Name] = []).Add(concept);
             foreach (var c in clauses)
             {
                 foreach (var (name, kind, pos) in c.Params)
                 {
-                    Mark(pos, name, "typeParameter", () => HoverText(LineAt(analysis, pos), null));
+                    Mark(pos, name, "typeParameter",
+                        At(_typeParamAt.GetValueOrDefault(name, pos), name, () => HoverText(LineAt(analysis, pos), null)));
                     Type(kind);
                 }
                 foreach (var t in c.Concepts.Concat(c.When)) Type(t);
@@ -575,7 +852,7 @@ public static partial class LanguageServer
                 case CallTarget call:
                     // Or a routine that doesn't return (`panic(...)`).
                     Mark(call.Pos, call.Name, "function",
-                        CallHover(call.Pos, FreeRoutine(new CallExpr(call.Name, [], call.Args, call.Pos))));
+                        CallHover(call.Pos, call.Name, FreeRoutine(new CallExpr(call.Name, [], call.Args, call.Pos))));
                     foreach (var a in call.Args) Expr(a);
                     break;
                 case ReturnTarget r when r.Value is not null:
@@ -600,7 +877,7 @@ public static partial class LanguageServer
                     Mark(r.Pos, r.Name, "function");
                     break;
                 case CallExpr call:
-                    Mark(call.Pos, call.Name, "function", CallHover(call.Pos, FreeRoutine(call)));
+                    Mark(call.Pos, call.Name, "function", CallHover(call.Pos, call.Name, FreeRoutine(call)));
                     foreach (var t in call.TypeArgs) Type(t);
                     foreach (var a in call.Args) Expr(a);
                     break;
@@ -615,7 +892,10 @@ public static partial class LanguageServer
                     if (IsCase(ns.Owner, ns.Name))
                         Mark(ns.Owner.Pos, ns.Name, "constant", CaseHover(ns.Owner, ns.Name));
                     else
-                        Mark(ns.Owner.Pos, ns.Name, "function", CallHover(ns.Pos, MethodOn(ns.Owner, ns.Name)));
+                        Mark(ns.Owner.Pos, ns.Name, "function",
+                            CallHover(ns.Pos, ns.Name, MethodOn(NsOwner(ns.Owner), ns.Name, ns.TypeArgs) ?? ConceptMethod(ns.Owner, ns.Name))
+                            ?? (ns.Name == "write" ? TemplateHover() : null));
+                    if (ns.Name == "write" && ns.Args is [StrLit nsTemplate]) TemplateHoles(nsTemplate);
                     foreach (var t in ns.TypeArgs) Type(t);
                     foreach (var a in ns.Args) Expr(a);
                     break;
@@ -627,13 +907,17 @@ public static partial class LanguageServer
                     if (analysis.Compiler.CaseUses.Contains(call.Pos) || owner is not null && IsCase(owner, call.Name))
                         Mark(call.Pos, call.Name, "constant", owner is null ? null : CaseHover(owner, call.Name));
                     else
-                        Mark(call.Pos, call.Name, "function", CallHover(call.Pos, MethodOn(owner, call.Name)));
+                        Mark(call.Pos, call.Name, "function", CallHover(call.Pos, call.Name, MethodOn(owner, call.Name)));
                     foreach (var t in call.TypeArgs) Type(t);
                     foreach (var a in call.Args) Expr(a);
                     break;
                 case ImplicitMemberExpr member:
                     Mark(member.Pos, member.Name, "constant",
                         Pointee(expected) is { } memberOwner ? CaseHover(memberOwner, member.Name) : null);
+                    break;
+                case PresetRef { Owner: null } number when _typeParamLines.TryGetValue(number.Name, out var numberClause):
+                    Mark(number.Pos, number.Name, "typeParameter",
+                        At(_typeParamAt[number.Name], number.Name, () => HoverText(numberClause, null)));
                     break;
                 case PresetRef preset:
                     if (preset.Owner is not null) Type(preset.Owner);
@@ -645,9 +929,15 @@ public static partial class LanguageServer
                 case MethodCallExpr method:
                     Expr(method.Receiver);
                     Mark(method.Pos, method.Name, "function",
-                        CallHover(method.Pos, MethodOn(ReceiverType(method.Receiver), method.Name)
-                                              ?? MethodOn(WrittenType(method.Receiver), method.Name))
-                        ?? StrideHover(method));
+                        CallHover(method.Pos, method.Name, MethodOn(ReceiverType(method.Receiver), method.Name, method.TypeArgs)
+                                                           ?? (method.Receiver is IntLit or FloatLit
+                                                               ? MethodOn(Pointee(expected), method.Name, method.TypeArgs)
+                                                               : null)
+                                                           ?? MethodOn(WrittenType(method.Receiver), method.Name, method.TypeArgs)
+                                                           ?? ConceptMethod(WrittenType(method.Receiver), method.Name))
+                        ?? StrideHover(method)
+                        ?? (method.Name == "write" && method.Args is [StrLit] ? TemplateHover() : null));
+                    if (method.Name == "write" && method.Args is [StrLit methodTemplate]) TemplateHoles(methodTemplate);
                     foreach (var t in method.TypeArgs) Type(t);
                     foreach (var a in method.Args) Expr(a);
                     break;
@@ -666,7 +956,7 @@ public static partial class LanguageServer
                     Expr(select.IfFalse);
                     break;
                 case ClaimExpr claim when claim.Contents is not null:
-                    Expr(claim.Contents);
+                    Expr(claim.Contents, expected);
                     break;
                 case RecordLit rec:
                     if (rec.Type is not null) Type(rec.Type);

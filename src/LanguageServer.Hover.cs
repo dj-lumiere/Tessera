@@ -18,6 +18,7 @@ public static partial class LanguageServer
             analysis = Analyses.GetValueOrDefault(uri);
         }
         if (text is null || analysis is null || analysis.Text != text) return null;
+        if (DocReferenceAt(analysis, text, line, character) is { } reference) return DocReferenceHover(reference);
 
         List<Token> tokens;
         try
@@ -28,11 +29,11 @@ public static partial class LanguageServer
         {
             return null;
         }
-        var hit = tokens.FirstOrDefault(t => t.Kind == TokenKind.Ident && t.Pos.Line == line + 1 &&
-                                            t.Pos.Col - 1 <= character && character <= t.Pos.Col - 1 + t.Text.Length);
-        if (hit is null) return null;
         var classifier = new Classifier(tokens, analysis);
         classifier.Run();
+        var hit = tokens.Concat(classifier.Extra).FirstOrDefault(t => t.Kind == TokenKind.Ident && t.Pos.Line == line + 1 &&
+            t.Pos.Col - 1 <= character && character <= t.Pos.Col - 1 + t.Text.Length);
+        if (hit is null) return null;
         if (!classifier.Hovers.TryGetValue((hit.Pos.Line, hit.Pos.Col), out var make)) return null;
 
         string? value;
@@ -52,13 +53,15 @@ public static partial class LanguageServer
         };
     }
 
-    /// A hover's markdown: the code, the rendered doc, and what each type parameter stands for.
+    /// A hover's markdown: the code, what each type parameter stands for there (it belongs with the signature), and the
+    /// rendered doc.
     private static string HoverText(string code, string? doc, IEnumerable<(string Name, string Type)>? bindings = null)
     {
+        // The fence names the language the Rider plugin registers for highlighting code in hover.
         var sb = new StringBuilder($"```tessera\n{code}\n```");
-        if (!string.IsNullOrWhiteSpace(doc)) sb.Append("\n\n").Append(RenderDoc(doc));
         var shown = (bindings ?? []).Where(b => b.Name != b.Type).ToList();
         if (shown.Count > 0) sb.Append("\n\n").Append(string.Join("  \n", shown.Select(b => $"`{b.Name}` is `{b.Type}`")));
+        if (!string.IsNullOrWhiteSpace(doc)) sb.Append("\n\n").Append(RenderDoc(doc));
         return sb.ToString();
     }
 

@@ -54,6 +54,8 @@ public static partial class LanguageServer
             analysis = Analyses.GetValueOrDefault(uri);
         }
         if (text is null || analysis is null || analysis.Text != text) return [];
+        if (DocReferenceAt(analysis, text, line, character) is { } reference)
+            return DocReferenceDefinition(analysis, uri, reference);
 
         List<Token> tokens;
         try
@@ -64,11 +66,11 @@ public static partial class LanguageServer
         {
             return [];
         }
-        var hit = tokens.FirstOrDefault(t => t.Kind == TokenKind.Ident && t.Pos.Line == line + 1 &&
-                                            t.Pos.Col - 1 <= character && character <= t.Pos.Col - 1 + t.Text.Length);
-        if (hit is null) return [];
         var classifier = new Classifier(tokens, analysis);
         classifier.Run();
+        var hit = tokens.Concat(classifier.Extra).FirstOrDefault(t => t.Kind == TokenKind.Ident && t.Pos.Line == line + 1 &&
+            t.Pos.Col - 1 <= character && character <= t.Pos.Col - 1 + t.Text.Length);
+        if (hit is null) return [];
         if (!classifier.Definitions.TryGetValue((hit.Pos.Line, hit.Pos.Col), out var target)) return [];
 
         string path = FullPathOf(analysis, target.Pos.File);

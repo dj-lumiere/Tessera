@@ -39,6 +39,7 @@ private val LOG = logger<TesseraLanguageServer>()
  */
 class TesseraLanguageServer : LspIntegrationProvider {
     override fun fileOpened(project: Project, file: VirtualFile, clientStarter: LspIntegrationProvider.LspClientStarter) {
+        TesseraLanguage.ensureRegistered()
         if (file.isTessera()) {
             clientStarter.ensureClientStarted(TesseraClientDescriptor(project))
         }
@@ -58,6 +59,7 @@ class TesseraLanguageServer : LspIntegrationProvider {
  */
 internal class TesseraFileOpenListener(private val project: Project) : FileEditorManagerListener {
     override fun fileOpened(source: FileEditorManager, file: VirtualFile) {
+        TesseraLanguage.ensureRegistered()
         if (file.isTessera()) {
             LspClientManager.getInstance(project)
                 .ensureClientStarted(TesseraLanguageServer::class.java, TesseraClientDescriptor(project))
