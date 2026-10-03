@@ -147,7 +147,7 @@ public sealed record Manifest(
     /// The entry and every file the build needs from the roots: those declaring a module the entry imports, then
     /// those declaring what they import, and so on. Standard:: modules are the standard library's, always built in;
     /// a module no root declares is left for the build to report where it is imported.
-    private static List<string> ImportClosure(string entry, List<string> roots, string buildDir)
+    internal static List<string> ImportClosure(string entry, List<string> roots, string buildDir)
     {
         var byModule = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (var root in roots)

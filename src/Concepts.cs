@@ -48,6 +48,15 @@ public sealed partial class Compiler
         }
     }
 
+    /// The concept a name means from `file`, or null when none or more than one is visible. It doesn't report errors:
+    /// the language server asks it to color a name.
+    public ConceptDecl? ConceptDeclQuiet(string name, string file, string? path = null)
+    {
+        path = ExpandPath(path, file);
+        var candidates = (_conceptDecls.GetValueOrDefault(name) ?? []).Where(c => Visible(c, file, path)).Cast<Decl>().ToList();
+        return Nearest(candidates, file) is [ConceptDecl only] ? only : null;
+    }
+
     private ConceptDecl FindConcept(TypeRef c, string file)
     {
         var decl = Pick(_conceptDecls.GetValueOrDefault(c.Name), file, c.Pos, $"concept '{c.Name}'", c.Path)

@@ -29,7 +29,7 @@ class TesseraIconProvider : FileIconProvider {
     override fun getIcon(file: VirtualFile, flags: Int, project: Project?): Icon? =
         if (file.isTessera()) ICON else null
 
-    private companion object {
+    internal companion object {
         val ICON: Icon = IconLoader.getIcon("/icons/tessera.svg", TesseraIconProvider::class.java)
     }
 }

@@ -8,12 +8,13 @@ import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.service
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.BoundConfigurable
+import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.panel
 
-/** Which Tessera builder formats `.tess` files. Empty means the workspace dev build (see `builderCommand`). */
+/** Which Tessera builder runs the language server. Empty means the workspace dev build (see `locateServer`). */
 @Service(Service.Level.APP)
 @State(name = "TesseraSettings", storages = [Storage("tessera.xml")])
 internal class TesseraSettings : SimplePersistentStateComponent<TesseraSettings.Options>(Options()) {
@@ -46,5 +47,10 @@ internal class TesseraConfigurable : BoundConfigurable("Tessera") {
                         "&lt;project&gt;/Tessera/bin/Debug/net10.0/tessera.dll, or else tessera on the PATH."
                 )
         }
+    }
+
+    override fun apply() {
+        super.apply()
+        ProjectManager.getInstance().openProjects.forEach(TesseraLanguageServer::restart)
     }
 }

@@ -273,10 +273,34 @@ public sealed partial class Compiler
     /// first. Used by `tessera check` to validate the standard library.
     public int InstanceCount => _instances.Count;
 
-    public List<CompileError> CheckAll()
+    /// Where a written name made or matched a variant case (`.Present(x)` resolves by the type it is expected to be):
+    /// the language server colors those as cases, not calls.
+    public HashSet<Pos> CaseUses { get; } = [];
+
+    /// A call the builder placed: the routine it calls and what each of that routine's type parameters stands for.
+    public sealed record CallUse(RoutineDecl Decl, List<(string Name, DType Type)> Bindings);
+
+    /// The calls and the values of the routines that aren't generic, by the position the parser gave them: what the
+    /// language server shows on hover. A generic routine's body means something else in each instance, so it isn't
+    /// recorded.
+    public Dictionary<Pos, CallUse> CallUses { get; } = [];
+    public Dictionary<Pos, DType> ValueTypes { get; } = [];
+
+    /// The routines on the type `owner` names from `file` with this name, whatever type arguments they are defined for:
+    /// a call the language server can't place by a value's type (in a generic routine's body). It doesn't report
+    /// errors.
+    public List<RoutineDecl> MethodsNamedQuiet(TypeRef owner, string name, string file)
+    {
+        var decl = TypeDeclQuiet(owner.Name, file, owner.Path);
+        return _methods.GetValueOrDefault((owner.Name, name))?.Where(m => OwnerDecl(m) == decl).ToList() ?? [];
+    }
+
+    /// `scope` keeps the check to the presets and routines of the files it accepts (by the name the parser gave the file),
+    /// with every instance they reach: the language server checks the document being edited, not the whole library.
+    public List<CompileError> CheckAll(Func<string, bool>? scope = null)
     {
         var errors = new List<CompileError>();
-        foreach (var c in _presets.Values.SelectMany(g => g))
+        foreach (var c in _presets.Values.SelectMany(g => g).Where(c => scope is null || scope(c.File)))
         {
             try { CheckPreset(c); }
             catch (CompileError e) { errors.Add(e); }
@@ -285,7 +309,8 @@ public sealed partial class Compiler
         // A library export the program replaces (its own panic handler) isn't part of the program.
         var programExports = _userRoutines.Select(r => r.Attr("export")?.First).Where(n => n is not null).ToHashSet();
         foreach (var r in _allRoutines.Where(r => !Tessera.Derive.IsImplicit(r)
-                     && !(r.IsLibrary && r.Attr("export") is { } e && programExports.Contains(e.First))))
+                     && !(r.IsLibrary && r.Attr("export") is { } e && programExports.Contains(e.First))
+                     && (scope is null || scope(r.File))))
         {
             try
             {

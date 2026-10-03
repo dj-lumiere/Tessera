@@ -71,6 +71,15 @@ public sealed class FunctionGen
 
     private CompileError Err(Pos pos, string msg) => new(pos, msg + InstantiationNote());
 
+    /// Whether this routine's calls and values are recorded for the language server: it isn't generic, so they mean the
+    /// same in every use.
+    private bool Recorded => _env.All.All(kv => kv.Key == "Self");
+
+    private void RecordValue(Pos pos, DType t)
+    {
+        if (Recorded) _c.ValueTypes.TryAdd(pos, t);
+    }
+
     private string InstantiationNote() =>
         _decl.IsLibrary || _decl.TypeParams.Count > 0 || (_decl.Owner?.Args.Count ?? 0) > 0
             ? $" (in {_inst.Symbol})"
@@ -104,6 +113,7 @@ public sealed class FunctionGen
             var p = _decl.Params[i];
             if (!_routineParams.TryAdd(p.Name, new Val($"%a.{IrName(p.Name)}", _inst.Params[i])))
                 throw Err(p.Pos, $"parameter '{p.Name}' is declared twice");
+            RecordValue(p.Pos, _inst.Params[i]);
         }
 
         foreach (var b in blocks)
@@ -339,6 +349,7 @@ public sealed class FunctionGen
         for (int i = 0; i < b.Params.Count; i++)
         {
             _values[b.Params[i].Name] = new Val(ParamOp(b.Name, b.Params[i].Name), types[i]);
+            RecordValue(b.Params[i].Pos, types[i]);
             if (Debug && types[i] is not VoidType)
                 (_blockRecords.TryGetValue(b.Name, out var records) ? records : _blockRecords[b.Name] = [])
                     .AddRange(ValueRecords(b.Params[i].Name, ParamOp(b.Name, b.Params[i].Name), types[i], b.Source ?? b.Params[i].Pos));
@@ -353,6 +364,7 @@ public sealed class FunctionGen
         if (_values.ContainsKey(name))
             throw Err(pos, $"'{name}' is already defined in block '{_blockName}' (SSA values are bound once)");
         _values[name] = v;
+        RecordValue(pos, v.Type);
     }
 
     private string LocalOp(string name) => $"%v.{_blockName}.{IrName(name)}";
@@ -615,7 +627,11 @@ public sealed class FunctionGen
 
     private Val Lookup(ValueRef r)
     {
-        if (_values.TryGetValue(r.Name, out var v)) return v;
+        if (_values.TryGetValue(r.Name, out var v))
+        {
+            RecordValue(r.Pos, v.Type);
+            return v;
+        }
         if (!BoundInRoutine(r.Name))
             throw Err(r.Pos, $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
         throw Err(r.Pos, $"'{r.Name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block arguments");
@@ -905,6 +921,7 @@ public sealed class FunctionGen
     /// reached through memory, so a case with a payload is built in a stack slot.
     private Val EmitVariantCase(VariantCaseRef c, Pos pos)
     {
+        _c.CaseUses.Add(pos);
         var (v, index, args) = c;
         string name = $"{v.Decl.Name}.{v.Decl.Cases[index].Name}";
         var payload = v.Payloads[index];
@@ -936,6 +953,7 @@ public sealed class FunctionGen
         if (owner is not null && owner != v.Decl.Name) throw Err(e.Pos, $"'{owner}' isn't {v}; its cases are {v.Decl.Name}.*");
         int index = v.CaseIndex(name);
         if (index < 0) throw Err(e.Pos, $"variant '{v.Decl.Name}' has no case '{name}'");
+        _c.CaseUses.Add(e.Pos);
         var payload = v.Payloads[index];
         switch (args)
         {
@@ -1668,6 +1686,8 @@ public sealed class FunctionGen
 
     private Val EmitCall(CallPlan plan)
     {
+        if (Recorded)
+            _c.CallUses.TryAdd(plan.Pos, new Compiler.CallUse(plan.Decl, [.. plan.Env.All.Select(kv => (kv.Key, kv.Value))]));
         var sig = _c.Signature(plan.Decl, plan.Env);
         int offset = plan.Receiver is null ? 0 : 1;
         int fixedCount = sig.Params.Count - offset - (sig.IsTrackCaller ? 1 : 0);

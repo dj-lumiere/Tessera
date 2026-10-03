@@ -1,7 +1,27 @@
 # Tessera for Rider
 
 A Rider plugin for Tessera (`.tess`): syntax highlighting from `../Tessera.tmbundle`, `//` comment toggling and
-bracket pairing (`bundle/`), and the Tessera file icon. There is no language server yet.
+bracket pairing (`bundle/`), the Tessera file icon, and the Tessera language server (`tessera lsp`): the builder's errors
+and style warnings as you type, semantic colors, hover (declaration, `///` doc, and what each type parameter stands for), go to
+definition, the file structure view, and
+Reformat Code.
+
+## Colors
+
+The server colors what the builder resolved: types by kind, routines, blocks, SSA values, parameters, fields, presets
+and cases, module paths, attributes, and terminators. Each color starts as its C# counterpart's (record as struct,
+concept as interface, routine as method, SSA value as local variable, terminator as control-flow keyword); a block
+starts purple and an attribute yellow. Change them in Settings | Editor | Color Scheme | Tessera.
+
+## Which builder runs
+
+Settings | Languages & Frameworks | Tessera sets the builder: `tessera.dll` (run with `dotnet`) or a `tessera` executable.
+Left empty, the plugin uses the dev build, `<project>/Tessera/bin/Debug/net10.0/tessera.dll` (the LumiFoundry
+workspace) or `<project>/bin/Debug/net10.0/tessera.dll`, else `tessera` on the PATH.
+
+The server runs from a copy of the builder's folder in Rider's system directory (`tessera-lsp/`), so it never holds the
+files a rebuild overwrites, and it is told where the standard library is (`TESSERA_STDLIB`, the `Standard/` above the
+builder). When the build folder changes and then stays the same for a few seconds, the plugin restarts the server.
 
 ## Build
 
