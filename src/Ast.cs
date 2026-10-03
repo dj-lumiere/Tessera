@@ -299,5 +299,5 @@ public sealed record WhenCondTerm(List<(Expr? Cond, Target Target)> Arms, Pos Po
 /// `when v` arms: one or more constants (`1, 2 -> ...`), or `_` (null).
 public sealed record WhenValueTerm(Expr Value, List<(List<Expr>? Cases, Target Target)> Arms, Pos Pos) : Terminator(Pos);
 
-/// A terminator written as a bare target: `return(x)`, `unreachable`, or a #noreturn call such as `trap()`.
+/// A terminator written as a bare target: `return(x)`, `unreachable`, or a #noreturn call such as `panic_overflow()`.
 public sealed record TargetTerm(Target Target, Pos Pos) : Terminator(Pos);

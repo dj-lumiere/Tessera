@@ -2212,7 +2212,7 @@ public sealed class FunctionGen
     }
 
     /// The label to branch to for an arm. A block call without arguments branches directly; anything else
-    /// (arguments to pass, an inline return/unreachable/trap) gets its own edge block.
+    /// (arguments to pass, an inline return/unreachable/panic) gets its own edge block.
     private string ArmLabel(Target target)
     {
         if (target is ContinueTarget cont)
@@ -2306,7 +2306,7 @@ public sealed class FunctionGen
         if (call is CallExpr c && _c.FindFree(c.Name, _env.File, c.Pos) is null)
             throw Err(pos, $"no block or routine named '{c.Name}'");
         if (!IsNoReturn(call))
-            throw Err(pos, "only a #noreturn routine (such as trap()) can end a block; this one returns");
+            throw Err(pos, "only a #noreturn routine (such as panic) can end a block; this one returns");
         EvalAny(call);
         Terminate("unreachable");
     }

@@ -1,39 +1,27 @@
 // Tessera stdlib: panic
 //
 // panic ends the program when a contract is broken: an index out of bounds,
-// unwrap of Absent, a failed allocation. It hands the code (and panic_msg's
-// message) to tessera_panic_handler, a routine the program links against and
-// that never returns. Standard::Os exports the default on hosted targets: one
-// line on stderr, then exit status 101 (Os/Panic.tess). A program replaces it
-// by exporting its own routine under that name, which is how a target without
-// an operating system gets one.
+// unwrap of Absent, a failed allocation. It names its own kind, with the names
+// RazorForge's crashables use (IntegerOverflowError, IndexOutOfBoundsError,
+// ...), so a failure reads the same whichever language it happens in. It hands
+// the name, a message, and the place to tessera_panic_handler, a routine the
+// program links against and that never returns. Standard::Os exports the
+// default on hosted targets: the report on stderr, then exit status 101
+// (Os/Panic.tess). A program replaces it by exporting its own routine under
+// that name, which is how a target without an operating system gets one.
+//
+// The panic_<kind> routines below are the stdlib's own kinds with RazorForge's
+// default crash messages, so a check stays one short call (panic_overflow()).
+// A failure with a message of its own calls panic(name, message) directly.
 //
 // panic and the stdlib routines that panic on a caller's mistake (an index out
 // of bounds, an overflowing add) are #track_caller: the handler gets the place
 // of the call in the caller's code, not a line inside the stdlib.
 //
 // There is no unwinding and no recovery. Failures a caller is expected to
-// handle return Result or Option instead. trap() stays in the prelude as the
-// runtime-free way to stop: it needs no handler and prints nothing.
+// handle return Result or Option instead.
 
 module Standard::Core
-
-/// Why the program stopped. Codes 0-63 belong to the stdlib; 64 and up are free
-/// for programs (bitcast<U8, TrapCode>(64)).
-choice TrapCode: U8
-    Unreachable  // a stdlib invariant broke: a bug in the stdlib
-    Bounds  // an index or range outside the valid one
-    Empty  // pop / peek on an empty collection
-    MissingKey  // get of a key that isn't there
-    UnwrapAbsent  // unwrap of Absent
-    UnwrapFailure  // unwrap of a Failure
-    UnwrapSuccess  // unwrap_failure of a Success
-    AllocFailed  // the allocator returned null
-    InvalidArgument  // outside the routine's domain: clamp with min > max, ilog of 0
-    AssertFailed
-    Overflow
-    DivByZero
-    ThreadFailed  // the operating system didn't start a thread
 
 /// A place in the source: the file as the build named it, the line, and the column (0 when a #source gave none).
 record SourceLocation
@@ -41,51 +29,90 @@ record SourceLocation
     line   : U32
     column : U32
 
-/// Stops the program at once, with no message: LLVM's trap instruction.
-#[external("llvm"), template("call void @llvm.trap()"), noreturn]
-routine trap() -> Void
-
 /// The program's panic handler. Export a routine with this signature as "tessera_panic_handler" to replace the
-/// default; message is empty for panic, and place is the call that panicked.
+/// default; name is the kind of failure (`IntegerOverflowError`), message says what happened, and place is the call
+/// that panicked.
 #[external("c"), symbol("tessera_panic_handler"), noreturn]
-private routine panic_handler(code: TrapCode, message: Bytes, place: @SourceLocation) -> Void
+private routine panic_handler(name: Bytes, message: Bytes, place: @SourceLocation) -> Void
 
-/// The fixed English message for a trap code, such as `index out of bounds` for `Bounds`. Codes outside the stdlib ones give `error code`.
-/// :returns: A static message for the code.
-routine TrapCode.description(self: Self) -> Bytes
-    block entry()
-        when self
-            Self.Unreachable     -> describe("internal error: entered unreachable code")
-            Self.Bounds          -> describe("index out of bounds")
-            Self.Empty           -> describe("the collection is empty")
-            Self.MissingKey      -> describe("key not found")
-            Self.UnwrapAbsent    -> describe("unwrap of Absent")
-            Self.UnwrapFailure   -> describe("unwrap of a Failure")
-            Self.UnwrapSuccess   -> describe("unwrap_failure of a Success")
-            Self.AllocFailed     -> describe("memory allocation failed")
-            Self.InvalidArgument -> describe("invalid argument")
-            Self.AssertFailed    -> describe("assertion failed")
-            Self.Overflow        -> describe("arithmetic overflow")
-            Self.DivByZero       -> describe("division by zero")
-            Self.ThreadFailed    -> describe("the operating system didn't start a thread")
-            else                 -> describe("error code")
-
-    block describe(text: Bytes)
-        return(text)
-
-/// Ends the program with `code` and an empty message by calling the panic handler, which never returns.
-/// :param code: The reason the program stops.
+/// Ends the program by calling the panic handler, which never returns.
+/// :param name: The kind of failure, named like a RazorForge crashable: `IntegerOverflowError`, or a program's own.
+/// :param message: What happened, in a sentence.
 /// :note: The handler receives the call site in the caller's code.
 #[noreturn, track_caller]
-routine panic(code: TrapCode) -> Void
+routine panic(name: Bytes, message: Bytes) -> Void
     block entry()
-        panic_handler(code, "", caller_location())
+        panic_handler(name, message, caller_location())
 
-/// Like `panic`, but passes `message` to the panic handler as well.
-/// :param code: The reason the program stops.
-/// :param message: Text describing the failure, passed to the panic handler.
-/// :note: The handler receives the call site in the caller's code and never returns.
+/// Panics with `IntegerOverflowError`: an arithmetic result or a conversion doesn't fit its type.
 #[noreturn, track_caller]
-routine panic_msg(code: TrapCode, message: Bytes) -> Void
+routine panic_overflow() -> Void
     block entry()
-        panic_handler(code, message, caller_location())
+        panic("IntegerOverflowError", "Integer overflow: value does not fit in the target type.")
+
+/// Panics with `DivisionByZeroError`: a division or remainder by zero.
+#[noreturn, track_caller]
+routine panic_division_by_zero() -> Void
+    block entry()
+        panic("DivisionByZeroError", "You tried to divide by zero, which is not allowed.")
+
+/// Panics with `IndexOutOfBoundsError`: an index or range outside the valid one.
+#[noreturn, track_caller]
+routine panic_out_of_bounds() -> Void
+    block entry()
+        panic("IndexOutOfBoundsError", "Index is out of bounds for the collection.")
+
+/// Panics with `MemoryAllocationError`: the allocator returned null.
+#[noreturn, track_caller]
+routine panic_allocation() -> Void
+    block entry()
+        panic("MemoryAllocationError", "Failed to allocate memory.")
+
+/// Panics with `InvalidValueError`: an argument outside what the routine accepts, such as clamp with min > max.
+#[noreturn, track_caller]
+routine panic_invalid_value() -> Void
+    block entry()
+        panic("InvalidValueError", "The value is not one the routine accepts.")
+
+/// Panics with `NumericDomainError`: a numeric operation with no result for its argument, such as ilog2 of 0 or the
+/// square root of a negative number.
+#[noreturn, track_caller]
+routine panic_numeric_domain() -> Void
+    block entry()
+        panic("NumericDomainError", "The operation has no result for this value.")
+
+/// Panics with `AbsentValueError`: unwrap of Absent, or pop / peek on an empty collection.
+#[noreturn, track_caller]
+routine panic_absent_value() -> Void
+    block entry()
+        panic("AbsentValueError", "Attempted to access a value that is absent.")
+
+/// Panics with `KeyNotFoundError`: get of a key that isn't there.
+#[noreturn, track_caller]
+routine panic_key_not_found() -> Void
+    block entry()
+        panic("KeyNotFoundError", "Key not found.")
+
+/// Panics with `UnwrapFailureError`: unwrap of a Result that holds a Failure.
+#[noreturn, track_caller]
+routine panic_unwrap_failure() -> Void
+    block entry()
+        panic("UnwrapFailureError", "Attempted to unwrap the value of a Failure.")
+
+/// Panics with `UnwrapSuccessError`: unwrap_failure of a Result that holds a Success.
+#[noreturn, track_caller]
+routine panic_unwrap_success() -> Void
+    block entry()
+        panic("UnwrapSuccessError", "Attempted to unwrap the failure of a Success.")
+
+/// Panics with `TaskSpawnError`: the operating system didn't start a thread.
+#[noreturn, track_caller]
+routine panic_task_spawn() -> Void
+    block entry()
+        panic("TaskSpawnError", "Failed to spawn a threaded task.")
+
+/// Panics with `LogicBreachedError`: a state the code rules out was reached, a bug in the code that panics.
+#[noreturn, track_caller]
+routine panic_logic_breached() -> Void
+    block entry()
+        panic("LogicBreachedError", "A logic breach was detected.")

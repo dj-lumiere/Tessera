@@ -139,12 +139,12 @@ routine main() -> S32
 - Every block ends with exactly one terminator: `jump b(...)`, `branch c ? a(...) : b(...)`, `when`
   (first condition that holds), `when v` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
   `when` names a block, or is an
-  inline `return(...)` or a call to a `#noreturn` routine (`trap()`, `panic(TrapCode.X)`). Block arguments and the
+  inline `return(...)` or a call to a `#noreturn` routine (`panic(...)`, `panic_overflow()`). Block arguments and the
   returned value may be expressions (`loop(i.add(1))`, `return(x.to<S32>())`), evaluated only when that arm is
   taken. An ordinary routine call can't be an arm by itself: call it inside a block.
 - There are no `for` / `while` / `if`. A loop is a block that jumps to itself with new arguments.
 - `continue` as an arm of `branch` / `when` goes on with the next line of the same block:
-  `branch failed ? panic(TrapCode.AllocFailed) : continue`. Use it for guards instead of a block that only receives
+  `branch failed ? panic_allocation() : continue`. Use it for guards instead of a block that only receives
   the values the rest needs. It is not C's "next iteration" (that's `jump loop(...)`), and a block still ends with a
   real terminator.
 - A line that starts with `?` or `:` continues the one above. `fmt` writes every `branch`, and every select that is a
@@ -229,9 +229,17 @@ routine main() -> S32
 
 **Errors**
 
-- Bugs trap: `trap()`, or `panic(TrapCode.X)` / `panic_msg(...)` for a message. Those call the panic handler; the
-  default (Standard::Os) prints the reason and the caller's place and exits with status 101, and a program replaces it
-  with `#[export("tessera_panic_handler"), noreturn] routine my_handler(code: TrapCode, message: Bytes, place:
+- Bugs panic, and a panic names its kind: `panic("ConfigurationError", "The configuration file is missing.")`.
+  The names are RazorForge's crashables, so a failure reads the same in both languages. The stdlib's own kinds have
+  one short routine each with RazorForge's default message: `panic_overflow()` (IntegerOverflowError),
+  `panic_division_by_zero()`, `panic_out_of_bounds()`, `panic_allocation()` (MemoryAllocationError),
+  `panic_invalid_value()`, `panic_numeric_domain()` (`ilog2(0)`, `isqrt` of a negative), `panic_absent_value()`
+  (unwrap of Absent, pop on empty), `panic_key_not_found()`, `panic_unwrap_failure()` / `panic_unwrap_success()`
+  (UnwrapFailureError / UnwrapSuccessError), `panic_task_spawn()`, and `panic_logic_breached()` for a state the code
+  rules out. A failure with its own message calls `panic(name, message)`. There's no `trap()`: every stop is a panic.
+  A panic calls the panic handler; the default (Standard::Os) prints `tessera: Name: message` and the caller's place
+  and exits with status 101, and a program replaces it (a program on a target without an OS must) with
+  `#[export("tessera_panic_handler"), noreturn] routine my_handler(name: Bytes, message: Bytes, place:
   @SourceLocation) -> Void`. A stdlib routine that panics on its caller's mistake is `#track_caller`, so the place is
   the caller's line; mark a routine of your own the same way when its panics are its caller's fault.
 - Expected failures return `Result<T, E>`. There's no `?`: `when r` with `.Success(v)` / `.Failure(e)` arms.
@@ -350,8 +358,8 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
 ## Collections
 
 All in `Standard/Collection/`, documented in `../Tessera-Wiki/docs/Collections.md`. `construct(alloc)` stores the allocator; `destruct()`
-releases storage. Out-of-range access, `pop` on empty, and `get` of a missing key trap; the `_checked` forms
-(`get_checked`, `pop_checked`, `peek_checked`) return `Option<T>` instead. Allocation failure traps too; each
+releases storage. Out-of-range access, `pop` on empty, and `get` of a missing key panic; the `_checked` forms
+(`get_checked`, `pop_checked`, `peek_checked`) return `Option<T>` instead. Allocation failure panics too; each
 insertion and `reserve` has a `_result` form (`push_result`, `put_result`, `add_result`) that returns
 `Result<T, AllocFailed>` and leaves the collection unchanged on a `Failure`. `_checked` always means `Option`, `_result`
 always `Result`.
@@ -421,7 +429,7 @@ routine, block, statement, or terminator it wrote: debug information and build e
 `p.to<@U>()` (each pair of types is its own routine, `routine S32.to<S64>`). There is no `to_s64` or `as_<type>`.
 Other ways to make a value are named for what they make (`out.to_bytes()`).
 
-**Name case.** Types, concepts, modules, and choice / variant cases are `PascalCase` (`TrapCode.DivByZero`,
+**Name case.** Types, concepts, modules, and choice / variant cases are `PascalCase` (`FsError.NotFound`,
 `.Absent`), with acronyms written as words (`Eof`, `Utf8Decoded`, `Nan`). Routines, fields, blocks, and values are
 `snake_case`. Only presets and globals are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
 

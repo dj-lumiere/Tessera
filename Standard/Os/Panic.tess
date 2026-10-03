@@ -1,11 +1,10 @@
 // Tessera stdlib: the default panic handler
 //
 // Standard::Core's panic calls tessera_panic_handler, a link-time symbol. This
-// is the hosted default: one line on stderr, then exit status 101.
+// is the hosted default: the panic's name and message, the place on a second
+// line, on stderr, then exit status 101.
 //
-//     tessera: runtime error: index out of bounds
-//       at examples/grid.tess:12:9
-//     tessera: runtime error: index out of bounds: row 7 of 5      (panic_msg)
+//     tessera: IndexOutOfBoundsError: Index is out of bounds for the collection.
 //       at examples/grid.tess:12:9
 //
 // A program replaces it by exporting its own routine under the same name; a
@@ -17,39 +16,23 @@ module Standard::Os
 import Standard::Format
 
 /// The hosted default panic handler, exported under the link-time name the core panic calls. It writes `tessera:
-/// runtime error: ` with the code's description (the number too for a program's own code), the message when there is
-/// one, and the source location on a second line to standard error, then exits with status 101. A program replaces it
-/// by exporting its own routine under the same name.
-/// :param code: The trap code that stopped the program.
-/// :param message: Extra detail, empty when there is none.
+/// <name>: <message>` and the source location on a second line to standard error, then exits with status 101. A
+/// program replaces it by exporting its own routine under the same name.
+/// :param name: The kind of failure, such as `IntegerOverflowError`.
+/// :param message: What happened.
 /// :param place: Where the panic happened: file, line, and column (0 when only the line is known).
 #[export("tessera_panic_handler"), noreturn, target(os: not "none")]
-routine default_panic_handler(code: TrapCode, message: Bytes, place: @SourceLocation) -> Void
+routine default_panic_handler(name: Bytes, message: Bytes, place: @SourceLocation) -> Void
     block entry()
-        text : Bytes = code.description()
-        Err.write("tessera: runtime error: {text}")
-        raw    : U8   = bitcast<TrapCode, U8>(code)
-        stdlib : Bool = raw.lt(64)
-        branch stdlib
-            ? message()
-            : code(raw)
-
-    // A program's own codes (64 and up) have no description, so the number is written too.
-    block code(raw: U8)
-        Err.write(" {raw}")
-        jump message()
-
-    block message()
+        Err.write("tessera: {name}")
         none : Bool = message.length.eq(0)
         branch none
-            ? finish()
-            : detail()
-
-    block detail()
+            ? place()
+            : continue
         Err.write(": {message}")
-        jump finish()
+        jump place()
 
-    block finish()
+    block place()
         file : Bytes = place.file.load()
         line : U32   = place.line.load()
         Err.write("\n  at {file}:{line}")
@@ -57,9 +40,7 @@ routine default_panic_handler(code: TrapCode, message: Bytes, place: @SourceLoca
         whole  : Bool = column.eq(0)
         branch whole
             ? done()
-            : column(column)
-
-    block column(column: U32)
+            : continue
         Err.write(":{column}")
         jump done()
 
