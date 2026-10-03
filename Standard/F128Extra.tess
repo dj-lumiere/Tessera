@@ -143,6 +143,7 @@ require N: USize
     shared a_count : USize = a.count.load()
     shared b_count : USize = b.count.load()
     shared count   : USize = a_count.add(b_count)
+    shared carry   : @U128 <- uninit
 
     block entry()
         room : Bool = count.le(N)
@@ -169,26 +170,28 @@ require N: USize
 
     block row_start(i: USize)
         a_limb : U64 = a.limbs.getitem(i)
-        jump column(i, 0, 0, a_limb)
+        0.store_into(carry)
+        jump column(i, 0, a_limb)
 
-    block column(i: USize, j: USize, carry: U128, a_limb: U64)
+    block column(i: USize, j: USize, a_limb: U64)
         done : Bool = j.ge(b_count)
         branch done
-            ? row_end(i, carry)
-            : column_step(i, j, carry, a_limb)
+            ? row_end(i)
+            : column_step(i, j, a_limb)
 
     // limb + a × b + carry < 2^128 for 64-bit a, b, limb, and carry
-    block column_step(i: USize, j: USize, carry: U128, a_limb: U64)
+    block column_step(i: USize, j: USize, a_limb: U64)
         at      : USize = i.add(j)
         b_limb  : U64   = b.limbs.getitem(j)
         limb    : U64   = self.limbs.getitem(at)
         product : U128  = a_limb.mul_wide(b_limb)
-        sum     : U128  = product.add(limb.to<U128>()).add(carry)
+        sum     : U128  = product.add(limb.to<U128>()).add(carry.load())
         self.limbs.setitem(at, sum.to_wrap<U64>())
-        jump column(i, j.add(1), sum.shr(64), a_limb)
+        sum.shr(64).store_into(carry)
+        jump column(i, j.add(1), a_limb)
 
-    block row_end(i: USize, carry: U128)
-        self.limbs.setitem(i.add(b_count), carry.to<U64>())
+    block row_end(i: USize)
+        self.limbs.setitem(i.add(b_count), carry.load().to<U64>())
         jump row(i.add(1))
 
     block finish()
@@ -279,6 +282,7 @@ routine big_trig_series(out: @BigNat<24>, u: @BigNat<24>, j0: U64) -> Void
     shared term    : @BigNat<24> <- uninit
     shared product : @BigNat<24> <- uninit
     shared minus   : @BigNat<24> <- uninit
+    shared j       : @U64        <- j0
 
     block entry()
         one : U64 = 1
@@ -286,32 +290,34 @@ routine big_trig_series(out: @BigNat<24>, u: @BigNat<24>, j0: U64) -> Void
         term.shl(PI_FIXED_BITS.to<USize>())
         out.copy_from(term)
         minus.set(U64.MIN)
-        jump next(j0, true)
+        jump next(true)
 
     // term ← term × u / (j (j + 1)), and the signs alternate, starting with minus
-    block next(j: U64, subtract: Bool)
+    block next(subtract: Bool)
         product.set_product(term, u)
         product.shr_round_even(PI_FIXED_BITS.to<USize>())
         term.copy_from(product)
-        divisor : U64  = j.mul(j.add(1))
+        divisor : U64  = j.load().mul(j.load().add(1))
         dropped : U64  = term.div_limb(divisor)
         done    : Bool = term.is_zero()
         branch done
             ? finish()
-            : accumulate(j, subtract)
+            : accumulate(subtract)
 
-    block accumulate(j: U64, subtract: Bool)
+    block accumulate(subtract: Bool)
         branch subtract
-            ? take(j)
-            : give(j)
+            ? take()
+            : give()
 
-    block take(j: U64)
+    block take()
         minus.add(term)
-        jump next(j.add(2), false)
+        j.load().add(2).store_into(j)
+        jump next(false)
 
-    block give(j: U64)
+    block give()
         out.add(term)
-        jump next(j.add(2), true)
+        j.load().add(2).store_into(j)
+        jump next(true)
 
     block finish()
         out.sub(minus)

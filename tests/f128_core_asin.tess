@@ -4294,33 +4294,38 @@ routine accepts(which: U64, x: F128) -> Bool
         return(r)
 
 routine run(out: @Out, name: Bytes, which: U64, want: @U128) -> Void
-    block entry()
-        jump next(0, 0, 0)
+    shared checked : @U64 <- 0
+    shared wrong   : @U64 <- 0
 
-    block next(i: USize, checked: U64, wrong: U64)
+    block entry()
+        jump next(0)
+
+    block next(i: USize)
         done : Bool = i.eq(CASE_COUNT)
         branch done
-            ? summary(checked, wrong)
-            : case(i, checked, wrong)
+            ? summary()
+            : case(i)
 
-    block case(i: USize, checked: U64, wrong: U64)
+    block case(i: USize)
         xs    : @U128 = CASE_X.to<@U128>()
         bits  : U128  = xs.stride(i).load()
         x     : F128  = f128_of(bits)
         taken : Bool  = accepts(which, x)
         branch taken
-            ? compare(i, checked, wrong, x)
-            : next(i.add(1), checked, wrong)
+            ? compare(i, x)
+            : next(i.add(1))
 
-    block compare(i: USize, checked: U64, wrong: U64, x: F128)
+    block compare(i: USize, x: F128)
         got   : F128 = evaluate(which, x)
         good  : U128 = want.stride(i).load()
         right : Bool = got.bits().eq(good)
         branch right
-            ? next(i.add(1), checked.add(1), wrong)
-            : report(i, checked, wrong, x, got, good)
+            ? continue
+            : report(i, x, got, good)
+        checked.load().add(1).store_into(checked)
+        jump next(i.add(1))
 
-    block report(i: USize, checked: U64, wrong: U64, x: F128, got: F128, good: U128)
+    block report(i: USize, x: F128, got: F128, good: U128)
         out.write("{name} ")
         x.bits().represent_hex_into(out)
         out.write(": got ")
@@ -4328,10 +4333,12 @@ routine run(out: @Out, name: Bytes, which: U64, want: @U128) -> Void
         out.write(", want ")
         good.represent_hex_into(out)
         out.write("\n")
-        jump next(i.add(1), checked.add(1), wrong.add(1))
+        checked.load().add(1).store_into(checked)
+        wrong.load().add(1).store_into(wrong)
+        jump next(i.add(1))
 
-    block summary(checked: U64, wrong: U64)
-        out.write("{name}: {checked} checked, {wrong} wrong\n")
+    block summary()
+        out.write("{name}: {checked.load()} checked, {wrong.load()} wrong\n")
         return()
 
 routine main() -> S32

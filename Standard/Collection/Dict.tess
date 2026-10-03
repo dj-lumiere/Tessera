@@ -91,56 +91,59 @@ require K: typename, V: typename
 /// first tombstone seen, else the first empty slot).
 routine Dict<K, V>.slot(self: Self, key: K, hash: U64) -> USize
 require K: typename, V: typename
+    shared first_tombstone : @USize <- SLOT_EMPTY
+
     block entry()
         capacity : USize = self.slots.count
         mask     : USize = capacity.sub(1)
         start    : USize = hash.to_wrap<USize>().bitand(mask)
-        jump probe(start, SLOT_EMPTY)
+        jump probe(start)
 
-    block probe(index: USize, first_tombstone: USize)
+    block probe(index: USize)
         slots        : @USize = self.slots.data
         entry_idx    : USize  = slots.stride(index).load()
         is_empty     : Bool   = entry_idx.eq(SLOT_EMPTY)
         is_tombstone : Bool   = entry_idx.eq(SLOT_TOMBSTONE)
         when
-            is_empty     -> empty_slot(index, first_tombstone)
-            is_tombstone -> tombstone_slot(index, first_tombstone)
-            else         -> occupied_slot(index, first_tombstone, entry_idx)
+            is_empty     -> empty_slot(index)
+            is_tombstone -> tombstone_slot(index)
+            else         -> occupied_slot(index, entry_idx)
 
-    block empty_slot(index: USize, first_tombstone: USize)
-        has_tombstone : Bool  = first_tombstone.ne(SLOT_EMPTY)
+    block empty_slot(index: USize)
+        has_tombstone : Bool  = first_tombstone.load().ne(SLOT_EMPTY)
         slot          : USize = has_tombstone
-            ? first_tombstone
+            ? first_tombstone.load()
             : index
         return(slot)
 
-    block tombstone_slot(index: USize, first_tombstone: USize)
-        seen           : Bool  = first_tombstone.ne(SLOT_EMPTY)
+    block tombstone_slot(index: USize)
+        seen           : Bool  = first_tombstone.load().ne(SLOT_EMPTY)
         next_tombstone : USize = seen
-            ? first_tombstone
+            ? first_tombstone.load()
             : index
         capacity : USize = self.slots.count
         next     : USize = index.add(1).bitand(capacity.sub(1))
-        jump probe(next, next_tombstone)
+        next_tombstone.store_into(first_tombstone)
+        jump probe(next)
 
-    block occupied_slot(index: USize, first_tombstone: USize, entry_idx: USize)
+    block occupied_slot(index: USize, entry_idx: USize)
         hashes     : @U64 = self.hashes.data
         entry_hash : U64  = hashes.stride(entry_idx).load()
         hash_match : Bool = entry_hash.eq(hash)
         branch hash_match
-            ? maybe_equal(index, first_tombstone, entry_idx)
-            : next(index, first_tombstone)
+            ? maybe_equal(index, entry_idx)
+            : next(index)
 
-    block maybe_equal(index: USize, first_tombstone: USize, entry_idx: USize)
+    block maybe_equal(index: USize, entry_idx: USize)
         keys      : @K   = self.keys.data
         entry_key : K    = keys.stride(entry_idx).load()
         equal     : Bool = entry_key.eq(key)
-        branch equal ? return(index): next(index, first_tombstone)
+        branch equal ? return(index): next(index)
 
-    block next(index: USize, first_tombstone: USize)
+    block next(index: USize)
         capacity : USize = self.slots.count
         next     : USize = index.add(1).bitand(capacity.sub(1))
-        jump probe(next, first_tombstone)
+        jump probe(next)
 
 /// Returns the entry index for key, or SLOT_EMPTY if absent.
 routine Dict<K, V>.find(self: Self, key: K) -> USize

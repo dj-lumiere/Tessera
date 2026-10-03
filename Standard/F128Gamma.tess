@@ -352,20 +352,23 @@ routine wide_exp_coef(i: USize) -> F128Extended
 /// and the first dropped term is below 2^-193, so the result is within about 2^-189 relative, plus
 /// 2^-191 |x| from the reduction. For |x| below about 12000 (the callers check).
 routine gamma_wide_exp(x: F128Extended) -> F128Extended
-    shared q : S64          = x.mul(wide_const(1)).to_nearest<S64>()
-    shared d : F128Extended = x.sub(q.to<F128Extended>().mul(wide_const(0)))
+    shared q : S64           = x.mul(wide_const(1)).to_nearest<S64>()
+    shared d : F128Extended  = x.sub(q.to<F128Extended>().mul(wide_const(0)))
+    shared s : @F128Extended <- uninit
 
     block entry()
         last : F128Extended = wide_exp_coef(35)
-        jump horner(34, last)
+        last.store_into(s)
+        jump horner(34)
 
-    block horner(i: S64, s: F128Extended)
+    block horner(i: S64)
         done : Bool = i.lt(0)
         branch done
-            ? return(s.ldexp(q))
+            ? return(s.load().ldexp(q))
             : continue
         c : F128Extended = wide_exp_coef(i.to<USize>())
-        jump horner(i.sub(1), s.mul(d).add(c))
+        s.store(s.load().mul(d).add(c))
+        jump horner(i.sub(1))
 
 /// ln a for a > 0: a = m 2^e with m in [1, 2), and ln m from F128's correctly rounded ln
 /// (CORE-MATH) refined by one Newton step y ← y + m e^-y - 1, which squares its 2^-113 error away.
@@ -390,21 +393,25 @@ routine wide_is_small(z: F128Extended) -> Bool
 /// (ζ(k) - 1) / k z^k (34 terms), for |z| < 2^-5: the first dropped term is below 2^-204 of the
 /// first one. Near the zeros at 1 and 2 this keeps the error relative to the value.
 routine wide_ln_gamma_near(z: F128Extended, two: Bool) -> LnGammaWide
+    shared s : @F128Extended <- uninit
+
     block entry()
         count : USize = two
             ? 34
             : 40
         last : F128Extended = ln_gamma_near_coef(two, count.sub(1))
-        jump horner(count.sub(1), last)
+        last.store_into(s)
+        jump horner(count.sub(1))
 
     // s ← s z + c_i, down to i = 0, and the value is then s z
-    block horner(i: USize, s: F128Extended)
+    block horner(i: USize)
         done : Bool = i.eq(0)
         branch done
-            ? finish(s.mul(z))
+            ? finish(s.load().mul(z))
             : continue
         c : F128Extended = ln_gamma_near_coef(two, i.sub(1))
-        jump horner(i.sub(1), s.mul(z).add(c))
+        s.store(s.load().mul(z).add(c))
+        jump horner(i.sub(1))
 
     // the terms fall by 2^-5 or faster, so the value's own exponent (plus one) is the scale
     block finish(value: F128Extended)
@@ -416,45 +423,53 @@ routine wide_ln_gamma_near(z: F128Extended, two: Bool) -> LnGammaWide
 /// in [30, 31), and Stirling's series there, 36 terms in 1/b² (the first dropped one is below
 /// 2^-207 at b = 30).
 routine wide_ln_gamma_positive(a: F128Extended, floor: S64) -> LnGammaWide
-    shared z1     : F128Extended = a.sub(wide_one())
-    shared z2     : F128Extended = a.sub(S64.to<F128Extended>(2))
-    shared near_1 : Bool         = wide_is_small(z1)
-    shared near_2 : Bool         = wide_is_small(z2)
-    shared steps  : S64          = GAMMA_WIDE_LIFT.sub(floor).max(0)
+    shared z1     : F128Extended  = a.sub(wide_one())
+    shared z2     : F128Extended  = a.sub(S64.to<F128Extended>(2))
+    shared near_1 : Bool          = wide_is_small(z1)
+    shared near_2 : Bool          = wide_is_small(z2)
+    shared steps  : S64           = GAMMA_WIDE_LIFT.sub(floor).max(0)
+    shared w      : @F128Extended <- uninit
+    shared s      : @F128Extended <- uninit
 
     block entry()
         when
             near_1 -> return(wide_ln_gamma_near(z1, false))
             near_2 -> return(wide_ln_gamma_near(z2, true))
-            else   -> lift(0, wide_one())
+            else   -> continue
+        wide_one().store_into(w)
+        jump lift(0)
 
     // w = a (a + 1) … (a + j - 1)
-    block lift(j: S64, w: F128Extended)
+    block lift(j: S64)
         done : Bool = j.ge(steps)
         branch done
-            ? stirling(a.add(steps.to<F128Extended>()), w)
-            : lift(j.add(1), w.mul(a.add(j.to<F128Extended>())))
+            ? stirling(a.add(steps.to<F128Extended>()))
+            : continue
+        w.load().mul(a.add(j.to<F128Extended>())).store_into(w)
+        jump lift(j.add(1))
 
-    block stirling(b: F128Extended, w: F128Extended)
+    block stirling(b: F128Extended)
         inv_bb : F128Extended = wide_one().div(b.mul(b))
         last   : F128Extended = wide_gamma_coef(35)
-        jump series(34, last, b, w, inv_bb)
+        last.store_into(s)
+        jump series(34, b, inv_bb)
 
-    block series(i: S64, s: F128Extended, b: F128Extended, w: F128Extended, inv_bb: F128Extended)
+    block series(i: S64, b: F128Extended, inv_bb: F128Extended)
         done : Bool = i.lt(0)
         branch done
-            ? assemble(s, b, w)
+            ? assemble(b)
             : continue
         c : F128Extended = wide_gamma_coef(i.to<USize>())
-        jump series(i.sub(1), s.mul(inv_bb).add(c), b, w, inv_bb)
+        s.store(s.load().mul(inv_bb).add(c))
+        jump series(i.sub(1), b, inv_bb)
 
     // (b - 1/2) ln b - b + ln(2π)/2 + series / b - ln |w|
-    block assemble(s: F128Extended, b: F128Extended, w: F128Extended)
+    block assemble(b: F128Extended)
         half           : F128Extended = wide_one().ldexp(-1)
         main           : F128Extended = b.sub(half).mul(gamma_wide_ln(b))
-        ln_w           : F128Extended = gamma_wide_ln(w.abs())
+        ln_w           : F128Extended = gamma_wide_ln(w.load().abs())
         half_ln_two_pi : F128Extended = wide_special(1).ldexp(-1)
-        tail           : F128Extended = half_ln_two_pi.add(s.div(b))
+        tail           : F128Extended = half_ln_two_pi.add(s.load().div(b))
         ln_gamma_b     : F128Extended = main.sub(b).add(tail)
         value          : F128Extended = ln_gamma_b.sub(ln_w)
         scale          : S64          = main.exponent.max(b.exponent).max(ln_w.exponent)
@@ -568,21 +583,25 @@ routine big_stirling(b: F128Big) -> F128Big
 /// ln |Γ(a)| for a > 0 or -1 < a < 0, floor = floor(a) (saturated): the recurrence up to a + n in
 /// [100, 101), then Stirling's series.
 routine big_ln_gamma_positive(a: F128Big, floor: S64) -> F128Big
-    shared steps : S64 = GAMMA_BIG_LIFT.sub(floor).max(0)
+    shared steps : S64      = GAMMA_BIG_LIFT.sub(floor).max(0)
+    shared w     : @F128Big <- uninit
 
     block entry()
-        jump lift(0, big_one())
+        big_one().store_into(w)
+        jump lift(0)
 
     // w = a (a + 1) … (a + j - 1)
-    block lift(j: S64, w: F128Big)
+    block lift(j: S64)
         done : Bool = j.ge(steps)
         branch done
-            ? finish(w)
-            : lift(j.add(1), w.mul(a.add(j.to<F128Big>())))
+            ? finish()
+            : continue
+        w.load().mul(a.add(j.to<F128Big>())).store_into(w)
+        jump lift(j.add(1))
 
-    block finish(w: F128Big)
+    block finish()
         b : F128Big = a.add(steps.to<F128Big>())
-        r : F128Big = big_stirling(b).sub(big_ln(w.abs()))
+        r : F128Big = big_stirling(b).sub(big_ln(w.load().abs()))
         return(r)
 
 /// |sin πx| for a finite x that is not an integer, from the exact reduction.
@@ -678,6 +697,8 @@ routine f128_gamma_is_negative(x: F128) -> Bool
 
 /// exact skips the fast tier (the tests use it to check the exact tier on its own).
 routine f128_gamma(x: F128, exact: Bool) -> F128
+    shared p : @F128Big <- uninit
+
     block entry()
         nan       : Bool = x.is_nan()
         zero      : Bool = f128_is_zero_bits(x.bits())
@@ -696,16 +717,20 @@ routine f128_gamma(x: F128, exact: Bool) -> F128
             invalid   -> return(F128.NAN)
             huge      -> return(F128.INFINITY)
             tiny      -> signed(f128_of(0), negative)
-            factorial -> product(2, x.to<U64>(), big_one())
+            factorial -> continue
             exact     -> slow(negative)
             else      -> fast(negative)
+        big_one().store_into(p)
+        jump product(2, x.to<U64>())
 
     // Γ(n) = (n - 1)!, exact in F128Big (38! has a 114-bit odd part), rounded once
-    block product(k: U64, n: U64, p: F128Big)
+    block product(k: U64, n: U64)
         done : Bool = k.ge(n)
         branch done
-            ? return(p.to<F128>())
-            : product(k.add(1), n, p.mul(k))
+            ? return(p.load().to<F128>())
+            : continue
+        p.load().mul(k).store_into(p)
+        jump product(k.add(1), n)
 
     // past ln |Γ| = 11360, Γ overflows, and below -11488 it is under half the smallest subnormal
     block fast(negative: Bool)

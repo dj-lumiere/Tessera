@@ -35,6 +35,8 @@ record SoftParts64
 /// :returns: The bits of the rounded value: infinity beyond the format's range, a subnormal or zero below it.
 #inline
 routine soft_round_pack(sign: U32, exponent: S32, m: U32, sig_bits: U32, max_exponent: S32) -> U32
+    shared sig : @U32 <- uninit
+
     block entry()
         top   : U32  = sig_bits.add(3)
         zeros : U32  = m.leading_zeros()
@@ -49,34 +51,37 @@ routine soft_round_pack(sign: U32, exponent: S32, m: U32, sig_bits: U32, max_exp
         kept   : U32  = m.shr(shift)
         lost   : Bool = kept.shl(shift).ne(m)
         sticky : U32  = kept.bitor(lost.to<U32>())
-        jump place(sticky, exponent.add(shift.to<S32>()))
+        sticky.store_into(sig)
+        jump place(exponent.add(shift.to<S32>()))
 
     block widen(shift: U32)
-        jump place(m.shl(shift), exponent.sub(shift.to<S32>()))
+        m.shl(shift).store_into(sig)
+        jump place(exponent.sub(shift.to<S32>()))
 
-    block place(sig: U32, biased: S32)
+    block place(biased: S32)
         overflow : Bool = biased.ge(max_exponent)
         tiny     : Bool = biased.lt(1)
         infinity : U32  = max_exponent.to<U32>().shl(sig_bits)
         when
             overflow -> return(sign.bitor(infinity))
-            tiny     -> subnormal(sig, biased)
-            else     -> round(sig, biased.to<U32>())
+            tiny     -> subnormal(biased)
+            else     -> round(biased.to<U32>())
 
     // below the smallest normal: shift to exponent 1's scale, which the field 0 encodes. A shift of 32 or more keeps
     // only the sticky bit
-    block subnormal(sig: U32, biased: S32)
+    block subnormal(biased: S32)
         shift  : U32  = S32.sub(1, biased).to<U32>()
-        kept   : U32  = sig.shr(shift)
-        lost   : Bool = kept.shl(shift).ne(sig)
+        kept   : U32  = sig.load().shr(shift)
+        lost   : Bool = kept.shl(shift).ne(sig.load())
         sticky : U32  = kept.bitor(lost.to<U32>())
-        jump round(sticky, 0)
+        sticky.store_into(sig)
+        jump round(0)
 
     // a carry out of the fraction bumps the exponent, up to infinity
-    block round(sig: U32, field: U32)
-        rest     : U32  = sig.bitand(7)
+    block round(field: U32)
+        rest     : U32  = sig.load().bitand(7)
         mask     : U32  = U32.shl(1, sig_bits).sub(1)
-        fraction : U32  = sig.shr(3).bitand(mask)
+        fraction : U32  = sig.load().shr(3).bitand(mask)
         packed   : U32  = sign.bitor(field.shl(sig_bits)).bitor(fraction)
         odd      : Bool = packed.bitand(1).eq(1)
         up       : Bool = rest.gt(4).bitor(rest.eq(4).bitand(odd))
@@ -90,6 +95,8 @@ routine soft_round_pack(sign: U32, exponent: S32, m: U32, sig_bits: U32, max_exp
 /// :returns: The bits of the rounded F64: infinity beyond its range, a subnormal or zero below it.
 #inline
 routine soft_round_pack(sign: U64, exponent: S32, m: U64) -> U64
+    shared sig : @U64 <- uninit
+
     block entry()
         zeros : U64  = m.leading_zeros()
         lead  : U64  = U64.sub(63, zeros)
@@ -102,29 +109,32 @@ routine soft_round_pack(sign: U64, exponent: S32, m: U64) -> U64
         kept   : U64  = m.shr(shift)
         lost   : Bool = kept.shl(shift).ne(m)
         sticky : U64  = kept.bitor(lost.to<U64>())
-        jump place(sticky, exponent.add(shift.to_wrap<S32>()))
+        sticky.store_into(sig)
+        jump place(exponent.add(shift.to_wrap<S32>()))
 
     block widen(shift: U64)
-        jump place(m.shl(shift), exponent.sub(shift.to_wrap<S32>()))
+        m.shl(shift).store_into(sig)
+        jump place(exponent.sub(shift.to_wrap<S32>()))
 
-    block place(sig: U64, biased: S32)
+    block place(biased: S32)
         overflow : Bool = biased.ge(0x7FF)
         tiny     : Bool = biased.lt(1)
         when
             overflow -> return(sign.bitor(0x7FF0000000000000))
-            tiny     -> subnormal(sig, biased)
-            else     -> round(sig, biased.to<U64>())
+            tiny     -> subnormal(biased)
+            else     -> round(biased.to<U64>())
 
-    block subnormal(sig: U64, biased: S32)
+    block subnormal(biased: S32)
         shift  : U64  = S32.sub(1, biased).to<U64>()
-        kept   : U64  = sig.shr(shift)
-        lost   : Bool = kept.shl(shift).ne(sig)
+        kept   : U64  = sig.load().shr(shift)
+        lost   : Bool = kept.shl(shift).ne(sig.load())
         sticky : U64  = kept.bitor(lost.to<U64>())
-        jump round(sticky, 0)
+        sticky.store_into(sig)
+        jump round(0)
 
-    block round(sig: U64, field: U64)
-        rest     : U64  = sig.bitand(7)
-        fraction : U64  = sig.shr(3).bitand(0x000FFFFFFFFFFFFF)
+    block round(field: U64)
+        rest     : U64  = sig.load().bitand(7)
+        fraction : U64  = sig.load().shr(3).bitand(0x000FFFFFFFFFFFFF)
         packed   : U64  = sign.bitor(field.shl(52)).bitor(fraction)
         odd      : Bool = packed.bitand(1).eq(1)
         up       : Bool = rest.gt(4).bitor(rest.eq(4).bitand(odd))

@@ -362,29 +362,34 @@ routine cm_atan_limbs_add_at(o: @U64, pos: USize, v: U128, n: USize) -> Void
 
 /// dst = a + b modulo 2^(64 n), and dst may be a or b
 routine cm_atan_limbs_add(dst: @U64, a: @U64, b: @U64, n: USize) -> Void
-    block entry()
-        jump limb(0, 0)
+    shared carry : @U128 <- 0
 
-    block limb(i: USize, carry: U128)
+    block entry()
+        jump limb(0)
+
+    block limb(i: USize)
         done : Bool = i.ge(n)
         branch done
             ? return()
-            : add(i, carry)
+            : add(i)
 
-    block add(i: USize, carry: U128)
+    block add(i: USize)
         ai : U64  = a.stride(i).load()
         bi : U64  = b.stride(i).load()
         ab : U128 = ai.to<U128>().add(bi.to<U128>())
-        s  : U128 = ab.add(carry)
+        s  : U128 = ab.add(carry.load())
         dst.stride(i).store(s.to_wrap<S64>().to_wrap<U64>())
-        jump limb(i.add(1), s.shr(64))
+        s.shr(64).store_into(carry)
+        jump limb(i.add(1))
 
 /// dst = a - b modulo 2^(64 n), and dst may be a or b
 routine cm_atan_limbs_sub(dst: @U64, a: @U64, b: @U64, n: USize) -> Void
-    block entry()
-        jump limb(0, 0)
+    shared borrow : @U128 <- 0
 
-    block limb(i: USize, borrow: U128)
+    block entry()
+        jump limb(0)
+
+    block limb(i: USize)
         done : Bool = i.ge(n)
         branch done
             ? return()
@@ -392,9 +397,10 @@ routine cm_atan_limbs_sub(dst: @U64, a: @U64, b: @U64, n: USize) -> Void
         ai : U64  = a.stride(i).load()
         bi : U64  = b.stride(i).load()
         ab : U128 = ai.to<U128>().sub_wrap(bi.to<U128>())
-        s  : U128 = ab.sub_wrap(borrow)
+        s  : U128 = ab.sub_wrap(borrow.load())
         dst.stride(i).store(s.to_wrap<S64>().to_wrap<U64>())
-        jump limb(i.add(1), s.shr(64).bitand(1))
+        s.shr(64).bitand(1).store_into(borrow)
+        jump limb(i.add(1))
 
 /// a = ~a on the low n limbs
 routine cm_atan_limbs_not(a: @U64, n: USize) -> Void
@@ -735,6 +741,7 @@ routine cm_atan_accurate_series(t: @U64, dn: S64, f: @U64) -> Void
     shared tmp_buf : @Array<S64, 8> <- uninit
     shared t2      : @U64           = t2_buf.to<@U64>()
     shared tmp     : @U64           = tmp_buf.to<@U64>()
+    shared ck      : @USize         <- 0
 
     block entry()
         cm_atan_limbs_mul_high(t2, t, t, 6)
@@ -744,33 +751,34 @@ routine cm_atan_accurate_series(t: @U64, dn: S64, f: @U64) -> Void
         f.zeroinit(8)
         f.stride(0).store(c0)
         f.stride(1).store(c1)
-        jump term(2, 0, 5)
+        jump term(2, 5)
 
     // left terms remain at the n-limb precision. The coefficient of the last one began at ck
-    block term(n: USize, ck: USize, left: S64)
+    block term(n: USize, left: S64)
         stage_done : Bool = left.eq(0)
         branch stage_done
-            ? widen(n, ck)
-            : step(n, ck, left)
+            ? widen(n)
+            : step(n, left)
 
     // f = CP[ck..] - f × t2 (the top n limbs of t2)
-    block step(n: USize, ck: USize, left: S64)
-        next_ck : USize = ck.add(n)
+    block step(n: USize, left: S64)
+        next_ck : USize = ck.load().add(n)
         t2_top  : @U64  = t2.stride(6.sub(n))
         coef    : @U64  = CM_ATAN_CP.to<@U64>().stride(next_ck)
         cm_atan_limbs_mul_high(tmp, f, t2_top, n)
         cm_atan_limbs_sub(f, coef, tmp, n)
-        jump term(n, next_ck, left.sub(1))
+        next_ck.store_into(ck)
+        jump term(n, left.sub(1))
 
     // one more limb on top: CP holds it right after the last coefficient used
-    block widen(n: USize, ck: USize)
+    block widen(n: USize)
         full : Bool = n.eq(6)
         branch full
             ? finish()
-            : grow(n, ck)
+            : grow(n)
 
-    block grow(n: USize, ck: USize)
-        top_at : USize = ck.add(n)
+    block grow(n: USize)
+        top_at : USize = ck.load().add(n)
         top    : U64   = CM_ATAN_CP.getitem(top_at)
         f.stride(n).store(top)
         wider : USize = n.add(1)
@@ -778,7 +786,7 @@ routine cm_atan_accurate_series(t: @U64, dn: S64, f: @U64) -> Void
         terms : S64   = last
             ? 4
             : 5
-        jump term(wider, ck, terms)
+        jump term(wider, terms)
 
     // f = t - t × (f × t2)
     block finish()

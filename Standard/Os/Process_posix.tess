@@ -277,6 +277,8 @@ private routine has_nul(program: Bytes, args: @Bytes, arg_count: USize,
 #target(os: ("linux", "macos"))
 private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: USize,
     options: ProcessOptions, alloc: @Allocator) -> Bool
+    shared first : @USize <- uninit
+
     block entry()
         p.store(Prepared { argv: null, argc: 0, envp: null, own_first: 0, own_count: 0,
             directory: null })
@@ -340,38 +342,40 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
             ? return(false)
             : continue
         p.envp.store(envp)
-        jump keep(parent, n, envp, 0, 0)
+        0.store_into(first)
+        jump keep(parent, n, envp, 0)
 
-    block keep(parent: @@Byte, n: USize, envp: @@Byte, i: USize, k: USize)
+    block keep(parent: @@Byte, n: USize, envp: @@Byte, i: USize)
         branch i.eq(n)
-            ? own(envp, k, 0)
+            ? own(envp, 0)
             : continue
         entry : @Byte = parent.stride(i).load()
         branch overridden(entry.to<CStr>().to<Bytes>(), options)
-            ? keep(parent, n, envp, i.add(1), k)
+            ? keep(parent, n, envp, i.add(1))
             : continue
-        envp.stride(k).store(entry)
-        jump keep(parent, n, envp, i.add(1), k.add(1))
+        envp.stride(first.load()).store(entry)
+        first.load().add(1).store_into(first)
+        jump keep(parent, n, envp, i.add(1))
 
-    block own(envp: @@Byte, first: USize, j: USize)
+    block own(envp: @@Byte, j: USize)
         branch j.eq(options.env_count)
-            ? finish(envp, first, j)
+            ? finish(envp, j)
             : continue
         e : @Byte = env_entry(options.env.stride(j).load(), alloc)
         branch e.is_null()
-            ? finish_failed(envp, first, j)
+            ? finish_failed(envp, j)
             : continue
-        envp.stride(first.add(j)).store(e)
-        jump own(envp, first, j.add(1))
+        envp.stride(first.load().add(j)).store(e)
+        jump own(envp, j.add(1))
 
-    block finish(envp: @@Byte, first: USize, count: USize)
-        envp.stride(first.add(count)).store(null)
-        p.own_first.store(first)
+    block finish(envp: @@Byte, count: USize)
+        envp.stride(first.load().add(count)).store(null)
+        p.own_first.store(first.load())
         p.own_count.store(count)
         return(true)
 
-    block finish_failed(envp: @@Byte, first: USize, count: USize)
-        p.own_first.store(first)
+    block finish_failed(envp: @@Byte, count: USize)
+        p.own_first.store(first.load())
         p.own_count.store(count)
         return(false)
 

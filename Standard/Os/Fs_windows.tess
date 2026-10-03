@@ -331,39 +331,42 @@ private routine wide_path(path: Bytes, out: @U16) -> Bool
 /// count UTF-16 units at units as UTF-8 at out (room for 3 bytes a unit): the bytes written.
 #target(os: "windows")
 internal routine narrow(units: @U16, count: USize, out: @Byte) -> USize
-    block entry()
-        jump next(0, 0)
+    shared n : @USize <- 0
 
-    block next(i: USize, n: USize)
+    block entry()
+        jump next(0)
+
+    block next(i: USize)
         branch i.ge(count)
-            ? return(n)
+            ? return(n.load())
             : continue
         unit : U16 = units.stride(i).load()
         u    : U32 = unit.to<U32>()
         branch u.between(0xD800, 0xDBFF)
-            ? high(i, n, u)
+            ? high(i, u)
             : continue
         branch u.between(0xDC00, 0xDFFF)
-            ? put(i.add(1), n, 0xFFFD)
-            : put(i.add(1), n, u)
+            ? put(i.add(1), 0xFFFD)
+            : put(i.add(1), u)
 
-    block high(i: USize, n: USize, u: U32)
+    block high(i: USize, u: U32)
         branch i.add(1).lt(count)
             ? continue
-            : put(i.add(1), n, 0xFFFD)
+            : put(i.add(1), 0xFFFD)
         low_unit : U16 = units.stride(i.add(1)).load()
         low      : U32 = low_unit.to<U32>()
         branch low.between(0xDC00, 0xDFFF)
-            ? surrogate_pair(i, n, u, low)
-            : put(i.add(1), n, 0xFFFD)
+            ? surrogate_pair(i, u, low)
+            : put(i.add(1), 0xFFFD)
 
-    block surrogate_pair(i: USize, n: USize, u: U32, low: U32)
+    block surrogate_pair(i: USize, u: U32, low: U32)
         high_half : U32 = u.sub(0xD800).shl(10)
         cp_offset : U32 = high_half.add(low.sub(0xDC00))
-        jump put(i.add(2), n, cp_offset.add(0x10000))
+        jump put(i.add(2), cp_offset.add(0x10000))
 
-    block put(i: USize, n: USize, cp: U32)
-        jump next(i, n.add(utf8_encode_into(cp.to<Char>(), out.stride(n))))
+    block put(i: USize, cp: U32)
+        n.load().add(utf8_encode_into(cp.to<Char>(), out.stride(n.load()))).store_into(n)
+        jump next(i)
 
 /// The units before the first 0 at units.
 #target(os: "windows")

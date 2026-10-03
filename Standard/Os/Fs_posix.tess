@@ -756,8 +756,9 @@ internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result<Unit, FsErr
 /// Copies from's bytes and permissions into to (made, or replaced): the bytes copied.
 #target(os: ("linux", "macos"))
 internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
-    shared src : @FileHandle <- uninit
-    shared dst : @FileHandle <- uninit
+    shared src   : @FileHandle <- uninit
+    shared dst   : @FileHandle <- uninit
+    shared total : @U64        <- uninit
 
     block entry()
         source : Result<FileHandle, FsError> = FileHandle.open(from, OpenMode.Read)
@@ -780,32 +781,35 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
         dst.store(made)
         set_mode(dst.fd.load(), fd_mode(src.fd.load()))
         claim buffer : @Array<Byte, 16384> <- uninit
-        jump chunk(buffer.to<@Byte>(), 0)
+        0.store_into(total)
+        jump chunk(buffer.to<@Byte>())
 
-    block chunk(buffer: @Byte, total: U64)
+    block chunk(buffer: @Byte)
         got : Result<USize, FsError> = src.read_bytes_result(buffer, 16384)
         when got
-            .Success(n)     -> put(buffer, total, n)
+            .Success(n)     -> put(buffer, n)
             .Failure(error) -> stop(error)
 
-    block put(buffer: @Byte, total: U64, n: USize)
+    block put(buffer: @Byte, n: USize)
         branch n.eq(0)
-            ? done(total)
+            ? done()
             : continue
         wrote : Result<Unit, FsError> = dst.write_all_result(buffer, n)
         when wrote
-            .Success        -> chunk(buffer, total.add(n.to<U64>()))
+            .Success        -> continue
             .Failure(error) -> stop(error)
+        total.load().add(n.to<U64>()).store_into(total)
+        jump chunk(buffer)
 
     block stop(error: FsError)
         src.close()
         dst.close()
         return(.Failure(error))
 
-    block done(total: U64)
+    block done()
         src.close()
         dst.close()
-        return(.Success(total))
+        return(.Success(total.load()))
 
 #target(os: "linux")
 private routine set_mode(fd: CInt, mode: U32) -> Void

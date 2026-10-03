@@ -513,33 +513,35 @@ routine cm_trig_window_limb(first: S64, count: S64, k: S64) -> U128
 /// m × window as count+3 little-endian 64-bit limbs at p, for the window of `count` limbs of 2/pi starting at
 /// `first`: the product fills count+2 of them and the spare top limb stays zero.
 routine cm_trig_product(m: U128, first: S64, count: USize, p: @U64) -> Void
-    shared low  : U128 = m.bitand(0xFFFFFFFFFFFFFFFF)
-    shared high : U128 = m.shr(64)
+    shared low   : U128  = m.bitand(0xFFFFFFFFFFFFFFFF)
+    shared high  : U128  = m.shr(64)
+    shared carry : @U128 <- 0
 
     block entry()
-        jump column(0, 0)
+        jump column(0)
 
-    block column(c: USize, carry: U128)
+    block column(c: USize)
         done : Bool = c.ge(count.add(3))
         branch done
             ? return()
-            : step(c, carry)
+            : step(c)
 
     // column c is (high*prev + carry) + low*cur, with cur and prev the window limbs under the two halves of m
-    block step(c: USize, carry: U128)
+    block step(c: USize)
         last_column : S64  = count.to<S64>().sub(1)
         cur         : U128 = cm_trig_window_limb(first, count.to<S64>(),
             last_column.sub(c.to<S64>()))
         prev        : U128 = cm_trig_window_limb(first, count.to<S64>(),
             count.to<S64>().sub(c.to<S64>()))
         // high < 2^49 keeps the first sum under 2^114, only the second can spill
-        acc     : U128 = high.mul_wrap(prev).add_wrap(carry)
+        acc     : U128 = high.mul_wrap(prev).add_wrap(carry.load())
         t       : U128 = acc.add_wrap(low.mul_wrap(cur))
         wrapped : Bool = t.lt(acc)
         spill   : U128 = wrapped.to<U128>().shl(64)
         p.stride(c).store(t.to_wrap<U64>())
         next_carry : U128 = t.shr(64).bitor(spill)
-        jump column(c.add(1), next_carry)
+        next_carry.store_into(carry)
+        jump column(c.add(1))
 
 /// n = round(256*x/pi) mod 512 from the two quadrant bits and the top 64 bits of the fraction.
 routine cm_trig_nearest(quadrant: U64, top_limb: U64) -> U64
@@ -679,20 +681,23 @@ routine cm_trig_magnitude448(f: @U64, negative: Bool) -> Void
     shared mask     : U64 = negative
         ? all_ones
         : no_bits
+    shared carry : @U64 <- uninit
 
     block entry()
-        jump flip(0, negative.to<U64>())
+        negative.to<U64>().store_into(carry)
+        jump flip(0)
 
-    block flip(k: USize, carry: U64)
+    block flip(k: USize)
         done : Bool = k.ge(7)
         branch done
             ? return()
             : continue
         limb    : U64 = f.stride(k).load()
-        flipped : U64 = limb.bitxor(mask).add_wrap(carry)
+        flipped : U64 = limb.bitxor(mask).add_wrap(carry.load())
         f.stride(k).store(flipped)
-        next_carry : U64 = flipped.lt(carry).to<U64>()
-        jump flip(k.add(1), next_carry)
+        next_carry : U64 = flipped.lt(carry.load()).to<U64>()
+        next_carry.store_into(carry)
+        jump flip(k.add(1))
 
 /// Leading zeros of the 448-bit fraction at f (seven limbs, least significant first), 448 when it is zero.
 routine cm_trig_lz448(f: @U64) -> S64
@@ -721,25 +726,27 @@ routine cm_trig_top448(f: @U64, lz: S64) -> CmTrigU384
     shared shifted : @Array<U64, 7> <- uninit
     shared s       : @U64           = shifted.to<@U64>()
     shared wbits   : S64            = lz.bitand(63)
+    shared below   : @U64           <- 0
 
     block entry()
         s.zeroinit(7)
         word : USize = lz.shr(6).to<USize>()
-        jump shift(word, 0, word)
+        jump shift(word, word)
 
     // s[q] = f[q - word] << wbits with the bits carried up from the limb below it
-    block shift(q: USize, below: U64, word: USize)
+    block shift(q: USize, word: USize)
         done : Bool = q.ge(7)
         branch done
             ? assemble()
-            : shift_one(q, below, word)
+            : shift_one(q, word)
 
-    block shift_one(q: USize, below: U64, word: USize)
+    block shift_one(q: USize, word: USize)
         from    : USize = q.sub(word)
         limb    : U64   = f.stride(from).load()
-        carried : U64   = below.shr(1).shr(63.sub(wbits).to<U64>())
+        carried : U64   = below.load().shr(1).shr(63.sub(wbits).to<U64>())
         s.stride(q).store(limb.shl(wbits.to<U64>()).bitor(carried))
-        jump shift(q.add(1), limb, word)
+        limb.store_into(below)
+        jump shift(q.add(1), word)
 
     block assemble()
         s1      : U64        = s.stride(1).load()

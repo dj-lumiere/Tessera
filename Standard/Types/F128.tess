@@ -1369,6 +1369,8 @@ record F128Remainder
 /// Long division, one quotient bit per step: x = ma × 2^(ea - eb) mod mb. Up to
 /// 32877 steps (MAX mod the smallest subnormal), each a compare and a shift.
 routine f128_remainder_parts(a: U128, b: U128) -> F128Remainder
+    shared x : @U128 <- uninit
+
     block entry()
         pa        : F128Parts     = f128_unpack(a)
         pb        : F128Parts     = f128_unpack(b)
@@ -1378,29 +1380,32 @@ routine f128_remainder_parts(a: U128, b: U128) -> F128Remainder
         as_is     : F128Remainder = F128Remainder { magnitude: magnitude, odd: false }
         branch a_smaller
             ? return(as_is)
-            : divide(pa.sig, pb.sig, pa.exponent.sub(pb.exponent), pb.exponent)
+            : continue
+        pa.sig.store_into(x)
+        jump divide(pb.sig, pa.exponent.sub(pb.exponent), pb.exponent)
 
-    block divide(x: U128, mb: U128, steps: S64, eb: S64)
+    block divide(mb: U128, steps: S64, eb: S64)
         done : Bool = steps.eq(0)
         branch done
-            ? last(x, mb, eb)
-            : step(x, mb, steps, eb)
+            ? last(mb, eb)
+            : step(mb, steps, eb)
 
-    block step(x: U128, mb: U128, steps: S64, eb: S64)
-        fits  : Bool = x.ge(mb)
+    block step(mb: U128, steps: S64, eb: S64)
+        fits  : Bool = x.load().ge(mb)
         taken : U128 = fits
             ? mb
             : 0
-        left : U128 = x.sub(taken)
-        jump divide(left.shl(1), mb, steps.sub(1), eb)
+        left : U128 = x.load().sub(taken)
+        left.shl(1).store_into(x)
+        jump divide(mb, steps.sub(1), eb)
 
     // x < 2 mb: one more subtraction gives the quotient's last bit. The rest is x × 2^(eb - 112)
-    block last(x: U128, mb: U128, eb: S64)
-        odd   : Bool = x.ge(mb)
+    block last(mb: U128, eb: S64)
+        odd   : Bool = x.load().ge(mb)
         taken : U128 = odd
             ? mb
             : 0
-        rest : U128          = x.sub(taken)
+        rest : U128          = x.load().sub(taken)
         bits : U128          = f128_round_pack(false, eb.add(F128_BIAS), rest.shl(3))
         r    : F128Remainder = F128Remainder { magnitude: f128_of(bits), odd: odd }
         return(r)

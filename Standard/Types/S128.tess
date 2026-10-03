@@ -584,50 +584,67 @@ routine S128.pow(self: Self, exponent: U32) -> Self
 
 /// Wrapping power by squaring.
 routine S128.pow_wrap(self: Self, exponent: U32) -> Self
-    block entry()
-        jump loop(self, exponent, 1)
+    shared base : @Self <- self
+    shared acc  : @Self <- 1
 
-    block loop(base: Self, exponent_left: U32, acc: Self)
+    block entry()
+        jump loop(exponent)
+
+    block loop(exponent_left: U32)
         done : Bool = exponent_left.eq(0)
         branch done
-            ? return(acc)
+            ? return(acc.load())
             : continue
         odd       : Bool = exponent_left.bitand(1).ne(0)
-        with_base : Self = mul<Self>(acc, base)
+        with_base : Self = mul<Self>(acc.load(), base.load())
         next_acc  : Self = odd
             ? with_base
-            : acc
-        jump loop(mul<Self>(base, base), exponent_left.shr(1), next_acc)
+            : acc.load()
+        next_acc2 : Self = next_acc
+        next_base : Self = mul<Self>(base.load(), base.load())
+        next_base.store_into(base)
+        next_acc2.store_into(acc)
+        jump loop(exponent_left.shr(1))
 
 /// None if any step overflows.
 routine S128.pow_checked(self: Self, exponent: U32) -> Option<Self>
-    block entry()
-        jump loop(self, exponent, 1, false)
+    shared base     : @Self <- self
+    shared acc      : @Self <- 1
+    shared overflow : @Bool <- false
 
-    block loop(base: Self, exponent_left: U32, acc: Self, overflow: Bool)
+    block entry()
+        jump loop(exponent)
+
+    block loop(exponent_left: U32)
         done : Bool = exponent_left.eq(0)
         branch done
-            ? finish(acc, overflow)
-            : step(base, exponent_left, acc, overflow)
+            ? finish()
+            : step(exponent_left)
 
     // The accumulator only multiplies on odd bits, and the base only needs
     // squaring while bits remain, so only those overflows count.
-    block step(base: Self, exponent_left: U32, acc: Self, overflow: Bool)
+    block step(exponent_left: U32)
         odd          : Bool = exponent_left.bitand(1).ne(0)
-        acc_overflow : Bool = smul_overflows<Self>(acc, base).bitand(odd)
-        with_base    : Self = mul<Self>(acc, base)
+        acc_overflow : Bool = smul_overflows<Self>(acc.load(), base.load()).bitand(odd)
+        with_base    : Self = mul<Self>(acc.load(), base.load())
         next_acc     : Self = odd
             ? with_base
-            : acc
+            : acc.load()
         rest          : U32  = exponent_left.shr(1)
         more          : Bool = rest.ne(0)
-        base_overflow : Bool = smul_overflows<Self>(base, base).bitand(more)
-        any           : Bool = overflow.bitor(acc_overflow).bitor(base_overflow)
-        jump loop(mul<Self>(base, base), rest, next_acc, any)
+        base_overflow : Bool = smul_overflows<Self>(base.load(), base.load()).bitand(more)
+        any           : Bool = overflow.load().bitor(acc_overflow).bitor(base_overflow)
+        next_overflow : Bool = any
+        next_acc2     : Self = next_acc
+        next_base     : Self = mul<Self>(base.load(), base.load())
+        next_base.store_into(base)
+        next_acc2.store_into(acc)
+        next_overflow.store_into(overflow)
+        jump loop(rest)
 
-    block finish(acc: Self, overflow: Bool)
-        fits : Bool         = overflow.bitnot()
-        r    : Option<Self> = fits.then_present(acc)
+    block finish()
+        fits : Bool         = overflow.load().bitnot()
+        r    : Option<Self> = fits.then_present(acc.load())
         return(r)
 
 /// MAX or MIN (by the sign the exact result would have) on overflow.

@@ -517,6 +517,7 @@ routine cm_exp_mul_words(out: @U64, a: @U64, na: USize, b: @U64, nb: USize, p: U
     shared hi_words : @Array<S64, 8> <- uninit
     shared lo       : @U64           = lo_words.to<@U64>()
     shared hi       : @U64           = hi_words.to<@U64>()
+    shared carry    : @U128          <- uninit
 
     block entry()
         lo.zeroinit(8)
@@ -526,8 +527,10 @@ routine cm_exp_mul_words(out: @U64, a: @U64, na: USize, b: @U64, nb: USize, p: U
     block row(i: USize)
         done : Bool = i.ge(na)
         branch done
-            ? carry(0, 0)
+            ? continue
             : column(i, 0)
+        0.store_into(carry)
+        jump carry(0)
 
     block column(i: USize, j: USize)
         row_done : Bool = j.ge(nb)
@@ -545,33 +548,38 @@ routine cm_exp_mul_words(out: @U64, a: @U64, na: USize, b: @U64, nb: USize, p: U
         cm_exp_add_column(lo, hi, slot.add(1), count, cm_exp_hi(prod))
         jump column(i, j.add(1))
 
-    block carry(q: S64, carry: U128)
+    block carry(q: S64)
         done : Bool = q.ge(count)
         branch done
             ? return()
-            : settle(q.to<USize>(), carry)
+            : settle(q.to<USize>())
 
-    block settle(q: USize, carry: U128)
+    block settle(q: USize)
         low  : U64  = lo.stride(q).load()
         high : U64  = hi.stride(q).load()
-        sum  : U128 = low.to<U128>().add(carry)
+        sum  : U128 = low.to<U128>().add(carry.load())
         out.stride(q).store(sum.to_wrap<S64>().to_wrap<U64>())
-        jump carry(q.add(1).to<S64>(), sum.shr(64).add(high.to<U128>()))
+        sum.shr(64).add(high.to<U128>()).store_into(carry)
+        jump carry(q.add(1).to<S64>())
 
 /// out = floor(a × b / 2^64) + c modulo 2^(64n), for a word a and n-word b and c.
 /// out may alias b or c.
 routine cm_exp_mul_add_words(out: @U64, a: U64, b: @U64, c: @U64, n: USize) -> Void
+    shared prev  : @U128 <- uninit
+    shared carry : @U128 <- 0
+
     block entry()
         b0 : U64 = b.stride(0).load()
-        jump step(0, cm_exp_mul(a, b0), 0)
+        cm_exp_mul(a, b0).store_into(prev)
+        jump step(0)
 
-    block step(k: USize, prev: U128, carry: U128)
+    block step(k: USize)
         done : Bool = k.ge(n)
         branch done
             ? return()
-            : add(k, prev, carry)
+            : add(k)
 
-    block add(k: USize, prev: U128, carry: U128)
+    block add(k: USize)
         next_k   : USize = k.add(1)
         has_next : Bool  = next_k.lt(n)
         index    : USize = has_next
@@ -583,29 +591,36 @@ routine cm_exp_mul_add_words(out: @U64, a: U64, b: @U64, c: @U64, n: USize) -> V
             ? product
             : 0
         ck      : U64  = c.stride(k).load()
-        overlap : U128 = prev.shr(64).add(next.bitand(CM_EXP_LOW))
-        sum     : U128 = overlap.add(ck.to<U128>()).add(carry)
+        overlap : U128 = prev.load().shr(64).add(next.bitand(CM_EXP_LOW))
+        sum     : U128 = overlap.add(ck.to<U128>()).add(carry.load())
         out.stride(k).store(sum.to_wrap<S64>().to_wrap<U64>())
-        jump step(next_k, next, sum.shr(64))
+        next_carry : U128 = sum.shr(64)
+        next_prev  : U128 = next
+        next_prev.store_into(prev)
+        next_carry.store_into(carry)
+        jump step(next_k)
 
 /// dst += src on n words, the carry out of the top dropped.
 routine cm_exp_add_words(dst: @U64, src: @U64, n: USize) -> Void
-    block entry()
-        jump step(0, 0)
+    shared carry : @U128 <- 0
 
-    block step(k: USize, carry: U128)
+    block entry()
+        jump step(0)
+
+    block step(k: USize)
         done : Bool = k.ge(n)
         branch done
             ? return()
-            : add(k, carry)
+            : add(k)
 
-    block add(k: USize, carry: U128)
+    block add(k: USize)
         d    : U64  = dst.stride(k).load()
         s    : U64  = src.stride(k).load()
         pair : U128 = d.to<U128>().add(s.to<U128>())
-        sum  : U128 = pair.add(carry)
+        sum  : U128 = pair.add(carry.load())
         dst.stride(k).store(sum.to_wrap<S64>().to_wrap<U64>())
-        jump step(k.add(1), sum.shr(64))
+        sum.shr(64).store_into(carry)
+        jump step(k.add(1))
 
 /// Word i of the len-word value at o, or the sign fill past its top.
 routine cm_exp_word_or_sign(o: @U64, i: USize, len: USize, sign: U64) -> U64

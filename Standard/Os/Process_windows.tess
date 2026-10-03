@@ -270,6 +270,8 @@ private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
 #target(os: "windows")
 private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
     alloc: @Allocator) -> @U16
+    shared at : @@U16 <- uninit
+
     block entry()
         program_bound : USize = program.count().mul(2)
         jump size(0, program_bound.add(3))
@@ -287,41 +289,45 @@ private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
     block made(line: @U16)
         branch line.is_null()
             ? return(null)
-            : append(line, line, 0)
+            : continue
+        line.store_into(at)
+        jump append(line, 0)
 
     // 0 is the program, i the argument i - 1.
-    block append(line: @U16, at: @U16, i: USize)
+    block append(line: @U16, i: USize)
         branch i.gt(arg_count)
-            ? finish(at, line)
+            ? finish(line)
             : continue
         branch i.eq(0)
-            ? one(line, at, i, program)
-            : one(line, at, i, args.stride(i.sub(1)).load())
+            ? one(line, i, program)
+            : one(line, i, args.stride(i.sub(1)).load())
 
-    block one(line: @U16, at: @U16, i: USize, arg: Bytes)
+    block one(line: @U16, i: USize, arg: Bytes)
         units, n = utf16(arg, alloc)
         branch units.is_null()
             ? failed(line)
             : continue
         branch i.eq(0)
-            ? quote(line, at, i, units, n)
-            : space(line, at, i, units, n)
+            ? quote(line, i, units, n)
+            : space(line, i, units, n)
 
-    block space(line: @U16, at: @U16, i: USize, units: @U16, n: USize)
-        at.store(32)
-        jump quote(line, at.stride(1), i, units, n)
+    block space(line: @U16, i: USize, units: @U16, n: USize)
+        at.load().store(32)
+        at.load().stride(1).store_into(at)
+        jump quote(line, i, units, n)
 
-    block quote(line: @U16, at: @U16, i: USize, units: @U16, n: USize)
-        end : @U16 = quote_arg(units, n, at)
+    block quote(line: @U16, i: USize, units: @U16, n: USize)
+        end : @U16 = quote_arg(units, n, at.load())
         deallocate(alloc, units)
-        jump append(line, end, i.add(1))
+        end.store_into(at)
+        jump append(line, i.add(1))
 
     block failed(line: @U16)
         deallocate(alloc, line)
         return(null)
 
-    block finish(at: @U16, line: @U16)
-        at.store(0)
+    block finish(line: @U16)
+        at.load().store(0)
         return(line)
 
 // -- the environment block ---------------------------------------------------------------

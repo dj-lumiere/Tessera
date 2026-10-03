@@ -310,6 +310,8 @@ private routine cm_f64_log1p_refine_near_zero(x: F64) -> F64
     shared x2h : F64        = x.mul(x)
     shared x2l : F64        = x.mul_add(x, x2h.neg())
     shared x3  : CmF64LogDd = cm_f64_log1p_mulddd(x, x2h, x2l)
+    shared ch  : @F64       <- uninit
+    shared cl  : @F64       <- uninit
 
     block entry()
         c01 : F64 = x.mul(0x1.c71c71c7185aap-4).add(-0x1.fffffffffc555p-4)
@@ -317,22 +319,28 @@ private routine cm_f64_log1p_refine_near_zero(x: F64) -> F64
         sl  : F64 = x.mul(c01.add(x2h.mul(c23)))
         // Horner evaluation of the double-double coefficients cz, in the double x
         h0 : CmF64LogDd = cm_f64_log1p_fasttwosum(F64.from_bits(CM_F64_LOG1P_CZ.getitem(8)), sl)
-        jump horner(4, h0.hi, F64.from_bits(CM_F64_LOG1P_CZ.getitem(9)).add(h0.lo))
+        h0.hi.store_into(ch)
+        F64.from_bits(CM_F64_LOG1P_CZ.getitem(9)).add(h0.lo).store_into(cl)
+        jump horner(4)
 
-    block horner(i: USize, ch: F64, cl: F64)
+    block horner(i: USize)
         done : Bool = i.eq(0)
         branch done
-            ? finish(ch, cl)
+            ? finish()
             : continue
-        k  : USize      = i.sub(1)
-        m  : CmF64LogDd = cm_f64_log1p_mulddd(x, ch, cl)
-        zh : F64        = F64.from_bits(CM_F64_LOG1P_CZ.getitem(k.mul(2)))
-        zl : F64        = F64.from_bits(CM_F64_LOG1P_CZ.getitem(k.mul(2).add(1)))
-        t  : CmF64LogDd = cm_f64_log1p_fastsum(zh, zl, m.hi, m.lo)
-        jump horner(k, t.hi, t.lo)
+        k       : USize      = i.sub(1)
+        m       : CmF64LogDd = cm_f64_log1p_mulddd(x, ch.load(), cl.load())
+        zh      : F64        = F64.from_bits(CM_F64_LOG1P_CZ.getitem(k.mul(2)))
+        zl      : F64        = F64.from_bits(CM_F64_LOG1P_CZ.getitem(k.mul(2).add(1)))
+        t       : CmF64LogDd = cm_f64_log1p_fastsum(zh, zl, m.hi, m.lo)
+        next_cl : F64        = t.lo
+        next_ch : F64        = t.hi
+        next_ch.store_into(ch)
+        next_cl.store_into(cl)
+        jump horner(k)
 
-    block finish(ch: F64, cl: F64)
-        p : CmF64LogDd = cm_f64_log1p_muldd(ch, cl, x3.hi, x3.lo)
+    block finish()
+        p : CmF64LogDd = cm_f64_log1p_muldd(ch.load(), cl.load(), x3.hi, x3.lo)
         q : CmF64LogDd = cm_f64_log1p_fastsum(x2h.mul(-0.5), x2l.mul(-0.5), p.hi, p.lo)
         return(cm_f64_log1p_final(x, q.hi, q.lo))
 
@@ -425,20 +433,27 @@ private routine cm_f64_log1p_refine_table(x: F64, a: F64) -> F64
 
 /// The Horner steps of degrees 3 down to 0 over the coefficients cy, in the double-double (xh, xl), from (ch, cl).
 private routine cm_f64_log1p_horner_cy(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64LogDd
-    block entry()
-        jump step(4, ch, cl)
+    shared acc_hi : @F64 <- ch
+    shared acc_lo : @F64 <- cl
 
-    block step(i: USize, acc_hi: F64, acc_lo: F64)
+    block entry()
+        jump step(4)
+
+    block step(i: USize)
         done : Bool = i.eq(0)
         branch done
-            ? return(CmF64LogDd { hi: acc_hi, lo: acc_lo })
+            ? return(CmF64LogDd { hi: acc_hi.load(), lo: acc_lo.load() })
             : continue
-        k  : USize      = i.sub(1)
-        m  : CmF64LogDd = cm_f64_log1p_muldd(xh, xl, acc_hi, acc_lo)
-        yh : F64        = F64.from_bits(CM_F64_LOG1P_CY.getitem(k.mul(2)))
-        yl : F64        = F64.from_bits(CM_F64_LOG1P_CY.getitem(k.mul(2).add(1)))
-        u  : CmF64LogDd = cm_f64_log1p_fastsum(yh, yl, m.hi, m.lo)
-        jump step(k, u.hi, u.lo)
+        k           : USize      = i.sub(1)
+        m           : CmF64LogDd = cm_f64_log1p_muldd(xh, xl, acc_hi.load(), acc_lo.load())
+        yh          : F64        = F64.from_bits(CM_F64_LOG1P_CY.getitem(k.mul(2)))
+        yl          : F64        = F64.from_bits(CM_F64_LOG1P_CY.getitem(k.mul(2).add(1)))
+        u           : CmF64LogDd = cm_f64_log1p_fastsum(yh, yl, m.hi, m.lo)
+        next_acc_lo : F64        = u.lo
+        next_acc_hi : F64        = u.hi
+        next_acc_hi.store_into(acc_hi)
+        next_acc_lo.store_into(acc_lo)
+        jump step(k)
 
 /// Reciprocal j of level k of the accurate path.
 private routine cm_f64_log1p_rt(j: USize, k: USize) -> F64

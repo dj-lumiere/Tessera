@@ -93,51 +93,55 @@ routine LazySegmentTree<T, L>.aligned_to_cover(self: @Self, node: USize, height:
         return(aligned)
 
 routine LazySegmentTree<T, L>.construct(count: USize, alloc: @Allocator) -> Self
+    shared height : @USize <- 0
+
     block entry()
         invalid : Bool = count.le(0)
         branch invalid
             ? crash_invalid_value()
-            : choose_size(1, 0)
+            : choose_size(1)
 
-    block choose_size(size: USize, height: USize)
+    block choose_size(size: USize)
         done : Bool = size.ge(count)
         branch done
-            ? allocate(size, height)
-            : grow(size, height)
+            ? allocate(size)
+            : grow(size)
 
-    block grow(size: USize, height: USize)
-        jump choose_size(size.shl(1), height.add(1))
+    block grow(size: USize)
+        height.load().add(1).store_into(height)
+        jump choose_size(size.shl(1))
 
-    block allocate(size: USize, height: USize)
+    block allocate(size: USize)
         data_count : USize    = size.shl(1)
         nodes      : Slice<T> = Slice<T>.construct(data_count, alloc)
         tags       : Slice<L> = Slice<L>.construct(size, alloc)
-        jump data_loop(0, nodes, tags, size, height)
+        jump data_loop(0, nodes, tags, size)
 
-    block data_loop(i: USize, nodes: Slice<T>, tags: Slice<L>, size: USize, height: USize)
+    block data_loop(i: USize, nodes: Slice<T>, tags: Slice<L>, size: USize)
         done : Bool = i.ge(nodes.count)
         branch done
-            ? init_lazy(0, nodes, tags, size, height)
-            : data_one(i, nodes, tags, size, height)
+            ? init_lazy(0, nodes, tags, size)
+            : data_one(i, nodes, tags, size)
 
-    block data_one(i: USize, nodes: Slice<T>, tags: Slice<L>, size: USize, height: USize)
+    block data_one(i: USize, nodes: Slice<T>, tags: Slice<L>, size: USize)
         identity : T = .identity()
         nodes.setitem(i, identity)
-        jump data_loop(i.add(1), nodes, tags, size, height)
+        jump data_loop(i.add(1), nodes, tags, size)
 
-    block init_lazy(i: USize, nodes: Slice<T>, tags: Slice<L>, size: USize, height: USize)
+    block init_lazy(i: USize, nodes: Slice<T>, tags: Slice<L>, size: USize)
         done : Bool = i.ge(size)
         branch done
-            ? finish(nodes, tags, size, height)
-            : lazy_one(i, nodes, tags, size, height)
+            ? finish(nodes, tags, size)
+            : lazy_one(i, nodes, tags, size)
 
-    block lazy_one(i: USize, nodes: Slice<T>, tags: Slice<L>, size: USize, height: USize)
+    block lazy_one(i: USize, nodes: Slice<T>, tags: Slice<L>, size: USize)
         identity : L = .identity()
         tags.setitem(i, identity)
-        jump init_lazy(i.add(1), nodes, tags, size, height)
+        jump init_lazy(i.add(1), nodes, tags, size)
 
-    block finish(nodes: Slice<T>, tags: Slice<L>, size: USize, height: USize)
-        tree : Self = Self { nodes: nodes, tags: tags, count: count, size: size, height: height }
+    block finish(nodes: Slice<T>, tags: Slice<L>, size: USize)
+        tree : Self = Self { nodes: nodes, tags: tags, count: count, size: size,
+            height: height.load() }
         return(tree)
 
 routine LazySegmentTree<T, L>.count(self: @Self) -> USize
@@ -345,6 +349,8 @@ routine LazySegmentTree<T, L>.getitem(self: @Self, index: USize) -> T
         return(value)
 
 routine LazySegmentTree<T, L>.range_apply(self: @Self, left: USize, right: USize, tag: L) -> Void
+    shared width : @USize <- 1
+
     block entry()
         valid_left  : Bool  = left.ge(0)
         valid_order : Bool  = left.le(right)
@@ -364,40 +370,41 @@ routine LazySegmentTree<T, L>.range_apply(self: @Self, left: USize, right: USize
         rex0 : USize = r0.add(1)
         self.push_path(l0)
         self.push_path(r0)
-        jump loop(l0, rex0, 1, l0, rex0)
+        jump loop(l0, rex0, l0, rex0)
 
-    block loop(l: USize, r: USize, width: USize, l0: USize, rex0: USize)
+    block loop(l: USize, r: USize, l0: USize, rex0: USize)
         done : Bool = l.ge(r)
         branch done
             ? rebuild(l0, rex0)
-            : apply_left(l, r, width, l0, rex0)
+            : apply_left(l, r, l0, rex0)
 
-    block apply_left(l: USize, r: USize, width: USize, l0: USize, rex0: USize)
+    block apply_left(l: USize, r: USize, l0: USize, rex0: USize)
         take_left : Bool = self.is_right_child(l)
         branch take_left
-            ? take_left(l, r, width, l0, rex0)
-            : apply_right(l, r, width, l0, rex0)
+            ? take_left(l, r, l0, rex0)
+            : apply_right(l, r, l0, rex0)
 
-    block take_left(l: USize, r: USize, width: USize, l0: USize, rex0: USize)
-        self.apply_node(l, tag, width)
-        jump apply_right(l.add(1), r, width, l0, rex0)
+    block take_left(l: USize, r: USize, l0: USize, rex0: USize)
+        self.apply_node(l, tag, width.load())
+        jump apply_right(l.add(1), r, l0, rex0)
 
-    block apply_right(l: USize, r: USize, width: USize, l0: USize, rex0: USize)
+    block apply_right(l: USize, r: USize, l0: USize, rex0: USize)
         take_right : Bool = self.is_right_child(r)
         branch take_right
-            ? take_right(l, r, width, l0, rex0)
-            : climb(l, r, width, l0, rex0)
+            ? take_right(l, r, l0, rex0)
+            : climb(l, r, l0, rex0)
 
-    block take_right(l: USize, r: USize, width: USize, l0: USize, rex0: USize)
+    block take_right(l: USize, r: USize, l0: USize, rex0: USize)
         node : USize = r.sub(1)
-        self.apply_node(node, tag, width)
-        jump climb(l, node, width, l0, rex0)
+        self.apply_node(node, tag, width.load())
+        jump climb(l, node, l0, rex0)
 
-    block climb(l: USize, r: USize, width: USize, l0: USize, rex0: USize)
+    block climb(l: USize, r: USize, l0: USize, rex0: USize)
         next_l     : USize = self.parent(l)
         next_r     : USize = self.parent(r)
-        next_width : USize = width.shl(1)
-        jump loop(next_l, next_r, next_width, l0, rex0)
+        next_width : USize = width.load().shl(1)
+        next_width.store_into(width)
+        jump loop(next_l, next_r, l0, rex0)
 
     block rebuild(l0: USize, rex0: USize)
         self.rebuild_left_boundary(l0)

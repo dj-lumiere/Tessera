@@ -519,9 +519,12 @@ routine F64.gamma(self: Self) -> Self
 /// gamma(x) for the inputs the fast phase leaves out: NaN, infinities, |x| < 2^-112,
 /// overflow, integers, and x <= -184.
 private routine cm_f64_tgamma_special(x: F64) -> F64
-    shared t  : U64 = x.bits()
-    shared ax : U64 = t.shl(1)
-    shared fx : F64 = x.floor()
+    shared t  : U64  = x.bits()
+    shared ax : U64  = t.shl(1)
+    shared fx : F64  = x.floor()
+    shared th : @F64 <- uninit
+    shared tl : @F64 <- uninit
+    shared x0 : @F64 <- uninit
 
     block entry()
         when
@@ -564,17 +567,27 @@ private routine cm_f64_tgamma_special(x: F64) -> F64
         when
             zero     -> return(F64.div(1.0, x))
             negative -> return(F64.from_bits(0xFFF8000000000000))
-            else     -> factorial(fx.to<S64>(), 1, 1.0, 0.0, 1.0)
+            else     -> continue
+        1.0.store_into(th)
+        0.0.store_into(tl)
+        1.0.store_into(x0)
+        jump factorial(fx.to<S64>(), 1)
 
-    block factorial(k: S64, i: S64, th: F64, tl: F64, x0: F64)
+    block factorial(k: S64, i: S64)
         more : Bool = i.lt(k)
         branch more
-            ? factor(k, i, th, tl, x0)
-            : return(th.add(tl))
+            ? factor(k, i)
+            : return(th.load().add(tl.load()))
 
-    block factor(k: S64, i: S64, th: F64, tl: F64, x0: F64)
-        m : CmF64GammaDD = cm_f64_gamma_mulddd(x0, th, tl)
-        jump factorial(k, i.add(1), m.hi, m.lo, x0.add(1.0))
+    block factor(k: S64, i: S64)
+        m       : CmF64GammaDD = cm_f64_gamma_mulddd(x0.load(), th.load(), tl.load())
+        next_x0 : F64          = x0.load().add(1.0)
+        next_tl : F64          = m.lo
+        next_th : F64          = m.hi
+        next_th.store_into(th)
+        next_tl.store_into(tl)
+        next_x0.store_into(x0)
+        jump factorial(k, i.add(1))
 
     // x <= -184, not an integer: |gamma(x)| < 2^-1078 rounds to a zero with the sign of gamma
     block under()
@@ -670,6 +683,11 @@ private routine cm_f64_tgamma_stirling(x: F64) -> CmF64TgammaFast
 /// Fast phase for -3 <= x <= 4: a polynomial around 3.5 + i, shifted by the
 /// recurrence gamma(x + 1) = x gamma(x).
 private routine cm_f64_tgamma_mid(x: F64) -> CmF64TgammaFast
+    shared xph : @F64 <- x
+    shared xpl : @F64 <- 0.0
+    shared wh  : @F64 <- x
+    shared wl  : @F64 <- 0.0
+
     block entry()
         ri   : F64          = x.sub(3.5).round_ties_even()
         d    : F64          = x.sub(ri.add(3.5))
@@ -682,28 +700,38 @@ private routine cm_f64_tgamma_mid(x: F64) -> CmF64TgammaFast
         jm   : S64          = ri.abs().to<S64>()
         none : Bool         = jm.eq(0)
         branch none
-            ? finish(f, 1.0, 0.0)
-            : product(f, x, 0.0, x, 0.0, jm.sub(1))
+            ? continue
+            : product(f, jm.sub(1))
+        1.0.store_into(wh)
+        jump finish(f)
 
     // w = x (x + 1) ... (x + jm - 1) in double-double
-    block product(f: CmF64GammaDD, xph: F64, xpl: F64, wh: F64, wl: F64, j: S64)
+    block product(f: CmF64GammaDD, j: S64)
         done : Bool = j.eq(0)
         branch done
-            ? finish(f, wh, wl)
-            : factor(f, xph, xpl, wh, wl, j)
+            ? finish(f)
+            : factor(f, j)
 
-    block factor(f: CmF64GammaDD, xph: F64, xpl: F64, wh: F64, wl: F64, j: S64)
-        big : Bool         = xph.abs().gt(1.0)
+    block factor(f: CmF64GammaDD, j: S64)
+        big : Bool         = xph.load().abs().gt(1.0)
         s   : CmF64GammaDD = big
-            ? cm_f64_gamma_fasttwosum(xph, 1.0)
-            : cm_f64_gamma_fasttwosum(1.0, xph)
-        xpl1 : F64          = xpl.add(s.lo)
-        w    : CmF64GammaDD = cm_f64_gamma_muldd(s.hi, xpl1, wh, wl)
-        jump product(f, s.hi, xpl1, w.hi, w.lo, j.sub(1))
+            ? cm_f64_gamma_fasttwosum(xph.load(), 1.0)
+            : cm_f64_gamma_fasttwosum(1.0, xph.load())
+        xpl1     : F64          = xpl.load().add(s.lo)
+        w        : CmF64GammaDD = cm_f64_gamma_muldd(s.hi, xpl1, wh.load(), wl.load())
+        next_wl  : F64          = w.lo
+        next_wh  : F64          = w.hi
+        next_xpl : F64          = xpl1
+        next_xph : F64          = s.hi
+        next_xph.store_into(xph)
+        next_xpl.store_into(xpl)
+        next_wh.store_into(wh)
+        next_wl.store_into(wl)
+        jump product(f, j.sub(1))
 
-    block finish(f: CmF64GammaDD, wh: F64, wl: F64)
-        rh     : F64          = F64.div(1.0, wh)
-        rh_err : F64          = rh.mul_add(wh.neg(), 1.0).sub(wl.mul(rh))
+    block finish(f: CmF64GammaDD)
+        rh     : F64          = F64.div(1.0, wh.load())
+        rh_err : F64          = rh.mul_add(wh.load().neg(), 1.0).sub(wl.load().mul(rh))
         rl     : F64          = rh_err.mul(rh)
         g      : CmF64GammaDD = cm_f64_gamma_muldd(rh, rl, f.hi, f.lo)
         return(CmF64TgammaFast { status: 0, hi: g.hi, lo: g.lo,
@@ -909,61 +937,83 @@ private routine cm_f64_tgamma_accurate_small(x: F64) -> F64
 /// (high, low) pairs of CM_F64_TGAMMA_T from base, at a double-double x.
 private routine cm_f64_tgamma_polydd(xh: F64, xl: F64, n: USize, base: USize,
     l: F64) -> CmF64GammaDD
+    shared ch : @F64 <- uninit
+    shared cl : @F64 <- uninit
+
     block entry()
         i : USize        = n.sub(1)
         k : USize        = base.add(i.mul(2))
         s : CmF64GammaDD = cm_f64_gamma_fasttwosum(cm_f64_tgamma_t(k), l)
-        jump loop(i, s.hi, s.lo.add(cm_f64_tgamma_t(k.add(1))))
+        s.hi.store_into(ch)
+        s.lo.add(cm_f64_tgamma_t(k.add(1))).store_into(cl)
+        jump loop(i)
 
-    block loop(i: USize, ch: F64, cl: F64)
+    block loop(i: USize)
         done : Bool = i.eq(0)
         branch done
-            ? return(CmF64GammaDD { hi: ch, lo: cl })
-            : step(i.sub(1), ch, cl)
+            ? return(CmF64GammaDD { hi: ch.load(), lo: cl.load() })
+            : step(i.sub(1))
 
-    block step(i: USize, ch: F64, cl: F64)
-        k : USize        = base.add(i.mul(2))
-        m : CmF64GammaDD = cm_f64_gamma_muldd(xh, xl, ch, cl)
-        a : CmF64GammaDD = cm_f64_gamma_fastsum(cm_f64_tgamma_t(k), cm_f64_tgamma_t(k.add(1)), m.hi,
-            m.lo)
-        jump loop(i, a.hi, a.lo)
+    block step(i: USize)
+        k       : USize        = base.add(i.mul(2))
+        m       : CmF64GammaDD = cm_f64_gamma_muldd(xh, xl, ch.load(), cl.load())
+        a       : CmF64GammaDD = cm_f64_gamma_fastsum(cm_f64_tgamma_t(k), cm_f64_tgamma_t(k.add(1)),
+            m.hi, m.lo)
+        next_cl : F64          = a.lo
+        next_ch : F64          = a.hi
+        next_ch.store_into(ch)
+        next_cl.store_into(cl)
+        jump loop(i)
 
 /// The same polynomial at a double x, accumulated with sumdd.
 private routine cm_f64_tgamma_polyddd(x: F64, n: USize, base: USize, l: F64) -> CmF64GammaDD
+    shared ch : @F64 <- uninit
+    shared cl : @F64 <- uninit
+
     block entry()
         i : USize        = n.sub(1)
         k : USize        = base.add(i.mul(2))
         s : CmF64GammaDD = cm_f64_gamma_fasttwosum(cm_f64_tgamma_t(k), l)
-        jump loop(i, s.hi, s.lo.add(cm_f64_tgamma_t(k.add(1))))
+        s.hi.store_into(ch)
+        s.lo.add(cm_f64_tgamma_t(k.add(1))).store_into(cl)
+        jump loop(i)
 
-    block loop(i: USize, ch: F64, cl: F64)
+    block loop(i: USize)
         done : Bool = i.eq(0)
         branch done
-            ? return(CmF64GammaDD { hi: ch, lo: cl })
-            : step(i.sub(1), ch, cl)
+            ? return(CmF64GammaDD { hi: ch.load(), lo: cl.load() })
+            : step(i.sub(1))
 
-    block step(i: USize, ch: F64, cl: F64)
-        k : USize        = base.add(i.mul(2))
-        m : CmF64GammaDD = cm_f64_gamma_mulddd(x, ch, cl)
-        a : CmF64GammaDD = cm_f64_gamma_sumdd(cm_f64_tgamma_t(k), cm_f64_tgamma_t(k.add(1)), m.hi,
-            m.lo)
-        jump loop(i, a.hi, a.lo)
+    block step(i: USize)
+        k       : USize        = base.add(i.mul(2))
+        m       : CmF64GammaDD = cm_f64_gamma_mulddd(x, ch.load(), cl.load())
+        a       : CmF64GammaDD = cm_f64_gamma_sumdd(cm_f64_tgamma_t(k), cm_f64_tgamma_t(k.add(1)),
+            m.hi, m.lo)
+        next_cl : F64          = a.lo
+        next_ch : F64          = a.hi
+        next_ch.store_into(ch)
+        next_cl.store_into(cl)
+        jump loop(i)
 
 /// The double polynomial c[0] + c[1] x + ... + c[n-1] x^(n-1) of the high parts of the
 /// pairs of CM_F64_TGAMMA_T from base.
 private routine cm_f64_tgamma_polyd(x: F64, n: USize, base: USize) -> F64
+    shared ch : @F64 <- uninit
+
     block entry()
         i : USize = n.sub(1)
-        jump loop(i, cm_f64_tgamma_t(base.add(i.mul(2))))
+        cm_f64_tgamma_t(base.add(i.mul(2))).store_into(ch)
+        jump loop(i)
 
-    block loop(i: USize, ch: F64)
+    block loop(i: USize)
         done : Bool = i.eq(0)
         branch done
-            ? return(ch)
-            : step(i.sub(1), ch)
+            ? return(ch.load())
+            : step(i.sub(1))
 
-    block step(i: USize, ch: F64)
-        jump loop(i, cm_f64_tgamma_t(base.add(i.mul(2))).add(x.mul(ch)))
+    block step(i: USize)
+        cm_f64_tgamma_t(base.add(i.mul(2))).add(x.mul(ch.load())).store_into(ch)
+        jump loop(i)
 
 /// x times the triple-double x0 + x1 + x2, as a triple-double.
 private routine cm_f64_tgamma_sprod(x: F64, x0: F64, x1: F64, x2: F64) -> CmF64GammaTD
@@ -983,26 +1033,46 @@ private routine cm_f64_tgamma_sprod(x: F64, x0: F64, x1: F64, x2: F64) -> CmF64G
 /// triple-double powers of d, plus a double-double tail of jmax pairs at clbase.
 private routine cm_f64_tgamma_poly3(d: F64, imax: USize, chbase: USize, jmax: USize,
     clbase: USize) -> CmF64GammaDD
-    block entry()
-        jump loop(1, 1.0, 0.0, 0.0, cm_f64_tgamma_t(chbase), 0.0, 0.0)
+    shared t0 : @F64 <- 1.0
+    shared t1 : @F64 <- 0.0
+    shared t2 : @F64 <- 0.0
+    shared s0 : @F64 <- uninit
+    shared s1 : @F64 <- 0.0
+    shared s2 : @F64 <- 0.0
 
-    block loop(i: USize, t0: F64, t1: F64, t2: F64, s0: F64, s1: F64, s2: F64)
+    block entry()
+        cm_f64_tgamma_t(chbase).store_into(s0)
+        jump loop(1)
+
+    block loop(i: USize)
         done : Bool = i.ge(imax)
         branch done
-            ? tail(s0, s1, s2)
-            : term(i, t0, t1, t2, s0, s1, s2)
+            ? tail()
+            : term(i)
 
-    block term(i: USize, t0: F64, t1: F64, t2: F64, s0: F64, s1: F64, s2: F64)
-        t   : CmF64GammaTD = cm_f64_tgamma_sprod(d, t0, t1, t2)
-        chi : F64          = cm_f64_tgamma_t(chbase.add(i))
-        f   : CmF64GammaDD = cm_f64_gamma_mulddd(chi, t.mid, t.lo)
-        a   : CmF64GammaDD = cm_f64_gamma_sumdd(s1, s2, f.hi, f.lo)
-        jump loop(i.add(1), t.hi, t.mid, t.lo, s0.add(t.hi.mul(chi)), a.hi, a.lo)
+    block term(i: USize)
+        t       : CmF64GammaTD = cm_f64_tgamma_sprod(d, t0.load(), t1.load(), t2.load())
+        chi     : F64          = cm_f64_tgamma_t(chbase.add(i))
+        f       : CmF64GammaDD = cm_f64_gamma_mulddd(chi, t.mid, t.lo)
+        a       : CmF64GammaDD = cm_f64_gamma_sumdd(s1.load(), s2.load(), f.hi, f.lo)
+        next_s2 : F64          = a.lo
+        next_s1 : F64          = a.hi
+        next_s0 : F64          = s0.load().add(t.hi.mul(chi))
+        next_t2 : F64          = t.lo
+        next_t1 : F64          = t.mid
+        next_t0 : F64          = t.hi
+        next_t0.store_into(t0)
+        next_t1.store_into(t1)
+        next_t2.store_into(t2)
+        next_s0.store_into(s0)
+        next_s1.store_into(s1)
+        next_s2.store_into(s2)
+        jump loop(i.add(1))
 
-    block tail(s0: F64, s1: F64, s2: F64)
+    block tail()
         p : CmF64GammaDD = cm_f64_tgamma_polyddd(d, jmax, clbase, 0.0)
-        a : CmF64GammaDD = cm_f64_gamma_sumdd(s1, s2, p.hi, p.lo)
-        b : CmF64GammaDD = cm_f64_gamma_fasttwosum(s0, a.hi)
+        a : CmF64GammaDD = cm_f64_gamma_sumdd(s1.load(), s2.load(), p.hi, p.lo)
+        b : CmF64GammaDD = cm_f64_gamma_fasttwosum(s0.load(), a.hi)
         c : CmF64GammaDD = cm_f64_gamma_fasttwosum(b.lo, a.lo)
         return(CmF64GammaDD { hi: b.hi, lo: c.hi })
 

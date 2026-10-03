@@ -188,6 +188,7 @@ routine cm_wide_mulhi_7x2(a: @U64, b: U128, out: @U64) -> Void
     shared shifted     : @U64           = shifted_buf.to<@U64>()
     shared low_buf     : @Array<U64, 7> <- uninit
     shared low         : @U64           = low_buf.to<@U64>()
+    shared carry       : @U64           <- uninit
 
     block entry()
         cm_wide_mul7w(a, cm_wide_hi(b), out)
@@ -207,9 +208,10 @@ routine cm_wide_mulhi_7x2(a: @U64, b: U128, out: @U64) -> Void
 
     block low()
         cm_wide_mul7w(shifted, cm_wide_lo(b), low)
-        jump add(0, 0)
+        0.store_into(carry)
+        jump add(0)
 
-    block add(i: USize, carry: U64)
+    block add(i: USize)
         done : Bool = i.eq(7)
         branch done
             ? return()
@@ -217,9 +219,10 @@ routine cm_wide_mulhi_7x2(a: @U64, b: U128, out: @U64) -> Void
         o    : U64  = out.stride(i).load()
         t    : U64  = low.stride(i).load()
         pair : U128 = o.to<U128>().add(t.to<U128>())
-        s    : U128 = pair.add(carry.to<U128>())
+        s    : U128 = pair.add(carry.load().to<U128>())
         out.stride(i).store(cm_wide_lo(s))
-        jump add(i.add(1), cm_wide_hi(s))
+        cm_wide_hi(s).store_into(carry)
+        jump add(i.add(1))
 
 /// arsu7: arithmetic right shift of the 7-word x by n bits (n < 192), in place.
 routine cm_wide_ashr7(x: @U64, n: U64) -> Void
@@ -265,23 +268,25 @@ routine cm_wide_ashr7(x: @U64, n: U64) -> Void
 /// above word 6, summed exactly modulo 2^384. Word w of the result reads only words >= w of a and b, so out
 /// may be a or b.
 routine cm_wide_mulhi_6x6(b: @U64, a: @U64, out: @U64) -> Void
-    block entry()
-        jump word(0, 0)
+    shared sum : @U128 <- 0
 
-    block word(w: USize, carry: U128)
+    block entry()
+        jump word(0)
+
+    block word(w: USize)
         done : Bool = w.eq(6)
         branch done
             ? return()
-            : term(w, w, carry)
+            : term(w, w)
 
     // the high half of a_i * b_(w+5-i) lands in word w, and so does the low half of a_i * b_(w+6-i)
-    block term(w: USize, i: USize, sum: U128)
+    block term(w: USize, i: USize)
         done : Bool = i.eq(6)
         branch done
-            ? store(w, sum)
-            : add_term(w, i, sum)
+            ? store(w)
+            : add_term(w, i)
 
-    block add_term(w: USize, i: USize, sum: U128)
+    block add_term(w: USize, i: USize)
         ai      : U64   = a.stride(i).load()
         j       : USize = w.add(5).sub(i)
         bj      : U64   = b.stride(j).load()
@@ -292,15 +297,17 @@ routine cm_wide_mulhi_6x6(b: @U64, a: @U64, out: @U64) -> Void
             : j
         bk      : U64  = b.stride(k).load()
         low     : U128 = cm_wide_mul(ai, bk).bitand(0xFFFFFFFFFFFFFFFF)
-        with_hi : U128 = sum.add(high)
+        with_hi : U128 = sum.load().add(high)
         next    : U128 = has_low
             ? with_hi.add(low)
             : with_hi
-        jump term(w, i.add(1), next)
+        next.store_into(sum)
+        jump term(w, i.add(1))
 
-    block store(w: USize, sum: U128)
-        out.stride(w).store(cm_wide_lo(sum))
-        jump word(w.add(1), sum.shr(64))
+    block store(w: USize)
+        out.stride(w).store(cm_wide_lo(sum.load()))
+        sum.load().shr(64).store_into(sum)
+        jump word(w.add(1))
 
 /// mahu1u6u6: ((a * b) >> 64) + c over 6 words. out may be b or c.
 routine cm_wide_mulhi_add6(a: U64, b: @U64, c: @U64, out: @U64) -> Void
@@ -334,10 +341,12 @@ routine cm_wide_mulhi_add6(a: U64, b: @U64, c: @U64, out: @U64) -> Void
 
 /// addu6u6: a + b over 6 words. out may be a or b.
 routine cm_wide_add6(a: @U64, b: @U64, out: @U64) -> Void
-    block entry()
-        jump next(0, 0)
+    shared carry : @U64 <- 0
 
-    block next(i: USize, carry: U64)
+    block entry()
+        jump next(0)
+
+    block next(i: USize)
         done : Bool = i.eq(6)
         branch done
             ? return()
@@ -345,9 +354,10 @@ routine cm_wide_add6(a: @U64, b: @U64, out: @U64) -> Void
         ai   : U64  = a.stride(i).load()
         bi   : U64  = b.stride(i).load()
         pair : U128 = ai.to<U128>().add(bi.to<U128>())
-        s    : U128 = pair.add(carry.to<U128>())
+        s    : U128 = pair.add(carry.load().to<U128>())
         out.stride(i).store(cm_wide_lo(s))
-        jump next(i.add(1), cm_wide_hi(s))
+        cm_wide_hi(s).store_into(carry)
+        jump next(i.add(1))
 
 // -- 2^f to about 380 bits -----------------------------------------------------
 

@@ -146,9 +146,11 @@ routine soft_f32_mul(a: U32, b: U32) -> U32
 /// value over zero is a signed infinity.
 #no_builtins
 routine soft_f32_div(a: U32, b: U32) -> U32
-    shared sign   : U32 = a.bitxor(b).bitand(SIGN)
-    shared a_size : U32 = a.bitand(MAGNITUDE)
-    shared b_size : U32 = b.bitand(MAGNITUDE)
+    shared sign     : U32  = a.bitxor(b).bitand(SIGN)
+    shared a_size   : U32  = a.bitand(MAGNITUDE)
+    shared b_size   : U32  = b.bitand(MAGNITUDE)
+    shared rem      : @U32 <- uninit
+    shared quotient : @U32 <- uninit
 
     block entry()
         when
@@ -184,25 +186,31 @@ routine soft_f32_div(a: U32, b: U32) -> U32
         exponent : S32 = below
             ? apart.add(126)
             : apart.add(127)
-        jump divide(exponent, num, y.sig, 0, 0)
+        num.store_into(rem)
+        0.store_into(quotient)
+        jump divide(exponent, y.sig, 0)
 
     // 26 quotient bits, one a step: the 24 the result keeps and two below them, then the remainder's sticky bit
-    block divide(exponent: S32, rem: U32, den: U32, quotient: U32, step: U32)
+    block divide(exponent: S32, den: U32, step: U32)
         done : Bool = step.eq(26)
         branch done
-            ? finish(exponent, rem, quotient)
+            ? finish(exponent)
             : continue
-        fits : Bool = rem.ge(den)
+        fits : Bool = rem.load().ge(den)
         left : U32  = fits
-            ? rem.sub_wrap(den)
-            : rem
-        q_bit : U32 = fits.to<U32>()
-        next  : U32 = quotient.shl(1).bitor(q_bit)
-        jump divide(exponent, left.shl(1), den, next, step.add(1))
+            ? rem.load().sub_wrap(den)
+            : rem.load()
+        q_bit         : U32 = fits.to<U32>()
+        next          : U32 = quotient.load().shl(1).bitor(q_bit)
+        next_quotient : U32 = next
+        next_rem      : U32 = left.shl(1)
+        next_rem.store_into(rem)
+        next_quotient.store_into(quotient)
+        jump divide(exponent, den, step.add(1))
 
-    block finish(exponent: S32, rem: U32, quotient: U32)
-        sticky : U32 = rem.ne(0).to<U32>()
-        sig    : U32 = quotient.shl(1).bitor(sticky)
+    block finish(exponent: S32)
+        sticky : U32 = rem.load().ne(0).to<U32>()
+        sig    : U32 = quotient.load().shl(1).bitor(sticky)
         r      : U32 = soft_round_pack(sign, exponent, sig, 23, 255)
         return(r)
 
@@ -215,7 +223,9 @@ routine soft_f32_div(a: U32, b: U32) -> U32
 /// for any other negative value.
 #no_builtins
 routine soft_f32_sqrt(a: U32) -> U32
-    shared size : U32 = a.bitand(MAGNITUDE)
+    shared size : U32  = a.bitand(MAGNITUDE)
+    shared rem  : @U64 <- uninit
+    shared res  : @U64 <- uninit
 
     block entry()
         when
@@ -236,27 +246,33 @@ routine soft_f32_sqrt(a: U32) -> U32
             : parts.sig
         even     : S32 = unbiased.sub(odd.to<S32>())
         radicand : U64 = sig.to<U64>().shl(27)
-        jump root(even.shr(1), radicand, 0, 0x4000000000000)
+        radicand.store_into(rem)
+        0.store_into(res)
+        jump root(even.shr(1), 0x4000000000000)
 
-    block root(half: S32, rem: U64, res: U64, bit: U64)
+    block root(half: S32, bit: U64)
         done : Bool = bit.eq(0)
         branch done
-            ? finish(half, rem, res)
+            ? finish(half)
             : continue
-        trial : U64  = res.add(bit)
-        fits  : Bool = rem.ge(trial)
+        trial : U64  = res.load().add(bit)
+        fits  : Bool = rem.load().ge(trial)
         left  : U64  = fits
-            ? rem.sub_wrap(trial)
-            : rem
-        shifted : U64 = res.shr(1)
+            ? rem.load().sub_wrap(trial)
+            : rem.load()
+        shifted : U64 = res.load().shr(1)
         next    : U64 = fits
             ? shifted.add(bit)
             : shifted
-        jump root(half, left, next, bit.shr(2))
+        next_res : U64 = next
+        next_rem : U64 = left
+        next_rem.store_into(rem)
+        next_res.store_into(res)
+        jump root(half, bit.shr(2))
 
-    block finish(half: S32, rem: U64, res: U64)
-        sticky : U64 = rem.ne(0).to<U64>()
-        sig    : U64 = res.shl(1).bitor(sticky)
+    block finish(half: S32)
+        sticky : U64 = rem.load().ne(0).to<U64>()
+        sig    : U64 = res.load().shl(1).bitor(sticky)
         r      : U32 = soft_round_pack(0, half.add(127), sig.to_wrap<U32>(), 23, 255)
         return(r)
 
@@ -312,28 +328,35 @@ routine soft_f32_mod(a: U32, b: U32) -> U32
 /// :returns: The bits of the result.
 #no_builtins
 routine soft_f32_powi(a: U32, n: S32) -> U32
+    shared base   : @U32 <- a
+    shared result : @U32 <- ONE
+
     block entry()
         count : U32 = n.abs_diff(0)
-        jump step(a, count, ONE)
+        jump step(count)
 
-    block step(base: U32, left: U32, result: U32)
+    block step(left: U32)
         odd : Bool = left.bitand(1).eq(1)
         branch odd
-            ? advance(base, left, soft_f32_mul(result, base))
-            : advance(base, left, result)
+            ? continue
+            : advance(left)
+        soft_f32_mul(result.load(), base.load()).store_into(result)
+        jump advance(left)
 
-    block advance(base: U32, left: U32, result: U32)
+    block advance(left: U32)
         rest : U32  = left.shr(1)
         done : Bool = rest.eq(0)
         branch done
-            ? finish(result)
-            : step(soft_f32_mul(base, base), rest, result)
+            ? finish()
+            : continue
+        soft_f32_mul(base.load(), base.load()).store_into(base)
+        jump step(rest)
 
-    block finish(result: U32)
+    block finish()
         negative : Bool = n.lt(0)
         branch negative
-            ? return(soft_f32_div(ONE, result))
-            : return(result)
+            ? return(soft_f32_div(ONE, result.load()))
+            : return(result.load())
 
 // -- comparison ----------------------------------------------------------------
 

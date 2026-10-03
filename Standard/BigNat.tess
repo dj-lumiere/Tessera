@@ -244,21 +244,24 @@ require N: USize
 /// self = self / 2, rounding down
 routine BigNat<N>.shr1(self: @Self) -> Void
 require N: USize
+    shared carry : @U64 <- 0
+
     block entry()
         count : USize = self.count.load()
-        jump loop(count, 0)
+        jump loop(count)
 
     // left limbs are still to shift, top first
-    block loop(left: USize, carry: U64)
+    block loop(left: USize)
         done : Bool = left.eq(0)
         branch done
             ? finish()
-            : step(left.sub(1), carry)
+            : step(left.sub(1))
 
-    block step(i: USize, carry: U64)
+    block step(i: USize)
         limb : U64 = self.limbs.getitem(i)
-        self.limbs.setitem(i, limb.shr(1).bitor(carry.shl(63)))
-        jump loop(i, limb.bitand(1))
+        self.limbs.setitem(i, limb.shr(1).bitor(carry.load().shl(63)))
+        limb.bitand(1).store_into(carry)
+        jump loop(i)
 
     block finish()
         self.trim()
@@ -299,29 +302,31 @@ routine BigNat<N>.sub(self: @Self, other: @Self) -> Void
 require N: USize
     shared a_count : USize = self.count.load()
     shared b_count : USize = other.count.load()
+    shared borrow  : @U64  <- 0
 
     block entry()
-        jump loop(0, 0)
+        jump loop(0)
 
-    block loop(i: USize, borrow: U64)
+    block loop(i: USize)
         done : Bool = i.ge(a_count)
         branch done
             ? finish()
-            : step(i, borrow)
+            : step(i)
 
-    block step(i: USize, borrow: U64)
+    block step(i: USize)
         a      : U64  = self.limbs.getitem(i)
         b_limb : U64  = other.limbs.getitem(i)
         in_b   : Bool = i.lt(b_count)
         b      : U64  = in_b
             ? b_limb
             : 0
-        self.limbs.setitem(i, a.sub_wrap(b).sub_wrap(borrow))
+        self.limbs.setitem(i, a.sub_wrap(b).sub_wrap(borrow.load()))
         // a - b - borrow goes negative when a < b, or a == b with a borrow in
         under    : Bool = a.lt(b)
-        even_out : Bool = a.eq(b).bitand(borrow.eq(1))
+        even_out : Bool = a.eq(b).bitand(borrow.load().eq(1))
         next     : U64  = under.bitor(even_out).to<U64>()
-        jump loop(i.add(1), next)
+        next.store_into(borrow)
+        jump loop(i.add(1))
 
     block finish()
         self.trim()
@@ -331,31 +336,34 @@ require N: USize
 /// remainder in self. scratch holds the shifted divisor.
 routine BigNat<N>.div_small(self: @Self, divisor: @Self, scratch: @Self, bits: USize) -> U128
 require N: USize
+    shared q : @U128 <- 0
+
     block entry()
         scratch.copy_from(divisor)
         scratch.shl(bits.sub(1))
-        jump loop(bits, 0)
+        jump loop(bits)
 
     // left quotient bits are still to find, top first
-    block loop(left: USize, q: U128)
+    block loop(left: USize)
         done : Bool = left.eq(0)
         branch done
-            ? return(q)
-            : try_bit(left.sub(1), q)
+            ? return(q.load())
+            : try_bit(left.sub(1))
 
-    block try_bit(i: USize, q: U128)
+    block try_bit(i: USize)
         fits : Bool = self.compare(scratch).ge(0)
         branch fits
-            ? take(i, q)
-            : next(i, q)
+            ? take(i)
+            : next(i)
 
-    block take(i: USize, q: U128)
+    block take(i: USize)
         self.sub(scratch)
-        jump next(i, q.bitor(1.shl(i.to<U128>())))
+        q.load().bitor(1.shl(i.to<U128>())).store_into(q)
+        jump next(i)
 
-    block next(i: USize, q: U128)
+    block next(i: USize)
         scratch.shr1()
-        jump loop(i, q)
+        jump loop(i)
 
 /// self = self + other
 routine BigNat<N>.add(self: @Self, other: @Self) -> Void
@@ -401,28 +409,30 @@ require N: USize
 /// self = floor(self / d), with d > 0. Returns the remainder
 routine BigNat<N>.div_limb(self: @Self, d: U64) -> U64
 require N: USize
-    shared divisor : U128 = d.to<U128>()
+    shared divisor : U128  = d.to<U128>()
+    shared rem     : @U128 <- 0
 
     block entry()
         count : USize = self.count.load()
-        jump loop(count, 0)
+        jump loop(count)
 
     // left limbs are still to divide, top first
-    block loop(left: USize, rem: U128)
+    block loop(left: USize)
         done : Bool = left.eq(0)
         branch done
-            ? finish(rem)
-            : step(left.sub(1), rem)
+            ? finish()
+            : step(left.sub(1))
 
-    block step(i: USize, rem: U128)
+    block step(i: USize)
         limb : U64  = self.limbs.getitem(i)
-        cur  : U128 = rem.shl(64).bitor(limb.to<U128>())
+        cur  : U128 = rem.load().shl(64).bitor(limb.to<U128>())
         self.limbs.setitem(i, cur.div(divisor).to<U64>())
-        jump loop(i, cur.mod(divisor))
+        cur.mod(divisor).store_into(rem)
+        jump loop(i)
 
-    block finish(rem: U128)
+    block finish()
         self.trim()
-        return(rem.to<U64>())
+        return(rem.load().to<U64>())
 
 /// Bit i of self (0 is the lowest).
 routine BigNat<N>.bit(self: @Self, i: USize) -> Bool

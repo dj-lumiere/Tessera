@@ -246,35 +246,40 @@ routine U256Division.step(self: @Self, j: USize) -> U64
 
 /// u[j .. j+len-1] -= v[0 .. len-1] × m// returns the limb that borrows out of the top.
 routine U256Division.submul(self: @Self, j: USize, len: USize, m: U64) -> U64
-    block entry()
-        jump loop(0, 0)
+    shared borrow : @U64 <- 0
 
-    block loop(i: USize, borrow: U64)
+    block entry()
+        jump loop(0)
+
+    block loop(i: USize)
         done : Bool = i.eq(len)
         branch done
-            ? return(borrow)
-            : limb(i, borrow)
+            ? return(borrow.load())
+            : limb(i)
 
     // v × m + borrow < 2^128, and when its high limb is 2^64 - 1 its low limb is 0,
     // so the next borrow fits a limb.
-    block limb(i: USize, borrow: U64)
+    block limb(i: USize)
         at      : USize = j.add(i)
         v_limb  : U64   = self.v.getitem(i)
         u_limb  : U64   = self.u.getitem(at)
-        product : U128  = v_limb.mul_wide(m).add(borrow.to<U128>())
+        product : U128  = v_limb.mul_wide(m).add(borrow.load().to<U128>())
         low     : U64   = product.to_wrap<U64>()
         wrapped : Bool  = u_limb.lt(low)
         self.u.setitem(at, u_limb.sub_wrap(low))
         high : U64 = product.shr(64).to<U64>()
-        jump loop(i.add(1), high.add(wrapped.to<U64>()))
+        high.add(wrapped.to<U64>()).store_into(borrow)
+        jump loop(i.add(1))
 
 /// u[j .. j+n-1] += v, dropping the carry out of the top: it cancels the borrow
 /// that made the window negative.
 routine U256Division.add_back(self: @Self, j: USize, n: USize) -> Void
-    block entry()
-        jump loop(0, 0)
+    shared carry : @U64 <- 0
 
-    block loop(i: USize, carry: U64)
+    block entry()
+        jump loop(0)
+
+    block loop(i: USize)
         done : Bool = i.eq(n)
         branch done
             ? return()
@@ -283,9 +288,10 @@ routine U256Division.add_back(self: @Self, j: USize, n: USize) -> Void
         v_limb   : U64   = self.v.getitem(i)
         u_limb   : U64   = self.u.getitem(at)
         limb_sum : U128  = u_limb.to<U128>().add(v_limb.to<U128>())
-        sum      : U128  = limb_sum.add(carry.to<U128>())
+        sum      : U128  = limb_sum.add(carry.load().to<U128>())
         self.u.setitem(at, sum.to_wrap<U64>())
-        jump loop(i.add(1), sum.shr(64).to<U64>())
+        sum.shr(64).to<U64>().store_into(carry)
+        jump loop(i.add(1))
 
 // -- targets narrower than 64 bits -----------------------------------------------
 //
@@ -386,27 +392,33 @@ private routine u256_load_words(src: @U32) -> U256
 routine divrem_by_word32(u: U256, d: U32, words: USize) -> U256DivRem
     shared limb_slots : @Array<U32, 8> <- uninit
     shared limbs      : @U32           = limb_slots.to<@U32>()
+    shared q          : @U256          <- 0
+    shared rem        : @U64           <- 0
 
     block entry()
         u256_store_words(u, limbs)
-        jump word(words, 0, 0)
+        jump word(words)
 
-    block word(i: USize, q: U256, rem: U64)
+    block word(i: USize)
         done : Bool = i.eq(0)
         branch done
-            ? finish(q, rem)
-            : step(i.sub(1), q, rem)
+            ? finish()
+            : step(i.sub(1))
 
-    block step(at: USize, q: U256, rem: U64)
-        divisor : U64  = d.to<U64>()
-        limb    : U32  = limbs.stride(at).load()
-        window  : U64  = rem.shl(32).bitor(limb.to<U64>())
-        digit   : U64  = window.div(divisor)
-        q_next  : U256 = q.shl(32).bitor(digit.to<U256>())
-        jump word(at, q_next, window.sub(digit.mul(divisor)))
+    block step(at: USize)
+        divisor  : U64  = d.to<U64>()
+        limb     : U32  = limbs.stride(at).load()
+        window   : U64  = rem.load().shl(32).bitor(limb.to<U64>())
+        digit    : U64  = window.div(divisor)
+        q_next   : U256 = q.load().shl(32).bitor(digit.to<U256>())
+        next_rem : U64  = window.sub(digit.mul(divisor))
+        next_q   : U256 = q_next
+        next_q.store_into(q)
+        next_rem.store_into(rem)
+        jump word(at)
 
-    block finish(q: U256, rem: U64)
-        return(U256DivRem { quotient: q, remainder: rem.to<U256>() })
+    block finish()
+        return(U256DivRem { quotient: q.load(), remainder: rem.load().to<U256>() })
 
 /// u / d for a divisor of two or more 32-bit limbs.
 /// :param u: The dividend, below 2^(32 × `words`) and at least `d`.
@@ -509,33 +521,38 @@ routine U256Division32.step(self: @Self, j: USize) -> U32
 
 /// u[j .. j+len-1] -= v[0 .. len-1] × m. Returns the limb that borrows out of the top.
 routine U256Division32.submul(self: @Self, j: USize, len: USize, m: U32) -> U32
-    block entry()
-        jump loop(0, 0)
+    shared borrow : @U32 <- 0
 
-    block loop(i: USize, borrow: U32)
+    block entry()
+        jump loop(0)
+
+    block loop(i: USize)
         done : Bool = i.eq(len)
         branch done
-            ? return(borrow)
-            : limb(i, borrow)
+            ? return(borrow.load())
+            : limb(i)
 
     // v × m + borrow < 2^64, and when its high limb is 2^32 - 1 its low limb is 0, so the next borrow fits a limb.
-    block limb(i: USize, borrow: U32)
+    block limb(i: USize)
         at      : USize = j.add(i)
         v_limb  : U32   = self.v.getitem(i)
         u_limb  : U32   = self.u.getitem(at)
-        product : U64   = v_limb.mul_wide(m).add(borrow.to<U64>())
+        product : U64   = v_limb.mul_wide(m).add(borrow.load().to<U64>())
         low     : U32   = product.to_wrap<U32>()
         wrapped : Bool  = u_limb.lt(low)
         self.u.setitem(at, u_limb.sub_wrap(low))
         high : U32 = product.shr(32).to<U32>()
-        jump loop(i.add(1), high.add(wrapped.to<U32>()))
+        high.add(wrapped.to<U32>()).store_into(borrow)
+        jump loop(i.add(1))
 
 /// u[j .. j+n-1] += v, dropping the carry out of the top: it cancels the borrow that made the window negative.
 routine U256Division32.add_back(self: @Self, j: USize, n: USize) -> Void
-    block entry()
-        jump loop(0, 0)
+    shared carry : @U32 <- 0
 
-    block loop(i: USize, carry: U32)
+    block entry()
+        jump loop(0)
+
+    block loop(i: USize)
         done : Bool = i.eq(n)
         branch done
             ? return()
@@ -544,6 +561,7 @@ routine U256Division32.add_back(self: @Self, j: USize, n: USize) -> Void
         v_limb   : U32   = self.v.getitem(i)
         u_limb   : U32   = self.u.getitem(at)
         limb_sum : U64   = u_limb.to<U64>().add(v_limb.to<U64>())
-        sum      : U64   = limb_sum.add(carry.to<U64>())
+        sum      : U64   = limb_sum.add(carry.load().to<U64>())
         self.u.setitem(at, sum.to_wrap<U32>())
-        jump loop(i.add(1), sum.shr(32).to<U32>())
+        sum.shr(32).to<U32>().store_into(carry)
+        jump loop(i.add(1))

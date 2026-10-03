@@ -27,12 +27,14 @@ routine operand(state: @U64) -> U128
 
 /// Divisors at the limb boundary and of every normalization shift, and S128.MIN.
 routine edge_cases() -> U64
-    block entry()
-        jump shift(0, 0)
+    shared wrong : @U64 <- 0
 
-    block shift(k: U64, wrong: U64)
+    block entry()
+        jump shift(0)
+
+    block shift(k: U64)
         branch k.eq(128)
-            ? signed(wrong)
+            ? signed()
             : continue
         d      : U128 = U128.MIN.add(1).shl(k.to<U128>())
         a      : U128 = U128.MAX
@@ -40,10 +42,12 @@ routine edge_cases() -> U64
         div_ok : Bool = a.div(d).eq(udiv<U128>(a, d))
         ok     : Bool = div_ok.bitand(a.mod(d1).eq(urem<U128>(a, d1)))
         branch ok
-            ? shift(k.add(1), wrong)
-            : shift(k.add(1), wrong.add(1))
+            ? shift(k.add(1))
+            : continue
+        wrong.load().add(1).store_into(wrong)
+        jump shift(k.add(1))
 
-    block signed(wrong: U64)
+    block signed()
         m           : S128 = S128.MIN
         min_div_ok  : Bool = m.div(3).eq(sdiv<S128>(m, 3))
         low         : Bool = min_div_ok.bitand(m.mod(-7).eq(srem<S128>(m, -7)))
@@ -51,18 +55,19 @@ routine edge_cases() -> U64
         high        : Bool = self_div_ok.bitand(S128.MAX.mod(m).eq(S128.MAX))
         ok          : Bool = low.bitand(high)
         branch ok
-            ? return(wrong)
-            : return(wrong.add(1))
+            ? return(wrong.load())
+            : return(wrong.load().add(1))
 
 routine main() -> S32
     shared state : @U64 <- 0x9E3779B97F4A7C15
+    shared wrong : @U64 <- 0
 
     block entry()
-        jump step(0, 0)
+        jump step(0)
 
-    block step(i: U64, wrong: U64)
+    block step(i: U64)
         branch i.eq(20000)
-            ? done(wrong)
+            ? done()
             : continue
         a        : U128 = operand(state)
         b        : U128 = operand(state)
@@ -73,15 +78,17 @@ routine main() -> S32
         // MIN / -1 overflows and crashes in both, so skip it.
         min_neg_one : Bool = sa.eq(S128.MIN).bitand(sb.eq(-1))
         branch min_neg_one
-            ? step(i.add(1), wrong)
+            ? step(i.add(1))
             : continue
         s_div_ok : Bool = sa.div(sb).eq(sdiv<S128>(sa, sb))
         s_ok     : Bool = s_div_ok.bitand(sa.mod(sb).eq(srem<S128>(sa, sb)))
         branch u_ok.bitand(s_ok)
-            ? step(i.add(1), wrong)
-            : step(i.add(1), wrong.add(1))
+            ? step(i.add(1))
+            : continue
+        wrong.load().add(1).store_into(wrong)
+        jump step(i.add(1))
 
-    block done(wrong: U64)
+    block done()
         edges : U64 = edge_cases()
-        Out.write("U128 / S128: 20000 random cases, {wrong} wrong; edge cases {edges} wrong\n")
+        Out.write("U128 / S128: 20000 random cases, {wrong.load()} wrong; edge cases {edges} wrong\n")
         return(0)

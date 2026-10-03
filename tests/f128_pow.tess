@@ -3601,7 +3601,9 @@ routine show(out: @Out, label: Bytes, x: F128, y: F128) -> Void
         return()
 
 routine main() -> S32
-    shared out : @Out = Out.writer()
+    shared out   : @Out   = Out.writer()
+    shared count : @USize <- 0
+    shared bad   : @U64   <- 0
 
     block entry()
         show(out, "2.25^1.5", f128_of(0x40002000000000000000000000000000),
@@ -3640,30 +3642,32 @@ routine main() -> S32
             f128_of(0xC0008000000000000000000000000000))
         show(out, "(-1)^inf", f128_of(0xBFFF0000000000000000000000000000),
             f128_of(0x7FFF0000000000000000000000000000))
-        jump row(0, 0, 0, 0)
+        jump row(0, 0)
 
-    block row(i: USize, id: U64, count: USize, bad: U64)
+    block row(i: USize, id: U64)
         done : Bool = i.ge(2505)
         branch done
-            ? last(id, count, bad)
-            : load(i, id, count, bad)
+            ? last(id)
+            : load(i, id)
 
-    block last(id: U64, count: USize, bad: U64)
-        summary(out, id, count, bad)
+    block last(id: U64)
+        summary(out, id, count.load(), bad.load())
         return(0)
 
-    block load(i: USize, id: U64, count: USize, bad: U64)
+    block load(i: USize, id: U64)
         row_id   : U64  = POW_ID.getitem(i)
         new_func : Bool = row_id.ne(id)
         branch new_func
-            ? next_function(i, row_id, id, count, bad)
-            : check(i, id, count, bad)
+            ? next_function(i, row_id, id)
+            : check(i, id)
 
-    block next_function(i: USize, row_id: U64, id: U64, count: USize, bad: U64)
-        summary(out, id, count, bad)
-        jump check(i, row_id, 0, 0)
+    block next_function(i: USize, row_id: U64, id: U64)
+        summary(out, id, count.load(), bad.load())
+        0.store_into(count)
+        0.store_into(bad)
+        jump check(i, row_id)
 
-    block check(i: USize, id: U64, count: USize, bad: U64)
+    block check(i: USize, id: U64)
         x     : F128 = f128_of(POW_X.getitem(i))
         y     : F128 = f128_of(POW_Y.getitem(i))
         n     : S64  = POW_N.getitem(i)
@@ -3671,12 +3675,14 @@ routine main() -> S32
         got   : U128 = compute(id, x, y, n)
         right : Bool = got.eq(want)
         branch right
-            ? next_row(i, id, count, bad)
-            : report(i, id, count, bad, got, want)
+            ? next_row(i, id)
+            : report(i, id, got, want)
 
-    block report(i: USize, id: U64, count: USize, bad: U64, got: U128, want: U128)
+    block report(i: USize, id: U64, got: U128, want: U128)
         mismatch(out, i, got, want)
-        jump next_row(i, id, count, bad.add(1))
+        bad.load().add(1).store_into(bad)
+        jump next_row(i, id)
 
-    block next_row(i: USize, id: U64, count: USize, bad: U64)
-        jump row(i.add(1), id, count.add(1), bad)
+    block next_row(i: USize, id: U64)
+        count.load().add(1).store_into(count)
+        jump row(i.add(1), id)

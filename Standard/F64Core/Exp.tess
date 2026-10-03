@@ -263,21 +263,29 @@ private routine cm_f64_exp_accurate(x: F64) -> F64
 /// The degree-6 double-double polynomial of the accurate path at xh + xl, by
 /// Horner's rule with fused double-word multiply-adds.
 private routine cm_f64_exp_poly_acc(xh: F64, xl: F64) -> CmF64ExpDd
-    block entry()
-        jump loop(6, F64.from_bits(CM_F64_EXP_ACC_CH.getitem(12)),
-            F64.from_bits(CM_F64_EXP_ACC_CH.getitem(13)))
+    shared ch : @F64 <- uninit
+    shared cl : @F64 <- uninit
 
-    block loop(i: USize, ch: F64, cl: F64)
+    block entry()
+        F64.from_bits(CM_F64_EXP_ACC_CH.getitem(12)).store_into(ch)
+        F64.from_bits(CM_F64_EXP_ACC_CH.getitem(13)).store_into(cl)
+        jump loop(6)
+
+    block loop(i: USize)
         done : Bool = i.eq(0)
         branch done
-            ? return(CmF64ExpDd { hi: ch, lo: cl })
-            : step(i.sub(1), ch, cl)
+            ? return(CmF64ExpDd { hi: ch.load(), lo: cl.load() })
+            : step(i.sub(1))
 
-    block step(i: USize, ch: F64, cl: F64)
-        c0 : F64        = F64.from_bits(CM_F64_EXP_ACC_CH.getitem(i.mul(2)))
-        c1 : F64        = F64.from_bits(CM_F64_EXP_ACC_CH.getitem(i.mul(2).add(1)))
-        r  : CmF64ExpDd = cm_f64_exp_fastfma_dw(xh, xl, ch, cl, c0, c1)
-        jump loop(i, r.hi, r.lo)
+    block step(i: USize)
+        c0      : F64        = F64.from_bits(CM_F64_EXP_ACC_CH.getitem(i.mul(2)))
+        c1      : F64        = F64.from_bits(CM_F64_EXP_ACC_CH.getitem(i.mul(2).add(1)))
+        r       : CmF64ExpDd = cm_f64_exp_fastfma_dw(xh, xl, ch.load(), cl.load(), c0, c1)
+        next_cl : F64        = r.lo
+        next_ch : F64        = r.hi
+        next_ch.store_into(ch)
+        next_cl.store_into(cl)
+        jump loop(i)
 
 /// Looks x up among the arguments whose e^x lies too close to a rounding
 /// boundary for the accurate path, and returns the correctly rounded

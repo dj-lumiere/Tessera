@@ -462,50 +462,67 @@ routine U16.pow(self: Self, exponent: U32) -> Self
 
 /// Wrapping power by squaring.
 routine U16.pow_wrap(self: Self, exponent: U32) -> Self
-    block entry()
-        jump loop(self, exponent, 1)
+    shared base : @Self <- self
+    shared acc  : @Self <- 1
 
-    block loop(base: Self, exponent_left: U32, acc: Self)
+    block entry()
+        jump loop(exponent)
+
+    block loop(exponent_left: U32)
         done : Bool = exponent_left.eq(0)
         branch done
-            ? return(acc)
+            ? return(acc.load())
             : continue
         odd       : Bool = exponent_left.bitand(1).ne(0)
-        with_base : Self = mul<Self>(acc, base)
+        with_base : Self = mul<Self>(acc.load(), base.load())
         next_acc  : Self = odd
             ? with_base
-            : acc
-        jump loop(mul<Self>(base, base), exponent_left.shr(1), next_acc)
+            : acc.load()
+        next_acc2 : Self = next_acc
+        next_base : Self = mul<Self>(base.load(), base.load())
+        next_base.store_into(base)
+        next_acc2.store_into(acc)
+        jump loop(exponent_left.shr(1))
 
 /// None if any step overflows.
 routine U16.pow_checked(self: Self, exponent: U32) -> Option<Self>
-    block entry()
-        jump loop(self, exponent, 1, false)
+    shared base     : @Self <- self
+    shared acc      : @Self <- 1
+    shared overflow : @Bool <- false
 
-    block loop(base: Self, exponent_left: U32, acc: Self, overflow: Bool)
+    block entry()
+        jump loop(exponent)
+
+    block loop(exponent_left: U32)
         done : Bool = exponent_left.eq(0)
         branch done
-            ? finish(acc, overflow)
-            : step(base, exponent_left, acc, overflow)
+            ? finish()
+            : step(exponent_left)
 
     // The accumulator only multiplies on odd bits, and the base only needs
     // squaring while bits remain, so only those overflows count.
-    block step(base: Self, exponent_left: U32, acc: Self, overflow: Bool)
+    block step(exponent_left: U32)
         odd          : Bool = exponent_left.bitand(1).ne(0)
-        acc_overflow : Bool = umul_overflows<Self>(acc, base).bitand(odd)
-        with_base    : Self = mul<Self>(acc, base)
+        acc_overflow : Bool = umul_overflows<Self>(acc.load(), base.load()).bitand(odd)
+        with_base    : Self = mul<Self>(acc.load(), base.load())
         next_acc     : Self = odd
             ? with_base
-            : acc
+            : acc.load()
         rest          : U32  = exponent_left.shr(1)
         more          : Bool = rest.ne(0)
-        base_overflow : Bool = umul_overflows<Self>(base, base).bitand(more)
-        any           : Bool = overflow.bitor(acc_overflow).bitor(base_overflow)
-        jump loop(mul<Self>(base, base), rest, next_acc, any)
+        base_overflow : Bool = umul_overflows<Self>(base.load(), base.load()).bitand(more)
+        any           : Bool = overflow.load().bitor(acc_overflow).bitor(base_overflow)
+        next_overflow : Bool = any
+        next_acc2     : Self = next_acc
+        next_base     : Self = mul<Self>(base.load(), base.load())
+        next_base.store_into(base)
+        next_acc2.store_into(acc)
+        next_overflow.store_into(overflow)
+        jump loop(rest)
 
-    block finish(acc: Self, overflow: Bool)
-        fits : Bool         = overflow.bitnot()
-        r    : Option<Self> = fits.then_present(acc)
+    block finish()
+        fits : Bool         = overflow.load().bitnot()
+        r    : Option<Self> = fits.then_present(acc.load())
         return(r)
 
 /// MAX on overflow.
@@ -654,18 +671,21 @@ routine U16.ilog2(self: Self) -> Self
 /// floor(log10(self)). Crashes on 0.
 #track_caller
 routine U16.ilog10(self: Self) -> Self
+    shared digits : @Self <- 0
+
     block entry()
         zero : Bool = self.eq(0)
         branch zero
             ? crash_numeric_domain()
-            : loop(self, 0)
+            : loop(self)
 
-    block loop(rest: Self, digits: Self)
+    block loop(rest: Self)
         last : Bool = rest.lt(10)
         branch last
-            ? return(digits)
+            ? return(digits.load())
             : continue
-        jump loop(rest.div(10), digits.add(1))
+        digits.load().add(1).store_into(digits)
+        jump loop(rest.div(10))
 
 /// floor(sqrt(self)), computed one result bit at a time.
 routine U16.isqrt(self: Self) -> Self

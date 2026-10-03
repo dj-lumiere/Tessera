@@ -65,79 +65,100 @@ preset BIG_TWO_OVER_SQRT_PI: @Array<U64, 7> <- { 0xBD1F4EEE48E1CA78, 0x40C036096
 /// e^x for |x| < 2^14, finer than wide_exp (whose Taylor series stops at 2^-141): x = q ln 2 + d with |d| <= ln 2
 /// / 2, e^(d/16) by its Taylor series to degree 22 (the first dropped term is below 2^-200), then four squarings.
 routine wide_erf_exp(x: F128Extended) -> F128Extended
-    shared q : S64 = x.mul(wide_const(1)).to_nearest<S64>()
+    shared q : S64           = x.mul(wide_const(1)).to_nearest<S64>()
+    shared s : @F128Extended <- uninit
 
     block entry()
         d    : F128Extended = x.sub(q.to<F128Extended>().mul(wide_const(0)))
         last : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(), WIDE_EXP_COEF_LO.to<@U64>(),
             WIDE_EXP_COEF_EXP.to<@S64>(), 22)
-        jump horner(21, last, d.ldexp(-4))
+        last.store_into(s)
+        jump horner(21, d.ldexp(-4))
 
     // s ← s × t + 1/i!
-    block horner(i: S64, s: F128Extended, t: F128Extended)
+    block horner(i: S64, t: F128Extended)
         done : Bool = i.lt(0)
         branch done
-            ? square(0, s)
+            ? square(0)
             : continue
         c : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(), WIDE_EXP_COEF_LO.to<@U64>(),
             WIDE_EXP_COEF_EXP.to<@S64>(), i.to<USize>())
-        jump horner(i.sub(1), s.mul(t).add(c), t)
+        s.store(s.load().mul(t).add(c))
+        jump horner(i.sub(1), t)
 
-    block square(k: S64, e: F128Extended)
+    block square(k: S64)
         done : Bool = k.ge(4)
         branch done
-            ? return(e.ldexp(q))
-            : square(k.add(1), e.mul(e))
+            ? return(s.load().ldexp(q))
+            : continue
+        s.load().mul(s.load()).store_into(s)
+        jump square(k.add(1))
 
 /// erf z = 2/sqrt(pi) × z e^(-z²) × d/n, from the continued fraction evaluated
 /// backward over levels levels (even), two per step.
 routine wide_erf_cf(z: F128Extended, levels: S64) -> F128Extended
-    shared zz : F128Extended = z.mul(z)
+    shared zz : F128Extended  = z.mul(z)
+    shared n  : @F128Extended <- uninit
+    shared d  : @F128Extended <- uninit
 
     block entry()
         n0 : F128Extended = S64.to<F128Extended>(levels.mul(2).add(1))
-        jump level(levels, n0, wide_one())
+        n0.store_into(n)
+        wide_one().store_into(d)
+        jump level(levels)
 
-    block level(i: S64, n: F128Extended, d: F128Extended)
+    block level(i: S64)
         done : Bool = i.le(0)
         branch done
-            ? finish(n, d)
-            : step(i, n, d)
+            ? finish()
+            : step(i)
 
-    block step(i: S64, n: F128Extended, d: F128Extended)
-        i2 : S64          = i.mul(2)
-        n1 : F128Extended = n.mul(S64.to<F128Extended>(i2.sub(1))).add(zz.mul(i2.to<F128Extended>()).mul(d))
-        n2 : F128Extended = n1.mul(S64.to<F128Extended>(i2.sub(3))).sub(zz.mul(S64.to<F128Extended>(i2.sub(2))).mul(n))
-        jump level(i.sub(2), n2, n1)
+    block step(i: S64)
+        i2     : S64          = i.mul(2)
+        n1     : F128Extended = n.load().mul(S64.to<F128Extended>(i2.sub(1))).add(zz.mul(i2.to<F128Extended>()).mul(d.load()))
+        n2     : F128Extended = n1.mul(S64.to<F128Extended>(i2.sub(3))).sub(zz.mul(S64.to<F128Extended>(i2.sub(2))).mul(n.load()))
+        next_d : F128Extended = n1
+        next_n : F128Extended = n2
+        next_n.store_into(n)
+        next_d.store_into(d)
+        jump level(i.sub(2))
 
-    block finish(n: F128Extended, d: F128Extended)
+    block finish()
         scale : F128Extended = z.mul(wide_special(0)).mul(wide_erf_exp(zz.neg()))
-        r     : F128Extended = scale.mul(d.ldexp(1).div(n))
+        r     : F128Extended = scale.mul(d.load().ldexp(1).div(n.load()))
         return(r)
 
 /// erfc z = 1/sqrt(pi) × z e^(-z²) × d/n, for the tail z >= 3.
 routine wide_erfc_cf(z: F128Extended, levels: S64) -> F128Extended
-    shared zz : F128Extended = z.mul(z)
+    shared zz : F128Extended  = z.mul(z)
+    shared n  : @F128Extended <- uninit
+    shared d  : @F128Extended <- uninit
 
     block entry()
-        jump level(levels, wide_one(), wide_one())
+        wide_one().store_into(n)
+        wide_one().store_into(d)
+        jump level(levels)
 
-    block level(i: S64, n: F128Extended, d: F128Extended)
+    block level(i: S64)
         done : Bool = i.le(0)
         branch done
-            ? finish(n, d)
-            : step(i, n, d)
+            ? finish()
+            : step(i)
 
-    block step(i: S64, n: F128Extended, d: F128Extended)
+    block step(i: S64)
         half_i    : F128Extended = i.to<F128Extended>().ldexp(-1)
-        n1        : F128Extended = n.add(half_i.mul(d))
+        n1        : F128Extended = n.load().add(half_i.mul(d.load()))
         half_prev : F128Extended = S64.to<F128Extended>(i.sub(1)).ldexp(-1)
-        n2        : F128Extended = zz.mul(n1).add(half_prev.mul(n))
-        jump level(i.sub(2), n2, n1)
+        n2        : F128Extended = zz.mul(n1).add(half_prev.mul(n.load()))
+        next_d    : F128Extended = n1
+        next_n    : F128Extended = n2
+        next_n.store_into(n)
+        next_d.store_into(d)
+        jump level(i.sub(2))
 
-    block finish(n: F128Extended, d: F128Extended)
+    block finish()
         scale : F128Extended = z.mul(wide_special(0)).mul(wide_erf_exp(zz.neg()))
-        r     : F128Extended = scale.mul(d.div(n))
+        r     : F128Extended = scale.mul(d.load().div(n.load()))
         return(r)
 
 /// Levels of the erfc continued fraction for a in [3, 107): base + linear / k + square / k² (+ 2, rounded up to
@@ -217,26 +238,34 @@ routine big_erf(a: F128Big) -> F128Big
 /// erfc z for z >= 4: Laplace's continued fraction as wide_erfc_cf, over levels levels (even). Every quantity
 /// is positive, so the backward recurrence loses nothing to cancellation.
 routine big_erfc_cf(z: F128Big, levels: S64) -> F128Big
-    shared zz : F128Big = z.mul(z)  // exact: z has 113 bits
+    shared zz : F128Big  = z.mul(z)  // exact: z has 113 bits
+    shared n  : @F128Big <- uninit
+    shared d  : @F128Big <- uninit
 
     block entry()
         one : F128Big = big_one()
-        jump level(levels, one, one)
+        one.store_into(n)
+        one.store_into(d)
+        jump level(levels)
 
-    block level(i: S64, n: F128Big, d: F128Big)
+    block level(i: S64)
         done : Bool = i.le(0)
         branch done
-            ? finish(n, d)
-            : step(i, n, d)
+            ? finish()
+            : step(i)
 
-    block step(i: S64, n: F128Big, d: F128Big)
-        n1 : F128Big = n.add(d.mul(i).ldexp(-1))
-        n2 : F128Big = zz.mul(n1).add(n.mul(i.sub(1)).ldexp(-1))
-        jump level(i.sub(2), n2, n1)
+    block step(i: S64)
+        n1     : F128Big = n.load().add(d.load().mul(i).ldexp(-1))
+        n2     : F128Big = zz.mul(n1).add(n.load().mul(i.sub(1)).ldexp(-1))
+        next_d : F128Big = n1
+        next_n : F128Big = n2
+        next_n.store_into(n)
+        next_d.store_into(d)
+        jump level(i.sub(2))
 
-    block finish(n: F128Big, d: F128Big)
+    block finish()
         scale : F128Big = z.mul(big_two_over_sqrt_pi().ldexp(-1)).mul(big_exp(zz.neg()))
-        r     : F128Big = scale.mul(d.div(n))
+        r     : F128Big = scale.mul(d.load().div(n.load()))
         return(r)
 
 /// erfc x for a nonzero x in (-F128_ERFC_TWO, F128_ERFC_ZERO).

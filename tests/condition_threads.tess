@@ -94,32 +94,37 @@ routine produce(raw: Addr) -> Void
 /// The main thread's side: takes ROUNDS values.
 /// :returns: Their sum, and whether they came in order.
 routine consume(box: @Mailbox) -> (U64, Bool)
-    block entry()
-        jump next(1, 0, true)
+    shared sum      : @U64  <- 0
+    shared in_order : @Bool <- true
 
-    block next(expected: U64, sum: U64, in_order: Bool)
+    block entry()
+        jump next(1)
+
+    block next(expected: U64)
         branch expected.gt(ROUNDS)
-            ? return({ sum, in_order })
+            ? return({ sum.load(), in_order.load() })
             : continue
         box.lock.lock()
-        jump item(expected, sum, in_order)
+        jump item(expected)
 
-    block item(expected: U64, sum: U64, in_order: Bool)
+    block item(expected: U64)
         full : Bool = box.full.load()
         branch full
-            ? take(expected, sum, in_order)
-            : wait(expected, sum, in_order)
+            ? take(expected)
+            : wait(expected)
 
-    block wait(expected: U64, sum: U64, in_order: Bool)
+    block wait(expected: U64)
         box.not_empty.wait(box.lock)
-        jump item(expected, sum, in_order)
+        jump item(expected)
 
-    block take(expected: U64, sum: U64, in_order: Bool)
+    block take(expected: U64)
         value : U64 = box.value.load()
         box.full.store(false)
         box.not_full.wake_one()
         box.lock.unlock()
-        jump next(expected.add(1), sum.add(value), in_order.bitand(value.eq(expected)))
+        sum.load().add(value).store_into(sum)
+        in_order.load().bitand(value.eq(expected)).store_into(in_order)
+        jump next(expected.add(1))
 
 // -- the gate ------------------------------------------------------------------------
 
@@ -217,25 +222,28 @@ routine await_passed(gate: @Gate, count: USize) -> Void
 /// Gives the waiting gate threads one token at a time, each with one wake_one, and waits for one to go through.
 /// :returns: Whether each token let exactly one through.
 routine hand_tokens(gate: @Gate) -> Bool
+    shared exact : @Bool <- true
+
     block entry()
         gate.lock.lock()
         await_waiting(gate, GATE_THREADS)
-        jump give(1, true)
+        jump give(1)
 
-    block give(round: USize, exact: Bool)
+    block give(round: USize)
         branch round.gt(GATE_THREADS)
-            ? done(exact)
+            ? done()
             : continue
         gate.tokens.store(1)
         gate.cond.wake_one()
         await_passed(gate, round)
         through : USize = gate.passed.load()
         one     : Bool  = through.eq(round).bitand(gate.tokens.load().eq(0))
-        jump give(round.add(1), exact.bitand(one))
+        exact.load().bitand(one).store_into(exact)
+        jump give(round.add(1))
 
-    block done(exact: Bool)
+    block done()
         gate.lock.unlock()
-        return(exact)
+        return(exact.load())
 
 /// Opens the gate once every gate thread waits at it, with one wake_all.
 routine open_gate(gate: @Gate) -> Void
