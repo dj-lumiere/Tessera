@@ -396,12 +396,12 @@ private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Allo
         branch i.eq(options.env_count)
             ? return(true)
             : continue
-        v     : EnvVar          = options.env.stride(i).load()
-        named : OwnedSpan<Byte> = Bytes.concat(v.name, "=", alloc)
-        whole : OwnedSpan<Byte> = Bytes.concat(named.to<Bytes>(), v.value, alloc)
-        deallocate(alloc, named.data)
-        units, n = utf16(whole.to<Bytes>(), alloc)
-        deallocate(alloc, whole.data)
+        v : EnvVar = options.env.stride(i).load()
+        claim named : @Bytes <- Bytes.concat(v.name, "=", alloc)
+        claim whole : @Bytes <- Bytes.concat(named.load(), v.value, alloc)
+        named.destruct()
+        units, n = utf16(whole.load(), alloc)
+        whole.destruct()
         branch units.is_null()
             ? undo(i)
             : continue
@@ -721,7 +721,7 @@ private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which:
 /// :returns: The {ProcessOutput}, or Failure with a {ProcessError} (InvalidArgument for a NUL in the command, the
 /// directory, or a variable).
 #target(os: "windows")
-routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
+routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
     block entry()
         line : @U16 = command_line(program, args, arg_count, alloc)
@@ -797,7 +797,7 @@ routine run_process(program: Bytes, args: @Bytes, arg_count: USize, options: Pro
         c_get_exit_code_process(pi.process.load(), code)
         c_close_handle(pi.thread.load())
         c_close_handle(pi.process.load())
-        error_text : OwnedSpan<Byte> = moved(err.buffer.load(), alloc)
+        error_text : Bytes = moved(err.buffer.load(), alloc)
         return(.Success(ProcessOutput { status: ExitStatus.Exited(code.load().to_wrap<S32>()),
             stdout: out.load().owned(alloc), stderr: error_text }))
 
@@ -865,10 +865,10 @@ private routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @Allocator)
 
 /// What a helper thread captured on the malloc heap, copied into alloc (and the heap copy given back).
 #target(os: "windows")
-private routine moved(b: CaptureBuffer, alloc: @Allocator) -> OwnedSpan<Byte>
+private routine moved(b: CaptureBuffer, alloc: @Allocator) -> Bytes
     block entry()
         branch b.data.is_null()
-            ? return(OwnedSpan<Byte> { data: null, count: 0, alloc: alloc })
+            ? return(Bytes { data: null, count: 0, alloc: alloc })
             : continue
         claim heap   : @Allocator     <- make_heap_allocator()
         claim copied : @CaptureBuffer <- CaptureBuffer.empty()
@@ -881,7 +881,7 @@ private routine moved(b: CaptureBuffer, alloc: @Allocator) -> OwnedSpan<Byte>
 /// The value of the environment variable name, in memory from alloc, or Absent when it isn't set. Release it with
 /// destruct().
 #target(os: "windows")
-routine env_var(name: Bytes, alloc: @Allocator) -> Option<OwnedSpan<Byte>>
+routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
     block entry()
         claim key : @Array<U16, 256> <- uninit
         n : Option<USize> = encode_utf16(name, key.to<@U16>(), 256)
@@ -895,7 +895,7 @@ routine env_var(name: Bytes, alloc: @Allocator) -> Option<OwnedSpan<Byte>>
             ? return(.Absent)
             : continue
         branch need.eq(0)
-            ? return(.Present(OwnedSpan<Byte> { data: null, count: 0, alloc: alloc }))
+            ? return(.Present(Bytes { data: null, count: 0, alloc: alloc }))
             : continue
         units : @U16 = allocate<U16>(alloc, need.to<USize>())
         branch units.is_null()
@@ -912,8 +912,7 @@ routine env_var(name: Bytes, alloc: @Allocator) -> Option<OwnedSpan<Byte>>
             .Failure    -> return(.Absent)
 
     block found(t: Bytes)
-        value : OwnedSpan<Byte> = OwnedSpan<Byte> { data: t.data, count: t.count, alloc: alloc }
-        return(.Present(value))
+        return(.Present(t))
 
     block gone(units: @U16)
         deallocate(alloc, units)

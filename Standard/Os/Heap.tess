@@ -3,17 +3,29 @@
 // An Allocator backed by libc malloc / realloc / free. Collections take any
 // Allocator, so this is the hosted default, not a requirement. DEFAULT_HEAP is
 // one, ready before main runs: the construct overloads without an allocator
-// (Os/Defaults.tess) draw from it.
+// (Os/Defaults.tess) draw from it, and make_heap_allocator() gives the same
+// allocator. In a debug build it checks every free and crashes on a block freed
+// twice (the debug heap, below), so its blocks are not malloc's own there.
+// make_c_heap_allocator() is plain malloc / realloc / free in every build: for
+// memory that C code frees or reallocates, or that comes from C's malloc.
 
 module Standard::Os
 
 import Standard::Alloc
 
-/// The hosted default allocator, ready before `main` runs: the C library's malloc, realloc, and free, the same as
-/// {make_heap_allocator}. The collections' and {OwnedSpan<T>}'s `construct` without an allocator draw from it, and it
-/// can be passed wherever an `@Allocator` goes. It holds no state, so threads share it.
-global DEFAULT_HEAP: @Allocator <- { alloc_fn: heap_alloc_fn.to<Callable>(),
-    realloc_fn: heap_realloc_fn.to<Callable>(), free_fn: heap_free_fn.to<Callable>(), state: null }
+/// The hosted default allocator, ready before `main` runs: the C library's malloc, realloc, and free, with the debug
+/// heap's checks in a debug build. The collections' and {Slice<T>}'s `construct` without an allocator draw from it,
+/// and it can be passed wherever an `@Allocator` goes. It holds no state, so threads share it.
+#debug("off")
+global DEFAULT_HEAP: @Allocator <- { alloc_fn: c_heap_alloc_fn.to<Callable>(),
+    realloc_fn: c_heap_realloc_fn.to<Callable>(), free_fn: c_heap_free_fn.to<Callable>(),
+    state: null }
+/// The hosted default allocator in a debug build: malloc, realloc, and free behind the debug heap's checks, which
+/// crash on a block freed twice.
+#debug("on")
+global DEFAULT_HEAP: @Allocator <- { alloc_fn: debug_heap_alloc_fn.to<Callable>(),
+    realloc_fn: debug_heap_realloc_fn.to<Callable>(), free_fn: debug_heap_free_fn.to<Callable>(),
+    state: null }
 
 /// Binds the C `malloc` function.
 #[external("c"), symbol("malloc")]
@@ -27,39 +39,208 @@ private routine c_realloc(ptr: Addr, size: USize) -> Addr
 #[external("c"), symbol("free")]
 private routine c_free(ptr: Addr) -> Void
 
-/// The allocator's alloc function: malloc of `size` bytes.
+/// An {Allocator} that is {DEFAULT_HEAP}: the C library's malloc, realloc, and free, with the debug heap's checks in a
+/// debug build. Collections take any allocator, so this is the hosted default and not a requirement.
+/// :returns: The allocator, which holds no state and needs nothing to free.
+routine make_heap_allocator() -> Allocator
+    block entry()
+        alloc : Allocator = DEFAULT_HEAP.load()
+        return(alloc)
+
+/// An {Allocator} that is the C library's malloc, realloc, and free in every build, with nothing in front of the
+/// blocks: for memory that C code frees or reallocates, or that comes from C's malloc and is freed here.
+/// :returns: The allocator, which holds no state and needs nothing to free.
+routine make_c_heap_allocator() -> Allocator
+    block entry()
+        alloc : Allocator = Allocator { alloc_fn: c_heap_alloc_fn.to<Callable>(),
+            realloc_fn: c_heap_realloc_fn.to<Callable>(), free_fn: c_heap_free_fn.to<Callable>(),
+            state: null }
+        return(alloc)
+
+/// The C heap's alloc function: malloc of `size` bytes.
 /// :param state: Unused, the heap allocator has no state.
 /// :param size: The number of bytes.
 /// :returns: The new block, null when malloc fails.
-private routine heap_alloc_fn(state: Addr, size: USize) -> Addr
+private routine c_heap_alloc_fn(state: Addr, size: USize) -> Addr
     block entry()
         result : Addr = c_malloc(size)
         return(result)
 
-/// The allocator's realloc function: resizes a block with realloc, keeping its contents.
+/// The C heap's realloc function: resizes a block with realloc, keeping its contents.
 /// :param state: Unused, the heap allocator has no state.
 /// :param old_ptr: The block to resize.
 /// :param size: The new size in bytes.
 /// :returns: The resized block (possibly moved), null when realloc fails and the old block is untouched.
-private routine heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize) -> Addr
+private routine c_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize) -> Addr
     block entry()
         result : Addr = c_realloc(old_ptr, size)
         return(result)
 
-/// The allocator's free function: free of a block from this allocator.
+/// The C heap's free function: free of a block from this allocator.
 /// :param state: Unused, the heap allocator has no state.
 /// :param ptr: The block to free.
-private routine heap_free_fn(state: Addr, ptr: Addr) -> Void
+private routine c_heap_free_fn(state: Addr, ptr: Addr) -> Void
     block entry()
         c_free(ptr)
         return()
 
-/// An {Allocator} backed by the C library's malloc, realloc, and free. Collections take any allocator, so this is the
-/// hosted default and not a requirement.
-/// :returns: The allocator, which holds no state and needs nothing to free.
-routine make_heap_allocator() -> Allocator
+// -- the debug heap -----------------------------------------------------------------------------------------------
+//
+// In a debug build every block has a 16-byte header in front of it (16 keeps malloc's alignment for the block): a tag
+// that says whether the block is live or freed, and its size. Freeing swaps the tag to FREED atomically and looks at
+// what was there:
+//
+// - LIVE: the first free. The block goes into a quarantine of the last QUARANTINE_SIZE freed blocks instead of back to
+//   malloc, so its memory keeps saying FREED. The block it pushes out of the quarantine goes back to malloc.
+// - FREED: the block was freed before, and the program crashes with DoubleFreeError at the line that freed it again
+//   (allocator_call_place(), noted by deallocate).
+// - anything else: the pointer isn't a block from this heap (or the bytes in front of it were overwritten), and the
+//   program crashes with InvalidValueError.
+//
+// The swap is atomic, so two threads freeing one block at once are caught too: exactly one of them sees LIVE. A
+// second free is caught for sure while the block is in the quarantine. Once it has gone back to malloc, malloc may
+// have written over the header (the free reads as "not a block": still a crash) or handed the memory out again as
+// another live block (the second free then frees that one, unseen), so the quarantine keeps the window wide. A
+// reallocation copies into a new block and frees the old one the same way, so a stale pointer to the old block is
+// caught like any freed one. Optimized builds have none of this: DEFAULT_HEAP is the C heap above, plain malloc, realloc, free.
+
+/// The headers of the last QUARANTINE_SIZE freed blocks, held back from malloc.
+#debug("on")
+private global QUARANTINE: @Array<Addr, QUARANTINE_SIZE>
+/// The number of blocks that have gone into the quarantine, whose low bits pick the next slot.
+#debug("on")
+private global QUARANTINE_NEXT: @USize
+
+/// The header's size: the tag, the size, and padding up to 16 bytes, so the block after it keeps malloc's alignment.
+private preset HEADER_SIZE: USize = 16
+
+/// HEADER_SIZE as an offset from the header to the block.
+private preset HEADER_FORWARD: SSize = 16
+/// The offset from a block back to its header.
+private preset HEADER_BACK: SSize = -16
+/// The tag of a block that is in use.
+private preset LIVE: USize = 0x7E55A11E
+/// The tag of a block that has been freed.
+private preset FREED: USize = 0x7E55F4EE
+/// How many freed blocks the debug heap holds back from malloc.
+private preset QUARANTINE_SIZE: USize = 256
+/// The mask that turns the running count of frees into a quarantine slot.
+private preset QUARANTINE_MASK: USize = QUARANTINE_SIZE.sub(1)
+
+/// What the debug heap keeps in front of each block.
+private record BlockHeader
+    tag  : USize
+    size : USize
+
+/// The debug heap's alloc function: malloc of the header and `size` bytes, the header tagged LIVE.
+/// :param state: Unused, the heap allocator has no state.
+/// :param size: The number of bytes.
+/// :returns: The block after the header, null when malloc fails or the size can't hold a header too.
+#debug("on")
+private routine debug_heap_alloc_fn(state: Addr, size: USize) -> Addr
     block entry()
-        alloc : Allocator = Allocator { alloc_fn: heap_alloc_fn.to<Callable>(),
-            realloc_fn: heap_realloc_fn.to<Callable>(), free_fn: heap_free_fn.to<Callable>(),
-            state: null }
-        return(alloc)
+        total : Option<USize> = size.add_checked(HEADER_SIZE)
+        when total
+            .Present(bytes) -> allocate(bytes)
+            .Absent         -> return(null)
+
+    block allocate(bytes: USize)
+        raw  : Addr = c_malloc(bytes)
+        none : Bool = raw.is_null()
+        branch none
+            ? return(null)
+            : continue
+        header : @BlockHeader = raw.to<@BlockHeader>()
+        header.tag.store(LIVE)
+        header.size.store(size)
+        block_start : Addr = raw.offset(HEADER_FORWARD)
+        return(block_start)
+
+/// The debug heap's realloc function: a new block, the contents copied over (as many bytes as both sizes allow),
+/// and the old block freed through the same checks as `debug_heap_free_fn`.
+/// :param state: Unused, the heap allocator has no state.
+/// :param old_ptr: The block to resize, or null for a new one.
+/// :param size: The new size in bytes.
+/// :returns: The new block, null when malloc fails and the old block is untouched.
+#debug("on")
+private routine debug_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize) -> Addr
+    block entry()
+        fresh : Bool = old_ptr.is_null()
+        branch fresh
+            ? return(debug_heap_alloc_fn(state, size))
+            : continue
+        header : @BlockHeader = header_of(old_ptr)
+        tag    : USize        = header.tag.atomic_load()
+        when
+            tag.eq(LIVE)  -> resize(header)
+            tag.eq(FREED) -> heap_crash("InvalidValueError",
+                "The default heap was asked to resize a block that was already freed.")
+            else          -> heap_crash("InvalidValueError",
+                "The default heap was asked to resize memory that isn't a block it gave out.")
+
+    block resize(header: @BlockHeader)
+        new_ptr : Addr = debug_heap_alloc_fn(state, size)
+        failed  : Bool = new_ptr.is_null()
+        branch failed
+            ? return(null)
+            : continue
+        kept : USize = header.size.load().min(size)
+        copy<Byte>(new_ptr.to<@Byte>(), old_ptr.to<@Byte>(), kept)
+        release_block(old_ptr)
+        return(new_ptr)
+
+/// The debug heap's free function: checks the block's tag and puts the block in the quarantine.
+/// :param state: Unused, the heap allocator has no state.
+/// :param ptr: The block to free. Null does nothing.
+#debug("on")
+private routine debug_heap_free_fn(state: Addr, ptr: Addr) -> Void
+    block entry()
+        none : Bool = ptr.is_null()
+        branch none
+            ? return()
+            : continue
+        release_block(ptr)
+        return()
+
+/// The header in front of a block of the debug heap.
+#debug("on")
+private routine header_of(block_start: Addr) -> @BlockHeader
+    block entry()
+        raw    : Addr         = block_start.offset(HEADER_BACK)
+        header : @BlockHeader = raw.to<@BlockHeader>()
+        return(header)
+
+/// Tags the block FREED and puts it in the quarantine, crashing when it was freed already or isn't a block of this
+/// heap.
+#debug("on")
+private routine release_block(block_start: Addr) -> Void
+    block entry()
+        header : @BlockHeader = header_of(block_start)
+        was    : USize        = header.tag.atomic_swap(FREED)
+        when
+            was.eq(LIVE)  -> quarantine(header)
+            was.eq(FREED) -> heap_crash("DoubleFreeError",
+                "This block was already freed: it was freed twice.")
+            else          -> heap_crash("InvalidValueError",
+                "The default heap was asked to free memory that isn't a block it gave out.")
+
+    block quarantine(header: @BlockHeader)
+        turn    : USize = QUARANTINE_NEXT.atomic_fetch_add(1)
+        slot    : @Addr = QUARANTINE.at(turn.bitand(QUARANTINE_MASK))
+        evicted : Addr  = slot.atomic_swap(header)
+        empty   : Bool  = evicted.is_null()
+        branch empty
+            ? return()
+            : continue
+        c_free(evicted)
+        return()
+
+/// Crashes at the place of the deallocate or reallocate call that reached the heap, when one was noted.
+#[debug("on"), noreturn]
+private routine heap_crash(name: Bytes, message: Bytes) -> Void
+    block entry()
+        place : @SourceLocation = allocator_call_place()
+        known : Bool            = place.is_not_null()
+        branch known
+            ? crash_at(name, message, place)
+            : crash(name, message)

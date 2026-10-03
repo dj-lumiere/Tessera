@@ -11,7 +11,7 @@ Run one with `dotnet run -- run examples/<name>.tess`. Every program has a `<nam
 | [gcd](gcd.tess) | Helper routines, loop state in block parameters, dividing before multiplying to avoid overflow |
 | [fibonacci](fibonacci.tess) | Overflow: `add` crashes, `add_checked` returns an `Option` |
 | [collatz](collatz.tess) | A nested loop split into two routines, best-so-far carried in block parameters |
-| [sieve](sieve.tess) | A `claim`ed slot, heap memory owned by an `OwnedSpan<T>` and released with `destruct()`, a `Span<T>` lent to a routine, `getitem` / `setitem`, `zeroinit`, `stride` with `load` / `store` |
+| [sieve](sieve.tess) | A `claim`ed slot, heap memory in a `Slice<T>` released with `destruct()`, a borrowed view of it (`getview()`) lent to a routine, `getitem` / `setitem`, `zeroinit`, `stride` with `load` / `store` |
 | [binary_search](binary_search.tess) | A preset in memory (`preset SORTED: @Array<S64, 10> <- { ... }`), returning `Option<USize>`, a three-way `when` |
 | [caesar](caesar.tess) | `Byte` text, a stack buffer claimed `<- uninit`, `Bytes.from_ptr` |
 | [insertion_sort](insertion_sort.tess) | `Array<T, N>` copied from a preset into a slot, `getitem` / `setitem`, and `List<S64>.sort` from the stdlib |

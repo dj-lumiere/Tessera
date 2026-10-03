@@ -1,6 +1,6 @@
 // Tessera stdlib: construction and the hosted routines on the default heap
 //
-// The hosted layer gives the collections and OwnedSpan a construct without an
+// The hosted layer gives the collections and Slice a construct without an
 // allocator, drawing from DEFAULT_HEAP (Os/Heap.tess). Like Out and Err, they
 // exist only where Standard::Os is imported: a file that doesn't import it, and
 // every program for a target without an operating system, passes an allocator.
@@ -10,10 +10,11 @@ module Standard::Os
 import Standard::Alloc
 import Standard::Collections
 
-/// `count` uninitialized values of `T` on the default heap. A count of 0 allocates nothing.
+/// `count` uninitialized values of `T` on the default heap, given back with `destruct()`. A count of 0 allocates
+/// nothing.
 /// :throws: Crashes with `MemoryAllocationError` when the heap is exhausted.
 #track_caller
-routine OwnedSpan<T>.construct(count: USize) -> Self
+routine Slice<T>.construct(count: USize) -> Self
 require T: typename
     block entry()
         owned : Self = Self.construct(count, DEFAULT_HEAP)
@@ -81,59 +82,73 @@ require T: typename, Comparable<T>
 // draws from DEFAULT_HEAP. The allocator version stays for memory that should come from somewhere else (an arena,
 // a fixed buffer).
 
-/// The next word (spaces, tabs, and line ends separate words) on the default heap, or Absent at the end of the input.
-/// The space after the word stays in the input. Release it with destruct().
-routine In.read_word() -> Option<OwnedSpan<Byte>>
+/// The next word (spaces, tabs, and line ends separate words) on the default heap. The space after the word stays in
+/// the input. Release it with destruct().
+/// :throws: Crashes with `AbsentValueError` at the end of the input. See {In.read_word_checked}.
+#track_caller
+routine In.read_word() -> Bytes
     block entry()
         return(Self.read_word(DEFAULT_HEAP))
 
-/// The next line, without its "\n" (or "\r\n"), on the default heap, or Absent at the end of the input. A last line
-/// with no "\n" still counts. Release it with destruct().
-routine In.read_line() -> Option<OwnedSpan<Byte>>
+/// The next word on the default heap, or Absent at the end of the input. Release it with destruct().
+routine In.read_word_checked() -> Option<Bytes>
+    block entry()
+        return(Self.read_word_checked(DEFAULT_HEAP))
+
+/// The next line, without its "\n" (or "\r\n"), on the default heap. A last line with no "\n" still counts, and a
+/// blank line is "". Release it with destruct().
+/// :throws: Crashes with `AbsentValueError` at the end of the input. See {In.read_line_checked}.
+#track_caller
+routine In.read_line() -> Bytes
     block entry()
         return(Self.read_line(DEFAULT_HEAP))
 
+/// The next line on the default heap, or Absent at the end of the input. Release it with destruct().
+routine In.read_line_checked() -> Option<Bytes>
+    block entry()
+        return(Self.read_line_checked(DEFAULT_HEAP))
+
 /// The rest of the input on the default heap. Release it with destruct().
-routine In.read_all() -> OwnedSpan<Byte>
+routine In.read_all() -> Bytes
     block entry()
         return(Self.read_all(DEFAULT_HEAP))
 
 /// Up to count bytes on the default heap, fewer only at the end of the input. Release them with destruct().
-routine In.read_count(count: USize) -> OwnedSpan<Byte>
+routine In.read_count(count: USize) -> Bytes
     block entry()
         return(Self.read_count(count, DEFAULT_HEAP))
 
 /// The whole file on the default heap. Release it with destruct().
-routine File.read_all(self: Self) -> Result<OwnedSpan<Byte>, FsError>
+routine File.read_all_result(self: Self) -> Result<Bytes, FsError>
     block entry()
-        return(self.read_all(DEFAULT_HEAP))
+        return(self.read_all_result(DEFAULT_HEAP))
 
 /// The path made absolute by the text, nothing looked up, on the default heap. Give it back with
-/// `deallocate(DEFAULT_HEAP, file.path.data)`.
-routine File.absolute(self: Self) -> Result<Self, FsError>
+/// `file.destruct()`.
+routine File.absolute_result(self: Self) -> Result<Self, FsError>
     block entry()
-        return(self.absolute(DEFAULT_HEAP))
+        return(self.absolute_result(DEFAULT_HEAP))
 
 /// The absolute path with every link, ".", and ".." resolved, on the default heap. The file must exist. Give it back
-/// with `deallocate(DEFAULT_HEAP, file.path.data)`.
-routine File.canonical(self: Self) -> Result<Self, FsError>
+/// with `file.destruct()`.
+routine File.canonical_result(self: Self) -> Result<Self, FsError>
     block entry()
-        return(self.canonical(DEFAULT_HEAP))
+        return(self.canonical_result(DEFAULT_HEAP))
 
 /// Deletes the directory and everything in it, building child paths on the default heap. A link inside is deleted,
 /// not followed.
-routine Directory.delete_all(self: Self) -> Result<Unit, FsError>
+routine Directory.delete_all_result(self: Self) -> Result<Unit, FsError>
     block entry()
-        return(self.delete_all(DEFAULT_HEAP))
+        return(self.delete_all_result(DEFAULT_HEAP))
 
-/// The file name in this directory, its path on the default heap (`deallocate(DEFAULT_HEAP, file.path.data)` gives it
+/// The file name in this directory, its path on the default heap (`file.destruct()` gives it
 /// back).
 #track_caller
 routine Directory.file(self: Self, name: Bytes) -> File
     block entry()
         return(self.file(name, DEFAULT_HEAP))
 
-/// The directory name in this directory, its path on the default heap (`deallocate(DEFAULT_HEAP, dir.path.data)`
+/// The directory name in this directory, its path on the default heap (`dir.destruct()`
 /// gives it back).
 #track_caller
 routine Directory.subdir(self: Self, name: Bytes) -> Self
@@ -141,43 +156,43 @@ routine Directory.subdir(self: Self, name: Bytes) -> Self
         return(self.subdir(name, DEFAULT_HEAP))
 
 /// The path made absolute by its text, nothing else looked up, on the default heap. Give it back with
-/// `deallocate(DEFAULT_HEAP, dir.path.data)`.
-routine Directory.absolute(self: Self) -> Result<Self, FsError>
+/// `dir.destruct()`.
+routine Directory.absolute_result(self: Self) -> Result<Self, FsError>
     block entry()
-        return(self.absolute(DEFAULT_HEAP))
+        return(self.absolute_result(DEFAULT_HEAP))
 
 /// The absolute path with every link, `.`, and `..` resolved, on the default heap. The directory must exist. Give it
-/// back with `deallocate(DEFAULT_HEAP, dir.path.data)`.
-routine Directory.canonical(self: Self) -> Result<Self, FsError>
+/// back with `dir.destruct()`.
+routine Directory.canonical_result(self: Self) -> Result<Self, FsError>
     block entry()
-        return(self.canonical(DEFAULT_HEAP))
+        return(self.canonical_result(DEFAULT_HEAP))
 
-/// The working directory, its path on the default heap (`deallocate(DEFAULT_HEAP, dir.path.data)` gives it back).
-routine Directory.current() -> Result<Self, FsError>
+/// The working directory, its path on the default heap (`dir.destruct()` gives it back).
+routine Directory.current_result() -> Result<Self, FsError>
     block entry()
-        return(Self.current(DEFAULT_HEAP))
+        return(Self.current_result(DEFAULT_HEAP))
 
 /// The temporary directory (TMPDIR or /tmp, on Windows GetTempPathW's), its path on the default heap
-/// (`deallocate(DEFAULT_HEAP, dir.path.data)` gives it back).
-routine Directory.temp() -> Result<Self, FsError>
+/// (`dir.destruct()` gives it back).
+routine Directory.temp_result() -> Result<Self, FsError>
     block entry()
-        return(Self.temp(DEFAULT_HEAP))
+        return(Self.temp_result(DEFAULT_HEAP))
 
 /// The user's home directory (HOME, on Windows USERPROFILE), its path on the default heap. NotFound when it can't be
 /// told.
-routine Directory.home() -> Result<Self, FsError>
+routine Directory.home_result() -> Result<Self, FsError>
     block entry()
-        return(Self.home(DEFAULT_HEAP))
+        return(Self.home_result(DEFAULT_HEAP))
 
 /// a and b with a separator between them (none added after one a already ends with), on the default heap. Release it
 /// with destruct().
 #track_caller
-routine join_path(a: Bytes, b: Bytes) -> OwnedSpan<Byte>
+routine join_path(a: Bytes, b: Bytes) -> Bytes
     block entry()
         return(join_path(a, b, DEFAULT_HEAP))
 
 /// The value of the environment variable name on the default heap, or Absent when it isn't set. Release it with
 /// destruct().
-routine env_var(name: Bytes) -> Option<OwnedSpan<Byte>>
+routine env_var(name: Bytes) -> Option<Bytes>
     block entry()
         return(env_var(name, DEFAULT_HEAP))

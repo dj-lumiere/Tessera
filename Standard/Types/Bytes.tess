@@ -1,47 +1,89 @@
 // Tessera stdlib: Bytes
 //
-// Bytes is a non-owning immutable view over a byte sequence, UTF-8 by convention:
-//   data   — @Byte to the first byte (a literal's bytes are also NUL-terminated, but other views aren't)
-//   count — USize byte count (not including the null terminator)
+// Bytes is text: UTF-8 by convention, and the type of a string literal. It is three fields:
+//   data  — @Byte to the first byte (a literal's bytes are also NUL-terminated, but other text isn't)
+//   count — USize byte count (not including any terminator)
+//   alloc — @Allocator the bytes came from, or null when they're borrowed
 //
 // Nothing checks that the bytes are UTF-8, but is_utf8 does when it matters. The character operations read a malformed
-// sequence as U+FFFD and move on, so they are defined for any bytes. A string literal ("hello", "안녕") is a Bytes
-// constant holding its UTF-8 encoding: no heap allocation, no allocator needed.
+// sequence as U+FFFD and move on, so they are defined for any bytes.
 //
-// Bytes never owns its bytes.  The caller is responsible for ensuring the
-// pointed-to data outlives the Bytes.  To build text on the heap, write into
-// a List<Byte> (it's a Writer) and view it with buf.to<Bytes>().
+// destruct() gives the bytes back to alloc and leaves the value empty. A null alloc means the text is borrowed and
+// destruct() does nothing: a string literal (its bytes are in the program image), Bytes.from_ptr, and every text made
+// from other text (slice, getview, the iterators, to<Bytes>() of a List<Byte>) have a null alloc. Text a routine
+// allocates (concat, In.read_line, File.read_all, join_path) carries its allocator, and the caller destructs it.
+// Copying a Bytes copies the allocator with it, so either copy can give the bytes back: destruct exactly one. ==,
+// compare, and hash look at the bytes only, never at alloc.
 //
-// Factory routines (concat) take an explicit @Allocator and
-// return an OwnedSpan<Byte> the caller releases with destruct().
+// Slice<Byte> has the same layout and is plain bytes. to<Slice<Byte>>() and Slice<Byte>.to<Bytes>() convert between
+// them as borrowed views.
 
 module Standard::Core
 
 import Standard::Alloc
 
-/// A non-owning, immutable view over a byte sequence, UTF-8 by convention. `data` points at the first byte and `count` counts bytes without any terminator. The view never owns its bytes, so they must outlive it. A string literal is a `Bytes` constant.
+/// Text, UTF-8 by convention: `count` bytes at `data`, and `alloc`, the allocator they came from. A null `alloc` means
+/// the bytes are borrowed and `destruct()` does nothing. A string literal is a `Bytes` with a null `alloc`.
 record Bytes
-conform Equatable<Bytes>, Comparable<Bytes>, Hashable<Bytes>
+conform Equatable<Bytes>, Comparable<Bytes>, Hashable<Bytes>, Destructible<Bytes>
     data  : @Byte
     count : USize
+    alloc : @Allocator
 
 // -- construction --------------------------------------------------------------
 
-/// The empty view: a null `data` pointer and a count of 0.
+/// The empty text: a null `data` pointer, a count of 0, and a null allocator.
 /// :returns: An empty `Bytes`.
 routine Bytes.empty() -> Self
     block entry()
-        str : Self = Self { data: null, count: 0 }
+        str : Self = Self { data: null, count: 0, alloc: null }
         return(str)
 
-/// Views `count` bytes starting at `data`, without copying. Nothing checks that the memory is valid or UTF-8.
+/// The `count` bytes starting at `data`, borrowed (a null allocator), without copying. Nothing checks that the memory
+/// is valid or UTF-8.
 /// :param data: A pointer to the first byte.
-/// :param count: The number of bytes in the view.
-/// :returns: A view over those bytes.
+/// :param count: The number of bytes.
+/// :returns: The text, which `destruct()` leaves alone.
 routine Bytes.from_ptr(data: @Byte, count: USize) -> Self
     block entry()
-        str : Self = Self { data: data, count: count }
+        str : Self = Self { data: data, count: count, alloc: null }
         return(str)
+
+/// The same bytes, borrowed: the same data and count with a null allocator, so `destruct()` on it does nothing.
+routine Bytes.getview(self: Self) -> Self
+    block entry()
+        view : Self = Self { data: self.data, count: self.count, alloc: null }
+        return(view)
+
+/// The same bytes, borrowed: the same data and count with a null allocator, so `destruct()` on it does nothing.
+routine Bytes.getview(self: @Self) -> Self
+    block entry()
+        view : Self = self.load().getview()
+        return(view)
+
+/// Gives the bytes back to the allocator they came from and leaves the text empty: a null data, a count of 0, and a
+/// null allocator. Does nothing when the allocator is null (a literal, or text borrowed from somewhere else).
+#track_caller
+routine Bytes.destruct(self: @Self) -> Void
+    block entry()
+        alloc    : @Allocator = self.alloc.load()
+        borrowed : Bool       = alloc.is_null()
+        branch borrowed
+            ? return()
+            : continue
+        data  : @Byte = self.data.load()
+        empty : Bool  = data.is_null()
+        branch empty
+            ? reset()
+            : continue
+        deallocate<Byte>(alloc, data)
+        jump reset()
+
+    block reset()
+        self.data.store(null)
+        self.count.store(0)
+        self.alloc.store(null)
+        return()
 
 // -- predicates ----------------------------------------------------------------
 
@@ -51,7 +93,7 @@ routine Bytes.count(self: Self) -> USize
         count : USize = self.count
         return(count)
 
-/// Whether the view holds no bytes.
+/// Whether the text holds no bytes.
 /// :returns: `true` when the count is 0.
 routine Bytes.is_empty(self: Self) -> Bool
     block entry()
@@ -81,7 +123,8 @@ routine Bytes.byte_at(self: Self, index: USize) -> U8
 
 // -- slicing -------------------------------------------------------------------
 
-/// Returns a sub-view [start, end).  Crashes if range is out of bounds.
+/// The bytes in [start, end), borrowed (a null allocator).
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range is out of bounds.
 #track_caller
 routine Bytes.slice(self: Self, start: USize, end: USize) -> Self
     block entry()
@@ -98,15 +141,16 @@ routine Bytes.slice(self: Self, start: USize, end: USize) -> Self
         from      : @Byte = base.stride(start)
         count     : USize = self.count
         slice_len : USize = end.sub(start)
-        result    : Self  = Self { data: from, count: slice_len }
+        result    : Self  = Self { data: from, count: slice_len, alloc: null }
         return(result)
 
 // -- heap-allocating operations ------------------------------------------------
 
-/// Allocates a new buffer containing a followed by b, with a NUL after them that the count leaves out.
-/// The caller releases it with destruct().
+/// a followed by b in new memory from `alloc`, with a NUL after them that the count leaves out. The caller gives it
+/// back with destruct().
+/// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
-routine Bytes.concat(a: Self, b: Self, alloc: @Allocator) -> OwnedSpan<Byte>
+routine Bytes.concat(a: Self, b: Self, alloc: @Allocator) -> Self
     block entry()
         la     : USize = a.count
         lb     : USize = b.count
@@ -128,12 +172,12 @@ routine Bytes.concat(a: Self, b: Self, alloc: @Allocator) -> OwnedSpan<Byte>
         copy<Byte>(dst, src_b, len_b)
         count : USize = offset.add(len_b)
         data.stride(count).store(0x00)
-        result : OwnedSpan<Byte> = OwnedSpan<Byte> { data: data, count: count, alloc: alloc }
+        result : Self = Self { data: data, count: count, alloc: alloc }
         return(result)
 
 // -- equality, ordering, hashing -----------------------------------------------
 
-/// Whether both views hold the same bytes: equal counts and equal contents, not the same address.
+/// Whether both hold the same bytes: equal counts and equal contents, not the same address or allocator.
 /// :param other: The right-hand operand.
 /// :returns: `true` when the contents are identical.
 routine Bytes.eq(self: Self, other: Self) -> Bool
@@ -158,7 +202,7 @@ routine Bytes.eq(self: Self, other: Self) -> Bool
             : return(false)
 
 /// Lexicographic byte-wise compare. Returns -1, 0, 1.
-/// Bytes are compared as U8, so this matches `memcmp` ordering.
+/// Bytes are compared as U8, so this matches `memcmp` ordering. The allocator plays no part.
 routine Bytes.compare(self: Self, other: Self) -> S32
     block entry()
         la        : USize = self.count
@@ -201,7 +245,7 @@ routine Bytes.compare(self: Self, other: Self) -> S32
             ? return(1)
             : return(0)
 
-/// xxHash64 of the byte contents, seeded with 0.
+/// xxHash64 of the byte contents, seeded with 0. The allocator plays no part.
 routine Bytes.hash(self: Self) -> U64
     block entry()
         data : @Byte = self.data
@@ -211,7 +255,7 @@ routine Bytes.hash(self: Self) -> U64
 
 // -- search --------------------------------------------------------------------
 
-/// Whether the view begins with `prefix`.
+/// Whether the text begins with `prefix`.
 /// :param prefix: The bytes to look for at the start.
 /// :returns: `true` when `prefix` matches the first bytes. An empty `prefix` always matches.
 routine Bytes.starts_with(self: Self, prefix: Self) -> Bool
@@ -235,7 +279,7 @@ routine Bytes.starts_with(self: Self, prefix: Self) -> Bool
             ? loop(i.add(1), pl, sd, pd)
             : return(false)
 
-/// Whether the view ends with `suffix`.
+/// Whether the text ends with `suffix`.
 /// :param suffix: The bytes to look for at the end.
 /// :returns: `true` when `suffix` matches the last bytes. An empty `suffix` always matches.
 routine Bytes.ends_with(self: Self, suffix: Self) -> Bool
@@ -312,7 +356,7 @@ routine Bytes.find(self: Self, needle: Self) -> Option<USize>
             ? inner(i, j.add(1), last, nlen, sd, nd)
             : outer(i.add(1), last, nlen, sd, nd)
 
-/// Whether `needle` occurs anywhere in the view, using {Bytes.find}.
+/// Whether `needle` occurs anywhere in the text, using {Bytes.find}.
 /// :param needle: The bytes to look for.
 /// :returns: `true` when a match exists. An empty `needle` always matches.
 routine Bytes.contains(self: Self, needle: Self) -> Bool
@@ -363,12 +407,12 @@ routine Bytes.is_char_boundary(self: Self, index: USize) -> Bool
 /// :returns: A {BytesIter} positioned at the first byte.
 routine Bytes.bytes(self: Self) -> BytesIter
     block entry()
-        iter : BytesIter = BytesIter { str: self, index: 0 }
+        iter : BytesIter = BytesIter { str: self.getview(), index: 0 }
         return(iter)
 
 /// Iterates over the characters, decoding UTF-8. A malformed sequence yields U+FFFD.
 /// :returns: A {BytesCharsIter} positioned at the first character.
 routine Bytes.chars(self: Self) -> BytesCharsIter
     block entry()
-        iter : BytesCharsIter = BytesCharsIter { str: self, index: 0 }
+        iter : BytesCharsIter = BytesCharsIter { str: self.getview(), index: 0 }
         return(iter)

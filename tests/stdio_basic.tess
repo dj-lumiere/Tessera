@@ -1,21 +1,30 @@
 // Standard::Os console streams. Out: bytes written as they are (here to a pipe, so no "\r\n" added and the UTF-8
 // unchanged), a character split across two writes too, and a pipe isn't a terminal. In, fed stdio_basic.input
 // through one shared buffer: lines (a "\r\n" one, and a last one with no "\n"), words, a count of bytes, the rest.
+// Each comes back as Bytes that carry their allocator, and destruct() gives them back. At the end of the input the
+// _checked forms return Absent.
 
 import Standard::Alloc
 import Standard::Format
 import Standard::Os
 
-routine show(what: Bytes, line: Option<OwnedSpan<Byte>>) -> Void
+/// Writes the text and gives it back.
+routine show(what: Bytes, text: Bytes) -> Void
     block entry()
-        when line
-            .Present(text) -> present(text)
-            .Absent        -> absent()
-
-    block present(text: OwnedSpan<Byte>)
-        claim owned : @OwnedSpan<Byte> <- text
-        Out.write("{what}: [{owned.to<Bytes>()}]\n")
+        claim owned : @Bytes <- text
+        Out.write("{what}: [{owned.load()}]\n")
         owned.destruct()
+        return()
+
+/// Writes the text if there is some, else says there's none.
+routine show_checked(what: Bytes, text: Option<Bytes>) -> Void
+    block entry()
+        when text
+            .Present(t) -> present(t)
+            .Absent     -> absent()
+
+    block present(t: Bytes)
+        show(what, t)
         return()
 
     block absent()
@@ -25,10 +34,10 @@ routine show(what: Bytes, line: Option<OwnedSpan<Byte>>) -> Void
 routine main() -> S32
     block entry()
         text : Bytes = "standard output: 한글\n"
-        Out.write_all(text.data, text.count())
+        Out.write_all_result(text.data, text.count())
         han : Bytes = "한"
-        Out.write_all(han.data, 1)
-        Out.write_all(han.data.stride(1), 2)
+        Out.write_all_result(han.data, 1)
+        Out.write_all_result(han.data.stride(1), 2)
         Out.write("\n")
         Out.write("output is a terminal: {Out.is_terminal()}, input: {In.is_terminal()}\n")
         claim alloc : @Allocator <- make_heap_allocator()
@@ -36,13 +45,11 @@ routine main() -> S32
         show("line", In.read_line())
         show("word", In.read_word(alloc))
         show("word", In.read_word())
-        claim three : @OwnedSpan<Byte> <- In.read_count(3)
-        Out.write("count 3: [{three.to<Bytes>()}]\n")
-        three.destruct()
+        show("count 3", In.read_count(3))
         show("line", In.read_line(alloc))
-        claim rest : @OwnedSpan<Byte> <- In.read_all()
-        Out.write("all: [{rest.to<Bytes>()}]\n")
-        rest.destruct()
-        show("line at the end", In.read_line(alloc))
-        show("word at the end", In.read_word(alloc))
+        show("all", In.read_all())
+        show_checked("line at the end", In.read_line_checked(alloc))
+        show_checked("word at the end", In.read_word_checked(alloc))
+        show_checked("line at the end, default heap", In.read_line_checked())
+        show_checked("word at the end, default heap", In.read_word_checked())
         return(0)

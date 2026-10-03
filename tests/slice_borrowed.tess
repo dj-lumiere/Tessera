@@ -1,0 +1,90 @@
+// The allocator a Slice<T> or a Bytes carries says whether destruct() gives memory back. A null allocator means
+// borrowed, and destruct() does nothing: a string literal, getview(), getslice, a sub-text, to<Slice<Byte>>() of a text.
+// Memory from an allocator goes back on the first destruct(), which leaves the value empty (null data, count 0, null
+// allocator), so a second destruct() does nothing. A counting allocator shows every block.
+
+import Standard::Alloc
+import Standard::Format
+import Standard::Os
+
+record Counts
+    live : S64
+
+routine counting_alloc(state: Addr, size: USize) -> Addr
+    block entry()
+        counts : @Counts = state.to<@Counts>()
+        more   : S64     = counts.live.load().add(1)
+        more.store_into(counts.live)
+        malloc : Callable<(Addr, USize), Addr> = DEFAULT_HEAP.alloc_fn.load()
+        return(malloc.call(null, size))
+
+routine counting_realloc(state: Addr, old: Addr, size: USize) -> Addr
+    block entry()
+        realloc : Callable<(Addr, Addr, USize), Addr> = DEFAULT_HEAP.realloc_fn.load()
+        return(realloc.call(null, old, size))
+
+routine counting_free(state: Addr, memory: Addr) -> Void
+    block entry()
+        counts : @Counts = state.to<@Counts>()
+        fewer  : S64     = counts.live.load().sub(1)
+        fewer.store_into(counts.live)
+        free : Callable<(Addr, Addr), Void> = DEFAULT_HEAP.free_fn.load()
+        free.call(null, memory)
+        return()
+
+routine literal() -> Void
+    block entry()
+        claim text : @Bytes <- "a literal"
+        text.destruct()
+        Out.write("literal after destruct: [{text.load()}], borrowed {text.alloc.load().is_null()}\n")
+        return()
+
+routine text(alloc: @Allocator, counts: @Counts) -> Void
+    block entry()
+        claim joined : @Bytes <- Bytes.concat("Tes", "sera", alloc)
+        Out.write("concat: [{joined.load()}], live {counts.live.load()}\n")
+        claim view : @Bytes <- joined.getview()
+        view.destruct()
+        claim part : @Bytes <- joined.load().slice(1, 4)
+        part.destruct()
+        claim bytes : @Slice<Byte> <- joined.load().to<Slice<Byte>>()
+        bytes.destruct()
+        Out.write("views destructed: [{view.load()}] [{part.load()}] {bytes.count()}, live {counts.live.load()}\n")
+        copy : Bytes = joined.load()
+        joined.destruct()
+        empty : Bool = joined.data.load().is_null()
+        Out.write("concat destructed: live {counts.live.load()}, empty {empty}, count {joined.load().count()}")
+        Out.write(", borrowed {joined.alloc.load().is_null()}, the copy kept its allocator {copy.alloc.is_not_null()}\n")
+        joined.destruct()
+        Out.write("second destruct: live {counts.live.load()}\n")
+        return()
+
+routine values(alloc: @Allocator, counts: @Counts) -> Void
+    block entry()
+        claim squares : @Slice<U32> <- .construct(4, alloc)
+        squares.setitem(3, 9)
+        claim view : @Slice<U32> <- squares.getview()
+        view.destruct()
+        claim part : @Slice<U32> <- squares.getslice(2, 2)
+        part.destruct()
+        Out.write("slice views destructed: {view.getitem(3)} {part.getitem(1)}, live {counts.live.load()}\n")
+        squares.resize(8)
+        Out.write("resized: count {squares.count()}, kept {squares.getitem(3)}, live {counts.live.load()}\n")
+        squares.destruct()
+        Out.write("slice destructed: live {counts.live.load()}, count {squares.count()}")
+        Out.write(", borrowed {squares.alloc.load().is_null()}\n")
+        squares.destruct()
+        return()
+
+routine main() -> S32
+    block entry()
+        claim counts : @Counts <- { live: 0 }
+        counting : Allocator = Allocator { alloc_fn: counting_alloc.to<Callable>(),
+            realloc_fn: counting_realloc.to<Callable>(), free_fn: counting_free.to<Callable>(),
+            state: counts }
+        claim alloc : @Allocator <- counting
+        literal()
+        text(alloc, counts)
+        values(alloc, counts)
+        Out.write("in the end: live {counts.live.load()}\n")
+        return(0)

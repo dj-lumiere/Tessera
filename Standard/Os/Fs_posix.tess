@@ -553,11 +553,11 @@ internal routine symlink_metadata(path: Bytes) -> Result<Metadata, FsError>
 
 // -- file handles ------------------------------------------------------------------------
 
-/// An open file, from a File's open_read and the like: a Reader and a Writer. claim it, and close it when done.
+/// An open file, from a File's open_read_result and the like: a Reader and a Writer. claim it, and close it when done.
 #target(os: ("linux", "macos"))
 record FileHandle
     fd     : CInt
-    failed : Bool  // a write_bytes failed (write_all reports each failure itself)
+    failed : Bool  // a write_bytes failed (write_all_result reports each failure itself)
 
 #target(os: ("linux", "macos"))
 internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, FsError>
@@ -587,7 +587,8 @@ internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, Fs
 
 /// Reads up to count bytes into buffer: how many, 0 at the end of the file.
 #target(os: ("linux", "macos"))
-routine FileHandle.read_bytes(self: @Self, buffer: @Byte, count: USize) -> Result<USize, FsError>
+routine FileHandle.read_bytes_result(self: @Self, buffer: @Byte,
+    count: USize) -> Result<USize, FsError>
     block entry()
         got : SSize = c_read(self.fd.load(), buffer, count.min(1073741824))
         branch got.ge(0)
@@ -595,7 +596,7 @@ routine FileHandle.read_bytes(self: @Self, buffer: @Byte, count: USize) -> Resul
             : continue
         // EINTR: a signal came first, so ask again
         branch errno().eq(4)
-            ? return(self.read_bytes(buffer, count))
+            ? return(self.read_bytes_result(buffer, count))
             : return(failed<USize>())
 
 /// Writes up to count bytes: how many it did.
@@ -613,7 +614,7 @@ internal routine FileHandle.write_some(self: @Self, data: @Byte,
 
 /// Moves the position: the new one, from the start.
 #target(os: ("linux", "macos"))
-routine FileHandle.seek(self: @Self, offset: S64, from: SeekFrom) -> Result<U64, FsError>
+routine FileHandle.seek_result(self: @Self, offset: S64, from: SeekFrom) -> Result<U64, FsError>
     block entry()
         fd : CInt = self.fd.load()
         // SEEK_SET, SEEK_CUR, SEEK_END
@@ -628,12 +629,12 @@ routine FileHandle.seek(self: @Self, offset: S64, from: SeekFrom) -> Result<U64,
             : return(failed<U64>())
 
 #target(os: ("linux", "macos"))
-routine FileHandle.metadata(self: @Self) -> Result<Metadata, FsError>
+routine FileHandle.metadata_result(self: @Self) -> Result<Metadata, FsError>
     block entry()
         return(fd_metadata(self.fd.load()))
 
 #target(os: ("linux", "macos"))
-routine FileHandle.size(self: @Self) -> Result<U64, FsError>
+routine FileHandle.size_result(self: @Self) -> Result<U64, FsError>
     block entry()
         m : Result<Metadata, FsError> = fd_metadata(self.fd.load())
         when m
@@ -642,13 +643,13 @@ routine FileHandle.size(self: @Self) -> Result<U64, FsError>
 
 /// Truncates or extends (with zeros) the file to size bytes. The position stays.
 #target(os: ("linux", "macos"))
-routine FileHandle.set_size(self: @Self, size: U64) -> Result<Unit, FsError>
+routine FileHandle.set_size_result(self: @Self, size: U64) -> Result<Unit, FsError>
     block entry()
         return(checked(c_ftruncate(self.fd.load(), size.to<S64>())))
 
 /// Waits until what was written is on the storage device.
 #target(os: ("linux", "macos"))
-routine FileHandle.sync(self: @Self) -> Result<Unit, FsError>
+routine FileHandle.sync_result(self: @Self) -> Result<Unit, FsError>
     block entry()
         return(checked(c_fsync(self.fd.load())))
 
@@ -776,7 +777,7 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
         jump chunk(src, dst, buffer.to<@Byte>(), 0)
 
     block chunk(src: @FileHandle, dst: @FileHandle, buffer: @Byte, total: U64)
-        got : Result<USize, FsError> = src.read_bytes(buffer, 16384)
+        got : Result<USize, FsError> = src.read_bytes_result(buffer, 16384)
         when got
             .Success(n)     -> put(src, dst, buffer, total, n)
             .Failure(error) -> stop(src, dst, error)
@@ -785,7 +786,7 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
         branch n.eq(0)
             ? done(src, dst, total)
             : continue
-        wrote : Result<Unit, FsError> = dst.write_all(buffer, n)
+        wrote : Result<Unit, FsError> = dst.write_all_result(buffer, n)
         when wrote
             .Success        -> chunk(src, dst, buffer, total.add(n.to<U64>()))
             .Failure(error) -> stop(src, dst, error)
@@ -950,7 +951,7 @@ routine DirIter.next(self: @Self) -> Option<DirEntry>
 
 /// The metadata of the entry next last returned, a link followed.
 #target(os: ("linux", "macos"))
-routine DirIter.entry_metadata(self: @Self) -> Result<Metadata, FsError>
+routine DirIter.entry_metadata_result(self: @Self) -> Result<Metadata, FsError>
     block entry()
         return(self.entry_metadata_of(true))
 
@@ -976,7 +977,7 @@ routine DirIter.close(self: @Self) -> Void
 
 // -- the working directory and well-known directories -------------------------------------
 
-/// A copy of the n bytes at p, in memory from alloc.
+/// A copy of the n bytes at p, in memory from alloc, carrying that allocator.
 #target(os: ("linux", "macos"))
 private routine owned(p: @Byte, n: USize, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry()
@@ -985,7 +986,7 @@ private routine owned(p: @Byte, n: USize, alloc: @Allocator) -> Result<Bytes, Fs
             ? return(.Failure(FsError.OutOfMemory))
             : continue
         copy<Byte>(buffer, p, n)
-        return(.Success(Bytes.from_ptr(buffer, n)))
+        return(.Success(Bytes { data: buffer, count: n, alloc: alloc }))
 
 /// The value of the environment variable name, when it is set and not empty.
 #target(os: ("linux", "macos"))
@@ -1011,7 +1012,7 @@ internal routine current_dir(alloc: @Allocator) -> Result<Bytes, FsError>
             ? return(.Failure(FsError.OutOfMemory))
             : continue
         branch c_getcwd(buffer, capacity).is_not_null()
-            ? return(.Success(Bytes.from_ptr(buffer, buffer.to<CStr>().count())))
+            ? found(buffer)
             : continue
         e : CInt = errno()
         deallocate(alloc, buffer)
@@ -1019,6 +1020,11 @@ internal routine current_dir(alloc: @Allocator) -> Result<Bytes, FsError>
         branch e.eq(34)
             ? attempt(capacity.mul(2))
             : return(.Failure(error_of(e)))
+
+    block found(buffer: @Byte)
+        count : USize = buffer.to<CStr>().count()
+        dir   : Bytes = Bytes { data: buffer, count: count, alloc: alloc }
+        return(.Success(dir))
 
 #target(os: ("linux", "macos"))
 internal routine set_current_dir(path: Bytes) -> Result<Unit, FsError>
@@ -1059,9 +1065,10 @@ internal routine absolute_path(path: Bytes, alloc: @Allocator) -> Result<Bytes, 
             .Failure(error) -> return(.Failure(error))
 
     block join(dir: Bytes)
-        full : OwnedSpan<Byte> = join_path(dir, path, alloc)
-        deallocate(alloc, dir.data)
-        return(.Success(full.to<Bytes>()))
+        full : Bytes = join_path(dir, path, alloc)
+        claim cwd : @Bytes <- dir
+        cwd.destruct()
+        return(.Success(full))
 
 /// The absolute path with every link, ".", and ".." resolved, and path must exist.
 #target(os: ("linux", "macos"))
@@ -1142,7 +1149,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
 
 /// Writes changed pages back to the file.
 #target(os: ("linux", "macos"))
-routine Mapping.flush(self: Self) -> Result<Unit, FsError>
+routine Mapping.flush_result(self: Self) -> Result<Unit, FsError>
     block entry()
         branch self.base.is_null()
             ? return(fs_done())

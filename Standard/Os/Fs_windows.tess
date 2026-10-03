@@ -376,14 +376,16 @@ internal routine wide_length(units: @U16) -> USize
             ? return(i)
             : scan(i.add(1))
 
-/// count UTF-16 units as UTF-8, in memory from alloc.
+/// count UTF-16 units as UTF-8, in memory from alloc, carrying that allocator.
 #target(os: "windows")
 internal routine owned_wide(units: @U16, count: USize, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry()
         buffer : @Byte = allocate<Byte>(alloc, count.mul(3).max(1))
         branch buffer.is_null()
             ? return(.Failure(FsError.OutOfMemory))
-            : return(.Success(Bytes.from_ptr(buffer, narrow(units, count, buffer))))
+            : continue
+        n : USize = narrow(units, count, buffer)
+        return(.Success(Bytes { data: buffer, count: n, alloc: alloc }))
 
 // -- metadata ------------------------------------------------------------------------
 
@@ -521,12 +523,12 @@ internal routine symlink_metadata(path: Bytes) -> Result<Metadata, FsError>
 
 // -- file handles --------------------------------------------------------------------------
 
-/// An open file, from a File's open_read and the like: a Reader and a Writer. claim it, and close it when
+/// An open file, from a File's open_read_result and the like: a Reader and a Writer. claim it, and close it when
 /// done.
 #target(os: "windows")
 record FileHandle
     handle : Addr
-    failed : Bool  // a write_bytes failed (write_all reports each failure itself)
+    failed : Bool  // a write_bytes failed (write_all_result reports each failure itself)
 
 #target(os: "windows")
 internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, FsError>
@@ -552,7 +554,8 @@ internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, Fs
 
 /// Reads up to count bytes into buffer: how many, 0 at the end of the file.
 #target(os: "windows")
-routine FileHandle.read_bytes(self: @Self, buffer: @Byte, count: USize) -> Result<USize, FsError>
+routine FileHandle.read_bytes_result(self: @Self, buffer: @Byte,
+    count: USize) -> Result<USize, FsError>
     block entry()
         claim got : @U32 <- 0
         ok : CInt = c_read_file(self.handle.load(), buffer, count.min(1073741824).to<U32>(), got,
@@ -580,7 +583,7 @@ internal routine FileHandle.write_some(self: @Self, data: @Byte,
 
 /// Moves the position: the new one, from the start.
 #target(os: "windows")
-routine FileHandle.seek(self: @Self, offset: S64, from: SeekFrom) -> Result<U64, FsError>
+routine FileHandle.seek_result(self: @Self, offset: S64, from: SeekFrom) -> Result<U64, FsError>
     block entry()
         claim at : @S64 <- 0
         // FILE_BEGIN, FILE_CURRENT, FILE_END
@@ -595,12 +598,12 @@ routine FileHandle.seek(self: @Self, offset: S64, from: SeekFrom) -> Result<U64,
             : return(failed<U64>())
 
 #target(os: "windows")
-routine FileHandle.metadata(self: @Self) -> Result<Metadata, FsError>
+routine FileHandle.metadata_result(self: @Self) -> Result<Metadata, FsError>
     block entry()
         return(handle_metadata(self.handle.load()))
 
 #target(os: "windows")
-routine FileHandle.size(self: @Self) -> Result<U64, FsError>
+routine FileHandle.size_result(self: @Self) -> Result<U64, FsError>
     block entry()
         claim size : @S64 <- 0
         branch c_get_file_size_ex(self.handle.load(), size).ne(0)
@@ -609,7 +612,7 @@ routine FileHandle.size(self: @Self) -> Result<U64, FsError>
 
 /// Truncates or extends (with zeros) the file to size bytes. The position stays.
 #target(os: "windows")
-routine FileHandle.set_size(self: @Self, size: U64) -> Result<Unit, FsError>
+routine FileHandle.set_size_result(self: @Self, size: U64) -> Result<Unit, FsError>
     block entry()
         claim end : @S64 <- size.to<S64>()
         // FileEndOfFileInfo
@@ -617,7 +620,7 @@ routine FileHandle.set_size(self: @Self, size: U64) -> Result<Unit, FsError>
 
 /// Waits until what was written is on the storage device.
 #target(os: "windows")
-routine FileHandle.sync(self: @Self) -> Result<Unit, FsError>
+routine FileHandle.sync_result(self: @Self) -> Result<Unit, FsError>
     block entry()
         return(checked(c_flush_file_buffers(self.handle.load())))
 
@@ -892,7 +895,7 @@ routine DirIter.next(self: @Self) -> Option<DirEntry>
 
 /// The metadata of the entry next last returned, from the listing itself (a link describes itself).
 #target(os: "windows")
-routine DirIter.entry_metadata(self: @Self) -> Result<Metadata, FsError>
+routine DirIter.entry_metadata_result(self: @Self) -> Result<Metadata, FsError>
     block entry()
         return(.Success(from_find_data(self.data.to<@Byte>())))
 
@@ -963,7 +966,7 @@ internal routine temp_dir(alloc: @Allocator) -> Result<Bytes, FsError>
             ? return(.Failure(FsError.OutOfMemory))
             : continue
         copy<Byte>(buffer, "C:\\Windows\\Temp", 15)
-        return(.Success(Bytes.from_ptr(buffer, 15)))
+        return(.Success(Bytes { data: buffer, count: 15, alloc: alloc }))
 
 /// The environment variable name, as UTF-8 in memory from alloc, when it is set and not empty.
 #target(os: "windows")
@@ -1001,14 +1004,17 @@ internal routine home_dir(alloc: @Allocator) -> Result<Bytes, FsError>
             .Absent        -> missing(drive)
 
     block missing(drive: Bytes)
-        deallocate(alloc, drive.data)
+        claim held : @Bytes <- drive
+        held.destruct()
         return(.Failure(FsError.NotFound))
 
     block join(drive: Bytes, path: Bytes)
-        both : OwnedSpan<Byte> = Bytes.concat(drive, path, alloc)
-        deallocate(alloc, drive.data)
-        deallocate(alloc, path.data)
-        return(.Success(both.to<Bytes>()))
+        both : Bytes = Bytes.concat(drive, path, alloc)
+        claim held_drive : @Bytes <- drive
+        claim held_path  : @Bytes <- path
+        held_drive.destruct()
+        held_path.destruct()
+        return(.Success(both))
 
 /// path made absolute by the text: the working directory in front of a relative path, and "." and ".." taken out
 /// (GetFullPathNameW), nothing looked up.
@@ -1077,7 +1083,7 @@ internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result<Bytes,
 
     block move(t: Bytes, from: USize, keep: USize, rest: USize, i: USize)
         branch i.eq(rest)
-            ? return(.Success(Bytes.from_ptr(t.data, keep.add(rest))))
+            ? return(.Success(Bytes { data: t.data, count: keep.add(rest), alloc: t.alloc }))
             : continue
         t.data.stride(keep.add(i)).store(t.data.stride(from.add(i)).load())
         jump move(t, from, keep, rest, i.add(1))
@@ -1150,7 +1156,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
 
 /// Writes changed pages back to the file.
 #target(os: "windows")
-routine Mapping.flush(self: Self) -> Result<Unit, FsError>
+routine Mapping.flush_result(self: Self) -> Result<Unit, FsError>
     block entry()
         branch self.base.is_null()
             ? return(fs_done())

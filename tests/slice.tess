@@ -1,14 +1,15 @@
-// Span<T> lends values that live somewhere else: an array on the stack, a list, an OwnedSpan, the bytes of a text.
-// Its at(i) is the checked address, and every access through it is @T's own (load, store, volatile, atomic).
-// getitem and setitem are the value shortcuts, getitem_checked returns an Option, and getspan is a checked range view.
+// A borrowed Slice<T> (a null allocator) lends values that live somewhere else: an array on the stack, a list, a
+// slice from an allocator, the bytes of a text. Its at(i) is the checked address, and every access through it is @T's
+// own (load, store, volatile, atomic). getitem and setitem are the value shortcuts, getitem_checked returns an Option,
+// and getslice is a checked range view.
 
 import Standard::Alloc
 import Standard::Collections
 import Standard::Format
 import Standard::Os
 
-/// Sums whatever the span lends: the same routine reads an array, a list, and an OwnedSpan.
-routine total(values: Span<U32>) -> U64
+/// Sums whatever the slice lends: the same routine reads an array, a list, and a slice from the heap.
+routine total(values: Slice<U32>) -> U64
     block entry()
         jump add(0, 0)
 
@@ -23,8 +24,8 @@ routine total(values: Span<U32>) -> U64
 routine from_array() -> Void
     block entry()
         claim digits : @Array<U32, 5> <- { 1, 2, 3, 4, 5 }
-        view : Span<U32> = digits.to<Span<U32>>()
-        tail : Span<U32> = digits.getspan(2, 3)
+        view : Slice<U32> = digits.to<Slice<U32>>()
+        tail : Slice<U32> = digits.getslice(2, 3)
         Out.write("array: count {view.count()}, total {total(view)}, last three {total(tail)}\n")
         view.setitem(0, 10)
         Out.write("array after setitem: {digits.getitem(0)}, getitem_checked(4) {view.getitem_checked(4)}")
@@ -38,20 +39,20 @@ routine from_list() -> Void
         primes.push(3)
         primes.push(5)
         primes.push(7)
-        view   : Span<U32> = primes.to<Span<U32>>()
-        middle : Span<U32> = primes.getspan(1, 2)
+        view   : Slice<U32> = primes.to<Slice<U32>>()
+        middle : Slice<U32> = primes.getslice(1, 2)
         Out.write("list: {primes.load()}, count {primes.count()}, total {total(view)}, middle {total(middle)}\n")
-        empty : Span<U32> = primes.getspan(4, 0)
+        empty : Slice<U32> = primes.getslice(4, 0)
         Out.write("an empty view at the end: count {empty.count()}\n")
         primes.destruct()
         return()
 
 routine from_owned() -> Void
     block entry()
-        claim squares : @OwnedSpan<U32> <- .construct(4)
+        claim squares : @Slice<U32> <- .construct(4)
         jump fill(squares, 0)
 
-    block fill(squares: @OwnedSpan<U32>, i: USize)
+    block fill(squares: @Slice<U32>, i: USize)
         done : Bool = i.ge(squares.count())
         branch done
             ? show(squares)
@@ -60,29 +61,29 @@ routine from_owned() -> Void
         squares.setitem(i, v.mul(v))
         jump fill(squares, i.add(1))
 
-    block show(squares: @OwnedSpan<U32>)
-        view  : Span<U32> = squares.to<Span<U32>>()
-        first : @U32      = view.to<@U32>()
+    block show(squares: @Slice<U32>)
+        view  : Slice<U32> = squares.getview()
+        first : @U32       = view.to<@U32>()
         Out.write("owned: total {total(view)}, squares[3] {squares.getitem(3)}, through the address {first.stride(2).load()}\n")
         squares.destruct()
         return()
 
 routine from_bytes() -> Void
     block entry()
-        text  : Bytes      = "Tessera"
-        whole : Span<Byte> = text.to<Span<Byte>>()
-        part  : Span<Byte> = text.getspan(1, 3)
+        text  : Bytes       = "Tessera"
+        whole : Slice<Byte> = text.to<Slice<Byte>>()
+        part  : Slice<Byte> = text.getslice(1, 3)
         Out.write("bytes: count {whole.count()}, first {whole.getitem(0).diagnose()}, part count {part.count()}")
         Out.write(", part starts with {part.getitem(0).diagnose()}\n")
         return()
 
-/// The whole @T vocabulary through at(): nothing is redefined on Span.
+/// The whole @T vocabulary through at(): nothing is redefined on Slice.
 routine through_at() -> Void
     block entry()
         claim counters : @Array<U32, 3> <- { 0, 0, 0 }
-        view   : Span<U32> = counters.to<Span<U32>>()
-        before : U32       = view.at(1).atomic_fetch_add(5)
-        after  : U32       = view.at(1).atomic_load()
+        view   : Slice<U32> = counters.to<Slice<U32>>()
+        before : U32        = view.at(1).atomic_fetch_add(5)
+        after  : U32        = view.at(1).atomic_load()
         view.at(2).volatile_store(9)
         register : U32 = view.at(2).volatile_load()
         view.at(0).store(4)

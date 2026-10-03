@@ -1,7 +1,7 @@
 // Tessera stdlib collection: CircularList<T>
 //
 // Dynamic array with a centered start index — front and back both grow without
-// shifting. The buffer is an OwnedSpan<T> whose count is the capacity, and it
+// shifting. The buffer is a Slice<T> whose count is the capacity, and it
 // keeps the allocator.
 //
 // Logical element i lives at storage.data[start + i]. Front growth consumes spare slots
@@ -21,7 +21,7 @@ conform Representable<CircularList<T>> when T: typename, Diagnosable<T>
 conform Diagnosable<CircularList<T>>   when T: typename, Diagnosable<T>
 conform Equatable<CircularList<T>>     when T: typename, Equatable<T>
 require T: typename
-    storage : OwnedSpan<T>
+    storage : Slice<T>
     start   : USize
     count   : USize
 
@@ -31,8 +31,8 @@ require T: typename
 routine CircularList<T>.construct(alloc: @Allocator) -> Self
 require T: typename
     block entry()
-        storage       : OwnedSpan<T> = OwnedSpan<T>.construct(0, alloc)
-        circular_list : Self         = Self { storage: storage, start: 0, count: 0 }
+        storage       : Slice<T> = Slice<T>.construct(0, alloc)
+        circular_list : Self     = Self { storage: storage, start: 0, count: 0 }
         return(circular_list)
 
 /// The number of elements currently stored.
@@ -73,24 +73,23 @@ require T: typename
 private routine CircularList<T>.recenter(self: @Self, new_capacity: USize) -> Bool
 require T: typename
     block entry()
-        count     : USize                             = self.count.load()
-        slack     : USize                             = new_capacity.sub(count)
-        new_start : USize                             = slack.div(2)
-        alloc     : @Allocator                        = self.storage.alloc.load()
-        made      : Result<OwnedSpan<T>, AllocFailed> = OwnedSpan<T>.construct_result(new_capacity,
-            alloc)
+        count     : USize                         = self.count.load()
+        slack     : USize                         = new_capacity.sub(count)
+        new_start : USize                         = slack.div(2)
+        alloc     : @Allocator                    = self.storage.alloc.load()
+        made      : Result<Slice<T>, AllocFailed> = Slice<T>.construct_result(new_capacity, alloc)
         when made
             .Success(fresh) -> move(fresh, new_start, count)
             .Failure        -> return(false)
 
-    block move(fresh: OwnedSpan<T>, new_start: USize, count: USize)
+    block move(fresh: Slice<T>, new_start: USize, count: USize)
         old_data : @T   = self.storage.data.load()
         old_null : Bool = old_data.is_null()
         branch old_null
             ? install(fresh, new_start)
             : copy_live(fresh, new_start, old_data, count)
 
-    block copy_live(fresh: OwnedSpan<T>, new_start: USize, old_data: @T, count: USize)
+    block copy_live(fresh: Slice<T>, new_start: USize, old_data: @T, count: USize)
         old_start : USize = self.start.load()
         src       : @T    = old_data.stride(old_start)
         dst       : @T    = fresh.data.stride(new_start)
@@ -98,7 +97,7 @@ require T: typename
         self.storage.destruct()
         jump install(fresh, new_start)
 
-    block install(fresh: OwnedSpan<T>, new_start: USize)
+    block install(fresh: Slice<T>, new_start: USize)
         self.storage.store(fresh)
         self.start.store(new_start)
         return(true)
@@ -488,16 +487,18 @@ require T: typename
 
 /// Gives the list's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
 /// :note: Safe to call on a never-filled instance, where it only resets the fields.
+#track_caller
 routine CircularList<T>.destruct(self: @Self) -> Void
 require T: typename
     block entry()
-        self.storage.destruct()
+        self.storage.resize(0)
         self.start.store(0)
         self.count.store(0)
         return()
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
 /// Elements that are only borrowed (a `Ptr` to memory owned elsewhere) must not be destructed this way.
+#track_caller
 routine CircularList<T>.destruct_all(self: @Self) -> Void
 require T: typename, Destructible<T>
     block entry()

@@ -46,10 +46,13 @@ public sealed partial class Compiler
 
     /// <paramref name="trace"/>: whether the program's routines keep the crash trace (Trace.cs). A builder that uses
     /// Tessera as a library passes false unless it wants Tessera's trace in what it builds.
-    public Compiler(BuildTarget target, IEnumerable<Decl> decls, bool trace = false)
+    /// <paramref name="debugChecks"/>: whether the standard library's `#debug("on")` declarations are kept (a debug
+    /// build: the default heap catches a block freed twice) instead of its `#debug("off")` ones.
+    public Compiler(BuildTarget target, IEnumerable<Decl> decls, bool trace = false, bool debugChecks = false)
     {
         Target = target;
         Trace = trace;
+        DebugChecks = debugChecks;
         foreach (var d in Derive.Routines(decls.ToList()))
         {
             if (!Selected(d)) continue;
@@ -229,6 +232,7 @@ public sealed partial class Compiler
         // drop out as a whole. The module itself stays, so importing it or naming something in it can say why.
         if (!Target.HasOs && d.IsLibrary && d is not ModuleDecl && IsOsModule(d.Module)) return false;
         if (!TraceSelected(d)) return false;
+        if (!DebugSelected(d)) return false;
         foreach (var a in d.Attributes)
         {
             if (a.Name != "target" && a.Args.FirstOrDefault(arg => arg.Values is not null) is { } listed)
@@ -257,6 +261,26 @@ public sealed partial class Compiler
             }
         }
         return true;
+    }
+
+    /// Whether this is a debug build: the standard library keeps its `#debug("on")` declarations (the default heap's
+    /// checks) and drops its `#debug("off")` ones. Optimized builds are the other way around.
+    public bool DebugChecks { get; }
+
+    /// `#debug("on")` / `#debug("off")` keeps a standard library declaration only in a debug build or only in an
+    /// optimized one, the way `#trace` follows the trace setting: the default heap's checking allocator is there only
+    /// in a debug build, and the plain malloc / free one only in the others.
+    private bool DebugSelected(Decl d)
+    {
+        if (d.Attr("debug") is not { } a) return true;
+        if (!d.IsLibrary)
+            throw new CompileError(a.Pos, "#debug selects standard library declarations by the build mode");
+        return a.First switch
+        {
+            "on" => DebugChecks,
+            "off" => !DebugChecks,
+            _ => throw new CompileError(a.Pos, "#debug takes \"on\" or \"off\""),
+        };
     }
 
     // ── Output ──────────────────────────────────────────────────────────────

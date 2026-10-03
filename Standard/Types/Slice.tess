@@ -1,0 +1,395 @@
+// Tessera stdlib: Slice<T>, a run of values whose count is known at run time
+//
+// Two types say where values are. `@T` is an address (a claim slot, a field, an element, memory from C) and frees
+// nothing. `Slice<T>` is an address, a count, and the allocator the memory came from. `Array<T, N>` is the other run
+// of values, with its count fixed in the type and its values inline.
+//
+// The allocator is what destruct() gives the memory back to. A null allocator means the slice is borrowed: a view of
+// memory something else gives back (an array, a list, another slice, a literal), and destruct() does nothing. Views
+// made from a slice (getslice, getview, to<Slice<T>>() of a list or an array) are borrowed. Copying a slice copies the
+// allocator with it, so either copy can give the memory back: destruct exactly one.
+//
+// `at(i)` is the checked address, and every access through it is `@T`'s own: load, store, volatile_load,
+// atomic_fetch_add, and the rest. getitem and setitem are the value shortcuts.
+
+module Standard::Core
+
+import Standard::Alloc
+
+/// `count` values of `T` at `data`, and `alloc`, the allocator the memory came from. A null `alloc` means the slice is
+/// borrowed and `destruct()` does nothing. Its count is chosen at run time (`Array<T, N>` has its count in the type),
+/// and `resize` changes it.
+/// :typeparam T: The element type.
+record Slice<T>
+conform Destructible<Slice<T>>
+require T: typename
+    data  : @T
+    count : USize
+    alloc : @Allocator
+
+// -- making one ---------------------------------------------------------------------------------------------------
+
+/// The `count` values starting at `data`, borrowed (a null allocator). The count is yours to get right.
+/// :param data: The first value.
+/// :param count: The number of values from `data` on.
+/// :returns: The slice, which `destruct()` leaves alone.
+routine Slice<T>.construct(data: @T, count: USize) -> Self
+require T: typename
+    block entry()
+        slice : Self = Self { data: data, count: count, alloc: null }
+        return(slice)
+
+/// `count` uninitialized values of `T` from `alloc`, given back with `destruct()`. A count of 0 allocates nothing and
+/// keeps the allocator.
+/// :param count: The number of values.
+/// :param alloc: The allocator the memory comes from and goes back to.
+/// :returns: The slice.
+/// :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {Slice<T>.construct_result}.
+#track_caller
+routine Slice<T>.construct(count: USize, alloc: @Allocator) -> Self
+require T: typename
+    block entry()
+        made : Result<Self, AllocFailed> = Self.construct_result(count, alloc)
+        when made
+            .Success(slice) -> return(slice)
+            .Failure        -> crash_allocation()
+
+/// `construct`, returning a Failure instead of crashing when the allocator fails.
+routine Slice<T>.construct_result(count: USize, alloc: @Allocator) -> Result<Self, AllocFailed>
+require T: typename
+    block entry()
+        nothing : Bool = count.eq(0)
+        branch nothing
+            ? empty()
+            : continue
+        data   : @T   = allocate<T>(alloc, count)
+        failed : Bool = data.is_null()
+        branch failed
+            ? return(.Failure(AllocFailed {}))
+            : continue
+        slice : Self = Self { data: data, count: count, alloc: alloc }
+        return(.Success(slice))
+
+    block empty()
+        slice : Self = Self { data: null, count: 0, alloc: alloc }
+        return(.Success(slice))
+
+// -- reading ------------------------------------------------------------------------------------------------------
+
+/// The number of values.
+routine Slice<T>.count(self: Self) -> USize
+require T: typename
+    block entry()
+        count : USize = self.count
+        return(count)
+
+/// The number of values.
+routine Slice<T>.count(self: @Self) -> USize
+require T: typename
+    block entry()
+        count : USize = self.count.load()
+        return(count)
+
+/// The same values, borrowed: the same data and count with a null allocator, so `destruct()` on it does nothing.
+routine Slice<T>.getview(self: Self) -> Self
+require T: typename
+    block entry()
+        view : Self = Self { data: self.data, count: self.count, alloc: null }
+        return(view)
+
+/// The same values, borrowed: the same data and count with a null allocator, so `destruct()` on it does nothing.
+routine Slice<T>.getview(self: @Self) -> Self
+require T: typename
+    block entry()
+        view : Self = self.load().getview()
+        return(view)
+
+/// The address of the value at `index`, checked against the count. Everything else is `@T`'s own: `load`, `store`,
+/// `volatile_load`, `atomic_fetch_add`, ...
+/// :param index: The zero-based position.
+/// :returns: The address of the value.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+#track_caller
+routine Slice<T>.at(self: Self, index: USize) -> @T
+require T: typename
+    block entry()
+        outside : Bool = index.ge(self.count)
+        branch outside
+            ? crash_out_of_bounds()
+            : continue
+        place : @T = self.data.stride(index)
+        return(place)
+
+/// The address of the value at `index`, checked against the count.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+#track_caller
+routine Slice<T>.at(self: @Self, index: USize) -> @T
+require T: typename
+    block entry()
+        place : @T = self.load().at(index)
+        return(place)
+
+/// The value at `index`, checked: `at(index).load()`.
+/// :param index: The zero-based position.
+/// :returns: A copy of the value.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {Slice<T>.getitem_checked}.
+#track_caller
+routine Slice<T>.getitem(self: Self, index: USize) -> T
+require T: typename
+    block entry()
+        value : T = self.at(index).load()
+        return(value)
+
+/// The value at `index`, checked.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {Slice<T>.getitem_checked}.
+#track_caller
+routine Slice<T>.getitem(self: @Self, index: USize) -> T
+require T: typename
+    block entry()
+        value : T = self.load().getitem(index)
+        return(value)
+
+/// `getitem`, returning Absent instead of crashing on an index past the end.
+routine Slice<T>.getitem_checked(self: Self, index: USize) -> Option<T>
+require T: typename
+    block entry()
+        inside : Bool = index.lt(self.count)
+        branch inside
+            ? continue
+            : return(.Absent)
+        value : T = self.data.stride(index).load()
+        return(.Present(value))
+
+/// `getitem`, returning Absent instead of crashing on an index past the end.
+routine Slice<T>.getitem_checked(self: @Self, index: USize) -> Option<T>
+require T: typename
+    block entry()
+        value : Option<T> = self.load().getitem_checked(index)
+        return(value)
+
+/// Writes `value` at `index`, checked: `at(index).store(value)`.
+/// :param index: The zero-based position.
+/// :param value: The value to store.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+#track_caller
+routine Slice<T>.setitem(self: Self, index: USize, value: T) -> Void
+require T: typename
+    block entry()
+        self.at(index).store(value)
+        return()
+
+/// Writes `value` at `index`, checked.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
+#track_caller
+routine Slice<T>.setitem(self: @Self, index: USize, value: T) -> Void
+require T: typename
+    block entry()
+        self.load().setitem(index, value)
+        return()
+
+/// The `count` values from `start`, borrowed (a null allocator), checked against this slice.
+/// :param start: The position of the first value.
+/// :param count: The number of values.
+/// :returns: A slice over that range.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine Slice<T>.getslice(self: Self, start: USize, count: USize) -> Self
+require T: typename
+    block entry()
+        past_end : Bool = start.gt(self.count)
+        branch past_end
+            ? crash_out_of_bounds()
+            : continue
+        room     : USize = self.count.sub(start)
+        too_many : Bool  = count.gt(room)
+        branch too_many
+            ? crash_out_of_bounds()
+            : continue
+        first : @T   = self.data.stride(start)
+        part  : Self = Self { data: first, count: count, alloc: null }
+        return(part)
+
+/// The `count` values from `start`, borrowed, checked against this slice.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine Slice<T>.getslice(self: @Self, start: USize, count: USize) -> Self
+require T: typename
+    block entry()
+        part : Self = self.load().getslice(start, count)
+        return(part)
+
+/// The address of the first value.
+routine Slice<T>.to<@T>(self: Self) -> @T
+require T: typename
+    block entry()
+        data : @T = self.data
+        return(data)
+
+/// The address of the first value.
+routine Slice<T>.to<@T>(self: @Self) -> @T
+require T: typename
+    block entry()
+        data : @T = self.data.load()
+        return(data)
+
+// -- changing the memory ------------------------------------------------------------------------------------------
+
+/// Reallocates to hold `count` values, keeping the first ones (as many as both counts allow). The memory may move,
+/// so addresses and slices taken before are stale. A count of 0 gives the memory back and keeps the allocator.
+/// :param count: The new number of values.
+/// :throws: Crashes with `InvalidValueError` on a borrowed slice (a null allocator), and with `MemoryAllocationError`
+///     when the allocator fails. See {Slice<T>.resize_result}.
+#track_caller
+routine Slice<T>.resize(self: @Self, count: USize) -> Void
+require T: typename
+    block entry()
+        resized : Result<Unit, AllocFailed> = self.resize_result(count)
+        when resized
+            .Success -> return()
+            .Failure -> crash_allocation()
+
+/// `resize`, returning a Failure instead of crashing when the allocator fails. The slice is unchanged then.
+/// :throws: Crashes with `InvalidValueError` on a borrowed slice (a null allocator).
+#track_caller
+routine Slice<T>.resize_result(self: @Self, count: USize) -> Result<Unit, AllocFailed>
+require T: typename
+    block entry()
+        alloc    : @Allocator = self.alloc.load()
+        borrowed : Bool       = alloc.is_null()
+        branch borrowed
+            ? crash("InvalidValueError",
+                "This slice is borrowed (its allocator is null), so it can't be resized.")
+            : continue
+        nothing : Bool = count.eq(0)
+        branch nothing
+            ? emptied(alloc)
+            : continue
+        data   : @T   = reallocate<T>(alloc, self.data.load(), count)
+        failed : Bool = data.is_null()
+        branch failed
+            ? return(.Failure(AllocFailed {}))
+            : continue
+        self.data.store(data)
+        self.count.store(count)
+        return(.Success(Unit.value()))
+
+    block emptied(alloc: @Allocator)
+        data : @T   = self.data.load()
+        none : Bool = data.is_null()
+        branch none
+            ? reset()
+            : continue
+        deallocate<T>(alloc, data)
+        jump reset()
+
+    block reset()
+        self.data.store(null)
+        self.count.store(0)
+        return(.Success(Unit.value()))
+
+/// Gives the memory back to the allocator it came from and leaves the slice empty: a null data, a count of 0, and a
+/// null allocator. Does nothing on a borrowed slice (a null allocator). The values themselves are not destructed:
+/// see `destruct_all`.
+#track_caller
+routine Slice<T>.destruct(self: @Self) -> Void
+require T: typename
+    block entry()
+        alloc    : @Allocator = self.alloc.load()
+        borrowed : Bool       = alloc.is_null()
+        branch borrowed
+            ? return()
+            : continue
+        data  : @T   = self.data.load()
+        empty : Bool = data.is_null()
+        branch empty
+            ? reset()
+            : continue
+        deallocate<T>(alloc, data)
+        jump reset()
+
+    block reset()
+        self.data.store(null)
+        self.count.store(0)
+        self.alloc.store(null)
+        return()
+
+/// Destructs every value, then gives the memory back: for values that own something, such as lists. Every value
+/// must be initialized. Does nothing on a borrowed slice (a null allocator), whose values belong to someone else.
+#track_caller
+routine Slice<T>.destruct_all(self: @Self) -> Void
+require T: typename, Destructible<T>
+    block entry()
+        borrowed : Bool = self.alloc.load().is_null()
+        branch borrowed
+            ? return()
+            : continue
+        first : @T    = self.data.load()
+        count : USize = self.count.load()
+        jump each(first, count, 0)
+
+    block each(first: @T, count: USize, i: USize)
+        done : Bool = i.ge(count)
+        branch done
+            ? finish()
+            : continue
+        first.stride(i).destruct()
+        jump each(first, count, i.add(1))
+
+    block finish()
+        self.destruct()
+        return()
+
+// -- text ---------------------------------------------------------------------------------------------------------
+
+/// The bytes as text, borrowed (a null allocator): valid until the slice's memory is given back or resized.
+routine Slice<Byte>.to<Bytes>(self: Self) -> Bytes
+    block entry()
+        text : Bytes = Bytes.from_ptr(self.data, self.count)
+        return(text)
+
+/// The bytes as text, borrowed (a null allocator): valid until the slice's memory is given back or resized.
+routine Slice<Byte>.to<Bytes>(self: @Self) -> Bytes
+    block entry()
+        text : Bytes = self.load().to<Bytes>()
+        return(text)
+
+// -- views of the built-in containers -------------------------------------------------------------------------
+
+/// The array's values, borrowed (a null allocator): valid as long as the array is.
+routine Array<T, N>.to<Slice<T>>(self: @Self) -> Slice<T>
+require T: typename, N: USize
+    block entry()
+        first : @T       = self.to<@T>()
+        slice : Slice<T> = Slice<T>.construct(first, N)
+        return(slice)
+
+/// The `count` values from `start`, borrowed, checked against `N`.
+/// :param start: The position of the first value.
+/// :param count: The number of values.
+/// :returns: A slice over that range.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine Array<T, N>.getslice(self: @Self, start: USize, count: USize) -> Slice<T>
+require T: typename, N: USize
+    block entry()
+        whole : Slice<T> = self.to<Slice<T>>()
+        part  : Slice<T> = whole.getslice(start, count)
+        return(part)
+
+/// The bytes as a slice, borrowed (a null allocator): the same memory, element by element.
+routine Bytes.to<Slice<Byte>>(self: Self) -> Slice<Byte>
+    block entry()
+        slice : Slice<Byte> = Slice<Byte>.construct(self.data, self.count)
+        return(slice)
+
+/// The `count` bytes from `start`, borrowed, checked against the count.
+/// :param start: The position of the first byte.
+/// :param count: The number of bytes.
+/// :returns: A slice over that range.
+/// :throws: Crashes with `IndexOutOfBoundsError` when the range runs past the end.
+#track_caller
+routine Bytes.getslice(self: Self, start: USize, count: USize) -> Slice<Byte>
+    block entry()
+        whole : Slice<Byte> = self.to<Slice<Byte>>()
+        part  : Slice<Byte> = whole.getslice(start, count)
+        return(part)

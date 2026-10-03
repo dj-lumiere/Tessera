@@ -199,7 +199,8 @@ public sealed partial class Compiler
 /// the string leaves out. The string comes from clang, so the builder and LLVM agree.
 public sealed class DataLayout
 {
-    private static readonly Dictionary<string, DataLayout> Cache = [];
+    /// The layouts by triple, a concurrent map since builds may run side by side in one process (the xUnit tests).
+    private static readonly ConcurrentDictionary<string, DataLayout> Cache = new();
 
     private readonly SortedDictionary<int, int> _ints = new() { [1] = 1, [8] = 1, [16] = 2, [32] = 4, [64] = 4 };
     private readonly Dictionary<int, int> _floats = new() { [16] = 2, [32] = 4, [64] = 8, [128] = 16 };
@@ -211,7 +212,7 @@ public sealed class DataLayout
         if (Cache.TryGetValue(target.LlvmTriple, out var cached)) return cached;
         string text = Query(target.LlvmTriple).GetAwaiter().GetResult()
                       ?? throw new CompileError(pos, $"cannot get the data layout for {target.LlvmTriple} from clang");
-        return Cache[target.LlvmTriple] = Parse(text);
+        return Cache.GetOrAdd(target.LlvmTriple, Parse(text));
     }
 
     /// The clang query of each triple, started once: by the first For, or ahead of it by Prefetch.

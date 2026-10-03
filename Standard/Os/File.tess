@@ -4,34 +4,46 @@
 // done at that path now. Opening a File gives a FileHandle (Fs_posix.tess, Fs_windows.tess), which reads and writes
 // (a Reader and a Writer: handle.write("x = {x}\n")) until it is closed:
 //
-//     claim h : @FileHandle <- File.at("out.txt").open_write().unwrap()
+//     claim h : @FileHandle <- File.at("out.txt").open_write_result().unwrap()
 //     h.write("total = {total}\n")
 //     h.close()
 //
-// The path is a view, so its text must outlive the File (a literal does). A routine that makes a path (file, subdir,
-// absolute, the well-known directories) takes an allocator, and the caller gives the new path back with
-// `deallocate(alloc, dir.path.data)`.
+// The path is a Bytes. File.at and Directory.at keep the one they're given, so a borrowed path's text must outlive the
+// File (a literal's does). A routine that makes a path (file, subdir, absolute, canonical, the well-known
+// directories) takes an allocator, and the path it makes carries that allocator: `file.destruct()` /
+// `dir.destruct()` gives it back. destruct() on a File or Directory over a borrowed path does nothing.
 
 module Standard::Os
 
 import Standard::Alloc
 
-/// A file, by its path.
+/// A file, by its path. `destruct()` gives the path back when it was made from an allocator.
 record File
+conform Destructible<File>
     path : Bytes
 
-/// A directory, by its path.
+/// A directory, by its path. `destruct()` gives the path back when it was made from an allocator.
 record Directory
+conform Destructible<Directory>
     path : Bytes
 
 // -- File --------------------------------------------------------------------------------
 
-/// A file named by `path`. Nothing is touched: the path is only held, and as a view its text must outlive the file.
+/// A file named by `path`. Nothing is touched: the path is only held. A borrowed path's text must outlive the file,
+/// and one with an allocator goes back to it with `destruct()`.
 /// :param path: The path of the file, as UTF-8 bytes.
 /// :returns: A {File} holding `path`.
 routine File.at(path: Bytes) -> Self
     block entry()
         return(Self { path: path })
+
+/// Gives the path back to the allocator it came from (a path made by `Directory.file`, `absolute`, `canonical`, ...)
+/// and leaves the path empty. Does nothing when the path is borrowed (a literal, or text someone else gives back).
+#track_caller
+routine File.destruct(self: @Self) -> Void
+    block entry()
+        self.path.destruct()
+        return()
 
 /// Whether something is at the path (a link counts as what it points at).
 routine File.exists(self: Self) -> Bool
@@ -44,73 +56,73 @@ routine File.is_file(self: Self) -> Bool
         return(is_kind(self.path, FileKind.File))
 
 /// The metadata, a link followed to what it points at.
-routine File.metadata(self: Self) -> Result<Metadata, FsError>
+routine File.metadata_result(self: Self) -> Result<Metadata, FsError>
     block entry()
         return(metadata(self.path))
 
 /// The metadata of a link itself (kind Symlink), or of what isn't one.
-routine File.link_metadata(self: Self) -> Result<Metadata, FsError>
+routine File.link_metadata_result(self: Self) -> Result<Metadata, FsError>
     block entry()
         return(symlink_metadata(self.path))
 
 /// Opens an existing file for reading.
-routine File.open_read(self: Self) -> Result<FileHandle, FsError>
+routine File.open_read_result(self: Self) -> Result<FileHandle, FsError>
     block entry()
         return(FileHandle.open(self.path, OpenMode.Read))
 
 /// Opens the file for writing, made if missing and emptied if not.
-routine File.open_write(self: Self) -> Result<FileHandle, FsError>
+routine File.open_write_result(self: Self) -> Result<FileHandle, FsError>
     block entry()
         return(FileHandle.open(self.path, OpenMode.Write))
 
 /// Opens the file for writing at its end, made if missing.
-routine File.open_append(self: Self) -> Result<FileHandle, FsError>
+routine File.open_append_result(self: Self) -> Result<FileHandle, FsError>
     block entry()
         return(FileHandle.open(self.path, OpenMode.Append))
 
 /// Opens an existing file for reading and writing.
-routine File.open_read_write(self: Self) -> Result<FileHandle, FsError>
+routine File.open_read_write_result(self: Self) -> Result<FileHandle, FsError>
     block entry()
         return(FileHandle.open(self.path, OpenMode.ReadWrite))
 
 /// Makes the file and opens it for writing: AlreadyExists if something is at the path.
-routine File.create_new(self: Self) -> Result<FileHandle, FsError>
+routine File.create_new_result(self: Self) -> Result<FileHandle, FsError>
     block entry()
         return(FileHandle.open(self.path, OpenMode.CreateNew))
 
 /// The whole file, in memory from alloc (release it with destruct()).
-routine File.read_all(self: Self, alloc: @Allocator) -> Result<OwnedSpan<Byte>, FsError>
+routine File.read_all_result(self: Self, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry()
         return(read_file(self.path, alloc))
 
 /// Writes data as the whole file: made if missing, replaced if not.
-routine File.write_all(self: Self, data: Bytes) -> Result<Unit, FsError>
+routine File.write_all_result(self: Self, data: Bytes) -> Result<Unit, FsError>
     block entry()
         return(write_file(self.path, data))
 
 /// Copies the bytes (and on Linux and macOS the permissions) to destination, made or replaced: the bytes copied.
-routine File.copy_to(self: Self, destination: Self) -> Result<U64, FsError>
+routine File.copy_to_result(self: Self, destination: Self) -> Result<U64, FsError>
     block entry()
         return(copy_file(self.path, destination.path))
 
 /// Moves (renames) the file to destination, replacing what is there. Between filesystems it fails with
 /// CrossDevice: copy and delete instead.
-routine File.move_to(self: Self, destination: Self) -> Result<Unit, FsError>
+routine File.move_to_result(self: Self, destination: Self) -> Result<Unit, FsError>
     block entry()
         return(rename(self.path, destination.path))
 
 /// Moves the file to destination, failing with AlreadyExists if something is there.
-routine File.move_to_if_absent(self: Self, destination: Self) -> Result<Unit, FsError>
+routine File.move_to_if_absent_result(self: Self, destination: Self) -> Result<Unit, FsError>
     block entry()
         return(rename_no_replace(self.path, destination.path))
 
 /// Deletes the file (or a link, not what it points at).
-routine File.delete(self: Self) -> Result<Unit, FsError>
+routine File.delete_result(self: Self) -> Result<Unit, FsError>
     block entry()
         return(remove_file(self.path))
 
 /// Makes the file if it's missing, and sets its access and modification times to now.
-routine File.touch(self: Self) -> Result<Unit, FsError>
+routine File.touch_result(self: Self) -> Result<Unit, FsError>
     block entry()
         return(touch(self.path))
 
@@ -118,7 +130,7 @@ routine File.touch(self: Self) -> Result<Unit, FsError>
 /// writable gives the owner's back. On Windows it sets or clears the read-only attribute.
 /// :param readonly: `true` to make the file read-only, `false` to make it writable.
 /// :returns: Success, or Failure with the {FsError} the OS reported (for example NotFound).
-routine File.set_readonly(self: Self, readonly: Bool) -> Result<Unit, FsError>
+routine File.set_readonly_result(self: Self, readonly: Bool) -> Result<Unit, FsError>
     block entry()
         return(set_readonly(self.path, readonly))
 
@@ -129,7 +141,8 @@ routine File.can(self: Self, access: Access) -> Bool
 
 /// Maps count bytes from offset (USize.MAX: to the end) into memory, clamped to the file. Past the end, or an empty
 /// file, gives an empty mapping. write maps it so stores reach the file. Otherwise it's read-only.
-routine File.map(self: Self, write: Bool, offset: U64, count: USize) -> Result<Mapping, FsError>
+routine File.map_result(self: Self, write: Bool, offset: U64,
+    count: USize) -> Result<Mapping, FsError>
     block entry()
         return(Mapping.map(self.path, write, offset, count))
 
@@ -155,8 +168,8 @@ routine File.parent(self: Self) -> Directory
 
 /// The path made absolute by the text: the working directory in front of a relative one (on Windows "." and ".."
 /// taken out too), nothing looked up. The new path is in memory from alloc: give it back with
-/// `deallocate(alloc, file.path.data)`.
-routine File.absolute(self: Self, alloc: @Allocator) -> Result<Self, FsError>
+/// `file.destruct()`.
+routine File.absolute_result(self: Self, alloc: @Allocator) -> Result<Self, FsError>
     block entry()
         r : Result<Bytes, FsError> = absolute_path(self.path, alloc)
         when r
@@ -164,8 +177,8 @@ routine File.absolute(self: Self, alloc: @Allocator) -> Result<Self, FsError>
             .Failure(error) -> return(.Failure(error))
 
 /// The absolute path with every link, ".", and ".." resolved. The file must exist. In memory from alloc: give it back
-/// with `deallocate(alloc, file.path.data)`.
-routine File.canonical(self: Self, alloc: @Allocator) -> Result<Self, FsError>
+/// with `file.destruct()`.
+routine File.canonical_result(self: Self, alloc: @Allocator) -> Result<Self, FsError>
     block entry()
         r : Result<Bytes, FsError> = canonical_path(self.path, alloc)
         when r
@@ -174,13 +187,21 @@ routine File.canonical(self: Self, alloc: @Allocator) -> Result<Self, FsError>
 
 // -- Directory ---------------------------------------------------------------------------
 
-/// A directory named by `path`. Nothing is touched: the path is only held, and as a view its text must outlive the
-/// directory.
+/// A directory named by `path`. Nothing is touched: the path is only held. A borrowed path's text must outlive the
+/// directory, and one with an allocator goes back to it with `destruct()`.
 /// :param path: The path of the directory, as UTF-8 bytes.
 /// :returns: A {Directory} holding `path`.
 routine Directory.at(path: Bytes) -> Self
     block entry()
         return(Self { path: path })
+
+/// Gives the path back to the allocator it came from (a path made by `subdir`, `current`, `temp`, ...) and leaves the
+/// path empty. Does nothing when the path is borrowed (a literal, or text someone else gives back).
+#track_caller
+routine Directory.destruct(self: @Self) -> Void
+    block entry()
+        self.path.destruct()
+        return()
 
 /// Whether a directory is at the path (a link counts as what it points at).
 routine Directory.exists(self: Self) -> Bool
@@ -189,45 +210,45 @@ routine Directory.exists(self: Self) -> Bool
 
 /// The metadata of the directory, a link followed to what it points at.
 /// :returns: The {Metadata}, or Failure with the {FsError} the OS reported.
-routine Directory.metadata(self: Self) -> Result<Metadata, FsError>
+routine Directory.metadata_result(self: Self) -> Result<Metadata, FsError>
     block entry()
         return(metadata(self.path))
 
 /// Makes the directory. Its parent must exist.
-routine Directory.create(self: Self) -> Result<Unit, FsError>
+routine Directory.create_result(self: Self) -> Result<Unit, FsError>
     block entry()
         return(create_dir(self.path))
 
 /// Makes the directory and every missing one on the way, like mkdir -p. One already there is fine.
-routine Directory.create_all(self: Self) -> Result<Unit, FsError>
+routine Directory.create_all_result(self: Self) -> Result<Unit, FsError>
     block entry()
         return(create_dir_all(self.path))
 
 /// Deletes the directory, which must be empty.
-routine Directory.delete(self: Self) -> Result<Unit, FsError>
+routine Directory.delete_result(self: Self) -> Result<Unit, FsError>
     block entry()
         return(remove_dir(self.path))
 
 /// Deletes the directory and everything in it. A link inside is deleted, not followed. Child paths are built in
 /// memory from alloc.
-routine Directory.delete_all(self: Self, alloc: @Allocator) -> Result<Unit, FsError>
+routine Directory.delete_all_result(self: Self, alloc: @Allocator) -> Result<Unit, FsError>
     block entry()
         return(remove_dir_all(self.path, alloc))
 
 /// Moves (renames) the directory to destination. Between filesystems it fails with CrossDevice.
-routine Directory.move_to(self: Self, destination: Self) -> Result<Unit, FsError>
+routine Directory.move_to_result(self: Self, destination: Self) -> Result<Unit, FsError>
     block entry()
         return(rename(self.path, destination.path))
 
 /// Moves the directory to destination, failing with AlreadyExists if something is there.
-routine Directory.move_to_if_absent(self: Self, destination: Self) -> Result<Unit, FsError>
+routine Directory.move_to_if_absent_result(self: Self, destination: Self) -> Result<Unit, FsError>
     block entry()
         return(rename_no_replace(self.path, destination.path))
 
-/// Sets or clears the directory's read-only state, as {File.set_readonly} does for a file.
+/// Sets or clears the directory's read-only state, as {File.set_readonly_result} does for a file.
 /// :param readonly: `true` to make the directory read-only, `false` to make it writable.
 /// :returns: Success, or Failure with the {FsError} the OS reported.
-routine Directory.set_readonly(self: Self, readonly: Bool) -> Result<Unit, FsError>
+routine Directory.set_readonly_result(self: Self, readonly: Bool) -> Result<Unit, FsError>
     block entry()
         return(set_readonly(self.path, readonly))
 
@@ -249,24 +270,24 @@ routine Directory.parent(self: Self) -> Self
     block entry()
         return(Self { path: parent_path(self.path) })
 
-/// The file name in this directory, its path in memory from alloc (`deallocate(alloc, file.path.data)` gives it back).
+/// The file name in this directory, its path in memory from alloc (`file.destruct()` gives it back).
 #track_caller
 routine Directory.file(self: Self, name: Bytes, alloc: @Allocator) -> File
     block entry()
-        return(File { path: join_path(self.path, name, alloc).to<Bytes>() })
+        return(File { path: join_path(self.path, name, alloc) })
 
-/// The directory name in this directory, its path in memory from alloc (`deallocate(alloc, dir.path.data)` gives it
+/// The directory name in this directory, its path in memory from alloc (`dir.destruct()` gives it
 /// back).
 #track_caller
 routine Directory.subdir(self: Self, name: Bytes, alloc: @Allocator) -> Self
     block entry()
-        return(Self { path: join_path(self.path, name, alloc).to<Bytes>() })
+        return(Self { path: join_path(self.path, name, alloc) })
 
 /// The path made absolute by its text: the working directory in front of a relative one, nothing else looked up. The
-/// new path is in memory from `alloc`. Give it back with `deallocate(alloc, dir.path.data)`.
+/// new path is in memory from `alloc`. Give it back with `dir.destruct()`.
 /// :param alloc: The allocator for the new path.
 /// :returns: The absolute {Directory}, or Failure with the {FsError} the OS reported.
-routine Directory.absolute(self: Self, alloc: @Allocator) -> Result<Self, FsError>
+routine Directory.absolute_result(self: Self, alloc: @Allocator) -> Result<Self, FsError>
     block entry()
         r : Result<Bytes, FsError> = absolute_path(self.path, alloc)
         when r
@@ -274,35 +295,35 @@ routine Directory.absolute(self: Self, alloc: @Allocator) -> Result<Self, FsErro
             .Failure(error) -> return(.Failure(error))
 
 /// The absolute path with every link, `.`, and `..` resolved. The directory must exist, and the new path is in memory
-/// from `alloc`. Give it back with `deallocate(alloc, dir.path.data)`.
+/// from `alloc`. Give it back with `dir.destruct()`.
 /// :param alloc: The allocator for the new path.
 /// :returns: The canonical {Directory}, or Failure with the {FsError} the OS reported (NotFound when it is missing).
-routine Directory.canonical(self: Self, alloc: @Allocator) -> Result<Self, FsError>
+routine Directory.canonical_result(self: Self, alloc: @Allocator) -> Result<Self, FsError>
     block entry()
         r : Result<Bytes, FsError> = canonical_path(self.path, alloc)
         when r
             .Success(p)     -> return(.Success(Self { path: p }))
             .Failure(error) -> return(.Failure(error))
 
-/// The working directory, its path in memory from alloc (`deallocate(alloc, dir.path.data)` gives it back).
-routine Directory.current(alloc: @Allocator) -> Result<Self, FsError>
+/// The working directory, its path in memory from alloc (`dir.destruct()` gives it back).
+routine Directory.current_result(alloc: @Allocator) -> Result<Self, FsError>
     block entry()
         return(directory_of(current_dir(alloc)))
 
 /// Makes this the working directory.
-routine Directory.set_current(self: Self) -> Result<Unit, FsError>
+routine Directory.set_current_result(self: Self) -> Result<Unit, FsError>
     block entry()
         return(set_current_dir(self.path))
 
 /// The temporary directory (TMPDIR or /tmp, on Windows GetTempPathW's), its path in memory from alloc
-/// (`deallocate(alloc, dir.path.data)` gives it back).
-routine Directory.temp(alloc: @Allocator) -> Result<Self, FsError>
+/// (`dir.destruct()` gives it back).
+routine Directory.temp_result(alloc: @Allocator) -> Result<Self, FsError>
     block entry()
         return(directory_of(temp_dir(alloc)))
 
 /// The user's home directory (HOME, on Windows USERPROFILE), its path in memory from alloc. NotFound when it can't
 /// be told.
-routine Directory.home(alloc: @Allocator) -> Result<Self, FsError>
+routine Directory.home_result(alloc: @Allocator) -> Result<Self, FsError>
     block entry()
         return(directory_of(home_dir(alloc)))
 
@@ -316,6 +337,6 @@ private routine directory_of(r: Result<Bytes, FsError>) -> Result<Directory, FsE
             .Failure(error) -> return(.Failure(error))
 
 /// Starts listing dir's entries.
-routine DirIter.open(self: @Self, dir: Directory) -> Result<Unit, FsError>
+routine DirIter.open_result(self: @Self, dir: Directory) -> Result<Unit, FsError>
     block entry()
         return(self.open_path(dir.path))

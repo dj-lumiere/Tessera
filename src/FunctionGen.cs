@@ -891,8 +891,9 @@ public sealed class FunctionGen
 
     private Val StringLiteral(StrLit s, DType expected)
     {
-        // A string literal is a Bytes (data + length, UTF-8) where a Bytes is expected, a CStr or CWStr (a pointer to
-        // NUL-terminated text) where one of those is expected, and a NUL-terminated Ptr<Byte> where a pointer is.
+        // A string literal is a Bytes (data + count + a null allocator, UTF-8) where a Bytes is expected, a CStr or
+        // CWStr (a pointer to NUL-terminated text) where one of those is expected, and a NUL-terminated Ptr<Byte>
+        // where a pointer is.
         string g = _c.StringGlobal(s.Value);
         if (expected is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } })
             return new Val(g, expected);
@@ -912,8 +913,10 @@ public sealed class FunctionGen
         if (expected is RecordType { Name: "Bytes" } st)
         {
             _c.EnsureTypeDefined(st);
+            // A literal's bytes belong to the program image, so its allocator is null: destruct() leaves it alone.
             string a = EmitTmp($"insertvalue {st.Llvm} poison, ptr {g}, 0");
-            return new Val(EmitTmp($"insertvalue {st.Llvm} {a}, {_c.USize.Llvm} {Compiler.Utf8Length(s.Value)}, 1"), st);
+            string b = EmitTmp($"insertvalue {st.Llvm} {a}, {_c.USize.Llvm} {Compiler.Utf8Length(s.Value)}, 1");
+            return new Val(EmitTmp($"insertvalue {st.Llvm} {b}, ptr null, 2"), st);
         }
         throw Mismatch(s.Pos, expected, "a string literal");
     }
@@ -1432,7 +1435,7 @@ public sealed class FunctionGen
         };
         if (s is null) return null;
         // Any routine of the name means a method call, whichever module it's in and whatever type arguments it's
-        // defined for (`Bytes.to<Span<Byte>>` beside a generic `Bytes.to<T>` another module adds).
+        // defined for (`Bytes.to<Slice<Byte>>` beside a generic `Bytes.to<T>` another module adds).
         if (_c.MethodsNamed(s, m.Name).Count > 0 || _c.FindMethod(s, m.Name, _env.File, m.Pos) is not null) return null;
         var field = _c.Fields(s).FirstOrDefault(f => f.Name == m.Name);
         if (field.Type is CallableType)

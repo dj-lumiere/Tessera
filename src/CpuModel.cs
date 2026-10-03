@@ -10,7 +10,9 @@ namespace Tessera;
 /// `target-features`, and `#feature` reads the same set, so the code a declaration selects is the code LLVM gets.
 public sealed class CpuModel
 {
-    private static readonly Dictionary<string, CpuModel> Cache = [];
+    /// The models by target, CPU, and features. Builds may run side by side in one process (the xUnit tests), so it
+    /// is a concurrent map, and each model guards its own name sets.
+    private static readonly ConcurrentDictionary<string, CpuModel> Cache = new();
 
     private readonly BuildTarget _target;
     private readonly HashSet<string> _enabled = [];
@@ -46,19 +48,20 @@ public sealed class CpuModel
         var feats = Regex.Match(ir, "\"target-features\"=\"([^\"]*)\"");
         if (!cpu.Success)
             throw new CompileError(pos, $"clang gave no CPU for {target.LlvmTriple}{(target.Cpu is null ? "" : $" with --cpu {target.Cpu}")}: {err.Trim()}");
-        return Cache[key] = new CpuModel(target, cpu.Groups[1].Value, feats.Success ? feats.Groups[1].Value : "");
+        return Cache.GetOrAdd(key, new CpuModel(target, cpu.Groups[1].Value, feats.Success ? feats.Groups[1].Value : ""));
     }
 
     /// Whether the build has the feature. A name LLVM doesn't know for the target's arch is an error.
     public bool Has(string feature, Pos pos)
     {
         if (_enabled.Contains(feature)) return true;
-        if (_known.Contains(feature)) return false;
+        lock (_known)
+            if (_known.Contains(feature)) return false;
         // Not in the CPU's list: ask clang whether the name exists at all (it warns about one it doesn't know).
         var (_, err) = QueryClang(_target, [.._target.Features, "+" + feature], pos);
         if (err.Contains("not a recognized feature", StringComparison.Ordinal))
             throw new CompileError(pos, $"'{feature}' is not a CPU feature of {_target.Arch}");
-        _known.Add(feature);
+        lock (_known) _known.Add(feature);
         return false;
     }
 

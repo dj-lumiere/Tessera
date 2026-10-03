@@ -6,7 +6,7 @@
 //   - Slots is an index table: each cell is SLOT_EMPTY, SLOT_TOMBSTONE, or an
 //     entry index >= 0. Linear probing on the hash mod capacity.
 //
-// Every array is an OwnedSpan of the same count, the capacity, and each keeps
+// Every array is a Slice of the same count, the capacity, and each keeps
 // the allocator. Removal marks the entry dead and the slot a tombstone. The
 // entry's position in the entries array is retained so the insertion order of
 // surviving entries is preserved. Rehash compacts dead entries away.
@@ -21,7 +21,7 @@ import Standard::Format
 private preset SLOT_EMPTY:     USize = USize.MAX
 private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
 
-/// An insertion-ordered hash set. Keys live in parallel arrays (each an {OwnedSpan<T>} holding the capacity and the allocator) in the order they were first added, and an open-addressed slot table with linear probing maps a hash to its entry. Removal marks the entry dead, so surviving elements keep their order until the next rehash.
+/// An insertion-ordered hash set. Keys live in parallel arrays (each a {Slice<T>} holding the capacity and the allocator) in the order they were first added, and an open-addressed slot table with linear probing maps a hash to its entry. Removal marks the entry dead, so surviving elements keep their order until the next rehash.
 /// :typeparam T: The element type, which must provide hashing and equality.
 record Set<T>
 conform Destructible<Set<T>>
@@ -29,10 +29,10 @@ conform Representable<Set<T>> when T: typename, HashEquatable<T>, Diagnosable<T>
 conform Diagnosable<Set<T>>   when T: typename, HashEquatable<T>, Diagnosable<T>
 conform Equatable<Set<T>>     when T: typename, HashEquatable<T>
 require T: typename, HashEquatable<T>
-    keys          : OwnedSpan<T>
-    hashes        : OwnedSpan<U64>
-    entry_states  : OwnedSpan<U8>
-    slots         : OwnedSpan<USize>
+    keys          : Slice<T>
+    hashes        : Slice<U64>
+    entry_states  : Slice<U8>
+    slots         : Slice<USize>
     count         : USize
     entries_count : USize
 
@@ -42,12 +42,12 @@ require T: typename, HashEquatable<T>
 routine Set<T>.construct(alloc: @Allocator) -> Self
 require T: typename, HashEquatable<T>
     block entry()
-        keys         : OwnedSpan<T>     = OwnedSpan<T>.construct(0, alloc)
-        hashes       : OwnedSpan<U64>   = OwnedSpan<U64>.construct(0, alloc)
-        entry_states : OwnedSpan<U8>    = OwnedSpan<U8>.construct(0, alloc)
-        slots        : OwnedSpan<USize> = OwnedSpan<USize>.construct(0, alloc)
-        set          : Self             = Self { keys: keys, hashes: hashes,
-            entry_states: entry_states, slots: slots, count: 0, entries_count: 0 }
+        keys         : Slice<T>     = Slice<T>.construct(0, alloc)
+        hashes       : Slice<U64>   = Slice<U64>.construct(0, alloc)
+        entry_states : Slice<U8>    = Slice<U8>.construct(0, alloc)
+        slots        : Slice<USize> = Slice<USize>.construct(0, alloc)
+        set          : Self         = Self { keys: keys, hashes: hashes, entry_states: entry_states,
+            slots: slots, count: 0, entries_count: 0 }
         return(set)
 
 /// The number of elements currently stored.
@@ -232,10 +232,10 @@ private routine Set<T>.rehash(self: @Self, new_capacity: USize) -> Bool
 require T: typename
     block entry()
         alloc : @Allocator = self.keys.alloc.load()
-        claim keys         : @OwnedSpan<T>     <- .construct(0, alloc)
-        claim hashes       : @OwnedSpan<U64>   <- .construct(0, alloc)
-        claim entry_states : @OwnedSpan<U8>    <- .construct(0, alloc)
-        claim slots        : @OwnedSpan<USize> <- .construct(0, alloc)
+        claim keys         : @Slice<T>     <- .construct(0, alloc)
+        claim hashes       : @Slice<U64>   <- .construct(0, alloc)
+        claim entry_states : @Slice<U8>    <- .construct(0, alloc)
+        claim slots        : @Slice<USize> <- .construct(0, alloc)
         made_keys : Bool = make_array<T>(keys, new_capacity)
         branch made_keys
             ? continue
@@ -253,13 +253,13 @@ require T: typename
             ? clear_loop(0, keys, hashes, entry_states, slots)
             : discard(keys, hashes, entry_states, slots)
 
-    block discard(keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>,
-        slots: @OwnedSpan<USize>)
+    block discard(keys: @Slice<T>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
+        slots: @Slice<USize>)
         destruct_set_arrays<T>(keys, hashes, entry_states, slots)
         return(false)
 
-    block clear_loop(i: USize, keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>,
-        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+    block clear_loop(i: USize, keys: @Slice<T>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
+        slots: @Slice<USize>)
         done : Bool = i.ge(new_capacity)
         branch done
             ? install(keys, hashes, entry_states, slots)
@@ -270,20 +270,20 @@ require T: typename
         state_cells.stride(i).store(0)
         jump clear_loop(i.add(1), keys, hashes, entry_states, slots)
 
-    // Swaps the new arrays into the set, so the claimed spans hold the old ones from here on.
-    block install(keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>,
-        slots: @OwnedSpan<USize>)
+    // Swaps the new arrays into the set, so the claimed slices hold the old ones from here on.
+    block install(keys: @Slice<T>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
+        slots: @Slice<USize>)
         old_count : USize = self.entries_count.load()
-        swap_spans<T>(self.keys, keys)
-        swap_spans<U64>(self.hashes, hashes)
-        swap_spans<U8>(self.entry_states, entry_states)
-        swap_spans<USize>(self.slots, slots)
+        swap_slices<T>(self.keys, keys)
+        swap_slices<U64>(self.hashes, hashes)
+        swap_slices<U8>(self.entry_states, entry_states)
+        swap_slices<USize>(self.slots, slots)
         self.count.store(0)
         self.entries_count.store(0)
         jump move_loop(0, old_count, keys, hashes, entry_states, slots)
 
-    block move_loop(i: USize, old_count: USize, keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>,
-        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+    block move_loop(i: USize, old_count: USize, keys: @Slice<T>, hashes: @Slice<U64>,
+        entry_states: @Slice<U8>, slots: @Slice<USize>)
         done : Bool = i.ge(old_count)
         branch done
             ? release_old(keys, hashes, entry_states, slots)
@@ -295,8 +295,8 @@ require T: typename
             ? insert_old(i, old_count, keys, hashes, entry_states, slots)
             : move_loop(i.add(1), old_count, keys, hashes, entry_states, slots)
 
-    block insert_old(i: USize, old_count: USize, keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>,
-        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+    block insert_old(i: USize, old_count: USize, keys: @Slice<T>, hashes: @Slice<U64>,
+        entry_states: @Slice<U8>, slots: @Slice<USize>)
         old_keys   : @T   = keys.data.load()
         old_hashes : @U64 = hashes.data.load()
         key        : T    = old_keys.stride(i).load()
@@ -304,8 +304,8 @@ require T: typename
         self.add_direct(key, hash)
         jump move_loop(i.add(1), old_count, keys, hashes, entry_states, slots)
 
-    block release_old(keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>,
-        slots: @OwnedSpan<USize>)
+    block release_old(keys: @Slice<T>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
+        slots: @Slice<USize>)
         destruct_set_arrays<T>(keys, hashes, entry_states, slots)
         return(true)
 
@@ -421,6 +421,7 @@ require T: typename
 
 /// Gives the set's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
 /// :note: Safe to call on a never-filled instance, where it only resets the fields.
+#track_caller
 routine Set<T>.destruct(self: @Self) -> Void
 require T: typename
     block entry()
@@ -431,6 +432,7 @@ require T: typename
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
 /// Elements that are only borrowed (a `Ptr` to memory owned elsewhere) must not be destructed this way.
+#track_caller
 routine Set<T>.destruct_all(self: @Self) -> Void
 require T: typename, HashEquatable<T>, Destructible<T>
     block entry()
@@ -479,12 +481,13 @@ require T: typename, HashEquatable<T>, Diagnosable<T>, W: typename, Writer<W>
 // -- the arrays -----------------------------------------------------------------
 
 /// Gives the four arrays of a set back to their allocator, leaving each empty.
-private routine destruct_set_arrays<T>(keys: @OwnedSpan<T>, hashes: @OwnedSpan<U64>,
-    entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>) -> Void
+#track_caller
+private routine destruct_set_arrays<T>(keys: @Slice<T>, hashes: @Slice<U64>,
+    entry_states: @Slice<U8>, slots: @Slice<USize>) -> Void
 require T: typename
     block entry()
-        keys.destruct()
-        hashes.destruct()
-        entry_states.destruct()
-        slots.destruct()
+        keys.resize(0)
+        hashes.resize(0)
+        entry_states.resize(0)
+        slots.resize(0)
         return()

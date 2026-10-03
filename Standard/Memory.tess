@@ -5,11 +5,16 @@
 // make_heap_allocator(), backed by libc malloc / realloc / free, is in
 // Standard::Os (Os/Heap.tess).
 //
-// Heap memory reaches user code as an OwnedSpan (OwnedSpan.tess): an address, a
-// count, and this allocator, released with destruct(). allocate, reallocate, and
-// deallocate below are the raw layer under it, for the stdlib's own node-based
-// structures (B-tree nodes, thread and fiber records) and for memory that C code
-// hands over. Sizes and counts are USize.
+// Heap memory reaches user code as a Slice (Types/Slice.tess) or Bytes: an
+// address, a count, and this allocator, released with destruct(). allocate,
+// reallocate, and deallocate below are the raw layer under it, for the stdlib's
+// own node-based structures (B-tree nodes, thread and fiber records) and for
+// memory that C code hands over. Sizes and counts are USize.
+//
+// In a debug build, reallocate and deallocate note the place they were called
+// from while the allocator runs, so an allocator that finds a mistake (the
+// default heap's check for a block freed twice) can crash at the caller's line:
+// allocator_call_place() reads it.
 
 module Standard::Alloc
 
@@ -65,6 +70,7 @@ require T: typename
 /// :param new_count: The new number of values of `T`.
 /// :returns: A pointer to the resized block, which may have moved, or a null pointer when the allocator fails.
 /// :note: A failed reallocation returns a null pointer, and the old block stays valid.
+#track_caller
 routine reallocate<T>(alloc: @Allocator, ptr: @T, new_count: USize) -> @T
 require T: typename
     block entry()
@@ -73,8 +79,10 @@ require T: typename
         raw_old    : Addr                                = ptr
         realloc_fn : Callable<(Addr, Addr, USize), Addr> = alloc.realloc_fn.load()
         state      : Addr                                = alloc.state.load()
-        raw        : Addr                                = realloc_fn.call(state, raw_old, size)
-        typed      : @T                                  = raw.to<@T>()
+        note_call_place(caller_location())
+        raw : Addr = realloc_fn.call(state, raw_old, size)
+        note_call_place(null)
+        typed : @T = raw.to<@T>()
         return(typed)
 
 /// Hands the block at `data` back to `alloc`, the allocator it came from. Not a destructor: whatever the values own is
@@ -82,15 +90,56 @@ require T: typename
 /// :typeparam T: The element type.
 /// :param alloc: The allocator the block came from.
 /// :param data: The block, from `allocate` or `reallocate`.
-/// :note: The raw layer under {OwnedSpan<T>}, whose `destruct()` calls it. Code that holds an OwnedSpan never needs it.
+/// :note: The raw layer under {Slice<T>} and {Bytes}, whose `destruct()` calls it. Code that holds a Slice never needs it.
+#track_caller
 routine deallocate<T>(alloc: @Allocator, data: @T) -> Void
 require T: typename
     block entry()
         raw     : Addr                         = data
         free_fn : Callable<(Addr, Addr), Void> = alloc.free_fn.load()
         state   : Addr                         = alloc.state.load()
+        note_call_place(caller_location())
         free_fn.call(state, raw)
+        note_call_place(null)
         return()
+
+// -- the place of the allocator call in progress --------------------------------------------------------------------
+
+/// The place of the reallocate or deallocate call the running thread is in, in a debug build.
+#[threadlocal, target(os: not "none"), debug("on")]
+private global CALL_PLACE: @@SourceLocation
+/// The place of the reallocate or deallocate call in progress, on a target without an operating system.
+#[target(os: "none"), debug("on")]
+private global CALL_PLACE: @@SourceLocation
+
+/// Notes `place` as the place of the allocator call in progress (null when it's over).
+#[inline, debug("on")]
+private routine note_call_place(place: @SourceLocation) -> Void
+    block entry()
+        CALL_PLACE.store(place)
+        return()
+
+/// Nothing to note outside a debug build.
+#[inline, debug("off")]
+private routine note_call_place(place: @SourceLocation) -> Void
+    block entry()
+        return()
+
+/// In a debug build, where the `reallocate` or `deallocate` call that is running this thread's allocator callback was
+/// made: the caller's line, for an allocator that crashes on a mistake (the default heap's block freed twice). Null
+/// outside such a call, and always null in an optimized build.
+/// :returns: The place, or null.
+#debug("on")
+routine allocator_call_place() -> @SourceLocation
+    block entry()
+        place : @SourceLocation = CALL_PLACE.load()
+        return(place)
+
+/// Always null outside a debug build: the place isn't noted there.
+#debug("off")
+routine allocator_call_place() -> @SourceLocation
+    block entry()
+        return(null)
 
 /// Copies `count` values of `T` from `src` to `dst` as raw bytes (`llvm.memcpy`).
 /// :typeparam T: The element type.
@@ -126,13 +175,13 @@ private routine copy_bytes(dst: Addr, src: Addr, bytes: USize) -> Void
 /// `CStr` with `to<CStr>()` and gives the memory back with `destruct()`.
 record OwnedCStr
 conform Destructible<OwnedCStr>
-    storage : OwnedSpan<CChar>
+    storage : Slice<CChar>
 
 /// A copy of some text in wide characters ending with a 0, for C, in memory from an allocator:
 /// `text.to<OwnedCWStr>(alloc)`. It lends a `CWStr` with `to<CWStr>()` and gives the memory back with `destruct()`.
 record OwnedCWStr
 conform Destructible<OwnedCWStr>
-    storage : OwnedSpan<CWChar>
+    storage : Slice<CWChar>
 
 /// The text, borrowed: valid until `destruct()`.
 routine OwnedCStr.to<CStr>(self: Self) -> CStr
@@ -147,6 +196,7 @@ routine OwnedCStr.to<CStr>(self: @Self) -> CStr
         return(text)
 
 /// Gives the memory back to the allocator it came from.
+#track_caller
 routine OwnedCStr.destruct(self: @Self) -> Void
     block entry()
         self.storage.destruct()
@@ -165,6 +215,7 @@ routine OwnedCWStr.to<CWStr>(self: @Self) -> CWStr
         return(text)
 
 /// Gives the memory back to the allocator it came from.
+#track_caller
 routine OwnedCWStr.destruct(self: @Self) -> Void
     block entry()
         self.storage.destruct()
@@ -175,8 +226,8 @@ routine OwnedCWStr.destruct(self: @Self) -> Void
 #track_caller
 routine Bytes.to<OwnedCStr>(self: Self, alloc: @Allocator) -> OwnedCStr
     block entry()
-        count  : USize            = self.count
-        buffer : OwnedSpan<CChar> = OwnedSpan<CChar>.construct(count.add(1), alloc)
+        count  : USize        = self.count
+        buffer : Slice<CChar> = Slice<CChar>.construct(count.add(1), alloc)
         copy<Byte>(buffer.data.to<@Byte>(), self.data, count)
         buffer.data.stride(count).store(0)
         owned : OwnedCStr = OwnedCStr { storage: buffer }
@@ -188,23 +239,22 @@ routine Bytes.to<OwnedCStr>(self: Self, alloc: @Allocator) -> OwnedCStr
 #track_caller
 routine Bytes.to<OwnedCWStr>(self: Self, alloc: @Allocator) -> OwnedCWStr
     block entry()
-        storage : OwnedSpan<CWChar> = OwnedSpan<CWChar>.construct(self.count.add(1), alloc)
-        units   : @CWChar           = storage.data
+        storage : Slice<CWChar> = Slice<CWChar>.construct(self.count.add(1), alloc)
+        units   : @CWChar       = storage.data
         claim iter : @BytesCharsIter <- self.chars()
         jump next(iter, storage, units, 0)
 
-    block next(iter: @BytesCharsIter, storage: OwnedSpan<CWChar>, units: @CWChar, n: USize)
+    block next(iter: @BytesCharsIter, storage: Slice<CWChar>, units: @CWChar, n: USize)
         c : Option<Char> = iter.next()
         when c
             .Present(char) -> put(iter, storage, units, n, char)
             .Absent        -> finish(storage, units, n)
 
-    block put(iter: @BytesCharsIter, storage: OwnedSpan<CWChar>, units: @CWChar, n: USize,
-        char: Char)
+    block put(iter: @BytesCharsIter, storage: Slice<CWChar>, units: @CWChar, n: USize, char: Char)
         count : USize = encode_cwchar(char, units.stride(n))
         jump next(iter, storage, units, n.add(count))
 
-    block finish(storage: OwnedSpan<CWChar>, units: @CWChar, n: USize)
+    block finish(storage: Slice<CWChar>, units: @CWChar, n: USize)
         units.stride(n).store(0)
         owned : OwnedCWStr = OwnedCWStr { storage: storage }
         return(owned)

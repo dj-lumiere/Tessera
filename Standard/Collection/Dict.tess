@@ -6,7 +6,7 @@
 //   - Slots is an index table: each cell is SLOT_EMPTY, SLOT_TOMBSTONE, or an
 //     entry index >= 0. Linear probing on the hash mod capacity.
 //
-// Every array is an OwnedSpan of the same count, the capacity, and each keeps
+// Every array is a Slice of the same count, the capacity, and each keeps
 // the allocator. Removal marks the entry dead and the slot a tombstone. The
 // entry's position in the entries array is retained so the insertion order of
 // surviving entries is preserved. Rehash compacts dead entries away.
@@ -21,7 +21,7 @@ import Standard::Format
 private preset SLOT_EMPTY:     USize = USize.MAX
 private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
 
-/// An insertion-ordered hash map. Entries live in parallel arrays (each an {OwnedSpan<T>} holding the capacity and the allocator) in the order they were first inserted, and an open-addressed slot table with linear probing maps a key hash to its entry. Removal marks the entry dead, so surviving entries keep their order until the next rehash.
+/// An insertion-ordered hash map. Entries live in parallel arrays (each a {Slice<T>} holding the capacity and the allocator) in the order they were first inserted, and an open-addressed slot table with linear probing maps a key hash to its entry. Removal marks the entry dead, so surviving entries keep their order until the next rehash.
 /// :typeparam K: The key type, which must provide hashing and equality.
 /// :typeparam V: The value type.
 record Dict<K, V>
@@ -30,11 +30,11 @@ conform Representable<Dict<K, V>> when K: typename, V: typename, HashEquatable<K
 conform Diagnosable<Dict<K, V>>   when K: typename, V: typename, HashEquatable<K>, Diagnosable<K>, Diagnosable<V>
 conform Equatable<Dict<K, V>>     when K: typename, V: typename, HashEquatable<K>, Equatable<V>
 require K: typename, V: typename, HashEquatable<K>
-    keys          : OwnedSpan<K>
-    values        : OwnedSpan<V>
-    hashes        : OwnedSpan<U64>
-    entry_states  : OwnedSpan<U8>
-    slots         : OwnedSpan<USize>
+    keys          : Slice<K>
+    values        : Slice<V>
+    hashes        : Slice<U64>
+    entry_states  : Slice<U8>
+    slots         : Slice<USize>
     count         : USize
     entries_count : USize
 
@@ -44,12 +44,12 @@ require K: typename, V: typename, HashEquatable<K>
 routine Dict<K, V>.construct(alloc: @Allocator) -> Self
 require K: typename, V: typename, HashEquatable<K>
     block entry()
-        keys         : OwnedSpan<K>     = OwnedSpan<K>.construct(0, alloc)
-        values       : OwnedSpan<V>     = OwnedSpan<V>.construct(0, alloc)
-        hashes       : OwnedSpan<U64>   = OwnedSpan<U64>.construct(0, alloc)
-        entry_states : OwnedSpan<U8>    = OwnedSpan<U8>.construct(0, alloc)
-        slots        : OwnedSpan<USize> = OwnedSpan<USize>.construct(0, alloc)
-        map          : Self             = Self { keys: keys, values: values, hashes: hashes,
+        keys         : Slice<K>     = Slice<K>.construct(0, alloc)
+        values       : Slice<V>     = Slice<V>.construct(0, alloc)
+        hashes       : Slice<U64>   = Slice<U64>.construct(0, alloc)
+        entry_states : Slice<U8>    = Slice<U8>.construct(0, alloc)
+        slots        : Slice<USize> = Slice<USize>.construct(0, alloc)
+        map          : Self         = Self { keys: keys, values: values, hashes: hashes,
             entry_states: entry_states, slots: slots, count: 0, entries_count: 0 }
         return(map)
 
@@ -247,11 +247,11 @@ private routine Dict<K, V>.rehash(self: @Self, new_capacity: USize) -> Bool
 require K: typename, V: typename
     block entry()
         alloc : @Allocator = self.keys.alloc.load()
-        claim keys         : @OwnedSpan<K>     <- .construct(0, alloc)
-        claim values       : @OwnedSpan<V>     <- .construct(0, alloc)
-        claim hashes       : @OwnedSpan<U64>   <- .construct(0, alloc)
-        claim entry_states : @OwnedSpan<U8>    <- .construct(0, alloc)
-        claim slots        : @OwnedSpan<USize> <- .construct(0, alloc)
+        claim keys         : @Slice<K>     <- .construct(0, alloc)
+        claim values       : @Slice<V>     <- .construct(0, alloc)
+        claim hashes       : @Slice<U64>   <- .construct(0, alloc)
+        claim entry_states : @Slice<U8>    <- .construct(0, alloc)
+        claim slots        : @Slice<USize> <- .construct(0, alloc)
         made_keys : Bool = make_array<K>(keys, new_capacity)
         branch made_keys
             ? continue
@@ -273,13 +273,13 @@ require K: typename, V: typename
             ? clear_loop(0, keys, values, hashes, entry_states, slots)
             : discard(keys, values, hashes, entry_states, slots)
 
-    block discard(keys: @OwnedSpan<K>, values: @OwnedSpan<V>, hashes: @OwnedSpan<U64>,
-        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+    block discard(keys: @Slice<K>, values: @Slice<V>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
+        slots: @Slice<USize>)
         destruct_arrays<K, V>(keys, values, hashes, entry_states, slots)
         return(false)
 
-    block clear_loop(i: USize, keys: @OwnedSpan<K>, values: @OwnedSpan<V>, hashes: @OwnedSpan<U64>,
-        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+    block clear_loop(i: USize, keys: @Slice<K>, values: @Slice<V>, hashes: @Slice<U64>,
+        entry_states: @Slice<U8>, slots: @Slice<USize>)
         done : Bool = i.ge(new_capacity)
         branch done
             ? install(keys, values, hashes, entry_states, slots)
@@ -290,21 +290,21 @@ require K: typename, V: typename
         state_cells.stride(i).store(0)
         jump clear_loop(i.add(1), keys, values, hashes, entry_states, slots)
 
-    // Swaps the new arrays into the dict, so the claimed spans hold the old ones from here on.
-    block install(keys: @OwnedSpan<K>, values: @OwnedSpan<V>, hashes: @OwnedSpan<U64>,
-        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+    // Swaps the new arrays into the dict, so the claimed slices hold the old ones from here on.
+    block install(keys: @Slice<K>, values: @Slice<V>, hashes: @Slice<U64>, entry_states: @Slice<U8>,
+        slots: @Slice<USize>)
         old_count : USize = self.entries_count.load()
-        swap_spans<K>(self.keys, keys)
-        swap_spans<V>(self.values, values)
-        swap_spans<U64>(self.hashes, hashes)
-        swap_spans<U8>(self.entry_states, entry_states)
-        swap_spans<USize>(self.slots, slots)
+        swap_slices<K>(self.keys, keys)
+        swap_slices<V>(self.values, values)
+        swap_slices<U64>(self.hashes, hashes)
+        swap_slices<U8>(self.entry_states, entry_states)
+        swap_slices<USize>(self.slots, slots)
         self.count.store(0)
         self.entries_count.store(0)
         jump move_loop(0, old_count, keys, values, hashes, entry_states, slots)
 
-    block move_loop(i: USize, old_count: USize, keys: @OwnedSpan<K>, values: @OwnedSpan<V>,
-        hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+    block move_loop(i: USize, old_count: USize, keys: @Slice<K>, values: @Slice<V>,
+        hashes: @Slice<U64>, entry_states: @Slice<U8>, slots: @Slice<USize>)
         done : Bool = i.ge(old_count)
         branch done
             ? release_old(keys, values, hashes, entry_states, slots)
@@ -316,8 +316,8 @@ require K: typename, V: typename
             ? insert_old(i, old_count, keys, values, hashes, entry_states, slots)
             : move_loop(i.add(1), old_count, keys, values, hashes, entry_states, slots)
 
-    block insert_old(i: USize, old_count: USize, keys: @OwnedSpan<K>, values: @OwnedSpan<V>,
-        hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+    block insert_old(i: USize, old_count: USize, keys: @Slice<K>, values: @Slice<V>,
+        hashes: @Slice<U64>, entry_states: @Slice<U8>, slots: @Slice<USize>)
         old_keys   : @K   = keys.data.load()
         old_values : @V   = values.data.load()
         old_hashes : @U64 = hashes.data.load()
@@ -327,8 +327,8 @@ require K: typename, V: typename
         self.put_direct(key, value, hash)
         jump move_loop(i.add(1), old_count, keys, values, hashes, entry_states, slots)
 
-    block release_old(keys: @OwnedSpan<K>, values: @OwnedSpan<V>, hashes: @OwnedSpan<U64>,
-        entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>)
+    block release_old(keys: @Slice<K>, values: @Slice<V>, hashes: @Slice<U64>,
+        entry_states: @Slice<U8>, slots: @Slice<USize>)
         destruct_arrays<K, V>(keys, values, hashes, entry_states, slots)
         return(true)
 
@@ -553,6 +553,7 @@ require K: typename, V: typename
 
 /// Gives the dict's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
 /// :note: Safe to call on a never-filled instance, where it only resets the fields.
+#track_caller
 routine Dict<K, V>.destruct(self: @Self) -> Void
 require K: typename, V: typename
     block entry()
@@ -562,6 +563,7 @@ require K: typename, V: typename
         return()
 
 /// Destructs every key and value, then the dictionary itself.
+#track_caller
 routine Dict<K, V>.destruct_all(self: @Self) -> Void
 require K: typename, V: typename, Destructible<K>, Destructible<V>
     block entry()
@@ -589,6 +591,7 @@ require K: typename, V: typename, Destructible<K>, Destructible<V>
         return()
 
 /// Destructs every value (the keys own nothing), then the dictionary itself.
+#track_caller
 routine Dict<K, V>.destruct_all_values(self: @Self) -> Void
 require K: typename, V: typename, Destructible<V>
     block entry()
@@ -636,39 +639,40 @@ require K: typename, V: typename, HashEquatable<K>, Diagnosable<K>, Diagnosable<
 
 // -- the arrays -----------------------------------------------------------------
 
-/// Fills `into` (an empty span holding the allocator) with `count` new values from that allocator. Returns false when
+/// Fills `into` (an empty slice holding the allocator) with `count` new values from that allocator. Returns false when
 /// the allocator fails, leaving `into` empty. Set's rehash makes its arrays the same way.
-internal routine make_array<T>(into: @OwnedSpan<T>, count: USize) -> Bool
+internal routine make_array<T>(into: @Slice<T>, count: USize) -> Bool
 require T: typename
     block entry()
-        alloc : @Allocator                        = into.alloc.load()
-        made  : Result<OwnedSpan<T>, AllocFailed> = OwnedSpan<T>.construct_result(count, alloc)
+        alloc : @Allocator                    = into.alloc.load()
+        made  : Result<Slice<T>, AllocFailed> = Slice<T>.construct_result(count, alloc)
         when made
-            .Success(span) -> stored(span)
-            .Failure       -> return(false)
+            .Success(slice) -> stored(slice)
+            .Failure        -> return(false)
 
-    block stored(span: OwnedSpan<T>)
-        span.store_into(into)
+    block stored(slice: Slice<T>)
+        slice.store_into(into)
         return(true)
 
-/// Exchanges the spans at `a` and `b`.
-internal routine swap_spans<T>(a: @OwnedSpan<T>, b: @OwnedSpan<T>) -> Void
+/// Exchanges the slices at `a` and `b`.
+internal routine swap_slices<T>(a: @Slice<T>, b: @Slice<T>) -> Void
 require T: typename
     block entry()
-        first  : OwnedSpan<T> = a.load()
-        second : OwnedSpan<T> = b.load()
+        first  : Slice<T> = a.load()
+        second : Slice<T> = b.load()
         second.store_into(a)
         first.store_into(b)
         return()
 
 /// Gives the five arrays of a dict back to their allocator, leaving each empty.
-private routine destruct_arrays<K, V>(keys: @OwnedSpan<K>, values: @OwnedSpan<V>,
-    hashes: @OwnedSpan<U64>, entry_states: @OwnedSpan<U8>, slots: @OwnedSpan<USize>) -> Void
+#track_caller
+private routine destruct_arrays<K, V>(keys: @Slice<K>, values: @Slice<V>, hashes: @Slice<U64>,
+    entry_states: @Slice<U8>, slots: @Slice<USize>) -> Void
 require K: typename, V: typename
     block entry()
-        keys.destruct()
-        values.destruct()
-        hashes.destruct()
-        entry_states.destruct()
-        slots.destruct()
+        keys.resize(0)
+        values.resize(0)
+        hashes.resize(0)
+        entry_states.resize(0)
+        slots.resize(0)
         return()

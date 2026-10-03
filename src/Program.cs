@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using Tessera;
@@ -274,7 +275,7 @@ static class Cli
         }
         var target = targetArgs.Build();
         var decls = LoadDecls([.. files], target);
-        var compiler = new Compiler(target, decls, trace ?? true);
+        var compiler = new Compiler(target, decls, trace ?? true, debugChecks: true);
         var errors = compiler.CheckAll();
         foreach (var e in errors) Console.Error.WriteLine(e.Message);
         if (errors.Count == 0) Lint(decls, files);
@@ -316,7 +317,7 @@ static class Cli
     {
         var inputs = files.ToList();
         var decls = LoadDecls(inputs, target);
-        var compiler = new Compiler(target, decls, trace ?? mode.TracedByDefault())
+        var compiler = new Compiler(target, decls, trace ?? mode.TracedByDefault(), mode.HasDebugChecks())
         {
             FileTagPaths = FileTagPaths(inputs, roots),
             DebugInfo = true,
@@ -574,7 +575,7 @@ static class Cli
         }
     }
 
-    private static readonly Dictionary<string, string?> Builtins = [];
+    private static readonly ConcurrentDictionary<string, string?> Builtins = new();
 
     /// clang's compiler-rt builtins library for the target, if it is installed.
     private static string? BuiltinsLibrary(BuildTarget target)
