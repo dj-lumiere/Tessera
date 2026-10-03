@@ -106,7 +106,7 @@ public sealed class FunctionGen
             EmitNaked();
             return;
         }
-        var blocks = _decl.Blocks!;   // the parser guarantees a leading `block entry():`
+        var blocks = _decl.Blocks!;   // the parser guarantees a leading `block entry()`
 
         for (int i = 0; i < _decl.Params.Count; i++)
         {
@@ -125,7 +125,6 @@ public sealed class FunctionGen
             foreach (var p in b.Params)
             {
                 var t = Resolve(p.Type);
-                // A block parameter may shadow a routine parameter (Standard/io.tess print_int does this).
                 if (!seen.Add(p.Name)) throw Err(p.Pos, $"block '{b.Name}' declares '{p.Name}' twice");
                 types.Add(t);
             }
@@ -2154,7 +2153,7 @@ public sealed class FunctionGen
                     break;
                 }
                 if (v.Type is not (IntType or ChoiceType))
-                    throw Err(sw.Value.Pos, $"when v: needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
+                    throw Err(sw.Value.Pos, $"when v needs an integer, Byte, Char, choice, or variant value, not {v.Type}");
                 string? defaultLabel = null;
                 var cases = new List<string>();
                 var seen = new HashSet<string>();

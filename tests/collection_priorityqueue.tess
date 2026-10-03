@@ -18,7 +18,7 @@ conform Priority<Job>
     sequence : S64
 
 routine Rng.below(self: @Self, bound: USize) -> USize
-    block entry():
+    block entry()
         state : U64 = self.state.load()
         next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         self.state.store(next)
@@ -27,19 +27,19 @@ routine Rng.below(self: @Self, bound: USize) -> USize
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
-    block entry():
+    block entry()
         mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
 routine labeled<W>(out: @W, label: Bytes, value: S64) -> Void
 require W: typename, Writer<W>
-    block entry():
+    block entry()
         write(out, " {label} {value}")
         return()
 
 // Lower priority first; equal priorities in push order.
 routine Job.less(self: Self, other: Self) -> Bool
-    block entry():
+    block entry()
         pa      : S64  = self.priority
         pb      : S64  = other.priority
         before  : Bool = pa.lt(pb)
@@ -52,7 +52,7 @@ routine Job.less(self: Self, other: Self) -> Bool
 
 // One number per job for the checksum. Sequence numbers stay below a million.
 routine Job.key(self: Self) -> S64
-    block entry():
+    block entry()
         priority : S64 = self.priority
         sequence : S64 = self.sequence
         key      : S64 = priority.mul(1000000).add(sequence)
@@ -60,7 +60,7 @@ routine Job.key(self: Self) -> S64
 
 routine checkpoint(out: @BufWriter<FdWriter>, heap: @PriorityQueue<Job>, phase: USize, op: USize,
     results: S64) -> Void
-    block entry():
+    block entry()
         write(out, "phase {phase}")
         labeled(out, "op", op.to<S64>())
         size : USize = heap.load().length()
@@ -73,88 +73,88 @@ routine checkpoint(out: @BufWriter<FdWriter>, heap: @PriorityQueue<Job>, phase: 
 // are below priorities, so small bounds make many ties. sequence counts pushes. Returns the updated results checksum.
 routine run_phase(out: @BufWriter<FdWriter>, heap: @PriorityQueue<Job>, rng: @Rng, sequence: @S64,
     phase: USize, ops: USize, push: USize, priorities: USize, results: S64) -> S64
-    block entry():
+    block entry()
         jump next(0, results)
 
-    block next(op: USize, results: S64):
+    block next(op: USize, checksum: S64)
         done : Bool = op.ge(ops)
         branch done
-            ? return(results)
-            : pick(op, results)
+            ? return(checksum)
+            : pick(op, checksum)
 
-    block pick(op: USize, results: S64):
+    block pick(op: USize, checksum: S64)
         kind     : USize = rng.below(1000)
         is_push  : Bool  = kind.lt(push.mul(10))
         is_pop   : Bool  = kind.lt(push.add(30).mul(10))
         is_clear : Bool  = kind.eq(999)
-        when:
-            is_push  -> push(op, results)
-            is_pop   -> pop(op, results)
-            is_clear -> clear(op, results)
-            else     -> peek(op, results)
+        when
+            is_push  -> push(op, checksum)
+            is_pop   -> pop(op, checksum)
+            is_clear -> clear(op, checksum)
+            else     -> peek(op, checksum)
 
-    block push(op: USize, results: S64):
+    block push(op: USize, checksum: S64)
         priority     : S64 = rng.below(priorities).to<S64>()
         sequence_val : S64 = sequence.load()
         sequence.store(sequence_val.add(1))
         job : Job = Job { priority: priority, sequence: sequence_val }
         heap.push(job)
-        jump record(op, results, job.key())
+        jump record(op, checksum, job.key())
 
-    block pop(op: USize, results: S64):
+    block pop(op: USize, checksum: S64)
         empty : Bool = heap.load().is_empty()
         branch empty
-            ? record(op, results, -1)
-            : pop_one(op, results)
+            ? record(op, checksum, -1)
+            : pop_one(op, checksum)
 
-    block pop_one(op: USize, results: S64):
+    block pop_one(op: USize, checksum: S64)
         job : Job = heap.pop()
-        jump record(op, results, job.key())
+        jump record(op, checksum, job.key())
 
-    block peek(op: USize, results: S64):
+    block peek(op: USize, checksum: S64)
         empty : Bool = heap.load().is_empty()
         branch empty
-            ? record(op, results, -2)
-            : peek_one(op, results)
+            ? record(op, checksum, -2)
+            : peek_one(op, checksum)
 
-    block peek_one(op: USize, results: S64):
+    block peek_one(op: USize, checksum: S64)
         job : Job = heap.load().peek()
-        jump record(op, results, job.key())
+        jump record(op, checksum, job.key())
 
-    block clear(op: USize, results: S64):
+    block clear(op: USize, checksum: S64)
         heap.clear()
-        jump record(op, results, -3)
+        jump record(op, checksum, -3)
 
-    block record(op: USize, results: S64, result: S64):
-        mixed   : S64   = mix(results, result)
+    block record(op: USize, checksum: S64, result: S64)
+        mixed   : S64   = mix(checksum, result)
         op_next : USize = op.add(1)
         report  : Bool  = op_next.mod(500).eq(0)
         branch report
             ? report(op_next, mixed)
             : next(op_next, mixed)
 
-    block report(op: USize, results: S64):
-        checkpoint(out, heap, phase, op, results)
-        jump next(op, results)
+    block report(op: USize, checksum: S64)
+        checkpoint(out, heap, phase, op, checksum)
+        jump next(op, checksum)
 
 // Pops everything, printing the count, a hash of the pop order, and whether each pop was no smaller than the last.
 routine drain(out: @BufWriter<FdWriter>, heap: @PriorityQueue<Job>) -> Void
-    block entry():
+    block entry()
         jump next(0, 0, -1, true)
 
-    block next(count: S64, hash: S64, last: S64, sorted: Bool):
+    block next(count: S64, hash: S64, last: S64, sorted: Bool)
         empty : Bool = heap.load().is_empty()
         branch empty
             ? done(count, hash, sorted)
             : pop(count, hash, last, sorted)
 
-    block pop(count: S64, hash: S64, last: S64, sorted: Bool):
+    block pop(count: S64, hash: S64, last: S64, sorted: Bool)
         job      : Job  = heap.pop()
         key      : S64  = job.key()
         in_order : Bool = key.gt(last)
         jump next(count.add(1), mix(hash, key), key, sorted.bitand(in_order))
 
-    block done(count: S64, hash: S64, sorted: Bool):
+    block done(count: S64, hash: S64, sorted: Bool)
         write(out, "drained")
         labeled(out, "count", count)
         labeled(out, "hash", hash)
@@ -162,7 +162,7 @@ routine drain(out: @BufWriter<FdWriter>, heap: @PriorityQueue<Job>) -> Void
         return()
 
 routine main() -> S32
-    block entry():
+    block entry()
         claim fd  : @FdWriter            <- .stdout()
         claim out : @BufWriter<FdWriter> <- uninit
         out.construct(fd)

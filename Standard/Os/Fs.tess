@@ -78,12 +78,12 @@ record Mapping
     length : USize  // the bytes mapped from there
 
 internal routine fs_done() -> Result<Unit, FsError>
-    block entry():
+    block entry()
         return(.Success(Unit.value()))
 
 /// Why path didn't fit a C path: a NUL inside, or too long.
 internal routine path_error(path: Bytes) -> FsError
-    block entry():
+    block entry()
         branch path.contains("\x00")
             ? return(FsError.InvalidPath)
             : return(FsError.NameTooLong)
@@ -92,24 +92,24 @@ internal routine path_error(path: Bytes) -> FsError
 
 /// Whether something is at path (a link counts as what it points at).
 internal routine exists(path: Bytes) -> Bool
-    block entry():
+    block entry()
         m : Result<Metadata, FsError> = metadata(path)
         return(m.is_success())
 
 internal routine is_kind(path: Bytes, kind: FileKind) -> Bool
-    block entry():
+    block entry()
         m : Result<Metadata, FsError> = metadata(path)
-        when m:
+        when m
             .Success(info) -> return(info.kind.eq(kind))
             .Failure       -> return(false)
 
 /// Like mkdir -p: every missing directory on the way, then path. A directory already there is fine.
 internal routine create_dir_all(path: Bytes) -> Result<Unit, FsError>
-    block entry():
+    block entry()
         jump scan(1)
 
     // Each separator after the first byte ends a prefix to make; failures there show up in the last step.
-    block scan(i: USize):
+    block scan(i: USize)
         branch i.ge(path.length())
             ? last()
             : continue
@@ -117,133 +117,133 @@ internal routine create_dir_all(path: Bytes) -> Result<Unit, FsError>
             ? make(i)
             : scan(i.add(1))
 
-    block make(i: USize):
+    block make(i: USize)
         create_dir(path.slice(0, i))
         jump scan(i.add(1))
 
-    block last():
+    block last()
         made : Result<Unit, FsError> = create_dir(path)
-        when made:
+        when made
             .Success        -> return(made)
             .Failure(error) -> check(error)
 
-    block check(error: FsError):
+    block check(error: FsError)
         branch error.eq(FsError.AlreadyExists).bitand(is_kind(path, FileKind.Directory))
             ? return(fs_done())
             : return(.Failure(error))
 
 /// path and everything in it. A link is removed, not followed. Child paths are built in memory from alloc.
 internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, FsError>
-    block entry():
+    block entry()
         m : Result<Metadata, FsError> = symlink_metadata(path)
-        when m:
+        when m
             .Success(info)  -> kind(info.kind)
             .Failure(error) -> return(.Failure(error))
 
-    block kind(k: FileKind):
+    block kind(k: FileKind)
         branch k.eq(FileKind.Directory)
             ? continue
             : return(remove_file(path))
         claim iter : @DirIter <- uninit
         opened : Result<Unit, FsError> = iter.open_path(path)
-        when opened:
+        when opened
             .Success        -> next(iter)
             .Failure(error) -> return(.Failure(error))
 
-    block next(iter: @DirIter):
+    block next(iter: @DirIter)
         entry : Option<DirEntry> = iter.next()
-        when entry:
+        when entry
             .Present(e) -> child(iter, e)
             .Absent     -> emptied(iter)
 
-    block child(iter: @DirIter, e: DirEntry):
+    block child(iter: @DirIter, e: DirEntry)
         full : Bytes                 = join_path(path, e.name, alloc)
         gone : Result<Unit, FsError> = remove_dir_all(full, alloc)
         full.data.free(alloc)
-        when gone:
+        when gone
             .Success        -> next(iter)
             .Failure(error) -> failed(iter, error)
 
-    block failed(iter: @DirIter, error: FsError):
+    block failed(iter: @DirIter, error: FsError)
         iter.close()
         return(.Failure(error))
 
-    block emptied(iter: @DirIter):
+    block emptied(iter: @DirIter)
         iter.close()
         return(remove_dir(path))
 
 /// The whole file, in memory from alloc (free it with `data.free(alloc)`).
 internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
-    block entry():
+    block entry()
         opened : Result<FileHandle, FsError> = FileHandle.open(path, OpenMode.Read)
-        when opened:
+        when opened
             .Success(f)     -> sized(f)
             .Failure(error) -> return(.Failure(error))
 
     // The size is a first guess: a file that grows while it's read, or reports 0 (Linux's /proc), still reads whole.
-    block sized(opened: FileHandle):
+    block sized(opened: FileHandle)
         claim f : @FileHandle <- opened
         size : Result<U64, FsError> = f.size()
-        when size:
+        when size
             .Success(n) -> known_size(f, n)
             .Failure    -> start(f, 64)
 
-    block known_size(f: @FileHandle, n: U64):
+    block known_size(f: @FileHandle, n: U64)
         size_guess : USize = n.to<USize>().add(1)
         jump start(f, size_guess.max(64))
 
-    block start(f: @FileHandle, capacity: USize):
+    block start(f: @FileHandle, capacity: USize)
         buffer : @Byte = allocate<Byte>(alloc, capacity)
         branch buffer.is_null()
             ? out_of_memory(f)
             : fill(f, buffer, capacity, 0)
 
-    block fill(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize):
+    block fill(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize)
         branch length.eq(capacity)
             ? grow(f, buffer, capacity, length)
             : continue
         got : Result<USize, FsError> = f.read_bytes(buffer.stride(length), capacity.sub(length))
-        when got:
+        when got
             .Success(n)     -> advance(f, buffer, capacity, length, n)
             .Failure(error) -> read_failed(f, buffer, error)
 
-    block advance(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize, n: USize):
+    block advance(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize, n: USize)
         branch n.eq(0)
             ? finish(f, buffer, length)
             : fill(f, buffer, capacity, length.add(n))
 
-    block grow(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize):
+    block grow(f: @FileHandle, buffer: @Byte, capacity: USize, length: USize)
         bigger : @Byte = reallocate<Byte>(alloc, buffer, capacity.mul(2))
         branch bigger.is_null()
             ? grow_failed(f, buffer)
             : fill(f, bigger, capacity.mul(2), length)
 
-    block grow_failed(f: @FileHandle, buffer: @Byte):
+    block grow_failed(f: @FileHandle, buffer: @Byte)
         buffer.free(alloc)
         jump out_of_memory(f)
 
-    block out_of_memory(f: @FileHandle):
+    block out_of_memory(f: @FileHandle)
         f.close()
         return(.Failure(FsError.OutOfMemory))
 
-    block read_failed(f: @FileHandle, buffer: @Byte, error: FsError):
+    block read_failed(f: @FileHandle, buffer: @Byte, error: FsError)
         buffer.free(alloc)
         f.close()
         return(.Failure(error))
 
-    block finish(f: @FileHandle, buffer: @Byte, length: USize):
+    block finish(f: @FileHandle, buffer: @Byte, length: USize)
         f.close()
         return(.Success(Bytes.from_ptr(buffer, length)))
 
 /// Writes data as the whole file: made if missing, replaced if not.
 internal routine write_file(path: Bytes, data: Bytes) -> Result<Unit, FsError>
-    block entry():
+    block entry()
         opened : Result<FileHandle, FsError> = FileHandle.open(path, OpenMode.Write)
-        when opened:
+        when opened
             .Success(f)     -> write(f)
             .Failure(error) -> return(.Failure(error))
 
-    block write(opened: FileHandle):
+    block write(opened: FileHandle)
         claim f : @FileHandle <- opened
         wrote : Result<Unit, FsError> = f.write_all(data.data, data.length())
         f.close()
@@ -256,26 +256,26 @@ conform Writer<FileHandle>
 
 /// Writes all length bytes, however many calls that takes.
 routine FileHandle.write_all(self: @Self, data: @Byte, length: USize) -> Result<Unit, FsError>
-    block entry():
+    block entry()
         jump write(data, length)
 
-    block write(at: @Byte, remaining: USize):
+    block write(at: @Byte, remaining: USize)
         branch remaining.eq(0)
             ? return(fs_done())
             : continue
         wrote : Result<USize, FsError> = self.write_some(at, remaining)
-        when wrote:
+        when wrote
             .Success(n)     -> advance(at, remaining, n)
             .Failure(error) -> return(.Failure(error))
 
-    block advance(at: @Byte, remaining: USize, n: USize):
+    block advance(at: @Byte, remaining: USize, n: USize)
         branch n.eq(0)
             ? return(.Failure(FsError.Other))
             : write(at.stride(n), remaining.sub(n))
 
 /// The Writer side, behind handle.write("x = {x}\n"): a failure is kept for has_failed, and the bytes are dropped.
 routine FileHandle.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
-    block entry():
+    block entry()
         wrote : Result<Unit, FsError> = self.write_all(data, length)
         branch wrote.is_success()
             ? return()
@@ -285,7 +285,7 @@ routine FileHandle.write_bytes(self: @Self, data: @Byte, length: USize) -> Void
 
 /// Whether a write through the Writer side (write_bytes) failed.
 routine FileHandle.has_failed(self: @Self) -> Bool
-    block entry():
+    block entry()
         return(self.failed.load())
 
 // -- paths (no OS calls) -----------------------------------------------------------------
@@ -294,34 +294,34 @@ routine FileHandle.has_failed(self: @Self) -> Bool
 
 #target(os: "windows")
 routine is_separator(b: Byte) -> Bool
-    block entry():
+    block entry()
         return(b.eq(b'/').bitor(b.eq(b'\\')))
 
 #target(os: not "windows")
 routine is_separator(b: Byte) -> Bool
-    block entry():
+    block entry()
         return(b.eq(b'/'))
 
 /// The separator the OS writes.
 #target(os: "windows")
 routine path_separator() -> Byte
-    block entry():
+    block entry()
         return(b'\\')
 
 #target(os: not "windows")
 routine path_separator() -> Byte
-    block entry():
+    block entry()
         return(b'/')
 
 /// a and b with a separator between them (none added after one a already ends with), in memory from alloc.
 #track_caller
 routine join_path(a: Bytes, b: Bytes, alloc: @Allocator) -> Bytes
-    block entry():
+    block entry()
         branch a.is_empty()
             ? build(true)
             : build(is_separator(a.byte_at(a.length().sub(1)).bits()))
 
-    block build(ends: Bool):
+    block build(ends: Bool)
         sep : USize = ends
             ? 0
             : 1
@@ -338,16 +338,16 @@ routine join_path(a: Bytes, b: Bytes, alloc: @Allocator) -> Bytes
         buffer.stride(a.length()).store(path_separator())
         jump tail(buffer, sep, length)
 
-    block tail(buffer: @Byte, sep: USize, length: USize):
+    block tail(buffer: @Byte, sep: USize, length: USize)
         copy<Byte>(buffer.stride(a.length().add(sep)), b.data, b.length())
         return(Bytes.from_ptr(buffer, length))
 
 /// Where path's last component ends, trailing separators left out.
 private routine name_end(path: Bytes) -> USize
-    block entry():
+    block entry()
         jump trim(path.length())
 
-    block trim(end: USize):
+    block trim(end: USize)
         branch end.eq(0)
             ? return(0)
             : continue
@@ -357,10 +357,10 @@ private routine name_end(path: Bytes) -> USize
 
 /// Where the component that ends at end starts.
 private routine name_start(path: Bytes, end: USize) -> USize
-    block entry():
+    block entry()
         jump find(end)
 
-    block find(i: USize):
+    block find(i: USize)
         branch i.eq(0)
             ? return(0)
             : continue
@@ -370,14 +370,14 @@ private routine name_start(path: Bytes, end: USize) -> USize
 
 /// The last component: "/a/b/file.txt" gives "file.txt", "/a/b/" gives "b".
 routine file_name(path: Bytes) -> Bytes
-    block entry():
+    block entry()
         end   : USize = name_end(path)
         start : USize = name_start(path, end)
         return(path.slice(start, end))
 
 /// The directory part: "/a/b/c" gives "/a/b", "a/b" gives "a", "file.txt" gives "", and "/" stays "/".
 routine parent_path(path: Bytes) -> Bytes
-    block entry():
+    block entry()
         end   : USize = name_end(path)
         start : USize = name_start(path, end)
         branch start.eq(0)
@@ -385,7 +385,7 @@ routine parent_path(path: Bytes) -> Bytes
             : trim(start)
 
     // Separators before the name go too, but a leading root separator stays.
-    block trim(i: USize):
+    block trim(i: USize)
         branch i.eq(0)
             ? return(path.slice(0, 1))
             : continue
@@ -394,19 +394,19 @@ routine parent_path(path: Bytes) -> Bytes
             : return(path.slice(0, i))
 
     // No separator before the name: the root if path is only separators, else nothing.
-    block root(end: USize):
+    block root(end: USize)
         branch end.eq(0).bitand(path.is_empty().bitnot())
             ? return(path.slice(0, 1))
             : return(path.slice(0, 0))
 
 /// The last '.' of a name after its first character, or 0: a hidden file's leading dot isn't an extension.
 private routine last_dot(name: Bytes) -> USize
-    block entry():
+    block entry()
         branch name.length().lt(2)
             ? return(0)
             : look(name.length().sub(1))
 
-    block look(i: USize):
+    block look(i: USize)
         branch i.eq(0)
             ? return(0)
             : continue
@@ -416,7 +416,7 @@ private routine last_dot(name: Bytes) -> USize
 
 /// The name without its extension: "file.txt" gives "file", "archive.tar.gz" gives "archive.tar".
 routine file_stem(path: Bytes) -> Bytes
-    block entry():
+    block entry()
         name : Bytes = file_name(path)
         dot  : USize = last_dot(name)
         branch dot.eq(0)
@@ -425,7 +425,7 @@ routine file_stem(path: Bytes) -> Bytes
 
 /// The extension without its dot: "file.txt" gives "txt", "file" and ".hidden" give "".
 routine file_extension(path: Bytes) -> Bytes
-    block entry():
+    block entry()
         name : Bytes = file_name(path)
         dot  : USize = last_dot(name)
         branch dot.eq(0)
@@ -436,16 +436,16 @@ routine file_extension(path: Bytes) -> Bytes
 
 /// A mapping of nothing: what an empty file, or a range past the end, maps to.
 routine Mapping.empty() -> Self
-    block entry():
+    block entry()
         return(Self { base: null, delta: 0, length: 0 })
 
 /// The first byte asked for (null for an empty mapping).
 routine Mapping.data(self: Self) -> @Byte
-    block entry():
+    block entry()
         branch self.base.is_null()
             ? return(null)
             : return(self.base.to<@Byte>().stride(self.delta))
 
 routine Mapping.length(self: Self) -> USize
-    block entry():
+    block entry()
         return(self.length)

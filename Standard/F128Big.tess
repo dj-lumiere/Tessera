@@ -39,65 +39,65 @@ record F128Big
 
 /// m × 2^exponent with m brought to BIG_BITS bits (rounded to nearest, ties to even, when longer). Uses m.
 routine big_make(negative: Bool, exponent: S64, m: @BigNat<16>) -> F128Big
-    block entry():
+    block entry()
         zero : Bool = m.is_zero()
         branch zero
             ? zero()
             : fit(exponent)
 
-    block zero():
+    block zero()
         r : F128Big = F128Big { negative: false, exponent: 0, mant: m.load() }
         return(r)
 
-    block fit(exponent: S64):
+    block fit(adjusted: S64)
         length : USize = m.bit_length()
         long   : Bool  = length.gt(BIG_BITS)
         short  : Bool  = length.lt(BIG_BITS)
-        when:
-            long  -> shrink(exponent, length.sub(BIG_BITS))
-            short -> grow(exponent, BIG_BITS.sub(length))
-            else  -> done(exponent)
+        when
+            long  -> shrink(adjusted, length.sub(BIG_BITS))
+            short -> grow(adjusted, BIG_BITS.sub(length))
+            else  -> done(adjusted)
 
     // rounding up can carry to 2^BIG_BITS, which the next pass shifts down
-    block shrink(exponent: S64, n: USize):
+    block shrink(adjusted: S64, n: USize)
         m.shr_round_even(n)
-        jump fit(exponent.add(n.to<S64>()))
+        jump fit(adjusted.add(n.to<S64>()))
 
-    block grow(exponent: S64, n: USize):
+    block grow(adjusted: S64, n: USize)
         m.shl(n)
-        jump fit(exponent.sub(n.to<S64>()))
+        jump fit(adjusted.sub(n.to<S64>()))
 
-    block done(exponent: S64):
-        r : F128Big = F128Big { negative: negative, exponent: exponent, mant: m.load() }
+    block done(adjusted: S64)
+        r : F128Big = F128Big { negative: negative, exponent: adjusted, mant: m.load() }
         return(r)
 
 routine big_zero() -> F128Big
-    block entry():
+    block entry()
         claim m : @BigNat<16> <- uninit
         m.set(0)
         r : F128Big = big_make(false, 0, m)
         return(r)
 
 routine big_from_u128(negative: Bool, value: U128, exponent: S64) -> F128Big
-    block entry():
+    block entry()
         claim m : @BigNat<16> <- uninit
         m.set_u128(value)
         r : F128Big = big_make(negative, exponent, m)
         return(r)
 
 routine big_from_s64(n: S64) -> F128Big
-    block entry():
+    block entry()
         r : F128Big = big_from_u128(n.lt(0), n.abs_diff(0).to<U128>(), 0)
         return(r)
 
 routine big_one() -> F128Big
-    block entry():
+    block entry()
         r : F128Big = big_from_u128(false, 1, 0)
         return(r)
 
 /// An F128, exactly.
 routine big_from_f128(x: F128) -> F128Big
-    block entry():
+    block entry()
         zero : Bool = f128_is_zero_bits(x.bits())
         branch zero
             ? return(big_zero())
@@ -108,7 +108,7 @@ routine big_from_f128(x: F128) -> F128Big
 
 /// An F128Extended, exactly.
 routine big_from_wide(w: F128Extended) -> F128Big
-    block entry():
+    block entry()
         claim m   : @BigNat<16> <- uninit
         claim low : @BigNat<16> <- uninit
         m.set_u128(w.hi)
@@ -120,77 +120,77 @@ routine big_from_wide(w: F128Extended) -> F128Big
 
 /// limbs (7 of them, least significant first) × 2^exponent.
 routine big_from_limbs(limbs: @U64, exponent: S64) -> F128Big
-    block entry():
+    block entry()
         claim m : @BigNat<16> <- uninit
         m.set(0)
         jump load(0, m)
 
-    block load(i: USize, m: @BigNat<16>):
+    block load(i: USize, m: @BigNat<16>)
         done : Bool = i.ge(7)
         branch done
             ? finish(m)
             : one(i, m)
 
-    block one(i: USize, m: @BigNat<16>):
+    block one(i: USize, m: @BigNat<16>)
         limb : U64 = limbs.stride(i).load()
         m.push_limb(limb)
         jump load(i.add(1), m)
 
-    block finish(m: @BigNat<16>):
+    block finish(m: @BigNat<16>)
         r : F128Big = big_make(false, exponent, m)
         return(r)
 
 routine big_ln2_hi() -> F128Big
-    block entry():
+    block entry()
         r : F128Big = big_from_limbs(BIG_LN2_HI.to<@U64>(), -448)
         return(r)
 
 routine big_ln2_lo() -> F128Big
-    block entry():
+    block entry()
         r : F128Big = big_from_limbs(BIG_LN2_LO.to<@U64>(), -898)
         return(r)
 
 /// ln 2 to 448 bits
 routine big_ln2() -> F128Big
-    block entry():
+    block entry()
         r : F128Big = big_ln2_hi()
         return(r)
 
 /// π/2 to 448 bits
 routine big_half_pi() -> F128Big
-    block entry():
+    block entry()
         r : F128Big = big_from_limbs(BIG_HALF_PI_HI.to<@U64>(), -447)
         return(r)
 
 /// π to 448 bits
 routine big_pi() -> F128Big
-    block entry():
+    block entry()
         r : F128Big = big_half_pi().ldexp(1)
         return(r)
 
 // -- reading one ---------------------------------------------------------------
 
 routine F128Big.is_zero(self: Self) -> Bool
-    block entry():
+    block entry()
         r : Bool = self.mant.length.eq(0)
         return(r)
 
 /// floor(log2 |self|) for a nonzero self: |self| is in [2^top, 2^(top + 1)).
 routine F128Big.top(self: Self) -> S64
-    block entry():
+    block entry()
         r : S64 = self.exponent.add(BIG_BITS.to<S64>()).sub(1)
         return(r)
 
 /// Rounded once to F128, to nearest, ties to even (overflow, subnormals, and underflow included). Zero is +0.
 routine F128Big.to<F128>(self: Self) -> F128
-    block entry():
+    block entry()
         zero : Bool = self.is_zero()
         branch zero
             ? return(f128_of(0))
             : round()
 
     // the top 125 bits with a sticky bit, as big_to_f128 hands them to f128_round_pack
-    block round():
+    block round()
         claim m : @BigNat<16> <- self.mant
         shift    : USize = BIG_BITS.sub(125)
         sticky   : Bool  = m.any_below(shift)
@@ -204,7 +204,7 @@ routine F128Big.to<F128>(self: Self) -> F128
 
 /// The top 192 bits, truncated: seeds for Newton's method and for reductions.
 routine F128Big.to_wide(self: Self) -> F128Extended
-    block entry():
+    block entry()
         zero : Bool = self.is_zero()
         branch zero
             ? return(wide_zero())
@@ -219,26 +219,26 @@ routine F128Big.to_wide(self: Self) -> F128Extended
 
 /// -1, 0, or 1 as |self| is below, equal to, or above |other|.
 routine F128Big.compare_magnitude(self: Self, other: Self) -> S32
-    block entry():
+    block entry()
         a_zero : Bool = self.is_zero()
         b_zero : Bool = other.is_zero()
         low    : S32  = b_zero
             ? 0
             : -1
-        when:
+        when
             a_zero -> return(low)
             b_zero -> return(1)
             else   -> both()
 
-    block both():
+    block both()
         lower  : Bool = self.exponent.lt(other.exponent)
         higher : Bool = self.exponent.gt(other.exponent)
-        when:
+        when
             lower  -> return(-1)
             higher -> return(1)
             else   -> mantissas()
 
-    block mantissas():
+    block mantissas()
         claim a : @BigNat<16> <- self.mant
         claim b : @BigNat<16> <- other.mant
         r : S32 = a.compare(b)
@@ -247,7 +247,7 @@ routine F128Big.compare_magnitude(self: Self, other: Self) -> S32
 // -- arithmetic ----------------------------------------------------------------
 
 routine F128Big.neg(self: Self) -> Self
-    block entry():
+    block entry()
         zero : Bool = self.is_zero()
         branch zero
             ? return(self)
@@ -257,13 +257,13 @@ routine F128Big.neg(self: Self) -> Self
         return(r)
 
 routine F128Big.abs(self: Self) -> Self
-    block entry():
+    block entry()
         r : Self = Self { negative: false, exponent: self.exponent, mant: self.mant }
         return(r)
 
 /// self × 2^k, exactly.
 routine F128Big.ldexp(self: Self, k: S64) -> Self
-    block entry():
+    block entry()
         zero : Bool = self.is_zero()
         branch zero
             ? return(self)
@@ -274,15 +274,15 @@ routine F128Big.ldexp(self: Self, k: S64) -> Self
 /// The sum, rounded once. Both mantissas get 64 guard bits; the smaller is shifted exactly when it's within 64
 /// bits of the larger, else rounded, which only happens when it can't cancel.
 routine F128Big.add(self: Self, other: Self) -> Self
-    block entry():
+    block entry()
         a_zero : Bool = self.is_zero()
         b_zero : Bool = other.is_zero()
-        when:
+        when
             a_zero -> return(other)
             b_zero -> return(self)
             else   -> order()
 
-    block order():
+    block order()
         a_first : Bool = self.compare_magnitude(other).ge(0)
         big     : Self = a_first
             ? self
@@ -296,7 +296,7 @@ routine F128Big.add(self: Self, other: Self) -> Self
             ? return(big)
             : align(big, small, d)
 
-    block align(big: Self, small: Self, d: S64):
+    block align(big: Self, small: Self, d: S64)
         claim x : @BigNat<16> <- big.mant
         claim y : @BigNat<16> <- small.mant
         x.shl(64)
@@ -305,40 +305,40 @@ routine F128Big.add(self: Self, other: Self) -> Self
             ? up(big, small, d, x, y)
             : down(big, small, d, x, y)
 
-    block up(big: Self, small: Self, d: S64, x: @BigNat<16>, y: @BigNat<16>):
+    block up(big: Self, small: Self, d: S64, x: @BigNat<16>, y: @BigNat<16>)
         y.shl(64.sub(d).to<USize>())
         jump combine(big, small, x, y)
 
-    block down(big: Self, small: Self, d: S64, x: @BigNat<16>, y: @BigNat<16>):
+    block down(big: Self, small: Self, d: S64, x: @BigNat<16>, y: @BigNat<16>)
         y.shr_round_even(d.sub(64).to<USize>())
         jump combine(big, small, x, y)
 
-    block combine(big: Self, small: Self, x: @BigNat<16>, y: @BigNat<16>):
+    block combine(big: Self, small: Self, x: @BigNat<16>, y: @BigNat<16>)
         same : Bool = big.negative.eq(small.negative)
         branch same
             ? plus(big, x, y)
             : minus(big, x, y)
 
-    block plus(big: Self, x: @BigNat<16>, y: @BigNat<16>):
+    block plus(big: Self, x: @BigNat<16>, y: @BigNat<16>)
         x.add(y)
         jump finish(big, x)
 
-    block minus(big: Self, x: @BigNat<16>, y: @BigNat<16>):
+    block minus(big: Self, x: @BigNat<16>, y: @BigNat<16>)
         x.sub(y)
         jump finish(big, x)
 
-    block finish(big: Self, x: @BigNat<16>):
+    block finish(big: Self, x: @BigNat<16>)
         r : Self = big_make(big.negative, big.exponent.sub(64), x)
         return(r)
 
 routine F128Big.sub(self: Self, other: Self) -> Self
-    block entry():
+    block entry()
         r : Self = self.add(other.neg())
         return(r)
 
 /// The product, rounded once.
 routine F128Big.mul(self: Self, other: Self) -> Self
-    block entry():
+    block entry()
         claim a : @BigNat<16> <- self.mant
         claim b : @BigNat<16> <- other.mant
         claim p : @BigNat<16> <- uninit
@@ -349,7 +349,7 @@ routine F128Big.mul(self: Self, other: Self) -> Self
 
 /// self × n, rounded once.
 routine F128Big.mul_u64(self: Self, n: U64) -> Self
-    block entry():
+    block entry()
         claim a : @BigNat<16> <- self.mant
         a.mul_add(n, 0)
         a.trim()  // n = 0 leaves zero limbs
@@ -358,7 +358,7 @@ routine F128Big.mul_u64(self: Self, n: U64) -> Self
 
 /// self × n for a signed n, rounded once.
 routine F128Big.mul_s64(self: Self, n: S64) -> Self
-    block entry():
+    block entry()
         m : Self = self.mul_u64(n.abs_diff(0))
         r : Self = n.lt(0)
             ? m.neg()
@@ -367,7 +367,7 @@ routine F128Big.mul_s64(self: Self, n: S64) -> Self
 
 /// self / n (n > 0), rounded once: 64 more bits go into the division.
 routine F128Big.div_u64(self: Self, n: U64) -> Self
-    block entry():
+    block entry()
         claim a : @BigNat<16> <- self.mant
         a.shl(64)
         dropped : U64  = a.div_limb(n)
@@ -383,7 +383,7 @@ routine F128Big.div_u64(self: Self, n: U64) -> Self
 
 /// 1 / self for a nonzero self: two Newton steps y ← y + y (1 - self y) from F128Extended's 190 bits.
 routine F128Big.recip(self: Self) -> Self
-    block entry():
+    block entry()
         seed : F128Extended = wide_one().div(self.to_wide())
         y0   : Self         = big_from_wide(seed)
         one  : Self         = big_one()
@@ -392,13 +392,13 @@ routine F128Big.recip(self: Self) -> Self
         return(y2)
 
 routine F128Big.div(self: Self, other: Self) -> Self
-    block entry():
+    block entry()
         r : Self = self.mul(other.recip())
         return(r)
 
 /// sqrt for self >= 0: two Newton steps s ← (s + self / s) / 2 from F128Extended's 190 bits.
 routine F128Big.sqrt(self: Self) -> Self
-    block entry():
+    block entry()
         zero : Bool = self.is_zero()
         branch zero
             ? return(self)
@@ -412,7 +412,7 @@ routine F128Big.sqrt(self: Self) -> Self
 
 /// Whether a term no longer moves a sum: |term| < 2^-(BIG_BITS + 8) |sum|.
 routine big_negligible(term: F128Big, sum: F128Big) -> Bool
-    block entry():
+    block entry()
         zero        : Bool = term.is_zero()
         sum_top     : S64  = sum.top()
         floor       : S64  = sum_top.sub(BIG_BITS.to<S64>()).sub(8)
@@ -426,7 +426,7 @@ routine big_negligible(term: F128Big, sum: F128Big) -> Bool
 /// e^x for |x| < 2^15: x = q ln 2 + r with ln 2 in two parts, then e^(r / 256) by its Taylor series and 8
 /// squarings (each doubles the relative error, to about 2^-438 in all).
 routine big_exp(x: F128Big) -> F128Big
-    block entry():
+    block entry()
         x_over_ln2 : F128Extended = x.to_wide().mul(wide_const(1))
         q          : S64          = x_over_ln2.to_i64_nearest()
         r          : F128Big      = x.sub(big_ln2_hi().mul_s64(q)).sub(big_ln2_lo().mul_s64(q))
@@ -435,14 +435,14 @@ routine big_exp(x: F128Big) -> F128Big
         jump series(1, small, one.add(small), small, q)
 
     // term = small^j / j!
-    block series(j: U64, term: F128Big, sum: F128Big, small: F128Big, q: S64):
+    block series(j: U64, term: F128Big, sum: F128Big, small: F128Big, q: S64)
         next : F128Big = term.mul(small).div_u64(j.add(1))
         done : Bool    = big_negligible(next, sum)
         branch done
             ? square(0, sum, q)
             : series(j.add(1), next, sum.add(next), small, q)
 
-    block square(i: S64, e: F128Big, q: S64):
+    block square(i: S64, e: F128Big, q: S64)
         done : Bool = i.ge(8)
         branch done
             ? return(e.ldexp(q))
@@ -451,16 +451,16 @@ routine big_exp(x: F128Big) -> F128Big
 /// e^x - 1 without cancellation: below 2^-20 its own series x Σ x^j / (j+1)!; else e^x - 1, which loses at most
 /// 21 of the 448 bits.
 routine big_exp_m1(x: F128Big) -> F128Big
-    block entry():
+    block entry()
         zero  : Bool = x.is_zero()
         small : Bool = x.top().lt(-20)
-        when:
+        when
             zero  -> return(x)
             small -> series(1, x, x)
             else  -> return(big_exp(x).sub(big_one()))
 
     // term = x^j / j!
-    block series(j: U64, term: F128Big, sum: F128Big):
+    block series(j: U64, term: F128Big, sum: F128Big)
         next : F128Big = term.mul(x).div_u64(j.add(1))
         done : Bool    = big_negligible(next, sum)
         branch done
@@ -472,7 +472,7 @@ routine big_exp_m1(x: F128Big) -> F128Big
 /// ln x for x > 0: x = m 2^e with m in [sqrt(1/2), sqrt(2)); ln m from F128Extended's log (about 135 bits), then
 /// two Newton steps y ← y + m e^-y - 1. Near 1, where ln m is small, ln_1p of m - 1 keeps it accurate.
 routine big_ln(x: F128Big) -> F128Big
-    block entry():
+    block entry()
         top      : S64          = x.top()
         m0       : F128Big      = x.ldexp(0.sub(top))  // in [1, 2)
         sqrt_two : F128Extended = wide_const(2).ldexp(1)
@@ -490,7 +490,7 @@ routine big_ln(x: F128Big) -> F128Big
             ? return(big_ln_1p(u))
             : newton(m, e)
 
-    block newton(m: F128Big, e: S64):
+    block newton(m: F128Big, e: S64)
         one  : F128Big = big_one()
         y0   : F128Big = big_from_wide(wide_log(m.to_wide()))
         y1   : F128Big = y0.add(m.mul(big_exp(y0.neg())).sub(one))
@@ -502,16 +502,16 @@ routine big_ln(x: F128Big) -> F128Big
 
 /// ln(1 + u) for u > -1: below 2^-20 its series u - u²/2 + u³/3 - …; else ln of 1 + u.
 routine big_ln_1p(u: F128Big) -> F128Big
-    block entry():
+    block entry()
         zero  : Bool = u.is_zero()
         small : Bool = u.top().lt(-20)
-        when:
+        when
             zero  -> return(u)
             small -> series(1, u, u)
             else  -> return(big_ln(big_one().add(u)))
 
     // power = u^j; the next term is (-1)^j u^(j+1) / (j+1)
-    block series(j: U64, power: F128Big, sum: F128Big):
+    block series(j: U64, power: F128Big, sum: F128Big)
         next_power : F128Big = power.mul(u)
         term       : F128Big = next_power.div_u64(j.add(1))
         odd        : Bool    = j.bitand(1).eq(1)
@@ -532,7 +532,7 @@ record BigReduced
 
 /// sin θ = θ Σ (-θ²)^k / (2k+1)! for |θ| <= π/4.
 routine big_sin_core(t: F128Big) -> F128Big
-    block entry():
+    block entry()
         zero : Bool = t.is_zero()
         branch zero
             ? return(t)
@@ -541,7 +541,7 @@ routine big_sin_core(t: F128Big) -> F128Big
         jump series(1, t, t, u)
 
     // term = θ (-θ²)^k / (2k+1)!, and j = 2k + 1
-    block series(j: U64, term: F128Big, sum: F128Big, u: F128Big):
+    block series(j: U64, term: F128Big, sum: F128Big, u: F128Big)
         next : F128Big = term.mul(u).div_u64(j.add(1).mul(j.add(2)))
         done : Bool    = big_negligible(next, sum)
         branch done
@@ -550,7 +550,7 @@ routine big_sin_core(t: F128Big) -> F128Big
 
 /// cos θ = Σ (-θ²)^k / (2k)! for |θ| <= π/4.
 routine big_cos_core(t: F128Big) -> F128Big
-    block entry():
+    block entry()
         one  : F128Big = big_one()
         zero : Bool    = t.is_zero()
         branch zero
@@ -560,7 +560,7 @@ routine big_cos_core(t: F128Big) -> F128Big
         jump series(0, one, one, u)
 
     // term = (-θ²)^k / (2k)!, and j = 2k
-    block series(j: U64, term: F128Big, sum: F128Big, u: F128Big):
+    block series(j: U64, term: F128Big, sum: F128Big, u: F128Big)
         next : F128Big = term.mul(u).div_u64(j.add(1).mul(j.add(2)))
         done : Bool    = big_negligible(next, sum)
         branch done
@@ -572,18 +572,18 @@ routine big_cos_core(t: F128Big) -> F128Big
 /// ones below it the fraction, accurate to about 2^-650 absolute: far past any F128's distance to a multiple of
 /// π/2, so θ keeps its 448 bits.
 routine big_reduce(x: F128) -> BigReduced
-    block entry():
+    block entry()
         p     : F128Parts = f128_unpack(x.bits())
         small : Bool      = p.exponent.lt(-1)  // |x| < 1/2 < π/4
         branch small
             ? near_zero()
             : window(p)
 
-    block near_zero():
+    block near_zero()
         r : BigReduced = BigReduced { quadrant: 0, theta: big_from_f128(x.abs()) }
         return(r)
 
-    block window(p: F128Parts):
+    block window(p: F128Parts)
         bits_above  : S64   = p.exponent.sub(114).max(0)
         s           : USize = bits_above.div(64).to<USize>()
         window_bits : USize = s.add(14).mul(64)
@@ -594,18 +594,18 @@ routine big_reduce(x: F128) -> BigReduced
         jump load(0, s, sh, p, w)
 
     // limb k of W, least significant first, is TWO_OVER_PI[s + 13 - k]
-    block load(k: USize, s: USize, sh: S64, p: F128Parts, w: @BigNat<24>):
+    block load(k: USize, s: USize, sh: S64, p: F128Parts, w: @BigNat<24>)
         done : Bool = k.ge(14)
         branch done
             ? multiply(sh, p, w)
             : load_one(k, s, sh, p, w)
 
-    block load_one(k: USize, s: USize, sh: S64, p: F128Parts, w: @BigNat<24>):
+    block load_one(k: USize, s: USize, sh: S64, p: F128Parts, w: @BigNat<24>)
         limb : U64 = TWO_OVER_PI.get(s.add(13).sub(k))
         w.push_limb(limb)
         jump load(k.add(1), s, sh, p, w)
 
-    block multiply(sh: S64, p: F128Parts, w: @BigNat<24>):
+    block multiply(sh: S64, p: F128Parts, w: @BigNat<24>)
         claim m    : @BigNat<24> <- uninit
         claim prod : @BigNat<24> <- uninit
         w.trim()
@@ -622,7 +622,7 @@ routine big_reduce(x: F128) -> BigReduced
 
     // copy the bits under sh into f, 64 at a time from the bottom (sh is a whole number of limbs past any
     // leftover bits, which bits128 reads across)
-    block fraction(i: USize, at: USize, prod: @BigNat<24>, f: @BigNat<16>, q: U64, past_half: Bool):
+    block fraction(i: USize, at: USize, prod: @BigNat<24>, f: @BigNat<16>, q: U64, past_half: Bool)
         pos  : USize = i.mul(64)
         done : Bool  = pos.ge(at)
         branch done
@@ -630,7 +630,7 @@ routine big_reduce(x: F128) -> BigReduced
             : fraction_one(i, at, prod, f, q, past_half)
 
     block fraction_one(i: USize, at: USize, prod: @BigNat<24>, f: @BigNat<16>, q: U64,
-        past_half: Bool):
+        past_half: Bool)
         pos  : USize = i.mul(64)
         left : USize = at.sub(pos)
         word : U64   = prod.bits128(pos).to_wrap<U64>()
@@ -638,21 +638,21 @@ routine big_reduce(x: F128) -> BigReduced
         f.push_limb(word.bitand(mask))
         jump fraction(i.add(1), at, prod, f, q, past_half)
 
-    block finish(at: USize, f: @BigNat<16>, q: U64, past_half: Bool):
+    block finish(at: USize, f: @BigNat<16>, q: U64, past_half: Bool)
         f.trim()
         branch past_half
             ? complement(at, f, q)
             : scale(false, at, f, q)
 
     // f - 1 = -(2^sh - F) × 2^-sh, taken exactly before any rounding
-    block complement(at: USize, f: @BigNat<16>, q: U64):
+    block complement(at: USize, f: @BigNat<16>, q: U64)
         claim c : @BigNat<16> <- uninit
         c.set(1)
         c.shl(at)
         c.sub(f)
         jump scale(true, at, c, q.add_wrap(1).bitand(3))
 
-    block scale(negative: Bool, at: USize, g: @BigNat<16>, k: U64):
+    block scale(negative: Bool, at: USize, g: @BigNat<16>, k: U64)
         frac : F128Big    = big_make(negative, 0.sub(at.to<S64>()), g)
         r    : BigReduced = BigReduced { quadrant: k, theta: frac.mul(big_half_pi()) }
         return(r)

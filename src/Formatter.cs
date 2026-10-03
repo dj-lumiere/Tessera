@@ -77,7 +77,7 @@ public static class Formatter
     {
         var rows = new List<Row?>();
         string? context = null;      // "record", "choice", or "variant" while inside one, for its field lines
-        int whenIndent = -1;          // the indent of the innermost `when ... :` whose arms we're in
+        int whenIndent = -1;          // the indent of the innermost `when` whose arms we're in
         for (int i = 0; i < lines.Count; i++)
         {
             string line = lines[i];
@@ -165,8 +165,9 @@ public static class Formatter
         return (s[..when].TrimEnd(), s[(when + 6)..].Trim());
     }
 
+    /// `when` (the first arm whose condition holds) or `when v` (match one value): a line of arms follows.
     private static bool IsWhenHeader(string trimmed) =>
-        (trimmed == "when:" || trimmed.StartsWith("when ")) && StripComment(trimmed).EndsWith(':');
+        StripComment(trimmed).TrimEnd() is var code && (code == "when" || code.StartsWith("when "));
 
     /// `name : Type = rest`, where the type may hold spaces inside brackets (`Callable<(A, B), R>`).
     private static (string Name, string Type, string Tail)? SplitBinding(string s)

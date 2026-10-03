@@ -26,15 +26,15 @@ become typed values, and hand-rolled loops over memory become collections.
 
 ```tessera
 routine two_sum(list: @S32, length: USize, target: S32) -> Option<(USize, USize)>
-    block entry():
+    block entry()
         jump search_left(0)
 
-    block search_left(left_idx: USize):
+    block search_left(left_idx: USize)
         branch left_idx.ge(length)
             ? return(.Absent)
             : search_right(left_idx, left_idx.add(1))
 
-    block search_right(left_idx: USize, right_idx: USize):
+    block search_right(left_idx: USize, right_idx: USize)
         branch right_idx.ge(length)
             ? search_left(left_idx.add(1))
             : continue

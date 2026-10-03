@@ -120,7 +120,7 @@ public sealed partial class Compiler
         if (external is not null && external.First is not ("c" or "llvm" or "asm"))
             throw new CompileError(external.Pos, "only #external(\"c\"), #external(\"llvm\") and #external(\"asm\") are supported");
         if (asm && r.Blocks is null)
-            throw new CompileError(r.Pos, $"assembly routine '{r.DisplayName}' needs its instructions: a 'block entry():'");
+            throw new CompileError(r.Pos, $"assembly routine '{r.DisplayName}' needs its instructions: a 'block entry()'");
         if (external is { First: "llvm" } && r.Attr("template") is null)
             throw new CompileError(r.Pos, $"#external(\"llvm\") routine '{r.DisplayName}' needs a #template");
         if (external is not null && !asm && r.Blocks is not null)

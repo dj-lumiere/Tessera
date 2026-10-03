@@ -296,7 +296,7 @@ public sealed record ExprTarget(Expr Call, Pos Pos) : Target(Pos);
 public sealed record JumpTerm(CallTarget Target, Pos Pos) : Terminator(Pos);
 public sealed record BranchTerm(Expr Cond, Target IfTrue, Target IfFalse, Pos Pos) : Terminator(Pos);
 public sealed record WhenCondTerm(List<(Expr? Cond, Target Target)> Arms, Pos Pos) : Terminator(Pos);
-/// `when v:` arms: one or more constants (`1, 2 -> ...`), or `_` (null).
+/// `when v` arms: one or more constants (`1, 2 -> ...`), or `_` (null).
 public sealed record WhenValueTerm(Expr Value, List<(List<Expr>? Cases, Target Target)> Arms, Pos Pos) : Terminator(Pos);
 
 /// A terminator written as a bare target: `return(x)`, `unreachable`, or a #noreturn call such as `trap()`.

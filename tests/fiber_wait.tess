@@ -35,19 +35,19 @@ record Family
 
 /// One side of the ping-pong: waits for mine, hands the turn to the other, ROUNDS times.
 routine play(game: @PingPong, mine: U32, me: @@FiberState, other: @@FiberState) -> Void
-    block entry():
+    block entry()
         sched : @Scheduler = game.sched.load()
         me.atomic_store(sched.current())
         jump round(sched, 0)
 
-    block round(sched: @Scheduler, i: U64):
+    block round(sched: @Scheduler, i: U64)
         done : Bool = i.eq(ROUNDS)
         branch done
             ? return()
             : wait(sched, i)
 
     // park may return without a wake, so the turn is checked again.
-    block wait(sched: @Scheduler, i: U64):
+    block wait(sched: @Scheduler, i: U64)
         ours : Bool = game.turn.atomic_load().eq(mine)
         branch ours
             ? hand_over(sched, i)
@@ -56,7 +56,7 @@ routine play(game: @PingPong, mine: U32, me: @@FiberState, other: @@FiberState) 
         jump wait(sched, i)
 
     // The other side may not have its handle in yet: then it hasn't checked the turn either, and will see it.
-    block hand_over(sched: @Scheduler, i: U64):
+    block hand_over(sched: @Scheduler, i: U64)
         game.handoffs.atomic_fetch_add(1)
         game.turn.atomic_store(mine.bitxor(1))
         peer : @FiberState = other.atomic_load()
@@ -68,13 +68,13 @@ routine play(game: @PingPong, mine: U32, me: @@FiberState, other: @@FiberState) 
         jump round(sched, i.add(1))
 
 routine ping(raw: Addr) -> Void
-    block entry():
+    block entry()
         game : @PingPong = raw.to<@PingPong>()
         play(game, 0, game.ping, game.pong)
         return()
 
 routine pong(raw: Addr) -> Void
-    block entry():
+    block entry()
         game : @PingPong = raw.to<@PingPong>()
         play(game, 1, game.pong, game.ping)
         return()
@@ -82,7 +82,7 @@ routine pong(raw: Addr) -> Void
 /// Sleeper n sleeps until (8 - n) * 30 ms after the base, so they wake from the last to the first. The times are
 /// far enough apart for a coarse system timer (15.6 ms on Windows by default).
 routine sleeper(raw: Addr) -> Void
-    block entry():
+    block entry()
         s     : @Sleeper  = raw.to<@Sleeper>()
         all   : @Sleepers = s.all.load()
         id    : U64       = s.id.load()
@@ -97,13 +97,13 @@ routine sleeper(raw: Addr) -> Void
             ? short(all)
             : return()
 
-    block short(all: @Sleepers):
+    block short(all: @Sleepers)
         all.short.atomic_fetch_add(1)
         return()
 
 /// A child adds its share, sleeping and yielding on the way so the parent waits on children still running.
 routine child(raw: Addr) -> Void
-    block entry():
+    block entry()
         family : @Family    = raw.to<@Family>()
         sched  : @Scheduler = family.sched.load()
         sched.sleep(1000000)
@@ -113,13 +113,13 @@ routine child(raw: Addr) -> Void
         return()
 
 routine parent(raw: Addr) -> Void
-    block entry():
+    block entry()
         family : @Family    = raw.to<@Family>()
         sched  : @Scheduler = family.sched.load()
         kids   : @@Join     = family.children.to<@@Join>()
         jump spawn(family, sched, kids, 0)
 
-    block spawn(family: @Family, sched: @Scheduler, kids: @@Join, i: USize):
+    block spawn(family: @Family, sched: @Scheduler, kids: @@Join, i: USize)
         done : Bool = i.eq(10)
         branch done
             ? join(family, sched, kids, 0)
@@ -127,7 +127,7 @@ routine parent(raw: Addr) -> Void
         kids.stride(i).store(sched.spawn_joinable(child.to<Callable>(), family, 65536))
         jump spawn(family, sched, kids, i.add(1))
 
-    block join(family: @Family, sched: @Scheduler, kids: @@Join, i: USize):
+    block join(family: @Family, sched: @Scheduler, kids: @@Join, i: USize)
         done : Bool = i.eq(10)
         branch done
             ? report(family)
@@ -135,12 +135,12 @@ routine parent(raw: Addr) -> Void
         sched.join(kids.stride(i).load())
         jump join(family, sched, kids, i.add(1))
 
-    block report(family: @Family):
+    block report(family: @Family)
         Out.write("joined: sum {family.sum.atomic_load()}\n")
         return()
 
 routine main() -> S32
-    block entry():
+    block entry()
         claim alloc  : @Allocator <- make_heap_allocator()
         claim stacks : @Allocator <- make_stack_allocator()
         claim sched  : @Scheduler <- .construct(alloc, stacks, 4)
@@ -163,7 +163,7 @@ routine main() -> S32
         jump sleepers(sched, game, sleepers, each.to<@Sleeper>(), 0)
 
     block sleepers(sched: @Scheduler, game: @PingPong, sleepers: @Sleepers, each: @Sleeper,
-        i: USize):
+        i: USize)
         done : Bool = i.eq(8)
         branch done
             ? family(sched, game, sleepers)
@@ -173,7 +173,7 @@ routine main() -> S32
         sched.spawn(sleeper.to<Callable>(), s, 65536)
         jump sleepers(sched, game, sleepers, each, i.add(1))
 
-    block family(sched: @Scheduler, game: @PingPong, sleepers: @Sleepers):
+    block family(sched: @Scheduler, game: @PingPong, sleepers: @Sleepers)
         claim family : @Family <- Family { sched: sched, sum: 0,
             children: { null, null, null, null, null, null, null, null, null, null } }
         sched.spawn(parent.to<Callable>(), family, 65536)
@@ -184,7 +184,7 @@ routine main() -> S32
         Out.write("handoffs: {game.handoffs.load()}\n")
         jump order(sched, sleepers, lone, 0)
 
-    block order(sched: @Scheduler, sleepers: @Sleepers, lone: @Join, i: USize):
+    block order(sched: @Scheduler, sleepers: @Sleepers, lone: @Join, i: USize)
         done : Bool = i.eq(8)
         branch done
             ? finish(sched, sleepers, lone)
@@ -194,7 +194,7 @@ routine main() -> S32
         jump order(sched, sleepers, lone, i.add(1))
 
     // The lone child returned during run: join just frees its Join.
-    block finish(sched: @Scheduler, sleepers: @Sleepers, lone: @Join):
+    block finish(sched: @Scheduler, sleepers: @Sleepers, lone: @Join)
         Out.write("\nwoke early: {sleepers.short.load()}\n")
         sched.join(lone)
         Out.write("lone joined\n")

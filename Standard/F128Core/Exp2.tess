@@ -17,45 +17,45 @@ preset CM_EXP2_OVERFLOW:  U128 = 0x400D0000000000000000000000000000
 preset CM_EXP2_UNDERFLOW: U128 = 0xC00D01BC000000000000000000000000
 
 routine F128.exp2(self: Self) -> Self
-    block entry():
+    block entry()
         nan       : Bool = self.is_nan()
         over      : Bool = self.gt(f128_of(0x400D0008000000000000000000000000))  // 16386
         under     : Bool = self.lt(f128_of(0xC00D0300000000000000000000000000))  // -16576
         quiet     : Self = f128_of(f128_quiet(self.bits()))
         infinity  : Self = Self.INFINITY
         plus_zero : Self = f128_of(0)
-        when:
+        when
             nan   -> return(quiet)
             over  -> return(infinity)
             under -> return(plus_zero)
             else  -> compute()
 
-    block compute():
+    block compute()
         u      : U128 = self.bits()
         hi     : U64  = cm_exp_hi(u)
         mag_hi : U64  = hi.bitand(0x7FFFFFFFFFFFFFFF)
         tiny   : Bool = mag_hi.lt(0x3F8D71547652B82F)  // 2^x rounds to 1
         large  : Bool = mag_hi.ge(0x400D000000000000)
-        when:
+        when
             tiny  -> return(CM_EXP_ONE)
             large -> edge(u)
             else  -> integer_check(u)
 
     // NaN, infinities, and the overflow and underflow thresholds
-    block edge(u: U128):
+    block edge(u: U128)
         is_nan      : Bool = f128_is_nan_bits(u)
         nonnegative : Bool = f128_is_negative_bits(u).bitnot()
         overflow    : Bool = nonnegative.bitand(u.ge(CM_EXP2_OVERFLOW))
         underflow   : Bool = u.ge(CM_EXP2_UNDERFLOW)
         quiet       : Self = f128_of(u.bitor(F128_QUIET_BIT))
-        when:
+        when
             is_nan    -> return(quiet)
             overflow  -> return(Self.INFINITY)
             underflow -> return(CM_EXP_ZERO)
             else      -> integer_check(u)
 
     // |x| >= 1 with no fraction bits in the low word
-    block integer_check(u: U128):
+    block integer_check(u: U128)
         e         : S64  = f128_exponent(u)
         candidate : Bool = e.ge(16383).bitand(u.to_wrap<S64>().eq(0))
         branch candidate
@@ -63,7 +63,7 @@ routine F128.exp2(self: Self) -> Self
             : reduce(u, e)
 
     // the high word has 16 sign and exponent bits, then e - 16383 integer bits
-    block integer_test(u: U128, e: S64):
+    block integer_test(u: U128, e: S64)
         fraction_bits : U64  = cm_exp_hi(u).shl(e.sub(16367).to<U64>())
         fraction      : S64  = fraction_bits.to_wrap<S64>()
         is_integer    : Bool = fraction.eq(0)
@@ -71,12 +71,12 @@ routine F128.exp2(self: Self) -> Self
             ? exact(u, e)
             : reduce(u, e)
 
-    block exact(u: U128, e: S64):
+    block exact(u: U128, e: S64)
         r : Self = cm_exp2_exact(u, e)
         return(r)
 
     // the significand, two's-complemented for negative x
-    block reduce(u: U128, e: S64):
+    block reduce(u: U128, e: S64)
         hi      : S64         = cm_exp_hi(u).to_wrap<S64>()
         sign2   : U128        = 0.sub_wrap(u.shr(127))
         sig     : U128        = u.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
@@ -89,7 +89,7 @@ routine F128.exp2(self: Self) -> Self
 
 /// 2^n for the integer n = x (biased exponent e): exact, normal or subnormal.
 routine cm_exp2_exact(u: U128, e: S64) -> F128
-    block entry():
+    block entry()
         hi        : S64  = cm_exp_hi(u).to_wrap<S64>()
         sign_mask : S64  = hi.shr(63)
         sig_bits  : S64  = hi.bitand(0xFFFFFFFFFFFF).bitor(0x1000000000000)
@@ -102,11 +102,11 @@ routine cm_exp2_exact(u: U128, e: S64) -> F128
             ? normal(biased)
             : subnormal(biased)
 
-    block normal(biased: S64):
+    block normal(biased: S64)
         r : F128 = f128_of(biased.to<U128>().shl(112))
         return(r)
 
     // 2^-16383 is bit 111; each step down halves it
-    block subnormal(biased: S64):
+    block subnormal(biased: S64)
         r : F128 = f128_of(F128_QUIET_BIT.shr(0.sub(biased).to<U128>()))
         return(r)

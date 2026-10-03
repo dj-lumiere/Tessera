@@ -83,7 +83,7 @@ record CmF32PowDd
 
 /// self^exponent, correctly rounded.
 routine F32.powf(self: Self, exponent: Self) -> Self
-    block entry():
+    block entry()
         tx      : U64  = self.to<F64>().bits()
         ty      : U64  = exponent.to<F64>().bits()
         tx2     : U64  = tx.shl(1)
@@ -92,54 +92,54 @@ routine F32.powf(self: Self, exponent: Self) -> Self
         zero_y  : Bool = ty2.eq(0)
         special : Bool = ty2.ge(0xFFE0000000000000)  // y is ±inf or NaN
         unusual : Bool = tx.ge(0x7FF0000000000000)  // x is ±inf, NaN, or has its sign bit set
-        when:
+        when
             unit_x  -> unit_base(tx, ty2)
             zero_y  -> zero_exponent()
             special -> special_exponent(tx2, ty, ty2)
             unusual -> unusual_base(tx, tx2, ty)
             else    -> finite_base(tx, tx2, ty)
 
-    block unit_base(tx: U64, ty2: U64):
+    block unit_base(tx: U64, ty2: U64)
         minus : Bool = tx.shr(63).eq(1)
         branch minus
             ? minus_one(ty2)
             : plus_one()
 
     // x = -1
-    block minus_one(ty2: U64):
+    block minus_one(ty2: U64)
         nan_y   : Bool = ty2.gt(0xFFE0000000000000)
         odd     : Bool = cm_f32_pow_isodd(exponent)
         integer : Bool = cm_f32_pow_isint(exponent)
-        when:
+        when
             nan_y   -> return(exponent.add(exponent))
             odd     -> return(self)
             integer -> return(self.neg())
             else    -> return(Self.from_bits(0xFFC00000))
 
     // 1^y = 1 except for a signaling NaN y
-    block plus_one():
+    block plus_one()
         signaling : Bool = cm_f32_pow_is_signaling(exponent)
         branch signaling
             ? return(self.add(exponent))
             : return(self)
 
     // x^0 = 1 except for a signaling NaN x
-    block zero_exponent():
+    block zero_exponent()
         signaling : Bool = cm_f32_pow_is_signaling(self)
         branch signaling
             ? return(self.add(exponent))
             : return(1.0)
 
     // y = ±inf or NaN
-    block special_exponent(tx2: U64, ty: U64, ty2: U64):
+    block special_exponent(tx2: U64, ty: U64, ty2: U64)
         nan_x : Bool = tx2.gt(0xFFE0000000000000)
         inf_y : Bool = ty2.eq(0xFFE0000000000000)
-        when:
+        when
             nan_x -> return(self.add(exponent))
             inf_y -> infinite_exponent(tx2, ty)
             else  -> return(self.add(exponent))
 
-    block infinite_exponent(tx2: U64, ty: U64):
+    block infinite_exponent(tx2: U64, ty: U64)
         below_one : Bool = tx2.lt(0x7FE0000000000000)
         negative  : Bool = ty.shr(63).eq(1)
         vanishes  : Bool = below_one.ne(negative)
@@ -148,20 +148,20 @@ routine F32.powf(self: Self, exponent: Self) -> Self
             : return(Self.INFINITY)
 
     // x is ±inf, NaN, or has its sign bit set
-    block unusual_base(tx: U64, tx2: U64, ty: U64):
+    block unusual_base(tx: U64, tx2: U64, ty: U64)
         inf_x             : Bool = tx2.eq(0xFFE0000000000000)
         nan_x             : Bool = tx2.gt(0xFFE0000000000000)
         nonzero           : Bool = self.to<F64>().ne(0.0)
         fraction          : Bool = cm_f32_pow_isint(exponent).bitnot()
         negative_fraction : Bool = tx.gt(0x7FF0000000000000).bitand(fraction)
         invalid           : Bool = negative_fraction.bitand(nonzero)
-        when:
+        when
             inf_x   -> infinite_base(ty)
             nan_x   -> return(self.add(self))
             invalid -> return(Self.from_bits(0xFFC00000))
             else    -> finite_base(tx, tx2, ty)
 
-    block infinite_base(ty: U64):
+    block infinite_base(ty: U64)
         odd  : Bool = cm_f32_pow_isodd(exponent)
         base : Self = odd
             ? self
@@ -171,25 +171,25 @@ routine F32.powf(self: Self, exponent: Self) -> Self
             ? return(Self.div(1.0, base))
             : return(base)
 
-    block finite_base(tx: U64, tx2: U64, ty: U64):
+    block finite_base(tx: U64, tx2: U64, ty: U64)
         zero_x : Bool = tx2.eq(0)
         branch zero_x
             ? zero_base(ty)
             : reduce(tx, ty)
 
     // x = ±0
-    block zero_base(ty: U64):
+    block zero_base(ty: U64)
         negative : Bool = ty.shr(63).eq(1)
         odd      : Bool = cm_f32_pow_isodd(exponent)
         pole     : Bool = negative.bitand(odd)
-        when:
+        when
             pole     -> return(Self.div(1.0, Self.copysign(0.0, self)))
             negative -> return(Self.INFINITY)
             odd      -> return(Self.copysign(1.0, self).mul(0.0))
             else     -> return(0.0)
 
     // |x| = 2^e xd, with 1/xd approximated from a 32-entry table
-    block reduce(tx: U64, ty: U64):
+    block reduce(tx: U64, ty: U64)
         m               : U64 = tx.bitand(0x000FFFFFFFFFFFFF)
         biased_exponent : U64 = tx.shr(52).bitand(0x7FF)
         e0              : S64 = biased_exponent.to<S64>().sub(0x3FF)
@@ -217,26 +217,26 @@ routine F32.powf(self: Self, exponent: Self) -> Self
         over  : Bool  = t.gt(2048.0)
         under : Bool  = t.lt(-2400.0)
         near1 : Bool  = t.abs().lt(0x1p-26)
-        when:
+        when
             over  -> overflow()
             under -> underflow()
             near1 -> return(t.add(1.0).to<Self>())
             else  -> exp2(l, y16, zt, t, ty)
 
-    block overflow():
+    block overflow()
         odd : Bool = cm_f32_pow_isodd(exponent)
         branch odd
             ? return(Self.copysign(0x1p+127, self).mul(0x1p+127))
             : return(Self.mul(0x1p+127, 0x1p+127))
 
-    block underflow():
+    block underflow()
         odd : Bool = cm_f32_pow_isodd(exponent)
         branch odd
             ? return(Self.copysign(0x1p-126, self).mul(0x1p-126))
             : return(Self.mul(0x1p-126, 0x1p-126))
 
     // 2^(t/16) = 2^el 2^(jl/16) 2^(h/16) with t = 16 el + jl + h
-    block exp2(l: F64, y16: F64, zt: F64, t: F64, ty: U64):
+    block exp2(l: F64, y16: F64, zt: F64, t: F64, ty: U64)
         ia          : F64  = t.floor()
         h           : F64  = l.mul_add(y16, zt.sub(ia))
         il          : S64  = ia.to<S64>()
@@ -259,17 +259,17 @@ routine F32.powf(self: Self, exponent: Self) -> Self
             : sign(rr, ty)
 
     // an odd integer y keeps the sign of x: kk has the units bit of y on top
-    block sign(rr: F64, ty: U64):
+    block sign(rr: F64, ty: U64)
         biased_exponent : U64  = ty.shr(52).bitand(0x7FF)
         et              : S64  = biased_exponent.to<S64>().sub(0x3FF)
         left            : Bool = et.ge(-11).bitand(et.lt(53))
         right           : Bool = et.lt(-11).bitand(et.gt(-75))
-        when:
+        when
             left  -> parity(rr, ty.shl(et.add(11).to_wrap<U64>()))
             right -> parity(rr, ty.shr(S64.sub(-11, et).to_wrap<U64>()))
             else  -> parity(rr, 0)
 
-    block parity(rr: F64, kk: U64):
+    block parity(rr: F64, kk: U64)
         units_only : Bool = kk.shl(1).eq(0)
         odd        : Bool = units_only.bitand(kk.ne(0))
         r          : F64  = odd
@@ -279,7 +279,7 @@ routine F32.powf(self: Self, exponent: Self) -> Self
 
 /// True when y is an integer (or ±0).
 private routine cm_f32_pow_isint(y: F32) -> Bool
-    block entry():
+    block entry()
         wy              : U32  = y.bits()
         biased_exponent : U32  = wy.shr(23).bitand(0xFF)
         ey              : S64  = biased_exponent.to<S64>().sub(127)
@@ -289,7 +289,7 @@ private routine cm_f32_pow_isint(y: F32) -> Bool
             ? big(wy, s)
             : return(wy.shl(1).eq(0))
 
-    block big(wy: U32, s: S64):
+    block big(wy: U32, s: S64)
         wide : Bool = s.ge(32)
         branch wide
             ? return(true)
@@ -297,38 +297,38 @@ private routine cm_f32_pow_isint(y: F32) -> Bool
 
 /// True when y is an odd integer.
 private routine cm_f32_pow_isodd(y: F32) -> Bool
-    block entry():
+    block entry()
         wy              : U32  = y.bits()
         biased_exponent : U32  = wy.shr(23).bitand(0xFF)
         ey              : S64  = biased_exponent.to<S64>().sub(127)
         s               : S64  = ey.add(9)
         inside          : Bool = ey.ge(0).bitand(s.lt(32))
         last            : Bool = ey.ge(0).bitand(s.eq(32))
-        when:
+        when
             inside -> fraction(wy, s)
             last   -> return(wy.bitand(1).eq(1))
             else   -> return(false)
 
     // the units bit sits inside the mantissa: y is odd if nothing follows it and it is set
-    block fraction(wy: U32, s: S64):
+    block fraction(wy: U32, s: S64)
         integer : Bool = wy.shl(s.to_wrap<U32>()).eq(0)
         branch integer
             ? units(wy, s)
             : return(false)
 
-    block units(wy: U32, s: S64):
+    block units(wy: U32, s: S64)
         bit : U32 = wy.shr(S64.sub(32, s).to_wrap<U32>()).bitand(1)
         return(bit.eq(1))
 
 /// True when x is a signaling NaN.
 private routine cm_f32_pow_is_signaling(x: F32) -> Bool
-    block entry():
+    block entry()
         u : U32 = x.bits().bitxor(0x00400000)
         return(u.bitand(0x7FFFFFFF).gt(0x7FC00000))
 
 /// The double-double product (xh + xl) (ch + cl).
 private routine cm_f32_pow_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF32PowDd
-    block entry():
+    block entry()
         ahlh : F64 = ch.mul(xl)
         alhh : F64 = cl.mul(xh)
         ahhh : F64 = ch.mul(xh)
@@ -340,7 +340,7 @@ private routine cm_f32_pow_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF32Pow
 
 /// The double-double times double product (xh + xl) ch.
 private routine cm_f32_pow_mulddd(xh: F64, xl: F64, ch: F64) -> CmF32PowDd
-    block entry():
+    block entry()
         ahlh : F64 = ch.mul(xl)
         ahhh : F64 = ch.mul(xh)
         err  : F64 = ch.mul_add(xh, ahhh.neg())
@@ -351,16 +351,16 @@ private routine cm_f32_pow_mulddd(xh: F64, xl: F64, ch: F64) -> CmF32PowDd
 
 /// Double-double Horner evaluation of the log2 series (13 double-double coefficients).
 private routine cm_f32_pow_poly_log(xh: F64, xl: F64) -> CmF32PowDd
-    block entry():
+    block entry()
         jump step(12, F64.from_bits(CM_F32_POW_CH.get(24)), F64.from_bits(CM_F32_POW_CH.get(25)))
 
-    block step(i: USize, ch: F64, cl: F64):
+    block step(i: USize, ch: F64, cl: F64)
         done : Bool = i.eq(0)
         branch done
             ? return(CmF32PowDd { hi: ch, lo: cl })
             : horner(i.sub(1), ch, cl)
 
-    block horner(i: USize, ch: F64, cl: F64):
+    block horner(i: USize, ch: F64, cl: F64)
         p  : CmF32PowDd = cm_f32_pow_muldd(xh, xl, ch, cl)
         c0 : F64        = F64.from_bits(CM_F32_POW_CH.get(i.mul(2)))
         c1 : F64        = F64.from_bits(CM_F32_POW_CH.get(i.mul(2).add(1)))
@@ -370,16 +370,16 @@ private routine cm_f32_pow_poly_log(xh: F64, xl: F64) -> CmF32PowDd
 
 /// Double-double Horner evaluation of the 2^x series (18 double-double coefficients).
 private routine cm_f32_pow_poly_exp(xh: F64, xl: F64) -> CmF32PowDd
-    block entry():
+    block entry()
         jump step(17, F64.from_bits(CM_F32_POW_CE.get(34)), F64.from_bits(CM_F32_POW_CE.get(35)))
 
-    block step(i: USize, ch: F64, cl: F64):
+    block step(i: USize, ch: F64, cl: F64)
         done : Bool = i.eq(0)
         branch done
             ? return(CmF32PowDd { hi: ch, lo: cl })
             : horner(i.sub(1), ch, cl)
 
-    block horner(i: USize, ch: F64, cl: F64):
+    block horner(i: USize, ch: F64, cl: F64)
         p  : CmF32PowDd = cm_f32_pow_muldd(xh, xl, ch, cl)
         c0 : F64        = F64.from_bits(CM_F32_POW_CE.get(i.mul(2)))
         c1 : F64        = F64.from_bits(CM_F32_POW_CE.get(i.mul(2).add(1)))
@@ -390,7 +390,7 @@ private routine cm_f32_pow_poly_exp(xh: F64, xl: F64) -> CmF32PowDd
 /// The accurate path of pow, in double-double arithmetic, for results close to a rounding boundary. x is
 /// finite, positive or a negative base with an integer exponent, not ±0 or ±1; y is finite and nonzero.
 private routine cm_f32_pow_accurate(x0: F32, y0: F32) -> F32
-    block entry():
+    block entry()
         yd       : F64  = y0.to<F64>()
         t0       : U64  = x0.to<F64>().bits()
         biased_x : U64  = t0.shr(52).bitand(0x7FF)
@@ -429,12 +429,12 @@ private routine cm_f32_pow_accurate(x0: F32, y0: F32) -> F32
         sh       : S64  = et.add(8)
         left     : Bool = sh.ge(0).bitand(sh.lt(32))
         right    : Bool = sh.lt(0).bitand(S64.sub(-8, et).lt(32))
-        when:
+        when
             left  -> parity(s.hi, s.lo, sc, et, ty.shl(sh.to_wrap<U32>()))
             right -> parity(s.hi, s.lo, sc, et, ty.shr(S64.sub(-8, et).to_wrap<U32>()))
             else  -> parity(s.hi, s.lo, sc, et, 0)
 
-    block parity(eh: F64, el: F64, sc: F64, et: S64, kk: U32):
+    block parity(eh: F64, el: F64, sc: F64, et: S64, kk: U32)
         small_integer : Bool = et.ge(0).bitand(kk.shl(1).eq(0))
         integer       : Bool = small_integer.bitor(et.ge(23))
         odd           : Bool = integer.bitand(kk.ne(0))
@@ -442,13 +442,13 @@ private routine cm_f32_pow_accurate(x0: F32, y0: F32) -> F32
         lmid          : U64  = el_high.bitand(0x1FFFFFFF)
         ones          : Bool = lmid.eq(0x1FFFFFFF)
         zeros         : Bool = lmid.eq(0)
-        when:
+        when
             ones  -> lmid_ones(eh, el, sc, odd)
             zeros -> lmid_zeros(eh, el, sc, odd)
             else  -> nudge(eh, el, sc, odd)
 
     // the middle bits of el are all ones: move one ulp of eh from el to eh when el reaches half of it
-    block lmid_ones(eh: F64, el: F64, sc: F64, odd: Bool):
+    block lmid_ones(eh: F64, el: F64, sc: F64, odd: Bool)
         small : Bool = eh.lt(1.0)
         ulp   : F64  = small
             ? 0x1p-53
@@ -458,36 +458,36 @@ private routine cm_f32_pow_accurate(x0: F32, y0: F32) -> F32
             : 0x1p-53
         up   : Bool = el.ge(half)
         down : Bool = el.le(half.neg())
-        when:
+        when
             up   -> nudge(eh.add(ulp), el.sub(ulp), sc, odd)
             down -> nudge(eh.sub(ulp), el.add(ulp), sc, odd)
             else -> nudge(eh, el, sc, odd)
 
     // the middle bits of el are all zeros: move one ulp of eh from el to eh when el reaches it
-    block lmid_zeros(eh: F64, el: F64, sc: F64, odd: Bool):
+    block lmid_zeros(eh: F64, el: F64, sc: F64, odd: Bool)
         small : Bool = eh.lt(1.0)
         ulp   : F64  = small
             ? 0x1p-53
             : 0x1p-52
         up   : Bool = el.gt(0.0).bitand(el.ge(ulp))
         down : Bool = el.le(0.0).bitand(el.le(ulp.neg()))
-        when:
+        when
             up   -> nudge(eh.add(ulp), el.sub(ulp), sc, odd)
             down -> nudge(eh.sub(ulp), el.add(ulp), sc, odd)
             else -> nudge(eh, el, sc, odd)
 
     // eh sits exactly on an F32 rounding boundary: el decides the side
-    block nudge(eh: F64, el: F64, sc: F64, odd: Bool):
+    block nudge(eh: F64, el: F64, sc: F64, odd: Bool)
         lh          : U64  = eh.bits()
         on_boundary : Bool = lh.bitand(0xFFFFFFF).eq(0)
         tie         : Bool = on_boundary.bitand(el.abs().gt(0x1p-91))
         below       : Bool = tie.bitand(el.lt(0.0))
-        when:
+        when
             below -> scale(F64.from_bits(lh.sub_wrap(1)), sc, odd)
             tie   -> scale(F64.from_bits(lh.add_wrap(1)), sc, odd)
             else  -> scale(eh, sc, odd)
 
-    block scale(eh: F64, sc: F64, odd: Bool):
+    block scale(eh: F64, sc: F64, odd: Bool)
         v : F64 = eh.mul(sc)
         r : F64 = odd
             ? v.copysign(x0.to<F64>())

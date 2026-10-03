@@ -13,7 +13,7 @@ record Rng
     state : U64
 
 routine Rng.below(self: @Self, bound: USize) -> USize
-    block entry():
+    block entry()
         state : U64 = self.state.load()
         next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         self.state.store(next)
@@ -22,32 +22,32 @@ routine Rng.below(self: @Self, bound: USize) -> USize
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
-    block entry():
+    block entry()
         mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
 routine labeled<W>(out: @W, label: Bytes, value: S64) -> Void
 require W: typename, Writer<W>
-    block entry():
+    block entry()
         write(out, " {label} {value}")
         return()
 
 // Folds every element in iteration order.
 routine iteration_hash(list: @SortedList<S64>) -> S64
-    block entry():
+    block entry()
         iter_val : SortedListIter<S64> = .construct(list)
         claim iter : @SortedListIter<S64> <- iter_val
         jump next(iter, 0)
 
-    block next(iter: @SortedListIter<S64>, hash: S64):
+    block next(iter: @SortedListIter<S64>, hash: S64)
         item : Option<S64> = iter.next()
-        when item:
+        when item
             .Present(value) -> next(iter, mix(hash, value))
             .Absent         -> return(hash)
 
 routine checkpoint(out: @BufWriter<FdWriter>, list: @SortedList<S64>, phase: USize, op: USize,
     results: S64) -> Void
-    block entry():
+    block entry()
         write(out, "phase {phase}")
         labeled(out, "op", op.to<S64>())
         size : USize = list.load().length()
@@ -63,94 +63,94 @@ routine checkpoint(out: @BufWriter<FdWriter>, list: @SortedList<S64>, phase: USi
 // results checksum.
 routine run_phase(out: @BufWriter<FdWriter>, list: @SortedList<S64>, rng: @Rng, phase: USize,
     ops: USize, pushes: USize, ranks: USize, contains: USize, removes: USize, results: S64) -> S64
-    block entry():
+    block entry()
         jump next(0, results)
 
-    block next(op: USize, results: S64):
+    block next(op: USize, checksum: S64)
         done : Bool = op.ge(ops)
         branch done
-            ? return(results)
-            : pick(op, results)
+            ? return(checksum)
+            : pick(op, checksum)
 
-    block pick(op: USize, results: S64):
+    block pick(op: USize, checksum: S64)
         kind        : USize = rng.below(10)
         is_push     : Bool  = kind.lt(pushes)
         is_rank     : Bool  = kind.lt(ranks)
         is_contains : Bool  = kind.lt(contains)
         empty       : Bool  = list.load().is_empty()
-        when:
-            is_push     -> push(op, results)
-            is_rank     -> rank(op, results)
-            is_contains -> contains(op, results)
-            empty       -> record(op, results, -1)
-            else        -> pick_indexed(op, results, kind)
+        when
+            is_push     -> push(op, checksum)
+            is_rank     -> rank(op, checksum)
+            is_contains -> contains(op, checksum)
+            empty       -> record(op, checksum, -1)
+            else        -> pick_indexed(op, checksum, kind)
 
-    block pick_indexed(op: USize, results: S64, kind: USize):
+    block pick_indexed(op: USize, checksum: S64, kind: USize)
         index     : USize = rng.below(list.load().length())
         is_remove : Bool  = kind.lt(removes)
         branch is_remove
-            ? remove(op, results, index)
-            : get(op, results, index)
+            ? remove(op, checksum, index)
+            : get(op, checksum, index)
 
-    block push(op: USize, results: S64):
+    block push(op: USize, checksum: S64)
         value : S64 = rng.below(1000).to<S64>()
         list.push(value)
-        jump record(op, results, value)
+        jump record(op, checksum, value)
 
-    block rank(op: USize, results: S64):
+    block rank(op: USize, checksum: S64)
         value : S64   = rng.below(1000).to<S64>()
         rank  : USize = list.load().rank(value)
-        jump record(op, results, rank.to<S64>())
+        jump record(op, checksum, rank.to<S64>())
 
-    block contains(op: USize, results: S64):
+    block contains(op: USize, checksum: S64)
         value : S64  = rng.below(1000).to<S64>()
         found : Bool = list.load().contains(value)
-        jump record(op, results, found.to<S64>())
+        jump record(op, checksum, found.to<S64>())
 
-    block remove(op: USize, results: S64, index: USize):
+    block remove(op: USize, checksum: S64, index: USize)
         value : S64 = list.remove(index)
-        jump record(op, results, value)
+        jump record(op, checksum, value)
 
-    block get(op: USize, results: S64, index: USize):
+    block get(op: USize, checksum: S64, index: USize)
         value : S64 = list.load().get(index)
-        jump record(op, results, value)
+        jump record(op, checksum, value)
 
-    block record(op: USize, results: S64, result: S64):
-        mixed   : S64   = mix(results, result)
+    block record(op: USize, checksum: S64, result: S64)
+        mixed   : S64   = mix(checksum, result)
         op_next : USize = op.add(1)
         report  : Bool  = op_next.mod(500).eq(0)
         branch report
             ? report(op_next, mixed)
             : next(op_next, mixed)
 
-    block report(op: USize, results: S64):
-        checkpoint(out, list, phase, op, results)
-        jump next(op, results)
+    block report(op: USize, checksum: S64)
+        checkpoint(out, list, phase, op, checksum)
+        jump next(op, checksum)
 
 // Pushes every element of from onto to, in iteration order.
 routine copy_all(from: @SortedList<S64>, to: @SortedList<S64>) -> Void
-    block entry():
+    block entry()
         iter_val : SortedListIter<S64> = .construct(from)
         claim iter : @SortedListIter<S64> <- iter_val
         jump next(iter)
 
-    block next(iter: @SortedListIter<S64>):
+    block next(iter: @SortedListIter<S64>)
         item : Option<S64> = iter.next()
-        when item:
+        when item
             .Present(value) -> copy(iter, value)
             .Absent         -> return()
 
-    block copy(iter: @SortedListIter<S64>, value: S64):
+    block copy(iter: @SortedListIter<S64>, value: S64)
         to.push(value)
         jump next(iter)
 
 routine report_eq(out: @BufWriter<FdWriter>, label: Bytes, equal: Bool) -> Void
-    block entry():
+    block entry()
         write(out, "{label} {equal}\n")
         return()
 
 routine main() -> S32
-    block entry():
+    block entry()
         claim fd  : @FdWriter            <- .stdout()
         claim out : @BufWriter<FdWriter> <- uninit
         out.construct(fd)

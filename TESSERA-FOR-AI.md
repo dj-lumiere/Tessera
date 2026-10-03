@@ -37,7 +37,7 @@ import Standard::Format
 import Standard::Os
 
 routine main() -> S32
-    block entry():
+    block entry()
         claim alloc : @Allocator <- make_heap_allocator()
         claim list  : @List<S64> <- .construct(alloc)
         list.push(42)
@@ -128,12 +128,16 @@ routine main() -> S32
 
 **Blocks and control flow**
 
-- A routine body is a list of blocks. The first is `block entry():`, and a routine without blocks must be
+- A routine body is a list of blocks. The first is `block entry()`, and a routine without blocks must be
   `#external`.
 - **A block sees only the routine's parameters, its own parameters, and values it defines.** Anything else must be
   passed as a block argument. This is the most common error.
-- Every block ends with exactly one terminator: `jump b(...)`, `branch c ? a(...) : b(...)`, `when:`
-  (first condition that holds), `when v:` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
+- **A routine's parameters are there in every block, so a block parameter can't share a name with one.** Don't pass
+  a routine parameter along to a block: use it. A value that starts from one and changes (a loop counter, a shrinking
+  length) gets its own name as a block parameter (`jump walk(start)` into `block walk(at: USize)`), or a `claim`ed
+  slot.
+- Every block ends with exactly one terminator: `jump b(...)`, `branch c ? a(...) : b(...)`, `when`
+  (first condition that holds), `when v` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
   `when` names a block, or is an
   inline `return(...)` or a call to a `#noreturn` routine (`trap()`, `panic(TrapCode.X)`). Block arguments and the
   returned value may be expressions (`loop(i.add(1))`, `return(x.to<S32>())`), evaluated only when that arm is
@@ -145,8 +149,8 @@ routine main() -> S32
   real terminator.
 - A line that starts with `?` or `:` continues the one above. `fmt` writes every `branch`, and every select that is a
   binding's or claim's whole value, on three lines: the condition, then `? a` and `: b` 4 spaces further in.
-- An integer `when v:` needs an `else` arm. A `when v:` on a choice without `else` must list every member. An arm may
-  list several values (`b'+', b'-' -> sign()`); there are no range patterns, so test ranges in `when:` with
+- An integer `when v` needs an `else` arm. A `when v` on a choice without `else` must list every member. An arm may
+  list several values (`b'+', b'-' -> sign()`); there are no range patterns, so test ranges in `when` with
   `between` / `in_range`.
 
 **Operations**
@@ -167,7 +171,7 @@ routine main() -> S32
 - Subtraction that can underflow panics even if the result is unused later, so don't compute `len.sub(1)` before
   the branch that knows it's safe: pass it as a branch-arm argument (arm arguments are evaluated lazily), or compute
   it in the arm's block. The same goes for a value select (`c ? a : b`), which evaluates both sides; the
-  `when:` terminator runs its conditions in order and stops at the first that holds.
+  `when` terminator runs its conditions in order and stops at the first that holds.
 - Range checks: `c.between(b'0', b'9')` is the closed `[lo, hi]`, `i.in_range(0, len)` the half-open
   `[lo, end)`, on every integer, float, `Byte`, and `Char`.
 - Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `USize`; integer generic parameters are `N: USize`.
@@ -230,7 +234,7 @@ routine main() -> S32
   with `#[export("tessera_panic_handler"), noreturn] routine my_handler(code: TrapCode, message: Bytes, place:
   @SourceLocation) -> Void`. A stdlib routine that panics on its caller's mistake is `#track_caller`, so the place is
   the caller's line; mark a routine of your own the same way when its panics are its caller's fault.
-- Expected failures return `Result<T, E>`. There's no `?`: `when r:` with `.Success(v)` / `.Failure(e)` arms.
+- Expected failures return `Result<T, E>`. There's no `?`: `when r` with `.Success(v)` / `.Failure(e)` arms.
 
 **Records**
 
@@ -261,7 +265,7 @@ routine main() -> S32
   values go in a record or a tuple. `Option<T>` (`Absent`, `Present : T`) and `Result<T, E>`
   (`Failure : E`, `Success : T`) are variants.
 - Build: `Expr.Number(5)`, `.Number(5)` where the type is known, `Expr.Empty` / `.Empty`.
-- Read with `when e:`; `Expr.Number(n) -> target(n)` binds the payload for that arm's target only, `Expr.Empty`
+- Read with `when e`; `Expr.Number(n) -> target(n)` binds the payload for that arm's target only, `Expr.Empty`
   or `.Present` matches without binding. Without `else`, list every case. There's no field access on a variant.
 - Payloads overlap; a payload arm reads through a stack slot (gone at `-O`).
 - A choice or variant without `#derive` derives Represent, Diagnose, Equal, Hash, and Compare (a variant's only when
@@ -276,10 +280,10 @@ the `branch` would (an overflow or an out-of-bounds load there is a real bug):
 
 ```tessera
 routine sum_to(n: U64) -> U64
-    block entry():
+    block entry()
         jump loop(0, 0)
 
-    block loop(i: U64, total: U64):
+    block loop(i: U64, total: U64)
         done : Bool = i.ge(n)
         branch done ? return(total) : loop(i.add(1), total.add(i))
 ```
@@ -288,13 +292,13 @@ Iterating a collection (`next` returns `Option<T>`):
 
 ```tessera
 routine sum_list(list: @List<S64>) -> S64
-    block entry():
+    block entry()
         claim iter : @ListIter<S64> <- .construct(list)
         jump next(iter, 0)
 
-    block next(iter: @ListIter<S64>, total: S64):
+    block next(iter: @ListIter<S64>, total: S64)
         item : Option<S64> = iter.next()
-        when item:
+        when item
             .Present(value) -> next(iter, total.add(value))
             .Absent          -> return(total)
 ```
@@ -303,13 +307,13 @@ Propagating a `Result`:
 
 ```tessera
 routine parse_or_zero(text: Bytes) -> F64
-    block entry():
+    block entry()
         r : Result<F64, ParseFloatError> = F64.parse(text)
-        when r:
+        when r
             .Success(value) -> return(value)
             .Failure(error) -> failed(error)
 
-    block failed(error: ParseFloatError):
+    block failed(error: ParseFloatError)
         return(0.0)
 ```
 
@@ -378,7 +382,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 **Routines every program has.**
 
 - `routine main() -> S32` is the entry point of an executable.
-- Every routine with a body starts with `block entry():`, which takes no parameters. A routine without blocks must
+- Every routine with a body starts with `block entry()`, which takes no parameters. A routine without blocks must
   be `#external`.
 
 **Threads and fibers.** `Standard::Os` has `Thread.spawn(routine, state, alloc)` / `join()`, `Mutex`

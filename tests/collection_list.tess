@@ -12,7 +12,7 @@ record Rng
     state : U64
 
 routine Rng.below(self: @Self, bound: USize) -> USize
-    block entry():
+    block entry()
         state : U64 = self.state.load()
         next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         self.state.store(next)
@@ -21,31 +21,31 @@ routine Rng.below(self: @Self, bound: USize) -> USize
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
-    block entry():
+    block entry()
         mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
 routine labeled<W>(out: @W, label: Bytes, value: S64) -> Void
 require W: typename, Writer<W>
-    block entry():
+    block entry()
         write(out, " {label} {value}")
         return()
 
 // Folds every element in iteration order.
 routine iteration_hash(list: @List<S64>) -> S64
-    block entry():
+    block entry()
         claim iter : @ListIter<S64> <- .construct(list)
         jump next(iter, 0)
 
-    block next(iter: @ListIter<S64>, hash: S64):
+    block next(iter: @ListIter<S64>, hash: S64)
         item : Option<S64> = iter.next()
-        when item:
+        when item
             .Present(value) -> next(iter, mix(hash, value))
             .Absent         -> return(hash)
 
 routine checkpoint(out: @BufWriter<FdWriter>, list: @List<S64>, phase: USize, op: USize,
     results: S64) -> Void
-    block entry():
+    block entry()
         write(out, "phase {phase}")
         labeled(out, "op", op.to<S64>())
         size : USize = list.load().length()
@@ -59,16 +59,16 @@ routine checkpoint(out: @BufWriter<FdWriter>, list: @List<S64>, phase: USize, op
 // checksum.
 routine run_phase(out: @BufWriter<FdWriter>, list: @List<S64>, rng: @Rng, phase: USize, ops: USize,
     push: USize, results: S64) -> S64
-    block entry():
+    block entry()
         jump next(0, results)
 
-    block next(op: USize, results: S64):
+    block next(op: USize, checksum: S64)
         done : Bool = op.ge(ops)
         branch done
-            ? return(results)
-            : pick(op, results)
+            ? return(checksum)
+            : pick(op, checksum)
 
-    block pick(op: USize, results: S64):
+    block pick(op: USize, checksum: S64)
         kind       : USize = rng.below(1000)
         pop_end    : USize = push.add(25).mul(10)
         is_push    : Bool  = kind.lt(push.mul(10))
@@ -76,97 +76,97 @@ routine run_phase(out: @BufWriter<FdWriter>, list: @List<S64>, rng: @Rng, phase:
         is_get     : Bool  = kind.lt(pop_end.add(200))
         is_clear   : Bool  = kind.eq(999)
         is_reserve : Bool  = kind.eq(998)
-        when:
-            is_push    -> push(op, results)
-            is_pop     -> pop(op, results)
-            is_get     -> get(op, results)
-            is_clear   -> clear(op, results)
-            is_reserve -> reserve(op, results)
-            else       -> set(op, results)
+        when
+            is_push    -> push(op, checksum)
+            is_pop     -> pop(op, checksum)
+            is_get     -> get(op, checksum)
+            is_clear   -> clear(op, checksum)
+            is_reserve -> reserve(op, checksum)
+            else       -> set(op, checksum)
 
-    block push(op: USize, results: S64):
+    block push(op: USize, checksum: S64)
         value : S64 = rng.below(1000000).to<S64>()
         list.push(value)
-        jump record(op, results, value)
+        jump record(op, checksum, value)
 
-    block pop(op: USize, results: S64):
+    block pop(op: USize, checksum: S64)
         empty : Bool = list.load().is_empty()
         branch empty
-            ? record(op, results, -1)
-            : pop_one(op, results)
+            ? record(op, checksum, -1)
+            : pop_one(op, checksum)
 
-    block pop_one(op: USize, results: S64):
+    block pop_one(op: USize, checksum: S64)
         value : S64 = list.pop()
-        jump record(op, results, value)
+        jump record(op, checksum, value)
 
-    block get(op: USize, results: S64):
+    block get(op: USize, checksum: S64)
         empty : Bool = list.load().is_empty()
         branch empty
-            ? record(op, results, -2)
-            : get_one(op, results)
+            ? record(op, checksum, -2)
+            : get_one(op, checksum)
 
-    block get_one(op: USize, results: S64):
+    block get_one(op: USize, checksum: S64)
         index : USize = rng.below(list.load().length())
         value : S64   = list.load().get(index)
-        jump record(op, results, value)
+        jump record(op, checksum, value)
 
-    block set(op: USize, results: S64):
+    block set(op: USize, checksum: S64)
         empty : Bool = list.load().is_empty()
         branch empty
-            ? record(op, results, -3)
-            : set_one(op, results)
+            ? record(op, checksum, -3)
+            : set_one(op, checksum)
 
-    block set_one(op: USize, results: S64):
+    block set_one(op: USize, checksum: S64)
         index : USize = rng.below(list.load().length())
         value : S64   = rng.below(1000000).to<S64>()
         list.set(index, value)
-        jump record(op, results, index.to<S64>())
+        jump record(op, checksum, index.to<S64>())
 
-    block clear(op: USize, results: S64):
+    block clear(op: USize, checksum: S64)
         list.clear()
-        jump record(op, results, -4)
+        jump record(op, checksum, -4)
 
-    block reserve(op: USize, results: S64):
+    block reserve(op: USize, checksum: S64)
         extra : USize = rng.below(3000)
         size  : USize = list.load().length()
         list.reserve(size.add(extra))
-        jump record(op, results, extra.to<S64>())
+        jump record(op, checksum, extra.to<S64>())
 
-    block record(op: USize, results: S64, result: S64):
-        mixed   : S64   = mix(results, result)
+    block record(op: USize, checksum: S64, result: S64)
+        mixed   : S64   = mix(checksum, result)
         op_next : USize = op.add(1)
         report  : Bool  = op_next.mod(500).eq(0)
         branch report
             ? report(op_next, mixed)
             : next(op_next, mixed)
 
-    block report(op: USize, results: S64):
-        checkpoint(out, list, phase, op, results)
-        jump next(op, results)
+    block report(op: USize, checksum: S64)
+        checkpoint(out, list, phase, op, checksum)
+        jump next(op, checksum)
 
 // Pushes every element of from onto to.
 routine copy_into(from: @List<S64>, to: @List<S64>) -> Void
-    block entry():
+    block entry()
         length : USize = from.load().length()
         jump next(0, length)
 
-    block next(index: USize, length: USize):
+    block next(index: USize, length: USize)
         done : Bool = index.ge(length)
         branch done
             ? return()
             : copy(index, length)
 
-    block copy(index: USize, length: USize):
+    block copy(index: USize, length: USize)
         to.push(from.load().get(index))
         jump next(index.add(1), length)
 
 routine report_eq(out: @BufWriter<FdWriter>, label: Bytes, equal: Bool) -> Void
-    block entry():
+    block entry()
         write(out, "{label} {equal}\n")
         return()
 
 routine main() -> S32
-    block entry():
+    block entry()
         claim fd  : @FdWriter            <- .stdout()
         claim out : @BufWriter<FdWriter> <- uninit
         out.construct(fd)

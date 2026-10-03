@@ -421,13 +421,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (inConcept)
             return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
 
-        // Only an #external routine is declared without a body; every other one starts with `block entry():`.
+        // Only an #external routine is declared without a body; every other one starts with `block entry()`.
         string display = owner is null ? name : $"{owner}.{name}";
         if (!IsIdent("block"))
         {
             if (attrs.Any(a => a.Name == "external"))
                 return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs, Source = source };
-            throw new CompileError(pos, $"routine '{display}' has no body: it needs a 'block entry():'");
+            throw new CompileError(pos, $"routine '{display}' has no body: it needs a 'block entry()'");
         }
 
         var blocks = new List<BlockDecl>();
@@ -728,7 +728,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ExpectIdent("block");
         var name = Expect(TokenKind.Ident, "a block name");
         var parameters = ParseParams();
-        Expect(TokenKind.Colon, "':' after the block header");
+        // A routine's parameters are values every block sees, so a block parameter can't take one's name: passing a
+        // parameter along is passing what the block has already, and a value that changes is a different value.
+        foreach (var p in parameters.Where(p => _routineValues.Contains(p.Name)))
+            throw new CompileError(p.Pos,
+                $"block '{name.Text}' has a parameter named '{p.Name}', like the routine's parameter, which every block "
+                + $"already sees: use '{p.Name}' itself, or give a value that changes its own name (or claim a slot for it)");
         ExpectLineEnd();
         _values = [.. _routineValues, .. parameters.Select(p => p.Name)];
 
@@ -905,11 +910,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 ExpectLineEnd();
                 return new BranchTerm(cond, a, b, pos);
             }
-            // `when:` takes the first arm whose condition holds; `when v:` matches one value against constants.
-            case "when" when PeekTok(1).Kind == TokenKind.Colon:
+            // `when` alone takes the first arm whose condition holds; `when v` matches one value against constants.
+            case "when" when PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof:
             {
                 Next();
-                Expect(TokenKind.Colon, "':'");
                 ExpectLineEnd();
                 var arms = new List<(Expr?, Target)>();
                 while (!AtBlockEnd() && LineIsArm())   // an arm has `->`; the first line without one follows the when
@@ -926,7 +930,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             {
                 Next();
                 var value = ParsePostfix();
-                Expect(TokenKind.Colon, "':'");
                 ExpectLineEnd();
                 var arms = new List<(List<Expr>?, Target)>();
                 while (!AtBlockEnd() && LineIsArm())

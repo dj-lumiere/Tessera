@@ -13,7 +13,7 @@ record Rng
     state : U64
 
 routine Rng.below(self: @Self, bound: USize) -> USize
-    block entry():
+    block entry()
         state : U64 = self.state.load()
         next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         self.state.store(next)
@@ -22,38 +22,38 @@ routine Rng.below(self: @Self, bound: USize) -> USize
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
-    block entry():
+    block entry()
         mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
 routine labeled<W>(out: @W, label: Bytes, value: S64) -> Void
 require W: typename, Writer<W>
-    block entry():
+    block entry()
         write(out, " {label} {value}")
         return()
 
 // Folds every element in iteration order.
 routine iteration_hash(set: @SortedSet<S64>) -> S64
-    block entry():
+    block entry()
         claim iter : @SortedSetIter<S64> <- .construct(set)
         jump next(iter, 0)
 
-    block next(iter: @SortedSetIter<S64>, hash: S64):
+    block next(iter: @SortedSetIter<S64>, hash: S64)
         item : Option<S64> = iter.next()
-        when item:
+        when item
             .Present(key) -> next(iter, mix(hash, key))
             .Absent       -> return(hash)
 
 // Folds the elements at ranks 0, length / 3, length / 2, and length - 1 (0 for an empty set).
 routine rank_hash(set: @SortedSet<S64>) -> S64
-    block entry():
+    block entry()
         length : USize = set.load().length()
         empty  : Bool  = length.eq(0)
         branch empty
             ? return(0)
             : fold(length)
 
-    block fold(length: USize):
+    block fold(length: USize)
         first : S64 = set.load().get_by_rank(0)
         third : S64 = set.load().get_by_rank(length.div(3))
         half  : S64 = set.load().get_by_rank(length.div(2))
@@ -63,7 +63,7 @@ routine rank_hash(set: @SortedSet<S64>) -> S64
 
 routine checkpoint(out: @BufWriter<FdWriter>, set: @SortedSet<S64>, phase: USize, op: USize,
     results: S64) -> Void
-    block entry():
+    block entry()
         write(out, "phase {phase}")
         labeled(out, "op", op.to<S64>())
         size : USize = set.load().length()
@@ -79,87 +79,87 @@ routine checkpoint(out: @BufWriter<FdWriter>, set: @SortedSet<S64>, phase: USize
 // Returns the updated results checksum.
 routine run_phase(out: @BufWriter<FdWriter>, set: @SortedSet<S64>, rng: @Rng, phase: USize,
     ops: USize, keys: USize, adds: USize, by_rank: Bool, results: S64) -> S64
-    block entry():
+    block entry()
         jump next(0, results)
 
-    block next(op: USize, results: S64):
+    block next(op: USize, checksum: S64)
         done : Bool = op.ge(ops)
         branch done
-            ? return(results)
-            : pick(op, results)
+            ? return(checksum)
+            : pick(op, checksum)
 
-    block pick(op: USize, results: S64):
+    block pick(op: USize, checksum: S64)
         key       : S64   = rng.below(keys).to<S64>()
         kind      : USize = rng.below(10)
         is_add    : Bool  = kind.lt(adds)
         is_remove : Bool  = kind.lt(7)
-        when:
-            is_add    -> add(op, results, key)
-            is_remove -> remove(op, results, key)
-            else      -> lookup(op, results, key)
+        when
+            is_add    -> add(op, checksum, key)
+            is_remove -> remove(op, checksum, key)
+            else      -> lookup(op, checksum, key)
 
-    block add(op: USize, results: S64, key: S64):
+    block add(op: USize, checksum: S64, key: S64)
         added : Bool = set.add(key)
-        jump record(op, results, added.to<S64>())
+        jump record(op, checksum, added.to<S64>())
 
-    block remove(op: USize, results: S64, key: S64):
+    block remove(op: USize, checksum: S64, key: S64)
         empty       : Bool = set.load().is_empty()
         nonempty    : Bool = empty.bitnot()
         rank_remove : Bool = by_rank.bitand(nonempty)
         branch rank_remove
-            ? remove_rank(op, results)
-            : remove_key(op, results, key)
+            ? remove_rank(op, checksum)
+            : remove_key(op, checksum, key)
 
-    block remove_rank(op: USize, results: S64):
+    block remove_rank(op: USize, checksum: S64)
         rank : USize = rng.below(set.load().length())
         key  : S64   = set.load().get_by_rank(rank)
-        jump remove_key(op, results, key)
+        jump remove_key(op, checksum, key)
 
-    block remove_key(op: USize, results: S64, key: S64):
+    block remove_key(op: USize, checksum: S64, key: S64)
         removed : Bool = set.remove(key)
-        jump record(op, results, mix(key, removed.to<S64>()))
+        jump record(op, checksum, mix(key, removed.to<S64>()))
 
-    block lookup(op: USize, results: S64, key: S64):
+    block lookup(op: USize, checksum: S64, key: S64)
         found : Bool = set.load().contains(key)
-        jump record(op, results, found.to<S64>())
+        jump record(op, checksum, found.to<S64>())
 
-    block record(op: USize, results: S64, result: S64):
-        mixed   : S64   = mix(results, result)
+    block record(op: USize, checksum: S64, result: S64)
+        mixed   : S64   = mix(checksum, result)
         op_next : USize = op.add(1)
         report  : Bool  = op_next.mod(500).eq(0)
         branch report
             ? report(op_next, mixed)
             : next(op_next, mixed)
 
-    block report(op: USize, results: S64):
-        checkpoint(out, set, phase, op, results)
-        jump next(op, results)
+    block report(op: USize, checksum: S64)
+        checkpoint(out, set, phase, op, checksum)
+        jump next(op, checksum)
 
 // Adds from's elements to to by rank, starting from the middle, so to is built in a different order.
 routine copy_rotated(from: @SortedSet<S64>, to: @SortedSet<S64>) -> Void
-    block entry():
+    block entry()
         length : USize = from.load().length()
         half   : USize = length.div(2)
         jump next(0, length, half)
 
-    block next(i: USize, length: USize, half: USize):
+    block next(i: USize, length: USize, half: USize)
         done : Bool = i.ge(length)
         branch done
             ? return()
             : copy(i, length, half)
 
-    block copy(i: USize, length: USize, half: USize):
+    block copy(i: USize, length: USize, half: USize)
         rank : USize = i.add(half).mod(length)
         to.add(from.load().get_by_rank(rank))
         jump next(i.add(1), length, half)
 
 routine report_eq(out: @BufWriter<FdWriter>, label: Bytes, equal: Bool) -> Void
-    block entry():
+    block entry()
         write(out, "{label} {equal}\n")
         return()
 
 routine main() -> S32
-    block entry():
+    block entry()
         claim fd  : @FdWriter            <- .stdout()
         claim out : @BufWriter<FdWriter> <- uninit
         out.construct(fd)

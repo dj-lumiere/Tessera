@@ -12,7 +12,7 @@ record Rng
     state : U64
 
 routine Rng.below(self: @Self, bound: USize) -> USize
-    block entry():
+    block entry()
         state : U64 = self.state.load()
         next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         self.state.store(next)
@@ -21,37 +21,37 @@ routine Rng.below(self: @Self, bound: USize) -> USize
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
-    block entry():
+    block entry()
         mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
 routine labeled<W>(out: @W, label: Bytes, value: S64) -> Void
 require W: typename, Writer<W>
-    block entry():
+    block entry()
         write(out, " {label} {value}")
         return()
 
 // Folds every (key, value) pair in iteration order.
 routine iteration_hash(map: @Dict<S64, S64>) -> S64
-    block entry():
+    block entry()
         iter_val : DictIter<S64, S64> = .construct(map)
         claim iter : @DictIter<S64, S64> <- iter_val
         jump next(iter, 0)
 
-    block next(iter: @DictIter<S64, S64>, hash: S64):
+    block next(iter: @DictIter<S64, S64>, hash: S64)
         item : Option<KVPair<S64, S64>> = iter.next()
-        when item:
+        when item
             .Present(pair) -> fold(iter, hash, pair)
             .Absent        -> return(hash)
 
-    block fold(iter: @DictIter<S64, S64>, hash: S64, pair: KVPair<S64, S64>):
+    block fold(iter: @DictIter<S64, S64>, hash: S64, pair: KVPair<S64, S64>)
         key   : S64 = pair.key
         value : S64 = pair.value
         jump next(iter, mix(mix(hash, key), value))
 
 routine checkpoint(out: @BufWriter<FdWriter>, map: @Dict<S64, S64>, phase: USize, op: USize,
     results: S64) -> Void
-    block entry():
+    block entry()
         write(out, "phase {phase}")
         labeled(out, "op", op.to<S64>())
         size : USize = map.load().length()
@@ -64,65 +64,65 @@ routine checkpoint(out: @BufWriter<FdWriter>, map: @Dict<S64, S64>, phase: USize
 // Runs ops random operations on keys below keys. Returns the updated results checksum.
 routine run_phase(out: @BufWriter<FdWriter>, map: @Dict<S64, S64>, rng: @Rng, phase: USize,
     ops: USize, keys: USize, results: S64) -> S64
-    block entry():
+    block entry()
         jump next(0, results)
 
-    block next(op: USize, results: S64):
+    block next(op: USize, checksum: S64)
         done : Bool = op.ge(ops)
         branch done
-            ? return(results)
-            : pick(op, results)
+            ? return(checksum)
+            : pick(op, checksum)
 
-    block pick(op: USize, results: S64):
+    block pick(op: USize, checksum: S64)
         key       : S64   = rng.below(keys).to<S64>()
         kind      : USize = rng.below(10)
         is_put    : Bool  = kind.lt(5)
         is_remove : Bool  = kind.lt(7)
-        when:
-            is_put    -> put(op, results, key)
-            is_remove -> remove(op, results, key)
-            else      -> lookup(op, results, key)
+        when
+            is_put    -> put(op, checksum, key)
+            is_remove -> remove(op, checksum, key)
+            else      -> lookup(op, checksum, key)
 
-    block put(op: USize, results: S64, key: S64):
+    block put(op: USize, checksum: S64, key: S64)
         value : S64 = rng.below(1000000).to<S64>()
         map.put(key, value)
-        jump record(op, results, value)
+        jump record(op, checksum, value)
 
-    block remove(op: USize, results: S64, key: S64):
+    block remove(op: USize, checksum: S64, key: S64)
         removed : Bool = map.remove(key)
-        jump record(op, results, removed.to<S64>())
+        jump record(op, checksum, removed.to<S64>())
 
-    block lookup(op: USize, results: S64, key: S64):
+    block lookup(op: USize, checksum: S64, key: S64)
         found : Bool = map.load().contains(key)
         branch found
-            ? get(op, results, key)
-            : record(op, results, -1)
+            ? get(op, checksum, key)
+            : record(op, checksum, -1)
 
-    block get(op: USize, results: S64, key: S64):
+    block get(op: USize, checksum: S64, key: S64)
         value : S64 = map.load().get(key)
-        jump record(op, results, value)
+        jump record(op, checksum, value)
 
-    block record(op: USize, results: S64, result: S64):
-        mixed   : S64   = mix(results, result)
+    block record(op: USize, checksum: S64, result: S64)
+        mixed   : S64   = mix(checksum, result)
         op_next : USize = op.add(1)
         report  : Bool  = op_next.mod(500).eq(0)
         branch report
             ? report(op_next, mixed)
             : next(op_next, mixed)
 
-    block report(op: USize, results: S64):
-        checkpoint(out, map, phase, op, results)
-        jump next(op, results)
+    block report(op: USize, checksum: S64)
+        checkpoint(out, map, phase, op, checksum)
+        jump next(op, checksum)
 
 // Copies from into to in iteration order, but starting from its second half, so the two maps hold the same pairs in
 // a different insertion order.
 routine copy_rotated(from: @Dict<S64, S64>, to: @Dict<S64, S64>) -> Void
-    block entry():
+    block entry()
         size : USize = from.load().length()
         half : USize = size.div(2)
         jump pass(0, half, true)
 
-    block pass(pass: USize, half: USize, second: Bool):
+    block pass(pass: USize, half: USize, second: Bool)
         done     : Bool               = pass.eq(2)
         iter_val : DictIter<S64, S64> = .construct(from)
         claim iter : @DictIter<S64, S64> <- iter_val
@@ -130,14 +130,14 @@ routine copy_rotated(from: @Dict<S64, S64>, to: @Dict<S64, S64>) -> Void
             ? return()
             : next(pass, half, second, iter, 0)
 
-    block next(pass: USize, half: USize, second: Bool, iter: @DictIter<S64, S64>, index: USize):
+    block next(pass: USize, half: USize, second: Bool, iter: @DictIter<S64, S64>, index: USize)
         item : Option<KVPair<S64, S64>> = iter.next()
-        when item:
+        when item
             .Present(pair) -> consider(pass, half, second, iter, index, pair)
             .Absent        -> pass(pass.add(1), half, second.bitnot())
 
     block consider(pass: USize, half: USize, second: Bool, iter: @DictIter<S64, S64>, index: USize,
-        pair: KVPair<S64, S64>):
+        pair: KVPair<S64, S64>)
         in_second : Bool = index.ge(half)
         wanted    : Bool = in_second.eq(second)
         branch wanted
@@ -145,17 +145,17 @@ routine copy_rotated(from: @Dict<S64, S64>, to: @Dict<S64, S64>) -> Void
             : next(pass, half, second, iter, index.add(1))
 
     block copy(pass: USize, half: USize, second: Bool, iter: @DictIter<S64, S64>, index: USize,
-        pair: KVPair<S64, S64>):
+        pair: KVPair<S64, S64>)
         to.put(pair.key, pair.value)
         jump next(pass, half, second, iter, index.add(1))
 
 routine report_eq(out: @BufWriter<FdWriter>, label: Bytes, equal: Bool) -> Void
-    block entry():
+    block entry()
         write(out, "{label} {equal}\n")
         return()
 
 routine main() -> S32
-    block entry():
+    block entry()
         claim fd  : @FdWriter            <- .stdout()
         claim out : @BufWriter<FdWriter> <- uninit
         out.construct(fd)

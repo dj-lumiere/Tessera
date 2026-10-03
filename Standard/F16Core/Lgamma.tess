@@ -47,52 +47,52 @@ preset CM_F16_LGAMMA_IX: @Array<U64, 16> <- { 0x3FF0000000000000, 0x3FEE1E1E1E1E
 
 /// ln |Γ(self)|: +inf at 0 and the negative integers.
 routine F16.ln_gamma(self: Self) -> Self
-    block entry():
+    block entry()
         xf      : F32  = self.to<F32>()
         fx      : F32  = xf.floor()
         ax      : F32  = xf.abs()
         tu      : U32  = ax.bits()
         special : Bool = tu.ge(0x7F800000)
         integer : Bool = fx.eq(xf)
-        when:
+        when
             special -> special(xf, tu)
             integer -> integer(xf, fx, ax, tu)
             else    -> body(xf, fx, ax, tu)
 
-    block special(xf: F32, tu: U32):
+    block special(xf: F32, tu: U32)
         infinite : Bool = tu.eq(0x7F800000)
         branch infinite
             ? return(Self.from_bits(0x7C00))
             : return(xf.add(xf).to<Self>())
 
     // an integer: a pole at zero and the negative integers, and exact zeros at 1 and 2
-    block integer(xf: F32, fx: F32, ax: F32, tu: U32):
+    block integer(xf: F32, fx: F32, ax: F32, tu: U32)
         pole    : Bool = xf.le(0.0)
         one_two : Bool = xf.eq(1.0).bitor(xf.eq(2.0))
-        when:
+        when
             pole    -> return(Self.from_bits(0x7C00))
             one_two -> return(Self.from_bits(0))
             else    -> body(xf, fx, ax, tu)
 
-    block body(xf: F32, fx: F32, ax: F32, tu: U32):
+    block body(xf: F32, fx: F32, ax: F32, tu: U32)
         s     : F64  = xf.to<F64>()
         z     : F64  = ax.to<F64>()
         small : Bool = ax.lt(0x1.52p-1)
         large : Bool = ax.gt(0x1.afc1ap+1)
-        when:
+        when
             small -> small(s, z)
             large -> large(xf, fx, ax, z)
             else  -> mid(xf, fx, tu, s, z)
 
     // a rational approximation of lgamma(x) + log|x| near zero
-    block small(s: F64, z: F64):
+    block small(s: F64, z: F64)
         num : F64 = F64.mul(0x1.0fc0fad268c4dp+2, s).mul(cm_f16_lgamma_r8(s, 0))
         f   : F64 = num.div(cm_f16_lgamma_r8(s, 8)).sub(cm_f16_lgamma_ln(z))
         return(f.to<Self>())
 
-    block large(xf: F32, fx: F32, ax: F32, z: F64):
+    block large(xf: F32, fx: F32, ax: F32, z: F64)
         // lgamma(0x1.ff4p+12) rounds to the largest finite F16, larger inputs overflow
-        when:
+        when
             xf.gt(0x1.ff4p+12) -> return(Self.from_bits(0x7C00))
             xf.ge(0x1.ff4p+12) -> return(Self.from_bits(0x7BFF))
             else               -> continue
@@ -103,26 +103,26 @@ routine F16.ln_gamma(self: Self) -> Self
         iz            : F64 = F64.div(1.0, z)
         iz2           : F64 = iz.mul(iz)
         iz4           : F64 = iz2.mul(iz2)
-        when:
+        when
             ax.gt(1198.0)        -> stirling1(xf, fx, lz, f, iz)
             ax.gt(0x1.279a7p+6)  -> stirling2(xf, fx, lz, f, iz, iz2)
             ax.gt(0x1.555556p+3) -> stirling4(xf, fx, lz, f, iz, iz2, iz4)
             else                 -> stirling8(xf, fx, lz, f, iz, iz2, iz4)
 
-    block stirling1(xf: F32, fx: F32, lz: F64, f: F64, iz: F64):
+    block stirling1(xf: F32, fx: F32, lz: F64, f: F64, iz: F64)
         jump reflect_large(xf, fx, lz, f.add(iz.mul(0x1.5555555555555p-4)))
 
-    block stirling2(xf: F32, fx: F32, lz: F64, f: F64, iz: F64, iz2: F64):
+    block stirling2(xf: F32, fx: F32, lz: F64, f: F64, iz: F64, iz2: F64)
         p : F64 = iz2.mul(-0x1.6c0fd270c465p-9).add(0x1.555555547fbadp-4)
         jump reflect_large(xf, fx, lz, f.add(iz.mul(p)))
 
-    block stirling4(xf: F32, fx: F32, lz: F64, f: F64, iz: F64, iz2: F64, iz4: F64):
+    block stirling4(xf: F32, fx: F32, lz: F64, f: F64, iz: F64, iz2: F64, iz4: F64)
         p0 : F64 = iz2.mul(-0x1.6c16bdc45944fp-9).add(0x1.555555554de0bp-4)
         p2 : F64 = iz2.mul(-0x1.2e9cfff3b29c2p-11).add(0x1.a0077f300ecb3p-11)
         p  : F64 = p0.add(iz4.mul(p2))
         jump reflect_large(xf, fx, lz, f.add(iz.mul(p)))
 
-    block stirling8(xf: F32, fx: F32, lz: F64, f: F64, iz: F64, iz2: F64, iz4: F64):
+    block stirling8(xf: F32, fx: F32, lz: F64, f: F64, iz: F64, iz2: F64, iz4: F64)
         iz8 : F64 = iz4.mul(iz4)
         p0  : F64 = iz2.mul(-0x1.6c16c0e7c4cf4p-9).add(0x1.5555555551286p-4)
         p2  : F64 = iz2.mul(-0x1.37e87ec19cb45p-11).add(0x1.a0193267fe6f2p-11)
@@ -134,7 +134,7 @@ routine F16.ln_gamma(self: Self) -> Self
         jump reflect_large(xf, fx, lz, f.add(iz.mul(p)))
 
     // the reflection formula lgamma(x) = log(pi) - lgamma(-x) - log|x sin(pi x)|
-    block reflect_large(xf: F32, fx: F32, lz: F64, f: F64):
+    block reflect_large(xf: F32, fx: F32, lz: F64, f: F64)
         negative : Bool = xf.lt(0.0)
         branch negative
             ? continue
@@ -144,7 +144,7 @@ routine F16.ln_gamma(self: Self) -> Self
         return(g.sub(lp).to<Self>())
 
     // a rational approximation with exact zeros at 1 and 2
-    block mid(xf: F32, fx: F32, tu: U32, s: F64, z: F64):
+    block mid(xf: F32, fx: F32, tu: U32, s: F64, z: F64)
         zero_factors : F64  = z.sub(1.0).mul(z.sub(2.0))
         num          : F64  = zero_factors.mul(0x1.3cc0e6a0106b3p+2).mul(cm_f16_lgamma_r7(z))
         f            : F64  = num.div(cm_f16_lgamma_r8(z, 16))
@@ -155,7 +155,7 @@ routine F16.ln_gamma(self: Self) -> Self
         zero1 : Bool = tu.gt(0x402F95C2).bitand(tu.lt(0x40301B93))
         zero2 : Bool = tu.gt(0x401CECCB).bitand(tu.lt(0x401D95CA))
         zero3 : Bool = tu.gt(0x40492009).bitand(tu.lt(0x404940EF))
-        when:
+        when
             zero1 -> near_zero1(s)
             zero2 -> near_zero2(s)
             zero3 -> near_zero3(s)
@@ -165,7 +165,7 @@ routine F16.ln_gamma(self: Self) -> Self
         return(g.sub(lp).to<Self>())
 
     // near the zero of lgamma at -0x1.5fb410a1bd901p+1
-    block near_zero1(s: F64):
+    block near_zero1(s: F64)
         h : F64 = s.add(0x1.5fb410a1bd901p+1).sub(0x1.a19a96d2e6f85p-54)
         f : F64 = cm_f16_lgamma_zero_poly(h, -0x1.ea12da904b18cp+0, 0x1.3267f3c265a54p+3,
             -0x1.4185ac30cadb3p+4, 0x1.f504accc3f2e4p+5, -0x1.8588444c679b4p+7, 0x1.43740491dc22p+9,
@@ -173,7 +173,7 @@ routine F16.ln_gamma(self: Self) -> Self
         return(f.to<Self>())
 
     // near the zero of lgamma at -0x1.3a7fc9600f86cp+1
-    block near_zero2(s: F64):
+    block near_zero2(s: F64)
         h : F64 = s.add(0x1.3a7fc9600f86cp+1).add(0x1.55f64f98af8dp-55)
         f : F64 = cm_f16_lgamma_zero_poly(h, 0x1.83fe966af535fp+0, 0x1.36eebb002f61ap+2,
             0x1.694a60589a0b3p+0, 0x1.1718d7aedb0b5p+3, 0x1.733a045eca0d3p+2, 0x1.8d4297421205bp+4,
@@ -181,7 +181,7 @@ routine F16.ln_gamma(self: Self) -> Self
         return(f.to<Self>())
 
     // near the zero of lgamma at -0x1.9260dbc9e59afp+1
-    block near_zero3(s: F64):
+    block near_zero3(s: F64)
         h : F64 = s.add(0x1.9260dbc9e59afp+1).add(0x1.f717cd335a7b3p-53)
         f : F64 = cm_f16_lgamma_zero_poly(h, 0x1.f20a65f2fac55p+2, 0x1.9d4d297715105p+4,
             0x1.c1137124d5b21p+6, 0x1.267203d24de38p+9, 0x1.99a63399a0b44p+11,
@@ -192,7 +192,7 @@ routine F16.ln_gamma(self: Self) -> Self
 /// the original. A degree-6 polynomial passes a7 = 0: a6 + h 0 is exactly a6.
 private routine cm_f16_lgamma_zero_poly(h: F64, a0: F64, a1: F64, a2: F64, a3: F64, a4: F64,
     a5: F64, a6: F64, a7: F64) -> F64
-    block entry():
+    block entry()
         h2 : F64 = h.mul(h)
         h4 : F64 = h2.mul(h2)
         c0 : F64 = a0.add(h.mul(a1))
@@ -206,7 +206,7 @@ private routine cm_f16_lgamma_zero_poly(h: F64, a0: F64, a1: F64, a2: F64, a3: F
 /// The product (x - r0)(x - r1)...(x - r7) over the 8 roots starting at base in
 /// CM_F16_LGAMMA_R8, grouped as in the original.
 private routine cm_f16_lgamma_r8(x: F64, base: USize) -> F64
-    block entry():
+    block entry()
         p01 : F64 = cm_f16_lgamma_factor(x, base, 0).mul(cm_f16_lgamma_factor(x, base, 1))
         p23 : F64 = cm_f16_lgamma_factor(x, base, 2).mul(cm_f16_lgamma_factor(x, base, 3))
         p45 : F64 = cm_f16_lgamma_factor(x, base, 4).mul(cm_f16_lgamma_factor(x, base, 5))
@@ -215,13 +215,13 @@ private routine cm_f16_lgamma_r8(x: F64, base: USize) -> F64
 
 /// x minus root k of the 8 starting at base in CM_F16_LGAMMA_R8.
 private routine cm_f16_lgamma_factor(x: F64, base: USize, k: USize) -> F64
-    block entry():
+    block entry()
         return(x.sub(F64.from_bits(CM_F16_LGAMMA_R8.get(base.add(k)))))
 
 /// The product (x - r0)(x - r1)...(x - r6) over the numerator roots of the
 /// mid-range approximation, grouped as in the original.
 private routine cm_f16_lgamma_r7(x: F64) -> F64
-    block entry():
+    block entry()
         p01 : F64 = cm_f16_lgamma_rn(x, 0).mul(cm_f16_lgamma_rn(x, 1))
         p23 : F64 = cm_f16_lgamma_rn(x, 2).mul(cm_f16_lgamma_rn(x, 3))
         p45 : F64 = cm_f16_lgamma_rn(x, 4).mul(cm_f16_lgamma_rn(x, 5))
@@ -229,12 +229,12 @@ private routine cm_f16_lgamma_r7(x: F64) -> F64
 
 /// x minus root k of CM_F16_LGAMMA_RN.
 private routine cm_f16_lgamma_rn(x: F64, k: USize) -> F64
-    block entry():
+    block entry()
         return(x.sub(F64.from_bits(CM_F16_LGAMMA_RN.get(k))))
 
 /// An approximation of sin(pi x) for 0 <= x <= 1.
 private routine cm_f16_lgamma_sinpi(x: F64) -> F64
-    block entry():
+    block entry()
         y  : F64 = x.sub(0.5)
         x2 : F64 = y.mul(y)
         x4 : F64 = x2.mul(x2)
@@ -249,7 +249,7 @@ private routine cm_f16_lgamma_sinpi(x: F64) -> F64
 
 /// An approximation of the natural logarithm of a positive normal F64.
 private routine cm_f16_lgamma_ln(x: F64) -> F64
-    block entry():
+    block entry()
         tu              : U64   = x.bits()
         biased_exponent : U64   = tu.shr(52)
         e               : S64   = biased_exponent.to<S64>().sub(0x3FF)

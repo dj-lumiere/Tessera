@@ -20,7 +20,7 @@ record Mix
     pop_front  : USize
 
 routine Rng.below(self: @Self, bound: USize) -> USize
-    block entry():
+    block entry()
         state : U64 = self.state.load()
         next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         self.state.store(next)
@@ -29,31 +29,31 @@ routine Rng.below(self: @Self, bound: USize) -> USize
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
-    block entry():
+    block entry()
         mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
 routine labeled<W>(out: @W, label: Bytes, value: S64) -> Void
 require W: typename, Writer<W>
-    block entry():
+    block entry()
         write(out, " {label} {value}")
         return()
 
 // Folds every element front to back.
 routine iteration_hash(circular_list: @CircularList<S64>) -> S64
-    block entry():
+    block entry()
         claim iter : @CircularListIter<S64> <- .construct(circular_list)
         jump next(iter, 0)
 
-    block next(iter: @CircularListIter<S64>, hash: S64):
+    block next(iter: @CircularListIter<S64>, hash: S64)
         item : Option<S64> = iter.next()
-        when item:
+        when item
             .Present(value) -> next(iter, mix(hash, value))
             .Absent         -> return(hash)
 
 routine checkpoint(out: @BufWriter<FdWriter>, circular_list: @CircularList<S64>, phase: USize,
     op: USize, results: S64) -> Void
-    block entry():
+    block entry()
         write(out, "phase {phase}")
         labeled(out, "op", op.to<S64>())
         size : USize = circular_list.load().length()
@@ -68,20 +68,20 @@ routine checkpoint(out: @BufWriter<FdWriter>, circular_list: @CircularList<S64>,
 // Runs ops random operations weighted by op_mix. Returns the updated results checksum.
 routine run_phase(out: @BufWriter<FdWriter>, circular_list: @CircularList<S64>, rng: @Rng,
     phase: USize, ops: USize, op_mix: Mix, results: S64) -> S64
-    block entry():
+    block entry()
         push_back_end  : USize = op_mix.push_back.mul(10)
         push_front_end : USize = push_back_end.add(op_mix.push_front.mul(10))
         pop_back_end   : USize = push_front_end.add(op_mix.pop_back.mul(10))
         pop_front_end  : USize = pop_back_end.add(op_mix.pop_front.mul(10))
         jump next(0, results, push_back_end, push_front_end, pop_back_end, pop_front_end)
 
-    block next(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block next(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         done : Bool = op.ge(ops)
         branch done
-            ? return(results)
-            : pick(op, results, pbe, pfe, obe, ofe)
+            ? return(checksum)
+            : pick(op, checksum, pbe, pfe, obe, ofe)
 
-    block pick(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block pick(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         kind          : USize = rng.below(1000)
         is_push_back  : Bool  = kind.lt(pbe)
         is_push_front : Bool  = kind.lt(pfe)
@@ -89,104 +89,104 @@ routine run_phase(out: @BufWriter<FdWriter>, circular_list: @CircularList<S64>, 
         is_pop_front  : Bool  = kind.lt(ofe)
         is_get        : Bool  = kind.lt(ofe.add(100))
         is_clear      : Bool  = kind.eq(999)
-        when:
-            is_push_back  -> push_back(op, results, pbe, pfe, obe, ofe)
-            is_push_front -> push_front(op, results, pbe, pfe, obe, ofe)
-            is_pop_back   -> pop_back(op, results, pbe, pfe, obe, ofe)
-            is_pop_front  -> pop_front(op, results, pbe, pfe, obe, ofe)
-            is_get        -> get(op, results, pbe, pfe, obe, ofe)
-            is_clear      -> clear(op, results, pbe, pfe, obe, ofe)
-            else          -> set(op, results, pbe, pfe, obe, ofe)
+        when
+            is_push_back  -> push_back(op, checksum, pbe, pfe, obe, ofe)
+            is_push_front -> push_front(op, checksum, pbe, pfe, obe, ofe)
+            is_pop_back   -> pop_back(op, checksum, pbe, pfe, obe, ofe)
+            is_pop_front  -> pop_front(op, checksum, pbe, pfe, obe, ofe)
+            is_get        -> get(op, checksum, pbe, pfe, obe, ofe)
+            is_clear      -> clear(op, checksum, pbe, pfe, obe, ofe)
+            else          -> set(op, checksum, pbe, pfe, obe, ofe)
 
-    block push_back(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block push_back(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         value : S64 = rng.below(1000000).to<S64>()
         circular_list.push_back(value)
-        jump record(op, results, value, pbe, pfe, obe, ofe)
+        jump record(op, checksum, value, pbe, pfe, obe, ofe)
 
-    block push_front(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block push_front(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         value : S64 = rng.below(1000000).to<S64>()
         circular_list.push_front(value)
-        jump record(op, results, value, pbe, pfe, obe, ofe)
+        jump record(op, checksum, value, pbe, pfe, obe, ofe)
 
-    block pop_back(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block pop_back(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         empty : Bool = circular_list.load().is_empty()
         branch empty
-            ? record(op, results, -1, pbe, pfe, obe, ofe)
-            : record(op, results, circular_list.pop_back(), pbe, pfe, obe, ofe)
+            ? record(op, checksum, -1, pbe, pfe, obe, ofe)
+            : record(op, checksum, circular_list.pop_back(), pbe, pfe, obe, ofe)
 
-    block pop_front(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block pop_front(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         empty : Bool = circular_list.load().is_empty()
         branch empty
-            ? record(op, results, -1, pbe, pfe, obe, ofe)
-            : pop_front_one(op, results, pbe, pfe, obe, ofe)
+            ? record(op, checksum, -1, pbe, pfe, obe, ofe)
+            : pop_front_one(op, checksum, pbe, pfe, obe, ofe)
 
-    block pop_front_one(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block pop_front_one(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         value : S64 = circular_list.pop_front()
-        jump record(op, results, value, pbe, pfe, obe, ofe)
+        jump record(op, checksum, value, pbe, pfe, obe, ofe)
 
-    block get(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block get(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         empty : Bool = circular_list.load().is_empty()
         branch empty
-            ? record(op, results, -2, pbe, pfe, obe, ofe)
-            : get_one(op, results, pbe, pfe, obe, ofe)
+            ? record(op, checksum, -2, pbe, pfe, obe, ofe)
+            : get_one(op, checksum, pbe, pfe, obe, ofe)
 
-    block get_one(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block get_one(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         index : USize = rng.below(circular_list.load().length())
         value : S64   = circular_list.load().get(index)
-        jump record(op, results, value, pbe, pfe, obe, ofe)
+        jump record(op, checksum, value, pbe, pfe, obe, ofe)
 
-    block set(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block set(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         empty : Bool = circular_list.load().is_empty()
         branch empty
-            ? record(op, results, -3, pbe, pfe, obe, ofe)
-            : set_one(op, results, pbe, pfe, obe, ofe)
+            ? record(op, checksum, -3, pbe, pfe, obe, ofe)
+            : set_one(op, checksum, pbe, pfe, obe, ofe)
 
-    block set_one(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block set_one(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         index : USize = rng.below(circular_list.load().length())
         value : S64   = rng.below(1000000).to<S64>()
         circular_list.set(index, value)
-        jump record(op, results, index.to<S64>(), pbe, pfe, obe, ofe)
+        jump record(op, checksum, index.to<S64>(), pbe, pfe, obe, ofe)
 
-    block clear(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
+    block clear(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
         circular_list.clear()
-        jump record(op, results, -4, pbe, pfe, obe, ofe)
+        jump record(op, checksum, -4, pbe, pfe, obe, ofe)
 
-    block record(op: USize, results: S64, result: S64, pbe: USize, pfe: USize, obe: USize,
-        ofe: USize):
-        mixed   : S64   = mix(results, result)
+    block record(op: USize, checksum: S64, result: S64, pbe: USize, pfe: USize, obe: USize,
+        ofe: USize)
+        mixed   : S64   = mix(checksum, result)
         op_next : USize = op.add(1)
         report  : Bool  = op_next.mod(500).eq(0)
         branch report
             ? report(op_next, mixed, pbe, pfe, obe, ofe)
             : next(op_next, mixed, pbe, pfe, obe, ofe)
 
-    block report(op: USize, results: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize):
-        checkpoint(out, circular_list, phase, op, results)
-        jump next(op, results, pbe, pfe, obe, ofe)
+    block report(op: USize, checksum: S64, pbe: USize, pfe: USize, obe: USize, ofe: USize)
+        checkpoint(out, circular_list, phase, op, checksum)
+        jump next(op, checksum, pbe, pfe, obe, ofe)
 
 // Copies from into to by pushing each element at the front, back to front, so to has a different start.
 routine copy_reversed_pushes(from: @CircularList<S64>, to: @CircularList<S64>) -> Void
-    block entry():
+    block entry()
         length : USize = from.load().length()
         jump next(length)
 
-    block next(index: USize):
+    block next(index: USize)
         done : Bool = index.eq(0)
         branch done
             ? return()
             : copy(index.sub(1))
 
-    block copy(index: USize):
+    block copy(index: USize)
         to.push_front(from.load().get(index))
         jump next(index)
 
 routine report_eq(out: @BufWriter<FdWriter>, label: Bytes, equal: Bool) -> Void
-    block entry():
+    block entry()
         write(out, "{label} {equal}\n")
         return()
 
 routine main() -> S32
-    block entry():
+    block entry()
         claim fd  : @FdWriter            <- .stdout()
         claim out : @BufWriter<FdWriter> <- uninit
         out.construct(fd)

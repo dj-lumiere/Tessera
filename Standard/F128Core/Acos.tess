@@ -111,25 +111,25 @@ preset CM_ACOS_PHI0: @Array<U64, 365> <- { 0x0000000000000000, 0x000000000000000
     0x948127044533E63A, 0x62633145C06E0E68, 0x6487ED5110B4611A }
 
 routine F128.acos(self: Self) -> Self
-    block entry():
+    block entry()
         nan     : Bool = self.is_nan()
         outside : Bool = self.abs().gt(f128_of(0x3FFF0000000000000000000000000000))
         quiet   : Self = f128_of(f128_quiet(self.bits()))
         invalid : Self = Self.NAN
-        when:
+        when
             nan     -> return(quiet)
             outside -> return(invalid)
             else    -> compute()
 
-    block compute():
+    block compute()
         bits  : U128 = self.bits()
         xb1   : U64  = cm_asin_hi(bits).bitand(0x7FFFFFFFFFFFFFFF)
         large : Bool = xb1.shr(48).ge(16383)  // |x| >= 1, infinity or NaN
         branch large
-            ? outside(self, xb1)
-            : inside(self)
+            ? outside(xb1)
+            : inside()
 
-    block outside(self: Self, xb1: U64):
+    block outside(xb1: U64)
         bits     : S128 = self.bits().to_wrap<S128>()
         xb0      : U64  = cm_asin_lo(bits)
         negative : Bool = bits.lt(0)
@@ -141,78 +141,78 @@ routine F128.acos(self: Self) -> Self
             ? pi
             : zero
         nan : Self = f128_of(cm_asin_join(0xFFFF800000000000, 0))
-        when:
+        when
             is_one  -> return(one_r)
             is_qnan -> return(self)
             else    -> return(nan)
 
-    block inside(self: Self):
+    block inside()
         r : Self = cm_acos_fast(self)
         return(r)
 
 /// Whether acos subtracts the reduced arc sine from pi/2: always but for x > 0 on the last table
 /// points, where the result comes from sqrt(1 - x^2) directly.
 routine cm_acos_via_half_pi(arg: CmAsinArg) -> Bool
-    block entry():
+    block entry()
         r : Bool = arg.xsgn.ne(0).bitor(arg.j.lt(71))
         return(r)
 
 /// The 128-bit fast path of acos; it falls back to cm_acos_accurate when its result could round
 /// either way.
 routine cm_acos_fast(x: F128) -> F128
-    block entry():
+    block entry()
         arg     : CmAsinArg = cm_asin_unpack(x)
         nz      : S64       = 16383.sub(arg.xn)
         reduced : Bool      = arg.j.ne(0)
         branch reduced
-            ? root(x, arg, nz)
-            : small(x, arg, nz)
+            ? root(arg, nz)
+            : small(arg, nz)
 
-    block root(x: F128, arg: CmAsinArg, nz: S64):
+    block root(arg: CmAsinArg, nz: S64)
         x0   : U64         = cm_asin_lo(arg.xa.to_wrap<S128>())
         x1   : U64         = cm_asin_hi(arg.xa)
         root : CmAsinRoot3 = cm_asin_fast_sqrt(x0, x1, nz, 1)
         via  : Bool        = cm_acos_via_half_pi(arg)
         branch via
-            ? reduce(x, arg, root)
-            : near_one(x, arg, root)
+            ? reduce(arg, root)
+            : near_one(arg, root)
 
     // the reduced argument d, with acos(x) = pi/2 - asin(s_j) - asin(d)
-    block reduce(x: F128, arg: CmAsinArg, root: CmAsinRoot3):
+    block reduce(arg: CmAsinArg, root: CmAsinRoot3)
         nz : S64      = 16383.sub(arg.xn)
         d  : CmAsinW3 = cm_asin_reduce3(arg.xa, nz, arg.j, root)
         dz : S64      = d.w2.leading_zeros().to<S64>()
         t  : U128     = cm_asin_top128(d, dz)
-        jump via_half_pi(x, arg, d, t, dz)
+        jump via_half_pi(arg, d, t, dz)
 
     // x near 1: acos(x) = asin(sqrt(1 - x^2)), with t = sqrt(1 - x^2) itself
-    block near_one(x: F128, arg: CmAsinArg, root: CmAsinRoot3):
+    block near_one(arg: CmAsinArg, root: CmAsinRoot3)
         dz : S64          = root.e.shr(1)
         xc : CmAsinW3     = CmAsinW3 { w0: root.w0, w1: root.w1, w2: root.w2 }
         t  : U128         = cm_asin_join(root.w2, root.w1)
         r  : Option<F128> = cm_acos_fast_direct(arg, xc, t, dz)
-        when r:
+        when r
             .Present(y) -> return(y)
-            .Absent     -> accurate(x)
+            .Absent     -> accurate()
 
     // small |x|: x itself, aligned to the fixed point of the result
-    block small(x: F128, arg: CmAsinArg, nz: S64):
+    block small(arg: CmAsinArg, nz: S64)
         xc : CmAsinW3 = cm_acos_align_x(arg.xa, nz)
-        jump via_half_pi(x, arg, xc, arg.xa, nz)
+        jump via_half_pi(arg, xc, arg.xa, nz)
 
-    block via_half_pi(x: F128, arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64):
+    block via_half_pi(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64)
         r : Option<F128> = cm_acos_fast_half_pi(arg, xc, t, nz)
-        when r:
+        when r
             .Present(y) -> return(y)
-            .Absent     -> accurate(x)
+            .Absent     -> accurate()
 
-    block accurate(x: F128):
+    block accurate()
         r : F128 = cm_acos_accurate(x)
         return(r)
 
 /// The 128-bit mantissa xa shifted right by nz into three words (the fast path's |x| < 0.022).
 routine cm_acos_align_x(xa: U128, nz: S64) -> CmAsinW3
-    block entry():
+    block entry()
         xb0     : U64      = cm_asin_lo(xa.to_wrap<S128>())
         xb1     : U64      = cm_asin_hi(xa)
         s       : S64      = cm_asin_sh(nz).to<S64>()
@@ -220,33 +220,33 @@ routine cm_acos_align_x(xa: U128, nz: S64) -> CmAsinW3
         in_one  : Bool     = nz.lt(128)
         in_two  : Bool     = nz.lt(192)
         gone    : CmAsinW3 = CmAsinW3 { w0: 0, w1: 0, w2: 0 }
-        when:
+        when
             in_word -> within_word(xb0, xb1, s)
             in_one  -> one_word(xb0, xb1, s)
             in_two  -> two_words(xb1, s)
             else    -> return(gone)
 
-    block within_word(xb0: U64, xb1: U64, s: S64):
+    block within_word(xb0: U64, xb1: U64, s: S64)
         back : S64      = cm_asin_sh(0.sub(s)).to<S64>()
         w0   : U64      = xb0.shl(back.to<U64>())
         w1   : U64      = xb1.shl(back.to<U64>()).bitor(xb0.shr(s.to<U64>()))
         r    : CmAsinW3 = CmAsinW3 { w0: w0, w1: w1, w2: xb1.shr(s.to<U64>()) }
         return(r)
 
-    block one_word(xb0: U64, xb1: U64, s: S64):
+    block one_word(xb0: U64, xb1: U64, s: S64)
         upper : U64      = xb1.shl(1).shl(cm_asin_sh(s.bitnot()))
         w0    : U64      = upper.bitor(xb0.shr(s.to<U64>()))
         r     : CmAsinW3 = CmAsinW3 { w0: w0, w1: xb1.shr(s.to<U64>()), w2: 0 }
         return(r)
 
-    block two_words(xb1: U64, s: S64):
+    block two_words(xb1: U64, s: S64)
         r : CmAsinW3 = CmAsinW3 { w0: xb1.shr(s.to<U64>()), w1: 0, w2: 0 }
         return(r)
 
 /// Finishes the fast path as pi/2 -/+ (asin(s_j) + d + t^3*P(t^2)) at half scale. The value is
 /// missing when the result could round either way.
 routine cm_acos_fast_half_pi(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> Option<F128>
-    block entry():
+    block entry()
         f     : U128     = cm_asin_fast_poly(t, nz.sub(6).mul(2))
         sf    : S64      = nz.mul(3).add(1)
         fs    : CmAsinW3 = cm_asin_shift_poly3(f, sf)
@@ -274,7 +274,7 @@ routine cm_acos_fast_half_pi(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> 
 /// Finishes the fast path for x near 1 as asin(t) = t + t^3*P(t^2) with t = sqrt(1 - x^2). The
 /// value is missing when the result could round either way.
 routine cm_acos_fast_direct(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> Option<F128>
-    block entry():
+    block entry()
         f     : U128         = cm_asin_fast_poly(t, nz.sub(6).mul(2))
         sf    : S64          = nz.mul(2)
         fs    : CmAsinW3     = cm_asin_shift_poly3(f, sf)
@@ -292,7 +292,7 @@ routine cm_acos_fast_direct(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> O
 /// y, rounded from the fixed-point sum s with k leading zeros, when the bits below its round
 /// bit, widened by eps, stay clear of the rounding boundary; otherwise missing.
 routine cm_acos_checked(y: F128, s: CmAsinW3, k: S64, eps: U64) -> Option<F128>
-    block entry():
+    block entry()
         top       : U64          = 0xFFFFFFFFFFFFFFFF.shr(cm_asin_sh(k.add(50)))
         msk       : U128         = cm_asin_join(top, 0xFFFFFFFFFFFFFFFF)
         low_words : U128         = cm_asin_join(s.w1, s.w0)
@@ -307,7 +307,7 @@ routine cm_acos_checked(y: F128, s: CmAsinW3, k: S64, eps: U64) -> Option<F128>
 
 /// The 320-bit accurate path of F128.acos for |x| < 1 (the C as_acosq_accurate).
 routine cm_acos_accurate(x: F128) -> F128
-    block entry():
+    block entry()
         arg     : CmAsinArg = cm_asin_unpack(x)
         nz      : S64       = 16383.sub(arg.xn)
         x0      : U64       = cm_asin_lo(arg.xa.to_wrap<S128>())
@@ -318,21 +318,21 @@ routine cm_acos_accurate(x: F128) -> F128
             ? root(arg, nz, xw)
             : small(arg, nz, xw)
 
-    block root(arg: CmAsinArg, nz: S64, xw: CmAsinW5):
+    block root(arg: CmAsinArg, nz: S64, xw: CmAsinW5)
         root : CmAsinRoot5 = cm_asin_getcos(nz, xw.w3, xw.w4)
         via  : Bool        = cm_acos_via_half_pi(arg)
         branch via
             ? reduce(arg, nz, root)
             : near_one(arg, root)
 
-    block reduce(arg: CmAsinArg, nz: S64, root: CmAsinRoot5):
+    block reduce(arg: CmAsinArg, nz: S64, root: CmAsinRoot5)
         d  : CmAsinW5 = cm_asin_reduce5(arg.xa, nz, arg.j, root)
         dz : S64      = cm_asin_clz5(d, nz)
         t  : CmAsinW5 = cm_asin_shift5(d, 0.sub(dz))
         r  : F128     = cm_acos_accurate_half_pi(arg, d, t, dz)
         return(r)
 
-    block near_one(arg: CmAsinArg, root: CmAsinRoot5):
+    block near_one(arg: CmAsinArg, root: CmAsinRoot5)
         dz      : S64      = root.e.shr(1)
         p       : CmAsinW5 = cm_asin_poly5(root.root, dz)
         f       : CmAsinW5 = cm_asin_shift5(p, dz.mul(2))
@@ -346,14 +346,14 @@ routine cm_acos_accurate(x: F128) -> F128
         r       : F128     = cm_asin_pack(v, xn, 0, rnd)
         return(r)
 
-    block small(arg: CmAsinArg, nz: S64, xw: CmAsinW5):
+    block small(arg: CmAsinArg, nz: S64, xw: CmAsinW5)
         xc : CmAsinW5 = cm_asin_shift5(xw, nz)
         r  : F128     = cm_acos_accurate_half_pi(arg, xc, xw, nz)
         return(r)
 
 /// Finishes the accurate path as pi/2 -/+ (asin(s_j) + d + t^3*P(t^2)) at half scale.
 routine cm_acos_accurate_half_pi(arg: CmAsinArg, xc: CmAsinW5, t: CmAsinW5, nz: S64) -> F128
-    block entry():
+    block entry()
         p     : CmAsinW5 = cm_asin_poly5(t, nz)
         f     : CmAsinW5 = cm_asin_shift5(p, nz.mul(3).add(1))
         half  : CmAsinW5 = cm_asin_shift5(xc, 1)
