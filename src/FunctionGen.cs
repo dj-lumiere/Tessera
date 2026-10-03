@@ -1703,7 +1703,7 @@ public sealed class FunctionGen
         {
             // An untyped literal receiver takes its type from the arguments: through the parameters of a routine on
             // every type (`7.store_into(p)` with `dest: @T`), or else as the first typed argument
-            // (`0.sub(x)`); then from context.
+            // (`0.sub(x)`). Failing both, it takes its type from context.
             // The result's type says the receiver's only for a routine that returns Self (`x : U64 = 1.shl(3)`), so it
             // is borrowed only when it's a type the literal could have.
             rt = BlanketReceiverType(m) ?? m.Args.Select(Infer).FirstOrDefault(t => t is not null)
@@ -2163,7 +2163,7 @@ public sealed class FunctionGen
 
     /// A routine every solution may emit from the same source (a generic routine's instance, or a stdlib routine
     /// compiled into each solution until the stdlib is prebuilt) is linkonce_odr: the linker keeps one copy. COFF and
-    /// ELF deduplicate through a comdat; Mach-O has none and relies on the weak definition. A stdlib routine with an
+    /// ELF deduplicate through a comdat. Mach-O has none and relies on the weak definition. A stdlib routine with an
     /// #export is weak instead, so the program's own export of that name wins at link time too.
     private (string Linkage, string Comdat) Linkage()
     {

@@ -182,7 +182,7 @@ public sealed partial class Compiler
     /// One name under one parent names one declaration, wherever it's declared: two modules may each have a
     /// `Point`, but a routine added to a type from another file can't reuse a name the type already has. A `private`
     /// declaration doesn't claim its name outside its file, so it may share the name with a declaration in another
-    /// file; in its own file it's the one that's visible (Pick).
+    /// file. In its own file it's the one that's visible (Pick).
     private static void RejectDuplicates<T>(IEnumerable<List<T>> groups, Func<T, string> what, Func<T, T, bool> sameParent)
         where T : Decl
     {
@@ -226,7 +226,7 @@ public sealed partial class Compiler
     private bool Selected(Decl d)
     {
         // The hosted layer exists only on a target with an operating system. Without one, its library declarations
-        // drop out as a whole; the module itself stays, so importing it or naming something in it can say why.
+        // drop out as a whole. The module itself stays, so importing it or naming something in it can say why.
         if (!Target.HasOs && d.IsLibrary && d is not ModuleDecl && IsOsModule(d.Module)) return false;
         if (!TraceSelected(d)) return false;
         foreach (var a in d.Attributes)
@@ -458,7 +458,7 @@ public sealed partial class Compiler
     private readonly Dictionary<string, string> _fileModule = [];
     private readonly Dictionary<string, HashSet<string>> _fileImports = [];
 
-    /// The module a file declares; "" for the solution's root.
+    /// The module a file declares, or "" for the solution's root.
     public string ModuleOf(string file) => _fileModule.GetValueOrDefault(file, "");
 
     private static string ShowModule(string module) => module == "" ? "the root module" : module;
