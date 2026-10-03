@@ -1,0 +1,67 @@
+// A Condition on one thread, where nothing wakes it. A wait with a timeout gives up and says so (false), and only
+// once the time is up: the loop that waits, as every waiter does, ends at the timeout. A deadline that has already
+// passed returns false at once. A wake with nobody waiting is not kept for a later wait, which times out too. The
+// mutex is held again after every wait.
+
+import Standard::Format
+import Standard::Os
+
+preset TIMEOUT_NS: U64 = 2000000
+
+/// Waits until `deadline`, again after every return before it (nothing changes the condition here, so any return
+/// before the deadline is one without a wake).
+/// :returns: Whether the last wait returned in time: false once the deadline has passed.
+routine wait_out(cond: @Condition, lock: @Mutex, deadline: U64) -> Bool
+    block entry()
+        jump again()
+
+    block again()
+        in_time : Bool = cond.wait_until(lock, deadline)
+        branch in_time
+            ? again()
+            : return(in_time)
+
+/// Waits with wait_for for TIMEOUT_NS from `start`, and on until then after every return before it.
+/// :returns: Whether the last wait returned in time: false once the time is up.
+routine wait_for_out(cond: @Condition, lock: @Mutex, start: U64) -> Bool
+    block entry()
+        in_time : Bool = cond.wait_for(lock, TIMEOUT_NS)
+        branch in_time
+            ? again()
+            : return(in_time)
+
+    block again()
+        in_time : Bool = wait_out(cond, lock, start.add(TIMEOUT_NS))
+        return(in_time)
+
+/// Says whether the calling thread holds `lock`: a try_lock that fails.
+routine report_held(lock: @Mutex) -> Void
+    block entry()
+        took : Bool = lock.try_lock()
+        Out.write("mutex held again: {took.bitnot()}\n")
+        return()
+
+routine main() -> S32
+    block entry()
+        claim lock : @Mutex     <- .construct()
+        claim cond : @Condition <- .construct()
+        lock.lock()
+        start    : U64  = monotonic_ns()
+        deadline : U64  = start.add(TIMEOUT_NS)
+        in_time  : Bool = wait_out(cond, lock, deadline)
+        elapsed  : U64  = monotonic_ns().sub(start)
+        Out.write("wait until 2 ms: in time {in_time}, waited the timeout {elapsed.ge(TIMEOUT_NS)}\n")
+        report_held(lock)
+        late : Bool = cond.wait_until(lock, start)
+        Out.write("wait until a passed deadline: in time {late}\n")
+        report_held(lock)
+        cond.wake_one()
+        cond.wake_all()
+        before : U64  = monotonic_ns()
+        timed  : Bool = wait_for_out(cond, lock, before)
+        waited : U64  = monotonic_ns().sub(before)
+        enough : Bool = waited.ge(TIMEOUT_NS)
+        Out.write("wait for 2 ms after an earlier wake: in time {timed}, waited the timeout {enough}\n")
+        report_held(lock)
+        lock.unlock()
+        return(0)

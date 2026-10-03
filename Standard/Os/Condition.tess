@@ -1,0 +1,84 @@
+// Tessera stdlib: Condition
+//
+// A condition variable for a Mutex, in one U32: a sequence number that every
+// wake changes. A waiter reads it while it holds the mutex, unlocks, and sleeps
+// (wait_on) while it still holds what it read, so a wake that comes between the
+// unlock and the sleep has changed it and the sleep returns at once: no wake
+// is lost. A wait may also return without a wake, so a waiter checks its
+// condition again in a loop. The same design as Rust's futex condition
+// variable, the same on every operating system. It starts with seq 0 and needs
+// nothing to free.
+
+module Standard::Os
+
+/// A condition variable: threads wait on it with a {Mutex} held until another thread changes what they wait for and
+/// wakes them. A waiter holds the mutex, checks its condition, and calls {Condition.wait} while it doesn't hold,
+/// again after every return: a wait may return without a wake, and another thread may have taken what it was woken
+/// for. A waker changes the condition with the mutex held, then calls {Condition.wake_one} or {Condition.wake_all},
+/// with the mutex held or after releasing it. No wake is lost: a waiter that checked before the change is woken.
+/// One U32 that every wake changes; it starts at 0, needs nothing to free, and works the same on every operating
+/// system.
+record Condition
+    seq : U32
+
+/// A condition with no waiters.
+/// :returns: A {Condition} with seq 0.
+routine Condition.construct() -> Self
+    block entry()
+        c : Self = Self { seq: 0 }
+        return(c)
+
+/// Releases `mutex`, sleeps until a wake, and takes `mutex` again before returning. It may return without a wake,
+/// so the caller checks its condition again in a loop.
+/// :param mutex: The mutex the caller holds, which guards the condition.
+routine Condition.wait(self: @Self, mutex: @Mutex) -> Void
+    block entry()
+        seen : U32 = self.seq.atomic_load()
+        mutex.unlock()
+        wait_on(self.seq, seen)
+        mutex.lock()
+        return()
+
+/// As {Condition.wait}, but gives up `timeout_ns` nanoseconds after the call (it may wait a little longer, down to
+/// the operating system's clock unit, never forever). It takes `mutex` again before returning either way.
+/// :param mutex: The mutex the caller holds, which guards the condition.
+/// :param timeout_ns: The longest wait in nanoseconds.
+/// :returns: Whether it returned before the timeout passed: false means the time is up, true means woken (or
+/// returned without a wake) in time, and the caller checks its condition again.
+routine Condition.wait_for(self: @Self, mutex: @Mutex, timeout_ns: U64) -> Bool
+    block entry()
+        deadline : U64  = monotonic_ns().add_clamp(timeout_ns)
+        in_time  : Bool = self.wait_until(mutex, deadline)
+        return(in_time)
+
+/// As {Condition.wait}, but gives up at `deadline_ns` on the {monotonic_ns} clock. A loop that waits for a condition
+/// keeps one deadline across its waits, so the wakes that don't satisfy it don't extend the wait. It takes `mutex`
+/// again before returning either way, and releases it even when the deadline has already passed.
+/// :param mutex: The mutex the caller holds, which guards the condition.
+/// :param deadline_ns: When to give up, in {monotonic_ns}.
+/// :returns: Whether it returned before the deadline: false means the time is up, true means woken (or returned
+/// without a wake) in time, and the caller checks its condition again.
+routine Condition.wait_until(self: @Self, mutex: @Mutex, deadline_ns: U64) -> Bool
+    block entry()
+        seen : U32 = self.seq.atomic_load()
+        mutex.unlock()
+        now  : U64 = monotonic_ns()
+        left : U64 = deadline_ns.sub_clamp(now)
+        wait_on_for(self.seq, seen, left)
+        mutex.lock()
+        in_time : Bool = monotonic_ns().lt(deadline_ns)
+        return(in_time)
+
+/// Wakes one thread waiting on the condition, if any. Call it after changing the condition with the mutex held.
+routine Condition.wake_one(self: @Self) -> Void
+    block entry()
+        self.seq.atomic_fetch_add(1)
+        wake_one(self.seq)
+        return()
+
+/// Wakes every thread waiting on the condition. Call it after changing the condition with the mutex held.
+routine Condition.wake_all(self: @Self) -> Void
+    block entry()
+        self.seq.atomic_fetch_add(1)
+        wake_all(self.seq)
+        return()

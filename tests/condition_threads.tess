@@ -1,0 +1,427 @@
+// Condition across threads. A producer hands values to the main thread through a one-value mailbox, waiting for room
+// on one Condition while the main thread waits for a value on another: every value arrives, in order. Four threads
+// wait at a gate for a token: each wake_one with one token lets exactly one through, and none is lost though all
+// four were waiting. Four threads wait at a closed gate: one wake_all lets every one through. Waiters with a
+// deadline under contention, while another thread takes the mutex and wakes everyone over and over: those whose
+// condition never comes true give up at their deadline (the spurious wakes don't extend it), and those whose
+// condition comes true return in time.
+//
+// Every waiter checks its condition again after each wait, so the output doesn't depend on when the threads run.
+
+import Standard::Alloc
+import Standard::Format
+import Standard::Os
+
+/// The values the producer hands over.
+preset ROUNDS: U64 = 10000
+
+/// The threads at the gate.
+preset GATE_THREADS: USize = 4
+
+/// The waiters of each kind in the deadline test.
+preset TIMED_THREADS: USize = 3
+
+/// How long a waiter whose condition never comes true waits.
+preset SHORT_NS: U64 = 20000000
+
+/// The deadline of a waiter whose condition comes true, far enough away never to be reached.
+preset LONG_NS: U64 = 10000000000
+
+/// A one-value mailbox between the producer thread and the main thread.
+record Mailbox
+    lock      : Mutex
+    not_full  : Condition  // the producer waits here for room
+    not_empty : Condition  // the main thread waits here for a value
+    full      : Bool
+    value     : U64
+
+/// Where the gate threads wait: for a token (wake_one) or for the gate to open (wake_all).
+record Gate
+    lock     : Mutex
+    cond     : Condition  // the gate threads wait here
+    progress : Condition  // the main thread waits here for the gate threads
+    waiting  : USize  // gate threads that have reached the gate
+    tokens   : USize  // passes not yet taken
+    passed   : USize  // gate threads through the gate
+    open     : Bool
+
+/// The deadline test: waiters for a condition that never comes true and for one that does, and a thread that takes
+/// the mutex and wakes everyone until told to stop.
+record Timed
+    lock      : Mutex
+    cond      : Condition  // the waiters wait here
+    progress  : Condition  // the main thread waits here for the waiters
+    waiting   : USize
+    ready     : Bool  // what the in-time waiters wait for
+    stop      : Bool  // tells the waking thread to stop
+    timed_out : USize  // waiters that gave up at their deadline, not before
+    in_time   : USize  // waiters that saw ready before their deadline
+    wrong     : USize  // waiters that did neither
+
+// -- the mailbox ---------------------------------------------------------------------
+
+/// The producer: hands over 1 to ROUNDS, waiting for room before each.
+routine produce(raw: Addr) -> Void
+    block entry()
+        box : @Mailbox = raw.to<@Mailbox>()
+        jump next(box, 1)
+
+    block next(box: @Mailbox, n: U64)
+        branch n.gt(ROUNDS)
+            ? return()
+            : continue
+        box.lock.lock()
+        jump room(box, n)
+
+    block room(box: @Mailbox, n: U64)
+        full : Bool = box.full.load()
+        branch full
+            ? wait(box, n)
+            : put(box, n)
+
+    block wait(box: @Mailbox, n: U64)
+        box.not_full.wait(box.lock)
+        jump room(box, n)
+
+    block put(box: @Mailbox, n: U64)
+        box.value.store(n)
+        box.full.store(true)
+        box.not_empty.wake_one()
+        box.lock.unlock()
+        jump next(box, n.add(1))
+
+/// The main thread's side: takes ROUNDS values.
+/// :returns: Their sum, and whether they came in order.
+routine consume(box: @Mailbox) -> (U64, Bool)
+    block entry()
+        jump next(1, 0, true)
+
+    block next(expected: U64, sum: U64, in_order: Bool)
+        branch expected.gt(ROUNDS)
+            ? return({ sum, in_order })
+            : continue
+        box.lock.lock()
+        jump item(expected, sum, in_order)
+
+    block item(expected: U64, sum: U64, in_order: Bool)
+        full : Bool = box.full.load()
+        branch full
+            ? take(expected, sum, in_order)
+            : wait(expected, sum, in_order)
+
+    block wait(expected: U64, sum: U64, in_order: Bool)
+        box.not_empty.wait(box.lock)
+        jump item(expected, sum, in_order)
+
+    block take(expected: U64, sum: U64, in_order: Bool)
+        value : U64 = box.value.load()
+        box.full.store(false)
+        box.not_full.wake_one()
+        box.lock.unlock()
+        jump next(expected.add(1), sum.add(value), in_order.bitand(value.eq(expected)))
+
+// -- the gate ------------------------------------------------------------------------
+
+/// Counts the calling thread in at the gate, with the lock held.
+routine arrive(gate: @Gate) -> Void
+    block entry()
+        arrived : USize = gate.waiting.load().add(1)
+        arrived.store_into(gate.waiting)
+        gate.progress.wake_all()
+        return()
+
+/// A gate thread that waits for a token and takes it.
+routine take_token(raw: Addr) -> Void
+    block entry()
+        gate : @Gate = raw.to<@Gate>()
+        gate.lock.lock()
+        arrive(gate)
+        jump look(gate)
+
+    block look(gate: @Gate)
+        left : USize = gate.tokens.load()
+        branch left.gt(0)
+            ? take(gate, left)
+            : wait(gate)
+
+    block wait(gate: @Gate)
+        gate.cond.wait(gate.lock)
+        jump look(gate)
+
+    block take(gate: @Gate, left: USize)
+        gate.tokens.store(left.sub(1))
+        through : USize = gate.passed.load().add(1)
+        through.store_into(gate.passed)
+        gate.progress.wake_all()
+        gate.lock.unlock()
+        return()
+
+/// A gate thread that waits for the gate to open and goes through.
+routine pass_open(raw: Addr) -> Void
+    block entry()
+        gate : @Gate = raw.to<@Gate>()
+        gate.lock.lock()
+        arrive(gate)
+        jump look(gate)
+
+    block look(gate: @Gate)
+        open : Bool = gate.open.load()
+        branch open
+            ? pass(gate)
+            : wait(gate)
+
+    block wait(gate: @Gate)
+        gate.cond.wait(gate.lock)
+        jump look(gate)
+
+    block pass(gate: @Gate)
+        through : USize = gate.passed.load().add(1)
+        through.store_into(gate.passed)
+        gate.lock.unlock()
+        return()
+
+/// Waits, with the gate's lock held, until `count` gate threads have reached the gate. Each holds the lock from
+/// arriving until its wait releases it, so all of them are waiting by then.
+routine await_waiting(gate: @Gate, count: USize) -> Void
+    block entry()
+        jump look()
+
+    block look()
+        arrived : USize = gate.waiting.load()
+        branch arrived.ge(count)
+            ? return()
+            : wait()
+
+    block wait()
+        gate.progress.wait(gate.lock)
+        jump look()
+
+/// Waits, with the gate's lock held, until `count` gate threads are through.
+routine await_passed(gate: @Gate, count: USize) -> Void
+    block entry()
+        jump look()
+
+    block look()
+        through : USize = gate.passed.load()
+        branch through.ge(count)
+            ? return()
+            : wait()
+
+    block wait()
+        gate.progress.wait(gate.lock)
+        jump look()
+
+/// Gives the waiting gate threads one token at a time, each with one wake_one, and waits for one to go through.
+/// :returns: Whether each token let exactly one through.
+routine hand_tokens(gate: @Gate) -> Bool
+    block entry()
+        gate.lock.lock()
+        await_waiting(gate, GATE_THREADS)
+        jump give(1, true)
+
+    block give(round: USize, exact: Bool)
+        branch round.gt(GATE_THREADS)
+            ? done(exact)
+            : continue
+        gate.tokens.store(1)
+        gate.cond.wake_one()
+        await_passed(gate, round)
+        through : USize = gate.passed.load()
+        one     : Bool  = through.eq(round).bitand(gate.tokens.load().eq(0))
+        jump give(round.add(1), exact.bitand(one))
+
+    block done(exact: Bool)
+        gate.lock.unlock()
+        return(exact)
+
+/// Opens the gate once every gate thread waits at it, with one wake_all.
+routine open_gate(gate: @Gate) -> Void
+    block entry()
+        gate.lock.lock()
+        await_waiting(gate, GATE_THREADS)
+        gate.open.store(true)
+        gate.cond.wake_all()
+        gate.lock.unlock()
+        return()
+
+// -- the deadlines -------------------------------------------------------------------
+
+/// Counts the calling thread in, with the lock held.
+routine arrive_timed(timed: @Timed) -> Void
+    block entry()
+        arrived : USize = timed.waiting.load().add(1)
+        arrived.store_into(timed.waiting)
+        timed.progress.wake_all()
+        return()
+
+/// Adds one to `counter`, with the lock held.
+routine count_in(counter: @USize) -> Void
+    block entry()
+        next_count : USize = counter.load().add(1)
+        next_count.store_into(counter)
+        return()
+
+/// Waits SHORT_NS for something that never comes true, again after every wake, until the deadline passes.
+routine wait_never(raw: Addr) -> Void
+    block entry()
+        timed : @Timed = raw.to<@Timed>()
+        timed.lock.lock()
+        arrive_timed(timed)
+        deadline : U64 = monotonic_ns().add(SHORT_NS)
+        jump again(timed, deadline)
+
+    block again(timed: @Timed, deadline: U64)
+        in_time : Bool = timed.cond.wait_until(timed.lock, deadline)
+        branch in_time
+            ? again(timed, deadline)
+            : over(timed, deadline)
+
+    block over(timed: @Timed, deadline: U64)
+        passed : Bool = monotonic_ns().ge(deadline)
+        branch passed
+            ? gave_up(timed)
+            : early(timed)
+
+    block gave_up(timed: @Timed)
+        count_in(timed.timed_out)
+        timed.lock.unlock()
+        return()
+
+    block early(timed: @Timed)
+        count_in(timed.wrong)
+        timed.lock.unlock()
+        return()
+
+/// Waits for ready, with a deadline it should never reach.
+routine wait_ready(raw: Addr) -> Void
+    block entry()
+        timed : @Timed = raw.to<@Timed>()
+        timed.lock.lock()
+        arrive_timed(timed)
+        deadline : U64 = monotonic_ns().add(LONG_NS)
+        jump look(timed, deadline)
+
+    block look(timed: @Timed, deadline: U64)
+        ready : Bool = timed.ready.load()
+        branch ready
+            ? seen(timed)
+            : wait(timed, deadline)
+
+    block wait(timed: @Timed, deadline: U64)
+        in_time : Bool = timed.cond.wait_until(timed.lock, deadline)
+        branch in_time
+            ? look(timed, deadline)
+            : late(timed)
+
+    block seen(timed: @Timed)
+        count_in(timed.in_time)
+        timed.lock.unlock()
+        return()
+
+    block late(timed: @Timed)
+        count_in(timed.wrong)
+        timed.lock.unlock()
+        return()
+
+/// Takes the mutex and wakes every waiter, over and over, until stop.
+routine wake_everyone(raw: Addr) -> Void
+    block entry()
+        timed : @Timed = raw.to<@Timed>()
+        jump again(timed)
+
+    block again(timed: @Timed)
+        timed.lock.lock()
+        stop : Bool = timed.stop.load()
+        timed.cond.wake_all()
+        timed.lock.unlock()
+        branch stop
+            ? return()
+            : again(timed)
+
+/// Sets ready once every waiter waits, and wakes them all.
+routine make_ready(timed: @Timed) -> Void
+    block entry()
+        timed.lock.lock()
+        jump look()
+
+    block look()
+        arrived : USize = timed.waiting.load()
+        branch arrived.ge(TIMED_THREADS.mul(2))
+            ? go()
+            : wait()
+
+    block wait()
+        timed.progress.wait(timed.lock)
+        jump look()
+
+    block go()
+        timed.ready.store(true)
+        timed.cond.wake_all()
+        timed.lock.unlock()
+        return()
+
+// -- threads -------------------------------------------------------------------------
+
+/// Starts `count` threads, each running `body` on `state`, into `threads` from `first` on.
+routine spawn_many(body: Callable<(Addr,), Void>, state: Addr, alloc: @Allocator,
+    threads: @Array<Thread, 8>, first: USize, count: USize) -> Void
+    block entry()
+        jump next(first)
+
+    block next(i: USize)
+        branch i.ge(first.add(count))
+            ? return()
+            : continue
+        t : Thread = Thread.spawn(body, state, alloc)
+        threads.set(i, t)
+        jump next(i.add(1))
+
+/// Joins the threads in `threads` below `count`.
+routine join_many(threads: @Array<Thread, 8>, count: USize) -> Void
+    block entry()
+        jump next(0)
+
+    block next(i: USize)
+        branch i.ge(count)
+            ? return()
+            : continue
+        threads.get(i).join()
+        jump next(i.add(1))
+
+routine main() -> S32
+    block entry()
+        claim alloc   : @Allocator        <- make_heap_allocator()
+        claim threads : @Array<Thread, 8> <- uninit
+        claim box     : @Mailbox          <- Mailbox { lock: .construct(), not_full: .construct(),
+            not_empty: .construct(), full: false, value: 0 }
+        producer : Thread = Thread.spawn(produce.to<Callable>(), box, alloc)
+        sum, in_order = consume(box)
+        producer.join()
+        Out.write("handoff: {ROUNDS} values, sum {sum}, in order {in_order}\n")
+        claim tokens : @Gate <- Gate { lock: .construct(), cond: .construct(),
+            progress: .construct(), waiting: 0, tokens: 0, passed: 0, open: false }
+        spawn_many(take_token.to<Callable>(), tokens, alloc, threads, 0, GATE_THREADS)
+        exact : Bool = hand_tokens(tokens)
+        join_many(threads, GATE_THREADS)
+        Out.write("wake_one: {GATE_THREADS} tokens, one thread through for each: {exact}\n")
+        claim gate : @Gate <- Gate { lock: .construct(), cond: .construct(), progress: .construct(),
+            waiting: 0, tokens: 0, passed: 0, open: false }
+        spawn_many(pass_open.to<Callable>(), gate, alloc, threads, 0, GATE_THREADS)
+        open_gate(gate)
+        join_many(threads, GATE_THREADS)
+        Out.write("wake_all: {gate.passed.load()} of {GATE_THREADS} through after one wake\n")
+        claim timed : @Timed <- Timed { lock: .construct(), cond: .construct(),
+            progress: .construct(), waiting: 0, ready: false, stop: false, timed_out: 0, in_time: 0,
+            wrong: 0 }
+        waker : Thread = Thread.spawn(wake_everyone.to<Callable>(), timed, alloc)
+        spawn_many(wait_never.to<Callable>(), timed, alloc, threads, 0, TIMED_THREADS)
+        spawn_many(wait_ready.to<Callable>(), timed, alloc, threads, TIMED_THREADS, TIMED_THREADS)
+        make_ready(timed)
+        join_many(threads, TIMED_THREADS.mul(2))
+        timed.lock.lock()
+        timed.stop.store(true)
+        timed.lock.unlock()
+        waker.join()
+        Out.write("deadlines under contention: {timed.timed_out.load()} gave up at the deadline, ")
+        Out.write("{timed.in_time.load()} woken in time, {timed.wrong.load()} wrong\n")
+        return(0)

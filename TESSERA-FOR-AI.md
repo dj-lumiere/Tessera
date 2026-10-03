@@ -412,8 +412,10 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   be `#external`.
 
 **Threads and fibers.** `Standard::Os` has `Thread.spawn(routine, state, alloc)` / `join()`, `Mutex`
-(`lock` / `unlock` / `try_lock`), `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32`, and
-`monotonic_ns()`. `Standard::Fiber`'s `Scheduler`
+(`lock` / `unlock` / `try_lock`), `Condition` (a condition variable for a Mutex: `wait(mutex)`,
+`wait_for(mutex, timeout_ns)` / `wait_until(mutex, deadline_ns)` returning whether it returned in time,
+`wake_one()` / `wake_all()`; a wait may return without a wake, so the waiter checks its condition again in a loop),
+`wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32`, and `monotonic_ns()`. `Standard::Fiber`'s `Scheduler`
 runs fibers over worker threads: `.construct(alloc, stacks, workers)` (0 = one per processor), then
 `spawn(routine, state, stack_size)` (the routine takes the state as an `Addr`), `yield()` inside a fiber, `run()`
 until all return, `destruct()`. Pass `make_stack_allocator()` as `stacks` for guard pages. A fiber may move to
