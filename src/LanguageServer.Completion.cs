@@ -266,6 +266,7 @@ public static partial class LanguageServer
             TypeParams.UnionWith(routine.TypeParams);
             TypeParams.UnionWith(routine.Clauses.SelectMany(c => c.Params).Select(p => p.Name));
             foreach (var p in routine.Params) Values.Add((p.Name, p.Type));
+            foreach (var shared in routine.Shared) Values.Add((shared.Name, shared.Type));
             if (blocks.LastOrDefault(b => b.Pos.Line <= line) is not { } block) return;
             foreach (var p in block.Params) Values.Add((p.Name, p.Type));
             foreach (var s in block.Stmts.Where(s => s.Pos.Line < line))

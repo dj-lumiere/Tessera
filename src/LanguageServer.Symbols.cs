@@ -147,6 +147,9 @@ public static partial class LanguageServer
                 kind = r.Owner is null ? 12 : 6;
                 name = r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}";
                 detail = $"({string.Join(", ", r.Params.Select(p => $"{p.Name}: {p.Type}"))}) -> {r.ReturnType}";
+                // LSP symbol kind 13: Variable.
+                foreach (var shared in r.Shared)
+                    children.Add(Node(lines, shared.Name, 13, shared.Pos, shared.Name, shared.Pos.Line, $"shared {shared.Type}"));
                 var blocks = r.Blocks ?? [];
                 for (int i = 0; i < blocks.Count; i++)
                 {

@@ -21,7 +21,7 @@ public static partial class LanguageServer
 
     private static readonly HashSet<string> Keywords =
     [
-        "routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "define", "block", "claim",
+        "routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "define", "block", "claim", "shared",
         "import", "module", "private", "internal", "require", "uninit", "not", "true", "false", "null", "typename",
     ];
 
@@ -179,8 +179,11 @@ public static partial class LanguageServer
     private static string? Lexical(List<Token> tokens, int i)
     {
         var t = tokens[i];
+        // A name after `.` is a member (`Out.writer`, `x.shared`), whatever word it spells.
+        bool member = i > 0 && tokens[i - 1].Kind == TokenKind.Dot;
         return t.Kind switch
         {
+            TokenKind.Ident when member => null,
             TokenKind.Ident when !t.Escaped && ControlKeywords.Contains(t.Text) => "controlKeyword",
             TokenKind.Ident when !t.Escaped && Keywords.Contains(t.Text) => "keyword",
             TokenKind.Ident when i > 0 && tokens[i - 1].Kind == TokenKind.Hash => "decorator",
@@ -760,6 +763,15 @@ public static partial class LanguageServer
                 _params.Add(p.Name);
             }
             Type(r.ReturnType);
+            // The head's `shared` lines: values every block sees, declared once above them.
+            foreach (var shared in r.Shared)
+            {
+                _written[shared.Name] = shared.Type;
+                _definedAt[shared.Name] = shared.Pos;
+                Mark(shared.Pos, shared.Name, "variable", ValueHover(shared.Name, shared.Pos, parameter: false));
+                Type(shared.Type);
+                Expr(shared.Value, shared.Type);
+            }
             _returnType = r.ReturnType;
             var routineParams = _params;
             foreach (var b in r.Blocks ?? [])
