@@ -15,13 +15,17 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.util.io.NioFiles
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.api.LspClientDescriptor
 import com.intellij.platform.lsp.api.LspClientManager
 import com.intellij.platform.lsp.api.LspIntegrationProvider
 import com.intellij.platform.lsp.api.customization.LspCustomization
+import com.intellij.platform.lsp.api.customization.LspDiagnosticsCustomizer
+import com.intellij.platform.lsp.api.customization.LspDiagnosticsSupport
 import com.intellij.platform.lsp.api.customization.LspSemanticTokensCustomizer
 import com.intellij.util.concurrency.AppExecutorUtil
+import org.eclipse.lsp4j.Diagnostic
 import java.io.IOException
 import java.io.UncheckedIOException
 import java.nio.charset.StandardCharsets
@@ -68,6 +72,15 @@ internal class TesseraFileOpenListener(private val project: Project) : FileEdito
 }
 
 /**
+ * The server's diagnostics are plain text, and the editor shows a tooltip as HTML: a message naming a type with angle
+ * brackets (`to<@Byte>`, `<error>`) would lose them as tags. The tooltip shows the message as written.
+ */
+private object PlainTextDiagnostics : LspDiagnosticsSupport() {
+    override fun getTooltip(diagnostic: Diagnostic): String =
+        StringUtil.escapeXmlEntities(diagnostic.message).replace("\n", "<br>")
+}
+
+/**
  * One server per project. Its root is the project (solution) folder rather than Rider's content roots, so files that no
  * .csproj includes still reach the server.
  */
@@ -79,6 +92,7 @@ private class TesseraClientDescriptor(project: Project) :
 
     override val lspCustomization: LspCustomization = object : LspCustomization() {
         override val semanticTokensCustomizer: LspSemanticTokensCustomizer = TesseraSemanticTokens
+        override val diagnosticsCustomizer: LspDiagnosticsCustomizer = PlainTextDiagnostics
     }
 
     override fun createCommandLine(): GeneralCommandLine {
