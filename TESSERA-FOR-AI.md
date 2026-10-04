@@ -90,7 +90,8 @@ routine main() -> S32
   slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) says so:
   `claim p : @T <- uninit`, a word that means something only there. A claim without `<-` is an error, so no slot is
   left unfilled by accident. `<-` fills memory and `=` only binds a name to a value, so `claim p : @T = v` is an
-  error too. An array value comes from `Array<T, N> { 1, 2, x }` or `Array<T, N>.from_ptr(first)`;
+  error too. An array value comes from `Array<T, N> { 1, 2, x }` or a load (N values at `first: @T` are
+  `first.to<@Array<T, N>>().load()`);
   a bare `[1, 2]` isn't a value. Where the type is known from where the value goes (a typed binding, a `preset` or
   `global`, an argument, an element of an outer literal, the pointer of `store_into`), the type can be left off:
   `preset SORTED: @Array<S64, 3> <- { -8, 0, 7 }`, `p : Point = { x: 1, y: 2 }`, like `.absent()`. Write the type
@@ -111,7 +112,9 @@ routine main() -> S32
   a `finish` block destructs. `Array<T, N>` is the other run of values, its count in the type. Heap memory reaches your code as a
   `Slice` or `Bytes` that carries its allocator (or a type built on one). The raw layer under it,
   `allocate<T>(alloc, count)` / `reallocate<T>` / `deallocate(alloc, p)`, is for node-based structures and C
-  interop. `@T` has no `free`.
+  interop. `@T` has no `free`. `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap), and
+  `src.copy_into(dst, count)` is the same copy from the source's side. On a `@Array<T, N>` (or any type with its own
+  `copy`) the type's routine wins, so generic code over `@T` uses `src.copy_into(dst, count)`.
 - **A plain copy copies ownership.** Copying a `Slice` or `Bytes` copies `alloc` with the address (no moves, no unique
   owner), so either copy can free the memory: destruct exactly one, and hand out `getview()` where the receiver only
   reads or writes. With `[debug] heap-check = true` in config.toml (any build mode, off by default, always on under
@@ -602,7 +605,7 @@ always `Result`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array<T, N>` | `Array<T, N> { a, b }` literal, `from_ptr`, `at`, `getitem`, `setitem`, `getslice`, `to<Slice<T>>`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
+| `Array<T, N>` | `Array<T, N> { a, b }` literal, `at`, `getitem`, `setitem`, `getslice`, `to<Slice<T>>`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
 | `List<T>` | `push`, `pop`, `getitem`, `setitem`, `getslice`, `to<Slice<T>>`, `clear`, `reserve` | index |
 | `CircularList<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `getitem`, `setitem` | front to back |
 | `Dict<K, V>` | `put`, `getitem`, `contains`, `remove` | **insertion order (guaranteed)** |
@@ -719,9 +722,12 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 
 - `to<T>()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to<CStr>()`, not
   `CStr.from_ptr(p)`). A conversion that can fail is `to_result<T>()`.
-- `_into` means the routine does its work into a pointer the caller passes: it writes its result to that destination
-  (`v.represent_into(out)`, `v.represent_hex_into(out)`, `x.store_into(p)`, `In.read_into_result(buffer, n)`). A routine
-  that writes into a caller's pointer carries `_into`, and one named `_into` takes such a destination.
+- `_into` is the argument-swapped form of a routine that acts on a place: `p.store(v)` is `v.store_into(p)`. The
+  plain form's receiver is the place acted on, and the `_into` form's receiver is the thing being put there, with the
+  place as the argument. So a chain reads left to right and ends at the place: `x.load().add(1).store_into(x)`,
+  `value.represent_into(out)`, `src.copy_into(dst, count)` next to `dst.copy(src, count)`. The Writer's `write_*`
+  routines (`write_str(out, text)`, `write_bytes`, `write_line`) keep their names: the verb already says where the
+  bytes go. Memory at a given address is `_at`: `Vector<T, N>.load_at(first)`, `v.store_at(first)`.
 - `from_XXX` is rare: it's for building a value where `construct` alone would be ambiguous, several ways to make the
   same type from similar inputs (`Bytes.from_ptr(data, count)`, `F64.from_bits(u)`). A `from_XXX` that is really a
   one-value conversion is `to<T>` on the source type, and one that could be a `construct` overload without ambiguity

@@ -2145,7 +2145,8 @@ public sealed class FunctionGen
         if (sig.Decl.Name is "store" or "volatile_store" or "setitem" or "shift_left" or "shift_right" or "copy"
             && plan.Receiver is { } place && PresetArrayRoot(place) is { } root)
             throw Err(plan.Pos, $"'{root.Name}' is a preset; its memory is read-only");
-        if (sig.Decl.Name == "store_into" && plan.Args.Count == 1 && PresetArrayRoot(plan.Args[0]) is { } destRoot)
+        if (sig.Decl.Name is "store_into" or "copy_into" or "store_at" && plan.Receiver is not null && plan.Args.Count >= 1
+            && PresetArrayRoot(plan.Args[0]) is { } destRoot)
             throw Err(plan.Pos, $"'{destRoot.Name}' is a preset; its memory is read-only");
         if (sig.IsAsm && !sig.IsNaked)
         {
