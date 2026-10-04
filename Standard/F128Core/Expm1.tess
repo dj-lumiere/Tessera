@@ -171,7 +171,7 @@ routine cm_expm1_general(u: U128) -> F128
         tail     : U128 = tail_bit.sub_wrap(1).bitand(z0)
         hard     : Bool = tail.le(6)
         branch hard
-            ? big_exact(el)
+            ? big_exact()
             : big_fast(signed, el, nz)
 
     block big_fast(res: U128, el: S64, nz: S64)
@@ -182,8 +182,8 @@ routine cm_expm1_general(u: U128) -> F128
         r      : F128 = cm_expm1_pack(sig, e.to<U64>(), sm, rnd)
         return(r)
 
-    block big_exact(el: S64)
-        a : CmExpm1Scaled = cm_expm1_accurate(el, u)
+    block big_exact()
+        a : CmExpm1Scaled = cm_expm1_accurate(u)
         r : F128          = cm_expm1_round15(a, sm)
         return(r)
 
@@ -222,7 +222,7 @@ routine cm_expm1_general(u: U128) -> F128
         return(r)
 
     block tiny_exact()
-        a : CmExpm1Scaled = cm_expm1_accurate(-1, u)
+        a : CmExpm1Scaled = cm_expm1_accurate(u)
         r : F128          = cm_expm1_round15(a, sm)
         return(r)
 
@@ -386,7 +386,7 @@ routine cm_expm1_small(x: U128) -> F128
         tail       : U64  = top_nudged.bitand(0x7FFF)
         hard       : Bool = tail.le(6)
         branch hard
-            ? exact(a.el)
+            ? exact()
             : round15(a)
 
     block below(a: CmExpm1Scaled, off: U64, lo: U64)
@@ -395,7 +395,7 @@ routine cm_expm1_small(x: U128) -> F128
         tail         : U64  = below_nudged.bitand(0x3FFF)
         hard         : Bool = tail.le(6)
         branch hard
-            ? exact(el)
+            ? exact()
             : round14(a.sig, el, lo)
 
     block round14(sig: U128, el: U64, lo: U64)
@@ -407,8 +407,8 @@ routine cm_expm1_small(x: U128) -> F128
         r : F128 = cm_expm1_round15(a, sm)
         return(r)
 
-    block exact(el: U64)
-        a : CmExpm1Scaled = cm_expm1_accurate(el.to_wrap<S64>(), x)
+    block exact()
+        a : CmExpm1Scaled = cm_expm1_accurate(x)
         r : F128          = cm_expm1_round15(a, sm)
         return(r)
 
@@ -755,10 +755,10 @@ routine cm_expm1_scaled(el: U64, m1: U64, m0: U64) -> CmExpm1Scaled
 
 /// The accurate step (about 190 bits), used when the fast path can't decide the rounding. It falls back to
 /// {cm_expm1_superaccurate} when this step can't decide it either.
-/// :param el: Not read: the step takes its exponent from its own reduction.
+/// It takes its exponent from its own reduction of x.
 /// :param x0: The bits of x.
 /// :returns: The new exponent and the significand with the round bit and sticky information in its low bits.
-routine cm_expm1_accurate(el: S64, x0: U128) -> CmExpm1Scaled
+routine cm_expm1_accurate(x0: U128) -> CmExpm1Scaled
     block entry()
         claim a_buf : @Array<U64, 7> <- Array<U64, 7> { 0, 0, 0, 0, 0, 0, 0 }
         a : @U64 = a_buf.to<@U64>()
@@ -794,7 +794,7 @@ routine cm_expm1_accurate(el: S64, x0: U128) -> CmExpm1Scaled
         f2       : U128          = cm_wide_mulhi(cm_wide_u128(x1w, x0w), c1)
         f1       : CmWide3       = CmWide3 { w0: cm_wide_lo(f2), w1: cm_wide_hi(f2), w2: c2 }
         f        : CmWide3       = cm_expm1_mulhi_3x3(ft2, f1)
-        r3       : CmExpm1Scaled = cm_expm1_accurate_scale(f, e, el, sm, x0)
+        r3       : CmExpm1Scaled = cm_expm1_accurate_scale(f, e, sm, x0)
         return(r3)
 
 /// The 2^r polynomial of the accurate step: Horner over the 15 coefficient rows of CM_EXPM1_AC.
@@ -818,12 +818,11 @@ routine cm_expm1_accurate_poly(r: U64) -> CmWide3
 /// Turns the accurate 2^(x / ln 2) f (3 words, the integer part e of x / ln 2 apart) into e^x - 1: subtract
 /// the 1, normalize, and check the result can be rounded, falling back to the super-accurate step.
 /// :param wide: The accurate 2^frac value.
-/// :param e: The integer part of x / ln 2.
-/// :param el: Not read: the exponent comes from `e`.
+/// :param e: The integer part of x / ln 2, which gives the exponent.
 /// :param sm: The sign mask of x, 0 or all ones.
 /// :param x0: The bits of x, for the super-accurate step.
 /// :returns: The exponent and significand, round bit at 14.
-routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, el: S64, sm: S64, x0: U128) -> CmExpm1Scaled
+routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, sm: S64, x0: U128) -> CmExpm1Scaled
     shared f_buf   : @Array<U64, 3> <- Array<U64, 3> { wide.w0, wide.w1, wide.w2 }
     shared f       : @U64           = f_buf.to<@U64>()
     shared s       : S64            = 60.sub(e)
@@ -862,7 +861,7 @@ routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, el: S64, sm: S64, x0: U12
         t0           : U128  = cm_wide_u128(w1, w0).add_wrap(8)
         hard         : Bool  = t0.bitand(mm).le(16)
         branch hard
-            ? super(nel)
+            ? super()
             : extract(nel, nz.to<U64>(), w0, w1, w2)
 
     block extract(nel: S64, nz: U64, w0: U64, w1: U64, w2: U64)
@@ -914,7 +913,7 @@ routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, el: S64, sm: S64, x0: U12
         two_words : Bool          = sg.eq(2)
         all_ones  : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, U64.MAX, U64.MAX)
         when
-            hard      -> super(-1)
+            hard      -> super()
             one_word  -> tiny_one(n1, n2)
             two_words -> tiny_two(n2.to_wrap<S64>())
             else      -> return(all_ones)
@@ -930,15 +929,15 @@ routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, el: S64, sm: S64, x0: U12
         r : CmExpm1Scaled = cm_expm1_scaled(U64.MAX, U64.MAX, n2.shr(sl).to_wrap<U64>())
         return(r)
 
-    block super(nel: S64)
-        r : CmExpm1Scaled = cm_expm1_superaccurate(nel, x0)
+    block super()
+        r : CmExpm1Scaled = cm_expm1_superaccurate(x0)
         return(r)
 
-/// The super-accurate step (about 380 bits), used when even the accurate step can't decide the rounding.
-/// :param el: Not read: the step takes its exponent from its own reduction.
+/// The super-accurate step (about 380 bits), used when even the accurate step can't decide the rounding. It takes
+/// its exponent from its own reduction of x.
 /// :param x0: The bits of x.
 /// :returns: The exponent and significand, round bit at 14.
-routine cm_expm1_superaccurate(el: S64, x0: U128) -> CmExpm1Scaled
+routine cm_expm1_superaccurate(x0: U128) -> CmExpm1Scaled
     shared ft_buf : @Array<U64, 6> <- uninit
     shared ft     : @U64           = ft_buf.to<@U64>()
     shared xh     : U64            = cm_wide_hi(x0)

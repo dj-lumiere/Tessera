@@ -21,18 +21,18 @@ record CmHypotSquare
 
 /// sqrt(x² + y²) without overflow or underflow, correctly rounded to nearest (a CORE-MATH port). A signaling NaN
 /// gives NaN, as it does in every operation, and otherwise an infinite leg gives +inf, even with a quiet NaN in the
-/// other leg (IEEE 754's hypot(±inf, qNaN)). Any other NaN gives NaN.
+/// other leg (IEEE 754's hypot(±inf, qNaN)). A NaN comes back quieted (`self` first), the payload kept.
 /// :param other: The other leg.
 /// :returns: sqrt(`self`² + `other`²), +inf when it overflows.
 routine F128.hypot(self: Self, other: Self) -> Self
     block entry()
-        signaling : Bool = cm_hypot_is_signaling(self).bitor(cm_hypot_is_signaling(other))
+        signaling : Bool = f128_is_signaling(self).bitor(f128_is_signaling(other))
         inf       : Bool = self.is_infinite().bitor(other.is_infinite())
         nan       : Bool = self.is_nan().bitor(other.is_nan())
         when
-            signaling -> return(Self.NAN)
+            signaling -> return(f128_nan_of(self, other))
             inf       -> return(Self.INFINITY)
-            nan       -> return(Self.NAN)
+            nan       -> return(f128_nan_of(self, other))
             else      -> compute()
 
     block compute()
@@ -45,14 +45,12 @@ routine F128.hypot(self: Self, other: Self) -> Self
         b : U128 = swap
             ? x_abs
             : y_abs
-        a_exp   : S64  = a.shr(112).to<S64>()
-        b_exp   : S64  = b.shr(112).to<S64>()
-        special : Bool = a_exp.eq(0x7FFF)
-        b_tiny  : Bool = b_exp.eq(0)
-        when
-            special -> return(cm_hypot_special(a, b))
-            b_tiny  -> tiny_leg(a, a_exp, b)
-            else    -> legs(a, a_exp, b, b_exp)
+        a_exp  : S64  = a.shr(112).to<S64>()
+        b_exp  : S64  = b.shr(112).to<S64>()
+        b_tiny : Bool = b_exp.eq(0)
+        branch b_tiny
+            ? tiny_leg(a, a_exp, b)
+            : legs(a, a_exp, b, b_exp)
 
     block tiny_leg(a: U128, a_exp: S64, b: U128)
         b_zero : Bool = b.eq(0)
@@ -136,54 +134,6 @@ routine F128.hypot(self: Self, other: Self) -> Self
         lowered : U128 = candidate.bitor(top_bit).sub_wrap(above)
         v       : U128 = lowered.add_wrap(below)
         r       : Self = cm_hypot_round(v, exponent.add(wrapped.to<S64>()))
-        return(r)
-
-/// Whether x is a signaling NaN: a NaN whose quiet bit is clear.
-/// :param x: The value.
-/// :returns: True for a signaling NaN.
-routine cm_hypot_is_signaling(x: F128) -> Bool
-    block entry()
-        quiet : Bool = x.bits().bitand(F128_QUIET_BIT).ne(0)
-        return(x.is_nan().bitand(quiet.bitnot()))
-
-/// hypot when the larger leg is infinite or NaN (its exponent field all ones).
-/// :param a: The bits of the larger leg, sign cleared.
-/// :param b: The bits of the smaller leg, sign cleared.
-/// :returns: The default NaN when either leg is a signaling NaN, +inf for an infinity with a quiet NaN, else the
-///     quiet NaN leg (`a` first), else +inf.
-routine cm_hypot_special(a: U128, b: U128) -> F128
-    block entry()
-        a_class   : S64  = cm_hypot_class(a)
-        b_class   : S64  = cm_hypot_class(b)
-        signaling : Bool = a_class.eq(2).bitor(b_class.eq(2))
-        inf_nan   : Bool = a_class.add(b_class).eq(4)  // infinity and a quiet NaN
-        a_nan     : Bool = a_class.eq(3)
-        b_nan     : Bool = b_class.eq(3)
-        nan       : F128 = f128_of(CM_SQRT_DEFAULT_NAN)
-        infinity  : F128 = F128.INFINITY
-        a_value   : F128 = f128_of(a)
-        b_value   : F128 = f128_of(b)
-        when
-            signaling -> return(nan)
-            inf_nan   -> return(infinity)
-            a_nan     -> return(a_value)
-            b_nan     -> return(b_value)
-            else      -> return(infinity)
-
-/// Classifies sign-stripped bits: 0 for a number, 1 for infinity, 2 for a signaling NaN,
-/// 3 for a quiet NaN.
-/// :param x: The bits, sign cleared.
-/// :returns: The class, 0 to 3.
-routine cm_hypot_class(x: U128) -> S64
-    block entry()
-        xh       : U64 = x.shr(64).to<U64>()
-        xl       : U64 = x.to_wrap<U64>()
-        rest     : U64 = xh.shl(32).bitor(xl)
-        t        : U64 = xh.shr(32).bitor(rest.ne(0).to<U64>())
-        inf_up   : S64 = t.ge(0x7FFF0000).to<S64>()
-        nan_up   : S64 = t.ge(0x7FFF0001).to<S64>()
-        quiet_up : S64 = t.ge(0x7FFF8000).to<S64>()
-        r        : S64 = inf_up.add(nan_up).add(quiet_up)
         return(r)
 
 /// Rounds v (leading bit at 127, sticky information in its low bits) times 2^(exponent - 16383) to

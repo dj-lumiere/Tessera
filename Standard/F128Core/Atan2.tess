@@ -9,7 +9,7 @@
 // atan(t) with t = TN[i] / 2^15, the series runs in AtanShared.tess, and the angle is rebuilt as
 // ±(PHI0[i] + f) plus a quadrant offset 0, π/2 or π, and y's sign goes on last. Zero and infinite
 // coordinates follow C99 Annex F (signed zeros pick 0 or π, infinities the multiples of π/4).
-// NaN in gives NaN out: a quiet y, else a quiet x, unchanged, and a signaling one the default NaN.
+// NaN in gives NaN out as in every F128 operation: y quieted when it is NaN, else x quieted, the payload kept.
 
 module Standard::Core
 
@@ -38,14 +38,9 @@ preset CM_ATAN2_IND: @Array<U64, 129> <- { 0, 0, 1, 1, 2, 3, 3, 4, 5, 5, 6, 6, 7
 /// atan2(y, x) for y = `self`: the angle of the point (x, y), correctly rounded to nearest (a CORE-MATH port).
 /// Zeros and infinities follow IEEE's rules (signed zeros pick 0 or pi, two infinities a multiple of pi/4).
 /// :param x: The x coordinate.
-/// :returns: The angle in [-pi, pi], with the sign of `self`. Any NaN argument gives `F128.NAN`.
+/// :returns: The angle in [-pi, pi], with the sign of `self`. A NaN argument comes back quieted (`self` first).
 routine F128.atan2(self: Self, x: Self) -> Self
     block entry()
-        nan   : Bool = self.is_nan().bitor(x.is_nan())
-        quiet : Self = Self.NAN
-        branch nan
-            ? return(quiet)
-            : continue
         x_neg     : Bool = f128_is_negative_bits(x.bits())
         y_sign    : U128 = self.bits().bitand(F128_SIGN)
         magnitude : U128 = F128_SIGN.bitnot()
@@ -311,9 +306,8 @@ routine cm_atan2_accurate(red: CmAtanReduction, x_neg: Bool, y_sign: U128) -> F1
 /// atan2 for NaN, infinite or zero coordinates.
 /// :param y: The y coordinate.
 /// :param x: The x coordinate.
-/// :returns: The default NaN when either is a signaling NaN, else a quiet NaN y, else a quiet NaN x, else the
-///     exact-case angle: 0 or pi on the x axis, ±pi/4 or ±3pi/4 for two infinities, otherwise ±pi/2, with the sign
-///     of `y`.
+/// :returns: `y` quieted when it is NaN, else `x` quieted when it is, else the exact-case angle: 0 or pi on the x
+///     axis, ±pi/4 or ±3pi/4 for two infinities, otherwise ±pi/2, with the sign of `y`.
 routine cm_atan2_special(y: F128, x: F128) -> F128
     shared magnitude : U128 = F128_SIGN.bitnot()
     shared ix        : U128 = x.bits().bitand(magnitude)
@@ -322,15 +316,10 @@ routine cm_atan2_special(y: F128, x: F128) -> F128
     shared y_class   : S64  = cm_atan_class(iy.shr(64).to<U64>(), iy.to_wrap<U64>())
 
     block entry()
-        signaling : Bool = x_class.eq(2).bitor(y_class.eq(2))
-        y_nan     : Bool = y_class.eq(3)
-        x_nan     : Bool = x_class.eq(3)
-        default   : F128 = f128_of(0xFFFF8000000000000000000000000000)
-        when
-            signaling -> return(default)
-            y_nan     -> return(y)
-            x_nan     -> return(x)
-            else      -> angle()
+        nan : Bool = x_class.ge(2).bitor(y_class.ge(2))
+        branch nan
+            ? return(f128_nan_of(y, x))
+            : angle()
 
     // the angle's row in RS: 0 or π on the x axis, π/4 or 3π/4 for two infinities, else π/2
     block angle()
