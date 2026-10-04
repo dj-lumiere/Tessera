@@ -18,7 +18,7 @@ static class Cli
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
           tessera fmt   -               format the source on standard input to standard output (for an editor)
           tessera lsp                   run the language server on standard input and output (for an editor)
-          tessera lint  <file-or-dir>...   print the style warnings (a chain of more than three calls), the stdlib's too
+          tessera lint  <file-or-dir>...   print the style warnings (see lint below), the stdlib's too
           tessera help                  print this text
           tessera version               print the builder's version
 
@@ -39,6 +39,10 @@ static class Cli
               built and run. Its stdout must equal <name>.expected (if present), and its exit code must equal
               the number in <name>.exit (default 0). If <name>.error exists, the build must fail with a message
               containing its text. <name>.input, if present, is its standard input (else it reads an empty one).
+        lint: warns on a chain of more than three calls, and in a routine with a block named finish (the block that
+              releases what the routine holds and is its only return), on a return outside finish and on finish
+              destructing a head slot that starts as <- uninit. check, build, and run print the same warnings for
+              the program's own files. Exits 1 when there is one.
         """;
 
     private static int Help()
@@ -161,7 +165,7 @@ static class Cli
             {
                 continue;   // a file that doesn't parse is the build's to report (some tests are made not to)
             }
-            foreach (var w in ChainLint.Check(decls))
+            foreach (var w in StyleLint.Check(decls))
             {
                 Console.Error.WriteLine(w);
                 count++;
@@ -333,12 +337,12 @@ static class Cli
         return ir;
     }
 
-    /// Prints the style warnings (ChainLint) for the program's own files, the inputs; the standard library's are its own
+    /// Prints the style warnings (StyleLint) for the program's own files, the inputs; the standard library's are its own
     /// business.
     private static void Lint(List<Decl> decls, IEnumerable<string> inputs)
     {
         var own = inputs.Select(f => ShownPath(Path.GetFullPath(f))).ToHashSet();
-        foreach (var w in ChainLint.Check(decls.Where(d => own.Contains(d.File))))
+        foreach (var w in StyleLint.Check(decls.Where(d => own.Contains(d.File))))
             Console.Error.WriteLine(w);
     }
 

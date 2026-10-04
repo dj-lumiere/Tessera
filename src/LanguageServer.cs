@@ -206,7 +206,7 @@ public static partial class LanguageServer
             analysis = new Analysis(text, shown, decls.Where(d => SameFile(d.File, shown)).ToList(), compiler, stdlib);
             foreach (var e in compiler.CheckAll(scope: own.Contains).Where(e => SameFile(e.Pos.File, shown)))
                 diagnostics.Add(Diagnostic(text, 1, e.Pos.Line, e.Pos.Col, e.Text));
-            foreach (string w in ChainLint.Check(decls.Where(d => SameFile(d.File, shown))))
+            foreach (string w in StyleLint.Check(decls.Where(d => SameFile(d.File, shown))))
                 if (Warning.Match(w) is { Success: true } m)
                     diagnostics.Add(Diagnostic(text, 2, int.Parse(m.Groups["line"].Value), int.Parse(m.Groups["col"].Value),
                         m.Groups["text"].Value));
