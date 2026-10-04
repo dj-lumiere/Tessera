@@ -29,8 +29,9 @@ preset CM_ATAN_INDH: @Array<U64, 128> <- { 0, 0, 1, 1, 2, 2, 3, 4, 5, 5, 5, 6, 6
     45, 46, 46, 46, 47, 47, 47, 48, 48, 49, 49, 49, 50, 50, 51, 51, 52, 52, 53, 53, 54, 54, 54, 55,
     55, 56, 57, 57, 58, 58, 59, 59, 60, 60, 61, 62, 62, 63 }
 
-/// atan, asin, acos, and atan2 are CORE-MATH ports. NaN in and
-/// outside the domain keep F128's own NaNs.
+/// The arc tangent of `self`, correctly rounded to nearest (a CORE-MATH port).
+/// :returns: atan(`self`) in [-pi/2, pi/2]. It is `self` itself for |`self`| < 2^-57 and ±pi/2 for |`self`| >= 2^115
+///     (infinities included). A NaN comes back quieted.
 routine F128.atan(self: Self) -> Self
     block entry()
         nan   : Bool = self.is_nan()
@@ -105,7 +106,12 @@ routine F128.atan(self: Self) -> Self
         return(r)
 
 /// Reduces |x| = mant:lo × 2^(xn - 0x3FFF - 112) (mant carrying the implicit bit) against the
-/// table. Far from 1 no table angle is needed: |x| itself, or 1/|x|.
+/// table. Far from 1 no table angle is needed: |x| itself below 2^-7, or 1/|x| from 2^7 on.
+/// :param mant: The high 49 bits of the significand, implicit bit included.
+/// :param lo: The low 64 bits of the significand.
+/// :param xn: The biased exponent, for 2^-57 <= |x| < 2^115.
+/// :returns: The reduced argument kn / kd × 2^-dn with its table index, `g` set when |x| >= 1 (the ratio was
+///     inverted).
 routine cm_atan_reduce(mant: U64, lo: U64, xn: U64) -> CmAtanReduction
     block entry()
         above : Bool = xn.ge(0x3FFF)
@@ -201,7 +207,11 @@ routine cm_atan_reduce(mant: U64, lo: U64, xn: U64) -> CmAtanReduction
             kn: norm.kn, kd0: 0, kd1: kd1, kd2: kd2 }
         return(r)
 
-/// The accurate path: the same reduction, the series in 6 limbs.
+/// The accurate path of atan: the same reduction, the series in 6 limbs, then the table angle added back (and
+/// taken from pi/2 when the ratio was inverted).
+/// :param red: The reduction from {cm_atan_reduce}.
+/// :param sign: The sign bit of x, in place in an F128's bits.
+/// :returns: atan(x), correctly rounded.
 routine cm_atan_accurate(red: CmAtanReduction, sign: U128) -> F128
     shared f_buf : @Array<S64, 8> <- uninit
     shared f     : @U64           = f_buf.to<@U64>()

@@ -74,7 +74,11 @@ preset CM_F16_POW_EXP_TB: @Array<U64, 64> <- { 0x3FF0000000000000, 0x3FF02C9A3E7
     0x3FFDFC97337B9B5F, 0x3FFE502EE78B3FF6, 0x3FFEA4AFA2A490D9, 0x3FFEFA1BEE615A27,
     0x3FFF50765B6E4541, 0x3FFFA7C1819E90D8 }
 
-/// self^exponent, correctly rounded.
+/// `self`^`exponent`, correctly rounded (to nearest), with the C pow special cases: overflow gives +-inf, a negative
+/// base with a non-integer exponent gives NaN, x^+-0 = 1 and 1^y = 1 (except for a signaling NaN), (-1)^+-inf = 1,
+/// and NaN comes back quiet.
+/// :param exponent: The power to raise `self` to.
+/// :returns: `self`^`exponent`.
 routine F16.powf(self: Self, exponent: Self) -> Self
     block entry()
         xu : U32 = self.bits().to<U32>()
@@ -225,7 +229,9 @@ routine F16.powf(self: Self, exponent: Self) -> Self
     block done(ret: U64, sign: U64)
         return(F64.from_bits(ret.add_wrap(sign)).to<Self>())
 
-// Whether the F16 value with bits u is an integer (zero counts).
+/// Whether the F16 value with bits `u` is an integer (zero counts).
+/// :param u: The F16 bits, widened to U32.
+/// :returns: True for an integer or a zero.
 private routine cm_f16_pow_is_int(u: U32) -> Bool
     block entry()
         zero     : Bool = u.bitand(0x7FFF).eq(0)
@@ -233,7 +239,9 @@ private routine cm_f16_pow_is_int(u: U32) -> Bool
         int      : Bool = exponent.ge(U32.sub(25, u.bitor(0x400).trailing_zeros()))
         return(zero.bitor(int))
 
-// Whether the F16 value with bits u is an odd integer.
+/// Whether the F16 value with bits `u` is an odd integer.
+/// :param u: The F16 bits, widened to U32.
+/// :returns: True for an odd integer.
 private routine cm_f16_pow_is_odd(u: U32) -> Bool
     block entry()
         nonzero  : Bool = u.bitand(0x7FFF).ne(0)
@@ -241,11 +249,12 @@ private routine cm_f16_pow_is_odd(u: U32) -> Bool
         odd      : Bool = exponent.eq(U32.sub(25, u.bitor(0x400).trailing_zeros()))
         return(nonzero.bitand(odd))
 
-// Classifies the inputs whose power may be exactly representable: a power of
-// two x = 2^E with -25 <= y E <= 15 and y E an integer (returns the F64 bits
-// of 2^(y E)), or y in {1/4, 1/2, 3/4, 1, 5/4, 3/2, 7/4, 2, 5/2, 3, 7/2, 4, 5,
-// 6, 7} (returns (n << 4) + 2^F for y = n / 2^F), else 0. xu holds the bits
-// of |x|.
+/// Classifies the inputs whose power may be exactly representable: a power of two x = 2^E with -25 <= y E <= 15 and
+/// y E an integer, or y in {1/4, 1/2, 3/4, 1, 5/4, 3/2, 7/4, 2, 5/2, 3, 7/2, 4, 5, 6, 7}.
+/// :param xu: The bits of |x|.
+/// :param yu: The bits of `y`.
+/// :param y: The exponent.
+/// :returns: The F64 bits of 2^(y E) for a power of two, (n << 4) + 2^F for y = n / 2^F in the set, else 0.
 private routine cm_f16_pow_is_exact(xu: U32, yu: U32, y: F16) -> U64
     shared yexp    : U32 = yu.shr(10).bitand(0x1F)
     shared yexp_tz : U32 = yexp.add(yu.bitor(0x400).trailing_zeros())
@@ -310,7 +319,10 @@ private routine cm_f16_pow_is_exact(xu: U32, yu: U32, y: F16) -> U64
             0x4700 -> return(0x71)
             else   -> return(0)
 
-// x^y for 0 <= y < 8 by square-and-multiply (three bits of y, as in the original).
+/// x^y for 0 <= y < 8 by square-and-multiply (three bits of y, as in the original).
+/// :param x: The base.
+/// :param y: The exponent, below 8.
+/// :returns: `x`^`y`, rounded at each product.
 private routine cm_f16_pow_fast(x: F64, y: U64) -> F64
     block entry()
         r0 : F64 = 1.0
@@ -330,7 +342,9 @@ private routine cm_f16_pow_fast(x: F64, y: U64) -> F64
             : s2
         return(r)
 
-// ln(x) for a positive normal F64 x.
+/// ln(x) for a positive normal F64 `x`, from a 64-entry table and a polynomial.
+/// :param x: The argument, positive and normal.
+/// :returns: The approximation of ln(`x`).
 private routine cm_f16_pow_log(x: F64) -> F64
     block entry()
         u               : U64   = x.bits()
@@ -348,7 +362,10 @@ private routine cm_f16_pow_log(x: F64) -> F64
         tb              : F64   = F64.from_bits(CM_F16_POW_LOG_TB.getitem(i))
         return(F64.mul_add(0x1.62e42fefa39efp-1, expo.to<F64>(), tb.add(r)))
 
-// e^x, saturated below at 2^-25 and above at 2^16 (both beyond the F16 range).
+/// e^x, saturated below at 2^-25 and above at 2^16 (both beyond the F16 range), from a 64-entry table and a
+/// polynomial. A NaN or infinite `x` gives `x + x`.
+/// :param x: The argument.
+/// :returns: The approximation of e^`x`.
 private routine cm_f16_pow_exp(x: F64) -> F64
     shared u : U64 = x.bits()
 

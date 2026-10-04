@@ -48,7 +48,10 @@ record PiPick
     divide   : Bool  // tan: divide by the other one
     negative : Bool
 
-/// For a finite x that is not an integer (so |x| < 2^112 and 2x can't overflow).
+/// The exact reduction of πx: r = 2x rounded to nearest (ties to even), quadrant = r mod 4, and d = 2x - r. For
+/// a finite x that is not an integer (so |x| < 2^112 and 2x can't overflow).
+/// :param x: The argument.
+/// :returns: The quadrant and d.
 routine f128_pi_reduce(x: F128) -> PiReduced
     block entry()
         twice       : F128      = x.add(x)
@@ -60,6 +63,8 @@ routine f128_pi_reduce(x: F128) -> PiReduced
         return(r)
 
 /// Whether x (an integer) is odd. From 2^113 on, every F128 is even.
+/// :param x: An integer-valued F128.
+/// :returns: True when x is odd.
 routine f128_integer_is_odd(x: F128) -> Bool
     block entry()
         big   : Bool = x.abs().ge(f128_of(0x40700000000000000000000000000000))  // 2^113
@@ -68,6 +73,11 @@ routine f128_integer_is_odd(x: F128) -> Bool
         r     : Bool = big.bitnot().bitand(odd)
         return(r)
 
+/// Which of sin θ and cos θ gives sin, cos, or tan of πx in a quadrant, whether tan divides by the other one,
+/// and the sign before θ's own.
+/// :param quadrant: The quadrant, 0 to 3.
+/// :param kind: The function.
+/// :returns: The pick.
 routine f128_pi_pick(quadrant: S64, kind: TrigKind) -> PiPick
     block entry()
         odd    : Bool   = quadrant.bitand(1).eq(1)
@@ -89,6 +99,9 @@ record WideRounding
     value : F128
 
 /// u rounded to F128, and whether all of u × (1 ± 2^-k) rounds to the same value.
+/// :param u: The value to round.
+/// :param k: The band, as a power of two.
+/// :returns: The rounded value and whether the band agrees (`ok`). `value` is kept even when `ok` is false.
 routine wide_round_within(u: F128Extended, k: S64) -> WideRounding
     block entry()
         r         : F128         = u.to<F128>()
@@ -103,7 +116,10 @@ routine wide_round_within(u: F128Extended, k: S64) -> WideRounding
         w         : WideRounding = WideRounding { ok: ok, value: r }
         return(w)
 
-/// The result in F128Extended from θ = d π/2 (d nonzero, |d| <= 1/2).
+/// The fast tier's result in F128Extended from θ = d π/2 (d nonzero, |d| <= 1/2).
+/// :param d: The reduced argument.
+/// :param pick: Which function of θ, and its sign.
+/// :returns: sin, cos, or tan of πx at 192 bits.
 routine wide_pi_trig(d: F128, pick: PiPick) -> F128Extended
     shared theta : F128Extended = d.to<F128Extended>().mul(wide_half_pi())
 
@@ -136,7 +152,10 @@ routine wide_pi_trig(d: F128, pick: PiPick) -> F128Extended
 
 // -- exact tier: 384-bit fixed point on BigNat ---------------------------------
 
-/// self = a × b (self must be neither).
+/// Sets `self` to a × b (`self` must be neither).
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :throws: Crashes with `IntegerOverflowError` when the product's limb count could exceed `LIMBS`.
 #track_caller
 routine BigNat<LIMBS>.set_product(self: @Self, a: @Self, b: @Self) -> Void
 require LIMBS: USize
@@ -199,7 +218,9 @@ require LIMBS: USize
         self.trim()
         return()
 
-/// The 128 bits of self from bit pos up (zeros past the top).
+/// The 128 bits of `self` from bit `pos` up (zeros past the top).
+/// :param pos: The lowest bit to take.
+/// :returns: The 128 bits.
 routine BigNat<LIMBS>.bits128(self: @Self, pos: USize) -> U128
 require LIMBS: USize
     block entry()
@@ -215,6 +236,9 @@ require LIMBS: USize
         r    : U128 = low.bitor(high)
         return(r)
 
+/// Limb i of `self`, or 0 past its count.
+/// :param i: The limb's index.
+/// :returns: The limb.
 routine BigNat<LIMBS>.limb_or_zero(self: @Self, i: USize) -> U64
 require LIMBS: USize
     block entry()
@@ -229,6 +253,10 @@ require LIMBS: USize
         return(limb)
 
 /// n × 2^e rounded once to F128 (n > 0).
+/// :param n: The magnitude.
+/// :param e: The power of two it is scaled by.
+/// :param negative: The result's sign.
+/// :returns: The rounded F128.
 routine big_to_f128(n: @BigNat<24>, e: S64, negative: Bool) -> F128
     block entry()
         length   : USize = n.bit_length()
@@ -242,8 +270,14 @@ routine big_to_f128(n: @BigNat<24>, e: S64, negative: Bool) -> F128
         r        : F128  = f128_of(bits)
         return(r)
 
-/// (num × 2^num_e) / (den × 2^den_e) rounded once to F128: a 126- or 127-bit
-/// quotient with the remainder as the sticky bit. Both operands are consumed.
+/// (num × 2^num_e) / (den × 2^den_e) rounded once to F128: a 126- or 127-bit quotient with the remainder as
+/// the sticky bit. Both operands are consumed.
+/// :param num: The numerator's magnitude.
+/// :param num_e: The numerator's power of two.
+/// :param den: The denominator's magnitude, nonzero.
+/// :param den_e: The denominator's power of two.
+/// :param negative: The result's sign.
+/// :returns: The rounded F128.
 routine big_quotient_to_f128(num: @BigNat<24>, num_e: S64, den: @BigNat<24>, den_e: S64,
     negative: Bool) -> F128
     shared den_bits : S64 = den.bit_length().to<S64>()
@@ -275,9 +309,12 @@ routine big_quotient_to_f128(num: @BigNat<24>, num_e: S64, den: @BigNat<24>, den
         r          : F128 = f128_of(bits)
         return(r)
 
-/// Σ (-u)^k / (j0 (j0 + 1) … (j0 + 2k - 1)) in fixed point with 2^384 as 1:
-/// j0 = 2 gives sin θ / θ, j0 = 1 gives cos θ, for u = θ² <= (π/4)². Each term
-/// is off by under 1.5 units (one rounding, one truncation). The sum takes about 50 terms.
+/// Sets `out` to Σ (-u)^k / (j0 (j0 + 1) … (j0 + 2k - 1)) in fixed point with 2^384 as 1: j0 = 2 gives
+/// sin θ / θ, j0 = 1 gives cos θ, for u = θ² <= (π/4)². Each term is off by under 1.5 units (one rounding, one
+/// truncation). The sum takes about 50 terms.
+/// :param out: The sum.
+/// :param u: θ² in fixed point.
+/// :param j0: 2 for the sine series, 1 for the cosine.
 routine big_trig_series(out: @BigNat<24>, u: @BigNat<24>, j0: U64) -> Void
     shared term    : @BigNat<24> <- uninit
     shared product : @BigNat<24> <- uninit
@@ -323,9 +360,12 @@ routine big_trig_series(out: @BigNat<24>, u: @BigNat<24>, j0: U64) -> Void
         out.sub(minus)
         return()
 
-/// The result from θ = d π/2 (d nonzero, |d| <= 1/2) in fixed point. With
-/// |d| = m × 2^(e - 112) and T = floor(π 2^384) × m, |θ| = T × 2^(e - 113 - 384).
-/// Then sin θ = |θ| × S × 2^-384 and cos θ = C × 2^-384 for the series S and C.
+/// The exact tier's result from θ = d π/2 (d nonzero, |d| <= 1/2) in fixed point. With |d| = m × 2^(e - 112)
+/// and T = floor(π 2^384) × m, |θ| = T × 2^(e - 113 - 384). Then sin θ = |θ| × S × 2^-384 and
+/// cos θ = C × 2^-384 for the series S and C.
+/// :param d: The reduced argument.
+/// :param pick: Which function of θ, and its sign.
+/// :returns: The result, rounded once.
 routine f128_pi_trig_exact(d: F128, pick: PiPick) -> F128
     shared p   : F128Parts   = f128_unpack(d.bits())
     shared pi  : @BigNat<24> <- uninit
@@ -394,9 +434,12 @@ routine f128_pi_trig_exact(d: F128, pick: PiPick) -> F128
 
 // -- the two tiers -------------------------------------------------------------
 
-/// sin, cos, or tan of π x for a finite non-integer x that is not a
-/// half-integer (and for tan not a quarter-integer). exact skips the fast tier
-/// (the tests use it to check the exact tier on its own).
+/// sin, cos, or tan of π x for a finite non-integer x that is not a half-integer (and for tan not a
+/// quarter-integer).
+/// :param red: The exact reduction of x.
+/// :param kind: The function.
+/// :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
+/// :returns: The correctly rounded result.
 routine f128_pi_trig_general(red: PiReduced, kind: TrigKind, exact: Bool) -> F128
     shared pick : PiPick = f128_pi_pick(red.quadrant, kind)
 
@@ -418,28 +461,35 @@ routine f128_pi_trig_general(red: PiReduced, kind: TrigKind, exact: Bool) -> F12
 
 // -- sin_pi, cos_pi, tan_pi ----------------------------------------------------
 
-/// sin(π self), correctly rounded: ±0 (self's sign) at the integers, ±1 at the
-/// half-integers, NaN for infinities.
+/// sin(π self), correctly rounded: ±0 (self's sign) at the integers, ±1 at the half-integers, NaN for
+/// infinities. A NaN comes back quieted.
+/// :returns: sin(π `self`).
 routine F128.sin_pi(self: Self) -> Self
     block entry()
         r : Self = f128_sin_pi(self, false)
         return(r)
 
-/// cos(π self), correctly rounded: ±1 at the integers, +0 at the
-/// half-integers, NaN for infinities.
+/// cos(π self), correctly rounded: ±1 at the integers, +0 at the half-integers, NaN for infinities. A NaN
+/// comes back quieted.
+/// :returns: cos(π `self`).
 routine F128.cos_pi(self: Self) -> Self
     block entry()
         r : Self = f128_cos_pi(self, false)
         return(r)
 
-/// tan(π self), correctly rounded. At an integer n it is +0 for a positive even
-/// n or a negative odd one and -0 otherwise. At n + 1/2 it is +inf for an even
-/// n and -inf for an odd one (IEEE 754 tanPi, C23 tanpi). It is NaN for infinities.
+/// tan(π self), correctly rounded. At an integer n it is +0 for a positive even n or a negative odd one and -0
+/// otherwise. At n + 1/2 it is +inf for an even n and -inf for an odd one (IEEE 754 tanPi, C23 tanpi). It is
+/// NaN for infinities, and a NaN comes back quieted.
+/// :returns: tan(π `self`).
 routine F128.tan_pi(self: Self) -> Self
     block entry()
         r : Self = f128_tan_pi(self, false)
         return(r)
 
+/// sin(π x), correctly rounded, as {F128.sin_pi}.
+/// :param x: The argument.
+/// :param exact: True skips the fast tier.
+/// :returns: sin(π x).
 routine f128_sin_pi(x: F128, exact: Bool) -> F128
     block entry()
         bits     : U128 = x.bits()
@@ -472,6 +522,10 @@ routine f128_sin_pi(x: F128, exact: Bool) -> F128
         r : F128 = f128_pi_trig_general(red, TrigKind.Sin, exact)
         return(r)
 
+/// cos(π x), correctly rounded, as {F128.cos_pi}.
+/// :param x: The argument.
+/// :param exact: True skips the fast tier.
+/// :returns: cos(π x).
 routine f128_cos_pi(x: F128, exact: Bool) -> F128
     block entry()
         bits     : U128 = x.bits()
@@ -502,6 +556,10 @@ routine f128_cos_pi(x: F128, exact: Bool) -> F128
         r : F128 = f128_pi_trig_general(red, TrigKind.Cos, exact)
         return(r)
 
+/// tan(π x), correctly rounded, as {F128.tan_pi}.
+/// :param x: The argument.
+/// :param exact: True skips the fast tier.
+/// :returns: tan(π x).
 routine f128_tan_pi(x: F128, exact: Bool) -> F128
     block entry()
         bits     : U128 = x.bits()

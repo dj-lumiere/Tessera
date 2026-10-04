@@ -19,9 +19,11 @@ record CmHypotSquare
 
 // -- hypot ---------------------------------------------------------------------
 
-/// sqrt(x² + y²) without overflow or underflow. A signaling NaN gives NaN, as it does in every operation, and
-/// otherwise an infinite leg gives +inf, even with a quiet NaN in the other leg (IEEE 754's hypot(±inf, qNaN)).
-/// Any other NaN gives NaN.
+/// sqrt(x² + y²) without overflow or underflow, correctly rounded to nearest (a CORE-MATH port). A signaling NaN
+/// gives NaN, as it does in every operation, and otherwise an infinite leg gives +inf, even with a quiet NaN in the
+/// other leg (IEEE 754's hypot(±inf, qNaN)). Any other NaN gives NaN.
+/// :param other: The other leg.
+/// :returns: sqrt(`self`² + `other`²), +inf when it overflows.
 routine F128.hypot(self: Self, other: Self) -> Self
     block entry()
         signaling : Bool = cm_hypot_is_signaling(self).bitor(cm_hypot_is_signaling(other))
@@ -137,12 +139,18 @@ routine F128.hypot(self: Self, other: Self) -> Self
         return(r)
 
 /// Whether x is a signaling NaN: a NaN whose quiet bit is clear.
+/// :param x: The value.
+/// :returns: True for a signaling NaN.
 routine cm_hypot_is_signaling(x: F128) -> Bool
     block entry()
         quiet : Bool = x.bits().bitand(F128_QUIET_BIT).ne(0)
         return(x.is_nan().bitand(quiet.bitnot()))
 
-/// Both legs are at least as large as a finite number and the larger is infinite or NaN.
+/// hypot when the larger leg is infinite or NaN (its exponent field all ones).
+/// :param a: The bits of the larger leg, sign cleared.
+/// :param b: The bits of the smaller leg, sign cleared.
+/// :returns: The default NaN when either leg is a signaling NaN, +inf for an infinity with a quiet NaN, else the
+///     quiet NaN leg (`a` first), else +inf.
 routine cm_hypot_special(a: U128, b: U128) -> F128
     block entry()
         a_class   : S64  = cm_hypot_class(a)
@@ -164,6 +172,8 @@ routine cm_hypot_special(a: U128, b: U128) -> F128
 
 /// Classifies sign-stripped bits: 0 for a number, 1 for infinity, 2 for a signaling NaN,
 /// 3 for a quiet NaN.
+/// :param x: The bits, sign cleared.
+/// :returns: The class, 0 to 3.
 routine cm_hypot_class(x: U128) -> S64
     block entry()
         xh       : U64 = x.shr(64).to<U64>()
@@ -178,6 +188,9 @@ routine cm_hypot_class(x: U128) -> S64
 
 /// Rounds v (leading bit at 127, sticky information in its low bits) times 2^(exponent - 16383) to
 /// the nearest F128, ties to even: a normal result, +inf on overflow, or a subnormal.
+/// :param v: The significand, leading bit at 127.
+/// :param exponent: The biased exponent of the leading bit.
+/// :returns: The rounded F128.
 routine cm_hypot_round(v: U128, exponent: S64) -> F128
     shared e : S64 = exponent.sub(1)
 
@@ -228,6 +241,12 @@ routine cm_hypot_round(v: U128, exponent: S64) -> F128
 /// a² + b² - c², reduced mod 2^128 and read as signed, where a and b are the legs (leading bit
 /// at 127, b not yet aligned) and c the candidate root, all shifted down 13 bits. The sum is
 /// exact apart from a sticky bit for b's shifted-out part.
+/// :param c: The candidate root, shifted down 13 bits.
+/// :param a_top: The larger leg, leading bit at 127.
+/// :param b_top: The smaller leg, leading bit at 127.
+/// :param gap: The exponent difference of the legs, 0 to 56.
+/// :returns: The low 128 bits of a² + b² - c² as a signed value: negative when the root is below `c`, positive when
+///     above, 0 when exact.
 routine cm_hypot_excess(c: U128, a_top: U128, b_top: U128, gap: S64) -> S128
     shared c_sq : U128          = c.mul_wrap(c)
     shared a_sq : CmHypotSquare = cm_hypot_sqr(a_top.shr(13))
@@ -268,6 +287,8 @@ routine cm_hypot_excess(c: U128, a_top: U128, b_top: U128, gap: S64) -> S128
         return(low.sub_wrap(c_sq).to_wrap<S128>())
 
 /// Approximate high 128 bits of a² (low × low dropped).
+/// :param a: The value.
+/// :returns: Approximately `a`² >> 128.
 routine cm_hypot_sqr_hi(a: U128) -> U128
     block entry()
         a0      : U128 = a.bitand(0xFFFFFFFFFFFFFFFF)
@@ -278,6 +299,8 @@ routine cm_hypot_sqr_hi(a: U128) -> U128
         return(r)
 
 /// The full 256-bit a²: the cross term a1·a0 is added twice at bit 64.
+/// :param a: The value.
+/// :returns: `a`², exact, as two 128-bit halves.
 routine cm_hypot_sqr(a: U128) -> CmHypotSquare
     block entry()
         a0    : U128          = a.bitand(0xFFFFFFFFFFFFFFFF)

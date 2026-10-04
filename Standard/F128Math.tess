@@ -90,29 +90,43 @@ record F128Extended
 
 // -- F128Extended ----------------------------------------------------------------------
 
+/// The F128Extended zero (positive, zero mantissa).
+/// :returns: +0.
 routine wide_zero() -> F128Extended
     block entry()
         w : F128Extended = F128Extended { negative: false, exponent: 0, hi: 0, lo: 0 }
         return(w)
 
+/// True when the mantissa is zero, whatever the sign.
+/// :returns: Whether `self` is ±0.
 routine F128Extended.is_zero(self: Self) -> Bool
     block entry()
         r : Bool = self.hi.eq(0).bitand(self.lo.eq(0))
         return(r)
 
+/// `self` with its sign flipped.
+/// :returns: -`self`.
 routine F128Extended.neg(self: Self) -> Self
     block entry()
         r : Self = Self { negative: self.negative.bitnot(), exponent: self.exponent, hi: self.hi,
             lo: self.lo }
         return(r)
 
+/// `self` × 2^k, by adding k to the exponent.
+/// :param k: The power of two.
+/// :returns: The scaled value.
 routine F128Extended.ldexp(self: Self, k: S64) -> Self
     block entry()
         r : Self = Self { negative: self.negative, exponent: self.exponent.add(k), hi: self.hi,
             lo: self.lo }
         return(r)
 
-/// Entry i of one of the constant tables.
+/// Entry i of one of the constant tables, as a positive F128Extended.
+/// :param hi: The table of mantissa bits 191..64.
+/// :param lo: The table of mantissa bits 63..0.
+/// :param exponent: The table of exponents.
+/// :param i: The entry.
+/// :returns: The entry.
 routine wide_table(hi: @U128, lo: @U64, exponent: @S64, i: USize) -> F128Extended
     block entry()
         h : U128         = hi.stride(i).load()
@@ -121,13 +135,22 @@ routine wide_table(hi: @U128, lo: @U64, exponent: @S64, i: USize) -> F128Extende
         w : F128Extended = F128Extended { negative: false, exponent: e, hi: h, lo: l }
         return(w)
 
+/// Entry i of the constants: 0 = ln 2, 1 = 1/ln 2, 2 = sqrt(1/2), 3 = 1/ln 10, 4 = 180/π, 5 = π/180.
+/// :param i: The entry, 0 to 5.
+/// :returns: The constant at 192 bits.
 routine wide_const(i: USize) -> F128Extended
     block entry()
         w : F128Extended = wide_table(WIDE_CONST_HI.to<@U128>(), WIDE_CONST_LO.to<@U64>(),
             WIDE_CONST_EXP.to<@S64>(), i)
         return(w)
 
-/// Shifts the mantissa up until bit 191 is set.
+/// Shifts the mantissa up until bit 191 is set, lowering the exponent to match. A zero mantissa gives
+/// {wide_zero}.
+/// :param negative: The sign.
+/// :param exponent: The exponent before the shift.
+/// :param hi: Mantissa bits 191..64.
+/// :param lo: Mantissa bits 63..0.
+/// :returns: The normalized value.
 routine wide_normalize(negative: Bool, exponent: S64, hi: U128, lo: U64) -> F128Extended
     shared adjusted : @S64 <- exponent
 
@@ -162,6 +185,8 @@ routine wide_normalize(negative: Bool, exponent: S64, hi: U128, lo: U64) -> F128
             hi: new_hi, lo: new_lo }
         return(w)
 
+/// `self` in F128Extended, exactly. For a finite `self` (±0 gives +0).
+/// :returns: The widened value.
 routine F128.to<F128Extended>(self: Self) -> F128Extended
     block entry()
         zero    : Bool         = f128_is_zero_bits(self.bits())
@@ -174,12 +199,15 @@ routine F128.to<F128Extended>(self: Self) -> F128Extended
             exponent: p.exponent, hi: p.sig.shl(15), lo: 0 }
         return(w)
 
+/// `self` in F128Extended, through F128 (exact for any S64).
+/// :returns: The widened value.
 routine S64.to<F128Extended>(self: Self) -> F128Extended
     block entry()
         w : F128Extended = self.to<F128>().to<F128Extended>()
         return(w)
 
 /// Rounds once to F128 (overflow, subnormals, and underflow included).
+/// :returns: The nearest F128, ties to even.
 routine F128Extended.to<F128>(self: Self) -> F128
     block entry()
         zero      : Bool = self.is_zero()
@@ -196,7 +224,11 @@ routine F128Extended.to<F128>(self: Self) -> F128
         r      : F128 = f128_of(bits)
         return(r)
 
-/// mantissa >> n (bits shifted out are dropped)
+/// mantissa >> n (bits shifted out are dropped), as a positive F128Extended with exponent 0.
+/// :param hi: Mantissa bits 191..64.
+/// :param lo: Mantissa bits 63..0.
+/// :param n: The shift, at least 0.
+/// :returns: The shifted mantissa.
 routine wide_shift_right(hi: U128, lo: U64, n: S64) -> F128Extended
     block entry()
         none  : Bool = n.eq(0)
@@ -225,6 +257,9 @@ routine wide_shift_right(hi: U128, lo: U64, n: S64) -> F128Extended
         w : F128Extended = F128Extended { negative: false, exponent: 0, hi: h, lo: l }
         return(w)
 
+/// The sum `self` + `other`, with the smaller operand's bits below the larger one's mantissa truncated.
+/// :param other: The value to add.
+/// :returns: The sum.
 routine F128Extended.add(self: Self, other: Self) -> Self
     block entry()
         a_zero : Bool = self.is_zero()
@@ -279,12 +314,17 @@ routine F128Extended.add(self: Self, other: Self) -> Self
         r : Self = Self { negative: negative, exponent: exponent, hi: hi, lo: lo }
         return(r)
 
+/// The difference `self` - `other`.
+/// :param other: The value to subtract.
+/// :returns: The difference.
 routine F128Extended.sub(self: Self, other: Self) -> Self
     block entry()
         r : Self = self.add(other.neg())
         return(r)
 
 /// The top 192 bits of the 384-bit product (the rest dropped).
+/// :param other: The value to multiply by.
+/// :returns: The product.
 routine F128Extended.mul(self: Self, other: Self) -> Self
     block entry()
         a_zero  : Bool = self.is_zero()
@@ -344,8 +384,10 @@ routine F128Extended.mul(self: Self, other: Self) -> Self
         r        : Self = Self { negative: negative, exponent: exponent, hi: hi, lo: lo }
         return(r)
 
-/// self / other by Newton's method on the reciprocal: y ← y + y(1 - other·y),
-/// from an F64 seed (53 bits → 106 → 212).
+/// self / other by Newton's method on the reciprocal: y ← y + y(1 - other·y), from an F64 seed
+/// (53 bits → 106 → 212).
+/// :param other: The divisor, nonzero.
+/// :returns: The quotient.
 routine F128Extended.div(self: Self, other: Self) -> Self
     block entry()
         e     : S64  = other.exponent
@@ -359,7 +401,8 @@ routine F128Extended.div(self: Self, other: Self) -> Self
         r     : Self = self.mul(y2).ldexp(0.sub(e))
         return(r)
 
-/// round to the nearest integer, for |self| < 2^62
+/// Rounds to the nearest integer (ties to even), for |self| < 2^62. Out-of-range values clamp.
+/// :returns: The integer.
 routine F128Extended.to_nearest<S64>(self: Self) -> S64
     block entry()
         rounded : F128 = self.to<F128>().round_ties_even()
@@ -368,9 +411,10 @@ routine F128Extended.to_nearest<S64>(self: Self) -> S64
 
 // -- exponent -----------------------------------------------------------------------
 
-/// e^x for finite x with |x| below the overflow range (the caller clamps).
-/// x = q ln2 + d with |d| <= ln2/2, e^d by its Taylor series (27th degree, and the
-/// first dropped term is below 2^-141), then × 2^q.
+/// e^x for finite x with |x| below the overflow range (the caller clamps). x = q ln2 + d with |d| <= ln2/2,
+/// e^d by its Taylor series (27th degree, and the first dropped term is below 2^-141), then × 2^q.
+/// :param x: The exponent.
+/// :returns: e^x at 192 bits.
 routine wide_exp(x: F128Extended) -> F128Extended
     shared ln2     : F128Extended  = wide_const(0)
     shared inv_ln2 : F128Extended  = wide_const(1)
@@ -511,9 +555,11 @@ preset WIDE_COS_COEF_LO: @Array<U64, 18> <- { 0, 0, 0xAAAAAAAAAAAAAAAB, 81985529
 preset WIDE_COS_COEF_EXP: @Array<S64, 18> <- { 0, -1, -5, -10, -16, -22, -29, -37, -45, -53, -62,
     -70, -80, -89, -98, -108, -118, -128 }
 
-/// ln x for finite x > 0: x = fr × 2^e with fr in [sqrt(1/2), sqrt(2)), then
-/// ln fr = 2 atanh(t) = 2 (t + t^3/3 + t^5/5 + …) with t = (fr - 1) / (fr + 1),
-/// |t| <= 0.172, 26 terms (the first dropped one is below 2^-135).
+/// ln x for finite x > 0: x = fr × 2^e with fr in [sqrt(1/2), sqrt(2)), then ln fr = 2 atanh(t) =
+/// 2 (t + t^3/3 + t^5/5 + …) with t = (fr - 1) / (fr + 1), |t| <= 0.172, 26 terms (the first dropped one is
+/// below 2^-135).
+/// :param x: The argument, positive.
+/// :returns: ln x at 192 bits.
 routine wide_log(x: F128Extended) -> F128Extended
     shared s : @F128Extended <- uninit
 
@@ -561,6 +607,9 @@ record Reduced
     theta    : F128Extended
 
 /// 64 bits of the little-endian limbs at p starting at bit pos (pos >= 0).
+/// :param p: The limbs, least significant first.
+/// :param pos: The lowest bit to take.
+/// :returns: The 64 bits.
 routine limbs_bits64(p: @U64, pos: S64) -> U64
     block entry()
         i       : USize = pos.shr(6).to<USize>()
@@ -575,13 +624,14 @@ routine limbs_bits64(p: @U64, pos: S64) -> U64
         r    : U64   = low.shr(off.to<U64>()).bitor(high.shl(64.sub(off).to<U64>()))
         return(r)
 
-/// Reduces |x| (finite, nonzero). With x = m × 2^(e - 112), x × 2/π keeps only
-/// the bits of 2/π that land below 4: a 512-bit window W of them, so x × 2/π
-/// mod 4 = m × W × 2^-sh. The product's bits above sh give the quadrant and the
-/// ones below it the fraction f. The window is good to about 2^-330, but f keeps
-/// only the 256 bits under sh, so θ is good to about 2^-256 absolute: relative
-/// 2^-133 at worst, where x sits closest to a multiple of π/2 (|θ| = 2^-123.3),
-/// which is why tan sends |θ| < 2^-90 to its exact tier (F128Tan.tess).
+/// Reduces |x| (finite, nonzero). With x = m × 2^(e - 112), x × 2/π keeps only the bits of 2/π that land below
+/// 4: a 512-bit window W of them, so x × 2/π mod 4 = m × W × 2^-sh. The product's bits above sh give the
+/// quadrant and the ones below it the fraction f. The window is good to about 2^-330, but f keeps only the 256
+/// bits under sh, so θ is good to about 2^-256 absolute: relative 2^-133 at worst, where x sits closest to a
+/// multiple of π/2 (|θ| = 2^-123.3), which is why tan sends |θ| < 2^-90 to its exact tier (F128Tan.tess).
+/// Below 0.5 the quadrant is 0 and θ = |x|.
+/// :param x: The argument.
+/// :returns: The quadrant (mod 4) and θ, |θ| <= π/4.
 routine f128_reduce(x: F128) -> Reduced
     shared p : F128Parts = f128_unpack(x.bits())
 
@@ -690,6 +740,9 @@ routine f128_reduce(x: F128) -> Reduced
         return(r)
 
 /// (hi × 2^128 + lo) × 2^-256 as a F128Extended, keeping its top 192 bits.
+/// :param hi: The high 128 bits.
+/// :param lo: The low 128 bits.
+/// :returns: The normalized value, or zero.
 routine wide_from_256(hi: U128, lo: U128) -> F128Extended
     shared exponent : @S64 <- -1
 
@@ -726,8 +779,9 @@ choice TrigKind: U8
     Cos
     Tan
 
-/// sin θ = θ Σ (-θ²)^k / (2k+1)!  and  cos θ = Σ (-θ²)^k / (2k)!, 18 terms each,
-/// for |θ| <= π/4 (the first dropped term is below 2^-139).
+/// sin θ = θ Σ (-θ²)^k / (2k+1)!, 18 terms, for |θ| <= π/4 (the first dropped term is below 2^-139).
+/// :param t: θ.
+/// :returns: sin θ at 192 bits.
 routine wide_sin_core(t: F128Extended) -> F128Extended
     shared u : F128Extended  = t.mul(t).neg()
     shared s : @F128Extended <- uninit
@@ -749,6 +803,9 @@ routine wide_sin_core(t: F128Extended) -> F128Extended
         s.store(s.load().mul(u).add(c))
         jump horner(i.sub(1))
 
+/// cos θ = Σ (-θ²)^k / (2k)!, 18 terms, for |θ| <= π/4 (the first dropped term is below 2^-139).
+/// :param t: θ.
+/// :returns: cos θ at 192 bits.
 routine wide_cos_core(t: F128Extended) -> F128Extended
     shared u : F128Extended  = t.mul(t).neg()
     shared s : @F128Extended <- uninit
@@ -770,6 +827,8 @@ routine wide_cos_core(t: F128Extended) -> F128Extended
         jump horner(i.sub(1))
 
 /// sin and cos of NaN (a quiet NaN) and of the infinities (NaN).
+/// :param x: A NaN or an infinity.
+/// :returns: The quieted NaN for a NaN, else the default NaN.
 routine f128_trig_nonfinite(x: F128) -> F128
     block entry()
         is_nan : Bool = x.is_nan()
@@ -781,13 +840,16 @@ routine f128_trig_nonfinite(x: F128) -> F128
 
 // -- more F128Extended -----------------------------------------------------------------
 
+/// `self` with its sign cleared.
+/// :returns: |`self`|.
 routine F128Extended.abs(self: Self) -> Self
     block entry()
         r : Self = Self { negative: false, exponent: self.exponent, hi: self.hi, lo: self.lo }
         return(r)
 
-/// sqrt for self > 0: Newton's method on 1/sqrt, y ← y (3 - a y²) / 2, from an
-/// F64 seed (53 bits → 106 → 212), then × a.
+/// sqrt for self > 0: Newton's method on 1/sqrt, y ← y (3 - a y²) / 2, from an F64 seed (53 bits → 106 → 212),
+/// then × a. Zero gives itself.
+/// :returns: The square root.
 routine F128Extended.sqrt(self: Self) -> Self
     block entry()
         zero : Bool = self.is_zero()
@@ -806,7 +868,8 @@ routine F128Extended.sqrt(self: Self) -> Self
         r       : Self = unit.mul(y2).ldexp(half_e)
         return(r)
 
-/// |self| > 1?
+/// Whether |self| > 1.
+/// :returns: True when the magnitude is above 1.
 routine F128Extended.is_above_one(self: Self) -> Bool
     block entry()
         big   : Bool = self.exponent.gt(0)
@@ -816,11 +879,15 @@ routine F128Extended.is_above_one(self: Self) -> Bool
         r     : Bool = big.bitor(one_e.bitand(more)).bitand(zero.bitnot())
         return(r)
 
+/// The F128Extended 1.
+/// :returns: 1.
 routine wide_one() -> F128Extended
     block entry()
         r : F128Extended = S64.to<F128Extended>(1)
         return(r)
 
+/// π/2 at 192 bits.
+/// :returns: π/2.
 routine wide_half_pi() -> F128Extended
     block entry()
         r : F128Extended = wide_table(WIDE_HALF_PI_HI.to<@U128>(), WIDE_HALF_PI_LO.to<@U64>(),
@@ -829,8 +896,10 @@ routine wide_half_pi() -> F128Extended
 
 // -- exp_m1, ln_1p ---------------------------------------------------------------
 
-/// e^x - 1 without cancellation: below |x| = 1/2 the series x Σ x^j / (j+1)!
-/// (35 terms, the first dropped one under 2^-150 relative), else e^x - 1.
+/// e^x - 1 without cancellation: below |x| = 1/2 the series x Σ x^j / (j+1)! (35 terms, the first dropped one
+/// under 2^-150 relative), else e^x - 1.
+/// :param x: The exponent.
+/// :returns: e^x - 1 at 192 bits.
 routine wide_exp_m1(x: F128Extended) -> F128Extended
     shared s : @F128Extended <- uninit
 
@@ -861,8 +930,10 @@ routine wide_exp_m1(x: F128Extended) -> F128Extended
         s.store(s.load().mul(x).add(c))
         jump horner(i.sub(1))
 
-/// ln(1 + x) for x > -1: below |x| = 1/4, 2 atanh(t) with t = x / (2 + x)
-/// (|t| < 0.143, inside the log series' reach), else ln of 1 + x, which is exact.
+/// ln(1 + x) for x > -1: below |x| = 1/4, 2 atanh(t) with t = x / (2 + x) (|t| < 0.143, inside the log
+/// series' reach), else ln of 1 + x, which is exact.
+/// :param x: The argument, above -1.
+/// :returns: ln(1 + x) at 192 bits.
 routine wide_ln_1p(x: F128Extended) -> F128Extended
     shared s : @F128Extended <- uninit
 
@@ -898,6 +969,8 @@ routine wide_ln_1p(x: F128Extended) -> F128Extended
 // -- atan ----------------------------------------------------------------------
 
 /// atan x = x Σ (-x²)^k / (2k+1), 26 terms, for |x| < 0.1.
+/// :param x: The argument.
+/// :returns: atan x at 192 bits.
 routine wide_atan_series(x: F128Extended) -> F128Extended
     shared u : F128Extended  = x.mul(x).neg()
     shared s : @F128Extended <- uninit
@@ -919,8 +992,10 @@ routine wide_atan_series(x: F128Extended) -> F128Extended
         s.store(s.load().mul(u).add(c))
         jump horner(i.sub_wrap(1))
 
-/// atan x for any finite x: past |x| = 1, π/2 - atan(1/|x|). Then three
-/// half-angle steps x ← x / (1 + sqrt(1 + x²)) bring |x| <= 1 under 0.1.
+/// atan x for any finite x: past |x| = 1, π/2 - atan(1/|x|). Then three half-angle steps
+/// x ← x / (1 + sqrt(1 + x²)) bring |x| <= 1 under 0.1.
+/// :param x: The argument.
+/// :returns: atan x at 192 bits.
 routine wide_atan(x: F128Extended) -> F128Extended
     shared a   : F128Extended  = x.abs()
     shared big : Bool          = a.is_above_one()
@@ -962,7 +1037,11 @@ routine wide_atan(x: F128Extended) -> F128Extended
 
 // -- exponentials and logarithms -----------------------------------------------
 
-/// log of self to the given base: ln self / ln base
+/// log of self to the given base: ln self / ln base, computed in F128Extended and rounded once when both logs
+/// are finite, ln self is nonzero, and ln base is nonzero. Otherwise the F128 quotient of the two logs, so the
+/// special cases follow F128 division.
+/// :param base: The base.
+/// :returns: log_base(`self`).
 routine F128.log(self: Self, base: Self) -> Self
     block entry()
         num         : Self = self.ln()
@@ -983,13 +1062,18 @@ routine F128.log(self: Self, base: Self) -> Self
 
 // -- powers and roots ----------------------------------------------------------
 
-/// Is x an integer, and if so an odd one? (|x| >= 2^113 is always even.)
+/// Whether x is a finite integer.
+/// :param x: The value.
+/// :returns: True for a finite x with no fractional part.
 routine f128_is_integer(x: F128) -> Bool
     block entry()
         integral : Bool = x.trunc().eq(x)
         r        : Bool = integral.bitand(x.is_finite())
         return(r)
 
+/// Whether x is an odd integer. |x| >= 2^113 is always even.
+/// :param x: The value.
+/// :returns: True for an odd finite integer.
 routine f128_is_odd_integer(x: F128) -> Bool
     block entry()
         int   : Bool = f128_is_integer(x)
@@ -1011,6 +1095,10 @@ preset WIDE_SPECIAL_CONST_LO: @Array<U64, 4> <- { 1443862089616487703, 0xCFB08F8
 
 preset WIDE_SPECIAL_CONST_EXP: @Array<S64, 4> <- { -1, 0, 0, 1 }
 
+/// x times constant `which` of {wide_const}, rounded once. Zeros, infinities, and NaN pass through.
+/// :param x: The angle.
+/// :param which: 4 for 180/π (to degrees), 5 for π/180 (to radians).
+/// :returns: The scaled angle.
 routine f128_scale_angle(x: F128, which: USize) -> F128
     block entry()
         keep : Bool = f128_is_zero_bits(x.bits()).bitor(x.is_finite().bitnot())
@@ -1021,11 +1109,15 @@ routine f128_scale_angle(x: F128, which: USize) -> F128
         r      : F128         = scaled.to<F128>()
         return(r)
 
+/// `self` (in radians) in degrees, rounded once. Zeros, infinities, and NaN pass through.
+/// :returns: `self` × 180/π.
 routine F128.to_degrees(self: Self) -> Self
     block entry()
         r : Self = f128_scale_angle(self, 4)
         return(r)
 
+/// `self` (in degrees) in radians, rounded once. Zeros, infinities, and NaN pass through.
+/// :returns: `self` × π/180.
 routine F128.to_radians(self: Self) -> Self
     block entry()
         r : Self = f128_scale_angle(self, 5)
@@ -1033,6 +1125,9 @@ routine F128.to_radians(self: Self) -> Self
 
 // -- constants of erf and gamma -------------------------------------------------
 
+/// Entry i of the erf and gamma constants: 0 = 1/sqrt(π), 1 = ln(2π), 2 = ln π, 3 = π.
+/// :param i: The entry, 0 to 3.
+/// :returns: The constant at 192 bits.
 routine wide_special(i: USize) -> F128Extended
     block entry()
         w : F128Extended = wide_table(WIDE_SPECIAL_CONST_HI.to<@U128>(),

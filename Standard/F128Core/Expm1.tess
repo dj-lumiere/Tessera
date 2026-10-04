@@ -21,6 +21,10 @@ record CmExpm1Scaled
     el  : U64
     sig : U128
 
+/// e^`self` - 1, correctly rounded to nearest (a CORE-MATH port), accurate for `self` near 0 where e^`self` - 1
+/// loses digits.
+/// :returns: e^`self` - 1: ±0 itself, +inf past the overflow threshold (about 11356.52), -1 for -inf and for
+///     `self` below about -77.7. A NaN comes back quieted.
 routine F128.exp_m1(self: Self) -> Self
     block entry()
         nan      : Bool = self.is_nan()
@@ -82,6 +86,11 @@ routine F128.exp_m1(self: Self) -> Self
 
 /// sig + ((el << 48 | sign << 63) << 64) + round: the exponent and sign fields added to the significand.
 /// sign is 0, 1, or all ones (only its lowest bit counts).
+/// :param sig: The significand, its leading bit at 112 (which adds one to the exponent field).
+/// :param el: The biased exponent, minus one for the leading bit.
+/// :param sign: The sign, 0, 1 or all ones.
+/// :param round: The round bit (0 or 1), added so a carry rounds up.
+/// :returns: The packed F128.
 routine cm_expm1_pack(sig: U128, el: U64, sign: U64, round: U64) -> F128
     block entry()
         dh    : U64  = el.shl(48).bitor(sign.shl(63))
@@ -90,6 +99,9 @@ routine cm_expm1_pack(sig: U128, el: U64, sign: U64, round: U64) -> F128
         return(r)
 
 /// Word pair (i, i + 1) of a table stored as (lo, hi) words, as one 128-bit value.
+/// :param table: The first word of the table.
+/// :param i: The index of the low word.
+/// :returns: `table[i + 1]` × 2^64 + `table[i]`.
 routine cm_expm1_pair(table: @U64, i: USize) -> U128
     block entry()
         lo : U64  = table.stride(i).load()
@@ -100,7 +112,10 @@ routine cm_expm1_pair(table: @U64, i: USize) -> U128
 // -- 0.5 <= |x| < overflow -----------------------------------------------------
 
 /// e^x - 1 for |x| >= 0.5 or so: x / ln 2 = el + (i0 i1 i2 i3 in 5-bit steps) + z, e^x = 2^el * the four
-/// table entries * 2^z.
+/// table entries * 2^z. Falls back to {cm_expm1_accurate} when the fast result can't decide the rounding.
+/// :param u: The bits of x, finite, from about 0.5 in magnitude up to the overflow threshold and down to about
+///     -77.7.
+/// :returns: e^x - 1, correctly rounded.
 routine cm_expm1_general(u: U128) -> F128
     shared uh : U64 = cm_wide_hi(u)
     shared ul : U64 = cm_wide_lo(u)
@@ -212,6 +227,9 @@ routine cm_expm1_general(u: U128) -> F128
         return(r)
 
 /// Rounds a result whose round bit is bit 14 of the significand.
+/// :param a: The result, its leading bit at 127.
+/// :param sign: The sign, 0, 1 or all ones.
+/// :returns: The rounded F128.
 routine cm_expm1_round15(a: CmExpm1Scaled, sign: U64) -> F128
     block entry()
         sig_lo : U64  = cm_wide_lo(a.sig)
@@ -219,7 +237,9 @@ routine cm_expm1_round15(a: CmExpm1Scaled, sign: U64) -> F128
         r      : F128 = cm_expm1_pack(a.sig.shr(15), a.el.add_wrap(16382), sign, rnd)
         return(r)
 
-/// 2^z - 1 scaled, for the fraction word z: the fast-path polynomial.
+/// 2^z - 1 scaled, for the fraction word z: the fast-path polynomial over CM_EXPM1_C.
+/// :param z: The fraction word, a fraction of 2^64 below the four table indices.
+/// :returns: The polynomial value as a 128-bit fixed-point value.
 routine cm_expm1_exp2_poly(z: U64) -> U128
     block entry()
         c   : @U64 = CM_EXPM1_C.to<@U64>()
@@ -235,6 +255,11 @@ routine cm_expm1_exp2_poly(z: U64) -> U128
         return(p0)
 
 /// The product of the four 2^(i/32^k) table entries.
+/// :param i0: The index into CM_EXPM1_R0 (0..31).
+/// :param i1: The index into CM_EXPM1_R1 (0..31).
+/// :param i2: The index into CM_EXPM1_R2 (0..31).
+/// :param i3: The index into CM_EXPM1_R3 (0..31).
+/// :returns: The approximate product of the four entries, as a 128-bit fixed-point value.
 routine cm_expm1_exp2_tables(i0: USize, i1: USize, i2: USize, i3: USize) -> U128
     block entry()
         t0  : U128 = cm_expm1_pair(CM_EXPM1_R0.to<@U64>(), i0.mul(2))
@@ -247,6 +272,10 @@ routine cm_expm1_exp2_tables(i0: USize, i1: USize, i2: USize, i3: USize) -> U128
         return(r)
 
 /// mahuUU: ((a * b) >> 64) + c for a 64-bit a and 128-bit b and c.
+/// :param a: The one-word factor.
+/// :param b: The two-word factor.
+/// :param c: The addend.
+/// :returns: ((`a` × `b`) >> 64) + `c`, modulo 2^128.
 routine cm_expm1_mulhi_add_64x128(a: U64, b: U128, c: U128) -> U128
     block entry()
         low  : U128 = cm_wide_mul(a, cm_wide_lo(b)).shr(64)
@@ -254,7 +283,10 @@ routine cm_expm1_mulhi_add_64x128(a: U64, b: U128, c: U128) -> U128
         r    : U128 = high.add_wrap(c.add_wrap(low))
         return(r)
 
-/// mhu3xu2: the words at or above word 2 of the 3x2-word product a * b.
+/// mhu3xu2: the words at or above word 2 of the 3x2-word product a * b (a0 × b0 is dropped).
+/// :param a: The three-word factor.
+/// :param b: The two-word factor.
+/// :returns: Approximately (`a` × `b`) >> 128, modulo 2^192.
 routine cm_expm1_mulhi_3x2(a: CmWide3, b: U128) -> CmWide3
     block entry()
         b0   : U64     = cm_wide_lo(b)
@@ -275,6 +307,9 @@ routine cm_expm1_mulhi_3x2(a: CmWide3, b: U128) -> CmWide3
         return(r)
 
 /// arsu3: arithmetic right shift of a 3-word number by n bits (n < 192).
+/// :param o: The value, read as signed.
+/// :param n: The shift, below 192.
+/// :returns: `o` >> `n`, the sign bit filling the vacated bits.
 routine cm_expm1_ashr3(o: CmWide3, n: U64) -> CmWide3
     shared sign  : S64  = o.w2.to_wrap<S64>().shr(63)
     shared rk    : U64  = n.bitand(63)
@@ -313,7 +348,10 @@ routine cm_expm1_ashr3(o: CmWide3, n: U64) -> CmWide3
 
 // -- |x| < 0.5 -----------------------------------------------------------------
 
-/// e^x - 1 for |x| < 0.5 or so.
+/// e^x - 1 for |x| < 0.5 or so: x itself when |x| is tiny, else a table step or a polynomial, then rounding
+/// (exactly via {cm_expm1_accurate} when too close to a midpoint).
+/// :param x: The bits of x, finite and nonzero with |x| < 0.5.
+/// :returns: e^x - 1, correctly rounded.
 routine cm_expm1_small(x: U128) -> F128
     shared uh : U64 = cm_wide_hi(x)
     shared b1 : U64 = uh.bitand(0x7FFFFFFFFFFFFFFF)
@@ -376,6 +414,11 @@ routine cm_expm1_small(x: U128) -> F128
 
 /// 2^-11 < |x| < 0.5 or so: two 5-bit indices j0, j1 of |x| pick exp(x_j) - 1 from the tables, and a
 /// polynomial in the rest combines with them.
+/// :param x: The bits of x.
+/// :param sm: The sign bit of x (0 or 1).
+/// :param e: The unbiased exponent of x, as wrapped bits.
+/// :param sj: The right shift that leaves the 10 index bits of the significand.
+/// :returns: The result before rounding, its leading bit at 127 or 126.
 routine cm_expm1_small_table(x: U128, sm: U64, e: U64, sj: U64) -> CmExpm1Scaled
     block entry()
         uh       : U64   = cm_wide_hi(x)
@@ -423,6 +466,15 @@ routine cm_expm1_small_table(x: U128, sm: U64, e: U64, sj: U64) -> CmExpm1Scaled
 
 /// The table entry r0 (+/-) tt (+/-) pp, plus the polynomial in the remaining bits (mh, ml) and its product
 /// with that sum: + for x > 0, - for x < 0.
+/// :param r0: The first table entry.
+/// :param tt: The second table entry, aligned.
+/// :param pp: The product of the two entries, aligned.
+/// :param mh: The high word of the remaining bits of |x|.
+/// :param ml: The low word of the remaining bits of |x|.
+/// :param cb: The first coefficient of the polynomial in CM_EXPM1_CB9 (the row for the sign).
+/// :param el: The exponent of the table entries.
+/// :param neg: True when x is negative.
+/// :returns: The significand of e^x - 1 before rounding.
 routine cm_expm1_small_table_sum(r0: U128, tt: U128, pp: U128, mh: U64, ml: U64, cb: USize, el: S64,
     neg: Bool) -> U128
     block entry()
@@ -458,6 +510,12 @@ routine cm_expm1_small_table_sum(r0: U128, tt: U128, pp: U128, mh: U64, ml: U64,
         return(r)
 
 /// v = c[top], then v = c[i] +/- (v * mh) >> 64 for i = top - 2 down to bottom in steps of 2.
+/// :param c: The coefficient words.
+/// :param top: The index of the first coefficient, `top` - `bottom` even.
+/// :param bottom: The index of the last coefficient, at least 2.
+/// :param mh: The argument, a fraction of 2^64.
+/// :param neg: True to subtract each product, false to add it.
+/// :returns: The value v of the Horner chain.
 routine cm_expm1_chain64(c: @U64, top: USize, bottom: USize, mh: U64, neg: Bool) -> U64
     block entry()
         v : U64 = c.stride(top).load()
@@ -476,6 +534,12 @@ routine cm_expm1_chain64(c: @U64, top: USize, bottom: USize, mh: U64, neg: Bool)
         jump step(i.sub(2), next)
 
 /// f = pair(base + 2i) +/- (mh * f) >> 64 for i = 3 down to 0.
+/// :param c: The coefficient words.
+/// :param base: The index of the lowest coefficient pair.
+/// :param mh: The one-word argument.
+/// :param f: The starting value.
+/// :param neg: True to subtract each product, false to add it.
+/// :returns: The final f.
 routine cm_expm1_horner(c: @U64, base: USize, mh: U64, f: U128, neg: Bool) -> U128
     shared partial : @U128 <- f
 
@@ -498,6 +562,12 @@ routine cm_expm1_horner(c: @U64, base: USize, mh: U64, f: U128, neg: Bool) -> U1
         jump step(i.to<S64>().sub(1))
 
 /// f = pair(base + 2i) +/- mhUU(m, f) for i = 3 down to 0.
+/// :param c: The coefficient words.
+/// :param base: The index of the lowest coefficient pair.
+/// :param m: The two-word argument.
+/// :param f: The starting value.
+/// :param neg: True to subtract each product, false to add it.
+/// :returns: The final f.
 routine cm_expm1_horner(c: @U64, base: S64, m: U128, f: U128, neg: Bool) -> U128
     shared partial : @U128 <- f
 
@@ -518,6 +588,10 @@ routine cm_expm1_horner(c: @U64, base: S64, m: U128, f: U128, neg: Bool) -> U128
         jump step(i.sub(1))
 
 /// |x| < 2^-11 (and not so small that the result is x): x + x^2 * P(x).
+/// :param x: The bits of x.
+/// :param sm: The sign bit of x (0 or 1).
+/// :param e: The unbiased exponent of x.
+/// :returns: The result before rounding, its leading bit at 127 or 126.
 routine cm_expm1_small_poly(x: U128, sm: U64, e: S64) -> CmExpm1Scaled
     block entry()
         c     : @U64  = CM_EXPM1_CB8.to<@U64>()
@@ -564,6 +638,8 @@ routine cm_expm1_small_poly(x: U128, sm: U64, e: S64) -> CmExpm1Scaled
 // -- accurate steps ------------------------------------------------------------
 
 /// arsu4: arithmetic right shift of the 4-word x by n bits (n < 256), in place.
+/// :param x: The value, read as signed.
+/// :param n: The shift, below 256.
 routine cm_expm1_ashr4(x: @U64, n: U64) -> Void
     shared rk : U64   = n.bitand(63)
     shared qk : USize = n.shr(6).to<USize>()
@@ -607,6 +683,9 @@ routine cm_expm1_ashr4(x: @U64, n: U64) -> Void
 
 /// mhu3u3u3: the approximate high 3 words of the 3x3-word product a * b (every partial-product half at or
 /// above word 3, summed exactly modulo 2^192).
+/// :param b: The first factor.
+/// :param a: The second factor.
+/// :returns: Approximately (`a` × `b`) >> 192.
 routine cm_expm1_mulhi_3x3(b: CmWide3, a: CmWide3) -> CmWide3
     block entry()
         a0b2    : U128    = cm_wide_mul(a.w0, b.w2)
@@ -627,6 +706,10 @@ routine cm_expm1_mulhi_3x3(b: CmWide3, a: CmWide3) -> CmWide3
         return(r)
 
 /// Subtracts 2^bit from the n-word f at word idx, propagating the borrow upward.
+/// :param f: The value, changed in place.
+/// :param n: The number of words of `f`.
+/// :param idx: The word the bit is in.
+/// :param bit: The bit within that word, 0 to 63.
 routine cm_expm1_sub_bit(f: @U64, n: USize, idx: USize, bit: S64) -> Void
     block entry()
         w   : U64 = f.stride(idx).load()
@@ -646,6 +729,9 @@ routine cm_expm1_sub_bit(f: @U64, n: USize, idx: USize, bit: S64) -> Void
         jump borrow(i.add_wrap(1), w.lt(br).to<S64>())
 
 /// The index of the highest nonzero word of the n-word f (0 when all are zero).
+/// :param f: The value.
+/// :param n: The number of words, at least 1.
+/// :returns: The index of the highest nonzero word.
 routine cm_expm1_top_word(f: @U64, n: USize) -> USize
     block entry()
         jump scan(n.sub(1))
@@ -658,13 +744,20 @@ routine cm_expm1_top_word(f: @U64, n: USize) -> USize
             : scan(i.sub(1))
 
 /// The significand words (m1, m0) of an accurate result, and its exponent.
+/// :param el: The exponent.
+/// :param m1: The high significand word.
+/// :param m0: The low significand word.
+/// :returns: The result record.
 routine cm_expm1_scaled(el: U64, m1: U64, m0: U64) -> CmExpm1Scaled
     block entry()
         r : CmExpm1Scaled = CmExpm1Scaled { el: el, sig: cm_wide_u128(m1, m0) }
         return(r)
 
-/// The accurate step (about 190 bits), used when the fast path can't decide the rounding. Returns the new
-/// exponent and the significand with the round bit and sticky information in its low bits.
+/// The accurate step (about 190 bits), used when the fast path can't decide the rounding. It falls back to
+/// {cm_expm1_superaccurate} when this step can't decide it either.
+/// :param el: Not read: the step takes its exponent from its own reduction.
+/// :param x0: The bits of x.
+/// :returns: The new exponent and the significand with the round bit and sticky information in its low bits.
 routine cm_expm1_accurate(el: S64, x0: U128) -> CmExpm1Scaled
     block entry()
         claim a_buf : @Array<U64, 7> <- Array<U64, 7> { 0, 0, 0, 0, 0, 0, 0 }
@@ -704,7 +797,9 @@ routine cm_expm1_accurate(el: S64, x0: U128) -> CmExpm1Scaled
         r3       : CmExpm1Scaled = cm_expm1_accurate_scale(f, e, el, sm, x0)
         return(r3)
 
-/// The 2^r polynomial of the accurate step: Horner over the 15 coefficient rows.
+/// The 2^r polynomial of the accurate step: Horner over the 15 coefficient rows of CM_EXPM1_AC.
+/// :param r: The fraction bits below the two table indices.
+/// :returns: The polynomial value as three words.
 routine cm_expm1_accurate_poly(r: U64) -> CmWide3
     shared ac : @U64 = CM_EXPM1_AC.to<@U64>()
 
@@ -722,6 +817,12 @@ routine cm_expm1_accurate_poly(r: U64) -> CmWide3
 
 /// Turns the accurate 2^(x / ln 2) f (3 words, the integer part e of x / ln 2 apart) into e^x - 1: subtract
 /// the 1, normalize, and check the result can be rounded, falling back to the super-accurate step.
+/// :param wide: The accurate 2^frac value.
+/// :param e: The integer part of x / ln 2.
+/// :param el: Not read: the exponent comes from `e`.
+/// :param sm: The sign mask of x, 0 or all ones.
+/// :param x0: The bits of x, for the super-accurate step.
+/// :returns: The exponent and significand, round bit at 14.
 routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, el: S64, sm: S64, x0: U128) -> CmExpm1Scaled
     shared f_buf   : @Array<U64, 3> <- Array<U64, 3> { wide.w0, wide.w1, wide.w2 }
     shared f       : @U64           = f_buf.to<@U64>()
@@ -834,6 +935,9 @@ routine cm_expm1_accurate_scale(wide: CmWide3, e: S64, el: S64, sm: S64, x0: U12
         return(r)
 
 /// The super-accurate step (about 380 bits), used when even the accurate step can't decide the rounding.
+/// :param el: Not read: the step takes its exponent from its own reduction.
+/// :param x0: The bits of x.
+/// :returns: The exponent and significand, round bit at 14.
 routine cm_expm1_superaccurate(el: S64, x0: U128) -> CmExpm1Scaled
     shared ft_buf : @Array<U64, 6> <- uninit
     shared ft     : @U64           = ft_buf.to<@U64>()

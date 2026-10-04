@@ -35,7 +35,10 @@ preset CM_ATAN2_IND: @Array<U64, 129> <- { 0, 0, 1, 1, 2, 3, 3, 4, 5, 5, 6, 6, 7
     49, 50, 50, 50, 51, 51, 52, 52, 52, 53, 53, 54, 54, 54, 55, 55, 56, 56, 56, 57, 57, 57, 58, 58,
     58, 59, 59, 60, 60, 60, 61, 61, 61, 62, 62, 62, 63, 63, 63 }
 
-/// atan2(y, x), the angle of (x, y), with IEEE's rules for zeros and infinities.
+/// atan2(y, x) for y = `self`: the angle of the point (x, y), correctly rounded to nearest (a CORE-MATH port).
+/// Zeros and infinities follow IEEE's rules (signed zeros pick 0 or pi, two infinities a multiple of pi/4).
+/// :param x: The x coordinate.
+/// :returns: The angle in [-pi, pi], with the sign of `self`. Any NaN argument gives `F128.NAN`.
 routine F128.atan2(self: Self, x: Self) -> Self
     block entry()
         nan   : Bool = self.is_nan().bitor(x.is_nan())
@@ -106,7 +109,10 @@ routine F128.atan2(self: Self, x: Self) -> Self
         r : Self = cm_atan2_accurate(red, x_neg, y_sign)
         return(r)
 
-/// the row of the quadrant offset: 0 (none), 1 (π/2 when |x| < |y|), 2 (π when x < 0, |x| >= |y|)
+/// The row of the quadrant offset: 0 (none), 1 (pi/2 when |x| < |y|), 2 (pi when x < 0, |x| >= |y|).
+/// :param g: True when |x| < |y|.
+/// :param x_neg: True when x is negative.
+/// :returns: The row of CM_ATAN_QOFF to add, 0, 1 or 2.
 routine cm_atan2_quadrant(g: Bool, x_neg: Bool) -> USize
     block entry()
         left : USize = x_neg
@@ -118,7 +124,10 @@ routine cm_atan2_quadrant(g: Bool, x_neg: Bool) -> USize
         return(q)
 
 /// Reduces b/a for a = max(|x|, |y|), b = min(|x|, |y|) (sign-stripped bits) against the table
-/// angle atan(TN[isct] / 2^15). zero is set when b = 0.
+/// angle atan(TN[isct] / 2^15). Subnormal coordinates are normalized first.
+/// :param xa: The bits of |x|, finite.
+/// :param ya: The bits of |y|, finite.
+/// :returns: The reduced argument, `g` set when |x| < |y|, and `zero` set when b = 0.
 routine cm_atan2_reduce(xa: U128, ya: U128) -> CmAtanReduction
     shared g : Bool = xa.lt(ya)
 
@@ -255,7 +264,11 @@ routine cm_atan2_reduce(xa: U128, ya: U128) -> CmAtanReduction
             kn: kn, kd0: low.to_wrap<S64>(), kd1: low.shr(64).to<U64>(), kd2: kd2 }
         return(r)
 
-/// The accurate path: the same reduction, the series and the reconstruction in 6 limbs.
+/// The accurate path of atan2: the same reduction, the series and the reconstruction in 6 limbs.
+/// :param red: The reduction from {cm_atan2_reduce}.
+/// :param x_neg: True when x is negative.
+/// :param y_sign: The sign bit of y, in place in an F128's bits.
+/// :returns: atan2(y, x), correctly rounded.
 routine cm_atan2_accurate(red: CmAtanReduction, x_neg: Bool, y_sign: U128) -> F128
     shared f_buf : @Array<S64, 8> <- uninit
     shared f     : @U64           = f_buf.to<@U64>()
@@ -295,7 +308,12 @@ routine cm_atan2_accurate(red: CmAtanReduction, x_neg: Bool, y_sign: U128) -> F1
         r    : F128 = f128_of(bits.bitor(y_sign))
         return(r)
 
-/// NaN, infinite or zero coordinates
+/// atan2 for NaN, infinite or zero coordinates.
+/// :param y: The y coordinate.
+/// :param x: The x coordinate.
+/// :returns: The default NaN when either is a signaling NaN, else a quiet NaN y, else a quiet NaN x, else the
+///     exact-case angle: 0 or pi on the x axis, ±pi/4 or ±3pi/4 for two infinities, otherwise ±pi/2, with the sign
+///     of `y`.
 routine cm_atan2_special(y: F128, x: F128) -> F128
     shared magnitude : U128 = F128_SIGN.bitnot()
     shared ix        : U128 = x.bits().bitand(magnitude)

@@ -47,19 +47,29 @@ record CmAtanNorm
 
 // -- word helpers ----------------------------------------------------------------
 
+/// A 128-bit value from its high and low words.
+/// :param hi: The high word.
+/// :param lo: The low word.
+/// :returns: `hi` × 2^64 + `lo`.
 routine cm_atan_join(hi: U64, lo: U64) -> U128
     block entry()
         upper : U128 = hi.to<U128>().shl(64)
         r     : U128 = upper.bitor(lo.to<U128>())
         return(r)
 
-/// the full 64 × 64 -> 128-bit product
+/// The full 64 × 64 -> 128-bit product.
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :returns: `a` × `b`, exact.
 routine cm_atan_mul(a: U64, b: U64) -> U128
     block entry()
         r : U128 = a.to<U128>().mul_wrap(b.to<U128>())
         return(r)
 
-/// the high 128 bits of the 64 × 128-bit product y × x
+/// The high 128 bits of the 64 × 128-bit product y × x.
+/// :param y: The one-word factor.
+/// :param x: The two-word factor.
+/// :returns: (`y` × `x`) >> 64.
 routine cm_atan_mul_high(y: U64, x: U128) -> U128
     block entry()
         xy0 : U128 = cm_atan_mul(x.to_wrap<U64>(), y)
@@ -67,7 +77,10 @@ routine cm_atan_mul_high(y: U64, x: U128) -> U128
         r   : U128 = xy1.add_wrap(xy0.shr(64))
         return(r)
 
-/// the approximate high 128 bits of a² (the low × low product is dropped)
+/// The approximate high 128 bits of a² (the low × low product and the low words of the cross products are
+/// dropped).
+/// :param a: The value.
+/// :returns: Approximately `a`² >> 128.
 routine cm_atan_square_high(a: U128) -> U128
     block entry()
         a1      : U64  = a.shr(64).to<U64>()
@@ -76,7 +89,11 @@ routine cm_atan_square_high(a: U128) -> U128
         r       : U128 = partial.add_wrap(cross)
         return(r)
 
-/// the approximate high 128 bits of the 128 × 128-bit product
+/// The approximate high 128 bits of the 128 × 128-bit product (the low × low product and the low words of the
+/// cross products are dropped).
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :returns: Approximately (`a` × `b`) >> 128.
 routine cm_atan_mul_high(a: U128, b: U128) -> U128
     block entry()
         a0      : U64  = a.to_wrap<U64>()
@@ -91,6 +108,8 @@ routine cm_atan_mul_high(a: U128, b: U128) -> U128
 
 /// 2^255 / kd rounded to 128 bits, for a normalized kd (top bit set): a 64-bit quotient refined
 /// by one Newton step.
+/// :param kd: The divisor, top bit set.
+/// :returns: The reciprocal as a 128-bit fixed-point value.
 routine cm_atan_reciprocal(kd: U128) -> U128
     block entry()
         kdh : U64  = kd.shr(64).to<U64>()
@@ -118,7 +137,10 @@ routine cm_atan_reciprocal(kd: U128) -> U128
         result : U128 = rr.shl(64).sub_wrap(cm_sar(dr, 56))
         return(result)
 
-/// class of a sign-stripped binary128: 0 a number, 1 infinity, 2 signaling NaN, 3 quiet NaN
+/// The class of a sign-stripped binary128: 0 a number, 1 infinity, 2 signaling NaN, 3 quiet NaN.
+/// :param hi: The high word, sign bit clear.
+/// :param lo: The low word.
+/// :returns: The class, 0 to 3.
 routine cm_atan_class(hi: U64, lo: U64) -> S64
     block entry()
         rest_bits : U64  = hi.shl(32).bitor(lo)
@@ -130,7 +152,10 @@ routine cm_atan_class(hi: U64, lo: U64) -> S64
         r         : S64  = inf.add(nan).add(quiet)
         return(r)
 
-/// knh:knl shifted left until its top bit is set, or 128 for zero
+/// knh:knl shifted left until its top bit is set.
+/// :param knh: The high word.
+/// :param knl: The low word.
+/// :returns: The normalized value and the shift it took, or 0 with a shift of 128 when both words are zero.
 routine cm_atan_normalize(knh: U64, knl: U64) -> CmAtanNorm
     block entry()
         high_set : Bool = knh.ne(0)
@@ -162,6 +187,10 @@ routine cm_atan_normalize(knh: U64, knl: U64) -> CmAtanNorm
 
 // -- 192-bit fixed point ---------------------------------------------------------
 
+/// The sum of two 192-bit fixed-point values, modulo 2^192.
+/// :param a: The first value.
+/// :param b: The second value.
+/// :returns: `a` + `b`, the carry out of the top word dropped.
 routine cm_atan_u192_add(a: CmAtanU192, b: CmAtanU192) -> CmAtanU192
     block entry()
         low   : U128       = a.low.add_wrap(b.low)
@@ -170,6 +199,10 @@ routine cm_atan_u192_add(a: CmAtanU192, b: CmAtanU192) -> CmAtanU192
         r     : CmAtanU192 = CmAtanU192 { top: top, low: low }
         return(r)
 
+/// The difference of two 192-bit fixed-point values, modulo 2^192.
+/// :param a: The value subtracted from.
+/// :param b: The value subtracted.
+/// :returns: `a` - `b`, the borrow out of the top word dropped.
 routine cm_atan_u192_sub(a: CmAtanU192, b: CmAtanU192) -> CmAtanU192
     block entry()
         borrow : U64        = a.low.lt(b.low).to<U64>()
@@ -178,6 +211,9 @@ routine cm_atan_u192_sub(a: CmAtanU192, b: CmAtanU192) -> CmAtanU192
         r      : CmAtanU192 = CmAtanU192 { top: top, low: low }
         return(r)
 
+/// The one's complement of a 192-bit value, which is -`a` - 1 modulo 2^192.
+/// :param a: The value.
+/// :returns: `a` with every bit flipped.
 routine cm_atan_u192_not(a: CmAtanU192) -> CmAtanU192
     block entry()
         top : U64        = a.top.bitnot()
@@ -185,7 +221,10 @@ routine cm_atan_u192_not(a: CmAtanU192) -> CmAtanU192
         r   : CmAtanU192 = CmAtanU192 { top: top, low: low }
         return(r)
 
-/// the top three limbs of row `row` of a 6-limb table (PHI0 or QOFF)
+/// The top three limbs of row `row` of a 6-limb table (PHI0 or QOFF).
+/// :param table: The first limb of the table.
+/// :param row: The row index.
+/// :returns: Limbs 3..5 of the row as a 192-bit value.
 routine cm_atan_row_top(table: @U64, row: USize) -> CmAtanU192
     block entry()
         base : USize      = row.mul(6)
@@ -195,7 +234,10 @@ routine cm_atan_row_top(table: @U64, row: USize) -> CmAtanU192
         r    : CmAtanU192 = CmAtanU192 { top: l5, low: cm_atan_join(l4, l3) }
         return(r)
 
-/// the fast series result f, placed as a fraction under 192 bits: (f × 2^64) >> dn
+/// The fast series result `f`, placed as a fraction under 192 bits: (f × 2^64) >> dn.
+/// :param f: The fast series result.
+/// :param dn: The right shift, not negative.
+/// :returns: The placed value, zero once `dn` >= 192.
 routine cm_atan_place(f: U128, dn: S64) -> CmAtanU192
     block entry()
         near : Bool = dn.lt(64)
@@ -222,8 +264,12 @@ routine cm_atan_place(f: U128, dn: S64) -> CmAtanU192
 
 // -- fast path -------------------------------------------------------------------
 
-/// Returns the 128-bit fixed-point atan(kn / kd × 2^-dn) × 2^dn, before the table angle is
+/// The 128-bit fixed-point atan(kn / kd × 2^-dn) × 2^dn, before the table angle is
 /// added: t = kn / kd, then t - t³ Σ c_i t^2i in Horner form, the low terms in 64-bit words.
+/// :param kn: The numerator of the reduced argument.
+/// :param kd: The normalized denominator (top bit set).
+/// :param dn: The scale exponent of the reduced argument.
+/// :returns: The scaled arc tangent of the reduced argument.
 routine cm_atan_fast_core(kn: U128, kd: U128, dn: S64) -> U128
     block entry()
         rcp    : U128 = cm_atan_reciprocal(kd)
@@ -268,7 +314,9 @@ routine cm_atan_fast_core(kn: U128, kd: U128, dn: S64) -> U128
         return(r)
 
 /// Rounds a table-path angle, a 192-bit fixed point with 2 integer bits, to F128 magnitude bits.
-/// It is hard when the bits under the rounding bit lie within the error bound of a half ulp.
+/// :param s: The angle.
+/// :returns: The rounded magnitude bits, `hard` set when the bits under the rounding bit lie within the error bound
+///     of a half ulp.
 routine cm_atan_round_fixed(s: CmAtanU192) -> CmAtanRounded
     block entry()
         f2   : U64           = s.top
@@ -289,6 +337,9 @@ routine cm_atan_round_fixed(s: CmAtanU192) -> CmAtanRounded
 
 /// Rounds a direct (no table angle) fast result f × 2^(-dn-128) to F128 magnitude bits, down to
 /// the subnormal range (atan2's y/x can underflow, but atan's never does).
+/// :param f: The fast series result.
+/// :param dn: The scale exponent.
+/// :returns: The rounded magnitude bits, `hard` set when the result lies too close to a rounding boundary.
 routine cm_atan_round_direct(f: U128, dn: S64) -> CmAtanRounded
     shared w0 : U64 = f.to_wrap<U64>()
     shared w1 : U64 = f.shr(64).to<U64>()
@@ -345,7 +396,11 @@ routine cm_atan_round_direct(f: U128, dn: S64) -> CmAtanRounded
 //
 // Numbers are little-endian 64-bit limbs in 8-limb buffers, and n says how many take part.
 
-/// o += v × 2^(64 pos), modulo 2^(64 n)
+/// o += v × 2^(64 pos), modulo 2^(64 n): the carry runs up until it is gone or limb n is reached.
+/// :param o: The limbs added into.
+/// :param pos: The limb `v` starts at.
+/// :param v: The two-limb value added.
+/// :param n: The number of limbs of `o`.
 routine cm_atan_limbs_add_at(o: @U64, pos: USize, v: U128, n: USize) -> Void
     block entry()
         jump carry(pos, v)
@@ -360,7 +415,11 @@ routine cm_atan_limbs_add_at(o: @U64, pos: USize, v: U128, n: USize) -> Void
         o.stride(q).store(s.to_wrap<S64>().to_wrap<U64>())
         jump carry(q.add(1), c.shr(64).add(s.shr(64)))
 
-/// dst = a + b modulo 2^(64 n), and dst may be a or b
+/// dst = a + b modulo 2^(64 n), and dst may be a or b.
+/// :param dst: Where the sum goes.
+/// :param a: The first value.
+/// :param b: The second value.
+/// :param n: The number of limbs.
 routine cm_atan_limbs_add(dst: @U64, a: @U64, b: @U64, n: USize) -> Void
     shared carry : @U128 <- 0
 
@@ -382,7 +441,11 @@ routine cm_atan_limbs_add(dst: @U64, a: @U64, b: @U64, n: USize) -> Void
         s.shr(64).store_into(carry)
         jump limb(i.add(1))
 
-/// dst = a - b modulo 2^(64 n), and dst may be a or b
+/// dst = a - b modulo 2^(64 n), and dst may be a or b.
+/// :param dst: Where the difference goes.
+/// :param a: The value subtracted from.
+/// :param b: The value subtracted.
+/// :param n: The number of limbs.
 routine cm_atan_limbs_sub(dst: @U64, a: @U64, b: @U64, n: USize) -> Void
     shared borrow : @U128 <- 0
 
@@ -402,7 +465,9 @@ routine cm_atan_limbs_sub(dst: @U64, a: @U64, b: @U64, n: USize) -> Void
         s.shr(64).bitand(1).store_into(borrow)
         jump limb(i.add(1))
 
-/// a = ~a on the low n limbs
+/// a = ~a on the low n limbs.
+/// :param a: The limbs flipped in place.
+/// :param n: The number of limbs.
 routine cm_atan_limbs_not(a: @U64, n: USize) -> Void
     block entry()
         jump limb(0)
@@ -416,7 +481,12 @@ routine cm_atan_limbs_not(a: @U64, n: USize) -> Void
         limb.bitnot().store_into(a.stride(i))
         jump limb(i.add(1))
 
-/// o = a × b exactly (na + nb limbs), where o is neither a nor b
+/// o = a × b exactly (na + nb limbs), where o is neither a nor b. All 8 limbs of `o` are cleared first.
+/// :param o: The 8-limb product buffer.
+/// :param a: The first factor.
+/// :param na: The limbs of `a`.
+/// :param b: The second factor.
+/// :param nb: The limbs of `b`, with `na` + `nb` <= 8.
 routine cm_atan_limbs_mul(o: @U64, a: @U64, na: USize, b: @U64, nb: USize) -> Void
     block entry()
         o.zeroinit(8)
@@ -442,7 +512,11 @@ routine cm_atan_limbs_mul(o: @U64, a: @U64, na: USize, b: @U64, nb: USize) -> Vo
 
 /// o = the approximate high n limbs of the product of the n-limb a and b: the partial products of
 /// column n-1 add their high words, the columns above add in full (the mhu2u2u2 .. mhu6u6u6 and
-/// sqrhu6 helpers of the original). o is neither a nor b.
+/// sqrhu6 helpers of the original). o is neither a nor b. All 8 limbs of `o` are cleared first.
+/// :param o: The 8-limb result buffer.
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :param n: The limbs of each factor and of the result.
 routine cm_atan_limbs_mul_high(o: @U64, a: @U64, b: @U64, n: USize) -> Void
     block entry()
         o.zeroinit(8)
@@ -481,7 +555,10 @@ routine cm_atan_limbs_mul_high(o: @U64, a: @U64, b: @U64, n: USize) -> Void
         cm_atan_limbs_add_at(o, pos, value, n)
         jump column(j, i.add(1))
 
-/// a <<= k on n limbs, k >= 0
+/// a <<= k on n limbs, k >= 0. Bits shifted past limb n - 1 are dropped.
+/// :param a: The limbs shifted in place.
+/// :param n: The number of limbs.
+/// :param k: The left shift, not negative.
 routine cm_atan_limbs_shl_pos(a: @U64, n: USize, k: S64) -> Void
     block entry()
         dst  : SSize = n.to<SSize>().sub(1)
@@ -527,7 +604,10 @@ routine cm_atan_limbs_shl_pos(a: @U64, n: USize, k: S64) -> Void
         a.stride(dst).store(zero.to<U64>())
         jump clear(dst.sub_wrap(1).to_wrap<SSize>())
 
-/// a >>= k (logical) on n limbs, k >= 0
+/// a >>= k (logical) on n limbs, k >= 0.
+/// :param a: The limbs shifted in place.
+/// :param n: The number of limbs.
+/// :param k: The right shift, not negative.
 routine cm_atan_limbs_shr_pos(a: @U64, n: USize, k: S64) -> Void
     block entry()
         src  : USize = k.shr(6).to<USize>()
@@ -572,7 +652,10 @@ routine cm_atan_limbs_shr_pos(a: @U64, n: USize, k: S64) -> Void
         a.stride(dst).store(zero.to<U64>())
         jump clear(dst.add(1))
 
-/// a >>= k (logical), or a <<= -k when k < 0
+/// a >>= k (logical), or a <<= -k when k < 0.
+/// :param a: The limbs shifted in place.
+/// :param n: The number of limbs.
+/// :param k: The right shift, negative for a left shift.
 routine cm_atan_limbs_shr(a: @U64, n: USize, k: S64) -> Void
     block entry()
         left : Bool = k.lt(0)
@@ -588,7 +671,10 @@ routine cm_atan_limbs_shr(a: @U64, n: USize, k: S64) -> Void
         cm_atan_limbs_shr_pos(a, n, k)
         return()
 
-/// a >>= k (arithmetic) on n limbs, k >= 0
+/// a >>= k (arithmetic) on n limbs, k >= 0: the top limb's sign bit fills the vacated bits.
+/// :param a: The limbs shifted in place.
+/// :param n: The number of limbs.
+/// :param k: The right shift, not negative.
 routine cm_atan_limbs_sar(a: @U64, n: USize, k: S64) -> Void
     block entry()
         src  : USize = k.shr(6).to<USize>()
@@ -632,6 +718,10 @@ routine cm_atan_limbs_sar(a: @U64, n: USize, k: S64) -> Void
 
 /// r = 2^447 / (kd2:kd1:kd0) to 6 limbs: the 128-bit fast reciprocal refined by one Newton step
 /// with a second-order term, r × (1 - h + h²) for the error h = 1 - r × kd.
+/// :param kd0: The low limb of the denominator.
+/// :param kd1: The middle limb of the denominator.
+/// :param kd2: The top limb of the denominator, top bit set.
+/// :param r: The 8-limb buffer the reciprocal goes into (limbs 0..5).
 routine cm_atan_accurate_reciprocal(kd0: S64, kd1: U64, kd2: U64, r: @U64) -> Void
     block entry()
         claim rcp_buf : @Array<S64, 8> <- uninit
@@ -736,6 +826,9 @@ routine cm_atan_accurate_reciprocal(kd0: S64, kd1: U64, kd2: U64, r: @U64) -> Vo
 
 /// f = the 6-limb fixed-point atan(t × 2^-dn) × 2^dn for the 6-limb t: the odd series in 25
 /// terms, t - t³ Σ c_k t^2k, the working precision widening from 2 to 6 limbs as the terms grow.
+/// :param t: The 6-limb reduced argument.
+/// :param dn: The scale exponent of `t`.
+/// :param f: The 8-limb buffer the result goes into.
 routine cm_atan_accurate_series(t: @U64, dn: S64, f: @U64) -> Void
     shared t2_buf  : @Array<S64, 8> <- uninit
     shared tmp_buf : @Array<S64, 8> <- uninit
@@ -795,7 +888,9 @@ routine cm_atan_accurate_series(t: @U64, dn: S64, f: @U64) -> Void
         cm_atan_limbs_sub(f, t, t2, 6)
         return()
 
-/// f = the 6-limb fixed-point atan(kn / kd × 2^-dn) × 2^dn, before the table angle is added
+/// f = the 6-limb fixed-point atan(kn / kd × 2^-dn) × 2^dn, before the table angle is added.
+/// :param red: The reduction.
+/// :param f: The 8-limb buffer the result goes into.
 routine cm_atan_accurate_core(red: CmAtanReduction, f: @U64) -> Void
     block entry()
         claim r_buf  : @Array<S64, 8> <- uninit
@@ -818,6 +913,9 @@ routine cm_atan_accurate_core(red: CmAtanReduction, f: @U64) -> Void
 
 /// Rounds the 6-limb angle f × 2^(-dn - 384) to F128 magnitude bits, down to the subnormal range.
 /// No tie can occur, so the bit under the last kept one decides.
+/// :param f: The 6-limb angle.
+/// :param dn: The scale exponent (-1 once a table angle has been added).
+/// :returns: The rounded magnitude bits.
 routine cm_atan_round_limbs(f: @U64, dn: S64) -> U128
     shared f5 : U64  = f.stride(5).load()
     shared f4 : U64  = f.stride(4).load()

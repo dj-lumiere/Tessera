@@ -45,7 +45,8 @@ preset CM_F16_LGAMMA_IX: @Array<U64, 16> <- { 0x3FF0000000000000, 0x3FEE1E1E1E1E
     0x3FE3B13B13B13B14, 0x3FE2F684BDA12F68, 0x3FE2492492492492, 0x3FE1A7B9611A7B96,
     0x3FE1111111111111, 0x3FE0842108421084 }
 
-/// ln |Γ(self)|: +inf at 0 and the negative integers.
+/// ln |Γ(`self`)|, correctly rounded (to nearest): +inf at 0, the negative integers and +-inf, and NaN comes back quiet.
+/// :returns: ln |Γ(`self`)|.
 routine F16.ln_gamma(self: Self) -> Self
     shared xf : F32 = self.to<F32>()
     shared fx : F32 = xf.floor()
@@ -191,6 +192,16 @@ routine F16.ln_gamma(self: Self) -> Self
 
 /// h ((a0 + h a1) + h^2 (a2 + h a3) + h^4 ((a4 + h a5) + h^2 (a6 + h a7))), grouped as in
 /// the original. A degree-6 polynomial passes a7 = 0: a6 + h 0 is exactly a6.
+/// :param h: The polynomial variable.
+/// :param a0: The coefficient of h.
+/// :param a1: The coefficient of h^2.
+/// :param a2: The coefficient of h^3.
+/// :param a3: The coefficient of h^4.
+/// :param a4: The coefficient of h^5.
+/// :param a5: The coefficient of h^6.
+/// :param a6: The coefficient of h^7.
+/// :param a7: The coefficient of h^8, 0 for the shorter polynomial.
+/// :returns: The polynomial's value.
 private routine cm_f16_lgamma_zero_poly(h: F64, a0: F64, a1: F64, a2: F64, a3: F64, a4: F64,
     a5: F64, a6: F64, a7: F64) -> F64
     block entry()
@@ -204,8 +215,11 @@ private routine cm_f16_lgamma_zero_poly(h: F64, a0: F64, a1: F64, a2: F64, a3: F
         hi : F64 = c4.add(h2.mul(c6))
         return(h.mul(lo.add(h4.mul(hi))))
 
-/// The product (x - r0)(x - r1)...(x - r7) over the 8 roots starting at base in
+/// The product (x - r0)(x - r1)...(x - r7) over the 8 roots starting at `base` in
 /// CM_F16_LGAMMA_R8, grouped as in the original.
+/// :param x: The point to evaluate at.
+/// :param base: The index of the first of the 8 roots in CM_F16_LGAMMA_R8.
+/// :returns: The product.
 private routine cm_f16_lgamma_r8(x: F64, base: USize) -> F64
     block entry()
         p01 : F64 = cm_f16_lgamma_factor(x, base, 0).mul(cm_f16_lgamma_factor(x, base, 1))
@@ -214,13 +228,19 @@ private routine cm_f16_lgamma_r8(x: F64, base: USize) -> F64
         p67 : F64 = cm_f16_lgamma_factor(x, base, 6).mul(cm_f16_lgamma_factor(x, base, 7))
         return(p01.mul(p23).mul(p45.mul(p67)))
 
-/// x minus root k of the 8 starting at base in CM_F16_LGAMMA_R8.
+/// `x` minus root `k` of the 8 starting at `base` in CM_F16_LGAMMA_R8.
+/// :param x: The point to evaluate at.
+/// :param base: The index of the first of the 8 roots.
+/// :param k: Which of the 8 roots, 0 to 7.
+/// :returns: `x` minus the root.
 private routine cm_f16_lgamma_factor(x: F64, base: USize, k: USize) -> F64
     block entry()
         return(x.sub(F64.from_bits(CM_F16_LGAMMA_R8.getitem(base.add(k)))))
 
 /// The product (x - r0)(x - r1)...(x - r6) over the numerator roots of the
 /// mid-range approximation, grouped as in the original.
+/// :param x: The point to evaluate at.
+/// :returns: The product.
 private routine cm_f16_lgamma_r7(x: F64) -> F64
     block entry()
         p01 : F64 = cm_f16_lgamma_rn(x, 0).mul(cm_f16_lgamma_rn(x, 1))
@@ -228,12 +248,17 @@ private routine cm_f16_lgamma_r7(x: F64) -> F64
         p45 : F64 = cm_f16_lgamma_rn(x, 4).mul(cm_f16_lgamma_rn(x, 5))
         return(p01.mul(p23).mul(p45.mul(cm_f16_lgamma_rn(x, 6))))
 
-/// x minus root k of CM_F16_LGAMMA_RN.
+/// `x` minus root `k` of CM_F16_LGAMMA_RN.
+/// :param x: The point to evaluate at.
+/// :param k: The index of the root.
+/// :returns: `x` minus the root.
 private routine cm_f16_lgamma_rn(x: F64, k: USize) -> F64
     block entry()
         return(x.sub(F64.from_bits(CM_F16_LGAMMA_RN.getitem(k))))
 
 /// An approximation of sin(pi x) for 0 <= x <= 1.
+/// :param x: The argument, in [0, 1].
+/// :returns: sin(pi `x`).
 private routine cm_f16_lgamma_sinpi(x: F64) -> F64
     block entry()
         y  : F64 = x.sub(0.5)
@@ -249,6 +274,8 @@ private routine cm_f16_lgamma_sinpi(x: F64) -> F64
         return(F64.sub(0.25, x2).mul(lo.add(x8.mul(hi))))
 
 /// An approximation of the natural logarithm of a positive normal F64.
+/// :param x: The argument, positive and normal.
+/// :returns: ln(`x`).
 private routine cm_f16_lgamma_ln(x: F64) -> F64
     block entry()
         tu              : U64   = x.bits()

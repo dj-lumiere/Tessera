@@ -116,6 +116,9 @@ record CmAsinArg
     xsgn : S64
     j    : USize
 
+/// The arc sine of `self`, correctly rounded to nearest (a CORE-MATH port).
+/// :returns: asin(`self`) in [-pi/2, pi/2]. It is `self` itself for |`self`| < 2^-56 and ±pi/2 for ±1. A NaN comes
+///     back quieted, and an argument with |`self`| > 1 gives NaN.
 routine F128.asin(self: Self) -> Self
     block entry()
         nan     : Bool = self.is_nan()
@@ -156,6 +159,10 @@ routine F128.asin(self: Self) -> Self
         r : Self = cm_asin_fast(self)
         return(r)
 
+/// Splits `x` into the mantissa, exponent, sign word and table point the asin and acos paths work on.
+/// :param x: The argument, finite with |x| < 1.
+/// :returns: The mantissa with its implicit bit at bit 127, the biased exponent, the sign bit as the top bit of a
+///     word, and the table index j of {cm_asin_jget}.
 routine cm_asin_unpack(x: F128) -> CmAsinArg
     block entry()
         bits : U128      = x.bits()
@@ -169,7 +176,13 @@ routine cm_asin_unpack(x: F128) -> CmAsinArg
         arg  : CmAsinArg = CmAsinArg { xa: xa, xn: xn.to<S64>(), xsgn: xsgn.to_wrap<S64>(), j: j }
         return(arg)
 
-/// Packs the 113-bit mantissa v (implicit bit included), exponent xn, sign word and round bit.
+/// Packs the 113-bit mantissa `v` (implicit bit included), exponent `xn`, sign word and round bit into an F128.
+/// The implicit bit of `v` adds one to the exponent field, and the round bit is added in so a carry rounds up.
+/// :param v: The 113-bit mantissa, implicit bit at bit 112.
+/// :param xn: The biased exponent, minus one for the implicit bit.
+/// :param xsgn: The sign as the top bit of a word, or 0.
+/// :param rnd: The round bit (0 or 1).
+/// :returns: The rounded F128.
 routine cm_asin_pack(v: U128, xn: S64, xsgn: S64, rnd: U64) -> F128
     block entry()
         sign_exponent : S64  = xn.shl(48).bitor(xsgn)
@@ -177,8 +190,10 @@ routine cm_asin_pack(v: U128, xn: S64, xsgn: S64, rnd: U64) -> F128
         r             : F128 = f128_of(v.add_wrap(top))
         return(r)
 
-/// The 128-bit fast path of asin. It falls back to cm_asin_accurate when its result could round
-/// either way.
+/// The 128-bit fast path of asin for 2^-56 <= |x| < 1. It falls back to {cm_asin_accurate} when its result could
+/// round either way.
+/// :param x: The argument.
+/// :returns: asin(`x`), correctly rounded.
 routine cm_asin_fast(x: F128) -> F128
     shared arg : CmAsinArg = cm_asin_unpack(x)
     shared nz  : S64       = 16383.sub(arg.xn)
@@ -252,8 +267,11 @@ routine cm_asin_fast(x: F128) -> F128
         r : F128 = cm_asin_accurate(x)
         return(r)
 
-/// A 128-bit f placed as the top two of four words and shifted right by sf (the small-argument
+/// A 128-bit `f` placed as the top two of four words and shifted right by `sf` (the small-argument
 /// alignment of the fast polynomial part), as the original's case split writes it.
+/// :param f: The polynomial part.
+/// :param sf: The right shift, not negative.
+/// :returns: The shifted value as four words, all zero once `sf` >= 192.
 routine cm_asin_shift_poly4(f: U128, sf: S64) -> CmAsinW4
     shared g3 : U64 = cm_asin_hi(f)
     shared g2 : U64 = cm_asin_lo(f.to_wrap<S128>())
@@ -290,6 +308,8 @@ routine cm_asin_shift_poly4(f: U128, sf: S64) -> CmAsinW4
         return(r)
 
 /// The 320-bit accurate path of F128.asin for 2^-57 <= |x| < 1 (the C as_asinq_accurate).
+/// :param x: The argument.
+/// :returns: asin(`x`), correctly rounded.
 routine cm_asin_accurate(x: F128) -> F128
     shared arg : CmAsinArg = cm_asin_unpack(x)
     shared nz  : S64       = 16383.sub(arg.xn)

@@ -295,6 +295,10 @@ preset BIG_HALF_LN_TWO_PI: @Array<U64, 7> <- { 0xB05CAB571B4CDA5C, 0x93EABF905C5
 preset BIG_LN_PI: @Array<U64, 7> <- { 0x39C5543C3AB0C9BA, 0x69201612B6D85C33, 0x2D53626FA918B073,
     0x19C0176577D49847, 0x2F36EDF9D9F93037, 0xAFCAB635421FA4CC, 0x928682473D0DE85E }
 
+/// Coefficient i of the fast tier's Stirling series, B(2i+2) / ((2i+2)(2i+1)), with its sign.
+/// :param i: The index, 0 to 35.
+/// :returns: The coefficient at 192 bits.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `i` > 35.
 routine wide_gamma_coef(i: USize) -> F128Extended
     block entry()
         w   : F128Extended = wide_table(WIDE_GAMMA_COEF_HI.to<@U128>(),
@@ -315,8 +319,11 @@ record LnGammaWide
     value : F128Extended
     scale : S64
 
-/// Entry i of the ln Γ(1 + z) table (two false) or the ln Γ(2 + z) one: the coefficient of z^(i +
-/// 1).
+/// Entry i of the ln Γ(1 + z) table (`two` false) or the ln Γ(2 + z) one: the coefficient of z^(i + 1).
+/// :param two: True for the table around 2, false for the one around 1.
+/// :param i: The index, below 40 (around 1) or 34 (around 2).
+/// :returns: The coefficient at 192 bits.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `i` is past the table.
 routine ln_gamma_near_coef(two: Bool, i: USize) -> F128Extended
     block entry()
         branch two
@@ -342,15 +349,19 @@ routine ln_gamma_near_coef(two: Bool, i: USize) -> F128Extended
         return(r)
 
 /// Entry i of WIDE_EXP_COEF, 1 / i!.
+/// :param i: The index.
+/// :returns: 1 / i! at 192 bits.
 routine wide_exp_coef(i: USize) -> F128Extended
     block entry()
         w : F128Extended = wide_table(WIDE_EXP_COEF_HI.to<@U128>(), WIDE_EXP_COEF_LO.to<@U64>(),
             WIDE_EXP_COEF_EXP.to<@S64>(), i)
         return(w)
 
-/// e^x as wide_exp computes it, but with all 36 Taylor terms: x = q ln 2 + d with |d| <= ln 2 / 2,
-/// and the first dropped term is below 2^-193, so the result is within about 2^-189 relative, plus
-/// 2^-191 |x| from the reduction. For |x| below about 12000 (the callers check).
+/// e^x as wide_exp computes it, but with all 36 Taylor terms: x = q ln 2 + d with |d| <= ln 2 / 2, and the
+/// first dropped term is below 2^-193, so the result is within about 2^-189 relative, plus 2^-191 |x| from the
+/// reduction. For |x| below about 12000 (the callers check).
+/// :param x: The exponent.
+/// :returns: e^x at 192 bits.
 routine gamma_wide_exp(x: F128Extended) -> F128Extended
     shared q : S64           = x.mul(wide_const(1)).to_nearest<S64>()
     shared d : F128Extended  = x.sub(q.to<F128Extended>().mul(wide_const(0)))
@@ -370,9 +381,11 @@ routine gamma_wide_exp(x: F128Extended) -> F128Extended
         s.store(s.load().mul(d).add(c))
         jump horner(i.sub(1))
 
-/// ln a for a > 0: a = m 2^e with m in [1, 2), and ln m from F128's correctly rounded ln
-/// (CORE-MATH) refined by one Newton step y ← y + m e^-y - 1, which squares its 2^-113 error away.
-/// Within about 2^-188 absolute, plus 2^-192 |e| from ln 2.
+/// ln a for a > 0: a = m 2^e with m in [1, 2), and ln m from F128's correctly rounded ln (CORE-MATH) refined by
+/// one Newton step y ← y + m e^-y - 1, which squares its 2^-113 error away. Within about 2^-188 absolute, plus
+/// 2^-192 |e| from ln 2.
+/// :param a: The argument, positive.
+/// :returns: ln a at 192 bits.
 routine gamma_wide_ln(a: F128Extended) -> F128Extended
     block entry()
         e      : S64          = a.exponent
@@ -384,14 +397,19 @@ routine gamma_wide_ln(a: F128Extended) -> F128Extended
         return(r)
 
 /// Whether |z| < 2^-5, where the Taylor series of ln Γ around 1 and 2 take over.
+/// :param z: The distance from 1 or 2.
+/// :returns: True when z is zero or below 2^-5 in magnitude.
 routine wide_is_small(z: F128Extended) -> Bool
     block entry()
         r : Bool = z.is_zero().bitor(z.exponent.lt(-5))
         return(r)
 
-/// ln Γ(1 + z) = -γ z + Σ (-1)^k ζ(k) / k z^k (40 terms), or ln Γ(2 + z) = (1 - γ) z + Σ (-1)^k
-/// (ζ(k) - 1) / k z^k (34 terms), for |z| < 2^-5: the first dropped term is below 2^-204 of the
-/// first one. Near the zeros at 1 and 2 this keeps the error relative to the value.
+/// ln Γ(1 + z) = -γ z + Σ (-1)^k ζ(k) / k z^k (40 terms), or ln Γ(2 + z) = (1 - γ) z + Σ (-1)^k (ζ(k) - 1) / k
+/// z^k (34 terms), for |z| < 2^-5: the first dropped term is below 2^-204 of the first one. Near the zeros at
+/// 1 and 2 this keeps the error relative to the value.
+/// :param z: The distance from 1 or 2.
+/// :param two: True for the series around 2, false for the one around 1.
+/// :returns: The value and its scale.
 routine wide_ln_gamma_near(z: F128Extended, two: Bool) -> LnGammaWide
     shared s : @F128Extended <- uninit
 
@@ -418,10 +436,12 @@ routine wide_ln_gamma_near(z: F128Extended, two: Bool) -> LnGammaWide
         r : LnGammaWide = LnGammaWide { value: value, scale: value.exponent.add(1) }
         return(r)
 
-/// ln |Γ(a)| for a > 0 or -1 < a < 0 (a exact in F128Extended), floor = floor(a) (saturated): the
-/// series near 1 and 2, else the recurrence Γ(a) = Γ(a + n) / (a (a + 1) … (a + n - 1)) up to a + n
-/// in [30, 31), and Stirling's series there, 36 terms in 1/b² (the first dropped one is below
-/// 2^-207 at b = 30).
+/// ln |Γ(a)| for a > 0 or -1 < a < 0 (a exact in F128Extended): the series near 1 and 2, else the recurrence
+/// Γ(a) = Γ(a + n) / (a (a + 1) … (a + n - 1)) up to a + n in [30, 31), and Stirling's series there, 36 terms
+/// in 1/b² (the first dropped one is below 2^-207 at b = 30).
+/// :param a: The argument.
+/// :param floor: floor(a), saturated.
+/// :returns: The value and its scale.
 routine wide_ln_gamma_positive(a: F128Extended, floor: S64) -> LnGammaWide
     shared z1     : F128Extended  = a.sub(wide_one())
     shared z2     : F128Extended  = a.sub(S64.to<F128Extended>(2))
@@ -476,9 +496,11 @@ routine wide_ln_gamma_positive(a: F128Extended, floor: S64) -> LnGammaWide
         r              : LnGammaWide  = LnGammaWide { value: value, scale: scale }
         return(r)
 
-/// |sin πx| for a finite x that is not an integer: πx = r π/2 + θ exactly reduced (f128_pi_reduce),
-/// then sin θ = 2 s c or cos θ = (c - s)(c + s) from s, c at θ/2, where the series' first dropped
-/// term is below 2^-186.
+/// |sin πx| for a finite x that is not an integer: πx = r π/2 + θ exactly reduced (f128_pi_reduce), then
+/// sin θ = 2 s c or cos θ = (c - s)(c + s) from s, c at θ/2, where the series' first dropped term is below
+/// 2^-186.
+/// :param x: The argument.
+/// :returns: |sin πx| at 192 bits.
 routine wide_abs_sin_pi(x: F128) -> F128Extended
     block entry()
         red   : PiReduced    = f128_pi_reduce(x)
@@ -496,6 +518,8 @@ routine wide_abs_sin_pi(x: F128) -> F128Extended
 
 /// ln |Γ(x)| in F128Extended for a finite x that is not a pole. Below -1, reflection: ln |Γ(x)| =
 /// ln π - ln |sin πx| - ln Γ(1 - x).
+/// :param x: The argument.
+/// :returns: The value and its scale.
 routine wide_ln_gamma(x: F128) -> LnGammaWide
     block entry()
         reflect : Bool = x.lt(f128_of(0xBFFF0000000000000000000000000000))  // -1
@@ -519,8 +543,11 @@ routine wide_ln_gamma(x: F128) -> LnGammaWide
         r              : LnGammaWide  = LnGammaWide { value: value, scale: scale }
         return(r)
 
-/// The band left for the fast tier's value once cancellation took its bits: band minus how far the
-/// value fell below its scale.
+/// The band left for the fast tier's value once cancellation took its bits: band minus how far the value
+/// fell below its scale.
+/// :param l: The fast tier's value and scale.
+/// :param band: The band against the scale, in bits.
+/// :returns: The band against the value, in bits.
 routine ln_gamma_band(l: LnGammaWide, band: S64) -> S64
     block entry()
         lost : S64 = l.scale.sub(l.value.exponent).max(0)
@@ -529,17 +556,24 @@ routine ln_gamma_band(l: LnGammaWide, band: S64) -> S64
 
 // -- exact tier: F128Big -------------------------------------------------------
 
+/// ln(2π)/2 at 448 bits.
+/// :returns: ln(2π)/2 as an F128Big.
 routine big_half_ln_two_pi() -> F128Big
     block entry()
         r : F128Big = big_from_limbs(BIG_HALF_LN_TWO_PI.to<@U64>(), -448)
         return(r)
 
+/// ln π at 448 bits.
+/// :returns: ln π as an F128Big.
 routine big_ln_pi() -> F128Big
     block entry()
         r : F128Big = big_from_limbs(BIG_LN_PI.to<@U64>(), -447)
         return(r)
 
 /// c_(i+1) = B(2i + 2) / ((2i + 2)(2i + 1)): 1/12, -1/360, 1/1260, …
+/// :param i: The index, 0 to 60.
+/// :returns: The coefficient at 448 bits.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `i` > 60.
 routine big_stirling_coef(i: USize) -> F128Big
     block entry()
         limbs : @U64    = BIG_STIRLING_LIMBS.to<@U64>()
@@ -550,10 +584,12 @@ routine big_stirling_coef(i: USize) -> F128Big
             : c
         return(r)
 
-/// ln Γ(b) for b >= 100 by Stirling's series (b - 1/2) ln b - b + ln(2π)/2 + Σ c_k / b^(2k-1). For
-/// a real b > 0 the remainder after any term is below the first term left out, and the terms fall
-/// while k < π b. At b = 100 the 62nd is below 2^-470, so the sum stops at its first negligible
-/// term (big_negligible) within the 61 of the table.
+/// ln Γ(b) for b >= 100 by Stirling's series (b - 1/2) ln b - b + ln(2π)/2 + Σ c_k / b^(2k-1). For a real
+/// b > 0 the remainder after any term is below the first term left out, and the terms fall while k < π b. At
+/// b = 100 the 62nd is below 2^-470, so the sum stops at its first negligible term ({big_is_negligible})
+/// within the 61 of the table.
+/// :param b: The argument, at least 100.
+/// :returns: ln Γ(b) at 448 bits.
 routine big_stirling(b: F128Big) -> F128Big
     shared inv    : F128Big = b.recip()
     shared inv_sq : F128Big = inv.mul(inv)
@@ -580,8 +616,10 @@ routine big_stirling(b: F128Big) -> F128Big
         r       : F128Big = leading.add(sum)
         return(r)
 
-/// ln |Γ(a)| for a > 0 or -1 < a < 0, floor = floor(a) (saturated): the recurrence up to a + n in
-/// [100, 101), then Stirling's series.
+/// ln |Γ(a)| for a > 0 or -1 < a < 0: the recurrence up to a + n in [100, 101), then Stirling's series.
+/// :param a: The argument.
+/// :param floor: floor(a), saturated.
+/// :returns: ln |Γ(a)| at 448 bits.
 routine big_ln_gamma_positive(a: F128Big, floor: S64) -> F128Big
     shared steps : S64      = GAMMA_BIG_LIFT.sub(floor).max(0)
     shared w     : @F128Big <- uninit
@@ -605,6 +643,8 @@ routine big_ln_gamma_positive(a: F128Big, floor: S64) -> F128Big
         return(r)
 
 /// |sin πx| for a finite x that is not an integer, from the exact reduction.
+/// :param x: The argument.
+/// :returns: |sin πx| at 448 bits.
 routine big_abs_sin_pi(x: F128) -> F128Big
     block entry()
         red   : PiReduced = f128_pi_reduce(x)
@@ -614,8 +654,10 @@ routine big_abs_sin_pi(x: F128) -> F128Big
             ? return(big_cos_core(theta).abs())
             : return(big_sin_core(theta).abs())
 
-/// ln |Γ(x)| in F128Big for a finite x that is not a pole, the same way as wide_ln_gamma. 1 - x is
-/// exact: it has at most 114 significant bits.
+/// ln |Γ(x)| in F128Big for a finite x that is not a pole, the same way as wide_ln_gamma. 1 - x is exact: it
+/// has at most 114 significant bits.
+/// :param x: The argument.
+/// :returns: ln |Γ(x)| at 448 bits.
 routine big_ln_gamma(x: F128) -> F128Big
     block entry()
         reflect : Bool = x.lt(f128_of(0xBFFF0000000000000000000000000000))  // -1
@@ -636,14 +678,18 @@ routine big_ln_gamma(x: F128) -> F128Big
 
 // -- ln_gamma ------------------------------------------------------------------
 
-/// ln |Γ(self)|, correctly rounded: +inf at the poles (0 and the negative integers) and at ±inf, +0
-/// at 1 and 2.
+/// ln |Γ(self)|, correctly rounded: +inf at the poles (0 and the negative integers) and at ±inf, +0 at 1 and 2.
+/// A NaN comes back quieted.
+/// :returns: ln |Γ(`self`)|.
 routine F128.ln_gamma(self: Self) -> Self
     block entry()
         r : Self = f128_ln_gamma(self, false)
         return(r)
 
-/// exact skips the fast tier (the tests use it to check the exact tier on its own).
+/// ln |Γ(x)|, correctly rounded, as {F128.ln_gamma}.
+/// :param x: The argument.
+/// :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
+/// :returns: ln |Γ(x)|.
 routine f128_ln_gamma(x: F128, exact: Bool) -> F128
     block entry()
         nan      : Bool = x.is_nan()
@@ -679,14 +725,17 @@ routine f128_ln_gamma(x: F128, exact: Bool) -> F128
 
 // -- gamma ---------------------------------------------------------------------
 
-/// Γ(self), correctly rounded: ±inf at ±0, NaN at the negative integers and -inf. It overflows to
-/// +inf past x = 1755.548.
+/// Γ(self), correctly rounded: ±inf at ±0, NaN at the negative integers and -inf, +inf at +inf. It overflows
+/// to +inf past x = 1755.548. A NaN comes back quieted.
+/// :returns: Γ(`self`).
 routine F128.gamma(self: Self) -> Self
     block entry()
         r : Self = f128_gamma(self, false)
         return(r)
 
 /// The sign of Γ(x) for x not a pole: negative on (-1, 0), (-3, -2), …, where trunc(x) is even.
+/// :param x: The argument.
+/// :returns: True when Γ(x) is negative.
 routine f128_gamma_is_negative(x: F128) -> Bool
     block entry()
         below : Bool = f128_is_negative_bits(x.bits())
@@ -695,7 +744,10 @@ routine f128_gamma_is_negative(x: F128) -> Bool
         r     : Bool = below.bitand(even)
         return(r)
 
-/// exact skips the fast tier (the tests use it to check the exact tier on its own).
+/// Γ(x), correctly rounded, as {F128.gamma}.
+/// :param x: The argument.
+/// :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
+/// :returns: Γ(x).
 routine f128_gamma(x: F128, exact: Bool) -> F128
     shared p : @F128Big <- uninit
 

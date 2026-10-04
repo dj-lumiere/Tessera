@@ -59,8 +59,9 @@ preset CM_SQRT_RSQRT9: @Array<U64, 256> <- { 0xFFFFFFFF, 0xFFFFF780, 0xBFF55815,
 
 // -- sqrt ----------------------------------------------------------------------
 
-/// NaN and negatives keep F128's own NaNs (CORE-MATH's default NaN has its sign
-/// bit set). Everything else takes the CORE-MATH path below.
+/// The square root of `self`, correctly rounded to nearest with ties to even (a CORE-MATH port).
+/// NaN and negatives keep F128's own NaNs (CORE-MATH's default NaN has its sign bit set). ±0 maps to itself.
+/// :returns: sqrt(`self`).
 routine F128.sqrt(self: Self) -> Self
     block entry()
         nan      : Bool = self.is_nan()
@@ -132,8 +133,10 @@ routine F128.sqrt(self: Self) -> Self
         r         : Self = f128_of(sig.add_wrap(exp_field))
         return(r)
 
-/// Negative, infinite, or NaN (sign and exponent at least 0x7FFF): -0 and +inf are their own
-/// roots, other negatives give the default NaN, and a NaN is quieted.
+/// The square root of a negative, infinite, or NaN `x` (sign and exponent at least 0x7FFF): -0 and +inf are
+/// their own roots, other negatives give the default NaN, and a NaN is quieted.
+/// :param x: The argument, with its top 16 bits at least 0x7FFF.
+/// :returns: The special-case root.
 routine cm_sqrt_special(x: F128) -> F128
     block entry()
         bits      : U128 = x.bits()
@@ -152,8 +155,11 @@ routine cm_sqrt_special(x: F128) -> F128
 
 // -- shared with hypot ---------------------------------------------------------
 
-/// The fixed-point radicand: frac (the fraction at the top, implicit bit dropped) shifted down
-/// two places, one for an odd exponent, under its restored leading bit.
+/// The fixed-point radicand: `frac` shifted down two places (one for an odd exponent) under its restored
+/// leading bit.
+/// :param frac: The fraction at the top of the word, implicit bit dropped.
+/// :param odd: 1 when the exponent is odd, else 0.
+/// :returns: The radicand.
 routine cm_sqrt_radicand(frac: U128, odd: S64) -> U128
     block entry()
         one     : U128 = 1
@@ -162,9 +168,13 @@ routine cm_sqrt_radicand(frac: U128, odd: S64) -> U128
         r       : U128 = shifted.bitor(leading)
         return(r)
 
-/// The square root of the radicand, scaled so its leading bit is bit 127 and accurate to a
-/// few units of bit 14: the seed r ≈ 1/sqrt, then sx = r·x and one correction
-/// v = 2 sx - sx·h, with h = r·sx·4 - 2 the (signed) residual.
+/// The square root of the radicand, scaled so its leading bit is bit 127 and accurate to a few units of bit 14:
+/// the seed r ≈ 1/sqrt, then sx = r·x and one correction v = 2 sx - sx·h, with h = r·sx·4 - 2 the (signed)
+/// residual.
+/// :param frac: The fraction at the top of the word, implicit bit dropped (its top 64 bits pick the seed).
+/// :param radicand: The radicand from {cm_sqrt_radicand}.
+/// :param odd: 1 when the exponent is odd, else 0.
+/// :returns: The approximate root.
 routine cm_sqrt_approx(frac: U128, radicand: U128, odd: S64) -> U128
     block entry()
         seed     : U64  = cm_sqrt_rsqrt9(frac.shr(64).to<U64>())
@@ -186,8 +196,10 @@ routine cm_sqrt_approx(frac: U128, radicand: U128, odd: S64) -> U128
         v : U128 = sx.shl(1).sub_wrap(ds)
         return(v)
 
-/// 2^64 / sqrt(1 + m / 2^64) to almost 64 bits, for the fraction bits m: the cubic seed of m's
-/// subrange, then one Newton-Raphson step r1 = r0 - r0 (r0² x - 1) / 2.
+/// 2^64 / sqrt(1 + m / 2^64) to almost 64 bits: the cubic seed of `m`'s subrange, then one Newton-Raphson step
+/// r1 = r0 - r0 (r0² x - 1) / 2. A result of 0 saturates to `U64.MAX`.
+/// :param m: The fraction bits of x in [1, 2).
+/// :returns: The reciprocal square root, scaled by 2^64.
 routine cm_sqrt_rsqrt9(m: U64) -> U64
     block entry()
         table      : @U64  = CM_SQRT_RSQRT9.to<@U64>()
@@ -219,15 +231,20 @@ routine cm_sqrt_rsqrt9(m: U64) -> U64
             : r1
         return(r)
 
-/// High 64 bits of the unsigned product a·b.
+/// The high 64 bits of the unsigned product a·b.
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :returns: The high half of the 128-bit product.
 routine cm_sqrt_mul_hi(a: U64, b: U64) -> U64
     block entry()
         product : U128 = a.to<U128>().mul_wrap(b.to<U128>())
         r       : U64  = product.shr(64).to<U64>()
         return(r)
 
-/// High 128 bits of the unsigned 64×128-bit product y·x, without the low partial product's
-/// low half.
+/// The high 128 bits of the unsigned 64×128-bit product y·x, without the low partial product's low half.
+/// :param y: The 64-bit factor.
+/// :param x: The 128-bit factor.
+/// :returns: The (truncated) high 128 bits.
 routine cm_sqrt_mul_hi(y: U64, x: U128) -> U128
     block entry()
         y2  : U128 = y.to<U128>()
@@ -236,7 +253,10 @@ routine cm_sqrt_mul_hi(y: U64, x: U128) -> U128
         r   : U128 = xy1.add_wrap(xy0.shr(64))
         return(r)
 
-/// Approximate high 128 bits of the unsigned 128×128-bit product a·b (low × low dropped).
+/// The approximate high 128 bits of the unsigned 128×128-bit product a·b (low × low dropped).
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :returns: The (truncated) high 128 bits.
 routine cm_sqrt_mul_hi(a: U128, b: U128) -> U128
     block entry()
         a0    : U128 = a.bitand(0xFFFFFFFFFFFFFFFF)

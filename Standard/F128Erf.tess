@@ -64,6 +64,8 @@ preset BIG_TWO_OVER_SQRT_PI: @Array<U64, 7> <- { 0xBD1F4EEE48E1CA78, 0x40C036096
 
 /// e^x for |x| < 2^14, finer than wide_exp (whose Taylor series stops at 2^-141): x = q ln 2 + d with |d| <= ln 2
 /// / 2, e^(d/16) by its Taylor series to degree 22 (the first dropped term is below 2^-200), then four squarings.
+/// :param x: The exponent, |x| < 2^14.
+/// :returns: e^x at 192 bits.
 routine wide_erf_exp(x: F128Extended) -> F128Extended
     shared q : S64           = x.mul(wide_const(1)).to_nearest<S64>()
     shared s : @F128Extended <- uninit
@@ -94,8 +96,11 @@ routine wide_erf_exp(x: F128Extended) -> F128Extended
         s.load().mul(s.load()).store_into(s)
         jump square(k.add(1))
 
-/// erf z = 2/sqrt(pi) × z e^(-z²) × d/n, from the continued fraction evaluated
-/// backward over levels levels (even), two per step.
+/// erf z = 2/sqrt(pi) × z e^(-z²) × d/n, from the continued fraction evaluated backward over `levels` levels,
+/// two per step.
+/// :param z: The argument.
+/// :param levels: The level count, even.
+/// :returns: erf z at 192 bits.
 routine wide_erf_cf(z: F128Extended, levels: S64) -> F128Extended
     shared zz : F128Extended  = z.mul(z)
     shared n  : @F128Extended <- uninit
@@ -128,7 +133,10 @@ routine wide_erf_cf(z: F128Extended, levels: S64) -> F128Extended
         r     : F128Extended = scale.mul(d.load().ldexp(1).div(n.load()))
         return(r)
 
-/// erfc z = 1/sqrt(pi) × z e^(-z²) × d/n, for the tail z >= 3.
+/// erfc z = 1/sqrt(pi) × z e^(-z²) × d/n from Laplace's continued fraction, for the tail z >= 3.
+/// :param z: The argument, at least 3.
+/// :param levels: The level count, even (from {erfc_cf_levels}).
+/// :returns: erfc z at 192 bits.
 routine wide_erfc_cf(z: F128Extended, levels: S64) -> F128Extended
     shared zz : F128Extended  = z.mul(z)
     shared n  : @F128Extended <- uninit
@@ -165,6 +173,12 @@ routine wide_erfc_cf(z: F128Extended, levels: S64) -> F128Extended
 /// even) with k = floor(a). The counts were checked against mpmath at every integer k, where the fraction
 /// converges slowest for its k: the fast tier's (22, 400, 1300) reaches 2^-196 at 3 and 2^-208 from 4 on, the
 /// exact tier's (48, 1000, 10000) 2^-470 from 4 on.
+/// :param a: The argument, in [3, 107).
+/// :param base: The constant term.
+/// :param linear: The coefficient of 1/k.
+/// :param square: The coefficient of 1/k².
+/// :returns: The even level count.
+/// :throws: Crashes with `DivisionByZeroError` when `a` < 1.
 routine erfc_cf_levels(a: F128, base: S64, linear: S64, square: S64) -> S64
     block entry()
         k           : S64 = a.trunc().to<S64>()
@@ -173,7 +187,9 @@ routine erfc_cf_levels(a: F128, base: S64, linear: S64, square: S64) -> S64
         r           : S64 = n.add(n.bitand(1))
         return(r)
 
-/// erf a for 0 < a < F128_ERF_ONE.
+/// erf a for 0 < a < F128_ERF_ONE, the fast tier: the erf continued fraction below 3, 1 - erfc from 3 on.
+/// :param a: The argument.
+/// :returns: erf a at 192 bits.
 routine wide_erf(a: F128) -> F128Extended
     shared z : F128Extended = a.to<F128Extended>()
 
@@ -188,7 +204,9 @@ routine wide_erf(a: F128) -> F128Extended
         r : F128Extended = wide_one().sub(c)
         return(r)
 
-/// erfc x for a nonzero x in (-F128_ERFC_TWO, F128_ERFC_ZERO).
+/// erfc x for a nonzero x in (-F128_ERFC_TWO, F128_ERFC_ZERO), the fast tier.
+/// :param x: The argument.
+/// :returns: erfc x at 192 bits.
 routine wide_erfc(x: F128) -> F128Extended
     shared a        : F128 = x.abs()
     shared negative : Bool = f128_is_negative_bits(x.bits())
@@ -210,6 +228,8 @@ routine wide_erfc(x: F128) -> F128Extended
 
 // -- exact tier: F128Big -------------------------------------------------------
 
+/// 2/√π at 448 bits.
+/// :returns: 2/√π as an F128Big.
 routine big_two_over_sqrt_pi() -> F128Big
     block entry()
         r : F128Big = big_from_limbs(BIG_TWO_OVER_SQRT_PI.to<@U64>(), -447)
@@ -218,6 +238,8 @@ routine big_two_over_sqrt_pi() -> F128Big
 /// erf a for 0 < a < F128_ERF_ONE: 2/√π e^(-a²) Σ t_n with t_0 = a, t_n = t_(n-1) × 2a² / (2n + 1). Every term
 /// is positive, so nothing cancels. The terms grow until n ~ a², then fall, and the sum stops once one is below
 /// 2^-456 of it (at most about 390 terms below 8.74).
+/// :param a: The argument.
+/// :returns: erf a at 448 bits.
 routine big_erf(a: F128Big) -> F128Big
     shared aa : F128Big = a.mul(a)
 
@@ -235,8 +257,11 @@ routine big_erf(a: F128Big) -> F128Big
         r : F128Big = sum.mul(big_exp(aa.neg())).mul(big_two_over_sqrt_pi())
         return(r)
 
-/// erfc z for z >= 4: Laplace's continued fraction as wide_erfc_cf, over levels levels (even). Every quantity
+/// erfc z for z >= 4: Laplace's continued fraction as wide_erfc_cf, over `levels` levels (even). Every quantity
 /// is positive, so the backward recurrence loses nothing to cancellation.
+/// :param z: The argument, at least 4.
+/// :param levels: The level count, even (from {erfc_cf_levels}).
+/// :returns: erfc z at 448 bits.
 routine big_erfc_cf(z: F128Big, levels: S64) -> F128Big
     shared zz : F128Big  = z.mul(z)  // exact: z has 113 bits
     shared n  : @F128Big <- uninit
@@ -268,7 +293,10 @@ routine big_erfc_cf(z: F128Big, levels: S64) -> F128Big
         r     : F128Big = scale.mul(d.load().div(n.load()))
         return(r)
 
-/// erfc x for a nonzero x in (-F128_ERFC_TWO, F128_ERFC_ZERO).
+/// erfc x for a nonzero x in (-F128_ERFC_TWO, F128_ERFC_ZERO), the exact tier: 1 + erf |x| for negative x,
+/// 1 - erf x below 4, Laplace's continued fraction from 4 on.
+/// :param x: The argument.
+/// :returns: erfc x at 448 bits.
 routine big_erfc(x: F128) -> F128Big
     block entry()
         a        : F128    = x.abs()
@@ -282,21 +310,25 @@ routine big_erfc(x: F128) -> F128Big
 
 // -- erf, erfc -----------------------------------------------------------------
 
-/// The error function, correctly rounded: ±0 at ±0, ±1 from |self| = 8.7334… on.
+/// The error function, correctly rounded: ±0 at ±0, ±1 from |self| = 8.7334… on. A NaN comes back quieted.
+/// :returns: erf(`self`).
 routine F128.erf(self: Self) -> Self
     block entry()
         r : Self = f128_erf(self, false)
         return(r)
 
 /// The complementary error function 1 - erf, correctly rounded: 1 at ±0, 2 from self = -8.6939… down, +0 from
-/// 106.9028… up.
+/// 106.9028… up. A NaN comes back quieted.
+/// :returns: erfc(`self`).
 routine F128.erfc(self: Self) -> Self
     block entry()
         r : Self = f128_erfc(self, false)
         return(r)
 
-/// erf x, where exact skips the fast tier (the tests use it to check the exact tier on its own). erf is
-/// odd and rounding to nearest is symmetric, so the work is done on |x|.
+/// erf x, correctly rounded. erf is odd and rounding to nearest is symmetric, so the work is done on |x|.
+/// :param x: The argument.
+/// :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
+/// :returns: erf x.
 routine f128_erf(x: F128, exact: Bool) -> F128
     shared bits : U128 = x.bits()
     shared nan  : Bool = f128_is_nan_bits(bits)
@@ -326,7 +358,10 @@ routine f128_erf(x: F128, exact: Bool) -> F128
         r         : F128 = magnitude.copysign(x)
         return(r)
 
-/// erfc x, where exact skips the fast tier.
+/// erfc x, correctly rounded.
+/// :param x: The argument.
+/// :param exact: True skips the fast tier.
+/// :returns: erfc x.
 routine f128_erfc(x: F128, exact: Bool) -> F128
     block entry()
         bits : U128 = x.bits()

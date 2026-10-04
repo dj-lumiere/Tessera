@@ -110,6 +110,9 @@ preset CM_ACOS_PHI0: @Array<U64, 365> <- { 0x0000000000000000, 0x000000000000000
     0x571F0D28A5438D2C, 0x632281CB0A93A34E, 0x28A5043CC71A026F, 0x0105DF531D89CD91,
     0x948127044533E63A, 0x62633145C06E0E68, 0x6487ED5110B4611A }
 
+/// The arc cosine of `self`, correctly rounded to nearest (a CORE-MATH port).
+/// :returns: acos(`self`) in [0, pi]. It is 0 for 1 and pi for -1. A NaN comes back quieted, and an argument with
+///     |`self`| > 1 gives NaN.
 routine F128.acos(self: Self) -> Self
     block entry()
         nan     : Bool = self.is_nan()
@@ -151,14 +154,18 @@ routine F128.acos(self: Self) -> Self
         return(r)
 
 /// Whether acos subtracts the reduced arc sine from pi/2: always but for x > 0 on the last table
-/// points, where the result comes from sqrt(1 - x^2) directly.
+/// points (j >= 71), where the result comes from sqrt(1 - x^2) directly.
+/// :param arg: The unpacked argument.
+/// :returns: True when the result is pi/2 minus (or plus) the arc sine.
 routine cm_acos_is_via_half_pi(arg: CmAsinArg) -> Bool
     block entry()
         r : Bool = arg.xsgn.ne(0).bitor(arg.j.lt(71))
         return(r)
 
-/// The 128-bit fast path of acos. It falls back to cm_acos_accurate when its result could round
+/// The 128-bit fast path of acos for |x| < 1. It falls back to {cm_acos_accurate} when its result could round
 /// either way.
+/// :param x: The argument, finite with |x| < 1.
+/// :returns: acos(`x`), correctly rounded.
 routine cm_acos_fast(x: F128) -> F128
     shared arg : CmAsinArg = cm_asin_unpack(x)
 
@@ -211,7 +218,10 @@ routine cm_acos_fast(x: F128) -> F128
         r : F128 = cm_acos_accurate(x)
         return(r)
 
-/// The 128-bit mantissa xa shifted right by nz into three words (the fast path's |x| < 0.022).
+/// The 128-bit mantissa `xa` shifted right by `nz` into three words (the fast path's |x| < 0.022, table point 0).
+/// :param xa: The mantissa, implicit bit at bit 127.
+/// :param nz: The shift, `0x3FFF` minus the biased exponent (not negative).
+/// :returns: `xa` × 2^(64 - `nz`) as three words, all zero once `nz` >= 192.
 routine cm_acos_align_x(xa: U128, nz: S64) -> CmAsinW3
     shared xb0 : U64 = cm_asin_lo(xa.to_wrap<S128>())
     shared xb1 : U64 = cm_asin_hi(xa)
@@ -245,8 +255,13 @@ routine cm_acos_align_x(xa: U128, nz: S64) -> CmAsinW3
         r : CmAsinW3 = CmAsinW3 { w0: xb1.shr(s.to<U64>()), w1: 0, w2: 0 }
         return(r)
 
-/// Finishes the fast path as pi/2 -/+ (asin(s_j) + d + t^3*P(t^2)) at half scale. The value is
-/// missing when the result could round either way.
+/// Finishes the fast path as pi/2 -/+ (asin(s_j) + d + t^3*P(t^2)) at half scale.
+/// :param arg: The unpacked argument (its sign and table point j).
+/// :param xc: The reduced argument d (or x itself for j = 0) as three words.
+/// :param t: The normalized reduced argument for the polynomial.
+/// :param nz: The leading zeros of the reduced argument.
+/// :returns: The rounded acos(x).
+/// :absent: When the result could round either way.
 routine cm_acos_fast_half_pi(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> Option<F128>
     block entry()
         f     : U128     = cm_asin_fast_poly(t, nz.sub(6).mul(2))
@@ -273,8 +288,13 @@ routine cm_acos_fast_half_pi(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> 
         r    : Option<F128> = cm_acos_checked(y, s, k, eps)
         return(r)
 
-/// Finishes the fast path for x near 1 as asin(t) = t + t^3*P(t^2) with t = sqrt(1 - x^2). The
-/// value is missing when the result could round either way.
+/// Finishes the fast path for x near 1 as asin(t) = t + t^3*P(t^2) with t = sqrt(1 - x^2).
+/// :param arg: The unpacked argument (its biased exponent).
+/// :param xc: sqrt(1 - x^2) as three words.
+/// :param t: The top 128 bits of sqrt(1 - x^2).
+/// :param nz: Half the exponent of 1 - x^2, the scale of `t`.
+/// :returns: The rounded acos(x).
+/// :absent: When the result could round either way.
 routine cm_acos_fast_direct(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> Option<F128>
     block entry()
         f     : U128         = cm_asin_fast_poly(t, nz.sub(6).mul(2))
@@ -291,8 +311,14 @@ routine cm_acos_fast_direct(arg: CmAsinArg, xc: CmAsinW3, t: U128, nz: S64) -> O
         r     : Option<F128> = cm_acos_checked(y, s, k, eps)
         return(r)
 
-/// y, rounded from the fixed-point sum s with k leading zeros, when the bits below its round
-/// bit, widened by eps, stay clear of the rounding boundary, otherwise missing.
+/// `y`, rounded from the fixed-point sum `s` with `k` leading zeros, when the bits below its round
+/// bit, widened by `eps`, stay clear of the rounding boundary.
+/// :param y: The rounded candidate.
+/// :param s: The three-word sum `y` was rounded from.
+/// :param k: The leading zeros of `s`.
+/// :param eps: The error bound in units of the lowest word.
+/// :returns: `y` when the rounding is safe.
+/// :absent: When the bits below the round bit lie within `eps` of the boundary.
 routine cm_acos_checked(y: F128, s: CmAsinW3, k: S64, eps: U64) -> Option<F128>
     block entry()
         top       : U64          = 0xFFFFFFFFFFFFFFFF.shr(cm_asin_sh(k.add(50)))
@@ -308,6 +334,8 @@ routine cm_acos_checked(y: F128, s: CmAsinW3, k: S64, eps: U64) -> Option<F128>
         return(r)
 
 /// The 320-bit accurate path of F128.acos for |x| < 1 (the C as_acosq_accurate).
+/// :param x: The argument, finite with |x| < 1.
+/// :returns: acos(`x`), correctly rounded.
 routine cm_acos_accurate(x: F128) -> F128
     shared arg : CmAsinArg = cm_asin_unpack(x)
     shared nz  : S64       = 16383.sub(arg.xn)
@@ -355,6 +383,11 @@ routine cm_acos_accurate(x: F128) -> F128
         return(r)
 
 /// Finishes the accurate path as pi/2 -/+ (asin(s_j) + d + t^3*P(t^2)) at half scale.
+/// :param arg: The unpacked argument (its sign and table point j).
+/// :param xc: The reduced argument d (or x itself for j = 0) as five words.
+/// :param t: The normalized reduced argument for the polynomial.
+/// :param nz: The leading zeros of the reduced argument.
+/// :returns: The rounded acos(x).
 routine cm_acos_accurate_half_pi(arg: CmAsinArg, xc: CmAsinW5, t: CmAsinW5, nz: S64) -> F128
     block entry()
         p     : CmAsinW5 = cm_asin_poly5(t, nz)

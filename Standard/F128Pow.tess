@@ -36,19 +36,28 @@ preset F128_POW_UNDER: F128 = F128.from_bits(0xC00C6700000000000000000000000000)
 
 /// x^y, correctly rounded, with the special cases of IEEE 754 and C99 Annex F: x^±0 = 1 and 1^y = 1 (a NaN
 /// included), a zero or infinite base by the sign of y, (-1)^±inf = 1, NaN for a negative base and a
-/// non-integer y, and a negative base with an odd integer y keeps the minus sign.
+/// non-integer y, and a negative base with an odd integer y keeps the minus sign. Any other NaN operand gives
+/// the default NaN.
+/// :param y: The exponent.
+/// :returns: `self`^y.
 routine F128.powf(self: Self, y: Self) -> Self
     block entry()
         r : Self = f128_pow(self, y, false)
         return(r)
 
 /// self^n, the same as powf with n converted.
+/// :param n: The integer exponent.
+/// :returns: `self`^n.
 routine F128.powi(self: Self, n: S32) -> Self
     block entry()
         r : Self = self.powf(n.to<Self>())
         return(r)
 
-/// powf, where exact skips the fast tier (the tests use it to check the exact tier on its own).
+/// x^y, correctly rounded, as {F128.powf}.
+/// :param x: The base.
+/// :param y: The exponent.
+/// :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
+/// :returns: x^y.
 routine f128_pow(x: F128, y: F128, exact: Bool) -> F128
     block entry()
         one    : F128 = f128_of(F128_ONE)
@@ -118,7 +127,12 @@ routine f128_pow(x: F128, y: F128, exact: Bool) -> F128
             : magnitude
         return(r)
 
-/// x^y for a finite x > 0 other than 1 and a finite nonzero y.
+/// x^y for a finite x > 0 other than 1 and a finite nonzero y: the exact and midpoint cases first, then the two
+/// tiers.
+/// :param x: The base.
+/// :param y: The exponent.
+/// :param exact: True skips the fast tier.
+/// :returns: x^y, correctly rounded.
 routine f128_pow_positive(x: F128, y: F128, exact: Bool) -> F128
     block entry()
         d : PowDyadic = f128_pow_dyadic(x, y)
@@ -161,6 +175,9 @@ private record OddScaled
     odd   : U128
     shift : S64
 
+/// A finite nonzero F128's magnitude as odd × 2^shift.
+/// :param x: The value.
+/// :returns: The odd part and the shift.
 private routine f128_odd_scaled(x: F128) -> OddScaled
     block entry()
         p     : F128Parts = f128_unpack(x.bits())
@@ -183,6 +200,9 @@ private routine f128_odd_scaled(x: F128) -> OddScaled
 ///
 /// For a power of two, |E y| >= 2^20 overflows or underflows whatever it is. It is clamped to ±2^30, which
 /// f128_round_pack turns into inf or +0 as the real one would.
+/// :param x: The base.
+/// :param y: The exponent.
+/// :returns: The rounded x^y with `found` true, or `found` false when x^y is no such number.
 routine f128_pow_dyadic(x: F128, y: F128) -> PowDyadic
     shared bx         : OddScaled = f128_odd_scaled(x)
     shared by         : OddScaled = f128_odd_scaled(y)
@@ -259,19 +279,28 @@ routine f128_pow_dyadic(x: F128, y: F128) -> PowDyadic
             .Present(value) -> return(pow_dyadic_place(value, bx.shift.shr(k).mul(n)))
             .Absent         -> return(pow_dyadic_none())
 
+/// The "not found" answer of {f128_pow_dyadic}.
+/// :returns: A PowDyadic with `found` false.
 private routine pow_dyadic_none() -> PowDyadic
     block entry()
         r : PowDyadic = PowDyadic { found: false, value: f128_of(0) }
         return(r)
 
 /// w × 2^f, rounded once (overflow, subnormals, and underflow included).
+/// :param w: The integer part.
+/// :param f: The power of two.
+/// :returns: The rounded value with `found` true.
 private routine pow_dyadic_place(w: U128, f: S64) -> PowDyadic
     block entry()
         bits : U128      = f128_round_pack(false, f.add(F128_BIAS).add(115), w)
         r    : PowDyadic = PowDyadic { found: true, value: f128_of(bits) }
         return(r)
 
-/// base^n for 0 <= n, or Absent when it doesn't fit in a U128.
+/// base^n for 0 <= n.
+/// :param base: The base.
+/// :param n: The exponent, at least 0.
+/// :returns: The power.
+/// :absent: When the power doesn't fit in a U128.
 private routine u128_power_checked(base: U128, n: S64) -> Option<U128>
     block entry()
         jump step(1, n)
@@ -287,6 +316,10 @@ private routine u128_power_checked(base: U128, n: S64) -> Option<U128>
             .Absent     -> return(.Absent)
 
 /// The 2^k-th root of m when m is a perfect 2^k-th power, by k exact square roots.
+/// :param m: The value.
+/// :param k: How many square roots, at least 0.
+/// :returns: The root.
+/// :absent: When some square root along the way is not exact.
 private routine u128_root_two_power(m: U128, k: S64) -> Option<U128>
     block entry()
         jump step(m, k)
@@ -305,8 +338,10 @@ private routine u128_root_two_power(m: U128, k: S64) -> Option<U128>
 // -- fast tier: F128Extended ---------------------------------------------------
 
 /// ln x for a finite x > 0, to about 2^-186 relative: x = f 2^e with f in [sqrt(1/2), sqrt(2)), and ln f from
-/// ln_1p's series, directly for |f - 1| < 1/8 (f - 1 is exact, and the series' argument is under 0.067) and else
-/// as 2 ln sqrt(f), which brings the argument under 0.087.
+/// ln_1p's series, directly for |f - 1| < 1/8 (f - 1 is exact, and the series' argument is under 0.067) and
+/// else as 2 ln sqrt(f), which brings the argument under 0.087.
+/// :param x: The argument, positive.
+/// :returns: ln x at 192 bits.
 routine wide_pow_ln(x: F128) -> F128Extended
     shared w         : F128Extended = x.to<F128Extended>()
     shared f0        : F128Extended = w.ldexp(0.sub(w.exponent))  // in [1, 2)
@@ -336,6 +371,8 @@ routine wide_pow_ln(x: F128) -> F128Extended
         return(r)
 
 /// e^z for |z| < 2^14: z = q ln 2 + d, and e^d = 1 + expm1(d) by its series (|d| < 1/2).
+/// :param z: The exponent.
+/// :returns: e^z at 192 bits.
 routine wide_pow_exp(z: F128Extended) -> F128Extended
     block entry()
         q     : S64          = z.mul(wide_const(1)).to_nearest<S64>()
@@ -345,6 +382,9 @@ routine wide_pow_exp(z: F128Extended) -> F128Extended
         return(r)
 
 /// The fast tier's x^y (x > 0, y ln x in range), before rounding.
+/// :param x: The base.
+/// :param y: The exponent.
+/// :returns: x^y at 192 bits.
 routine wide_pow(x: F128, y: F128) -> F128Extended
     block entry()
         z : F128Extended = y.to<F128Extended>().mul(wide_pow_ln(x))
@@ -354,6 +394,9 @@ routine wide_pow(x: F128, y: F128) -> F128Extended
 // -- exact tier: F128Big -------------------------------------------------------
 
 /// x^y in F128Big, rounded once, for x > 0 finite and not 1 and y finite and nonzero.
+/// :param x: The base.
+/// :param y: The exponent.
+/// :returns: x^y, with inf past overflow and +0 past underflow.
 routine f128_pow_big(x: F128, y: F128) -> F128
     block entry()
         z     : F128Big = big_ln(x.to<F128Big>()).mul(y.to<F128Big>())
