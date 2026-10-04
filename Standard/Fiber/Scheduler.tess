@@ -7,12 +7,13 @@
 //
 //     claim stacks : @Allocator <- make_stack_allocator()   // guard pages
 //     claim sched  : @Scheduler <- .construct(alloc, stacks, 0)   // 0: a worker per processor
-//     sched.spawn(worker, state, 65536)
+//     sched.spawn(worker.to<Callable>(), state, 65536)
 //     sched.run()
 //     sched.destruct()
 //
-// A fiber's routine takes one Addr, the state it works on (the state record is
-// the capture list, as for a thread), and that state must outlive the fiber.
+// A fiber's routine takes an @S, the state it works on (the state record is
+// the capture list, as for a thread), and spawn hands it an @S of that S, so
+// nothing converts through Addr. The state must outlive the fiber.
 // Inside, sched.yield() lets other fibers run first. A fiber may go on on a
 // different thread after it yields, so a #threadlocal global read on both
 // sides of a yield may be two threads' copies.
@@ -175,18 +176,28 @@ routine Scheduler.construct(alloc: @Allocator, stacks: @Allocator, workers: USiz
 
 /// Starts entry(arg) on a stack of stack_size bytes, from inside a fiber or out. From inside one of this
 /// scheduler's fibers it goes in that worker's queue, else in the workers' queues in turn.
+/// :typeparam S: The type of the state the fiber works on.
+/// :param entry: The routine the fiber runs.
+/// :param arg: The state it works on, which must outlive the fiber.
+/// :param stack_size: The size of the fiber's stack in bytes.
 #target(os: not "none")
-routine Scheduler.spawn(self: @Self, entry: Callable<(Addr,), Void>, arg: Addr,
+routine Scheduler.spawn<S>(self: @Self, entry: Callable<(@S,), Void>, arg: @S,
     stack_size: USize) -> Void
+require S: typename
     block entry()
         start_fiber(self, entry, arg, stack_size, null)
         return()
 
 /// spawn, and a Join to wait for the fiber with: join(j) returns once it has returned, and frees the Join. Every
 /// Join is joined once.
+/// :typeparam S: The type of the state the fiber works on.
+/// :param entry: The routine the fiber runs.
+/// :param arg: The state it works on, which must outlive the fiber.
+/// :param stack_size: The size of the fiber's stack in bytes.
 #target(os: not "none")
-routine Scheduler.spawn_joinable(self: @Self, entry: Callable<(Addr,), Void>, arg: Addr,
+routine Scheduler.spawn_joinable<S>(self: @Self, entry: Callable<(@S,), Void>, arg: @S,
     stack_size: USize) -> @Join
+require S: typename
     block entry()
         j : @Join = allocate<Join>(self.alloc.load(), 1)
         j.store(Join { lock: .construct(), done: 0, waiter: null })
@@ -466,8 +477,12 @@ routine Scheduler.destruct(self: @Self) -> Void
 /// it runs on one of the scheduler's I/O threads while the fiber waits, and the fiber goes on once it returns,
 /// maybe on another worker. Outside a fiber it is just called. arg may point into the fiber's stack: the fiber
 /// waits until the call is over.
+/// :typeparam S: The type of the state the call works on.
+/// :param work: The call that may block.
+/// :param arg: The state it works on.
 #target(os: not "none")
-routine Scheduler.run_blocking(self: @Self, work: Callable<(Addr,), Void>, arg: Addr) -> Void
+routine Scheduler.run_blocking<S>(self: @Self, work: Callable<(@S,), Void>, arg: @S) -> Void
+require S: typename
     shared fiber : @FiberState = self.current()
 
     block entry()
@@ -482,8 +497,9 @@ routine Scheduler.run_blocking(self: @Self, work: Callable<(Addr,), Void>, arg: 
 
     // The worker hands the fiber to the I/O threads once it is back on its own stack (see to_io).
     block park()
-        fiber.work.store(work)
-        fiber.work_arg.store(arg)
+        state : Addr = arg
+        fiber.work.store(erased(work))
+        fiber.work_arg.store(state)
         fiber.then.store(to_io.to<Callable>())
         switch_stack(fiber.sp, current_worker().home.load())
         return()
@@ -846,17 +862,32 @@ private routine place_ready(sched: @Scheduler, fiber: @FiberState) -> Void
         notify(sched)
         return()
 
+/// The routine without its state type, as a FiberState keeps it: a routine taking an @S takes an Addr the same
+/// way (both are one pointer), so the fiber, or the I/O thread for run_blocking, calls it with the state as an Addr.
+/// :typeparam S: The type of the state the routine works on.
+/// :param entry: The routine, on its own state type.
+/// :returns: The same routine, on an Addr.
+#target(os: not "none")
+private routine erased<S>(entry: Callable<(@S,), Void>) -> Callable<(Addr,), Void>
+require S: typename
+    block entry()
+        on_addr : Callable<(Addr,), Void> = bitcast(entry)
+        return(on_addr)
+
 /// A new fiber, ready to run.
 #target(os: not "none")
-private routine start_fiber(sched: @Scheduler, entry: Callable<(Addr,), Void>, arg: Addr,
+private routine start_fiber<S>(sched: @Scheduler, entry: Callable<(@S,), Void>, arg: @S,
     stack_size: USize, j: @Join) -> Void
+require S: typename
     block entry()
         stack : @Byte       = allocate<Byte>(sched.stacks.load(), stack_size)
         sp    : Addr        = initial_stack(stack, stack_size, fiber_start.addr())
+        state : Addr        = arg
         fiber : @FiberState = allocate<FiberState>(sched.alloc.load(), 1)
-        fiber.store(FiberState { sp: sp, stack: stack, entry: entry, arg: arg, finished: false,
-            then: requeue.to<Callable>(), wake_state: FIBER_RUNNING, deadline: 0, join: j,
-            waiting_for: null, work: no_work.to<Callable>(), work_arg: null, trace_depth: 0 })
+        fiber.store(FiberState { sp: sp, stack: stack, entry: erased(entry), arg: state,
+            finished: false, then: requeue.to<Callable>(), wake_state: FIBER_RUNNING, deadline: 0,
+            join: j, waiting_for: null, work: no_work.to<Callable>(), work_arg: null,
+            trace_depth: 0 })
         sched.live.atomic_fetch_add(1)
         place_ready(sched, fiber)
         return()

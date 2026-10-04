@@ -634,7 +634,8 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 `wake_one()` / `wake_all()`; a wait may return without a wake, so the waiter checks its condition again in a loop),
 `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32`, and `monotonic_ns()`. `Standard::Fiber`'s `Scheduler`
 runs fibers over worker threads: `.construct(alloc, stacks, workers)` (0 = one per processor), then
-`spawn(routine, state, stack_size)` (the routine takes the state as an `Addr`), `yield()` inside a fiber, `run()`
+`spawn(routine, state, stack_size)` (generic over the state like `Thread.spawn`: the routine takes an `@S` and
+`state` is one, and so for `spawn_joinable` and `run_blocking`), `yield()` inside a fiber, `run()`
 until all return, `destruct()`. Pass `make_stack_allocator()` as `stacks` for guard pages. A fiber may move to
 another thread at a yield. A call that may block goes through `sched.run_blocking(routine, state)`, or
 `sched.read` / `sched.write`, so the worker runs other fibers meanwhile. A fiber waits without holding its worker
