@@ -42,8 +42,8 @@ record EnvVar
     name  : Bytes
     value : Bytes
 
-/// How {run_process} starts a program: its working directory, environment overrides, and what its standard streams
-/// are. {ProcessOptions.default} is a good start.
+/// How {run_process_result} starts a program: its working directory, environment overrides, and what its standard
+/// streams are. {ProcessOptions.default} is a good start.
 record ProcessOptions
     directory : Option<Bytes>  // where it starts: Absent for this process's working directory
     env       : @EnvVar  // env_count overrides of this process's environment
@@ -69,12 +69,14 @@ routine ProcessOutput.destruct(self: @Self) -> Void
         return()
 
 /// No directory and no overrides, the null device as input, and both output streams captured.
+/// :returns: The default options.
 routine ProcessOptions.default() -> Self
     block entry()
         return(Self { directory: .Absent, env: null, env_count: 0, stdin: InputMode.Null,
             stdout: OutputMode.Capture, stderr: OutputMode.Capture })
 
 /// The exit code, or for a program a signal stopped, 128 plus the signal (as a POSIX shell reports it).
+/// :returns: The code.
 routine ExitStatus.code(self: Self) -> S32
     block entry()
         when self
@@ -82,20 +84,26 @@ routine ExitStatus.code(self: Self) -> S32
             .Signaled(s) -> return(s.add_wrap(128))
 
 /// Whether it exited with code 0.
+/// :returns: True for an exit with code 0, false for any other code or a signal.
 routine ExitStatus.is_success(self: Self) -> Bool
     block entry()
         when self
             .Exited(c) -> return(c.eq(0))
             .Signaled  -> return(false)
 
-/// command through the platform shell: sh -c on Linux and macOS, cmd.exe /c on Windows.
+/// Runs a command line through the platform shell (`/bin/sh -c` on Linux and macOS, `cmd.exe /c` on Windows) with
+/// {run_process_result}, for pipes and globs at the cost of the shell's quoting.
+/// :param command: The command line.
+/// :param options: The directory, environment overrides, and standard streams.
+/// :param alloc: The allocator for the captured output and the working memory.
+/// :returns: The {ProcessOutput}, or Failure with a {ProcessError} when the shell couldn't start.
 routine run_shell_result(command: Bytes, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
     block entry()
         claim args : @Array<Bytes, 2> <- { shell_flag(), command }
         return(run_process_result(shell_program(), args.to<@Bytes>(), 2, options, alloc))
 
-/// The platform shell {run_shell} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
+/// The platform shell {run_shell_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
 /// :returns: The program name.
 #target(os: "windows")
 private routine shell_program() -> Bytes
@@ -109,7 +117,7 @@ private routine shell_flag() -> Bytes
     block entry()
         return("/c")
 
-/// The platform shell {run_shell} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
+/// The platform shell {run_shell_result} starts: `cmd.exe` on Windows, `/bin/sh` elsewhere.
 /// :returns: The program name.
 #target(os: ("linux", "macos"))
 private routine shell_program() -> Bytes
@@ -123,7 +131,8 @@ private routine shell_flag() -> Bytes
     block entry()
         return("-c")
 
-/// Ends this process with status, without returning. (Nothing is flushed but what the C library flushes.)
+/// Ends this process with `status`, without returning. (Nothing is flushed but what the C library flushes.)
+/// :param status: The process's exit status.
 #noreturn
 routine exit(status: S32) -> Void
     block entry()
@@ -138,11 +147,17 @@ internal record CaptureBuffer
     capacity : USize
     failed   : Bool  // an allocation failed: what came after was dropped
 
+/// An empty capture buffer that holds no memory yet.
+/// :returns: The buffer.
 internal routine CaptureBuffer.empty() -> Self
     block entry()
         return(Self { data: null, count: 0, capacity: 0, failed: false })
 
-/// Appends n bytes, growing the buffer. An allocation failure drops them and marks the buffer.
+/// Appends `n` bytes, growing the buffer (to at least double, and at least 256 bytes). An allocation failure drops
+/// them and marks the buffer `failed`.
+/// :param chunk: The first byte to append.
+/// :param n: How many bytes to append.
+/// :param alloc: The allocator the buffer's memory comes from.
 internal routine CaptureBuffer.append(self: @Self, chunk: @Byte, n: USize,
     alloc: @Allocator) -> Void
     shared need : USize = self.count.load().add(n)
@@ -180,20 +195,28 @@ internal routine CaptureBuffer.append(self: @Self, chunk: @Byte, n: USize,
         next_count.store_into(self.count)
         return()
 
-/// What was captured, owned by the caller, who releases it with destruct(). alloc is the allocator it was filled from.
+/// What was captured, owned by the caller, who releases it with `destruct()`.
+/// :param alloc: The allocator the buffer was filled from.
+/// :returns: The captured bytes, carrying `alloc`.
 internal routine CaptureBuffer.owned(self: Self, alloc: @Allocator) -> Bytes
     block entry()
         owned : Bytes = Bytes { data: self.data, count: self.count, alloc: alloc }
         return(owned)
 
-/// What was captured, owned by the caller, who releases it with destruct(). alloc is the allocator it was filled from.
+/// What was captured, owned by the caller, who releases it with `destruct()`.
+/// :param alloc: The allocator the buffer was filled from.
+/// :returns: The captured bytes, carrying `alloc`.
 internal routine CaptureBuffer.owned(self: @Self, alloc: @Allocator) -> Bytes
     block entry()
         owned : Bytes = self.load().owned(alloc)
         return(owned)
 
-/// Whether name's bytes equal the start of entry up to its '=' (a "NAME=VALUE" entry), ASCII letters in any case
-/// when fold is set.
+/// Whether `name`'s bytes equal the start of `entry` up to its '=' (a "NAME=VALUE" entry), ASCII letters in any case
+/// when `fold` is set.
+/// :param name: The variable name.
+/// :param entry: The "NAME=VALUE" entry.
+/// :param fold: True to compare ASCII letters without regard to case.
+/// :returns: True when `entry` is the variable `name`.
 internal routine env_key_matches(name: Bytes, entry: Bytes, fold: Bool) -> Bool
     block entry()
         n : USize = name.count()
@@ -217,6 +240,9 @@ internal routine env_key_matches(name: Bytes, entry: Bytes, fold: Bool) -> Bool
             ? compare(i.add(1))
             : return(false)
 
+/// The lowercase form of an ASCII uppercase letter, any other byte unchanged.
+/// :param c: The byte.
+/// :returns: `c` plus 32 for 'A' to 'Z', else `c`.
 internal routine ascii_lower(c: U8) -> U8
     block entry()
         branch c.between(65, 90)

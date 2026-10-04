@@ -35,26 +35,35 @@ record RyuDigits
 
 // -- helpers -------------------------------------------------------------------
 
-/// floor(log2(5^e)) + 1, for 0 <= e <= 3528
+/// floor(log2(5^e)) + 1, the number of bits in 5^e, for 0 <= e <= 3528.
+/// :param e: The power of 5.
+/// :returns: The bit count.
 routine ryu_pow5bits(e: U64) -> U64
     block entry()
         log2_floor : U64 = e.mul(1217359).shr(19)
         r          : U64 = log2_floor.add(1)
         return(r)
 
-/// floor(log10(2^e)), for 0 <= e <= 1650
+/// floor(log10(2^e)), for 0 <= e <= 1650.
+/// :param e: The power of 2.
+/// :returns: floor(log10(2^`e`)).
 routine ryu_log10_pow2(e: U64) -> U64
     block entry()
         r : U64 = e.mul(78913).shr(18)
         return(r)
 
-/// floor(log10(5^e)), for 0 <= e <= 2620
+/// floor(log10(5^e)), for 0 <= e <= 2620.
+/// :param e: The power of 5.
+/// :returns: floor(log10(5^`e`)).
 routine ryu_log10_pow5(e: U64) -> U64
     block entry()
         r : U64 = e.mul(732923).shr(20)
         return(r)
 
 /// Is value (nonzero) divisible by 5^p?
+/// :param value: The value to test, nonzero.
+/// :param p: The power of 5.
+/// :returns: True when 5^`p` divides `value` (always for `p` <= 0).
 routine ryu_is_multiple_of_pow5(value: U64, p: S64) -> Bool
     block entry()
         jump count(value, 0)
@@ -68,20 +77,32 @@ routine ryu_is_multiple_of_pow5(value: U64, p: S64) -> Bool
             : return(enough)
 
 /// Is value divisible by 2^p (p < 63)?
+/// :param value: The value to test.
+/// :param p: The power of 2, below 63.
+/// :returns: True when the low `p` bits of `value` are all 0.
 routine ryu_is_multiple_of_pow2(value: U64, p: U64) -> Bool
     block entry()
         mask : U64  = 1.shl(p).sub_wrap(1)
         r    : Bool = value.bitand(mask).eq(0)
         return(r)
 
-/// floor(m × factor / 2^shift), with factor read as unsigned 64-bit and m < 2^32
+/// floor(m × factor / 2^shift), with factor read as unsigned 64-bit and m < 2^32.
+/// :param m: The value to scale, below 2^32.
+/// :param factor: The 64-bit table multiplier.
+/// :param shift: How far to shift the 128-bit product right.
+/// :returns: The scaled value's low 64 bits.
 routine ryu_mul_shift32(m: U64, factor: U64, shift: S64) -> U64
     block entry()
         product : U128 = m.to<U128>().mul(factor.to<U128>())
         r       : U64  = product.shr(shift.to<U128>()).to<U64>()
         return(r)
 
-/// floor(m × W / 2^shift) for the 128-bit W = high:low, with m < 2^55 and shift > 64
+/// floor(m × W / 2^shift) for the 128-bit W = high:low, with m < 2^55 and shift > 64.
+/// :param m: The value to scale, below 2^55.
+/// :param low: The table multiplier's low 64 bits.
+/// :param high: The table multiplier's high 64 bits.
+/// :param shift: How far to shift the product right, above 64.
+/// :returns: The scaled value's low 64 bits.
 routine ryu_mul_shift64(m: U64, low: U64, high: U64, shift: S64) -> U64
     block entry()
         wide : U128 = m.to<U128>()
@@ -99,6 +120,10 @@ routine ryu_mul_shift64(m: U64, low: U64, high: U64, shift: S64) -> U64
 /// value (BF16's smallest subnormal, 9.18e-41, would print as 1e-40, not 9e-41).
 /// Stopping there changes no F32 or F64 output. F16 and BF16 were checked
 /// exhaustively.
+/// :param vr: The scaled value.
+/// :param vp: The interval's upper end.
+/// :param vm: The interval's lower end.
+/// :returns: True when one more digit can be removed.
 routine ryu_has_removable_digit(vr: U64, vp: U64, vm: U64) -> Bool
     block entry()
         shorter  : Bool = vp.div(10).gt(vm.div(10))
@@ -109,6 +134,10 @@ routine ryu_has_removable_digit(vr: U64, vp: U64, vm: U64) -> Bool
 /// Removes digits while the interval [vm, vp] still holds a shorter number,
 /// then rounds vr. accept says whether the interval ends themselves read back
 /// to the float (they do when its mantissa is even).
+/// :param start: The scaled value, the interval ends, and what is known about their trailing zeros.
+/// :param accept: True when the interval ends read back to the float.
+/// :param e10: The decimal exponent of `start`'s values.
+/// :returns: The shortest decimal.
 routine ryu_shorten(start: RyuDigits, accept: Bool, e10: S64) -> FloatDecimal
     block entry()
         vm_zeros : Bool = start.vm_zeros
@@ -229,7 +258,10 @@ routine ryu_shorten(start: RyuDigits, accept: Bool, e10: S64) -> FloatDecimal
 
 // -- F64 (d2s) -----------------------------------------------------------------
 
-/// mantissa and exponent are the raw IEEE fields of a finite, nonzero F64.
+/// The shortest decimal that reads back to an F64 (Ryu's d2s), closest to the exact value among those.
+/// :param mantissa: The raw 52-bit mantissa field of a finite, nonzero F64.
+/// :param exponent: The raw biased exponent field (0 for a subnormal).
+/// :returns: The decimal.
 routine ryu_double_decimal(mantissa: U64, exponent: S64) -> FloatDecimal
     shared subnormal : Bool = exponent.eq(0)
     shared normal_m2 : U64  = mantissa.bitor(4503599627370496)  // 2^52
@@ -333,8 +365,13 @@ routine ryu_double_decimal(mantissa: U64, exponent: S64) -> FloatDecimal
 
 // -- F32, F16, BF16 (f2s) ------------------------------------------------------
 
-/// mantissa and exponent are the raw IEEE fields of a finite, nonzero value of
-/// a format with mantissa_bits stored mantissa bits and exponent bias bias.
+/// The shortest decimal that reads back to an F32, F16, or BF16 value (Ryu's f2s), closest to the exact value among
+/// those.
+/// :param mantissa: The raw mantissa field of a finite, nonzero value.
+/// :param exponent: The raw biased exponent field (0 for a subnormal).
+/// :param mantissa_bits: How many mantissa bits the format stores (23 for F32).
+/// :param bias: The format's exponent bias (127 for F32).
+/// :returns: The decimal.
 routine ryu_float_decimal(mantissa: S64, exponent: S64, mantissa_bits: S64,
     bias: S64) -> FloatDecimal
     block entry()

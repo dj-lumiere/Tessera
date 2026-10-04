@@ -28,15 +28,21 @@ global DEFAULT_HEAP: @Allocator <- { alloc_fn: checked_heap_alloc_fn.to<Callable
     realloc_fn: checked_heap_realloc_fn.to<Callable>(),
     free_fn: checked_heap_free_fn.to<Callable>(), state: null }
 
-/// Binds the C `malloc` function.
+/// Binds the C `malloc` function, which allocates a block of memory.
+/// :param size: The number of bytes.
+/// :returns: The new block, or null when the allocation fails.
 #[external("c"), symbol("malloc")]
 private routine c_malloc(size: USize) -> Addr
 
-/// Binds the C `realloc` function.
+/// Binds the C `realloc` function, which resizes a block, keeping its contents up to the smaller size.
+/// :param ptr: The block to resize, or null for a new one.
+/// :param size: The new size in bytes.
+/// :returns: The resized block (possibly moved), or null when the allocation fails and `ptr` is untouched.
 #[external("c"), symbol("realloc")]
 private routine c_realloc(ptr: Addr, size: USize) -> Addr
 
-/// Binds the C `free` function.
+/// Binds the C `free` function, which gives a block back to the C heap.
+/// :param ptr: The block to free. Null does nothing.
 #[external("c"), symbol("free")]
 private routine c_free(ptr: Addr) -> Void
 
@@ -164,6 +170,7 @@ private routine checked_heap_alloc_fn(state: Addr, size: USize) -> Addr
 /// :param old_ptr: The block to resize, or null for a new one.
 /// :param size: The new size in bytes.
 /// :returns: The new block, null when malloc fails and the old block is untouched.
+/// :throws: Crashes with `InvalidValueError` when `old_ptr` was freed already or isn't a block of this heap.
 #heap_check("on")
 private routine checked_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize) -> Addr
     block entry()
@@ -194,6 +201,8 @@ private routine checked_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize)
 /// The checked heap's free function: checks the block's tag and puts the block in the quarantine.
 /// :param state: Unused, the heap allocator has no state.
 /// :param ptr: The block to free. Null does nothing.
+/// :throws: Crashes with `DoubleFreeError` when the block was freed already, and with `InvalidValueError` when `ptr`
+///     isn't a block of this heap.
 #heap_check("on")
 private routine checked_heap_free_fn(state: Addr, ptr: Addr) -> Void
     block entry()
@@ -205,6 +214,8 @@ private routine checked_heap_free_fn(state: Addr, ptr: Addr) -> Void
         return()
 
 /// The header in front of a block of the checked heap.
+/// :param block_start: The block, as the checked heap gave it out.
+/// :returns: The address `HEADER_SIZE` bytes before `block_start`.
 #heap_check("on")
 private routine header_of(block_start: Addr) -> @BlockHeader
     block entry()
@@ -213,7 +224,10 @@ private routine header_of(block_start: Addr) -> @BlockHeader
         return(header)
 
 /// Tags the block FREED and puts it in the quarantine, crashing when it was freed already or isn't a block of this
-/// heap.
+/// heap. The block pushed out of the quarantine goes back to malloc.
+/// :param block_start: The block to release.
+/// :throws: Crashes with `DoubleFreeError` when the block was freed already, and with `InvalidValueError` when it
+///     isn't a block of this heap.
 #heap_check("on")
 private routine release_block(block_start: Addr) -> Void
     shared header : @BlockHeader = header_of(block_start)
@@ -238,7 +252,11 @@ private routine release_block(block_start: Addr) -> Void
         c_free(evicted)
         return()
 
-/// Crashes at the place of the deallocate or reallocate call that reached the heap, when one was noted.
+/// Crashes at the place of the deallocate or reallocate call that reached the heap, when one was noted, else at the
+/// heap itself.
+/// :param name: The crash's error name, such as `DoubleFreeError`.
+/// :param message: The crash message.
+/// :throws: Always crashes with the error `name`.
 #[heap_check("on"), noreturn]
 private routine heap_crash(name: Bytes, message: Bytes) -> Void
     block entry()

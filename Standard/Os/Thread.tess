@@ -20,7 +20,9 @@ private record ThreadStart
     arg   : Addr
     alloc : @Allocator
 
-/// Every new thread's first Tessera routine, whatever the OS's entry signature.
+/// Every new thread's first Tessera routine, whatever the OS's entry signature: frees the start record, then calls
+/// the entry with its state.
+/// :param raw: The {ThreadStart} record.
 private routine thread_body(raw: Addr) -> Void
     block entry()
         start : @ThreadStart            = raw.to<@ThreadStart>()
@@ -35,7 +37,8 @@ private routine thread_body(raw: Addr) -> Void
 /// :param entry: The routine the thread runs.
 /// :param arg: The state it works on.
 /// :param alloc: The allocator the record comes from, which the new thread frees it to.
-/// :returns: The record, null when the allocation fails.
+/// :returns: The filled record.
+/// :note: A failed allocation isn't checked: the record is then stored through a null pointer.
 private routine thread_start<T>(entry: Callable<(@T,), Void>, arg: @T,
     alloc: @Allocator) -> @ThreadStart
 require T: typename
@@ -48,16 +51,26 @@ require T: typename
 
 // -- POSIX ----------------------------------------------------------------------------
 
-/// Binds the C `pthread_create` function.
+/// Binds the C `pthread_create` function, which starts a thread.
+/// :param thread: Where the new thread's id goes.
+/// :param attr: The thread attributes, or null for the defaults.
+/// :param start: The routine the thread runs.
+/// :param arg: What `start` is called with.
+/// :returns: 0 on success, or an error number.
 #[external("c"), symbol("pthread_create"), target(os: ("linux", "macos"))]
 private routine c_pthread_create(thread: @Addr, attr: Addr, start: Callable<(Addr,), Addr>,
     arg: Addr) -> CInt
 
-/// Binds the C `pthread_join` function.
+/// Binds the C `pthread_join` function, which waits for a thread to return.
+/// :param thread: The thread's id.
+/// :param result: Where the thread's return value goes, or null.
+/// :returns: 0 on success, or an error number.
 #[external("c"), symbol("pthread_join"), target(os: ("linux", "macos"))]
 private routine c_pthread_join(thread: Addr, result: Addr) -> CInt
 
-/// Binds the C `sysconf` function.
+/// Binds the C `sysconf` function, which reads a system setting.
+/// :param name: The setting's `_SC_*` number.
+/// :returns: The setting's value, or -1 when it can't be told.
 #[external("c"), symbol("sysconf"), target(os: ("linux", "macos"))]
 private routine c_sysconf(name: CInt) -> CLong
 
@@ -74,6 +87,7 @@ private routine posix_thread_main(arg: Addr) -> Addr
 /// :param entry: The routine the thread runs.
 /// :param arg: The state it works on, which must outlive the thread.
 /// :param alloc: The allocator the thread's start record comes from.
+/// :returns: The new thread, to {Thread.join} or {Thread.detach}.
 /// :throws: Crashes with `TaskSpawnError` when the operating system starts no thread.
 #[target(os: ("linux", "macos")), track_caller]
 routine Thread.spawn<T>(entry: Callable<(@T,), Void>, arg: @T, alloc: @Allocator) -> Self
@@ -96,7 +110,9 @@ routine Thread.join(self: Self) -> Void
         c_pthread_join(self.handle, null)
         return()
 
-/// Binds the C `pthread_detach` function.
+/// Binds the C `pthread_detach` function, which lets a thread's resources go when it returns, with nobody joining.
+/// :param thread: The thread's id.
+/// :returns: 0 on success, or an error number.
 #[external("c"), symbol("pthread_detach"), target(os: ("linux", "macos"))]
 private routine c_pthread_detach(thread: Addr) -> CInt
 
@@ -109,17 +125,21 @@ routine Thread.detach(self: Self) -> Void
         return()
 
 /// _SC_NPROCESSORS_ONLN, whose number differs between Linux and macOS.
+/// :returns: The sysconf number.
 #target(os: "macos")
 private routine sc_nprocessors_onln() -> CInt
     block entry()
         return(58)
 
+/// _SC_NPROCESSORS_ONLN, whose number differs between Linux and macOS.
+/// :returns: The sysconf number.
 #target(os: "linux")
 private routine sc_nprocessors_onln() -> CInt
     block entry()
         return(84)
 
 /// The number of processors the system has online, at least 1.
+/// :returns: The processor count, 1 when it can't be told.
 #target(os: ("linux", "macos"))
 routine cpu_count() -> USize
     block entry()
@@ -131,20 +151,34 @@ routine cpu_count() -> USize
 
 // -- Windows --------------------------------------------------------------------------
 
-/// Binds the Win32 `CreateThread` function.
+/// Binds the Win32 `CreateThread` function, which starts a thread.
+/// :param attrs: The thread handle's security attributes, or null.
+/// :param stack: The stack size in bytes, 0 for the default.
+/// :param start: The routine the thread runs.
+/// :param arg: What `start` is called with.
+/// :param flags: The creation flags, 0 to run at once.
+/// :param id: Where the thread id goes, or null.
+/// :returns: The thread's handle, or null with the last error set.
 #[external("c"), symbol("CreateThread"), callconv("stdcall"), target(os: "windows")]
 private routine c_create_thread(attrs: Addr, stack: USize,
     start: Callable<#callconv("stdcall"), (Addr,), U32>, arg: Addr, flags: U32, id: Addr) -> Addr
 
-/// Binds the Win32 `WaitForSingleObject` function.
+/// Binds the Win32 `WaitForSingleObject` function, which waits until an object is signaled.
+/// :param handle: The object, such as a thread.
+/// :param millis: The longest wait in milliseconds, `INFINITE` (U32 MAX) for no limit.
+/// :returns: `WAIT_OBJECT_0`, `WAIT_TIMEOUT`, or `WAIT_FAILED` with the last error set.
 #[external("c"), symbol("WaitForSingleObject"), callconv("stdcall"), target(os: "windows")]
 private routine c_wait_for_single_object(handle: Addr, millis: U32) -> U32
 
-/// Binds the Win32 `CloseHandle` function.
+/// Binds the Win32 `CloseHandle` function, which closes a handle.
+/// :param handle: The handle.
+/// :returns: Nonzero on success, 0 with the last error set.
 #[external("c"), symbol("CloseHandle"), callconv("stdcall"), target(os: "windows")]
 private routine c_close_handle(handle: Addr) -> CInt
 
-/// Binds the Win32 `GetActiveProcessorCount` function.
+/// Binds the Win32 `GetActiveProcessorCount` function, which counts the active processors.
+/// :param group: The processor group, or `ALL_PROCESSOR_GROUPS` (0xFFFF) for all of them.
+/// :returns: The number of active processors, 0 on failure.
 #[external("c"), symbol("GetActiveProcessorCount"), callconv("stdcall"), target(os: "windows")]
 private routine c_get_active_processor_count(group: U16) -> U32
 
@@ -161,6 +195,7 @@ private routine windows_thread_main(arg: Addr) -> U32
 /// :param entry: The routine the thread runs.
 /// :param arg: The state it works on, which must outlive the thread.
 /// :param alloc: The allocator the thread's start record comes from.
+/// :returns: The new thread, to {Thread.join} or {Thread.detach}.
 /// :throws: Crashes with `TaskSpawnError` when the operating system starts no thread.
 #[target(os: "windows"), track_caller]
 routine Thread.spawn<T>(entry: Callable<(@T,), Void>, arg: @T, alloc: @Allocator) -> Self
@@ -194,6 +229,7 @@ routine Thread.detach(self: Self) -> Void
         return()
 
 /// The number of processors the system has online, at least 1.
+/// :returns: The processor count, 1 when it can't be told.
 #target(os: "windows")
 routine cpu_count() -> USize
     block entry()

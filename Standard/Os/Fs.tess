@@ -78,11 +78,15 @@ record Mapping
     delta : USize  // from base to the first byte asked for
     count : USize  // the bytes mapped from there
 
+/// The success value of a filesystem call that has nothing to return.
+/// :returns: `Success(Unit)`.
 internal routine fs_done() -> Result<Unit, FsError>
     block entry()
         return(.Success(Unit.value()))
 
 /// Why path didn't fit a C path: a NUL inside, or too long.
+/// :param path: The path that didn't fit.
+/// :returns: `InvalidPath` when `path` holds a NUL, else `NameTooLong`.
 internal routine path_error(path: Bytes) -> FsError
     block entry()
         branch path.has("\x00")
@@ -92,11 +96,17 @@ internal routine path_error(path: Bytes) -> FsError
 // -- built on the per-OS calls ---------------------------------------------------------
 
 /// Whether something is at path (a link counts as what it points at).
+/// :param path: The path to look at.
+/// :returns: True when the metadata of `path` can be read. Any failure, not only `NotFound`, gives false.
 internal routine is_present(path: Bytes) -> Bool
     block entry()
         m : Result<Metadata, FsError> = metadata(path)
         return(m.is_success())
 
+/// Whether something is at path and is of the given kind (a link counts as what it points at).
+/// :param path: The path to look at.
+/// :param kind: The kind to test for.
+/// :returns: True when the metadata of `path` can be read and its kind is `kind`.
 internal routine is_kind(path: Bytes, kind: FileKind) -> Bool
     block entry()
         m : Result<Metadata, FsError> = metadata(path)
@@ -105,6 +115,10 @@ internal routine is_kind(path: Bytes, kind: FileKind) -> Bool
             .Failure       -> return(false)
 
 /// Like mkdir -p: every missing directory on the way, then path. A directory already there is fine.
+/// :param path: The directory to make.
+/// :returns: `Success(Unit)` once `path` is a directory.
+/// :throws: Returns `Failure` with the reason when the last step fails, `AlreadyExists` when something other than a
+///     directory is at `path`.
 internal routine create_dir_all(path: Bytes) -> Result<Unit, FsError>
     block entry()
         jump scan(1)
@@ -133,7 +147,12 @@ internal routine create_dir_all(path: Bytes) -> Result<Unit, FsError>
             ? return(fs_done())
             : return(.Failure(error))
 
-/// path and everything in it. A link is removed, not followed. Child paths are built in memory from alloc.
+/// Removes path and everything in it. A link is removed, not followed. Child paths are built in memory from alloc.
+/// :param path: The file or directory to remove.
+/// :param alloc: The allocator for the child paths, each given back before the next.
+/// :returns: `Success(Unit)` once everything is gone.
+/// :throws: Returns `Failure` with the first error, which stops the removal partway. Crashes with
+///     `MemoryAllocationError` when `alloc` fails for a child path.
 internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, FsError>
     block entry()
         m : Result<Metadata, FsError> = symlink_metadata(path)
@@ -150,8 +169,13 @@ internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, 
             .Success        -> return(remove_dir(path))
             .Failure(error) -> return(.Failure(error))
 
-/// Everything in the directory at path, which is left empty. Its listing is closed before remove_dir_all removes the
-/// directory itself, since Windows can't remove a directory that is still being listed.
+/// Removes everything in the directory at path, which is left empty. Its listing is closed before remove_dir_all
+/// removes the directory itself, since Windows can't remove a directory that is still being listed.
+/// :param path: The directory to empty.
+/// :param alloc: The allocator for the child paths.
+/// :returns: `Success(Unit)` once the directory is empty.
+/// :throws: Returns `Failure` with the first error. Crashes with `MemoryAllocationError` when `alloc` fails for a
+///     child path.
 private routine remove_entries(path: Bytes, alloc: @Allocator) -> Result<Unit, FsError>
     // open_path sets the handle before anything in it can fail, so finish closes a real or a null one
     shared iter : @DirIter <- uninit
@@ -180,7 +204,12 @@ private routine remove_entries(path: Bytes, alloc: @Allocator) -> Result<Unit, F
         iter.close()
         return(result)
 
-/// The whole file, in memory from alloc (release it with destruct()).
+/// Reads the whole file at path into memory from alloc (release it with destruct()).
+/// :param path: The file to read.
+/// :param alloc: The allocator for the text.
+/// :returns: `Success` with the file's bytes.
+/// :throws: Returns `Failure` with the reason when the file can't be opened or read, `OutOfMemory` when `alloc`
+///     fails. Crashes with `IntegerOverflowError` on a 32-bit target when the file reports a size of 4 GiB or more.
 internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry()
         opened : Result<FileHandle, FsError> = FileHandle.open(path, OpenMode.Read)
@@ -194,8 +223,13 @@ internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsEr
         f.close()
         return(text)
 
-/// The rest of the open file f, in memory from alloc. The size is a first guess: a file that grows while it's read,
-/// or reports 0 (Linux's /proc), still reads whole.
+/// Reads the rest of the open file f into memory from alloc. The size is a first guess: a file that grows while it's
+/// read, or reports 0 (Linux's /proc), still reads whole.
+/// :param f: The open file, read from its position to the end.
+/// :param alloc: The allocator for the text.
+/// :returns: `Success` with the bytes read.
+/// :throws: Returns `Failure` with the reason when a read fails, `OutOfMemory` when `alloc` fails. Crashes with
+///     `IntegerOverflowError` on a 32-bit target when the file reports a size of 4 GiB or more.
 private routine read_rest(f: @FileHandle, alloc: @Allocator) -> Result<Bytes, FsError>
     shared buffer : @Slice<Byte> <- .empty()
 
@@ -252,6 +286,10 @@ private routine read_rest(f: @FileHandle, alloc: @Allocator) -> Result<Bytes, Fs
         return(result)
 
 /// Writes data as the whole file: made if missing, replaced if not.
+/// :param path: The file to write.
+/// :param data: The bytes that become the file.
+/// :returns: `Success(Unit)` once every byte is written.
+/// :throws: Returns `Failure` with the reason when the file can't be opened or written.
 internal routine write_file(path: Bytes, data: Bytes) -> Result<Unit, FsError>
     block entry()
         opened : Result<FileHandle, FsError> = FileHandle.open(path, OpenMode.Write)
@@ -271,6 +309,10 @@ conform Reader<FileHandle>
 conform Writer<FileHandle>
 
 /// Writes all count bytes, however many calls that takes.
+/// :param data: The first byte to write.
+/// :param count: How many bytes to write.
+/// :returns: `Success(Unit)` once all of them are written.
+/// :throws: Returns `Failure` with the reason when a write fails, `Other` when a write makes no progress.
 routine FileHandle.write_all_result(self: @Self, data: @Byte, count: USize) -> Result<Unit, FsError>
     block entry()
         jump write(data, count)
@@ -288,6 +330,8 @@ routine FileHandle.write_all_result(self: @Self, data: @Byte, count: USize) -> R
             : write(at.stride(n), remaining.sub(n))
 
 /// The Writer side, behind handle.write("x = {x}\n"): a failure is kept for has_failed, and the bytes are dropped.
+/// :param data: The first byte to write.
+/// :param count: How many bytes to write.
 routine FileHandle.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
     block entry()
         wrote : Result<Unit, FsError> = self.write_all_result(data, count)
@@ -298,6 +342,7 @@ routine FileHandle.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
         return()
 
 /// Whether a write through the Writer side (write_bytes) failed.
+/// :returns: True once a `write_bytes` has failed. Nothing clears it.
 routine FileHandle.has_failed(self: @Self) -> Bool
     block entry()
         return(self.failed.load())
@@ -306,29 +351,43 @@ routine FileHandle.has_failed(self: @Self) -> Bool
 //
 // A separator is '/' everywhere, and '\' too on Windows. These look at the text only: nothing is resolved.
 
+/// Whether b is a path separator: '/' or '\' on Windows.
+/// :param b: The byte to test.
+/// :returns: True for '/' and '\'.
 #target(os: "windows")
 routine is_separator(b: Byte) -> Bool
     block entry()
         return(b.eq(b'/').bitor(b.eq(b'\\')))
 
+/// Whether b is a path separator: '/' on Linux and macOS.
+/// :param b: The byte to test.
+/// :returns: True for '/'.
 #target(os: ("linux", "macos"))
 routine is_separator(b: Byte) -> Bool
     block entry()
         return(b.eq(b'/'))
 
 /// The separator the OS writes.
+/// :returns: '\' on Windows.
 #target(os: "windows")
 routine path_separator() -> Byte
     block entry()
         return(b'\\')
 
+/// The separator the OS writes.
+/// :returns: '/' on Linux and macOS.
 #target(os: ("linux", "macos"))
 routine path_separator() -> Byte
     block entry()
         return(b'/')
 
-/// a and b with a separator between them (none added after one a already ends with), in memory from alloc. Release it
-/// with destruct().
+/// a and b with a separator between them (none added when a is empty or already ends with one), in memory from
+/// alloc. Release it with destruct().
+/// :param a: The leading part.
+/// :param b: The part to append.
+/// :param alloc: The allocator for the result.
+/// :returns: The joined path.
+/// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 routine join_path(a: Bytes, b: Bytes, alloc: @Allocator) -> Bytes
     block entry()
@@ -359,6 +418,8 @@ routine join_path(a: Bytes, b: Bytes, alloc: @Allocator) -> Bytes
         return(joined)
 
 /// Where path's last component ends, trailing separators left out.
+/// :param path: The path to look at.
+/// :returns: The index just past the component's last byte, 0 when `path` is empty or only separators.
 private routine name_end(path: Bytes) -> USize
     block entry()
         jump trim(path.count())
@@ -372,6 +433,9 @@ private routine name_end(path: Bytes) -> USize
             : return(end)
 
 /// Where the component that ends at end starts.
+/// :param path: The path to look at.
+/// :param end: Where the component ends, from {name_end}.
+/// :returns: The index just after the separator before the component, or 0 when there is none.
 private routine name_start(path: Bytes, end: USize) -> USize
     block entry()
         jump find(end)
@@ -385,6 +449,8 @@ private routine name_start(path: Bytes, end: USize) -> USize
             : find(i.sub(1))
 
 /// The last component: "/a/b/file.txt" gives "file.txt", "/a/b/" gives "b".
+/// :param path: The path to look at.
+/// :returns: The component, borrowed from `path` (empty when `path` is empty or only separators).
 routine file_name(path: Bytes) -> Bytes
     block entry()
         end   : USize = name_end(path)
@@ -392,6 +458,8 @@ routine file_name(path: Bytes) -> Bytes
         return(path.slice(start, end))
 
 /// The directory part: "/a/b/c" gives "/a/b", "a/b" gives "a", "file.txt" gives "", and "/" stays "/".
+/// :param path: The path to look at.
+/// :returns: The directory part, borrowed from `path`.
 routine parent_path(path: Bytes) -> Bytes
     shared end : USize = name_end(path)
 
@@ -417,6 +485,8 @@ routine parent_path(path: Bytes) -> Bytes
             : return(path.slice(0, 0))
 
 /// The last '.' of a name after its first character, or 0: a hidden file's leading dot isn't an extension.
+/// :param name: The file name to look at.
+/// :returns: The index of that dot, or 0 when there is none.
 private routine last_dot(name: Bytes) -> USize
     block entry()
         branch name.count().lt(2)
@@ -432,6 +502,8 @@ private routine last_dot(name: Bytes) -> USize
             : look(i.sub(1))
 
 /// The name without its extension: "file.txt" gives "file", "archive.tar.gz" gives "archive.tar".
+/// :param path: The path whose last component is used.
+/// :returns: The stem, borrowed from `path`.
 routine file_stem(path: Bytes) -> Bytes
     block entry()
         name : Bytes = file_name(path)
@@ -441,6 +513,8 @@ routine file_stem(path: Bytes) -> Bytes
             : return(name.slice(0, dot))
 
 /// The extension without its dot: "file.txt" gives "txt", "file" and ".hidden" give "".
+/// :param path: The path whose last component is used.
+/// :returns: The extension, borrowed from `path`.
 routine file_extension(path: Bytes) -> Bytes
     block entry()
         name : Bytes = file_name(path)
@@ -452,17 +526,21 @@ routine file_extension(path: Bytes) -> Bytes
 // -- memory-mapped files -----------------------------------------------------------------
 
 /// A mapping of nothing: what an empty file, or a range past the end, maps to.
+/// :returns: A mapping with a null base and a count of 0.
 routine Mapping.empty() -> Self
     block entry()
         return(Self { base: null, delta: 0, count: 0 })
 
 /// The first byte asked for (null for an empty mapping).
+/// :returns: `base` plus `delta`, or null.
 routine Mapping.data(self: Self) -> @Byte
     block entry()
         branch self.base.is_null()
             ? return(null)
             : return(self.base.to<@Byte>().stride(self.delta))
 
+/// The number of bytes mapped, from `data()` on.
+/// :returns: The byte count, 0 for an empty mapping.
 routine Mapping.count(self: Self) -> USize
     block entry()
         return(self.count)

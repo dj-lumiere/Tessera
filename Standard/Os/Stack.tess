@@ -24,29 +24,48 @@ import Standard::Alloc
 // -- pages, POSIX ------------------------------------------------------------------
 
 /// Binds the C `getpagesize` function.
+/// :returns: The memory page size in bytes.
 #[external("c"), symbol("getpagesize"), target(os: ("linux", "macos"))]
 private routine c_getpagesize() -> CInt
 
-/// Binds the C `mmap` function.
+/// Binds the C `mmap` function, which maps pages into the address space.
+/// :param addr: Where to put the mapping, or null to let the system choose.
+/// :param length: The number of bytes.
+/// :param prot: The `PROT_*` access the pages allow.
+/// :param flags: The `MAP_*` flags.
+/// :param fd: The file to map, or -1 for anonymous memory.
+/// :param offset: The offset into the file.
+/// :returns: The mapping's start, or MAP_FAILED (-1) with `errno` set.
 #[external("c"), symbol("mmap"), target(os: ("linux", "macos"))]
 private routine c_mmap(addr: Addr, length: USize, prot: CInt, flags: CInt, fd: CInt,
     offset: SSize) -> Addr
 
-/// Binds the C `mprotect` function.
+/// Binds the C `mprotect` function, which changes the access pages allow.
+/// :param addr: The start of the pages, page aligned.
+/// :param length: The number of bytes.
+/// :param prot: The `PROT_*` access the pages allow.
+/// :returns: 0 on success, or -1 with `errno` set.
 #[external("c"), symbol("mprotect"), target(os: ("linux", "macos"))]
 private routine c_mprotect(addr: Addr, length: USize, prot: CInt) -> CInt
 
-/// Binds the C `munmap` function.
+/// Binds the C `munmap` function, which removes a mapping.
+/// :param addr: The start of the pages, page aligned.
+/// :param length: The number of bytes.
+/// :returns: 0 on success, or -1 with `errno` set.
 #[external("c"), symbol("munmap"), target(os: ("linux", "macos"))]
 private routine c_munmap(addr: Addr, length: USize) -> CInt
 
 /// MAP_PRIVATE | MAP_ANONYMOUS, whose second bit differs between Linux and the BSDs, and on Linux MAP_NORESERVE:
 /// the pages are counted against memory only once touched.
+/// :returns: The flags.
 #target(os: "macos")
 private routine map_private_anonymous() -> CInt
     block entry()
         return(0x1002)
 
+/// MAP_PRIVATE | MAP_ANONYMOUS, whose second bit differs between Linux and the BSDs, and on Linux MAP_NORESERVE:
+/// the pages are counted against memory only once touched.
+/// :returns: The flags.
 #target(os: "linux")
 private routine map_private_anonymous() -> CInt
     block entry()
@@ -60,7 +79,10 @@ private routine page_size() -> USize
         size : USize = c_getpagesize().to<USize>()
         return(size)
 
-/// length bytes of pages for a stack, the bottom one closed with the length written in it, or null.
+/// `length` bytes of pages for a stack, the bottom one closed with the length written in it.
+/// :param length: The number of bytes, a whole number of pages.
+/// :param page: The page size in bytes.
+/// :returns: The start of the mapping, or null when the pages can't be mapped.
 #target(os: ("linux", "macos"))
 private routine stack_map(length: USize, page: USize) -> Addr
     // PROT_READ | PROT_WRITE, no file
@@ -99,27 +121,45 @@ private routine pages_release(at: Addr, length: USize) -> Void
 
 // -- pages, Windows ----------------------------------------------------------------
 
-/// Binds the Win32 `VirtualAlloc` function.
+/// Binds the Win32 `VirtualAlloc` function, which reserves or commits pages.
+/// :param addr: Where to put the pages, or null to let the system choose.
+/// :param size: The number of bytes.
+/// :param type: The `MEM_*` allocation type, such as `MEM_RESERVE` or `MEM_COMMIT`.
+/// :param protect: The `PAGE_*` protection.
+/// :returns: The start of the pages, or null with the last error set.
 #[external("c"), symbol("VirtualAlloc"), callconv("stdcall"), target(os: "windows")]
 private routine c_virtual_alloc(addr: Addr, size: USize, type: U32, protect: U32) -> Addr
 
-/// Binds the Win32 `VirtualProtect` function.
+/// Binds the Win32 `VirtualProtect` function, which changes the protection of committed pages.
+/// :param addr: The start of the pages.
+/// :param size: The number of bytes.
+/// :param protect: The new `PAGE_*` protection.
+/// :param old: Where the previous protection goes.
+/// :returns: Nonzero on success, 0 with the last error set.
 #[external("c"), symbol("VirtualProtect"), callconv("stdcall"), target(os: "windows")]
 private routine c_virtual_protect(addr: Addr, size: USize, protect: U32, old: @U32) -> CInt
 
-/// Binds the Win32 `VirtualFree` function.
+/// Binds the Win32 `VirtualFree` function, which decommits or releases pages.
+/// :param addr: The start of the pages (the reservation's start for `MEM_RELEASE`).
+/// :param size: The number of bytes (0 for `MEM_RELEASE`).
+/// :param type: The `MEM_*` free type, such as `MEM_RELEASE`.
+/// :returns: Nonzero on success, 0 with the last error set.
 #[external("c"), symbol("VirtualFree"), callconv("stdcall"), target(os: "windows")]
 private routine c_virtual_free(addr: Addr, size: USize, type: U32) -> CInt
 
 /// Windows' pages are 4 KiB on every architecture it runs on.
+/// :returns: 4096.
 #target(os: "windows")
 private routine page_size() -> USize
     block entry()
         return(4096)
 
-/// length bytes reserved for a stack: the bottom page committed and closed with the length written in it, the top
-/// two committed, and below them a guard page Windows moves down as the stack grows into it. Null if the space
-/// can't be reserved.
+/// `length` bytes reserved for a stack: the bottom page committed and closed with the length written in it, the top
+/// two committed, and below them a guard page Windows moves down as the stack grows into it. A stack of fewer than
+/// three pages above the bottom one is committed whole.
+/// :param length: The number of bytes, a whole number of pages.
+/// :param page: The page size in bytes.
+/// :returns: The start of the reservation, or null when the space can't be reserved.
 #target(os: "windows")
 private routine stack_map(length: USize, page: USize) -> Addr
     // MEM_RESERVE, PAGE_NOACCESS
@@ -186,6 +226,8 @@ private routine pages_release(at: Addr, length: USize) -> Void
 /// :param size: The stack size wanted, in bytes.
 /// :returns: The lowest usable address of the stack (just above the guard page), null when the pages can't be
 /// reserved.
+/// :throws: Crashes with `IntegerOverflowError` when `size` rounded up to pages, plus the guard page, doesn't fit in
+///     USize.
 #target(os: not "none")
 private routine stack_alloc_fn(state: Addr, size: USize) -> Addr
     shared page        : USize = page_size()
@@ -229,6 +271,7 @@ private routine stack_free_fn(state: Addr, ptr: Addr) -> Void
         return()
 
 /// An Allocator for stacks: whole pages, with a guard page below that stops the program when a stack overflows.
+/// :returns: The allocator, which holds no state and needs nothing to free.
 #target(os: not "none")
 routine make_stack_allocator() -> Allocator
     block entry()

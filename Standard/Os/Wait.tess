@@ -13,11 +13,14 @@ module Standard::Os
 
 // -- Linux: futex --------------------------------------------------------------------
 
-/// Binds the C `syscall` function.
+/// Binds the C `syscall` function (variadic), which makes a Linux system call.
+/// :param number: The system call number, with the call's arguments passed after it.
+/// :returns: What the system call gives, or -1 with `errno` set.
 #[external("c"), symbol("syscall"), variadic, target(os: "linux")]
 private routine c_syscall(number: CLong) -> CLong
 
-/// SYS_futex, whose number depends on the architecture.
+/// The system call number of futex, which depends on the architecture.
+/// :returns: The number.
 #target(os: "linux", arch: "x86_64")
 private routine sys_futex() -> CLong
     block entry()
@@ -94,11 +97,20 @@ routine wake_all(at: @U32) -> Void
 
 // -- macOS: __ulock ------------------------------------------------------------------
 
-/// Binds the C `__ulock_wait` function.
+/// Binds the macOS `__ulock_wait` function, which sleeps while a word holds a value.
+/// :param operation: The `UL_*` operation and `ULF_*` flags.
+/// :param addr: The word to wait on.
+/// :param value: The value it must still hold for the thread to sleep.
+/// :param timeout_us: The longest wait in microseconds, 0 for no limit.
+/// :returns: The number of waiters left, or a negative error (with `ULF_NO_ERRNO`).
 #[external("c"), symbol("__ulock_wait"), target(os: "macos")]
 private routine c_ulock_wait(operation: U32, addr: Addr, value: U64, timeout_us: U32) -> CInt
 
-/// Binds the C `__ulock_wake` function.
+/// Binds the macOS `__ulock_wake` function, which wakes threads sleeping on a word.
+/// :param operation: The `UL_*` operation and `ULF_*` flags (`ULF_WAKE_ALL` for every waiter).
+/// :param addr: The word the threads wait on.
+/// :param wake_value: The thread to wake with `ULF_WAKE_THREAD`, else 0.
+/// :returns: 0 on success, or a negative error (with `ULF_NO_ERRNO`).
 #[external("c"), symbol("__ulock_wake"), target(os: "macos")]
 private routine c_ulock_wake(operation: U32, addr: Addr, wake_value: U64) -> CInt
 
@@ -115,7 +127,12 @@ routine wait_on(at: @U32, expected: U32) -> Void
         c_ulock_wait(0x1000001, at, expected.to<U64>(), 0)
         return()
 
-/// __ulock_wait takes microseconds, and 0 means no timeout, so a wait is at least one.
+/// As {wait_on}, but gives up after `timeout_ns` nanoseconds too. It may wait a little longer (down to the operating
+/// system's clock unit), never forever, and returns the same way whether it was woken or timed out.
+/// :param at: The word to wait on.
+/// :param expected: The value it must still hold for the thread to sleep.
+/// :param timeout_ns: The longest wait in nanoseconds.
+/// :note: __ulock_wait takes microseconds, and 0 means no timeout, so a wait is at least one.
 #target(os: "macos")
 routine wait_on_for(at: @U32, expected: U32, timeout_ns: U64) -> Void
     block entry()
@@ -143,15 +160,22 @@ routine wake_all(at: @U32) -> Void
 
 // -- Windows: WaitOnAddress ----------------------------------------------------------
 
-/// Binds the Win32 `WaitOnAddress` function.
+/// Binds the Win32 `WaitOnAddress` function, which sleeps while the value at an address equals another.
+/// :param addr: The address to wait on.
+/// :param compare: The value it must still hold for the thread to sleep.
+/// :param size: The value's size in bytes (1, 2, 4, or 8).
+/// :param millis: The longest wait in milliseconds, `INFINITE` (U32 MAX) for no limit.
+/// :returns: Nonzero when woken (or the values differed), 0 with the last error set on a timeout.
 #[external("c"), symbol("WaitOnAddress"), callconv("stdcall"), target(os: "windows")]
 private routine c_wait_on_address(addr: Addr, compare: Addr, size: USize, millis: U32) -> CInt
 
-/// Binds the Win32 `WakeByAddressSingle` function.
+/// Binds the Win32 `WakeByAddressSingle` function, which wakes one thread waiting on an address.
+/// :param addr: The address the thread waits on.
 #[external("c"), symbol("WakeByAddressSingle"), callconv("stdcall"), target(os: "windows")]
 private routine c_wake_by_address_single(addr: Addr) -> Void
 
-/// Binds the Win32 `WakeByAddressAll` function.
+/// Binds the Win32 `WakeByAddressAll` function, which wakes every thread waiting on an address.
+/// :param addr: The address the threads wait on.
 #[external("c"), symbol("WakeByAddressAll"), callconv("stdcall"), target(os: "windows")]
 private routine c_wake_by_address_all(addr: Addr) -> Void
 
@@ -169,7 +193,12 @@ routine wait_on(at: @U32, expected: U32) -> Void
         c_wait_on_address(at, compare, 4, U32.MAX)
         return()
 
-/// WaitOnAddress takes milliseconds, and U32.MAX means no timeout, so a wait is at most one less.
+/// As {wait_on}, but gives up after `timeout_ns` nanoseconds too. It may wait a little longer (down to the operating
+/// system's clock unit), never forever, and returns the same way whether it was woken or timed out.
+/// :param at: The word to wait on.
+/// :param expected: The value it must still hold for the thread to sleep.
+/// :param timeout_ns: The longest wait in nanoseconds.
+/// :note: WaitOnAddress takes milliseconds, and U32.MAX means no timeout, so a wait is at most one less.
 #target(os: "windows")
 routine wait_on_for(at: @U32, expected: U32, timeout_ns: U64) -> Void
     block entry()
