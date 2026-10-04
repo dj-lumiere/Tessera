@@ -1,0 +1,76 @@
+// File.copy_to_result reports the bytes it copied (an empty file, a small one, and one of several chunks), each copy
+// the same size as its source, and a copy that fails (the source is a directory) leaves nothing at the destination:
+// on Linux and macOS the destination used to stay behind, made and empty, after the read failed.
+
+import Standard::Alloc
+import Standard::Collections
+import Standard::Format
+import Standard::Os
+
+/// The size of a file, or U64.MAX when it can't be read.
+/// :param f: The file.
+/// :returns: Its size in bytes.
+routine size_of(f: File) -> U64
+    block entry()
+        m : Result<Metadata, FsError> = f.metadata_result()
+        when m
+            .Success(info) -> return(info.size)
+            .Failure       -> return(U64.MAX)
+
+/// Writes `count` bytes to a file in `root`, copies it, and prints what the copy reported.
+/// :param root: The test's directory.
+/// :param count: The file's size.
+/// :param alloc: The allocator for the paths and the text.
+routine copy_of(root: Directory, count: USize, alloc: @Allocator) -> Void
+    shared text : @List<Byte> <- .construct(alloc)
+
+    block entry()
+        jump fill(0)
+
+    block fill(i: USize)
+        done : Bool = i.ge(count)
+        branch done
+            ? copy()
+            : continue
+        letter : U8 = i.mod(26).to<U8>().add(97)
+        text.push(letter.bits())
+        jump fill(i.add(1))
+
+    block copy()
+        source          : File                  = root.file("source.txt", alloc)
+        target          : File                  = root.file("target.txt", alloc)
+        discard_written : Result<Unit, FsError> = source.write_all_result(text.to<Bytes>())
+        r               : Result<U64, FsError>  = source.copy_to_result(target)
+        when r
+            .Success(n) -> continue
+            .Failure    -> failed()
+        same : Bool = size_of(target).eq(n)
+        Out.write("{count} bytes: copied {n}, the copy has as many {same}\n")
+        jump finish()
+
+    block failed()
+        Out.write("{count} bytes: failed\n")
+        jump finish()
+
+    block finish()
+        text.destruct()
+        return()
+
+routine main() -> S32
+    shared alloc : @Allocator <- make_heap_allocator()
+    shared tmp   : Directory  = Directory.temp_result(alloc).unwrap()
+    shared root  : Directory  = tmp.subdir("tessera_fs_copy", alloc)
+
+    block entry()
+        discard_old  : Result<Unit, FsError> = root.delete_all_result(alloc)
+        discard_made : Result<Unit, FsError> = root.create_all_result()
+        copy_of(root, 0, alloc)
+        copy_of(root, 5, alloc)
+        copy_of(root, 100000, alloc)
+        inner         : Directory             = root.subdir("inner", alloc)
+        target        : File                  = root.file("from_directory.txt", alloc)
+        discard_inner : Result<Unit, FsError> = inner.create_result()
+        r             : Result<U64, FsError>  = File.at(inner.path).copy_to_result(target)
+        Out.write("copying a directory fails: {r.is_failure()}, leaves a file behind: {target.is_present()}\n")
+        discard_gone : Result<Unit, FsError> = root.delete_all_result(alloc)
+        return(0)

@@ -348,7 +348,7 @@ private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
 /// :param args: The arguments, not including the program name.
 /// :param arg_count: How many arguments `args` holds.
 /// :param alloc: The allocator for the line and the working memory.
-/// :returns: The command line, or null when a text has a NUL or an allocation fails.
+/// :returns: The command line, or null when an allocation fails (the texts were checked for a NUL before).
 #target(os: "windows")
 private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
     alloc: @Allocator) -> @U16
@@ -487,13 +487,41 @@ private routine units_of(s: @U16) -> USize
     block entry()
         return(wide_length(s))
 
+/// One override as a 0-terminated "NAME=VALUE" UTF-16 string, in memory from `alloc`.
+/// :param v: The override, its texts without a NUL (checked before).
+/// :param alloc: The allocator for the string.
+/// :returns: The string, or null when the allocation fails.
+#target(os: "windows")
+private routine env_entry_utf16(v: EnvVar, alloc: @Allocator) -> @U16
+    shared room  : USize = v.name.count().add(v.value.count()).add(2)
+    shared units : @U16  = allocate<U16>(room, alloc)
+
+    block entry()
+        branch units.is_null()
+            ? return(null)
+            : continue
+        name_units : Option<USize> = encode_utf16(v.name, units, room)
+        when name_units
+            .Present(n) -> continue
+            .Absent     -> failed()
+        // '='
+        units.stride(n).store(61)
+        value_units : Option<USize> = encode_utf16(v.value, units.stride(n.add(1)),
+            room.sub(n).sub(1))
+        branch value_units.is_present()
+            ? return(units)
+            : failed()
+
+    // Not reached after the NUL check, which leaves the texts encodable in the room counted for them.
+    block failed()
+        deallocate(units, alloc)
+        return(null)
+
 /// The overrides as "NAME=VALUE" UTF-16 strings, in memory from `alloc`.
 /// :param options: The environment overrides.
 /// :param out: Where the strings go, room for one per override.
 /// :param alloc: The allocator for the strings.
-/// :returns: True when all were made, false (and the ones made so far freed) when a text has a NUL or an allocation
-///     fails.
-/// :throws: Crashes with `MemoryAllocationError` when the "NAME=VALUE" text can't be allocated.
+/// :returns: True when all were made, false (and the ones made so far freed) when an allocation fails.
 #target(os: "windows")
 private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Allocator) -> Bool
     block entry()
@@ -503,12 +531,8 @@ private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Allo
         branch i.eq(options.env_count)
             ? return(true)
             : continue
-        v : EnvVar = options.env.stride(i).load()
-        claim named : @Bytes <- Bytes.concat(v.name, "=", alloc)
-        claim whole : @Bytes <- Bytes.concat(named.load(), v.value, alloc)
-        named.destruct()
-        units, n = utf16(whole.load(), alloc)
-        whole.destruct()
+        v     : EnvVar = options.env.stride(i).load()
+        units : @U16   = env_entry_utf16(v, alloc)
         branch units.is_null()
             ? undo(i)
             : continue
@@ -526,8 +550,8 @@ private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Allo
 /// This process's environment with the overrides applied, as a sorted block, in memory from `alloc`.
 /// :param options: The environment overrides.
 /// :param alloc: The allocator for the block and the working memory.
-/// :returns: The UTF-16 environment block, or null when an override has a NUL or an allocation fails.
-/// :throws: Crashes with `MemoryAllocationError` when an override's "NAME=VALUE" text can't be allocated.
+/// :returns: The UTF-16 environment block, or null when an allocation fails (the overrides were checked for a NUL
+///     before).
 #target(os: "windows")
 private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
     shared own : @@U16 = allocate<@U16>(options.env_count.max(1), alloc)
@@ -856,20 +880,25 @@ private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which:
 /// :param options: The directory, environment overrides, and standard streams.
 /// :param alloc: The allocator for the captured output and the working memory.
 /// :returns: The {ProcessOutput}, or Failure with a {ProcessError} (InvalidArgument for a NUL in the command, the
-/// directory, or a variable).
-/// :throws: Crashes with `MemoryAllocationError` when an environment override's text can't be allocated.
+/// directory, or a variable, or a directory too long for a path, OutOfMemory when the working memory or the
+/// captured output can't be allocated).
 #target(os: "windows")
 routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
-    shared line : @U16                = command_line(program, args, arg_count, alloc)
+    shared line : @@U16               <- null
     shared env  : @@U16               <- null
     shared h    : @Handles            <- Handles.empty()
     shared pi   : @ProcessInformation <- ProcessInformation { process: null, thread: null,
         process_id: 0, thread_id: 0 }
 
     block entry()
-        branch line.is_null()
+        branch has_nul(program, args, arg_count, options)
             ? finish(.Failure(ProcessError.InvalidArgument))
+            : continue
+        made_line : @U16 = command_line(program, args, arg_count, alloc)
+        made_line.store_into(line)
+        branch made_line.is_null()
+            ? finish(.Failure(ProcessError.OutOfMemory))
             : continue
         claim directory : @Array<U16, PATH_CAPACITY> <- uninit
         when options.directory
@@ -888,7 +917,7 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
         block_units : @U16 = env_block(options, alloc)
         block_units.store_into(env)
         branch block_units.is_null()
-            ? finish(.Failure(ProcessError.InvalidArgument))
+            ? finish(.Failure(ProcessError.OutOfMemory))
             : handles(directory)
 
     block handles(directory: @U16)
@@ -904,8 +933,8 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
             cb_reserved2: 0, reserved2: null, std_input: h.input.load(),
             std_output: h.output.load(), std_error: h.error.load() }
         // CREATE_UNICODE_ENVIRONMENT
-        made : Bool = c_create_process(null, line, null, null, 1, 0x400, env.load(), directory, si,
-            pi).ne(0)
+        made : Bool = c_create_process(null, line.load(), null, null, 1, 0x400, env.load(),
+            directory, si, pi).ne(0)
         e    : U32  = c_get_last_error()
         h.close_child_side()
         branch made
@@ -926,9 +955,20 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
         c_wait_for_single_object(pi.process.load(), U32.MAX)
         claim code : @U32 <- 0
         c_get_exit_code_process(pi.process.load(), code)
-        error_text : Bytes = moved(err.buffer.load(), alloc)
-        jump finish(.Success(ProcessOutput { status: ExitStatus.Exited(code.load().to_wrap<S32>()),
-            stdout: out.owned(alloc), stderr: error_text }))
+        errors : CaptureBuffer = moved(err.buffer.load(), alloc)
+        status : ExitStatus    = ExitStatus.Exited(code.load().to_wrap<S32>())
+        output : ProcessOutput = ProcessOutput { status: status, stdout: out.owned(alloc),
+            stderr: errors.owned(alloc) }
+        lost   : Bool          = out.failed.load().bitor(errors.failed)
+        branch lost
+            ? lost_output(output)
+            : finish(.Success(output))
+
+    // A capture couldn't grow and lost bytes: what was captured goes back, and the run fails.
+    block lost_output(output: ProcessOutput)
+        claim held : @ProcessOutput <- output
+        held.destruct()
+        jump finish(.Failure(ProcessError.OutOfMemory))
 
     // The parent's ends of the pipes, the process and thread handles, the command line, and the environment block:
     // each one this run got.
@@ -937,7 +977,7 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
         close_if_open(h.err_r.load())
         close_if_open(pi.thread.load())
         close_if_open(pi.process.load())
-        free_texts(line, env.load(), alloc)
+        free_texts(line.load(), env.load(), alloc)
         return(result)
 
 /// Frees the command line and the environment block, each when there is one.
@@ -1019,18 +1059,21 @@ private routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @Allocator)
 /// What a helper thread captured on the malloc heap, copied into `alloc` (and the heap copy given back).
 /// :param b: The buffer filled on the malloc heap.
 /// :param alloc: The allocator for the copy.
-/// :returns: The captured bytes, carrying `alloc` (empty when nothing was captured or the copy couldn't be allocated).
+/// :returns: The copy in memory from `alloc`, `failed` when the helper's buffer lost bytes or the copy couldn't be
+///     allocated.
 #target(os: "windows")
-private routine moved(b: CaptureBuffer, alloc: @Allocator) -> Bytes
+private routine moved(b: CaptureBuffer, alloc: @Allocator) -> CaptureBuffer
     block entry()
         branch b.data.is_null()
-            ? return(Bytes { data: null, count: 0, alloc: alloc })
+            ? return(CaptureBuffer { data: null, count: 0, capacity: 0, failed: b.failed })
             : continue
         claim heap   : @Allocator     <- make_heap_allocator()
         claim copied : @CaptureBuffer <- CaptureBuffer.empty()
         copied.append(b.data, b.count, alloc)
         deallocate(b.data, heap)
-        return(copied.owned(alloc))
+        lost : Bool = copied.failed.load().bitor(b.failed)
+        copied.failed.store(lost)
+        return(copied.load())
 
 // -- the environment ---------------------------------------------------------------------
 

@@ -13,12 +13,12 @@ module Standard::Os
 
 import Standard::Alloc
 
-/// Why a program couldn't start.
+/// Why a program couldn't start, or its output couldn't be captured.
 choice ProcessError: U8
     NotFound  // no such program
     PermissionDenied
-    InvalidArgument  // a NUL inside the program, an argument, the directory, or a variable
-    OutOfMemory
+    InvalidArgument  // a NUL inside the program, an argument, the directory, or a variable, or a '=' in a name
+    OutOfMemory  // the working memory, or room for the captured output, couldn't be allocated
     Other
 
 /// What the child's standard input is.
@@ -147,7 +147,8 @@ internal record CaptureBuffer
     capacity : USize
     failed   : Bool  // an allocation failed: what came after was dropped
 
-/// An empty capture buffer that holds no memory yet.
+/// An empty capture buffer that holds no memory yet. Its `failed` is read when the run ends: a capture that lost
+/// bytes makes the run fail with OutOfMemory instead of handing back a truncated stream.
 /// :returns: The buffer.
 internal routine CaptureBuffer.empty() -> Self
     block entry()
@@ -210,6 +211,44 @@ internal routine CaptureBuffer.owned(self: @Self, alloc: @Allocator) -> Bytes
     block entry()
         owned : Bytes = self.load().owned(alloc)
         return(owned)
+
+/// Whether a NUL is inside any text the child would get, or an override's name holds a '=': what run_process_result
+/// turns down with InvalidArgument before it allocates anything, so a later failure to allocate is OutOfMemory.
+/// :param program: The program to run.
+/// :param args: The arguments.
+/// :param arg_count: How many arguments `args` holds.
+/// :param options: The directory and environment overrides.
+/// :returns: True when the program, an argument, an override, or the directory can't be passed to the child.
+internal routine has_nul(program: Bytes, args: @Bytes, arg_count: USize,
+    options: ProcessOptions) -> Bool
+    block entry()
+        branch program.has("\x00")
+            ? return(true)
+            : arg(0)
+
+    block arg(i: USize)
+        branch i.eq(arg_count)
+            ? env(0)
+            : continue
+        argument : Bytes = args.stride(i).load()
+        branch argument.has("\x00")
+            ? return(true)
+            : arg(i.add(1))
+
+    block env(i: USize)
+        branch i.eq(options.env_count)
+            ? directory()
+            : continue
+        v          : EnvVar = options.env.stride(i).load()
+        nul_inside : Bool   = v.name.has("\x00").bitor(v.value.has("\x00"))
+        branch nul_inside.bitor(v.name.has("="))
+            ? return(true)
+            : env(i.add(1))
+
+    block directory()
+        when options.directory
+            .Present(d) -> return(d.has("\x00"))
+            .Absent     -> return(false)
 
 /// Whether `name`'s bytes equal the start of `entry` up to its '=' (a "NAME=VALUE" entry), ASCII letters in any case
 /// when `fold` is set.

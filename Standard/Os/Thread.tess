@@ -38,7 +38,8 @@ private routine thread_body(raw: Addr) -> Void
 /// :param arg: The state it works on.
 /// :param alloc: The allocator the record comes from, which the new thread frees it to.
 /// :returns: The filled record.
-/// :note: A failed allocation isn't checked: the record is then stored through a null pointer.
+/// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the record.
+#track_caller
 private routine thread_start<T>(entry: Callable<(@T,), Void>, arg: @T,
     alloc: @Allocator) -> @ThreadStart
 require T: typename
@@ -46,6 +47,9 @@ require T: typename
         erased : Callable<(Addr,), Void> = bitcast(entry)
         state  : Addr                    = arg
         start  : @ThreadStart            = allocate<ThreadStart>(1, alloc)
+        branch start.is_null()
+            ? crash_allocation()
+            : continue
         start.store(ThreadStart { entry: erased, arg: state, alloc: alloc })
         return(start)
 
@@ -88,7 +92,8 @@ private routine posix_thread_main(arg: Addr) -> Addr
 /// :param arg: The state it works on, which must outlive the thread.
 /// :param alloc: The allocator the thread's start record comes from.
 /// :returns: The new thread, to {Thread.join} or {Thread.detach}.
-/// :throws: Crashes with `TaskSpawnError` when the operating system starts no thread.
+/// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the thread's start record, and with
+///     `TaskSpawnError` when the operating system starts no thread.
 #[target(os: ("linux", "macos")), track_caller]
 routine Thread.spawn<T>(entry: Callable<(@T,), Void>, arg: @T, alloc: @Allocator) -> Self
 require T: typename
@@ -196,7 +201,8 @@ private routine windows_thread_main(arg: Addr) -> U32
 /// :param arg: The state it works on, which must outlive the thread.
 /// :param alloc: The allocator the thread's start record comes from.
 /// :returns: The new thread, to {Thread.join} or {Thread.detach}.
-/// :throws: Crashes with `TaskSpawnError` when the operating system starts no thread.
+/// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the thread's start record, and with
+///     `TaskSpawnError` when the operating system starts no thread.
 #[target(os: "windows"), track_caller]
 routine Thread.spawn<T>(entry: Callable<(@T,), Void>, arg: @T, alloc: @Allocator) -> Self
 require T: typename

@@ -1,0 +1,40 @@
+// File.read_all_result on a 32-bit target turns down a file of 4 GiB or more with Failure(OutOfMemory), without
+// allocating: it can't fit in the address space. It used to crash with IntegerOverflowError converting the size.
+// The file is sparse (set_size_result), so making it writes nothing, and it is deleted after.
+
+import Standard::Alloc
+import Standard::Format
+import Standard::Os
+
+routine main() -> S32
+    shared alloc : @Allocator  <- make_heap_allocator()
+    shared tmp   : Directory   = Directory.temp_result(alloc).unwrap()
+    shared big   : File        = tmp.file("tessera_fs_read_too_large.bin", alloc)
+    shared h     : @FileHandle <- .empty()
+
+    block entry()
+        opened : Result<FileHandle, FsError> = big.open_write_result()
+        h.store(opened.unwrap())
+        four_gib : U64                   = U64.shl(1, 32)
+        sized    : Result<Unit, FsError> = h.set_size_result(four_gib)
+        h.close()
+        Out.write("made a 4 GiB file: {sized.is_success()}\n")
+        r : Result<Bytes, FsError> = big.read_all_result(alloc)
+        when r
+            .Success(text) -> read(text)
+            .Failure(e)    -> failed(e)
+
+    block read(text: Bytes)
+        claim held : @Bytes <- text
+        Out.write("read it all: {held.count()} bytes\n")
+        held.destruct()
+        jump finish()
+
+    block failed(e: FsError)
+        out_of_memory : Bool = e.eq(FsError.OutOfMemory)
+        Out.write("turned down as out of memory: {out_of_memory}\n")
+        jump finish()
+
+    block finish()
+        discard_gone : Result<Unit, FsError> = big.delete_result()
+        return(0)

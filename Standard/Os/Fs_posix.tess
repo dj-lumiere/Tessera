@@ -1072,8 +1072,8 @@ internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result<Unit, FsErr
 /// :param from: The file to copy.
 /// :param to: The file to write.
 /// :returns: `Success` with the number of bytes copied.
-/// :throws: Returns `Failure` with the reason when a file can't be opened, read, or written. A failure partway
-///     leaves `to` holding part of the bytes.
+/// :throws: Returns `Failure` with the reason when a file can't be opened, read, or written, or the permissions can't
+///     be set. A failure once `to` is opened removes it, so no partial copy is left.
 #target(os: ("linux", "macos"))
 internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
     shared src   : @FileHandle <- .empty()
@@ -1095,7 +1095,10 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
 
     block copy(made: FileHandle)
         dst.store(made)
-        set_mode(dst.fd.load(), fd_mode(src.fd.load()))
+        set : Bool = set_mode(dst.fd.load(), fd_mode(src.fd.load())).eq(0)
+        branch set
+            ? continue
+            : abandon(error_of(errno()))
         claim buffer : @Array<Byte, 16384> <- uninit
         jump chunk(buffer.to<@Byte>())
 
@@ -1103,7 +1106,7 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
         got : Result<USize, FsError> = src.read_bytes_result(buffer, 16384)
         when got
             .Success(n)     -> put(buffer, n)
-            .Failure(error) -> finish(.Failure(error))
+            .Failure(error) -> abandon(error)
 
     block put(buffer: @Byte, n: USize)
         branch n.eq(0)
@@ -1112,32 +1115,38 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
         wrote : Result<Unit, FsError> = dst.write_all_result(buffer, n)
         when wrote
             .Success        -> continue
-            .Failure(error) -> finish(.Failure(error))
+            .Failure(error) -> abandon(error)
         total.load().add(n.to<U64>()).store_into(total)
         jump chunk(buffer)
+
+    // `to` is opened (made or emptied) and the copy can't be finished: it goes, so no partial copy is left.
+    block abandon(error: FsError)
+        dst.close()
+        discard_removed : Result<Unit, FsError> = remove_file(to)
+        jump finish(.Failure(error))
 
     block finish(result: Result<U64, FsError>)
         src.close()
         dst.close()
         return(result)
 
-/// Sets the permission bits of the open file fd. A failure is ignored.
+/// Sets the permission bits of the open file fd.
 /// :param fd: The open file.
 /// :param mode: The new permission bits.
+/// :returns: 0, or -1 with `errno` set.
 #target(os: "linux")
-private routine set_mode(fd: CInt, mode: U32) -> Void
+private routine set_mode(fd: CInt, mode: U32) -> CInt
     block entry()
-        c_fchmod(fd, mode)
-        return()
+        return(c_fchmod(fd, mode))
 
-/// Sets the permission bits of the open file fd. A failure is ignored.
+/// Sets the permission bits of the open file fd.
 /// :param fd: The open file.
 /// :param mode: The new permission bits, of which the low 16 bits are used.
+/// :returns: 0, or -1 with `errno` set.
 #target(os: "macos")
-private routine set_mode(fd: CInt, mode: U32) -> Void
+private routine set_mode(fd: CInt, mode: U32) -> CInt
     block entry()
-        c_fchmod(fd, mode.to_wrap<U16>())
-        return()
+        return(c_fchmod(fd, mode.to_wrap<U16>()))
 
 /// Sets the permission bits of cpath, a link followed.
 /// :param cpath: The NUL-terminated path.

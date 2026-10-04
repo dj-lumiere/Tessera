@@ -209,7 +209,7 @@ private routine remove_entries(path: Bytes, alloc: @Allocator) -> Result<Unit, F
 /// :param alloc: The allocator for the text.
 /// :returns: `Success` with the file's bytes.
 /// :throws: Returns `Failure` with the reason when the file can't be opened or read, `OutOfMemory` when `alloc`
-///     fails. Crashes with `IntegerOverflowError` on a 32-bit target when the file reports a size of 4 GiB or more.
+///     fails or the file is too large for the address space (4 GiB or more on a 32-bit target).
 internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry()
         opened : Result<FileHandle, FsError> = FileHandle.open(path, OpenMode.Read)
@@ -228,8 +228,8 @@ internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsEr
 /// :param f: The open file, read from its position to the end.
 /// :param alloc: The allocator for the text.
 /// :returns: `Success` with the bytes read.
-/// :throws: Returns `Failure` with the reason when a read fails, `OutOfMemory` when `alloc` fails. Crashes with
-///     `IntegerOverflowError` on a 32-bit target when the file reports a size of 4 GiB or more.
+/// :throws: Returns `Failure` with the reason when a read fails, `OutOfMemory` when `alloc` fails or the file is too
+///     large for the address space (it reports a size, or grows to one, that a USize can't hold).
 private routine read_rest(f: @FileHandle, alloc: @Allocator) -> Result<Bytes, FsError>
     shared buffer : @Slice<Byte> <- .empty()
 
@@ -240,8 +240,14 @@ private routine read_rest(f: @FileHandle, alloc: @Allocator) -> Result<Bytes, Fs
             .Failure    -> start(64)
 
     block known_size(n: U64)
-        size_guess : USize = n.to<USize>().add(1)
-        jump start(size_guess.max(64))
+        room : Option<U64> = n.add_checked(1)
+        when room
+            .Present(with_one) -> continue
+            .Absent            -> finish(.Failure(FsError.OutOfMemory))
+        size_guess : Option<USize> = with_one.to_checked<USize>()
+        when size_guess
+            .Present(guess) -> start(guess.max(64))
+            .Absent         -> finish(.Failure(FsError.OutOfMemory))
 
     block start(capacity: USize)
         made : Result<Slice<Byte>, AllocFailed> = Slice<Byte>.construct_result(capacity, alloc)
@@ -270,7 +276,11 @@ private routine read_rest(f: @FileHandle, alloc: @Allocator) -> Result<Bytes, Fs
             : fill(count.add(n))
 
     block grow(count: USize)
-        bigger : Result<Unit, AllocFailed> = buffer.resize_result(count.mul(2))
+        doubled : Option<USize> = count.mul_checked(2)
+        when doubled
+            .Present(capacity) -> continue
+            .Absent            -> finish(.Failure(FsError.OutOfMemory))
+        bigger : Result<Unit, AllocFailed> = buffer.resize_result(capacity)
         when bigger
             .Success -> fill(count)
             .Failure -> finish(.Failure(FsError.OutOfMemory))

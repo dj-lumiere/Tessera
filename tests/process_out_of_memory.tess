@@ -1,0 +1,108 @@
+// run_process_result and run_shell_result report an allocator that fails as OutOfMemory: one that gives nothing (the
+// run can't even build its command line, which Windows used to report as InvalidArgument), and one that can't grow a
+// capture past its first block, which used to hand back the first part of the output as if that were all. The same
+// command with the default heap captures everything. The command prints 200 lines of 48 x's, over several reads.
+
+import Standard::Alloc
+import Standard::Format
+import Standard::Os
+
+/// The bytes the command prints at least (200 lines of 48 x's and a line ending).
+preset LONG_COUNT: USize = 9800
+
+/// An allocator call that always fails.
+/// :param state: Unused.
+/// :param size: Unused.
+/// :returns: Null.
+routine refuse_alloc(state: Addr, size: USize) -> Addr
+    block entry()
+        return(null)
+
+/// A reallocation that always fails, leaving the block as it was.
+/// :param state: Unused.
+/// :param old: Unused.
+/// :param size: Unused.
+/// :returns: Null.
+routine refuse_realloc(state: Addr, old: Addr, size: USize) -> Addr
+    block entry()
+        return(null)
+
+/// The C heap's allocation, for an allocator that only refuses to grow.
+/// :param state: Unused.
+/// :param size: The size in bytes.
+/// :returns: The block, or null.
+routine heap_alloc(state: Addr, size: USize) -> Addr
+    block entry()
+        heap : Allocator                     = make_c_heap_allocator()
+        fn   : Callable<(Addr, USize), Addr> = heap.alloc_fn
+        return(fn.call(heap.state, size))
+
+/// The C heap's free.
+/// :param state: Unused.
+/// :param ptr: The block.
+routine heap_free(state: Addr, ptr: Addr) -> Void
+    block entry()
+        heap : Allocator                    = make_c_heap_allocator()
+        fn   : Callable<(Addr, Addr), Void> = heap.free_fn
+        fn.call(heap.state, ptr)
+        return()
+
+/// The command that prints the 200 lines, through cmd.exe.
+/// :returns: The command line.
+#target(os: "windows")
+routine long_echo() -> Bytes
+    block entry()
+        return("for /L %i in (1,1,200) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+
+/// The command that prints the 200 lines, through sh.
+/// :returns: The command line.
+#target(os: ("linux", "macos"))
+routine long_echo() -> Bytes
+    block entry()
+        return("i=0; while [ $i -lt 200 ]; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; i=$((i+1)); done")
+
+/// The name of a run's failure.
+/// :param e: The failure.
+/// :returns: Its name.
+routine error_name(e: ProcessError) -> Bytes
+    block entry()
+        when e
+            ProcessError.NotFound         -> return("NotFound")
+            ProcessError.PermissionDenied -> return("PermissionDenied")
+            ProcessError.InvalidArgument  -> return("InvalidArgument")
+            ProcessError.OutOfMemory      -> return("OutOfMemory")
+            ProcessError.Other            -> return("Other")
+
+/// Runs the long echo with `alloc` and says how it went.
+/// :param label: What the allocator is.
+/// :param alloc: The allocator for the run.
+routine run(label: Bytes, alloc: @Allocator) -> Void
+    block entry()
+        r : Result<ProcessOutput, ProcessError> = run_shell_result(long_echo(),
+            ProcessOptions.default(), alloc)
+        when r
+            .Success(output) -> captured(output)
+            .Failure(e)      -> failed(e)
+
+    block captured(output: ProcessOutput)
+        claim held : @ProcessOutput <- output
+        whole : Bool = held.stdout.load().count().ge(LONG_COUNT)
+        Out.write("{label}: captured all of it {whole}\n")
+        held.destruct()
+        return()
+
+    block failed(e: ProcessError)
+        Out.write("{label}: {error_name(e)}\n")
+        return()
+
+routine main() -> S32
+    shared nothing : @Allocator <- { alloc_fn: refuse_alloc.to<Callable>(),
+        realloc_fn: refuse_realloc.to<Callable>(), free_fn: heap_free.to<Callable>(), state: null }
+    shared no_grow : @Allocator <- { alloc_fn: heap_alloc.to<Callable>(),
+        realloc_fn: refuse_realloc.to<Callable>(), free_fn: heap_free.to<Callable>(), state: null }
+
+    block entry()
+        run("an allocator that gives nothing", nothing)
+        run("an allocator that can't grow a capture", no_grow)
+        run("the default heap", DEFAULT_HEAP)
+        return(0)

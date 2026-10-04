@@ -1,0 +1,61 @@
+// Thread.spawn crashes with MemoryAllocationError, at the caller's line, when its allocator can't give the thread's
+// start record. It used to store the record through the null pointer it got.
+
+import Standard::Alloc
+import Standard::Format
+import Standard::Os
+
+#[external("c"), symbol("exit"), noreturn]
+routine exit(status: CInt) -> Void
+
+/// Reports the crash and the caller's line on stdout, where the golden test sees them, and exits with status 3.
+/// :param name: The crash kind.
+/// :param message: The crash message.
+/// :param place: Where the crash was raised.
+#[export("tessera_crash_handler"), noreturn]
+routine on_crash(name: Bytes, message: Bytes, place: @SourceLocation) -> Void
+    block entry()
+        Out.write("crashed: {name} at line {place.line.load()}\n")
+        exit(3)
+
+/// An allocator call that always fails.
+/// :param state: Unused.
+/// :param size: Unused.
+/// :returns: Null.
+routine refuse_alloc(state: Addr, size: USize) -> Addr
+    block entry()
+        return(null)
+
+/// A reallocation that always fails.
+/// :param state: Unused.
+/// :param old: Unused.
+/// :param size: Unused.
+/// :returns: Null.
+routine refuse_realloc(state: Addr, old: Addr, size: USize) -> Addr
+    block entry()
+        return(null)
+
+/// A free that has nothing to do.
+/// :param state: Unused.
+/// :param ptr: Unused.
+routine ignore_free(state: Addr, ptr: Addr) -> Void
+    block entry()
+        return()
+
+/// The thread's work, never run.
+/// :param count: Unused.
+routine work(count: @U32) -> Void
+    block entry()
+        return()
+
+routine main() -> S32
+    shared count   : @U32       <- 0
+    shared nothing : @Allocator <- { alloc_fn: refuse_alloc.to<Callable>(),
+        realloc_fn: refuse_realloc.to<Callable>(), free_fn: ignore_free.to<Callable>(),
+        state: null }
+
+    block entry()
+        t : Thread = Thread.spawn(work.to<Callable>(), count, nothing)
+        t.join()
+        Out.write("not reached\n")
+        return(0)

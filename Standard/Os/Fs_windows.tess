@@ -199,13 +199,18 @@ private routine c_remove_directory(path: @U16) -> CInt
 #[external("c"), symbol("DeleteFileW"), callconv("stdcall"), target(os: "windows")]
 private routine c_delete_file(path: @U16) -> CInt
 
-/// Binds the Win32 `CopyFileW` function: copies a file's data and attributes.
+/// Binds the Win32 `CopyFileExW` function: copies a file's data and attributes, calling `progress` as it goes.
 /// :param from: The 0-terminated UTF-16 path of the file to copy.
 /// :param to: The 0-terminated UTF-16 path of the copy.
-/// :param fail_if_exists: Nonzero to fail when something is at `to`, 0 to replace it.
+/// :param progress: The progress routine, or null.
+/// :param data: What `progress` gets as its last argument.
+/// :param cancel: A flag that cancels the copy when set, or null.
+/// :param flags: The `COPY_FILE_*` flags, 0 to replace what is at `to`.
 /// :returns: Nonzero, or 0 with the last error set.
-#[external("c"), symbol("CopyFileW"), callconv("stdcall"), target(os: "windows")]
-private routine c_copy_file(from: @U16, to: @U16, fail_if_exists: CInt) -> CInt
+#[external("c"), symbol("CopyFileExW"), callconv("stdcall"), target(os: "windows")]
+private routine c_copy_file_ex(from: @U16, to: @U16,
+    progress: Callable<#callconv("stdcall"), (S64, S64, S64, S64, U32, U32, Addr, Addr, Addr), U32>,
+    data: Addr, cancel: Addr, flags: U32) -> CInt
 
 /// Binds the Win32 `MoveFileExW` function: renames a file or directory.
 /// :param from: The current 0-terminated UTF-16 path.
@@ -974,29 +979,49 @@ internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result<Unit, FsErr
     block entry()
         return(move_file(from, to, 0))
 
-/// Copies from into to (made, or replaced): the bytes copied.
+/// CopyFileExW's progress routine: records the bytes transferred so far in the U64 at `data`, and lets the copy go
+/// on.
+/// :param total_size: The file's size.
+/// :param transferred: The bytes copied so far.
+/// :param stream_size: The current stream's size.
+/// :param stream_transferred: The current stream's bytes copied so far.
+/// :param stream: The current stream's number.
+/// :param reason: Why it is called (a chunk finished, or a stream started).
+/// :param source: The source file's handle.
+/// :param destination: The destination file's handle.
+/// :param data: The U64 that counts the bytes copied.
+/// :returns: `PROGRESS_CONTINUE` (0).
+#[target(os: "windows"), callconv("stdcall")]
+private routine copy_progress(total_size: S64, transferred: S64, stream_size: S64,
+    stream_transferred: S64, stream: U32, reason: U32, source: Addr, destination: Addr,
+    data: Addr) -> U32
+    block entry()
+        data.to<@U64>().store(transferred.to_wrap<U64>())
+        return(0)
+
+/// Copies from into to (made, or replaced): the bytes copied, as CopyFileExW reports them while it copies.
 /// :param from: The file to copy.
 /// :param to: The file to write.
-/// :returns: `Success` with the size of `to` after the copy.
-/// :throws: Returns `Failure` with the reason when the copy fails, or when the size of the copy can't be read.
+/// :returns: `Success` with the number of bytes copied.
+/// :throws: Returns `Failure` with the reason when the copy fails, `InvalidPath` or `NameTooLong` when a path doesn't
+///     fit a C path.
 #target(os: "windows")
 internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
     block entry()
-        claim a : @Array<U16, PATH_CAPACITY> <- uninit
-        claim b : @Array<U16, PATH_CAPACITY> <- uninit
+        claim a      : @Array<U16, PATH_CAPACITY> <- uninit
+        claim b      : @Array<U16, PATH_CAPACITY> <- uninit
+        claim copied : @U64                       <- 0
         branch wide_path(from, a.to<@U16>())
             ? continue
             : return(.Failure(path_error(from)))
         branch wide_path(to, b.to<@U16>())
             ? continue
             : return(.Failure(path_error(to)))
-        branch c_copy_file(a.to<@U16>(), b.to<@U16>(), 0).ne(0)
-            ? continue
+        done : Bool = c_copy_file_ex(a.to<@U16>(), b.to<@U16>(), copy_progress.to<Callable>(),
+            copied, null, 0).ne(0)
+        branch done
+            ? return(.Success(copied.load()))
             : return(failed<U64>())
-        m : Result<Metadata, FsError> = metadata(to)
-        when m
-            .Success(info)  -> return(.Success(info.size))
-            .Failure(error) -> return(.Failure(error))
 
 /// Sets or clears the read-only attribute.
 /// :param path: The file to change.

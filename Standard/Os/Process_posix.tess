@@ -289,44 +289,6 @@ private routine Prepared.release(self: @Self, alloc: @Allocator) -> Void
         deallocate(dir, alloc)
         return()
 
-/// Whether a NUL is inside any text the child would get, or an override's name holds a '='.
-/// :param program: The program to run.
-/// :param args: The arguments.
-/// :param arg_count: How many arguments `args` holds.
-/// :param options: The directory and environment overrides.
-/// :returns: True when the program, an argument, an override, or the directory can't be passed as a C string.
-#target(os: ("linux", "macos"))
-private routine has_nul(program: Bytes, args: @Bytes, arg_count: USize,
-    options: ProcessOptions) -> Bool
-    block entry()
-        branch program.has("\x00")
-            ? return(true)
-            : arg(0)
-
-    block arg(i: USize)
-        branch i.eq(arg_count)
-            ? env(0)
-            : continue
-        argument : Bytes = args.stride(i).load()
-        branch argument.has("\x00")
-            ? return(true)
-            : arg(i.add(1))
-
-    block env(i: USize)
-        branch i.eq(options.env_count)
-            ? directory()
-            : continue
-        v          : EnvVar = options.env.stride(i).load()
-        nul_inside : Bool   = v.name.has("\x00").bitor(v.value.has("\x00"))
-        branch nul_inside.bitor(v.name.has("="))
-            ? return(true)
-            : env(i.add(1))
-
-    block directory()
-        when options.directory
-            .Present(d) -> return(d.has("\x00"))
-            .Absent     -> return(false)
-
 /// Builds everything the child needs before fork, so the child allocates nothing: the argument vector, the merged
 /// environment, and the directory path.
 /// :param p: Where the result goes. It is valid to free even on failure.
@@ -649,7 +611,8 @@ private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 /// :param options: The directory, environment overrides, and standard streams.
 /// :param alloc: The allocator for the captured output and the working memory.
 /// :returns: The {ProcessOutput}, or Failure with a {ProcessError} (InvalidArgument for a NUL in the program, an
-/// argument, the directory, or a variable).
+/// argument, the directory, or a variable, OutOfMemory when the working memory or the captured output can't be
+/// allocated).
 #target(os: ("linux", "macos"))
 routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
@@ -719,8 +682,13 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
             .Present(s) -> exited(s)
             .Absent     -> finish(.Failure(ProcessError.Other))
 
-    // The output owns the captured bytes from here, so finish has none left to release.
+    // The output owns the captured bytes from here, so finish has none left to release. A capture that couldn't
+    // grow lost bytes: the run fails, and finish releases what was captured.
     block exited(s: ExitStatus)
+        lost : Bool = out.failed.load().bitor(err.failed.load())
+        branch lost
+            ? finish(.Failure(ProcessError.OutOfMemory))
+            : continue
         output : ProcessOutput = ProcessOutput { status: s, stdout: out.owned(alloc),
             stderr: err.owned(alloc) }
         out.store(CaptureBuffer.empty())
