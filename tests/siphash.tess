@@ -1,0 +1,48 @@
+// SipHash-2-4 against the reference: the paper's 64 test vectors (key 00..0f, messages 00, 00 01, ..., 00..3e),
+// each printed as the U64 it is (the paper lists its bytes, little-endian). Then the 8- and 16-byte fast paths
+// against the byte path, and the stdlib hash() against SipHash under the process key.
+
+import Standard::Format
+import Standard::Os
+
+routine main() -> S32
+    shared message : @Array<Byte, 64> <- uninit
+    shared key     : SipKey           = { k0: 0x0706050403020100, k1: 0x0F0E0D0C0B0A0908 }
+
+    block entry()
+        jump fill(0)
+
+    block fill(at: USize)
+        done : Bool = at.ge(64)
+        branch done
+            ? vectors(0)
+            : continue
+        message.setitem(at, at.to<U8>().bits())
+        jump fill(at.add(1))
+
+    block vectors(count: USize)
+        done : Bool = count.ge(64)
+        branch done
+            ? fast_paths()
+            : continue
+        h : U64 = siphash24(message.to<@Byte>(), count, key)
+        h.represent_hex_into(Out.writer(), 16)
+        Out.write("\n")
+        jump vectors(count.add(1))
+
+    block fast_paths()
+        bytes : @Byte = message.to<@Byte>()
+        low   : U64   = bytes.to<@U64>().load_unaligned()
+        high  : U64   = bytes.stride(8).to<@U64>().load_unaligned()
+        one   : Bool  = siphash24(low, key).eq(siphash24(bytes, 8, key))
+        two   : Bool  = siphash24(low, high, key).eq(siphash24(bytes, 16, key))
+        Out.write("8-byte path matches: {one}\n16-byte path matches: {two}\n")
+        n       : U64   = 0x123456789ABCDEF0
+        keyed   : Bool  = n.hash().eq(siphash24(n, hash_key()))
+        same    : Bool  = n.hash().eq(n.hash())
+        wide    : U128  = U128.shl(1, 100)
+        wide_ok : Bool  = wide.hash().eq(siphash24(0, wide.shr(64).to<U64>(), hash_key()))
+        text    : Bytes = "siphash"
+        text_ok : Bool  = text.hash().eq(siphash24(text.data, text.count, hash_key()))
+        Out.write("hash() is keyed SipHash: {keyed}, stable: {same}, U128: {wide_ok}, Bytes: {text_ok}\n")
+        return(0)

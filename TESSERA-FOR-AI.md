@@ -351,6 +351,11 @@ routine main() -> S32
   `USize` / `SSize` are the pointer-width integers (C's `size_t` / `ssize_t`), types of their own that never mix with
   `U64` / `S64`: convert with `n.to<U64>()` / `x.to<USize>()`. Hashes stay `U64`.
 - `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`, `abs_diff` returns the unsigned type.
+- **`hash()` is keyed.** Every stdlib `hash()` (and every `#derive(Hashable)`) is SipHash-2-4 under a secret 128-bit
+  key drawn once per process (`hash_key()`), so a hash value differs from run to run: never print one, store one, or
+  compare one across runs. Combine part hashes with `hash_combine(a, b)`. `siphash24(data, count, key)` /
+  `siphash24(v, key)` / `siphash24(low, high, key)` take a `SipKey { k0, k1 }` of your own. `xxh64` stays as the
+  unkeyed fast hash, the same in every run: for checksums and keys you trust, not for a table filled from outside.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to<U8>()` /
   `b.to<S8>()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap<U64>()` / `to_wrap<S64>()`. It has
@@ -608,8 +613,8 @@ always `Result`.
 | `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Ordered<T>`) | none |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
-removing then re-adding moves it to the end. Iterators are `XIter<T>.construct(collection)`; don't mutate a collection
-while iterating it.
+removing then re-adding moves it to the end, so output never depends on the (keyed, per-run) hash. Iterators are
+`XIter<T>.construct(collection)`. Don't mutate a collection while iterating it.
 
 ## Conventions
 
@@ -671,7 +676,11 @@ gives it back (and does nothing for a literal path).
 Collections all check there. `Standard::Os` drops out of the build, so importing it or naming anything in it is one
 build error ("Standard::Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, Fiber,
 `make_heap_allocator`, `DEFAULT_HEAP`, or `construct()` without an allocator. The program exports its own crash handler (`#[export("tessera_crash_handler"), noreturn]`, which
-may loop forever), passes its own `Allocator` if it allocates, and brings its startup code and link script. The
+may loop forever), passes its own `Allocator` if it allocates, and brings its startup code and link script. A program
+that hashes (a `Dict`, a `Set`, any `hash()`) also exports the hash key, `#[export("tessera_hash_key")] routine
+board_key(key: @SipKey) -> Void` filling 128 secret random bits (from the board's TRNG, never a fixed value or a cycle
+counter), unless the build enables a random number instruction (`--feature rdrnd` / `rdseed` on x86-64, `rand` on
+AArch64, `zkr` on RISC-V), from which the stdlib exports it. Without either the link fails on `tessera_hash_key`. The
 stdlib supplies `memcpy` / `memmove` / `memset` / `memcmp` (and ARM's `__aeabi_mem*`) there, weak, from
 `Standard/Freestanding.tess`, and the whole compiler runtime from `Standard/SoftFloat/`, so nothing needs compiler-rt
 or libgcc: the soft-float routines LLVM calls for F16 / BF16 / F32 / F64 without a floating-point unit (`__addsf3`,

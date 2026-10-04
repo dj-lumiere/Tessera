@@ -1,0 +1,76 @@
+// Tessera stdlib: the hash key from the operating system
+//
+// Every stdlib `hash()` is SipHash-2-4 under one per-process key (HashKey.tess in Standard::Core), which asks the
+// program's `tessera_hash_key` for it the first time something hashes. With an operating system this is that routine:
+// 128 bits from the OS's random source, getrandom on Linux, arc4random_buf on macOS, and ProcessPrng (what
+// BCryptGenRandom draws from, Windows 10 and later) on Windows. A program replaces it by exporting its own routine
+// under the same name, as it replaces the crash handler.
+
+module Standard::Os
+
+/// Linux's EINTR: a signal arrived before getrandom had its bytes (only while the kernel's pool is still filling).
+#[target(os: "linux")]
+private preset EINTR: CInt = 4
+
+/// Binds the C `getrandom` function (glibc 2.25 and later, musl).
+#[external("c"), symbol("getrandom"), target(os: "linux")]
+private routine c_getrandom(buffer: Addr, count: USize, flags: U32) -> SSize
+
+/// Binds the C `__errno_location` function.
+#[external("c"), symbol("__errno_location"), target(os: "linux")]
+private routine c_random_errno_place() -> @CInt
+
+/// Binds the C `arc4random_buf` function, which can't fail.
+#[external("c"), symbol("arc4random_buf"), target(os: "macos")]
+private routine c_arc4random_buf(buffer: Addr, count: USize) -> Void
+
+/// Binds the Win32 `LoadLibraryA` function.
+#[external("c"), symbol("LoadLibraryA"), callconv("stdcall"), target(os: "windows")]
+private routine c_load_library(name: CStr) -> Addr
+
+/// Binds the Win32 `GetProcAddress` function.
+#[external("c"), symbol("GetProcAddress"), callconv("stdcall"), target(os: "windows")]
+private routine c_get_proc_address(library: Addr, name: CStr) -> Addr
+
+/// The hosted hash key: 16 bytes from getrandom, which waits only until the kernel's random pool is first filled.
+/// :param key: Where the key goes.
+/// :throws: Crashes with `InvalidValueError` when getrandom fails (a kernel older than 3.17, or a seccomp filter).
+#[target(os: "linux"), export("tessera_hash_key")]
+routine os_hash_key(key: @SipKey) -> Void
+    block entry()
+        got  : SSize = c_getrandom(key, 16, 0)
+        full : Bool  = got.eq(16)
+        branch full
+            ? return()
+            : continue
+        interrupted : Bool = c_random_errno_place().load().eq(EINTR)
+        branch interrupted
+            ? entry()
+            : crash("InvalidValueError", "getrandom gave no random bytes for the hash key.")
+
+/// The hosted hash key: 16 bytes from arc4random_buf.
+/// :param key: Where the key goes.
+#[target(os: "macos"), export("tessera_hash_key")]
+routine os_hash_key(key: @SipKey) -> Void
+    block entry()
+        c_arc4random_buf(key, 16)
+        return()
+
+/// The hosted hash key: 16 bytes from ProcessPrng in bcryptprimitives.dll, looked up at run time so that no import
+/// library is needed (it has none before the Windows 11 SDK).
+/// :param key: Where the key goes.
+/// :throws: Crashes with `InvalidValueError` when bcryptprimitives.dll has no ProcessPrng (Windows before 10).
+#[target(os: "windows"), export("tessera_hash_key")]
+routine os_hash_key(key: @SipKey) -> Void
+    block entry()
+        library : Addr = c_load_library("bcryptprimitives.dll")
+        found   : Addr = c_get_proc_address(library, "ProcessPrng")
+        missing : Bool = found.is_null()
+        branch missing
+            ? crash("InvalidValueError",
+                "bcryptprimitives.dll has no ProcessPrng for the hash key (Windows 10 or later).")
+            : continue
+        claim place : @Addr <- found
+        prng : Callable<#callconv("stdcall"), (Addr, USize), CInt> = place.to<@Callable<#callconv("stdcall"), (Addr, USize), CInt>>().load()
+        prng.call(key, 16)
+        return()

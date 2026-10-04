@@ -3,8 +3,9 @@
 // undefined. On a target without a floating-point unit LLVM turns each float operation into a call (__aeabi_fadd,
 // __divdf3, __truncsfhf2, ...), and on 32-bit targets and without a divide instruction each wide division too. The
 // stdlib supplies every one of them there (Standard/SoftFloat). It reads its operands from volatile globals and
-// writes every result to one, so none of it folds away. Like tests/freestanding, it never runs here
-// (freestanding_float.arch).
+// writes every result to one, so none of it folds away. Its hashes need the hash key, which it exports itself from
+// the board's random number generator, as a target without an OS and without a random number instruction must.
+// Like tests/freestanding, it never runs here (freestanding_float.arch).
 
 global IN_F16: @Array<F16, 4>
 global IN_BF16: @Array<BF16, 4>
@@ -39,6 +40,10 @@ global OUT_U64: @U64
 global OUT_U128: @U128
 global OUT_BOOL: @Bool
 
+/// Stands for the data register of the board's true random number generator (a real board reads its memory-mapped
+/// register here, at the address its reference manual gives).
+global TRNG_DATA: @U32
+
 /// Halts on a crash: there's nowhere to print and nothing to exit to.
 #[export("tessera_crash_handler"), noreturn]
 routine halt(name: Bytes, message: Bytes, place: @SourceLocation) -> Void
@@ -47,6 +52,19 @@ routine halt(name: Bytes, message: Bytes, place: @SourceLocation) -> Void
 
     block spin()
         jump spin()
+
+/// The hash key every `hash()` below uses: the default CPUs of these targets have no random number instruction, so
+/// the program supplies it, 128 bits from the board's generator, 32 at a time.
+#[export("tessera_hash_key")]
+routine board_hash_key(key: @SipKey) -> Void
+    block entry()
+        a : U64 = TRNG_DATA.volatile_load().to<U64>()
+        b : U64 = TRNG_DATA.volatile_load().to<U64>()
+        c : U64 = TRNG_DATA.volatile_load().to<U64>()
+        d : U64 = TRNG_DATA.volatile_load().to<U64>()
+        a.shl(32).bitor(b).store_into(key.k0)
+        c.shl(32).bitor(d).store_into(key.k1)
+        return()
 
 /// Every F16 operation and conversion.
 routine use_f16() -> Void

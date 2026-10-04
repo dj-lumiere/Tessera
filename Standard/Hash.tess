@@ -4,6 +4,13 @@
 // compatible with the upstream spec: little-endian byte reads, the same
 // five primes, and the same finalization mixer.
 //
+// xxh64 is the unkeyed fast hash: the same input gives the same value in
+// every run and on every machine, which is what a checksum, a content
+// address, or a table whose keys you trust wants. It is not what `hash()`
+// is: anyone can compute xxh64 collisions offline and flood a hash table
+// with them, so every stdlib `hash()` is SipHash-2-4 under a secret
+// per-process key instead (SipHash.tess, HashKey.tess).
+//
 // Public surface:
 //   xxh64(data, len, seed) -> U64    — one-shot byte hash
 //   xxh64(v, seed) -> U64    — fast path for an 8-byte integer
@@ -123,7 +130,7 @@ routine xxh64_finalize(h: U64) -> U64
 //   3. Drain remaining 8-byte chunks, then a 4-byte chunk, then trailing bytes.
 //   4. Apply the finalization mixer.
 
-/// Hashes `len` bytes starting at `data` with the xxHash64 algorithm and the given `seed`, matching the reference output.
+/// Hashes `len` bytes starting at `data` with the xxHash64 algorithm and the given `seed`, matching the reference output. Unkeyed and the same in every run: for checksums and trusted keys, not for a table that takes keys from outside (`hash()` is keyed SipHash-2-4).
 /// :param data: The first byte of the input.
 /// :param len: The number of bytes to hash.
 /// :param seed: The seed of the hash.
@@ -222,15 +229,12 @@ routine xxh64(data: @Byte, len: USize, seed: U64) -> U64
         result : U64 = xxh64_finalize(h)
         return(result)
 
-// -- 8-byte fast path (used by integer primitives) -----------------------------
+// -- 8-byte fast path ------------------------------------------------------------
 //
 // Equivalent to xxh64 with len=8: skip the big-block path, add 8, run one
-// iteration of the 8-byte tail loop, finalize. Primitives smaller than 8 bytes
-// zero-extend to U64 and route through here too — slightly different output
-// from a "true" len=4 hash, but saves the stack slot + memcpy round-trip and the
-// behavior is consistent across primitive widths.
+// iteration of the 8-byte tail loop, finalize.
 
-/// Hashes one U64 as if it were an 8-byte input of `xxh64` with the given `seed`, without a buffer. Smaller integers zero-extend and use this too.
+/// Hashes one U64 as if it were an 8-byte input of `xxh64` with the given `seed`, without a buffer. Unkeyed, like every xxh64.
 /// :param v: The integer to hash.
 /// :param seed: The seed of the hash.
 /// :returns: The 64-bit hash.
@@ -244,13 +248,13 @@ routine xxh64(v: U64, seed: U64) -> U64
         result  : U64 = xxh64_finalize(h2)
         return(result)
 
-// -- 16-byte combiner (used by composite types) --------------------------------
+// -- 16-byte combiner -------------------------------------------------------------
 //
 // Folds two precomputed sub-hashes into one. Equivalent to running xxh64
 // with len=16 over the concatenation h1 || h2 — two iterations of the
 // 8-byte tail path, then finalize.
 
-/// Combines two sub-hashes into one, the same as `xxh64` over their 16 bytes `h1 || h2`, for hashing composite values.
+/// Combines two sub-hashes into one, the same as `xxh64` over their 16 bytes `h1 || h2`, for an unkeyed hash of a composite value.
 /// :param h1: The first sub-hash.
 /// :param h2: The second sub-hash.
 /// :param seed: The seed of the hash.

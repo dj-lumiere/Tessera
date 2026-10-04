@@ -243,7 +243,7 @@ public static class Derive
         sb.Append($"        return(all{r.Fields.Count - 1})\n");
     }
 
-    /// The fields' hashes, combined in order with xxh64_combine2.
+    /// The fields' hashes, combined in order with hash_combine (SipHash-2-4 under the process key).
     private static void HashBody(StringBuilder sb, RecordDecl r)
     {
         sb.Append("    block entry()\n");
@@ -257,7 +257,7 @@ public static class Derive
             var f = r.Fields[i];
             sb.Append($"        a{i} : {f.Type} = self.{f.Name}\n");
             sb.Append($"        g{i} : U64 = a{i}.hash()\n");
-            if (i > 0) sb.Append($"        h{i} : U64 = xxh64_combine2(h{i - 1}, g{i}, 0)\n");
+            if (i > 0) sb.Append($"        h{i} : U64 = hash_combine(h{i - 1}, g{i})\n");
             else sb.Append("        h0 : U64 = g0\n");
         }
         sb.Append($"        return(h{r.Fields.Count - 1})\n");
@@ -404,9 +404,9 @@ public static class Derive
                     string a = Payload(cases[i], "a");
                     sb.Append($"\n    block case{i}({a}: {cases[i].Payload})\n");
                     sb.Append($"        g : U64 = {a}.hash()\n");
-                    sb.Append($"        h : U64 = xxh64_combine2({i}, g, 0)\n        return(h)\n");
+                    sb.Append($"        h : U64 = hash_combine({i}, g)\n        return(h)\n");
                 }
-                sb.Append("\n    block bare(index: U64)\n        h : U64 = xxh64(index, 0)\n        return(h)\n");
+                sb.Append("\n    block bare(index: U64)\n        h : U64 = siphash24(index, hash_key())\n        return(h)\n");
                 break;
             }
         }

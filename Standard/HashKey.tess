@@ -1,0 +1,283 @@
+// Tessera stdlib: the process's hash key
+//
+// Every `hash()` in the stdlib is SipHash-2-4 (SipHash.tess) under one 128-bit key, drawn once per process the first
+// time something hashes, so a hash value is the same everywhere in a run and differs from run to run. Hash tables
+// keep insertion order, so the key changes no output that doesn't print a hash value itself.
+//
+// The key comes from a routine the program links against, `tessera_hash_key`, which fills a SipKey with secret
+// random bits. Where it comes from depends on the target, in this order:
+//   - With an operating system, Standard::Os exports it: the OS's random source (Os/HashKey.tess).
+//   - Without one, a CPU with a random number instruction exports it from here: RDRAND (or RDSEED) on x86-64, RNDR
+//     on AArch64, the Zkr `seed` CSR on RISC-V, chosen at build time by the CPU's features (`--cpu`, `--feature`).
+//   - Otherwise the program exports it, from the board's true random number generator or another secret source,
+//     the way it exports its crash handler. Without one the link fails: there is no silent fixed key. A cycle
+//     counter is no key, since it is predictable at boot.
+// A program's own `tessera_hash_key` replaces the stdlib's, as its crash handler replaces the default.
+
+module Standard::Core
+
+/// The process's key, filled the first time `hash_key()` runs.
+private global HASH_KEY: @SipKey
+/// Where the key stands: 0 not drawn, 1 being drawn, 2 ready.
+private global HASH_KEY_STATE: @U32
+
+private preset KEY_UNDRAWN: U32 = 0
+private preset KEY_DRAWING: U32 = 1
+private preset KEY_READY:   U32 = 2
+
+/// The key source the program links against: fills `key` with 128 secret random bits. Export a routine with this
+/// signature as "tessera_hash_key" to supply it: Standard::Os does with the OS's random source, and so does the stdlib
+/// on a target without an OS whose CPU has a random number instruction.
+#[external("c"), symbol("tessera_hash_key")]
+private routine hash_key_source(key: @SipKey) -> Void
+
+/// The process's hash key, the one every stdlib `hash()` uses: drawn from `tessera_hash_key` the first time it is
+/// asked for, the same from then on. With an OS it is safe to ask from any thread: one draws it and the others wait
+/// for it.
+/// :returns: The 128-bit key.
+#[target(os: not "none"), inline]
+routine hash_key() -> SipKey
+    block entry()
+        state : U32  = HASH_KEY_STATE.atomic_load_acquire()
+        ready : Bool = state.eq(KEY_READY)
+        branch ready
+            ? return(HASH_KEY.load())
+            : draw()
+
+    block draw()
+        key : SipKey = draw_hash_key()
+        return(key)
+
+/// Draws the key once: the thread that moves the state from undrawn to drawing asks the source, and every other one
+/// waits until the key is ready.
+#[target(os: not "none"), noinline]
+private routine draw_hash_key() -> SipKey
+    block entry()
+        claimed : Result<U32, U32> = HASH_KEY_STATE.atomic_compare_exchange(KEY_UNDRAWN,
+            KEY_DRAWING)
+        when claimed
+            .Success -> fill()
+            .Failure -> wait()
+
+    block fill()
+        hash_key_source(HASH_KEY)
+        HASH_KEY_STATE.atomic_store_release(KEY_READY)
+        return(HASH_KEY.load())
+
+    block wait()
+        state : U32  = HASH_KEY_STATE.atomic_load_acquire()
+        ready : Bool = state.eq(KEY_READY)
+        branch ready
+            ? return(HASH_KEY.load())
+            : wait()
+
+/// The process's hash key, the one every stdlib `hash()` uses: drawn from `tessera_hash_key` the first time it is
+/// asked for, the same from then on. Without an OS there is no thread to wait for, so a program whose interrupt
+/// handlers hash calls `hash_key()` once before it enables them.
+/// :returns: The 128-bit key.
+#[target(os: "none"), inline]
+routine hash_key() -> SipKey
+    block entry()
+        state : U32  = HASH_KEY_STATE.volatile_load()
+        ready : Bool = state.eq(KEY_READY)
+        branch ready
+            ? return(HASH_KEY.load())
+            : draw()
+
+    block draw()
+        key : SipKey = draw_hash_key()
+        return(key)
+
+/// Draws the key from the source and marks it ready.
+#[target(os: "none"), noinline]
+private routine draw_hash_key() -> SipKey
+    block entry()
+        hash_key_source(HASH_KEY)
+        HASH_KEY_STATE.volatile_store(KEY_READY)
+        return(HASH_KEY.load())
+
+/// Folds two hashes into one, for a value made of parts (a record's fields, a variant's case and payload): SipHash-2-4
+/// of their 16 bytes under the process's key, so the order of the parts counts.
+/// :param first: The hash of the first part.
+/// :param second: The hash of the second part.
+/// :returns: The combined hash.
+#inline
+routine hash_combine(first: U64, second: U64) -> U64
+    block entry()
+        return(siphash24(first, second, hash_key()))
+
+// -- the key from a random number instruction, without an OS -------------------------------------------------------
+//
+// Each export below is the stdlib's `tessera_hash_key` on a target without an OS whose CPU (as the build's `--cpu`
+// and `--feature` set it) has the instruction. A program's own export replaces it.
+
+/// How many 16-bit samples the key is conditioned from: 512 bits, so a source with even a quarter of a bit of
+/// entropy per bit gives the 128-bit key its full strength.
+#[target(arch: "riscv32", os: "none"), feature("zkr")]
+private preset SEED_SAMPLES: USize = 32
+
+/// RDRAND once: the random value, and 1 when the CPU had one ready (the carry flag), 0 when not.
+#[target(arch: "x86_64", os: "none"), feature("rdrnd"), external("asm"), clobbers(FLAGS)]
+private routine rdrand_step() -> (U64, U8)
+    block entry()
+        rdrand<U64>(R0)  // rdrand rax
+        setc<U8>(R1)  // setc cl
+        return({ R0, R1 })
+
+/// One 64-bit word from RDRAND, retried up to 10 times as Intel's guide says (a failure that persists means a broken
+/// generator).
+/// :throws: Crashes with `InvalidValueError` when RDRAND fails 10 times in a row.
+#[target(arch: "x86_64", os: "none"), feature("rdrnd")]
+private routine rdrand_word() -> U64
+    block entry()
+        jump draw(0)
+
+    block draw(attempt: U32)
+        gave_up : Bool = attempt.ge(10)
+        branch gave_up
+            ? crash("InvalidValueError", "RDRAND gave no random value in 10 tries.")
+            : continue
+        value, ok = rdrand_step()
+        got : Bool = ok.ne(0)
+        branch got
+            ? return(value)
+            : draw(attempt.add(1))
+
+/// The hash key from RDRAND: two 64-bit words.
+#[target(arch: "x86_64", os: "none"), feature("rdrnd"), export("tessera_hash_key")]
+routine rdrand_hash_key(key: @SipKey) -> Void
+    block entry()
+        rdrand_word().store_into(key.k0)
+        rdrand_word().store_into(key.k1)
+        return()
+
+/// RDSEED once: the random value, and 1 when the CPU had one ready (the carry flag), 0 when not.
+#[target(arch: "x86_64", os: "none"), feature(not "rdrnd", "rdseed"), external("asm"),
+    clobbers(FLAGS)]
+private routine rdseed_step() -> (U64, U8)
+    block entry()
+        rdseed<U64>(R0)  // rdseed rax
+        setc<U8>(R1)  // setc cl
+        return({ R0, R1 })
+
+/// The CPU's spin-wait hint, between RDSEED tries.
+#[target(arch: "x86_64", os: "none"), feature(not "rdrnd", "rdseed"), external("asm")]
+private routine rdseed_pause() -> Void
+    block entry()
+        pause()  // pause
+        return()
+
+/// One 64-bit word from RDSEED, which runs dry for a while when asked often: retried with a pause in between, as
+/// Intel's guide says, up to 1000 times.
+/// :throws: Crashes with `InvalidValueError` when RDSEED fails 1000 times in a row.
+#[target(arch: "x86_64", os: "none"), feature(not "rdrnd", "rdseed")]
+private routine rdseed_word() -> U64
+    block entry()
+        jump draw(0)
+
+    block draw(attempt: U32)
+        gave_up : Bool = attempt.ge(1000)
+        branch gave_up
+            ? crash("InvalidValueError", "RDSEED gave no random value in 1000 tries.")
+            : continue
+        value, ok = rdseed_step()
+        got : Bool = ok.ne(0)
+        branch got
+            ? return(value)
+            : wait(attempt)
+
+    block wait(attempt: U32)
+        rdseed_pause()
+        jump draw(attempt.add(1))
+
+/// The hash key from RDSEED, on a CPU built for without RDRAND: two 64-bit words.
+#[target(arch: "x86_64", os: "none"), feature(not "rdrnd", "rdseed"), export("tessera_hash_key")]
+routine rdseed_hash_key(key: @SipKey) -> Void
+    block entry()
+        rdseed_word().store_into(key.k0)
+        rdseed_word().store_into(key.k1)
+        return()
+
+/// RNDR once (FEAT_RNG): the random value and whether the CPU had one (it clears the Z flag when it did). The assembly
+/// routines can't name a system register yet, so this is LLVM's intrinsic for `mrs x0, rndr`.
+#[target(arch: "aarch64", os: "none"), feature("rand"), external("llvm"),
+    template("{t0} = call {{ i64, i1 }} @llvm.aarch64.rndr()\n{t1} = extractvalue {{ i64, i1 }} {t0}, 0\nstore i64 {t1}, ptr {value}\n{result} = extractvalue {{ i64, i1 }} {t0}, 1")]
+private routine rndr_step(value: @U64) -> Bool
+
+/// One 64-bit word from RNDR, retried up to 10 times (the instruction fails only when the generator can't give a value
+/// in reasonable time).
+/// :throws: Crashes with `InvalidValueError` when RNDR fails 10 times in a row.
+#[target(arch: "aarch64", os: "none"), feature("rand")]
+private routine rndr_word() -> U64
+    shared value : @U64 <- 0
+
+    block entry()
+        jump draw(0)
+
+    block draw(attempt: U32)
+        gave_up : Bool = attempt.ge(10)
+        branch gave_up
+            ? crash("InvalidValueError", "RNDR gave no random value in 10 tries.")
+            : continue
+        got : Bool = rndr_step(value)
+        branch got
+            ? return(value.load())
+            : draw(attempt.add(1))
+
+/// The hash key from RNDR: two 64-bit words.
+#[target(arch: "aarch64", os: "none"), feature("rand"), export("tessera_hash_key")]
+routine rndr_hash_key(key: @SipKey) -> Void
+    block entry()
+        rndr_word().store_into(key.k0)
+        rndr_word().store_into(key.k1)
+        return()
+
+/// Reads the Zkr `seed` CSR (number 0x015) once, which only a write may read: `csrrw a0, seed, zero`. Bits 31 and 30
+/// are its state (2 is ES16: bits 15..0 hold 16 bits of entropy), the rest is reserved or entropy.
+#[target(arch: "riscv32", os: "none"), feature("zkr"), external("asm")]
+private routine seed_poll() -> U32
+    block entry()
+        csrrw<U32, U32>(R10, 21, ZERO)  // csrrw a0, seed, zero
+        return(R10)
+
+/// The next 16-bit sample from `seed`: polled until its state is ES16 (WAIT means try again, BIST a self test still
+/// running).
+/// :throws: Crashes with `InvalidValueError` when the source reports DEAD (an unrecoverable failure).
+#[target(arch: "riscv32", os: "none"), feature("zkr")]
+private routine seed_sample() -> U16
+    block entry()
+        jump poll()
+
+    block poll()
+        word  : U64 = seed_poll().to<U64>()
+        state : U64 = word.shr(30).bitand(3)
+        when state
+            2    -> return(word.bitand(0xFFFF).to<U16>())
+            3    -> crash("InvalidValueError", "The RISC-V entropy source (seed) reports DEAD.")
+            else -> poll()
+
+/// The hash key from the Zkr entropy source: `SEED_SAMPLES` raw 16-bit samples, conditioned into 128 bits by hashing
+/// them with SipHash under two fixed keys.
+#[target(arch: "riscv32", os: "none"), feature("zkr"), export("tessera_hash_key")]
+routine seed_hash_key(key: @SipKey) -> Void
+    shared samples : @Array<U16, 32> <- uninit
+
+    block entry()
+        jump gather(0)
+
+    block gather(at: USize)
+        done : Bool = at.ge(SEED_SAMPLES)
+        branch done
+            ? condition()
+            : continue
+        samples.setitem(at, seed_sample())
+        jump gather(at.add(1))
+
+    block condition()
+        bytes : @Byte  = samples.to<@Byte>()
+        size  : USize  = SEED_SAMPLES.mul(2)
+        first : SipKey = { k0: 0, k1: 0 }
+        other : SipKey = { k0: 1, k1: 0 }
+        siphash24(bytes, size, first).store_into(key.k0)
+        siphash24(bytes, size, other).store_into(key.k1)
+        return()
