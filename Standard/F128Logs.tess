@@ -1,4 +1,4 @@
-// Tessera stdlib: F128 ln_1p, log2, log10
+// Tessera stdlib: F128 ln_1p, log2, log10, and the two-tier body of log with a base
 //
 // ln(1 + x), log2 x, and log10 x, correctly rounded. CORE-MATH has no binary128 versions of these, so they run in
 // the two tiers of sin_pi (F128Extra.tess):
@@ -26,12 +26,19 @@
 //   (5^k < 2^113), and 10^-k has a factor 5^-k and is never one. log10(10^k) = k.
 // - ln(1 + x) for a rational 1 + x other than 1 is transcendental (Lindemann: e^r is transcendental for a nonzero
 //   algebraic r), so only ln_1p(±0) = ±0 is exact.
+//
+// log(x, base) (f128_log_base, for F128.log in F128Math.tess) runs in the same two tiers on the quotient of two
+// logarithms, each within 2^-137.9 relative in F128Extended (wide_log's first dropped term, as above), so the
+// quotient within 2^-136.9 (the worst of 240000 random pairs against mpmath was 2^-137.1, x near 1/sqrt 2 and base
+// near sqrt 2). Its band of 2^-132 leaves about 5 bits. It needs no exact cases of its own: its exact results are F128s that the band keeps, and its
+// quotient is never a midpoint (F128.log's doc comment has the proof).
 
 module Standard::Core
 
-preset F128_LN_1P_BAND: S64 = 133
-preset F128_LOG2_BAND:  S64 = 133
-preset F128_LOG10_BAND: S64 = 133
+preset F128_LN_1P_BAND:    S64 = 133
+preset F128_LOG2_BAND:     S64 = 133
+preset F128_LOG10_BAND:    S64 = 133
+preset F128_LOG_BASE_BAND: S64 = 132
 
 choice LogKind: U8
     Ln1p
@@ -240,3 +247,32 @@ routine f128_log10(x: F128, exact: Bool) -> F128
             : continue
         r : F128 = f128_log_general(x, LogKind.Log10, exact)
         return(r)
+
+// -- log with a base -----------------------------------------------------------
+
+/// log base `base` of `x`, ln `x` / ln `base` correctly rounded, as {F128.log}, for `x` and `base` positive and finite
+/// (subnormals included) and not 1. The fast tier divides the two F128Extended logarithms and keeps the quotient
+/// when all of it × (1 ± 2^-F128_LOG_BASE_BAND) rounds to one F128. The exact tier divides the two F128Big
+/// logarithms and rounds once.
+/// :param x: The argument.
+/// :param base: The base.
+/// :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
+/// :returns: log base `base` of `x`.
+routine f128_log_base(x: F128, base: F128, exact: Bool) -> F128
+    block entry()
+        branch exact
+            ? slow()
+            : fast()
+
+    block fast()
+        num     : F128Extended = wide_log(x.to<F128Extended>())
+        den     : F128Extended = wide_log(base.to<F128Extended>())
+        rounded : WideRounding = wide_round_within(num.div(den), F128_LOG_BASE_BAND)
+        branch rounded.ok
+            ? return(rounded.value)
+            : slow()
+
+    block slow()
+        num      : F128Big = big_ln(x.to<F128Big>())
+        quotient : F128Big = num.div(big_ln(base.to<F128Big>()))
+        return(quotient.to<F128>())
