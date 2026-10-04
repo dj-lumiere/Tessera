@@ -25,12 +25,15 @@ preset F64.NAN:          F64 = F64.from_bits(0x7FF8000000000000)  // canonical q
 // -- arithmetic ----------------------------------------------------------------
 
 /// Clears the sign bit, so abs(-0.0) is 0.0 and NaN stays NaN.
+/// :returns: `self` with the sign bit cleared.
 routine F64.abs(self: Self) -> Self
     block entry()
         r : Self = fabs<Self>(self)
         return(r)
 
 /// The smaller value. If one operand is NaN, the other one.
+/// :param other: The value to compare with.
+/// :returns: The smaller value, the other operand when one is NaN, and NaN when both are.
 routine F64.min(self: Self, other: Self) -> Self
     block entry()
         self_nan  : Bool = self.is_nan()
@@ -51,6 +54,8 @@ routine F64.min(self: Self, other: Self) -> Self
         return(r)
 
 /// The larger value. If one operand is NaN, the other one.
+/// :param other: The value to compare with.
+/// :returns: The larger value, the other operand when one is NaN, and NaN when both are.
 routine F64.max(self: Self, other: Self) -> Self
     block entry()
         self_nan  : Bool = self.is_nan()
@@ -263,13 +268,16 @@ routine F64.neg(self: Self) -> Self
         r : Self = fneg<Self>(self)
         return(r)
 
-/// The magnitude of self with the sign of sign.
+/// The magnitude of `self` with the sign of `sign`.
+/// :param sign: The value whose sign bit is used.
+/// :returns: `self` with its sign bit replaced by the sign bit of `sign`.
 routine F64.copysign(self: Self, sign: Self) -> Self
     block entry()
         r : Self = copysign<Self>(self, sign)
         return(r)
 
 /// 1.0 for +0.0 and positive values, -1.0 for -0.0 and negative values, NaN for NaN.
+/// :returns: 1.0, -1.0, or NaN, by the sign of `self`.
 routine F64.signum(self: Self) -> Self
     block entry()
         nan  : Bool = self.is_nan()
@@ -280,6 +288,7 @@ routine F64.signum(self: Self) -> Self
         return(r)
 
 /// Reads the sign bit, so it is true for +0.0 and for NaNs with the bit clear.
+/// :returns: Whether the sign bit is clear.
 routine F64.is_sign_positive(self: Self) -> Bool
     block entry()
         bits : S64  = self.bits().to_wrap<S64>()
@@ -300,6 +309,9 @@ routine F64.is_sign_negative(self: Self) -> Bool
 ///
 /// A long division on the significands, one quotient bit per step (up to 2098), since LLVM lowers frem to
 /// libm's fmod on every target.
+/// :param other: The divisor.
+/// :returns: The remainder. NaN when either operand is NaN, `self` is infinite, or `other` is 0. Otherwise `self`
+///     itself when `other` is infinite or `self` is a zero.
 routine F64.mod(self: Self, other: Self) -> Self
     block entry()
         nan     : Bool = self.is_nan().bitor(other.is_nan())
@@ -358,8 +370,10 @@ routine F64.recip(self: Self) -> Self
         r : Self = fdiv<Self>(1.0, self)
         return(r)
 
-/// self * a + b with a single rounding: the FMA instruction where the CPU has one (every AArch64, x86 with the
-/// fma feature, as in --cpu x86-64-v3), mul_add_soft elsewhere.
+/// Fused multiply-add: `self * a + b` with a single rounding, computed with the AArch64 FMA instruction.
+/// :param a: The factor `self` is multiplied by.
+/// :param b: The addend.
+/// :returns: `self * a + b` rounded once to nearest (ties to even). NaN for a NaN operand, `inf * 0`, or `inf - inf`.
 #target(arch: "aarch64")
 routine F64.mul_add(self: Self, a: Self, b: Self) -> Self
     block entry()
@@ -400,6 +414,9 @@ routine F64.mul_add(self: Self, a: Self, b: Self) -> Self
 ///
 /// Without one LLVM calls libm's fma, so this forms the 106-bit product exactly in a U128,
 /// aligns b to it (bits shifted out past the product become a sticky bit), and rounds only the sum.
+/// :param a: The factor `self` is multiplied by.
+/// :param b: The addend.
+/// :returns: `self * a + b` rounded once to nearest (ties to even). NaN for a NaN operand, `inf * 0`, or `inf - inf`.
 private routine F64.mul_add_soft(self: Self, a: Self, b: Self) -> Self
     block entry()
         factors_finite : Bool = self.is_finite().bitand(a.is_finite())
@@ -481,7 +498,9 @@ private routine F64.mul_add_soft(self: Self, a: Self, b: Self) -> Self
         result     : Self = f64_round_pack(negative, exponent, sig)
         return(result)
 
-/// The quotient q of Euclidean division, so that self = q * other + r with 0 <= r < |other|.
+/// The quotient `q` of Euclidean division, so that `self = q * other + r` with `0 <= r < |other|`.
+/// :param other: The divisor.
+/// :returns: The quotient `q`. NaN when either operand is NaN.
 routine F64.div_euclid(self: Self, other: Self) -> Self
     block entry()
         q            : Self = self.div(other).trunc()
@@ -498,7 +517,9 @@ routine F64.div_euclid(self: Self, other: Self) -> Self
             : up
         return(r)
 
-/// The least non-negative remainder of self / other.
+/// The least non-negative remainder of `self / other`.
+/// :param other: The divisor.
+/// :returns: The remainder, never negative. Rounding can make it equal `|other|` when the exact remainder is a tiny negative value.
 routine F64.mod_euclid(self: Self, other: Self) -> Self
     block entry()
         rem          : Self = self.mod(other)
@@ -513,6 +534,8 @@ routine F64.mod_euclid(self: Self, other: Self) -> Self
 // -- ordering ------------------------------------------------------------------
 
 /// The smaller value, NaN if either is NaN, and -0.0 below +0.0.
+/// :param other: The value to compare with.
+/// :returns: The smaller value, or NaN when either operand is NaN.
 routine F64.minimum(self: Self, other: Self) -> Self
     block entry()
         nan : Bool = self.is_nan().bitor(other.is_nan())
@@ -531,6 +554,8 @@ routine F64.minimum(self: Self, other: Self) -> Self
         return(r)
 
 /// The larger value, NaN if either is NaN, and +0.0 above -0.0.
+/// :param other: The value to compare with.
+/// :returns: The larger value, or NaN when either operand is NaN.
 routine F64.maximum(self: Self, other: Self) -> Self
     block entry()
         nan : Bool = self.is_nan().bitor(other.is_nan())
@@ -548,7 +573,11 @@ routine F64.maximum(self: Self, other: Self) -> Self
             : other
         return(r)
 
-/// Restricts self to lo ..= hi. NaN stays NaN. Crashes unless lo <= hi.
+/// Restricts `self` to `lo ..= hi`. NaN stays NaN.
+/// :param lo: The lower bound.
+/// :param hi: The upper bound.
+/// :returns: `lo` when `self < lo`, `hi` when `self > hi`, otherwise `self`.
+/// :throws: Crashes with `InvalidValueError` unless `lo <= hi`, so also when either bound is NaN.
 #track_caller
 routine F64.clamp(self: Self, lo: Self, hi: Self) -> Self
     block entry()
@@ -568,19 +597,27 @@ routine F64.clamp(self: Self, lo: Self, hi: Self) -> Self
             : upper
         return(r)
 
-/// self in [lo, hi], both ends included. False when lo > hi.
+/// Tests whether `self` is in `[lo, hi]`, both ends included. False when `lo > hi`.
+/// :param lo: The lower bound, included.
+/// :param hi: The upper bound, included.
+/// :returns: True when `lo <= self <= hi`. False when any operand is NaN.
 routine F64.between(self: Self, lo: Self, hi: Self) -> Bool
     block entry()
         r : Bool = self.ge(lo).bitand(self.le(hi))
         return(r)
 
-/// self in [lo, end): lo included, end not. False when lo >= end.
+/// Tests whether `self` is in `[lo, end)`: `lo` included, `end` not. False when `lo >= end`.
+/// :param lo: The lower bound, included.
+/// :param end: The upper bound, excluded.
+/// :returns: True when `lo <= self < end`. False when any operand is NaN.
 routine F64.in_range(self: Self, lo: Self, end: Self) -> Bool
     block entry()
         r : Bool = self.ge(lo).bitand(self.lt(end))
         return(r)
 
 /// IEEE 754 totalOrder: -NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN.
+/// :param other: The value to compare with.
+/// :returns: -1, 0, or 1 as `self` comes before, at the same place as, or after `other` in that order.
 routine F64.total_compare(self: Self, other: Self) -> S32
     block entry()
         a : S64 = self.bits().to_wrap<S64>()
@@ -637,6 +674,7 @@ routine F64.ceil(self: Self) -> Self
         return(r)
 
 /// Rounds half-way cases away from zero.
+/// :returns: The nearest integer value, half-way cases away from zero. Zeros, infinities and NaN come back unchanged.
 #target(arch: "aarch64")
 routine F64.round(self: Self) -> Self
     block entry()
@@ -644,6 +682,7 @@ routine F64.round(self: Self) -> Self
         return(r)
 
 /// Rounds half-way cases away from zero.
+/// :returns: The nearest integer value, half-way cases away from zero. Zeros, infinities and NaN come back unchanged.
 #target(arch: not "aarch64")
 routine F64.round(self: Self) -> Self
     block entry()
@@ -657,6 +696,7 @@ routine F64.round(self: Self) -> Self
         return(r)
 
 /// Rounds half-way cases to the even neighbor.
+/// :returns: The nearest integer value, half-way cases to the even one. Zeros, infinities and NaN come back unchanged.
 #target(arch: "aarch64")
 routine F64.round_ties_even(self: Self) -> Self
     block entry()
@@ -666,6 +706,7 @@ routine F64.round_ties_even(self: Self) -> Self
 /// Rounds half-way cases to the even neighbor.
 ///
 /// Below 2^52, adding and subtracting 2^52 leaves the magnitude rounded to an integer by the addition.
+/// :returns: The nearest integer value, half-way cases to the even one. Zeros, infinities and NaN come back unchanged.
 #target(arch: not "aarch64")
 routine F64.round_ties_even(self: Self) -> Self
     block entry()
@@ -679,6 +720,7 @@ routine F64.round_ties_even(self: Self) -> Self
         return(r)
 
 /// Rounds toward zero.
+/// :returns: The integer part of `self`. Zeros, infinities and NaN come back unchanged.
 #target(arch: "aarch64")
 routine F64.trunc(self: Self) -> Self
     block entry()
@@ -686,6 +728,7 @@ routine F64.trunc(self: Self) -> Self
         return(r)
 
 /// Rounds toward zero.
+/// :returns: The integer part of `self`. Zeros, infinities and NaN come back unchanged.
 #target(arch: not "aarch64")
 routine F64.trunc(self: Self) -> Self
     shared bits  : U64 = self.bits()
@@ -707,7 +750,8 @@ routine F64.trunc(self: Self) -> Self
         r    : Self = Self.from_bits(bits.bitand(mask.bitnot()))
         return(r)
 
-/// self minus its integer part, with the sign of self.
+/// `self` minus its integer part, with the sign of `self`.
+/// :returns: The fractional part. NaN for an infinity or NaN.
 routine F64.fract(self: Self) -> Self
     block entry()
         whole : Self = self.trunc()
@@ -720,19 +764,24 @@ routine F64.fract(self: Self) -> Self
 // defined in Standard/F64Core/, one file each: ports of CORE-MATH, correctly rounded, so they give the same
 // bits on every target, unlike the platform libm.
 
-/// NaN for negative values (other than -0.0).
+/// The square root of `self`.
+/// :returns: The square root: NaN for negative values other than -0.0, which gives -0.0.
 routine F64.sqrt(self: Self) -> Self
     block entry()
         r : Self = sqrt<Self>(self)
         return(r)
 
 /// self raised to an integer power, correctly rounded: powf with n converted, which is exact.
+/// :param n: The integer exponent.
+/// :returns: `self` to the power `n`, rounded once.
 routine F64.powi(self: Self, n: S32) -> Self
     block entry()
         r : Self = self.powf(n.to<Self>())
         return(r)
 
-/// The logarithm with an arbitrary base.
+/// The logarithm of `self` in an arbitrary base, computed as `ln(self) / ln(base)`.
+/// :param base: The base of the logarithm.
+/// :returns: `ln(self) / ln(base)`, each step rounded.
 routine F64.log(self: Self, base: Self) -> Self
     block entry()
         num : Self = self.ln()
@@ -774,6 +823,7 @@ routine F64.is_infinite(self: Self) -> Bool
         return(r)
 
 /// Neither infinite nor NaN.
+/// :returns: True for zeros, subnormals and normal values. False for infinities and NaN.
 routine F64.is_finite(self: Self) -> Bool
     block entry()
         magnitude : Self = fabs<Self>(self)
@@ -781,6 +831,7 @@ routine F64.is_finite(self: Self) -> Bool
         return(r)
 
 /// Not zero, subnormal, infinite, or NaN.
+/// :returns: True when the exponent field is neither all zeros nor all ones.
 routine F64.is_normal(self: Self) -> Bool
     block entry()
         exponent : U64  = self.bits().bitand(0x7FF0000000000000)
@@ -805,6 +856,7 @@ record F64Parts
     exponent : S64
 
 /// The raw IEEE 754 bits.
+/// :returns: The encoding as a U64: sign bit at the top, then the exponent field, then the fraction.
 routine F64.bits(self: Self) -> U64
     block entry()
         r : U64 = bitcast<Self, U64>(self)
@@ -847,6 +899,10 @@ routine f64_unpack(x: F64) -> F64Parts
 /// sig × 2^(exponent - 1086) rounded to nearest, ties to even, where sig has its top bit (63) set and exponent
 /// is the biased exponent the result has if it's normal. Rounds into the subnormals below 1 and overflows to
 /// infinity at 0x7FF.
+/// :param negative: The sign of the result.
+/// :param exponent: The biased exponent the result has if it is normal.
+/// :param sig: The significand, with its top bit (63) set.
+/// :returns: The rounded F64: a subnormal or zero below exponent 1, and infinity at 0x7FF or above.
 routine f64_round_pack(negative: Bool, exponent: S64, sig: U64) -> F64
     shared sign : U64 = negative
         ? 0x8000000000000000
@@ -891,6 +947,9 @@ routine f64_round_pack(negative: Bool, exponent: S64, sig: U64) -> F64
 /// format with at most 51 bits rounds it to nearest exactly as it would the true sum, so F16's and BF16's
 /// mul_add add their exact F64 product this way and narrow once. Finite inputs. An infinite or NaN sum is
 /// returned as the addition gives it.
+/// :param a: The first addend, finite.
+/// :param b: The second addend, finite.
+/// :returns: `a + b` rounded to odd, or the plain sum when it is infinite or NaN.
 routine f64_add_round_to_odd(a: F64, b: F64) -> F64
     shared s : F64 = a.add(b)
 
@@ -924,6 +983,7 @@ routine f64_add_round_to_odd(a: F64, b: F64) -> F64
 
 /// Narrows to F32 with round-to-odd, then rounds that to F16. F32's 24 bits are
 /// enough (2 * 11 + 2) for the second rounding to be exact.
+/// :returns: The nearest F16, rounded once. Values past the F16 range give a signed infinity.
 routine F64.to<F16>(self: Self) -> F16
     block entry()
         narrow  : F32  = fptrunc<Self, F32>(self)
@@ -942,6 +1002,7 @@ routine F64.to<F16>(self: Self) -> F16
 /// Narrows to F32 with round-to-odd (an inexact result gets its lowest bit set),
 /// then rounds that to BF16. Round-to-odd keeps the second rounding from
 /// double-rounding, because F32 has more than twice BF16's precision.
+/// :returns: The nearest BF16, rounded once.
 routine F64.to<BF16>(self: Self) -> BF16
     block entry()
         narrow  : F32  = fptrunc<Self, F32>(self)
@@ -1302,7 +1363,10 @@ routine F64.to_clamp<U128>(self: Self) -> U128
         r : U128 = fptoui_sat<Self, U128>(self)
         return(r)
 
-/// Whether self, rounded toward zero, lies in [lo, hi). False for NaN.
+/// Whether `self`, rounded toward zero, lies in `[lo, hi)`. False for NaN.
+/// :param lo: The lower bound, included.
+/// :param hi: The upper bound, excluded.
+/// :returns: True when `lo <= trunc(self) < hi`.
 routine F64.is_trunc_in_range(self: Self, lo: Self, hi: Self) -> Bool
     block entry()
         whole : Self = self.trunc()

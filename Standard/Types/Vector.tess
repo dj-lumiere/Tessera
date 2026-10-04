@@ -108,18 +108,22 @@ require T: typename, LANES: USize
 
 // -- construction ----------------------------------------------------------------------
 
-/// Every lane x.
+/// A vector with every lane set to `x`.
+/// :param x: The value for every lane.
+/// :returns: The vector of `LANES` copies of `x`.
 #[external("llvm"),
     template("{t0} = insertelement {Self} poison, {T} {x}, i64 0\n{result} = shufflevector {Self} {t0}, {Self} poison, <{LANES} x i32> zeroinitializer")]
 routine Vector<T, LANES>.splat(x: T) -> Self
 require T: typename, LANES: USize
 
 /// Every lane zero (false, for a mask).
+/// :returns: The all-zero vector.
 #[external("llvm"), template("{result} = bitcast {Self} zeroinitializer to {Self}")]
 routine Vector<T, LANES>.zero() -> Self
 require T: typename, LANES: USize
 
 /// The array's elements as lanes, element i in lane i.
+/// :returns: The vector whose lane i is element i.
 routine Array<T, COUNT>.to<Vector<T, COUNT>>(self: Self) -> Vector<T, COUNT>
 require T: typename, COUNT: USize
     shared elements : @Self             <- self
@@ -143,6 +147,7 @@ require T: typename, COUNT: USize
         jump fill(i.add(1))
 
 /// The lanes as an array, lane i in element i.
+/// :returns: The array whose element i is lane i.
 routine Vector<T, LANES>.to<Array<T, LANES>>(self: Self) -> Array<T, LANES>
 require T: typename, LANES: USize
     shared elements : @Array<T, LANES> <- uninit
@@ -182,7 +187,10 @@ require T: typename, LANES: USize
 private routine Vector<T, LANES>.with_unchecked(self: Self, index: USize, x: T) -> Self
 require T: typename, LANES: USize
 
-/// Lane index. Crashes if index is LANES or more.
+/// Reads lane `index`.
+/// :param index: The lane to read.
+/// :returns: The lane value.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index` is `LANES` or more.
 #track_caller
 routine Vector<T, LANES>.getitem(self: Self, index: USize) -> T
 require T: typename, LANES: USize
@@ -194,7 +202,11 @@ require T: typename, LANES: USize
         lane : T = self.get_unchecked(index)
         return(lane)
 
-/// A copy with lane index set to x. Crashes if index is LANES or more.
+/// A copy of `self` with lane `index` set to `x`.
+/// :param index: The lane to replace.
+/// :param x: The new lane value.
+/// :returns: The copy with that lane set.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index` is `LANES` or more.
 #track_caller
 routine Vector<T, LANES>.with(self: Self, index: USize, x: T) -> Self
 require T: typename, LANES: USize
@@ -211,12 +223,15 @@ require T: typename, LANES: USize
 // A @Vector<T, LANES> loads and stores the whole vector at the vector's alignment. These read and write LANES Ts in a
 // row at any T-aligned address: an array's elements, a list's storage.
 
-/// Reads the LANES Ts at first as lanes. first need only be aligned for T.
+/// Reads the `LANES` values of `T` starting at `first` as lanes. `first` need only be aligned for `T`.
+/// :param first: The address of the first value.
+/// :returns: The vector, value i in lane i.
 #[external("llvm"), template("{result} = load {Self}, ptr {first}, align {sizeof T}")]
 routine Vector<T, LANES>.load_at(first: @T) -> Self
 require T: typename, LANES: USize, NumberLane<T>
 
-/// Writes the lanes to the LANES Ts at first. first need only be aligned for T.
+/// Writes the lanes to the `LANES` values of `T` starting at `first`. `first` need only be aligned for `T`.
+/// :param first: The address of the first value.
 #[external("llvm"), template("store {Self} {self}, ptr {first}, align {sizeof T}")]
 routine Vector<T, LANES>.store_at(self: Self, first: @T) -> Void
 require T: typename, LANES: USize, NumberLane<T>
@@ -270,6 +285,9 @@ private routine Vector<T, LANES>.mul_overflows(self: Self, other: Self) -> Bool
 require T: typename, LANES: USize, NumberLane<T>
 
 /// Lane-wise sum. For integers, crashes if any lane overflows.
+/// :param other: The right-hand operand.
+/// :returns: The lane-wise sum.
+/// :throws: Crashes with `IntegerOverflowError` when an integer lane overflows.
 #track_caller
 routine Vector<T, LANES>.add(self: Self, other: Self) -> Self
 require T: typename, LANES: USize, NumberLane<T>
@@ -282,6 +300,9 @@ require T: typename, LANES: USize, NumberLane<T>
         return(r)
 
 /// Lane-wise difference. For integers, crashes if any lane overflows.
+/// :param other: The right-hand operand.
+/// :returns: The lane-wise difference.
+/// :throws: Crashes with `IntegerOverflowError` when an integer lane overflows.
 #track_caller
 routine Vector<T, LANES>.sub(self: Self, other: Self) -> Self
 require T: typename, LANES: USize, NumberLane<T>
@@ -294,6 +315,9 @@ require T: typename, LANES: USize, NumberLane<T>
         return(r)
 
 /// Lane-wise product. For integers, crashes if any lane overflows.
+/// :param other: The right-hand operand.
+/// :returns: The lane-wise product.
+/// :throws: Crashes with `IntegerOverflowError` when an integer lane overflows.
 #track_caller
 routine Vector<T, LANES>.mul(self: Self, other: Self) -> Self
 require T: typename, LANES: USize, NumberLane<T>
@@ -305,55 +329,70 @@ require T: typename, LANES: USize, NumberLane<T>
         r : Self = self.mul_raw(other)
         return(r)
 
-/// Lane-wise sum, each lane wrapping modulo 2^bits.
+/// Lane-wise sum, each lane wrapping modulo 2^bits, where bits is the lane width.
+/// :param other: The right-hand operand.
+/// :returns: The wrapped lane-wise sum.
 routine Vector<T, LANES>.add_wrap(self: Self, other: Self) -> Self
 require T: typename, LANES: USize, IntLane<T>
     block entry()
         r : Self = self.add_raw(other)
         return(r)
 
-/// Lane-wise difference, each lane wrapping modulo 2^bits.
+/// Lane-wise difference, each lane wrapping modulo 2^bits, where bits is the lane width.
+/// :param other: The right-hand operand.
+/// :returns: The wrapped lane-wise difference.
 routine Vector<T, LANES>.sub_wrap(self: Self, other: Self) -> Self
 require T: typename, LANES: USize, IntLane<T>
     block entry()
         r : Self = self.sub_raw(other)
         return(r)
 
-/// Lane-wise product, each lane wrapping modulo 2^bits.
+/// Lane-wise product, each lane wrapping modulo 2^bits, where bits is the lane width.
+/// :param other: The right-hand operand.
+/// :returns: The wrapped lane-wise product.
 routine Vector<T, LANES>.mul_wrap(self: Self, other: Self) -> Self
 require T: typename, LANES: USize, IntLane<T>
     block entry()
         r : Self = self.mul_raw(other)
         return(r)
 
-/// Lane-wise sum, each lane saturating at T's MIN / MAX.
+/// Lane-wise sum, each lane saturating at `T`'s `MIN` / `MAX`.
+/// :param other: The right-hand operand.
+/// :returns: The saturated lane-wise sum.
 #[external("llvm"),
     template("{result} = call {Self} @llvm.{by T||s|u}add.sat.{mangle Self}({Self} {self}, {Self} {other})")]
 routine Vector<T, LANES>.add_clamp(self: Self, other: Self) -> Self
 require T: typename, LANES: USize, IntLane<T>
 
-/// Lane-wise difference, each lane saturating at T's MIN / MAX.
+/// Lane-wise difference, each lane saturating at `T`'s `MIN` / `MAX`.
+/// :param other: The right-hand operand.
+/// :returns: The saturated lane-wise difference.
 #[external("llvm"),
     template("{result} = call {Self} @llvm.{by T||s|u}sub.sat.{mangle Self}({Self} {self}, {Self} {other})")]
 routine Vector<T, LANES>.sub_clamp(self: Self, other: Self) -> Self
 require T: typename, LANES: USize, IntLane<T>
 
-/// Lane-wise quotient.
+/// Lane-wise quotient of float lanes.
+/// :param other: The divisor.
+/// :returns: The lane-wise quotient.
 #[external("llvm"), template("{result} = fdiv {Self} {self}, {other}")]
 routine Vector<T, LANES>.div(self: Self, other: Self) -> Self
 require T: typename, LANES: USize, FloatLane<T>
 
 /// Each lane negated (-0.0 for 0.0).
+/// :returns: `self` with every lane negated.
 #[external("llvm"), template("{result} = fneg {Self} {self}")]
 routine Vector<T, LANES>.neg(self: Self) -> Self
 require T: typename, LANES: USize, FloatLane<T>
 
 /// Each lane's magnitude.
+/// :returns: The lane-wise absolute value.
 #[external("llvm"), template("{result} = call {Self} @llvm.fabs.{mangle Self}({Self} {self})")]
 routine Vector<T, LANES>.abs(self: Self) -> Self
 require T: typename, LANES: USize, FloatLane<T>
 
 /// Each lane's square root. NaN for a negative lane (other than -0.0).
+/// :returns: The lane-wise square root.
 #[external("llvm"), template("{result} = call {Self} @llvm.sqrt.{mangle Self}({Self} {self})")]
 routine Vector<T, LANES>.sqrt(self: Self) -> Self
 require T: typename, LANES: USize, FloatLane<T>
@@ -405,14 +444,18 @@ require T: typename, LANES: USize, BitLane<T>
 routine Vector<T, LANES>.bitnot(self: Self) -> Self
 require T: typename, LANES: USize, BitLane<T>
 
-/// Each lane shifted left by the matching lane of n. A shift by the lane width or more (or a negative one) gives 0.
+/// Each lane shifted left by the matching lane of `n`. A shift by the lane width or more (or a negative one) gives 0.
+/// :param n: The shift amount for each lane.
+/// :returns: The shifted lanes.
 #[external("llvm"),
     template("{t0} = icmp ult {Self} {n}, splat ({T} {bits T})\n{t1} = shl {Self} {self}, {n}\n{result} = select <{LANES} x i1> {t0}, {Self} {t1}, {Self} zeroinitializer")]
 routine Vector<T, LANES>.shl(self: Self, n: Self) -> Self
 require T: typename, LANES: USize, IntLane<T>
 
-/// Each lane shifted right by the matching lane of n: arithmetic for signed lanes, logical for unsigned. A shift
+/// Each lane shifted right by the matching lane of `n`: arithmetic for signed lanes, logical for unsigned. A shift
 /// by the lane width or more (or a negative one) gives the sign fill: 0, or -1 for a negative signed lane.
+/// :param n: The shift amount for each lane.
+/// :returns: The shifted lanes.
 #[external("llvm"),
     template("{t0} = icmp ult {Self} {n}, splat ({T} {bits T})\n{by T||{t1} = ashr {Self} {self}, {n}\n{t3} = icmp slt {Self} {self}, zeroinitializer\n{t2} = sext <{LANES} x i1> {t3} to {Self}|{t1} = lshr {Self} {self}, {n}\n{t2} = bitcast {Self} zeroinitializer to {Self}}\n{result} = select <{LANES} x i1> {t0}, {Self} {t1}, {Self} {t2}")]
 routine Vector<T, LANES>.shr(self: Self, n: Self) -> Self
@@ -480,18 +523,21 @@ require T: typename, LANES: USize, NumberLane<T>
 // -- masks -----------------------------------------------------------------------------
 
 /// Whether every lane is true.
+/// :returns: `true` when every lane of the mask is true.
 #[external("llvm"),
     template("{result} = call i1 @llvm.vector.reduce.and.{mangle Self}({Self} {self})")]
 routine Vector<T, LANES>.is_all_true(self: Self) -> Bool
 require T: typename, LANES: USize, MaskLane<T>
 
 /// Whether some lane is true.
+/// :returns: `true` when at least one lane of the mask is true.
 #[external("llvm"),
     template("{result} = call i1 @llvm.vector.reduce.or.{mangle Self}({Self} {self})")]
 routine Vector<T, LANES>.is_any_true(self: Self) -> Bool
 require T: typename, LANES: USize, MaskLane<T>
 
 /// Whether no lane is true.
+/// :returns: `true` when every lane of the mask is false.
 routine Vector<T, LANES>.is_none_true(self: Self) -> Bool
 require T: typename, LANES: USize, MaskLane<T>
     block entry()
@@ -499,12 +545,17 @@ require T: typename, LANES: USize, MaskLane<T>
         return(some.bitnot())
 
 /// How many lanes are true.
+/// :returns: The count of true lanes, from 0 to `LANES`.
 #[external("llvm"),
     template("{t0} = bitcast {Self} {self} to i{LANES}\n{t1} = call i{LANES} @llvm.ctpop.i{LANES}(i{LANES} {t0})\n{result} = zext i{LANES} {t1} to {USize}")]
 routine Vector<T, LANES>.count_true(self: Self) -> USize
 require T: typename, LANES: USize, MaskLane<T>
 
-/// Lane i of if_true where this mask's lane i is true, else lane i of if_false.
+/// Lane i of `if_true` where this mask's lane i is true, else lane i of `if_false`.
+/// :typeparam TValue: The lane type of the vectors to choose from.
+/// :param if_true: The lanes taken where the mask is true.
+/// :param if_false: The lanes taken where the mask is false.
+/// :returns: The lanes chosen by the mask.
 #[external("llvm"),
     template("{result} = select {Self} {self}, <{LANES} x {TValue}> {if_true}, <{LANES} x {TValue}> {if_false}")]
 routine Vector<T, LANES>.select<TValue>(self: Self, if_true: Vector<TValue, LANES>,
@@ -550,6 +601,8 @@ require T: typename, LANES: USize, NumberLane<T>
 
 /// The lanes added in order, lane 0 first. For integers, crashes on overflow. In order, so a float sum is the same
 /// on every target, though a tree of adds would be faster.
+/// :returns: The sum of the lanes.
+/// :throws: Crashes with `IntegerOverflowError` when an integer running sum overflows.
 #track_caller
 routine Vector<T, LANES>.sum(self: Self) -> T
 require T: typename, LANES: USize, NumberLane<T>
@@ -573,6 +626,7 @@ require T: typename, LANES: USize, NumberLane<T>
         jump step(i.add(1), next)
 
 /// The smallest lane. A NaN lane counts only if every lane is NaN.
+/// :returns: The smallest lane value.
 routine Vector<T, LANES>.reduce_min(self: Self) -> T
 require T: typename, LANES: USize, NumberLane<T>
     shared acc : @T <- uninit
@@ -595,6 +649,7 @@ require T: typename, LANES: USize, NumberLane<T>
         jump step(i.add(1))
 
 /// The largest lane. A NaN lane counts only if every lane is NaN.
+/// :returns: The largest lane value.
 routine Vector<T, LANES>.reduce_max(self: Self) -> T
 require T: typename, LANES: USize, NumberLane<T>
     shared acc : @T <- uninit
