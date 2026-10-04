@@ -425,6 +425,7 @@ public sealed class FunctionGen
         }
 
         _values = new Dictionary<string, Val>(_routineValues);
+        _hiddenPayloads.Clear();
         var types = _blockParamTypes[b.Name];
         for (int i = 0; i < b.Params.Count; i++)
         {
@@ -474,6 +475,13 @@ public sealed class FunctionGen
     /// Where a `continue` arm goes: the LLVM block that holds the lines after the guard.
     private string? _continueLabel;
 
+    /// While a guard's `when` is emitted: the payload its continuing arm binds, read in that arm's own block, by name.
+    private Dictionary<string, (Val Value, Pos Pos)>? _continuedPayloads;
+
+    /// The payload names a guard's arms bound that the lines after it don't see, with the reason, said when one is
+    /// used.
+    private readonly Dictionary<string, string> _hiddenPayloads = [];
+
     private void EmitStmt(Stmt s)
     {
         try { EmitStmtCore(s); }
@@ -490,10 +498,21 @@ public sealed class FunctionGen
             {
                 var next = NewLBlock("cont");
                 string? outer = _continueLabel;
+                var outerPayloads = _continuedPayloads;
+                Dictionary<string, (Val Value, Pos Pos)> continued = [];
                 _continueLabel = next.Label;
-                EmitTerminator(g.Term);
-                _continueLabel = outer;
+                _continuedPayloads = continued;
+                try
+                {
+                    EmitTerminator(g.Term);
+                }
+                finally
+                {
+                    _continueLabel = outer;
+                    _continuedPayloads = outerPayloads;
+                }
                 _cur = next;
+                KeepContinuedPayload(g.Term, continued);
                 break;
             }
             case BindStmt b:
@@ -749,6 +768,7 @@ public sealed class FunctionGen
             RecordValue(r.Pos, v.Type);
             return v;
         }
+        if (_hiddenPayloads.TryGetValue(r.Name, out var why)) throw Err(r.Pos, why);
         if (!BoundInRoutine(r.Name))
             throw Err(r.Pos, $"'{r.Name}' is not defined in '{_decl.DisplayName}'; bind it or claim it first");
         throw Err(r.Pos, NotVisible(r.Name));
@@ -1168,6 +1188,51 @@ public sealed class FunctionGen
         Terminate($"switch {vt.Tag.Llvm} {tag}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
     }
 
+    /// After a guard's `when`, the lines that follow see the payload of the arm that continues, when it is the only
+    /// one that does: every other arm left the block, so the lines run only after that arm, and the payload it read
+    /// is a block binding from here on, under the same rules as any other. The payloads of the arms that left, or of
+    /// arms that continue alongside others, are not bound, and a use of one says why.
+    private void KeepContinuedPayload(Terminator term, Dictionary<string, (Val Value, Pos Pos)> continued)
+    {
+        if (term is not WhenValueTerm when) return;
+        int continuing = when.Arms.Count(a => a.Target is ContinueTarget);
+        foreach (var (cases, target) in when.Arms)
+        {
+            if (cases is not [var pattern] || PayloadBinding(pattern) is not { } binding) continue;
+            string arm = PatternText(pattern, binding.Name);
+            if (target is ContinueTarget && continuing == 1)
+            {
+                var (value, pos) = continued[binding.Name];
+                Define(binding.Name, value, pos);
+                DescribeValue(binding.Name, value.Op, value.Type, pos);
+                continue;
+            }
+            if (_values.ContainsKey(binding.Name)) continue;
+            _hiddenPayloads[binding.Name] = target is ContinueTarget
+                ? $"'{binding.Name}' is the payload of the arm {arm} (line {pattern.Pos.Line}), and {continuing} arms of "
+                  + "that when continue, so the lines after it don't know which payload they have: give each arm a "
+                  + "block of its own, or let only one arm continue"
+                : $"'{binding.Name}' is the payload of the arm {arm} (line {pattern.Pos.Line}), which leaves the block: "
+                  + "only the arm that continues binds its payload for the lines after the when";
+        }
+    }
+
+    /// The name a `when` arm's pattern binds its payload to: `n` of `.Present(n)`.
+    private static ValueRef? PayloadBinding(Expr pattern) => pattern switch
+    {
+        NsCallExpr { Args: [ValueRef r] } => r,
+        ImplicitCallExpr { Args: [ValueRef r] } => r,
+        _ => null,
+    };
+
+    /// A pattern as written, for a message: `.Present(value)`, `Expr.Number(n)`.
+    private static string PatternText(Expr pattern, string binding) => pattern switch
+    {
+        NsCallExpr n => $"{n.Owner.Name}.{n.Name}({binding})",
+        ImplicitCallExpr ic => $".{ic.Name}({binding})",
+        _ => binding,
+    };
+
     private string BindingArm(VariantType vt, string slot, int index, ValueRef binding, Target target)
     {
         var payload = vt.Payloads[index]!;
@@ -1179,6 +1244,9 @@ public sealed class FunctionGen
         string value = EmitTmp($"load {payload.Llvm}, ptr {at}");
         _values = new Dictionary<string, Val>(_values);
         Define(binding.Name, new Val(value, payload), binding.Pos);
+        // A guard's continuing arm: the lines after the when may see the payload (KeepContinuedPayload).
+        if (target is ContinueTarget && _continuedPayloads is { } kept)
+            kept[binding.Name] = (new Val(value, payload), binding.Pos);
         EmitTarget(target);
         _values = savedValues;
         _cur = saved;

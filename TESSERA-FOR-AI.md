@@ -328,6 +328,20 @@ routine main() -> S32
   `branch failed ? crash_allocation() : continue`. Use it for guards instead of a block that only receives
   the values the rest needs. It is not C's "next iteration" (that's `jump loop(...)`), and a block still ends with a
   real terminator.
+- **The arm that continues keeps its payload** (let-else). When exactly one arm of a `when` on a variant continues and
+  the others leave, its payload is a block binding from the next line on, so a payload doesn't need a block of its own
+  to reach the rest of the work:
+
+  ```tessera
+  when item
+      .Present(value) -> continue
+      .Absent         -> finish()
+  total.load().add(value).store_into(total)  // value is bound here
+  ```
+
+  Same rules as any block binding (not a routine parameter's, a shared value's, or an earlier binding's name, and not
+  bound again later). When several arms continue, none of their payloads is bound after the `when`, nor is the
+  payload of an arm that leaves: a use is a build error saying why.
 - A line that starts with `?` or `:` continues the one above. `fmt` writes every `branch`, and every select that is a
   binding's or claim's whole value, on three lines: the condition, then `? a` and `: b` 4 spaces further in.
 - An integer `when v` needs an `else` arm. A `when v` on a choice without `else` must list every member. An arm may
@@ -505,8 +519,8 @@ routine main() -> S32
   values go in a record or a tuple. `Option<T>` (`Absent`, `Present : T`) and `Result<T, E>`
   (`Failure : E`, `Success : T`) are variants.
 - Build: `Expr.Number(5)`, `.Number(5)` where the type is known, `Expr.Empty` / `.Empty`.
-- Read with `when e`; `Expr.Number(n) -> target(n)` binds the payload for that arm's target only, `Expr.Empty`
-  or `.Present` matches without binding. Without `else`, list every case. There's no field access on a variant.
+- Read with `when e`; `Expr.Number(n) -> target(n)` binds the payload for that arm's target only (or, on the one
+  arm that `continue`s, for the rest of the block), `Expr.Empty` or `.Present` matches without binding. Without `else`, list every case. There's no field access on a variant.
 - Payloads overlap; a payload arm reads through a stack slot (gone at `-O`).
 - A choice or variant without `#derive` derives Representable, Diagnosable, Equatable, Hashable, and Comparable (a variant's only when
   its payloads have them), skipping what it declares itself; `#derive(...)` lists exactly what to derive,
