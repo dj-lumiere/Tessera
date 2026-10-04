@@ -790,7 +790,9 @@ job goes just before it (`Scheduler.construct(workers, stacks, alloc)`). So the 
 the value (`is_empty`, `is_null`, `is_finite`, `is_utf8`, `file.is_present()`, `file.is_accessible(access)`), and
 `has_` about what it contains (`set.has(x)`, `dict.has_key(k)`, `text.has(needle)`, `text.has_prefix(p)` /
 `has_suffix(s)`, `n.has_bit(i)`, `SliceWriter.has_overflowed()`). There are no bare predicates (`empty()`,
-`finite()`, `exists()`, `all()`), no `can_` / `should_`, and no `contains` / `starts_with`. A vector mask asks
+`finite()`, `exists()`, `all()`), no `should_`, and no `contains` / `starts_with`. A capability is `is_<x>able`,
+never `can_<x>`: `is_readable`, `is_writable`, `is_seekable` (not `can_read`, `can_write`, `can_seek`), and a C ABI
+symbol keeps its own name (`rf_fs_can_read`). A vector mask asks
 `is_all_true()`, `is_any_true()`, `is_none_true()`. A free routine with a family prefix keeps the prefix first
 (`f128_is_integer`, `ryu_is_multiple_of_pow5`). Not questions in this sense, so they keep their names: comparisons and
 range checks (`eq`, `lt`, `less`, `between`, `in_range`), an overflow test that goes with its operation
