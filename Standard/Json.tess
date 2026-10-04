@@ -1,0 +1,192 @@
+// Tessera stdlib: JSON strings
+//
+// A JSON string (RFC 8259, section 7) is text between quotation marks in which the quotation mark, the reverse solidus,
+// and the control characters below U+0020 must be escaped. The escapes written here: `\"` and `\\`, the five controls
+// with a short form (`\b` `\t` `\n` `\f` `\r`), and `\u00XX` with lowercase hex digits for every other control.
+// Everything else, DEL and every non-ASCII character included, is written as it is, so valid UTF-8 stays valid.
+//
+// Public surface (each routine is a method on the text or code point it reads, `_into` naming where it goes):
+//   text.json_quote_into(out)             writes UTF-8 text as a JSON string, quotes included, to a Writer
+//   chars.json_quoted_count()             how many code points text held as code points (Slice<U32>) takes as a
+//                                         JSON string
+//   chars.json_quote_into(out) -> n       writes it, one code point per element (a language whose text is UTF-32,
+//                                         like RazorForge's Text, encodes through these)
+//   c.json_escaped_width()                1, 2, or 6: how many characters one code point (or byte) takes
+//   c.json_escape_into(out) -> n          the escape of one code point into 6 bytes, 0 when it needs none
+//
+// RazorForge's JSON encoder writes its strings through these (by way of Ingrid), so the text they give is part of its
+// output: changing an escape here changes what RazorForge writes.
+
+module Standard::Json
+
+import Standard::Format
+
+/// How many characters this code point takes inside a JSON string: 2 for a short escape, 6 for `\u00XX`, 1 when it
+/// is written as itself. A byte of UTF-8 text goes in as its value, since every escaped character is ASCII.
+/// :returns: 1, 2, or 6.
+#inline
+routine U32.json_escaped_width(self: Self) -> USize
+    block entry()
+        when self
+            0x22, 0x5C, 0x08, 0x09, 0x0A, 0x0C, 0x0D -> return(2)
+            else                                     -> other()
+
+    block other()
+        control : Bool = self.lt(0x20)
+        branch control
+            ? return(6)
+            : return(1)
+
+/// Writes the escape of this code point into `out` and gives its length: 2 for a short escape, 6 for `\u00XX`, and
+/// 0 (with nothing written) when the code point is written as itself.
+/// :param out: Room for the escape's 6 bytes.
+/// :returns: 0, 2, or 6.
+routine U32.json_escape_into(self: Self, out: @Array<Byte, 6>) -> USize
+    block entry()
+        when self
+            0x22 -> short(b'"')
+            0x5C -> short(b'\\')
+            0x08 -> short(b'b')
+            0x09 -> short(b't')
+            0x0A -> short(b'n')
+            0x0C -> short(b'f')
+            0x0D -> short(b'r')
+            else -> other()
+
+    block other()
+        control : Bool = self.lt(0x20)
+        branch control
+            ? long()
+            : return(0)
+
+    block short(letter: Byte)
+        out.setitem(0, b'\\')
+        out.setitem(1, letter)
+        return(2)
+
+    block long()
+        out.setitem(0, b'\\')
+        out.setitem(1, b'u')
+        out.setitem(2, b'0')
+        out.setitem(3, b'0')
+        out.setitem(4, hex_digit(self.shr(4)))
+        out.setitem(5, hex_digit(self.bitand(0xF)))
+        return(6)
+
+/// The lowercase hex digit of a nibble.
+/// :param nibble: A value from 0 to 15.
+/// :returns: `0` to `9` or `a` to `f`.
+#inline
+private routine hex_digit(nibble: U32) -> Byte
+    block entry()
+        digit : Bool = nibble.lt(10)
+        code  : U32  = digit
+            ? nibble.add(0x30)
+            : nibble.add(0x57)
+        return(code.to<U8>().bits())
+
+/// Writes this UTF-8 text as a JSON string, quotes included. Runs of bytes that need no escape go out in one write
+/// each. Bytes above 0x7F are written as they are.
+/// :param out: The Writer.
+routine Bytes.json_quote_into<W>(self: Self, out: @W) -> Void
+require W: typename, Writer<W>
+    shared data   : @Byte           = self.data
+    shared count  : USize           = self.count
+    shared escape : @Array<Byte, 6> <- uninit
+
+    block entry()
+        write_str(out, "\"")
+        jump scan(0, 0)
+
+    block scan(start: USize, at: USize)
+        done : Bool = at.ge(count)
+        branch done
+            ? close(start)
+            : continue
+        byte  : Byte  = data.stride(at).load()
+        c     : U32   = byte.to<U8>().to<U32>()
+        width : USize = c.json_escape_into(escape)
+        plain : Bool  = width.eq(0)
+        branch plain
+            ? scan(start, at.add(1))
+            : escaped(start, at, width)
+
+    block escaped(start: USize, at: USize, width: USize)
+        out.write_bytes(data.stride(start), at.sub(start))
+        out.write_bytes(escape.to<@Byte>(), width)
+        jump scan(at.add(1), at.add(1))
+
+    block close(start: USize)
+        out.write_bytes(data.stride(start), count.sub(start))
+        write_str(out, "\"")
+        return()
+
+/// Writes the text in this slot as a JSON string, quotes included (the value form's).
+/// :param out: The Writer.
+routine Bytes.json_quote_into<W>(self: @Self, out: @W) -> Void
+require W: typename, Writer<W>
+    block entry()
+        self.load().json_quote_into(out)
+        return()
+
+/// How many code points this text, held as code points, takes as a JSON string, quotes included: the length
+/// `json_quote_into` writes.
+/// :returns: The JSON string's length in code points.
+routine Slice<U32>.json_quoted_count(self: Self) -> USize
+    shared count : USize  = self.count()
+    shared total : @USize <- 2
+
+    block entry()
+        jump add(0)
+
+    block add(at: USize)
+        done : Bool = at.ge(count)
+        branch done
+            ? return(total.load())
+            : continue
+        c     : U32   = self.getitem(at)
+        width : USize = c.json_escaped_width()
+        total.load().add(width).store_into(total)
+        jump add(at.add(1))
+
+/// Writes this text, held as code points, as a JSON string, quotes included, one code point per element of `out`.
+/// :param out: Where the JSON string goes: `json_quoted_count()` elements.
+/// :returns: How many elements it wrote.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `out` is shorter than the JSON string.
+#track_caller
+routine Slice<U32>.json_quote_into(self: Self, out: Self) -> USize
+    shared count  : USize           = self.count()
+    shared escape : @Array<Byte, 6> <- uninit
+
+    block entry()
+        out.setitem(0, 0x22)
+        jump each(0, 1)
+
+    block each(at: USize, put: USize)
+        done : Bool = at.ge(count)
+        branch done
+            ? close(put)
+            : continue
+        c     : U32   = self.getitem(at)
+        width : USize = c.json_escape_into(escape)
+        plain : Bool  = width.eq(0)
+        branch plain
+            ? copy(at, put, c)
+            : spell(at, put, width, 0)
+
+    block copy(at: USize, put: USize, c: U32)
+        out.setitem(put, c)
+        jump each(at.add(1), put.add(1))
+
+    block spell(at: USize, put: USize, width: USize, k: USize)
+        done : Bool = k.ge(width)
+        branch done
+            ? each(at.add(1), put.add(width))
+            : continue
+        byte : Byte = escape.getitem(k)
+        out.setitem(put.add(k), byte.to<U8>().to<U32>())
+        jump spell(at, put, width, k.add(1))
+
+    block close(put: USize)
+        out.setitem(put, 0x22)
+        return(put.add(1))
