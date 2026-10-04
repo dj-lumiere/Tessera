@@ -736,18 +736,22 @@ static class Cli
 
         int passed = 0, skipped = 0;
         var failures = new List<string>();
+        var outcomes = RunAll(tests, target);
 
-        foreach (var (stem, sources) in tests)
+        for (int i = 0; i < tests.Count; i++)
         {
+            var (stem, _) = tests[i];
             string name = Path.GetFileName(stem);
             if (qualify) name = Path.GetFileName(Path.GetDirectoryName(stem)) + "/" + name;
-            if (!RunsOn(stem, target))
+            if (outcomes[i] is null)
             {
                 skipped++;
                 Console.WriteLine($"  skip  {name}");
                 continue;
             }
-            string? why = RunOne(sources, stem, target);
+            // In the order the tests were found, each as soon as it and the ones before it are done. A builder
+            // exception (not a test failure) ends the run here, after the results before it.
+            string? why = outcomes[i]!.Task.GetAwaiter().GetResult();
             if (why is null)
             {
                 passed++;
@@ -764,6 +768,52 @@ static class Cli
         Console.WriteLine($"\n{passed} passed, {failures.Count} failed{skips} ({target.LlvmTriple})");
         return failures.Count == 0 ? 0 : 1;
     }
+
+    /// Starts every test that runs on the target and gives back, per test, the outcome RunOne will have (null for a
+    /// test the target skips). The tests run Environment.ProcessorCount at a time on threads of their own, so a build
+    /// waiting on clang or a program waiting on its output doesn't hold a thread pool thread. A test with a
+    /// <name>.serial file runs first, alone: one whose output depends on timing that other builds would disturb.
+    private static TaskCompletionSource<string?>?[] RunAll(List<(string Stem, string[] Sources)> tests, BuildTarget target)
+    {
+        var outcomes = new TaskCompletionSource<string?>?[tests.Count];
+        var alone = new List<int>();
+        var shared = new ConcurrentQueue<int>();
+        for (int i = 0; i < tests.Count; i++)
+        {
+            if (!RunsOn(tests[i].Stem, target)) continue;
+            outcomes[i] = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (RunsAlone(tests[i].Stem)) alone.Add(i);
+            else shared.Enqueue(i);
+        }
+
+        void Run(int i)
+        {
+            try { outcomes[i]!.SetResult(RunOne(tests[i].Sources, tests[i].Stem, target)); }
+            catch (Exception e) { outcomes[i]!.SetException(e); }
+        }
+
+        void Worker()
+        {
+            while (shared.TryDequeue(out int i)) Run(i);
+        }
+
+        var starter = new Thread(() =>
+        {
+            // The stdlib is parsed once up front, so the first tests don't each parse all of it at the same time. A
+            // stdlib that doesn't parse fails every test, which reports it.
+            try { LoadDecls([], target); }
+            catch (Exception e) when (e is CompileError or ToolError or IOException) { }
+            foreach (int i in alone) Run(i);
+            int count = Math.Max(1, Math.Min(Environment.ProcessorCount, shared.Count));
+            for (int w = 0; w < count; w++) new Thread(Worker) { IsBackground = true, Name = $"test worker {w}" }.Start();
+        })
+        { IsBackground = true, Name = "test starter" };
+        starter.Start();
+        return outcomes;
+    }
+
+    /// A <name>.serial file marks a test that runs by itself, with no other test building or running beside it.
+    internal static bool RunsAlone(string stem) => File.Exists(stem + ".serial");
 
     /// The golden tests in a directory: every <name>.tess, and every subdirectory <name>/ (its .tess files compiled
     /// together, or built through its config.toml). A test's .expected / .exit / .error files sit next to it.

@@ -29,8 +29,9 @@ public static class ChainLint
     }
 
     /// Every name a value has somewhere in the routine, for parsing a template hole: a name there is a value when one
-    /// is visible by that name, and which ones are the build checks, so the routine's whole set is close enough.
-    private static HashSet<string> _values = [];
+    /// is visible by that name, and which ones are the build checks, so the routine's whole set is close enough. Each
+    /// thread has its own, so builds on several threads (the parallel test runner) don't see each other's routine.
+    [ThreadStatic] private static HashSet<string>? _values;
 
     private static HashSet<string> ValueNames(RoutineDecl r)
     {
@@ -178,7 +179,7 @@ public static class ChainLint
             var at = new Pos(s.Pos.File, s.Pos.Line, s.Pos.Col + 2 + i);
             try
             {
-                var hole = new Parser(new Lexer(at.File, text[(i + 1)..end], at.Line, at.Col).Lex(), at.File, values: _values)
+                var hole = new Parser(new Lexer(at.File, text[(i + 1)..end], at.Line, at.Col).Lex(), at.File, values: _values ?? [])
                     .ParseLoneExpr();
                 Expr(hole, warnings);
             }
