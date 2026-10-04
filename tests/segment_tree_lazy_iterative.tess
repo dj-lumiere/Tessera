@@ -221,22 +221,22 @@ routine LazySegmentTree<T, L>.apply_node(self: @Self, node: USize, tag: L, width
         return()
 
 routine LazySegmentTree<T, L>.push_node(self: @Self, node: USize, width: USize) -> Void
+    shared lazy : @L = self.tags.to<@L>()
+    shared tag  : L  = lazy.stride(node).load()
+
     block entry()
-        lazy  : @L   = self.tags.to<@L>()
-        tag   : L    = lazy.stride(node).load()
         clean : Bool = tag.is_identity_lazy()
         branch clean
             ? return()
-            : spread(tag)
+            : spread()
 
-    block spread(tag: L)
+    block spread()
         child_width : USize = width.shr(1)
         left        : USize = self.left_child(node)
         right       : USize = self.right_child(node)
         self.apply_node(left, tag, child_width)
         self.apply_node(right, tag, child_width)
-        lazy     : @L = self.tags.to<@L>()
-        identity : L  = .identity()
+        identity : L = .identity()
         lazy.stride(node).store(identity)
         return()
 
@@ -412,6 +412,9 @@ routine LazySegmentTree<T, L>.range_apply(self: @Self, left: USize, right: USize
         return()
 
 routine LazySegmentTree<T, L>.range_query(self: @Self, left: USize, right: USize) -> T
+    shared left_acc  : @T <- uninit
+    shared right_acc : @T <- uninit
+
     block entry()
         valid_left  : Bool  = left.ge(0)
         valid_order : Bool  = left.le(right)
@@ -436,48 +439,52 @@ routine LazySegmentTree<T, L>.range_query(self: @Self, left: USize, right: USize
         r : USize = self.leaf(right.sub(1))
         self.push_path(l)
         self.push_path(r)
-        left_acc  : T = .identity()
-        right_acc : T = .identity()
-        jump loop(l, r.add(1), left_acc, right_acc)
+        left_identity  : T = .identity()
+        right_identity : T = .identity()
+        left_identity.store_into(left_acc)
+        right_identity.store_into(right_acc)
+        jump loop(l, r.add(1))
 
-    block loop(l: USize, r: USize, left_acc: T, right_acc: T)
+    block loop(l: USize, r: USize)
         done : Bool = l.ge(r)
         branch done
-            ? combine(left_acc, right_acc)
-            : take_left(l, r, left_acc, right_acc)
+            ? combine()
+            : take_left(l, r)
 
-    block take_left(l: USize, r: USize, left_acc: T, right_acc: T)
+    block take_left(l: USize, r: USize)
         use_left : Bool = self.is_right_child(l)
         branch use_left
-            ? use_left(l, r, left_acc, right_acc)
-            : take_right(l, r, left_acc, right_acc)
+            ? use_left(l, r)
+            : take_right(l, r)
 
-    block use_left(l: USize, r: USize, left_acc: T, right_acc: T)
+    block use_left(l: USize, r: USize)
         data      : @T = self.nodes.to<@T>()
         value     : T  = data.stride(l).load()
-        next_left : T  = left_acc.combine(value)
-        jump take_right(l.add(1), r, next_left, right_acc)
+        next_left : T  = left_acc.load().combine(value)
+        next_left.store_into(left_acc)
+        jump take_right(l.add(1), r)
 
-    block take_right(l: USize, r: USize, left_acc: T, right_acc: T)
+    block take_right(l: USize, r: USize)
         use_right : Bool = self.is_right_child(r)
         branch use_right
-            ? use_right(l, r, left_acc, right_acc)
-            : climb(l, r, left_acc, right_acc)
+            ? use_right(l, r)
+            : climb(l, r)
 
-    block use_right(l: USize, r: USize, left_acc: T, right_acc: T)
+    block use_right(l: USize, r: USize)
         node       : USize = r.sub(1)
         data       : @T    = self.nodes.to<@T>()
         value      : T     = data.stride(node).load()
-        next_right : T     = value.combine(right_acc)
-        jump climb(l, node, left_acc, next_right)
+        next_right : T     = value.combine(right_acc.load())
+        next_right.store_into(right_acc)
+        jump climb(l, node)
 
-    block climb(l: USize, r: USize, left_acc: T, right_acc: T)
+    block climb(l: USize, r: USize)
         next_l : USize = self.parent(l)
         next_r : USize = self.parent(r)
-        jump loop(next_l, next_r, left_acc, right_acc)
+        jump loop(next_l, next_r)
 
-    block combine(left_acc: T, right_acc: T)
-        value : T = left_acc.combine(right_acc)
+    block combine()
+        value : T = left_acc.load().combine(right_acc.load())
         return(value)
 
 routine LazySegmentTree<T, L>.destruct(self: @Self) -> Void
