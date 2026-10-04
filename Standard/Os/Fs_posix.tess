@@ -562,6 +562,12 @@ record FileHandle
     fd     : CInt
     failed : Bool  // a write_bytes failed (write_all_result reports each failure itself)
 
+/// A handle to no file, whose close() does nothing: the start value of a slot that a finish block closes.
+#target(os: ("linux", "macos"))
+routine FileHandle.empty() -> Self
+    block entry()
+        return(Self { fd: -1, failed: false })
+
 #target(os: ("linux", "macos"))
 internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, FsError>
     block entry()
@@ -656,10 +662,16 @@ routine FileHandle.sync_result(self: @Self) -> Result<Unit, FsError>
     block entry()
         return(checked(c_fsync(self.fd.load())))
 
+/// Closes the file and leaves the handle empty, so a second close does nothing.
 #target(os: ("linux", "macos"))
 routine FileHandle.close(self: @Self) -> Void
     block entry()
-        c_close(self.fd.load())
+        fd : CInt = self.fd.load()
+        branch fd.lt(0)
+            ? return()
+            : continue
+        c_close(fd)
+        self.fd.store(-1)
         return()
 
 // -- directories and names -------------------------------------------------------------
@@ -756,60 +768,50 @@ internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result<Unit, FsErr
 /// Copies from's bytes and permissions into to (made, or replaced): the bytes copied.
 #target(os: ("linux", "macos"))
 internal routine copy_file(from: Bytes, to: Bytes) -> Result<U64, FsError>
-    shared src   : @FileHandle <- uninit
-    shared dst   : @FileHandle <- uninit
-    shared total : @U64        <- uninit
+    shared src   : @FileHandle <- .empty()
+    shared dst   : @FileHandle <- .empty()
+    shared total : @U64        <- 0
 
     block entry()
         source : Result<FileHandle, FsError> = FileHandle.open(from, OpenMode.Read)
         when source
             .Success(f)     -> target(f)
-            .Failure(error) -> return(.Failure(error))
+            .Failure(error) -> finish(.Failure(error))
 
     block target(opened: FileHandle)
         src.store(opened)
         dest : Result<FileHandle, FsError> = FileHandle.open(to, OpenMode.Write)
         when dest
             .Success(f)     -> copy(f)
-            .Failure(error) -> failed_with(error)
-
-    block failed_with(error: FsError)
-        src.close()
-        return(.Failure(error))
+            .Failure(error) -> finish(.Failure(error))
 
     block copy(made: FileHandle)
         dst.store(made)
         set_mode(dst.fd.load(), fd_mode(src.fd.load()))
         claim buffer : @Array<Byte, 16384> <- uninit
-        0.store_into(total)
         jump chunk(buffer.to<@Byte>())
 
     block chunk(buffer: @Byte)
         got : Result<USize, FsError> = src.read_bytes_result(buffer, 16384)
         when got
             .Success(n)     -> put(buffer, n)
-            .Failure(error) -> stop(error)
+            .Failure(error) -> finish(.Failure(error))
 
     block put(buffer: @Byte, n: USize)
         branch n.eq(0)
-            ? done()
+            ? finish(.Success(total.load()))
             : continue
         wrote : Result<Unit, FsError> = dst.write_all_result(buffer, n)
         when wrote
             .Success        -> continue
-            .Failure(error) -> stop(error)
+            .Failure(error) -> finish(.Failure(error))
         total.load().add(n.to<U64>()).store_into(total)
         jump chunk(buffer)
 
-    block stop(error: FsError)
+    block finish(result: Result<U64, FsError>)
         src.close()
         dst.close()
-        return(.Failure(error))
-
-    block done()
-        src.close()
-        dst.close()
-        return(.Success(total.load()))
+        return(result)
 
 #target(os: "linux")
 private routine set_mode(fd: CInt, mode: U32) -> Void
@@ -1109,30 +1111,29 @@ private routine map_failed(p: Addr) -> Bool
 #target(os: ("linux", "macos"))
 internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
     count: USize) -> Result<Self, FsError>
+    shared file : @FileHandle <- .empty()
+
     block entry()
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
             ? continue
-            : return(.Failure(path_error(path)))
+            : finish(.Failure(path_error(path)))
         flags : CInt = write
             ? 2
             : 0
         fd : CInt = c_open(cpath.to<@Byte>(), flags.bitor(open_flags().cloexec), 0)
         branch fd.lt(0)
-            ? return(failed<Self>())
+            ? finish(failed<Self>())
             : continue
+        file.fd.store(fd)
         m : Result<Metadata, FsError> = fd_metadata(fd)
         when m
             .Success(info)  -> sized(fd, info.size)
-            .Failure(error) -> closed(fd, error)
-
-    block closed(fd: CInt, error: FsError)
-        c_close(fd)
-        return(.Failure(error))
+            .Failure(error) -> finish(.Failure(error))
 
     block sized(fd: CInt, size: U64)
         branch offset.ge(size)
-            ? empty(fd)
+            ? finish(.Success(Self.empty()))
             : continue
         want_bytes : U64   = count.to<U64>().min(size.sub(offset))
         want       : USize = want_bytes.to<USize>()
@@ -1147,15 +1148,14 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
             ? 1
             : 2
         p : Addr = c_mmap(null, want.add(delta), prot, share, fd, aligned.to<S64>())
-        e : CInt = errno()
-        c_close(fd)
+        // the mapping keeps the file open on its own, and errno is read before finish closes the descriptor
         branch map_failed(p)
-            ? return(.Failure(error_of(e)))
-            : return(.Success(Self { base: p, delta: delta, count: want }))
+            ? finish(failed<Self>())
+            : finish(.Success(Self { base: p, delta: delta, count: want }))
 
-    block empty(fd: CInt)
-        c_close(fd)
-        return(.Success(Self.empty()))
+    block finish(result: Result<Self, FsError>)
+        file.close()
+        return(result)
 
 /// Writes changed pages back to the file.
 #target(os: ("linux", "macos"))

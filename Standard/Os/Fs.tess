@@ -135,8 +135,6 @@ internal routine create_dir_all(path: Bytes) -> Result<Unit, FsError>
 
 /// path and everything in it. A link is removed, not followed. Child paths are built in memory from alloc.
 internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, FsError>
-    shared iter : @DirIter <- uninit
-
     block entry()
         m : Result<Metadata, FsError> = symlink_metadata(path)
         when m
@@ -147,16 +145,28 @@ internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, 
         branch k.eq(FileKind.Directory)
             ? continue
             : return(remove_file(path))
+        emptied : Result<Unit, FsError> = remove_entries(path, alloc)
+        when emptied
+            .Success        -> return(remove_dir(path))
+            .Failure(error) -> return(.Failure(error))
+
+/// Everything in the directory at path, which is left empty. Its listing is closed before remove_dir_all removes the
+/// directory itself, since Windows can't remove a directory that is still being listed.
+private routine remove_entries(path: Bytes, alloc: @Allocator) -> Result<Unit, FsError>
+    // open_path sets the handle before anything in it can fail, so finish closes a real or a null one
+    shared iter : @DirIter <- uninit
+
+    block entry()
         opened : Result<Unit, FsError> = iter.open_path(path)
         when opened
             .Success        -> next()
-            .Failure(error) -> return(.Failure(error))
+            .Failure(error) -> finish(.Failure(error))
 
     block next()
         entry : Option<DirEntry> = iter.next()
         when entry
             .Present(e) -> child(e)
-            .Absent     -> emptied()
+            .Absent     -> finish(fs_done())
 
     block child(e: DirEntry)
         claim full : @Bytes <- join_path(path, e.name, alloc)
@@ -164,80 +174,82 @@ internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result<Unit, 
         full.destruct()
         when gone
             .Success        -> next()
-            .Failure(error) -> failed(error)
+            .Failure(error) -> finish(.Failure(error))
 
-    block failed(error: FsError)
+    block finish(result: Result<Unit, FsError>)
         iter.close()
-        return(.Failure(error))
-
-    block emptied()
-        iter.close()
-        return(remove_dir(path))
+        return(result)
 
 /// The whole file, in memory from alloc (release it with destruct()).
 internal routine read_file(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry()
         opened : Result<FileHandle, FsError> = FileHandle.open(path, OpenMode.Read)
         when opened
-            .Success(f)     -> sized(f)
+            .Success(f)     -> read(f)
             .Failure(error) -> return(.Failure(error))
 
-    // The size is a first guess: a file that grows while it's read, or reports 0 (Linux's /proc), still reads whole.
-    block sized(opened: FileHandle)
+    block read(opened: FileHandle)
         claim f : @FileHandle <- opened
+        text : Result<Bytes, FsError> = read_rest(f, alloc)
+        f.close()
+        return(text)
+
+/// The rest of the open file f, in memory from alloc. The size is a first guess: a file that grows while it's read,
+/// or reports 0 (Linux's /proc), still reads whole.
+private routine read_rest(f: @FileHandle, alloc: @Allocator) -> Result<Bytes, FsError>
+    shared buffer : @Slice<Byte> <- .empty()
+
+    block entry()
         size : Result<U64, FsError> = f.size_result()
         when size
-            .Success(n) -> known_size(f, n)
-            .Failure    -> start(f, 64)
+            .Success(n) -> known_size(n)
+            .Failure    -> start(64)
 
-    block known_size(f: @FileHandle, n: U64)
+    block known_size(n: U64)
         size_guess : USize = n.to<USize>().add(1)
-        jump start(f, size_guess.max(64))
+        jump start(size_guess.max(64))
 
-    block start(f: @FileHandle, capacity: USize)
-        buffer : @Byte = allocate<Byte>(alloc, capacity)
-        branch buffer.is_null()
-            ? out_of_memory(f)
-            : fill(f, buffer, capacity, 0)
+    block start(capacity: USize)
+        made : Result<Slice<Byte>, AllocFailed> = Slice<Byte>.construct_result(capacity, alloc)
+        when made
+            .Success(slice) -> filling(slice)
+            .Failure        -> finish(.Failure(FsError.OutOfMemory))
 
-    block fill(f: @FileHandle, buffer: @Byte, capacity: USize, count: USize)
+    block filling(slice: Slice<Byte>)
+        slice.store_into(buffer)
+        jump fill(0)
+
+    // count bytes read so far, and the buffer's count is its capacity
+    block fill(count: USize)
+        capacity : USize = buffer.count()
         branch count.eq(capacity)
-            ? grow(f, buffer, capacity, count)
+            ? grow(count)
             : continue
-        got : Result<USize, FsError> = f.read_bytes_result(buffer.stride(count),
-            capacity.sub(count))
+        got : Result<USize, FsError> = f.read_bytes_result(buffer.at(count), capacity.sub(count))
         when got
-            .Success(n)     -> advance(f, buffer, capacity, count, n)
-            .Failure(error) -> read_failed(f, buffer, error)
+            .Success(n)     -> advance(count, n)
+            .Failure(error) -> finish(.Failure(error))
 
-    block advance(f: @FileHandle, buffer: @Byte, capacity: USize, count: USize, n: USize)
+    block advance(count: USize, n: USize)
         branch n.eq(0)
-            ? finish(f, buffer, count)
-            : fill(f, buffer, capacity, count.add(n))
+            ? read_all(count)
+            : fill(count.add(n))
 
-    block grow(f: @FileHandle, buffer: @Byte, capacity: USize, count: USize)
-        bigger : @Byte = reallocate<Byte>(alloc, buffer, capacity.mul(2))
-        branch bigger.is_null()
-            ? grow_failed(f, buffer)
-            : fill(f, bigger, capacity.mul(2), count)
+    block grow(count: USize)
+        bigger : Result<Unit, AllocFailed> = buffer.resize_result(count.mul(2))
+        when bigger
+            .Success -> fill(count)
+            .Failure -> finish(.Failure(FsError.OutOfMemory))
 
-    block grow_failed(f: @FileHandle, buffer: @Byte)
-        deallocate(alloc, buffer)
-        jump out_of_memory(f)
+    // The text takes the memory over, so buffer goes back to empty and finish has nothing to give back.
+    block read_all(count: USize)
+        text : Bytes = Bytes { data: buffer.data.load(), count: count, alloc: alloc }
+        buffer.store(Slice<Byte>.empty())
+        jump finish(.Success(text))
 
-    block out_of_memory(f: @FileHandle)
-        f.close()
-        return(.Failure(FsError.OutOfMemory))
-
-    block read_failed(f: @FileHandle, buffer: @Byte, error: FsError)
-        deallocate(alloc, buffer)
-        f.close()
-        return(.Failure(error))
-
-    block finish(f: @FileHandle, buffer: @Byte, count: USize)
-        f.close()
-        text : Bytes = Bytes { data: buffer, count: count, alloc: alloc }
-        return(.Success(text))
+    block finish(result: Result<Bytes, FsError>)
+        buffer.destruct()
+        return(result)
 
 /// Writes data as the whole file: made if missing, replaced if not.
 internal routine write_file(path: Bytes, data: Bytes) -> Result<Unit, FsError>

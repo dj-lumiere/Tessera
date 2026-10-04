@@ -107,7 +107,8 @@ routine main() -> S32
   `getview()`, and `to<Slice<T>>()` of a `List` / `Array` / `Bytes` are all borrowed. `.construct(count, alloc)` (a
   count of 0 allocates nothing) carries `alloc`: `resize(n)` reallocates (`resize(0)` frees and keeps `alloc`),
   `destruct()` gives the memory back and leaves the slice empty with a null `alloc`, `destruct_all()` destructs the
-  values first. `Array<T, N>` is the other run of values, its count in the type. Heap memory reaches your code as a
+  values first. `Slice<T>.empty()` (like `Bytes.empty()`) is the empty borrowed slice, the start value of a slot that
+  a `finish` block destructs. `Array<T, N>` is the other run of values, its count in the type. Heap memory reaches your code as a
   `Slice` or `Bytes` that carries its allocator (or a type built on one). The raw layer under it,
   `allocate<T>(alloc, count)` / `reallocate<T>` / `deallocate(alloc, p)`, is for node-based structures and C
   interop. `@T` has no `free`.
@@ -242,6 +243,69 @@ routine main() -> S32
           jump add(i.add(1))
   ```
 
+- **Release in one `finish` block.** A routine that has something to release (a `destruct()` / `destruct_all()`, a
+  `deallocate`, an `unlock()`, a handle to close) gathers its exits into ONE block named `finish`: every other block
+  that ends the routine does `jump finish(result)` (`jump finish()` for `Void`, or a `finish(...)` arm), and
+  `finish` releases everything and is the only `return`. A routine with nothing to release returns wherever it likes.
+  `finish` is a convention, not a keyword, so a block that only computes a last step is named for that step
+  (`round`, `pack`). The owners `finish` releases are usually head `shared` slots, and each starts explicitly EMPTY,
+  never `<- uninit`, so releasing it on a path that never filled it does nothing: `<- .empty()` (`Slice`, `Bytes`,
+  `FileHandle`) or a collection's `.construct(alloc)` (allocates nothing). When the result takes over what a slot
+  holds, store the empty value back before the jump. Before, each exit releases what it has:
+
+  ```tessera
+  routine home_path(drive: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+      block entry()
+          p : Option<Bytes> = env_dir("HOMEPATH", alloc)
+          when p
+              .Present(path) -> join(path)
+              .Absent        -> missing()
+
+      block missing()
+          claim held : @Bytes <- drive
+          held.destruct()
+          return(.Failure(FsError.NotFound))
+
+      block join(path: Bytes)
+          both : Bytes = Bytes.concat(drive, path, alloc)
+          claim held_drive : @Bytes <- drive
+          claim held_path  : @Bytes <- path
+          held_drive.destruct()
+          held_path.destruct()
+          return(.Success(both))
+  ```
+
+  After, the owners start empty in the head and every exit goes through `finish`:
+
+  ```tessera
+  routine home_path(drive_text: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+      shared drive : @Bytes <- drive_text
+      shared path  : @Bytes <- .empty()
+
+      block entry()
+          p : Option<Bytes> = env_dir("HOMEPATH", alloc)
+          when p
+              .Present(text) -> join(text)
+              .Absent        -> finish(.Failure(FsError.NotFound))
+
+      block join(path_text: Bytes)
+          path_text.store_into(path)
+          both : Bytes = Bytes.concat(drive.load(), path.load(), alloc)
+          jump finish(.Success(both))
+
+      block finish(result: Result<Bytes, FsError>)
+          drive.destruct()
+          path.destruct()
+          return(result)
+  ```
+
+  An early return before anything was acquired may stay a plain `return` only in a routine without a `finish`. A lock
+  isn't made safe by an empty value (unlocking a lock not held is a bug): every path into `finish` holds it, so take
+  it first or move the locked part into its own routine. A release whose order matters (unlock before a callback or a
+  park) stays where it must happen. `tessera lint` (and `check` / `build` / `run` for the program's own files) warns,
+  in a routine with a block named `finish`, on each `return` outside it and on `finish` destructing a head slot that
+  starts as `<- uninit`.
+
 - Every block ends with exactly one terminator: `jump b(...)`, `branch c ? a(...) : b(...)`, `when`
   (first condition that holds), `when v` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
   `when` names a block, or is an
@@ -267,9 +331,9 @@ routine main() -> S32
   write-template hole is its own chain. A fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`x.load().add(y).store_into(x)`): the basic
   shape of an update, too common to warn about. The lint is there to stop a line from piling up conversions, not to
   split ordinary updates. `check`/`build`/`run` warn (not an error) for the program's own files, and
-  `tessera lint <files-or-dirs>` checks any file; CI holds `stdlib`, `tests`, and `examples` to 0 warnings. When
-  the chain sits in a `branch`/`when` arm or a later `when` condition, don't hoist it above (that would run it on
-  paths that didn't): give the arm its own block.
+  `tessera lint <files-or-dirs>` checks any file (this lint and the `finish` lint above); CI holds `stdlib`, `tests`, and
+  `examples` to 0 warnings. When the chain sits in a `branch`/`when` arm or a later `when` condition, don't hoist it
+  above (that would run it on paths that didn't): give the arm its own block.
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
   `add`, `div`, `mod`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more
   shifts every bit out (0, or -1 for a negative S value shifted right).
@@ -568,7 +632,8 @@ with `park()` (until `wake(handle)`, the handle from `current()`; it may return 
 routine on them is one thing done there now, returning `Result<T, FsError>`, so each is a `_result` form. A File:
 `open_read_result` / `open_write_result` / `open_append_result` / `open_read_write_result` / `create_new_result` give a
 `FileHandle` (claim it: `read_bytes_result`, `write_all_result`, `h.write("...")`, `seek_result`, `size_result`,
-`set_size_result`, `sync_result`, `close`); `read_all_result(alloc)` / `write_all_result(data)`, `exists`,
+`set_size_result`, `sync_result`, `close`, which leaves it empty, and `FileHandle.empty()` a handle to nothing whose
+`close` does nothing); `read_all_result(alloc)` / `write_all_result(data)`, `exists`,
 `metadata_result` (`kind`, `size`, times in ns), `copy_to_result`, `move_to_result`, `move_to_if_absent_result`,
 `delete_result`, `touch_result`, `map_result(write, offset, count)`, `name` / `stem` / `extension` / `parent`. A
 Directory: `create_result` / `create_all_result`, `delete_result` / `delete_all_result(alloc)`, `file(name, alloc)` /

@@ -534,6 +534,12 @@ record FileHandle
     handle : Addr
     failed : Bool  // a write_bytes failed (write_all_result reports each failure itself)
 
+/// A handle to no file, whose close() does nothing: the start value of a slot that a finish block closes.
+#target(os: "windows")
+routine FileHandle.empty() -> Self
+    block entry()
+        return(Self { handle: inttoptr<USize, Addr>(USize.MAX), failed: false })
+
 #target(os: "windows")
 internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, FsError>
     block entry()
@@ -629,10 +635,16 @@ routine FileHandle.sync_result(self: @Self) -> Result<Unit, FsError>
     block entry()
         return(checked(c_flush_file_buffers(self.handle.load())))
 
+/// Closes the file and leaves the handle empty, so a second close does nothing.
 #target(os: "windows")
 routine FileHandle.close(self: @Self) -> Void
     block entry()
-        c_close_handle(self.handle.load())
+        h : Addr = self.handle.load()
+        branch invalid_handle(h)
+            ? return()
+            : continue
+        c_close_handle(h)
+        self.handle.store(inttoptr<USize, Addr>(USize.MAX))
         return()
 
 // -- directories and names -------------------------------------------------------------
@@ -920,26 +932,30 @@ routine DirIter.close(self: @Self) -> Void
 /// The working directory, in memory from alloc.
 #target(os: "windows")
 internal routine current_dir(alloc: @Allocator) -> Result<Bytes, FsError>
+    shared units : @Slice<U16> <- .empty()
+
     block entry()
         need : U32 = c_get_current_directory(0, null)
         branch need.eq(0)
-            ? return(failed<Bytes>())
+            ? finish(failed<Bytes>())
             : continue
-        units : @U16 = allocate<U16>(alloc, need.to<USize>())
-        branch units.is_null()
-            ? return(.Failure(FsError.OutOfMemory))
-            : continue
-        got : U32 = c_get_current_directory(need, units)
-        branch got.eq(0).bitor(got.ge(need))
-            ? fail(units)
-            : continue
-        text : Result<Bytes, FsError> = owned_wide(units, got.to<USize>(), alloc)
-        deallocate(alloc, units)
-        return(text)
+        made : Result<Slice<U16>, AllocFailed> = Slice<U16>.construct_result(need.to<USize>(),
+            alloc)
+        when made
+            .Success(slice) -> read(slice)
+            .Failure        -> finish(.Failure(FsError.OutOfMemory))
 
-    block fail(units: @U16)
-        deallocate(alloc, units)
-        return(failed<Bytes>())
+    block read(slice: Slice<U16>)
+        slice.store_into(units)
+        need : U32 = slice.count().to<U32>()
+        got  : U32 = c_get_current_directory(need, slice.to<@U16>())
+        branch got.eq(0).bitor(got.ge(need))
+            ? finish(failed<Bytes>())
+            : finish(owned_wide(slice.to<@U16>(), got.to<USize>(), alloc))
+
+    block finish(result: Result<Bytes, FsError>)
+        units.destruct()
+        return(result)
 
 #target(os: "windows")
 internal routine set_current_dir(path: Bytes) -> Result<Unit, FsError>
@@ -990,36 +1006,37 @@ private routine env_dir(name: CWStr, alloc: @Allocator) -> Option<Bytes>
 /// USERPROFILE, or HOMEDRIVE and HOMEPATH, in memory from alloc. NotFound when neither is set.
 #target(os: "windows")
 internal routine home_dir(alloc: @Allocator) -> Result<Bytes, FsError>
+    shared drive : @Bytes <- .empty()
+    shared path  : @Bytes <- .empty()
+
     block entry()
         profile : Option<Bytes> = env_dir("USERPROFILE", alloc)
         when profile
-            .Present(dir) -> return(.Success(dir))
-            .Absent       -> drive()
+            .Present(dir) -> finish(.Success(dir))
+            .Absent       -> from_drive()
 
-    block drive()
+    block from_drive()
         d : Option<Bytes> = env_dir("HOMEDRIVE", alloc)
         when d
-            .Present(drive) -> home_path(drive)
-            .Absent         -> return(.Failure(FsError.NotFound))
+            .Present(text) -> home_path(text)
+            .Absent        -> finish(.Failure(FsError.NotFound))
 
-    block home_path(drive: Bytes)
+    block home_path(drive_text: Bytes)
+        drive_text.store_into(drive)
         p : Option<Bytes> = env_dir("HOMEPATH", alloc)
         when p
-            .Present(path) -> join(drive, path)
-            .Absent        -> missing(drive)
+            .Present(text) -> join(text)
+            .Absent        -> finish(.Failure(FsError.NotFound))
 
-    block missing(drive: Bytes)
-        claim held : @Bytes <- drive
-        held.destruct()
-        return(.Failure(FsError.NotFound))
+    block join(path_text: Bytes)
+        path_text.store_into(path)
+        both : Bytes = Bytes.concat(drive.load(), path.load(), alloc)
+        jump finish(.Success(both))
 
-    block join(drive: Bytes, path: Bytes)
-        both : Bytes = Bytes.concat(drive, path, alloc)
-        claim held_drive : @Bytes <- drive
-        claim held_path  : @Bytes <- path
-        held_drive.destruct()
-        held_path.destruct()
-        return(.Success(both))
+    block finish(result: Result<Bytes, FsError>)
+        drive.destruct()
+        path.destruct()
+        return(result)
 
 /// path made absolute by the text: the working directory in front of a relative path, and "." and ".." taken out
 /// (GetFullPathNameW), nothing looked up.
@@ -1101,11 +1118,13 @@ internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result<Bytes,
 #target(os: "windows")
 internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
     count: USize) -> Result<Self, FsError>
+    shared file : @FileHandle <- .empty()
+
     block entry()
         claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
         branch wide_path(path, wpath.to<@U16>())
             ? continue
-            : return(.Failure(path_error(path)))
+            : finish(.Failure(path_error(path)))
         branch write
             ? opened(c_create_file(wpath.to<@U16>(), GENERIC_READ.bitor(GENERIC_WRITE),
                 FILE_SHARE_ALL, null, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null))
@@ -1114,20 +1133,17 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
 
     block opened(h: Addr)
         branch invalid_handle(h)
-            ? return(failed<Self>())
+            ? finish(failed<Self>())
             : continue
+        file.handle.store(h)
         claim size : @S64 <- 0
         branch c_get_file_size_ex(h, size).ne(0)
             ? sized(h, size.load().to<U64>())
-            : closed(h, last_error())
-
-    block closed(h: Addr, error: FsError)
-        c_close_handle(h)
-        return(.Failure(error))
+            : finish(failed<Self>())
 
     block sized(h: Addr, size: U64)
         branch offset.ge(size)
-            ? empty(h)
+            ? finish(.Success(Self.empty()))
             : continue
         want_bytes : U64   = count.to<U64>().min(size.sub(offset))
         want       : USize = want_bytes.to<USize>()
@@ -1140,7 +1156,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
             : 2
         mapping : Addr = c_create_file_mapping(h, null, protect, 0, 0, null)
         branch mapping.is_null()
-            ? closed(h, last_error())
+            ? finish(failed<Self>())
             : continue
         // FILE_MAP_WRITE or FILE_MAP_READ
         access : U32 = write
@@ -1149,15 +1165,15 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
         view : Addr = c_map_view_of_file(mapping, access, aligned.shr(32).to_wrap<U32>(),
             aligned.to_wrap<U32>(), want.add(delta))
         e    : U32  = c_get_last_error()
+        // the view keeps the mapping and the file open on its own
         c_close_handle(mapping)
-        c_close_handle(h)
         branch view.is_null()
-            ? return(.Failure(error_of(e)))
-            : return(.Success(Self { base: view, delta: delta, count: want }))
+            ? finish(.Failure(error_of(e)))
+            : finish(.Success(Self { base: view, delta: delta, count: want }))
 
-    block empty(h: Addr)
-        c_close_handle(h)
-        return(.Success(Self.empty()))
+    block finish(result: Result<Self, FsError>)
+        file.close()
+        return(result)
 
 /// Writes changed pages back to the file.
 #target(os: "windows")

@@ -155,6 +155,13 @@ private record Prepared
     own_count : USize
     directory : @Byte
 
+/// Nothing prepared: what a run starts from, so releasing it is right on every path.
+#target(os: ("linux", "macos"))
+private routine Prepared.empty() -> Self
+    block entry()
+        return(Self { argv: null, argc: 0, envp: null, own_first: 0, own_count: 0,
+            directory: null })
+
 /// text with a NUL after it, in memory from alloc, or null when that can't be had.
 #target(os: ("linux", "macos"))
 private routine c_string(text: Bytes, alloc: @Allocator) -> @Byte
@@ -280,8 +287,7 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
     shared first : @USize <- uninit
 
     block entry()
-        p.store(Prepared { argv: null, argc: 0, envp: null, own_first: 0, own_count: 0,
-            directory: null })
+        p.store(Prepared.empty())
         argv : @@Byte = allocate<@Byte>(alloc, arg_count.add(2))
         branch argv.is_null()
             ? return(false)
@@ -359,22 +365,22 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
 
     block own(envp: @@Byte, j: USize)
         branch j.eq(options.env_count)
-            ? finish(envp, j)
+            ? env_done(envp, j)
             : continue
         e : @Byte = env_entry(options.env.stride(j).load(), alloc)
         branch e.is_null()
-            ? finish_failed(envp, j)
+            ? env_failed(envp, j)
             : continue
         envp.stride(first.load().add(j)).store(e)
         jump own(envp, j.add(1))
 
-    block finish(envp: @@Byte, count: USize)
+    block env_done(envp: @@Byte, count: USize)
         envp.stride(first.load().add(count)).store(null)
         p.own_first.store(first.load())
         p.own_count.store(count)
         return(true)
 
-    block finish_failed(envp: @@Byte, count: USize)
+    block env_failed(envp: @@Byte, count: USize)
         p.own_first.store(first.load())
         p.own_count.store(count)
         return(false)
@@ -471,6 +477,13 @@ private record Plumbing
     exec_w  : CInt
     devnull : CInt
 
+/// No pipes and no null device: what a run starts from, so closing them is right on every path.
+#target(os: ("linux", "macos"))
+private routine Plumbing.none() -> Self
+    block entry()
+        return(Self { out_r: -1, out_w: -1, err_r: -1, err_w: -1, exec_r: -1, exec_w: -1,
+            devnull: -1 })
+
 /// A pipe, both ends close-on-exec: whether it was made.
 #target(os: ("linux", "macos"))
 private routine cloexec_pipe(fds: @CInt) -> Bool
@@ -511,8 +524,7 @@ private routine Plumbing.close_all(self: @Self) -> Void
 #target(os: ("linux", "macos"))
 private routine Plumbing.make(self: @Self, options: ProcessOptions) -> Bool
     block entry()
-        self.store(Plumbing { out_r: -1, out_w: -1, err_r: -1, err_w: -1, exec_r: -1, exec_w: -1,
-            devnull: -1 })
+        self.store(Plumbing.none())
         claim fds : @Array<CInt, 2> <- { -1, -1 }
         branch cloexec_pipe(fds.to<@CInt>())
             ? continue
@@ -573,19 +585,19 @@ private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 #target(os: ("linux", "macos"))
 routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
-    shared p      : @Prepared      <- uninit
-    shared pipes  : @Plumbing      <- uninit
+    shared p      : @Prepared      <- Prepared.empty()
+    shared pipes  : @Plumbing      <- Plumbing.none()
     shared report : @CInt          <- 0
     shared out    : @CaptureBuffer <- CaptureBuffer.empty()
     shared err    : @CaptureBuffer <- CaptureBuffer.empty()
 
     block entry()
         branch has_nul(program, args, arg_count, options)
-            ? return(.Failure(ProcessError.InvalidArgument))
+            ? finish(.Failure(ProcessError.InvalidArgument))
             : continue
         branch prepare(p, program, args, arg_count, options, alloc)
             ? continue
-            : out_of_memory()
+            : finish(.Failure(ProcessError.OutOfMemory))
         branch pipes.make(options)
             ? continue
             : spawn_failed()
@@ -615,15 +627,9 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
         pipes.devnull.store(-1)
         jump started(pid)
 
-    block out_of_memory()
-        p.release(alloc)
-        return(.Failure(ProcessError.OutOfMemory))
-
     block spawn_failed()
         e : CInt = errno()
-        pipes.close_all()
-        p.release(alloc)
-        return(.Failure(spawn_error(e)))
+        jump finish(.Failure(spawn_error(e)))
 
     // 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started program.
     block started(pid: CInt)
@@ -633,26 +639,33 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
             : continue
         c_close(pipes.exec_r.load())
         pipes.exec_r.store(-1)
-        p.release(alloc)
+        // drain closes both pipes as each ends.
         drain(pipes.out_r.load(), pipes.err_r.load(), out, err, alloc)
+        pipes.out_r.store(-1)
+        pipes.err_r.store(-1)
         status : Option<ExitStatus> = reap(pid)
         branch got.eq(4)
-            ? exec_failed(report.load())
+            ? finish(.Failure(spawn_error(report.load())))
             : continue
         when status
-            .Present(s) -> return(.Success(ProcessOutput { status: s,
-                stdout: out.load().owned(alloc), stderr: err.load().owned(alloc) }))
-            .Absent     -> lost()
+            .Present(s) -> exited(s)
+            .Absent     -> finish(.Failure(ProcessError.Other))
 
-    block exec_failed(e: CInt)
+    // The output owns the captured bytes from here, so finish has none left to release.
+    block exited(s: ExitStatus)
+        output : ProcessOutput = ProcessOutput { status: s, stdout: out.load().owned(alloc),
+            stderr: err.load().owned(alloc) }
+        out.store(CaptureBuffer.empty())
+        err.store(CaptureBuffer.empty())
+        jump finish(.Success(output))
+
+    // Every descriptor still open, the prepared strings, and the captured bytes nothing took.
+    block finish(result: Result<ProcessOutput, ProcessError>)
+        pipes.close_all()
+        p.release(alloc)
         release(out.load(), alloc)
         release(err.load(), alloc)
-        return(.Failure(spawn_error(e)))
-
-    block lost()
-        release(out.load(), alloc)
-        release(err.load(), alloc)
-        return(.Failure(ProcessError.Other))
+        return(result)
 
 /// Frees a capture buffer's memory if it has any.
 /// :param b: The buffer.

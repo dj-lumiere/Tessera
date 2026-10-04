@@ -241,7 +241,7 @@ routine In.read_into_result(buffer: @Byte, count: USize) -> Result<USize, FsErro
             : continue
         branch b.fill()
             ? held()
-            : ended()
+            : finish(.Success(0))
 
     block held()
         available : USize = b.end.load().sub(b.start.load())
@@ -249,17 +249,15 @@ routine In.read_into_result(buffer: @Byte, count: USize) -> Result<USize, FsErro
         copy<Byte>(buffer, b.bytes.to<@Byte>().stride(b.start.load()), n)
         next_start : USize = b.start.load().add(n)
         next_start.store_into(b.start)
-        b.lock.unlock()
-        return(.Success(n))
+        jump finish(.Success(n))
 
     block direct()
         got : Result<USize, FsError> = stdin_read(buffer, count)
-        b.lock.unlock()
-        return(got)
+        jump finish(got)
 
-    block ended()
+    block finish(read: Result<USize, FsError>)
         b.lock.unlock()
-        return(.Success(0))
+        return(read)
 
 /// Skips white space and reads the next word (spaces, tabs, and line ends separate words) as a T, straight from the
 /// input buffer: nothing is allocated unless the word is longer than the buffer. The space after the word stays in
@@ -317,18 +315,17 @@ require T: typename, Parsable<T>
         word : Option<Bytes> = b.word()
         when word
             .Present(text) -> convert(text)
-            .Absent        -> ended()
-
-    block ended()
-        b.lock.unlock()
-        return(.Failure(ParseError.Empty))
+            .Absent        -> finish(.Failure(ParseError.Empty))
 
     block convert(text: Bytes)
         claim word : @Bytes <- text
         converted : Result<T, ParseError> = text.to_result<T>()
         word.destruct()
+        jump finish(converted)
+
+    block finish(value: Result<T, ParseError>)
         b.lock.unlock()
-        return(converted)
+        return(value)
 
 /// The Reader side: In.read_into_result.
 routine In.read_bytes_result(self: @Self, buffer: @Byte, count: USize) -> Result<USize, FsError>
@@ -416,14 +413,16 @@ routine In.read_line_checked(alloc: @Allocator) -> Option<Bytes>
         jump next(true)
 
     block ended(any: Bool)
-        b.lock.unlock()
         branch any
-            ? return(.Present(trim_cr(text.load().owned(alloc))))
-            : return(.Absent)
+            ? done()
+            : finish(.Absent)
 
     block done()
+        jump finish(.Present(trim_cr(text.load().owned(alloc))))
+
+    block finish(line: Option<Bytes>)
         b.lock.unlock()
-        return(.Present(trim_cr(text.load().owned(alloc))))
+        return(line)
 
 /// line without a "\r" at its end. The memory and its allocator stay the same, only the count drops.
 private routine trim_cr(line: Bytes) -> Bytes
@@ -470,11 +469,7 @@ routine In.read_word_checked(alloc: @Allocator) -> Option<Bytes>
         c : Option<Byte> = b.next()
         when c
             .Present(byte) -> first(byte)
-            .Absent        -> nothing()
-
-    block nothing()
-        b.lock.unlock()
-        return(.Absent)
+            .Absent        -> finish(.Absent)
 
     block first(byte: Byte)
         branch is_space(byte)
@@ -503,8 +498,11 @@ routine In.read_word_checked(alloc: @Allocator) -> Option<Bytes>
         jump done()
 
     block done()
+        jump finish(.Present(text.load().owned(alloc)))
+
+    block finish(word: Option<Bytes>)
         b.lock.unlock()
-        return(.Present(text.load().owned(alloc)))
+        return(word)
 
 /// Whether standard input is a terminal (not a pipe or a file).
 routine In.is_terminal() -> Bool

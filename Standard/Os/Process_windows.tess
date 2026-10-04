@@ -296,7 +296,7 @@ private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
     // 0 is the program, i the argument i - 1.
     block append(line: @U16, i: USize)
         branch i.gt(arg_count)
-            ? finish(line)
+            ? terminate(line)
             : continue
         branch i.eq(0)
             ? one(line, i, program)
@@ -326,7 +326,7 @@ private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
         deallocate(alloc, line)
         return(null)
 
-    block finish(line: @U16)
+    block terminate(line: @U16)
         at.load().store(0)
         return(line)
 
@@ -431,17 +431,14 @@ private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
 
     block entry()
         branch own.is_null()
-            ? return(null)
+            ? finish(null, null)
             : continue
+        // A failure has freed the strings made so far, so only the array is left.
         branch wide_overrides(options, own, alloc)
             ? continue
-            : free_own_array()
+            : finish(null, null)
         parent : @U16 = c_get_environment_strings()
         jump count(parent, parent, 0)
-
-    block free_own_array()
-        deallocate(alloc, own)
-        return(null)
 
     // How many entries the parent block has: each ends with a 0, and an empty one ends the block.
     block count(parent: @U16, at: @U16, n: USize)
@@ -535,13 +532,17 @@ private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
 
     block release(all: @@U16, result: @U16, j: USize)
         branch j.eq(options.env_count)
-            ? arrays(all, result)
+            ? finish(result, all)
             : continue
         own_slot : @@U16 = own.stride(j)
         deallocate(alloc, own_slot.load())
         jump release(all, result, j.add(1))
 
-    block arrays(all: @@U16, result: @U16)
+    // The arrays, each when it was made: own is null only when its allocation failed, and all is then null too.
+    block finish(result: @U16, all: @@U16)
+        branch own.is_null()
+            ? return(result)
+            : continue
         deallocate(alloc, own)
         branch all.is_null()
             ? return(result)
@@ -583,6 +584,13 @@ private record Handles
     output : Addr
     error  : Addr
     device : Addr  // the null device
+
+/// No handles at all: what a run starts from, so closing them is right on every path.
+#target(os: "windows")
+private routine Handles.none() -> Self
+    block entry()
+        return(Self { out_r: null, out_w: null, err_r: null, err_w: null, input: null, output: null,
+            error: null, device: null })
 
 /// Reads the pipe to its end into the reader's buffer, from the malloc heap.
 #target(os: "windows")
@@ -654,8 +662,7 @@ private routine inherited(which: U32) -> Addr
 #target(os: "windows")
 private routine Handles.make(self: @Self, options: ProcessOptions, sa: @SecurityAttributes) -> Bool
     block entry()
-        self.store(Handles { out_r: null, out_w: null, err_r: null, err_w: null, input: null,
-            output: null, error: null, device: null })
+        self.store(Handles.none())
         null_in  : Bool = options.stdin.eq(InputMode.Null)
         null_out : Bool = options.stdout.eq(OutputMode.Null).bitor(options.stderr.eq(OutputMode.Null))
         branch null_in.bitor(null_out)
@@ -732,13 +739,14 @@ private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which:
 routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
     shared line : @U16                = command_line(program, args, arg_count, alloc)
-    shared h    : @Handles            <- uninit
+    shared env  : @@U16               <- null
+    shared h    : @Handles            <- Handles.none()
     shared pi   : @ProcessInformation <- ProcessInformation { process: null, thread: null,
         process_id: 0, thread_id: 0 }
 
     block entry()
         branch line.is_null()
-            ? return(.Failure(ProcessError.InvalidArgument))
+            ? finish(.Failure(ProcessError.InvalidArgument))
             : continue
         claim directory : @Array<U16, PATH_CAPACITY> <- uninit
         when options.directory
@@ -749,27 +757,24 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
         n : Option<USize> = encode_utf16(d, directory, PATH_CAPACITY)
         branch n.is_present()
             ? environment(directory)
-            : bad(null)
+            : finish(.Failure(ProcessError.InvalidArgument))
 
     block environment(directory: @U16)
         branch options.env_count.eq(0)
-            ? handles(directory, null)
+            ? handles(directory)
             : continue
         block_units : @U16 = env_block(options, alloc)
+        block_units.store_into(env)
         branch block_units.is_null()
-            ? bad(null)
-            : handles(directory, block_units)
+            ? finish(.Failure(ProcessError.InvalidArgument))
+            : handles(directory)
 
-    block bad(env: @U16)
-        deallocate(alloc, line)
-        return(.Failure(ProcessError.InvalidArgument))
-
-    block handles(directory: @U16, env: @U16)
+    block handles(directory: @U16)
         claim sa : @SecurityAttributes <- SecurityAttributes {
             length: sizeof<SecurityAttributes>().to<U32>(), descriptor: null, inherit_handle: 1 }
         branch h.make(options, sa)
             ? continue
-            : not_started(env, c_get_last_error())
+            : not_started(c_get_last_error())
         // STARTF_USESTDHANDLES
         claim si : @StartupInfo <- StartupInfo { cb: sizeof<StartupInfo>().to<U32>(),
             reserved: null, desktop: null, title: null, x: 0, y: 0, x_size: 0, y_size: 0,
@@ -777,47 +782,56 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
             cb_reserved2: 0, reserved2: null, std_input: h.input.load(),
             std_output: h.output.load(), std_error: h.error.load() }
         // CREATE_UNICODE_ENVIRONMENT
-        made : Bool = c_create_process(null, line, null, null, 1, 0x400, env, directory, si,
+        made : Bool = c_create_process(null, line, null, null, 1, 0x400, env.load(), directory, si,
             pi).ne(0)
         e    : U32  = c_get_last_error()
         h.close_child_side()
         branch made
-            ? started(env)
-            : not_started(env, e)
+            ? started()
+            : finish(.Failure(spawn_error(e)))
 
-    block not_started(env: @U16, e: U32)
+    // The handles were partly made: the child's side of what there is closes here, the parent's side in finish.
+    block not_started(e: U32)
         h.close_child_side()
-        close_if_open(h.out_r.load())
-        close_if_open(h.err_r.load())
-        free_texts(line, env, alloc)
-        return(.Failure(spawn_error(e)))
+        jump finish(.Failure(spawn_error(e)))
 
-    block started(env: @U16)
-        free_texts(line, env, alloc)
+    block started()
         claim out : @CaptureBuffer <- CaptureBuffer.empty()
         claim err : @PipeReader    <- PipeReader { pipe: h.err_r.load(),
             buffer: CaptureBuffer.empty() }
         read_both(h.out_r.load(), out, err, alloc)
-        close_if_open(h.out_r.load())
-        close_if_open(h.err_r.load())
         // INFINITE
         c_wait_for_single_object(pi.process.load(), U32.MAX)
         claim code : @U32 <- 0
         c_get_exit_code_process(pi.process.load(), code)
-        c_close_handle(pi.thread.load())
-        c_close_handle(pi.process.load())
         error_text : Bytes = moved(err.buffer.load(), alloc)
-        return(.Success(ProcessOutput { status: ExitStatus.Exited(code.load().to_wrap<S32>()),
+        jump finish(.Success(ProcessOutput { status: ExitStatus.Exited(code.load().to_wrap<S32>()),
             stdout: out.load().owned(alloc), stderr: error_text }))
 
-/// Frees the command line, and the environment block when there is one.
-/// :param line: The command line text.
+    // The parent's ends of the pipes, the process and thread handles, the command line, and the environment block:
+    // each one this run got.
+    block finish(result: Result<ProcessOutput, ProcessError>)
+        close_if_open(h.out_r.load())
+        close_if_open(h.err_r.load())
+        close_if_open(pi.thread.load())
+        close_if_open(pi.process.load())
+        free_texts(line, env.load(), alloc)
+        return(result)
+
+/// Frees the command line and the environment block, each when there is one.
+/// :param line: The command line text, or null.
 /// :param env: The environment block, or null.
 /// :param alloc: The allocator they came from.
 #target(os: "windows")
 private routine free_texts(line: @U16, env: @U16, alloc: @Allocator) -> Void
     block entry()
+        branch line.is_null()
+            ? environment()
+            : continue
         deallocate(alloc, line)
+        jump environment()
+
+    block environment()
         branch env.is_null()
             ? return()
             : continue
@@ -892,38 +906,42 @@ private routine moved(b: CaptureBuffer, alloc: @Allocator) -> Bytes
 /// destruct().
 #target(os: "windows")
 routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
+    shared units : @@U16 <- null
+
     block entry()
         claim key : @Array<U16, 256> <- uninit
         n : Option<USize> = encode_utf16(name, key.to<@U16>(), 256)
         branch n.is_present()
             ? continue
-            : return(.Absent)
+            : finish(.Absent)
         c_set_last_error(0)
         need : U32 = c_get_environment_variable(key.to<@U16>(), null, 0)
         // ERROR_ENVVAR_NOT_FOUND
         branch need.eq(0).bitand(c_get_last_error().eq(203))
-            ? return(.Absent)
+            ? finish(.Absent)
             : continue
         branch need.eq(0)
-            ? return(.Present(Bytes { data: null, count: 0, alloc: alloc }))
+            ? finish(.Present(Bytes { data: null, count: 0, alloc: alloc }))
             : continue
-        units : @U16 = allocate<U16>(alloc, need.to<USize>())
-        branch units.is_null()
-            ? return(.Absent)
+        made : @U16 = allocate<U16>(alloc, need.to<USize>())
+        made.store_into(units)
+        branch made.is_null()
+            ? finish(.Absent)
             : continue
-        got : U32 = c_get_environment_variable(key.to<@U16>(), units, need)
+        got : U32 = c_get_environment_variable(key.to<@U16>(), made, need)
         branch got.eq(0).bitor(got.ge(need))
-            ? gone(units)
+            ? finish(.Absent)
             : continue
-        text : Result<Bytes, FsError> = owned_wide(units, got.to<USize>(), alloc)
-        deallocate(alloc, units)
+        text : Result<Bytes, FsError> = owned_wide(made, got.to<USize>(), alloc)
         when text
-            .Success(t) -> found(t)
-            .Failure    -> return(.Absent)
+            .Success(t) -> finish(.Present(t))
+            .Failure    -> finish(.Absent)
 
-    block found(t: Bytes)
-        return(.Present(t))
-
-    block gone(units: @U16)
-        deallocate(alloc, units)
-        return(.Absent)
+    // The UTF-16 value, when there is one: the UTF-8 copy is what goes back.
+    block finish(value: Option<Bytes>)
+        held : @U16 = units.load()
+        branch held.is_null()
+            ? return(value)
+            : continue
+        deallocate(alloc, held)
+        return(value)
