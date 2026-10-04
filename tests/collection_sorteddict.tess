@@ -54,13 +54,13 @@ routine iteration_hash(map: @SortedDict<S64, S64>) -> S64
 
 routine rank_hash_at(map: @SortedDict<S64, S64>, hash: S64, rank: USize) -> S64
     block entry()
-        key   : S64 = map.load().get_by_rank(rank).key
-        value : S64 = map.load().get_by_rank(rank).value
+        key   : S64 = map.get_by_rank(rank).key
+        value : S64 = map.get_by_rank(rank).value
         return(mix(mix(hash, key), value))
 
 // Folds get_by_rank at the first, middle, and last rank, or 0 for an empty map.
 routine rank_hash(map: @SortedDict<S64, S64>) -> S64
-    shared count : USize = map.load().count()
+    shared count : USize = map.count()
 
     block entry()
         empty : Bool = count.eq(0)
@@ -79,7 +79,7 @@ routine checkpoint(out: @BufWriter<Out>, map: @SortedDict<S64, S64>, phase: USiz
     block entry()
         out.write("phase {phase}")
         labeled(out, "op", op.to<S64>())
-        size : USize = map.load().count()
+        size : USize = map.count()
         labeled(out, "length", size.to<S64>())
         labeled(out, "results", results)
         labeled(out, "iteration", iteration_hash(map))
@@ -123,7 +123,7 @@ routine run_phase(out: @BufWriter<Out>, map: @SortedDict<S64, S64>, rng: @Rng, p
         jump record(op, checksum, removed.to<S64>())
 
     block remove_ranked(op: USize, checksum: S64)
-        count : USize = map.load().count()
+        count : USize = map.count()
         empty : Bool  = count.eq(0)
         branch empty
             ? record(op, checksum, -2)
@@ -131,18 +131,18 @@ routine run_phase(out: @BufWriter<Out>, map: @SortedDict<S64, S64>, rng: @Rng, p
 
     block remove_at(op: USize, checksum: S64, count: USize)
         rank    : USize = rng.below(count)
-        key     : S64   = map.load().get_by_rank(rank).key
+        key     : S64   = map.get_by_rank(rank).key
         removed : Bool  = map.remove(key)
         jump record(op, checksum, mix(key, removed.to<S64>()))
 
     block lookup(op: USize, checksum: S64, key: S64)
-        found : Bool = map.load().contains(key)
+        found : Bool = map.contains(key)
         branch found
             ? get(op, checksum, key)
             : record(op, checksum, -1)
 
     block get(op: USize, checksum: S64, key: S64)
-        value : S64 = map.load().getitem(key)
+        value : S64 = map.getitem(key)
         jump record(op, checksum, value)
 
     block record(op: USize, checksum: S64, result: S64)
@@ -160,7 +160,7 @@ routine run_phase(out: @BufWriter<Out>, map: @SortedDict<S64, S64>, rng: @Rng, p
 // Copies from into to from the largest key down, so the two trees are built by a different insertion order.
 routine copy_reversed(from: @SortedDict<S64, S64>, to: @SortedDict<S64, S64>) -> Void
     block entry()
-        jump next(from.load().count())
+        jump next(from.count())
 
     block next(rank_end: USize)
         done : Bool = rank_end.eq(0)
@@ -169,7 +169,7 @@ routine copy_reversed(from: @SortedDict<S64, S64>, to: @SortedDict<S64, S64>) ->
             : copy(rank_end.sub(1))
 
     block copy(rank: USize)
-        to.put(from.load().get_by_rank(rank).key, from.load().get_by_rank(rank).value)
+        to.put(from.get_by_rank(rank).key, from.get_by_rank(rank).value)
         jump next(rank)
 
 routine report_eq(out: @BufWriter<Out>, label: Bytes, equal: Bool) -> Void
@@ -198,14 +198,14 @@ routine main() -> S32
         report_eq(out, "extra key equal", map.load().eq(copied.load()))
         copied.remove(-1)
         report_eq(out, "extra key removed equal", map.load().eq(copied.load()))
-        key       : S64 = map.load().get_by_rank(0).key
-        old_value : S64 = map.load().getitem(key)
+        key       : S64 = map.get_by_rank(0).key
+        old_value : S64 = map.getitem(key)
         copied.put(key, old_value.add(1))
         report_eq(out, "changed value equal", map.load().eq(copied.load()))
         copied.destruct()
 
         r3 : S64 = run_phase(out, map, rng, 3, 14000, 20000, 1, 3, 8, r2)
         map.destruct()
-        report_eq(out, "freed is empty", map.load().is_empty())
+        report_eq(out, "freed is empty", map.is_empty())
         out.flush()
         return(0)
