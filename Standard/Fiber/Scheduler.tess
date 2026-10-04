@@ -6,7 +6,7 @@
 // yields or returns: nothing preempts it. run returns when every fiber has.
 //
 //     claim stacks : @Allocator <- make_stack_allocator()   // guard pages
-//     claim sched  : @Scheduler <- .construct(alloc, stacks, 0)   // 0: a worker per processor
+//     claim sched  : @Scheduler <- .construct(0, stacks, alloc)   // 0: a worker per processor
 //     sched.spawn(worker.to<Callable>(), state, 65536)
 //     sched.run()
 //     sched.destruct()
@@ -141,7 +141,7 @@ private routine current_worker() -> @Worker
 
 /// A scheduler with workers worker threads, or one per processor for 0.
 #target(os: not "none")
-routine Scheduler.construct(alloc: @Allocator, stacks: @Allocator, workers: USize) -> Self
+routine Scheduler.construct(workers: USize, stacks: @Allocator, alloc: @Allocator) -> Self
     block entry()
         none : Bool = workers.eq(0)
         branch none
@@ -149,7 +149,7 @@ routine Scheduler.construct(alloc: @Allocator, stacks: @Allocator, workers: USiz
             : make(workers)
 
     block make(count: USize)
-        array : @Worker = allocate<Worker>(alloc, count)
+        array : @Worker = allocate<Worker>(count, alloc)
         jump init(count, array, 0)
 
     block init(count: USize, array: @Worker, i: USize)
@@ -166,7 +166,7 @@ routine Scheduler.construct(alloc: @Allocator, stacks: @Allocator, workers: USiz
 
     block finish(count: USize, array: @Worker)
         timers     : PriorityQueue<TimerEntry> = .construct(alloc)
-        io_threads : @Thread                   = allocate<Thread>(alloc, IO_THREADS)
+        io_threads : @Thread                   = allocate<Thread>(IO_THREADS, alloc)
         io_queue   : CircularList<@FiberState> = .construct(alloc)
         s          : Self                      = Self { alloc: alloc, stacks: stacks, count: count,
             workers: array, next: 0, live: 0, epoch: 0, sleepers: 0, timer_lock: .construct(),
@@ -199,7 +199,7 @@ routine Scheduler.spawn_joinable<S>(self: @Self, entry: Callable<(@S,), Void>, a
     stack_size: USize) -> @Join
 require S: typename
     block entry()
-        j : @Join = allocate<Join>(self.alloc.load(), 1)
+        j : @Join = allocate<Join>(1, self.alloc.load())
         j.store(Join { lock: .construct(), done: 0, waiter: null })
         start_fiber(self, entry, arg, stack_size, j)
         return(j)
@@ -367,7 +367,7 @@ routine Scheduler.join(self: @Self, j: @Join) -> Void
         jump free_join()
 
     block free_join()
-        deallocate(self.alloc.load(), j)
+        deallocate(j, self.alloc.load())
         return()
 
 /// Runs the fibers, and those they spawn, on the workers until every one has returned. This thread is the first
@@ -469,8 +469,8 @@ routine Scheduler.destruct(self: @Self) -> Void
         self.timers.destruct()
         drain(self, self.io_queue)
         self.io_queue.destruct()
-        deallocate(self.alloc.load(), self.io_threads.load())
-        deallocate(self.alloc.load(), self.workers.load())
+        deallocate(self.io_threads.load(), self.alloc.load())
+        deallocate(self.workers.load(), self.alloc.load())
         return()
 
 /// Runs work(arg), a call that may block the thread it runs on, without stopping the other fibers: inside a fiber
@@ -880,10 +880,10 @@ private routine start_fiber<S>(sched: @Scheduler, entry: Callable<(@S,), Void>, 
     stack_size: USize, j: @Join) -> Void
 require S: typename
     block entry()
-        stack : @Byte       = allocate<Byte>(sched.stacks.load(), stack_size)
+        stack : @Byte       = allocate<Byte>(stack_size, sched.stacks.load())
         sp    : Addr        = initial_stack(stack, stack_size, fiber_start.addr())
         state : Addr        = arg
-        fiber : @FiberState = allocate<FiberState>(sched.alloc.load(), 1)
+        fiber : @FiberState = allocate<FiberState>(1, sched.alloc.load())
         fiber.store(FiberState { sp: sp, stack: stack, entry: erased(entry), arg: state,
             finished: false, then: requeue.to<Callable>(), wake_state: FIBER_RUNNING, deadline: 0,
             join: j, waiting_for: null, work: no_work.to<Callable>(), work_arg: null,
@@ -990,8 +990,8 @@ private routine drain(sched: @Scheduler, queue: @CircularList<@FiberState>) -> V
 private routine free_fiber(sched: @Scheduler, fiber: @FiberState) -> Void
     block entry()
         stack : @Byte = fiber.stack.load().to<@Byte>()
-        deallocate(sched.stacks.load(), stack)
-        deallocate(sched.alloc.load(), fiber)
+        deallocate(stack, sched.stacks.load())
+        deallocate(fiber, sched.alloc.load())
         return()
 
 /// A new fiber's first routine: switch_stack returns into it on the fiber's new stack. It runs the fiber's routine,

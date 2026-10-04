@@ -189,7 +189,7 @@ private routine InputBuffer.word(self: @Self) -> Option<Bytes>
 
     // The whole buffer is one word so far: it goes on in memory from the default heap.
     block spill(length: USize)
-        text.append(DEFAULT_HEAP, self.bytes.to<@Byte>(), length)
+        text.append(self.bytes.to<@Byte>(), length, DEFAULT_HEAP)
         self.start.store(length)
         jump spill_next()
 
@@ -204,7 +204,7 @@ private routine InputBuffer.word(self: @Self) -> Option<Bytes>
             ? spill_end()
             : continue
         claim single : @Byte <- byte
-        text.append(DEFAULT_HEAP, single, 1)
+        text.append(single, 1, DEFAULT_HEAP)
         jump spill_next()
 
     block spill_end()
@@ -334,7 +334,7 @@ routine In.read_bytes_result(self: @Self, buffer: @Byte, count: USize) -> Result
 
 /// Up to count bytes, in memory from alloc: fewer only at the end of the input. Release them with destruct().
 routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
-    shared buffer : @Byte = allocate<Byte>(alloc, count.max(1))
+    shared buffer : @Byte = allocate<Byte>(count.max(1), alloc)
 
     block entry()
         branch buffer.is_null()
@@ -369,7 +369,7 @@ routine In.read_all(alloc: @Allocator) -> Bytes
         branch n.eq(0)
             ? return(text.owned(alloc))
             : continue
-        text.append(alloc, chunk, n)
+        text.append(chunk, n, alloc)
         jump more(chunk)
 
 /// The next line, without its "\n" (or "\r\n"), in memory from alloc. A last line with no "\n" still counts, and a
@@ -403,7 +403,7 @@ routine In.read_line_checked(alloc: @Allocator) -> Option<Bytes>
             ? done()
             : continue
         claim single : @Byte <- byte
-        text.append(alloc, single, 1)
+        text.append(single, 1, alloc)
         jump next(true)
 
     block ended(any: Bool)
@@ -421,7 +421,7 @@ routine In.read_line_checked(alloc: @Allocator) -> Option<Bytes>
 /// line without a "\r" at its end. The memory and its allocator stay the same, only the count drops.
 private routine trim_cr(line: Bytes) -> Bytes
     block entry()
-        branch line.ends_with("\r")
+        branch line.has_suffix("\r")
             ? continue
             : return(line)
         trimmed : Bytes = Bytes { data: line.data, count: line.count.sub(1), alloc: line.alloc }
@@ -468,7 +468,7 @@ routine In.read_word_checked(alloc: @Allocator) -> Option<Bytes>
             ? skip()
             : continue
         single.store(byte)
-        text.append(alloc, single, 1)
+        text.append(single, 1, alloc)
         jump next()
 
     block next()
@@ -480,7 +480,7 @@ routine In.read_word_checked(alloc: @Allocator) -> Option<Bytes>
             ? put_back()
             : continue
         single.store(byte)
-        text.append(alloc, single, 1)
+        text.append(single, 1, alloc)
         jump next()
 
     block put_back()
@@ -722,7 +722,7 @@ private routine handle_of(stream: StdStream) -> Addr
 /// :param h: The handle to test.
 /// :returns: `true` when it can be used.
 #target(os: "windows")
-private routine usable(h: Addr) -> Bool
+private routine is_usable(h: Addr) -> Bool
     block entry()
         return(h.is_not_null().bitand(ptrtoint<Addr, USize>(h).ne(USize.MAX)))
 
@@ -740,7 +740,7 @@ private routine is_console(h: Addr) -> Bool
 internal routine stream_is_terminal(stream: StdStream) -> Bool
     block entry()
         h : Addr = handle_of(stream)
-        branch usable(h)
+        branch is_usable(h)
             ? return(is_console(h))
             : return(false)
 
@@ -750,7 +750,7 @@ internal routine stream_is_terminal(stream: StdStream) -> Bool
 internal routine stream_enable_colors(stream: StdStream) -> Bool
     block entry()
         h : Addr = handle_of(stream)
-        branch usable(h)
+        branch is_usable(h)
             ? continue
             : return(false)
         claim mode : @U32 <- 0
@@ -766,7 +766,7 @@ internal routine stream_enable_colors(stream: StdStream) -> Bool
 internal routine stream_write(stream: StdStream, data: @Byte, count: USize) -> Bool
     block entry()
         h : Addr = handle_of(stream)
-        branch usable(h)
+        branch is_usable(h)
             ? continue
             : return(false)
         branch is_console(h)
@@ -933,7 +933,7 @@ private routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Bo
 internal routine stdin_read(buffer: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
         h : Addr = handle_of(StdStream.Input)
-        branch usable(h)
+        branch is_usable(h)
             ? continue
             : return(.Success(0))
         branch is_console(h)

@@ -300,7 +300,7 @@ private routine c_path(path: Bytes, out: @Byte) -> Bool
         branch n.ge(PATH_CAPACITY)
             ? return(false)
             : continue
-        branch path.contains("\x00")
+        branch path.has("\x00")
             ? return(false)
             : continue
         out.copy(path.data, n)
@@ -856,7 +856,7 @@ internal routine set_readonly(path: Bytes, readonly: Bool) -> Result<Unit, FsErr
 
 /// Whether this process may read, write, or execute path.
 #target(os: ("linux", "macos"))
-internal routine can_access(path: Bytes, access: Access) -> Bool
+internal routine is_accessible(path: Bytes, access: Access) -> Bool
     block entry()
         claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
         branch c_path(path, cpath.to<@Byte>())
@@ -993,7 +993,7 @@ routine DirIter.close(self: @Self) -> Void
 #target(os: ("linux", "macos"))
 private routine owned(p: @Byte, n: USize, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry()
-        buffer : @Byte = allocate<Byte>(alloc, n.max(1))
+        buffer : @Byte = allocate<Byte>(n.max(1), alloc)
         branch buffer.is_null()
             ? return(.Failure(FsError.OutOfMemory))
             : continue
@@ -1019,7 +1019,7 @@ internal routine current_dir(alloc: @Allocator) -> Result<Bytes, FsError>
         jump attempt(256)
 
     block attempt(capacity: USize)
-        buffer : @Byte = allocate<Byte>(alloc, capacity)
+        buffer : @Byte = allocate<Byte>(capacity, alloc)
         branch buffer.is_null()
             ? return(.Failure(FsError.OutOfMemory))
             : continue
@@ -1027,7 +1027,7 @@ internal routine current_dir(alloc: @Allocator) -> Result<Bytes, FsError>
             ? found(buffer)
             : continue
         e : CInt = errno()
-        deallocate(alloc, buffer)
+        deallocate(buffer, alloc)
         // ERANGE: a bigger buffer
         branch e.eq(34)
             ? attempt(capacity.mul(2))
@@ -1068,7 +1068,7 @@ internal routine home_dir(alloc: @Allocator) -> Result<Bytes, FsError>
 #target(os: ("linux", "macos"))
 internal routine absolute_path(path: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry()
-        branch path.starts_with("/")
+        branch path.has_prefix("/")
             ? return(owned(path.data, path.count(), alloc))
             : continue
         cwd : Result<Bytes, FsError> = current_dir(alloc)
@@ -1101,7 +1101,7 @@ internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result<Bytes,
 // -- memory-mapped files -----------------------------------------------------------------
 
 #target(os: ("linux", "macos"))
-private routine map_failed(p: Addr) -> Bool
+private routine is_map_failed(p: Addr) -> Bool
     block entry()
         // MAP_FAILED, (void*)-1
         return(ptrtoint<Addr, USize>(p).eq(USize.MAX))
@@ -1149,7 +1149,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
             : 2
         p : Addr = c_mmap(null, want.add(delta), prot, share, fd, aligned.to<S64>())
         // the mapping keeps the file open on its own, and errno is read before finish closes the descriptor
-        branch map_failed(p)
+        branch is_map_failed(p)
             ? finish(failed<Self>())
             : finish(.Success(Self { base: p, delta: delta, count: want }))
 

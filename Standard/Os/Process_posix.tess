@@ -167,7 +167,7 @@ private routine Prepared.empty() -> Self
 private routine c_string(text: Bytes, alloc: @Allocator) -> @Byte
     block entry()
         n : USize = text.count()
-        p : @Byte = allocate<Byte>(alloc, n.add(1))
+        p : @Byte = allocate<Byte>(n.add(1), alloc)
         branch p.is_null()
             ? return(null)
             : continue
@@ -181,7 +181,7 @@ private routine env_entry(v: EnvVar, alloc: @Allocator) -> @Byte
     block entry()
         n : USize = v.name.count()
         m : USize = v.value.count()
-        p : @Byte = allocate<Byte>(alloc, n.add(m).add(2))
+        p : @Byte = allocate<Byte>(n.add(m).add(2), alloc)
         branch p.is_null()
             ? return(null)
             : continue
@@ -203,7 +203,7 @@ private routine Prepared.release(self: @Self, alloc: @Allocator) -> Void
             ? env(0)
             : continue
         arg_slot : @@Byte = self.argv.load().stride(i)
-        deallocate(alloc, arg_slot.load())
+        deallocate(arg_slot.load(), alloc)
         jump args(i.add(1))
 
     block env(i: USize)
@@ -212,7 +212,7 @@ private routine Prepared.release(self: @Self, alloc: @Allocator) -> Void
             ? rest()
             : continue
         entry_slot : @@Byte = envp.stride(self.own_first.load().add(i))
-        deallocate(alloc, entry_slot.load())
+        deallocate(entry_slot.load(), alloc)
         jump env(i.add(1))
 
     block rest()
@@ -220,7 +220,7 @@ private routine Prepared.release(self: @Self, alloc: @Allocator) -> Void
         branch argv.is_null()
             ? arrays_done()
             : continue
-        deallocate(alloc, argv)
+        deallocate(argv, alloc)
         jump arrays_done()
 
     block arrays_done()
@@ -228,7 +228,7 @@ private routine Prepared.release(self: @Self, alloc: @Allocator) -> Void
         branch envp.is_null()
             ? env_done()
             : continue
-        deallocate(alloc, envp)
+        deallocate(envp, alloc)
         jump env_done()
 
     block env_done()
@@ -236,7 +236,7 @@ private routine Prepared.release(self: @Self, alloc: @Allocator) -> Void
         branch dir.is_null()
             ? return()
             : continue
-        deallocate(alloc, dir)
+        deallocate(dir, alloc)
         return()
 
 /// Whether a NUL is inside any text the child would get.
@@ -244,7 +244,7 @@ private routine Prepared.release(self: @Self, alloc: @Allocator) -> Void
 private routine has_nul(program: Bytes, args: @Bytes, arg_count: USize,
     options: ProcessOptions) -> Bool
     block entry()
-        branch program.contains("\x00")
+        branch program.has("\x00")
             ? return(true)
             : arg(0)
 
@@ -253,7 +253,7 @@ private routine has_nul(program: Bytes, args: @Bytes, arg_count: USize,
             ? env(0)
             : continue
         argument : Bytes = args.stride(i).load()
-        branch argument.contains("\x00")
+        branch argument.has("\x00")
             ? return(true)
             : arg(i.add(1))
 
@@ -262,14 +262,14 @@ private routine has_nul(program: Bytes, args: @Bytes, arg_count: USize,
             ? directory()
             : continue
         v          : EnvVar = options.env.stride(i).load()
-        nul_inside : Bool   = v.name.contains("\x00").bitor(v.value.contains("\x00"))
-        branch nul_inside.bitor(v.name.contains("="))
+        nul_inside : Bool   = v.name.has("\x00").bitor(v.value.has("\x00"))
+        branch nul_inside.bitor(v.name.has("="))
             ? return(true)
             : env(i.add(1))
 
     block directory()
         when options.directory
-            .Present(d) -> return(d.contains("\x00"))
+            .Present(d) -> return(d.has("\x00"))
             .Absent     -> return(false)
 
 /// Builds everything the child needs before fork, so the child allocates nothing: the argument vector, the merged
@@ -288,7 +288,7 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
 
     block entry()
         p.store(Prepared.empty())
-        argv : @@Byte = allocate<@Byte>(alloc, arg_count.add(2))
+        argv : @@Byte = allocate<@Byte>(arg_count.add(2), alloc)
         branch argv.is_null()
             ? return(false)
             : continue
@@ -343,7 +343,7 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
     // The parent's entries the overrides don't name, pointed at as they are (the child gets the same memory), then
     // the overrides, made here.
     block merge(parent: @@Byte, n: USize)
-        envp : @@Byte = allocate<@Byte>(alloc, n.add(options.env_count).add(1))
+        envp : @@Byte = allocate<@Byte>(n.add(options.env_count).add(1), alloc)
         branch envp.is_null()
             ? return(false)
             : continue
@@ -356,7 +356,7 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
             ? own(envp, 0)
             : continue
         entry : @Byte = parent.stride(i).load()
-        branch overridden(entry.to<CStr>().to<Bytes>(), options)
+        branch is_overridden(entry.to<CStr>().to<Bytes>(), options)
             ? keep(parent, n, envp, i.add(1))
             : continue
         envp.stride(first.load()).store(entry)
@@ -387,7 +387,7 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
 
 /// Whether an override names entry's variable.
 #target(os: ("linux", "macos"))
-private routine overridden(entry: Bytes, options: ProcessOptions) -> Bool
+private routine is_overridden(entry: Bytes, options: ProcessOptions) -> Bool
     block entry()
         jump look(0)
 
@@ -479,7 +479,7 @@ private record Plumbing
 
 /// No pipes and no null device: what a run starts from, so closing them is right on every path.
 #target(os: ("linux", "macos"))
-private routine Plumbing.none() -> Self
+private routine Plumbing.empty() -> Self
     block entry()
         return(Self { out_r: -1, out_w: -1, err_r: -1, err_w: -1, exec_r: -1, exec_w: -1,
             devnull: -1 })
@@ -524,7 +524,7 @@ private routine Plumbing.close_all(self: @Self) -> Void
 #target(os: ("linux", "macos"))
 private routine Plumbing.make(self: @Self, options: ProcessOptions) -> Bool
     block entry()
-        self.store(Plumbing.none())
+        self.store(Plumbing.empty())
         claim fds : @Array<CInt, 2> <- { -1, -1 }
         branch cloexec_pipe(fds.to<@CInt>())
             ? continue
@@ -586,7 +586,7 @@ private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
     shared p      : @Prepared      <- Prepared.empty()
-    shared pipes  : @Plumbing      <- Plumbing.none()
+    shared pipes  : @Plumbing      <- Plumbing.empty()
     shared report : @CInt          <- 0
     shared out    : @CaptureBuffer <- CaptureBuffer.empty()
     shared err    : @CaptureBuffer <- CaptureBuffer.empty()
@@ -676,7 +676,7 @@ private routine release(b: CaptureBuffer, alloc: @Allocator) -> Void
         branch b.data.is_null()
             ? return()
             : continue
-        deallocate(alloc, b.data)
+        deallocate(b.data, alloc)
         return()
 
 /// Reads both pipes (-1 for one not captured) to their end, whichever has data, and closes them.
@@ -736,7 +736,7 @@ private routine drain(out_fd: CInt, err_fd: CInt, out: @CaptureBuffer, err: @Cap
             : into(fds, chunk, open, i, n, err)
 
     block into(fds: @PollFd, chunk: @Byte, open: U32, i: USize, n: USize, buffer: @CaptureBuffer)
-        buffer.append(alloc, chunk, n)
+        buffer.append(chunk, n, alloc)
         jump stream(fds, chunk, open, i.add(1))
 
 /// Waits for the child: how it ended, or Absent if waitpid failed.
@@ -771,7 +771,7 @@ routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
     block entry()
         claim key : @Array<Byte, 256> <- uninit
         too_long : Bool = name.count().ge(256)
-        branch too_long.bitor(name.contains("\x00"))
+        branch too_long.bitor(name.has("\x00"))
             ? return(.Absent)
             : continue
         key.to<@Byte>().copy(name.data, name.count())
@@ -782,7 +782,7 @@ routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
             ? return(.Absent)
             : continue
         n     : USize = value.to<CStr>().count()
-        owned : @Byte = allocate<Byte>(alloc, n.max(1))
+        owned : @Byte = allocate<Byte>(n.max(1), alloc)
         branch owned.is_null()
             ? return(.Absent)
             : continue

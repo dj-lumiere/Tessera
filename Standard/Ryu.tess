@@ -55,7 +55,7 @@ routine ryu_log10_pow5(e: U64) -> U64
         return(r)
 
 /// Is value (nonzero) divisible by 5^p?
-routine ryu_multiple_of_pow5(value: U64, p: S64) -> Bool
+routine ryu_is_multiple_of_pow5(value: U64, p: S64) -> Bool
     block entry()
         jump count(value, 0)
 
@@ -68,7 +68,7 @@ routine ryu_multiple_of_pow5(value: U64, p: S64) -> Bool
             : return(enough)
 
 /// Is value divisible by 2^p (p < 63)?
-routine ryu_multiple_of_pow2(value: U64, p: U64) -> Bool
+routine ryu_is_multiple_of_pow2(value: U64, p: U64) -> Bool
     block entry()
         mask : U64  = 1.shl(p).sub_wrap(1)
         r    : Bool = value.bitand(mask).eq(0)
@@ -99,7 +99,7 @@ routine ryu_mul_shift64(m: U64, low: U64, high: U64, shift: S64) -> U64
 /// value (BF16's smallest subnormal, 9.18e-41, would print as 1e-40, not 9e-41).
 /// Stopping there changes no F32 or F64 output. F16 and BF16 were checked
 /// exhaustively.
-routine ryu_can_remove(vr: U64, vp: U64, vm: U64) -> Bool
+routine ryu_has_removable_digit(vr: U64, vp: U64, vm: U64) -> Bool
     block entry()
         shorter  : Bool = vp.div(10).gt(vm.div(10))
         two_plus : Bool = vr.ge(10)
@@ -123,7 +123,7 @@ routine ryu_shorten(start: RyuDigits, accept: Bool, e10: S64) -> FloatDecimal
         vr   : U64  = s.vr
         vp   : U64  = s.vp
         vm   : U64  = s.vm
-        more : Bool = ryu_can_remove(vr, vp, vm)
+        more : Bool = ryu_has_removable_digit(vr, vp, vm)
         branch more
             ? fast_step(s)
             : fast_done(s)
@@ -152,7 +152,7 @@ routine ryu_shorten(start: RyuDigits, accept: Bool, e10: S64) -> FloatDecimal
         vr   : U64  = s.vr
         vp   : U64  = s.vp
         vm   : U64  = s.vm
-        more : Bool = ryu_can_remove(vr, vp, vm)
+        more : Bool = ryu_has_removable_digit(vr, vp, vm)
         branch more
             ? careful_step(s)
             : trim_vm(s)
@@ -274,11 +274,11 @@ routine ryu_double_decimal(mantissa: U64, exponent: S64) -> FloatDecimal
         small    : Bool         = q.le(21)
         mv_by_5  : Bool         = mv.mod(5).eq(0)
         not_by_5 : Bool         = mv_by_5.bitnot()
-        vr_exact : Bool         = small.bitand(mv_by_5).bitand(ryu_multiple_of_pow5(mv, q))
+        vr_exact : Bool         = small.bitand(mv_by_5).bitand(ryu_is_multiple_of_pow5(mv, q))
         mm_case  : Bool         = small.bitand(not_by_5).bitand(accept)
-        vm_exact : Bool         = mm_case.bitand(ryu_multiple_of_pow5(mm, q))
+        vm_exact : Bool         = mm_case.bitand(ryu_is_multiple_of_pow5(mm, q))
         mp_case  : Bool         = small.bitand(not_by_5).bitand(accept.bitnot())
-        vp_exact : Bool         = mp_case.bitand(ryu_multiple_of_pow5(mp, q))
+        vp_exact : Bool         = mp_case.bitand(ryu_is_multiple_of_pow5(mp, q))
         vp_fixed : U64          = vp.sub_wrap(vp_exact.to<U64>())
         digits   : RyuDigits    = RyuDigits { vr: vr, vp: vp_fixed, vm: vm, removed: 0, last: 0,
             vm_zeros: vm_exact, vr_zeros: vr_exact }
@@ -325,7 +325,7 @@ routine ryu_double_decimal(mantissa: U64, exponent: S64) -> FloatDecimal
     block wide_q(vr: U64, vp: U64, vm: U64, e10: S64, q: S64)
         checkable : Bool         = q.lt(63)
         shift     : S64          = q.min(62)
-        vr_exact  : Bool         = checkable.bitand(ryu_multiple_of_pow2(mv, shift.to<U64>()))
+        vr_exact  : Bool         = checkable.bitand(ryu_is_multiple_of_pow2(mv, shift.to<U64>()))
         digits    : RyuDigits    = RyuDigits { vr: vr, vp: vp, vm: vm, removed: 0, last: 0,
             vm_zeros: false, vr_zeros: vr_exact }
         r         : FloatDecimal = ryu_shorten(digits, accept, e10)
@@ -375,11 +375,11 @@ routine ryu_float_decimal(mantissa: S64, exponent: S64, mantissa_bits: S64,
         small    : Bool  = q.le(9)
         mv_by_5  : Bool  = mv.mod(5).eq(0)
         not_by_5 : Bool  = mv_by_5.bitnot()
-        vr_exact : Bool  = small.bitand(mv_by_5).bitand(ryu_multiple_of_pow5(mv, q))
+        vr_exact : Bool  = small.bitand(mv_by_5).bitand(ryu_is_multiple_of_pow5(mv, q))
         mm_case  : Bool  = small.bitand(not_by_5).bitand(accept)
-        vm_exact : Bool  = mm_case.bitand(ryu_multiple_of_pow5(mm, q))
+        vm_exact : Bool  = mm_case.bitand(ryu_is_multiple_of_pow5(mm, q))
         mp_case  : Bool  = small.bitand(not_by_5).bitand(accept.bitnot())
-        vp_exact : Bool  = mp_case.bitand(ryu_multiple_of_pow5(mp, q))
+        vp_exact : Bool  = mp_case.bitand(ryu_is_multiple_of_pow5(mp, q))
         vp_fixed : U64   = vp.sub(vp_exact.to<U64>())
         // f2s also needs the digit just below vr, in case nothing gets removed
         vp_tens : U64  = vp.sub(1).div(10)
@@ -440,7 +440,7 @@ routine ryu_float_decimal(mantissa: S64, exponent: S64, mantissa_bits: S64,
         vp_fixed  : U64  = vp.sub(vp_down.to<U64>())
         checkable : Bool = tiny.bitnot().bitand(q.lt(31))
         shift     : S64  = q.sub(1).max(0)
-        by_2      : Bool = checkable.bitand(ryu_multiple_of_pow2(mv.to<U64>(), shift.to<U64>()))
+        by_2      : Bool = checkable.bitand(ryu_is_multiple_of_pow2(mv.to<U64>(), shift.to<U64>()))
         vr_exact  : Bool = tiny.bitor(by_2)
         jump shorten(vr, vp_fixed, vm, e10, digit, vm_exact, vr_exact, accept)
 

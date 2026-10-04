@@ -264,7 +264,7 @@ private routine checked(ok: CInt) -> Result<Unit, FsError>
             : return(failed<Unit>())
 
 #target(os: "windows")
-private routine invalid_handle(h: Addr) -> Bool
+private routine is_invalid_handle(h: Addr) -> Bool
     block entry()
         // INVALID_HANDLE_VALUE, (HANDLE)-1
         return(ptrtoint<Addr, USize>(h).eq(USize.MAX))
@@ -384,7 +384,7 @@ internal routine wide_length(units: @U16) -> USize
 #target(os: "windows")
 internal routine owned_wide(units: @U16, count: USize, alloc: @Allocator) -> Result<Bytes, FsError>
     block entry()
-        buffer : @Byte = allocate<Byte>(alloc, count.mul(3).max(1))
+        buffer : @Byte = allocate<Byte>(count.mul(3).max(1), alloc)
         branch buffer.is_null()
             ? return(.Failure(FsError.OutOfMemory))
             : continue
@@ -493,7 +493,7 @@ internal routine metadata(path: Bytes) -> Result<Metadata, FsError>
             ? continue
             : return(.Failure(path_error(path)))
         h : Addr = query_handle(wpath.to<@U16>(), false)
-        branch invalid_handle(h)
+        branch is_invalid_handle(h)
             ? unopened(wpath.to<@U16>())
             : continue
         m : Result<Metadata, FsError> = handle_metadata(h)
@@ -519,7 +519,7 @@ internal routine symlink_metadata(path: Bytes) -> Result<Metadata, FsError>
         claim data : @Array<U32, FIND_DATA_WORDS> <- uninit
         find : Addr = c_find_first_file(wpath.to<@U16>(), data.to<@Byte>())
         // A root ("C:\") has no directory entry: its attributes describe it
-        branch invalid_handle(find)
+        branch is_invalid_handle(find)
             ? return(attribute_metadata(wpath.to<@U16>()))
             : continue
         c_find_close(find)
@@ -558,7 +558,7 @@ internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, Fs
     block open(wpath: @U16, access: U32, disposition: U32)
         h : Addr = c_create_file(wpath, access, FILE_SHARE_ALL, null, disposition,
             FILE_ATTRIBUTE_NORMAL, null)
-        branch invalid_handle(h)
+        branch is_invalid_handle(h)
             ? return(failed<Self>())
             : return(.Success(Self { handle: h, failed: false }))
 
@@ -640,7 +640,7 @@ routine FileHandle.sync_result(self: @Self) -> Result<Unit, FsError>
 routine FileHandle.close(self: @Self) -> Void
     block entry()
         h : Addr = self.handle.load()
-        branch invalid_handle(h)
+        branch is_invalid_handle(h)
             ? return()
             : continue
         c_close_handle(h)
@@ -778,7 +778,7 @@ private routine is_program_extension(e: Bytes) -> Bool
 /// Whether path can be read (it exists), written (it exists and isn't read-only), or run (a file named .exe, .com,
 /// .cmd, or .bat). Windows checks permissions only when a file is opened.
 #target(os: "windows")
-internal routine can_access(path: Bytes, access: Access) -> Bool
+internal routine is_accessible(path: Bytes, access: Access) -> Bool
     block entry()
         claim wpath : @Array<U16, PATH_CAPACITY> <- uninit
         branch wide_path(path, wpath.to<@U16>())
@@ -808,7 +808,7 @@ internal routine touch(path: Bytes) -> Result<Unit, FsError>
             : return(.Failure(path_error(path)))
         h : Addr = c_create_file(wpath.to<@U16>(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_ALL, null,
             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL.bitor(FILE_FLAG_BACKUP_SEMANTICS), null)
-        branch invalid_handle(h)
+        branch is_invalid_handle(h)
             ? return(failed<Unit>())
             : continue
         claim now : @FileTime <- FileTime { low: 0, high: 0 }
@@ -858,7 +858,7 @@ internal routine DirIter.open_path(self: @Self, path: Bytes) -> Result<Unit, FsE
         pattern.stride(at).store(0x2A)
         pattern.stride(at.add(1)).store(0)
         find : Addr = c_find_first_file(pattern, self.data.to<@Byte>())
-        branch invalid_handle(find)
+        branch is_invalid_handle(find)
             ? return(failed<Unit>())
             : continue
         self.find.store(find)
@@ -888,7 +888,7 @@ private routine is_dot_wide(name: @U16) -> Bool
 #target(os: "windows")
 routine DirIter.next(self: @Self) -> Option<DirEntry>
     block entry()
-        branch invalid_handle(self.find.load())
+        branch is_invalid_handle(self.find.load())
             ? return(.Absent)
             : continue
         branch self.pending.load()
@@ -920,7 +920,7 @@ routine DirIter.entry_metadata_result(self: @Self) -> Result<Metadata, FsError>
 routine DirIter.close(self: @Self) -> Void
     block entry()
         find : Addr = self.find.load()
-        branch invalid_handle(find)
+        branch is_invalid_handle(find)
             ? return()
             : continue
         c_find_close(find)
@@ -982,7 +982,7 @@ internal routine temp_dir(alloc: @Allocator) -> Result<Bytes, FsError>
             : return(owned_wide(units.to<@U16>(), got.to<USize>(), alloc))
 
     block fallback()
-        buffer : @Byte = allocate<Byte>(alloc, 15)
+        buffer : @Byte = allocate<Byte>(15, alloc)
         branch buffer.is_null()
             ? return(.Failure(FsError.OutOfMemory))
             : continue
@@ -1067,7 +1067,7 @@ internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result<Bytes,
             ? continue
             : return(.Failure(path_error(path)))
         h : Addr = query_handle(wpath.to<@U16>(), false)
-        branch invalid_handle(h)
+        branch is_invalid_handle(h)
             ? return(failed<Bytes>())
             : continue
         claim full : @Array<U16, PATH_CAPACITY> <- uninit
@@ -1087,10 +1087,10 @@ internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result<Bytes,
             .Failure(error) -> return(.Failure(error))
 
     block strip(t: Bytes)
-        branch t.starts_with("\\\\?\\UNC\\")
+        branch t.has_prefix("\\\\?\\UNC\\")
             ? unc(t)
             : continue
-        branch t.starts_with("\\\\?\\")
+        branch t.has_prefix("\\\\?\\")
             ? shift(t, 4, 0)
             : return(.Success(t))
 
@@ -1132,7 +1132,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
                 OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, null))
 
     block opened(h: Addr)
-        branch invalid_handle(h)
+        branch is_invalid_handle(h)
             ? finish(failed<Self>())
             : continue
         file.handle.store(h)

@@ -118,8 +118,8 @@ routine main() -> S32
   values first. `Slice<T>.empty()` (like `Bytes.empty()`) is the empty borrowed slice, the start value of a slot that
   a `finish` block destructs. `Array<T, N>` is the other run of values, its count in the type. Heap memory reaches your code as a
   `Slice` or `Bytes` that carries its allocator (or a type built on one). The raw layer under it,
-  `allocate<T>(alloc, count)` / `reallocate<T>` / `deallocate(alloc, p)`, is for node-based structures and C
-  interop. `@T` has no `free`. `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap), and
+  `allocate<T>(count, alloc)` / `reallocate<T>(p, count, alloc)` / `deallocate(p, alloc)`, is for node-based
+  structures and C interop. `@T` has no `free`. `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap), and
   `src.copy_into(dst, count)` is the same copy from the source's side. On a `@Array<T, N>` (or any type with its own
   `copy`) the type's routine wins, so generic code over `@T` uses `src.copy_into(dst, count)`.
 - **A plain copy copies ownership.** Copying a `Slice` or `Bytes` copies `alloc` with the address (no moves, no unique
@@ -633,11 +633,11 @@ always `Result`.
 | `Array<T, N>` | `Array<T, N> { a, b }` literal, `at`, `getitem`, `setitem`, `getslice`, `to<Slice<T>>`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
 | `List<T>` | `push`, `pop`, `getitem`, `setitem`, `getslice`, `to<Slice<T>>`, `clear`, `reserve` | index |
 | `CircularList<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `getitem`, `setitem` | front to back |
-| `Dict<K, V>` | `put`, `getitem`, `contains`, `remove` | **insertion order (guaranteed)** |
-| `Set<T>` | `add`, `contains`, `remove` | **insertion order (guaranteed)** |
-| `SortedDict<K, V>` | `put`, `getitem`, `contains`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
-| `SortedSet<T>` | `add`, `contains`, `remove`, `get_by_rank(rank)` | ascending |
-| `SortedList<T>` | `push` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `contains`, `remove(i)` (`T: Comparable<T>`) | ascending |
+| `Dict<K, V>` | `put`, `getitem`, `has_key`, `remove` | **insertion order (guaranteed)** |
+| `Set<T>` | `add`, `has`, `remove` | **insertion order (guaranteed)** |
+| `SortedDict<K, V>` | `put`, `getitem`, `has_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
+| `SortedSet<T>` | `add`, `has`, `remove`, `get_by_rank(rank)` | ascending |
+| `SortedList<T>` | `push` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `has`, `remove(i)` (`T: Comparable<T>`) | ascending |
 | `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Ordered<T>`) | none |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
@@ -666,7 +666,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 `wait_for(mutex, timeout_ns)` / `wait_until(mutex, deadline_ns)` returning whether it returned in time,
 `wake_one()` / `wake_all()`; a wait may return without a wake, so the waiter checks its condition again in a loop),
 `wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32`, and `monotonic_ns()`. `Standard::Fiber`'s `Scheduler`
-runs fibers over worker threads: `.construct(alloc, stacks, workers)` (0 = one per processor), then
+runs fibers over worker threads: `.construct(workers, stacks, alloc)` (0 = one per processor), then
 `spawn(routine, state, stack_size)` (generic over the state like `Thread.spawn`: the routine takes an `@S` and
 `state` is one, and so for `spawn_joinable` and `run_blocking`), `yield()` inside a fiber, `run()`
 until all return, `destruct()`. Pass `make_stack_allocator()` as `stacks` for guard pages. A fiber may move to
@@ -680,7 +680,7 @@ routine on them is one thing done there now, returning `Result<T, FsError>`, so 
 `open_read_result` / `open_write_result` / `open_append_result` / `open_read_write_result` / `create_new_result` give a
 `FileHandle` (claim it: `read_bytes_result`, `write_all_result`, `h.write("...")`, `seek_result`, `size_result`,
 `set_size_result`, `sync_result`, `close`, which leaves it empty, and `FileHandle.empty()` a handle to nothing whose
-`close` does nothing); `read_all_result(alloc)` / `write_all_result(data)`, `exists`,
+`close` does nothing); `read_all_result(alloc)` / `write_all_result(data)`, `is_present`,
 `metadata_result` (`kind`, `size`, times in ns), `copy_to_result`, `move_to_result`, `move_to_if_absent_result`,
 `delete_result`, `touch_result`, `map_result(write, offset, count)`, `name` / `stem` / `extension` / `parent`. A
 Directory: `create_result` / `create_all_result`, `delete_result` / `delete_all_result(alloc)`, `file(name, alloc)` /
@@ -772,6 +772,31 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 that `to<T>`, which would call itself there. It keeps the shape under its own name, `x.soft_to<F16>()`
 (Standard/SoftFloat), and a shim that only exists to be exported is named for its symbol (`export_truncsfhf2`).
 
+**The empty value: `.empty()` or `.zero()`.** A type's ready-made empty value (what a slot that `finish` releases
+starts as, the "nothing yet" of a record) is a typewise routine without arguments, named by what the type holds. A
+type that holds a pointer, directly or in a field (`Slice`, `Bytes`, `FileHandle`, `Mapping`, a collection, a record
+with a `@T` field), or an OS handle, has `.empty()`. A type with no pointer inside (numbers, records and vectors of
+numbers) has `.zero()`: `Vector<T, N>.zero()`. `Option<T>` keeps its case `.Absent`, and a bare pointer keeps the
+literal `null` (tested with `is_null()`), so there is no `none()`, `null()`, or `nothing()` routine. A default that
+isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
+
+**The allocator comes last.** A routine that takes an `@Allocator` takes it as its last parameter:
+`List<T>.construct(alloc)`, `Slice<T>.construct(count, alloc)`, `allocate<T>(count, alloc)`,
+`deallocate(p, alloc)`, `In.read_line(alloc)`, `Thread.spawn(routine, state, alloc)`. A second allocator for another
+job goes just before it (`Scheduler.construct(workers, stacks, alloc)`). So the form without the allocator
+(`construct()` with `Standard::Os`) is the same call with the last argument left off.
+
+**`Bool` routines: `is_` or `has_`.** A routine that answers a question names which kind: `is_` asks about a state of
+the value (`is_empty`, `is_null`, `is_finite`, `is_utf8`, `file.is_present()`, `file.is_accessible(access)`), and
+`has_` about what it contains (`set.has(x)`, `dict.has_key(k)`, `text.has(needle)`, `text.has_prefix(p)` /
+`has_suffix(s)`, `n.has_bit(i)`, `SliceWriter.has_overflowed()`). There are no bare predicates (`empty()`,
+`finite()`, `exists()`, `all()`), no `can_` / `should_`, and no `contains` / `starts_with`. A vector mask asks
+`is_all_true()`, `is_any_true()`, `is_none_true()`. A free routine with a family prefix keeps the prefix first
+(`f128_is_integer`, `ryu_is_multiple_of_pow5`). Not questions in this sense, so they keep their names: comparisons and
+range checks (`eq`, `lt`, `less`, `between`, `in_range`), an overflow test that goes with its operation
+(`mul_overflows`), and a routine that does something and says whether it worked (`Set.add`, `remove`, `try_lock`,
+`wait_for`). A `Bool` value in a block reads as a predicate too, but needs no prefix (`done`, `found`).
+
 **Name case.** Types, concepts, modules, and choice / variant cases are `PascalCase` (`FsError.NotFound`,
 `.Absent`), with acronyms written as words (`Eof`, `Utf8Decoded`, `Nan`). Routines, fields, blocks, and values are
 `snake_case`. Only presets and globals are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
@@ -796,7 +821,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array<T, N> <- { ... }`).
   nothing, so it has no `destruct()`, only `destruct_all()` for elements that own something.
 - Other ways to make a value are named for what they make: `Out.writer()`, `Bytes.from_ptr(p, n)`,
   `Option<T>.Absent`, `FormatSpec.zero_padded(6)`.
-- `deallocate(alloc, p)` (the raw layer) is not a destructor: it hands a block of memory back to its allocator.
+- `deallocate(p, alloc)` (the raw layer) is not a destructor: it hands a block of memory back to its allocator.
   `Slice<T>.destruct()` / `Bytes.destruct()` are the way to do it for memory that carries its allocator.
 
 ## Style

@@ -164,7 +164,7 @@ private routine close_if_open(h: Addr) -> Void
 /// memory).
 #target(os: "windows")
 private routine utf16(text: Bytes, alloc: @Allocator) -> (@U16, USize)
-    shared units : @U16 = allocate<U16>(alloc, text.count().add(1))
+    shared units : @U16 = allocate<U16>(text.count().add(1), alloc)
 
     block entry()
         branch units.is_null()
@@ -176,7 +176,7 @@ private routine utf16(text: Bytes, alloc: @Allocator) -> (@U16, USize)
             .Absent         -> failed()
 
     block failed()
-        deallocate(alloc, units)
+        deallocate(units, alloc)
         return({ null, 0 })
 
 // -- the command line --------------------------------------------------------------------
@@ -279,7 +279,7 @@ private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
     // A UTF-8 byte count bounds the UTF-16 unit count, so 2 * bytes + 3 units bound an argument and its space.
     block size(i: USize, capacity: USize)
         branch i.eq(arg_count)
-            ? made(allocate<U16>(alloc, capacity.add(1)))
+            ? made(allocate<U16>(capacity.add(1), alloc))
             : count_arg(i, capacity)
 
     block count_arg(i: USize, capacity: USize)
@@ -318,12 +318,12 @@ private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
 
     block quote(line: @U16, i: USize, units: @U16, n: USize)
         end : @U16 = quote_arg(units, n, at.load())
-        deallocate(alloc, units)
+        deallocate(units, alloc)
         end.store_into(at)
         jump append(line, i.add(1))
 
     block failed(line: @U16)
-        deallocate(alloc, line)
+        deallocate(line, alloc)
         return(null)
 
     block terminate(line: @U16)
@@ -420,14 +420,14 @@ private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Allo
             ? return(false)
             : continue
         copy_slot : @@U16 = out.stride(i.sub(1))
-        deallocate(alloc, copy_slot.load())
+        deallocate(copy_slot.load(), alloc)
         jump undo(i.sub(1))
 
 /// This process's environment with the overrides applied, as a sorted block, in memory from alloc: null on a
 /// failure.
 #target(os: "windows")
 private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
-    shared own : @@U16 = allocate<@U16>(alloc, options.env_count.max(1))
+    shared own : @@U16 = allocate<@U16>(options.env_count.max(1), alloc)
 
     block entry()
         branch own.is_null()
@@ -450,7 +450,7 @@ private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
             : count(parent, at.stride(units_of(at).add(1)), n.add(1))
 
     block collect(parent: @U16, n: USize)
-        all : @@U16 = allocate<@U16>(alloc, n.add(options.env_count).max(1))
+        all : @@U16 = allocate<@U16>(n.add(options.env_count).max(1), alloc)
         branch all.is_null()
             ? done(parent, null, null)
             : keep(parent, all, parent, 0)
@@ -464,7 +464,7 @@ private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
             ? add_own(parent, all, k, 0)
             : continue
         next : @U16 = at.stride(units_of(at).add(1))
-        branch overridden(at, own, options.env_count)
+        branch is_overridden(at, own, options.env_count)
             ? keep(parent, all, next, k)
             : continue
         all.stride(k).store(at)
@@ -498,7 +498,7 @@ private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
 
     block measure(parent: @U16, all: @@U16, total: USize, i: USize, units: USize)
         branch i.eq(total)
-            ? build(parent, all, total, allocate<U16>(alloc, units))
+            ? build(parent, all, total, allocate<U16>(units, alloc))
             : measure(parent, all, total, i.add(1),
                 units.add(units_of(all.stride(i).load())).add(1))
 
@@ -535,7 +535,7 @@ private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
             ? finish(result, all)
             : continue
         own_slot : @@U16 = own.stride(j)
-        deallocate(alloc, own_slot.load())
+        deallocate(own_slot.load(), alloc)
         jump release(all, result, j.add(1))
 
     // The arrays, each when it was made: own is null only when its allocation failed, and all is then null too.
@@ -543,16 +543,16 @@ private routine env_block(options: ProcessOptions, alloc: @Allocator) -> @U16
         branch own.is_null()
             ? return(result)
             : continue
-        deallocate(alloc, own)
+        deallocate(own, alloc)
         branch all.is_null()
             ? return(result)
             : continue
-        deallocate(alloc, all)
+        deallocate(all, alloc)
         return(result)
 
 /// Whether one of the m overrides ("NAME=VALUE" each) names the parent entry's variable.
 #target(os: "windows")
-private routine overridden(entry: @U16, own: @@U16, m: USize) -> Bool
+private routine is_overridden(entry: @U16, own: @@U16, m: USize) -> Bool
     block entry()
         jump look(0)
 
@@ -587,7 +587,7 @@ private record Handles
 
 /// No handles at all: what a run starts from, so closing them is right on every path.
 #target(os: "windows")
-private routine Handles.none() -> Self
+private routine Handles.empty() -> Self
     block entry()
         return(Self { out_r: null, out_w: null, err_r: null, err_w: null, input: null, output: null,
             error: null, device: null })
@@ -607,7 +607,7 @@ private routine read_pipe(r: @PipeReader) -> Void
         branch ok.bitand(n.load().gt(0))
             ? continue
             : return()
-        r.buffer.append(heap, chunk, n.load().to<USize>())
+        r.buffer.append(chunk, n.load().to<USize>(), heap)
         jump next(chunk)
 
 /// Closes this process's copies of the handles the child was given (its ends of the pipes, the null device, and any
@@ -661,7 +661,7 @@ private routine inherited(which: U32) -> Addr
 #target(os: "windows")
 private routine Handles.make(self: @Self, options: ProcessOptions, sa: @SecurityAttributes) -> Bool
     block entry()
-        self.store(Handles.none())
+        self.store(Handles.empty())
         null_in  : Bool = options.stdin.eq(InputMode.Null)
         null_out : Bool = options.stdout.eq(OutputMode.Null).bitor(options.stderr.eq(OutputMode.Null))
         branch null_in.bitor(null_out)
@@ -739,7 +739,7 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
     shared line : @U16                = command_line(program, args, arg_count, alloc)
     shared env  : @@U16               <- null
-    shared h    : @Handles            <- Handles.none()
+    shared h    : @Handles            <- Handles.empty()
     shared pi   : @ProcessInformation <- ProcessInformation { process: null, thread: null,
         process_id: 0, thread_id: 0 }
 
@@ -826,14 +826,14 @@ private routine free_texts(line: @U16, env: @U16, alloc: @Allocator) -> Void
         branch line.is_null()
             ? environment()
             : continue
-        deallocate(alloc, line)
+        deallocate(line, alloc)
         jump environment()
 
     block environment()
         branch env.is_null()
             ? return()
             : continue
-        deallocate(alloc, env)
+        deallocate(env, alloc)
         return()
 
 /// Reads standard output here and standard error on a helper thread when both are captured, and one alone here.
@@ -882,7 +882,7 @@ private routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @Allocator)
         branch ok.bitand(n.load().gt(0))
             ? continue
             : return()
-        buffer.append(alloc, chunk, n.load().to<USize>())
+        buffer.append(chunk, n.load().to<USize>(), alloc)
         jump next(chunk)
 
 /// What a helper thread captured on the malloc heap, copied into alloc (and the heap copy given back).
@@ -894,8 +894,8 @@ private routine moved(b: CaptureBuffer, alloc: @Allocator) -> Bytes
             : continue
         claim heap   : @Allocator     <- make_heap_allocator()
         claim copied : @CaptureBuffer <- CaptureBuffer.empty()
-        copied.append(alloc, b.data, b.count)
-        deallocate(heap, b.data)
+        copied.append(b.data, b.count, alloc)
+        deallocate(b.data, heap)
         return(copied.owned(alloc))
 
 // -- the environment ---------------------------------------------------------------------
@@ -921,7 +921,7 @@ routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
         branch need.eq(0)
             ? finish(.Present(Bytes { data: null, count: 0, alloc: alloc }))
             : continue
-        made : @U16 = allocate<U16>(alloc, need.to<USize>())
+        made : @U16 = allocate<U16>(need.to<USize>(), alloc)
         made.store_into(units)
         branch made.is_null()
             ? finish(.Absent)
@@ -941,5 +941,5 @@ routine env_var(name: Bytes, alloc: @Allocator) -> Option<Bytes>
         branch held.is_null()
             ? return(value)
             : continue
-        deallocate(alloc, held)
+        deallocate(held, alloc)
         return(value)
