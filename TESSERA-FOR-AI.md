@@ -381,10 +381,16 @@ routine main() -> S32
   `offset`, `to<@U>`, ...). Value methods (`self: Self`, such as every collection's `eq`) aren't reachable through a
   pointer, because that would hide a load: load first (`a.load().eq(b.load())`). Don't name your own pointer methods after `Ptr`'s.
 - **Collection methods that change the collection take `self: @Self`**, so it must live in memory (`claim` a
-  slot) before you call them. Read-only ones (`count`, `is_empty`, `getitem`, `contains`, `to<Slice<T>>`, ...) take
-  either: a claimed collection reads directly (`list.count()`), a value too. Value-only routines such as `eq` need
-  a load (`a.load().eq(b.load())`). You can't call a pointer method on a temporary: `DictIter<K, V>.construct(m).next()` fails with "has no
-  method 'next'"; claim a slot for the iterator first.
+  slot) before you call them. **Read-only ones come in both receiver forms**: next to the `self: Self` routine, a
+  `self: @Self` one that forwards to it (`return(self.load().m(...))`, or reads the fields), so a slot or a field
+  reads directly (`list.count()`, `primes.to<Slice<U32>>()`, `line.find("=")` on a claimed `Bytes`, `w.to<Bytes>()`
+  on a `SliceWriter`) and a value too. This holds for the collections, `Slice`, and `Bytes`; a type of your own
+  that people keep in slots does the same for the reads they call there. It's never automatic, and three kinds stay
+  value-only because `@T` has its own: `eq` / `compare` / `hash` (a pointer compares only through `ptr_eq`, so
+  `a.load().eq(b.load())`), `represent_into` / `diagnose_into` (`{p}` writes a pointer's address, so
+  `{list.load()}`), and a generic `to<T>` (it would hide `Ptr`'s `to<@U>`). You can't call a pointer method on a
+  temporary: `DictIter<K, V>.construct(m).next()` fails with "has no method 'next'"; claim a slot for the iterator
+  first.
 - Generic routines repeat their constraints: `require T: typename, Comparable<T>`. Concepts: `Equatable`, `Hashable`,
   `HashEquatable`, `Comparable`, `Ordered`, `Destructible`, `Representable`, `Diagnosable`, `Parsable` (a
   capability is an `-able` adjective), and the roles `Iterator`, `Reader`, `Writer`. Constraints are checked: a type satisfies a
@@ -616,7 +622,10 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 - Every routine with a body starts with `block entry()` (after its head's `shared` lines, if it has any), which
   takes no parameters. A routine without blocks must be `#external`.
 
-**Threads and fibers.** `Standard::Os` has `Thread.spawn(routine, state, alloc)` / `join()`, `Mutex`
+**Threads and fibers.** `Standard::Os` has `Thread.spawn(routine, state, alloc)` (or without `alloc`, on
+`DEFAULT_HEAP`) / `join()` / `detach()`, generic over the state: the routine takes an `@S` and `state` is one
+(`routine work(job: @Job) -> Void`, then `Thread.spawn(work.to<Callable>(), job)`), so nothing converts through
+`Addr`; a thread with no state of its own is handed the global it works on. `Mutex`
 (`lock` / `unlock` / `try_lock`), `Condition` (a condition variable for a Mutex: `wait(mutex)`,
 `wait_for(mutex, timeout_ns)` / `wait_until(mutex, deadline_ns)` returning whether it returned in time,
 `wake_one()` / `wake_all()`; a wait may return without a wake, so the waiter checks its condition again in a loop),

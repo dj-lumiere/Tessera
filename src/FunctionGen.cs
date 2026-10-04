@@ -2006,6 +2006,14 @@ public sealed class FunctionGen
                 if (t.Args[1] is TypeArgType { Type: { Args.Count: 0 } n } && unbound.Contains(n.Name) && !env.Has(n.Name))
                     env.Bind(n.Name, new ConstArg(a.Count));
                 break;
+            case CallableType ct when t.Name == "Callable"
+                                      && t.Args.Where(a => a is not TypeArgAttr).ToList() is [TypeArgTuple ps, TypeArgType ret]
+                                      && ps.Types.Count == ct.Params.Count:
+                // `Callable<(@S,), Void>` against a routine value: its parameter types (and a non-Void return type)
+                // bind the type parameters they mention, so `Thread.spawn(work.to<Callable>(), state)` needn't say S.
+                for (int i = 0; i < ps.Types.Count; i++) Unify(ps.Types[i], ct.Params[i], env, unbound);
+                if (ct.Ret is not VoidType) Unify(ret.Type, ct.Ret, env, unbound);
+                break;
             case VectorType vt when t.Name == "Vector" && t.Args.Count == 2:
                 if (t.Args[0] is TypeArgType ve) Unify(ve.Type, vt.Elem, env, unbound);
                 if (t.Args[1] is TypeArgType { Type: { Args.Count: 0 } vn } && unbound.Contains(vn.Name) && !env.Has(vn.Name))
