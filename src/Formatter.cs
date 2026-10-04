@@ -629,8 +629,13 @@ public static class Formatter
     private static bool IsOpenAngle(string s, int i) => s[i] == '<' && !(i + 1 < s.Length && s[i + 1] == '-');
 
     /// The first `(`, `[`, or `{` group at the line's top level whose own depth holds a comma: its bounds and commas.
+    /// A type is never broken: nothing inside angle brackets (`Callable<(Addr,), Void>`) is a candidate, and outside an
+    /// attribute (whose `("linux", "macos")` is a list of values) a `(` that doesn't follow a name opens a tuple type
+    /// (`-> (U64, U64)`, `q : (S64, S64) = ...`), skipped whole.
     private static (int Open, int Close, List<int> Commas)? FirstCommaList(string s)
     {
+        bool attribute = s.TrimStart().StartsWith('#');
+        int outerAngle = 0;
         for (int i = 0; i < s.Length; i++)
         {
             char c = s[i];
@@ -640,7 +645,17 @@ public static class Formatter
                 continue;
             }
             if (c == '/' && i + 1 < s.Length && s[i + 1] == '/') return null;
-            if (c is not ('(' or '[' or '{')) continue;
+            if (IsAngle(s, i, out int outerStep))
+            {
+                outerAngle = Math.Max(0, outerAngle + outerStep);
+                continue;
+            }
+            if (outerAngle > 0 || c is not ('(' or '[' or '{')) continue;
+            if (c == '(' && !attribute && !FollowsName(s, i))
+            {
+                i = GroupEnd(s, i);
+                continue;
+            }
             var commas = new List<int>();
             int depth = 0, angle = 0, j = i;
             for (; j < s.Length; j++)
@@ -663,6 +678,25 @@ public static class Formatter
             if (j < s.Length && commas.Count > 0) return (i, j, commas);
         }
         return null;
+    }
+
+    /// Whether the `(` at i follows a name, as a call's or a routine's argument list does (`f(`, `.to<U8>(`,
+    /// `` `block`( ``), rather than opening a tuple type.
+    private static bool FollowsName(string s, int i) =>
+        i > 0 && (char.IsLetterOrDigit(s[i - 1]) || s[i - 1] is '_' or '>' or '`');
+
+    /// The index of the bracket closing the group opened at i, or the line's last index when it doesn't close there.
+    private static int GroupEnd(string s, int i)
+    {
+        int depth = 0;
+        for (int j = i; j < s.Length; j++)
+        {
+            char d = s[j];
+            if (d is '"' or '\'') j = SkipLiteral(s, j);
+            else if (d is '(' or '[' or '{') depth++;
+            else if (d is ')' or ']' or '}' && --depth == 0) return j;
+        }
+        return s.Length - 1;
     }
 
     // ── Joining ─────────────────────────────────────────────────────────
