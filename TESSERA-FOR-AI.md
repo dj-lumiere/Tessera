@@ -641,7 +641,7 @@ always `Result`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array<T, COUNT>` | `Array<T, COUNT> { a, b }` literal, `at`, `getitem`, `setitem`, `getslice`, `to<Slice<T>>`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
+| `Array<T, COUNT>` | `Array<T, COUNT> { a, b }` literal, `at`, `getitem` (on a value or a pointer: `Array<U64, 3> { 2, 3, 5 }.getitem(i)`), `setitem`, `getslice`, `to<Slice<T>>`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
 | `List<T>` | `push`, `pop`, `getitem`, `setitem`, `getslice`, `to<Slice<T>>`, `clear`, `reserve` | index |
 | `CircularList<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `getitem`, `setitem` | front to back |
 | `Dict<TKey, TValue>` | `put`, `getitem`, `has_key`, `remove` | **insertion order (guaranteed)** |
