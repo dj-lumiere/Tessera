@@ -1,0 +1,54 @@
+// Fibers without an operating system: start switches to a fiber on a stack of its own (a global array), the fiber
+// counts and switches back, three times, and start adds up what it counted. There is no scheduler here (it needs
+// threads), only Standard::Fiber's switch_stack and initial_stack, which a board's own cooperative loop is built
+// on. CI builds it for the targets without an OS that have fiber switches (32-bit ARM's Cortex-M, AArch64, x86_64),
+// links it with tests/freestanding/<target>.ld, and checks that nothing is left undefined (see
+// freestanding_fiber.arch: it never runs here).
+
+import Standard::Fiber
+
+global MAIN_SP: @Addr
+global FIBER_SP: @Addr
+global STEPS: @U32
+global TOTAL: @U32
+
+/// The fiber's stack: 4 KiB.
+global FIBER_STACK: @Array<U64, 512>
+
+/// Halts on a crash: there's nowhere to print and nothing to exit to.
+#[export("tessera_crash_handler"), noreturn]
+routine halt(name: Bytes, message: Bytes, place: @SourceLocation) -> Void
+    block entry()
+        jump spin()
+
+    block spin()
+        jump spin()
+
+/// The fiber: counts a step and switches back to start, forever.
+#noreturn
+routine fiber_main() -> Void
+    block entry()
+        jump step()
+
+    block step()
+        STEPS.load().add(1).store_into(STEPS)
+        switch_stack(FIBER_SP, MAIN_SP.load())
+        jump step()
+
+/// Switches to the fiber three times and keeps the sum of the steps it had counted after each.
+routine start() -> Void
+    shared size : USize = sizeof<Array<U64, 512>>()
+
+    block entry()
+        sp : Addr = initial_stack(FIBER_STACK, size, fiber_main.to<Callable>().addr())
+        sp.store_into(FIBER_SP)
+        jump round(0)
+
+    block round(i: U32)
+        done : Bool = i.eq(3)
+        branch done
+            ? return()
+            : continue
+        switch_stack(MAIN_SP, FIBER_SP.load())
+        TOTAL.load().add(STEPS.load()).store_into(TOTAL)
+        jump round(i.add(1))

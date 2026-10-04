@@ -6,9 +6,10 @@
 // starts with a frame laid out the same way, whose return address is the
 // fiber's first routine (initial_stack).
 //
-// It is written for System V and Windows x86-64 and for AArch64 outside
-// Windows. On any other target a program that switches fibers fails to link,
-// on tessera_fibers_unsupported_on_this_target.
+// It is written for System V and Windows x86-64, for AArch64 outside Windows,
+// and for 32-bit ARM, ARM and Thumb code alike (Cortex-M included, with or
+// without a floating-point unit). On any other target a program that switches
+// fibers fails to link, on tessera_fibers_unsupported_on_this_target.
 
 module Standard::Fiber
 
@@ -131,11 +132,54 @@ routine switch_stack(from: @Addr = R0, to: Addr = R1) -> Void
         ldp<F64, F64, U64>(V8, V9, SP.after_offset(16))  // ldp d8, d9, [sp], #16
         return()  // ret
 
+/// 32-bit ARM with a floating-point unit, ARM or Thumb code: from arrives in R0, to in R1. R4 to R11, the link
+/// register (the return address) and D8 to D15 are the caller's.
+/// :param from: Where the current stack pointer is saved.
+/// :param to: The stack pointer to resume.
+#[target(arch: "arm"), feature("vfp2sp"), external("asm"), naked]
+routine switch_stack(from: @Addr = R0, to: Addr = R1) -> Void
+    block entry()
+        push<U32>({ R4, R5, R6, R7, R8, R9, R10, R11, LR })  // push {r4-r11, lr}
+        vpush<F64>({ D8, D9, D10, D11, D12, D13, D14, D15 })  // vpush {d8-d15}
+        mov<U32, U32>(R2, SP)  // mov r2, sp
+        str<U32, U32>(R2, from.offset(0))  // str r2, [r0]
+        mov<U32, U32>(SP, to)  // mov sp, r1
+        vpop<F64>({ D8, D9, D10, D11, D12, D13, D14, D15 })  // vpop {d8-d15}
+        pop<U32>({ R4, R5, R6, R7, R8, R9, R10, R11, LR })  // pop {r4-r11, lr}
+        return()  // bx lr
+
+/// 32-bit ARM without a floating-point unit: from arrives in R0, to in R1. R4 to R11 and the link register (the
+/// return address) are the caller's. ARMv6-M (Cortex-M0, M0+, M1) pushes and pops only R0 to R7 and LR, so R8 to R11
+/// go through R4 to R7, which works on every core.
+/// :param from: Where the current stack pointer is saved.
+/// :param to: The stack pointer to resume.
+#[target(arch: "arm"), feature(not "vfp2sp"), external("asm"), naked]
+routine switch_stack(from: @Addr = R0, to: Addr = R1) -> Void
+    block entry()
+        push<U32>({ R4, R5, R6, R7, LR })  // push {r4-r7, lr}
+        mov<U32, U32>(R4, R8)  // mov r4, r8
+        mov<U32, U32>(R5, R9)  // mov r5, r9
+        mov<U32, U32>(R6, R10)  // mov r6, r10
+        mov<U32, U32>(R7, R11)  // mov r7, r11
+        push<U32>({ R4, R5, R6, R7 })  // push {r4-r7}: r8 to r11
+        mov<U32, U32>(R2, SP)  // mov r2, sp
+        str<U32, U32>(R2, from.offset(0))  // str r2, [r0]
+        mov<U32, U32>(SP, to)  // mov sp, r1
+        pop<U32>({ R4, R5, R6, R7 })  // pop {r4-r7}: r8 to r11
+        mov<U32, U32>(R8, R4)  // mov r8, r4
+        mov<U32, U32>(R9, R5)  // mov r9, r5
+        mov<U32, U32>(R10, R6)  // mov r10, r6
+        mov<U32, U32>(R11, R7)  // mov r11, r7
+        pop<U32>({ R4, R5, R6, R7 })  // pop {r4-r7}
+        pop<U32>({ R2 })  // pop {r2}: the return address
+        mov<U32, U32>(LR, R2)  // mov lr, r2
+        return()  // bx lr
+
 /// Every other target: a program that switches fibers fails to link, naming why.
 /// :param from: Where the current stack pointer would be saved.
 /// :param to: The stack pointer to resume.
 #[external("c"), symbol("tessera_fibers_unsupported_on_this_target"),
-    target(arch: not ("x86_64", "aarch64"))]
+    target(arch: not ("x86_64", "aarch64", "arm"))]
 routine switch_stack(from: @Addr, to: Addr) -> Void
 
 /// Declared for a target without fiber support: a program that switches fibers fails to link, naming the unsupported
@@ -164,23 +208,38 @@ private record PageRange
 
 /// The words a new stack starts with, below its 16-byte aligned top, as switch_stack restores them: the saved
 /// registers (zero), the fiber's first routine where switch_stack returns, and on x86 the room above a return
-/// address that a routine's entry expects (its own return address slot, and Windows' 32-byte home area).
-/// :returns: The number of 8-byte words.
+/// address that a routine's entry expects (its own return address slot, and Windows' 32-byte home area). A word is
+/// a USize: 8 bytes, 4 on 32-bit ARM.
+/// :returns: The number of words.
 #target(arch: "x86_64", os: not "windows")
 private routine frame_words() -> USize
     block entry()
         return(8)
 
 /// How many words the starting frame of a new stack holds on this target.
-/// :returns: The number of 8-byte words.
+/// :returns: The number of words.
 #target(arch: "x86_64", os: "windows")
 private routine frame_words() -> USize
     block entry()
         return(38)
 
+/// How many words the starting frame of a new stack holds on this target: D8 to D15 (16 words), R4 to R11, and LR.
+/// :returns: The number of words.
+#[target(arch: "arm"), feature("vfp2sp")]
+private routine frame_words() -> USize
+    block entry()
+        return(25)
+
+/// How many words the starting frame of a new stack holds on this target: R8 to R11, R4 to R7, and LR.
+/// :returns: The number of words.
+#[target(arch: "arm"), feature(not "vfp2sp")]
+private routine frame_words() -> USize
+    block entry()
+        return(9)
+
 /// How many words the starting frame of a new stack holds on this target.
-/// :returns: The number of 8-byte words.
-#target(arch: not "x86_64")
+/// :returns: The number of words.
+#target(arch: not ("x86_64", "arm"))
 private routine frame_words() -> USize
     block entry()
         return(20)
@@ -199,9 +258,23 @@ private routine entry_word() -> USize
     block entry()
         return(32)
 
+/// Which word of the starting frame a new stack's first routine goes in: LR, above D8 to D15 and R4 to R11.
+/// :returns: The word index from the frame's start.
+#[target(arch: "arm"), feature("vfp2sp")]
+private routine entry_word() -> USize
+    block entry()
+        return(24)
+
+/// Which word of the starting frame a new stack's first routine goes in: LR, above R8 to R11 and R4 to R7.
+/// :returns: The word index from the frame's start.
+#[target(arch: "arm"), feature(not "vfp2sp")]
+private routine entry_word() -> USize
+    block entry()
+        return(8)
+
 /// Which word of the starting frame a new stack's first routine goes in: where switch_stack returns.
 /// :returns: The word index from the frame's start.
-#target(arch: not "x86_64")
+#target(arch: not ("x86_64", "arm"))
 private routine entry_word() -> USize
     block entry()
         return(1)
@@ -223,12 +296,12 @@ private routine c_virtual_query(addr: Addr, info: @PageRange, length: USize) -> 
 /// :param limit: The bottom of the stack (unused here, VirtualQuery gives the limit).
 /// :param base: The top of the stack.
 #target(arch: "x86_64", os: "windows")
-private routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
+private routine store_bounds(sp: @USize, limit: USize, base: USize) -> Void
     block entry()
         claim info : @PageRange <- uninit
-        c_virtual_query(inttoptr<U64, Addr>(base.sub(1)), info, 48)
-        ptrtoint<Addr, U64>(info.allocation_base.load()).store_into(sp.stride(21))
-        ptrtoint<Addr, U64>(info.base.load()).store_into(sp.stride(22))
+        c_virtual_query(inttoptr<USize, Addr>(base.sub(1)), info, 48)
+        ptrtoint<Addr, USize>(info.allocation_base.load()).store_into(sp.stride(21))
+        ptrtoint<Addr, USize>(info.base.load()).store_into(sp.stride(22))
         base.store_into(sp.stride(23))
         return()
 
@@ -238,7 +311,7 @@ private routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
 /// :param limit: The bottom of the stack.
 /// :param base: The top of the stack.
 #target(arch: not "x86_64")
-private routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
+private routine store_bounds(sp: @USize, limit: USize, base: USize) -> Void
     block entry()
         return()
 
@@ -248,7 +321,7 @@ private routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
 /// :param limit: The bottom of the stack.
 /// :param base: The top of the stack.
 #target(arch: "x86_64", os: not "windows")
-private routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
+private routine store_bounds(sp: @USize, limit: USize, base: USize) -> Void
     block entry()
         return()
 
@@ -258,10 +331,11 @@ private routine store_bounds(sp: @U64, limit: U64, base: U64) -> Void
 /// :param entry: The address of the routine the new stack starts in.
 /// :returns: The stack pointer to pass to {switch_stack}.
 routine initial_stack(stack: Addr, size: USize, entry: Addr) -> Addr
-    shared bottom : U64   = ptrtoint<Addr, U64>(stack)
-    shared top    : U64   = bottom.add(size.to<U64>()).bitand(0xFFFFFFFFFFFFFFF0)
-    shared frame  : USize = frame_words()
-    shared sp     : @U64  = inttoptr<U64, @U64>(top.sub(frame.mul(8).to<U64>()))
+    shared bottom : USize  = ptrtoint<Addr, USize>(stack)
+    shared end    : USize  = bottom.add(size)
+    shared top    : USize  = end.sub(end.bitand(15))
+    shared frame  : USize  = frame_words()
+    shared sp     : @USize = inttoptr<USize, @USize>(top.sub(frame.mul(sizeof<USize>())))
 
     block entry()
         jump clear(0)
@@ -277,7 +351,7 @@ routine initial_stack(stack: Addr, size: USize, entry: Addr) -> Addr
         jump clear(i.add(1))
 
     block fill()
-        sp.stride(entry_word()).store(ptrtoint<Addr, U64>(entry))
+        sp.stride(entry_word()).store(ptrtoint<Addr, USize>(entry))
         store_bounds(sp, bottom, top)
         at : Addr = sp
         return(at)

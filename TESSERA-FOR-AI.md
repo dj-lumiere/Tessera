@@ -690,7 +690,9 @@ until all return, `destruct()`. Pass `make_stack_allocator()` as `stacks` for gu
 another thread at a yield. A call that may block goes through `sched.run_blocking(routine, state)`, or
 `sched.read` / `sched.write`, so the worker runs other fibers meanwhile. A fiber waits without holding its worker
 with `park()` (until `wake(handle)`, the handle from `current()`; it may return early, so loop on the condition),
-`sleep(ns)`, or `join(j)` on a fiber from `spawn_joinable` (every `Join` is joined once). Fibers run on x86_64 and AArch64 (not on Windows) only.
+`sleep(ns)`, or `join(j)` on a fiber from `spawn_joinable` (every `Join` is joined once). Fibers run on System V and Windows x86-64 (where the switch moves the thread
+block's stack fields with the stack), AArch64 outside Windows, and 32-bit ARM (ARM and Thumb code, Cortex-M included).
+On any other target a program that switches fibers fails to link (`tessera_fibers_unsupported_on_this_target`).
 
 **Files.** `File.at(path)` and `Directory.at(path)` are paths (`Bytes`, UTF-8; the W calls on Windows); each
 routine on them is one thing done there now, returning `Result<T, FsError>`, so each is a `_result` form. A File:
@@ -720,7 +722,8 @@ gives it back (and does nothing for a literal path).
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
 `x86_64-none-elf`) gets everything but `Standard::Os`: Core, Format (into a `SliceWriter` or `List<Byte>`), Alloc, and
 Collections all check there. `Standard::Os` drops out of the build, so importing it or naming anything in it is one
-build error ("Standard::Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, Fiber,
+build error ("Standard::Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, fiber `Scheduler` (`Standard::Fiber`'s
+`switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
 `make_heap_allocator`, `DEFAULT_HEAP`, or `construct()` without an allocator. The program exports its own crash handler (`#[export("tessera_crash_handler"), noreturn]`, which
 may loop forever), passes its own `Allocator` if it allocates, and brings its link script. A program that defines `start` gets its
 entry from the builder: `_start` (on Cortex-M also a vector table in section `.isr_vector`, its first word

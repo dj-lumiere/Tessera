@@ -180,6 +180,15 @@ jobs:
       - name: Check the stdlib
         run: dotnet bin/Release/net10.0/tessera.dll check --target ${{ matrix.target }}
 
+      # The fiber tests can't run here, but they build: switch_stack's assembly (ARM code for arm-linux-gnueabihf)
+      # goes through the assembler, and nothing else in them is target-specific.
+      - name: Build the fiber tests to objects
+        run: |
+          for test in fiber_scheduler fiber_workers fiber_wait fiber_io; do
+            dotnet bin/Release/net10.0/tessera.dll build --target ${{ matrix.target }} --emit-llvm tests/$test.tess -o "$test.ll"
+            clang --target=${{ matrix.target }} -c -Wno-override-module "$test.ll" -o "$test.o"
+          done
+
   # Targets without an operating system: the stdlib checks there (Standard::Os drops out), and the programs built for
   # one (tests/freestanding, and tests/freestanding_float, which uses every float operation and integer division; the
   # golden run skips both) leave nothing undefined: no C++ unwinding personality (every routine is nounwind), and no
@@ -187,7 +196,8 @@ jobs:
   # memmove, memcmp, ARM's __aeabi_mem*, and Standard/SoftFloat's runtime there). Both define start, so the builder
   # writes their entry (_start, and on Cortex-M the vector table), and each is linked with the link script for its
   # target (tests/freestanding/<target>.ld), which defines the symbols that entry uses. 32-bit ARM builds for a
-  # Cortex-M CPU, since the generated entry there is a Cortex-M reset vector.
+  # Cortex-M CPU, since the generated entry there is a Cortex-M reset vector. The targets with a fiber switch (all but
+  # RISC-V) also build tests/freestanding_fiber, which switches to a fiber on a stack of its own and back.
   freestanding:
     name: freestanding (${{ matrix.target }})
     runs-on: ubuntu-latest
@@ -198,15 +208,18 @@ jobs:
           - target: arm-none-eabi
             clang-target: thumbv7m-none-eabi
             cpu: cortex-m3
+            fibers: freestanding_fiber
           - target: riscv32-none-elf
             clang-target: riscv32-unknown-elf
             rng-feature: zkr
           - target: aarch64-none-elf
             clang-target: aarch64-unknown-none-elf
             rng-feature: rand
+            fibers: freestanding_fiber
           - target: x86_64-none-elf
             clang-target: x86_64-unknown-none-elf
             rng-feature: rdrnd
+            fibers: freestanding_fiber
 
     steps:
       - name: Checkout
@@ -252,7 +265,8 @@ jobs:
         run: |
           cpu=""
           if [ -n "${{ matrix.cpu }}" ]; then cpu="--cpu ${{ matrix.cpu }}"; fi
-          for program in freestanding freestanding_float; do
+          # tests/freestanding_fiber switches stacks with Standard::Fiber's switch_stack, which RISC-V doesn't have.
+          for program in freestanding freestanding_float ${{ matrix.fibers }}; do
             for mode in debug release; do
               ll="$program-$mode.ll"
               obj="$program-$mode.o"
