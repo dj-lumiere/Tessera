@@ -856,7 +856,7 @@ public static class Formatter
         int firstOther = units.FindIndex(u => u.Kind is not (DeclKind.Module or DeclKind.Import));
         if (firstOther >= 0 && units.Skip(firstOther).Any(u => u.Kind is DeclKind.Module or DeclKind.Import)) return lines;
 
-        // Order each section; the entry routines go to the very end.
+        // Order each section, and put the entry routines at the very end.
         var sections = new List<List<DeclChunk>> { new() };
         foreach (var u in units)
         {

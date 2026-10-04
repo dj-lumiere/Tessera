@@ -128,8 +128,8 @@ public sealed partial class Compiler
             throw new CompileError(start.Pos,
                 $"on 32-bit ARM without an operating system the generated entry is a Cortex-M reset vector, and the build's CPU ({cpu.Cpu}) " +
                 "isn't an M-profile one: pass --cpu cortex-m3 (or the board's Cortex-M), or bring your own entry instead of start");
-        // Whether the code runs from flash, so .data's first values are copied from their load address into RAM; and
-        // the FPU, turned on when the build may use it.
+        // Whether the code runs from flash, so .data's first values are copied from their load address into RAM, and
+        // whether there is an FPU the build may use, which is turned on.
         bool fromFlash = Target.Arch is "arm" or "riscv32";
         bool fpu = Target.Arch switch
         {

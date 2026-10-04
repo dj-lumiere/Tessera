@@ -342,7 +342,7 @@ static class Cli
         }
     }
 
-    /// Compiles the inputs to LLVM IR. An executable needs `routine start() -> Void`; checking for it here gives a
+    /// Compiles the inputs to LLVM IR. An executable needs `routine start() -> Void`. Checking for it here gives a
     /// clear error instead of the platform linker's (lld-link says "subsystem must be defined").
     /// <paramref name="trace"/>: whether the program keeps the crash trace, or null for the mode's default.
     /// <paramref name="heapCheck"/>: whether the default heap crashes on a block freed twice (`[debug] heap-check`).
