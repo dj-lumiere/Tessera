@@ -114,9 +114,10 @@ routine main() -> S32
   interop. `@T` has no `free`.
 - **A plain copy copies ownership.** Copying a `Slice` or `Bytes` copies `alloc` with the address (no moves, no unique
   owner), so either copy can free the memory: destruct exactly one, and hand out `getview()` where the receiver only
-  reads or writes. In a debug build (`--mode debug`, the default) `DEFAULT_HEAP` keeps a header in front of each
-  block and crashes with `DoubleFreeError` at the line of a second `destruct()` of the same block (a quarantine of the
-  last 256 freed blocks keeps that sure); the other modes are plain malloc / free.
+  reads or writes. With `[debug] heap-check = true` in config.toml (any build mode, off by default, always on under
+  `tessera test`) `DEFAULT_HEAP` keeps a header in front of each block and crashes with `DoubleFreeError` at the line
+  of a second `destruct()` of the same block (a quarantine of the last 256 freed blocks keeps that sure); with it off
+  it is plain malloc / free, and so is a single-file build without a manifest. Debug and release behave the same.
 - **The default heap comes with `Standard::Os`**, like `Out`: there `DEFAULT_HEAP` is an `@Allocator` ready before
   `main` (`make_heap_allocator()` gives the same one), and every collection and `Slice` gets a `construct` without
   the allocator (`List<S64>.construct()`, `Slice<U8>.construct(n)`). Memory C frees or reallocates, or memory from C's

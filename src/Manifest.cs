@@ -27,6 +27,9 @@ namespace Tessera;
 /// emit-llvm = true                    # keep the IR next to the output
 /// trace = false                       # leave out the crash trace (default: kept in debug and release,
 ///                                     # left out in release-time and release-space)
+/// heap-check = true                   # the default heap crashes on a block freed twice (DoubleFreeError), in
+///                                     # every mode (default: off, plain malloc and free; `tessera test` always
+///                                     # turns it on)
 /// ```
 ///
 /// The build is the entry file and what it imports, found as RazorForge finds modules: the files under the
@@ -62,6 +65,10 @@ public sealed record Manifest(
     /// Whether the build keeps the crash trace: `[debug] trace`, else the mode's default.
     public bool Traced => Trace ?? Mode.TracedByDefault();
 
+    /// `[debug] heap-check`: whether the default heap checks every free and crashes on a block freed twice. Off unless
+    /// the manifest turns it on, whatever the mode, so debug and release builds behave the same.
+    public bool HeapCheck { get; init; }
+
     /// Where the build writes its output: `build/` next to the manifest.
     public string OutputDirectory => System.IO.Path.Combine(Directory, "build");
 
@@ -83,7 +90,7 @@ public sealed record Manifest(
     {
         ["package"] = ["name", "version", "description", "authors", "license", "repository", "tessera-version"],
         ["target"] = ["executable", "triple", "cpu", "features", "mode", "library", "sources", "c-libraries", "library-paths", "link-script"],
-        ["debug"] = ["emit-llvm", "trace"],
+        ["debug"] = ["emit-llvm", "trace", "heap-check"],
     };
 
     /// <paramref name="defaultTarget"/> is the triple used when [target] names none (the host if null).
@@ -163,7 +170,12 @@ public sealed record Manifest(
             Strs(target, "c-libraries", path) ?? [],
             (Strs(target, "library-paths", path) ?? []).Select(Resolve).ToList(),
             linkScript,
-            Bool(debug, "emit-llvm", path) ?? false) { Roots = roots, Trace = Bool(debug, "trace", path) };
+            Bool(debug, "emit-llvm", path) ?? false)
+        {
+            Roots = roots,
+            Trace = Bool(debug, "trace", path),
+            HeapCheck = Bool(debug, "heap-check", path) ?? false,
+        };
     }
 
     /// The entry and every file the build needs from the roots: those declaring a module the entry imports, then

@@ -30,6 +30,9 @@ static class Cli
         <trace>: --no-trace leaves out the crash trace (the program's routines on the crash report), --trace keeps it.
                  Without either, debug and release builds keep it and release-time and release-space leave it out;
                  check keeps it. A routine marked #untraced is left out of it in any build.
+        heap check: with [debug] heap-check = true in config.toml the default heap checks every free and crashes with
+                 DoubleFreeError at the line that frees a block a second time, in every mode. It is off otherwise
+                 (a build without a manifest too), except that test always turns it on. check checks both sides.
         <target>: --target <arch-os-abi> (default: this machine), --cpu <name> (default: the triple's baseline, such
                   as x86-64 v1), --feature <name>[,<name>...] (a leading - removes one). #feature reads the result.
 
@@ -278,15 +281,39 @@ static class Cli
             files.Add(args[i]);
         }
         var target = targetArgs.Build();
-        var decls = LoadDecls([.. files], target);
-        var compiler = new Compiler(target, decls, trace ?? true, debugChecks: true);
-        var errors = compiler.CheckAll();
+        // Both sides of the heap-check selection: the #heap_check("on") declarations and the #heap_check("off") ones.
+        // An error both sides share is reported once.
+        var errors = new List<CompileError>();
+        var reported = new HashSet<string>();
+        var checkedSides = new List<(string Name, Compiler Compiler)>();
+        List<Decl>? ownDecls = null;
+        int instances = 0;
+        foreach (bool heapCheck in new[] { true, false })
+        {
+            var decls = LoadDecls([.. files], target);
+            ownDecls ??= decls;
+            var compiler = new Compiler(target, decls, trace ?? true, heapCheck);
+            foreach (var e in compiler.CheckAll())
+                if (reported.Add(e.Message)) errors.Add(e);
+            instances += compiler.InstanceCount;
+            checkedSides.Add((heapCheck ? "heap check on" : "heap check off", compiler));
+        }
         foreach (var e in errors) Console.Error.WriteLine(e.Message);
-        if (errors.Count == 0) Lint(decls, files);
-        Console.Error.WriteLine($"{compiler.InstanceCount} routine instance(s) checked, {errors.Count} error(s)");
+        if (errors.Count == 0) Lint(ownDecls!, files);
+        Console.Error.WriteLine($"{instances} routine instance(s) checked (heap check on and off), {errors.Count} error(s)");
         if (errors.Count > 0) return 1;
 
         // The IR must also be valid for LLVM: compile it to an object file and throw that away.
+        foreach (var (name, compiler) in checkedSides)
+            if (!LlvmAccepts(compiler, target, name)) return 1;
+        Console.Error.WriteLine("LLVM accepted the IR");
+        return 0;
+    }
+
+    /// Whether clang compiles the checked IR to an object file, which is thrown away. Prints LLVM's complaint, and
+    /// keeps the IR, when it doesn't.
+    private static bool LlvmAccepts(Compiler compiler, BuildTarget target, string side)
+    {
         string ll = Path.ChangeExtension(TempExe(), ".ll"), obj = Path.ChangeExtension(ll, ".o");
         File.WriteAllText(ll, compiler.Output());
         try
@@ -299,12 +326,11 @@ static class Cli
             p.WaitForExit();
             if (p.ExitCode != 0)
             {
-                Console.Error.WriteLine($"LLVM rejected the IR (kept at {ll}):\n{err}");
-                return 1;
+                Console.Error.WriteLine($"LLVM rejected the IR with the {side} (kept at {ll}):\n{err}");
+                return false;
             }
-            Console.Error.WriteLine("LLVM accepted the IR");
             TryDelete(ll);
-            return 0;
+            return true;
         }
         finally
         {
@@ -315,13 +341,14 @@ static class Cli
     /// Compiles the inputs to LLVM IR. An executable needs `routine main() -> S32`; checking for it here gives a
     /// clear error instead of the platform linker's (lld-link says "subsystem must be defined").
     /// <paramref name="trace"/>: whether the program keeps the crash trace, or null for the mode's default.
+    /// <paramref name="heapCheck"/>: whether the default heap crashes on a block freed twice (`[debug] heap-check`).
     public static string Compile(IEnumerable<string> files, BuildTarget target, bool executable = true,
         IReadOnlyList<string>? roots = null, BuildMode mode = BuildMode.Debug, bool stdlibExports = true, bool lint = true,
-        bool? trace = null)
+        bool? trace = null, bool heapCheck = false)
     {
         var inputs = files.ToList();
         var decls = LoadDecls(inputs, target);
-        var compiler = new Compiler(target, decls, trace ?? mode.TracedByDefault(), mode.HasDebugChecks())
+        var compiler = new Compiler(target, decls, trace ?? mode.TracedByDefault(), heapCheck)
         {
             FileTagPaths = FileTagPaths(inputs, roots),
             DebugInfo = true,
@@ -490,7 +517,8 @@ static class Cli
 
     private static string BuildManifest(Manifest m)
     {
-        string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced);
+        string ir = Compile(m.Sources, m.Target, roots: m.Roots, mode: m.Mode, trace: m.Traced,
+            heapCheck: m.HeapCheck);
         Directory.CreateDirectory(m.OutputDirectory);
         if (m.EmitLlvm) File.WriteAllText(Path.ChangeExtension(m.ExecutablePath, ".ll"), ir);
         Link(ir, m.ExecutablePath, m.Target, m.Mode, m.LinkArguments());
@@ -778,8 +806,9 @@ static class Cli
                 manifest = Manifest.Load(only, target);
                 (sources, target) = ([.. manifest.Sources], manifest.Target);
             }
+            // A test always runs with the heap check on, whatever its manifest says: a block freed twice fails it.
             ir = Compile(sources, target, mode: manifest?.Mode ?? _testMode, lint: false,
-                trace: manifest is null ? _testTrace : manifest.Traced);
+                trace: manifest is null ? _testTrace : manifest.Traced, heapCheck: true);
         }
         catch (ManifestError e)
         {
