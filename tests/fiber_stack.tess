@@ -1,0 +1,124 @@
+// Fibers that run deep on stacks of their own: two fibers on one worker each recurse 40 levels through 8 KiB frames
+// (320 KiB of a 1 MiB stack from the stack allocator) and yield at the bottom, so each runs while the other's stack is
+// deep. A frame larger than a page makes Windows' __chkstk probe the stack page by page, and the stack allocator commits
+// only the top pages there, with a guard page below that Windows moves down as the stack grows: both read the thread
+// block's stack fields, which the fiber switch keeps in step with the stack. Each fiber also checks that its locals are
+// on its own stack and that (on Windows) the thread block's stack base is that stack's top.
+
+import Standard::Alloc
+import Standard::Fiber
+import Standard::Format
+import Standard::Os
+
+preset LEVELS: U64 = 40
+
+preset STACK_SIZE: USize = 1048576
+
+record Diver
+    sched : @Scheduler
+    name  : Bytes
+
+/// Windows x64's thread block: the stack base, GS:[8].
+#[target(arch: "x86_64", os: "windows"), external("asm")]
+routine stack_base() -> U64
+    block entry()
+        mov<U64, U64>(R0, GS.offset(8))
+        return(R0)
+
+/// Whether the thread block's stack base is the top of the fiber's stack: on Windows, the 16-byte aligned end of
+/// the stack the scheduler gave the fiber.
+#target(arch: "x86_64", os: "windows")
+routine thread_block_follows(stack: Addr) -> Bool
+    block entry()
+        bottom : U64 = ptrtoint<Addr, U64>(stack)
+        top    : U64 = bottom.add(STACK_SIZE.to<U64>())
+        return(stack_base().eq(top.sub(top.bitand(15))))
+
+/// Elsewhere nothing follows the stack.
+#target(os: not "windows")
+routine thread_block_follows(stack: Addr) -> Bool
+    block entry()
+        return(true)
+
+/// Stores value into each word of the frame.
+#noinline
+routine fill(frame: @Array<U64, 1024>, value: U64) -> Void
+    shared first : @U64 = frame.to<@U64>()
+
+    block entry()
+        jump store(0)
+
+    block store(i: USize)
+        done : Bool = i.eq(1024)
+        branch done
+            ? return()
+            : continue
+        first.stride(i).store(value)
+        jump store(i.add(1))
+
+/// The sum of the frame's words.
+#noinline
+routine frame_sum(frame: @Array<U64, 1024>) -> U64
+    shared first : @U64 = frame.to<@U64>()
+
+    block entry()
+        jump add(0, 0)
+
+    block add(i: USize, total: U64)
+        done : Bool = i.eq(1024)
+        branch done
+            ? return(total)
+            : continue
+        jump add(i.add(1), total.add(first.stride(i).load()))
+
+/// One level: fills an 8 KiB frame with its level, goes a level deeper (or yields at the bottom), then adds up its
+/// frame, which must still hold its level.
+#noinline
+routine dive(d: @Diver, level: U64) -> U64
+    shared frame : @Array<U64, 1024> <- uninit
+
+    block entry()
+        fill(frame, level)
+        bottom : Bool = level.eq(0)
+        branch bottom
+            ? turn()
+            : deeper()
+
+    block turn()
+        Out.write("{d.name.load()} at the bottom\n")
+        d.sched.load().yield()
+        return(frame_sum(frame))
+
+    block deeper()
+        below : U64 = dive(d, level.sub(1))
+        return(below.add(frame_sum(frame)))
+
+/// A fiber: checks where its stack is, dives, and prints the sum of every level's frame.
+routine diver(d: @Diver) -> Void
+    shared here : @U64 <- 0
+
+    block entry()
+        fiber : @FiberState = d.sched.load().current()
+        stack : Addr        = fiber.stack.load()
+        at    : USize       = ptrtoint<@U64, USize>(here)
+        first : USize       = ptrtoint<Addr, USize>(stack)
+        own   : Bool        = at.in_range(first, first.add(STACK_SIZE))
+        Out.write("{d.name.load()} on its own stack: {own}\n")
+        Out.write("{d.name.load()} thread block follows: {thread_block_follows(stack)}\n")
+        total : U64 = dive(d, LEVELS)
+        Out.write("{d.name.load()} sum {total}\n")
+        return()
+
+routine start() -> Void
+    block entry()
+        claim alloc  : @Allocator <- make_heap_allocator()
+        claim stacks : @Allocator <- make_stack_allocator()
+        claim sched  : @Scheduler <- .construct(1, stacks, alloc)
+        claim a      : @Diver     <- Diver { sched: sched, name: "a" }
+        claim b      : @Diver     <- Diver { sched: sched, name: "b" }
+        sched.spawn(diver.to<Callable>(), a, STACK_SIZE)
+        sched.spawn(diver.to<Callable>(), b, STACK_SIZE)
+        sched.run()
+        Out.write("both returned\n")
+        sched.destruct()
+        return()

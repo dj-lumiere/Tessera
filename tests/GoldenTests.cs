@@ -5,7 +5,8 @@ namespace Tessera.Tests;
 /// <summary>
 /// The golden tests in tests/ and examples/, one theory case each, run the way <c>tessera test</c> runs them: a
 /// program's stdout must equal its .expected, its exit code its .exit, and a .error names the build error it must
-/// fail with. A test whose .arch leaves out the host's architecture passes without running.
+/// fail with. A test whose .arch leaves out the host's architecture is not a case here, so nothing passes without
+/// running.
 /// </summary>
 public class GoldenTests
 {
@@ -14,9 +15,11 @@ public class GoldenTests
     public static TheoryData<string> Cases()
     {
         var data = new TheoryData<string>();
+        var host = BuildTarget.Host();
         foreach (string dir in new[] { "tests", "examples" })
             foreach (var (stem, _) in Cli.TestsIn(Path.Combine(Root, dir)))
-                data.Add(Path.GetRelativePath(Root, stem).Replace(Path.DirectorySeparatorChar, '/'));
+                if (Cli.RunsOn(stem, host))
+                    data.Add(Path.GetRelativePath(Root, stem).Replace(Path.DirectorySeparatorChar, '/'));
         return data;
     }
 
@@ -29,9 +32,7 @@ public class GoldenTests
         string stem = Path.GetFullPath(Path.Combine(Root, test));
         var (_, sources) = Cli.TestsIn(Path.GetDirectoryName(stem)!)
             .Single(t => Path.GetFullPath(t.Stem) == stem);
-        var target = BuildTarget.Host();
-        if (!Cli.RunsOn(stem, target)) return;
-        string? why = Cli.RunOne(sources, stem, target);
+        string? why = Cli.RunOne(sources, stem, BuildTarget.Host());
         Assert.True(why is null, why);
     }
 
