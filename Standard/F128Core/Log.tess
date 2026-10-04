@@ -94,16 +94,31 @@ routine cm_log_general(u: U128) -> F128
         e : S64  = 0.sub_wrap(nz.sub(16).shl(48))
         jump reduce(cm_wide_hi(m), cm_wide_lo(m), e.to_wrap<U64>())
 
-    // x = 2^e * m: m is multiplied by four table reciprocals chosen from a crude log2(m)
     block reduce(mh: U64, ml: U64, e_field: U64)
-        e : U64 = e_field.add_wrap(0x0070000000000000)  // + 112 << 48
-        jump scale(mh, ml, e, cm_log_log2(mh))
+        total : CmWide3 = cm_log_fast(mh, ml, e_field)
+        // the exact check compares against the normalized significand (subnormal x included)
+        r : F128 = cm_log_round(total, cm_wide_u128(mh, ml))
+        return(r)
+
+/// The fast path of ln(x) before rounding: x = 2^e * m, m is multiplied by four table reciprocals chosen from a
+/// crude log2(m), and a polynomial gives ln of the reduced m. CORE-MATH's rounding test (in {cm_log_round})
+/// takes the result to be within 13 units of its last bit (2^-148) of ln(x).
+/// :param mh: The high word of x's bits with the significand normalized (a subnormal x shifted up), exponent
+///     field included.
+/// :param ml: The low word.
+/// :param e_field: The biased exponent shifted up by 48 (two's complement below 1 for a subnormal x).
+/// :returns: ln(x) in 3-word two's-complement fixed point, its last bit 2^-148.
+routine cm_log_fast(mh: U64, ml: U64, e_field: U64) -> CmWide3
+    shared e : U64 = e_field.add_wrap(0x0070000000000000)  // + 112 << 48
+
+    block entry()
+        jump scale(cm_log_log2(mh))
 
     // The four 5-bit digits of l index the reciprocals, whose product r makes m * r slightly above 1. The
     // crude log2 can overshoot an index boundary by a hair, leaving m * r just below 1, which the unsigned
     // reduced argument can't hold (the original, CORE-MATH's logq.c, is off by about 2^-20 there: m just
     // below 2^(k / 2^20) for k = 29, 256, 285). Then the index one lower is taken.
-    block scale(mh: U64, ml: U64, e: U64, l: U64)
+    block scale(l: U64)
         j0      : USize = l.shr(59).to<USize>()
         j1_bits : U64   = l.shr(54).bitand(31)
         j1      : USize = j1_bits.to<USize>()
@@ -124,25 +139,23 @@ routine cm_log_general(u: U128) -> F128
         // m * r below 1: the product's leading bit (2^236) is clear
         below_one : Bool = rhh.shr(44).eq(0)
         branch below_one
-            ? scale(mh, ml, e, l.sub(0x0000100000000000))
+            ? scale(l.sub(0x0000100000000000))
             : continue
         rhl : U64     = rr.shr(128).to_wrap<U64>()
         rlh : U64     = rr.shr(64).to_wrap<U64>()
         mh2 : U64     = rhh.shl(40).bitor(rhl.shr(24))
         ml2 : U64     = rhl.shl(40).bitor(rlh.shr(24))
         sum : CmWide3 = cm_log_table_sum(e, j0, j1, j2, j3)
-        // the exact check compares against the normalized significand (subnormal x included)
-        normalized : U128 = cm_wide_u128(mh, ml)
-        jump polynomial(sum, mh2, cm_wide_u128(mh2, ml2), normalized)
+        jump polynomial(sum, mh2, cm_wide_u128(mh2, ml2))
 
     // ln(1 + m) for the reduced m, added to the table sum
-    block polynomial(sum: CmWide3, mh: U64, m: U128, normalized: U128)
+    block polynomial(sum: CmWide3, top: U64, m: U128)
         c6    : U64     = CM_LOG_C.getitem(6)
         c7    : U64     = CM_LOG_C.getitem(7)
         c8    : U64     = CM_LOG_C.getitem(8)
         c10   : U64     = CM_LOG_C.getitem(10)
-        t10   : U64     = cm_wide_mulhi(mh, c10)
-        t8    : U64     = cm_wide_mulhi(mh, c8.sub_wrap(t10))
+        t10   : U64     = cm_wide_mulhi(top, c10)
+        t8    : U64     = cm_wide_mulhi(top, c8.sub_wrap(t10))
         f3    : U128    = cm_wide_u128(c7, c6.sub_wrap(t8))
         f2    : U128    = cm_log_coefficient(4).sub_wrap(cm_wide_mulhi(m, f3))
         f1    : U128    = cm_log_coefficient(2).sub_wrap(cm_wide_mulhi(m, f2))
@@ -150,8 +163,7 @@ routine cm_log_general(u: U128) -> F128
         p     : U128    = cm_wide_mulhi(m, f0)
         p3    : CmWide3 = CmWide3 { w0: cm_wide_lo(p), w1: cm_wide_hi(p), w2: 0 }
         total : CmWide3 = cm_wide_add3(sum, p3)
-        r     : F128    = cm_log_round(total, normalized)
-        return(r)
+        return(total)
 
 /// Word pair (i, i + 1) of the ln(1 + r) polynomial as a 128-bit coefficient.
 /// :param i: The index of the low word in CM_LOG_C.

@@ -1,0 +1,226 @@
+// Tessera stdlib: fixed-point fractions for the quick tiers of the F128 functions
+//
+// tan (F128Tan.tess), sinh, cosh, tanh (F128Hyperbolic.tess), and asinh, acosh, atanh (F128InverseHyperbolic.tess)
+// put a quick tier in front of their F128Extended and F128Big tiers. It works on positive numbers kept as a 128-bit
+// fraction with its top bit set and an exponent (CmFrac: frac × 2^(exponent - 128), so the value lies in
+// [2^(exponent - 1), 2^exponent)), built from CORE-MATH's fast paths, and it rounds only when a proven bound on the
+// error keeps the 15 bits below the 113-bit significand away from the rounding midpoint (cm_frac_round).
+//
+// Every step here is exact or truncates, and each routine says by how much, in units of the last bit of the
+// fraction it returns (one unit is a relative 2^-127 at most):
+//
+// - cm_frac_quotient, cm_frac_div, cm_frac_mul: the floor of the exact result, under one unit below it.
+// - cm_frac_add: under one unit below the exact sum.
+// - cm_frac_sub: at most one unit of the larger operand above the exact difference, before normalizing it (the
+//   callers bound how far it shifts).
+// - cm_frac_sqrt: within 2.01 units of the exact root.
+
+module Standard::Core
+
+/// 2^127, the top bit of a fraction (1 is { frac: CM_FRAC_TOP, exponent: 1 }).
+preset CM_FRAC_TOP: U128 = 0x80000000000000000000000000000000
+
+/// A positive number frac × 2^(exponent - 128) with frac in [2^127, 2^128).
+record CmFrac
+    frac     : U128
+    exponent : S64
+
+/// The scaled quotient of two normalized fractions and the scale's extra bit.
+record CmFracQuotient
+    frac  : U128
+    scale : S64
+
+/// floor(s × 2^128 / c) when s < c, else floor(s × 2^127 / c): either way in [2^127, 2^128), and exact.
+/// :param s: The dividend, with its top bit set.
+/// :param c: The divisor, with its top bit set.
+/// :returns: The quotient, and 1 in `scale` when it was scaled by 2^127 (s / c >= 1), else 0.
+routine cm_frac_quotient(s: U128, c: U128) -> CmFracQuotient
+    shared d1 : U64 = c.shr(64).to<U64>()
+    shared d0 : U64 = c.to_wrap<U64>()
+    shared v  : U64 = div_3by2_prepare(d1, d0)
+
+    block entry()
+        big : Bool = s.ge(c)
+        branch big
+            ? halved()
+            : divide(s, 0, 0)
+
+    // s × 2^127 = (s >> 1) × 2^128 + (s & 1) × 2^127, and s >> 1 < 2^127 <= c
+    block halved()
+        odd : U64 = s.bitand(1).to<U64>()
+        jump divide(s.shr(1), odd.shl(63), 1)
+
+    // the 256-bit dividend (top, next, 0) by c, 64 quotient bits at a time: top < c, then the remainder < c
+    block divide(top: U128, next: U64, scale: S64)
+        high  : Div3By2        = div_3by2(top.shr(64).to<U64>(), top.to_wrap<U64>(), next, d1, d0,
+            v)
+        rem   : U128           = high.remainder
+        low   : Div3By2        = div_3by2(rem.shr(64).to<U64>(), rem.to_wrap<U64>(), 0, d1, d0, v)
+        upper : U128           = high.quotient.to<U128>().shl(64)
+        frac  : U128           = upper.bitor(low.quotient.to<U128>())
+        r     : CmFracQuotient = CmFracQuotient { frac: frac, scale: scale }
+        return(r)
+
+/// a / b, the floor of its fraction: under one unit below the exact quotient.
+/// :param a: The dividend.
+/// :param b: The divisor.
+/// :returns: The quotient.
+routine cm_frac_div(a: CmFrac, b: CmFrac) -> CmFrac
+    block entry()
+        q        : CmFracQuotient = cm_frac_quotient(a.frac, b.frac)
+        exponent : S64            = a.exponent.sub(b.exponent).add(q.scale)
+        r        : CmFrac         = CmFrac { frac: q.frac, exponent: exponent }
+        return(r)
+
+/// a × b, the floor of its fraction: under one unit below the exact product.
+/// :param a: A factor.
+/// :param b: The other factor.
+/// :returns: The product.
+routine cm_frac_mul(a: CmFrac, b: CmFrac) -> CmFrac
+    shared p        : U256 = a.frac.mul_wide(b.frac)
+    shared exponent : S64  = a.exponent.add(b.exponent)
+
+    block entry()
+        top : Bool = p.shr(255).eq(1)
+        branch top
+            ? return(CmFrac { frac: p.shr(128).to_wrap<U128>(), exponent: exponent })
+            : return(CmFrac { frac: p.shr(127).to_wrap<U128>(), exponent: exponent.sub(1) })
+
+/// Shifts a nonzero v left until its top bit is set, lowering the exponent to match: exact.
+/// :param v: The fraction, nonzero.
+/// :param exponent: Its exponent.
+/// :returns: The same value, normalized.
+routine cm_frac_normalize(v: U128, exponent: S64) -> CmFrac
+    block entry()
+        lz : U128   = v.leading_zeros()
+        e  : S64    = exponent.sub(lz.to<S64>())
+        r  : CmFrac = CmFrac { frac: v.shl(lz), exponent: e }
+        return(r)
+
+/// a + b for a.exponent >= b.exponent: b is aligned to a (its low bits dropped), and a carry out of the top bit
+/// shifts the sum down one bit. Under one unit below the exact sum.
+/// :param a: The addend with the larger exponent.
+/// :param b: The other addend.
+/// :returns: The sum.
+routine cm_frac_add(a: CmFrac, b: CmFrac) -> CmFrac
+    shared shift   : S64  = a.exponent.sub(b.exponent)
+    shared aligned : U128 = b.frac.shr(shift.to<U128>())
+    shared sum     : U128 = a.frac.add_wrap(aligned)
+
+    block entry()
+        carry : Bool = sum.lt(a.frac)
+        branch carry
+            ? carried()
+            : return(CmFrac { frac: sum, exponent: a.exponent })
+
+    block carried()
+        top : U128   = sum.shr(1).bitor(CM_FRAC_TOP)
+        r   : CmFrac = CmFrac { frac: top, exponent: a.exponent.add(1) }
+        return(r)
+
+/// a - b for a > b with a.exponent >= b.exponent: b is aligned to a (its low bits dropped), then the difference
+/// is normalized. Before normalizing it lies at most one unit of a above the exact difference, and each bit of the
+/// normalizing shift doubles that in units of the result.
+/// :param a: The larger number.
+/// :param b: The smaller one.
+/// :returns: The difference.
+routine cm_frac_sub(a: CmFrac, b: CmFrac) -> CmFrac
+    block entry()
+        shift   : S64    = a.exponent.sub(b.exponent)
+        aligned : U128   = b.frac.shr(shift.to<U128>())
+        r       : CmFrac = cm_frac_normalize(a.frac.sub(aligned), a.exponent)
+        return(r)
+
+/// sqrt(n × 2^(e - 256)) for n >= 2^255: within 2.01 units of the exact root (twice the root of m below, within
+/// 1 + 2^-47, and the 3 bits of n it drops). F128's correctly rounded sqrt of n's top bits gives a 113-bit start,
+/// and one Newton step on 256 bits finishes it.
+/// :param n: The radicand's 256 bits, its top bit set.
+/// :param e: The radicand's exponent.
+/// :returns: The square root.
+routine cm_frac_sqrt(n: U256, e: S64) -> CmFrac
+    shared odd : Bool = e.bitand(1).eq(1)
+
+    block entry()
+        // m in [2^252, 2^254) with m × 2^(even - 254) = n × 2^(e - 256), at most 3 bits of n dropped
+        m_odd  : U256 = n.shr(3)
+        m_even : U256 = n.shr(2)
+        m      : U256 = odd
+            ? m_odd
+            : m_even
+        even_odd : S64 = e.add(1)
+        even     : S64 = odd
+            ? even_odd
+            : e
+        root : U128 = cm_frac_isqrt(m)
+        // root ≈ sqrt(m) in [2^126, 2^127): the value is root × 2^(even / 2 - 127). A root one below 2^126 (m
+        // near 2^252) is lifted back to it, which stays within the bound
+        doubled  : U128   = root.shl(1)
+        frac     : U128   = doubled.max(CM_FRAC_TOP)
+        exponent : S64    = even.div(2)
+        r        : CmFrac = CmFrac { frac: frac, exponent: exponent }
+        return(r)
+
+/// sqrt(m) for m in [2^252, 2^254), within 1 + 2^-47 of the exact root: one Newton step g + (m - g²) / 2g from
+/// F128's sqrt g of m's top 113 bits. That start is within 2^-111.9 relative (the dropped bits and two roundings),
+/// so within 2^15.1 of the root, and the exact step lands at most (2^15.1)² / 2^127 < 2^-96 above the root. Here
+/// |m - g²| < 2^144, so the step is |m - g²| / 2^64 over g / 2^63, both cut to whole numbers, and the quotient's
+/// floor: within 2^-47 above and 1 + 2^-63 below the exact step.
+/// :param m: The radicand.
+/// :returns: The root.
+routine cm_frac_isqrt(m: U256) -> U128
+    shared hi : U128 = m.shr(128).to_wrap<U128>()
+
+    block entry()
+        lz     : U128 = hi.leading_zeros()  // 2 or 3
+        top    : U128 = hi.shl(lz).shr(15)  // 113 bits of m, truncated
+        biased : U128 = 127.sub(lz).add(16383).shl(112)
+        t      : F128 = f128_of(biased.bitor(top.bitand(F128_FRAC_MASK)))
+        s      : U128 = t.sqrt().bits()
+        // s = M × 2^(es - 112) with es 62 (t in [2^124, 2^126)), so sqrt(m) ≈ M × 2^14
+        mantissa : U128 = s.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)
+        seed     : U128 = mantissa.shl(14)
+        square   : U256 = seed.mul_wide(seed)
+        above    : Bool = m.ge(square)
+        up       : U256 = m.sub_wrap(square)
+        down     : U256 = square.sub_wrap(m)
+        residual : U256 = above
+            ? up
+            : down
+        numer    : U128    = residual.shr(64).to_wrap<U128>()  // below 2^80
+        denom    : U64     = seed.shr(63).to<U64>()  // its top bit set
+        high     : U64     = numer.shr(64).to<U64>()
+        quotient : Div2By1 = div_2by1(high, numer.to_wrap<U64>(), denom, div_2by1_prepare(denom))
+        step     : U128    = quotient.quotient.to<U128>()
+        raised   : U128    = seed.add(step)
+        lowered  : U128    = seed.sub(step)
+        r        : U128    = above
+            ? raised
+            : lowered
+        return(r)
+
+/// Rounds a quotient frac × 2^(exponent - 128) on its 15 guard bits, unless they lie within `gate` units of
+/// the midpoint.
+/// :param frac: The quotient, with its top bit set.
+/// :param exponent: Its exponent.
+/// :param sign: The result's sign bit.
+/// :param gate: The proven bound on the quotient's error, in units of its last bit, rounded up.
+/// :returns: The rounded F128 bits.
+/// :absent: When the guard bits lie within the window.
+routine cm_frac_round(frac: U128, exponent: S64, sign: U128, gate: U64) -> Option<U128>
+    shared rest : U64 = frac.to_wrap<U64>().bitand(0x7FFF)
+
+    block entry()
+        shifted  : U64  = rest.add(gate).sub_wrap(0x4000)
+        distance : U64  = shifted.bitand(0x7FFF)
+        near     : Bool = distance.le(gate.mul(2))
+        branch near
+            ? return(.Absent)
+            : continue
+        up              : U128 = rest.gt(0x4000).to<U128>()
+        biased_exponent : S64  = exponent.add(16382)
+        biased          : U128 = biased_exponent.to<U128>().shl(112)
+        mantissa        : U128 = frac.shr(15)
+        truncated       : U128 = biased.add(mantissa).sub(F128_IMPLICIT)
+        magnitude       : U128 = truncated.add(up)
+        r               : U128 = sign.bitor(magnitude)
+        return(.Present(r))

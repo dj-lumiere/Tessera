@@ -357,21 +357,13 @@ routine cm_expm1_small(x: U128) -> F128
     shared uh : U64 = cm_wide_hi(x)
     shared b1 : U64 = uh.bitand(0x7FFFFFFFFFFFFFFF)
     shared sm : U64 = uh.shr(63)
-    shared e  : U64 = b1.shr(48).sub_wrap(16383)
 
     block entry()
-        sj    : U64  = 37.sub_wrap(e)
-        table : Bool = sj.lt(49)
         exact : Bool = b1.lt(0x3F8E6A09E667F3BC)
         same  : F128 = f128_of(x)
-        when
-            table -> normalize(cm_expm1_small_table(x, sm, e, sj))
-            exact -> return(same)
-            else  -> polynomial()
-
-    block polynomial()
-        a : CmExpm1Scaled = cm_expm1_small_poly(x, sm, e.to_wrap<S64>())
-        jump normalize(a)
+        branch exact
+            ? return(same)
+            : normalize(cm_expm1_small_fast(x))
 
     // the leading bit is at 127 or 126: round at bit 14 or 13, exactly when too close to a midpoint
     block normalize(a: CmExpm1Scaled)
@@ -412,6 +404,23 @@ routine cm_expm1_small(x: U128) -> F128
         a : CmExpm1Scaled = cm_expm1_accurate(x)
         r : F128          = cm_expm1_round15(a, sm)
         return(r)
+
+/// The fast path of e^x - 1 for |x| < 0.5 or so, before rounding: a table step above 2^-11, else a polynomial.
+/// CORE-MATH's rounding test (in {cm_expm1_small}) takes the result to be within [-3, 5) units of its last bit
+/// of e^x - 1 for x > 0, and within 4 for x < 0.
+/// :param x: The bits of x, finite, with 2^-113.5 < |x| < 0.5 or so (the result isn't x itself).
+/// :returns: e^x - 1 = sig × 2^(el - 127), the leading bit at 127 or 126.
+routine cm_expm1_small_fast(x: U128) -> CmExpm1Scaled
+    shared uh : U64 = cm_wide_hi(x)
+    shared sm : U64 = uh.shr(63)
+    shared e  : U64 = uh.bitand(0x7FFFFFFFFFFFFFFF).shr(48).sub_wrap(16383)
+
+    block entry()
+        sj    : U64  = 37.sub_wrap(e)
+        table : Bool = sj.lt(49)
+        branch table
+            ? return(cm_expm1_small_table(x, sm, e, sj))
+            : return(cm_expm1_small_poly(x, sm, e.to_wrap<S64>()))
 
 /// 2^-11 < |x| < 0.5 or so: two 5-bit indices j0, j1 of |x| pick exp(x_j) - 1 from the tables, and a
 /// polynomial in the rest combines with them.
