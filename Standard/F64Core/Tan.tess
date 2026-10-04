@@ -1,14 +1,17 @@
 // Tessera stdlib: the correctly rounded tangent of F64
 //
-// |x| is reduced to x/(2pi) mod 1 = i/2^11 + X (TrigReduce.tess) and folded into [0, pi/4] by the symmetries
-// of the tangent. Then sin and cos of the reduced argument come out in double-double as for the cosine, and their
-// quotient, with an error bound, is tan x or its reciprocal. When the bound can't decide the rounding, the
-// accurate path redoes it in 128-bit floating point, dividing through a Newton reciprocal. Two arguments that
-// path still can't round have their results written out. Round to nearest only: +-0 stay themselves,
-// infinities give NaN, a NaN comes back quiet.
+// The fast path takes sin x and cos x from the sine's double-double evaluation (Sin.tess), the cosine a quarter
+// turn further as in Cos.tess, each within the sine's error bound, and divides them. The quotient's error bound
+// follows from those two bounds and |cos x|: it grows like 1/cos^2 x, so a rounding test on it decides most
+// arguments, and |cos x| < 2^-20 goes straight to the accurate path. That path reduces |x| to x/(2pi) mod 1 =
+// i/2^11 + X (TrigReduce.tess), folds it into [0, pi/4] by the symmetries of the tangent, and redoes the quotient
+// in 128-bit floating point, dividing through a Newton reciprocal. Two arguments that path still can't round have
+// their results written out. Round to nearest only: +-0 stay themselves, infinities give NaN, a NaN comes back
+// quiet.
 //
-// Ported from CORE-MATH, src/binary64/tan/tan.c via RazorForge's B64Tan.rf.
-// Copyright (c) 2022-2025 Paul Zimmermann and Tom Hubrecht
+// The fast path is ported from CORE-MATH, src/binary64/sin/sin.c, the accurate path from src/binary64/tan/tan.c via
+// RazorForge's B64Tan.rf.
+// Copyright (c) 2022-2026 Paul Zimmermann and Tom Hubrecht and Alexei Sibidanov
 // MIT license: see LICENSE-CORE-MATH
 
 module Standard::Core
@@ -85,7 +88,8 @@ preset CM_F64_TAN_TINV: @Array<U64, 256> <- { 0xff00ff00ff00ff02, 0xfe03f80fe03f
 /// and NaN comes back quiet.
 /// :returns: tan(`self`).
 routine F64.tan(self: Self) -> Self
-    shared ux : U64 = self.bits()
+    shared ux : U64  = self.bits()
+    shared ax : Self = Self.from_bits(ux.bitand(0x7FFFFFFFFFFFFFFF))
 
     block entry()
         exp_field : U64  = ux.shr(52).bitand(0x7FF)
@@ -94,17 +98,14 @@ routine F64.tan(self: Self) -> Self
             ? special()
             : continue
         // |x| <= 0x1.d12ed0af1a27ep-27: tan(x) rounds like x + x^3/3
-        tiny : Bool = ux.bitand(0x7FFFFFFFFFFFFFFF).le(0x3E4D12ED0AF1A27E)
+        tiny : Bool = ax.bits().le(0x3E4D12ED0AF1A27E)
         branch tiny
             ? tiny()
             : continue
-        f     : CmF64TrigBound = cm_f64_tan_fast(self)
-        left  : Self           = f.hi.add(f.lo.sub(f.err))
-        right : Self           = f.hi.add(f.lo.add(f.err))
-        done  : Bool           = left.eq(right)
-        branch done
-            ? return(left)
-            : return(cm_f64_tan_accurate(self))
+        moderate : Bool = exp_field.lt(1054)
+        branch moderate
+            ? moderate()
+            : large()
 
     // an infinity gives NaN (inf - inf), a NaN comes back quiet
     block special()
@@ -119,87 +120,75 @@ routine F64.tan(self: Self) -> Self
             ? return(self)
             : return(self.mul_add(0x1p-54, self))
 
-/// (bh + bl) / (ah + al) in double-double with relative error below 2^-96.99, for |bl|, |al| < 2^-49.47
-/// (Karp-Markstein).
-/// :param b: The numerator.
-/// :param a: The denominator.
-/// :returns: The quotient as a double-double.
-private routine cm_f64_tan_fast_div(b: CmF64TrigDD, a: CmF64TrigDD) -> CmF64TrigDD
-    block entry()
-        y  : F64 = F64.div(1.0, a.hi)
-        h  : F64 = b.hi.mul(y)
-        eh : F64 = a.hi.mul_add(h.neg(), b.hi)
-        el : F64 = a.lo.mul_add(h.neg(), b.lo)
-        return(CmF64TrigDD { hi: h, lo: y.mul(eh.add(el)) })
+    // |x| < 2^31: sin and cos within 0x1.dep-64 each, a quarter turn is 2^13 steps of pi/2^14
+    block moderate()
+        red : CmF64SinReduced = cm_f64_sin_reduce_moderate(ax)
+        s   : CmF64TrigDD     = cm_f64_sin_moderate_parts(red.k, red.r)
+        c   : CmF64TrigDD     = cm_f64_sin_moderate_parts(red.k.add(0x2000), red.r)
+        jump quotient(cm_f64_tan_quotient(s, c, 0x1.dep-63))
 
-/// The fast path for |x| > 0x1.d12ed0af1a27ep-27: hi + lo with |hi + lo - tan(x)| < |err|.
-/// :param x: The finite argument.
-/// :returns: The approximation hi + lo and its error bound err.
-private routine cm_f64_tan_fast(x: F64) -> CmF64TrigBound
-    shared neg0 : U64 = x.lt(0.0)
-        ? 1
-        : 0
-    shared red : CmF64TrigFast = cm_f64_trig_reduce_fast(x.abs(), true)
-    // i >= 2^10: pi <= x <= 2pi, tan(pi + x) = tan(x)
-    shared i0 : U64 = red.i.bitand(0x3FF)
-    // i >= 2^9: pi/2 <= x <= pi, tan(pi/2 + x) = -cot(x)
-    shared half : U64 = i0.shr(9)
-    shared neg  : U64 = neg0.bitxor(half)
+    // |x| >= 2^31: sin and cos within 0x1.41p-63 each
+    block large()
+        red : CmF64SinReduced = cm_f64_sin_reduce_large(ax)
+        s   : CmF64TrigDD     = cm_f64_sin_large_parts(red.k, red.r)
+        c   : CmF64TrigDD     = cm_f64_sin_large_parts(red.k.add(0x2000), red.r)
+        jump quotient(cm_f64_tan_quotient(s, c, 0x1.41p-62))
 
-    block entry()
-        is_tan : U64 = U64.bitxor(1, half)
-        i1     : U64 = i0.bitand(0x1FF)
-        // i >= 2^8: tan(pi/2 - x) = cot(x), and 2^-11 - h is exact
-        mirror : Bool = i1.bitand(0x100).ne(0)
-        branch mirror
-            ? check(is_tan.bitxor(1), U64.sub(0x1FF, i1), F64.sub(0x1p-11, red.hi), red.lo.neg())
-            : check(is_tan, i1, red.hi, red.lo)
-
-    // a tiny reduced argument is left to the accurate path
-    block check(is_tan: U64, i: U64, h: F64, l: F64)
-        tiny : Bool = i.eq(0).bitand(h.lt(0x1p-37))
-        branch tiny
-            ? return(CmF64TrigBound { hi: h, lo: l, err: 0x1p+0 })
-            : eval(is_tan, i, h, l)
-
-    // the SC table is evaluated at i/2^11 + SC[i][0], and h - SC[i][0] is exact
-    block eval(is_tan: U64, i: U64, h0: F64, l0: F64)
-        k     : USize       = i.to<USize>().mul(3)
-        hl    : CmF64TrigDD = cm_f64_trig_fast_two_sum(h0.sub(CM_F64_TRIG_SC.getitem(k)), l0)
-        h     : F64         = hl.hi
-        l     : F64         = hl.lo
-        u     : CmF64TrigDD = cm_f64_trig_a_mul(h, h)
-        ul    : F64         = h.add(h).mul_add(l, u.lo)
-        ps    : CmF64TrigDD = cm_f64_trig_eval_ps_fast(h, l, u.hi, ul)
-        pc    : CmF64TrigDD = cm_f64_trig_eval_pc_fast(u.hi, ul)
-        sin_i : F64         = CM_F64_TRIG_SC.getitem(k.add(1))
-        cos_i : F64         = CM_F64_TRIG_SC.getitem(k.add(2))
-        // h1 + l1 ~ sin2pi(R)
-        s0 : CmF64TrigDD = cm_f64_trig_s_mul(cos_i, ps)
-        c0 : CmF64TrigDD = cm_f64_trig_s_mul(sin_i, pc)
-        t1 : CmF64TrigDD = cm_f64_trig_fast_two_sum(c0.hi, s0.hi)
-        sn : CmF64TrigDD = CmF64TrigDD { hi: t1.hi, lo: t1.lo.add(s0.lo.add(c0.lo)) }
-        // h2 + l2 ~ cos2pi(R)
-        c2  : CmF64TrigDD = cm_f64_trig_s_mul(cos_i, pc)
-        s2  : CmF64TrigDD = cm_f64_trig_s_mul(sin_i, ps)
-        t2  : CmF64TrigDD = cm_f64_trig_fast_two_sum(c2.hi, s2.hi.neg())
-        cs  : CmF64TrigDD = CmF64TrigDD { hi: t2.hi, lo: t2.lo.add(c2.lo.sub(s2.lo)) }
-        tan : Bool        = is_tan.ne(0)
-        branch tan
-            ? quotient(sn, cs)
-            : quotient(cs, sn)
-
-    // tan = sin / cos, or cot = cos / sin
-    block quotient(num: CmF64TrigDD, den: CmF64TrigDD)
-        q    : CmF64TrigDD = cm_f64_tan_fast_div(num, den)
-        flip : Bool        = neg.ne(0)
-        hi   : F64         = flip
+    // tan(-x) = -tan(x), and the rounding test is symmetric
+    block quotient(q: CmF64TrigBound)
+        flip : Bool = ux.shr(63).eq(1)
+        hi   : Self = flip
             ? q.hi.neg()
             : q.hi
-        lo : F64 = flip
+        lo : Self = flip
             ? q.lo.neg()
             : q.lo
-        return(CmF64TrigBound { hi: hi, lo: lo, err: hi.mul(0x1.1ap-66) })
+        lb   : Self = hi.add(lo.sub(q.err))
+        ub   : Self = hi.add(lo.add(q.err))
+        done : Bool = lb.eq(ub)
+        branch done
+            ? return(lb)
+            : return(cm_f64_tan_accurate(self))
+
+/// a + b = hi + lo exactly, whichever of a and b is larger (Knuth's TwoSum).
+/// :param a: The first addend.
+/// :param b: The second addend.
+/// :returns: The rounded sum and its error.
+#inline
+private routine cm_f64_tan_two_sum(a: F64, b: F64) -> CmF64TrigDD
+    block entry()
+        hi : F64 = a.add(b)
+        bb : F64 = hi.sub(a)
+        ab : F64 = hi.sub(bb)
+        lo : F64 = a.sub(ab).add(b.sub(bb))
+        return(CmF64TrigDD { hi: hi, lo: lo })
+
+/// tan x = sin x / cos x from s and c, unevaluated sums within e of sin x and cos x, as hi + lo with a bound err on
+/// |hi + lo - tan x|. With |c| >= 2^-20, |sin x / cos x - s/c| <= e (|sin x| + |cos x|) / |c cos x|, at most
+/// sqrt(2) e (1 + 2^-40) / c^2. The division below is within 2^-98 |s/c|, and y = 1/c rounded has y^2 within
+/// 2^-51 of 1/c^2, so err = 2 e y^2 covers both with room for the roundings of err and of the caller's test.
+/// :param s: sin x as an unevaluated sum.
+/// :param c: cos x as an unevaluated sum.
+/// :param bound: 2 e, twice the error bound of each sum.
+/// :returns: The quotient and its error bound, or an infinite bound when |c| < 2^-20.
+#inline
+private routine cm_f64_tan_quotient(s: CmF64TrigDD, c: CmF64TrigDD, bound: F64) -> CmF64TrigBound
+    block entry()
+        sn  : CmF64TrigDD = cm_f64_tan_two_sum(s.hi, s.lo)
+        cn  : CmF64TrigDD = cm_f64_tan_two_sum(c.hi, c.lo)
+        far : Bool        = cn.hi.abs().ge(0x1p-20)
+        branch far
+            ? continue
+            : return(CmF64TrigBound { hi: 0.0, lo: 0.0, err: F64.from_bits(0x7FF0000000000000) })
+        y  : F64 = F64.div(1.0, cn.hi)
+        qh : F64 = sn.hi.mul(y)
+        // qh cn.hi = ph + pl exactly, and sn.hi - ph is exact as ph is within a factor 2 of sn.hi
+        ph : F64 = qh.mul(cn.hi)
+        pl : F64 = f64_mul_error(qh, cn.hi, ph)
+        d  : F64 = sn.hi.sub(ph)
+        // sn - qh cn, the numerator of the remaining part of the quotient
+        n : F64 = d.sub(pl).add(sn.lo).sub(qh.mul(cn.lo))
+        return(CmF64TrigBound { hi: qh, lo: n.mul(y), err: bound.mul(y).mul(y) })
 
 /// 1/a for a non-zero dint, with relative error below 2^-124.999: a 64-bit table seed, three integer Newton
 /// steps, then one dint Newton step.
