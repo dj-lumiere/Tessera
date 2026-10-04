@@ -20,6 +20,8 @@ preset CM_EXP2_UNDERFLOW: U128 = 0xC00D01BC000000000000000000000000
 /// :returns: 2^`self`: +inf from 2^14 on, a correctly rounded subnormal or +0 at the bottom of the range. A NaN
 ///     comes back quieted with its sign and payload.
 routine F128.exp2(self: Self) -> Self
+    shared u : U128 = self.bits()
+
     block entry()
         nan       : Bool = self.is_nan()
         over      : Bool = self.gt(f128_of(0x400D0008000000000000000000000000))  // 16386
@@ -34,18 +36,17 @@ routine F128.exp2(self: Self) -> Self
             else  -> compute()
 
     block compute()
-        u      : U128 = self.bits()
         hi     : U64  = cm_exp_hi(u)
         mag_hi : U64  = hi.bitand(0x7FFFFFFFFFFFFFFF)
         tiny   : Bool = mag_hi.lt(0x3F8D71547652B82F)  // 2^x rounds to 1
         large  : Bool = mag_hi.ge(0x400D000000000000)
         when
             tiny  -> return(CM_EXP_ONE)
-            large -> edge(u)
-            else  -> integer_check(u)
+            large -> edge()
+            else  -> integer_check()
 
     // NaN, infinities, and the overflow and underflow thresholds
-    block edge(u: U128)
+    block edge()
         is_nan      : Bool = f128_is_nan_bits(u)
         nonnegative : Bool = f128_is_negative_bits(u).bitnot()
         overflow    : Bool = nonnegative.bitand(u.ge(CM_EXP2_OVERFLOW))
@@ -55,31 +56,31 @@ routine F128.exp2(self: Self) -> Self
             is_nan    -> return(quiet)
             overflow  -> return(Self.INFINITY)
             underflow -> return(CM_EXP_ZERO)
-            else      -> integer_check(u)
+            else      -> integer_check()
 
     // |x| >= 1 with no fraction bits in the low word
-    block integer_check(u: U128)
+    block integer_check()
         e         : S64  = f128_exponent(u)
         candidate : Bool = e.ge(16383).bitand(u.to_wrap<S64>().eq(0))
         branch candidate
-            ? integer_test(u, e)
-            : reduce(u, e)
+            ? integer_test(e)
+            : reduce(e)
 
     // the high word has 16 sign and exponent bits, then e - 16383 integer bits
-    block integer_test(u: U128, e: S64)
+    block integer_test(e: S64)
         fraction_bits : U64  = cm_exp_hi(u).shl(e.sub(16367).to<U64>())
         fraction      : S64  = fraction_bits.to_wrap<S64>()
         is_integer    : Bool = fraction.eq(0)
         branch is_integer
-            ? exact(u, e)
-            : reduce(u, e)
+            ? exact(e)
+            : reduce(e)
 
-    block exact(u: U128, e: S64)
+    block exact(e: S64)
         r : Self = cm_exp2_exact(u, e)
         return(r)
 
     // the significand, two's-complemented for negative x
-    block reduce(u: U128, e: S64)
+    block reduce(e: S64)
         hi      : S64         = cm_exp_hi(u).to_wrap<S64>()
         sign2   : U128        = 0.sub_wrap(u.shr(127))
         sig     : U128        = u.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)

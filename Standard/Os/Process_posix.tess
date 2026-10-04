@@ -725,61 +725,64 @@ private routine release(b: CaptureBuffer, alloc: @Allocator) -> Void
 #target(os: ("linux", "macos"))
 private routine drain(out_fd: CInt, err_fd: CInt, out: @CaptureBuffer, err: @CaptureBuffer,
     alloc: @Allocator) -> Void
+    // POLLIN, and poll skips a negative fd
+    shared poll_fds     : @Array<PollFd, 2>  <- { PollFd { fd: out_fd, events: 1, revents: 0 },
+        PollFd { fd: err_fd, events: 1, revents: 0 } }
+    shared chunk_buffer : @Array<Byte, 4096> <- uninit
+    shared fds          : @PollFd            = poll_fds.to<@PollFd>()
+    shared chunk        : @Byte              = chunk_buffer.to<@Byte>()
+
     block entry()
-        // POLLIN, and poll skips a negative fd
-        claim fds   : @Array<PollFd, 2>  <- { PollFd { fd: out_fd, events: 1, revents: 0 },
-            PollFd { fd: err_fd, events: 1, revents: 0 } }
-        claim chunk : @Array<Byte, 4096> <- uninit
         out_open : U32 = out_fd.ge(0).to<U32>()
         open     : U32 = out_open.add(err_fd.ge(0).to<U32>())
-        jump wait(fds.to<@PollFd>(), chunk.to<@Byte>(), open)
+        jump wait(open)
 
-    block wait(fds: @PollFd, chunk: @Byte, open: U32)
+    block wait(open: U32)
         branch open.eq(0)
             ? return()
             : continue
         branch poll_two(fds).lt(0)
-            ? interrupted(fds, chunk, open)
-            : stream(fds, chunk, open, 0)
+            ? interrupted(open)
+            : stream(open, 0)
 
-    block interrupted(fds: @PollFd, chunk: @Byte, open: U32)
+    block interrupted(open: U32)
         branch errno().eq(4)
-            ? wait(fds, chunk, open)
-            : give_up(fds)
+            ? wait(open)
+            : give_up()
 
-    block give_up(fds: @PollFd)
+    block give_up()
         close_if_open(fds.fd.load())
         close_if_open(fds.stride(1).fd.load())
         return()
 
-    block stream(fds: @PollFd, chunk: @Byte, open: U32, i: USize)
+    block stream(open: U32, i: USize)
         branch i.eq(2)
-            ? wait(fds, chunk, open)
+            ? wait(open)
             : continue
         p  : @PollFd = fds.stride(i)
         fd : CInt    = p.fd.load()
         branch fd.lt(0).bitor(p.revents.load().eq(0))
-            ? stream(fds, chunk, open, i.add(1))
+            ? stream(open, i.add(1))
             : continue
         n : SSize = c_read(fd, chunk, 4096)
         branch n.gt(0)
-            ? keep(fds, chunk, open, i, n.to<USize>())
+            ? keep(open, i, n.to<USize>())
             : continue
         branch n.lt(0).bitand(errno().eq(4))
-            ? stream(fds, chunk, open, i.add(1))
+            ? stream(open, i.add(1))
             : continue
         c_close(fd)
         p.fd.store(-1)
-        jump stream(fds, chunk, open.sub(1), i.add(1))
+        jump stream(open.sub(1), i.add(1))
 
-    block keep(fds: @PollFd, chunk: @Byte, open: U32, i: USize, n: USize)
+    block keep(open: U32, i: USize, n: USize)
         branch i.eq(0)
-            ? into(fds, chunk, open, i, n, out)
-            : into(fds, chunk, open, i, n, err)
+            ? into(open, i, n, out)
+            : into(open, i, n, err)
 
-    block into(fds: @PollFd, chunk: @Byte, open: U32, i: USize, n: USize, buffer: @CaptureBuffer)
+    block into(open: U32, i: USize, n: USize, buffer: @CaptureBuffer)
         buffer.append(chunk, n, alloc)
-        jump stream(fds, chunk, open, i.add(1))
+        jump stream(open, i.add(1))
 
 /// Waits for the child to end, retrying when a signal interrupts the wait.
 /// :param pid: The child's process id.

@@ -699,6 +699,7 @@ routine big_reduce(x: F128) -> BigReduced
     shared prod : @BigNat<24> <- uninit
     // f = F × 2^-sh with F the bits under sh. Past 1/2, count the next quadrant and use f - 1
     shared f : @BigNat<16> <- uninit
+    shared q : @U64        <- uninit
 
     block entry()
         small : Bool = p.exponent.lt(-1)  // |x| < 1/2 < π/4
@@ -738,44 +739,46 @@ routine big_reduce(x: F128) -> BigReduced
         prod.set_product(m, w)
         at        : USize = sh.to<USize>()
         whole_low : U64   = prod.bits128(at).to_wrap<U64>()
-        q         : U64   = whole_low.bitand(3)
+        quadrant  : U64   = whole_low.bitand(3)
         past_half : Bool  = prod.has_bit(at.sub(1))
         f.set(U64.MIN)
-        jump fraction(0, at, q, past_half)
+        quadrant.store_into(q)
+        jump fraction(0, at, past_half)
 
     // copy the bits under sh into f, 64 at a time from the bottom (sh is a whole number of limbs past any
     // leftover bits, which bits128 reads across)
-    block fraction(i: USize, at: USize, q: U64, past_half: Bool)
+    block fraction(i: USize, at: USize, past_half: Bool)
         pos  : USize = i.mul(64)
         done : Bool  = pos.ge(at)
         branch done
-            ? trim(at, q, past_half)
-            : fraction_one(i, at, q, past_half)
+            ? trim(at, past_half)
+            : fraction_one(i, at, past_half)
 
-    block fraction_one(i: USize, at: USize, q: U64, past_half: Bool)
+    block fraction_one(i: USize, at: USize, past_half: Bool)
         pos  : USize = i.mul(64)
         left : USize = at.sub(pos)
         word : U64   = prod.bits128(pos).to_wrap<U64>()
         mask : U64   = U64.MAX.shr(64.sub(left.min(64)).to<U64>())
         f.push_limb(word.bitand(mask))
-        jump fraction(i.add(1), at, q, past_half)
+        jump fraction(i.add(1), at, past_half)
 
-    block trim(at: USize, q: U64, past_half: Bool)
+    block trim(at: USize, past_half: Bool)
         f.trim()
         branch past_half
-            ? complement(at, q)
-            : scale(false, at, f, q)
+            ? complement(at)
+            : scale(false, at, f)
 
     // f - 1 = -(2^sh - F) × 2^-sh, taken exactly before any rounding
-    block complement(at: USize, q: U64)
+    block complement(at: USize)
         claim c : @BigNat<16> <- uninit
         one : U64 = 1
         c.set(one)
         c.shl(at)
         c.sub(f)
-        jump scale(true, at, c, q.add_wrap(1).bitand(3))
+        q.store(q.load().add_wrap(1).bitand(3))
+        jump scale(true, at, c)
 
-    block scale(negative: Bool, at: USize, g: @BigNat<16>, k: U64)
+    block scale(negative: Bool, at: USize, g: @BigNat<16>)
         frac : F128Big    = big_make(negative, 0.sub(at.to<S64>()), g)
-        r    : BigReduced = BigReduced { quadrant: k, theta: frac.mul(big_half_pi()) }
+        r    : BigReduced = BigReduced { quadrant: q.load(), theta: frac.mul(big_half_pi()) }
         return(r)

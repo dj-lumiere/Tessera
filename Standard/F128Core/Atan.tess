@@ -32,43 +32,44 @@ preset CM_ATAN_INDH: @Array<U64, 128> <- { 0, 0, 1, 1, 2, 2, 3, 4, 5, 5, 5, 6, 6
 /// :returns: atan(`self`) in [-pi/2, pi/2]. It is `self` itself for |`self`| < 2^-57 and ±pi/2 for |`self`| >= 2^115
 ///     (infinities included). A NaN comes back quieted.
 routine F128.atan(self: Self) -> Self
+    shared bits : U128 = self.bits()
+    shared sign : U128 = bits.bitand(F128_SIGN)
+    shared lo   : U64  = bits.to_wrap<U64>()
+
     block entry()
         nan   : Bool = self.is_nan()
         quiet : Self = f128_of(f128_quiet(self.bits()))
         branch nan
             ? return(quiet)
             : continue
-        bits   : U128 = self.bits()
-        sign   : U128 = bits.bitand(F128_SIGN)
-        hi_raw : U64  = bits.shr(64).to<U64>()
-        hi     : U64  = hi_raw.bitand(0x7FFFFFFFFFFFFFFF)
-        lo     : U64  = bits.to_wrap<U64>()
-        xn     : U64  = hi.shr(48)
+        hi_raw : U64 = bits.shr(64).to<U64>()
+        hi     : U64 = hi_raw.bitand(0x7FFFFFFFFFFFFFFF)
+        xn     : U64 = hi.shr(48)
         // for |x| < 2^-57 the difference atan(x) - x is under half an ulp (this covers ±0)
         tiny : Bool = xn.lt(0x3FC6)  // 0x3FFF - 57
         huge : Bool = xn.gt(0x4071)  // 0x3FFF + 114
         when
             tiny -> return(self)
-            huge -> huge(sign)
-            else -> reduce(hi, lo, xn, sign)
+            huge -> huge()
+            else -> reduce(hi, xn)
 
     // |x| >= 2^115 or infinity (a NaN went back above): ±pi/2
-    block huge(sign: U128)
+    block huge()
         half_pi : U128 = 0x3FFF921FB54442D18469898CC51701B8
         return(f128_of(half_pi.bitor(sign)))
 
-    block reduce(hi: U64, lo: U64, xn: U64, sign: U128)
+    block reduce(hi: U64, xn: U64)
         mant  : U64             = hi.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
         red   : CmAtanReduction = cm_atan_reduce(mant, lo, xn)
         kd    : U128            = cm_atan_join(red.kd2, red.kd1)
         f     : U128            = cm_atan_fast_core(red.kn, kd, red.dn)
         table : Bool            = red.isct.ne(0).bitor(red.g)
         branch table
-            ? with_table(red, f, sign)
-            : direct(red, f, sign)
+            ? with_table(red, f)
+            : direct(red, f)
 
     // atan|x| = PHI0[isct] + f, or π/2 - that past 1
-    block with_table(red: CmAtanReduction, f: U128, sign: U128)
+    block with_table(red: CmAtanReduction, f: U128)
         placed    : CmAtanU192 = cm_atan_place(f, red.dn.add(1))
         phi       : CmAtanU192 = cm_atan_row_top(CM_ATAN_PHI0.to<@U64>(), red.isct)
         angle     : CmAtanU192 = cm_atan_u192_add(phi, placed)
@@ -81,18 +82,18 @@ routine F128.atan(self: Self) -> Self
         result  : Self          = f128_of(rounded.bits.bitor(sign))
         hard    : Bool          = rounded.hard
         branch hard
-            ? accurate(red, sign)
+            ? accurate(red)
             : return(result)
 
-    block direct(red: CmAtanReduction, f: U128, sign: U128)
+    block direct(red: CmAtanReduction, f: U128)
         rounded : CmAtanRounded = cm_atan_round_direct(f, red.dn)
         result  : Self          = f128_of(rounded.bits.bitor(sign))
         hard    : Bool          = rounded.hard
         branch hard
-            ? accurate(red, sign)
+            ? accurate(red)
             : return(result)
 
-    block accurate(red: CmAtanReduction, sign: U128)
+    block accurate(red: CmAtanReduction)
         r : Self = cm_atan_accurate(red, sign)
         return(r)
 

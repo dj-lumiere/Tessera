@@ -64,18 +64,18 @@ routine F16.atan2(self: Self, other: Self) -> Self
     shared sy   : F64  = yneg
         ? -1.0
         : 1.0
+    shared ay : U32 = uy.bitand(0x7FFFFFFF)
 
     block entry()
-        ay      : U32  = uy.bitand(0x7FFFFFFF)
         special : Bool = ay.ge(0x7F800000).bitor(ax.ge(0x7F800000))
         yzero   : Bool = ay.eq(0)
         when
-            special -> special(ay)
+            special -> special()
             yzero   -> y_zero()
             else    -> general(ay)
 
     // x or y is NaN or infinity: a NaN x wins over a NaN y, and the result is quiet
-    block special(ay: U32)
+    block special()
         xnan : Bool = ax.gt(0x7F800000)
         ynan : Bool = ay.gt(0x7F800000)
         yinf : Bool = ay.eq(0x7F800000)
@@ -118,8 +118,8 @@ routine F16.atan2(self: Self, other: Self) -> Self
             ? return(off.add(F64.from_bits(CM_F16_ATAN2_OFFL.getitem(iz))).to<Self>())
             : return(off.to<Self>())
 
-    block general(ay: U32)
-        gt  : Bool = ay.gt(ax)
+    block general(y_abs: U32)
+        gt  : Bool = y_abs.gt(ax)
         gti : U32  = gt
             ? 1
             : 0
@@ -142,17 +142,17 @@ routine F16.atan2(self: Self, other: Self) -> Self
         num  : F64  = mg.mul(zx).add(mng.mul(zy))
         den  : F64  = mg.mul(zy).add(mng.mul(zx))
         z    : F64  = num.div(den)
-        xbig : Bool = ax.ge(ay)
+        xbig : Bool = ax.ge(y_abs)
         d    : U32  = xbig
-            ? ax.sub_wrap(ay)
-            : ay.sub_wrap(ax)
+            ? ax.sub_wrap(y_abs)
+            : y_abs.sub_wrap(ax)
         close : Bool = d.lt(0x0D800000)
         branch close
-            ? rational(ay, gt, i, off, sg, z)
-            : combine(ay, gt, i, off, sg, z, 1.0)
+            ? rational(y_abs, gt, i, off, sg, z)
+            : combine(y_abs, gt, i, off, sg, z, 1.0)
 
     // the exponents are close: a rational approximation of atan(z)/z
-    block rational(ay: U32, gt: Bool, i: USize, off: F64, sg: F64, z: F64)
+    block rational(y_abs: U32, gt: Bool, i: USize, off: F64, sg: F64, z: F64)
         z2  : F64 = z.mul(z)
         z4  : F64 = z2.mul(z2)
         z8  : F64 = z4.mul(z4)
@@ -170,20 +170,20 @@ routine F16.atan2(self: Self, other: Self) -> Self
         d0  : F64 = z4.mul(cd2).add(cd0)
         d4  : F64 = z4.mul(cd6).add(cd4)
         d   : F64 = z8.mul(d4).add(d0)
-        jump combine(ay, gt, i, off, sg, z, n.div(d))
+        jump combine(y_abs, gt, i, off, sg, z, n.div(d))
 
-    block combine(ay: U32, gt: Bool, i: USize, off: F64, sg: F64, z: F64, r: F64)
+    block combine(y_abs: U32, gt: Bool, i: USize, off: F64, sg: F64, z: F64, r: F64)
         zr          : F64  = z.mul(sg).mul(r)
         res         : F64  = zr.add(off)
         biased_bits : U64  = res.bits().add_wrap(8)
         hard        : Bool = biased_bits.bitand(0xFFFFFFF).le(16)
         branch hard
-            ? check_tiny(ay, gt, i, off, sg)
+            ? check_tiny(y_abs, gt, i, off, sg)
             : return(res.to<Self>())
 
-    block check_tiny(ay: U32, gt: Bool, i: USize, off: F64, sg: F64)
-        exponent_gap : U32  = ax.sub_wrap(ay).shr(23)
-        tiny         : Bool = ay.lt(ax).bitand(exponent_gap.ge(25))  // the exponents differ by 25 or more
+    block check_tiny(y_abs: U32, gt: Bool, i: USize, off: F64, sg: F64)
+        exponent_gap : U32  = ax.sub_wrap(y_abs).shr(23)
+        tiny         : Bool = y_abs.lt(ax).bitand(exponent_gap.ge(25))  // the exponents differ by 25 or more
         branch tiny
             ? return(cm_f16_atan2_tiny(self.to<F32>(), other.to<F32>()))
             : accurate(gt, i, off, sg)

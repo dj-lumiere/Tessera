@@ -26,6 +26,8 @@ record CmExpm1Scaled
 /// :returns: e^`self` - 1: ±0 itself, +inf past the overflow threshold (about 11356.52), -1 for -inf and for
 ///     `self` below about -77.7. A NaN comes back quieted.
 routine F128.exp_m1(self: Self) -> Self
+    shared u : U128 = self.bits()
+
     block entry()
         nan      : Bool = self.is_nan()
         zero     : Bool = f128_is_zero_bits(self.bits())
@@ -39,23 +41,22 @@ routine F128.exp_m1(self: Self) -> Self
             else -> compute()
 
     block compute()
-        u     : U128 = self.bits()
         uh    : U64  = cm_wide_hi(u)
         ul    : U64  = cm_wide_lo(u)
         b1    : U64  = uh.bitand(0x7FFFFFFFFFFFFFFF)
         small : Bool = b1.lt(0x3FFE000000000000)
         large : Bool = b1.ge(0x400C62E42FEFA39E)
         when
-            small -> small(u)
-            large -> large(u, uh.to_wrap<S64>(), ul, b1)
-            else  -> moderate(u)
+            small -> small()
+            large -> large(uh.to_wrap<S64>(), ul, b1)
+            else  -> moderate()
 
-    block small(u: U128)
+    block small()
         r : Self = cm_expm1_small(u)
         return(r)
 
     // NaN, infinity, overflow, or a large negative x
-    block large(u: U128, uh: S64, ul: U64, b1: U64)
+    block large(uh: S64, ul: U64, b1: U64)
         inf       : Bool = b1.eq(0x7FFF000000000000).bitand(ul.eq(0))
         nan_exp   : Bool = b1.gt(0x7FFF000000000000)
         nan_frac  : Bool = b1.eq(0x7FFF000000000000).bitand(ul.ne(0))
@@ -72,10 +73,10 @@ routine F128.exp_m1(self: Self) -> Self
             inf       -> return(limit)
             nan       -> return(quiet)
             overflows -> return(infinity)
-            else      -> moderate(u)
+            else      -> moderate()
 
     // below about -77.7, e^x - 1 rounds to -1
-    block moderate(u: U128)
+    block moderate()
         saturates : Bool = u.ge(0xC0053C133AB16DB990B9FF9D97E6C709)
         minus_one : Self = f128_of(0xBFFF0000000000000000000000000000)
         branch saturates
@@ -517,21 +518,25 @@ routine cm_expm1_small_table_sum(r0: U128, tt: U128, pp: U128, mh: U64, ml: U64,
 /// :param neg: True to subtract each product, false to add it.
 /// :returns: The value v of the Horner chain.
 routine cm_expm1_chain64(c: @U64, top: USize, bottom: USize, mh: U64, neg: Bool) -> U64
-    block entry()
-        v : U64 = c.stride(top).load()
-        jump step(top.sub(2), v)
+    shared v : @U64 <- uninit
 
-    block step(i: USize, v: U64)
+    block entry()
+        v_start : U64 = c.stride(top).load()
+        v_start.store_into(v)
+        jump step(top.sub(2))
+
+    block step(i: USize)
         done : Bool = i.lt(bottom)
         branch done
-            ? return(v)
+            ? return(v.load())
             : continue
         ci   : U64 = c.stride(i).load()
-        t    : U64 = cm_wide_mulhi(v, mh)
+        t    : U64 = cm_wide_mulhi(v.load(), mh)
         next : U64 = neg
             ? ci.sub_wrap(t)
             : ci.add_wrap(t)
-        jump step(i.sub(2), next)
+        next.store_into(v)
+        jump step(i.sub(2))
 
 /// f = pair(base + 2i) +/- (mh * f) >> 64 for i = 3 down to 0.
 /// :param c: The coefficient words.
@@ -801,19 +806,23 @@ routine cm_expm1_accurate(x0: U128) -> CmExpm1Scaled
 /// :param r: The fraction bits below the two table indices.
 /// :returns: The polynomial value as three words.
 routine cm_expm1_accurate_poly(r: U64) -> CmWide3
-    shared ac : @U64 = CM_EXPM1_AC.to<@U64>()
+    shared ac : @U64     = CM_EXPM1_AC.to<@U64>()
+    shared f  : @CmWide3 <- uninit
 
     block entry()
-        f : CmWide3 = cm_wide_mulhi_add3(r, cm_wide_row3(ac, 14), cm_wide_row3(ac, 13))
-        jump step(12, f)
+        f_start : CmWide3 = cm_wide_mulhi_add3(r, cm_wide_row3(ac, 14), cm_wide_row3(ac, 13))
+        f_start.store_into(f)
+        jump step(12)
 
-    block step(i: USize, f: CmWide3)
+    block step(i: USize)
         c    : CmWide3 = cm_wide_row3(ac, i)
-        next : CmWide3 = cm_wide_mulhi_add3(r, f, c)
+        next : CmWide3 = cm_wide_mulhi_add3(r, f.load(), c)
         done : Bool    = i.eq(0)
         branch done
             ? return(next)
-            : step(i.sub(1), next)
+            : continue
+        next.store_into(f)
+        jump step(i.sub(1))
 
 /// Turns the accurate 2^(x / ln 2) f (3 words, the integer part e of x / ln 2 apart) into e^x - 1: subtract
 /// the 1, normalize, and check the result can be rounded, falling back to the super-accurate step.

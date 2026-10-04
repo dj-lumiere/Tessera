@@ -177,19 +177,20 @@ preset CM_F64_LOG2_LL: @Array<U64, 204> <- { 0x0000000000000000, 0x0000000000000
 /// log2(±0) = -inf, log2(+inf) = +inf, a negative argument gives NaN, and NaN comes back quiet.
 /// :returns: The base-2 logarithm of `self`.
 routine F64.log2(self: Self) -> Self
+    shared tu : U64 = self.bits()
+    shared ex : U64 = tu.shr(52)
+    shared e  : S64 = ex.to<S64>().sub(0x3FF)
+
     block entry()
-        tu      : U64  = self.bits()
-        ex      : U64  = tu.shr(52)
-        e       : S64  = ex.to<S64>().sub(0x3FF)
         small   : Bool = ex.eq(0)
         special : Bool = ex.ge(0x7FF)  // the sign bit is set, or +inf or NaN
         when
-            small   -> small(tu, e)
-            special -> special(tu)
+            small   -> small()
+            special -> special()
             else    -> normal(tu, e)
 
     // +0 or a subnormal
-    block small(tu: U64, e: S64)
+    block small()
         zero : Bool = tu.eq(0)
         branch zero
             ? return(Self.from_bits(0xFFF0000000000000))
@@ -198,7 +199,7 @@ routine F64.log2(self: Self) -> Self
         k : U64 = tu.leading_zeros()
         jump normal(tu.shl(k.sub(11)), e.sub(k.to<S64>().sub(12)))
 
-    block special(tu: U64)
+    block special()
         zero     : Bool = tu.shl(1).eq(0)
         nan      : Bool = tu.shl(1).gt(U64.shl(0x7FF, 53))
         negative : Bool = tu.shr(63).eq(1)
@@ -208,19 +209,19 @@ routine F64.log2(self: Self) -> Self
             negative -> return(Self.from_bits(0xFFF8000000000000))  // the default NaN of 0/0
             else     -> return(self)  // +inf
 
-    block normal(tn: U64, e: S64)
-        tu    : U64  = tn.bitand(0x000FFFFFFFFFFFFF)
-        power : Bool = tu.eq(0)  // exact powers of two
+    block normal(tn: U64, e_norm: S64)
+        mbits : U64  = tn.bitand(0x000FFFFFFFFFFFFF)
+        power : Bool = mbits.eq(0)  // exact powers of two
         branch power
-            ? return(e.to<Self>())
+            ? return(e_norm.to<Self>())
             : continue
-        ed   : Self  = e.to<Self>()
-        i    : USize = tu.shr(47).to<USize>()
-        d    : U64   = tu.bitand(0x00007FFFFFFFFFFF)
+        ed   : Self  = e_norm.to<Self>()
+        i    : USize = mbits.shr(47).to<USize>()
+        d    : U64   = mbits.bitand(0x00007FFFFFFFFFFF)
         corr : S64   = CM_F64_LOG2_B1.getitem(i).mul(d.shr(16).to<S64>())
-        jsum : U64   = tu.add_wrap(CM_F64_LOG2_B0.getitem(i).shl(33)).add_wrap(corr.to_wrap<U64>())
+        jsum : U64   = mbits.add_wrap(CM_F64_LOG2_B0.getitem(i).shl(33)).add_wrap(corr.to_wrap<U64>())
         j    : U64   = jsum.shr(42)
-        tf   : Self  = Self.from_bits(tu.bitor(0x3FF0000000000000))
+        tf   : Self  = Self.from_bits(mbits.bitor(0x3FF0000000000000))
         i1   : USize = j.shr(5).to<USize>()
         i2   : USize = j.bitand(0x1F).to<USize>()
         r    : Self  = Self.from_bits(CM_F64_LOG2_R1.getitem(i1)).mul(Self.from_bits(CM_F64_LOG2_R2.getitem(i2)))

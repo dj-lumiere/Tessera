@@ -40,40 +40,41 @@ preset CM_ATAN2_IND: @Array<U64, 129> <- { 0, 0, 1, 1, 2, 3, 3, 4, 5, 5, 6, 6, 7
 /// :param x: The x coordinate.
 /// :returns: The angle in [-pi, pi], with the sign of `self`. A NaN argument comes back quieted (`self` first).
 routine F128.atan2(self: Self, x: Self) -> Self
+    shared x_neg     : Bool = f128_is_negative_bits(x.bits())
+    shared y_sign    : U128 = self.bits().bitand(F128_SIGN)
+    shared magnitude : U128 = F128_SIGN.bitnot()
+    shared xa        : U128 = x.bits().bitand(magnitude)
+    shared ya        : U128 = self.bits().bitand(magnitude)
+
     block entry()
-        x_neg     : Bool = f128_is_negative_bits(x.bits())
-        y_sign    : U128 = self.bits().bitand(F128_SIGN)
-        magnitude : U128 = F128_SIGN.bitnot()
-        xa        : U128 = x.bits().bitand(magnitude)
-        ya        : U128 = self.bits().bitand(magnitude)
         nonfinite : Bool = xa.ge(F128_INF).bitor(ya.ge(F128_INF))
         branch nonfinite
             ? special()
-            : reduce(xa, ya, x_neg, y_sign)
+            : reduce()
 
     block special()
         r : Self = cm_atan2_special(self, x)
         return(r)
 
-    block reduce(xa: U128, ya: U128, x_neg: Bool, y_sign: U128)
+    block reduce()
         red  : CmAtanReduction = cm_atan2_reduce(xa, ya)
         zero : Bool            = red.zero
         branch zero
             ? special()
-            : fast(red, x_neg, y_sign)
+            : fast(red)
 
-    block fast(red: CmAtanReduction, x_neg: Bool, y_sign: U128)
+    block fast(red: CmAtanReduction)
         kd       : U128 = cm_atan_join(red.kd2, red.kd1)
         f        : U128 = cm_atan_fast_core(red.kn, kd, red.dn)
         in_table : Bool = red.isct.ne(0).bitor(red.g)
         table    : Bool = in_table.bitor(x_neg)
         branch table
-            ? with_table(red, f, x_neg, y_sign)
-            : direct(red, f, y_sign)
+            ? with_table(red, f)
+            : direct(red, f)
 
     // the angle ±(PHI0[isct] + f) + (0, π/2 or π): negated when exactly one of |x| < |y| and
     // x < 0 holds
-    block with_table(red: CmAtanReduction, f: U128, x_neg: Bool, y_sign: U128)
+    block with_table(red: CmAtanReduction, f: U128)
         placed  : CmAtanU192 = cm_atan_place(f, red.dn.add(1))
         phi     : CmAtanU192 = cm_atan_row_top(CM_ATAN_PHI0.to<@U64>(), red.isct)
         angle   : CmAtanU192 = cm_atan_u192_add(phi, placed)
@@ -89,19 +90,19 @@ routine F128.atan2(self: Self, x: Self) -> Self
         result  : Self          = f128_of(rounded.bits.bitor(y_sign))
         hard    : Bool          = rounded.hard
         branch hard
-            ? accurate(red, x_neg, y_sign)
+            ? accurate(red, x_neg)
             : return(result)
 
-    block direct(red: CmAtanReduction, f: U128, y_sign: U128)
+    block direct(red: CmAtanReduction, f: U128)
         rounded : CmAtanRounded = cm_atan_round_direct(f, red.dn)
         result  : Self          = f128_of(rounded.bits.bitor(y_sign))
         hard    : Bool          = rounded.hard
         branch hard
-            ? accurate(red, false, y_sign)
+            ? accurate(red, false)
             : return(result)
 
-    block accurate(red: CmAtanReduction, x_neg: Bool, y_sign: U128)
-        r : Self = cm_atan2_accurate(red, x_neg, y_sign)
+    block accurate(red: CmAtanReduction, x_negative: Bool)
+        r : Self = cm_atan2_accurate(red, x_negative, y_sign)
         return(r)
 
 /// The row of the quadrant offset: 0 (none), 1 (pi/2 when |x| < |y|), 2 (pi when x < 0, |x| >= |y|).
@@ -125,23 +126,23 @@ routine cm_atan2_quadrant(g: Bool, x_neg: Bool) -> USize
 /// :returns: The reduced argument, `g` set when |x| < |y|, and `zero` set when b = 0.
 routine cm_atan2_reduce(xa: U128, ya: U128) -> CmAtanReduction
     shared g : Bool = xa.lt(ya)
+    shared a : U128 = g
+        ? ya
+        : xa
+    shared b : U128 = g
+        ? xa
+        : ya
+    shared xn : S64 = a.shr(112).to<S64>()
 
     block entry()
-        a : U128 = g
-            ? ya
-            : xa
-        b : U128 = g
-            ? xa
-            : ya
-        xn          : S64  = a.shr(112).to<S64>()
         yn          : S64  = b.shr(112).to<S64>()
         b_subnormal : Bool = yn.eq(0)
         branch b_subnormal
-            ? scale(a, b, xn)
+            ? scale()
             : estimate(a, b, xn, yn)
 
     // subnormal b (or a too): normalize the significand, extending the exponent below 1
-    block scale(a: U128, b: U128, xn: S64)
+    block scale()
         b_zero      : Bool            = b.eq(0)
         none        : CmAtanReduction = CmAtanReduction { zero: true, g: g, isct: 0, dn: 0, kn: 0,
             kd0: 0, kd1: 0, kd2: 0 }
@@ -164,14 +165,14 @@ routine cm_atan2_reduce(xa: U128, ya: U128) -> CmAtanReduction
             : estimate(a_used, b_norm, xn_used, yn)
 
     // the table index from b × (1/a) estimated in a few bits, then corrected by one
-    block estimate(a_raw: U128, b_raw: U128, xn: S64, yn: S64)
-        dn         : S64   = xn.sub(yn)
+    block estimate(a_raw: U128, b_raw: U128, a_exponent: S64, yn: S64)
+        dn         : S64   = a_exponent.sub(yn)
         a_hi       : U64   = a_raw.shr(64).to<U64>()
         ah         : U64   = a_hi.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
         b_hi       : U64   = b_raw.shr(64).to<U64>()
         bh         : U64   = b_hi.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        a          : U128  = cm_atan_join(ah, a_raw.to_wrap<U64>())
-        b          : U128  = cm_atan_join(bh, b_raw.to_wrap<U64>())
+        a_full     : U128  = cm_atan_join(ah, a_raw.to_wrap<U64>())
+        b_full     : U128  = cm_atan_join(bh, b_raw.to_wrap<U64>())
         inda_bits  : U64   = ah.shr(41).bitand(127)
         inda       : USize = inda_bits.to<USize>()
         rcp        : U64   = CM_ATAN2_RCP.getitem(inda)
@@ -186,42 +187,42 @@ routine cm_atan2_reduce(xa: U128, ya: U128) -> CmAtanReduction
             ? scaled.to<USize>()
             : 0
         guess : USize = CM_ATAN2_IND.getitem(k).to<USize>()
-        jump correct(a, b, dn, near, guess)
+        jump correct(a_full, b_full, dn, near, guess)
 
-    block correct(a: U128, b: U128, dn: S64, near: Bool, guess: USize)
+    block correct(a_full: U128, b_full: U128, dn: S64, near: Bool, guess: USize)
         next_at      : USize = guess.add(1)
         next_tn      : U64   = CM_ATAN_TN.getitem(next_at)
-        ah           : U64   = a.shr(64).to<U64>()
-        bh           : U64   = b.shr(64).to<U64>()
+        ah           : U64   = a_full.shr(64).to<U64>()
+        bh           : U64   = b_full.shr(64).to<U64>()
         next_product : U64   = ah.shr(15).mul_wrap(next_tn)
         below        : Bool  = next_product.lt(bh.shr(dn.min(63).to<U64>()))
         bump         : Bool  = near.bitand(below)
         isct         : USize = guess.add(bump.to<USize>())
         plain        : Bool  = isct.eq(0)
         branch plain
-            ? plain(a, b, dn)
-            : offset(a, b, dn, isct.min(63))
+            ? plain(a_full, b_full, dn)
+            : offset(a_full, b_full, dn, isct.min(63))
 
     // b/a itself: kn = b, kd = a
-    block plain(a: U128, b: U128, dn: S64)
-        kn : U128            = b.shl(15)
-        kd : U128            = a.shl(15)
+    block plain(a_full: U128, b_full: U128, dn: S64)
+        kn : U128            = b_full.shl(15)
+        kd : U128            = a_full.shl(15)
         r  : CmAtanReduction = CmAtanReduction { zero: false, g: g, isct: 0, dn: dn, kn: kn, kd0: 0,
             kd1: kd.to_wrap<U64>(), kd2: kd.shr(64).to<U64>() }
         return(r)
 
     // kn = b - a t, kd = a + b t (scaled), the index moved down one when kn goes negative
-    block offset(a: U128, b: U128, dn: S64, first: USize)
+    block offset(a_full: U128, b_full: U128, dn: S64, first: USize)
         first_tn      : U64   = CM_ATAN_TN.getitem(first)
         shift         : S128  = dn.to<S128>()
-        kn_first_bits : U128  = b.shl(15).sub_wrap(a.mul_wrap(first_tn.to<U128>()).shl(shift.to<U128>()))
+        kn_first_bits : U128  = b_full.shl(15).sub_wrap(a_full.mul_wrap(first_tn.to<U128>()).shl(shift.to<U128>()))
         kn_first      : S128  = kn_first_bits.to_wrap<S128>()
         over          : Bool  = kn_first.lt(0)
         isct          : USize = over
             ? first.sub(1)
             : first
         tn      : U64  = CM_ATAN_TN.getitem(isct)
-        kn_raw  : U128 = b.shl(15).sub_wrap(a.mul_wrap(tn.to<U128>()).shl(shift.to<U128>()))
+        kn_raw  : U128 = b_full.shl(15).sub_wrap(a_full.mul_wrap(tn.to<U128>()).shl(shift.to<U128>()))
         kn_zero : Bool = kn_raw.eq(0)
         nzn_raw : S64  = kn_raw.leading_zeros().to<S64>()
         nzn     : S64  = kn_zero
@@ -230,10 +231,10 @@ routine cm_atan2_reduce(xa: U128, ya: U128) -> CmAtanReduction
         kn : U128 = kn_raw.shl(nzn.to<U128>())
         // kd = a × 2^(15 + dn) + b t as 192 bits, then normalized
         sl        : S64        = dn.add(15)
-        a_word    : U64        = a.shr(64).to<U64>()
+        a_word    : U64        = a_full.shr(64).to<U64>()
         a_top     : U64        = a_word.shr(49.sub(dn).to<U64>())
-        a_shifted : CmAtanU192 = CmAtanU192 { top: a_top, low: a.shl(sl.to<U128>()) }
-        bt        : CmAtanU192 = CmAtanU192 { top: 0, low: b.mul_wrap(tn.to<U128>()) }
+        a_shifted : CmAtanU192 = CmAtanU192 { top: a_top, low: a_full.shl(sl.to<U128>()) }
+        bt        : CmAtanU192 = CmAtanU192 { top: 0, low: b_full.mul_wrap(tn.to<U128>()) }
         kd        : CmAtanU192 = cm_atan_u192_add(a_shifted, bt)
         jump normalize(isct, dn, kn, nzn, kd)
 

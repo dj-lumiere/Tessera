@@ -25,6 +25,16 @@ record CmHypotSquare
 /// :param other: The other leg.
 /// :returns: sqrt(`self`² + `other`²), +inf when it overflows.
 routine F128.hypot(self: Self, other: Self) -> Self
+    shared x_abs : U128 = self.bits().bitand(F128_SIGN.bitnot())
+    shared y_abs : U128 = other.bits().bitand(F128_SIGN.bitnot())
+    shared swap  : Bool = x_abs.lt(y_abs)
+    shared a     : U128 = swap  // the larger leg
+        ? y_abs
+        : x_abs
+    shared b : U128 = swap
+        ? x_abs
+        : y_abs
+
     block entry()
         signaling : Bool = f128_is_signaling(self).bitor(f128_is_signaling(other))
         inf       : Bool = self.is_infinite().bitor(other.is_infinite())
@@ -36,51 +46,42 @@ routine F128.hypot(self: Self, other: Self) -> Self
             else      -> compute()
 
     block compute()
-        x_abs : U128 = self.bits().bitand(F128_SIGN.bitnot())
-        y_abs : U128 = other.bits().bitand(F128_SIGN.bitnot())
-        swap  : Bool = x_abs.lt(y_abs)
-        a     : U128 = swap  // the larger leg
-            ? y_abs
-            : x_abs
-        b : U128 = swap
-            ? x_abs
-            : y_abs
         a_exp  : S64  = a.shr(112).to<S64>()
         b_exp  : S64  = b.shr(112).to<S64>()
         b_tiny : Bool = b_exp.eq(0)
         branch b_tiny
-            ? tiny_leg(a, a_exp, b)
+            ? tiny_leg(a_exp)
             : legs(a, a_exp, b, b_exp)
 
-    block tiny_leg(a: U128, a_exp: S64, b: U128)
+    block tiny_leg(a_exp: S64)
         b_zero : Bool = b.eq(0)
         a_only : Self = f128_of(a)
         branch b_zero
             ? return(a_only)
-            : normalize_b(a, a_exp, b)
+            : normalize_b(a_exp)
 
     // A subnormal leg moves its leading bit up to the implicit bit's place, and its exponent
     // drops below 1 to match. Only then can the larger leg be subnormal too.
-    block normalize_b(a: U128, a_exp: S64, b: U128)
+    block normalize_b(a_exp: S64)
         lz_b   : U128 = b.leading_zeros()
         shift  : S64  = lz_b.to<S64>().sub(15)
         b_norm : U128 = b.shl(shift.to<U128>())
         b_exp  : S64  = 1.sub(shift)
         a_tiny : Bool = a_exp.eq(0)
         branch a_tiny
-            ? normalize_a(a, b_norm, b_exp)
+            ? normalize_a(b_norm, b_exp)
             : legs(a, a_exp, b_norm, b_exp)
 
-    block normalize_a(a: U128, b: U128, b_exp: S64)
+    block normalize_a(b_leg: U128, b_exp: S64)
         lz_a  : U128 = a.leading_zeros()
         shift : S64  = lz_a.to<S64>().sub(15)
-        jump legs(a.shl(shift.to<U128>()), 1.sub(shift), b, b_exp)
+        jump legs(a.shl(shift.to<U128>()), 1.sub(shift), b_leg, b_exp)
 
     // Both legs as 1.frac × 2^(exponent - 16383) with the leading bit placed at bit 127.
-    block legs(a: U128, a_exp: S64, b: U128, b_exp: S64)
+    block legs(a_leg: U128, a_exp: S64, b_leg: U128, b_exp: S64)
         gap        : S64  = a_exp.sub(b_exp)
-        a_top      : U128 = a.shl(15).bitor(F128_SIGN)
-        b_top      : U128 = b.shl(15).bitor(F128_SIGN)
+        a_top      : U128 = a_leg.shl(15).bitor(F128_SIGN)
+        b_top      : U128 = b_leg.shl(15).bitor(F128_SIGN)
         negligible : Bool = gap.gt(56)  // b only matters as a sticky bit
         branch negligible
             ? negligible(a_top, a_exp)
@@ -200,16 +201,16 @@ routine cm_hypot_round(v: U128, exponent: S64) -> F128
 routine cm_hypot_excess(c: U128, a_top: U128, b_top: U128, gap: S64) -> S128
     shared c_sq : U128          = c.mul_wrap(c)
     shared a_sq : CmHypotSquare = cm_hypot_sqr(a_top.shr(13))
+    shared b_sq : CmHypotSquare = cm_hypot_sqr(b_top.shr(13))
 
     block entry()
-        b_sq    : CmHypotSquare = cm_hypot_sqr(b_top.shr(13))
-        aligned : Bool          = gap.eq(0)
+        aligned : Bool = gap.eq(0)
         branch aligned
             ? add(b_sq)
-            : align(b_sq)
+            : align()
 
     // b² × 2^(-2 gap), with the bits shifted out kept as a sticky bit.
-    block align(b_sq: CmHypotSquare)
+    block align()
         k       : S128          = gap.mul(2).to<S128>()
         kc      : S128          = 128.sub(k)
         b_hi    : U128          = b_sq.hi
@@ -221,11 +222,11 @@ routine cm_hypot_excess(c: U128, a_top: U128, b_top: U128, gap: S64) -> S128
         shifted : CmHypotSquare = CmHypotSquare { hi: b_hi.shr(k.to<U128>()), lo: low }
         jump add(shifted)
 
-    block add(b_sq: CmHypotSquare)
-        b_lo  : U128 = b_sq.lo
+    block add(b_sq_aligned: CmHypotSquare)
+        b_lo  : U128 = b_sq_aligned.lo
         lo    : U128 = a_sq.lo.add_wrap(b_lo)
         carry : U128 = lo.lt(b_lo).to<U128>()
-        hi    : U128 = a_sq.hi.add_wrap(b_sq.hi.add_wrap(carry))
+        hi    : U128 = a_sq.hi.add_wrap(b_sq_aligned.hi.add_wrap(carry))
         wide  : Bool = hi.shr(102).ne(0)  // the sum carried: halve it (s = 2)
         branch wide
             ? continue

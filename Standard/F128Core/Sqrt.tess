@@ -63,6 +63,8 @@ preset CM_SQRT_RSQRT9: @Array<U64, 256> <- { 0xFFFFFFFF, 0xFFFFF780, 0xBFF55815,
 /// NaN and negatives keep F128's own NaNs (CORE-MATH's default NaN has its sign bit set). ±0 maps to itself.
 /// :returns: sqrt(`self`).
 routine F128.sqrt(self: Self) -> Self
+    shared bits : U128 = self.bits()
+
     block entry()
         nan      : Bool = self.is_nan()
         negative : Bool = f128_is_negative_bits(self.bits()).bitand(f128_is_zero_bits(self.bits()).bitnot())
@@ -76,35 +78,34 @@ routine F128.sqrt(self: Self) -> Self
         return(r)
 
     block compute()
-        bits    : U128 = self.bits()
         top     : S64  = bits.shr(112).to<S64>()  // sign and biased exponent
         tiny    : Bool = top.eq(0)  // +0 or positive subnormal
         special : Bool = top.ge(0x7FFF)  // negative, infinite, or NaN
         when
-            tiny    -> subnormal(bits)
+            tiny    -> subnormal()
             special -> return(cm_sqrt_special(self))
             else    -> root(bits, top)
 
-    block subnormal(bits: U128)
+    block subnormal()
         zero : Bool = bits.eq(0)
         branch zero
             ? return(self)
-            : normalize(bits)
+            : normalize()
 
     // Moves the leading bit up to the implicit bit's place. The exponent drops below 1 to match.
-    block normalize(bits: U128)
+    block normalize()
         lz    : U128 = bits.leading_zeros()
         shift : S64  = lz.to<S64>().sub(15)
         jump root(bits.shl(shift.to<U128>()), 1.sub(shift))
 
     // x = 1.frac × 2^(exponent - 16383). The root's biased exponent is floor((exponent + 1) / 2) + 8191:
     // the field gets one less, since the significand's leading bit lands on bit 112 and adds 1.
-    block root(bits: U128, exponent: S64)
+    block root(norm_bits: U128, exponent: S64)
         exp1            : S64  = exponent.add(1)
         odd             : S64  = exp1.bitand(1)
         biased_exponent : S64  = exp1.shr(1).add(8190)
         exp_field       : U128 = biased_exponent.to<U128>().shl(112)
-        frac            : U128 = bits.shl(16)  // the fraction alone, at the top
+        frac            : U128 = norm_bits.shl(16)  // the fraction alone, at the top
         radicand        : U128 = cm_sqrt_radicand(frac, odd)
         approx          : U128 = cm_sqrt_approx(frac, radicand, odd)
         slack           : S16  = approx.shl(2).to_wrap<S16>()  // the bits under the rounding point

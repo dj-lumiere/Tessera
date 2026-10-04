@@ -303,31 +303,33 @@ private routine cm_f64_pow_q_1(z: F64) -> CmF64PowDd
 /// :param x: The positive finite argument.
 /// :returns: log(`x`) as a double-double, with the cancellation flag.
 private routine cm_f64_pow_log_1(x: F64) -> CmF64PowLog1
+    shared xu : U64 = x.bits()
+    shared m  : U64 = xu.bitand(0x000FFFFFFFFFFFFF)
+
     block entry()
-        xu        : U64  = x.bits()
-        m         : U64  = xu.bitand(0x000FFFFFFFFFFFFF)
         exp_field : U64  = xu.shr(52).bitand(0x7FF)
         e         : S64  = exp_field.to<S64>()
         normal    : Bool = e.ne(0)
         branch normal
             ? reduce(m.add(0x0010000000000000), e.sub(0x3FF), m.bitor(0x3FF0000000000000))
-            : subnormal(m)
+            : subnormal()
 
-    block subnormal(m: U64)
+    block subnormal()
         k  : U64 = m.leading_zeros().sub(11)
         mk : U64 = m.shl(k)
         jump reduce(mk, S64.sub(-1022, k.to<S64>()), mk.bitor(0x3FF0000000000000))
 
-    // x = 2^e t with 1 <= t < 2 and 2^52 <= m < 2^53. Above sqrt(2), halve t so that 1/sqrt(2) < t < sqrt(2)
-    block reduce(m: U64, e0: S64, tu: U64)
+    // x = 2^e t with 1 <= t < 2 and 2^52 <= m_norm < 2^53. Above sqrt(2), halve t so that
+    // 1/sqrt(2) < t < sqrt(2)
+    block reduce(m_norm: U64, e0: S64, tu: U64)
         t0  : F64  = F64.from_bits(tu)
-        big : Bool = m.ge(0x16A09E667F3BCD)
+        big : Bool = m_norm.ge(0x16A09E667F3BCD)
         e   : S64  = big
             ? e0.add(1)
             : e0
         i : U64 = big
-            ? m.shr(45)
-            : m.shr(44)
+            ? m_norm.shr(45)
+            : m_norm.shr(44)
         t : F64 = big
             ? t0.mul(0.5)
             : t0
@@ -421,34 +423,34 @@ private routine cm_f64_pow_accurate(x0: F64, x: F64, y: F64, s: F64) -> F64
     shared sgn : U64 = s.eq(-1.0)
         ? 1
         : 0
+    shared dx  : CmF64PowDint = x.to<CmF64PowDint>()
+    shared dy  : CmF64PowDint = y.to<CmF64PowDint>()
+    shared lx  : CmF64PowDint = cm_f64_pow_log_2(dx)
+    shared ylx : CmF64PowDint = cm_f64_pow_mul_dint_21(lx, dy)
+    shared br  : CmF64PowDint = cm_f64_pow_exp_2(ylx)
 
     block entry()
-        dx        : CmF64PowDint = x.to<CmF64PowDint>()
-        dy        : CmF64PowDint = y.to<CmF64PowDint>()
-        lx        : CmF64PowDint = cm_f64_pow_log_2(dx)
-        ylx       : CmF64PowDint = cm_f64_pow_mul_dint_21(lx, dy)
-        br        : CmF64PowDint = cm_f64_pow_exp_2(ylx)
-        underflow : Bool         = br.ex.lt(-1075)
-        subnormal : Bool         = br.ex.lt(-1022)
+        underflow : Bool = br.ex.lt(-1075)
+        subnormal : Bool = br.ex.lt(-1022)
         when
             underflow -> return(F64.mul(0.5, s.mul(F64.from_bits(1))))
-            subnormal -> subnormal(br)
-            else      -> normal(br)
+            subnormal -> subnormal()
+            else      -> normal()
 
     // rounding test: the significand has to be shifted right by 1 <= sh <= 53 bits
-    block subnormal(br: CmF64PowDint)
+    block subnormal()
         sh         : U64 = S64.sub(0, br.ex.add(1022)).to_wrap<U64>()
         lo_shifted : U64 = cm_f64_pow_lo(br.r).shr(sh.add(10))
         m          : U64 = lo_shifted.bitor(cm_f64_pow_hi(br.r).shl(U64.sub(54, sh)))
-        jump round_test(br, m.add_wrap(14).gt(28))
+        jump round_test(m.add_wrap(14).gt(28))
 
     // rounding test on the 64 bits after the round bit
-    block normal(br: CmF64PowDint)
+    block normal()
         lo_tail : U64 = cm_f64_pow_lo(br.r).shr(10)
         lo      : U64 = lo_tail.bitor(cm_f64_pow_hi(br.r).shl(54))
-        jump round_test(br, lo.add_wrap(28).gt(56))
+        jump round_test(lo.add_wrap(28).gt(56))
 
-    block round_test(br: CmF64PowDint, rounds: Bool)
+    block round_test(rounds: Bool)
         z : CmF64PowDint = CmF64PowDint { r: br.r, ex: br.ex, sgn: sgn }
         branch rounds
             ? return(z.to<F64>())
@@ -463,8 +465,8 @@ private routine cm_f64_pow_accurate(x0: F64, x: F64, y: F64, s: F64) -> F64
     block phase3()
         qx       : CmF64PowQint = x.to<CmF64PowQint>()
         qy       : CmF64PowQint = y.to<CmF64PowQint>()
-        lx       : CmF64PowQint = cm_f64_pow_log_3(qx)
-        qr       : CmF64PowQint = cm_f64_pow_mul_qint_41(lx, qy)
+        qlx      : CmF64PowQint = cm_f64_pow_log_3(qx)
+        qr       : CmF64PowQint = cm_f64_pow_mul_qint_41(qlx, qy)
         qz       : CmF64PowQint = cm_f64_pow_exp_3(qr)
         hh       : U64          = cm_f64_pow_hi(qz.rh)
         hl       : U64          = cm_f64_pow_lo(qz.rh)

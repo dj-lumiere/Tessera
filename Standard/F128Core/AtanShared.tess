@@ -271,6 +271,8 @@ routine cm_atan_place(f: U128, dn: S64) -> CmAtanU192
 /// :param dn: The scale exponent of the reduced argument.
 /// :returns: The scaled arc tangent of the reduced argument.
 routine cm_atan_fast_core(kn: U128, kd: U128, dn: S64) -> U128
+    shared f : @U128 <- uninit
+
     block entry()
         rcp    : U128 = cm_atan_reciprocal(kd)
         t      : U128 = cm_atan_mul_high(kn, rcp)
@@ -281,34 +283,36 @@ routine cm_atan_fast_core(kn: U128, kd: U128, dn: S64) -> U128
         t2     : U128 = inside
             ? scaled
             : 0
-        t2h  : U64  = t2.shr(64).to<U64>()
-        c16  : U64  = CM_ATAN_C.getitem(16)
-        c14  : U64  = CM_ATAN_C.getitem(14)
-        c12  : U64  = CM_ATAN_C.getitem(12)
-        c11  : U64  = CM_ATAN_C.getitem(11)
-        c10  : U64  = CM_ATAN_C.getitem(10)
-        fl14 : U64  = c14.sub_wrap(mul_high64(t2h, c16))
-        fl12 : U64  = c12.sub_wrap(mul_high64(t2h, fl14))
-        f_lo : U64  = c10.sub_wrap(t2h).sub_wrap(mul_high64(t2h, fl12))
-        f    : U128 = cm_atan_join(c11, f_lo)
-        jump horner(4, f, t, t2)
+        t2h     : U64  = t2.shr(64).to<U64>()
+        c16     : U64  = CM_ATAN_C.getitem(16)
+        c14     : U64  = CM_ATAN_C.getitem(14)
+        c12     : U64  = CM_ATAN_C.getitem(12)
+        c11     : U64  = CM_ATAN_C.getitem(11)
+        c10     : U64  = CM_ATAN_C.getitem(10)
+        fl14    : U64  = c14.sub_wrap(mul_high64(t2h, c16))
+        fl12    : U64  = c12.sub_wrap(mul_high64(t2h, fl14))
+        f_lo    : U64  = c10.sub_wrap(t2h).sub_wrap(mul_high64(t2h, fl12))
+        f_start : U128 = cm_atan_join(c11, f_lo)
+        f_start.store_into(f)
+        jump horner(4, t, t2)
 
-    block horner(i: USize, f: U128, t: U128, t2: U128)
+    block horner(i: USize, t: U128, t2: U128)
         done : Bool = i.lt(1)
         branch done
-            ? finish(f, t, t2)
-            : term(i, f, t, t2)
+            ? finish(t, t2)
+            : term(i, t, t2)
 
-    block term(i: USize, f: U128, t: U128, t2: U128)
+    block term(i: USize, t: U128, t2: U128)
         lo_at : USize = i.mul(2)
         hi_at : USize = lo_at.add(1)
         c_lo  : U64   = CM_ATAN_C.getitem(lo_at)
         c_hi  : U64   = CM_ATAN_C.getitem(hi_at)
-        next  : U128  = cm_atan_join(c_hi, c_lo).sub_wrap(cm_atan_mul_high(t2, f))
-        jump horner(i.sub(1), next, t, t2)
+        next  : U128  = cm_atan_join(c_hi, c_lo).sub_wrap(cm_atan_mul_high(t2, f.load()))
+        next.store_into(f)
+        jump horner(i.sub(1), t, t2)
 
-    block finish(f: U128, t: U128, t2: U128)
-        times_t2 : U128 = cm_atan_mul_high(t2, f)
+    block finish(t: U128, t2: U128)
+        times_t2 : U128 = cm_atan_mul_high(t2, f.load())
         times_t  : U128 = cm_atan_mul_high(t, times_t2)
         r        : U128 = t.sub_wrap(times_t)
         return(r)
@@ -343,24 +347,24 @@ routine cm_atan_round_fixed(s: CmAtanU192) -> CmAtanRounded
 routine cm_atan_round_direct(f: U128, dn: S64) -> CmAtanRounded
     shared w0 : U64 = f.to_wrap<U64>()
     shared w1 : U64 = f.shr(64).to<U64>()
+    shared k  : S64 = w1.leading_zeros().to<S64>()
+    shared xn : S64 = 0x3FFE.sub(dn).sub(k)
 
     block entry()
-        k      : S64  = w1.leading_zeros().to<S64>()
-        xn     : S64  = 0x3FFE.sub(dn).sub(k)
         normal : Bool = xn.gt(0)
         branch normal
-            ? normal(k.to<U64>(), xn)
+            ? normal(k.to<U64>())
             : subnormal()
 
-    block normal(k: U64, xn: S64)
+    block normal(ku: U64)
         ones    : U64           = U64.MAX
-        mask    : U64           = ones.shr(49.add(k))
+        mask    : U64           = ones.shr(49.add(ku))
         w0_tail : U64           = w0.add_wrap(6).bitand(mask)
-        tl      : U64           = w0_tail.bitxor(1.shl(14.sub(k)))
+        tl      : U64           = w0_tail.bitxor(1.shl(14.sub(ku)))
         hard    : Bool          = tl.le(15)
-        rnd     : U64           = w0.shr(14.sub(k)).bitand(1)
-        v0      : U64           = w0.shr(15.sub(k)).bitor(w1.shl(49.add(k)))
-        v1      : U64           = w1.shr(15.sub(k))
+        rnd     : U64           = w0.shr(14.sub(ku)).bitand(1)
+        v0      : U64           = w0.shr(15.sub(ku)).bitor(w1.shl(49.add(ku)))
+        v1      : U64           = w1.shr(15.sub(ku))
         bits    : U128          = cm_atan_join(v1,
             v0).add_wrap(cm_atan_join(xn.shl(48).to_wrap<U64>(), rnd))
         r       : CmAtanRounded = CmAtanRounded { hard: hard, bits: bits }
@@ -560,87 +564,95 @@ routine cm_atan_limbs_mul_high(o: @U64, a: @U64, b: @U64, n: USize) -> Void
 /// :param n: The number of limbs.
 /// :param k: The left shift, not negative.
 routine cm_atan_limbs_shl_pos(a: @U64, n: USize, k: S64) -> Void
+    shared dst : SSize = n.to<SSize>().sub(1)
+    shared c   : @S64  <- uninit
+
     block entry()
-        dst  : SSize = n.to<SSize>().sub(1)
         src  : SSize = dst.sub(k.shr(6).to<SSize>())
         some : Bool  = src.ge(0)
         branch some
-            ? first(dst, src.to<USize>())
+            ? first(src.to<USize>())
             : clear(dst)
 
-    block first(dst: SSize, src: USize)
-        c : U64 = a.stride(src).load()
-        jump move(dst, src.sub(1).to<SSize>(), c.to_wrap<S64>())
+    block first(src: USize)
+        first_limb : U64 = a.stride(src).load()
+        first_limb.to_wrap<S64>().store_into(c)
+        jump move(dst, src.sub(1).to<SSize>())
 
-    // the limb at dst takes c's bits and the top of the next lower limb
-    block move(dst: SSize, src: SSize, c: S64)
+    // the limb at target takes c's bits and the top of the next lower limb
+    block move(target: SSize, src: SSize)
         s    : S64  = k.bitand(63)
         more : Bool = src.ge(0)
         branch more
-            ? step(dst.to<USize>(), src.to<USize>(), c, s)
-            : last(dst.to<USize>(), c, s)
+            ? step(target.to<USize>(), src.to<USize>(), s)
+            : last(target.to<USize>(), s)
 
-    block step(dst: USize, src: USize, c: S64, s: S64)
+    block step(target: USize, src: USize, s: S64)
         next        : U64 = a.stride(src).load()
         under_shift : S64 = k.bitnot().bitand(63)
         under_bits  : U64 = next.shr(1).shr(under_shift.to<U64>())
         under       : S64 = under_bits.to<S64>()
-        limb_bits   : S64 = c.shl(s).bitor(under)
-        a.stride(dst).store(limb_bits.to_wrap<U64>())
-        jump move(dst.sub(1).to<SSize>(), src.sub_wrap(1).to_wrap<SSize>(), next.to_wrap<S64>())
+        limb_bits   : S64 = c.load().shl(s).bitor(under)
+        a.stride(target).store(limb_bits.to_wrap<U64>())
+        next.to_wrap<S64>().store_into(c)
+        jump move(target.sub(1).to<SSize>(), src.sub_wrap(1).to_wrap<SSize>())
 
-    block last(dst: USize, c: S64, s: S64)
-        a.stride(dst).store(c.shl(s).to_wrap<U64>())
-        jump clear(dst.sub_wrap(1).to_wrap<SSize>())
+    block last(target: USize, s: S64)
+        a.stride(target).store(c.load().shl(s).to_wrap<U64>())
+        jump clear(target.sub_wrap(1).to_wrap<SSize>())
 
-    block clear(dst: SSize)
-        done : Bool = dst.lt(0)
+    block clear(target: SSize)
+        done : Bool = target.lt(0)
         branch done
             ? return()
-            : clear_one(dst.to<USize>())
+            : clear_one(target.to<USize>())
 
-    block clear_one(dst: USize)
+    block clear_one(target: USize)
         zero : S64 = 0
-        a.stride(dst).store(zero.to<U64>())
-        jump clear(dst.sub_wrap(1).to_wrap<SSize>())
+        a.stride(target).store(zero.to<U64>())
+        jump clear(target.sub_wrap(1).to_wrap<SSize>())
 
 /// a >>= k (logical) on n limbs, k >= 0.
 /// :param a: The limbs shifted in place.
 /// :param n: The number of limbs.
 /// :param k: The right shift, not negative.
 routine cm_atan_limbs_shr_pos(a: @U64, n: USize, k: S64) -> Void
+    shared src : USize = k.shr(6).to<USize>()
+    shared c   : @U64  <- uninit
+
     block entry()
-        src  : USize = k.shr(6).to<USize>()
-        some : Bool  = src.lt(n)
+        some : Bool = src.lt(n)
         branch some
-            ? first(src)
+            ? first()
             : clear(0)
 
-    block first(src: USize)
-        c : U64 = a.stride(src).load()
-        jump move(0, src.add(1), c)
+    block first()
+        first_limb : U64 = a.stride(src).load()
+        first_limb.store_into(c)
+        jump move(0, src.add(1))
 
     // the limb at dst takes c's bits and the bottom of the next higher limb
-    block move(dst: USize, src: USize, c: U64)
+    block move(dst: USize, from: USize)
         s    : S64  = k.bitand(63)
-        more : Bool = src.lt(n)
+        more : Bool = from.lt(n)
         branch more
-            ? step(dst, src, c, s)
-            : last(dst, c, s)
+            ? step(dst, from, s)
+            : last(dst, s)
 
-    block step(dst: USize, src: USize, c: U64, s: S64)
-        next       : U64  = a.stride(src).load()
+    block step(dst: USize, from: USize, s: S64)
+        next       : U64  = a.stride(from).load()
         aligned    : Bool = s.eq(0)
         over_shift : S64  = 0.sub(k).bitand(63)
         over       : U64  = next.shl(over_shift.to<U64>())
         above      : U64  = aligned
             ? 0
             : over
-        a.stride(dst).store(c.shr(s.to<U64>()).bitor(above))
-        jump move(dst.add(1), src.add(1), next)
+        a.stride(dst).store(c.load().shr(s.to<U64>()).bitor(above))
+        next.store_into(c)
+        jump move(dst.add(1), from.add(1))
 
-    block last(dst: USize, c: U64, s: S64)
-        a.stride(dst).store(c.shr(s.to<U64>()))
+    block last(dst: USize, s: S64)
+        a.stride(dst).store(c.load().shr(s.to<U64>()))
         jump clear(dst.add(1))
 
     block clear(dst: USize)
@@ -676,30 +688,35 @@ routine cm_atan_limbs_shr(a: @U64, n: USize, k: S64) -> Void
 /// :param n: The number of limbs.
 /// :param k: The right shift, not negative.
 routine cm_atan_limbs_sar(a: @U64, n: USize, k: S64) -> Void
+    shared c : @U64 <- uninit
+
     block entry()
         src  : USize = k.shr(6).to<USize>()
         some : Bool  = src.lt(n)
         branch some
-            ? move(0, src.add(1), a.stride(src).load())
+            ? continue
             : beyond()
+        a.stride(src).load().store_into(c)
+        jump move(0, src.add(1))
 
-    block move(dst: USize, src: USize, c: U64)
+    block move(dst: USize, src: USize)
         s    : S64  = k.bitand(63)
         more : Bool = src.lt(n)
         branch more
-            ? step(dst, src, c, s)
-            : last(dst, c.to_wrap<S64>(), s)
+            ? step(dst, src, s)
+            : last(dst, c.load().to_wrap<S64>(), s)
 
-    block step(dst: USize, src: USize, c: U64, s: S64)
+    block step(dst: USize, src: USize, s: S64)
         next        : U64 = a.stride(src).load()
         above_shift : S64 = k.bitnot().bitand(63)
         above       : U64 = next.shl(1).shl(above_shift.to<U64>())
-        a.stride(dst).store(c.shr(s.to<U64>()).bitor(above))
-        jump move(dst.add(1), src.add(1), next)
+        a.stride(dst).store(c.load().shr(s.to<U64>()).bitor(above))
+        next.store_into(c)
+        jump move(dst.add(1), src.add(1))
 
-    block last(dst: USize, c: S64, s: S64)
-        a.stride(dst).store(c.shr(s).to_wrap<U64>())
-        jump fill(dst.add(1), c.shr(63))
+    block last(dst: USize, c_signed: S64, s: S64)
+        a.stride(dst).store(c_signed.shr(s).to_wrap<U64>())
+        jump fill(dst.add(1), c_signed.shr(63))
 
     block beyond()
         top_at : USize = n.sub_wrap(1)

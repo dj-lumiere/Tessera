@@ -277,6 +277,8 @@ private routine has_any(s: @U16, n: USize, a: U16, b: U16, c: U16) -> Bool
 /// :returns: The unit just after what was written.
 #target(os: "windows")
 private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
+    shared start : @U16 = target.stride(1)
+
     block entry()
         branch n.eq(0)
             ? empty()
@@ -309,25 +311,24 @@ private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
     // backwards, then reversed.
     block escaped()
         target.store(34)
-        start : @U16 = target.stride(1)
-        jump back(n, start, start, true)
+        jump back(n, start, true)
 
-    block back(i: USize, start: @U16, at: @U16, before_quote: Bool)
+    block back(i: USize, at: @U16, before_quote: Bool)
         branch i.eq(0)
             ? reverse(at, start, at.stride(-1))
             : continue
         u : U16 = source.stride(i.sub(1)).load()
         at.store(u)
         branch before_quote.bitand(u.eq(92))
-            ? doubled(i, start, at)
+            ? doubled(i, at)
             : continue
         branch u.eq(34)
-            ? doubled(i, start, at)
-            : back(i.sub(1), start, at.stride(1), false)
+            ? doubled(i, at)
+            : back(i.sub(1), at.stride(1), false)
 
-    block doubled(i: USize, start: @U16, at: @U16)
+    block doubled(i: USize, at: @U16)
         at.stride(1).store(92)
-        jump back(i.sub(1), start, at.stride(2), true)
+        jump back(i.sub(1), at.stride(2), true)
 
     block reverse(end: @U16, a: @U16, b: @U16)
         branch ptrtoint<@U16, USize>(a).lt(ptrtoint<@U16, USize>(b))
@@ -728,20 +729,21 @@ private routine Handles.empty() -> Self
 /// :param r: The pipe and the buffer.
 #target(os: "windows")
 private routine read_pipe(r: @PipeReader) -> Void
-    shared heap : @Allocator <- make_heap_allocator()
-    shared n    : @U32       <- 0
+    shared heap         : @Allocator         <- make_heap_allocator()
+    shared n            : @U32               <- 0
+    shared chunk_buffer : @Array<Byte, 4096> <- uninit
+    shared chunk        : @Byte              = chunk_buffer.to<@Byte>()
 
     block entry()
-        claim chunk : @Array<Byte, 4096> <- uninit
-        jump next(chunk.to<@Byte>())
+        jump next()
 
-    block next(chunk: @Byte)
+    block next()
         ok : Bool = c_read_file(r.pipe.load(), chunk, 4096, n, null).ne(0)
         branch ok.bitand(n.load().gt(0))
             ? continue
             : return()
         r.buffer.append(chunk, n.load().to<USize>(), heap)
-        jump next(chunk)
+        jump next()
 
 /// Closes this process's copies of the handles the child was given (its ends of the pipes, the null device, and any
 /// standard handle duplicated only for it), so end-of-file reaches the parent when the child exits.
@@ -1042,19 +1044,20 @@ private routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
 /// :param alloc: The allocator `buffer` grows from.
 #target(os: "windows")
 private routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @Allocator) -> Void
-    shared n : @U32 <- 0
+    shared n            : @U32               <- 0
+    shared chunk_buffer : @Array<Byte, 4096> <- uninit
+    shared chunk        : @Byte              = chunk_buffer.to<@Byte>()
 
     block entry()
-        claim chunk : @Array<Byte, 4096> <- uninit
-        jump next(chunk.to<@Byte>())
+        jump next()
 
-    block next(chunk: @Byte)
+    block next()
         ok : Bool = c_read_file(pipe, chunk, 4096, n, null).ne(0)
         branch ok.bitand(n.load().gt(0))
             ? continue
             : return()
         buffer.append(chunk, n.load().to<USize>(), alloc)
-        jump next(chunk)
+        jump next()
 
 /// What a helper thread captured on the malloc heap, copied into `alloc` (and the heap copy given back).
 /// :param b: The buffer filled on the malloc heap.

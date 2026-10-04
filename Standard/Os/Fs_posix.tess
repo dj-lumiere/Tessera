@@ -813,25 +813,27 @@ routine FileHandle.empty() -> Self
 /// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
 internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, FsError>
+    shared cpath_buffer : @Array<Byte, PATH_CAPACITY> <- uninit
+    shared cpath        : @Byte                       = cpath_buffer.to<@Byte>()
+
     block entry()
-        claim cpath : @Array<Byte, PATH_CAPACITY> <- uninit
-        branch c_path(path, cpath.to<@Byte>())
+        branch c_path(path, cpath)
             ? continue
             : return(.Failure(path_error(path)))
         f : OpenFlags = open_flags()
         when mode
-            OpenMode.Read      -> open(cpath.to<@Byte>(), f.cloexec)
-            OpenMode.Write     -> open_creating(cpath.to<@Byte>(), f, f.truncate)
-            OpenMode.Append    -> open_creating(cpath.to<@Byte>(), f, f.append)
-            OpenMode.ReadWrite -> open(cpath.to<@Byte>(), f.cloexec.bitor(2))
-            OpenMode.CreateNew -> open_creating(cpath.to<@Byte>(), f, f.exclude)
+            OpenMode.Read      -> open(f.cloexec)
+            OpenMode.Write     -> open_creating(f, f.truncate)
+            OpenMode.Append    -> open_creating(f, f.append)
+            OpenMode.ReadWrite -> open(f.cloexec.bitor(2))
+            OpenMode.CreateNew -> open_creating(f, f.exclude)
 
     // Write-only and created if missing, plus how it opens (truncate, append, or exclude).
-    block open_creating(cpath: @Byte, f: OpenFlags, how: CInt)
+    block open_creating(f: OpenFlags, how: CInt)
         creating : CInt = f.cloexec.bitor(1).bitor(f.create)
-        jump open(cpath, creating.bitor(how))
+        jump open(creating.bitor(how))
 
-    block open(cpath: @Byte, flags: CInt)
+    block open(flags: CInt)
         fd : CInt = c_open(cpath, flags, 0o666)
         branch fd.lt(0)
             ? return(failed<Self>())

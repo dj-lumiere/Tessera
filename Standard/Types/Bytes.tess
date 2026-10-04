@@ -197,26 +197,25 @@ routine Bytes.slice(self: @Self, start: USize, end: USize) -> Self
 #track_caller
 routine Bytes.concat(a: Self, b: Self, alloc: @Allocator) -> Self
     shared len_a : USize = a.count
+    shared la    : USize = a.count
+    shared lb    : USize = b.count
+    shared count : USize = la.add(lb)
+    shared data  : @Byte = allocate<Byte>(count.add(1), alloc)
 
     block entry()
-        la     : USize = a.count
-        lb     : USize = b.count
-        count  : USize = la.add(lb)
-        data   : @Byte = allocate<Byte>(count.add(1), alloc)
-        failed : Bool  = data.is_null()
+        failed : Bool = data.is_null()
         branch failed
             ? crash_allocation()
             : continue
         src_a : @Byte = a.data
         data.copy(src_a, len_a)
-        jump copy_b(data)
+        jump copy_b()
 
-    block copy_b(data: @Byte)
+    block copy_b()
         dst   : @Byte = data.stride(len_a)
         src_b : @Byte = b.data
         len_b : USize = b.count
         dst.copy(src_b, len_b)
-        count : USize = len_a.add(len_b)
         data.stride(count).store(0x00)
         result : Self = Self { data: data, count: count, alloc: alloc }
         return(result)
@@ -228,15 +227,17 @@ routine Bytes.concat(a: Self, b: Self, alloc: @Allocator) -> Self
 /// :returns: `true` when the contents are identical.
 routine Bytes.eq(self: Self, other: Self) -> Bool
     shared la : USize = self.count
+    shared pa : @Byte = self.data
+    shared pb : @Byte = other.data
 
     block entry()
         lb       : USize = other.count
         same_len : Bool  = la.eq(lb)
         branch same_len
-            ? loop(0, self.data, other.data)
+            ? loop(0)
             : return(false)
 
-    block loop(i: USize, pa: @Byte, pb: @Byte)
+    block loop(i: USize)
         done : Bool = i.ge(la)
         branch done
             ? return(true)
@@ -245,7 +246,7 @@ routine Bytes.eq(self: Self, other: Self) -> Bool
         bb : U8   = Byte.to<U8>(pb.stride(i).load())
         eq : Bool = ba.eq(bb)
         branch eq
-            ? loop(i.add(1), pa, pb)
+            ? loop(i.add(1))
             : return(false)
 
 /// Lexicographic byte-wise comparison. Bytes compare as U8, so this matches `memcmp` ordering, and a text that is a
@@ -311,15 +312,17 @@ routine Bytes.hash(self: Self) -> U64
 /// :returns: `true` when `prefix` matches the first bytes. An empty `prefix` always matches.
 routine Bytes.has_prefix(self: Self, prefix: Self) -> Bool
     shared pl : USize = prefix.count
+    shared sd : @Byte = self.data
+    shared pd : @Byte = prefix.data
 
     block entry()
         sl   : USize = self.count
         fits : Bool  = pl.le(sl)
         branch fits
-            ? loop(0, self.data, prefix.data)
+            ? loop(0)
             : return(false)
 
-    block loop(i: USize, sd: @Byte, pd: @Byte)
+    block loop(i: USize)
         done : Bool = i.ge(pl)
         branch done
             ? return(true)
@@ -328,7 +331,7 @@ routine Bytes.has_prefix(self: Self, prefix: Self) -> Bool
         b  : U8   = Byte.to<U8>(pd.stride(i).load())
         eq : Bool = a.eq(b)
         branch eq
-            ? loop(i.add(1), sd, pd)
+            ? loop(i.add(1))
             : return(false)
 
 /// Whether the text begins with `prefix`.
@@ -344,15 +347,17 @@ routine Bytes.has_prefix(self: @Self, prefix: Self) -> Bool
 /// :returns: `true` when `suffix` matches the last bytes. An empty `suffix` always matches.
 routine Bytes.has_suffix(self: Self, suffix: Self) -> Bool
     shared fl : USize = suffix.count
+    shared sd : @Byte = self.data
+    shared fd : @Byte = suffix.data
 
     block entry()
         sl   : USize = self.count
         fits : Bool  = fl.le(sl)
         branch fits
-            ? loop(0, sl.sub(fl), self.data, suffix.data)
+            ? loop(0, sl.sub(fl))
             : return(false)
 
-    block loop(i: USize, off: USize, sd: @Byte, fd: @Byte)
+    block loop(i: USize, off: USize)
         done : Bool = i.ge(fl)
         branch done
             ? return(true)
@@ -362,7 +367,7 @@ routine Bytes.has_suffix(self: Self, suffix: Self) -> Bool
         b   : U8    = Byte.to<U8>(fd.stride(i).load())
         eq  : Bool  = a.eq(b)
         branch eq
-            ? loop(i.add(1), off, sd, fd)
+            ? loop(i.add(1), off)
             : return(false)
 
 /// Whether the text ends with `suffix`.
@@ -380,6 +385,8 @@ routine Bytes.has_suffix(self: @Self, suffix: Self) -> Bool
 routine Bytes.find(self: Self, needle: Self) -> Option<USize>
     shared nlen : USize = needle.count
     shared slen : USize = self.count
+    shared sd   : @Byte = self.data
+    shared nd   : @Byte = needle.data
 
     block entry()
         empty_needle : Bool = nlen.eq(0)
@@ -402,31 +409,29 @@ routine Bytes.find(self: Self, needle: Self) -> Option<USize>
         return(r)
 
     block start()
-        sd   : @Byte = self.data
-        nd   : @Byte = needle.data
         last : USize = slen.sub(nlen)
-        jump outer(0, last, sd, nd)
+        jump outer(0, last)
 
-    block outer(i: USize, last: USize, sd: @Byte, nd: @Byte)
+    block outer(i: USize, last: USize)
         past : Bool = i.gt(last)
         branch past
             ? miss()
-            : inner(i, 0, last, sd, nd)
+            : inner(i, 0, last)
 
-    block inner(i: USize, j: USize, last: USize, sd: @Byte, nd: @Byte)
+    block inner(i: USize, j: USize, last: USize)
         done : Bool = j.ge(nlen)
         branch done
             ? hit(i)
-            : check(i, j, last, sd, nd)
+            : check(i, j, last)
 
-    block check(i: USize, j: USize, last: USize, sd: @Byte, nd: @Byte)
+    block check(i: USize, j: USize, last: USize)
         idx : USize = i.add(j)
         a   : U8    = Byte.to<U8>(sd.stride(idx).load())
         b   : U8    = Byte.to<U8>(nd.stride(j).load())
         eq  : Bool  = a.eq(b)
         branch eq
-            ? inner(i, j.add(1), last, sd, nd)
-            : outer(i.add(1), last, sd, nd)
+            ? inner(i, j.add(1), last)
+            : outer(i.add(1), last)
 
 /// The byte index of the first match of `needle`.
 /// :param needle: The bytes to look for.

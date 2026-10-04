@@ -469,16 +469,17 @@ routine cm_exp_fast(fs: CmExpWords3) -> U128
 /// :param kind: The function, `CM_EXP_KIND_E`, `CM_EXP_KIND_TWO` or `CM_EXP_KIND_TEN`.
 /// :returns: The correctly rounded result, normal, subnormal, or +0 below the subnormal range.
 routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> F128
+    shared el  : S64  = fs.w2.to_wrap<S64>().shr(20)
+    shared sig : U128 = cm_exp_fast(fs)
+
     block entry()
-        el     : S64  = fs.w2.to_wrap<S64>().shr(20)
-        sig    : U128 = cm_exp_fast(fs)
         normal : Bool = el.ge(-16382)
         branch normal
-            ? normal(el, sig)
-            : subnormal(el, sig)
+            ? normal()
+            : subnormal()
 
     // fall back when the 11 dropped bits are too close to a rounding boundary
-    block normal(el: S64, sig: U128)
+    block normal()
         sig_low : U64  = sig.to_wrap<U64>()
         dropped : U64  = sig_low.add_wrap(1030).bitand(0x7FF)
         close   : Bool = dropped.le(6)
@@ -491,16 +492,16 @@ routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> F128
         jump normal_round(better.exponent, better.sig)
 
     // the leading bit (at 112 after the shift) carries into the exponent field
-    block normal_round(el: S64, sig: U128)
-        round_bit       : U128 = sig.shr(10).bitand(1)
-        biased_exponent : S64  = el.add(16382)
+    block normal_round(el_final: S64, sig_final: U128)
+        round_bit       : U128 = sig_final.shr(10).bitand(1)
+        biased_exponent : S64  = el_final.add(16382)
         field           : U128 = biased_exponent.to<U128>().shl(112)
-        unrounded       : U128 = sig.shr(11).add_wrap(field)
+        unrounded       : U128 = sig_final.shr(11).add_wrap(field)
         bits            : U128 = unrounded.add_wrap(round_bit)
         r               : F128 = f128_of(bits)
         return(r)
 
-    block subnormal(el: S64, sig: U128)
+    block subnormal()
         some : Bool = el.gt(-16499)
         branch some
             ? continue
@@ -520,14 +521,14 @@ routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> F128
 
     // the accurate path may land one binade lower than the fast one, so the shift
     // can reach 127. The result then rounds from its top bit alone (RF shifted by 128)
-    block subnormal_round(el: S64, sig: U128)
-        shift    : S128 = -16372.sub(el).to<S128>()
+    block subnormal_round(el_final: S64, sig_final: U128)
+        shift    : S128 = -16372.sub(el_final).to<S128>()
         vanishes : Bool = shift.gt(127)
         branch vanishes
             ? return(CM_EXP_ZERO)
             : continue
-        round_bit : U128 = sig.shr(shift.to<U128>()).bitand(1)
-        aligned   : U128 = sig.shr(shift.to<U128>()).shr(1)
+        round_bit : U128 = sig_final.shr(shift.to<U128>()).bitand(1)
+        aligned   : U128 = sig_final.shr(shift.to<U128>()).shr(1)
         bits      : U128 = aligned.add_wrap(round_bit)
         r         : F128 = f128_of(bits)
         return(r)
@@ -711,13 +712,15 @@ routine cm_exp_ashr_words(o: @U64, len: USize, n: U64) -> Void
     shared top_index : USize = len.sub(1)
     shared top       : U64   = o.stride(top_index).load()
     shared sign      : S64   = top.to_wrap<S64>().shr(63)
+    shared words     : USize = n.shr(6).to<USize>()
+    shared bits      : U64   = n.bitand(63)
 
     block entry()
-        jump step(0, n.shr(6).to<USize>(), n.bitand(63))
+        jump step(0)
 
     // word j comes from words j + words and the one above it. Both are at or above
     // j, so shifting in place from the bottom up never reads a word already written
-    block step(j: USize, words: USize, bits: U64)
+    block step(j: USize)
         done : Bool = j.ge(len)
         branch done
             ? return()
@@ -726,7 +729,7 @@ routine cm_exp_ashr_words(o: @U64, len: USize, n: U64) -> Void
         low  : U64   = cm_exp_word_or_sign(o, from, len, sign.to_wrap<U64>())
         high : U64   = cm_exp_word_or_sign(o, from.add(1), len, sign.to_wrap<U64>())
         o.stride(j).store(cm_exp_funnel(high, low, bits.to<S64>()).to_wrap<U64>())
-        jump step(j.add(1), words, bits)
+        jump step(j.add(1))
 
 // -- fallback paths --------------------------------------------------------------
 

@@ -19,6 +19,8 @@ preset CM_EXP_E_UNDERFLOW: U128 = 0xC00C654BB3B2C73EBB059FABB506FF34
 /// :returns: e^`self`: +inf past the overflow threshold (about 11356.52), a correctly rounded subnormal or +0 at the
 ///     bottom of the range, exactly 1 for |`self`| < 2^-114. A NaN comes back quieted with its sign and payload.
 routine F128.exp(self: Self) -> Self
+    shared u : U128 = self.bits()
+
     block entry()
         nan      : Bool = self.is_nan()
         bits     : S128 = self.bits().to_wrap<S128>()
@@ -39,18 +41,17 @@ routine F128.exp(self: Self) -> Self
             else  -> compute()
 
     block compute()
-        u      : U128 = self.bits()
         hi     : U64  = cm_exp_hi(u)
         mag_hi : U64  = hi.bitand(0x7FFFFFFFFFFFFFFF)
         tiny   : Bool = mag_hi.lt(0x3F8D000000000000)  // |x| < 2^-114: e^x rounds to 1
         large  : Bool = mag_hi.ge(0x400C62E42FEFA39E)
         when
             tiny  -> return(CM_EXP_ONE)
-            large -> edge(u)
-            else  -> reduce(u)
+            large -> edge()
+            else  -> reduce()
 
     // NaN, infinities, and the overflow and underflow thresholds
-    block edge(u: U128)
+    block edge()
         is_nan      : Bool = f128_is_nan_bits(u)
         nonnegative : Bool = f128_is_negative_bits(u).bitnot()
         overflow    : Bool = nonnegative.bitand(u.ge(CM_EXP_E_OVERFLOW))
@@ -60,10 +61,10 @@ routine F128.exp(self: Self) -> Self
             is_nan    -> return(quiet)
             overflow  -> return(Self.INFINITY)
             underflow -> return(CM_EXP_ZERO)
-            else      -> reduce(u)
+            else      -> reduce()
 
     // x / ln(2): the significand times 1/ln(2), one's-complemented for negative x
-    block reduce(u: U128)
+    block reduce()
         hi        : S64         = cm_exp_hi(u).to_wrap<S64>()
         sign_mask : S64         = hi.shr(63)
         sig       : U128        = u.bitand(F128_FRAC_MASK).bitor(F128_IMPLICIT)

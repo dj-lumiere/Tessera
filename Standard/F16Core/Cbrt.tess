@@ -30,6 +30,8 @@ preset CM_F16_CBRT_TF: @Array<U32, 16> <- { 0x3C00, 0, 0, 0, 0x3D80, 0x3F00, 0x3
 /// back quiet).
 /// :returns: cbrt(`self`).
 routine F16.cbrt(self: Self) -> Self
+    shared tu : U32 = self.bits().to<U32>()
+
     block entry()
         // F16.to<F32> keeps a signaling NaN signaling, and its bits could pass for an exact cube below
         // (RazorForge's conversion quiets it, which rules that out). NaN comes back quiet either way
@@ -37,27 +39,26 @@ routine F16.cbrt(self: Self) -> Self
         branch nan
             ? return(self.add(self))
             : continue
-        tu           : U32   = self.bits().to<U32>()
         xf           : U32   = self.to<F32>().bits()
         top_mantissa : U32   = xf.shr(19).bitand(0xF)
         k            : USize = top_mantissa.to<USize>()
         tm           : U32   = CM_F16_CBRT_TM.getitem(k)
         match        : Bool  = tm.eq(xf.shr(13).bitand(0x3F))
         branch match
-            ? exponent(tu, xf, k)
-            : hard(tu)
+            ? exponent(xf, k)
+            : hard()
 
     // The mantissa is that of an exact cube, and the exponent must fit too.
-    block exponent(tu: U32, xf: U32, k: USize)
+    block exponent(xf: U32, k: USize)
         expo  : U32  = xf.bitand(0x7FFFFFFF).shr(23)
         te    : U32  = CM_F16_CBRT_TE.getitem(k)
         exact : Bool = te.eq(expo.add(2).mod(3))
         branch exact
-            ? exact(tu, expo, te, k)
-            : hard(tu)
+            ? exact(expo, te, k)
+            : hard()
 
     // expo - 127 - te is a multiple of 3, so its truncated and floored quotients agree.
-    block exact(tu: U32, expo: U32, te: U32, k: USize)
+    block exact(expo: U32, te: U32, k: USize)
         unbiased      : S32 = expo.to<S32>().sub(127)
         q             : S32 = unbiased.sub(te.to<S32>())
         qu            : U32 = q.div(3).to_wrap<U32>()
@@ -66,16 +67,16 @@ routine F16.cbrt(self: Self) -> Self
         return(Self.from_bits(r.to_wrap<U16>()))
 
     // The only input the F32 cube root rounds wrongly is 0x1.544p(k) with k = 1 mod 3.
-    block hard(tu: U32)
+    block hard()
         e             : U32  = tu.bitand(0x7FFF).shr(10)
         hard_mantissa : Bool = tu.bitand(0x03FF).eq(0x0151)
         wrong         : Bool = hard_mantissa.bitand(e.mod(3).eq(1)).bitand(e.lt(31))
         widened       : F32  = self.to<F32>()
         branch wrong
-            ? fix(tu, e)
+            ? fix(e)
             : return(widened.cbrt().to<Self>())
 
-    block fix(tu: U32, e: U32)
+    block fix(e: U32)
         e_rel          : S32 = e.to<S32>().sub(16)
         q              : S32 = e_rel.div(3).add(15)
         exponent_field : U32 = q.to_wrap<U32>().shl(10)

@@ -51,28 +51,29 @@ preset CM_F32_SIN_PI_S: @Array<U64, 128> <- { 0x0000000000000000, 0x3FA91F65F10D
 /// half-integer +-1, +-inf gives NaN, and NaN comes back quiet.
 /// :returns: sin(pi `self`).
 routine F32.sin_pi(self: Self) -> Self
-    shared ix       : U32  = self.bits()
-    shared e        : S32  = ix.shr(23).bitand(0xFF).to_wrap<S32>()
-    shared negative : Bool = ix.shr(31).eq(1)
-    shared zero     : Self = Self.copysign(0.0, self)
+    shared ix        : U32  = self.bits()
+    shared e         : S32  = ix.shr(23).bitand(0xFF).to_wrap<S32>()
+    shared negative  : Bool = ix.shr(31).eq(1)
+    shared zero      : Self = Self.copysign(0.0, self)
+    shared magnitude : U32  = ix.bitand(0x7FFFFF).bitor(0x800000)
+    shared sgn       : U32  = negative
+        ? 0xFFFFFFFF
+        : 0
+    // the significand with the sign of x, in two's complement
+    shared m : U32 = magnitude.bitxor(sgn).sub_wrap(sgn)
 
     block entry()
         special : Bool = e.eq(0xFF)
         branch special
             ? special()
             : continue
-        magnitude : U32 = ix.bitand(0x7FFFFF).bitor(0x800000)
-        sgn       : U32 = negative
-            ? 0xFFFFFFFF
-            : 0
-        m     : U32  = magnitude.bitxor(sgn).sub_wrap(sgn)  // the significand with the sign of x, in two's complement
         s     : S32  = S32.sub(143, e)
         big   : Bool = s.lt(0)
         small : Bool = s.gt(30)
         when
-            big   -> large(m, s)
+            big   -> large(s)
             small -> tiny()
-            else  -> moderate(m, s)
+            else  -> moderate(s)
 
     // infinities give NaN, NaN comes back quiet with its sign and payload
     block special()
@@ -82,7 +83,7 @@ routine F32.sin_pi(self: Self) -> Self
             : return(self.add(self))
 
     // |x| >= 2^17: x is a multiple of 1/64
-    block large(m: U32, s: S32)
+    block large(s: S32)
         even : Bool = s.lt(-6)  // |x| >= 2^23: x is an even integer
         branch even
             ? return(zero)
@@ -104,21 +105,21 @@ routine F32.sin_pi(self: Self) -> Self
         r  : F64 = z.mul(p)
         return(r.to<Self>())
 
-    block moderate(m: U32, s: S32)
+    block moderate(s: S32)
         si      : S32  = S32.sub(25, s)
         bits_in : Bool = si.ge(0)
         branch bits_in
-            ? fraction(m, s, si.to<U32>())
-            : evaluate(m, s)
+            ? fraction(s, si.to<U32>())
+            : evaluate(s)
 
     // 2^-1 <= |x| < 2^17: x is an integer when its bits below the binary point are all 0
-    block fraction(m: U32, s: S32, si: U32)
+    block fraction(s: S32, si: U32)
         integer : Bool = m.shl(si).eq(0)
         branch integer
             ? return(zero)
-            : evaluate(m, s)
+            : evaluate(s)
 
-    block evaluate(m: U32, s: S32)
+    block evaluate(s: S32)
         shift   : U32 = S32.sub(31, s).to<U32>()
         k       : S32 = m.shl(shift).to_wrap<S32>()  // 64 x - round(64 x), scaled by 2^32
         z       : F64 = k.to<F64>()

@@ -308,17 +308,18 @@ preset CM_F64_LOG10_POW10: @Array<U64, 32> <- { 0x3FF0000000000000, 0x4024000000
 /// log10(+inf) = +inf, a negative argument gives NaN, and NaN comes back quiet.
 /// :returns: The base-10 logarithm of `self`.
 routine F64.log10(self: Self) -> Self
+    shared u               : U64 = self.bits()
+    shared biased_exponent : S64 = u.shr(52).to<S64>()
+    shared e               : S64 = biased_exponent.sub(0x3FF)
+
     block entry()
-        u               : U64  = self.bits()
-        biased_exponent : S64  = u.shr(52).to<S64>()
-        e               : S64  = biased_exponent.sub(0x3FF)
-        edge            : Bool = e.ge(0x400).bitor(e.eq(-0x3FF))
+        edge : Bool = e.ge(0x400).bitor(e.eq(-0x3FF))
         branch edge
-            ? edge(u, e)
+            ? edge()
             : normal(u, e)
 
     // x <= 0, NaN, infinity or subnormal
-    block edge(u: U64, e: S64)
+    block edge()
         nan_inf  : Bool = e.eq(0x400).bitor(e.eq(0xC00).bitand(u.ne(0xFFF0000000000000)))
         negative : Bool = self.lt(0.0)
         zero     : Bool = self.eq(0.0)
@@ -334,14 +335,14 @@ routine F64.log10(self: Self) -> Self
         scaled_exponent : S64 = us.shr(52).to<S64>()
         jump normal(us, scaled_exponent.sub(0x3FF).sub(52))
 
-    block normal(u: U64, e: S64)
+    block normal(u_norm: U64, e_norm: S64)
         // x = 10^n for 0 <= n <= 22 gives exactly n: n is a guess from the exponent (32-bit wrapping arithmetic)
-        n     : U32  = U32.mul_wrap(0x267CFA2, e.to_wrap<U32>().add_wrap(1)).shr(27)
-        exact : Bool = u.eq(CM_F64_LOG10_POW10.getitem(n.to<USize>()))
+        n     : U32  = U32.mul_wrap(0x267CFA2, e_norm.to_wrap<U32>().add_wrap(1)).shr(27)
+        exact : Bool = u_norm.eq(CM_F64_LOG10_POW10.getitem(n.to<USize>()))
         branch exact
             ? return(n.to<Self>())
             : continue
-        hl    : CmF64LogDd = cm_f64_log10_fast(e, u.bitand(0x000FFFFFFFFFFFFF))
+        hl    : CmF64LogDd = cm_f64_log10_fast(e_norm, u_norm.bitand(0x000FFFFFFFFFFFFF))
         left  : Self       = hl.hi.add(hl.lo.sub(0x1.04p-69))  // the fast path's maximal absolute error
         right : Self       = hl.hi.add(hl.lo.add(0x1.04p-69))
         sure  : Bool       = left.eq(right)

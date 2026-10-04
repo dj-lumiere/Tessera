@@ -1136,31 +1136,33 @@ record DirIter
 /// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
 internal routine DirIter.open_path(self: @Self, path: Bytes) -> Result<Unit, FsError>
+    shared pattern_buffer : @Array<U16, PATH_CAPACITY> <- uninit
+    shared pattern        : @U16                       = pattern_buffer.to<@U16>()
+
     block entry()
         self.find.store(inttoptr<USize, Addr>(USize.MAX))
         self.pending.store(false)
-        claim pattern : @Array<U16, PATH_CAPACITY> <- uninit
-        n : Option<USize> = wide(path, pattern.to<@U16>())
+        n : Option<USize> = wide(path, pattern)
         when n
-            .Present(count) -> star(pattern.to<@U16>(), count)
+            .Present(count) -> star(count)
             .Absent         -> return(.Failure(path_error(path)))
 
     // path, a separator unless it ends with one, and "*"
-    block star(pattern: @U16, count: USize)
+    block star(count: USize)
         branch count.add(2).ge(PATH_CAPACITY)
             ? return(.Failure(FsError.NameTooLong))
             : continue
         branch count.eq(0)
-            ? glob(pattern, 0)
+            ? glob(0)
             : continue
         last : U16 = pattern.stride(count.sub(1)).load()
         branch last.eq(0x2F).bitor(last.eq(0x5C))
-            ? glob(pattern, count)
+            ? glob(count)
             : continue
         pattern.stride(count).store(0x5C)
-        jump glob(pattern, count.add(1))
+        jump glob(count.add(1))
 
-    block glob(pattern: @U16, at: USize)
+    block glob(at: USize)
         pattern.stride(at).store(0x2A)
         pattern.stride(at.add(1)).store(0)
         find : Addr = c_find_first_file(pattern, self.data.to<@Byte>())

@@ -378,13 +378,14 @@ routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
 /// :param alloc: The allocator for the bytes.
 /// :returns: The bytes up to the end of the input (or up to a read failure).
 routine In.read_all(alloc: @Allocator) -> Bytes
-    shared text : @CaptureBuffer <- CaptureBuffer.empty()
+    shared text         : @CaptureBuffer     <- CaptureBuffer.empty()
+    shared chunk_buffer : @Array<Byte, 4096> <- uninit
+    shared chunk        : @Byte              = chunk_buffer.to<@Byte>()
 
     block entry()
-        claim chunk : @Array<Byte, 4096> <- uninit
-        jump more(chunk.to<@Byte>())
+        jump more()
 
-    block more(chunk: @Byte)
+    block more()
         got : Result<USize, FsError> = Self.read_into_result(chunk, 4096)
         when got
             .Success(n) -> continue
@@ -393,7 +394,7 @@ routine In.read_all(alloc: @Allocator) -> Bytes
             ? return(text.owned(alloc))
             : continue
         text.append(chunk, n, alloc)
-        jump more(chunk)
+        jump more()
 
 /// The next line, without its "\n" (or "\r\n"), in memory from alloc. A last line with no "\n" still counts, and a
 /// blank line is "". Release it with `destruct()`.
@@ -988,43 +989,44 @@ private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: US
 /// :returns: `true` when all of it was written, `false` if the console refused.
 #target(os: "windows")
 private routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
-    shared written : @U32            <- 0
-    shared iter    : @BytesCharsIter <- Bytes.from_ptr(data, count).chars()
+    shared written     : @U32              <- 0
+    shared iter        : @BytesCharsIter   <- Bytes.from_ptr(data, count).chars()
+    shared unit_buffer : @Array<U16, 2048> <- uninit
+    shared units       : @U16              = unit_buffer.to<@U16>()
 
     block entry()
-        claim units : @Array<U16, 2048> <- uninit
-        jump fill(units.to<@U16>(), 0)
+        jump fill(0)
 
-    block fill(units: @U16, n: USize)
+    block fill(n: USize)
         branch n.ge(2046)
-            ? flush(units, n)
+            ? flush(n)
             : continue
         c : Option<Char> = iter.next()
         when c
-            .Present(char) -> put(units, n, char.to<U32>())
-            .Absent        -> last(units, n)
+            .Present(char) -> put(n, char.to<U32>())
+            .Absent        -> last(n)
 
-    block put(units: @U16, n: USize, cp: U32)
+    block put(n: USize, cp: U32)
         branch cp.lt(0x10000)
-            ? single(units, n, cp)
+            ? single(n, cp)
             : continue
         v              : U32 = cp.sub(0x10000)
         high_surrogate : U32 = v.shr(10).add(0xD800)
         units.stride(n).store(high_surrogate.to<U16>())
         low_surrogate : U32 = v.bitand(0x3FF).add(0xDC00)
         units.stride(n.add(1)).store(low_surrogate.to<U16>())
-        jump fill(units, n.add(2))
+        jump fill(n.add(2))
 
-    block single(units: @U16, n: USize, cp: U32)
+    block single(n: USize, cp: U32)
         units.stride(n).store(cp.to<U16>())
-        jump fill(units, n.add(1))
+        jump fill(n.add(1))
 
-    block flush(units: @U16, n: USize)
+    block flush(n: USize)
         branch write_units(h, units, n, written)
-            ? fill(units, 0)
+            ? fill(0)
             : return(false)
 
-    block last(units: @U16, n: USize)
+    block last(n: USize)
         return(write_units(h, units, n, written))
 
 /// Writes `n` UTF-16 units to a console, however many calls that takes.

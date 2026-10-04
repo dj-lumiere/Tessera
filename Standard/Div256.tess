@@ -199,29 +199,32 @@ private routine u256_divrem_knuth(u: U256, d: U256) -> U256DivRem
     shared lz    : U64           = d.leading_zeros().to<U64>()
     shared shift : U64           = lz.bitand(63)
     shared state : @U256Division <- uninit
+    shared q     : @U256         <- 0
 
     block entry()
         n : USize = 4.sub(lz.shr(6).to<USize>())
         state.construct(u, d, n, shift)
-        jump digit(4.sub(n), 0)
+        jump digit(4.sub(n))
 
     // Quotient digits come out most significant first, from j = 4 - n down to 0.
-    block digit(j: USize, q: U256)
+    block digit(j: USize)
         q_digit : U64  = state.step(j)
-        q_next  : U256 = q.shl(64).bitor(q_digit.to<U256>())
+        q_next  : U256 = q.load().shl(64).bitor(q_digit.to<U256>())
         done    : Bool = j.eq(0)
         branch done
             ? finish(q_next)
-            : digit(j.sub(1), q_next)
+            : continue
+        q_next.store_into(q)
+        jump digit(j.sub(1))
 
-    block finish(q: U256)
+    block finish(quotient: U256)
         l3        : U64        = state.u.getitem(3)
         l2        : U64        = state.u.getitem(2)
         l1        : U64        = state.u.getitem(1)
         l0        : U64        = state.u.getitem(0)
         shifted   : U256       = u256_from_limbs(l3, l2, l1, l0)
         remainder : U256       = shifted.shr(shift.to<U256>())
-        r         : U256DivRem = U256DivRem { quotient: q, remainder: remainder }
+        r         : U256DivRem = U256DivRem { quotient: quotient, remainder: remainder }
         return(r)
 
 /// Fills the state for dividing `u` by the `n`-limb `d`: both shifted left by `shift`, the bits shifted out of the
@@ -424,18 +427,20 @@ routine wide_divrem(u: U256, d: U256) -> U256DivRem
 /// :param x: The value.
 /// :param dst: The first of the eight limbs to write.
 private routine u256_store_words(x: U256, dst: @U32) -> Void
-    block entry()
-        claim slot : @U256 <- x
-        jump word(0, slot.to<@U32>())
+    shared slot : @U256 <- x
+    shared src  : @U32  = slot.to<@U32>()
 
-    block word(i: USize, src: @U32)
+    block entry()
+        jump word(0)
+
+    block word(i: USize)
         done : Bool = i.eq(8)
         branch done
             ? return()
             : continue
         limb : U32 = src.stride(i).load()
         limb.store_into(dst.stride(i))
-        jump word(i.add(1), src)
+        jump word(i.add(1))
 
 /// The U256 whose eight 32-bit limbs are at src, least significant first.
 /// :param src: The first of the eight limbs.
@@ -505,25 +510,28 @@ routine divrem_knuth32(u: U256, d: U256, words: USize) -> U256DivRem
     shared n     : USize           = 8.sub(lz.shr(5).to<USize>())
     shared shift : U32             = lz.bitand(31).to<U32>()
     shared state : @U256Division32 <- uninit
+    shared q     : @U256           <- 0
 
     block entry()
         state.construct(u, d, n, shift)
-        jump digit(words.sub(n), 0)
+        jump digit(words.sub(n))
 
     // Quotient digits come out most significant first, from j = words - n down to 0. A dividend of fewer than eight
     // limbs carries its normalization overflow in limb `words`, which the first step reads as its top limb.
-    block digit(j: USize, q: U256)
+    block digit(j: USize)
         q_digit : U32  = state.step(j)
-        q_next  : U256 = q.shl(32).bitor(q_digit.to<U256>())
+        q_next  : U256 = q.load().shl(32).bitor(q_digit.to<U256>())
         done    : Bool = j.eq(0)
         branch done
             ? finish(q_next)
-            : digit(j.sub(1), q_next)
+            : continue
+        q_next.store_into(q)
+        jump digit(j.sub(1))
 
-    block finish(q: U256)
+    block finish(quotient: U256)
         shifted   : U256 = u256_load_words(state.u.to<@U32>())
         remainder : U256 = shifted.shr(shift.to<U256>())
-        return(U256DivRem { quotient: q, remainder: remainder })
+        return(U256DivRem { quotient: quotient, remainder: remainder })
 
 /// Fills the state for dividing `u` by the `n`-limb `d`: both shifted left by `shift`, the bits shifted out of the
 /// dividend's top in a ninth limb.
@@ -547,51 +555,50 @@ routine U256Division32.construct(self: @Self, u: U256, d: U256, n: USize, shift:
 /// :param j: The window's lowest limb.
 /// :returns: The quotient digit.
 routine U256Division32.step(self: @Self, j: USize) -> U32
-    shared n : USize = self.n.load()
+    shared n      : USize = self.n.load()
+    shared top_at : USize = j.add(n)
+    shared u2     : U32   = self.u.getitem(top_at)
+    shared u1     : U32   = self.u.getitem(top_at.sub(1))
+    shared u0     : U32   = self.u.getitem(top_at.sub(2))
+    shared d1     : U32   = self.v.getitem(n.sub(1))
+    shared d0     : U32   = self.v.getitem(n.sub(2))
 
     block entry()
-        top_at : USize = j.add(n)
-        u2     : U32   = self.u.getitem(top_at)
-        u1     : U32   = self.u.getitem(top_at.sub(1))
-        u0     : U32   = self.u.getitem(top_at.sub(2))
-        d1     : U32   = self.v.getitem(n.sub(1))
-        d0     : U32   = self.v.getitem(n.sub(2))
         // The window's top limb is at most d1, so q̂ < 2^33 and r̂ < d1.
         top_high : U64 = u2.to<U64>().shl(32)
         top      : U64 = top_high.bitor(u1.to<U64>())
         q_hat    : U64 = top.div(d1.to<U64>())
         r_hat    : U64 = top.sub(q_hat.mul_wrap(d1.to<U64>()))  // one division: a U64 one is a library call here
-        jump refine(q_hat, r_hat, u0, d1, d0)
+        jump refine(q_hat, r_hat)
 
     // Knuth's D3: q̂ is too big while it exceeds a limb or q̂ × d0 exceeds r̂ × 2^32 + u0. Once r̂ reaches 2^32 the
     // test can't fail, and what is left is at most one too big.
-    block refine(q_hat: U64, r_hat: U64, u0: U32, d1: U32, d0: U32)
+    block refine(q_hat: U64, r_hat: U64)
         over_limb : Bool = q_hat.gt(0xFFFFFFFF)
         branch over_limb
-            ? lower(q_hat, r_hat, u0, d1, d0)
-            : test(q_hat, r_hat, u0, d1, d0)
+            ? lower(q_hat, r_hat)
+            : test(q_hat, r_hat)
 
-    block test(q_hat: U64, r_hat: U64, u0: U32, d1: U32, d0: U32)
+    block test(q_hat: U64, r_hat: U64)
         product : U64  = q_hat.mul(d0.to<U64>())
         window  : U64  = r_hat.shl(32).bitor(u0.to<U64>())
         over    : Bool = product.gt(window)
         branch over
-            ? lower(q_hat, r_hat, u0, d1, d0)
+            ? lower(q_hat, r_hat)
             : subtract(q_hat.to_wrap<U32>())
 
-    block lower(q_hat: U64, r_hat: U64, u0: U32, d1: U32, d0: U32)
+    block lower(q_hat: U64, r_hat: U64)
         q_less : U64  = q_hat.sub(1)
         r_more : U64  = r_hat.add(d1.to<U64>())
         again  : Bool = r_more.le(0xFFFFFFFF)
         branch again
-            ? refine(q_less, r_more, u0, d1, d0)
+            ? refine(q_less, r_more)
             : subtract(q_less.to_wrap<U32>())
 
     // Subtract q̂ × v from the window. A borrow out of its top means q̂ was one too big, so v is added back.
     block subtract(q_hat: U32)
-        borrow : U32   = self.submul(j, n, q_hat)
-        top_at : USize = j.add(n)
-        top    : U32   = self.u.getitem(top_at)
+        borrow : U32 = self.submul(j, n, q_hat)
+        top    : U32 = self.u.getitem(top_at)
         self.u.setitem(top_at, 0)  // the window's remainder is below v
         too_big : Bool = top.lt(borrow)
         branch too_big

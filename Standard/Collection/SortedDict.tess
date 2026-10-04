@@ -712,51 +712,52 @@ require TKey: typename, TValue: typename
 routine SortedDict<TKey, TValue>.put_result(self: @Self, key: TKey,
     value: TValue) -> Result<Unit, AllocFailed>
 require TKey: typename, TValue: typename
+    shared root : @SortedDictNode<TKey, TValue> = self.root.load()
+
     block entry()
-        root  : @SortedDictNode<TKey, TValue> = self.root.load()
-        empty : Bool                          = root.is_null()
+        empty : Bool = root.is_null()
         branch empty
             ? first_root()
-            : maybe_replace(root)
+            : maybe_replace()
 
     block first_root()
-        alloc   : @Allocator                    = self.alloc.load()
-        root    : @SortedDictNode<TKey, TValue> = SortedDictNode<TKey, TValue>.construct(true,
+        alloc      : @Allocator                    = self.alloc.load()
+        first_node : @SortedDictNode<TKey, TValue> = SortedDictNode<TKey, TValue>.construct(true,
             alloc)
-        no_root : Bool                          = root.is_null()
+        no_root    : Bool                          = first_node.is_null()
         branch no_root
             ? return(.Failure(AllocFailed {}))
             : continue
-        root.keys.setitem(0, key)
-        root.values.setitem(0, value)
-        root.count.store(1)
-        root.subtree_count.store(1)
-        self.root.store(root)
+        first_node.keys.setitem(0, key)
+        first_node.values.setitem(0, value)
+        first_node.count.store(1)
+        first_node.subtree_count.store(1)
+        self.root.store(first_node)
         self.count.store(1)
         return(.Success(Unit.value()))
 
-    block maybe_replace(root: @SortedDictNode<TKey, TValue>)
+    block maybe_replace()
         replaced : Bool = root.replace(key, value)
         branch replaced
             ? return(.Success(Unit.value()))
-            : insert_root(root)
+            : insert_root()
 
-    block insert_root(root: @SortedDictNode<TKey, TValue>)
+    block insert_root()
         alloc      : @Allocator = self.alloc.load()
         root_count : USize      = root.count.load()
         full       : Bool       = root_count.eq(NODE_KEYS)
         branch full
-            ? split_root(root, alloc)
+            ? split_root(alloc)
             : insert_nonfull(root, alloc)
 
-    block split_root(old_root: @SortedDictNode<TKey, TValue>, alloc: @Allocator)
+    block split_root(alloc: @Allocator)
         new_root : @SortedDictNode<TKey, TValue> = SortedDictNode<TKey, TValue>.construct(false,
             alloc)
         no_root  : Bool                          = new_root.is_null()
         branch no_root
             ? return(.Failure(AllocFailed {}))
             : continue
-        new_root.children.setitem(0, old_root)
+        new_root.children.setitem(0, root)
         split : Bool = new_root.split_child(0, alloc)
         branch split
             ? install_root(new_root, alloc)
@@ -770,8 +771,8 @@ require TKey: typename, TValue: typename
         deallocate<SortedDictNode<TKey, TValue>>(new_root, alloc)
         return(.Failure(AllocFailed {}))
 
-    block insert_nonfull(root: @SortedDictNode<TKey, TValue>, alloc: @Allocator)
-        inserted : Bool = root.insert_nonfull(key, value, alloc)
+    block insert_nonfull(root_node: @SortedDictNode<TKey, TValue>, alloc: @Allocator)
+        inserted : Bool = root_node.insert_nonfull(key, value, alloc)
         branch inserted
             ? continue
             : return(.Failure(AllocFailed {}))

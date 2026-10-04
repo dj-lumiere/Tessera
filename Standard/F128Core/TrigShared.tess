@@ -120,6 +120,7 @@ routine cm_trig(bits: U128, cosine: Bool) -> U128
 /// :returns: The sine and the cosine.
 routine cm_trig_both(bits: U128) -> F128SinCos
     shared magnitude : U128 = bits.bitand(F128_SIGN.bitnot())
+    shared sign      : U128 = bits.bitand(F128_SIGN)
 
     block entry()
         not_finite : Bool = magnitude.ge(F128_INF)
@@ -139,14 +140,13 @@ routine cm_trig_both(bits: U128) -> F128SinCos
     block finite()
         m     : U128 = cm_trig_significand(magnitude)
         e     : S64  = cm_trig_exponent(magnitude)
-        sign  : U128 = bits.bitand(F128_SIGN)
         small : Bool = e.lt(-8)
         branch small
-            ? small(m, e, sign)
-            : reduce(m, e, sign)
+            ? small(m, e)
+            : reduce(m, e)
 
     // below 2^-8 there is no reduction to share
-    block small(m: U128, e: S64, sign: U128)
+    block small(m: U128, e: S64)
         sin_fast : CmTrigFast = cm_trig_fast(m, e, false)
         cos_fast : CmTrigFast = cm_trig_fast(m, e, true)
         sin_bits : U128       = cm_trig_finish(sin_fast, m, e, false, sign)
@@ -154,14 +154,14 @@ routine cm_trig_both(bits: U128) -> F128SinCos
         r        : F128SinCos = cm_trig_pair(sin_bits, cos_bits)
         return(r)
 
-    block reduce(m: U128, e: S64, sign: U128)
+    block reduce(m: U128, e: S64)
         red : CmTrigReduced = cm_trig_reduce(m, e)
         ok  : Bool          = red.ok
         branch ok
-            ? fast(red, m, e, sign)
-            : accurate(m, e, sign)
+            ? fast(red, m, e)
+            : accurate(m, e)
 
-    block fast(red: CmTrigReduced, m: U128, e: S64, sign: U128)
+    block fast(red: CmTrigReduced, m: U128, e: S64)
         t1         : U128          = red.t1
         et         : S64           = red.et
         sq         : CmTrigSquares = cm_trig_squares(t1, et)
@@ -173,7 +173,7 @@ routine cm_trig_both(bits: U128) -> F128SinCos
         r          : F128SinCos    = cm_trig_pair(sin_bits, cos_bits)
         return(r)
 
-    block accurate(m: U128, e: S64, sign: U128)
+    block accurate(m: U128, e: S64)
         sin_bits : U128       = cm_trig_accurate(m, e, false, sign)
         cos_bits : U128       = cm_trig_accurate(m, e, true, 0)
         r        : F128SinCos = cm_trig_pair(sin_bits, cos_bits)
@@ -216,20 +216,20 @@ routine cm_trig_exponent(magnitude: U128) -> S64
 /// :param sign: The sign bit the argument contributes (0 for the cosine).
 /// :returns: The result's F128 bits.
 routine cm_trig_finish(fast: CmTrigFast, m: U128, e: S64, cosine: Bool, sign: U128) -> U128
+    shared frac : U128 = fast.frac
+    shared rest : U64  = frac.to_wrap<U64>().bitand(0x7FFF)
+
     block entry()
-        frac         : U128 = fast.frac
         vouched      : Bool = fast.vouched
-        rest         : U64  = frac.to_wrap<U64>().bitand(0x7FFF)
         shifted_rest : U64  = rest.add(16).sub_wrap(0x4000)
         distance     : U64  = shifted_rest.bitand(0x7FFF)
         clear        : Bool = distance.gt(32)
         decided      : Bool = vouched.bitand(clear)
         branch decided
-            ? round(rest)
+            ? round()
             : accurate()
 
-    block round(rest: U64)
-        frac            : U128 = fast.frac
+    block round()
         exponent        : U64  = fast.exponent
         fast_sign       : U128 = fast.sign
         up              : U128 = rest.gt(0x4000).to<U128>()
@@ -1009,31 +1009,29 @@ routine cm_trig_fast_tail(red: CmTrigReduced, sq: CmTrigSquares, sine_theta: U12
     cosine: Bool) -> CmTrigFast
     // the cosine is the sine a quadrant on: the top bit of the quadrant is the sign, the low bit which of
     // sin A and cos A is wanted
-    shared n        : S64 = red.n.to<S64>()
-    shared quadrant : S64 = n.shr(7).add(cosine.to<S64>())
-    shared want_cos : S64 = quadrant.bitand(1)
-    shared j        : S64 = n.bitand(127)
+    shared n        : S64  = red.n.to<S64>()
+    shared quadrant : S64  = n.shr(7).add(cosine.to<S64>())
+    shared want_cos : S64  = quadrant.bitand(1)
+    shared j        : S64  = n.bitand(127)
+    shared flipped  : Bool = quadrant.bitand(2).ne(0)
+    shared sign_bit : U128 = F128_SIGN
+    shared no_sign  : U128 = 0
+    shared flip     : U128 = flipped
+        ? sign_bit
+        : no_sign
 
     block entry()
-        flipped  : Bool = quadrant.bitand(2).ne(0)
-        sign_bit : U128 = F128_SIGN
-        no_sign  : U128 = 0
-        flip     : U128 = flipped
-            ? sign_bit
-            : no_sign
         pure_sine : Bool = j.eq(0).bitand(want_cos.eq(0))
         branch pure_sine
-            ? pure(flip)
-            : combine(flip)
+            ? pure()
+            : combine()
 
     // A = 0: the result is ±sin(theta) itself
-    block pure(flip: U128)
+    block pure()
         lz       : S64  = cm_trig_clz(sine_theta)
         frac     : U128 = sine_theta.shl(lz.to<U128>())
         exponent : S64  = red.et.sub(lz)
         negative : Bool = red.negative
-        sign_bit : U128 = F128_SIGN
-        no_sign  : U128 = 0
         g_sign   : U128 = negative
             ? sign_bit
             : no_sign
@@ -1043,7 +1041,7 @@ routine cm_trig_fast_tail(red: CmTrigReduced, sq: CmTrigSquares, sine_theta: U12
         return(r)
 
     // T1*cos(theta) ± T2*sin(theta), with T1 the wanted one of sin A and cos A and T2 the other
-    block combine(flip: U128)
+    block combine()
         et         : S64  = red.et
         correction : U128 = cm_trig_cos_corr(sq.u1, sq.u, sq.v)
         first1     : U128 = cm_trig_sincos(j.to<USize>(), want_cos.to<USize>(), 1)

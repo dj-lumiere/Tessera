@@ -80,61 +80,62 @@ preset CM_F16_POW_EXP_TB: @Array<U64, 64> <- { 0x3FF0000000000000, 0x3FF02C9A3E7
 /// :param exponent: The power to raise `self` to.
 /// :returns: `self`^`exponent`.
 routine F16.powf(self: Self, exponent: Self) -> Self
-    block entry()
-        xu : U32 = self.bits().to<U32>()
-        yu : U32 = exponent.bits().to<U32>()
-        xa : U32 = xu.bitand(0x7FFF)
-        ya : U32 = yu.bitand(0x7FFF)
-        when
-            xa.eq(0x3C00) -> unit_base(xu, yu, ya)  // |x| = 1
-            ya.eq(0)      -> zero_exponent(xa, xu)
-            ya.ge(0x7C00) -> special_exponent(xa, yu, ya)  // y = ±inf or NaN
-            xa.eq(0)      -> zero_base(xu, yu)
-            xu.ge(0x7C00) -> special_base(xa, xu, yu)  // x = ±inf, NaN, or x < 0
-            else          -> listed(xu, yu, 0)
+    shared xu : U32 = self.bits().to<U32>()
+    shared yu : U32 = exponent.bits().to<U32>()
+    shared xa : U32 = xu.bitand(0x7FFF)
+    shared ya : U32 = yu.bitand(0x7FFF)
 
-    block unit_base(xu: U32, yu: U32, ya: U32)
+    block entry()
+        when
+            xa.eq(0x3C00) -> unit_base()  // |x| = 1
+            ya.eq(0)      -> zero_exponent()
+            ya.ge(0x7C00) -> special_exponent()  // y = ±inf or NaN
+            xa.eq(0)      -> zero_base()
+            xu.ge(0x7C00) -> special_base()  // x = ±inf, NaN, or x < 0
+            else          -> listed(xu, 0)
+
+    block unit_base()
         minus_one : Bool = xu.shr(15).eq(1)
         branch minus_one
-            ? minus_one(yu, ya)
-            : plus_one(yu, ya)
+            ? minus_one()
+            : plus_one()
 
     // (-1)^y: ±1 for an integer y, NaN otherwise
-    block minus_one(yu: U32, ya: U32)
+    block minus_one()
         when
             ya.gt(0x7C00)         -> return(exponent.add(exponent))
-            cm_f16_pow_is_int(yu) -> minus_one_int(yu)
+            cm_f16_pow_is_int(yu) -> minus_one_int()
             else                  -> return(Self.from_bits(0xFE00))
 
-    block minus_one_int(yu: U32)
+    block minus_one_int()
         odd : Bool = cm_f16_pow_is_odd(yu)
         branch odd
             ? return(self)
             : return(self.neg())
 
     // 1^y = 1, except for a signaling NaN y
-    block plus_one(yu: U32, ya: U32)
+    block plus_one()
         snan : Bool = ya.gt(0x7C00).bitand(yu.bitand(0x0200).eq(0))
         branch snan
             ? return(exponent.add(exponent))
             : return(self)
 
     // x^0 = 1, except for a signaling NaN x
-    block zero_exponent(xa: U32, xu: U32)
+    block zero_exponent()
         snan : Bool = xa.gt(0x7C00).bitand(xu.bitand(0x0200).eq(0))
         branch snan
             ? return(self.add(self))
             : return(1.0)
 
     // |x| = 1 was handled above
-    block special_exponent(xa: U32, yu: U32, ya: U32)
+    block special_exponent()
         when
             xa.gt(0x7C00) -> return(self.add(self))
-            ya.eq(0x7C00) -> infinite_exponent(xa, yu)
+            ya.eq(0x7C00) -> infinite_exponent()
             else          -> return(exponent.add(exponent))
 
     // 0 when |x| < 1 and y = +inf or |x| > 1 and y = -inf, else +inf
-    block infinite_exponent(xa: U32, yu: U32)
+    block infinite_exponent()
         small : Bool = xa.lt(0x3C00)
         neg   : Bool = yu.shr(15).eq(1)
         zero  : Bool = small.ne(neg)
@@ -143,7 +144,7 @@ routine F16.powf(self: Self, exponent: Self) -> Self
             : return(Self.INFINITY)
 
     // x = ±0: a signed zero or infinity, negative only for -0 and an odd integer y
-    block zero_base(xu: U32, yu: U32)
+    block zero_base()
         odd_neg : Bool = cm_f16_pow_is_odd(yu).bitand(xu.shr(15).ne(0))
         neg_y   : Bool = yu.shr(15).eq(1)
         when
@@ -152,14 +153,14 @@ routine F16.powf(self: Self, exponent: Self) -> Self
             odd_neg               -> return(Self.from_bits(0x8000))
             else                  -> return(Self.from_bits(0x0000))
 
-    block special_base(xa: U32, xu: U32, yu: U32)
+    block special_base()
         when
-            xa.eq(0x7C00) -> infinite_base(xu, yu)
+            xa.eq(0x7C00) -> infinite_base()
             xa.gt(0x7C00) -> return(self.add(self))
-            else          -> negative_base(xa, yu)
+            else          -> negative_base()
 
     // ±inf: the sign survives only for an odd y, and a negative y gives a zero
-    block infinite_base(xu: U32, yu: U32)
+    block infinite_base()
         odd    : Bool = cm_f16_pow_is_odd(yu)
         signed : U32  = odd
             ? xu
@@ -171,7 +172,7 @@ routine F16.powf(self: Self, exponent: Self) -> Self
         return(Self.from_bits(r.to<U16>()))
 
     // x < 0: NaN for a non-integer y, else |x|^y with the sign of an odd y
-    block negative_base(xa: U32, yu: U32)
+    block negative_base()
         int : Bool = cm_f16_pow_is_int(yu)
         branch int
             ? continue
@@ -180,30 +181,30 @@ routine F16.powf(self: Self, exponent: Self) -> Self
         sign : U64  = odd
             ? 0x8000000000000000
             : 0
-        jump listed(xa, yu, sign)
+        jump listed(xa, sign)
 
-    // the inputs the approximation rounds wrongly (xu = |x| from here on)
-    block listed(xu: U32, yu: U32, sign: U64)
+    // the inputs the approximation rounds wrongly (xm = |x| from here on)
+    block listed(xm: U32, sign: U64)
         when
-            xu.eq(0x1C94).bitand(yu.eq(0x31BC)) -> return(F32.sub(0x1.848p-2, 0x1p-14).to<Self>())
-            xu.eq(0x537B).bitand(yu.eq(0x25BF)) -> return(F32.sub(0x1.18cp+0, 0x1p-12).to<Self>())
-            xu.eq(0x756B).bitand(yu.eq(0x112E)) -> return(F32.sub(0x1.01cp+0, 0x1p-12).to<Self>())
-            xu.eq(0x0D36).bitand(yu.eq(0x2316)) -> return(F32.add(0x1.cap-1, 0x1p-13).to<Self>())
-            xu.eq(0x273B).bitand(yu.eq(0x38B3)) -> return(F32.add(0x1.f8p-4, 0x1p-16).to<Self>())
-            xu.eq(0x32BB).bitand(yu.eq(0x4242)) -> return(F32.add(0x1.f2cp-8, 0x1p-20).to<Self>())
-            xu.eq(0x4D47).bitand(yu.eq(0x9D5F)) -> return(F64.sub(0x1.f8p-1, 0x1p-13).to<Self>())
-            xu.eq(0x2E27).bitand(yu.eq(0xC107)) -> return(F64.sub(0x1.688p+8, 0x1p-4).to<Self>())
-            xu.eq(0x14CB).bitand(yu.eq(0xBE46)) -> return(F64.sub(0x1.35cp+15, 0x1p-3).to<Self>())
-            xu.eq(0x7ABF).bitand(yu.eq(0x8CC5)) -> return(F64.sub(0x1.fe8p-1, 0x1p-13).to<Self>())
-            xu.eq(0x650C).bitand(yu.eq(0x9BED)) -> return(F64.add(0x1.f2p-1, 0x1p-13).to<Self>())
-            xu.eq(0x29A0).bitand(yu.eq(0xB5CF)) -> return(F64.add(0x1.8ep+1, 0x1p-11).to<Self>())
-            xu.eq(0x17E9).bitand(yu.eq(0xB1CF)) -> return(F64.add(0x1.8ep+1, 0x1p-11).to<Self>())
-            xu.eq(0x5988).bitand(yu.eq(0x9443)) -> return(F64.add(0x1.fd4p-1, 0x1p-13).to<Self>())
-            else                                -> classify(xu, yu, sign)
+            xm.eq(0x1C94).bitand(yu.eq(0x31BC)) -> return(F32.sub(0x1.848p-2, 0x1p-14).to<Self>())
+            xm.eq(0x537B).bitand(yu.eq(0x25BF)) -> return(F32.sub(0x1.18cp+0, 0x1p-12).to<Self>())
+            xm.eq(0x756B).bitand(yu.eq(0x112E)) -> return(F32.sub(0x1.01cp+0, 0x1p-12).to<Self>())
+            xm.eq(0x0D36).bitand(yu.eq(0x2316)) -> return(F32.add(0x1.cap-1, 0x1p-13).to<Self>())
+            xm.eq(0x273B).bitand(yu.eq(0x38B3)) -> return(F32.add(0x1.f8p-4, 0x1p-16).to<Self>())
+            xm.eq(0x32BB).bitand(yu.eq(0x4242)) -> return(F32.add(0x1.f2cp-8, 0x1p-20).to<Self>())
+            xm.eq(0x4D47).bitand(yu.eq(0x9D5F)) -> return(F64.sub(0x1.f8p-1, 0x1p-13).to<Self>())
+            xm.eq(0x2E27).bitand(yu.eq(0xC107)) -> return(F64.sub(0x1.688p+8, 0x1p-4).to<Self>())
+            xm.eq(0x14CB).bitand(yu.eq(0xBE46)) -> return(F64.sub(0x1.35cp+15, 0x1p-3).to<Self>())
+            xm.eq(0x7ABF).bitand(yu.eq(0x8CC5)) -> return(F64.sub(0x1.fe8p-1, 0x1p-13).to<Self>())
+            xm.eq(0x650C).bitand(yu.eq(0x9BED)) -> return(F64.add(0x1.f2p-1, 0x1p-13).to<Self>())
+            xm.eq(0x29A0).bitand(yu.eq(0xB5CF)) -> return(F64.add(0x1.8ep+1, 0x1p-11).to<Self>())
+            xm.eq(0x17E9).bitand(yu.eq(0xB1CF)) -> return(F64.add(0x1.8ep+1, 0x1p-11).to<Self>())
+            xm.eq(0x5988).bitand(yu.eq(0x9443)) -> return(F64.add(0x1.fd4p-1, 0x1p-13).to<Self>())
+            else                                -> classify(xm, sign)
 
-    block classify(xu: U32, yu: U32, sign: U64)
-        xd   : F64  = Self.from_bits(xu.to<U16>()).to<F64>()
-        isex : U64  = cm_f16_pow_is_exact(xu, yu, exponent)
+    block classify(xm: U32, sign: U64)
+        xd   : F64  = Self.from_bits(xm.to<U16>()).to<F64>()
+        isex : U64  = cm_f16_pow_is_exact(xm, yu, exponent)
         pow2 : Bool = isex.gt(0xFF)
         // x = 2^E with an integer y E in range: the exact power of two
         branch pow2

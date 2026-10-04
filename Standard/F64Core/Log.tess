@@ -617,17 +617,18 @@ record CmF64LogDint
 /// a negative argument gives NaN, and NaN comes back quiet.
 /// :returns: ln(`self`).
 routine F64.ln(self: Self) -> Self
+    shared u               : U64 = self.bits()
+    shared biased_exponent : S64 = u.shr(52).to<S64>()
+    shared e               : S64 = biased_exponent.sub(0x3FF)
+
     block entry()
-        u               : U64  = self.bits()
-        biased_exponent : S64  = u.shr(52).to<S64>()
-        e               : S64  = biased_exponent.sub(0x3FF)
-        edge            : Bool = e.ge(0x400).bitor(e.eq(-0x3FF))
+        edge : Bool = e.ge(0x400).bitor(e.eq(-0x3FF))
         branch edge
-            ? edge(u, e)
+            ? edge()
             : normal(u, e)
 
     // x <= 0, NaN, infinity or subnormal
-    block edge(u: U64, e: S64)
+    block edge()
         nan_inf  : Bool = e.eq(0x400).bitor(e.eq(0xC00).bitand(u.ne(0xFFF0000000000000)))
         negative : Bool = self.lt(0.0)
         zero     : Bool = self.eq(0.0)
@@ -643,14 +644,14 @@ routine F64.ln(self: Self) -> Self
         scaled_exponent : S64 = us.shr(52).to<S64>()
         jump normal(us, scaled_exponent.sub(0x3FF).sub(52))
 
-    // now x = m 2^e with 1 <= m < 2 and -1074 <= e <= 1023
-    block normal(u: U64, e: S64)
-        mbits : U64  = u.bitand(0x000FFFFFFFFFFFFF)
-        one   : Bool = mbits.eq(0).bitand(e.eq(0))
+    // now x = m 2^e_norm with 1 <= m < 2 and -1074 <= e_norm <= 1023
+    block normal(u_norm: U64, e_norm: S64)
+        mbits : U64  = u_norm.bitand(0x000FFFFFFFFFFFFF)
+        one   : Bool = mbits.eq(0).bitand(e_norm.eq(0))
         branch one
             ? return(0.0)
             : continue
-        hl    : CmF64LogDd = cm_f64_log_fast(e, mbits)
+        hl    : CmF64LogDd = cm_f64_log_fast(e_norm, mbits)
         left  : Self       = hl.hi.add(hl.lo.sub(0x1.b6p-69))  // the fast path's maximal absolute error
         right : Self       = hl.hi.add(hl.lo.add(0x1.b6p-69))
         sure  : Bool       = left.eq(right)

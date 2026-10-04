@@ -56,6 +56,7 @@ private routine cm_f64_cos_fast(x: F64) -> CmF64TrigBound
     // i >= 2^9: pi/2 <= x <= pi, cos(pi/2 + x) = -sin(x)
     shared half : U64 = i0.shr(9)
     shared neg  : U64 = neg0.bitxor(half)
+    shared err1 : F64 = red.err
 
     block entry()
         is_cos : U64 = U64.bitxor(1, half)
@@ -63,12 +64,11 @@ private routine cm_f64_cos_fast(x: F64) -> CmF64TrigBound
         // i >= 2^8: cos(pi/2 - x) = sin(x), and 2^-11 - h is exact
         mirror : Bool = i1.bitand(0x100).ne(0)
         branch mirror
-            ? eval(is_cos.bitxor(1), U64.sub(0x1FF, i1), F64.sub(0x1p-11, red.hi), red.lo.neg(),
-                red.err)
-            : eval(is_cos, i1, red.hi, red.lo, red.err)
+            ? eval(is_cos.bitxor(1), U64.sub(0x1FF, i1), F64.sub(0x1p-11, red.hi), red.lo.neg())
+            : eval(is_cos, i1, red.hi, red.lo)
 
     // the SC table is evaluated at i/2^11 + SC[i][0], and h - SC[i][0] is exact
-    block eval(is_cos: U64, i: U64, h0: F64, l: F64, err1: F64)
+    block eval(is_cos: U64, i: U64, h0: F64, l: F64)
         k      : USize       = i.to<USize>().mul(3)
         h      : F64         = h0.sub(CM_F64_TRIG_SC.getitem(k))
         u      : CmF64TrigDD = cm_f64_trig_a_mul(h, h)
@@ -79,18 +79,18 @@ private routine cm_f64_cos_fast(x: F64) -> CmF64TrigBound
         cos_i  : F64         = CM_F64_TRIG_SC.getitem(k.add(2))
         is_sin : Bool        = is_cos.eq(0)
         branch is_sin
-            ? sine(sin_i, cos_i, ps, pc, err1)
-            : cosine(sin_i, cos_i, ps, pc, err1)
+            ? sine(sin_i, cos_i, ps, pc)
+            : cosine(sin_i, cos_i, ps, pc)
 
     // sin2pi(i/2^11 + X) = cos2pi(i/2^11) sin2pi(X) + sin2pi(i/2^11) cos2pi(X)
-    block sine(sin_i: F64, cos_i: F64, ps: CmF64TrigDD, pc: CmF64TrigDD, err1: F64)
+    block sine(sin_i: F64, cos_i: F64, ps: CmF64TrigDD, pc: CmF64TrigDD)
         s : CmF64TrigDD = cm_f64_trig_s_mul(cos_i, ps)
         c : CmF64TrigDD = cm_f64_trig_s_mul(sin_i, pc)
         t : CmF64TrigDD = cm_f64_trig_fast_two_sum(c.hi, s.hi)
         jump finish(t.hi, t.lo.add(s.lo.add(c.lo)), F64.add(0x1.55p-69, err1))
 
     // cos2pi(i/2^11 + X) = cos2pi(i/2^11) cos2pi(X) - sin2pi(i/2^11) sin2pi(X)
-    block cosine(sin_i: F64, cos_i: F64, ps: CmF64TrigDD, pc: CmF64TrigDD, err1: F64)
+    block cosine(sin_i: F64, cos_i: F64, ps: CmF64TrigDD, pc: CmF64TrigDD)
         c : CmF64TrigDD = cm_f64_trig_s_mul(cos_i, pc)
         s : CmF64TrigDD = cm_f64_trig_s_mul(sin_i, ps)
         t : CmF64TrigDD = cm_f64_trig_fast_two_sum(c.hi, s.hi.neg())
