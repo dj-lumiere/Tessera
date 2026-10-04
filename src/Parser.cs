@@ -88,7 +88,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private AliasDecl ParseDefine(List<Attribute> attrs)
     {
         var pos = Next().Pos;
-        var name = Expect(TokenKind.Ident, "the defined name");
+        var name = TypeName(Expect(TokenKind.Ident, "the defined name"));
         if (!char.IsAsciiLetterUpper(name.Text[0]))
             throw new CompileError(name.Pos, $"define names a module or a type, so the name is PascalCase: '{name.Text}'");
         Expect(TokenKind.Eq, "'='");
@@ -391,7 +391,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var names = new List<string>();
         if (!Accept(TokenKind.Lt)) return names;
-        do names.Add(Expect(TokenKind.Ident, "a type parameter name").Text); while (Accept(TokenKind.Comma));
+        do names.Add(TypeName(Expect(TokenKind.Ident, "a type parameter name")).Text); while (Accept(TokenKind.Comma));
         Expect(TokenKind.Gt, "'>'");
         return names;
     }
@@ -422,10 +422,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             typeParams = first.Args.Select(a => a is TypeArgType { Type.Args.Count: 0 } t
                 ? t.Type.Name
                 : throw new CompileError(first.Pos, "routine type parameters must be plain names")).ToList();
+            if (first.Args.FirstOrDefault(a => a is TypeArgType { Type: { Name: "Me", Args.Count: 0 } }) is TypeArgType me)
+                throw TypeNameTaken(me.Type.Pos);
         }
 
         _inAsm = attrs.Any(a => a is { Name: "external", First: "asm" });
-        var parameters = ParseParams();
+        var parameters = ParseParams(receiver: true);
         _routineValues = parameters.Select(p => p.Name).ToList();
         Expect(TokenKind.Arrow, "'->' and a return type");
         var ret = ParseType();
@@ -563,7 +565,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var pos = Cur.Pos;
         ExpectIdent("record");
-        var name = Expect(TokenKind.Ident, "a record name");
+        var name = TypeName(Expect(TokenKind.Ident, "a record name"));
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
         var clauses = ParseClauses();
@@ -597,7 +599,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var pos = Cur.Pos;
         ExpectIdent("variant");
-        var name = Expect(TokenKind.Ident, "a variant name");
+        var name = TypeName(Expect(TokenKind.Ident, "a variant name"));
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
         var clauses = ParseClauses();
@@ -618,7 +620,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var pos = Cur.Pos;
         ExpectIdent("choice");
-        var name = Expect(TokenKind.Ident, "a choice name");
+        var name = TypeName(Expect(TokenKind.Ident, "a choice name"));
         // The underlying type is always written: `choice Dir: U8`.
         if (!Accept(TokenKind.Colon))
             throw new CompileError(name.Pos, $"choice '{name.Text}' needs its underlying type: choice {name.Text}: U8");
@@ -702,7 +704,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var pos = Cur.Pos;
         ExpectIdent("concept");
-        var name = Expect(TokenKind.Ident, "a concept name");
+        var name = TypeName(Expect(TokenKind.Ident, "a concept name"));
         var typeParams = ParseTypeParamNames();
         ExpectLineEnd();
         var clauses = ParseClauses();
@@ -718,7 +720,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new ConceptDecl(file, attrs, name.Text, typeParams, clauses, routines, pos);
     }
 
-    private List<Param> ParseParams()
+    /// A routine's parameters (`receiver`), which may start with `me`, or a block's, which may not.
+    private List<Param> ParseParams(bool receiver = false)
     {
         Expect(TokenKind.LParen, "'('");
         var list = new List<Param>();
@@ -726,7 +729,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             do
             {
-                var n = ValueName("a parameter name");
+                var n = ValueName("a parameter name", receiver);
                 Expect(TokenKind.Colon, "':'");
                 var type = ParseType();
                 // `hi: U64 = R2`: the register an assembly routine's parameter arrives in.
@@ -1364,11 +1367,20 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         _values is not null && _values.Contains(t.Text) && (t.Escaped || !ReservedValueNames.Contains(t.Text))
         && PeekTok(1).Kind is not (TokenKind.LParen or TokenKind.ColonColon or TokenKind.LBrace);
 
+    /// A name a declaration gives a type or a type parameter. `Me` is the type a routine is on, so it names nothing else.
+    private static Token TypeName(Token n) =>
+        !n.Escaped && n.Text == "Me" ? throw TypeNameTaken(n.Pos) : n;
+
+    private static CompileError TypeNameTaken(Pos pos) =>
+        new(pos, "'Me' is the type a routine is on, so no type or type parameter takes that name");
+
     /// The name a parameter, binding, or claim gives a value. A word a statement or an expression starts with is a
     /// value's name only between backticks.
-    private Token ValueName(string what)
+    private Token ValueName(string what, bool receiver = false)
     {
         var n = Expect(TokenKind.Ident, what);
+        if (!n.Escaped && n.Text == "me" && !receiver)
+            throw new CompileError(n.Pos, "'me' is the receiver, a routine's first parameter, so no other value takes that name");
         if (!n.Escaped && ReservedValueNames.Contains(n.Text))
             throw new CompileError(n.Pos, $"'{n.Text}' is a keyword; a value of that name is written `{n.Text}`");
         return n;

@@ -963,9 +963,7 @@ public sealed partial class Compiler
     {
         var env = new TypeEnv(s.Decl.File);
         for (int i = 0; i < s.Decl.TypeParams.Count; i++) env.Bind(s.Decl.TypeParams[i], s.Args[i]);
-        // A library written before `Me` was reserved may still declare a type of that name, and its fields mean
-        // that type. This goes once every library is written with the reserved names.
-        if (s.Decl.Name == "Me" || !_records.ContainsKey("Me")) env.Bind("Me", s);
+        env.Bind("Me", s);
         return env;
     }
 

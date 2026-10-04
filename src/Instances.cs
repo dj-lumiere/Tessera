@@ -161,7 +161,7 @@ public sealed partial class Compiler
         inst.Decl.TypeParams.Count != 0 || OwnerTypeParams(inst.Decl).Count != 0;
 
     /// Whether a routine is a method: its first parameter is `me`, the receiver of `x.name(...)`.
-    public static bool HasReceiver(RoutineDecl r) => r.Owner is not null && r.Params.Count > 0 && r.Params[0].Name == "me";
+    public static bool HasReceiver(RoutineDecl r) => r.Params.Count > 0 && r.Params[0].Name == "me";
 
     /// `me` is the receiver: the first parameter of a routine on a type, and the type itself or a pointer to it.
     private static void CheckReceiver(RoutineDecl r, TypeEnv env, List<DType> ps)
@@ -169,9 +169,8 @@ public sealed partial class Compiler
         for (int i = 0; i < r.Params.Count; i++)
         {
             if (r.Params[i].Name != "me") continue;
-            // Code generated before `me` was reserved names a routine's first parameter `me` on routines without an
-            // owner. There it stays an ordinary name until every generator writes the reserved names.
-            if (r.Owner is null) continue;
+            if (r.Owner is null)
+                throw new CompileError(r.Params[i].Pos, $"me is the receiver of a routine on a type; '{r.Name}' is on none");
             if (i != 0)
                 throw new CompileError(r.Params[i].Pos, "me is the receiver, so it's the first parameter");
             var self = env.Get("Me") ?? env.Get(r.Owner.Name);
