@@ -76,7 +76,9 @@ preset CM_F64_EXPM1_DB: @Array<U64, 38> <- { 0x3FBE923C188EA79B, 0x3FD1A0408712E
     0xBFD82B5DFAF59B4C, 0xBFD9D871E078EBCE, 0xBFE1397ADD4538AC, 0xBFE22E24FA3D5CF9,
     0xBFEDC2B5DF1F7D3D, 0xBFF0A54D87783D6F, 0xBFF2A9CAD9998262, 0xBFFE42A2ABB1BF0F }
 
-/// e^self - 1, accurate near 0.
+/// e^self - 1, correctly rounded (to nearest, ties to even) and accurate near 0. +inf gives +inf, -inf gives -1,
+/// overflow gives +inf, and NaN comes back quiet.
+/// :returns: e^`self` - 1, correctly rounded.
 routine F64.exp_m1(self: Self) -> Self
     shared ux  : U64 = self.bits()
     shared aix : U64 = ux.bitand(0x7FFFFFFFFFFFFFFF)
@@ -201,6 +203,8 @@ routine F64.exp_m1(self: Self) -> Self
 
 /// The slow accurate path of expm1, for finite x with 2^-53 <= |x| and e^x - 1
 /// neither overflowing nor within an ulp of -1.
+/// :param x: The argument.
+/// :returns: e^`x` - 1, correctly rounded.
 private routine cm_f64_expm1_accurate(x: F64) -> F64
     block entry()
         small : Bool = x.abs().lt(0.25)
@@ -288,6 +292,8 @@ private routine cm_f64_expm1_accurate(x: F64) -> F64
 
 /// The degree-10 double-double polynomial (in x, with double high-order terms)
 /// of the accurate path for |x| < 1/4, by Horner's rule.
+/// :param x: The argument, |x| < 1/4.
+/// :returns: The polynomial value as a double-double.
 private routine cm_f64_expm1_poly_small(x: F64) -> CmF64ExpDd
     block entry()
         c5 : F64        = F64.from_bits(CM_F64_EXPM1_ACC_SMALL_CL.getitem(5))
@@ -317,6 +323,9 @@ private routine cm_f64_expm1_poly_small(x: F64) -> CmF64ExpDd
 
 /// The degree-6 double-double polynomial of e^x at xh + xl (the exp accurate
 /// polynomial), by Horner's rule with double-double products and sums.
+/// :param xh: The high part of the reduced argument.
+/// :param xl: The low part of the reduced argument.
+/// :returns: The polynomial value as a double-double.
 private routine cm_f64_expm1_poly_exp(xh: F64, xl: F64) -> CmF64ExpDd
     shared ch : @F64 <- uninit
     shared cl : @F64 <- uninit
@@ -344,6 +353,10 @@ private routine cm_f64_expm1_poly_exp(xh: F64, xl: F64) -> CmF64ExpDd
         jump loop(i)
 
 /// Double-double times double (xh + xl) c.
+/// :param xh: The high part of the double-double factor.
+/// :param xl: The low part of the double-double factor.
+/// :param c: The double factor.
+/// :returns: The product as a double-double, not renormalized.
 private routine cm_f64_expm1_mulddd(xh: F64, xl: F64, c: F64) -> CmF64ExpDd
     block entry()
         h  : F64 = c.mul(xh)
@@ -353,6 +366,9 @@ private routine cm_f64_expm1_mulddd(xh: F64, xl: F64, c: F64) -> CmF64ExpDd
 /// Looks x up among the arguments whose e^x - 1 lies too close to a rounding
 /// boundary for the accurate path, and returns the correctly rounded result
 /// (unscaled when |x| >= 1/4) for them, or f unchanged otherwise.
+/// :param x: The argument.
+/// :param f: The result of the accurate path, returned when `x` is not in the table.
+/// :returns: The correctly rounded result for a listed `x`, else `f`.
 private routine cm_f64_expm1_database(x: F64, f: F64) -> F64
     block entry()
         jump search(0, 37)

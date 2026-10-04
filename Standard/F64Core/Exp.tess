@@ -116,7 +116,9 @@ record CmF64ExpDd
     hi : F64
     lo : F64
 
-/// e^self
+/// e^`self`, correctly rounded (to nearest). Overflow gives +inf, underflow a correctly rounded subnormal or +0, and
+/// NaN comes back quiet.
+/// :returns: e^`self`.
 routine F64.exp(self: Self) -> Self
     shared ux  : U64 = self.bits()
     shared aix : U64 = ux.bitand(0x7FFFFFFFFFFFFFFF)
@@ -187,6 +189,8 @@ routine F64.exp(self: Self) -> Self
             : return(cm_f64_exp_accurate(self))
 
 /// The slow accurate path of exp, for finite x with |x| in (2^-54, 0x1.74910d52d3052p+9).
+/// :param x: The argument.
+/// :returns: e^`x` from the accurate path.
 private routine cm_f64_exp_accurate(x: F64) -> F64
     block entry()
         ux    : U64  = x.bits()
@@ -262,6 +266,9 @@ private routine cm_f64_exp_accurate(x: F64) -> F64
 
 /// The degree-6 double-double polynomial of the accurate path at xh + xl, by
 /// Horner's rule with fused double-word multiply-adds.
+/// :param xh: The high part of the point.
+/// :param xl: The low part of the point.
+/// :returns: The polynomial's value as a double-double.
 private routine cm_f64_exp_poly_acc(xh: F64, xl: F64) -> CmF64ExpDd
     shared ch : @F64 <- uninit
     shared cl : @F64 <- uninit
@@ -290,6 +297,9 @@ private routine cm_f64_exp_poly_acc(xh: F64, xl: F64) -> CmF64ExpDd
 /// Looks x up among the arguments whose e^x lies too close to a rounding
 /// boundary for the accurate path, and returns the correctly rounded
 /// (unscaled) result for them, or f unchanged otherwise.
+/// :param x: The argument.
+/// :param f: The accurate path's unscaled result.
+/// :returns: The tabulated result for a listed `x`, else `f`.
 private routine cm_f64_exp_database(x: F64, f: F64) -> F64
     block entry()
         jump search(0, 50)
@@ -324,6 +334,10 @@ private routine cm_f64_exp_database(x: F64, f: F64) -> F64
 /// Picks, among f - 1ulp, f, f + 1ulp, the one whose two low bits equal t, and
 /// adds the tiny correction dr to it (the databases' encoding of a
 /// hard-to-round result). Returns f when no neighbour matches.
+/// :param f: The approximate result.
+/// :param t: The two low bits of the wanted neighbour.
+/// :param dr: The tiny correction.
+/// :returns: The matching neighbour plus `dr`, or `f`.
 routine cm_f64_exp_pick(f: F64, t: U64, dr: F64) -> F64
     block entry()
         jf    : U64  = f.bits()
@@ -341,6 +355,8 @@ routine cm_f64_exp_pick(f: F64, t: U64, dr: F64) -> F64
 /// The double-double value of 2^((j mod 2^12) / 2^12), as the product of the
 /// table entries 2^(i0/2^6) and 2^(i1/2^12), where i0, i1 are bits 6..11 and
 /// 0..5 of j.
+/// :param j: The table index (only its low 12 bits are used).
+/// :returns: 2^((`j` mod 2^12) / 2^12) as a double-double.
 routine cm_f64_exp_table_2pow(j: U64) -> CmF64ExpDd
     block entry()
         i0u : U64   = j.shr(6).bitand(0x3F)
@@ -354,11 +370,17 @@ routine cm_f64_exp_table_2pow(j: U64) -> CmF64ExpDd
 
 /// x 2^e by integer addition on the exponent field of x (no range checks):
 /// right only when the result stays normal.
+/// :param x: The value to scale.
+/// :param e: The power of two.
+/// :returns: `x` 2^`e`.
 routine cm_f64_exp_ldexp(x: F64, e: S64) -> F64
     block entry()
         return(F64.from_bits(x.bits().add_wrap(e.to_wrap<U64>().shl(52))))
 
 /// Fast two-sum: s = x + y and its exact error, for |x| >= |y| (or x = 0).
+/// :param x: The larger addend.
+/// :param y: The smaller addend.
+/// :returns: The rounded sum and its exact error.
 routine cm_f64_exp_fasttwosum(x: F64, y: F64) -> CmF64ExpDd
     block entry()
         s : F64 = x.add(y)
@@ -366,12 +388,22 @@ routine cm_f64_exp_fasttwosum(x: F64, y: F64) -> CmF64ExpDd
         return(CmF64ExpDd { hi: s, lo: y.sub(z) })
 
 /// Double-double sum (xh + xl) + (yh + yl), for |xh| >= |yh|.
+/// :param xh: The high part of the first addend.
+/// :param xl: The low part of the first addend.
+/// :param yh: The high part of the second addend.
+/// :param yl: The low part of the second addend.
+/// :returns: The sum as a double-double.
 routine cm_f64_exp_fastsum(xh: F64, xl: F64, yh: F64, yl: F64) -> CmF64ExpDd
     block entry()
         s : CmF64ExpDd = cm_f64_exp_fasttwosum(xh, yh)
         return(CmF64ExpDd { hi: s.hi, lo: xl.add(yl).add(s.lo) })
 
 /// Double-double product (xh + xl) (ch + cl).
+/// :param xh: The high part of the first factor.
+/// :param xl: The low part of the first factor.
+/// :param ch: The high part of the second factor.
+/// :param cl: The low part of the second factor.
+/// :returns: The product as a double-double.
 routine cm_f64_exp_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64ExpDd
     block entry()
         ahhh  : F64 = ch.mul(xh)
@@ -382,6 +414,13 @@ routine cm_f64_exp_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64ExpDd
 /// Double-word fused multiply-add (ah + al) (bh + bl) + (ch + cl) (Jeannerod,
 /// Joldes, Louvet and Muller, Algorithm 4, with its last two FMAs split into a
 /// product and a sum as in CORE-MATH).
+/// :param ah: The high part of the first factor.
+/// :param al: The low part of the first factor.
+/// :param bh: The high part of the second factor.
+/// :param bl: The low part of the second factor.
+/// :param ch: The high part of the addend.
+/// :param cl: The low part of the addend.
+/// :returns: The result as a double-double.
 routine cm_f64_exp_fastfma_dw(ah: F64, al: F64, bh: F64, bl: F64, ch: F64, cl: F64) -> CmF64ExpDd
     block entry()
         dh : F64 = ah.mul_add(bh, ch)

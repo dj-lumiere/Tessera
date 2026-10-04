@@ -34,7 +34,11 @@ record CmF64PowLog1
     l      : F64
     cancel : Bool
 
-/// self^exponent, correctly rounded.
+/// self^exponent, correctly rounded (to nearest, ties to even), with the IEEE 754 pow special cases: overflow gives
+/// ±inf, a negative base with a non-integer exponent gives NaN, x^±0 = 1 and 1^y = 1 even for a quiet NaN, and a
+/// NaN comes back quiet.
+/// :param exponent: The power to raise `self` to.
+/// :returns: `self` raised to `exponent`.
 routine F64.powf(self: Self, exponent: Self) -> Self
     shared xu : U64 = self.bits()
     shared yu : U64 = exponent.bits()
@@ -206,11 +210,15 @@ routine F64.powf(self: Self, exponent: Self) -> Self
             else    -> return(cm_f64_pow_accurate(self, ax, exponent, s))
 
 /// True when x (finite) is an integer.
+/// :param x: The finite value to test.
+/// :returns: True when `x` is an integer.
 private routine cm_f64_pow_is_int(x: F64) -> Bool
     block entry()
         return(x.eq(x.round_ties_even()))
 
 /// True when y (finite) is an odd integer.
+/// :param y: The finite value to test.
+/// :returns: True when `y` is an odd integer.
 private routine cm_f64_pow_is_odd(y: F64) -> Bool
     block entry()
         whole : Bool = cm_f64_pow_is_int(y)
@@ -218,6 +226,9 @@ private routine cm_f64_pow_is_odd(y: F64) -> Bool
         return(whole.bitand(even.bitnot()))
 
 /// a + b as a double-double, assuming |a| >= |b|.
+/// :param a: The larger addend.
+/// :param b: The smaller addend.
+/// :returns: The rounded sum and its exact error.
 private routine cm_f64_pow_fast_two_sum(a: F64, b: F64) -> CmF64PowDd
     block entry()
         hi : F64 = a.add(b)
@@ -225,12 +236,21 @@ private routine cm_f64_pow_fast_two_sum(a: F64, b: F64) -> CmF64PowDd
         return(CmF64PowDd { hi: hi, lo: b.sub(e) })
 
 /// a + (bh + bl) as a double-double, assuming |a| >= |bh|.
+/// :param a: The larger addend.
+/// :param bh: The high part of the smaller addend.
+/// :param bl: The low part of the smaller addend.
+/// :returns: The sum as a double-double.
 private routine cm_f64_pow_fast_sum(a: F64, bh: F64, bl: F64) -> CmF64PowDd
     block entry()
         t : CmF64PowDd = cm_f64_pow_fast_two_sum(a, bh)
         return(CmF64PowDd { hi: t.hi, lo: t.lo.add(bl) })
 
 /// (ah + al) (bh + bl), ignoring al bl.
+/// :param ah: The high part of the first factor.
+/// :param al: The low part of the first factor.
+/// :param bh: The high part of the second factor.
+/// :param bl: The low part of the second factor.
+/// :returns: The product as a double-double.
 private routine cm_f64_pow_d_mul(ah: F64, al: F64, bh: F64, bl: F64) -> CmF64PowDd
     block entry()
         hi : F64 = ah.mul(bh)
@@ -238,12 +258,16 @@ private routine cm_f64_pow_d_mul(ah: F64, al: F64, bh: F64, bl: F64) -> CmF64Pow
         t  : F64 = al.mul_add(bh, s)
         return(CmF64PowDd { hi: hi, lo: ah.mul_add(bl, t) })
 
-/// Entry i of a table of F64 bit patterns.
+/// Entry i of the phase-1 log polynomial (CM_F64_POW_P1).
+/// :param i: The coefficient index, 0..5.
+/// :returns: The coefficient as an F64.
 private routine cm_f64_pow_p1(i: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_POW_P1.getitem(i)))
 
 /// log(1+z) - z for |z| <= 33 2^-13, z an integer multiple of 2^-61, as (ph, pl).
+/// :param z: The reduced argument.
+/// :returns: log(1 + `z`) - `z` as a double-double.
 private routine cm_f64_pow_p_1(z: F64) -> CmF64PowDd
     block entry()
         wh : F64 = z.mul(z)
@@ -257,11 +281,15 @@ private routine cm_f64_pow_p_1(z: F64) -> CmF64PowDd
         return(CmF64PowDd { hi: wh.mul(-0.5), lo: u.mul_add(z, wl.mul(-0.5)) })
 
 /// Entry i of the phase-1 exp polynomial.
+/// :param i: The coefficient index, 0..4.
+/// :returns: The coefficient as an F64.
 private routine cm_f64_pow_q1(i: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_POW_Q1.getitem(i)))
 
 /// exp(z) for |z| < 2^-12.905, as (qh, ql).
+/// :param z: The reduced argument.
+/// :returns: exp(`z`) as a double-double.
 private routine cm_f64_pow_q_1(z: F64) -> CmF64PowDd
     block entry()
         q0 : F64 = cm_f64_pow_q1(4).mul_add(z, cm_f64_pow_q1(3))
@@ -272,6 +300,8 @@ private routine cm_f64_pow_q_1(z: F64) -> CmF64PowDd
         return(cm_f64_pow_fast_sum(cm_f64_pow_q1(0), h1, l1))
 
 /// log(x) as h + l, for 2^-1074 <= x <= F64 MAX, with the cancellation flag.
+/// :param x: The positive finite argument.
+/// :returns: log(`x`) as a double-double, with the cancellation flag.
 private routine cm_f64_pow_log_1(x: F64) -> CmF64PowLog1
     block entry()
         xu        : U64  = x.bits()
@@ -323,6 +353,10 @@ private routine cm_f64_pow_log_1(x: F64) -> CmF64PowLog1
         return(CmF64PowLog1 { h: n.hi, l: n.lo, cancel: true })
 
 /// s exp(rh + rl) as a double-double. NaN when the result may underflow or overflow (left to the next phase).
+/// :param rh: The high part of the exponent.
+/// :param rl: The low part of the exponent.
+/// :param s: The sign of the result, 1 or -1.
+/// :returns: The double-double result, or NaN parts when the next phase must decide.
 private routine cm_f64_pow_exp_1(rh: F64, rl: F64, s: F64) -> CmF64PowDd
     block entry()
         high : Bool = rh.is_nan().bitor(rh.gt(0x1.62e42e709a95bp+9))
@@ -378,6 +412,11 @@ private routine cm_f64_pow_exp_1(rh: F64, rl: F64, s: F64) -> CmF64PowDd
 
 /// Phases 2 and 3 of pow, for inputs phase 1 could not round: x0 is the original base, x = |x0| (finite, nonzero),
 /// y finite and nonzero, s the sign of the result (1 or -1).
+/// :param x0: The original base.
+/// :param x: |x0|.
+/// :param y: The exponent.
+/// :param s: The sign of the result, 1 or -1.
+/// :returns: x0^y, correctly rounded.
 private routine cm_f64_pow_accurate(x0: F64, x: F64, y: F64, s: F64) -> F64
     shared sgn : U64 = s.eq(-1.0)
         ? 1
@@ -456,6 +495,8 @@ private routine cm_f64_pow_accurate(x0: F64, x: F64, y: F64, s: F64) -> F64
             else     -> return(qz.to<F64>())
 
 /// |v| = m 2^e with m odd, for the bits u of a nonzero finite F64.
+/// :param u: The bits of the value.
+/// :returns: The odd m and the exponent e.
 private routine cm_f64_pow_odd_part(u: U64) -> (U64, S64)
     block entry()
         m0        : U64  = u.bitand(0x000FFFFFFFFFFFFF)
@@ -472,6 +513,9 @@ private routine cm_f64_pow_odd_part(u: U64) -> (U64, S64)
         return({ m1.shr(t), e1.add(t.to<S64>()) })
 
 /// True when x^y is exactly representable, for x > 0 finite and y finite.
+/// :param x: The base.
+/// :param y: The exponent.
+/// :returns: True when x^y is an F64.
 private routine cm_f64_pow_is_exact(x: F64, y: F64) -> Bool
     shared vu : U64  = x.bits()
     shared wu : U64  = y.bits()
@@ -604,6 +648,9 @@ private routine cm_f64_pow_is_exact(x: F64, y: F64) -> Bool
         return(en.ge(-1074).bitand(en.add(tb).le(1024)))
 
 /// x 2^e in two steps, so that the intermediate stays representable (|e| <= 2046).
+/// :param x: The value to scale.
+/// :param e: The power of two.
+/// :returns: x 2^e.
 private routine cm_f64_pow_pow2(x: F64, e: S64) -> F64
     block entry()
         odd : Bool = e.bitand(1).ne(0)
@@ -618,6 +665,11 @@ private routine cm_f64_pow_pow2(x: F64, e: S64) -> F64
 /// x^y exactly when it fits into 54 bits (the exact and midpoint cases, Algorithm detectRoundingBoundaryCase of
 /// Lauter and Lefevre), else NaN. Here z is the phase-2 approximation of |x|^y, with the sign of the result
 /// and a relative error below 2^-117.
+/// :param x: The base.
+/// :param y: The exponent.
+/// :param z: The phase-2 approximation of the result.
+/// :param exact: Whether x^y is known to be exactly representable, from {cm_f64_pow_is_exact}.
+/// :returns: x^y when it fits into 54 bits, else NaN.
 private routine cm_f64_pow_exact_pow(x: F64, y: F64, z: CmF64PowDint, exact: Bool) -> F64
     shared sg : S64 = z.sgn.ne(0)
         ? -1

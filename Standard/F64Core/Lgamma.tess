@@ -563,7 +563,9 @@ record CmF64LgammaFast
     lo  : F64
     eps : F64
 
-/// ln |Γ(self)|: +inf at 0 and the negative integers.
+/// ln |Γ(self)|, correctly rounded (to nearest, ties to even): +inf at 0 and the negative integers, 0 at 1 and 2,
+/// +inf at ±inf and on overflow, and NaN comes back quiet.
+/// :returns: The natural logarithm of the absolute value of the gamma function at `self`.
 routine F64.ln_gamma(self: Self) -> Self
     shared t  : U64 = self.bits()
     shared nx : U64 = t.shl(1)
@@ -605,6 +607,8 @@ routine F64.ln_gamma(self: Self) -> Self
 
 /// The double-double fast phase of lgamma, for a finite x that is not a pole, not
 /// 1 or 2, and below 0x1.006df1bfac84ep+1015 in magnitude.
+/// :param x: The argument.
+/// :returns: The approximation hi + lo and its error bound eps.
 private routine cm_f64_lgamma_dd(x: F64) -> CmF64LgammaFast
     shared t  : U64 = x.bits()
     shared au : U64 = t.shl(1).shr(38)
@@ -735,11 +739,17 @@ private routine cm_f64_lgamma_dd(x: F64) -> CmF64LgammaFast
             eps: eps.add(lg.hi.abs().mul(0x1.e392010175ee6p-71)) })
 
 /// Entry i of CM_F64_LGAMMA_T as an F64.
+/// :param i: The index into the table.
+/// :returns: The entry as an F64.
 private routine cm_f64_lgamma_t(i: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_LGAMMA_T.getitem(i)))
 
 /// (c[q] + z c[q+1]) + z2 (c[q+2] + z c[q+3]) for the entries c of CM_F64_LGAMMA_T.
+/// :param z: The argument.
+/// :param z2: z^2.
+/// :param q: The table index of c[q].
+/// :returns: The value of the four-term polynomial.
 private routine cm_f64_lgamma_pair4(z: F64, z2: F64, q: USize) -> F64
     block entry()
         a : F64 = cm_f64_lgamma_t(q).add(z.mul(cm_f64_lgamma_t(q.add(1))))
@@ -748,6 +758,8 @@ private routine cm_f64_lgamma_pair4(z: F64, z2: F64, q: USize) -> F64
 
 /// The piece-wise region (0..18) of [0.5, 8.29541] holding the argument whose bits
 /// shifted right by 37 are au (at least CM_F64_LGAMMA_UBRD[0]).
+/// :param au: The bits of the argument's absolute value, shifted right by 37.
+/// :returns: The region index.
 private routine cm_f64_lgamma_piece(au: U64) -> USize
     block entry()
         ou     : U64   = au.sub(CM_F64_LGAMMA_UBRD.getitem(0))
@@ -761,6 +773,9 @@ private routine cm_f64_lgamma_piece(au: U64) -> USize
             : return(j)
 
 /// The region-j polynomial of the piece-wise approximation at the offset z.
+/// :param z: The offset of the argument within the region.
+/// :param j: The region index, 0..18.
+/// :returns: The polynomial value as a double-double.
 private routine cm_f64_lgamma_piece_poly(z: F64, j: USize) -> CmF64GammaDD
     block entry()
         z2 : F64   = z.mul(z)
@@ -772,6 +787,9 @@ private routine cm_f64_lgamma_piece_poly(z: F64, j: USize) -> CmF64GammaDD
         return(cm_f64_lgamma_polydddfst(z, 5, j.mul(10).add(1239), fl))
 
 /// The correctly rounded log-gamma of a tabulated hard-to-round x, or f otherwise.
+/// :param x: The argument.
+/// :param f: The result returned when `x` is not in the table.
+/// :returns: The correctly rounded log-gamma for a listed `x`, else `f`.
 private routine cm_f64_lgamma_database(x: F64, f: F64) -> F64
     block entry()
         jump search(0, 18)
@@ -792,6 +810,11 @@ private routine cm_f64_lgamma_database(x: F64, f: F64) -> F64
             else      -> search(a, m.sub(1))
 
 /// The triple-double sum f + l.
+/// :param f: The triple-double addend.
+/// :param lh: The high part of l.
+/// :param ll: The middle part of l.
+/// :param lll: The low part of l.
+/// :returns: The sum as a triple-double.
 private routine cm_f64_lgamma_add3(f: CmF64GammaTD, lh: F64, ll: F64, lll: F64) -> CmF64GammaTD
     block entry()
         s  : CmF64GammaDD = cm_f64_gamma_sumdd(f.mid, f.lo, ll, lll)
@@ -800,12 +823,17 @@ private routine cm_f64_lgamma_add3(f: CmF64GammaTD, lh: F64, ll: F64, lll: F64) 
         return(CmF64GammaTD { hi: h.hi, mid: s2.hi, lo: s2.lo })
 
 /// f + log(x) for a triple-double f and x > 0, both as triple-doubles.
+/// :param f: The triple-double addend.
+/// :param x: The positive argument of the logarithm.
+/// :returns: The sum as a triple-double.
 private routine cm_f64_lgamma_add_log(f: CmF64GammaTD, x: F64) -> CmF64GammaTD
     block entry()
         l : CmF64GammaTD = cm_f64_lgamma_logd_accurate(x)
         return(cm_f64_lgamma_add3(f, l.hi, l.mid, l.lo))
 
 /// log(x - 1) + log(x - 2) as a triple-double, for x > 2.
+/// :param x: The argument, greater than 2.
+/// :returns: The sum of the two logarithms as a triple-double.
 private routine cm_f64_lgamma_log2terms(x: F64) -> CmF64GammaTD
     block entry()
         l2 : CmF64GammaTD = cm_f64_lgamma_logd_accurate(x.sub(2.0))
@@ -816,11 +844,15 @@ private routine cm_f64_lgamma_log2terms(x: F64) -> CmF64GammaTD
         return(CmF64GammaTD { hi: h.hi, mid: s2.hi, lo: s2.lo })
 
 /// A double-double as a triple-double with a zero low part.
+/// :param f: The double-double value.
+/// :returns: `f` as a triple-double.
 private routine cm_f64_lgamma_td(f: CmF64GammaDD) -> CmF64GammaTD
     block entry()
         return(CmF64GammaTD { hi: f.hi, mid: f.lo, lo: 0.0 })
 
 /// The accurate phase of lgamma, for a finite x that is not a pole.
+/// :param x: The argument.
+/// :returns: lgamma(`x`), correctly rounded.
 private routine cm_f64_lgamma_accurate(x: F64) -> F64
     shared ax : F64 = x.abs()
 
@@ -1011,6 +1043,9 @@ private routine cm_f64_lgamma_accurate(x: F64) -> F64
             : return(fh.add(fl))
 
 /// The polynomial of root region k (around a root x0 of lgamma for -10.5 < x < -2) at x.
+/// :param x: The argument.
+/// :param k: The root region, 0..16.
+/// :returns: The polynomial value as a double-double.
 private routine cm_f64_lgamma_root_poly(x: F64, k: USize) -> CmF64GammaDD
     block entry()
         x0              : USize        = CM_F64_LGAMMA_RG_X0.getitem(k)
@@ -1032,6 +1067,12 @@ private routine cm_f64_lgamma_root_poly(x: F64, k: USize) -> CmF64GammaDD
 
 /// The double-double polynomial c[0] + c[1] x + ... + (c[n-1] + l) x^(n-1) of the
 /// (high, low) pairs of CM_F64_LGAMMA_T from base, at a double-double x.
+/// :param xh: The high part of the argument.
+/// :param xl: The low part of the argument.
+/// :param n: The number of coefficient pairs, at least 1.
+/// :param base: The table index of the first pair.
+/// :param l: The tail added to the highest coefficient.
+/// :returns: The polynomial value as a double-double.
 private routine cm_f64_lgamma_polydd(xh: F64, xl: F64, n: USize, base: USize,
     l: F64) -> CmF64GammaDD
     shared ch : @F64 <- uninit
@@ -1063,6 +1104,11 @@ private routine cm_f64_lgamma_polydd(xh: F64, xl: F64, n: USize, base: USize,
         jump loop(i)
 
 /// The same polynomial at a double x.
+/// :param x: The argument.
+/// :param n: The number of coefficient pairs, at least 1.
+/// :param base: The table index of the first pair.
+/// :param l: The tail added to the highest coefficient.
+/// :returns: The polynomial value as a double-double.
 private routine cm_f64_lgamma_polydddfst(x: F64, n: USize, base: USize, l: F64) -> CmF64GammaDD
     shared ch : @F64 <- uninit
     shared cl : @F64 <- uninit
@@ -1094,6 +1140,10 @@ private routine cm_f64_lgamma_polydddfst(x: F64, n: USize, base: USize, l: F64) 
 
 /// The double polynomial c[0] + c[1] x + ... + c[n-1] x^(n-1) of the high parts of the
 /// pairs of CM_F64_LGAMMA_T from base.
+/// :param x: The argument.
+/// :param n: The number of coefficients, at least 1.
+/// :param base: The table index of the first pair.
+/// :returns: The polynomial value.
 private routine cm_f64_lgamma_polyd(x: F64, n: USize, base: USize) -> F64
     shared ch : @F64 <- uninit
 
@@ -1113,6 +1163,8 @@ private routine cm_f64_lgamma_polyd(x: F64, n: USize, base: USize) -> F64
         jump loop(i)
 
 /// sin(pi x) / pi as a double-double, for 0 < x < 1.
+/// :param x: The argument, 0 < x < 1.
+/// :returns: sin(pi `x`) / pi as a double-double.
 private routine cm_f64_lgamma_sinpipid(x: F64) -> CmF64GammaDD
     shared ax : F64   = x.sub(0.5).abs()
     shared sx : F64   = ax.mul(128.0)
@@ -1161,6 +1213,8 @@ private routine cm_f64_lgamma_sinpipid(x: F64) -> CmF64GammaDD
         return(cm_f64_gamma_fastsum(sh, sl, c2.hi, c2.lo))
 
 /// sin(pi x) / pi as an accurate double-double, for 0 < x < 1.
+/// :param x: The argument, 0 < x < 1.
+/// :returns: sin(pi `x`) / pi as a double-double.
 private routine cm_f64_lgamma_sinpipid_accurate(x: F64) -> CmF64GammaDD
     block entry()
         from_half : F64          = x.sub(0.5).abs()
@@ -1185,6 +1239,8 @@ private routine cm_f64_lgamma_sinpipid_accurate(x: F64) -> CmF64GammaDD
         return(cm_f64_gamma_fastsum(sh, sl, c.hi, c.lo))
 
 /// log(x) as a triple-double, for a positive finite x (subnormals included).
+/// :param x: The positive finite argument.
+/// :returns: log(`x`) as a triple-double.
 private routine cm_f64_lgamma_logd_accurate(x: F64) -> CmF64GammaTD
     block entry()
         a  : CmF64GammaLogArg = cm_f64_gamma_log_arg(x)
@@ -1210,6 +1266,9 @@ private routine cm_f64_lgamma_logd_accurate(x: F64) -> CmF64GammaTD
         return(CmF64GammaTD { hi: b.hi, mid: b2.hi, lo: b2.lo })
 
 /// lgamma(x) for x = xh + xl > 3.75 as a triple-double, from Stirling's asymptotic series.
+/// :param xh: The high part of the argument.
+/// :param xl: The low part of the argument.
+/// :returns: lgamma(`xh + xl`) as a triple-double.
 private routine cm_f64_lgamma_asym_accurate(xh: F64, xl: F64) -> CmF64GammaTD
     shared lg : CmF64GammaTD = cm_f64_lgamma_logd_accurate(xh)
 

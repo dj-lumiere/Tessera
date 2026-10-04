@@ -28,6 +28,7 @@ private preset KEY_READY:   U32 = 2
 /// The key source the program links against: fills `key` with 128 secret random bits. Export a routine with this
 /// signature as "tessera_hash_key" to supply it: Standard::Os does with the OS's random source, and so does the stdlib
 /// on a target without an OS whose CPU has a random number instruction.
+/// :param key: The key to fill.
 #[external("c"), symbol("tessera_hash_key")]
 private routine hash_key_source(key: @SipKey) -> Void
 
@@ -60,6 +61,7 @@ routine hash_key() -> SipKey
 
 /// Draws the key once: the thread that moves the state from undrawn to drawing asks the source, and every other one
 /// waits until the key is ready.
+/// :returns: The 128-bit key.
 #[target(os: not "none"), noinline]
 private routine draw_hash_key() -> SipKey
     block entry()
@@ -99,6 +101,7 @@ routine hash_key() -> SipKey
         return(key)
 
 /// Draws the key from the source and marks it ready.
+/// :returns: The 128-bit key.
 #[target(os: "none"), noinline]
 private routine draw_hash_key() -> SipKey
     block entry()
@@ -127,6 +130,7 @@ routine hash_combine(first: U64, second: U64) -> U64
 private preset SEED_SAMPLES: USize = 32
 
 /// RDRAND once: the random value, and 1 when the CPU had one ready (the carry flag), 0 when not.
+/// :returns: The value and 1, or an unspecified value and 0 when the CPU had none ready.
 #[target(arch: "x86_64", os: "none"), feature("rdrnd"), external("asm"), clobbers(FLAGS)]
 private routine rdrand_step() -> (U64, U8)
     block entry()
@@ -136,6 +140,7 @@ private routine rdrand_step() -> (U64, U8)
 
 /// One 64-bit word from RDRAND, retried up to 10 times as Intel's guide says (a failure that persists means a broken
 /// generator).
+/// :returns: The random word.
 /// :throws: Crashes with `InvalidValueError` when RDRAND fails 10 times in a row.
 #[target(arch: "x86_64", os: "none"), feature("rdrnd")]
 private routine rdrand_word() -> U64
@@ -154,6 +159,8 @@ private routine rdrand_word() -> U64
             : draw(attempt.add(1))
 
 /// The hash key from RDRAND: two 64-bit words.
+/// :param key: The key to fill.
+/// :throws: Crashes with `InvalidValueError` when RDRAND fails 10 times in a row.
 #[target(arch: "x86_64", os: "none"), feature("rdrnd"), export("tessera_hash_key")]
 routine rdrand_hash_key(key: @SipKey) -> Void
     block entry()
@@ -162,6 +169,7 @@ routine rdrand_hash_key(key: @SipKey) -> Void
         return()
 
 /// RDSEED once: the random value, and 1 when the CPU had one ready (the carry flag), 0 when not.
+/// :returns: The value and 1, or an unspecified value and 0 when the CPU had none ready.
 #[target(arch: "x86_64", os: "none"), feature(not "rdrnd", "rdseed"), external("asm"),
     clobbers(FLAGS)]
 private routine rdseed_step() -> (U64, U8)
@@ -179,6 +187,7 @@ private routine rdseed_pause() -> Void
 
 /// One 64-bit word from RDSEED, which runs dry for a while when asked often: retried with a pause in between, as
 /// Intel's guide says, up to 1000 times.
+/// :returns: The random word.
 /// :throws: Crashes with `InvalidValueError` when RDSEED fails 1000 times in a row.
 #[target(arch: "x86_64", os: "none"), feature(not "rdrnd", "rdseed")]
 private routine rdseed_word() -> U64
@@ -201,6 +210,8 @@ private routine rdseed_word() -> U64
         jump draw(attempt.add(1))
 
 /// The hash key from RDSEED, on a CPU built for without RDRAND: two 64-bit words.
+/// :param key: The key to fill.
+/// :throws: Crashes with `InvalidValueError` when RDSEED fails 1000 times in a row.
 #[target(arch: "x86_64", os: "none"), feature(not "rdrnd", "rdseed"), export("tessera_hash_key")]
 routine rdseed_hash_key(key: @SipKey) -> Void
     block entry()
@@ -210,6 +221,7 @@ routine rdseed_hash_key(key: @SipKey) -> Void
 
 /// RNDR once (FEAT_RNG): the random value, and 1 when the CPU had one ready, 0 when not (RNDR clears the Z flag when
 /// it gave a value and sets it when it didn't).
+/// :returns: The value and 1, or an unspecified value and 0 when the CPU had none ready.
 #[target(arch: "aarch64", os: "none"), feature("rand"), external("asm"), clobbers(FLAGS)]
 private routine rndr_step() -> (U64, U8)
     block entry()
@@ -219,6 +231,7 @@ private routine rndr_step() -> (U64, U8)
 
 /// One 64-bit word from RNDR, retried up to 10 times (the instruction fails only when the generator can't give a value
 /// in reasonable time).
+/// :returns: The random word.
 /// :throws: Crashes with `InvalidValueError` when RNDR fails 10 times in a row.
 #[target(arch: "aarch64", os: "none"), feature("rand")]
 private routine rndr_word() -> U64
@@ -237,6 +250,8 @@ private routine rndr_word() -> U64
             : draw(attempt.add(1))
 
 /// The hash key from RNDR: two 64-bit words.
+/// :param key: The key to fill.
+/// :throws: Crashes with `InvalidValueError` when RNDR fails 10 times in a row.
 #[target(arch: "aarch64", os: "none"), feature("rand"), export("tessera_hash_key")]
 routine rndr_hash_key(key: @SipKey) -> Void
     block entry()
@@ -246,6 +261,7 @@ routine rndr_hash_key(key: @SipKey) -> Void
 
 /// Reads the Zkr `seed` CSR (number 0x015) once, which only a write may read: `csrrw a0, seed, zero`. Bits 31 and 30
 /// are its state (2 is ES16: bits 15..0 hold 16 bits of entropy), the rest is reserved or entropy.
+/// :returns: The CSR's 32 bits.
 #[target(arch: "riscv32", os: "none"), feature("zkr"), external("asm")]
 private routine seed_poll() -> U32
     block entry()
@@ -254,6 +270,7 @@ private routine seed_poll() -> U32
 
 /// The next 16-bit sample from `seed`: polled until its state is ES16 (WAIT means try again, BIST a self test still
 /// running).
+/// :returns: The 16 bits of entropy.
 /// :throws: Crashes with `InvalidValueError` when the source reports DEAD (an unrecoverable failure).
 #[target(arch: "riscv32", os: "none"), feature("zkr")]
 private routine seed_sample() -> U16
@@ -270,6 +287,8 @@ private routine seed_sample() -> U16
 
 /// The hash key from the Zkr entropy source: `SEED_SAMPLES` raw 16-bit samples, conditioned into 128 bits by hashing
 /// them with SipHash under two fixed keys.
+/// :param key: The key to fill.
+/// :throws: Crashes with `InvalidValueError` when the source reports DEAD.
 #[target(arch: "riscv32", os: "none"), feature("zkr"), export("tessera_hash_key")]
 routine seed_hash_key(key: @SipKey) -> Void
     shared samples : @Array<U16, 32> <- uninit

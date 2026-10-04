@@ -24,7 +24,10 @@ record U256DivRem
 
 // -- limbs ---------------------------------------------------------------------
 
-/// The 64-bit limb index of x (0 is the least significant), for index < 4.
+/// The 64-bit limb `index` of `x` (0 is the least significant), for `index` < 4.
+/// :param x: The value.
+/// :param index: The limb's position, below 4.
+/// :returns: The limb.
 private routine u256_limb(x: U256, index: USize) -> U64
     block entry()
         shift : U256 = index.mul(64).to<U256>()
@@ -32,6 +35,11 @@ private routine u256_limb(x: U256, index: USize) -> U64
         return(r)
 
 /// The integer with limbs (l3, l2, l1, l0), most significant first.
+/// :param l3: The most significant limb.
+/// :param l2: The second limb from the top.
+/// :param l1: The second limb from the bottom.
+/// :param l0: The least significant limb.
+/// :returns: The integer.
 private routine u256_from_limbs(l3: U64, l2: U64, l1: U64, l0: U64) -> U256
     block entry()
         top  : U256 = l3.to<U256>().shl(64)
@@ -43,6 +51,9 @@ private routine u256_from_limbs(l3: U64, l2: U64, l1: U64, l0: U64) -> U256
 // -- entry points --------------------------------------------------------------
 
 /// Unsigned quotient and remainder, for a nonzero d.
+/// :param u: The dividend.
+/// :param d: The divisor, not zero.
+/// :returns: The quotient and the remainder.
 #target(size: 64)
 routine wide_divrem(u: U256, d: U256) -> U256DivRem
     block entry()
@@ -79,18 +90,29 @@ routine wide_divrem(u: U256, d: U256) -> U256DivRem
         r : U256DivRem = u256_divrem_knuth(u, d)
         return(r)
 
+/// Unsigned quotient, for a nonzero `d`.
+/// :param u: The dividend.
+/// :param d: The divisor, not zero.
+/// :returns: The quotient.
 routine wide_div(u: U256, d: U256) -> U256
     block entry()
         r : U256DivRem = wide_divrem(u, d)
         return(r.quotient)
 
+/// Unsigned remainder, for a nonzero `d`.
+/// :param u: The dividend.
+/// :param d: The divisor, not zero.
+/// :returns: The remainder.
 routine wide_rem(u: U256, d: U256) -> U256
     block entry()
         r : U256DivRem = wide_divrem(u, d)
         return(r.remainder)
 
-/// Signed division truncates toward zero// the remainder has the dividend's sign.
-/// The magnitudes go through wide_divrem: abs_diff(0) is exact even for MIN.
+/// Signed quotient, truncated toward zero, for a nonzero `d`. The magnitudes go through wide_divrem: `abs_diff(0)`
+/// is exact even for MIN.
+/// :param u: The dividend.
+/// :param d: The divisor, not zero.
+/// :returns: The quotient.
 routine wide_div(u: S256, d: S256) -> S256
     block entry()
         magnitudes : U256DivRem = wide_divrem(u.abs_diff(0), d.abs_diff(0))
@@ -100,6 +122,10 @@ routine wide_div(u: S256, d: S256) -> S256
             ? return(quotient.neg_wrap())
             : return(quotient)
 
+/// Signed remainder, with the dividend's sign, for a nonzero `d`. The magnitudes go through wide_divrem.
+/// :param u: The dividend.
+/// :param d: The divisor, not zero.
+/// :returns: The remainder.
 routine wide_rem(u: S256, d: S256) -> S256
     block entry()
         magnitudes : U256DivRem = wide_divrem(u.abs_diff(0), d.abs_diff(0))
@@ -111,15 +137,18 @@ routine wide_rem(u: S256, d: S256) -> S256
 
 // -- one-limb divisor ----------------------------------------------------------
 
-/// u / d for a nonzero one-limb d: normalize so d's top bit is set, then one
-/// 2-by-1 step per dividend limb, most significant first.
+/// u / d and u % d for a nonzero one-limb d: normalize so d's top bit is set, then one 2-by-1 step per dividend
+/// limb, most significant first.
+/// :param u: The dividend.
+/// :param d: The divisor, not zero.
+/// :returns: The quotient and the remainder.
 private routine u256_divrem_by_limb(u: U256, d: U64) -> U256DivRem
     block entry()
         shift  : U64  = d.leading_zeros()
         d_norm : U64  = d.shl(shift)
         v      : U64  = div_2by1_prepare(d_norm)
         u_norm : U256 = u.shl(shift.to<U256>())
-        // The bits shifted out of the top// a funnel shift by 0 gives 0, where a
+        // The bits shifted out of the top. A funnel shift by 0 gives 0, where a
         // plain shr by 64 would be poison.
         u_over : U64        = fshl<U64>(0, u256_limb(u, 3), shift)
         s3     : Div2By1    = div_2by1(u_over, u256_limb(u_norm, 3), d_norm, v)
@@ -144,7 +173,10 @@ private record U256Division
     n          : USize  // the divisor's limb count
     reciprocal : U64  // div_3by2_prepare of v's top two limbs
 
-/// u / d for a divisor of two or more limbs.
+/// u / d and u % d for a divisor of two or more limbs, by algorithm D.
+/// :param u: The dividend, at least `d`.
+/// :param d: The divisor, at least 2^64.
+/// :returns: The quotient and the remainder.
 private routine u256_divrem_knuth(u: U256, d: U256) -> U256DivRem
     shared lz    : U64           = d.leading_zeros().to<U64>()
     shared shift : U64           = lz.bitand(63)
@@ -174,6 +206,12 @@ private routine u256_divrem_knuth(u: U256, d: U256) -> U256DivRem
         r         : U256DivRem = U256DivRem { quotient: q, remainder: remainder }
         return(r)
 
+/// Fills the state for dividing `u` by the `n`-limb `d`: both shifted left by `shift`, the bits shifted out of the
+/// dividend's top in a fifth limb, and the reciprocal of the divisor's top two limbs.
+/// :param u: The dividend.
+/// :param d: The divisor.
+/// :param n: The divisor's limb count, 2 to 4.
+/// :param shift: The normalizing shift, which sets the divisor's top bit.
 routine U256Division.construct(self: @Self, u: U256, d: U256, n: USize, shift: U64) -> Void
     block entry()
         u_norm : U256 = u.shl(shift.to<U256>())
@@ -196,8 +234,9 @@ routine U256Division.construct(self: @Self, u: U256, d: U256, n: USize, shift: U
         self.reciprocal.store(reciprocal)
         return()
 
-/// One step: the quotient digit of the window u[j .. j+n] by v, which
-/// replaces the window with its remainder.
+/// One step: the quotient digit of the window u[j .. j+n] by v, which replaces the window with its remainder.
+/// :param j: The window's lowest limb.
+/// :returns: The quotient digit.
 routine U256Division.step(self: @Self, j: USize) -> U64
     shared n      : USize = self.n.load()
     shared top_at : USize = j.add(n)
@@ -221,7 +260,7 @@ routine U256Division.step(self: @Self, j: USize) -> U64
         return(U64.MAX)
 
     // The top three limbs over the top two divisor limbs give q̂ and the
-    // remainder of those limbs// subtracting q̂ times the lower divisor limbs
+    // remainder of those limbs. Subtracting q̂ times the lower divisor limbs
     // finishes the window. q̂ can be one too big for n >= 3: then that
     // subtraction borrows, and v is added back.
     block estimate()
@@ -244,7 +283,11 @@ routine U256Division.step(self: @Self, j: USize) -> U64
         self.add_back(j, n)
         return(q_hat.sub(1))
 
-/// u[j .. j+len-1] -= v[0 .. len-1] × m// returns the limb that borrows out of the top.
+/// u[j .. j+len-1] -= v[0 .. len-1] × m.
+/// :param j: The first limb of `u` to subtract from.
+/// :param len: The number of limbs.
+/// :param m: The multiplier.
+/// :returns: The limb that borrows out of the top.
 routine U256Division.submul(self: @Self, j: USize, len: USize, m: U64) -> U64
     shared borrow : @U64 <- 0
 
@@ -273,6 +316,8 @@ routine U256Division.submul(self: @Self, j: USize, len: USize, m: U64) -> U64
 
 /// u[j .. j+n-1] += v, dropping the carry out of the top: it cancels the borrow
 /// that made the window negative.
+/// :param j: The window's lowest limb.
+/// :param n: The divisor's limb count.
 routine U256Division.add_back(self: @Self, j: USize, n: USize) -> Void
     shared carry : @U64 <- 0
 
@@ -312,6 +357,9 @@ private record U256Division32
     n : USize  // the divisor's limb count
 
 /// Unsigned quotient and remainder, for a nonzero d.
+/// :param u: The dividend.
+/// :param d: The divisor, not zero.
+/// :returns: The quotient and the remainder.
 #target(size: not 64)
 routine wide_divrem(u: U256, d: U256) -> U256DivRem
     block entry()
@@ -350,6 +398,8 @@ routine wide_divrem(u: U256, d: U256) -> U256DivRem
 
 /// Writes the eight 32-bit limbs of x to dst, least significant first. Targets are little-endian, so the limbs
 /// are the U256's own bytes, and reading them costs no 256-bit shifts.
+/// :param x: The value.
+/// :param dst: The first of the eight limbs to write.
 private routine u256_store_words(x: U256, dst: @U32) -> Void
     block entry()
         claim slot : @U256 <- x
@@ -365,6 +415,8 @@ private routine u256_store_words(x: U256, dst: @U32) -> Void
         jump word(i.add(1), src)
 
 /// The U256 whose eight 32-bit limbs are at src, least significant first.
+/// :param src: The first of the eight limbs.
+/// :returns: The integer.
 private routine u256_load_words(src: @U32) -> U256
     shared slot : @U256 <- uninit
 
@@ -450,6 +502,12 @@ routine divrem_knuth32(u: U256, d: U256, words: USize) -> U256DivRem
         remainder : U256 = shifted.shr(shift.to<U256>())
         return(U256DivRem { quotient: q, remainder: remainder })
 
+/// Fills the state for dividing `u` by the `n`-limb `d`: both shifted left by `shift`, the bits shifted out of the
+/// dividend's top in a ninth limb.
+/// :param u: The dividend.
+/// :param d: The divisor.
+/// :param n: The divisor's 32-bit limb count, 2 to 8.
+/// :param shift: The normalizing shift, which sets the divisor's top bit.
 routine U256Division32.construct(self: @Self, u: U256, d: U256, n: USize, shift: U32) -> Void
     block entry()
         u_norm : U256 = u.shl(shift.to<U256>())
@@ -463,6 +521,8 @@ routine U256Division32.construct(self: @Self, u: U256, d: U256, n: USize, shift:
         return()
 
 /// One step: the quotient digit of the window u[j .. j+n] by v, which replaces the window with its remainder.
+/// :param j: The window's lowest limb.
+/// :returns: The quotient digit.
 routine U256Division32.step(self: @Self, j: USize) -> U32
     shared n : USize = self.n.load()
 
@@ -520,6 +580,10 @@ routine U256Division32.step(self: @Self, j: USize) -> U32
         return(q_hat.sub(1))
 
 /// u[j .. j+len-1] -= v[0 .. len-1] × m. Returns the limb that borrows out of the top.
+/// :param j: The first limb of `u` to subtract from.
+/// :param len: The number of limbs.
+/// :param m: The multiplier.
+/// :returns: The limb that borrows out of the top.
 routine U256Division32.submul(self: @Self, j: USize, len: USize, m: U32) -> U32
     shared borrow : @U32 <- 0
 
@@ -546,6 +610,8 @@ routine U256Division32.submul(self: @Self, j: USize, len: USize, m: U32) -> U32
         jump loop(i.add(1))
 
 /// u[j .. j+n-1] += v, dropping the carry out of the top: it cancels the borrow that made the window negative.
+/// :param j: The window's lowest limb.
+/// :param n: The divisor's limb count.
 routine U256Division32.add_back(self: @Self, j: USize, n: USize) -> Void
     shared carry : @U32 <- 0
 

@@ -86,9 +86,11 @@ require TKey: typename, TValue: typename
         empty : Bool = self.load().is_empty()
         return(empty)
 
-/// Probe the slot table for key. Returns the slot index at which the key was
-/// found, or the slot at which a new entry should be installed (preferring the
-/// first tombstone seen, else the first empty slot).
+/// Probes the slot table for `key`, from `hash` modulo the capacity. The table must have at least one slot.
+/// :param key: The key to look for.
+/// :param hash: The key's hash.
+/// :returns: The slot holding the key, or else the slot a new entry should take: the first tombstone seen, else the
+///     first empty slot.
 routine Dict<TKey, TValue>.slot(self: Self, key: TKey, hash: U64) -> USize
 require TKey: typename, TValue: typename
     shared first_tombstone : @USize <- SLOT_EMPTY
@@ -145,7 +147,9 @@ require TKey: typename, TValue: typename
         next     : USize = index.add(1).bitand(capacity.sub(1))
         jump probe(next)
 
-/// Returns the entry index for key, or SLOT_EMPTY if absent.
+/// The entry index of `key`.
+/// :param key: The key to look for.
+/// :returns: The index of the key's entry, or `SLOT_EMPTY` when the key is absent.
 routine Dict<TKey, TValue>.find(self: Self, key: TKey) -> USize
 require TKey: typename, TValue: typename
     block entry()
@@ -181,9 +185,10 @@ require TKey: typename, TValue: typename
         found : Bool = self.load().has_key(key)
         return(found)
 
-/// Two Dicts are equal when they hold the same key→value pairs, regardless
-/// of insertion order or internal slot layout. With matching count, "every
-/// key in A is in B and maps to an equal value" is sufficient.
+/// Two dicts are equal when they hold the same key-value pairs, regardless of insertion order or slot layout. With
+/// matching counts, every key of `self` being in `other` with an equal value is enough.
+/// :param other: The dict to compare with.
+/// :returns: True when the two hold the same pairs.
 routine Dict<TKey, TValue>.eq(self: Self, other: Self) -> Bool
 require TKey: typename, TValue: typename, HashEquatable<TKey>, Equatable<TValue>
     block entry()
@@ -192,7 +197,9 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>, Equatable<TValue>
         equal : Bool = a.eq_at(b)
         return(equal)
 
-/// eq, through pointers to the two Dicts.
+/// `eq`, through pointers to the two dicts.
+/// :param other: The dict to compare with.
+/// :returns: True when the two hold the same pairs.
 private routine Dict<TKey, TValue>.eq_at(self: @Self, other: @Self) -> Bool
 require TKey: typename, TValue: typename, HashEquatable<TKey>, Equatable<TValue>
     block entry()
@@ -240,12 +247,11 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>, Equatable<TValue>
             ? loop(i.add(1), n)
             : return(false)
 
-/// Allocate fresh arrays at new_capacity, walk the old entries in insertion
-/// order, and re-insert each live entry. Dead entries are dropped, so the
-/// entries array is compacted as a side effect. Returns false when the
-/// allocator fails, leaving the map as it was. The new arrays are made in the
-/// order keys, values, hashes, entry states, slots, and a failure releases the
-/// ones already made.
+/// Allocates fresh arrays of `new_capacity`, walks the old entries in insertion order, and re-inserts each live
+/// entry. Dead entries are dropped, so the entries array is compacted. The new arrays are made in the order keys,
+/// values, hashes, entry states, slots, and a failure releases the ones already made.
+/// :param new_capacity: The new capacity, a power of two above the live count.
+/// :returns: True when it rehashed, false when the allocator failed (the map is left as it was).
 private routine Dict<TKey, TValue>.rehash(self: @Self, new_capacity: USize) -> Bool
 require TKey: typename, TValue: typename
     shared alloc        : @Allocator     = self.keys.alloc.load()
@@ -330,8 +336,9 @@ require TKey: typename, TValue: typename
         destruct_arrays<TKey, TValue>(keys, values, hashes, entry_states, slots)
         return(true)
 
-/// Makes room for one more entry. Returns false when the allocator fails,
-/// leaving the map as it was.
+/// Makes room for one more entry: the first insertion rehashes into 8 slots, and the tables double once one more
+/// entry would fill three quarters of them.
+/// :returns: True when there is room, false when the allocator failed (the map is left as it was).
 private routine Dict<TKey, TValue>.ensure(self: @Self) -> Bool
 require TKey: typename, TValue: typename
     shared capacity : USize = self.slots.count.load()
@@ -356,11 +363,12 @@ require TKey: typename, TValue: typename
     block grow()
         return(self.rehash(capacity.mul(2)))
 
-/// Insert without growing — used internally by rehash after new arrays are in place.
-/// If the key already lives, update its value in place (preserves position in
-/// the entries array, and therefore insertion order). Otherwise append a fresh
-/// entry at entries_count and bind the slot to that index. hash is the key's hash, so rehash can pass the stored
-/// one instead of hashing every key again.
+/// Inserts without growing, for rehash once the new arrays are in place and for `put_result` after `ensure`. A key
+/// already live gets its value updated in place, so it keeps its position in insertion order. Otherwise a fresh
+/// entry is appended at `entries_count` and the slot bound to it.
+/// :param key: The key to store under.
+/// :param value: The value to store.
+/// :param hash: The key's hash, so rehash can pass the stored one instead of hashing every key again.
 routine Dict<TKey, TValue>.put_direct(self: @Self, key: TKey, value: TValue, hash: U64) -> Void
 require TKey: typename, TValue: typename
     shared slot : USize = self.load().slot(key, hash)
@@ -409,6 +417,10 @@ require TKey: typename, TValue: typename
             .Failure -> crash_allocation()
 
 /// `put`, returning a Failure instead of crashing when the allocator fails.
+/// :param key: The key to store under.
+/// :param value: The value to store.
+/// :returns: `Success` once the value is stored.
+/// :throws: Returns `Failure(AllocFailed)` when the tables must grow and the allocator fails.
 routine Dict<TKey, TValue>.put_result(self: @Self, key: TKey,
     value: TValue) -> Result<Unit, AllocFailed>
 require TKey: typename, TValue: typename
@@ -452,6 +464,9 @@ require TKey: typename, TValue: typename
         return(value)
 
 /// `getitem`, returning Absent instead of crashing on a missing key.
+/// :param key: The key to look up.
+/// :returns: A copy of the value.
+/// :absent: When the key is not present.
 routine Dict<TKey, TValue>.getitem_checked(self: Self, key: TKey) -> Option<TValue>
 require TKey: typename, TValue: typename
     shared entry_idx : USize = self.find(key)
@@ -468,14 +483,20 @@ require TKey: typename, TValue: typename
         return(.Present(value))
 
 /// `getitem`, returning Absent instead of crashing on a missing key.
+/// :param key: The key to look up.
+/// :returns: A copy of the value.
+/// :absent: When the key is not present.
 routine Dict<TKey, TValue>.getitem_checked(self: @Self, key: TKey) -> Option<TValue>
 require TKey: typename, TValue: typename
     block entry()
         value : Option<TValue> = self.load().getitem_checked(key)
         return(value)
 
-/// The address of key's value, checked like getitem: a place to update the value in place. Only the value: changing a
-/// key in place would lose it. It stays valid until the dict grows, rehashes, or is destructed.
+/// The address of the value under `key`, checked like getitem: a place to update the value in place. Only the
+/// value: changing a key in place would lose it. It stays valid until the dict grows, rehashes, or is destructed.
+/// :param key: The key to look up.
+/// :returns: The value's address.
+/// :throws: Crashes with `KeyNotFoundError` when the key is absent.
 #track_caller
 routine Dict<TKey, TValue>.at(self: Self, key: TKey) -> @TValue
 require TKey: typename, TValue: typename
@@ -492,8 +513,11 @@ require TKey: typename, TValue: typename
         value  : @TValue = values.stride(entry_idx)
         return(value)
 
-/// The address of key's value, checked like getitem: a place to update the value in place. Only the value: changing a
-/// key in place would lose it. It stays valid until the dict grows, rehashes, or is destructed.
+/// The address of the value under `key`, checked like getitem: a place to update the value in place. Only the
+/// value: changing a key in place would lose it. It stays valid until the dict grows, rehashes, or is destructed.
+/// :param key: The key to look up.
+/// :returns: The value's address.
+/// :throws: Crashes with `KeyNotFoundError` when the key is absent.
 #track_caller
 routine Dict<TKey, TValue>.at(self: @Self, key: TKey) -> @TValue
 require TKey: typename, TValue: typename
@@ -502,6 +526,9 @@ require TKey: typename, TValue: typename
         return(value)
 
 /// `at`, returning Absent instead of crashing on a missing key.
+/// :param key: The key to look up.
+/// :returns: The value's address.
+/// :absent: When the key is not present.
 routine Dict<TKey, TValue>.at_checked(self: Self, key: TKey) -> Option<@TValue>
 require TKey: typename, TValue: typename
     shared entry_idx : USize = self.find(key)
@@ -518,6 +545,9 @@ require TKey: typename, TValue: typename
         return(.Present(value))
 
 /// `at`, returning Absent instead of crashing on a missing key.
+/// :param key: The key to look up.
+/// :returns: The value's address.
+/// :absent: When the key is not present.
 routine Dict<TKey, TValue>.at_checked(self: @Self, key: TKey) -> Option<@TValue>
 require TKey: typename, TValue: typename
     block entry()
@@ -626,6 +656,8 @@ require TKey: typename, TValue: typename, Destructible<TValue>
 // -- text -----------------------------------------------------------------------
 
 /// The entries in insertion order, keys and values diagnosed (strings quoted): {"a": 1, "b": 2}.
+/// :typeparam TWriter: The type of the Writer that receives the text.
+/// :param out: The writer to write to.
 routine Dict<TKey, TValue>.represent_into<TWriter>(self: Self, out: @TWriter) -> Void
 require TKey: typename, TValue: typename, HashEquatable<TKey>, Diagnosable<TKey>, Diagnosable<TValue>, TWriter: typename, Writer<TWriter>
     block entry()
@@ -636,6 +668,8 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>, Diagnosable<TKey>
         return()
 
 /// The entries in insertion order, keys and values diagnosed: {"a": 1, "b": 2}.
+/// :typeparam TWriter: The type of the Writer that receives the text.
+/// :param out: The writer to write to.
 routine Dict<TKey, TValue>.diagnose_into<TWriter>(self: Self, out: @TWriter) -> Void
 require TKey: typename, TValue: typename, HashEquatable<TKey>, Diagnosable<TKey>, Diagnosable<TValue>, TWriter: typename, Writer<TWriter>
     block entry()
@@ -647,8 +681,12 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>, Diagnosable<TKey>
 
 // -- the arrays -----------------------------------------------------------------
 
-/// Fills `into` (an empty slice holding the allocator) with `count` new values from that allocator. Returns false when
-/// the allocator fails, leaving `into` empty. Set's rehash makes its arrays the same way.
+/// Fills `into` (an empty slice holding the allocator) with `count` new values from that allocator. Set's rehash
+/// makes its arrays the same way.
+/// :typeparam T: The element type.
+/// :param into: The empty slice to fill, which carries the allocator.
+/// :param count: The number of elements to allocate.
+/// :returns: True when it allocated, false when the allocator failed (leaving `into` empty).
 internal routine make_array<T>(into: @Slice<T>, count: USize) -> Bool
 require T: typename
     block entry()
@@ -663,6 +701,9 @@ require T: typename
         return(true)
 
 /// Exchanges the slices at `a` and `b`.
+/// :typeparam T: The element type.
+/// :param a: The first slice.
+/// :param b: The second slice.
 internal routine swap_slices<T>(a: @Slice<T>, b: @Slice<T>) -> Void
 require T: typename
     block entry()
@@ -673,6 +714,13 @@ require T: typename
         return()
 
 /// Gives the five arrays of a dict back to their allocator, leaving each empty.
+/// :typeparam TKey: The key type.
+/// :typeparam TValue: The value type.
+/// :param keys: The keys array.
+/// :param values: The values array.
+/// :param hashes: The hashes array.
+/// :param entry_states: The entry states array.
+/// :param slots: The slot table.
 #track_caller
 private routine destruct_arrays<TKey, TValue>(keys: @Slice<TKey>, values: @Slice<TValue>,
     hashes: @Slice<U64>, entry_states: @Slice<U8>, slots: @Slice<USize>) -> Void

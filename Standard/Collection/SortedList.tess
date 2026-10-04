@@ -84,7 +84,10 @@ require T: typename
         result : Bool = self.load().is_empty()
         return(result)
 
-/// A new empty node, or null when the allocator fails.
+/// A new empty node from `alloc`.
+/// :param leaf: Whether the node is a leaf.
+/// :param alloc: The allocator to take the node from.
+/// :returns: The node, or null when the allocator fails.
 routine SortedListNode<T>.construct(leaf: Bool, alloc: @Allocator) -> @Self
 require T: typename
     shared node : @Self = allocate<Self>(1, alloc)
@@ -162,7 +165,9 @@ require T: typename, Equatable<T>
         equal : Bool = a.eq_at(b)
         return(equal)
 
-/// eq, through pointers to the two SortedLists.
+/// `eq`, through pointers to the two lists.
+/// :param other: The list to compare with.
+/// :returns: True when the counts match and every element pair is equal.
 private routine SortedList<T>.eq_at(self: @Self, other: @Self) -> Bool
 require T: typename, Equatable<T>
     shared a : @SortedListIter<T> <- uninit
@@ -220,6 +225,9 @@ require T: typename
         return(result)
 
 /// `getitem`, returning Absent instead of crashing on a position past the end.
+/// :param order: The zero-based position in sorted order.
+/// :returns: A copy of the element.
+/// :absent: When `order >= count`.
 routine SortedList<T>.getitem_checked(self: Self, order: USize) -> Option<T>
 require T: typename
     block entry()
@@ -255,28 +263,38 @@ require T: typename
             : scan(node, remaining.sub(child_count), i.add(1))
 
 /// `getitem`, returning Absent instead of crashing on a position past the end.
+/// :param order: The zero-based position in sorted order.
+/// :returns: A copy of the element.
+/// :absent: When `order >= count`.
 routine SortedList<T>.getitem_checked(self: @Self, order: USize) -> Option<T>
 require T: typename
     block entry()
         result : Option<T> = self.load().getitem_checked(order)
         return(result)
 
-/// The element at rank, the same as getitem: a SortedList's rank is its position in sorted order. Crashes if
-/// rank >= count.
+/// The element at `rank`, the same as getitem: a SortedList's rank is its position in sorted order.
+/// :param rank: The zero-based rank.
+/// :returns: A copy of the element.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 routine SortedList<T>.get_by_rank(self: Self, rank: USize) -> T
 require T: typename
     block entry()
         return(self.getitem(rank))
 
-/// The element at rank, the same as getitem: a SortedList's rank is its position in sorted order. Crashes if
-/// rank >= count.
+/// The element at `rank`, the same as getitem: a SortedList's rank is its position in sorted order.
+/// :param rank: The zero-based rank.
+/// :returns: A copy of the element.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 routine SortedList<T>.get_by_rank(self: @Self, rank: USize) -> T
 require T: typename
     block entry()
         result : T = self.load().get_by_rank(rank)
         return(result)
 
-/// Puts value in sorted order, after every element equal to it.
+/// Puts `value` in sorted order, after every element equal to it.
+/// :param value: The element to add.
+/// :throws: Crashes with `MemoryAllocationError` when a node cannot be allocated. See {SortedList<T>.push_result}
+///     for a recoverable form.
 #track_caller
 routine SortedList<T>.push(self: @Self, value: T) -> Void
 require T: typename, Comparable<T>
@@ -287,6 +305,9 @@ require T: typename, Comparable<T>
             .Failure -> crash_allocation()
 
 /// `push`, returning a Failure instead of crashing when the allocator fails.
+/// :param value: The element to add.
+/// :returns: `Success` once the element is in the list.
+/// :throws: Returns `Failure(AllocFailed)` when a node cannot be allocated.
 routine SortedList<T>.push_result(self: @Self, value: T) -> Result<Unit, AllocFailed>
 require T: typename, Comparable<T>
     block entry()
@@ -296,16 +317,20 @@ require T: typename, Comparable<T>
             ? return(.Success(Unit.value()))
             : return(.Failure(AllocFailed {}))
 
-/// The number of elements less than value: the position of its first copy if it's there, and where push would put
+/// The number of elements less than `value`: the position of its first copy if it's there, and where push would put
 /// it if not.
+/// :param value: The value to rank.
+/// :returns: The count of smaller elements.
 routine SortedList<T>.rank(self: Self, value: T) -> USize
 require T: typename, Comparable<T>
     block entry()
         rank : USize = self.bound(value, false)
         return(rank)
 
-/// The number of elements less than value: the position of its first copy if it's there, and where push would put
+/// The number of elements less than `value`: the position of its first copy if it's there, and where push would put
 /// it if not.
+/// :param value: The value to rank.
+/// :returns: The count of smaller elements.
 routine SortedList<T>.rank(self: @Self, value: T) -> USize
 require T: typename, Comparable<T>
     block entry()
@@ -340,7 +365,11 @@ require T: typename, Comparable<T>
         result : Bool = self.load().has(value)
         return(result)
 
-/// The number of elements less than value, or with or_equal, less than or equal to it. Binary search over getitem.
+/// The number of elements less than `value`, or with `or_equal`, less than or equal to it. Binary search over
+/// getitem.
+/// :param value: The value to compare against.
+/// :param or_equal: Whether elements equal to `value` count too.
+/// :returns: The count.
 private routine SortedList<T>.bound(self: Self, value: T, or_equal: Bool) -> USize
 require T: typename, Comparable<T>
     block entry()
@@ -364,8 +393,11 @@ require T: typename, Comparable<T>
             ? search(mid.add(1), hi)
             : search(lo, mid)
 
-/// Splits the full child at index around its middle. Returns false when the
-/// allocator fails, before anything has moved.
+/// Splits the full child at `index` around its middle: its upper half moves into a new right sibling placed after
+/// it.
+/// :param index: The index of the full child.
+/// :param alloc: The allocator for the new node.
+/// :returns: True when it split, false when the allocator failed (before anything moved).
 routine SortedListNode<T>.split_child(self: @Self, index: USize, alloc: @Allocator) -> Bool
 require T: typename
     shared left  : @Self = self.children.getitem(index)
@@ -430,9 +462,11 @@ require T: typename
         self.recount()
         return(true)
 
-/// Insert variant: an order equal to the rightmost subtree's count means
-/// "append at the end of that child", so `remaining == count` keeps us in
-/// the current child rather than overflowing into a non-existent next one.
+/// The child that position `order` falls in, for an insert: an order equal to a child's subtree count stays in that
+/// child (appending at its end) rather than moving on to a next child that may not exist.
+/// :param order: The position within this node's subtree.
+/// :param out_local: Receives the position within the chosen child.
+/// :returns: The child's index.
 routine SortedListNode<T>.find_child(self: @Self, order: USize, out_local: @USize) -> USize
 require T: typename
     block entry()
@@ -450,10 +484,11 @@ require T: typename
         out_local.store(remaining)
         return(i)
 
-/// Remove variant: order must address an existing element, so `remaining`
-/// must be strictly less than the child's count — at exact subtree
-/// boundaries the element belongs to the next sibling, not the trailing
-/// position of this one.
+/// The child holding the element at position `order`, for a remove: the position must address an existing element,
+/// so at a subtree boundary the element belongs to the next child.
+/// :param order: The position within this node's subtree.
+/// :param out_local: Receives the position within the chosen child.
+/// :returns: The child's index.
 routine SortedListNode<T>.find_child_strict(self: @Self, order: USize, out_local: @USize) -> USize
 require T: typename
     block entry()
@@ -471,8 +506,12 @@ require T: typename
         out_local.store(remaining)
         return(i)
 
-/// Inserts below a node that isn't full. Returns false when a split fails to
-/// allocate. The tree then holds the same elements, some nodes already split.
+/// Inserts `value` at position `order` below a node that isn't full, splitting full children on the way down.
+/// :param order: The position within this node's subtree to insert before.
+/// :param value: The element to insert.
+/// :param alloc: The allocator for nodes made by splits.
+/// :returns: True when it inserted, false when a split failed to allocate. The tree then holds the same elements,
+///     some nodes already split.
 routine SortedListNode<T>.insert_nonfull(self: @Self, order: USize, value: T,
     alloc: @Allocator) -> Bool
 require T: typename
@@ -532,8 +571,11 @@ require T: typename
         self.recount()
         return(true)
 
-/// Inserts value before position order. push picks the position, so the order holds. Returns false when the
-/// allocator fails, leaving the list with the same elements.
+/// Inserts `value` before position `order`. push picks the position, so the order holds.
+/// :param order: The position to insert before, at most the count.
+/// :param value: The element to insert.
+/// :returns: True when it inserted, false when the allocator failed (the list keeps the same elements).
+/// :throws: Crashes with `IndexOutOfBoundsError` when `order > count`.
 #track_caller
 private routine SortedList<T>.insert_at(self: @Self, order: USize, value: T) -> Bool
 require T: typename
@@ -711,10 +753,13 @@ require T: typename
         self.recount()
         return()
 
-/// remove descends with rebalancing inlined: when a borrow or merge fires the
-/// local order index has to be adjusted to account for the entries that moved
-/// into (or out of) the descent target, so we cannot factor out a generic
-/// ensure_min the way the keyed B-tree variants do.
+/// Removes the element at position `order` of this node's subtree and returns it, borrowing from or merging with a
+/// sibling first whenever the child it descends into has too few elements.
+/// :param order: The element's position within this node's subtree.
+/// :param alloc: The allocator to free merged nodes through.
+/// :returns: The removed element.
+/// :note: The rebalancing is inlined: after a borrow or merge the local order has to be adjusted for the entries
+///     that moved into or out of the child, so no generic ensure_min is factored out the way the keyed B-trees do.
 #track_caller
 routine SortedListNode<T>.remove(self: @Self, order: USize, alloc: @Allocator) -> T
 require T: typename
@@ -873,7 +918,9 @@ require T: typename
         self.root.store(new_root)
         return(value)
 
-/// Internal nodes use `count` as the child count (indices 0..count-1).
+/// Frees this node and every node below it through `alloc`. An internal node uses `count` as its child count. The
+/// values are not destructed.
+/// :param alloc: The allocator the nodes came from.
 routine SortedListNode<T>.free_recursive(self: @Self, alloc: @Allocator) -> Void
 require T: typename
     block entry()
@@ -953,6 +1000,8 @@ require T: typename, Destructible<T>
 // -- text -----------------------------------------------------------------------
 
 /// The elements in sorted order, each diagnosed (strings quoted): [1, 2, 3].
+/// :typeparam TWriter: The type of the Writer that receives the text.
+/// :param out: The writer to write to.
 routine SortedList<T>.represent_into<TWriter>(self: Self, out: @TWriter) -> Void
 require T: typename, Comparable<T>, Diagnosable<T>, TWriter: typename, Writer<TWriter>
     block entry()
@@ -963,6 +1012,8 @@ require T: typename, Comparable<T>, Diagnosable<T>, TWriter: typename, Writer<TW
         return()
 
 /// The elements in sorted order, each diagnosed: [1, 2, 3].
+/// :typeparam TWriter: The type of the Writer that receives the text.
+/// :param out: The writer to write to.
 routine SortedList<T>.diagnose_into<TWriter>(self: Self, out: @TWriter) -> Void
 require T: typename, Comparable<T>, Diagnosable<T>, TWriter: typename, Writer<TWriter>
     block entry()

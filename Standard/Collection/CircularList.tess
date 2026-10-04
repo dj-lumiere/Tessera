@@ -68,8 +68,9 @@ require T: typename
         empty : Bool  = count.eq(0)
         return(empty)
 
-/// Moves the elements into a new buffer of new_capacity, centered. Returns false
-/// when the allocator fails, leaving the list as it was.
+/// Moves the elements into a new buffer of `new_capacity`, centered in it.
+/// :param new_capacity: The new buffer's capacity, at least the count.
+/// :returns: True when it moved them, false when the allocator failed (the list is left as it was).
 private routine CircularList<T>.recenter(self: @Self, new_capacity: USize) -> Bool
 require T: typename
     shared count     : USize = self.count.load()
@@ -106,6 +107,8 @@ require T: typename
 /// The capacity to recenter into when one end runs out: double it only when the circular_list is more than half full.
 /// Otherwise the live range just moves back to the middle, so a queue (push_back / pop_front) keeps a bounded buffer
 /// instead of doubling each time its window drifts to the end.
+/// :param capacity: The current capacity.
+/// :returns: Twice `capacity` when the list is more than half full, else `capacity`.
 routine CircularList<T>.grown_capacity(self: Self, capacity: USize) -> USize
 require T: typename
     block entry()
@@ -116,6 +119,9 @@ require T: typename
             : capacity
         return(new_capacity)
 
+/// Makes room for one element before the first: when the start is at 0, recenters into a buffer of 4 (none yet) or
+/// of {CircularList<T>.grown_capacity}.
+/// :returns: True when there is room, false when the allocator failed.
 private routine CircularList<T>.ensure_front(self: @Self) -> Bool
 require T: typename
     block entry()
@@ -138,6 +144,9 @@ require T: typename
     block grow(capacity: USize)
         return(self.recenter(self.load().grown_capacity(capacity)))
 
+/// Makes room for one element after the last: when the buffer's end is reached, recenters into a buffer of 4 (none
+/// yet) or of {CircularList<T>.grown_capacity}.
+/// :returns: True when there is room, false when the allocator failed.
 private routine CircularList<T>.ensure_back(self: @Self) -> Bool
 require T: typename
     shared start    : USize = self.start.load()
@@ -175,6 +184,9 @@ require T: typename
             .Failure -> crash_allocation()
 
 /// `push_back`, returning a Failure instead of crashing when the allocator fails.
+/// :param value: The element to add.
+/// :returns: `Success` once the element is added.
+/// :throws: Returns `Failure(AllocFailed)` when the buffer must grow and the allocator fails.
 routine CircularList<T>.push_back_result(self: @Self, value: T) -> Result<Unit, AllocFailed>
 require T: typename
     block entry()
@@ -200,6 +212,9 @@ require T: typename
         return()
 
 /// `push`, returning a Failure instead of crashing when the allocator fails.
+/// :param value: The element to add.
+/// :returns: `Success` once the element is added.
+/// :throws: Returns `Failure(AllocFailed)` when the buffer must grow and the allocator fails.
 routine CircularList<T>.push_result(self: @Self, value: T) -> Result<Unit, AllocFailed>
 require T: typename
     block entry()
@@ -218,6 +233,9 @@ require T: typename
             .Failure -> crash_allocation()
 
 /// `push_front`, returning a Failure instead of crashing when the allocator fails.
+/// :param value: The element to add.
+/// :returns: `Success` once the element is added.
+/// :throws: Returns `Failure(AllocFailed)` when the buffer must grow and the allocator fails.
 routine CircularList<T>.push_front_result(self: @Self, value: T) -> Result<Unit, AllocFailed>
 require T: typename
     block entry()
@@ -247,6 +265,8 @@ require T: typename
             .Absent         -> crash_absent_value()
 
 /// `pop_back`, returning Absent instead of crashing on an empty list.
+/// :returns: The removed element.
+/// :absent: When the list is empty.
 routine CircularList<T>.pop_back_checked(self: @Self) -> Option<T>
 require T: typename
     shared count : USize = self.count.load()
@@ -276,6 +296,8 @@ require T: typename
         return(value)
 
 /// `pop`, returning Absent instead of crashing on an empty list.
+/// :returns: The removed element.
+/// :absent: When the list is empty.
 routine CircularList<T>.pop_checked(self: @Self) -> Option<T>
 require T: typename
     block entry()
@@ -294,6 +316,8 @@ require T: typename
             .Absent         -> crash_absent_value()
 
 /// `pop_front`, returning Absent instead of crashing on an empty list.
+/// :returns: The removed element.
+/// :absent: When the list is empty.
 routine CircularList<T>.pop_front_checked(self: @Self) -> Option<T>
 require T: typename
     shared count : USize = self.count.load()
@@ -333,6 +357,9 @@ require T: typename
         return(value)
 
 /// `getitem`, returning Absent instead of crashing on an index past the end.
+/// :param index: The zero-based position to read.
+/// :returns: A copy of the element.
+/// :absent: When `index >= count`.
 routine CircularList<T>.getitem_checked(self: Self, index: USize) -> Option<T>
 require T: typename
     block entry()
@@ -348,8 +375,11 @@ require T: typename
         value : T     = data.stride(start.add(index)).load()
         return(.Present(value))
 
-/// The address of element index, checked like getitem: a place to read or write in place. It stays valid until the
-/// list grows, shrinks, or is destructed.
+/// The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
+/// the list grows, shrinks, or is destructed.
+/// :param index: The zero-based position.
+/// :returns: The element's address.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 #track_caller
 routine CircularList<T>.at(self: Self, index: USize) -> @T
 require T: typename
@@ -367,6 +397,9 @@ require T: typename
         return(element)
 
 /// `at`, returning Absent instead of crashing on an index past the end.
+/// :param index: The zero-based position.
+/// :returns: The element's address.
+/// :absent: When `index >= count`.
 routine CircularList<T>.at_checked(self: Self, index: USize) -> Option<@T>
 require T: typename
     block entry()
@@ -394,14 +427,20 @@ require T: typename
         return(value)
 
 /// `getitem`, returning Absent instead of crashing on an index past the end.
+/// :param index: The zero-based position to read.
+/// :returns: A copy of the element.
+/// :absent: When `index >= count`.
 routine CircularList<T>.getitem_checked(self: @Self, index: USize) -> Option<T>
 require T: typename
     block entry()
         value : Option<T> = self.load().getitem_checked(index)
         return(value)
 
-/// The address of element index, checked like getitem: a place to read or write in place. It stays valid until the
-/// list grows, shrinks, or is destructed.
+/// The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
+/// the list grows, shrinks, or is destructed.
+/// :param index: The zero-based position.
+/// :returns: The element's address.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 #track_caller
 routine CircularList<T>.at(self: @Self, index: USize) -> @T
 require T: typename
@@ -410,6 +449,9 @@ require T: typename
         return(element)
 
 /// `at`, returning Absent instead of crashing on an index past the end.
+/// :param index: The zero-based position.
+/// :returns: The element's address.
+/// :absent: When `index >= count`.
 routine CircularList<T>.at_checked(self: @Self, index: USize) -> Option<@T>
 require T: typename
     block entry()
@@ -427,7 +469,9 @@ require T: typename, Equatable<T>
         equal : Bool = a.eq_at(b)
         return(equal)
 
-/// eq, through pointers to the two CircularLists.
+/// `eq`, through pointers to the two lists.
+/// :param other: The list to compare with.
+/// :returns: True when the counts match and every element pair is equal.
 private routine CircularList<T>.eq_at(self: @Self, other: @Self) -> Bool
 require T: typename, Equatable<T>
     shared la : USize = self.count.load()
@@ -531,6 +575,8 @@ require T: typename, Destructible<T>
 // -- text -----------------------------------------------------------------------
 
 /// The elements from the front, each diagnosed (strings quoted): [1, 2, 3].
+/// :typeparam TWriter: The type of the Writer that receives the text.
+/// :param out: The writer to write to.
 routine CircularList<T>.represent_into<TWriter>(self: Self, out: @TWriter) -> Void
 require T: typename, Diagnosable<T>, TWriter: typename, Writer<TWriter>
     block entry()
@@ -541,6 +587,8 @@ require T: typename, Diagnosable<T>, TWriter: typename, Writer<TWriter>
         return()
 
 /// The elements from the front, each diagnosed: [1, 2, 3].
+/// :typeparam TWriter: The type of the Writer that receives the text.
+/// :param out: The writer to write to.
 routine CircularList<T>.diagnose_into<TWriter>(self: Self, out: @TWriter) -> Void
 require T: typename, Diagnosable<T>, TWriter: typename, Writer<TWriter>
     block entry()

@@ -32,6 +32,7 @@ preset CM_F64_TANH_DB_L: @Array<U64, 12> <- { 0x3C60000000000000, 0xB97000000000
     0x3C80000000000000, 0xB970000000000000 }
 
 /// tanh self, correctly rounded.
+/// :returns: tanh `self`, correctly rounded.
 routine F64.tanh(self: Self) -> Self
     shared ax  : Self = self.abs()
     shared aix : U64  = ax.bits()
@@ -169,6 +170,9 @@ routine F64.tanh(self: Self) -> Self
             : return(res)
 
 /// The fast-path polynomial e^d - 1 ~ d ((2 + 2d) + d2 (c2 + d c3)) of tanh (scaled by 2), with d2 = d^2.
+/// :param d: The reduced argument.
+/// :param d2: `d` squared.
+/// :returns: The polynomial's value, about 2 (e^`d` - 1).
 private routine cm_f64_tanh_poly(d: F64, d2: F64) -> F64
     block entry()
         a : F64 = d.mul(0x1p+1).add(0x1p+1)
@@ -176,6 +180,9 @@ private routine cm_f64_tanh_poly(d: F64, d2: F64) -> F64
         return(d.mul(d2.mul(b).add(a)))
 
 /// x - y as hi + lo exactly, when |x| >= |y|.
+/// :param x: The minuend, at least as large as `y` in magnitude.
+/// :param y: The subtrahend.
+/// :returns: The exact difference as a double-double.
 private routine cm_f64_tanh_fasttwosub(x: F64, y: F64) -> CmF64HypDd
     block entry()
         s : F64 = x.sub(y)
@@ -184,6 +191,11 @@ private routine cm_f64_tanh_fasttwosub(x: F64, y: F64) -> CmF64HypDd
         return(CmF64HypDd { hi: s, lo: e })
 
 /// The double-double product (xh + xl) (ch + cl), renormalized.
+/// :param xh: The high part of the double-double.
+/// :param xl: The low part of the double-double.
+/// :param ch: The high part of the other factor.
+/// :param cl: The low part of the other factor.
+/// :returns: The product as a double-double.
 private routine cm_f64_tanh_muldd_acc(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64HypDd
     block entry()
         plh  : F64 = xl.mul(ch)
@@ -193,6 +205,10 @@ private routine cm_f64_tanh_muldd_acc(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF
         return(cm_f64_hyp_fasttwosum(phh, rest))
 
 /// The double-double times double product (xh + xl) c, renormalized.
+/// :param xh: The high part of the double-double.
+/// :param xl: The low part of the double-double.
+/// :param c: The F64 factor.
+/// :returns: The product as a double-double.
 private routine cm_f64_tanh_mulddd_acc(xh: F64, xl: F64, c: F64) -> CmF64HypDd
     block entry()
         pl   : F64 = xl.mul(c)
@@ -202,6 +218,13 @@ private routine cm_f64_tanh_mulddd_acc(xh: F64, xl: F64, c: F64) -> CmF64HypDd
 
 /// One Horner step of a double-double polynomial with the renormalizing product: (ch + cl) (xh + xl)
 /// + (c_hi + c_lo).
+/// :param xh: The high part of the double-double.
+/// :param xl: The low part of the double-double.
+/// :param ch: The high part of the polynomial so far.
+/// :param cl: The low part of the polynomial so far.
+/// :param c_hi: The high part of the next coefficient.
+/// :param c_lo: The low part of the next coefficient.
+/// :returns: The polynomial after this step, as a double-double.
 private routine cm_f64_tanh_polydd_step(xh: F64, xl: F64, ch: F64, cl: F64, c_hi: F64,
     c_lo: F64) -> CmF64HypDd
     block entry()
@@ -212,6 +235,11 @@ private routine cm_f64_tanh_polydd_step(xh: F64, xl: F64, ch: F64, cl: F64, c_hi
 
 /// Accurate exp(x) as a double-double, given t = round(x 2^12 / log 2) as an F64 and the scaled table value
 /// th + tl. It is cm_f64_hyp_exp_accurate with the renormalizing products.
+/// :param x: The argument.
+/// :param t: round(`x` 2^12 / log 2), as an F64.
+/// :param th: The high part of the scaled table value.
+/// :param tl: The low part of the scaled table value.
+/// :returns: exp(`x`) as a double-double.
 private routine cm_f64_tanh_exp_accurate(x: F64, t: F64, th: F64, tl: F64) -> CmF64HypDd
     block entry()
         dx     : F64        = x.sub(t.mul(0x1.62e42ffp-13))
@@ -242,6 +270,8 @@ private routine cm_f64_tanh_exp_accurate(x: F64, t: F64, th: F64, tl: F64) -> Cm
         return(CmF64HypDd { hi: vh, lo: vl })
 
 /// The accurate path of tanh for 0x1.d12ed0af1a27fp-27 < |x| < 1/4: a double-double odd polynomial.
+/// :param x: The argument.
+/// :returns: tanh `x`, correctly rounded.
 private routine cm_f64_tanh_zero(x: F64) -> F64
     block entry()
         x2  : F64        = x.mul(x)
@@ -283,6 +313,9 @@ private routine cm_f64_tanh_zero(x: F64) -> F64
             : return(r)
 
 /// The exact tanh x for the arguments the fast and accurate paths can't round, or f for any other x.
+/// :param x: The argument.
+/// :param f: The result to return when `x` isn't listed.
+/// :returns: The listed tanh `x`, or `f`.
 private routine cm_f64_tanh_database(x: F64, f: F64) -> F64
     block entry()
         jump search(0, 11)

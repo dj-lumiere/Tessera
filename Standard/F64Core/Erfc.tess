@@ -276,7 +276,9 @@ preset CM_F64_ERFC_POS_EXC: @Array<U64, 87> <- { 0x3C8C5BF891B4EF6B, 0x3FEFFFFFF
     0x3F94BB609C105C2D, 0xB929182DAE766FC4, 0x3FFAF08AE30C9364, 0x3F91AC47852096CB,
     0xBC3FFFFFFFFFFFDA }
 
-/// 1 - erf(self), accurate where erf is near 1.
+/// 1 - erf(`self`), accurate where erf is near 1 and correctly rounded (to nearest). -inf gives 2, +inf gives +0,
+/// and NaN comes back quiet.
+/// :returns: erfc(`self`).
 routine F64.erfc(self: Self) -> Self
     shared tu : U64 = self.bits()
     shared at : U64 = tu.bitand(0x7FFFFFFFFFFFFFFF)
@@ -334,12 +336,21 @@ routine F64.erfc(self: Self) -> Self
 // -- double-double helpers -----------------------------------------------------
 
 /// a (bh + bl) as a double-double.
+/// :param a: The F64 factor.
+/// :param bh: The high part of the double-double factor.
+/// :param bl: The low part of the double-double factor.
+/// :returns: The product as a double-double.
 routine cm_f64_erfc_s_mul(a: F64, bh: F64, bl: F64) -> CmF64ErfDd
     block entry()
         p : CmF64ErfDd = cm_f64_erf_a_mul(a, bh)
         return(CmF64ErfDd { hi: p.hi, lo: a.mul_add(bl, p.lo) })
 
 /// (ah + al) (bh + bl) - al bl as a double-double.
+/// :param ah: The high part of the first factor.
+/// :param al: The low part of the first factor.
+/// :param bh: The high part of the second factor.
+/// :param bl: The low part of the second factor.
+/// :returns: The product as a double-double.
 routine cm_f64_erfc_d_mul(ah: F64, al: F64, bh: F64, bl: F64) -> CmF64ErfDd
     block entry()
         p  : CmF64ErfDd = cm_f64_erf_a_mul(ah, bh)
@@ -347,6 +358,9 @@ routine cm_f64_erfc_d_mul(ah: F64, al: F64, bh: F64, bl: F64) -> CmF64ErfDd
         return(CmF64ErfDd { hi: p.hi, lo: al.mul_add(bh, lo) })
 
 /// x 2^n with a single rounding (C's ldexp), for -2044 <= n <= 2046.
+/// :param x: The value to scale.
+/// :param n: The power of two.
+/// :returns: `x` 2^`n`.
 routine cm_f64_erfc_ldexp(x: F64, n: S64) -> F64
     block entry()
         big : Bool = n.gt(1023)
@@ -363,6 +377,8 @@ routine cm_f64_erfc_ldexp(x: F64, n: S64) -> F64
             : return(y.mul(cm_f64_erfc_pow2(k)))
 
 /// 2^k for a normal exponent -1022 <= k <= 1023.
+/// :param k: The exponent.
+/// :returns: 2^`k`.
 routine cm_f64_erfc_pow2(k: S64) -> F64
     block entry()
         biased : U64 = k.add(1023).to_wrap<U64>()
@@ -372,6 +388,8 @@ routine cm_f64_erfc_pow2(k: S64) -> F64
 
 /// (h, l, err): h + l approximates erfc(x) with absolute error at most err, for
 /// -0x1.7744f8f74e94bp+2 < x < 0x1.b39dc41e48bfdp+4.
+/// :param x: The argument.
+/// :returns: The triple (h, l, err).
 routine cm_f64_erfc_fast(x: F64) -> (F64, F64, F64)
     block entry()
         negative : Bool = x.lt(0.0)
@@ -400,6 +418,8 @@ routine cm_f64_erfc_fast(x: F64) -> (F64, F64, F64)
 
 /// The fast path erfc(x) = exp(-x^2) p(1/x) for 0x1.713786d9c7c09p+1 < x < 0x1.b39dc41e48bfdp+4, as
 /// (h, l, err).
+/// :param x: The argument.
+/// :returns: The triple (h, l, err), h + l within err of erfc(`x`).
 routine cm_f64_erfc_asympt_fast(x: F64) -> (F64, F64, F64)
     block entry()
         tiny : Bool = x.ge(0x1.9db1bb14e15cap+4)  // erfc(x) < 2^-970: leave it to the accurate path
@@ -460,6 +480,9 @@ routine cm_f64_erfc_asympt_fast(x: F64) -> (F64, F64, F64)
 
 /// exp(xh + xl) as a double-double with relative error below 2^-74.139, for |xl/xh| < 2^-23.89 and
 /// |xl| < 2^-14.3486 (the fast exponential of CORE-MATH's pow).
+/// :param xh: The high part of the argument.
+/// :param xl: The low part of the argument.
+/// :returns: exp(`xh` + `xl`) as a double-double.
 routine cm_f64_erfc_exp_1(xh: F64, xl: F64) -> CmF64ErfDd
     block entry()
         // 0x1.71547652b82fep+12 approximates 2^12/log(2)
@@ -483,6 +506,9 @@ routine cm_f64_erfc_exp_1(xh: F64, xl: F64) -> CmF64ErfDd
 
 /// exp(zh + zl) as a double-double for |zh + zl| < 2^-12.88 and |zl| < 2^-42.6 (a degree-4
 /// polynomial).
+/// :param zh: The high part of the argument.
+/// :param zl: The low part of the argument.
+/// :returns: exp(`zh` + `zl`) as a double-double.
 routine cm_f64_erfc_q_1(zh: F64, zl: F64) -> CmF64ErfDd
     block entry()
         z  : F64        = zh.add(zl)
@@ -497,6 +523,8 @@ routine cm_f64_erfc_q_1(zh: F64, zl: F64) -> CmF64ErfDd
 
 /// The correctly rounded erfc(x) for the inputs the fast path can't round,
 /// -0x1.7744f8f74e94bp+2 < x < 0x1.b39dc41e48bfdp+4.
+/// :param x: The argument.
+/// :returns: erfc(`x`), correctly rounded.
 routine cm_f64_erfc_accurate(x: F64) -> F64
     block entry()
         negative : Bool = x.lt(0.0)
@@ -543,6 +571,8 @@ routine cm_f64_erfc_accurate(x: F64) -> F64
 
 /// The accurate asymptotic path erfc(x) = exp(-x^2) p(1/x), correctly rounded, for
 /// 0x1.b59ffb450828cp+0 < x < 0x1.b39dc41e48bfdp+4.
+/// :param x: The argument.
+/// :returns: erfc(`x`), correctly rounded.
 routine cm_f64_erfc_asympt_accurate(x: F64) -> F64
     block entry()
         jump scan(0)
@@ -640,6 +670,9 @@ routine cm_f64_erfc_asympt_accurate(x: F64) -> F64
         return(res.add(cm_f64_erfc_ldexp(corr, e)))
 
 /// exp(xh + xl) as 2^e (h + l) with about 104 bits of accuracy, for -742 <= xh + xl <= -2.92.
+/// :param xh: The high part of the argument.
+/// :param xl: The low part of the argument.
+/// :returns: The triple (h, l, e).
 routine cm_f64_erfc_exp_accurate(xh: F64, xl: F64) -> (F64, F64, S64)
     // xh + xl ~ k log(2) + yh + yl
     shared kd : F64 = xh.mul(0x1.71547652b82fep+0).round_ties_even()
@@ -692,40 +725,64 @@ routine cm_f64_erfc_exp_accurate(xh: F64, xl: F64) -> (F64, F64, S64)
 // -- table access --------------------------------------------------------------
 
 /// Entry k of pair i in CM_F64_ERFC_T1.
+/// :param i: The pair's index.
+/// :param k: The entry's index within the pair.
+/// :returns: The entry as an F64.
 private routine cm_f64_erfc_t1(i: USize, k: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_ERFC_T1.getitem(i.mul(2).add(k))))
 
 /// Entry k of pair i in CM_F64_ERFC_T2.
+/// :param i: The pair's index.
+/// :param k: The entry's index within the pair.
+/// :returns: The entry as an F64.
 private routine cm_f64_erfc_t2(i: USize, k: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_ERFC_T2.getitem(i.mul(2).add(k))))
 
 /// Coefficient k of the row starting at base in CM_F64_ERFC_T.
+/// :param base: The index of the row's first coefficient.
+/// :param k: The coefficient's index within the row.
+/// :returns: The coefficient.
 private routine cm_f64_erfc_t(base: USize, k: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_ERFC_T.getitem(base.add(k))))
 
 /// Coefficient k of the row starting at base in CM_F64_ERFC_TACC.
+/// :param base: The index of the row's first coefficient.
+/// :param k: The coefficient's index within the row.
+/// :returns: The coefficient.
 private routine cm_f64_erfc_tacc(base: USize, k: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_ERFC_TACC.getitem(base.add(k))))
 
+/// Entry k of CM_F64_ERFC_E2, the degree-19 polynomial approximating exp(x) near 1.
+/// :param k: The entry's index.
+/// :returns: The entry as an F64.
 private routine cm_f64_erfc_e2(k: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_ERFC_E2.getitem(k)))
 
 /// Entry k of triple i in CM_F64_ERFC_ASYMPT_EXC.
+/// :param i: The triple's index.
+/// :param k: The entry's index within the triple.
+/// :returns: The entry as an F64.
 private routine cm_f64_erfc_asympt_exc(i: USize, k: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_ERFC_ASYMPT_EXC.getitem(i.mul(3).add(k))))
 
 /// Entry k of triple i in CM_F64_ERFC_NEG_EXC.
+/// :param i: The triple's index.
+/// :param k: The entry's index within the triple.
+/// :returns: The entry as an F64.
 private routine cm_f64_erfc_neg_exc(i: USize, k: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_ERFC_NEG_EXC.getitem(i.mul(3).add(k))))
 
 /// Entry k of triple i in CM_F64_ERFC_POS_EXC.
+/// :param i: The triple's index.
+/// :param k: The entry's index within the triple.
+/// :returns: The entry as an F64.
 private routine cm_f64_erfc_pos_exc(i: USize, k: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_ERFC_POS_EXC.getitem(i.mul(3).add(k))))

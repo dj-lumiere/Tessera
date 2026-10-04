@@ -377,7 +377,9 @@ record CmF64SinAccReduced
     r   : U128
     neg : U64
 
-/// In radians.
+/// The sine of `self` in radians, correctly rounded (to nearest, ties to even). ±0 stays itself, and ±inf and NaN
+/// give NaN.
+/// :returns: sin(`self`).
 routine F64.sin(self: Self) -> Self
     shared ux : U64 = self.bits()
     shared au : U64 = ux.shl(1)
@@ -404,6 +406,9 @@ routine F64.sin(self: Self) -> Self
 
 /// The high half of a 128 x 128-bit fixed-point product, floor(a b / 2^128) up to the dropped low-times-low
 /// partial product.
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :returns: The high half of the product.
 private routine cm_f64_sin_mhuu(a: U128, b: U128) -> U128
     block entry()
         ah   : U64  = cm_f64_trig_hi(a)
@@ -416,6 +421,9 @@ private routine cm_f64_sin_mhuu(a: U128, b: U128) -> U128
         return(ahbh.add_wrap(ahbl.shr(64).add_wrap(albh.shr(64))))
 
 /// (-1)^sbit r/2^128 rounded to F64, for r non-zero and the result not subnormal.
+/// :param r: The fixed-point magnitude, non-zero.
+/// :param sbit: The sign bit, 0 or 1.
+/// :returns: The rounded F64.
 private routine cm_f64_sin_u128_to_f64(r: U128, sbit: U64) -> F64
     block entry()
         sh : U128 = r.leading_zeros()
@@ -434,12 +442,22 @@ private routine cm_f64_sin_u128_to_f64(r: U128, sbit: U64) -> F64
         return(a.add(a.mul(scale)))
 
 /// (xh + xl) + (yh + yl) in double-double, for |xh| >= |yh|.
+/// :param xh: The high part of the larger addend.
+/// :param xl: The low part of the larger addend.
+/// :param yh: The high part of the smaller addend.
+/// :param yl: The low part of the smaller addend.
+/// :returns: The sum as a double-double.
 private routine cm_f64_sin_fastsum(xh: F64, xl: F64, yh: F64, yl: F64) -> CmF64TrigDD
     block entry()
         s : CmF64TrigDD = cm_f64_trig_fast_two_sum(xh, yh)
         return(CmF64TrigDD { hi: s.hi, lo: xl.add(yl).add(s.lo) })
 
 /// (xh + xl) (ch + cl) in double-double.
+/// :param xh: The high part of the first factor.
+/// :param xl: The low part of the first factor.
+/// :param ch: The high part of the second factor.
+/// :param cl: The low part of the second factor.
+/// :returns: The product as a double-double.
 private routine cm_f64_sin_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64TrigDD
     block entry()
         ahhh  : F64 = xh.mul(ch)
@@ -448,12 +466,16 @@ private routine cm_f64_sin_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64Tri
         return(CmF64TrigDD { hi: ahhh, lo: lo })
 
 /// Word j of the 1/(2pi) table: 1/(2pi) ~ sum of T[j] / 2^(64j).
+/// :param j: The word index.
+/// :returns: The 64-bit word.
 private routine cm_f64_sin_t(j: U64) -> U64
     block entry()
         return(CM_F64_SIN_T.getitem(j.to<USize>()))
 
 /// The fast reduction for |x| >= 2^31: x/(2pi) mod 1 = k/2^15 + r + 2^-16 + s with 0 <= r + 2^-16 < 2^-15 and
 /// 0 <= s < 2^-67.988.
+/// :param x: The argument, |x| >= 2^31 and finite.
+/// :returns: k (15 bits) and r.
 private routine cm_f64_sin_reduce_large(x: F64) -> CmF64SinReduced
     block entry()
         ux : U64 = x.bits()
@@ -477,8 +499,12 @@ private routine cm_f64_sin_reduce_large(x: F64) -> CmF64SinReduced
         r      : F64  = t.mul(0x1p-68).sub(0x1p-16)
         return(CmF64SinReduced { k: cm_f64_trig_lo(u.shr(113)), r: r })
 
-/// Sr with Sr/2^128 ~ sin(2 pi r) for 0 <= r < 2^-14, where u, u2 and u4 are r, r^2 and r^4 in 128-bit fixed
-/// point and u2h = floor(u2 / 2^64).
+/// sin(u) in 128-bit fixed point, for the reduced angle u = 2 pi r with 0 <= r < 2^-14.
+/// :param u: u in 128-bit fixed point.
+/// :param u2: u^2 in 128-bit fixed point.
+/// :param u2h: The upper 64 bits of `u2`.
+/// :param u4: u^4 in 128-bit fixed point.
+/// :returns: sin(`u`) times 2^128.
 private routine cm_f64_sin_eval_ps(u: U128, u2: U128, u2h: U128, u4: U128) -> U128
     block entry()
         // Estrin's scheme: the degree-{1,3} part plus r^4 times the degree-{5,7} part, with alternating signs
@@ -490,8 +516,11 @@ private routine cm_f64_sin_eval_ps(u: U128, u2: U128, u2h: U128, u4: U128) -> U1
         s   : U128 = ps0.sub_wrap(cm_f64_sin_mhuu(ps1, u2)).add_wrap(sh)
         return(cm_f64_sin_mhuu(s, u))
 
-/// Cr with Cr/2^128 ~ cos(2 pi r) for 0 <= r < 2^-14, where u2 and u4 are r^2 and r^4 in 128-bit fixed point
-/// and u2h = floor(u2 / 2^64).
+/// cos(u) in 128-bit fixed point, for the reduced angle u = 2 pi r with 0 <= r < 2^-14.
+/// :param u2: u^2 in 128-bit fixed point.
+/// :param u2h: The upper 64 bits of `u2`.
+/// :param u4: u^4 in 128-bit fixed point.
+/// :returns: cos(u) times 2^128.
 private routine cm_f64_sin_eval_pc(u2: U128, u2h: U128, u4: U128) -> U128
     block entry()
         pc0 : U128 = cm_f64_trig_u128(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF)
@@ -506,6 +535,8 @@ private routine cm_f64_sin_eval_pc(u2: U128, u2h: U128, u4: U128) -> U128
 
 /// The accurate reduction for |x| >= 2^-16: x/(2pi) mod 1 = k/2^13 + (-1)^neg r/2^128 + eps, with
 /// |r/2^128| <= 2^-14 and 0 <= eps < 2^-127.999.
+/// :param x: The finite argument, |x| >= 2^-16.
+/// :returns: k (13 bits), r and the sign bit neg.
 private routine cm_f64_sin_reduce_large_acc(x: F64) -> CmF64SinAccReduced
     block entry()
         ux : U64 = x.bits()
@@ -544,12 +575,16 @@ private routine cm_f64_sin_reduce_large_acc(x: F64) -> CmF64SinAccReduced
             : return(CmF64SinAccReduced { k: k, r: u, neg: neg })
 
 /// Entry i (0 <= i <= 32) of the sin(pi i/2^6) table, in 128-bit fixed point.
+/// :param i: The index, 0..32.
+/// :returns: sin(pi `i`/2^6) in 128-bit fixed point.
 private routine cm_f64_sin_s1u(i: U64) -> U128
     block entry()
         k : USize = i.to<USize>().mul(2)
         return(cm_f64_trig_u128(CM_F64_SIN_S1U.getitem(k.add(1)), CM_F64_SIN_S1U.getitem(k)))
 
 /// The accurate path in 128-bit fixed point, for finite |x| >= 2^-16.
+/// :param x: The argument.
+/// :returns: sin(`x`), correctly rounded.
 private routine cm_f64_sin_large_accurate(x: F64) -> F64
     block entry()
         red : CmF64SinAccReduced = cm_f64_sin_reduce_large_acc(x)
@@ -604,6 +639,8 @@ private routine cm_f64_sin_large_accurate(x: F64) -> F64
 
 /// The accurate path for |x| < 2^-16: x + (c3h + c3l) x^3 + c5 x^5 with relative error below 2^-112.743, in
 /// double-double.
+/// :param x: The argument, |x| < 2^-16.
+/// :returns: sin(`x`), correctly rounded.
 private routine cm_f64_sin_small_accurate(x: F64) -> F64
     block entry()
         c3h : F64         = -0x1.5555555555555p-3
@@ -621,6 +658,11 @@ private routine cm_f64_sin_small_accurate(x: F64) -> F64
 
 /// sin of j/2^15 turns (j = 2^7 i1 + i2) plus r, from the tables of sin and cos at i1 pi/2^7 and i2 pi/2^14 and
 /// the polynomial values sh ~ sin(r) and ch ~ cos(r) - 1: (Sh, Sl + Sh ch + Ch sh).
+/// :param i1: The coarse table index, 0..127.
+/// :param i2: The fine table index, 0..127.
+/// :param sh: The approximation of sin(r).
+/// :param ch: The approximation of cos(r) - 1.
+/// :returns: The sine as a double-double.
 private routine cm_f64_sin_combine(i1: U64, i2: U64, sh: F64, ch: F64) -> CmF64TrigDD
     block entry()
         a   : USize       = i1.to<USize>().mul(4)
@@ -640,6 +682,9 @@ private routine cm_f64_sin_combine(i1: U64, i2: U64, sh: F64, ch: F64) -> CmF64T
         return(CmF64TrigDD { hi: s.hi, lo: s.lo.add(s.hi.mul(ch)).add(cc.mul(sh)) })
 
 /// The fast path for 0x1.7137449123ef6p-26 < |x| < 2^31, where sbit is the sign bit of x.
+/// :param x: The argument.
+/// :param sbit: The sign bit of `x`.
+/// :returns: sin(`x`), correctly rounded.
 private routine cm_f64_sin_moderate(x: F64, sbit: U64) -> F64
     block entry()
         ax : F64 = x.abs()
@@ -678,6 +723,8 @@ private routine cm_f64_sin_moderate(x: F64, sbit: U64) -> F64
             else  -> return(cm_f64_sin_large_accurate(x))
 
 /// The fast path for finite |x| >= 2^31.
+/// :param x: The argument.
+/// :returns: sin(`x`), correctly rounded.
 private routine cm_f64_sin_large(x: F64) -> F64
     block entry()
         red : CmF64SinReduced = cm_f64_sin_reduce_large(x.abs())

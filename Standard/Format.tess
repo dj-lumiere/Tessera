@@ -24,13 +24,18 @@ import Standard::Collections
 /// :typeparam T: The type that accepts bytes.
 concept Writer<T>
 require T: typename
-    /// Write count bytes starting at data.
+    /// Writes `count` bytes starting at `data`.
+    /// :param data: The first byte to write.
+    /// :param count: The number of bytes to write.
     routine Self.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
 
 /// A type that can write its program-output text into a Writer with `represent_into`. Integers write decimal (`represent_hex_into` gives hex), Bytes writes itself unquoted, and Bool writes `true` or `false`.
 /// :typeparam T: The type that can write its program-output text.
 concept Representable<T>
 require T: typename
+    /// Writes the value's program-output text to `out`.
+    /// :typeparam TWriter: The type of the Writer that receives the text.
+    /// :param out: The Writer the text is written to.
     routine Self.represent_into<TWriter>(self: Self, out: @TWriter) -> Void
 
 /// The built-in types' represent routines are further down.
@@ -62,6 +67,7 @@ routine SliceWriter.construct(data: @Byte, capacity: USize) -> Self
         return(w)
 
 /// The text written so far, a view into the buffer.
+/// :returns: The bytes written so far, a view into the buffer.
 routine SliceWriter.to<Bytes>(self: Self) -> Bytes
     block entry()
         data  : @Byte = self.data
@@ -70,6 +76,7 @@ routine SliceWriter.to<Bytes>(self: Self) -> Bytes
         return(s)
 
 /// The text written so far, a view into the buffer.
+/// :returns: The bytes written so far, a view into the buffer.
 routine SliceWriter.to<Bytes>(self: @Self) -> Bytes
     block entry()
         s : Bytes = .from_ptr(self.data.load(), self.count.load())
@@ -83,6 +90,7 @@ routine SliceWriter.has_overflowed(self: Self) -> Bool
         return(r)
 
 /// True once some write did not fit in the buffer, meaning the text was cut off.
+/// :returns: True when at least one write was cut short.
 routine SliceWriter.has_overflowed(self: @Self) -> Bool
     block entry()
         r : Bool = self.overflowed.load()
@@ -683,6 +691,8 @@ require T: typename, Writer<T>
         return()
 
 /// The bits at the target's width, like the fixed-width types.
+/// :typeparam T: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
 routine SSize.represent_hex_into<T>(self: Self, out: @T) -> Void
 require T: typename, Writer<T>
     block entry()
@@ -690,6 +700,8 @@ require T: typename, Writer<T>
         return()
 
 /// The character's UTF-8 bytes.
+/// :typeparam T: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
 routine Char.represent_into<T>(self: Self, out: @T) -> Void
 require T: typename, Writer<T>
     block entry()
@@ -747,6 +759,8 @@ require T: typename, Writer<T>
 // -- arrays --------------------------------------------------------------------
 
 /// The elements, each diagnosed (so strings keep their quotes), as [1, 2, 3].
+/// :typeparam TWriter: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
 routine Array<T, COUNT>.represent_into<TWriter>(self: Self, out: @TWriter) -> Void
 require T: typename, COUNT: USize, Diagnosable<T>, TWriter: typename, Writer<TWriter>
     shared slot : @Self <- self
@@ -789,6 +803,9 @@ require T: typename, COUNT: USize, Diagnosable<T>, TWriter: typename, Writer<TWr
 // codes in U8 buffers and written out as bytes.
 
 /// Writes count zeros.
+/// :typeparam T: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
+/// :param count: The number of zeros.
 routine write_zeros<T>(out: @T, count: USize) -> Void
 require T: typename, Writer<T>
     block entry()
@@ -805,6 +822,10 @@ require T: typename, Writer<T>
         jump loop(left.sub(1))
 
 /// Writes count ASCII digits starting at first.
+/// :typeparam T: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
+/// :param first: The first digit, as an ASCII code.
+/// :param count: The number of digits.
 routine write_digits<T>(out: @T, first: @U8, count: USize) -> Void
 require T: typename, Writer<T>
     block entry()
@@ -813,6 +834,9 @@ require T: typename, Writer<T>
         return()
 
 /// Writes digits × 10^exponent (digits > 0, at most 19 digits).
+/// :typeparam T: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
+/// :param d: The digits and the decimal exponent.
 routine write_float_decimal<T>(out: @T, d: FloatDecimal) -> Void
 require T: typename, Writer<T>
     shared buf    : @Array<U8, 20> <- uninit
@@ -842,6 +866,11 @@ require T: typename, Writer<T>
 
 /// Writes the n ASCII digits at first times 10^exponent (no leading zero). The
 /// point goes after the first digit at scientific exponent x = n - 1 + exponent.
+/// :typeparam T: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
+/// :param first: The first digit, as an ASCII code.
+/// :param n: The number of digits.
+/// :param exponent: The power of ten the digits are scaled by.
 routine write_decimal_digits<T>(out: @T, first: @U8, n: USize, exponent: S64) -> Void
 require T: typename, Writer<T>
     shared top_place : S64 = n.to<S64>().sub(1)
@@ -921,6 +950,14 @@ require T: typename, Writer<T>
 
 /// Writes a binary float given its IEEE fields. exponent_max is the all-ones
 /// exponent (infinity / NaN).
+/// :typeparam T: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
+/// :param negative: The sign bit.
+/// :param mantissa: The stored mantissa field.
+/// :param exponent: The biased exponent field.
+/// :param mantissa_bits: The number of stored mantissa bits.
+/// :param bias: The exponent bias.
+/// :param exponent_max: The all-ones exponent field.
 routine write_binary_float<T>(out: @T, negative: Bool, mantissa: U64, exponent: U64,
     mantissa_bits: S64, bias: S64, exponent_max: U64) -> Void
 require T: typename, Writer<T>
@@ -1048,9 +1085,11 @@ require T: typename, Writer<T>
 // Quickly and Accurately", 1996) on BigNats. With v = f × 2^e, the value,
 // half the gap to the next float, and half the gap to the previous one are
 // r / s, m+ / s, and m- / s. Digits come out one at a time until the number so
-// far is inside the rounding interval// the last digit is the nearer choice.
+// far is inside the rounding interval. The last digit is the nearer choice.
 
-/// floor(x × log10(2)), for |x| up to about 10^6
+/// floor(x × log10(2)), for |x| up to about 10^6.
+/// :param x: The power of two.
+/// :returns: floor(`x` × log10(2)).
 routine floor_log10_pow2(x: S64) -> S64
     block entry()
         r : S64 = x.mul(646456993).shr(31)
@@ -1058,7 +1097,13 @@ routine floor_log10_pow2(x: S64) -> S64
 
 /// Writes f × 2^e (f > 0) as its shortest round-trip decimal. boundary says the
 /// gap below is half the gap above (f is a power of two above the smallest
-/// normal)// even says ties read back as this float (f is even).
+/// normal). even says ties read back as this float (f is even).
+/// :typeparam T: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
+/// :param f: The significand, above 0.
+/// :param e: The binary exponent.
+/// :param boundary: True when the gap below is half the gap above.
+/// :param even: True when a tie reads back as this float.
 routine write_float_exact<T>(out: @T, f: U128, e: S64, boundary: Bool, even: Bool) -> Void
 require T: typename, Writer<T>
     shared r     : @BigNat<320> <- uninit
@@ -1157,7 +1202,7 @@ require T: typename, Writer<T>
         r.sub(s)
         jump take(d.add(1), n, k, digits)
 
-    // low: the digits so far are already within m- of the value// high: rounding
+    // low: the digits so far are already within m- of the value. High: rounding
     // this digit up is within m+. Either one ends the output.
     block judge(d: U8, n: USize, k: S64, digits: @U8)
         low_cmp : S32  = r.compare(minus)
@@ -1263,6 +1308,11 @@ require T: typename, Writer<T>
 /// own digits end max(0, -e) places after the point, so the rounding works on at
 /// most that many and the rest are zeros. Sized for F128: f × 10^16494 needs
 /// about 55,000 bits and prints at most 16,530 digits.
+/// :typeparam T: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
+/// :param f: The significand.
+/// :param e: The binary exponent.
+/// :param digits: The number of digits after the point.
 routine write_float_fixed<T>(out: @T, f: U128, e: S64, digits: USize) -> Void
 require T: typename, Writer<T>
     shared n          : @BigNat<864> <- uninit
@@ -1329,7 +1379,7 @@ require T: typename, Writer<T>
             ? skip_zeros(chars, at.add(1))
             : lay_out(chars, at)
 
-    // n has count digits at chars[first ..]// the last places of them follow the point
+    // n has count digits at chars[first ..]. The last places of them follow the point
     block lay_out(chars: @U8, first: USize)
         count   : USize = 16640.sub(first)
         has_int : Bool  = count.gt(places)
@@ -1363,6 +1413,15 @@ require T: typename, Writer<T>
 
 /// represent_fixed_into for a binary float given its IEEE fields: shift is bias +
 /// mantissa bits, so a normal value is (1.fraction) × 2^(biased - shift).
+/// :typeparam T: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
+/// :param negative: The sign bit.
+/// :param fraction: The stored mantissa field.
+/// :param biased: The biased exponent field.
+/// :param mantissa_bits: The number of stored mantissa bits.
+/// :param shift: The bias plus the number of mantissa bits.
+/// :param exponent_max: The all-ones exponent field.
+/// :param digits: The number of digits after the point.
 routine write_binary_fixed<T>(out: @T, negative: Bool, fraction: U128, biased: S64,
     mantissa_bits: U128, shift: S64, exponent_max: S64, digits: USize) -> Void
 require T: typename, Writer<T>
@@ -1549,12 +1608,16 @@ conform Writer<SignPadWriter<T>>
     pad   : USize
 
 /// Right-aligned to width, padded with spaces.
+/// :param width: The minimum width in characters.
+/// :returns: The spec.
 routine FormatSpec.construct(width: USize) -> Self
     block entry()
         spec : Self = Self { width: width, fill: " ", align: Align.Right }
         return(spec)
 
 /// Padded with zeros after the sign: -7 at 4 is -007.
+/// :param width: The minimum width in characters.
+/// :returns: The spec.
 routine FormatSpec.zero_padded(width: USize) -> Self
     block entry()
         spec : Self = Self { width: width, fill: "0", align: Align.AfterSign }
@@ -1568,13 +1631,19 @@ routine FormatSpec.with_align(self: Self, align: Align) -> Self
         spec : Self = Self { width: self.width, fill: self.fill, align: align }
         return(spec)
 
-/// fill is one character (any UTF-8 text works, but width counts it as one).
+/// The same spec with a different fill: one character (any UTF-8 text works, but width counts it as one).
+/// :param fill: The new fill text.
+/// :returns: A copy of the spec with the new fill.
 routine FormatSpec.with_fill(self: Self, fill: Bytes) -> Self
     block entry()
         spec : Self = Self { width: self.width, fill: fill, align: self.align }
         return(spec)
 
 /// Writes text count times.
+/// :typeparam T: The type of the Writer that receives the text.
+/// :param out: The Writer the text is written to.
+/// :param text: The text to write.
+/// :param count: How many times to write it.
 routine write_repeated<T>(out: @T, text: Bytes, count: USize) -> Void
 require T: typename, Writer<T>
     block entry()

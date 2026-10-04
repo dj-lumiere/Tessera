@@ -612,7 +612,9 @@ record CmF64LogDint
     ex  : S64
     sgn : U64
 
-/// The natural logarithm.
+/// The natural logarithm, correctly rounded (to nearest, ties to even). ln(1) = +0, ln(±0) = -inf, ln(+inf) = +inf,
+/// a negative argument gives NaN, and NaN comes back quiet.
+/// :returns: ln(`self`).
 routine F64.ln(self: Self) -> Self
     block entry()
         u               : U64  = self.bits()
@@ -657,6 +659,9 @@ routine F64.ln(self: Self) -> Self
 
 /// The fast path of log: a double-double approximation of log(2^e m) with absolute error below 0x1.b6p-69, where
 /// m = 1 + mbits/2^52.
+/// :param e: The unbiased exponent.
+/// :param mbits: The 52 fraction bits of the significand.
+/// :returns: The approximation as a double-double.
 private routine cm_f64_log_fast(e: S64, mbits: U64) -> CmF64LogDd
     block entry()
         m     : U64  = mbits.add(0x0010000000000000)
@@ -689,6 +694,8 @@ private routine cm_f64_log_fast(e: S64, mbits: U64) -> CmF64LogDd
         return(CmF64LogDd { hi: h, lo: lo })
 
 /// The accurate path of log: log x as a dint with about 126 bits of accuracy, for a positive finite x other than 1.
+/// :param x: The argument.
+/// :returns: log(`x`) as a dint.
 routine cm_f64_log_dint_log_of(x: F64) -> CmF64LogDint
     shared d : CmF64LogDint = x.to<CmF64LogDint>()
 
@@ -722,6 +729,8 @@ routine cm_f64_log_dint_log_of(x: F64) -> CmF64LogDint
         return(cm_f64_log_dint_add(s, r))
 
 /// The accurate-path polynomial approximating log(1 + z), evaluated in dint arithmetic.
+/// :param z: The reduced argument.
+/// :returns: The polynomial value as a dint.
 private routine cm_f64_log_dint_poly(z: CmF64LogDint) -> CmF64LogDint
     shared r : @CmF64LogDint <- uninit
 
@@ -739,6 +748,8 @@ private routine cm_f64_log_dint_poly(z: CmF64LogDint) -> CmF64LogDint
         jump horner(j.add(1))
 
 /// Coefficient j of the accurate-path polynomial, highest degree first.
+/// :param j: The coefficient index, 0..12.
+/// :returns: The coefficient as a dint.
 private routine cm_f64_log_dint_coefficient(j: USize) -> CmF64LogDint
     block entry()
         m_hi : U128 = CM_F64_LOG_DP_HI.getitem(j).to<U128>()
@@ -747,6 +758,9 @@ private routine cm_f64_log_dint_coefficient(j: USize) -> CmF64LogDint
             sgn: CM_F64_LOG_DP_SGN.getitem(j) })
 
 /// a + b, rounded to nearest on 128 bits.
+/// :param a: The first addend.
+/// :param b: The second addend.
+/// :returns: The sum as a normalized dint.
 private routine cm_f64_log_dint_add(a: CmF64LogDint, b: CmF64LogDint) -> CmF64LogDint
     block entry()
         a_zero   : Bool = a.m.eq(0)
@@ -803,6 +817,9 @@ private routine cm_f64_log_dint_add(a: CmF64LogDint, b: CmF64LogDint) -> CmF64Lo
         return(CmF64LogDint { m: c.shl(lz), ex: m_ex.sub(lz.to<S64>()), sgn: x.sgn })
 
 /// a b, with 126 bits of accuracy.
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :returns: The product as a normalized dint.
 routine cm_f64_log_dint_mul(a: CmF64LogDint, b: CmF64LogDint) -> CmF64LogDint
     block entry()
         mask : U128 = 0xFFFFFFFFFFFFFFFF
@@ -828,6 +845,9 @@ routine cm_f64_log_dint_mul(a: CmF64LogDint, b: CmF64LogDint) -> CmF64LogDint
             : return(CmF64LogDint { m: t.shl(1).add_wrap(low), ex: a.ex.add(b.ex), sgn: sgn })
 
 /// b a for a small integer b.
+/// :param b: The integer factor.
+/// :param a: The dint factor.
+/// :returns: The product as a normalized dint.
 private routine cm_f64_log_dint_mul_int(b: S64, a: CmF64LogDint) -> CmF64LogDint
     block entry()
         zero : Bool = b.eq(0)
@@ -858,6 +878,7 @@ private routine cm_f64_log_dint_mul_int(b: S64, a: CmF64LogDint) -> CmF64LogDint
         return(CmF64LogDint { m: m, ex: a.ex.add(64).sub(sh.to<S64>().sub(1)), sgn: sgn })
 
 /// A positive finite x as a dint.
+/// :returns: `self` as a normalized dint.
 private routine F64.to<CmF64LogDint>(self: Self) -> CmF64LogDint
     block entry()
         u      : U64  = self.bits()
@@ -877,6 +898,7 @@ private routine F64.to<CmF64LogDint>(self: Self) -> CmF64LogDint
         return(CmF64LogDint { m: normalized.to<U128>().shl(64), ex: e.sub(shift), sgn: 0 })
 
 /// A dint rounded to the nearest F64, assuming the result is in the normal range.
+/// :returns: The rounded F64.
 routine CmF64LogDint.to<F64>(self: Self) -> F64
     block entry()
         hi        : U64  = self.m.shr(64).to<U64>()

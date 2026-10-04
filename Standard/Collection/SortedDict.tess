@@ -86,7 +86,10 @@ require TKey: typename, TValue: typename
         result : Bool = self.load().is_empty()
         return(result)
 
-/// A new empty node, or null when the allocator fails.
+/// A new empty node from `alloc`.
+/// :param leaf: Whether the node is a leaf.
+/// :param alloc: The allocator to take the node from.
+/// :returns: The node, or null when the allocator fails.
 routine SortedDictNode<TKey, TValue>.construct(leaf: Bool, alloc: @Allocator) -> @Self
 require TKey: typename, TValue: typename
     shared node : @Self = allocate<Self>(1, alloc)
@@ -206,6 +209,9 @@ require TKey: typename, TValue: typename
         return(result)
 
 /// `getitem`, returning Absent instead of crashing on a missing key.
+/// :param key: The key to look up.
+/// :returns: A copy of the value.
+/// :absent: When the key is not present.
 routine SortedDict<TKey, TValue>.getitem_checked(self: Self, key: TKey) -> Option<TValue>
 require TKey: typename, TValue: typename
     block entry()
@@ -246,14 +252,21 @@ require TKey: typename, TValue: typename
         return(.Present(value))
 
 /// `getitem`, returning Absent instead of crashing on a missing key.
+/// :param key: The key to look up.
+/// :returns: A copy of the value.
+/// :absent: When the key is not present.
 routine SortedDict<TKey, TValue>.getitem_checked(self: @Self, key: TKey) -> Option<TValue>
 require TKey: typename, TValue: typename
     block entry()
         result : Option<TValue> = self.load().getitem_checked(key)
         return(result)
 
-/// The address of key's value, checked like getitem: a place to update the value in place. Only the value: changing a
-/// key in place would break the order. It stays valid until the dict changes shape or is destructed.
+/// The address of the value under `key`, checked like getitem: a place to update the value in place. Only the
+/// value: changing a key in place would break the order. It stays valid until the dict changes shape or is
+/// destructed.
+/// :param key: The key to look up.
+/// :returns: The value's address.
+/// :throws: Crashes with `KeyNotFoundError` when the key is absent.
 #track_caller
 routine SortedDict<TKey, TValue>.at(self: Self, key: TKey) -> @TValue
 require TKey: typename, TValue: typename
@@ -263,8 +276,12 @@ require TKey: typename, TValue: typename
             .Present(value) -> return(value)
             .Absent         -> crash_key_not_found()
 
-/// The address of key's value, checked like getitem: a place to update the value in place. Only the value: changing a
-/// key in place would break the order. It stays valid until the dict changes shape or is destructed.
+/// The address of the value under `key`, checked like getitem: a place to update the value in place. Only the
+/// value: changing a key in place would break the order. It stays valid until the dict changes shape or is
+/// destructed.
+/// :param key: The key to look up.
+/// :returns: The value's address.
+/// :throws: Crashes with `KeyNotFoundError` when the key is absent.
 #track_caller
 routine SortedDict<TKey, TValue>.at(self: @Self, key: TKey) -> @TValue
 require TKey: typename, TValue: typename
@@ -273,6 +290,9 @@ require TKey: typename, TValue: typename
         return(result)
 
 /// `at`, returning Absent instead of crashing on a missing key.
+/// :param key: The key to look up.
+/// :returns: The value's address.
+/// :absent: When the key is not present.
 routine SortedDict<TKey, TValue>.at_checked(self: Self, key: TKey) -> Option<@TValue>
 require TKey: typename, TValue: typename
     block entry()
@@ -313,14 +333,19 @@ require TKey: typename, TValue: typename
         return(.Present(value))
 
 /// `at`, returning Absent instead of crashing on a missing key.
+/// :param key: The key to look up.
+/// :returns: The value's address.
+/// :absent: When the key is not present.
 routine SortedDict<TKey, TValue>.at_checked(self: @Self, key: TKey) -> Option<@TValue>
 require TKey: typename, TValue: typename
     block entry()
         result : Option<@TValue> = self.load().at_checked(key)
         return(result)
 
-/// SortedDicts are sorted by key, so structural in-order comparison of both
-/// keys and values gives map equality.
+/// Whether two dicts hold the same key-value pairs. Both are sorted by key, so comparing the pairs in order is
+/// enough.
+/// :param other: The dict to compare with.
+/// :returns: True when the counts match and every pair has an equal key and an equal value.
 routine SortedDict<TKey, TValue>.eq(self: Self, other: Self) -> Bool
 require TKey: typename, TValue: typename, Comparable<TKey>, Equatable<TValue>
     block entry()
@@ -329,7 +354,9 @@ require TKey: typename, TValue: typename, Comparable<TKey>, Equatable<TValue>
         equal : Bool = a.eq_at(b)
         return(equal)
 
-/// eq, through pointers to the two SortedDicts.
+/// `eq`, through pointers to the two dicts.
+/// :param other: The dict to compare with.
+/// :returns: True when the counts match and every pair has an equal key and an equal value.
 private routine SortedDict<TKey, TValue>.eq_at(self: @Self, other: @Self) -> Bool
 require TKey: typename, TValue: typename, Comparable<TKey>, Equatable<TValue>
     shared a : @SortedDictIter<TKey, TValue> <- uninit
@@ -414,7 +441,10 @@ require TKey: typename, TValue: typename
         result : Bool = self.load().has_key(key)
         return(result)
 
-/// The node and index of the rank-th smallest key. Crashes if rank >= count.
+/// The node and index of the `rank`-th smallest key.
+/// :param rank: The zero-based rank.
+/// :returns: The entry's node and its index there.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 #track_caller
 private routine SortedDict<TKey, TValue>.locate_rank(self: Self,
     rank: USize) -> SortedDictSpot<TKey, TValue>
@@ -481,8 +511,11 @@ require TKey: typename, TValue: typename
     block found(node: @SortedDictNode<TKey, TValue>, i: USize)
         return(SortedDictSpot<TKey, TValue> { node: node, index: i })
 
-/// The rank-th smallest key and its value, copied (0 is the smallest). Crashes if rank >= count. A copy, because
-/// writing a key through a pointer would break the order.
+/// The `rank`-th smallest key and its value, copied (0 is the smallest). A copy, because writing a key through a
+/// pointer would break the order.
+/// :param rank: The zero-based rank.
+/// :returns: The key and its value.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 routine SortedDict<TKey, TValue>.get_by_rank(self: Self, rank: USize) -> KVPair<TKey, TValue>
 require TKey: typename, TValue: typename
     block entry()
@@ -492,16 +525,21 @@ require TKey: typename, TValue: typename
         value : TValue                        = node.values.getitem(spot.index)
         return(KVPair<TKey, TValue> { key: key, value: value })
 
-/// The rank-th smallest key and its value, copied (0 is the smallest). Crashes if rank >= count. A copy, because
-/// writing a key through a pointer would break the order.
+/// The `rank`-th smallest key and its value, copied (0 is the smallest). A copy, because writing a key through a
+/// pointer would break the order.
+/// :param rank: The zero-based rank.
+/// :returns: The key and its value.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 routine SortedDict<TKey, TValue>.get_by_rank(self: @Self, rank: USize) -> KVPair<TKey, TValue>
 require TKey: typename, TValue: typename
     block entry()
         result : KVPair<TKey, TValue> = self.load().get_by_rank(rank)
         return(result)
 
-/// A pointer to the value of the rank-th smallest key, to change it in place. Crashes if rank >= count. Valid until
-/// the next put or remove.
+/// A pointer to the value of the `rank`-th smallest key, to change it in place. Valid until the next put or remove.
+/// :param rank: The zero-based rank.
+/// :returns: The value's address.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 routine SortedDict<TKey, TValue>.value_ptr_by_rank(self: Self, rank: USize) -> @TValue
 require TKey: typename, TValue: typename
     block entry()
@@ -510,16 +548,21 @@ require TKey: typename, TValue: typename
         value : @TValue                       = node.values.to<@TValue>().stride(spot.index)
         return(value)
 
-/// A pointer to the value of the rank-th smallest key, to change it in place. Crashes if rank >= count. Valid until
-/// the next put or remove.
+/// A pointer to the value of the `rank`-th smallest key, to change it in place. Valid until the next put or remove.
+/// :param rank: The zero-based rank.
+/// :returns: The value's address.
+/// :throws: Crashes with `IndexOutOfBoundsError` when `rank >= count`.
 routine SortedDict<TKey, TValue>.value_ptr_by_rank(self: @Self, rank: USize) -> @TValue
 require TKey: typename, TValue: typename
     block entry()
         result : @TValue = self.load().value_ptr_by_rank(rank)
         return(result)
 
-/// Splits the full child at index around its middle. Returns false when the
-/// allocator fails, before anything has moved.
+/// Splits the full child at `index` around its middle: the middle entry moves up into this node and the upper half
+/// into a new right sibling.
+/// :param index: The index of the full child.
+/// :param alloc: The allocator for the new node.
+/// :returns: True when it split, false when the allocator failed (before anything moved).
 routine SortedDictNode<TKey, TValue>.split_child(self: @Self, index: USize,
     alloc: @Allocator) -> Bool
 require TKey: typename, TValue: typename
@@ -589,8 +632,13 @@ require TKey: typename, TValue: typename
         self.recount()
         return(true)
 
-/// Inserts below a node that isn't full. Returns false when a split fails to
-/// allocate. The tree then holds the same elements, some nodes already split.
+/// Inserts `key` and `value` below a node that isn't full, splitting full children on the way down. An equal key
+/// must not already be in the subtree (the caller replaces those first).
+/// :param key: The key to insert.
+/// :param value: The value to insert.
+/// :param alloc: The allocator for nodes made by splits.
+/// :returns: True when it inserted, false when a split failed to allocate. The tree then holds the same entries,
+///     some nodes already split.
 routine SortedDictNode<TKey, TValue>.insert_nonfull(self: @Self, key: TKey, value: TValue,
     alloc: @Allocator) -> Bool
 require TKey: typename, TValue: typename
@@ -657,6 +705,10 @@ require TKey: typename, TValue: typename
             .Failure -> crash_allocation()
 
 /// `put`, returning a Failure instead of crashing when the allocator fails.
+/// :param key: The key to store under.
+/// :param value: The value to store.
+/// :returns: `Success` once the value is stored.
+/// :throws: Returns `Failure(AllocFailed)` when a node cannot be allocated.
 routine SortedDict<TKey, TValue>.put_result(self: @Self, key: TKey,
     value: TValue) -> Result<Unit, AllocFailed>
 require TKey: typename, TValue: typename
@@ -1162,7 +1214,9 @@ require TKey: typename, TValue: typename
         self.root.store(new_root)
         return(true)
 
-/// Internal nodes store `count` separator keys and `count + 1` children.
+/// Frees this node and every node below it through `alloc`. An internal node has `count` keys and `count + 1`
+/// children. The keys and values are not destructed.
+/// :param alloc: The allocator the nodes came from.
 routine SortedDictNode<TKey, TValue>.free_recursive(self: @Self, alloc: @Allocator) -> Void
 require TKey: typename, TValue: typename
     block entry()
@@ -1271,6 +1325,8 @@ require TKey: typename, TValue: typename, Destructible<TValue>
 // -- text -----------------------------------------------------------------------
 
 /// The entries in key order, keys and values diagnosed (strings quoted): {"a": 1, "b": 2}.
+/// :typeparam TWriter: The type of the Writer that receives the text.
+/// :param out: The writer to write to.
 routine SortedDict<TKey, TValue>.represent_into<TWriter>(self: Self, out: @TWriter) -> Void
 require TKey: typename, TValue: typename, Comparable<TKey>, Diagnosable<TKey>, Diagnosable<TValue>, TWriter: typename, Writer<TWriter>
     block entry()
@@ -1281,6 +1337,8 @@ require TKey: typename, TValue: typename, Comparable<TKey>, Diagnosable<TKey>, D
         return()
 
 /// The entries in key order, keys and values diagnosed: {"a": 1, "b": 2}.
+/// :typeparam TWriter: The type of the Writer that receives the text.
+/// :param out: The writer to write to.
 routine SortedDict<TKey, TValue>.diagnose_into<TWriter>(self: Self, out: @TWriter) -> Void
 require TKey: typename, TValue: typename, Comparable<TKey>, Diagnosable<TKey>, Diagnosable<TValue>, TWriter: typename, Writer<TWriter>
     block entry()

@@ -37,7 +37,12 @@ record F128Big
 
 // -- making one ----------------------------------------------------------------
 
-/// m × 2^exponent with m brought to BIG_BITS bits (rounded to nearest, ties to even, when longer). Uses m.
+/// `m` × 2^`exponent` with `m` brought to BIG_BITS bits (rounded to nearest, ties to even, when longer). Uses `m`
+/// as working space. A zero `m` gives +0.
+/// :param negative: Whether the value is negative.
+/// :param exponent: The power of two `m` is scaled by.
+/// :param m: The mantissa, changed in place.
+/// :returns: The value.
 routine big_make(negative: Bool, exponent: S64, m: @BigNat<16>) -> F128Big
     shared adjusted : @S64 <- exponent
 
@@ -75,6 +80,8 @@ routine big_make(negative: Bool, exponent: S64, m: @BigNat<16>) -> F128Big
         r : F128Big = F128Big { negative: negative, exponent: adjusted.load(), mant: m.load() }
         return(r)
 
+/// Zero, as an F128Big (+0, with an empty mantissa).
+/// :returns: +0.
 routine big_zero() -> F128Big
     block entry()
         claim m : @BigNat<16> <- uninit
@@ -82,6 +89,11 @@ routine big_zero() -> F128Big
         r : F128Big = big_make(false, 0, m)
         return(r)
 
+/// `value` × 2^`exponent`, exactly.
+/// :param negative: Whether the value is negative.
+/// :param value: The mantissa.
+/// :param exponent: The power of two `value` is scaled by.
+/// :returns: The value.
 routine big_from_u128(negative: Bool, value: U128, exponent: S64) -> F128Big
     block entry()
         claim m : @BigNat<16> <- uninit
@@ -89,17 +101,22 @@ routine big_from_u128(negative: Bool, value: U128, exponent: S64) -> F128Big
         r : F128Big = big_make(negative, exponent, m)
         return(r)
 
+/// An S64, exactly.
+/// :returns: The same value as an F128Big.
 routine S64.to<F128Big>(self: Self) -> F128Big
     block entry()
         r : F128Big = big_from_u128(self.lt(0), self.abs_diff(0).to<U128>(), 0)
         return(r)
 
+/// One, as an F128Big.
+/// :returns: 1.
 routine big_one() -> F128Big
     block entry()
         r : F128Big = big_from_u128(false, 1, 0)
         return(r)
 
 /// An F128, exactly.
+/// :returns: The same value as an F128Big (both zeros give +0).
 routine F128.to<F128Big>(self: Self) -> F128Big
     block entry()
         zero : Bool = f128_is_zero_bits(self.bits())
@@ -112,6 +129,7 @@ routine F128.to<F128Big>(self: Self) -> F128Big
         return(r)
 
 /// An F128Extended, exactly.
+/// :returns: The same value as an F128Big.
 routine F128Extended.to<F128Big>(self: Self) -> F128Big
     block entry()
         claim m   : @BigNat<16> <- uninit
@@ -123,7 +141,10 @@ routine F128Extended.to<F128Big>(self: Self) -> F128Big
         r : F128Big = big_make(self.negative, self.exponent.sub(191), m)
         return(r)
 
-/// limbs (7 of them, least significant first) × 2^exponent.
+/// `limbs` (7 of them, least significant first) × 2^`exponent`.
+/// :param limbs: The first of the seven limbs.
+/// :param exponent: The power of two the limbs are scaled by.
+/// :returns: The value, rounded to BIG_BITS bits if it is longer.
 routine big_from_limbs(limbs: @U64, exponent: S64) -> F128Big
     shared m : @BigNat<16> <- uninit
 
@@ -146,29 +167,36 @@ routine big_from_limbs(limbs: @U64, exponent: S64) -> F128Big
         r : F128Big = big_make(false, exponent, m)
         return(r)
 
+/// The high part of ln 2: `BIG_LN2_HI` × 2^-448, its first 448 bits.
+/// :returns: The high part.
 routine big_ln2_hi() -> F128Big
     block entry()
         r : F128Big = big_from_limbs(BIG_LN2_HI.to<@U64>(), -448)
         return(r)
 
+/// The low part of ln 2, the next bits below `big_ln2_hi`: `BIG_LN2_LO` × 2^-898.
+/// :returns: The low part.
 routine big_ln2_lo() -> F128Big
     block entry()
         r : F128Big = big_from_limbs(BIG_LN2_LO.to<@U64>(), -898)
         return(r)
 
-/// ln 2 to 448 bits
+/// ln 2 to 448 bits (`big_ln2_hi`).
+/// :returns: ln 2.
 routine big_ln2() -> F128Big
     block entry()
         r : F128Big = big_ln2_hi()
         return(r)
 
-/// π/2 to 448 bits
+/// π/2 to 448 bits.
+/// :returns: π/2.
 routine big_half_pi() -> F128Big
     block entry()
         r : F128Big = big_from_limbs(BIG_HALF_PI_HI.to<@U64>(), -447)
         return(r)
 
-/// π to 448 bits
+/// π to 448 bits.
+/// :returns: π.
 routine big_pi() -> F128Big
     block entry()
         r : F128Big = big_half_pi().ldexp(1)
@@ -176,18 +204,22 @@ routine big_pi() -> F128Big
 
 // -- reading one ---------------------------------------------------------------
 
+/// True when `self` is zero (its mantissa is empty).
+/// :returns: True for zero.
 routine F128Big.is_zero(self: Self) -> Bool
     block entry()
         r : Bool = self.mant.count.eq(0)
         return(r)
 
 /// floor(log2 |self|) for a nonzero self: |self| is in [2^top, 2^(top + 1)).
+/// :returns: `top`, the exponent of the leading bit.
 routine F128Big.top(self: Self) -> S64
     block entry()
         r : S64 = self.exponent.add(BIG_BITS.to<S64>()).sub(1)
         return(r)
 
 /// Rounded once to F128, to nearest, ties to even (overflow, subnormals, and underflow included). Zero is +0.
+/// :returns: The nearest F128.
 routine F128Big.to<F128>(self: Self) -> F128
     block entry()
         zero : Bool = self.is_zero()
@@ -209,6 +241,7 @@ routine F128Big.to<F128>(self: Self) -> F128
         return(r)
 
 /// The top 192 bits, truncated: seeds for Newton's method and for reductions.
+/// :returns: The truncated F128Extended.
 routine F128Big.to<F128Extended>(self: Self) -> F128Extended
     block entry()
         zero : Bool = self.is_zero()
@@ -223,7 +256,9 @@ routine F128Big.to<F128Extended>(self: Self) -> F128Extended
             exponent: self.exponent.add(shift.to<S64>()).add(191), hi: hi, lo: lo }
         return(w)
 
-/// -1, 0, or 1 as |self| is below, equal to, or above |other|.
+/// Compares the magnitudes of `self` and `other`.
+/// :param other: The value to compare with.
+/// :returns: -1, 0, or 1 as |`self`| is below, equal to, or above |`other`|.
 routine F128Big.compare_magnitude(self: Self, other: Self) -> S32
     block entry()
         a_zero : Bool = self.is_zero()
@@ -252,6 +287,8 @@ routine F128Big.compare_magnitude(self: Self, other: Self) -> S32
 
 // -- arithmetic ----------------------------------------------------------------
 
+/// The negation of `self`. Zero stays +0.
+/// :returns: -`self`.
 routine F128Big.neg(self: Self) -> Self
     block entry()
         zero : Bool = self.is_zero()
@@ -262,12 +299,16 @@ routine F128Big.neg(self: Self) -> Self
             mant: self.mant }
         return(r)
 
+/// The magnitude of `self`.
+/// :returns: |`self`|.
 routine F128Big.abs(self: Self) -> Self
     block entry()
         r : Self = Self { negative: false, exponent: self.exponent, mant: self.mant }
         return(r)
 
-/// self × 2^k, exactly.
+/// `self` × 2^`k`, exactly.
+/// :param k: The power of two.
+/// :returns: The scaled value.
 routine F128Big.ldexp(self: Self, k: S64) -> Self
     block entry()
         zero : Bool = self.is_zero()
@@ -279,6 +320,8 @@ routine F128Big.ldexp(self: Self, k: S64) -> Self
 
 /// The sum, rounded once. Both mantissas get 64 guard bits. The smaller is shifted exactly when it's within 64
 /// bits of the larger, else rounded, which only happens when it can't cancel.
+/// :param other: The value to add.
+/// :returns: The sum.
 routine F128Big.add(self: Self, other: Self) -> Self
     shared x : @BigNat<16> <- uninit
     shared y : @BigNat<16> <- uninit
@@ -340,12 +383,17 @@ routine F128Big.add(self: Self, other: Self) -> Self
         r : Self = big_make(big.negative, big.exponent.sub(64), x)
         return(r)
 
+/// The difference, rounded once: `self` plus the negation of `other`.
+/// :param other: The value to subtract.
+/// :returns: The difference.
 routine F128Big.sub(self: Self, other: Self) -> Self
     block entry()
         r : Self = self.add(other.neg())
         return(r)
 
 /// The product, rounded once.
+/// :param other: The value to multiply by.
+/// :returns: The product.
 routine F128Big.mul(self: Self, other: Self) -> Self
     block entry()
         claim a : @BigNat<16> <- self.mant
@@ -357,6 +405,8 @@ routine F128Big.mul(self: Self, other: Self) -> Self
         return(r)
 
 /// self × n, rounded once.
+/// :param n: The factor.
+/// :returns: The product.
 routine F128Big.mul(self: Self, n: U64) -> Self
     block entry()
         claim a : @BigNat<16> <- self.mant
@@ -366,6 +416,8 @@ routine F128Big.mul(self: Self, n: U64) -> Self
         return(r)
 
 /// self × n for a signed n, rounded once.
+/// :param n: The factor.
+/// :returns: The product.
 routine F128Big.mul(self: Self, n: S64) -> Self
     block entry()
         m : Self = self.mul(n.abs_diff(0))
@@ -375,6 +427,9 @@ routine F128Big.mul(self: Self, n: S64) -> Self
         return(r)
 
 /// self / n (n > 0), rounded once: 64 more bits go into the division.
+/// :param n: The divisor, not zero.
+/// :returns: The quotient.
+/// :throws: Crashes with `DivisionByZeroError` when `n` is 0 and `self` is not zero.
 routine F128Big.div(self: Self, n: U64) -> Self
     block entry()
         claim a : @BigNat<16> <- self.mant
@@ -391,6 +446,7 @@ routine F128Big.div(self: Self, n: U64) -> Self
         return(r)
 
 /// 1 / self for a nonzero self: two Newton steps y ← y + y (1 - self y) from F128Extended's 190 bits.
+/// :returns: The reciprocal.
 routine F128Big.recip(self: Self) -> Self
     block entry()
         seed : F128Extended = wide_one().div(self.to<F128Extended>())
@@ -400,12 +456,16 @@ routine F128Big.recip(self: Self) -> Self
         y2   : Self         = y1.add(y1.mul(one.sub(self.mul(y1))))
         return(y2)
 
+/// `self` / `other` for a nonzero `other`, as `self` times the reciprocal of `other`.
+/// :param other: The divisor, not zero.
+/// :returns: The quotient.
 routine F128Big.div(self: Self, other: Self) -> Self
     block entry()
         r : Self = self.mul(other.recip())
         return(r)
 
 /// sqrt for self >= 0: two Newton steps s ← (s + self / s) / 2 from F128Extended's 190 bits.
+/// :returns: The square root.
 routine F128Big.sqrt(self: Self) -> Self
     block entry()
         zero : Bool = self.is_zero()
@@ -420,6 +480,9 @@ routine F128Big.sqrt(self: Self) -> Self
 // -- series --------------------------------------------------------------------
 
 /// Whether a term no longer moves a sum: |term| < 2^-(BIG_BITS + 8) |sum|.
+/// :param term: The next term.
+/// :param sum: The sum so far.
+/// :returns: True when `term` is zero, or below that bound and `sum` is nonzero.
 routine big_is_negligible(term: F128Big, sum: F128Big) -> Bool
     block entry()
         zero        : Bool = term.is_zero()
@@ -434,6 +497,8 @@ routine big_is_negligible(term: F128Big, sum: F128Big) -> Bool
 
 /// e^x for |x| < 2^15: x = q ln 2 + r with ln 2 in two parts, then e^(r / 256) by its Taylor series and 8
 /// squarings (each doubles the relative error, to about 2^-438 in all).
+/// :param x: The exponent, |x| < 2^15.
+/// :returns: e^x.
 routine big_exp(x: F128Big) -> F128Big
     shared x_over_ln2 : F128Extended = x.to<F128Extended>().mul(wide_const(1))
     shared q          : S64          = x_over_ln2.to_nearest<S64>()
@@ -460,6 +525,8 @@ routine big_exp(x: F128Big) -> F128Big
 
 /// e^x - 1 without cancellation: below 2^-20 its own series x Σ x^j / (j+1)!, else e^x - 1, which loses at most
 /// 21 of the 448 bits.
+/// :param x: The exponent.
+/// :returns: e^x - 1.
 routine big_exp_m1(x: F128Big) -> F128Big
     block entry()
         zero  : Bool = x.is_zero()
@@ -481,6 +548,8 @@ routine big_exp_m1(x: F128Big) -> F128Big
 
 /// ln x for x > 0: x = m 2^e with m in [sqrt(1/2), sqrt(2)), ln m from F128Extended's log (about 135 bits), then
 /// two Newton steps y ← y + m e^-y - 1. Near 1, where ln m is small, ln_1p of m - 1 keeps it accurate.
+/// :param x: The argument, positive.
+/// :returns: ln x.
 routine big_ln(x: F128Big) -> F128Big
     shared top      : S64          = x.top()
     shared m0       : F128Big      = x.ldexp(0.sub(top))  // in [1, 2)
@@ -512,6 +581,8 @@ routine big_ln(x: F128Big) -> F128Big
         return(r)
 
 /// ln(1 + u) for u > -1: below 2^-20 its series u - u²/2 + u³/3 - …, else ln of 1 + u.
+/// :param u: The argument, above -1.
+/// :returns: ln(1 + u).
 routine big_ln_1p(u: F128Big) -> F128Big
     block entry()
         zero  : Bool = u.is_zero()
@@ -542,6 +613,8 @@ record BigReduced
     theta    : F128Big
 
 /// sin θ = θ Σ (-θ²)^k / (2k+1)! for |θ| <= π/4.
+/// :param t: θ, with |θ| <= π/4.
+/// :returns: sin θ.
 routine big_sin_core(t: F128Big) -> F128Big
     block entry()
         zero : Bool = t.is_zero()
@@ -560,6 +633,8 @@ routine big_sin_core(t: F128Big) -> F128Big
             : series(j.add(2), next, sum.add(next), u)
 
 /// cos θ = Σ (-θ²)^k / (2k)! for |θ| <= π/4.
+/// :param t: θ, with |θ| <= π/4.
+/// :returns: cos θ.
 routine big_cos_core(t: F128Big) -> F128Big
     block entry()
         one  : F128Big = big_one()
@@ -582,6 +657,8 @@ routine big_cos_core(t: F128Big) -> F128Big
 /// of 14 limbs (896 bits) from limb s on: |x| × 2/π mod 4 = m W × 2^-sh. The bits above sh give the quadrant, the
 /// ones below it the fraction, accurate to about 2^-650 absolute: far past any F128's distance to a multiple of
 /// π/2, so θ keeps its 448 bits.
+/// :param x: The argument, finite and nonzero.
+/// :returns: The quadrant `k` mod 4 and θ.
 routine big_reduce(x: F128) -> BigReduced
     shared p    : F128Parts   = f128_unpack(x.bits())
     shared w    : @BigNat<24> <- uninit

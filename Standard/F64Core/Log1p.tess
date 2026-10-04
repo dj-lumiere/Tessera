@@ -150,7 +150,9 @@ preset CM_F64_LOG1P_CY: @Array<U64, 10> <- { 0x3FF0000000000000, 0x0000000000000
     0xBFE0000000000000, 0x0000000000000000, 0x3FD5555555555555, 0x3C75555555555555,
     0xBFD0000000000000, 0xB9480007ED9858B7, 0x3FC999999999999A, 0xBC69999999999991 }
 
-/// ln(1 + self), accurate near 0.
+/// ln(1 + self), correctly rounded (to nearest, ties to even) and accurate near 0. ±0 stays itself, -1 gives -inf,
+/// +inf gives +inf, an argument below -1 gives NaN, and NaN comes back quiet.
+/// :returns: ln(1 + `self`).
 routine F64.ln_1p(self: Self) -> Self
     shared ixu : U64 = self.bits()
     shared ax  : U64 = ixu.shl(1)
@@ -262,6 +264,8 @@ routine F64.ln_1p(self: Self) -> Self
             : return(cm_f64_log1p_refine(self, lb))
 
 /// log1p x for |x| < 2^-53: x - |x| 2^-54 rounds like log1p x (and +-0 stays itself).
+/// :param x: The argument, |x| < 2^-53.
+/// :returns: log1p(`x`), correctly rounded.
 private routine cm_f64_log1p_tiny(x: F64) -> F64
     block entry()
         magnitude_bits : U64  = x.bits().shl(1)
@@ -271,6 +275,8 @@ private routine cm_f64_log1p_tiny(x: F64) -> F64
             : return(x.abs().mul_add(-0x1p-54, x))
 
 /// The factor that scales t and dt when e is 1022, 1023 or 1024.
+/// :param je: The exponent of t, at least 1022.
+/// :returns: 0.5, 0.25 or 0.125.
 private routine cm_f64_log1p_scale(je: S64) -> F64
     block entry()
         e1022 : Bool = je.eq(1022)
@@ -281,6 +287,8 @@ private routine cm_f64_log1p_scale(je: S64) -> F64
             else  -> return(0.125)
 
 /// log1p of NaN (itself, quiet), +inf (itself), -1 (-inf) or an input below -1 (NaN).
+/// :param x: The argument: NaN, +inf, or at most -1.
+/// :returns: log1p(`x`).
 private routine cm_f64_log1p_special(x: F64) -> F64
     block entry()
         ixu   : U64  = x.bits()
@@ -295,6 +303,9 @@ private routine cm_f64_log1p_special(x: F64) -> F64
 
 /// The accurate path of log1p, taken when the fast path can't decide the rounding: a is the fast path's
 /// approximation, x is finite and above -1.
+/// :param x: The argument.
+/// :param a: The fast path's approximation of log1p(`x`).
+/// :returns: log1p(`x`), correctly rounded.
 private routine cm_f64_log1p_refine(x: F64, a: F64) -> F64
     block entry()
         ax   : U64  = x.bits().shl(1)
@@ -306,6 +317,8 @@ private routine cm_f64_log1p_refine(x: F64, a: F64) -> F64
             else -> return(cm_f64_log1p_refine_table(x, a))
 
 /// The accurate path for |x| < 2^-10: a polynomial with double-double coefficients.
+/// :param x: The argument, |x| < 2^-10.
+/// :returns: log1p(`x`), correctly rounded.
 private routine cm_f64_log1p_refine_near_zero(x: F64) -> F64
     shared x2h : F64        = x.mul(x)
     shared x2l : F64        = x.mul_add(x, x2h.neg())
@@ -346,6 +359,9 @@ private routine cm_f64_log1p_refine_near_zero(x: F64) -> F64
 
 /// The accurate path for |x| >= 2^-10: four levels of reciprocal tables, indexed by the fast path's approximation
 /// a, and a polynomial with double-double coefficients.
+/// :param x: The argument, finite and above -1.
+/// :param a: The fast path's approximation of log1p(`x`).
+/// :returns: log1p(`x`), correctly rounded.
 private routine cm_f64_log1p_refine_table(x: F64, a: F64) -> F64
     block entry()
         ixu      : U64   = x.bits()
@@ -432,6 +448,11 @@ private routine cm_f64_log1p_refine_table(x: F64, a: F64) -> F64
         return(cm_f64_log1p_final(ln22, r.hi, r.lo))
 
 /// The Horner steps of degrees 3 down to 0 over the coefficients cy, in the double-double (xh, xl), from (ch, cl).
+/// :param xh: The high part of the argument.
+/// :param xl: The low part of the argument.
+/// :param ch: The high part of the polynomial so far.
+/// :param cl: The low part of the polynomial so far.
+/// :returns: The polynomial value as a double-double.
 private routine cm_f64_log1p_horner_cy(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64LogDd
     shared acc_hi : @F64 <- ch
     shared acc_lo : @F64 <- cl
@@ -456,11 +477,19 @@ private routine cm_f64_log1p_horner_cy(xh: F64, xl: F64, ch: F64, cl: F64) -> Cm
         jump step(k)
 
 /// Reciprocal j of level k of the accurate path.
+/// :param j: The entry within the level, 0..15.
+/// :param k: The level, 0..3.
+/// :returns: The reciprocal as an F64.
 private routine cm_f64_log1p_rt(j: USize, k: USize) -> F64
     block entry()
         return(F64.from_bits(CM_F64_LOG1P_RT.getitem(k.mul(16).add(j))))
 
 /// The sum of the four entries k1..k4 of CM_F64_LOG1P_LN, grouped as (k1 + k2) + (k3 + k4).
+/// :param k1: The first table index.
+/// :param k2: The second table index.
+/// :param k3: The third table index.
+/// :param k4: The fourth table index.
+/// :returns: The sum.
 private routine cm_f64_log1p_ln_sum(k1: USize, k2: USize, k3: USize, k4: USize) -> F64
     block entry()
         a : F64 = F64.from_bits(CM_F64_LOG1P_LN.getitem(k1)).add(F64.from_bits(CM_F64_LOG1P_LN.getitem(k2)))
@@ -469,6 +498,10 @@ private routine cm_f64_log1p_ln_sum(k1: USize, k2: USize, k3: USize, k4: USize) 
 
 /// The triple-double ln22 + ln21 + ln20 rounded: after renormalizing, when the middle word has an all-zero mantissa,
 /// it's nudged one ulp toward the low word so that the sum of the top two rounds correctly.
+/// :param ln22: The high word.
+/// :param ln21: The middle word.
+/// :param ln20: The low word.
+/// :returns: The correctly rounded sum.
 private routine cm_f64_log1p_final(ln22: F64, ln21: F64, ln20: F64) -> F64
     block entry()
         w0    : CmF64LogDd = cm_f64_log1p_fasttwosum(ln22, ln21)
@@ -486,6 +519,9 @@ private routine cm_f64_log1p_final(ln22: F64, ln21: F64, ln20: F64) -> F64
         return(w0.hi.add(F64.from_bits(nudged)))
 
 /// Error-free sum of x and y when |x| >= |y|: s = x + y rounded, and s + e = x + y exactly.
+/// :param x: The larger addend.
+/// :param y: The smaller addend.
+/// :returns: The rounded sum and its exact error.
 private routine cm_f64_log1p_fasttwosum(x: F64, y: F64) -> CmF64LogDd
     block entry()
         s : F64 = x.add(y)
@@ -493,6 +529,9 @@ private routine cm_f64_log1p_fasttwosum(x: F64, y: F64) -> CmF64LogDd
         return(CmF64LogDd { hi: s, lo: y.sub(z) })
 
 /// Error-free sum of xh and ch in any order of magnitude.
+/// :param xh: The first addend.
+/// :param ch: The second addend.
+/// :returns: The rounded sum and its exact error.
 private routine cm_f64_log1p_twosum(xh: F64, ch: F64) -> CmF64LogDd
     block entry()
         s : F64 = xh.add(ch)
@@ -500,18 +539,33 @@ private routine cm_f64_log1p_twosum(xh: F64, ch: F64) -> CmF64LogDd
         return(CmF64LogDd { hi: s, lo: ch.sub(d).add(xh.add(d.sub(s))) })
 
 /// The sum of the double-doubles (xh, xl) and (yh, yl) when |xh| >= |yh|.
+/// :param xh: The high part of the larger addend.
+/// :param xl: The low part of the larger addend.
+/// :param yh: The high part of the smaller addend.
+/// :param yl: The low part of the smaller addend.
+/// :returns: The sum as a double-double.
 private routine cm_f64_log1p_fastsum(xh: F64, xl: F64, yh: F64, yl: F64) -> CmF64LogDd
     block entry()
         s : CmF64LogDd = cm_f64_log1p_fasttwosum(xh, yh)
         return(CmF64LogDd { hi: s.hi, lo: xl.add(yl).add(s.lo) })
 
 /// The sum of the double-doubles (xh, xl) and (ch, cl) in any order of magnitude.
+/// :param xh: The high part of the first addend.
+/// :param xl: The low part of the first addend.
+/// :param ch: The high part of the second addend.
+/// :param cl: The low part of the second addend.
+/// :returns: The sum as a double-double.
 private routine cm_f64_log1p_sum(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64LogDd
     block entry()
         s : CmF64LogDd = cm_f64_log1p_twosum(xh, ch)
         return(CmF64LogDd { hi: s.hi, lo: xl.add(cl).add(s.lo) })
 
 /// The product of the double-doubles (xh, xl) and (ch, cl).
+/// :param xh: The high part of the first factor.
+/// :param xl: The low part of the first factor.
+/// :param ch: The high part of the second factor.
+/// :param cl: The low part of the second factor.
+/// :returns: The product as a double-double.
 private routine cm_f64_log1p_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64LogDd
     block entry()
         ahhh  : F64 = ch.mul(xh)
@@ -520,6 +574,10 @@ private routine cm_f64_log1p_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64L
         return(CmF64LogDd { hi: ahhh, lo: lo })
 
 /// The product of the double x and the double-double (ch, cl).
+/// :param x: The double factor.
+/// :param ch: The high part of the double-double factor.
+/// :param cl: The low part of the double-double factor.
+/// :returns: The product as a double-double.
 private routine cm_f64_log1p_mulddd(x: F64, ch: F64, cl: F64) -> CmF64LogDd
     block entry()
         ahhh : F64 = ch.mul(x)

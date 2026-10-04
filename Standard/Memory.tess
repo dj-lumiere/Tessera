@@ -51,6 +51,7 @@ record AllocFailed
 /// :param count: The number of values of `T` to make room for.
 /// :param alloc: The allocator to use.
 /// :returns: A pointer to the new block, or a null pointer when the allocator fails.
+/// :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in USize.
 /// :note: The byte size is `sizeof<T>() * count` with checked multiplication. The memory is uninitialized, and a failed allocation returns a null pointer rather than crashing.
 routine allocate<T>(count: USize, alloc: @Allocator) -> @T
 require T: typename
@@ -69,6 +70,7 @@ require T: typename
 /// :param new_count: The new number of values of `T`.
 /// :param alloc: The allocator to use.
 /// :returns: A pointer to the resized block, which may have moved, or a null pointer when the allocator fails.
+/// :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in USize.
 /// :note: A failed reallocation returns a null pointer, and the old block stays valid.
 #track_caller
 routine reallocate<T>(ptr: @T, new_count: USize, alloc: @Allocator) -> @T
@@ -113,6 +115,7 @@ private global CALL_PLACE: @@SourceLocation
 private global CALL_PLACE: @@SourceLocation
 
 /// Notes `place` as the place of the allocator call in progress (null when it's over).
+/// :param place: The call's place, or null.
 #[inline, heap_check("on")]
 private routine note_call_place(place: @SourceLocation) -> Void
     block entry()
@@ -120,6 +123,7 @@ private routine note_call_place(place: @SourceLocation) -> Void
         return()
 
 /// Nothing to note with the heap check off.
+/// :param place: The call's place, or null.
 #[inline, heap_check("off")]
 private routine note_call_place(place: @SourceLocation) -> Void
     block entry()
@@ -136,6 +140,7 @@ routine allocator_call_place() -> @SourceLocation
         return(place)
 
 /// Always null with the heap check off: the place isn't noted then.
+/// :returns: The place, or null.
 #heap_check("off")
 routine allocator_call_place() -> @SourceLocation
     block entry()
@@ -146,6 +151,7 @@ routine allocator_call_place() -> @SourceLocation
 /// :typeparam T: The element type.
 /// :param src: The first value to read.
 /// :param count: The number of values of `T` to copy.
+/// :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in USize.
 /// :note: The ranges must not overlap, and no destructor or copy hook runs.
 routine Ptr<T>.copy(self: Self, src: Self, count: USize) -> Void
 require T: typename
@@ -162,6 +168,7 @@ require T: typename
 /// :typeparam T: The element type.
 /// :param dst: The first value to write to.
 /// :param count: The number of values of `T` to copy.
+/// :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in USize.
 /// :note: The ranges must not overlap, and no destructor or copy hook runs.
 routine Ptr<T>.copy_into(self: Self, dst: Self, count: USize) -> Void
 require T: typename
@@ -200,12 +207,14 @@ conform Destructible<OwnedCWStr>
     storage : Slice<CWChar>
 
 /// The text, borrowed: valid until `destruct()`.
+/// :returns: The NUL-terminated text.
 routine OwnedCStr.to<CStr>(self: Self) -> CStr
     block entry()
         text : CStr = self.storage.data.to<CStr>()
         return(text)
 
 /// The text, borrowed: valid until `destruct()`.
+/// :returns: The NUL-terminated text.
 routine OwnedCStr.to<CStr>(self: @Self) -> CStr
     block entry()
         text : CStr = self.load().to<CStr>()
@@ -219,12 +228,14 @@ routine OwnedCStr.destruct(self: @Self) -> Void
         return()
 
 /// The text, borrowed: valid until `destruct()`.
+/// :returns: The 0-terminated wide text.
 routine OwnedCWStr.to<CWStr>(self: Self) -> CWStr
     block entry()
         text : CWStr = self.storage.data.to<CWStr>()
         return(text)
 
 /// The text, borrowed: valid until `destruct()`.
+/// :returns: The 0-terminated wide text.
 routine OwnedCWStr.to<CWStr>(self: @Self) -> CWStr
     block entry()
         text : CWStr = self.load().to<CWStr>()
@@ -238,6 +249,8 @@ routine OwnedCWStr.destruct(self: @Self) -> Void
         return()
 
 /// Copies self into memory from alloc and ends it with a NUL: an {OwnedCStr}, released with `destruct()`.
+/// :param alloc: The allocator the copy's memory comes from.
+/// :returns: The NUL-terminated copy.
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 routine Bytes.to<OwnedCStr>(self: Self, alloc: @Allocator) -> OwnedCStr
@@ -250,6 +263,8 @@ routine Bytes.to<OwnedCStr>(self: Self, alloc: @Allocator) -> OwnedCStr
         return(owned)
 
 /// Copies self into memory from alloc and ends it with a NUL: an {OwnedCStr}, released with `destruct()`.
+/// :param alloc: The allocator the copy's memory comes from.
+/// :returns: The NUL-terminated copy.
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 routine Bytes.to<OwnedCStr>(self: @Self, alloc: @Allocator) -> OwnedCStr
@@ -259,6 +274,8 @@ routine Bytes.to<OwnedCStr>(self: @Self, alloc: @Allocator) -> OwnedCStr
 
 /// Converts self to wide characters in memory from alloc, ending with a 0: UTF-16 on Windows, UTF-32 elsewhere. An
 /// {OwnedCWStr}, released with `destruct()`. A UTF-8 byte count bounds both unit counts, so one allocation is enough.
+/// :param alloc: The allocator the copy's memory comes from.
+/// :returns: The 0-terminated wide copy.
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 routine Bytes.to<OwnedCWStr>(self: Self, alloc: @Allocator) -> OwnedCWStr
@@ -286,6 +303,8 @@ routine Bytes.to<OwnedCWStr>(self: Self, alloc: @Allocator) -> OwnedCWStr
 
 /// Converts self to wide characters in memory from alloc, ending with a 0: an {OwnedCWStr}, released with
 /// `destruct()`.
+/// :param alloc: The allocator the copy's memory comes from.
+/// :returns: The 0-terminated wide copy.
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 routine Bytes.to<OwnedCWStr>(self: @Self, alloc: @Allocator) -> OwnedCWStr
@@ -293,8 +312,11 @@ routine Bytes.to<OwnedCWStr>(self: @Self, alloc: @Allocator) -> OwnedCWStr
         owned : OwnedCWStr = self.load().to<OwnedCWStr>(alloc)
         return(owned)
 
-/// Writes char at out as UTF-16, one unit or a surrogate pair, and returns
+/// Writes `char` at `out` as UTF-16, one unit or a surrogate pair, and returns
 /// how many units it wrote.
+/// :param char: The character to encode.
+/// :param out: Where the units go (room for 2 on Windows, 1 elsewhere).
+/// :returns: The number of units written.
 #target(os: "windows")
 private routine encode_cwchar(char: Char, out: @CWChar) -> USize
     shared cp : U32 = char.to<U32>()
@@ -317,8 +339,11 @@ private routine encode_cwchar(char: Char, out: @CWChar) -> USize
         out.stride(1).store(low_unit.to<U16>())
         return(2)
 
-/// Writes char at out as one UTF-32 unit. CWChar is S32 on some targets and U32 on others (ARM and AArch64 outside
+/// Writes `char` at `out` as one UTF-32 unit. CWChar is S32 on some targets and U32 on others (ARM and AArch64 outside
 /// Apple). The code point's bits are the same either way.
+/// :param char: The character to encode.
+/// :param out: Where the units go (room for 2 on Windows, 1 elsewhere).
+/// :returns: The number of units written.
 #target(os: not "windows")
 private routine encode_cwchar(char: Char, out: @CWChar) -> USize
     block entry()
