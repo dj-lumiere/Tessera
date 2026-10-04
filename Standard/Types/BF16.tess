@@ -330,7 +330,8 @@ routine BF16.div_euclid(self: Self, other: Self) -> Self
 
 /// The least non-negative remainder of `self / other`.
 /// :param other: The divisor.
-/// :returns: {BF16.mod}, plus `|other|` when that is negative.
+/// :returns: The remainder, in `0 ..< |other|` for a finite `other`. When the exact remainder is a tiny negative value,
+///     `|other|` plus it would round to `|other|`, so the largest value below `|other|` comes back instead.
 routine BF16.mod_euclid(self: Self, other: Self) -> Self
     block entry()
         rem          : Self = self.mod(other)
@@ -340,7 +341,12 @@ routine BF16.mod_euclid(self: Self, other: Self) -> Self
             : return(rem)
         magnitude : Self = other.abs()
         r         : Self = rem.add(magnitude)
-        return(r)
+        whole     : Bool = r.eq(magnitude).bitand(magnitude.is_finite())
+        // a tiny negative remainder plus |other| rounds up to |other|: the largest value below it is the nearest
+        // one in range
+        branch whole
+            ? return(Self.from_bits(magnitude.bits().sub(1)))
+            : return(r)
 
 // -- ordering ------------------------------------------------------------------
 
@@ -601,15 +607,29 @@ routine BF16.ln_1p(self: Self) -> Self
         r    : Self = wide.ln_1p().to<Self>()
         return(r)
 
-/// The logarithm with an arbitrary base, as `self.ln() / base.ln()` in BF16 (three roundings).
+/// The logarithm with an arbitrary base, ln(`self`) / ln(`base`), correctly rounded to BF16. The quotient of the two
+/// correctly rounded F64 logarithms is within about 2^-51 of the true value, so it rounds to BF16 correctly unless it
+/// lies within 2^-36 of a BF16 midpoint. There both logarithms and the quotient are taken again in F128.
 /// :param base: The base of the logarithm.
-/// :returns: log base `base` of `self`.
+/// :returns: log base `base` of `self`, NaN for a negative `self` or `base` and for base 1, ±inf or ±0 where the
+///     logarithms are infinite or zero.
+/// :note: No result is exactly a BF16 midpoint: that would take x^(2^e) = base^m with an odd m of 9 bits, which
+///     8-bit significands and exponents within ±133 rule out, so the F128 quotient decides every case it gets. A scan
+///     of every pair of positive finite inputs found two quotients in the band, both rounded the same in F128.
 routine BF16.log(self: Self, base: Self) -> Self
     block entry()
-        num : Self = self.ln()
-        den : Self = base.ln()
-        r   : Self = num.div(den)
-        return(r)
+        num  : F64  = self.to<F64>().ln()
+        den  : F64  = base.to<F64>().ln()
+        wide : F64  = num.div(den)
+        near : Bool = bf16_is_near_midpoint(wide)
+        branch near
+            ? precise()
+            : return(wide.to<Self>())
+
+    block precise()
+        num : F128 = self.to<F128>().ln()
+        den : F128 = base.to<F128>().ln()
+        return(num.div(den).to<Self>())
 
 /// sqrt(`self`^2 + `other`^2), correctly rounded. Squares of 16-bit floats cannot overflow F32. Computed in F32, and
 /// in F64 when the F32 result lands on a BF16 midpoint.
@@ -823,6 +843,20 @@ private routine bf16_is_on_midpoint(r: F32) -> Bool
         low : U32  = r.bits().bitand(0xFFFF)
         mid : Bool = r.is_finite().bitand(low.eq(0x8000))
         return(mid)
+
+/// Whether the normal F64 `r` is within 2^16 of its own units (2^-36 relative) of a BF16 midpoint.
+/// :param r: The F64 result to test.
+/// :returns: `true` near a midpoint. Zeros, infinities, NaN, and values below BF16's normal range give `false`.
+private routine bf16_is_near_midpoint(r: F64) -> Bool
+    block entry()
+        a      : F64  = r.abs()
+        normal : Bool = a.is_finite().bitand(a.ge(0x1p-126))
+        branch normal
+            ? continue
+            : return(false)
+        low      : U64 = a.bits().bitand(0x1FFFFFFFFFFF)
+        distance : U64 = low.abs_diff(0x100000000000)
+        return(distance.le(0x10000))
 
 /// Whether `r` lies exactly between two BF16 values, normal or subnormal.
 /// :param r: The F64 result to test.
