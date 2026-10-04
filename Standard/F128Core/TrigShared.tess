@@ -63,6 +63,19 @@ record CmTrigWideReduced
     t        : CmTrigU384
     et       : S64
 
+/// The accurate path's result before rounding: the magnitude frac × 2^(exponent - 384), normalized, and its sign bit.
+record CmTrigWide
+    frac     : CmTrigU384
+    exponent : U64
+    sign     : U128
+
+/// The accurate path's shared series: u = theta^2 as a 2^-384 fraction, and sin(theta) = sine × 2^(es - 384),
+/// normalized.
+record CmTrigSeries
+    u    : CmTrigU384
+    sine : CmTrigU384
+    es   : S64
+
 /// theta^2 as a 2^-128 fraction (u), theta^4 likewise (v), and the unshifted theta^2 = u1 × 2^(2*et - 128).
 record CmTrigSquares
     u  : U128
@@ -1176,47 +1189,115 @@ routine cm_trig_accurate(m: U128, e: S64, cosine: Bool, sign: U128) -> U128
 /// :returns: The correctly rounded result's F128 bits.
 routine cm_trig_evaluate(red: CmTrigWideReduced, cosine: Bool, sign: U128) -> U128
     block entry()
-        t         : CmTrigU384 = red.t
-        et        : S64        = red.et
-        square    : CmTrigU384 = cm_trig_mul384(t, t)
-        u         : CmTrigU384 = cm_trig_shr384(square, 0.sub(et.add(et)))
-        n         : S64        = red.n.to<S64>()
-        quadrant  : S64        = n.shr(7).add(cosine.to<S64>())
-        want_cos  : S64        = quadrant.bitand(1)
-        j         : S64        = n.bitand(127)
-        flipped   : Bool       = quadrant.bitand(2).ne(0)
-        flip_sign : U128       = sign.bitxor(F128_SIGN)
-        sg        : U128       = flipped
+        w : CmTrigWide = cm_trig_evaluate_wide(red, cosine, sign)
+        r : U128       = cm_trig_round384(w.frac, w.exponent, w.sign)
+        return(r)
+
+/// sin or cos of A ± theta at 384 bits, before rounding. F128Tan.tess builds both from one {cm_trig_series}.
+/// :param red: The accurate reduction.
+/// :param cosine: True for the cosine, false for the sine.
+/// :param sign: The sign bit the argument contributes (0 for the cosine).
+/// :returns: The normalized 384-bit result, its exponent, and its sign bit.
+routine cm_trig_evaluate_wide(red: CmTrigWideReduced, cosine: Bool, sign: U128) -> CmTrigWide
+    shared series : CmTrigSeries = cm_trig_series(red)
+
+    block entry()
+        pure : Bool = cm_trig_is_pure_sine(red, cosine)
+        branch pure
+            ? pure()
+            : combine()
+
+    // the pure sine never reads 1 - cos(theta)
+    block pure()
+        unused : CmTrigU384 = CmTrigU384 { l0: 0, l1: 0, l2: 0 }
+        r      : CmTrigWide = cm_trig_compose(red, series, unused, cosine, sign)
+        return(r)
+
+    block combine()
+        one_minus : CmTrigU384 = cm_trig_one_minus(series.u)
+        r         : CmTrigWide = cm_trig_compose(red, series, one_minus, cosine, sign)
+        return(r)
+
+/// theta^2 and sin(theta) at 384 bits, shared by the sine and the cosine of one accurate reduction.
+/// :param red: The accurate reduction.
+/// :returns: u = theta^2 as a 2^-384 fraction, and sin(theta) normalized with its exponent.
+routine cm_trig_series(red: CmTrigWideReduced) -> CmTrigSeries
+    block entry()
+        t      : CmTrigU384 = red.t
+        et     : S64        = red.et
+        square : CmTrigU384 = cm_trig_mul384(t, t)
+        u      : CmTrigU384 = cm_trig_shr384(square, 0.sub(et.add(et)))
+        // sin(theta) = theta*(1 - u*Q) keeps theta's floating form, at most one bit short
+        q        : CmTrigU384   = cm_trig_alternating(u, CM_TRIG_SIN_COEF.to<@U128>())
+        uq       : CmTrigU384   = cm_trig_mul384(u, q)
+        t_uq     : CmTrigU384   = cm_trig_mul384(t, uq)
+        sine_raw : CmTrigU384   = cm_trig_sub384(t, t_uq)
+        lzs      : S64          = cm_trig_lz384(sine_raw)
+        sine     : CmTrigU384   = cm_trig_shl384(sine_raw, lzs)
+        r        : CmTrigSeries = CmTrigSeries { u: u, sine: sine, es: et.sub(lzs) }
+        return(r)
+
+/// 1 - cos(theta) = u*Q at 384 bits.
+/// :param u: theta^2 from {cm_trig_series}.
+/// :returns: 1 - cos(theta).
+routine cm_trig_one_minus(u: CmTrigU384) -> CmTrigU384
+    block entry()
+        q : CmTrigU384 = cm_trig_alternating(u, CM_TRIG_COS_COEF.to<@U128>())
+        r : CmTrigU384 = cm_trig_mul384(u, q)
+        return(r)
+
+/// Whether the result is ±sin(theta) itself (breakpoint A = 0 and the sine wanted), which needs no 1 - cos(theta).
+/// :param red: The accurate reduction.
+/// :param cosine: True for the cosine, false for the sine.
+/// :returns: True for the pure sine.
+routine cm_trig_is_pure_sine(red: CmTrigWideReduced, cosine: Bool) -> Bool
+    block entry()
+        n        : S64  = red.n.to<S64>()
+        quadrant : S64  = n.shr(7).add(cosine.to<S64>())
+        want_cos : S64  = quadrant.bitand(1)
+        j        : S64  = n.bitand(127)
+        r        : Bool = j.eq(0).bitand(want_cos.eq(0))
+        return(r)
+
+/// sin or cos of A ± theta from theta's series and the tables, before rounding.
+/// :param red: The accurate reduction.
+/// :param series: theta^2 and sin(theta) from {cm_trig_series}.
+/// :param one_minus: 1 - cos(theta) from {cm_trig_one_minus}, unread for the pure sine.
+/// :param cosine: True for the cosine, false for the sine.
+/// :param sign: The sign bit the argument contributes (0 for the cosine).
+/// :returns: The normalized 384-bit result, its exponent, and its sign bit.
+routine cm_trig_compose(red: CmTrigWideReduced, series: CmTrigSeries, one_minus: CmTrigU384,
+    cosine: Bool, sign: U128) -> CmTrigWide
+    shared sine : CmTrigU384 = series.sine
+    shared es   : S64        = series.es
+
+    block entry()
+        n         : S64  = red.n.to<S64>()
+        quadrant  : S64  = n.shr(7).add(cosine.to<S64>())
+        want_cos  : S64  = quadrant.bitand(1)
+        j         : S64  = n.bitand(127)
+        flipped   : Bool = quadrant.bitand(2).ne(0)
+        flip_sign : U128 = sign.bitxor(F128_SIGN)
+        sg        : U128 = flipped
             ? flip_sign
             : sign
-        // sin(theta) = theta*(1 - u*Q) keeps theta's floating form, at most one bit short
-        q         : CmTrigU384 = cm_trig_alternating(u, CM_TRIG_SIN_COEF.to<@U128>())
-        uq        : CmTrigU384 = cm_trig_mul384(u, q)
-        t_uq      : CmTrigU384 = cm_trig_mul384(t, uq)
-        sine_raw  : CmTrigU384 = cm_trig_sub384(t, t_uq)
-        lzs       : S64        = cm_trig_lz384(sine_raw)
-        sine      : CmTrigU384 = cm_trig_shl384(sine_raw, lzs)
-        es        : S64        = et.sub(lzs)
-        negative  : Bool       = red.negative
-        pure_sine : Bool       = j.eq(0).bitand(want_cos.eq(0))
+        negative  : Bool = red.negative
+        pure_sine : Bool = j.eq(0).bitand(want_cos.eq(0))
         branch pure_sine
-            ? pure(sine, es, sg, negative)
-            : combine(u, sine, es, want_cos, j, sg, negative)
+            ? pure(sg, negative)
+            : combine(want_cos, j, sg, negative)
 
     // A = 0: the result is ±sin(theta) itself
-    block pure(sine: CmTrigU384, es: S64, sg: U128, negative: Bool)
+    block pure(sg: U128, negative: Bool)
         flip_sign : U128 = sg.bitxor(F128_SIGN)
         sign_out  : U128 = negative
             ? flip_sign
             : sg
-        r : U128 = cm_trig_round384(sine, es.to_wrap<U64>(), sign_out)
+        r : CmTrigWide = CmTrigWide { frac: sine, exponent: es.to_wrap<U64>(), sign: sign_out }
         return(r)
 
     // 1 - cos(theta) = u*Q, so T*cos(theta) = T - T*(u*Q) never overflows the frame
-    block combine(u: CmTrigU384, sine: CmTrigU384, es: S64, want_cos: S64, j: S64, sg: U128,
-        negative: Bool)
-        q          : CmTrigU384 = cm_trig_alternating(u, CM_TRIG_COS_COEF.to<@U128>())
-        one_minus  : CmTrigU384 = cm_trig_mul384(u, q)
+    block combine(want_cos: S64, j: S64, sg: U128, negative: Bool)
         first      : CmTrigU384 = cm_trig_sincos384(j.to<USize>(), want_cos.to<USize>())
         second     : CmTrigU384 = cm_trig_sincos384(j.to<USize>(), 1.sub(want_cos).to<USize>())
         first_c    : CmTrigU384 = cm_trig_mul384(first, one_minus)
@@ -1231,7 +1312,8 @@ routine cm_trig_evaluate(red: CmTrigWideReduced, cosine: Bool, sign: U128) -> U1
             : sum
         lz         : S64        = cm_trig_lz384(f)
         normalized : CmTrigU384 = cm_trig_shl384(f, lz)
-        r          : U128       = cm_trig_round384(normalized, 0.sub(lz).to_wrap<U64>(), sg)
+        r          : CmTrigWide = CmTrigWide { frac: normalized, exponent: 0.sub(lz).to_wrap<U64>(),
+            sign: sg }
         return(r)
 
 // -- tables --------------------------------------------------------------------

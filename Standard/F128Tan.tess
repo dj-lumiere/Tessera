@@ -1,10 +1,28 @@
 // Tessera stdlib: F128 tan, correctly rounded
 //
-// CORE-MATH has no binary128 tan, so tan runs in two tiers, as tan_pi does (F128Extra.tess):
+// CORE-MATH has no binary128 tan, so tan runs in three tiers:
 //
+// - quick: CORE-MATH's sine and cosine pipeline (TrigShared.tess) reduces |x| once and gives sin |x| and cos |x|
+//   as normalized fractions, and tan is their quotient, divided exactly in fixed point and rounded here unless it
+//   lies too close to a rounding midpoint. The fractions come from the 128-bit fast path, or from the 384-bit
+//   accurate path when the fast reduction keeps too few bits (x near a multiple of π/256). On random arguments
+//   about 0.4% go on.
 // - fast: |x| = k π/2 + θ by f128_reduce, then sin θ / cos θ (k even) or -cos θ / sin θ (k odd) in F128Extended.
 //   The result is kept when all of it × (1 ± 2^-F128_TAN_BAND) rounds to the same F128.
 // - exact: otherwise the same formulas in F128Big (448 bits, F128Big.tess), rounded once.
+//
+// The quick tier's bounds are proven. CORE-MATH's sinq_error.md bounds each fast-path fraction (normalized into
+// [2^127, 2^128) units of 2^(e - 128)) within 15.8 units of the exact sin or cos, so each is off by a relative α
+// or β with |α|, |β| < 15.8 / (2^127 - 15.8). Their quotient s / c (in [1/2, 2)) is scaled into [2^127, 2^128)
+// by 2^128 or 2^127 and divided exactly, keeping the floor. With S = s (1 + α) and C = c (1 + β), the scaled
+// quotient Q is off from the exact one by Q |α - β| / (1 + α) < 2^128 × 31.6 / (2^127 - 31.6) < 63.3 units, and
+// the floor by less than one more: under 64.3 units in all. So the 15 bits below the 113-bit significand are
+// rounded only when they lie more than F128_TAN_GATE = 64 units from the midpoint 2^14. The exact tan then lies on
+// the same side of the midpoint, or in the same rounding cell at a binade's edge. Everything nearer goes on.
+// The accurate path's fractions are good to far better than 2^-280 relative (its 448-bit reduction keeps over 300
+// bits, since no F128 comes within 2^-124 of a multiple of π/2, and its series are within 2^-296), and cutting
+// each to its top 128 bits adds under one unit: |α|, |β| < 2^-127 + 2^-280, so Q is within 5.01 units and
+// F128_TAN_WIDE_GATE = 8 decides there.
 //
 // The band is measured, not proven: on about 110000 inputs (every exponent, tiny ones, 1/2 to 2, near k π/4 and
 // k π/2 for small and huge k, up to F128.MAX) the fast tier's worst relative error against mpmath was 2^-150.2, at
@@ -31,8 +49,21 @@ module Standard::Core
 /// :note: Measured, not proven: the worst fast-tier error seen against mpmath was about 2^-150.2, so the band leaves about 5 bits.
 preset F128_TAN_BAND: S64 = 145
 
+/// The quick tier's refusal window: it rounds only when the 15 guard bits lie more than this many units from the midpoint.
+/// :note: Proven: the quick quotient is within 64.3 units of the exact one (the derivation is at the top of this file).
+preset F128_TAN_GATE: U64 = 64
+
+/// The quick tier's refusal window when it divides the accurate path's 384-bit sine and cosine, cut to 128 bits.
+/// :note: Proven: that quotient is within 5.01 units of the exact one, and 8 leaves room.
+preset F128_TAN_WIDE_GATE: U64 = 8
+
 /// Past |x| = 1/2, the fast tier needs |θ| >= 2^-F128_TAN_LOOSE (else f128_reduce's 2^-256 is too coarse).
 preset F128_TAN_LOOSE: S64 = 90
+
+/// The scaled quotient of two normalized fractions and the scale's extra bit.
+record CmTanQuotient
+    frac  : U128
+    scale : S64
 
 /// tan x, correctly rounded (round to nearest, ties to even): ±0 for ±0, a quiet NaN for NaN, NaN for infinities.
 /// :returns: tan(`self`).
@@ -43,7 +74,7 @@ routine F128.tan(self: Self) -> Self
 
 /// tan x, correctly rounded, as {F128.tan}. Below |x| = 2^-57 the answer is x itself.
 /// :param x: The argument.
-/// :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
+/// :param exact: True skips the quick and fast tiers (the tests use it to check the exact tier on its own).
 /// :returns: tan x.
 routine f128_tan(x: F128, exact: Bool) -> F128
     block entry()
@@ -61,15 +92,21 @@ routine f128_tan(x: F128, exact: Bool) -> F128
         r : F128 = f128_tan_general(x, exact)
         return(r)
 
-/// tan x for a finite x with |x| >= 2^-57, by the two tiers.
+/// tan x for a finite x with |x| >= 2^-57, by the three tiers.
 /// :param x: The argument.
-/// :param exact: True skips the fast tier.
+/// :param exact: True skips the quick and fast tiers.
 /// :returns: tan x, correctly rounded.
 routine f128_tan_general(x: F128, exact: Bool) -> F128
     block entry()
         branch exact
             ? slow()
-            : fast()
+            : quick()
+
+    block quick()
+        q : Option<U128> = cm_tan_quick(x.bits())
+        when q
+            .Present(bits) -> return(f128_of(bits))
+            .Absent        -> fast()
 
     block fast()
         red   : Reduced = f128_reduce(x)
@@ -157,3 +194,125 @@ routine big_tan(x: F128) -> F128
             : t
         r : F128 = v.to<F128>()
         return(r)
+
+/// The quick tier: sin |x| and cos |x| from CORE-MATH's fast path, sharing one reduction, and their quotient
+/// rounded when it is far enough from a rounding midpoint.
+/// :param bits: The bits of x, finite with |x| >= 2^-57.
+/// :returns: The bits of tan x, correctly rounded.
+/// :absent: When the fast path can't vouch for its reduction, or the quotient lies within {F128_TAN_GATE} units
+///     of a midpoint.
+routine cm_tan_quick(bits: U128) -> Option<U128>
+    shared magnitude : U128 = bits.bitand(F128_SIGN.bitnot())
+    shared m         : U128 = cm_trig_significand(magnitude)
+    shared e         : S64  = cm_trig_exponent(magnitude)
+
+    block entry()
+        small : Bool = e.lt(-8)
+        branch small
+            ? unreduced()
+            : reduced()
+
+    // below 2^-8 the argument is its own reduced angle
+    block unreduced()
+        sine   : CmTrigFast = cm_trig_fast(m, e, false)
+        cosine : CmTrigFast = cm_trig_fast(m, e, true)
+        jump divide(sine, cosine)
+
+    block reduced()
+        red : CmTrigReduced = cm_trig_reduce(m, e)
+        ok  : Bool          = red.ok
+        branch ok
+            ? continue
+            : wide()
+        t1         : U128          = red.t1
+        sq         : CmTrigSquares = cm_trig_squares(t1, red.et)
+        sine_theta : U128          = cm_trig_sin_frac(t1, sq.u, sq.v)
+        sine       : CmTrigFast    = cm_trig_fast_tail(red, sq, sine_theta, false)
+        cosine     : CmTrigFast    = cm_trig_fast_tail(red, sq, sine_theta, true)
+        jump divide(sine, cosine)
+
+    // tan = sin / cos: the signs combine with the argument's, and the exponents subtract
+    block divide(sine: CmTrigFast, cosine: CmTrigFast)
+        q           : CmTanQuotient = cm_tan_quotient(sine.frac, cosine.frac)
+        es          : S64           = sine.exponent.to_wrap<S64>()
+        ec          : S64           = cosine.exponent.to_wrap<S64>()
+        exponent    : S64           = es.sub(ec).add(q.scale)
+        trig_sign   : U128          = sine.sign.bitxor(cosine.sign)
+        result_sign : U128          = bits.bitand(F128_SIGN).bitxor(trig_sign)
+        r           : Option<U128>  = cm_tan_round(q.frac, exponent, result_sign, F128_TAN_GATE)
+        return(r)
+
+    // the fast reduction kept too few bits (x near a multiple of π/256): the accurate path's 448-bit reduction
+    // and 384-bit series, divided on their top 128 bits
+    block wide()
+        red         : CmTrigWideReduced = cm_trig_reduce_wide(m, e)
+        series      : CmTrigSeries      = cm_trig_series(red)
+        one_minus   : CmTrigU384        = cm_trig_one_minus(series.u)  // the sine or the cosine needs it
+        sine        : CmTrigWide        = cm_trig_compose(red, series, one_minus, false, 0)
+        cosine      : CmTrigWide        = cm_trig_compose(red, series, one_minus, true, 0)
+        q           : CmTanQuotient     = cm_tan_quotient(sine.frac.l2, cosine.frac.l2)
+        es          : S64               = sine.exponent.to_wrap<S64>()
+        ec          : S64               = cosine.exponent.to_wrap<S64>()
+        exponent    : S64               = es.sub(ec).add(q.scale)
+        trig_sign   : U128              = sine.sign.bitxor(cosine.sign)
+        result_sign : U128              = bits.bitand(F128_SIGN).bitxor(trig_sign)
+        r           : Option<U128>      = cm_tan_round(q.frac, exponent, result_sign,
+            F128_TAN_WIDE_GATE)
+        return(r)
+
+/// floor(s × 2^128 / c) when s < c, else floor(s × 2^127 / c): either way in [2^127, 2^128), and exact.
+/// :param s: The dividend, with its top bit set.
+/// :param c: The divisor, with its top bit set.
+/// :returns: The quotient, and 1 in `scale` when it was scaled by 2^127 (s / c >= 1), else 0.
+routine cm_tan_quotient(s: U128, c: U128) -> CmTanQuotient
+    shared d1 : U64 = c.shr(64).to<U64>()
+    shared d0 : U64 = c.to_wrap<U64>()
+    shared v  : U64 = div_3by2_prepare(d1, d0)
+
+    block entry()
+        big : Bool = s.ge(c)
+        branch big
+            ? halved()
+            : divide(s, 0, 0)
+
+    // s × 2^127 = (s >> 1) × 2^128 + (s & 1) × 2^127, and s >> 1 < 2^127 <= c
+    block halved()
+        odd : U64 = s.bitand(1).to<U64>()
+        jump divide(s.shr(1), odd.shl(63), 1)
+
+    // the 256-bit dividend (top, next, 0) by c, 64 quotient bits at a time: top < c, then the remainder < c
+    block divide(top: U128, next: U64, scale: S64)
+        high  : Div3By2       = div_3by2(top.shr(64).to<U64>(), top.to_wrap<U64>(), next, d1, d0, v)
+        rem   : U128          = high.remainder
+        low   : Div3By2       = div_3by2(rem.shr(64).to<U64>(), rem.to_wrap<U64>(), 0, d1, d0, v)
+        upper : U128          = high.quotient.to<U128>().shl(64)
+        frac  : U128          = upper.bitor(low.quotient.to<U128>())
+        r     : CmTanQuotient = CmTanQuotient { frac: frac, scale: scale }
+        return(r)
+
+/// Rounds a quotient frac × 2^(exponent - 128) on its 15 guard bits, unless they lie within `gate` units of
+/// the midpoint.
+/// :param frac: The quotient, with its top bit set.
+/// :param exponent: Its exponent.
+/// :param sign: The result's sign bit.
+/// :param gate: The proven bound on the quotient's error, in units of its last bit, rounded up.
+/// :returns: The rounded F128 bits.
+/// :absent: When the guard bits lie within the window.
+routine cm_tan_round(frac: U128, exponent: S64, sign: U128, gate: U64) -> Option<U128>
+    shared rest : U64 = frac.to_wrap<U64>().bitand(0x7FFF)
+
+    block entry()
+        shifted  : U64  = rest.add(gate).sub_wrap(0x4000)
+        distance : U64  = shifted.bitand(0x7FFF)
+        near     : Bool = distance.le(gate.mul(2))
+        branch near
+            ? return(.Absent)
+            : continue
+        up              : U128 = rest.gt(0x4000).to<U128>()
+        biased_exponent : S64  = exponent.add(16382)
+        biased          : U128 = biased_exponent.to<U128>().shl(112)
+        mantissa        : U128 = frac.shr(15)
+        truncated       : U128 = biased.add(mantissa).sub(F128_IMPLICIT)
+        magnitude       : U128 = truncated.add(up)
+        r               : U128 = sign.bitor(magnitude)
+        return(.Present(r))
