@@ -1,0 +1,151 @@
+// xoshiro256** (Standard::Random) against a Python model of the reference C code: the reference's own start state
+// (1, 2, 3, 4, whose first outputs are 11520, 0, 1509978240, 1215971899390074240), then three seeds through the
+// splitmix64 chain, each draw kind, Lemire's bounded draw, and a checksum of 100000 more draws. The model also
+// reproduces RazorForge's Random streams, which this file's routines now compute.
+
+import Standard::Format
+import Standard::Os
+import Standard::Random
+
+/// Writes a U64 as 16 hex digits.
+routine hex(value: U64) -> Void
+    block entry()
+        value.represent_hex_into(Out.writer(), 16)
+        return()
+
+/// Writes `count` 64-bit draws, a space before each.
+routine draws(rng: @Xoshiro256, count: USize) -> Void
+    block entry()
+        jump each(0)
+
+    block each(i: USize)
+        branch i.ge(count)
+            ? return()
+            : continue
+        Out.write(" ")
+        hex(rng.next())
+        jump each(i.add(1))
+
+/// Writes four draws of each kind and the bounded draws from a seed.
+routine seeded(seed: U64) -> Void
+    shared rng : @Xoshiro256 <- .from_seed(seed)
+
+    block entry()
+        state : Xoshiro256 = rng.load()
+        Out.write("seed ")
+        hex(seed)
+        Out.write(" state: ")
+        hex(state.s0)
+        Out.write(" ")
+        hex(state.s1)
+        Out.write(" ")
+        hex(state.s2)
+        Out.write(" ")
+        hex(state.s3)
+        Out.write("\nseed ")
+        hex(seed)
+        Out.write(" u64:")
+        draws(rng, 4)
+        Out.write("\nseed ")
+        hex(seed)
+        Out.write(" u32:")
+        jump u32(0)
+
+    block u32(i: USize)
+        branch i.ge(4)
+            ? f64(0)
+            : continue
+        Out.write(" ")
+        value : U64 = rng.next_u32().to<U64>()
+        value.represent_hex_into(Out.writer(), 8)
+        jump u32(i.add(1))
+
+    block f64(i: USize)
+        branch i.eq(0)
+            ? f64_head()
+            : continue
+        branch i.ge(5)
+            ? below_head()
+            : continue
+        Out.write(" ")
+        hex(rng.next_f64().bits())
+        jump f64(i.add(1))
+
+    block f64_head()
+        Out.write("\nseed ")
+        hex(seed)
+        Out.write(" f64:")
+        jump f64(1)
+
+    block below_head()
+        Out.write("\nseed ")
+        hex(seed)
+        Out.write(" below 6:")
+        jump below(0, 6, 12)
+
+    block below(i: USize, bound: U64, count: USize)
+        branch i.ge(count)
+            ? next_bound(bound)
+            : continue
+        Out.write(" {rng.below(bound)}")
+        jump below(i.add(1), bound, count)
+
+    block next_bound(bound: U64)
+        when
+            bound.eq(6) -> huge()
+            bound.eq(1) -> tail()
+            else        -> one()
+
+    block huge()
+        Out.write("\nseed ")
+        hex(seed)
+        Out.write(" below 2^63+1:")
+        bound : U64 = U64.shl(1, 63).add(1)
+        jump below(0, bound, 4)
+
+    block one()
+        Out.write("\nseed ")
+        hex(seed)
+        Out.write(" below 1:")
+        jump below(0, 1, 3)
+
+    block tail()
+        Out.write("\nseed ")
+        hex(seed)
+        Out.write(" 100000 more: ")
+        jump sum(0, 14695981039346656037)
+
+    block sum(i: USize, h: U64)
+        branch i.ge(100000)
+            ? done(h)
+            : continue
+        mixed : U64 = h.bitxor(rng.next()).mul_wrap(1099511628211)
+        jump sum(i.add(1), mixed)
+
+    block done(h: U64)
+        hex(h)
+        Out.write("\n")
+        return()
+
+routine main() -> S32
+    shared reference : @Xoshiro256 <- .from_state(1, 2, 3, 4)
+
+    block entry()
+        Out.write("state 1 2 3 4:")
+        draws(reference, 6)
+        Out.write("\n")
+        seeded(0)
+        seeded(12345)
+        seeded(U64.MAX)
+        top    : U64 = U64.MAX
+        bottom : U64 = 0
+        Out.write("unit 0: ")
+        hex(unit_f64(bottom).bits())
+        Out.write(", unit max: ")
+        hex(unit_f64(top).bits())
+        Out.write("\n")
+        claim first  : @Xoshiro256 <- .from_entropy()
+        claim second : @Xoshiro256 <- .from_entropy()
+        differ : Bool = first.next().ne(second.next())
+        Out.write("two entropy seeds differ: {differ}\n")
+        return(0)

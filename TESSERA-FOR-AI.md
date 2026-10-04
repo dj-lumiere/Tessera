@@ -359,6 +359,9 @@ routine main() -> S32
   compare one across runs. Combine part hashes with `hash_combine(a, b)`. `siphash24(data, count, key)` /
   `siphash24(v, key)` / `siphash24(low, high, key)` take a `SipKey { k0, k1 }` of your own. `xxh64` stays as the
   unkeyed fast hash, the same in every run: for checksums and keys you trust, not for a table filled from outside.
+- **Random numbers** are `Xoshiro256` (`import Standard::Random`): `.from_seed(seed)` replays a stream,
+  `.from_entropy()` draws one per run from the hash key's source (`entropy_key()`), then `next()`, `next_u32()`,
+  `next_f64()` ([0, 1)), and `below(bound)` (unbiased). Not for secrets.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to<U8>()` /
   `b.to<S8>()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap<U64>()` / `to_wrap<S64>()`. It has

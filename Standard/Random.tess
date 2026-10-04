@@ -1,0 +1,171 @@
+// Tessera stdlib: xoshiro256**, a seedable pseudo-random number generator
+//
+// xoshiro256** (Blackman and Vigna, 2018) keeps 256 bits of state, four U64 words, and steps them with xors, shifts,
+// and rotations. Each output scrambles one state word (multiply by 5, rotate left by 7, multiply by 9). Its period is
+// 2^256 - 1 and every output passes the usual statistical batteries, so it serves simulations, games, sampling, and
+// shuffling. It is NOT cryptographically secure: 4 outputs give the state away.
+//
+// A generator starts from one of:
+//   Xoshiro256.from_seed(seed)    a U64 seed spread over the four words with splitmix64, so equal seeds replay equal
+//                                 streams and a small or zero seed still starts well mixed
+//   Xoshiro256.from_state(...)    the four words themselves (not all zero)
+//   Xoshiro256.from_entropy()     256 secret random bits from the source the hash key comes from (HashKey.tess): the
+//                                 OS's random source, a CPU random number instruction, or the program's own
+//
+// Draws: next() (U64), next_u32() (the high 32 bits of a draw), next_f64() ([0, 1) from the top 53 bits), and
+// below(bound) (an unbiased U64 in [0, bound)). This file is also the body RazorForge's and Suflae's `Random` call
+// through Ingrid, so the streams of a seed are part of its contract: changing a formula here changes theirs.
+
+module Standard::Random
+
+/// The splitmix64 increment, 2^64 divided by the golden ratio.
+private preset GOLDEN_GAMMA: U64 = 0x9E3779B97F4A7C15
+/// 2^-53, the weight of the lowest of the 53 bits a [0, 1) draw keeps.
+private preset UNIT_STEP: F64 = F64.from_bits(0x3CA0000000000000)
+
+/// The state of a xoshiro256** generator: four 64-bit words, never all zero.
+record Xoshiro256
+    s0 : U64
+    s1 : U64
+    s2 : U64
+    s3 : U64
+
+/// One round of the splitmix64 mixer (Steele, Lea, and Flood, 2014): adds the golden gamma to `x` and mixes the sum
+/// with two multiply-xorshift steps. Fed its own output, it gives the chain `from_seed` spreads a seed with. The
+/// splitmix64 generator itself is `splitmix64(state)` with the state stepping by the gamma between outputs.
+/// :param x: The running accumulator.
+/// :returns: The mixed value.
+#inline
+routine splitmix64(x: U64) -> U64
+    block entry()
+        z : U64 = x.add_wrap(GOLDEN_GAMMA)
+        a : U64 = z.bitxor(z.shr(30)).mul_wrap(0xBF58476D1CE4E5B9)
+        b : U64 = a.bitxor(a.shr(27)).mul_wrap(0x94D049BB133111EB)
+        return(b.bitxor(b.shr(31)))
+
+/// The double in [0, 1) that 64 random bits stand for: their top 53 bits times 2^-53, exact, so every multiple of
+/// 2^-53 below 1 is equally likely.
+/// :param bits: The random bits.
+/// :returns: A value in [0, 1).
+#inline
+routine unit_f64(bits: U64) -> F64
+    block entry()
+        top : F64 = bits.shr(11).to<F64>()
+        return(top.mul(UNIT_STEP))
+
+/// A generator from its four state words, as the reference code starts one.
+/// :param s0: State word 0.
+/// :param s1: State word 1.
+/// :param s2: State word 2.
+/// :param s3: State word 3.
+/// :returns: The generator.
+/// :throws: Crashes with `InvalidValueError` when all four words are zero (the one state that stays zero forever).
+#[inline, track_caller]
+routine Xoshiro256.from_state(s0: U64, s1: U64, s2: U64, s3: U64) -> Self
+    block entry()
+        low  : U64  = s0.bitor(s1)
+        high : U64  = s2.bitor(s3)
+        zero : Bool = low.bitor(high).eq(0)
+        branch zero
+            ? crash_invalid_value()
+            : continue
+        return({ s0: s0, s1: s1, s2: s2, s3: s3 })
+
+/// A generator seeded from one U64: each state word is splitmix64 of the one before it, starting from the seed
+/// (s0 = splitmix64(seed), s1 = splitmix64(s0), ...). Equal seeds replay equal streams.
+/// :param seed: The seed.
+/// :returns: The generator.
+#inline
+routine Xoshiro256.from_seed(seed: U64) -> Self
+    block entry()
+        s0 : U64 = splitmix64(seed)
+        s1 : U64 = splitmix64(s0)
+        s2 : U64 = splitmix64(s1)
+        s3 : U64 = splitmix64(s2)
+        return({ s0: s0, s1: s1, s2: s2, s3: s3 })
+
+/// A generator seeded with 256 secret random bits from the program's key source (`entropy_key()`), so every run gets
+/// a stream of its own.
+/// :returns: The generator.
+routine Xoshiro256.from_entropy() -> Self
+    block entry()
+        first  : SipKey = entropy_key()
+        second : SipKey = entropy_key()
+        state  : Self   = { s0: first.k0, s1: first.k1, s2: second.k0, s3: second.k1 }
+        low    : U64    = first.k0.bitor(first.k1)
+        high   : U64    = second.k0.bitor(second.k1)
+        zero   : Bool   = low.bitor(high).eq(0)
+        branch zero
+            ? entry()
+            : return(state)
+
+/// The output this state gives: state word 1 scrambled by multiply by 5, rotate left by 7, multiply by 9.
+/// :returns: The next 64 random bits.
+#inline
+routine Xoshiro256.output(self: Self) -> U64
+    block entry()
+        return(self.s1.mul_wrap(5).rotl(7).mul_wrap(9))
+
+/// The state after this one: the xoshiro linear step.
+/// :returns: The next state.
+#inline
+routine Xoshiro256.step(self: Self) -> Self
+    block entry()
+        t  : U64 = self.s1.shl(17)
+        s2 : U64 = self.s2.bitxor(self.s0)
+        s3 : U64 = self.s3.bitxor(self.s1)
+        s1 : U64 = self.s1.bitxor(s2)
+        s0 : U64 = self.s0.bitxor(s3)
+        return({ s0: s0, s1: s1, s2: s2.bitxor(t), s3: s3.rotl(45) })
+
+/// The next 64 random bits, stepping the generator.
+/// :returns: A uniform U64.
+#inline
+routine Xoshiro256.next(self: @Self) -> U64
+    block entry()
+        state : Self = self.load()
+        state.step().store_into(self)
+        return(state.output())
+
+/// The next 32 random bits: the high half of a 64-bit draw.
+/// :returns: A uniform U32.
+#inline
+routine Xoshiro256.next_u32(self: @Self) -> U32
+    block entry()
+        return(self.next().shr(32).to<U32>())
+
+/// The next double in [0, 1), from the top 53 bits of a draw (`unit_f64`).
+/// :returns: A uniform F64 in [0, 1).
+#inline
+routine Xoshiro256.next_f64(self: @Self) -> F64
+    block entry()
+        return(unit_f64(self.next()))
+
+/// A uniform value in [0, bound), without the bias of a draw modulo `bound`: Lemire's multiply-and-reject (2019). The
+/// high 64 bits of draw times bound are the value, and a draw whose low 64 bits fall below 2^64 mod bound is drawn
+/// again, so each value has exactly the same number of draws behind it. Takes one draw almost always.
+/// :param bound: The exclusive upper bound.
+/// :returns: A uniform U64 in [0, bound).
+/// :throws: Crashes with `InvalidValueError` when `bound` is 0 (the range is empty).
+#track_caller
+routine Xoshiro256.below(self: @Self, bound: U64) -> U64
+    block entry()
+        empty : Bool = bound.eq(0)
+        branch empty
+            ? crash_invalid_value()
+            : draw()
+
+    block draw()
+        product : U128 = self.next().mul_wide(bound)
+        low     : U64  = product.to_wrap<U64>()
+        short   : Bool = low.lt(bound)
+        branch short
+            ? check(product, low)
+            : return(product.shr(64).to<U64>())
+
+    block check(product: U128, low: U64)
+        threshold : U64  = U64.sub_wrap(0, bound).mod(bound)
+        biased    : Bool = low.lt(threshold)
+        branch biased
+            ? draw()
+            : return(product.shr(64).to<U64>())
