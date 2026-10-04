@@ -56,7 +56,10 @@ record Div2By1
 
 // -- helpers -------------------------------------------------------------------
 
-/// The high 64 bits of a × b, both unsigned.
+/// The high 64 bits of the full 128-bit product of `a` and `b`, both unsigned.
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :returns: `(a × b) >> 64`.
 routine mul_high64(a: U64, b: U64) -> U64
     block entry()
         product : U128 = a.to<U128>().mul_wrap(b.to<U128>())
@@ -65,7 +68,10 @@ routine mul_high64(a: U64, b: U64) -> U64
 
 // -- Möller–Granlund -----------------------------------------------------------
 
-/// floor((2^128 - 1) / d) - 2^64 for a normalized d (Algorithm 2 of the paper).
+/// The Moller and Granlund reciprocal of a normalized `d`, floor((2^128 - 1) / d) - 2^64 (Algorithm 2 of the paper).
+/// :param d: The divisor, with its top bit set.
+/// :returns: The reciprocal, for {div_2by1_mg}.
+/// :throws: Crashes with `IntegerOverflowError` when the top bit of `d` is clear.
 routine reciprocal_2by1(d: U64) -> U64
     block entry()
         slot     : U64   = d.shr(55).sub(256)
@@ -91,7 +97,11 @@ routine reciprocal_2by1(d: U64) -> U64
         v4  : U64  = v3.sub_wrap(p.shr(64).to<U64>()).sub_wrap(d)
         return(v4)
 
-/// floor((2^192 - 1) / d) - 2^64 for the normalized two-limb d = (d1, d0).
+/// The Moller and Granlund reciprocal of the normalized two-limb divisor `(d1, d0)`, floor((2^192 - 1) / d) - 2^64.
+/// :param d1: The high limb of the divisor, with its top bit set.
+/// :param d0: The low limb of the divisor.
+/// :returns: The reciprocal, for {div_3by2_mg}.
+/// :throws: Crashes with `IntegerOverflowError` when the top bit of `d1` is clear.
 routine reciprocal_3by2(d1: U64, d0: U64) -> U64
     block entry()
         v     : U64  = reciprocal_2by1(d1)
@@ -166,7 +176,13 @@ routine div_3by2_mg(u2: U64, u1: U64, u0: U64, d1: U64, d0: U64, v: U64) -> Div3
         res : Div3By2 = Div3By2 { quotient: qq3, remainder: rr2 }
         return(res)
 
-/// (u1, u0) / d with the reciprocal v = reciprocal_2by1(d) (Algorithm 4 of the paper).
+/// Divides the 128-bit `(u1, u0)` by the normalized 64-bit `d` by multiplying with the precomputed reciprocal `v` (Algorithm 4 of the Moller and Granlund paper).
+/// :param u1: The high limb of the dividend, which must be below `d`.
+/// :param u0: The low limb of the dividend.
+/// :param d: The divisor, with its top bit set.
+/// :param v: The reciprocal from `reciprocal_2by1(d)`.
+/// :returns: The 64-bit quotient and remainder.
+/// :note: Needs `u1 < d`. Defined on every target.
 routine div_2by1_mg(u1: U64, u0: U64, d: U64, v: U64) -> Div2By1
     block entry()
         u1_high : U128 = u1.to<U128>().shl(64)
@@ -197,11 +213,14 @@ routine div_2by1_mg(u1: U64, u0: U64, d: U64, v: U64) -> Div2By1
 
 // -- divq ----------------------------------------------------------------------
 
-/// (hi × 2^64 + lo) / d with x86's divq: the quotient and the remainder, which
-/// one instruction gives together. Needs hi < d: divq faults (#DE) when the
-/// quotient doesn't fit in 64 bits. Not #pure: div_3by2_divq guards it with a
-/// branch, and a faulting instruction moved ahead of that branch would fault on
-/// the path that never runs it.
+/// Divides `hi × 2^64 + lo` by `d` with x86's `divq`, which gives the quotient and the remainder together.
+/// :param hi: The high limb of the dividend, which must be below `d`.
+/// :param lo: The low limb of the dividend.
+/// :param d: The divisor.
+/// :returns: The quotient and the remainder, in that order.
+/// :note: Needs `hi < d`. `divq` faults (#DE) when the quotient doesn't fit in 64 bits.
+/// :note: Not #pure. {div_3by2_divq} guards it with a branch, and a faulting instruction moved ahead of that branch
+///     would fault on the path that never runs it.
 #[target(arch: "x86_64"), external("asm"), clobbers(FLAGS)]
 routine divq(hi: U64 = R2, lo: U64 = R0, d: U64) -> (U64, U64)
     block entry()
