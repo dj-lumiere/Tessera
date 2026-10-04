@@ -70,16 +70,23 @@ public sealed partial class Compiler
             ? bits
             : null;
 
-    /// v as a value of type t: an untyped integer takes t (if in range); anything else must already be a t.
-    private ConstVal Typed(ConstVal v, DType t, Pos pos)
+    /// v as a value of type t: an untyped integer takes t (if in range); anything else must already be a t. `argument`
+    /// is v's position among a call's arguments (1 for the first), or 0 when v isn't one.
+    private ConstVal Typed(ConstVal v, DType t, Pos pos, int argument = 0)
     {
         if (v.Type is null)
         {
-            if (t is not IntType it) throw new CompileError(pos, $"an integer can't be a {t.Name}");
+            if (t is not IntType it)
+                throw new CompileError(pos, argument > 0
+                    ? $"argument {argument}: an integer literal can't be a {t.Name}"
+                    : $"an integer can't be a {t.Name}");
             CheckRange(v.Value, it, pos);
             return new ConstVal(it, v.Value);
         }
-        if (!v.Type.Equals(t)) throw new CompileError(pos, $"expected {t.Name}, found {v.Type.Name}");
+        if (!v.Type.Equals(t))
+            throw new CompileError(pos, argument > 0
+                ? FunctionGen.ArgumentMismatch(argument, v.Type.Name, t)
+                : $"expected {t.Name}, found {v.Type.Name}");
         return v;
     }
 
@@ -199,14 +206,14 @@ public sealed partial class Compiler
         {
             int? bits = owner is FloatType ft ? ft.Bits : BitRecordWidth(owner);
             if (bits is null) throw new CompileError(n.Pos, $"{owner.Name}.from_bits isn't a buildtime constant");
-            var raw = Typed(Fold(n.Args[0], IntType.U(bits.Value), env), IntType.U(bits.Value), n.Args[0].Pos);
+            var raw = Typed(Fold(n.Args[0], IntType.U(bits.Value), env), IntType.U(bits.Value), n.Args[0].Pos, 1);
             return new ConstVal(owner, raw.Value);
         }
         // `S64.add(1, 2)`: the receiver is the first argument, of the owner type
         if (n.Args.Count == 0)
             throw new CompileError(n.Pos, $"'{owner.Name}.{n.Name}' can't run at build time; a preset is made of {PresetForms}");
-        var receiver = Typed(Fold(n.Args[0], owner, env), owner, n.Args[0].Pos);
-        return Apply(receiver, n.Name, n.Args.Skip(1).ToList(), env, n.Pos);
+        var receiver = Typed(Fold(n.Args[0], owner, env), owner, n.Args[0].Pos, 1);
+        return Apply(receiver, n.Name, n.Args.Skip(1).ToList(), 2, env, n.Pos);
     }
 
     private ConstVal FoldMethod(Expr receiverExpr, string name, List<TypeRef> typeArgs, List<Expr> args, DType? hint,
@@ -225,7 +232,7 @@ public sealed partial class Compiler
             throw new CompileError(receiverExpr.Pos, $"nothing says this literal's type; name it: U64.{name}(...)");
         if (conversion && receiver.Type is IntType { IsNumber: true } from && args.Count == 0)
             return Convert(receiver.Value, from, name, typeArgs[0], env, pos);
-        return Apply(receiver, name, args, env, pos);
+        return Apply(receiver, name, args, 1, env, pos);
     }
 
     /// `to<T>()` and `to_wrap<T>()`, the conversions a preset can fold.
@@ -243,22 +250,24 @@ public sealed partial class Compiler
         _ => throw new CompileError(pos, $"nothing says these literals' type; name it: S64.{name}(...)"),
     };
 
-    private ConstVal Apply(ConstVal r, string name, List<Expr> args, TypeEnv env, Pos pos)
+    /// `firstArgument` is the position of args[0] among the call's arguments: 1 after a receiver, 2 in the typewise
+    /// form (`S64.add(1, 2)`), whose first argument is the receiver.
+    private ConstVal Apply(ConstVal r, string name, List<Expr> args, int firstArgument, TypeEnv env, Pos pos)
     {
         switch (r.Type)
         {
             case IntType it when it.IsNumber:
-                return ApplyInt(r.Value, it, name, args, env, pos);
+                return ApplyInt(r.Value, it, name, args, firstArgument, env, pos);
             case BoolType:
-                return ApplyBool(r.Value, name, args, env, pos);
+                return ApplyBool(r.Value, name, args, firstArgument, env, pos);
             case FloatType ft when ft == FloatType.F32 || ft == FloatType.F64:
-                return ApplyFloat(r.Value, ft, name, args, env, pos);
+                return ApplyFloat(r.Value, ft, name, args, firstArgument, env, pos);
             default:
                 throw new CompileError(pos, $"{r.Type!.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
         }
     }
 
-    private ConstVal ApplyInt(BigInteger a, IntType it, string name, List<Expr> args, TypeEnv env, Pos pos)
+    private ConstVal ApplyInt(BigInteger a, IntType it, string name, List<Expr> args, int firstArgument, TypeEnv env, Pos pos)
     {
         if (args.Count == 0)
         {
@@ -272,7 +281,7 @@ public sealed partial class Compiler
         }
         else if (args.Count == 1)
         {
-            BigInteger b = Typed(Fold(args[0], it, env), it, args[0].Pos).Value;
+            BigInteger b = Typed(Fold(args[0], it, env), it, args[0].Pos, firstArgument).Value;
             BigInteger v;
             switch (name)
             {
@@ -320,12 +329,12 @@ public sealed partial class Compiler
         return new ConstVal(to, a);
     }
 
-    private ConstVal ApplyBool(BigInteger a, string name, List<Expr> args, TypeEnv env, Pos pos)
+    private ConstVal ApplyBool(BigInteger a, string name, List<Expr> args, int firstArgument, TypeEnv env, Pos pos)
     {
         if (name == "bitnot" && args.Count == 0) return new ConstVal(BoolType.Instance, a.IsZero ? 1 : 0);
         if (args.Count == 1 && name is "bitand" or "bitor" or "bitxor")
         {
-            BigInteger b = Typed(Fold(args[0], BoolType.Instance, env), BoolType.Instance, args[0].Pos).Value;
+            BigInteger b = Typed(Fold(args[0], BoolType.Instance, env), BoolType.Instance, args[0].Pos, firstArgument).Value;
             BigInteger v = name switch { "bitand" => a & b, "bitor" => a | b, _ => a ^ b };
             return new ConstVal(BoolType.Instance, v);
         }
@@ -333,14 +342,14 @@ public sealed partial class Compiler
     }
 
     /// F32 and F64 arithmetic, rounded to nearest like the hardware (C# float and double are IEEE).
-    private ConstVal ApplyFloat(BigInteger bits, FloatType ft, string name, List<Expr> args, TypeEnv env, Pos pos)
+    private ConstVal ApplyFloat(BigInteger bits, FloatType ft, string name, List<Expr> args, int firstArgument, TypeEnv env, Pos pos)
     {
         bool f32 = ft == FloatType.F32;
         double a = f32 ? BitConverter.UInt32BitsToSingle((uint)bits) : BitConverter.UInt64BitsToDouble((ulong)bits);
         if (name == "neg" && args.Count == 0) return new ConstVal(ft, bits ^ (BigInteger.One << (ft.Bits - 1)));
         if (args.Count == 1 && name is "add" or "sub" or "mul" or "div")
         {
-            BigInteger bb = Typed(Fold(args[0], ft, env), ft, args[0].Pos).Value;
+            BigInteger bb = Typed(Fold(args[0], ft, env), ft, args[0].Pos, firstArgument).Value;
             if (f32)
             {
                 float x = (float)a, y = BitConverter.UInt32BitsToSingle((uint)bb);

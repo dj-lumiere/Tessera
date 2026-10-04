@@ -334,6 +334,9 @@ public sealed class FunctionGen
     /// Whether this routine keeps a frame on the crash trace.
     private bool _traced;
 
+    /// The contents of the `claim p : @T <- value` being stored: the argument of a store the program didn't write.
+    private Expr? _claimContents;
+
     /// The place the frame last got in the LLVM block being written: a second call from the same place there needs
     /// no second update.
     private (LBlock Block, Pos Pos)? _tracedAt;
@@ -510,7 +513,18 @@ public sealed class FunctionGen
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
                 // `claim p : @T <- value` is the claim, then `p.store(value)`.
                 if (b.Value is ClaimExpr { Contents: { } contents })
-                    EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "store", [], [contents], contents.Pos), VoidType.Instance);
+                {
+                    // The store is the builder's, so a mismatch is said as a binding's, not as an argument's.
+                    _claimContents = contents;
+                    try
+                    {
+                        EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "store", [], [contents], contents.Pos), VoidType.Instance);
+                    }
+                    finally
+                    {
+                        _claimContents = null;
+                    }
+                }
                 break;
             }
             case DestructureStmt d:
@@ -866,8 +880,14 @@ public sealed class FunctionGen
 
     private CompileError Mismatch(Pos pos, DType expected, string actual) => Err(pos, $"expected {expected}, found {actual}");
 
-    /// Evaluates `e` as a value of type `expected`.
-    private Val Eval(Expr e, DType expected)
+    /// The one wording for an argument whose type isn't its parameter's, whichever path finds it (overload resolution,
+    /// a single candidate, a Callable value, a variant payload, a preset).
+    internal static string ArgumentMismatch(int argument, string actual, DType parameter) =>
+        $"argument {argument} is {actual}, and the parameter is {parameter}";
+
+    /// Evaluates `e` as a value of type `expected`. `argument` is the argument's position (1 for the first) when `e` is
+    /// one, so a type mismatch names it the way overload resolution does.
+    private Val Eval(Expr e, DType expected, int argument = 0)
     {
         e = AsStride(AsField(e));
         Val v = e switch
@@ -902,18 +922,26 @@ public sealed class FunctionGen
             _ => throw new InvalidOperationException(e.GetType().Name),
         };
 
-        if (!Compatible(v.Type, expected)) throw Mismatch(e.Pos, expected, v.Type.ToString());
+        if (!Compatible(v.Type, expected))
+            throw argument > 0 ? Err(e.Pos, ArgumentMismatch(argument, v.Type.ToString(), expected)) : Mismatch(e.Pos, expected, v.Type.ToString());
         return v;
     }
 
     /// A place argument is its address, as everywhere else: memory is never read implicitly (see Memory-Model, The Rule).
-    /// When the parameter wants what is stored there, the error says to load it.
-    private Val EvalArg(Expr e, DType expected)
+    /// When the parameter wants what is stored there, the error says to load it. `argument` is the argument's position
+    /// (1 for the first), or 0 for a receiver or the contents of a claim.
+    private Val EvalArg(Expr e, DType expected, int argument)
     {
         if (AsStride(e) is FieldExpr or IndexExpr && IsPlaceChain(e) && PlaceType(e) is { } t && Compatible(t, expected)
             && !(expected is PtrType { Pointee: { } pe } && pe.Equals(t)))
-            throw Err(e.Pos, $"expected {expected}, found the place {new PtrType(t)}; read it first with .load()");
-        return Eval(e, expected);
+            throw Err(e.Pos, argument > 0
+                ? $"{ArgumentMismatch(argument, $"the place {new PtrType(t)}", expected)}; read it first with .load()"
+                : $"expected {expected}, found the place {new PtrType(t)}; read it first with .load()");
+        // A literal says why it can't be the parameter's type the way overload resolution does.
+        bool preferred = true;
+        if (argument > 0 && e is IntLit or FloatLit or NullLit or StrLit && UntypedMisfit(e, expected, ref preferred) is { } why)
+            throw Err(e.Pos, $"argument {argument}: {why}");
+        return Eval(e, expected, argument);
     }
 
     private Val PlaceAsValue(Expr e)
@@ -1052,7 +1080,7 @@ public sealed class FunctionGen
         _c.EnsureTypeDefined(v);
         string tagged = EmitTmp($"insertvalue {v.Llvm} zeroinitializer, {v.Tag.Llvm} {index}, 0");
         if (payload is null) return new Val(tagged, v);
-        var value = EvalArg(args[0], payload);
+        var value = EvalArg(args[0], payload, 1);
         string slot = NewSlot(v);
         Line($"store {v.Llvm} {tagged}, ptr {slot}");
         string at = EmitTmp($"getelementptr inbounds {v.Llvm}, ptr {slot}, i32 0, i32 2");
@@ -1643,7 +1671,7 @@ public sealed class FunctionGen
                 var pt = _c.ResolveType(p, env);
                 if (InferQuiet(args[i]) is { } at)
                 {
-                    if (!at.Equals(pt)) return No($"argument {i + 1} is {at}, and the parameter is {pt}");
+                    if (!at.Equals(pt)) return No(ArgumentMismatch(i + 1, at.ToString(), pt));
                     continue;
                 }
                 if (UntypedMisfit(args[i], pt, ref preferred) is { } why) return No($"argument {i + 1}: {why}");
@@ -2097,17 +2125,17 @@ public sealed class FunctionGen
             ? (sig.Decl.Name == "store_into" ? plan.Args.FirstOrDefault() : plan.Receiver)
             : null;
         string alignSuffix = "";
-        Val Address(Expr e, DType t)
+        Val Address(Expr e, DType t, int argument)
         {
-            if (e != access || AsStride(e) is not (FieldExpr or IndexExpr) || !IsPlaceChain(e)) return EvalArg(e, t);
+            if (e != access || AsStride(e) is not (FieldExpr or IndexExpr) || !IsPlaceChain(e)) return EvalArg(e, t, argument);
             var (addr, pointee) = PlaceAddress(e);
             alignSuffix = AlignSuffix(addr);
             return new Val(addr, new PtrType(pointee));
         }
         var args = new List<Val>();
         if (plan.Receiver is not null)
-            args.Add(plan.Receiver == access ? Address(plan.Receiver, sig.Params[0]) : EvalReceiver(plan.Receiver, sig.Params[0]));
-        for (int i = 0; i < fixedCount; i++) args.Add(Address(plan.Args[i], sig.Params[i + offset]));
+            args.Add(plan.Receiver == access ? Address(plan.Receiver, sig.Params[0], 0) : EvalReceiver(plan.Receiver, sig.Params[0]));
+        for (int i = 0; i < fixedCount; i++) args.Add(Address(plan.Args[i], sig.Params[i + offset], ReferenceEquals(plan.Args[i], _claimContents) ? 0 : i + 1));
         for (int i = fixedCount; i < plan.Args.Count; i++) args.Add(VariadicArg(plan.Args[i]));
         if (sig.IsTrackCaller) args.Add(CallerPlace(plan.Pos));
 
@@ -2261,7 +2289,7 @@ public sealed class FunctionGen
         if (argExprs.Count != ct.Params.Count)
             throw Err(pos, $"this Callable takes {ct.Params.Count} argument(s), got {argExprs.Count}");
         Val fp = Eval(callee, ct);
-        var args = argExprs.Select((a, i) => EvalArg(a, ct.Params[i])).ToList();
+        var args = argExprs.Select((a, i) => EvalArg(a, ct.Params[i], i + 1)).ToList();
         string cc = Compiler.CcPrefix(ct.CallConv, _c.Target);
         const bool bits = true;
         bool c = ct.CallConv != "fast";
