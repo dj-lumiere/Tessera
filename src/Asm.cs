@@ -71,6 +71,8 @@ internal sealed class AsmLowering
     /// Every fixed register the body names, by LLVM register name: each counts as changed.
     private readonly Dictionary<string, Pos> _named = [];
     private bool _flagsTested;
+    /// The first system register the body names (RNDR, mstatus, CR3), which rules out #pure and #readonly.
+    private PresetRef? _systemRegister;
     /// `#naked`: the body is a whole function, entered by a call under the C convention and left by `ret`.
     private readonly bool _naked;
 
@@ -139,6 +141,12 @@ internal sealed class AsmLowering
         }
 
         string text = Body();
+        // A system register changes on its own (a counter, a random number) or writing it changes the machine, so the
+        // optimizer may never merge, drop or move the routine as #pure or #readonly would let it.
+        if (_systemRegister is { } sys && (_r.Attr("pure") ?? _r.Attr("readonly")) is { } weaker)
+            throw new CompileError(weaker.Pos,
+                $"'{_r.DisplayName}' names the system register {sys.Name} (line {sys.Pos.Line}), whose value changes on its "
+                + $"own or whose writing changes the machine, so it keeps its side effects: drop #{weaker.Name}");
         return new AsmPlan(text, _arch == Arch.X86, _outputs, inputs, Clobbers(), resultOutputs,
             SideEffect: _r.Attr("pure") is null && _r.Attr("readonly") is null,
             Memory: _r.Attr("pure") is not null ? "none" : _r.Attr("readonly") is not null ? "read" : null);
@@ -243,24 +251,71 @@ internal sealed class AsmLowering
     /// The register a bare name names, or an error saying what the target has.
     private Reg Register(string name, Pos pos)
     {
-        Reg? r = name switch
-        {
-            "SP" => _arch switch { Arch.X86 => new Reg(RegClass.Gpr, 4, name), Arch.A64 => new Reg(RegClass.Sp, 31, name), _ => new Reg(RegClass.Gpr, 2, name) },
-            "ZERO" => _arch switch { Arch.A64 => new Reg(RegClass.Zero, 31, name), Arch.Rv => new Reg(RegClass.Gpr, 0, name), _ => null },
-            "FP" => _arch == Arch.A64 ? new Reg(RegClass.Gpr, 29, name) : null,
-            "LR" => _arch switch { Arch.A64 => new Reg(RegClass.Gpr, 30, name), Arch.Rv => new Reg(RegClass.Gpr, 1, name), _ => null },
-            "PC" => new Reg(RegClass.Pc, 0, name),
-            "FLAGS" => _arch == Arch.Rv ? null : new Reg(RegClass.Flags, 0, name),
-            "FS" => _arch == Arch.X86 ? new Reg(RegClass.Fs, 0, name) : null,
-            "GS" => _arch == Arch.X86 ? new Reg(RegClass.Gs, 0, name) : null,
-            _ => Numbered(name),
-        };
+        var r = TryRegister(name);
         if (r is null)
-            throw new CompileError(pos, $"{_c.Target.Arch} has no register {name}");
+            throw new CompileError(pos, SystemName(name) switch
+            {
+                AsmSystemNames.Kind.Register => $"{name} is a system register, which only an instruction reads or writes "
+                                                + $"({SystemExample}): read it into a general register first",
+                AsmSystemNames.Kind.Option => $"{name} is a word an instruction takes as an operand, not a register",
+                _ => $"{_c.Target.Arch} has no register {name}" + _arch switch
+                {
+                    Arch.A64 => ", and no system register the builder knows by that name: write one it doesn't know in "
+                                + "its generic form, S3_3_C2_C4_0 for RNDR",
+                    Arch.Rv => ", and no CSR the builder knows by that name: write one it doesn't know by its number, "
+                               + "csrrw<U32, U32>(R10, 0x15, ZERO) for seed",
+                    _ => "",
+                },
+            });
         if (_arch == Arch.A64 && r is { Class: RegClass.Gpr, Index: 31 })
             throw new CompileError(pos, "aarch64's x31 is the stack pointer in some instructions and the zero register in others: write SP or ZERO");
         return r;
     }
+
+    /// What a bare name that isn't one of Tessera's registers is on this architecture: a system register (RNDR,
+    /// mstatus, CR3), a named option of an instruction (ISH, rw), or nothing.
+    private AsmSystemNames.Kind? SystemName(string name) =>
+        AsmSystemNames.Lookup(_arch switch { Arch.X86 => "x86_64", Arch.A64 => "aarch64", _ => "riscv" }, name);
+
+    /// How this architecture's instructions read a system register, for a message.
+    private string SystemExample => _arch switch
+    {
+        Arch.X86 => "mov<U64>(R0, CR3)",
+        Arch.A64 => "mrs<U64>(R0, RNDR)",
+        _ => "csrrs<U64, U64>(R10, mstatus, ZERO)",
+    };
+
+    /// Whether a bare name is an operand of its own kind that takes no type: a system register or a named option,
+    /// whose one width the architecture fixes, or x86's FS and GS as segment selectors.
+    private bool IsUntypedName(string name) =>
+        name is "FS" or "GS" ? _arch == Arch.X86 : TryRegister(name) is null && SystemName(name) is not null;
+
+    /// A system register or a named option as the instruction writes it, as the manual spells it (x86 in lowercase,
+    /// as its Intel syntax writes registers). A system register makes the routine keep its side effects, and NZCV
+    /// is AArch64's flags, so naming it counts as changing them.
+    private string SystemOperand(PresetRef p)
+    {
+        if (SystemName(p.Name) == AsmSystemNames.Kind.Register)
+        {
+            _systemRegister ??= p;
+            if (p.Name == "NZCV") _flagsTested = true;
+        }
+        return _arch == Arch.X86 ? p.Name.ToLowerInvariant() : p.Name;
+    }
+
+    /// Tessera's register by this name, or null when it names none on this architecture.
+    private Reg? TryRegister(string name) => name switch
+    {
+        "SP" => _arch switch { Arch.X86 => new Reg(RegClass.Gpr, 4, name), Arch.A64 => new Reg(RegClass.Sp, 31, name), _ => new Reg(RegClass.Gpr, 2, name) },
+        "ZERO" => _arch switch { Arch.A64 => new Reg(RegClass.Zero, 31, name), Arch.Rv => new Reg(RegClass.Gpr, 0, name), _ => null },
+        "FP" => _arch == Arch.A64 ? new Reg(RegClass.Gpr, 29, name) : null,
+        "LR" => _arch switch { Arch.A64 => new Reg(RegClass.Gpr, 30, name), Arch.Rv => new Reg(RegClass.Gpr, 1, name), _ => null },
+        "PC" => new Reg(RegClass.Pc, 0, name),
+        "FLAGS" => _arch == Arch.Rv ? null : new Reg(RegClass.Flags, 0, name),
+        "FS" => _arch == Arch.X86 ? new Reg(RegClass.Fs, 0, name) : null,
+        "GS" => _arch == Arch.X86 ? new Reg(RegClass.Gs, 0, name) : null,
+        _ => Numbered(name),
+    };
 
     private Reg? Numbered(string name)
     {
@@ -627,8 +682,12 @@ internal sealed class AsmLowering
                 $"an instruction is written like a routine, its operands in order: {m.Name}<…>({OperandName(m.Receiver)}{(m.Args.Count > 0 ? ", …" : "")})"),
             _ => throw new CompileError(es.Pos, "an instruction is written like a routine, its operands in order: add<U64, U64>(R0, R3), rdtsc()"),
         };
+        // A name that is no register and no word of the instruction set is said as that, before the types are counted.
+        foreach (var o in operands)
+            if (o is PresetRef { Owner: null, Path: null } p && TryRegister(p.Name) is null && SystemName(p.Name) is null)
+                Register(p.Name, p.Pos);
         // One type per register, in order: a register, a parameter's register, or the memory a memory operand
-        // reads (its size). An immediate and a condition take none.
+        // reads (its size). An immediate, a condition, a system register and a named option take none.
         int wanted = operands.Count(IsTyped);
         if (typeArgs.Count != wanted)
             throw new CompileError(es.Pos, wanted switch
@@ -656,21 +715,27 @@ internal sealed class AsmLowering
         _ => "…",
     };
 
-    /// Whether an operand takes a type: a register or memory does, an immediate or a condition doesn't.
-    private static bool IsTyped(Expr e) => e is not (IntLit or AsmCondExpr or PresetRef { Owner.Name: "FLAGS" });
+    /// Whether an operand takes a type: a register or memory does, an immediate, a condition, a system register or a
+    /// named option doesn't.
+    private bool IsTyped(Expr e) => e is not (IntLit or AsmCondExpr or PresetRef { Owner.Name: "FLAGS" })
+                                    && !(e is PresetRef { Owner: null, Path: null } p && IsUntypedName(p.Name));
 
     private string Operand(Expr e, DType? type)
     {
         DType t = type!;
         switch (e)
         {
+            // x86's FS and GS as an operand are the segment selectors (`mov ax, fs`), and their base is read through
+            // offset: FS.offset(0x28).
+            case PresetRef { Owner: null, Path: null, Name: "FS" or "GS" } segment when _arch == Arch.X86:
+                return segment.Name.ToLowerInvariant();
+            case PresetRef { Owner: null, Path: null } p when IsUntypedName(p.Name):
+                return SystemOperand(p);
             case PresetRef { Owner: null, Path: null } p:
             {
                 var reg = Register(p.Name, p.Pos);
-                if (reg.Class is RegClass.Flags or RegClass.Fs or RegClass.Gs)
-                    throw new CompileError(p.Pos, reg.Class == RegClass.Flags
-                        ? "FLAGS is read by a branch condition (FLAGS.Carry, lt<U64>), not as an operand"
-                        : $"{p.Name} is a base address, read through offset: {p.Name}.offset(0x28)");
+                if (reg.Class == RegClass.Flags)
+                    throw new CompileError(p.Pos, "FLAGS is read by a branch condition (FLAGS.Carry, lt<U64>), not as an operand");
                 if (reg.Class == RegClass.Pc && _arch != Arch.A64)
                     throw new CompileError(p.Pos, "PC is read through offset: PC.offset(8)");
                 Name(reg, t, p.Pos);

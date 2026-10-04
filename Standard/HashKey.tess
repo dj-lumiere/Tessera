@@ -198,19 +198,20 @@ routine rdseed_hash_key(key: @SipKey) -> Void
         rdseed_word().store_into(key.k1)
         return()
 
-/// RNDR once (FEAT_RNG): the random value and whether the CPU had one (it clears the Z flag when it did). The assembly
-/// routines can't name a system register yet, so this is LLVM's intrinsic for `mrs x0, rndr`.
-#[target(arch: "aarch64", os: "none"), feature("rand"), external("llvm"),
-    template("{t0} = call {{ i64, i1 }} @llvm.aarch64.rndr()\n{t1} = extractvalue {{ i64, i1 }} {t0}, 0\nstore i64 {t1}, ptr {value}\n{result} = extractvalue {{ i64, i1 }} {t0}, 1")]
-private routine rndr_step(value: @U64) -> Bool
+/// RNDR once (FEAT_RNG): the random value, and 1 when the CPU had one ready, 0 when not (RNDR clears the Z flag when
+/// it gave a value and sets it when it didn't).
+#[target(arch: "aarch64", os: "none"), feature("rand"), external("asm"), clobbers(FLAGS)]
+private routine rndr_step() -> (U64, U8)
+    block entry()
+        mrs<U64>(R0, RNDR)  // mrs x0, RNDR
+        cset<U8>(R1, ne)  // cset w1, ne
+        return({ R0, R1 })
 
 /// One 64-bit word from RNDR, retried up to 10 times (the instruction fails only when the generator can't give a value
 /// in reasonable time).
 /// :throws: Crashes with `InvalidValueError` when RNDR fails 10 times in a row.
 #[target(arch: "aarch64", os: "none"), feature("rand")]
 private routine rndr_word() -> U64
-    shared value : @U64 <- 0
-
     block entry()
         jump draw(0)
 
@@ -219,9 +220,10 @@ private routine rndr_word() -> U64
         branch gave_up
             ? crash("InvalidValueError", "RNDR gave no random value in 10 tries.")
             : continue
-        got : Bool = rndr_step(value)
+        value, ok = rndr_step()
+        got : Bool = ok.ne(0)
         branch got
-            ? return(value.load())
+            ? return(value)
             : draw(attempt.add(1))
 
 /// The hash key from RNDR: two 64-bit words.
@@ -237,7 +239,7 @@ routine rndr_hash_key(key: @SipKey) -> Void
 #[target(arch: "riscv32", os: "none"), feature("zkr"), external("asm")]
 private routine seed_poll() -> U32
     block entry()
-        csrrw<U32, U32>(R10, 21, ZERO)  // csrrw a0, seed, zero
+        csrrw<U32, U32>(R10, seed, ZERO)  // csrrw a0, seed, zero
         return(R10)
 
 /// The next 16-bit sample from `seed`: polled until its state is ES16 (WAIT means try again, BIST a self test still

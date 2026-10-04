@@ -693,6 +693,17 @@ or libgcc: the soft-float routines LLVM calls for F16 / BF16 / F32 / F64 without
 `tests/soft_float` checks them against the host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them and requires
 that nothing is left undefined; the golden run skips them).
 
+**Assembly.** An `#external("asm")` routine with `#target(arch: ...)` is assembly in Tessera's syntax, put in place at
+each call (`../Tessera-Wiki/docs/Inline-Assembly.md`): one instruction per line written like a call, operands in the
+assembler's order, one type argument per register operand (`add<U64, U64>(R0, R3)`), registers by Tessera's names
+(`R0`..., `V0`..., `SP`, `ZERO`, `FLAGS`), parameters by name, `reg.offset(n)` for memory, blocks and `branch` for
+jumps. System registers and the words some instructions take are written as the architecture's manual spells them
+and take no type: `mrs<U64>(R0, RNDR)`, `msr<U64>(TPIDR_EL0, R1)`, AArch64's generic `S3_3_C14_C0_2`,
+`csrrs<U64, U64>(R10, mstatus, ZERO)` (a CSR the builder doesn't know goes in by number), `mov<U64>(R0, CR3)`,
+`mov<U16>(R0, CS)`, `dmb(ISH)`, `dc<U64>(CIVAC, R0)`, `fence(rw, rw)`, a rounding mode `rtz`. A routine that names a
+system register can't be `#pure` or `#readonly`, and an instruction that changes the flags without naming them
+(`RNDR`) still lists `#clobbers(FLAGS)`.
+
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.
 
