@@ -13,8 +13,9 @@
 // suits 32-bit x86. A target without a 64-by-32 divide (Cortex-M, RV32, AVR)
 // would want its own digit step, which is open (Roadmap).
 //
-// The callers check the divisor first: every routine here assumes a nonzero
-// divisor, and the signed ones assume the quotient fits (not MIN / -1).
+// The entry points crash on a zero divisor (DivisionByZeroError), and the signed
+// quotient on MIN / -1 (IntegerOverflowError). The routines behind them assume
+// a nonzero divisor.
 
 module Standard::Core
 
@@ -50,13 +51,18 @@ private routine u256_from_limbs(l3: U64, l2: U64, l1: U64, l0: U64) -> U256
 
 // -- entry points --------------------------------------------------------------
 
-/// Unsigned quotient and remainder, for a nonzero d.
+/// Unsigned quotient and remainder.
 /// :param u: The dividend.
-/// :param d: The divisor, not zero.
+/// :param d: The divisor.
 /// :returns: The quotient and the remainder.
-#target(size: 64)
+/// :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+#[target(size: 64), track_caller]
 routine wide_divrem(u: U256, d: U256) -> U256DivRem
     block entry()
+        by_zero : Bool = d.eq(0)
+        branch by_zero
+            ? crash_division_by_zero()
+            : continue
         below : Bool = u.lt(d)
         branch below
             ? return(U256DivRem { quotient: 0, remainder: u })
@@ -90,31 +96,41 @@ routine wide_divrem(u: U256, d: U256) -> U256DivRem
         r : U256DivRem = u256_divrem_knuth(u, d)
         return(r)
 
-/// Unsigned quotient, for a nonzero `d`.
+/// Unsigned quotient.
 /// :param u: The dividend.
-/// :param d: The divisor, not zero.
+/// :param d: The divisor.
 /// :returns: The quotient.
+/// :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+#track_caller
 routine wide_div(u: U256, d: U256) -> U256
     block entry()
         r : U256DivRem = wide_divrem(u, d)
         return(r.quotient)
 
-/// Unsigned remainder, for a nonzero `d`.
+/// Unsigned remainder.
 /// :param u: The dividend.
-/// :param d: The divisor, not zero.
+/// :param d: The divisor.
 /// :returns: The remainder.
+/// :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+#track_caller
 routine wide_rem(u: U256, d: U256) -> U256
     block entry()
         r : U256DivRem = wide_divrem(u, d)
         return(r.remainder)
 
-/// Signed quotient, truncated toward zero, for a nonzero `d`. The magnitudes go through wide_divrem: `abs_diff(0)`
-/// is exact even for MIN.
+/// Signed quotient, truncated toward zero. The magnitudes go through wide_divrem: `abs_diff(0)` is exact even
+/// for MIN.
 /// :param u: The dividend.
-/// :param d: The divisor, not zero.
+/// :param d: The divisor.
 /// :returns: The quotient.
+/// :throws: Crashes with `DivisionByZeroError` when `d` is 0, and with `IntegerOverflowError` on `MIN / -1`.
+#track_caller
 routine wide_div(u: S256, d: S256) -> S256
     block entry()
+        overflow : Bool = u.eq(S256.MIN).bitand(d.eq(-1))
+        branch overflow
+            ? crash_overflow()
+            : continue
         magnitudes : U256DivRem = wide_divrem(u.abs_diff(0), d.abs_diff(0))
         quotient   : S256       = magnitudes.quotient.to_wrap<S256>()
         negative   : Bool       = u.is_negative().bitxor(d.is_negative())
@@ -122,10 +138,12 @@ routine wide_div(u: S256, d: S256) -> S256
             ? return(quotient.neg_wrap())
             : return(quotient)
 
-/// Signed remainder, with the dividend's sign, for a nonzero `d`. The magnitudes go through wide_divrem.
+/// Signed remainder, with the dividend's sign (MIN % -1 is 0). The magnitudes go through wide_divrem.
 /// :param u: The dividend.
-/// :param d: The divisor, not zero.
+/// :param d: The divisor.
 /// :returns: The remainder.
+/// :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+#track_caller
 routine wide_rem(u: S256, d: S256) -> S256
     block entry()
         magnitudes : U256DivRem = wide_divrem(u.abs_diff(0), d.abs_diff(0))
@@ -356,13 +374,18 @@ private record U256Division32
     v : Array<U32, 8>  // the normalized divisor
     n : USize  // the divisor's limb count
 
-/// Unsigned quotient and remainder, for a nonzero d.
+/// Unsigned quotient and remainder.
 /// :param u: The dividend.
-/// :param d: The divisor, not zero.
+/// :param d: The divisor.
 /// :returns: The quotient and the remainder.
-#target(size: not 64)
+/// :throws: Crashes with `DivisionByZeroError` when `d` is 0.
+#[target(size: not 64), track_caller]
 routine wide_divrem(u: U256, d: U256) -> U256DivRem
     block entry()
+        by_zero : Bool = d.eq(0)
+        branch by_zero
+            ? crash_division_by_zero()
+            : continue
         below : Bool = u.lt(d)
         branch below
             ? return(U256DivRem { quotient: 0, remainder: u })
