@@ -394,7 +394,7 @@ routine F64.mul_add(self: Self, a: Self, b: Self) -> Self
 /// :param a: The factor `self` is multiplied by.
 /// :param b: The addend.
 /// :returns: `self * a + b` rounded once to nearest (ties to even). NaN for a NaN operand, `inf * 0`, or `inf - inf`.
-#[target(arch: "x86_64"), feature(not "fma")]
+#[target(arch: "x86_64"), feature(not "fma"), inline]
 routine F64.mul_add(self: Self, a: Self, b: Self) -> Self
     block entry()
         r : Self = self.mul_add_soft(a, b)
@@ -404,7 +404,7 @@ routine F64.mul_add(self: Self, a: Self, b: Self) -> Self
 /// :param a: The factor `self` is multiplied by.
 /// :param b: The addend.
 /// :returns: `self * a + b` rounded once to nearest (ties to even). NaN for a NaN operand, `inf * 0`, or `inf - inf`.
-#target(arch: not ("aarch64", "x86_64"))
+#[target(arch: not ("aarch64", "x86_64")), inline]
 routine F64.mul_add(self: Self, a: Self, b: Self) -> Self
     block entry()
         r : Self = self.mul_add_soft(a, b)
@@ -412,12 +412,85 @@ routine F64.mul_add(self: Self, a: Self, b: Self) -> Self
 
 /// self * a + b with a single rounding, without an FMA instruction.
 ///
-/// Without one LLVM calls libm's fma, so this forms the 106-bit product exactly in a U128,
-/// aligns b to it (bits shifted out past the product become a sticky bit), and rounds only the sum.
+/// Without one LLVM calls libm's fma. When the operands' exponents keep every intermediate below away from
+/// overflow and underflow, this is Boldo and Melquiond's emulation in F64 arithmetic: the exact product
+/// p + e (Dekker), the exact sum c + p = th + tl (TwoSum), then th + (tl + e rounded to odd), rounded once.
+/// Rounding the small part to odd keeps the information the last rounding needs, so the result is the
+/// correctly rounded `self * a + b`. Plain th + (tl + e) is that same value except near a tie, which an exact
+/// check of both roundings' errors rules out, so the round to odd runs only there. Outside that window
+/// (zeros, subnormals, infinities, NaN, huge or tiny products) it forms the 106-bit product exactly in a U128,
+/// aligns b to it (bits shifted out past the product become a sticky bit), and rounds only the sum
+/// ({F64.mul_add_wide}).
 /// :param a: The factor `self` is multiplied by.
 /// :param b: The addend.
 /// :returns: `self * a + b` rounded once to nearest (ties to even). NaN for a NaN operand, `inf * 0`, or `inf - inf`.
+#inline
 private routine F64.mul_add_soft(self: Self, a: Self, b: Self) -> Self
+    shared field_x : U64 = self.bits().shr(52).bitand(0x7FF)
+    shared field_a : U64 = a.bits().shr(52).bitand(0x7FF)
+    shared field_b : U64 = b.bits().shr(52).bitand(0x7FF)
+
+    // The emulation is exact when the factors are normal and below 2^996 (splitting them can't overflow),
+    // their product's exponent is in [-918, 960] (its error is a multiple of 2^-1022, the product
+    // and the sum stay below 2^1003), and the addend's exponent is in [-960, 1000] (its ulp is at least
+    // 2^-1012). Every nonzero intermediate is then a normal number.
+    block entry()
+        x_normal  : Bool = field_x.sub_wrap(1).lt(2018)
+        a_normal  : Bool = field_a.sub_wrap(1).lt(2018)
+        product   : U64  = field_x.add_wrap(field_a)
+        p_inside  : Bool = product.sub_wrap(1128).lt(1879)
+        b_inside  : Bool = field_b.sub_wrap(63).lt(1961)
+        factors   : Bool = x_normal.bitand(a_normal)
+        operands  : Bool = p_inside.bitand(b_inside)
+        emulation : Bool = factors.bitand(operands)
+        branch emulation
+            ? emulated()
+            : return(self.mul_add_wide(a, b))
+
+    // R = th + tl + e exactly. z = th + (tl + e), each sum rounded, is R rounded once unless the first
+    // rounding moved the sum across a rounding boundary of z. The two errors d and r are exact (TwoSum), so
+    // R = z + r + d, and when |r| + |d| is below the distance from z to its nearer boundary, z is the answer.
+    // The check runs beside the next operation, and only a sum within a few ulps of a tie of z falls back to
+    // rounding tl + e to odd.
+    block emulated()
+        p  : Self = self.mul(a)
+        e  : Self = f64_dekker_error(a, self, p)
+        th : Self = b.add(p)
+        bv : Self = th.sub(b)
+        av : Self = th.sub(bv)
+        tl : Self = b.sub(av).add(p.sub(bv))
+        s  : Self = tl.add(e)
+        z  : Self = th.add(s)
+        sv : Self = s.sub(tl)
+        su : Self = s.sub(sv)
+        d  : Self = tl.sub(su).add(e.sub(sv))
+        zv : Self = z.sub(th)
+        zu : Self = z.sub(zv)
+        r  : Self = th.sub(zu).add(s.sub(zv))
+        w  : Self = r.abs().add(d.abs())
+        // |r + d| <= |r| + |d|, and w, that sum rounded, is below a power of two only when the sum is. The
+        // boundaries of z are half an ulp away, the power of two with the exponent field of z less 53, and a
+        // quarter ulp below a power of two, one field less (for z not tiny: a field of 55 or more).
+        z_bits   : U64  = z.bits()
+        z_field  : U64  = z_bits.shr(52).bitand(0x7FF)
+        power    : Bool = z_bits.bitand(0x000FFFFFFFFFFFFF).eq(0)
+        boundary : U64  = z_field.sub_wrap(53).sub_wrap(power.to<U64>())
+        w_field  : U64  = w.bits().shr(52)
+        normal   : Bool = z_field.ge(55)
+        inside   : Bool = w_field.lt(boundary)
+        decided  : Bool = normal.bitand(inside)
+        branch decided
+            ? return(z)
+            : return(th.add(f64_add_round_to_odd(tl, e)))
+
+/// self * a + b with a single rounding, for every operand: the slow path of {F64.mul_add_soft}, kept out of line so
+/// the emulated path that callers inline stays small. It forms the 106-bit product exactly in a U128, aligns b to it
+/// (bits shifted out past the product become a sticky bit), and rounds only the sum.
+/// :param a: The factor `self` is multiplied by.
+/// :param b: The addend.
+/// :returns: `self * a + b` rounded once to nearest (ties to even). NaN for a NaN operand, `inf * 0`, or `inf - inf`.
+#noinline
+private routine F64.mul_add_wide(self: Self, a: Self, b: Self) -> Self
     block entry()
         factors_finite : Bool = self.is_finite().bitand(a.is_finite())
         factor_special : Bool = factors_finite.bitnot()
@@ -1017,6 +1090,103 @@ routine f64_add_round_to_odd(a: F64, b: F64) -> F64
             ? bits.add_wrap(1)
             : bits.sub_wrap(1)
         return(F64.from_bits(odd))
+
+/// The rounding error of the product `p = x * y`: `x * y - p` rounded once, as `x.mul_add(y, p.neg())` gives it,
+/// which is exact whenever that difference is a F64 (unless the product underflows). With the FMA instruction.
+/// :param x: The first factor.
+/// :param y: The second factor.
+/// :param p: `x * y` rounded to nearest.
+/// :returns: `x.mul_add(y, p.neg())`.
+#[target(arch: "aarch64"), inline]
+routine f64_mul_error(x: F64, y: F64, p: F64) -> F64
+    block entry()
+        e : F64 = x.mul_add(y, p.neg())
+        return(e)
+
+/// The rounding error of the product `p = x * y`: `x * y - p` rounded once, as `x.mul_add(y, p.neg())` gives it,
+/// which is exact whenever that difference is a F64 (unless the product underflows). With the x86 FMA instruction
+/// (targets with the `fma` feature).
+/// :param x: The first factor.
+/// :param y: The second factor.
+/// :param p: `x * y` rounded to nearest.
+/// :returns: `x.mul_add(y, p.neg())`.
+#[target(arch: "x86_64"), feature("fma"), inline]
+routine f64_mul_error(x: F64, y: F64, p: F64) -> F64
+    block entry()
+        e : F64 = x.mul_add(y, p.neg())
+        return(e)
+
+/// The rounding error of the product `p = x * y`: the same value as `x.mul_add(y, p.neg())`, by Dekker's product
+/// ({f64_mul_error_soft}) on x86 without the `fma` feature.
+/// :param x: The first factor.
+/// :param y: The second factor.
+/// :param p: `x * y` rounded to nearest.
+/// :returns: `x.mul_add(y, p.neg())`.
+#[target(arch: "x86_64"), feature(not "fma"), inline]
+routine f64_mul_error(x: F64, y: F64, p: F64) -> F64
+    block entry()
+        e : F64 = f64_mul_error_soft(x, y, p)
+        return(e)
+
+/// The rounding error of the product `p = x * y`: the same value as `x.mul_add(y, p.neg())`, by Dekker's product
+/// ({f64_mul_error_soft}) on targets other than AArch64 and x86_64.
+/// :param x: The first factor.
+/// :param y: The second factor.
+/// :param p: `x * y` rounded to nearest.
+/// :returns: `x.mul_add(y, p.neg())`.
+#[target(arch: not ("aarch64", "x86_64")), inline]
+routine f64_mul_error(x: F64, y: F64, p: F64) -> F64
+    block entry()
+        e : F64 = f64_mul_error_soft(x, y, p)
+        return(e)
+
+/// `x.mul_add(y, p.neg())` for `p = x * y` without an FMA instruction. When the factors are normal and below
+/// 2^996, and their exponents add up to a value in [-970, 1021], the error is a F64 and Dekker's product
+/// ({f64_dekker_error}) gives it exactly, so it equals the fused result. Elsewhere it is that fused result.
+/// :param x: The first factor.
+/// :param y: The second factor.
+/// :param p: `x * y` rounded to nearest.
+/// :returns: `x.mul_add(y, p.neg())`.
+#inline
+private routine f64_mul_error_soft(x: F64, y: F64, p: F64) -> F64
+    shared field_x : U64 = x.bits().shr(52).bitand(0x7FF)
+    shared field_y : U64 = y.bits().shr(52).bitand(0x7FF)
+
+    block entry()
+        x_normal : Bool = field_x.sub_wrap(1).lt(2018)
+        y_normal : Bool = field_y.sub_wrap(1).lt(2018)
+        product  : U64  = field_x.add_wrap(field_y)
+        inside   : Bool = product.sub_wrap(1076).lt(1992)
+        factors  : Bool = x_normal.bitand(y_normal)
+        exact    : Bool = factors.bitand(inside)
+        branch exact
+            ? return(f64_dekker_error(x, y, p))
+            : return(x.mul_add(y, p.neg()))
+
+/// The rounding error of the product `p = x * y` (rounded to nearest), exactly: `x * y - p`, by Dekker's
+/// product. Each factor splits into a high part of 26 bits (its encoding rounded to nearest at bit 27, then
+/// cut there: two integer operations, where Veltkamp's split takes three dependent float operations) and a
+/// low part of at most 26 bits, so the four partial products are exact. Exact when `x` and `y` are normal
+/// and below 2^1023, `p` is finite, and the error is a multiple of 2^-1074, which holds when the exponents
+/// of `x` and `y` add up to at least -970.
+/// :param x: The first factor.
+/// :param y: The second factor.
+/// :param p: `x * y` rounded to nearest.
+/// :returns: `x * y - p`.
+#inline
+private routine f64_dekker_error(x: F64, y: F64, p: F64) -> F64
+    block entry()
+        xr : U64 = x.bits().add_wrap(0x4000000)
+        xh : F64 = F64.from_bits(xr.bitand(0xFFFFFFFFF8000000))
+        xl : F64 = x.sub(xh)
+        yr : U64 = y.bits().add_wrap(0x4000000)
+        yh : F64 = F64.from_bits(yr.bitand(0xFFFFFFFFF8000000))
+        yl : F64 = y.sub(yh)
+        t1 : F64 = p.sub(xh.mul(yh))
+        t2 : F64 = t1.sub(xh.mul(yl))
+        t3 : F64 = t2.sub(xl.mul(yh))
+        e  : F64 = xl.mul(yl).sub(t3)
+        return(e)
 
 /// Narrows to F32 with round-to-odd, then rounds that to F16. F32's 24 bits are
 /// enough (2 * 11 + 2) for the second rounding to be exact.
