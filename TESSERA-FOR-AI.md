@@ -18,7 +18,8 @@ dotnet run -- build                      # build config.toml's entry (executable
 dotnet run -- version                    # the builder's version; help prints every command
 ```
 
-A program needs `routine main() -> S32`. A file may start with `module A::B` and `import` lines. Name lookup follows
+A program's entry point is `routine start() -> Void`, and a nonzero exit status is `set_exit_code(n)` (Standard::Os)
+before it returns. A file may start with `module A::B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `Standard::Core` (always imported: the built-in types, `Option`, `Result`,
 `Bytes`), and what it imports, so printing a number needs `import Standard::Format`, a `List` needs
 `import Standard::Collections`, and `make_heap_allocator` / `Out` need `import Standard::Os` (the hosted layer,
@@ -44,7 +45,7 @@ import Standard::Collections
 import Standard::Format
 import Standard::Os
 
-routine main() -> S32
+routine start() -> Void
     block entry()
         claim alloc : @Allocator <- make_heap_allocator()
         claim list  : @List<S64> <- .construct(alloc)
@@ -53,7 +54,7 @@ routine main() -> S32
         Out.write("first: {first}, as source: {first.diagnose()}\n")
 
         list.destruct()
-        return(0)
+        return()
 ```
 
 ## Rules That Trip People Up
@@ -138,7 +139,7 @@ routine main() -> S32
   of a second `destruct()` of the same block (a quarantine of the last 256 freed blocks keeps that sure); with it off
   it is plain malloc / free, and so is a single-file build without a manifest. Debug and release behave the same.
 - **The default heap comes with `Standard::Os`**, like `Out`: there `DEFAULT_HEAP` is an `@Allocator` ready before
-  `main` (`make_heap_allocator()` gives the same one), and every collection and `Slice` gets a `construct` without
+  `start` (`make_heap_allocator()` gives the same one), and every collection and `Slice` gets a `construct` without
   the allocator (`List<S64>.construct()`, `Slice<U8>.construct(n)`). Memory C frees or reallocates, or memory from C's
   malloc, goes through `make_c_heap_allocator()` (plain malloc in every build). A file that doesn't import
   `Standard::Os`, and every program for a target without an OS, passes an allocator.
@@ -146,8 +147,8 @@ routine main() -> S32
   pointer type, and the declared type is the name's type everywhere:
   `claim p : @T <- v` (a stack slot, `<- uninit` if a routine fills it), `global NAME: @T [<- value]` (mutable, all-zero without a value),
   `preset NAME: @T <- value` (read-only). `preset NAME: T = value` is a value, not memory: folded at build time, with
-  no address. A global or a preset in memory is part of the program image, there before `main` runs, so its contents
-  are known at build time: literals, presets, `null`, `{ ... }` (an array, or a record field by field), a routine for
+  no address. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
+  before it to compute one, on any target), so its contents are known at build time: literals, presets, `null`, `{ ... }` (an array, or a record field by field), a routine for
   a `Callable` (`f.to<Callable>()`), or the name of another global or preset in memory (its
   address; a global holding a pointer is `@@T`: `global HEAD: @@Node <- null`). Use them as `TICKS.load()`,
   `STATS.calls.store(n)`, `K.getitem(i)`; writing a preset's memory is a build error. Neither kind is a buildtime
@@ -663,7 +664,14 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 
 **Routines every program has.**
 
-- `routine main() -> S32` is the entry point of an executable.
+- `routine start() -> Void` is the entry point of an executable. With an operating system the builder writes the
+  platform's C `main`, which calls `start` and returns the exit status `set_exit_code(code: S32)` (Standard::Os)
+  stored, 0 when nothing did. It is one atomic value: the last store wins, any thread may set it, and a thread
+  still running when `start` returns may or may not get its store in. `exit_code()` reads it back. A crash keeps its
+  own status (101 by default). `main` is an ordinary routine name; a program with `main` and no `start` is a build
+  error that says so. `start` with parameters or a result is an error too.
+- `routine when_booted() -> Void` is the board step of a program for a target without an operating system (below);
+  with one it is a build error.
 - Every routine with a body starts with `block entry()` (after its head's `shared` lines, if it has any), which
   takes no parameters. A routine without blocks must be `#external`.
 
@@ -706,14 +714,26 @@ gives it back (and does nothing for a literal path).
 (`.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Bytes`, released with the output's
 `destruct()`). `ProcessOptions.default()` captures both and gives the child the null device as input; set
 `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
-`env_var(name, alloc)` reads a variable (Absent when it isn't set), `exit(status)` ends the process.
+`env_var(name, alloc)` reads a variable (Absent when it isn't set), `exit(status)` ends the process at once, and
+`set_exit_code(status)` sets the status `start` returning ends it with.
 
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
 `x86_64-none-elf`) gets everything but `Standard::Os`: Core, Format (into a `SliceWriter` or `List<Byte>`), Alloc, and
 Collections all check there. `Standard::Os` drops out of the build, so importing it or naming anything in it is one
 build error ("Standard::Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, Fiber,
 `make_heap_allocator`, `DEFAULT_HEAP`, or `construct()` without an allocator. The program exports its own crash handler (`#[export("tessera_crash_handler"), noreturn]`, which
-may loop forever), passes its own `Allocator` if it allocates, and brings its startup code and link script. A program
+may loop forever), passes its own `Allocator` if it allocates, and brings its link script. A program that defines `start` gets its
+entry from the builder: `_start` (on Cortex-M also a vector table in section `.isr_vector`, its first word
+`__stack_top` and its second `_start`, the system exceptions halting) runs, in order, the stack pointer from
+`__stack_top`, .bss zeroed (`__bss_start` to `__bss_end`), .data copied from flash (`__data_load` to `__data_start` ..
+`__data_end`) on 32-bit ARM and RISC-V, which run from flash (x86_64 and AArch64 are loaded into RAM, so their .data
+is in place), the FPU turned on when the build may use one (x86_64 SSE: CR0.EM off, CR0.MP, CR4.OSFXSR and
+OSXMMEXCPT on; AArch64 at EL1: CPACR_EL1.FPEN; Cortex-M: CPACR's CP10 and CP11, then dsb and isb; RISC-V in machine
+mode: mstatus.FS), then the program's `when_booted()` if it has one (clocks, pins, a serial port), `start()`, and
+a loop that halts (`hlt` / `wfi`). The link script defines those symbols (`tests/freestanding/<target>.ld` are
+small ones) and, on RISC-V, no `__global_pointer$` (the entry leaves gp alone). On 32-bit ARM the entry is a Cortex-M
+reset vector, so the build names a Cortex-M CPU (`--cpu cortex-m3`). The steps are `Standard/Boot.tess`. A program
+without `start` brings its own entry instead. x86_64 code without an OS is built without the red zone. A program
 that hashes (a `Dict`, a `Set`, any `hash()`) also exports the hash key, `#[export("tessera_hash_key")] routine
 board_key(key: @SipKey) -> Void` filling 128 secret random bits (from the board's TRNG, never a fixed value or a cycle
 counter), unless the build enables a random number instruction (`--feature rdrnd` / `rdseed` on x86-64, `rand` on
@@ -724,8 +744,8 @@ or libgcc: the soft-float routines LLVM calls for F16 / BF16 / F32 / F64 without
 `__aeabi_dmul`, `__truncsfhf2`, `sqrtf`, ...), integer division (`__udivdi3`, `__aeabi_uldivmod`, ...), and
 `__clzsi2`, written with integer operations only, weak and `#no_builtins`. Each export wraps an ordinary routine
 (`soft_f32_add(a, b)` on the bits, `x.soft_to<F16>()` for a conversion) that any target can call, which is how
-`tests/soft_float` checks them against the host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them and requires
-that nothing is left undefined; the golden run skips them).
+`tests/soft_float` checks them against the host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them, links them with their link
+scripts, and requires that nothing is left undefined; the golden run skips them).
 
 **Assembly.** An `#external("asm")` routine with `#target(arch: ...)` is assembly in Tessera's syntax, put in place at
 each call (`../Tessera-Wiki/docs/Inline-Assembly.md`): one instruction per line written like a call, operands in the
@@ -852,7 +872,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array<T, COUNT> <- { ... }`).
 Run `tessera fmt` on what you write: it aligns `name : T = value` runs, spaces blocks and routines, joins broken
 lists and wraps lines over 100 characters at commas (continuation lines 4 spaces further in), and writes a routine's owner type as `Self` after it's declared
 (not in `require` lines). It also orders the top-level declarations: module, sorted imports, defines, globals,
-presets, types, concepts, standalone conformances, routines (in your order), and `main` last. Follow `../Tessera-Wiki/docs/Style-Guide.md`. In short: one purpose per block, blocks named for what they do (`grow`,
+presets, types, concepts, standalone conformances, routines (in your order), and `when_booted` then `start` last. Follow `../Tessera-Wiki/docs/Style-Guide.md`. In short: one purpose per block, blocks named for what they do (`grow`,
 `scan`, `sift_up`), values named for what they mean (`in_bounds`, not `t1`), boolean names that read as
 predicates, `return(...)` inline instead of a block that only returns, and helper routines instead of one huge
 block graph. Don't add syntax sugar to shorten code; readability comes from decomposition and naming.
