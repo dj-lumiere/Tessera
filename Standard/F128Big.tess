@@ -605,6 +605,40 @@ routine big_ln_1p(u: F128Big) -> F128Big
             ? return(sum)
             : series(j.add(1), next_power, sum.add(signed))
 
+/// ln `x` / ln `base` in F128Big (within about 2^-430 relative), rounded to an F128 that narrows correctly to a binary
+/// format with `fraction_bits` fraction bits: the last tier of F32.log and F64.log, whose results are normal. The
+/// nearest F128 narrows to the nearest value of the quotient unless it is exactly a midpoint of the narrow format
+/// (double rounding), so there the F128 one step toward the F128Big quotient is taken instead.
+/// :param x: The argument, positive and finite, not 1.
+/// :param base: The base, positive and finite, not 1.
+/// :param fraction_bits: The narrow format's fraction bits: 23 for F32, 52 for F64.
+/// :returns: An F128 whose nearest value in the narrow format is the correctly rounded quotient.
+/// :note: The quotient is never exactly a midpoint of F32 or F64: ln x / ln base = p / q in lowest terms means
+///     x^q = base^p, so x and base are powers c^p and c^q of one rational c. A midpoint needs q a power of 2 and p
+///     odd with at least 25 bits (54 for F64), and c^p is then no F128 (an odd prime of c to that power, or a power
+///     of 2 far out of range) unless c = 1, which base = c^q rules out.
+routine big_log_ratio(x: F128, base: F128, fraction_bits: U128) -> F128
+    shared quotient : F128Big = big_ln(x.to<F128Big>()).div(big_ln(base.to<F128Big>()))
+    shared nearest  : F128    = quotient.to<F128>()
+
+    block entry()
+        dropped : U128 = U128.sub(112, fraction_bits)
+        half    : U128 = U128.shl(1, dropped.sub(1))
+        low     : U128 = nearest.bits().bitand(half.shl(1).sub(1))
+        branch low.eq(half)
+            ? nudge()
+            : return(nearest)
+
+    // a midpoint of the narrow format: step off it toward the quotient, so the narrowing rounds the right way
+    block nudge()
+        gap   : F128Big = quotient.sub(nearest.to<F128Big>())
+        exact : Bool    = gap.is_zero()
+        below : Bool    = gap.negative
+        when
+            exact -> return(nearest)
+            below -> return(nearest.next_down())
+            else  -> return(nearest.next_up())
+
 // -- sin, cos ------------------------------------------------------------------
 
 /// |x| = k π/2 + θ with k mod 4 and |θ| <= π/4, for a finite nonzero x.

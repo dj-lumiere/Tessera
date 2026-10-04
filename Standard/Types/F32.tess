@@ -681,15 +681,47 @@ private routine f32_is_on_midpoint_f64(r: F64) -> Bool
         odd   : Bool = t.mod(2.0).eq(1.0)
         return(whole.bitand(odd))
 
-/// The logarithm of `self` in an arbitrary base, computed as `ln(self) / ln(base)`.
+/// The logarithm of `self` in base `base`, ln(`self`) / ln(`base`) correctly rounded (to nearest, ties to even). Three
+/// tiers, each kept only when an error band around its quotient rounds to one F32 (Ziv's test): the correctly rounded
+/// F64 logarithms divided in F64 (within 3 × 2^-53 relative, band 2^-50), then the correctly rounded F128 logarithms
+/// divided in F128 (band 2^-109), then both logarithms in F128Big ({big_log_ratio}). Exact results come out exact:
+/// log(8, 2) = 3, log(1000, 10) = 3, log(x, x) = 1.
 /// :param base: The base of the logarithm.
-/// :returns: `ln(self) / ln(base)`, each step rounded.
+/// :returns: log base `base` of `self`. Where `self` or `base` is 0, 1, +inf, negative, or NaN, the F32 quotient
+///     ln(`self`) / ln(`base`): NaN for a negative or NaN argument, ±inf for base 1 or `self` 0 or +inf, ±0 for
+///     `self` 1 or base 0 or +inf, NaN when both logarithms are zero or both infinite.
+/// :note: Every positive finite `self` with base 2 and base 10 gives the correctly rounded log2 and log10.
 routine F32.log(self: Self, base: Self) -> Self
     block entry()
-        num : Self = self.ln()
-        den : Self = base.ln()
-        r   : Self = num.div(den)
-        return(r)
+        x_ok    : Bool = self.gt(0.0).bitand(self.is_finite())
+        base_ok : Bool = base.gt(0.0).bitand(base.is_finite())
+        one     : Bool = self.eq(1.0).bitor(base.eq(1.0))
+        general : Bool = x_ok.bitand(base_ok).bitand(one.bitnot())
+        branch general
+            ? narrow()
+            : return(self.ln().div(base.ln()))
+
+    block narrow()
+        q     : F64  = self.to<F64>().ln().div(base.to<F64>().ln())
+        width : F64  = q.abs().mul(0x1p-50)
+        left  : Self = q.sub(width).to<Self>()
+        right : Self = q.add(width).to<Self>()
+        branch left.eq(right)
+            ? return(left)
+            : wide()
+
+    block wide()
+        q     : F128 = self.to<F128>().ln().div(base.to<F128>().ln())
+        width : F128 = q.abs().scalbn(-109)
+        left  : Self = q.sub(width).to<Self>()
+        right : Self = q.add(width).to<Self>()
+        branch left.eq(right)
+            ? return(left)
+            : exact()
+
+    block exact()
+        r : F128 = big_log_ratio(self.to<F128>(), base.to<F128>(), 23)
+        return(r.to<Self>())
 
 // -- special functions ---------------------------------------------------------
 

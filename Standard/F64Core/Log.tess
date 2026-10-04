@@ -10,7 +10,8 @@
 // log(1) = +0.
 //
 // The dint helpers and the accurate path (cm_f64_log_dint_*) are shared with
-// log10 (Log10.tess).
+// log10 (Log10.tess). The fast path's double-double also gives F64.log(self,
+// base) its first tier (cm_f64_log_dd, cm_f64_log_ratio_fast).
 //
 // Ported from CORE-MATH, src/binary64/log/log.c and its dint.h via
 // RazorForge's B64Log.rf.
@@ -692,6 +693,59 @@ private routine cm_f64_log_fast(e: S64, mbits: U64) -> CmF64LogDd
         lo1 : F64 = ph.add(lo0.add(l2))
         lo  : F64 = eed.mul_add(0x1.ef35793c7673p-45, lo1)
         return(CmF64LogDd { hi: h, lo: lo })
+
+/// ln `x` as the fast path's double-double, renormalized so that the low part is at most half an ulp of the high
+/// part, for F64.log's first tier. Its absolute error stays below 0x1.b6p-69.
+/// :param x: The argument, positive and finite (subnormals included), not 1.
+/// :returns: ln `x` as a normalized double-double.
+routine cm_f64_log_dd(x: F64) -> CmF64LogDd
+    shared u      : U64 = x.bits()
+    shared biased : S64 = u.shr(52).to<S64>()
+
+    block entry()
+        branch biased.eq(0)
+            ? subnormal()
+            : fast(u, biased.sub(0x3FF))
+
+    // scale into the normal range, as F64.ln does
+    block subnormal()
+        us     : U64 = x.mul(0x1p52).bits()
+        scaled : S64 = us.shr(52).to<S64>()
+        jump fast(us, scaled.sub(0x3FF).sub(52))
+
+    // the fast path's low part can be about 2^-10 of its high part near 1: fold it back (Fast2Sum, exact)
+    block fast(bits: U64, e: S64)
+        hl : CmF64LogDd = cm_f64_log_fast(e, bits.bitand(0x000FFFFFFFFFFFFF))
+        hi : F64        = hl.hi.add(hl.lo)
+        lo : F64        = hl.lo.sub(hi.sub(hl.hi))
+        return(CmF64LogDd { hi: hi, lo: lo })
+
+/// ln `x` / ln `base` from the fast path's double-doubles, divided in double-double, when an error band around the
+/// quotient rounds to one F64 (Ziv's test). Each logarithm is off by at most 0x1.b6p-69 absolute, so by that over its
+/// size relative. The quotient adds below 2^-100 relative. The band is the sum of the two relative bounds, raised by
+/// 1/10000 for the first-order terms and the bounds' own rounding, plus 2^-98.
+/// :param x: The argument, positive and finite, not 1.
+/// :param base: The base, positive and finite, not 1.
+/// :returns: log base `base` of `x`, correctly rounded.
+/// :absent: When the band reaches a rounding boundary: about 2 in a million random pairs, and most pairs with `x` or
+///     `base` within about 2^-12 of 1, where the absolute bound is wide next to the logarithm.
+routine cm_f64_log_ratio_fast(x: F64, base: F64) -> Option<F64>
+    block entry()
+        n     : CmF64LogDd = cm_f64_log_dd(x)
+        d     : CmF64LogDd = cm_f64_log_dd(base)
+        q_hi  : F64        = n.hi.div(d.hi)
+        rest  : F64        = q_hi.neg().mul_add(d.hi, n.hi)  // n.hi - q_hi d.hi, exact
+        top   : F64        = rest.add(n.lo).sub(q_hi.mul(d.lo))
+        q_lo  : F64        = top.div(d.hi)
+        en    : F64        = F64.div(0x1.b6p-69, n.hi.abs())
+        ed    : F64        = F64.div(0x1.b6p-69, d.hi.abs())
+        rel   : F64        = en.add(ed).mul(1.0001).add(0x1p-98)
+        width : F64        = q_hi.abs().mul(rel)
+        left  : F64        = q_hi.add(q_lo.sub(width))
+        right : F64        = q_hi.add(q_lo.add(width))
+        branch left.eq(right)
+            ? return(.Present(left))
+            : return(.Absent)
 
 /// The accurate path of log: log x as a dint with about 126 bits of accuracy, for a positive finite x other than 1.
 /// :param x: The argument.
