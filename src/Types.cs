@@ -195,7 +195,7 @@ public sealed class PtrType(DType? pointee) : DType
     public override string OwnerName => Pointee is null ? "Addr" : "Ptr";
 }
 
-/// `Array<T, N>`: N elements of T, stored inline.
+/// `Array<T, COUNT>`: COUNT elements of T, stored inline.
 public sealed class ArrayType(DType elem, long count) : DType
 {
     public DType Elem { get; } = elem;
@@ -206,7 +206,7 @@ public sealed class ArrayType(DType elem, long count) : DType
     public override string OwnerName => "Array";
 }
 
-/// `Vector<T, N>`: N lanes of T as one SIMD value, LLVM's `<N x T>`. `Vector<Bool, N>` is a lane mask.
+/// `Vector<T, LANES>`: LANES lanes of T as one SIMD value, LLVM's `<LANES x T>`. `Vector<Bool, LANES>` is a lane mask.
 public sealed class VectorType(DType elem, long count) : DType
 {
     public DType Elem { get; } = elem;

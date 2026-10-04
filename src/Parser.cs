@@ -372,7 +372,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return (true, source);
     }
 
-    /// Every type name a type is written with: `Ptr`, `U` in `@U`, `Array`, `T` and `N` in `Array<T, N>`.
+    /// Every type name a type is written with: `Ptr`, `U` in `@U`, `Array`, `T` and `COUNT` in `Array<T, COUNT>`.
     private static IEnumerable<string> NamesIn(TypeRef t) =>
         new[] { t.Name }.Concat(t.Args.OfType<TypeArgType>().SelectMany(a => NamesIn(a.Type)));
 
@@ -431,14 +431,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var ret = ParseType();
         ExpectLineEnd();
         var clauses = ParseClauses();
-        // `T.bitcast<U>` declares U in its `require`. `S32.to<S64>` names the type it is defined for instead, and
+        // `TFrom.bitcast<TTo>` declares TTo in its `require`. `S32.to<S64>` names the type it is defined for instead, and
         // `Ptr<T>.to<@U>` a pattern of one: its own parameters there (U) are bound by matching a call's type arguments.
         List<TypeRef> fixedArgs = [];
         if (ownArgs.Count != 0)
         {
             var declared = RequiredNames(clauses);
             bool IsParam(TypeRef t) => t is { Args.Count: 0, Path: null } && declared.Contains(t.Name);
-            // A concept's routine declares its parameters without a require of its own: `Self.represent<W>`. Type
+            // A concept's routine declares its parameters without a require of its own: `Self.represent_into<TWriter>`. Type
             // arguments that are the concept's own parameters fix it instead: `Bytes.to_result<T>` in Parsable<T>.
             bool fixedByConcept = inConcept && conceptParams is not null
                                   && ownArgs.Any(t => NamesIn(t).Any(conceptParams.Contains));
@@ -1303,7 +1303,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         Expect(TokenKind.LBrace, "'{'");
         var fields = new List<(string, Expr, Pos)>();
-        // `Array<T, N> { a, b, c }` / `Vector<T, N> { a, b, c }`: elements in order, where a record names its fields.
+        // `Array<T, COUNT> { a, b, c }` / `Vector<T, LANES> { a, b, c }`: elements in order, where a record names its fields.
         if (!Is(TokenKind.RBrace) && !(Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon))
         {
             var elems = new List<Expr>();

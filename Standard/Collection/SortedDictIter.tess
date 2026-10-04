@@ -1,13 +1,13 @@
-// Tessera stdlib collection: SortedDictIter<K, V>
+// Tessera stdlib collection: SortedDictIter<TKey, TValue>
 //
-// In-order iterator over SortedDict<K, V>. Yields KVPair<K, V> with keys in
+// In-order iterator over SortedDict<TKey, TValue>. Yields KVPair<TKey, TValue> with keys in
 // ascending sorted order. It keeps the path from the root to the current node
 // on an inline stack, so a full traversal is O(n) and the iterator allocates
 // nothing.
 //
-// KVPair<K, V> is defined in option.tess.
+// KVPair<TKey, TValue> is defined in option.tess.
 //
-// Satisfies concept Iterator<KVPair<K, V>, SortedDictIter<K, V>>.
+// Satisfies concept Iterator<KVPair<TKey, TValue>, SortedDictIter<TKey, TValue>>.
 
 module Standard::Collections
 
@@ -16,23 +16,23 @@ private preset ITER_DEPTH: USize = 64
 
 /// `nodes[d]` and `indices[d]` for each level `d < depth`: the node, and in it the next key to yield. Every child
 /// left of that key has been walked already.
-record SortedDictIter<K, V>
-conform Iterator<KVPair<K, V>, SortedDictIter<K, V>>
-require K: typename, V: typename
-    nodes   : Array<@SortedDictNode<K, V>, ITER_DEPTH>
+record SortedDictIter<TKey, TValue>
+conform Iterator<KVPair<TKey, TValue>, SortedDictIter<TKey, TValue>>
+require TKey: typename, TValue: typename
+    nodes   : Array<@SortedDictNode<TKey, TValue>, ITER_DEPTH>
     indices : Array<USize, ITER_DEPTH>
     depth   : USize
 
 /// Creates an iterator positioned before the smallest key, descending to the leftmost leaf.
 /// :param map: The sorted dict to walk.
 /// :returns: A new iterator, already positioned when the map is not empty.
-routine SortedDictIter<K, V>.construct(map: @SortedDict<K, V>) -> Self
-require K: typename, V: typename
+routine SortedDictIter<TKey, TValue>.construct(map: @SortedDict<TKey, TValue>) -> Self
+require TKey: typename, TValue: typename
     shared iter : @Self <- uninit
 
     block entry()
-        root  : @SortedDictNode<K, V> = map.root.load()
-        empty : Bool                  = root.is_null()
+        root  : @SortedDictNode<TKey, TValue> = map.root.load()
+        empty : Bool                          = root.is_null()
         iter.depth.store(0)
         branch empty
             ? finish()
@@ -45,12 +45,13 @@ require K: typename, V: typename
         return(iter_val)
 
 /// Pushes node and the first child of each level below it, down to a leaf.
-private routine SortedDictIter<K, V>.push_leftmost(self: @Self, node: @SortedDictNode<K, V>) -> Void
-require K: typename, V: typename
+private routine SortedDictIter<TKey, TValue>.push_leftmost(self: @Self,
+    node: @SortedDictNode<TKey, TValue>) -> Void
+require TKey: typename, TValue: typename
     block entry()
         jump push(node)
 
-    block push(current: @SortedDictNode<K, V>)
+    block push(current: @SortedDictNode<TKey, TValue>)
         depth : USize = self.depth.load()
         leaf  : Bool  = current.leaf.load()
         self.nodes.setitem(depth, current)
@@ -60,14 +61,14 @@ require K: typename, V: typename
             ? return()
             : first_child(current)
 
-    block first_child(current: @SortedDictNode<K, V>)
+    block first_child(current: @SortedDictNode<TKey, TValue>)
         jump push(current.children.getitem(0))
 
 /// Yields the next entry in ascending key order, climbing to a parent or descending to the next leaf as needed.
 /// :returns: The next key and value pair, smallest key first.
 /// :absent: After the entry with the largest key has been yielded.
-routine SortedDictIter<K, V>.next(self: @Self) -> Option<KVPair<K, V>>
-require K: typename, V: typename
+routine SortedDictIter<TKey, TValue>.next(self: @Self) -> Option<KVPair<TKey, TValue>>
+require TKey: typename, TValue: typename
     block entry()
         jump top()
 
@@ -77,11 +78,11 @@ require K: typename, V: typename
         branch empty
             ? done()
             : continue
-        level   : USize                 = depth.sub(1)
-        node    : @SortedDictNode<K, V> = self.nodes.getitem(level)
-        index   : USize                 = self.indices.getitem(level)
-        count   : USize                 = node.count.load()
-        has_key : Bool                  = index.lt(count)
+        level   : USize                         = depth.sub(1)
+        node    : @SortedDictNode<TKey, TValue> = self.nodes.getitem(level)
+        index   : USize                         = self.indices.getitem(level)
+        count   : USize                         = node.count.load()
+        has_key : Bool                          = index.lt(count)
         branch has_key
             ? take(node, level, index)
             : pop(level)
@@ -90,23 +91,23 @@ require K: typename, V: typename
         self.depth.store(level)
         jump top()
 
-    block take(node: @SortedDictNode<K, V>, level: USize, index: USize)
-        key   : K            = node.keys.getitem(index)
-        value : V            = node.values.getitem(index)
-        pair  : KVPair<K, V> = KVPair<K, V> { key: key, value: value }
-        leaf  : Bool         = node.leaf.load()
+    block take(node: @SortedDictNode<TKey, TValue>, level: USize, index: USize)
+        key   : TKey                 = node.keys.getitem(index)
+        value : TValue               = node.values.getitem(index)
+        pair  : KVPair<TKey, TValue> = KVPair<TKey, TValue> { key: key, value: value }
+        leaf  : Bool                 = node.leaf.load()
         self.indices.setitem(level, index.add(1))
         branch leaf
             ? yield(pair)
             : continue
-        right : @SortedDictNode<K, V> = node.children.getitem(index.add(1))
+        right : @SortedDictNode<TKey, TValue> = node.children.getitem(index.add(1))
         self.push_leftmost(right)
         jump yield(pair)
 
-    block yield(pair: KVPair<K, V>)
-        some : Option<KVPair<K, V>> = .Present(pair)
+    block yield(pair: KVPair<TKey, TValue>)
+        some : Option<KVPair<TKey, TValue>> = .Present(pair)
         return(some)
 
     block done()
-        none : Option<KVPair<K, V>> = .Absent
+        none : Option<KVPair<TKey, TValue>> = .Absent
         return(none)

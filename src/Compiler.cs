@@ -42,7 +42,7 @@ public sealed partial class Compiler
     private readonly Dictionary<string, List<ChoiceDecl>> _choices = [];
     private readonly Dictionary<string, List<RoutineDecl>> _free = [];
     private readonly Dictionary<(string Owner, string Name), List<RoutineDecl>> _methods = [];
-    private readonly Dictionary<string, List<RoutineDecl>> _blanket = []; // owner is a type parameter: `T.bitcast<U>`
+    private readonly Dictionary<string, List<RoutineDecl>> _blanket = []; // owner is a type parameter: `TFrom.bitcast<TTo>`
     private readonly Dictionary<(string Owner, string Name), List<PresetDecl>> _presets = [];
     private readonly Dictionary<string, List<AliasDecl>> _aliases = [];
     private readonly List<RoutineDecl> _userRoutines = [];
@@ -227,7 +227,7 @@ public sealed partial class Compiler
         list.Add(value);
     }
 
-    /// `routine T.bitcast<U>(...) require T: typename`: the owner is a type parameter, so the routine applies to
+    /// `routine TFrom.bitcast<TTo>(...) require TFrom: typename`: the owner is a type parameter, so the routine applies to
     /// every type.
     private static bool IsBlanketOwner(RoutineDecl r) =>
         r.Owner is { Args.Count: 0 } o && ClauseTypeParams(r.Clauses).Contains(o.Name);
@@ -644,8 +644,8 @@ public sealed partial class Compiler
     public PresetDecl? FindPreset(string owner, string name, string file, Pos pos, string? path = null) =>
         Pick(_presets.GetValueOrDefault((owner, name)), file, pos, $"preset '{(owner == "" ? name : owner + "." + name)}'", path);
 
-    /// The names that are type parameters of the routine's owner: `T` in `Option<T>.some`, `T` and `N` in
-    /// `Array<T, N>.get`, `T` in `T.bitcast<U>`.
+    /// The names that are type parameters of the routine's owner: `T` in `Option<T>.some`, `T` and `COUNT` in
+    /// `Array<T, COUNT>.get`, `TFrom` in `TFrom.bitcast<TTo>`.
     private static List<string> OwnerTypeParams(RoutineDecl r)
     {
         if (r.Owner is null) return [];
@@ -725,12 +725,12 @@ public sealed partial class Compiler
                 };
             case "Array":
                 if (t.Args is not [TypeArgType elem, var count])
-                    throw new CompileError(t.Pos, "Array takes an element type and an element count: Array<T, N>");
+                    throw new CompileError(t.Pos, "Array takes an element type and an element count: Array<T, COUNT>");
                 return new ArrayType(ResolveType(elem.Type, env), ConstInt(count, env, t.Pos));
             case "Vector":
             {
                 if (t.Args is not [TypeArgType lane, var lanes])
-                    throw new CompileError(t.Pos, "Vector takes a lane type and a lane count: Vector<T, N>");
+                    throw new CompileError(t.Pos, "Vector takes a lane type and a lane count: Vector<T, LANES>");
                 var laneType = ResolveType(lane.Type, env);
                 if (laneType.Repr is not (IntType or FloatType or BoolType))
                     throw new CompileError(t.Pos, $"a Vector's lanes are integers, floats, or Bool (a mask), not {laneType}");

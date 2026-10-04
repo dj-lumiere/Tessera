@@ -729,7 +729,7 @@ public sealed class FunctionGen
                 if (bp.Pointee is null) throw Err(ix.Pos, "an Addr has no element type to stride over: cast it to @T first, or step bytes with offset");
                 var idx = EvalIndex(ix.Index);
                 _c.EnsureTypeDefined(bp.Pointee);
-                // `Ptr<X>.stride(i)` is the i-th X, whatever X is: on a Ptr<Array<T, N>> it steps over whole arrays
+                // `Ptr<X>.stride(i)` is the i-th X, whatever X is: on a Ptr<Array<T, COUNT>> it steps over whole arrays
                 // (elements are .at / .get / .set, or .to<@T>().stride(i)).
                 return (EmitTmp($"getelementptr {bp.Pointee.Llvm}, ptr {b.Op}, {idx.Type.Llvm} {idx.Op}"), bp.Pointee);
             }
@@ -812,7 +812,7 @@ public sealed class FunctionGen
             : e;
 
     /// `p.stride(n)` on a pointer is built in: the address n Ts past p (LLVM GEP's first index; on a
-    /// `Ptr<Array<T, N>>` that's n whole arrays). It's a place like `p.f`, so it chains (`p.stride(i).f`) and a
+    /// `Ptr<Array<T, COUNT>>` that's n whole arrays). It's a place like `p.f`, so it chains (`p.stride(i).f`) and a
     /// load or store through it keeps a dense record's real alignment. n is a USize or an SSize (negative moves back).
     private Expr AsStride(Expr e) =>
         e is MethodCallExpr { Name: "stride", TypeArgs.Count: 0, Args: [var n] } m && Infer(m.Receiver) is PtrType
@@ -1357,7 +1357,7 @@ public sealed class FunctionGen
         return new Val("", VoidType.Instance);
     }
 
-    /// `Array<T, N> { a, b, c }` or `Vector<T, N> { a, b, c }`: N elements in order, each typed by T. A bare
+    /// `Array<T, COUNT> { a, b, c }` or `Vector<T, LANES> { a, b, c }`: the elements in order, each typed by T. A bare
     /// `{ a, b, c }` takes the type the value goes to.
     private Val EvalElementsLit(ArrayLit lit, DType expected)
     {
@@ -1892,7 +1892,7 @@ public sealed class FunctionGen
                 string call = m.Name + (m.TypeArgs.Count == 0 ? "" : $"<{string.Join(", ", m.TypeArgs)}>");
                 string fix = m.Receiver switch
                 {
-                    ArrayLit => "Array<T, N> { ... }",
+                    ArrayLit => "Array<T, COUNT> { ... }",
                     RecordLit => "Type { ... }",
                     FloatLit => $"F64.{call}(...)",
                     _ => $"S64.{call}(...)",

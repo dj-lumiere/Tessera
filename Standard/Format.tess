@@ -21,9 +21,9 @@ import Standard::Alloc
 import Standard::Collections
 
 /// A sink for bytes: any type with a `write_bytes` method. Formatting routines write into a Writer, so nothing allocates unless the Writer does.
-/// :typeparam W: The type that accepts bytes.
-concept Writer<W>
-require W: typename
+/// :typeparam T: The type that accepts bytes.
+concept Writer<T>
+require T: typename
     /// Write count bytes starting at data.
     routine Self.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
 
@@ -31,7 +31,7 @@ require W: typename
 /// :typeparam T: The type that can write its program-output text.
 concept Representable<T>
 require T: typename
-    routine Self.represent_into<W>(self: Self, out: @W) -> Void
+    routine Self.represent_into<TWriter>(self: Self, out: @TWriter) -> Void
 
 /// The built-in types' represent routines are further down.
 conform Representable<S8>, Representable<S16>, Representable<S32>, Representable<S64>, Representable<S128>, Representable<S256>
@@ -39,7 +39,7 @@ conform Representable<U8>, Representable<U16>, Representable<U32>, Representable
 conform Representable<USize>, Representable<SSize>
 conform Representable<F16>, Representable<BF16>, Representable<F32>, Representable<F64>, Representable<F128>
 conform Representable<Bool>, Representable<Char>, Representable<Bytes>, Representable<Addr>
-conform Representable<Array<T, N>> when T: typename, N: USize, Diagnosable<T>
+conform Representable<Array<T, COUNT>> when T: typename, COUNT: USize, Diagnosable<T>
 
 // -- SliceWriter ---------------------------------------------------------------
 
@@ -115,28 +115,28 @@ routine SliceWriter.write_bytes(self: @Self, bytes: @Byte, count: USize) -> Void
 /// large pieces. Nothing reaches the inner Writer until the buffer fills or
 /// flush() is called, and nothing flushes by itself: call flush() before the
 /// program ends or reads input. Writes of 4 KiB or more skip the buffer.
-record BufWriter<W>
-require W: typename
-conform Writer<BufWriter<W>>
-    private inner  : @W
+record BufWriter<T>
+require T: typename
+conform Writer<BufWriter<T>>
+    private inner  : @T
     private count : USize
     private data   : Array<Byte, 4096>
 
 /// Sets up the buffer to pass its writes on to `inner`, with nothing buffered yet. `inner` must outlive the writer.
-/// :typeparam W: The inner Writer type.
+/// :typeparam T: The inner Writer type.
 /// :param inner: The Writer that receives the buffered bytes.
-routine BufWriter<W>.construct(self: @Self, inner: @W) -> Void
-require W: typename
+routine BufWriter<T>.construct(self: @Self, inner: @T) -> Void
+require T: typename
     block entry()
         self.inner.store(inner)
         self.count.store(0)
         return()
 
 /// Writes out the buffered bytes.
-routine BufWriter<W>.flush(self: @Self) -> Void
-require W: typename, Writer<W>
+routine BufWriter<T>.flush(self: @Self) -> Void
+require T: typename, Writer<T>
     shared count  : USize              = self.count.load()
-    shared inner  : @W                 = self.inner.load()
+    shared inner  : @T                 = self.inner.load()
     shared buffer : @Array<Byte, 4096> = self.data
     shared data   : @Byte              = buffer.to<@Byte>()
 
@@ -152,11 +152,11 @@ require W: typename, Writer<W>
         return()
 
 /// Appends to the buffer, flushing it first when the bytes would not fit. A write of 4 KiB or more goes straight to the inner Writer after that flush.
-/// :typeparam W: The inner Writer type.
+/// :typeparam T: The inner Writer type.
 /// :param bytes: The bytes to append.
 /// :param count: The number of bytes to append.
-routine BufWriter<W>.write_bytes(self: @Self, bytes: @Byte, count: USize) -> Void
-require W: typename, Writer<W>
+routine BufWriter<T>.write_bytes(self: @Self, bytes: @Byte, count: USize) -> Void
+require T: typename, Writer<T>
     block entry()
         buffered : USize = self.count.load()
         fits     : Bool  = buffered.add(count).le(4096)
@@ -172,7 +172,7 @@ require W: typename, Writer<W>
             : append(0)
 
     block direct()
-        inner : @W = self.inner.load()
+        inner : @T = self.inner.load()
         inner.write_bytes(bytes, count)
         return()
 
@@ -226,11 +226,11 @@ routine CountWriter.write_bytes(self: @Self, bytes: @Byte, count: USize) -> Void
 // -- text ----------------------------------------------------------------------
 
 /// Writes the bytes of `text` to `out` as they are.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param text: The bytes to write.
-routine write_str<W>(out: @W, text: Bytes) -> Void
-require W: typename, Writer<W>
+routine write_str<T>(out: @T, text: Bytes) -> Void
+require T: typename, Writer<T>
     block entry()
         data  : @Byte = text.data
         count : USize = text.count
@@ -238,10 +238,10 @@ require W: typename, Writer<W>
         return()
 
 /// Writes a single `\n` to `out`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine write_line<W>(out: @W) -> Void
-require W: typename, Writer<W>
+routine write_line<T>(out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         write_str(out, "\n")
         return()
@@ -262,65 +262,65 @@ preset TWO_POW_64: U128 = U64.MAX.to<U128>().add(1)
 preset TEN_POW_19_WIDE: U256 = TEN_POW_19.to<U256>()
 
 /// Writes the S8 in decimal, with a leading `-` when negative.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S8.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S8.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<S64>().represent_into(out)
         return()
 
 /// Writes the bits of the S8 in lowercase hex with no leading zeros, so a negative value shows its two's complement at the type's width.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S8.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S8.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         bits : U8 = self.bits().to<U8>()
         bits.represent_hex_into(out)
         return()
 
 /// Writes the S16 in decimal, with a leading `-` when negative.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S16.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S16.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<S64>().represent_into(out)
         return()
 
 /// Writes the bits of the S16 in lowercase hex with no leading zeros, so a negative value shows its two's complement at the type's width.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S16.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S16.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to_wrap<U16>().represent_hex_into(out)
         return()
 
 /// Writes the S32 in decimal, with a leading `-` when negative.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S32.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S32.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<S64>().represent_into(out)
         return()
 
 /// Writes the bits of the S32 in lowercase hex with no leading zeros, so a negative value shows its two's complement at the type's width.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S32.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S32.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to_wrap<U32>().represent_hex_into(out)
         return()
 
 /// Writes the S64 in decimal, with a leading `-` when negative: the sign, then the magnitude, which always fits in a U64.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S64.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S64.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         negative : Bool = self.lt(0)
         branch negative
@@ -336,19 +336,19 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the bits of the S64 in lowercase hex with no leading zeros, so a negative value shows its two's complement at the type's width.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S64.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S64.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to_wrap<U64>().represent_hex_into(out)
         return()
 
 /// Writes the S128 in decimal, with a leading `-` when negative: the sign, then the magnitude.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S128.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S128.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         negative : Bool = self.lt(0)
         branch negative
@@ -364,19 +364,19 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the bits of the S128 in lowercase hex with no leading zeros, so a negative value shows its two's complement at the type's width.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S128.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S128.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to_wrap<U128>().represent_hex_into(out)
         return()
 
 /// Writes the S256 in decimal, with a leading `-` when negative: the sign, then the magnitude.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S256.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S256.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         negative : Bool = self.lt(0)
         branch negative
@@ -392,83 +392,83 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the bits of the S256 in lowercase hex with no leading zeros, so a negative value shows its two's complement at the type's width.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine S256.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine S256.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to_wrap<U256>().represent_hex_into(out)
         return()
 
 /// Writes the U8 in decimal.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U8.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U8.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<U64>().represent_into(out)
         return()
 
 /// Writes the U8 in lowercase hex with no leading zeros (`0` for zero).
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U8.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U8.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<U64>().represent_hex_into(out)
         return()
 
 /// Writes the U16 in decimal.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U16.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U16.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<U64>().represent_into(out)
         return()
 
 /// Writes the U16 in lowercase hex with no leading zeros (`0` for zero).
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U16.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U16.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<U64>().represent_hex_into(out)
         return()
 
 /// Writes the U32 in decimal.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U32.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U32.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<U64>().represent_into(out)
         return()
 
 /// Writes the U32 in lowercase hex with no leading zeros (`0` for zero).
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U32.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U32.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<U64>().represent_hex_into(out)
         return()
 
 /// Writes the U64 in decimal.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U64.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U64.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.represent_into(out, 0)
         return()
 
 /// Writes the U64 in decimal, zero-padded to at least `min_digits` digits (at most 20).
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param min_digits: The fewest digits to write. Shorter values get leading zeros.
-routine U64.represent_into<W>(self: Self, out: @W, min_digits: USize) -> Void
-require W: typename, Writer<W>
+routine U64.represent_into<T>(self: Self, out: @T, min_digits: USize) -> Void
+require T: typename, Writer<T>
     shared buf    : @Array<Byte, 20> <- uninit
     shared digits : @Byte            = buf.to<@Byte>()
 
@@ -497,20 +497,20 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the U64 in lowercase hex with no leading zeros (`0` for zero).
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U64.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U64.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.represent_hex_into(out, 0)
         return()
 
 /// Writes the U64 in lowercase hex, zero-padded to at least `min_digits` digits (at most 16).
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param min_digits: The fewest digits to write. Shorter values get leading zeros.
-routine U64.represent_hex_into<W>(self: Self, out: @W, min_digits: USize) -> Void
-require W: typename, Writer<W>
+routine U64.represent_hex_into<T>(self: Self, out: @T, min_digits: USize) -> Void
+require T: typename, Writer<T>
     shared buf    : @Array<Byte, 16> <- uninit
     shared digits : @Byte            = buf.to<@Byte>()
 
@@ -540,21 +540,21 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the U128 in decimal.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U128.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U128.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.represent_into(out, 0)
         return()
 
 /// Writes the U128 in decimal, zero-padded to at least `min_digits` digits. It goes out in 19-digit chunks, so only
 /// the chunking divides U128.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param min_digits: The fewest digits to write. Shorter values get leading zeros.
-routine U128.represent_into<W>(self: Self, out: @W, min_digits: USize) -> Void
-require W: typename, Writer<W>
+routine U128.represent_into<T>(self: Self, out: @T, min_digits: USize) -> Void
+require T: typename, Writer<T>
     block entry()
         fits : Bool = self.lt(TWO_POW_64)
         branch fits
@@ -574,10 +574,10 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the U128 in lowercase hex with no leading zeros (`0` for zero).
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U128.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U128.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     shared high : U64 = self.shr(64).to<U64>()
     shared low  : U64 = self.to_wrap<U64>()
 
@@ -597,21 +597,21 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the U256 in decimal.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U256.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U256.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.represent_into(out, 0)
         return()
 
 /// Writes the U256 in decimal, zero-padded to at least `min_digits` digits. It goes out in 19-digit chunks too, until
 /// the rest fits in 128 bits.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param min_digits: The fewest digits to write. Shorter values get leading zeros.
-routine U256.represent_into<W>(self: Self, out: @W, min_digits: USize) -> Void
-require W: typename, Writer<W>
+routine U256.represent_into<T>(self: Self, out: @T, min_digits: USize) -> Void
+require T: typename, Writer<T>
     block entry()
         fits : Bool = self.shr(128).eq(0)
         branch fits
@@ -631,10 +631,10 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the U256 in lowercase hex with no leading zeros (`0` for zero).
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine U256.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine U256.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     shared high : U128 = self.shr(128).to<U128>()
     shared low  : U128 = self.to_wrap<U128>()
 
@@ -656,42 +656,42 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the USize in decimal.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine USize.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine USize.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<U64>().represent_into(out)
         return()
 
 /// Writes the USize in lowercase hex with no leading zeros (`0` for zero).
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine USize.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine USize.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<U64>().represent_hex_into(out)
         return()
 
 /// Writes the SSize in decimal, with a leading `-` when negative.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine SSize.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine SSize.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to<S64>().represent_into(out)
         return()
 
 /// The bits at the target's width, like the fixed-width types.
-routine SSize.represent_hex_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine SSize.represent_hex_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         self.to_wrap<USize>().represent_hex_into(out)
         return()
 
 /// The character's UTF-8 bytes.
-routine Char.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine Char.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         claim buf : @Array<Byte, 4> <- uninit
         bytes : @Byte = buf.to<@Byte>()
@@ -700,10 +700,10 @@ require W: typename, Writer<W>
         return()
 
 /// Writes `true` or `false`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine Bool.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine Bool.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         branch self
             ? yes()
@@ -718,10 +718,10 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the bytes as they are, without quotes or escapes.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine Bytes.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine Bytes.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         write_str(out, self)
         return()
@@ -734,10 +734,10 @@ require W: typename, Writer<W>
 // Null is 0x0.
 
 /// Writes the address as `0x` and lowercase hex without leading zeros. Null is `0x0`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine Addr.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine Addr.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         address : U64 = ptrtoint<Self, U64>(self)
         write_str(out, "0x")
@@ -747,8 +747,8 @@ require W: typename, Writer<W>
 // -- arrays --------------------------------------------------------------------
 
 /// The elements, each diagnosed (so strings keep their quotes), as [1, 2, 3].
-routine Array<T, N>.represent_into<W>(self: Self, out: @W) -> Void
-require T: typename, N: USize, Diagnosable<T>, W: typename, Writer<W>
+routine Array<T, COUNT>.represent_into<TWriter>(self: Self, out: @TWriter) -> Void
+require T: typename, COUNT: USize, Diagnosable<T>, TWriter: typename, Writer<TWriter>
     shared slot : @Self <- self
 
     block entry()
@@ -756,7 +756,7 @@ require T: typename, N: USize, Diagnosable<T>, W: typename, Writer<W>
         jump walk(0)
 
     block walk(at: USize)
-        more : Bool = at.lt(N)
+        more : Bool = at.lt(COUNT)
         branch more
             ? item(at)
             : close()
@@ -789,8 +789,8 @@ require T: typename, N: USize, Diagnosable<T>, W: typename, Writer<W>
 // codes in U8 buffers and written out as bytes.
 
 /// Writes count zeros.
-routine write_zeros<W>(out: @W, count: USize) -> Void
-require W: typename, Writer<W>
+routine write_zeros<T>(out: @T, count: USize) -> Void
+require T: typename, Writer<T>
     block entry()
         jump loop(count)
 
@@ -805,16 +805,16 @@ require W: typename, Writer<W>
         jump loop(left.sub(1))
 
 /// Writes count ASCII digits starting at first.
-routine write_digits<W>(out: @W, first: @U8, count: USize) -> Void
-require W: typename, Writer<W>
+routine write_digits<T>(out: @T, first: @U8, count: USize) -> Void
+require T: typename, Writer<T>
     block entry()
         bytes : @Byte = first.to<@Byte>()
         out.write_bytes(bytes, count)
         return()
 
 /// Writes digits × 10^exponent (digits > 0, at most 19 digits).
-routine write_float_decimal<W>(out: @W, d: FloatDecimal) -> Void
-require W: typename, Writer<W>
+routine write_float_decimal<T>(out: @T, d: FloatDecimal) -> Void
+require T: typename, Writer<T>
     shared buf    : @Array<U8, 20> <- uninit
     shared digits : @U8            = buf.to<@U8>()
     shared end    : @USize         <- 20
@@ -842,8 +842,8 @@ require W: typename, Writer<W>
 
 /// Writes the n ASCII digits at first times 10^exponent (no leading zero). The
 /// point goes after the first digit at scientific exponent x = n - 1 + exponent.
-routine write_decimal_digits<W>(out: @W, first: @U8, n: USize, exponent: S64) -> Void
-require W: typename, Writer<W>
+routine write_decimal_digits<T>(out: @T, first: @U8, n: USize, exponent: S64) -> Void
+require T: typename, Writer<T>
     shared top_place : S64 = n.to<S64>().sub(1)
     shared x         : S64 = top_place.add(exponent)
 
@@ -921,9 +921,9 @@ require W: typename, Writer<W>
 
 /// Writes a binary float given its IEEE fields. exponent_max is the all-ones
 /// exponent (infinity / NaN).
-routine write_binary_float<W>(out: @W, negative: Bool, mantissa: U64, exponent: U64,
+routine write_binary_float<T>(out: @T, negative: Bool, mantissa: U64, exponent: U64,
     mantissa_bits: S64, bias: S64, exponent_max: U64) -> Void
-require W: typename, Writer<W>
+require T: typename, Writer<T>
     block entry()
         special : Bool = exponent.eq(exponent_max)
         branch special
@@ -990,10 +990,10 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the F64 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine F64.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine F64.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         bits     : U64  = self.bits()
         negative : Bool = bits.shr(63).eq(1)
@@ -1003,10 +1003,10 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the F32 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine F32.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine F32.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         bits     : U64  = self.bits().to<U64>()
         negative : Bool = bits.shr(31).eq(1)
@@ -1016,10 +1016,10 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the F16 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine F16.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine F16.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         bits     : U64  = self.bits().to<U64>()
         negative : Bool = bits.shr(15).eq(1)
@@ -1029,10 +1029,10 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the BF16 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine BF16.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine BF16.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     block entry()
         bits     : U64  = self.bits().to<U64>()
         negative : Bool = bits.shr(15).eq(1)
@@ -1059,8 +1059,8 @@ routine floor_log10_pow2(x: S64) -> S64
 /// Writes f × 2^e (f > 0) as its shortest round-trip decimal. boundary says the
 /// gap below is half the gap above (f is a power of two above the smallest
 /// normal)// even says ties read back as this float (f is even).
-routine write_float_exact<W>(out: @W, f: U128, e: S64, boundary: Bool, even: Bool) -> Void
-require W: typename, Writer<W>
+routine write_float_exact<T>(out: @T, f: U128, e: S64, boundary: Bool, even: Bool) -> Void
+require T: typename, Writer<T>
     shared r     : @BigNat<320> <- uninit
     shared s     : @BigNat<320> <- uninit
     shared plus  : @BigNat<320> <- uninit
@@ -1197,10 +1197,10 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the F128 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine F128.represent_into<W>(self: Self, out: @W) -> Void
-require W: typename, Writer<W>
+routine F128.represent_into<T>(self: Self, out: @T) -> Void
+require T: typename, Writer<T>
     shared bits     : U128 = self.bits()
     shared negative : Bool = f128_is_negative_bits(bits)
     shared biased   : S64  = f128_exponent(bits)
@@ -1263,8 +1263,8 @@ require W: typename, Writer<W>
 /// own digits end max(0, -e) places after the point, so the rounding works on at
 /// most that many and the rest are zeros. Sized for F128: f × 10^16494 needs
 /// about 55,000 bits and prints at most 16,530 digits.
-routine write_float_fixed<W>(out: @W, f: U128, e: S64, digits: USize) -> Void
-require W: typename, Writer<W>
+routine write_float_fixed<T>(out: @T, f: U128, e: S64, digits: USize) -> Void
+require T: typename, Writer<T>
     shared n          : @BigNat<864> <- uninit
     shared below_zero : U64          = e.min(0).abs_diff(0)
     shared own        : USize        = below_zero.to<USize>()  // max(0, -e)
@@ -1363,9 +1363,9 @@ require W: typename, Writer<W>
 
 /// represent_fixed_into for a binary float given its IEEE fields: shift is bias +
 /// mantissa bits, so a normal value is (1.fraction) × 2^(biased - shift).
-routine write_binary_fixed<W>(out: @W, negative: Bool, fraction: U128, biased: S64,
+routine write_binary_fixed<T>(out: @T, negative: Bool, fraction: U128, biased: S64,
     mantissa_bits: U128, shift: S64, exponent_max: S64, digits: USize) -> Void
-require W: typename, Writer<W>
+require T: typename, Writer<T>
     block entry()
         special : Bool = biased.eq(exponent_max)
         nan     : Bool = special.bitand(fraction.ne(0))
@@ -1401,11 +1401,11 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the F64 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param digits: The number of digits after the point.
-routine F64.represent_fixed_into<W>(self: Self, out: @W, digits: USize) -> Void
-require W: typename, Writer<W>
+routine F64.represent_fixed_into<T>(self: Self, out: @T, digits: USize) -> Void
+require T: typename, Writer<T>
     block entry()
         bits           : U64  = self.bits()
         negative       : Bool = bits.shr(63).eq(1)
@@ -1416,11 +1416,11 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the F32 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param digits: The number of digits after the point.
-routine F32.represent_fixed_into<W>(self: Self, out: @W, digits: USize) -> Void
-require W: typename, Writer<W>
+routine F32.represent_fixed_into<T>(self: Self, out: @T, digits: USize) -> Void
+require T: typename, Writer<T>
     block entry()
         bits           : U64  = self.bits().to<U64>()
         negative       : Bool = bits.shr(31).eq(1)
@@ -1431,11 +1431,11 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the F16 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param digits: The number of digits after the point.
-routine F16.represent_fixed_into<W>(self: Self, out: @W, digits: USize) -> Void
-require W: typename, Writer<W>
+routine F16.represent_fixed_into<T>(self: Self, out: @T, digits: USize) -> Void
+require T: typename, Writer<T>
     block entry()
         bits           : U64  = self.bits().to<U64>()
         negative       : Bool = bits.shr(15).eq(1)
@@ -1446,11 +1446,11 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the BF16 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param digits: The number of digits after the point.
-routine BF16.represent_fixed_into<W>(self: Self, out: @W, digits: USize) -> Void
-require W: typename, Writer<W>
+routine BF16.represent_fixed_into<T>(self: Self, out: @T, digits: USize) -> Void
+require T: typename, Writer<T>
     block entry()
         bits           : U64  = self.bits().to<U64>()
         negative       : Bool = bits.shr(15).eq(1)
@@ -1461,11 +1461,11 @@ require W: typename, Writer<W>
         return()
 
 /// Writes the F128 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param digits: The number of digits after the point.
-routine F128.represent_fixed_into<W>(self: Self, out: @W, digits: USize) -> Void
-require W: typename, Writer<W>
+routine F128.represent_fixed_into<T>(self: Self, out: @T, digits: USize) -> Void
+require T: typename, Writer<T>
     block entry()
         bits     : U128 = self.bits()
         negative : Bool = f128_is_negative_bits(bits)
@@ -1497,10 +1497,10 @@ conform Representable<Fixed<T>>
 
 /// Writes the wrapped integer with its `represent_hex_into`.
 /// :typeparam T: The wrapped integer type.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam TWriter: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine Hex<T>.represent_into<W>(self: Self, out: @W) -> Void
-require T: typename, W: typename, Writer<W>
+routine Hex<T>.represent_into<TWriter>(self: Self, out: @TWriter) -> Void
+require T: typename, TWriter: typename, Writer<TWriter>
     block entry()
         value : T = self.value
         value.represent_hex_into(out)
@@ -1508,10 +1508,10 @@ require T: typename, W: typename, Writer<W>
 
 /// Writes the wrapped float with its `represent_fixed_into` using `digits`.
 /// :typeparam T: The wrapped float type.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam TWriter: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-routine Fixed<T>.represent_into<W>(self: Self, out: @W) -> Void
-require T: typename, W: typename, Writer<W>
+routine Fixed<T>.represent_into<TWriter>(self: Self, out: @TWriter) -> Void
+require T: typename, TWriter: typename, Writer<TWriter>
     block entry()
         value  : T     = self.value
         digits : USize = self.digits
@@ -1541,10 +1541,10 @@ record FormatSpec
 
 /// Passes writes on to inner, putting pad copies of fill before the first
 /// byte, or after it when it is - or +.
-record SignPadWriter<W>
-require W: typename
-conform Writer<SignPadWriter<W>>
-    inner : @W
+record SignPadWriter<T>
+require T: typename
+conform Writer<SignPadWriter<T>>
+    inner : @T
     fill  : Bytes
     pad   : USize
 
@@ -1575,8 +1575,8 @@ routine FormatSpec.with_fill(self: Self, fill: Bytes) -> Self
         return(spec)
 
 /// Writes text count times.
-routine write_repeated<W>(out: @W, text: Bytes, count: USize) -> Void
-require W: typename, Writer<W>
+routine write_repeated<T>(out: @T, text: Bytes, count: USize) -> Void
+require T: typename, Writer<T>
     block entry()
         jump loop(count)
 
@@ -1591,13 +1591,13 @@ require W: typename, Writer<W>
         jump loop(left.sub(1))
 
 /// Writes `value` padded to at least `spec.width` characters. The value is formatted twice, once into a `CountWriter` to measure it and once for real, so nothing is buffered. A value already as wide as the spec is written unpadded.
-/// :typeparam T: The type of the value, which must conform to {Representable}.
-/// :typeparam W: The type of the Writer that receives the text.
+/// :typeparam TValue: The type of the value, which must conform to {Representable}.
+/// :typeparam TWriter: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param value: The value to write.
 /// :param spec: The width, fill and alignment to apply.
-routine represent_with_into<T, W>(out: @W, value: T, spec: FormatSpec) -> Void
-require T: typename, W: typename, Writer<W>, Representable<T>
+routine represent_with_into<TValue, TWriter>(out: @TWriter, value: TValue, spec: FormatSpec) -> Void
+require TValue: typename, TWriter: typename, Writer<TWriter>, Representable<TValue>
     shared fill : Bytes = spec.fill
 
     block entry()
@@ -1620,17 +1620,18 @@ require T: typename, W: typename, Writer<W>, Representable<T>
         return()
 
     block after_sign(pad: USize)
-        claim inner : @SignPadWriter<W> <- SignPadWriter<W> { inner: out, fill: fill, pad: pad}
+        claim inner : @SignPadWriter<TWriter> <- SignPadWriter<TWriter> { inner: out, fill: fill,
+            pad: pad }
         value.represent_into(inner)
         return()
 
 /// Writes the first bytes after the padding, or after a leading `-` or `+`, and passes every later write straight through.
-/// :typeparam W: The inner Writer type.
+/// :typeparam T: The inner Writer type.
 /// :param bytes: The bytes being written.
 /// :param count: The number of bytes.
-routine SignPadWriter<W>.write_bytes(self: @Self, bytes: @Byte, count: USize) -> Void
-require W: typename, Writer<W>
-    shared inner : @W    = self.inner.load()
+routine SignPadWriter<T>.write_bytes(self: @Self, bytes: @Byte, count: USize) -> Void
+require T: typename, Writer<T>
+    shared inner : @T    = self.inner.load()
     shared pad   : USize = self.pad.load()
 
     block entry()

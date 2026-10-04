@@ -97,8 +97,8 @@ routine main() -> S32
   slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) says so:
   `claim p : @T <- uninit`, a word that means something only there. A claim without `<-` is an error, so no slot is
   left unfilled by accident. `<-` fills memory and `=` only binds a name to a value, so `claim p : @T = v` is an
-  error too. An array value comes from `Array<T, N> { 1, 2, x }` or a load (N values at `first: @T` are
-  `first.to<@Array<T, N>>().load()`);
+  error too. An array value comes from `Array<T, COUNT> { 1, 2, x }` or a load (COUNT values at `first: @T` are
+  `first.to<@Array<T, COUNT>>().load()`);
   a bare `[1, 2]` isn't a value. Where the type is known from where the value goes (a typed binding, a `preset` or
   `global`, an argument, an element of an outer literal, the pointer of `store_into`), the type can be left off:
   `preset SORTED: @Array<S64, 3> <- { -8, 0, 7 }`, `p : Point = { x: 1, y: 2 }`, like `.absent()`. Write the type
@@ -116,11 +116,11 @@ routine main() -> S32
   count of 0 allocates nothing) carries `alloc`: `resize(n)` reallocates (`resize(0)` frees and keeps `alloc`),
   `destruct()` gives the memory back and leaves the slice empty with a null `alloc`, `destruct_all()` destructs the
   values first. `Slice<T>.empty()` (like `Bytes.empty()`) is the empty borrowed slice, the start value of a slot that
-  a `finish` block destructs. `Array<T, N>` is the other run of values, its count in the type. Heap memory reaches your code as a
+  a `finish` block destructs. `Array<T, COUNT>` is the other run of values, its count in the type. Heap memory reaches your code as a
   `Slice` or `Bytes` that carries its allocator (or a type built on one). The raw layer under it,
   `allocate<T>(count, alloc)` / `reallocate<T>(p, count, alloc)` / `deallocate(p, alloc)`, is for node-based
   structures and C interop. `@T` has no `free`. `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap), and
-  `src.copy_into(dst, count)` is the same copy from the source's side. On a `@Array<T, N>` (or any type with its own
+  `src.copy_into(dst, count)` is the same copy from the source's side. On a `@Array<T, COUNT>` (or any type with its own
   `copy`) the type's routine wins, so generic code over `@T` uses `src.copy_into(dst, count)`.
 - **A plain copy copies ownership.** Copying a `Slice` or `Bytes` copies `alloc` with the address (no moves, no unique
   owner), so either copy can free the memory: destruct exactly one, and hand out `getview()` where the receiver only
@@ -371,7 +371,7 @@ routine main() -> S32
   `when` terminator runs its conditions in order and stops at the first that holds.
 - Range checks: `c.between(b'0', b'9')` is the closed `[lo, hi]`, `i.in_range(0, len)` the half-open
   `[lo, end)`, on every integer, float, `Byte`, and `Char`.
-- Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `USize`; integer generic parameters are `N: USize`.
+- Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `USize`; value generic parameters are `USize` (`COUNT: USize`).
   `USize` / `SSize` are the pointer-width integers (C's `size_t` / `ssize_t`), types of their own that never mix with
   `U64` / `S64`: convert with `n.to<U64>()` / `x.to<USize>()`. Hashes stay `U64`.
 - `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`, `abs_diff` returns the unsigned type.
@@ -423,7 +423,7 @@ routine main() -> S32
   through `ptr_eq`, so `a.load().eq(b.load())`), `represent_into` / `diagnose_into` (a pointer isn't
   Representable, so `{list}` on a slot is a build error that asks for `{list.load()}`), and a generic `to<T>` (it
   would hide `Ptr`'s `to<@U>`). You can't call a pointer method on a temporary:
-  `DictIter<K, V>.construct(m).next()` fails with "has no method 'next'"; claim a slot for
+  `DictIter<TKey, TValue>.construct(m).next()` fails with "has no method 'next'"; claim a slot for
   the iterator first.
 - Generic routines repeat their constraints: `require T: typename, Comparable<T>`. Concepts: `Equatable`, `Hashable`,
   `HashEquatable`, `Comparable`, `Ordered`, `Destructible`, `Representable`, `Diagnosable`, `Parsable` (a
@@ -488,7 +488,7 @@ routine main() -> S32
   `TRACE_CAPACITY`). It's on in debug and release, off in release-time and release-space; `--no-trace` / `--trace`
   or `[debug] trace = false|true` in config.toml override that. Thread-local with an OS, a plain global without.
   A handler's own helper routines should be `#untraced` (they'd push onto the trace it's reading).
-- Expected failures return `Result<T, E>`. There's no `?`: `when r` with `.Success(v)` / `.Failure(e)` arms.
+- Expected failures return `Result<TSuccess, TFailure>`. There's no `?`: `when r` with `.Success(v)` / `.Failure(e)` arms.
 
 **Records**
 
@@ -516,8 +516,8 @@ routine main() -> S32
 **Variants**
 
 - `variant Expr` lists cases, each with at most one payload type (`Number : S64`, `Add : BinaryExpr`, `Empty`); several
-  values go in a record or a tuple. `Option<T>` (`Absent`, `Present : T`) and `Result<T, E>`
-  (`Failure : E`, `Success : T`) are variants.
+  values go in a record or a tuple. `Option<T>` (`Absent`, `Present : T`) and `Result<TSuccess, TFailure>`
+  (`Failure : TFailure`, `Success : TSuccess`) are variants.
 - Build: `Expr.Number(5)`, `.Number(5)` where the type is known, `Expr.Empty` / `.Empty`.
 - Read with `when e`; `Expr.Number(n) -> target(n)` binds the payload for that arm's target only (or, on the one
   arm that `continue`s, for the rest of the block), `Expr.Empty` or `.Present` matches without binding. Without `else`, list every case. There's no field access on a variant.
@@ -578,7 +578,7 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
 `BF16`, or `F128`, and a mismatched format is undefined behavior.
 
 - Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.writer()` is the pointer a
-  Writer parameter takes), a `FileHandle`, `BufWriter<W>` (`out.construct(inner)`, then `flush()`),
+  Writer parameter takes), a `FileHandle`, `BufWriter<T>` (`out.construct(inner)`, then `flush()`),
   `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `buf.write("...")`, then `buf.to<Bytes>()`; it is
   the string builder). Standard input is `In`: `In.read<T>()`, `In.read_line(alloc)`, `read_word`,
   `read_count(n, alloc)`, `read_all`, `read_into_result(buffer, n)`, all through one buffer the process shares.
@@ -630,12 +630,12 @@ always `Result`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array<T, N>` | `Array<T, N> { a, b }` literal, `at`, `getitem`, `setitem`, `getslice`, `to<Slice<T>>`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
+| `Array<T, COUNT>` | `Array<T, COUNT> { a, b }` literal, `at`, `getitem`, `setitem`, `getslice`, `to<Slice<T>>`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
 | `List<T>` | `push`, `pop`, `getitem`, `setitem`, `getslice`, `to<Slice<T>>`, `clear`, `reserve` | index |
 | `CircularList<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `getitem`, `setitem` | front to back |
-| `Dict<K, V>` | `put`, `getitem`, `has_key`, `remove` | **insertion order (guaranteed)** |
+| `Dict<TKey, TValue>` | `put`, `getitem`, `has_key`, `remove` | **insertion order (guaranteed)** |
 | `Set<T>` | `add`, `has`, `remove` | **insertion order (guaranteed)** |
-| `SortedDict<K, V>` | `put`, `getitem`, `has_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
+| `SortedDict<TKey, TValue>` | `put`, `getitem`, `has_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
 | `SortedSet<T>` | `add`, `has`, `remove`, `get_by_rank(rank)` | ascending |
 | `SortedList<T>` | `push` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `has`, `remove(i)` (`T: Comparable<T>`) | ascending |
 | `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Ordered<T>`) | none |
@@ -748,7 +748,7 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 **Naming rules for `to`, `_into`, `from_`, `_checked`, and `_result`.**
 
 - A plain routine name crashes on failure, `name_checked` returns `Option<T>` (Absent on failure), and `name_result`
-  returns `Result<T, E>` (the failure as a value): `getitem` / `getitem_checked`, `construct` / `construct_result`,
+  returns `Result<TSuccess, TFailure>` (the failure as a value): `getitem` / `getitem_checked`, `construct` / `construct_result`,
   `to<T>` / `to_result<T>`, `In.read<T>` / `read_checked<T>` / `read_result<T>`. File and process routines fail for
   reasons the caller handles, so they are `_result` forms (`File.open_read_result`). A `_checked` never returns a
   `Result` or a `Bool`, a `_result` never an `Option`, and a plain name never returns an `Option` or a `Result` just to
@@ -763,7 +763,7 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
   place as the argument. So a chain reads left to right and ends at the place: `x.load().add(1).store_into(x)`,
   `value.represent_into(out)`, `src.copy_into(dst, count)` next to `dst.copy(src, count)`. The Writer's `write_*`
   routines (`write_str(out, text)`, `write_bytes`, `write_line`) keep their names: the verb already says where the
-  bytes go. Memory at a given address is `_at`: `Vector<T, N>.load_at(first)`, `v.store_at(first)`.
+  bytes go. Memory at a given address is `_at`: `Vector<T, LANES>.load_at(first)`, `v.store_at(first)`.
 - `from_XXX` is rare: it's for building a value where `construct` alone would be ambiguous, several ways to make the
   same type from similar inputs (`Bytes.from_ptr(data, count)`, `F64.from_bits(u)`). A `from_XXX` that is really a
   one-value conversion is `to<T>` on the source type, and one that could be a `construct` overload without ambiguity
@@ -776,7 +776,7 @@ that `to<T>`, which would call itself there. It keeps the shape under its own na
 starts as, the "nothing yet" of a record) is a typewise routine without arguments, named by what the type holds. A
 type that holds a pointer, directly or in a field (`Slice`, `Bytes`, `FileHandle`, `Mapping`, a collection, a record
 with a `@T` field), or an OS handle, has `.empty()`. A type with no pointer inside (numbers, records and vectors of
-numbers) has `.zero()`: `Vector<T, N>.zero()`. `Option<T>` keeps its case `.Absent`, and a bare pointer keeps the
+numbers) has `.zero()`: `Vector<T, LANES>.zero()`. `Option<T>` keeps its case `.Absent`, and a bare pointer keeps the
 literal `null` (tested with `is_null()`), so there is no `none()`, `null()`, or `nothing()` routine. A default that
 isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
 
@@ -799,25 +799,37 @@ range checks (`eq`, `lt`, `less`, `between`, `in_range`), an overflow test that 
 
 **Name case.** Types, concepts, modules, and choice / variant cases are `PascalCase` (`FsError.NotFound`,
 `.Absent`), with acronyms written as words (`Eof`, `Utf8Decoded`, `Nan`). Routines, fields, blocks, and values are
-`snake_case`. Only presets and globals are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
+`snake_case`. Only presets, globals, and value generic parameters are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
+
+**Generic parameter names.** Count only the type parameters in scope. One is `T` (`List<T>`, `Option<T>`,
+`Writer<T>`, `BufWriter<T>`, `Thread.spawn<T>`, `S64.represent_into<T>`). Two or more are each `T` + its role in
+PascalCase: `Dict<TKey, TValue>`, `Result<TSuccess, TFailure>` (named for its cases), `Iterator<TItem, TIter>`,
+`Tuple2<TItem0, TItem1>`, `bitcast<TFrom, TTo>`. A routine's own type parameters count together with its owner
+type's, and the owner's keep the names the type declares: `List<T>.represent_into<TWriter>`,
+`Dict<TKey, TValue>.represent_into<TWriter>`, `Ptr<T>.to<@TPointee>`. A value (const) parameter is named like a
+preset, UPPER_SNAKE for what it counts: `Array<T, COUNT>`, `Vector<T, LANES>`, `BigNat<LIMBS>`. Why: a type
+parameter can't be told from a real type by its case (both PascalCase), so the leading `T` marks "a type slot", and
+the upper case marks a build-time value like a preset. That's not Hungarian notation: it marks what kind of name it
+is, not the type of a value. `#derive` follows the rule (`T` for the Writer of a non-generic type, `TWriter` next to
+the type's own).
 
 **Arrays and `stride`.** There is no `[]`. `p.stride(i)` is the address of the i-th `T` of a `@T` (a
 `USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
-`@Array<T, N>` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(i, v)` / `arr.at(i)`
+`@Array<T, COUNT>` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(i, v)` / `arr.at(i)`
 (bounds checked), or `arr.to<@T>().stride(i).load()` unchecked. Literals name their type: `Array<S32, 3> { 1, 2, 3 }`,
 `Vector<F32, 4> { ... }`. The same holds for array fields (`node.keys.getitem(i)`) and
-array presets (`K.getitem(i)`, with `preset K: @Array<T, N> <- { ... }`).
+array presets (`K.getitem(i)`, with `preset K: @Array<T, COUNT> <- { ... }`).
 
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
 `destruct`:
 
 - `Type.construct(...) -> Self` is the constructor, a typewise routine: `List<S64>.construct(alloc)`,
   `ListIter<T>.construct(list)`, `CountWriter.construct()`. A type too large to return by value constructs in
-  place instead, through a pointer: `out.construct(inner)` for `BufWriter<W>`.
+  place instead, through a pointer: `out.construct(inner)` for `BufWriter<T>`.
 - `self.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
   and leaves the value empty. Call it yourself; nothing runs it for you. A collection's `destruct` doesn't touch its
   elements; `destruct_all()` destructs them first (elements must conform to `Destructible<T>`), and `Dict` / `SortedDict`
-  also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release. `Array<T, N>` acquires
+  also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release. `Array<T, COUNT>` acquires
   nothing, so it has no `destruct()`, only `destruct_all()` for elements that own something.
 - Other ways to make a value are named for what they make: `Out.writer()`, `Bytes.from_ptr(p, n)`,
   `Option<T>.Absent`, `FormatSpec.zero_padded(6)`.

@@ -618,7 +618,7 @@ public static class Formatter
         return result;
     }
 
-    /// `<` or `>` of a type argument list (`Dict<K, V>`), whose commas are not break points. Tessera has no comparison
+    /// `<` or `>` of a type argument list (`Dict<TKey, TValue>`), whose commas are not break points. Tessera has no comparison
     /// operators, so every angle bracket is one, except the `>` of `->` and the `<` of `<-`.
     private static bool IsAngle(string s, int i, out int step)
     {
@@ -1027,7 +1027,7 @@ public static class Formatter
             while (end < result.Count && (result[end].Length == 0 || result[end].StartsWith(' ') || result[end].StartsWith("require ")))
                 end++;
             // `Self` starts where the owner is declared. A concrete owner is declared by the header (`U64.` in
-            // `routine U64.min`); a type parameter by its `require` line (`routine T.bitcast<U>(self: T)` with
+            // `routine U64.min`); a type parameter by its `require` line (`routine TFrom.bitcast<TTo>(self: TFrom)` with
             // `require T: typename`), so its header keeps T. `require` lines always name their types.
             bool typeParameter = Enumerable.Range(i + 1, end - i - 1).Any(j => result[j].StartsWith("require ")
                 && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^require |,\s*){owner}\s*:"));

@@ -14,7 +14,7 @@ Run one with `dotnet run -- run examples/<name>.tess`. Every program has a `<nam
 | [sieve](sieve.tess) | A `claim`ed slot, heap memory in a `Slice<T>` released with `destruct()`, a borrowed view of it (`getview()`) lent to a routine, `getitem` / `setitem`, `zeroinit`, `stride` with `load` / `store` |
 | [binary_search](binary_search.tess) | A preset in memory (`preset SORTED: @Array<S64, 10> <- { ... }`), returning `Option<USize>`, a three-way `when` |
 | [caesar](caesar.tess) | `Byte` text, a stack buffer claimed `<- uninit`, `Bytes.from_ptr` |
-| [insertion_sort](insertion_sort.tess) | `Array<T, N>` copied from a preset into a slot, `getitem` / `setitem`, and `List<S64>.sort` from the stdlib |
+| [insertion_sort](insertion_sort.tess) | `Array<T, COUNT>` copied from a preset into a slot, `getitem` / `setitem`, and `List<S64>.sort` from the stdlib |
 | [brackets](brackets.tess) | `List<T>` as a stack, a `choice` result, a `when` over every member, one `finish` block for every exit |
 | [word_count](word_count.tess) | `Bytes` views, `Dict<Bytes, USize>` in insertion order, `DictIter` |
 | [temperature](temperature.tess) | `F64` arithmetic, integer ↔ float conversion, `represent` and `represent_fixed_into` |

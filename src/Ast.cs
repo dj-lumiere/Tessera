@@ -79,9 +79,9 @@ public abstract record Decl(string File, List<Attribute> Attributes, Pos Pos)
 public sealed record RoutineDecl(
     string File,
     List<Attribute> Attributes,
-    TypeRef? Owner,              // `S64` in `S64.add`, `Option<T>` in `Option<T>.some`, `T` in `T.bitcast<U>`
+    TypeRef? Owner,              // `S64` in `S64.add`, `Option<T>` in `Option<T>.some`, `TFrom` in `TFrom.bitcast<TTo>`
     string Name,
-    List<string> TypeParams,     // the routine's own: `U` in `T.bitcast<U>`, `T` in `add<T>`
+    List<string> TypeParams,     // the routine's own: `TTo` in `TFrom.bitcast<TTo>`, `T` in `add<T>`
     List<Param> Params,
     TypeRef ReturnType,
     List<Clause> Clauses,
@@ -89,7 +89,7 @@ public sealed record RoutineDecl(
     Pos Pos) : Decl(File, Attributes, Pos)
 {
     /// The type arguments a routine on a type is defined for, when its `<...>` names types its `require` doesn't
-    /// declare: `S64` in `S32.to<S64>`, `@T` in `Array<T, N>.to<@T>`. A call picks the one its type arguments match.
+    /// declare: `S64` in `S32.to<S64>`, `@T` in `Array<T, COUNT>.to<@T>`. A call picks the one its type arguments match.
     public List<TypeRef> Fixed { get; init; } = [];
 
     /// The head's `shared` lines, top to bottom: values and slots every block sees, made once when the routine starts,
@@ -272,8 +272,8 @@ public sealed record ClaimExpr(Pos Pos) : Expr(Pos)
 /// `Type { field: value, ... }`, or `{ field: value, ... }` typed by where the value goes (Type is null).
 public sealed record RecordLit(TypeRef? Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);
 
-/// `[a, b, c]` — the elements of `Array<T, N>.from([...])` or of a preset array.
-/// `Array<T, N> { a, b, c }` or `Vector<T, N> { a, b, c }`, or `{ a, b, c }` typed by where the value goes
+/// `[a, b, c]` — the elements of `Array<T, COUNT>.from([...])` or of a preset array.
+/// `Array<T, COUNT> { a, b, c }` or `Vector<T, LANES> { a, b, c }`, or `{ a, b, c }` typed by where the value goes
 /// (Type is null).
 public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
 {
