@@ -33,6 +33,38 @@ public class TraceTests
         Assert.Contains(ir.Split('\n'), line => line.Contains("5TRACEB") && line.Contains(storage));
     }
 
+    /// An `#inline` routine is part of each caller, like `#untraced` code: its body pushes and pops no frame, so a hot
+    /// loop that calls it pays nothing for the trace on its account. Its traced caller keeps its own frame.
+    [Fact]
+    public void InlineRoutineHasNoFrame()
+    {
+        string root = FindRoot();
+        Directory.SetCurrentDirectory(root);
+        string ir = Cli.Compile([Path.Combine(root, "tests", "trace_frames", "src", "main.tess")], BuildTarget.Host(),
+            lint: false, trace: true);
+        string inline = Body(ir, "@_Z4pass");
+        Assert.DoesNotContain("trace_push", inline);
+        Assert.DoesNotContain("trace_pop", inline);
+        string traced = Body(ir, "@_Z5relay");
+        Assert.Contains("trace_push", traced);
+        Assert.Contains("trace_pop", traced);
+    }
+
+    /// The text of the one routine definition whose symbol starts with `symbol`, up to its closing brace.
+    private static string Body(string ir, string symbol)
+    {
+        int start = ir.IndexOf("define ", StringComparison.Ordinal);
+        while (start >= 0)
+        {
+            int end = ir.IndexOf("\n}", start, StringComparison.Ordinal);
+            string header = ir[start..ir.IndexOf('\n', start)];
+            if (header.Contains(symbol, StringComparison.Ordinal)) return ir[start..end];
+            start = ir.IndexOf("\ndefine ", end, StringComparison.Ordinal);
+            if (start >= 0) start++;
+        }
+        throw new InvalidOperationException($"no definition of {symbol} in the IR");
+    }
+
     /// tests/freestanding builds for any target: it brings its own crash handler and needs no Standard::Os.
     private static string CompileTraceProgram(string triple, bool trace)
     {
