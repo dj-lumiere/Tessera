@@ -401,7 +401,7 @@ static class Cli
         CpuModel.Prefetch(target);
         DataLayout.Prefetch(target);
         var inputs = files.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var jobs = inputs.Select(f => (Path: f, IsLibrary: false, ShownAs: (string?)null, Stamp: default(FileStamp)))
+        var jobs = inputs.Select(f => (Path: f, IsLibrary: false, ShownAs: (string?)null, Stamp: default(StandardLibrary.FileStamp)))
             .ToList();
         // Stdlib files are named from the stdlib directory (Standard/Collection/List.tess) wherever the build runs, so
         // the file tags in private symbols don't depend on the working directory. A stdlib that can't be found is
@@ -413,8 +413,8 @@ static class Cli
             foreach (var f in new DirectoryInfo(stdlib).GetFiles("*.tess", SearchOption.AllDirectories)
                          .OrderBy(f => f.FullName))
                 if (!inputs.Contains(f.FullName))
-                    jobs.Add((f.FullName, true, Path.Combine("Standard", Path.GetRelativePath(stdlib, f.FullName)),
-                        new FileStamp(f.LastWriteTimeUtc, f.Length)));
+                    jobs.Add((f.FullName, true, StandardLibrary.ShownAs(stdlib, f.FullName),
+                        StandardLibrary.FileStamp.Of(f)));
         }
         catch (Exception e)
         {
@@ -424,8 +424,8 @@ static class Cli
 
         // Each file is parsed on its own, in parallel, and the results are joined in the order above, so the
         // declarations come out in the same order on every run. The first file in that order that fails is the one
-        // reported, as if they had been parsed one after another. A stdlib file parsed before and unchanged since is
-        // taken from ParsedStdlib instead.
+        // reported, as if they had been parsed one after another. A stdlib file parsed before in this process and
+        // unchanged since is taken as it was (StandardLibrary).
         var parsed = new List<Decl>?[jobs.Count];
         var failed = new ExceptionDispatchInfo?[jobs.Count];
         Parallel.For(0, jobs.Count, i =>
@@ -433,15 +433,13 @@ static class Cli
             var (path, isLibrary, shownAs, stamp) = jobs[i];
             try
             {
-                if (isLibrary && ParsedStdlib.TryGetValue(path, out var known) && known.Stamp == stamp
-                    && known.ShownAs == shownAs)
+                if (isLibrary)
                 {
-                    parsed[i] = known.Decls;
+                    parsed[i] = StandardLibrary.Declarations(path, shownAs!, stamp);
                     return;
                 }
-                if (!isLibrary && !File.Exists(path)) throw new ToolError($"no such file: {path}");
+                if (!File.Exists(path)) throw new ToolError($"no such file: {path}");
                 parsed[i] = ParseFile(path, isLibrary, shownAs);
-                if (isLibrary) ParsedStdlib[path] = new ParsedFile(stamp, shownAs!, parsed[i]!);
             }
             catch (Exception e)
             {
@@ -459,20 +457,6 @@ static class Cli
         CpuModel.PrefetchFeatures(target, CpuModel.FeaturesNamed(decls, target));
         return decls;
     }
-
-    /// When a file was last written and how long it is: a stdlib file with the same stamp as when it was parsed is taken
-    /// to be unchanged.
-    private readonly record struct FileStamp(DateTime WrittenUtc, long Length);
-
-    /// A stdlib file's declarations, the stamp the file had when they were parsed, and the name they were parsed under.
-    private sealed record ParsedFile(FileStamp Stamp, string ShownAs, List<Decl> Decls);
-
-    /// The stdlib files parsed so far in this process, by full path. Parsing doesn't depend on the target (a `#target`
-    /// attribute is read when the Compiler selects declarations), so every build of the process shares them: the test
-    /// runner parses the stdlib once for the whole suite, not once per test, and the xUnit tests share it across their
-    /// parallel cases. A build only reads declarations, so sharing them is safe. A file changed on disk since is
-    /// parsed again.
-    private static readonly ConcurrentDictionary<string, ParsedFile> ParsedStdlib = new(StringComparer.OrdinalIgnoreCase);
 
     private static List<Decl> ParseFile(string path, bool isLibrary, string? shownAs = null)
     {
