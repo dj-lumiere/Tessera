@@ -200,7 +200,9 @@ public static class Derive
         if (constraints.Count > 0) sb.Append($"require {string.Join(", ", constraints)}\n");
     }
 
-    /// `Point { x: 1, name: "a" }`, each field diagnosed: inside a record, a string keeps its quotes either way.
+    /// `Point { x: 1, name: "a" }`, each field diagnosed: inside a record, a string keeps its quotes either way. A
+    /// pointer field writes its address (`next: 0x7ffd5e8c1a40`): a pointer isn't Diagnosable, so the derived routine
+    /// says which side it means, `to<Addr>()`, as a hand-written one would.
     private static void WriteBody(StringBuilder sb, RecordDecl r)
     {
         sb.Append("    block entry()\n");
@@ -211,7 +213,9 @@ public static class Derive
             string before = i == 0 ? $"{r.Name} {{ " : ", ";
             string value = $"f{i}";
             sb.Append($"        Standard::Format::write_str(out, \"{before}{f.Name}: \")\n");
-            sb.Append($"        {value} : {f.Type} = self.{f.Name}\n");
+            sb.Append(f.Type.Name == "Ptr"
+                ? $"        {value} : Addr = self.{f.Name}.to<Addr>()\n"
+                : $"        {value} : {f.Type} = self.{f.Name}\n");
             sb.Append($"        {value}.diagnose_into(out)\n");
         }
         if (r.Fields.Count > 0) sb.Append("        Standard::Format::write_str(out, \" }\")\n");
@@ -303,7 +307,11 @@ public static class Derive
         if (implicitly)
         {
             string part = Qualified(concept == "Representable" ? "Diagnosable" : concept);
-            constraints = constraints.Concat(v.Cases.Where(c => c.Payload is not null).Select(c => $"{part}<{c.Payload}>"))
+            // A pointer payload writes its address, so it asks nothing of the pointer to write it.
+            bool writes = method is "represent_into" or "diagnose_into";
+            constraints = constraints
+                .Concat(v.Cases.Where(c => c.Payload is { } payload && !(writes && payload.Name == "Ptr"))
+                    .Select(c => $"{part}<{c.Payload}>"))
                 .Distinct().ToList();
         }
         string self = SelfName(v.Name, v.TypeParams);
@@ -331,7 +339,13 @@ public static class Derive
                     string p = Payload(cases[i], "p");
                     sb.Append($"\n    block case{i}({p}: {cases[i].Payload})\n");
                     sb.Append($"        Standard::Format::write_str(out, \"{prefix}{cases[i].Name}(\")\n");
-                    sb.Append($"        {p}.diagnose_into(out)\n");
+                    // A pointer payload writes its address, as a record's pointer field does.
+                    if (cases[i].Payload!.Name == "Ptr")
+                    {
+                        sb.Append($"        address : Addr = {p}.to<Addr>()\n");
+                        sb.Append("        address.diagnose_into(out)\n");
+                    }
+                    else sb.Append($"        {p}.diagnose_into(out)\n");
                     sb.Append("        Standard::Format::write_str(out, \")\")\n        return()\n");
                 }
                 sb.Append("\n    block named(text: Bytes)\n        Standard::Format::write_str(out, text)\n        return()\n");

@@ -104,8 +104,11 @@ public sealed partial class Compiler
     {
         var decl = FindConcept(constraint, env.File);
         var args = ConceptArgs(constraint, env);
-        if (Conforms(decl, args, env.File, at) is { } why)
-            throw new CompileError(at, $"{Show(decl.Name, args)} doesn't hold, which {neededBy} requires: {why}");
+        if (Conforms(decl, args, env.File, at) is not { } why) return;
+        // A pointer writes neither its value nor its address on its own, so the fix names both.
+        if (decl.Name is "Representable" or "Diagnosable" && args is [PtrType { Pointee: not null }])
+            why = $"a pointer isn't {decl.Name}; write the value with .load(), or the address with .to<Addr>()";
+        throw new CompileError(at, $"{Show(decl.Name, args)} doesn't hold, which {neededBy} requires: {why}");
     }
 
     private List<DType> ConceptArgs(TypeRef concept, TypeEnv env) =>

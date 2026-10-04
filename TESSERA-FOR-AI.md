@@ -387,9 +387,10 @@ routine main() -> S32
   on a `SliceWriter`) and a value too. This holds for the collections, `Slice`, and `Bytes`, and a type of your own
   that people keep in slots does the same for the reads they call there. It's never automatic, and three kinds stay
   value-only because on a pointer they'd be about the pointer: `eq` / `compare` / `hash` (a pointer compares only
-  through `ptr_eq`, so `a.load().eq(b.load())`), `represent_into` / `diagnose_into` (`{p}` writes a pointer's
-  address, so `{list.load()}`), and a generic `to<T>` (it would hide `Ptr`'s `to<@U>`). You can't call a pointer
-  method on a temporary: `DictIter<K, V>.construct(m).next()` fails with "has no method 'next'"; claim a slot for
+  through `ptr_eq`, so `a.load().eq(b.load())`), `represent_into` / `diagnose_into` (a pointer isn't
+  Representable, so `{list}` on a slot is a build error that asks for `{list.load()}`), and a generic `to<T>` (it
+  would hide `Ptr`'s `to<@U>`). You can't call a pointer method on a temporary:
+  `DictIter<K, V>.construct(m).next()` fails with "has no method 'next'"; claim a slot for
   the iterator first.
 - Generic routines repeat their constraints: `require T: typename, Comparable<T>`. Concepts: `Equatable`, `Hashable`,
   `HashEquatable`, `Comparable`, `Ordered`, `Destructible`, `Representable`, `Diagnosable`, `Parsable` (a
@@ -561,8 +562,10 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   `In.read_checked<T>()` gives `Option<T>` (Absent for both), `In.read_result<T>()` a `Result<T, ParseError>`
   (`Failure(Empty)` at the end).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
-  `Bytes`, and `p.represent_into(out)` for a pointer's address (`0x7ffd5e8c1a40`); `v.represent_hex_into(out)` for an
-  integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
+  `Bytes`. A pointer is neither Representable nor Diagnosable, so `{sum}` on a `shared sum : @S64` slot is a build
+  error, not its address: write the value with `{sum.load()}`, or the address with `{sum.to<Addr>()}`
+  (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived routine writes a pointer field's address.
+  `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
   min_digits)` (`U64`) zero-pad; `represent_fixed_into(out, digits)`; `represent_with_into(out, v, spec)` with a `FormatSpec`.
   There are no `write_decimal_*` / `write_hex_*` helpers: the integer's own method is the writer.
 - `v.diagnose_into(out)` writes a value as Tessera source: `"a\n"`, `'A'`, `b'A'`, `.Present(3)`, `[1, 2]`. A record or

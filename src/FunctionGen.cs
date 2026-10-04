@@ -45,6 +45,9 @@ public sealed class FunctionGen
     /// The LLVM block the head is emitted into, the function's `start`, or null for a routine without shared lines.
     private LBlock? _head;
     private Dictionary<string, Val> _values = [];
+
+    /// The source of the write-template hole being expanded (`sum` for `{sum}`), so an error about it can quote it.
+    private string? _templateHole;
     private LBlock _cur = null!;
     private string _blockName = "";
     private int _tmp;
@@ -1243,7 +1246,15 @@ public sealed class FunctionGen
             var value = new Parser(new Lexer(at.File, source, at.Line, at.Col).Lex(), at.File, values: _values.Keys)
                 .ParseLoneExpr();
             Flush();
-            EvalCall(new MethodCallExpr(value, "represent_into", [], [writer], at), VoidType.Instance);
+            _templateHole = source.Trim();
+            try
+            {
+                EvalCall(new MethodCallExpr(value, "represent_into", [], [writer], at), VoidType.Instance);
+            }
+            finally
+            {
+                _templateHole = null;
+            }
             i = end;
         }
         Flush();
@@ -1869,6 +1880,16 @@ public sealed class FunctionGen
         if (typewise is not null)
             throw Err(m.Pos, $"'{typewise.DisplayName}' has no self, so it isn't a method; call it by its type: "
                 + $"{typewise.Owner!.Name}.{m.Name}(...)");
+        // A pointer writes neither its value nor its address on its own: `{sum}` on a slot would print where the sum
+        // is, so the line says which one it means.
+        if (rt is PtrType { Pointee: not null } && m.Name is "represent_into" or "diagnose_into")
+        {
+            string concept = m.Name == "represent_into" ? "Representable" : "Diagnosable";
+            string fix = _templateHole is { } hole && m.Name == "represent_into"
+                ? $"write the value with {{{hole}.load()}}, or the address with {{{hole}.to<Addr>()}}"
+                : $"write the value with .load().{m.Name}(out), or the address with .to<Addr>().{m.Name}(out)";
+            throw Err(m.Pos, $"{rt} is a pointer, and a pointer isn't {concept}; {fix}");
+        }
         // `p.eq(q)` where T.eq takes values: the load is written, not implied.
         if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held) || Derived) is not null)
             throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; load it: .load().{m.Name}(...)");
