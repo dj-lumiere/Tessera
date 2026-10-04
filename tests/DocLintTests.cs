@@ -4,7 +4,7 @@ namespace Tessera.Tests;
 
 /// <summary>
 /// The doc lint: every routine in a library or example file has a <c>///</c> doc comment with a <c>:param</c> line for
-/// each parameter but <c>self</c> (and none for a name that isn't one), and a <c>:returns:</c> line unless it returns
+/// each parameter but <c>me</c> (and none for a name that isn't one), and a <c>:returns:</c> line unless it returns
 /// Void. Files under a <c>tests</c>, <c>playground</c>, <c>scratch</c>, or <c>generated</c> directory, and routines a
 /// generator wrote (<c>#source</c>), aren't held to it.
 /// </summary>
@@ -14,12 +14,12 @@ public class DocLintTests
     public void FullyDocumentedRoutineIsClean()
     {
         var warnings = Lint("""
-            /// The sum of `self` and `other`.
+            /// The sum of `me` and `other`.
             /// :param other: The value to add.
             /// :returns: The sum.
-            routine S64.plus(self: S64, other: S64) -> S64
+            routine S64.plus(me: S64, other: S64) -> S64
                 block entry()
-                    return(self.add(other))
+                    return(me.add(other))
             """);
         Assert.Empty(warnings);
     }
@@ -113,11 +113,11 @@ public class DocLintTests
             concept Same<T>
             require T: typename
                 /// True when the two are the same.
-                routine Self.same(self: Self, other: Self) -> Bool
+                routine Me.same(me: Me, other: Me) -> Bool
             """);
         Assert.Equal(2, warnings.Count);
-        Assert.Contains(warnings, w => w.Contains("'Self.same' has no :param line for 'other'"));
-        Assert.Contains(warnings, w => w.Contains("'Self.same' has no :returns: line"));
+        Assert.Contains(warnings, w => w.Contains("'Me.same' has no :param line for 'other'"));
+        Assert.Contains(warnings, w => w.Contains("'Me.same' has no :returns: line"));
     }
 
     [Theory]

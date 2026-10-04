@@ -124,15 +124,15 @@ record Scheduler
     io_epoch    : U32  // changes when a call is queued or the I/O threads should stop; they wait on it
     io_stop     : U32  // 1 once run is over
 
-/// Whether `self` is due before `other`: the earlier deadline, or the earlier sleep for the same deadline.
+/// Whether `me` is due before `other`: the earlier deadline, or the earlier sleep for the same deadline.
 /// :param other: The entry to compare with.
-/// :returns: True when `self` comes first.
-routine TimerEntry.less(self: Self, other: Self) -> Bool
+/// :returns: True when `me` comes first.
+routine TimerEntry.less(me: Me, other: Me) -> Bool
     block entry()
-        same : Bool = self.deadline.eq(other.deadline)
+        same : Bool = me.deadline.eq(other.deadline)
         branch same
-            ? return(self.seq.lt(other.seq))
-            : return(self.deadline.lt(other.deadline))
+            ? return(me.seq.lt(other.seq))
+            : return(me.deadline.lt(other.deadline))
 
 /// This thread's worker, read again at every call: a fiber may be on another thread after it yields, and a
 /// thread-local address kept across the switch would be the old thread's.
@@ -149,7 +149,7 @@ private routine current_worker() -> @Worker
 /// :param alloc: The allocator for the fiber records, the workers and the queues.
 /// :returns: The scheduler, with no fibers.
 #target(os: not "none")
-routine Scheduler.construct(workers: USize, stacks: @Allocator, alloc: @Allocator) -> Self
+routine Scheduler.construct(workers: USize, stacks: @Allocator, alloc: @Allocator) -> Me
     block entry()
         none : Bool = workers.eq(0)
         branch none
@@ -176,7 +176,7 @@ routine Scheduler.construct(workers: USize, stacks: @Allocator, alloc: @Allocato
         timers     : PriorityQueue<TimerEntry> = .construct(alloc)
         io_threads : @Thread                   = allocate<Thread>(IO_THREADS, alloc)
         io_queue   : CircularList<@FiberState> = .construct(alloc)
-        s          : Self                      = Self { alloc: alloc, stacks: stacks, count: count,
+        s          : Me                        = Me { alloc: alloc, stacks: stacks, count: count,
             workers: array, next: 0, live: 0, epoch: 0, sleepers: 0, timer_lock: .construct(),
             timers: timers, timer_seq: 0, timer_count: 0, io_threads: io_threads,
             io_lock: .construct(), io_queue: io_queue, io_epoch: 0, io_stop: 0 }
@@ -189,11 +189,11 @@ routine Scheduler.construct(workers: USize, stacks: @Allocator, alloc: @Allocato
 /// :param arg: The state it works on, which must outlive the fiber.
 /// :param stack_size: The size of the fiber's stack in bytes.
 #target(os: not "none")
-routine Scheduler.spawn<T>(self: @Self, entry: Callable<(@T,), Void>, arg: @T,
+routine Scheduler.spawn<T>(me: @Me, entry: Callable<(@T,), Void>, arg: @T,
     stack_size: USize) -> Void
 require T: typename
     block entry()
-        start_fiber(self, entry, arg, stack_size, null)
+        start_fiber(me, entry, arg, stack_size, null)
         return()
 
 /// spawn, and a Join to wait for the fiber with: join(j) returns once it has returned, and frees the Join. Every
@@ -204,19 +204,19 @@ require T: typename
 /// :param stack_size: The size of the fiber's stack in bytes.
 /// :returns: The Join to pass to {Scheduler.join}.
 #target(os: not "none")
-routine Scheduler.spawn_joinable<T>(self: @Self, entry: Callable<(@T,), Void>, arg: @T,
+routine Scheduler.spawn_joinable<T>(me: @Me, entry: Callable<(@T,), Void>, arg: @T,
     stack_size: USize) -> @Join
 require T: typename
     block entry()
-        j : @Join = allocate<Join>(1, self.alloc.load())
+        j : @Join = allocate<Join>(1, me.alloc.load())
         j.store(Join { lock: .construct(), done: 0, waiter: null })
-        start_fiber(self, entry, arg, stack_size, j)
+        start_fiber(me, entry, arg, stack_size, j)
         return(j)
 
 /// The fiber running this code, if it is one of this scheduler's, or null: its handle for wake.
 /// :returns: The running fiber's handle, or null.
 #target(os: not "none")
-routine Scheduler.current(self: @Self) -> @FiberState
+routine Scheduler.current(me: @Me) -> @FiberState
     shared w : @Worker = current_worker()
 
     block entry()
@@ -226,7 +226,7 @@ routine Scheduler.current(self: @Self) -> @FiberState
             : check()
 
     block check()
-        ours : Bool = w.sched.load().ptr_eq(self)
+        ours : Bool = w.sched.load().ptr_eq(me)
         branch ours
             ? return(w.current.load())
             : return(null)
@@ -234,7 +234,7 @@ routine Scheduler.current(self: @Self) -> @FiberState
 /// Inside a fiber: lets other fibers run first, then goes on, maybe on another thread. Outside one it does
 /// nothing.
 #target(os: not "none")
-routine Scheduler.yield(self: @Self) -> Void
+routine Scheduler.yield(me: @Me) -> Void
     shared w : @Worker = current_worker()
 
     block entry()
@@ -258,8 +258,8 @@ routine Scheduler.yield(self: @Self) -> Void
 /// Inside a fiber: waits until wake is called with its handle, or returns at once for a wake that came since the
 /// last park. It may also return without one, so a fiber checks what it waits for again. Outside a fiber it returns.
 #target(os: not "none")
-routine Scheduler.park(self: @Self) -> Void
-    shared fiber : @FiberState = self.current()
+routine Scheduler.park(me: @Me) -> Void
+    shared fiber : @FiberState = me.current()
 
     block entry()
         none : Bool = fiber.is_null()
@@ -288,7 +288,7 @@ routine Scheduler.park(self: @Self) -> Void
 /// next park returns at once. From any thread, inside a fiber or out.
 /// :param fiber: The handle of the fiber to wake, from {Scheduler.current}.
 #target(os: not "none")
-routine Scheduler.wake(self: @Self, fiber: @FiberState) -> Void
+routine Scheduler.wake(me: @Me, fiber: @FiberState) -> Void
     block entry()
         jump look()
 
@@ -316,16 +316,16 @@ routine Scheduler.wake(self: @Self, fiber: @FiberState) -> Void
             : look()
 
     block queue()
-        place_ready(self, fiber)
+        place_ready(me, fiber)
         return()
 
 /// Inside a fiber: waits at least ns nanoseconds while the worker goes on with other fibers. Outside one the
 /// thread waits.
 /// :param ns: The least time to wait, in nanoseconds.
 #target(os: not "none")
-routine Scheduler.sleep(self: @Self, ns: U64) -> Void
+routine Scheduler.sleep(me: @Me, ns: U64) -> Void
     shared deadline : U64         = monotonic_ns().add_clamp(ns)
-    shared fiber    : @FiberState = self.current()
+    shared fiber    : @FiberState = me.current()
 
     block entry()
         none : Bool = fiber.is_null()
@@ -348,8 +348,8 @@ routine Scheduler.sleep(self: @Self, ns: U64) -> Void
 /// with other fibers meanwhile, and outside one the thread waits.
 /// :param j: The Join from {Scheduler.spawn_joinable}, freed on return.
 #target(os: not "none")
-routine Scheduler.join(self: @Self, j: @Join) -> Void
-    shared fiber : @FiberState = self.current()
+routine Scheduler.join(me: @Me, j: @Join) -> Void
+    shared fiber : @FiberState = me.current()
 
     block entry()
         none : Bool = fiber.is_null()
@@ -380,16 +380,16 @@ routine Scheduler.join(self: @Self, j: @Join) -> Void
         jump free_join()
 
     block free_join()
-        deallocate(j, self.alloc.load())
+        deallocate(j, me.alloc.load())
         return()
 
 /// Runs the fibers, and those they spawn, on the workers until every one has returned. This thread is the first
 /// worker.
 /// :throws: Crashes with `TaskSpawnError` when the operating system starts no thread.
 #target(os: not "none")
-routine Scheduler.run(self: @Self) -> Void
+routine Scheduler.run(me: @Me) -> Void
     block entry()
-        self.io_stop.atomic_store(0)
+        me.io_stop.atomic_store(0)
         jump io_start(0)
 
     block io_start(i: USize)
@@ -399,46 +399,46 @@ routine Scheduler.run(self: @Self) -> Void
             : io_one(i)
 
     block io_one(i: USize)
-        io_slot : @Thread = self.io_threads.load().stride(i)
-        io_slot.store(Thread.spawn(io_main.to<Callable>(), self, self.alloc.load()))
+        io_slot : @Thread = me.io_threads.load().stride(i)
+        io_slot.store(Thread.spawn(io_main.to<Callable>(), me, me.alloc.load()))
         jump io_start(i.add(1))
 
     block start(i: USize)
-        done : Bool = i.ge(self.count.load())
+        done : Bool = i.ge(me.count.load())
         branch done
             ? own()
             : one(i)
 
     block one(i: USize)
-        w : @Worker = self.workers.load().stride(i)
-        w.sched.store(self)
-        w.thread.store(Thread.spawn(worker_loop.to<Callable>(), w, self.alloc.load()))
+        w : @Worker = me.workers.load().stride(i)
+        w.sched.store(me)
+        w.thread.store(Thread.spawn(worker_loop.to<Callable>(), w, me.alloc.load()))
         jump start(i.add(1))
 
     block own()
-        w     : @Worker = self.workers.load()
+        w     : @Worker = me.workers.load()
         outer : @Worker = WORKER.load()
-        w.sched.store(self)
+        w.sched.store(me)
         worker_loop(w)
         WORKER.store(outer)
         jump join(1)
 
     block join(i: USize)
-        done : Bool = i.ge(self.count.load())
+        done : Bool = i.ge(me.count.load())
         branch done
             ? io_stop()
             : wait_for(i)
 
     block wait_for(i: USize)
-        worker : @Worker = self.workers.load().stride(i)
+        worker : @Worker = me.workers.load().stride(i)
         worker.thread.load().join()
         jump join(i.add(1))
 
     // Every fiber has returned, so no call is left: the I/O threads stop.
     block io_stop()
-        self.io_stop.atomic_store(1)
-        self.io_epoch.atomic_fetch_add(1)
-        wake_all(self.io_epoch)
+        me.io_stop.atomic_store(1)
+        me.io_epoch.atomic_fetch_add(1)
+        wake_all(me.io_epoch)
         jump io_join(0)
 
     block io_join(i: USize)
@@ -448,43 +448,43 @@ routine Scheduler.run(self: @Self) -> Void
             : io_wait_for(i)
 
     block io_wait_for(i: USize)
-        io_thread : @Thread = self.io_threads.load().stride(i)
+        io_thread : @Thread = me.io_threads.load().stride(i)
         io_thread.load().join()
         jump io_join(i.add(1))
 
 /// Frees the fibers that never got to return, the queues, and the workers.
 #target(os: not "none")
-routine Scheduler.destruct(self: @Self) -> Void
+routine Scheduler.destruct(me: @Me) -> Void
     block entry()
         jump worker(0)
 
     block worker(i: USize)
-        done : Bool = i.eq(self.count.load())
+        done : Bool = i.eq(me.count.load())
         branch done
             ? timers()
             : one(i)
 
     block one(i: USize)
-        w : @Worker = self.workers.load().stride(i)
-        drain(self, w.queue)
+        w : @Worker = me.workers.load().stride(i)
+        drain(me, w.queue)
         w.queue.destruct()
         jump worker(i.add(1))
 
     block timers()
-        empty : Bool = self.timers.is_empty()
+        empty : Bool = me.timers.is_empty()
         branch empty
             ? finish()
             : continue
-        entry : TimerEntry = self.timers.pop()
-        free_fiber(self, entry.fiber)
+        entry : TimerEntry = me.timers.pop()
+        free_fiber(me, entry.fiber)
         jump timers()
 
     block finish()
-        self.timers.destruct()
-        drain(self, self.io_queue)
-        self.io_queue.destruct()
-        deallocate(self.io_threads.load(), self.alloc.load())
-        deallocate(self.workers.load(), self.alloc.load())
+        me.timers.destruct()
+        drain(me, me.io_queue)
+        me.io_queue.destruct()
+        deallocate(me.io_threads.load(), me.alloc.load())
+        deallocate(me.workers.load(), me.alloc.load())
         return()
 
 /// Runs work(arg), a call that may block the thread it runs on, without stopping the other fibers: inside a fiber
@@ -495,9 +495,9 @@ routine Scheduler.destruct(self: @Self) -> Void
 /// :param work: The call that may block.
 /// :param arg: The state it works on.
 #target(os: not "none")
-routine Scheduler.run_blocking<T>(self: @Self, work: Callable<(@T,), Void>, arg: @T) -> Void
+routine Scheduler.run_blocking<T>(me: @Me, work: Callable<(@T,), Void>, arg: @T) -> Void
 require T: typename
-    shared fiber : @FiberState = self.current()
+    shared fiber : @FiberState = me.current()
 
     block entry()
         none : Bool = fiber.is_null()

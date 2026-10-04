@@ -398,7 +398,7 @@ public sealed partial class Compiler
             if (c.Owner.Args.Count != 0 || TypeDeclQuiet(c.Owner.Name, c.File, c.Owner.Path) is RecordDecl { TypeParams.Count: > 0 })
                 return;
             self = ResolveType(c.Owner, env);
-            env.Bind("Self", self);
+            env.Bind("Me", self);
         }
         var t = ResolveType(c.Type, env);
         if (!c.IsStorage && t is ArrayType)
@@ -449,13 +449,13 @@ public sealed partial class Compiler
         if (IsAsm(r) && r.TypeParams.Count == 0 && (r.Owner is null || OwnerTypeParams(r).Count == 0))
         {
             var asmEnv = new TypeEnv(r.File);
-            if (r.Owner is not null) asmEnv.Bind("Self", ResolveType(r.Owner, asmEnv));
+            if (r.Owner is not null) asmEnv.Bind("Me", ResolveType(r.Owner, asmEnv));
             RequireInstance(r, asmEnv);
             return;
         }
         if (r.TypeParams.Count != 0 || (r.Owner is not null && OwnerTypeParams(r).Count != 0)) return;
         var env = new TypeEnv(r.File);
-        if (r.Owner is not null) env.Bind("Self", ResolveType(r.Owner, env));
+        if (r.Owner is not null) env.Bind("Me", ResolveType(r.Owner, env));
         RequireInstance(r, env);
     }
 
@@ -659,7 +659,7 @@ public sealed partial class Compiler
 
     // ── Types ───────────────────────────────────────────────────────────────
 
-    /// Type parameters in scope (and `Self`), plus the file whose declarations win name lookups.
+    /// Type parameters in scope (and `Me`), plus the file whose declarations win name lookups.
     public sealed class TypeEnv(string file)
     {
         private readonly Dictionary<string, DType> _map = [];
@@ -958,12 +958,14 @@ public sealed partial class Compiler
         return fields;
     }
 
-    /// The record's type parameters bound to its arguments, plus Self.
+    /// The record's type parameters bound to its arguments, plus Me.
     private TypeEnv RecordEnv(RecordType s)
     {
         var env = new TypeEnv(s.Decl.File);
         for (int i = 0; i < s.Decl.TypeParams.Count; i++) env.Bind(s.Decl.TypeParams[i], s.Args[i]);
-        env.Bind("Self", s);
+        // A library written before `Me` was reserved may still declare a type of that name, and its fields mean
+        // that type. This goes once every library is written with the reserved names.
+        if (s.Decl.Name == "Me" || !_records.ContainsKey("Me")) env.Bind("Me", s);
         return env;
     }
 
@@ -1134,7 +1136,7 @@ public sealed partial class Compiler
     /// on first use.
     public string PresetStorageGlobal(PresetDecl c, DType t, TypeEnv env)
     {
-        string key = MangleVariable(c, c.Owner is null ? null : env.Get("Self"));
+        string key = MangleVariable(c, c.Owner is null ? null : env.Get("Me"));
         if (_presetArrays.TryGetValue(key, out var name)) return name;
         EnsureTypeDefined(t);
         name = "@" + key;

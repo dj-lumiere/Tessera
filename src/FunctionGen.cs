@@ -82,7 +82,7 @@ public sealed class FunctionGen
 
     /// Whether this routine's calls and values are recorded for the language server: it isn't generic, so they mean the
     /// same in every use.
-    private bool Recorded => _env.All.All(kv => kv.Key == "Self");
+    private bool Recorded => _env.All.All(kv => kv.Key == "Me");
 
     private void RecordValue(Pos pos, DType t)
     {
@@ -656,13 +656,13 @@ public sealed class FunctionGen
 
     /// Whether `t` is what one of the instance's type parameters stands for. A method called on such a value is found
     /// whatever module declares it: the routine's constraints on the parameter vouch for it.
-    private bool FromTypeParameter(DType t) => _env.All.Any(kv => kv.Key != "Self" && kv.Value.Equals(t));
+    private bool FromTypeParameter(DType t) => _env.All.Any(kv => kv.Key != "Me" && kv.Value.Equals(t));
 
-    /// A call whose type argument is one of the routine's type parameters (`self.to_result<T>()` in `Bytes.to<T>`) is
+    /// A call whose type argument is one of the routine's type parameters (`me.to_result<T>()` in `Bytes.to<T>`) is
     /// vouched for by the parameter's constraints, so it finds the routine defined for that type in any module, as a
     /// call on a value of the parameter's type does.
     private bool TypeArgFromParameter(List<TypeRef> typeArgs) =>
-        typeArgs.Any(t => t is { Args.Count: 0, Path: null } && t.Name != "Self" && _env.Has(t.Name));
+        typeArgs.Any(t => t is { Args.Count: 0, Path: null } && t.Name != "Me" && _env.Has(t.Name));
 
     /// A derived routine calls its fields' and payloads' methods whatever module declares them: its constraints
     /// vouch for them, and the type's file needn't import Standard::Format for its represent.
@@ -1467,7 +1467,7 @@ public sealed class FunctionGen
     private PresetInfo PresetValue(PresetDecl c, DType? self)
     {
         var env = new Compiler.TypeEnv(c.File);
-        if (self is not null) env.Bind("Self", self);
+        if (self is not null) env.Bind("Me", self);
         var t = _c.ResolveType(c.Type, env);
         // A global's name is the address of its storage.
         if (c.IsGlobal)
@@ -1883,7 +1883,7 @@ public sealed class FunctionGen
             // An untyped literal receiver takes its type from the arguments: through the parameters of a routine on
             // every type (`7.store_into(p)` with `dest: @T`), or else as the first typed argument
             // (`0.sub(x)`). Failing both, it takes its type from context.
-            // The result's type says the receiver's only for a routine that returns Self (`x : U64 = 1.shl(3)`), so it
+            // The result's type says the receiver's only for a routine that returns Me (`x : U64 = 1.shl(3)`), so it
             // is borrowed only when it's a type the literal could have.
             rt = BlanketReceiverType(m) ?? m.Args.Select(Infer).FirstOrDefault(t => t is not null)
                  ?? (LiteralCanBe(m.Receiver, expected) ? expected : null);
@@ -1902,7 +1902,7 @@ public sealed class FunctionGen
             }
         }
 
-        // Receivers behind a pointer: `p.m()` finds T.m(self: @Self) first, then Ptr<T>.m(self: Self).
+        // Receivers behind a pointer: `p.m()` finds T.m(me: @Me) first, then Ptr<T>.m(me: Me).
         var candidates = new List<(DType Owner, bool PassesPointer)>();
         if (rt is PtrType { Pointee: { } pointee })
         {
@@ -1938,7 +1938,7 @@ public sealed class FunctionGen
                 return new CallPlan(fit.Decl, fit.Env, m.Receiver, m.Args, m.Pos);
             }
             var r = set[0];
-            // Only a routine whose first parameter is self is a method; the rest are called by their type.
+            // Only a routine whose first parameter is me is a method; the rest are called by their type.
             if (!Compiler.HasReceiver(r))
             {
                 typewise ??= r;
@@ -1974,7 +1974,7 @@ public sealed class FunctionGen
                     : $"{owner} has no {m.Name}<{string.Join(", ", m.TypeArgs)}>; it has {forms}");
             }
         if (typewise is not null)
-            throw Err(m.Pos, $"'{typewise.DisplayName}' has no self, so it isn't a method; call it by its type: "
+            throw Err(m.Pos, $"'{typewise.DisplayName}' doesn't take me, so it isn't a method; call it by its type: "
                 + $"{typewise.Owner!.Name}.{m.Name}(...)");
         // A pointer writes neither its value nor its address on its own: `{sum}` on a slot would print where the sum
         // is, so the line says which one it means.
@@ -2016,7 +2016,7 @@ public sealed class FunctionGen
         if (o.Args.Count == 0)
         {
             if (!PrimitiveOrRecordName(o.Name)) env.Bind(o.Name, owner); // blanket `T.m`
-            env.Bind("Self", owner);
+            env.Bind("Me", owner);
             return env;
         }
 
@@ -2033,7 +2033,7 @@ public sealed class FunctionGen
         for (int i = 0; i < o.Args.Count; i++)
             if (o.Args[i] is TypeArgType { Type.Args.Count: 0 } ta)
                 env.Bind(ta.Type.Name, actual[i]);
-        env.Bind("Self", owner is PtrType { Pointee: null } ? new PtrType(IntType.Byte) : owner);
+        env.Bind("Me", owner is PtrType { Pointee: null } ? new PtrType(IntType.Byte) : owner);
         return env;
     }
 

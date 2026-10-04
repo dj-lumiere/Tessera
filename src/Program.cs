@@ -46,7 +46,7 @@ static class Cli
               releases what the routine holds and is its only return), on a return outside finish and on finish
               destructing a head slot that starts as <- uninit, and in a library or example file (one not under a
               tests, playground, scratch, or generated directory) on a routine without a /// doc comment, or whose doc lacks
-              a :param line for a parameter (self aside), has one for a name that isn't a parameter, or lacks
+              a :param line for a parameter (me aside), has one for a name that isn't a parameter, or lacks
               :returns: when it returns a value. check, build, and run print the same warnings for the program's
               own files. Exits 1 when there is one.
         """;

@@ -65,32 +65,32 @@ conform Destructible<ProcessOutput>
 
 /// Gives both captured streams back to the allocator they came from.
 #track_caller
-routine ProcessOutput.destruct(self: @Self) -> Void
+routine ProcessOutput.destruct(me: @Me) -> Void
     block entry()
-        self.stdout.destruct()
-        self.stderr.destruct()
+        me.stdout.destruct()
+        me.stderr.destruct()
         return()
 
 /// No directory and no overrides, the null device as input, and both output streams captured.
 /// :returns: The default options.
-routine ProcessOptions.default() -> Self
+routine ProcessOptions.default() -> Me
     block entry()
-        return(Self { directory: .Absent, env: null, env_count: 0, stdin: InputMode.Null,
+        return(Me { directory: .Absent, env: null, env_count: 0, stdin: InputMode.Null,
             stdout: OutputMode.Capture, stderr: OutputMode.Capture })
 
 /// The exit code, or for a program a signal stopped, 128 plus the signal (as a POSIX shell reports it).
 /// :returns: The code.
-routine ExitStatus.code(self: Self) -> S32
+routine ExitStatus.code(me: Me) -> S32
     block entry()
-        when self
+        when me
             .Exited(c)   -> return(c)
             .Signaled(s) -> return(s.add_wrap(128))
 
 /// Whether it exited with code 0.
 /// :returns: True for an exit with code 0, false for any other code or a signal.
-routine ExitStatus.is_success(self: Self) -> Bool
+routine ExitStatus.is_success(me: Me) -> Bool
     block entry()
-        when self
+        when me
             .Exited(c) -> return(c.eq(0))
             .Signaled  -> return(false)
 
@@ -169,30 +169,29 @@ internal record CaptureBuffer
 /// An empty capture buffer that holds no memory yet. Its `failed` is read when the run ends: a capture that lost
 /// bytes makes the run fail with OutOfMemory instead of handing back a truncated stream.
 /// :returns: The buffer.
-internal routine CaptureBuffer.empty() -> Self
+internal routine CaptureBuffer.empty() -> Me
     block entry()
-        return(Self { data: null, count: 0, capacity: 0, failed: false })
+        return(Me { data: null, count: 0, capacity: 0, failed: false })
 
 /// Appends `n` bytes, growing the buffer (to at least double, and at least 256 bytes). An allocation failure drops
 /// them and marks the buffer `failed`.
 /// :param chunk: The first byte to append.
 /// :param n: How many bytes to append.
 /// :param alloc: The allocator the buffer's memory comes from.
-internal routine CaptureBuffer.append(self: @Self, chunk: @Byte, n: USize,
-    alloc: @Allocator) -> Void
-    shared need : USize = self.count.load().add(n)
+internal routine CaptureBuffer.append(me: @Me, chunk: @Byte, n: USize, alloc: @Allocator) -> Void
+    shared need : USize = me.count.load().add(n)
 
     block entry()
-        branch need.gt(self.capacity.load())
+        branch need.gt(me.capacity.load())
             ? grow_to_fit()
             : put()
 
     block grow_to_fit()
-        doubled : USize = self.capacity.load().mul(2)
+        doubled : USize = me.capacity.load().mul(2)
         jump grow(doubled.max(need).max(256))
 
     block grow(capacity: USize)
-        old : @Byte = self.data.load()
+        old : @Byte = me.data.load()
         branch old.is_null()
             ? grown(capacity, allocate<Byte>(capacity, alloc))
             : grown(capacity, reallocate<Byte>(old, capacity, alloc))
@@ -201,34 +200,34 @@ internal routine CaptureBuffer.append(self: @Self, chunk: @Byte, n: USize,
         branch bigger.is_null()
             ? lost()
             : continue
-        self.data.store(bigger)
-        self.capacity.store(capacity)
+        me.data.store(bigger)
+        me.capacity.store(capacity)
         jump put()
 
     block lost()
-        self.failed.store(true)
+        me.failed.store(true)
         return()
 
     block put()
-        self.data.load().stride(self.count.load()).copy(chunk, n)
-        next_count : USize = self.count.load().add(n)
-        next_count.store_into(self.count)
+        me.data.load().stride(me.count.load()).copy(chunk, n)
+        next_count : USize = me.count.load().add(n)
+        next_count.store_into(me.count)
         return()
 
 /// What was captured, owned by the caller, who releases it with `destruct()`.
 /// :param alloc: The allocator the buffer was filled from.
 /// :returns: The captured bytes, carrying `alloc`.
-internal routine CaptureBuffer.owned(self: Self, alloc: @Allocator) -> Bytes
+internal routine CaptureBuffer.owned(me: Me, alloc: @Allocator) -> Bytes
     block entry()
-        owned : Bytes = Bytes { data: self.data, count: self.count, alloc: alloc }
+        owned : Bytes = Bytes { data: me.data, count: me.count, alloc: alloc }
         return(owned)
 
 /// What was captured, owned by the caller, who releases it with `destruct()`.
 /// :param alloc: The allocator the buffer was filled from.
 /// :returns: The captured bytes, carrying `alloc`.
-internal routine CaptureBuffer.owned(self: @Self, alloc: @Allocator) -> Bytes
+internal routine CaptureBuffer.owned(me: @Me, alloc: @Allocator) -> Bytes
     block entry()
-        owned : Bytes = self.load().owned(alloc)
+        owned : Bytes = me.load().owned(alloc)
         return(owned)
 
 /// Whether a NUL is inside any text the child would get, or an override's name holds a '=': what run_process_result

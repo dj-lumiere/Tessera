@@ -33,13 +33,13 @@ preset CM_F64_EXP10_DB: @Array<U64, 49> <- { 0x3F4821E0F2AFB970, 0x3F57C3DDD23AC
     0xBFD56FF305822F26, 0xBFDC03419F51B93E, 0xBFE1416C72A588A6, 0xBFED18176754AAC7,
     0xC01AA5575135E2D3, 0xC034CD4AF2FCA2B4, 0xC05DA5B10D8689FD }
 
-/// 10^self, correctly rounded (to nearest, ties to even). 10^-inf = +0, 10^+inf = +inf, overflow gives +inf,
+/// 10^me, correctly rounded (to nearest, ties to even). 10^-inf = +0, 10^+inf = +inf, overflow gives +inf,
 /// underflow a correctly rounded subnormal or +0, and NaN comes back quiet. 10^n is exact for n in 0..22.
-/// :returns: 10^`self`, correctly rounded.
-routine F64.exp10(self: Self) -> Self
-    shared ux  : U64   = self.bits()
-    shared aix : U64   = ux.bitand(0x7FFFFFFFFFFFFFFF)
-    shared r   : @Self <- uninit
+/// :returns: 10^`me`, correctly rounded.
+routine F64.exp10(me: Me) -> Me
+    shared ux  : U64 = me.bits()
+    shared aix : U64 = ux.bitand(0x7FFFFFFFFFFFFFFF)
+    shared r   : @Me <- uninit
 
     block entry()
         edge : Bool = aix.gt(0x40734413509F79FE)  // |x| > 0x1.34413509f79fep+8
@@ -53,15 +53,15 @@ routine F64.exp10(self: Self) -> Self
         positive : Bool = ux.shr(63).eq(0)
         under    : Bool = aix.gt(0x407439B746E36B52)  // x < -0x1.439b746e36b52p+8
         when
-            nan      -> return(self.add(self))
+            nan      -> return(me.add(me))
             inf      -> infinite(positive)
-            positive -> return(Self.mul(0x1p1023, 2.0))  // overflow
-            under    -> return(Self.mul(0x1.8p-1022, 0x1p-55))  // underflow to +0
+            positive -> return(Me.mul(0x1p1023, 2.0))  // overflow
+            under    -> return(Me.mul(0x1.8p-1022, 0x1p-55))  // underflow to +0
             else     -> exact()
 
     block infinite(positive: Bool)
         branch positive
-            ? return(self)
+            ? return(me)
             : return(0.0)
 
     // a nonnegative integer n <= 22 (bits below 2^(e - 1023 - 4) all 0): 10^n by exact products
@@ -70,8 +70,8 @@ routine F64.exp10(self: Self) -> Self
         branch short
             ? continue
             : flat()
-        kx       : Self = self.round_ties_even()
-        integral : Bool = kx.eq(self)
+        kx       : Me   = me.round_ties_even()
+        integral : Bool = kx.eq(me)
         branch integral
             ? continue
             : flat()
@@ -94,46 +94,45 @@ routine F64.exp10(self: Self) -> Self
     block flat()
         one : Bool = aix.le(0x3C7BCB7B1526E50E)  // |x| <= 0x1.bcb7b1526e50ep-56: 10^x rounds to 1
         branch one
-            ? return(Self.add(1.0, self))
+            ? return(Me.add(1.0, me))
             : fast()
 
     block fast()
-        t   : Self       = Self.mul(0x1.a934f0979a371p+13, self).round_ties_even()
+        t   : Me         = Me.mul(0x1.a934f0979a371p+13, me).round_ties_even()
         jt  : S64        = t.to<S64>()
         ie  : S64        = jt.shr(12)
         tt  : CmF64ExpDd = cm_f64_exp_table_2pow(jt.to_wrap<U64>())
-        dx  : Self       = self.sub(Self.mul(0x1.34413508p-14,
-            t)).sub(Self.mul(0x1.f79fef311f12bp-46, t))
-        dx2 : Self       = dx.mul(dx)
-        p01 : Self       = Self.add(0x1.26bb1bbb55516p+1, dx.mul(0x1.53524c73cea69p+1))
-        p23 : Self       = Self.add(0x1.0470591fd74e1p+1, dx.mul(0x1.2bd760a1f32a5p+0))
-        p   : Self       = p01.add(dx2.mul(p23))
-        fx  : Self       = tt.hi.mul(dx)
-        fl  : Self       = tt.lo.add(fx.mul(p))
+        dx  : Me         = me.sub(Me.mul(0x1.34413508p-14, t)).sub(Me.mul(0x1.f79fef311f12bp-46, t))
+        dx2 : Me         = dx.mul(dx)
+        p01 : Me         = Me.add(0x1.26bb1bbb55516p+1, dx.mul(0x1.53524c73cea69p+1))
+        p23 : Me         = Me.add(0x1.0470591fd74e1p+1, dx.mul(0x1.2bd760a1f32a5p+0))
+        p   : Me         = p01.add(dx2.mul(p23))
+        fx  : Me         = tt.hi.mul(dx)
+        fl  : Me         = tt.lo.add(fx.mul(p))
         sub : Bool       = ux.ge(0xC0733A7146F72A42)  // x <= -0x1.33a7146f72a42p+8: subnormal result
         branch sub
             ? subnormal(tt.hi, fl, ie)
             : normal(tt.hi, fl, ie)
 
-    block normal(fh: Self, fl: Self, ie: S64)
-        ub   : Self = fh.add(fl.add(2.17e-19))
-        lb   : Self = fh.add(fl.sub(2.17e-19))
+    block normal(fh: Me, fl: Me, ie: S64)
+        ub   : Me   = fh.add(fl.add(2.17e-19))
+        lb   : Me   = fh.add(fl.sub(2.17e-19))
         sure : Bool = lb.eq(ub)
         branch sure
             ? return(cm_f64_exp_ldexp(fh.add(fl), ie))
-            : return(cm_f64_exp10_accurate(self))
+            : return(cm_f64_exp10_accurate(me))
 
-    block subnormal(fh: Self, fl: Self, ie: S64)
+    block subnormal(fh: Me, fl: Me, ie: S64)
         bias_e : U64        = S64.sub(1, ie).to_wrap<U64>()
-        bias   : Self       = Self.from_bits(bias_e.shl(52))
+        bias   : Me         = Me.from_bits(bias_e.shl(52))
         s      : CmF64ExpDd = cm_f64_exp_fasttwosum(bias, fh)
-        sl     : Self       = fl.add(s.lo)
-        lb     : Self       = s.hi.add(sl.sub(2.17e-19))
-        ub     : Self       = s.hi.add(sl.add(2.17e-19))
+        sl     : Me         = fl.add(s.lo)
+        lb     : Me         = s.hi.add(sl.sub(2.17e-19))
+        ub     : Me         = s.hi.add(sl.add(2.17e-19))
         sure   : Bool       = lb.eq(ub)
         branch sure
-            ? return(Self.from_bits(s.hi.add(sl).bits().bitand(0x000FFFFFFFFFFFFF)))
-            : return(cm_f64_exp10_accurate(self))
+            ? return(Me.from_bits(s.hi.add(sl).bits().bitand(0x000FFFFFFFFFFFFF)))
+            : return(cm_f64_exp10_accurate(me))
 
 /// The slow accurate path of exp10, for finite x whose 10^x neither overflows nor underflows to 0.
 /// :param x: The argument.

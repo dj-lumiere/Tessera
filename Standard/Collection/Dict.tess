@@ -41,7 +41,7 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>
 /// Creates an empty Dict that draws its storage from `alloc`. Nothing is allocated until the first insertion.
 /// :param alloc: The allocator the dict stores and later frees its memory with.
 /// :returns: A new empty Dict.
-routine Dict<TKey, TValue>.construct(alloc: @Allocator) -> Self
+routine Dict<TKey, TValue>.construct(alloc: @Allocator) -> Me
 require TKey: typename, TValue: typename, HashEquatable<TKey>
     block entry()
         keys         : Slice<TKey>   = Slice<TKey>.construct(0, alloc)
@@ -49,41 +49,41 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>
         hashes       : Slice<U64>    = Slice<U64>.construct(0, alloc)
         entry_states : Slice<U8>     = Slice<U8>.construct(0, alloc)
         slots        : Slice<USize>  = Slice<USize>.construct(0, alloc)
-        map          : Self          = Self { keys: keys, values: values, hashes: hashes,
+        map          : Me            = Me { keys: keys, values: values, hashes: hashes,
             entry_states: entry_states, slots: slots, count: 0, entries_count: 0 }
         return(map)
 
 /// The number of entries currently stored.
 /// :returns: The count of entries, `0` when the dict is empty.
-routine Dict<TKey, TValue>.count(self: Self) -> USize
+routine Dict<TKey, TValue>.count(me: Me) -> USize
 require TKey: typename, TValue: typename
     block entry()
-        count : USize = self.count
+        count : USize = me.count
         return(count)
 
 /// The number of entries currently stored.
 /// :returns: The count of entries, `0` when the dict is empty.
-routine Dict<TKey, TValue>.count(self: @Self) -> USize
+routine Dict<TKey, TValue>.count(me: @Me) -> USize
 require TKey: typename, TValue: typename
     block entry()
-        count : USize = self.count.load()
+        count : USize = me.count.load()
         return(count)
 
 /// Whether the dict holds no entries.
 /// :returns: `true` when the count is `0`.
-routine Dict<TKey, TValue>.is_empty(self: Self) -> Bool
+routine Dict<TKey, TValue>.is_empty(me: Me) -> Bool
 require TKey: typename, TValue: typename
     block entry()
-        count : USize = self.count
+        count : USize = me.count
         empty : Bool  = count.eq(0)
         return(empty)
 
 /// Whether the dict holds no entries.
 /// :returns: `true` when the count is `0`.
-routine Dict<TKey, TValue>.is_empty(self: @Self) -> Bool
+routine Dict<TKey, TValue>.is_empty(me: @Me) -> Bool
 require TKey: typename, TValue: typename
     block entry()
-        empty : Bool = self.load().is_empty()
+        empty : Bool = me.load().is_empty()
         return(empty)
 
 /// Probes the slot table for `key`, from `hash` modulo the capacity. The table must have at least one slot.
@@ -91,18 +91,18 @@ require TKey: typename, TValue: typename
 /// :param hash: The key's hash.
 /// :returns: The slot holding the key, or else the slot a new entry should take: the first tombstone seen, else the
 ///     first empty slot.
-routine Dict<TKey, TValue>.slot(self: Self, key: TKey, hash: U64) -> USize
+routine Dict<TKey, TValue>.slot(me: Me, key: TKey, hash: U64) -> USize
 require TKey: typename, TValue: typename
     shared first_tombstone : @USize <- SLOT_EMPTY
 
     block entry()
-        capacity : USize = self.slots.count
+        capacity : USize = me.slots.count
         mask     : USize = capacity.sub(1)
         start    : USize = hash.to_wrap<USize>().bitand(mask)
         jump probe(start)
 
     block probe(index: USize)
-        slots        : @USize = self.slots.data
+        slots        : @USize = me.slots.data
         entry_idx    : USize  = slots.stride(index).load()
         is_empty     : Bool   = entry_idx.eq(SLOT_EMPTY)
         is_tombstone : Bool   = entry_idx.eq(SLOT_TOMBSTONE)
@@ -123,13 +123,13 @@ require TKey: typename, TValue: typename
         next_tombstone : USize = seen
             ? first_tombstone.load()
             : index
-        capacity : USize = self.slots.count
+        capacity : USize = me.slots.count
         next     : USize = index.add(1).bitand(capacity.sub(1))
         next_tombstone.store_into(first_tombstone)
         jump probe(next)
 
     block occupied_slot(index: USize, entry_idx: USize)
-        hashes     : @U64 = self.hashes.data
+        hashes     : @U64 = me.hashes.data
         entry_hash : U64  = hashes.stride(entry_idx).load()
         hash_match : Bool = entry_hash.eq(hash)
         branch hash_match
@@ -137,30 +137,30 @@ require TKey: typename, TValue: typename
             : next(index)
 
     block maybe_equal(index: USize, entry_idx: USize)
-        keys      : @TKey = self.keys.data
+        keys      : @TKey = me.keys.data
         entry_key : TKey  = keys.stride(entry_idx).load()
         equal     : Bool  = entry_key.eq(key)
         branch equal ? return(index): next(index)
 
     block next(index: USize)
-        capacity : USize = self.slots.count
+        capacity : USize = me.slots.count
         next     : USize = index.add(1).bitand(capacity.sub(1))
         jump probe(next)
 
 /// The entry index of `key`.
 /// :param key: The key to look for.
 /// :returns: The index of the key's entry, or `SLOT_EMPTY` when the key is absent.
-routine Dict<TKey, TValue>.find(self: Self, key: TKey) -> USize
+routine Dict<TKey, TValue>.find(me: Me, key: TKey) -> USize
 require TKey: typename, TValue: typename
     block entry()
-        capacity : USize = self.slots.count
+        capacity : USize = me.slots.count
         empty    : Bool  = capacity.eq(0)
         branch empty ? return(SLOT_EMPTY): hash()
 
     block hash()
         hash      : U64    = TKey.hash(key)
-        slot      : USize  = self.slot(key, hash)
-        slots     : @USize = self.slots.data
+        slot      : USize  = me.slot(key, hash)
+        slots     : @USize = me.slots.data
         entry_idx : USize  = slots.stride(slot).load()
         found     : Bool   = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
@@ -170,40 +170,40 @@ require TKey: typename, TValue: typename
 /// Whether `key` is present.
 /// :param key: The key to look for.
 /// :returns: `true` when an entry with an equal key is live.
-routine Dict<TKey, TValue>.has_key(self: Self, key: TKey) -> Bool
+routine Dict<TKey, TValue>.has_key(me: Me, key: TKey) -> Bool
 require TKey: typename, TValue: typename
     block entry()
-        found : Bool = self.find(key).ne(SLOT_EMPTY)
+        found : Bool = me.find(key).ne(SLOT_EMPTY)
         return(found)
 
 /// Whether `key` is present.
 /// :param key: The key to look for.
 /// :returns: `true` when an entry with an equal key is live.
-routine Dict<TKey, TValue>.has_key(self: @Self, key: TKey) -> Bool
+routine Dict<TKey, TValue>.has_key(me: @Me, key: TKey) -> Bool
 require TKey: typename, TValue: typename
     block entry()
-        found : Bool = self.load().has_key(key)
+        found : Bool = me.load().has_key(key)
         return(found)
 
 /// Two dicts are equal when they hold the same key-value pairs, regardless of insertion order or slot layout. With
-/// matching counts, every key of `self` being in `other` with an equal value is enough.
+/// matching counts, every key of `me` being in `other` with an equal value is enough.
 /// :param other: The dict to compare with.
 /// :returns: True when the two hold the same pairs.
-routine Dict<TKey, TValue>.eq(self: Self, other: Self) -> Bool
+routine Dict<TKey, TValue>.eq(me: Me, other: Me) -> Bool
 require TKey: typename, TValue: typename, HashEquatable<TKey>, Equatable<TValue>
     block entry()
-        claim a : @Self <- self
-        claim b : @Self <- other
+        claim a : @Me <- me
+        claim b : @Me <- other
         equal : Bool = a.eq_at(b)
         return(equal)
 
 /// `eq`, through pointers to the two dicts.
 /// :param other: The dict to compare with.
 /// :returns: True when the two hold the same pairs.
-private routine Dict<TKey, TValue>.eq_at(self: @Self, other: @Self) -> Bool
+private routine Dict<TKey, TValue>.eq_at(me: @Me, other: @Me) -> Bool
 require TKey: typename, TValue: typename, HashEquatable<TKey>, Equatable<TValue>
     block entry()
-        la       : USize = self.count.load()
+        la       : USize = me.count.load()
         lb       : USize = other.count.load()
         same_len : Bool  = la.eq(lb)
         branch same_len
@@ -211,7 +211,7 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>, Equatable<TValue>
             : return(false)
 
     block scan()
-        n : USize = self.entries_count.load()
+        n : USize = me.entries_count.load()
         jump loop(0, n)
 
     block loop(i: USize, n: USize)
@@ -221,7 +221,7 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>, Equatable<TValue>
             : check(i, n)
 
     block check(i: USize, n: USize)
-        entry_states : @U8  = self.entry_states.data.load()
+        entry_states : @U8  = me.entry_states.data.load()
         s            : U8   = entry_states.stride(i).load()
         live         : Bool = s.eq(1)
         branch live
@@ -229,7 +229,7 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>, Equatable<TValue>
             : loop(i.add(1), n)
 
     block probe(i: USize, n: USize)
-        keys  : @TKey = self.keys.data.load()
+        keys  : @TKey = me.keys.data.load()
         key   : TKey  = keys.stride(i).load()
         eb    : USize = other.load().find(key)
         found : Bool  = eb.lt(SLOT_TOMBSTONE)
@@ -238,7 +238,7 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>, Equatable<TValue>
             : return(false)
 
     block compare_value(i: USize, n: USize, eb: USize)
-        values_a : @TValue = self.values.data.load()
+        values_a : @TValue = me.values.data.load()
         values_b : @TValue = other.values.data.load()
         va       : TValue  = values_a.stride(i).load()
         vb       : TValue  = values_b.stride(eb).load()
@@ -252,9 +252,9 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>, Equatable<TValue>
 /// values, hashes, entry states, slots, and a failure releases the ones already made.
 /// :param new_capacity: The new capacity, a power of two above the live count.
 /// :returns: True when it rehashed, false when the allocator failed (the map is left as it was).
-private routine Dict<TKey, TValue>.rehash(self: @Self, new_capacity: USize) -> Bool
+private routine Dict<TKey, TValue>.rehash(me: @Me, new_capacity: USize) -> Bool
 require TKey: typename, TValue: typename
-    shared alloc        : @Allocator     = self.keys.alloc.load()
+    shared alloc        : @Allocator     = me.keys.alloc.load()
     shared keys         : @Slice<TKey>   <- .construct(0, alloc)
     shared values       : @Slice<TValue> <- .construct(0, alloc)
     shared hashes       : @Slice<U64>    <- .construct(0, alloc)
@@ -300,14 +300,14 @@ require TKey: typename, TValue: typename
 
     // Swaps the new arrays into the dict, so the claimed slices hold the old ones from here on.
     block install()
-        old_count : USize = self.entries_count.load()
-        swap_slices<TKey>(self.keys, keys)
-        swap_slices<TValue>(self.values, values)
-        swap_slices<U64>(self.hashes, hashes)
-        swap_slices<U8>(self.entry_states, entry_states)
-        swap_slices<USize>(self.slots, slots)
-        self.count.store(0)
-        self.entries_count.store(0)
+        old_count : USize = me.entries_count.load()
+        swap_slices<TKey>(me.keys, keys)
+        swap_slices<TValue>(me.values, values)
+        swap_slices<U64>(me.hashes, hashes)
+        swap_slices<U8>(me.entry_states, entry_states)
+        swap_slices<USize>(me.slots, slots)
+        me.count.store(0)
+        me.entries_count.store(0)
         jump move_loop(0, old_count)
 
     block move_loop(i: USize, old_count: USize)
@@ -329,7 +329,7 @@ require TKey: typename, TValue: typename
         key        : TKey    = old_keys.stride(i).load()
         value      : TValue  = old_values.stride(i).load()
         hash       : U64     = old_hashes.stride(i).load()
-        self.put_direct(key, value, hash)
+        me.put_direct(key, value, hash)
         jump move_loop(i.add(1), old_count)
 
     block release_old()
@@ -339,9 +339,9 @@ require TKey: typename, TValue: typename
 /// Makes room for one more entry: the first insertion rehashes into 8 slots, and the tables double once one more
 /// entry would fill three quarters of them.
 /// :returns: True when there is room, false when the allocator failed (the map is left as it was).
-private routine Dict<TKey, TValue>.ensure(self: @Self) -> Bool
+private routine Dict<TKey, TValue>.ensure(me: @Me) -> Bool
 require TKey: typename, TValue: typename
-    shared capacity : USize = self.slots.count.load()
+    shared capacity : USize = me.slots.count.load()
 
     block entry()
         empty : Bool = capacity.eq(0)
@@ -350,10 +350,10 @@ require TKey: typename, TValue: typename
             : check()
 
     block first()
-        return(self.rehash(8))
+        return(me.rehash(8))
 
     block check()
-        count : USize = self.entries_count.load()
+        count : USize = me.entries_count.load()
         limit : USize = capacity.mul(3).div(4)
         full  : Bool  = count.add(1).ge(limit)
         branch full
@@ -361,7 +361,7 @@ require TKey: typename, TValue: typename
             : return(true)
 
     block grow()
-        return(self.rehash(capacity.mul(2)))
+        return(me.rehash(capacity.mul(2)))
 
 /// Inserts without growing, for rehash once the new arrays are in place and for `put_result` after `ensure`. A key
 /// already live gets its value updated in place, so it keeps its position in insertion order. Otherwise a fresh
@@ -369,10 +369,10 @@ require TKey: typename, TValue: typename
 /// :param key: The key to store under.
 /// :param value: The value to store.
 /// :param hash: The key's hash, so rehash can pass the stored one instead of hashing every key again.
-routine Dict<TKey, TValue>.put_direct(self: @Self, key: TKey, value: TValue, hash: U64) -> Void
+routine Dict<TKey, TValue>.put_direct(me: @Me, key: TKey, value: TValue, hash: U64) -> Void
 require TKey: typename, TValue: typename
-    shared slot      : USize  = self.load().slot(key, hash)
-    shared slots     : @USize = self.slots.data.load()
+    shared slot      : USize  = me.load().slot(key, hash)
+    shared slots     : @USize = me.slots.data.load()
     shared entry_idx : USize  = slots.stride(slot).load()
 
     block entry()
@@ -382,24 +382,24 @@ require TKey: typename, TValue: typename
             : add()
 
     block replace()
-        values : @TValue = self.values.data.load()
+        values : @TValue = me.values.data.load()
         values.stride(entry_idx).store(value)
         return()
 
     block add()
-        new_idx      : USize   = self.entries_count.load()
-        keys         : @TKey   = self.keys.data.load()
-        values       : @TValue = self.values.data.load()
-        hashes       : @U64    = self.hashes.data.load()
-        entry_states : @U8     = self.entry_states.data.load()
+        new_idx      : USize   = me.entries_count.load()
+        keys         : @TKey   = me.keys.data.load()
+        values       : @TValue = me.values.data.load()
+        hashes       : @U64    = me.hashes.data.load()
+        entry_states : @U8     = me.entry_states.data.load()
         keys.stride(new_idx).store(key)
         values.stride(new_idx).store(value)
         hashes.stride(new_idx).store(hash)
         entry_states.stride(new_idx).store(1)
         slots.stride(slot).store(new_idx)
-        next_count : USize = self.count.load().add(1)
-        next_count.store_into(self.count)
-        self.entries_count.store(new_idx.add(1))
+        next_count : USize = me.count.load().add(1)
+        next_count.store_into(me.count)
+        me.entries_count.store(new_idx.add(1))
         return()
 
 /// Stores `value` under `key`, inserting a new entry or replacing the value of an equal existing key.
@@ -407,10 +407,10 @@ require TKey: typename, TValue: typename
 /// :param value: The value to store.
 /// :throws: Crashes with `MemoryAllocationError` when the tables must grow and the allocator fails. See {Dict<TKey, TValue>.put_result} for a recoverable form.
 #track_caller
-routine Dict<TKey, TValue>.put(self: @Self, key: TKey, value: TValue) -> Void
+routine Dict<TKey, TValue>.put(me: @Me, key: TKey, value: TValue) -> Void
 require TKey: typename, TValue: typename
     block entry()
-        put : Result<Unit, AllocFailed> = self.put_result(key, value)
+        put : Result<Unit, AllocFailed> = me.put_result(key, value)
         when put
             .Success -> return()
             .Failure -> crash_allocation()
@@ -420,15 +420,15 @@ require TKey: typename, TValue: typename
 /// :param value: The value to store.
 /// :returns: `Success` once the value is stored.
 /// :throws: Returns `Failure(AllocFailed)` when the tables must grow and the allocator fails.
-routine Dict<TKey, TValue>.put_result(self: @Self, key: TKey,
+routine Dict<TKey, TValue>.put_result(me: @Me, key: TKey,
     value: TValue) -> Result<Unit, AllocFailed>
 require TKey: typename, TValue: typename
     block entry()
-        room : Bool = self.ensure()
+        room : Bool = me.ensure()
         branch room
             ? continue
             : return(.Failure(AllocFailed {}))
-        self.put_direct(key, value, TKey.hash(key))
+        me.put_direct(key, value, TKey.hash(key))
         return(.Success(Unit.value()))
 
 /// Reads the value stored under `key`.
@@ -436,9 +436,9 @@ require TKey: typename, TValue: typename
 /// :returns: A copy of the value.
 /// :throws: Crashes with `KeyNotFoundError` when the key is absent. See {Dict<TKey, TValue>.getitem_checked}.
 #track_caller
-routine Dict<TKey, TValue>.getitem(self: Self, key: TKey) -> TValue
+routine Dict<TKey, TValue>.getitem(me: Me, key: TKey) -> TValue
 require TKey: typename, TValue: typename
-    shared entry_idx : USize = self.find(key)
+    shared entry_idx : USize = me.find(key)
 
     block entry()
         found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
@@ -447,7 +447,7 @@ require TKey: typename, TValue: typename
             : crash_key_not_found()
 
     block load()
-        values : @TValue = self.values.data
+        values : @TValue = me.values.data
         value  : TValue  = values.stride(entry_idx).load()
         return(value)
 
@@ -456,19 +456,19 @@ require TKey: typename, TValue: typename
 /// :returns: A copy of the value.
 /// :throws: Crashes with `KeyNotFoundError` when the key is absent. See {Dict<TKey, TValue>.getitem_checked}.
 #track_caller
-routine Dict<TKey, TValue>.getitem(self: @Self, key: TKey) -> TValue
+routine Dict<TKey, TValue>.getitem(me: @Me, key: TKey) -> TValue
 require TKey: typename, TValue: typename
     block entry()
-        value : TValue = self.load().getitem(key)
+        value : TValue = me.load().getitem(key)
         return(value)
 
 /// `getitem`, returning Absent instead of crashing on a missing key.
 /// :param key: The key to look up.
 /// :returns: A copy of the value.
 /// :absent: When the key is not present.
-routine Dict<TKey, TValue>.getitem_checked(self: Self, key: TKey) -> Option<TValue>
+routine Dict<TKey, TValue>.getitem_checked(me: Me, key: TKey) -> Option<TValue>
 require TKey: typename, TValue: typename
-    shared entry_idx : USize = self.find(key)
+    shared entry_idx : USize = me.find(key)
 
     block entry()
         found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
@@ -477,7 +477,7 @@ require TKey: typename, TValue: typename
             : return(.Absent)
 
     block load()
-        values : @TValue = self.values.data
+        values : @TValue = me.values.data
         value  : TValue  = values.stride(entry_idx).load()
         return(.Present(value))
 
@@ -485,10 +485,10 @@ require TKey: typename, TValue: typename
 /// :param key: The key to look up.
 /// :returns: A copy of the value.
 /// :absent: When the key is not present.
-routine Dict<TKey, TValue>.getitem_checked(self: @Self, key: TKey) -> Option<TValue>
+routine Dict<TKey, TValue>.getitem_checked(me: @Me, key: TKey) -> Option<TValue>
 require TKey: typename, TValue: typename
     block entry()
-        value : Option<TValue> = self.load().getitem_checked(key)
+        value : Option<TValue> = me.load().getitem_checked(key)
         return(value)
 
 /// The address of the value under `key`, checked like getitem: a place to update the value in place. Only the
@@ -497,9 +497,9 @@ require TKey: typename, TValue: typename
 /// :returns: The value's address.
 /// :throws: Crashes with `KeyNotFoundError` when the key is absent.
 #track_caller
-routine Dict<TKey, TValue>.at(self: Self, key: TKey) -> @TValue
+routine Dict<TKey, TValue>.at(me: Me, key: TKey) -> @TValue
 require TKey: typename, TValue: typename
-    shared entry_idx : USize = self.find(key)
+    shared entry_idx : USize = me.find(key)
 
     block entry()
         found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
@@ -508,7 +508,7 @@ require TKey: typename, TValue: typename
             : crash_key_not_found()
 
     block address()
-        values : @TValue = self.values.data
+        values : @TValue = me.values.data
         value  : @TValue = values.stride(entry_idx)
         return(value)
 
@@ -518,19 +518,19 @@ require TKey: typename, TValue: typename
 /// :returns: The value's address.
 /// :throws: Crashes with `KeyNotFoundError` when the key is absent.
 #track_caller
-routine Dict<TKey, TValue>.at(self: @Self, key: TKey) -> @TValue
+routine Dict<TKey, TValue>.at(me: @Me, key: TKey) -> @TValue
 require TKey: typename, TValue: typename
     block entry()
-        value : @TValue = self.load().at(key)
+        value : @TValue = me.load().at(key)
         return(value)
 
 /// `at`, returning Absent instead of crashing on a missing key.
 /// :param key: The key to look up.
 /// :returns: The value's address.
 /// :absent: When the key is not present.
-routine Dict<TKey, TValue>.at_checked(self: Self, key: TKey) -> Option<@TValue>
+routine Dict<TKey, TValue>.at_checked(me: Me, key: TKey) -> Option<@TValue>
 require TKey: typename, TValue: typename
-    shared entry_idx : USize = self.find(key)
+    shared entry_idx : USize = me.find(key)
 
     block entry()
         found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
@@ -539,7 +539,7 @@ require TKey: typename, TValue: typename
             : return(.Absent)
 
     block address()
-        values : @TValue = self.values.data
+        values : @TValue = me.values.data
         value  : @TValue = values.stride(entry_idx)
         return(.Present(value))
 
@@ -547,20 +547,20 @@ require TKey: typename, TValue: typename
 /// :param key: The key to look up.
 /// :returns: The value's address.
 /// :absent: When the key is not present.
-routine Dict<TKey, TValue>.at_checked(self: @Self, key: TKey) -> Option<@TValue>
+routine Dict<TKey, TValue>.at_checked(me: @Me, key: TKey) -> Option<@TValue>
 require TKey: typename, TValue: typename
     block entry()
-        value : Option<@TValue> = self.load().at_checked(key)
+        value : Option<@TValue> = me.load().at_checked(key)
         return(value)
 
 /// Removes the entry for `key`. Removal keeps the entries array's layout: the entry is marked dead and its slot
 /// becomes a tombstone, so surviving entries keep their order until the next rehash.
 /// :param key: The key to remove.
 /// :returns: `true` when an entry was removed, `false` when the key was not present.
-routine Dict<TKey, TValue>.remove(self: @Self, key: TKey) -> Bool
+routine Dict<TKey, TValue>.remove(me: @Me, key: TKey) -> Bool
 require TKey: typename, TValue: typename
     block entry()
-        capacity : USize = self.slots.count.load()
+        capacity : USize = me.slots.count.load()
         empty    : Bool  = capacity.eq(0)
         branch empty
             ? return(false)
@@ -568,8 +568,8 @@ require TKey: typename, TValue: typename
 
     block hash()
         hash      : U64    = TKey.hash(key)
-        slot      : USize  = self.load().slot(key, hash)
-        slots     : @USize = self.slots.data.load()
+        slot      : USize  = me.load().slot(key, hash)
+        slots     : @USize = me.slots.data.load()
         entry_idx : USize  = slots.stride(slot).load()
         found     : Bool   = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
@@ -577,31 +577,30 @@ require TKey: typename, TValue: typename
             : return(false)
 
     block remove(slot: USize, entry_idx: USize)
-        slots        : @USize = self.slots.data.load()
-        entry_states : @U8    = self.entry_states.data.load()
+        slots        : @USize = me.slots.data.load()
+        entry_states : @U8    = me.entry_states.data.load()
         slots.stride(slot).store(SLOT_TOMBSTONE)
         entry_states.stride(entry_idx).store(0)
-        remaining_count : USize = self.count.load().sub(1)
-        remaining_count.store_into(self.count)
+        remaining_count : USize = me.count.load().sub(1)
+        remaining_count.store_into(me.count)
         return(true)
 
 /// Gives the dict's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
 /// :note: Safe to call on a never-filled instance, where it only resets the fields.
 #track_caller
-routine Dict<TKey, TValue>.destruct(self: @Self) -> Void
+routine Dict<TKey, TValue>.destruct(me: @Me) -> Void
 require TKey: typename, TValue: typename
     block entry()
-        destruct_arrays<TKey, TValue>(self.keys, self.values, self.hashes, self.entry_states,
-            self.slots)
-        self.count.store(0)
-        self.entries_count.store(0)
+        destruct_arrays<TKey, TValue>(me.keys, me.values, me.hashes, me.entry_states, me.slots)
+        me.count.store(0)
+        me.entries_count.store(0)
         return()
 
 /// Destructs every key and value, then the dictionary itself.
 #track_caller
-routine Dict<TKey, TValue>.destruct_all(self: @Self) -> Void
+routine Dict<TKey, TValue>.destruct_all(me: @Me) -> Void
 require TKey: typename, TValue: typename, Destructible<TKey>, Destructible<TValue>
-    shared iter_val   : DictIter<TKey, TValue>  = .construct(self)
+    shared iter_val   : DictIter<TKey, TValue>  = .construct(me)
     shared iter       : @DictIter<TKey, TValue> <- iter_val
     shared key_slot   : @TKey                   <- uninit
     shared value_slot : @TValue                 <- uninit
@@ -623,14 +622,14 @@ require TKey: typename, TValue: typename, Destructible<TKey>, Destructible<TValu
         jump next()
 
     block finish()
-        self.destruct()
+        me.destruct()
         return()
 
 /// Destructs every value (the keys own nothing), then the dictionary itself.
 #track_caller
-routine Dict<TKey, TValue>.destruct_all_values(self: @Self) -> Void
+routine Dict<TKey, TValue>.destruct_all_values(me: @Me) -> Void
 require TKey: typename, TValue: typename, Destructible<TValue>
-    shared iter_val   : DictIter<TKey, TValue>  = .construct(self)
+    shared iter_val   : DictIter<TKey, TValue>  = .construct(me)
     shared iter       : @DictIter<TKey, TValue> <- iter_val
     shared value_slot : @TValue                 <- uninit
 
@@ -649,7 +648,7 @@ require TKey: typename, TValue: typename, Destructible<TValue>
         jump next()
 
     block finish()
-        self.destruct()
+        me.destruct()
         return()
 
 // -- text -----------------------------------------------------------------------
@@ -657,10 +656,10 @@ require TKey: typename, TValue: typename, Destructible<TValue>
 /// The entries in insertion order, keys and values diagnosed (strings quoted): {"a": 1, "b": 2}.
 /// :typeparam TWriter: The type of the Writer that receives the text.
 /// :param out: The writer to write to.
-routine Dict<TKey, TValue>.represent_into<TWriter>(self: Self, out: @TWriter) -> Void
+routine Dict<TKey, TValue>.represent_into<TWriter>(me: Me, out: @TWriter) -> Void
 require TKey: typename, TValue: typename, HashEquatable<TKey>, Diagnosable<TKey>, Diagnosable<TValue>, TWriter: typename, Writer<TWriter>
     block entry()
-        claim whole : @Self <- self
+        claim whole : @Me <- me
         iter_val : DictIter<TKey, TValue> = .construct(whole)
         claim iter : @DictIter<TKey, TValue> <- iter_val
         diagnose_entries<TKey, TValue, DictIter<TKey, TValue>, TWriter>(out, iter)
@@ -669,10 +668,10 @@ require TKey: typename, TValue: typename, HashEquatable<TKey>, Diagnosable<TKey>
 /// The entries in insertion order, keys and values diagnosed: {"a": 1, "b": 2}.
 /// :typeparam TWriter: The type of the Writer that receives the text.
 /// :param out: The writer to write to.
-routine Dict<TKey, TValue>.diagnose_into<TWriter>(self: Self, out: @TWriter) -> Void
+routine Dict<TKey, TValue>.diagnose_into<TWriter>(me: Me, out: @TWriter) -> Void
 require TKey: typename, TValue: typename, HashEquatable<TKey>, Diagnosable<TKey>, Diagnosable<TValue>, TWriter: typename, Writer<TWriter>
     block entry()
-        claim whole : @Self <- self
+        claim whole : @Me <- me
         iter_val : DictIter<TKey, TValue> = .construct(whole)
         claim iter : @DictIter<TKey, TValue> <- iter_val
         diagnose_entries<TKey, TValue, DictIter<TKey, TValue>, TWriter>(out, iter)

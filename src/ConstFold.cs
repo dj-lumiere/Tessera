@@ -23,7 +23,7 @@ public sealed partial class Compiler
     private readonly Dictionary<string, ConstVal> _presetValues = [];
     private readonly HashSet<string> _foldingPresets = [];
 
-    /// The folded value of a scalar preset, as its declared type. Self is the owner type, for `Type.NAME` presets.
+    /// The folded value of a scalar preset, as its declared type. Me is the owner type, for `Type.NAME` presets.
     public ConstVal PresetConst(PresetDecl c, DType t, DType? self, Pos usePos)
     {
         string key = $"{c.File}:{c.Pos}:{self?.Key}";
@@ -32,7 +32,7 @@ public sealed partial class Compiler
         try
         {
             var env = new TypeEnv(c.File);
-            if (self is not null) env.Bind("Self", self);
+            if (self is not null) env.Bind("Me", self);
             var v = Typed(Fold(c.Value!, t, env), t, c.Value!.Pos);
             _presetValues[key] = v;
             return v;
@@ -182,7 +182,7 @@ public sealed partial class Compiler
         if (c.IsStorage)
             throw new CompileError(r.Pos, $"'{c.Name}' is in memory, not a buildtime constant: its name is an address");
         var cenv = new TypeEnv(c.File);
-        if (owner is not null) cenv.Bind("Self", owner);
+        if (owner is not null) cenv.Bind("Me", owner);
         var t = ResolveType(c.Type, cenv);
         return PresetConst(c, t, owner, r.Pos);
     }

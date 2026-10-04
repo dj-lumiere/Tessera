@@ -720,9 +720,9 @@ private record Handles
 /// No handles at all: what a run starts from, so closing them is right on every path.
 /// :returns: The {Handles} with every handle null.
 #target(os: "windows")
-private routine Handles.empty() -> Self
+private routine Handles.empty() -> Me
     block entry()
-        return(Self { out_r: null, out_w: null, err_r: null, err_w: null, input: null, output: null,
+        return(Me { out_r: null, out_w: null, err_r: null, err_w: null, input: null, output: null,
             error: null, device: null })
 
 /// Reads the pipe to its end into the reader's buffer, from the malloc heap.
@@ -748,30 +748,30 @@ private routine read_pipe(r: @PipeReader) -> Void
 /// Closes this process's copies of the handles the child was given (its ends of the pipes, the null device, and any
 /// standard handle duplicated only for it), so end-of-file reaches the parent when the child exits.
 #target(os: "windows")
-private routine Handles.close_child_side(self: @Self) -> Void
+private routine Handles.close_child_side(me: @Me) -> Void
     block entry()
-        close_if_open(self.out_w.load())
-        close_if_open(self.err_w.load())
-        close_if_open(self.device.load())
-        own_input : Bool = same(self.input.load(), self.device.load()).bitnot()
+        close_if_open(me.out_w.load())
+        close_if_open(me.err_w.load())
+        close_if_open(me.device.load())
+        own_input : Bool = same(me.input.load(), me.device.load()).bitnot()
         branch own_input
             ? continue
             : outputs()
-        close_if_open(self.input.load())
+        close_if_open(me.input.load())
         jump outputs()
 
     // The pipe ends and the device were closed above. The duplicates of this process's handles go here.
     block outputs()
-        o : Addr = self.output.load()
-        branch same(o, self.out_w.load()).bitor(same(o, self.device.load()))
+        o : Addr = me.output.load()
+        branch same(o, me.out_w.load()).bitor(same(o, me.device.load()))
             ? errors()
             : continue
         close_if_open(o)
         jump errors()
 
     block errors()
-        e : Addr = self.error.load()
-        branch same(e, self.err_w.load()).bitor(same(e, self.device.load()))
+        e : Addr = me.error.load()
+        branch same(e, me.err_w.load()).bitor(same(e, me.device.load()))
             ? return()
             : continue
         close_if_open(e)
@@ -788,9 +788,9 @@ private routine inherited(which: U32) -> Addr
             ? return(null)
             : continue
         claim copy : @Addr <- null
-        me : Addr = c_get_current_process()
+        this_process : Addr = c_get_current_process()
         // DUPLICATE_SAME_ACCESS
-        branch c_duplicate_handle(me, h, me, copy, 0, 1, 2).ne(0)
+        branch c_duplicate_handle(this_process, h, this_process, copy, 0, 1, 2).ne(0)
             ? return(copy.load())
             : return(null)
 
@@ -800,9 +800,9 @@ private routine inherited(which: U32) -> Addr
 /// :param sa: The security attributes that make the child's handles inheritable.
 /// :returns: True when all were made. What was made before a failure is kept for closing.
 #target(os: "windows")
-private routine Handles.make(self: @Self, options: ProcessOptions, sa: @SecurityAttributes) -> Bool
+private routine Handles.make(me: @Me, options: ProcessOptions, sa: @SecurityAttributes) -> Bool
     block entry()
-        self.store(Handles.empty())
+        me.store(Handles.empty())
         null_in  : Bool = options.stdin.eq(InputMode.Null)
         null_out : Bool = options.stdout.eq(OutputMode.Null).bitor(options.stderr.eq(OutputMode.Null))
         branch null_in.bitor(null_out)
@@ -814,37 +814,36 @@ private routine Handles.make(self: @Self, options: ProcessOptions, sa: @Security
         branch is_invalid(device)
             ? return(false)
             : continue
-        self.device.store(device)
+        me.device.store(device)
         jump pipes()
 
     block pipes()
         branch options.stdout.eq(OutputMode.Capture)
             ? continue
             : error_pipe()
-        branch c_create_pipe(self.out_r, self.out_w, sa, 0).ne(0)
+        branch c_create_pipe(me.out_r, me.out_w, sa, 0).ne(0)
             ? continue
             : return(false)
         // HANDLE_FLAG_INHERIT off for the parent's end
-        c_set_handle_information(self.out_r.load(), 1, 0)
+        c_set_handle_information(me.out_r.load(), 1, 0)
         jump error_pipe()
 
     block error_pipe()
         branch options.stderr.eq(OutputMode.Capture)
             ? continue
             : standard()
-        branch c_create_pipe(self.err_r, self.err_w, sa, 0).ne(0)
+        branch c_create_pipe(me.err_r, me.err_w, sa, 0).ne(0)
             ? continue
             : return(false)
-        c_set_handle_information(self.err_r.load(), 1, 0)
+        c_set_handle_information(me.err_r.load(), 1, 0)
         jump standard()
 
     // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
     block standard()
-        self.input.store(input_handle(options.stdin, self.device.load()))
-        self.output.store(output_handle(options.stdout, self.out_w.load(), self.device.load(),
+        me.input.store(input_handle(options.stdin, me.device.load()))
+        me.output.store(output_handle(options.stdout, me.out_w.load(), me.device.load(),
             0xFFFFFFF5))
-        self.error.store(output_handle(options.stderr, self.err_w.load(), self.device.load(),
-            0xFFFFFFF4))
+        me.error.store(output_handle(options.stderr, me.err_w.load(), me.device.load(), 0xFFFFFFF4))
         return(true)
 
 /// The child's standard input: the null device, or a duplicate of this process's.

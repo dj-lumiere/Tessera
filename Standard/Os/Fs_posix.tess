@@ -574,15 +574,15 @@ private routine c_statx(dir: CInt, path: @Byte, flags: CInt, mask: U32, out: @St
 /// read-only means the owner has no write permission.
 /// :returns: The metadata.
 #target(os: "linux")
-private routine Statx.to<Metadata>(self: Self) -> Metadata
+private routine Statx.to<Metadata>(me: Me) -> Metadata
     block entry()
-        mode     : U32         = self.mode.to<U32>()
-        modified : S64         = ns_of(self.mtime.sec, self.mtime.nsec.to<S64>())
-        born     : Bool        = self.mask.bitand(STATX_BTIME).ne(0)
+        mode     : U32         = me.mode.to<U32>()
+        modified : S64         = ns_of(me.mtime.sec, me.mtime.nsec.to<S64>())
+        born     : Bool        = me.mask.bitand(STATX_BTIME).ne(0)
         created  : Option<S64> = born
-            ? Option<S64>.Present(ns_of(self.btime.sec, self.btime.nsec.to<S64>()))
+            ? Option<S64>.Present(ns_of(me.btime.sec, me.btime.nsec.to<S64>()))
             : .Absent
-        return(Metadata { kind: mode_kind(mode), size: self.size, modified_ns: modified,
+        return(Metadata { kind: mode_kind(mode), size: me.size, modified_ns: modified,
             created_ns: created, readonly: mode.bitand(0o200).eq(0) })
 
 /// statx of dir + path with flags: the raw struct.
@@ -698,12 +698,12 @@ private routine c_fstat(fd: CInt, out: @DarwinStat) -> CInt
 /// write permission.
 /// :returns: The metadata.
 #target(os: "macos")
-private routine DarwinStat.to<Metadata>(self: Self) -> Metadata
+private routine DarwinStat.to<Metadata>(me: Me) -> Metadata
     block entry()
-        mode     : U32 = self.mode.to<U32>()
-        modified : S64 = ns_of(self.mtime.sec, self.mtime.nsec)
-        created  : S64 = ns_of(self.birthtime.sec, self.birthtime.nsec)
-        return(Metadata { kind: mode_kind(mode), size: self.size.to_wrap<U64>(),
+        mode     : U32 = me.mode.to<U32>()
+        modified : S64 = ns_of(me.mtime.sec, me.mtime.nsec)
+        created  : S64 = ns_of(me.birthtime.sec, me.birthtime.nsec)
+        return(Metadata { kind: mode_kind(mode), size: me.size.to_wrap<U64>(),
             modified_ns: modified, created_ns: .Present(created),
             readonly: mode.bitand(0o200).eq(0) })
 
@@ -801,9 +801,9 @@ record FileHandle
 /// A handle to no file, whose close() does nothing: the start value of a slot that a finish block closes.
 /// :returns: The empty handle.
 #target(os: ("linux", "macos"))
-routine FileHandle.empty() -> Self
+routine FileHandle.empty() -> Me
     block entry()
-        return(Self { fd: -1, failed: false })
+        return(Me { fd: -1, failed: false })
 
 /// Opens path in mode. The file is opened close-on-exec, and one it makes gets the permissions 0o666 before the
 /// umask.
@@ -812,7 +812,7 @@ routine FileHandle.empty() -> Self
 /// :returns: `Success` with the open handle.
 /// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
-internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, FsError>
+internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Me, FsError>
     shared cpath_buffer : @Array<Byte, PATH_CAPACITY> <- uninit
     shared cpath        : @Byte                       = cpath_buffer.to<@Byte>()
 
@@ -836,8 +836,8 @@ internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, Fs
     block open(flags: CInt)
         fd : CInt = c_open(cpath, flags, 0o666)
         branch fd.lt(0)
-            ? return(failed<Self>())
-            : return(.Success(Self { fd: fd, failed: false }))
+            ? return(failed<Me>())
+            : return(.Success(Me { fd: fd, failed: false }))
 
 /// Reads up to count bytes into buffer: how many, 0 at the end of the file. One call reads at most 1 GiB, and a
 /// read a signal interrupts is tried again.
@@ -846,16 +846,15 @@ internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result<Self, Fs
 /// :returns: `Success` with the count read, 0 at the end of the file.
 /// :throws: Returns `Failure` with the reason when the read fails.
 #target(os: ("linux", "macos"))
-routine FileHandle.read_bytes_result(self: @Self, buffer: @Byte,
-    count: USize) -> Result<USize, FsError>
+routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
-        got : SSize = c_read(self.fd.load(), buffer, count.min(1073741824))
+        got : SSize = c_read(me.fd.load(), buffer, count.min(1073741824))
         branch got.ge(0)
             ? return(.Success(got.to<USize>()))
             : continue
         // EINTR: a signal came first, so ask again
         branch errno().eq(4)
-            ? return(self.read_bytes_result(buffer, count))
+            ? return(me.read_bytes_result(buffer, count))
             : return(failed<USize>())
 
 /// Writes up to count bytes: how many it did. One call writes at most 1 GiB, and a write a signal interrupts is
@@ -865,15 +864,14 @@ routine FileHandle.read_bytes_result(self: @Self, buffer: @Byte,
 /// :returns: `Success` with the count written.
 /// :throws: Returns `Failure` with the reason when the write fails.
 #target(os: ("linux", "macos"))
-internal routine FileHandle.write_some(self: @Self, data: @Byte,
-    count: USize) -> Result<USize, FsError>
+internal routine FileHandle.write_some(me: @Me, data: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
-        wrote : SSize = c_write(self.fd.load(), data, count.min(1073741824))
+        wrote : SSize = c_write(me.fd.load(), data, count.min(1073741824))
         branch wrote.ge(0)
             ? return(.Success(wrote.to<USize>()))
             : continue
         branch errno().eq(4)
-            ? return(self.write_some(data, count))
+            ? return(me.write_some(data, count))
             : return(failed<USize>())
 
 /// Moves the position: the new one, from the start.
@@ -882,9 +880,9 @@ internal routine FileHandle.write_some(self: @Self, data: @Byte,
 /// :returns: `Success` with the new position from the start.
 /// :throws: Returns `Failure` with the reason, such as a position before the start.
 #target(os: ("linux", "macos"))
-routine FileHandle.seek_result(self: @Self, offset: S64, from: SeekFrom) -> Result<U64, FsError>
+routine FileHandle.seek_result(me: @Me, offset: S64, from: SeekFrom) -> Result<U64, FsError>
     block entry()
-        fd : CInt = self.fd.load()
+        fd : CInt = me.fd.load()
         // SEEK_SET, SEEK_CUR, SEEK_END
         when from
             SeekFrom.Start   -> moved(c_lseek(fd, offset, 0))
@@ -900,17 +898,17 @@ routine FileHandle.seek_result(self: @Self, offset: S64, from: SeekFrom) -> Resu
 /// :returns: `Success` with the metadata.
 /// :throws: Returns `Failure` with the reason when the OS can't report it.
 #target(os: ("linux", "macos"))
-routine FileHandle.metadata_result(self: @Self) -> Result<Metadata, FsError>
+routine FileHandle.metadata_result(me: @Me) -> Result<Metadata, FsError>
     block entry()
-        return(fd_metadata(self.fd.load()))
+        return(fd_metadata(me.fd.load()))
 
 /// The size of the open file in bytes.
 /// :returns: `Success` with the size.
 /// :throws: Returns `Failure` with the reason when the OS can't report it.
 #target(os: ("linux", "macos"))
-routine FileHandle.size_result(self: @Self) -> Result<U64, FsError>
+routine FileHandle.size_result(me: @Me) -> Result<U64, FsError>
     block entry()
-        m : Result<Metadata, FsError> = fd_metadata(self.fd.load())
+        m : Result<Metadata, FsError> = fd_metadata(me.fd.load())
         when m
             .Success(info)  -> return(.Success(info.size))
             .Failure(error) -> return(.Failure(error))
@@ -921,28 +919,28 @@ routine FileHandle.size_result(self: @Self) -> Result<U64, FsError>
 /// :throws: Returns `Failure` with the reason when the OS refuses. Crashes with `IntegerOverflowError` when `size`
 ///     doesn't fit in S64.
 #target(os: ("linux", "macos"))
-routine FileHandle.set_size_result(self: @Self, size: U64) -> Result<Unit, FsError>
+routine FileHandle.set_size_result(me: @Me, size: U64) -> Result<Unit, FsError>
     block entry()
-        return(checked(c_ftruncate(self.fd.load(), size.to<S64>())))
+        return(checked(c_ftruncate(me.fd.load(), size.to<S64>())))
 
 /// Waits until what was written is on the storage device.
 /// :returns: `Success(Unit)` once it is.
 /// :throws: Returns `Failure` with the reason when the OS reports an error.
 #target(os: ("linux", "macos"))
-routine FileHandle.sync_result(self: @Self) -> Result<Unit, FsError>
+routine FileHandle.sync_result(me: @Me) -> Result<Unit, FsError>
     block entry()
-        return(checked(c_fsync(self.fd.load())))
+        return(checked(c_fsync(me.fd.load())))
 
 /// Closes the file and leaves the handle empty, so a second close does nothing.
 #target(os: ("linux", "macos"))
-routine FileHandle.close(self: @Self) -> Void
+routine FileHandle.close(me: @Me) -> Void
     block entry()
-        fd : CInt = self.fd.load()
+        fd : CInt = me.fd.load()
         branch fd.lt(0)
             ? return()
             : continue
         c_close(fd)
-        self.fd.store(-1)
+        me.fd.store(-1)
         return()
 
 // -- directories and names -------------------------------------------------------------
@@ -1244,19 +1242,19 @@ record DirIter
 /// :returns: `Success(Unit)` once the listing is open.
 /// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
-internal routine DirIter.open_path(self: @Self, path: Bytes) -> Result<Unit, FsError>
+internal routine DirIter.open_path(me: @Me, path: Bytes) -> Result<Unit, FsError>
     block entry()
-        self.dir.store(null)
-        branch c_path(path, self.path.to<@Byte>())
+        me.dir.store(null)
+        branch c_path(path, me.path.to<@Byte>())
             ? continue
             : return(.Failure(path_error(path)))
-        self.count.store(path.count())
-        self.name.store(null)
-        dir : Addr = c_opendir(self.path.to<@Byte>())
+        me.count.store(path.count())
+        me.name.store(null)
+        dir : Addr = c_opendir(me.path.to<@Byte>())
         branch dir.is_null()
             ? return(failed<Unit>())
             : continue
-        self.dir.store(dir)
+        me.dir.store(dir)
         return(fs_done())
 
 /// Whether name is "." or "..".
@@ -1284,17 +1282,17 @@ private routine is_dot_name(name: @Byte) -> Bool
 /// :returns: The next entry, its name valid until the next call.
 /// :absent: At the end of the listing, or when reading it fails.
 #target(os: ("linux", "macos"))
-routine DirIter.next(self: @Self) -> Option<DirEntry>
+routine DirIter.next(me: @Me) -> Option<DirEntry>
     block entry()
-        entry : @Byte = c_readdir(self.dir.load())
+        entry : @Byte = c_readdir(me.dir.load())
         branch entry.is_null()
             ? return(.Absent)
             : continue
         name : @Byte = entry.stride(dirent_name_at())
         branch is_dot_name(name)
-            ? return(self.next())
+            ? return(me.next())
             : continue
-        self.name.store(name)
+        me.name.store(name)
         // DT_DIR, DT_REG, DT_LNK. DT_UNKNOWN (some filesystems) asks lstat
         d_type : Byte = entry.stride(dirent_type_at()).load()
         when d_type.to<U8>()
@@ -1305,7 +1303,7 @@ routine DirIter.next(self: @Self) -> Option<DirEntry>
             else -> found(name, FileKind.Other)
 
     block unknown(name: @Byte)
-        m : Result<Metadata, FsError> = self.entry_metadata_of(false)
+        m : Result<Metadata, FsError> = me.entry_metadata_of(false)
         when m
             .Success(info) -> found(name, info.kind)
             .Failure       -> found(name, FileKind.Other)
@@ -1317,33 +1315,32 @@ routine DirIter.next(self: @Self) -> Option<DirEntry>
 /// :returns: `Success` with the metadata.
 /// :throws: Returns `Failure` with the reason, `NameTooLong` when the entry's full path doesn't fit a C path.
 #target(os: ("linux", "macos"))
-routine DirIter.entry_metadata_result(self: @Self) -> Result<Metadata, FsError>
+routine DirIter.entry_metadata_result(me: @Me) -> Result<Metadata, FsError>
     block entry()
-        return(self.entry_metadata_of(true))
+        return(me.entry_metadata_of(true))
 
 /// The metadata of the entry next last returned, by its full path.
 /// :param follow: True to describe what a link points at, false to describe the link itself.
 /// :returns: `Success` with the metadata.
 /// :throws: Returns `Failure` with the reason, `NameTooLong` when the entry's full path doesn't fit a C path.
 #target(os: ("linux", "macos"))
-private routine DirIter.entry_metadata_of(self: @Self, follow: Bool) -> Result<Metadata, FsError>
+private routine DirIter.entry_metadata_of(me: @Me, follow: Bool) -> Result<Metadata, FsError>
     block entry()
         claim full : @Array<Byte, PATH_CAPACITY> <- uninit
-        branch c_child_path(self.path.to<@Byte>(), self.count.load(), self.name.load(),
-            full.to<@Byte>())
+        branch c_child_path(me.path.to<@Byte>(), me.count.load(), me.name.load(), full.to<@Byte>())
             ? return(metadata_of(full.to<@Byte>(), follow))
             : return(.Failure(FsError.NameTooLong))
 
 /// Closes the listing and leaves the handle null, so a second close does nothing.
 #target(os: ("linux", "macos"))
-routine DirIter.close(self: @Self) -> Void
+routine DirIter.close(me: @Me) -> Void
     block entry()
-        dir : Addr = self.dir.load()
+        dir : Addr = me.dir.load()
         branch dir.is_null()
             ? return()
             : continue
         c_closedir(dir)
-        self.dir.store(null)
+        me.dir.store(null)
         return()
 
 // -- the working directory and well-known directories -------------------------------------
@@ -1509,7 +1506,7 @@ private routine is_map_failed(p: Addr) -> Bool
 /// :throws: Returns `Failure` with the reason when the file can't be opened, measured, or mapped.
 #target(os: ("linux", "macos"))
 internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
-    count: USize) -> Result<Self, FsError>
+    count: USize) -> Result<Me, FsError>
     shared file : @FileHandle <- .empty()
 
     block entry()
@@ -1522,7 +1519,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
             : 0
         fd : CInt = c_open(cpath.to<@Byte>(), flags.bitor(open_flags().cloexec), 0)
         branch fd.lt(0)
-            ? finish(failed<Self>())
+            ? finish(failed<Me>())
             : continue
         file.fd.store(fd)
         m : Result<Metadata, FsError> = fd_metadata(fd)
@@ -1532,7 +1529,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
 
     block sized(fd: CInt, size: U64)
         branch offset.ge(size)
-            ? finish(.Success(Self.empty()))
+            ? finish(.Success(Me.empty()))
             : continue
         want_bytes : U64   = count.to<U64>().min(size.sub(offset))
         want       : USize = want_bytes.to<USize>()
@@ -1549,10 +1546,10 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
         p : Addr = c_mmap(null, want.add(delta), prot, share, fd, aligned.to<S64>())
         // the mapping keeps the file open on its own, and errno is read before finish closes the descriptor
         branch is_map_failed(p)
-            ? finish(failed<Self>())
-            : finish(.Success(Self { base: p, delta: delta, count: want }))
+            ? finish(failed<Me>())
+            : finish(.Success(Me { base: p, delta: delta, count: want }))
 
-    block finish(result: Result<Self, FsError>)
+    block finish(result: Result<Me, FsError>)
         file.close()
         return(result)
 
@@ -1560,41 +1557,41 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
 /// :returns: `Success(Unit)` once they are written, at once for an empty mapping.
 /// :throws: Returns `Failure` with the reason when msync fails.
 #target(os: ("linux", "macos"))
-routine Mapping.flush_result(self: Self) -> Result<Unit, FsError>
+routine Mapping.flush_result(me: Me) -> Result<Unit, FsError>
     block entry()
-        branch self.base.is_null()
+        branch me.base.is_null()
             ? return(fs_done())
-            : return(checked(c_msync(self.base, self.delta.add(self.count), ms_sync())))
+            : return(checked(c_msync(me.base, me.delta.add(me.count), ms_sync())))
 
 /// Writes changed pages back and unmaps.
 #target(os: ("linux", "macos"))
-routine Mapping.unmap(self: Self) -> Void
+routine Mapping.unmap(me: Me) -> Void
     block entry()
-        branch self.base.is_null()
+        branch me.base.is_null()
             ? return()
             : continue
-        c_msync(self.base, self.delta.add(self.count), ms_sync())
-        c_munmap(self.base, self.delta.add(self.count))
+        c_msync(me.base, me.delta.add(me.count), ms_sync())
+        c_munmap(me.base, me.delta.add(me.count))
         return()
 
 /// Asks the OS to read the whole mapping in now.
 #target(os: ("linux", "macos"))
-routine Mapping.prefetch(self: Self) -> Void
+routine Mapping.prefetch(me: Me) -> Void
     block entry()
-        branch self.base.is_null()
+        branch me.base.is_null()
             ? return()
             : continue
         // MADV_WILLNEED
-        c_madvise(self.base, self.delta.add(self.count), 3)
+        c_madvise(me.base, me.delta.add(me.count), 3)
         return()
 
 /// Tells the OS the mapping will be read front to back.
 #target(os: ("linux", "macos"))
-routine Mapping.advise_sequential(self: Self) -> Void
+routine Mapping.advise_sequential(me: Me) -> Void
     block entry()
-        branch self.base.is_null()
+        branch me.base.is_null()
             ? return()
             : continue
         // MADV_SEQUENTIAL
-        c_madvise(self.base, self.delta.add(self.count), 2)
+        c_madvise(me.base, me.delta.add(me.count), 2)
         return()

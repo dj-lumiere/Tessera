@@ -10,7 +10,7 @@
 // log(1) = +0.
 //
 // The dint helpers and the accurate path (cm_f64_log_dint_*) are shared with
-// log10 (Log10.tess). The fast path's double-double also gives F64.log(self,
+// log10 (Log10.tess). The fast path's double-double also gives F64.log(me,
 // base) its first tier (cm_f64_log_dd, cm_f64_log_ratio_fast).
 //
 // Ported from CORE-MATH, src/binary64/log/log.c and its dint.h via
@@ -615,9 +615,9 @@ record CmF64LogDint
 
 /// The natural logarithm, correctly rounded (to nearest, ties to even). ln(1) = +0, ln(±0) = -inf, ln(+inf) = +inf,
 /// a negative argument gives NaN, and NaN comes back quiet.
-/// :returns: ln(`self`).
-routine F64.ln(self: Self) -> Self
-    shared u               : U64 = self.bits()
+/// :returns: ln(`me`).
+routine F64.ln(me: Me) -> Me
+    shared u               : U64 = me.bits()
     shared biased_exponent : S64 = u.shr(52).to<S64>()
     shared e               : S64 = biased_exponent.sub(0x3FF)
 
@@ -630,17 +630,17 @@ routine F64.ln(self: Self) -> Self
     // x <= 0, NaN, infinity or subnormal
     block edge()
         nan_inf  : Bool = e.eq(0x400).bitor(e.eq(0xC00).bitand(u.ne(0xFFF0000000000000)))
-        negative : Bool = self.lt(0.0)
-        zero     : Bool = self.eq(0.0)
+        negative : Bool = me.lt(0.0)
+        zero     : Bool = me.eq(0.0)
         when
-            nan_inf  -> return(self.add(self))  // +inf or NaN of either sign
-            negative -> return(Self.from_bits(0xFFF8000000000000))  // the default NaN of 0/0
-            zero     -> return(Self.from_bits(0xFFF0000000000000))  // the pole
+            nan_inf  -> return(me.add(me))  // +inf or NaN of either sign
+            negative -> return(Me.from_bits(0xFFF8000000000000))  // the default NaN of 0/0
+            zero     -> return(Me.from_bits(0xFFF0000000000000))  // the pole
             else     -> subnormal()
 
     // scale into the normal range
     block subnormal()
-        us              : U64 = self.mul(0x1p52).bits()
+        us              : U64 = me.mul(0x1p52).bits()
         scaled_exponent : S64 = us.shr(52).to<S64>()
         jump normal(us, scaled_exponent.sub(0x3FF).sub(52))
 
@@ -652,12 +652,12 @@ routine F64.ln(self: Self) -> Self
             ? return(0.0)
             : continue
         hl    : CmF64LogDd = cm_f64_log_fast(e_norm, mbits)
-        left  : Self       = hl.hi.add(hl.lo.sub(0x1.b6p-69))  // the fast path's maximal absolute error
-        right : Self       = hl.hi.add(hl.lo.add(0x1.b6p-69))
+        left  : Me         = hl.hi.add(hl.lo.sub(0x1.b6p-69))  // the fast path's maximal absolute error
+        right : Me         = hl.hi.add(hl.lo.add(0x1.b6p-69))
         sure  : Bool       = left.eq(right)
         branch sure
             ? return(left)
-            : return(CmF64LogDint.to<Self>(cm_f64_log_dint_log_of(self)))
+            : return(CmF64LogDint.to<Me>(cm_f64_log_dint_log_of(me)))
 
 /// The fast path of log: a double-double approximation of log(2^e m) with absolute error below 0x1.b6p-69, where
 /// m = 1 + mbits/2^52.
@@ -933,10 +933,10 @@ private routine cm_f64_log_dint_mul_int(b: S64, a: CmF64LogDint) -> CmF64LogDint
         return(CmF64LogDint { m: m, ex: a.ex.add(64).sub(sh.to<S64>().sub(1)), sgn: sgn })
 
 /// A positive finite x as a dint.
-/// :returns: `self` as a normalized dint.
-private routine F64.to<CmF64LogDint>(self: Self) -> CmF64LogDint
+/// :returns: `me` as a normalized dint.
+private routine F64.to<CmF64LogDint>(me: Me) -> CmF64LogDint
     block entry()
-        u      : U64  = self.bits()
+        u      : U64  = me.bits()
         eb     : U64  = u.shr(52).bitand(0x7FF)
         frac   : U64  = u.bitand(0x000FFFFFFFFFFFFF)
         normal : Bool = eb.ne(0)
@@ -954,10 +954,10 @@ private routine F64.to<CmF64LogDint>(self: Self) -> CmF64LogDint
 
 /// A dint rounded to the nearest F64, assuming the result is in the normal range.
 /// :returns: The rounded F64.
-routine CmF64LogDint.to<F64>(self: Self) -> F64
+routine CmF64LogDint.to<F64>(me: Me) -> F64
     block entry()
-        hi        : U64  = self.m.shr(64).to<U64>()
-        lo        : U64  = self.m.to_wrap<U64>()
+        hi        : U64  = me.m.shr(64).to<U64>()
+        lo        : U64  = me.m.to_wrap<U64>()
         rbits     : U64  = hi.shr(11).bitor(0x3FF0000000000000)  // the upper 53 bits of hi, 1 <= r < 2
         round_bit : U64  = hi.shr(10).bitand(1)
         round     : Bool = round_bit.eq(1)
@@ -969,11 +969,11 @@ routine CmF64LogDint.to<F64>(self: Self) -> F64
         rd : F64 = sticky
             ? rd0.add(0x1p-54)
             : rd0
-        r0   : F64  = F64.from_bits(rbits.bitor(self.sgn.shl(63)))
-        plus : Bool = self.sgn.eq(0)
+        r0   : F64  = F64.from_bits(rbits.bitor(me.sgn.shl(63)))
+        plus : Bool = me.sgn.eq(0)
         r    : F64  = plus
             ? r0.add(rd)
             : r0.add(rd.neg())
-        biased_exponent : U64 = self.ex.add(1023).to_wrap<U64>()
+        biased_exponent : U64 = me.ex.add(1023).to_wrap<U64>()
         scale           : F64 = F64.from_bits(biased_exponent.bitand(0x7FF).shl(52))
         return(r.mul(scale))

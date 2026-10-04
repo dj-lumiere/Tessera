@@ -438,7 +438,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             var declared = RequiredNames(clauses);
             bool IsParam(TypeRef t) => t is { Args.Count: 0, Path: null } && declared.Contains(t.Name);
-            // A concept's routine declares its parameters without a require of its own: `Self.represent_into<TWriter>`. Type
+            // A concept's routine declares its parameters without a require of its own: `Me.represent_into<TWriter>`. Type
             // arguments that are the concept's own parameters fix it instead: `Bytes.to_result<T>` in Parsable<T>.
             bool fixedByConcept = inConcept && conceptParams is not null
                                   && ownArgs.Any(t => NamesIn(t).Any(conceptParams.Contains));
@@ -707,12 +707,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         ExpectLineEnd();
         var clauses = ParseClauses();
 
-        // Required routines are written `routine Self.name(...)`, `routine T.name(...)` with one of the concept's
+        // Required routines are written `routine Me.name(...)`, `routine T.name(...)` with one of the concept's
         // parameters (a multi-type concept), or, indented under the concept, on a fixed type with the concept's
         // parameters as its type arguments (`routine Bytes.to_result<T>(...)`). They have no body.
         var routines = new List<RoutineDecl>();
         while (IsIdent("routine") && PeekTok(1) is { Kind: TokenKind.Ident } owner
-                                  && (owner.Text == "Self" || typeParams.Contains(owner.Text) || Cur.Pos.Col > 1)
+                                  && (owner.Text == "Me" || typeParams.Contains(owner.Text) || Cur.Pos.Col > 1)
                                   && PeekTok(2).Kind == TokenKind.Dot)
             routines.Add(ParseRoutine([], inConcept: true, conceptParams: typeParams));
         return new ConceptDecl(file, attrs, name.Text, typeParams, clauses, routines, pos);

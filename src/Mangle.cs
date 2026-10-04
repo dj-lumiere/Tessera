@@ -18,7 +18,7 @@ public sealed partial class Compiler
     {
         var m = new Mangler(this);
         m.Out("_Z");
-        var steps = r.Owner is null ? ModuleSteps(r.Module) : m.TypeSteps(env.Get("Self") ?? env.Get(r.Owner.Name)!);
+        var steps = r.Owner is null ? ModuleSteps(r.Module) : m.TypeSteps(env.Get("Me") ?? env.Get(r.Owner.Name)!);
         // A routine defined for type arguments is an explicit specialization: its name carries them, then the
         // concrete return and parameter types.
         if (r.Fixed.Count > 0)

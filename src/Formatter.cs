@@ -28,7 +28,7 @@ namespace Tessera;
 ///   routines last (`when_booted`, then `start`). Within a kind the written order
 ///   stays, a declaration keeps the comments and attributes above it, and a file divided by section comments is
 ///   ordered section by section. A file already in order is left as it is;
-/// - inside `routine Owner.name`, the owner type is written `Self` after the header names it (`List<T>` in a
+/// - inside `routine Owner.name`, the owner type is written `Me` after the header names it (`List<T>` in a
 ///   `List<T>` routine, not `List<U>`); comments and literals are left alone.
 /// Formatting is idempotent: formatting formatted text changes nothing.
 public static class Formatter
@@ -478,7 +478,7 @@ public static class Formatter
         }
         items.Add(line[from..close].Trim());
         string head = line[..(open + 1)];
-        // a record literal keeps its inner spaces, `Self { a: 1, b: 2 }`, which trimming the items dropped
+        // a record literal keeps its inner spaces, `Me { a: 1, b: 2 }`, which trimming the items dropped
         string tail = line[open] == '{' ? " " + line[close..] : line[close..];
         string pad = new(' ', Indent(line) + ContinuationIndent);
 
@@ -1021,9 +1021,9 @@ public static class Formatter
         return null;
     }
 
-    // ── Self ────────────────────────────────────────────────────────────
+    // ── Me ────────────────────────────────────────────────────────────
 
-    /// Rewrites the owner type as `Self` inside each routine declared on it.
+    /// Rewrites the owner type as `Me` inside each routine declared on it.
     private static List<string> UseSelf(List<string> lines)
     {
         var result = new List<string>(lines);
@@ -1031,12 +1031,12 @@ public static class Formatter
         {
             if (!result[i].StartsWith("routine ")) continue;
             string? owner = Owner(result[i]);
-            if (owner is null || owner == "Self") continue;
+            if (owner is null || owner == "Me") continue;
             int end = i + 1;
             while (end < result.Count && (result[end].Length == 0 || result[end].StartsWith(' ') || result[end].StartsWith("require ")))
                 end++;
-            // `Self` starts where the owner is declared. A concrete owner is declared by the header (`U64.` in
-            // `routine U64.min`); a type parameter by its `require` line (`routine TFrom.bitcast<TTo>(self: TFrom)` with
+            // `Me` starts where the owner is declared. A concrete owner is declared by the header (`U64.` in
+            // `routine U64.min`); a type parameter by its `require` line (`routine TFrom.bitcast<TTo>(me: TFrom)` with
             // `require T: typename`), so its header keeps T. `require` lines always name their types.
             bool typeParameter = Enumerable.Range(i + 1, end - i - 1).Any(j => result[j].StartsWith("require ")
                 && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^require |,\s*){owner}\s*:"));
@@ -1093,7 +1093,7 @@ public static class Formatter
         return j < header.Length && header[j] == '.' ? header[i..j] : null;
     }
 
-    /// Replaces whole occurrences of `type` with `Self`, outside comments and literals.
+    /// Replaces whole occurrences of `type` with `Me`, outside comments and literals.
     private static string ReplaceType(string line, string type)
     {
         var sb = new StringBuilder();
@@ -1117,7 +1117,7 @@ public static class Formatter
             if (boundaryBefore && string.CompareOrdinal(line, i, type, 0, type.Length) == 0
                 && (after >= line.Length || !(char.IsLetterOrDigit(line[after]) || line[after] is '_' or '<')))
             {
-                sb.Append("Self");
+                sb.Append("Me");
                 i = after - 1;
                 continue;
             }

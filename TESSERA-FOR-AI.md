@@ -65,7 +65,7 @@ routine start() -> Void
   `;` is not a comment (it was until 2026-09-28) and is rejected.
 - **Every routine has a doc comment**, private ones, externals, and a concept's required routines included. It sits
   above the attribute lines and reads, in this order: what the routine does in one or two plain sentences (from its
-  real behavior), `:typeparam T:` for its own type parameters, `:param name:` for every parameter but `self` in
+  real behavior), `:typeparam T:` for its own type parameters, `:param name:` for every parameter but `me` in
   order, `:returns:` unless it returns Void, then `:throws:` ("Crashes with `IndexOutOfBoundsError` when ...", or the
   `Failure` it returns), `:absent:` (when an Option comes back Absent), `:note:`, and `:see:` as needed. No `;` in the
   prose, facts only. `tessera lint` (and `check` / `build` / `run` for the program's own files) warns on a routine
@@ -88,8 +88,8 @@ routine start() -> Void
   (`p.field`, `p.stride(i)`) are addresses. An `Addr` has no `load` or `store`: convert it to say what's there, `a.to<@U32>().load()`. Registers:
   `volatile_load()` / `volatile_store(...)`. (`:=` and `p = v` are gone and rejected.) From the value's side,
   `v.store_into(p)` is `p.store(v)`, so a chain can end in memory: `a.add(b).store_into(sum)`. A
-  read-modify-write on one place reads left to right: `self.count.load().add(1).store_into(self.count)`, not
-  `self.count.store(self.count.load().add(1))`. The load needn't come first: `x.sub(p.load()).store_into(p)`
+  read-modify-write on one place reads left to right: `me.count.load().add(1).store_into(me.count)`, not
+  `me.count.store(me.count.load().add(1))`. The load needn't come first: `x.sub(p.load()).store_into(p)`
   (for a commutative op, put the load first: `p.load().add(x).store_into(p)`). A literal receiver takes its type from the pointer
   (`0.store_into(count)`).
 - Memory is never read implicitly. A place passed as an argument is its address, so `Byte.to<U8>(p.stride(i))` is an
@@ -207,11 +207,11 @@ routine start() -> Void
   Before, `first` and `count` ride along every jump:
 
   ```tessera
-  routine List<T>.destruct_all(self: @Self) -> Void
+  routine List<T>.destruct_all(me: @Me) -> Void
   require T: typename, Destructible<T>
       block entry()
-          first : @T    = self.storage.data.load()
-          count : USize = self.count.load()
+          first : @T    = me.storage.data.load()
+          count : USize = me.count.load()
           jump each(first, count, 0)
 
       block each(first: @T, count: USize, i: USize)
@@ -223,10 +223,10 @@ routine start() -> Void
   After, the head shares them and the loop passes only what changes:
 
   ```tessera
-  routine List<T>.destruct_all(self: @Self) -> Void
+  routine List<T>.destruct_all(me: @Me) -> Void
   require T: typename, Destructible<T>
-      shared first : @T    = self.storage.data.load()
-      shared count : USize = self.count.load()
+      shared first : @T    = me.storage.data.load()
+      shared count : USize = me.count.load()
 
       block entry()
           jump each(0)
@@ -410,22 +410,23 @@ routine start() -> Void
 
 **Routines and generics**
 
-- `routine name(a: T, p: @U) -> R`. Methods are `routine Type.name(self: @Self, ...)` (pointer receiver)
-  or `(self: Self, ...)` (value receiver). The name `self` is what makes a method: only a first parameter named
-  `self` (typed `Self` or `@Self`) allows `x.name(...)`; anything else is typewise: `List<S64>.construct(alloc)`,
-  `Job.less(a, b)`. A routine meeting a concept (`less`, `eq`, `compare`, `hash`) takes `self` as the concept does. Where the
+- `routine name(a: T, p: @U) -> R`. Methods are `routine Type.name(me: @Me, ...)` (pointer receiver)
+  or `(me: Me, ...)` (value receiver). The name `me` is what makes a method: only a first parameter named
+  `me` (typed `Me` or `@Me`) allows `x.name(...)`; anything else is typewise: `List<S64>.construct(alloc)`,
+  `Job.less(a, b)`. `me` and `Me` are reserved: no other parameter, binding, or claim is named `me`, and no type is
+  named `Me`. A routine meeting a concept (`less`, `eq`, `compare`, `hash`) takes `me` as the concept does. Where the
   type is expected (a binding, an argument, a block argument, a return), a leading `.` leaves it out:
   `list: List<S64> = .construct(alloc)`, `return(.Absent)`. Not at the head of a chain or as a statement.
-- **`@T` or `T`** (for `self` and any parameter): take `@T` when the routine changes the value in place, or
+- **`@T` or `T`** (for `me` and any parameter): take `@T` when the routine changes the value in place, or
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound-assignment methods (`add_assign` and the like): change a value in memory by load, act, store —
   `p.load().add(1).store_into(p)`.
-- **Methods through a pointer.** `p.m()` finds `T.m(self: @Self)` first, then `Ptr`'s own methods (`is_null`,
-  `offset`, `to<@U>`, ...). Value methods (`self: Self`, such as every collection's `eq`) aren't reachable through a
+- **Methods through a pointer.** `p.m()` finds `T.m(me: @Me)` first, then `Ptr`'s own methods (`is_null`,
+  `offset`, `to<@U>`, ...). Value methods (`me: Me`, such as every collection's `eq`) aren't reachable through a
   pointer, because that would hide a load: load first (`a.load().eq(b.load())`). Don't name your own pointer methods after `Ptr`'s.
-- **Collection methods that change the collection take `self: @Self`**, so it must live in memory (`claim` a
-  slot) before you call them. **Read-only ones come in both receiver forms**: next to the `self: Self` routine, a
-  `self: @Self` one that forwards to it (`return(self.load().m(...))`, or reads the fields), so a slot or a field
+- **Collection methods that change the collection take `me: @Me`**, so it must live in memory (`claim` a
+  slot) before you call them. **Read-only ones come in both receiver forms**: next to the `me: Me` routine, a
+  `me: @Me` one that forwards to it (`return(me.load().m(...))`, or reads the fields), so a slot or a field
   reads directly (`list.count()`, `primes.to<Slice<U32>>()`, `line.find("=")` on a claimed `Bytes`, `w.to<Bytes>()`
   on a `SliceWriter`) and a value too. This holds for the collections, `Slice`, and `Bytes`, and a type of your own
   that people keep in slots does the same for the reads they call there. It's never automatic, and three kinds stay
@@ -443,7 +444,7 @@ routine start() -> Void
   record's own `require` applies to every use, so put element constraints on the routines that need them.
 - A bare literal doesn't bind a type parameter: bind it first (`n: S64 = 42`), then pass `n`.
 - **Overloads.** Routines of one name under one parent (a module's free routines, one type's routines) may differ in
-  their parameter types (`self` included); a call picks the one whose parameter types are its arguments' types
+  their parameter types (`me` included); a call picks the one whose parameter types are its arguments' types
   exactly. No implicit conversion counts there (a `@T` isn't an `Addr` overload's argument), and an untyped integer
   literal prefers `USize` (`SSize` if negative) when several take it. An exact concrete overload beats a generic
   one; anything else ambiguous, or nothing fitting, is an error listing the overloads. Same parameter types, or a
@@ -599,7 +600,7 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   the text and the type, on bad text) or `text.to_result<S32>()` (`Result<T, ParseError>`: `Empty`, `Invalid`,
   `OutOfRange`), for every integer type (an optional sign and decimal digits) and every float type. There is no
   `parse`. A type is readable from text when it conforms to `Parsable<T>`, which asks for one routine,
-  `routine Bytes.to_result<T>(self: Bytes) -> Result<T, ParseError>`, and `to<T>` comes with it. Numbers from
+  `routine Bytes.to_result<T>(me: Bytes) -> Result<T, ParseError>`, and `to<T>` comes with it. Numbers from
   standard input: `a : S32 = In.read<S32>()` reads the next word in place (a word longer than the 8192-byte buffer
   goes through a temporary on `DEFAULT_HEAP`) and crashes at the end of the input or on a word that isn't a T;
   `In.read_checked<T>()` gives `Option<T>` (Absent for both), `In.read_result<T>()` a `Result<T, ParseError>`
@@ -860,10 +861,10 @@ array presets (`K.getitem(i)`, with `preset K: @Array<T, COUNT> <- { ... }`).
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
 `destruct`:
 
-- `Type.construct(...) -> Self` is the constructor, a typewise routine: `List<S64>.construct(alloc)`,
+- `Type.construct(...) -> Me` is the constructor, a typewise routine: `List<S64>.construct(alloc)`,
   `ListIter<T>.construct(list)`, `CountWriter.construct()`. A type too large to return by value constructs in
   place instead, through a pointer: `out.construct(inner)` for `BufWriter<T>`.
-- `self.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
+- `me.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
   and leaves the value empty. Call it yourself; nothing runs it for you. A collection's `destruct` doesn't touch its
   elements; `destruct_all()` destructs them first (elements must conform to `Destructible<T>`), and `Dict` / `SortedDict`
   also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release. `Array<T, COUNT>` acquires
@@ -876,7 +877,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array<T, COUNT> <- { ... }`).
 ## Style
 
 Run `tessera fmt` on what you write: it aligns `name : T = value` runs, spaces blocks and routines, joins broken
-lists and wraps lines over 100 characters at commas (continuation lines 4 spaces further in), and writes a routine's owner type as `Self` after it's declared
+lists and wraps lines over 100 characters at commas (continuation lines 4 spaces further in), and writes a routine's owner type as `Me` after it's declared
 (not in `require` lines). It also orders the top-level declarations: module, sorted imports, defines, globals,
 presets, types, concepts, standalone conformances, routines (in your order), and `when_booted` then `start` last. Follow `../Tessera-Wiki/docs/Style-Guide.md`. In short: one purpose per block, blocks named for what they do (`grow`,
 `scan`, `sift_up`), values named for what they mean (`in_bounds`, not `t1`), boolean names that read as

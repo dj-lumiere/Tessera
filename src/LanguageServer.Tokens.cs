@@ -235,7 +235,7 @@ public static partial class LanguageServer
         private Dictionary<string, string> _typeParamLines = [];
         private Dictionary<string, Pos> _typeParamAt = [];
 
-        /// The concept being walked: what `Self` means in its routines.
+        /// The concept being walked: what `Me` means in its routines.
         private ConceptDecl? _concept;
 
         /// The concepts each type parameter in scope is required to meet (`Equal<T>` for `T`).
@@ -282,12 +282,12 @@ public static partial class LanguageServer
         /// A routine as called at `call`: what the builder bound its type parameters to there, when it recorded it.
         private Func<string?> RoutineHover(RoutineDecl r, Pos call) =>
             DeclHover(r, analysis.Compiler.CallUses.GetValueOrDefault((call, r.Name))?.Bindings
-                .Where(b => b.Name != "Self").Select(b => (b.Name, b.Type.ToString())));
+                .Where(b => b.Name != "Me").Select(b => (b.Name, b.Type.ToString())));
 
         /// A value: its type as the builder resolved it where it recorded one, else as written.
         private Func<string?> ValueHover(string name, Pos pos, bool parameter)
         {
-            var written = _written.GetValueOrDefault(name) is { Name: "Self", Path: null } && _routine?.Owner is { } owner
+            var written = _written.GetValueOrDefault(name) is { Name: "Me", Path: null } && _routine?.Owner is { } owner
                 ? owner
                 : _written.GetValueOrDefault(name);
             var doc = parameter ? ParamDoc(_blockDoc, name) ?? ParamDoc(RoutineDoc(), name) : null;
@@ -304,8 +304,8 @@ public static partial class LanguageServer
         /// A type name: its declaration, and what it binds the declaration's type parameters to (`List<S64>`).
         private Func<string?>? TypeHover(TypeRef t)
         {
-            if (t is { Name: "Self", Path: null } && _routine?.Owner is { } owner && owner.Name != "Self") return TypeHover(owner);
-            if (t is { Name: "Self", Path: null } && _concept is not null) return DeclHover(_concept);
+            if (t is { Name: "Me", Path: null } && _routine?.Owner is { } owner && owner.Name != "Me") return TypeHover(owner);
+            if (t is { Name: "Me", Path: null } && _concept is not null) return DeclHover(_concept);
             if (t.Path is null && _typeParamLines.TryGetValue(t.Name, out var clause))
                 return At(_typeParamAt[t.Name], t.Name, () => HoverText(clause, null));
             Decl? decl = analysis.Compiler.TypeDeclQuiet(t.Name, analysis.Shown, t.Path)
@@ -315,11 +315,11 @@ public static partial class LanguageServer
             return DeclHover(decl, parameters.Zip(t.Args, (p, a) => (p, a.ToString() ?? "")));
         }
 
-        /// The type a value's written type names, past pointers (`@Self` is a `Self`), with `Self` as the routine's owner.
+        /// The type a value's written type names, past pointers (`@Me` is a `Me`), with `Me` as the routine's owner.
         private TypeRef? Pointee(TypeRef? t)
         {
             while (t is { Name: "Ptr", Path: null, Args: [TypeArgType inner] }) t = inner.Type;
-            return t is { Name: "Self", Path: null } ? _routine?.Owner : t;
+            return t is { Name: "Me", Path: null } ? _routine?.Owner : t;
         }
 
         /// The written type of an expression the walk can read one off: a value's, a field's.
@@ -384,10 +384,10 @@ public static partial class LanguageServer
                 ? preset
                 : owner;
 
-        /// A routine's result type with its owner's type parameters as the receiver has them, and `Self` as the receiver.
+        /// A routine's result type with its owner's type parameters as the receiver has them, and `Me` as the receiver.
         private TypeRef Substitute(RoutineDecl r, TypeRef receiver)
         {
-            var map = new Dictionary<string, TypeRef> { ["Self"] = receiver };
+            var map = new Dictionary<string, TypeRef> { ["Me"] = receiver };
             if (r.Owner is { } owner)
             {
                 if (owner.Args.Count == 0 && owner.Name != receiver.Name) map[owner.Name] = receiver; // `T.name`, on anything
@@ -403,15 +403,15 @@ public static partial class LanguageServer
                 ? to
                 : t with { Args = [.. t.Args.Select(a => a is TypeArgType inner ? new TypeArgType(Replace(inner.Type, map)) : a)] };
 
-        /// A type with the walked routine's `Self` written out as its owner, wherever it appears (`@Self`).
+        /// A type with the walked routine's `Me` written out as its owner, wherever it appears (`@Me`).
         private TypeRef SelfIsOwner(TypeRef t) =>
-            _routine?.Owner is { Name: not "Self" } owner ? Replace(t, new Dictionary<string, TypeRef> { ["Self"] = owner }) : t;
+            _routine?.Owner is { Name: not "Me" } owner ? Replace(t, new Dictionary<string, TypeRef> { ["Me"] = owner }) : t;
 
         /// The written type of a call's receiver as it is, a pointer included (`data.stride(i)` on a `@S64`).
         private TypeRef? ReceiverType(Expr e) => e switch
         {
             ValueRef v when _written.GetValueOrDefault(v.Name) is { } t => SelfIsOwner(t),
-            // A field reached through a pointer is a place: `self.capacity.load()` reads it.
+            // A field reached through a pointer is a place: `me.capacity.load()` reads it.
             FieldExpr f when IsPlace(f.Base) && Field(f.Base, f.Name) is { } field =>
                 new TypeRef("Ptr", [new TypeArgType(field.Field.Type)], f.Pos),
             MethodCallExpr { Name: "stride", Args.Count: 1 } stride => ReceiverType(stride.Receiver),
@@ -474,7 +474,7 @@ public static partial class LanguageServer
             var lines = LinesOf(analysis, ptr);
             int at = Array.FindIndex(lines, l => l.Contains("`p.stride(n)`", StringComparison.Ordinal));
             Pos? where = at < 0 ? null : new Pos(ptr, at + 1, lines[at].IndexOf("stride", StringComparison.Ordinal) + 1);
-            Func<string?> hover = () => HoverText("routine Ptr<T>.stride(self: Self, n: USize) -> Self",
+            Func<string?> hover = () => HoverText("routine Ptr<T>.stride(me: Me, n: USize) -> Me",
                 "The address `n` `T`s past this one; an `SSize` moves back. Built into the builder: it is a place like a "
                 + "field, so it chains (`p.stride(i).f`), and a load or a store through it keeps a dense record's "
                 + "alignment.", [("T", pointee)]);
@@ -706,7 +706,7 @@ public static partial class LanguageServer
                     break;
                 case ConceptDecl concept:
                     _concept = concept;
-                    _typeParams = [.. concept.TypeParams, "Self"];
+                    _typeParams = [.. concept.TypeParams, "Me"];
                     Mark(concept.Pos, concept.Name, "interface", DeclHover(concept));
                     Clauses(concept.Clauses);
                     TypeParamNames(concept.Pos, concept.TypeParams);
@@ -731,7 +731,7 @@ public static partial class LanguageServer
 
         private void Routine(RoutineDecl r, IEnumerable<string> outer)
         {
-            _typeParams = [.. outer, .. r.TypeParams, "Self"];
+            _typeParams = [.. outer, .. r.TypeParams, "Me"];
             if (r.Owner is not null)
             {
                 // `routine List<T>.push`: the owner's written arguments are the routine's parameters too, unless one names a

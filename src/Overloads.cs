@@ -21,7 +21,7 @@ public sealed partial class Compiler
     private readonly Dictionary<RoutineDecl, (string Params, string Ret)> _signatureKeys = [];
 
     /// A routine's parameter types (its receiver included) and its return type, with each type parameter written as the
-    /// slot it fills: the routine's own by position, its owner's by position in the owner, `Self` as itself. Two routines
+    /// slot it fills: the routine's own by position, its owner's by position in the owner, `Me` as itself. Two routines
     /// with equal parameter keys can't be told apart by a call.
     private (string Params, string Ret) SignatureKey(RoutineDecl r)
     {
@@ -31,24 +31,24 @@ public sealed partial class Compiler
         for (int i = 0; i < r.TypeParams.Count; i++) slots[r.TypeParams[i]] = $"$R{i}";
         if (r.Owner is not null)
         {
-            if (IsBlanketOwner(r)) slots[r.Owner.Name] = "$Self";
+            if (IsBlanketOwner(r)) slots[r.Owner.Name] = "$Me";
             for (int i = 0; i < r.Owner.Args.Count; i++)
                 if (r.Owner.Args[i] is TypeArgType { Type: { Args.Count: 0, Path: null } a }
                     && ClauseTypeParamsOrOwnerArg(r, a.Name))
                     slots.TryAdd(a.Name, $"$O{i}");
         }
         foreach (var (name, slot) in slots) env.Bind(name, new SlotType(slot));
-        // `Self` is the owner, so `self: Self` and `self: Point` on Point are the same parameter.
+        // `Me` is the owner, so `me: Me` and `me: Point` on Point are the same parameter.
         if (r.Owner is not null)
         {
-            DType self = new SlotType("$Self");
+            DType self = new SlotType("$Me");
             if (!IsBlanketOwner(r))
             {
                 try { self = ResolveType(r.Owner, env); }
                 catch (CompileError) { /* an owner that doesn't resolve stays a slot */ }
             }
-            env.Bind("Self", self);
-            slots.TryAdd("Self", self.Key);
+            env.Bind("Me", self);
+            slots.TryAdd("Me", self.Key);
         }
         string Key(TypeRef t) =>
             KeyQuiet(t, env) ?? "?" + SlotText(t, slots);
@@ -207,7 +207,7 @@ public sealed partial class Compiler
         foreach (var m in all)
         {
             if (m == seen || m.IsPrivate || m.IsInternal || OwnerDecl(m) != ownerDecl || Visible(m, file, null)) continue;
-            int count = m.Params.Count - (m.Params is [{ Name: "self" }, ..] ? 1 : 0);
+            int count = m.Params.Count - (m.Params is [{ Name: "me" }, ..] ? 1 : 0);
             if (count == args)
                 return $"; the '{seen.DisplayName}' that takes {args} argument(s) is in {m.Module}, "
                        + $"which this file doesn't import (import {m.Module})";
@@ -242,7 +242,7 @@ public sealed partial class Compiler
         return null;
     }
 
-    /// A routine's signature as it's declared, for listing overloads: `routine Point.scale(self: Point, by: S64) -> Point`.
+    /// A routine's signature as it's declared, for listing overloads: `routine Point.scale(me: Point, by: S64) -> Point`.
     public static string ShowSignature(RoutineDecl r)
     {
         var sb = new StringBuilder("routine ");

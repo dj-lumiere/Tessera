@@ -73,16 +73,16 @@ preset CM_F64_TAN_PI_DB: @Array<U64, 147> <- { 0x3C8B44453E2404E7, 0x3CA56A4AA74
     0x4022E342CA2440EE, 0x3CC0000000000000, 0x3FDEE846D3680301, 0x4032A04FA64D35FF,
     0x3CD0000000000000 }
 
-/// tan(pi self), correctly rounded (to nearest, ties to even). An integer n gives +0 for a positive even n or a
+/// tan(pi me), correctly rounded (to nearest, ties to even). An integer n gives +0 for a positive even n or a
 /// negative odd one and -0 otherwise, n + 1/2 gives +inf for an even n and -inf for an odd one, n +- 1/4 gives
 /// +-1, +-inf gives NaN, and NaN comes back quiet.
-/// :returns: tan(pi `self`), correctly rounded.
-routine F64.tan_pi(self: Self) -> Self
-    shared ixu  : U64  = self.bits()
-    shared ax   : U64  = ixu.bitand(0x7FFFFFFFFFFFFFFF)
-    shared neg  : U64  = ixu.shr(63)
-    shared zero : Self = Self.copysign(0.0, self)
-    shared one  : Self = Self.copysign(1.0, self)
+/// :returns: tan(pi `me`), correctly rounded.
+routine F64.tan_pi(me: Me) -> Me
+    shared ixu  : U64 = me.bits()
+    shared ax   : U64 = ixu.bitand(0x7FFFFFFFFFFFFFFF)
+    shared neg  : U64 = ixu.shr(63)
+    shared zero : Me  = Me.copysign(0.0, me)
+    shared one  : Me  = Me.copysign(1.0, me)
 
     block entry()
         moderate : Bool = ax.ge(0x3F30000000000000)  // |x| >= 2^-12
@@ -119,8 +119,8 @@ routine F64.tan_pi(self: Self) -> Self
     block special()
         nan : Bool = ax.gt(0x7FF0000000000000)
         branch nan
-            ? return(self.add(self))
-            : return(Self.from_bits(0xFFF8000000000000))
+            ? return(me.add(me))
+            : return(Me.from_bits(0xFFF8000000000000))
 
     // 2^-12 <= |x| < 2^46, so 1011 <= e <= 1068
     block moderate()
@@ -139,13 +139,13 @@ routine F64.tan_pi(self: Self) -> Self
         flip   : U64  = msb.bitxor(neg)  // the table entry is negated
         sm     : U64  = cm_f64_tan_pi_signed(m, neg)
         k      : U64  = sm.shl(e.sub(1005))  // the bits of 64 x below 1/2 (signed), scaled by 2^63
-        z      : Self = k.to_wrap<S64>().to<Self>()
+        z      : Me   = k.to_wrap<S64>().to<Me>()
         mod256 : Bool = k.shl(1).eq(0)  // x mod 2^-8 = 0
         branch mod256
             ? aligned(e, s, s1, m, iq, flip, sm, k, z)
             : fast(iq, flip, z)
 
-    block aligned(e: U64, s: U64, s1: U64, m: U64, iq: U64, flip: U64, sm: U64, k: U64, z: Self)
+    block aligned(e: U64, s: U64, s1: U64, m: U64, iq: U64, flip: U64, sm: U64, k: U64, z: Me)
         mod128 : Bool = k.eq(0)  // x mod 2^-7 = 0
         branch mod128
             ? continue
@@ -165,33 +165,33 @@ routine F64.tan_pi(self: Self) -> Self
         jq : S64 = sm.to_wrap<S64>().shr(s.add(6).to_wrap<S64>())
         return(cm_f64_tan_pi_exact(jq.to_wrap<U64>(), neg))
 
-    block fast(iq: U64, flip: U64, z: Self)
-        z2   : Self        = z.mul(z)
-        z4   : Self        = z2.mul(z2)
-        z3   : Self        = z.mul(z2)
-        c01  : Self        = Self.add(0x1.4abbce625be51p-207, z2.mul(0x1.466bc6776a9b1p-345))
-        c23  : Self        = Self.add(0x1.45fff6eb26045p-483, z2.mul(0x1.4627663861052p-621))
-        f    : Self        = z3.mul(c01.add(z4.mul(c23)))
-        eps0 : Self        = z3.mul(0x1p-256).add(Self.copysign(0x1p-104, z))
+    block fast(iq: U64, flip: U64, z: Me)
+        z2   : Me          = z.mul(z)
+        z4   : Me          = z2.mul(z2)
+        z3   : Me          = z.mul(z2)
+        c01  : Me          = Me.add(0x1.4abbce625be51p-207, z2.mul(0x1.466bc6776a9b1p-345))
+        c23  : Me          = Me.add(0x1.45fff6eb26045p-483, z2.mul(0x1.4627663861052p-621))
+        f    : Me          = z3.mul(c01.add(z4.mul(c23)))
+        eps0 : Me          = z3.mul(0x1p-256).add(Me.copysign(0x1p-104, z))
         p0   : CmF64TrigDD = cm_f64_trig_pi_mulddd(0x1.921fb54442d18p-69, 0x1.1a62633145c07p-123, z)
         p1   : CmF64TrigDD = cm_f64_tan_pi_fastsumddd(p0.hi, p0.lo, f)
         p    : CmF64TrigDD = cm_f64_tan_pi_combine(p1.hi, p1.lo, iq, flip)
-        eps  : Self        = eps0.add(eps0.mul(p.hi.mul(p.hi)))
-        lb   : Self        = p.hi.add(p.lo.sub(eps))
-        ub   : Self        = p.hi.add(p.lo.add(eps))
+        eps  : Me          = eps0.add(eps0.mul(p.hi.mul(p.hi)))
+        lb   : Me          = p.hi.add(p.lo.sub(eps))
+        ub   : Me          = p.hi.add(p.lo.add(eps))
         sure : Bool        = lb.eq(ub)
         branch sure
             ? return(lb)
             : accurate(iq, flip, z)
 
     // the fast path can't decide the rounding: a longer double-double polynomial of tan(pi z 2^-69)
-    block accurate(iq: U64, flip: U64, zs: Self)
-        z   : Self        = zs.mul(0x1p-63)
-        z2  : Self        = z.mul(z)
-        dz2 : Self        = f64_mul_error(z, z, z2)
-        cl2 : Self        = Self.add(0x1.45f3030c82af4p-78, z2.mul(0x1.464490600a978p-90))
-        cl1 : Self        = Self.add(0x1.45f32f25dab7fp-66, z2.mul(cl2))
-        cl  : Self        = z2.mul(cl1)
+    block accurate(iq: U64, flip: U64, zs: Me)
+        z   : Me          = zs.mul(0x1p-63)
+        z2  : Me          = z.mul(z)
+        dz2 : Me          = f64_mul_error(z, z, z2)
+        cl2 : Me          = Me.add(0x1.45f3030c82af4p-78, z2.mul(0x1.464490600a978p-90))
+        cl1 : Me          = Me.add(0x1.45f32f25dab7fp-66, z2.mul(cl2))
+        cl  : Me          = z2.mul(cl1)
         q0  : CmF64TrigDD = cm_f64_trig_pi_poly_start(0x1.45f472e3af011p-54, 0x1.90612a0755449p-110,
             cl)
         q1  : CmF64TrigDD = cm_f64_trig_pi_poly_step(z2, dz2, q0, 0x1.45fff9b48e95ep-42,
@@ -212,7 +212,7 @@ routine F64.tan_pi(self: Self) -> Self
         is_zero : Bool = ax.eq(0)
         tiny    : Bool = ax.lt(0x3CA0000000000000)  // |x| < 2^-53
         when
-            is_zero -> return(self)
+            is_zero -> return(me)
             tiny    -> tiny()
             else    -> polynomial()
 
@@ -221,54 +221,53 @@ routine F64.tan_pi(self: Self) -> Self
         branch subnormal
             ? scaled()
             : continue
-        r : CmF64TrigDD = cm_f64_trig_pi_mulddd(0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53, self)
+        r : CmF64TrigDD = cm_f64_trig_pi_mulddd(0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53, me)
         jump check(r.hi, r.lo, r.hi)
 
     // scaled up so that the double-double product stays exact
     block scaled()
         e   : U64         = ax.shr(52)
-        sc  : Self        = Self.from_bits(U64.sub(2045, e).shl(52))
-        isc : Self        = Self.from_bits(e.add(1).shl(52))
+        sc  : Me          = Me.from_bits(U64.sub(2045, e).shl(52))
+        isc : Me          = Me.from_bits(e.add(1).shl(52))
         r   : CmF64TrigDD = cm_f64_trig_pi_mulddd(0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53,
-            self.mul(sc))
-        res : Self        = r.hi.mul(isc)
+            me.mul(sc))
+        res : Me          = r.hi.mul(isc)
         sub : Bool        = res.abs().lt(0x1p-1022)
         branch sub
             ? subnormal(r, sc, isc, res)
             : check(r.hi, r.lo, res)
 
     // a subnormal result: round at the subnormal's precision by adding and removing 2^-1022 at the scaled size
-    block subnormal(r: CmF64TrigDD, sc: Self, isc: Self, res: Self)
-        o   : Self = Self.copysign(0x1p-1022, self)
-        v0b : Self = o.add(res).mul(sc)
-        v0h : Self = res.mul(sc)
-        tl  : Self = r.lo.add(r.hi.sub(v0h))
-        v0  : Self = v0b.add(tl)
+    block subnormal(r: CmF64TrigDD, sc: Me, isc: Me, res: Me)
+        o   : Me = Me.copysign(0x1p-1022, me)
+        v0b : Me = o.add(res).mul(sc)
+        v0h : Me = res.mul(sc)
+        tl  : Me = r.lo.add(r.hi.sub(v0h))
+        v0  : Me = v0b.add(tl)
         return(v0.mul(isc).sub(o))
 
     // 2^-53 <= |x| < 2^-12: pi x + (pi^3/3) x^3 + ...
     block polynomial()
-        x2   : Self        = self.mul(self)
-        x3   : Self        = self.mul(x2)
-        f2   : Self        = Self.add(0x1.466bc6775aa2ap+5, x2.mul(0x1.46000158496c2p+7))
-        f1   : Self        = Self.add(0x1.4abbce625be53p+3, x2.mul(f2))
-        f    : Self        = x3.mul(f1)
-        px   : CmF64TrigDD = cm_f64_trig_pi_mulddd(0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53,
-            self)
+        x2   : Me          = me.mul(me)
+        x3   : Me          = me.mul(x2)
+        f2   : Me          = Me.add(0x1.466bc6775aa2ap+5, x2.mul(0x1.46000158496c2p+7))
+        f1   : Me          = Me.add(0x1.4abbce625be53p+3, x2.mul(f2))
+        f    : Me          = x3.mul(f1)
+        px   : CmF64TrigDD = cm_f64_trig_pi_mulddd(0x1.921fb54442d18p+1, 0x1.1a62633145c07p-53, me)
         t    : CmF64TrigDD = cm_f64_tan_pi_fastsumddd(px.hi, px.lo, f)
-        eps  : Self        = self.mul(x2.mul(0x1.1p-47).add(0x1p-101))
-        lb   : Self        = t.hi.add(t.lo.sub(eps))
-        ub   : Self        = t.hi.add(t.lo.add(eps))
+        eps  : Me          = me.mul(x2.mul(0x1.1p-47).add(0x1p-101))
+        lb   : Me          = t.hi.add(t.lo.sub(eps))
+        ub   : Me          = t.hi.add(t.lo.add(eps))
         sure : Bool        = lb.eq(ub)
         branch sure
             ? return(lb)
             : polynomial_accurate(x2, x3, px)
 
-    block polynomial_accurate(x2: Self, x3: Self, px: CmF64TrigDD)
-        dx2 : Self        = f64_mul_error(self, self, x2)
-        dx3 : Self        = f64_mul_error(x2, self, x3).add(dx2.mul(self))
-        cl1 : Self        = Self.add(0x1.45f472e3aed7dp+9, x2.mul(0x1.45f33be0e9598p+11))
-        cl  : Self        = x2.mul(cl1)
+    block polynomial_accurate(x2: Me, x3: Me, px: CmF64TrigDD)
+        dx2 : Me          = f64_mul_error(me, me, x2)
+        dx3 : Me          = f64_mul_error(x2, me, x3).add(dx2.mul(me))
+        cl1 : Me          = Me.add(0x1.45f472e3aed7dp+9, x2.mul(0x1.45f33be0e9598p+11))
+        cl  : Me          = x2.mul(cl1)
         q0  : CmF64TrigDD = cm_f64_trig_pi_poly_start(0x1.45fff9b48e95ep+7, 0x1.a5047910ae0efp-49,
             cl)
         q1  : CmF64TrigDD = cm_f64_trig_pi_poly_step(x2, dx2, q0, 0x1.466bc6775aae2p+5,
@@ -277,19 +276,19 @@ routine F64.tan_pi(self: Self) -> Self
             -0x1.05511c68476a8p-51)
         q3  : CmF64TrigDD = cm_f64_trig_pi_muldd(x3, dx3, q2.hi, q2.lo)
         sv  : CmF64TrigDD = cm_f64_trig_fast_two_sum(px.hi, q3.hi)
-        tl  : Self        = q3.lo.add(px.lo).add(sv.lo)
+        tl  : Me          = q3.lo.add(px.lo).add(sv.lo)
         q   : CmF64TrigDD = cm_f64_trig_fast_two_sum(sv.hi, tl)
         jump check(q.hi, q.lo, q.hi)
 
     // th + tl may still round the wrong way when tl sits at a rounding boundary: look the input up
-    block check(th: Self, tl: Self, res: Self)
+    block check(th: Me, tl: Me, res: Me)
         ul   : U64  = tl.bits()
         er   : U64  = ul.add_wrap(6).bitand(0x000FFFFFFFFFFFFF)
         diff : U64  = th.bits().sub_wrap(ul)
         de   : U64  = diff.shr(52).bitand(0x7FF)
         hard : Bool = er.le(12).bitor(de.gt(102))
         branch hard
-            ? return(cm_f64_tan_pi_database(self, res))
+            ? return(cm_f64_tan_pi_database(me, res))
             : return(res)
 
 /// x with the sign of the input (neg is its sign bit), in two's complement.

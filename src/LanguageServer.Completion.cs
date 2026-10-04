@@ -146,7 +146,7 @@ public static partial class LanguageServer
                     add(r.Name, KindMethod, Signature(r), r, null, 0);
                 continue;
             }
-            // Through a pointer, the pointee's routines that take their `self` as `@Self`.
+            // Through a pointer, the pointee's routines that take their `me` as `@Me`.
             bool throughPointer = !ReferenceEquals(owner, type);
             foreach (var r in compiler.RoutinesOn(owner, file).Where(r =>
                          !throughPointer || r.Params is [{ Type: { Name: "Ptr", Path: null } }, ..]))
@@ -282,11 +282,11 @@ public static partial class LanguageServer
             Values.Reverse(); // the nearest binding first
         }
 
-        /// A type with `Self` written out as the routine's owner.
+        /// A type with `Me` written out as the routine's owner.
         public TypeRef? WithOwner(TypeRef? t) =>
-            t is { Name: "Self", Path: null } && _routine?.Owner is { Name: not "Self" } owner ? owner
-            : t is { Name: "Ptr", Path: null, Args: [TypeArgType { Type: { Name: "Self", Path: null } }] }
-              && _routine?.Owner is { Name: not "Self" } pointee
+            t is { Name: "Me", Path: null } && _routine?.Owner is { Name: not "Me" } owner ? owner
+            : t is { Name: "Ptr", Path: null, Args: [TypeArgType { Type: { Name: "Me", Path: null } }] }
+              && _routine?.Owner is { Name: not "Me" } pointee
                 ? t with { Args = [new TypeArgType(pointee)] }
                 : t;
 

@@ -1,6 +1,6 @@
 namespace Tessera;
 
-/// Concept checking. A concept names a set of required routines (`routine Self.eq(...)`), and may refine other
+/// Concept checking. A concept names a set of required routines (`routine Me.eq(...)`), and may refine other
 /// concepts (`conform Equatable<T>` inside it). A type satisfies a concept through a conformance: a `conform` clause on
 /// its record, or a top-level `conform` declaration. A conformance may hold only `when` other constraints hold
 /// (`conform Equatable<Option<T>> when Equatable<T>`). A concept with no routines of its own that only refines others
@@ -235,10 +235,10 @@ public sealed partial class Compiler
 
         foreach (var req in concept.Routines)
         {
-            // `Self.name` belongs to the concept's first parameter. A multi-type concept names the owner, and a routine
+            // `Me.name` belongs to the concept's first parameter. A multi-type concept names the owner, and a routine
             // on a fixed type (`Bytes.to_result<T>`) names that type, with the concept's parameters as its type
             // arguments: the conforming routine is the one defined for them (`Bytes.to_result<S32>`).
-            string ownerParam = req.Owner!.Name == "Self" ? concept.TypeParams[0] : req.Owner.Name;
+            string ownerParam = req.Owner!.Name == "Me" ? concept.TypeParams[0] : req.Owner.Name;
             var owner = req.Owner.Args.Count == 0 && cenv.Get(ownerParam) is { } bound ? bound : ResolveType(req.Owner, cenv);
             string claim = $"{key} (declared at {conf.Source.Pos})";
             var wanted = req.Fixed.Select(f => ResolveType(f, cenv, allowVoid: true)).ToList();
@@ -286,7 +286,7 @@ public sealed partial class Compiler
     private void MatchRequirement(RoutineDecl req, RoutineDecl method, DType owner, TypeEnv cenv, string claim, Pos at)
     {
         var renv = cenv.Clone();
-        renv.Bind("Self", owner);
+        renv.Bind("Me", owner);
         var menv = OwnerEnv(method, owner, at);
         string where = $"routine '{owner.Name}.{req.Name}' at {method.Pos}";
 
@@ -295,8 +295,8 @@ public sealed partial class Compiler
         // Generic code calls a method as `x.name(...)`, so a receiver in the concept needs one in the routine.
         if (HasReceiver(req) != HasReceiver(method))
             throw new CompileError(at, HasReceiver(req)
-                ? $"{claim}: {where} has no self; the concept calls it as a method, x.{req.Name}(...)"
-                : $"{claim}: {where} takes self; the concept calls it by its type, {owner.Name}.{req.Name}(...)");
+                ? $"{claim}: {where} doesn't take me; the concept calls it as a method, x.{req.Name}(...)"
+                : $"{claim}: {where} takes me; the concept calls it by its type, {owner.Name}.{req.Name}(...)");
         bool ownTypeParams = req.TypeParams.Count > 0 || method.TypeParams.Count > 0;
         if (req.TypeParams.Count != method.TypeParams.Count)
             throw new CompileError(at, $"{claim}: {where} takes {method.TypeParams.Count} type parameter(s); the concept wants {req.TypeParams.Count}");
@@ -315,11 +315,11 @@ public sealed partial class Compiler
             throw new CompileError(at, $"{claim}: {where} returns {haveRet}; the concept wants {wantRet}");
     }
 
-    /// The environment of a method called on `owner`: its owner's type parameters bound from `owner`, and Self.
+    /// The environment of a method called on `owner`: its owner's type parameters bound from `owner`, and Me.
     private TypeEnv OwnerEnv(RoutineDecl m, DType owner, Pos pos)
     {
         var env = new TypeEnv(m.File);
-        env.Bind("Self", owner);
+        env.Bind("Me", owner);
         var o = m.Owner!;
         if (o.Args.Count == 0)
         {

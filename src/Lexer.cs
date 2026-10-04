@@ -210,6 +210,8 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
             if (char.IsAsciiLetter(c) || (c == '_' && IsIdentChar(Peek(1))))
             {
                 string name = ReadIdent();
+                // The receiver's old spellings read as `me` and `Me` until every library is written with them.
+                name = name switch { "self" => "me", "Self" => "Me", _ => name };
                 _tokens.Add(new Token(TokenKind.Ident, name, pos));
                 continue;
             }

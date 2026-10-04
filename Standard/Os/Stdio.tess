@@ -44,8 +44,7 @@ require T: typename
     /// :param buffer: Where the bytes go.
     /// :param count: The most bytes to read.
     /// :returns: How many bytes were read, 0 at the end, or Failure with an {FsError}.
-    routine Self.read_bytes_result(self: @Self, buffer: @Byte,
-        count: USize) -> Result<USize, FsError>
+    routine Me.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result<USize, FsError>
 
 // -- In ----------------------------------------------------------------------------------
 
@@ -64,70 +63,70 @@ private record InputBuffer
 
 /// Fills the empty buffer from the OS with one read.
 /// :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
-private routine InputBuffer.fill(self: @Self) -> Bool
+private routine InputBuffer.fill(me: @Me) -> Bool
     block entry()
-        got : Result<USize, FsError> = stdin_read(self.bytes.to<@Byte>(), IN_BUFFER)
+        got : Result<USize, FsError> = stdin_read(me.bytes.to<@Byte>(), IN_BUFFER)
         when got
             .Success(n) -> filled(n)
             .Failure    -> filled(0)
 
     block filled(n: USize)
-        self.start.store(0)
-        self.end.store(n)
+        me.start.store(0)
+        me.end.store(n)
         return(n.gt(0))
 
 /// The next byte, filling the buffer when it is empty. The lock is held.
 /// :returns: The byte.
 /// :absent: At the end of the input.
-private routine InputBuffer.next(self: @Self) -> Option<Byte>
+private routine InputBuffer.next(me: @Me) -> Option<Byte>
     block entry()
-        branch self.start.load().lt(self.end.load())
+        branch me.start.load().lt(me.end.load())
             ? take()
             : continue
-        branch self.fill()
+        branch me.fill()
             ? take()
             : return(.Absent)
 
     block take()
-        at : USize = self.start.load()
-        self.start.store(at.add(1))
-        buffered : @Byte = self.bytes.to<@Byte>()
+        at : USize = me.start.load()
+        me.start.store(at.add(1))
+        buffered : @Byte = me.bytes.to<@Byte>()
         return(.Present(buffered.stride(at).load()))
 
 /// Puts back the byte next just handed out. The lock is held.
-private routine InputBuffer.unread(self: @Self) -> Void
+private routine InputBuffer.unread(me: @Me) -> Void
     block entry()
-        previous_start : USize = self.start.load().sub(1)
-        previous_start.store_into(self.start)
+        previous_start : USize = me.start.load().sub(1)
+        previous_start.store_into(me.start)
         return()
 
 /// Reads more input after what the buffer holds, into its free end. The buffer must have room after what it holds.
 /// The lock is held.
 /// :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
-private routine InputBuffer.fill_more(self: @Self) -> Bool
-    shared end : USize = self.end.load()
+private routine InputBuffer.fill_more(me: @Me) -> Bool
+    shared end : USize = me.end.load()
 
     block entry()
-        free : @Byte                  = self.bytes.to<@Byte>().stride(end)
+        free : @Byte                  = me.bytes.to<@Byte>().stride(end)
         got  : Result<USize, FsError> = stdin_read(free, IN_BUFFER.sub(end))
         when got
             .Success(n) -> added(n)
             .Failure    -> return(false)
 
     block added(n: USize)
-        self.end.store(end.add(n))
+        me.end.store(end.add(n))
         return(n.gt(0))
 
 /// Moves the bytes the buffer holds to its front, so the free space after them is as large as it can be. The lock is
 /// held.
-private routine InputBuffer.compact(self: @Self) -> Void
-    shared from     : USize = self.start.load()
-    shared held     : USize = self.end.load().sub(from)
-    shared buffered : @Byte = self.bytes.to<@Byte>()
+private routine InputBuffer.compact(me: @Me) -> Void
+    shared from     : USize = me.start.load()
+    shared held     : USize = me.end.load().sub(from)
+    shared buffered : @Byte = me.bytes.to<@Byte>()
 
     block entry()
-        self.start.store(0)
-        self.end.store(held)
+        me.start.store(0)
+        me.end.store(held)
         jump move(0)
 
     // front to back: each byte goes to a place the loop has already read
@@ -147,14 +146,14 @@ private routine InputBuffer.compact(self: @Self) -> Void
 /// :returns: The word.
 /// :absent: At the end of the input.
 /// :throws: Crashes with `MemoryAllocationError` when a word longer than the buffer can't be copied.
-private routine InputBuffer.word(self: @Self) -> Option<Bytes>
+private routine InputBuffer.word(me: @Me) -> Option<Bytes>
     shared text : @CaptureBuffer <- CaptureBuffer.empty()
 
     block entry()
         jump skip()
 
     block skip()
-        c : Option<Byte> = self.next()
+        c : Option<Byte> = me.next()
         when c
             .Present(byte) -> first(byte)
             .Absent        -> return(.Absent)
@@ -163,48 +162,48 @@ private routine InputBuffer.word(self: @Self) -> Option<Bytes>
         branch is_space(byte)
             ? skip()
             : continue
-        self.unread()
+        me.unread()
         jump scan(1)
 
     // length bytes of the word are known
     block scan(length: USize)
-        at : USize = self.start.load().add(length)
-        branch at.lt(self.end.load())
+        at : USize = me.start.load().add(length)
+        branch at.lt(me.end.load())
             ? look(length, at)
             : more(length)
 
     block look(length: USize, at: USize)
-        buffered : @Byte = self.bytes.to<@Byte>()
+        buffered : @Byte = me.bytes.to<@Byte>()
         c        : Byte  = buffered.stride(at).load()
         branch is_space(c)
             ? found(length)
             : scan(length.add(1))
 
     block more(length: USize)
-        self.compact()
-        full : Bool = self.end.load().ge(IN_BUFFER)
+        me.compact()
+        full : Bool = me.end.load().ge(IN_BUFFER)
         branch full
             ? spill(length)
             : continue
-        branch self.fill_more()
+        branch me.fill_more()
             ? scan(length)
             : found(length)
 
     block found(length: USize)
-        from     : USize = self.start.load()
-        buffered : @Byte = self.bytes.to<@Byte>()
+        from     : USize = me.start.load()
+        buffered : @Byte = me.bytes.to<@Byte>()
         word     : Bytes = Bytes.from_ptr(buffered.stride(from), length)
-        self.start.store(from.add(length))
+        me.start.store(from.add(length))
         return(.Present(word))
 
     // The whole buffer is one word so far: it goes on in memory from the default heap.
     block spill(length: USize)
-        text.append(self.bytes.to<@Byte>(), length, DEFAULT_HEAP)
-        self.start.store(length)
+        text.append(me.bytes.to<@Byte>(), length, DEFAULT_HEAP)
+        me.start.store(length)
         jump spill_next()
 
     block spill_next()
-        c : Option<Byte> = self.next()
+        c : Option<Byte> = me.next()
         when c
             .Present(byte) -> spill_byte(byte)
             .Absent        -> spilled()
@@ -218,7 +217,7 @@ private routine InputBuffer.word(self: @Self) -> Option<Bytes>
         jump spill_next()
 
     block spill_end()
-        self.unread()
+        me.unread()
         jump spilled()
 
     block spilled()
@@ -231,9 +230,9 @@ private routine InputBuffer.word(self: @Self) -> Option<Bytes>
 /// A pointer to standard input, for passing where a Reader is taken (`@R`). Every value of {In} is the same stream,
 /// so the pointer holds no state and is null.
 /// :returns: The pointer to hand to a reader parameter.
-routine In.reader() -> @Self
+routine In.reader() -> @Me
     block entry()
-        none : @Self = null
+        none : @Me = null
         return(none)
 
 /// Reads up to `count` bytes: what the buffer holds first, else one read from the OS (straight into `buffer` when
@@ -311,7 +310,7 @@ require T: typename, Parsable<T>
 routine In.read_checked<T>() -> Option<T>
 require T: typename, Parsable<T>
     block entry()
-        converted : Result<T, ParseError> = Self.read_result<T>()
+        converted : Result<T, ParseError> = Me.read_result<T>()
         when converted
             .Success(value) -> return(.Present(value))
             .Failure        -> return(.Absent)
@@ -345,9 +344,9 @@ require T: typename, Parsable<T>
 /// :param buffer: Where the bytes go.
 /// :param count: The most bytes to read.
 /// :returns: How many bytes were read, 0 at the end, or Failure with an {FsError}.
-routine In.read_bytes_result(self: @Self, buffer: @Byte, count: USize) -> Result<USize, FsError>
+routine In.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result<USize, FsError>
     block entry()
-        return(Self.read_into_result(buffer, count))
+        return(Me.read_into_result(buffer, count))
 
 /// Up to `count` bytes, in memory from `alloc`: fewer only at the end of the input or on a read failure. Release
 /// them with `destruct()`.
@@ -366,7 +365,7 @@ routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
         branch n.eq(count)
             ? return(Bytes { data: buffer, count: n, alloc: alloc })
             : continue
-        got : Result<USize, FsError> = Self.read_into_result(buffer.stride(n), count.sub(n))
+        got : Result<USize, FsError> = Me.read_into_result(buffer.stride(n), count.sub(n))
         when got
             .Success(k) -> continue
             .Failure    -> return(Bytes { data: buffer, count: n, alloc: alloc })
@@ -386,7 +385,7 @@ routine In.read_all(alloc: @Allocator) -> Bytes
         jump more()
 
     block more()
-        got : Result<USize, FsError> = Self.read_into_result(chunk, 4096)
+        got : Result<USize, FsError> = Me.read_into_result(chunk, 4096)
         when got
             .Success(n) -> continue
             .Failure    -> return(text.owned(alloc))
@@ -404,7 +403,7 @@ routine In.read_all(alloc: @Allocator) -> Bytes
 #track_caller
 routine In.read_line(alloc: @Allocator) -> Bytes
     block entry()
-        line : Option<Bytes> = Self.read_line_checked(alloc)
+        line : Option<Bytes> = Me.read_line_checked(alloc)
         when line
             .Present(text) -> return(text)
             .Absent        -> crash("AbsentValueError",
@@ -475,7 +474,7 @@ private routine is_space(c: Byte) -> Bool
 #track_caller
 routine In.read_word(alloc: @Allocator) -> Bytes
     block entry()
-        word : Option<Bytes> = Self.read_word_checked(alloc)
+        word : Option<Bytes> = Me.read_word_checked(alloc)
         when word
             .Present(text) -> return(text)
             .Absent        -> crash("AbsentValueError",
@@ -541,9 +540,9 @@ routine In.is_terminal() -> Bool
 /// A pointer to standard output, for passing where a Writer is taken. Every value of {Out} is the same stream, so the
 /// pointer holds no state and is null.
 /// :returns: The pointer to hand to a writer parameter.
-routine Out.writer() -> @Self
+routine Out.writer() -> @Me
     block entry()
-        none : @Self = null
+        none : @Me = null
         return(none)
 
 /// Writes all `count` bytes to standard output.
@@ -559,7 +558,7 @@ routine Out.write_all_result(data: @Byte, count: USize) -> Result<Unit, FsError>
 /// The Writer side of standard output: a failed write is dropped ({Out.write_all_result} reports it).
 /// :param data: The bytes to write.
 /// :param count: How many bytes there are.
-routine Out.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
+routine Out.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
     block entry()
         stream_write(StdStream.Output, data, count)
         return()
@@ -580,9 +579,9 @@ routine Out.enable_colors() -> Bool
 /// A pointer to standard error, for passing where a Writer is taken. Every value of {Err} is the same stream, so the
 /// pointer holds no state and is null.
 /// :returns: The pointer to hand to a writer parameter.
-routine Err.writer() -> @Self
+routine Err.writer() -> @Me
     block entry()
-        none : @Self = null
+        none : @Me = null
         return(none)
 
 /// Writes all `count` bytes to standard error.
@@ -598,7 +597,7 @@ routine Err.write_all_result(data: @Byte, count: USize) -> Result<Unit, FsError>
 /// The Writer side of standard error: a failed write is dropped ({Err.write_all_result} reports it).
 /// :param data: The bytes to write.
 /// :param count: How many bytes there are.
-routine Err.write_bytes(self: @Self, data: @Byte, count: USize) -> Void
+routine Err.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
     block entry()
         stream_write(StdStream.Error, data, count)
         return()

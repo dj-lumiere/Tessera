@@ -116,18 +116,18 @@ record CmF64ExpDd
     hi : F64
     lo : F64
 
-/// e^`self`, correctly rounded (to nearest). Overflow gives +inf, underflow a correctly rounded subnormal or +0, and
+/// e^`me`, correctly rounded (to nearest). Overflow gives +inf, underflow a correctly rounded subnormal or +0, and
 /// NaN comes back quiet.
-/// :returns: e^`self`.
-routine F64.exp(self: Self) -> Self
-    shared ux  : U64 = self.bits()
+/// :returns: e^`me`.
+routine F64.exp(me: Me) -> Me
+    shared ux  : U64 = me.bits()
     shared aix : U64 = ux.bitand(0x7FFFFFFFFFFFFFFF)
 
     block entry()
         tiny : Bool = aix.le(0x3C90000000000000)  // |x| <= 2^-54: e^x rounds to 1
         edge : Bool = aix.ge(0x40862E42FEFA39F0)
         when
-            tiny -> return(Self.add(1.0, self))
+            tiny -> return(Me.add(1.0, me))
             edge -> edge()
             else -> fast()
 
@@ -138,55 +138,55 @@ routine F64.exp(self: Self) -> Self
         positive : Bool = ux.shr(63).eq(0)
         under    : Bool = aix.ge(0x40874910D52D3052)  // x <= -0x1.74910d52d3052p+9
         when
-            nan      -> return(self.add(self))
+            nan      -> return(me.add(me))
             inf      -> infinite(positive)
-            positive -> return(Self.INFINITY)
+            positive -> return(Me.INFINITY)
             under    -> return(0.0)
             else     -> fast()
 
     block infinite(positive: Bool)
         branch positive
-            ? return(self)
+            ? return(me)
             : return(0.0)
 
     block fast()
-        t  : Self       = self.mul(0x1.71547652b82fep+12).round_ties_even()
+        t  : Me         = me.mul(0x1.71547652b82fep+12).round_ties_even()
         jt : S64        = t.to<S64>()
         ie : S64        = jt.shr(12)
         tt : CmF64ExpDd = cm_f64_exp_table_2pow(jt.to_wrap<U64>())
         // Cody-Waite reduction: |t| < 2^23 and the high part of log(2)/2^12 fits in 29 bits, so its product is exact
-        dx  : Self = self.sub(t.mul(0x1.62e42ffp-13)).add(t.mul(0x1.718432a1b0e26p-47))
-        dx2 : Self = dx.mul(dx)
+        dx  : Me = me.sub(t.mul(0x1.62e42ffp-13)).add(t.mul(0x1.718432a1b0e26p-47))
+        dx2 : Me = dx.mul(dx)
         // 1 + dx (c0 + c1 dx + c2 dx^2 + c3 dx^3) approximates e^dx with absolute error below 2^-76.173
-        p01 : Self = Self.add(1.0, dx.mul(0x1p-1))
-        p23 : Self = Self.add(0x1.55555557e54ffp-3, dx.mul(0x1.55555553a12f4p-5))
-        p   : Self = p01.add(dx2.mul(p23))
-        tx  : Self = tt.hi.mul(dx)
-        fl  : Self = tt.lo.add(tx.mul(p))
+        p01 : Me   = Me.add(1.0, dx.mul(0x1p-1))
+        p23 : Me   = Me.add(0x1.55555557e54ffp-3, dx.mul(0x1.55555553a12f4p-5))
+        p   : Me   = p01.add(dx2.mul(p23))
+        tx  : Me   = tt.hi.mul(dx)
+        fl  : Me   = tt.lo.add(tx.mul(p))
         sub : Bool = ux.gt(0xC086232BDD7ABCD2)  // x < -0x1.6232bdd7abcd2p+9: subnormal result
         branch sub
             ? subnormal(tt.hi, fl, ie)
             : normal(tt.hi, fl, ie)
 
-    block normal(fh: Self, fl: Self, ie: S64)
-        ub   : Self = fh.add(fl.add(1.64e-19))
-        lb   : Self = fh.add(fl.sub(1.64e-19))
+    block normal(fh: Me, fl: Me, ie: S64)
+        ub   : Me   = fh.add(fl.add(1.64e-19))
+        lb   : Me   = fh.add(fl.sub(1.64e-19))
         sure : Bool = ub.eq(lb)
         branch sure
             ? return(cm_f64_exp_ldexp(lb, ie))
-            : return(cm_f64_exp_accurate(self))
+            : return(cm_f64_exp_accurate(me))
 
-    block subnormal(fh: Self, fl: Self, ie: S64)
+    block subnormal(fh: Me, fl: Me, ie: S64)
         bias_e : U64        = S64.sub(1, ie).to_wrap<U64>()
-        bias   : Self       = Self.from_bits(bias_e.shl(52))
+        bias   : Me         = Me.from_bits(bias_e.shl(52))
         s      : CmF64ExpDd = cm_f64_exp_fasttwosum(bias, fh)
-        sl     : Self       = fl.add(s.lo)
-        ub     : Self       = s.hi.add(sl.add(1.64e-19))
-        lb     : Self       = s.hi.add(sl.sub(1.64e-19))
+        sl     : Me         = fl.add(s.lo)
+        ub     : Me         = s.hi.add(sl.add(1.64e-19))
+        lb     : Me         = s.hi.add(sl.sub(1.64e-19))
         sure   : Bool       = ub.eq(lb)
         branch sure
-            ? return(Self.from_bits(lb.bits().bitand(0x000FFFFFFFFFFFFF)))
-            : return(cm_f64_exp_accurate(self))
+            ? return(Me.from_bits(lb.bits().bitand(0x000FFFFFFFFFFFFF)))
+            : return(cm_f64_exp_accurate(me))
 
 /// The slow accurate path of exp, for finite x with |x| in (2^-54, 0x1.74910d52d3052p+9).
 /// :param x: The argument.
