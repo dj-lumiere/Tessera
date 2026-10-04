@@ -162,6 +162,21 @@ public static class Derive
     private static string SelfName(string name, List<string> typeParams) =>
         typeParams.Count == 0 ? name : $"{name}<{string.Join(", ", typeParams)}>";
 
+    /// The Writer's type parameter in a derived `represent_into` / `diagnose_into`, named by the stdlib's rule: `T`
+    /// when it is the only type parameter, `TWriter` next to the type's own (a value parameter like `COUNT` doesn't
+    /// count), and never one of the type's names.
+    private static string WriterParam(List<string> typeParams, List<Clause> clauses)
+    {
+        var typeNames = clauses.Where(c => c.Kind == "require").SelectMany(c => c.Params)
+            .Where(p => p.Kind.Name == "typename").Select(p => p.Name).ToHashSet();
+        string name = typeParams.Any(typeNames.Contains) ? "TWriter" : "T";
+        while (typeParams.Contains(name)) name = "T" + name;
+        return name;
+    }
+
+    private static string WriterHeader(string self, string method, string writer) =>
+        $"routine {self}.{method}<{writer}>(self: Self, out: @{writer}) -> Void\n";
+
     private static string RecordSource(RecordDecl r, string concept, string method)
     {
         var constraints = Constraints(r.Clauses, concept);
@@ -174,10 +189,13 @@ public static class Derive
         switch (method)
         {
             case "represent_into" or "diagnose_into":
-                sb.Append($"routine {self}.{method}<W>(self: Self, out: @W) -> Void\n");
-                sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append(Fmt + "Writer<W>"))}\n");
+            {
+                string writer = WriterParam(r.TypeParams, r.Clauses);
+                sb.Append(WriterHeader(self, method, writer));
+                sb.Append($"require {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer<{writer}>"))}\n");
                 WriteBody(sb, r);
                 break;
+            }
             case "eq":
                 Header(sb, $"routine {self}.eq(self: Self, other: Self) -> Bool", constraints);
                 EqBody(sb, r);
@@ -326,8 +344,9 @@ public static class Derive
             case "represent_into" or "diagnose_into":
             {
                 string prefix = method == "diagnose_into" ? $"{v.Name}." : "";
-                sb.Append($"routine {self}.{method}<W>(self: Self, out: @W) -> Void\n");
-                sb.Append($"require {string.Join(", ", constraints.Append("W: typename").Append(Fmt + "Writer<W>"))}\n");
+                string writer = WriterParam(v.TypeParams, v.Clauses);
+                sb.Append(WriterHeader(self, method, writer));
+                sb.Append($"require {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer<{writer}>"))}\n");
                 sb.Append("    block entry()\n        when self\n");
                 for (int i = 0; i < cases.Count; i++)
                     sb.Append(cases[i].Payload is null
@@ -427,8 +446,8 @@ public static class Derive
                 if (c.Members.Count == 0)
                     throw new CompileError(c.Pos, $"{c.Name} has no members to {method}");
                 string prefix = method == "diagnose_into" ? $"{c.Name}." : "";
-                sb.Append($"routine {c.Name}.{method}<W>(self: Self, out: @W) -> Void\n");
-                sb.Append($"require W: typename, {Fmt}Writer<W>\n");
+                sb.Append(WriterHeader(c.Name, method, "T"));
+                sb.Append($"require T: typename, {Fmt}Writer<T>\n");
                 sb.Append("    block entry()\n");
                 sb.Append("        when self\n");
                 foreach (var (name, _) in c.Members)

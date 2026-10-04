@@ -1961,7 +1961,7 @@ public sealed class FunctionGen
             var r = _c.FindFree(m.Name == "eq" ? "ieq" : "ine", _env.File, m.Pos, Compiler.CoreModule)
                     ?? throw Err(m.Pos, $"the prelude has no '{(m.Name == "eq" ? "ieq" : "ine")}'");
             var env = new Compiler.TypeEnv(r.File);
-            env.Bind("T", en);
+            env.Bind(r.TypeParams[0], en);
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
         // `x.to<S64>()`: the routines are defined per type argument, and none is for these.
