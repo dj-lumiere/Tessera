@@ -29,6 +29,13 @@ the file's own module wins over its imports, and two imports offering it need th
 Standard::Format` shortens a path (`Fmt::write_str`) without importing; `define Map = Standard::Collections::Dict` names
 a type.
 
+A builder that uses Tessera as a library (RazorForge's Tessera backend) can split one program over two modules, a base
+built once and a delta built for each edit that links against it: `new Compiler(...) { ExposeDefinitions = true }`
+builds the base (every routine but an `#inline` one, and every global, defined external, their symbols in
+`ExposedSymbols` after `Generate()`), and `new Compiler(...) { ProvidedSymbols = baseSymbols }` builds the delta, which
+declares a routine instance or global of those symbols instead of defining it. Both come from the same library and
+target. `tests/SplitModuleTests.cs` shows the pair.
+
 ## Skeleton
 
 ```tessera

@@ -2313,10 +2313,25 @@ public sealed class FunctionGen
     /// compiled into each solution until the stdlib is prebuilt) is linkonce_odr: the linker keeps one copy. COFF and
     /// ELF deduplicate through a comdat. Mach-O has none and relies on the weak definition. A stdlib routine with an
     /// #export is weak instead, so the program's own export of that name wins at link time too.
+    /// The base of a split program (Compiler.ExposeDefinitions) defines each routine once for the delta to link to: a
+    /// plain external definition, an export still weak. An `#inline` routine stays in its own module (the delta
+    /// defines its own copy), so one that would be external is internal there.
     private (string Linkage, string Comdat) Linkage()
     {
         bool shared = _c.IsGenericInstance(_inst) || _decl.IsLibrary;
         bool exported = _decl.Attr("export") is not null;
+        if (_c.ExposeDefinitions)
+        {
+            if (_decl.Attr("inline") is not null)
+            {
+                if (!shared && !exported) return ("internal ", "");
+            }
+            else
+            {
+                _c.NoteExposed(_inst.Symbol);
+                if (!exported || !_decl.IsLibrary) return ("", "");
+            }
+        }
         if (!shared || (exported && !_decl.IsLibrary)) return ("", "");
         if (_c.Target.Os == "macos") return (exported ? "weak " : "linkonce_odr ", "");
         _out.AppendLine($"${Compiler.Quote(_inst.Symbol)} = comdat any");

@@ -15,6 +15,25 @@ public sealed partial class Compiler
     /// program doesn't, since that program brings its own runtime.
     public bool EmitLibraryExports { get; init; } = true;
 
+    /// Builds the base of a program split over two modules: a base built once, and a delta built for each edit that
+    /// links against it. Every routine this module defines, except an `#inline` one, and every global it defines is
+    /// left for the other module to link to: no linkonce_odr, no internal linkage. Their symbols are
+    /// `ExposedSymbols` after `Generate`, the set the delta passes as `ProvidedSymbols`.
+    public bool ExposeDefinitions { get; init; }
+
+    /// Builds the delta of a split program: the symbols the base defines (its `ExposedSymbols`). A routine instance or a
+    /// global whose symbol is here is declared, not defined, so this module links against the base's. The two modules
+    /// must come from the same library and the same target.
+    public IReadOnlySet<string> ProvidedSymbols { get; init; } = new HashSet<string>();
+
+    private readonly HashSet<string> _exposedSymbols = [];
+
+    /// With `ExposeDefinitions`, the routines and globals this module defined for another module to link to.
+    public IReadOnlyCollection<string> ExposedSymbols => _exposedSymbols;
+
+    /// Records a definition `ExposeDefinitions` left for another module.
+    public void NoteExposed(string symbol) => _exposedSymbols.Add(symbol);
+
     /// The target's USize: lengths, indices, counts, sizeof / alignof, and integer generic arguments.
     public IntType USize => new(Target.Size, IntKind.Unsigned, isSize: true);
 
@@ -1095,8 +1114,16 @@ public sealed partial class Compiler
         }
         name = "@" + symbol;
         _globalVars[symbol] = name;
+        // A split program has one copy of each global, the base's (ExposeDefinitions, ProvidedSymbols).
+        if (ProvidedSymbols.Contains(symbol))
+        {
+            _globals.AppendLine($"{name} = external {threadLocal}global {t.Llvm}");
+            return name;
+        }
         string init = c.Value is null ? "zeroinitializer" : PresetInitializer(c.Value, t, env);
-        _globals.AppendLine($"{name} = internal {threadLocal}global {t.Llvm} {init}");
+        string linkage = ExposeDefinitions ? "" : "internal ";
+        if (ExposeDefinitions) NoteExposed(symbol);
+        _globals.AppendLine($"{name} = {linkage}{threadLocal}global {t.Llvm} {init}");
         return name;
     }
 

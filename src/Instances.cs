@@ -203,8 +203,10 @@ public sealed partial class Compiler
         EnsureTypeDefined(sig.Ret);
         CheckCBoundary(sig);
 
-        if (sig.IsExternalC)
+        if (sig.IsExternalC || (ProvidedSymbols.Contains(sig.Symbol) && !sig.IsTemplate && (!sig.IsAsm || sig.IsNaked)))
         {
+            // A routine the base of a split program defines (ProvidedSymbols) is declared like a C routine: every
+            // routine has the same lowered signature at its definition and its calls.
             if (_declaredSymbols.Add(sig.Symbol))
                 _declares.Add((sig.Symbol, $"declare {sig.CcPrefix(Target)}{AbiRet(sig, withAttrs: true)} @{Quote(sig.Symbol)}({string.Join(", ", AbiParams(sig, withAttrs: true))}){sig.FnAttrs}"));
         }
