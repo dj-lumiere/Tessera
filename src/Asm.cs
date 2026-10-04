@@ -39,9 +39,10 @@ public sealed partial class Compiler
 /// its operands the arguments in the assembler's order, and its type arguments one per register operand.
 internal sealed class AsmLowering
 {
-    private enum Arch { X86, A64, Rv }
+    private enum Arch { X86, A64, Arm, Rv }
 
-    private enum RegClass { Gpr, Vec, Fpr, Sp, Zero, Pc, Flags, Fs, Gs }
+    /// Single and Double are 32-bit ARM's VFP views, `S0`–`S31` and `D0`–`D31`, which overlap (D1 is S2 and S3).
+    private enum RegClass { Gpr, Vec, Fpr, Single, Double, Sp, Zero, Pc, Flags, Fs, Gs }
 
     /// A register as the body names it. Index is the encoding's number for the numbered classes.
     private sealed record Reg(RegClass Class, int Index, string Written);
@@ -75,6 +76,9 @@ internal sealed class AsmLowering
     private PresetRef? _systemRegister;
     /// `#naked`: the body is a whole function, entered by a call under the C convention and left by `ret`.
     private readonly bool _naked;
+    /// 32-bit ARM built as Thumb code (every Cortex-M, or a `thumb-mode` build): a conditional instruction needs an
+    /// `it` block before it, which the builder writes.
+    private readonly bool _thumb;
 
     public AsmLowering(Compiler c, Instance sig)
     {
@@ -88,12 +92,14 @@ internal sealed class AsmLowering
         {
             "x86_64" => Arch.X86,
             "aarch64" => Arch.A64,
+            "arm" => Arch.Arm,
             "riscv64" or "riscv32" => Arch.Rv,
             var other => throw new CompileError(_r.Pos,
-                $"assembly is written for x86_64, aarch64, riscv64 and riscv32; '{_r.DisplayName}' is built for {other}"),
+                $"assembly is written for x86_64, aarch64, arm, riscv64 and riscv32; '{_r.DisplayName}' is built for {other}"),
         };
         _paramOutput = new int[_r.Params.Count];
         _naked = _r.Attr("naked") is not null;
+        _thumb = _arch == Arch.Arm && CpuModel.For(c.Target, _r.Pos).Has("thumb-mode", _r.Pos);
     }
 
     public AsmPlan Plan()
@@ -166,6 +172,7 @@ internal sealed class AsmLowering
             var cls = ClassOf(_sig.Params[i], p.Pos);
             if (_sig.Params[i].Repr is VectorType)
                 throw new CompileError(p.Pos, "a #naked routine takes integers, pointers and floats, which arrive in registers");
+            if (_arch == Arch.Arm && cls != RegClass.Gpr) throw new CompileError(p.Pos, ArmNakedFloats);
             var abi = cls == RegClass.Gpr ? ArgRegister(true, ints++, i, p.Pos) : ArgRegister(false, floats++, i, p.Pos);
             if (p.Register is not { } placed)
                 throw new CompileError(p.Pos,
@@ -181,6 +188,7 @@ internal sealed class AsmLowering
             if (item.Reg is null)
                 throw new CompileError(_r.Pos, "a #naked routine returns in the convention's result register, not a parameter's");
             bool isInt = ClassOf(item.Type, _r.Pos) == RegClass.Gpr;
+            if (!isInt && _arch == Arch.Arm) throw new CompileError(_r.Pos, ArmNakedFloats);
             var abi = new Reg(isInt ? RegClass.Gpr : _arch == Arch.Rv ? RegClass.Fpr : RegClass.Vec,
                 _arch == Arch.Rv ? 10 : 0, "");
             abi = abi with { Written = WrittenName(abi) };
@@ -188,6 +196,11 @@ internal sealed class AsmLowering
                 throw new CompileError(_r.Pos, $"a #naked routine returns its {item.Type} in {Shown(abi)}: return({abi.Written})");
         }
     }
+
+    /// Where 32-bit ARM's C convention passes a float depends on the float ABI (core registers, or VFP ones), so a
+    /// #naked routine there takes and returns only what goes in core registers.
+    private const string ArmNakedFloats =
+        "a #naked routine on 32-bit ARM takes and returns integers and pointers: where a float goes depends on the float ABI";
 
     /// The register the C calling convention passes the n-th integer (or float) argument in. `position` is the
     /// parameter's place among all of them, which Windows x64 counts instead.
@@ -200,6 +213,7 @@ internal sealed class AsmLowering
         {
             (Arch.X86, true) => windows ? 4 : 6,
             (Arch.X86, false) => windows ? 4 : 8,
+            (Arch.Arm, _) => 4,
             _ => 8,
         };
         if (index >= count)
@@ -210,6 +224,7 @@ internal sealed class AsmLowering
             (Arch.X86, false) => new Reg(RegClass.Vec, index, ""),
             (Arch.A64, true) => new Reg(RegClass.Gpr, index, ""),
             (Arch.A64, false) => new Reg(RegClass.Vec, index, ""),
+            (Arch.Arm, _) => new Reg(RegClass.Gpr, index, ""),
             (_, true) => new Reg(RegClass.Gpr, 10 + index, ""),
             _ => new Reg(RegClass.Fpr, 10 + index, ""),
         };
@@ -217,7 +232,8 @@ internal sealed class AsmLowering
     }
 
     private static string WrittenName(Reg r) =>
-        (r.Class switch { RegClass.Vec => "V", RegClass.Fpr => "F", _ => "R" }) + r.Index;
+        (r.Class switch { RegClass.Vec => "V", RegClass.Fpr => "F", RegClass.Single => "S", RegClass.Double => "D", _ => "R" })
+        + r.Index;
 
     private int AddOutput(string constraint, DType type)
     {
@@ -264,6 +280,8 @@ internal sealed class AsmLowering
                                 + "its generic form, S3_3_C2_C4_0 for RNDR",
                     Arch.Rv => ", and no CSR the builder knows by that name: write one it doesn't know by its number, "
                                + "csrrw<U32, U32>(R10, 0x15, ZERO) for seed",
+                    Arch.Arm => ", and no system register the builder knows by that name: a coprocessor's register is "
+                                + "read by its numbers, mrc<U32>(p15, 0, R0, c13, c0, 3)",
                     _ => "",
                 },
             });
@@ -275,14 +293,15 @@ internal sealed class AsmLowering
     /// What a bare name that isn't one of Tessera's registers is on this architecture: a system register (RNDR,
     /// mstatus, CR3), a named option of an instruction (ISH, rw), or nothing.
     private AsmSystemNames.Kind? SystemName(string name) =>
-        AsmSystemNames.Lookup(_arch switch { Arch.X86 => "x86_64", Arch.A64 => "aarch64", _ => "riscv" }, name);
+        AsmSystemNames.Lookup(_arch switch { Arch.X86 => "x86_64", Arch.A64 => "aarch64", Arch.Arm => "arm", _ => "riscv" }, name);
 
     /// How this architecture's instructions read a system register, for a message.
     private string SystemExample => _arch switch
     {
         Arch.X86 => "mov<U64>(R0, CR3)",
         Arch.A64 => "mrs<U64>(R0, RNDR)",
-        _ => "csrrs<U64, U64>(R10, mstatus, ZERO)",
+        Arch.Arm => "mrs<U32>(R0, PRIMASK)",
+        _ =>"csrrs<U64, U64>(R10, mstatus, ZERO)",
     };
 
     /// Whether a bare name is an operand of its own kind that takes no type: a system register or a named option,
@@ -298,13 +317,19 @@ internal sealed class AsmLowering
         if (SystemName(p.Name) == AsmSystemNames.Kind.Register)
         {
             _systemRegister ??= p;
-            if (p.Name == "NZCV") _flagsTested = true;
+            if (p.Name == "NZCV" || _arch == Arch.Arm && ArmFlagsRegister(p.Name)) _flagsTested = true;
         }
         return _arch == Arch.X86 ? p.Name.ToLowerInvariant() : p.Name;
     }
 
+    /// 32-bit ARM's status registers that hold the condition flags, so writing one changes them: APSR, CPSR and
+    /// their field forms (APSR_nzcvq, CPSR_fc), and Cortex-M's xPSR views.
+    private static bool ArmFlagsRegister(string name) =>
+        name.StartsWith("APSR", StringComparison.Ordinal) || name.StartsWith("CPSR", StringComparison.Ordinal)
+        || name is "XPSR" or "IAPSR" or "EAPSR";
+
     /// Tessera's register by this name, or null when it names none on this architecture.
-    private Reg? TryRegister(string name) => name switch
+    private Reg? TryRegister(string name) => _arch == Arch.Arm ? ArmRegister(name) : name switch
     {
         "SP" => _arch switch { Arch.X86 => new Reg(RegClass.Gpr, 4, name), Arch.A64 => new Reg(RegClass.Sp, 31, name), _ => new Reg(RegClass.Gpr, 2, name) },
         "ZERO" => _arch switch { Arch.A64 => new Reg(RegClass.Zero, 31, name), Arch.Rv => new Reg(RegClass.Gpr, 0, name), _ => null },
@@ -316,6 +341,29 @@ internal sealed class AsmLowering
         "GS" => _arch == Arch.X86 ? new Reg(RegClass.Gs, 0, name) : null,
         _ => Numbered(name),
     };
+
+    /// 32-bit ARM's registers: R0–R15 with SP (R13), LR (R14) and PC (R15), FLAGS (the condition flags), and the
+    /// VFP's S0–S31 and D0–D31.
+    private static Reg? ArmRegister(string name)
+    {
+        switch (name)
+        {
+            case "SP": return new Reg(RegClass.Gpr, 13, name);
+            case "LR": return new Reg(RegClass.Gpr, 14, name);
+            case "PC": return new Reg(RegClass.Pc, 15, name);
+            case "FLAGS": return new Reg(RegClass.Flags, 0, name);
+        }
+        foreach (var (prefix, cls) in new[] { ("R", RegClass.Gpr), ("S", RegClass.Single), ("D", RegClass.Double) })
+        {
+            if (!name.StartsWith(prefix, StringComparison.Ordinal) || name.Length == prefix.Length) continue;
+            string digits = name[prefix.Length..];
+            if (!digits.All(char.IsAsciiDigit) || (digits.Length > 1 && digits[0] == '0')) return null;
+            int n = int.Parse(digits);
+            if (n >= (cls == RegClass.Gpr ? 16 : 32)) return null;
+            return cls == RegClass.Gpr && n == 15 ? new Reg(RegClass.Pc, 15, name) : new Reg(cls, n, name);
+        }
+        return null;
+    }
 
     private Reg? Numbered(string name)
     {
@@ -351,12 +399,25 @@ internal sealed class AsmLowering
     }
 
     /// The register class a value of this type is placed in.
-    private RegClass ClassOf(DType t, Pos pos) => t.Repr switch
+    private RegClass ClassOf(DType t, Pos pos) => _arch == Arch.Arm ? ArmClassOf(t, pos) : t.Repr switch
     {
         IntType or BoolType or PtrType or CallableType => RegClass.Gpr,
         FloatType => _arch == Arch.Rv ? RegClass.Fpr : RegClass.Vec,
         VectorType => RegClass.Vec,
         _ => throw new CompileError(pos, $"an assembly operand is an integer, a float, a pointer or a vector, not {t}"),
+    };
+
+    /// 32-bit ARM's register class for a value: a general register holds up to 32 bits, an S register an F32 (or an
+    /// F16), a D register an F64 or a 64-bit vector.
+    private RegClass ArmClassOf(DType t, Pos pos) => t.Repr switch
+    {
+        IntType { Bits: > 32 } => throw new CompileError(pos, $"32-bit ARM's general registers hold 32 bits, not {t}"),
+        IntType or BoolType or PtrType or CallableType => RegClass.Gpr,
+        FloatType { Bits: 16 or 32 } => RegClass.Single,
+        FloatType { Bits: 64 } => RegClass.Double,
+        VectorType when Bits(t, pos) == 64 => RegClass.Double,
+        _ => throw new CompileError(pos, "an operand on 32-bit ARM is an integer or a pointer of up to 32 bits (an R register), "
+                                         + $"an F32 (an S register), or an F64 or a 64-bit vector (a D register), not {t}"),
     };
 
     private int Bits(DType t, Pos pos) => t.Repr switch
@@ -375,6 +436,8 @@ internal sealed class AsmLowering
         (_, RegClass.Gpr) => "r",
         (Arch.X86, _) => Bits(t, _r.Pos) > 256 ? "v" : "x",
         (Arch.A64, _) => "w",
+        (Arch.Arm, RegClass.Single) => "t",
+        (Arch.Arm, _) => "w",
         (Arch.Rv, RegClass.Fpr) => "f",
         _ => "vr",
     };
@@ -387,6 +450,9 @@ internal sealed class AsmLowering
         (Arch.A64, RegClass.Gpr) => "x" + r.Index,
         (Arch.A64, RegClass.Sp) => "sp",
         (Arch.A64, RegClass.Vec) => "v" + r.Index,
+        (Arch.Arm, RegClass.Gpr) => r.Index switch { 13 => "sp", 14 => "lr", _ => "r" + r.Index },
+        (Arch.Arm, RegClass.Single) => "s" + r.Index,
+        (Arch.Arm, RegClass.Double) => "d" + r.Index,
         (Arch.Rv, RegClass.Gpr) => "x" + r.Index,
         (Arch.Rv, RegClass.Fpr) => "f" + r.Index,
         (Arch.Rv, RegClass.Vec) => "v" + r.Index,
@@ -396,7 +462,8 @@ internal sealed class AsmLowering
     /// `RDX=R2`: the architecture's name next to Tessera's, as a build error shows a register.
     private string Shown(Reg r) => r.Class switch
     {
-        RegClass.Gpr or RegClass.Vec or RegClass.Fpr => $"{LlvmName(r, null).ToUpperInvariant()}={r.Written}",
+        RegClass.Gpr or RegClass.Vec or RegClass.Fpr or RegClass.Single or RegClass.Double
+            when LlvmName(r, null).ToUpperInvariant() is var arch && arch != r.Written => $"{arch}={r.Written}",
         _ => r.Written,
     };
 
@@ -424,6 +491,14 @@ internal sealed class AsmLowering
                 return bits <= 32 ? "wzr" : "xzr";
             case (Arch.A64, RegClass.Vec):
                 return t.Repr is VectorType vt ? $"v{r.Index}.{Arrangement(vt, pos)}" : $"{ScalarLetter(bits, pos)}{r.Index}";
+            case (Arch.Arm, RegClass.Gpr) when bits > 32:
+                throw new CompileError(pos, $"32-bit ARM's general registers hold 32 bits, not {t}");
+            case (Arch.Arm, RegClass.Gpr):
+            case (Arch.Arm, RegClass.Single) when bits is 16 or 32:
+            case (Arch.Arm, RegClass.Double) when bits == 64:
+                return LlvmName(r, t);
+            case (Arch.Arm, RegClass.Single or RegClass.Double):
+                throw new CompileError(pos, $"{Shown(r)} holds {(r.Class == RegClass.Single ? 32 : 64)} bits, not {t}");
             case (_, RegClass.Pc):
                 return "pc";
             case (Arch.Rv, _):
@@ -467,6 +542,7 @@ internal sealed class AsmLowering
             (Arch.X86, _) => bits switch { > 256 => $"${{{n}:g}}", > 128 => $"${{{n}:t}}", _ => $"${{{n}:x}}" },
             (Arch.A64, RegClass.Gpr) => bits <= 32 ? $"${{{n}:w}}" : $"${{{n}:x}}",
             (Arch.A64, _) => t.Repr is VectorType vt ? $"${{{n}}}.{Arrangement(vt, pos)}" : $"${{{n}:{ScalarLetter(bits, pos)}}}",
+            (Arch.Arm, RegClass.Gpr) when bits > 32 => throw new CompileError(pos, $"32-bit ARM's general registers hold 32 bits, not {t}"),
             _ => $"${{{n}}}",
         };
     }
@@ -481,13 +557,13 @@ internal sealed class AsmLowering
     /// Notes a fixed register the body names: it counts as changed, unless it is a result or a parameter's.
     private void Name(Reg r, DType? t, Pos pos)
     {
-        if (r.Class is RegClass.Gpr or RegClass.Vec or RegClass.Fpr && !IsStackOrZero(r))
+        if (r.Class is RegClass.Gpr or RegClass.Vec or RegClass.Fpr or RegClass.Single or RegClass.Double && !IsStackOrZero(r))
             _named.TryAdd(LlvmName(r, t), pos);
     }
 
     /// The stack pointer and the zero register are read, never counted as changed: LLVM can't give them up.
     private bool IsStackOrZero(Reg r) =>
-        (_arch, r.Class, r.Index) is (Arch.X86, RegClass.Gpr, 4) or (Arch.Rv, RegClass.Gpr, 0 or 2);
+        (_arch, r.Class, r.Index) is (Arch.X86, RegClass.Gpr, 4) or (Arch.Arm, RegClass.Gpr, 13) or (Arch.Rv, RegClass.Gpr, 0 or 2);
 
     // ── Results ─────────────────────────────────────────────────────────────
 
@@ -576,6 +652,7 @@ internal sealed class AsmLowering
         }
 
         var lines = new List<string>();
+        var itBlock = new List<(string Text, string Condition)>();
         bool endUsed = false;
         for (int k = 0; k < blocks.Count; k++)
         {
@@ -611,9 +688,21 @@ internal sealed class AsmLowering
             {
                 if (s is not GuardStmt guard)
                 {
-                    lines.Add(Instruction(s));
+                    var (text, condition) = Instruction(s);
+                    if (condition is null)
+                    {
+                        EndItBlock();
+                        lines.Add(text);
+                        continue;
+                    }
+                    if (itBlock.Count > 0 && condition != itBlock[0].Condition
+                                          && condition != ArmConditions.Opposite(itBlock[0].Condition))
+                        EndItBlock();
+                    itBlock.Add((text, condition));
+                    if (itBlock.Count == 4 || EndsItBlock(text)) EndItBlock();
                     continue;
                 }
+                EndItBlock();
                 if (guard.Term is not BranchTerm gb)
                     throw new CompileError(guard.Pos, "an assembly block goes on after a branch, not a when");
                 bool trueGoesOn = gb.IfTrue is ContinueTarget, falseGoesOn = gb.IfFalse is ContinueTarget;
@@ -623,6 +712,7 @@ internal sealed class AsmLowering
                 if (label == Label(EndLabel)) endUsed = true;
                 lines.Add(ConditionalJump(gb.Cond, label, negate: trueGoesOn));
             }
+            EndItBlock();
 
             switch (b.Terminator)
             {
@@ -639,7 +729,7 @@ internal sealed class AsmLowering
                     break;
                 }
                 case TargetTerm { Target: ReturnTarget } when _naked:
-                    lines.Add("ret");
+                    lines.Add(Ret());
                     break;
                 case TargetTerm { Target: ReturnTarget r }:
                     if (JumpText(r, r.Pos) is { } rl) lines.Add($"{Jump()} {rl}");
@@ -653,13 +743,39 @@ internal sealed class AsmLowering
             }
         }
         if (endUsed) lines.Add(Label(EndLabel) + ":");
-        if (endUsed && _naked) lines.Add("ret");
+        if (endUsed && _naked) lines.Add(Ret());
         return string.Join("\n\t", lines);
+
+        // Thumb runs a conditional instruction only inside an `it` block, so the builder opens one before a run of
+        // them: up to four in a row, each with the first one's condition or its opposite (`ite eq` before moveq,
+        // movne). ARM code needs none, and a run ends at a line that isn't conditional, a label or a jump.
+        void EndItBlock()
+        {
+            if (itBlock.Count == 0) return;
+            string first = itBlock[0].Condition;
+            string mask = string.Concat(itBlock.Skip(1).Select(i => i.Condition == first ? "t" : "e"));
+            lines.Add($"it{mask} {first}");
+            lines.AddRange(itBlock.Select(i => i.Text));
+            itBlock.Clear();
+        }
     }
 
-    private string Jump() => _arch switch { Arch.X86 => "jmp", Arch.A64 => "b", _ => "j" };
+    private string Jump() => _arch switch { Arch.X86 => "jmp", Arch.A64 or Arch.Arm => "b", _ => "j" };
 
-    private string Instruction(Stmt s)
+    /// A #naked routine's return: 32-bit ARM's `bx lr`, every other architecture's `ret`.
+    private string Ret() => _arch == Arch.Arm ? "bx lr" : "ret";
+
+    /// An instruction that must be the last of an `it` block: a branch, or one that writes the PC.
+    private static bool EndsItBlock(string text)
+    {
+        string mnemonic = text.Split(' ', 2)[0];
+        return mnemonic.StartsWith('b') && ArmConditions.Split(mnemonic)?.Stem is "b" or "bl" or "bx" or "blx"
+               || text.Contains("pc", StringComparison.Ordinal);
+    }
+
+    /// An instruction's text, and on Thumb the condition it carries in its mnemonic (`moveq` is `mov` on eq), which
+    /// an `it` block before it has to name.
+    private (string Text, string? Condition) Instruction(Stmt s)
     {
         if (s is not ExprStmt es)
             throw new CompileError(s.Pos, "an assembly body holds instructions, one per line: add<U64, U64>(R0, R3)");
@@ -699,7 +815,8 @@ internal sealed class AsmLowering
             });
         var types = new Queue<DType>(typeArgs.Select(t => _c.ResolveType(t, _sig.Env)));
         var texts = operands.Select(o => Operand(o, IsTyped(o) ? types.Dequeue() : null)).ToList();
-        return prefix + Escape(mnemonic) + (texts.Count == 0 ? "" : " " + string.Join(", ", texts));
+        string line = prefix + Escape(mnemonic) + (texts.Count == 0 ? "" : " " + string.Join(", ", texts));
+        return (line, _thumb ? ArmConditions.Split(mnemonic)?.Condition : null);
     }
 
     /// `$` is LLVM's operand marker, so a written one is doubled.
@@ -736,7 +853,7 @@ internal sealed class AsmLowering
                 var reg = Register(p.Name, p.Pos);
                 if (reg.Class == RegClass.Flags)
                     throw new CompileError(p.Pos, "FLAGS is read by a branch condition (FLAGS.Carry, lt<U64>), not as an operand");
-                if (reg.Class == RegClass.Pc && _arch != Arch.A64)
+                if (reg.Class == RegClass.Pc && _arch is not (Arch.A64 or Arch.Arm))
                     throw new CompileError(p.Pos, "PC is read through offset: PC.offset(8)");
                 Name(reg, t, p.Pos);
                 return RegText(reg, t, p.Pos);
@@ -744,14 +861,49 @@ internal sealed class AsmLowering
             case ValueRef v:
                 return ParamText(ParamIndex(v), t, v.Pos);
             case IntLit lit:
-                return _arch == Arch.A64 ? "#" + lit.Value : lit.Value.ToString();
+                return _arch is Arch.A64 or Arch.Arm ? "#" + lit.Value : lit.Value.ToString();
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" }:
                 return ConditionOperand(e);
             case NsCallExpr or MethodCallExpr:
                 return Memory(e, t);
+            case ArrayLit { Type: null } list:
+                return RegisterList(list, t);
             default:
                 throw new CompileError(e.Pos, "an operand is a register, a parameter, an integer literal or a memory operand");
         }
+    }
+
+    /// 32-bit ARM's register list, `{ R4, R5, LR }` as `push {r4, r5, lr}` or `{ D8, D9 }` as `vpush {d8, d9}`: one
+    /// operand, so its one type is that of each register in it.
+    private string RegisterList(ArrayLit list, DType t)
+    {
+        if (_arch != Arch.Arm)
+            throw new CompileError(list.Pos, "a register list, { R4, R5, LR }, is 32-bit ARM's");
+        var texts = new List<string>();
+        foreach (var item in list.Elements)
+        {
+            switch (item)
+            {
+                case PresetRef { Owner: null, Path: null } p when TryRegister(p.Name) is not null:
+                {
+                    var reg = Register(p.Name, p.Pos);
+                    if (reg.Class == RegClass.Flags)
+                        throw new CompileError(p.Pos, "FLAGS is read by a branch condition (FLAGS.Carry, lt<U32>), not as an operand");
+                    Name(reg, t, p.Pos);
+                    texts.Add(RegText(reg, t, p.Pos));
+                    break;
+                }
+                case PresetRef { Owner: null, Path: null } p:
+                    Register(p.Name, p.Pos);
+                    break;
+                case ValueRef v:
+                    texts.Add(ParamText(ParamIndex(v), t, v.Pos));
+                    break;
+                default:
+                    throw new CompileError(item.Pos, "a register list holds registers and parameters: { R4, R5, LR }");
+            }
+        }
+        return "{" + string.Join(", ", texts) + "}";
     }
 
     // ── Memory operands ─────────────────────────────────────────────────────
@@ -825,8 +977,8 @@ internal sealed class AsmLowering
     private string Memory(Expr e, DType t)
     {
         var m = ReadMemory(e);
-        if ((m.Update || m.After) && _arch != Arch.A64)
-            throw new CompileError(e.Pos, "update() and after_offset() are aarch64's");
+        if ((m.Update || m.After) && _arch is not (Arch.A64 or Arch.Arm))
+            throw new CompileError(e.Pos, "update() and after_offset() are aarch64's and 32-bit ARM's");
         string baseText = AddressText(m.Base);
         string? index = m.Index is null ? null : AddressText(m.Index);
         var off = m.Offset;
@@ -841,10 +993,10 @@ internal sealed class AsmLowering
                     parts.Append(parts.Length == 0 ? off.ToString() : off < 0 ? $" - {-off}" : $" + {off}");
                 return $"{X86Size(t, e.Pos)} ptr {segment}[{parts}]";
             }
-            case Arch.A64:
+            case Arch.A64 or Arch.Arm:
             {
                 if (index is not null && off != 0)
-                    throw new CompileError(e.Pos, "aarch64 has no address with both an index and an offset");
+                    throw new CompileError(e.Pos, $"{_c.Target.Arch} has no address with both an index and an offset");
                 if (m.After) return $"[{baseText}], #{off}";
                 string inner = index is not null
                     ? m.Scale == 1 ? $"{baseText}, {index}" : $"{baseText}, {index}, lsl #{BitOperations.Log2((uint)m.Scale)}"
@@ -873,7 +1025,8 @@ internal sealed class AsmLowering
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" } when _arch != Arch.Rv:
             {
                 string code = ConditionCode(cond);
-                return (_arch == Arch.X86 ? "j" : "b.") + (negate ? Opposite(code) : code) + " " + label;
+                string jump = _arch switch { Arch.X86 => "j", Arch.Arm => "b", _ => "b." };
+                return jump + (negate ? Opposite(code) : code) + " " + label;
             }
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" }:
                 throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt<U64>(R10, R11) ? … : …");
@@ -931,13 +1084,16 @@ internal sealed class AsmLowering
         };
     }
 
-    /// A condition as an operand, as aarch64's `cset x1, cs` and `csel x0, x1, x2, lo` take one. x86 and RISC-V have
-    /// no such operand: x86 spells the condition in the mnemonic (`setc`, `cmovb`), RISC-V has no flags.
+    /// A condition as an operand, as aarch64's `cset x1, cs` and `csel x0, x1, x2, lo` take one. x86, 32-bit ARM and
+    /// RISC-V have no such operand: x86 and ARM spell the condition in the mnemonic (`setc`, `moveq`), RISC-V has no
+    /// flags.
     private string ConditionOperand(Expr cond) => _arch switch
     {
         Arch.A64 => ConditionCode(cond),
         Arch.X86 => throw new CompileError(cond.Pos,
             "x86 spells a condition in the mnemonic (setc, cmovb), so it isn't an operand; a branch tests it"),
+        Arch.Arm => throw new CompileError(cond.Pos,
+            "32-bit ARM spells a condition in the mnemonic (moveq, addne), so it isn't an operand: a branch tests it"),
         _ => throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt<U64>(R10, R11) ? … : …"),
     };
 
@@ -1038,4 +1194,63 @@ internal sealed class AsmLowering
     }
 
     private string FlagsClobber => _arch == Arch.X86 ? "~{flags}" : "~{cc}";
+}
+
+/// 32-bit ARM's condition suffixes, as a mnemonic carries one (`moveq` is `mov` when eq holds, `addseq` `adds`):
+/// Thumb runs such an instruction only inside an `it` block, which the builder writes before it.
+internal static class ArmConditions
+{
+    /// The condition codes and the one that holds exactly when each doesn't. `hs` and `lo` are `cs` and `cc`.
+    private static readonly Dictionary<string, string> Opposites = new()
+    {
+        ["eq"] = "ne", ["ne"] = "eq", ["cs"] = "cc", ["cc"] = "cs", ["hs"] = "lo", ["lo"] = "hs",
+        ["mi"] = "pl", ["pl"] = "mi", ["vs"] = "vc", ["vc"] = "vs", ["hi"] = "ls", ["ls"] = "hi",
+        ["ge"] = "lt", ["lt"] = "ge", ["gt"] = "le", ["le"] = "gt", ["al"] = "",
+    };
+
+    /// The instructions that take a condition suffix, by their unconditional mnemonics. A mnemonic is conditional when
+    /// it is one of these followed by a condition (and by `s` before it for a flag-setting form), and never when it is
+    /// one of these as written: `teq`, `mls` and `smlal` end in a condition's letters but are instructions of their own.
+    private static readonly HashSet<string> Stems =
+    [
+        "adc", "add", "addw", "adr", "and", "asr", "b", "bfc", "bfi", "bic", "bl", "blx", "bx", "bxj", "clz", "cmn",
+        "cmp", "cpy", "dbg", "eor", "ldc", "ldm", "ldmia", "ldmib", "ldmda", "ldmdb", "ldmfd", "ldmfa", "ldmed", "ldmea",
+        "ldr", "ldrb", "ldrbt", "ldrd", "ldrex", "ldrexb", "ldrexd", "ldrexh", "ldrh", "ldrht", "ldrsb", "ldrsbt",
+        "ldrsh", "ldrsht", "ldrt", "lsl", "lsr", "mcr", "mcrr", "mla", "mls", "mov", "movt", "movw", "mrc", "mrrc", "mrs",
+        "msr", "mul", "mvn", "neg", "nop", "orn", "orr", "pkhbt", "pkhtb", "pld", "pli", "pop", "push", "qadd",
+        "qadd16", "qadd8", "qasx", "qdadd", "qdsub", "qsax", "qsub", "qsub16", "qsub8", "rbit", "rev", "rev16", "revsh",
+        "ror", "rrx", "rsb", "rsc", "sadd16", "sadd8", "sasx", "sbc", "sbfx", "sdiv", "sel", "sev", "shadd16", "shadd8",
+        "shasx", "shsax", "shsub16", "shsub8", "smlabb", "smlabt", "smlatb", "smlatt", "smlad", "smladx", "smlal",
+        "smlalbb", "smlalbt", "smlaltb", "smlaltt", "smlald", "smlaldx", "smlawb", "smlawt", "smlsd", "smlsdx", "smlsld",
+        "smlsldx", "smmla", "smmlar", "smmls", "smmlsr", "smmul", "smmulr", "smuad", "smuadx", "smulbb", "smulbt",
+        "smultb", "smultt", "smull", "smulwb", "smulwt", "smusd", "smusdx", "ssat", "ssat16", "ssax", "ssub16", "ssub8",
+        "stc", "stm", "stmia", "stmib", "stmda", "stmdb", "stmfd", "stmfa", "stmed", "stmea", "str", "strb", "strbt",
+        "strd", "strex", "strexb", "strexd", "strexh", "strh", "strht", "strt", "sub", "subw", "svc", "swp", "swpb",
+        "sxtab", "sxtab16", "sxtah", "sxtb", "sxtb16", "sxth", "teq", "tst", "uadd16", "uadd8", "uasx", "ubfx", "udiv",
+        "uhadd16", "uhadd8", "uhasx", "uhsax", "uhsub16", "uhsub8", "umaal", "umlal", "umull", "uqadd16", "uqadd8",
+        "uqasx", "uqsax", "uqsub16", "uqsub8", "usad8", "usada8", "usat", "usat16", "usax", "usub16", "usub8", "uxtab",
+        "uxtab16", "uxtah", "uxtb", "uxtb16", "uxth", "wfe", "wfi", "yield",
+        // The VFP's.
+        "vabs", "vadd", "vcmp", "vcmpe", "vcvt", "vcvtb", "vcvtr", "vcvtt", "vdiv", "vfma", "vfms", "vfnma", "vfnms",
+        "vldm", "vldmia", "vldmdb", "vldr", "vmla", "vmls", "vmov", "vmrs", "vmsr", "vmul", "vneg", "vnmla", "vnmls",
+        "vnmul", "vpop", "vpush", "vsqrt", "vstm", "vstmia", "vstmdb", "vstr", "vsub",
+    ];
+
+    /// The unconditional mnemonic and the condition of a conditional one (`moveq` is `mov` and `eq`, `vaddeq.f32` is
+    /// `vadd` and `eq`), or null for a mnemonic that carries none.
+    public static (string Stem, string Condition)? Split(string mnemonic)
+    {
+        string head = mnemonic.Split('.', 2)[0].ToLowerInvariant();
+        if (head.Length < 3 || Stems.Contains(head)) return null;
+        string condition = head[^2..];
+        if (!Opposites.ContainsKey(condition)) return null;
+        string stem = head[..^2];
+        if (Stems.Contains(stem)) return (stem, condition);
+        if (stem.EndsWith('s') && Stems.Contains(stem[..^1])) return (stem[..^1], condition);
+        return null;
+    }
+
+    /// The condition that holds exactly when this one doesn't, or null for `al`, which has none.
+    public static string? Opposite(string condition) =>
+        Opposites.TryGetValue(condition, out var o) && o.Length > 0 ? o : null;
 }

@@ -3,10 +3,11 @@ using System.Text.RegularExpressions;
 namespace Tessera;
 
 /// The names an instruction set gives to what an assembly operand can be besides a general, vector or float register:
-/// system registers (AArch64's RNDR and CNTVCT_EL0, RISC-V's CSRs, x86's control, debug and segment registers) and
-/// the named options some instructions take (a barrier's domain, a cache or TLB operation, a fence's sets, a rounding
-/// mode). Each is written as the architecture's manual spells it, so it never collides with Tessera's own register
-/// names (R0, V3, SP, FLAGS), and the builder passes it to the assembler as written.
+/// system registers (AArch64's RNDR and CNTVCT_EL0, 32-bit ARM's PRIMASK and FPSCR, RISC-V's CSRs, x86's control,
+/// debug and segment registers) and the named options some instructions take (a barrier's domain, a cache or TLB
+/// operation, a coprocessor and its registers, a fence's sets, a rounding mode). Each is written as the architecture's
+/// manual spells it, so it never collides with Tessera's own register names (R0, V3, S3, SP, FLAGS), and the builder
+/// passes it to the assembler as written.
 internal static partial class AsmSystemNames
 {
     public enum Kind
@@ -18,11 +19,13 @@ internal static partial class AsmSystemNames
         Option,
     }
 
-    /// What `name` is on this architecture ("x86_64", "aarch64", or "riscv"), or null when it is none of these.
+    /// What `name` is on this architecture ("x86_64", "aarch64", "arm", or "riscv"), or null when it is none of these.
     public static Kind? Lookup(string arch, string name) => arch switch
     {
         "aarch64" when A64Registers.Contains(name) || A64Generic().IsMatch(name) => Kind.Register,
         "aarch64" when A64Options.Contains(name) => Kind.Option,
+        "arm" when ArmRegisters.Contains(name) => Kind.Register,
+        "arm" when ArmOptions.Contains(name) => Kind.Option,
         "riscv" when RvCsrs.Contains(name) => Kind.Register,
         "riscv" when RvOptions.Contains(name) => Kind.Option,
         "x86_64" when X86Registers.Contains(name) => Kind.Register,
@@ -96,6 +99,33 @@ internal static partial class AsmSystemNames
            select kind + level + policy,
         "C", "J", "JC", "CSYNC",
         .. Numbered("C", 0, 15),
+    ];
+
+    /// 32-bit ARM's special registers by the names the Arm manuals give them, the ones `mrs` and `msr` (and the VFP's
+    /// `vmrs` and `vmsr`) read and write. A coprocessor's registers have no names: `mrc` and `mcr` reach them by number.
+    private static readonly HashSet<string> ArmRegisters =
+    [
+        // A and R profiles: the program status registers and their fields.
+        "APSR", "APSR_nzcvq", "APSR_g", "APSR_nzcvqg", "CPSR", "SPSR",
+        .. new[] { "c", "x", "s", "f", "fc", "fs", "fx", "sc", "sx", "xc", "fsx", "fsc", "fxc", "sxc", "fsxc" }
+            .SelectMany(fields => new[] { "CPSR_" + fields, "SPSR_" + fields }),
+        // M profile (Cortex-M): the program status views, the stack pointers and their limits, the masks, CONTROL,
+        // and the Non-secure ones from the Secure state.
+        "XPSR", "IPSR", "EPSR", "IAPSR", "EAPSR", "IEPSR", "MSP", "PSP", "MSPLIM", "PSPLIM", "PRIMASK", "BASEPRI",
+        "BASEPRI_MAX", "FAULTMASK", "CONTROL",
+        "MSP_NS", "PSP_NS", "MSPLIM_NS", "PSPLIM_NS", "PRIMASK_NS", "BASEPRI_NS", "FAULTMASK_NS", "CONTROL_NS", "SP_NS",
+        // The VFP's system registers, and the flags `vmrs` copies its comparison into (APSR_nzcv).
+        "FPSID", "FPSCR", "FPEXC", "FPINST", "FPINST2", "MVFR0", "MVFR1", "MVFR2", "APSR_nzcv",
+    ];
+
+    /// The words 32-bit ARM instructions take as operands: a barrier's domain (`dsb sy`, `dmb ish`), a coprocessor
+    /// and its registers for `mrc` and `mcr` (`mrc p15, 0, r0, c13, c0, 3`), and the interrupt masks `cpsid` and
+    /// `cpsie` set or clear (`cpsid i`).
+    private static readonly HashSet<string> ArmOptions =
+    [
+        "SY", "ST", "LD", "ISH", "ISHST", "ISHLD", "NSH", "NSHST", "NSHLD", "OSH", "OSHST", "OSHLD",
+        .. Numbered("p", 0, 15), .. Numbered("c", 0, 15),
+        "a", "i", "f", "ai", "af", "if", "aif",
     ];
 
     /// RISC-V's CSRs by the names the privileged and unprivileged specifications give them. A CSR missing here is

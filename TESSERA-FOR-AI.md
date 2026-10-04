@@ -756,7 +756,10 @@ and take no type: `mrs<U64>(R0, RNDR)`, `msr<U64>(TPIDR_EL0, R1)`, AArch64's gen
 `csrrs<U64, U64>(R10, mstatus, ZERO)` (a CSR the builder doesn't know goes in by number), `mov<U64>(R0, CR3)`,
 `mov<U16>(R0, CS)`, `dmb(ISH)`, `dc<U64>(CIVAC, R0)`, `fence(rw, rw)`, a rounding mode `rtz`. A routine that names a
 system register can't be `#pure` or `#readonly`, and an instruction that changes the flags without naming them
-(`RNDR`) still lists `#clobbers(FLAGS)`.
+(`RNDR`) still lists `#clobbers(FLAGS)`. 32-bit ARM (`arch: "arm"`): `R0`–`R15` with `SP` / `LR` / `PC`
+(R13–R15), the VFP's `S0`–`S31` (32 bits) and `D0`–`D31` (64 bits), a condition in the mnemonic (`moveq<U32>(R0, 1)`,
+the builder writes Thumb's `it` blocks itself on Cortex-M or `thumb-mode`), register lists as one typed operand
+(`push<U32>({ R4, R5, LR })`), `mrs<U32>(R0, PRIMASK)`, `cpsid(i)`, `dsb(SY)`, `mrc<U32>(p15, 0, R0, c13, c0, 3)`.
 
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.
