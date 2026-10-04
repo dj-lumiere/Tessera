@@ -1,0 +1,85 @@
+// Tessera stdlib: the correctly rounded cos(pi x) of F32
+//
+// With 64 |x| = iq + z/2^32 for an integer iq: cos(iq pi/64) and sin(iq pi/64) from sin_pi's table,
+// cos(z pi/2^38) - 1 and sin(z pi/2^38) from short polynomials, all in F64, where one evaluation rounds correctly to
+// F32. Multiples of 1/64 read the table directly, |x| < 2^-15 is 1 - (pi^2/2) x^2 by one FMA, |x| >= 2^24 is an
+// even integer. Round to nearest only.
+//
+// Ported from CORE-MATH, src/binary32/cospi/cospif.c via RazorForge's B32Cospi.rf.
+// Copyright (c) 2022 Alexei Sibidanov
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// cos(pi self), correctly rounded (to nearest, ties to even). An integer gives +-1, a half-integer +0, +-inf
+/// gives NaN, and NaN comes back quiet.
+routine F32.cos_pi(self: Self) -> Self
+    shared ix : U32 = self.bits()
+    shared e  : S32 = ix.shr(23).bitand(0xFF).to_wrap<S32>()
+    shared m  : U32 = ix.bitand(0x7FFFFF).bitor(0x800000)
+
+    block entry()
+        special : Bool = e.eq(0xFF)
+        branch special
+            ? special()
+            : continue
+        p     : S32  = e.sub(112)
+        tiny  : Bool = p.lt(0)  // |x| < 2^-15
+        large : Bool = p.gt(31)  // |x| >= 2^17: x is a multiple of 1/64
+        when
+            tiny  -> tiny()
+            large -> large(p)
+            else  -> moderate(p)
+
+    // infinities give NaN, NaN comes back quiet with its sign and payload
+    block special()
+        infinite : Bool = ix.shl(9).eq(0)
+        branch infinite
+            ? return(Self.from_bits(0x7FC00000))
+            : return(self.add(self))
+
+    // the product below would underflow for |x| < 0x1.9f03p-129
+    block tiny()
+        ax       : U32  = ix.bitand(0x7FFFFFFF)
+        relevant : Bool = ax.ge(0x19F030)
+        branch relevant
+            ? return(self.mul(-0x1.3bd3ccp+2).mul_add(self, 1.0))
+            : return(self.neg().mul_add(self, 1.0))
+
+    block large(p: S32)
+        even : Bool = p.gt(63)  // |x| >= 2^49: an even integer, too large for the shift below
+        branch even
+            ? return(1.0)
+            : continue
+        shift : U32 = p.sub(32).to<U32>()
+        iq    : U32 = m.shl(shift)
+        jump table(iq)
+
+    block moderate(p: S32)
+        k        : U32  = m.shl(p.to<U32>())  // the bits of 64 |x| below the binary point, scaled by 2^32
+        multiple : Bool = k.eq(0)  // x is a multiple of 1/64
+        branch multiple
+            ? table(m.shr(S32.sub(32, p).to<U32>()))
+            : evaluate(p, k)
+
+    // |x| = iq/64: cos(pi x) = sin((iq + 32) pi/64)
+    block table(iq: U32)
+        i : U32 = iq.add_wrap(32).bitand(127)
+        r : F64 = F64.from_bits(CM_F32_SIN_PI_S.getitem(i.to<USize>()))
+        return(r.to<Self>())
+
+    block evaluate(p: S32, k: U32)
+        z    : F64 = k.to_wrap<S32>().to<F64>()  // 64 |x| - round(64 |x|), scaled by 2^32
+        z2   : F64 = z.mul(z)
+        fs2  : F64 = F64.add(-0x1.4abbce6102b94p-112, z2.mul(0x1.4669fa3c58463p-189))
+        fs   : F64 = F64.add(0x1.921fb54442d0fp-37, z2.mul(fs2))
+        fc2  : F64 = F64.add(0x1.03c1f08088742p-150, z2.mul(-0x1.55d1e5eff55a5p-228))
+        fc   : F64 = F64.add(-0x1.3bd3cc9be45cfp-74, z2.mul(fc2))
+        s    : U32 = S32.sub(31, p).to<U32>()
+        iq   : U32 = m.shr(s).add_wrap(1).shr(1)  // round(64 |x|)
+        ts_i : U32 = iq.add_wrap(32).bitand(127)
+        ts   : F64 = F64.from_bits(CM_F32_SIN_PI_S.getitem(ts_i.to<USize>()))
+        tc   : F64 = F64.from_bits(CM_F32_SIN_PI_S.getitem(iq.bitand(127).to<USize>()))
+        head : F64 = ts.add(ts.mul(z2).mul(fc))
+        r    : F64 = head.sub(tc.mul(z).mul(fs))
+        return(r.to<Self>())

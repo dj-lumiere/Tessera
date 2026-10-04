@@ -19,17 +19,19 @@ record CmHypotSquare
 
 // -- hypot ---------------------------------------------------------------------
 
-/// sqrt(x² + y²) without overflow or underflow, or inf if either is infinite.
+/// sqrt(x² + y²) without overflow or underflow. A signaling NaN gives NaN, as it does in every operation, and
+/// otherwise an infinite leg gives +inf, even with a quiet NaN in the other leg (IEEE 754's hypot(±inf, qNaN)).
+/// Any other NaN gives NaN.
 routine F128.hypot(self: Self, other: Self) -> Self
     block entry()
-        inf      : Bool = self.is_infinite().bitor(other.is_infinite())
-        nan      : Bool = self.is_nan().bitor(other.is_nan())
-        infinity : Self = Self.INFINITY
-        quiet    : Self = Self.NAN
+        signaling : Bool = cm_hypot_is_signaling(self).bitor(cm_hypot_is_signaling(other))
+        inf       : Bool = self.is_infinite().bitor(other.is_infinite())
+        nan       : Bool = self.is_nan().bitor(other.is_nan())
         when
-            inf  -> return(infinity)
-            nan  -> return(quiet)
-            else -> compute()
+            signaling -> return(Self.NAN)
+            inf       -> return(Self.INFINITY)
+            nan       -> return(Self.NAN)
+            else      -> compute()
 
     block compute()
         x_abs : U128 = self.bits().bitand(F128_SIGN.bitnot())
@@ -133,6 +135,12 @@ routine F128.hypot(self: Self, other: Self) -> Self
         v       : U128 = lowered.add_wrap(below)
         r       : Self = cm_hypot_round(v, exponent.add(wrapped.to<S64>()))
         return(r)
+
+/// Whether x is a signaling NaN: a NaN whose quiet bit is clear.
+routine cm_hypot_is_signaling(x: F128) -> Bool
+    block entry()
+        quiet : Bool = x.bits().bitand(F128_QUIET_BIT).ne(0)
+        return(x.is_nan().bitand(quiet.bitnot()))
 
 /// Both legs are at least as large as a finite number and the larger is infinite or NaN.
 routine cm_hypot_special(a: U128, b: U128) -> F128

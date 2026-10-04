@@ -1,0 +1,252 @@
+// Tessera stdlib: the correctly rounded base-10 exponential 10^x of F64
+//
+// x log2(10) = (k + h) / 2^12 with k an integer: 2^(k/2^12) as a double-double from exp's tables, 10^(h log10(2)
+// / 2^12) from a short polynomial. When that can't decide the rounding, a triple-double reduction and a degree-5
+// double-double polynomial redo it, and a few arguments too close to a rounding boundary even for that are looked
+// up. The exact powers 10^0 .. 10^22 are computed exactly. Round to nearest only: overflow gives +inf, underflow a
+// correctly rounded subnormal or +0, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary64/exp10/exp10.c via RazorForge's B64Exp10.rf.
+// Copyright (c) 2023-2025 Alexei Sibidanov
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// Double-double coefficients (high, low) of the degree-5 polynomial of the accurate path, as F64 bits.
+preset CM_F64_EXP10_ACC_C: @Array<U64, 12> <- { 0x40026BB1BBB55516, 0xBCAF48AD494EA102,
+    0x40053524C73CEA69, 0xBCAE2BFAB318D399, 0x4000470591DE2CA4, 0x3CA81F50779E162B,
+    0x3FF2BD7609FD98C4, 0x3C931A5CC5D3D313, 0x3FE1429FFD336AA3, 0x3C8910DE8C68A0C2,
+    0x3FCA7ED7086882B4, 0xBC605E703D496537 }
+/// The arguments (sorted bits) whose power of ten is too close to a rounding boundary for the accurate
+/// path.
+preset CM_F64_EXP10_DB: @Array<U64, 49> <- { 0x3F4821E0F2AFB970, 0x3F57C3DDD23AC8CA,
+    0x3F5A2D7C1699E82D, 0x3F7EC65645EDC394, 0x3F890D7373B3A546, 0x3F97E3C84F2CB9B5,
+    0x3FA25765968ECD68, 0x3FA9AA6FD4D21A47, 0x3FAE7B525705EDEF, 0x3FD12E02AA997AF2,
+    0x3FDC414AA8BD83B1, 0x3FDD7D271AB4EEB4, 0x3FE1FE5F30572361, 0x3FE522C9F19CC202,
+    0x3FF1DAF94CF0BD01, 0x3FF75F49C6AD3BAD, 0x3FFA3C782D4F54FC, 0x3FFCC30B915EC8C4,
+    0x400EE9674267E65F, 0x4012D5494EB1DD13, 0x40389063309F3004, 0x4052A59B82B6FC5E,
+    0x406CDE37694F4D10, 0xBF045DDB10382E3F, 0xBF0485426A688467, 0xBF06506061AAE6F7,
+    0xBF0898A8C3990624, 0xBF117362E953393B, 0xBF1E40231E216CAD, 0xBF27A7F33CC3FD0B,
+    0xBF363DF14C04AB23, 0xBF3A1B18D3A28957, 0xBF3E12494018E44C, 0xBF44C7A2BE09B10E,
+    0xBF4DE686910F4F52, 0xBF5EBB11D32C9493, 0xBF7F6F96F005FD47, 0xBF8B44E17164CE91,
+    0xBF93B95082297EA7, 0xBF95B25114A07A72, 0xBFBA9CF11E5ADBC5, 0xBFCC360CDDE773F7,
+    0xBFD56FF305822F26, 0xBFDC03419F51B93E, 0xBFE1416C72A588A6, 0xBFED18176754AAC7,
+    0xC01AA5575135E2D3, 0xC034CD4AF2FCA2B4, 0xC05DA5B10D8689FD }
+
+/// 10^self, correctly rounded (to nearest, ties to even). 10^-inf = +0, 10^+inf = +inf, overflow gives +inf,
+/// underflow a correctly rounded subnormal or +0, and NaN comes back quiet. 10^n is exact for n in 0..22.
+routine F64.exp10(self: Self) -> Self
+    shared ux  : U64 = self.bits()
+    shared aix : U64 = ux.bitand(0x7FFFFFFFFFFFFFFF)
+
+    block entry()
+        edge : Bool = aix.gt(0x40734413509F79FE)  // |x| > 0x1.34413509f79fep+8
+        branch edge
+            ? edge()
+            : exact()
+
+    block edge()
+        nan      : Bool = aix.gt(0x7FF0000000000000)
+        inf      : Bool = aix.eq(0x7FF0000000000000)
+        positive : Bool = ux.shr(63).eq(0)
+        under    : Bool = aix.gt(0x407439B746E36B52)  // x < -0x1.439b746e36b52p+8
+        when
+            nan      -> return(self.add(self))
+            inf      -> infinite(positive)
+            positive -> return(Self.mul(0x1p1023, 2.0))  // overflow
+            under    -> return(Self.mul(0x1.8p-1022, 0x1p-55))  // underflow to +0
+            else     -> exact()
+
+    block infinite(positive: Bool)
+        branch positive
+            ? return(self)
+            : return(0.0)
+
+    // a nonnegative integer n <= 22 (bits below 2^(e - 1023 - 4) all 0): 10^n by exact products
+    block exact()
+        short : Bool = ux.shl(16).eq(0).bitand(aix.shr(48).le(0x4036))
+        branch short
+            ? continue
+            : flat()
+        kx       : Self = self.round_ties_even()
+        integral : Bool = kx.eq(self)
+        branch integral
+            ? continue
+            : flat()
+        k        : S64  = kx.to<S64>()
+        positive : Bool = k.ge(0)
+        branch positive
+            ? power(k, 0, 1.0)
+            : flat()
+
+    block power(k: S64, i: S64, r: Self)
+        done : Bool = i.ge(k)
+        branch done
+            ? return(r)
+            : power(k, i.add(1), r.mul(10.0))
+
+    block flat()
+        one : Bool = aix.le(0x3C7BCB7B1526E50E)  // |x| <= 0x1.bcb7b1526e50ep-56: 10^x rounds to 1
+        branch one
+            ? return(Self.add(1.0, self))
+            : fast()
+
+    block fast()
+        t   : Self       = Self.mul(0x1.a934f0979a371p+13, self).round_ties_even()
+        jt  : S64        = t.to<S64>()
+        ie  : S64        = jt.shr(12)
+        tt  : CmF64ExpDd = cm_f64_exp_table_2pow(jt.to_wrap<U64>())
+        dx  : Self       = self.sub(Self.mul(0x1.34413508p-14,
+            t)).sub(Self.mul(0x1.f79fef311f12bp-46, t))
+        dx2 : Self       = dx.mul(dx)
+        p01 : Self       = Self.add(0x1.26bb1bbb55516p+1, dx.mul(0x1.53524c73cea69p+1))
+        p23 : Self       = Self.add(0x1.0470591fd74e1p+1, dx.mul(0x1.2bd760a1f32a5p+0))
+        p   : Self       = p01.add(dx2.mul(p23))
+        fx  : Self       = tt.hi.mul(dx)
+        fl  : Self       = tt.lo.add(fx.mul(p))
+        sub : Bool       = ux.ge(0xC0733A7146F72A42)  // x <= -0x1.33a7146f72a42p+8: subnormal result
+        branch sub
+            ? subnormal(tt.hi, fl, ie)
+            : normal(tt.hi, fl, ie)
+
+    block normal(fh: Self, fl: Self, ie: S64)
+        ub   : Self = fh.add(fl.add(2.17e-19))
+        lb   : Self = fh.add(fl.sub(2.17e-19))
+        sure : Bool = lb.eq(ub)
+        branch sure
+            ? return(cm_f64_exp_ldexp(fh.add(fl), ie))
+            : return(cm_f64_exp10_accurate(self))
+
+    block subnormal(fh: Self, fl: Self, ie: S64)
+        bias_e : U64        = S64.sub(1, ie).to_wrap<U64>()
+        bias   : Self       = Self.from_bits(bias_e.shl(52))
+        s      : CmF64ExpDd = cm_f64_exp_fasttwosum(bias, fh)
+        sl     : Self       = fl.add(s.lo)
+        lb     : Self       = s.hi.add(sl.sub(2.17e-19))
+        ub     : Self       = s.hi.add(sl.add(2.17e-19))
+        sure   : Bool       = lb.eq(ub)
+        branch sure
+            ? return(Self.from_bits(s.hi.add(sl).bits().bitand(0x000FFFFFFFFFFFFF)))
+            : return(cm_f64_exp10_accurate(self))
+
+/// The slow accurate path of exp10, for finite x whose 10^x neither overflows nor underflows to 0.
+private routine cm_f64_exp10_accurate(x: F64) -> F64
+    shared ch : @F64 <- uninit
+    shared cl : @F64 <- uninit
+
+    block entry()
+        ux  : U64        = x.bits()
+        t   : F64        = F64.mul(0x1.a934f0979a371p+13, x).round_ties_even()
+        jt  : S64        = t.to<S64>()
+        ujt : U64        = jt.to_wrap<U64>()
+        ie  : S64        = jt.shr(12)
+        tt  : CmF64ExpDd = cm_f64_exp_table_2pow(ujt)
+        // Cody-Waite reduction with a triple-double log10(2)/2^12
+        dx   : F64 = x.sub(F64.mul(0x1.34413508p-14, t))
+        dxl  : F64 = F64.mul(-0x1.f79fef311f12bp-46, t)
+        dxle : F64 = F64.mul_add(-0x1.f79fef311f12bp-46, t, dxl.neg())  // the rounding error of dxl
+        dxll : F64 = F64.mul(-0x1.ac0b7c917826bp-101, t).add(dxle)
+        dxh  : F64 = dx.add(dxl)
+        dxlo : F64 = dx.sub(dxh).add(dxl).add(dxll)
+        F64.from_bits(CM_F64_EXP10_ACC_C.getitem(10)).store_into(ch)
+        F64.from_bits(CM_F64_EXP10_ACC_C.getitem(11)).store_into(cl)
+        jump horner(ux, ujt, ie, tt, dxh, dxlo, 5)
+
+    // Horner's rule over the double-double coefficients, top down
+    block horner(ux: U64, ujt: U64, ie: S64, tt: CmF64ExpDd, dxh: F64, dxl: F64, i: USize)
+        done : Bool = i.eq(0)
+        branch done
+            ? evaluated(ux, ujt, ie, tt, dxh, dxl)
+            : continue
+        j   : USize      = i.sub(1)
+        r   : CmF64ExpDd = cm_f64_exp_muldd(dxh, dxl, ch.load(), cl.load())
+        ci  : F64        = F64.from_bits(CM_F64_EXP10_ACC_C.getitem(j.mul(2)))
+        cil : F64        = F64.from_bits(CM_F64_EXP10_ACC_C.getitem(j.mul(2).add(1)))
+        sh  : F64        = r.hi.add(ci)
+        sl  : F64        = ci.sub(sh).add(r.hi)
+        r.lo.add(sl.add(cil)).store_into(cl)
+        sh.store_into(ch)
+        jump horner(ux, ujt, ie, tt, dxh, dxl, j)
+
+    block evaluated(ux: U64, ujt: U64, ie: S64, tt: CmF64ExpDd, dxh: F64, dxl: F64)
+        f   : CmF64ExpDd = cm_f64_exp_muldd(dxh, dxl, ch.load(), cl.load())
+        sub : Bool       = ux.ge(0xC0733A7146F72A42)  // subnormal result
+        one : Bool       = ujt.bitand(0xFFF).eq(0)  // 2^(k/2^12) is exactly 1
+        when
+            sub  -> subnormal(f, tt, ie)
+            one  -> at_one(f, tt.hi, ie)
+            else -> scale(f, tt, ie)
+
+    block subnormal(f: CmF64ExpDd, tt: CmF64ExpDd, ie: S64)
+        bias_e : U64        = S64.sub(1, ie).to_wrap<U64>()
+        bias   : F64        = F64.from_bits(bias_e.shl(52))
+        g      : CmF64ExpDd = cm_f64_exp_muldd(f.hi, f.lo, tt.hi, tt.lo)
+        h      : CmF64ExpDd = cm_f64_exp_fastsum(tt.hi, tt.lo, g.hi, g.lo)
+        s      : CmF64ExpDd = cm_f64_exp_fasttwosum(bias, h.hi)
+        fl     : F64        = h.lo.add(s.lo)
+        res    : F64        = s.hi.add(fl)
+        return(F64.from_bits(res.bits().bitand(0x000FFFFFFFFFFFFF)))
+
+    // add 1 in without a product
+    block at_one(f: CmF64ExpDd, th: F64, ie: S64)
+        s1   : CmF64ExpDd = cm_f64_exp_fasttwosum(f.hi, f.lo)
+        s2   : CmF64ExpDd = cm_f64_exp_fasttwosum(th, s1.hi)
+        s3   : CmF64ExpDd = cm_f64_exp_fasttwosum(s2.lo, s1.lo)
+        ub   : U64        = s3.hi.bits()
+        pow2 : Bool       = ub.shl(12).eq(0)
+        branch pow2
+            ? nudge(s2.hi, ub, s3.lo, ie)
+            : return(cm_f64_exp_ldexp(s2.hi.add(s3.hi), ie))
+
+    // the tail is a power of 2: push it away from the rounding boundary toward the sign of its own tail
+    block nudge(fh: F64, ub: U64, tail: F64, ie: S64)
+        same : Bool = ub.shr(63).eq(tail.bits().shr(63))
+        u    : U64  = same
+            ? ub.add_wrap(U64.shl(1, 51))
+            : ub.sub_wrap(U64.shl(1, 51).add_wrap(1))
+        return(cm_f64_exp_ldexp(fh.add(F64.from_bits(u)), ie))
+
+    block scale(f: CmF64ExpDd, tt: CmF64ExpDd, ie: S64)
+        g    : CmF64ExpDd = cm_f64_exp_muldd(f.hi, f.lo, tt.hi, tt.lo)
+        h    : CmF64ExpDd = cm_f64_exp_fastsum(tt.hi, tt.lo, g.hi, g.lo)
+        s    : CmF64ExpDd = cm_f64_exp_fasttwosum(h.hi, h.lo)
+        ul   : U64        = s.lo.bits()
+        near : Bool       = ul.add_wrap(4).bitand(0x000FFFFFFFFFFFFF).le(4)
+        tiny : Bool       = ul.shr(52).bitand(0x7FF).lt(918)
+        hard : Bool       = near.bitor(tiny)
+        branch hard
+            ? return(cm_f64_exp_ldexp(cm_f64_exp10_database(x, s.hi), ie))
+            : return(cm_f64_exp_ldexp(s.hi, ie))
+
+/// Looks x up among the arguments whose 10^x lies too close to a rounding boundary for the accurate path, and
+/// returns the correctly rounded (unscaled) result for them, or f unchanged otherwise.
+private routine cm_f64_exp10_database(x: F64, f: F64) -> F64
+    block entry()
+        jump search(0, 48)
+
+    block search(a: S64, b: S64)
+        open : Bool = a.le(b)
+        branch open
+            ? probe(a, b)
+            : return(f)
+
+    block probe(a: S64, b: S64)
+        m     : S64  = a.add(b).shr(1)
+        cm    : U64  = CM_F64_EXP10_DB.getitem(m.to<USize>())
+        ux    : U64  = x.bits()
+        below : Bool = cm.lt(ux)
+        found : Bool = cm.eq(ux)
+        when
+            below -> search(m.add(1), b)
+            found -> found(m.to_wrap<U64>())
+            else  -> search(a, m.sub(1))
+
+    block found(um: U64)
+        sign_bit : U64  = U64.shr(371470981966157, um).bitand(1).shl(63)
+        dr       : F64  = F64.from_bits(sign_bit.bitor(0x3C90000000000000))
+        upper    : Bool = um.shr(5).eq(1)
+        s2       : U64  = upper
+            ? 0x3781B19E1
+            : 0x7EB37EF5AC3FE7C6
+        t : U64 = s2.shr(um.bitand(31).shl(1)).bitand(3)
+        return(cm_f64_exp_pick(f, t, dr))

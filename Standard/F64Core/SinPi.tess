@@ -1,0 +1,247 @@
+// Tessera stdlib: the correctly rounded sin(pi x) of F64
+//
+// With 2048 x = iq + z 2^-64 for an integer iq: sin(pi iq/2048) and cos(pi iq/2048) from tables (TrigPi.tess),
+// the residual by short polynomials, and an error bound that says whether the sum rounds safely. When it can't,
+// a double-double accurate phase redoes it, and four inputs too close to a rounding boundary even for that are
+// listed. Small |x| has its own polynomial and accurate phase. Integers give +-0 with the sign of x, half-integers
+// +-1. Round to nearest only.
+//
+// Ported from CORE-MATH, src/binary64/sinpi/sinpi.c via RazorForge's B64Sinpi.rf.
+// Copyright (c) 2023-2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// The angle index (mod 2048) of each input whose accurate phase is still too close to a rounding boundary.
+preset CM_F64_SIN_PI_DB_IQ: @Array<U64, 4> <- { 76, 108, 490, 903 }
+
+/// For each entry of CM_F64_SIN_PI_DB_IQ: the reduced argument, the correctly rounded result and a tiny correction
+/// that fixes the rounding direction, as F64 bits.
+preset CM_F64_SIN_PI_DB: @Array<U64, 12> <- { 0xBFD276B3FEF46600, 0x3FBDB8A79A80C3A0,
+    0x3910000000000000, 0xBFD33CAEA0F24C00, 0x3FC5146C0BC45BCE, 0x3920000000000000,
+    0xBFE8A1E8A3E82C00, 0x3FE5D6561936B699, 0xBC80000000000000, 0xBFDBDD02D1AD6000,
+    0x3FEF72C906962631, 0x3C80000000000000 }
+
+/// sin(pi self), correctly rounded (to nearest, ties to even). An integer gives +-0 with the sign of self, a
+/// half-integer +-1, +-inf gives NaN, and NaN comes back quiet.
+routine F64.sin_pi(self: Self) -> Self
+    shared ixu  : U64  = self.bits()
+    shared ax   : U64  = ixu.bitand(0x7FFFFFFFFFFFFFFF)
+    shared e    : S64  = ax.shr(52).to_wrap<S64>()
+    shared m0   : U64  = ixu.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
+    shared zero : Self = Self.copysign(0.0, self)
+
+    block entry()
+        is_zero : Bool = ax.eq(0)
+        branch is_zero
+            ? return(self)
+            : continue
+        magnitude : S64  = m0.to_wrap<S64>()
+        negative  : Bool = ixu.shr(63).eq(1)
+        m         : S64  = negative
+            ? magnitude.neg()
+            : magnitude
+        s     : S64  = S64.sub(1063, e)
+        large : Bool = s.lt(0)  // |x| >= 2^41
+        small : Bool = ax.le(0x3FA2000000000000)  // |x| <= 0x1.2p-5
+        when
+            large -> large(m, s)
+            small -> small()
+            else  -> halves(m, s)
+
+    block large(m: S64, s: S64)
+        special : Bool = e.eq(0x7FF)
+        branch special
+            ? special()
+            : continue
+        shift : S64  = s.neg().sub(1)  // 2^(41 + shift) <= |x| < 2^(42 + shift)
+        even  : Bool = shift.gt(10)  // |x| >= 2^52: an even integer
+        branch even
+            ? return(zero)
+            : continue
+        iq      : U64  = m.to_wrap<U64>().shl(shift.to_wrap<U64>())  // 2048 x mod 2^64
+        integer : Bool = iq.bitand(2047).eq(0)
+        branch integer
+            ? return(zero)
+            : continue
+        b : CmF64TrigPiSinCos = cm_f64_trig_pi_sincos(iq)
+        return(b.sh.add(b.sl))
+
+    // infinities give NaN, NaN comes back quiet with its sign and payload
+    block special()
+        infinite : Bool = ixu.shl(12).eq(0)
+        branch infinite
+            ? return(Self.from_bits(0x7FF8000000000000))
+            : return(self.add(self))
+
+    block small()
+        tiny : Bool = self.abs().lt(0x1p-54)
+        branch tiny
+            ? tiny()
+            : continue
+        zh   : Self = Self.mul(0x1.921fb54442d18p+1, self)
+        zl0  : Self = Self.mul_add(0x1.921fb54442d18p+1, self,
+            zh.neg()).add(Self.mul(0x1.1a62633145c07p-53, self))
+        x2   : Self = self.mul(self)
+        x3   : Self = x2.mul(self)
+        x4   : Self = x2.mul(x2)
+        eps  : Self = self.mul(x2.mul(0x1p-47).add(0x1p-102))
+        c01  : Self = Self.add(-0x1.4abbce625be51p+2, x2.mul(0x1.466bc67754b46p+1))
+        c23  : Self = Self.add(-0x1.32d2cc12a51f4p-1, x2.mul(0x1.5060540058476p-4))
+        zl   : Self = zl0.add(x3.mul(c01.add(x4.mul(c23))))
+        lb   : Self = zl.sub(eps).add(zh)
+        ub   : Self = zl.add(eps).add(zh)
+        sure : Bool = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : return(cm_f64_sin_pi_zero(self))
+
+    // |x| < 2^-54: pi x as a double-double, rounded once
+    block tiny()
+        subnormal : Bool = self.abs().lt(0x1p-970)
+        branch subnormal
+            ? scaled()
+            : continue
+        sh : Self = Self.mul(0x1.921fb54442d18p+1, self)
+        sl : Self = Self.mul_add(0x1.921fb54442d18p+1, self,
+            sh.neg()).add(Self.mul(0x1.1a62633145c07p-53, self))
+        return(sh.add(sl))
+
+    // |x| < 2^-970: scaled up so that the double-double product stays exact, then rounded once at the true scale
+    block scaled()
+        t  : Self = self.mul(0x1p106)
+        th : Self = Self.mul(0x1.921fb54442d18p+1, t)
+        tl : Self = Self.mul_add(0x1.921fb54442d18p+1, t,
+            th.neg()).add(Self.mul(0x1.1a62633145c07p-53, t))
+        r  : Self = th.add(tl)
+        rs : Self = r.mul(0x1p-106)
+        rt : Self = rs.mul(0x1p106)
+        return(th.sub(rt).add(tl).mul_add(0x1p-106, rs))
+
+    // x is an integer or a half-integer when its bits below 1/2 are all 0
+    block halves(m: S64, s: S64)
+        si      : S64  = e.sub(1011)
+        bits_in : Bool = si.ge(0)
+        branch bits_in
+            ? continue
+            : moderate(m, s)
+        shift : U64  = si.to_wrap<U64>()
+        exact : Bool = m0.shl(shift.add(1)).eq(0)
+        branch exact
+            ? continue
+            : moderate(m, s)
+        integer : Bool = m0.shl(shift).eq(0)
+        branch integer
+            ? return(zero)
+            : continue
+        odd : Bool = m0.shl(shift.sub(1)).shr(63).eq(1)  // |x| = 3/2 mod 2
+        one : Self = Self.copysign(1.0, self)
+        branch odd
+            ? return(one.neg())
+            : return(one)
+
+    block moderate(m: S64, s: S64)
+        shifted : U64 = m.shr(s).to_wrap<U64>().bitand(8191)
+        iq      : U64 = shifted.add(1).shr(1)  // round(2048 x) mod 4096
+        // 2048 x - iq, scaled by 2^64
+        up  : U64  = e.sub(1000).to_wrap<U64>()
+        k   : S64  = m.to_wrap<U64>().shl(up).to_wrap<S64>()
+        z   : Self = k.to<Self>()
+        z2  : Self = z.mul(z)
+        fs2 : Self = Self.add(-0x1.4abbce625be51p-223, z2.mul(0x1.466bc6044ba16p-374))
+        fs  : Self = Self.add(0x1.921fb54442d18p-74, z2.mul(fs2))
+        fc  : Self = Self.add(-0x1.3bd3cc9be45dbp-148, z2.mul(0x1.03c1f00186416p-298))
+
+        b    : CmF64TrigPiSinCos = cm_f64_trig_pi_sincos(iq)
+        er   : Self              = z.abs().mul(0x1p-123).add(0x1p-78)
+        r0   : Self              = b.sl.add(b.sh.mul(z2.mul(fc)))
+        r    : Self              = r0.add(b.ch.mul(z.mul(fs)))
+        lb   : Self              = r.sub(er).add(b.sh)
+        ub   : Self              = r.add(er).add(b.sh)
+        sure : Bool              = lb.eq(ub)
+        branch sure
+            ? return(lb)
+            : return(cm_f64_sin_pi_refine(iq, z))
+
+/// sin(pi x) for 2^-54 <= |x| <= 0x1.2p-5 in double-double arithmetic: the accurate phase of the small-argument
+/// path.
+private routine cm_f64_sin_pi_zero(x: F64) -> F64
+    block entry()
+        x2  : F64         = x.mul(x)
+        dx2 : F64         = x.mul_add(x, x2.neg())
+        x3  : F64         = x2.mul(x)
+        dx3 : F64         = x2.mul_add(x, x3.neg()).add(dx2.mul(x))
+        fl2 : F64         = F64.add(0x1.e8f4344534da6p-12, x2.mul(-0x1.6f9cd7b8cb9dbp-16))
+        fl1 : F64         = F64.add(-0x1.e3074fde861fp-8, x2.mul(fl2))
+        fl  : F64         = x2.mul(fl1)
+        f0  : CmF64TrigDD = cm_f64_trig_pi_poly_start(0x1.50783487ee781p-4, 0x1.832989f39a743p-58,
+            fl)
+        f1  : CmF64TrigDD = cm_f64_trig_pi_poly_step(x2, dx2, f0, -0x1.32d2cce62bd86p-1,
+            0x1.066bd54973829p-55)
+        f2  : CmF64TrigDD = cm_f64_trig_pi_poly_step(x2, dx2, f1, 0x1.466bc6775aae2p+1,
+            -0x1.6dc0cbefae1dap-54)
+        f3  : CmF64TrigDD = cm_f64_trig_pi_poly_step(x2, dx2, f2, -0x1.4abbce625be53p+2,
+            0x1.05511c68477bep-52)
+        f   : CmF64TrigDD = cm_f64_trig_pi_muldd(f3.hi, f3.lo, x3, dx3)
+        // pi x as a triple-double y0 + y1 + y2, y0 rounded to a few bits so that y0 + y0l is exact
+        p0   : F64         = F64.mul(0x1.92p+1, x)
+        bu   : U64         = p0.bits().bitand(0x000FFFFFFFFFFFFF).add_wrap(U64.shl(85, 51))
+        bf   : F64         = F64.from_bits(bu)
+        y0   : F64         = p0.add(bf).sub(bf)
+        y0l  : F64         = F64.mul_add(0x1.92p+1, x, y0.neg())
+        y1   : F64         = F64.mul(0x1.fb54442d1846ap-11, x)
+        y2   : F64         = F64.mul_add(0x1.fb54442d1846ap-11, x,
+            y1.neg()).add(F64.mul(-0x1.d9cceba3f91f2p-65, x))
+        a1   : CmF64TrigDD = cm_f64_trig_pi_adddd(y1, y2, y0l, 0.0)
+        a2   : CmF64TrigDD = cm_f64_trig_pi_adddd(a1.hi, a1.lo, f.hi, f.lo)
+        s0   : CmF64TrigDD = cm_f64_trig_fast_two_sum(y0, a2.hi)
+        s1   : CmF64TrigDD = cm_f64_trig_fast_two_sum(s0.lo, a2.lo)
+        tu   : U64         = s1.hi.bits()
+        pow2 : Bool        = tu.bitand(0x000FFFFFFFFFFFFF).eq(0)
+        branch pow2
+            ? nudge(s0.hi, tu, s1.lo)
+            : return(s0.hi.add(s1.hi))
+
+    // the low part is a power of two: nudge it one ulp toward the tail so that the sum rounds correctly
+    block nudge(hi: F64, tu: U64, tail: F64)
+        signs : U64  = tail.bits().bitxor(tu)
+        away  : Bool = signs.shr(63).eq(1)
+        u     : U64  = away
+            ? tu.sub_wrap(1)
+            : tu.add_wrap(1)
+        return(hi.add(F64.from_bits(u)))
+
+/// The accurate phase of sin_pi's main path, with the list of exceptions.
+private routine cm_f64_sin_pi_refine(iq: U64, z: F64) -> F64
+    shared t : CmF64TrigDD = cm_f64_trig_pi_refine(iq, z)
+
+    block entry()
+        suspect : Bool = cm_f64_trig_pi_refine_suspect(t.lo)
+        branch suspect
+            ? search(0)
+            : return(t.hi.add(t.lo))
+
+    block search(i: USize)
+        done : Bool = i.eq(4)
+        branch done
+            ? return(t.hi.add(t.lo))
+            : continue
+        x     : F64  = z.mul(0x1p-63)
+        iqm   : U64  = iq.bitand(0x7FF)
+        dq    : U64  = CM_F64_SIN_PI_DB_IQ.getitem(i)
+        dx    : F64  = F64.from_bits(CM_F64_SIN_PI_DB.getitem(i.mul(3)))
+        plus  : Bool = x.eq(dx).bitand(iqm.eq(dq))
+        minus : Bool = x.eq(dx.neg()).bitand(iqm.eq(U64.sub(2048, dq)))
+        found : Bool = plus.bitor(minus)
+        branch found
+            ? listed(i)
+            : search(i.add(1))
+
+    block listed(i: USize)
+        upper : Bool = iq.gt(2048)
+        sgn   : F64  = upper
+            ? -1.0
+            : 1.0
+        r  : F64 = F64.from_bits(CM_F64_SIN_PI_DB.getitem(i.mul(3).add(1)))
+        dr : F64 = F64.from_bits(CM_F64_SIN_PI_DB.getitem(i.mul(3).add(2)))
+        return(sgn.mul(r).add(sgn.mul(dr)))

@@ -1,0 +1,117 @@
+// Tessera stdlib: the correctly rounded base-10 exponential 10^x of F32
+//
+// x log2(10) = k/32 + h: 2^(k/32) from a table, 2^h from a polynomial, all in F64. A second, longer reduction and
+// polynomial settle the cases the first can't round. The exact powers 10^1 .. 10^10 come from a table. Round to
+// nearest only: overflow gives +inf, underflow a correctly rounded subnormal or +0, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/exp10/exp10f.c via RazorForge's B32Exp10.rf.
+// Copyright (c) 2023-2025 Alexei Sibidanov
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// 10^n for n in 1..10, as F32 bits (exact, except the last one, rounded to F32).
+preset CM_F32_EXP10_EX: @Array<U32, 10> <- { 0x41200000, 0x42C80000, 0x447A0000, 0x461C4000,
+    0x47C35000, 0x49742400, 0x4B189680, 0x4CBEBC20, 0x4E6E6B28, 0x501502F9 }
+
+/// 10^self, correctly rounded (to nearest, ties to even). 10^-inf = +0, 10^+inf = +inf, overflow gives +inf,
+/// underflow a correctly rounded subnormal or +0, and NaN comes back quiet. 10^n is exact for n in 0..10.
+routine F32.exp10(self: Self) -> Self
+    shared tu : U32 = self.bits()
+    shared z  : F64 = self.to<F64>()
+    shared ux : U32 = tu.shl(1)
+
+    block entry()
+        outside : Bool = ux.gt(0x84344134).bitor(ux.lt(0x72ADF1C6))
+        branch outside
+            ? edge()
+            : exact()
+
+    // |x| > 0x1.344134p+5, x is NaN, or |x| < 0x1.adf1c6p-13
+    block edge()
+        tiny     : Bool = ux.lt(0x72ADF1C6)
+        special  : Bool = ux.ge(0xFF000000)
+        negative : Bool = tu.shr(31).eq(1)
+        under    : Bool = tu.gt(0xC23369F4)  // x < -0x1.66d3e8p+5
+        when
+            tiny     -> tiny()
+            special  -> special(negative)
+            under    -> underflow()
+            negative -> exact()
+            else     -> return(Self.INFINITY)  // x > 0x1.344134p+5
+
+    block tiny()
+        c23 : F64 = z.mul(0x1.0470591de2ca4p+1).add(0x1.53524c73cea69p+1)
+        c13 : F64 = z.mul(c23).add(0x1.26bb1bbb55516p+1)
+        r   : F64 = F64.add(1.0, z.mul(c13))  // 1 + z (c1 + z (c2 + z c3))
+        return(r.to<Self>())
+
+    // infinities and NaN, which comes back quiet with its sign and payload
+    block special(negative: Bool)
+        nan : Bool = ux.gt(0xFF000000)
+        when
+            nan      -> return(self.add(self))
+            negative -> return(0.0)
+            else     -> return(Self.INFINITY)
+
+    // the result underflows to a tiny subnormal or zero
+    block underflow()
+        scaled  : F64 = z.add(0x1.66d3e7bd9a403p+5).mul(0x1.a934f0979a37p-149)
+        y       : F64 = F64.add(0x1p-149, scaled)
+        clamped : F64 = y.max(0x1p-151)
+        return(clamped.to<Self>())
+
+    // x = n for an integer n in 1..10 has an exact (or tabulated) power
+    block exact()
+        integral : Bool = tu.shl(12).eq(0)
+        branch integral
+            ? small_integer(tu.shr(20).sub_wrap(1016))
+            : fast()
+
+    // bit k of 0x7551101 is set for the k of the integers 1..10, and counting the set bits below it gives n - 1
+    block small_integer(k: U32)
+        in_range : Bool = k.le(26)
+        branch in_range
+            ? continue
+            : fast()
+        bt     : U32  = U32.shl(1, k)
+        listed : Bool = bt.bitand(0x7551101).ne(0)
+        branch listed
+            ? continue
+            : fast()
+        below : U32 = bt.sub(1).bitand(0x7551101)
+        n     : U32 = below.count_ones()
+        return(Self.from_bits(CM_F32_EXP10_EX.getitem(n.to<USize>())))
+
+    block fast()
+        a     : F64  = F64.mul(0x1.a934f0979a371p+6, z)  // 32 x log2(10)
+        ia    : F64  = a.round_ties_even()
+        h     : F64  = a.sub(ia)
+        ja    : S64  = ia.to<S64>()
+        entry : U64  = CM_F32_EXPM1_TD.getitem(ja.to_wrap<U64>().bitand(0x1F).to<USize>())
+        scale : U64  = ja.shr(5).to_wrap<U64>().shl(52)
+        sv    : F64  = F64.from_bits(entry.add_wrap(scale))  // 2^(round(32 x log2(10)) / 32)
+        h2    : F64  = h.mul(h)
+        p01   : F64  = F64.add(1.0, h.mul(0x1.62e42fef4c4e7p-6))
+        p23   : F64  = F64.add(0x1.ebfd1b232f475p-13, h.mul(0x1.c6b19384ecd93p-20))
+        r     : F64  = p01.add(h2.mul(p23)).mul(sv)
+        ub    : Self = r.to<Self>()
+        lb    : Self = r.sub(r.mul(0x1.3edbbe4560327p-33)).to<Self>()
+        sure  : Bool = ub.eq(lb)
+        branch sure
+            ? return(ub)
+            : slow(ia, sv)
+
+    // The fast path can't decide the rounding: redo it with a longer reduction and polynomial.
+    block slow(ia: F64, sv: F64)
+        h_hi : F64 = F64.mul(0x1.a934f09p+1, z).sub(ia.mul(0.03125))
+        h    : F64 = h_hi.add(F64.mul(0x1.e68dc57f2496p-29, z))
+        h2   : F64 = h.mul(h)
+        w    : F64 = sv.mul(h)
+        c01  : F64 = F64.add(0x1.62e42fefa39efp-1, h.mul(0x1.ebfbdff82c58fp-3))
+        c23  : F64 = F64.add(0x1.c6b08d702e0edp-5, h.mul(0x1.3b2ab6fb92e5ep-7))
+        c45  : F64 = F64.add(0x1.5d886e6d54203p-10, h.mul(0x1.430976b8ce6efp-13))
+        c25  : F64 = c23.add(h2.mul(c45))
+        c05  : F64 = c01.add(h2.mul(c25))
+        r    : F64 = sv.add(w.mul(c05))
+        return(r.to<Self>())

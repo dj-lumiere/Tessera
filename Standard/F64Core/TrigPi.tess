@@ -1,0 +1,329 @@
+// Tessera stdlib: what the correctly rounded sin_pi, cos_pi and tan_pi of F64 share
+//
+// sin(pi s/2048) and cos(pi s/2048) for an angle index s, from tables of sin(pi i/64) and of sin and cos of
+// pi j/2048 (to about 2^-75, and to double-double accuracy for the accurate phase), the double-double helpers,
+// and the accurate phase sin_pi and cos_pi both end in.
+//
+// Ported from CORE-MATH, src/binary64/sinpi/sinpi.c and src/binary64/cospi/cospi.c via RazorForge's B64TrigPi.rf
+// (the helpers and tables appear identically in both files, and tanpi.c repeats the double-double helpers).
+// Copyright (c) 2023-2026 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// sin(pi i/64) for i in 0..32 as (high, low) pairs of F64 bits, the high parts short enough that
+/// their products are exact.
+preset CM_F64_TRIG_PI_SN: @Array<U64, 66> <- { 0x0000000000000000, 0x0000000000000000,
+    0x3FA91F6600000000, 0xBE1DE44FD832257A, 0x3FB917A6C0000000, 0xBE0EB25EA0F138C7,
+    0x3FC2C81060000000, 0x3E3D1CC27444C003, 0x3FC8F8B840000000, 0xBE1CB2CFAA4DA337,
+    0x3FCF19F980000000, 0xBE237A839542DEEF, 0x3FD2940630000000, 0xBE12A60FA574A369,
+    0x3FD58F9A70000000, 0x3E36AC7F73F84090, 0x3FD87DE2A0000000, 0x3E3ABAA58B469891,
+    0x3FDB5D1010000000, 0xBE387A8CFF5264EA, 0x3FDE2B5D40000000, 0xBE3FE4271387C9DC,
+    0x3FE0738798000000, 0x3E222FFED9697FAF, 0x3FE1C73B38000000, 0x3E2AE68C86C9774A,
+    0x3FE30FF800000000, 0xBE38F47E58F7E631, 0x3FE44CF328000000, 0xBE37B7114F3FC4AF,
+    0x3FE57D6938000000, 0xBE3B989B02EAE413, 0x3FE6A09E68000000, 0xBE280C4336F74D05,
+    0x3FE7B5DF20000000, 0x3E33557D76F0AC85, 0x3FE8BC8068000000, 0x3E38A8BA05A743DA,
+    0x3FE9B3E048000000, 0xBDD8F17E98771434, 0x3FEA9B6628000000, 0x3E20EA1A3033EC62,
+    0x3FEB728348000000, 0xBE37348E1378D3E6, 0x3FEC38B2F0000000, 0x3E280BDB0D23E9D1,
+    0x3FECED7AF8000000, 0xBE3E19C46879EDAF, 0x3FED906BD0000000, 0xBE19AE573AEA067C,
+    0x3FEE212108000000, 0xBE384BC8DA0298EE, 0x3FEE9F4158000000, 0xBE239D225A27D387,
+    0x3FEF0A7EF8000000, 0x3E3C9186B952C7AE, 0x3FEF6297D0000000, 0xBDD1469FAA77A357,
+    0x3FEFA75580000000, 0xBE1EEB5D2BD05465, 0x3FEFD88DA0000000, 0x3E3E89292CF04139,
+    0x3FEFF621E0000000, 0x3E3BCB6BEF1D421F, 0x3FF0000000000000, 0x0000000000000000 }
+
+/// sin(pi j/2048) for j in 0..31, paired like CM_F64_TRIG_PI_SN.
+preset CM_F64_TRIG_PI_SM: @Array<U64, 64> <- { 0x0000000000000000, 0x0000000000000000,
+    0x3F59220000000000, 0xBE354466E349EE53, 0x3F6921F800000000, 0x3E17D99497495D20,
+    0x3F72D97800000000, 0x3E017CCB5E27CB43, 0x3F7921F000000000, 0x3E2FCCE00E23572D,
+    0x3F7F6A6400000000, 0x3E3F9A2A3C5885CF, 0x3F82D96C00000000, 0xBE3E35ED1FA23D22,
+    0x3F85FDA000000000, 0x3E1BD602F04014C8, 0x3F8921D200000000, 0xBDD909C3DCCF0E28,
+    0x3F8C460000000000, 0xBE0E1B7526EBF9F2, 0x3F8F6A2A00000000, 0xBE32A8CD06AF94A2,
+    0x3F91472700000000, 0x3E0B5AE26618769E, 0x3F92D93700000000, 0xBE31073C40B25037,
+    0x3F946B4400000000, 0xBE3F80C5F9200607, 0x3F95FD4D00000000, 0x3E20FD5912EF3F57,
+    0x3F978F5300000000, 0x3E377727C10D8CA5, 0x3F99215600000000, 0xBE00B933040D8EB2,
+    0x3F9AB35500000000, 0xBE33ABEC0D92AE48, 0x3F9C454F00000000, 0x3E33394EC7229C28,
+    0x3F9DD74600000000, 0xBE3CE6D5319D653E, 0x3F9F693700000000, 0x3E28E8E7807F600B,
+    0x3FA07D9200000000, 0xBDC9EEA00D71246D, 0x3FA1468600000000, 0xBE325E9F40A5121A,
+    0x3FA20F7700000000, 0x3E19D6238D09F231, 0x3FA2D86580000000, 0xBE14D75465D2F213,
+    0x3FA3A15100000000, 0xBE137BCA0781D73A, 0x3FA46A3980000000, 0xBE20079E86EEC954,
+    0x3FA5331F00000000, 0xBE3E222F8A75DE87, 0x3FA5FC0100000000, 0xBE36B7995E4BB32D,
+    0x3FA6C4DF80000000, 0xBDF41523E139C56B, 0x3FA78DBA80000000, 0x3E32C3A342EB5F11,
+    0x3FA8569200000000, 0x3E35DA89E0B235C0 }
+
+/// cos(pi j/2048) for j in 0..31, paired like CM_F64_TRIG_PI_SN.
+preset CM_F64_TRIG_PI_CM: @Array<U64, 64> <- { 0x3FF0000000000000, 0x0000000000000000,
+    0x3FEFFFFD88000000, 0x3E061BB991AF64F1, 0x3FEFFFF620000000, 0x3E2621D01D2A6063,
+    0x3FEFFFE9C8000000, 0x3E38F17465DE1773, 0x3FEFFFD888000000, 0xBE338BAB6D94C71D,
+    0x3FEFFFC250000000, 0x3E16BB5DD7625BCD, 0x3FEFFFA730000000, 0xBE3B439D8A459600,
+    0x3FEFFF8718000000, 0x3E237CE2EEC7251B, 0x3FEFFF6218000000, 0xBE2646D24A88970E,
+    0x3FEFFF3828000000, 0xBE39BB848BDB041E, 0x3FEFFF0940000000, 0x3E3E29DE85718CC2,
+    0x3FEFFED570000000, 0x3E3CC695B5E89E49, 0x3FEFFE9CB8000000, 0xBE3DA572F6A4BCCA,
+    0x3FEFFE5F08000000, 0xBE30D43929B71F74, 0x3FEFFE1C68000000, 0x3E0C32DDD89AA147,
+    0x3FEFFDD4D8000000, 0x3E3FBC7A9242CCF3, 0x3FEFFD8860000000, 0x3E1099A19765595D,
+    0x3FEFFD36F8000000, 0xBE2DBAFF3C93CDC4, 0x3FEFFCE0A0000000, 0xBE38EACC3AF7AC55,
+    0x3FEFFC8558000000, 0xBE3996F62D2DF41D, 0x3FEFFC2520000000, 0xBE3071603E8582DF,
+    0x3FEFFBBFF8000000, 0x3E07E5454B8225E9, 0x3FEFFB55E8000000, 0xBE3ED0128D24B027,
+    0x3FEFFAE6E0000000, 0x3E25569984BD1A7A, 0x3FEFFA72F0000000, 0xBDA08A362D33736D,
+    0x3FEFF9FA10000000, 0x3DFA441BA9901FD5, 0x3FEFF97C40000000, 0x3E304600A0A95596,
+    0x3FEFF8F988000000, 0xBE3387D3A589FA3D, 0x3FEFF871D8000000, 0x3E36DC0EF98B1C67,
+    0x3FEFF7E540000000, 0x3E301907C4C59658, 0x3FEFF753B8000000, 0x3E38DC8B1E83CCFF,
+    0x3FEFF6BD48000000, 0xBE2C4BBB2C348040 }
+
+/// sin(pi i/64) for i in 0..32 as double-double (high, low) pairs of F64 bits.
+preset CM_F64_TRIG_PI_SN2: @Array<U64, 66> <- { 0x0000000000000000, 0x0000000000000000,
+    0x3FA91F65F10DD814, 0xBC2912BD0D569A90, 0x3FB917A6BC29B42C, 0xBC3E2718D26ED688,
+    0x3FC2C8106E8E613A, 0x3C513000A89A11E0, 0x3FC8F8B83C69A60B, 0xBC626D19B9FF8D82,
+    0x3FCF19F97B215F1B, 0xBC642DEEF11DA2C4, 0x3FD294062ED59F06, 0xBC75D28DA2C4612D,
+    0x3FD58F9A75AB1FDD, 0xBC1EFDC0D58CF620, 0x3FD87DE2A6AEA963, 0xBC672CEDD3D5A610,
+    0x3FDB5D1009E15CC0, 0x3C65B362CB974183, 0x3FDE2B5D3806F63B, 0x3C5E0D891D3C6841,
+    0x3FE073879922FFEE, 0xBC8A5A014347406C, 0x3FE1C73B39AE68C8, 0x3C8B25DD267F6600,
+    0x3FE30FF7FCE17035, 0xBC6EFCC626F74A6F, 0x3FE44CF325091DD6, 0x3C68076A2CFDC6B3,
+    0x3FE57D69348CECA0, 0xBC875720992BFBB2, 0x3FE6A09E667F3BCD, 0xBC8BDD3413B26456,
+    0x3FE7B5DF226AAFAF, 0xBC70F537ACDF0AD7, 0x3FE8BC806B151741, 0xBC82C5E12ED1336D,
+    0x3FE9B3E047F38741, 0xBC830EE286712474, 0x3FEA9B66290EA1A3, 0x3C39F630E8B6DAC8,
+    0x3FEB728345196E3E, 0xBC8BC69F324E6D61, 0x3FEC38B2F180BDB1, 0xBC76E0B1757C8D07,
+    0x3FECED7AF43CC773, 0xBC5E7B6BB5AB58AE, 0x3FED906BCF328D46, 0x3C7457E610231AC2,
+    0x3FEE212104F686E5, 0xBC8014C76C126527, 0x3FEE9F4156C62DDA, 0x3C8760B1E2E3F81E,
+    0x3FEF0A7EFB9230D7, 0x3C752C7ADC6B4989, 0x3FEF6297CFF75CB0, 0x3C7562172A361FD3,
+    0x3FEFA7557F08A517, 0xBC87A0A8CA13571F, 0x3FEFD88DA3D12526, 0xBC887DF6378811C7,
+    0x3FEFF621E3796D7E, 0xBC6C57BC2E24AA15, 0x3FF0000000000000, 0x0000000000000000 }
+
+/// sin(pi j/2048) for j in 0..31 as double-double (high, low) pairs of F64 bits.
+preset CM_F64_TRIG_PI_SM2: @Array<U64, 64> <- { 0x0000000000000000, 0x0000000000000000,
+    0x3F5921FAAEE6472E, 0xBBFEE52E284A9DF8, 0x3F6921F8BECCA4BA, 0x3C02BA407BCAB5B2,
+    0x3F72D97822F996BC, 0x3C13E5A15ED6AA3E, 0x3F7921F0FE670071, 0x3BFAB967FE6B7A9B,
+    0x3F7F6A65F9A2A3C6, 0xBC1DE8C48783F3AE, 0x3F82D96B0E509703, 0xBC01E9131FF52DC9,
+    0x3F85FDA037AC05E1, 0xBC2FF59BF4B574EE, 0x3F8921D1FCDEC784, 0x3C29878EBE836D9D,
+    0x3F8C45FFE1E48AD9, 0x3C04060E4BD32E79, 0x3F8F6A296AB997CB, 0xBC2F2943D8FE7033,
+    0x3F9147270DAD7133, 0x3C08769E00E01800, 0x3F92D936BBE30EFD, 0x3C2B5F91EE371D64,
+    0x3F946B4381FCE81B, 0x3C3FF9F89FB65BE3, 0x3F95FD4D21FAB226, 0xBC20C0A91C37851C,
+    0x3F978F535DDC9F04, 0x3C2B194AD9B1AA97, 0x3F992155F7A3667E, 0xBBFB1D63091A0130,
+    0x3F9AB354B1504FCA, 0xBC32AE47937CBDD3, 0x3F9C454F4CE53B1D, 0xBC3D63D7FEF0E36C,
+    0x3F9DD7458C64AB3A, 0xBC3D653DF3FCC281, 0x3F9F693731D1CF01, 0xBBD3FE9BC66286C7,
+    0x3FA07D91FF984580, 0xBC3AE248DA7A9007, 0x3FA14685DB42C17F, 0xBC42890D277CB974,
+    0x3FA20F770CEB11C7, 0xBC4EC1B9D46693B1, 0x3FA2D865759455CD, 0x3C2686F65BA93AC0,
+    0x3FA3A150F6421AFC, 0x3C3F8A318BA775FD, 0x3FA46A396FF86179, 0x3C2136AC00FA2DA9,
+    0x3FA5331EC3BBA0EB, 0x3C2442F2A9DAC128, 0x3FA5FC00D290CD43, 0x3C4A2669A693A8E1,
+    0x3FA6C4DF7D7D5B84, 0xBC339C56A9BD0A9B, 0x3FA78DBAA5874686, 0xBC34A0EF4035C29C,
+    0x3FA856922BB513C1, 0x3C491ADFD607CB2B }
+
+/// 1 - cos(pi j/2048) for j in 0..31 as double-double (high, low) pairs of F64 bits.
+preset CM_F64_TRIG_PI_CM2: @Array<U64, 64> <- { 0x0000000000000000, 0x0000000000000000,
+    0x3EB3BD3C88CDCA13, 0x3B5874628D2B6835, 0x3ED3BD3BC5FC5AB4, 0xBB48A1BEBF665CEF,
+    0x3EE634E1D173443D, 0x3B6198FF5804D8DC, 0x3EF3BD38BAB6D94C, 0x3B9C73BE2184804E,
+    0x3EFED7A51288A277, 0xBB9BCD47BF19555B, 0x3F0634DA1CEC522D, 0xBBA3FFF35C1BDB61,
+    0x3F0E39B20C7444E3, 0x3BAAE49F0BE31E8C, 0x3F13BD2C8DA49511, 0x3BA70DF810BCC0E2,
+    0x3F18FB66EE122F6C, 0x3B9079FF34BFFA7E, 0x3F1ED7875885EA3A, 0xBBA983278BAA11C2,
+    0x3F22A8C672D4942F, 0xBBBE4938F661AA14, 0x3F2634BB4AE5ED49, 0x3BCE64C904CC8156,
+    0x3F2A0FA1A872536E, 0x3BBF7469ECC1331F, 0x3F2E3978F34889D9, 0x3BC5EB897CDC1B0D,
+    0x3F31592043856DBD, 0x3BC9865D9CDC3744, 0x3F33BCFBD9979A27, 0xBBD595D548D9A586,
+    0x3F36484EDD7F9E4A, 0xBBB91DF31AAA6F7F, 0x3F38FB18EACC3AF8, 0xBBD4EAA508EEC2B7,
+    0x3F3BD55996F62D2E, 0xBBA7C51F7D8F9F71, 0x3F3ED71071603E86, 0xBBDF4827CCB50B62,
+    0x3F41001E81ABAB48, 0xBBD12F4A2E3616D5, 0x3F42A86F68094692, 0x3BE604E1F8F76C27,
+    0x3F44647AAA599ED1, 0xBBE1A79A86FB8FF5, 0x3F46344004228D8B, 0x3BE33736C96557C9,
+    0x3F4817BF2DDF22B3, 0x3BEFC0555A81D729, 0x3F4A0EF7DCFFAFAB, 0x3BE54D46B817BCA4,
+    0x3F4C19E9C3E9D2C5, 0xBB970A980659E790, 0x3F4E389491F8833A, 0x3BEC7313BEEAB883,
+    0x3F50357BF9BE0ECF, 0xBBF965827F33D907, 0x3F515889C8DD385F, 0x3BC98094FAB77B42,
+    0x3F52857389776587, 0xBBFBFDFCE09AEA7B }
+
+/// sin(pi s/2048) and cos(pi s/2048) as double-doubles.
+record CmF64TrigPiSinCos
+    sh : F64
+    sl : F64
+    ch : F64
+    cl : F64
+
+/// The angle s/2048 (only the low 12 bits of s matter) as a table index ks of sin(pi ks/64), its complement kc
+/// (cos(pi ks/64) = sin(pi kc/64)), and an index jm of the pi j/2048 tables: s/2048 = +-(ks/64 + jm/2048) folded
+/// into a quarter turn, with the signs of the sine and cosine as the bits ss and sc.
+private record CmF64TrigPiAngle
+    ks : USize
+    kc : USize
+    jm : USize
+    ss : Bool
+    sc : Bool
+
+/// (xh + xl) + (ch + cl) as a double-double.
+routine cm_f64_trig_pi_adddd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64TrigDD
+    block entry()
+        s     : F64 = xh.add(ch)
+        d     : F64 = s.sub(xh)
+        error : F64 = ch.sub(d).add(xh.add(d.sub(s)))
+        return(CmF64TrigDD { hi: s, lo: error.add(xl.add(cl)) })
+
+/// (xh + xl) (ch + cl) as a double-double, the cross terms added before the final Fast2Sum.
+routine cm_f64_trig_pi_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64TrigDD
+    block entry()
+        ahlh : F64 = ch.mul(xl)
+        alhh : F64 = cl.mul(xh)
+        ahhh : F64 = ch.mul(xh)
+        ahhl : F64 = ch.mul_add(xh, ahhh.neg())
+        low  : F64 = ahhl.add(alhh.add(ahlh))
+        return(cm_f64_trig_fast_two_sum(ahhh, low))
+
+/// (xh + xl) c as a double-double.
+routine cm_f64_trig_pi_mulddd(xh: F64, xl: F64, c: F64) -> CmF64TrigDD
+    block entry()
+        ahlh : F64 = c.mul(xl)
+        ahhh : F64 = c.mul(xh)
+        ahhl : F64 = c.mul_add(xh, ahhh.neg()).add(ahlh)
+        h    : F64 = ahhh.add(ahhl)
+        return(CmF64TrigDD { hi: h, lo: ahhh.sub(h).add(ahhl) })
+
+/// The first step of a double-double Horner evaluation: the top coefficient c0 + c1 plus the tail l, already
+/// evaluated in double precision.
+routine cm_f64_trig_pi_poly_start(c0: F64, c1: F64, l: F64) -> CmF64TrigDD
+    block entry()
+        h : F64 = c0.add(l)
+        return(CmF64TrigDD { hi: h, lo: c0.sub(h).add(l).add(c1) })
+
+/// One double-double Horner step: p (xh + xl) + (c0 + c1).
+routine cm_f64_trig_pi_poly_step(xh: F64, xl: F64, p: CmF64TrigDD, c0: F64, c1: F64) -> CmF64TrigDD
+    block entry()
+        q  : CmF64TrigDD = cm_f64_trig_pi_muldd(xh, xl, p.hi, p.lo)
+        th : F64         = q.hi.add(c0)
+        tl : F64         = c0.sub(th).add(q.hi)
+        return(CmF64TrigDD { hi: th, lo: q.lo.add(tl.add(c1)) })
+
+/// The CmF64TrigPiAngle of the angle index s.
+private routine cm_f64_trig_pi_angle(s: U64) -> CmF64TrigPiAngle
+    block entry()
+        low      : U64  = s.bitand(0x3FF)
+        mirrored : Bool = s.shr(10).bitand(1).eq(1)
+        j        : U64  = mirrored
+            ? U64.sub(1024, low)
+            : low
+        ks        : USize = j.shr(5).to<USize>()
+        kc        : USize = USize.sub(32, ks)
+        jm        : USize = j.bitand(0x1F).to<USize>()
+        ss        : Bool  = s.shr(11).bitand(1).eq(1)
+        next_half : U64   = s.add_wrap(1024)  // the angle plus a quarter turn
+        sc        : Bool  = next_half.shr(11).bitand(1).eq(1)
+        return(CmF64TrigPiAngle { ks: ks, kc: kc, jm: jm, ss: ss, sc: sc })
+
+/// The signs of the angle applied to a sine and a cosine double-double.
+private routine cm_f64_trig_pi_signed(a: CmF64TrigPiAngle, ts: CmF64TrigDD,
+    tc: CmF64TrigDD) -> CmF64TrigPiSinCos
+    block entry()
+        sh : F64 = a.ss
+            ? ts.hi.neg()
+            : ts.hi
+        sl : F64 = a.ss
+            ? ts.lo.neg()
+            : ts.lo
+        ch : F64 = a.sc
+            ? tc.hi.neg()
+            : tc.hi
+        cl : F64 = a.sc
+            ? tc.lo.neg()
+            : tc.lo
+        return(CmF64TrigPiSinCos { sh: sh, sl: sl, ch: ch, cl: cl })
+
+/// The F64 at index i of a table.
+private routine cm_f64_trig_pi_at(table: @Array<U64, 66>, i: USize) -> F64
+    block entry()
+        return(F64.from_bits(table.getitem(i)))
+
+/// The F64 at index i of a 64-entry table.
+private routine cm_f64_trig_pi_at(table: @Array<U64, 64>, i: USize) -> F64
+    block entry()
+        return(F64.from_bits(table.getitem(i)))
+
+/// sin(pi s/2048) and cos(pi s/2048) to about 2^-75, from the angle index s (only its low 12 bits matter).
+routine cm_f64_trig_pi_sincos(s: U64) -> CmF64TrigPiSinCos
+    block entry()
+        a   : CmF64TrigPiAngle = cm_f64_trig_pi_angle(s)
+        sbh : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SN, a.ks.mul(2))
+        sbl : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SN, a.ks.mul(2).add(1))
+        cbh : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SN, a.kc.mul(2))
+        cbl : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SN, a.kc.mul(2).add(1))
+        slh : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SM, a.jm.mul(2))
+        sll : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SM, a.jm.mul(2).add(1))
+        clh : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_CM, a.jm.mul(2))
+        cll : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_CM, a.jm.mul(2).add(1))
+        sb  : F64              = sbh.add(sbl)
+        cb  : F64              = cbh.add(cbl)
+        // cos(b + l) = cb cl - sb sl and sin(b + l) = sb cl + cb sl, the high parts exact
+        bch : F64         = cbh.mul(clh).sub(sbh.mul(slh))
+        bc1 : F64         = clh.mul(cbl).sub(slh.mul(sbl))
+        bcl : F64         = bc1.add(cb.mul(cll)).sub(sb.mul(sll))
+        bsh : F64         = sbh.mul(clh).add(cbh.mul(slh))
+        bs1 : F64         = slh.mul(cbl).add(clh.mul(sbl))
+        bsl : F64         = bs1.add(cb.mul(sll)).add(sb.mul(cll))
+        tch : F64         = bch.add(bcl)
+        tsh : F64         = bsh.add(bsl)
+        tc  : CmF64TrigDD = { hi: tch, lo: bch.sub(tch).add(bcl) }
+        ts  : CmF64TrigDD = { hi: tsh, lo: bsh.sub(tsh).add(bsl) }
+        return(cm_f64_trig_pi_signed(a, ts, tc))
+
+/// sin(pi s/2048) and cos(pi s/2048) to double-double accuracy, from the angle index s (only its low 12 bits
+/// matter).
+routine cm_f64_trig_pi_sincos2(s: U64) -> CmF64TrigPiSinCos
+    block entry()
+        a   : CmF64TrigPiAngle = cm_f64_trig_pi_angle(s)
+        sbh : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SN2, a.ks.mul(2))
+        sbl : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SN2, a.ks.mul(2).add(1))
+        cbh : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SN2, a.kc.mul(2))
+        cbl : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SN2, a.kc.mul(2).add(1))
+        slh : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SM2, a.jm.mul(2))
+        sll : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_SM2, a.jm.mul(2).add(1))
+        clh : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_CM2, a.jm.mul(2))
+        cll : F64              = cm_f64_trig_pi_at(CM_F64_TRIG_PI_CM2, a.jm.mul(2).add(1))
+        // with the second table holding 1 - cos(l): cos(b + l) = cb - (cb (1 - cos l) + sb sin l) and
+        // sin(b + l) = sb - (sb (1 - cos l) - cb sin l)
+        cc  : CmF64TrigDD = cm_f64_trig_pi_muldd(clh, cll, cbh, cbl)
+        sn  : CmF64TrigDD = cm_f64_trig_pi_muldd(slh, sll, sbh, sbl)
+        cs  : CmF64TrigDD = cm_f64_trig_pi_muldd(clh, cll, sbh, sbl)
+        scp : CmF64TrigDD = cm_f64_trig_pi_muldd(slh, sll, cbh, cbl)
+        dc  : CmF64TrigDD = cm_f64_trig_fast_two_sum(sn.hi, cc.hi)
+        dcl : F64         = dc.lo.add(cc.lo.add(sn.lo))
+        ds  : CmF64TrigDD = cm_f64_trig_fast_two_sum(scp.hi.neg(), cs.hi)
+        dsl : F64         = ds.lo.add(cs.lo.sub(scp.lo))
+        tc  : CmF64TrigDD = cm_f64_trig_fast_two_sum(cbh, dc.hi.neg())
+        ts  : CmF64TrigDD = cm_f64_trig_fast_two_sum(sbh, ds.hi.neg())
+        c   : CmF64TrigDD = { hi: tc.hi, lo: cbl.sub(dcl).add(tc.lo) }
+        s2  : CmF64TrigDD = { hi: ts.hi, lo: sbl.sub(dsl).add(ts.lo) }
+        return(cm_f64_trig_pi_signed(a, s2, c))
+
+/// The accurate phase shared by sin_pi and cos_pi: the sine of the angle iq/2048 + z 2^-75 half turns, as an
+/// unevaluated double-double (iq in 0..4096, z the scaled residual angle).
+routine cm_f64_trig_pi_refine(iq: U64, z: F64) -> CmF64TrigDD
+    block entry()
+        x   : F64               = z.mul(0x1p-63)
+        x2  : F64               = x.mul(x)
+        dx2 : F64               = x.mul_add(x, x2.neg())
+        sll : F64               = F64.mul(-0x1.32d2cc920dcb4p-73, x2)
+        sp0 : CmF64TrigDD       = cm_f64_trig_pi_poly_start(0x1.466bc6775aae1p-47,
+            -0x1.9c3c168d990ap-114, sll)
+        sp1 : CmF64TrigDD       = cm_f64_trig_pi_poly_step(x2, dx2, sp0, -0x1.4abbce625be53p-22,
+            0x1.05511cbc65743p-76)
+        sp2 : CmF64TrigDD       = cm_f64_trig_pi_poly_step(x2, dx2, sp1, 0x1.921fb54442d18p+1,
+            0x1.1a62633145c06p-53)
+        sl  : CmF64TrigDD       = cm_f64_trig_pi_mulddd(sp2.hi, sp2.lo,
+            x.mul(0x1p-12))  // sin(pi x 2^-12)
+        cl2 : F64               = F64.add(-0x1.55d3c7e3cbff9p-72,
+            F64.mul(0x1.e1f50604fa0ffp-99, x2))
+        cll : F64               = x2.mul(cl2)
+        cp0 : CmF64TrigDD       = cm_f64_trig_pi_poly_start(0x1.03c1f081b5ac4p-46,
+            -0x1.32b33fda9113cp-100, cll)
+        cp1 : CmF64TrigDD       = cm_f64_trig_pi_poly_step(x2, dx2, cp0, -0x1.3bd3cc9be45dep-22,
+            -0x1.692b71366cc04p-76)
+        cl  : CmF64TrigDD       = cm_f64_trig_pi_muldd(cp1.hi, cp1.lo, x2,
+            dx2)  // cos(pi x 2^-12) - 1
+        b   : CmF64TrigPiSinCos = cm_f64_trig_pi_sincos2(iq)
+        cs  : CmF64TrigDD       = cm_f64_trig_pi_muldd(cl.hi, cl.lo, b.sh, b.sl)
+        sc  : CmF64TrigDD       = cm_f64_trig_pi_muldd(sl.hi, sl.lo, b.ch, b.cl)
+        ts  : CmF64TrigDD       = cm_f64_trig_fast_two_sum(sc.hi, cs.hi)
+        tsl : F64               = ts.lo.add(cs.lo.add(sc.lo))
+        ts2 : CmF64TrigDD       = cm_f64_trig_fast_two_sum(b.sh, ts.hi)
+        low : F64               = b.sl.add(tsl).add(ts2.lo)
+        return(CmF64TrigDD { hi: ts2.hi, lo: low })
+
+/// Whether the low part of the accurate phase has a mantissa of all zeros or all ones: the only case where
+/// high + low may round wrongly, so the list of exceptions must be consulted.
+routine cm_f64_trig_pi_refine_suspect(tsl: F64) -> Bool
+    block entry()
+        t    : U64  = tsl.bits()
+        ones : Bool = t.bitor(0xFFF0000000000000).eq(0xFFFFFFFFFFFFFFFF)
+        zero : Bool = t.shl(12).eq(0)
+        return(ones.bitor(zero))
