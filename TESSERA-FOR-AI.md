@@ -62,6 +62,15 @@ routine main() -> S32
 
 - `//` for comments, `///` for Markdown doc comments directly above a declaration, field, or choice member.
   `;` is not a comment (it was until 2026-09-28) and is rejected.
+- **Every routine has a doc comment**, private ones, externals, and a concept's required routines included. It sits
+  above the attribute lines and reads, in this order: what the routine does in one or two plain sentences (from its
+  real behavior), `:typeparam T:` for its own type parameters, `:param name:` for every parameter but `self` in
+  order, `:returns:` unless it returns Void, then `:throws:` ("Crashes with `IndexOutOfBoundsError` when ...", or the
+  `Failure` it returns), `:absent:` (when an Option comes back Absent), `:note:`, and `:see:` as needed. No `;` in the
+  prose, facts only. `tessera lint` (and `check` / `build` / `run` for the program's own files) warns on a routine
+  without one, a parameter without its `:param` line, a `:param` line for a name that isn't a parameter, and a
+  missing `:returns:`, in every file except those under a `tests`, `playground`, `scratch`, or `generated` directory, and except
+  routines a generator wrote (`#source`).
 
 **Values and pointers**
 
@@ -356,7 +365,7 @@ routine main() -> S32
   write-template hole is its own chain. A fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`x.load().add(y).store_into(x)`): the basic
   shape of an update, too common to warn about. The lint is there to stop a line from piling up conversions, not to
   split ordinary updates. `check`/`build`/`run` warn (not an error) for the program's own files, and
-  `tessera lint <files-or-dirs>` checks any file (this lint and the `finish` lint above); CI holds `stdlib`, `tests`, and
+  `tessera lint <files-or-dirs>` checks any file (this lint, the `finish` lint above, and the doc-comment lint); CI holds `stdlib`, `tests`, and
   `examples` to 0 warnings. When the chain sits in a `branch`/`when` arm or a later `when` condition, don't hoist it
   above (that would run it on paths that didn't): give the arm its own block.
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain

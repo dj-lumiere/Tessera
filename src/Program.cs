@@ -44,8 +44,11 @@ static class Cli
               containing its text. <name>.input, if present, is its standard input (else it reads an empty one).
         lint: warns on a chain of more than three calls, and in a routine with a block named finish (the block that
               releases what the routine holds and is its only return), on a return outside finish and on finish
-              destructing a head slot that starts as <- uninit. check, build, and run print the same warnings for
-              the program's own files. Exits 1 when there is one.
+              destructing a head slot that starts as <- uninit, and in a library or example file (one not under a
+              tests, playground, scratch, or generated directory) on a routine without a /// doc comment, or whose doc lacks
+              a :param line for a parameter (self aside), has one for a name that isn't a parameter, or lacks
+              :returns: when it returns a value. check, build, and run print the same warnings for the program's
+              own files. Exits 1 when there is one.
         """;
 
     private static int Help()
@@ -156,6 +159,7 @@ static class Cli
             ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
             : [p]).Order().ToList();
         int count = 0;
+        var linesOf = StyleLint.SavedFiles();
         foreach (var file in files)
         {
             if (!File.Exists(file)) throw new ToolError($"no such file: {file}");
@@ -168,7 +172,7 @@ static class Cli
             {
                 continue;   // a file that doesn't parse is the build's to report (some tests are made not to)
             }
-            foreach (var w in StyleLint.Check(decls))
+            foreach (var w in StyleLint.Check(decls, linesOf))
             {
                 Console.Error.WriteLine(w);
                 count++;
@@ -369,7 +373,7 @@ static class Cli
     private static void Lint(List<Decl> decls, IEnumerable<string> inputs)
     {
         var own = inputs.Select(f => ShownPath(Path.GetFullPath(f))).ToHashSet();
-        foreach (var w in StyleLint.Check(decls.Where(d => own.Contains(d.File))))
+        foreach (var w in StyleLint.Check(decls.Where(d => own.Contains(d.File)), StyleLint.SavedFiles()))
             Console.Error.WriteLine(w);
     }
 
