@@ -184,7 +184,10 @@ jobs:
   # one (tests/freestanding, and tests/freestanding_float, which uses every float operation and integer division; the
   # golden run skips both) leave nothing undefined: no C++ unwinding personality (every routine is nounwind), and no
   # C memory routine, soft-float routine, or other compiler-rt / libgcc helper (the stdlib exports memcpy, memset,
-  # memmove, memcmp, ARM's __aeabi_mem*, and Standard/SoftFloat's runtime there).
+  # memmove, memcmp, ARM's __aeabi_mem*, and Standard/SoftFloat's runtime there). Both define start, so the builder
+  # writes their entry (_start, and on Cortex-M the vector table), and each is linked with the link script for its
+  # target (tests/freestanding/<target>.ld), which defines the symbols that entry uses. 32-bit ARM builds for a
+  # Cortex-M CPU, since the generated entry there is a Cortex-M reset vector.
   freestanding:
     name: freestanding (${{ matrix.target }})
     runs-on: ubuntu-latest
@@ -194,6 +197,7 @@ jobs:
         include:
           - target: arm-none-eabi
             clang-target: thumbv7m-none-eabi
+            cpu: cortex-m3
           - target: riscv32-none-elf
             clang-target: riscv32-unknown-elf
             rng-feature: zkr
@@ -222,6 +226,7 @@ jobs:
           test -x /usr/bin/clang-21
           sudo ln -sf /usr/bin/clang-21 /usr/local/bin/clang
           sudo ln -sf /usr/bin/llvm-nm-21 /usr/local/bin/llvm-nm
+          sudo ln -sf /usr/bin/ld.lld-21 /usr/local/bin/ld.lld
           clang --version | grep -q 'clang version 21' || { clang --version; echo 'clang is not LLVM 21'; exit 1; }
           clang --version
 
@@ -245,22 +250,28 @@ jobs:
       # optimizations get their chance to call something too.
       - name: Build the programs and require that nothing is undefined
         run: |
+          cpu=""
+          if [ -n "${{ matrix.cpu }}" ]; then cpu="--cpu ${{ matrix.cpu }}"; fi
           for program in freestanding freestanding_float; do
             for mode in debug release; do
               ll="$program-$mode.ll"
               obj="$program-$mode.o"
+              elf="$program-$mode.elf"
               level=-O0
               if [ "$mode" = release ]; then level=-O2; fi
-              dotnet bin/Release/net10.0/tessera.dll build --target ${{ matrix.target }} --mode $mode --emit-llvm \
+              dotnet bin/Release/net10.0/tessera.dll build --target ${{ matrix.target }} $cpu --mode $mode --emit-llvm \
                 tests/$program/main.tess -o "$ll"
               clang --target=${{ matrix.clang-target }} $level -c -Wno-override-module "$ll" -o "$obj"
-              undefined=$(llvm-nm -u "$obj")
+              # The object may leave only the link script's symbols undefined, and the link supplies those.
+              undefined=$(llvm-nm -u "$obj" | grep -vE ' (__stack_top|__bss_start|__bss_end|__data_start|__data_end|__data_load)$' || true)
               if [ -n "$undefined" ]; then
                 echo "tests/$program for ${{ matrix.target }} ($mode) leaves symbols undefined that no bare-metal link supplies:"
                 echo "$undefined"
                 exit 1
               fi
-              echo "tests/$program ($mode): nothing undefined"
+              ld.lld -T tests/freestanding/${{ matrix.target }}.ld "$obj" -o "$elf"
+              llvm-nm "$elf" | grep -q ' T _start$' || { echo "tests/$program ($mode) has no _start"; exit 1; }
+              echo "tests/$program ($mode): nothing undefined, linked"
             done
           done
 

@@ -1,11 +1,16 @@
 // A program for a target without an operating system: no C library, no Standard::Os. It brings its own crash
-// handler, and its copies and fills reach the stdlib's memcpy and memset. CI builds it for arm-none-eabi and
-// riscv32-none-elf and checks that nothing it needs is left undefined (see freestanding.arch: it never runs here).
+// handler and its board step (when_booted), the builder writes its entry (_start, which sets the stack, zeroes .bss,
+// copies .data where the code runs from flash, turns the FPU on, then runs when_booted and start), and its copies and
+// fills reach the stdlib's memcpy and memset. CI builds it for each target without an OS, links it with the link
+// script for that target here (<target>.ld, which defines the symbols the entry uses), and checks that nothing it
+// needs is left undefined (see freestanding.arch: it never runs here).
 
 import Standard::Alloc
 
 global CURRENT: @Frame
 global PREVIOUS: @Frame
+global TOTAL: @U32
+global READINGS: @USize <- 16
 
 /// A sensor reading, large enough that copying one is a memcpy.
 record Frame
@@ -40,7 +45,14 @@ routine record_readings(n: USize) -> U32
         total.load().add(reading).store_into(total)
         jump fill(at.add(1))
 
-routine main() -> S32
+/// The board step: a board would set its clocks and serial port up here. This one only picks the number of readings.
+routine when_booted() -> Void
     block entry()
-        total : U32 = record_readings(16)
-        return(total.to<S32>())
+        READINGS.load().add(0).store_into(READINGS)
+        return()
+
+/// Records the readings and keeps their total.
+routine start() -> Void
+    block entry()
+        record_readings(READINGS.load()).store_into(TOTAL)
+        return()

@@ -127,7 +127,7 @@ public sealed record VariantCase(string Name, TypeRef? Payload, Pos Pos);
 
 /// `preset NAME: T = value` is a value, and `preset NAME: @T <- value` is read-only memory. With `IsGlobal`,
 /// `global NAME: @T [<- value]` is mutable memory, all-zero without a value. In memory (`IsStorage`), Type is the
-/// pointee T and the name is its address; the contents are part of the program image, there before `main` runs.
+/// pointee T and the name is its address; the contents are part of the program image, there before `start` runs.
 public sealed record PresetDecl(
     string File, List<Attribute> Attributes, TypeRef? Owner, string Name, TypeRef Type, Expr? Value, Pos Pos)
     : Decl(File, Attributes, Pos)

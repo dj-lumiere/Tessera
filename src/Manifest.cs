@@ -13,7 +13,7 @@ namespace Tessera;
 /// version = "0.1.0"
 ///
 /// [target]
-/// executable = "src/main.tess"        # the entry file (it has main); the output is build/main
+/// executable = "src/main.tess"        # the entry file (it has start); the output is build/main
 /// library = ["../shared"]             # source directories of other solutions this one builds with
 /// sources = ["../lib/hash.tess"]      # files (or directories of them) built in whatever the entry imports
 /// mode = "release"                    # "debug" (-O0, the default), "release" (-O2), "release-time" (-O3),

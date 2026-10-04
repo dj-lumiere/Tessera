@@ -24,11 +24,11 @@ public class SplitModuleTests
             block entry()
                 return(x.add(x))
 
-        routine main() -> S32
+        routine start() -> Void
             block entry()
                 bump(twice(2))
                 total : S64 = COUNTER.load()
-                return(0)
+                return()
 
         """;
 
@@ -44,10 +44,12 @@ public class SplitModuleTests
         Assert.Contains($"define void @{bump}(", baseIr);
         Assert.DoesNotContain(baseCompiler.ExposedSymbols, s => s.Contains("twice", StringComparison.Ordinal));
         Assert.Contains("main", baseCompiler.ExposedSymbols);
+        string start = Assert.Single(baseCompiler.ExposedSymbols, s => s.Contains("5start", StringComparison.Ordinal));
 
+        // The delta is the edited program: it defines start (and the C main the builder writes for it) again.
         var delta = new Compiler(BuildTarget.Host(), Decls())
         {
-            ProvidedSymbols = baseCompiler.ExposedSymbols.Where(s => s != "main").ToHashSet()
+            ProvidedSymbols = baseCompiler.ExposedSymbols.Where(s => s != "main" && s != start).ToHashSet()
         };
         string deltaIr = delta.Generate();
         Assert.Contains($"declare void @{bump}(", deltaIr);

@@ -306,8 +306,6 @@ public sealed partial class Compiler
 
     // ── Output ──────────────────────────────────────────────────────────────
 
-    public bool HasMain => _userRoutines.Any(r => r.Owner is null && r.Name == "main" && r.TypeParams.Count == 0);
-
     public string Generate()
     {
         foreach (var c in _presets.Values.SelectMany(g => g).Where(c => !c.IsLibrary)) CheckPreset(c);
@@ -319,6 +317,9 @@ public sealed partial class Compiler
         if (EmitLibraryExports)
             foreach (var r in _allRoutines.Where(r => r.IsLibrary && r.Attr("export") is { } e && !programExports.Contains(e.First)))
                 CheckRoot(r);
+        while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
+        // The entry comes after the program's own routines, so an error in one of them is reported first.
+        PlanEntry();
         while (_pending.Count > 0) EmitInstance(_pending.Dequeue());
         if (InlineRecursion() is [var recursive, ..]) throw recursive;
         if (VerifyFixedConformances() is [var first, ..]) throw first;
@@ -440,6 +441,7 @@ public sealed partial class Compiler
     /// Instantiates a routine that needs no type arguments: user code is always checked, even if unused.
     private void CheckRoot(RoutineDecl r)
     {
+        if (IsEntryRoutine(r)) CheckEntryRoutine(r);
         CheckInlining(r);
         if (r.Attr("external") is { First: "llvm" }) return;
         if (r.Blocks is null) { CheckExternal(r); return; }
@@ -471,6 +473,7 @@ public sealed partial class Compiler
         foreach (var sb in new[] { _typeDefs, _globals, declares })
             if (sb.Length > 0) o.Append(sb).AppendLine();
         o.Append(_functions);
+        o.Append(_entry);
         o.Append(DebugTrailer());
         return o.ToString();
     }

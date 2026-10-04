@@ -24,7 +24,8 @@ namespace Tessera;
 /// - parentheses around one value, which group nothing in a language without operators, are dropped: `(x).add(1)` is
 ///   `x.add(1)`. A call's arguments, a tuple type, and `(a, b)` (an error the builder reports) stay.
 /// - top-level declarations come in one order: module, imports (sorted), defines, globals, presets, types (records,
-///   choices, variants), concepts, standalone conformances, routines, and `main` last. Within a kind the written order
+///   choices, variants), concepts, standalone conformances, routines, and the entry
+///   routines last (`when_booted`, then `start`). Within a kind the written order
 ///   stays, a declaration keeps the comments and attributes above it, and a file divided by section comments is
 ///   ordered section by section. A file already in order is left as it is;
 /// - inside `routine Owner.name`, the owner type is written `Self` after the header names it (`List<T>` in a
@@ -748,7 +749,7 @@ public static class Formatter
 
     // ── Declaration order ───────────────────────────────────────────────
 
-    private enum DeclKind { Module, Import, Define, Global, Preset, Type, Concept, Conform, Routine, Main }
+    private enum DeclKind { Module, Import, Define, Global, Preset, Type, Concept, Conform, Routine, Entry }
 
     /// One top-level declaration with the comments and attributes above it, or a section divider (Kind null).
     private sealed record DeclChunk(DeclKind? Kind, List<string> Lines, int Index)
@@ -775,10 +776,14 @@ public static class Formatter
             "record" or "choice" or "variant" => DeclKind.Type,
             "concept" => DeclKind.Concept,
             "conform" => DeclKind.Conform,
-            "routine" => s.StartsWith("routine main(") || s.StartsWith("routine main (") ? DeclKind.Main : DeclKind.Routine,
+            "routine" => IsEntryHeader(s, "start") || IsEntryHeader(s, "when_booted") ? DeclKind.Entry : DeclKind.Routine,
             _ => null,
         };
     }
+
+    /// Whether a line is the header of the entry routine `name` (`routine start()`).
+    private static bool IsEntryHeader(string line, string name) =>
+        line.StartsWith($"routine {name}(", StringComparison.Ordinal) || line.StartsWith($"routine {name} (", StringComparison.Ordinal);
 
     /// Puts the top-level declarations in the canonical order (see the class comment). A file whose declarations are
     /// already in order comes back unchanged, so the pass never moves blank lines it doesn't have to.
@@ -851,25 +856,29 @@ public static class Formatter
         int firstOther = units.FindIndex(u => u.Kind is not (DeclKind.Module or DeclKind.Import));
         if (firstOther >= 0 && units.Skip(firstOther).Any(u => u.Kind is DeclKind.Module or DeclKind.Import)) return lines;
 
-        // Order each section; main goes to the very end.
+        // Order each section; the entry routines go to the very end.
         var sections = new List<List<DeclChunk>> { new() };
         foreach (var u in units)
         {
             if (u.Kind is null) sections.Add([u]);
             else sections[^1].Add(u);
         }
-        var mains = units.Where(u => u.Kind == DeclKind.Main).ToList();
+        // The board step runs before start, so it comes first.
+        var entries = units.Where(u => u.Kind == DeclKind.Entry)
+            .OrderBy(u => u.Lines.Any(l => IsEntryHeader(l, "start")) ? 1 : 0)
+            .ThenBy(u => u.Index)
+            .ToList();
         var ordered = new List<DeclChunk>();
         foreach (var section in sections)
         {
             ordered.AddRange(section.Where(u => u.Kind is null));
             ordered.AddRange(section
-                .Where(u => u.Kind is not null and not DeclKind.Main)
+                .Where(u => u.Kind is not null and not DeclKind.Entry)
                 .OrderBy(u => u.Kind)
                 .ThenBy(u => u.Kind == DeclKind.Import ? u.Lines.First(l => DeclKindOf(l) is not null) : "", StringComparer.Ordinal)
                 .ThenBy(u => u.Index));
         }
-        ordered.AddRange(mains);
+        ordered.AddRange(entries);
         if (ordered.Select(u => u.Index).SequenceEqual(units.Select(u => u.Index))) return lines;
 
         var result = new List<string>(header);

@@ -65,13 +65,18 @@ public class TraceTests
         throw new InvalidOperationException($"no definition of {symbol} in the IR");
     }
 
-    /// tests/freestanding builds for any target: it brings its own crash handler and needs no Standard::Os.
+    /// tests/trace_frames with an operating system, tests/freestanding (its own crash handler and board step, no
+    /// Standard::Os) without one, for a Cortex-M CPU on 32-bit ARM, where the builder's entry is a Cortex-M reset vector.
     private static string CompileTraceProgram(string triple, bool trace)
     {
         string root = FindRoot();
         Directory.SetCurrentDirectory(root);
-        return Cli.Compile([Path.Combine(root, "tests", "freestanding", "main.tess")], BuildTarget.Parse(triple),
-            lint: false, trace: trace);
+        var target = BuildTarget.Parse(triple);
+        if (target.Arch == "arm" && !target.HasOs) target = target with { Cpu = "cortex-m3" };
+        string program = target.HasOs
+            ? Path.Combine(root, "tests", "trace_frames", "src", "main.tess")
+            : Path.Combine(root, "tests", "freestanding", "main.tess");
+        return Cli.Compile([program], target, lint: false, trace: trace);
     }
 
     private static string FindRoot()

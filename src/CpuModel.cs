@@ -23,8 +23,16 @@ public sealed class CpuModel
     /// The comma-separated `+name` / `-name` list, as LLVM's `target-features` attribute takes it.
     public string FeatureString { get; }
 
-    /// The function attributes every defined routine carries.
-    public string FnAttrs => $"\"target-cpu\"=\"{Cpu}\" \"target-features\"=\"{FeatureString}\"";
+    /// The function attributes every defined routine carries. x86-64 code without an operating system keeps nothing
+    /// below the stack pointer (no red zone): an interrupt there pushes its frame onto the same stack.
+    public string FnAttrs =>
+        (_target.Arch == "x86_64" && !_target.HasOs ? "noredzone " : "")
+        + $"\"target-cpu\"=\"{Cpu}\" \"target-features\"=\"{FeatureString}\"";
+
+    /// Whether a 32-bit ARM CPU is an M-profile one (Cortex-M): its architecture feature is armv6-m, armv7-m,
+    /// armv7e-m, armv8-m.base, armv8-m.main, or armv8.1-m.main.
+    public bool IsMProfile => _enabled.Any(f => f.StartsWith("armv", StringComparison.Ordinal) && (f.EndsWith("-m", StringComparison.Ordinal)
+                                                  || f.Contains("-m.", StringComparison.Ordinal)));
 
     private CpuModel(BuildTarget target, string cpu, string features)
     {

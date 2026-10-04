@@ -1,0 +1,175 @@
+// Tessera stdlib: the startup steps of a program without an operating system
+//
+// A program for a target without an operating system that defines `start` gets its entry from the builder. `_start`
+// sets the stack pointer from the link script's `__stack_top` (on Cortex-M the core loads it from the vector table's
+// first word) and runs the steps here in order: zero_bss, copy_data where the code runs from flash (32-bit ARM and
+// RISC-V), enable_fpu when the target has a floating-point unit the build may use, then the program's when_booted
+// (its board step, when it has one) and start, then halt. A global's first value is build-time data in the program
+// image, so nothing runs before these steps, and none of them reads a global.
+//
+// The link script defines the symbols they use: `__stack_top`, `__bss_start` and `__bss_end` around .bss, and on a
+// target that runs from flash `__data_start` and `__data_end` around .data in RAM with `__data_load`, where its first
+// values are in flash.
+
+module Standard::Boot
+
+import Standard::Alloc
+
+/// The first byte of .bss (the link script's `__bss_start`).
+#[external("c"), symbol("__bss_start"), target(os: "none")]
+global BSS_START: @Byte
+
+/// The byte after .bss (the link script's `__bss_end`).
+#[external("c"), symbol("__bss_end"), target(os: "none")]
+global BSS_END: @Byte
+
+/// The first byte of .data in RAM (the link script's `__data_start`).
+#[external("c"), symbol("__data_start"), target(os: "none")]
+global DATA_START: @Byte
+
+/// The byte after .data in RAM (the link script's `__data_end`).
+#[external("c"), symbol("__data_end"), target(os: "none")]
+global DATA_END: @Byte
+
+/// Where .data's first values are in flash (the link script's `__data_load`).
+#[external("c"), symbol("__data_load"), target(os: "none")]
+global DATA_LOAD: @Byte
+
+/// Zeroes .bss, the globals whose first value is all zero bytes: `__bss_start` up to `__bss_end`.
+#[target(os: "none")]
+internal routine zero_bss() -> Void
+    block entry()
+        first : USize = ptrtoint<Addr, USize>(BSS_START)
+        after : USize = ptrtoint<Addr, USize>(BSS_END)
+        BSS_START.zeroinit(after.sub(first))
+        return()
+
+/// Copies .data's first values from flash (`__data_load`) into RAM (`__data_start` up to `__data_end`), on a target
+/// whose code runs from flash.
+#[target(os: "none")]
+internal routine copy_data() -> Void
+    block entry()
+        first : USize = ptrtoint<Addr, USize>(DATA_START)
+        after : USize = ptrtoint<Addr, USize>(DATA_END)
+        DATA_START.copy(DATA_LOAD, after.sub(first))
+        return()
+
+/// Turns SSE on: CR0.EM off and CR0.MP on, then CR4.OSFXSR and CR4.OSXMMEXCPT.
+#[target(arch: "x86_64", os: "none")]
+internal routine enable_fpu() -> Void
+    block entry()
+        allow_sse()
+        return()
+
+/// Turns the FP and SIMD registers on at EL1: CPACR_EL1.FPEN = 0b11.
+#[target(arch: "aarch64", os: "none")]
+internal routine enable_fpu() -> Void
+    block entry()
+        allow_fp_access()
+        return()
+
+/// Turns the FPU on in machine mode: mstatus.FS = Initial.
+#[target(arch: "riscv32", os: "none")]
+internal routine enable_fpu() -> Void
+    block entry()
+        allow_fp_access()
+        return()
+
+/// Turns a Cortex-M FPU on: full access to coprocessors 10 and 11 in CPACR (0xE000ED88), then a data and an
+/// instruction barrier, so the next instruction may use it. Cortex-M runs Thumb code only, so the steps for it are
+/// there for a Thumb build.
+#[target(arch: "arm", os: "none"), feature("thumb-mode")]
+internal routine enable_fpu() -> Void
+    shared cpacr : @U32 = inttoptr<USize, @U32>(0xE000ED88)
+
+    block entry()
+        access : U32 = cpacr.volatile_load()
+        cpacr.volatile_store(access.bitor(0xF00000))
+        data_barrier()
+        instruction_barrier()
+        return()
+
+/// Halts the core for good once `start` has returned: it waits for interrupts, forever. On Cortex-M the vector
+/// table's system exceptions come here too.
+#[target(os: "none"), noreturn]
+internal routine halt() -> Void
+    block entry()
+        jump idle()
+
+    block idle()
+        wait_for_interrupt()
+        jump idle()
+
+/// CR0: EM (bit 2) off, MP (bit 1) on. CR4: OSFXSR (bit 9) and OSXMMEXCPT (bit 10) on.
+#[target(arch: "x86_64", os: "none"), external("asm")]
+private routine allow_sse() -> Void
+    block entry()
+        mov<U64>(R0, CR0)  // mov rax, cr0
+        and<U64>(R0, -5)  // and rax, ~4
+        or<U64>(R0, 2)  // or rax, 2
+        mov<U64>(CR0, R0)  // mov cr0, rax
+        mov<U64>(R0, CR4)  // mov rax, cr4
+        or<U64>(R0, 0x600)  // or rax, 0x600
+        mov<U64>(CR4, R0)  // mov cr4, rax
+        return()
+
+/// CPACR_EL1.FPEN (bits 20 and 21) on, then an instruction barrier.
+#[target(arch: "aarch64", os: "none"), external("asm")]
+private routine allow_fp_access() -> Void
+    block entry()
+        mrs<U64>(R0, CPACR_EL1)  // mrs x0, cpacr_el1
+        orr<U64, U64>(R0, R0, 0x300000)  // orr x0, x0, #0x300000
+        msr<U64>(CPACR_EL1, R0)  // msr cpacr_el1, x0
+        isb()  // isb
+        return()
+
+/// mstatus.FS (bits 13 and 14) to Initial, 0b01.
+#[target(arch: "riscv32", os: "none"), external("asm")]
+private routine allow_fp_access() -> Void
+    block entry()
+        lui<U32>(R5, 2)  // lui t0, 2: t0 = 0x2000
+        csrrs<U32, U32>(ZERO, mstatus, R5)  // csrs mstatus, t0
+        return()
+
+/// Waits for an interrupt.
+#[target(arch: "x86_64", os: "none"), external("asm")]
+private routine wait_for_interrupt() -> Void
+    block entry()
+        hlt()  // hlt
+        return()
+
+/// Waits for an interrupt.
+#[target(arch: "aarch64", os: "none"), external("asm")]
+private routine wait_for_interrupt() -> Void
+    block entry()
+        wfi()  // wfi
+        return()
+
+/// Waits for an interrupt.
+#[target(arch: "riscv32", os: "none"), external("asm")]
+private routine wait_for_interrupt() -> Void
+    block entry()
+        wfi()  // wfi
+        return()
+
+/// Waits for an interrupt. 32-bit ARM has no Tessera assembly, so the instruction is LLVM's.
+#[target(arch: "arm", os: "none"), feature("thumb-mode"), external("llvm"),
+    template("call void @llvm.arm.hint(i32 3)")]
+private routine wait_for_interrupt() -> Void
+
+/// Waits: an ARM-mode core before ARMv6K has no `wfi` hint, so the halt loop only spins there. The generated entry is
+/// for Cortex-M, which has it.
+#[target(arch: "arm", os: "none"), feature(not "thumb-mode")]
+private routine wait_for_interrupt() -> Void
+    block entry()
+        return()
+
+/// A data synchronization barrier: every memory access before it completes first.
+#[target(arch: "arm", os: "none"), feature("thumb-mode"), external("llvm"),
+    template("call void @llvm.arm.dsb(i32 15)")]
+private routine data_barrier() -> Void
+
+/// An instruction synchronization barrier: the instructions after it are fetched again.
+#[target(arch: "arm", os: "none"), feature("thumb-mode"), external("llvm"),
+    template("call void @llvm.arm.isb(i32 15)")]
+private routine instruction_barrier() -> Void

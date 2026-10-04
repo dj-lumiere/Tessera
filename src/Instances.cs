@@ -151,12 +151,6 @@ public sealed partial class Compiler
             if (r.TypeParams.Count != 0 || OwnerTypeParams(r).Count != 0)
                 throw new CompileError(export.Pos, $"'{r.DisplayName}' is generic, and one C name can't name every instance");
         }
-        else if (r.Owner is null && r.Name == "main" && r.TypeParams.Count == 0)
-        {
-            if (ps.Count != 0 || ret is not IntType { Bits: 32, Kind: IntKind.Signed })
-                throw new CompileError(r.Pos, "main must be declared 'routine main() -> S32'");
-            symbol = "main";
-        }
         else symbol = MangleRoutine(r, env, ps, ret);
 
         return new Instance(r, env, symbol, ps, ret);
