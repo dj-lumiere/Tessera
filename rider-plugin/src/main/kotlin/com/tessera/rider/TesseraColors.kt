@@ -25,6 +25,7 @@ object TesseraColors {
     val BLOCK = key("TESSERA_BLOCK", DefaultLanguageHighlighterColors.LABEL)
     val VALUE = key("TESSERA_VALUE", DefaultLanguageHighlighterColors.LOCAL_VARIABLE)
     val PARAMETER = key("TESSERA_PARAMETER", DefaultLanguageHighlighterColors.PARAMETER)
+    val SHARED = key("TESSERA_SHARED", DefaultLanguageHighlighterColors.PARAMETER)
     val FIELD = key("TESSERA_FIELD", DefaultLanguageHighlighterColors.INSTANCE_FIELD)
     val CONSTANT = key("TESSERA_CONSTANT", DefaultLanguageHighlighterColors.CONSTANT)
     val MODULE = key("TESSERA_MODULE", TextAttributesKey.find("ReSharper.NAMESPACE_IDENTIFIER"))
@@ -49,6 +50,7 @@ internal object TesseraSemanticTokens : LspSemanticTokensSupport() {
         "block" to TesseraColors.BLOCK,
         "variable" to TesseraColors.VALUE,
         "parameter" to TesseraColors.PARAMETER,
+        "sharedValue" to TesseraColors.SHARED,
         "property" to TesseraColors.FIELD,
         "constant" to TesseraColors.CONSTANT,
         "namespace" to TesseraColors.MODULE,
@@ -70,23 +72,24 @@ internal object TesseraSemanticTokens : LspSemanticTokensSupport() {
 /** Settings | Editor | Color Scheme | Tessera. */
 class TesseraColorSettingsPage : ColorSettingsPage {
     private val descriptors = arrayOf(
-        AttributesDescriptor("Types//Record, choice, variant", TesseraColors.RECORD),
-        AttributesDescriptor("Types//Concept", TesseraColors.CONCEPT),
-        AttributesDescriptor("Types//Type parameter", TesseraColors.TYPE_PARAMETER),
-        AttributesDescriptor("Routine", TesseraColors.ROUTINE),
-        AttributesDescriptor("Block", TesseraColors.BLOCK),
-        AttributesDescriptor("Values//SSA value", TesseraColors.VALUE),
-        AttributesDescriptor("Values//Parameter", TesseraColors.PARAMETER),
-        AttributesDescriptor("Values//Field", TesseraColors.FIELD),
-        AttributesDescriptor("Values//Preset, global, case", TesseraColors.CONSTANT),
-        AttributesDescriptor("Module", TesseraColors.MODULE),
-        AttributesDescriptor("Attribute", TesseraColors.ATTRIBUTE),
-        AttributesDescriptor("Keywords//Terminator", TesseraColors.TERMINATOR),
-        AttributesDescriptor("Keywords//Keyword", TesseraColors.KEYWORD),
-        AttributesDescriptor("Number", TesseraColors.NUMBER),
-        AttributesDescriptor("Operator", TesseraColors.OPERATOR),
-        AttributesDescriptor("Doc comment//Field (:param, :returns)", TesseraColors.DOC_TAG),
-        AttributesDescriptor("Doc comment//Field name, reference", TesseraColors.DOC_VALUE),
+        AttributesDescriptor(TesseraBundle.message("color.types.record"), TesseraColors.RECORD),
+        AttributesDescriptor(TesseraBundle.message("color.types.concept"), TesseraColors.CONCEPT),
+        AttributesDescriptor(TesseraBundle.message("color.types.typeParameter"), TesseraColors.TYPE_PARAMETER),
+        AttributesDescriptor(TesseraBundle.message("color.routine"), TesseraColors.ROUTINE),
+        AttributesDescriptor(TesseraBundle.message("color.block"), TesseraColors.BLOCK),
+        AttributesDescriptor(TesseraBundle.message("color.values.ssa"), TesseraColors.VALUE),
+        AttributesDescriptor(TesseraBundle.message("color.values.parameter"), TesseraColors.PARAMETER),
+        AttributesDescriptor(TesseraBundle.message("color.values.shared"), TesseraColors.SHARED),
+        AttributesDescriptor(TesseraBundle.message("color.values.field"), TesseraColors.FIELD),
+        AttributesDescriptor(TesseraBundle.message("color.values.constant"), TesseraColors.CONSTANT),
+        AttributesDescriptor(TesseraBundle.message("color.module"), TesseraColors.MODULE),
+        AttributesDescriptor(TesseraBundle.message("color.attribute"), TesseraColors.ATTRIBUTE),
+        AttributesDescriptor(TesseraBundle.message("color.keywords.terminator"), TesseraColors.TERMINATOR),
+        AttributesDescriptor(TesseraBundle.message("color.keywords.keyword"), TesseraColors.KEYWORD),
+        AttributesDescriptor(TesseraBundle.message("color.number"), TesseraColors.NUMBER),
+        AttributesDescriptor(TesseraBundle.message("color.operator"), TesseraColors.OPERATOR),
+        AttributesDescriptor(TesseraBundle.message("color.doc.tag"), TesseraColors.DOC_TAG),
+        AttributesDescriptor(TesseraBundle.message("color.doc.value"), TesseraColors.DOC_VALUE),
     )
 
     private val tags = mapOf(
@@ -97,6 +100,7 @@ class TesseraColorSettingsPage : ColorSettingsPage {
         "block" to TesseraColors.BLOCK,
         "value" to TesseraColors.VALUE,
         "param" to TesseraColors.PARAMETER,
+        "shared" to TesseraColors.SHARED,
         "field" to TesseraColors.FIELD,
         "const" to TesseraColors.CONSTANT,
         "module" to TesseraColors.MODULE,
@@ -130,6 +134,8 @@ class TesseraColorSettingsPage : ColorSettingsPage {
 
         <attr>#track_caller</attr>
         <kw>routine</kw> <routine>find</routine><<tp>T</tp>: <concept>Eq</concept>>(<param>data</param>: <op>@</op><tp>T</tp>, <param>length</param>: <record>USize</record>, <param>target</param>: <tp>T</tp>) -> <record>Option</record><<record>USize</record>>
+            <kw>shared</kw> <shared>step</shared> : <record>USize</record> = <num>1</num>
+
             <kw>block</kw> <block>entry</block>()
                 <term>jump</term> <block>scan</block>(<num>0</num>)
 
@@ -140,6 +146,6 @@ class TesseraColorSettingsPage : ColorSettingsPage {
                     : <term>continue</term>
                 <term>when</term>
                     <param>data</param>.<routine>stride</routine>(<param>i</param>).<routine>load</routine>().<routine>eq</routine>(<param>target</param>) -> <term>return</term>(.<const>Present</const>(<param>i</param>))
-                    <term>else</term> -> <block>scan</block>(<param>i</param>.<routine>add</routine>(<num>1</num>))
+                    <term>else</term> -> <block>scan</block>(<param>i</param>.<routine>add</routine>(<shared>step</shared>))
     """.trimIndent()
 }

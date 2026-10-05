@@ -38,14 +38,11 @@ internal class TesseraConfigurable : BoundConfigurable("Tessera") {
     private val settings = TesseraSettings.getInstance()
 
     override fun createPanel(): DialogPanel = panel {
-        row("Builder:") {
-            textFieldWithBrowseButton(FileChooserDescriptorFactory.singleFile().withTitle("Tessera Builder"))
+        row(TesseraBundle.message("settings.label")) {
+            textFieldWithBrowseButton(FileChooserDescriptorFactory.singleFile().withTitle(TesseraBundle.message("settings.title")))
                 .bindText(settings::builderPath)
                 .align(AlignX.FILL)
-                .comment(
-                    "tessera.dll (run with dotnet) or a tessera executable. Empty uses the dev build, " +
-                        "&lt;project&gt;/Tessera/bin/Debug/net10.0/tessera.dll, or else tessera on the PATH."
-                )
+                .comment(TesseraBundle.message("settings.comment"))
         }
     }
 

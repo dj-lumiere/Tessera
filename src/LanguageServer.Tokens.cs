@@ -13,7 +13,7 @@ public static partial class LanguageServer
     private static readonly string[] TokenTypes =
     [
         "function", "variable", "parameter", "property", "namespace", "recordType", "interface", "typeParameter",
-        "constant", "block", "decorator", "controlKeyword", "keyword", "operator", "number", "docTag", "docValue",
+        "constant", "block", "decorator", "controlKeyword", "keyword", "operator", "number", "docTag", "docValue", "sharedValue",
     ];
 
     private static readonly HashSet<string> ControlKeywords =
@@ -221,6 +221,9 @@ public static partial class LanguageServer
         /// The routine's and the current block's parameters: a value by one of these names is a parameter.
         private HashSet<string> _params = [];
 
+        /// The routine head's `shared` names: values every block sees, colored apart from a block's own.
+        private HashSet<string> _shared = [];
+
         /// The routine's result type: what a `return(...)` value is expected to be.
         private TypeRef? _returnType;
 
@@ -395,7 +398,7 @@ public static partial class LanguageServer
                     if (param is TypeArgType { Type: { Path: null, Args.Count: 0 } name } && arg is TypeArgType given)
                         map[name.Name] = given.Type;
             }
-            return SelfIsOwner(Replace(r.ReturnType, map));
+            return MeIsOwner(Replace(r.ReturnType, map));
         }
 
         private static TypeRef Replace(TypeRef t, Dictionary<string, TypeRef> map) =>
@@ -404,13 +407,13 @@ public static partial class LanguageServer
                 : t with { Args = [.. t.Args.Select(a => a is TypeArgType inner ? new TypeArgType(Replace(inner.Type, map)) : a)] };
 
         /// A type with the walked routine's `Me` written out as its owner, wherever it appears (`@Me`).
-        private TypeRef SelfIsOwner(TypeRef t) =>
+        private TypeRef MeIsOwner(TypeRef t) =>
             _routine?.Owner is { Name: not "Me" } owner ? Replace(t, new Dictionary<string, TypeRef> { ["Me"] = owner }) : t;
 
         /// The written type of a call's receiver as it is, a pointer included (`data.stride(i)` on a `@S64`).
         private TypeRef? ReceiverType(Expr e) => e switch
         {
-            ValueRef v when _written.GetValueOrDefault(v.Name) is { } t => SelfIsOwner(t),
+            ValueRef v when _written.GetValueOrDefault(v.Name) is { } t => MeIsOwner(t),
             // A field reached through a pointer is a place: `me.capacity.load()` reads it.
             FieldExpr f when IsPlace(f.Base) && Field(f.Base, f.Name) is { } field =>
                 new TypeRef("Ptr", [new TypeArgType(field.Field.Type)], f.Pos),
@@ -475,9 +478,12 @@ public static partial class LanguageServer
             int at = Array.FindIndex(lines, l => l.Contains("`p.stride(n)`", StringComparison.Ordinal));
             Pos? where = at < 0 ? null : new Pos(ptr, at + 1, lines[at].IndexOf("stride", StringComparison.Ordinal) + 1);
             Func<string?> hover = () => HoverText("routine Ptr<T>.stride(me: Me, n: USize) -> Me",
-                "The address `n` `T`s past this one; an `SSize` moves back. Built into the builder: it is a place like a "
-                + "field, so it chains (`p.stride(i).f`), and a load or a store through it keeps a dense record's "
-                + "alignment.", [("T", pointee)]);
+                Ko("The address `n` `T`s past this one; an `SSize` moves back. Built into the builder: it is a place like a "
+                   + "field, so it chains (`p.stride(i).f`), and a load or a store through it keeps a dense record's "
+                   + "alignment.",
+                    "이 주소에서 `T` `n`개만큼 떨어진 주소입니다. `SSize`면 뒤로 갑니다. builder에 내장되어 있습니다. 필드처럼 "
+                   + "place라서 이어 쓸 수 있고(`p.stride(i).f`), 이를 거친 load나 store는 dense record의 정렬을 그대로 "
+                   + "지킵니다."), [("T", pointee)]);
             return where is null ? hover : At(where.Value, "stride", hover);
         }
 
@@ -550,8 +556,10 @@ public static partial class LanguageServer
         private Func<string?> TemplateHover()
         {
             Func<string?> hover = () => HoverText("out.write(template: Bytes) -> Void",
-                "Writes the string to the Writer, each `{expression}` in it through the value's `represent_into`, "
-                + "expanded in place by the builder: nothing is allocated. `{{` and `}}` are literal braces.");
+                Ko("Writes the string to the Writer, each `{expression}` in it through the value's `represent_into`, "
+                   + "expanded in place by the builder: nothing is allocated. `{{` and `}}` are literal braces.",
+                    "문자열을 Writer에 씁니다. 안의 `{식}`은 그 값의 `represent_into`로 씁니다. builder가 그 자리에서 "
+                   + "펼치므로 할당은 없습니다. `{{`와 `}}`는 중괄호 그대로입니다."));
             // The pieces of text go out through write_str: the routine a template is made of.
             RoutineDecl? writeStr;
             try
@@ -754,6 +762,7 @@ public static partial class LanguageServer
             if (r.Owner is null) Clauses(r.Clauses);
             TypeParamNames(r.Pos, r.TypeParams);
             _params = [];
+            _shared = [.. r.Shared.Select(b => b.Name)];
             foreach (var p in r.Params)
             {
                 _written[p.Name] = p.Type;
@@ -768,7 +777,7 @@ public static partial class LanguageServer
             {
                 _written[shared.Name] = shared.Type;
                 _definedAt[shared.Name] = shared.Pos;
-                Mark(shared.Pos, shared.Name, "variable", ValueHover(shared.Name, shared.Pos, parameter: false));
+                Mark(shared.Pos, shared.Name, "sharedValue", ValueHover(shared.Name, shared.Pos, parameter: false));
                 Type(shared.Type);
                 Expr(shared.Value, shared.Type);
             }
@@ -798,7 +807,7 @@ public static partial class LanguageServer
                 Mark(pos, n, "typeParameter",
                     _typeParamLines.TryGetValue(n, out var clause)
                         ? At(_typeParamAt[n], n, () => HoverText(clause, null))
-                        : At(pos, n, () => HoverText(n, "A type parameter.")));
+                        : At(pos, n, () => HoverText(n, Ko("A type parameter.", "타입 매개변수입니다."))));
             // One with no `require` line is declared where it is written: its uses find it there.
             foreach (var n in names)
                 if (_typeParamLines.TryAdd(n, n))
@@ -822,9 +831,33 @@ public static partial class LanguageServer
                         At(_typeParamAt.GetValueOrDefault(name, pos), name, () => HoverText(LineAt(analysis, pos), null)));
                     Type(kind);
                 }
+                if (c.Kind == "conform") ConformNames(c);
                 foreach (var t in c.Concepts.Concat(c.When)) Type(t);
             }
         }
+
+        /// In a `conform X<Owner<...>> when ...` line, the concept and the type it is about hover as the whole line with
+        /// the constraints the owner's `require` adds (each still goes to its own declaration).
+        private void ConformNames(Clause c)
+        {
+            if (c.Tokens.Count == 0) return;
+            string line = LineAt(analysis, c.Tokens[0].Pos);
+            foreach (var concept in c.Concepts)
+            {
+                if (concept.Args is not [TypeArgType { Type: var owner }, ..] ||
+                    analysis.Compiler.TypeDeclQuiet(owner.Name, analysis.Shown, owner.Path) is not (RecordDecl or VariantDecl))
+                    continue;
+                Mark(concept.Pos, concept.Name, "interface", Targeted(concept, () => ConformText(analysis, line, owner)));
+                Mark(owner.Pos, owner.Name, "recordType", Targeted(owner, () => ConformText(analysis, line, owner)));
+            }
+        }
+
+        /// A hover that goes, for go-to-definition, to the declaration the type name means.
+        private Func<string?> Targeted(TypeRef t, Func<string?> hover) =>
+            ((Decl?)analysis.Compiler.TypeDeclQuiet(t.Name, analysis.Shown, t.Path) ?? analysis.Compiler.ConceptDeclQuiet(t.Name, analysis.Shown, t.Path))
+                is { } decl
+                ? At(decl.Pos, DeclName(decl), hover)
+                : hover;
 
         private void Stmt(Stmt s)
         {
@@ -935,7 +968,8 @@ public static partial class LanguageServer
             switch (e)
             {
                 case ValueRef v:
-                    Mark(v.Pos, v.Name, _params.Contains(v.Name) ? "parameter" : "variable",
+                    Mark(v.Pos, v.Name,
+                        _params.Contains(v.Name) ? "parameter" : _shared.Contains(v.Name) ? "sharedValue" : "variable",
                         ValueHover(v.Name, v.Pos, _params.Contains(v.Name)));
                     break;
                 case RoutineRef r:

@@ -19,6 +19,13 @@ public static partial class LanguageServer
     private const int QuietMillis = 250;
 
     private static readonly object WriteLock = new();
+
+    /// Whether hover and doc text are written in Korean: the editor's language, which the Rider plugin passes as
+    /// LSP_LOCALE, else the `locale` the client sends with `initialize`.
+    private static bool _korean = Environment.GetEnvironmentVariable("LSP_LOCALE")?.StartsWith("ko", StringComparison.OrdinalIgnoreCase) == true;
+
+    /// The text in the editor's language.
+    private static string Ko(string english, string korean) => _korean ? korean : english;
     private static Stream _out = Stream.Null;
 
     /// The text of each open document, by URI, with a version that grows with every change.
@@ -45,6 +52,9 @@ public static partial class LanguageServer
             switch (method)
             {
                 case "initialize":
+                    if (Environment.GetEnvironmentVariable("LSP_LOCALE") is null &&
+                        p?["locale"]?.GetValue<string>() is { } locale)
+                        _korean = locale.StartsWith("ko", StringComparison.OrdinalIgnoreCase);
                     Reply(id, new JsonObject
                     {
                         ["capabilities"] = new JsonObject
@@ -55,6 +65,8 @@ public static partial class LanguageServer
                             ["hoverProvider"] = true,
                             ["completionProvider"] = CompletionOptions(),
                             ["definitionProvider"] = true,
+                            ["referencesProvider"] = true,
+                            ["renameProvider"] = new JsonObject { ["prepareProvider"] = true },
                             ["documentSymbolProvider"] = true,
                         },
                         ["serverInfo"] = new JsonObject { ["name"] = "tessera-lsp", ["version"] = "0.1" },
@@ -96,6 +108,18 @@ public static partial class LanguageServer
                     break;
                 case "completionItem/resolve":
                     Reply(id, ResolveCompletion(p!.DeepClone()));
+                    break;
+                case "textDocument/references":
+                    Reply(id, References(p!["textDocument"]!["uri"]!.GetValue<string>(), p["position"]!["line"]!.GetValue<int>(),
+                        p["position"]!["character"]!.GetValue<int>()));
+                    break;
+                case "textDocument/prepareRename":
+                    Reply(id, PrepareRename(p!["textDocument"]!["uri"]!.GetValue<string>(), p["position"]!["line"]!.GetValue<int>(),
+                        p["position"]!["character"]!.GetValue<int>()));
+                    break;
+                case "textDocument/rename":
+                    Reply(id, Rename(p!["textDocument"]!["uri"]!.GetValue<string>(), p["position"]!["line"]!.GetValue<int>(),
+                        p["position"]!["character"]!.GetValue<int>(), p["newName"]!.GetValue<string>()));
                     break;
                 case "textDocument/definition":
                     Reply(id, Definition(p!["textDocument"]!["uri"]!.GetValue<string>(), p["position"]!["line"]!.GetValue<int>(),
@@ -244,7 +268,7 @@ public static partial class LanguageServer
         {
             // A config.toml it can't read, often another language's (a RazorForge folder that keeps its Tessera
             // translation, main.tess, next to main.rf): the document is checked alone, and says why.
-            return (BuildTarget.Host(), [file], $"checked on its own: {e.Message}");
+            return (BuildTarget.Host(), [file], Ko($"checked on its own: {e.Message}", $"이 파일만 검사합니다: {e.Message}"));
         }
         if (!IsUnder(file, manifest.Directory)) return (manifest.Target, [file], null);
         return (manifest.Target, Manifest.ImportClosure(file, manifest.Roots, manifest.OutputDirectory), null);

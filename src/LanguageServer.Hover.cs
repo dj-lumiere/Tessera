@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -61,9 +62,45 @@ public static partial class LanguageServer
         var sb = new StringBuilder($"```tessera\n{code}\n```");
         var shown = (bindings ?? []).Where(b => b.Name != b.Type).ToList();
         // One paragraph each: an editor drops a trailing-space line break, which would run them into one line.
-        if (shown.Count > 0) sb.Append("\n\n").Append(string.Join("\n\n", shown.Select(b => $"`{b.Name}` is `{b.Type}`")));
+        if (shown.Count > 0) sb.Append("\n\n").Append(string.Join("\n\n", shown.Select(b => Ko($"`{b.Name}` is `{b.Type}`", $"`{b.Name}`은(는) `{b.Type}`입니다"))));
+        if (Instantiated(code, shown) is { } instance) sb.Append("\n\n").Append($"→ `{instance}`");
         if (!string.IsNullOrWhiteSpace(doc)) sb.Append("\n\n").Append(RenderDoc(doc));
         return sb.ToString();
+    }
+
+    private static readonly Regex DeclarationWords =
+        new(@"^(?:(?:private|internal)\s+)?(?:routine|record|variant|choice|concept)\s+");
+
+    /// The declaration's first line with each bound parameter written out (`Array<Byte, 400>.to<@Byte>(...)` for
+    /// `Array<T, COUNT>.to<@T>(...)`), so a parameter used inside a larger type (`<@T>`) reads as what it stands for.
+    /// Null when nothing is bound.
+    private static string? Instantiated(string code, List<(string Name, string Type)> bindings)
+    {
+        if (bindings.Count == 0) return null;
+        var byName = bindings.GroupBy(b => b.Name).ToDictionary(g => g.Key, g => g.First().Type);
+        string line = DeclarationWords.Replace(code.Split('\n')[0].Trim(), "");
+        string written = Regex.Replace(line, @"(?<![\w`])[A-Za-z_]\w*(?![\w`])",
+            m => byName.TryGetValue(m.Value, out var type) ? type : m.Value);
+        // `Me` is the type the routine is on, as this instance has it (`me: @Array<Byte, 400>`).
+        if (OwnerOf(written) is { } owner)
+            written = Regex.Replace(written, @"(?<![\w`])Me(?![\w`])", owner);
+        return written == line ? null : written;
+    }
+
+    /// The type a routine line is on: what comes before its name's `.` (`Array<Byte, 400>` in
+    /// `Array<Byte, 400>.to<@Byte>(...)`). Null for a routine on no type.
+    private static string? OwnerOf(string routineLine)
+    {
+        int depth = 0;
+        for (int i = 0; i < routineLine.Length; i++)
+            switch (routineLine[i])
+            {
+                case '<' or '[': depth++; break;
+                case '>' or ']': depth--; break;
+                case '(': return null;
+                case '.' when depth == 0: return i > 0 ? routineLine[..i] : null;
+            }
+        return null;
     }
 
     private static readonly Dictionary<string, (DateTime Stamp, string[] Lines)> SourceLines =
@@ -107,7 +144,32 @@ public static partial class LanguageServer
             if (!l.StartsWith("conform ") && !l.StartsWith("require ") && !l.StartsWith("when ")) break;
             header.Add(l.TrimEnd());
         }
+        if (d is RoutineDecl { Owner: { } owner })
+            header.AddRange(InheritedRequires(analysis, owner, d.File, line => header.Any(o => o.Trim() == line)));
         return string.Join("\n", header);
+    }
+
+    /// The `require` lines of the record or variant `owner` names, which hold in a routine on it or a conformance of it
+    /// without being written there: under that place's names for the type parameters (`E` for the record's `T` in
+    /// `routine List<E>.x`), each marked with where it comes from, and none `alreadyWritten` says the place writes.
+    private static IEnumerable<string> InheritedRequires(Analysis analysis, TypeRef owner, string file,
+        Func<string, bool> alreadyWritten)
+    {
+        if (analysis.Compiler.TypeDeclQuiet(owner.Name, file, owner.Path) is not ((RecordDecl or VariantDecl) and var type))
+            yield break;
+        var renamed = TypeParamsOf(type).Zip(owner.Args)
+            .Where(x => x.Second is TypeArgType { Type: { Path: null, Args.Count: 0 } } given && given.Type.Name != x.First)
+            .ToDictionary(x => x.First, x => ((TypeArgType)x.Second).Type.Name);
+        string from = Ko($"// from {type.GetType().Name.Replace("Decl", "").ToLowerInvariant()} {owner}",
+            $"// {owner}의 제약");
+        foreach (string line in HeaderOf(analysis, type).Split('\n').Skip(1).Where(l => l.StartsWith("require ")))
+        {
+            string written = renamed.Count == 0
+                ? line.Trim()
+                : Regex.Replace(line.Trim(), @"(?<![\w`])[A-Za-z_]\w*(?![\w`])",
+                    m => renamed.TryGetValue(m.Value, out var name) ? name : m.Value);
+            if (!alreadyWritten(written)) yield return $"{written}    {from}";
+        }
     }
 
     /// The `///` lines right above a line, past any attribute lines (`#track_caller`), without their markers.
@@ -123,6 +185,18 @@ public static partial class LanguageServer
         }
         doc.Reverse();
         return doc.Count > 0 ? string.Join("\n", doc) : null;
+    }
+
+    /// A `conform X<Owner<...>> when ...` line as written, then the owning record's `require` lines that hold in it
+    /// without being written: those its `when` clause doesn't already say.
+    private static string ConformText(Analysis analysis, string line, TypeRef owner)
+    {
+        string conform = line.Trim();
+        int when = conform.IndexOf(" when ", StringComparison.Ordinal);
+        string whenText = when < 0 ? "" : conform[(when + 6)..];
+        var inherited = InheritedRequires(analysis, owner, analysis.Shown,
+            require => require.StartsWith("require ") && whenText.Contains(require["require ".Length..], StringComparison.Ordinal));
+        return HoverText(string.Join("\n", [conform, .. inherited]), null);
     }
 
     /// A doc split into its summary and its `:field:` lines (`:param x:`, `:typeparam T:`, `:returns:`, `:throws:`,
@@ -169,11 +243,12 @@ public static partial class LanguageServer
                     e.Text.Length > 0 ? $"\n- `{e.Name}` — {e.Text}" : $"\n- `{e.Name}`")));
         }
 
-        Section("Type parameters", "typeparam");
-        Section("Parameters", "param");
+        Section(Ko("Type parameters", "타입 매개변수"), "typeparam");
+        Section(Ko("Parameters", "매개변수"), "param");
         foreach (var (kind, label) in new[]
                  {
-                     ("returns", "Returns"), ("throws", "Throws"), ("absent", "Absent"), ("note", "Note"), ("see", "See"),
+                     ("returns", Ko("Returns", "반환")), ("throws", Ko("Throws", "throw")), ("absent", Ko("Absent", "absent")),
+                     ("note", Ko("Note", "참고")), ("see", Ko("See", "같이 보기")),
                  })
             parts.AddRange(fields.Where(f => f.Kind == kind && f.Text.Length > 0).Select(f => $"**{label}** — {f.Text}"));
         return string.Join("\n\n", parts);

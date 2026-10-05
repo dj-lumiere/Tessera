@@ -1,5 +1,6 @@
 package com.tessera.rider
 
+import com.intellij.DynamicBundle
 import com.intellij.execution.ExecutionException
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.configurations.PathEnvironmentVariableUtil
@@ -110,6 +111,8 @@ private class TesseraClientDescriptor(project: Project) :
         // The builder looks for its standard library above itself, which the copy no longer is: name the one the
         // builder it was copied from would find.
         stdlibAbove(server.parent)?.let { command.withEnvironment("TESSERA_STDLIB", it.toString()) }
+        // Hover and doc text in the IDE's language.
+        command.withEnvironment("LSP_LOCALE", DynamicBundle.getLocale().toLanguageTag())
         return command.withWorkDirectory(staged.parent.toFile()).withCharset(StandardCharsets.UTF_8)
     }
 }
