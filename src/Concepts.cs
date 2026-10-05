@@ -7,9 +7,10 @@ namespace Tessera;
 /// (`HashEquatable<T>`) is satisfied by satisfying them.
 ///
 /// Constraints are checked where they apply: a routine's `require` concepts when a call instantiates it, a record's
-/// when its type is formed. A routine on a record lists only the constraints it adds: the record's hold wherever its
-/// type is formed, so they hold in every routine on it. Each conformance is checked against the concept's routines, by signature, the first time
-/// it is used, and every conformance without type parameters is checked up front.
+/// when its type is formed. A routine on a record, and a conformance's `when`, lists only the constraints it adds: the
+/// record's hold wherever its type is formed, so they hold in every routine and conformance on it. Each conformance is
+/// checked against the concept's routines, by signature, the first time it is used, and every conformance without
+/// type parameters is checked up front.
 public sealed partial class Compiler
 {
     private readonly Dictionary<string, List<ConceptDecl>> _conceptDecls = [];
@@ -161,6 +162,8 @@ public sealed partial class Compiler
                           : conf.Concept.Args[i] is TypeArgInt pi && args[i] is ConstArg ca && ca.Value == pi.Value;
             if (!matched) continue;
 
+            // A `when` lists only what the conformance adds. The conforming type's own `require` was checked when the
+            // type was formed, and every type reaching here is a formed one, so it holds without being listed.
             foreach (var w in conf.When)
             {
                 var wd = FindConcept(w, conf.Source.File);

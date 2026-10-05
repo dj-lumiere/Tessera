@@ -441,7 +441,9 @@ routine start() -> Void
   `Standard/Os/Defaults.tess`, included): a constraint is a fact about the type, said where the type is declared. So a
   routine on a record lists its type parameters and only the constraints it adds: `SortedDict<TKey, TValue>.has_key`
   calls `key.compare(...)` with `require TKey: typename, TValue: typename`, and `SortedDict.eq` adds just
-  `Equatable<TValue>`. Don't restate the record's. A free generic routine has no record, so it lists everything its
+  `Equatable<TValue>`. The same goes for a `conform ... when` on the type: it lists only the conditions that
+  conformance adds (`conform Equatable<SortedDict<TKey, TValue>> when TKey: typename, TValue: typename,
+  Equatable<TValue>`, no `Comparable<TKey>`). Don't restate the record's. A free generic routine has no record, so it lists everything its
   body uses: `require T: typename, Comparable<T>`. Put a constraint on the record only when every use of the type
   needs it (the keyed collections' `Comparable<TKey>` / `HashEquatable<TKey>`, `PriorityQueue`'s `Ordered<T>`), and
   element constraints only some routines need on those routines (`List<T>.eq` adds `Equatable<T>`), since a record's
