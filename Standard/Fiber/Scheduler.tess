@@ -88,12 +88,12 @@ record Join
     done   : U32  // 1 once the fiber has returned
     waiter : @FiberState  // a fiber waiting in join, or null
 
-/// A sleeping fiber in the timers, earliest first, and in the order they went to sleep when they are due together.
-private record TimerEntry
-conform Ordered<TimerEntry>
+/// When a sleeping fiber in the timers is due, its priority there: earliest first, and in the order they went to sleep
+/// when they are due together.
+private record TimerKey
+conform Comparable<TimerKey>
     deadline : U64
     seq      : U64
-    fiber    : @FiberState
 
 /// A worker thread of a Scheduler.
 record Worker
@@ -115,7 +115,7 @@ record Scheduler
     epoch       : U32  // changes when there is work to look for, or none left; idle workers wait on it
     sleepers    : U32  // workers waiting on epoch
     timer_lock  : Mutex
-    timers      : PriorityQueue<TimerEntry>  // the sleeping fibers
+    timers      : PriorityQueue<TimerKey, @FiberState>  // the sleeping fibers
     timer_seq   : U64
     timer_count : USize  // entries in timers, read without the lock so a worker skips it when there are none
     io_threads  : @Thread  // IO_THREADS threads running the fibers' blocking calls
@@ -124,15 +124,16 @@ record Scheduler
     io_epoch    : U32  // changes when a call is queued or the I/O threads should stop; they wait on it
     io_stop     : U32  // 1 once run is over
 
-/// Whether `me` is due before `other`: the earlier deadline, or the earlier sleep for the same deadline.
-/// :param other: The entry to compare with.
-/// :returns: True when `me` comes first.
-routine TimerEntry.less(me: Me, other: Me) -> Bool
+/// Orders two timer keys by when they are due: the earlier deadline first, and the earlier sleep first for the same
+/// deadline.
+/// :param other: The key to compare with.
+/// :returns: -1 when `me` is due first, 0 for the same key, and 1 when `other` is due first.
+routine TimerKey.compare(me: Me, other: Me) -> S32
     block entry()
         same : Bool = me.deadline.eq(other.deadline)
         branch same
-            ? return(me.seq.lt(other.seq))
-            : return(me.deadline.lt(other.deadline))
+            ? return(me.seq.compare(other.seq))
+            : return(me.deadline.compare(other.deadline))
 
 /// This thread's worker, read again at every call: a fiber may be on another thread after it yields, and a
 /// thread-local address kept across the switch would be the old thread's.
@@ -173,13 +174,14 @@ routine Scheduler.construct(workers: USize, stacks: @Allocator, alloc: @Allocato
         jump init(count, array, i.add(1))
 
     block finish(count: USize, array: @Worker)
-        timers     : PriorityQueue<TimerEntry> = .construct(alloc)
-        io_threads : @Thread                   = allocate<Thread>(IO_THREADS, alloc)
-        io_queue   : CircularList<@FiberState> = .construct(alloc)
-        s          : Me                        = Me { alloc: alloc, stacks: stacks, count: count,
-            workers: array, next: 0, live: 0, epoch: 0, sleepers: 0, timer_lock: .construct(),
-            timers: timers, timer_seq: 0, timer_count: 0, io_threads: io_threads,
-            io_lock: .construct(), io_queue: io_queue, io_epoch: 0, io_stop: 0 }
+        timers     : PriorityQueue<TimerKey, @FiberState> = .construct(alloc)
+        io_threads : @Thread                              = allocate<Thread>(IO_THREADS, alloc)
+        io_queue   : CircularList<@FiberState>            = .construct(alloc)
+        s          : Me                                   = Me { alloc: alloc, stacks: stacks,
+            count: count, workers: array, next: 0, live: 0, epoch: 0, sleepers: 0,
+            timer_lock: .construct(), timers: timers, timer_seq: 0, timer_count: 0,
+            io_threads: io_threads, io_lock: .construct(), io_queue: io_queue, io_epoch: 0,
+            io_stop: 0 }
         return(s)
 
 /// Starts entry(arg) on a stack of stack_size bytes, from inside a fiber or out. From inside one of this
@@ -475,8 +477,8 @@ routine Scheduler.destruct(me: @Me) -> Void
         branch empty
             ? finish()
             : continue
-        entry : TimerEntry = me.timers.pop()
-        free_fiber(me, entry.fiber)
+        sleeper : @FiberState = me.timers.pop()
+        free_fiber(me, sleeper)
         jump timers()
 
     block finish()
@@ -559,7 +561,7 @@ private routine to_timers(w: @Worker, fiber: @FiberState) -> Void
         sched.timer_lock.lock()
         seq : U64 = sched.timer_seq.load()
         seq.add(1).store_into(sched.timer_seq)
-        sched.timers.push(TimerEntry { deadline: fiber.deadline.load(), seq: seq, fiber: fiber })
+        sched.timers.push(TimerKey { deadline: fiber.deadline.load(), seq: seq }, fiber)
         sched.timer_count.atomic_fetch_add(1)
         sched.timer_lock.unlock()
         notify(sched)
@@ -756,16 +758,16 @@ private routine fire_timers(w: @Worker) -> Void
         branch empty
             ? done(fired)
             : continue
-        earliest : TimerEntry = sched.timers.peek()
-        due      : Bool       = earliest.deadline.le(now)
+        earliest : U64  = sched.timers.peek_entry().priority.deadline
+        due      : Bool = earliest.le(now)
         branch due
             ? fire(now)
             : done(fired)
 
     block fire(now: U64)
-        entry : TimerEntry = sched.timers.pop()
+        due_fiber : @FiberState = sched.timers.pop()
         sched.timer_count.atomic_fetch_sub(1)
-        push_ready(w, entry.fiber)
+        push_ready(w, due_fiber)
         jump next(now, true)
 
     // Others may take what this worker can't get to first.
@@ -800,7 +802,7 @@ private routine timer_wait(sched: @Scheduler) -> U64
         return(U64.MAX)
 
     block earliest()
-        deadline : U64 = sched.timers.peek().deadline
+        deadline : U64 = sched.timers.peek_entry().priority.deadline
         sched.timer_lock.unlock()
         wait : U64 = deadline.sub_clamp(monotonic_ns())
         return(wait)

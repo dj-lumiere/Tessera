@@ -3,13 +3,13 @@
 // Finds single-source shortest distances on a directed weighted graph.
 //
 // Stdlib used:
-//   PriorityQueue<DijkstraEntry>   min-heap keyed by tentative distance
+//   PriorityQueue<S64, USize>      min-heap of nodes keyed by tentative distance
 //   List<Edge>                     per-node adjacency list
 //
 // Control flow highlights:
 //   block-parameter loops for dist initialisation, edge relaxation, printing
 //   inline branch terminator to drop stale priority-queue entries
-//   Ordered<DijkstraEntry> concept for the min-heap ordering
+//   pop_entry for the distance and the node together
 
 import Standard::Alloc
 import Standard::Collections
@@ -34,21 +34,6 @@ record Edge
 record Graph
     adj       : @List<@List<Edge>>
     num_nodes : USize
-
-record DijkstraEntry
-conform Ordered<DijkstraEntry>
-    dist : S64
-    node : USize
-
-// ── Ordered<DijkstraEntry> ───────────────────────────────────────────────────
-
-/// Lower distance = higher priority.
-routine DijkstraEntry.less(me: Me, other: Me) -> Bool
-    block entry()
-        a_dist : S64  = me.dist
-        b_dist : S64  = other.dist
-        result : Bool = a_dist.lt(b_dist)
-        return(result)
 
 // ── Graph ─────────────────────────────────────────────────────────────────────
 
@@ -124,8 +109,8 @@ routine Graph.destruct(me: @Me, alloc: @Allocator) -> Void
 // Owns and frees the priority queue before returning.
 
 routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator) -> Void
-    shared n  : USize                         = graph.num_nodes.load()
-    shared pq : @PriorityQueue<DijkstraEntry> <- .construct(alloc)
+    shared n  : USize                      = graph.num_nodes.load()
+    shared pq : @PriorityQueue<S64, USize> <- .construct(alloc)
 
     block entry()
         jump fill_inf(0)
@@ -144,8 +129,7 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator
     // Phase 2 — set the source distance to 0 and seed the queue.
     block seed()
         dist.stride(source).store(0)
-        first : DijkstraEntry = DijkstraEntry { dist: 0, node: source }
-        pq.push(first)
+        pq.push(0, source)
         jump main_loop()
 
     // Phase 3 — drain the queue, relaxing edges on each settled node.
@@ -156,11 +140,11 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator
             : dequeue()
 
     block dequeue()
-        entry : DijkstraEntry = pq.pop()
-        d     : S64           = entry.dist
-        u     : USize         = entry.node
-        best  : S64           = dist.stride(u).load()
-        stale : Bool          = d.gt(best)
+        top   : PriorityEntry<S64, USize> = pq.pop_entry()
+        d     : S64                       = top.priority
+        u     : USize                     = top.element
+        best  : S64                       = dist.stride(u).load()
+        stale : Bool                      = d.gt(best)
         // re-push instead of decrease-key produces stale entries — drop them.
         branch stale
             ? main_loop()
@@ -191,8 +175,7 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator
 
     block improve(i: USize, len: USize, d: S64, list: @List<Edge>, v: USize, new_dist: S64)
         dist.stride(v).store(new_dist)
-        entry : DijkstraEntry = DijkstraEntry { dist: new_dist, node: v }
-        pq.push(entry)
+        pq.push(new_dist, v)
         jump edge_loop(i.add(1), len, d, list)
 
     block done()

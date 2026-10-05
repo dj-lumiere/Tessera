@@ -413,8 +413,8 @@ routine start() -> Void
 - `routine name(a: T, p: @U) -> R`. Methods are `routine Type.name(me: @Me, ...)` (pointer receiver)
   or `(me: Me, ...)` (value receiver). The name `me` is what makes a method: only a first parameter named
   `me` (typed `Me` or `@Me`) allows `x.name(...)`; anything else is typewise: `List<S64>.construct(alloc)`,
-  `Job.less(a, b)`. `me` and `Me` are reserved: no other parameter, binding, or claim is named `me`, and no type is
-  named `Me`. A routine meeting a concept (`less`, `eq`, `compare`, `hash`) takes `me` as the concept does. Where the
+  `Job.compare(a, b)`. `me` and `Me` are reserved: no other parameter, binding, or claim is named `me`, and no type is
+  named `Me`. A routine meeting a concept (`eq`, `compare`, `hash`) takes `me` as the concept does. Where the
   type is expected (a binding, an argument, a block argument, a return), a leading `.` leaves it out:
   `list: List<S64> = .construct(alloc)`, `return(.Absent)`. Not at the head of a chain or as a statement.
 - **`@T` or `T`** (for `me` and any parameter): take `@T` when the routine changes the value in place, or
@@ -445,15 +445,17 @@ routine start() -> Void
   conformance adds (`conform Equatable<SortedDict<TKey, TValue>> when TKey: typename, TValue: typename,
   Equatable<TValue>`, no `Comparable<TKey>`). Don't restate the record's. A free generic routine has no record, so it lists everything its
   body uses: `require T: typename, Comparable<T>`. Put a constraint on the record only when every use of the type
-  needs it (the keyed collections' `Comparable<TKey>` / `HashEquatable<TKey>`, `PriorityQueue`'s `Ordered<T>`), and
+  needs it (the keyed collections' `Comparable<TKey>` / `HashEquatable<TKey>`, `PriorityQueue`'s `Comparable<TPriority>`), and
   element constraints only some routines need on those routines (`List<T>.eq` adds `Equatable<T>`), since a record's
   `require` limits which instances can exist at all. The builder checks a record's constraints when its type is
   formed and a routine's when a call instantiates it, and doesn't yet check a generic body against them before
   that (a planned build-time check). Concepts: `Equatable`, `Hashable`,
-  `HashEquatable`, `Comparable`, `Ordered`, `Destructible`, `Representable`, `Diagnosable`, `Parsable` (a
+  `HashEquatable`, `Comparable`, `Destructible`, `Representable`, `Diagnosable`, `Parsable` (a
   capability is an `-able` adjective), and the roles `Iterator`, `Reader`, `Writer`. Constraints are checked: a type satisfies a
   concept only through a `conform` (on its record, or a top-level `conform C<X>` line), and the builder checks the
   declared routines' signatures. Conditional conformance: `conform Equatable<Box<T>> when T: typename, Equatable<T>`.
+  `Reversed<T>` (Core) is a `T` whose `compare` is flipped (`Reversed<S64>.construct(5)`): Comparable, Equatable,
+  Hashable, Representable, and Diagnosable when `T` is.
 - A bare literal doesn't bind a type parameter: bind it first (`n: S64 = 42`), then pass `n`.
 - **Overloads.** Routines of one name under one parent (a module's free routines, one type's routines) may differ in
   their parameter types (`me` included); a call picks the one whose parameter types are its arguments' types
@@ -661,7 +663,7 @@ always `Result`.
 | `SortedDict<TKey, TValue>` | `put`, `getitem`, `has_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
 | `SortedSet<T>` | `add`, `has`, `remove`, `get_by_rank(rank)` | ascending |
 | `SortedList<T>` | `push` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `has`, `remove(i)` (`T: Comparable<T>`) | ascending |
-| `PriorityQueue<T>` | `push`, `pop`, `peek` (`T: Ordered<T>`) | none |
+| `PriorityQueue<TPriority, TElement>` | `push(priority, element)`, `pop` / `peek` (the element), `pop_entry` / `peek_entry` (a `PriorityEntry` with `priority` and `element`); a min-heap on `TPriority: Comparable<TPriority>`, the smallest first, `Reversed<T>` priorities for the largest first | none (the top first) |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
 removing then re-adding moves it to the end, so output never depends on the (keyed, per-run) hash. Iterators are
@@ -843,7 +845,7 @@ never `can_<x>`: `is_readable`, `is_writable`, `is_seekable` (not `can_read`, `c
 symbol keeps its own name (`rf_fs_can_read`). A vector mask asks
 `is_all_true()`, `is_any_true()`, `is_none_true()`. A free routine with a family prefix keeps the prefix first
 (`f128_is_integer`, `ryu_is_multiple_of_pow5`). Not questions in this sense, so they keep their names: comparisons and
-range checks (`eq`, `lt`, `less`, `between`, `in_range`), an overflow test that goes with its operation
+range checks (`eq`, `lt`, `between`, `in_range`), an overflow test that goes with its operation
 (`mul_overflows`), and a routine that does something and says whether it worked (`Set.add`, `remove`, `try_lock`,
 `wait_for`). A `Bool` value in a block reads as a predicate too, but needs no prefix (`done`, `found`).
 

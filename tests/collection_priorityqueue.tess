@@ -1,7 +1,7 @@
-// PriorityQueue<Job> against a model. Jobs order by priority, then by sequence number, so every pop is determined. An
-// LCG drives random push / pop / peek and a rare clear in three phases (filling, steady, draining), with a checkpoint
-// every 500 operations (length and a running checksum of every result). Then the heap is drained and must come out
-// sorted.
+// PriorityQueue<Job, S64> against a model: each Job is the priority, and its checksum key the element. Jobs order by
+// priority, then by sequence number, so every pop is determined. An LCG drives random push / pop / peek and a rare
+// clear in three phases (filling, steady, draining), with a checkpoint every 500 operations (length and a running
+// checksum of every result). Then the heap is drained and must come out sorted.
 // The expected output comes from an independent Python model of the collection.
 
 import Standard::Alloc
@@ -13,7 +13,7 @@ record Rng
     state : U64
 
 record Job
-conform Ordered<Job>
+conform Comparable<Job>
     priority : S64
     sequence : S64
 
@@ -38,17 +38,13 @@ require T: typename, Writer<T>
         return()
 
 // Lower priority first, equal priorities in push order.
-routine Job.less(me: Me, other: Me) -> Bool
+routine Job.compare(me: Me, other: Me) -> S32
     block entry()
-        pa      : S64  = me.priority
-        pb      : S64  = other.priority
-        before  : Bool = pa.lt(pb)
-        tied    : Bool = pa.eq(pb)
-        sa      : S64  = me.sequence
-        sb      : S64  = other.sequence
-        earlier : Bool = sa.lt(sb)
-        result  : Bool = before.bitor(tied.bitand(earlier))
-        return(result)
+        by_priority : S32  = me.priority.compare(other.priority)
+        tied        : Bool = by_priority.eq(0)
+        branch tied
+            ? return(me.sequence.compare(other.sequence))
+            : return(by_priority)
 
 // One number per job for the checksum. Sequence numbers stay below a million.
 routine Job.key(me: Me) -> S64
@@ -58,7 +54,7 @@ routine Job.key(me: Me) -> S64
         key      : S64 = priority.mul(1000000).add(sequence)
         return(key)
 
-routine checkpoint(out: @BufWriter<Out>, heap: @PriorityQueue<Job>, phase: USize, op: USize,
+routine checkpoint(out: @BufWriter<Out>, heap: @PriorityQueue<Job, S64>, phase: USize, op: USize,
     results: S64) -> Void
     block entry()
         out.write("phase {phase}")
@@ -71,7 +67,7 @@ routine checkpoint(out: @BufWriter<Out>, heap: @PriorityQueue<Job>, phase: USize
 
 // Runs ops random operations: push is the percentage of pushes, pop takes the next 30 and peek the rest. Priorities
 // are below priorities, so small bounds make many ties. sequence counts pushes. Returns the updated results checksum.
-routine run_phase(out: @BufWriter<Out>, heap: @PriorityQueue<Job>, rng: @Rng, sequence: @S64,
+routine run_phase(out: @BufWriter<Out>, heap: @PriorityQueue<Job, S64>, rng: @Rng, sequence: @S64,
     phase: USize, ops: USize, push: USize, priorities: USize, results: S64) -> S64
     block entry()
         jump next(0, results)
@@ -98,8 +94,9 @@ routine run_phase(out: @BufWriter<Out>, heap: @PriorityQueue<Job>, rng: @Rng, se
         sequence_val : S64 = sequence.load()
         sequence.store(sequence_val.add(1))
         job : Job = Job { priority: priority, sequence: sequence_val }
-        heap.push(job)
-        jump record(op, checksum, job.key())
+        key : S64 = job.key()
+        heap.push(job, key)
+        jump record(op, checksum, key)
 
     block pop(op: USize, checksum: S64)
         empty : Bool = heap.is_empty()
@@ -108,8 +105,8 @@ routine run_phase(out: @BufWriter<Out>, heap: @PriorityQueue<Job>, rng: @Rng, se
             : pop_one(op, checksum)
 
     block pop_one(op: USize, checksum: S64)
-        job : Job = heap.pop()
-        jump record(op, checksum, job.key())
+        key : S64 = heap.pop()
+        jump record(op, checksum, key)
 
     block peek(op: USize, checksum: S64)
         empty : Bool = heap.is_empty()
@@ -118,8 +115,8 @@ routine run_phase(out: @BufWriter<Out>, heap: @PriorityQueue<Job>, rng: @Rng, se
             : peek_one(op, checksum)
 
     block peek_one(op: USize, checksum: S64)
-        job : Job = heap.peek()
-        jump record(op, checksum, job.key())
+        key : S64 = heap.peek()
+        jump record(op, checksum, key)
 
     block clear(op: USize, checksum: S64)
         heap.clear()
@@ -138,7 +135,7 @@ routine run_phase(out: @BufWriter<Out>, heap: @PriorityQueue<Job>, rng: @Rng, se
         jump next(op, checksum)
 
 // Pops everything, printing the count, a hash of the pop order, and whether each pop was no smaller than the last.
-routine drain(out: @BufWriter<Out>, heap: @PriorityQueue<Job>) -> Void
+routine drain(out: @BufWriter<Out>, heap: @PriorityQueue<Job, S64>) -> Void
     shared count  : @S64  <- 0
     shared hash   : @S64  <- 0
     shared last   : @S64  <- -1
@@ -154,8 +151,7 @@ routine drain(out: @BufWriter<Out>, heap: @PriorityQueue<Job>) -> Void
             : pop()
 
     block pop()
-        job         : Job  = heap.pop()
-        key         : S64  = job.key()
+        key         : S64  = heap.pop()
         in_order    : Bool = key.gt(last.load())
         next_sorted : Bool = sorted.load().bitand(in_order)
         next_last   : S64  = key
@@ -179,10 +175,10 @@ routine start() -> Void
         fd : @Out = Out.writer()
         claim out : @BufWriter<Out> <- uninit
         out.construct(fd)
-        claim alloc    : @Allocator          <- make_heap_allocator()
-        claim rng      : @Rng                <- Rng { state: 4 }
-        claim sequence : @S64                <- 0
-        claim heap     : @PriorityQueue<Job> <- .construct(alloc)
+        claim alloc    : @Allocator               <- make_heap_allocator()
+        claim rng      : @Rng                     <- Rng { state: 4 }
+        claim sequence : @S64                     <- 0
+        claim heap     : @PriorityQueue<Job, S64> <- .construct(alloc)
 
         r1 : S64 = run_phase(out, heap, rng, sequence, 1, 4000, 55, 1000000, 0)
         r2 : S64 = run_phase(out, heap, rng, sequence, 2, 4000, 40, 20, r1)
