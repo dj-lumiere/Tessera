@@ -9,6 +9,10 @@
 
 module Standard::Core
 
+/// The powers of ten that fit in `U32`, 10^0 through 10^9, for {U32.ilog10}.
+private preset U32_POW10: @Array<U32, 10> <- { 1, 10, 100, 1000, 10000, 100000, 1000000, 10000000,
+    100000000, 1000000000 }
+
 /// 32-bit unsigned integer, mapped to LLVM `i32`. Arithmetic, shifts, and lossy conversions crash when the result does not fit. The `_checked` forms return an `Option`, the `_wrap` forms are modular, and the `_clamp` forms saturate.
 #llvm("i32")
 record U32
@@ -754,26 +758,28 @@ routine U32.ilog2(me: Me) -> Me
         r  : Me = sub<Me>(Me.BITS.sub(1), lz)
         return(r)
 
-/// The base-10 logarithm of `me`, rounded down.
+/// The base-10 logarithm of `me`, rounded down. It estimates the answer from the bit length of `me` and corrects the
+/// estimate with one compare against {U32_POW10}, with no division and no loop.
 /// :returns: `floor(log10(me))`.
 /// :throws: Crashes with `NumericDomainError` when `me` is 0.
 #track_caller
 routine U32.ilog10(me: Me) -> Me
-    shared digits : @Me <- 0
-
     block entry()
         zero : Bool = me.eq(0)
         branch zero
             ? crash_numeric_domain()
-            : loop(me)
-
-    block loop(rest: Me)
-        last : Bool = rest.lt(10)
-        branch last
-            ? return(digits.load())
             : continue
-        digits.load().add(1).store_into(digits)
-        jump loop(rest.div(10))
+        // me has bits significant bits, so 2^(bits - 1) <= me < 2^bits. guess = floor(bits * 1233 / 4096), where
+        // 1233 / 4096 = 0.3010254 is just under log10(2) = 0.3010300, so guess <= bits * log10(2), and with
+        // log10(2) < 1 that gives 10^(guess - 1) <= 2^(bits - 1) <= me. Going through every bits from 1 to 256 (the
+        // widest type), bits * log10(2) - guess is at most 0.9958, so me < 2^bits < 10^(guess + 1). floor(log10(me))
+        // is therefore guess when me >= 10^guess and guess - 1 otherwise, which never goes below 0 since
+        // me >= 1 = 10^0. guess is at most 9 here, the table's last index.
+        bits  : USize = Me.BITS.sub(clz<Me>(me, true)).to<USize>()
+        guess : USize = bits.mul_wrap(1233).shr(12)
+        below : Bool  = me.lt(U32_POW10.getitem(guess))
+        r     : Me    = guess.sub(below.to<USize>()).to_wrap<Me>()
+        return(r)
 
 /// The integer square root of `me`, rounded down.
 /// :returns: `floor(sqrt(me))`.
