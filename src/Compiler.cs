@@ -309,6 +309,9 @@ public sealed partial class Compiler
     public string Generate()
     {
         foreach (var c in _presets.Values.SelectMany(g => g).Where(c => !c.IsLibrary)) CheckPreset(c);
+        // A generic routine of the program is checked against its constraints before anything instantiates it, so
+        // its error points into the routine, not at a call (GenericPrecheck.cs).
+        if (PrecheckGenerics(d => !d.IsLibrary) is [var unmet, ..]) throw unmet;
         foreach (var r in _userRoutines) CheckRoot(r);
         // Exported library routines are always emitted: something outside Tessera (C code, or LLVM's own lowering)
         // may call them by their C name. A program's export of the same name replaces the library's, the way a
@@ -363,6 +366,12 @@ public sealed partial class Compiler
             try { CheckPreset(c); }
             catch (CompileError e) { errors.Add(e); }
         }
+        // Generic bodies and conformances against their constraints, before any instantiation (GenericPrecheck.cs).
+        // An instance that fails where its template already did says the same thing again, so it is left out.
+        var prechecked = PrecheckGenerics(d => scope is null || scope(d.File));
+        var templateErrors = prechecked.Select(e => e.Pos).ToHashSet();
+        errors.AddRange(prechecked);
+        int checkedUpTo = errors.Count;
         // A routine derived without being asked for holds only when its payloads allow it, so it's checked when used.
         // A library export the program replaces (its own crash handler) isn't part of the program.
         var programExports = _userRoutines.Select(r => r.Attr("export")?.First).Where(n => n is not null).ToHashSet();
@@ -382,7 +391,7 @@ public sealed partial class Compiler
         }
         errors.AddRange(InlineRecursion());
         errors.AddRange(VerifyFixedConformances());
-        return errors;
+        return [.. errors.Take(checkedUpTo), .. errors.Skip(checkedUpTo).Where(e => !templateErrors.Contains(e.Pos))];
     }
 
     /// Folds a preset (or a global's initializer) whether or not anything uses it, so a preset that isn't a
@@ -735,7 +744,8 @@ public sealed partial class Compiler
                 if (t.Args is not [TypeArgType lane, var lanes])
                     throw new CompileError(t.Pos, "Vector takes a lane type and a lane count: Vector<T, LANES>");
                 var laneType = ResolveType(lane.Type, env);
-                if (laneType.Repr is not (IntType or FloatType or BoolType))
+                // A type parameter's lanes are checked at each instantiation (the lane concepts say which ones work).
+                if (laneType.Repr is not (IntType or FloatType or BoolType or ArchetypeType))
                     throw new CompileError(t.Pos, $"a Vector's lanes are integers, floats, or Bool (a mask), not {laneType}");
                 long n = ConstInt(lanes, env, t.Pos);
                 if (n < 1) throw new CompileError(t.Pos, "a Vector has at least one lane");
@@ -840,6 +850,7 @@ public sealed partial class Compiler
     /// Records a direct call, for finding the #inline routines that reach themselves.
     public void RecordCall(Instance caller, Instance callee)
     {
+        if (Prechecking) return;
         if (!_calls.TryGetValue(caller.Symbol, out var callees)) _calls[caller.Symbol] = callees = [];
         callees.Add(callee.Symbol);
     }
@@ -1030,6 +1041,7 @@ public sealed partial class Compiler
     /// Makes sure every record type used in the IR has a definition.
     public void EnsureTypeDefined(DType t)
     {
+        if (Prechecking) return;
         switch (t)
         {
             case RecordType { TransparentField: { } field }:
@@ -1100,6 +1112,7 @@ public sealed partial class Compiler
     /// `#external("c")` one is declared, not defined: the C variable of its #symbol.
     public string GlobalVariable(PresetDecl c, DType t, TypeEnv env)
     {
+        if (Prechecking) return "@precheck";
         var external = c.Attr("external");
         string symbol = external is null ? MangleVariable(c, null) : ExternalSymbol(c);
         if (_globalVars.TryGetValue(symbol, out var name)) return name;
@@ -1134,6 +1147,7 @@ public sealed partial class Compiler
     /// on first use.
     public string PresetStorageGlobal(PresetDecl c, DType t, TypeEnv env)
     {
+        if (Prechecking) return "@precheck";
         string key = MangleVariable(c, c.Owner is null ? null : env.Get("Me"));
         if (_presetArrays.TryGetValue(key, out var name)) return name;
         EnsureTypeDefined(t);
@@ -1246,6 +1260,7 @@ public sealed partial class Compiler
     /// A NUL-terminated private global holding the bytes of a string literal.
     public string StringGlobal(string value)
     {
+        if (Prechecking) return "@precheck";
         if (_strings.TryGetValue(value, out var name)) return name;
         name = $"@.str.{_strings.Count}";
         _strings[value] = name;
@@ -1263,6 +1278,7 @@ public sealed partial class Compiler
     /// UTF-32 code points elsewhere.
     public string WideStringGlobal(string value)
     {
+        if (Prechecking) return "@precheck";
         if (_wideStrings.TryGetValue(value, out var name)) return name;
         name = $"@.wstr.{_wideStrings.Count}";
         _wideStrings[value] = name;

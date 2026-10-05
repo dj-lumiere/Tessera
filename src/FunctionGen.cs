@@ -55,7 +55,7 @@ public sealed class FunctionGen
 
     // Debug information (Compiler.DebugInfo): the routine's DISubprogram, the current block's DILexicalBlock, the
     // location the next operation gets, and each block's records for its parameters, written after its phis.
-    private bool Debug => _c.DebugInfo;
+    private bool Debug => _c.DebugInfo && !_c.Prechecking;
 
     /// A `#track_caller` routine's hidden parameter: the place it was called from.
     private const string CallerParam = "%a.caller";
@@ -96,7 +96,9 @@ public sealed class FunctionGen
     }
 
     private string InstantiationNote() =>
-        _decl.IsLibrary || _decl.TypeParams.Count > 0 || (_decl.Owner?.Args.Count ?? 0) > 0
+        // A generic body checked against its constraints is no instance: the error is the template's own.
+        _c.Prechecking ? ""
+        : _decl.IsLibrary || _decl.TypeParams.Count > 0 || (_decl.Owner?.Args.Count ?? 0) > 0
             ? $" (in {_inst.Symbol})"
             : "";
 
@@ -122,7 +124,7 @@ public sealed class FunctionGen
             return;
         }
         var blocks = _decl.Blocks!;   // the parser guarantees a leading `block entry()`
-        _traced = _c.IsTraced(_inst);
+        _traced = !_c.Prechecking && _c.IsTraced(_inst);
 
         for (int i = 0; i < _decl.Params.Count; i++)
         {
@@ -882,6 +884,7 @@ public sealed class FunctionGen
             return BytesType(tn.Pos);
         if (AddrOfCallable(e) is not null) return new PtrType(null);
         if (IndirectCall(e) is { } ind) return ind.Callable.Ret;
+        if (e is MethodCallExpr deferred && DeferredType(deferred, expected) is { } deferredType) return deferredType;
         var plan = PlanCall(e, expected);
         return plan is null ? null : _c.Signature(plan.Decl, plan.Env).Ret;
     }
@@ -1774,6 +1777,48 @@ public sealed class FunctionGen
         catch (CompileError) { return null; }
     }
 
+    /// While a generic body is checked, a call on a value of a known type whose routine is picked by a type argument
+    /// that is a type parameter (`x.to<T>()`, defined as `S32.to<S64>`, `S32.to<F64>`, ...) has no routine to check
+    /// until the parameter is known, and no concept names one, so it is checked at each instantiation. Its type is the
+    /// one those routines return for that argument. Null for every other call, and for a routine a concept provides
+    /// (`text.to_result<T>()` under `Parsable<T>`), which the constraints in force must give.
+    private DType? DeferredType(MethodCallExpr m, DType? expected)
+    {
+        if (!_c.Prechecking || _c.ConceptProvides(m.Name)) return null;
+        var typeArgs = m.TypeArgs;
+        if (typeArgs.Count == 0 && m is { Name: "to" or "to_wrap" or "to_clamp", Args.Count: 0 } && expected is not null)
+            typeArgs = [new TypeRef(expected.Name, [], m.Pos) { Known = expected }];
+        if (typeArgs.Count == 0) return null;
+        List<DType> given;
+        try { given = typeArgs.Select(t => Resolve(t, allowVoid: true)).ToList(); }
+        catch (CompileError) { return null; }
+        if (!given.Any(Compiler.MentionsArchetype) || InferQuiet(m.Receiver) is not { } rt || rt is ArchetypeType) return null;
+        foreach (var owner in rt is PtrType { Pointee: { } pointee } ? new[] { pointee, rt } : [rt])
+        {
+            var defined = _c.MethodsNamed(owner, m.Name);
+            if (defined.Count == 0 || defined.Any(d => d.Fixed.Count == 0)) continue;
+            try
+            {
+                // A routine defined for a pattern (`Ptr<T>.to<@U>`) takes the parameter like any type: no deferring.
+                if (_c.MethodCandidates(owner, m.Name, _env.File, m.Pos, true, d => FixedFits(d, owner, typeArgs, m.Pos)).Count > 0)
+                    return null;
+                var d = defined.FirstOrDefault(d => d.Fixed.Count == given.Count);
+                if (d is null) return null;
+                return _c.ResolveType(Substitute(d.ReturnType, d.Fixed, given), BindOwner(d, owner, m.Pos), allowVoid: true);
+            }
+            catch (CompileError) { return null; }
+        }
+        return null;
+    }
+
+    /// A type with each of a routine's fixed type arguments replaced by the type given for it.
+    private static TypeRef Substitute(TypeRef t, List<TypeRef> fixedArgs, List<DType> given)
+    {
+        int i = fixedArgs.FindIndex(f => f.ToString() == t.ToString());
+        if (i >= 0) return new TypeRef(given[i].Name, [], t.Pos) { Known = given[i] };
+        return t with { Args = t.Args.Select(a => a is TypeArgType ta ? new TypeArgType(Substitute(ta.Type, fixedArgs, given)) : a).ToList() };
+    }
+
     /// Why an argument without a type of its own can't be a `pt`, or null if it can. An integer literal not landing on a
     /// USize (SSize when negative) clears `preferred`.
     private string? UntypedMisfit(Expr arg, DType pt, ref bool preferred)
@@ -2001,8 +2046,19 @@ public sealed class FunctionGen
         // Memory is read through a typed pointer only; an Addr says where, not what.
         if (rt is PtrType { Pointee: null } && m.Name is "load" or "store" or "volatile_load" or "volatile_store")
             throw Err(m.Pos, $"an Addr has no pointee type to {m.Name}; cast it first: .to<@T>().{m.Name}(...)");
+        // A value of a type parameter has the routines its constraints give it, and the error says which would.
+        if (_c.Prechecking && (rt as ArchetypeType ?? (rt as PtrType)?.Pointee as ArchetypeType) is { } param)
+            throw _c.PrecheckNoMethod(param, m.Name, DescribeReceiver(m.Receiver, rt), rt, m.Pos);
         throw Err(m.Pos, $"{rt} has no method '{m.Name}'");
     }
+
+    /// A receiver as an error names it: `'key'`, `'node.key'`, or what it is (`a value`, `a pointer`).
+    private static string DescribeReceiver(Expr receiver, DType type) => receiver switch
+    {
+        ValueRef v => $"'{v.Name}'",
+        FieldExpr { Base: ValueRef b } f => $"'{b.Name}.{f.Name}'",
+        _ => type is PtrType ? "a pointer" : "a value",
+    };
 
     /// The receiver type a `T.name` routine gets from the other arguments, if there is such a routine and they fix T.
     private DType? BlanketReceiverType(MethodCallExpr m)
@@ -2020,6 +2076,8 @@ public sealed class FunctionGen
     /// Binds the owner's type parameters from a concrete type: `Option<T>` against `Option<S64>` binds T.
     private Compiler.TypeEnv BindOwner(RoutineDecl r, DType owner, Pos pos)
     {
+        // A concept's required routine, which a constraint in force gives a type parameter: the constraint binds it.
+        if (_c.RequirementEnv(r, owner) is { } required) return required;
         var env = new Compiler.TypeEnv(r.File);
         var o = r.Owner!;
         if (o.Args.Count == 0)
@@ -2164,6 +2222,12 @@ public sealed class FunctionGen
 
         if (AddrOfCallable(e) is { } addr) return new Val(Eval(addr.Callee, addr.Callable).Op, new PtrType(null));
         if (IndirectCall(e) is { } ind) return EmitIndirect(ind.Callee, ind.Callable, ind.Args, e.Pos);
+        if (e is MethodCallExpr deferred && DeferredType(deferred, expected) is { } deferredType)
+        {
+            EvalAny(deferred.Receiver);
+            foreach (var a in deferred.Args) if (Infer(a) is not null) EvalAny(a);
+            return new Val("poison", deferredType);
+        }
 
         var plan = PlanCall(e, expected);
         if (plan is null)
@@ -2228,6 +2292,8 @@ public sealed class FunctionGen
         if (sig.Decl.Name is "store_into" or "copy_into" or "store_at" && plan.Receiver is not null && plan.Args.Count >= 1
             && PresetArrayRoot(plan.Args[0]) is { } destRoot)
             throw Err(plan.Pos, $"'{destRoot.Name}' is a preset; its memory is read-only");
+        // An assembly routine is checked as assembly on its own, so a generic body being checked only types its call.
+        if (sig.IsAsm && _c.Prechecking) return new Val(sig.Ret is VoidType ? "" : "poison", sig.Ret);
         if (sig.IsAsm && !sig.IsNaked)
         {
             foreach (var p in sig.Params) _c.EnsureTypeDefined(p);
@@ -2398,6 +2464,7 @@ public sealed class FunctionGen
     /// defines its own copy), so one that would be external is internal there.
     private (string Linkage, string Comdat) Linkage()
     {
+        if (_c.Prechecking) return ("", "");
         bool shared = _c.IsGenericInstance(_inst) || _decl.IsLibrary;
         bool exported = _decl.Attr("export") is not null;
         if (_c.ExposeDefinitions)

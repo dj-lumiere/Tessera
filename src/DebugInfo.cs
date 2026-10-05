@@ -36,6 +36,7 @@ public sealed partial class Compiler
     /// Bytes (with a null allocator), its line, and its column (0 when a `#source` gives none).
     public string PlaceGlobal(Pos pos)
     {
+        if (Prechecking) return "@precheck";
         string file = pos.File.Replace('\\', '/');
         string key = $"{file}:{pos.Line}:{pos.Col}";
         if (_places.TryGetValue(key, out var name)) return name;

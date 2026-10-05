@@ -458,9 +458,19 @@ routine start() -> Void
   needs it (the keyed collections' `Comparable<TKey>` / `HashEquatable<TKey>`, `PriorityQueue`'s `Comparable<TPriority>`), and
   element constraints only some routines need on those routines (`List<T>.eq` adds `Equatable<T>`), since a record's
   `require` limits which instances can exist at all. The builder checks a record's constraints when its type is
-  formed and a routine's when a call instantiates it, and doesn't yet check a generic body against them before
-  that (a planned build-time check). Concepts: `Equatable`, `Hashable`,
-  `HashEquatable`, `Comparable`, `Destructible`, `Representable`, `Diagnosable`, `Parsable` (a
+  formed and a routine's when a call instantiates it.
+- **A generic body is checked against its constraints before any instantiation.** The constraints in force are the
+  record's (or variant's) `require`, the routine's own, and what they refine (`HashEquatable<T>` gives `Equatable<T>`
+  and `Hashable<T>`). A value of a type parameter has only the required routines of those concepts (and the routines
+  on every type, `T.name`): `key.compare(...)` with no `Comparable<TKey>` in force is a build error at the routine,
+  even if nothing instantiates it, and the error names the concept to add and where. A call to another generic
+  routine, and a generic type the body forms (`Set<T>` needs `HashEquatable<T>`), must have its constraints met by
+  the ones in force. A generic conformance is checked too: the routines that meet it must have their constraints met
+  by its `when` plus the type's `require`. A routine picked by a type argument that is a type parameter
+  (`x.to<T>()`) is checked at each instantiation. A record whose fields form another generic type (`DictIter` holds
+  a `@Dict<TKey, TValue>`) carries that type's constraints in its own `require`. Concepts: `Equatable`, `Hashable`,
+  `HashEquatable`, `Comparable`, `Destructible`, `Representable`, `HexRepresentable` (`represent_hex_into`, every
+  integer), `FixedRepresentable` (`represent_fixed_into`, every float), `Diagnosable`, `Parsable` (a
   capability is an `-able` adjective), and the roles `Iterator`, `Reader`, `Writer`. Constraints are checked: a type satisfies a
   concept only through a `conform` (on its record, or a top-level `conform C<X>` line), and the builder checks the
   declared routines' signatures. Conditional conformance: `conform Equatable<Box<T>> when T: typename, Equatable<T>`.

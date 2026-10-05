@@ -50,6 +50,8 @@ public sealed partial class Compiler
     /// convention: every aggregate passes Direct.
     public AbiSig LowerSignature(IReadOnlyList<DType> ps, DType ret, string callConv, Pos pos)
     {
+        // A generic body being checked lowers into throwaway IR, so every value passes directly, and nothing is cached.
+        if (Prechecking) return new AbiSig(AbiValue.Direct(ret), ps.Select(AbiValue.Direct).ToList());
         string key = $"{callConv}|{ret.Key}|{string.Join(",", ps.Select(p => p.Key))}";
         if (_abiSigs.TryGetValue(key, out var cached)) return cached;
         AbiSig sig;

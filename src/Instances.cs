@@ -127,22 +127,16 @@ public sealed partial class Compiler
             ps.Add(new PtrType(null));
         }
         var ret = ResolveType(r.ReturnType, env, allowVoid: true);
-
-        var external = r.Attr("external");
-        if (external is not null && external.First is not ("c" or "llvm" or "asm"))
-            throw new CompileError(external.Pos, "only #external(\"c\"), #external(\"llvm\") and #external(\"asm\") are supported");
-        if (asm && r.Blocks is null)
-            throw new CompileError(r.Pos, $"assembly routine '{r.DisplayName}' needs its instructions: a 'block entry()'");
-        if (external is { First: "llvm" } && r.Attr("template") is null)
-            throw new CompileError(r.Pos, $"#external(\"llvm\") routine '{r.DisplayName}' needs a #template");
-        if (external is not null && !asm && r.Blocks is not null)
-            throw new CompileError(r.Pos, $"external routine '{r.DisplayName}' cannot have a body");
-        if (external is null && r.Blocks is null)
-            throw new CompileError(r.Pos, $"routine '{r.DisplayName}' has no body (mark it #external to declare it)");
+        // A concept's required routine, called on a type parameter in a generic body being checked, stands for the
+        // routine each instance will call: it has a signature and no body.
+        bool required = _requirementOf.ContainsKey(r);
+        if (!required) CheckExternalSignature(r, asm);
+        // Nothing a generic body being checked calls is kept, so the call needs no symbol.
+        if (required || Prechecking) return new Instance(r, env, $"precheck {r.DisplayName}", ps, ret);
 
         string symbol;
         if (asm && r.Attr("export") is null) symbol = MangleRoutine(r, env, ps, ret);
-        else if (external is not null && !asm) symbol = r.Attr("symbol")?.First ?? r.Name;
+        else if (r.Attr("external") is { } external && !asm) symbol = r.Attr("symbol")?.First ?? r.Name;
         // `#export("name")` defines the routine under that plain C name: Tessera's own calls use it too, so a caller in
         // another module and one here reach the same definition, which LLVM can inline (an alias it can't see through).
         else if (r.Attr("export") is { } export)
@@ -154,6 +148,23 @@ public sealed partial class Compiler
         else symbol = MangleRoutine(r, env, ps, ret);
 
         return new Instance(r, env, symbol, ps, ret);
+    }
+
+    /// What a routine's attributes say about its body: an external one has none (and an LLVM one a template), every
+    /// other one has blocks.
+    private static void CheckExternalSignature(RoutineDecl r, bool asm)
+    {
+        var external = r.Attr("external");
+        if (external is not null && external.First is not ("c" or "llvm" or "asm"))
+            throw new CompileError(external.Pos, "only #external(\"c\"), #external(\"llvm\") and #external(\"asm\") are supported");
+        if (asm && r.Blocks is null)
+            throw new CompileError(r.Pos, $"assembly routine '{r.DisplayName}' needs its instructions: a 'block entry()'");
+        if (external is { First: "llvm" } && r.Attr("template") is null)
+            throw new CompileError(r.Pos, $"#external(\"llvm\") routine '{r.DisplayName}' needs a #template");
+        if (external is not null && !asm && r.Blocks is not null)
+            throw new CompileError(r.Pos, $"external routine '{r.DisplayName}' cannot have a body");
+        if (external is null && r.Blocks is null)
+            throw new CompileError(r.Pos, $"routine '{r.DisplayName}' has no body (mark it #external to declare it)");
     }
 
     /// Whether an instance comes from a generic routine: its own type parameters, or its owner's (`List<T>.push`).
@@ -183,6 +194,8 @@ public sealed partial class Compiler
     public Instance RequireInstance(RoutineDecl r, TypeEnv env)
     {
         var sig = Signature(r, env);
+        // A generic body being checked calls routines without making instances of them: each is checked on its own.
+        if (Prechecking) return sig;
         // An #external declaration and an #export definition of one C name are one routine; the definition is the
         // instance, whichever was reached first, and the declaration is never emitted (see _exported).
         if (_instances.TryGetValue(sig.Symbol, out var existing) && !(existing.IsExternalC && r.Attr("export") is not null))

@@ -10,7 +10,8 @@ namespace Tessera;
 /// when its type is formed. A routine on a record, and a conformance's `when`, lists only the constraints it adds: the
 /// record's hold wherever its type is formed, so they hold in every routine and conformance on it. Each conformance is
 /// checked against the concept's routines, by signature, the first time it is used, and every conformance without
-/// type parameters is checked up front.
+/// type parameters is checked up front. A generic routine's body, and a generic conformance, is also checked once
+/// against the constraints in force there, before any instantiation (GenericPrecheck.cs).
 public sealed partial class Compiler
 {
     private readonly Dictionary<string, List<ConceptDecl>> _conceptDecls = [];
@@ -29,6 +30,7 @@ public sealed partial class Compiler
         {
             case ConceptDecl c:
                 Add(_conceptDecls, c.Name, c);
+                foreach (var req in c.Routines) _requirementOf[req] = c;
                 break;
             case RecordDecl r:
                 foreach (var cl in r.Clauses.Where(c => c.Kind == "conform"))
@@ -78,7 +80,7 @@ public sealed partial class Compiler
     {
         var constraints = r.Clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts).ToList();
         if (constraints.Count == 0) return;
-        string key = r.Pos + "|" + string.Join(",", env.All.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value.Name}"));
+        string key = r.Pos + "|" + string.Join(",", env.All.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value.Key}"));
         if (!_checkedRequirements.Add(key)) return;
         foreach (var c in constraints)
             RequireConformance(c, env, at, $"'{r.DisplayName}'");
@@ -110,6 +112,10 @@ public sealed partial class Compiler
         // A pointer writes neither its value nor its address on its own, so the fix names both.
         if (decl.Name is "Representable" or "Diagnosable" && args is [PtrType { Pointee: not null }])
             why = $"a pointer isn't {decl.Name}; write the value with .load(), or the address with .to<Addr>()";
+        // In a generic body being checked, the constraint is missing from the routine's (or its record's) require.
+        else if (_precheck is { } scope && args.Any(MentionsArchetype))
+            throw new CompileError(at, $"{scope.What} needs {Show(decl.Name, args)}, which {neededBy} requires: {why}"
+                + PrecheckFix(decl, args));
         throw new CompileError(at, $"{Show(decl.Name, args)} doesn't hold, which {neededBy} requires: {why}");
     }
 
@@ -126,15 +132,28 @@ public sealed partial class Compiler
     /// Null when `concept<args>` holds, else the reason it doesn't.
     private string? Conforms(ConceptDecl concept, List<DType> args, string file, Pos at)
     {
-        string key = Show(concept.Name, args);
+        string key = ConformsKey(concept, args);
+        // While a generic body is checked, its constraints in force hold for its type parameters.
+        if (_precheck is { } scope && scope.GivenKeys.Contains(key)) return null;
         if (_conformsCache.TryGetValue(key, out var cached)) return cached;
         _conformsCache[key] = null;   // assume it holds while checking, so recursive constraints terminate
-        string? result = ConformsUncached(concept, args, file, at);
+        string? result = ConformsUncached(concept, args, file, at, key);
         _conformsCache[key] = result;
         return result;
     }
 
-    private string? ConformsUncached(ConceptDecl concept, List<DType> args, string file, Pos at)
+    /// A conformance query's identity: the concept and its arguments by key, so two types of one name (a type
+    /// parameter `T` of two routines) stay apart.
+    private static string ConformsKey(ConceptDecl concept, List<DType> args) =>
+        $"{concept.Name}<{string.Join(", ", args.Select(a => a.Key))}>";
+
+    /// Carries the constraint missing behind a failed query on to the query that asked it.
+    private void Missing(string key, ConceptDecl inner, List<DType> innerArgs)
+    {
+        if (_missingConstraint.TryGetValue(ConformsKey(inner, innerArgs), out var missing)) _missingConstraint[key] = missing;
+    }
+
+    private string? ConformsUncached(ConceptDecl concept, List<DType> args, string file, Pos at, string key)
     {
         var cenv = new TypeEnv(concept.File);
         for (int i = 0; i < concept.TypeParams.Count; i++) cenv.Bind(concept.TypeParams[i], args[i]);
@@ -145,7 +164,13 @@ public sealed partial class Compiler
         {
             var sd = FindConcept(s, concept.File);
             var sargs = ConceptArgs(s, cenv);
-            if (Conforms(sd, sargs, file, at) is { } why) return $"{Show(sd.Name, sargs)} doesn't hold ({why})";
+            if (Conforms(sd, sargs, file, at) is { } why)
+            {
+                // A type parameter lacking a refined concept lacks the refining one: that is the constraint to add.
+                if (_precheck is not null && args.Any(a => a is ArchetypeType)) _missingConstraint[key] = Show(concept.Name, args);
+                else Missing(key, sd, sargs);
+                return $"{Show(sd.Name, sargs)} doesn't hold ({why})";
+            }
         }
         // A concept that only groups others needs no declaration of its own.
         if (concept.Routines.Count == 0 && supers.Count > 0) return null;
@@ -169,10 +194,19 @@ public sealed partial class Compiler
                 var wd = FindConcept(w, conf.Source.File);
                 var wargs = ConceptArgs(w, binding);
                 if (Conforms(wd, wargs, file, at) is { } why)
+                {
+                    Missing(key, wd, wargs);
                     return $"its conformance at {conf.Source.Pos} holds only when {Show(wd.Name, wargs)}, and {why}";
+                }
             }
             VerifyConformance(concept, args, conf);
             return null;
+        }
+        // A type parameter has only the constraints in force on it.
+        if (_precheck is not null && args.Any(MentionsArchetype))
+        {
+            _missingConstraint[key] = Show(concept.Name, args);
+            return $"no constraint in force says {Show(concept.Name, args)}";
         }
         // A marker states a capability its conformances grant per target (the atomics), so say which target.
         bool targetBound = _conformances.Any(c => c.Concept.Name == concept.Name
@@ -229,11 +263,13 @@ public sealed partial class Compiler
 
     // ── A conformance against its concept ─────────────────────────────────
 
-    /// Checks that the types of a conformance have every routine the concept requires, with matching signatures.
-    private void VerifyConformance(ConceptDecl concept, List<DType> args, Conformance conf)
+    /// Checks that the types of a conformance have every routine the concept requires, with matching signatures. Returns
+    /// the routine that meets each requirement, with the type it's on (none when this conformance was checked before).
+    private List<(RoutineDecl Method, DType Owner)> VerifyConformance(ConceptDecl concept, List<DType> args, Conformance conf)
     {
+        var met = new List<(RoutineDecl, DType)>();
         string key = Show(concept.Name, args);
-        if (!_verified.Add(key)) return;
+        if (!_verified.Add(ConformsKey(concept, args))) return met;
         var cenv = new TypeEnv(concept.File);
         for (int i = 0; i < concept.TypeParams.Count; i++) cenv.Bind(concept.TypeParams[i], args[i]);
 
@@ -260,6 +296,7 @@ public sealed partial class Compiler
                 {
                     MatchRequirement(req, method, owner, cenv, claim, conf.Source.Pos);
                     misses.Clear();
+                    met.Add((method, owner));
                     break;
                 }
                 catch (CompileError e) { misses.Add((method, e)); }
@@ -270,6 +307,7 @@ public sealed partial class Compiler
                     + $"signature the concept wants ({ShowSignature(req)}):"
                     + string.Concat(misses.Select(m => $"\n    {ShowSignature(m.Method)} at {m.Method.Pos}: {Reason(m.Why.Text, claim)}")));
         }
+        return met;
     }
 
     /// Whether a routine defined for type arguments (`Bytes.to_result<S32>`) is the one for `wanted`.

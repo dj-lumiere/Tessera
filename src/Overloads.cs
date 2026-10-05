@@ -180,6 +180,10 @@ public sealed partial class Compiler
     public List<RoutineDecl> MethodCandidates(DType ownerType, string name, string file, Pos pos, bool anyModule = false,
         Func<RoutineDecl, bool>? fits = null)
     {
+        // In a generic body being checked, a type parameter's routines are the ones its constraints give it, and a
+        // concept may put one on a fixed type for it (GenericPrecheck.cs).
+        var required = _precheck is null ? [] : ConstraintRoutines(ownerType, name).Where(m => fits?.Invoke(m) ?? m.Fixed.Count == 0).ToList();
+        if (ownerType is ArchetypeType && required.Count > 0) return required;
         string owner = ownerType.OwnerName;
         var ownerDecl = DeclOf(ownerType);
         if (_methods.GetValueOrDefault((owner, name))?.Where(m => OwnerDecl(m) == ownerDecl && (fits?.Invoke(m) ?? m.Fixed.Count == 0))
@@ -194,7 +198,7 @@ public sealed partial class Compiler
                 throw new CompileError(pos, Hidden(methods[0], $"routine '{owner}.{name}'", null));
             return LocalHides(visible, file);
         }
-        return BlanketCandidates(name, file, pos, anyModule);
+        return required.Count > 0 ? required : BlanketCandidates(name, file, pos, anyModule);
     }
 
     /// For an error about a call to a routine on a type that takes `args` arguments: a routine of the same type and name

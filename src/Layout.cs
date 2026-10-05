@@ -128,7 +128,8 @@ public sealed partial class Compiler
             case IntType i: return Layout(pos).Int(i.Bits);
             case ChoiceType e: return Layout(pos).Int(e.Underlying.Bits);
             case FloatType f: return Layout(pos).Float(f.Bits);
-            case PtrType or CallableType: return Layout(pos).Pointer;
+            // A type parameter while its generic body is checked: any one size serves the throwaway lowering.
+            case PtrType or CallableType or ArchetypeType: return Layout(pos).Pointer;
             case ArrayType a:
             {
                 var (size, align) = SizeAlign(a.Elem, pos);
