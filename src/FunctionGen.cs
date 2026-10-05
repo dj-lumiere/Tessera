@@ -69,6 +69,12 @@ public sealed class FunctionGen
     private string? _loc;
     private readonly Dictionary<string, List<string>> _blockRecords = [];
 
+    /// The receivers of the calls this instance resolved to one of `Ptr<T>`'s loads: what UninitReads counts as a read.
+    private readonly HashSet<Expr> _pointerLoads = new(ReferenceEqualityComparer.Instance);
+
+    private static readonly HashSet<string> PointerLoadNames =
+        ["load", "volatile_load", "load_unaligned", "atomic_load", "atomic_load_relaxed", "atomic_load_acquire"];
+
     public FunctionGen(Compiler c, Instance inst, StringBuilder output)
     {
         _c = c;
@@ -145,6 +151,9 @@ public sealed class FunctionGen
         if (Debug) BeginSubprogram();
         EmitHead();
         foreach (var b in blocks) EmitBlock(b);
+        // With every call resolved, a load of a slot that some path reaches before anything was stored into it.
+        if (UninitReads.Find(_decl, m => _pointerLoads.Contains(m.Receiver)) is { } uninitRead)
+            throw Err(uninitRead.Pos, uninitRead.Message);
 
         // A BF16 parameter arrives as its i16 bits (see Instance.PassesBf16AsBits) and is bitcast back on entry.
         // An aggregate the C ABI coerces arrives as its parts, stored into a buffer and loaded back as the value; one
@@ -2180,6 +2189,9 @@ public sealed class FunctionGen
         if (Recorded)
             _c.CallUses.TryAdd((plan.Pos, plan.Decl.Name), new Compiler.CallUse(plan.Decl, [.. plan.Env.All.Select(kv => (kv.Key, kv.Value))]));
         var sig = _c.Signature(plan.Decl, plan.Env);
+        if (plan.Receiver is not null && plan.Decl is { IsLibrary: true, Owner.Name: "Ptr" }
+            && PointerLoadNames.Contains(plan.Decl.Name))
+            _pointerLoads.Add(plan.Receiver);
         int offset = plan.Receiver is null ? 0 : 1;
         int fixedCount = sig.Params.Count - offset - (sig.IsTrackCaller ? 1 : 0);
         bool arityOk = sig.Variadic && sig.IsExternalC ? plan.Args.Count >= fixedCount : plan.Args.Count == fixedCount;

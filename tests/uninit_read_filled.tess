@@ -1,0 +1,74 @@
+// Slots the uninitialized-read check accepts: one a routine fills through its address, one filled field by field,
+// one every path stores into before the load, and one a loop fills element by element before it is loaded.
+import Standard::Format
+import Standard::Os
+
+record Point
+    x : S64
+    y : S64
+
+/// Stores 5 into the slot.
+/// :param out: the slot to fill
+routine fill(out: @S64) -> Void
+    block entry()
+        out.store(5)
+        return()
+
+/// Picks 1 or 2 by `flag`, storing the choice into a head slot on both paths before reading it.
+/// :param flag: which value to pick
+/// :returns: 1 when flag holds, else 2
+routine pick(flag: Bool) -> S64
+    shared result : @S64 <- uninit
+
+    block entry()
+        branch flag
+            ? one()
+            : two()
+
+    block one()
+        1.store_into(result)
+        jump done()
+
+    block two()
+        2.store_into(result)
+        jump done()
+
+    block done()
+        return(result.load())
+
+/// The squares of 0, 1, and 2, stored element by element in a loop and loaded once the loop is left.
+/// :returns: the array { 0, 1, 4 }
+routine squares() -> Array<S64, 3>
+    shared values : @Array<S64, 3> <- uninit
+
+    block entry()
+        jump fill(0)
+
+    block fill(i: USize)
+        more : Bool = i.lt(3)
+        branch more
+            ? put(i)
+            : done()
+
+    block put(i: USize)
+        n : S64 = i.to<S64>()
+        values.setitem(i, n.mul(n))
+        jump fill(i.add(1))
+
+    block done()
+        return(values.load())
+
+routine start() -> Void
+    block entry()
+        claim filled : @S64 <- uninit
+        fill(filled)
+        a : S64 = filled.load()
+        claim point : @Point <- uninit
+        point.x.store(3)
+        point.y.store(4)
+        p    : Point         = point.load()
+        b    : S64           = pick(false)
+        sq   : Array<S64, 3> = squares()
+        last : S64           = sq.getitem(2)
+        Out.write("{a} {p.x} {p.y} {b} {last}\n")
+        return()

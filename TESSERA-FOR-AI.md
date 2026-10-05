@@ -116,6 +116,15 @@ routine start() -> Void
   gives it no type: `{ 1, 2 }.eq(...)` is an error. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot, but its `<-` runs every time the block runs: a claim can't carry a value from one pass to
   the next. A slot that does is shared in the routine's head (below).
+- **A slot is loaded only after a store on every path.** A `load` (also `volatile_load`, `load_unaligned`, the atomic
+  loads) of a claimed or `shared` slot, or of a place inside one (`p.field.load()`, `p.stride(i).load()`), that some
+  path from the routine's start reaches with nothing stored yet is a build error in every mode, and the error names
+  that path (`entry -> skip -> done`). A slot counts as filled by its `<- value`, by a store through it or through
+  any place inside it (one field or one element fills the whole slot), and from the moment its address goes anywhere
+  but a load: a routine argument or method receiver (`out.construct(...)`, `buf.setitem(i, v)`), a binding, a block
+  argument, a literal, a `write` hole. A loop that stores into the slot anywhere counts as having filled it once the
+  loop is left (a fill-every-element loop, then a load, is fine), but inside the loop a load before the store on the
+  first pass is reported. A head slot filled in the head stays filled, `jump entry()` included.
 - **Where values are: `@T` and `Slice<T>`.** `@T` is an address (a claim slot, a field, an element, memory from C)
   and frees nothing. `Slice<T>` (Core) is an address, a count, and `alloc`, the allocator the memory came from: `at(i)`
   is the checked address, and everything through it is `@T`'s own (`load`, `store`, `volatile_load`,
@@ -138,6 +147,7 @@ routine start() -> Void
   `tessera test`) `DEFAULT_HEAP` keeps a header in front of each block and crashes with `DoubleFreeError` at the line
   of a second `destruct()` of the same block (a quarantine of the last 256 freed blocks keeps that sure); with it off
   it is plain malloc / free, and so is a single-file build without a manifest. Debug and release behave the same.
+  Double frees are the heap check's job: the builder makes no build-time check for them.
 - **The default heap comes with `Standard::Os`**, like `Out`: there `DEFAULT_HEAP` is an `@Allocator` ready before
   `start` (`make_heap_allocator()` gives the same one), and every collection and `Slice` gets a `construct` without
   the allocator (`List<S64>.construct()`, `Slice<U8>.construct(n)`). Memory C frees or reallocates, or memory from C's
