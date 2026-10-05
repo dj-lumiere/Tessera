@@ -28,13 +28,10 @@ preset FILE_FLAG_SEQUENTIAL_SCAN:    U32 = 0x08000000
 preset IO_REPARSE_TAG_SYMLINK:       U32 = 0xA000000C
 preset IO_REPARSE_TAG_MOUNT_POINT:   U32 = 0xA0000003
 
-/// WIN32_FIND_DATAW: the attributes, the creation and last-write times, the size, the reparse tag, then the name.
+/// WIN32_FIND_DATAW: the fields of a WIN32_FILE_ATTRIBUTE_DATA (attributes, times, size), the reparse tag, then the
+/// name.
 preset FIND_DATA_WORDS:  USize = 148
 
-preset FIND_CREATED:     USize = 4
-preset FIND_WRITTEN:     USize = 20
-preset FIND_SIZE_HIGH:   USize = 28
-preset FIND_SIZE_LOW:    USize = 32
 preset FIND_REPARSE_TAG: USize = 36
 preset FIND_NAME:        USize = 44
 
@@ -603,47 +600,38 @@ private routine kind_of(attributes: U32, tag: U32) -> FileKind
             ? return(FileKind.Directory)
             : return(FileKind.File)
 
-/// A Metadata from the parts Windows reports. Read-only is the read-only attribute.
-/// :param attributes: The file's attribute bits.
+/// A Metadata from the attributes, times, and size Windows reports. Read-only is the read-only attribute.
+/// :param data: The file's attribute bits, times, and size.
 /// :param tag: Its reparse tag, 0 when not known.
-/// :param size: Its size in bytes.
-/// :param written: Its last-write time.
-/// :param created: Its creation time.
 /// :returns: The metadata.
 #target(os: "windows")
-private routine make_metadata(attributes: U32, tag: U32, size: U64, written: FileTime,
-    created: FileTime) -> Metadata
+private routine make_metadata(data: AttributeData, tag: U32) -> Metadata
     block entry()
-        return(Metadata { kind: kind_of(attributes, tag), size: size, modified_ns: unix_ns(written),
-            created_ns: .Present(unix_ns(created)),
-            readonly: attributes.bitand(FILE_ATTRIBUTE_READONLY).ne(0) })
+        size : U64 = size_of(data.size_high, data.size_low)
+        return(Metadata { kind: kind_of(data.attributes, tag), size: size,
+            modified_ns: unix_ns(data.written), created_ns: .Present(unix_ns(data.created)),
+            readonly: data.attributes.bitand(FILE_ATTRIBUTE_READONLY).ne(0) })
 
-/// The metadata in a WIN32_FIND_DATAW.
+/// The metadata in a WIN32_FIND_DATAW, which starts with the fields of a WIN32_FILE_ATTRIBUTE_DATA.
 /// :param data: The `WIN32_FIND_DATAW`.
 /// :returns: The metadata, a link describing itself.
 #target(os: "windows")
 private routine from_find_data(data: @Byte) -> Metadata
     block entry()
-        attributes   : U32      = data.to<@U32>().load()
-        tag_at       : @Byte    = data.stride(FIND_REPARSE_TAG)
-        tag          : U32      = tag_at.to<@U32>().load()
-        size_high_at : @Byte    = data.stride(FIND_SIZE_HIGH)
-        size_low_at  : @Byte    = data.stride(FIND_SIZE_LOW)
-        size         : U64      = size_of(size_high_at.to<@U32>().load(),
-            size_low_at.to<@U32>().load())
-        written_at   : @Byte    = data.stride(FIND_WRITTEN)
-        written      : FileTime = written_at.to<@FileTime>().load()
-        created_at   : @Byte    = data.stride(FIND_CREATED)
-        created      : FileTime = created_at.to<@FileTime>().load()
-        return(make_metadata(attributes, tag, size, written, created))
+        parts  : AttributeData = data.to<@AttributeData>().load()
+        tag_at : @Byte         = data.stride(FIND_REPARSE_TAG)
+        tag    : U32           = tag_at.to<@U32>().load()
+        return(make_metadata(parts, tag))
 
 /// The Metadata in a `BY_HANDLE_FILE_INFORMATION`. It has no reparse tag, so a link reads as a directory or a file.
 /// :returns: The metadata.
 #target(os: "windows")
 private routine HandleInfo.to<Metadata>(me: Me) -> Metadata
     block entry()
-        return(make_metadata(me.attributes, 0, size_of(me.size_high, me.size_low), me.written,
-            me.created))
+        parts : AttributeData = AttributeData { attributes: me.attributes, created: me.created,
+            accessed: me.accessed, written: me.written, size_high: me.size_high,
+            size_low: me.size_low }
+        return(make_metadata(parts, 0))
 
 /// The metadata of the open file h.
 /// :param h: The open file.
@@ -671,8 +659,7 @@ private routine attribute_metadata(wpath: @U16) -> Result<Metadata, FsError>
             ? return(failed<Metadata>())
             : continue
         d : AttributeData = data.load()
-        return(.Success(make_metadata(d.attributes, 0, size_of(d.size_high, d.size_low), d.written,
-            d.created)))
+        return(.Success(make_metadata(d, 0)))
 
 /// A handle for asking about path (no read or write access): a directory too, and with link_itself, a link rather
 /// than what it points at.

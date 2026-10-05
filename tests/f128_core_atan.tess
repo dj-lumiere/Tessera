@@ -7356,21 +7356,42 @@ preset ATAN2_SP_W: @Array<U128, 361> <- { 0x00000000000000000000000000000000,
     0xFFFF8000000000000000000000000005, 0xFFFF8000000000000000000000000005,
     0xFFFF8000000000000000000000000005, 0xFFFF8000000000000000000000000005 }
 
+/// One case whose result differs from the expected bits.
+record Mismatch
+    name : Bytes  // the group the case belongs to
+    y    : U128  // the y coordinate's bits, 0 for atan
+    x    : U128  // the x coordinate's bits
+    got  : U128  // the bits the routine gave
+    want : U128  // the expected bits
+
+/// A group of atan cases: inputs and expected results, element by element.
+record AtanCases
+    name : Bytes  // the group's name in the report
+    xs   : Slice<U128>  // the inputs' bits
+    want : Slice<U128>  // the expected results' bits
+
+/// A group of atan2 cases: coordinates and expected results, element by element.
+record Atan2Cases
+    name : Bytes  // the group's name in the report
+    ys   : Slice<U128>  // the y coordinates' bits
+    xs   : Slice<U128>  // the x coordinates' bits
+    want : Slice<U128>  // the expected results' bits
+
 routine report(out: @Out, name: Bytes, count: USize, wrong: U64) -> Void
     block entry()
         out.write("{name}: {count} cases, {wrong} wrong\n")
         return()
 
-routine mismatch(out: @Out, name: Bytes, y: U128, x: U128, got: U128, want: U128) -> Void
+routine mismatch(out: @Out, m: Mismatch) -> Void
     block entry()
-        out.write("{name} ")
-        y.represent_hex_into(out)
+        out.write("{m.name} ")
+        m.y.represent_hex_into(out)
         out.write(" ")
-        x.represent_hex_into(out)
+        m.x.represent_hex_into(out)
         out.write(" got ")
-        got.represent_hex_into(out)
+        m.got.represent_hex_into(out)
         out.write(" want ")
-        want.represent_hex_into(out)
+        m.want.represent_hex_into(out)
         out.write("\n")
         return()
 
@@ -7427,9 +7448,10 @@ routine atan2_of(y: U128, x: U128, mode: U64) -> U128
         bits      : U128            = r.bits()
         return(bits)
 
-// checks cases [0, count) of one atan group and returns the number wrong
-routine check_atan(out: @Out, name: Bytes, xs: @U128, want: @U128, count: USize, mode: U64) -> U64
-    shared wrong : @U64 <- 0
+// checks every case of one atan group and returns the number wrong
+routine check_atan(out: @Out, cases: AtanCases, mode: U64) -> U64
+    shared count : USize = cases.xs.count()
+    shared wrong : @U64  <- 0
 
     block entry()
         jump case(0)
@@ -7441,8 +7463,8 @@ routine check_atan(out: @Out, name: Bytes, xs: @U128, want: @U128, count: USize,
             : run(i)
 
     block run(i: USize)
-        x    : U128 = xs.stride(i).load()
-        w    : U128 = want.stride(i).load()
+        x    : U128 = cases.xs.getitem(i)
+        w    : U128 = cases.want.getitem(i)
         got  : U128 = atan_of(x, mode)
         good : Bool = got.eq(w)
         branch good
@@ -7450,13 +7472,13 @@ routine check_atan(out: @Out, name: Bytes, xs: @U128, want: @U128, count: USize,
             : bad(i, x, got, w)
 
     block bad(i: USize, x: U128, got: U128, w: U128)
-        mismatch(out, name, 0, x, got, w)
+        mismatch(out, Mismatch { name: cases.name, y: 0, x: x, got: got, want: w })
         wrong.load().add(1).store_into(wrong)
         jump case(i.add(1))
 
-routine check_atan2(out: @Out, name: Bytes, ys: @U128, xs: @U128, want: @U128, count: USize,
-    mode: U64) -> U64
-    shared wrong : @U64 <- 0
+routine check_atan2(out: @Out, cases: Atan2Cases, mode: U64) -> U64
+    shared count : USize = cases.xs.count()
+    shared wrong : @U64  <- 0
 
     block entry()
         jump case(0)
@@ -7468,9 +7490,9 @@ routine check_atan2(out: @Out, name: Bytes, ys: @U128, xs: @U128, want: @U128, c
             : run(i)
 
     block run(i: USize)
-        y    : U128 = ys.stride(i).load()
-        x    : U128 = xs.stride(i).load()
-        w    : U128 = want.stride(i).load()
+        y    : U128 = cases.ys.getitem(i)
+        x    : U128 = cases.xs.getitem(i)
+        w    : U128 = cases.want.getitem(i)
         got  : U128 = atan2_of(y, x, mode)
         good : Bool = got.eq(w)
         branch good
@@ -7478,40 +7500,51 @@ routine check_atan2(out: @Out, name: Bytes, ys: @U128, xs: @U128, want: @U128, c
             : bad(i, y, x, got, w)
 
     block bad(i: USize, y: U128, x: U128, got: U128, w: U128)
-        mismatch(out, name, y, x, got, w)
+        mismatch(out, Mismatch { name: cases.name, y: y, x: x, got: got, want: w })
         wrong.load().add(1).store_into(wrong)
         jump case(i.add(1))
 
+// checks one atan group with the given mode and prints its summary line
+routine atan_group(out: @Out, cases: AtanCases, mode: U64) -> Void
+    block entry()
+        wrong : U64 = check_atan(out, cases, mode)
+        report(out, cases.name, cases.xs.count(), wrong)
+        return()
+
+// checks one atan2 group with the given mode and prints its summary line
+routine atan2_group(out: @Out, cases: Atan2Cases, mode: U64) -> Void
+    block entry()
+        wrong : U64 = check_atan2(out, cases, mode)
+        report(out, cases.name, cases.xs.count(), wrong)
+        return()
+
 routine start() -> Void
     block entry()
-        out    : @Out = Out.writer()
-        wrong0 : U64  = check_atan(out, "atan", ATAN_X.to<@U128>(), ATAN_W.to<@U128>(), 2756, 0)
-        report(out, "atan", 2756, wrong0)
-        wrong1 : U64 = check_atan(out, "atan accurate", ATAN_X.to<@U128>(), ATAN_W.to<@U128>(),
-            2756, 1)
-        report(out, "atan accurate", 2756, wrong1)
-        wrong2 : U64 = check_atan(out, "atan hard", ATAN_HARD_X.to<@U128>(),
-            ATAN_HARD_W.to<@U128>(), 100, 0)
-        report(out, "atan hard", 100, wrong2)
-        wrong3 : U64 = check_atan(out, "atan hard accurate", ATAN_HARD_X.to<@U128>(),
-            ATAN_HARD_W.to<@U128>(), 100, 1)
-        report(out, "atan hard accurate", 100, wrong3)
-        wrong4 : U64 = check_atan(out, "atan special", ATAN_SP_X.to<@U128>(), ATAN_SP_W.to<@U128>(),
-            19, 0)
-        report(out, "atan special", 19, wrong4)
-        wrong2_0 : U64 = check_atan2(out, "atan2", ATAN2_Y.to<@U128>(), ATAN2_X.to<@U128>(),
-            ATAN2_W.to<@U128>(), 2505, 0)
-        report(out, "atan2", 2505, wrong2_0)
-        wrong2_1 : U64 = check_atan2(out, "atan2 accurate", ATAN2_Y.to<@U128>(),
-            ATAN2_X.to<@U128>(), ATAN2_W.to<@U128>(), 2505, 1)
-        report(out, "atan2 accurate", 2505, wrong2_1)
-        wrong2_2 : U64 = check_atan2(out, "atan2 hard", ATAN2_HARD_Y.to<@U128>(),
-            ATAN2_HARD_X.to<@U128>(), ATAN2_HARD_W.to<@U128>(), 100, 0)
-        report(out, "atan2 hard", 100, wrong2_2)
-        wrong2_3 : U64 = check_atan2(out, "atan2 hard accurate", ATAN2_HARD_Y.to<@U128>(),
-            ATAN2_HARD_X.to<@U128>(), ATAN2_HARD_W.to<@U128>(), 100, 1)
-        report(out, "atan2 hard accurate", 100, wrong2_3)
-        wrong2_4 : U64 = check_atan2(out, "atan2 special", ATAN2_SP_Y.to<@U128>(),
-            ATAN2_SP_X.to<@U128>(), ATAN2_SP_W.to<@U128>(), 361, 0)
-        report(out, "atan2 special", 361, wrong2_4)
+        out  : @Out      = Out.writer()
+        atan : AtanCases = { name: "atan", xs: ATAN_X.to<Slice<U128>>(),
+            want: ATAN_W.to<Slice<U128>>() }
+        atan_group(out, atan, 0)
+        atan_group(out, AtanCases { name: "atan accurate", xs: atan.xs, want: atan.want }, 1)
+        hard : AtanCases = { name: "atan hard", xs: ATAN_HARD_X.to<Slice<U128>>(),
+            want: ATAN_HARD_W.to<Slice<U128>>() }
+        atan_group(out, hard, 0)
+        atan_group(out, AtanCases { name: "atan hard accurate", xs: hard.xs, want: hard.want }, 1)
+        special : AtanCases = { name: "atan special", xs: ATAN_SP_X.to<Slice<U128>>(),
+            want: ATAN_SP_W.to<Slice<U128>>() }
+        atan_group(out, special, 0)
+        atan2 : Atan2Cases = { name: "atan2", ys: ATAN2_Y.to<Slice<U128>>(),
+            xs: ATAN2_X.to<Slice<U128>>(), want: ATAN2_W.to<Slice<U128>>() }
+        atan2_group(out, atan2, 0)
+        atan2_accurate : Atan2Cases = { name: "atan2 accurate", ys: atan2.ys, xs: atan2.xs,
+            want: atan2.want }
+        atan2_group(out, atan2_accurate, 1)
+        hard2 : Atan2Cases = { name: "atan2 hard", ys: ATAN2_HARD_Y.to<Slice<U128>>(),
+            xs: ATAN2_HARD_X.to<Slice<U128>>(), want: ATAN2_HARD_W.to<Slice<U128>>() }
+        atan2_group(out, hard2, 0)
+        hard2_accurate : Atan2Cases = { name: "atan2 hard accurate", ys: hard2.ys, xs: hard2.xs,
+            want: hard2.want }
+        atan2_group(out, hard2_accurate, 1)
+        special2 : Atan2Cases = { name: "atan2 special", ys: ATAN2_SP_Y.to<Slice<U128>>(),
+            xs: ATAN2_SP_X.to<Slice<U128>>(), want: ATAN2_SP_W.to<Slice<U128>>() }
+        atan2_group(out, special2, 0)
         return()

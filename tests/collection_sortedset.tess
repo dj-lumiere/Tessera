@@ -12,6 +12,35 @@ import Standard::Os
 record Rng
     state : U64
 
+/// What every phase works with besides the collection.
+record Harness
+    /// Where checkpoints are written.
+    out : @BufWriter<Out>
+    /// The generator that picks each operation.
+    rng : @Rng
+
+/// One phase of the run: its number and how many operations of which kinds it makes.
+record Phase
+    /// The phase's number, as checkpoints print it.
+    number : USize
+    /// How many operations the phase runs.
+    ops : USize
+    /// How many distinct keys the operations draw from.
+    keys : USize
+    /// The weight of add among the operations.
+    adds : USize
+    /// Whether removes go by rank instead of by key.
+    by_rank : Bool
+
+/// Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
+record Checkpoint
+    /// The phase's number.
+    phase : USize
+    /// The operations run so far in the phase.
+    op : USize
+    /// The checksum of every result so far.
+    results : S64
+
 routine Rng.below(me: @Me, bound: USize) -> USize
     block entry()
         state : U64 = me.state.load()
@@ -63,14 +92,13 @@ routine rank_hash(set: @SortedSet<S64>) -> S64
         hash  : S64 = mix(mix(mix(mix(0, first), third), half), last)
         return(hash)
 
-routine checkpoint(out: @BufWriter<Out>, set: @SortedSet<S64>, phase: USize, op: USize,
-    results: S64) -> Void
+routine checkpoint(out: @BufWriter<Out>, set: @SortedSet<S64>, at: Checkpoint) -> Void
     block entry()
-        out.write("phase {phase}")
-        labeled(out, "op", op.to<S64>())
+        out.write("phase {at.phase}")
+        labeled(out, "op", at.op.to<S64>())
         size : USize = set.count()
         labeled(out, "length", size.to<S64>())
-        labeled(out, "results", results)
+        labeled(out, "results", at.results)
         labeled(out, "ranks", rank_hash(set))
         labeled(out, "iteration", iteration_hash(set))
         out.write("\n")
@@ -79,8 +107,13 @@ routine checkpoint(out: @BufWriter<Out>, set: @SortedSet<S64>, phase: USize, op:
 // Runs ops random operations on keys below keys: an add when the kind (0..9) is below adds, a remove below 7, and
 // a has otherwise. With by_rank, a remove takes the element at a random rank instead of a random key.
 // Returns the updated results checksum.
-routine run_phase(out: @BufWriter<Out>, set: @SortedSet<S64>, rng: @Rng, phase: USize, ops: USize,
-    keys: USize, adds: USize, by_rank: Bool, results: S64) -> S64
+routine run_phase(harness: Harness, set: @SortedSet<S64>, phase: Phase, results: S64) -> S64
+    shared rng     : @Rng  = harness.rng
+    shared ops     : USize = phase.ops
+    shared keys    : USize = phase.keys
+    shared adds    : USize = phase.adds
+    shared by_rank : Bool  = phase.by_rank
+
     block entry()
         jump next(0, results)
 
@@ -134,7 +167,7 @@ routine run_phase(out: @BufWriter<Out>, set: @SortedSet<S64>, rng: @Rng, phase: 
             : next(op_next, mixed)
 
     block report(op: USize, checksum: S64)
-        checkpoint(out, set, phase, op, checksum)
+        checkpoint(harness.out, set, Checkpoint { phase: phase.number, op: op, results: checksum })
         jump next(op, checksum)
 
 // Adds from's elements to to by rank, starting from the middle, so to is built in a different order.
@@ -170,9 +203,13 @@ routine start() -> Void
         claim rng   : @Rng            <- Rng { state: 1 }
         claim set   : @SortedSet<S64> <- .construct(alloc)
 
-        r1 : S64 = run_phase(out, set, rng, 1, 3000, 64, 5, false, 0)
-        r2 : S64 = run_phase(out, set, rng, 2, 12000, 20000, 5, false, r1)
-        r3 : S64 = run_phase(out, set, rng, 3, 9000, 20000, 1, true, r2)
+        harness : Harness = Harness { out: out, rng: rng }
+        r1      : S64     = run_phase(harness, set,
+            Phase { number: 1, ops: 3000, keys: 64, adds: 5, by_rank: false }, 0)
+        r2      : S64     = run_phase(harness, set,
+            Phase { number: 2, ops: 12000, keys: 20000, adds: 5, by_rank: false }, r1)
+        r3      : S64     = run_phase(harness, set,
+            Phase { number: 3, ops: 9000, keys: 20000, adds: 1, by_rank: true }, r2)
 
         claim copied : @SortedSet<S64> <- .construct(alloc)
         report_eq(out, "empty copy equal", set.load().eq(copied.load()))

@@ -545,24 +545,24 @@ routine f128_div_bits(a: U128, b: U128) -> U128
     // limbs, (ma × 8, 0, 0), so the quotient takes two 3-by-2 steps
     // (Standard/WideDiv.tess). The last remainder is the sticky bit.
     block finite()
-        pa       : F128Parts = f128_unpack(a)
-        pb       : F128Parts = f128_unpack(b)
-        d        : U128      = pb.sig.shl(15)
-        d1       : U64       = d.shr(64).to<U64>()
-        d0       : U64       = d.to_wrap<U64>()
-        v        : U64       = div_3by2_prepare(d1, d0)
-        n        : U128      = pa.sig.shl(3)
-        high     : Div3By2   = div_3by2(n.shr(64).to<U64>(), n.to_wrap<U64>(), 0, d1, d0, v)
-        r        : U128      = high.remainder
-        low      : Div3By2   = div_3by2(r.shr(64).to<U64>(), r.to_wrap<U64>(), 0, d1, d0, v)
-        q_high   : U128      = high.quotient.to<U128>().shl(64)
-        q        : U128      = q_high.bitor(low.quotient.to<U128>())
-        sticky   : Bool      = low.remainder.ne(0)
-        sig      : U128      = q.bitor(sticky.to<U128>())
-        unbiased : S64       = pa.exponent.sub(pb.exponent).sub(1)
-        exponent : S64       = unbiased.add(F128_BIAS)
-        negative : Bool      = sign.ne(0)
-        bits     : U128      = f128_round_pack(negative, exponent, sig)
+        pa       : F128Parts   = f128_unpack(a)
+        pb       : F128Parts   = f128_unpack(b)
+        d        : U128        = pb.sig.shl(15)
+        d1       : U64         = d.shr(64).to<U64>()
+        d0       : U64         = d.to_wrap<U64>()
+        divisor  : Divisor3By2 = div_3by2_prepare(d1, d0)
+        n        : U128        = pa.sig.shl(3)
+        high     : Div3By2     = div_3by2(n.shr(64).to<U64>(), n.to_wrap<U64>(), 0, divisor)
+        r        : U128        = high.remainder
+        low      : Div3By2     = div_3by2(r.shr(64).to<U64>(), r.to_wrap<U64>(), 0, divisor)
+        q_high   : U128        = high.quotient.to<U128>().shl(64)
+        q        : U128        = q_high.bitor(low.quotient.to<U128>())
+        sticky   : Bool        = low.remainder.ne(0)
+        sig      : U128        = q.bitor(sticky.to<U128>())
+        unbiased : S64         = pa.exponent.sub(pb.exponent).sub(1)
+        exponent : S64         = unbiased.add(F128_BIAS)
+        negative : Bool        = sign.ne(0)
+        bits     : U128        = f128_round_pack(negative, exponent, sig)
         return(bits)
 
 /// The square root of a binary128 value on its bits, correctly rounded, from a 256-bit integer square root.
@@ -617,18 +617,18 @@ routine div_256_by_128(hi: U128, lo: U128, x: U128) -> U128
         carry       : U128 = s.eq(0)
             ? 0
             : spill
-        n_hi   : U128    = hi.shl(s.to<U128>()).bitor(carry)
-        n_lo   : U128    = lo.shl(s.to<U128>())
-        d1     : U64     = d.shr(64).to<U64>()
-        d0     : U64     = d.to_wrap<U64>()
-        v      : U64     = div_3by2_prepare(d1, d0)
-        high   : Div3By2 = div_3by2(n_hi.shr(64).to<U64>(), n_hi.to_wrap<U64>(),
-            n_lo.shr(64).to<U64>(), d1, d0, v)
-        r      : U128    = high.remainder
-        low    : Div3By2 = div_3by2(r.shr(64).to<U64>(), r.to_wrap<U64>(), n_lo.to_wrap<U64>(), d1,
-            d0, v)
-        q_high : U128    = high.quotient.to<U128>().shl(64)
-        q      : U128    = q_high.bitor(low.quotient.to<U128>())
+        n_hi    : U128        = hi.shl(s.to<U128>()).bitor(carry)
+        n_lo    : U128        = lo.shl(s.to<U128>())
+        d1      : U64         = d.shr(64).to<U64>()
+        d0      : U64         = d.to_wrap<U64>()
+        divisor : Divisor3By2 = div_3by2_prepare(d1, d0)
+        high    : Div3By2     = div_3by2(n_hi.shr(64).to<U64>(), n_hi.to_wrap<U64>(),
+            n_lo.shr(64).to<U64>(), divisor)
+        r       : U128        = high.remainder
+        low     : Div3By2     = div_3by2(r.shr(64).to<U64>(), r.to_wrap<U64>(), n_lo.to_wrap<U64>(),
+            divisor)
+        q_high  : U128        = high.quotient.to<U128>().shl(64)
+        q       : U128        = q_high.bitor(low.quotient.to<U128>())
         return(q)
 
 /// floor(sqrt(n)) for n = `hi` × 2^128 + `lo` with 2^230 <= n < 2^232: Newton's method on integers, started above the
@@ -782,20 +782,20 @@ routine F128.total_compare(me: Me, other: Me) -> S32
 
 // -- conversions ---------------------------------------------------------------
 
-/// Widens exactly to F128 from a binary format with `mantissa_bits` stored bits, exponent bias `bias`, and all-ones
-/// exponent field `exponent_max`. NaN payloads move to the top of the fraction.
-/// :param bits: The narrower value's bits, in the low `width` bits.
-/// :param width: The format's width in bits.
-/// :param mantissa_bits: The format's stored fraction bits.
-/// :param bias: The format's exponent bias.
-/// :param exponent_max: The format's all-ones exponent field.
+/// Widens exactly to F128 from a narrower binary format. NaN payloads move to the top of the fraction.
+/// :param bits: The narrower value's bits, in the low `format.width` bits.
+/// :param format: The narrower format (F64, F32, F16, or BF16).
 /// :returns: The same value as an F128.
-routine f128_widen(bits: U64, width: U64, mantissa_bits: U64, bias: S64, exponent_max: U64) -> F128
-    shared sign_bit : U64  = bits.shr(width.sub(1)).bitand(1)
-    shared fraction : U64  = bits.bitand(1.shl(mantissa_bits).sub(1))
-    shared top      : U128 = fraction.to<U128>().shl(112.sub(mantissa_bits).to<U128>())
-    shared negative : Bool = sign_bit.eq(1)
-    shared sign     : U128 = negative
+routine f128_widen(bits: U64, format: FloatFormat) -> F128
+    shared width         : U64  = format.width.to<U64>()
+    shared mantissa_bits : U64  = format.fraction_bits.to<U64>()
+    shared bias          : S64  = format.bias.to<S64>()
+    shared exponent_max  : U64  = format.exponent_max.to<U64>()
+    shared sign_bit      : U64  = bits.shr(width.sub(1)).bitand(1)
+    shared fraction      : U64  = bits.bitand(1.shl(mantissa_bits).sub(1))
+    shared top           : U128 = fraction.to<U128>().shl(112.sub(mantissa_bits).to<U128>())
+    shared negative      : Bool = sign_bit.eq(1)
+    shared sign          : U128 = negative
         ? F128_SIGN
         : 0
     shared exponent : U64 = bits.shr(mantissa_bits).bitand(exponent_max)
@@ -827,19 +827,19 @@ routine f128_widen(bits: U64, width: U64, mantissa_bits: U64, bias: S64, exponen
         v : F128 = f128_of(r)
         return(v)
 
-/// Rounds to nearest even into a format with `mantissa_bits` stored bits, exponent bias `bias`, and all-ones exponent
-/// field `exponent_max`. Rounds once, so F128 to F32 is not F128 to F64 to F32.
+/// Rounds to nearest even into a narrower binary format. Rounds once, so F128 to F32 is not F128 to F64 to F32.
 /// :param value: The F128 to narrow.
-/// :param width: The format's width in bits.
-/// :param mantissa_bits: The format's stored fraction bits.
-/// :param bias: The format's exponent bias.
-/// :param exponent_max: The format's all-ones exponent field.
-/// :returns: The format's bits, the sign at bit `width - 1`. A NaN keeps its top payload bits and comes back quiet.
-routine f128_narrow(value: F128, width: U64, mantissa_bits: U64, bias: S64,
-    exponent_max: U64) -> U64
-    shared bits    : U128 = value.bits()
-    shared top_bit : U64  = 1.shl(width.sub(1))
-    shared sign    : U64  = f128_is_negative_bits(bits)
+/// :param format: The narrower format (F64, F32, F16, or BF16).
+/// :returns: The format's bits, the sign at bit `format.width - 1`. A NaN keeps its top payload bits and comes back
+///     quiet.
+routine f128_narrow(value: F128, format: FloatFormat) -> U64
+    shared width         : U64  = format.width.to<U64>()
+    shared mantissa_bits : U64  = format.fraction_bits.to<U64>()
+    shared bias          : S64  = format.bias.to<S64>()
+    shared exponent_max  : U64  = format.exponent_max.to<U64>()
+    shared bits          : U128 = value.bits()
+    shared top_bit       : U64  = 1.shl(width.sub(1))
+    shared sign          : U64  = f128_is_negative_bits(bits)
         ? top_bit
         : 0
     shared infinity : U64 = exponent_max.shl(mantissa_bits)
@@ -900,56 +900,56 @@ routine f128_narrow(value: F128, width: U64, mantissa_bits: U64, bias: S64,
 /// :returns: The same value as an F128. NaN payloads move to the top of the fraction.
 routine F64.to<F128>(me: Me) -> F128
     block entry()
-        r : F128 = f128_widen(me.bits(), 64, 52, 1023, 2047)
+        r : F128 = f128_widen(me.bits(), Me.FORMAT.load())
         return(r)
 
 /// Widens to F128, exactly.
 /// :returns: The same value as an F128. NaN payloads move to the top of the fraction.
 routine F32.to<F128>(me: Me) -> F128
     block entry()
-        r : F128 = f128_widen(me.bits().to<U64>(), 32, 23, 127, 255)
+        r : F128 = f128_widen(me.bits().to<U64>(), Me.FORMAT.load())
         return(r)
 
 /// Widens to F128, exactly.
 /// :returns: The same value as an F128. NaN payloads move to the top of the fraction.
 routine F16.to<F128>(me: Me) -> F128
     block entry()
-        r : F128 = f128_widen(me.bits().to<U64>(), 16, 10, 15, 31)
+        r : F128 = f128_widen(me.bits().to<U64>(), Me.FORMAT.load())
         return(r)
 
 /// Widens to F128, exactly.
 /// :returns: The same value as an F128. NaN payloads move to the top of the fraction.
 routine BF16.to<F128>(me: Me) -> F128
     block entry()
-        r : F128 = f128_widen(me.bits().to<U64>(), 16, 7, 127, 255)
+        r : F128 = f128_widen(me.bits().to<U64>(), Me.FORMAT.load())
         return(r)
 
 /// Narrows to F64, rounding once to nearest (ties to even).
 /// :returns: The nearest F64: infinity beyond F64's range, a subnormal or zero for tiny values, NaN for NaN.
 routine F128.to<F64>(me: Me) -> F64
     block entry()
-        r : F64 = .from_bits(f128_narrow(me, 64, 52, 1023, 2047))
+        r : F64 = .from_bits(f128_narrow(me, F64.FORMAT.load()))
         return(r)
 
 /// Narrows to F32, rounding once to nearest (ties to even), so it can differ from going through F64.
 /// :returns: The nearest F32: infinity beyond F32's range, a subnormal or zero for tiny values, NaN for NaN.
 routine F128.to<F32>(me: Me) -> F32
     block entry()
-        r : F32 = .from_bits(f128_narrow(me, 32, 23, 127, 255).to<U32>())
+        r : F32 = .from_bits(f128_narrow(me, F32.FORMAT.load()).to<U32>())
         return(r)
 
 /// Narrows to F16, rounding once to nearest (ties to even).
 /// :returns: The nearest F16: infinity above 65504, a subnormal or zero for tiny values, NaN for NaN.
 routine F128.to<F16>(me: Me) -> F16
     block entry()
-        r : F16 = .from_bits(f128_narrow(me, 16, 10, 15, 31).to<U16>())
+        r : F16 = .from_bits(f128_narrow(me, F16.FORMAT.load()).to<U16>())
         return(r)
 
 /// Narrows to BF16, rounding once to nearest (ties to even).
 /// :returns: The nearest BF16: infinity beyond BF16's range, a subnormal or zero for tiny values, NaN for NaN.
 routine F128.to<BF16>(me: Me) -> BF16
     block entry()
-        r : BF16 = .from_bits(f128_narrow(me, 16, 7, 127, 255).to<U16>())
+        r : BF16 = .from_bits(f128_narrow(me, BF16.FORMAT.load()).to<U16>())
         return(r)
 
 /// The identity conversion, so generic code can call `to<T>()` when `T` is F128.

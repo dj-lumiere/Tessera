@@ -25,6 +25,18 @@ record CmLogNear
     e    : U64
     hard : Bool
 
+/// The four indices into the reciprocal and logarithm tables (CM_LOG_RT0..3, CM_LOG_LT0..3), the top 20 bits of
+/// the log2 estimate in 5-bit pieces.
+record CmLogIndices
+    /// The index into the tables of level 0.
+    j0 : USize
+    /// The index into the tables of level 1.
+    j1 : USize
+    /// The index into the tables of level 2.
+    j2 : USize
+    /// The index into the tables of level 3.
+    j3 : USize
+
 /// The natural logarithm of `me`, correctly rounded to nearest (a CORE-MATH port).
 /// :returns: ln(`me`): NaN for `me` < 0, -inf at ±0, +inf at +inf, +0 at 1. A NaN comes back quieted.
 routine F128.ln(me: Me) -> Me
@@ -119,23 +131,17 @@ routine cm_log_fast(mh: U64, ml: U64, e_field: U64) -> CmWide3
     // reduced argument can't hold (the original, CORE-MATH's logq.c, is off by about 2^-20 there: m just
     // below 2^(k / 2^20) for k = 29, 256, 285). Then the index one lower is taken.
     block scale(l: U64)
-        j0      : USize = l.shr(59).to<USize>()
-        j1_bits : U64   = l.shr(54).bitand(31)
-        j1      : USize = j1_bits.to<USize>()
-        j2_bits : U64   = l.shr(49).bitand(31)
-        j2      : USize = j2_bits.to<USize>()
-        j3_bits : U64   = l.shr(44).bitand(31)
-        j3      : USize = j3_bits.to<USize>()
-        sig     : U64   = mh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        rt0     : U64   = CM_LOG_RT0.getitem(j0)
-        rt1     : U64   = CM_LOG_RT1.getitem(j1)
-        rt2     : U64   = CM_LOG_RT2.getitem(j2)
-        rt3     : U64   = CM_LOG_RT3.getitem(j3)
-        r01     : U64   = rt1.mul_wrap(rt0)
-        r23     : U64   = rt2.mul_wrap(rt3)
-        r       : U128  = cm_wide_mul(r01, r23)
-        rr      : U256  = cm_wide_u128(sig, ml).mul_wide(r)
-        rhh     : U64   = rr.shr(192).to<U64>()
+        j   : CmLogIndices = cm_log_indices(l)
+        sig : U64          = mh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        rt0 : U64          = CM_LOG_RT0.getitem(j.j0)
+        rt1 : U64          = CM_LOG_RT1.getitem(j.j1)
+        rt2 : U64          = CM_LOG_RT2.getitem(j.j2)
+        rt3 : U64          = CM_LOG_RT3.getitem(j.j3)
+        r01 : U64          = rt1.mul_wrap(rt0)
+        r23 : U64          = rt2.mul_wrap(rt3)
+        r   : U128         = cm_wide_mul(r01, r23)
+        rr  : U256         = cm_wide_u128(sig, ml).mul_wide(r)
+        rhh : U64          = rr.shr(192).to<U64>()
         // m * r below 1: the product's leading bit (2^236) is clear
         below_one : Bool = rhh.shr(44).eq(0)
         branch below_one
@@ -145,7 +151,7 @@ routine cm_log_fast(mh: U64, ml: U64, e_field: U64) -> CmWide3
         rlh : U64     = rr.shr(64).to_wrap<U64>()
         mh2 : U64     = rhh.shl(40).bitor(rhl.shr(24))
         ml2 : U64     = rhl.shl(40).bitor(rlh.shr(24))
-        sum : CmWide3 = cm_log_table_sum(e, j0, j1, j2, j3)
+        sum : CmWide3 = cm_log_table_sum(e, j)
         jump polynomial(sum, mh2, cm_wide_u128(mh2, ml2))
 
     // ln(1 + m) for the reduced m, added to the table sum
@@ -175,22 +181,30 @@ routine cm_log_coefficient(i: USize) -> U128
         r  : U128 = cm_wide_u128(hi, lo)
         return(r)
 
+/// The four table indices of a log2 estimate: its top 20 bits, 5 at a time.
+/// :param l: The log2 estimate.
+/// :returns: The indices, j0 from the top bits.
+routine cm_log_indices(l: U64) -> CmLogIndices
+    block entry()
+        j1_bits : U64 = l.shr(54).bitand(31)
+        j2_bits : U64 = l.shr(49).bitand(31)
+        j3_bits : U64 = l.shr(44).bitand(31)
+        return(CmLogIndices { j0: l.shr(59).to<USize>(), j1: j1_bits.to<USize>(),
+            j2: j2_bits.to<USize>(), j3: j3_bits.to<USize>() })
+
 /// e * ln(2) minus the bias, plus the logarithms of the four chosen reciprocals, in 3-word fixed point.
 /// :param e: The exponent field of x (shifted up by 48), plus 112.
-/// :param j0: The index into CM_LOG_LT0.
-/// :param j1: The index into CM_LOG_LT1.
-/// :param j2: The index into CM_LOG_LT2.
-/// :param j3: The index into CM_LOG_LT3.
+/// :param j: The indices into CM_LOG_LT0..3.
 /// :returns: The sum as three words.
-routine cm_log_table_sum(e: U64, j0: USize, j1: USize, j2: USize, j3: USize) -> CmWide3
+routine cm_log_table_sum(e: U64, j: CmLogIndices) -> CmWide3
     block entry()
         ln2    : CmWide3 = cm_wide_row3(CM_LOG_LN2A.to<@U64>(), 0)
         offset : CmWide3 = cm_wide_row3(CM_LOG_OFFA.to<@U64>(), 0)
         s0     : CmWide3 = cm_wide_mulhi_add3(e, ln2, offset)
-        s1     : CmWide3 = cm_wide_add3(s0, cm_wide_row3(CM_LOG_LT0.to<@U64>(), j0))
-        s2     : CmWide3 = cm_wide_add3(s1, cm_wide_row3(CM_LOG_LT1.to<@U64>(), j1))
-        s3     : CmWide3 = cm_wide_add3(s2, cm_wide_row3(CM_LOG_LT2.to<@U64>(), j2))
-        s4     : CmWide3 = cm_wide_add3(s3, cm_wide_row3(CM_LOG_LT3.to<@U64>(), j3))
+        s1     : CmWide3 = cm_wide_add3(s0, cm_wide_row3(CM_LOG_LT0.to<@U64>(), j.j0))
+        s2     : CmWide3 = cm_wide_add3(s1, cm_wide_row3(CM_LOG_LT1.to<@U64>(), j.j1))
+        s3     : CmWide3 = cm_wide_add3(s2, cm_wide_row3(CM_LOG_LT2.to<@U64>(), j.j2))
+        s4     : CmWide3 = cm_wide_add3(s3, cm_wide_row3(CM_LOG_LT3.to<@U64>(), j.j3))
         return(s4)
 
 /// Rounds the 3-word fixed-point logarithm f to F128, checking exactly with {cm_log_refine} when it's too close
@@ -199,12 +213,13 @@ routine cm_log_table_sum(e: U64, j0: USize, j1: USize, j2: USize, j3: USize) -> 
 /// :param x: The input with its significand normalized.
 /// :returns: The rounded logarithm.
 routine cm_log_round(f: CmWide3, x: U128) -> F128
-    shared mask     : U64  = cm_sign_mask64(f.w2)
-    shared f0       : U64  = f.w0.bitxor(mask)
-    shared f1       : U64  = f.w1.bitxor(mask)
-    shared f2       : U64  = f.w2.bitxor(mask)
-    shared top_zero : Bool = f2.eq(0)
-    shared nz       : U64  = top_zero
+    shared mask      : U64     = cm_sign_mask64(f.w2)
+    shared f0        : U64     = f.w0.bitxor(mask)
+    shared f1        : U64     = f.w1.bitxor(mask)
+    shared f2        : U64     = f.w2.bitxor(mask)
+    shared magnitude : CmWide3 = { w0: f0, w1: f1, w2: f2 }
+    shared top_zero  : Bool    = f2.eq(0)
+    shared nz        : U64     = top_zero
         ? f1.leading_zeros().add(64)
         : f2.leading_zeros()
     shared ns   : U64 = nz.sub_wrap(15)
@@ -224,7 +239,7 @@ routine cm_log_round(f: CmWide3, x: U128) -> F128
     block fast()
         ls  : U64  = ns.bitand(63)
         rs  : U64  = 64.sub_wrap(ns).bitand(63)
-        sig : U128 = cm_log_shift_pair(f0, f1, f2, ls, rs)
+        sig : U128 = cm_log_shift_pair(magnitude, ls, rs)
         r   : F128 = cm_log_pack(sig, el, rnd)
         return(r)
 
@@ -232,25 +247,23 @@ routine cm_log_round(f: CmWide3, x: U128) -> F128
     block exact()
         ls    : U64           = nz.sub_wrap(14)
         rs    : U64           = 64.sub_wrap(ls).bitand(63)
-        sig   : U128          = cm_log_shift_pair(f0, f1, f2, ls.bitand(63), rs)
+        sig   : U128          = cm_log_shift_pair(magnitude, ls.bitand(63), rs)
         below : U64           = f0.shr(63.sub_wrap(ls).bitand(63)).bitand(1)
         m     : U128          = sig.add_wrap(below.to<U128>())
         exact : CmLogRounding = cm_log_refine(el, m, x)
         r     : F128          = cm_log_pack(exact.sig, el, exact.round)
         return(r)
 
-/// The 128 bits (f2:f1:f0 << ls) >> 64, shifting by ls left and rs = (64 - ls) mod 64 right as the original
-/// does (a zero ls ORs in the lower word unshifted, like the x86 shifts it was written for).
-/// :param f0: The low word.
-/// :param f1: The middle word.
-/// :param f2: The high word.
+/// The 128 bits (f << ls) >> 64, shifting by ls left and rs = (64 - ls) mod 64 right as the original does (a
+/// zero ls ORs in the lower word unshifted, like the x86 shifts it was written for).
+/// :param f: The three words shifted.
 /// :param ls: The left shift, 0 to 63.
 /// :param rs: The matching right shift, (64 - `ls`) mod 64.
 /// :returns: The top two words of the shifted value.
-routine cm_log_shift_pair(f0: U64, f1: U64, f2: U64, ls: U64, rs: U64) -> U128
+routine cm_log_shift_pair(f: CmWide3, ls: U64, rs: U64) -> U128
     block entry()
-        hi : U64  = f2.shl(ls).bitor(f1.shr(rs))
-        lo : U64  = f1.shl(ls).bitor(f0.shr(rs))
+        hi : U64  = f.w2.shl(ls).bitor(f.w1.shr(rs))
+        lo : U64  = f.w1.shl(ls).bitor(f.w0.shr(rs))
         r  : U128 = cm_wide_u128(hi, lo)
         return(r)
 

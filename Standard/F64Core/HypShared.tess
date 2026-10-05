@@ -139,20 +139,16 @@ routine cm_f64_hyp_polydd_init(l: F64, c_hi: F64, c_lo: F64) -> CmF64HypDd
         s : CmF64HypDd = cm_f64_hyp_fasttwosum(c_hi, l)
         return(CmF64HypDd { hi: s.hi, lo: s.lo.add(c_lo) })
 
-/// One Horner step of a double-double polynomial: (ch + cl) (xh + xl) + (c_hi + c_lo).
-/// :param xh: The high part of the argument.
-/// :param xl: The low part of the argument.
-/// :param ch: The high part of the polynomial so far.
-/// :param cl: The low part of the polynomial so far.
-/// :param c_hi: The high part of the next coefficient.
-/// :param c_lo: The low part of the next coefficient.
+/// One Horner step of a double-double polynomial: `value` `x` + `c`.
+/// :param x: The point, as a double-double.
+/// :param value: The polynomial so far, as a double-double.
+/// :param c: The next coefficient, as a double-double.
 /// :returns: The new polynomial value as a double-double.
-routine cm_f64_hyp_polydd_step(xh: F64, xl: F64, ch: F64, cl: F64, c_hi: F64,
-    c_lo: F64) -> CmF64HypDd
+routine cm_f64_hyp_polydd_step(x: CmF64HypDd, value: CmF64HypDd, c: CmF64HypDd) -> CmF64HypDd
     block entry()
-        p : CmF64HypDd = cm_f64_hyp_muldd(xh, xl, ch, cl)
-        s : CmF64HypDd = cm_f64_hyp_fasttwosum(c_hi, p.hi)
-        l : F64        = p.lo.add(c_lo).add(s.lo)
+        p : CmF64HypDd = cm_f64_hyp_muldd(x.hi, x.lo, value.hi, value.lo)
+        s : CmF64HypDd = cm_f64_hyp_fasttwosum(c.hi, p.hi)
+        l : F64        = p.lo.add(c.lo).add(s.lo)
         return(CmF64HypDd { hi: s.hi, lo: l })
 
 /// Accurate exp(x) as a double-double, given t = round(x 2^12 / log 2) as an F64 and the table value
@@ -172,14 +168,15 @@ routine cm_f64_hyp_exp_accurate(x: F64, t: F64, th: F64, tl: F64) -> CmF64HypDd
         dxh    : F64        = dx.add(dxl0)
         dx_err : F64        = dx.sub(dxh).add(dxl0)
         dxl    : F64        = dx_err.add(dxll)
+        dxdd   : CmF64HypDd = { hi: dxh, lo: dxl }
         tail   : F64        = dxh.mul(0x1.6c16c169400a7p-10).add(0x1.11111113e93e9p-7)
         fl     : F64        = dxh.mul(dxh.mul(tail).add(0x1.5555555555555p-5))
         p3     : CmF64HypDd = cm_f64_hyp_polydd_init(fl, 0x1.5555555555555p-3,
             0x1.53e93e9f26e62p-57)
-        p2     : CmF64HypDd = cm_f64_hyp_polydd_step(dxh, dxl, p3.hi, p3.lo, 0x1p-1,
-            -0x1.8259d904fd34fp-93)
-        p1     : CmF64HypDd = cm_f64_hyp_polydd_step(dxh, dxl, p2.hi, p2.lo, 0x1p+0,
-            0x1.6c16bd194535dp-94)
+        p2     : CmF64HypDd = cm_f64_hyp_polydd_step(dxdd, p3,
+            CmF64HypDd { hi: 0x1p-1, lo: -0x1.8259d904fd34fp-93 })
+        p1     : CmF64HypDd = cm_f64_hyp_polydd_step(dxdd, p2,
+            CmF64HypDd { hi: 0x1p+0, lo: 0x1.6c16bd194535dp-94 })
         p0     : CmF64HypDd = cm_f64_hyp_muldd(dxh, dxl, p1.hi, p1.lo)
         f      : CmF64HypDd = cm_f64_hyp_muldd(th, tl, p0.hi, p0.lo)
         // th + tl + fh + fl, renormalized

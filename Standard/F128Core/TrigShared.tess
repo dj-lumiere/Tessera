@@ -33,6 +33,13 @@ record CmTrigU384
     l1 : U128
     l2 : U128
 
+/// Which of the two functions a result is for, and the sign bit the argument contributes to it.
+record CmTrigFunction
+    /// True for the cosine, false for the sine.
+    cosine : Bool
+    /// The sign bit the argument contributes (0 for the cosine, which is even).
+    sign : U128
+
 /// The fast path's result: the magnitude frac × 2^(exponent - 128) and the sign bit it contributes. When
 /// `vouched` is false the reduction lost too much precision and the accurate path must run.
 record CmTrigFast
@@ -125,7 +132,8 @@ routine cm_trig(bits: U128, cosine: Bool) -> U128
             ? positive
             : sign_bit
         fast : CmTrigFast = cm_trig_fast(m, e, cosine)
-        r    : U128       = cm_trig_finish(fast, m, e, cosine, sign)
+        r    : U128       = cm_trig_finish(fast, m, e,
+            CmTrigFunction { cosine: cosine, sign: sign })
         return(r)
 
 /// Both correctly rounded results, sharing the argument reduction (the expensive part) between them.
@@ -162,8 +170,10 @@ routine cm_trig_both(bits: U128) -> F128SinCos
     block small(m: U128, e: S64)
         sin_fast : CmTrigFast = cm_trig_fast(m, e, false)
         cos_fast : CmTrigFast = cm_trig_fast(m, e, true)
-        sin_bits : U128       = cm_trig_finish(sin_fast, m, e, false, sign)
-        cos_bits : U128       = cm_trig_finish(cos_fast, m, e, true, 0)
+        sin_bits : U128       = cm_trig_finish(sin_fast, m, e,
+            CmTrigFunction { cosine: false, sign: sign })
+        cos_bits : U128       = cm_trig_finish(cos_fast, m, e,
+            CmTrigFunction { cosine: true, sign: 0 })
         r        : F128SinCos = cm_trig_pair(sin_bits, cos_bits)
         return(r)
 
@@ -181,8 +191,10 @@ routine cm_trig_both(bits: U128) -> F128SinCos
         sine_theta : U128          = cm_trig_sin_frac(t1, sq.u, sq.v)
         sin_fast   : CmTrigFast    = cm_trig_fast_tail(red, sq, sine_theta, false)
         cos_fast   : CmTrigFast    = cm_trig_fast_tail(red, sq, sine_theta, true)
-        sin_bits   : U128          = cm_trig_finish(sin_fast, m, e, false, sign)
-        cos_bits   : U128          = cm_trig_finish(cos_fast, m, e, true, 0)
+        sin_bits   : U128          = cm_trig_finish(sin_fast, m, e,
+            CmTrigFunction { cosine: false, sign: sign })
+        cos_bits   : U128          = cm_trig_finish(cos_fast, m, e,
+            CmTrigFunction { cosine: true, sign: 0 })
         r          : F128SinCos    = cm_trig_pair(sin_bits, cos_bits)
         return(r)
 
@@ -225,11 +237,11 @@ routine cm_trig_exponent(magnitude: U128) -> S64
 /// :param fast: The fast path's result.
 /// :param m: The argument's 113-bit significand.
 /// :param e: The argument's unbiased exponent.
-/// :param cosine: True for the cosine, false for the sine.
-/// :param sign: The sign bit the argument contributes (0 for the cosine).
+/// :param function: The sine or the cosine, and the sign the argument contributes.
 /// :returns: The result's F128 bits.
-routine cm_trig_finish(fast: CmTrigFast, m: U128, e: S64, cosine: Bool, sign: U128) -> U128
+routine cm_trig_finish(fast: CmTrigFast, m: U128, e: S64, function: CmTrigFunction) -> U128
     shared frac : U128 = fast.frac
+    shared sign : U128 = function.sign
     shared rest : U64  = frac.to_wrap<U64>().bitand(0x7FFF)
 
     block entry()
@@ -255,7 +267,7 @@ routine cm_trig_finish(fast: CmTrigFast, m: U128, e: S64, cosine: Bool, sign: U1
         return(r)
 
     block accurate()
-        r : U128 = cm_trig_accurate(m, e, cosine, sign)
+        r : U128 = cm_trig_accurate(m, e, function.cosine, sign)
         return(r)
 
 // -- wide integer helpers ------------------------------------------------------
@@ -1210,12 +1222,14 @@ routine cm_trig_evaluate_wide(red: CmTrigWideReduced, cosine: Bool, sign: U128) 
     // the pure sine never reads 1 - cos(theta)
     block pure()
         unused : CmTrigU384 = CmTrigU384 { l0: 0, l1: 0, l2: 0 }
-        r      : CmTrigWide = cm_trig_compose(red, series, unused, cosine, sign)
+        r      : CmTrigWide = cm_trig_compose(red, series, unused,
+            CmTrigFunction { cosine: cosine, sign: sign })
         return(r)
 
     block combine()
         one_minus : CmTrigU384 = cm_trig_one_minus(series.u)
-        r         : CmTrigWide = cm_trig_compose(red, series, one_minus, cosine, sign)
+        r         : CmTrigWide = cm_trig_compose(red, series, one_minus,
+            CmTrigFunction { cosine: cosine, sign: sign })
         return(r)
 
 /// theta^2 and sin(theta) at 384 bits, shared by the sine and the cosine of one accurate reduction.
@@ -1263,13 +1277,14 @@ routine cm_trig_is_pure_sine(red: CmTrigWideReduced, cosine: Bool) -> Bool
 /// :param red: The accurate reduction.
 /// :param series: theta^2 and sin(theta) from {cm_trig_series}.
 /// :param one_minus: 1 - cos(theta) from {cm_trig_one_minus}, unread for the pure sine.
-/// :param cosine: True for the cosine, false for the sine.
-/// :param sign: The sign bit the argument contributes (0 for the cosine).
+/// :param function: The sine or the cosine, and the sign the argument contributes.
 /// :returns: The normalized 384-bit result, its exponent, and its sign bit.
 routine cm_trig_compose(red: CmTrigWideReduced, series: CmTrigSeries, one_minus: CmTrigU384,
-    cosine: Bool, sign: U128) -> CmTrigWide
-    shared sine : CmTrigU384 = series.sine
-    shared es   : S64        = series.es
+    function: CmTrigFunction) -> CmTrigWide
+    shared cosine : Bool       = function.cosine
+    shared sign   : U128       = function.sign
+    shared sine   : CmTrigU384 = series.sine
+    shared es     : S64        = series.es
 
     block entry()
         n         : S64  = red.n.to<S64>()

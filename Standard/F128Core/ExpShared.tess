@@ -269,6 +269,26 @@ record CmExpScaled
     exponent : S64
     sig      : U128
 
+/// The column sums of a multi-word product in progress: each column a double word, its low and high words
+/// in two arrays.
+record CmExpColumns
+    /// The low words of the column sums.
+    lo : @U64
+    /// The high words of the column sums.
+    hi : @U64
+    /// The number of columns.
+    count : S64
+
+/// A polynomial whose coefficients are multi-word fractions: a flattened table of rows of the same width,
+/// the constant term first.
+record CmExpPoly
+    /// The first word of the coefficient table.
+    rows : @U64
+    /// The words per coefficient row.
+    width : USize
+    /// The degree of the polynomial: the table holds `degree` + 1 rows.
+    degree : USize
+
 /// A 128-bit value from its high and low words.
 /// :param hi: The high word.
 /// :param lo: The low word.
@@ -535,16 +555,17 @@ routine cm_exp_finish(fs: CmExpWords3, x: U128, kind: U64) -> F128
 
 // -- multi-word arithmetic -------------------------------------------------------
 
-/// Adds `word` to `slot` of the (lo, hi) column sums, when 0 <= slot < count. The carry out of the low word goes
+/// Adds `word` to `slot` of the column sums, when 0 <= slot < columns.count. The carry out of the low word goes
 /// into the high word of the same slot.
-/// :param lo: The low words of the column sums.
-/// :param hi: The high words of the column sums.
+/// :param columns: The column sums.
 /// :param slot: The column, skipped when out of range.
-/// :param count: The number of columns.
 /// :param word: The word added.
-routine cm_exp_add_column(lo: @U64, hi: @U64, slot: S64, count: S64, word: U64) -> Void
+routine cm_exp_add_column(columns: CmExpColumns, slot: S64, word: U64) -> Void
+    shared lo : @U64 = columns.lo
+    shared hi : @U64 = columns.hi
+
     block entry()
-        in_range : Bool = slot.in_range(0, count)
+        in_range : Bool = slot.in_range(0, columns.count)
         branch in_range
             ? add(slot.to<USize>())
             : return()
@@ -557,22 +578,22 @@ routine cm_exp_add_column(lo: @U64, hi: @U64, slot: S64, count: S64, word: U64) 
         hi.stride(at).store(high.add(cm_exp_hi(sum)))
         return()
 
-/// Words out[0 .. count-1] = the words p .. p+count-1 of the product of the na-word a
-/// and the nb-word b, keeping every partial-product word at a position >= p (lower
-/// words and their carries are dropped). out may alias a or b.
-/// :param out: Where the `count` words go.
-/// :param a: The first factor.
-/// :param na: The words of `a`.
-/// :param b: The second factor.
-/// :param nb: The words of `b`.
+/// The words out[0 .. out.count-1] = the words p .. p+out.count-1 of the product of a
+/// and b, keeping every partial-product word at a position >= p (lower words and
+/// their carries are dropped). out may alias a or b.
+/// :param out: Where the kept words go, at most 8.
+/// :param a: The first factor's words.
+/// :param b: The second factor's words.
 /// :param p: The first product word kept.
-/// :param count: The number of words kept, at most 8.
-routine cm_exp_mul_words(out: @U64, a: @U64, na: USize, b: @U64, nb: USize, p: USize,
-    count: S64) -> Void
+routine cm_exp_mul_words(out: Slice<U64>, a: Slice<U64>, b: Slice<U64>, p: USize) -> Void
+    shared na       : USize          = a.count
+    shared nb       : USize          = b.count
+    shared count    : S64            = out.count.to<S64>()
     shared lo_words : @Array<S64, 8> <- uninit
     shared hi_words : @Array<S64, 8> <- uninit
     shared lo       : @U64           = lo_words.to<@U64>()
     shared hi       : @U64           = hi_words.to<@U64>()
+    shared columns  : CmExpColumns   = { lo: lo, hi: hi, count: count }
     shared carry    : @U128          <- uninit
 
     block entry()
@@ -595,13 +616,13 @@ routine cm_exp_mul_words(out: @U64, a: @U64, na: USize, b: @U64, nb: USize, p: U
             : product(i, j)
 
     block product(i: USize, j: USize)
-        ai     : U64   = a.stride(i).load()
-        bj     : U64   = b.stride(j).load()
+        ai     : U64   = a.data.stride(i).load()
+        bj     : U64   = b.data.stride(j).load()
         prod   : U128  = cm_exp_mul(ai, bj)
         column : USize = i.add(j)
         slot   : S64   = column.to<S64>().sub(p.to<S64>())
-        cm_exp_add_column(lo, hi, slot, count, prod.to_wrap<U64>())
-        cm_exp_add_column(lo, hi, slot.add(1), count, cm_exp_hi(prod))
+        cm_exp_add_column(columns, slot, prod.to_wrap<U64>())
+        cm_exp_add_column(columns, slot.add(1), cm_exp_hi(prod))
         jump column(i, j.add(1))
 
     block carry(q: S64)
@@ -614,18 +635,32 @@ routine cm_exp_mul_words(out: @U64, a: @U64, na: USize, b: @U64, nb: USize, p: U
         low  : U64  = lo.stride(q).load()
         high : U64  = hi.stride(q).load()
         sum  : U128 = low.to<U128>().add(carry.load())
-        out.stride(q).store(sum.to_wrap<S64>().to_wrap<U64>())
+        out.data.stride(q).store(sum.to_wrap<S64>().to_wrap<U64>())
         sum.shr(64).add(high.to<U128>()).store_into(carry)
         jump carry(q.add(1).to<S64>())
 
-/// out = floor(a × b / 2^64) + c modulo 2^(64n), for a word a and n-word b and c.
-/// out may alias b or c.
+/// The high n words of the product of the n-word a and b: the words n .. 2n-1, every
+/// partial-product word at a position >= n kept. out may alias a or b.
+/// :param out: Where the `n` words go.
+/// :param a: The first factor.
+/// :param b: The second factor.
+/// :param n: The words of each factor and of the result, at most 8.
+routine cm_exp_mul_high(out: @U64, a: @U64, b: @U64, n: USize) -> Void
+    block entry()
+        out_words : Slice<U64> = .construct(out, n)
+        a_words   : Slice<U64> = .construct(a, n)
+        b_words   : Slice<U64> = .construct(b, n)
+        cm_exp_mul_words(out_words, a_words, b_words, n)
+        return()
+
+/// out = floor(a × b / 2^64) + c modulo 2^(64n), for a word a and n-word b and c, with
+/// n = out.count. out may alias b or c.
 /// :param out: Where the `n` words go.
 /// :param a: The one-word factor.
 /// :param b: The n-word factor.
 /// :param c: The n-word addend.
-/// :param n: The number of words.
-routine cm_exp_mul_add_words(out: @U64, a: U64, b: @U64, c: @U64, n: USize) -> Void
+routine cm_exp_mul_add_words(out: Slice<U64>, a: U64, b: @U64, c: @U64) -> Void
+    shared n     : USize = out.count
     shared prev  : @U128 <- uninit
     shared carry : @U128 <- 0
 
@@ -654,7 +689,7 @@ routine cm_exp_mul_add_words(out: @U64, a: U64, b: @U64, c: @U64, n: USize) -> V
         ck      : U64  = c.stride(k).load()
         overlap : U128 = prev.load().shr(64).add(next.bitand(CM_EXP_LOW))
         sum     : U128 = overlap.add(ck.to<U128>()).add(carry.load())
-        out.stride(k).store(sum.to_wrap<S64>().to_wrap<U64>())
+        out.data.stride(k).store(sum.to_wrap<S64>().to_wrap<U64>())
         next_carry : U128 = sum.shr(64)
         next_prev  : U128 = next
         next_prev.store_into(prev)
@@ -770,8 +805,11 @@ routine cm_exp_reduce_wide(out: @U64, x: U128, kind: U64, len: USize) -> Void
         table : @U64 = is_e
             ? CM_EXP_ILN2.to<@U64>()
             : CM_EXP_ILN102.to<@U64>()
-        coef : @U64 = table.stride(7.sub(len))
-        cm_exp_mul_words(out, coef, len, sig_ptr, 2, 2, len.to<S64>())
+        coef       : @U64       = table.stride(7.sub(len))
+        out_words  : Slice<U64> = .construct(out, len)
+        coef_words : Slice<U64> = .construct(coef, len)
+        sig_slice  : Slice<U64> = .construct(sig_ptr, 2)
+        cm_exp_mul_words(out_words, coef_words, sig_slice, 2)
         jump flip(0)
 
     block flip(q: USize)
@@ -807,17 +845,18 @@ routine cm_exp_row(table: @U64, width: USize, i: USize) -> @U64
         r : @U64 = table.stride(i.mul(width))
         return(r)
 
-/// poly = the polynomial of the given degree at the word y (as a fraction of 2^64),
-/// its coefficients the width-word rows of coefs, by Horner steps.
-/// :param poly: Where the `width`-word result goes.
+/// poly = the polynomial p at the word y (as a fraction of 2^64), by Horner steps.
+/// :param poly: Where the `p.width`-word result goes.
 /// :param y: The argument, a fraction of 2^64.
-/// :param coefs: The coefficient rows, constant term first.
-/// :param width: The words per coefficient and of the result.
-/// :param degree: The degree of the polynomial.
-routine cm_exp_horner(poly: @U64, y: U64, coefs: @U64, width: USize, degree: USize) -> Void
+/// :param p: The polynomial.
+routine cm_exp_horner(poly: @U64, y: U64, p: CmExpPoly) -> Void
+    shared coefs : @U64       = p.rows
+    shared width : USize      = p.width
+    shared out   : Slice<U64> = .construct(poly, width)
+
     block entry()
-        poly.copy(cm_exp_row(coefs, width, degree), width)
-        jump step(degree)
+        poly.copy(cm_exp_row(coefs, width, p.degree), width)
+        jump step(p.degree)
 
     block step(i: USize)
         done : Bool = i.eq(0)
@@ -826,7 +865,7 @@ routine cm_exp_horner(poly: @U64, y: U64, coefs: @U64, width: USize, degree: USi
             : fold(i.sub(1))
 
     block fold(i: USize)
-        cm_exp_mul_add_words(poly, y, poly, cm_exp_row(coefs, width, i), width)
+        cm_exp_mul_add_words(out, y, poly, cm_exp_row(coefs, width, i))
         jump step(i)
 
 /// The accurate path, on 3 words. It defers to {cm_exp_superaccurate} when this
@@ -856,12 +895,12 @@ routine cm_exp_accurate(x: U128, kind: U64) -> CmExpScaled
         j1      : USize = j1_bits.to<USize>()
         t0      : @U64  = cm_exp_row(CM_EXP_TBL0.to<@U64>(), 3, j0)
         t1      : @U64  = cm_exp_row(CM_EXP_TBL1.to<@U64>(), 3, j1)
-        cm_exp_mul_words(tab, t0, 3, t1, 3, 3, 3)
+        cm_exp_mul_high(tab, t0, t1, 3)
         // a degree-14 polynomial in the rest of the top fraction word
         c3   : @U64 = CM_EXP_C3.to<@U64>()
         frac : U64  = top.bitand(0x00FFFFFFFFFFFFFF)
-        cm_exp_horner(poly, frac, c3, 3, 14)
-        cm_exp_mul_words(tab, poly, 3, tab, 3, 3, 3)
+        cm_exp_horner(poly, frac, CmExpPoly { rows: c3, width: 3, degree: 14 })
+        cm_exp_mul_high(tab, poly, tab, 3)
         // the two low fraction words by a first-order correction
         c3w2   : U64  = c3.stride(2).load()
         c3w4   : U64  = c3.stride(4).load()
@@ -872,7 +911,7 @@ routine cm_exp_accurate(x: U128, kind: U64) -> CmExpScaled
         low.stride(0).store(linear.to_wrap<S64>().to_wrap<U64>())
         low.stride(1).store(cm_exp_hi(linear))
         low.stride(2).store(c3w2)
-        cm_exp_mul_words(poly, tab, 3, low, 3, 3, 3)
+        cm_exp_mul_high(poly, tab, low, 3)
         f0     : U64         = poly.stride(0).load()
         f1     : U64         = poly.stride(1).load()
         f2     : U64         = poly.stride(2).load()
@@ -956,14 +995,14 @@ routine cm_exp_superaccurate(x: U128, kind: U64) -> CmExpScaled
         // a degree-36 polynomial in the top fraction word below its 4 table bits
         c6   : @U64 = CM_EXP_C6.to<@U64>()
         frac : U64  = top.bitand(0x0FFFFFFFFFFFFFFF)
-        cm_exp_horner(poly, frac, c6, 6, 36)
+        cm_exp_horner(poly, frac, CmExpPoly { rows: c6, width: 6, degree: 36 })
         cm_exp_superaccurate_next(next, arg, c6)
         cm_exp_superaccurate_low(low, arg, c6)
-        cm_exp_mul_words(poly, poly, 6, next, 6, 6, 6)
-        cm_exp_mul_words(poly, poly, 6, low, 6, 6, 6)
+        cm_exp_mul_high(poly, poly, next, 6)
+        cm_exp_mul_high(poly, poly, low, 6)
         // 2^(j/16) from the table bits
         power : @U64 = cm_exp_row(CM_EXP_TBL6.to<@U64>(), 6, top.shr(60).to<USize>())
-        cm_exp_mul_words(poly, poly, 6, power, 6, 6, 6)
+        cm_exp_mul_high(poly, poly, power, 6)
         f4  : U64         = poly.stride(4).load()
         f5  : U64         = poly.stride(5).load()
         sig : U128        = cm_exp_join(f5.shr(1), f4.shr(1).bitor(f5.shl(63)))
@@ -981,6 +1020,7 @@ routine cm_exp_superaccurate_next(out: @U64, arg: @U64, c6: @U64) -> Void
     shared acc        : @U64           = acc_words.to<@U64>()
     shared term       : @U64           = term_words.to<@U64>()
     shared y          : U64            = arg.stride(4).load()
+    shared acc_slice  : Slice<U64>     = .construct(acc, 6)
 
     block entry()
         acc.zeroinit(8)
@@ -997,11 +1037,12 @@ routine cm_exp_superaccurate_next(out: @U64, arg: @U64, c6: @U64) -> Void
         term.zeroinit(8)
         coef : @U64 = c6.stride(r.mul(7))
         term.copy(coef, 6.sub(r))
-        cm_exp_mul_add_words(acc, y, acc, term, 6)
+        cm_exp_mul_add_words(acc_slice, y, acc, term)
         jump degree(r.sub(1))
 
     block constant()
-        cm_exp_mul_add_words(out, y, acc, c6, 6)
+        out_slice : Slice<U64> = .construct(out, 6)
+        cm_exp_mul_add_words(out_slice, y, acc, c6)
         return()
 
 /// 2^y for the four low fraction words y = arg[0..3], by a second-order correction:
@@ -1019,11 +1060,11 @@ routine cm_exp_superaccurate_low(out: @U64, arg: @U64, c6: @U64) -> Void
         slope : @U64 = slope_words.to<@U64>()
         y.zeroinit(8)
         y.offset(16).copy(arg, 4)
-        cm_exp_mul_words(prod, y, 6, cm_exp_row(c6, 6, 2), 6, 6, 6)
+        cm_exp_mul_high(prod, y, cm_exp_row(c6, 6, 2), 6)
         slope.zeroinit(8)
         slope.copy(prod.offset(16), 4)
         cm_exp_add_words(slope, cm_exp_row(c6, 6, 1), 6)
-        cm_exp_mul_words(prod, y, 6, slope, 6, 6, 6)
+        cm_exp_mul_high(prod, y, slope, 6)
         out.copy(prod.offset(16), 4)
         out.offset(32).copy(c6.offset(32), 2)
         return()

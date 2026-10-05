@@ -270,28 +270,25 @@ private routine cm_f64_exp_accurate(x: F64) -> F64
 /// :param xl: The low part of the point.
 /// :returns: The polynomial's value as a double-double.
 private routine cm_f64_exp_poly_acc(xh: F64, xl: F64) -> CmF64ExpDd
-    shared ch : @F64 <- uninit
-    shared cl : @F64 <- uninit
+    shared x   : CmF64ExpDd  = { hi: xh, lo: xl }
+    shared acc : @CmF64ExpDd <- uninit
 
     block entry()
-        F64.from_bits(CM_F64_EXP_ACC_CH.getitem(12)).store_into(ch)
-        F64.from_bits(CM_F64_EXP_ACC_CH.getitem(13)).store_into(cl)
+        top_hi : F64 = F64.from_bits(CM_F64_EXP_ACC_CH.getitem(12))
+        top_lo : F64 = F64.from_bits(CM_F64_EXP_ACC_CH.getitem(13))
+        acc.store(CmF64ExpDd { hi: top_hi, lo: top_lo })
         jump loop(6)
 
     block loop(i: USize)
         done : Bool = i.eq(0)
         branch done
-            ? return(CmF64ExpDd { hi: ch.load(), lo: cl.load() })
+            ? return(acc.load())
             : step(i.sub(1))
 
     block step(i: USize)
-        c0      : F64        = F64.from_bits(CM_F64_EXP_ACC_CH.getitem(i.mul(2)))
-        c1      : F64        = F64.from_bits(CM_F64_EXP_ACC_CH.getitem(i.mul(2).add(1)))
-        r       : CmF64ExpDd = cm_f64_exp_fastfma_dw(xh, xl, ch.load(), cl.load(), c0, c1)
-        next_cl : F64        = r.lo
-        next_ch : F64        = r.hi
-        next_ch.store_into(ch)
-        next_cl.store_into(cl)
+        c0 : F64 = F64.from_bits(CM_F64_EXP_ACC_CH.getitem(i.mul(2)))
+        c1 : F64 = F64.from_bits(CM_F64_EXP_ACC_CH.getitem(i.mul(2).add(1)))
+        cm_f64_exp_fastfma_dw(x, acc.load(), CmF64ExpDd { hi: c0, lo: c1 }).store_into(acc)
         jump loop(i)
 
 /// Looks x up among the arguments whose e^x lies too close to a rounding
@@ -411,21 +408,18 @@ routine cm_f64_exp_muldd(xh: F64, xl: F64, ch: F64, cl: F64) -> CmF64ExpDd
         lo    : F64 = cross.add(f64_mul_error(ch, xh, ahhh))
         return(CmF64ExpDd { hi: ahhh, lo: lo })
 
-/// Double-word fused multiply-add (ah + al) (bh + bl) + (ch + cl) (Jeannerod,
-/// Joldes, Louvet and Muller, Algorithm 4, with its last two FMAs split into a
-/// product and a sum as in CORE-MATH).
-/// :param ah: The high part of the first factor.
-/// :param al: The low part of the first factor.
-/// :param bh: The high part of the second factor.
-/// :param bl: The low part of the second factor.
-/// :param ch: The high part of the addend.
-/// :param cl: The low part of the addend.
+/// Double-word fused multiply-add `a` `b` + `c` (Jeannerod, Joldes, Louvet and
+/// Muller, Algorithm 4, with its last two FMAs split into a product and a sum as
+/// in CORE-MATH).
+/// :param a: The first factor, as a double-double.
+/// :param b: The second factor, as a double-double.
+/// :param c: The addend, as a double-double.
 /// :returns: The result as a double-double.
-routine cm_f64_exp_fastfma_dw(ah: F64, al: F64, bh: F64, bl: F64, ch: F64, cl: F64) -> CmF64ExpDd
+routine cm_f64_exp_fastfma_dw(a: CmF64ExpDd, b: CmF64ExpDd, c: CmF64ExpDd) -> CmF64ExpDd
     block entry()
-        dh : F64 = ah.mul_add(bh, ch)
-        t  : F64 = ch.sub(dh)
-        e  : F64 = ah.mul_add(bh, t)
-        f  : F64 = e.add(cl)
-        g  : F64 = ah.mul(bl).add(f)
-        return(CmF64ExpDd { hi: dh, lo: al.mul(bh).add(g) })
+        dh : F64 = a.hi.mul_add(b.hi, c.hi)
+        t  : F64 = c.hi.sub(dh)
+        e  : F64 = a.hi.mul_add(b.hi, t)
+        f  : F64 = e.add(c.lo)
+        g  : F64 = a.hi.mul(b.lo).add(f)
+        return(CmF64ExpDd { hi: dh, lo: a.lo.mul(b.hi).add(g) })

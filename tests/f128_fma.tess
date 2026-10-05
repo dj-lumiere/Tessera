@@ -1523,6 +1523,22 @@ preset FMA_CANCELLATION_WANT: @Array<U128, 60> <- { 0xEC116FBBE09114AA8A5D8E4971
     0xCF53D10B9F911D4D465048498DE0ABAA, 0x2CE3F2B85539AC377CA487370EAC4D54,
     0xB12642DB67F515209196A87C938D3303 }
 
+/// One triple whose result differs from the expected bits.
+record Mismatch
+    a    : U128  // the first factor's bits
+    b    : U128  // the second factor's bits
+    c    : U128  // the addend's bits
+    got  : U128  // the bits mul_add gave
+    want : U128  // the expected bits
+
+/// A group of triples and their expected results, element by element.
+record FmaCases
+    name : Bytes  // the group's name in the summary line
+    a    : Slice<U128>  // the first factors' bits
+    b    : Slice<U128>  // the second factors' bits
+    c    : Slice<U128>  // the addends' bits
+    want : Slice<U128>  // the expected results' bits
+
 routine one(out: @Out, a: U128, b: U128, c: U128) -> Void
     block entry()
         r : F128 = f128_of(a).mul_add(f128_of(b), f128_of(c))
@@ -1530,25 +1546,25 @@ routine one(out: @Out, a: U128, b: U128, c: U128) -> Void
         out.write("\n")
         return()
 
-routine mismatch(out: @Out, a: U128, b: U128, c: U128, got: U128, want: U128) -> Void
+routine mismatch(out: @Out, m: Mismatch) -> Void
     block entry()
         out.write("a ")
-        a.represent_hex_into(out)
+        m.a.represent_hex_into(out)
         out.write(" b ")
-        b.represent_hex_into(out)
+        m.b.represent_hex_into(out)
         out.write(" c ")
-        c.represent_hex_into(out)
+        m.c.represent_hex_into(out)
         out.write(" got ")
-        got.represent_hex_into(out)
+        m.got.represent_hex_into(out)
         out.write(" want ")
-        want.represent_hex_into(out)
+        m.want.represent_hex_into(out)
         out.write("\n")
         return()
 
-// Checks count triples against their expected bits, printing each mismatch, then the summary line.
-routine check_group(out: @Out, name: Bytes, a: @U128, b: @U128, c: @U128, want: @U128,
-    count: USize) -> Void
-    shared bad : @U64 <- 0
+// Checks a group's triples against their expected bits, printing each mismatch, then the summary.
+routine check_group(out: @Out, cases: FmaCases) -> Void
+    shared count : USize = cases.a.count()
+    shared bad   : @U64  <- 0
 
     block entry()
         jump loop(0)
@@ -1560,10 +1576,10 @@ routine check_group(out: @Out, name: Bytes, a: @U128, b: @U128, c: @U128, want: 
             : test(i)
 
     block test(i: USize)
-        x   : U128 = a.stride(i).load()
-        y   : U128 = b.stride(i).load()
-        z   : U128 = c.stride(i).load()
-        w   : U128 = want.stride(i).load()
+        x   : U128 = cases.a.getitem(i)
+        y   : U128 = cases.b.getitem(i)
+        z   : U128 = cases.c.getitem(i)
+        w   : U128 = cases.want.getitem(i)
         r   : F128 = f128_of(x).mul_add(f128_of(y), f128_of(z))
         got : U128 = r.bits()
         ok  : Bool = got.eq(w)
@@ -1572,12 +1588,12 @@ routine check_group(out: @Out, name: Bytes, a: @U128, b: @U128, c: @U128, want: 
             : fail(i, x, y, z, got, w)
 
     block fail(i: USize, x: U128, y: U128, z: U128, got: U128, w: U128)
-        mismatch(out, x, y, z, got, w)
+        mismatch(out, Mismatch { a: x, b: y, c: z, got: got, want: w })
         bad.load().add(1).store_into(bad)
         jump loop(i.add(1))
 
     block summary()
-        out.write("{name}: {count} cases, {bad.load()} mismatches\n")
+        out.write("{cases.name}: {count} cases, {bad.load()} mismatches\n")
         return()
 
 routine start() -> Void
@@ -2181,44 +2197,33 @@ routine start() -> Void
             170141183460469231731687303715884105728)
         one(out, 85065399433376081038215121361612832768, 85065399433376081038215121361612832768,
             255206582893845312769902425077496938496)
-        c_below_a    : @U128 = FMA_C_BELOW_A.to<@U128>()
-        c_below_b    : @U128 = FMA_C_BELOW_B.to<@U128>()
-        c_below_c    : @U128 = FMA_C_BELOW_C.to<@U128>()
-        c_below_want : @U128 = FMA_C_BELOW_WANT.to<@U128>()
-        check_group(out, "c below", c_below_a, c_below_b, c_below_c, c_below_want, 120)
-        c_straddles_a    : @U128 = FMA_C_STRADDLES_A.to<@U128>()
-        c_straddles_b    : @U128 = FMA_C_STRADDLES_B.to<@U128>()
-        c_straddles_c    : @U128 = FMA_C_STRADDLES_C.to<@U128>()
-        c_straddles_want : @U128 = FMA_C_STRADDLES_WANT.to<@U128>()
-        check_group(out, "c straddles", c_straddles_a, c_straddles_b, c_straddles_c,
-            c_straddles_want, 120)
-        c_in_window_a    : @U128 = FMA_C_IN_WINDOW_A.to<@U128>()
-        c_in_window_b    : @U128 = FMA_C_IN_WINDOW_B.to<@U128>()
-        c_in_window_c    : @U128 = FMA_C_IN_WINDOW_C.to<@U128>()
-        c_in_window_want : @U128 = FMA_C_IN_WINDOW_WANT.to<@U128>()
-        check_group(out, "c in window", c_in_window_a, c_in_window_b, c_in_window_c,
-            c_in_window_want, 120)
-        addend_tail_a    : @U128 = FMA_ADDEND_TAIL_A.to<@U128>()
-        addend_tail_b    : @U128 = FMA_ADDEND_TAIL_B.to<@U128>()
-        addend_tail_c    : @U128 = FMA_ADDEND_TAIL_C.to<@U128>()
-        addend_tail_want : @U128 = FMA_ADDEND_TAIL_WANT.to<@U128>()
-        check_group(out, "addend tail", addend_tail_a, addend_tail_b, addend_tail_c,
-            addend_tail_want, 150)
-        product_below_a    : @U128 = FMA_PRODUCT_BELOW_A.to<@U128>()
-        product_below_b    : @U128 = FMA_PRODUCT_BELOW_B.to<@U128>()
-        product_below_c    : @U128 = FMA_PRODUCT_BELOW_C.to<@U128>()
-        product_below_want : @U128 = FMA_PRODUCT_BELOW_WANT.to<@U128>()
-        check_group(out, "product below", product_below_a, product_below_b, product_below_c,
-            product_below_want, 60)
-        subnormal_a    : @U128 = FMA_SUBNORMAL_A.to<@U128>()
-        subnormal_b    : @U128 = FMA_SUBNORMAL_B.to<@U128>()
-        subnormal_c    : @U128 = FMA_SUBNORMAL_C.to<@U128>()
-        subnormal_want : @U128 = FMA_SUBNORMAL_WANT.to<@U128>()
-        check_group(out, "subnormal", subnormal_a, subnormal_b, subnormal_c, subnormal_want, 100)
-        cancellation_a    : @U128 = FMA_CANCELLATION_A.to<@U128>()
-        cancellation_b    : @U128 = FMA_CANCELLATION_B.to<@U128>()
-        cancellation_c    : @U128 = FMA_CANCELLATION_C.to<@U128>()
-        cancellation_want : @U128 = FMA_CANCELLATION_WANT.to<@U128>()
-        check_group(out, "cancellation", cancellation_a, cancellation_b, cancellation_c,
-            cancellation_want, 60)
+        c_below : FmaCases = { name: "c below", a: FMA_C_BELOW_A.to<Slice<U128>>(),
+            b: FMA_C_BELOW_B.to<Slice<U128>>(), c: FMA_C_BELOW_C.to<Slice<U128>>(),
+            want: FMA_C_BELOW_WANT.to<Slice<U128>>() }
+        check_group(out, c_below)
+        c_straddles : FmaCases = { name: "c straddles", a: FMA_C_STRADDLES_A.to<Slice<U128>>(),
+            b: FMA_C_STRADDLES_B.to<Slice<U128>>(), c: FMA_C_STRADDLES_C.to<Slice<U128>>(),
+            want: FMA_C_STRADDLES_WANT.to<Slice<U128>>() }
+        check_group(out, c_straddles)
+        c_in_window : FmaCases = { name: "c in window", a: FMA_C_IN_WINDOW_A.to<Slice<U128>>(),
+            b: FMA_C_IN_WINDOW_B.to<Slice<U128>>(), c: FMA_C_IN_WINDOW_C.to<Slice<U128>>(),
+            want: FMA_C_IN_WINDOW_WANT.to<Slice<U128>>() }
+        check_group(out, c_in_window)
+        addend_tail : FmaCases = { name: "addend tail", a: FMA_ADDEND_TAIL_A.to<Slice<U128>>(),
+            b: FMA_ADDEND_TAIL_B.to<Slice<U128>>(), c: FMA_ADDEND_TAIL_C.to<Slice<U128>>(),
+            want: FMA_ADDEND_TAIL_WANT.to<Slice<U128>>() }
+        check_group(out, addend_tail)
+        product_below : FmaCases = { name: "product below",
+            a: FMA_PRODUCT_BELOW_A.to<Slice<U128>>(), b: FMA_PRODUCT_BELOW_B.to<Slice<U128>>(),
+            c: FMA_PRODUCT_BELOW_C.to<Slice<U128>>(),
+            want: FMA_PRODUCT_BELOW_WANT.to<Slice<U128>>() }
+        check_group(out, product_below)
+        subnormal : FmaCases = { name: "subnormal", a: FMA_SUBNORMAL_A.to<Slice<U128>>(),
+            b: FMA_SUBNORMAL_B.to<Slice<U128>>(), c: FMA_SUBNORMAL_C.to<Slice<U128>>(),
+            want: FMA_SUBNORMAL_WANT.to<Slice<U128>>() }
+        check_group(out, subnormal)
+        cancellation : FmaCases = { name: "cancellation", a: FMA_CANCELLATION_A.to<Slice<U128>>(),
+            b: FMA_CANCELLATION_B.to<Slice<U128>>(), c: FMA_CANCELLATION_C.to<Slice<U128>>(),
+            want: FMA_CANCELLATION_WANT.to<Slice<U128>>() }
+        check_group(out, cancellation)
         return()

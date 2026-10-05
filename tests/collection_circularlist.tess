@@ -12,6 +12,31 @@ import Standard::Os
 record Rng
     state : U64
 
+/// What every phase works with besides the collection.
+record Harness
+    /// Where checkpoints are written.
+    out : @BufWriter<Out>
+    /// The generator that picks each operation.
+    rng : @Rng
+
+/// One phase of the run: its number and how many operations of which kinds it makes.
+record Phase
+    /// The phase's number, as checkpoints print it.
+    number : USize
+    /// How many operations the phase runs.
+    ops : USize
+    /// The percentages of each push and pop.
+    op_mix : Mix
+
+/// Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
+record Checkpoint
+    /// The phase's number.
+    phase : USize
+    /// The operations run so far in the phase.
+    op : USize
+    /// The checksum of every result so far.
+    results : S64
+
 // Percentages of each push and pop. Get and set take 10 each.
 record Mix
     push_back  : USize
@@ -52,14 +77,13 @@ routine iteration_hash(circular_list: @CircularList<S64>) -> S64
             .Present(value) -> next(mix(hash, value))
             .Absent         -> return(hash)
 
-routine checkpoint(out: @BufWriter<Out>, circular_list: @CircularList<S64>, phase: USize, op: USize,
-    results: S64) -> Void
+routine checkpoint(out: @BufWriter<Out>, circular_list: @CircularList<S64>, at: Checkpoint) -> Void
     block entry()
-        out.write("phase {phase}")
-        labeled(out, "op", op.to<S64>())
+        out.write("phase {at.phase}")
+        labeled(out, "op", at.op.to<S64>())
         size : USize = circular_list.count()
         labeled(out, "length", size.to<S64>())
-        labeled(out, "results", results)
+        labeled(out, "results", at.results)
         labeled(out, "iteration", iteration_hash(circular_list))
         capacity : USize = circular_list.storage.count.load()
         labeled(out, "capacity", capacity.to<S64>())
@@ -67,8 +91,11 @@ routine checkpoint(out: @BufWriter<Out>, circular_list: @CircularList<S64>, phas
         return()
 
 // Runs ops random operations weighted by op_mix. Returns the updated results checksum.
-routine run_phase(out: @BufWriter<Out>, circular_list: @CircularList<S64>, rng: @Rng, phase: USize,
-    ops: USize, op_mix: Mix, results: S64) -> S64
+routine run_phase(harness: Harness, circular_list: @CircularList<S64>, phase: Phase,
+    results: S64) -> S64
+    shared rng            : @Rng  = harness.rng
+    shared ops            : USize = phase.ops
+    shared op_mix         : Mix   = phase.op_mix
     shared push_back_end  : USize = op_mix.push_back.mul(10)
     shared push_front_end : USize = push_back_end.add(op_mix.push_front.mul(10))
     shared pop_back_end   : USize = push_front_end.add(op_mix.pop_back.mul(10))
@@ -162,7 +189,8 @@ routine run_phase(out: @BufWriter<Out>, circular_list: @CircularList<S64>, rng: 
             : next(op_next, mixed)
 
     block report(op: USize, checksum: S64)
-        checkpoint(out, circular_list, phase, op, checksum)
+        checkpoint(harness.out, circular_list,
+            Checkpoint { phase: phase.number, op: op, results: checksum })
         jump next(op, checksum)
 
 // Copies from into to by pushing each element at the front, back to front, so to has a different start.
@@ -195,16 +223,23 @@ routine start() -> Void
         claim rng           : @Rng               <- Rng { state: 3 }
         claim circular_list : @CircularList<S64> <- .construct(alloc)
 
-        balanced       : Mix = Mix { push_back: 25, push_front: 25, pop_back: 15, pop_front: 15 }
-        front_heavy    : Mix = Mix { push_back: 5, push_front: 45, pop_back: 20, pop_front: 10 }
-        back_heavy     : Mix = Mix { push_back: 45, push_front: 5, pop_back: 10, pop_front: 20 }
-        queue          : Mix = Mix { push_back: 40, push_front: 0, pop_back: 0, pop_front: 40 }
-        reversed_queue : Mix = Mix { push_back: 0, push_front: 40, pop_back: 40, pop_front: 0 }
-        r1             : S64 = run_phase(out, circular_list, rng, 1, 3000, balanced, 0)
-        r2             : S64 = run_phase(out, circular_list, rng, 2, 3000, front_heavy, r1)
-        r3             : S64 = run_phase(out, circular_list, rng, 3, 3000, back_heavy, r2)
-        r4             : S64 = run_phase(out, circular_list, rng, 4, 8000, queue, r3)
-        r5             : S64 = run_phase(out, circular_list, rng, 5, 8000, reversed_queue, r4)
+        balanced       : Mix     = Mix { push_back: 25, push_front: 25, pop_back: 15,
+            pop_front: 15 }
+        front_heavy    : Mix     = Mix { push_back: 5, push_front: 45, pop_back: 20, pop_front: 10 }
+        back_heavy     : Mix     = Mix { push_back: 45, push_front: 5, pop_back: 10, pop_front: 20 }
+        queue          : Mix     = Mix { push_back: 40, push_front: 0, pop_back: 0, pop_front: 40 }
+        reversed_queue : Mix     = Mix { push_back: 0, push_front: 40, pop_back: 40, pop_front: 0 }
+        harness        : Harness = Harness { out: out, rng: rng }
+        r1             : S64     = run_phase(harness, circular_list,
+            Phase { number: 1, ops: 3000, op_mix: balanced }, 0)
+        r2             : S64     = run_phase(harness, circular_list,
+            Phase { number: 2, ops: 3000, op_mix: front_heavy }, r1)
+        r3             : S64     = run_phase(harness, circular_list,
+            Phase { number: 3, ops: 3000, op_mix: back_heavy }, r2)
+        r4             : S64     = run_phase(harness, circular_list,
+            Phase { number: 4, ops: 8000, op_mix: queue }, r3)
+        r5             : S64     = run_phase(harness, circular_list,
+            Phase { number: 5, ops: 8000, op_mix: reversed_queue }, r4)
 
         claim copied : @CircularList<S64> <- .construct(alloc)
         report_eq(out, "empty copy equal", circular_list.load().eq(copied.load()))

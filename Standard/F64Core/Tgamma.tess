@@ -804,9 +804,7 @@ private routine cm_f64_tgamma_accurate(x: F64) -> F64
         d    : F64          = F64.mul(2.0, x.sub(ix.add(0.5)))
         i    : S64          = ix.to<S64>()
         k    : USize        = cm_f64_tgamma_range(i)
-        pf   : CmF64GammaDD = cm_f64_tgamma_poly3(d, CM_F64_TGAMMA_BR_NCH.getitem(k),
-            CM_F64_TGAMMA_BR_CH.getitem(k), CM_F64_TGAMMA_BR_NCL.getitem(k),
-            CM_F64_TGAMMA_BR_CL.getitem(k))
+        pf   : CmF64GammaDD = cm_f64_tgamma_poly3(d, k)
         jm   : S64          = CM_F64_TGAMMA_BR_BASE.getitem(k).sub(i)
         eoff : S64          = CM_F64_TGAMMA_BR_EOFF.getitem(k)
         x1   : F64          = x.sub(1.0)
@@ -963,14 +961,12 @@ private routine cm_f64_tgamma_accurate_small(x: F64) -> F64
 
 /// The double-double polynomial c[0] + c[1] x + ... + (c[n-1] + l) x^(n-1) of the
 /// (high, low) pairs of CM_F64_TGAMMA_T from base, at a double-double x.
-/// :param xh: The high part of x.
-/// :param xl: The low part of x.
+/// :param x: The point, as a double-double.
 /// :param n: The number of coefficients, at least 1.
 /// :param base: The table index of the first (high, low) pair.
 /// :param l: An extra low part added to the top coefficient.
 /// :returns: The polynomial's value as a double-double.
-private routine cm_f64_tgamma_polydd(xh: F64, xl: F64, n: USize, base: USize,
-    l: F64) -> CmF64GammaDD
+private routine cm_f64_tgamma_polydd(x: CmF64GammaDD, n: USize, base: USize, l: F64) -> CmF64GammaDD
     shared ch : @F64 <- uninit
     shared cl : @F64 <- uninit
 
@@ -990,7 +986,7 @@ private routine cm_f64_tgamma_polydd(xh: F64, xl: F64, n: USize, base: USize,
 
     block step(i: USize)
         k       : USize        = base.add(i.mul(2))
-        m       : CmF64GammaDD = cm_f64_gamma_muldd(xh, xl, ch.load(), cl.load())
+        m       : CmF64GammaDD = cm_f64_gamma_muldd(x.hi, x.lo, ch.load(), cl.load())
         a       : CmF64GammaDD = cm_f64_gamma_fastsum(cm_f64_tgamma_t(k), cm_f64_tgamma_t(k.add(1)),
             m.hi, m.lo)
         next_cl : F64          = a.lo
@@ -1077,22 +1073,23 @@ private routine cm_f64_tgamma_sprod(x: F64, x0: F64, x1: F64, x2: F64) -> CmF64G
         t  : CmF64GammaDD = cm_f64_gamma_twosum(s.hi, z1)
         return(CmF64GammaTD { hi: zh, mid: t.hi, lo: t.lo.add(s.lo).add(z2) })
 
-/// The accurate-phase polynomial: imax double coefficients at chbase, weighted by
-/// triple-double powers of d, plus a double-double tail of jmax pairs at clbase.
+/// The accurate-phase polynomial of range k: imax double coefficients at chbase,
+/// weighted by triple-double powers of d, plus a double-double tail of jmax pairs
+/// at clbase, where the CM_F64_TGAMMA_BR_* tables give the four for the range.
 /// :param d: The reduced argument.
-/// :param imax: The number of double coefficients.
-/// :param chbase: The table index of the first double coefficient.
-/// :param jmax: The number of double-double tail pairs.
-/// :param clbase: The table index of the first tail pair.
+/// :param k: The accurate-phase range, 0 to 8 (see cm_f64_tgamma_range).
 /// :returns: The polynomial's value as a double-double.
-private routine cm_f64_tgamma_poly3(d: F64, imax: USize, chbase: USize, jmax: USize,
-    clbase: USize) -> CmF64GammaDD
-    shared t0 : @F64 <- 1.0
-    shared t1 : @F64 <- 0.0
-    shared t2 : @F64 <- 0.0
-    shared s0 : @F64 <- uninit
-    shared s1 : @F64 <- 0.0
-    shared s2 : @F64 <- 0.0
+private routine cm_f64_tgamma_poly3(d: F64, k: USize) -> CmF64GammaDD
+    shared imax   : USize = CM_F64_TGAMMA_BR_NCH.getitem(k)
+    shared chbase : USize = CM_F64_TGAMMA_BR_CH.getitem(k)
+    shared jmax   : USize = CM_F64_TGAMMA_BR_NCL.getitem(k)
+    shared clbase : USize = CM_F64_TGAMMA_BR_CL.getitem(k)
+    shared t0     : @F64  <- 1.0
+    shared t1     : @F64  <- 0.0
+    shared t2     : @F64  <- 0.0
+    shared s0     : @F64  <- uninit
+    shared s1     : @F64  <- 0.0
+    shared s2     : @F64  <- 0.0
 
     block entry()
         cm_f64_tgamma_t(chbase).store_into(s0)
@@ -1177,7 +1174,7 @@ private routine cm_f64_tgamma_expd(x: F64, l: F64) -> CmF64TgammaExp
             cm_f64_tgamma_t(i0.mul(2).add(1299)), cm_f64_tgamma_t(i1.mul(2).add(1364)),
             cm_f64_tgamma_t(i1.mul(2).add(1363)))
         fl    : F64          = s.hi.mul(cm_f64_tgamma_polyd(s.hi, 4, 1429))
-        f     : CmF64GammaDD = cm_f64_tgamma_polydd(s.hi, s.lo, 1, 1427, fl)
+        f     : CmF64GammaDD = cm_f64_tgamma_polydd(s, 1, 1427, fl)
         g     : CmF64GammaDD = cm_f64_gamma_muldd(s.hi, s.lo, f.hi, f.lo)
         o     : CmF64GammaDD = cm_f64_gamma_fasttwosum(1.0, g.hi)
         h     : CmF64GammaDD = cm_f64_gamma_muldd(r.hi, r.lo, o.hi, g.lo.add(o.lo))
@@ -1220,7 +1217,7 @@ private routine cm_f64_tgamma_lgamma_asym(xh: F64, xl: F64) -> CmF64GammaDD
         q2 : F64 = cm_f64_tgamma_stride2(z2.hi, 1445)
         q4 : F64 = cm_f64_tgamma_stride2(z2.hi, 1449)
         fl : F64 = z2.hi.mul(q0.add(x2.mul(q2.add(x2.mul(q4)))))
-        jump finish(a, cm_f64_tgamma_polydd(z2.hi, z2.lo, 1, 1439, fl))
+        jump finish(a, cm_f64_tgamma_polydd(z2, 1, 1439, fl))
 
     block small()
         a  : CmF64GammaDD = cm_f64_gamma_fastsum(l.hi, l.lo, cm_f64_tgamma_t(1453),
@@ -1235,7 +1232,7 @@ private routine cm_f64_tgamma_lgamma_asym(xh: F64, xl: F64) -> CmF64GammaDD
         hi : F64 = q4.add(x2.mul(q6.add(x2.mul(q8))))
         lo : F64 = q0.add(x2.mul(q2))
         q  : F64 = lo.add(x4.mul(hi))
-        jump finish(a, cm_f64_tgamma_polydd(z2.hi, z2.lo, 2, 1455, z2.hi.mul(q)))
+        jump finish(a, cm_f64_tgamma_polydd(z2, 2, 1455, z2.hi.mul(q)))
 
     block finish(a: CmF64GammaDD, f: CmF64GammaDD)
         g : CmF64GammaDD = cm_f64_gamma_muldd(zh, zl, f.hi, f.lo)

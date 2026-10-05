@@ -84,7 +84,7 @@ routine F16.soft_to<F32>(me: Me) -> F32
 routine F64.soft_to<F32>(me: Me) -> F32
     block entry()
         a : U64 = me.bits()
-        r : U32 = soft_narrow(a, 0x80000000, 23, 127, 255)
+        r : U32 = soft_narrow(a, F32.FORMAT.load())
         return(bitcast<U32, F32>(r))
 
 /// Narrows F64 to F16, rounding once to nearest (ties to even): compiler-rt's `__truncdfhf2`.
@@ -93,7 +93,7 @@ routine F64.soft_to<F32>(me: Me) -> F32
 routine F64.soft_to<F16>(me: Me) -> F16
     block entry()
         a : U64 = me.bits()
-        r : U16 = soft_narrow(a, 0x8000, 10, 15, 31).to_wrap<U16>()
+        r : U16 = soft_narrow(a, F16.FORMAT.load()).to_wrap<U16>()
         return(bitcast<U16, F16>(r))
 
 /// Narrows F64 to BF16, rounding once to nearest (ties to even): compiler-rt's `__truncdfbf2`.
@@ -102,7 +102,7 @@ routine F64.soft_to<F16>(me: Me) -> F16
 routine F64.soft_to<BF16>(me: Me) -> BF16
     block entry()
         a : U64 = me.bits()
-        r : U16 = soft_narrow(a, 0x8000, 7, 127, 255).to_wrap<U16>()
+        r : U16 = soft_narrow(a, BF16.FORMAT.load()).to_wrap<U16>()
         return(bitcast<U16, BF16>(r))
 
 /// Narrows F32 to F16, rounding to nearest (ties to even): compiler-rt's `__truncsfhf2`.
@@ -111,7 +111,7 @@ routine F64.soft_to<BF16>(me: Me) -> BF16
 routine F32.soft_to<F16>(me: Me) -> F16
     block entry()
         a : U32 = me.bits()
-        r : U16 = soft_narrow(a, 10, 15, 31).to_wrap<U16>()
+        r : U16 = soft_narrow(a, F16.FORMAT.load()).to_wrap<U16>()
         return(bitcast<U16, F16>(r))
 
 /// Narrows F32 to BF16, rounding to nearest (ties to even): compiler-rt's `__truncsfbf2`.
@@ -120,21 +120,21 @@ routine F32.soft_to<F16>(me: Me) -> F16
 routine F32.soft_to<BF16>(me: Me) -> BF16
     block entry()
         a : U32 = me.bits()
-        r : U16 = soft_narrow(a, 7, 127, 255).to_wrap<U16>()
+        r : U16 = soft_narrow(a, BF16.FORMAT.load()).to_wrap<U16>()
         return(bitcast<U16, BF16>(r))
 
 /// Narrows F64 bits into a binary format whose bits fit in a U32, rounding to nearest (ties to even).
 /// :param a: The F64's bits.
-/// :param sign_bit: The format's sign bit (bit 15 or bit 31).
-/// :param sig_bits: The format's stored fraction bits.
-/// :param bias: The format's exponent bias.
-/// :param max_exponent: The format's all-ones exponent field.
+/// :param format: The narrower format (F32, F16, or BF16).
 /// :returns: The format's bits, in the low bits of a U32.
 #inline
-routine soft_narrow(a: U64, sign_bit: U32, sig_bits: U32, bias: S32, max_exponent: S32) -> U32
-    shared negative : Bool = a.ge(0x8000000000000000)
-    shared sign     : U32  = negative
-        ? sign_bit
+routine soft_narrow(a: U64, format: FloatFormat) -> U32
+    shared sig_bits     : U32  = format.fraction_bits
+    shared bias         : S32  = format.bias
+    shared max_exponent : S32  = format.exponent_max
+    shared negative     : Bool = a.ge(0x8000000000000000)
+    shared sign         : U32  = negative
+        ? format.sign_bit()
         : 0
     shared size : U64 = a.bitand(0x7FFFFFFFFFFFFFFF)
 
@@ -170,20 +170,20 @@ routine soft_narrow(a: U64, sign_bit: U32, sig_bits: U32, bias: S32, max_exponen
         narrow   : U64 = soft_shr_sticky(sig, 26)
         scale    : S32 = bias.add(sig_bits.to<S32>())
         exponent : S32 = stored.add(scale).sub(1046)
-        r        : U32 = soft_round_pack(sign, exponent, narrow.to_wrap<U32>(), sig_bits,
-            max_exponent)
+        r        : U32 = soft_round_pack(sign, exponent, narrow.to_wrap<U32>(), format)
         return(r)
 
 /// Narrows F32 bits into F16 or BF16, rounding to nearest (ties to even).
 /// :param a: The F32's bits.
-/// :param sig_bits: The format's stored fraction bits.
-/// :param bias: The format's exponent bias.
-/// :param max_exponent: The format's all-ones exponent field.
+/// :param format: The narrower format (F16 or BF16).
 /// :returns: The format's bits, in the low 16 bits of a U32.
 #inline
-routine soft_narrow(a: U32, sig_bits: U32, bias: S32, max_exponent: S32) -> U32
-    shared sign : U32 = a.shr(16).bitand(0x8000)
-    shared size : U32 = a.bitand(0x7FFFFFFF)
+routine soft_narrow(a: U32, format: FloatFormat) -> U32
+    shared sig_bits     : U32 = format.fraction_bits
+    shared bias         : S32 = format.bias
+    shared max_exponent : S32 = format.exponent_max
+    shared sign         : U32 = a.shr(16).bitand(0x8000)
+    shared size         : U32 = a.bitand(0x7FFFFFFF)
 
     block entry()
         infinity : U32 = max_exponent.to<U32>().shl(sig_bits)
@@ -211,28 +211,28 @@ routine soft_narrow(a: U32, sig_bits: U32, bias: S32, max_exponent: S32) -> U32
             : 1
         scale    : S32 = bias.add(sig_bits.to<S32>())
         exponent : S32 = stored.add(scale).sub(147)
-        r        : U32 = soft_round_pack(sign, exponent, sig, sig_bits, max_exponent)
+        r        : U32 = soft_round_pack(sign, exponent, sig, format)
         return(r)
 
 // -- float to integer ----------------------------------------------------------
 
-/// Converts a float's significand and exponent to an integer of at most 64 bits, rounding toward zero, as
-/// compiler-rt's `__fix*` and `__fixuns*` do.
-/// :param negative: The float's sign.
-/// :param field: The float's biased exponent field.
-/// :param sig: The significand with its implicit bit (any value for a zero or subnormal, which give 0).
-/// :param bias: The format's exponent bias.
-/// :param sig_bits: The format's stored fraction bits.
+/// Converts float bits to an integer of at most 64 bits, rounding toward zero, as compiler-rt's `__fix*` and
+/// `__fixuns*` do.
+/// :param bits: The float's bits, in the low `format.width` bits.
+/// :param format: The float's format (F32 or F64).
 /// :param width: The integer's width, 32 or 64.
 /// :param signed: Whether the integer is signed.
 /// :returns: The integer's bits in the low `width` bits.
 #inline
-routine soft_fix(negative: Bool, field: S32, sig: U64, bias: S32, sig_bits: S32, width: U64,
-    signed: Bool) -> U64
-    shared all : U64 = U64.shl(1, width).sub_wrap(1)
+routine soft_fix(bits: U64, format: FloatFormat, width: U64, signed: Bool) -> U64
+    shared all      : U64  = U64.shl(1, width).sub_wrap(1)
+    shared negative : Bool = soft_is_negative(bits, format)
+    shared sig      : U64  = soft_sig(bits, format)
+    shared sig_bits : S32  = format.fraction_bits.to<S32>()
 
     block entry()
-        exponent : S32  = field.sub(bias)
+        field    : S32  = soft_field(bits, format)
+        exponent : S32  = field.sub(format.bias)
         largest  : U64  = all.shr(1)
         unsigned : Bool = signed.bitnot()
         huge     : Bool = exponent.ge(width.to_wrap<S32>())
@@ -258,18 +258,20 @@ routine soft_fix(negative: Bool, field: S32, sig: U64, bias: S32, sig_bits: S32,
         return(r.bitand(all))
 
 /// {soft_fix} for 128-bit integers.
-/// :param negative: The float's sign.
-/// :param field: The float's biased exponent field.
-/// :param sig: The significand with its implicit bit.
-/// :param bias: The format's exponent bias.
-/// :param sig_bits: The format's stored fraction bits.
+/// :param bits: The float's bits, in the low `format.width` bits.
+/// :param format: The float's format (F16, F32, or F64).
 /// :param signed: Whether the integer is signed.
 /// :returns: The integer's bits.
 #inline
-routine soft_fix(negative: Bool, field: S32, sig: U128, bias: S32, sig_bits: S32,
-    signed: Bool) -> U128
+routine soft_fix(bits: U64, format: FloatFormat, signed: Bool) -> U128
+    shared negative : Bool = soft_is_negative(bits, format)
+    shared narrow   : U64  = soft_sig(bits, format)
+    shared sig      : U128 = narrow.to<U128>()
+    shared sig_bits : S32  = format.fraction_bits.to<S32>()
+
     block entry()
-        exponent : S32  = field.sub(bias)
+        field    : S32  = soft_field(bits, format)
+        exponent : S32  = field.sub(format.bias)
         unsigned : Bool = signed.bitnot()
         largest  : U128 = U128.MAX.shr(1)
         when
@@ -298,9 +300,8 @@ routine soft_fix(negative: Bool, field: S32, sig: U128, bias: S32, sig_bits: S32
 #no_builtins
 routine F32.soft_to<S32>(me: Me) -> S32
     block entry()
-        a    : U32 = me.bits()
-        bits : U64 = soft_fix(a.ge(0x80000000), soft_f32_field(a), soft_f32_sig(a), 127, 23, 32,
-            true)
+        a    : U64 = me.bits().to<U64>()
+        bits : U64 = soft_fix(a, Me.FORMAT.load(), 32, true)
         r    : S32 = bits.to_wrap<U32>().to_wrap<S32>()
         return(r)
 
@@ -309,9 +310,8 @@ routine F32.soft_to<S32>(me: Me) -> S32
 #no_builtins
 routine F32.soft_to<U32>(me: Me) -> U32
     block entry()
-        a    : U32 = me.bits()
-        bits : U64 = soft_fix(a.ge(0x80000000), soft_f32_field(a), soft_f32_sig(a), 127, 23, 32,
-            false)
+        a    : U64 = me.bits().to<U64>()
+        bits : U64 = soft_fix(a, Me.FORMAT.load(), 32, false)
         r    : U32 = bits.to_wrap<U32>()
         return(r)
 
@@ -320,9 +320,8 @@ routine F32.soft_to<U32>(me: Me) -> U32
 #no_builtins
 routine F32.soft_to<S64>(me: Me) -> S64
     block entry()
-        a    : U32 = me.bits()
-        bits : U64 = soft_fix(a.ge(0x80000000), soft_f32_field(a), soft_f32_sig(a), 127, 23, 64,
-            true)
+        a    : U64 = me.bits().to<U64>()
+        bits : U64 = soft_fix(a, Me.FORMAT.load(), 64, true)
         r    : S64 = bits.to_wrap<S64>()
         return(r)
 
@@ -331,8 +330,8 @@ routine F32.soft_to<S64>(me: Me) -> S64
 #no_builtins
 routine F32.soft_to<U64>(me: Me) -> U64
     block entry()
-        a : U32 = me.bits()
-        r : U64 = soft_fix(a.ge(0x80000000), soft_f32_field(a), soft_f32_sig(a), 127, 23, 64, false)
+        a : U64 = me.bits().to<U64>()
+        r : U64 = soft_fix(a, Me.FORMAT.load(), 64, false)
         return(r)
 
 /// F32 to S128, rounding toward zero: compiler-rt's `__fixsfti`.
@@ -340,9 +339,8 @@ routine F32.soft_to<U64>(me: Me) -> U64
 #no_builtins
 routine F32.soft_to<S128>(me: Me) -> S128
     block entry()
-        a    : U32  = me.bits()
-        sig  : U128 = soft_f32_sig(a).to<U128>()
-        bits : U128 = soft_fix(a.ge(0x80000000), soft_f32_field(a), sig, 127, 23, true)
+        a    : U64  = me.bits().to<U64>()
+        bits : U128 = soft_fix(a, Me.FORMAT.load(), true)
         r    : S128 = bits.to_wrap<S128>()
         return(r)
 
@@ -351,9 +349,8 @@ routine F32.soft_to<S128>(me: Me) -> S128
 #no_builtins
 routine F32.soft_to<U128>(me: Me) -> U128
     block entry()
-        a   : U32  = me.bits()
-        sig : U128 = soft_f32_sig(a).to<U128>()
-        r   : U128 = soft_fix(a.ge(0x80000000), soft_f32_field(a), sig, 127, 23, false)
+        a : U64  = me.bits().to<U64>()
+        r : U128 = soft_fix(a, Me.FORMAT.load(), false)
         return(r)
 
 /// F64 to S32, rounding toward zero: compiler-rt's `__fixdfsi`.
@@ -361,9 +358,7 @@ routine F32.soft_to<U128>(me: Me) -> U128
 #no_builtins
 routine F64.soft_to<S32>(me: Me) -> S32
     block entry()
-        a    : U64 = me.bits()
-        bits : U64 = soft_fix(a.ge(0x8000000000000000), soft_f64_field(a), soft_f64_sig(a), 1023,
-            52, 32, true)
+        bits : U64 = soft_fix(me.bits(), Me.FORMAT.load(), 32, true)
         r    : S32 = bits.to_wrap<U32>().to_wrap<S32>()
         return(r)
 
@@ -372,9 +367,7 @@ routine F64.soft_to<S32>(me: Me) -> S32
 #no_builtins
 routine F64.soft_to<U32>(me: Me) -> U32
     block entry()
-        a    : U64 = me.bits()
-        bits : U64 = soft_fix(a.ge(0x8000000000000000), soft_f64_field(a), soft_f64_sig(a), 1023,
-            52, 32, false)
+        bits : U64 = soft_fix(me.bits(), Me.FORMAT.load(), 32, false)
         r    : U32 = bits.to_wrap<U32>()
         return(r)
 
@@ -383,9 +376,7 @@ routine F64.soft_to<U32>(me: Me) -> U32
 #no_builtins
 routine F64.soft_to<S64>(me: Me) -> S64
     block entry()
-        a    : U64 = me.bits()
-        bits : U64 = soft_fix(a.ge(0x8000000000000000), soft_f64_field(a), soft_f64_sig(a), 1023,
-            52, 64, true)
+        bits : U64 = soft_fix(me.bits(), Me.FORMAT.load(), 64, true)
         r    : S64 = bits.to_wrap<S64>()
         return(r)
 
@@ -394,9 +385,7 @@ routine F64.soft_to<S64>(me: Me) -> S64
 #no_builtins
 routine F64.soft_to<U64>(me: Me) -> U64
     block entry()
-        a : U64 = me.bits()
-        r : U64 = soft_fix(a.ge(0x8000000000000000), soft_f64_field(a), soft_f64_sig(a), 1023, 52,
-            64, false)
+        r : U64 = soft_fix(me.bits(), Me.FORMAT.load(), 64, false)
         return(r)
 
 /// F64 to S128, rounding toward zero: compiler-rt's `__fixdfti`.
@@ -404,9 +393,7 @@ routine F64.soft_to<U64>(me: Me) -> U64
 #no_builtins
 routine F64.soft_to<S128>(me: Me) -> S128
     block entry()
-        a    : U64  = me.bits()
-        sig  : U128 = soft_f64_sig(a).to<U128>()
-        bits : U128 = soft_fix(a.ge(0x8000000000000000), soft_f64_field(a), sig, 1023, 52, true)
+        bits : U128 = soft_fix(me.bits(), Me.FORMAT.load(), true)
         r    : S128 = bits.to_wrap<S128>()
         return(r)
 
@@ -415,9 +402,7 @@ routine F64.soft_to<S128>(me: Me) -> S128
 #no_builtins
 routine F64.soft_to<U128>(me: Me) -> U128
     block entry()
-        a   : U64  = me.bits()
-        sig : U128 = soft_f64_sig(a).to<U128>()
-        r   : U128 = soft_fix(a.ge(0x8000000000000000), soft_f64_field(a), sig, 1023, 52, false)
+        r : U128 = soft_fix(me.bits(), Me.FORMAT.load(), false)
         return(r)
 
 /// F16 to S128, rounding toward zero: compiler-rt's `__fixhfti`, which LLVM calls on x86_64 and AArch64.
@@ -425,8 +410,8 @@ routine F64.soft_to<U128>(me: Me) -> U128
 #no_builtins
 routine F16.soft_to<S128>(me: Me) -> S128
     block entry()
-        a    : U16  = me.bits()
-        bits : U128 = soft_fix(a.ge(0x8000), soft_f16_field(a), soft_f16_sig(a), 15, 10, true)
+        a    : U64  = me.bits().to<U64>()
+        bits : U128 = soft_fix(a, Me.FORMAT.load(), true)
         r    : S128 = bits.to_wrap<S128>()
         return(r)
 
@@ -435,82 +420,53 @@ routine F16.soft_to<S128>(me: Me) -> S128
 #no_builtins
 routine F16.soft_to<U128>(me: Me) -> U128
     block entry()
-        a : U16  = me.bits()
-        r : U128 = soft_fix(a.ge(0x8000), soft_f16_field(a), soft_f16_sig(a), 15, 10, false)
+        a : U64  = me.bits().to<U64>()
+        r : U128 = soft_fix(a, Me.FORMAT.load(), false)
         return(r)
 
-/// The biased exponent field of F32 bits.
-/// :param a: The F32's bits.
-/// :returns: The 8-bit exponent field, from 0 to 255.
+/// Whether float bits are negative: the format's sign bit.
+/// :param bits: The float's bits, in the low `format.width` bits.
+/// :param format: The float's format.
+/// :returns: True when the sign bit is set.
 #inline
-private routine soft_f32_field(a: U32) -> S32
+private routine soft_is_negative(bits: U64, format: FloatFormat) -> Bool
     block entry()
-        field : U32 = a.shr(23).bitand(0xFF)
-        r     : S32 = field.to<S32>()
-        return(r)
+        top  : U64 = format.width.sub(1).to<U64>()
+        sign : U64 = bits.shr(top).bitand(1)
+        return(sign.eq(1))
 
-/// The significand of F32 bits with the implicit bit set.
-/// :param a: The F32's bits.
-/// :returns: The 23 fraction bits with bit 23 set.
+/// The biased exponent field of float bits.
+/// :param bits: The float's bits, in the low `format.width` bits.
+/// :param format: The float's format.
+/// :returns: The exponent field, from 0 to the format's all-ones field.
 #inline
-private routine soft_f32_sig(a: U32) -> U64
+private routine soft_field(bits: U64, format: FloatFormat) -> S32
     block entry()
-        sig : U32 = a.bitand(0x007FFFFF).bitor(0x00800000)
-        r   : U64 = sig.to<U64>()
-        return(r)
-
-/// The biased exponent field of F64 bits.
-/// :param a: The F64's bits.
-/// :returns: The 11-bit exponent field, from 0 to 2047.
-#inline
-private routine soft_f64_field(a: U64) -> S32
-    block entry()
-        field : U64 = a.shr(52).bitand(0x7FF)
+        mask  : U64 = format.exponent_max.to<U64>()
+        field : U64 = bits.shr(format.fraction_bits.to<U64>()).bitand(mask)
         r     : S32 = field.to_wrap<S32>()
         return(r)
 
-/// The significand of F64 bits with the implicit bit set.
-/// :param a: The F64's bits.
-/// :returns: The 52 fraction bits with bit 52 set.
+/// The significand of float bits with the implicit bit set.
+/// :param bits: The float's bits, in the low `format.width` bits.
+/// :param format: The float's format.
+/// :returns: The fraction bits with the implicit bit above them set.
 #inline
-private routine soft_f64_sig(a: U64) -> U64
+private routine soft_sig(bits: U64, format: FloatFormat) -> U64
     block entry()
-        r : U64 = a.bitand(0x000FFFFFFFFFFFFF).bitor(0x0010000000000000)
-        return(r)
-
-/// The biased exponent field of F16 bits.
-/// :param a: The F16's bits.
-/// :returns: The 5-bit exponent field, from 0 to 31.
-#inline
-private routine soft_f16_field(a: U16) -> S32
-    block entry()
-        field : U16 = a.shr(10).bitand(0x1F)
-        r     : S32 = field.to<S32>()
-        return(r)
-
-/// The significand of F16 bits with the implicit bit set.
-/// :param a: The F16's bits.
-/// :returns: The 10 fraction bits with bit 10 set.
-#inline
-private routine soft_f16_sig(a: U16) -> U128
-    block entry()
-        sig : U16  = a.bitand(0x03FF).bitor(0x0400)
-        r   : U128 = sig.to<U128>()
-        return(r)
+        implicit : U64 = U64.shl(1, format.fraction_bits.to<U64>())
+        fraction : U64 = bits.bitand(implicit.sub(1))
+        return(fraction.bitor(implicit))
 
 // -- integer to float ----------------------------------------------------------
 
 /// Rounds an integer magnitude of at most 64 bits into a binary format whose bits fit in a U32.
 /// :param negative: Whether the integer was negative.
 /// :param magnitude: Its magnitude.
-/// :param sign_bit: The format's sign bit.
-/// :param sig_bits: The format's stored fraction bits.
-/// :param bias: The format's exponent bias.
-/// :param max_exponent: The format's all-ones exponent field.
+/// :param format: The format (F32 or F16).
 /// :returns: The format's bits, 0 for 0.
 #inline
-routine soft_float32_from(negative: Bool, magnitude: U64, sign_bit: U32, sig_bits: U32, bias: S32,
-    max_exponent: S32) -> U32
+routine soft_float32_from(negative: Bool, magnitude: U64, format: FloatFormat) -> U32
     block entry()
         zero : Bool = magnitude.eq(0)
         branch zero
@@ -520,24 +476,20 @@ routine soft_float32_from(negative: Bool, magnitude: U64, sign_bit: U32, sig_bit
         shift  : U64 = lead.sub_clamp(31)
         narrow : U64 = soft_shr_sticky(magnitude, shift)
         sign   : U32 = negative
-            ? sign_bit
+            ? format.sign_bit()
             : 0
-        exponent : S32 = bias.add(sig_bits.to<S32>()).add(shift.to_wrap<S32>().add(3))
-        r        : U32 = soft_round_pack(sign, exponent, narrow.to_wrap<U32>(), sig_bits,
-            max_exponent)
+        scale    : S32 = format.bias.add(format.fraction_bits.to<S32>())
+        exponent : S32 = scale.add(shift.to_wrap<S32>().add(3))
+        r        : U32 = soft_round_pack(sign, exponent, narrow.to_wrap<U32>(), format)
         return(r)
 
 /// {soft_float32_from} for a 128-bit magnitude.
 /// :param negative: Whether the integer was negative.
 /// :param magnitude: Its magnitude.
-/// :param sign_bit: The format's sign bit.
-/// :param sig_bits: The format's stored fraction bits.
-/// :param bias: The format's exponent bias.
-/// :param max_exponent: The format's all-ones exponent field.
+/// :param format: The format (F32 or F16).
 /// :returns: The format's bits, 0 for 0.
 #inline
-routine soft_float32_from(negative: Bool, magnitude: U128, sign_bit: U32, sig_bits: U32, bias: S32,
-    max_exponent: S32) -> U32
+routine soft_float32_from(negative: Bool, magnitude: U128, format: FloatFormat) -> U32
     block entry()
         zero : Bool = magnitude.eq(0)
         branch zero
@@ -547,11 +499,11 @@ routine soft_float32_from(negative: Bool, magnitude: U128, sign_bit: U32, sig_bi
         shift  : U128 = lead.sub_clamp(31)
         narrow : U128 = soft_shr_sticky(magnitude, shift)
         sign   : U32  = negative
-            ? sign_bit
+            ? format.sign_bit()
             : 0
-        exponent : S32 = bias.add(sig_bits.to<S32>()).add(shift.to_wrap<S32>().add(3))
-        r        : U32 = soft_round_pack(sign, exponent, narrow.to_wrap<U32>(), sig_bits,
-            max_exponent)
+        scale    : S32 = format.bias.add(format.fraction_bits.to<S32>())
+        exponent : S32 = scale.add(shift.to_wrap<S32>().add(3))
+        r        : U32 = soft_round_pack(sign, exponent, narrow.to_wrap<U32>(), format)
         return(r)
 
 /// Rounds an integer magnitude of at most 64 bits into F64 bits.
@@ -595,7 +547,7 @@ routine soft_float64_from(negative: Bool, magnitude: U128) -> U64
 #[inline, no_builtins]
 routine S32.soft_to<F32>(me: Me) -> F32
     block entry()
-        r : U32 = soft_float32_from(me.lt(0), me.abs_diff(0).to<U64>(), 0x80000000, 23, 127, 255)
+        r : U32 = soft_float32_from(me.lt(0), me.abs_diff(0).to<U64>(), F32.FORMAT.load())
         return(bitcast<U32, F32>(r))
 
 /// U32 to F32, rounded to nearest (ties to even): compiler-rt's `__floatunsisf`.
@@ -603,7 +555,7 @@ routine S32.soft_to<F32>(me: Me) -> F32
 #[inline, no_builtins]
 routine U32.soft_to<F32>(me: Me) -> F32
     block entry()
-        r : Me = soft_float32_from(false, me.to<U64>(), 0x80000000, 23, 127, 255)
+        r : Me = soft_float32_from(false, me.to<U64>(), F32.FORMAT.load())
         return(bitcast<Me, F32>(r))
 
 /// S64 to F32, rounded to nearest (ties to even): compiler-rt's `__floatdisf`.
@@ -611,7 +563,7 @@ routine U32.soft_to<F32>(me: Me) -> F32
 #[inline, no_builtins]
 routine S64.soft_to<F32>(me: Me) -> F32
     block entry()
-        r : U32 = soft_float32_from(me.lt(0), me.abs_diff(0), 0x80000000, 23, 127, 255)
+        r : U32 = soft_float32_from(me.lt(0), me.abs_diff(0), F32.FORMAT.load())
         return(bitcast<U32, F32>(r))
 
 /// U64 to F32, rounded to nearest (ties to even): compiler-rt's `__floatundisf`.
@@ -619,7 +571,7 @@ routine S64.soft_to<F32>(me: Me) -> F32
 #[inline, no_builtins]
 routine U64.soft_to<F32>(me: Me) -> F32
     block entry()
-        r : U32 = soft_float32_from(false, me, 0x80000000, 23, 127, 255)
+        r : U32 = soft_float32_from(false, me, F32.FORMAT.load())
         return(bitcast<U32, F32>(r))
 
 /// S128 to F32, rounded to nearest (ties to even): compiler-rt's `__floattisf`.
@@ -627,7 +579,7 @@ routine U64.soft_to<F32>(me: Me) -> F32
 #[inline, no_builtins]
 routine S128.soft_to<F32>(me: Me) -> F32
     block entry()
-        r : U32 = soft_float32_from(me.lt(0), me.abs_diff(0), 0x80000000, 23, 127, 255)
+        r : U32 = soft_float32_from(me.lt(0), me.abs_diff(0), F32.FORMAT.load())
         return(bitcast<U32, F32>(r))
 
 /// U128 to F32, rounded to nearest (ties to even): compiler-rt's `__floatuntisf`.
@@ -635,7 +587,7 @@ routine S128.soft_to<F32>(me: Me) -> F32
 #[inline, no_builtins]
 routine U128.soft_to<F32>(me: Me) -> F32
     block entry()
-        r : U32 = soft_float32_from(false, me, 0x80000000, 23, 127, 255)
+        r : U32 = soft_float32_from(false, me, F32.FORMAT.load())
         return(bitcast<U32, F32>(r))
 
 /// S32 to F64, exactly: compiler-rt's `__floatsidf`.
@@ -692,7 +644,7 @@ routine U128.soft_to<F64>(me: Me) -> F64
 #[inline, no_builtins]
 routine S128.soft_to<F16>(me: Me) -> F16
     block entry()
-        bits : U32 = soft_float32_from(me.lt(0), me.abs_diff(0), 0x8000, 10, 15, 31)
+        bits : U32 = soft_float32_from(me.lt(0), me.abs_diff(0), F16.FORMAT.load())
         r    : U16 = bits.to_wrap<U16>()
         return(bitcast<U16, F16>(r))
 
@@ -702,6 +654,6 @@ routine S128.soft_to<F16>(me: Me) -> F16
 #[inline, no_builtins]
 routine U128.soft_to<F16>(me: Me) -> F16
     block entry()
-        bits : U32 = soft_float32_from(false, me, 0x8000, 10, 15, 31)
+        bits : U32 = soft_float32_from(false, me, F16.FORMAT.load())
         r    : U16 = bits.to_wrap<U16>()
         return(bitcast<U16, F16>(r))

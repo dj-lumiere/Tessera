@@ -952,19 +952,22 @@ require T: typename, Writer<T>
         x.abs_diff(0).represent_into(out, 2)
         return()
 
-/// Writes a binary float given its IEEE fields. exponent_max is the all-ones
-/// exponent (infinity / NaN).
+/// Writes a binary float of at most 64 bits, given its bits and its format, as its shortest round-trip decimal.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-/// :param negative: The sign bit.
-/// :param mantissa: The stored mantissa field.
-/// :param exponent: The biased exponent field.
-/// :param mantissa_bits: The number of stored mantissa bits.
-/// :param bias: The exponent bias.
-/// :param exponent_max: The all-ones exponent field.
-routine write_binary_float<T>(out: @T, negative: Bool, mantissa: U64, exponent: U64,
-    mantissa_bits: S64, bias: S64, exponent_max: U64) -> Void
+/// :param bits: The float's bits, in the low `format.width` bits.
+/// :param format: The float's format (F16, BF16, F32, or F64).
+routine write_binary_float<T>(out: @T, bits: U64, format: FloatFormat) -> Void
 require T: typename, Writer<T>
+    shared mantissa_bits : S64  = format.fraction_bits.to<S64>()
+    shared bias          : S64  = format.bias.to<S64>()
+    shared exponent_max  : U64  = format.exponent_max.to<U64>()
+    shared fraction_mask : U64  = U64.shl(1, mantissa_bits.to<U64>()).sub(1)
+    shared mantissa      : U64  = bits.bitand(fraction_mask)
+    shared exponent      : U64  = bits.shr(mantissa_bits.to<U64>()).bitand(exponent_max)
+    shared sign_at       : U64  = format.width.sub(1).to<U64>()
+    shared negative      : Bool = bits.shr(sign_at).eq(1)
+
     block entry()
         special : Bool = exponent.eq(exponent_max)
         branch special
@@ -1036,11 +1039,8 @@ require T: typename, Writer<T>
 routine F64.represent_into<T>(me: Me, out: @T) -> Void
 require T: typename, Writer<T>
     block entry()
-        bits     : U64  = me.bits()
-        negative : Bool = bits.shr(63).eq(1)
-        mantissa : U64  = bits.bitand(0x000FFFFFFFFFFFFF)  // 2^52 - 1
-        exponent : U64  = bits.shr(52).bitand(2047)
-        write_binary_float(out, negative, mantissa, exponent, 52, 1023, 2047)
+        bits : U64 = me.bits()
+        write_binary_float(out, bits, Me.FORMAT.load())
         return()
 
 /// Writes the F32 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
@@ -1049,11 +1049,8 @@ require T: typename, Writer<T>
 routine F32.represent_into<T>(me: Me, out: @T) -> Void
 require T: typename, Writer<T>
     block entry()
-        bits     : U64  = me.bits().to<U64>()
-        negative : Bool = bits.shr(31).eq(1)
-        mantissa : U64  = bits.bitand(0x7FFFFF)  // 2^23 - 1
-        exponent : U64  = bits.shr(23).bitand(255)
-        write_binary_float(out, negative, mantissa, exponent, 23, 127, 255)
+        bits : U64 = me.bits().to<U64>()
+        write_binary_float(out, bits, Me.FORMAT.load())
         return()
 
 /// Writes the F16 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
@@ -1062,11 +1059,8 @@ require T: typename, Writer<T>
 routine F16.represent_into<T>(me: Me, out: @T) -> Void
 require T: typename, Writer<T>
     block entry()
-        bits     : U64  = me.bits().to<U64>()
-        negative : Bool = bits.shr(15).eq(1)
-        mantissa : U64  = bits.bitand(0x3FF)  // 2^10 - 1
-        exponent : U64  = bits.shr(10).bitand(31)
-        write_binary_float(out, negative, mantissa, exponent, 10, 15, 31)
+        bits : U64 = me.bits().to<U64>()
+        write_binary_float(out, bits, Me.FORMAT.load())
         return()
 
 /// Writes the BF16 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
@@ -1075,11 +1069,8 @@ require T: typename, Writer<T>
 routine BF16.represent_into<T>(me: Me, out: @T) -> Void
 require T: typename, Writer<T>
     block entry()
-        bits     : U64  = me.bits().to<U64>()
-        negative : Bool = bits.shr(15).eq(1)
-        mantissa : U64  = bits.bitand(0x7F)  // 2^7 - 1
-        exponent : U64  = bits.shr(7).bitand(255)
-        write_binary_float(out, negative, mantissa, exponent, 7, 127, 255)
+        bits : U64 = me.bits().to<U64>()
+        write_binary_float(out, bits, Me.FORMAT.load())
         return()
 
 // -- F128 ----------------------------------------------------------------------
@@ -1101,15 +1092,15 @@ routine floor_log10_pow2(x: S64) -> S64
 
 /// Writes f × 2^e (f > 0) as its shortest round-trip decimal. boundary says the
 /// gap below is half the gap above (f is a power of two above the smallest
-/// normal). even says ties read back as this float (f is even).
+/// normal). A tie reads back as this float when f is even.
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
 /// :param f: The significand, above 0.
 /// :param e: The binary exponent.
 /// :param boundary: True when the gap below is half the gap above.
-/// :param even: True when a tie reads back as this float.
-routine write_float_exact<T>(out: @T, f: U128, e: S64, boundary: Bool, even: Bool) -> Void
+routine write_float_exact<T>(out: @T, f: U128, e: S64, boundary: Bool) -> Void
 require T: typename, Writer<T>
+    shared even  : Bool         = f.bitand(1).eq(0)
     shared r     : @BigNat<320> <- uninit
     shared s     : @BigNat<320> <- uninit
     shared plus  : @BigNat<320> <- uninit
@@ -1296,8 +1287,7 @@ require T: typename, Writer<T>
             ? -16494
             : biased.sub(16383).sub(112)
         boundary : Bool = fraction.eq(0).bitand(biased.gt(1))
-        even     : Bool = f.bitand(1).eq(0)
-        write_float_exact(out, f, e, boundary, even)
+        write_float_exact(out, f, e, boundary)
         return()
 
 // -- fixed-point floats --------------------------------------------------------
@@ -1415,20 +1405,25 @@ require T: typename, Writer<T>
         write_zeros(out, digits.sub(places))
         return()
 
-/// represent_fixed_into for a binary float given its IEEE fields: shift is bias +
-/// mantissa bits, so a normal value is (1.fraction) × 2^(biased - shift).
+/// represent_fixed_into for a binary float given its bits and its format: with shift the bias plus the fraction
+/// bits, a normal value is (1.fraction) × 2^(biased - shift).
 /// :typeparam T: The type of the Writer that receives the text.
 /// :param out: The Writer the text is written to.
-/// :param negative: The sign bit.
-/// :param fraction: The stored mantissa field.
-/// :param biased: The biased exponent field.
-/// :param mantissa_bits: The number of stored mantissa bits.
-/// :param shift: The bias plus the number of mantissa bits.
-/// :param exponent_max: The all-ones exponent field.
+/// :param bits: The float's bits, in the low `format.width` bits.
+/// :param format: The float's format.
 /// :param digits: The number of digits after the point.
-routine write_binary_fixed<T>(out: @T, negative: Bool, fraction: U128, biased: S64,
-    mantissa_bits: U128, shift: S64, exponent_max: S64, digits: USize) -> Void
+routine write_binary_fixed<T>(out: @T, bits: U128, format: FloatFormat, digits: USize) -> Void
 require T: typename, Writer<T>
+    shared mantissa_bits : U128 = format.fraction_bits.to<U128>()
+    shared shift         : S64  = format.bias.add(format.fraction_bits.to<S32>()).to<S64>()
+    shared exponent_max  : S64  = format.exponent_max.to<S64>()
+    shared fraction_mask : U128 = U128.shl(1, mantissa_bits).sub(1)
+    shared fraction      : U128 = bits.bitand(fraction_mask)
+    shared field         : U128 = bits.shr(mantissa_bits).bitand(exponent_max.to<U128>())
+    shared biased        : S64  = field.to<S64>()
+    shared sign_at       : U128 = format.width.sub(1).to<U128>()
+    shared negative      : Bool = bits.shr(sign_at).eq(1)
+
     block entry()
         special : Bool = biased.eq(exponent_max)
         nan     : Bool = special.bitand(fraction.ne(0))
@@ -1470,12 +1465,8 @@ require T: typename, Writer<T>
 routine F64.represent_fixed_into<T>(me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer<T>
     block entry()
-        bits           : U64  = me.bits()
-        negative       : Bool = bits.shr(63).eq(1)
-        fraction       : U128 = bits.bitand(0x000FFFFFFFFFFFFF).to<U128>()  // 2^52 - 1
-        exponent_field : U64  = bits.shr(52).bitand(2047)
-        biased         : S64  = exponent_field.to<S64>()
-        write_binary_fixed(out, negative, fraction, biased, 52, 1075, 2047, digits)
+        bits : U128 = me.bits().to<U128>()
+        write_binary_fixed(out, bits, Me.FORMAT.load(), digits)
         return()
 
 /// Writes the F32 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1485,12 +1476,8 @@ require T: typename, Writer<T>
 routine F32.represent_fixed_into<T>(me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer<T>
     block entry()
-        bits           : U64  = me.bits().to<U64>()
-        negative       : Bool = bits.shr(31).eq(1)
-        fraction       : U128 = bits.bitand(0x7FFFFF).to<U128>()  // 2^23 - 1
-        exponent_field : U64  = bits.shr(23).bitand(255)
-        biased         : S64  = exponent_field.to<S64>()
-        write_binary_fixed(out, negative, fraction, biased, 23, 150, 255, digits)
+        bits : U128 = me.bits().to<U128>()
+        write_binary_fixed(out, bits, Me.FORMAT.load(), digits)
         return()
 
 /// Writes the F16 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1500,12 +1487,8 @@ require T: typename, Writer<T>
 routine F16.represent_fixed_into<T>(me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer<T>
     block entry()
-        bits           : U64  = me.bits().to<U64>()
-        negative       : Bool = bits.shr(15).eq(1)
-        fraction       : U128 = bits.bitand(0x3FF).to<U128>()  // 2^10 - 1
-        exponent_field : U64  = bits.shr(10).bitand(31)
-        biased         : S64  = exponent_field.to<S64>()
-        write_binary_fixed(out, negative, fraction, biased, 10, 25, 31, digits)
+        bits : U128 = me.bits().to<U128>()
+        write_binary_fixed(out, bits, Me.FORMAT.load(), digits)
         return()
 
 /// Writes the BF16 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1515,12 +1498,8 @@ require T: typename, Writer<T>
 routine BF16.represent_fixed_into<T>(me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer<T>
     block entry()
-        bits           : U64  = me.bits().to<U64>()
-        negative       : Bool = bits.shr(15).eq(1)
-        fraction       : U128 = bits.bitand(0x7F).to<U128>()  // 2^7 - 1
-        exponent_field : U64  = bits.shr(7).bitand(255)
-        biased         : S64  = exponent_field.to<S64>()
-        write_binary_fixed(out, negative, fraction, biased, 7, 134, 255, digits)
+        bits : U128 = me.bits().to<U128>()
+        write_binary_fixed(out, bits, Me.FORMAT.load(), digits)
         return()
 
 /// Writes the F128 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1530,11 +1509,7 @@ require T: typename, Writer<T>
 routine F128.represent_fixed_into<T>(me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer<T>
     block entry()
-        bits     : U128 = me.bits()
-        negative : Bool = f128_is_negative_bits(bits)
-        fraction : U128 = f128_fraction(bits)
-        biased   : S64  = f128_exponent(bits)
-        write_binary_fixed(out, negative, fraction, biased, 112, 16495, F128_EXP_MAX, digits)
+        write_binary_fixed(out, me.bits(), Me.FORMAT.load(), digits)
         return()
 
 // -- views ---------------------------------------------------------------------

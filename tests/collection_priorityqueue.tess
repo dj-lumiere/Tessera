@@ -12,6 +12,35 @@ import Standard::Os
 record Rng
     state : U64
 
+/// What every phase works with besides the collection.
+record Harness
+    /// Where checkpoints are written.
+    out : @BufWriter<Out>
+    /// The generator that picks each operation.
+    rng : @Rng
+    /// The next job's sequence number, counting across phases.
+    sequence : @S64
+
+/// One phase of the run: its number and how many operations of which kinds it makes.
+record Phase
+    /// The phase's number, as checkpoints print it.
+    number : USize
+    /// How many operations the phase runs.
+    ops : USize
+    /// The percentage of operations that push.
+    push : USize
+    /// How many distinct priorities a pushed job draws from.
+    priorities : USize
+
+/// Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
+record Checkpoint
+    /// The phase's number.
+    phase : USize
+    /// The operations run so far in the phase.
+    op : USize
+    /// The checksum of every result so far.
+    results : S64
+
 record Job
 conform Comparable<Job>
     priority : S64
@@ -54,21 +83,26 @@ routine Job.key(me: Me) -> S64
         key      : S64 = priority.mul(1000000).add(sequence)
         return(key)
 
-routine checkpoint(out: @BufWriter<Out>, heap: @PriorityQueue<Job, S64>, phase: USize, op: USize,
-    results: S64) -> Void
+routine checkpoint(out: @BufWriter<Out>, heap: @PriorityQueue<Job, S64>, at: Checkpoint) -> Void
     block entry()
-        out.write("phase {phase}")
-        labeled(out, "op", op.to<S64>())
+        out.write("phase {at.phase}")
+        labeled(out, "op", at.op.to<S64>())
         size : USize = heap.count()
         labeled(out, "length", size.to<S64>())
-        labeled(out, "results", results)
+        labeled(out, "results", at.results)
         out.write("\n")
         return()
 
 // Runs ops random operations: push is the percentage of pushes, pop takes the next 30 and peek the rest. Priorities
 // are below priorities, so small bounds make many ties. sequence counts pushes. Returns the updated results checksum.
-routine run_phase(out: @BufWriter<Out>, heap: @PriorityQueue<Job, S64>, rng: @Rng, sequence: @S64,
-    phase: USize, ops: USize, push: USize, priorities: USize, results: S64) -> S64
+routine run_phase(harness: Harness, heap: @PriorityQueue<Job, S64>, phase: Phase,
+    results: S64) -> S64
+    shared rng        : @Rng  = harness.rng
+    shared sequence   : @S64  = harness.sequence
+    shared ops        : USize = phase.ops
+    shared push       : USize = phase.push
+    shared priorities : USize = phase.priorities
+
     block entry()
         jump next(0, results)
 
@@ -131,7 +165,7 @@ routine run_phase(out: @BufWriter<Out>, heap: @PriorityQueue<Job, S64>, rng: @Rn
             : next(op_next, mixed)
 
     block report(op: USize, checksum: S64)
-        checkpoint(out, heap, phase, op, checksum)
+        checkpoint(harness.out, heap, Checkpoint { phase: phase.number, op: op, results: checksum })
         jump next(op, checksum)
 
 // Pops everything, printing the count, a hash of the pop order, and whether each pop was no smaller than the last.
@@ -180,10 +214,15 @@ routine start() -> Void
         claim sequence : @S64                     <- 0
         claim heap     : @PriorityQueue<Job, S64> <- .construct(alloc)
 
-        r1 : S64 = run_phase(out, heap, rng, sequence, 1, 4000, 55, 1000000, 0)
-        r2 : S64 = run_phase(out, heap, rng, sequence, 2, 4000, 40, 20, r1)
-        r3 : S64 = run_phase(out, heap, rng, sequence, 3, 3000, 25, 1000, r2)
-        r4 : S64 = run_phase(out, heap, rng, sequence, 4, 3000, 60, 5, r3)
+        harness : Harness = Harness { out: out, rng: rng, sequence: sequence }
+        r1      : S64     = run_phase(harness, heap,
+            Phase { number: 1, ops: 4000, push: 55, priorities: 1000000 }, 0)
+        r2      : S64     = run_phase(harness, heap,
+            Phase { number: 2, ops: 4000, push: 40, priorities: 20 }, r1)
+        r3      : S64     = run_phase(harness, heap,
+            Phase { number: 3, ops: 3000, push: 25, priorities: 1000 }, r2)
+        r4      : S64     = run_phase(harness, heap,
+            Phase { number: 4, ops: 3000, push: 60, priorities: 5 }, r3)
         drain(out, heap)
         heap.destruct()
         out.write("freed is empty {heap.is_empty()}\n")

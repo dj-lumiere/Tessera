@@ -247,15 +247,16 @@ private routine utf16(text: Bytes, alloc: @Allocator) -> (@U16, USize)
 
 // -- the command line --------------------------------------------------------------------
 
-/// Whether one of the `n` units at `s` is `a`, `b`, or `c`.
-/// :param s: The first unit.
-/// :param n: How many units to look at.
+/// Whether one of the units of `s` is `a`, `b`, or `c`.
+/// :param s: The units to look at.
 /// :param a: One unit to look for.
 /// :param b: Another unit to look for.
 /// :param c: A third unit to look for.
 /// :returns: True when one of them is there.
 #target(os: "windows")
-private routine has_any(s: @U16, n: USize, a: U16, b: U16, c: U16) -> Bool
+private routine has_any(s: Slice<U16>, a: U16, b: U16, c: U16) -> Bool
+    shared n : USize = s.count()
+
     block entry()
         jump look(0)
 
@@ -263,7 +264,7 @@ private routine has_any(s: @U16, n: USize, a: U16, b: U16, c: U16) -> Bool
         branch i.eq(n)
             ? return(false)
             : continue
-        u          : U16  = s.stride(i).load()
+        u          : U16  = s.getitem(i)
         matches_ab : Bool = u.eq(a).bitor(u.eq(b))
         branch matches_ab.bitor(u.eq(c))
             ? return(true)
@@ -277,18 +278,19 @@ private routine has_any(s: @U16, n: USize, a: U16, b: U16, c: U16) -> Bool
 /// :returns: The unit just after what was written.
 #target(os: "windows")
 private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
-    shared start : @U16 = target.stride(1)
+    shared start : @U16       = target.stride(1)
+    shared units : Slice<U16> = Slice<U16>.construct(source, n)
 
     block entry()
         branch n.eq(0)
             ? empty()
             : continue
         // ' ', '\t', '"'
-        branch has_any(source, n, 32, 9, 34)
+        branch has_any(units, 32, 9, 34)
             ? continue
             : plain()
         // '"', '\\'
-        branch has_any(source, n, 34, 92, 34)
+        branch has_any(units, 34, 92, 34)
             ? escaped()
             : quoted()
 
@@ -347,13 +349,12 @@ private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
 /// `alloc`.
 /// :param program: The program to run.
 /// :param args: The arguments, not including the program name.
-/// :param arg_count: How many arguments `args` holds.
 /// :param alloc: The allocator for the line and the working memory.
 /// :returns: The command line, or null when an allocation fails (the texts were checked for a NUL before).
 #target(os: "windows")
-private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
-    alloc: @Allocator) -> @U16
-    shared at : @@U16 <- uninit
+private routine command_line(program: Bytes, args: Slice<Bytes>, alloc: @Allocator) -> @U16
+    shared arg_count : USize = args.count()
+    shared at        : @@U16 <- uninit
 
     block entry()
         program_bound : USize = program.count().mul(2)
@@ -366,7 +367,7 @@ private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
             : count_arg(i, capacity)
 
     block count_arg(i: USize, capacity: USize)
-        argument : Bytes = args.stride(i).load()
+        argument : Bytes = args.getitem(i)
         jump size(i.add(1), capacity.add(argument.count().mul(2)).add(3))
 
     block made(line: @U16)
@@ -383,7 +384,7 @@ private routine command_line(program: Bytes, args: @Bytes, arg_count: USize,
             : continue
         branch i.eq(0)
             ? one(line, i, program)
-            : one(line, i, args.stride(i.sub(1)).load())
+            : one(line, i, args.getitem(i.sub(1)))
 
     block one(line: @U16, i: USize, arg: Bytes)
         units, n = utf16(arg, alloc)
@@ -877,14 +878,13 @@ private routine output_handle(mode: OutputMode, pipe: Addr, device: Addr, which:
 /// execvp.
 /// :param program: The program to run.
 /// :param args: The arguments, not including the program name.
-/// :param arg_count: How many arguments `args` holds.
 /// :param options: The directory, environment overrides, and standard streams.
 /// :param alloc: The allocator for the captured output and the working memory.
 /// :returns: The {ProcessOutput}, or Failure with a {ProcessError} (InvalidArgument for a NUL in the command, the
 /// directory, or a variable, or a directory too long for a path, OutOfMemory when the working memory or the
 /// captured output can't be allocated).
 #target(os: "windows")
-routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
+routine run_process_result(program: Bytes, args: Slice<Bytes>, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
     shared line : @@U16               <- null
     shared env  : @@U16               <- null
@@ -893,10 +893,10 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
         process_id: 0, thread_id: 0 }
 
     block entry()
-        branch has_nul(program, args, arg_count, options)
+        branch has_nul(program, args, options)
             ? finish(.Failure(ProcessError.InvalidArgument))
             : continue
-        made_line : @U16 = command_line(program, args, arg_count, alloc)
+        made_line : @U16 = command_line(program, args, alloc)
         made_line.store_into(line)
         branch made_line.is_null()
             ? finish(.Failure(ProcessError.OutOfMemory))

@@ -485,13 +485,15 @@ routine cm_atan_limbs_not(a: @U64, n: USize) -> Void
         limb.bitnot().store_into(a.stride(i))
         jump limb(i.add(1))
 
-/// o = a × b exactly (na + nb limbs), where o is neither a nor b. All 8 limbs of `o` are cleared first.
+/// o = a × b exactly (a.count + b.count limbs), where o is neither a nor b. All 8 limbs of `o` are cleared
+/// first.
 /// :param o: The 8-limb product buffer.
-/// :param a: The first factor.
-/// :param na: The limbs of `a`.
-/// :param b: The second factor.
-/// :param nb: The limbs of `b`, with `na` + `nb` <= 8.
-routine cm_atan_limbs_mul(o: @U64, a: @U64, na: USize, b: @U64, nb: USize) -> Void
+/// :param a: The first factor's limbs.
+/// :param b: The second factor's limbs, with `a.count` + `b.count` <= 8.
+routine cm_atan_limbs_mul(o: @U64, a: Slice<U64>, b: Slice<U64>) -> Void
+    shared na : USize = a.count
+    shared nb : USize = b.count
+
     block entry()
         o.zeroinit(8)
         jump row(0)
@@ -509,8 +511,8 @@ routine cm_atan_limbs_mul(o: @U64, a: @U64, na: USize, b: @U64, nb: USize) -> Vo
             : product(j, i)
 
     block product(j: USize, i: USize)
-        ai : U64 = a.stride(i).load()
-        bj : U64 = b.stride(j).load()
+        ai : U64 = a.data.stride(i).load()
+        bj : U64 = b.data.stride(j).load()
         cm_atan_limbs_add_at(o, i.add(j), cm_atan_mul(ai, bj), na.add(nb))
         jump column(j, i.add(1))
 
@@ -767,7 +769,7 @@ routine cm_atan_accurate_reciprocal(kd0: S64, kd1: U64, kd2: U64, r: @U64) -> Vo
         kd.stride(1).store(kd1)
         kd.stride(2).store(kd2)
         // h = r × kd (5 limbs), and sh = h >> 58, a signed 3-limb error term
-        cm_atan_limbs_mul(h, rcp, 2, kd, 3)
+        cm_atan_limbs_mul(h, Slice<U64>.construct(rcp, 2), Slice<U64>.construct(kd, 3))
         h0     : U64 = h.stride(0).load()
         h1     : U64 = h.stride(1).load()
         h2_val : U64 = h.stride(2).load()
@@ -779,7 +781,7 @@ routine cm_atan_accurate_reciprocal(kd0: S64, kd1: U64, kd2: U64, r: @U64) -> Vo
         sh.stride(1).store(sh1)
         sh.stride(2).store(sh2)
         // h2 = sh² as a signed square: the unsigned square, less 2 sh × 2^192 when sh < 0
-        cm_atan_limbs_mul(h2, sh, 3, sh, 3)
+        cm_atan_limbs_mul(h2, Slice<U64>.construct(sh, 3), Slice<U64>.construct(sh, 3))
         sh_neg : Bool = sh2.shr(63).eq(1)
         fix.zeroinit(8)
         tw3      : S64 = sh0.shl(1).to_wrap<S64>()
@@ -811,7 +813,7 @@ routine cm_atan_accurate_reciprocal(kd0: S64, kd1: U64, kd2: U64, r: @U64) -> Vo
         fix.stride(2).store(sq4)
         cm_atan_limbs_sub(h, h, fix, 5)
         // dr = h × r as a signed product (h is signed), then >> 10
-        cm_atan_limbs_mul(dr, h, 5, rcp, 2)
+        cm_atan_limbs_mul(dr, Slice<U64>.construct(h, 5), Slice<U64>.construct(rcp, 2))
         top_h : U64  = h.stride(4).load()
         h_neg : Bool = top_h.shr(63).eq(1)
         fix.zeroinit(8)
@@ -923,7 +925,7 @@ routine cm_atan_accurate_core(red: CmAtanReduction, f: @U64) -> Void
         kn.stride(0).store(kn_lo.to_wrap<U64>())
         kn.stride(1).store(kn_hi.to_wrap<U64>())
         // t = r × kn >> 128: the reduced argument to 6 limbs (limbs 2..7 of the product)
-        cm_atan_limbs_mul(t, r, 6, kn, 2)
+        cm_atan_limbs_mul(t, Slice<U64>.construct(r, 6), Slice<U64>.construct(kn, 2))
         t_top : @U64 = t.offset(16)
         cm_atan_accurate_series(t_top, red.dn, f)
         return()

@@ -44,7 +44,8 @@ static class Cli
               containing its text. <name>.input, if present, is its standard input (else it reads an empty one).
         lint: warns on a chain of more than three calls, and in a routine with a block named finish (the block that
               releases what the routine holds and is its only return), on a return outside finish and on finish
-              destructing a head slot that starts as <- uninit, and in a library or example file (one not under a
+              destructing a head slot that starts as <- uninit, on a routine with five or more parameters (me aside,
+              C ABI signatures and generated code exempt) that should take a record instead, and in a library or example file (one not under a
               tests, playground, scratch, or generated directory) on a routine without a /// doc comment, or whose doc lacks
               a :param line for a parameter (me aside), has one for a name that isn't a parameter, or lacks
               :returns: when it returns a value. check, build, and run print the same warnings for the program's

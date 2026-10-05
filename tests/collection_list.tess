@@ -11,6 +11,31 @@ import Standard::Os
 record Rng
     state : U64
 
+/// What every phase works with besides the collection.
+record Harness
+    /// Where checkpoints are written.
+    out : @BufWriter<Out>
+    /// The generator that picks each operation.
+    rng : @Rng
+
+/// One phase of the run: its number and how many operations of which kinds it makes.
+record Phase
+    /// The phase's number, as checkpoints print it.
+    number : USize
+    /// How many operations the phase runs.
+    ops : USize
+    /// The percentage of operations that push. Pop takes the next 25.
+    push : USize
+
+/// Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
+record Checkpoint
+    /// The phase's number.
+    phase : USize
+    /// The operations run so far in the phase.
+    op : USize
+    /// The checksum of every result so far.
+    results : S64
+
 routine Rng.below(me: @Me, bound: USize) -> USize
     block entry()
         state : U64 = me.state.load()
@@ -44,22 +69,24 @@ routine iteration_hash(list: @List<S64>) -> S64
             .Present(value) -> next(mix(hash, value))
             .Absent         -> return(hash)
 
-routine checkpoint(out: @BufWriter<Out>, list: @List<S64>, phase: USize, op: USize,
-    results: S64) -> Void
+routine checkpoint(out: @BufWriter<Out>, list: @List<S64>, at: Checkpoint) -> Void
     block entry()
-        out.write("phase {phase}")
-        labeled(out, "op", op.to<S64>())
+        out.write("phase {at.phase}")
+        labeled(out, "op", at.op.to<S64>())
         size : USize = list.count()
         labeled(out, "length", size.to<S64>())
-        labeled(out, "results", results)
+        labeled(out, "results", at.results)
         labeled(out, "iteration", iteration_hash(list))
         out.write("\n")
         return()
 
 // Runs ops random operations: push is the percentage of pushes, pop takes the next 25. Returns the updated results
 // checksum.
-routine run_phase(out: @BufWriter<Out>, list: @List<S64>, rng: @Rng, phase: USize, ops: USize,
-    push: USize, results: S64) -> S64
+routine run_phase(harness: Harness, list: @List<S64>, phase: Phase, results: S64) -> S64
+    shared rng  : @Rng  = harness.rng
+    shared ops  : USize = phase.ops
+    shared push : USize = phase.push
+
     block entry()
         jump next(0, results)
 
@@ -142,7 +169,7 @@ routine run_phase(out: @BufWriter<Out>, list: @List<S64>, rng: @Rng, phase: USiz
             : next(op_next, mixed)
 
     block report(op: USize, checksum: S64)
-        checkpoint(out, list, phase, op, checksum)
+        checkpoint(harness.out, list, Checkpoint { phase: phase.number, op: op, results: checksum })
         jump next(op, checksum)
 
 // Pushes every element of from onto to.
@@ -176,10 +203,11 @@ routine start() -> Void
         claim rng   : @Rng       <- Rng { state: 2 }
         claim list  : @List<S64> <- .construct(alloc)
 
-        r1 : S64 = run_phase(out, list, rng, 1, 4000, 50, 0)
-        r2 : S64 = run_phase(out, list, rng, 2, 4000, 25, r1)
-        r3 : S64 = run_phase(out, list, rng, 3, 3000, 15, r2)
-        r4 : S64 = run_phase(out, list, rng, 4, 3000, 45, r3)
+        harness : Harness = Harness { out: out, rng: rng }
+        r1      : S64     = run_phase(harness, list, Phase { number: 1, ops: 4000, push: 50 }, 0)
+        r2      : S64     = run_phase(harness, list, Phase { number: 2, ops: 4000, push: 25 }, r1)
+        r3      : S64     = run_phase(harness, list, Phase { number: 3, ops: 3000, push: 15 }, r2)
+        r4      : S64     = run_phase(harness, list, Phase { number: 4, ops: 3000, push: 45 }, r3)
 
         claim copied : @List<S64> <- .construct(alloc)
         empty_copy : List<S64> = copied.load()

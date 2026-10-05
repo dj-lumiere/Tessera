@@ -255,11 +255,12 @@ require TKey: typename, TValue: typename, Equatable<TValue>
 private routine Dict<TKey, TValue>.rehash(me: @Me, new_capacity: USize) -> Bool
 require TKey: typename, TValue: typename
     shared alloc        : @Allocator     = me.keys.alloc.load()
-    shared keys         : @Slice<TKey>   <- .construct(0, alloc)
-    shared values       : @Slice<TValue> <- .construct(0, alloc)
-    shared hashes       : @Slice<U64>    <- .construct(0, alloc)
-    shared entry_states : @Slice<U8>     <- .construct(0, alloc)
-    shared slots        : @Slice<USize>  <- .construct(0, alloc)
+    shared fresh        : @Me            <- .construct(alloc)
+    shared keys         : @Slice<TKey>   = fresh.keys
+    shared values       : @Slice<TValue> = fresh.values
+    shared hashes       : @Slice<U64>    = fresh.hashes
+    shared entry_states : @Slice<U8>     = fresh.entry_states
+    shared slots        : @Slice<USize>  = fresh.slots
 
     block entry()
         made_keys : Bool = make_array<TKey>(keys, new_capacity)
@@ -284,7 +285,7 @@ require TKey: typename, TValue: typename
             : discard()
 
     block discard()
-        destruct_arrays<TKey, TValue>(keys, values, hashes, entry_states, slots)
+        fresh.destruct()
         return(false)
 
     block clear_loop(i: USize)
@@ -333,7 +334,7 @@ require TKey: typename, TValue: typename
         jump move_loop(i.add(1), old_count)
 
     block release_old()
-        destruct_arrays<TKey, TValue>(keys, values, hashes, entry_states, slots)
+        fresh.destruct()
         return(true)
 
 /// Makes room for one more entry: the first insertion rehashes into 8 slots, and the tables double once one more
@@ -591,7 +592,11 @@ require TKey: typename, TValue: typename
 routine Dict<TKey, TValue>.destruct(me: @Me) -> Void
 require TKey: typename, TValue: typename
     block entry()
-        destruct_arrays<TKey, TValue>(me.keys, me.values, me.hashes, me.entry_states, me.slots)
+        me.keys.resize(0)
+        me.values.resize(0)
+        me.hashes.resize(0)
+        me.entry_states.resize(0)
+        me.slots.resize(0)
         me.count.store(0)
         me.entries_count.store(0)
         return()
@@ -709,24 +714,4 @@ require T: typename
         second : Slice<T> = b.load()
         second.store_into(a)
         first.store_into(b)
-        return()
-
-/// Gives the five arrays of a dict back to their allocator, leaving each empty.
-/// :typeparam TKey: The key type.
-/// :typeparam TValue: The value type.
-/// :param keys: The keys array.
-/// :param values: The values array.
-/// :param hashes: The hashes array.
-/// :param entry_states: The entry states array.
-/// :param slots: The slot table.
-#track_caller
-private routine destruct_arrays<TKey, TValue>(keys: @Slice<TKey>, values: @Slice<TValue>,
-    hashes: @Slice<U64>, entry_states: @Slice<U8>, slots: @Slice<USize>) -> Void
-require TKey: typename, TValue: typename
-    block entry()
-        keys.resize(0)
-        values.resize(0)
-        hashes.resize(0)
-        entry_states.resize(0)
-        slots.resize(0)
         return()

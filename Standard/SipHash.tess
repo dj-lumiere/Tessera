@@ -11,7 +11,7 @@
 //   siphash24(value, key) -> U64    one U64, the same as its 8 bytes in memory
 //   siphash24(low, high, key) -> U64    two U64s, the same as their 16 bytes in memory (low first)
 //
-// The state is four 64-bit words, carried from step to step as a tuple. All arithmetic is modulo 2^64.
+// The state is four 64-bit words, carried from step to step as a SipState. All arithmetic is modulo 2^64.
 
 module Standard::Core
 
@@ -28,71 +28,71 @@ record SipKey
     k0 : U64
     k1 : U64
 
+/// The SipHash state: four 64-bit words that every round mixes and every block is absorbed into.
+record SipState
+    v0 : U64  // the first word, which a block is xored into after its rounds
+    v1 : U64  // the second word
+    v2 : U64  // the third word, which the finish xors with 0xFF
+    v3 : U64  // the fourth word, which a block is xored into before its rounds
+
 /// One SipRound: additions, rotations, and xors that mix the four state words.
-/// :param v0: The first state word.
-/// :param v1: The second state word.
-/// :param v2: The third state word.
-/// :param v3: The fourth state word.
-/// :returns: The four mixed state words, in the same order.
+/// :param s: The state.
+/// :returns: The mixed state.
 #inline
-private routine sip_round(v0: U64, v1: U64, v2: U64, v3: U64) -> (U64, U64, U64, U64)
+private routine sip_round(s: SipState) -> SipState
     block entry()
-        a0    : U64                  = v0.add_wrap(v1)
-        a1    : U64                  = v1.rotl(13).bitxor(a0)
-        b0    : U64                  = a0.rotl(32)
-        a2    : U64                  = v2.add_wrap(v3)
-        a3    : U64                  = v3.rotl(16).bitxor(a2)
-        c0    : U64                  = b0.add_wrap(a3)
-        c3    : U64                  = a3.rotl(21).bitxor(c0)
-        c2    : U64                  = a2.add_wrap(a1)
-        c1    : U64                  = a1.rotl(17).bitxor(c2)
-        d2    : U64                  = c2.rotl(32)
-        state : (U64, U64, U64, U64) = { c0, c1, d2, c3 }
+        a0    : U64      = s.v0.add_wrap(s.v1)
+        a1    : U64      = s.v1.rotl(13).bitxor(a0)
+        b0    : U64      = a0.rotl(32)
+        a2    : U64      = s.v2.add_wrap(s.v3)
+        a3    : U64      = s.v3.rotl(16).bitxor(a2)
+        c0    : U64      = b0.add_wrap(a3)
+        c3    : U64      = a3.rotl(21).bitxor(c0)
+        c2    : U64      = a2.add_wrap(a1)
+        c1    : U64      = a1.rotl(17).bitxor(c2)
+        d2    : U64      = c2.rotl(32)
+        state : SipState = SipState { v0: c0, v1: c1, v2: d2, v3: c3 }
         return(state)
 
 /// The starting state for a key: the four constants, each xored with one of the key's words.
 /// :param key: The 128-bit key.
-/// :returns: The four state words.
+/// :returns: The starting state.
 #inline
-private routine sip_init(key: SipKey) -> (U64, U64, U64, U64)
+private routine sip_init(key: SipKey) -> SipState
     block entry()
-        v0    : U64                  = key.k0.bitxor(SIP_C0)
-        v1    : U64                  = key.k1.bitxor(SIP_C1)
-        v2    : U64                  = key.k0.bitxor(SIP_C2)
-        v3    : U64                  = key.k1.bitxor(SIP_C3)
-        state : (U64, U64, U64, U64) = { v0, v1, v2, v3 }
+        v0    : U64      = key.k0.bitxor(SIP_C0)
+        v1    : U64      = key.k1.bitxor(SIP_C1)
+        v2    : U64      = key.k0.bitxor(SIP_C2)
+        v3    : U64      = key.k1.bitxor(SIP_C3)
+        state : SipState = SipState { v0: v0, v1: v1, v2: v2, v3: v3 }
         return(state)
 
 /// Absorbs one 64-bit block `m` with two SipRounds.
-/// :param v0: The first state word.
-/// :param v1: The second state word.
-/// :param v2: The third state word.
-/// :param v3: The fourth state word.
+/// :param s: The state before the block.
 /// :param m: The block, its bytes read little-endian.
-/// :returns: The four state words after the block.
+/// :returns: The state after the block.
 #inline
-private routine sip_compress(v0: U64, v1: U64, v2: U64, v3: U64, m: U64) -> (U64, U64, U64, U64)
+private routine sip_compress(s: SipState, m: U64) -> SipState
     block entry()
-        a0, a1, a2, a3 = sip_round(v0, v1, v2, v3.bitxor(m))
-        b0, b1, b2, b3 = sip_round(a0, a1, a2, a3)
-        state : (U64, U64, U64, U64) = { b0.bitxor(m), b1, b2, b3 }
+        mixed : SipState = SipState { v0: s.v0, v1: s.v1, v2: s.v2, v3: s.v3.bitxor(m) }
+        a     : SipState = sip_round(mixed)
+        b     : SipState = sip_round(a)
+        state : SipState = SipState { v0: b.v0.bitxor(m), v1: b.v1, v2: b.v2, v3: b.v3 }
         return(state)
 
 /// Finishes with four SipRounds and folds the state into the 64-bit digest.
-/// :param v0: The first state word.
-/// :param v1: The second state word.
-/// :param v2: The third state word.
-/// :param v3: The fourth state word.
+/// :param s: The state after the last block.
 /// :returns: The 64-bit hash.
 #inline
-private routine sip_finish(v0: U64, v1: U64, v2: U64, v3: U64) -> U64
+private routine sip_finish(s: SipState) -> U64
     block entry()
-        a0, a1, a2, a3 = sip_round(v0, v1, v2.bitxor(0xFF), v3)
-        b0, b1, b2, b3 = sip_round(a0, a1, a2, a3)
-        c0, c1, c2, c3 = sip_round(b0, b1, b2, b3)
-        d0, d1, d2, d3 = sip_round(c0, c1, c2, c3)
-        low  : U64 = d0.bitxor(d1)
-        high : U64 = d2.bitxor(d3)
+        mixed : SipState = SipState { v0: s.v0, v1: s.v1, v2: s.v2.bitxor(0xFF), v3: s.v3 }
+        a     : SipState = sip_round(mixed)
+        b     : SipState = sip_round(a)
+        c     : SipState = sip_round(b)
+        d     : SipState = sip_round(c)
+        low   : U64      = d.v0.bitxor(d.v1)
+        high  : U64      = d.v2.bitxor(d.v3)
         return(low.bitxor(high))
 
 /// The last block of a `count`-byte input: the bytes from `from` (fewer than 8) little-endian, and the count's low byte
@@ -129,23 +129,21 @@ routine siphash24(data: @Byte, count: USize, key: SipKey) -> U64
     shared whole : USize = count.sub(count.bitand(7))
 
     block entry()
-        v0, v1, v2, v3 = sip_init(key)
-        jump blocks(0, v0, v1, v2, v3)
+        jump blocks(0, sip_init(key))
 
-    block blocks(at: USize, v0: U64, v1: U64, v2: U64, v3: U64)
+    block blocks(at: USize, state: SipState)
         done : Bool = at.ge(whole)
         branch done
-            ? last(v0, v1, v2, v3)
+            ? last(state)
             : continue
         // Every target Tessera supports is little-endian, so the block's 8 bytes read as one U64 are the block.
         m : U64 = data.stride(at).to<@U64>().load_unaligned()
-        s0, s1, s2, s3 = sip_compress(v0, v1, v2, v3, m)
-        jump blocks(at.add(8), s0, s1, s2, s3)
+        jump blocks(at.add(8), sip_compress(state, m))
 
-    block last(v0: U64, v1: U64, v2: U64, v3: U64)
-        m : U64 = sip_last_block(data, whole, count)
-        s0, s1, s2, s3 = sip_compress(v0, v1, v2, v3, m)
-        return(sip_finish(s0, s1, s2, s3))
+    block last(state: SipState)
+        m     : U64      = sip_last_block(data, whole, count)
+        final : SipState = sip_compress(state, m)
+        return(sip_finish(final))
 
 /// SipHash-2-4 of one U64 under `key`, the same as `siphash24` over its 8 bytes in memory (little-endian), without a
 /// buffer: one full block, then the length (8) in the top byte of a block of its own.
@@ -155,10 +153,10 @@ routine siphash24(data: @Byte, count: USize, key: SipKey) -> U64
 #inline
 routine siphash24(value: U64, key: SipKey) -> U64
     block entry()
-        v0, v1, v2, v3 = sip_init(key)
-        s0, s1, s2, s3 = sip_compress(v0, v1, v2, v3, value)
-        t0, t1, t2, t3 = sip_compress(s0, s1, s2, s3, 0x0800000000000000)
-        return(sip_finish(t0, t1, t2, t3))
+        start  : SipState = sip_init(key)
+        block1 : SipState = sip_compress(start, value)
+        final  : SipState = sip_compress(block1, 0x0800000000000000)
+        return(sip_finish(final))
 
 /// SipHash-2-4 of two U64s under `key`, the same as `siphash24` over their 16 bytes in memory, `low` first (a U128's
 /// low and high words): two full blocks, then the length (16) in the top byte of a block of its own.
@@ -169,8 +167,8 @@ routine siphash24(value: U64, key: SipKey) -> U64
 #inline
 routine siphash24(low: U64, high: U64, key: SipKey) -> U64
     block entry()
-        v0, v1, v2, v3 = sip_init(key)
-        s0, s1, s2, s3 = sip_compress(v0, v1, v2, v3, low)
-        t0, t1, t2, t3 = sip_compress(s0, s1, s2, s3, high)
-        u0, u1, u2, u3 = sip_compress(t0, t1, t2, t3, 0x1000000000000000)
-        return(sip_finish(u0, u1, u2, u3))
+        start  : SipState = sip_init(key)
+        block1 : SipState = sip_compress(start, low)
+        block2 : SipState = sip_compress(block1, high)
+        final  : SipState = sip_compress(block2, 0x1000000000000000)
+        return(sip_finish(final))

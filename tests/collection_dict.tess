@@ -11,6 +11,31 @@ import Standard::Os
 record Rng
     state : U64
 
+/// What every phase works with besides the collection.
+record Harness
+    /// Where checkpoints are written.
+    out : @BufWriter<Out>
+    /// The generator that picks each operation.
+    rng : @Rng
+
+/// One phase of the run: its number and how many operations of which kinds it makes.
+record Phase
+    /// The phase's number, as checkpoints print it.
+    number : USize
+    /// How many operations the phase runs.
+    ops : USize
+    /// How many distinct keys the operations draw from.
+    keys : USize
+
+/// Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
+record Checkpoint
+    /// The phase's number.
+    phase : USize
+    /// The operations run so far in the phase.
+    op : USize
+    /// The checksum of every result so far.
+    results : S64
+
 routine Rng.below(me: @Me, bound: USize) -> USize
     block entry()
         state : U64 = me.state.load()
@@ -50,21 +75,23 @@ routine iteration_hash(map: @Dict<S64, S64>) -> S64
         mix(mix(hash.load(), key), value).store_into(hash)
         jump next()
 
-routine checkpoint(out: @BufWriter<Out>, map: @Dict<S64, S64>, phase: USize, op: USize,
-    results: S64) -> Void
+routine checkpoint(out: @BufWriter<Out>, map: @Dict<S64, S64>, at: Checkpoint) -> Void
     block entry()
-        out.write("phase {phase}")
-        labeled(out, "op", op.to<S64>())
+        out.write("phase {at.phase}")
+        labeled(out, "op", at.op.to<S64>())
         size : USize = map.count()
         labeled(out, "length", size.to<S64>())
-        labeled(out, "results", results)
+        labeled(out, "results", at.results)
         labeled(out, "iteration", iteration_hash(map))
         out.write("\n")
         return()
 
 // Runs ops random operations on keys below keys. Returns the updated results checksum.
-routine run_phase(out: @BufWriter<Out>, map: @Dict<S64, S64>, rng: @Rng, phase: USize, ops: USize,
-    keys: USize, results: S64) -> S64
+routine run_phase(harness: Harness, map: @Dict<S64, S64>, phase: Phase, results: S64) -> S64
+    shared rng  : @Rng  = harness.rng
+    shared ops  : USize = phase.ops
+    shared keys : USize = phase.keys
+
     block entry()
         jump next(0, results)
 
@@ -112,7 +139,7 @@ routine run_phase(out: @BufWriter<Out>, map: @Dict<S64, S64>, rng: @Rng, phase: 
             : next(op_next, mixed)
 
     block report(op: USize, checksum: S64)
-        checkpoint(out, map, phase, op, checksum)
+        checkpoint(harness.out, map, Checkpoint { phase: phase.number, op: op, results: checksum })
         jump next(op, checksum)
 
 // Copies from into to in iteration order, but starting from its second half, so the two maps hold the same pairs in
@@ -160,9 +187,10 @@ routine start() -> Void
         claim rng   : @Rng            <- Rng { state: 1 }
         claim map   : @Dict<S64, S64> <- .construct(alloc)
 
-        r1 : S64 = run_phase(out, map, rng, 1, 3000, 64, 0)
-        r2 : S64 = run_phase(out, map, rng, 2, 8000, 5000, r1)
-        r3 : S64 = run_phase(out, map, rng, 3, 4000, 300, r2)
+        harness : Harness = Harness { out: out, rng: rng }
+        r1      : S64     = run_phase(harness, map, Phase { number: 1, ops: 3000, keys: 64 }, 0)
+        r2      : S64     = run_phase(harness, map, Phase { number: 2, ops: 8000, keys: 5000 }, r1)
+        r3      : S64     = run_phase(harness, map, Phase { number: 3, ops: 4000, keys: 300 }, r2)
 
         claim copied : @Dict<S64, S64> <- .construct(alloc)
         report_eq(out, "empty copy equal", map.load().eq(copied.load()))

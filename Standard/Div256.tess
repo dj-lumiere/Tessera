@@ -189,7 +189,7 @@ private record U256Division
     u          : Array<U64, 5>  // the normalized dividend, least significant limb first
     v          : Array<U64, 4>  // the normalized divisor
     n          : USize  // the divisor's limb count
-    reciprocal : U64  // div_3by2_prepare of v's top two limbs
+    reciprocal : U64  // the reciprocal div_3by2_prepare works out for v's top two limbs
 
 /// u / d and u % d for a divisor of two or more limbs, by algorithm D.
 /// :param u: The dividend, at least `d`.
@@ -249,10 +249,10 @@ routine U256Division.construct(me: @Me, u: U256, d: U256, n: USize, shift: U64) 
         me.v.setitem(2, u256_limb(d_norm, 2))
         me.v.setitem(3, u256_limb(d_norm, 3))
         me.n.store(n)
-        d1         : U64 = u256_limb(d_norm, n.sub(1))
-        d0         : U64 = u256_limb(d_norm, n.sub(2))
-        reciprocal : U64 = div_3by2_prepare(d1, d0)
-        me.reciprocal.store(reciprocal)
+        d1          : U64         = u256_limb(d_norm, n.sub(1))
+        d0          : U64         = u256_limb(d_norm, n.sub(2))
+        top_divisor : Divisor3By2 = div_3by2_prepare(d1, d0)
+        me.reciprocal.store(top_divisor.reciprocal)
         return()
 
 /// One step: the quotient digit of the window u[j .. j+n] by v, which replaces the window with its remainder.
@@ -285,14 +285,14 @@ routine U256Division.step(me: @Me, j: USize) -> U64
     // finishes the window. q̂ can be one too big for n >= 3: then that
     // subtraction borrows, and v is added back.
     block estimate()
-        v      : U64     = me.reciprocal.load()
-        top    : Div3By2 = div_3by2(u2, u1, u0, d1, d0, v)
-        q_hat  : U64     = top.quotient
-        borrow : U64     = me.submul(j, n.sub(2), q_hat)
-        rhat   : U128    = top.remainder
-        taken  : U128    = borrow.to<U128>()
-        rest   : U128    = rhat.sub_wrap(taken)
-        low_at : USize   = j.add(n).sub(2)
+        divisor : Divisor3By2 = Divisor3By2 { high: d1, low: d0, reciprocal: me.reciprocal.load() }
+        top     : Div3By2     = div_3by2(u2, u1, u0, divisor)
+        q_hat   : U64         = top.quotient
+        borrow  : U64         = me.submul(j, n.sub(2), q_hat)
+        rhat    : U128        = top.remainder
+        taken   : U128        = borrow.to<U128>()
+        rest    : U128        = rhat.sub_wrap(taken)
+        low_at  : USize       = j.add(n).sub(2)
         me.u.setitem(low_at, rest.to_wrap<U64>())
         me.u.setitem(low_at.add(1), rest.shr(64).to<U64>())
         too_big : Bool = rhat.lt(taken)

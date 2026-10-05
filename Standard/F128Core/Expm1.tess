@@ -21,6 +21,27 @@ record CmExpm1Scaled
     el  : U64
     sig : U128
 
+/// The polynomial coefficients for the argument's sign: a coefficient table holds a row for x > 0 and one for
+/// x < 0, and the row for x < 0 alternates its terms.
+record CmExpm1Coefs
+    /// The coefficient table's words.
+    words : @U64
+    /// The index in `words` where the row for the sign starts.
+    row : USize
+    /// True for x < 0: each step subtracts its product instead of adding it.
+    neg : Bool
+
+/// The two table entries of cm_expm1_small_table and their product, before the polynomial combines with them.
+record CmExpm1Entries
+    /// The first table entry.
+    r0 : U128
+    /// The second table entry, aligned to the first.
+    tt : U128
+    /// The product of the two entries, aligned to the first.
+    pp : U128
+    /// The exponent of the entries.
+    el : S64
+
 /// e^`me` - 1, correctly rounded to nearest (a CORE-MATH port), accurate for `me` near 0 where e^`me` - 1
 /// loses digits.
 /// :returns: e^`me` - 1: ±0 itself, +inf past the overflow threshold (about 11356.52), -1 for -inf and for
@@ -452,48 +473,51 @@ routine cm_expm1_small_table(x: U128, sm: U64, e: U64, sj: U64) -> CmExpm1Scaled
         r0 : U128 = cm_expm1_pair(CM_EXPM1_R0Z.to<@U64>(), row0.mul(2))
         r1 : U128 = cm_expm1_pair(CM_EXPM1_R1Z.to<@U64>(), row1.mul(2))
         // pp = (r0 * r1) >> e1 and tt = r1 >> st, each shifted the way the original's x86 shifts do
-        prod          : U128          = cm_wide_mulhi(r0, r1)
-        ph            : U64           = cm_wide_hi(prod)
-        pl            : U64           = cm_wide_lo(prod)
-        ph_shift      : S64           = 64.sub(e1).bitand(63)
-        pl2           : U64           = pl.shr(e1.to<U64>()).bitor(ph.shl(ph_shift.to<U64>()))
-        pp            : U128          = cm_wide_u128(ph.shr(e1.to<U64>()), pl2)
-        th            : U64           = cm_wide_hi(r1)
-        tl            : U64           = cm_wide_lo(r1)
-        st_r          : S64           = st.bitand(63)
-        st_l          : S64           = st.bitxor(-1).bitand(63)
-        tl2           : U64           = tl.shr(st_r.to<U64>()).bitor(th.shl(1).shl(st_l.to<U64>()))
-        tt            : U128          = cm_wide_u128(th.shr(st_r.to<U64>()), tl2)
-        up            : U64           = e.add_wrap(27)
-        mh2           : U64           = mh.shl(up).bitor(ml.shr(sj))
-        ml2           : U64           = ml.shl(up)
-        cb            : USize         = sm.to<USize>().mul(18)
-        neg           : Bool          = sm.ne(0)
-        sig           : U128          = cm_expm1_small_table_sum(r0, tt, pp, mh2, ml2, cb, el, neg)
-        el_complement : S64           = 0.sub(el).sub(1)
-        r             : CmExpm1Scaled = CmExpm1Scaled { el: el_complement.to_wrap<U64>(), sig: sig }
+        prod          : U128           = cm_wide_mulhi(r0, r1)
+        ph            : U64            = cm_wide_hi(prod)
+        pl            : U64            = cm_wide_lo(prod)
+        ph_shift      : S64            = 64.sub(e1).bitand(63)
+        pl2           : U64            = pl.shr(e1.to<U64>()).bitor(ph.shl(ph_shift.to<U64>()))
+        pp            : U128           = cm_wide_u128(ph.shr(e1.to<U64>()), pl2)
+        th            : U64            = cm_wide_hi(r1)
+        tl            : U64            = cm_wide_lo(r1)
+        st_r          : S64            = st.bitand(63)
+        st_l          : S64            = st.bitxor(-1).bitand(63)
+        tl2           : U64            = tl.shr(st_r.to<U64>()).bitor(th.shl(1).shl(st_l.to<U64>()))
+        tt            : U128           = cm_wide_u128(th.shr(st_r.to<U64>()), tl2)
+        up            : U64            = e.add_wrap(27)
+        mh2           : U64            = mh.shl(up).bitor(ml.shr(sj))
+        ml2           : U64            = ml.shl(up)
+        entries       : CmExpm1Entries = { r0: r0, tt: tt, pp: pp, el: el }
+        coefs         : CmExpm1Coefs   = { words: CM_EXPM1_CB9.to<@U64>(),
+            row: sm.to<USize>().mul(18), neg: sm.ne(0) }
+        sig           : U128           = cm_expm1_small_table_sum(entries, cm_wide_u128(mh2, ml2),
+            coefs)
+        el_complement : S64            = 0.sub(el).sub(1)
+        r             : CmExpm1Scaled  = CmExpm1Scaled { el: el_complement.to_wrap<U64>(),
+            sig: sig }
         return(r)
 
-/// The table entry r0 (+/-) tt (+/-) pp, plus the polynomial in the remaining bits (mh, ml) and its product
+/// The table entry r0 (+/-) tt (+/-) pp, plus the polynomial in the remaining bits of |x| and its product
 /// with that sum: + for x > 0, - for x < 0.
-/// :param r0: The first table entry.
-/// :param tt: The second table entry, aligned.
-/// :param pp: The product of the two entries, aligned.
-/// :param mh: The high word of the remaining bits of |x|.
-/// :param ml: The low word of the remaining bits of |x|.
-/// :param cb: The first coefficient of the polynomial in CM_EXPM1_CB9 (the row for the sign).
-/// :param el: The exponent of the table entries.
-/// :param neg: True when x is negative.
+/// :param entries: The table entries and their exponent.
+/// :param rest: The remaining bits of |x|, a fraction of 2^128.
+/// :param coefs: The polynomial's coefficients in CM_EXPM1_CB9, the row for the sign.
 /// :returns: The significand of e^x - 1 before rounding.
-routine cm_expm1_small_table_sum(r0: U128, tt: U128, pp: U128, mh: U64, ml: U64, cb: USize, el: S64,
-    neg: Bool) -> U128
+routine cm_expm1_small_table_sum(entries: CmExpm1Entries, rest: U128, coefs: CmExpm1Coefs) -> U128
+    shared c   : @U64  = coefs.words
+    shared cb  : USize = coefs.row
+    shared neg : Bool  = coefs.neg
+    shared el  : S64   = entries.el
+    shared mh  : U64   = cm_wide_hi(rest)
+    shared ml  : U64   = cm_wide_lo(rest)
+
     block entry()
-        c     : @U64 = CM_EXPM1_CB9.to<@U64>()
         terms : U128 = neg
-            ? tt.sub_wrap(pp)
-            : tt.add_wrap(pp)
-        res   : U128 = r0.add_wrap(terms)
-        v     : U64  = cm_expm1_chain64(c, cb.add(16), cb.add(10), mh, neg)
+            ? entries.tt.sub_wrap(entries.pp)
+            : entries.tt.add_wrap(entries.pp)
+        res   : U128 = entries.r0.add_wrap(terms)
+        v     : U64  = cm_expm1_chain64(coefs, 16, 10, mh)
         t     : U64  = cm_wide_mulhi(v, mh)
         c8    : U128 = cm_expm1_pair(c, cb.add(8))
         f_neg : U128 = c8.sub_wrap(t.to<U128>())
@@ -503,7 +527,7 @@ routine cm_expm1_small_table_sum(r0: U128, tt: U128, pp: U128, mh: U64, ml: U64,
         f4    : U128 = neg
             ? f_neg
             : f_pos
-        f0   : U128 = cm_expm1_horner(c, cb, mh, f4, neg)
+        f0   : U128 = cm_expm1_horner(coefs, mh, f4)
         f    : U128 = cm_wide_mulhi(mh, f0)
         hl   : U64  = cm_wide_mulhi(ml, cm_wide_hi(f))
         half : U64  = ml.shr(1)
@@ -519,14 +543,14 @@ routine cm_expm1_small_table_sum(r0: U128, tt: U128, pp: U128, mh: U64, ml: U64,
         r : U128 = res.add_wrap(delta)
         return(r)
 
-/// v = c[top], then v = c[i] +/- (v * mh) >> 64 for i = top - 2 down to bottom in steps of 2.
-/// :param c: The coefficient words.
-/// :param top: The index of the first coefficient, `top` - `bottom` even.
-/// :param bottom: The index of the last coefficient, at least 2.
+/// v = c[row + top], then v = c[row + i] +/- (v * mh) >> 64 for i = top - 2 down to bottom in steps of 2.
+/// :param coefs: The coefficients, the row for the sign.
+/// :param top: The index of the first coefficient in the row, `top` - `bottom` even.
+/// :param bottom: The index of the last coefficient in the row, at least 2.
 /// :param mh: The argument, a fraction of 2^64.
-/// :param neg: True to subtract each product, false to add it.
 /// :returns: The value v of the Horner chain.
-routine cm_expm1_chain64(c: @U64, top: USize, bottom: USize, mh: U64, neg: Bool) -> U64
+routine cm_expm1_chain64(coefs: CmExpm1Coefs, top: USize, bottom: USize, mh: U64) -> U64
+    shared c : @U64 = coefs.words.stride(coefs.row)
     shared v : @U64 <- uninit
 
     block entry()
@@ -541,20 +565,18 @@ routine cm_expm1_chain64(c: @U64, top: USize, bottom: USize, mh: U64, neg: Bool)
             : continue
         ci   : U64 = c.stride(i).load()
         t    : U64 = cm_wide_mulhi(v.load(), mh)
-        next : U64 = neg
+        next : U64 = coefs.neg
             ? ci.sub_wrap(t)
             : ci.add_wrap(t)
         next.store_into(v)
         jump step(i.sub(2))
 
-/// f = pair(base + 2i) +/- (mh * f) >> 64 for i = 3 down to 0.
-/// :param c: The coefficient words.
-/// :param base: The index of the lowest coefficient pair.
+/// f = pair(row + 2i) +/- (mh * f) >> 64 for i = 3 down to 0.
+/// :param coefs: The coefficients, the row for the sign, its lowest pair first.
 /// :param mh: The one-word argument.
 /// :param f: The starting value.
-/// :param neg: True to subtract each product, false to add it.
 /// :returns: The final f.
-routine cm_expm1_horner(c: @U64, base: USize, mh: U64, f: U128, neg: Bool) -> U128
+routine cm_expm1_horner(coefs: CmExpm1Coefs, mh: U64, f: U128) -> U128
     shared partial : @U128 <- f
 
     block entry()
@@ -567,22 +589,20 @@ routine cm_expm1_horner(c: @U64, base: USize, mh: U64, f: U128, neg: Bool) -> U1
             : term(i.to<USize>())
 
     block term(i: USize)
-        coef : U128 = cm_expm1_pair(c, base.add(i.mul(2)))
+        coef : U128 = cm_expm1_pair(coefs.words, coefs.row.add(i.mul(2)))
         t    : U128 = cm_wide_mulhi(mh, partial.load())
-        next : U128 = neg
+        next : U128 = coefs.neg
             ? coef.sub_wrap(t)
             : coef.add_wrap(t)
         next.store_into(partial)
         jump step(i.to<S64>().sub(1))
 
-/// f = pair(base + 2i) +/- mhUU(m, f) for i = 3 down to 0.
-/// :param c: The coefficient words.
-/// :param base: The index of the lowest coefficient pair.
+/// f = pair(row + 2i) +/- mhUU(m, f) for i = 3 down to 0.
+/// :param coefs: The coefficients, the row for the sign, its lowest pair first.
 /// :param m: The two-word argument.
 /// :param f: The starting value.
-/// :param neg: True to subtract each product, false to add it.
 /// :returns: The final f.
-routine cm_expm1_horner(c: @U64, base: S64, m: U128, f: U128, neg: Bool) -> U128
+routine cm_expm1_horner(coefs: CmExpm1Coefs, m: U128, f: U128) -> U128
     shared partial : @U128 <- f
 
     block entry()
@@ -592,14 +612,16 @@ routine cm_expm1_horner(c: @U64, base: S64, m: U128, f: U128, neg: Bool) -> U128
         done : Bool = i.lt(0)
         branch done
             ? return(partial.load())
-            : continue
-        coef : U128 = cm_expm1_pair(c, base.add(i.mul(2)).to<USize>())
+            : term(i.to<USize>())
+
+    block term(i: USize)
+        coef : U128 = cm_expm1_pair(coefs.words, coefs.row.add(i.mul(2)))
         t    : U128 = cm_wide_mulhi(m, partial.load())
-        next : U128 = neg
+        next : U128 = coefs.neg
             ? coef.sub_wrap(t)
             : coef.add_wrap(t)
         next.store_into(partial)
-        jump step(i.sub(1))
+        jump step(i.to<S64>().sub(1))
 
 /// |x| < 2^-11 (and not so small that the result is x): x + x^2 * P(x).
 /// :param x: The bits of x.
@@ -608,25 +630,26 @@ routine cm_expm1_horner(c: @U64, base: S64, m: U128, f: U128, neg: Bool) -> U128
 /// :returns: The result before rounding, its leading bit at 127 or 126.
 routine cm_expm1_small_poly(x: U128, sm: U64, e: S64) -> CmExpm1Scaled
     block entry()
-        c     : @U64  = CM_EXPM1_CB8.to<@U64>()
-        uh    : U64   = cm_wide_hi(x)
-        mh    : U64   = uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
-        m0    : U128  = cm_wide_u128(mh, cm_wide_lo(x)).shl(15)
-        m0_sq : U256  = m0.mul_wide(m0)
-        m2    : U128  = m0_sq.shr(128).to<U128>()
-        m     : U128  = m0.shr(0.sub(e.add(12)).to<U128>())
-        mh2   : U64   = cm_wide_hi(m)
-        cb    : USize = sm.to<USize>().mul(16)
-        neg   : Bool  = sm.ne(0)
-        v     : U64   = cm_expm1_chain64(c, cb.add(14), cb.add(10), mh2, neg)
-        t     : U64   = cm_wide_mulhi(v, mh2)
-        c8    : U64   = c.stride(cb.add(8)).load()
-        c9    : U64   = c.stride(cb.add(9)).load()
-        f0    : U64   = neg
+        c     : @U64         = CM_EXPM1_CB8.to<@U64>()
+        uh    : U64          = cm_wide_hi(x)
+        mh    : U64          = uh.bitand(0x0000FFFFFFFFFFFF).bitor(0x0001000000000000)
+        m0    : U128         = cm_wide_u128(mh, cm_wide_lo(x)).shl(15)
+        m0_sq : U256         = m0.mul_wide(m0)
+        m2    : U128         = m0_sq.shr(128).to<U128>()
+        m     : U128         = m0.shr(0.sub(e.add(12)).to<U128>())
+        mh2   : U64          = cm_wide_hi(m)
+        cb    : USize        = sm.to<USize>().mul(16)
+        neg   : Bool         = sm.ne(0)
+        coefs : CmExpm1Coefs = { words: c, row: cb, neg: neg }
+        v     : U64          = cm_expm1_chain64(coefs, 14, 10, mh2)
+        t     : U64          = cm_wide_mulhi(v, mh2)
+        c8    : U64          = c.stride(cb.add(8)).load()
+        c9    : U64          = c.stride(cb.add(9)).load()
+        f0    : U64          = neg
             ? c8.sub_wrap(t)
             : c8.add_wrap(t)
         f4      : U128 = cm_wide_u128(c9, f0)
-        poly    : U128 = cm_expm1_horner(c, cb.to<S64>(), m, f4, neg)
+        poly    : U128 = cm_expm1_horner(coefs, m, f4)
         f_shift : S64  = 0.sub(e).sub(1)
         f       : U128 = cm_wide_mulhi(m2, poly).shr(f_shift.to<U128>())
         branch neg

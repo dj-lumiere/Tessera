@@ -251,21 +251,29 @@ require LIMBS: USize
 
 // -- rounding ------------------------------------------------------------------
 
-/// The IEEE bits, without the sign, of the float nearest to the parsed value,
-/// for a format with mantissa_bits stored bits, exponent bias bias, and
-/// all-ones exponent exponent_max.
-/// :typeparam LIMBS: The number of 64-bit limbs of the BigNat holding the digits.
+/// The IEEE bits, without the sign, of the float of `format` nearest to the parsed value.
+/// :typeparam LIMBS: The number of 64-bit limbs of the BigNat holding the digits: room for F64's decimal range (72
+///     limbs) for F64 and the narrower formats, for F128's (320 or more) for F128.
 /// :param digits: The kept digits from {parse_decimal}, used as scratch.
 /// :param parts: The parsed parts.
-/// :param mantissa_bits: The number of stored mantissa bits.
-/// :param bias: The exponent bias.
-/// :param exponent_max: The all-ones exponent field.
-/// :param huge_from: The decimal magnitude (kept digits plus exponent) above which the result is infinity.
-/// :param tiny_below: The decimal magnitude below which the result is 0.
+/// :param format: The float's format (F16, BF16, F32, F64, or F128).
 /// :returns: The float's bits without the sign (a quiet NaN for a NaN).
-routine decimal_to_bits<LIMBS>(digits: @BigNat<LIMBS>, parts: DecimalParts, mantissa_bits: S64,
-    bias: S64, exponent_max: S64, huge_from: S64, tiny_below: S64) -> U128
+routine decimal_to_bits<LIMBS>(digits: @BigNat<LIMBS>, parts: DecimalParts,
+    format: FloatFormat) -> U128
 require LIMBS: USize
+    shared mantissa_bits : S64 = format.fraction_bits.to<S64>()
+    shared bias          : S64 = format.bias.to<S64>()
+    shared exponent_max  : S64 = format.exponent_max.to<S64>()
+    // The decimal magnitudes (kept digits plus exponent) past which the result is infinity, or 0. F128 has its own,
+    // and the narrower formats all take F64's: past them every format is infinity or 0, and inside them the numbers
+    // stay inside the BigNat.
+    shared wide      : Bool = format.width.gt(64)
+    shared huge_from : S64  = wide
+        ? 4933
+        : 310
+    shared tiny_below : S64 = wide
+        ? -4966
+        : -324
     shared infinity : U128           = exponent_max.to<U128>().shl(mantissa_bits.to<U128>())
     shared d        : @BigNat<LIMBS> <- uninit
     shared a        : @BigNat<LIMBS> <- uninit
@@ -392,7 +400,7 @@ routine Bytes.to_result<F64>(me: Me) -> Result<F64, ParseError>
             .Failure(error) -> fail(error)
 
     block build(parts: DecimalParts)
-        magnitude : U64  = decimal_to_bits(digits, parts, 52, 1023, 2047, 310, -324).to<U64>()
+        magnitude : U64  = decimal_to_bits(digits, parts, F64.FORMAT.load()).to<U64>()
         negative  : Bool = parts.negative
         sign      : U64  = negative
             ? 0x8000000000000000
@@ -419,7 +427,7 @@ routine Bytes.to_result<F32>(me: Me) -> Result<F32, ParseError>
             .Failure(error) -> fail(error)
 
     block build(parts: DecimalParts)
-        magnitude : U32  = decimal_to_bits(digits, parts, 23, 127, 255, 310, -324).to<U32>()
+        magnitude : U32  = decimal_to_bits(digits, parts, F32.FORMAT.load()).to<U32>()
         negative  : Bool = parts.negative
         sign      : U32  = negative
             ? 0x80000000
@@ -446,7 +454,7 @@ routine Bytes.to_result<F16>(me: Me) -> Result<F16, ParseError>
             .Failure(error) -> fail(error)
 
     block build(parts: DecimalParts)
-        magnitude : U16  = decimal_to_bits(digits, parts, 10, 15, 31, 310, -324).to<U16>()
+        magnitude : U16  = decimal_to_bits(digits, parts, F16.FORMAT.load()).to<U16>()
         negative  : Bool = parts.negative
         sign      : U16  = negative
             ? 0x8000
@@ -473,7 +481,7 @@ routine Bytes.to_result<BF16>(me: Me) -> Result<BF16, ParseError>
             .Failure(error) -> fail(error)
 
     block build(parts: DecimalParts)
-        magnitude : U16  = decimal_to_bits(digits, parts, 7, 127, 255, 310, -324).to<U16>()
+        magnitude : U16  = decimal_to_bits(digits, parts, BF16.FORMAT.load()).to<U16>()
         negative  : Bool = parts.negative
         sign      : U16  = negative
             ? 0x8000
@@ -501,7 +509,7 @@ routine Bytes.to_result<F128>(me: Me) -> Result<F128, ParseError>
 
     // F128's largest value is about 1.19e4932 and its smallest subnormal 6.5e-4966.
     block build(parts: DecimalParts)
-        magnitude : U128 = decimal_to_bits(digits, parts, 112, 16383, 32767, 4933, -4966)
+        magnitude : U128 = decimal_to_bits(digits, parts, F128.FORMAT.load())
         negative  : Bool = parts.negative
         sign      : U128 = negative
             ? F128_SIGN

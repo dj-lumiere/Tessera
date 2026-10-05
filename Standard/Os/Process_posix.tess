@@ -289,26 +289,25 @@ private routine Prepared.release(me: @Me, alloc: @Allocator) -> Void
         return()
 
 /// Builds everything the child needs before fork, so the child allocates nothing: the argument vector, the merged
-/// environment, and the directory path.
-/// :param p: Where the result goes. It is valid to free even on failure.
+/// environment, and the directory path. What it made is right to release even when it fails.
 /// :param program: The program to run.
-/// :param args: `arg_count` arguments, not including the program.
-/// :param arg_count: How many arguments there are.
+/// :param args: The arguments, not including the program.
 /// :param options: The directory and environment overrides.
 /// :param alloc: The allocator for the strings and arrays.
 /// :returns: `true` on success, `false` when an allocation failed.
 #target(os: ("linux", "macos"))
-private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: USize,
-    options: ProcessOptions, alloc: @Allocator) -> Bool
-    shared first : @USize <- uninit
+private routine Prepared.make(me: @Me, program: Bytes, args: Slice<Bytes>, options: ProcessOptions,
+    alloc: @Allocator) -> Bool
+    shared arg_count : USize  = args.count()
+    shared first     : @USize <- uninit
 
     block entry()
-        p.store(Prepared.empty())
+        me.store(Prepared.empty())
         argv : @@Byte = allocate<@Byte>(arg_count.add(2), alloc)
         branch argv.is_null()
             ? return(false)
             : continue
-        p.argv.store(argv)
+        me.argv.store(argv)
         jump string(argv, 0)
 
     block string(argv: @@Byte, i: USize)
@@ -317,14 +316,14 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
             : continue
         branch i.eq(0)
             ? made(argv, i, c_string(program, alloc))
-            : made(argv, i, c_string(args.stride(i.sub(1)).load(), alloc))
+            : made(argv, i, c_string(args.getitem(i.sub(1)), alloc))
 
     block made(argv: @@Byte, i: USize, s: @Byte)
         branch s.is_null()
             ? return(false)
             : continue
         argv.stride(i).store(s)
-        p.argc.store(i.add(1))
+        me.argc.store(i.add(1))
         jump string(argv, i.add(1))
 
     block args_done(argv: @@Byte, n: USize)
@@ -337,7 +336,7 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
         branch d.is_null()
             ? return(false)
             : continue
-        p.directory.store(d)
+        me.directory.store(d)
         jump environment()
 
     block environment()
@@ -363,7 +362,7 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
         branch envp.is_null()
             ? return(false)
             : continue
-        p.envp.store(envp)
+        me.envp.store(envp)
         0.store_into(first)
         jump keep(parent, n, envp, 0)
 
@@ -392,13 +391,13 @@ private routine prepare(p: @Prepared, program: Bytes, args: @Bytes, arg_count: U
 
     block env_done(envp: @@Byte, count: USize)
         envp.stride(first.load().add(count)).store(null)
-        p.own_first.store(first.load())
-        p.own_count.store(count)
+        me.own_first.store(first.load())
+        me.own_count.store(count)
         return(true)
 
     block env_failed(envp: @@Byte, count: USize)
-        p.own_first.store(first.load())
-        p.own_count.store(count)
+        me.own_first.store(first.load())
+        me.own_count.store(count)
         return(false)
 
 /// Whether an override names `entry`'s variable (names compared exactly, case included).
@@ -495,6 +494,14 @@ private record Plumbing
     exec_r  : CInt
     exec_w  : CInt
     devnull : CInt
+
+/// One captured output stream of the child: the read end of its pipe and the buffer what it reads goes into.
+#target(os: ("linux", "macos"))
+private record PipeCapture
+    /// The read end of the pipe, or -1 when the stream isn't captured.
+    fd : CInt
+    /// The buffer the stream's bytes go into.
+    buffer : @CaptureBuffer
 
 /// No pipes and no null device: what a run starts from, so closing them is right on every path.
 /// :returns: The {Plumbing} with every descriptor -1.
@@ -606,14 +613,13 @@ private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 /// uses CreateProcessW.
 /// :param program: The program to run.
 /// :param args: The arguments, not including the program name.
-/// :param arg_count: How many arguments `args` holds.
 /// :param options: The directory, environment overrides, and standard streams.
 /// :param alloc: The allocator for the captured output and the working memory.
 /// :returns: The {ProcessOutput}, or Failure with a {ProcessError} (InvalidArgument for a NUL in the program, an
 /// argument, the directory, or a variable, OutOfMemory when the working memory or the captured output can't be
 /// allocated).
 #target(os: ("linux", "macos"))
-routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, options: ProcessOptions,
+routine run_process_result(program: Bytes, args: Slice<Bytes>, options: ProcessOptions,
     alloc: @Allocator) -> Result<ProcessOutput, ProcessError>
     shared p      : @Prepared      <- Prepared.empty()
     shared pipes  : @Plumbing      <- Plumbing.empty()
@@ -622,10 +628,10 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
     shared err    : @CaptureBuffer <- CaptureBuffer.empty()
 
     block entry()
-        branch has_nul(program, args, arg_count, options)
+        branch has_nul(program, args, options)
             ? finish(.Failure(ProcessError.InvalidArgument))
             : continue
-        branch prepare(p, program, args, arg_count, options, alloc)
+        branch p.make(program, args, options, alloc)
             ? continue
             : finish(.Failure(ProcessError.OutOfMemory))
         branch pipes.make(options)
@@ -670,7 +676,8 @@ routine run_process_result(program: Bytes, args: @Bytes, arg_count: USize, optio
         c_close(pipes.exec_r.load())
         pipes.exec_r.store(-1)
         // drain closes both pipes as each ends.
-        drain(pipes.out_r.load(), pipes.err_r.load(), out, err, alloc)
+        drain(PipeCapture { fd: pipes.out_r.load(), buffer: out },
+            PipeCapture { fd: pipes.err_r.load(), buffer: err }, alloc)
         pipes.out_r.store(-1)
         pipes.err_r.store(-1)
         status : Option<ExitStatus> = reap(pid)
@@ -716,14 +723,13 @@ private routine release(b: CaptureBuffer, alloc: @Allocator) -> Void
 
 /// Reads both pipes (-1 for one not captured) to their end, whichever has data, and closes them. When poll fails
 /// with anything but EINTR, it closes both and stops.
-/// :param out_fd: The read end of the standard output pipe, or -1.
-/// :param err_fd: The read end of the standard error pipe, or -1.
-/// :param out: The buffer standard output goes into.
-/// :param err: The buffer standard error goes into.
+/// :param out: Standard output's pipe (its fd -1 when not captured) and the buffer it goes into.
+/// :param err: Standard error's pipe (its fd -1 when not captured) and the buffer it goes into.
 /// :param alloc: The allocator the buffers grow from.
 #target(os: ("linux", "macos"))
-private routine drain(out_fd: CInt, err_fd: CInt, out: @CaptureBuffer, err: @CaptureBuffer,
-    alloc: @Allocator) -> Void
+private routine drain(out: PipeCapture, err: PipeCapture, alloc: @Allocator) -> Void
+    shared out_fd : CInt = out.fd
+    shared err_fd : CInt = err.fd
     // POLLIN, and poll skips a negative fd
     shared poll_fds     : @Array<PollFd, 2>  <- { PollFd { fd: out_fd, events: 1, revents: 0 },
         PollFd { fd: err_fd, events: 1, revents: 0 } }
@@ -776,8 +782,8 @@ private routine drain(out_fd: CInt, err_fd: CInt, out: @CaptureBuffer, err: @Cap
 
     block keep(open: U32, i: USize, n: USize)
         branch i.eq(0)
-            ? into(open, i, n, out)
-            : into(open, i, n, err)
+            ? into(open, i, n, out.buffer)
+            : into(open, i, n, err.buffer)
 
     block into(open: U32, i: USize, n: USize, buffer: @CaptureBuffer)
         buffer.append(chunk, n, alloc)

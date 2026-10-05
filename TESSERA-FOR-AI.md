@@ -366,7 +366,7 @@ routine start() -> Void
   write-template hole is its own chain. A fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`x.load().add(y).store_into(x)`): the basic
   shape of an update, too common to warn about. The lint is there to stop a line from piling up conversions, not to
   split ordinary updates. `check`/`build`/`run` warn (not an error) for the program's own files, and
-  `tessera lint <files-or-dirs>` checks any file (this lint, the `finish` lint above, and the doc-comment lint); CI holds `stdlib`, `tests`, and
+  `tessera lint <files-or-dirs>` checks any file (this lint, the `finish` lint above, the record-parameter lint, and the doc-comment lint); CI holds `stdlib`, `tests`, and
   `examples` to 0 warnings. When the chain sits in a `branch`/`when` arm or a later `when` condition, don't hoist it
   above (that would run it on paths that didn't): give the arm its own block.
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
@@ -726,7 +726,7 @@ that carry it (`read_all_result`, `join_path`, `env_var`): release them with `de
 `home_result`) returns a `File` / `Directory` whose path carries the allocator: `file.destruct()` / `dir.destruct()`
 gives it back (and does nothing for a literal path).
 
-**Processes.** `run_process_result(program, args, arg_count, options, alloc)` (looked up on PATH) and
+**Processes.** `run_process_result(program, args, options, alloc)` (looked up on PATH, `args` a `Slice<Bytes>`) and
 `run_shell_result(command, options, alloc)` return `Result<ProcessOutput, ProcessError>`: an `ExitStatus`
 (`.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Bytes`, released with the output's
 `destruct()`). `ProcessOptions.default()` captures both and gives the child the null device as input; set
@@ -835,6 +835,20 @@ isn't empty is named for what it is: `ProcessOptions.default()` captures both st
 `deallocate(p, alloc)`, `In.read_line(alloc)`, `Thread.spawn(routine, state, alloc)`. A second allocator for another
 job goes just before it (`Scheduler.construct(workers, stacks, alloc)`). So the form without the allocator
 (`construct()` with `Standard::Os`) is the same call with the last argument left off.
+
+**Five or more parameters take a record.** Arguments are positional (there are no named arguments), so a call reads
+by its values: pass named values (`retries : U32 = 3`, then `retries`), not bare literals whose role needs the
+signature, unless the routine's name already says it (`len.add(1)`, `list.getitem(0)`). A routine with five or more
+parameters, `me` not counted, takes a record instead: one record parameter, or a record plus the few parameters that
+clearly don't belong to the group, so the count drops below five. The record is named for what the group is, its
+fields in reading order and documented, and one record serves every routine that passes the same group. Its literal
+names each field at the call (`fill_rect(canvas, Rect { left: 10, top: 20, width: 300, height: 200 }, orange)`), and a
+value that already is the group passes whole. A pointer and a count that go together are a `Slice<T>`. The allocator
+counts too: a routine that reaches five only through it still takes a record for the rest, the allocator staying the
+separate last parameter. Exempt: `#external` declarations, `#export` routines and `#callconv` callbacks (a C ABI sets
+their signature), generated code (files under a `generated` directory, routines with `#source`, what Anvila's Tessera
+emitter writes), and `Callable` types. `tessera lint` warns on the rest (`check`, `build`, `run` too, for the
+program's own files).
 
 **`Bool` routines: `is_` or `has_`.** A routine that answers a question names which kind: `is_` asks about a state of
 the value (`is_empty`, `is_null`, `is_finite`, `is_utf8`, `file.is_present()`, `file.is_accessible(access)`), and
