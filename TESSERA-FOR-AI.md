@@ -436,12 +436,22 @@ routine start() -> Void
   would hide `Ptr`'s `to<@U>`). You can't call a pointer method on a temporary:
   `DictIter<TKey, TValue>.construct(m).next()` fails with "has no method 'next'"; claim a slot for
   the iterator first.
-- Generic routines repeat their constraints: `require T: typename, Comparable<T>`. Concepts: `Equatable`, `Hashable`,
+- **A constraint is said once, where it belongs.** A record's (or variant's) `require` constraints hold in every
+  routine on it, wherever the routine is declared (an extension routine in another module, such as
+  `Standard/Os/Defaults.tess`, included): a constraint is a fact about the type, said where the type is declared. So a
+  routine on a record lists its type parameters and only the constraints it adds: `SortedDict<TKey, TValue>.has_key`
+  calls `key.compare(...)` with `require TKey: typename, TValue: typename`, and `SortedDict.eq` adds just
+  `Equatable<TValue>`. Don't restate the record's. A free generic routine has no record, so it lists everything its
+  body uses: `require T: typename, Comparable<T>`. Put a constraint on the record only when every use of the type
+  needs it (the keyed collections' `Comparable<TKey>` / `HashEquatable<TKey>`, `PriorityQueue`'s `Ordered<T>`), and
+  element constraints only some routines need on those routines (`List<T>.eq` adds `Equatable<T>`), since a record's
+  `require` limits which instances can exist at all. The builder checks a record's constraints when its type is
+  formed and a routine's when a call instantiates it, and doesn't yet check a generic body against them before
+  that (a planned build-time check). Concepts: `Equatable`, `Hashable`,
   `HashEquatable`, `Comparable`, `Ordered`, `Destructible`, `Representable`, `Diagnosable`, `Parsable` (a
   capability is an `-able` adjective), and the roles `Iterator`, `Reader`, `Writer`. Constraints are checked: a type satisfies a
   concept only through a `conform` (on its record, or a top-level `conform C<X>` line), and the builder checks the
-  declared routines' signatures. Conditional conformance: `conform Equatable<Box<T>> when T: typename, Equatable<T>`. A
-  record's own `require` applies to every use, so put element constraints on the routines that need them.
+  declared routines' signatures. Conditional conformance: `conform Equatable<Box<T>> when T: typename, Equatable<T>`.
 - A bare literal doesn't bind a type parameter: bind it first (`n: S64 = 42`), then pass `n`.
 - **Overloads.** Routines of one name under one parent (a module's free routines, one type's routines) may differ in
   their parameter types (`me` included); a call picks the one whose parameter types are its arguments' types

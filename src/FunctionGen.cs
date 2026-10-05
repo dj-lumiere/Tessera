@@ -655,11 +655,11 @@ public sealed class FunctionGen
     }
 
     /// Whether `t` is what one of the instance's type parameters stands for. A method called on such a value is found
-    /// whatever module declares it: the routine's constraints on the parameter vouch for it.
+    /// whatever module declares it: the constraints on the parameter (its record's and the routine's own) vouch for it.
     private bool FromTypeParameter(DType t) => _env.All.Any(kv => kv.Key != "Me" && kv.Value.Equals(t));
 
     /// A call whose type argument is one of the routine's type parameters (`me.to_result<T>()` in `Bytes.to<T>`) is
-    /// vouched for by the parameter's constraints, so it finds the routine defined for that type in any module, as a
+    /// vouched for by the parameter's constraints (its record's and the routine's own), so it finds the routine defined for that type in any module, as a
     /// call on a value of the parameter's type does.
     private bool TypeArgFromParameter(List<TypeRef> typeArgs) =>
         typeArgs.Any(t => t is { Args.Count: 0, Path: null } && t.Name != "Me" && _env.Has(t.Name));

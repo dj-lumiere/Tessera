@@ -146,14 +146,14 @@ public static class Derive
     // ── Records ─────────────────────────────────────────────────────────────
 
     /// A generic type conforms when its type parameters do. Representable writes the parts with diagnose (strings keep
-    /// their quotes), so it needs Diagnosable of them.
+    /// their quotes), so it needs Diagnosable of them. The type's own `require` concepts already hold wherever the type
+    /// is formed, so the derived routine and its conformance list only what they add, as a written routine does.
     private static List<string> Constraints(List<Clause> clauses, string concept)
     {
         var requires = clauses.Where(c => c.Kind == "require").ToList();
         var parameters = requires.SelectMany(c => c.Params).ToList();
         string partConcept = Qualified(concept == "Representable" ? "Diagnosable" : concept);
         return parameters.Select(p => $"{p.Name}: {p.Kind}")
-            .Concat(requires.SelectMany(c => c.Concepts).Select(c => c.ToString()))
             .Concat(parameters.Where(p => p.Kind.Name == "typename").Select(p => $"{partConcept}<{p.Name}>"))
             .Distinct()
             .ToList();
