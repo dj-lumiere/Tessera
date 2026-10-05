@@ -184,6 +184,19 @@ routine start() -> Void
   recursive one (directly or through other routines), and on one used as a `Callable` value. `#noinline` (LLVM
   `noinline`) keeps a cold path out of a hot loop; a routine can't be both. An `#inline` routine has no frame on the
   crash trace (below); `#untraced` keeps a larger hot routine off it too.
+- `#expensive` (or `#expensive("allocates heap memory")`, the reason reading after the routine's name) marks a routine
+  that costs a lot on every call and every target: allocation and freeing (`allocate`, `reallocate`, `deallocate`,
+  `Slice<T>.construct` / `resize`, `Bytes.concat`, `List<T>.reserve`), the operating system (`Out` / `Err` writes,
+  allocating `In` reads, file and directory operations, `FileHandle` I/O, processes, `Thread.spawn`), `U256` / `S256`
+  division and `BigNat` division, and whole-buffer hashes. It changes nothing in the output and goes on routines
+  only. `tessera lint` (and `check` / `build` / `run` for the program's own files, and the language server) warns on a
+  direct call to one from a block on a loop (a block that can reach itself again through its jumps and arms), naming
+  the block that closes the loop. Not reported: a call in an arm that leaves the loop, a call inside an `#expensive`
+  routine, and a call to a routine that only calls an expensive one. Hoist the call, reuse one buffer across the
+  passes, or keep it when each pass needs its own: there is no way to mark a call as meant yet
+  (Roadmap open question #66), so `lint` prints these and counts them apart without failing. Don't mark what costs
+  only on some targets (64-bit division on 32-bit, 128-bit division, `popcount`) or only now and then (`List.push`),
+  nor blocking waits (`Condition.wait`, `wait_on`, `Thread.join`), which belong in loops.
 - A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
   conversions (`add`, `shl`, `bitor`, `to<U128>()`, `to_wrap<U8>()`, …), F32/F64 `add`/`sub`/`mul`/`div`/`neg`,
   `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and F128. A routine call is an error; nothing
@@ -376,8 +389,8 @@ routine start() -> Void
   write-template hole is its own chain. A fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`x.load().add(y).store_into(x)`): the basic
   shape of an update, too common to warn about. The lint is there to stop a line from piling up conversions, not to
   split ordinary updates. `check`/`build`/`run` warn (not an error) for the program's own files, and
-  `tessera lint <files-or-dirs>` checks any file (this lint, the `finish` lint above, the record-parameter lint, and the doc-comment lint); CI holds `stdlib`, `tests`, and
-  `examples` to 0 warnings. When the chain sits in a `branch`/`when` arm or a later `when` condition, don't hoist it
+  `tessera lint <files-or-dirs>` checks any file (this lint, the `finish` lint above, the record-parameter lint, the doc-comment lint, and the expensive-call lint); CI holds `stdlib`, `tests`, and
+  `examples` to 0 warnings, the expensive calls on loops aside (they don't fail `lint`). When the chain sits in a `branch`/`when` arm or a later `when` condition, don't hoist it
   above (that would run it on paths that didn't): give the arm its own block.
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
   `add`, `div`, `mod`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more

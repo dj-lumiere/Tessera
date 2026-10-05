@@ -72,6 +72,14 @@ public sealed class FunctionGen
     /// The receivers of the calls this instance resolved to one of `Ptr<T>`'s loads: what UninitReads counts as a read.
     private readonly HashSet<Expr> _pointerLoads = new(ReferenceEqualityComparer.Instance);
 
+    /// The calls written in a block that this instance resolved to an `#expensive` routine: what ExpensiveCallLint
+    /// checks for loops once every block is built.
+    private readonly List<ExpensiveCallLint.Call> _expensiveCalls = [];
+
+    /// While an arm's arguments are evaluated, the block it goes to (ExpensiveCallLint.LeavesRoutine for a return or a
+    /// `#noreturn` call). Null on a block's own lines and conditions.
+    private string? _arm;
+
     private static readonly HashSet<string> PointerLoadNames =
         ["load", "volatile_load", "load_unaligned", "atomic_load", "atomic_load_relaxed", "atomic_load_acquire"];
 
@@ -156,6 +164,7 @@ public sealed class FunctionGen
         // With every call resolved, a load of a slot that some path reaches before anything was stored into it.
         if (UninitReads.Find(_decl, m => _pointerLoads.Contains(m.Receiver)) is { } uninitRead)
             throw Err(uninitRead.Pos, uninitRead.Message);
+        _c.NoteExpensiveCalls(ExpensiveCallLint.Check(_decl, _expensiveCalls));
 
         // A BF16 parameter arrives as its i16 bits (see Instance.PassesBf16AsBits) and is bitcast back on entry.
         // An aggregate the C ABI coerces arrives as its parts, stored into a buffer and loaded back as the value; one
@@ -2253,6 +2262,8 @@ public sealed class FunctionGen
         if (Recorded)
             _c.CallUses.TryAdd((plan.Pos, plan.Decl.Name), new Compiler.CallUse(plan.Decl, [.. plan.Env.All.Select(kv => (kv.Key, kv.Value))]));
         var sig = _c.Signature(plan.Decl, plan.Env);
+        if (_blockName.Length > 0 && plan.Decl.Attr(ExpensiveCallLint.Attribute) is not null)
+            _expensiveCalls.Add(new ExpensiveCallLint.Call(_blockName, _arm, plan.Pos, plan.Decl));
         if (plan.Receiver is not null && plan.Decl is { IsLibrary: true, Owner.Name: "Ptr" }
             && PointerLoadNames.Contains(plan.Decl.Name))
             _pointerLoads.Add(plan.Receiver);
@@ -2823,8 +2834,23 @@ public sealed class FunctionGen
             throw Err(ct.Pos, $"block '{ct.Name}' takes {types.Count} argument(s), got {ct.Args.Count}");
     }
 
-    /// Emits a target in the current block, terminating it.
+    /// Emits a target in the current block, terminating it. While its arguments are evaluated, `_arm` says where the
+    /// arm goes, for ExpensiveCallLint: a call there runs only when the arm is taken.
     private void EmitTarget(Target target)
+    {
+        string? outer = _arm;
+        _arm = target is CallTarget call && _blocks.ContainsKey(call.Name) ? call.Name : ExpensiveCallLint.LeavesRoutine;
+        try
+        {
+            EmitTargetCore(target);
+        }
+        finally
+        {
+            _arm = outer;
+        }
+    }
+
+    private void EmitTargetCore(Target target)
     {
         switch (target)
         {

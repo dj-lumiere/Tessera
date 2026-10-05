@@ -391,6 +391,7 @@ routine U256.mul_overflows(me: Me, other: Me) -> Bool
 /// :returns: The quotient.
 /// :throws: Crashes with `DivisionByZeroError` when `other` is 0.
 #track_caller
+#expensive("divides in software")
 routine U256.div(me: Me, other: Me) -> Me
     block entry()
         by_zero : Bool = other.eq(0)
@@ -405,6 +406,7 @@ routine U256.div(me: Me, other: Me) -> Me
 /// :returns: The remainder, between 0 and `other - 1`.
 /// :throws: Crashes with `DivisionByZeroError` when `other` is 0.
 #track_caller
+#expensive("divides in software")
 routine U256.mod(me: Me, other: Me) -> Me
     block entry()
         by_zero : Bool = other.eq(0)
@@ -418,6 +420,7 @@ routine U256.mod(me: Me, other: Me) -> Me
 /// :param other: The divisor.
 /// :returns: The quotient of `me` divided by `other`.
 /// :absent: On a zero divisor.
+#expensive("divides in software")
 routine U256.div_checked(me: Me, other: Me) -> Option<Me>
     block entry()
         by_zero : Bool = other.eq(0)
@@ -431,6 +434,7 @@ routine U256.div_checked(me: Me, other: Me) -> Option<Me>
 /// :param other: The divisor.
 /// :returns: The remainder of `me` divided by `other`.
 /// :absent: On a zero divisor.
+#expensive("divides in software")
 routine U256.mod_checked(me: Me, other: Me) -> Option<Me>
     block entry()
         by_zero : Bool = other.eq(0)
@@ -445,6 +449,7 @@ routine U256.mod_checked(me: Me, other: Me) -> Option<Me>
 /// :returns: The quotient, rounded up.
 /// :throws: Crashes with `DivisionByZeroError` when `other` is 0.
 #track_caller
+#expensive("divides in software")
 routine U256.div_ceil(me: Me, other: Me) -> Me
     block entry()
         q     : Me   = me.div(other)
@@ -753,26 +758,28 @@ routine U256.ilog2(me: Me) -> Me
         r  : Me = sub<Me>(Me.BITS.sub(1), lz)
         return(r)
 
-/// The base-10 logarithm of `me`, rounded down.
+/// The base-10 logarithm of `me`, rounded down. It counts the powers of ten up to `me` by multiplying, since a 256-bit
+/// division is done in software and a multiplication is far cheaper.
 /// :returns: `floor(log10(me))`.
 /// :throws: Crashes with `NumericDomainError` when `me` is 0.
 #track_caller
 routine U256.ilog10(me: Me) -> Me
-    shared digits : @Me <- 0
-
     block entry()
         zero : Bool = me.eq(0)
         branch zero
             ? crash_numeric_domain()
-            : loop(me)
+            : loop(0, 10)
 
-    block loop(rest: Me)
-        last : Bool = rest.lt(10)
-        branch last
-            ? return(digits.load())
-            : continue
-        digits.load().add(1).store_into(digits)
-        jump loop(rest.div(10))
+    // power is 10^(digits + 1): one more while it is still at most me. A power past 2^256 is past every me.
+    block loop(digits: Me, power: Me)
+        more : Bool = power.le(me)
+        branch more
+            ? continue
+            : return(digits)
+        next : Option<Me> = power.mul_checked(10)
+        when next
+            .Present(bigger) -> loop(digits.add(1), bigger)
+            .Absent          -> return(digits.add(1))
 
 /// The integer square root of `me`, rounded down.
 /// :returns: `floor(sqrt(me))`.

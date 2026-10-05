@@ -181,7 +181,11 @@ public sealed record Manifest(
     /// The entry and every file the build needs from the roots: those declaring a module the entry imports, then
     /// those declaring what they import, and so on. Standard:: modules are the standard library's, always built in;
     /// a module no root declares is left for the build to report where it is imported.
-    internal static List<string> ImportClosure(string entry, List<string> roots, string buildDir)
+    internal static List<string> ImportClosure(string entry, List<string> roots, string buildDir) =>
+        ImportClosure(entry, ModuleFiles(roots, buildDir));
+
+    /// The files under the roots (not under buildDir) that declare a module, by the module they declare.
+    internal static Dictionary<string, List<string>> ModuleFiles(List<string> roots, string buildDir)
     {
         var byModule = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (var root in roots)
@@ -192,7 +196,12 @@ public sealed record Manifest(
                     if (!byModule.TryGetValue(module, out var files)) byModule[module] = files = [];
                     files.Add(System.IO.Path.GetFullPath(file));
                 }
+        return byModule;
+    }
 
+    /// The entry and every file the build needs from `byModule` (ModuleFiles), as the overload above.
+    internal static List<string> ImportClosure(string entry, Dictionary<string, List<string>> byModule)
+    {
         var result = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var pending = new Queue<string>();

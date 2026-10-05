@@ -63,7 +63,7 @@ public static class UninitReads
             successors[b.Name] = probe.Block(b).Select(e => e.Target).Where(byName.ContainsKey).Distinct().ToList();
             fills[b.Name] = [.. probe.Filled.Where(shared.Contains)];
         }
-        var loopOf = Loops(blocks[0].Name, successors);
+        var loopOf = BlockGraph.Loops(blocks[0].Name, successors);
         var loopFills = new Dictionary<int, HashSet<string>>();
         foreach (var (block, loop) in loopOf)
             (loopFills.TryGetValue(loop, out var set) ? set : loopFills[loop] = []).UnionWith(fills[block]);
@@ -116,61 +116,6 @@ public static class UninitReads
             return new Finding(found.Pos, Message(found, r, path));
         }
         return null;
-    }
-
-    /// The loops among the blocks reached from `entry`: each block on a cycle, mapped to the number of its loop (its
-    /// strongly connected component, Tarjan's algorithm, kept iterative so a long chain of blocks can't overflow the
-    /// stack). A block on no cycle isn't in the map.
-    private static Dictionary<string, int> Loops(string entry, Dictionary<string, List<string>> successors)
-    {
-        var index = new Dictionary<string, int>();
-        var low = new Dictionary<string, int>();
-        var onStack = new HashSet<string>();
-        var stack = new Stack<string>();
-        var loops = new Dictionary<string, int>();
-        int next = 0, loopCount = 0;
-        var frames = new Stack<(string Block, int Child)>();
-        index[entry] = low[entry] = next++;
-        stack.Push(entry);
-        onStack.Add(entry);
-        frames.Push((entry, 0));
-        while (frames.Count > 0)
-        {
-            var (block, child) = frames.Pop();
-            var succ = successors[block];
-            if (child < succ.Count)
-            {
-                frames.Push((block, child + 1));
-                string s = succ[child];
-                if (!index.ContainsKey(s))
-                {
-                    index[s] = low[s] = next++;
-                    stack.Push(s);
-                    onStack.Add(s);
-                    frames.Push((s, 0));
-                }
-                else if (onStack.Contains(s)) low[block] = Math.Min(low[block], index[s]);
-                continue;
-            }
-            if (frames.Count > 0)
-            {
-                string parent = frames.Peek().Block;
-                low[parent] = Math.Min(low[parent], low[block]);
-            }
-            if (low[block] != index[block]) continue;
-            var members = new List<string>();
-            string popped;
-            do
-            {
-                popped = stack.Pop();
-                onStack.Remove(popped);
-                members.Add(popped);
-            } while (popped != block);
-            if (members.Count == 1 && !succ.Contains(block)) continue;
-            foreach (var m in members) loops[m] = loopCount;
-            loopCount++;
-        }
-        return loops;
     }
 
     /// The blocks from entry to `block` along which the head slot stays unfilled.

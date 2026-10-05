@@ -84,7 +84,7 @@ public sealed partial class Compiler
     private static readonly HashSet<string> KnownAttributes =
         ["external", "symbol", "callconv", "noreturn", "variadic", "template", "target", "feature", "llvm",
          "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source", "track_caller",
-         "no_builtins", "untraced", "trace", "heap_check"];
+         "no_builtins", "untraced", "trace", "heap_check", ExpensiveCallLint.Attribute];
 
     /// Attributes that describe an assembly routine and mean nothing on another.
     private static readonly string[] AsmAttributes = ["clobbers", "readonly", "pure", "naked"];
@@ -106,6 +106,7 @@ public sealed partial class Compiler
                     $"'= {placed.Text}' places a parameter of an assembly routine in a register, and '{r.DisplayName}' is not #external(\"asm\")");
         CheckInlining(r);
         CheckUntraced(r);
+        ExpensiveCallLint.CheckAttribute(r);
 
         var needed = new HashSet<string>(OwnerTypeParams(r).Concat(r.TypeParams));
         foreach (var n in needed)

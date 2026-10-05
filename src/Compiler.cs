@@ -333,6 +333,30 @@ public sealed partial class Compiler
     /// first. Used by `tessera check` to validate the standard library.
     public int InstanceCount => _instances.Count;
 
+    /// The expensive-call warnings (ExpensiveCallLint) of every routine built so far, by the call's place: a generic
+    /// routine's call is the same call in each of its instances, so it is reported once.
+    private readonly Dictionary<Pos, string> _expensiveCalls = [];
+
+    public void NoteExpensiveCalls(List<(Pos Pos, string Warning)> warnings)
+    {
+        if (warnings.Count == 0) return;
+        lock (_expensiveCalls)
+            foreach (var (pos, warning) in warnings) _expensiveCalls.TryAdd(pos, warning);
+    }
+
+    /// The expensive-call warnings in the files `file` accepts (by the name the parser gave the file), in source order.
+    public List<string> ExpensiveCallWarnings(Func<string, bool> file) =>
+        ExpensiveCalls(file).Select(c => c.Warning).ToList();
+
+    /// The same with the place of each call.
+    public List<(Pos Pos, string Warning)> ExpensiveCalls(Func<string, bool> file)
+    {
+        lock (_expensiveCalls)
+            return _expensiveCalls.Where(kv => file(kv.Key.File))
+                .OrderBy(kv => kv.Key.File, StringComparer.Ordinal).ThenBy(kv => kv.Key.Line).ThenBy(kv => kv.Key.Col)
+                .Select(kv => (kv.Key, kv.Value)).ToList();
+    }
+
     /// Where a written name made or matched a variant case (`.Present(x)` resolves by the type it is expected to be):
     /// the language server colors those as cases, not calls.
     public HashSet<Pos> CaseUses { get; } = [];

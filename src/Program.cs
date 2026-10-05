@@ -48,8 +48,10 @@ static class Cli
               C ABI signatures and generated code exempt) that should take a record instead, and in a library or example file (one not under a
               tests, playground, scratch, or generated directory) on a routine without a /// doc comment, or whose doc lacks
               a :param line for a parameter (me aside), has one for a name that isn't a parameter, or lacks
-              :returns: when it returns a value. check, build, and run print the same warnings for the program's
-              own files. Exits 1 when there is one.
+              :returns: when it returns a value. It also warns on a call to an #expensive routine from a block on a
+              loop (it builds the files to know which routine each call is). check, build, and run print the same
+              warnings for the program's own files. Exits 1 when there is one, the expensive calls aside: there is
+              no way yet to accept one that is meant, so they don't fail it.
         """;
 
     private static int Help()
@@ -153,17 +155,21 @@ static class Cli
 
     /// The style warnings for the files given, whoever's they are: what check, build, and run print for the
     /// program's own files, here for any file, the stdlib included. Exits 1 when there is one, so CI can hold to it.
+    /// The expensive calls on loops are printed and counted apart, and don't make it exit 1: some are meant (a loop that
+    /// starts one thread per worker), and nothing marks a call as accepted yet.
     private static int LintFiles(string[] args)
     {
         if (args.Length == 0) return Fail("lint: give files or directories to lint");
         var files = args.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
             : [p]).Order().ToList();
-        int count = 0;
+        foreach (var file in files)
+            if (!File.Exists(file)) throw new ToolError($"no such file: {file}");
+        var expensive = ExpensiveCallsIn(files);
+        int count = 0, expensiveCount = 0;
         var linesOf = StyleLint.SavedFiles();
         foreach (var file in files)
         {
-            if (!File.Exists(file)) throw new ToolError($"no such file: {file}");
             List<Decl> decls;
             try
             {
@@ -178,9 +184,99 @@ static class Cli
                 Console.Error.WriteLine(w);
                 count++;
             }
+            foreach (var w in expensive.GetValueOrDefault(Path.GetFullPath(file), []))
+            {
+                Console.Error.WriteLine(w);
+                expensiveCount++;
+            }
         }
-        Console.Error.WriteLine($"{count} warning(s) in {files.Count} file(s)");
+        Console.Error.WriteLine(
+            $"{count} warning(s) and {expensiveCount} expensive call(s) on a loop in {files.Count} file(s)");
         return count > 0 ? 1 : 0;
+    }
+
+    /// The hosted targets the standard library's own files are linted on, so the result doesn't depend on the host and
+    /// each operating system's routines are checked.
+    private static readonly string[] LibraryLintTargets = ["x86_64-linux-gnu", "x86_64-windows-msvc", "aarch64-macos-none"];
+
+    /// The expensive-call warnings (ExpensiveCallLint) of the files, by full path. That lint needs the routine each call
+    /// resolved to, so the files are checked as builds: the standard library's files together, as the library, on each
+    /// hosted operating system (LibraryLintTargets) with the heap check on and off, and every other file with the
+    /// files a build of it would take (its manifest's import closure and target, or else the host and the files under
+    /// its directory that declare its module and the modules it imports). Files that come to the same build are
+    /// checked once, and the builds run in parallel. A file that doesn't build gets what its routines that did build
+    /// reported, its errors being the build's to report.
+    private static Dictionary<string, List<string>> ExpensiveCallsIn(List<string> files)
+    {
+        string stdlib = Path.GetFullPath(StdlibDir());
+        var full = files.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        bool InStdlib(string f) => f.StartsWith(stdlib.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+            StringComparison.OrdinalIgnoreCase);
+
+        // Each build: its target, its sources (none for the library alone), whether it is the library, and the files
+        // it lints, with the names their declarations carry in it.
+        var builds = new List<(BuildTarget Target, List<string> Sources, bool Library, List<(string File, string Shown)> Linted)>();
+        var library = full.Where(InStdlib).Select(f => (f, StandardLibrary.ShownAs(stdlib, f))).ToList();
+        if (library.Count > 0)
+            foreach (var triple in LibraryLintTargets)
+                builds.Add((BuildTarget.Parse(triple), [], true, library));
+        var modulesByDir = new Dictionary<string, Dictionary<string, List<string>>>(StringComparer.OrdinalIgnoreCase);
+        var byKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var f in full.Where(f => !InStdlib(f)))
+        {
+            var (target, sources) = LintBuild(f, modulesByDir);
+            string key = target.LlvmTriple + "|" + string.Join("|", sources.Order(StringComparer.OrdinalIgnoreCase));
+            if (!byKey.TryGetValue(key, out int at))
+            {
+                byKey[key] = at = builds.Count;
+                builds.Add((target, sources, false, []));
+            }
+            builds[at].Linted.Add((f, ShownPath(f)));
+        }
+
+        var found = new ConcurrentBag<(string File, Pos Pos, string Warning)>();
+        Parallel.ForEach(builds, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, build =>
+        {
+            var shown = build.Linted.Select(l => l.Shown).ToHashSet();
+            foreach (bool heapCheck in build.Library ? new[] { true, false } : [false])
+            {
+                try
+                {
+                    var compiler = new Compiler(build.Target, LoadDecls(build.Sources, build.Target), trace: true, heapCheck);
+                    _ = compiler.CheckAll(scope: shown.Contains);
+                    foreach (var (file, name) in build.Linted)
+                        foreach (var (pos, warning) in compiler.ExpensiveCalls(f => f == name))
+                            found.Add((file, pos, warning));
+                }
+                catch (Exception e) when (e is CompileError or ManifestError or IOException) { }
+            }
+        });
+        return found.GroupBy(f => f.File, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key,
+            g => g.DistinctBy(f => f.Pos).OrderBy(f => f.Pos.Line).ThenBy(f => f.Pos.Col).Select(f => f.Warning).ToList(),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// The target and the sources a build of `file` takes, for the lint: its manifest's, when one above it reads,
+    /// or else the host and the file with what it needs from its own directory (ModuleFiles, cached per directory).
+    private static (BuildTarget Target, List<string> Sources) LintBuild(string file,
+        Dictionary<string, Dictionary<string, List<string>>> modulesByDir)
+    {
+        string dir = Path.GetDirectoryName(file)!;
+        if (Manifest.Find(dir) is { } path)
+        {
+            try
+            {
+                var manifest = Manifest.Load(path);
+                return (manifest.Target, Manifest.ImportClosure(file, manifest.Roots, manifest.OutputDirectory));
+            }
+            catch (ManifestError)
+            {
+                // Another language's config.toml, or one this builder can't read: the file's own directory decides.
+            }
+        }
+        if (!modulesByDir.TryGetValue(dir, out var modules))
+            modulesByDir[dir] = modules = Manifest.ModuleFiles([dir], Path.Combine(dir, "build"));
+        return (BuildTarget.Host(), Manifest.ImportClosure(file, modules));
     }
 
     private static int Fail(string message)
@@ -304,7 +400,7 @@ static class Cli
             checkedSides.Add((heapCheck ? "heap check on" : "heap check off", compiler));
         }
         foreach (var e in errors) Console.Error.WriteLine(e.Message);
-        if (errors.Count == 0) Lint(ownDecls!, files);
+        if (errors.Count == 0) Lint(ownDecls!, files, [.. checkedSides.Select(s => s.Compiler)]);
         Console.Error.WriteLine($"{instances} routine instance(s) checked (heap check on and off), {errors.Count} error(s)");
         if (errors.Count > 0) return 1;
 
@@ -362,7 +458,7 @@ static class Cli
             StdlibParent = Path.GetDirectoryName(StdlibDir()),
         };
         string ir = compiler.Generate();
-        if (lint) Lint(decls, inputs);
+        if (lint) Lint(decls, inputs, [compiler]);
         if (executable && !compiler.HasStart)
             throw compiler.MainRoutine is { } main
                 ? new CompileError(main.Pos,
@@ -373,12 +469,12 @@ static class Cli
         return ir;
     }
 
-    /// Prints the style warnings (StyleLint) for the program's own files, the inputs; the standard library's are its own
-    /// business.
-    private static void Lint(List<Decl> decls, IEnumerable<string> inputs)
+    /// Prints the style warnings (StyleLint) for the program's own files, the inputs, with the expensive-call warnings of
+    /// the builds that checked them. The standard library's are its own business.
+    private static void Lint(List<Decl> decls, IEnumerable<string> inputs, IReadOnlyList<Compiler> built)
     {
         var own = inputs.Select(f => ShownPath(Path.GetFullPath(f))).ToHashSet();
-        foreach (var w in StyleLint.Check(decls.Where(d => own.Contains(d.File)), StyleLint.SavedFiles()))
+        foreach (var w in StyleLint.Check(decls.Where(d => own.Contains(d.File)), StyleLint.SavedFiles(), built))
             Console.Error.WriteLine(w);
     }
 

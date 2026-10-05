@@ -78,6 +78,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 "define" => ParseDefine(attrs),
                 _ => ParseConcept(attrs),
             };
+            if (d is not RoutineDecl && attrs.FirstOrDefault(a => a.Name == ExpensiveCallLint.Attribute) is { } expensive)
+                throw new CompileError(expensive.Pos,
+                    "#expensive marks a routine, the one whose calls cost a lot: put it on the routine declaration");
             decls.Add(d with { IsLibrary = isLibrary, IsPrivate = isPrivate, IsInternal = isInternal, Module = module });
             SkipNewlines();
         }
@@ -587,6 +590,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             }
 
             var f = Expect(TokenKind.Ident, "a field name");
+            if (fieldAttrs.FirstOrDefault(a => a.Name == ExpensiveCallLint.Attribute) is { } expensive)
+                throw new CompileError(expensive.Pos,
+                    "#expensive marks a routine, the one whose calls cost a lot, not a field");
             Expect(TokenKind.Colon, "':' after the field name");
             fields.Add(new FieldDecl(f.Text, ParseType(), fieldAttrs, f.Pos, isPrivate, isInternal));
             ExpectLineEnd();
