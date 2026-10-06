@@ -19,6 +19,7 @@ static class Cli
           tessera fmt   -               format the source on standard input to standard output (for an editor)
           tessera lsp                   run the language server on standard input and output (for an editor)
           tessera lint  <file-or-dir>...   print the style warnings (see lint below), the stdlib's too
+          tessera docs  <source-dir> <output-dir>   write the API reference pages of a library from its /// docs
           tessera help                  print this text
           tessera version               print the builder's version
 
@@ -90,6 +91,7 @@ static class Cli
                 "lsp" => LanguageServer.Run(StdlibDir),
                 "fmt" => Fmt(args[1..]),
                 "lint" => LintFiles(args[1..]),
+                "docs" => Docs(args[1..]),
                 "version" => Version(),
                 "help" => Help(),
                 _ => Fail($"unknown command '{args[0]}'\n{Usage}"),
@@ -157,6 +159,19 @@ static class Cli
     /// program's own files, here for any file, the stdlib included. Exits 1 when there is one, so CI can hold to it.
     /// The expensive calls on loops are printed and counted apart, and don't make it exit 1: some are meant (a loop that
     /// starts one thread per worker), and nothing marks a call as accepted yet.
+    /// `docs <source-dir> <output-dir>`: one MkDocs page per library file under the source directory, with an index page
+    /// per folder (ApiDocs). The output directory's .md files are replaced. Exits 1 when a file doesn't parse (the others
+    /// are still written).
+    private static int Docs(string[] args)
+    {
+        if (args.Length != 2) return Fail("docs: give the library's source directory and the output directory");
+        if (!Directory.Exists(args[0])) throw new ToolError($"no such directory: {args[0]}");
+        var (files, pages, problems) = new ApiDocs(args[0], path => ParseFile(path, isLibrary: true)).Generate(args[1]);
+        foreach (string problem in problems) Console.Error.WriteLine($"not documented: {problem}");
+        Console.WriteLine($"{files} files: {pages} pages written to {args[1]}, {problems.Count} could not be read");
+        return problems.Count > 0 ? 1 : 0;
+    }
+
     private static int LintFiles(string[] args)
     {
         if (args.Length == 0) return Fail("lint: give files or directories to lint");

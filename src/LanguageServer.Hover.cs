@@ -136,14 +136,7 @@ public static partial class LanguageServer
     {
         var lines = LinesOf(analysis, d.File);
         if (d.Pos.Line < 1 || d.Pos.Line > lines.Length) return d.ToString();
-        var header = new List<string> { lines[d.Pos.Line - 1].TrimEnd() };
-        for (int i = d.Pos.Line; i < lines.Length; i++)
-        {
-            string l = lines[i];
-            if (l.Trim().Length == 0 || char.IsWhiteSpace(l[0]) || l.StartsWith("//") || l.StartsWith('#')) break;
-            if (!l.StartsWith("conform ") && !l.StartsWith("require ") && !l.StartsWith("when ")) break;
-            header.Add(l.TrimEnd());
-        }
+        var header = ApiDocs.HeaderLines(lines, d.Pos.Line);
         if (d is RoutineDecl { Owner: { } owner })
             header.AddRange(InheritedRequires(analysis, owner, d.File, line => header.Any(o => o.Trim() == line)));
         return string.Join("\n", header);
@@ -199,32 +192,8 @@ public static partial class LanguageServer
         return HoverText(string.Join("\n", [conform, .. inherited]), null);
     }
 
-    /// A doc split into its summary and its `:field:` lines (`:param x:`, `:typeparam T:`, `:returns:`, `:throws:`,
-    /// `:absent:`, `:note:`, `:see:`). A line that opens no field continues the one before it.
-    private static (List<string> Summary, List<(string Kind, string? Name, string Text)> Fields) ParseDoc(string doc)
-    {
-        var summary = new List<string>();
-        var fields = new List<(string Kind, string? Name, string Text)>();
-        foreach (string raw in doc.Split('\n'))
-        {
-            string line = raw.Trim();
-            if (line.StartsWith(':') && line.IndexOf(':', 1) is var end and > 0)
-            {
-                string[] spec = line[1..end].Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-                fields.Add((spec[0].ToLowerInvariant(), spec.Length > 1 ? spec[1] : null, line[(end + 1)..].Trim()));
-            }
-            else if (fields.Count > 0 && line.Length > 0)
-            {
-                var last = fields[^1];
-                fields[^1] = last with { Text = $"{last.Text} {line}".Trim() };
-            }
-            else
-            {
-                summary.Add(line);
-            }
-        }
-        return (summary, fields);
-    }
+    private static (List<string> Summary, List<(string Kind, string? Name, string Text)> Fields) ParseDoc(string doc) =>
+        ApiDocs.ParseDoc(doc);
 
     /// A doc as hover markdown, the way RazorForge and Suflae show theirs: the summary, the type parameters and the
     /// parameters as lists, then Returns, Throws, Absent, Note, and See.
