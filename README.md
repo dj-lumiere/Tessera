@@ -54,6 +54,10 @@ it goes.
 > golden tests on Linux, Windows, and macOS, 64- and 32-bit, and checks 32-bit ARM, aarch64 Linux, and riscv64
 > builds in CI. Expect changes between releases, and expect bugs.
 
+## What it keeps
+
+The satisfaction of building something stitch by stitch, and of growing it into larger code.
+
 ## What it is like
 
 **A program is tiles of tiles.** A tessera is one tile of a mosaic, and a Tessera program is put together the same
