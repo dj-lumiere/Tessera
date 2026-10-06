@@ -54,9 +54,13 @@ it goes.
 > golden tests on Linux, Windows, and macOS, 64- and 32-bit, and checks 32-bit ARM, aarch64 Linux, and riscv64
 > builds in CI. Expect changes between releases, and expect bugs.
 
-## What it keeps
+## What we are trying to keep
 
-The satisfaction of building something stitch by stitch, and of growing it into larger code.
+- **No ceremony.** Nothing you write is there only because the language asks for it.
+- **Code is the expression of intent.** What you write says what you mean.
+- **What should work, works.** If something ought to work, it does.
+
+And for Tessera, the satisfaction of building something stitch by stitch, and of growing it into larger code.
 
 ## What it is like
 
