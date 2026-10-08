@@ -10,6 +10,9 @@ import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.editor.event.EditorFactoryEvent
+import com.intellij.openapi.editor.event.EditorFactoryListener
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
@@ -27,6 +30,8 @@ import com.intellij.platform.lsp.api.customization.LspDiagnosticsSupport
 import com.intellij.platform.lsp.api.customization.LspSemanticTokensCustomizer
 import com.intellij.util.concurrency.AppExecutorUtil
 import org.eclipse.lsp4j.Diagnostic
+import org.eclipse.lsp4j.MarkupContent
+import org.eclipse.lsp4j.jsonrpc.messages.Either
 import java.io.IOException
 import java.io.UncheckedIOException
 import java.nio.charset.StandardCharsets
@@ -73,13 +78,41 @@ internal class TesseraFileOpenListener(private val project: Project) : FileEdito
 }
 
 /**
+ * Starts the server when an editor for a `.tess` file is created. In a remote-development backend the editors a client
+ * opens go through the guest editor manager, which doesn't publish `FileEditorManagerListener.fileOpened` on the backend,
+ * so TesseraFileOpenListener alone never sees them. An editor is created on the backend either way.
+ */
+internal class TesseraEditorListener : EditorFactoryListener {
+    override fun editorCreated(event: EditorFactoryEvent) {
+        val project = event.editor.project ?: return
+        val file = FileDocumentManager.getInstance().getFile(event.editor.document) ?: return
+        TesseraLanguage.ensureRegistered()
+        if (file.isTessera()) {
+            LspClientManager.getInstance(project)
+                .ensureClientStarted(TesseraLanguageServer::class.java, TesseraClientDescriptor(project))
+        }
+    }
+}
+
+/**
  * The server's diagnostics are plain text, and the editor shows a tooltip as HTML: a message naming a type with angle
  * brackets (`to<@Byte>`, `<error>`) would lose them as tags. The tooltip shows the message as written.
  */
 private object PlainTextDiagnostics : LspDiagnosticsSupport() {
     override fun getTooltip(diagnostic: Diagnostic): String =
-        StringUtil.escapeXmlEntities(diagnostic.message).replace("\n", "<br>")
+        StringUtil.escapeXmlEntities(diagnostic.messageText()).replace("\n", "<br>")
 }
+
+/**
+ * The message as text. Rider 2026.2 bundles an lsp4j whose `Diagnostic.message` is a `String`, and 2026.3 one where it
+ * is `Either<String, MarkupContent>`, so the value is read as `Any?` to build against both.
+ */
+private fun Diagnostic.messageText(): String =
+    when (val raw: Any? = message) {
+        is String -> raw
+        is Either<*, *> -> (raw.left as? String) ?: (raw.right as? MarkupContent)?.value.orEmpty()
+        else -> raw?.toString().orEmpty()
+    }
 
 /**
  * One server per project. Its root is the project (solution) folder rather than Rider's content roots, so files that no
@@ -104,7 +137,7 @@ private class TesseraClientDescriptor(project: Project) :
         LOG.info("Starting the Tessera language server from $staged (a copy of $server)")
 
         val command = if (staged.fileName.toString().endsWith(".dll", ignoreCase = true)) {
-            GeneralCommandLine("dotnet", staged.toString(), "lsp")
+            GeneralCommandLine(dotnetExecutable(), staged.toString(), "lsp")
         } else {
             GeneralCommandLine(staged.toString(), "lsp")
         }
@@ -267,4 +300,17 @@ internal class ServerBuildWatcher(private val project: Project) : Disposable {
     private companion object {
         const val POLL_SECONDS = 3L
     }
+}
+
+/**
+ * The `dotnet` that runs a server dll. Rider's own PATH often lacks a per-user .NET install (a remote backend started
+ * without the login shell's profile), so `DOTNET_ROOT` and the default per-user folder come before the bare name.
+ */
+private fun dotnetExecutable(): String {
+    val name = if (System.getProperty("os.name").startsWith("Windows")) "dotnet.exe" else "dotnet"
+    val candidates = listOfNotNull(
+        System.getenv("DOTNET_ROOT")?.let { Path.of(it, name) },
+        Path.of(System.getProperty("user.home"), ".dotnet", name),
+    )
+    return candidates.firstOrNull { Files.isRegularFile(it) }?.toString() ?: "dotnet"
 }
