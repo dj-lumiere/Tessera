@@ -261,6 +261,12 @@ public static partial class LanguageServer
             var decls = analysis.Decls.Where(d => d.Pos.Line > 0).OrderBy(d => d.Pos.Line).ToList();
             int at = decls.FindLastIndex(d => d.Pos.Line <= line);
             if (at < 0 || decls[at] is not RoutineDecl { Blocks: { } blocks } routine) return;
+            // A declaration that didn't parse (one being written) is missing from the list: a line of column 0 after a
+            // blank one between the routine and the cursor starts it, and the cursor isn't in the routine.
+            var text = analysis.Text.Replace("\r\n", "\n").Split('\n');
+            for (int i = routine.Pos.Line; i < Math.Min(line - 1, text.Length); i++)
+                if (text[i].Length > 0 && !char.IsWhiteSpace(text[i][0]) && text[i - 1].Trim().Length == 0)
+                    return;
             _routine = routine;
             Blocks.AddRange(blocks);
             TypeParams.UnionWith(routine.TypeParams);

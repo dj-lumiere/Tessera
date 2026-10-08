@@ -216,24 +216,36 @@ public static partial class LanguageServer
             if (manifestProblem is not null) diagnostics.Add(Diagnostic(text, 3, 1, 1, manifestProblem));
             var own = sources.Select(Shown).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var decls = new List<Decl>();
+            var parseErrors = new List<CompileError>();
             foreach (var source in sources)
             {
                 string sourceText = source.Equals(file, StringComparison.OrdinalIgnoreCase)
                     ? text
                     : OpenText(source) ?? SourceText.Read(source, Shown(source));
-                var tokens = new Lexer(Shown(source), sourceText).Lex();
-                decls.AddRange(new Parser(tokens, Shown(source), IsUnder(source, stdlib)).ParseModule().Decls);
+                decls.AddRange(ParseRecovering(Shown(source), sourceText, IsUnder(source, stdlib), parseErrors));
             }
             decls.AddRange(StdlibDecls(stdlib).Where(d => !own.Contains(d.File)));
 
             var compiler = new Compiler(target, decls);
             analysis = new Analysis(text, shown, decls.Where(d => SameFile(d.File, shown)).ToList(), compiler, stdlib);
-            foreach (var e in compiler.CheckAll(scope: own.Contains).Where(e => SameFile(e.Pos.File, shown)))
-                diagnostics.Add(Diagnostic(text, 1, e.Pos.Line, e.Pos.Col, e.Text));
-            foreach (string w in StyleLint.Check(decls.Where(d => SameFile(d.File, shown)), built: [compiler]))
-                if (Warning.Match(w) is { Success: true } m)
-                    diagnostics.Add(Diagnostic(text, 2, int.Parse(m.Groups["line"].Value), int.Parse(m.Groups["col"].Value),
-                        m.Groups["text"].Value));
+            var shownParseErrors = parseErrors.Where(e => SameFile(e.Pos.File, shown)).ToList();
+            if (parseErrors.Count > 0)
+            {
+                // While a declaration doesn't parse, the errors to fix are the parse errors: what the rest says about
+                // the missing declaration would only be noise. The check still runs, for what hover and colors use.
+                foreach (var e in shownParseErrors) diagnostics.Add(Diagnostic(text, 1, e.Pos.Line, e.Pos.Col, e.Text));
+                if (shownParseErrors.Count == 0) diagnostics.Add(Diagnostic(text, 1, 1, 1, parseErrors[0].Message));
+                compiler.CheckAll(scope: own.Contains);
+            }
+            else
+            {
+                foreach (var e in compiler.CheckAll(scope: own.Contains).Where(e => SameFile(e.Pos.File, shown)))
+                    diagnostics.Add(Diagnostic(text, 1, e.Pos.Line, e.Pos.Col, e.Text));
+                foreach (string w in StyleLint.Check(decls.Where(d => SameFile(d.File, shown)), built: [compiler]))
+                    if (Warning.Match(w) is { Success: true } m)
+                        diagnostics.Add(Diagnostic(text, 2, int.Parse(m.Groups["line"].Value), int.Parse(m.Groups["col"].Value),
+                            m.Groups["text"].Value));
+            }
         }
         catch (CompileError e)
         {
@@ -252,6 +264,40 @@ public static partial class LanguageServer
             diagnostics.Add(Diagnostic(text, 1, 1, 1, $"internal builder error: {e.Message}"));
         }
         return (diagnostics, analysis);
+    }
+
+    /// A file's declarations, as many as parse. The parser stops at the first error, so when the file doesn't parse
+    /// whole, each top-level declaration is parsed on its own (one starts at a line of its own column 0 after a blank
+    /// line, its doc and attribute lines included) and those that parse are kept, at their own lines. Each one that
+    /// doesn't adds its error. A half-written routine leaves the rest of the file named, colored, and completed.
+    private static List<Decl> ParseRecovering(string shown, string text, bool library, List<CompileError> errors)
+    {
+        try
+        {
+            return new Parser(new Lexer(shown, text).Lex(), shown, library).ParseModule().Decls;
+        }
+        catch (CompileError) { }
+
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        var starts = new List<int>();
+        for (int i = 0; i < lines.Length; i++)
+            if (lines[i].Length > 0 && !char.IsWhiteSpace(lines[i][0]) && (i == 0 || lines[i - 1].Trim().Length == 0))
+                starts.Add(i);
+        var decls = new List<Decl>();
+        for (int k = 0; k < starts.Count; k++)
+        {
+            int from = starts[k], to = k + 1 < starts.Count ? starts[k + 1] : lines.Length;
+            string chunk = string.Join("\n", lines[from..to]);
+            try
+            {
+                decls.AddRange(new Parser(new Lexer(shown, chunk, from + 1, 1).Lex(), shown, library).ParseModule().Decls);
+            }
+            catch (CompileError e)
+            {
+                errors.Add(e);
+            }
+        }
+        return decls;
     }
 
     /// The target and the files a document builds with: its `config.toml` solution's import closure from the document,
