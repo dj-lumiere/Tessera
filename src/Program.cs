@@ -9,6 +9,7 @@ static class Cli
 {
     private const string Usage = """
         usage:
+          tessera new   [<folder>]      start a solution: config.toml, main.tess, .gitignore, VS Code files
           tessera check [<target>] [<trace>] [<file.tess>...]   type-check every non-generic routine, the stdlib included
           tessera build                 build the solution its config.toml describes (here or above)
           tessera build <file.tess>... [-o <out>] [--emit-llvm] [--no-stdlib-exports] [<target>] [--mode <mode>] [<trace>]
@@ -61,15 +62,20 @@ static class Cli
         return 0;
     }
 
-    /// The builder's version, without the build metadata .NET appends (`0.1.0+<commit>`).
     private static int Version()
+    {
+        Console.WriteLine($"tessera {BuilderVersion()}");
+        return 0;
+    }
+
+    /// The builder's version, without the build metadata .NET appends (`0.1.0+<commit>`).
+    private static string BuilderVersion()
     {
         string version = typeof(Cli).Assembly
             .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
             .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
             .FirstOrDefault()?.InformationalVersion ?? "unknown";
-        Console.WriteLine($"tessera {version.Split('+')[0]}");
-        return 0;
+        return version.Split('+')[0];
     }
 
     public static int Execute(string[] args)
@@ -84,6 +90,7 @@ static class Cli
         {
             return args[0] switch
             {
+                "new" => NewProject.Run(args[1..], BuilderVersion()),
                 "build" => Build(args[1..]),
                 "run" => Run(args[1..]),
                 "test" => Test(args[1..]),

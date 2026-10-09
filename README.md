@@ -125,6 +125,7 @@ starting points.
 ## Command line
 
 ```
+tessera new   [<folder>]                      Start a solution: config.toml, main.tess, .gitignore, .vscode/
 tessera build                                 Build the solution its config.toml describes (here or above)
 tessera run                                   Build it and run it
 tessera build <file.tess>... [-o <out>]       Build an executable from these files
