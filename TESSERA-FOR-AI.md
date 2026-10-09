@@ -534,7 +534,7 @@ routine start() -> Void
   (UnwrapFailureError / UnwrapSuccessError), `crash_task_spawn()`, and `crash_logic_breached()` for a state the code
   rules out. A failure with its own message calls `crash(name, message)`. There's no `trap()`: every stop is a crash.
   A crash calls the crash handler; the default (Standard::Os) prints `tessera: Name: message` and the caller's place
-  and exits with status 101, and a program replaces it (a program on a target without an OS must) with
+  and exits with status 82, and a program replaces it (a program on a target without an OS must) with
   `#[export("tessera_crash_handler"), noreturn] routine my_handler(name: Bytes, message: Bytes, place:
   @SourceLocation) -> Void`. A stdlib routine that crashes on its caller's mistake is `#track_caller`, so the place is
   the caller's line; mark a routine of your own the same way when its crashes are its caller's fault.
@@ -716,7 +716,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
   platform's C `main`, which calls `start` and returns the exit status `set_exit_code(code: S32)` (Standard::Os)
   stored, 0 when nothing did. It is one atomic value: the last store wins, any thread may set it, and a thread
   still running when `start` returns may or may not get its store in. `exit_code()` reads it back. A crash keeps its
-  own status (101 by default). `main` is an ordinary routine name; a program with `main` and no `start` is a build
+  own status (82 by default). `main` is an ordinary routine name; a program with `main` and no `start` is a build
   error that says so. `start` with parameters or a result is an error too.
 - `routine when_booted() -> Void` is the board step of a program for a target without an operating system (below);
   with one it is a build error.
