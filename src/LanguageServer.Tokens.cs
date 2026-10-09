@@ -19,6 +19,15 @@ public static partial class LanguageServer
     private static readonly HashSet<string> ControlKeywords =
         ["jump", "branch", "when", "return", "unreachable", "continue", "else"];
 
+    /// Words the improvement plan adds that the parser doesn't take yet (`drop`, the Bool `and` / `or`, the `is` / `as`
+    /// patterns, `local` for `shared`): colored as keywords so code written for the planned surface reads right, and
+    /// left out of completion, since the builder still rejects them.
+    private static readonly HashSet<string> PlannedKeywords = ["drop", "and", "or", "is", "as", "local"];
+
+    /// Keywords the improvement plan drops or renames (`uninit` gives way to `.hollow()`, `shared` to `local`): still
+    /// colored as keywords and marked `retired`, which the Rider plugin strikes through.
+    private static readonly HashSet<string> RetiredKeywords = ["uninit", "shared"];
+
     private static readonly HashSet<string> Keywords =
     [
         "routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "define", "block", "claim", "shared",
@@ -36,7 +45,7 @@ public static partial class LanguageServer
         ["legend"] = new JsonObject
         {
             ["tokenTypes"] = new JsonArray([.. TokenTypes.Select(t => (JsonNode)t)]),
-            ["tokenModifiers"] = new JsonArray(),
+            ["tokenModifiers"] = new JsonArray("retired"),
         },
         ["full"] = true,
     };
@@ -82,6 +91,7 @@ public static partial class LanguageServer
         }
         spans.AddRange(DocSpans(text, "///"));
 
+        var sourceLines = text.Replace("\r\n", "\n").Split('\n');
         int prevLine = 0, prevChar = 0;
         foreach (var (spanLine, spanCol, length, kind) in spans.OrderBy(x => x.Line).ThenBy(x => x.Col))
         {
@@ -90,12 +100,16 @@ public static partial class LanguageServer
             data.Add(line == prevLine ? ch - prevChar : ch);
             data.Add(length);
             data.Add(Array.IndexOf(TokenTypes, kind));
-            data.Add(0);
+            data.Add(kind == "keyword" && IsRetired(sourceLines, line, ch, length) ? 1 : 0);
             prevLine = line;
             prevChar = ch;
         }
         return new JsonObject { ["data"] = data };
     }
+
+    /// Whether the word at this span is a keyword the plan retires.
+    private static bool IsRetired(string[] lines, int line, int ch, int length) =>
+        line < lines.Length && ch + length <= lines[line].Length && RetiredKeywords.Contains(lines[line].Substring(ch, length));
 
     private static List<Token>? Lex(string shown, string text)
     {
@@ -186,6 +200,7 @@ public static partial class LanguageServer
             TokenKind.Ident when member => null,
             TokenKind.Ident when !t.Escaped && ControlKeywords.Contains(t.Text) => "controlKeyword",
             TokenKind.Ident when !t.Escaped && Keywords.Contains(t.Text) => "keyword",
+            TokenKind.Ident when !t.Escaped && PlannedKeywords.Contains(t.Text) => "keyword",
             TokenKind.Ident when i > 0 && tokens[i - 1].Kind == TokenKind.Hash => "decorator",
             TokenKind.Hash => "decorator",
             TokenKind.Int or TokenKind.Float or TokenKind.Byte or TokenKind.Char => "number",

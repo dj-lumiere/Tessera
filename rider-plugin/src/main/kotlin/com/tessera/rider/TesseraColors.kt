@@ -1,6 +1,7 @@
 package com.tessera.rider
 
 import com.intellij.openapi.editor.DefaultLanguageHighlighterColors
+import com.intellij.openapi.editor.colors.CodeInsightColors
 import com.intellij.openapi.editor.colors.TextAttributesKey
 import com.intellij.openapi.fileTypes.PlainSyntaxHighlighter
 import com.intellij.openapi.fileTypes.SyntaxHighlighter
@@ -37,6 +38,9 @@ object TesseraColors {
     val DOC_TAG = key("TESSERA_DOC_TAG", DefaultLanguageHighlighterColors.DOC_COMMENT_TAG)
     val DOC_VALUE = key("TESSERA_DOC_VALUE", DefaultLanguageHighlighterColors.DOC_COMMENT_TAG_VALUE)
 
+    /** A keyword the next version drops or renames: struck through over its keyword color. */
+    val RETIRED = key("TESSERA_RETIRED_KEYWORD", CodeInsightColors.DEPRECATED_ATTRIBUTES)
+
     private fun key(name: String, csharp: TextAttributesKey) = TextAttributesKey.createTextAttributesKey(name, csharp)
 }
 
@@ -66,7 +70,8 @@ internal object TesseraSemanticTokens : LspSemanticTokensSupport() {
     override val tokenTypes: List<String> = (super.tokenTypes + keys.keys).distinct()
 
     override fun getTextAttributesKey(tokenType: String, modifiers: List<String>): TextAttributesKey? =
-        keys[tokenType] ?: super.getTextAttributesKey(tokenType, modifiers)
+        if ("retired" in modifiers) TesseraColors.RETIRED
+        else keys[tokenType] ?: super.getTextAttributesKey(tokenType, modifiers)
 }
 
 /** Settings | Editor | Color Scheme | Tessera. */
