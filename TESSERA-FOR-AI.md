@@ -198,8 +198,9 @@ routine start() -> Void
 
 **Blocks and control flow**
 
-- A routine body is its head (optional `local` lines) and a list of blocks. The first block is `block entry()`, and
-  a routine without blocks must be `#external`.
+- A routine body is its head (optional `local` lines) and a list of blocks. The first block is `entry`: written
+  `block entry()`, or left out, when the lines after the head (before the first `block`) are the entry block. A
+  routine without a body must be `#external`.
 - **A routine has two layers of names.** The routine layer, its parameters and the values its head shares, is
   visible in every block. The block layer, the block's parameters, the values it binds and the slots it claims, is
   visible only in that block. Anything else must be passed as a block argument. This is the most common error. No

@@ -463,25 +463,32 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (inConcept)
             return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
 
-        // Only an #external routine is declared without a body. Every other one starts with `block entry()`, after
-        // its head: the routine's local lines, if it has any.
+        // Only an #external routine is declared without a body. Every other one has its head (the routine's local
+        // lines, if it has any), then its entry block: written `block entry()`, or the lines before the first block.
         string display = owner is null ? name : $"{owner}.{name}";
         _routineDisplay = display;
         var shared = ParseHead(display);
-        if (!IsIdent("block"))
+        var blocks = new List<BlockDecl>();
+        int afterHead = _i;
+        bool blockNext = NextBlockSource().IsBlock;
+        _i = afterHead;
+        if (!blockNext)
         {
-            if (!AtDeclStart())
-                throw Error($"only local lines go between the header of routine '{display}' and its 'block entry()', "
-                            + $"and this is {Describe(Cur)}: a statement goes in a block");
-            if (shared.Count > 0)
-                throw new CompileError(shared[0].Pos,
-                    $"routine '{display}' shares values but has no blocks to share them with: a 'block entry()' follows its head");
-            if (attrs.Any(a => a.Name == "external"))
-                return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs, Source = source };
-            throw new CompileError(pos, $"routine '{display}' has no body: it needs a 'block entry()'");
+            if (AtDeclStart())
+            {
+                if (shared.Count > 0)
+                    throw new CompileError(shared[0].Pos,
+                        $"routine '{display}' shares values but has no body to share them with: its lines follow the head");
+                if (attrs.Any(a => a.Name == "external"))
+                    return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs, Source = source };
+                throw new CompileError(pos, $"routine '{display}' has no body: its lines follow the header");
+            }
+            // The lines before the first block are the entry block.
+            _blockName = "entry";
+            _values = [.. _routineValues];
+            blocks.Add(ParseBlockBody("entry", [], Cur.Pos, implicitEntry: true));
         }
 
-        var blocks = new List<BlockDecl>();
         while (NextBlockSource() is var (isBlock, blockSource) && isBlock)
             blocks.Add(ParseBlock() with { Source = blockSource });
         _inAsm = false;
@@ -868,7 +875,21 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                   + $"already sees: use '{p.Name}' itself, or give a value that changes its own name (or claim a slot for it)");
         ExpectLineEnd();
         _values = [.. _routineValues, .. parameters.Select(p => p.Name)];
+        return ParseBlockBody(name.Text, parameters, pos);
+    }
 
+    /// The error for a block whose lines stop before a terminator. Lines after a routine's head that run into a
+    /// `block entry()` are an entry block of their own, which says so.
+    private CompileError Unterminated(string block, Pos pos, bool implicitEntry) =>
+        new(pos, implicitEntry && IsIdent("block") && PeekTok(1).Text == "entry"
+            ? $"the lines after the head of routine '{_routineDisplay}' are its entry block, and a 'block entry()' "
+              + "follows them: move those lines into the block, or end them with a terminator and drop the block's header"
+            : $"block '{block}' does not end with a terminator");
+
+    /// A block's lines, up to and including its terminator.
+    private BlockDecl ParseBlockBody(string blockName, List<Param> parameters, Pos pos, bool implicitEntry = false)
+    {
+        var name = (Text: blockName, Pos: pos);
         var stmts = new List<Stmt>();
         while (true)
         {
@@ -876,7 +897,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             // Attributes on the line before a line of the block: `#source(...)` on any, and `#asm_prefix("lock")` on an
             // instruction of an assembly routine.
             if (AtBlockEnd())
-                throw new CompileError(pos, $"block '{name.Text}' does not end with a terminator");
+                throw Unterminated(name.Text, pos, implicitEntry);
             Pos? lineSource = null;
             List<Attribute> prefixes = [];
             if (Is(TokenKind.Hash))
@@ -894,7 +915,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     throw new CompileError(Cur.Pos, "an attribute goes on the line before the line it describes");
             }
             if (AtBlockEnd())
-                throw new CompileError(pos, $"block '{name.Text}' does not end with a terminator");
+                throw Unterminated(name.Text, pos, implicitEntry);
 
             if (IsKeyword(Cur) && TerminatorKeywords.Contains(Cur.Text))
             {
