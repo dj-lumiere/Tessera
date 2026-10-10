@@ -1399,13 +1399,17 @@ public sealed class FunctionGen
                 ? $"(a, b) is a tuple, and a {t} isn't one"
                 : $"only an Array or a Vector takes its elements in order; a record names its fields: {t}(name: value)"),
         };
-        if (lit.Elements.Count != count)
-            throw Err(lit.Pos, $"{t} needs {count} element(s), got {lit.Elements.Count}");
+        if (lit.IsTuple && lit.Repeat is not null) throw Err(lit.Repeat.Pos, "a tuple doesn't repeat; an Array does: [a] x n");
+        var elements = _c.Elements(lit, _env);
+        if (elements.Count != count)
+            throw Err(lit.Pos, $"{t} needs {count} element(s), got {elements.Count}");
         _c.EnsureTypeDefined(t);
+        // Each written element is evaluated once; its repeats reuse the value.
+        var written = lit.Elements.Select(x => Eval(x, elem)).ToList();
         string acc = "poison";
-        for (int i = 0; i < lit.Elements.Count; i++)
+        for (int i = 0; i < elements.Count; i++)
         {
-            var v = Eval(lit.Elements[i], elem);
+            var v = written[i % written.Count];
             string at = t is VectorType ? $"i32 {i}" : $"{i}";
             acc = EmitTmp($"{insert} {t.Llvm} {acc}, {elem.Llvm} {v.Op}, {at}");
         }

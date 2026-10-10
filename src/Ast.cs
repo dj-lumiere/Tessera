@@ -297,6 +297,10 @@ public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
 {
     /// `(a, b)`: a tuple, where `[a, b]` is an Array or a Vector.
     public bool IsTuple { get; init; }
+
+    /// `[0] x 256`: how many times the elements repeat, a count the build knows (a literal or a preset). Null when
+    /// they are written out.
+    public Expr? Repeat { get; init; }
 }
 
 // ── Terminators ─────────────────────────────────────────────────────────────

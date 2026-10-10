@@ -980,6 +980,19 @@ public sealed partial class Compiler
         }
     }
 
+    /// An array literal's elements in order: `[1, 2] x 3` is 1, 2, 1, 2, 1, 2.
+    public List<Expr> Elements(ArrayLit lit, TypeEnv env)
+    {
+        if (lit.Repeat is null) return lit.Elements;
+        long times = EvalConstInt(lit.Repeat, env, 0);
+        if (times < 0) throw new CompileError(lit.Repeat.Pos, $"'x {times}' repeats a negative number of times");
+        if (times * lit.Elements.Count > 1 << 24)
+            throw new CompileError(lit.Repeat.Pos, $"'x {times}' makes {times * lit.Elements.Count} elements, too many for a literal");
+        var all = new List<Expr>((int)(times * lit.Elements.Count));
+        for (long i = 0; i < times; i++) all.AddRange(lit.Elements);
+        return all;
+    }
+
     /// A buildtime integer (an Array length, an alignment, an integer generic argument): any folded integer
     /// constant (ConstFold.cs).
     private long EvalConstInt(Expr e, TypeEnv env, int depth)
@@ -1212,9 +1225,12 @@ public sealed partial class Compiler
         if (t is ArrayType a)
         {
             if (e is not ArrayLit { IsTuple: false } lit) throw new CompileError(e.Pos, $"expected an array literal for {a}: [...]");
-            if (lit.Elements.Count != a.Count)
-                throw new CompileError(lit.Pos, $"{a} needs {a.Count} element(s), got {lit.Elements.Count}");
-            return "[" + string.Join(", ", lit.Elements.Select(x => $"{a.Elem.Llvm} {PresetInitializer(x, a.Elem, env)}")) + "]";
+            var elements = Elements(lit, env);
+            if (elements.Count != a.Count)
+                throw new CompileError(lit.Pos, $"{a} needs {a.Count} element(s), got {elements.Count}");
+            // A repeated element is one constant, written once.
+            var constants = lit.Elements.Select(x => $"{a.Elem.Llvm} {PresetInitializer(x, a.Elem, env)}").ToList();
+            return "[" + string.Join(", ", elements.Select((_, i) => constants[i % constants.Count])) + "]";
         }
         if (t is PtrType or CallableType) return PointerInitializer(e, t, env);
         if (t is RecordType record && record.Decl.Attr("llvm") is null && e is RecordLit recordLit)

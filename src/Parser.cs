@@ -1272,6 +1272,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 if (!Is(TokenKind.RBracket))
                     do elems.Add(ParseExpr()); while (Accept(TokenKind.Comma));
                 Expect(TokenKind.RBracket, "']'");
+                // `[0] x 256`: the elements repeated, as many times as a count the build knows.
+                if (Cur is { Kind: TokenKind.Ident, Text: "x", Escaped: false } && !_inAsm)
+                {
+                    Next();
+                    if (elems.Count == 0) throw Error("'[] x n' repeats nothing; write the elements to repeat: [0] x n");
+                    return new ArrayLit(elems, t.Pos) { Repeat = ParsePostfix() };
+                }
                 return new ArrayLit(elems, t.Pos);
             }
             case TokenKind.Ident when _inAsm && AsmCondition() is { } condition:

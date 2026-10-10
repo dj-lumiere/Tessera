@@ -915,9 +915,9 @@ the type's own).
 
 **Arrays and `stride`.** `p.stride(i)` is the address of the i-th `T` of a `@T` (a
 `USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
-`@Array[T, COUNT]` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(i, v)` / `arr.getslot(i)`
-(bounds checked), or `arr.to[@T]().stride(i).peek()` unchecked. Literals name their type: `[1, 2, 3]`,
-`[...]`. The same holds for array fields (`node.keys.getitem(i)`) and
+`@Array[T, COUNT]` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(index: i, value: v)` / `arr.getslot(i)`
+(bounds checked), or `arr.to[@T]().stride(i).peek()` unchecked. An array literal is `[1, 2, 3]`, and `[0] x 256`
+repeats its elements (`[1, 2] x 3` = `[1, 2, 1, 2, 1, 2]`; the count is a number or a preset). The same holds for array fields (`node.keys.getitem(i)`) and
 array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`).
 
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
