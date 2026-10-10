@@ -36,7 +36,7 @@ conform Equatable[SortedDict[TKey, TValue]] when TKey: typename, TValue: typenam
 require TKey: typename, TValue: typename, Comparable[TKey]
     root: @SortedDictNode[TKey, TValue]
     count: USize
-    alloc: @Allocator
+    alloc: @MemoryManager
 
 /// Where the entry of a rank lives: its node and its index there.
 private record SortedDictSpot[TKey, TValue]
@@ -47,7 +47,7 @@ require TKey: typename, TValue: typename
 /// Creates an empty SortedDict that draws its storage from `alloc`. Nothing is allocated until the first insertion.
 /// :param alloc: The allocator the dict stores and later frees its memory with.
 /// :returns: A new empty SortedDict.
-routine SortedDict[TKey, TValue].construct(alloc: @Allocator) -> Me
+routine SortedDict[TKey, TValue].construct(alloc: @MemoryManager) -> Me
 require TKey: typename, TValue: typename
     block entry()
         map: Me = Me(root: null, count: 0, alloc: alloc)
@@ -66,7 +66,7 @@ require TKey: typename, TValue: typename
 routine SortedDict[TKey, TValue].count(me: @Me) -> USize
 require TKey: typename, TValue: typename
     block entry()
-        result: USize = me.load().count()
+        result: USize = me.peek().count()
         return(result)
 
 /// Whether the dict holds no entries.
@@ -83,14 +83,14 @@ require TKey: typename, TValue: typename
 routine SortedDict[TKey, TValue].is_empty(me: @Me) -> Bool
 require TKey: typename, TValue: typename
     block entry()
-        result: Bool = me.load().is_empty()
+        result: Bool = me.peek().is_empty()
         return(result)
 
 /// A new empty node from `alloc`.
 /// :param leaf: Whether the node is a leaf.
 /// :param alloc: The allocator to take the node from.
 /// :returns: The node, or null when the allocator fails.
-routine SortedDictNode[TKey, TValue].construct(leaf: Bool, alloc: @Allocator) -> @Me
+routine SortedDictNode[TKey, TValue].construct(leaf: Bool, alloc: @MemoryManager) -> @Me
 require TKey: typename, TValue: typename
     local node: @Me = allocate[Me](1, alloc)
 
@@ -101,9 +101,9 @@ require TKey: typename, TValue: typename
             : init()
 
     block init()
-        node.leaf.store(leaf)
-        node.count.store(0)
-        node.subtree_count.store(0)
+        node.leaf.poke(leaf)
+        node.count.poke(0)
+        node.subtree_count.poke(0)
         return(node)
 
 /// The number of entries in the subtree below this node.
@@ -117,14 +117,14 @@ require TKey: typename, TValue: typename
             : count()
 
     block count()
-        count: USize = me.subtree_count.load()
+        count: USize = me.subtree_count.peek()
         return(count)
 
 /// Recomputes this node's subtree count from its own keys and its children's counts. Call it after the node's contents change.
 routine SortedDictNode[TKey, TValue].recount(me: @Me) -> Void
 require TKey: typename, TValue: typename
-    local leaf: Bool = me.leaf.load()
-    local count: USize = me.count.load()
+    local leaf: Bool = me.leaf.peek()
+    local count: USize = me.count.peek()
     local sum: @USize <- .hollow()
 
     block entry()
@@ -133,11 +133,11 @@ require TKey: typename, TValue: typename
             : internal_count()
 
     block leaf_count()
-        me.subtree_count.store(count)
+        me.subtree_count.poke(count)
         return()
 
     block internal_count()
-        0.store_into(sum)
+        0.poke_into(sum)
         jump loop(0)
 
     block loop(i: USize)
@@ -149,16 +149,16 @@ require TKey: typename, TValue: typename
     block add_child(i: USize)
         child: @Me = me.children.getitem(i)
         child_count: USize = child.subtree_count()
-        with_child: USize = sum.load().add(child_count)
+        with_child: USize = sum.peek().add(child_count)
         has_key: Bool = i.lt(count)
         next_sum: USize = has_key
             ? with_child.add(1)
             : with_child
-        next_sum.store_into(sum)
+        next_sum.poke_into(sum)
         jump loop(i.add(1))
 
     block store_sum()
-        me.subtree_count.store(sum.load())
+        me.subtree_count.poke(sum.peek())
         return()
 
 /// Finds where `key` sits among this node's keys.
@@ -170,7 +170,7 @@ require TKey: typename, TValue: typename
         jump loop(0)
 
     block loop(i: USize)
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         done: Bool = i.ge(count)
         branch done
             ? return(i)
@@ -205,7 +205,7 @@ require TKey: typename, TValue: typename
 routine SortedDict[TKey, TValue].getitem(me: @Me, key: TKey) -> TValue
 require TKey: typename, TValue: typename
     block entry()
-        result: TValue = me.load().getitem(key)
+        result: TValue = me.peek().getitem(key)
         return(result)
 
 /// `getitem`, returning Absent instead of crashing on a missing key.
@@ -223,7 +223,7 @@ require TKey: typename, TValue: typename
 
     block search(node: @SortedDictNode[TKey, TValue])
         i: USize = node.find_index(key)
-        count: USize = node.count.load()
+        count: USize = node.count.peek()
         inside: Bool = i.lt(count)
         branch inside
             ? maybe_match(node, i)
@@ -238,7 +238,7 @@ require TKey: typename, TValue: typename
             : descend_or_missing(node, i)
 
     block descend_or_missing(node: @SortedDictNode[TKey, TValue], i: USize)
-        leaf: Bool = node.leaf.load()
+        leaf: Bool = node.leaf.peek()
         branch leaf
             ? return(.Absent)
             : descend(node, i)
@@ -258,7 +258,7 @@ require TKey: typename, TValue: typename
 routine SortedDict[TKey, TValue].getitem_checked(me: @Me, key: TKey) -> Option[TValue]
 require TKey: typename, TValue: typename
     block entry()
-        result: Option[TValue] = me.load().getitem_checked(key)
+        result: Option[TValue] = me.peek().getitem_checked(key)
         return(result)
 
 /// The address of the value under `key`, checked like getitem: a place to update the value in place. Only the
@@ -268,10 +268,10 @@ require TKey: typename, TValue: typename
 /// :returns: The value's address.
 /// :throws: Crashes with `KeyNotFoundError` when the key is absent.
 #track_caller
-routine SortedDict[TKey, TValue].at(me: Me, key: TKey) -> @TValue
+routine SortedDict[TKey, TValue].getslot(me: Me, key: TKey) -> @TValue
 require TKey: typename, TValue: typename
     block entry()
-        found: Option[@TValue] = me.at_checked(key)
+        found: Option[@TValue] = me.getslot_checked(key)
         when found
             .Present(value) => return(value)
             .Absent => crash_key_not_found()
@@ -283,17 +283,17 @@ require TKey: typename, TValue: typename
 /// :returns: The value's address.
 /// :throws: Crashes with `KeyNotFoundError` when the key is absent.
 #track_caller
-routine SortedDict[TKey, TValue].at(me: @Me, key: TKey) -> @TValue
+routine SortedDict[TKey, TValue].getslot(me: @Me, key: TKey) -> @TValue
 require TKey: typename, TValue: typename
     block entry()
-        result: @TValue = me.load().at(key)
+        result: @TValue = me.peek().getslot(key)
         return(result)
 
 /// `at`, returning Absent instead of crashing on a missing key.
 /// :param key: The key to look up.
 /// :returns: The value's address.
 /// :absent: When the key is not present.
-routine SortedDict[TKey, TValue].at_checked(me: Me, key: TKey) -> Option[@TValue]
+routine SortedDict[TKey, TValue].getslot_checked(me: Me, key: TKey) -> Option[@TValue]
 require TKey: typename, TValue: typename
     block entry()
         root: @SortedDictNode[TKey, TValue] = me.root
@@ -304,7 +304,7 @@ require TKey: typename, TValue: typename
 
     block search(node: @SortedDictNode[TKey, TValue])
         i: USize = node.find_index(key)
-        count: USize = node.count.load()
+        count: USize = node.count.peek()
         inside: Bool = i.lt(count)
         branch inside
             ? maybe_match(node, i)
@@ -319,7 +319,7 @@ require TKey: typename, TValue: typename
             : descend_or_missing(node, i)
 
     block descend_or_missing(node: @SortedDictNode[TKey, TValue], i: USize)
-        leaf: Bool = node.leaf.load()
+        leaf: Bool = node.leaf.peek()
         branch leaf
             ? return(.Absent)
             : descend(node, i)
@@ -329,17 +329,17 @@ require TKey: typename, TValue: typename
         jump search(child)
 
     block address(node: @SortedDictNode[TKey, TValue], i: USize)
-        value: @TValue = node.values.at(i)
+        value: @TValue = node.values.getslot(i)
         return(.Present(value))
 
 /// `at`, returning Absent instead of crashing on a missing key.
 /// :param key: The key to look up.
 /// :returns: The value's address.
 /// :absent: When the key is not present.
-routine SortedDict[TKey, TValue].at_checked(me: @Me, key: TKey) -> Option[@TValue]
+routine SortedDict[TKey, TValue].getslot_checked(me: @Me, key: TKey) -> Option[@TValue]
 require TKey: typename, TValue: typename
     block entry()
-        result: Option[@TValue] = me.load().at_checked(key)
+        result: Option[@TValue] = me.peek().getslot_checked(key)
         return(result)
 
 /// Whether two dicts hold the same key-value pairs. Both are sorted by key, so comparing the pairs in order is
@@ -363,16 +363,16 @@ require TKey: typename, TValue: typename, Equatable[TValue]
     local b: @SortedDictIter[TKey, TValue] <- .hollow()
 
     block entry()
-        la: USize = me.count.load()
-        lb: USize = other.count.load()
+        la: USize = me.count.peek()
+        lb: USize = other.count.peek()
         same_len: Bool = la.eq(lb)
         branch same_len
             ? continue
             : return(false)
         a_val: SortedDictIter[TKey, TValue] = .construct(me)
         b_val: SortedDictIter[TKey, TValue] = .construct(other)
-        a.store(a_val)
-        b.store(b_val)
+        a.poke(a_val)
+        b.poke(b_val)
         jump loop()
 
     // both have the same count, so both run out together
@@ -408,7 +408,7 @@ require TKey: typename, TValue: typename
 
     block search(node: @SortedDictNode[TKey, TValue])
         i: USize = node.find_index(key)
-        count: USize = node.count.load()
+        count: USize = node.count.peek()
         inside: Bool = i.lt(count)
         branch inside
             ? maybe_match(node, i)
@@ -423,7 +423,7 @@ require TKey: typename, TValue: typename
             : descend_or_missing(node, i)
 
     block descend_or_missing(node: @SortedDictNode[TKey, TValue], i: USize)
-        leaf: Bool = node.leaf.load()
+        leaf: Bool = node.leaf.peek()
         branch leaf
             ? return(false)
             : descend(node, i)
@@ -438,7 +438,7 @@ require TKey: typename, TValue: typename
 routine SortedDict[TKey, TValue].contains(me: @Me, key: TKey) -> Bool
 require TKey: typename, TValue: typename
     block entry()
-        result: Bool = me.load().contains(key)
+        result: Bool = me.peek().contains(key)
         return(result)
 
 /// The node and index of the `rank`-th smallest key.
@@ -464,14 +464,14 @@ require TKey: typename, TValue: typename
         jump scan(node, remaining, 0)
 
     block scan(node: @SortedDictNode[TKey, TValue], remaining: USize, i: USize)
-        count: USize = node.count.load()
+        count: USize = node.count.peek()
         done: Bool = i.ge(count)
         branch done
             ? last_child(node, remaining, i)
             : check_child(node, remaining, i)
 
     block check_child(node: @SortedDictNode[TKey, TValue], remaining: USize, i: USize)
-        leaf: Bool = node.leaf.load()
+        leaf: Bool = node.leaf.peek()
         branch leaf
             ? leaf_key(node, remaining, i)
             : internal_child(node, remaining, i)
@@ -499,7 +499,7 @@ require TKey: typename, TValue: typename
             : scan(node, after_child.sub(1), i.add(1))
 
     block last_child(node: @SortedDictNode[TKey, TValue], remaining: USize, i: USize)
-        leaf: Bool = node.leaf.load()
+        leaf: Bool = node.leaf.peek()
         branch leaf
             ? crash_logic_breached()
             : descend_last(node, remaining, i)
@@ -533,7 +533,7 @@ require TKey: typename, TValue: typename
 routine SortedDict[TKey, TValue].get_by_rank(me: @Me, rank: USize) -> KVPair[TKey, TValue]
 require TKey: typename, TValue: typename
     block entry()
-        result: KVPair[TKey, TValue] = me.load().get_by_rank(rank)
+        result: KVPair[TKey, TValue] = me.peek().get_by_rank(rank)
         return(result)
 
 /// A pointer to the value of the `rank`-th smallest key, to change it in place. Valid until the next put or remove.
@@ -555,7 +555,7 @@ require TKey: typename, TValue: typename
 routine SortedDict[TKey, TValue].value_ptr_by_rank(me: @Me, rank: USize) -> @TValue
 require TKey: typename, TValue: typename
     block entry()
-        result: @TValue = me.load().value_ptr_by_rank(rank)
+        result: @TValue = me.peek().value_ptr_by_rank(rank)
         return(result)
 
 /// Splits the full child at `index` around its middle: the middle entry moves up into this node and the upper half
@@ -563,10 +563,11 @@ require TKey: typename, TValue: typename
 /// :param index: The index of the full child.
 /// :param alloc: The allocator for the new node.
 /// :returns: True when it split, false when the allocator failed (before anything moved).
-routine SortedDictNode[TKey, TValue].split_child(me: @Me, index: USize, alloc: @Allocator) -> Bool
+routine SortedDictNode[TKey, TValue].split_child(me: @Me, index: USize,
+    alloc: @MemoryManager) -> Bool
 require TKey: typename, TValue: typename
     local left: @Me = me.children.getitem(index)
-    local leaf: Bool = left.leaf.load()
+    local leaf: Bool = left.leaf.peek()
     local right: @Me = Me.construct(leaf, alloc)
 
     block entry()
@@ -579,7 +580,7 @@ require TKey: typename, TValue: typename
         right_count: USize = NODE_KEYS.sub(right_start)
         right.keys.copy(0, left.keys, right_start, right_count)
         right.values.copy(0, left.values, right_start, right_count)
-        right.count.store(right_count)
+        right.count.poke(right_count)
         branch leaf
             ? promote(mid)
             : copy_children(mid, right_count)
@@ -600,7 +601,7 @@ require TKey: typename, TValue: typename
         jump child_loop(i.add(1), mid, right_count)
 
     block promote(mid: USize)
-        parent_count: USize = me.count.load()
+        parent_count: USize = me.count.peek()
         me.keys.shift_right(index, parent_count)
         me.values.shift_right(index, parent_count)
         jump shift_children(parent_count, mid)
@@ -623,9 +624,9 @@ require TKey: typename, TValue: typename
         me.keys.setitem(index, middle_key)
         me.values.setitem(index, middle_value)
         me.children.setitem(index.add(1), right)
-        left.count.store(mid)
-        next_count: USize = me.count.load().add(1)
-        next_count.store_into(me.count)
+        left.count.poke(mid)
+        next_count: USize = me.count.peek().add(1)
+        next_count.poke_into(me.count)
         left.recount()
         right.recount()
         me.recount()
@@ -639,30 +640,30 @@ require TKey: typename, TValue: typename
 /// :returns: True when it inserted, false when a split failed to allocate. The tree then holds the same entries,
 ///     some nodes already split.
 routine SortedDictNode[TKey, TValue].insert_nonfull(me: @Me, key: TKey, value: TValue,
-    alloc: @Allocator) -> Bool
+    alloc: @MemoryManager) -> Bool
 require TKey: typename, TValue: typename
     block entry()
-        leaf: Bool = me.leaf.load()
+        leaf: Bool = me.leaf.peek()
         branch leaf
             ? insert_leaf()
             : insert_internal()
 
     block insert_leaf()
         slot: USize = me.find_index(key)
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         me.keys.shift_right(slot, count)
         me.values.shift_right(slot, count)
         me.keys.setitem(slot, key)
         me.values.setitem(slot, value)
         new_count: USize = count.add(1)
-        me.count.store(new_count)
-        me.subtree_count.store(new_count)
+        me.count.poke(new_count)
+        me.subtree_count.poke(new_count)
         return(true)
 
     block insert_internal()
         slot: USize = me.find_index(key)
         child: @Me = me.children.getitem(slot)
-        child_count: USize = child.count.load()
+        child_count: USize = child.count.peek()
         full: Bool = child_count.eq(NODE_KEYS)
         branch full
             ? split_then_insert(slot, child)
@@ -711,7 +712,7 @@ require TKey: typename, TValue: typename
 routine SortedDict[TKey, TValue].setitem_result(me: @Me, key: TKey,
     value: TValue) -> Result[Unit, AllocFailed]
 require TKey: typename, TValue: typename
-    local root: @SortedDictNode[TKey, TValue] = me.root.load()
+    local root: @SortedDictNode[TKey, TValue] = me.root.peek()
 
     block entry()
         empty: Bool = root.is_null()
@@ -720,7 +721,7 @@ require TKey: typename, TValue: typename
             : maybe_replace()
 
     block first_root()
-        alloc: @Allocator = me.alloc.load()
+        alloc: @MemoryManager = me.alloc.peek()
         first_node: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(true,
             alloc)
         no_root: Bool = first_node.is_null()
@@ -729,10 +730,10 @@ require TKey: typename, TValue: typename
             : continue
         first_node.keys.setitem(0, key)
         first_node.values.setitem(0, value)
-        first_node.count.store(1)
-        first_node.subtree_count.store(1)
-        me.root.store(first_node)
-        me.count.store(1)
+        first_node.count.poke(1)
+        first_node.subtree_count.poke(1)
+        me.root.poke(first_node)
+        me.count.poke(1)
         return(.Success(Unit.value()))
 
     block maybe_replace()
@@ -742,14 +743,14 @@ require TKey: typename, TValue: typename
             : insert_root()
 
     block insert_root()
-        alloc: @Allocator = me.alloc.load()
-        root_count: USize = root.count.load()
+        alloc: @MemoryManager = me.alloc.peek()
+        root_count: USize = root.count.peek()
         full: Bool = root_count.eq(NODE_KEYS)
         branch full
             ? split_root(alloc)
             : insert_nonfull(root, alloc)
 
-    block split_root(alloc: @Allocator)
+    block split_root(alloc: @MemoryManager)
         new_root: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(false,
             alloc)
         no_root: Bool = new_root.is_null()
@@ -762,21 +763,21 @@ require TKey: typename, TValue: typename
             ? install_root(new_root, alloc)
             : discard_root(new_root, alloc)
 
-    block install_root(new_root: @SortedDictNode[TKey, TValue], alloc: @Allocator)
-        me.root.store(new_root)
+    block install_root(new_root: @SortedDictNode[TKey, TValue], alloc: @MemoryManager)
+        me.root.poke(new_root)
         jump insert_nonfull(new_root, alloc)
 
-    block discard_root(new_root: @SortedDictNode[TKey, TValue], alloc: @Allocator)
+    block discard_root(new_root: @SortedDictNode[TKey, TValue], alloc: @MemoryManager)
         deallocate[SortedDictNode[TKey, TValue]](new_root, alloc)
         return(.Failure(AllocFailed()))
 
-    block insert_nonfull(root_node: @SortedDictNode[TKey, TValue], alloc: @Allocator)
+    block insert_nonfull(root_node: @SortedDictNode[TKey, TValue], alloc: @MemoryManager)
         inserted: Bool = root_node.insert_nonfull(key, value, alloc)
         branch inserted
             ? continue
             : return(.Failure(AllocFailed()))
-        next_count: USize = me.count.load().add(1)
-        next_count.store_into(me.count)
+        next_count: USize = me.count.peek().add(1)
+        next_count.poke_into(me.count)
         return(.Success(Unit.value()))
 
 /// Replaces the value of `key` somewhere in this subtree, if the key is present.
@@ -788,7 +789,7 @@ require TKey: typename, TValue: typename
     local slot: USize = me.find_index(key)
 
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         inside: Bool = slot.lt(count)
         branch inside
             ? maybe_match()
@@ -807,7 +808,7 @@ require TKey: typename, TValue: typename
         return(true)
 
     block descend_or_missing()
-        leaf: Bool = me.leaf.load()
+        leaf: Bool = me.leaf.peek()
         branch leaf ? return(false): descend()
 
     block descend()
@@ -822,12 +823,12 @@ routine SortedDictNode[TKey, TValue].remove_leaf_at(me: @Me, index: USize) -> TV
 require TKey: typename, TValue: typename
     block entry()
         old: TValue = me.values.getitem(index)
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         me.keys.shift_left(index, count)
         me.values.shift_left(index, count)
         new_count: USize = count.sub(1)
-        me.count.store(new_count)
-        me.subtree_count.store(new_count)
+        me.count.poke(new_count)
+        me.subtree_count.poke(new_count)
         return(old)
 
 // Capacity = NODE_KEYS, t = NODE_MIN_KEYS. Non-root nodes maintain
@@ -842,8 +843,8 @@ require TKey: typename, TValue: typename
     local separator: USize = i.sub(1)
     local left: @Me = me.children.getitem(separator)
     local child: @Me = me.children.getitem(i)
-    local left_count: USize = left.count.load()
-    local child_count: USize = child.count.load()
+    local left_count: USize = left.count.peek()
+    local child_count: USize = child.count.peek()
 
     block entry()
         child.keys.shift_right(0, child_count)
@@ -856,7 +857,7 @@ require TKey: typename, TValue: typename
         new_pivot_value: TValue = left.values.getitem(left_count.sub(1))
         me.keys.setitem(separator, new_pivot_key)
         me.values.setitem(separator, new_pivot_value)
-        leaf: Bool = child.leaf.load()
+        leaf: Bool = child.leaf.peek()
         branch leaf
             ? finalize()
             : move_child()
@@ -869,8 +870,8 @@ require TKey: typename, TValue: typename
         jump finalize()
 
     block finalize()
-        left.count.store(left_count.sub(1))
-        child.count.store(child_count.add(1))
+        left.count.poke(left_count.sub(1))
+        child.count.poke(child_count.add(1))
         left.recount()
         child.recount()
         me.recount()
@@ -882,8 +883,8 @@ routine SortedDictNode[TKey, TValue].borrow_from_right(me: @Me, i: USize) -> Voi
 require TKey: typename, TValue: typename
     local child: @Me = me.children.getitem(i)
     local right: @Me = me.children.getitem(i.add(1))
-    local child_count: USize = child.count.load()
-    local right_count: USize = right.count.load()
+    local child_count: USize = child.count.peek()
+    local right_count: USize = right.count.peek()
 
     block entry()
         pivot_key: TKey = me.keys.getitem(i)
@@ -896,7 +897,7 @@ require TKey: typename, TValue: typename
         me.values.setitem(i, new_pivot_value)
         right.keys.shift_left(0, right_count)
         right.values.shift_left(0, right_count)
-        leaf: Bool = child.leaf.load()
+        leaf: Bool = child.leaf.peek()
         branch leaf
             ? finalize()
             : move_child()
@@ -908,8 +909,8 @@ require TKey: typename, TValue: typename
         jump finalize()
 
     block finalize()
-        child.count.store(child_count.add(1))
-        right.count.store(right_count.sub(1))
+        child.count.poke(child_count.add(1))
+        right.count.poke(right_count.sub(1))
         child.recount()
         right.recount()
         me.recount()
@@ -918,12 +919,13 @@ require TKey: typename, TValue: typename
 /// Merges child `i + 1` and the separating entry into child `i` and frees the emptied node, shrinking this node by one key.
 /// :param i: The index of the left child of the pair.
 /// :param alloc: The allocator that frees the merged node.
-routine SortedDictNode[TKey, TValue].merge_children(me: @Me, i: USize, alloc: @Allocator) -> Void
+routine SortedDictNode[TKey, TValue].merge_children(me: @Me, i: USize,
+    alloc: @MemoryManager) -> Void
 require TKey: typename, TValue: typename
     local left: @Me = me.children.getitem(i)
     local right: @Me = me.children.getitem(i.add(1))
-    local left_count: USize = left.count.load()
-    local right_count: USize = right.count.load()
+    local left_count: USize = left.count.peek()
+    local right_count: USize = right.count.peek()
 
     block entry()
         pivot_key: TKey = me.keys.getitem(i)
@@ -933,7 +935,7 @@ require TKey: typename, TValue: typename
         dst_start: USize = left_count.add(1)
         left.keys.copy(dst_start, right.keys, 0, right_count)
         left.values.copy(dst_start, right.values, 0, right_count)
-        leaf: Bool = left.leaf.load()
+        leaf: Bool = left.leaf.peek()
         branch leaf
             ? finalize()
             : copy_children()
@@ -943,12 +945,12 @@ require TKey: typename, TValue: typename
         jump finalize()
 
     block finalize()
-        left.count.store(left_count.add(1).add(right_count))
-        parent_count: USize = me.count.load()
+        left.count.poke(left_count.add(1).add(right_count))
+        parent_count: USize = me.count.peek()
         me.keys.shift_left(i, parent_count)
         me.values.shift_left(i, parent_count)
         me.children.shift_left(i.add(1), parent_count.add(1))
-        me.count.store(parent_count.sub(1))
+        me.count.poke(parent_count.sub(1))
         deallocate[Me](right, alloc)
         left.recount()
         me.recount()
@@ -959,11 +961,11 @@ require TKey: typename, TValue: typename
 /// :param alloc: The allocator that frees a merged node.
 /// :returns: The index of the child to descend into, which differs from `i` when a merge with the left sibling happened.
 #track_caller
-routine SortedDictNode[TKey, TValue].ensure_min(me: @Me, i: USize, alloc: @Allocator) -> USize
+routine SortedDictNode[TKey, TValue].ensure_min(me: @Me, i: USize, alloc: @MemoryManager) -> USize
 require TKey: typename, TValue: typename
     block entry()
         child: @Me = me.children.getitem(i)
-        child_count: USize = child.count.load()
+        child_count: USize = child.count.peek()
         ok: Bool = child_count.ge(NODE_MIN_KEYS)
         branch ok ? return(i): try_left()
 
@@ -975,7 +977,7 @@ require TKey: typename, TValue: typename
 
     block check_left()
         left: @Me = me.children.getitem(i.sub(1))
-        left_count: USize = left.count.load()
+        left_count: USize = left.count.peek()
         left_ok: Bool = left_count.ge(NODE_MIN_KEYS)
         branch left_ok
             ? do_borrow_left()
@@ -986,7 +988,7 @@ require TKey: typename, TValue: typename
         return(i)
 
     block try_right(has_left: Bool)
-        parent_count: USize = me.count.load()
+        parent_count: USize = me.count.peek()
         has_right: Bool = i.lt(parent_count)
         branch has_right
             ? check_right(has_left)
@@ -994,7 +996,7 @@ require TKey: typename, TValue: typename
 
     block check_right(has_left: Bool)
         right: @Me = me.children.getitem(i.add(1))
-        right_count: USize = right.count.load()
+        right_count: USize = right.count.peek()
         right_ok: Bool = right_count.ge(NODE_MIN_KEYS)
         branch right_ok
             ? do_borrow_right()
@@ -1028,24 +1030,24 @@ require TKey: typename, TValue: typename
 /// :param alloc: The allocator used when nodes merge.
 /// :returns: The removed largest key.
 routine SortedDictNode[TKey, TValue].take_max_key(me: @Me, out_value: @TValue,
-    alloc: @Allocator) -> TKey
+    alloc: @MemoryManager) -> TKey
 require TKey: typename, TValue: typename
     block entry()
-        leaf: Bool = me.leaf.load()
+        leaf: Bool = me.leaf.peek()
         branch leaf
             ? leaf_take()
             : descend()
 
     block leaf_take()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         index: USize = count.sub(1)
         key: TKey = me.keys.getitem(index)
         value: TValue = me.remove_leaf_at(index)
-        out_value.store(value)
+        out_value.poke(value)
         return(key)
 
     block descend()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         actual: USize = me.ensure_min(count, alloc)
         child: @Me = me.children.getitem(actual)
         key: TKey = child.take_max_key(out_value, alloc)
@@ -1057,10 +1059,10 @@ require TKey: typename, TValue: typename
 /// :param alloc: The allocator used when nodes merge.
 /// :returns: The removed smallest key.
 routine SortedDictNode[TKey, TValue].take_min_key(me: @Me, out_value: @TValue,
-    alloc: @Allocator) -> TKey
+    alloc: @MemoryManager) -> TKey
 require TKey: typename, TValue: typename
     block entry()
-        leaf: Bool = me.leaf.load()
+        leaf: Bool = me.leaf.peek()
         branch leaf
             ? leaf_take()
             : descend()
@@ -1068,7 +1070,7 @@ require TKey: typename, TValue: typename
     block leaf_take()
         key: TKey = me.keys.getitem(0)
         value: TValue = me.remove_leaf_at(0)
-        out_value.store(value)
+        out_value.poke(value)
         return(key)
 
     block descend()
@@ -1082,12 +1084,12 @@ require TKey: typename, TValue: typename
 /// :param key: The key to remove.
 /// :param alloc: The allocator used when nodes merge.
 /// :returns: `true` when the key was found and removed, `false` otherwise.
-routine SortedDictNode[TKey, TValue].remove(me: @Me, key: TKey, alloc: @Allocator) -> Bool
+routine SortedDictNode[TKey, TValue].remove(me: @Me, key: TKey, alloc: @MemoryManager) -> Bool
 require TKey: typename, TValue: typename
     local slot: USize = me.find_index(key)
 
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         inside: Bool = slot.lt(count)
         branch inside
             ? maybe_match()
@@ -1102,7 +1104,7 @@ require TKey: typename, TValue: typename
             : descend_or_missing()
 
     block remove_here()
-        leaf: Bool = me.leaf.load()
+        leaf: Bool = me.leaf.peek()
         branch leaf
             ? remove_leaf()
             : remove_internal()
@@ -1113,7 +1115,7 @@ require TKey: typename, TValue: typename
 
     block remove_internal()
         left: @Me = me.children.getitem(slot)
-        left_count: USize = left.count.load()
+        left_count: USize = left.count.peek()
         left_ok: Bool = left_count.ge(NODE_MIN_KEYS)
         branch left_ok
             ? take_pred()
@@ -1123,7 +1125,7 @@ require TKey: typename, TValue: typename
         claim out: @TValue <- .hollow()
         left: @Me = me.children.getitem(slot)
         replacement_key: TKey = left.take_max_key(out, alloc)
-        replacement_value: TValue = out.load()
+        replacement_value: TValue = out.peek()
         me.keys.setitem(slot, replacement_key)
         me.values.setitem(slot, replacement_value)
         me.recount()
@@ -1131,7 +1133,7 @@ require TKey: typename, TValue: typename
 
     block try_succ()
         right: @Me = me.children.getitem(slot.add(1))
-        right_count: USize = right.count.load()
+        right_count: USize = right.count.peek()
         right_ok: Bool = right_count.ge(NODE_MIN_KEYS)
         branch right_ok
             ? take_succ()
@@ -1141,7 +1143,7 @@ require TKey: typename, TValue: typename
         claim out: @TValue <- .hollow()
         right: @Me = me.children.getitem(slot.add(1))
         replacement_key: TKey = right.take_min_key(out, alloc)
-        replacement_value: TValue = out.load()
+        replacement_value: TValue = out.peek()
         me.keys.setitem(slot, replacement_key)
         me.values.setitem(slot, replacement_value)
         me.recount()
@@ -1155,7 +1157,7 @@ require TKey: typename, TValue: typename
         return(removed)
 
     block descend_or_missing()
-        leaf: Bool = me.leaf.load()
+        leaf: Bool = me.leaf.peek()
         branch leaf ? return(false): descend()
 
     block descend()
@@ -1170,7 +1172,7 @@ require TKey: typename, TValue: typename
 /// :returns: `true` when an entry was removed, `false` when the key was not present.
 routine SortedDict[TKey, TValue].remove(me: @Me, key: TKey) -> Bool
 require TKey: typename, TValue: typename
-    local root: @SortedDictNode[TKey, TValue] = me.root.load()
+    local root: @SortedDictNode[TKey, TValue] = me.root.peek()
 
     block entry()
         empty: Bool = root.is_null()
@@ -1179,53 +1181,53 @@ require TKey: typename, TValue: typename
             : remove_root()
 
     block remove_root()
-        alloc: @Allocator = me.alloc.load()
+        alloc: @MemoryManager = me.alloc.peek()
         removed: Bool = root.remove(key, alloc)
         branch removed
             ? after_remove()
             : return(false)
 
     block after_remove()
-        remaining_count: USize = me.count.load().sub(1)
-        remaining_count.store_into(me.count)
-        root_count: USize = root.count.load()
+        remaining_count: USize = me.count.peek().sub(1)
+        remaining_count.poke_into(me.count)
+        root_count: USize = root.count.peek()
         empty_root: Bool = root_count.eq(0)
         branch empty_root
             ? maybe_shrink()
             : return(true)
 
     block maybe_shrink()
-        leaf: Bool = root.leaf.load()
+        leaf: Bool = root.leaf.peek()
         branch leaf
             ? clear_root()
             : shrink()
 
     block clear_root()
-        alloc: @Allocator = me.alloc.load()
+        alloc: @MemoryManager = me.alloc.peek()
         deallocate[SortedDictNode[TKey, TValue]](root, alloc)
-        me.root.store(null)
+        me.root.poke(null)
         return(true)
 
     block shrink()
-        alloc: @Allocator = me.alloc.load()
+        alloc: @MemoryManager = me.alloc.peek()
         new_root: @SortedDictNode[TKey, TValue] = root.children.getitem(0)
         deallocate[SortedDictNode[TKey, TValue]](root, alloc)
-        me.root.store(new_root)
+        me.root.poke(new_root)
         return(true)
 
 /// Frees this node and every node below it through `alloc`. An internal node has `count` keys and `count + 1`
 /// children. The keys and values are not destructed.
 /// :param alloc: The allocator the nodes came from.
-routine SortedDictNode[TKey, TValue].free_recursive(me: @Me, alloc: @Allocator) -> Void
+routine SortedDictNode[TKey, TValue].free_recursive(me: @Me, alloc: @MemoryManager) -> Void
 require TKey: typename, TValue: typename
     block entry()
-        leaf: Bool = me.leaf.load()
+        leaf: Bool = me.leaf.peek()
         branch leaf
             ? free_self()
             : free_children()
 
     block free_children()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         jump child_loop(0, count.add(1))
 
     block child_loop(i: USize, child_count: USize)
@@ -1248,7 +1250,7 @@ require TKey: typename, TValue: typename
 #track_caller
 routine SortedDict[TKey, TValue].destruct(me: @Me) -> Void
 require TKey: typename, TValue: typename
-    local root: @SortedDictNode[TKey, TValue] = me.root.load()
+    local root: @SortedDictNode[TKey, TValue] = me.root.peek()
 
     block entry()
         empty: Bool = root.is_null()
@@ -1257,13 +1259,13 @@ require TKey: typename, TValue: typename
             : free_root()
 
     block free_root()
-        alloc: @Allocator = me.alloc.load()
+        alloc: @MemoryManager = me.alloc.peek()
         root.free_recursive(alloc)
         jump reset()
 
     block reset()
-        me.root.store(null)
-        me.count.store(0)
+        me.root.poke(null)
+        me.count.poke(0)
         return()
 
 /// Destructs every key and value, then the dictionary itself.
@@ -1285,9 +1287,9 @@ require TKey: typename, TValue: typename, Destructible[TKey], Destructible[TValu
             .Absent => finish()
 
     block entry_found(entry: KVPair[TKey, TValue])
-        key_slot.store(entry.key)
+        key_slot.poke(entry.key)
         key_slot.destruct()
-        value_slot.store(entry.value)
+        value_slot.poke(entry.value)
         value_slot.destruct()
         jump next()
 
@@ -1313,7 +1315,7 @@ require TKey: typename, TValue: typename, Destructible[TValue]
             .Absent => finish()
 
     block entry_found(entry: KVPair[TKey, TValue])
-        value_slot.store(entry.value)
+        value_slot.poke(entry.value)
         value_slot.destruct()
         jump next()
 

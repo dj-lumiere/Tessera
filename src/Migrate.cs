@@ -138,7 +138,89 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)))));
+        return Renames(CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))))));
+    }
+
+    /// The 0.5 names of the managers and the lock types (whole words, in code and in comments).
+    private static readonly Dictionary<string, string> TypeRenames = new()
+    {
+        ["Allocator"] = "MemoryManager", ["Mutex"] = "ExclusiveLock", ["Condition"] = "SignalCaster",
+        ["Scheduler"] = "FiberManager", ["make_heap_allocator"] = "make_heap_memory",
+        ["make_c_heap_allocator"] = "make_c_heap_memory", ["make_stack_allocator"] = "make_stack_memory",
+    };
+
+    /// Reading and writing through a pointer is `peek` / `poke` (the kind after the verb), a collection's element slot
+    /// is `getslot`, and a SignalCaster wakes with `cast_one` / `cast_all`.
+    private static readonly Dictionary<string, string> MethodRenames = new()
+    {
+        ["load"] = "peek", ["store"] = "poke", ["store_into"] = "poke_into", ["store_at"] = "poke_at", ["load_at"] = "peek_at",
+        ["volatile_load"] = "peek_volatile", ["volatile_store"] = "poke_volatile",
+        ["load_unaligned"] = "peek_unaligned", ["store_unaligned"] = "poke_unaligned",
+        ["atomic_load"] = "peek_atomic", ["atomic_load_relaxed"] = "peek_atomic_relaxed",
+        ["atomic_load_acquire"] = "peek_atomic_acquire", ["atomic_store"] = "poke_atomic",
+        ["atomic_store_relaxed"] = "poke_atomic_relaxed", ["atomic_store_release"] = "poke_atomic_release",
+        ["at"] = "getslot", ["at_checked"] = "getslot_checked", ["wake_one"] = "cast_one", ["wake_all"] = "cast_all",
+    };
+
+    private static readonly Regex RenamedType =
+        new(@"(?<![\w`])(Allocator|Mutex|Condition|Scheduler|make_heap_allocator|make_c_heap_allocator|make_stack_allocator)(?![\w`])", RegexOptions.Compiled);
+
+    private static readonly Regex RenamedMethod =
+        new(@"(?<=(\w|\]|\)|`)?)\.(load_unaligned|load|store_unaligned|store_into|store_at|load_at|store|volatile_load|volatile_store|atomic_load_relaxed|atomic_load_acquire|atomic_load|atomic_store_relaxed|atomic_store_release|atomic_store|at_checked|at|wake_one|wake_all)(?=\s*[\[(}])", RegexOptions.Compiled);
+
+    /// The text with 0.5's renamed types and routines. A routine is renamed where it is called or declared after a
+    /// `.` (and in `{Type.name}` doc references), never in an assembly routine, whose lines are instructions, and never
+    /// in a string (an LLVM template's `load` is an LLVM instruction). `File.at(path)` and `Directory.at(path)` keep
+    /// their name: they build a value, they aren't a collection's slot.
+    public static string Renames(string text)
+    {
+        var lines = text.Split('\n');
+        bool asmPending = false, inAsm = false;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            if (line.Length > 0 && !char.IsWhiteSpace(line[0]))
+            {
+                bool routineLine = Regex.IsMatch(line, @"^(?:(?:private|internal)\s+)?routine\s");
+                if (line.StartsWith('#') && line.Contains("external(\"asm\")", StringComparison.Ordinal)) asmPending = true;
+                else if (routineLine) { inAsm = asmPending; asmPending = false; }
+                else if (!line.StartsWith('#') && !line.StartsWith("//", StringComparison.Ordinal)) { inAsm = false; asmPending = false; }
+            }
+
+            var sb = new StringBuilder(line);
+            int comment = line.TrimStart().StartsWith("//", StringComparison.Ordinal) ? line.IndexOf("//", StringComparison.Ordinal) : CommentStart(sb, 0, sb.Length);
+            var result = new StringBuilder();
+            int from = 0;
+            for (int j = 0; j < comment; j++)
+            {
+                int skipped = SkipLiteral(sb, j, comment);
+                if (skipped == j) continue;
+                string literal = line[j..skipped];
+                result.Append(RenameCode(line[from..j], inAsm))
+                      .Append(literal[0] == '"' ? InHoles(literal, hole => RenameCode(hole, asm: false)) : literal);
+                from = skipped;
+                j = skipped - 1;
+            }
+
+            result.Append(RenameCode(line[from..comment], inAsm));
+            result.Append(RenameCode(line[comment..], asm: false));
+            lines[i] = result.ToString();
+        }
+
+        return string.Join('\n', lines);
+    }
+
+    private static string RenameCode(string code, bool asm)
+    {
+        code = RenamedType.Replace(code, m => TypeRenames[m.Value]);
+        if (asm) return code;
+        return RenamedMethod.Replace(code, m =>
+        {
+            string name = m.Groups[2].Value;
+            int dot = m.Index;
+            if (name == "at" && dot >= 4 && Regex.IsMatch(code[..dot], @"(?<![\w`])(File|Directory)$")) return m.Value;
+            return "." + MethodRenames[name];
+        });
     }
 
     /// The collection routines' 0.5 names, the same as RazorForge's: one name whatever the collection.
@@ -161,7 +243,14 @@ public static class Migrate
         ["pop"] = ("remove_last", "remove"), ["pop_checked"] = ("remove_last_checked", "remove_checked"),
     };
 
-    private static readonly Regex CalledName = new(@"\.(push_back_result|push_back|push_front_result|push_front|pop_back_checked|pop_back|pop_front_checked|pop_front|pop_entry_checked|pop_entry|put_result|put_direct|put|has_key|has|push_result|push|pop_checked|pop)(?=\s*[\[(])", RegexOptions.Compiled);
+    /// A priority queue's front: `peek` reads through a pointer in 0.5, so the queue's smallest entry is `first`.
+    private static readonly Dictionary<string, string> QueueFront = new()
+    {
+        ["peek"] = "first", ["peek_checked"] = "first_checked", ["peek_entry"] = "first_entry",
+        ["peek_entry_checked"] = "first_entry_checked",
+    };
+
+    private static readonly Regex CalledName = new(@"\.(peek_entry_checked|peek_entry|peek_checked|peek|push_back_result|push_back|push_front_result|push_front|pop_back_checked|pop_back|pop_front_checked|pop_front|pop_entry_checked|pop_entry|put_result|put_direct|put|has_key|has|push_result|push|pop_checked|pop)(?=\s*[\[(])", RegexOptions.Compiled);
 
     /// The text with the collection routines renamed (`xs.push(v)` is `xs.add_last(v)`), in code, declarations
     /// included. For `push` and `pop`, the receiver's type decides: a name declared in the file with a `SortedList` or
@@ -193,9 +282,15 @@ public static class Migrate
             string renamed = CalledName.Replace(code, m =>
             {
                 string name = m.Groups[1].Value;
+                string before = string.Join('\n', lines, 0, i + 1);
+                // `peek_entry` belongs to a priority queue alone, `peek` was its front too.
+                if (QueueFront.TryGetValue(name, out string? front))
+                    return name.StartsWith("peek_entry", StringComparison.Ordinal)
+                           || ReceiverType(code, m.Index, before, owner) == "PriorityQueue"
+                        ? "." + front
+                        : m.Value;
                 if (CollectionRenames.TryGetValue(name, out string? plain)) return "." + plain;
                 var (ends, ordered) = EndOrOrdered[name];
-                string before = string.Join('\n', lines, 0, i + 1);
                 return "." + (IsOrdered(ReceiverType(code, m.Index, before, owner)) ? ordered : ends);
             });
             lines[i] = renamed + line[comment..];
@@ -210,6 +305,10 @@ public static class Migrate
     /// `owner`, or a name (the last of a field chain) declared above it with a type, `q: @PriorityQueue[...]`.
     private static string? ReceiverType(string code, int dot, string text, string? owner)
     {
+        // A value read through its pointer has the pointer's type: `q.load().peek()` is a call on `q`'s queue.
+        foreach (string read in new[] { ".load()", ".peek()" })
+            if (code[..dot].EndsWith(read, StringComparison.Ordinal))
+                return ReceiverType(code, dot - read.Length, text, owner);
         int end = dot;
         if (end > 0 && code[end - 1] == ']')
         {
@@ -335,7 +434,11 @@ public static class Migrate
     }
 
     /// A string literal with the literals in each `{...}` hole rewritten (`{{` is a brace).
-    private static string LiteralsInHoles(string literal)
+    private static string LiteralsInHoles(string literal) =>
+        InHoles(literal, hole => hole.Contains('{') ? Literals(hole) : hole);
+
+    /// A string literal with the code in each `{...}` hole rewritten by `rewrite` (`{{` is a brace).
+    private static string InHoles(string literal, Func<string, string> rewrite)
     {
         var sb = new StringBuilder();
         for (int j = 0; j < literal.Length; j++)
@@ -368,9 +471,7 @@ public static class Migrate
                 break;
             }
 
-            // Only a hole holding a literal of its own changes: `"{sum2({ 7, 8 })}"`.
-            string hole = literal[(j + 1)..k];
-            sb.Append('{').Append(hole.Contains('{') ? Literals(hole) : hole).Append('}');
+            sb.Append('{').Append(rewrite(literal[(j + 1)..k])).Append('}');
             j = k;
         }
 

@@ -72,7 +72,7 @@ routine LazySegmentTree[T, L].is_right_child(me: @Me, node: USize) -> Bool
 
 routine LazySegmentTree[T, L].leaf(me: @Me, index: USize) -> USize
     block entry()
-        size: USize = me.size.load()
+        size: USize = me.size.peek()
         leaf: USize = index.bitor(size)
         return(leaf)
 
@@ -92,7 +92,7 @@ routine LazySegmentTree[T, L].is_aligned_to_cover(me: @Me, node: USize, height: 
         aligned: Bool = node.bitand(mask).eq(0)
         return(aligned)
 
-routine LazySegmentTree[T, L].construct(count: USize, alloc: @Allocator) -> Me
+routine LazySegmentTree[T, L].construct(count: USize, alloc: @MemoryManager) -> Me
     local height: @USize <- 0
 
     block entry()
@@ -108,7 +108,7 @@ routine LazySegmentTree[T, L].construct(count: USize, alloc: @Allocator) -> Me
             : grow(size)
 
     block grow(size: USize)
-        height.load().add(1).store_into(height)
+        height.peek().add(1).poke_into(height)
         jump choose_size(size.shl(1))
 
     block allocate(size: USize)
@@ -140,12 +140,12 @@ routine LazySegmentTree[T, L].construct(count: USize, alloc: @Allocator) -> Me
         jump init_lazy(i.add(1), nodes, tags, size)
 
     block finish(nodes: Slice[T], tags: Slice[L], size: USize)
-        tree: Me = Me(nodes: nodes, tags: tags, count: count, size: size, height: height.load())
+        tree: Me = Me(nodes: nodes, tags: tags, count: count, size: size, height: height.peek())
         return(tree)
 
 routine LazySegmentTree[T, L].count(me: @Me) -> USize
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         return(count)
 
 routine LazySegmentTree[T, L].build_from(me: @Me, values: @T) -> Void
@@ -153,7 +153,7 @@ routine LazySegmentTree[T, L].build_from(me: @Me, values: @T) -> Void
         jump copy_loop(0)
 
     block copy_loop(i: USize)
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         done: Bool = i.ge(count)
         branch done
             ? reset_lazy(0)
@@ -162,12 +162,12 @@ routine LazySegmentTree[T, L].build_from(me: @Me, values: @T) -> Void
     block copy_one(i: USize)
         data: @T = me.nodes.to[@T]()
         leaf: USize = me.leaf(i)
-        value: T = values.stride(i).load()
-        data.stride(leaf).store(value)
+        value: T = values.stride(i).peek()
+        data.stride(leaf).poke(value)
         jump copy_loop(i.add(1))
 
     block reset_lazy(i: USize)
-        size: USize = me.size.load()
+        size: USize = me.size.peek()
         done: Bool = i.ge(size)
         branch done
             ? pull_all()
@@ -176,11 +176,11 @@ routine LazySegmentTree[T, L].build_from(me: @Me, values: @T) -> Void
     block reset_one(i: USize)
         lazy: @L = me.tags.to[@L]()
         identity: L = .identity()
-        lazy.stride(i).store(identity)
+        lazy.stride(i).poke(identity)
         jump reset_lazy(i.add(1))
 
     block pull_all()
-        size: USize = me.size.load()
+        size: USize = me.size.peek()
         start: USize = size.sub(1)
         jump pull_loop(start)
 
@@ -197,31 +197,31 @@ routine LazySegmentTree[T, L].pull_node(me: @Me, node: USize) -> Void
         data: @T = me.nodes.to[@T]()
         left: USize = me.left_child(node)
         right: USize = me.right_child(node)
-        left_value: T = data.stride(left).load()
-        right_value: T = data.stride(right).load()
+        left_value: T = data.stride(left).peek()
+        right_value: T = data.stride(right).peek()
         value: T = left_value.combine(right_value)
-        data.stride(node).store(value)
+        data.stride(node).poke(value)
         return()
 
 routine LazySegmentTree[T, L].apply_node(me: @Me, node: USize, tag: L, width: USize) -> Void
     block entry()
         data: @T = me.nodes.to[@T]()
-        node_value: T = data.stride(node).load()
-        node_value.apply(tag, width).store_into(data.stride(node))
-        size: USize = me.size.load()
+        node_value: T = data.stride(node).peek()
+        node_value.apply(tag, width).poke_into(data.stride(node))
+        size: USize = me.size.peek()
         is_internal: Bool = node.lt(size)
         branch is_internal
             ? continue
             : return()
         lazy: @L = me.tags.to[@L]()
-        old: L = lazy.stride(node).load()
+        old: L = lazy.stride(node).peek()
         next: L = tag.compose(old)
-        lazy.stride(node).store(next)
+        lazy.stride(node).poke(next)
         return()
 
 routine LazySegmentTree[T, L].push_node(me: @Me, node: USize, width: USize) -> Void
     local lazy: @L = me.tags.to[@L]()
-    local tag: L = lazy.stride(node).load()
+    local tag: L = lazy.stride(node).peek()
 
     block entry()
         clean: Bool = tag.is_identity_lazy()
@@ -236,12 +236,12 @@ routine LazySegmentTree[T, L].push_node(me: @Me, node: USize, width: USize) -> V
         me.apply_node(left, tag, child_width)
         me.apply_node(right, tag, child_width)
         identity: L = .identity()
-        lazy.stride(node).store(identity)
+        lazy.stride(node).poke(identity)
         return()
 
 routine LazySegmentTree[T, L].push_path(me: @Me, node: USize) -> Void
     block entry()
-        height: USize = me.height.load()
+        height: USize = me.height.peek()
         jump loop(height)
 
     block loop(level: USize)
@@ -273,7 +273,7 @@ routine LazySegmentTree[T, L].rebuild_left_boundary(me: @Me, node: USize) -> Voi
         jump loop(1)
 
     block loop(level: USize)
-        height: USize = me.height.load()
+        height: USize = me.height.peek()
         done: Bool = level.gt(height)
         branch done
             ? return()
@@ -296,7 +296,7 @@ routine LazySegmentTree[T, L].rebuild_right_boundary(me: @Me, exclusive: USize) 
         jump loop(1)
 
     block loop(level: USize)
-        height: USize = me.height.load()
+        height: USize = me.height.peek()
         done: Bool = level.gt(height)
         branch done
             ? return()
@@ -316,7 +316,7 @@ routine LazySegmentTree[T, L].rebuild_right_boundary(me: @Me, exclusive: USize) 
 
 routine LazySegmentTree[T, L].setitem(me: @Me, index: USize, value: T) -> Void
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         not_negative: Bool = index.ge(0)
         before_end: Bool = index.lt(count)
         in_bounds: Bool = not_negative.bitand(before_end)
@@ -326,13 +326,13 @@ routine LazySegmentTree[T, L].setitem(me: @Me, index: USize, value: T) -> Void
         node: USize = me.leaf(index)
         me.push_path(node)
         data: @T = me.nodes.to[@T]()
-        data.stride(node).store(value)
+        data.stride(node).poke(value)
         me.rebuild_path(node)
         return()
 
 routine LazySegmentTree[T, L].getitem(me: @Me, index: USize) -> T
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         not_negative: Bool = index.ge(0)
         before_end: Bool = index.lt(count)
         in_bounds: Bool = not_negative.bitand(before_end)
@@ -344,7 +344,7 @@ routine LazySegmentTree[T, L].getitem(me: @Me, index: USize) -> T
         node: USize = me.leaf(index)
         me.push_path(node)
         data: @T = me.nodes.to[@T]()
-        value: T = data.stride(node).load()
+        value: T = data.stride(node).peek()
         return(value)
 
 routine LazySegmentTree[T, L].range_apply(me: @Me, left: USize, right: USize, tag: L) -> Void
@@ -353,7 +353,7 @@ routine LazySegmentTree[T, L].range_apply(me: @Me, left: USize, right: USize, ta
     block entry()
         valid_left: Bool = left.ge(0)
         valid_order: Bool = left.le(right)
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         valid_right: Bool = right.le(count)
         valid_a: Bool = valid_left.bitand(valid_order)
         valid: Bool = valid_a.bitand(valid_right)
@@ -384,7 +384,7 @@ routine LazySegmentTree[T, L].range_apply(me: @Me, left: USize, right: USize, ta
             : apply_right(l, r, l0, rex0)
 
     block take_left(l: USize, r: USize, l0: USize, rex0: USize)
-        me.apply_node(l, tag, width.load())
+        me.apply_node(l, tag, width.peek())
         jump apply_right(l.add(1), r, l0, rex0)
 
     block apply_right(l: USize, r: USize, l0: USize, rex0: USize)
@@ -395,14 +395,14 @@ routine LazySegmentTree[T, L].range_apply(me: @Me, left: USize, right: USize, ta
 
     block take_right(l: USize, r: USize, l0: USize, rex0: USize)
         node: USize = r.sub(1)
-        me.apply_node(node, tag, width.load())
+        me.apply_node(node, tag, width.peek())
         jump climb(l, node, l0, rex0)
 
     block climb(l: USize, r: USize, l0: USize, rex0: USize)
         next_l: USize = me.parent(l)
         next_r: USize = me.parent(r)
-        next_width: USize = width.load().shl(1)
-        next_width.store_into(width)
+        next_width: USize = width.peek().shl(1)
+        next_width.poke_into(width)
         jump loop(next_l, next_r, l0, rex0)
 
     block rebuild(l0: USize, rex0: USize)
@@ -417,7 +417,7 @@ routine LazySegmentTree[T, L].range_query(me: @Me, left: USize, right: USize) ->
     block entry()
         valid_left: Bool = left.ge(0)
         valid_order: Bool = left.le(right)
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         valid_right: Bool = right.le(count)
         valid_a: Bool = valid_left.bitand(valid_order)
         valid: Bool = valid_a.bitand(valid_right)
@@ -440,8 +440,8 @@ routine LazySegmentTree[T, L].range_query(me: @Me, left: USize, right: USize) ->
         me.push_path(r)
         left_identity: T = .identity()
         right_identity: T = .identity()
-        left_identity.store_into(left_acc)
-        right_identity.store_into(right_acc)
+        left_identity.poke_into(left_acc)
+        right_identity.poke_into(right_acc)
         jump loop(l, r.add(1))
 
     block loop(l: USize, r: USize)
@@ -458,9 +458,9 @@ routine LazySegmentTree[T, L].range_query(me: @Me, left: USize, right: USize) ->
 
     block use_left(l: USize, r: USize)
         data: @T = me.nodes.to[@T]()
-        value: T = data.stride(l).load()
-        next_left: T = left_acc.load().combine(value)
-        next_left.store_into(left_acc)
+        value: T = data.stride(l).peek()
+        next_left: T = left_acc.peek().combine(value)
+        next_left.poke_into(left_acc)
         jump take_right(l.add(1), r)
 
     block take_right(l: USize, r: USize)
@@ -472,9 +472,9 @@ routine LazySegmentTree[T, L].range_query(me: @Me, left: USize, right: USize) ->
     block use_right(l: USize, r: USize)
         node: USize = r.sub(1)
         data: @T = me.nodes.to[@T]()
-        value: T = data.stride(node).load()
-        next_right: T = value.combine(right_acc.load())
-        next_right.store_into(right_acc)
+        value: T = data.stride(node).peek()
+        next_right: T = value.combine(right_acc.peek())
+        next_right.poke_into(right_acc)
         jump climb(l, node)
 
     block climb(l: USize, r: USize)
@@ -483,16 +483,16 @@ routine LazySegmentTree[T, L].range_query(me: @Me, left: USize, right: USize) ->
         jump loop(next_l, next_r)
 
     block combine()
-        value: T = left_acc.load().combine(right_acc.load())
+        value: T = left_acc.peek().combine(right_acc.peek())
         return(value)
 
 routine LazySegmentTree[T, L].destruct(me: @Me) -> Void
     block entry()
         me.nodes.destruct()
         me.tags.destruct()
-        me.count.store(0)
-        me.size.store(0)
-        me.height.store(0)
+        me.count.poke(0)
+        me.size.poke(0)
+        me.height.poke(0)
         return()
 
 // ── Demo: range add, range sum ────────────────────────────────────────────────
@@ -572,7 +572,7 @@ routine fill_values(values: @RangeSum, count: USize) -> Void
     block store(i: USize)
         scrambled: USize = i.mul(7).mod(10)
         leaf: RangeSum = RangeSum(sum: scrambled.to[S64]())
-        values.stride(i).store(leaf)
+        values.stride(i).poke(leaf)
         jump loop(i.add(1))
 
 routine start() -> Void
@@ -580,7 +580,7 @@ routine start() -> Void
         fd: @Out = Out.writer()
         claim out: @BufWriter[Out] <- .hollow()
         out.construct(fd)
-        claim alloc: @Allocator <- make_heap_allocator()
+        claim alloc: @MemoryManager <- make_heap_memory()
         claim values: @Slice[RangeSum] <- .construct(10, alloc)
         first: @RangeSum = values.to[@RangeSum]()
         fill_values(first, 10)

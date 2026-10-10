@@ -12,9 +12,9 @@ record Counts
 routine counting_alloc(state: Addr, size: USize) -> Addr
     block entry()
         counts: @Counts = state.to[@Counts]()
-        next_live: S64 = counts.live.load().add(1)
-        next_live.store_into(counts.live)
-        heap: Allocator = make_heap_allocator()
+        next_live: S64 = counts.live.peek().add(1)
+        next_live.poke_into(counts.live)
+        heap: MemoryManager = make_heap_memory()
         r: Addr = heap.alloc_fn.call(null, size)
         return(r)
 
@@ -27,12 +27,12 @@ routine counting_realloc(state: Addr, old: Addr, size: USize) -> Addr
 
     block fresh()
         counts: @Counts = state.to[@Counts]()
-        next_live: S64 = counts.live.load().add(1)
-        next_live.store_into(counts.live)
+        next_live: S64 = counts.live.peek().add(1)
+        next_live.poke_into(counts.live)
         jump resize()
 
     block resize()
-        heap: Allocator = make_heap_allocator()
+        heap: MemoryManager = make_heap_memory()
         r: Addr = heap.realloc_fn.call(null, old, size)
         return(r)
 
@@ -45,21 +45,21 @@ routine counting_free(state: Addr, memory: Addr) -> Void
 
     block release()
         counts: @Counts = state.to[@Counts]()
-        remaining_live: S64 = counts.live.load().sub(1)
-        remaining_live.store_into(counts.live)
-        heap: Allocator = make_heap_allocator()
+        remaining_live: S64 = counts.live.peek().sub(1)
+        remaining_live.poke_into(counts.live)
+        heap: MemoryManager = make_heap_memory()
         heap.free_fn.call(null, memory)
         return()
 
 routine show(label: Bytes, counts: @Counts) -> Void
     block entry()
         Out.write("{label}")
-        live: S64 = counts.live.load()
+        live: S64 = counts.live.peek()
         Out.write("{live}\n")
         return()
 
 // A list of three inner lists, each with a few elements.
-routine fill(outer: @List[List[S64]], alloc: @Allocator) -> Void
+routine fill(outer: @List[List[S64]], alloc: @MemoryManager) -> Void
     block entry()
         jump loop(0)
 
@@ -73,17 +73,17 @@ routine fill(outer: @List[List[S64]], alloc: @Allocator) -> Void
         claim inner: @List[S64] <- .construct(alloc)
         inner.add_last(i.to[S64]())
         inner.add_last(7)
-        filled: List[S64] = inner.load()
+        filled: List[S64] = inner.peek()
         outer.add_last(filled)
         jump loop(i.add(1))
 
 routine start() -> Void
     block entry()
         claim counts: @Counts <- (live: 0)
-        counting: Allocator = Allocator(alloc_fn:   counting_alloc.to[Callable](),
+        counting: MemoryManager = MemoryManager(alloc_fn:   counting_alloc.to[Callable](),
             realloc_fn: counting_realloc.to[Callable](), free_fn:    counting_free.to[Callable](),
             state:      counts.to[@Byte]())
-        claim alloc: @Allocator <- counting
+        claim alloc: @MemoryManager <- counting
 
         claim a: @List[List[S64]] <- .construct(alloc)
         fill(a, alloc)
@@ -91,17 +91,17 @@ routine start() -> Void
         a.destruct()
         show("after destruct (inner lists leak): ", counts)
 
-        counts.live.store(0)
+        counts.live.poke(0)
         claim b: @List[List[S64]] <- .construct(alloc)
         fill(b, alloc)
         b.destruct_all()
         show("after destruct_all: ", counts)
 
-        counts.live.store(0)
+        counts.live.poke(0)
         claim d: @Dict[S64, List[S64]] <- .construct(alloc)
         claim v: @List[S64] <- .construct(alloc)
         v.add_last(1)
-        v_loaded: List[S64] = v.load()
+        v_loaded: List[S64] = v.peek()
         d.setitem(5, v_loaded)
         d.destruct_all_values()
         show("dict after destruct_all_values: ", counts)

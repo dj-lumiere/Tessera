@@ -153,7 +153,7 @@ internal routine create_dir_all(path: Bytes) -> Result[Unit, FsError]
 /// :returns: `Success(Unit)` once everything is gone.
 /// :throws: Returns `Failure` with the first error, which stops the removal partway. Crashes with
 ///     `MemoryAllocationError` when `alloc` fails for a child path.
-internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result[Unit, FsError]
+internal routine remove_dir_all(path: Bytes, alloc: @MemoryManager) -> Result[Unit, FsError]
     block entry()
         m: Result[Metadata, FsError] = symlink_metadata(path)
         when m
@@ -176,7 +176,7 @@ internal routine remove_dir_all(path: Bytes, alloc: @Allocator) -> Result[Unit, 
 /// :returns: `Success(Unit)` once the directory is empty.
 /// :throws: Returns `Failure` with the first error. Crashes with `MemoryAllocationError` when `alloc` fails for a
 ///     child path.
-private routine remove_entries(path: Bytes, alloc: @Allocator) -> Result[Unit, FsError]
+private routine remove_entries(path: Bytes, alloc: @MemoryManager) -> Result[Unit, FsError]
     // open_path sets the handle before anything in it can fail, so finish closes a real or a null one
     local iter: @DirIter <- .hollow()
 
@@ -194,7 +194,7 @@ private routine remove_entries(path: Bytes, alloc: @Allocator) -> Result[Unit, F
 
     block child(e: DirEntry)
         claim full: @Bytes <- join_path(path, e.name, alloc)
-        gone: Result[Unit, FsError] = remove_dir_all(full.load(), alloc)
+        gone: Result[Unit, FsError] = remove_dir_all(full.peek(), alloc)
         full.destruct()
         when gone
             .Success => next()
@@ -210,7 +210,7 @@ private routine remove_entries(path: Bytes, alloc: @Allocator) -> Result[Unit, F
 /// :returns: `Success` with the file's bytes.
 /// :throws: Returns `Failure` with the reason when the file can't be opened or read, `OutOfMemory` when `alloc`
 ///     fails or the file is too large for the address space (4 GiB or more on a 32-bit target).
-internal routine read_file(path: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
+internal routine read_file(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         opened: Result[FileHandle, FsError] = FileHandle.open(path, OpenMode.READ)
         when opened
@@ -230,7 +230,7 @@ internal routine read_file(path: Bytes, alloc: @Allocator) -> Result[Bytes, FsEr
 /// :returns: `Success` with the bytes read.
 /// :throws: Returns `Failure` with the reason when a read fails, `OutOfMemory` when `alloc` fails or the file is too
 ///     large for the address space (it reports a size, or grows to one, that a USize can't hold).
-private routine read_rest(f: @FileHandle, alloc: @Allocator) -> Result[Bytes, FsError]
+private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Bytes, FsError]
     local buffer: @Slice[Byte] <- .empty()
 
     block entry()
@@ -256,7 +256,7 @@ private routine read_rest(f: @FileHandle, alloc: @Allocator) -> Result[Bytes, Fs
             .Failure => finish(.Failure(FsError.OUT_OF_MEMORY))
 
     block filling(slice: Slice[Byte])
-        slice.store_into(buffer)
+        slice.poke_into(buffer)
         jump fill(0)
 
     // count bytes read so far, and the buffer's count is its capacity
@@ -265,7 +265,8 @@ private routine read_rest(f: @FileHandle, alloc: @Allocator) -> Result[Bytes, Fs
         branch count.eq(capacity)
             ? grow(count)
             : continue
-        got: Result[USize, FsError] = f.read_bytes_result(buffer.at(count), capacity.sub(count))
+        got: Result[USize, FsError] = f.read_bytes_result(buffer.getslot(count),
+            capacity.sub(count))
         when got
             .Success(n) => advance(count, n)
             .Failure(error) => finish(.Failure(error))
@@ -287,8 +288,8 @@ private routine read_rest(f: @FileHandle, alloc: @Allocator) -> Result[Bytes, Fs
 
     // The text takes the memory over, so buffer goes back to empty and finish has nothing to give back.
     block read_all(count: USize)
-        text: Bytes = Bytes(data: buffer.data.load(), count: count, alloc: alloc)
-        buffer.store(Slice[Byte].empty())
+        text: Bytes = Bytes(data: buffer.data.peek(), count: count, alloc: alloc)
+        buffer.poke(Slice[Byte].empty())
         jump finish(.Success(text))
 
     block finish(result: Result[Bytes, FsError])
@@ -350,14 +351,14 @@ routine FileHandle.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
         branch wrote.is_success()
             ? return()
             : continue
-        me.failed.store(true)
+        me.failed.poke(true)
         return()
 
 /// Whether a write through the Writer side (write_bytes) failed.
 /// :returns: True once a `write_bytes` has failed. Nothing clears it.
 routine FileHandle.has_failed(me: @Me) -> Bool
     block entry()
-        return(me.failed.load())
+        return(me.failed.peek())
 
 // -- paths (no OS calls) -----------------------------------------------------------------
 //
@@ -402,7 +403,7 @@ routine path_separator() -> Byte
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates the joined path")
-routine join_path(a: Bytes, b: Bytes, alloc: @Allocator) -> Bytes
+routine join_path(a: Bytes, b: Bytes, alloc: @MemoryManager) -> Bytes
     block entry()
         branch a.is_empty()
             ? build(true)
@@ -422,7 +423,7 @@ routine join_path(a: Bytes, b: Bytes, alloc: @Allocator) -> Bytes
         branch ends
             ? tail(buffer, sep, count)
             : continue
-        buffer.stride(a.count()).store(path_separator())
+        buffer.stride(a.count()).poke(path_separator())
         jump tail(buffer, sep, count)
 
     block tail(buffer: @Byte, sep: USize, count: USize)

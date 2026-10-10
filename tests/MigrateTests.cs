@@ -62,7 +62,7 @@ public class MigrateTests
         "f : Callable[(S64, S64), Dict[S64, List[U8]]] = g.to[Callable]()")]
     [InlineData("routine id(x: S64) -> S64", "routine id(x: S64) -> S64")]
     [InlineData("f: Callable<#callconv(\"stdcall\"), (Addr,), U32>", "f: Callable[#callconv(\"stdcall\"), (Addr,), U32]")]
-    [InlineData("x.store_into(p)  // keeps `Array<S32, 3>` <- here", "x.store_into(p)  // keeps `Array[S32, 3]` <- here")]
+    [InlineData("x.store_into(p)  // keeps `Array<S32, 3>` <- here", "x.poke_into(p)  // keeps `Array[S32, 3]` <- here")]
     [InlineData("v : S64 <- add<S64>(a, b)", "v : S64 <- add[S64](a, b)")]
     [InlineData("show(\"to<B16>\", a < b)", "show(\"to<B16>\", a < b)")]
     [InlineData("c : Char = '<'", "c : Char = '<'")]

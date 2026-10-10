@@ -434,8 +434,8 @@ routine cm_exp_pair(table: @U64, i: USize) -> U128
     block entry()
         low_index: USize = i.shl(1)
         high_index: USize = low_index.add(1)
-        low: U64 = table.stride(low_index).load()
-        high: U64 = table.stride(high_index).load()
+        low: U64 = table.stride(low_index).peek()
+        high: U64 = table.stride(high_index).peek()
         r: U128 = cm_exp_join(high, low)
         return(r)
 
@@ -570,11 +570,11 @@ routine cm_exp_add_column(columns: CmExpColumns, slot: S64, word: U64) -> Void
             : return()
 
     block add(at: USize)
-        low: U64 = lo.stride(at).load()
-        high: U64 = hi.stride(at).load()
+        low: U64 = lo.stride(at).peek()
+        high: U64 = hi.stride(at).peek()
         sum: U128 = low.to[U128]().add(word.to[U128]())
-        lo.stride(at).store(sum.to_wrap[U64]())
-        hi.stride(at).store(high.add(cm_exp_hi(sum)))
+        lo.stride(at).poke(sum.to_wrap[U64]())
+        hi.stride(at).poke(high.add(cm_exp_hi(sum)))
         return()
 
 /// The words out[0 .. out.count-1] = the words p .. p+out.count-1 of the product of a
@@ -605,7 +605,7 @@ routine cm_exp_mul_words(out: Slice[U64], a: Slice[U64], b: Slice[U64], p: USize
         branch done
             ? continue
             : column(i, 0)
-        0.store_into(carry)
+        0.poke_into(carry)
         jump carry(0)
 
     block column(i: USize, j: USize)
@@ -615,8 +615,8 @@ routine cm_exp_mul_words(out: Slice[U64], a: Slice[U64], b: Slice[U64], p: USize
             : product(i, j)
 
     block product(i: USize, j: USize)
-        ai: U64 = a.data.stride(i).load()
-        bj: U64 = b.data.stride(j).load()
+        ai: U64 = a.data.stride(i).peek()
+        bj: U64 = b.data.stride(j).peek()
         prod: U128 = cm_exp_mul(ai, bj)
         column: USize = i.add(j)
         slot: S64 = column.to[S64]().sub(p.to[S64]())
@@ -631,11 +631,11 @@ routine cm_exp_mul_words(out: Slice[U64], a: Slice[U64], b: Slice[U64], p: USize
             : settle(q.to[USize]())
 
     block settle(q: USize)
-        low: U64 = lo.stride(q).load()
-        high: U64 = hi.stride(q).load()
-        sum: U128 = low.to[U128]().add(carry.load())
-        out.data.stride(q).store(sum.to_wrap[S64]().to_wrap[U64]())
-        sum.shr(64).add(high.to[U128]()).store_into(carry)
+        low: U64 = lo.stride(q).peek()
+        high: U64 = hi.stride(q).peek()
+        sum: U128 = low.to[U128]().add(carry.peek())
+        out.data.stride(q).poke(sum.to_wrap[S64]().to_wrap[U64]())
+        sum.shr(64).add(high.to[U128]()).poke_into(carry)
         jump carry(q.add(1).to[S64]())
 
 /// The high n words of the product of the n-word a and b: the words n .. 2n-1, every
@@ -664,8 +664,8 @@ routine cm_exp_mul_add_words(out: Slice[U64], a: U64, b: @U64, c: @U64) -> Void
     local carry: @U128 <- 0
 
     block entry()
-        b0: U64 = b.stride(0).load()
-        cm_exp_mul(a, b0).store_into(prev)
+        b0: U64 = b.stride(0).peek()
+        cm_exp_mul(a, b0).poke_into(prev)
         jump step(0)
 
     block step(k: USize)
@@ -680,19 +680,19 @@ routine cm_exp_mul_add_words(out: Slice[U64], a: U64, b: @U64, c: @U64) -> Void
         index: USize = has_next
             ? next_k
             : k
-        bn: U64 = b.stride(index).load()
+        bn: U64 = b.stride(index).peek()
         product: U128 = cm_exp_mul(a, bn)
         next: U128 = has_next
             ? product
             : 0
-        ck: U64 = c.stride(k).load()
-        overlap: U128 = prev.load().shr(64).add(next.bitand(CM_EXP_LOW))
-        sum: U128 = overlap.add(ck.to[U128]()).add(carry.load())
-        out.data.stride(k).store(sum.to_wrap[S64]().to_wrap[U64]())
+        ck: U64 = c.stride(k).peek()
+        overlap: U128 = prev.peek().shr(64).add(next.bitand(CM_EXP_LOW))
+        sum: U128 = overlap.add(ck.to[U128]()).add(carry.peek())
+        out.data.stride(k).poke(sum.to_wrap[S64]().to_wrap[U64]())
         next_carry: U128 = sum.shr(64)
         next_prev: U128 = next
-        next_prev.store_into(prev)
-        next_carry.store_into(carry)
+        next_prev.poke_into(prev)
+        next_carry.poke_into(carry)
         jump step(next_k)
 
 /// dst += src on n words, the carry out of the top dropped.
@@ -712,12 +712,12 @@ routine cm_exp_add_words(dst: @U64, src: @U64, n: USize) -> Void
             : add(k)
 
     block add(k: USize)
-        d: U64 = dst.stride(k).load()
-        s: U64 = src.stride(k).load()
+        d: U64 = dst.stride(k).peek()
+        s: U64 = src.stride(k).peek()
         pair: U128 = d.to[U128]().add(s.to[U128]())
-        sum: U128 = pair.add(carry.load())
-        dst.stride(k).store(sum.to_wrap[S64]().to_wrap[U64]())
-        sum.shr(64).store_into(carry)
+        sum: U128 = pair.add(carry.peek())
+        dst.stride(k).poke(sum.to_wrap[S64]().to_wrap[U64]())
+        sum.shr(64).poke_into(carry)
         jump step(k.add(1))
 
 /// Word i of the len-word value at o, or the sign fill past its top.
@@ -732,7 +732,7 @@ routine cm_exp_word_or_sign(o: @U64, i: USize, len: USize, sign: U64) -> U64
         index: USize = inside
             ? i
             : 0
-        word: U64 = o.stride(index).load()
+        word: U64 = o.stride(index).peek()
         r: U64 = inside
             ? word
             : sign
@@ -744,7 +744,7 @@ routine cm_exp_word_or_sign(o: @U64, i: USize, len: USize, sign: U64) -> U64
 /// :param n: The shift.
 routine cm_exp_ashr_words(o: @U64, len: USize, n: U64) -> Void
     local top_index: USize = len.sub(1)
-    local top: U64 = o.stride(top_index).load()
+    local top: U64 = o.stride(top_index).peek()
     local sign: S64 = top.to_wrap[S64]().shr(63)
     local words: USize = n.shr(6).to[USize]()
     local bits: U64 = n.bitand(63)
@@ -762,7 +762,7 @@ routine cm_exp_ashr_words(o: @U64, len: USize, n: U64) -> Void
         from: USize = j.add(words)
         low: U64 = cm_exp_word_or_sign(o, from, len, sign.to_wrap[U64]())
         high: U64 = cm_exp_word_or_sign(o, from.add(1), len, sign.to_wrap[U64]())
-        o.stride(j).store(cm_exp_funnel(high, low, bits.to[S64]()).to_wrap[U64]())
+        o.stride(j).poke(cm_exp_funnel(high, low, bits.to[S64]()).to_wrap[U64]())
         jump step(j.add(1))
 
 // -- fallback paths --------------------------------------------------------------
@@ -791,15 +791,15 @@ routine cm_exp_reduce_wide(out: @U64, x: U128, kind: U64, len: USize) -> Void
         signed: U128 = sig.bitxor(mask2).sub_wrap(mask2)
         low_index: USize = len.sub(2)
         high_index: USize = len.sub(1)
-        out.stride(low_index).store(signed.to_wrap[S64]().to_wrap[U64]())
-        out.stride(high_index).store(cm_exp_hi(signed))
+        out.stride(low_index).poke(signed.to_wrap[S64]().to_wrap[U64]())
+        out.stride(high_index).poke(cm_exp_hi(signed))
         return()
 
     block scale()
         claim sig_words: @Array[S64, 2] <- .hollow()
         sig_ptr: @U64 = sig_words.to[@U64]()
-        sig_ptr.stride(0).store(sig.to_wrap[S64]().to_wrap[U64]())
-        sig_ptr.stride(1).store(cm_exp_hi(sig))
+        sig_ptr.stride(0).poke(sig.to_wrap[S64]().to_wrap[U64]())
+        sig_ptr.stride(1).poke(cm_exp_hi(sig))
         is_e: Bool = kind.eq(CM_EXP_KIND_E)
         table: @U64 = is_e
             ? CM_EXP_ILN2.to[@U64]()
@@ -816,8 +816,8 @@ routine cm_exp_reduce_wide(out: @U64, x: U128, kind: U64, len: USize) -> Void
         branch done
             ? return()
             : continue
-        word: U64 = out.stride(q).load()
-        word.bitxor(sign_mask).store_into(out.stride(q))
+        word: U64 = out.stride(q).peek()
+        word.bitxor(sign_mask).poke_into(out.stride(q))
         jump flip(q.add(1))
 
 /// The reduced argument of the wide paths: len words (4 or 7) of x × log2(base),
@@ -883,11 +883,11 @@ routine cm_exp_accurate(x: U128, kind: U64) -> CmExpScaled
         poly: @U64 = poly_words.to[@U64]()
         low: @U64 = low_words.to[@U64]()
         cm_exp_wide_argument(arg, x, kind, 4)
-        el_word: U64 = arg.stride(3).load()
+        el_word: U64 = arg.stride(3).peek()
         el: S64 = el_word.to_wrap[S64]()  // the exponent, stored as a word
-        top: U64 = arg.stride(2).load()
-        x0: U64 = arg.stride(0).load()
-        x1: U64 = arg.stride(1).load()
+        top: U64 = arg.stride(2).peek()
+        x0: U64 = arg.stride(0).peek()
+        x1: U64 = arg.stride(1).peek()
         // 2^(j0/16) × 2^(j1/256) from the top 8 fraction bits
         j0: USize = top.shr(60).to[USize]()
         j1_bits: U64 = top.shr(56).bitand(15)
@@ -901,19 +901,19 @@ routine cm_exp_accurate(x: U128, kind: U64) -> CmExpScaled
         cm_exp_horner(poly, frac, CmExpPoly(rows: c3, width: 3, degree: 14))
         cm_exp_mul_high(tab, poly, tab, 3)
         // the two low fraction words by a first-order correction
-        c3w2: U64 = c3.stride(2).load()
-        c3w4: U64 = c3.stride(4).load()
-        c3w5: U64 = c3.stride(5).load()
-        c3w8: U64 = c3.stride(8).load()
+        c3w2: U64 = c3.stride(2).peek()
+        c3w4: U64 = c3.stride(4).peek()
+        c3w5: U64 = c3.stride(5).peek()
+        c3w8: U64 = c3.stride(8).peek()
         slope: U128 = cm_exp_join(c3w5, c3w4).add_wrap(cm_exp_mulhi(c3w8, x1).to[U128]())
         linear: U128 = cm_exp_mulhi(cm_exp_join(x1, x0), slope)
-        low.stride(0).store(linear.to_wrap[S64]().to_wrap[U64]())
-        low.stride(1).store(cm_exp_hi(linear))
-        low.stride(2).store(c3w2)
+        low.stride(0).poke(linear.to_wrap[S64]().to_wrap[U64]())
+        low.stride(1).poke(cm_exp_hi(linear))
+        low.stride(2).poke(c3w2)
         cm_exp_mul_high(poly, tab, low, 3)
-        f0: U64 = poly.stride(0).load()
-        f1: U64 = poly.stride(1).load()
-        f2: U64 = poly.stride(2).load()
+        f0: U64 = poly.stride(0).peek()
+        f1: U64 = poly.stride(1).peek()
+        f2: U64 = poly.stride(2).peek()
         sig: U128 = cm_exp_join(f2.shr(1), f1.shr(1).bitor(f2.shl(63)))
         close: Bool = cm_exp_accurate_is_close(el, f0, f1, f2)
         result: CmExpScaled = CmExpScaled(exponent: el, sig: sig)
@@ -988,9 +988,9 @@ routine cm_exp_superaccurate(x: U128, kind: U64) -> CmExpScaled
         next: @U64 = next_words.to[@U64]()
         low: @U64 = low_words.to[@U64]()
         cm_exp_wide_argument(arg, x, kind, 7)
-        el_word: U64 = arg.stride(6).load()
+        el_word: U64 = arg.stride(6).peek()
         el: S64 = el_word.to_wrap[S64]()  // the exponent, stored as a word
-        top: U64 = arg.stride(5).load()
+        top: U64 = arg.stride(5).peek()
         // a degree-36 polynomial in the top fraction word below its 4 table bits
         c6: @U64 = CM_EXP_C6.to[@U64]()
         frac: U64 = top.bitand(0x0FFFFFFFFFFFFFFF)
@@ -1002,8 +1002,8 @@ routine cm_exp_superaccurate(x: U128, kind: U64) -> CmExpScaled
         // 2^(j/16) from the table bits
         power: @U64 = cm_exp_row(CM_EXP_TBL6.to[@U64](), 6, top.shr(60).to[USize]())
         cm_exp_mul_high(poly, poly, power, 6)
-        f4: U64 = poly.stride(4).load()
-        f5: U64 = poly.stride(5).load()
+        f4: U64 = poly.stride(4).peek()
+        f5: U64 = poly.stride(5).peek()
         sig: U128 = cm_exp_join(f5.shr(1), f4.shr(1).bitor(f5.shl(63)))
         r: CmExpScaled = CmExpScaled(exponent: el, sig: sig)
         return(r)
@@ -1018,7 +1018,7 @@ routine cm_exp_superaccurate_next(out: @U64, arg: @U64, c6: @U64) -> Void
     local term_words: @Array[S64, 8] <- .hollow()
     local acc: @U64 = acc_words.to[@U64]()
     local term: @U64 = term_words.to[@U64]()
-    local y: U64 = arg.stride(4).load()
+    local y: U64 = arg.stride(4).peek()
     local acc_slice: Slice[U64] = .construct(acc, 6)
 
     block entry()

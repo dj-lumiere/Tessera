@@ -127,9 +127,9 @@ routine B128Extended.ldexp(me: Me, k: S64) -> Me
 /// :returns: The entry.
 routine wide_table(hi: @U128, lo: @U64, exponent: @S64, i: USize) -> B128Extended
     block entry()
-        h: U128 = hi.stride(i).load()
-        l: U64 = lo.stride(i).load()
-        e: S64 = exponent.stride(i).load()
+        h: U128 = hi.stride(i).peek()
+        l: U64 = lo.stride(i).peek()
+        e: S64 = exponent.stride(i).peek()
         w: B128Extended = B128Extended(negative: false, exponent: e, hi: h, lo: l)
         return(w)
 
@@ -168,7 +168,7 @@ routine wide_normalize(negative: Bool, exponent: S64, hi: U128, lo: U64) -> B128
 
     block limb(upper: U128, lower: U64)
         new_hi: U128 = upper.shl(64).bitor(lower.to[U128]())
-        adjusted.load().sub(64).store_into(adjusted)
+        adjusted.peek().sub(64).poke_into(adjusted)
         jump count(new_hi, 0)
 
     block bits(upper: U128, lower: U64)
@@ -179,7 +179,7 @@ routine wide_normalize(negative: Bool, exponent: S64, hi: U128, lo: U64) -> B128
             : 0
         new_hi: U128 = upper.shl(s.to[U128]()).bitor(carry)
         new_lo: U64 = lower.shl(s.to[U64]())
-        w: B128Extended = B128Extended(negative: negative, exponent: adjusted.load().sub(s),
+        w: B128Extended = B128Extended(negative: negative, exponent: adjusted.peek().sub(s),
             hi: new_hi, lo: new_lo)
         return(w)
 
@@ -423,18 +423,18 @@ routine wide_exp(x: B128Extended) -> B128Extended
     block entry()
         last: B128Extended = wide_table(WIDE_EXP_COEF_HI.to[@U128](), WIDE_EXP_COEF_LO.to[@U64](),
             WIDE_EXP_COEF_EXP.to[@S64](), 27)
-        last.store_into(s)
+        last.poke_into(s)
         jump horner(26)
 
     block horner(i: S64)
         done: Bool = i.lt(0)
-        scaled: B128Extended = s.load().ldexp(q)
+        scaled: B128Extended = s.peek().ldexp(q)
         branch done
             ? return(scaled)
             : continue
         c: B128Extended = wide_table(WIDE_EXP_COEF_HI.to[@U128](), WIDE_EXP_COEF_LO.to[@U64](),
             WIDE_EXP_COEF_EXP.to[@S64](), i.to[USize]())
-        s.store(s.load().mul(d).add(c))
+        s.poke(s.peek().mul(d).add(c))
         jump horner(i.sub(1))
 
 // -- log -----------------------------------------------------------------------
@@ -576,7 +576,7 @@ routine wide_log(x: B128Extended) -> B128Extended
         tt: B128Extended = t.mul(t)
         last: B128Extended = wide_table(WIDE_LOG_COEF_HI.to[@U128](), WIDE_LOG_COEF_LO.to[@U64](),
             WIDE_LOG_COEF_EXP.to[@S64](), 25)
-        last.store_into(s)
+        last.poke_into(s)
         jump horner(24, tt, t, e)
 
     block horner(i: S64, tt: B128Extended, t: B128Extended, e: S64)
@@ -588,11 +588,11 @@ routine wide_log(x: B128Extended) -> B128Extended
     block step(i: S64, tt: B128Extended, t: B128Extended, e: S64)
         c: B128Extended = wide_table(WIDE_LOG_COEF_HI.to[@U128](), WIDE_LOG_COEF_LO.to[@U64](),
             WIDE_LOG_COEF_EXP.to[@S64](), i.to[USize]())
-        s.store(s.load().mul(tt).add(c))
+        s.poke(s.peek().mul(tt).add(c))
         jump horner(i.sub(1), tt, t, e)
 
     block finish(t: B128Extended, e: S64)
-        ln_fr: B128Extended = s.load().mul(t).ldexp(1)
+        ln_fr: B128Extended = s.peek().mul(t).ldexp(1)
         e_ln2: B128Extended = e.to[B128Extended]().mul(wide_const(0))
         r: B128Extended = e_ln2.add(ln_fr)
         return(r)
@@ -612,13 +612,13 @@ routine limbs_bits64(p: @U64, pos: S64) -> U64
     block entry()
         i: USize = pos.shr(6).to[USize]()
         off: S64 = pos.bitand(63)
-        low: U64 = p.stride(i).load()
+        low: U64 = p.stride(i).peek()
         aligned: Bool = off.eq(0)
         branch aligned
             ? return(low)
             : continue
         j: USize = i.add(1)
-        high: U64 = p.stride(j).load()
+        high: U64 = p.stride(j).peek()
         r: U64 = low.shr(off.to[U64]()).bitor(high.shl(64.sub(off).to[U64]()))
         return(r)
 
@@ -670,18 +670,18 @@ routine b128_reduce(x: B128) -> Reduced
         hi_p: U128 = m1.mul_wrap(wide)
         k1: USize = k.add(1)
         k2: USize = k.add(2)
-        r0: U64 = limbs.stride(k).load()
-        r1: U64 = limbs.stride(k1).load()
-        r2: U64 = limbs.stride(k2).load()
+        r0: U64 = limbs.stride(k).peek()
+        r1: U64 = limbs.stride(k1).peek()
+        r2: U64 = limbs.stride(k2).peek()
         // limb k gets lo_p's low half, limb k+1 lo_p's high half and hi_p's low, and k+2 the rest
         s0: U128 = r0.to[U128]().add(lo_p.bitand(0xFFFFFFFFFFFFFFFF))
         s1a: U128 = r1.to[U128]().add(lo_p.shr(64))
         s1: U128 = s1a.add(hi_p.bitand(0xFFFFFFFFFFFFFFFF)).add(s0.shr(64))
         s2a: U128 = r2.to[U128]().add(hi_p.shr(64))
         s2: U128 = s2a.add(s1.shr(64))
-        limbs.stride(k).store(s0.to_wrap[U64]())
-        limbs.stride(k1).store(s1.to_wrap[U64]())
-        limbs.stride(k2).store(s2.to[U64]())
+        limbs.stride(k).poke(s0.to_wrap[U64]())
+        limbs.stride(k1).poke(s1.to_wrap[U64]())
+        limbs.stride(k2).poke(s2.to[U64]())
         carry: U64 = s2.shr(64).to[U64]()
         jump spill(k.add(3), carry, k, start, sh, m0, m1, limbs)
 
@@ -695,9 +695,9 @@ routine b128_reduce(x: B128) -> Reduced
 
     block spill_one(j: USize, carry: U64, k: USize, start: USize, sh: S64, m0: U128, m1: U128,
         limbs: @U64)
-        r: U64 = limbs.stride(j).load()
+        r: U64 = limbs.stride(j).peek()
         s: U128 = r.to[U128]().add_wrap(carry.to[U128]())
-        limbs.stride(j).store(s.to_wrap[U64]())
+        limbs.stride(j).poke(s.to_wrap[U64]())
         jump spill(j.add_wrap(1), s.shr(64).to[U64](), k, start, sh, m0, m1, limbs)
 
     // quadrant: bits sh and sh+1. Fraction: the 256 bits under sh, normalized
@@ -755,7 +755,7 @@ routine wide_from_256(hi: U128, lo: U128) -> B128Extended
             all => return(nothing)
             empty => continue
             else => bits(upper, lower)
-        exponent.load().sub_wrap(128).store_into(exponent)
+        exponent.peek().sub_wrap(128).poke_into(exponent)
         jump shift(lower, 0)
 
     block bits(upper: U128, lower: U128)
@@ -766,7 +766,7 @@ routine wide_from_256(hi: U128, lo: U128) -> B128Extended
             : 0
         new_hi: U128 = upper.shl(s.to[U128]()).bitor(carry)
         new_lo: U128 = lower.shl(s.to[U128]())
-        w: B128Extended = B128Extended(negative: false, exponent: exponent.load().sub(s),
+        w: B128Extended = B128Extended(negative: false, exponent: exponent.peek().sub(s),
             hi: new_hi, lo: new_lo.shr(64).to[U64]())
         return(w)
 
@@ -787,18 +787,18 @@ routine wide_sin_core(t: B128Extended) -> B128Extended
     block entry()
         last: B128Extended = wide_table(WIDE_SIN_COEF_HI.to[@U128](), WIDE_SIN_COEF_LO.to[@U64](),
             WIDE_SIN_COEF_EXP.to[@S64](), 17)
-        last.store_into(s)
+        last.poke_into(s)
         jump horner(16)
 
     block horner(i: S64)
         done: Bool = i.lt(0)
-        r: B128Extended = s.load().mul(t)
+        r: B128Extended = s.peek().mul(t)
         branch done
             ? return(r)
             : continue
         c: B128Extended = wide_table(WIDE_SIN_COEF_HI.to[@U128](), WIDE_SIN_COEF_LO.to[@U64](),
             WIDE_SIN_COEF_EXP.to[@S64](), i.to[USize]())
-        s.store(s.load().mul(u).add(c))
+        s.poke(s.peek().mul(u).add(c))
         jump horner(i.sub(1))
 
 /// cos θ = Σ (-θ²)^k / (2k)!, 18 terms, for |θ| <= π/4 (the first dropped term is below 2^-139).
@@ -811,17 +811,17 @@ routine wide_cos_core(t: B128Extended) -> B128Extended
     block entry()
         last: B128Extended = wide_table(WIDE_COS_COEF_HI.to[@U128](), WIDE_COS_COEF_LO.to[@U64](),
             WIDE_COS_COEF_EXP.to[@S64](), 17)
-        last.store_into(s)
+        last.poke_into(s)
         jump horner(16)
 
     block horner(i: S64)
         done: Bool = i.lt(0)
         branch done
-            ? return(s.load())
+            ? return(s.peek())
             : continue
         c: B128Extended = wide_table(WIDE_COS_COEF_HI.to[@U128](), WIDE_COS_COEF_LO.to[@U64](),
             WIDE_COS_COEF_EXP.to[@S64](), i.to[USize]())
-        s.store(s.load().mul(u).add(c))
+        s.poke(s.peek().mul(u).add(c))
         jump horner(i.sub(1))
 
 /// sin and cos of NaN (a quiet NaN) and of the infinities (NaN).
@@ -914,18 +914,18 @@ routine wide_exp_m1(x: B128Extended) -> B128Extended
     block series()
         last: B128Extended = wide_table(WIDE_EXP_COEF_HI.to[@U128](), WIDE_EXP_COEF_LO.to[@U64](),
             WIDE_EXP_COEF_EXP.to[@S64](), 35)
-        last.store_into(s)
+        last.poke_into(s)
         jump horner(34)
 
     block horner(i: USize)
         done: Bool = i.lt(1)
-        r: B128Extended = s.load().mul(x)
+        r: B128Extended = s.peek().mul(x)
         branch done
             ? return(r)
             : continue
         c: B128Extended = wide_table(WIDE_EXP_COEF_HI.to[@U128](), WIDE_EXP_COEF_LO.to[@U64](),
             WIDE_EXP_COEF_EXP.to[@S64](), i)
-        s.store(s.load().mul(x).add(c))
+        s.poke(s.peek().mul(x).add(c))
         jump horner(i.sub(1))
 
 /// ln(1 + x) for x > -1: below |x| = 1/4, 2 atanh(t) with t = x / (2 + x) (|t| < 0.143, inside the log
@@ -950,18 +950,18 @@ routine wide_ln_1p(x: B128Extended) -> B128Extended
         tt: B128Extended = t.mul(t)
         last: B128Extended = wide_table(WIDE_LOG_COEF_HI.to[@U128](), WIDE_LOG_COEF_LO.to[@U64](),
             WIDE_LOG_COEF_EXP.to[@S64](), 25)
-        last.store_into(s)
+        last.poke_into(s)
         jump horner(24, tt, t)
 
     block horner(i: S64, tt: B128Extended, t: B128Extended)
         done: Bool = i.lt(0)
-        r: B128Extended = s.load().mul(t).ldexp(1)
+        r: B128Extended = s.peek().mul(t).ldexp(1)
         branch done
             ? return(r)
             : continue
         c: B128Extended = wide_table(WIDE_LOG_COEF_HI.to[@U128](), WIDE_LOG_COEF_LO.to[@U64](),
             WIDE_LOG_COEF_EXP.to[@S64](), i.to[USize]())
-        s.store(s.load().mul(tt).add(c))
+        s.poke(s.peek().mul(tt).add(c))
         jump horner(i.sub(1), tt, t)
 
 // -- atan ----------------------------------------------------------------------
@@ -976,18 +976,18 @@ routine wide_atan_series(x: B128Extended) -> B128Extended
     block entry()
         last: B128Extended = wide_table(WIDE_LOG_COEF_HI.to[@U128](), WIDE_LOG_COEF_LO.to[@U64](),
             WIDE_LOG_COEF_EXP.to[@S64](), 25)
-        last.store_into(s)
+        last.poke_into(s)
         jump horner(24)
 
     block horner(i: S64)
         done: Bool = i.lt(0)
-        r: B128Extended = s.load().mul(x)
+        r: B128Extended = s.peek().mul(x)
         branch done
             ? return(r)
             : continue
         c: B128Extended = wide_table(WIDE_LOG_COEF_HI.to[@U128](), WIDE_LOG_COEF_LO.to[@U64](),
             WIDE_LOG_COEF_EXP.to[@S64](), i.to[USize]())
-        s.store(s.load().mul(u).add(c))
+        s.poke(s.peek().mul(u).add(c))
         jump horner(i.sub_wrap(1))
 
 /// atan x for any finite x: past |x| = 1, π/2 - atan(1/|x|). Then three half-angle steps
@@ -1004,7 +1004,7 @@ routine wide_atan(x: B128Extended) -> B128Extended
         small: B128Extended = big
             ? inv
             : a
-        small.store_into(t)
+        small.poke_into(t)
         jump halve(0)
 
     block halve(n: S64)
@@ -1015,12 +1015,12 @@ routine wide_atan(x: B128Extended) -> B128Extended
 
     block step(n: S64)
         one: B128Extended = wide_one()
-        next: B128Extended = t.load().div(one.add(one.add(t.load().mul(t.load())).sqrt()))
-        next.store_into(t)
+        next: B128Extended = t.peek().div(one.add(one.add(t.peek().mul(t.peek())).sqrt()))
+        next.poke_into(t)
         jump halve(n.add_wrap(1))
 
     block finish()
-        r0: B128Extended = wide_atan_series(t.load()).ldexp(3)
+        r0: B128Extended = wide_atan_series(t.peek()).ldexp(3)
         r1: B128Extended = big
             ? wide_half_pi().sub(r0)
             : r0

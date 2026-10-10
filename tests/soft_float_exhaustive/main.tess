@@ -34,8 +34,8 @@ record Worker
 /// splitmix64.
 routine random(state: @U64) -> U64
     block entry()
-        s: U64 = state.load().add_wrap(0x9E3779B97F4A7C15)
-        s.store_into(state)
+        s: U64 = state.peek().add_wrap(0x9E3779B97F4A7C15)
+        s.poke_into(state)
         z1: U64 = s.bitxor(s.shr(30)).mul_wrap(0xBF58476D1CE4E5B9)
         z2: U64 = z1.bitxor(z1.shr(27)).mul_wrap(0x94D049BB133111EB)
         r: U64 = z2.bitxor(z2.shr(31))
@@ -66,7 +66,7 @@ routine operands64(state: @U64, mix: U64, second: @U64) -> U64
         other: U64 = tiny
             ? low
             : near
-        other.store_into(second)
+        other.poke_into(second)
         r: U64 = tiny
             ? a.bitand(0x801FFFFFFFFFFFFF)
             : a
@@ -566,7 +566,7 @@ routine run_job(worker: @Worker, job: U64) -> Void
 
     block entry()
         seed: U64 = job.mul_wrap(0x9E3779B97F4A7C15)
-        seed.store_into(worker.seed)
+        seed.poke_into(worker.seed)
         when
             job.lt(256) => chunk32(0)
             job.eq(256) => b16()
@@ -612,7 +612,7 @@ routine run_job(worker: @Worker, job: U64) -> Void
             : continue
         claim second: @U64 <- 0
         a: U64 = operands64(worker.seed, mix, second)
-        ok: Bool = check64(op, a, second.load())
+        ok: Bool = check64(op, a, second.peek())
         tally(worker, op.add(14).to[USize](), ok, a)
         jump pairs64(op, mix, at.add(1))
 
@@ -640,14 +640,14 @@ routine run_job(worker: @Worker, job: U64) -> Void
 /// A thread's body: its jobs, index, index + threads, and so on.
 routine work(worker: @Worker) -> Void
     block entry()
-        jump next(worker.index.load())
+        jump next(worker.index.peek())
 
     block next(job: U64)
         branch job.ge(JOBS)
             ? return()
             : continue
         run_job(worker, job)
-        jump next(job.add(worker.threads.load()))
+        jump next(job.add(worker.threads.peek()))
 
 routine check_name(check: USize) -> Bytes
     block entry()
@@ -694,11 +694,11 @@ routine sum_fails(workers: @Worker, threads: U64, check: USize, first: @U64) -> 
             : step(at.add(1), total.add(fails))
 
     block keep(at: U64, total: U64, input: U64)
-        input.store_into(first)
+        input.poke_into(first)
         jump step(at.add(1), total)
 
 routine start() -> Void
-    local alloc: @Allocator <- make_heap_allocator()
+    local alloc: @MemoryManager <- make_heap_memory()
     local threads: U64 = cpu_count().to[U64]()
     local worker_memory: @Slice[Worker] <- .construct(threads.to[USize](), alloc)
     local handle_memory: @Slice[Thread] <- .construct(threads.to[USize](), alloc)
@@ -715,17 +715,17 @@ routine start() -> Void
             : continue
         worker: @Worker = workers.stride(at.to[USize]())
         worker.zeroinit(1)
-        at.store_into(worker.index)
-        threads.store_into(worker.threads)
+        at.poke_into(worker.index)
+        threads.poke_into(worker.threads)
         handle: Thread = Thread.spawn(work.to[Callable](), worker, alloc)
-        handles.stride(at.to[USize]()).store(handle)
+        handles.stride(at.to[USize]()).poke(handle)
         jump spawn(at.add(1))
 
     block join(at: U64)
         branch at.eq(threads)
             ? report(0, 0)
             : continue
-        handle: Thread = handles.stride(at.to[USize]()).load()
+        handle: Thread = handles.stride(at.to[USize]()).peek()
         handle.join()
         jump join(at.add(1))
 
@@ -739,7 +739,7 @@ routine start() -> Void
         Out.write("{name}: {fails} mismatches")
         branch fails.eq(0)
             ? report_end(check, total)
-            : report_first(check, total.add(fails), first.load())
+            : report_first(check, total.add(fails), first.peek())
 
     block report_first(check: USize, total: U64, input: U64)
         Out.write(", first at input 0x")

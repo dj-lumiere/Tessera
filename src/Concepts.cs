@@ -111,7 +111,7 @@ public sealed partial class Compiler
         if (Conforms(decl, args, env.File, at) is not { } why) return;
         // A pointer writes neither its value nor its address on its own, so the fix names both.
         if (decl.Name is "Representable" or "Diagnosable" && args is [PtrType { Pointee: not null }])
-            why = $"a pointer isn't {decl.Name}; write the value with .load(), or the address with .to[Addr]()";
+            why = $"a pointer isn't {decl.Name}; write the value with .peek(), or the address with .to[Addr]()";
         // In a generic body being checked, the constraint is missing from the routine's (or its record's) require.
         else if (_precheck is { } scope && args.Any(MentionsArchetype))
             throw new CompileError(at, $"{scope.What} needs {Show(decl.Name, args)}, which {neededBy} requires: {why}"

@@ -56,7 +56,7 @@ preset IN_BUFFER: USize = 8192
 
 /// Standard input's one buffer: bytes read from the OS and not handed out yet, in bytes[start, end).
 private record InputBuffer
-    lock: Mutex
+    lock: ExclusiveLock
     bytes: Array[Byte, IN_BUFFER]
     start: USize
     end: USize
@@ -71,8 +71,8 @@ private routine InputBuffer.fill(me: @Me) -> Bool
             .Failure => filled(0)
 
     block filled(n: USize)
-        me.start.store(0)
-        me.end.store(n)
+        me.start.poke(0)
+        me.end.poke(n)
         return(n.gt(0))
 
 /// The next byte, filling the buffer when it is empty. The lock is held.
@@ -80,7 +80,7 @@ private routine InputBuffer.fill(me: @Me) -> Bool
 /// :absent: At the end of the input.
 private routine InputBuffer.next(me: @Me) -> Option[Byte]
     block entry()
-        branch me.start.load().lt(me.end.load())
+        branch me.start.peek().lt(me.end.peek())
             ? take()
             : continue
         branch me.fill()
@@ -88,23 +88,23 @@ private routine InputBuffer.next(me: @Me) -> Option[Byte]
             : return(.Absent)
 
     block take()
-        at: USize = me.start.load()
-        me.start.store(at.add(1))
+        at: USize = me.start.peek()
+        me.start.poke(at.add(1))
         buffered: @Byte = me.bytes.to[@Byte]()
-        return(.Present(buffered.stride(at).load()))
+        return(.Present(buffered.stride(at).peek()))
 
 /// Puts back the byte next just handed out. The lock is held.
 private routine InputBuffer.unread(me: @Me) -> Void
     block entry()
-        previous_start: USize = me.start.load().sub(1)
-        previous_start.store_into(me.start)
+        previous_start: USize = me.start.peek().sub(1)
+        previous_start.poke_into(me.start)
         return()
 
 /// Reads more input after what the buffer holds, into its free end. The buffer must have room after what it holds.
 /// The lock is held.
 /// :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
 private routine InputBuffer.fill_more(me: @Me) -> Bool
-    local end: USize = me.end.load()
+    local end: USize = me.end.peek()
 
     block entry()
         free: @Byte = me.bytes.to[@Byte]().stride(end)
@@ -114,19 +114,19 @@ private routine InputBuffer.fill_more(me: @Me) -> Bool
             .Failure => return(false)
 
     block added(n: USize)
-        me.end.store(end.add(n))
+        me.end.poke(end.add(n))
         return(n.gt(0))
 
 /// Moves the bytes the buffer holds to its front, so the free space after them is as large as it can be. The lock is
 /// held.
 private routine InputBuffer.compact(me: @Me) -> Void
-    local from: USize = me.start.load()
-    local held: USize = me.end.load().sub(from)
+    local from: USize = me.start.peek()
+    local held: USize = me.end.peek().sub(from)
     local buffered: @Byte = me.bytes.to[@Byte]()
 
     block entry()
-        me.start.store(0)
-        me.end.store(held)
+        me.start.poke(0)
+        me.end.poke(held)
         jump move(0)
 
     // front to back: each byte goes to a place the loop has already read
@@ -134,8 +134,8 @@ private routine InputBuffer.compact(me: @Me) -> Void
         branch i.eq(held)
             ? return()
             : continue
-        byte: Byte = buffered.stride(from.add(i)).load()
-        buffered.stride(i).store(byte)
+        byte: Byte = buffered.stride(from.add(i)).peek()
+        buffered.stride(i).poke(byte)
         jump move(i.add(1))
 
 /// Skips white space and hands out the next word, Absent at the end of the input. A word that fits in the buffer is a
@@ -167,21 +167,21 @@ private routine InputBuffer.word(me: @Me) -> Option[Bytes]
 
     // length bytes of the word are known
     block scan(length: USize)
-        at: USize = me.start.load().add(length)
-        branch at.lt(me.end.load())
+        at: USize = me.start.peek().add(length)
+        branch at.lt(me.end.peek())
             ? look(length, at)
             : more(length)
 
     block look(length: USize, at: USize)
         buffered: @Byte = me.bytes.to[@Byte]()
-        c: Byte = buffered.stride(at).load()
+        c: Byte = buffered.stride(at).peek()
         branch is_space(c)
             ? found(length)
             : scan(length.add(1))
 
     block more(length: USize)
         me.compact()
-        full: Bool = me.end.load().ge(IN_BUFFER)
+        full: Bool = me.end.peek().ge(IN_BUFFER)
         branch full
             ? spill(length)
             : continue
@@ -190,16 +190,16 @@ private routine InputBuffer.word(me: @Me) -> Option[Bytes]
             : found(length)
 
     block found(length: USize)
-        from: USize = me.start.load()
+        from: USize = me.start.peek()
         buffered: @Byte = me.bytes.to[@Byte]()
         word: Bytes = Bytes.from_ptr(buffered.stride(from), length)
-        me.start.store(from.add(length))
+        me.start.poke(from.add(length))
         return(.Present(word))
 
     // The whole buffer is one word so far: it goes on in memory from the default heap.
     block spill(length: USize)
         text.append(me.bytes.to[@Byte](), length, DEFAULT_HEAP)
-        me.start.store(length)
+        me.start.poke(length)
         jump spill_next()
 
     block spill_next()
@@ -221,7 +221,7 @@ private routine InputBuffer.word(me: @Me) -> Option[Bytes]
         jump spilled()
 
     block spilled()
-        branch text.failed.load()
+        branch text.failed.peek()
             ? crash_allocation()
             : continue
         word: Bytes = text.owned(DEFAULT_HEAP)
@@ -245,7 +245,7 @@ routine In.read_into_result(buffer: @Byte, count: USize) -> Result[USize, FsErro
 
     block entry()
         b.lock.lock()
-        branch b.start.load().lt(b.end.load())
+        branch b.start.peek().lt(b.end.peek())
             ? held()
             : continue
         // Nothing held: a read that wants a bufferful or more goes straight to the caller's buffer.
@@ -257,11 +257,11 @@ routine In.read_into_result(buffer: @Byte, count: USize) -> Result[USize, FsErro
             : finish(.Success(0))
 
     block held()
-        available: USize = b.end.load().sub(b.start.load())
+        available: USize = b.end.peek().sub(b.start.peek())
         n: USize = available.min(count)
-        buffer.copy(b.bytes.to[@Byte]().stride(b.start.load()), n)
-        next_start: USize = b.start.load().add(n)
-        next_start.store_into(b.start)
+        buffer.copy(b.bytes.to[@Byte]().stride(b.start.peek()), n)
+        next_start: USize = b.start.peek().add(n)
+        next_start.poke_into(b.start)
         jump finish(.Success(n))
 
     block direct()
@@ -354,7 +354,7 @@ routine In.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USi
 /// :param alloc: The allocator for the bytes.
 /// :returns: The bytes read (empty when the allocation fails).
 #expensive("allocates what it reads")
-routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
+routine In.read_count(count: USize, alloc: @MemoryManager) -> Bytes
     local buffer: @Byte = allocate[Byte](count.max(1), alloc)
 
     block entry()
@@ -378,7 +378,7 @@ routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
 /// :param alloc: The allocator for the bytes.
 /// :returns: The bytes up to the end of the input (or up to a read failure).
 #expensive("allocates what it reads")
-routine In.read_all(alloc: @Allocator) -> Bytes
+routine In.read_all(alloc: @MemoryManager) -> Bytes
     local text: @CaptureBuffer <- CaptureBuffer.empty()
     local chunk_buffer: @Array[Byte, 4096] <- .hollow()
     local chunk: @Byte = chunk_buffer.to[@Byte]()
@@ -404,7 +404,7 @@ routine In.read_all(alloc: @Allocator) -> Bytes
 /// :throws: Crashes with `AbsentValueError` at the end of the input. See {In.read_line_checked}.
 #track_caller
 #expensive("allocates what it reads")
-routine In.read_line(alloc: @Allocator) -> Bytes
+routine In.read_line(alloc: @MemoryManager) -> Bytes
     block entry()
         line: Option[Bytes] = Me.read_line_checked(alloc)
         when line
@@ -418,7 +418,7 @@ routine In.read_line(alloc: @Allocator) -> Bytes
 /// :returns: The line.
 /// :absent: At the end of the input.
 #expensive("allocates what it reads")
-routine In.read_line_checked(alloc: @Allocator) -> Option[Bytes]
+routine In.read_line_checked(alloc: @MemoryManager) -> Option[Bytes]
     local b: @InputBuffer = STDIN_BUFFER
     local text: @CaptureBuffer <- CaptureBuffer.empty()
 
@@ -477,7 +477,7 @@ private routine is_space(c: Byte) -> Bool
 /// :throws: Crashes with `AbsentValueError` at the end of the input. See {In.read_word_checked}.
 #track_caller
 #expensive("allocates what it reads")
-routine In.read_word(alloc: @Allocator) -> Bytes
+routine In.read_word(alloc: @MemoryManager) -> Bytes
     block entry()
         word: Option[Bytes] = Me.read_word_checked(alloc)
         when word
@@ -491,7 +491,7 @@ routine In.read_word(alloc: @Allocator) -> Bytes
 /// :returns: The word.
 /// :absent: At the end of the input.
 #expensive("allocates what it reads")
-routine In.read_word_checked(alloc: @Allocator) -> Option[Bytes]
+routine In.read_word_checked(alloc: @MemoryManager) -> Option[Bytes]
     local b: @InputBuffer = STDIN_BUFFER
     local text: @CaptureBuffer <- CaptureBuffer.empty()
     local single: @Byte <- .hollow()
@@ -508,7 +508,7 @@ routine In.read_word_checked(alloc: @Allocator) -> Option[Bytes]
         branch is_space(byte)
             ? skip()
             : continue
-        single.store(byte)
+        single.poke(byte)
         text.append(single, 1, alloc)
         jump next()
 
@@ -520,7 +520,7 @@ routine In.read_word_checked(alloc: @Allocator) -> Option[Bytes]
         branch is_space(byte)
             ? put_back()
             : continue
-        single.store(byte)
+        single.poke(byte)
         text.append(single, 1, alloc)
         jump next()
 
@@ -681,7 +681,7 @@ internal routine stream_write(stream: StdStream, data: @Byte, count: USize) -> B
         branch wrote.gt(0)
             ? write(at.stride(wrote.to[USize]()), remaining.sub(wrote.to[USize]()))
             : continue
-        errno: CInt = c_errno_place().load()
+        errno: CInt = c_errno_place().peek()
         // EINTR: a signal came first, so try again
         branch wrote.lt(0).bitand(errno.eq(4))
             ? write(at, remaining)
@@ -698,7 +698,7 @@ internal routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsErro
         branch got.ge(0)
             ? return(.Success(got.to[USize]()))
             : continue
-        errno: CInt = c_errno_place().load()
+        errno: CInt = c_errno_place().peek()
         branch errno.eq(4)
             ? return(stdin_read(buffer, count))
             : return(.Failure(FsError.OTHER))
@@ -862,7 +862,7 @@ internal routine stream_enable_colors(stream: StdStream) -> Bool
             ? continue
             : return(false)
         // ENABLE_VIRTUAL_TERMINAL_PROCESSING
-        return(c_set_console_mode(h, mode.load().bitor(4)).ne(0))
+        return(c_set_console_mode(h, mode.peek().bitor(4)).ne(0))
 
 /// Writes all `count` bytes to standard output or error: as UTF-16 to a console, as they are to a pipe or a file.
 /// :param stream: Standard output or error.
@@ -898,7 +898,7 @@ private routine file_write(h: Addr, data: @Byte, count: USize) -> Bool
             ? return(true)
             : continue
         ok: CInt = c_write_file(h, at, remaining.min(1073741824).to[U32](), wrote, null)
-        n: USize = wrote.load().to[USize]()
+        n: USize = wrote.peek().to[USize]()
         branch ok.ne(0).bitand(n.gt(0))
             ? write(at.stride(n), remaining.sub(n))
             : return(false)
@@ -930,7 +930,7 @@ private routine complete_end(data: @Byte, count: USize) -> USize
         branch i.eq(0).bitor(seen.eq(3))
             ? return(count)
             : continue
-        b: Byte = data.stride(i.sub(1)).load()
+        b: Byte = data.stride(i.sub(1)).peek()
         top_bits: U8 = b.to[U8]().bitand(0xC0)
         // a continuation byte: 10xxxxxx
         branch top_bits.eq(0x80)
@@ -961,7 +961,7 @@ private routine pending_of(stream: StdStream) -> @PendingUtf8
 #target(os: "windows")
 private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: USize) -> Bool
     local pending: @PendingUtf8 = pending_of(stream)
-    local held: USize = pending.count.load()
+    local held: USize = pending.count.peek()
 
     block entry()
         branch held.eq(0)
@@ -976,19 +976,19 @@ private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: US
         branch taken.lt(need)
             ? still_open(held.add(taken))
             : continue
-        pending.count.store(0)
+        pending.count.poke(0)
         branch console_text(h, pending.bytes.to[@Byte](), held.add(taken))
             ? body(data.stride(taken), count.sub(taken))
             : return(false)
 
     block still_open(now_held: USize)
-        pending.count.store(now_held)
+        pending.count.poke(now_held)
         return(true)
 
     block body(at: @Byte, n: USize)
         cut: USize = complete_end(at, n)
         pending.bytes.to[@Byte]().copy(at.stride(cut), n.sub(cut))
-        pending.count.store(n.sub(cut))
+        pending.count.poke(n.sub(cut))
         return(console_text(h, at, cut))
 
 /// Writes complete UTF-8 text to a console, a bufferful of UTF-16 at a time.
@@ -1021,13 +1021,13 @@ private routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
             : continue
         v: U32 = cp.sub(0x10000)
         high_surrogate: U32 = v.shr(10).add(0xD800)
-        units.stride(n).store(high_surrogate.to[U16]())
+        units.stride(n).poke(high_surrogate.to[U16]())
         low_surrogate: U32 = v.bitand(0x3FF).add(0xDC00)
-        units.stride(n.add(1)).store(low_surrogate.to[U16]())
+        units.stride(n.add(1)).poke(low_surrogate.to[U16]())
         jump fill(n.add(2))
 
     block single(n: USize, cp: U32)
-        units.stride(n).store(cp.to[U16]())
+        units.stride(n).poke(cp.to[U16]())
         jump fill(n.add(1))
 
     block flush(n: USize)
@@ -1051,7 +1051,7 @@ private routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Bo
             ? return(true)
             : continue
         ok: CInt = c_write_console(h, units, n.to[U32](), written, null)
-        w: USize = written.load().to[USize]()
+        w: USize = written.peek().to[USize]()
         branch ok.ne(0).bitand(w.gt(0))
             ? return(write_units(h, units.stride(w), n.sub(w), written))
             : return(false)
@@ -1073,7 +1073,7 @@ internal routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsErro
             : continue
         claim got: @U32 <- 0
         branch c_read_file(h, buffer, count.min(1073741824).to[U32](), got, null).ne(0)
-            ? return(.Success(got.load().to[USize]()))
+            ? return(.Success(got.peek().to[USize]()))
             : continue
         // ERROR_BROKEN_PIPE: the writing end closed, which is the end
         branch c_get_last_error().eq(109)
@@ -1091,7 +1091,7 @@ private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USi
     local input: @ConsoleReadBuffer = CONSOLE_INPUT
 
     block entry()
-        branch input.start.load().lt(input.end.load())
+        branch input.start.peek().lt(input.end.peek())
             ? hand_out()
             : continue
         claim units: @Array[U16, 4096] <- .hollow()
@@ -1099,7 +1099,7 @@ private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USi
         branch c_read_console(h, units.to[@U16](), 4096, got, null).ne(0)
             ? continue
             : return(.Failure(FsError.OTHER))
-        n: USize = got.load().to[USize]()
+        n: USize = got.peek().to[USize]()
         branch n.eq(0)
             ? return(.Success(0))
             : continue
@@ -1111,32 +1111,32 @@ private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USi
     // A high surrogate at the end waits for its low half. One held from the last read goes in front.
     block convert(units: @U16, n: USize)
         claim joined: @Array[U16, 4097] <- .hollow()
-        high: U16 = input.high.load()
+        high: U16 = input.high.peek()
         lead: USize = high.eq(0)
             ? 0
             : 1
-        joined.to[@U16]().store(high)
+        joined.to[@U16]().poke(high)
         joined.to[@U16]().stride(lead).copy(units, n)
         total: USize = n.add(lead)
         joined_units: @U16 = joined.to[@U16]()
-        last: U16 = joined_units.stride(total.sub(1)).load()
+        last: U16 = joined_units.stride(total.sub(1)).peek()
         branch last.between(0xD800, 0xDBFF)
             ? hold(joined.to[@U16](), total.sub(1), last)
             : hold(joined.to[@U16](), total, 0)
 
     block hold(joined: @U16, units: USize, high: U16)
-        input.high.store(high)
+        input.high.poke(high)
         made: USize = narrow(joined, units, input.bytes.to[@Byte]())
-        input.start.store(0)
-        input.end.store(made)
+        input.start.poke(0)
+        input.end.poke(made)
         branch made.eq(0)
             ? return(console_read(h, buffer, count))
             : hand_out()
 
     block hand_out()
-        start: USize = input.start.load()
-        available: USize = input.end.load().sub(start)
+        start: USize = input.start.peek()
+        available: USize = input.end.peek().sub(start)
         n: USize = available.min(count)
         buffer.copy(input.bytes.to[@Byte]().stride(start), n)
-        input.start.store(start.add(n))
+        input.start.poke(start.add(n))
         return(.Success(n))

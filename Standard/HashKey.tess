@@ -40,7 +40,7 @@ routine entropy_key() -> SipKey
     block entry()
         claim key: @SipKey <- (k0: 0, k1: 0)
         hash_key_source(key)
-        return(key.load())
+        return(key.peek())
 
 /// The process's hash key, the one every stdlib `hash()` uses: drawn from `tessera_hash_key` the first time it is
 /// asked for, the same from then on. With an OS it is safe to ask from any thread: one draws it and the others wait
@@ -49,10 +49,10 @@ routine entropy_key() -> SipKey
 #[target(os: not "none"), inline]
 routine hash_key() -> SipKey
     block entry()
-        state: U32 = HASH_KEY_STATE.atomic_load_acquire()
+        state: U32 = HASH_KEY_STATE.peek_atomic_acquire()
         ready: Bool = state.eq(KEY_READY)
         branch ready
-            ? return(HASH_KEY.load())
+            ? return(HASH_KEY.peek())
             : draw()
 
     block draw()
@@ -72,14 +72,14 @@ private routine draw_hash_key() -> SipKey
 
     block fill()
         hash_key_source(HASH_KEY)
-        HASH_KEY_STATE.atomic_store_release(KEY_READY)
-        return(HASH_KEY.load())
+        HASH_KEY_STATE.poke_atomic_release(KEY_READY)
+        return(HASH_KEY.peek())
 
     block wait()
-        state: U32 = HASH_KEY_STATE.atomic_load_acquire()
+        state: U32 = HASH_KEY_STATE.peek_atomic_acquire()
         ready: Bool = state.eq(KEY_READY)
         branch ready
-            ? return(HASH_KEY.load())
+            ? return(HASH_KEY.peek())
             : wait()
 
 /// The process's hash key, the one every stdlib `hash()` uses: drawn from `tessera_hash_key` the first time it is
@@ -89,10 +89,10 @@ private routine draw_hash_key() -> SipKey
 #[target(os: "none"), inline]
 routine hash_key() -> SipKey
     block entry()
-        state: U32 = HASH_KEY_STATE.volatile_load()
+        state: U32 = HASH_KEY_STATE.peek_volatile()
         ready: Bool = state.eq(KEY_READY)
         branch ready
-            ? return(HASH_KEY.load())
+            ? return(HASH_KEY.peek())
             : draw()
 
     block draw()
@@ -105,8 +105,8 @@ routine hash_key() -> SipKey
 private routine draw_hash_key() -> SipKey
     block entry()
         hash_key_source(HASH_KEY)
-        HASH_KEY_STATE.volatile_store(KEY_READY)
-        return(HASH_KEY.load())
+        HASH_KEY_STATE.poke_volatile(KEY_READY)
+        return(HASH_KEY.peek())
 
 /// Folds two hashes into one, for a value made of parts (a record's fields, a variant's case and payload): SipHash-2-4
 /// of their 16 bytes under the process's key, so the order of the parts counts.
@@ -163,8 +163,8 @@ private routine rdrand_word() -> U64
 #[target(arch: "x86_64", os: "none"), feature("rdrnd"), export("tessera_hash_key")]
 routine rdrand_hash_key(key: @SipKey) -> Void
     block entry()
-        rdrand_word().store_into(key.k0)
-        rdrand_word().store_into(key.k1)
+        rdrand_word().poke_into(key.k0)
+        rdrand_word().poke_into(key.k1)
         return()
 
 /// RDSEED once: the random value, and 1 when the CPU had one ready (the carry flag), 0 when not.
@@ -214,8 +214,8 @@ private routine rdseed_word() -> U64
 #[target(arch: "x86_64", os: "none"), feature(not "rdrnd", "rdseed"), export("tessera_hash_key")]
 routine rdseed_hash_key(key: @SipKey) -> Void
     block entry()
-        rdseed_word().store_into(key.k0)
-        rdseed_word().store_into(key.k1)
+        rdseed_word().poke_into(key.k0)
+        rdseed_word().poke_into(key.k1)
         return()
 
 /// RNDR once (FEAT_RNG): the random value, and 1 when the CPU had one ready, 0 when not (RNDR clears the Z flag when
@@ -254,8 +254,8 @@ private routine rndr_word() -> U64
 #[target(arch: "aarch64", os: "none"), feature("rand"), export("tessera_hash_key")]
 routine rndr_hash_key(key: @SipKey) -> Void
     block entry()
-        rndr_word().store_into(key.k0)
-        rndr_word().store_into(key.k1)
+        rndr_word().poke_into(key.k0)
+        rndr_word().poke_into(key.k1)
         return()
 
 /// Reads the Zkr `seed` CSR (number 0x015) once, which only a write may read: `csrrw a0, seed, zero`. Bits 31 and 30
@@ -308,6 +308,6 @@ routine seed_hash_key(key: @SipKey) -> Void
         size: USize = SEED_SAMPLES.mul(2)
         first: SipKey = (k0: 0, k1: 0)
         other: SipKey = (k0: 1, k1: 0)
-        siphash24(bytes, size, first).store_into(key.k0)
-        siphash24(bytes, size, other).store_into(key.k1)
+        siphash24(bytes, size, first).poke_into(key.k0)
+        siphash24(bytes, size, other).poke_into(key.k1)
         return()

@@ -39,7 +39,7 @@ require T: typename, HashEquatable[T]
 /// Creates an empty Set that draws its storage from `alloc`. Nothing is allocated until the first insertion.
 /// :param alloc: The allocator the set stores and later frees its memory with.
 /// :returns: A new empty Set.
-routine Set[T].construct(alloc: @Allocator) -> Me
+routine Set[T].construct(alloc: @MemoryManager) -> Me
 require T: typename
     block entry()
         keys: Slice[T] = Slice[T].construct(0, alloc)
@@ -63,7 +63,7 @@ require T: typename
 routine Set[T].count(me: @Me) -> USize
 require T: typename
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         return(count)
 
 /// Whether the set holds no elements.
@@ -80,7 +80,7 @@ require T: typename
 routine Set[T].is_empty(me: @Me) -> Bool
 require T: typename
     block entry()
-        empty: Bool = me.load().is_empty()
+        empty: Bool = me.peek().is_empty()
         return(empty)
 
 /// Probes the slot table for `key`, linearly from `hash` modulo capacity.
@@ -99,7 +99,7 @@ require T: typename
 
     block probe(index: USize)
         slots: @USize = me.slots.data
-        entry_idx: USize = slots.stride(index).load()
+        entry_idx: USize = slots.stride(index).peek()
         is_empty: Bool = entry_idx.eq(SLOT_EMPTY)
         is_tombstone: Bool = entry_idx.eq(SLOT_TOMBSTONE)
         when
@@ -108,25 +108,25 @@ require T: typename
             else => occupied_slot(index, entry_idx)
 
     block empty_slot(index: USize)
-        has_tombstone: Bool = first_tombstone.load().ne(SLOT_EMPTY)
+        has_tombstone: Bool = first_tombstone.peek().ne(SLOT_EMPTY)
         slot: USize = has_tombstone
-            ? first_tombstone.load()
+            ? first_tombstone.peek()
             : index
         return(slot)
 
     block tombstone_slot(index: USize)
-        seen: Bool = first_tombstone.load().ne(SLOT_EMPTY)
+        seen: Bool = first_tombstone.peek().ne(SLOT_EMPTY)
         next_tombstone: USize = seen
-            ? first_tombstone.load()
+            ? first_tombstone.peek()
             : index
         capacity: USize = me.slots.count
         next: USize = index.add(1).bitand(capacity.sub(1))
-        next_tombstone.store_into(first_tombstone)
+        next_tombstone.poke_into(first_tombstone)
         jump probe(next)
 
     block occupied_slot(index: USize, entry_idx: USize)
         hashes: @U64 = me.hashes.data
-        entry_hash: U64 = hashes.stride(entry_idx).load()
+        entry_hash: U64 = hashes.stride(entry_idx).peek()
         hash_match: Bool = entry_hash.eq(hash)
         branch hash_match
             ? maybe_equal(index, entry_idx)
@@ -134,7 +134,7 @@ require T: typename
 
     block maybe_equal(index: USize, entry_idx: USize)
         keys: @T = me.keys.data
-        entry_key: T = keys.stride(entry_idx).load()
+        entry_key: T = keys.stride(entry_idx).peek()
         equal: Bool = entry_key.eq(key)
         branch equal ? return(index): next(index)
 
@@ -157,7 +157,7 @@ require T: typename
         hash: U64 = key.hash()
         slot: USize = me.slot(key, hash)
         slots: @USize = me.slots.data
-        entry_idx: USize = slots.stride(slot).load()
+        entry_idx: USize = slots.stride(slot).peek()
         found: Bool = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
             ? return(entry_idx)
@@ -178,7 +178,7 @@ require T: typename
 routine Set[T].contains(me: @Me, key: T) -> Bool
 require T: typename
     block entry()
-        found: Bool = me.load().contains(key)
+        found: Bool = me.peek().contains(key)
         return(found)
 
 /// Two sets are equal when they hold the same elements, regardless of insertion order or slot layout. With
@@ -199,15 +199,15 @@ require T: typename
 private routine Set[T].eq_at(me: @Me, other: @Me) -> Bool
 require T: typename
     block entry()
-        la: USize = me.count.load()
-        lb: USize = other.count.load()
+        la: USize = me.count.peek()
+        lb: USize = other.count.peek()
         same_len: Bool = la.eq(lb)
         branch same_len
             ? scan()
             : return(false)
 
     block scan()
-        n: USize = me.entries_count.load()
+        n: USize = me.entries_count.peek()
         jump loop(0, n)
 
     block loop(i: USize, n: USize)
@@ -217,16 +217,16 @@ require T: typename
             : check(i, n)
 
     block check(i: USize, n: USize)
-        entry_states: @U8 = me.entry_states.data.load()
-        s: U8 = entry_states.stride(i).load()
+        entry_states: @U8 = me.entry_states.data.peek()
+        s: U8 = entry_states.stride(i).peek()
         live: Bool = s.eq(1)
         branch live
             ? probe(i, n)
             : loop(i.add(1), n)
 
     block probe(i: USize, n: USize)
-        keys: @T = me.keys.data.load()
-        key: T = keys.stride(i).load()
+        keys: @T = me.keys.data.peek()
+        key: T = keys.stride(i).peek()
         has: Bool = other.contains(key)
         branch has
             ? loop(i.add(1), n)
@@ -238,7 +238,7 @@ require T: typename
 /// :returns: True when it rehashed, false when the allocator failed (the set is left as it was).
 private routine Set[T].rehash(me: @Me, new_capacity: USize) -> Bool
 require T: typename
-    local alloc: @Allocator = me.keys.alloc.load()
+    local alloc: @MemoryManager = me.keys.alloc.peek()
     local keys: @Slice[T] <- .construct(0, alloc)
     local hashes: @Slice[U64] <- .construct(0, alloc)
     local entry_states: @Slice[U8] <- .construct(0, alloc)
@@ -271,21 +271,21 @@ require T: typename
         branch done
             ? install()
             : continue
-        slot_cells: @USize = slots.data.load()
-        state_cells: @U8 = entry_states.data.load()
-        slot_cells.stride(i).store(SLOT_EMPTY)
-        state_cells.stride(i).store(0)
+        slot_cells: @USize = slots.data.peek()
+        state_cells: @U8 = entry_states.data.peek()
+        slot_cells.stride(i).poke(SLOT_EMPTY)
+        state_cells.stride(i).poke(0)
         jump clear_loop(i.add(1))
 
     // Swaps the new arrays into the set, so the claimed slices hold the old ones from here on.
     block install()
-        old_count: USize = me.entries_count.load()
+        old_count: USize = me.entries_count.peek()
         swap_slices[T](me.keys, keys)
         swap_slices[U64](me.hashes, hashes)
         swap_slices[U8](me.entry_states, entry_states)
         swap_slices[USize](me.slots, slots)
-        me.count.store(0)
-        me.entries_count.store(0)
+        me.count.poke(0)
+        me.entries_count.poke(0)
         jump move_loop(0, old_count)
 
     block move_loop(i: USize, old_count: USize)
@@ -293,18 +293,18 @@ require T: typename
         branch done
             ? release_old()
             : continue
-        states: @U8 = entry_states.data.load()
-        s: U8 = states.stride(i).load()
+        states: @U8 = entry_states.data.peek()
+        s: U8 = states.stride(i).peek()
         live: Bool = s.eq(1)
         branch live
             ? insert_old(i, old_count)
             : move_loop(i.add(1), old_count)
 
     block insert_old(i: USize, old_count: USize)
-        old_keys: @T = keys.data.load()
-        old_hashes: @U64 = hashes.data.load()
-        key: T = old_keys.stride(i).load()
-        hash: U64 = old_hashes.stride(i).load()
+        old_keys: @T = keys.data.peek()
+        old_hashes: @U64 = hashes.data.peek()
+        key: T = old_keys.stride(i).peek()
+        hash: U64 = old_hashes.stride(i).peek()
         me.add_direct(key, hash)
         jump move_loop(i.add(1), old_count)
 
@@ -317,7 +317,7 @@ require T: typename
 /// :returns: True when there is room, false when the allocator failed (the set is left as it was).
 private routine Set[T].ensure(me: @Me) -> Bool
 require T: typename
-    local capacity: USize = me.slots.count.load()
+    local capacity: USize = me.slots.count.peek()
 
     block entry()
         empty: Bool = capacity.eq(0)
@@ -329,7 +329,7 @@ require T: typename
         return(me.rehash(8))
 
     block check()
-        count: USize = me.entries_count.load()
+        count: USize = me.entries_count.peek()
         limit: USize = capacity.mul(3).div(4)
         full: Bool = count.add(1).ge(limit)
         branch full
@@ -345,29 +345,29 @@ require T: typename
 /// :returns: True when a new entry was appended, false when an equal element was already live.
 routine Set[T].add_direct(me: @Me, key: T, hash: U64) -> Bool
 require T: typename
-    local slot: USize = me.load().slot(key, hash)
+    local slot: USize = me.peek().slot(key, hash)
 
     block entry()
-        slots: @USize = me.slots.data.load()
-        entry_idx: USize = slots.stride(slot).load()
+        slots: @USize = me.slots.data.peek()
+        entry_idx: USize = slots.stride(slot).peek()
         exists: Bool = entry_idx.lt(SLOT_TOMBSTONE)
         branch exists
             ? return(false)
             : add()
 
     block add()
-        new_idx: USize = me.entries_count.load()
-        keys: @T = me.keys.data.load()
-        hashes: @U64 = me.hashes.data.load()
-        entry_states: @U8 = me.entry_states.data.load()
-        slots: @USize = me.slots.data.load()
-        keys.stride(new_idx).store(key)
-        hashes.stride(new_idx).store(hash)
-        entry_states.stride(new_idx).store(1)
-        slots.stride(slot).store(new_idx)
-        next_count: USize = me.count.load().add(1)
-        next_count.store_into(me.count)
-        me.entries_count.store(new_idx.add(1))
+        new_idx: USize = me.entries_count.peek()
+        keys: @T = me.keys.data.peek()
+        hashes: @U64 = me.hashes.data.peek()
+        entry_states: @U8 = me.entry_states.data.peek()
+        slots: @USize = me.slots.data.peek()
+        keys.stride(new_idx).poke(key)
+        hashes.stride(new_idx).poke(hash)
+        entry_states.stride(new_idx).poke(1)
+        slots.stride(slot).poke(new_idx)
+        next_count: USize = me.count.peek().add(1)
+        next_count.poke_into(me.count)
+        me.entries_count.poke(new_idx.add(1))
         return(true)
 
 /// Adds `key` to the set unless an equal element is already present.
@@ -403,7 +403,7 @@ require T: typename
 routine Set[T].remove(me: @Me, key: T) -> Bool
 require T: typename
     block entry()
-        capacity: USize = me.slots.count.load()
+        capacity: USize = me.slots.count.peek()
         empty: Bool = capacity.eq(0)
         branch empty
             ? return(false)
@@ -411,21 +411,21 @@ require T: typename
 
     block hash()
         hash: U64 = key.hash()
-        slot: USize = me.load().slot(key, hash)
-        slots: @USize = me.slots.data.load()
-        entry_idx: USize = slots.stride(slot).load()
+        slot: USize = me.peek().slot(key, hash)
+        slots: @USize = me.slots.data.peek()
+        entry_idx: USize = slots.stride(slot).peek()
         found: Bool = entry_idx.lt(SLOT_TOMBSTONE)
         branch found
             ? remove(slot, entry_idx)
             : return(false)
 
     block remove(slot: USize, entry_idx: USize)
-        slots: @USize = me.slots.data.load()
-        entry_states: @U8 = me.entry_states.data.load()
-        slots.stride(slot).store(SLOT_TOMBSTONE)
-        entry_states.stride(entry_idx).store(0)
-        remaining_count: USize = me.count.load().sub(1)
-        remaining_count.store_into(me.count)
+        slots: @USize = me.slots.data.peek()
+        entry_states: @U8 = me.entry_states.data.peek()
+        slots.stride(slot).poke(SLOT_TOMBSTONE)
+        entry_states.stride(entry_idx).poke(0)
+        remaining_count: USize = me.count.peek().sub(1)
+        remaining_count.poke_into(me.count)
         return(true)
 
 /// Gives the set's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
@@ -435,8 +435,8 @@ routine Set[T].destruct(me: @Me) -> Void
 require T: typename
     block entry()
         destruct_set_arrays[T](me.keys, me.hashes, me.entry_states, me.slots)
-        me.count.store(0)
-        me.entries_count.store(0)
+        me.count.poke(0)
+        me.entries_count.poke(0)
         return()
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
@@ -458,7 +458,7 @@ require T: typename, Destructible[T]
             .Absent => finish()
 
     block element(value: T)
-        slot.store(value)
+        slot.poke(value)
         slot.destruct()
         jump next()
 
@@ -505,7 +505,7 @@ private routine destruct_set_arrays[T](keys: @Slice[T], hashes: @Slice[U64],
     entry_states: @Slice[U8], slots: @Slice[USize]) -> Void
 require T: typename
     block entry()
-        hollow: Bool = keys.alloc.load().is_null()
+        hollow: Bool = keys.alloc.peek().is_null()
         branch hollow
             ? return()
             : continue

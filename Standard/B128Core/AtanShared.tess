@@ -228,9 +228,9 @@ routine cm_atan_u192_not(a: CmAtanU192) -> CmAtanU192
 routine cm_atan_row_top(table: @U64, row: USize) -> CmAtanU192
     block entry()
         base: USize = row.mul(6)
-        l3: U64 = table.stride(base.add(3)).load()
-        l4: U64 = table.stride(base.add(4)).load()
-        l5: U64 = table.stride(base.add(5)).load()
+        l3: U64 = table.stride(base.add(3)).peek()
+        l4: U64 = table.stride(base.add(4)).peek()
+        l5: U64 = table.stride(base.add(5)).peek()
         r: CmAtanU192 = CmAtanU192(top: l5, low: cm_atan_join(l4, l3))
         return(r)
 
@@ -293,7 +293,7 @@ routine cm_atan_fast_core(kn: U128, kd: U128, dn: S64) -> U128
         fl12: U64 = c12.sub_wrap(mul_high64(t2h, fl14))
         f_lo: U64 = c10.sub_wrap(t2h).sub_wrap(mul_high64(t2h, fl12))
         f_start: U128 = cm_atan_join(c11, f_lo)
-        f_start.store_into(f)
+        f_start.poke_into(f)
         jump horner(4, t, t2)
 
     block horner(i: USize, t: U128, t2: U128)
@@ -307,12 +307,12 @@ routine cm_atan_fast_core(kn: U128, kd: U128, dn: S64) -> U128
         hi_at: USize = lo_at.add(1)
         c_lo: U64 = CM_ATAN_C.getitem(lo_at)
         c_hi: U64 = CM_ATAN_C.getitem(hi_at)
-        next: U128 = cm_atan_join(c_hi, c_lo).sub_wrap(cm_atan_mul_high(t2, f.load()))
-        next.store_into(f)
+        next: U128 = cm_atan_join(c_hi, c_lo).sub_wrap(cm_atan_mul_high(t2, f.peek()))
+        next.poke_into(f)
         jump horner(i.sub(1), t, t2)
 
     block finish(t: U128, t2: U128)
-        times_t2: U128 = cm_atan_mul_high(t2, f.load())
+        times_t2: U128 = cm_atan_mul_high(t2, f.peek())
         times_t: U128 = cm_atan_mul_high(t, times_t2)
         r: U128 = t.sub_wrap(times_t)
         return(r)
@@ -413,9 +413,9 @@ routine cm_atan_limbs_add_at(o: @U64, pos: USize, v: U128, n: USize) -> Void
         branch more
             ? continue
             : return()
-        limb: U64 = o.stride(q).load()
+        limb: U64 = o.stride(q).peek()
         s: U128 = limb.to[U128]().add(c.bitand(0xFFFFFFFFFFFFFFFF))
-        o.stride(q).store(s.to_wrap[S64]().to_wrap[U64]())
+        o.stride(q).poke(s.to_wrap[S64]().to_wrap[U64]())
         jump carry(q.add(1), c.shr(64).add(s.shr(64)))
 
 /// dst = a + b modulo 2^(64 n), and dst may be a or b.
@@ -436,12 +436,12 @@ routine cm_atan_limbs_add(dst: @U64, a: @U64, b: @U64, n: USize) -> Void
             : add(i)
 
     block add(i: USize)
-        ai: U64 = a.stride(i).load()
-        bi: U64 = b.stride(i).load()
+        ai: U64 = a.stride(i).peek()
+        bi: U64 = b.stride(i).peek()
         ab: U128 = ai.to[U128]().add(bi.to[U128]())
-        s: U128 = ab.add(carry.load())
-        dst.stride(i).store(s.to_wrap[S64]().to_wrap[U64]())
-        s.shr(64).store_into(carry)
+        s: U128 = ab.add(carry.peek())
+        dst.stride(i).poke(s.to_wrap[S64]().to_wrap[U64]())
+        s.shr(64).poke_into(carry)
         jump limb(i.add(1))
 
 /// dst = a - b modulo 2^(64 n), and dst may be a or b.
@@ -460,12 +460,12 @@ routine cm_atan_limbs_sub(dst: @U64, a: @U64, b: @U64, n: USize) -> Void
         branch done
             ? return()
             : continue
-        ai: U64 = a.stride(i).load()
-        bi: U64 = b.stride(i).load()
+        ai: U64 = a.stride(i).peek()
+        bi: U64 = b.stride(i).peek()
         ab: U128 = ai.to[U128]().sub_wrap(bi.to[U128]())
-        s: U128 = ab.sub_wrap(borrow.load())
-        dst.stride(i).store(s.to_wrap[S64]().to_wrap[U64]())
-        s.shr(64).bitand(1).store_into(borrow)
+        s: U128 = ab.sub_wrap(borrow.peek())
+        dst.stride(i).poke(s.to_wrap[S64]().to_wrap[U64]())
+        s.shr(64).bitand(1).poke_into(borrow)
         jump limb(i.add(1))
 
 /// a = ~a on the low n limbs.
@@ -480,8 +480,8 @@ routine cm_atan_limbs_not(a: @U64, n: USize) -> Void
         branch done
             ? return()
             : continue
-        limb: U64 = a.stride(i).load()
-        limb.bitnot().store_into(a.stride(i))
+        limb: U64 = a.stride(i).peek()
+        limb.bitnot().poke_into(a.stride(i))
         jump limb(i.add(1))
 
 /// o = a × b exactly (a.count + b.count limbs), where o is neither a nor b. All 8 limbs of `o` are cleared
@@ -510,8 +510,8 @@ routine cm_atan_limbs_mul(o: @U64, a: Slice[U64], b: Slice[U64]) -> Void
             : product(j, i)
 
     block product(j: USize, i: USize)
-        ai: U64 = a.data.stride(i).load()
-        bj: U64 = b.data.stride(j).load()
+        ai: U64 = a.data.stride(i).peek()
+        bj: U64 = b.data.stride(j).peek()
         cm_atan_limbs_add_at(o, i.add(j), cm_atan_mul(ai, bj), na.add(nb))
         jump column(j, i.add(1))
 
@@ -547,8 +547,8 @@ routine cm_atan_limbs_mul_high(o: @U64, a: @U64, b: @U64, n: USize) -> Void
             : column(j, i.add(1))
 
     block keep(j: USize, i: USize, s: USize)
-        ai: U64 = a.stride(i).load()
-        bj: U64 = b.stride(j).load()
+        ai: U64 = a.stride(i).peek()
+        bj: U64 = b.stride(j).peek()
         p: U128 = cm_atan_mul(ai, bj)
         edge: Bool = s.add(1).eq(n)
         value: U128 = edge
@@ -576,8 +576,8 @@ routine cm_atan_limbs_shl_pos(a: @U64, n: USize, k: S64) -> Void
             : clear(dst)
 
     block first(src: USize)
-        first_limb: U64 = a.stride(src).load()
-        first_limb.to_wrap[S64]().store_into(c)
+        first_limb: U64 = a.stride(src).peek()
+        first_limb.to_wrap[S64]().poke_into(c)
         jump move(dst, src.sub(1).to[SSize]())
 
     // the limb at target takes c's bits and the top of the next lower limb
@@ -589,17 +589,17 @@ routine cm_atan_limbs_shl_pos(a: @U64, n: USize, k: S64) -> Void
             : last(target.to[USize](), s)
 
     block step(target: USize, src: USize, s: S64)
-        next: U64 = a.stride(src).load()
+        next: U64 = a.stride(src).peek()
         under_shift: S64 = k.bitnot().bitand(63)
         under_bits: U64 = next.shr(1).shr(under_shift.to[U64]())
         under: S64 = under_bits.to[S64]()
-        limb_bits: S64 = c.load().shl(s).bitor(under)
-        a.stride(target).store(limb_bits.to_wrap[U64]())
-        next.to_wrap[S64]().store_into(c)
+        limb_bits: S64 = c.peek().shl(s).bitor(under)
+        a.stride(target).poke(limb_bits.to_wrap[U64]())
+        next.to_wrap[S64]().poke_into(c)
         jump move(target.sub(1).to[SSize](), src.sub_wrap(1).to_wrap[SSize]())
 
     block last(target: USize, s: S64)
-        a.stride(target).store(c.load().shl(s).to_wrap[U64]())
+        a.stride(target).poke(c.peek().shl(s).to_wrap[U64]())
         jump clear(target.sub_wrap(1).to_wrap[SSize]())
 
     block clear(target: SSize)
@@ -610,7 +610,7 @@ routine cm_atan_limbs_shl_pos(a: @U64, n: USize, k: S64) -> Void
 
     block clear_one(target: USize)
         zero: S64 = 0
-        a.stride(target).store(zero.to[U64]())
+        a.stride(target).poke(zero.to[U64]())
         jump clear(target.sub_wrap(1).to_wrap[SSize]())
 
 /// a >>= k (logical) on n limbs, k >= 0.
@@ -628,8 +628,8 @@ routine cm_atan_limbs_shr_pos(a: @U64, n: USize, k: S64) -> Void
             : clear(0)
 
     block first()
-        first_limb: U64 = a.stride(src).load()
-        first_limb.store_into(c)
+        first_limb: U64 = a.stride(src).peek()
+        first_limb.poke_into(c)
         jump move(0, src.add(1))
 
     // the limb at dst takes c's bits and the bottom of the next higher limb
@@ -641,19 +641,19 @@ routine cm_atan_limbs_shr_pos(a: @U64, n: USize, k: S64) -> Void
             : last(dst, s)
 
     block step(dst: USize, from: USize, s: S64)
-        next: U64 = a.stride(from).load()
+        next: U64 = a.stride(from).peek()
         aligned: Bool = s.eq(0)
         over_shift: S64 = 0.sub(k).bitand(63)
         over: U64 = next.shl(over_shift.to[U64]())
         above: U64 = aligned
             ? 0
             : over
-        a.stride(dst).store(c.load().shr(s.to[U64]()).bitor(above))
-        next.store_into(c)
+        a.stride(dst).poke(c.peek().shr(s.to[U64]()).bitor(above))
+        next.poke_into(c)
         jump move(dst.add(1), from.add(1))
 
     block last(dst: USize, s: S64)
-        a.stride(dst).store(c.load().shr(s.to[U64]()))
+        a.stride(dst).poke(c.peek().shr(s.to[U64]()))
         jump clear(dst.add(1))
 
     block clear(dst: USize)
@@ -662,7 +662,7 @@ routine cm_atan_limbs_shr_pos(a: @U64, n: USize, k: S64) -> Void
             ? return()
             : continue
         zero: S64 = 0
-        a.stride(dst).store(zero.to[U64]())
+        a.stride(dst).poke(zero.to[U64]())
         jump clear(dst.add(1))
 
 /// a >>= k (logical), or a <<= -k when k < 0.
@@ -697,7 +697,7 @@ routine cm_atan_limbs_sar(a: @U64, n: USize, k: S64) -> Void
         branch some
             ? continue
             : beyond()
-        a.stride(src).load().store_into(c)
+        a.stride(src).peek().poke_into(c)
         jump move(0, src.add(1))
 
     block move(dst: USize, src: USize)
@@ -705,23 +705,23 @@ routine cm_atan_limbs_sar(a: @U64, n: USize, k: S64) -> Void
         more: Bool = src.lt(n)
         branch more
             ? step(dst, src, s)
-            : last(dst, c.load().to_wrap[S64](), s)
+            : last(dst, c.peek().to_wrap[S64](), s)
 
     block step(dst: USize, src: USize, s: S64)
-        next: U64 = a.stride(src).load()
+        next: U64 = a.stride(src).peek()
         above_shift: S64 = k.bitnot().bitand(63)
         above: U64 = next.shl(1).shl(above_shift.to[U64]())
-        a.stride(dst).store(c.load().shr(s.to[U64]()).bitor(above))
-        next.store_into(c)
+        a.stride(dst).poke(c.peek().shr(s.to[U64]()).bitor(above))
+        next.poke_into(c)
         jump move(dst.add(1), src.add(1))
 
     block last(dst: USize, c_signed: S64, s: S64)
-        a.stride(dst).store(c_signed.shr(s).to_wrap[U64]())
+        a.stride(dst).poke(c_signed.shr(s).to_wrap[U64]())
         jump fill(dst.add(1), c_signed.shr(63))
 
     block beyond()
         top_at: USize = n.sub_wrap(1)
-        top: U64 = a.stride(top_at).load()
+        top: U64 = a.stride(top_at).peek()
         jump fill(0, top.to_wrap[S64]().shr(63))
 
     block fill(dst: USize, sign: S64)
@@ -729,7 +729,7 @@ routine cm_atan_limbs_sar(a: @U64, n: USize, k: S64) -> Void
         branch done
             ? return()
             : continue
-        a.stride(dst).store(sign.to_wrap[U64]())
+        a.stride(dst).poke(sign.to_wrap[U64]())
         jump fill(dst.add_wrap(1), sign)
 
 // -- accurate path: kernel -------------------------------------------------------
@@ -760,25 +760,25 @@ routine cm_atan_accurate_reciprocal(kd0: S64, kd1: U64, kd2: U64, r: @U64) -> Vo
         r_lo: S64 = first.to_wrap[S64]()
         r_hi: S64 = first.shr(64).to_wrap[S64]()
         r.zeroinit(8)
-        r.stride(4).store(r_lo.to_wrap[U64]())
-        r.stride(5).store(r_hi.to_wrap[U64]())
-        rcp.stride(0).store(r_lo.to_wrap[U64]())
-        rcp.stride(1).store(r_hi.to_wrap[U64]())
-        kd.stride(0).store(kd0.to_wrap[U64]())
-        kd.stride(1).store(kd1)
-        kd.stride(2).store(kd2)
+        r.stride(4).poke(r_lo.to_wrap[U64]())
+        r.stride(5).poke(r_hi.to_wrap[U64]())
+        rcp.stride(0).poke(r_lo.to_wrap[U64]())
+        rcp.stride(1).poke(r_hi.to_wrap[U64]())
+        kd.stride(0).poke(kd0.to_wrap[U64]())
+        kd.stride(1).poke(kd1)
+        kd.stride(2).poke(kd2)
         // h = r × kd (5 limbs), and sh = h >> 58, a signed 3-limb error term
         cm_atan_limbs_mul(h, Slice[U64].construct(rcp, 2), Slice[U64].construct(kd, 3))
-        h0: U64 = h.stride(0).load()
-        h1: U64 = h.stride(1).load()
-        h2_val: U64 = h.stride(2).load()
-        h3: U64 = h.stride(3).load()
+        h0: U64 = h.stride(0).peek()
+        h1: U64 = h.stride(1).peek()
+        h2_val: U64 = h.stride(2).peek()
+        h3: U64 = h.stride(3).peek()
         sh0: U64 = h0.shr(58).bitor(h1.shl(6))
         sh1: U64 = h1.shr(58).bitor(h2_val.shl(6))
         sh2: U64 = h2_val.shr(58).bitor(h3.shl(6))
-        sh.stride(0).store(sh0)
-        sh.stride(1).store(sh1)
-        sh.stride(2).store(sh2)
+        sh.stride(0).poke(sh0)
+        sh.stride(1).poke(sh1)
+        sh.stride(2).poke(sh2)
         // h2 = sh² as a signed square: the unsigned square, less 2 sh × 2^192 when sh < 0
         cm_atan_limbs_mul(h2, Slice[U64].construct(sh, 3), Slice[U64].construct(sh, 3))
         sh_neg: Bool = sh2.shr(63).eq(1)
@@ -797,23 +797,23 @@ routine cm_atan_accurate_reciprocal(kd0: S64, kd1: U64, kd2: U64, r: @U64) -> Vo
         fix5: S64 = sh_neg
             ? tw5
             : 0
-        fix.stride(3).store(fix3.to_wrap[U64]())
-        fix.stride(4).store(fix4.to_wrap[U64]())
-        fix.stride(5).store(fix5.to_wrap[U64]())
+        fix.stride(3).poke(fix3.to_wrap[U64]())
+        fix.stride(4).poke(fix4.to_wrap[U64]())
+        fix.stride(5).poke(fix5.to_wrap[U64]())
         cm_atan_limbs_sub(h2, h2, fix, 6)
         // h = (h << 75) - h2 >> 128
         cm_atan_limbs_shl_pos(h, 5, 75)
-        sq2: U64 = h2.stride(2).load()
-        sq3: U64 = h2.stride(3).load()
-        sq4: U64 = h2.stride(4).load()
+        sq2: U64 = h2.stride(2).peek()
+        sq3: U64 = h2.stride(3).peek()
+        sq4: U64 = h2.stride(4).peek()
         fix.zeroinit(8)
-        fix.stride(0).store(sq2)
-        fix.stride(1).store(sq3)
-        fix.stride(2).store(sq4)
+        fix.stride(0).poke(sq2)
+        fix.stride(1).poke(sq3)
+        fix.stride(2).poke(sq4)
         cm_atan_limbs_sub(h, h, fix, 5)
         // dr = h × r as a signed product (h is signed), then >> 10
         cm_atan_limbs_mul(dr, Slice[U64].construct(h, 5), Slice[U64].construct(rcp, 2))
-        top_h: U64 = h.stride(4).load()
+        top_h: U64 = h.stride(4).peek()
         h_neg: Bool = top_h.shr(63).eq(1)
         fix.zeroinit(8)
         fix_lo: S64 = h_neg
@@ -822,23 +822,23 @@ routine cm_atan_accurate_reciprocal(kd0: S64, kd1: U64, kd2: U64, r: @U64) -> Vo
         fix_hi: S64 = h_neg
             ? r_hi
             : 0
-        fix.stride(5).store(fix_lo.to_wrap[U64]())
-        fix.stride(6).store(fix_hi.to_wrap[U64]())
+        fix.stride(5).poke(fix_lo.to_wrap[U64]())
+        fix.stride(6).poke(fix_hi.to_wrap[U64]())
         cm_atan_limbs_sub(dr, dr, fix, 7)
         cm_atan_limbs_sar(dr, 7, 10)
         // r -= dr >> 128, sign-extended to 6 limbs
-        d2: U64 = dr.stride(2).load()
-        d3: U64 = dr.stride(3).load()
-        d4: U64 = dr.stride(4).load()
-        d5: U64 = dr.stride(5).load()
-        d6: U64 = dr.stride(6).load()
-        fix.stride(0).store(d2)
-        fix.stride(1).store(d3)
-        fix.stride(2).store(d4)
-        fix.stride(3).store(d5)
+        d2: U64 = dr.stride(2).peek()
+        d3: U64 = dr.stride(3).peek()
+        d4: U64 = dr.stride(4).peek()
+        d5: U64 = dr.stride(5).peek()
+        d6: U64 = dr.stride(6).peek()
+        fix.stride(0).poke(d2)
+        fix.stride(1).poke(d3)
+        fix.stride(2).poke(d4)
+        fix.stride(3).poke(d5)
         d7: S64 = d6.to_wrap[S64]().shr(63)
-        fix.stride(4).store(d6)
-        fix.stride(5).store(d7.to_wrap[U64]())
+        fix.stride(4).poke(d6)
+        fix.stride(5).poke(d7.to_wrap[U64]())
         cm_atan_limbs_sub(r, r, fix, 6)
         return()
 
@@ -860,8 +860,8 @@ routine cm_atan_accurate_series(t: @U64, dn: S64, f: @U64) -> Void
         c0: U64 = CM_ATAN_CP.getitem(0)
         c1: U64 = CM_ATAN_CP.getitem(1)
         f.zeroinit(8)
-        f.stride(0).store(c0)
-        f.stride(1).store(c1)
+        f.stride(0).poke(c0)
+        f.stride(1).poke(c1)
         jump term(2, 5)
 
     // left terms remain at the n-limb precision. The coefficient of the last one began at ck
@@ -873,12 +873,12 @@ routine cm_atan_accurate_series(t: @U64, dn: S64, f: @U64) -> Void
 
     // f = CP[ck..] - f × t2 (the top n limbs of t2)
     block step(n: USize, left: S64)
-        next_ck: USize = ck.load().add(n)
+        next_ck: USize = ck.peek().add(n)
         t2_top: @U64 = t2.stride(6.sub(n))
         coef: @U64 = CM_ATAN_CP.to[@U64]().stride(next_ck)
         cm_atan_limbs_mul_high(tmp, f, t2_top, n)
         cm_atan_limbs_sub(f, coef, tmp, n)
-        next_ck.store_into(ck)
+        next_ck.poke_into(ck)
         jump term(n, left.sub(1))
 
     // one more limb on top: CP holds it right after the last coefficient used
@@ -889,9 +889,9 @@ routine cm_atan_accurate_series(t: @U64, dn: S64, f: @U64) -> Void
             : grow(n)
 
     block grow(n: USize)
-        top_at: USize = ck.load().add(n)
+        top_at: USize = ck.peek().add(n)
         top: U64 = CM_ATAN_CP.getitem(top_at)
-        f.stride(n).store(top)
+        f.stride(n).poke(top)
         wider: USize = n.add(1)
         last: Bool = wider.eq(6)
         terms: S64 = last
@@ -921,8 +921,8 @@ routine cm_atan_accurate_core(red: CmAtanReduction, f: @U64) -> Void
         kn_val: U128 = red.kn
         kn_lo: S64 = kn_val.to_wrap[S64]()
         kn_hi: S64 = kn_val.shr(64).to_wrap[S64]()
-        kn.stride(0).store(kn_lo.to_wrap[U64]())
-        kn.stride(1).store(kn_hi.to_wrap[U64]())
+        kn.stride(0).poke(kn_lo.to_wrap[U64]())
+        kn.stride(1).poke(kn_hi.to_wrap[U64]())
         // t = r × kn >> 128: the reduced argument to 6 limbs (limbs 2..7 of the product)
         cm_atan_limbs_mul(t, Slice[U64].construct(r, 6), Slice[U64].construct(kn, 2))
         t_top: @U64 = t.offset(16)
@@ -935,8 +935,8 @@ routine cm_atan_accurate_core(red: CmAtanReduction, f: @U64) -> Void
 /// :param dn: The scale exponent (-1 once a table angle has been added).
 /// :returns: The rounded magnitude bits.
 routine cm_atan_round_limbs(f: @U64, dn: S64) -> U128
-    local f5: U64 = f.stride(5).load()
-    local f4: U64 = f.stride(4).load()
+    local f5: U64 = f.stride(5).peek()
+    local f4: U64 = f.stride(4).peek()
     local k: S64 = f5.leading_zeros().to[S64]()
     local v: U128 = cm_atan_join(f5, f4).shl(k.to[U128]())
     local xn: S64 = 0x3FFE.sub(dn).sub(k)

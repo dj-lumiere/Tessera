@@ -1,7 +1,7 @@
 // Tessera doubly-linked list
 //
 // Generic doubly-linked list with O(1) push/pop at both ends.
-// Nodes are heap-allocated via an explicit Allocator.
+// Nodes are heap-allocated via an explicit MemoryManager.
 //
 // Layout:
 //   ListNode[T]    heap node — value, prev, next
@@ -52,17 +52,17 @@ routine LinkedList[T].construct() -> Me
 
 routine LinkedList[T].count(me: @Me) -> S64
     block entry()
-        len: S64 = me.count.load()
+        len: S64 = me.count.peek()
         return(len)
 
 routine LinkedList[T].is_empty(me: @Me) -> Bool
     block entry()
-        len: S64 = me.count.load()
+        len: S64 = me.count.peek()
         empty: Bool = len.eq(0)
         return(empty)
 
 routine LinkedList[T].peek_front(me: @Me) -> Option[T]
-    local head: @ListNode[T] = me.head.load()
+    local head: @ListNode[T] = me.head.peek()
 
     block entry()
         empty: Bool = head.is_null()
@@ -75,12 +75,12 @@ routine LinkedList[T].peek_front(me: @Me) -> Option[T]
         return(none)
 
     block return_val()
-        val: T = head.value.load()
+        val: T = head.value.peek()
         some: Option[T] = .Present(val)
         return(some)
 
 routine LinkedList[T].peek_back(me: @Me) -> Option[T]
-    local tail: @ListNode[T] = me.tail.load()
+    local tail: @ListNode[T] = me.tail.peek()
 
     block entry()
         empty: Bool = tail.is_null()
@@ -93,13 +93,13 @@ routine LinkedList[T].peek_back(me: @Me) -> Option[T]
         return(none)
 
     block return_val()
-        val: T = tail.value.load()
+        val: T = tail.value.peek()
         some: Option[T] = .Present(val)
         return(some)
 
 // ── Insert ────────────────────────────────────────────────────────────────────
 
-routine LinkedList[T].add_first(me: @Me, val: T, alloc: @Allocator) -> Void
+routine LinkedList[T].add_first(me: @Me, val: T, alloc: @MemoryManager) -> Void
     local node: @ListNode[T] = allocate[ListNode[T]](1, alloc)
 
     block entry()
@@ -107,30 +107,30 @@ routine LinkedList[T].add_first(me: @Me, val: T, alloc: @Allocator) -> Void
         branch alloc_failed
             ? crash_allocation()
             : continue
-        node.value.store(val)
-        node.prev.store(null)
-        head: @ListNode[T] = me.head.load()
-        node.next.store(head)
+        node.value.poke(val)
+        node.prev.poke(null)
+        head: @ListNode[T] = me.head.peek()
+        node.next.poke(head)
         was_empty: Bool = head.is_null()
         branch was_empty
             ? set_tail()
             : link_old_head(head)
 
     block set_tail()
-        me.tail.store(node)
+        me.tail.poke(node)
         jump finish()
 
     block link_old_head(head: @ListNode[T])
-        head.prev.store(node)
+        head.prev.poke(node)
         jump finish()
 
     block finish()
-        me.head.store(node)
-        next_count: S64 = me.count.load().add(1)
-        next_count.store_into(me.count)
+        me.head.poke(node)
+        next_count: S64 = me.count.peek().add(1)
+        next_count.poke_into(me.count)
         return()
 
-routine LinkedList[T].add_last(me: @Me, val: T, alloc: @Allocator) -> Void
+routine LinkedList[T].add_last(me: @Me, val: T, alloc: @MemoryManager) -> Void
     local node: @ListNode[T] = allocate[ListNode[T]](1, alloc)
 
     block entry()
@@ -138,33 +138,33 @@ routine LinkedList[T].add_last(me: @Me, val: T, alloc: @Allocator) -> Void
         branch alloc_failed
             ? crash_allocation()
             : continue
-        node.value.store(val)
-        node.next.store(null)
-        tail: @ListNode[T] = me.tail.load()
-        node.prev.store(tail)
+        node.value.poke(val)
+        node.next.poke(null)
+        tail: @ListNode[T] = me.tail.peek()
+        node.prev.poke(tail)
         was_empty: Bool = tail.is_null()
         branch was_empty
             ? set_head()
             : link_old_tail(tail)
 
     block set_head()
-        me.head.store(node)
+        me.head.poke(node)
         jump finish()
 
     block link_old_tail(tail: @ListNode[T])
-        tail.next.store(node)
+        tail.next.poke(node)
         jump finish()
 
     block finish()
-        me.tail.store(node)
-        next_count: S64 = me.count.load().add(1)
-        next_count.store_into(me.count)
+        me.tail.poke(node)
+        next_count: S64 = me.count.peek().add(1)
+        next_count.poke_into(me.count)
         return()
 
 // ── Remove ────────────────────────────────────────────────────────────────────
 
-routine LinkedList[T].remove_first(me: @Me, alloc: @Allocator) -> Option[T]
-    local head: @ListNode[T] = me.head.load()
+routine LinkedList[T].remove_first(me: @Me, alloc: @MemoryManager) -> Option[T]
+    local head: @ListNode[T] = me.head.peek()
 
     block entry()
         empty: Bool = head.is_null()
@@ -177,31 +177,31 @@ routine LinkedList[T].remove_first(me: @Me, alloc: @Allocator) -> Option[T]
         return(none)
 
     block extract()
-        val: T = head.value.load()
-        next: @ListNode[T] = head.next.load()
-        me.head.store(next)
+        val: T = head.value.peek()
+        next: @ListNode[T] = head.next.peek()
+        me.head.poke(next)
         new_empty: Bool = next.is_null()
         branch new_empty
             ? clear_tail(val)
             : unlink_next(next, val)
 
     block clear_tail(val: T)
-        me.tail.store(null)
+        me.tail.poke(null)
         jump unlink(val)
 
     block unlink_next(next: @ListNode[T], val: T)
-        next.prev.store(null)
+        next.prev.poke(null)
         jump unlink(val)
 
     block unlink(val: T)
-        next_count: S64 = me.count.load().sub(1)
-        next_count.store_into(me.count)
+        next_count: S64 = me.count.peek().sub(1)
+        next_count.poke_into(me.count)
         deallocate(head, alloc)
         some: Option[T] = .Present(val)
         return(some)
 
-routine LinkedList[T].remove_last(me: @Me, alloc: @Allocator) -> Option[T]
-    local tail: @ListNode[T] = me.tail.load()
+routine LinkedList[T].remove_last(me: @Me, alloc: @MemoryManager) -> Option[T]
+    local tail: @ListNode[T] = me.tail.peek()
 
     block entry()
         empty: Bool = tail.is_null()
@@ -214,25 +214,25 @@ routine LinkedList[T].remove_last(me: @Me, alloc: @Allocator) -> Option[T]
         return(none)
 
     block extract()
-        val: T = tail.value.load()
-        prev: @ListNode[T] = tail.prev.load()
-        me.tail.store(prev)
+        val: T = tail.value.peek()
+        prev: @ListNode[T] = tail.prev.peek()
+        me.tail.poke(prev)
         new_empty: Bool = prev.is_null()
         branch new_empty
             ? clear_head(val)
             : unlink_prev(prev, val)
 
     block clear_head(val: T)
-        me.head.store(null)
+        me.head.poke(null)
         jump unlink(val)
 
     block unlink_prev(prev: @ListNode[T], val: T)
-        prev.next.store(null)
+        prev.next.poke(null)
         jump unlink(val)
 
     block unlink(val: T)
-        next_count: S64 = me.count.load().sub(1)
-        next_count.store_into(me.count)
+        next_count: S64 = me.count.peek().sub(1)
+        next_count.poke_into(me.count)
         deallocate(tail, alloc)
         some: Option[T] = .Present(val)
         return(some)
@@ -241,13 +241,13 @@ routine LinkedList[T].remove_last(me: @Me, alloc: @Allocator) -> Option[T]
 
 routine LinkedList[T].iter(me: @Me) -> LinkedListIter[T]
     block entry()
-        head: @ListNode[T] = me.head.load()
+        head: @ListNode[T] = me.head.peek()
         iter: LinkedListIter[T] = LinkedListIter[T](current: head)
         return(iter)
 
 /// satisfies Iterator[T, LinkedListIter[T]]
 routine LinkedListIter[T].next(me: @Me) -> Option[T]
-    local cur: @ListNode[T] = me.current.load()
+    local cur: @ListNode[T] = me.current.peek()
 
     block entry()
         done: Bool = cur.is_null()
@@ -260,17 +260,17 @@ routine LinkedListIter[T].next(me: @Me) -> Option[T]
         return(none)
 
     block return_val()
-        val: T = cur.value.load()
-        next: @ListNode[T] = cur.next.load()
-        me.current.store(next)
+        val: T = cur.value.peek()
+        next: @ListNode[T] = cur.next.peek()
+        me.current.poke(next)
         some: Option[T] = .Present(val)
         return(some)
 
 // ── Free ──────────────────────────────────────────────────────────────────────
 
-routine LinkedList[T].destruct(me: @Me, alloc: @Allocator) -> Void
+routine LinkedList[T].destruct(me: @Me, alloc: @MemoryManager) -> Void
     block entry()
-        cur: @ListNode[T] = me.head.load()
+        cur: @ListNode[T] = me.head.peek()
         jump loop(cur)
 
     block loop(cur: @ListNode[T])
@@ -280,14 +280,14 @@ routine LinkedList[T].destruct(me: @Me, alloc: @Allocator) -> Void
             : free_node(cur)
 
     block free_node(cur: @ListNode[T])
-        next: @ListNode[T] = cur.next.load()
+        next: @ListNode[T] = cur.next.peek()
         deallocate(cur, alloc)
         jump loop(next)
 
     block reset()
-        me.head.store(null)
-        me.tail.store(null)
-        me.count.store(0)
+        me.head.poke(null)
+        me.tail.poke(null)
+        me.count.poke(0)
         return()
 
 // ── Demo ──────────────────────────────────────────────────────────────────────
@@ -297,7 +297,7 @@ routine print_list(out: @BufWriter[Out], list: @LinkedList[S64]) -> Void
 
     block entry()
         out.write("list [")
-        iter.store(list.iter())
+        iter.poke(list.iter())
         jump next(true)
 
     block next(first: Bool)
@@ -342,7 +342,7 @@ routine start() -> Void
         fd: @Out = Out.writer()
         claim out: @BufWriter[Out] <- .hollow()
         out.construct(fd)
-        claim alloc: @Allocator <- make_heap_allocator()
+        claim alloc: @MemoryManager <- make_heap_memory()
         claim list: @LinkedList[S64] <- .construct()
 
         print_list(out, list)

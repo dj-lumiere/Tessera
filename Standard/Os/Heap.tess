@@ -1,13 +1,13 @@
 // Tessera stdlib: the heap allocator
 //
-// An Allocator backed by libc malloc / realloc / free. Collections take any
-// Allocator, so this is the hosted default, not a requirement. DEFAULT_HEAP is
+// An MemoryManager backed by libc malloc / realloc / free. Collections take any
+// MemoryManager, so this is the hosted default, not a requirement. DEFAULT_HEAP is
 // one, ready before start runs: the construct overloads without an allocator
-// (Os/Defaults.tess) draw from it, and make_heap_allocator() gives the same
+// (Os/Defaults.tess) draw from it, and make_heap_memory() gives the same
 // allocator. With the heap check on (config.toml's [debug] heap-check, in any
 // build mode) it checks every free and crashes on a block freed twice (the
 // checked heap, below), so its blocks are not malloc's own then.
-// make_c_heap_allocator() is plain malloc / realloc / free in every build: for
+// make_c_heap_memory() is plain malloc / realloc / free in every build: for
 // memory that C code frees or reallocates, or that comes from C's malloc.
 
 module Standard/Os
@@ -18,11 +18,11 @@ import Standard/Alloc
 /// heap's checks when the heap check is on. The collections' and {Slice[T]}'s `construct` without an allocator draw
 /// from it, and it can be passed wherever an `@Allocator` goes. It holds no state, so threads share it.
 #heap_check("off")
-global DEFAULT_HEAP: @Allocator <- (alloc_fn: c_heap_alloc_fn.to[Callable](), realloc_fn: c_heap_realloc_fn.to[Callable](), free_fn: c_heap_free_fn.to[Callable](), state: null)
+global DEFAULT_HEAP: @MemoryManager <- (alloc_fn: c_heap_alloc_fn.to[Callable](), realloc_fn: c_heap_realloc_fn.to[Callable](), free_fn: c_heap_free_fn.to[Callable](), state: null)
 /// The hosted default allocator with the heap check on: malloc, realloc, and free behind the checked heap's checks,
 /// which crash on a block freed twice.
 #heap_check("on")
-global DEFAULT_HEAP: @Allocator <- (alloc_fn: checked_heap_alloc_fn.to[Callable](), realloc_fn: checked_heap_realloc_fn.to[Callable](), free_fn: checked_heap_free_fn.to[Callable](), state: null)
+global DEFAULT_HEAP: @MemoryManager <- (alloc_fn: checked_heap_alloc_fn.to[Callable](), realloc_fn: checked_heap_realloc_fn.to[Callable](), free_fn: checked_heap_free_fn.to[Callable](), state: null)
 
 /// Binds the C `malloc` function, which allocates a block of memory.
 /// :param size: The number of bytes.
@@ -42,20 +42,20 @@ private routine c_realloc(ptr: Addr, size: USize) -> Addr
 #[external("c"), symbol("free")]
 private routine c_free(ptr: Addr) -> Void
 
-/// An {Allocator} that is {DEFAULT_HEAP}: the C library's malloc, realloc, and free, with the checked heap's checks
+/// An {MemoryManager} that is {DEFAULT_HEAP}: the C library's malloc, realloc, and free, with the checked heap's checks
 /// when the heap check is on. Collections take any allocator, so this is the hosted default and not a requirement.
 /// :returns: The allocator, which holds no state and needs nothing to free.
-routine make_heap_allocator() -> Allocator
+routine make_heap_memory() -> MemoryManager
     block entry()
-        alloc: Allocator = DEFAULT_HEAP.load()
+        alloc: MemoryManager = DEFAULT_HEAP.peek()
         return(alloc)
 
-/// An {Allocator} that is the C library's malloc, realloc, and free in every build, with nothing in front of the
+/// An {MemoryManager} that is the C library's malloc, realloc, and free in every build, with nothing in front of the
 /// blocks: for memory that C code frees or reallocates, or that comes from C's malloc and is freed here.
 /// :returns: The allocator, which holds no state and needs nothing to free.
-routine make_c_heap_allocator() -> Allocator
+routine make_c_heap_memory() -> MemoryManager
     block entry()
-        alloc: Allocator = Allocator(alloc_fn: c_heap_alloc_fn.to[Callable](),
+        alloc: MemoryManager = MemoryManager(alloc_fn: c_heap_alloc_fn.to[Callable](),
             realloc_fn: c_heap_realloc_fn.to[Callable](), free_fn: c_heap_free_fn.to[Callable](),
             state: null)
         return(alloc)
@@ -155,8 +155,8 @@ private routine checked_heap_alloc_fn(state: Addr, size: USize) -> Addr
             ? return(null)
             : continue
         header: @BlockHeader = raw.to[@BlockHeader]()
-        header.tag.store(LIVE)
-        header.size.store(size)
+        header.tag.poke(LIVE)
+        header.size.poke(size)
         block_start: Addr = raw.offset(HEADER_FORWARD)
         return(block_start)
 
@@ -175,7 +175,7 @@ private routine checked_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize)
             ? return(checked_heap_alloc_fn(state, size))
             : continue
         header: @BlockHeader = header_of(old_ptr)
-        tag: USize = header.tag.atomic_load()
+        tag: USize = header.tag.peek_atomic()
         when
             tag.eq(LIVE) => resize(header)
             tag.eq(FREED) => heap_crash("InvalidValueError",
@@ -189,7 +189,7 @@ private routine checked_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize)
         branch failed
             ? return(null)
             : continue
-        kept: USize = header.size.load().min(size)
+        kept: USize = header.size.peek().min(size)
         new_ptr.to[@Byte]().copy(old_ptr.to[@Byte](), kept)
         release_block(old_ptr)
         return(new_ptr)
@@ -239,7 +239,7 @@ private routine release_block(block_start: Addr) -> Void
 
     block quarantine()
         turn: USize = QUARANTINE_NEXT.atomic_fetch_add(1)
-        slot: @Addr = QUARANTINE.at(turn.bitand(QUARANTINE_MASK))
+        slot: @Addr = QUARANTINE.getslot(turn.bitand(QUARANTINE_MASK))
         evicted: Addr = slot.atomic_swap(header)
         empty: Bool = evicted.is_null()
         branch empty

@@ -22,7 +22,7 @@ A program's entry point is `routine start() -> Void`, and a nonzero exit status 
 before it returns. A file may start with `module A/B` and `import` lines. Name lookup follows
 modules: a file sees its own module, `Standard/Core` (always imported: the built-in types, `Option`, `Result`,
 `Bytes`), and what it imports, so printing a number needs `import Standard/Format`, a `List` needs
-`import Standard/Collections`, and `make_heap_allocator` / `Out` need `import Standard/Os` (the hosted layer,
+`import Standard/Collections`, and `make_heap_memory` / `Out` need `import Standard/Os` (the hosted layer,
 the only one that calls libc; a target with OS `none` has none of it). A routine declared in its type's module comes with the type; one another module adds
 to it (like `S64.represent_into` from `Standard/Format`) needs that module imported. A qualified path
 (`Standard/Format/write_str`) reaches any public name without an import. Two modules may declare the same name:
@@ -47,7 +47,7 @@ import Standard/Os
 
 routine start() -> Void
     block entry()
-        claim alloc: @Allocator <- make_heap_allocator()
+        claim alloc: @MemoryManager <- make_heap_memory()
         claim list: @List[S64] <- .construct(alloc)
         list.add_last(42)
         first: S64 = list.getitem(0)
@@ -82,23 +82,23 @@ routine start() -> Void
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
   passes where an `Addr` is expected; the other way takes `a.to[@T]()`. `@T` is how the record `Ptr[T]` is
   written (`@@Byte`, `@Array[@S32, 3]`); it keeps its name only where routines are declared on it or called through
-  it (`routine Ptr[T].load`). Attributes start with `#`: `#target(os: "windows")`, `#[external("c"), noreturn]`.
-- `=` only binds. Memory is read and written with methods: `v: S64 = p.load()`, `p.store(v)`,
-  `f: T = p.field.load()`, `p.field.store(v)`, `e: T = p.stride(i).load()`, `p.stride(i).store(v)`. Places
-  (`p.field`, `p.stride(i)`) are addresses. An `Addr` has no `load` or `store`: convert it to say what's there, `a.to[@U32]().load()`. Registers:
+  it (`routine Ptr[T].peek`). Attributes start with `#`: `#target(os: "windows")`, `#[external("c"), noreturn]`.
+- `=` only binds. Memory is read and written with methods: `v: S64 = p.peek()`, `p.poke(v)`,
+  `f: T = p.field.peek()`, `p.field.poke(v)`, `e: T = p.stride(i).peek()`, `p.stride(i).poke(v)`. Places
+  (`p.field`, `p.stride(i)`) are addresses. An `Addr` has no `peek` or `poke`: convert it to say what's there, `a.to[@U32]().peek()`. Registers:
   `volatile_load()` / `volatile_store(...)`. (`:=` and `p = v` are gone and rejected.) From the value's side,
-  `v.store_into(p)` is `p.store(v)`, so a chain can end in memory: `a.add(b).store_into(sum)`. A
-  read-modify-write on one place reads left to right: `me.count.load().add(1).store_into(me.count)`, not
-  `me.count.store(me.count.load().add(1))`. The load needn't come first: `x.sub(p.load()).store_into(p)`
-  (for a commutative op, put the load first: `p.load().add(x).store_into(p)`). A literal receiver takes its type from the pointer
-  (`0.store_into(count)`).
+  `v.poke_into(p)` is `p.poke(v)`, so a chain can end in memory: `a.add(b).poke_into(sum)`. A
+  read-modify-write on one place reads left to right: `me.count.peek().add(1).poke_into(me.count)`, not
+  `me.count.poke(me.count.peek().add(1))`. The load needn't come first: `x.sub(p.peek()).poke_into(p)`
+  (for a commutative op, put the load first: `p.peek().add(x).poke_into(p)`). A literal receiver takes its type from the pointer
+  (`0.poke_into(count)`).
 - Memory is never read implicitly. A place passed as an argument is its address, so `Byte.to[U8](p.stride(i))` is an
-  error: write `Byte.to[U8](p.stride(i).load())`.
+  error: write `Byte.to[U8](p.stride(i).peek())`.
 - `.addr()` gives a `Callable`'s code address as an `Addr`, for C code that takes a function as `void*`:
   `fn.addr()`, or `my_routine.addr()` (typed by the routine's own signature). A `Callable` never widens to `Addr` on
   its own, and an `Addr` is not callable.
 - A `Callable` value is called with `.call(args)`. One stored in a field is loaded first:
-  `free_fn: Callable[…] = alloc.free_fn.load()`, then `free_fn.call(state, raw)`. `alloc.free_fn(...)` is an
+  `free_fn: Callable[…] = alloc.free_fn.peek()`, then `free_fn.call(state, raw)`. `alloc.free_fn(...)` is an
   error.
 - A field of an SSA record value is read with plain `=`: `key: K = pair.key`.
 - `claim p: @T <- v` claims a slot for the routine call (a stack slot in practice) and stores `v` in it where the
@@ -109,9 +109,9 @@ routine start() -> Void
   collection with no memory, a choice's first member), and every `destruct` leaves it alone. A claim without `<-` is
   an error. `<-` fills memory and `=` only binds a name to a value, so `claim p: @T = v` is an
   error too. An array value comes from `[1, 2, x]` or a load (COUNT values at `first: @T` are
-  `first.to[@Array[T, COUNT]]().load()`);
+  `first.to[@Array[T, COUNT]]().peek()`);
   a bare `[1, 2]` isn't a value. Where the type is known from where the value goes (a typed binding, a `preset` or
-  `global`, an argument, an element of an outer literal, the pointer of `store_into`), the type can be left off:
+  `global`, an argument, an element of an outer literal, the pointer of `poke_into`), the type can be left off:
   `preset SORTED: @Array[S64, 3] <- [-8, 0, 7]`, `p: Point = (x: 1, y: 2)`, like `.absent()`. Write the type
   where it isn't on the same line: `sum2([7, 8])` compiles, but prefer `sum2([7, 8])`. A receiver
   gives it no type: `[1, 2].eq(...)` is an error. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
@@ -119,7 +119,7 @@ routine start() -> Void
   the next. A slot that does is local to the routine, declared in its head (below).
 - **Where values are: `@T` and `Slice[T]`.** `@T` is an address (a claim slot, a field, an element, memory from C)
   and frees nothing. `Slice[T]` (Core) is an address, a count, and `alloc`, the allocator the memory came from: `at(i)`
-  is the checked address, and everything through it is `@T`'s own (`load`, `store`, `volatile_load`,
+  is the checked address, and everything through it is `@T`'s own (`peek`, `poke`, `peek_volatile`,
   `atomic_fetch_add`, ...), `getitem(i)` / `setitem(i, v)` the value shortcuts, `getitem_checked(i)` an `Option`,
   `getslice(start, count)` a checked range, `getview()` the whole of it, `to[@T]()` the first address.
   **A null `alloc` means borrowed**, and `destruct()` does nothing: `Slice[T].construct(data, count)`, `getslice`,
@@ -140,10 +140,10 @@ routine start() -> Void
   of a second `destruct()` of the same block (a quarantine of the last 256 freed blocks keeps that sure); with it off
   it is plain malloc / free, and so is a single-file build without a manifest. Debug and release behave the same.
   Double frees are the heap check's job: the builder makes no build-time check for them.
-- **The default heap comes with `Standard/Os`**, like `Out`: there `DEFAULT_HEAP` is an `@Allocator` ready before
-  `start` (`make_heap_allocator()` gives the same one), and every collection and `Slice` gets a `construct` without
+- **The default heap comes with `Standard/Os`**, like `Out`: there `DEFAULT_HEAP` is an `@MemoryManager` ready before
+  `start` (`make_heap_memory()` gives the same one), and every collection and `Slice` gets a `construct` without
   the allocator (`List[S64].construct()`, `Slice[U8].construct(n)`). Memory C frees or reallocates, or memory from C's
-  malloc, goes through `make_c_heap_allocator()` (plain malloc in every build). A file that doesn't import
+  malloc, goes through `make_c_heap_memory()` (plain malloc in every build). A file that doesn't import
   `Standard/Os`, and every program for a target without an OS, passes an allocator.
 - **Memory is declared `@T`, and its contents go in with `<-`.** A name that is an address is written with its
   pointer type, and the declared type is the name's type everywhere:
@@ -152,8 +152,8 @@ routine start() -> Void
   no address. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
   before it to compute one, on any target), so its contents are known at build time: literals, presets, `null`, `[...]` (an array), `T(field: value)` (a record field by field), a routine for
   a `Callable` (`f.to[Callable]()`), or the name of another global or preset in memory (its
-  address; a global holding a pointer is `@@T`: `global HEAD: @@Node <- null`). Use them as `TICKS.load()`,
-  `STATS.calls.store(n)`, `K.getitem(i)`; writing a preset's memory is a build error. Neither kind is a buildtime
+  address; a global holding a pointer is `@@T`: `global HEAD: @@Node <- null`). Use them as `TICKS.peek()`,
+  `STATS.calls.poke(n)`, `K.getitem(i)`; writing a preset's memory is a build error. Neither kind is a buildtime
   constant: a preset value is (`Array[S64, N]` with `preset N: USize = 4`). An array preset is always in memory.
 - `#[external("c"), symbol("environ")] global ENVIRON: @@@Byte` declares a C variable (C's `extern`): no `<-`, read and
   written like any global; dllimport on Windows.
@@ -188,7 +188,7 @@ routine start() -> Void
   passes, or keep it when each pass needs its own: there is no way to mark a call as meant yet
   (Roadmap open question #66), so `lint` prints these and counts them apart without failing. Don't mark what costs
   only on some targets (64-bit division on 32-bit, 128-bit division, `popcount`) or only now and then (`List.push`),
-  nor blocking waits (`Condition.wait`, `wait_on`, `Thread.join`), which belong in loops.
+  nor blocking waits (`SignalCaster.wait`, `wait_on`, `Thread.join`), which belong in loops.
 - A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
   conversions (`add`, `shl`, `bitor`, `to[U128]()`, `to_wrap[U8]()`, …), B32/B64 `add`/`sub`/`mul`/`div`/`neg`,
   `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and B128. A routine call is an error; nothing
@@ -225,8 +225,8 @@ routine start() -> Void
   routine List[T].destruct_all(me: @Me) -> Void
   require T: typename, Destructible[T]
       block entry()
-          first: @T = me.storage.data.load()
-          count: USize = me.count.load()
+          first: @T = me.storage.data.peek()
+          count: USize = me.count.peek()
           jump each(first, count, 0)
 
       block each(first: @T, count: USize, i: USize)
@@ -240,8 +240,8 @@ routine start() -> Void
   ```tessera
   routine List[T].destruct_all(me: @Me) -> Void
   require T: typename, Destructible[T]
-      local first: @T = me.storage.data.load()
-      local count: USize = me.count.load()
+      local first: @T = me.storage.data.peek()
+      local count: USize = me.count.peek()
 
       block entry()
           jump each(0)
@@ -253,10 +253,10 @@ routine start() -> Void
   ```
 
 - **Accumulating state may live in a local slot (recommended).** A sum, a count, or a position being advanced can be
-  a head slot updated with `load` / `store_into` instead of a block parameter threaded through every jump. The value
+  a head slot updated with `peek` / `poke_into` instead of a block parameter threaded through every jump. The value
   that decides where the loop goes next (the `i` of `jump add(i.add(1))`) stays a block parameter, so the jump line
   shows how the loop advances. The optimizer keeps the slot in a register as long as it is only loaded and stored
-  (`load`, `store`, `store_into`) or passed to routines that get inlined. Passing it to a routine that isn't inlined
+  (`peek`, `poke`, `poke_into`) or passed to routines that get inlined. Passing it to a routine that isn't inlined
   (`#noinline`, recursion, a C external, a routine too big to inline) keeps it in memory, measured about 4 times
   slower in a hot loop. At -O0 it costs nothing extra: a block parameter gets a debug slot of its own anyway.
 
@@ -271,11 +271,11 @@ routine start() -> Void
       block add(i: USize)
           done: Bool = i.ge(n)
           branch done
-              ? return(sum.load())
+              ? return(sum.peek())
               : continue
           value: U32 = values.getitem(i)
-          total: U64 = sum.load()
-          total.add(value.to[U64]()).store_into(sum)
+          total: U64 = sum.peek()
+          total.add(value.to[U64]()).poke_into(sum)
           jump add(i.add(1))
   ```
 
@@ -291,7 +291,7 @@ routine start() -> Void
   holds, store the empty value back before the jump. Before, each exit releases what it has:
 
   ```tessera
-  routine home_path(drive: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
+  routine home_path(drive: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
       block entry()
           p: Option[Bytes] = env_dir("HOMEPATH", alloc)
           when p
@@ -315,7 +315,7 @@ routine start() -> Void
   After, the owners start empty in the head and every exit goes through `finish`:
 
   ```tessera
-  routine home_path(drive_text: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
+  routine home_path(drive_text: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
       local drive: @Bytes <- drive_text
       local path: @Bytes <- .empty()
 
@@ -326,8 +326,8 @@ routine start() -> Void
               .Absent => finish(.Failure(FsError.NOT_FOUND))
 
       block join(path_text: Bytes)
-          path_text.store_into(path)
-          both: Bytes = Bytes.concat(drive.load(), path.load(), alloc)
+          path_text.poke_into(path)
+          both: Bytes = Bytes.concat(drive.peek(), path.peek(), alloc)
           jump finish(.Success(both))
 
       block finish(result: Result[Bytes, FsError])
@@ -362,7 +362,7 @@ routine start() -> Void
   when item
       .Present(value) => continue
       .Absent => finish()
-  total.load().add(value).store_into(total)  // value is bound here
+  total.peek().add(value).poke_into(total)  // value is bound here
   ```
 
   Same rules as any block binding (not a routine parameter's, a local value's, or an earlier binding's name, and not
@@ -377,9 +377,9 @@ routine start() -> Void
 **Operations**
 
 - There are no operators. Everything is a method, and pure calls chain: `i.add(1).bitand(mask)`.
-- A chain holds at most three calls (`sum.load().add(x).store_into(sum)` is fine). Everything call-shaped counts
+- A chain holds at most three calls (`sum.peek().add(x).poke_into(sum)` is fine). Everything call-shaped counts
   (`x.f()`, `T.f()`, `f()`, `.stride(i)`, `.to[T]()`), a field doesn't, and each argument and each `{...}`
-  write-template hole is its own chain. A fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`x.load().add(y).store_into(x)`): the basic
+  write-template hole is its own chain. A fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`x.peek().add(y).poke_into(x)`): the basic
   shape of an update, too common to warn about. The lint is there to stop a line from piling up conversions, not to
   split ordinary updates. `check`/`build`/`run` warn (not an error) for the program's own files, and
   `tessera lint <files-or-dirs>` checks any file (this lint, the `finish` lint above, the record-parameter lint, the doc-comment lint, and the expensive-call lint); CI holds `stdlib`, `tests`, and
@@ -436,19 +436,19 @@ routine start() -> Void
 - **`@T` or `T`** (for `me` and any parameter): take `@T` when the routine changes the value in place, or
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound-assignment methods (`add_assign` and the like): change a value in memory by load, act, store —
-  `p.load().add(1).store_into(p)`.
+  `p.peek().add(1).poke_into(p)`.
 - **Methods through a pointer.** `p.m()` finds `T.m(me: @Me)` first, then `Ptr`'s own methods (`is_null`,
   `offset`, `to[@U]`, ...). Value methods (`me: Me`, such as every collection's `eq`) aren't reachable through a
-  pointer, because that would hide a load: load first (`a.load().eq(b.load())`). Don't name your own pointer methods after `Ptr`'s.
+  pointer, because that would hide a load: load first (`a.peek().eq(b.peek())`). Don't name your own pointer methods after `Ptr`'s.
 - **Collection methods that change the collection take `me: @Me`**, so it must live in memory (`claim` a
   slot) before you call them. **Read-only ones come in both receiver forms**: next to the `me: Me` routine, a
-  `me: @Me` one that forwards to it (`return(me.load().m(...))`, or reads the fields), so a slot or a field
+  `me: @Me` one that forwards to it (`return(me.peek().m(...))`, or reads the fields), so a slot or a field
   reads directly (`list.count()`, `primes.to[Slice[U32]]()`, `line.find("=")` on a claimed `Bytes`, `w.to[Bytes]()`
   on a `SliceWriter`) and a value too. This holds for the collections, `Slice`, and `Bytes`, and a type of your own
   that people keep in slots does the same for the reads they call there. It's never automatic, and three kinds stay
   value-only because on a pointer they'd be about the pointer: `eq` / `compare` / `hash` (a pointer compares only
-  through `ptr_eq`, so `a.load().eq(b.load())`), `represent_into` / `diagnose_into` (a pointer isn't
-  Representable, so `{list}` on a slot is a build error that asks for `{list.load()}`), and a generic `to[T]` (it
+  through `ptr_eq`, so `a.peek().eq(b.peek())`), `represent_into` / `diagnose_into` (a pointer isn't
+  Representable, so `{list}` on a slot is a build error that asks for `{list.peek()}`), and a generic `to[T]` (it
   would hide `Ptr`'s `to<@U>`). You can't call a pointer method on a temporary:
   `DictIter[TKey, TValue].construct(m).next()` fails with "has no method 'next'"; claim a slot for
   the iterator first.
@@ -504,7 +504,7 @@ routine start() -> Void
   (it holds its UTF-8 in the program image), `Bytes.from_ptr`, and every text made from other text (`slice`,
   `getview()`, the iterators, `buf.to[Bytes]()` of a `List[Byte]`). Text a routine allocates (`Bytes.concat`,
   `In.read_line`, `File.read_all_result`, `join_path`, ...) carries its allocator: release it with `destruct()` on a
-  claimed slot (`claim line: @Bytes <- In.read_line()`, read it with `line.getview()` or `line.load()`).
+  claimed slot (`claim line: @Bytes <- In.read_line()`, read it with `line.getview()` or `line.peek()`).
   `eq` / `compare` / `hash` ignore `alloc`. `Slice[Byte]` has the same layout and is plain bytes:
   `text.to[Slice[Byte]]()` and `bytes.to[Bytes]()` convert between them as borrowed views. Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
@@ -648,7 +648,7 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   (`Failure(Empty)` at the end).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
   `Bytes`. A pointer is neither Representable nor Diagnosable, so `{sum}` on a `local sum: @S64` slot is a build
-  error, not its address: write the value with `{sum.load()}`, or the address with `{sum.to[Addr]()}`
+  error, not its address: write the value with `{sum.peek()}`, or the address with `{sum.to[Addr]()}`
   (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
   min_digits)` (`U64`) zero-pad; `represent_fixed_into(out, digits)`; `represent_with_into(out, v, spec)` with a `FormatSpec`.
@@ -682,7 +682,7 @@ always `Result`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array[T, COUNT]` | `[a, b]` literal, `at`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `getslice`, `to[Slice[T]]`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
+| `Array[T, COUNT]` | `[a, b]` literal, `getslot`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `getslice`, `to[Slice[T]]`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
 | `List[T]` | `add_last`, `remove_last`, `getitem`, `setitem`, `getslice`, `to[Slice[T]]`, `clear`, `reserve` | index |
 | `CircularList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem` | front to back |
 | `Dict[TKey, TValue]` | `setitem`, `getitem`, `contains`, `remove` | **insertion order (guaranteed)** |
@@ -720,15 +720,15 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 **Threads and fibers.** `Standard/Os` has `Thread.spawn(routine, state, alloc)` (or without `alloc`, on
 `DEFAULT_HEAP`) / `join()` / `detach()`, generic over the state: the routine takes an `@S` and `state` is one
 (`routine work(job: @Job) -> Void`, then `Thread.spawn(work.to[Callable](), job)`), so nothing converts through
-`Addr`; a thread with no state of its own is handed the global it works on. `Mutex`
-(`lock` / `unlock` / `try_lock`), `Condition` (a condition variable for a Mutex: `wait(mutex)`,
+`Addr`; a thread with no state of its own is handed the global it works on. `ExclusiveLock`
+(`lock` / `unlock` / `try_lock`), `SignalCaster` (a condition variable for an ExclusiveLock: `wait(mutex)`,
 `wait_for(mutex, timeout_ns)` / `wait_until(mutex, deadline_ns)` returning whether it returned in time,
 `wake_one()` / `wake_all()`; a wait may return without a wake, so the waiter checks its condition again in a loop),
-`wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32`, and `monotonic_ns()`. `Standard/Fiber`'s `Scheduler`
+`wait_on` / `wait_on_for` / `cast_one` / `cast_all` on a `@U32`, and `monotonic_ns()`. `Standard/Fiber`'s `FiberManager`
 runs fibers over worker threads: `.construct(workers, stacks, alloc)` (0 = one per processor), then
 `spawn(routine, state, stack_size)` (generic over the state like `Thread.spawn`: the routine takes an `@S` and
 `state` is one, and so for `spawn_joinable` and `run_blocking`), `yield()` inside a fiber, `run()`
-until all return, `destruct()`. Pass `make_stack_allocator()` as `stacks` for guard pages. A fiber may move to
+until all return, `destruct()`. Pass `make_stack_memory()` as `stacks` for guard pages. A fiber may move to
 another thread at a yield. A call that may block goes through `sched.run_blocking(routine, state)`, or
 `sched.read` / `sched.write`, so the worker runs other fibers meanwhile. A fiber waits without holding its worker
 with `park()` (until `wake(handle)`, the handle from `current()`; it may return early, so loop on the condition),
@@ -764,10 +764,10 @@ gives it back (and does nothing for a literal path).
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
 `x86_64-none-elf`) gets everything but `Standard/Os`: Core, Format (into a `SliceWriter` or `List[Byte]`), Alloc, and
 Collections all check there. `Standard/Os` drops out of the build, so importing it or naming anything in it is one
-build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, fiber `Scheduler` (`Standard/Fiber`'s
+build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, fiber `FiberManager` (`Standard/Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
-`make_heap_allocator`, `DEFAULT_HEAP`, or `construct()` without an allocator. The program exports its own crash handler (`#[export("tessera_crash_handler"), noreturn]`, which
-may loop forever), passes its own `Allocator` if it allocates, and brings its link script. A program that defines `start` gets its
+`make_heap_memory`, `DEFAULT_HEAP`, or `construct()` without an allocator. The program exports its own crash handler (`#[export("tessera_crash_handler"), noreturn]`, which
+may loop forever), passes its own `MemoryManager` if it allocates, and brings its link script. A program that defines `start` gets its
 entry from the builder: `_start` (on Cortex-M also a vector table in section `.isr_vector`, its first word
 `__stack_top` and its second `_start`, the system exceptions halting) runs, in order, the stack pointer from
 `__stack_top`, .bss zeroed (`__bss_start` to `__bss_end`), .data copied from flash (`__data_load` to `__data_start` ..
@@ -835,12 +835,12 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
 
 - `to[T]()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to[CStr]()`, not
   `CStr.from_ptr(p)`). A conversion that can fail is `to_result[T]()`.
-- `_into` is the argument-swapped form of a routine that acts on a place: `p.store(v)` is `v.store_into(p)`. The
+- `_into` is the argument-swapped form of a routine that acts on a place: `p.poke(v)` is `v.poke_into(p)`. The
   plain form's receiver is the place acted on, and the `_into` form's receiver is the thing being put there, with the
-  place as the argument. So a chain reads left to right and ends at the place: `x.load().add(1).store_into(x)`,
+  place as the argument. So a chain reads left to right and ends at the place: `x.peek().add(1).poke_into(x)`,
   `value.represent_into(out)`, `src.copy_into(dst, count)` next to `dst.copy(src, count)`. The Writer's `write_*`
   routines (`write_str(out, text)`, `write_bytes`, `write_line`) keep their names: the verb already says where the
-  bytes go. Memory at a given address is `_at`: `Vector[T, LANES].load_at(first)`, `v.store_at(first)`.
+  bytes go. Memory at a given address is `_at`: `Vector[T, LANES].load_at(first)`, `v.poke_at(first)`.
 - `from_XXX` is rare: it's for building a value where `construct` alone would be ambiguous, several ways to make the
   same type from similar inputs (`Bytes.from_ptr(data, count)`, `B64.from_bits(u)`). A `from_XXX` that is really a
   one-value conversion is `to[T]` on the source type, and one that could be a `construct` overload without ambiguity
@@ -857,10 +857,10 @@ numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Option[T]` keeps its case `.
 literal `null` (tested with `is_null()`), so there is no `none()`, `null()`, or `nothing()` routine. A default that
 isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
 
-**The allocator comes last.** A routine that takes an `@Allocator` takes it as its last parameter:
+**The allocator comes last.** A routine that takes an `@MemoryManager` takes it as its last parameter:
 `List[T].construct(alloc)`, `Slice[T].construct(count, alloc)`, `allocate[T](count, alloc)`,
 `deallocate(p, alloc)`, `In.read_line(alloc)`, `Thread.spawn(routine, state, alloc)`. A second allocator for another
-job goes just before it (`Scheduler.construct(workers, stacks, alloc)`). So the form without the allocator
+job goes just before it (`FiberManager.construct(workers, stacks, alloc)`). So the form without the allocator
 (`construct()` with `Standard/Os`) is the same call with the last argument left off.
 
 **Five or more parameters take a record.** Arguments are positional (there are no named arguments), so a call reads
@@ -909,8 +909,8 @@ the type's own).
 
 **Arrays and `stride`.** `p.stride(i)` is the address of the i-th `T` of a `@T` (a
 `USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
-`@Array[T, COUNT]` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(i, v)` / `arr.at(i)`
-(bounds checked), or `arr.to[@T]().stride(i).load()` unchecked. Literals name their type: `[1, 2, 3]`,
+`@Array[T, COUNT]` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(i, v)` / `arr.getslot(i)`
+(bounds checked), or `arr.to[@T]().stride(i).peek()` unchecked. Literals name their type: `[1, 2, 3]`,
 `[...]`. The same holds for array fields (`node.keys.getitem(i)`) and
 array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`).
 

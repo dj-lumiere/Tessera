@@ -581,7 +581,7 @@ routine cm_trig_sincos384(j: USize, w: USize) -> CmTrigU384
 routine cm_trig_coef(coef: @U128, k: USize, limb: USize) -> U128
     block entry()
         index: USize = k.mul(3).add(limb)
-        r: U128 = coef.stride(index).load()
+        r: U128 = coef.stride(index).peek()
         return(r)
 
 // -- argument reduction --------------------------------------------------------
@@ -647,13 +647,13 @@ routine cm_trig_product(m: U128, first: S64, count: USize, p: @U64) -> Void
         cur: U128 = cm_trig_window_limb(first, count.to[S64](), last_column.sub(c.to[S64]()))
         prev: U128 = cm_trig_window_limb(first, count.to[S64](), count.to[S64]().sub(c.to[S64]()))
         // high < 2^49 keeps the first sum under 2^114, only the second can spill
-        acc: U128 = high.mul_wrap(prev).add_wrap(carry.load())
+        acc: U128 = high.mul_wrap(prev).add_wrap(carry.peek())
         t: U128 = acc.add_wrap(low.mul_wrap(cur))
         wrapped: Bool = t.lt(acc)
         spill: U128 = wrapped.to[U128]().shl(64)
-        p.stride(c).store(t.to_wrap[U64]())
+        p.stride(c).poke(t.to_wrap[U64]())
         next_carry: U128 = t.shr(64).bitor(spill)
-        next_carry.store_into(carry)
+        next_carry.poke_into(carry)
         jump column(c.add(1))
 
 /// n = round(256*x/pi) mod 512 from the two quadrant bits and the top 64 bits of the fraction.
@@ -685,11 +685,11 @@ routine cm_trig_reduce(m: U128, e: S64) -> CmTrigReduced
         word_index: S64 = base.shr(6).bitand(7)
         i: USize = word_index.to[USize]()
         bits: S64 = base.bitand(63)
-        a0: U64 = p.stride(i).load()
-        a1: U64 = p.stride(i.add(1)).load()
-        a2: U64 = p.stride(i.add(2)).load()
-        a3: U64 = p.stride(i.add(3)).load()
-        a4: U64 = p.stride(i.add(4)).load()
+        a0: U64 = p.stride(i).peek()
+        a1: U64 = p.stride(i.add(1)).peek()
+        a2: U64 = p.stride(i.add(2)).peek()
+        a3: U64 = p.stride(i.add(3)).peek()
+        a4: U64 = p.stride(i.add(4)).peek()
         f0: U64 = cm_trig_funnel(a0, a1, bits)
         f1: U64 = cm_trig_funnel(a1, a2, bits)
         f2: U64 = cm_trig_funnel(a2, a3, bits)
@@ -755,13 +755,13 @@ routine cm_trig_reduce_wide(m: U128, e: S64) -> CmTrigWideReduced
         cm_trig_cut(p, i, bits, f)
         i7: USize = i.add(7)
         i8: USize = i.add(8)
-        a7: U64 = p.stride(i7).load()
-        a8: U64 = p.stride(i8).load()
+        a7: U64 = p.stride(i7).peek()
+        a8: U64 = p.stride(i8).peek()
         quadrant: U64 = cm_trig_funnel(a7, a8, bits).bitand(3)
-        f6: U64 = f.stride(6).load()
+        f6: U64 = f.stride(6).peek()
         n: U64 = cm_trig_nearest(quadrant, f6)
         g_top: S64 = f6.sub_wrap(n.bitand(127).shl(57)).to_wrap[S64]()
-        f.stride(6).store(g_top.to_wrap[U64]())
+        f.stride(6).poke(g_top.to_wrap[U64]())
         negative: Bool = g_top.lt(0)
         cm_trig_magnitude448(f, negative)
         // no binary128 comes within 2^-124 of a multiple of pi/2, so the residual keeps over 300 of its bits
@@ -794,9 +794,9 @@ routine cm_trig_cut(p: @U64, i: USize, bits: S64, f: @U64) -> Void
     block cut_one(k: USize)
         at: USize = i.add(k)
         above: USize = at.add(1)
-        low: U64 = p.stride(at).load()
-        high: U64 = p.stride(above).load()
-        f.stride(k).store(cm_trig_funnel(low, high, bits))
+        low: U64 = p.stride(at).peek()
+        high: U64 = p.stride(above).peek()
+        f.stride(k).poke(cm_trig_funnel(low, high, bits))
         jump cut(k.add(1))
 
 /// Replaces the seven-limb two's-complement fraction at f by its magnitude when it is negative.
@@ -811,7 +811,7 @@ routine cm_trig_magnitude448(f: @U64, negative: Bool) -> Void
     local carry: @U64 <- .hollow()
 
     block entry()
-        negative.to[U64]().store_into(carry)
+        negative.to[U64]().poke_into(carry)
         jump flip(0)
 
     block flip(k: USize)
@@ -819,11 +819,11 @@ routine cm_trig_magnitude448(f: @U64, negative: Bool) -> Void
         branch done
             ? return()
             : continue
-        limb: U64 = f.stride(k).load()
-        flipped: U64 = limb.bitxor(mask).add_wrap(carry.load())
-        f.stride(k).store(flipped)
-        next_carry: U64 = flipped.lt(carry.load()).to[U64]()
-        next_carry.store_into(carry)
+        limb: U64 = f.stride(k).peek()
+        flipped: U64 = limb.bitxor(mask).add_wrap(carry.peek())
+        f.stride(k).poke(flipped)
+        next_carry: U64 = flipped.lt(carry.peek()).to[U64]()
+        next_carry.poke_into(carry)
         jump flip(k.add(1))
 
 /// Leading zeros of the 448-bit fraction at f (seven limbs, least significant first), 448 when it is zero.
@@ -841,7 +841,7 @@ routine cm_trig_lz448(f: @U64) -> S64
             : scan_one(k.to[USize]())
 
     block scan_one(k: USize)
-        limb: U64 = f.stride(k).load()
+        limb: U64 = f.stride(k).peek()
         empty: Bool = limb.eq(0)
         above_bits: USize = 6.sub(k).mul(64)
         above: U64 = above_bits.to[U64]()
@@ -874,19 +874,19 @@ routine cm_trig_top448(f: @U64, lz: S64) -> CmTrigU384
 
     block shift_one(q: USize, word: USize)
         from: USize = q.sub(word)
-        limb: U64 = f.stride(from).load()
-        carried: U64 = below.load().shr(1).shr(63.sub(wbits).to[U64]())
-        s.stride(q).store(limb.shl(wbits.to[U64]()).bitor(carried))
-        limb.store_into(below)
+        limb: U64 = f.stride(from).peek()
+        carried: U64 = below.peek().shr(1).shr(63.sub(wbits).to[U64]())
+        s.stride(q).poke(limb.shl(wbits.to[U64]()).bitor(carried))
+        limb.poke_into(below)
         jump shift(q.add(1), word)
 
     block assemble()
-        s1: U64 = s.stride(1).load()
-        s2: U64 = s.stride(2).load()
-        s3: U64 = s.stride(3).load()
-        s4: U64 = s.stride(4).load()
-        s5: U64 = s.stride(5).load()
-        s6: U64 = s.stride(6).load()
+        s1: U64 = s.stride(1).peek()
+        s2: U64 = s.stride(2).peek()
+        s3: U64 = s.stride(3).peek()
+        s4: U64 = s.stride(4).peek()
+        s5: U64 = s.stride(5).peek()
+        s6: U64 = s.stride(6).peek()
         s2_high: U128 = s2.to[U128]().shl(64)
         l0: U128 = s2_high.bitor(s1.to[U128]())
         s4_high: U128 = s4.to[U128]().shl(64)

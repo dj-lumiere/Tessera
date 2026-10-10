@@ -54,10 +54,10 @@ public class RecordParamLintTests
     }
 
     [Fact]
-    public void TheAllocatorCounts()
+    public void TheMemoryManagerCounts()
     {
         string warning = Assert.Single(Lint("""
-            routine make(a: S64, b: S64, c: S64, d: S64, alloc: @Allocator) -> S64
+            routine make(a: S64, b: S64, c: S64, d: S64, alloc: @MemoryManager) -> S64
                 block entry()
                     return(a)
             """));

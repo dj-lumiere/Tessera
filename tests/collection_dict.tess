@@ -38,9 +38,9 @@ record Checkpoint
 
 routine Rng.below(me: @Me, bound: USize) -> USize
     block entry()
-        state: U64 = me.state.load()
+        state: U64 = me.state.peek()
         next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
-        me.state.store(next)
+        me.state.poke(next)
         bucket: U64 = next.shr(33).mod(bound.to[U64]())
         value: USize = bucket.to[USize]()
         return(value)
@@ -69,10 +69,10 @@ routine iteration_hash(map: @Dict[S64, S64]) -> S64
         item: Option[KVPair[S64, S64]] = iter.next()
         when item
             .Present(pair) => continue
-            .Absent => return(hash.load())
+            .Absent => return(hash.peek())
         key: S64 = pair.key
         value: S64 = pair.value
-        mix(mix(hash.load(), key), value).store_into(hash)
+        mix(mix(hash.peek(), key), value).poke_into(hash)
         jump next()
 
 routine checkpoint(out: @BufWriter[Out], map: @Dict[S64, S64], at: Checkpoint) -> Void
@@ -155,7 +155,7 @@ routine copy_rotated(from: @Dict[S64, S64], to: @Dict[S64, S64]) -> Void
     block pass(pass: USize, second: Bool)
         done: Bool = pass.eq(2)
         iter_val: DictIter[S64, S64] = .construct(from)
-        iter.store(iter_val)
+        iter.poke(iter_val)
         branch done
             ? return()
             : next(pass, second, 0)
@@ -183,7 +183,7 @@ routine start() -> Void
         fd: @Out = Out.writer()
         claim out: @BufWriter[Out] <- .hollow()
         out.construct(fd)
-        claim alloc: @Allocator <- make_heap_allocator()
+        claim alloc: @MemoryManager <- make_heap_memory()
         claim rng: @Rng <- Rng(state: 1)
         claim map: @Dict[S64, S64] <- .construct(alloc)
 
@@ -193,19 +193,19 @@ routine start() -> Void
         r3: S64 = run_phase(harness, map, Phase(number: 3, ops: 4000, keys: 300), r2)
 
         claim copied: @Dict[S64, S64] <- .construct(alloc)
-        report_eq(out, "empty copy equal", map.load().eq(copied.load()))
+        report_eq(out, "empty copy equal", map.peek().eq(copied.peek()))
         copy_rotated(map, copied)
-        report_eq(out, "rotated copy equal", map.load().eq(copied.load()))
+        report_eq(out, "rotated copy equal", map.peek().eq(copied.peek()))
         report_eq(out, "rotated copy same order", iteration_hash(map).eq(iteration_hash(copied)))
         copied.setitem(-1, 0)
-        report_eq(out, "extra key equal", map.load().eq(copied.load()))
+        report_eq(out, "extra key equal", map.peek().eq(copied.peek()))
         copied.remove(-1)
-        report_eq(out, "extra key removed equal", map.load().eq(copied.load()))
+        report_eq(out, "extra key removed equal", map.peek().eq(copied.peek()))
         iter_val: DictIter[S64, S64] = .construct(map)
         claim iter: @DictIter[S64, S64] <- iter_val
         first: KVPair[S64, S64] = iter.next().unwrap()
         copied.setitem(first.key, first.value.add(1))
-        report_eq(out, "changed value equal", map.load().eq(copied.load()))
+        report_eq(out, "changed value equal", map.peek().eq(copied.peek()))
         copied.destruct()
         map.destruct()
         report_eq(out, "freed is empty", map.is_empty())

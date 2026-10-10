@@ -75,7 +75,7 @@ routine soft_b32_add(a: U32, b: U32) -> U32
         sign: U32 = x.bitand(SIGN)
         same: Bool = x.bitxor(y).lt(SIGN)
         branch same
-            ? return(soft_round_pack(sign, x_parts.exponent, x_sig.add(aligned), B32.FORMAT.load()))
+            ? return(soft_round_pack(sign, x_parts.exponent, x_sig.add(aligned), B32.FORMAT.peek()))
             : difference(sign, x_sig.sub(aligned), x_parts.exponent)
 
     // the larger magnitude came first, so the difference isn't negative. An exact zero is +0
@@ -83,7 +83,7 @@ routine soft_b32_add(a: U32, b: U32) -> U32
         cancelled: Bool = sig.eq(0)
         branch cancelled
             ? return(0)
-            : return(soft_round_pack(sign, exponent, sig, B32.FORMAT.load()))
+            : return(soft_round_pack(sign, exponent, sig, B32.FORMAT.peek()))
 
 /// B32 subtraction on the bits: `a + (-b)`, as compiler-rt's `__subsf3` computes it (so a NaN `b` comes back with its
 /// sign flipped).
@@ -134,7 +134,7 @@ routine soft_b32_mul(a: U32, b: U32) -> U32
         product: U64 = x.sig.to[U64]().mul_wrap(y.sig.to[U64]())
         sig: U64 = soft_shr_sticky(product, 21)
         sum: S32 = x.exponent.add(y.exponent)
-        r: U32 = soft_round_pack(sign, sum.sub(126), sig.to_wrap[U32](), B32.FORMAT.load())
+        r: U32 = soft_round_pack(sign, sum.sub(126), sig.to_wrap[U32](), B32.FORMAT.peek())
         return(r)
 
 // -- division ------------------------------------------------------------------
@@ -186,8 +186,8 @@ routine soft_b32_div(a: U32, b: U32) -> U32
         exponent: S32 = below
             ? apart.add(126)
             : apart.add(127)
-        num.store_into(rem)
-        0.store_into(quotient)
+        num.poke_into(rem)
+        0.poke_into(quotient)
         jump divide(exponent, y.sig, 0)
 
     // 26 quotient bits, one a step: the 24 the result keeps and two below them, then the remainder's sticky bit
@@ -196,22 +196,22 @@ routine soft_b32_div(a: U32, b: U32) -> U32
         branch done
             ? round(exponent)
             : continue
-        fits: Bool = rem.load().ge(den)
+        fits: Bool = rem.peek().ge(den)
         left: U32 = fits
-            ? rem.load().sub_wrap(den)
-            : rem.load()
+            ? rem.peek().sub_wrap(den)
+            : rem.peek()
         q_bit: U32 = fits.to[U32]()
-        next: U32 = quotient.load().shl(1).bitor(q_bit)
+        next: U32 = quotient.peek().shl(1).bitor(q_bit)
         next_quotient: U32 = next
         next_rem: U32 = left.shl(1)
-        next_rem.store_into(rem)
-        next_quotient.store_into(quotient)
+        next_rem.poke_into(rem)
+        next_quotient.poke_into(quotient)
         jump divide(exponent, den, step.add(1))
 
     block round(exponent: S32)
-        sticky: U32 = rem.load().ne(0).to[U32]()
-        sig: U32 = quotient.load().shl(1).bitor(sticky)
-        r: U32 = soft_round_pack(sign, exponent, sig, B32.FORMAT.load())
+        sticky: U32 = rem.peek().ne(0).to[U32]()
+        sig: U32 = quotient.peek().shl(1).bitor(sticky)
+        r: U32 = soft_round_pack(sign, exponent, sig, B32.FORMAT.peek())
         return(r)
 
 // -- square root and remainder ---------------------------------------------------
@@ -246,8 +246,8 @@ routine soft_b32_sqrt(a: U32) -> U32
             : parts.sig
         even: S32 = unbiased.sub(odd.to[S32]())
         radicand: U64 = sig.to[U64]().shl(27)
-        radicand.store_into(rem)
-        0.store_into(res)
+        radicand.poke_into(rem)
+        0.poke_into(res)
         jump root(even.shr(1), 0x4000000000000)
 
     block root(half: S32, bit: U64)
@@ -255,25 +255,25 @@ routine soft_b32_sqrt(a: U32) -> U32
         branch done
             ? round(half)
             : continue
-        trial: U64 = res.load().add(bit)
-        fits: Bool = rem.load().ge(trial)
+        trial: U64 = res.peek().add(bit)
+        fits: Bool = rem.peek().ge(trial)
         left: U64 = fits
-            ? rem.load().sub_wrap(trial)
-            : rem.load()
-        shifted: U64 = res.load().shr(1)
+            ? rem.peek().sub_wrap(trial)
+            : rem.peek()
+        shifted: U64 = res.peek().shr(1)
         next: U64 = fits
             ? shifted.add(bit)
             : shifted
         next_res: U64 = next
         next_rem: U64 = left
-        next_rem.store_into(rem)
-        next_res.store_into(res)
+        next_rem.poke_into(rem)
+        next_res.poke_into(res)
         jump root(half, bit.shr(2))
 
     block round(half: S32)
-        sticky: U64 = rem.load().ne(0).to[U64]()
-        sig: U64 = res.load().shl(1).bitor(sticky)
-        r: U32 = soft_round_pack(0, half.add(127), sig.to_wrap[U32](), B32.FORMAT.load())
+        sticky: U64 = rem.peek().ne(0).to[U64]()
+        sig: U64 = res.peek().shl(1).bitor(sticky)
+        r: U32 = soft_round_pack(0, half.add(127), sig.to_wrap[U32](), B32.FORMAT.peek())
         return(r)
 
 /// The B32 remainder on the bits, exact: C's `fmodf`, which LLVM calls for `frem`. The result has the sign of `a`
@@ -318,7 +318,7 @@ routine soft_b32_mod(a: U32, b: U32) -> U32
 
     // the remainder is exact and fits the format, so the packing doesn't round
     block pack(rem: U32, exponent: S32)
-        r: U32 = soft_round_pack(sign, exponent, rem.shl(3), B32.FORMAT.load())
+        r: U32 = soft_round_pack(sign, exponent, rem.shl(3), B32.FORMAT.peek())
         return(r)
 
 /// B32 raised to an integer power by repeated squaring: compiler-rt's `__powisf2`, with the same multiplications in
@@ -340,7 +340,7 @@ routine soft_b32_powi(a: U32, n: S32) -> U32
         branch odd
             ? continue
             : advance(left)
-        soft_b32_mul(result.load(), base.load()).store_into(result)
+        soft_b32_mul(result.peek(), base.peek()).poke_into(result)
         jump advance(left)
 
     block advance(left: U32)
@@ -349,14 +349,14 @@ routine soft_b32_powi(a: U32, n: S32) -> U32
         branch done
             ? finish()
             : continue
-        soft_b32_mul(base.load(), base.load()).store_into(base)
+        soft_b32_mul(base.peek(), base.peek()).poke_into(base)
         jump step(rest)
 
     block finish()
         negative: Bool = n.lt(0)
         branch negative
-            ? return(soft_b32_div(ONE, result.load()))
-            : return(result.load())
+            ? return(soft_b32_div(ONE, result.peek()))
+            : return(result.peek())
 
 // -- comparison ----------------------------------------------------------------
 

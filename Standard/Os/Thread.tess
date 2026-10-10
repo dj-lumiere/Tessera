@@ -18,7 +18,7 @@ record Thread
 private record ThreadStart
     entry: Callable[(Addr,), Void]
     arg: Addr
-    alloc: @Allocator
+    alloc: @MemoryManager
 
 /// Every new thread's first Tessera routine, whatever the OS's entry signature: frees the start record, then calls
 /// the entry with its state.
@@ -26,9 +26,9 @@ private record ThreadStart
 private routine thread_body(raw: Addr) -> Void
     block entry()
         start: @ThreadStart = raw.to[@ThreadStart]()
-        entry: Callable[(Addr,), Void] = start.entry.load()
-        arg: Addr = start.arg.load()
-        deallocate(start, start.alloc.load())
+        entry: Callable[(Addr,), Void] = start.entry.peek()
+        arg: Addr = start.arg.peek()
+        deallocate(start, start.alloc.peek())
         entry.call(arg)
         return()
 
@@ -41,7 +41,7 @@ private routine thread_body(raw: Addr) -> Void
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the record.
 #track_caller
 private routine thread_start[T](entry: Callable[(@T,), Void], arg: @T,
-    alloc: @Allocator) -> @ThreadStart
+    alloc: @MemoryManager) -> @ThreadStart
 require T: typename
     block entry()
         erased: Callable[(Addr,), Void] = bitcast(entry)
@@ -50,7 +50,7 @@ require T: typename
         branch start.is_null()
             ? crash_allocation()
             : continue
-        start.store(ThreadStart(entry: erased, arg: state, alloc: alloc))
+        start.poke(ThreadStart(entry: erased, arg: state, alloc: alloc))
         return(start)
 
 // -- POSIX ----------------------------------------------------------------------------
@@ -96,7 +96,7 @@ private routine posix_thread_main(arg: Addr) -> Addr
 ///     `TaskSpawnError` when the operating system starts no thread.
 #[target(os: ("linux", "macos")), track_caller]
 #expensive("starts an operating system thread")
-routine Thread.spawn[T](entry: Callable[(@T,), Void], arg: @T, alloc: @Allocator) -> Me
+routine Thread.spawn[T](entry: Callable[(@T,), Void], arg: @T, alloc: @MemoryManager) -> Me
 require T: typename
     block entry()
         start: @ThreadStart = thread_start(entry, arg, alloc)
@@ -106,7 +106,7 @@ require T: typename
         branch failed
             ? crash_task_spawn()
             : continue
-        thread: Me = Me(handle: handle.load())
+        thread: Me = Me(handle: handle.peek())
         return(thread)
 
 /// Waits for the thread to return.
@@ -206,7 +206,7 @@ private routine windows_thread_main(arg: Addr) -> U32
 ///     `TaskSpawnError` when the operating system starts no thread.
 #[target(os: "windows"), track_caller]
 #expensive("starts an operating system thread")
-routine Thread.spawn[T](entry: Callable[(@T,), Void], arg: @T, alloc: @Allocator) -> Me
+routine Thread.spawn[T](entry: Callable[(@T,), Void], arg: @T, alloc: @MemoryManager) -> Me
 require T: typename
     block entry()
         start: @ThreadStart = thread_start(entry, arg, alloc)

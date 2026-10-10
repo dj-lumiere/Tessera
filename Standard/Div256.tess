@@ -213,12 +213,12 @@ private routine u256_divrem_knuth(u: U256, d: U256) -> U256DivRem
     // Quotient digits come out most significant first, from j = 4 - n down to 0.
     block digit(j: USize)
         q_digit: U64 = state.step(j)
-        q_next: U256 = q.load().shl(64).bitor(q_digit.to[U256]())
+        q_next: U256 = q.peek().shl(64).bitor(q_digit.to[U256]())
         done: Bool = j.eq(0)
         branch done
             ? finish(q_next)
             : continue
-        q_next.store_into(q)
+        q_next.poke_into(q)
         jump digit(j.sub(1))
 
     block finish(quotient: U256)
@@ -252,18 +252,18 @@ routine U256Division.construct(me: @Me, u: U256, d: U256, n: USize, shift: U64) 
         me.v.setitem(1, u256_limb(d_norm, 1))
         me.v.setitem(2, u256_limb(d_norm, 2))
         me.v.setitem(3, u256_limb(d_norm, 3))
-        me.n.store(n)
+        me.n.poke(n)
         d1: U64 = u256_limb(d_norm, n.sub(1))
         d0: U64 = u256_limb(d_norm, n.sub(2))
         top_divisor: Divisor3By2 = div_3by2_prepare(d1, d0)
-        me.reciprocal.store(top_divisor.reciprocal)
+        me.reciprocal.poke(top_divisor.reciprocal)
         return()
 
 /// One step: the quotient digit of the window u[j .. j+n] by v, which replaces the window with its remainder.
 /// :param j: The window's lowest limb.
 /// :returns: The quotient digit.
 routine U256Division.step(me: @Me, j: USize) -> U64
-    local n: USize = me.n.load()
+    local n: USize = me.n.peek()
     local top_at: USize = j.add(n)
     local u2: U64 = me.u.getitem(top_at)
     local u1: U64 = me.u.getitem(top_at.sub(1))
@@ -289,7 +289,7 @@ routine U256Division.step(me: @Me, j: USize) -> U64
     // finishes the window. q̂ can be one too big for n >= 3: then that
     // subtraction borrows, and v is added back.
     block estimate()
-        divisor: Divisor3By2 = Divisor3By2(high: d1, low: d0, reciprocal: me.reciprocal.load())
+        divisor: Divisor3By2 = Divisor3By2(high: d1, low: d0, reciprocal: me.reciprocal.peek())
         top: Div3By2 = div_3by2(u2, u1, u0, divisor)
         q_hat: U64 = top.quotient
         borrow: U64 = me.submul(j, n.sub(2), q_hat)
@@ -322,7 +322,7 @@ routine U256Division.submul(me: @Me, j: USize, len: USize, m: U64) -> U64
     block loop(i: USize)
         done: Bool = i.eq(len)
         branch done
-            ? return(borrow.load())
+            ? return(borrow.peek())
             : limb(i)
 
     // v × m + borrow < 2^128, and when its high limb is 2^64 - 1 its low limb is 0,
@@ -331,12 +331,12 @@ routine U256Division.submul(me: @Me, j: USize, len: USize, m: U64) -> U64
         at: USize = j.add(i)
         v_limb: U64 = me.v.getitem(i)
         u_limb: U64 = me.u.getitem(at)
-        product: U128 = v_limb.mul_wide(m).add(borrow.load().to[U128]())
+        product: U128 = v_limb.mul_wide(m).add(borrow.peek().to[U128]())
         low: U64 = product.to_wrap[U64]()
         wrapped: Bool = u_limb.lt(low)
         me.u.setitem(at, u_limb.sub_wrap(low))
         high: U64 = product.shr(64).to[U64]()
-        high.add(wrapped.to[U64]()).store_into(borrow)
+        high.add(wrapped.to[U64]()).poke_into(borrow)
         jump loop(i.add(1))
 
 /// u[j .. j+n-1] += v, dropping the carry out of the top: it cancels the borrow
@@ -358,9 +358,9 @@ routine U256Division.add_back(me: @Me, j: USize, n: USize) -> Void
         v_limb: U64 = me.v.getitem(i)
         u_limb: U64 = me.u.getitem(at)
         limb_sum: U128 = u_limb.to[U128]().add(v_limb.to[U128]())
-        sum: U128 = limb_sum.add(carry.load().to[U128]())
+        sum: U128 = limb_sum.add(carry.peek().to[U128]())
         me.u.setitem(at, sum.to_wrap[U64]())
-        sum.shr(64).to[U64]().store_into(carry)
+        sum.shr(64).to[U64]().poke_into(carry)
         jump loop(i.add(1))
 
 // -- targets narrower than 64 bits -----------------------------------------------
@@ -442,8 +442,8 @@ private routine u256_store_words(x: U256, dst: @U32) -> Void
         branch done
             ? return()
             : continue
-        limb: U32 = src.stride(i).load()
-        limb.store_into(dst.stride(i))
+        limb: U32 = src.stride(i).peek()
+        limb.poke_into(dst.stride(i))
         jump word(i.add(1))
 
 /// The U256 whose eight 32-bit limbs are at src, least significant first.
@@ -460,12 +460,12 @@ private routine u256_load_words(src: @U32) -> U256
         branch done
             ? finish()
             : continue
-        limb: U32 = src.stride(i).load()
-        limb.store_into(slot.to[@U32]().stride(i))
+        limb: U32 = src.stride(i).peek()
+        limb.poke_into(slot.to[@U32]().stride(i))
         jump word(i.add(1))
 
     block finish()
-        return(slot.load())
+        return(slot.peek())
 
 /// u / d for a nonzero one-limb d: one U64 by U32 division per dividend limb, most significant first. No
 /// normalizing: the U64 division takes any divisor.
@@ -491,18 +491,18 @@ routine divrem_by_word32(u: U256, d: U32, words: USize) -> U256DivRem
 
     block step(at: USize)
         divisor: U64 = d.to[U64]()
-        limb: U32 = limbs.stride(at).load()
-        window: U64 = rem.load().shl(32).bitor(limb.to[U64]())
+        limb: U32 = limbs.stride(at).peek()
+        window: U64 = rem.peek().shl(32).bitor(limb.to[U64]())
         digit: U64 = window.div(divisor)
-        q_next: U256 = q.load().shl(32).bitor(digit.to[U256]())
+        q_next: U256 = q.peek().shl(32).bitor(digit.to[U256]())
         next_rem: U64 = window.sub(digit.mul(divisor))
         next_q: U256 = q_next
-        next_q.store_into(q)
-        next_rem.store_into(rem)
+        next_q.poke_into(q)
+        next_rem.poke_into(rem)
         jump word(at)
 
     block finish()
-        return(U256DivRem(quotient: q.load(), remainder: rem.load().to[U256]()))
+        return(U256DivRem(quotient: q.peek(), remainder: rem.peek().to[U256]()))
 
 /// u / d for a divisor of two or more 32-bit limbs.
 /// :param u: The dividend, below 2^(32 × `words`) and at least `d`.
@@ -524,12 +524,12 @@ routine divrem_knuth32(u: U256, d: U256, words: USize) -> U256DivRem
     // limbs carries its normalization overflow in limb `words`, which the first step reads as its top limb.
     block digit(j: USize)
         q_digit: U32 = state.step(j)
-        q_next: U256 = q.load().shl(32).bitor(q_digit.to[U256]())
+        q_next: U256 = q.peek().shl(32).bitor(q_digit.to[U256]())
         done: Bool = j.eq(0)
         branch done
             ? finish(q_next)
             : continue
-        q_next.store_into(q)
+        q_next.poke_into(q)
         jump digit(j.sub(1))
 
     block finish(quotient: U256)
@@ -552,14 +552,14 @@ routine U256Division32.construct(me: @Me, u: U256, d: U256, n: USize, shift: U32
         u256_store_words(u_norm, me.u.to[@U32]())
         me.u.setitem(8, u_over)
         u256_store_words(d_norm, me.v.to[@U32]())
-        me.n.store(n)
+        me.n.poke(n)
         return()
 
 /// One step: the quotient digit of the window u[j .. j+n] by v, which replaces the window with its remainder.
 /// :param j: The window's lowest limb.
 /// :returns: The quotient digit.
 routine U256Division32.step(me: @Me, j: USize) -> U32
-    local n: USize = me.n.load()
+    local n: USize = me.n.peek()
     local top_at: USize = j.add(n)
     local u2: U32 = me.u.getitem(top_at)
     local u1: U32 = me.u.getitem(top_at.sub(1))
@@ -627,7 +627,7 @@ routine U256Division32.submul(me: @Me, j: USize, len: USize, m: U32) -> U32
     block loop(i: USize)
         done: Bool = i.eq(len)
         branch done
-            ? return(borrow.load())
+            ? return(borrow.peek())
             : limb(i)
 
     // v × m + borrow < 2^64, and when its high limb is 2^32 - 1 its low limb is 0, so the next borrow fits a limb.
@@ -635,12 +635,12 @@ routine U256Division32.submul(me: @Me, j: USize, len: USize, m: U32) -> U32
         at: USize = j.add(i)
         v_limb: U32 = me.v.getitem(i)
         u_limb: U32 = me.u.getitem(at)
-        product: U64 = v_limb.mul_wide(m).add(borrow.load().to[U64]())
+        product: U64 = v_limb.mul_wide(m).add(borrow.peek().to[U64]())
         low: U32 = product.to_wrap[U32]()
         wrapped: Bool = u_limb.lt(low)
         me.u.setitem(at, u_limb.sub_wrap(low))
         high: U32 = product.shr(32).to[U32]()
-        high.add(wrapped.to[U32]()).store_into(borrow)
+        high.add(wrapped.to[U32]()).poke_into(borrow)
         jump loop(i.add(1))
 
 /// u[j .. j+n-1] += v, dropping the carry out of the top: it cancels the borrow that made the window negative.
@@ -661,7 +661,7 @@ routine U256Division32.add_back(me: @Me, j: USize, n: USize) -> Void
         v_limb: U32 = me.v.getitem(i)
         u_limb: U32 = me.u.getitem(at)
         limb_sum: U64 = u_limb.to[U64]().add(v_limb.to[U64]())
-        sum: U64 = limb_sum.add(carry.load().to[U64]())
+        sum: U64 = limb_sum.add(carry.peek().to[U64]())
         me.u.setitem(at, sum.to_wrap[U32]())
-        sum.shr(32).to[U32]().store_into(carry)
+        sum.shr(32).to[U32]().poke_into(carry)
         jump loop(i.add(1))

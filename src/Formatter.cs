@@ -21,7 +21,7 @@ namespace Tessera;
 /// - a `branch`, and a select that is a binding's or a claim's whole value, always put `? a` and `: b` on their own
 ///   lines, 4 spaces further in, so the two outcomes sit one above the other; a select inside an argument stays.
 /// - a pointer type is written `@T`, not `Ptr[T]`, except where routines are declared on or called through the record
-///   (`routine Ptr[T].load`); comments and literals are left alone;
+///   (`routine Ptr[T].peek`); comments and literals are left alone;
 /// - parentheses around one value, which group nothing in a language without operators, are dropped: `(x).add(1)` is
 ///   `x.add(1)`. A call's arguments, a tuple type, and `(a, b)` (an error the builder reports) stay.
 /// - top-level declarations come in one order: module, imports (sorted), defines, globals, presets, types (records,

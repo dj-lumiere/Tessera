@@ -15,8 +15,8 @@ public class SplitModuleTests
 
         routine bump(by: S64) -> Void
             block entry()
-                next : S64 = COUNTER.load().add(by)
-                next.store_into(COUNTER)
+                next: S64 = COUNTER.peek().add(by)
+                next.poke_into(COUNTER)
                 return()
 
         #inline
@@ -27,7 +27,7 @@ public class SplitModuleTests
         routine start() -> Void
             block entry()
                 bump(twice(2))
-                total : S64 = COUNTER.load()
+                total: S64 = COUNTER.peek()
                 return()
 
         """;

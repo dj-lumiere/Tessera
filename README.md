@@ -38,8 +38,8 @@ routine two_sum(list: @S32, count: USize, target: S32) -> Option[(USize, USize)]
         branch right_idx.ge(count)
             ? search_left(left_idx.add(1))
             : continue
-        left_val: S32 = list.stride(left_idx).load()
-        right_val: S32 = list.stride(right_idx).load()
+        left_val: S32 = list.stride(left_idx).peek()
+        right_val: S32 = list.stride(right_idx).peek()
         branch left_val.add(right_val).eq(target)
             ? return(.Present([left_idx, right_idx]))
             : search_right(left_idx, right_idx.add(1))
@@ -47,7 +47,7 @@ routine two_sum(list: @S32, count: USize, target: S32) -> Option[(USize, USize)]
 
 Two blocks make the two loops of an O(n²) search. Each loop's state travels as block parameters, `continue` goes on
 with the next line when the inner loop isn't done, and the numbers come as a pointer and a count: `stride` is the
-address of one, read with an explicit `load`. The answer is an `Option` of a tuple, built with `(...)` from where
+address of one, read with an explicit `peek`. The answer is an `Option` of a tuple, built with `(...)` from where
 it goes.
 
 > **Early alpha.** The language is still changing, and the builder works but is incomplete. Every commit runs the
@@ -72,7 +72,7 @@ way: each level is made of whole pieces of the level below.
 
 | Level         | What it is                                                                                                                                                                                 |
 |---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **operation** | One explicit step: a named method (`a.add(b)`), a load (`p.load()`), a store (`p.store(v)`), a stack slot (`claim`), a call. There are no operators, so every operation says what it does and what it costs. |
+| **operation** | One explicit step: a named method (`a.add(b)`), a load (`p.peek()`), a store (`p.poke(v)`), a stack slot (`claim`), a call. There are no operators, so every operation says what it does and what it costs. |
 | **block**     | A straight run of operations. Values come in as block parameters (no phi nodes), and the block ends in exactly one terminator: `jump`, `branch`, `when`, or `return`.                      |
 | **routine**   | A set of blocks with one entry. Control moves between its blocks only through terminators, and every value is SSA.                                                                         |
 | **module**    | A namespace for routines, types, and constants (`Standard/Format`). It's declared in the source, not tied to files.                                                                        |
@@ -84,7 +84,7 @@ never look alike.
 **Block parameters instead of phi nodes.** A loop passes its state forward (`search_right(left_idx,
 right_idx.add(1))`) instead of collecting it from predecessors.
 
-**`=` only binds.** Memory is read and written by `load` and `store` calls, and every binding states its type.
+**`=` only binds.** Memory is read and written by `peek` and `poke` calls, and every binding states its type.
 
 **Sum types are variants.** `Option` and `Result` are variants, read with a `when` whose arms bind the payload;
 choices and variants print, compare, and hash without being asked. Tuples of two to four values

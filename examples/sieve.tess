@@ -2,7 +2,7 @@
 //
 // Introduces:
 //   claim: a slot in memory for a value whose methods take a pointer, filled with <- where it's claimed
-//   heap memory through an Allocator: a Slice[T] from construct(count, alloc) gives it back with destruct()
+//   heap memory through an MemoryManager: a Slice[T] from construct(count, alloc) gives it back with destruct()
 //   a borrowed view of it (getview(), a null allocator) lent to a routine that reads and writes the values,
 //   getitem and setitem
 //   raw element access with stride (address arithmetic), load and store
@@ -32,7 +32,7 @@ routine sieve(composite: Slice[Bool]) -> Void
         branch past_root
             ? return()
             : continue
-        crossed: Bool = flags.stride(p).load()
+        crossed: Bool = flags.stride(p).peek()
         branch crossed
             ? outer(limit, p.add(1))
             : cross_out(limit, p, p.mul(p))
@@ -44,7 +44,7 @@ routine sieve(composite: Slice[Bool]) -> Void
             : mark(limit, p, multiple)
 
     block mark(limit: USize, p: USize, multiple: USize)
-        flags.stride(multiple).store(true)
+        flags.stride(multiple).poke(true)
         jump cross_out(limit, p, multiple.add(p))
 
 /// Writes every prime from 2 to `limit` on one line, using a sieve in memory it allocates and gives back.
@@ -53,7 +53,7 @@ routine sieve(composite: Slice[Bool]) -> Void
 /// :param alloc: The allocator for the sieve's flags.
 /// :throws: Crashes with `MemoryAllocationError` when the flags can't be allocated, and with
 ///     `IndexOutOfBoundsError` when `limit` is 0.
-routine print_primes(out: @Out, limit: USize, alloc: @Allocator) -> Void
+routine print_primes(out: @Out, limit: USize, alloc: @MemoryManager) -> Void
     local composite: @Slice[Bool] <- .construct(limit.add(1), alloc)
 
     block entry()
@@ -88,7 +88,7 @@ routine print_primes(out: @Out, limit: USize, alloc: @Allocator) -> Void
 /// :returns: The number of primes up to and including `limit`.
 /// :throws: Crashes with `MemoryAllocationError` when the flags can't be allocated, and with
 ///     `IndexOutOfBoundsError` when `limit` is 0.
-routine count_primes(limit: USize, alloc: @Allocator) -> USize
+routine count_primes(limit: USize, alloc: @MemoryManager) -> USize
     local composite: @Slice[Bool] <- .construct(limit.add(1), alloc)
     local count: @USize <- 0
 
@@ -105,18 +105,18 @@ routine count_primes(limit: USize, alloc: @Allocator) -> USize
     block tally(n: USize)
         crossed: Bool = composite.getitem(n)
         is_prime: USize = crossed.bitnot().to[USize]()
-        count.load().add(is_prime).store_into(count)
+        count.peek().add(is_prime).poke_into(count)
         jump loop(n.add(1))
 
     block finish()
         composite.destruct()
-        return(count.load())
+        return(count.peek())
 
 /// Prints the primes up to 50 and how many primes there are below 10,000.
 routine start() -> Void
     block entry()
         out: @Out = Out.writer()
-        claim alloc: @Allocator <- make_heap_allocator()
+        claim alloc: @MemoryManager <- make_heap_memory()
 
         print_primes(out, 50, alloc)
         out.write("primes below 10000: {count_primes(9999, alloc)}\n")

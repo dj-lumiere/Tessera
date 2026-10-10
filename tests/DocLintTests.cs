@@ -45,7 +45,7 @@ public class DocLintTests
             /// :param old: A parameter that was renamed.
             routine put(p: @S64, value: S64) -> Void
                 block entry()
-                    p.store(value)
+                    p.poke(value)
                     return()
             """);
         Assert.Equal(3, warnings.Count);

@@ -15,7 +15,7 @@ preset LEVELS: U64 = 40
 preset STACK_SIZE: USize = 1048576
 
 record Diver
-    sched: @Scheduler
+    sched: @FiberManager
     name: Bytes
 
 /// Windows x64's thread block: the stack base, GS:[8].
@@ -53,7 +53,7 @@ routine fill(frame: @Array[U64, 1024], value: U64) -> Void
         branch done
             ? return()
             : continue
-        first.stride(i).store(value)
+        first.stride(i).poke(value)
         jump store(i.add(1))
 
 /// The sum of the frame's words.
@@ -69,7 +69,7 @@ routine frame_sum(frame: @Array[U64, 1024]) -> U64
         branch done
             ? return(total)
             : continue
-        jump add(i.add(1), total.add(first.stride(i).load()))
+        jump add(i.add(1), total.add(first.stride(i).peek()))
 
 /// One level: fills an 8 KiB frame with its level, goes a level deeper (or yields at the bottom), then adds up its
 /// frame, which must still hold its level.
@@ -85,8 +85,8 @@ routine dive(d: @Diver, level: U64) -> U64
             : deeper()
 
     block turn()
-        Out.write("{d.name.load()} at the bottom\n")
-        d.sched.load().yield()
+        Out.write("{d.name.peek()} at the bottom\n")
+        d.sched.peek().yield()
         return(frame_sum(frame))
 
     block deeper()
@@ -98,22 +98,22 @@ routine diver(d: @Diver) -> Void
     local here: @U64 <- 0
 
     block entry()
-        fiber: @FiberState = d.sched.load().current()
-        stack: Addr = fiber.stack.load()
+        fiber: @FiberState = d.sched.peek().current()
+        stack: Addr = fiber.stack.peek()
         at: USize = ptrtoint[@U64, USize](here)
         first: USize = ptrtoint[Addr, USize](stack)
         own: Bool = at.in_range(first, first.add(STACK_SIZE))
-        Out.write("{d.name.load()} on its own stack: {own}\n")
-        Out.write("{d.name.load()} thread block follows: {thread_block_follows(stack)}\n")
+        Out.write("{d.name.peek()} on its own stack: {own}\n")
+        Out.write("{d.name.peek()} thread block follows: {thread_block_follows(stack)}\n")
         total: U64 = dive(d, LEVELS)
-        Out.write("{d.name.load()} sum {total}\n")
+        Out.write("{d.name.peek()} sum {total}\n")
         return()
 
 routine start() -> Void
     block entry()
-        claim alloc: @Allocator <- make_heap_allocator()
-        claim stacks: @Allocator <- make_stack_allocator()
-        claim sched: @Scheduler <- .construct(1, stacks, alloc)
+        claim alloc: @MemoryManager <- make_heap_memory()
+        claim stacks: @MemoryManager <- make_stack_memory()
+        claim sched: @FiberManager <- .construct(1, stacks, alloc)
         claim a: @Diver <- Diver(sched: sched, name: "a")
         claim b: @Diver <- Diver(sched: sched, name: "b")
         sched.spawn(diver.to[Callable](), a, STACK_SIZE)

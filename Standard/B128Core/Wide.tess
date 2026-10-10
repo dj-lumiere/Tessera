@@ -130,9 +130,9 @@ routine cm_wide_mulhi(a: U64, b: U128) -> U128
 routine cm_wide_row3(table: @U64, i: USize) -> CmWide3
     block entry()
         base: USize = i.mul(3)
-        w0: U64 = table.stride(base).load()
-        w1: U64 = table.stride(base.add(1)).load()
-        w2: U64 = table.stride(base.add(2)).load()
+        w0: U64 = table.stride(base).peek()
+        w1: U64 = table.stride(base.add(1)).peek()
+        w2: U64 = table.stride(base.add(2)).peek()
         r: CmWide3 = CmWide3(w0: w0, w1: w1, w2: w2)
         return(r)
 
@@ -199,8 +199,8 @@ routine cm_wide_xor_words(x: @U64, n: USize, mask: U64) -> Void
         branch done
             ? return()
             : continue
-        word: U64 = x.stride(i).load()
-        word.bitxor(mask).store_into(x.stride(i))
+        word: U64 = x.stride(i).peek()
+        word.bitxor(mask).poke_into(x.stride(i))
         jump next(i.add(1))
 
 /// Writes (a * b) >> 64 for a 7-word a, truncated to 7 words. out may be a.
@@ -211,9 +211,9 @@ routine cm_wide_mul7w(a: @U64, b: U64, out: @U64) -> Void
     local prev: @U64 <- .hollow()
 
     block entry()
-        a0: U64 = a.stride(0).load()
+        a0: U64 = a.stride(0).peek()
         high0: U64 = cm_wide_mulhi(a0, b)
-        high0.store_into(prev)
+        high0.poke_into(prev)
         jump next(1)
 
     block next(i: USize)
@@ -223,16 +223,16 @@ routine cm_wide_mul7w(a: @U64, b: U64, out: @U64) -> Void
             : word(i)
 
     block word(i: USize)
-        ai: U64 = a.stride(i).load()
+        ai: U64 = a.stride(i).peek()
         p: U128 = cm_wide_mul(ai, b)
-        s: U128 = p.bitand(0xFFFFFFFFFFFFFFFF).add(prev.load().to[U128]())
-        out.stride(i.sub(1)).store(cm_wide_lo(s))
+        s: U128 = p.bitand(0xFFFFFFFFFFFFFFFF).add(prev.peek().to[U128]())
+        out.stride(i.sub(1)).poke(cm_wide_lo(s))
         carried: U64 = cm_wide_hi(p).add_wrap(cm_wide_hi(s))
-        carried.store_into(prev)
+        carried.poke_into(prev)
         jump next(i.add(1))
 
     block last()
-        out.stride(6).store(prev.load())
+        out.stride(6).poke(prev.peek())
         return()
 
 /// mhu7xu2: writes the words at or above word 2 of the 7x2-word product a * b, as 7 words. out must not be a.
@@ -258,13 +258,13 @@ routine cm_wide_mulhi_7x2(a: @U64, b: U128, out: @U64) -> Void
             : shift_word(i)
 
     block shift_word(i: USize)
-        w: U64 = a.stride(i.add(1)).load()
-        shifted.stride(i).store(w)
+        w: U64 = a.stride(i.add(1)).peek()
+        shifted.stride(i).poke(w)
         jump shift(i.add(1))
 
     block low()
         cm_wide_mul7w(shifted, cm_wide_lo(b), low)
-        0.store_into(carry)
+        0.poke_into(carry)
         jump add(0)
 
     block add(i: USize)
@@ -272,12 +272,12 @@ routine cm_wide_mulhi_7x2(a: @U64, b: U128, out: @U64) -> Void
         branch done
             ? return()
             : continue
-        o: U64 = out.stride(i).load()
-        t: U64 = low.stride(i).load()
+        o: U64 = out.stride(i).peek()
+        t: U64 = low.stride(i).peek()
         pair: U128 = o.to[U128]().add(t.to[U128]())
-        s: U128 = pair.add(carry.load().to[U128]())
-        out.stride(i).store(cm_wide_lo(s))
-        cm_wide_hi(s).store_into(carry)
+        s: U128 = pair.add(carry.peek().to[U128]())
+        out.stride(i).poke(cm_wide_lo(s))
+        cm_wide_hi(s).poke_into(carry)
         jump add(i.add(1))
 
 /// arsu7: arithmetic right shift of the 7-word x by n bits (n < 192), in place.
@@ -289,7 +289,7 @@ routine cm_wide_ashr7(x: @U64, n: U64) -> Void
     local qk: USize = n.shr(6).to[USize]()
 
     block entry()
-        top: U64 = x.stride(6).load()
+        top: U64 = x.stride(6).peek()
         jump move(0, top.to_wrap[S64]())
 
     // words move down by qk and shift by rk. The top word is shifted in once the loop ends
@@ -302,16 +302,16 @@ routine cm_wide_ashr7(x: @U64, n: U64) -> Void
 
     block move_word(i: USize, top: S64)
         src: USize = qk.add(i)
-        lower: U64 = x.stride(src).load()
-        upper: U64 = x.stride(src.add(1)).load()
+        lower: U64 = x.stride(src).peek()
+        upper: U64 = x.stride(src.add(1)).peek()
         combined: U64 = upper.shl(lk).bitor(lower.shr(rk))
         aligned: Bool = rk.eq(0)
-        x.stride(i).store(aligned ? lower : combined)
+        x.stride(i).poke(aligned ? lower : combined)
         jump move(i.add(1), top)
 
     block fill(top: S64)
         k: USize = 6.sub(qk)
-        x.stride(k).store(top.shr(rk.to[S64]()).to_wrap[U64]())
+        x.stride(k).poke(top.shr(rk.to[S64]()).to_wrap[U64]())
         jump sign(k.add(1), top.shr(63))
 
     block sign(k: USize, sign: S64)
@@ -319,7 +319,7 @@ routine cm_wide_ashr7(x: @U64, n: U64) -> Void
         branch done
             ? return()
             : continue
-        x.stride(k).store(sign.to_wrap[U64]())
+        x.stride(k).poke(sign.to_wrap[U64]())
         jump sign(k.add(1), sign)
 
 /// mhu6u6u6: writes the approximate high 6 words of the 6x6-word product a * b: every partial-product half at
@@ -348,26 +348,26 @@ routine cm_wide_mulhi_6x6(b: @U64, a: @U64, out: @U64) -> Void
             : add_term(w, i)
 
     block add_term(w: USize, i: USize)
-        ai: U64 = a.stride(i).load()
+        ai: U64 = a.stride(i).peek()
         j: USize = w.add(5).sub(i)
-        bj: U64 = b.stride(j).load()
+        bj: U64 = b.stride(j).peek()
         high: U128 = cm_wide_mul(ai, bj).shr(64)
         has_low: Bool = i.gt(w)
         k: USize = has_low
             ? j.add(1)
             : j
-        bk: U64 = b.stride(k).load()
+        bk: U64 = b.stride(k).peek()
         low: U128 = cm_wide_mul(ai, bk).bitand(0xFFFFFFFFFFFFFFFF)
-        with_hi: U128 = sum.load().add(high)
+        with_hi: U128 = sum.peek().add(high)
         next: U128 = has_low
             ? with_hi.add(low)
             : with_hi
-        next.store_into(sum)
+        next.poke_into(sum)
         jump term(w, i.add(1))
 
     block store(w: USize)
-        out.stride(w).store(cm_wide_lo(sum.load()))
-        sum.load().shr(64).store_into(sum)
+        out.stride(w).poke(cm_wide_lo(sum.peek()))
+        sum.peek().shr(64).poke_into(sum)
         jump word(w.add(1))
 
 /// mahu1u6u6: writes ((a * b) >> 64) + c over 6 words. out may be b or c.
@@ -377,7 +377,7 @@ routine cm_wide_mulhi_6x6(b: @U64, a: @U64, out: @U64) -> Void
 /// :param out: Room for 6 words.
 routine cm_wide_mulhi_add6(a: U64, b: @U64, c: @U64, out: @U64) -> Void
     block entry()
-        b0: U64 = b.stride(0).load()
+        b0: U64 = b.stride(0).peek()
         prev: U64 = cm_wide_mulhi(a, b0)
         jump next(0, prev, 0)
 
@@ -391,16 +391,16 @@ routine cm_wide_mulhi_add6(a: U64, b: @U64, c: @U64, out: @U64) -> Void
     block word(i: USize, prev: U64, carry: U64)
         has_next: Bool = i.lt(5)
         j: USize = i.add(1).min(5)
-        bj: U64 = b.stride(j).load()
+        bj: U64 = b.stride(j).peek()
         product: U128 = cm_wide_mul(a, bj)
         p: U128 = has_next
             ? product
             : 0
         s: U128 = p.bitand(0xFFFFFFFFFFFFFFFF).add(prev.to[U128]())
-        ci: U64 = c.stride(i).load()
+        ci: U64 = c.stride(i).peek()
         s2_part: U128 = ci.to[U128]().add(s.bitand(0xFFFFFFFFFFFFFFFF))
         s2: U128 = s2_part.add(carry.to[U128]())
-        out.stride(i).store(cm_wide_lo(s2))
+        out.stride(i).poke(cm_wide_lo(s2))
         next_prev: U64 = cm_wide_hi(p).add_wrap(cm_wide_hi(s))
         jump next(i.add(1), next_prev, cm_wide_hi(s2))
 
@@ -419,12 +419,12 @@ routine cm_wide_add6(a: @U64, b: @U64, out: @U64) -> Void
         branch done
             ? return()
             : continue
-        ai: U64 = a.stride(i).load()
-        bi: U64 = b.stride(i).load()
+        ai: U64 = a.stride(i).peek()
+        bi: U64 = b.stride(i).peek()
         pair: U128 = ai.to[U128]().add(bi.to[U128]())
-        s: U128 = pair.add(carry.load().to[U128]())
-        out.stride(i).store(cm_wide_lo(s))
-        cm_wide_hi(s).store_into(carry)
+        s: U128 = pair.add(carry.peek().to[U128]())
+        out.stride(i).poke(cm_wide_lo(s))
+        cm_wide_hi(s).poke_into(carry)
         jump next(i.add(1))
 
 // -- 2^f to about 380 bits -----------------------------------------------------
@@ -480,8 +480,8 @@ routine cm_wide_pol6red(x: U64, out: @U64) -> Void
 
     block load_word(r: USize, k: USize)
         coefficient: @U64 = cm_wide_coefficient(r)
-        w: U64 = coefficient.stride(r.add(k)).load()
-        row.stride(k).store(w)
+        w: U64 = coefficient.stride(r.add(k)).peek()
+        row.stride(k).poke(w)
         jump load_row(r, k.add(1))
 
     block horner(r: USize)
@@ -497,26 +497,26 @@ routine cm_wide_pol6red(x: U64, out: @U64) -> Void
 /// :param out: Room for 6 words.
 routine cm_wide_pol6redred(x: @U64, out: @U64) -> Void
     block entry()
-        x0: U64 = x.stride(0).load()
-        x1: U64 = x.stride(1).load()
-        x2: U64 = x.stride(2).load()
-        x3: U64 = x.stride(3).load()
+        x0: U64 = x.stride(0).peek()
+        x1: U64 = x.stride(1).peek()
+        x2: U64 = x.stride(2).peek()
+        x3: U64 = x.stride(3).peek()
         claim xs_buf: @Array[U64, 6] <- [0, 0, x0, x1, x2, x3]
         xs: @U64 = xs_buf.to[@U64]()
         claim f_buf: @Array[U64, 6] <- .hollow()
         f: @U64 = f_buf.to[@U64]()
         cm_wide_mulhi_6x6(xs, cm_wide_coefficient(2), f)
         cm_wide_shift_down2(f, out)
-        out.stride(4).store(0)
-        out.stride(5).store(0)
+        out.stride(4).poke(0)
+        out.stride(5).poke(0)
         cm_wide_add6(out, cm_wide_coefficient(1), out)
         cm_wide_mulhi_6x6(xs, out, f)
         cm_wide_shift_down2(f, out)
         c0: @U64 = cm_wide_coefficient(0)
-        c4: U64 = c0.stride(4).load()
-        c5: U64 = c0.stride(5).load()
-        out.stride(4).store(c4)
-        out.stride(5).store(c5)
+        c4: U64 = c0.stride(4).peek()
+        c5: U64 = c0.stride(5).peek()
+        out.stride(4).poke(c4)
+        out.stride(5).poke(c5)
         return()
 
 /// Copies f[2..5] to out[0..3].
@@ -524,14 +524,14 @@ routine cm_wide_pol6redred(x: @U64, out: @U64) -> Void
 /// :param out: Room for 4 words.
 routine cm_wide_shift_down2(f: @U64, out: @U64) -> Void
     block entry()
-        f2: U64 = f.stride(2).load()
-        f3: U64 = f.stride(3).load()
-        f4: U64 = f.stride(4).load()
-        f5: U64 = f.stride(5).load()
-        out.stride(0).store(f2)
-        out.stride(1).store(f3)
-        out.stride(2).store(f4)
-        out.stride(3).store(f5)
+        f2: U64 = f.stride(2).peek()
+        f3: U64 = f.stride(3).peek()
+        f4: U64 = f.stride(4).peek()
+        f5: U64 = f.stride(5).peek()
+        out.stride(0).poke(f2)
+        out.stride(1).poke(f3)
+        out.stride(2).poke(f4)
+        out.stride(3).poke(f5)
         return()
 
 /// Writes 2^f to about 380 bits, as 6 words, for the fixed-point fraction f in words 0..5 of the 7-word x: bits
@@ -546,8 +546,8 @@ routine cm_wide_exp2_frac(x: @U64, out: @U64) -> Void
         f1: @U64 = f1_buf.to[@U64]()
         claim f2_buf: @Array[U64, 6] <- .hollow()
         f2: @U64 = f2_buf.to[@U64]()
-        x4: U64 = x.stride(4).load()
-        x5: U64 = x.stride(5).load()
+        x4: U64 = x.stride(4).peek()
+        x5: U64 = x.stride(5).peek()
         j: USize = x5.shr(60).to[USize]()
         cm_wide_pol6(x5.bitand(0x0FFFFFFFFFFFFFFF), f)
         cm_wide_pol6red(x4, f1)

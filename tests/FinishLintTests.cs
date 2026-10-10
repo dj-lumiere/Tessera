@@ -12,7 +12,7 @@ public class FinishLintTests
     public void EveryExitThroughFinishIsClean()
     {
         var warnings = Lint("""
-            routine count_open(text: Bytes, alloc: @Allocator) -> USize
+            routine count_open(text: Bytes, alloc: @MemoryManager) -> USize
                 local stack : @List[Byte] <- .construct(alloc)
 
                 block entry()
@@ -33,7 +33,7 @@ public class FinishLintTests
     public void ReturnOutsideFinishWarns()
     {
         var warnings = Lint("""
-            routine count_open(text: Bytes, alloc: @Allocator) -> USize
+            routine count_open(text: Bytes, alloc: @MemoryManager) -> USize
                 local stack : @List[Byte] <- .construct(alloc)
 
                 block entry()

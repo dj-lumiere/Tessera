@@ -103,7 +103,7 @@ routine SliceWriter.to[Bytes](me: Me) -> Bytes
 /// :returns: The bytes written so far, a view into the buffer.
 routine SliceWriter.to[Bytes](me: @Me) -> Bytes
     block entry()
-        s: Bytes = .from_ptr(me.data.load(), me.count.load())
+        s: Bytes = .from_ptr(me.data.peek(), me.count.peek())
         return(s)
 
 /// True once some write did not fit in the buffer, meaning the text was cut off.
@@ -117,7 +117,7 @@ routine SliceWriter.has_overflowed(me: Me) -> Bool
 /// :returns: True when at least one write was cut short.
 routine SliceWriter.has_overflowed(me: @Me) -> Bool
     block entry()
-        r: Bool = me.overflowed.load()
+        r: Bool = me.overflowed.peek()
         return(r)
 
 /// Appends as many of the `count` bytes as fit in the remaining room and drops the rest.
@@ -126,19 +126,19 @@ routine SliceWriter.has_overflowed(me: @Me) -> Bool
 /// :note: Sets the overflow flag when anything was dropped, see {SliceWriter.has_overflowed}.
 routine SliceWriter.write_bytes(me: @Me, bytes: @Byte, count: USize) -> Void
     block entry()
-        used: USize = me.count.load()
-        capacity: USize = me.capacity.load()
+        used: USize = me.count.peek()
+        capacity: USize = me.capacity.peek()
         room: USize = capacity.sub(used)
         fits: Bool = count.le(room)
         taken: USize = count.min(room)
-        data: @Byte = me.data.load()
+        data: @Byte = me.data.peek()
         to: @Byte = data.stride(used)
         to.copy(bytes, taken)
-        me.count.store(used.add(taken))
+        me.count.poke(used.add(taken))
         branch fits
             ? return()
             : continue
-        me.overflowed.store(true)
+        me.overflowed.poke(true)
         return()
 
 // -- BufWriter -----------------------------------------------------------------
@@ -160,20 +160,20 @@ conform Writer[BufWriter[T]] when T: typename, Writer[T]
 routine BufWriter[T].construct(me: @Me, inner: @T) -> Void
 require T: typename
     block entry()
-        me.inner.store(inner)
-        me.count.store(0)
+        me.inner.poke(inner)
+        me.count.poke(0)
         return()
 
 /// Writes out the buffered bytes.
 routine BufWriter[T].flush(me: @Me) -> Void
 require T: typename, Writer[T]
-    local count: USize = me.count.load()
-    local inner: @T = me.inner.load()
+    local count: USize = me.count.peek()
+    local inner: @T = me.inner.peek()
     local buffer: @Array[Byte, 4096] = me.data
     local data: @Byte = buffer.to[@Byte]()
 
     block entry()
-        me.count.store(0)
+        me.count.poke(0)
         empty: Bool = count.eq(0)
         branch empty
             ? return()
@@ -190,7 +190,7 @@ require T: typename, Writer[T]
 routine BufWriter[T].write_bytes(me: @Me, bytes: @Byte, count: USize) -> Void
 require T: typename, Writer[T]
     block entry()
-        buffered: USize = me.count.load()
+        buffered: USize = me.count.peek()
         fits: Bool = buffered.add(count).le(4096)
         branch fits
             ? append(buffered)
@@ -204,7 +204,7 @@ require T: typename, Writer[T]
             : append(0)
 
     block direct()
-        inner: @T = me.inner.load()
+        inner: @T = me.inner.peek()
         inner.write_bytes(bytes, count)
         return()
 
@@ -213,7 +213,7 @@ require T: typename, Writer[T]
         data: @Byte = buffer.to[@Byte]()
         to: @Byte = data.stride(buffered)
         to.copy(bytes, count)
-        me.count.store(buffered.add(count))
+        me.count.poke(buffered.add(count))
         return()
 
 // -- CountWriter ---------------------------------------------------------------
@@ -238,8 +238,8 @@ routine CountWriter.write_bytes(me: @Me, bytes: @Byte, count: USize) -> Void
     local total: @USize <- .hollow()
 
     block entry()
-        initial: USize = me.count.load()
-        initial.store_into(total)
+        initial: USize = me.count.peek()
+        initial.poke_into(total)
         jump loop(0)
 
     block loop(i: USize)
@@ -250,13 +250,13 @@ routine CountWriter.write_bytes(me: @Me, bytes: @Byte, count: USize) -> Void
 
     // continuation bytes are 10xxxxxx
     block step(i: USize)
-        byte: U8 = Byte.to[U8](bytes.stride(i).load())
+        byte: U8 = Byte.to[U8](bytes.stride(i).peek())
         starts: Bool = byte.bitand(0xC0).ne(0x80)
-        total.load().add(starts.to[USize]()).store_into(total)
+        total.peek().add(starts.to[USize]()).poke_into(total)
         jump loop(i.add(1))
 
     block finish()
-        me.count.store(total.load())
+        me.count.poke(total.peek())
         return()
 
 // -- text ----------------------------------------------------------------------
@@ -518,7 +518,7 @@ require T: typename, Writer[T]
         at: USize = end.sub(1)
         low_digit: U8 = rest.mod(10).to[U8]()
         ascii: U8 = low_digit.add(48)  // '0' = 48
-        digits.stride(at).store(ascii.bits())
+        digits.stride(at).poke(ascii.bits())
         next: Me = rest.div(10)
         written: USize = 20.sub(at)
         more_value: Bool = next.ne(0)
@@ -561,7 +561,7 @@ require T: typename, Writer[T]
         base: U8 = decimal  // '0', or 'a' - 10
             ? 48
             : 87
-        digits.stride(at).store(base.add(nibble).bits())
+        digits.stride(at).poke(base.add(nibble).bits())
         next: Me = rest.shr(4)
         written: USize = 16.sub(at)
         more_value: Bool = next.ne(0)
@@ -770,7 +770,7 @@ require T: typename, Writer[T]
 // -- addresses -----------------------------------------------------------------
 //
 // A pointer isn't Representable: `{p}` would hide whether the value or the
-// address was meant. `{p.load()}` writes the value, `{p.to[Addr]()}` the
+// address was meant. `{p.peek()}` writes the value, `{p.to[Addr]()}` the
 // address, as lowercase hex after 0x without leading zeros, like Rust's {:p}.
 // Null is 0x0.
 
@@ -877,15 +877,15 @@ require T: typename, Writer[T]
         jump fill(value)
 
     block fill(rest: U64)
-        at: USize = end.load().sub(1)
+        at: USize = end.peek().sub(1)
         low_digit: U8 = rest.mod(10).to[U8]()
-        digits.stride(at).store(low_digit.add(48))
+        digits.stride(at).poke(low_digit.add(48))
         next: U64 = rest.div(10)
         more: Bool = next.ne(0)
         branch more
             ? continue
             : layout(at)
-        at.store_into(end)
+        at.poke_into(end)
         jump fill(next)
 
     block layout(start: USize)
@@ -1065,7 +1065,7 @@ routine B64.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U64 = me.bits()
-        write_binary_float(out, bits, Me.FORMAT.load())
+        write_binary_float(out, bits, Me.FORMAT.peek())
         return()
 
 /// Writes the B32 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
@@ -1075,7 +1075,7 @@ routine B32.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U64 = me.bits().to[U64]()
-        write_binary_float(out, bits, Me.FORMAT.load())
+        write_binary_float(out, bits, Me.FORMAT.peek())
         return()
 
 /// Writes the B16 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
@@ -1085,7 +1085,7 @@ routine B16.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U64 = me.bits().to[U64]()
-        write_binary_float(out, bits, Me.FORMAT.load())
+        write_binary_float(out, bits, Me.FORMAT.peek())
         return()
 
 /// Writes the BF16 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
@@ -1095,7 +1095,7 @@ routine BF16.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U64 = me.bits().to[U64]()
-        write_binary_float(out, bits, Me.FORMAT.load())
+        write_binary_float(out, bits, Me.FORMAT.peek())
         return()
 
 // -- B128 ----------------------------------------------------------------------
@@ -1241,7 +1241,7 @@ require T: typename, Writer[T]
             : emit(d, n, k, digits)
 
     block emit(d: U8, n: USize, k: S64, digits: @U8)
-        digits.stride(n).store(d.add(48))
+        digits.stride(n).poke(d.add(48))
         jump next_digit(n.add(1), k, digits)
 
     // Both ends reachable: the nearer one, and the even digit on an exact tie.
@@ -1256,7 +1256,7 @@ require T: typename, Writer[T]
             ? nearer
             : high
         digit: U8 = d.add(round_up.to[U8]())
-        digits.stride(n).store(digit.add(48))
+        digits.stride(n).poke(digit.add(48))
         count: USize = n.add(1)
         write_decimal_digits(out, digits, count, k.sub(count.to[S64]()))
         return()
@@ -1381,7 +1381,7 @@ require T: typename, Writer[T]
     block put(chars: @U8, at: USize, rest: U64, left: USize)
         to: USize = at.sub(1)
         low_digit: U8 = rest.mod(10).to[U8]()
-        chars.stride(to).store(low_digit.add(48))
+        chars.stride(to).poke(low_digit.add(48))
         jump digit(chars, to, rest.div(10), left.sub(1))
 
     // the top chunk is zero-padded to 19 digits
@@ -1392,7 +1392,7 @@ require T: typename, Writer[T]
             : lay_out(chars, at)
 
     block look(chars: @U8, at: USize)
-        ascii: U8 = chars.stride(at).load()
+        ascii: U8 = chars.stride(at).peek()
         zero: Bool = ascii.eq(48)
         branch zero
             ? skip_zeros(chars, at.add(1))
@@ -1491,7 +1491,7 @@ routine B64.represent_fixed_into[T](me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U128 = me.bits().to[U128]()
-        write_binary_fixed(out, bits, Me.FORMAT.load(), digits)
+        write_binary_fixed(out, bits, Me.FORMAT.peek(), digits)
         return()
 
 /// Writes the B32 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1502,7 +1502,7 @@ routine B32.represent_fixed_into[T](me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U128 = me.bits().to[U128]()
-        write_binary_fixed(out, bits, Me.FORMAT.load(), digits)
+        write_binary_fixed(out, bits, Me.FORMAT.peek(), digits)
         return()
 
 /// Writes the B16 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1513,7 +1513,7 @@ routine B16.represent_fixed_into[T](me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U128 = me.bits().to[U128]()
-        write_binary_fixed(out, bits, Me.FORMAT.load(), digits)
+        write_binary_fixed(out, bits, Me.FORMAT.peek(), digits)
         return()
 
 /// Writes the BF16 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1524,7 +1524,7 @@ routine BF16.represent_fixed_into[T](me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U128 = me.bits().to[U128]()
-        write_binary_fixed(out, bits, Me.FORMAT.load(), digits)
+        write_binary_fixed(out, bits, Me.FORMAT.peek(), digits)
         return()
 
 /// Writes the B128 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1534,7 +1534,7 @@ require T: typename, Writer[T]
 routine B128.represent_fixed_into[T](me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer[T]
     block entry()
-        write_binary_fixed(out, me.bits(), Me.FORMAT.load(), digits)
+        write_binary_fixed(out, me.bits(), Me.FORMAT.peek(), digits)
         return()
 
 // -- views ---------------------------------------------------------------------
@@ -1676,7 +1676,7 @@ require TValue: typename, TWriter: typename, Writer[TWriter], Representable[TVal
     block entry()
         claim counter: @CountWriter <- .construct()
         value.represent_into(counter)
-        count: USize = counter.count.load()
+        count: USize = counter.count.peek()
         pad: USize = spec.width.sub_clamp(count)
         half: USize = pad.div(2)
         align: Align = spec.align
@@ -1704,8 +1704,8 @@ require TValue: typename, TWriter: typename, Writer[TWriter], Representable[TVal
 /// :param count: The number of bytes.
 routine SignPadWriter[T].write_bytes(me: @Me, bytes: @Byte, count: USize) -> Void
 require T: typename, Writer[T]
-    local inner: @T = me.inner.load()
-    local pad: USize = me.pad.load()
+    local inner: @T = me.inner.peek()
+    local pad: USize = me.pad.peek()
 
     block entry()
         first: Bool = pad.gt(0).bitand(count.gt(0))
@@ -1714,9 +1714,9 @@ require T: typename, Writer[T]
             : pass(bytes, count)
 
     block first()
-        fill: Bytes = me.fill.load()
-        me.pad.store(0)
-        byte: U8 = Byte.to[U8](bytes.stride(0).load())
+        fill: Bytes = me.fill.peek()
+        me.pad.poke(0)
+        byte: U8 = Byte.to[U8](bytes.stride(0).peek())
         signed: Bool = byte.eq(45).bitor(byte.eq(43))  // - or +
         branch signed
             ? sign(fill)

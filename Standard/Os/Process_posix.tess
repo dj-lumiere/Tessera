@@ -172,7 +172,7 @@ private routine read_write_cloexec() -> CInt
 #target(os: ("linux", "macos"))
 private routine errno() -> CInt
     block entry()
-        return(c_errno_place().load())
+        return(c_errno_place().peek())
 
 /// The {ProcessError} for the errno a failed start reported.
 /// :param e: The error number.
@@ -210,7 +210,7 @@ private routine Prepared.empty() -> Me
 /// :param alloc: The allocator for the copy.
 /// :returns: The NUL-terminated copy, or null when the allocation fails.
 #target(os: ("linux", "macos"))
-private routine c_string(text: Bytes, alloc: @Allocator) -> @Byte
+private routine c_string(text: Bytes, alloc: @MemoryManager) -> @Byte
     block entry()
         n: USize = text.count()
         p: @Byte = allocate[Byte](n.add(1), alloc)
@@ -218,7 +218,7 @@ private routine c_string(text: Bytes, alloc: @Allocator) -> @Byte
             ? return(null)
             : continue
         p.copy(text.data, n)
-        p.stride(n).store(0x00)
+        p.stride(n).poke(0x00)
         return(p)
 
 /// "name=value" with a NUL after it, in memory from `alloc`.
@@ -226,7 +226,7 @@ private routine c_string(text: Bytes, alloc: @Allocator) -> @Byte
 /// :param alloc: The allocator for the entry.
 /// :returns: The NUL-terminated entry, or null when the allocation fails.
 #target(os: ("linux", "macos"))
-private routine env_entry(v: EnvVar, alloc: @Allocator) -> @Byte
+private routine env_entry(v: EnvVar, alloc: @MemoryManager) -> @Byte
     block entry()
         n: USize = v.name.count()
         m: USize = v.value.count()
@@ -235,37 +235,37 @@ private routine env_entry(v: EnvVar, alloc: @Allocator) -> @Byte
             ? return(null)
             : continue
         p.copy(v.name.data, n)
-        p.stride(n).store(b'=')
+        p.stride(n).poke(b'=')
         p.stride(n.add(1)).copy(v.value.data, m)
-        p.stride(n.add(m).add(1)).store(0x00)
+        p.stride(n.add(m).add(1)).poke(0x00)
         return(p)
 
 /// Frees every string and array a prepared start owns, whether it was made completely or not.
 /// :param alloc: The allocator they came from.
 #target(os: ("linux", "macos"))
-private routine Prepared.release(me: @Me, alloc: @Allocator) -> Void
+private routine Prepared.release(me: @Me, alloc: @MemoryManager) -> Void
     block entry()
         jump args(0)
 
     block args(i: USize)
-        branch i.eq(me.argc.load())
+        branch i.eq(me.argc.peek())
             ? env(0)
             : continue
-        arg_slot: @@Byte = me.argv.load().stride(i)
-        deallocate(arg_slot.load(), alloc)
+        arg_slot: @@Byte = me.argv.peek().stride(i)
+        deallocate(arg_slot.peek(), alloc)
         jump args(i.add(1))
 
     block env(i: USize)
-        envp: @@Byte = me.envp.load()
-        branch envp.is_null().bitor(i.eq(me.own_count.load()))
+        envp: @@Byte = me.envp.peek()
+        branch envp.is_null().bitor(i.eq(me.own_count.peek()))
             ? rest()
             : continue
-        entry_slot: @@Byte = envp.stride(me.own_first.load().add(i))
-        deallocate(entry_slot.load(), alloc)
+        entry_slot: @@Byte = envp.stride(me.own_first.peek().add(i))
+        deallocate(entry_slot.peek(), alloc)
         jump env(i.add(1))
 
     block rest()
-        argv: @@Byte = me.argv.load()
+        argv: @@Byte = me.argv.peek()
         branch argv.is_null()
             ? arrays_done()
             : continue
@@ -273,7 +273,7 @@ private routine Prepared.release(me: @Me, alloc: @Allocator) -> Void
         jump arrays_done()
 
     block arrays_done()
-        envp: @@Byte = me.envp.load()
+        envp: @@Byte = me.envp.peek()
         branch envp.is_null()
             ? env_done()
             : continue
@@ -281,7 +281,7 @@ private routine Prepared.release(me: @Me, alloc: @Allocator) -> Void
         jump env_done()
 
     block env_done()
-        dir: @Byte = me.directory.load()
+        dir: @Byte = me.directory.peek()
         branch dir.is_null()
             ? return()
             : continue
@@ -297,17 +297,17 @@ private routine Prepared.release(me: @Me, alloc: @Allocator) -> Void
 /// :returns: `true` on success, `false` when an allocation failed.
 #target(os: ("linux", "macos"))
 private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], options: ProcessOptions,
-    alloc: @Allocator) -> Bool
+    alloc: @MemoryManager) -> Bool
     local arg_count: USize = args.count()
     local first: @USize <- .hollow()
 
     block entry()
-        me.store(Prepared.empty())
+        me.poke(Prepared.empty())
         argv: @@Byte = allocate[@Byte](arg_count.add(2), alloc)
         branch argv.is_null()
             ? return(false)
             : continue
-        me.argv.store(argv)
+        me.argv.poke(argv)
         jump string(argv, 0)
 
     block string(argv: @@Byte, i: USize)
@@ -322,12 +322,12 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
         branch s.is_null()
             ? return(false)
             : continue
-        argv.stride(i).store(s)
-        me.argc.store(i.add(1))
+        argv.stride(i).poke(s)
+        me.argc.poke(i.add(1))
         jump string(argv, i.add(1))
 
     block args_done(argv: @@Byte, n: USize)
-        argv.stride(n).store(null)
+        argv.stride(n).poke(null)
         when options.directory
             .Present(d) => directory(c_string(d, alloc))
             .Absent => environment()
@@ -336,21 +336,21 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
         branch d.is_null()
             ? return(false)
             : continue
-        me.directory.store(d)
+        me.directory.poke(d)
         jump environment()
 
     block environment()
         branch options.env_count.eq(0)
             ? return(true)
             : continue
-        parent: @@Byte = environ_place().load()
+        parent: @@Byte = environ_place().peek()
         jump count(parent, 0)
 
     block count(parent: @@Byte, n: USize)
         branch parent.is_null()
             ? merge(parent, n)
             : continue
-        parent_entry: @Byte = parent.stride(n).load()
+        parent_entry: @Byte = parent.stride(n).peek()
         branch parent_entry.is_null()
             ? merge(parent, n)
             : count(parent, n.add(1))
@@ -362,42 +362,42 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
         branch envp.is_null()
             ? return(false)
             : continue
-        me.envp.store(envp)
-        0.store_into(first)
+        me.envp.poke(envp)
+        0.poke_into(first)
         jump keep(parent, n, envp, 0)
 
     block keep(parent: @@Byte, n: USize, envp: @@Byte, i: USize)
         branch i.eq(n)
             ? own(envp, 0)
             : continue
-        entry: @Byte = parent.stride(i).load()
+        entry: @Byte = parent.stride(i).peek()
         branch is_overridden(entry.to[CStr]().to[Bytes](), options)
             ? keep(parent, n, envp, i.add(1))
             : continue
-        envp.stride(first.load()).store(entry)
-        first.load().add(1).store_into(first)
+        envp.stride(first.peek()).poke(entry)
+        first.peek().add(1).poke_into(first)
         jump keep(parent, n, envp, i.add(1))
 
     block own(envp: @@Byte, j: USize)
         branch j.eq(options.env_count)
             ? env_done(envp, j)
             : continue
-        e: @Byte = env_entry(options.env.stride(j).load(), alloc)
+        e: @Byte = env_entry(options.env.stride(j).peek(), alloc)
         branch e.is_null()
             ? env_failed(envp, j)
             : continue
-        envp.stride(first.load().add(j)).store(e)
+        envp.stride(first.peek().add(j)).poke(e)
         jump own(envp, j.add(1))
 
     block env_done(envp: @@Byte, count: USize)
-        envp.stride(first.load().add(count)).store(null)
-        me.own_first.store(first.load())
-        me.own_count.store(count)
+        envp.stride(first.peek().add(count)).poke(null)
+        me.own_first.poke(first.peek())
+        me.own_count.poke(count)
         return(true)
 
     block env_failed(envp: @@Byte, count: USize)
-        me.own_first.store(first.load())
-        me.own_count.store(count)
+        me.own_first.poke(first.peek())
+        me.own_count.poke(count)
         return(false)
 
 /// Whether an override names `entry`'s variable (names compared exactly, case included).
@@ -413,7 +413,7 @@ private routine is_overridden(entry: Bytes, options: ProcessOptions) -> Bool
         branch j.eq(options.env_count)
             ? return(false)
             : continue
-        branch env_key_matches(options.env.stride(j).load().name, entry, false)
+        branch env_key_matches(options.env.stride(j).peek().name, entry, false)
             ? return(true)
             : look(j.add(1))
 
@@ -456,7 +456,7 @@ private routine child(p: @Prepared, s: ChildStreams) -> Void
         jump directory()
 
     block directory()
-        dir: @Byte = p.directory.load()
+        dir: @Byte = p.directory.peek()
         branch dir.is_null()
             ? environment()
             : continue
@@ -465,16 +465,16 @@ private routine child(p: @Prepared, s: ChildStreams) -> Void
             : failed()
 
     block environment()
-        envp: @@Byte = p.envp.load()
+        envp: @@Byte = p.envp.peek()
         branch envp.is_null()
             ? exec()
             : continue
-        environ_place().store(envp)
+        environ_place().poke(envp)
         jump exec()
 
     block exec()
-        argv: @@Byte = p.argv.load()
-        c_execvp(argv.load(), argv)
+        argv: @@Byte = p.argv.peek()
+        c_execvp(argv.peek(), argv)
         jump failed()
 
     block failed()
@@ -520,8 +520,8 @@ private routine cloexec_pipe(fds: @CInt) -> Bool
             ? continue
             : return(false)
         // F_SETFD, FD_CLOEXEC
-        c_fcntl(fds.load(), 2, 1)
-        c_fcntl(fds.stride(1).load(), 2, 1)
+        c_fcntl(fds.peek(), 2, 1)
+        c_fcntl(fds.stride(1).peek(), 2, 1)
         return(true)
 
 /// Closes `fd` unless it is negative (not open).
@@ -539,13 +539,13 @@ private routine close_if_open(fd: CInt) -> Void
 #target(os: ("linux", "macos"))
 private routine Plumbing.close_all(me: @Me) -> Void
     block entry()
-        close_if_open(me.out_r.load())
-        close_if_open(me.out_w.load())
-        close_if_open(me.err_r.load())
-        close_if_open(me.err_w.load())
-        close_if_open(me.exec_r.load())
-        close_if_open(me.exec_w.load())
-        close_if_open(me.devnull.load())
+        close_if_open(me.out_r.peek())
+        close_if_open(me.out_w.peek())
+        close_if_open(me.err_r.peek())
+        close_if_open(me.err_w.peek())
+        close_if_open(me.exec_r.peek())
+        close_if_open(me.exec_w.peek())
+        close_if_open(me.devnull.peek())
         return()
 
 /// Makes the pipes and the null device `options` call for: always the exec report pipe, a pipe for each captured
@@ -555,21 +555,21 @@ private routine Plumbing.close_all(me: @Me) -> Void
 #target(os: ("linux", "macos"))
 private routine Plumbing.make(me: @Me, options: ProcessOptions) -> Bool
     block entry()
-        me.store(Plumbing.empty())
+        me.poke(Plumbing.empty())
         claim fds: @Array[CInt, 2] <- [-1, -1]
         branch cloexec_pipe(fds.to[@CInt]())
             ? continue
             : return(false)
-        me.exec_r.store(fds.getitem(0))
-        me.exec_w.store(fds.getitem(1))
+        me.exec_r.poke(fds.getitem(0))
+        me.exec_w.poke(fds.getitem(1))
         branch options.stdout.eq(OutputMode.CAPTURE)
             ? continue
             : error_pipe(fds.to[@CInt]())
         branch cloexec_pipe(fds.to[@CInt]())
             ? continue
             : return(false)
-        me.out_r.store(fds.getitem(0))
-        me.out_w.store(fds.getitem(1))
+        me.out_r.poke(fds.getitem(0))
+        me.out_w.poke(fds.getitem(1))
         jump error_pipe(fds.to[@CInt]())
 
     block error_pipe(fds: @CInt)
@@ -579,8 +579,8 @@ private routine Plumbing.make(me: @Me, options: ProcessOptions) -> Bool
         branch cloexec_pipe(fds)
             ? continue
             : return(false)
-        me.err_r.store(fds.load())
-        me.err_w.store(fds.stride(1).load())
+        me.err_r.poke(fds.peek())
+        me.err_w.poke(fds.stride(1).peek())
         jump null_device()
 
     block null_device()
@@ -591,7 +591,7 @@ private routine Plumbing.make(me: @Me, options: ProcessOptions) -> Bool
             ? continue
             : return(true)
         fd: CInt = c_open("/dev/null", read_write_cloexec())
-        me.devnull.store(fd)
+        me.devnull.poke(fd)
         return(fd.ge(0))
 
 /// The fd one output stream of the child gets: the pipe's write end, the null device, or -1 (inherit).
@@ -620,7 +620,7 @@ private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 #target(os: ("linux", "macos"))
 #expensive("starts a process")
 routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessOptions,
-    alloc: @Allocator) -> Result[ProcessOutput, ProcessError]
+    alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
     local p: @Prepared <- Prepared.empty()
     local pipes: @Plumbing <- Plumbing.empty()
     local report: @CInt <- 0
@@ -637,14 +637,14 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         branch pipes.make(options)
             ? continue
             : spawn_failed()
-        null_fd: CInt = pipes.devnull.load()
+        null_fd: CInt = pipes.devnull.peek()
         input: CInt = options.stdin.eq(InputMode.NULL)
             ? null_fd
             : -1
         streams: ChildStreams = ChildStreams(input: input,
-            output: output_fd(options.stdout, pipes.out_w.load(), null_fd),
-            error: output_fd(options.stderr, pipes.err_w.load(), null_fd),
-            report: pipes.exec_w.load())
+            output: output_fd(options.stdout, pipes.out_w.peek(), null_fd),
+            error: output_fd(options.stderr, pipes.err_w.peek(), null_fd),
+            report: pipes.exec_w.peek())
         pid: CInt = c_fork()
         branch pid.eq(0)
             ? child(p, streams)
@@ -653,14 +653,14 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
             ? spawn_failed()
             : continue
         // The child's ends close here, so each pipe ends when the child is done with it.
-        close_if_open(pipes.out_w.load())
-        close_if_open(pipes.err_w.load())
-        close_if_open(pipes.exec_w.load())
+        close_if_open(pipes.out_w.peek())
+        close_if_open(pipes.err_w.peek())
+        close_if_open(pipes.exec_w.peek())
         close_if_open(null_fd)
-        pipes.out_w.store(-1)
-        pipes.err_w.store(-1)
-        pipes.exec_w.store(-1)
-        pipes.devnull.store(-1)
+        pipes.out_w.poke(-1)
+        pipes.err_w.poke(-1)
+        pipes.exec_w.poke(-1)
+        pipes.devnull.poke(-1)
         jump started(pid)
 
     block spawn_failed()
@@ -669,20 +669,20 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
 
     // 4 bytes on the report pipe are the errno of a failed exec. Its end without them is a started program.
     block started(pid: CInt)
-        got: SSize = c_read(pipes.exec_r.load(), report.to[@Byte](), 4)
+        got: SSize = c_read(pipes.exec_r.peek(), report.to[@Byte](), 4)
         branch got.lt(0).bitand(errno().eq(4))
             ? started(pid)
             : continue
-        c_close(pipes.exec_r.load())
-        pipes.exec_r.store(-1)
+        c_close(pipes.exec_r.peek())
+        pipes.exec_r.poke(-1)
         // drain closes both pipes as each ends.
-        drain(PipeCapture(fd: pipes.out_r.load(), buffer: out),
-            PipeCapture(fd: pipes.err_r.load(), buffer: err), alloc)
-        pipes.out_r.store(-1)
-        pipes.err_r.store(-1)
+        drain(PipeCapture(fd: pipes.out_r.peek(), buffer: out),
+            PipeCapture(fd: pipes.err_r.peek(), buffer: err), alloc)
+        pipes.out_r.poke(-1)
+        pipes.err_r.poke(-1)
         status: Option[ExitStatus] = reap(pid)
         branch got.eq(4)
-            ? finish(.Failure(spawn_error(report.load())))
+            ? finish(.Failure(spawn_error(report.peek())))
             : continue
         when status
             .Present(s) => exited(s)
@@ -691,29 +691,29 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
     // The output owns the captured bytes from here, so finish has none left to release. A capture that couldn't
     // grow lost bytes: the run fails, and finish releases what was captured.
     block exited(s: ExitStatus)
-        lost: Bool = out.failed.load().bitor(err.failed.load())
+        lost: Bool = out.failed.peek().bitor(err.failed.peek())
         branch lost
             ? finish(.Failure(ProcessError.OUT_OF_MEMORY))
             : continue
         output: ProcessOutput = ProcessOutput(status: s, stdout: out.owned(alloc),
             stderr: err.owned(alloc))
-        out.store(CaptureBuffer.empty())
-        err.store(CaptureBuffer.empty())
+        out.poke(CaptureBuffer.empty())
+        err.poke(CaptureBuffer.empty())
         jump finish(.Success(output))
 
     // Every descriptor still open, the prepared strings, and the captured bytes nothing took.
     block finish(result: Result[ProcessOutput, ProcessError])
         pipes.close_all()
         p.release(alloc)
-        release(out.load(), alloc)
-        release(err.load(), alloc)
+        release(out.peek(), alloc)
+        release(err.peek(), alloc)
         return(result)
 
 /// Frees a capture buffer's memory if it has any.
 /// :param b: The buffer.
 /// :param alloc: The allocator it was filled from.
 #target(os: ("linux", "macos"))
-private routine release(b: CaptureBuffer, alloc: @Allocator) -> Void
+private routine release(b: CaptureBuffer, alloc: @MemoryManager) -> Void
     block entry()
         branch b.data.is_null()
             ? return()
@@ -727,7 +727,7 @@ private routine release(b: CaptureBuffer, alloc: @Allocator) -> Void
 /// :param err: Standard error's pipe (its fd -1 when not captured) and the buffer it goes into.
 /// :param alloc: The allocator the buffers grow from.
 #target(os: ("linux", "macos"))
-private routine drain(out: PipeCapture, err: PipeCapture, alloc: @Allocator) -> Void
+private routine drain(out: PipeCapture, err: PipeCapture, alloc: @MemoryManager) -> Void
     local out_fd: CInt = out.fd
     local err_fd: CInt = err.fd
     // POLLIN, and poll skips a negative fd
@@ -756,8 +756,8 @@ private routine drain(out: PipeCapture, err: PipeCapture, alloc: @Allocator) -> 
             : give_up()
 
     block give_up()
-        close_if_open(fds.fd.load())
-        close_if_open(fds.stride(1).fd.load())
+        close_if_open(fds.fd.peek())
+        close_if_open(fds.stride(1).fd.peek())
         return()
 
     block stream(open: U32, i: USize)
@@ -765,8 +765,8 @@ private routine drain(out: PipeCapture, err: PipeCapture, alloc: @Allocator) -> 
             ? wait(open)
             : continue
         p: @PollFd = fds.stride(i)
-        fd: CInt = p.fd.load()
-        branch fd.lt(0).bitor(p.revents.load().eq(0))
+        fd: CInt = p.fd.peek()
+        branch fd.lt(0).bitor(p.revents.peek().eq(0))
             ? stream(open, i.add(1))
             : continue
         n: SSize = c_read(fd, chunk, 4096)
@@ -777,7 +777,7 @@ private routine drain(out: PipeCapture, err: PipeCapture, alloc: @Allocator) -> 
             ? stream(open, i.add(1))
             : continue
         c_close(fd)
-        p.fd.store(-1)
+        p.fd.poke(-1)
         jump stream(open.sub(1), i.add(1))
 
     block keep(open: U32, i: USize, n: USize)
@@ -808,7 +808,7 @@ private routine reap(pid: CInt) -> Option[ExitStatus]
         branch rc.lt(0)
             ? return(.Absent)
             : continue
-        s: CInt = status.load()
+        s: CInt = status.peek()
         low: CInt = s.bitand(0x7F)
         // WIFEXITED, else WIFSIGNALED (0x7F is a stop, which waitpid without WUNTRACED doesn't report)
         branch low.eq(0)
@@ -824,7 +824,7 @@ private routine reap(pid: CInt) -> Option[ExitStatus]
 /// :absent: When the variable isn't set, `name` is 256 bytes or longer or holds a NUL, or the allocation fails.
 #target(os: ("linux", "macos"))
 #expensive("allocates a copy of the variable")
-routine env_var(name: Bytes, alloc: @Allocator) -> Option[Bytes]
+routine env_var(name: Bytes, alloc: @MemoryManager) -> Option[Bytes]
     block entry()
         claim key: @Array[Byte, 256] <- .hollow()
         too_long: Bool = name.count().ge(256)
@@ -833,7 +833,7 @@ routine env_var(name: Bytes, alloc: @Allocator) -> Option[Bytes]
             : continue
         key.to[@Byte]().copy(name.data, name.count())
         key_end: @Byte = key.to[@Byte]().stride(name.count())
-        key_end.store(0x00)
+        key_end.poke(0x00)
         value: @Byte = c_getenv(key.to[@Byte]())
         branch value.is_null()
             ? return(.Absent)

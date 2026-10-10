@@ -37,7 +37,7 @@ record Graph
 
 // ── Graph ─────────────────────────────────────────────────────────────────────
 
-routine Graph.construct(num_nodes: USize, alloc: @Allocator) -> Me
+routine Graph.construct(num_nodes: USize, alloc: @MemoryManager) -> Me
     local adj: @List[@List[Edge]] = allocate[List[@List[Edge]]](1, alloc)
 
     block entry()
@@ -46,7 +46,7 @@ routine Graph.construct(num_nodes: USize, alloc: @Allocator) -> Me
             ? crash_allocation()
             : continue
         adj_val: List[@List[Edge]] = .construct(alloc)
-        adj.store(adj_val)
+        adj.poke(adj_val)
         jump init_loop(0)
 
     block init_loop(i: USize)
@@ -62,7 +62,7 @@ routine Graph.construct(num_nodes: USize, alloc: @Allocator) -> Me
             ? crash_allocation()
             : continue
         empty: List[Edge] = .construct(alloc)
-        list.store(empty)
+        list.poke(empty)
         adj.add_last(list)
         jump init_loop(i.add(1))
 
@@ -72,15 +72,15 @@ routine Graph.construct(num_nodes: USize, alloc: @Allocator) -> Me
 
 routine Graph.add_edge(me: @Me, from: USize, to: USize, weight: S64) -> Void
     block entry()
-        adj: @List[@List[Edge]] = me.adj.load()
+        adj: @List[@List[Edge]] = me.adj.peek()
         list: @List[Edge] = adj.getitem(from)
         edge: Edge = Edge(to: to, weight: weight)
         list.add_last(edge)
         return()
 
-routine Graph.destruct(me: @Me, alloc: @Allocator) -> Void
-    local n: USize = me.num_nodes.load()
-    local adj: @List[@List[Edge]] = me.adj.load()
+routine Graph.destruct(me: @Me, alloc: @MemoryManager) -> Void
+    local n: USize = me.num_nodes.peek()
+    local adj: @List[@List[Edge]] = me.adj.peek()
 
     block entry()
         jump free_loop(0)
@@ -108,8 +108,8 @@ routine Graph.destruct(me: @Me, alloc: @Allocator) -> Void
 // Fills it with shortest distances from source (INF where unreachable).
 // Owns and frees the priority queue before returning.
 
-routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator) -> Void
-    local n: USize = graph.num_nodes.load()
+routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @MemoryManager) -> Void
+    local n: USize = graph.num_nodes.peek()
     local pq: @PriorityQueue[S64, USize] <- .construct(alloc)
 
     block entry()
@@ -123,12 +123,12 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator
             : write_inf(i)
 
     block write_inf(i: USize)
-        dist.stride(i).store(INF)
+        dist.stride(i).poke(INF)
         jump fill_inf(i.add(1))
 
     // Phase 2 — set the source distance to 0 and seed the queue.
     block seed()
-        dist.stride(source).store(0)
+        dist.stride(source).poke(0)
         pq.add(0, source)
         jump main_loop()
 
@@ -143,7 +143,7 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator
         top: PriorityEntry[S64, USize] = pq.remove_entry()
         d: S64 = top.priority
         u: USize = top.element
-        best: S64 = dist.stride(u).load()
+        best: S64 = dist.stride(u).peek()
         stale: Bool = d.gt(best)
         // re-push instead of decrease-key produces stale entries — drop them.
         branch stale
@@ -151,7 +151,7 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator
             : scan(u, d)
 
     block scan(u: USize, d: S64)
-        adj: @List[@List[Edge]] = graph.adj.load()
+        adj: @List[@List[Edge]] = graph.adj.peek()
         list: @List[Edge] = adj.getitem(u)
         len: USize = list.count()
         jump edge_loop(0, len, d, list)
@@ -167,14 +167,14 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator
         v: USize = edge.to
         w: S64 = edge.weight
         new_dist: S64 = d.add(w)
-        best: S64 = dist.stride(v).load()
+        best: S64 = dist.stride(v).peek()
         better: Bool = new_dist.lt(best)
         branch better
             ? improve(i, len, d, list, v, new_dist) \
             : edge_loop(i.add(1), len, d, list)
 
     block improve(i: USize, len: USize, d: S64, list: @List[Edge], v: USize, new_dist: S64)
-        dist.stride(v).store(new_dist)
+        dist.stride(v).poke(new_dist)
         pq.add(new_dist, v)
         jump edge_loop(i.add(1), len, d, list)
 
@@ -204,7 +204,7 @@ routine dijkstra(graph:  @Graph, source: USize, dist:   @S64, alloc:  @Allocator
 //   node 5: 11    (0→2→5)
 
 routine start() -> Void
-    local alloc: @Allocator <- make_heap_allocator()
+    local alloc: @MemoryManager <- make_heap_memory()
     local g: Graph = .construct(6, alloc)
     local graph: @Graph <- g
     local distances: @Slice[S64] <- .hollow()
@@ -221,7 +221,7 @@ routine start() -> Void
         graph.add_edge(3, 4,  6)
         graph.add_edge(4, 5,  9)
 
-        distances.store(.construct(6, alloc))
+        distances.poke(.construct(6, alloc))
         dist: @S64 = distances.to[@S64]()
         dijkstra(graph, 0, dist, alloc)
 

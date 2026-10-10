@@ -13,8 +13,8 @@ module Standard/Collections
 import Standard/Alloc
 import Standard/Format
 
-/// One entry of a PriorityQueue: the priority it is ordered by and the element it carries. `peek_entry` and
-/// `pop_entry` hand it back.
+/// One entry of a PriorityQueue: the priority it is ordered by and the element it carries. `first_entry` and
+/// `remove_entry` hand it back.
 /// :typeparam TPriority: The priority type.
 /// :typeparam TElement: The element type.
 record PriorityEntry[TPriority, TElement]
@@ -22,7 +22,7 @@ require TPriority: typename, TElement: typename
     priority: TPriority
     element: TElement
 
-/// A binary min-heap on a growable array: each element is added with a priority, the entry with the smallest priority by `compare` is always at the top, and `remove` takes it out first. Entries whose priorities compare equal come out in no particular order. For the largest priority first, use {Reversed[T]} priorities. Adding and removing are `O(log n)`, and peek is `O(1)`.
+/// A binary min-heap on a growable array: each element is added with a priority, the entry with the smallest priority by `compare` is always at the top, and `remove` takes it out first. Entries whose priorities compare equal come out in no particular order. For the largest priority first, use {Reversed[T]} priorities. Adding and removing are `O(log n)`, and `first` is `O(1)`.
 /// :typeparam TPriority: The priority type, ordered by its `Comparable` conformance.
 /// :typeparam TElement: The element type, which only rides along with its priority.
 record PriorityQueue[TPriority, TElement]
@@ -36,7 +36,7 @@ require TPriority: typename, TElement: typename, Comparable[TPriority]
 /// Creates an empty PriorityQueue that draws its storage from `alloc`. Nothing is allocated until the first insertion.
 /// :param alloc: The allocator the queue stores and later frees its memory with.
 /// :returns: A new empty PriorityQueue.
-routine PriorityQueue[TPriority, TElement].construct(alloc: @Allocator) -> Me
+routine PriorityQueue[TPriority, TElement].construct(alloc: @MemoryManager) -> Me
 require TPriority: typename, TElement: typename
     block entry()
         storage: Slice[PriorityEntry[TPriority, TElement]] = .construct(0, alloc)
@@ -56,7 +56,7 @@ require TPriority: typename, TElement: typename
 routine PriorityQueue[TPriority, TElement].count(me: @Me) -> USize
 require TPriority: typename, TElement: typename
     block entry()
-        count: USize = me.load().count()
+        count: USize = me.peek().count()
         return(count)
 
 /// Whether the queue holds no entries.
@@ -64,7 +64,7 @@ require TPriority: typename, TElement: typename
 routine PriorityQueue[TPriority, TElement].is_empty(me: @Me) -> Bool
 require TPriority: typename, TElement: typename
     block entry()
-        empty: Bool = me.load().is_empty()
+        empty: Bool = me.peek().is_empty()
         return(empty)
 
 /// Whether the queue holds no entries.
@@ -109,7 +109,7 @@ require TPriority: typename, TElement: typename
 private routine PriorityQueue[TPriority, TElement].make_capacity(me: @Me, capacity: USize) -> Bool
 require TPriority: typename, TElement: typename
     block entry()
-        old_capacity: USize = me.storage.count.load()
+        old_capacity: USize = me.storage.count.peek()
         enough: Bool = old_capacity.ge(capacity)
         branch enough
             ? return(true)
@@ -125,7 +125,7 @@ require TPriority: typename, TElement: typename
 /// :returns: True when the array is big enough, false when the allocator failed (the queue is left as it was).
 private routine PriorityQueue[TPriority, TElement].make_room(me: @Me, wanted: USize) -> Bool
 require TPriority: typename, TElement: typename
-    local capacity: USize = me.storage.count.load()
+    local capacity: USize = me.storage.count.peek()
 
     block entry()
         enough: Bool = capacity.ge(wanted)
@@ -179,16 +179,16 @@ require TPriority: typename, TElement: typename
     local data_at: @@PriorityEntry[TPriority, TElement] = me.storage.data
 
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         wanted: USize = count.add(1)
         room: Bool = me.make_room(wanted)
         branch room
             ? continue
             : return(.Failure(AllocFailed()))
-        data: @PriorityEntry[TPriority, TElement] = data_at.load()
-        data.stride(count).store(PriorityEntry[TPriority, TElement](priority: priority,
+        data: @PriorityEntry[TPriority, TElement] = data_at.peek()
+        data.stride(count).poke(PriorityEntry[TPriority, TElement](priority: priority,
             element: element))
-        me.count.store(wanted)
+        me.count.poke(wanted)
         jump sift_up(count)
 
     block sift_up(index: USize)
@@ -199,9 +199,9 @@ require TPriority: typename, TElement: typename
 
     block compare_parent(index: USize)
         parent: USize = index.sub(1).div(2)
-        data: @PriorityEntry[TPriority, TElement] = data_at.load()
-        child_entry: PriorityEntry[TPriority, TElement] = data.stride(index).load()
-        parent_entry: PriorityEntry[TPriority, TElement] = data.stride(parent).load()
+        data: @PriorityEntry[TPriority, TElement] = data_at.peek()
+        child_entry: PriorityEntry[TPriority, TElement] = data.stride(index).peek()
+        parent_entry: PriorityEntry[TPriority, TElement] = data.stride(parent).peek()
         smaller: Bool = child_entry.priority.compare(parent_entry.priority).lt(0)
         branch smaller
             ? swap(index, parent, child_entry, parent_entry)
@@ -209,86 +209,86 @@ require TPriority: typename, TElement: typename
 
     block swap(index: USize, parent: USize, child_entry: PriorityEntry[TPriority, TElement],
         parent_entry: PriorityEntry[TPriority, TElement])
-        data: @PriorityEntry[TPriority, TElement] = data_at.load()
-        data.stride(parent).store(child_entry)
-        data.stride(index).store(parent_entry)
+        data: @PriorityEntry[TPriority, TElement] = data_at.peek()
+        data.stride(parent).poke(child_entry)
+        data.stride(index).poke(parent_entry)
         jump sift_up(parent)
 
 /// Reads the element with the smallest priority, the top, without removing it.
 /// :returns: A copy of the top element.
-/// :throws: Crashes with `AbsentValueError` when the queue is empty. See {PriorityQueue[TPriority, TElement].peek_checked}.
+/// :throws: Crashes with `AbsentValueError` when the queue is empty. See {PriorityQueue[TPriority, TElement].first_checked}.
 #track_caller
-routine PriorityQueue[TPriority, TElement].peek(me: Me) -> TElement
+routine PriorityQueue[TPriority, TElement].first(me: Me) -> TElement
 require TPriority: typename, TElement: typename
     block entry()
-        top: PriorityEntry[TPriority, TElement] = me.peek_entry()
+        top: PriorityEntry[TPriority, TElement] = me.first_entry()
         return(top.element)
 
 /// Reads the element with the smallest priority, the top, without removing it.
 /// :returns: A copy of the top element.
-/// :throws: Crashes with `AbsentValueError` when the queue is empty. See {PriorityQueue[TPriority, TElement].peek_checked}.
+/// :throws: Crashes with `AbsentValueError` when the queue is empty. See {PriorityQueue[TPriority, TElement].first_checked}.
 #track_caller
-routine PriorityQueue[TPriority, TElement].peek(me: @Me) -> TElement
+routine PriorityQueue[TPriority, TElement].first(me: @Me) -> TElement
 require TPriority: typename, TElement: typename
     block entry()
-        element: TElement = me.load().peek()
+        element: TElement = me.peek().first()
         return(element)
 
-/// `peek`, returning Absent instead of crashing on an empty queue.
+/// `first`, returning Absent instead of crashing on an empty queue.
 /// :returns: A copy of the top element.
 /// :absent: When the queue is empty.
-routine PriorityQueue[TPriority, TElement].peek_checked(me: @Me) -> Option[TElement]
+routine PriorityQueue[TPriority, TElement].first_checked(me: @Me) -> Option[TElement]
 require TPriority: typename, TElement: typename
     block entry()
-        element: Option[TElement] = me.load().peek_checked()
+        element: Option[TElement] = me.peek().first_checked()
         return(element)
 
-/// `peek`, returning Absent instead of crashing on an empty queue.
+/// `first`, returning Absent instead of crashing on an empty queue.
 /// :returns: A copy of the top element.
 /// :absent: When the queue is empty.
-routine PriorityQueue[TPriority, TElement].peek_checked(me: Me) -> Option[TElement]
+routine PriorityQueue[TPriority, TElement].first_checked(me: Me) -> Option[TElement]
 require TPriority: typename, TElement: typename
     block entry()
-        top: Option[PriorityEntry[TPriority, TElement]] = me.peek_entry_checked()
+        top: Option[PriorityEntry[TPriority, TElement]] = me.first_entry_checked()
         when top
             .Present(found) => return(.Present(found.element))
             .Absent => return(.Absent)
 
 /// Reads the top entry, the smallest priority with its element, without removing it.
 /// :returns: A copy of the top entry.
-/// :throws: Crashes with `AbsentValueError` when the queue is empty. See {PriorityQueue[TPriority, TElement].peek_entry_checked}.
+/// :throws: Crashes with `AbsentValueError` when the queue is empty. See {PriorityQueue[TPriority, TElement].first_entry_checked}.
 #track_caller
-routine PriorityQueue[TPriority, TElement].peek_entry(me: Me) -> PriorityEntry[TPriority, TElement]
+routine PriorityQueue[TPriority, TElement].first_entry(me: Me) -> PriorityEntry[TPriority, TElement]
 require TPriority: typename, TElement: typename
     block entry()
-        top: Option[PriorityEntry[TPriority, TElement]] = me.peek_entry_checked()
+        top: Option[PriorityEntry[TPriority, TElement]] = me.first_entry_checked()
         when top
             .Present(found) => return(found)
             .Absent => crash_absent_value()
 
 /// Reads the top entry, the smallest priority with its element, without removing it.
 /// :returns: A copy of the top entry.
-/// :throws: Crashes with `AbsentValueError` when the queue is empty. See {PriorityQueue[TPriority, TElement].peek_entry_checked}.
+/// :throws: Crashes with `AbsentValueError` when the queue is empty. See {PriorityQueue[TPriority, TElement].first_entry_checked}.
 #track_caller
-routine PriorityQueue[TPriority, TElement].peek_entry(me: @Me) -> PriorityEntry[TPriority, TElement]
+routine PriorityQueue[TPriority, TElement].first_entry(me: @Me) -> PriorityEntry[TPriority, TElement]
 require TPriority: typename, TElement: typename
     block entry()
-        top: PriorityEntry[TPriority, TElement] = me.load().peek_entry()
+        top: PriorityEntry[TPriority, TElement] = me.peek().first_entry()
         return(top)
 
-/// `peek_entry`, returning Absent instead of crashing on an empty queue.
+/// `first_entry`, returning Absent instead of crashing on an empty queue.
 /// :returns: A copy of the top entry.
 /// :absent: When the queue is empty.
-routine PriorityQueue[TPriority, TElement].peek_entry_checked(me: @Me) -> Option[PriorityEntry[TPriority, TElement]]
+routine PriorityQueue[TPriority, TElement].first_entry_checked(me: @Me) -> Option[PriorityEntry[TPriority, TElement]]
 require TPriority: typename, TElement: typename
     block entry()
-        top: Option[PriorityEntry[TPriority, TElement]] = me.load().peek_entry_checked()
+        top: Option[PriorityEntry[TPriority, TElement]] = me.peek().first_entry_checked()
         return(top)
 
-/// `peek_entry`, returning Absent instead of crashing on an empty queue.
+/// `first_entry`, returning Absent instead of crashing on an empty queue.
 /// :returns: A copy of the top entry.
 /// :absent: When the queue is empty.
-routine PriorityQueue[TPriority, TElement].peek_entry_checked(me: Me) -> Option[PriorityEntry[TPriority, TElement]]
+routine PriorityQueue[TPriority, TElement].first_entry_checked(me: Me) -> Option[PriorityEntry[TPriority, TElement]]
 require TPriority: typename, TElement: typename
     block entry()
         count: USize = me.count
@@ -299,7 +299,7 @@ require TPriority: typename, TElement: typename
 
     block load()
         data: @PriorityEntry[TPriority, TElement] = me.storage.data
-        top: PriorityEntry[TPriority, TElement] = data.stride(0).load()
+        top: PriorityEntry[TPriority, TElement] = data.stride(0).peek()
         return(.Present(top))
 
 /// Removes the element with the smallest priority, the top, and returns it, then restores the heap order.
@@ -340,7 +340,7 @@ require TPriority: typename, TElement: typename
 /// :absent: When the queue is empty.
 routine PriorityQueue[TPriority, TElement].remove_entry_checked(me: @Me) -> Option[PriorityEntry[TPriority, TElement]]
 require TPriority: typename, TElement: typename
-    local count: USize = me.count.load()
+    local count: USize = me.count.peek()
     local data_at: @@PriorityEntry[TPriority, TElement] = me.storage.data
 
     block entry()
@@ -350,23 +350,23 @@ require TPriority: typename, TElement: typename
             : remove_root()
 
     block remove_root()
-        data: @PriorityEntry[TPriority, TElement] = data_at.load()
-        result: PriorityEntry[TPriority, TElement] = data.stride(0).load()
+        data: @PriorityEntry[TPriority, TElement] = data_at.peek()
+        result: PriorityEntry[TPriority, TElement] = data.stride(0).peek()
         new_count: USize = count.sub(1)
-        me.count.store(new_count)
+        me.count.poke(new_count)
         now_empty: Bool = new_count.eq(0)
         branch now_empty
             ? return(.Present(result))
             : move_last(result, new_count)
 
     block move_last(result: PriorityEntry[TPriority, TElement], new_count: USize)
-        data: @PriorityEntry[TPriority, TElement] = data_at.load()
-        last: PriorityEntry[TPriority, TElement] = data.stride(new_count).load()
-        data.stride(0).store(last)
+        data: @PriorityEntry[TPriority, TElement] = data_at.peek()
+        last: PriorityEntry[TPriority, TElement] = data.stride(new_count).peek()
+        data.stride(0).poke(last)
         jump sift_down(0, result)
 
     block sift_down(index: USize, result: PriorityEntry[TPriority, TElement])
-        heap_count: USize = me.count.load()
+        heap_count: USize = me.count.peek()
         left: USize = index.mul(2).add(1)
         right: USize = left.add(1)
         has_left: Bool = left.lt(heap_count)
@@ -376,7 +376,7 @@ require TPriority: typename, TElement: typename
 
     block choose_child(index: USize, left: USize, right: USize,
         result: PriorityEntry[TPriority, TElement])
-        heap_count: USize = me.count.load()
+        heap_count: USize = me.count.peek()
         has_right: Bool = right.lt(heap_count)
         branch has_right
             ? compare_children(index, left, right, result)
@@ -384,9 +384,9 @@ require TPriority: typename, TElement: typename
 
     block compare_children(index: USize, left: USize, right: USize,
         result: PriorityEntry[TPriority, TElement])
-        data: @PriorityEntry[TPriority, TElement] = data_at.load()
-        left_entry: PriorityEntry[TPriority, TElement] = data.stride(left).load()
-        right_entry: PriorityEntry[TPriority, TElement] = data.stride(right).load()
+        data: @PriorityEntry[TPriority, TElement] = data_at.peek()
+        left_entry: PriorityEntry[TPriority, TElement] = data.stride(left).peek()
+        right_entry: PriorityEntry[TPriority, TElement] = data.stride(right).peek()
         right_smaller: Bool = right_entry.priority.compare(left_entry.priority).lt(0)
         child: USize = right_smaller
             ? right
@@ -394,9 +394,9 @@ require TPriority: typename, TElement: typename
         jump compare_with_child(index, child, result)
 
     block compare_with_child(index: USize, child: USize, result: PriorityEntry[TPriority, TElement])
-        data: @PriorityEntry[TPriority, TElement] = data_at.load()
-        index_entry: PriorityEntry[TPriority, TElement] = data.stride(index).load()
-        child_entry: PriorityEntry[TPriority, TElement] = data.stride(child).load()
+        data: @PriorityEntry[TPriority, TElement] = data_at.peek()
+        index_entry: PriorityEntry[TPriority, TElement] = data.stride(index).peek()
+        child_entry: PriorityEntry[TPriority, TElement] = data.stride(child).peek()
         child_smaller: Bool = child_entry.priority.compare(index_entry.priority).lt(0)
         branch child_smaller
             ? swap_down(index, child, index_entry, child_entry, result)
@@ -404,16 +404,16 @@ require TPriority: typename, TElement: typename
 
     block swap_down(index: USize, child: USize, index_entry: PriorityEntry[TPriority, TElement],
         child_entry: PriorityEntry[TPriority, TElement], result: PriorityEntry[TPriority, TElement])
-        data: @PriorityEntry[TPriority, TElement] = data_at.load()
-        data.stride(index).store(child_entry)
-        data.stride(child).store(index_entry)
+        data: @PriorityEntry[TPriority, TElement] = data_at.peek()
+        data.stride(index).poke(child_entry)
+        data.stride(child).poke(index_entry)
         jump sift_down(child, result)
 
 /// Removes every entry by resetting the count to `0`. The array and its capacity are kept for reuse, and neither priorities nor elements are destructed.
 routine PriorityQueue[TPriority, TElement].clear(me: @Me) -> Void
 require TPriority: typename, TElement: typename
     block entry()
-        me.count.store(0)
+        me.count.poke(0)
         return()
 
 /// Gives the queue's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored priorities and elements themselves are not destructed.
@@ -422,20 +422,20 @@ require TPriority: typename, TElement: typename
 routine PriorityQueue[TPriority, TElement].destruct(me: @Me) -> Void
 require TPriority: typename, TElement: typename
     block entry()
-        hollow: Bool = me.storage.alloc.load().is_null()
+        hollow: Bool = me.storage.alloc.peek().is_null()
         branch hollow
             ? return()
             : continue
         me.storage.resize(0)
-        me.count.store(0)
+        me.count.poke(0)
         return()
 
 /// Destructs every priority and every element, then the queue itself: for priorities and elements the queue owns.
 #track_caller
 routine PriorityQueue[TPriority, TElement].destruct_all(me: @Me) -> Void
 require TPriority: typename, TElement: typename, Destructible[TPriority], Destructible[TElement]
-    local count: USize = me.count.load()
-    local data: @PriorityEntry[TPriority, TElement] = me.storage.data.load()
+    local count: USize = me.count.peek()
+    local data: @PriorityEntry[TPriority, TElement] = me.storage.data.peek()
 
     block entry()
         jump loop(0)
@@ -461,8 +461,8 @@ require TPriority: typename, TElement: typename, Destructible[TPriority], Destru
 #track_caller
 routine PriorityQueue[TPriority, TElement].destruct_all_elements(me: @Me) -> Void
 require TPriority: typename, TElement: typename, Destructible[TElement]
-    local count: USize = me.count.load()
-    local data: @PriorityEntry[TPriority, TElement] = me.storage.data.load()
+    local count: USize = me.count.peek()
+    local data: @PriorityEntry[TPriority, TElement] = me.storage.data.peek()
 
     block entry()
         jump loop(0)
@@ -524,7 +524,7 @@ require TPriority: typename, TElement: typename, Diagnosable[TPriority], Diagnos
 
     block element(at: USize)
         data: @PriorityEntry[TPriority, TElement] = me.storage.data
-        item: PriorityEntry[TPriority, TElement] = data.stride(at).load()
+        item: PriorityEntry[TPriority, TElement] = data.stride(at).peek()
         item.priority.diagnose_into(out)
         write_str(out, ": ")
         item.element.diagnose_into(out)

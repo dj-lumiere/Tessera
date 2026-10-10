@@ -356,7 +356,7 @@ public static partial class LanguageServer
             }
         }
 
-        /// The type a call returns, as its declaration writes it with the receiver's type arguments put in: `p.load()`
+        /// The type a call returns, as its declaration writes it with the receiver's type arguments put in: `p.peek()`
         /// on a `@Dict[K, V]` is a `Dict[K, V]`.
         private readonly Dictionary<Expr, TypeRef?> _results = new(ReferenceEqualityComparer.Instance);
 
@@ -422,7 +422,7 @@ public static partial class LanguageServer
         private TypeRef? ReceiverType(Expr e) => e switch
         {
             ValueRef v when _written.GetValueOrDefault(v.Name) is { } t => MeIsOwner(t),
-            // A field reached through a pointer is a place: `me.capacity.load()` reads it.
+            // A field reached through a pointer is a place: `me.capacity.peek()` reads it.
             FieldExpr f when IsPlace(f.Base) && Field(f.Base, f.Name) is { } field =>
                 new TypeRef("Ptr", [new TypeArgType(field.Field.Type)], f.Pos),
             MethodCallExpr { Name: "stride", Args.Count: 1 } stride => ReceiverType(stride.Receiver),

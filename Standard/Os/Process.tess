@@ -102,7 +102,7 @@ routine ExitStatus.is_success(me: Me) -> Bool
 /// :returns: The {ProcessOutput}, or Failure with a {ProcessError} when the shell couldn't start.
 #expensive("starts a process")
 routine run_shell_result(command: Bytes, options: ProcessOptions,
-    alloc: @Allocator) -> Result[ProcessOutput, ProcessError]
+    alloc: @MemoryManager) -> Result[ProcessOutput, ProcessError]
     block entry()
         claim args: @Array[Bytes, 2] <- [shell_flag(), command]
         return(run_process_result(shell_program(), args.to[Slice[Bytes]](), options, alloc))
@@ -141,7 +141,7 @@ private routine shell_flag() -> Bytes
 /// :param code: The exit status, 0 for success.
 routine set_exit_code(code: S32) -> Void
     block entry()
-        EXIT_CODE.atomic_store(code)
+        EXIT_CODE.poke_atomic(code)
         return()
 
 /// The exit status the program ends with when `start` returns: the last {set_exit_code}, 0 when nothing set one.
@@ -149,7 +149,7 @@ routine set_exit_code(code: S32) -> Void
 /// :returns: The status.
 routine exit_code() -> S32
     block entry()
-        return(EXIT_CODE.atomic_load())
+        return(EXIT_CODE.peek_atomic())
 
 /// Ends this process with `status`, without returning. (Nothing is flushed but what the C library flushes.)
 /// :param status: The process's exit status.
@@ -179,20 +179,21 @@ internal routine CaptureBuffer.empty() -> Me
 /// :param chunk: The first byte to append.
 /// :param n: How many bytes to append.
 /// :param alloc: The allocator the buffer's memory comes from.
-internal routine CaptureBuffer.append(me: @Me, chunk: @Byte, n: USize, alloc: @Allocator) -> Void
-    local need: USize = me.count.load().add(n)
+internal routine CaptureBuffer.append(me: @Me, chunk: @Byte, n: USize,
+    alloc: @MemoryManager) -> Void
+    local need: USize = me.count.peek().add(n)
 
     block entry()
-        branch need.gt(me.capacity.load())
+        branch need.gt(me.capacity.peek())
             ? grow_to_fit()
             : put()
 
     block grow_to_fit()
-        doubled: USize = me.capacity.load().mul(2)
+        doubled: USize = me.capacity.peek().mul(2)
         jump grow(doubled.max(need).max(256))
 
     block grow(capacity: USize)
-        old: @Byte = me.data.load()
+        old: @Byte = me.data.peek()
         branch old.is_null()
             ? grown(capacity, allocate[Byte](capacity, alloc))
             : grown(capacity, reallocate[Byte](old, capacity, alloc))
@@ -201,24 +202,24 @@ internal routine CaptureBuffer.append(me: @Me, chunk: @Byte, n: USize, alloc: @A
         branch bigger.is_null()
             ? lost()
             : continue
-        me.data.store(bigger)
-        me.capacity.store(capacity)
+        me.data.poke(bigger)
+        me.capacity.poke(capacity)
         jump put()
 
     block lost()
-        me.failed.store(true)
+        me.failed.poke(true)
         return()
 
     block put()
-        me.data.load().stride(me.count.load()).copy(chunk, n)
-        next_count: USize = me.count.load().add(n)
-        next_count.store_into(me.count)
+        me.data.peek().stride(me.count.peek()).copy(chunk, n)
+        next_count: USize = me.count.peek().add(n)
+        next_count.poke_into(me.count)
         return()
 
 /// What was captured, owned by the caller, who releases it with `destruct()`.
 /// :param alloc: The allocator the buffer was filled from.
 /// :returns: The captured bytes, carrying `alloc`.
-internal routine CaptureBuffer.owned(me: Me, alloc: @Allocator) -> Bytes
+internal routine CaptureBuffer.owned(me: Me, alloc: @MemoryManager) -> Bytes
     block entry()
         owned: Bytes = Bytes(data: me.data, count: me.count, alloc: alloc)
         return(owned)
@@ -226,9 +227,9 @@ internal routine CaptureBuffer.owned(me: Me, alloc: @Allocator) -> Bytes
 /// What was captured, owned by the caller, who releases it with `destruct()`.
 /// :param alloc: The allocator the buffer was filled from.
 /// :returns: The captured bytes, carrying `alloc`.
-internal routine CaptureBuffer.owned(me: @Me, alloc: @Allocator) -> Bytes
+internal routine CaptureBuffer.owned(me: @Me, alloc: @MemoryManager) -> Bytes
     block entry()
-        owned: Bytes = me.load().owned(alloc)
+        owned: Bytes = me.peek().owned(alloc)
         return(owned)
 
 /// Whether a NUL is inside any text the child would get, or an override's name holds a '=': what run_process_result
@@ -258,7 +259,7 @@ internal routine has_nul(program: Bytes, args: Slice[Bytes], options: ProcessOpt
         branch i.eq(options.env_count)
             ? directory()
             : continue
-        v: EnvVar = options.env.stride(i).load()
+        v: EnvVar = options.env.stride(i).peek()
         nul_inside: Bool = v.name.contains("\x00").bitor(v.value.contains("\x00"))
         branch nul_inside.bitor(v.name.contains("="))
             ? return(true)

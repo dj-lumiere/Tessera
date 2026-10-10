@@ -48,9 +48,9 @@ conform Comparable[Job]
 
 routine Rng.below(me: @Me, bound: USize) -> USize
     block entry()
-        state: U64 = me.state.load()
+        state: U64 = me.state.peek()
         next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
-        me.state.store(next)
+        me.state.poke(next)
         bucket: U64 = next.shr(33).mod(bound.to[U64]())
         value: USize = bucket.to[USize]()
         return(value)
@@ -125,8 +125,8 @@ routine run_phase(harness: Harness, heap: @PriorityQueue[Job, S64], phase: Phase
 
     block push(op: USize, checksum: S64)
         priority: S64 = rng.below(priorities).to[S64]()
-        sequence_val: S64 = sequence.load()
-        sequence.store(sequence_val.add(1))
+        sequence_val: S64 = sequence.peek()
+        sequence.poke(sequence_val.add(1))
         job: Job = Job(priority: priority, sequence: sequence_val)
         key: S64 = job.key()
         heap.add(job, key)
@@ -149,7 +149,7 @@ routine run_phase(harness: Harness, heap: @PriorityQueue[Job, S64], phase: Phase
             : peek_one(op, checksum)
 
     block peek_one(op: USize, checksum: S64)
-        key: S64 = heap.peek()
+        key: S64 = heap.first()
         jump record(op, checksum, key)
 
     block clear(op: USize, checksum: S64)
@@ -186,22 +186,22 @@ routine drain(out: @BufWriter[Out], heap: @PriorityQueue[Job, S64]) -> Void
 
     block pop()
         key: S64 = heap.remove()
-        in_order: Bool = key.gt(last.load())
-        next_sorted: Bool = sorted.load().bitand(in_order)
+        in_order: Bool = key.gt(last.peek())
+        next_sorted: Bool = sorted.peek().bitand(in_order)
         next_last: S64 = key
-        next_hash: S64 = mix(hash.load(), key)
-        next_count: S64 = count.load().add(1)
-        next_count.store_into(count)
-        next_hash.store_into(hash)
-        next_last.store_into(last)
-        next_sorted.store_into(sorted)
+        next_hash: S64 = mix(hash.peek(), key)
+        next_count: S64 = count.peek().add(1)
+        next_count.poke_into(count)
+        next_hash.poke_into(hash)
+        next_last.poke_into(last)
+        next_sorted.poke_into(sorted)
         jump next()
 
     block done()
         out.write("drained")
-        labeled(out, "count", count.load())
-        labeled(out, "hash", hash.load())
-        out.write(" sorted {sorted.load()}\n")
+        labeled(out, "count", count.peek())
+        labeled(out, "hash", hash.peek())
+        out.write(" sorted {sorted.peek()}\n")
         return()
 
 routine start() -> Void
@@ -209,7 +209,7 @@ routine start() -> Void
         fd: @Out = Out.writer()
         claim out: @BufWriter[Out] <- .hollow()
         out.construct(fd)
-        claim alloc: @Allocator <- make_heap_allocator()
+        claim alloc: @MemoryManager <- make_heap_memory()
         claim rng: @Rng <- Rng(state: 4)
         claim sequence: @S64 <- 0
         claim heap: @PriorityQueue[Job, S64] <- .construct(alloc)

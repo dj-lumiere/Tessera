@@ -23,7 +23,7 @@ require T: typename
 /// Creates an empty List that draws its storage from `alloc`. Nothing is allocated until the first insertion.
 /// :param alloc: The allocator the list stores and later frees its memory with.
 /// :returns: A new empty List.
-routine List[T].construct(alloc: @Allocator) -> Me
+routine List[T].construct(alloc: @MemoryManager) -> Me
 require T: typename
     block entry()
         storage: Slice[T] = Slice[T].construct(0, alloc)
@@ -43,7 +43,7 @@ require T: typename
 routine List[T].count(me: @Me) -> USize
 require T: typename
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         return(count)
 
 /// Whether the list holds no elements.
@@ -60,7 +60,7 @@ require T: typename
 routine List[T].is_empty(me: @Me) -> Bool
 require T: typename
     block entry()
-        empty: Bool = me.count.load().eq(0)
+        empty: Bool = me.count.peek().eq(0)
         return(empty)
 
 /// Grows the buffer to hold at least `capacity` elements without further allocation. A smaller request leaves the buffer unchanged.
@@ -95,7 +95,7 @@ require T: typename
 private routine List[T].make_capacity(me: @Me, capacity: USize) -> Bool
 require T: typename
     block entry()
-        old_capacity: USize = me.storage.count.load()
+        old_capacity: USize = me.storage.count.peek()
         enough: Bool = old_capacity.ge(capacity)
         branch enough
             ? return(true)
@@ -123,7 +123,7 @@ require T: typename
 /// :returns: True when the buffer is big enough, false when the allocator failed (the list is left as it was).
 private routine List[T].make_room(me: @Me, wanted: USize) -> Bool
 require T: typename
-    local capacity: USize = me.storage.count.load()
+    local capacity: USize = me.storage.count.peek()
 
     block entry()
         enough: Bool = capacity.ge(wanted)
@@ -171,15 +171,15 @@ require T: typename
 routine List[T].add_last_result(me: @Me, value: T) -> Result[Unit, AllocFailed]
 require T: typename
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         wanted: USize = count.add(1)
         room: Bool = me.make_room(wanted)
         branch room
             ? continue
             : return(.Failure(AllocFailed()))
-        data: @T = me.storage.data.load()
-        data.stride(count).store(value)
-        me.count.store(wanted)
+        data: @T = me.storage.data.peek()
+        data.stride(count).poke(value)
+        me.count.poke(wanted)
         return(.Success(Unit.value()))
 
 /// Removes the last element and returns it.
@@ -199,7 +199,7 @@ require T: typename
 /// :absent: When the list is empty.
 routine List[T].remove_last_checked(me: @Me) -> Option[T]
 require T: typename
-    local count: USize = me.count.load()
+    local count: USize = me.count.peek()
 
     block entry()
         empty: Bool = count.eq(0)
@@ -209,9 +209,9 @@ require T: typename
 
     block pop()
         index: USize = count.sub(1)
-        data: @T = me.storage.data.load()
-        value: T = data.stride(index).load()
-        me.count.store(index)
+        data: @T = me.storage.data.peek()
+        value: T = data.stride(index).peek()
+        me.count.poke(index)
         return(.Present(value))
 
 // -- element access ------------------------------------------------------------
@@ -264,10 +264,10 @@ require T: typename
 /// :returns: The element's address.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 #track_caller
-routine List[T].at(me: Me, index: USize) -> @T
+routine List[T].getslot(me: Me, index: USize) -> @T
 require T: typename
     block entry()
-        element: @T = me.to[Slice[T]]().at(index)
+        element: @T = me.to[Slice[T]]().getslot(index)
         return(element)
 
 /// The address of element `index`, checked like getitem: a place to read or write in place. It stays valid until
@@ -276,17 +276,17 @@ require T: typename
 /// :returns: The element's address.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 #track_caller
-routine List[T].at(me: @Me, index: USize) -> @T
+routine List[T].getslot(me: @Me, index: USize) -> @T
 require T: typename
     block entry()
-        element: @T = me.to[Slice[T]]().at(index)
+        element: @T = me.to[Slice[T]]().getslot(index)
         return(element)
 
 /// `at`, returning Absent instead of crashing on an index past the end.
 /// :param index: The zero-based position.
 /// :returns: The element's address.
 /// :absent: When `index >= count`.
-routine List[T].at_checked(me: Me, index: USize) -> Option[@T]
+routine List[T].getslot_checked(me: Me, index: USize) -> Option[@T]
 require T: typename
     block entry()
         count: USize = me.count
@@ -304,10 +304,10 @@ require T: typename
 /// :param index: The zero-based position.
 /// :returns: The element's address.
 /// :absent: When `index >= count`.
-routine List[T].at_checked(me: @Me, index: USize) -> Option[@T]
+routine List[T].getslot_checked(me: @Me, index: USize) -> Option[@T]
 require T: typename
     block entry()
-        element: Option[@T] = me.load().at_checked(index)
+        element: Option[@T] = me.peek().getslot_checked(index)
         return(element)
 
 /// Overwrites the element at `index` with `value`.
@@ -335,7 +335,7 @@ require T: typename
 routine List[T].to[Slice[T]](me: @Me) -> Slice[T]
 require T: typename
     block entry()
-        slice: Slice[T] = me.load().to[Slice[T]]()
+        slice: Slice[T] = me.peek().to[Slice[T]]()
         return(slice)
 
 /// The `count` elements from `start`, borrowed, checked against the list's count.
@@ -366,7 +366,7 @@ require T: typename
 routine List[T].clear(me: @Me) -> Void
 require T: typename
     block entry()
-        me.count.store(0)
+        me.count.poke(0)
         return()
 
 /// Whether two lists hold equal elements in the same order.
@@ -395,8 +395,8 @@ require T: typename, Equatable[T]
             : step(i)
 
     block step(i: USize)
-        x: T = pa.stride(i).load()
-        y: T = pb.stride(i).load()
+        x: T = pa.stride(i).peek()
+        y: T = pb.stride(i).peek()
         eq: Bool = x.eq(y)
         branch eq
             ? loop(i.add(1))
@@ -408,12 +408,12 @@ require T: typename, Equatable[T]
 routine List[T].destruct(me: @Me) -> Void
 require T: typename
     block entry()
-        hollow: Bool = me.storage.alloc.load().is_null()
+        hollow: Bool = me.storage.alloc.peek().is_null()
         branch hollow
             ? return()
             : continue
         me.storage.resize(0)
-        me.count.store(0)
+        me.count.poke(0)
         return()
 
 /// Destructs every element, then the collection itself: for elements the collection owns, such as inner lists.
@@ -421,8 +421,8 @@ require T: typename
 #track_caller
 routine List[T].destruct_all(me: @Me) -> Void
 require T: typename, Destructible[T]
-    local first: @T = me.storage.data.load()
-    local count: USize = me.count.load()
+    local first: @T = me.storage.data.peek()
+    local count: USize = me.count.peek()
 
     block entry()
         jump each(0)
@@ -457,12 +457,12 @@ routine List[Byte].write_bytes(me: @Me, data: @Byte, count: USize) -> Void
         branch nothing
             ? return()
             : continue
-        old: USize = me.count.load()
+        old: USize = me.count.peek()
         new: USize = old.add(count)
         me.ensure_capacity(new)
-        base: @Byte = me.storage.data.load()
+        base: @Byte = me.storage.data.peek()
         base.stride(old).copy(data, count)
-        me.count.store(new)
+        me.count.poke(new)
         return()
 
 /// A view of the bytes written so far, without copying. It's valid until the
@@ -478,7 +478,7 @@ routine List[Byte].to[Bytes](me: Me) -> Bytes
 /// :returns: A borrowed `Bytes` over the `count` bytes.
 routine List[Byte].to[Bytes](me: @Me) -> Bytes
     block entry()
-        text: Bytes = me.load().to[Bytes]()
+        text: Bytes = me.peek().to[Bytes]()
         return(text)
 
 /// Ends the bytes with a NUL (not counted in `count`) and points at them,
@@ -487,10 +487,10 @@ routine List[Byte].to[Bytes](me: @Me) -> Bytes
 /// :throws: Crashes with `MemoryAllocationError` when the buffer must grow and the allocator fails.
 routine List[Byte].to[CStr](me: @Me) -> CStr
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         me.ensure_capacity(count.add(1))
-        data: @Byte = me.storage.data.load()
-        data.stride(count).store(0x00)
+        data: @Byte = me.storage.data.peek()
+        data.stride(count).poke(0x00)
         return(data.to[CStr]())
 
 // -- text -----------------------------------------------------------------------

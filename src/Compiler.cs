@@ -365,7 +365,7 @@ public sealed partial class Compiler
     public sealed record CallUse(RoutineDecl Decl, List<(string Name, DType Type)> Bindings);
 
     /// The calls and the values of the routines that aren't generic, by the position the parser gave them (a call also
-    /// by the routine's name: `claim p : @T <- .make()` calls `make` and stores through `Ptr[T].store` at one place):
+    /// by the routine's name: `claim p : @T <- .make()` calls `make` and stores through `Ptr[T].poke` at one place):
     /// what the language server shows on hover. A generic routine's body means something else in each instance, so it
     /// isn't recorded.
     public Dictionary<(Pos Pos, string Name), CallUse> CallUses { get; } = [];

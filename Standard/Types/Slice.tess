@@ -25,7 +25,7 @@ conform Destructible[Slice[T]]
 require T: typename
     data: @T
     count: USize
-    alloc: @Allocator
+    alloc: @MemoryManager
 
 // -- making one ---------------------------------------------------------------------------------------------------
 
@@ -56,7 +56,7 @@ require T: typename
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails. See {Slice[T].construct_result}.
 #track_caller
 #expensive("allocates heap memory")
-routine Slice[T].construct(count: USize, alloc: @Allocator) -> Me
+routine Slice[T].construct(count: USize, alloc: @MemoryManager) -> Me
 require T: typename
     block entry()
         made: Result[Me, AllocFailed] = Me.construct_result(count, alloc)
@@ -71,7 +71,7 @@ require T: typename
 /// :returns: Success with the slice of `count` uninitialized values.
 /// :throws: Returns Failure(`AllocFailed`) when the allocator fails.
 #expensive("allocates heap memory")
-routine Slice[T].construct_result(count: USize, alloc: @Allocator) -> Result[Me, AllocFailed]
+routine Slice[T].construct_result(count: USize, alloc: @MemoryManager) -> Result[Me, AllocFailed]
 require T: typename
     block entry()
         nothing: Bool = count.eq(0)
@@ -105,7 +105,7 @@ require T: typename
 routine Slice[T].count(me: @Me) -> USize
 require T: typename
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         return(count)
 
 /// The same values, borrowed: the same data and count with a null allocator, so `destruct()` on it does nothing.
@@ -121,7 +121,7 @@ require T: typename
 routine Slice[T].getview(me: @Me) -> Me
 require T: typename
     block entry()
-        view: Me = me.load().getview()
+        view: Me = me.peek().getview()
         return(view)
 
 /// The address of the value at `index`, checked against the count. Everything else is `@T`'s own: `load`, `store`,
@@ -130,7 +130,7 @@ require T: typename
 /// :returns: The address of the value.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 #track_caller
-routine Slice[T].at(me: Me, index: USize) -> @T
+routine Slice[T].getslot(me: Me, index: USize) -> @T
 require T: typename
     block entry()
         outside: Bool = index.ge(me.count)
@@ -145,13 +145,13 @@ require T: typename
 /// :returns: The address of the value.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
 #track_caller
-routine Slice[T].at(me: @Me, index: USize) -> @T
+routine Slice[T].getslot(me: @Me, index: USize) -> @T
 require T: typename
     block entry()
-        place: @T = me.load().at(index)
+        place: @T = me.peek().getslot(index)
         return(place)
 
-/// The value at `index`, checked: `at(index).load()`.
+/// The value at `index`, checked: `at(index).peek()`.
 /// :param index: The zero-based position.
 /// :returns: A copy of the value.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`. See {Slice[T].getitem_checked}.
@@ -159,7 +159,7 @@ require T: typename
 routine Slice[T].getitem(me: Me, index: USize) -> T
 require T: typename
     block entry()
-        value: T = me.at(index).load()
+        value: T = me.getslot(index).peek()
         return(value)
 
 /// The value at `index`, checked.
@@ -170,7 +170,7 @@ require T: typename
 routine Slice[T].getitem(me: @Me, index: USize) -> T
 require T: typename
     block entry()
-        value: T = me.load().getitem(index)
+        value: T = me.peek().getitem(index)
         return(value)
 
 /// `getitem`, returning Absent instead of crashing on an index past the end.
@@ -184,7 +184,7 @@ require T: typename
         branch inside
             ? continue
             : return(.Absent)
-        value: T = me.data.stride(index).load()
+        value: T = me.data.stride(index).peek()
         return(.Present(value))
 
 /// `getitem`, returning Absent instead of crashing on an index past the end.
@@ -194,10 +194,10 @@ require T: typename
 routine Slice[T].getitem_checked(me: @Me, index: USize) -> Option[T]
 require T: typename
     block entry()
-        value: Option[T] = me.load().getitem_checked(index)
+        value: Option[T] = me.peek().getitem_checked(index)
         return(value)
 
-/// Writes `value` at `index`, checked: `at(index).store(value)`.
+/// Writes `value` at `index`, checked: `at(index).poke(value)`.
 /// :param index: The zero-based position.
 /// :param value: The value to store.
 /// :throws: Crashes with `IndexOutOfBoundsError` when `index >= count`.
@@ -205,7 +205,7 @@ require T: typename
 routine Slice[T].setitem(me: Me, index: USize, value: T) -> Void
 require T: typename
     block entry()
-        me.at(index).store(value)
+        me.getslot(index).poke(value)
         return()
 
 /// Writes `value` at `index`, checked.
@@ -216,7 +216,7 @@ require T: typename
 routine Slice[T].setitem(me: @Me, index: USize, value: T) -> Void
 require T: typename
     block entry()
-        me.load().setitem(index, value)
+        me.peek().setitem(index, value)
         return()
 
 /// The `count` values from `start`, borrowed (a null allocator), checked against this slice.
@@ -250,7 +250,7 @@ require T: typename
 routine Slice[T].getslice(me: @Me, start: USize, count: USize) -> Me
 require T: typename
     block entry()
-        part: Me = me.load().getslice(start, count)
+        part: Me = me.peek().getslice(start, count)
         return(part)
 
 /// The address of the first value.
@@ -266,7 +266,7 @@ require T: typename
 routine Slice[T].to[@T](me: @Me) -> @T
 require T: typename
     block entry()
-        data: @T = me.data.load()
+        data: @T = me.data.peek()
         return(data)
 
 // -- changing the memory ------------------------------------------------------------------------------------------
@@ -295,7 +295,7 @@ require T: typename
 #expensive("reallocates heap memory")
 routine Slice[T].resize_result(me: @Me, count: USize) -> Result[Unit, AllocFailed]
 require T: typename
-    local alloc: @Allocator = me.alloc.load()
+    local alloc: @MemoryManager = me.alloc.peek()
 
     block entry()
         borrowed: Bool = alloc.is_null()
@@ -307,17 +307,17 @@ require T: typename
         branch nothing
             ? emptied()
             : continue
-        data: @T = reallocate[T](me.data.load(), count, alloc)
+        data: @T = reallocate[T](me.data.peek(), count, alloc)
         failed: Bool = data.is_null()
         branch failed
             ? return(.Failure(AllocFailed()))
             : continue
-        me.data.store(data)
-        me.count.store(count)
+        me.data.poke(data)
+        me.count.poke(count)
         return(.Success(Unit.value()))
 
     block emptied()
-        data: @T = me.data.load()
+        data: @T = me.data.peek()
         none: Bool = data.is_null()
         branch none
             ? reset()
@@ -326,8 +326,8 @@ require T: typename
         jump reset()
 
     block reset()
-        me.data.store(null)
-        me.count.store(0)
+        me.data.poke(null)
+        me.count.poke(0)
         return(.Success(Unit.value()))
 
 /// Gives the memory back to the allocator it came from and leaves the slice empty: a null data, a count of 0, and a
@@ -337,12 +337,12 @@ require T: typename
 routine Slice[T].destruct(me: @Me) -> Void
 require T: typename
     block entry()
-        alloc: @Allocator = me.alloc.load()
+        alloc: @MemoryManager = me.alloc.peek()
         borrowed: Bool = alloc.is_null()
         branch borrowed
             ? return()
             : continue
-        data: @T = me.data.load()
+        data: @T = me.data.peek()
         empty: Bool = data.is_null()
         branch empty
             ? reset()
@@ -351,9 +351,9 @@ require T: typename
         jump reset()
 
     block reset()
-        me.data.store(null)
-        me.count.store(0)
-        me.alloc.store(null)
+        me.data.poke(null)
+        me.count.poke(0)
+        me.alloc.poke(null)
         return()
 
 /// Destructs every value, then gives the memory back: for values that own something, such as lists. Every value
@@ -362,12 +362,12 @@ require T: typename
 routine Slice[T].destruct_all(me: @Me) -> Void
 require T: typename, Destructible[T]
     block entry()
-        borrowed: Bool = me.alloc.load().is_null()
+        borrowed: Bool = me.alloc.peek().is_null()
         branch borrowed
             ? finish()
             : continue
-        first: @T = me.data.load()
-        count: USize = me.count.load()
+        first: @T = me.data.peek()
+        count: USize = me.count.peek()
         jump each(first, count, 0)
 
     block each(first: @T, count: USize, i: USize)
@@ -395,7 +395,7 @@ routine Slice[Byte].to[Bytes](me: Me) -> Bytes
 /// :returns: The bytes over the same memory.
 routine Slice[Byte].to[Bytes](me: @Me) -> Bytes
     block entry()
-        text: Bytes = me.load().to[Bytes]()
+        text: Bytes = me.peek().to[Bytes]()
         return(text)
 
 // -- views of the built-in containers -------------------------------------------------------------------------
@@ -433,7 +433,7 @@ routine Bytes.to[Slice[Byte]](me: Me) -> Slice[Byte]
 /// :returns: A slice over the same memory.
 routine Bytes.to[Slice[Byte]](me: @Me) -> Slice[Byte]
     block entry()
-        slice: Slice[Byte] = Slice[Byte].construct(me.data.load(), me.count.load())
+        slice: Slice[Byte] = Slice[Byte].construct(me.data.peek(), me.count.peek())
         return(slice)
 
 /// The `count` bytes from `start`, borrowed, checked against the count.

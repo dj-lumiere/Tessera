@@ -390,7 +390,7 @@ private routine dirent_name_at() -> USize
 #target(os: ("linux", "macos"))
 private routine errno() -> CInt
     block entry()
-        return(c_errno_place().load())
+        return(c_errno_place().peek())
 
 /// The FsError for an errno value.
 /// :param e: The errno value.
@@ -456,7 +456,7 @@ private routine c_path(path: Bytes, out: @Byte) -> Bool
             ? return(false)
             : continue
         out.copy(path.data, n)
-        out.stride(n).store(0x00)
+        out.stride(n).poke(0x00)
         return(true)
 
 /// dir, a '/', and name (NUL-terminated) in out: false if it doesn't fit.
@@ -474,9 +474,9 @@ private routine c_child_path(dir: @Byte, dir_count: USize, name: @Byte, out: @By
             ? return(false)
             : continue
         out.copy(dir, dir_count)
-        out.stride(dir_count).store(b'/')
+        out.stride(dir_count).poke(b'/')
         out.stride(dir_count.add(1)).copy(name, name_count)
-        out.stride(total).store(0x00)
+        out.stride(total).poke(0x00)
         return(true)
 
 // -- metadata ------------------------------------------------------------------------
@@ -609,7 +609,7 @@ private routine metadata_of(cpath: @Byte, follow: Bool) -> Result[Metadata, FsEr
             ? 0
             : AT_SYMLINK_NOFOLLOW
         branch stat_raw(AT_FDCWD, cpath, flags, st)
-            ? return(.Success(st.load().to[Metadata]()))
+            ? return(.Success(st.peek().to[Metadata]()))
             : return(failed[Metadata]())
 
 /// The metadata of the open file fd.
@@ -621,7 +621,7 @@ private routine fd_metadata(fd: CInt) -> Result[Metadata, FsError]
     block entry()
         claim st: @Statx <- .hollow()
         branch stat_raw(fd, "", AT_EMPTY_PATH, st)
-            ? return(.Success(st.load().to[Metadata]()))
+            ? return(.Success(st.peek().to[Metadata]()))
             : return(failed[Metadata]())
 
 /// The permission bits of the open file fd, or 0o666 when they can't be read.
@@ -637,7 +637,7 @@ private routine fd_mode(fd: CInt) -> U32
             : return(0o666)
 
     block permission_bits()
-        mode: U32 = st.mode.load().to[U32]()
+        mode: U32 = st.mode.peek().to[U32]()
         return(mode.bitand(0o7777))
 
 /// The `st_mode` of the NUL-terminated cpath, a link followed.
@@ -649,7 +649,7 @@ private routine path_mode(cpath: @Byte) -> Option[U32]
     block entry()
         claim st: @Statx <- .hollow()
         branch stat_raw(AT_FDCWD, cpath, 0, st)
-            ? return(.Present(st.mode.load().to[U32]()))
+            ? return(.Present(st.mode.peek().to[U32]()))
             : return(.Absent)
 
 /// Binds the C `stat$INODE64` function: reads a file's metadata, a link followed.
@@ -722,7 +722,7 @@ private routine metadata_of(cpath: @Byte, follow: Bool) -> Result[Metadata, FsEr
 
     block got(rc: CInt)
         branch rc.eq(0)
-            ? return(.Success(st.load().to[Metadata]()))
+            ? return(.Success(st.peek().to[Metadata]()))
             : return(failed[Metadata]())
 
 /// The metadata of the open file fd.
@@ -734,7 +734,7 @@ private routine fd_metadata(fd: CInt) -> Result[Metadata, FsError]
     block entry()
         claim st: @DarwinStat <- .hollow()
         branch c_fstat(fd, st).eq(0)
-            ? return(.Success(st.load().to[Metadata]()))
+            ? return(.Success(st.peek().to[Metadata]()))
             : return(failed[Metadata]())
 
 /// The permission bits of the open file fd, or 0o666 when they can't be read.
@@ -750,7 +750,7 @@ private routine fd_mode(fd: CInt) -> U32
             : return(0o666)
 
     block permission_bits()
-        mode: U32 = st.mode.load().to[U32]()
+        mode: U32 = st.mode.peek().to[U32]()
         return(mode.bitand(0o7777))
 
 /// The `st_mode` of the NUL-terminated cpath, a link followed.
@@ -762,7 +762,7 @@ private routine path_mode(cpath: @Byte) -> Option[U32]
     block entry()
         claim st: @DarwinStat <- .hollow()
         branch c_stat(cpath, st).eq(0)
-            ? return(.Present(st.mode.load().to[U32]()))
+            ? return(.Present(st.mode.peek().to[U32]()))
             : return(.Absent)
 
 /// path's metadata, a link followed to what it points at.
@@ -848,7 +848,7 @@ internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result[Me, FsEr
 #expensive("asks the operating system")
 routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USize, FsError]
     block entry()
-        got: SSize = c_read(me.fd.load(), buffer, count.min(1073741824))
+        got: SSize = c_read(me.fd.peek(), buffer, count.min(1073741824))
         branch got.ge(0)
             ? return(.Success(got.to[USize]()))
             : continue
@@ -866,7 +866,7 @@ routine FileHandle.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Re
 #target(os: ("linux", "macos"))
 internal routine FileHandle.write_some(me: @Me, data: @Byte, count: USize) -> Result[USize, FsError]
     block entry()
-        wrote: SSize = c_write(me.fd.load(), data, count.min(1073741824))
+        wrote: SSize = c_write(me.fd.peek(), data, count.min(1073741824))
         branch wrote.ge(0)
             ? return(.Success(wrote.to[USize]()))
             : continue
@@ -883,7 +883,7 @@ internal routine FileHandle.write_some(me: @Me, data: @Byte, count: USize) -> Re
 #expensive("asks the operating system")
 routine FileHandle.seek_result(me: @Me, offset: S64, from: SeekFrom) -> Result[U64, FsError]
     block entry()
-        fd: CInt = me.fd.load()
+        fd: CInt = me.fd.peek()
         // SEEK_SET, SEEK_CUR, SEEK_END
         when from
             SeekFrom.START => moved(c_lseek(fd, offset, 0))
@@ -902,7 +902,7 @@ routine FileHandle.seek_result(me: @Me, offset: S64, from: SeekFrom) -> Result[U
 #expensive("asks the operating system")
 routine FileHandle.metadata_result(me: @Me) -> Result[Metadata, FsError]
     block entry()
-        return(fd_metadata(me.fd.load()))
+        return(fd_metadata(me.fd.peek()))
 
 /// The size of the open file in bytes.
 /// :returns: `Success` with the size.
@@ -911,7 +911,7 @@ routine FileHandle.metadata_result(me: @Me) -> Result[Metadata, FsError]
 #expensive("asks the operating system")
 routine FileHandle.size_result(me: @Me) -> Result[U64, FsError]
     block entry()
-        m: Result[Metadata, FsError] = fd_metadata(me.fd.load())
+        m: Result[Metadata, FsError] = fd_metadata(me.fd.peek())
         when m
             .Success(info) => return(.Success(info.size))
             .Failure(error) => return(.Failure(error))
@@ -925,7 +925,7 @@ routine FileHandle.size_result(me: @Me) -> Result[U64, FsError]
 #expensive("asks the operating system")
 routine FileHandle.set_size_result(me: @Me, size: U64) -> Result[Unit, FsError]
     block entry()
-        return(checked(c_ftruncate(me.fd.load(), size.to[S64]())))
+        return(checked(c_ftruncate(me.fd.peek(), size.to[S64]())))
 
 /// Waits until what was written is on the storage device.
 /// :returns: `Success(Unit)` once it is.
@@ -934,19 +934,19 @@ routine FileHandle.set_size_result(me: @Me, size: U64) -> Result[Unit, FsError]
 #expensive("asks the operating system")
 routine FileHandle.sync_result(me: @Me) -> Result[Unit, FsError]
     block entry()
-        return(checked(c_fsync(me.fd.load())))
+        return(checked(c_fsync(me.fd.peek())))
 
 /// Closes the file and leaves the handle empty, so a second close does nothing.
 #target(os: ("linux", "macos"))
 #expensive("asks the operating system")
 routine FileHandle.close(me: @Me) -> Void
     block entry()
-        fd: CInt = me.fd.load()
+        fd: CInt = me.fd.peek()
         branch fd.lt(0)
             ? return()
             : continue
         c_close(fd)
-        me.fd.store(-1)
+        me.fd.poke(-1)
         return()
 
 // -- directories and names -------------------------------------------------------------
@@ -1093,15 +1093,15 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
             .Failure(error) => finish(.Failure(error))
 
     block target(opened: FileHandle)
-        src.store(opened)
+        src.poke(opened)
         dest: Result[FileHandle, FsError] = FileHandle.open(to, OpenMode.WRITE)
         when dest
             .Success(f) => copy(f)
             .Failure(error) => finish(.Failure(error))
 
     block copy(made: FileHandle)
-        dst.store(made)
-        set: Bool = set_mode(dst.fd.load(), fd_mode(src.fd.load())).eq(0)
+        dst.poke(made)
+        set: Bool = set_mode(dst.fd.peek(), fd_mode(src.fd.peek())).eq(0)
         branch set
             ? continue
             : abandon(error_of(errno()))
@@ -1116,13 +1116,13 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
 
     block put(buffer: @Byte, n: USize)
         branch n.eq(0)
-            ? finish(.Success(total.load()))
+            ? finish(.Success(total.peek()))
             : continue
         wrote: Result[Unit, FsError] = dst.write_all_result(buffer, n)
         when wrote
             .Success => continue
             .Failure(error) => abandon(error)
-        total.load().add(n.to[U64]()).store_into(total)
+        total.peek().add(n.to[U64]()).poke_into(total)
         jump chunk(buffer)
 
     // `to` is opened (made or emptied) and the copy can't be finished: it goes, so no partial copy is left.
@@ -1250,17 +1250,17 @@ record DirIter
 #target(os: ("linux", "macos"))
 internal routine DirIter.open_path(me: @Me, path: Bytes) -> Result[Unit, FsError]
     block entry()
-        me.dir.store(null)
+        me.dir.poke(null)
         branch c_path(path, me.path.to[@Byte]())
             ? continue
             : return(.Failure(path_error(path)))
-        me.count.store(path.count())
-        me.name.store(null)
+        me.count.poke(path.count())
+        me.name.poke(null)
         dir: Addr = c_opendir(me.path.to[@Byte]())
         branch dir.is_null()
             ? return(failed[Unit]())
             : continue
-        me.dir.store(dir)
+        me.dir.poke(dir)
         return(fs_done())
 
 /// Whether name is "." or "..".
@@ -1269,10 +1269,10 @@ internal routine DirIter.open_path(me: @Me, path: Bytes) -> Result[Unit, FsError
 #target(os: ("linux", "macos"))
 private routine is_dot_name(name: @Byte) -> Bool
     block entry()
-        branch name.load().eq(b'.')
+        branch name.peek().eq(b'.')
             ? continue
             : return(false)
-        second: Byte = name.stride(1).load()
+        second: Byte = name.stride(1).peek()
         branch second.eq(0x00)
             ? return(true)
             : continue
@@ -1281,7 +1281,7 @@ private routine is_dot_name(name: @Byte) -> Bool
             : return(false)
 
     block two_dots()
-        third: Byte = name.stride(2).load()
+        third: Byte = name.stride(2).peek()
         return(third.eq(0x00))
 
 /// The next entry, or Absent at the end (a failure partway reads as the end).
@@ -1290,7 +1290,7 @@ private routine is_dot_name(name: @Byte) -> Bool
 #target(os: ("linux", "macos"))
 routine DirIter.next(me: @Me) -> Option[DirEntry]
     block entry()
-        entry: @Byte = c_readdir(me.dir.load())
+        entry: @Byte = c_readdir(me.dir.peek())
         branch entry.is_null()
             ? return(.Absent)
             : continue
@@ -1298,9 +1298,9 @@ routine DirIter.next(me: @Me) -> Option[DirEntry]
         branch is_dot_name(name)
             ? return(me.next())
             : continue
-        me.name.store(name)
+        me.name.poke(name)
         // DT_DIR, DT_REG, DT_LNK. DT_UNKNOWN (some filesystems) asks lstat
-        d_type: Byte = entry.stride(dirent_type_at()).load()
+        d_type: Byte = entry.stride(dirent_type_at()).peek()
         when d_type.to[U8]()
             4 => found(name, FileKind.DIRECTORY)
             8 => found(name, FileKind.FILE)
@@ -1334,7 +1334,7 @@ routine DirIter.entry_metadata_result(me: @Me) -> Result[Metadata, FsError]
 private routine DirIter.entry_metadata_of(me: @Me, follow: Bool) -> Result[Metadata, FsError]
     block entry()
         claim full: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_child_path(me.path.to[@Byte](), me.count.load(), me.name.load(), full.to[@Byte]())
+        branch c_child_path(me.path.to[@Byte](), me.count.peek(), me.name.peek(), full.to[@Byte]())
             ? return(metadata_of(full.to[@Byte](), follow))
             : return(.Failure(FsError.NAME_TOO_LONG))
 
@@ -1342,12 +1342,12 @@ private routine DirIter.entry_metadata_of(me: @Me, follow: Bool) -> Result[Metad
 #target(os: ("linux", "macos"))
 routine DirIter.close(me: @Me) -> Void
     block entry()
-        dir: Addr = me.dir.load()
+        dir: Addr = me.dir.peek()
         branch dir.is_null()
             ? return()
             : continue
         c_closedir(dir)
-        me.dir.store(null)
+        me.dir.poke(null)
         return()
 
 // -- the working directory and well-known directories -------------------------------------
@@ -1359,7 +1359,7 @@ routine DirIter.close(me: @Me) -> Void
 /// :returns: `Success` with the copy.
 /// :throws: Returns `Failure(OutOfMemory)` when `alloc` fails.
 #target(os: ("linux", "macos"))
-private routine owned(p: @Byte, n: USize, alloc: @Allocator) -> Result[Bytes, FsError]
+private routine owned(p: @Byte, n: USize, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         buffer: @Byte = allocate[Byte](n.max(1), alloc)
         branch buffer.is_null()
@@ -1379,7 +1379,7 @@ private routine nonempty_env(name: CStr) -> Option[@Byte]
         branch value.is_null()
             ? return(.Absent)
             : continue
-        branch value.load().eq(0x00)
+        branch value.peek().eq(0x00)
             ? return(.Absent)
             : return(.Present(value))
 
@@ -1388,7 +1388,7 @@ private routine nonempty_env(name: CStr) -> Option[@Byte]
 /// :returns: `Success` with the path.
 /// :throws: Returns `Failure` with the reason when the OS can't report it, `OutOfMemory` when `alloc` fails.
 #target(os: ("linux", "macos"))
-internal routine current_dir(alloc: @Allocator) -> Result[Bytes, FsError]
+internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         jump attempt(256)
 
@@ -1429,7 +1429,7 @@ internal routine set_current_dir(path: Bytes) -> Result[Unit, FsError]
 /// :returns: `Success` with the path.
 /// :throws: Returns `Failure(OutOfMemory)` when `alloc` fails.
 #target(os: ("linux", "macos"))
-internal routine temp_dir(alloc: @Allocator) -> Result[Bytes, FsError]
+internal routine temp_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         t: Option[@Byte] = nonempty_env("TMPDIR")
         when t
@@ -1441,7 +1441,7 @@ internal routine temp_dir(alloc: @Allocator) -> Result[Bytes, FsError]
 /// :returns: `Success` with the path.
 /// :throws: Returns `Failure(NotFound)` when HOME is not set or empty, `Failure(OutOfMemory)` when `alloc` fails.
 #target(os: ("linux", "macos"))
-internal routine home_dir(alloc: @Allocator) -> Result[Bytes, FsError]
+internal routine home_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         h: Option[@Byte] = nonempty_env("HOME")
         when h
@@ -1455,7 +1455,7 @@ internal routine home_dir(alloc: @Allocator) -> Result[Bytes, FsError]
 /// :throws: Returns `Failure` with the reason when the working directory can't be read, `OutOfMemory` when `alloc`
 ///     fails for it. Crashes with `MemoryAllocationError` when `alloc` fails for the joined path.
 #target(os: ("linux", "macos"))
-internal routine absolute_path(path: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
+internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         branch path.has_prefix("/")
             ? return(owned(path.data, path.count(), alloc))
@@ -1478,7 +1478,7 @@ internal routine absolute_path(path: Bytes, alloc: @Allocator) -> Result[Bytes, 
 /// :throws: Returns `Failure` with the reason, such as `NotFound`, `OutOfMemory` when `alloc` fails, `InvalidPath`
 ///     or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: ("linux", "macos"))
-internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
+internal routine canonical_path(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
         branch c_path(path, cpath.to[@Byte]())
@@ -1528,7 +1528,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
         branch fd.lt(0)
             ? finish(failed[Me]())
             : continue
-        file.fd.store(fd)
+        file.fd.poke(fd)
         m: Result[Metadata, FsError] = fd_metadata(fd)
         when m
             .Success(info) => sized(fd, info.size)

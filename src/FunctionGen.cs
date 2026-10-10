@@ -542,14 +542,14 @@ public sealed class FunctionGen
                     Line($"{op} = {Copy(v, t)}");
                 Define(b.Name, new Val(op, t), b.Pos);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
-                // `claim p : @T <- value` is the claim, then `p.store(value)`.
+                // `claim p : @T <- value` is the claim, then `p.poke(value)`.
                 if (b.Value is ClaimExpr { Contents: { } contents })
                 {
                     // The store is the builder's, so a mismatch is said as a binding's, not as an argument's.
                     _claimContents = contents;
                     try
                     {
-                        EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "store", [], [contents], contents.Pos), VoidType.Instance);
+                        EvalCall(new MethodCallExpr(new ValueRef(b.Name, b.Pos), "poke", [], [contents], contents.Pos), VoidType.Instance);
                     }
                     finally
                     {
@@ -699,7 +699,7 @@ public sealed class FunctionGen
                     (baseAddr, baseType) = (p.Op, pointee);
                 }
                 if (baseType is PtrType)
-                    throw Err(f.Pos, "this field holds a pointer; load it into a value first");
+                    throw Err(f.Pos, "this field holds a pointer; peek it into a value first");
                 if (baseType is not RecordType s)
                     throw Err(f.Pos, $"{baseType} has no fields");
                 var (idx, ft) = FieldOf(s, f.Name, f.Pos);
@@ -721,9 +721,9 @@ public sealed class FunctionGen
                 {
                     var (baseAddr, baseType) = PlaceAddress(ix.Base);
                     if (baseType is PtrType)
-                        throw Err(ix.Pos, "this field holds a pointer; load it into a value before stepping it");
+                        throw Err(ix.Pos, "this field holds a pointer; peek it into a value before stepping it");
                     if (baseType is ArrayType)
-                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .at(i), .getitem(i) / .setitem(i, v), or .to[@T]().stride(i)");
+                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .getslot(i), .getitem(i) / .setitem(i, v), or .to[@T]().stride(i)");
                     var i = EvalIndex(ix.Index);
                     _c.EnsureTypeDefined(baseType);
                     string elemAddr = EmitTmp($"getelementptr {baseType.Llvm}, ptr {baseAddr}, {i.Type.Llvm} {i.Op}");
@@ -794,7 +794,7 @@ public sealed class FunctionGen
             : $"'{name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block "
               + "arguments or local in the routine head" + (fromNextLine ? ", and a binding is visible from the line after it" : "");
 
-    /// `b.store(20)` where `b` names no type, preset, global, or routine: a value that isn't there.
+    /// `b.poke(20)` where `b` names no type, preset, global, or routine: a value that isn't there.
     private void UnknownReceiver(TypeRef owner)
     {
         if (TryResolveOwner(owner) is not null || _c.FindPreset("", owner.Name, _env.File, owner.Pos, null) is not null
@@ -971,15 +971,15 @@ public sealed class FunctionGen
     }
 
     /// A place argument is its address, as everywhere else: memory is never read implicitly (see Memory-Model, The Rule).
-    /// When the parameter wants what is stored there, the error says to load it. `argument` is the argument's position
+    /// When the parameter wants what is stored there, the error says to peek it. `argument` is the argument's position
     /// (1 for the first), or 0 for a receiver or the contents of a claim.
     private Val EvalArg(Expr e, DType expected, int argument)
     {
         if (AsStride(e) is FieldExpr or IndexExpr && IsPlaceChain(e) && PlaceType(e) is { } t && Compatible(t, expected)
             && !(expected is PtrType { Pointee: { } pe } && pe.Equals(t)))
             throw Err(e.Pos, argument > 0
-                ? $"{ArgumentMismatch(argument, $"the place {new PtrType(t)}", expected)}; read it first with .load()"
-                : $"expected {expected}, found the place {new PtrType(t)}; read it first with .load()");
+                ? $"{ArgumentMismatch(argument, $"the place {new PtrType(t)}", expected)}; read it first with .peek()"
+                : $"expected {expected}, found the place {new PtrType(t)}; read it first with .peek()");
         // A literal says why it can't be the parameter's type the way overload resolution does.
         bool preferred = true;
         if (argument > 0 && e is IntLit or FloatLit or NullLit or StrLit && UntypedMisfit(e, expected, ref preferred) is { } why)
@@ -1614,7 +1614,7 @@ public sealed class FunctionGen
     }
 
     /// A call through a Callable value: `fn.call(args)`. A Callable stored in memory is loaded first
-    /// (`fn: Callable[…] = alloc.alloc_fn.load()`); calling the field directly would hide that load.
+    /// (`fn: Callable[…] = alloc.alloc_fn.peek()`); calling the field directly would hide that load.
     private (Expr Callee, CallableType Callable, List<Expr> Args)? IndirectCall(Expr e)
     {
         if (e is not MethodCallExpr m) return null;
@@ -1632,7 +1632,7 @@ public sealed class FunctionGen
         if (_c.MethodsNamed(s, m.Name).Count > 0 || _c.FindMethod(s, m.Name, _env.File, m.Pos) is not null) return null;
         var field = _c.Fields(s).FirstOrDefault(f => f.Name == m.Name);
         if (field.Type is CallableType)
-            throw Err(m.Pos, $"'{m.Name}' is a Callable field: load it (.{m.Name}.load()) and call the value "
+            throw Err(m.Pos, $"'{m.Name}' is a Callable field: peek it (.{m.Name}.peek()) and call the value "
                 + $"with .call(...)");
         return null;
     }
@@ -1960,7 +1960,7 @@ public sealed class FunctionGen
         if (rt is null)
         {
             // An untyped literal receiver takes its type from the arguments: through the parameters of a routine on
-            // every type (`7.store_into(p)` with `dest: @T`), or else as the first typed argument
+            // every type (`7.poke_into(p)` with `dest: @T`), or else as the first typed argument
             // (`0.sub(x)`). Failing both, it takes its type from context.
             // The result's type says the receiver's only for a routine that returns Me (`x : U64 = 1.shl(3)`), so it
             // is borrowed only when it's a type the literal could have.
@@ -2026,7 +2026,7 @@ public sealed class FunctionGen
             var env = BindOwner(r, owner, m.Pos);
             var selfType = _c.ResolveType(r.Params[0].Type, env);
             // Through a pointer, T's method must take exactly that pointer: `slot: Ptr[Addr]` doesn't make
-            // `slot.load()` an Addr method on the slot.
+            // `slot.peek()` an Addr method on the slot.
             if (passesPointer ? !selfType.Equals(rt) : !Compatible(rt, selfType)) continue;
             BindExplicit(r, env, m.TypeArgs, m.Pos);
             InferTypeArgs(r, env, m.Args, expected, 1);
@@ -2061,15 +2061,15 @@ public sealed class FunctionGen
         {
             string concept = m.Name == "represent_into" ? "Representable" : "Diagnosable";
             string fix = _templateHole is { } hole && m.Name == "represent_into"
-                ? $"write the value with {{{hole}.load()}}, or the address with {{{hole}.to[Addr]()}}"
-                : $"write the value with .load().{m.Name}(out), or the address with .to[Addr]().{m.Name}(out)";
+                ? $"write the value with {{{hole}.peek()}}, or the address with {{{hole}.to[Addr]()}}"
+                : $"write the value with .peek().{m.Name}(out), or the address with .to[Addr]().{m.Name}(out)";
             throw Err(m.Pos, $"{rt} is a pointer, and a pointer isn't {concept}; {fix}");
         }
         // `p.eq(q)` where T.eq takes values: the load is written, not implied.
         if (rt is PtrType { Pointee: { } held } && _c.FindMethod(held, m.Name, _env.File, m.Pos, FromTypeParameter(held) || Derived) is not null)
-            throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; load it: .load().{m.Name}(...)");
+            throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; peek it: .peek().{m.Name}(...)");
         // Memory is read through a typed pointer only; an Addr says where, not what.
-        if (rt is PtrType { Pointee: null } && m.Name is "load" or "store" or "volatile_load" or "volatile_store")
+        if (rt is PtrType { Pointee: null } && m.Name is "peek" or "poke" or "peek_volatile" or "poke_volatile")
             throw Err(m.Pos, $"an Addr has no pointee type to {m.Name}; cast it first: .to[@T]().{m.Name}(...)");
         // A value of a type parameter has the routines its constraints give it, and the error says which would.
         if (_c.Prechecking && (rt as ArchetypeType ?? (rt as PtrType)?.Pointee as ArchetypeType) is { } param)
@@ -2289,8 +2289,8 @@ public sealed class FunctionGen
 
         // A load or store reads its address straight from a place chain, so a field of a dense record keeps the
         // alignment it really has (see PlaceAddress); anywhere else such an address is refused.
-        var access = sig.IsTemplate && sig.Decl.Name is "load" or "store" or "volatile_load" or "volatile_store" or "store_into"
-            ? (sig.Decl.Name == "store_into" ? plan.Args.FirstOrDefault() : plan.Receiver)
+        var access = sig.IsTemplate && sig.Decl.Name is "peek" or "poke" or "peek_volatile" or "poke_volatile" or "poke_into"
+            ? (sig.Decl.Name == "poke_into" ? plan.Args.FirstOrDefault() : plan.Receiver)
             : null;
         string alignSuffix = "";
         Val Address(Expr e, DType t, int argument)
@@ -2310,10 +2310,10 @@ public sealed class FunctionGen
         _c.CheckRoutineRequirements(plan.Decl, plan.Env, plan.Pos);
         // A preset in memory is read-only static data, and pointers carry no read-only marker, so the routines that
         // write through their receiver are refused on one by name.
-        if (sig.Decl.Name is "store" or "volatile_store" or "setitem" or "shift_left" or "shift_right" or "copy"
+        if (sig.Decl.Name is "poke" or "poke_volatile" or "setitem" or "shift_left" or "shift_right" or "copy"
             && plan.Receiver is { } place && PresetArrayRoot(place) is { } root)
             throw Err(plan.Pos, $"'{root.Name}' is a preset; its memory is read-only");
-        if (sig.Decl.Name is "store_into" or "copy_into" or "store_at" && plan.Receiver is not null && plan.Args.Count >= 1
+        if (sig.Decl.Name is "poke_into" or "copy_into" or "poke_at" && plan.Receiver is not null && plan.Args.Count >= 1
             && PresetArrayRoot(plan.Args[0]) is { } destRoot)
             throw Err(plan.Pos, $"'{destRoot.Name}' is a preset; its memory is read-only");
         // An assembly routine is checked as assembly on its own, so a generic body being checked only types its call.

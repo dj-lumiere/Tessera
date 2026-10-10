@@ -1,6 +1,6 @@
 // Tessera stdlib: the stack allocator
 //
-// An Allocator for stacks, such as a fiber's: whole pages from the operating
+// An MemoryManager for stacks, such as a fiber's: whole pages from the operating
 // system, with one page below them that may not be touched. A stack grows
 // down, so a stack that runs out reaches that page and the program stops
 // there, instead of writing over whatever lies below.
@@ -12,7 +12,7 @@
 // down as the stack grows into it, as for a thread's own stack (the fiber
 // switch keeps the thread block's stack fields in step, see switch_stack).
 //
-// The Allocator interface frees without a size, so the size of the mapping is
+// The MemoryManager interface frees without a size, so the size of the mapping is
 // written at the start of the bottom page, which is opened again to read it
 // when the stack is freed. It doesn't grow a stack past its size: realloc
 // returns null, as an allocator out of memory does.
@@ -95,7 +95,7 @@ private routine stack_map(length: USize, page: USize) -> Addr
             : close()
 
     block close()
-        length.store_into(at.to[@USize]())
+        length.poke_into(at.to[@USize]())
         pages_protect(at, page, false)
         return(at)
 
@@ -174,7 +174,7 @@ private routine stack_map(length: USize, page: USize) -> Addr
     // MEM_COMMIT, PAGE_READWRITE
     block bottom()
         c_virtual_alloc(at, page, 0x1000, 4)
-        length.store_into(at.to[@USize]())
+        length.poke_into(at.to[@USize]())
         pages_protect(at, page, false)
         pages: USize = length.div(page).sub(1)
         small: Bool = pages.lt(3)
@@ -259,23 +259,23 @@ private routine stack_realloc_fn(state: Addr, old_ptr: Addr, size: USize) -> Add
 /// The stack allocator's free function: reopens the bottom page to read the length written in it, then releases the
 /// whole mapping.
 /// :param state: Unused, the stack allocator has no state.
-/// :param ptr: A stack from {make_stack_allocator}.
+/// :param ptr: A stack from {make_stack_memory}.
 #target(os: not "none")
 private routine stack_free_fn(state: Addr, ptr: Addr) -> Void
     block entry()
         page: USize = page_size()
         base: Addr = ptr.offset(page.to[SSize]().neg())
         pages_protect(base, page, true)
-        length: USize = base.to[@USize]().load()
+        length: USize = base.to[@USize]().peek()
         pages_release(base, length)
         return()
 
-/// An Allocator for stacks: whole pages, with a guard page below that stops the program when a stack overflows.
+/// An MemoryManager for stacks: whole pages, with a guard page below that stops the program when a stack overflows.
 /// :returns: The allocator, which holds no state and needs nothing to free.
 #target(os: not "none")
-routine make_stack_allocator() -> Allocator
+routine make_stack_memory() -> MemoryManager
     block entry()
-        alloc: Allocator = Allocator(alloc_fn: stack_alloc_fn.to[Callable](),
+        alloc: MemoryManager = MemoryManager(alloc_fn: stack_alloc_fn.to[Callable](),
             realloc_fn: stack_realloc_fn.to[Callable](), free_fn: stack_free_fn.to[Callable](),
             state: null)
         return(alloc)

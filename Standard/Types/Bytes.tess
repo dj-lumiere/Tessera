@@ -3,7 +3,7 @@
 // Bytes is text: UTF-8 by convention, and the type of a string literal. It is three fields:
 //   data  — @Byte to the first byte (a literal's bytes are also NUL-terminated, but other text isn't)
 //   count — USize byte count (not including any terminator)
-//   alloc — @Allocator the bytes came from, or null when they're borrowed
+//   alloc — @MemoryManager the bytes came from, or null when they're borrowed
 //
 // Nothing checks that the bytes are UTF-8, but is_utf8 does when it matters. The character operations read a malformed
 // sequence as U+FFFD and move on, so they are defined for any bytes.
@@ -28,7 +28,7 @@ record Bytes
 conform Equatable[Bytes], Comparable[Bytes], Hashable[Bytes], Destructible[Bytes]
     data: @Byte
     count: USize
-    alloc: @Allocator
+    alloc: @MemoryManager
 
 // -- construction --------------------------------------------------------------
 
@@ -60,7 +60,7 @@ routine Bytes.getview(me: Me) -> Me
 /// :returns: The borrowed view.
 routine Bytes.getview(me: @Me) -> Me
     block entry()
-        view: Me = me.load().getview()
+        view: Me = me.peek().getview()
         return(view)
 
 /// Gives the bytes back to the allocator they came from and leaves the text empty: a null data, a count of 0, and a
@@ -68,12 +68,12 @@ routine Bytes.getview(me: @Me) -> Me
 #track_caller
 routine Bytes.destruct(me: @Me) -> Void
     block entry()
-        alloc: @Allocator = me.alloc.load()
+        alloc: @MemoryManager = me.alloc.peek()
         borrowed: Bool = alloc.is_null()
         branch borrowed
             ? return()
             : continue
-        data: @Byte = me.data.load()
+        data: @Byte = me.data.peek()
         empty: Bool = data.is_null()
         branch empty
             ? reset()
@@ -82,9 +82,9 @@ routine Bytes.destruct(me: @Me) -> Void
         jump reset()
 
     block reset()
-        me.data.store(null)
-        me.count.store(0)
-        me.alloc.store(null)
+        me.data.poke(null)
+        me.count.poke(0)
+        me.alloc.poke(null)
         return()
 
 // -- predicates ----------------------------------------------------------------
@@ -100,7 +100,7 @@ routine Bytes.count(me: Me) -> USize
 /// :returns: The byte count.
 routine Bytes.count(me: @Me) -> USize
     block entry()
-        count: USize = me.count.load()
+        count: USize = me.count.peek()
         return(count)
 
 /// Whether the text holds no bytes.
@@ -115,7 +115,7 @@ routine Bytes.is_empty(me: Me) -> Bool
 /// :returns: `true` when the count is 0.
 routine Bytes.is_empty(me: @Me) -> Bool
     block entry()
-        result: Bool = me.count.load().eq(0)
+        result: Bool = me.count.peek().eq(0)
         return(result)
 
 // -- element access ------------------------------------------------------------
@@ -135,7 +135,7 @@ routine Bytes.byte_at(me: Me, index: USize) -> U8
 
     block load()
         data: @Byte = me.data
-        byte: U8 = Byte.to[U8](data.stride(index).load())
+        byte: U8 = Byte.to[U8](data.stride(index).peek())
         return(byte)
 
 /// Reads the byte at `index`.
@@ -145,7 +145,7 @@ routine Bytes.byte_at(me: Me, index: USize) -> U8
 #track_caller
 routine Bytes.byte_at(me: @Me, index: USize) -> U8
     block entry()
-        byte: U8 = me.load().byte_at(index)
+        byte: U8 = me.peek().byte_at(index)
         return(byte)
 
 // -- slicing -------------------------------------------------------------------
@@ -182,7 +182,7 @@ routine Bytes.slice(me: Me, start: USize, end: USize) -> Me
 #track_caller
 routine Bytes.slice(me: @Me, start: USize, end: USize) -> Me
     block entry()
-        result: Me = me.load().slice(start, end)
+        result: Me = me.peek().slice(start, end)
         return(result)
 
 // -- heap-allocating operations ------------------------------------------------
@@ -196,7 +196,7 @@ routine Bytes.slice(me: @Me, start: USize, end: USize) -> Me
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates a new buffer")
-routine Bytes.concat(a: Me, b: Me, alloc: @Allocator) -> Me
+routine Bytes.concat(a: Me, b: Me, alloc: @MemoryManager) -> Me
     local len_a: USize = a.count
     local la: USize = a.count
     local lb: USize = b.count
@@ -217,7 +217,7 @@ routine Bytes.concat(a: Me, b: Me, alloc: @Allocator) -> Me
         src_b: @Byte = b.data
         len_b: USize = b.count
         dst.copy(src_b, len_b)
-        data.stride(count).store(0x00)
+        data.stride(count).poke(0x00)
         result: Me = Me(data: data, count: count, alloc: alloc)
         return(result)
 
@@ -243,8 +243,8 @@ routine Bytes.eq(me: Me, other: Me) -> Bool
         branch done
             ? return(true)
             : continue
-        ba: U8 = Byte.to[U8](pa.stride(i).load())
-        bb: U8 = Byte.to[U8](pb.stride(i).load())
+        ba: U8 = Byte.to[U8](pa.stride(i).peek())
+        bb: U8 = Byte.to[U8](pb.stride(i).peek())
         eq: Bool = ba.eq(bb)
         branch eq
             ? loop(i.add(1))
@@ -274,8 +274,8 @@ routine Bytes.compare(me: Me, other: Me) -> S32
             : step(i)
 
     block step(i: USize)
-        ba: U8 = Byte.to[U8](pa.stride(i).load())
-        bb: U8 = Byte.to[U8](pb.stride(i).load())
+        ba: U8 = Byte.to[U8](pa.stride(i).peek())
+        bb: U8 = Byte.to[U8](pb.stride(i).peek())
         lt: Bool = ba.lt(bb)
         branch lt
             ? return(-1)
@@ -329,8 +329,8 @@ routine Bytes.has_prefix(me: Me, prefix: Me) -> Bool
         branch done
             ? return(true)
             : continue
-        a: U8 = Byte.to[U8](sd.stride(i).load())
-        b: U8 = Byte.to[U8](pd.stride(i).load())
+        a: U8 = Byte.to[U8](sd.stride(i).peek())
+        b: U8 = Byte.to[U8](pd.stride(i).peek())
         eq: Bool = a.eq(b)
         branch eq
             ? loop(i.add(1))
@@ -341,7 +341,7 @@ routine Bytes.has_prefix(me: Me, prefix: Me) -> Bool
 /// :returns: `true` when `prefix` matches the first bytes. An empty `prefix` always matches.
 routine Bytes.has_prefix(me: @Me, prefix: Me) -> Bool
     block entry()
-        result: Bool = me.load().has_prefix(prefix)
+        result: Bool = me.peek().has_prefix(prefix)
         return(result)
 
 /// Whether the text ends with `suffix`.
@@ -365,8 +365,8 @@ routine Bytes.has_suffix(me: Me, suffix: Me) -> Bool
             ? return(true)
             : continue
         idx: USize = off.add(i)
-        a: U8 = Byte.to[U8](sd.stride(idx).load())
-        b: U8 = Byte.to[U8](fd.stride(i).load())
+        a: U8 = Byte.to[U8](sd.stride(idx).peek())
+        b: U8 = Byte.to[U8](fd.stride(i).peek())
         eq: Bool = a.eq(b)
         branch eq
             ? loop(i.add(1), off)
@@ -377,7 +377,7 @@ routine Bytes.has_suffix(me: Me, suffix: Me) -> Bool
 /// :returns: `true` when `suffix` matches the last bytes. An empty `suffix` always matches.
 routine Bytes.has_suffix(me: @Me, suffix: Me) -> Bool
     block entry()
-        result: Bool = me.load().has_suffix(suffix)
+        result: Bool = me.peek().has_suffix(suffix)
         return(result)
 
 /// The byte index of the first match of `needle`, by a naive O(n*m) search.
@@ -428,8 +428,8 @@ routine Bytes.find(me: Me, needle: Me) -> Option[USize]
 
     block check(i: USize, j: USize, last: USize)
         idx: USize = i.add(j)
-        a: U8 = Byte.to[U8](sd.stride(idx).load())
-        b: U8 = Byte.to[U8](nd.stride(j).load())
+        a: U8 = Byte.to[U8](sd.stride(idx).peek())
+        b: U8 = Byte.to[U8](nd.stride(j).peek())
         eq: Bool = a.eq(b)
         branch eq
             ? inner(i, j.add(1), last)
@@ -441,7 +441,7 @@ routine Bytes.find(me: Me, needle: Me) -> Option[USize]
 /// :absent: When `needle` does not occur in the text.
 routine Bytes.find(me: @Me, needle: Me) -> Option[USize]
     block entry()
-        r: Option[USize] = me.load().find(needle)
+        r: Option[USize] = me.peek().find(needle)
         return(r)
 
 /// Whether `needle` occurs anywhere in the text, using {Bytes.find}.
@@ -458,7 +458,7 @@ routine Bytes.contains(me: Me, needle: Me) -> Bool
 /// :returns: `true` when a match exists. An empty `needle` always matches.
 routine Bytes.contains(me: @Me, needle: Me) -> Bool
     block entry()
-        found: Bool = me.load().contains(needle)
+        found: Bool = me.peek().contains(needle)
         return(found)
 
 // -- UTF-8 -----------------------------------------------------------------------
@@ -486,7 +486,7 @@ routine Bytes.is_utf8(me: Me) -> Bool
 /// :returns: `true` when the whole text decodes as UTF-8. An empty text is valid.
 routine Bytes.is_utf8(me: @Me) -> Bool
     block entry()
-        valid: Bool = me.load().is_utf8()
+        valid: Bool = me.peek().is_utf8()
         return(valid)
 
 /// Whether a character can start at byte `index`: the byte there is not a UTF-8 continuation byte.
@@ -502,7 +502,7 @@ routine Bytes.is_char_boundary(me: Me, index: USize) -> Bool
             else => inside()
 
     block inside()
-        b: U8 = Byte.to[U8](me.data.stride(index).load())
+        b: U8 = Byte.to[U8](me.data.stride(index).peek())
         lead: Bool = b.bitand(0xC0).ne(0x80)
         return(lead)
 
@@ -511,7 +511,7 @@ routine Bytes.is_char_boundary(me: Me, index: USize) -> Bool
 /// :returns: `true` when `index` is the count or the byte there is not a continuation byte. `false` past the end.
 routine Bytes.is_char_boundary(me: @Me, index: USize) -> Bool
     block entry()
-        lead: Bool = me.load().is_char_boundary(index)
+        lead: Bool = me.peek().is_char_boundary(index)
         return(lead)
 
 // -- iterators -----------------------------------------------------------------
@@ -527,7 +527,7 @@ routine Bytes.bytes(me: Me) -> BytesIter
 /// :returns: A {BytesIter} positioned at the first byte.
 routine Bytes.bytes(me: @Me) -> BytesIter
     block entry()
-        iter: BytesIter = me.load().bytes()
+        iter: BytesIter = me.peek().bytes()
         return(iter)
 
 /// Iterates over the characters, decoding UTF-8. A malformed sequence yields U+FFFD.
@@ -541,5 +541,5 @@ routine Bytes.chars(me: Me) -> BytesCharsIter
 /// :returns: A {BytesCharsIter} positioned at the first character.
 routine Bytes.chars(me: @Me) -> BytesCharsIter
     block entry()
-        iter: BytesCharsIter = me.load().chars()
+        iter: BytesCharsIter = me.peek().chars()
         return(iter)

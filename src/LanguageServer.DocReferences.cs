@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-/// A reference in a doc comment, `{Allocator}` or `{List[T].reserve_result}`: hover shows what it names, as hovering
+/// A reference in a doc comment, `{MemoryManager}` or `{List[T].reserve_result}`: hover shows what it names, as hovering
 /// the name in code does, and go-to-definition goes there.
 public static partial class LanguageServer
 {
