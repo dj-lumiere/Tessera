@@ -1,0 +1,114 @@
+// B64.to_b16 and B64.to_bf16 round to nearest, ties to even, at every midpoint between neighbouring finite values
+// of the narrow type, both signs: the midpoint itself (a tie), the B64 values next to it, and values 2^-20 of the
+// gap away. They narrow through B32 with round-to-odd, which must truncate before setting the low bit.
+
+import Standard::Format
+import Standard::Os
+
+/// The narrow value a correct rounding gives at d near the midpoint of lo and hi (bits, lo even or odd).
+routine expected(d: B64, mid: B64, lo: U16, hi: U16) -> U16
+    block entry()
+        below  : Bool = d.lt(mid)
+        above  : Bool = d.gt(mid)
+        lo_odd : Bool = lo.bitand(1).eq(1)
+        when
+            below  -> return(lo)
+            above  -> return(hi)
+            lo_odd -> return(hi)
+            else   -> return(lo)
+
+/// The k-th probe near mid: the midpoint, its B64 neighbours, and 2^-20 of the gap either side.
+routine probe_at(mid: B64, gap: B64, k: USize) -> B64
+    block entry()
+        bits : U64 = mid.bits()
+        off  : B64 = gap.mul(0x1p-20)
+        when
+            k.eq(0) -> return(mid)
+            k.eq(1) -> return(B64.from_bits(bits.sub(1)))
+            k.eq(2) -> return(B64.from_bits(bits.add(1)))
+            k.eq(3) -> return(mid.sub(off))
+            else    -> return(mid.add(off))
+
+/// Failures of B64.to_b16 over all positive finite B16 pairs, both signs.
+routine check_b16() -> U64
+    shared fails : @U64 <- 0
+
+    block entry()
+        jump pair(0)
+
+    block pair(lo: U16)
+        done : Bool = lo.eq(0x7BFF)  // B16.MAX has no finite neighbour above
+        branch done
+            ? return(fails.load())
+            : probe(lo)
+
+    block probe(lo: U16)
+        hi  : U16 = lo.add(1)
+        a   : B64 = B16.from_bits(lo).to<B64>()
+        b   : B64 = B16.from_bits(hi).to<B64>()
+        mid : B64 = a.add(b).mul(0.5)
+        jump one(lo, hi, mid, b.sub(a), 0)
+
+    block one(lo: U16, hi: U16, mid: B64, gap: B64, k: USize)
+        done : Bool = k.eq(5)
+        branch done
+            ? pair(hi)
+            : test(lo, hi, mid, gap, k)
+
+    block test(lo: U16, hi: U16, mid: B64, gap: B64, k: USize)
+        d        : B64  = probe_at(mid, gap, k)
+        want     : U16  = expected(d, mid, lo, hi)
+        got      : U16  = d.to<B16>().bits()
+        negated  : B64  = d.neg()
+        got_neg  : U16  = negated.to<B16>().bits()
+        ok       : Bool = got.eq(want).bitand(got_neg.eq(want.bitor(0x8000)))
+        fails_to : U64  = ok
+            ? fails.load()
+            : fails.load().add(1)
+        fails_to.store_into(fails)
+        jump one(lo, hi, mid, gap, k.add(1))
+
+/// Failures of B64.to_bf16 over all positive finite BF16 pairs, both signs.
+routine check_bf16() -> U64
+    shared fails : @U64 <- 0
+
+    block entry()
+        jump pair(0)
+
+    block pair(lo: U16)
+        done : Bool = lo.eq(0x7F7F)  // BF16.MAX has no finite neighbour above
+        branch done
+            ? return(fails.load())
+            : probe(lo)
+
+    block probe(lo: U16)
+        hi  : U16 = lo.add(1)
+        a   : B64 = BF16.from_bits(lo).to<B64>()
+        b   : B64 = BF16.from_bits(hi).to<B64>()
+        mid : B64 = a.add(b).mul(0.5)
+        jump one(lo, hi, mid, b.sub(a), 0)
+
+    block one(lo: U16, hi: U16, mid: B64, gap: B64, k: USize)
+        done : Bool = k.eq(5)
+        branch done
+            ? pair(hi)
+            : test(lo, hi, mid, gap, k)
+
+    block test(lo: U16, hi: U16, mid: B64, gap: B64, k: USize)
+        d        : B64  = probe_at(mid, gap, k)
+        want     : U16  = expected(d, mid, lo, hi)
+        got      : U16  = d.to<BF16>().bits()
+        negated  : B64  = d.neg()
+        got_neg  : U16  = negated.to<BF16>().bits()
+        ok       : Bool = got.eq(want).bitand(got_neg.eq(want.bitor(0x8000)))
+        fails_to : U64  = ok
+            ? fails.load()
+            : fails.load().add(1)
+        fails_to.store_into(fails)
+        jump one(lo, hi, mid, gap, k.add(1))
+
+routine start() -> Void
+    block entry()
+        Out.write("B16 failures: {check_b16()}\n")
+        Out.write("BF16 failures: {check_bf16()}\n")
+        return()

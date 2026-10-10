@@ -174,8 +174,8 @@ public static partial class LanguageServer
     }
 
     private static bool IsBuiltinType(string name) =>
-        name is "Bool" or "Void" or "Addr" or "Array" or "Vector" or "USize" or "SSize" or "Byte" or "Char" or "F16" or "BF16"
-            or "F32" or "F64" or "F128"
+        name is "Bool" or "Void" or "Addr" or "Array" or "Vector" or "USize" or "SSize" or "Byte" or "Char" or "B16" or "BF16"
+            or "B32" or "B64" or "B128"
         || (name.Length > 1 && name[0] is 'S' or 'U' && name[1..].All(char.IsDigit));
 
     /// The names of `a.b.c` (each with the type arguments written after it, `List<S64>`) before the cursor's `.`.

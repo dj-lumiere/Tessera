@@ -1729,7 +1729,7 @@ public sealed class FunctionGen
             ? "an untyped integer literal prefers USize (SSize when negative), and that doesn't settle it here; "
               + "give the literal its type by binding it first (n : U8 = 1)"
             : args.Any(a => a is FloatLit)
-                ? "a float literal can be any float type; give it its type by binding it first (x : F64 = 1.5)"
+                ? "a float literal can be any float type; give it its type by binding it first (x : B64 = 1.5)"
             : tier.All(f => f.Generic)
                 ? "more than one generic overload fits; pass the type arguments, or add an overload for these types"
                 : "give the arguments the types of the overload you mean";
@@ -1787,7 +1787,7 @@ public sealed class FunctionGen
     }
 
     /// While a generic body is checked, a call on a value of a known type whose routine is picked by a type argument
-    /// that is a type parameter (`x.to<T>()`, defined as `S32.to<S64>`, `S32.to<F64>`, ...) has no routine to check
+    /// that is a type parameter (`x.to<T>()`, defined as `S32.to<S64>`, `S32.to<B64>`, ...) has no routine to check
     /// until the parameter is known, and no concept names one, so it is checked at each instantiation. Its type is the
     /// one those routines return for that argument. Null for every other call, and for a routine a concept provides
     /// (`text.to_result<T>()` under `Parsable<T>`), which the constraints in force must give.
@@ -1957,7 +1957,7 @@ public sealed class FunctionGen
                 {
                     ArrayLit => "Array<T, COUNT> { ... }",
                     RecordLit => "Type { ... }",
-                    FloatLit => $"F64.{call}(...)",
+                    FloatLit => $"B64.{call}(...)",
                     _ => $"S64.{call}(...)",
                 };
                 throw Err(m.Receiver.Pos,
@@ -2115,7 +2115,7 @@ public sealed class FunctionGen
 
     private bool PrimitiveOrRecordName(string name) =>
         IntType.FromName(name) is not null
-        || name is "F16" or "BF16" or "F32" or "F64" or "Bool" or "Void" or "Ptr" or "Addr" or "Array" or "Vector"
+        || name is "B16" or "BF16" or "B32" or "B64" or "Bool" or "Void" or "Ptr" or "Addr" or "Array" or "Vector"
         || _c.DeclaresType(name);
 
     /// Whether a routine defined for type arguments (`S32.to<S64>`, `Ptr<T>.to<@U>`) is the one these name.
@@ -2417,21 +2417,21 @@ public sealed class FunctionGen
     }
 
     /// An argument in the `...` part of a C variadic call gets C's default promotions: untyped integer literals
-    /// are `int` (S32), float literals and F32 values are F64, and Bool and narrow integers are widened to `int`
+    /// are `int` (S32), float literals and B32 values are B64, and Bool and narrow integers are widened to `int`
     /// (zero-extended when unsigned or a Byte, sign-extended otherwise).
     private Val VariadicArg(Expr e)
     {
         var t = Infer(e) ?? e switch
         {
             IntLit => IntType.S(32),
-            FloatLit => FloatType.F64,
+            FloatLit => FloatType.B64,
             StrLit => new PtrType(IntType.Byte),
             _ => throw Err(e.Pos, "cannot infer the type of this variadic argument; bind it with a type first"),
         };
         var v = Eval(e, t);
         return v.Type.Repr switch
         {
-            FloatType ft when ft != FloatType.F64 => new Val(EmitTmp($"fpext {ft.Llvm} {v.Op} to double"), FloatType.F64),
+            FloatType ft when ft != FloatType.B64 => new Val(EmitTmp($"fpext {ft.Llvm} {v.Op} to double"), FloatType.B64),
             BoolType => new Val(EmitTmp($"zext i1 {v.Op} to i32"), IntType.S(32)),
             IntType { Bits: < 32, Kind: IntKind.Unsigned or IntKind.Byte } it =>
                 new Val(EmitTmp($"zext {it.Llvm} {v.Op} to i32"), IntType.S(32)),

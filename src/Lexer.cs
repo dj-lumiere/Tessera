@@ -469,7 +469,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         return j < src.Length && char.IsAsciiDigit(src[j]);
     }
 
-    /// `0x1.8p+46`: hex digits scaled by a power of two. The value must be exactly an F64 (float literals are held
+    /// `0x1.8p+46`: hex digits scaled by a power of two. The value must be exactly a B64 (float literals are held
     /// as doubles), so a hex float never rounds.
     private Token ReadHexFloat(int start, int digitsStart, Pos pos)
     {
@@ -505,7 +505,7 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
         while (mantissa.IsEven) { mantissa >>= 1; scale++; }
         long bits = (long)mantissa.GetBitLength();
         if (bits > 53 || scale < -1074 || scale + bits - 1 > 1023)
-            throw new CompileError(pos, $"hex float literal '{text}' is not exactly an F64");
+            throw new CompileError(pos, $"hex float literal '{text}' is not exactly a B64");
         double value = Math.ScaleB((double)mantissa, (int)scale);
         return new Token(TokenKind.Float, text, pos, BitConverter.DoubleToInt64Bits(negative ? -value : value));
     }

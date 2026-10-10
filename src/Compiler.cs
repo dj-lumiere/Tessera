@@ -745,10 +745,10 @@ public sealed partial class Compiler
 
         switch (t.Name)
         {
-            case "F16": NoArgs(); return FloatType.F16;
+            case "B16": NoArgs(); return FloatType.B16;
             case "BF16": NoArgs(); return FloatType.BF16;
-            case "F32": NoArgs(); return FloatType.F32;
-            case "F64": NoArgs(); return FloatType.F64;
+            case "B32": NoArgs(); return FloatType.B32;
+            case "B64": NoArgs(); return FloatType.B64;
             case "Bool": NoArgs(); return BoolType.Instance;
             case "Void": NoArgs(); return VoidType.Instance;
             case "Addr": NoArgs(); return new PtrType(null);
@@ -842,6 +842,10 @@ public sealed partial class Compiler
 
         if (t.Args.Count == 0 && FindPreset("", t.Name, env.File, t.Pos, t.Path) is { IsStorage: false })
             return new ConstArg(ConstInt(new TypeArgType(t), env, t.Pos));
+
+        // The binary floating-point types are B16, B32, B64 and B128.
+        if (t.Args.Count == 0 && t.Name is "F16" or "F32" or "F64" or "F128")
+            throw new CompileError(t.Pos, $"unknown type '{t}'. Did you mean 'B{t.Name[1..]}'?");
 
         throw new CompileError(t.Pos, $"unknown type '{t}'");
     }
@@ -1012,7 +1016,7 @@ public sealed partial class Compiler
     private DType? TransparentField(RecordType s)
     {
         var d = s.Decl;
-        // A library `#llvm("iN")` record (F128) is an integer of that width underneath. Built-in names never get here.
+        // A library `#llvm("iN")` record (B128) is an integer of that width underneath. Built-in names never get here.
         if (d.Attr("llvm") is { } llvm)
             return llvm.First is ['i', .. var digits] && int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
                 ? IntType.U(bits)

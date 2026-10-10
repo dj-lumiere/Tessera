@@ -1,0 +1,96 @@
+// Tessera stdlib: the correctly rounded hyperbolic cosine of B32
+//
+// Near zero a polynomial in x^2. Elsewhere 32 x / ln(2) = k + h, and
+// cosh x = 2^(k/32) 2^(h/32) / 2 + 2^(-k/32) 2^(-h/32) / 2 with the powers of
+// two from a table and 2^(+-h/32) from a polynomial, all in B64. A second,
+// longer polynomial settles the cases the first can't round. The table and
+// cm_b32_sinh_scale are shared with sinh (Sinh.tess).
+// Round to nearest only: overflow gives +inf, NaN comes back quiet.
+//
+// Ported from CORE-MATH, src/binary32/cosh/coshf.c via RazorForge's B32Cosh.rf.
+// Copyright (c) 2022-2023 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+
+module Standard::Core
+
+/// cosh `me`, correctly rounded.
+/// :returns: The hyperbolic cosine of `me`.
+routine B32.cosh(me: Me) -> Me
+    shared ax : U32 = me.bits().shl(1)
+
+    block entry()
+        large : Bool = ax.gt(0x8565A9F8)
+        small : Bool = ax.lt(0x7C000000)
+        when
+            large -> large()
+            small -> small()
+            else  -> return(cm_b32_cosh_main(me.to<B64>()))
+
+    // |x| > 0x1.65a9f8p+6: NaN, infinities, or overflow
+    block large()
+        special : Bool = ax.ge(0xFF000000)
+        branch special
+            ? return(me.mul(me))
+            : return(Me.INFINITY)
+
+    // |x| < 0.125
+    block small()
+        tiny      : Bool = ax.lt(0x66000000)
+        quadratic : Bool = ax.lt(0x74000000)  // |x| < 0x1p-11
+        when
+            tiny      -> return(me.abs().mul_add(0x1p-25, 1.0))
+            quadratic -> quadratic()
+            else      -> series()
+
+    block quadratic()
+        half_square : Me = me.mul(0.5).mul(me)
+        return(half_square.add(1.0))
+
+    block series()
+        z  : B64 = me.to<B64>()
+        z2 : B64 = z.mul(z)
+        z4 : B64 = z2.mul(z2)
+        p0 : B64 = z2.mul(0x1.55555555723cfp-5).add(0x1.fffffffffffe3p-2)
+        p1 : B64 = z2.mul(0x1.a0483fc0328f7p-16).add(0x1.6c16bee4a5986p-10)
+        p  : B64 = z4.mul(p1).add(p0)
+        r  : B64 = z2.mul(p).add(1.0)
+        return(r.to<Me>())
+
+/// The main path of cosh, for 0.125 <= |x| without overflow: e^x / 2 + e^-x / 2 from a 2^(k/32) table.
+/// :param z: The argument as B64.
+/// :returns: cosh(`z`), rounded to B32.
+private routine cm_b32_cosh_main(z: B64) -> B32
+    shared a  : B64 = z.mul(0x1.71547652b82fep+5)  // 32 x / ln(2)
+    shared ia : B64 = a.round_ties_even()
+    shared h  : B64 = a.sub(ia)
+    shared h2 : B64 = h.mul(h)
+    shared sp : B64 = cm_b32_sinh_scale(ia, false)
+    shared sm : B64 = cm_b32_sinh_scale(ia, true)
+
+    block entry()
+        tev  : B64  = h2.mul(0x1.ebfd1b232f475p-13).add(1.0)
+        tod  : B64  = h2.mul(0x1.c6b19384ecd93p-20).add(0x1.62e42fef4c4e7p-6)
+        rp   : B64  = sp.mul(h.mul(tod).add(tev))
+        rm   : B64  = sm.mul(tev.sub(h.mul(tod)))
+        r    : B64  = rp.add(rm)
+        ub   : B32  = r.to<B32>()
+        lb   : B32  = r.sub(r.mul(0x1.3edbbe4560327p-33)).to<B32>()
+        sure : Bool = ub.eq(lb)
+        branch sure
+            ? return(ub)
+            : slow()
+
+    // too close to a rounding boundary: redo it with a split 32 / ln(2) and a longer polynomial
+    block slow()
+        h_hi     : B64 = z.mul(0x1.7154765p+5).sub(ia)
+        h_split  : B64 = h_hi.add(z.mul(0x1.5c17f0bbbe88p-26))
+        h2_split : B64 = h_split.mul(h_split)
+        te4      : B64 = h2_split.mul(0x1.430976b8ce6efp-43).add(0x1.3b2ab6fb92e5ep-27)
+        te02     : B64 = h2_split.mul(0x1.ebfbdff82c58fp-13).add(1.0)
+        tev      : B64 = te02.add(h2_split.mul(h2_split).mul(te4))
+        to2      : B64 = h2_split.mul(0x1.5d886e6d54203p-35).add(0x1.c6b08d702e0edp-20)
+        tod      : B64 = h2_split.mul(to2).add(0x1.62e42fefa39efp-6)
+        rp       : B64 = sp.mul(h_split.mul(tod).add(tev))
+        rm       : B64 = sm.mul(tev.sub(h_split.mul(tod)))
+        r        : B64 = rp.add(rm)
+        return(r.to<B32>())

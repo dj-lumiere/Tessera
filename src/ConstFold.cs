@@ -4,20 +4,20 @@ using System.Numerics;
 namespace Tessera;
 
 /// A value the builder folded: an integer (Type null while it is an untyped literal), a Bool (0 or 1), or the IEEE
-/// bits of a float or of a bit-pattern record such as F128.
+/// bits of a float or of a bit-pattern record such as B128.
 public sealed record ConstVal(DType? Type, BigInteger Value);
 
 public sealed partial class Compiler
 {
     // Presets fold to constants here, and only these forms fold: literals; other presets; add, sub, mul, div, mod,
     // min, max, the bitwise operations and shifts, neg, and the integer conversions to<T>() and to_wrap<T>(); the
-    // bitwise operations of Bool; add, sub, mul, div, and neg of F32 and F64; max, min, sizeof, and alignof; and
+    // bitwise operations of Bool; add, sub, mul, div, and neg of B32 and B64; max, min, sizeof, and alignof; and
     // T.from_bits(...) for a float or a bit-pattern record. Each follows the stdlib routine's meaning, and what would
     // crash at run time (overflow, a zero divisor, a value out of range) is a build error. Nothing else runs at
     // build time: a routine call in a preset is an error, not code at each use.
 
     private const string PresetForms =
-        "literals, other presets, integer and Bool arithmetic and conversions, F32/F64 add/sub/mul/div/neg, " +
+        "literals, other presets, integer and Bool arithmetic and conversions, B32/B64 add/sub/mul/div/neg, " +
         "max/min, sizeof/alignof, and T.from_bits(...)";
 
     private readonly Dictionary<string, ConstVal> _presetValues = [];
@@ -63,7 +63,7 @@ public sealed partial class Compiler
         return u >= span >> 1 ? u - span : u;
     }
 
-    /// A fieldless `#llvm("iN")` record (F128): its width, or null.
+    /// A fieldless `#llvm("iN")` record (B128): its width, or null.
     private static int? BitRecordWidth(DType t) =>
         t is RecordType { Decl: var d } && d.Fields.Count == 0 && d.Attr("llvm")?.First is ['i', .. var digits]
         && int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
@@ -134,7 +134,7 @@ public sealed partial class Compiler
             case FloatLit f:
                 if (hint is FloatType ft) return new ConstVal(ft, FloatBits(ft, f.Value));
                 throw new CompileError(f.Pos, hint is null
-                    ? "nothing says this float literal's type; name it: F64.add(1.5, 2.0)"
+                    ? "nothing says this float literal's type; name it: B64.add(1.5, 2.0)"
                     : $"a float literal can't be a {hint.Name}");
             case PresetRef r:
                 return FoldPresetRef(r, env);
@@ -260,7 +260,7 @@ public sealed partial class Compiler
                 return ApplyInt(r.Value, it, name, args, firstArgument, env, pos);
             case BoolType:
                 return ApplyBool(r.Value, name, args, firstArgument, env, pos);
-            case FloatType ft when ft == FloatType.F32 || ft == FloatType.F64:
+            case FloatType ft when ft == FloatType.B32 || ft == FloatType.B64:
                 return ApplyFloat(r.Value, ft, name, args, firstArgument, env, pos);
             default:
                 throw new CompileError(pos, $"{r.Type!.Name}.{name} can't run at build time; a preset is made of {PresetForms}");
@@ -341,10 +341,10 @@ public sealed partial class Compiler
         throw new CompileError(pos, $"Bool.{name} can't run at build time; a preset is made of {PresetForms}");
     }
 
-    /// F32 and F64 arithmetic, rounded to nearest like the hardware (C# float and double are IEEE).
+    /// B32 and B64 arithmetic, rounded to nearest like the hardware (C# float and double are IEEE).
     private ConstVal ApplyFloat(BigInteger bits, FloatType ft, string name, List<Expr> args, int firstArgument, TypeEnv env, Pos pos)
     {
-        bool f32 = ft == FloatType.F32;
+        bool f32 = ft == FloatType.B32;
         double a = f32 ? BitConverter.UInt32BitsToSingle((uint)bits) : BitConverter.UInt64BitsToDouble((ulong)bits);
         if (name == "neg" && args.Count == 0) return new ConstVal(ft, bits ^ (BigInteger.One << (ft.Bits - 1)));
         if (args.Count == 1 && name is "add" or "sub" or "mul" or "div")
@@ -365,8 +365,8 @@ public sealed partial class Compiler
 
     /// The bits of a float literal rounded to ft, as FloatType.Constant rounds it.
     private static BigInteger FloatBits(FloatType ft, double value) =>
-        ft == FloatType.F16 ? BitConverter.HalfToUInt16Bits((Half)value)
+        ft == FloatType.B16 ? BitConverter.HalfToUInt16Bits((Half)value)
         : ft == FloatType.BF16 ? FloatType.ToBFloat16Bits((float)value)
-        : ft == FloatType.F32 ? BitConverter.SingleToUInt32Bits((float)value)
+        : ft == FloatType.B32 ? BitConverter.SingleToUInt32Bits((float)value)
         : BitConverter.DoubleToUInt64Bits(value);
 }

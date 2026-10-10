@@ -1,0 +1,269 @@
+// Tessera stdlib: correctly rounded B128 hypot (CORE-MATH)
+//
+// Ported from CORE-MATH, src/binary128/hypot/hypotq.c via RazorForge's B128Hypot.rf.
+// Copyright (c) 2025 Alexei Sibidanov <sibid@uvic.ca>
+// MIT license: see LICENSE-CORE-MATH
+//
+// Only round-to-nearest (ties to even) is kept. The original's rounding-mode probe, errno and
+// exception flags are dropped. Everything runs on 64- and 128-bit integers: x² + y² is formed
+// in fixed point relative to the larger leg, its square root comes from Sqrt.tess's seed and
+// refinement, and a result within a few units of a rounding boundary is settled by an exact
+// 256-bit comparison of the candidate's square with the sum of squares.
+
+module Standard::Core
+
+/// A 256-bit value (or square) as two 128-bit halves.
+record CmHypotSquare
+    hi : U128
+    lo : U128
+
+// -- hypot ---------------------------------------------------------------------
+
+/// sqrt(x² + y²) without overflow or underflow, correctly rounded to nearest (a CORE-MATH port). A signaling NaN
+/// gives NaN, as it does in every operation, and otherwise an infinite leg gives +inf, even with a quiet NaN in the
+/// other leg (IEEE 754's hypot(±inf, qNaN)). A NaN comes back quieted (`me` first), the payload kept.
+/// :param other: The other leg.
+/// :returns: sqrt(`me`² + `other`²), +inf when it overflows.
+routine B128.hypot(me: Me, other: Me) -> Me
+    shared x_abs : U128 = me.bits().bitand(B128_SIGN.bitnot())
+    shared y_abs : U128 = other.bits().bitand(B128_SIGN.bitnot())
+    shared swap  : Bool = x_abs.lt(y_abs)
+    shared a     : U128 = swap  // the larger leg
+        ? y_abs
+        : x_abs
+    shared b : U128 = swap
+        ? x_abs
+        : y_abs
+
+    block entry()
+        signaling : Bool = b128_is_signaling(me).bitor(b128_is_signaling(other))
+        inf       : Bool = me.is_infinite().bitor(other.is_infinite())
+        nan       : Bool = me.is_nan().bitor(other.is_nan())
+        when
+            signaling -> return(b128_nan_of(me, other))
+            inf       -> return(Me.INFINITY)
+            nan       -> return(b128_nan_of(me, other))
+            else      -> compute()
+
+    block compute()
+        a_exp  : S64  = a.shr(112).to<S64>()
+        b_exp  : S64  = b.shr(112).to<S64>()
+        b_tiny : Bool = b_exp.eq(0)
+        branch b_tiny
+            ? tiny_leg(a_exp)
+            : legs(a, a_exp, b, b_exp)
+
+    block tiny_leg(a_exp: S64)
+        b_zero : Bool = b.eq(0)
+        a_only : Me   = b128_of(a)
+        branch b_zero
+            ? return(a_only)
+            : normalize_b(a_exp)
+
+    // A subnormal leg moves its leading bit up to the implicit bit's place, and its exponent
+    // drops below 1 to match. Only then can the larger leg be subnormal too.
+    block normalize_b(a_exp: S64)
+        lz_b   : U128 = b.leading_zeros()
+        shift  : S64  = lz_b.to<S64>().sub(15)
+        b_norm : U128 = b.shl(shift.to<U128>())
+        b_exp  : S64  = 1.sub(shift)
+        a_tiny : Bool = a_exp.eq(0)
+        branch a_tiny
+            ? normalize_a(b_norm, b_exp)
+            : legs(a, a_exp, b_norm, b_exp)
+
+    block normalize_a(b_leg: U128, b_exp: S64)
+        lz_a  : U128 = a.leading_zeros()
+        shift : S64  = lz_a.to<S64>().sub(15)
+        jump legs(a.shl(shift.to<U128>()), 1.sub(shift), b_leg, b_exp)
+
+    // Both legs as 1.frac × 2^(exponent - 16383) with the leading bit placed at bit 127.
+    block legs(a_leg: U128, a_exp: S64, b_leg: U128, b_exp: S64)
+        gap        : S64  = a_exp.sub(b_exp)
+        a_top      : U128 = a_leg.shl(15).bitor(B128_SIGN)
+        b_top      : U128 = b_leg.shl(15).bitor(B128_SIGN)
+        negligible : Bool = gap.gt(56)  // b only matters as a sticky bit
+        branch negligible
+            ? negligible(a_top, a_exp)
+            : sum(a_top, a_exp, b_top, gap)
+
+    block negligible(a_top: U128, a_exp: S64)
+        r : Me = cm_hypot_round(a_top.bitor(1), a_exp)
+        return(r)
+
+    // s = a² + b² in fixed point (b aligned to a), normalized with an even or odd shift so its
+    // square root can reuse the sqrt refinement. A carry out of the sum bumps the exponent.
+    block sum(a_top: U128, a_exp: S64, b_top: U128, gap: S64)
+        a_sq    : U128 = cm_hypot_sqr_hi(a_top)
+        b_sq    : U128 = cm_hypot_sqr_hi(b_top.shr(gap.to<U128>()))
+        s       : U128 = a_sq.add_wrap(b_sq)
+        carried : Bool = s.lt(a_sq)
+        carry   : S64  = carried.to<S64>()
+        s_hi    : S64  = s.shr(64).to_wrap<S64>()
+        zeros   : S64  = s_hi.leading_zeros()
+        lead    : S64  = carried
+            ? 0
+            : zeros
+        shift    : S64  = 1.sub(carry).add(lead)
+        odd      : S64  = shift.bitand(1)
+        frac     : U128 = s.shl(shift.to<U128>())
+        exponent : S64  = a_exp.add(carry)
+        radicand : U128 = cm_sqrt_radicand(frac, odd)
+        approx   : U128 = cm_sqrt_approx(frac, radicand, odd)
+        slack    : S16  = approx.shl(2).to_wrap<S16>()  // the bits under the rounding point
+        close    : Bool = slack.gt(-37).bitand(slack.lt(13))
+        branch close
+            ? settle(approx, exponent, a_top, b_top, gap)
+            : round(approx, exponent)
+
+    block round(approx: U128, exponent: S64)
+        r : Me = cm_hypot_round(approx, exponent)
+        return(r)
+
+    // approx is at most one unit (of its bit 14) off: square the candidate, compare it with the
+    // exact sum of squares, and leave bit 0 saying which way the true root lies. Rounding up
+    // can wrap the candidate to 0, which means 2^128: the exponent takes the carry.
+    block settle(approx: U128, exponent: S64, a_top: U128, b_top: U128, gap: S64)
+        candidate : U128 = approx.add_wrap(0x2000).bitand(0x3FFF.bitnot())
+        wrapped   : Bool = candidate.eq(0)
+        excess    : S128 = cm_hypot_excess(candidate.shr(13), a_top, b_top, gap)
+        top_bit   : U128 = wrapped
+            ? B128_SIGN
+            : 0
+        above   : U128 = excess.lt(0).to<U128>()  // the sum is below the square
+        below   : U128 = excess.gt(0).to<U128>()
+        lowered : U128 = candidate.bitor(top_bit).sub_wrap(above)
+        v       : U128 = lowered.add_wrap(below)
+        r       : Me   = cm_hypot_round(v, exponent.add(wrapped.to<S64>()))
+        return(r)
+
+/// Rounds v (leading bit at 127, sticky information in its low bits) times 2^(exponent - 16383) to
+/// the nearest B128, ties to even: a normal result, +inf on overflow, or a subnormal.
+/// :param v: The significand, leading bit at 127.
+/// :param exponent: The biased exponent of the leading bit.
+/// :returns: The rounded B128.
+routine cm_hypot_round(v: U128, exponent: S64) -> B128
+    shared e : S64 = exponent.sub(1)
+
+    block entry()
+        normal : Bool = e.gt(0)
+        branch normal
+            ? normal()
+            : subnormal()
+
+    block normal()
+        overflow : Bool = e.ge(32766)
+        infinity : B128 = B128.INFINITY
+        branch overflow
+            ? return(infinity)
+            : pack()
+
+    // The leading bit lands on bit 112 and adds 1 to the exponent field e.
+    block pack()
+        rest     : U128 = v.bitand(0x7FFF)
+        tie      : Bool = rest.eq(0x4000)
+        up       : U128 = rest.shr(14)
+        kept     : U128 = v.shr(15)
+        even     : U128 = kept.bitand(1)
+        round_up : U128 = tie
+            ? even
+            : up
+        exponent_field : U128 = e.to<U128>().shl(112)
+        field          : U128 = exponent_field.bitor(round_up)
+        r              : B128 = b128_of(kept.add_wrap(field))
+        return(r)
+
+    // e <= 0: shift out 15 - e bits (at most 127) and round them.
+    block subnormal()
+        one      : U128 = 1
+        shift    : S128 = 15.sub(e).to<S128>()
+        half     : U128 = one.shl(14.sub(e).to<U128>())
+        rest     : U128 = v.bitand(one.shl(shift.to<U128>()).sub_wrap(1))
+        tie      : Bool = rest.eq(half)
+        up       : U128 = rest.shr(14.sub(e).to<U128>())
+        kept     : U128 = v.shr(shift.to<U128>())
+        even     : U128 = kept.bitand(1)
+        round_up : U128 = tie
+            ? even
+            : up
+        r : B128 = b128_of(kept.add_wrap(round_up))
+        return(r)
+
+/// a² + b² - c², reduced mod 2^128 and read as signed, where a and b are the legs (leading bit
+/// at 127, b not yet aligned) and c the candidate root, all shifted down 13 bits. The sum is
+/// exact apart from a sticky bit for b's shifted-out part.
+/// :param c: The candidate root, shifted down 13 bits.
+/// :param a_top: The larger leg, leading bit at 127.
+/// :param b_top: The smaller leg, leading bit at 127.
+/// :param gap: The exponent difference of the legs, 0 to 56.
+/// :returns: The low 128 bits of a² + b² - c² as a signed value: negative when the root is below `c`, positive when
+///     above, 0 when exact.
+routine cm_hypot_excess(c: U128, a_top: U128, b_top: U128, gap: S64) -> S128
+    shared c_sq : U128          = c.mul_wrap(c)
+    shared a_sq : CmHypotSquare = cm_hypot_sqr(a_top.shr(13))
+    shared b_sq : CmHypotSquare = cm_hypot_sqr(b_top.shr(13))
+
+    block entry()
+        aligned : Bool = gap.eq(0)
+        branch aligned
+            ? add(b_sq)
+            : align()
+
+    // b² × 2^(-2 gap), with the bits shifted out kept as a sticky bit.
+    block align()
+        k       : S128          = gap.mul(2).to<S128>()
+        kc      : S128          = 128.sub(k)
+        b_hi    : U128          = b_sq.hi
+        b_lo    : U128          = b_sq.lo
+        lost    : Bool          = b_lo.shl(kc.to<U128>()).ne(0)
+        sticky  : U128          = lost.to<U128>()
+        aligned : U128          = b_lo.shr(k.to<U128>()).bitor(b_hi.shl(kc.to<U128>()))
+        low     : U128          = aligned.bitor(sticky)
+        shifted : CmHypotSquare = CmHypotSquare { hi: b_hi.shr(k.to<U128>()), lo: low }
+        jump add(shifted)
+
+    block add(b_sq_aligned: CmHypotSquare)
+        b_lo  : U128 = b_sq_aligned.lo
+        lo    : U128 = a_sq.lo.add_wrap(b_lo)
+        carry : U128 = lo.lt(b_lo).to<U128>()
+        hi    : U128 = a_sq.hi.add_wrap(b_sq_aligned.hi.add_wrap(carry))
+        wide  : Bool = hi.shr(102).ne(0)  // the sum carried: halve it (s = 2)
+        branch wide
+            ? continue
+            : return(lo.sub_wrap(c_sq).to_wrap<S128>())
+        dropped : Bool = lo.shl(126).ne(0)
+        sticky  : U128 = dropped.to<U128>()
+        shifted : U128 = lo.shr(2).bitor(hi.shl(126))
+        low     : U128 = shifted.bitor(sticky)
+        return(low.sub_wrap(c_sq).to_wrap<S128>())
+
+/// Approximate high 128 bits of a² (low × low dropped).
+/// :param a: The value.
+/// :returns: Approximately `a`² >> 128.
+routine cm_hypot_sqr_hi(a: U128) -> U128
+    block entry()
+        a0      : U128 = a.bitand(0xFFFFFFFFFFFFFFFF)
+        a1      : U128 = a.shr(64)
+        cross   : U128 = a1.mul_wrap(a0).shr(64)
+        partial : U128 = a1.mul_wrap(a1).add_wrap(cross)
+        r       : U128 = partial.add_wrap(cross)
+        return(r)
+
+/// The full 256-bit a²: the cross term a1·a0 is added twice at bit 64.
+/// :param a: The value.
+/// :returns: `a`², exact, as two 128-bit halves.
+routine cm_hypot_sqr(a: U128) -> CmHypotSquare
+    block entry()
+        a0    : U128          = a.bitand(0xFFFFFFFFFFFFFFFF)
+        a1    : U128          = a.shr(64)
+        cross : U128          = a1.mul_wrap(a0)
+        t     : U128          = cross.shl(64)
+        th    : U128          = cross.shr(64)
+        lo0   : U128          = a0.mul_wrap(a0)
+        hi0   : U128          = a1.mul_wrap(a1)
+        lo1   : U128          = lo0.add_wrap(t)
+        hi1   : U128          = hi0.add_wrap(lo1.lt(t).to<U128>()).add_wrap(th)
+        lo2   : U128          = lo1.add_wrap(t)
+        hi2   : U128          = hi1.add_wrap(lo2.lt(t).to<U128>()).add_wrap(th)
+        r     : CmHypotSquare = CmHypotSquare { hi: hi2, lo: lo2 }
+        return(r)

@@ -1,0 +1,412 @@
+// Tessera stdlib: B128 sinh, cosh, tanh
+//
+// Correctly rounded (to nearest, ties to even). CORE-MATH has no binary128 versions, so these run in three tiers:
+//
+// - quick: CORE-MATH's fast exp or expm1 path (B128Core/ExpShared.tess, B128Core/Expm1.tess) before its rounding,
+//   combined in 128-bit fixed point (B128Frac.tess) and rounded unless the result lies too close to a rounding
+//   midpoint for its proven error bound. About 1% of random arguments go on.
+// - fast: the result in B128Extended (Standard/B128Math.tess) from e^a - 1 or e^a. It is kept when all of it
+//   × (1 ± 2^-B128_HYPER_BAND) rounds to the same B128.
+// - exact: otherwise the same formulas in B128Big (Standard/B128Big.tess, within about 2^-430 relative), rounded
+//   once.
+//
+// The quick tier on a = |x| (2^-57 <= a below the cutoffs):
+//
+// - sinh, a < 1/2: m = e^a - 1 from the fast expm1 path, then (m + m / (m + 1)) / 2.
+// - sinh, a >= 1/2: e = e^a from the fast exp path, then (e - 1 / e) / 2.
+// - cosh: e = e^a from the fast exp path, then (e + 1 / e) / 2.
+// - tanh, a < 1/4: m = e^2a - 1 from the fast expm1 path, then m / (m + 2).
+// - tanh, a >= 1/4: e = e^2a from the fast exp path, then (e - 1) / (e + 1).
+//
+// Its bounds are proven from the error bounds CORE-MATH's own rounding tests rest on. The fast exp path's 2^x
+// significand sig (leading bit at 123, so e^x = X × 2^(el - 123) with X in [2^123, 2^124)) is rounded there at
+// bit 10 unless its low 11 bits lie in [1018, 1024], which is correct only when X - sig lies in [-1, 7). So sig + 3
+// is within 4 units of X, a relative 2^-120.99 (cm_hyper_exp). The fast expm1 path below 1/2 (its result's
+// leading bit at 127 or 126) is rounded unless its 15 or 14 guard bits lie within [-4, 2] of the midpoint, which
+// is correct only when the exact value minus the result lies in [-3, 5): a relative 5 / 2^126 = 2^-123.68
+// (cm_hyper_expm1). The fixed-point steps (B128Frac.tess) each lose under one unit, a relative 2^-127. In units of
+// the result's last bit (2^128 relative units), with ε = 2^-120.99 and μ = 2^-123.68:
+//
+// - sinh below 1/2: m + 1 and the quotient lose 2^-127 each, so q = m / (m + 1) is within μ / (m + 1) + 2^-126
+//   relative, and as q is at most half the sum the sum is within (μ + 2^-127) relative plus its own truncation:
+//   2^128 μ + 2 + 1 = 23.01 units, so B128_SINH_NEAR_GATE = 24.
+// - sinh from 1/2: e's error ε reaches e - 1/e as ε (e + 1/e) / (e - 1/e) = ε coth a, 1/e's floor adds 2^-127 of
+//   1/e (at most 1.17 units, as 1/e < 0.59 (e - 1/e) from a = 1/2 on), and aligning and subtracting loses one unit of
+//   e, at most 2 units after normalizing: 2^128 ε coth a + 3.17. With e in [2^k, 2^(k + 1)), coth a is at most
+//   2.164, 5/3, 17/15, and 65/63 for k = 0, 1, 2, and 3 on, so the gates B128_SINH_FAR_GATES are 283, 219, 150,
+//   and 137.
+// - cosh: e's error reaches e + 1/e as ε tanh a, 1/e's floor adds at most 1 unit (1/e is at most half the sum), and
+//   the sum's truncation one more: 2^128 ε tanh a + 2. With tanh a < min(1, 2^(k + 1)) for a in [2^k, 2^(k + 1)),
+//   the gate is 4 + (129 >> max(0, -(k + 1))).
+// - tanh below 1/4: m / (m + 2) carries m's error times 2 / (m + 2) <= 1, m + 2 and the quotient lose under a unit
+//   each: 2^128 (μ + 2^-127) + 1 = 23.01 units, so B128_TANH_NEAR_GATE = 24.
+// - tanh from 1/4: e - 1 is exact, e's error reaches (e - 1) / (e + 1) as ε 2e / (e² - 1), e + 1 and the quotient
+//   lose under a unit each: 2^128 ε 2e / (e² - 1) + 3. With e = e^2a >= e^(1/2) in [2^k, 2^(k + 1)), 2e / (e² - 1)
+//   is at most 1.919, 4/3, 8/15, and 16/63 for k = 0, 1, 2, and 3 on, so B128_TANH_FAR_GATES are 251, 176, 72,
+//   and 36.
+//
+// Each gate is the bound rounded up, so the exact result lies on the rounded side of the midpoint (or in the same
+// rounding cell at a binade's edge) whenever the guard bits sit farther from it than the gate (cm_frac_round). The
+// arguments from CORE-MATH's overflow threshold of exp (about 11356.52) to B128_HYPER_OVERFLOW go on to the
+// fast tier, beyond what exp's fast path is used for.
+//
+// The band is measured, not proven: on 20000 inputs per function (random magnitudes from 2^-57 to the cutoffs,
+// plus both sides of the 1/2 and 1/4 switches, of 2^-57, 2^-56 and 2^-55, and of the cutoffs) the fast tier's worst
+// relative error against mpmath was 2^-140.3 for sinh and cosh and 2^-140.9 for tanh, about the size of the first
+// term wide_exp's series drops, so 2^-135 leaves about 5 bits. Results near a rounding boundary do occur: cosh x =
+// 1 + x²/2 + x⁴/24 + … lies within 2^-220 of a midpoint for x near n 2^-56 with odd n, sinh(21 × 2^-54) and
+// tanh(3 × 2^-56) within 2^-205 and 2^-220 of one, and tanh x just below B128_TANH_FLAT within 2^-200 of 1 - 2^-114.
+// The fast tier alone rounds some of those the wrong way (tests/b128_hyperbolic.tess has them).
+//
+// Only zero gives an exact result. For a nonzero B128 x, which is rational, e^x is transcendental (Lindemann-
+// Weierstrass), so sinh x = (e^x - e^-x) / 2, cosh x = (e^x + e^-x) / 2, and tanh x = (e^2x - 1) / (e^2x + 1) are
+// too: each would otherwise make e^x a root of a polynomial with rational coefficients. No B128 and no midpoint
+// between two B128 is transcendental, so no other input lands on either, and the tiers only have to be accurate
+// enough to see which side of a midpoint the result lies on. Two ranges need no computing at all:
+//
+// - |x| < 2^-57: sinh x = x + x³/6 + … and tanh x = x - x³/3 + … are within x³/3 < half an ulp of x (the half
+//   ulp below a power of two included), and 1 <= cosh x = 1 + x²/2 + … < 1 + 2^-115 rounds to 1.
+// - large |x|: sinh and cosh round to infinity from B128_HYPER_OVERFLOW on, and tanh to ±1 from B128_TANH_FLAT
+//   on (1 - tanh x < 2^-114, half the ulp below 1). Both are the first B128 past the boundary, found with mpmath.
+
+module Standard::Core
+
+/// The fast tier's error band, as a power of two: a B128Extended result is kept only when all of it × (1 ± 2^-135) rounds to the same B128.
+/// :note: Measured, not proven: the worst fast-tier error seen against mpmath was about 2^-140.3, so the band leaves about 5 bits.
+preset B128_HYPER_BAND: S64 = 135
+
+/// 2^-57: below it sinh and tanh round to x and cosh to 1.
+preset B128_HYPER_TINY: B128 = B128.from_bits(0x3FC60000000000000000000000000000)
+/// About 11357.2166: the least B128 whose sinh and cosh round to infinity (the one below gives MAX - 830 ulps).
+preset B128_HYPER_OVERFLOW: B128 = B128.from_bits(0x400C62E9BB80635D81D36125B64DA4A7)
+/// About 39.8560: the least B128 whose tanh rounds to 1.
+preset B128_TANH_FLAT: B128 = B128.from_bits(0x40043ED903114D00CEA0AEC526B52719)
+
+/// The quick tier's gate for sinh below 1/2, in units of the result's last bit.
+/// :note: Proven: the result is within 23.01 units (the derivation is at the top of this file).
+preset B128_SINH_NEAR_GATE: U64 = 24
+
+/// The quick tier's gates for sinh from 1/2, by k with e^a in [2^k, 2^(k + 1)) (3 for k >= 3).
+/// :note: Proven: 2^128 × 2^-120.99 × coth a + 3.17 units, coth a bounded per k (the derivation is at the top of this file).
+preset B128_SINH_FAR_GATES: @Array<U64, 4> <- { 283, 219, 150, 137 }
+
+/// The quick tier's gate for tanh below 1/4, in units of the result's last bit.
+/// :note: Proven: the result is within 23.01 units (the derivation is at the top of this file).
+preset B128_TANH_NEAR_GATE: U64 = 24
+
+/// The quick tier's gates for tanh from 1/4, by k with e^2a in [2^k, 2^(k + 1)) (3 for k >= 3).
+/// :note: Proven: 2^128 × 2^-120.99 × 2e / (e² - 1) + 3 units, bounded per k (the derivation is at the top of this file).
+preset B128_TANH_FAR_GATES: @Array<U64, 4> <- { 251, 176, 72, 36 }
+
+/// The bits of 1/4: tanh's quick tier switches from expm1 to exp there.
+preset B128_QUARTER_BITS: U128 = 0x3FFD0000000000000000000000000000
+
+/// The bits of 1/2: sinh's quick tier switches from expm1 to exp there.
+preset B128_HALF_BITS: U128 = 0x3FFE0000000000000000000000000000
+
+/// Which hyperbolic function the shared tiers compute: `Sinh`, `Cosh` or `Tanh`.
+choice HyperKind: U8
+    Sinh
+    Cosh
+    Tanh
+
+// -- quick tier: CORE-MATH's fast exp and expm1 -----------------------------------
+
+/// e^x from CORE-MATH's fast exp path before its rounding, centered: sig + 3 is within 4 units of the exact
+/// 2^x significand, a relative 2^-120.99.
+/// :param u: The bits of a positive x with 2^-114 <= x below CORE-MATH's overflow threshold of exp.
+/// :returns: e^x.
+routine cm_hyper_exp(u: U128) -> CmFrac
+    block entry()
+        fs  : CmExpWords3 = cm_exp_reduce(u)
+        el  : S64         = fs.w2.to_wrap<S64>().shr(20)
+        sig : U128        = cm_exp_fast(fs)
+        // e^x = (sig + 3) × 2^(el - 123), sig's leading bit at 123
+        r : CmFrac = cm_frac_normalize(sig.add(3), el.add(5))
+        return(r)
+
+/// e^x - 1 from CORE-MATH's fast expm1 path before its rounding: within 5 units of its last bit, a relative
+/// 2^-123.68.
+/// :param u: The bits of x with 2^-113.5 < x < 1/2.
+/// :returns: e^x - 1.
+routine cm_hyper_expm1(u: U128) -> CmFrac
+    block entry()
+        s  : CmExpm1Scaled = cm_expm1_small_fast(u)
+        el : S64           = s.el.to_wrap<S64>()
+        // e^x - 1 = sig × 2^(el - 127)
+        r : CmFrac = cm_frac_normalize(s.sig, el.add(1))
+        return(r)
+
+/// The quick tier: sinh, cosh, or tanh of a = |x| from CORE-MATH's fast exp or expm1 path, rounded when its proven
+/// error bound keeps it clear of a rounding midpoint (the derivation is at the top of this file).
+/// :param a: The magnitude, 2^-57 <= a below the function's cutoff.
+/// :param kind: The function.
+/// :returns: The bits of the correctly rounded result.
+/// :absent: When the result lies too close to a midpoint to decide here, or a is past exp's overflow threshold.
+routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option<U128>
+    shared u   : U128   = a.bits()
+    shared one : CmFrac = CmFrac { frac: CM_FRAC_TOP, exponent: 1 }
+
+    block entry()
+        beyond : Bool = u.ge(CM_EXP_E_OVERFLOW)
+        branch beyond
+            ? return(.Absent)
+            : continue
+        when kind
+            HyperKind.Sinh -> sinh()
+            HyperKind.Cosh -> cosh()
+            HyperKind.Tanh -> tanh()
+
+    // (m + m / (m + 1)) / 2 with m = e^a - 1 below 1/2
+    block sinh()
+        near : Bool = u.lt(B128_HALF_BITS)
+        branch near
+            ? continue
+            : sinh_far()
+        m : CmFrac       = cm_hyper_expm1(u)
+        q : CmFrac       = cm_frac_div(m, cm_frac_add(one, m))
+        s : CmFrac       = cm_frac_add(m, q)
+        r : Option<U128> = cm_frac_round(s.frac, s.exponent.sub(1), 0, B128_SINH_NEAR_GATE)
+        return(r)
+
+    // (e - 1 / e) / 2 with e = e^a
+    block sinh_far()
+        e    : CmFrac       = cm_hyper_exp(u)
+        d    : CmFrac       = cm_frac_sub(e, cm_frac_div(one, e))
+        k    : S64          = e.exponent.sub(1).min(3)
+        gate : U64          = B128_SINH_FAR_GATES.getitem(k.to<USize>())
+        r    : Option<U128> = cm_frac_round(d.frac, d.exponent.sub(1), 0, gate)
+        return(r)
+
+    // (e + 1 / e) / 2 with e = e^a: e's error enters as tanh a < min(1, 2^(k + 1)) for a in [2^k, 2^(k + 1))
+    block cosh()
+        e    : CmFrac       = cm_hyper_exp(u)
+        s    : CmFrac       = cm_frac_add(e, cm_frac_div(one, e))
+        k    : S64          = b128_exponent(u).sub(16383)
+        drop : S64          = 0.sub(k.add(1)).max(0)
+        gate : U64          = 129.shr(drop.to<U64>()).add(4)
+        r    : Option<U128> = cm_frac_round(s.frac, s.exponent.sub(1), 0, gate)
+        return(r)
+
+    // m / (m + 2) with m = e^2a - 1 below 1/4
+    block tanh()
+        doubled : U128 = u.add(B128_IMPLICIT)  // 2a, exactly
+        near    : Bool = u.lt(B128_QUARTER_BITS)
+        branch near
+            ? continue
+            : tanh_far(doubled)
+        m   : CmFrac       = cm_hyper_expm1(doubled)
+        two : CmFrac       = CmFrac { frac: CM_FRAC_TOP, exponent: 2 }
+        t   : CmFrac       = cm_frac_div(m, cm_frac_add(two, m))
+        r   : Option<U128> = cm_frac_round(t.frac, t.exponent, 0, B128_TANH_NEAR_GATE)
+        return(r)
+
+    // (e - 1) / (e + 1) with e = e^2a
+    block tanh_far(doubled: U128)
+        e    : CmFrac       = cm_hyper_exp(doubled)
+        t    : CmFrac       = cm_frac_div(cm_frac_sub(e, one), cm_frac_add(e, one))
+        k    : S64          = e.exponent.sub(1).min(3)
+        gate : U64          = B128_TANH_FAR_GATES.getitem(k.to<USize>())
+        r    : Option<U128> = cm_frac_round(t.frac, t.exponent, 0, gate)
+        return(r)
+
+// -- fast tier: B128Extended -----------------------------------------------------
+
+/// sinh, cosh, or tanh of a = |x| (2^-57 <= a below the cutoffs) in B128Extended.
+/// :param a: The magnitude of the argument.
+/// :param kind: The function.
+/// :returns: The result at 192 bits.
+routine wide_hyper(a: B128, kind: HyperKind) -> B128Extended
+    shared w : B128Extended = a.to<B128Extended>()
+
+    block entry()
+        when kind
+            HyperKind.Sinh -> sinh()
+            HyperKind.Cosh -> cosh()
+            HyperKind.Tanh -> tanh()
+
+    // (m + m / (m + 1)) / 2 with m = e^a - 1 below 1/2, else (e^a - e^-a) / 2
+    block sinh()
+        small : Bool = w.exponent.lt(-1)
+        branch small
+            ? sinh_small()
+            : sinh_large()
+
+    block sinh_small()
+        m : B128Extended = wide_exp_m1(w)
+        r : B128Extended = m.add(m.div(m.add(wide_one()))).ldexp(-1)
+        return(r)
+
+    block sinh_large()
+        e : B128Extended = wide_exp(w)
+        r : B128Extended = e.sub(wide_one().div(e)).ldexp(-1)
+        return(r)
+
+    // (e^a + e^-a) / 2
+    block cosh()
+        e : B128Extended = wide_exp(w)
+        r : B128Extended = e.add(wide_one().div(e)).ldexp(-1)
+        return(r)
+
+    // m / (m + 2) with m = e^2a - 1
+    block tanh()
+        m : B128Extended = wide_exp_m1(w.ldexp(1))
+        r : B128Extended = m.div(m.add(S64.to<B128Extended>(2)))
+        return(r)
+
+// -- exact tier: B128Big ---------------------------------------------------------
+
+/// The same formulas in B128Big, rounded once: sinh a = (m + m / (m + 1)) / 2 with m = e^a - 1 throughout (no
+/// cancellation anywhere), cosh a = (e^a + e^-a) / 2, tanh a = m / (m + 2) with m = e^2a - 1.
+/// :param a: The magnitude of the argument.
+/// :param kind: The function.
+/// :returns: The correctly rounded result.
+routine big_hyper(a: B128, kind: HyperKind) -> B128
+    shared b : B128Big = a.to<B128Big>()
+
+    block entry()
+        when kind
+            HyperKind.Sinh -> sinh()
+            HyperKind.Cosh -> cosh()
+            HyperKind.Tanh -> tanh()
+
+    block sinh()
+        m : B128Big = big_exp_m1(b)
+        s : B128Big = m.add(m.div(m.add(big_one()))).ldexp(-1)
+        return(s.to<B128>())
+
+    block cosh()
+        e : B128Big = big_exp(b)
+        c : B128Big = e.add(e.recip()).ldexp(-1)
+        return(c.to<B128>())
+
+    block tanh()
+        m : B128Big = big_exp_m1(b.ldexp(1))
+        t : B128Big = m.div(m.add(S64.to<B128Big>(2)))
+        return(t.to<B128>())
+
+// -- the three tiers ---------------------------------------------------------------
+
+/// sinh, cosh, or tanh of a = |x| between the cutoffs.
+/// :param a: The magnitude of the argument.
+/// :param kind: The function.
+/// :param exact: True skips the quick and fast tiers (the tests use it to check the exact tier on its own).
+/// :returns: The correctly rounded result.
+routine b128_hyper_general(a: B128, kind: HyperKind, exact: Bool) -> B128
+    block entry()
+        branch exact
+            ? slow()
+            : quick()
+
+    block quick()
+        q : Option<U128> = cm_hyper_quick(a, kind)
+        when q
+            .Present(bits) -> return(b128_of(bits))
+            .Absent        -> fast()
+
+    block fast()
+        w       : B128Extended = wide_hyper(a, kind)
+        rounded : WideRounding = wide_round_within(w, B128_HYPER_BAND)
+        branch rounded.ok
+            ? return(rounded.value)
+            : slow()
+
+    block slow()
+        r : B128 = big_hyper(a, kind)
+        return(r)
+
+// -- sinh, cosh, tanh --------------------------------------------------------------
+
+/// sinh, correctly rounded: ±0 and ±inf give themselves, and NaN a quiet NaN.
+/// :returns: sinh(`me`).
+routine B128.sinh(me: Me) -> Me
+    block entry()
+        r : Me = b128_sinh(me, false)
+        return(r)
+
+/// cosh, correctly rounded: 1 at ±0, +inf at ±inf, and a quiet NaN for NaN.
+/// :returns: cosh(`me`).
+routine B128.cosh(me: Me) -> Me
+    block entry()
+        r : Me = b128_cosh(me, false)
+        return(r)
+
+/// tanh, correctly rounded: ±0 gives itself, ±inf gives ±1, and NaN a quiet NaN.
+/// :returns: tanh(`me`).
+routine B128.tanh(me: Me) -> Me
+    block entry()
+        r : Me = b128_tanh(me, false)
+        return(r)
+
+/// sinh x, correctly rounded (to nearest, ties to even), the body of {B128.sinh}.
+/// :param x: The argument.
+/// :param exact: True to skip the quick and fast tiers and compute in {B128Big} directly (the tests use it to check the exact tier on its own), or false for the normal three-tier path.
+/// :returns: x itself below 2^-57 in magnitude, a signed infinity from {B128_HYPER_OVERFLOW} on, ±0 for ±0, and a quiet NaN for NaN.
+routine b128_sinh(x: B128, exact: Bool) -> B128
+    shared bits : U128 = x.bits()
+    shared nan  : Bool = b128_is_nan_bits(bits)
+    shared zero : Bool = b128_is_zero_bits(bits)
+    shared a    : B128 = x.abs()
+
+    block entry()
+        tiny : Bool = a.lt(B128_HYPER_TINY)
+        over : Bool = a.ge(B128_HYPER_OVERFLOW)  // infinities too
+        when
+            nan  -> return(b128_of(b128_quiet(bits)))
+            zero -> return(x)
+            tiny -> return(x)
+            over -> return(B128.INFINITY.copysign(x))
+            else -> general()
+
+    block general()
+        r : B128 = b128_hyper_general(a, HyperKind.Sinh, exact).copysign(x)
+        return(r)
+
+/// cosh x, correctly rounded (to nearest, ties to even), the body of {B128.cosh}.
+/// :param x: The argument.
+/// :param exact: True to skip the quick and fast tiers and compute in {B128Big} directly (the tests use it to check the exact tier on its own), or false for the normal three-tier path.
+/// :returns: 1 below 2^-57 in magnitude (zeros included), +inf from {B128_HYPER_OVERFLOW} on, and a quiet NaN for NaN.
+routine b128_cosh(x: B128, exact: Bool) -> B128
+    shared bits : U128 = x.bits()
+    shared nan  : Bool = b128_is_nan_bits(bits)
+    shared zero : Bool = b128_is_zero_bits(bits)
+    shared a    : B128 = x.abs()
+
+    block entry()
+        tiny : Bool = a.lt(B128_HYPER_TINY)
+        over : Bool = a.ge(B128_HYPER_OVERFLOW)  // infinities too
+        one  : B128 = b128_of(B128_ONE)
+        when
+            nan  -> return(b128_of(b128_quiet(bits)))
+            zero -> return(one)
+            tiny -> return(one)
+            over -> return(B128.INFINITY)
+            else -> general()
+
+    block general()
+        r : B128 = b128_hyper_general(a, HyperKind.Cosh, exact)
+        return(r)
+
+/// tanh x, correctly rounded (to nearest, ties to even), the body of {B128.tanh}.
+/// :param x: The argument.
+/// :param exact: True to skip the quick and fast tiers and compute in {B128Big} directly (the tests use it to check the exact tier on its own), or false for the normal three-tier path.
+/// :returns: x itself below 2^-57 in magnitude, ±1 from {B128_TANH_FLAT} on (infinities included), ±0 for ±0, and a quiet NaN for NaN.
+routine b128_tanh(x: B128, exact: Bool) -> B128
+    shared bits : U128 = x.bits()
+    shared nan  : Bool = b128_is_nan_bits(bits)
+    shared zero : Bool = b128_is_zero_bits(bits)
+    shared a    : B128 = x.abs()
+
+    block entry()
+        tiny : Bool = a.lt(B128_HYPER_TINY)
+        flat : Bool = a.ge(B128_TANH_FLAT)  // infinities too
+        when
+            nan  -> return(b128_of(b128_quiet(bits)))
+            zero -> return(x)
+            tiny -> return(x)
+            flat -> return(b128_of(B128_ONE).copysign(x))
+            else -> general()
+
+    block general()
+        r : B128 = b128_hyper_general(a, HyperKind.Tanh, exact).copysign(x)
+        return(r)

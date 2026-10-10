@@ -1,6 +1,6 @@
-// Tessera stdlib: F32 arithmetic in software
+// Tessera stdlib: B32 arithmetic in software
 //
-// The F32 operations LLVM calls a routine for on a target without a floating-point unit (Exports.tess and Aeabi.tess
+// The B32 operations LLVM calls a routine for on a target without a floating-point unit (Exports.tess and Aeabi.tess
 // export them under those names), on the bits, with integer operations only. They round to nearest, ties to even,
 // handle subnormals, signed zeros, and infinities, and treat NaN as compiler-rt does: a NaN operand comes back
 // quieted (its payload and sign kept, the first operand's when both are NaN), and an invalid operation gives the
@@ -19,13 +19,13 @@ private preset ONE:      U32 = 0x3F800000
 
 // -- addition ------------------------------------------------------------------
 
-/// F32 addition on the bits, rounded to nearest (ties to even): compiler-rt's `__addsf3`.
+/// B32 addition on the bits, rounded to nearest (ties to even): compiler-rt's `__addsf3`.
 /// :param a: The first addend's bits.
 /// :param b: The second addend's bits.
 /// :returns: The bits of `a + b`: a NaN operand comes back quieted, `inf + -inf` is NaN, and a sum of two zeros is
 /// -0 only when both are -0 (an exact zero sum of nonzero values is +0).
 #no_builtins
-routine soft_f32_add(a: U32, b: U32) -> U32
+routine soft_b32_add(a: U32, b: U32) -> U32
     shared a_size : U32 = a.bitand(MAGNITUDE)
     shared b_size : U32 = b.bitand(MAGNITUDE)
 
@@ -75,7 +75,7 @@ routine soft_f32_add(a: U32, b: U32) -> U32
         sign    : U32         = x.bitand(SIGN)
         same    : Bool        = x.bitxor(y).lt(SIGN)
         branch same
-            ? return(soft_round_pack(sign, x_parts.exponent, x_sig.add(aligned), F32.FORMAT.load()))
+            ? return(soft_round_pack(sign, x_parts.exponent, x_sig.add(aligned), B32.FORMAT.load()))
             : difference(sign, x_sig.sub(aligned), x_parts.exponent)
 
     // the larger magnitude came first, so the difference isn't negative. An exact zero is +0
@@ -83,28 +83,28 @@ routine soft_f32_add(a: U32, b: U32) -> U32
         cancelled : Bool = sig.eq(0)
         branch cancelled
             ? return(0)
-            : return(soft_round_pack(sign, exponent, sig, F32.FORMAT.load()))
+            : return(soft_round_pack(sign, exponent, sig, B32.FORMAT.load()))
 
-/// F32 subtraction on the bits: `a + (-b)`, as compiler-rt's `__subsf3` computes it (so a NaN `b` comes back with its
+/// B32 subtraction on the bits: `a + (-b)`, as compiler-rt's `__subsf3` computes it (so a NaN `b` comes back with its
 /// sign flipped).
 /// :param a: The minuend's bits.
 /// :param b: The subtrahend's bits.
 /// :returns: The bits of `a - b`.
 #no_builtins
-routine soft_f32_sub(a: U32, b: U32) -> U32
+routine soft_b32_sub(a: U32, b: U32) -> U32
     block entry()
-        r : U32 = soft_f32_add(a, b.bitxor(SIGN))
+        r : U32 = soft_b32_add(a, b.bitxor(SIGN))
         return(r)
 
 // -- multiplication ------------------------------------------------------------
 
-/// F32 multiplication on the bits, rounded to nearest (ties to even): compiler-rt's `__mulsf3`.
+/// B32 multiplication on the bits, rounded to nearest (ties to even): compiler-rt's `__mulsf3`.
 /// :param a: The first factor's bits.
 /// :param b: The second factor's bits.
 /// :returns: The bits of `a * b`: a NaN operand comes back quieted, `inf * 0` is NaN, and the sign is the XOR of the
 /// signs.
 #no_builtins
-routine soft_f32_mul(a: U32, b: U32) -> U32
+routine soft_b32_mul(a: U32, b: U32) -> U32
     shared sign   : U32 = a.bitxor(b).bitand(SIGN)
     shared a_size : U32 = a.bitand(MAGNITUDE)
     shared b_size : U32 = b.bitand(MAGNITUDE)
@@ -135,18 +135,18 @@ routine soft_f32_mul(a: U32, b: U32) -> U32
         sig     : U64         = soft_shr_sticky(product, 21)
         sum     : S32         = x.exponent.add(y.exponent)
         r       : U32         = soft_round_pack(sign, sum.sub(126), sig.to_wrap<U32>(),
-            F32.FORMAT.load())
+            B32.FORMAT.load())
         return(r)
 
 // -- division ------------------------------------------------------------------
 
-/// F32 division on the bits, rounded to nearest (ties to even): compiler-rt's `__divsf3`, computed by long division.
+/// B32 division on the bits, rounded to nearest (ties to even): compiler-rt's `__divsf3`, computed by long division.
 /// :param a: The dividend's bits.
 /// :param b: The divisor's bits.
 /// :returns: The bits of `a / b`: a NaN operand comes back quieted, `0 / 0` and `inf / inf` are NaN, and a nonzero
 /// value over zero is a signed infinity.
 #no_builtins
-routine soft_f32_div(a: U32, b: U32) -> U32
+routine soft_b32_div(a: U32, b: U32) -> U32
     shared sign     : U32  = a.bitxor(b).bitand(SIGN)
     shared a_size   : U32  = a.bitand(MAGNITUDE)
     shared b_size   : U32  = b.bitand(MAGNITUDE)
@@ -212,18 +212,18 @@ routine soft_f32_div(a: U32, b: U32) -> U32
     block round(exponent: S32)
         sticky : U32 = rem.load().ne(0).to<U32>()
         sig    : U32 = quotient.load().shl(1).bitor(sticky)
-        r      : U32 = soft_round_pack(sign, exponent, sig, F32.FORMAT.load())
+        r      : U32 = soft_round_pack(sign, exponent, sig, B32.FORMAT.load())
         return(r)
 
 // -- square root and remainder ---------------------------------------------------
 
-/// The F32 square root on the bits, correctly rounded: C's `sqrtf`, which LLVM calls for `F32.sqrt` on a target
+/// The B32 square root on the bits, correctly rounded: C's `sqrtf`, which LLVM calls for `B32.sqrt` on a target
 /// without a floating-point unit. The root comes from a bit-by-bit integer square root.
 /// :param a: The radicand's bits.
 /// :returns: The bits of sqrt(a): the same zero for ±0, +inf for +inf, a quieted NaN for NaN, and NaN (0x7FC00000)
 /// for any other negative value.
 #no_builtins
-routine soft_f32_sqrt(a: U32) -> U32
+routine soft_b32_sqrt(a: U32) -> U32
     shared size : U32  = a.bitand(MAGNITUDE)
     shared rem  : @U64 <- uninit
     shared res  : @U64 <- uninit
@@ -274,17 +274,17 @@ routine soft_f32_sqrt(a: U32) -> U32
     block round(half: S32)
         sticky : U64 = rem.load().ne(0).to<U64>()
         sig    : U64 = res.load().shl(1).bitor(sticky)
-        r      : U32 = soft_round_pack(0, half.add(127), sig.to_wrap<U32>(), F32.FORMAT.load())
+        r      : U32 = soft_round_pack(0, half.add(127), sig.to_wrap<U32>(), B32.FORMAT.load())
         return(r)
 
-/// The F32 remainder on the bits, exact: C's `fmodf`, which LLVM calls for `frem`. The result has the sign of `a`
+/// The B32 remainder on the bits, exact: C's `fmodf`, which LLVM calls for `frem`. The result has the sign of `a`
 /// and a magnitude below `|b|`.
 /// :param a: The dividend's bits.
 /// :param b: The divisor's bits.
 /// :returns: The bits of `fmod(a, b)`: a NaN operand comes back quieted, NaN for an infinite `a` or a zero `b`, `a`
 /// itself when `|a| < |b|`, and a zero with `a`'s sign when the division is exact.
 #no_builtins
-routine soft_f32_mod(a: U32, b: U32) -> U32
+routine soft_b32_mod(a: U32, b: U32) -> U32
     shared sign   : U32 = a.bitand(SIGN)
     shared a_size : U32 = a.bitand(MAGNITUDE)
     shared b_size : U32 = b.bitand(MAGNITUDE)
@@ -319,16 +319,16 @@ routine soft_f32_mod(a: U32, b: U32) -> U32
 
     // the remainder is exact and fits the format, so the packing doesn't round
     block pack(rem: U32, exponent: S32)
-        r : U32 = soft_round_pack(sign, exponent, rem.shl(3), F32.FORMAT.load())
+        r : U32 = soft_round_pack(sign, exponent, rem.shl(3), B32.FORMAT.load())
         return(r)
 
-/// F32 raised to an integer power by repeated squaring: compiler-rt's `__powisf2`, with the same multiplications in
+/// B32 raised to an integer power by repeated squaring: compiler-rt's `__powisf2`, with the same multiplications in
 /// the same order (so it rounds at each step, as compiler-rt does, rather than once).
 /// :param a: The base's bits.
 /// :param n: The exponent. A negative one takes the reciprocal of the positive power at the end.
 /// :returns: The bits of the result.
 #no_builtins
-routine soft_f32_powi(a: U32, n: S32) -> U32
+routine soft_b32_powi(a: U32, n: S32) -> U32
     shared base   : @U32 <- a
     shared result : @U32 <- ONE
 
@@ -341,7 +341,7 @@ routine soft_f32_powi(a: U32, n: S32) -> U32
         branch odd
             ? continue
             : advance(left)
-        soft_f32_mul(result.load(), base.load()).store_into(result)
+        soft_b32_mul(result.load(), base.load()).store_into(result)
         jump advance(left)
 
     block advance(left: U32)
@@ -350,47 +350,47 @@ routine soft_f32_powi(a: U32, n: S32) -> U32
         branch done
             ? finish()
             : continue
-        soft_f32_mul(base.load(), base.load()).store_into(base)
+        soft_b32_mul(base.load(), base.load()).store_into(base)
         jump step(rest)
 
     block finish()
         negative : Bool = n.lt(0)
         branch negative
-            ? return(soft_f32_div(ONE, result.load()))
+            ? return(soft_b32_div(ONE, result.load()))
             : return(result.load())
 
 // -- comparison ----------------------------------------------------------------
 
-/// Orders two F32 values as compiler-rt's `__lesf2` (and its aliases `__eqsf2`, `__ltsf2`, `__nesf2`) does.
+/// Orders two B32 values as compiler-rt's `__lesf2` (and its aliases `__eqsf2`, `__ltsf2`, `__nesf2`) does.
 /// :param a: The first operand's bits.
 /// :param b: The second operand's bits.
 /// :returns: -1 when `a < b`, 0 when they are equal (+0 equals -0), 1 when `a > b` or either is NaN.
 #no_builtins
-routine soft_f32_le(a: U32, b: U32) -> S32
+routine soft_b32_le(a: U32, b: U32) -> S32
     block entry()
-        unordered : Bool = soft_f32_unordered(a, b)
+        unordered : Bool = soft_b32_unordered(a, b)
         branch unordered
             ? return(1)
-            : return(soft_f32_order(a, b))
+            : return(soft_b32_order(a, b))
 
-/// Orders two F32 values as compiler-rt's `__gesf2` (and its alias `__gtsf2`) does.
+/// Orders two B32 values as compiler-rt's `__gesf2` (and its alias `__gtsf2`) does.
 /// :param a: The first operand's bits.
 /// :param b: The second operand's bits.
 /// :returns: -1 when `a < b` or either is NaN, 0 when they are equal (+0 equals -0), 1 when `a > b`.
 #no_builtins
-routine soft_f32_ge(a: U32, b: U32) -> S32
+routine soft_b32_ge(a: U32, b: U32) -> S32
     block entry()
-        unordered : Bool = soft_f32_unordered(a, b)
+        unordered : Bool = soft_b32_unordered(a, b)
         branch unordered
             ? return(-1)
-            : return(soft_f32_order(a, b))
+            : return(soft_b32_order(a, b))
 
-/// Whether either F32 is NaN: compiler-rt's `__unordsf2`.
+/// Whether either B32 is NaN: compiler-rt's `__unordsf2`.
 /// :param a: The first operand's bits.
 /// :param b: The second operand's bits.
 /// :returns: True when `a` or `b` is NaN.
 #no_builtins
-routine soft_f32_unordered(a: U32, b: U32) -> Bool
+routine soft_b32_unordered(a: U32, b: U32) -> Bool
     block entry()
         a_nan : Bool = a.bitand(MAGNITUDE).gt(INFINITY)
         b_nan : Bool = b.bitand(MAGNITUDE).gt(INFINITY)
@@ -402,7 +402,7 @@ routine soft_f32_unordered(a: U32, b: U32) -> Bool
 /// :param a: The first operand's bits.
 /// :param b: The second operand's bits.
 /// :returns: -1 when `a < b`, 0 when they are equal (+0 equals -0), 1 when `a > b`.
-private routine soft_f32_order(a: U32, b: U32) -> S32
+private routine soft_b32_order(a: U32, b: U32) -> S32
     block entry()
         both  : U32  = a.bitor(b)
         zeros : Bool = both.bitand(MAGNITUDE).eq(0)

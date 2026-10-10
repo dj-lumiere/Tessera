@@ -198,8 +198,8 @@ routine start() -> Void
   only on some targets (64-bit division on 32-bit, 128-bit division, `popcount`) or only now and then (`List.push`),
   nor blocking waits (`Condition.wait`, `wait_on`, `Thread.join`), which belong in loops.
 - A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
-  conversions (`add`, `shl`, `bitor`, `to<U128>()`, `to_wrap<U8>()`, …), F32/F64 `add`/`sub`/`mul`/`div`/`neg`,
-  `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and F128. A routine call is an error; nothing
+  conversions (`add`, `shl`, `bitor`, `to<U128>()`, `to_wrap<U8>()`, …), B32/B64 `add`/`sub`/`mul`/`div`/`neg`,
+  `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and B128. A routine call is an error; nothing
   runs at build time. Overflow or an out-of-range conversion in a preset is a build error.
 - `p.to<@U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
   (`Bool`, `Char`, choices). Pointers may alias.
@@ -424,11 +424,11 @@ routine start() -> Void
   a byte literal `b'A'` is a `Byte`, and a `Byte` hex literal has exactly two digits (`0x0A`).
 - `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `c.to<U32>()` and `n.to<Char>()`
   convert.
-- Conversions are methods: `n.to<S64>()`, `b.to<U64>()` (Bool to 0/1), `x.to<F64>()`. Float to integer is
+- Conversions are methods: `n.to<S64>()`, `b.to<U64>()` (Bool to 0/1), `x.to<B64>()`. Float to integer is
   `to<S64>()` (crashes on NaN or out of range), `to_checked<S64>()`, or `to_clamp<S64>()`. A conversion names the type
   it goes to as a type argument, so `x.to<T>()` works in generic code.
-- Floats are `F16`, `BF16`, `F32`, `F64`, and software `F128` (an `i128`; stdlib code reads it with `f128_bits`):
-  `add`, `mul`, `div`, `mod`, and so on. `x.bits()` gives the bits as the same-width `U`, `F64.from_bits(u)` goes back.
+- Floats are `B16`, `BF16`, `B32`, `B64`, and software `B128` (an `i128`; stdlib code reads it with `f128_bits`):
+  `add`, `mul`, `div`, `mod`, and so on. `x.bits()` gives the bits as the same-width `U`, `B64.from_bits(u)` goes back.
 - Value select: `r: T = cond ? a : b`. Both sides are evaluated.
 
 **Routines and generics**
@@ -555,7 +555,7 @@ routine start() -> Void
 - A name is unique under its parent, wherever it's declared: you can add `routine U64.double(...)` to a stdlib type,
   but not a second `U64.midpoint` with the same parameter types (one with other parameter types is an overload). Private names don't count outside their file.
 
-- A record with exactly one field has the same representation as that field (`F128` is an `i128`). Mark it
+- A record with exactly one field has the same representation as that field (`B128` is an `i128`). Mark it
   `#aggregate` to keep it a one-member struct; `#layout(align: N)` on a one-field record (a record's alignment; `#aligned` is for fields) needs `#aggregate`.
 - A record can't contain itself by value; go through a `Ptr`.
 
@@ -619,9 +619,9 @@ routine sum_list(list: @List<S64>) -> S64
 Propagating a `Result`:
 
 ```tessera
-routine parse_or_zero(text: Bytes) -> F64
+routine parse_or_zero(text: Bytes) -> B64
     block entry()
-        r : Result<F64, ParseError> = text.to_result<F64>()
+        r : Result<B64, ParseError> = text.to_result<B64>()
         when r
             .Success(value) -> return(value)
             .Failure(error) -> failed(error)
@@ -632,8 +632,8 @@ routine parse_or_zero(text: Bytes) -> F64
 
 ## Output
 
-Format through `Standard/Format.tess`, not printf. printf is for C interop demos only: it can't print `S128`, `F16`,
-`BF16`, or `F128`, and a mismatched format is undefined behavior.
+Format through `Standard/Format.tess`, not printf. printf is for C interop demos only: it can't print `S128`, `B16`,
+`BF16`, or `B128`, and a mismatched format is undefined behavior.
 
 - Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.writer()` is the pointer a
   Writer parameter takes), a `FileHandle`, `BufWriter<T>` (`out.construct(inner)`, then `flush()`),
@@ -791,10 +791,10 @@ counter), unless the build enables a random number instruction (`--feature rdrnd
 AArch64, `zkr` on RISC-V), from which the stdlib exports it. Without either the link fails on `tessera_hash_key`. The
 stdlib supplies `memcpy` / `memmove` / `memset` / `memcmp` (and ARM's `__aeabi_mem*`) there, weak, from
 `Standard/Freestanding.tess`, and the whole compiler runtime from `Standard/SoftFloat/`, so nothing needs compiler-rt
-or libgcc: the soft-float routines LLVM calls for F16 / BF16 / F32 / F64 without a floating-point unit (`__addsf3`,
+or libgcc: the soft-float routines LLVM calls for B16 / BF16 / B32 / B64 without a floating-point unit (`__addsf3`,
 `__aeabi_dmul`, `__truncsfhf2`, `sqrtf`, ...), integer division (`__udivdi3`, `__aeabi_uldivmod`, ...), and
 `__clzsi2`, written with integer operations only, weak and `#no_builtins`. Each export wraps an ordinary routine
-(`soft_f32_add(a, b)` on the bits, `x.soft_to<F16>()` for a conversion) that any target can call, which is how
+(`soft_f32_add(a, b)` on the bits, `x.soft_to<B16>()` for a conversion) that any target can call, which is how
 `tests/soft_float` checks them against the host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them, links them with their link
 scripts, and requires that nothing is left undefined; the golden run skips them).
 
@@ -820,12 +820,12 @@ value into another type is the method `x.to<T>()` on the type it converts from, 
 (each pair of types is its own routine, `routine S32.to<S64>`): `n.to<S64>()`, `x.to_wrap<U8>()`, `arr.to<@T>()`,
 `p.to<@U>()`, `b.to<U8>()` on a `Byte`, `s.to<OwnedCStr>(alloc)` / `s.to<OwnedCWStr>(alloc)` on a `Bytes` (a conversion may take
 parameters), `list.to<Slice<T>>()`, `bytes.to<Bytes>()` on a `Slice<Byte>`, `buf.to<Bytes>()` on a `List<Byte>` or `SliceWriter`, `c.to<Bytes>()` on a `CStr`,
-`a.to<Vector<F32, 4>>()` on an `Array`, `n.to<F128Big>()`, `f.to<F128Extended>()`. Its variants keep the family
-(`to_wrap`, `to_clamp`, `to_checked`, `to_nearest<S64>()` on an `F128Extended`). There is no `to_s64`, `as_<type>`,
+`a.to<Vector<B32, 4>>()` on an `Array`, `n.to<B128Big>()`, `f.to<B128Extended>()`. Its variants keep the family
+(`to_wrap`, `to_clamp`, `to_checked`, `to_nearest<S64>()` on a `B128Extended`). There is no `to_s64`, `as_<type>`,
 `y_from_x`, or `x_to_y`, and a routine that differs from another only in the type it produces takes the type as a
 type argument (`p.read_le<U64>(off)` on a `@Byte`). Text to a value is a conversion too: `text.to<S32>()`, and a
 conversion that can fail on its input is `to_result<T>()`, returning `Result` (there is no `parse`). Not conversions:
-values built from raw parts (`Bytes.from_ptr(p, n)`), bits seen as another type (`F64.from_bits(u)`, `x.bits()`),
+values built from raw parts (`Bytes.from_ptr(p, n)`), bits seen as another type (`B64.from_bits(u)`, `x.bits()`),
 byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`).
 
 **Naming rules for `to`, `_into`, `from_`, `_checked`, and `_result`.**
@@ -848,11 +848,11 @@ byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`
   routines (`write_str(out, text)`, `write_bytes`, `write_line`) keep their names: the verb already says where the
   bytes go. Memory at a given address is `_at`: `Vector<T, LANES>.load_at(first)`, `v.store_at(first)`.
 - `from_XXX` is rare: it's for building a value where `construct` alone would be ambiguous, several ways to make the
-  same type from similar inputs (`Bytes.from_ptr(data, count)`, `F64.from_bits(u)`). A `from_XXX` that is really a
+  same type from similar inputs (`Bytes.from_ptr(data, count)`, `B64.from_bits(u)`). A `from_XXX` that is really a
   one-value conversion is `to<T>` on the source type, and one that could be a `construct` overload without ambiguity
   is `construct`. One exception: a routine that implements a conversion's C runtime call (LLVM lowers
-`F32.to<F16>()` to `__truncsfhf2` on x86, and every float conversion to a call on a target without an FPU) can't be
-that `to<T>`, which would call itself there. It keeps the shape under its own name, `x.soft_to<F16>()`
+`B32.to<B16>()` to `__truncsfhf2` on x86, and every float conversion to a call on a target without an FPU) can't be
+that `to<T>`, which would call itself there. It keeps the shape under its own name, `x.soft_to<B16>()`
 (Standard/SoftFloat), and a shim that only exists to be exported is named for its symbol (`export_truncsfhf2`).
 
 **The empty value: `.empty()` or `.zero()`.** A type's ready-made empty value (what a slot that `finish` releases
@@ -916,7 +916,7 @@ the type's own).
 `USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
 `@Array<T, COUNT>` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(i, v)` / `arr.at(i)`
 (bounds checked), or `arr.to<@T>().stride(i).load()` unchecked. Literals name their type: `Array<S32, 3> { 1, 2, 3 }`,
-`Vector<F32, 4> { ... }`. The same holds for array fields (`node.keys.getitem(i)`) and
+`Vector<B32, 4> { ... }`. The same holds for array fields (`node.keys.getitem(i)`) and
 array presets (`K.getitem(i)`, with `preset K: @Array<T, COUNT> <- { ... }`).
 
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with

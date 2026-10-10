@@ -18,13 +18,14 @@ static class Cli
           tessera test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.tess>...
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
           tessera fmt   -               format the source on standard input to standard output (for an editor)
+          tessera migrate [--check] <file-or-dir>...   rewrite .tess files to this release's spellings (--check: list them)
           tessera lsp                   run the language server on standard input and output (for an editor)
           tessera lint  <file-or-dir>...   print the style warnings (see lint below), the stdlib's too
           tessera docs  <source-dir> <output-dir>   write the API reference pages of a library from its /// docs
           tessera help                  print this text
           tessera version               print the builder's version
 
-        --no-stdlib-exports: leave out the standard library's #export routines (the default crash handler, the F16 and
+        --no-stdlib-exports: leave out the standard library's #export routines (the default crash handler, the B16 and
                 BF16 conversion helpers), for a library that is linked into a program which has them already.
         <mode>: debug (-O0, the default), release (-O2), release-time (-O3), or release-space (-Os), as a
                 manifest's mode. Every mode has debug information: DWARF, or CodeView and a .pdb on Windows, so a
@@ -97,6 +98,7 @@ static class Cli
                 "check" => Check(args[1..]),
                 "lsp" => LanguageServer.Run(StdlibDir),
                 "fmt" => Fmt(args[1..]),
+                "migrate" => Migrate.Run(args[1..]),
                 "lint" => LintFiles(args[1..]),
                 "docs" => Docs(args[1..]),
                 "version" => Version(),
@@ -712,7 +714,7 @@ static class Cli
             };
             foreach (var a in new[] { "-Wno-override-module", mode.OptLevel(), "--target=" + target.LlvmTriple, ll, "-o", exe })
                 psi.ArgumentList.Add(a);
-            // U128 / S128 division, F16 / BF16 arithmetic and similar operations lower to compiler-rt routines. GNU
+            // U128 / S128 division, B16 / BF16 arithmetic and similar operations lower to compiler-rt routines. GNU
             // toolchains get them from libgcc; the MSVC toolchain has no equivalent, so link clang's builtins.
             if (target.Os == "windows" && BuiltinsLibrary(target) is { } builtins) psi.ArgumentList.Add(builtins);
             // lld-link reports in English whatever the system locale, and links faster than link.exe.

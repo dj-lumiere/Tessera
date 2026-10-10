@@ -179,7 +179,7 @@ public sealed partial class Compiler
                 case PtrType { Pointee: { } p }: return Core("Ptr", [p], t);
                 case ArrayType a: return Core("Array", [a.Elem, new ConstArg(a.Count)], t);
                 case VectorType v: return Core("Vector", [v.Elem, new ConstArg(v.Count)], t);
-                default: return Core(t.OwnerName, [], t);   // S64, Bool, F32, USize, Addr, ...
+                default: return Core(t.OwnerName, [], t);   // S64, Bool, B32, USize, Addr, ...
             }
         }
 

@@ -407,8 +407,8 @@ internal sealed class AsmLowering
         _ => throw new CompileError(pos, $"an assembly operand is an integer, a float, a pointer or a vector, not {t}"),
     };
 
-    /// 32-bit ARM's register class for a value: a general register holds up to 32 bits, an S register an F32 (or an
-    /// F16), a D register an F64 or a 64-bit vector.
+    /// 32-bit ARM's register class for a value: a general register holds up to 32 bits, an S register a B32 (or an
+    /// B16), a D register a B64 or a 64-bit vector.
     private RegClass ArmClassOf(DType t, Pos pos) => t.Repr switch
     {
         IntType { Bits: > 32 } => throw new CompileError(pos, $"32-bit ARM's general registers hold 32 bits, not {t}"),
@@ -417,7 +417,7 @@ internal sealed class AsmLowering
         FloatType { Bits: 64 } => RegClass.Double,
         VectorType when Bits(t, pos) == 64 => RegClass.Double,
         _ => throw new CompileError(pos, "an operand on 32-bit ARM is an integer or a pointer of up to 32 bits (an R register), "
-                                         + $"an F32 (an S register), or an F64 or a 64-bit vector (a D register), not {t}"),
+                                         + $"a B32 (an S register), or a B64 or a 64-bit vector (a D register), not {t}"),
     };
 
     private int Bits(DType t, Pos pos) => t.Repr switch
@@ -514,7 +514,7 @@ internal sealed class AsmLowering
         _ => throw new CompileError(pos, $"aarch64's vector registers hold 8, 16, 32, 64 or 128 bits as a scalar, not {bits}"),
     };
 
-    /// AArch64's arrangement for a vector type: `Vector<F32, 4>` is `4s`.
+    /// AArch64's arrangement for a vector type: `Vector<B32, 4>` is `4s`.
     private string Arrangement(VectorType vt, Pos pos)
     {
         int lane = Bits(vt.Elem, pos);

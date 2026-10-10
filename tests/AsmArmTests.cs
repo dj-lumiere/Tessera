@@ -122,11 +122,11 @@ public class AsmArmTests
                     return(R0)
 
             #[target(arch: "arm"), external("asm"), pure]
-            routine join(lo: U32, hi: U32) -> F64
+            routine join(lo: U32, hi: U32) -> B64
                 block entry()
-                    vmov<F64, U32, U32>(D0, lo, hi)
-                    `vadd.f64`<F64, F64, F64>(D0, D0, D0)
-                    vmov<F32, U32>(S2, lo)
+                    vmov<B64, U32, U32>(D0, lo, hi)
+                    `vadd.f64`<B64, B64, B64>(D0, D0, D0)
+                    vmov<B32, U32>(S2, lo)
                     return(D0)
 
             #[target(arch: "arm"), external("asm")]
@@ -138,14 +138,14 @@ public class AsmArmTests
                     ldr<U32, U32>(R0, p.index(R4, 4))
                     ldr<U32, U32>(R0, PC.offset(0))
                     pop<U32>({ R4, R5, LR })
-                    vpush<F64>({ D8, D9 })
-                    vpop<F64>({ D8, D9 })
+                    vpush<B64>({ D8, D9 })
+                    vpop<B64>({ D8, D9 })
                     return(R0)
 
             routine start() -> Void
                 block entry()
                     t : U32 = thread_id()
-                    f : F64 = join(1, 2)
+                    f : B64 = join(1, 2)
                     claim v : @U32 <- 3
                     w : U32 = walk(v)
                     return()
@@ -162,8 +162,8 @@ public class AsmArmTests
     [InlineData("mov<U32, U32>(R0, V1)", "arm has no register V1")]
     [InlineData("mrs<U32>(R0, PRIMASKS)", "arm has no register PRIMASKS, and no system register the builder knows by that name")]
     [InlineData("mov<U64, U64>(R0, R1)", "32-bit ARM's general registers hold 32 bits, not U64")]
-    [InlineData("vmov<F64, F64>(S0, D1)", "S0 holds 32 bits, not F64")]
-    [InlineData("vmov<F32, F32>(D0, S1)", "D0 holds 64 bits, not F32")]
+    [InlineData("vmov<B64, B64>(S0, D1)", "S0 holds 32 bits, not B64")]
+    [InlineData("vmov<B32, B32>(D0, S1)", "D0 holds 64 bits, not B32")]
     [InlineData("mov<U32>(R0, eq)", "32-bit ARM spells a condition in the mnemonic")]
     public void OperandErrors(string instruction, string error)
     {
@@ -184,7 +184,7 @@ public class AsmArmTests
     {
         const string source = """
             #[target(arch: "arm"), external("asm"), naked]
-            routine half(x: F32 = S0) -> Void
+            routine half(x: B32 = S0) -> Void
                 block entry()
                     return()
 

@@ -138,7 +138,7 @@ public sealed partial class Compiler
             case VectorType v:
             {
                 // LLVM's rule: the lanes packed (a Bool lane is one bit), aligned as the datalayout says for that
-                // width, else to the next power of two; so Vector<F32, 3> is 16 bytes, not Array<F32, 3>'s 12.
+                // width, else to the next power of two; so Vector<B32, 3> is 16 bytes, not Array<B32, 3>'s 12.
                 long bits = v.Count * (v.Elem.Repr is BoolType ? 1 : SizeAlign(v.Elem, pos).Size * 8);
                 long bytes = (bits + 7) / 8;
                 long align = Math.Max(1, Layout(pos).VectorAlign(bytes * 8));

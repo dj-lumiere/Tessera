@@ -134,6 +134,7 @@ tessera run   <file.tess>... [<target>] [--mode <mode>]  Build and run these fil
 tessera test  [<target>] [--mode <mode>] <dir-or-file>...  Run golden tests
 tessera check [<target>] [<file.tess>...]     Type-check every non-generic routine, the stdlib included
 tessera fmt   [--check] <file-or-dir>...      Format .tess files in place
+tessera migrate [--check] <file-or-dir>...    Rewrite .tess files to this release's spellings
 tessera help | version
 ```
 
@@ -223,5 +224,5 @@ disagree, the stdlib wins. Report bugs at
 
 ## License
 
-MIT; see [`LICENSE`](LICENSE). The float math in `Standard/F16Core/`, `F32Core/`, `F64Core/`, and `F128Core/` is
+MIT; see [`LICENSE`](LICENSE). The float math in `Standard/B16Core/`, `B32Core/`, `B64Core/`, and `B128Core/` is
 based on CORE-MATH, also MIT; each of those directories carries its `LICENSE-CORE-MATH`.

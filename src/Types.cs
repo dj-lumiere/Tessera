@@ -130,13 +130,13 @@ public sealed class BoolType : DType
     public override string OwnerName => Name;
 }
 
-/// F16 (IEEE half), BF16 (bfloat16), F32, F64.
+/// B16 (IEEE half), BF16 (bfloat16), B32, B64.
 public sealed class FloatType : DType
 {
-    public static readonly FloatType F16 = new("F16", "half", 16);
+    public static readonly FloatType B16 = new("B16", "half", 16);
     public static readonly FloatType BF16 = new("BF16", "bfloat", 16);
-    public static readonly FloatType F32 = new("F32", "float", 32);
-    public static readonly FloatType F64 = new("F64", "double", 64);
+    public static readonly FloatType B32 = new("B32", "float", 32);
+    public static readonly FloatType B64 = new("B64", "double", 64);
 
     private readonly string _name, _llvm;
 
@@ -154,14 +154,14 @@ public sealed class FloatType : DType
 
     /// An LLVM constant for `value` rounded to this type. float and double constants are written as the hex bits
     /// of the equivalent double; half is `0xH` and bfloat `0xR` followed by their own 16 bits.
-    public string Constant(double value) => this == F16 ? $"0xH{BitConverter.HalfToUInt16Bits((Half)value):X4}"
+    public string Constant(double value) => this == B16 ? $"0xH{BitConverter.HalfToUInt16Bits((Half)value):X4}"
         : this == BF16 ? $"0xR{ToBFloat16Bits((float)value):X4}"
-        : Hex(this == F32 ? (float)value : value);
+        : Hex(this == B32 ? (float)value : value);
 
     /// An LLVM constant with exactly these IEEE bits.
-    public string FromBits(BigInteger bits) => this == F16 ? $"0xH{(ushort)(bits & ushort.MaxValue):X4}"
+    public string FromBits(BigInteger bits) => this == B16 ? $"0xH{(ushort)(bits & ushort.MaxValue):X4}"
         : this == BF16 ? $"0xR{(ushort)(bits & ushort.MaxValue):X4}"
-        : this == F32 ? Hex(BitConverter.Int32BitsToSingle(unchecked((int)(uint)(bits & uint.MaxValue))))
+        : this == B32 ? Hex(BitConverter.Int32BitsToSingle(unchecked((int)(uint)(bits & uint.MaxValue))))
         : Hex(BitConverter.Int64BitsToDouble(unchecked((long)(ulong)(bits & ulong.MaxValue))));
 
     private static string Hex(double d) =>
