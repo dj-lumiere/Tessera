@@ -108,13 +108,13 @@ routine start() -> Void
   `claim p : @T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, null, a
   collection with no memory, a choice's first member), and every `destruct` leaves it alone. A claim without `<-` is
   an error. `<-` fills memory and `=` only binds a name to a value, so `claim p : @T = v` is an
-  error too. An array value comes from `Array[T, COUNT] { 1, 2, x }` or a load (COUNT values at `first: @T` are
+  error too. An array value comes from `[1, 2, x]` or a load (COUNT values at `first: @T` are
   `first.to[@Array[T, COUNT]]().load()`);
   a bare `[1, 2]` isn't a value. Where the type is known from where the value goes (a typed binding, a `preset` or
   `global`, an argument, an element of an outer literal, the pointer of `store_into`), the type can be left off:
-  `preset SORTED: @Array[S64, 3] <- { -8, 0, 7 }`, `p : Point = { x: 1, y: 2 }`, like `.absent()`. Write the type
-  where it isn't on the same line: `sum2({ 7, 8 })` compiles, but prefer `sum2(Array[S64, 2] { 7, 8 })`. A receiver
-  gives it no type: `{ 1, 2 }.eq(...)` is an error. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
+  `preset SORTED: @Array[S64, 3] <- [-8, 0, 7]`, `p : Point = (x: 1, y: 2)`, like `.absent()`. Write the type
+  where it isn't on the same line: `sum2([7, 8])` compiles, but prefer `sum2([7, 8])`. A receiver
+  gives it no type: `[1, 2].eq(...)` is an error. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot, but its `<-` runs every time the block runs: a claim can't carry a value from one pass to
   the next. A slot that does is local to the routine, declared in its head (below).
 - **Where values are: `@T` and `Slice[T]`.** `@T` is an address (a claim slot, a field, an element, memory from C)
@@ -150,7 +150,7 @@ routine start() -> Void
   `claim p : @T <- v` (a stack slot, `<- .hollow()` if a routine fills it), `global NAME: @T [<- value]` (mutable, all-zero without a value),
   `preset NAME: @T <- value` (read-only). `preset NAME: T = value` is a value, not memory: folded at build time, with
   no address. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
-  before it to compute one, on any target), so its contents are known at build time: literals, presets, `null`, `{ ... }` (an array, or a record field by field), a routine for
+  before it to compute one, on any target), so its contents are known at build time: literals, presets, `null`, `[...]` (an array), `T(field: value)` (a record field by field), a routine for
   a `Callable` (`f.to[Callable]()`), or the name of another global or preset in memory (its
   address; a global holding a pointer is `@@T`: `global HEAD: @@Node <- null`). Use them as `TICKS.load()`,
   `STATS.calls.store(n)`, `K.getitem(i)`; writing a preset's memory is a build error. Neither kind is a buildtime
@@ -511,7 +511,7 @@ routine start() -> Void
   Source files must be UTF-8.
 - String literals are `Bytes` where a `Bytes` is expected, `CStr` / `CWStr` (terminated C text) where one of those
   is, and a NUL-terminated `@Byte` where a pointer is. Declare C string parameters as `s: CStr`. A `CStr` is
-  `{ data: @CChar }` (C's `char`, `S8` or `U8` as the target has it), symmetric with `CWStr` over `@CWChar`, so
+  `(data: @CChar)` (C's `char`, `S8` or `U8` as the target has it), symmetric with `CWStr` over `@CWChar`, so
   a pointer becomes one with `p.to[CStr]()` (on a `@CChar` or a `@Byte`). A `CStr` stays one pointer (C's ABI), so
   it carries no allocator. A `Bytes` has no terminator: claim `s.to[OwnedCStr](alloc)` (a copy that lends `to[CStr]()`
   and is released with `destruct()`) or use `buf.to[CStr]()` on a `List[Byte]`.
@@ -554,12 +554,13 @@ routine start() -> Void
 
 **Tuples**
 
-- `(A, B)` to `(A, B, C, D)`: the type; `{ a, b }`: a value where the type is known, braces like every aggregate
-  value; fields `item0` .. `item3`. Returning several values is returning a tuple: `-> (U64, U64)`,
-  `return({ q, r })`.
+- `(A, B)` to `(A, B, C, D)`: the type; `(a, b)`: a value where the type is known (the comma tells it from
+  parentheses around one value); fields `item0` .. `item3`. Returning several values is returning a tuple:
+  `-> (U64, U64)`, `return((q, r))`.
 - `q, r = div_rem(a, b)` takes a tuple apart, every item, no types. It's the only destructuring: a record's
   fields are read by name. Nested tuples come apart one level at a time.
-- A tuple value takes its type from where it goes (`t : (S64, S64) = { 1, 2 }`); `(1, 2)` in an expression is an error.
+- A tuple value takes its type from where it goes (`t : (S64, S64) = (1, 2)`); with nowhere to take it from, it's
+  an error. An Array is `[1, 2]`, never `(1, 2)`, and a tuple never `[1, 2]`.
 - Parentheses make a tuple type and hold a call's arguments. Around one value they group nothing, so `(a)` is `a`
   and `fmt` drops them. In `Callable[(A, B), R]` the first list is the parameters.
 - Use a record when the parts mean something (`quotient`, `remainder`); a tuple when they're just values.
@@ -659,8 +660,8 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   writes the Tessera-source form: `v.diagnose()` hands back an adapter (`Diagnosed[T]`) that writes `v` with
   `diagnose_into` wherever it goes.
 - `out.write("x = {x}\n")` writes text and values in one line: it expands at build time into
-  `write_str` / `.represent_into` calls, a brace holds one expression (loads and chains allowed, and literals with their own braces:
-  `"{sum2(Array[S64, 2] { 7, 8 })}"`), `{{` is a literal brace,
+  `write_str` / `.represent_into` calls, a brace holds one expression (loads and chains allowed, and literals:
+  `"{sum2([7, 8])}"`), `{{` is a literal brace,
   and there are no format options. The template is a method on any Writer: `out.write("...")` on a pointer
   to one (`buf.write(...)`, `handle.write(...)`), and `Out.write("x = {x}\n")` / `Err.write(...)` on a stateless
   one (it writes to `T.writer()`). It's only ever a method: there is no free `write(out, "...")`, and no
@@ -681,7 +682,7 @@ always `Result`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array[T, COUNT]` | `Array[T, COUNT] { a, b }` literal, `at`, `getitem` (on a value or a pointer: `Array[U64, 3] { 2, 3, 5 }.getitem(i)`), `setitem`, `getslice`, `to[Slice[T]]`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
+| `Array[T, COUNT]` | `[a, b]` literal, `at`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `getslice`, `to[Slice[T]]`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
 | `List[T]` | `push`, `pop`, `getitem`, `setitem`, `getslice`, `to[Slice[T]]`, `clear`, `reserve` | index |
 | `CircularList[T]` | `push_front`, `push_back`, `pop_front`, `pop_back`, `getitem`, `setitem` | front to back |
 | `Dict[TKey, TValue]` | `put`, `getitem`, `has_key`, `remove` | **insertion order (guaranteed)** |
@@ -803,7 +804,7 @@ system register can't be `#pure` or `#readonly`, and an instruction that changes
 (`RNDR`) still lists `#clobbers(FLAGS)`. 32-bit ARM (`arch: "arm"`): `R0`–`R15` with `SP` / `LR` / `PC`
 (R13–R15), the VFP's `S0`–`S31` (32 bits) and `D0`–`D31` (64 bits), a condition in the mnemonic (`moveq[U32](R0, 1)`,
 the builder writes Thumb's `it` blocks itself on Cortex-M or `thumb-mode`), register lists as one typed operand
-(`push[U32]({ R4, R5, LR })`), `mrs[U32](R0, PRIMASK)`, `cpsid(i)`, `dsb(SY)`, `mrc[U32](p15, 0, R0, c13, c0, 3)`.
+(`push[U32]([R4, R5, LR])`), `mrs[U32](R0, PRIMASK)`, `cpsid(i)`, `dsb(SY)`, `mrc[U32](p15, 0, R0, c13, c0, 3)`.
 
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.
@@ -868,7 +869,7 @@ signature, unless the routine's name already says it (`len.add(1)`, `list.getite
 parameters, `me` not counted, takes a record instead: one record parameter, or a record plus the few parameters that
 clearly don't belong to the group, so the count drops below five. The record is named for what the group is, its
 fields in reading order and documented, and one record serves every routine that passes the same group. Its literal
-names each field at the call (`fill_rect(canvas, Rect { left: 10, top: 20, width: 300, height: 200 }, orange)`), and a
+names each field at the call (`fill_rect(canvas, Rect(left: 10, top: 20, width: 300, height: 200), orange)`), and a
 value that already is the group passes whole. A pointer and a count that go together are a `Slice[T]`. The allocator
 counts too: a routine that reaches five only through it still takes a record for the rest, the allocator staying the
 separate last parameter. Exempt: `#external` declarations, `#export` routines and `#callconv` callbacks (a C ABI sets
@@ -909,9 +910,9 @@ the type's own).
 **Arrays and `stride`.** `p.stride(i)` is the address of the i-th `T` of a `@T` (a
 `USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
 `@Array[T, COUNT]` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(i, v)` / `arr.at(i)`
-(bounds checked), or `arr.to[@T]().stride(i).load()` unchecked. Literals name their type: `Array[S32, 3] { 1, 2, 3 }`,
-`Vector[B32, 4] { ... }`. The same holds for array fields (`node.keys.getitem(i)`) and
-array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- { ... }`).
+(bounds checked), or `arr.to[@T]().stride(i).load()` unchecked. Literals name their type: `[1, 2, 3]`,
+`[...]`. The same holds for array fields (`node.keys.getitem(i)`) and
+array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`).
 
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
 `destruct`:

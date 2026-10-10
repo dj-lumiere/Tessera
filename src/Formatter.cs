@@ -921,7 +921,9 @@ public static class Formatter
             if (c == '(' && OpensExpression(sb, signature) && MatchingParen(line, i) is int close)
             {
                 string inner = line[(i + 1)..close];
-                if (inner.Trim().Length > 0 && TopLevelIndex(inner, 0, ",") < 0)
+                // `(x: 1)` is a record literal and `(a, b)` a tuple: only parentheses around one plain value group.
+                bool recordLiteral = System.Text.RegularExpressions.Regex.IsMatch(inner, @"^\s*[A-Za-z_]\w*\s*:(?!:)");
+                if (inner.Trim().Length > 0 && !recordLiteral && TopLevelIndex(inner, 0, ",") < 0)
                 {
                     sb.Append(DropGroupingParens(inner).Trim());
                     i = close;

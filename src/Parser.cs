@@ -1238,24 +1238,37 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 if (!Is(TokenKind.LParen) && typeArgs.Count == 0) return new ImplicitMemberExpr(member.Text, t.Pos);
                 return new ImplicitCallExpr(member.Text, typeArgs, ParseArgs(), t.Pos);
             }
+            case TokenKind.LParen when PeekTok(1).Kind == TokenKind.RParen
+                                       || (PeekTok(1).Kind == TokenKind.Ident && PeekTok(2).Kind == TokenKind.Colon):
+                // `(x: 1, y: 2)` (or `()` for one with no fields): a record whose type comes from where the value goes, as
+                // with `.construct()`.
+                return ParseRecordLit(t.Pos);
             case TokenKind.LParen:
             {
-                // Parentheses make a tuple type, `(S64, S64)`, and hold a call's arguments. Around one value they group
-                // nothing (there are no operators), so `(x)` is `x`, which `fmt` writes without them; every aggregate
-                // value, a tuple's included, is written with braces.
+                // `(a, b)` is a tuple. Around one value parentheses group nothing (there are no operators), so `(x)` is
+                // `x`, which `fmt` writes without them.
                 Next();
                 var inner = ParseExpr();
-                if (Is(TokenKind.Comma))
-                    throw new CompileError(t.Pos, "a tuple value is written with braces where its type is known: { a, b }; "
-                                                  + "parentheses make a tuple type, (S64, S64)");
+                if (Accept(TokenKind.Comma))
+                {
+                    var items = new List<Expr> { inner };
+                    do items.Add(ParseExpr()); while (Accept(TokenKind.Comma));
+                    Expect(TokenKind.RParen, "')'");
+                    return new ArrayLit(items, t.Pos) { IsTuple = true };
+                }
                 Expect(TokenKind.RParen, "')'");
                 return inner;
             }
-            case TokenKind.LBrace:
-                // `{ 1, 2, 3 }` / `{ x: 1 }`: the type comes from where the value goes, as with `.absent()`.
-                return ParseRecordLit(null, t.Pos);
             case TokenKind.LBracket:
-                throw Error("an array literal is written with braces: Array[S32, 3] { 1, 2, 3 }, or { 1, 2, 3 } where the type is known");
+            {
+                // `[1, 2, 3]`: an Array or a Vector, typed by where the value goes.
+                Next();
+                var elems = new List<Expr>();
+                if (!Is(TokenKind.RBracket))
+                    do elems.Add(ParseExpr()); while (Accept(TokenKind.Comma));
+                Expect(TokenKind.RBracket, "']'");
+                return new ArrayLit(elems, t.Pos);
+            }
             case TokenKind.Ident when _inAsm && AsmCondition() is { } condition:
                 return condition;
             case TokenKind.Ident:
@@ -1271,23 +1284,25 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
-    /// `f(args)`, `f[T](args)`, `Type.f(args)`, `Type[T].f[U](args)`, `Type.CONST`, `CONST`, `Type { fields }`.
+    /// `f(args)`, `f[T](args)`, `Type.f(args)`, `Type[T].f[U](args)`, `Type.CONST`, `CONST`, `Type(field: value)`.
     private Expr ParseNameExpr()
     {
         var pos = Cur.Pos;
         var (path, name) = ParseQualifiedName("a name");
         var typeArgs = ParseTypeArgs();
 
+        // `f(args)` calls a routine and `Point(x: 1, y: 2)` builds a record field by field: which one the name is,
+        // the checker says, once names are resolved.
         if (Is(TokenKind.LParen))
         {
-            var targs = typeArgs.Select(a => a is TypeArgType tt
-                ? tt.Type
-                : throw new CompileError(pos, "call type arguments must be types")).ToList();
-            return new CallExpr(name.Text, targs, ParseArgs(), pos) { Path = path };
+            bool numbers = typeArgs.Any(a => a is not TypeArgType);
+            var targs = numbers ? [] : typeArgs.Select(a => ((TypeArgType)a).Type).ToList();
+            var (args, names) = ParseNamedArgs();
+            return new CallExpr(name.Text, targs, args, pos)
+                { Path = path, ArgNames = names, WrittenTypeArgs = numbers ? typeArgs : null };
         }
 
         var owner = new TypeRef(name.Text, typeArgs, pos) { Path = path };
-        if (Is(TokenKind.LBrace)) return ParseRecordLit(owner, owner.Pos);
 
         if (typeArgs.Count == 0 && Is(TokenKind.Dot) && PeekTok(1) is { Kind: TokenKind.Ident, Text: "to" }
             && PeekTok(2).Kind == TokenKind.LBracket && PeekTok(3) is { Kind: TokenKind.Ident, Text: "Callable" })
@@ -1316,29 +1331,25 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new PresetRef(null, name.Text, pos) { Path = path };
     }
 
-    private Expr ParseRecordLit(TypeRef? type, Pos pos)
+    /// `(field: value, ...)`: a record built field by field, its type from where the value goes. With the type
+    /// written, `Point(x: 1)` parses as a call and the checker sees that it names a type.
+    private Expr ParseRecordLit(Pos pos)
     {
-        Expect(TokenKind.LBrace, "'{'");
+        Expect(TokenKind.LParen, "'('");
         var fields = new List<(string, Expr, Pos)>();
-        // `Array[T, COUNT] { a, b, c }` / `Vector[T, LANES] { a, b, c }`: elements in order, where a record names its fields.
-        if (!Is(TokenKind.RBrace) && !(Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon))
-        {
-            var elems = new List<Expr>();
-            do elems.Add(ParseExpr()); while (Accept(TokenKind.Comma));
-            Expect(TokenKind.RBrace, "'}'");
-            return new ArrayLit(elems, pos) { Type = type };
-        }
-        if (!Is(TokenKind.RBrace))
+        if (!Is(TokenKind.RParen))
         {
             do
             {
-                var f = Expect(TokenKind.Ident, "a field name");
+                if (!(Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon))
+                    throw Error("a record literal names its fields: (name: value)");
+                var f = Next();
                 Expect(TokenKind.Colon, "':'");
                 fields.Add((f.Text, ParseExpr(), f.Pos));
             } while (Accept(TokenKind.Comma));
         }
-        Expect(TokenKind.RBrace, "'}'");
-        return new RecordLit(type, fields, pos);
+        Expect(TokenKind.RParen, "')'");
+        return new RecordLit(null, fields, pos);
     }
 
     /// `claim p : @T`: a stack slot bound to a pointer name. It takes no initializer; the value goes in with a
@@ -1374,7 +1385,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// A bare name that names a visible value, and isn't a call (a call always names a routine), a path, or a record.
     private bool IsValue(Token t) =>
         _values is not null && _values.Contains(t.Text) && (t.Escaped || !ReservedValueNames.Contains(t.Text))
-        && PeekTok(1).Kind is not (TokenKind.LParen or TokenKind.Slash or TokenKind.LBrace);
+        && PeekTok(1).Kind is not (TokenKind.LParen or TokenKind.Slash);
 
     /// A name a declaration gives a type or a type parameter. `Me` is the type a routine is on, so it names nothing else.
     private static Token TypeName(Token n) =>
@@ -1393,6 +1404,35 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (!n.Escaped && ReservedValueNames.Contains(n.Text))
             throw new CompileError(n.Pos, $"'{n.Text}' is a keyword; a value of that name is written `{n.Text}`");
         return n;
+    }
+
+    /// A call's arguments, each optionally named (`x: 1`): the names, or null when none is named. Naming some and not
+    /// others is an error.
+    private (List<Expr> Args, List<string>? Names) ParseNamedArgs()
+    {
+        Expect(TokenKind.LParen, "'('");
+        var args = new List<Expr>();
+        var names = new List<string>();
+        if (!Is(TokenKind.RParen))
+        {
+            do
+            {
+                if (Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon)
+                {
+                    names.Add(Next().Text);
+                    Next();
+                }
+                else if (names.Count > 0)
+                {
+                    throw Error("name every argument or none: an argument here has no name");
+                }
+                args.Add(ParseExpr());
+                if (names.Count > 0 && names.Count != args.Count)
+                    throw new CompileError(args[^1].Pos, "name every argument or none: an argument here has no name");
+            } while (Accept(TokenKind.Comma));
+        }
+        Expect(TokenKind.RParen, "')'");
+        return (args, names.Count == 0 ? null : names);
     }
 
     private List<Expr> ParseArgs()

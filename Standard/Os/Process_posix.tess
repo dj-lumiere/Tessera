@@ -203,7 +203,7 @@ private record Prepared
 #target(os: ("linux", "macos"))
 private routine Prepared.empty() -> Me
     block entry()
-        return(Me { argv: null, argc: 0, envp: null, own_first: 0, own_count: 0, directory: null })
+        return(Me(argv: null, argc: 0, envp: null, own_first: 0, own_count: 0, directory: null))
 
 /// `text` with a NUL after it, in memory from `alloc`.
 /// :param text: The bytes to copy.
@@ -508,8 +508,7 @@ private record PipeCapture
 #target(os: ("linux", "macos"))
 private routine Plumbing.empty() -> Me
     block entry()
-        return(Me { out_r: -1, out_w: -1, err_r: -1, err_w: -1, exec_r: -1, exec_w: -1,
-            devnull: -1 })
+        return(Me(out_r: -1, out_w: -1, err_r: -1, err_w: -1, exec_r: -1, exec_w: -1, devnull: -1))
 
 /// Makes a pipe with both ends close-on-exec.
 /// :param fds: Where the two descriptors go: the read end, then the write end.
@@ -557,7 +556,7 @@ private routine Plumbing.close_all(me: @Me) -> Void
 private routine Plumbing.make(me: @Me, options: ProcessOptions) -> Bool
     block entry()
         me.store(Plumbing.empty())
-        claim fds : @Array[CInt, 2] <- { -1, -1 }
+        claim fds : @Array[CInt, 2] <- [-1, -1]
         branch cloexec_pipe(fds.to[@CInt]())
             ? continue
             : return(false)
@@ -642,10 +641,10 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         input   : CInt = options.stdin.eq(InputMode.NULL)
             ? null_fd
             : -1
-        streams : ChildStreams = ChildStreams { input: input,
+        streams : ChildStreams = ChildStreams(input: input,
             output: output_fd(options.stdout, pipes.out_w.load(), null_fd),
             error: output_fd(options.stderr, pipes.err_w.load(), null_fd),
-            report: pipes.exec_w.load() }
+            report: pipes.exec_w.load())
         pid     : CInt         = c_fork()
         branch pid.eq(0)
             ? child(p, streams)
@@ -677,8 +676,8 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         c_close(pipes.exec_r.load())
         pipes.exec_r.store(-1)
         // drain closes both pipes as each ends.
-        drain(PipeCapture { fd: pipes.out_r.load(), buffer: out },
-            PipeCapture { fd: pipes.err_r.load(), buffer: err }, alloc)
+        drain(PipeCapture(fd: pipes.out_r.load(), buffer: out),
+            PipeCapture(fd: pipes.err_r.load(), buffer: err), alloc)
         pipes.out_r.store(-1)
         pipes.err_r.store(-1)
         status : Option[ExitStatus] = reap(pid)
@@ -696,8 +695,8 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         branch lost
             ? finish(.Failure(ProcessError.OUT_OF_MEMORY))
             : continue
-        output : ProcessOutput = ProcessOutput { status: s, stdout: out.owned(alloc),
-            stderr: err.owned(alloc) }
+        output : ProcessOutput = ProcessOutput(status: s, stdout: out.owned(alloc),
+            stderr: err.owned(alloc))
         out.store(CaptureBuffer.empty())
         err.store(CaptureBuffer.empty())
         jump finish(.Success(output))
@@ -732,8 +731,8 @@ private routine drain(out: PipeCapture, err: PipeCapture, alloc: @Allocator) -> 
     local out_fd : CInt = out.fd
     local err_fd : CInt = err.fd
     // POLLIN, and poll skips a negative fd
-    local poll_fds     : @Array[PollFd, 2]  <- { PollFd { fd: out_fd, events: 1, revents: 0 },
-        PollFd { fd: err_fd, events: 1, revents: 0 } }
+    local poll_fds     : @Array[PollFd, 2]  <- [PollFd(fd: out_fd, events: 1, revents: 0),
+        PollFd(fd: err_fd, events: 1, revents: 0)]
     local chunk_buffer : @Array[Byte, 4096] <- .hollow()
     local fds          : @PollFd            = poll_fds.to[@PollFd]()
     local chunk        : @Byte              = chunk_buffer.to[@Byte]()
@@ -845,5 +844,5 @@ routine env_var(name: Bytes, alloc: @Allocator) -> Option[Bytes]
             ? return(.Absent)
             : continue
         owned.copy(value, n)
-        text : Bytes = Bytes { data: owned, count: n, alloc: alloc }
+        text : Bytes = Bytes(data: owned, count: n, alloc: alloc)
         return(.Present(text))

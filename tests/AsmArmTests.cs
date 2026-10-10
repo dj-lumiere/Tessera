@@ -132,14 +132,14 @@ public class AsmArmTests
             #[target(arch: "arm"), external("asm")]
             routine walk(p: @U32) -> U32
                 block entry()
-                    push[U32]({ R4, R5, LR })
+                    push[U32]([R4, R5, LR])
                     ldr[U32, U32](R4, p.offset(4).update())
                     ldr[U32, U32](R5, p.after_offset(-4))
                     ldr[U32, U32](R0, p.index(R4, 4))
                     ldr[U32, U32](R0, PC.offset(0))
-                    pop[U32]({ R4, R5, LR })
-                    vpush[B64]({ D8, D9 })
-                    vpop[B64]({ D8, D9 })
+                    pop[U32]([R4, R5, LR])
+                    vpush[B64]([D8, D9])
+                    vpop[B64]([D8, D9])
                     return(R0)
 
             routine start() -> Void

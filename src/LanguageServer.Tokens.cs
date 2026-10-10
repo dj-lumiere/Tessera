@@ -1082,7 +1082,6 @@ public static partial class LanguageServer
                     }
                     break;
                 case ArrayLit array:
-                    if (array.Type is not null) Type(array.Type);
                     foreach (var el in array.Elements) Expr(el);
                     break;
             }

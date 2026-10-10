@@ -834,11 +834,11 @@ public sealed class FunctionGen
     /// The type an expression has on its own, or null if it depends on context (untyped literals, null).
     private DType? Infer(Expr e)
     {
-        e = AsStride(AsField(e));
+        e = AsStride(AsField(_c.AsRecordLit(e, _env)));
         switch (e)
         {
             case IntLit or FloatLit or NullLit or StrLit: return null;
-            case ArrayLit a: return a.Type is null ? null : Resolve(a.Type);
+            case ArrayLit: return null;
             case BoolLit: return BoolType.Instance;
             case TypedIntLit t: return t.Type;
             case ValueRef r: return Lookup(r).Type;
@@ -890,6 +890,16 @@ public sealed class FunctionGen
         return plan is null ? null : _c.Signature(plan.Decl, plan.Env).Ret;
     }
 
+    /// Why a call reaches no routine: a record type's name with its fields in order (they're named, `Point(x: 1)`), or
+    /// no routine of that name.
+    private string UnknownCall(CallExpr c)
+    {
+        var type = new TypeRef(c.Name, c.TypeArgs.Select(t => (TypeArg)new TypeArgType(t)).ToList(), c.Pos) { Path = c.Path };
+        return TryResolveOwner(type) is RecordType record
+            ? $"a record literal names its fields: {record.Name}({string.Join(", ", _c.Fields(record).Select(f => $"{f.Name}: ..."))})"
+            : $"unknown routine '{c.Name}'";
+    }
+
     private Val EvalAny(Expr e)
     {
         if (e is ImplicitCallExpr ic)
@@ -898,7 +908,7 @@ public sealed class FunctionGen
             throw Err(im.Pos, $"'.{im.Name}' needs a known variant type here; write the type: Type.{im.Name}");
         // A call to no routine at all says so, rather than that its type is unknown.
         if (e is CallExpr unknown && Infer(e) is null && PlanCall(e, null) is null)
-            throw Err(unknown.Pos, $"unknown routine '{unknown.Name}'");
+            throw Err(unknown.Pos, UnknownCall(unknown));
         if (e is RoutineRef overloaded && Infer(e) is null) return RoutineValue(overloaded, null);
         var t = Infer(e) ?? throw Err(e.Pos, "cannot infer the type of this expression; bind it with a type annotation");
         return Eval(e, t);
@@ -922,7 +932,7 @@ public sealed class FunctionGen
     /// one, so a type mismatch names it the way overload resolution does.
     private Val Eval(Expr e, DType expected, int argument = 0)
     {
-        e = AsStride(AsField(e));
+        e = AsStride(AsField(_c.AsRecordLit(e, _env)));
         Val v = e switch
         {
             IntLit i => IntConst(i.Value, i.Pos, expected, i.HexDigits),
@@ -1374,13 +1384,20 @@ public sealed class FunctionGen
     /// `{ a, b, c }` takes the type the value goes to.
     private Val EvalElementsLit(ArrayLit lit, DType expected)
     {
-        var t = lit.Type is null ? expected : Resolve(lit.Type);
-        if (lit.Type is null && t is RecordType { IsTuple: true } tuple) return EvalTupleLit(lit, tuple);
+        var t = expected;
+        if (t is RecordType { IsTuple: true } tuple)
+            return lit.IsTuple
+                ? EvalTupleLit(lit, tuple)
+                : throw Err(lit.Pos, $"a tuple is written in parentheses: ({string.Join(", ", tuple.Args.Select(_ => "..."))})");
+        if (lit.IsTuple && t is ArrayType or VectorType)
+            throw Err(lit.Pos, $"an {(t is ArrayType ? "Array" : "Vector")} is written in brackets: [a, b, ...]");
         var (elem, count, insert) = t switch
         {
             ArrayType a => (a.Elem, a.Count, "insertvalue"),
             VectorType v => (v.Elem, v.Count, "insertelement"),
-            _ => throw Err(lit.Pos, $"only an Array or a Vector takes its elements in order; a record names its fields: {t} {{ name: value }}"),
+            _ => throw Err(lit.Pos, lit.IsTuple
+                ? $"(a, b) is a tuple, and a {t} isn't one"
+                : $"only an Array or a Vector takes its elements in order; a record names its fields: {t}(name: value)"),
         };
         if (lit.Elements.Count != count)
             throw Err(lit.Pos, $"{t} needs {count} element(s), got {lit.Elements.Count}");
@@ -1403,7 +1420,7 @@ public sealed class FunctionGen
         return new Val(EmitTmp($"select i1 {c.Op}, {expected.Llvm} {a.Op}, {expected.Llvm} {b.Op}"), expected);
     }
 
-    /// `{ a, b }` where a tuple is expected: each item takes the type the tuple has in its place.
+    /// `(a, b)` where a tuple is expected: each item takes the type the tuple has in its place.
     private Val EvalTupleLit(ArrayLit lit, RecordType s)
     {
         if (s.Args.Count != lit.Elements.Count)
@@ -1632,6 +1649,9 @@ public sealed class FunctionGen
                 if (_blocks.ContainsKey(c.Name) && set.Count == 0)
                     throw Err(c.Pos, $"'{c.Name}' is a block; blocks are entered with jump/branch, not called");
                 if (set.Count == 0) return null;
+                if (c.WrittenTypeArgs is not null) throw Err(c.Pos, "call type arguments must be types");
+                if (c.ArgNames is not null)
+                    throw Err(c.Pos, $"'{c.Name}' is a routine, and its arguments are given in order, without names");
                 if (set.Count > 1)
                 {
                     var fit = ChooseOverload([.. set.Select(o => (o, new Compiler.TypeEnv(o.File)))], c.TypeArgs, c.Args, 0,
@@ -1843,16 +1863,18 @@ public sealed class FunctionGen
                 return pt is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } } or RecordType { Name: "Bytes" or "CStr" or "CWStr" }
                     ? null
                     : $"a string literal can't be a {pt}";
-            case ArrayLit { Type: null } a:
+            case ArrayLit a:
                 return pt switch
                 {
-                    ArrayType at when at.Count == a.Elements.Count => null,
-                    VectorType vt when vt.Count == a.Elements.Count => null,
-                    RecordType { IsTuple: true } tu when tu.Args.Count == a.Elements.Count => null,
-                    _ => $"{{ ... }} with {a.Elements.Count} element(s) can't be a {pt}",
+                    ArrayType at when !a.IsTuple && at.Count == a.Elements.Count => null,
+                    VectorType vt when !a.IsTuple && vt.Count == a.Elements.Count => null,
+                    RecordType { IsTuple: true } tu when a.IsTuple && tu.Args.Count == a.Elements.Count => null,
+                    _ => a.IsTuple
+                        ? $"a tuple of {a.Elements.Count} items can't be a {pt}"
+                        : $"[...] with {a.Elements.Count} element(s) can't be a {pt}",
                 };
             case RecordLit { Type: null }:
-                return pt is RecordType { IsTuple: false } ? null : $"{{ name: ... }} can't be a {pt}";
+                return pt is RecordType { IsTuple: false } ? null : $"(name: ...) can't be a {pt}";
             case ImplicitMemberExpr m:
                 return pt is VariantType v && v.CaseIndex(m.Name) >= 0 ? null : $"{pt} has no case '{m.Name}'";
             case ImplicitCallExpr ic:
@@ -1876,8 +1898,9 @@ public sealed class FunctionGen
         FloatLit => "a float literal",
         StrLit => "a string literal",
         NullLit => "null",
-        ArrayLit => "{ ... }",
-        RecordLit => "{ name: ... }",
+        ArrayLit { IsTuple: true } => "(...)",
+        ArrayLit => "[...]",
+        RecordLit => "(name: ...)",
         ImplicitMemberExpr m => $".{m.Name}",
         ImplicitCallExpr ic => $".{ic.Name}(...)",
         RoutineRef r => $"{r.Name}.to[Callable]()",
@@ -1914,12 +1937,13 @@ public sealed class FunctionGen
     }
 
     /// Whether an untyped literal can take `t`: an integer literal a number type, a float literal a float type, a
-    /// bare `{ a, b }` an Array, a Vector, or a tuple, a bare `{ x: a }` a record.
+    /// bare `[a, b]` an Array or a Vector, a bare `(a, b)` a tuple, a bare `(x: a)` a record.
     private static bool LiteralCanBe(Expr literal, DType? t) => literal switch
     {
         IntLit => t is IntType { IsNumber: true },
         FloatLit => t is FloatType,
-        ArrayLit => t is ArrayType or VectorType or RecordType { IsTuple: true },
+        ArrayLit { IsTuple: true } => t is RecordType { IsTuple: true },
+        ArrayLit => t is ArrayType or VectorType,
         RecordLit => t is RecordType,
         _ => t is not null,
     };
@@ -1947,8 +1971,8 @@ public sealed class FunctionGen
                 string call = m.Name + (m.TypeArgs.Count == 0 ? "" : $"<{string.Join(", ", m.TypeArgs)}>");
                 string fix = m.Receiver switch
                 {
-                    ArrayLit => "Array[T, COUNT] { ... }",
-                    RecordLit => "Type { ... }",
+                    ArrayLit => $"a : Array[T, COUNT] = [...], then a.{call}(...)",
+                    RecordLit => "Type(...)",
                     FloatLit => $"B64.{call}(...)",
                     _ => $"S64.{call}(...)",
                 };
@@ -2234,7 +2258,7 @@ public sealed class FunctionGen
         if (plan is null)
         {
             var c = (CallExpr)e;
-            throw Err(c.Pos, $"unknown routine '{c.Name}'");
+            throw Err(c.Pos, UnknownCall(c));
         }
         return EmitCall(plan);
     }

@@ -16,6 +16,9 @@ namespace Tessera;
 /// `<...>` list that follows a name directly becomes `[...]`, in code and in comments, never inside a string or a
 /// character literal. `<-` fills memory and stays.
 ///
+/// 0.5: literals are written `Point(x: 1)`, `(x: 1)`, `(a, b)` for a tuple and `[a, b]` for an Array or a Vector, and
+/// braces are gone.
+///
 /// 0.5: a routine's head lines are `local` (they were `shared`), and a slot that starts unfilled starts as `<- .hollow()`
 /// (`uninit` is gone).
 ///
@@ -135,7 +138,251 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)));
+        return Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))));
+    }
+
+    private sealed record Brace(int Open, bool Named, bool Tuple, int PrefixStart);
+
+    /// The text with every brace literal in its 0.5 spelling: a record `Point { x: 1 }` is `Point(x: 1)` and
+    /// `{ x: 1 }` is `(x: 1)`, a tuple `{ a, b }` is `(a, b)`, and an Array or a Vector `{ a, b }` (with or without
+    /// `Array[T, COUNT]` before it) is `[a, b]`. A literal is a tuple where the text says so: the value of a binding
+    /// or a slot typed `(A, B)`, or what `return(...)` gives back in a routine that returns `(A, B)`. Comments and
+    /// strings are left alone.
+    public static string Literals(string text)
+    {
+        var sb = new StringBuilder(text);
+        var stack = new Stack<Brace>();
+        bool routineSeen = false, returnsTuple = false;
+        int i = 0;
+        while (i < sb.Length)
+        {
+            char c = sb[i];
+            if (c == '/' && i + 1 < sb.Length && sb[i + 1] == '/')
+            {
+                while (i < sb.Length && sb[i] != '\n') i++;
+                continue;
+            }
+
+            if (c == '#')
+            {
+                // An attribute holds no literal, and its strings are LLVM or assembler text: skip it whole.
+                i = AttributeEnd(sb, i);
+                continue;
+            }
+
+            int skipped = SkipLiteral(sb, i, LineEnd(sb, i));
+            if (skipped != i)
+            {
+                if (sb[i] == '"')
+                {
+                    // The code in a string's `{...}` holes is rewritten too: `"{sum2({ 7, 8 })}"`.
+                    string literal = sb.ToString(i, skipped - i);
+                    string rewritten = LiteralsInHoles(literal);
+                    sb.Remove(i, literal.Length).Insert(i, rewritten);
+                    skipped = i + rewritten.Length;
+                }
+
+                i = skipped;
+                continue;
+            }
+
+            if (IsWord(sb, i, sb.Length, "routine"))
+            {
+                routineSeen = true;
+                i += "routine".Length;
+                continue;
+            }
+
+            if (c == '-' && i + 1 < sb.Length && sb[i + 1] == '>' && routineSeen)
+            {
+                int k = i + 2;
+                while (k < sb.Length && sb[k] == ' ') k++;
+                returnsTuple = k < sb.Length && sb[k] == '(';
+                routineSeen = false;
+                i += 2;
+                continue;
+            }
+
+            if (c == '{')
+            {
+                stack.Push(OpenBrace(sb, i, returnsTuple));
+                i++;
+                continue;
+            }
+
+            if (c == '}' && stack.Count > 0)
+            {
+                var open = stack.Pop();
+                CloseBrace(sb, open, i);
+                // The text before `i` may have shrunk: continue right after the new closing bracket.
+                i = Math.Min(i, sb.Length);
+                i = NextAfterClose(sb, open);
+                continue;
+            }
+
+            i++;
+        }
+
+        return sb.ToString();
+    }
+
+    /// The index past the attribute starting at the `#` at `i`: `#name(...)` to the end of its line, `#[...]` to its
+    /// closing bracket, over any lines.
+    private static int AttributeEnd(StringBuilder sb, int i)
+    {
+        if (i + 1 >= sb.Length || sb[i + 1] != '[') return LineEnd(sb, i);
+        int depth = 0;
+        for (int k = i + 1; k < sb.Length; k++)
+        {
+            int skipped = SkipLiteral(sb, k, LineEnd(sb, k));
+            if (skipped != k) { k = skipped - 1; continue; }
+            if (sb[k] == '[') depth++;
+            else if (sb[k] == ']' && --depth == 0) return k + 1;
+        }
+
+        return sb.Length;
+    }
+
+    /// A string literal with the literals in each `{...}` hole rewritten (`{{` is a brace).
+    private static string LiteralsInHoles(string literal)
+    {
+        var sb = new StringBuilder();
+        for (int j = 0; j < literal.Length; j++)
+        {
+            char c = literal[j];
+            if (c == '\\' && j + 1 < literal.Length)
+            {
+                sb.Append(c).Append(literal[j + 1]);
+                j++;
+                continue;
+            }
+
+            if (c != '{' || (j + 1 < literal.Length && literal[j + 1] == '{'))
+            {
+                sb.Append(c);
+                if (c == '{') { sb.Append('{'); j++; }
+                continue;
+            }
+
+            int depth = 0, k = j;
+            for (; k < literal.Length; k++)
+            {
+                if (literal[k] == '{') depth++;
+                else if (literal[k] == '}' && --depth == 0) break;
+            }
+
+            if (k >= literal.Length)
+            {
+                sb.Append(literal, j, literal.Length - j);
+                break;
+            }
+
+            // Only a hole holding a literal of its own changes: `"{sum2({ 7, 8 })}"`.
+            string hole = literal[(j + 1)..k];
+            sb.Append('{').Append(hole.Contains('{') ? Literals(hole) : hole).Append('}');
+            j = k;
+        }
+
+        return sb.ToString();
+    }
+
+    private static Brace OpenBrace(StringBuilder sb, int open, bool returnsTuple)
+    {
+        int k = open + 1;
+        while (k < sb.Length && char.IsWhiteSpace(sb[k])) k++;
+        int nameEnd = k;
+        while (nameEnd < sb.Length && (char.IsAsciiLetterOrDigit(sb[nameEnd]) || sb[nameEnd] == '_')) nameEnd++;
+        bool named = nameEnd > k && nameEnd < sb.Length && sb[nameEnd] == ':' && !(nameEnd + 1 < sb.Length && sb[nameEnd + 1] == ':');
+
+        // The type written before the brace, if any: `Point`, `Array[S64, 3]`, `Standard/Core/Pair[S64]`.
+        int p = open - 1;
+        while (p >= 0 && sb[p] == ' ') p--;
+        int prefixStart = -1;
+        if (p >= 0 && sb[p] == '`')
+        {
+            // A backtick name: `` `Core.Pair` { a: 1 } ``.
+            int q = p - 1;
+            while (q >= 0 && sb[q] != '`' && sb[q] != '\n') q--;
+            if (q >= 0 && sb[q] == '`') prefixStart = q;
+        }
+        else if (p >= 0 && (char.IsAsciiLetterOrDigit(sb[p]) || sb[p] is '_' or ']'))
+        {
+            int q = p;
+            if (sb[q] == ']')
+            {
+                int depth = 0;
+                for (; q >= 0; q--)
+                {
+                    if (sb[q] == ']') depth++;
+                    else if (sb[q] == '[' && --depth == 0) break;
+                }
+                q--;
+            }
+            while (q >= 0 && (char.IsAsciiLetterOrDigit(sb[q]) || sb[q] is '_' or '/')) q--;
+            prefixStart = q + 1;
+            if (prefixStart > p || !char.IsAsciiLetterUpper(sb[prefixStart])) prefixStart = -1;
+        }
+
+        // A type other than an Array or a Vector before the brace makes it a record, `AllocFailed {}` included.
+        if (prefixStart >= 0 && !Regex.IsMatch(sb.ToString(prefixStart, open - prefixStart), @"^(\w+/)*(Array|Vector)\["))
+            named = true;
+
+        bool tuple = false;
+        if (!named && prefixStart < 0)
+        {
+            int lineStart = open;
+            while (lineStart > 0 && sb[lineStart - 1] != '\n') lineStart--;
+            string before = sb.ToString(lineStart, open - lineStart);
+            tuple = Regex.IsMatch(before, @":\s*@?\(.*\)\s*(=|<-)\s*$")
+                    || (returnsTuple && Regex.IsMatch(before, @"return\(\s*$"));
+        }
+
+        return new Brace(open, named, tuple, prefixStart);
+    }
+
+    /// Rewrites the literal opened by `open` and closed at `close`, last character first so the earlier positions hold.
+    private static void CloseBrace(StringBuilder sb, Brace open, int close)
+    {
+        bool array = !open.Named && !open.Tuple;
+        char closing = array ? ']' : ')';
+        char opening = array ? '[' : '(';
+        // `{ a }` loses its inner padding: `[a]`.
+        int end = close;
+        if (end - 1 > open.Open && sb[end - 1] == ' ') { sb.Remove(end - 1, 1); end--; }
+        sb[end] = closing;
+        int start = open.Open;
+        if (start + 1 < end && sb[start + 1] == ' ') sb.Remove(start + 1, 1);
+        sb[start] = opening;
+        if (open.PrefixStart >= 0)
+        {
+            int gap = start;
+            while (gap > open.PrefixStart && sb[gap - 1] == ' ') gap--;
+            if (array)
+            {
+                // An Array or a Vector takes its type from where the value goes: `Array[S64, 2] { 1, 2 }` is `[1, 2]`.
+                sb.Remove(open.PrefixStart, start - open.PrefixStart);
+            }
+            else
+            {
+                sb.Remove(gap, start - gap);
+            }
+        }
+    }
+
+    /// Where scanning goes on after a literal was rewritten: right after its closing bracket.
+    private static int NextAfterClose(StringBuilder sb, Brace open)
+    {
+        int depth = 0;
+        int k = open.PrefixStart >= 0 ? open.PrefixStart : open.Open;
+        for (; k < sb.Length; k++)
+        {
+            int skipped = SkipLiteral(sb, k, LineEnd(sb, k));
+            if (skipped != k) { k = skipped - 1; continue; }
+            if (sb[k] is '(' or '[') depth++;
+            else if (sb[k] is ')' or ']' && --depth == 0) return k + 1;
+        }
+
+        return sb.Length;
     }
 
     private static readonly Regex SharedLine = new(@"^(\s*)shared(\s+[A-Za-z_`])", RegexOptions.Compiled | RegexOptions.Multiline);
@@ -146,6 +393,8 @@ public static class Migrate
     /// (`<- uninit`) starting as `<- .hollow()`, all zero.
     public static string LocalAndHollow(string text) =>
         Uninit.Replace(SharedLine.Replace(text, "$1local$2"), "<-$1.hollow()");
+
+    private static readonly Regex KeywordLocal = new(@"^\s*local\s+[A-Za-z_`]\w*`?\s*:", RegexOptions.Compiled);
 
     private static readonly Regex NewKeyword = new(@"(?<![\w`.])(and|or|is|as|todo|local)(?![\w`]|\[|\()", RegexOptions.Compiled);
 
@@ -159,6 +408,8 @@ public static class Migrate
         {
             string line = lines[i];
             if (line.TrimStart().StartsWith("//", StringComparison.Ordinal)) continue;
+            // Already 0.5: a routine's head line (`local x : T = v`) and a block not written yet (`todo`).
+            if (KeywordLocal.IsMatch(line) || line.Trim() == "todo") continue;
             var sb = new StringBuilder(line);
             int comment = CommentStart(sb, 0, sb.Length);
             var result = new StringBuilder();

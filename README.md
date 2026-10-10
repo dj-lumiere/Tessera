@@ -41,13 +41,13 @@ routine two_sum(list: @S32, count: USize, target: S32) -> Option[(USize, USize)]
         left_val  : S32 = list.stride(left_idx).load()
         right_val : S32 = list.stride(right_idx).load()
         branch left_val.add(right_val).eq(target)
-            ? return(.Present({ left_idx, right_idx }))
+            ? return(.Present([left_idx, right_idx]))
             : search_right(left_idx, right_idx.add(1))
 ```
 
 Two blocks make the two loops of an O(n²) search. Each loop's state travels as block parameters, `continue` goes on
 with the next line when the inner loop isn't done, and the numbers come as a pointer and a count: `stride` is the
-address of one, read with an explicit `load`. The answer is an `Option` of a tuple, built with `{ ... }` from where
+address of one, read with an explicit `load`. The answer is an `Option` of a tuple, built with `(...)` from where
 it goes.
 
 > **Early alpha.** The language is still changing, and the builder works but is incomplete. Every commit runs the

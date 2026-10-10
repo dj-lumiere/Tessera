@@ -224,6 +224,12 @@ public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Ar
 {
     /// The module of a qualified call: `Standard/Format` in `Standard/Format/write_str(...)`.
     public string? Path { get; init; }
+
+    /// Each argument's name where the call names them (`Point(x: 1, y: 2)`), else null.
+    public List<string>? ArgNames { get; init; }
+
+    /// The generic arguments as written when one is a number (`Bits[8](...)`), which only a type takes.
+    public List<TypeArg>? WrittenTypeArgs { get; init; }
 }
 
 /// `Type.name(args)` — a call through a type's namespace: `S64.add(a, b)`, `Option[T].absent()`, `K.hash(k)`.
@@ -270,15 +276,14 @@ public sealed record ClaimExpr(Pos Pos) : Expr(Pos)
     public Expr? Contents { get; init; }
 }
 
-/// `Type { field: value, ... }`, or `{ field: value, ... }` typed by where the value goes (Type is null).
+/// `Type(field: value)`, or `(field: value)` typed by where the value goes (Type is null).
 public sealed record RecordLit(TypeRef? Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);
 
-/// `[a, b, c]` — the elements of `Array[T, COUNT].from([...])` or of a preset array.
-/// `Array[T, COUNT] { a, b, c }` or `Vector[T, LANES] { a, b, c }`, or `{ a, b, c }` typed by where the value goes
-/// (Type is null).
+/// `[a, b, c]`, an Array or a Vector, or `(a, b)`, a tuple: elements in order, typed by where the value goes.
 public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
 {
-    public TypeRef? Type { get; init; }
+    /// `(a, b)`: a tuple, where `[a, b]` is an Array or a Vector.
+    public bool IsTuple { get; init; }
 }
 
 // ── Terminators ─────────────────────────────────────────────────────────────

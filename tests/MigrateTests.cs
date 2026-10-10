@@ -78,7 +78,7 @@ public class MigrateTests
         "x : U64 = Standard/Format/width(Standard/Core/PI)  // see Standard/Format")]
     [InlineData("define Numbers = Standard::Collections::List<S64>", "define Numbers = Standard/Collections/List[S64]")]
     [InlineData("Out.write(\"Standard::Os\")", "Out.write(\"Standard::Os\")")]
-    [InlineData("p : (S64, S64) = { a, b }  // a :: b", "p : (S64, S64) = { a, b }  // a :: b")]
+    [InlineData("p : (S64, S64) = { a, b }  // a :: b", "p : (S64, S64) = (a, b)  // a :: b")]
     public void Writes_module_paths_with_slashes(string before, string after)
     {
         Assert.Equal(after, Migrate.Rewrite(before));

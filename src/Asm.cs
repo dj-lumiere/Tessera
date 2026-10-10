@@ -602,8 +602,8 @@ internal sealed class AsmLowering
         if (rt is VoidType) throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns nothing: return()");
         if (rt is RecordType { IsTuple: true } tuple)
         {
-            if (ret.Value is not ArrayLit { Type: null } lit || lit.Elements.Count != tuple.Args.Count)
-                throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns {rt}: name {tuple.Args.Count} registers, return({{ R0, R2 }})");
+            if (ret.Value is not ArrayLit { IsTuple: true } lit || lit.Elements.Count != tuple.Args.Count)
+                throw new CompileError(ret.Pos, $"'{_r.DisplayName}' returns {rt}: name {tuple.Args.Count} registers, return((R0, R2))");
             return lit.Elements.Select((e, i) => ResultItem(e, tuple.Args[i])).ToList();
         }
         return [ResultItem(ret.Value, rt)];
@@ -866,7 +866,7 @@ internal sealed class AsmLowering
                 return ConditionOperand(e);
             case NsCallExpr or MethodCallExpr:
                 return Memory(e, t);
-            case ArrayLit { Type: null } list:
+            case ArrayLit { IsTuple: false } list:
                 return RegisterList(list, t);
             default:
                 throw new CompileError(e.Pos, "an operand is a register, a parameter, an integer literal or a memory operand");

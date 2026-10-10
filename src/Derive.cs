@@ -218,17 +218,17 @@ public static class Derive
         if (constraints.Count > 0) sb.Append($"require {string.Join(", ", constraints)}\n");
     }
 
-    /// `Point { x: 1, name: "a" }`, each field diagnosed: inside a record, a string keeps its quotes either way. A
+    /// `Point(x: 1, name: "a")`, each field diagnosed: inside a record, a string keeps its quotes either way. A
     /// pointer field writes its address (`next: 0x7ffd5e8c1a40`): a pointer isn't Diagnosable, so the derived routine
     /// says which side it means, `to[Addr]()`, as a hand-written one would.
     private static void WriteBody(StringBuilder sb, RecordDecl r)
     {
         sb.Append("    block entry()\n");
-        if (r.Fields.Count == 0) sb.Append($"        Standard/Format/write_str(out, \"{r.Name} {{}}\")\n");
+        if (r.Fields.Count == 0) sb.Append($"        Standard/Format/write_str(out, \"{r.Name}()\")\n");
         for (int i = 0; i < r.Fields.Count; i++)
         {
             var f = r.Fields[i];
-            string before = i == 0 ? $"{r.Name} {{ " : ", ";
+            string before = i == 0 ? $"{r.Name}(" : ", ";
             string value = $"f{i}";
             sb.Append($"        Standard/Format/write_str(out, \"{before}{f.Name}: \")\n");
             sb.Append(f.Type.Name == "Ptr"
@@ -236,7 +236,7 @@ public static class Derive
                 : $"        {value} : {f.Type} = me.{f.Name}\n");
             sb.Append($"        {value}.diagnose_into(out)\n");
         }
-        if (r.Fields.Count > 0) sb.Append("        Standard/Format/write_str(out, \" }\")\n");
+        if (r.Fields.Count > 0) sb.Append("        Standard/Format/write_str(out, \")\")\n");
         sb.Append("        return()\n");
     }
 

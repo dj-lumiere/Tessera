@@ -118,7 +118,7 @@ public sealed partial class Compiler
 
     private ConstVal Fold(Expr e, DType? hint, TypeEnv env)
     {
-        switch (e)
+        switch (AsRecordLit(e, env))
         {
             case IntLit il:
                 if (hint is IntType it)
