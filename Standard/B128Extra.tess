@@ -177,7 +177,7 @@ require LIMBS: USize
             : clear_one(i)
 
     block clear_one(i: USize)
-        me.limbs.setitem(i, 0)
+        me.limbs.setitem(index: i, value: 0)
         jump clear(i.add(1))
 
     // row i adds a[i] × b at limb i
@@ -205,12 +205,12 @@ require LIMBS: USize
         limb: U64 = me.limbs.getitem(at)
         product: U128 = a_limb.mul_wide(b_limb)
         sum: U128 = product.add(limb.to[U128]()).add(carry.peek())
-        me.limbs.setitem(at, sum.to_wrap[U64]())
+        me.limbs.setitem(index: at, value: sum.to_wrap[U64]())
         sum.shr(64).poke_into(carry)
         jump column(i, j.add(1), a_limb)
 
     block row_end(i: USize)
-        me.limbs.setitem(i.add(b_count), carry.peek().to[U64]())
+        me.limbs.setitem(index: i.add(b_count), value: carry.peek().to[U64]())
         jump row(i.add(1))
 
     block finish()
@@ -298,7 +298,7 @@ routine big_quotient_to_b128(num: @BigNat[24], den: @BigNat[24], scale: S64, neg
 
     block divide()
         claim scratch: @BigNat[24] <- .hollow()
-        q: U128 = num.div_small(den, scratch, 127)
+        q: U128 = num.div_small(divisor: den, scratch, bits: 127)
         sticky: Bool = num.is_zero().bitnot()
         sig: U128 = q.bitor(sticky.to[U128]())
         quotient_e: S64 = scale.sub(shift)
@@ -329,7 +329,7 @@ routine big_trig_series(out: @BigNat[24], u: @BigNat[24], j0: U64) -> Void
 
     // term ← term × u / (j (j + 1)), and the signs alternate, starting with minus
     block next(subtract: Bool)
-        product.set_product(term, u)
+        product.set_product(a: term, b: u)
         product.shr_round_even(PI_FIXED_BITS.to[USize]())
         term.copy_from(product)
         divisor: U64 = j.peek().mul(j.peek().add(1))
@@ -392,15 +392,15 @@ routine b128_pi_trig_exact(d: B128, pick: PiPick) -> B128
         claim u: @BigNat[24] <- .hollow()
         claim s: @BigNat[24] <- .hollow()
         m.set(p.sig)
-        t.set_product(pi, m)
+        t.set_product(a: pi, b: m)
         // θ in fixed point (for u only, where its relative accuracy doesn't matter)
         theta.copy_from(t)
         theta.shr_round_even(113.sub(p.exponent).to[USize]())
-        u.set_product(theta, theta)
+        u.set_product(a: theta, b: theta)
         u.shr_round_even(PI_FIXED_BITS.to[USize]())
-        big_trig_series(s, u, 2)
-        big_trig_series(c, u, 1)
-        sin.set_product(t, s)
+        big_trig_series(out: s, u, j0: 2)
+        big_trig_series(out: c, u, j0: 1)
+        sin.set_product(a: t, b: s)
         sig_e: S64 = p.exponent.sub(113)
         sin_e: S64 = sig_e.sub(PI_FIXED_BITS).sub(PI_FIXED_BITS)
         cos_e: S64 = 0.sub(PI_FIXED_BITS)
@@ -413,8 +413,8 @@ routine b128_pi_trig_exact(d: B128, pick: PiPick) -> B128
         over_sin: Bool = pick.over_sin
         when
             tan => divide(sin_e, cos_e, negative)
-            over_sin => return(big_to_b128(sin, sin_e, negative))
-            else => return(big_to_b128(c, cos_e, negative))
+            over_sin => return(big_to_b128(n: sin, e: sin_e, negative))
+            else => return(big_to_b128(n: c, e: cos_e, negative))
 
     block divide(sin_e: S64, cos_e: S64, negative: Bool)
         over_sin: Bool = pick.over_sin
@@ -423,11 +423,11 @@ routine b128_pi_trig_exact(d: B128, pick: PiPick) -> B128
             : cotangent(sin_e, cos_e, negative)
 
     block tangent(sin_e: S64, cos_e: S64, negative: Bool)
-        r: B128 = big_quotient_to_b128(sin, c, sin_e.sub(cos_e), negative)
+        r: B128 = big_quotient_to_b128(num: sin, den: c, scale: sin_e.sub(cos_e), negative)
         return(r)
 
     block cotangent(sin_e: S64, cos_e: S64, negative: Bool)
-        r: B128 = big_quotient_to_b128(c, sin, cos_e.sub(sin_e), negative)
+        r: B128 = big_quotient_to_b128(num: c, den: sin, scale: cos_e.sub(sin_e), negative)
         return(r)
 
 // -- the two tiers -------------------------------------------------------------
@@ -439,7 +439,7 @@ routine b128_pi_trig_exact(d: B128, pick: PiPick) -> B128
 /// :param exact: True skips the fast tier (the tests use it to check the exact tier on its own).
 /// :returns: The correctly rounded result.
 routine b128_pi_trig_general(red: PiReduced, kind: TrigKind, exact: Bool) -> B128
-    local pick: PiPick = b128_pi_pick(red.quadrant, kind)
+    local pick: PiPick = b128_pi_pick(quadrant: red.quadrant, kind)
 
     block entry()
         branch exact
@@ -447,14 +447,14 @@ routine b128_pi_trig_general(red: PiReduced, kind: TrigKind, exact: Bool) -> B12
             : fast()
 
     block fast()
-        w: B128Extended = wide_pi_trig(red.d, pick)
-        rounded: WideRounding = wide_round_within(w, B128_PI_BAND)
+        w: B128Extended = wide_pi_trig(d: red.d, pick)
+        rounded: WideRounding = wide_round_within(u: w, k: B128_PI_BAND)
         branch rounded.ok
             ? return(rounded.value)
             : slow()
 
     block slow()
-        r: B128 = b128_pi_trig_exact(red.d, pick)
+        r: B128 = b128_pi_trig_exact(d: red.d, pick)
         return(r)
 
 // -- sin_pi, cos_pi, tan_pi ----------------------------------------------------
@@ -464,7 +464,7 @@ routine b128_pi_trig_general(red: PiReduced, kind: TrigKind, exact: Bool) -> B12
 /// :returns: sin(π `me`).
 routine B128.sin_pi(me: Me) -> Me
     block entry()
-        r: Me = b128_sin_pi(me, false)
+        r: Me = b128_sin_pi(x: me, exact: false)
         return(r)
 
 /// cos(π me), correctly rounded: ±1 at the integers, +0 at the half-integers, NaN for infinities. A NaN
@@ -472,7 +472,7 @@ routine B128.sin_pi(me: Me) -> Me
 /// :returns: cos(π `me`).
 routine B128.cos_pi(me: Me) -> Me
     block entry()
-        r: Me = b128_cos_pi(me, false)
+        r: Me = b128_cos_pi(x: me, exact: false)
         return(r)
 
 /// tan(π me), correctly rounded. At an integer n it is +0 for a positive even n or a negative odd one and -0
@@ -481,7 +481,7 @@ routine B128.cos_pi(me: Me) -> Me
 /// :returns: tan(π `me`).
 routine B128.tan_pi(me: Me) -> Me
     block entry()
-        r: Me = b128_tan_pi(me, false)
+        r: Me = b128_tan_pi(x: me, exact: false)
         return(r)
 
 /// sin(π x), correctly rounded, as {B128.sin_pi}.
@@ -517,7 +517,7 @@ routine b128_sin_pi(x: B128, exact: Bool) -> B128
         return(r)
 
     block general(red: PiReduced)
-        r: B128 = b128_pi_trig_general(red, TrigKind.SIN, exact)
+        r: B128 = b128_pi_trig_general(red, kind: TrigKind.SIN, exact)
         return(r)
 
 /// cos(π x), correctly rounded, as {B128.cos_pi}.
@@ -551,7 +551,7 @@ routine b128_cos_pi(x: B128, exact: Bool) -> B128
         branch half
             ? return(zero)
             : continue
-        r: B128 = b128_pi_trig_general(red, TrigKind.COS, exact)
+        r: B128 = b128_pi_trig_general(red, kind: TrigKind.COS, exact)
         return(r)
 
 /// tan(π x), correctly rounded, as {B128.tan_pi}.
@@ -608,5 +608,5 @@ routine b128_tan_pi(x: B128, exact: Bool) -> B128
         return(r)
 
     block general(red: PiReduced)
-        r: B128 = b128_pi_trig_general(red, TrigKind.TAN, exact)
+        r: B128 = b128_pi_trig_general(red, kind: TrigKind.TAN, exact)
         return(r)

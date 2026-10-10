@@ -1,10 +1,9 @@
 namespace Tessera;
 
-/// The style warning for long parameter lists. Arguments are positional, so a call with many of them reads as a row of
-/// values whose roles the reader has to look up. A routine with MaxParameters or more parameters (`me` not counted)
-/// takes a record instead: one record parameter, or a record plus the few parameters that don't belong to the group,
-/// so the count drops below MaxParameters. A record literal names its fields, so the call site reads by name. The
-/// allocator counts like any other parameter (it may stay a separate last parameter beside the record).
+/// The style warning for long parameter lists. Values that belong together travel better as one: a routine with
+/// MaxParameters or more parameters (`me` not counted) takes a record instead, one record parameter or a record plus
+/// the few parameters that don't belong to the group, so the count drops below MaxParameters. The allocator counts
+/// like any other parameter (it may stay a separate last parameter beside the record).
 ///
 /// Exempt: an `#external` declaration, an `#export` routine, and a C callback with a `#callconv` (their signature is
 /// a C ABI), a routine a generator

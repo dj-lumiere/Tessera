@@ -71,7 +71,7 @@ routine iteration_hash(set: @SortedSet[S64]) -> S64
     block next(hash: S64)
         item: Option[S64] = iter.next()
         when item
-            .Present(key) => next(mix(hash, key))
+            .Present(key) => next(mix(hash, value: key))
             .Absent => return(hash)
 
 // Folds the elements at ranks 0, count / 3, count / 2, and count - 1 (0 for an empty set).
@@ -89,18 +89,20 @@ routine rank_hash(set: @SortedSet[S64]) -> S64
         third: S64 = set.get_by_rank(count.div(3))
         half: S64 = set.get_by_rank(count.div(2))
         last: S64 = set.get_by_rank(count.sub(1))
-        hash: S64 = mix(mix(mix(mix(0, first), third), half), last)
+        hash: S64 = mix(
+            hash: mix(hash: mix(hash: mix(hash: 0, value: first), value: third), value: half),
+            value: last)
         return(hash)
 
 routine checkpoint(out: @BufWriter[Out], set: @SortedSet[S64], at: Checkpoint) -> Void
     block entry()
         out.write("phase {at.phase}")
-        labeled(out, "op", at.op.to[S64]())
+        labeled(out, label: "op", value: at.op.to[S64]())
         size: USize = set.count()
-        labeled(out, "length", size.to[S64]())
-        labeled(out, "results", at.results)
-        labeled(out, "ranks", rank_hash(set))
-        labeled(out, "iteration", iteration_hash(set))
+        labeled(out, label: "length", value: size.to[S64]())
+        labeled(out, label: "results", value: at.results)
+        labeled(out, label: "ranks", value: rank_hash(set))
+        labeled(out, label: "iteration", value: iteration_hash(set))
         out.write("\n")
         return()
 
@@ -152,14 +154,14 @@ routine run_phase(harness: Harness, set: @SortedSet[S64], phase: Phase, results:
 
     block remove_key(op: USize, checksum: S64, key: S64)
         removed: Bool = set.remove(key)
-        jump record(op, checksum, mix(key, removed.to[S64]()))
+        jump record(op, checksum, mix(hash: key, value: removed.to[S64]()))
 
     block lookup(op: USize, checksum: S64, key: S64)
         found: Bool = set.contains(key)
         jump record(op, checksum, found.to[S64]())
 
     block record(op: USize, checksum: S64, result: S64)
-        mixed: S64 = mix(checksum, result)
+        mixed: S64 = mix(hash: checksum, value: result)
         op_next: USize = op.add(1)
         report: Bool = op_next.mod(500).eq(0)
         branch report
@@ -167,7 +169,8 @@ routine run_phase(harness: Harness, set: @SortedSet[S64], phase: Phase, results:
             : next(op_next, mixed)
 
     block report(op: USize, checksum: S64)
-        checkpoint(harness.out, set, Checkpoint(phase: phase.number, op: op, results: checksum))
+        checkpoint(out: harness.out, set,
+            at: Checkpoint(phase: phase.number, op: op, results: checksum))
         jump next(op, checksum)
 
 // Adds from's elements to to by rank, starting from the middle, so to is built in a different order.
@@ -205,28 +208,29 @@ routine start() -> Void
 
         harness: Harness = Harness(out: out, rng: rng)
         r1: S64 = run_phase(harness, set,
-            Phase(number: 1, ops: 3000, keys: 64, adds: 5, by_rank: false), 0)
+            phase: Phase(number: 1, ops: 3000, keys: 64, adds: 5, by_rank: false), results: 0)
         r2: S64 = run_phase(harness, set,
-            Phase(number: 2, ops: 12000, keys: 20000, adds: 5, by_rank: false), r1)
+            phase: Phase(number: 2, ops: 12000, keys: 20000, adds: 5, by_rank: false), results: r1)
         r3: S64 = run_phase(harness, set,
-            Phase(number: 3, ops: 9000, keys: 20000, adds: 1, by_rank: true), r2)
+            phase: Phase(number: 3, ops: 9000, keys: 20000, adds: 1, by_rank: true), results: r2)
 
         claim copied: @SortedSet[S64] <- .construct(alloc)
-        report_eq(out, "empty copy equal", set.peek().eq(copied.peek()))
-        copy_rotated(set, copied)
-        report_eq(out, "rotated copy equal", set.peek().eq(copied.peek()))
-        report_eq(out, "rotated copy same order", iteration_hash(set).eq(iteration_hash(copied)))
+        report_eq(out, label: "empty copy equal", equal: set.peek().eq(copied.peek()))
+        copy_rotated(from: set, to: copied)
+        report_eq(out, label: "rotated copy equal", equal: set.peek().eq(copied.peek()))
+        report_eq(out, label: "rotated copy same order",
+            equal: iteration_hash(set).eq(iteration_hash(copied)))
         copied.add(-1)
-        report_eq(out, "extra element equal", set.peek().eq(copied.peek()))
+        report_eq(out, label: "extra element equal", equal: set.peek().eq(copied.peek()))
         copied.remove(-1)
-        report_eq(out, "extra element removed equal", set.peek().eq(copied.peek()))
+        report_eq(out, label: "extra element removed equal", equal: set.peek().eq(copied.peek()))
         size: USize = set.count()
         last: S64 = set.get_by_rank(size.sub(1))
         copied.remove(last)
         copied.add(last.add(1))
-        report_eq(out, "changed element equal", set.peek().eq(copied.peek()))
+        report_eq(out, label: "changed element equal", equal: set.peek().eq(copied.peek()))
         copied.destruct()
         set.destruct()
-        report_eq(out, "freed is empty", set.is_empty())
+        report_eq(out, label: "freed is empty", equal: set.is_empty())
         out.flush()
         return()

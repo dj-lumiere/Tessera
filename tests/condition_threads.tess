@@ -220,7 +220,7 @@ routine hand_tokens(gate: @Gate) -> Bool
 
     block entry()
         gate.lock.lock()
-        await_waiting(gate, GATE_THREADS)
+        await_waiting(gate, count: GATE_THREADS)
         jump give(1)
 
     block give(round: USize)
@@ -229,7 +229,7 @@ routine hand_tokens(gate: @Gate) -> Bool
             : continue
         gate.tokens.poke(1)
         gate.cond.cast_one()
-        await_passed(gate, round)
+        await_passed(gate, count: round)
         through: USize = gate.passed.peek()
         one: Bool = through.eq(round).bitand(gate.tokens.peek().eq(0))
         exact.peek().bitand(one).poke_into(exact)
@@ -243,7 +243,7 @@ routine hand_tokens(gate: @Gate) -> Bool
 routine open_gate(gate: @Gate) -> Void
     block entry()
         gate.lock.lock()
-        await_waiting(gate, GATE_THREADS)
+        await_waiting(gate, count: GATE_THREADS)
         gate.open.poke(true)
         gate.cond.cast_all()
         gate.lock.unlock()
@@ -275,7 +275,7 @@ routine wait_never(timed: @Timed) -> Void
         jump again(deadline)
 
     block again(deadline: U64)
-        in_time: Bool = timed.cond.wait_until(timed.lock, deadline)
+        in_time: Bool = timed.cond.wait_until(mutex: timed.lock, deadline_ns: deadline)
         branch in_time
             ? again(deadline)
             : over(deadline)
@@ -311,7 +311,7 @@ routine wait_ready(timed: @Timed) -> Void
             : wait(deadline)
 
     block wait(deadline: U64)
-        in_time: Bool = timed.cond.wait_until(timed.lock, deadline)
+        in_time: Bool = timed.cond.wait_until(mutex: timed.lock, deadline_ns: deadline)
         branch in_time
             ? look(deadline)
             : late()
@@ -387,8 +387,8 @@ require T: typename
         branch i.ge(end)
             ? return()
             : continue
-        t: Thread = Thread.spawn(body, state, alloc)
-        threads.setitem(i, t)
+        t: Thread = Thread.spawn(entry: body, arg: state, alloc)
+        threads.setitem(index: i, value: t)
         jump next(i.add(1))
 
 /// Joins the threads in `threads` below `count`.
@@ -409,33 +409,33 @@ routine start() -> Void
         claim threads: @Array[Thread, 8] <- .hollow()
         claim box: @Mailbox <- Mailbox(lock: .construct(), not_full: .construct(),
             not_empty: .construct(), full: false, value: 0)
-        producer: Thread = Thread.spawn(produce.to[Callable](), box, alloc)
+        producer: Thread = Thread.spawn(entry: produce.to[Callable](), arg: box, alloc)
         sum, in_order = consume(box)
         producer.join()
         Out.write("handoff: {ROUNDS} values, sum {sum}, in order {in_order}\n")
         claim tokens: @Gate <- Gate(lock: .construct(), cond: .construct(), progress: .construct(),
             waiting: 0, tokens: 0, passed: 0, open: false)
-        spawn_many(take_token.to[Callable](), tokens,
-            ThreadSlots(threads: threads, first: 0, count: GATE_THREADS), alloc)
+        spawn_many(body: take_token.to[Callable](), state: tokens,
+            slots: ThreadSlots(threads: threads, first: 0, count: GATE_THREADS), alloc)
         exact: Bool = hand_tokens(tokens)
-        join_many(threads, GATE_THREADS)
+        join_many(threads, count: GATE_THREADS)
         Out.write("wake_one: {GATE_THREADS} tokens, one thread through for each: {exact}\n")
         claim gate: @Gate <- Gate(lock: .construct(), cond: .construct(), progress: .construct(),
             waiting: 0, tokens: 0, passed: 0, open: false)
-        spawn_many(pass_open.to[Callable](), gate,
-            ThreadSlots(threads: threads, first: 0, count: GATE_THREADS), alloc)
+        spawn_many(body: pass_open.to[Callable](), state: gate,
+            slots: ThreadSlots(threads: threads, first: 0, count: GATE_THREADS), alloc)
         open_gate(gate)
-        join_many(threads, GATE_THREADS)
+        join_many(threads, count: GATE_THREADS)
         Out.write("wake_all: {gate.passed.peek()} of {GATE_THREADS} through after one wake\n")
         claim timed: @Timed <- Timed(lock: .construct(), cond: .construct(), progress: .construct(),
             waiting: 0, ready: false, stop: false, timed_out: 0, in_time: 0, wrong: 0)
-        waker: Thread = Thread.spawn(wake_everyone.to[Callable](), timed, alloc)
-        spawn_many(wait_never.to[Callable](), timed,
-            ThreadSlots(threads: threads, first: 0, count: TIMED_THREADS), alloc)
-        spawn_many(wait_ready.to[Callable](), timed,
-            ThreadSlots(threads: threads, first: TIMED_THREADS, count: TIMED_THREADS), alloc)
+        waker: Thread = Thread.spawn(entry: wake_everyone.to[Callable](), arg: timed, alloc)
+        spawn_many(body: wait_never.to[Callable](), state: timed,
+            slots: ThreadSlots(threads: threads, first: 0, count: TIMED_THREADS), alloc)
+        spawn_many(body: wait_ready.to[Callable](), state: timed,
+            slots: ThreadSlots(threads: threads, first: TIMED_THREADS, count: TIMED_THREADS), alloc)
         make_ready(timed)
-        join_many(threads, TIMED_THREADS.mul(2))
+        join_many(threads, count: TIMED_THREADS.mul(2))
         timed.lock.lock()
         timed.stop.poke(true)
         timed.lock.unlock()

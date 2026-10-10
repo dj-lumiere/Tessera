@@ -93,7 +93,7 @@ public sealed record RoutineDecl(
     public List<TypeRef> Fixed { get; init; } = [];
 
     /// The head's `local` lines, top to bottom: values and slots every block sees, made once when the routine starts,
-    /// before `entry`. `local x : T = v` is a BindStmt of v, and `local p : @T <- v` a BindStmt of
+    /// before `entry`. `local x: T = v` is a BindStmt of v, and `local p: @T <- v` a BindStmt of
     /// a ClaimExpr, the shapes a block's binding and claim have. Empty for a routine without a body.
     public List<BindStmt> Shared { get; init; } = [];
 
@@ -101,7 +101,7 @@ public sealed record RoutineDecl(
     public Pos? Source { get; init; }
 
     public string DisplayName => (Owner is null ? Name : $"{Owner}.{Name}")
-        + (Fixed.Count == 0 ? "" : $"<{string.Join(", ", Fixed)}>");
+        + (Fixed.Count == 0 ? "" : $"[{string.Join(", ", Fixed)}]");
 }
 
 public sealed record FieldDecl(string Name, TypeRef Type, List<Attribute> Attributes, Pos Pos, bool IsPrivate = false,
@@ -118,7 +118,7 @@ public sealed record ChoiceDecl(
     string File, List<Attribute> Attributes, string Name, TypeRef Underlying, List<(string Name, Expr Value)> Members,
     Pos Pos) : Decl(File, Attributes, Pos);
 
-/// `variant Expr` and its cases, each a name and at most one payload type: `Number : S64`, `Empty`.
+/// `variant Expr` and its cases, each a name and at most one payload type: `Number: S64`, `Empty`.
 public sealed record VariantDecl(
     string File, List<Attribute> Attributes, string Name, List<string> TypeParams, List<Clause> Clauses,
     List<VariantCase> Cases, Pos Pos) : Decl(File, Attributes, Pos);
@@ -225,8 +225,9 @@ public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Ar
     /// The module of a qualified call: `Standard/Format` in `Standard/Format/write_str(...)`.
     public string? Path { get; init; }
 
-    /// Each argument's name where the call names them (`Point(x: 1, y: 2)`), else null.
-    public List<string>? ArgNames { get; init; }
+    /// Each argument's name where the call names it (`Point(x: 1, y: 2)`, null for an argument written without
+    /// one), or null when no argument is named.
+    public List<string?>? ArgNames { get; init; }
 
     /// The generic arguments as written when one is a number (`Bits[8](...)`), which only a type takes.
     public List<TypeArg>? WrittenTypeArgs { get; init; }
@@ -235,10 +236,18 @@ public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Ar
 /// `Type.name(args)` — a call through a type's namespace: `S64.add(a, b)`, `Option[T].absent()`, `K.hash(k)`.
 /// If `Owner` turns out to name a preset rather than a type, this is a method call on that preset.
 public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
-    : Expr(Pos);
+    : Expr(Pos)
+{
+    /// Each argument's name where the call names it, as on CallExpr.
+    public List<string?>? ArgNames { get; init; }
+}
 
 /// `.name(args)`: a typewise call whose type is the expected one (`n: Option[T] = .absent()`).
-public sealed record ImplicitCallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos);
+public sealed record ImplicitCallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos)
+{
+    /// Each argument's name where the call names it, as on CallExpr.
+    public List<string?>? ArgNames { get; init; }
+}
 
 /// `.Nothing`: a variant case without a payload, of the variant the value goes to.
 public sealed record ImplicitMemberExpr(string Name, Pos Pos) : Expr(Pos);
@@ -252,7 +261,11 @@ public sealed record PresetRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos)
 
 /// `recv.name(args)`.
 public sealed record MethodCallExpr(Expr Receiver, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
-    : Expr(Pos);
+    : Expr(Pos)
+{
+    /// Each argument's name where the call names it, as on CallExpr.
+    public List<string?>? ArgNames { get; init; }
+}
 
 /// `base.field` — a field of a value record, or (behind a pointer) a place.
 public sealed record FieldExpr(Expr Base, string Name, Pos Pos) : Expr(Pos);
@@ -267,11 +280,11 @@ public sealed record AsmCondExpr(string Name, TypeRef? Type, Pos Pos) : Expr(Pos
 /// `cond ? a : b` — value select.
 public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) : Expr(Pos);
 
-/// The slot of `claim p : @T`, which parses as a binding of this: an uninitialized stack slot for one T. Lowers
+/// The slot of `claim p: @T`, which parses as a binding of this: an uninitialized stack slot for one T. Lowers
 /// to an LLVM alloca.
 public sealed record ClaimExpr(Pos Pos) : Expr(Pos)
 {
-    /// `claim p : @T <- value`: stored into the slot where the claim stands. Null only for a slot the builder makes
+    /// `claim p: @T <- value`: stored into the slot where the claim stands. Null only for a slot the builder makes
     /// itself, which it fills before any read.
     public Expr? Contents { get; init; }
 }
@@ -298,7 +311,11 @@ public abstract record Terminator(Pos Pos)
 public abstract record Target(Pos Pos);
 
 /// `name(args)` — a block call, or (resolved later) a call to a #noreturn routine.
-public sealed record CallTarget(string Name, List<Expr> Args, Pos Pos) : Target(Pos);
+public sealed record CallTarget(string Name, List<Expr> Args, Pos Pos) : Target(Pos)
+{
+    /// Each argument's name where the call names it, as on CallExpr. A block takes its arguments in order.
+    public List<string?>? ArgNames { get; init; }
+}
 public sealed record ReturnTarget(Expr? Value, Pos Pos) : Target(Pos);
 public sealed record UnreachableTarget(Pos Pos) : Target(Pos);
 /// `continue` as an arm: go on with the next line of the same block.

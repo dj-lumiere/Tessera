@@ -473,7 +473,7 @@ internal routine encode_utf16(text: Bytes, out: @U16, capacity: USize) -> Option
 #target(os: "windows")
 private routine wide(path: Bytes, out: @U16) -> Option[USize]
     block entry()
-        return(encode_utf16(path, out, PATH_CAPACITY))
+        return(encode_utf16(text: path, out, capacity: PATH_CAPACITY))
 
 /// path as UTF-16 in out: whether it fit.
 /// :param path: The UTF-8 path.
@@ -504,10 +504,10 @@ internal routine narrow(units: @U16, count: USize, out: @Byte) -> USize
             : continue
         unit: U16 = units.stride(i).peek()
         u: U32 = unit.to[U32]()
-        branch u.between(0xD800, 0xDBFF)
+        branch u.between(lo: 0xD800, hi: 0xDBFF)
             ? high(i, u)
             : continue
-        branch u.between(0xDC00, 0xDFFF)
+        branch u.between(lo: 0xDC00, hi: 0xDFFF)
             ? put(i.add(1), 0xFFFD)
             : put(i.add(1), u)
 
@@ -517,7 +517,7 @@ internal routine narrow(units: @U16, count: USize, out: @Byte) -> USize
             : put(i.add(1), 0xFFFD)
         low_unit: U16 = units.stride(i.add(1)).peek()
         low: U32 = low_unit.to[U32]()
-        branch low.between(0xDC00, 0xDFFF)
+        branch low.between(lo: 0xDC00, hi: 0xDFFF)
             ? surrogate_pair(i, u, low)
             : put(i.add(1), 0xFFFD)
 
@@ -527,7 +527,7 @@ internal routine narrow(units: @U16, count: USize, out: @Byte) -> USize
         jump put(i.add(2), cp_offset.add(0x10000))
 
     block put(i: USize, cp: U32)
-        n.peek().add(utf8_encode_into(cp.to[Char](), out.stride(n.peek()))).poke_into(n)
+        n.peek().add(utf8_encode_into(char: cp.to[Char](), out: out.stride(n.peek()))).poke_into(n)
         jump next(i)
 
 /// The units before the first 0 at units.
@@ -554,11 +554,11 @@ internal routine wide_length(units: @U16) -> USize
 internal routine owned_wide(units: @U16, count: USize,
     alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
-        buffer: @Byte = allocate[Byte](count.mul(3).max(1), alloc)
+        buffer: @Byte = allocate[Byte](count: count.mul(3).max(1), alloc)
         branch buffer.is_null()
             ? return(.Failure(FsError.OUT_OF_MEMORY))
             : continue
-        n: USize = narrow(units, count, buffer)
+        n: USize = narrow(units, count, out: buffer)
         return(.Success(Bytes(data: buffer, count: n, alloc: alloc)))
 
 // -- metadata ------------------------------------------------------------------------
@@ -608,8 +608,8 @@ private routine kind_of(attributes: U32, tag: U32) -> FileKind
 #target(os: "windows")
 private routine make_metadata(data: AttributeData, tag: U32) -> Metadata
     block entry()
-        size: U64 = size_of(data.size_high, data.size_low)
-        return(Metadata(kind: kind_of(data.attributes, tag), size: size,
+        size: U64 = size_of(high: data.size_high, low: data.size_low)
+        return(Metadata(kind: kind_of(attributes: data.attributes, tag), size: size,
             modified_ns: unix_ns(data.written), created_ns: .Present(unix_ns(data.created)),
             readonly: data.attributes.bitand(FILE_ATTRIBUTE_READONLY).ne(0)))
 
@@ -622,7 +622,7 @@ private routine from_find_data(data: @Byte) -> Metadata
         parts: AttributeData = data.to[@AttributeData]().peek()
         tag_at: @Byte = data.stride(FIND_REPARSE_TAG)
         tag: U32 = tag_at.to[@U32]().peek()
-        return(make_metadata(parts, tag))
+        return(make_metadata(data: parts, tag))
 
 /// The Metadata in a `BY_HANDLE_FILE_INFORMATION`. It has no reparse tag, so a link reads as a directory or a file.
 /// :returns: The metadata.
@@ -632,7 +632,7 @@ private routine HandleInfo.to[Metadata](me: Me) -> Metadata
         parts: AttributeData = AttributeData(attributes: me.attributes, created: me.created,
             accessed: me.accessed, written: me.written, size_high: me.size_high,
             size_low: me.size_low)
-        return(make_metadata(parts, 0))
+        return(make_metadata(data: parts, tag: 0))
 
 /// The metadata of the open file h.
 /// :param h: The open file.
@@ -660,7 +660,7 @@ private routine attribute_metadata(wpath: @U16) -> Result[Metadata, FsError]
             ? return(failed[Metadata]())
             : continue
         d: AttributeData = data.peek()
-        return(.Success(make_metadata(d, 0)))
+        return(.Success(make_metadata(data: d, tag: 0)))
 
 /// A handle for asking about path (no read or write access): a directory too, and with link_itself, a link rather
 /// than what it points at.
@@ -683,10 +683,10 @@ private routine query_handle(wpath: @U16, link_itself: Bool) -> Addr
 internal routine metadata(path: Bytes) -> Result[Metadata, FsError]
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
-        h: Addr = query_handle(wpath.to[@U16](), false)
+        h: Addr = query_handle(wpath: wpath.to[@U16](), link_itself: false)
         branch is_invalid_handle(h)
             ? unopened(wpath.to[@U16]())
             : continue
@@ -710,7 +710,7 @@ internal routine metadata(path: Bytes) -> Result[Metadata, FsError]
 internal routine symlink_metadata(path: Bytes) -> Result[Metadata, FsError]
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
         claim data: @Array[U32, FIND_DATA_WORDS] <- .hollow()
@@ -747,7 +747,7 @@ routine FileHandle.empty() -> Me
 internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result[Me, FsError]
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
         when mode
@@ -890,7 +890,7 @@ routine FileHandle.close(me: @Me) -> Void
 internal routine create_dir(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? return(checked(c_create_directory(wpath.to[@U16](), null)))
             : return(.Failure(path_error(path)))
 
@@ -902,7 +902,7 @@ internal routine create_dir(path: Bytes) -> Result[Unit, FsError]
 internal routine remove_file(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
         branch c_delete_file(wpath.to[@U16]()).ne(0)
@@ -927,7 +927,7 @@ internal routine remove_file(path: Bytes) -> Result[Unit, FsError]
 internal routine remove_dir(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? return(checked(c_remove_directory(wpath.to[@U16]())))
             : return(.Failure(path_error(path)))
 
@@ -942,10 +942,10 @@ private routine move_file(from: Bytes, to: Bytes, flags: U32) -> Result[Unit, Fs
     block entry()
         claim a: @Array[U16, PATH_CAPACITY] <- .hollow()
         claim b: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(from, a.to[@U16]())
+        branch wide_path(path: from, out: a.to[@U16]())
             ? continue
             : return(.Failure(path_error(from)))
-        branch wide_path(to, b.to[@U16]())
+        branch wide_path(path: to, out: b.to[@U16]())
             ? return(checked(c_move_file_ex(a.to[@U16](), b.to[@U16](), flags)))
             : return(.Failure(path_error(to)))
 
@@ -958,7 +958,7 @@ private routine move_file(from: Bytes, to: Bytes, flags: U32) -> Result[Unit, Fs
 internal routine rename(from: Bytes, to: Bytes) -> Result[Unit, FsError]
     block entry()
         // MOVEFILE_REPLACE_EXISTING
-        return(move_file(from, to, 1))
+        return(move_file(from, to, flags: 1))
 
 /// Renames from to to, failing with AlreadyExists if something is at to.
 /// :param from: The current path.
@@ -969,7 +969,7 @@ internal routine rename(from: Bytes, to: Bytes) -> Result[Unit, FsError]
 #target(os: "windows")
 internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result[Unit, FsError]
     block entry()
-        return(move_file(from, to, 0))
+        return(move_file(from, to, flags: 0))
 
 /// CopyFileExW's progress routine: records the bytes transferred so far in the U64 at `data`, and lets the copy go
 /// on.
@@ -1003,10 +1003,10 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
         claim a: @Array[U16, PATH_CAPACITY] <- .hollow()
         claim b: @Array[U16, PATH_CAPACITY] <- .hollow()
         claim copied: @U64 <- 0
-        branch wide_path(from, a.to[@U16]())
+        branch wide_path(path: from, out: a.to[@U16]())
             ? continue
             : return(.Failure(path_error(from)))
-        branch wide_path(to, b.to[@U16]())
+        branch wide_path(path: to, out: b.to[@U16]())
             ? continue
             : return(.Failure(path_error(to)))
         done: Bool = c_copy_file_ex(a.to[@U16](), b.to[@U16](), copy_progress.to[Callable](),
@@ -1024,7 +1024,7 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
 internal routine set_readonly(path: Bytes, readonly: Bool) -> Result[Unit, FsError]
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
         attributes: U32 = c_get_file_attributes(wpath.to[@U16]())
@@ -1071,7 +1071,7 @@ private routine is_program_extension(e: Bytes) -> Bool
 internal routine is_accessible(path: Bytes, access: Access) -> Bool
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? continue
             : return(false)
         attributes: U32 = c_get_file_attributes(wpath.to[@U16]())
@@ -1096,7 +1096,7 @@ internal routine is_accessible(path: Bytes, access: Access) -> Bool
 internal routine touch(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
         h: Addr = c_create_file(wpath.to[@U16](), FILE_WRITE_ATTRIBUTES, FILE_SHARE_ALL, null,
@@ -1134,7 +1134,7 @@ internal routine DirIter.open_path(me: @Me, path: Bytes) -> Result[Unit, FsError
     block entry()
         me.find.poke(inttoptr[USize, Addr](USize.MAX))
         me.pending.poke(false)
-        n: Option[USize] = wide(path, pattern)
+        n: Option[USize] = wide(path, out: pattern)
         when n
             .Present(count) => star(count)
             .Absent => return(.Failure(path_error(path)))
@@ -1209,9 +1209,10 @@ routine DirIter.next(me: @Me) -> Option[DirEntry]
         branch is_dot_wide(name)
             ? return(me.next())
             : continue
-        n: USize = narrow(name, wide_length(name), me.name.to[@Byte]())
+        n: USize = narrow(units: name, count: wide_length(name), out: me.name.to[@Byte]())
         info: Metadata = from_find_data(data)
-        return(.Present(DirEntry(name: Bytes.from_ptr(me.name.to[@Byte](), n), kind: info.kind)))
+        return(.Present(DirEntry(name: Bytes.from_ptr(data: me.name.to[@Byte](), count: n),
+            kind: info.kind)))
 
 /// The metadata of the entry next last returned, from the listing itself (a link describes itself).
 /// :returns: `Success` with the metadata, which never fails here.
@@ -1248,7 +1249,8 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
         branch need.eq(0)
             ? finish(failed[Bytes]())
             : continue
-        made: Result[Slice[U16], AllocFailed] = Slice[U16].construct_result(need.to[USize](), alloc)
+        made: Result[Slice[U16], AllocFailed] = Slice[U16].construct_result(count: need.to[USize](),
+            alloc)
         when made
             .Success(slice) => read(slice)
             .Failure => finish(.Failure(FsError.OUT_OF_MEMORY))
@@ -1259,7 +1261,7 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
         got: U32 = c_get_current_directory(need, slice.to[@U16]())
         branch got.eq(0).bitor(got.ge(need))
             ? finish(failed[Bytes]())
-            : finish(owned_wide(slice.to[@U16](), got.to[USize](), alloc))
+            : finish(owned_wide(units: slice.to[@U16](), count: got.to[USize](), alloc))
 
     block finish(result: Result[Bytes, FsError])
         units.destruct()
@@ -1273,7 +1275,7 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
 internal routine set_current_dir(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? return(checked(c_set_current_directory(wpath.to[@U16]())))
             : return(.Failure(path_error(path)))
 
@@ -1293,15 +1295,15 @@ internal routine temp_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
         path_units: @U16 = units.to[@U16]()
         last: U16 = path_units.stride(got.sub(1).to[USize]()).peek()
         branch last.eq(0x5C).bitor(last.eq(0x2F))
-            ? return(owned_wide(units.to[@U16](), got.sub(1).to[USize](), alloc))
-            : return(owned_wide(units.to[@U16](), got.to[USize](), alloc))
+            ? return(owned_wide(units: units.to[@U16](), count: got.sub(1).to[USize](), alloc))
+            : return(owned_wide(units: units.to[@U16](), count: got.to[USize](), alloc))
 
     block fallback()
-        buffer: @Byte = allocate[Byte](15, alloc)
+        buffer: @Byte = allocate[Byte](count: 15, alloc)
         branch buffer.is_null()
             ? return(.Failure(FsError.OUT_OF_MEMORY))
             : continue
-        buffer.copy("C:\\Windows\\Temp", 15)
+        buffer.copy(src: "C:\\Windows\\Temp", count: 15)
         return(.Success(Bytes(data: buffer, count: 15, alloc: alloc)))
 
 /// The environment variable name, as UTF-8 in memory from alloc, when it is set and not empty.
@@ -1317,7 +1319,8 @@ private routine env_dir(name: CWStr, alloc: @MemoryManager) -> Option[Bytes]
         branch got.eq(0).bitor(got.to[USize]().ge(PATH_CAPACITY))
             ? return(.Absent)
             : continue
-        text: Result[Bytes, FsError] = owned_wide(units.to[@U16](), got.to[USize](), alloc)
+        text: Result[Bytes, FsError] = owned_wide(units: units.to[@U16](), count: got.to[USize](),
+            alloc)
         when text
             .Success(t) => return(.Present(t))
             .Failure => return(.Absent)
@@ -1333,27 +1336,27 @@ internal routine home_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
     local path: @Bytes <- .empty()
 
     block entry()
-        profile: Option[Bytes] = env_dir("USERPROFILE", alloc)
+        profile: Option[Bytes] = env_dir(name: "USERPROFILE", alloc)
         when profile
             .Present(dir) => finish(.Success(dir))
             .Absent => from_drive()
 
     block from_drive()
-        d: Option[Bytes] = env_dir("HOMEDRIVE", alloc)
+        d: Option[Bytes] = env_dir(name: "HOMEDRIVE", alloc)
         when d
             .Present(text) => home_path(text)
             .Absent => finish(.Failure(FsError.NOT_FOUND))
 
     block home_path(drive_text: Bytes)
         drive_text.poke_into(drive)
-        p: Option[Bytes] = env_dir("HOMEPATH", alloc)
+        p: Option[Bytes] = env_dir(name: "HOMEPATH", alloc)
         when p
             .Present(text) => join(text)
             .Absent => finish(.Failure(FsError.NOT_FOUND))
 
     block join(path_text: Bytes)
         path_text.poke_into(path)
-        both: Bytes = Bytes.concat(drive.peek(), path.peek(), alloc)
+        both: Bytes = Bytes.concat(a: drive.peek(), b: path.peek(), alloc)
         jump finish(.Success(both))
 
     block finish(result: Result[Bytes, FsError])
@@ -1372,7 +1375,7 @@ internal routine home_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
 internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
         claim full: @Array[U16, PATH_CAPACITY] <- .hollow()
@@ -1383,7 +1386,7 @@ internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Byt
             : continue
         branch got.to[USize]().ge(PATH_CAPACITY)
             ? return(.Failure(FsError.NAME_TOO_LONG))
-            : return(owned_wide(full.to[@U16](), got.to[USize](), alloc))
+            : return(owned_wide(units: full.to[@U16](), count: got.to[USize](), alloc))
 
 /// The absolute path with every link, ".", and ".." resolved, and path must exist. The "\\?\" prefix the OS gives is
 /// taken off ("\\?\UNC\server\share" becomes "\\server\share").
@@ -1396,10 +1399,10 @@ internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Byt
 internal routine canonical_path(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
-        h: Addr = query_handle(wpath.to[@U16](), false)
+        h: Addr = query_handle(wpath: wpath.to[@U16](), link_itself: false)
         branch is_invalid_handle(h)
             ? return(failed[Bytes]())
             : continue
@@ -1414,7 +1417,8 @@ internal routine canonical_path(path: Bytes, alloc: @MemoryManager) -> Result[By
         branch got.to[USize]().ge(PATH_CAPACITY)
             ? return(.Failure(FsError.NAME_TOO_LONG))
             : continue
-        text: Result[Bytes, FsError] = owned_wide(full.to[@U16](), got.to[USize](), alloc)
+        text: Result[Bytes, FsError] = owned_wide(units: full.to[@U16](), count: got.to[USize](),
+            alloc)
         when text
             .Success(t) => strip(t)
             .Failure(error) => return(.Failure(error))
@@ -1461,7 +1465,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
 
     block entry()
         claim wpath: @Array[U16, PATH_CAPACITY] <- .hollow()
-        branch wide_path(path, wpath.to[@U16]())
+        branch wide_path(path, out: wpath.to[@U16]())
             ? continue
             : finish(.Failure(path_error(path)))
         branch write

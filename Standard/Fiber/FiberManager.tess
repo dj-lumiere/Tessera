@@ -175,7 +175,7 @@ routine FiberManager.construct(workers: USize, stacks: @MemoryManager, alloc: @M
 
     block finish(count: USize, array: @Worker)
         timers: PriorityQueue[TimerKey, @FiberState] = .construct(alloc)
-        io_threads: @Thread = allocate[Thread](IO_THREADS, alloc)
+        io_threads: @Thread = allocate[Thread](count: IO_THREADS, alloc)
         io_queue: CircularList[@FiberState] = .construct(alloc)
         s: Me = Me(alloc: alloc, stacks: stacks, count: count, workers: array, next: 0, live: 0,
             epoch: 0, sleepers: 0, timer_lock: .construct(), timers: timers, timer_seq: 0,
@@ -194,7 +194,7 @@ routine FiberManager.spawn[T](me: @Me, entry: Callable[(@T,), Void], arg: @T,
     stack_size: USize) -> Void
 require T: typename
     block entry()
-        me.start_fiber(entry, arg, stack_size, null)
+        me.start_fiber(entry, arg, stack_size, j: null)
         return()
 
 /// spawn, and a Join to wait for the fiber with: join(j) returns once it has returned, and frees the Join. Every
@@ -209,7 +209,7 @@ routine FiberManager.spawn_joinable[T](me: @Me, entry: Callable[(@T,), Void], ar
     stack_size: USize) -> @Join
 require T: typename
     block entry()
-        j: @Join = allocate[Join](1, me.alloc.peek())
+        j: @Join = allocate[Join](count: 1, alloc: me.alloc.peek())
         j.poke(Join(lock: .construct(), done: 0, waiter: null))
         me.start_fiber(entry, arg, stack_size, j)
         return(j)
@@ -253,7 +253,7 @@ routine FiberManager.yield(me: @Me) -> Void
 
     // The worker queues the fiber once it is back on its own stack (see resume).
     block give_way(fiber: @FiberState)
-        switch_stack(fiber.sp, w.home.peek())
+        switch_stack(from: fiber.sp, to: w.home.peek())
         return()
 
 /// Inside a fiber: waits until wake is called with its handle, or returns at once for a wake that came since the
@@ -269,7 +269,8 @@ routine FiberManager.park(me: @Me) -> Void
             : inside()
 
     block inside()
-        parking: Bool = compare_exchange(fiber.wake_state, FIBER_RUNNING, FIBER_PARKING)
+        parking: Bool = compare_exchange(at: fiber.wake_state, expected: FIBER_RUNNING,
+            new: FIBER_PARKING)
         branch parking
             ? stop()
             : notified()
@@ -282,7 +283,7 @@ routine FiberManager.park(me: @Me) -> Void
     // The worker decides, once the fiber is off its stack, whether a wake came meanwhile (see commit_park).
     block stop()
         fiber.then.poke(commit_park.to[Callable]())
-        switch_stack(fiber.sp, current_worker().home.peek())
+        switch_stack(from: fiber.sp, to: current_worker().home.peek())
         return()
 
 /// Lets fiber, a fiber of this scheduler that hasn't returned, go on: if it is parked it is queued, and if not its
@@ -305,19 +306,20 @@ routine FiberManager.wake(me: @Me, fiber: @FiberState) -> Void
         branch already
             ? return()
             : continue
-        marked: Bool = compare_exchange(fiber.wake_state, state, FIBER_NOTIFIED)
+        marked: Bool = compare_exchange(at: fiber.wake_state, expected: state, new: FIBER_NOTIFIED)
         branch marked
             ? return()
             : look()
 
     block unpark()
-        ours: Bool = compare_exchange(fiber.wake_state, FIBER_PARKED, FIBER_RUNNING)
+        ours: Bool = compare_exchange(at: fiber.wake_state, expected: FIBER_PARKED,
+            new: FIBER_RUNNING)
         branch ours
             ? queue()
             : look()
 
     block queue()
-        place_ready(me, fiber)
+        place_ready(sched: me, fiber)
         return()
 
 /// Inside a fiber: waits at least ns nanoseconds while the worker goes on with other fibers. Outside one the
@@ -342,7 +344,7 @@ routine FiberManager.sleep(me: @Me, ns: U64) -> Void
     block inside()
         fiber.deadline.poke(deadline)
         fiber.then.poke(to_timers.to[Callable]())
-        switch_stack(fiber.sp, current_worker().home.peek())
+        switch_stack(from: fiber.sp, to: current_worker().home.peek())
         return()
 
 /// Waits until the fiber of j, from spawn_joinable, has returned, then frees j. Inside a fiber the worker goes on
@@ -362,7 +364,7 @@ routine FiberManager.join(me: @Me, j: @Join) -> Void
     block inside()
         fiber.waiting_for.poke(j)
         fiber.then.poke(commit_join.to[Callable]())
-        switch_stack(fiber.sp, current_worker().home.peek())
+        switch_stack(from: fiber.sp, to: current_worker().home.peek())
         jump free_join()
 
     block thread()
@@ -370,7 +372,7 @@ routine FiberManager.join(me: @Me, j: @Join) -> Void
         branch done
             ? settled()
             : continue
-        wait_on(j.done, 0)
+        wait_on(at: j.done, expected: 0)
         jump thread()
 
     // The fiber's worker sets done and wakes this thread while it holds the lock: taking it once is waiting until
@@ -381,7 +383,7 @@ routine FiberManager.join(me: @Me, j: @Join) -> Void
         jump free_join()
 
     block free_join()
-        deallocate(j, me.alloc.peek())
+        deallocate(data: j, alloc: me.alloc.peek())
         return()
 
 /// Runs the fibers, and those they spawn, on the workers until every one has returned. This thread is the first
@@ -401,7 +403,7 @@ routine FiberManager.run(me: @Me) -> Void
 
     block io_one(i: USize)
         io_slot: @Thread = me.io_threads.peek().stride(i)
-        io_slot.poke(Thread.spawn(io_main.to[Callable](), me, me.alloc.peek()))
+        io_slot.poke(Thread.spawn(entry: io_main.to[Callable](), arg: me, alloc: me.alloc.peek()))
         jump io_start(i.add(1))
 
     block start(i: USize)
@@ -413,7 +415,8 @@ routine FiberManager.run(me: @Me) -> Void
     block one(i: USize)
         w: @Worker = me.workers.peek().stride(i)
         w.sched.poke(me)
-        w.thread.poke(Thread.spawn(worker_loop.to[Callable](), w, me.alloc.peek()))
+        w.thread.poke(Thread.spawn(entry: worker_loop.to[Callable](), arg: w,
+            alloc: me.alloc.peek()))
         jump start(i.add(1))
 
     block own()
@@ -467,7 +470,7 @@ routine FiberManager.destruct(me: @Me) -> Void
 
     block one(i: USize)
         w: @Worker = me.workers.peek().stride(i)
-        drain(me, w.queue)
+        drain(sched: me, queue: w.queue)
         w.queue.destruct()
         jump worker(i.add(1))
 
@@ -477,15 +480,15 @@ routine FiberManager.destruct(me: @Me) -> Void
             ? finish()
             : continue
         sleeper: @FiberState = me.timers.remove()
-        free_fiber(me, sleeper)
+        free_fiber(sched: me, fiber: sleeper)
         jump timers()
 
     block finish()
         me.timers.destruct()
-        drain(me, me.io_queue)
+        drain(sched: me, queue: me.io_queue)
         me.io_queue.destruct()
-        deallocate(me.io_threads.peek(), me.alloc.peek())
-        deallocate(me.workers.peek(), me.alloc.peek())
+        deallocate(data: me.io_threads.peek(), alloc: me.alloc.peek())
+        deallocate(data: me.workers.peek(), alloc: me.alloc.peek())
         return()
 
 /// Runs work(arg), a call that may block the thread it runs on, without stopping the other fibers: inside a fiber
@@ -516,7 +519,7 @@ require T: typename
         fiber.work.poke(erased(work))
         fiber.work_arg.poke(state)
         fiber.then.poke(to_io.to[Callable]())
-        switch_stack(fiber.sp, current_worker().home.peek())
+        switch_stack(from: fiber.sp, to: current_worker().home.peek())
         return()
 
 // -- where a stopped fiber goes ------------------------------------------------------
@@ -540,7 +543,8 @@ private routine requeue(w: @Worker, fiber: @FiberState) -> Void
 #target(os: not "none")
 private routine commit_park(w: @Worker, fiber: @FiberState) -> Void
     block entry()
-        parked: Bool = compare_exchange(fiber.wake_state, FIBER_PARKING, FIBER_PARKED)
+        parked: Bool = compare_exchange(at: fiber.wake_state, expected: FIBER_PARKING,
+            new: FIBER_PARKED)
         branch parked
             ? return()
             : notified()
@@ -560,7 +564,8 @@ private routine to_timers(w: @Worker, fiber: @FiberState) -> Void
         sched.timer_lock.lock()
         seq: U64 = sched.timer_seq.peek()
         seq.add(1).poke_into(sched.timer_seq)
-        sched.timers.add(TimerKey(deadline: fiber.deadline.peek(), seq: seq), fiber)
+        sched.timers.add(priority: TimerKey(deadline: fiber.deadline.peek(), seq: seq),
+            element: fiber)
         sched.timer_count.atomic_fetch_add(1)
         sched.timer_lock.unlock()
         notify(sched)
@@ -621,7 +626,7 @@ private routine io_main(sched: @FiberManager) -> Void
     // Reads the epoch before looking, so a call queued in between changes it and the wait returns.
     block look()
         seen: U32 = sched.io_epoch.peek_atomic()
-        fiber: @FiberState = pop_front_locked(sched.io_lock, sched.io_queue)
+        fiber: @FiberState = pop_front_locked(lock: sched.io_lock, queue: sched.io_queue)
         none: Bool = fiber.is_null()
         branch none
             ? idle(seen)
@@ -634,7 +639,7 @@ private routine io_main(sched: @FiberManager) -> Void
             : sleep(seen)
 
     block sleep(seen: U32)
-        wait_on(sched.io_epoch, seen)
+        wait_on(at: sched.io_epoch, expected: seen)
         jump look()
 
     // The call is over: the fiber is ready again, in the workers' queues in turn.
@@ -694,11 +699,11 @@ private routine worker_loop(w: @Worker) -> Void
             : wait_short(sched, seen, wait)
 
     block wait_long(sched: @FiberManager, seen: U32)
-        wait_on(sched.epoch, seen)
+        wait_on(at: sched.epoch, expected: seen)
         jump woke(sched)
 
     block wait_short(sched: @FiberManager, seen: U32, wait: U64)
-        wait_on_for(sched.epoch, seen, wait)
+        wait_on_for(at: sched.epoch, expected: seen, timeout_ns: wait)
         jump woke(sched)
 
     block woke(sched: @FiberManager)
@@ -713,7 +718,7 @@ private routine worker_loop(w: @Worker) -> Void
 private routine find_work(w: @Worker) -> @FiberState
     block entry()
         fire_timers(w)
-        own: @FiberState = pop_front_locked(w.lock, w.queue)
+        own: @FiberState = pop_front_locked(lock: w.lock, queue: w.queue)
         found: Bool = own.is_not_null()
         branch found
             ? return(own)
@@ -729,7 +734,7 @@ private routine find_work(w: @Worker) -> @FiberState
     block victim(sched: @FiberManager, k: USize, count: USize)
         rotated: USize = w.index.peek().add(k)
         other: @Worker = sched.workers.peek().stride(rotated.mod(count))
-        fiber: @FiberState = pop_back_locked(other.lock, other.queue)
+        fiber: @FiberState = pop_back_locked(lock: other.lock, queue: other.queue)
         found: Bool = fiber.is_not_null()
         branch found
             ? return(fiber)
@@ -766,7 +771,7 @@ private routine fire_timers(w: @Worker) -> Void
     block fire(now: U64)
         due_fiber: @FiberState = sched.timers.remove()
         sched.timer_count.atomic_fetch_sub(1)
-        push_ready(w, due_fiber)
+        push_ready(w, fiber: due_fiber)
         jump next(now, true)
 
     // Others may take what this worker can't get to first.
@@ -817,7 +822,7 @@ private routine resume(w: @Worker, fiber: @FiberState) -> Void
         // The fiber's crash trace depth goes in while it runs and comes back out with it, so it stays right on every
         // thread the fiber runs on, and the worker's own stays as it was.
         own: USize = trace_switch(fiber.trace_depth.peek())
-        switch_stack(w.home, fiber.sp.peek())
+        switch_stack(from: w.home, to: fiber.sp.peek())
         trace_switch(own).poke_into(fiber.trace_depth)
         w.current.poke(null)
         done: Bool = fiber.finished.peek()
@@ -868,7 +873,7 @@ private routine finish_join(w: @Worker, j: @Join) -> Void
         branch alone
             ? return()
             : continue
-        requeue(w, waiter)
+        requeue(w, fiber: waiter)
         return()
 
 /// fiber is ready: in this worker's queue if this runs in one of the scheduler's fibers or workers, else in the
@@ -899,7 +904,7 @@ private routine place_ready(sched: @FiberManager, fiber: @FiberState) -> Void
     block any_worker()
         turn: USize = sched.next.atomic_fetch_add(1)
         chosen: @Worker = sched.workers.peek().stride(turn.mod(sched.count.peek()))
-        push_ready(chosen, fiber)
+        push_ready(w: chosen, fiber)
         notify(sched)
         return()
 
@@ -925,16 +930,16 @@ private routine FiberManager.start_fiber[T](me: @Me, entry: Callable[(@T,), Void
     stack_size: USize, j: @Join) -> Void
 require T: typename
     block entry()
-        stack: @Byte = allocate[Byte](stack_size, me.stacks.peek())
-        sp: Addr = initial_stack(stack, stack_size, fiber_start.addr())
+        stack: @Byte = allocate[Byte](count: stack_size, alloc: me.stacks.peek())
+        sp: Addr = initial_stack(stack, size: stack_size, entry: fiber_start.addr())
         state: Addr = arg
-        fiber: @FiberState = allocate[FiberState](1, me.alloc.peek())
+        fiber: @FiberState = allocate[FiberState](count: 1, alloc: me.alloc.peek())
         fiber.poke(FiberState(sp: sp, stack: stack, entry: erased(entry), arg: state,
             finished: false, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, deadline: 0,
             join: j, waiting_for: null, work: no_work.to[Callable](), work_arg: null,
             trace_depth: 0))
         me.live.atomic_fetch_add(1)
-        place_ready(me, fiber)
+        place_ready(sched: me, fiber)
         return()
 
 /// There is a fiber to look for: a waiting worker, if any, looks.
@@ -967,7 +972,7 @@ private routine sleep_thread(deadline: U64) -> Void
         branch done
             ? return()
             : continue
-        wait_on_for(never, 0, deadline.sub(now))
+        wait_on_for(at: never, expected: 0, timeout_ns: deadline.sub(now))
         jump look()
 
 /// Writes new at at if expected is there, and says whether it did.
@@ -1051,7 +1056,7 @@ private routine drain(sched: @FiberManager, queue: @CircularList[@FiberState]) -
             : drop()
 
     block drop()
-        free_fiber(sched, queue.remove_first())
+        free_fiber(sched, fiber: queue.remove_first())
         jump next()
 
 /// Gives a fiber's stack back to the stack allocator and its record to the scheduler's allocator.
@@ -1061,8 +1066,8 @@ private routine drain(sched: @FiberManager, queue: @CircularList[@FiberState]) -
 private routine free_fiber(sched: @FiberManager, fiber: @FiberState) -> Void
     block entry()
         stack: @Byte = fiber.stack.peek().to[@Byte]()
-        deallocate(stack, sched.stacks.peek())
-        deallocate(fiber, sched.alloc.peek())
+        deallocate(data: stack, alloc: sched.stacks.peek())
+        deallocate(data: fiber, alloc: sched.alloc.peek())
         return()
 
 /// A new fiber's first routine: switch_stack returns into it on the fiber's new stack. It runs the fiber's routine,
@@ -1075,5 +1080,5 @@ private routine fiber_start() -> Void
         entry.call(fiber.arg.peek())
         fiber.finished.poke(true)
         w: @Worker = current_worker()
-        switch_stack(fiber.sp, w.home.peek())
+        switch_stack(from: fiber.sp, to: w.home.peek())
         unreachable

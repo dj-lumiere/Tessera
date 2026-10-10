@@ -365,7 +365,7 @@ public sealed partial class Compiler
     public sealed record CallUse(RoutineDecl Decl, List<(string Name, DType Type)> Bindings);
 
     /// The calls and the values of the routines that aren't generic, by the position the parser gave them (a call also
-    /// by the routine's name: `claim p : @T <- .make()` calls `make` and stores through `Ptr[T].poke` at one place):
+    /// by the routine's name: `claim p: @T <- .make()` calls `make` and stores through `Ptr[T].poke` at one place):
     /// what the language server shows on hover. A generic routine's body means something else in each instance, so it
     /// isn't recorded.
     public Dictionary<(Pos Pos, string Name), CallUse> CallUses { get; } = [];
@@ -649,11 +649,13 @@ public sealed partial class Compiler
     /// call chooses among the set by its arguments (FunctionGen.ChooseOverload); this is for asking whether the name
     /// is a routine at all.
     /// A call that names a record type, `Point(x: 1, y: 2)` (or `Point()`), as the record literal it is: a type's
-    /// name is resolved like any other, so the parser reads both a call and a literal as a call. Anything else is
-    /// returned as it is.
+    /// name is resolved like any other, so the parser reads both a call and a literal as a call. A value already
+    /// called like its field goes by its name alone (`Point(x, y: 2)`). Anything else is returned as it is.
     public Expr AsRecordLit(Expr e, TypeEnv env)
     {
-        if (e is not CallExpr c || (c.ArgNames is null && c.Args.Count > 0)) return e;
+        if (e is not CallExpr c) return e;
+        string? FieldName(int i) => c.ArgNames?[i] ?? (c.Args[i] as ValueRef)?.Name;
+        if (Enumerable.Range(0, c.Args.Count).Any(i => FieldName(i) is null)) return e;
         if (FindFree(c.Name, env.File, c.Pos, c.Path) is not null) return e;
         var args = c.WrittenTypeArgs ?? c.TypeArgs.Select(t => (TypeArg)new TypeArgType(t)).ToList();
         var type = new TypeRef(c.Name, args, c.Pos) { Path = c.Path };
@@ -661,7 +663,7 @@ public sealed partial class Compiler
         try { resolved = ResolveType(type, env, allowVoid: true); }
         catch (CompileError err) when (!err.Final) { return e; }
         if (resolved is not RecordType) return e;
-        var fields = c.Args.Select((a, i) => (c.ArgNames![i], a, a.Pos)).ToList();
+        var fields = c.Args.Select((a, i) => (FieldName(i)!, a, a.Pos)).ToList();
         return new RecordLit(type, fields, c.Pos);
     }
 

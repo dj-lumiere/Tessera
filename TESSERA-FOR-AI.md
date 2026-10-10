@@ -293,7 +293,7 @@ routine start() -> Void
   ```tessera
   routine home_path(drive: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
       block entry()
-          p: Option[Bytes] = env_dir("HOMEPATH", alloc)
+          p: Option[Bytes] = env_dir(name: "HOMEPATH", alloc)
           when p
               .Present(path) => join(path)
               .Absent => missing()
@@ -320,14 +320,14 @@ routine start() -> Void
       local path: @Bytes <- .empty()
 
       block entry()
-          p: Option[Bytes] = env_dir("HOMEPATH", alloc)
+          p: Option[Bytes] = env_dir(name: "HOMEPATH", alloc)
           when p
               .Present(text) => join(text)
               .Absent => finish(.Failure(FsError.NOT_FOUND))
 
       block join(path_text: Bytes)
           path_text.poke_into(path)
-          both: Bytes = Bytes.concat(drive.peek(), path.peek(), alloc)
+          both: Bytes = Bytes.concat(a: drive.peek(), b: path.peek(), alloc)
           jump finish(.Success(both))
 
       block finish(result: Result[Bytes, FsError])
@@ -863,13 +863,19 @@ isn't empty is named for what it is: `ProcessOptions.default()` captures both st
 job goes just before it (`FiberManager.construct(workers, stacks, alloc)`). So the form without the allocator
 (`construct()` with `Standard/Os`) is the same call with the last argument left off.
 
-**Five or more parameters take a record.** Arguments are positional (there are no named arguments), so a call reads
-by its values: pass named values (`retries: U32 = 3`, then `retries`), not bare literals whose role needs the
-signature, unless the routine's name already says it (`len.add(1)`, `list.getitem(0)`). A routine with five or more
+**Named arguments.** A call to a routine taking two or more arguments besides `me` names each one, in the order of
+the parameters (`area(width: 3, height: 4)`); a name out of place is a build error. A value already called like its
+parameter goes by its name alone (`area(width, height: 4)`), so bind values under their parameters' names
+(`retries: U32 = 3`, then `connect(host, retries)`). One argument besides `me` goes without a name (`len.add(1)`,
+`list.getitem(0)`), and `me` is never named (`S64.max(a, b)`). `#positional` routines (the raw operations: `add[T](a,
+b)`, `ieq`, `band`, `fadd`, ...) and C externals take their arguments in order. Blocks take theirs in order too.
+`tessera migrate --named-args` names the arguments of existing calls.
+
+**Five or more parameters take a record.** A routine with five or more
 parameters, `me` not counted, takes a record instead: one record parameter, or a record plus the few parameters that
 clearly don't belong to the group, so the count drops below five. The record is named for what the group is, its
 fields in reading order and documented, and one record serves every routine that passes the same group. Its literal
-names each field at the call (`fill_rect(canvas, Rect(left: 10, top: 20, width: 300, height: 200), orange)`), and a
+names each field at the call (`fill_rect(canvas, area: Rect(left: 10, top: 20, width: 300, height: 200), color: orange)`), and a
 value that already is the group passes whole. A pointer and a count that go together are a `Slice[T]`. The allocator
 counts too: a routine that reaches five only through it still takes a record for the rest, the allocator staying the
 separate last parameter. Exempt: `#external` declarations, `#export` routines and `#callconv` callbacks (a C ABI sets

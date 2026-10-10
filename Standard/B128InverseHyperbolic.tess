@@ -151,13 +151,13 @@ routine cm_inv_poly(c: U128, k: U64) -> U128
 /// :returns: The series' value.
 routine cm_inv_series(lead: CmFrac, p: U128, k: U64) -> CmFrac
     local product: U128 = lead.frac.mul_wide(p).shr(128).to_wrap[U128]()
-    local term: CmFrac = cm_frac_normalize(product, lead.exponent)
+    local term: CmFrac = cm_frac_normalize(v: product, exponent: lead.exponent)
 
     block entry()
         grows: Bool = k.eq(1)
         branch grows
-            ? return(cm_frac_add(lead, term))
-            : return(cm_frac_sub(lead, term))
+            ? return(cm_frac_add(a: lead, b: term))
+            : return(cm_frac_sub(a: lead, b: term))
 
 /// ln(1 + w) for w >= 2^-17 given as a fraction (cut to 113 bits plus the rest, the rest added to CORE-MATH's
 /// fast ln of the cut part), within 3 units of ln(1 + w) for the w given.
@@ -168,7 +168,7 @@ routine cm_inv_ln_1p(w: CmFrac) -> CmFrac
         near: Bool = w.exponent.le(0)
         branch near
             ? continue
-            : return(cm_inv_ln(cm_frac_add(w, CmFrac(frac: CM_FRAC_TOP, exponent: 1))))
+            : return(cm_inv_ln(cm_frac_add(a: w, b: CmFrac(frac: CM_FRAC_TOP, exponent: 1))))
         // z = 1 + k 2^-112 holds w's bits down to 2^-112, the rest is d = rest × 2^(w.exponent - 128)
         shift: S64 = 16.sub(w.exponent)
         k: U128 = w.frac.shr(shift.to[U128]())
@@ -177,7 +177,7 @@ routine cm_inv_ln_1p(w: CmFrac) -> CmFrac
         // d / z × 2^148 = rest × 2^(w.exponent + 83) / (z × 2^63), z × 2^63 cut to 64 bits
         top: U64 = B128_IMPLICIT.bitor(k).shr(49).to[U64]()
         scaled: U128 = rest.shl(w.exponent.add(83).to[U128]())
-        r: CmFrac = cm_inv_ln_finish(bits, scaled, top)
+        r: CmFrac = cm_inv_ln_finish(bits, numer: scaled, divisor: top)
         return(r)
 
 /// ln z for z >= 2 given as a fraction below 2^16384: ln of z cut to 113 bits from CORE-MATH's fast ln path, plus
@@ -192,7 +192,8 @@ routine cm_inv_ln(z: CmFrac) -> CmFrac
         mantissa: U128 = cut.shr(15).bitand(B128_FRAC_MASK)
         // d / z × 2^148 = rest × 2^148 / cut = rest × 2^84 / (cut × 2^-64), cut × 2^-64 cut to 64 bits
         top: U64 = cut.shr(64).to[U64]()
-        r: CmFrac = cm_inv_ln_finish(biased.bitor(mantissa), rest.shl(84), top)
+        r: CmFrac = cm_inv_ln_finish(bits: biased.bitor(mantissa), numer: rest.shl(84),
+            divisor: top)
         return(r)
 
 /// ln z plus d/z, for the B128 z with bits `bits` (outside ln's window near 1) and d/z = numer / divisor × 2^-148
@@ -206,11 +207,12 @@ routine cm_inv_ln_finish(bits: U128, numer: U128, divisor: U64) -> CmFrac
     block entry()
         hi: U64 = cm_wide_hi(bits)
         e_field: U64 = hi.bitand(0xFFFF000000000000)
-        log: CmWide3 = cm_log_fast(hi, cm_wide_lo(bits), e_field)
+        log: CmWide3 = cm_log_fast(mh: hi, ml: cm_wide_lo(bits), e_field)
         high: U64 = numer.shr(64).to[U64]()
-        quotient: Div2By1 = div_2by1(high, numer.to_wrap[U64](), divisor, div_2by1_prepare(divisor))
+        quotient: Div2By1 = div_2by1(u1: high, u0: numer.to_wrap[U64](), d: divisor,
+            v: div_2by1_prepare(divisor))
         extra: U64 = quotient.quotient
-        sum: CmWide3 = cm_wide_add3(log, CmWide3(w0: extra, w1: 0, w2: 0))
+        sum: CmWide3 = cm_wide_add3(a: log, b: CmWide3(w0: extra, w1: 0, w2: 0))
         // the sum is above 2^130, so its top word holds the leading bit
         shift: U64 = 64.sub(sum.w2.leading_zeros())
         upper: U256 = sum.w2.to[U256]().shl(128)
@@ -244,28 +246,31 @@ routine cm_asinh_quick(a: B128) -> Option[U128]
     block series()
         x: CmFrac = cm_inv_frac(u)
         c: U128 = x.frac.mul_wide(x.frac).shr(128.sub(x.exponent.mul(2)).to[U256]()).to_wrap[U128]()
-        t: CmFrac = cm_inv_series(x, cm_inv_poly(c, 0), 0)
-        r: Option[U128] = cm_frac_round(t.frac, t.exponent, 0, B128_INV_SERIES_GATE)
+        t: CmFrac = cm_inv_series(lead: x, p: cm_inv_poly(c, k: 0), k: 0)
+        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+            gate: B128_INV_SERIES_GATE)
         return(r)
 
     // w = a + a² / (1 + sqrt(1 + a²))
     block near()
         x: CmFrac = cm_inv_frac(u)
-        xx: CmFrac = cm_frac_mul(x, x)
-        op: CmFrac = cm_frac_add(one, xx)
-        root: CmFrac = cm_frac_sqrt(op.frac.to[U256]().shl(128), op.exponent)
-        q: CmFrac = cm_frac_div(xx, cm_frac_add(root, one))
-        t: CmFrac = cm_inv_ln_1p(cm_frac_add(x, q))
-        r: Option[U128] = cm_frac_round(t.frac, t.exponent, 0, B128_INV_LOG_GATE)
+        xx: CmFrac = cm_frac_mul(a: x, b: x)
+        op: CmFrac = cm_frac_add(a: one, b: xx)
+        root: CmFrac = cm_frac_sqrt(n: op.frac.to[U256]().shl(128), e: op.exponent)
+        q: CmFrac = cm_frac_div(a: xx, b: cm_frac_add(a: root, b: one))
+        t: CmFrac = cm_inv_ln_1p(cm_frac_add(a: x, b: q))
+        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+            gate: B128_INV_LOG_GATE)
         return(r)
 
     // z = a + sqrt(a² + 1)
     block far()
         x: CmFrac = cm_inv_frac(u)
-        s: CmFrac = cm_frac_add(cm_frac_mul(x, x), one)
-        root: CmFrac = cm_frac_sqrt(s.frac.to[U256]().shl(128), s.exponent)
-        t: CmFrac = cm_inv_ln(cm_frac_add(root, x))
-        r: Option[U128] = cm_frac_round(t.frac, t.exponent, 0, B128_INV_LOG_GATE)
+        s: CmFrac = cm_frac_add(a: cm_frac_mul(a: x, b: x), b: one)
+        root: CmFrac = cm_frac_sqrt(n: s.frac.to[U256]().shl(128), e: s.exponent)
+        t: CmFrac = cm_inv_ln(cm_frac_add(a: root, b: x))
+        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+            gate: B128_INV_LOG_GATE)
         return(r)
 
 /// The quick tier of acosh on x > 1 (the derivation is at the top of this file).
@@ -287,34 +292,37 @@ routine cm_acosh_quick(x: B128) -> Option[U128]
 
     // y = x - 1 is exact
     block small()
-        y: CmFrac = cm_frac_normalize(v.frac.sub(CM_FRAC_TOP), 1)
+        y: CmFrac = cm_frac_normalize(v: v.frac.sub(CM_FRAC_TOP), exponent: 1)
         series: Bool = y.exponent.lt(-33)
         branch series
             ? series(y)
             : near(y)
 
     block series(y: CmFrac)
-        root: CmFrac = cm_frac_sqrt(y.frac.to[U256]().shl(128), y.exponent.add(1))
+        root: CmFrac = cm_frac_sqrt(n: y.frac.to[U256]().shl(128), e: y.exponent.add(1))
         c: U128 = y.frac.shr(0.sub(y.exponent).to[U128]())
-        t: CmFrac = cm_inv_series(root, cm_inv_poly(c, 2), 2)
-        r: Option[U128] = cm_frac_round(t.frac, t.exponent, 0, B128_ACOSH_SERIES_GATE)
+        t: CmFrac = cm_inv_series(lead: root, p: cm_inv_poly(c, k: 2), k: 2)
+        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+            gate: B128_ACOSH_SERIES_GATE)
         return(r)
 
     // w = y + sqrt(y (y + 2))
     block near(y: CmFrac)
         two: CmFrac = CmFrac(frac: CM_FRAC_TOP, exponent: 2)
-        product: U256 = y.frac.mul_wide(cm_frac_add(two, y).frac)
-        root: CmFrac = cm_inv_sqrt_product(product, y.exponent.add(2))
-        t: CmFrac = cm_inv_ln_1p(cm_frac_add(root, y))
-        r: Option[U128] = cm_frac_round(t.frac, t.exponent, 0, B128_INV_LOG_GATE)
+        product: U256 = y.frac.mul_wide(cm_frac_add(a: two, b: y).frac)
+        root: CmFrac = cm_inv_sqrt_product(p: product, e: y.exponent.add(2))
+        t: CmFrac = cm_inv_ln_1p(cm_frac_add(a: root, b: y))
+        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+            gate: B128_INV_LOG_GATE)
         return(r)
 
     // z = x + sqrt(x² - 1)
     block far()
-        s: CmFrac = cm_frac_sub(cm_frac_mul(v, v), one)
-        root: CmFrac = cm_frac_sqrt(s.frac.to[U256]().shl(128), s.exponent)
-        t: CmFrac = cm_inv_ln(cm_frac_add(v, root))
-        r: Option[U128] = cm_frac_round(t.frac, t.exponent, 0, B128_INV_LOG_GATE)
+        s: CmFrac = cm_frac_sub(a: cm_frac_mul(a: v, b: v), b: one)
+        root: CmFrac = cm_frac_sqrt(n: s.frac.to[U256]().shl(128), e: s.exponent)
+        t: CmFrac = cm_inv_ln(cm_frac_add(a: v, b: root))
+        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+            gate: B128_INV_LOG_GATE)
         return(r)
 
 /// sqrt(p × 2^(e - 256)) for a product p of two fractions (p >= 2^254), shifted to set its top bit first.
@@ -325,8 +333,8 @@ routine cm_inv_sqrt_product(p: U256, e: S64) -> CmFrac
     block entry()
         top: Bool = p.shr(255).eq(1)
         branch top
-            ? return(cm_frac_sqrt(p, e))
-            : return(cm_frac_sqrt(p.shl(1), e.sub(1)))
+            ? return(cm_frac_sqrt(n: p, e))
+            : return(cm_frac_sqrt(n: p.shl(1), e: e.sub(1)))
 
 /// The quick tier of atanh on 0 < a < 1 (the derivation is at the top of this file).
 /// :param a: The magnitude.
@@ -347,22 +355,24 @@ routine cm_atanh_quick(a: B128) -> Option[U128]
     block series()
         x: CmFrac = cm_inv_frac(u)
         c: U128 = x.frac.mul_wide(x.frac).shr(128.sub(x.exponent.mul(2)).to[U256]()).to_wrap[U128]()
-        t: CmFrac = cm_inv_series(x, cm_inv_poly(c, 1), 1)
-        r: Option[U128] = cm_frac_round(t.frac, t.exponent, 0, B128_INV_SERIES_GATE)
+        t: CmFrac = cm_inv_series(lead: x, p: cm_inv_poly(c, k: 1), k: 1)
+        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+            gate: B128_INV_SERIES_GATE)
         return(r)
 
     // w = 2a / (1 - a): 1 - a is exact from 1/2 on, else within a unit
     block logarithm()
         x: CmFrac = cm_inv_frac(u)
         upper: Bool = x.exponent.eq(0)
-        exact: CmFrac = cm_frac_normalize(0.sub_wrap(x.frac), 0)
-        computed: CmFrac = cm_frac_sub(one, x)
+        exact: CmFrac = cm_frac_normalize(v: 0.sub_wrap(x.frac), exponent: 0)
+        computed: CmFrac = cm_frac_sub(a: one, b: x)
         gap: CmFrac = upper
             ? exact
             : computed
         twice: CmFrac = CmFrac(frac: x.frac, exponent: x.exponent.add(1))
-        t: CmFrac = cm_inv_ln_1p(cm_frac_div(twice, gap))
-        r: Option[U128] = cm_frac_round(t.frac, t.exponent.sub(1), 0, B128_INV_LOG_GATE)
+        t: CmFrac = cm_inv_ln_1p(cm_frac_div(a: twice, b: gap))
+        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent.sub(1), sign: 0,
+            gate: B128_INV_LOG_GATE)
         return(r)
 
 // -- fast tier: B128Extended ---------------------------------------------------
@@ -458,21 +468,21 @@ routine big_atanh(a: B128) -> B128Big
 /// :returns: asinh(`me`).
 routine B128.asinh(me: Me) -> Me
     block entry()
-        r: Me = b128_asinh(me, false)
+        r: Me = b128_asinh(x: me, exact: false)
         return(r)
 
 /// acosh, correctly rounded: +0 at 1, +inf at +inf, NaN below 1, and a NaN comes back quieted.
 /// :returns: acosh(`me`).
 routine B128.acosh(me: Me) -> Me
     block entry()
-        r: Me = b128_acosh(me, false)
+        r: Me = b128_acosh(x: me, exact: false)
         return(r)
 
 /// atanh, correctly rounded: ±0 at ±0, ±inf at ±1, NaN beyond, and a NaN comes back quieted.
 /// :returns: atanh(`me`).
 routine B128.atanh(me: Me) -> Me
     block entry()
-        r: Me = b128_atanh(me, false)
+        r: Me = b128_atanh(x: me, exact: false)
         return(r)
 
 /// asinh x, correctly rounded, as {B128.asinh}.
@@ -500,7 +510,7 @@ routine b128_asinh(x: B128, exact: Bool) -> B128
             .Present(found) => return(b128_of(found).copysign(x))
             .Absent => continue
         w: B128Extended = wide_asinh(a.to[B128Extended]())
-        rounded: WideRounding = wide_round_within(w, B128_ASINH_BAND)
+        rounded: WideRounding = wide_round_within(u: w, k: B128_ASINH_BAND)
         branch rounded.ok
             ? return(rounded.value.copysign(x))
             : slow(a)
@@ -537,7 +547,7 @@ routine b128_acosh(x: B128, exact: Bool) -> B128
         when q
             .Present(found) => return(b128_of(found))
             .Absent => continue
-        rounded: WideRounding = wide_round_within(wide_acosh(x), B128_ACOSH_BAND)
+        rounded: WideRounding = wide_round_within(u: wide_acosh(x), k: B128_ACOSH_BAND)
         branch rounded.ok
             ? return(rounded.value)
             : slow()
@@ -575,7 +585,7 @@ routine b128_atanh(x: B128, exact: Bool) -> B128
         when q
             .Present(found) => return(b128_of(found).copysign(x))
             .Absent => continue
-        rounded: WideRounding = wide_round_within(wide_atanh(a), B128_ATANH_BAND)
+        rounded: WideRounding = wide_round_within(u: wide_atanh(a), k: B128_ATANH_BAND)
         branch rounded.ok
             ? return(rounded.value.copysign(x))
             : slow()

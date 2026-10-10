@@ -305,7 +305,7 @@ public static partial class LanguageServer
             Func<string?> hover = () =>
             {
                 string? type = analysis.Compiler.ValueTypes.GetValueOrDefault(pos)?.ToString() ?? written?.ToString();
-                return HoverText(type is null ? name : $"{name} : {type}", doc);
+                return HoverText(type is null ? name : $"{name}: {type}", doc);
             };
             return _definedAt.TryGetValue(name, out var at) ? At(at, name, hover) : hover;
         }
@@ -510,14 +510,14 @@ public static partial class LanguageServer
         }
 
         private Func<string?> FieldHover(RecordDecl record, FieldDecl field) =>
-            At(field.Pos, field.Name, () => HoverText($"{record.Name}.{field.Name} : {field.Type}", DocAbove(analysis, field.Pos)));
+            At(field.Pos, field.Name, () => HoverText($"{record.Name}.{field.Name}: {field.Type}", DocAbove(analysis, field.Pos)));
 
         /// A case of the variant or choice `owner` names.
         private Func<string?>? CaseHover(TypeRef owner, string name) =>
             analysis.Compiler.TypeDeclQuiet(owner.Name, analysis.Shown, owner.Path) switch
             {
                 VariantDecl v when v.Cases.FirstOrDefault(c => c.Name == name) is { } c =>
-                    At(c.Pos, c.Name, () => HoverText($"{owner}.{c.Name}" + (c.Payload is null ? "" : $" : {c.Payload}"),
+                    At(c.Pos, c.Name, () => HoverText($"{owner}.{c.Name}" + (c.Payload is null ? "" : $": {c.Payload}"),
                         DocAbove(analysis, c.Pos), v.TypeParams.Zip(owner.Args, (p, a) => (p, a.ToString() ?? "")))),
                 ChoiceDecl ch when ch.Members.FirstOrDefault(m => m.Name == name) is { Name: not null } m =>
                     At(m.Value.Pos.Line > 0 ? m.Value.Pos with { Col = 1 } : ch.Pos, m.Name, () => HoverText(
@@ -709,7 +709,7 @@ public static partial class LanguageServer
                     foreach (var c in variant.Cases)
                     {
                         Mark(c.Pos, c.Name, "constant", () => HoverText(
-                            $"{variant.Name}.{c.Name}" + (c.Payload is null ? "" : $" : {c.Payload}"), DocAbove(analysis, c.Pos)));
+                            $"{variant.Name}.{c.Name}" + (c.Payload is null ? "" : $": {c.Payload}"), DocAbove(analysis, c.Pos)));
                         if (c.Payload is not null) Type(c.Payload);
                     }
                     break;

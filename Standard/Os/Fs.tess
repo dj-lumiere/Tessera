@@ -133,7 +133,7 @@ internal routine create_dir_all(path: Bytes) -> Result[Unit, FsError]
             : scan(i.add(1))
 
     block make(i: USize)
-        create_dir(path.slice(0, i))
+        create_dir(path.slice(start: 0, end: i))
         jump scan(i.add(1))
 
     block last()
@@ -143,7 +143,7 @@ internal routine create_dir_all(path: Bytes) -> Result[Unit, FsError]
             .Failure(error) => check(error)
 
     block check(error: FsError)
-        branch error.eq(FsError.ALREADY_EXISTS).bitand(is_kind(path, FileKind.DIRECTORY))
+        branch error.eq(FsError.ALREADY_EXISTS).bitand(is_kind(path, kind: FileKind.DIRECTORY))
             ? return(fs_done())
             : return(.Failure(error))
 
@@ -193,8 +193,8 @@ private routine remove_entries(path: Bytes, alloc: @MemoryManager) -> Result[Uni
             .Absent => finish(fs_done())
 
     block child(e: DirEntry)
-        claim full: @Bytes <- join_path(path, e.name, alloc)
-        gone: Result[Unit, FsError] = remove_dir_all(full.peek(), alloc)
+        claim full: @Bytes <- join_path(a: path, b: e.name, alloc)
+        gone: Result[Unit, FsError] = remove_dir_all(path: full.peek(), alloc)
         full.destruct()
         when gone
             .Success => next()
@@ -212,7 +212,7 @@ private routine remove_entries(path: Bytes, alloc: @MemoryManager) -> Result[Uni
 ///     fails or the file is too large for the address space (4 GiB or more on a 32-bit target).
 internal routine read_file(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
-        opened: Result[FileHandle, FsError] = FileHandle.open(path, OpenMode.READ)
+        opened: Result[FileHandle, FsError] = FileHandle.open(path, mode: OpenMode.READ)
         when opened
             .Success(f) => read(f)
             .Failure(error) => return(.Failure(error))
@@ -250,7 +250,8 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Bytes
             .Absent => finish(.Failure(FsError.OUT_OF_MEMORY))
 
     block start(capacity: USize)
-        made: Result[Slice[Byte], AllocFailed] = Slice[Byte].construct_result(capacity, alloc)
+        made: Result[Slice[Byte], AllocFailed] = Slice[Byte].construct_result(count: capacity,
+            alloc)
         when made
             .Success(slice) => filling(slice)
             .Failure => finish(.Failure(FsError.OUT_OF_MEMORY))
@@ -265,8 +266,8 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Bytes
         branch count.eq(capacity)
             ? grow(count)
             : continue
-        got: Result[USize, FsError] = f.read_bytes_result(buffer.getslot(count),
-            capacity.sub(count))
+        got: Result[USize, FsError] = f.read_bytes_result(buffer: buffer.getslot(count),
+            count: capacity.sub(count))
         when got
             .Success(n) => advance(count, n)
             .Failure(error) => finish(.Failure(error))
@@ -303,14 +304,14 @@ private routine read_rest(f: @FileHandle, alloc: @MemoryManager) -> Result[Bytes
 /// :throws: Returns `Failure` with the reason when the file can't be opened or written.
 internal routine write_file(path: Bytes, data: Bytes) -> Result[Unit, FsError]
     block entry()
-        opened: Result[FileHandle, FsError] = FileHandle.open(path, OpenMode.WRITE)
+        opened: Result[FileHandle, FsError] = FileHandle.open(path, mode: OpenMode.WRITE)
         when opened
             .Success(f) => write(f)
             .Failure(error) => return(.Failure(error))
 
     block write(opened: FileHandle)
         claim f: @FileHandle <- opened
-        wrote: Result[Unit, FsError] = f.write_all_result(data.data, data.count())
+        wrote: Result[Unit, FsError] = f.write_all_result(data: data.data, count: data.count())
         f.close()
         return(wrote)
 
@@ -333,7 +334,7 @@ routine FileHandle.write_all_result(me: @Me, data: @Byte, count: USize) -> Resul
         branch remaining.eq(0)
             ? return(fs_done())
             : continue
-        wrote: Result[USize, FsError] = me.write_some(at, remaining)
+        wrote: Result[USize, FsError] = me.write_some(data: at, count: remaining)
         when wrote
             .Success(n) => continue
             .Failure(error) => return(.Failure(error))
@@ -415,11 +416,11 @@ routine join_path(a: Bytes, b: Bytes, alloc: @MemoryManager) -> Bytes
             : 1
         prefix_count: USize = a.count().add(sep)
         count: USize = prefix_count.add(b.count())
-        buffer: @Byte = allocate[Byte](count.max(1), alloc)
+        buffer: @Byte = allocate[Byte](count: count.max(1), alloc)
         branch buffer.is_null()
             ? crash_allocation()
             : continue
-        buffer.copy(a.data, a.count())
+        buffer.copy(src: a.data, count: a.count())
         branch ends
             ? tail(buffer, sep, count)
             : continue
@@ -427,7 +428,7 @@ routine join_path(a: Bytes, b: Bytes, alloc: @MemoryManager) -> Bytes
         jump tail(buffer, sep, count)
 
     block tail(buffer: @Byte, sep: USize, count: USize)
-        buffer.stride(a.count().add(sep)).copy(b.data, b.count())
+        buffer.stride(a.count().add(sep)).copy(src: b.data, count: b.count())
         joined: Bytes = Bytes(data: buffer, count: count, alloc: alloc)
         return(joined)
 
@@ -486,17 +487,17 @@ routine parent_path(path: Bytes) -> Bytes
     // Separators before the name go too, but a leading root separator stays.
     block trim(i: USize)
         branch i.eq(0)
-            ? return(path.slice(0, 1))
+            ? return(path.slice(start: 0, end: 1))
             : continue
         branch is_separator(path.byte_at(i.sub(1)).bits())
             ? trim(i.sub(1))
-            : return(path.slice(0, i))
+            : return(path.slice(start: 0, end: i))
 
     // No separator before the name: the root if path is only separators, else nothing.
     block root()
         branch end.eq(0).bitand(path.is_empty().bitnot())
-            ? return(path.slice(0, 1))
-            : return(path.slice(0, 0))
+            ? return(path.slice(start: 0, end: 1))
+            : return(path.slice(start: 0, end: 0))
 
 /// The last '.' of a name after its first character, or 0: a hidden file's leading dot isn't an extension.
 /// :param name: The file name to look at.
@@ -524,7 +525,7 @@ routine file_stem(path: Bytes) -> Bytes
         dot: USize = last_dot(name)
         branch dot.eq(0)
             ? return(name)
-            : return(name.slice(0, dot))
+            : return(name.slice(start: 0, end: dot))
 
 /// The extension without its dot: "file.txt" gives "txt", "file" and ".hidden" give "".
 /// :param path: The path whose last component is used.
@@ -534,8 +535,8 @@ routine file_extension(path: Bytes) -> Bytes
         name: Bytes = file_name(path)
         dot: USize = last_dot(name)
         branch dot.eq(0)
-            ? return(name.slice(0, 0))
-            : return(name.slice(dot.add(1), name.count()))
+            ? return(name.slice(start: 0, end: 0))
+            : return(name.slice(start: dot.add(1), end: name.count()))
 
 // -- memory-mapped files -----------------------------------------------------------------
 

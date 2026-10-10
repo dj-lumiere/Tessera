@@ -66,16 +66,17 @@ routine soft_b32_add(a: U32, b: U32) -> U32
     // each significand gets three bits below it (half, and the rest), and the smaller one shifts right to the larger
     // one's exponent with the bits it loses folded into a sticky bit
     block align(x: U32, y: U32)
-        x_parts: SoftParts32 = soft_unpack(x.bitand(MAGNITUDE), 23)
-        y_parts: SoftParts32 = soft_unpack(y.bitand(MAGNITUDE), 23)
+        x_parts: SoftParts32 = soft_unpack(magnitude: x.bitand(MAGNITUDE), sig_bits: 23)
+        y_parts: SoftParts32 = soft_unpack(magnitude: y.bitand(MAGNITUDE), sig_bits: 23)
         x_sig: U32 = x_parts.sig.shl(3)
         y_sig: U32 = y_parts.sig.shl(3)
         apart: U32 = x_parts.exponent.sub(y_parts.exponent).to[U32]()
-        aligned: U32 = soft_shr_sticky(y_sig, apart)
+        aligned: U32 = soft_shr_sticky(x: y_sig, shift: apart)
         sign: U32 = x.bitand(SIGN)
         same: Bool = x.bitxor(y).lt(SIGN)
         branch same
-            ? return(soft_round_pack(sign, x_parts.exponent, x_sig.add(aligned), B32.FORMAT.peek()))
+            ? return(soft_round_pack(sign, exponent: x_parts.exponent, m: x_sig.add(aligned),
+                format: B32.FORMAT.peek()))
             : difference(sign, x_sig.sub(aligned), x_parts.exponent)
 
     // the larger magnitude came first, so the difference isn't negative. An exact zero is +0
@@ -83,7 +84,7 @@ routine soft_b32_add(a: U32, b: U32) -> U32
         cancelled: Bool = sig.eq(0)
         branch cancelled
             ? return(0)
-            : return(soft_round_pack(sign, exponent, sig, B32.FORMAT.peek()))
+            : return(soft_round_pack(sign, exponent, m: sig, format: B32.FORMAT.peek()))
 
 /// B32 subtraction on the bits: `a + (-b)`, as compiler-rt's `__subsf3` computes it (so a NaN `b` comes back with its
 /// sign flipped).
@@ -93,7 +94,7 @@ routine soft_b32_add(a: U32, b: U32) -> U32
 #no_builtins
 routine soft_b32_sub(a: U32, b: U32) -> U32
     block entry()
-        r: U32 = soft_b32_add(a, b.bitxor(SIGN))
+        r: U32 = soft_b32_add(a, b: b.bitxor(SIGN))
         return(r)
 
 // -- multiplication ------------------------------------------------------------
@@ -129,12 +130,13 @@ routine soft_b32_mul(a: U32, b: U32) -> U32
     // the 48-bit product of two 24-bit significands, its leading bit at 46 or 47. Shifted down by 21 with a sticky
     // bit, it is a significand for an exponent of the two exponents' sum minus 126
     block finite()
-        x: SoftParts32 = soft_unpack(a_size, 23)
-        y: SoftParts32 = soft_unpack(b_size, 23)
+        x: SoftParts32 = soft_unpack(magnitude: a_size, sig_bits: 23)
+        y: SoftParts32 = soft_unpack(magnitude: b_size, sig_bits: 23)
         product: U64 = x.sig.to[U64]().mul_wrap(y.sig.to[U64]())
-        sig: U64 = soft_shr_sticky(product, 21)
+        sig: U64 = soft_shr_sticky(x: product, shift: 21)
         sum: S32 = x.exponent.add(y.exponent)
-        r: U32 = soft_round_pack(sign, sum.sub(126), sig.to_wrap[U32](), B32.FORMAT.peek())
+        r: U32 = soft_round_pack(sign, exponent: sum.sub(126), m: sig.to_wrap[U32](),
+            format: B32.FORMAT.peek())
         return(r)
 
 // -- division ------------------------------------------------------------------
@@ -176,8 +178,8 @@ routine soft_b32_div(a: U32, b: U32) -> U32
 
     // a dividend below the divisor doubles, so the quotient is in [1, 2)
     block finite()
-        x: SoftParts32 = soft_unpack(a_size, 23)
-        y: SoftParts32 = soft_unpack(b_size, 23)
+        x: SoftParts32 = soft_unpack(magnitude: a_size, sig_bits: 23)
+        y: SoftParts32 = soft_unpack(magnitude: b_size, sig_bits: 23)
         apart: S32 = x.exponent.sub(y.exponent)
         below: Bool = x.sig.lt(y.sig)
         num: U32 = below
@@ -211,7 +213,7 @@ routine soft_b32_div(a: U32, b: U32) -> U32
     block round(exponent: S32)
         sticky: U32 = rem.peek().ne(0).to[U32]()
         sig: U32 = quotient.peek().shl(1).bitor(sticky)
-        r: U32 = soft_round_pack(sign, exponent, sig, B32.FORMAT.peek())
+        r: U32 = soft_round_pack(sign, exponent, m: sig, format: B32.FORMAT.peek())
         return(r)
 
 // -- square root and remainder ---------------------------------------------------
@@ -238,7 +240,7 @@ routine soft_b32_sqrt(a: U32) -> U32
     // an odd unbiased exponent moves one bit into the significand, so the root's exponent is a whole half. The
     // significand scaled by 2^27 has a 26-bit root, the 24 kept bits and two below them
     block finite()
-        parts: SoftParts32 = soft_unpack(size, 23)
+        parts: SoftParts32 = soft_unpack(magnitude: size, sig_bits: 23)
         unbiased: S32 = parts.exponent.sub(127)
         odd: Bool = unbiased.bitand(1).eq(1)
         sig: U32 = odd
@@ -273,7 +275,8 @@ routine soft_b32_sqrt(a: U32) -> U32
     block round(half: S32)
         sticky: U64 = rem.peek().ne(0).to[U64]()
         sig: U64 = res.peek().shl(1).bitor(sticky)
-        r: U32 = soft_round_pack(0, half.add(127), sig.to_wrap[U32](), B32.FORMAT.peek())
+        r: U32 = soft_round_pack(sign: 0, exponent: half.add(127), m: sig.to_wrap[U32](),
+            format: B32.FORMAT.peek())
         return(r)
 
 /// The B32 remainder on the bits, exact: C's `fmodf`, which LLVM calls for `frem`. The result has the sign of `a`
@@ -300,8 +303,8 @@ routine soft_b32_mod(a: U32, b: U32) -> U32
 
     // long division one exponent step at a time, keeping only the remainder (below 2 × den throughout)
     block finite()
-        x: SoftParts32 = soft_unpack(a_size, 23)
-        y: SoftParts32 = soft_unpack(b_size, 23)
+        x: SoftParts32 = soft_unpack(magnitude: a_size, sig_bits: 23)
+        y: SoftParts32 = soft_unpack(magnitude: b_size, sig_bits: 23)
         jump reduce(x.sig, x.exponent, y.sig, y.exponent)
 
     block reduce(rem: U32, exponent: S32, den: U32, den_exponent: S32)
@@ -318,7 +321,7 @@ routine soft_b32_mod(a: U32, b: U32) -> U32
 
     // the remainder is exact and fits the format, so the packing doesn't round
     block pack(rem: U32, exponent: S32)
-        r: U32 = soft_round_pack(sign, exponent, rem.shl(3), B32.FORMAT.peek())
+        r: U32 = soft_round_pack(sign, exponent, m: rem.shl(3), format: B32.FORMAT.peek())
         return(r)
 
 /// B32 raised to an integer power by repeated squaring: compiler-rt's `__powisf2`, with the same multiplications in
@@ -340,7 +343,7 @@ routine soft_b32_powi(a: U32, n: S32) -> U32
         branch odd
             ? continue
             : advance(left)
-        soft_b32_mul(result.peek(), base.peek()).poke_into(result)
+        soft_b32_mul(a: result.peek(), b: base.peek()).poke_into(result)
         jump advance(left)
 
     block advance(left: U32)
@@ -349,13 +352,13 @@ routine soft_b32_powi(a: U32, n: S32) -> U32
         branch done
             ? finish()
             : continue
-        soft_b32_mul(base.peek(), base.peek()).poke_into(base)
+        soft_b32_mul(a: base.peek(), b: base.peek()).poke_into(base)
         jump step(rest)
 
     block finish()
         negative: Bool = n.lt(0)
         branch negative
-            ? return(soft_b32_div(ONE, result.peek()))
+            ? return(soft_b32_div(a: ONE, b: result.peek()))
             : return(result.peek())
 
 // -- comparison ----------------------------------------------------------------

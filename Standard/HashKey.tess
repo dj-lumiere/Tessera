@@ -65,7 +65,8 @@ routine hash_key() -> SipKey
 #[target(os: not "none"), noinline]
 private routine draw_hash_key() -> SipKey
     block entry()
-        claimed: Result[U32, U32] = HASH_KEY_STATE.atomic_compare_exchange(KEY_UNDRAWN, KEY_DRAWING)
+        claimed: Result[U32, U32] = HASH_KEY_STATE.atomic_compare_exchange(expected: KEY_UNDRAWN,
+            new: KEY_DRAWING)
         when claimed
             .Success => fill()
             .Failure => wait()
@@ -116,7 +117,7 @@ private routine draw_hash_key() -> SipKey
 #inline
 routine hash_combine(first: U64, second: U64) -> U64
     block entry()
-        return(siphash24(first, second, hash_key()))
+        return(siphash24(low: first, high: second, key: hash_key()))
 
 // -- the key from a random number instruction, without an OS -------------------------------------------------------
 //
@@ -149,7 +150,7 @@ private routine rdrand_word() -> U64
     block draw(attempt: U32)
         gave_up: Bool = attempt.ge(10)
         branch gave_up
-            ? crash("InvalidValueError", "RDRAND gave no random value in 10 tries.")
+            ? crash(name: "InvalidValueError", message: "RDRAND gave no random value in 10 tries.")
             : continue
         value, ok = rdrand_step()
         got: Bool = ok.ne(0)
@@ -196,7 +197,8 @@ private routine rdseed_word() -> U64
     block draw(attempt: U32)
         gave_up: Bool = attempt.ge(1000)
         branch gave_up
-            ? crash("InvalidValueError", "RDSEED gave no random value in 1000 tries.")
+            ? crash(name: "InvalidValueError",
+                message: "RDSEED gave no random value in 1000 tries.")
             : continue
         value, ok = rdseed_step()
         got: Bool = ok.ne(0)
@@ -240,7 +242,7 @@ private routine rndr_word() -> U64
     block draw(attempt: U32)
         gave_up: Bool = attempt.ge(10)
         branch gave_up
-            ? crash("InvalidValueError", "RNDR gave no random value in 10 tries.")
+            ? crash(name: "InvalidValueError", message: "RNDR gave no random value in 10 tries.")
             : continue
         value, ok = rndr_step()
         got: Bool = ok.ne(0)
@@ -281,7 +283,8 @@ private routine seed_sample() -> U16
         state: U64 = word.shr(30).bitand(3)
         when state
             2 => return(word.bitand(0xFFFF).to[U16]())
-            3 => crash("InvalidValueError", "The RISC-V entropy source (seed) reports DEAD.")
+            3 => crash(name: "InvalidValueError",
+                message: "The RISC-V entropy source (seed) reports DEAD.")
             else => poll()
 
 /// The hash key from the Zkr entropy source: `SEED_SAMPLES` raw 16-bit samples, conditioned into 128 bits by hashing
@@ -300,7 +303,7 @@ routine seed_hash_key(key: @SipKey) -> Void
         branch done
             ? condition()
             : continue
-        samples.setitem(at, seed_sample())
+        samples.setitem(index: at, value: seed_sample())
         jump gather(at.add(1))
 
     block condition()
@@ -308,6 +311,6 @@ routine seed_hash_key(key: @SipKey) -> Void
         size: USize = SEED_SAMPLES.mul(2)
         first: SipKey = (k0: 0, k1: 0)
         other: SipKey = (k0: 1, k1: 0)
-        siphash24(bytes, size, first).poke_into(key.k0)
-        siphash24(bytes, size, other).poke_into(key.k1)
+        siphash24(data: bytes, count: size, key: first).poke_into(key.k0)
+        siphash24(data: bytes, count: size, key: other).poke_into(key.k1)
         return()

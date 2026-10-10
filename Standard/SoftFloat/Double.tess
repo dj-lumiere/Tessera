@@ -70,11 +70,11 @@ routine soft_b64_add(a: U64, b: U64) -> U64
         x_sig: U64 = x_parts.sig.shl(3)
         y_sig: U64 = y_parts.sig.shl(3)
         apart: U64 = x_parts.exponent.sub(y_parts.exponent).to[U64]()
-        aligned: U64 = soft_shr_sticky(y_sig, apart)
+        aligned: U64 = soft_shr_sticky(x: y_sig, shift: apart)
         sign: U64 = x.bitand(SIGN)
         same: Bool = x.bitxor(y).lt(SIGN)
         branch same
-            ? return(soft_round_pack(sign, x_parts.exponent, x_sig.add(aligned)))
+            ? return(soft_round_pack(sign, exponent: x_parts.exponent, m: x_sig.add(aligned)))
             : difference(sign, x_sig.sub(aligned), x_parts.exponent)
 
     // the larger magnitude came first, so the difference isn't negative. An exact zero is +0
@@ -82,7 +82,7 @@ routine soft_b64_add(a: U64, b: U64) -> U64
         cancelled: Bool = sig.eq(0)
         branch cancelled
             ? return(0)
-            : return(soft_round_pack(sign, exponent, sig))
+            : return(soft_round_pack(sign, exponent, m: sig))
 
 /// B64 subtraction on the bits: `a + (-b)`, as compiler-rt's `__subdf3` computes it (so a NaN `b` comes back with its
 /// sign flipped).
@@ -92,7 +92,7 @@ routine soft_b64_add(a: U64, b: U64) -> U64
 #no_builtins
 routine soft_b64_sub(a: U64, b: U64) -> U64
     block entry()
-        r: U64 = soft_b64_add(a, b.bitxor(SIGN))
+        r: U64 = soft_b64_add(a, b: b.bitxor(SIGN))
         return(r)
 
 // -- multiplication ------------------------------------------------------------
@@ -131,9 +131,9 @@ routine soft_b64_mul(a: U64, b: U64) -> U64
         x: SoftParts64 = soft_unpack(a_size)
         y: SoftParts64 = soft_unpack(b_size)
         product: U128 = x.sig.to[U128]().mul_wrap(y.sig.to[U128]())
-        sig: U128 = soft_shr_sticky(product, 50)
+        sig: U128 = soft_shr_sticky(x: product, shift: 50)
         sum: S32 = x.exponent.add(y.exponent)
-        r: U64 = soft_round_pack(sign, sum.sub(1022), sig.to_wrap[U64]())
+        r: U64 = soft_round_pack(sign, exponent: sum.sub(1022), m: sig.to_wrap[U64]())
         return(r)
 
 // -- division ------------------------------------------------------------------
@@ -210,7 +210,7 @@ routine soft_b64_div(a: U64, b: U64) -> U64
     block round(exponent: S32)
         sticky: U64 = rem.peek().ne(0).to[U64]()
         sig: U64 = quotient.peek().shl(1).bitor(sticky)
-        r: U64 = soft_round_pack(sign, exponent, sig)
+        r: U64 = soft_round_pack(sign, exponent, m: sig)
         return(r)
 
 // -- square root and remainder ---------------------------------------------------
@@ -273,7 +273,7 @@ routine soft_b64_sqrt(a: U64) -> U64
         sticky: U64 = rem.peek().ne(0).to[U64]()
         root: U64 = res.peek().to_wrap[U64]()
         sig: U64 = root.shl(1).bitor(sticky)
-        r: U64 = soft_round_pack(0, half.add(1023), sig)
+        r: U64 = soft_round_pack(sign: 0, exponent: half.add(1023), m: sig)
         return(r)
 
 /// The B64 remainder on the bits, exact: C's `fmod`, which LLVM calls for `frem`. The result has the sign of `a`
@@ -318,7 +318,7 @@ routine soft_b64_mod(a: U64, b: U64) -> U64
 
     // the remainder is exact and fits the format, so the packing doesn't round
     block pack(rem: U64, exponent: S32)
-        r: U64 = soft_round_pack(sign, exponent, rem.shl(3))
+        r: U64 = soft_round_pack(sign, exponent, m: rem.shl(3))
         return(r)
 
 /// B64 raised to an integer power by repeated squaring: compiler-rt's `__powidf2`, with the same multiplications in
@@ -340,7 +340,7 @@ routine soft_b64_powi(a: U64, n: S32) -> U64
         branch odd
             ? continue
             : advance(left)
-        soft_b64_mul(result.peek(), base.peek()).poke_into(result)
+        soft_b64_mul(a: result.peek(), b: base.peek()).poke_into(result)
         jump advance(left)
 
     block advance(left: U32)
@@ -349,13 +349,13 @@ routine soft_b64_powi(a: U64, n: S32) -> U64
         branch done
             ? finish()
             : continue
-        soft_b64_mul(base.peek(), base.peek()).poke_into(base)
+        soft_b64_mul(a: base.peek(), b: base.peek()).poke_into(base)
         jump step(rest)
 
     block finish()
         negative: Bool = n.lt(0)
         branch negative
-            ? return(soft_b64_div(ONE, result.peek()))
+            ? return(soft_b64_div(a: ONE, b: result.peek()))
             : return(result.peek())
 
 // -- comparison ----------------------------------------------------------------

@@ -79,7 +79,7 @@ public static class Formatter
 
     private enum Kind { Binding, Claim, Shared, Field, Arm, Conform }
 
-    /// One alignable line split into its columns: `name : type = rest`, `claim name : type <- rest`, `name : rest`,
+    /// One alignable line split into its columns: `name: type = rest`, `claim name: type <- rest`, `name: rest`,
     /// `left -> rest`, or `conform C[X] when rest`.
     private sealed record Row(int Index, Kind Kind, int Indent, string Name, string? Type, string Rest);
 
@@ -182,7 +182,7 @@ public static class Formatter
     private static bool IsWhenHeader(string trimmed) =>
         StripComment(trimmed).TrimEnd() is var code && (code == "when" || code.StartsWith("when "));
 
-    /// `name : Type = rest`, where the type may hold spaces inside brackets (`Callable[(A, B), R]`).
+    /// `name: Type = rest`, where the type may hold spaces inside brackets (`Callable[(A, B), R]`).
     private static (string Name, string Type, string Tail)? SplitBinding(string s)
     {
         if (s.Length == 0 || !IsNameStart(s[0])) return null;
@@ -199,7 +199,7 @@ public static class Formatter
         return (name, type, rest);
     }
 
-    /// `local name : Type = value` or `local name : @Type <- contents`: the name, the type, and the rest with its `=`
+    /// `local name: Type = value` or `local name: @Type <- contents`: the name, the type, and the rest with its `=`
     /// or `<-` (value and slot lines align as one group).
     private static (string Name, string Type, string Tail)? SplitShared(string s)
     {
@@ -225,7 +225,7 @@ public static class Formatter
     /// A value's name starts with a letter or `_`; `%` may start one too.
     private static bool IsNameStart(char c) => char.IsLetter(c) || c is '_' or '%';
 
-    /// `claim name : Type <- contents`, or `claim name : Type` (an error the builder reports, kept as written); a line
+    /// `claim name: Type <- contents`, or `claim name: Type` (an error the builder reports, kept as written); a line
     /// with `=` after the type (also an error) isn't one.
     private static (string Name, string Type, string Contents)? SplitClaim(string s)
     {
@@ -535,7 +535,7 @@ public static class Formatter
 
     // ── Selects and branches ─────────────────────────────────────────────
 
-    /// Writes every `branch c ? a : b`, and every `x : T = c ? a : b` / `claim p : @T <- c ? a : b`, on three
+    /// Writes every `branch c ? a : b`, and every `x: T = c ? a : b` / `claim p: @T <- c ? a : b`, on three
     /// lines: the condition, then `? a` and `: b` 4 spaces further in. Arms already on their own lines are joined first,
     /// so every such statement comes out the same way. The lexer reads a line starting with `?` or `:` as the end of
     /// the one above, so the meaning doesn't change.
@@ -1048,7 +1048,7 @@ public static class Formatter
             {
                 if (result[j].StartsWith("require ") || (typeParameter && result[j].StartsWith(' ') && j < FirstBodyLine(result, i, end)))
                     continue;
-                // `claim p : @T` (and a local slot) spells its pointer type out, so a routine on Ptr[T] keeps it there.
+                // `claim p: @T` (and a local slot) spells its pointer type out, so a routine on Ptr[T] keeps it there.
                 if (atOwner is not null && (result[j].TrimStart().StartsWith("claim ", StringComparison.Ordinal)
                                             || result[j].TrimStart().StartsWith("local ", StringComparison.Ordinal)))
                     continue;

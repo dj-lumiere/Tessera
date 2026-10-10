@@ -243,7 +243,7 @@ routine b128_round_pack(negative: Bool, exponent: S64, sig: U128) -> U128
             : shift_left(amount, final_exp)
 
     block shift_right(amount: S64, e: S64)
-        s: U128 = shr_sticky(sig, amount)
+        s: U128 = shr_sticky(value: sig, n: amount)
         jump round(s, e)
 
     block shift_left(amount: S64, e: S64)
@@ -334,7 +334,7 @@ routine b128_nan_of(a: B128, b: B128) -> B128
 /// :see: {b128_add_bits} for the algorithm.
 routine B128.add(me: Me, other: Me) -> Me
     block entry()
-        r: Me = b128_of(b128_add_bits(me.bits(), other.bits()))
+        r: Me = b128_of(b128_add_bits(a: me.bits(), b: other.bits()))
         return(r)
 
 /// Subtracts `other` from `me` in software: adds `other` with its sign flipped, rounded to nearest (ties to even).
@@ -342,7 +342,7 @@ routine B128.add(me: Me, other: Me) -> Me
 /// :returns: `me - other`: infinity on overflow, NaN when either operand is NaN or for `inf - inf`.
 routine B128.sub(me: Me, other: Me) -> Me
     block entry()
-        r: Me = b128_of(b128_add_bits(me.bits(), other.bits().bitxor(B128_SIGN)))
+        r: Me = b128_of(b128_add_bits(a: me.bits(), b: other.bits().bitxor(B128_SIGN)))
         return(r)
 
 /// Adds two binary128 values on their bits, rounded to nearest (ties to even). {B128.add} and {B128.sub} call it.
@@ -422,14 +422,14 @@ routine b128_add_bits(a: U128, b: U128) -> U128
             : a_e
         big_neg: Bool = b128_is_negative_bits(a_big ? a : b)
         small_neg: Bool = b128_is_negative_bits(a_big ? b : a)
-        aligned: U128 = shr_sticky(small_sig, big_e.sub(small_e))
+        aligned: U128 = shr_sticky(value: small_sig, n: big_e.sub(small_e))
         same: Bool = big_neg.eq(small_neg)
         branch same
             ? sum(big_sig, aligned, big_e, big_neg)
             : difference(big_sig, aligned, big_e, big_neg)
 
     block sum(x: U128, y: U128, e: S64, negative: Bool)
-        r: U128 = b128_round_pack(negative, e, x.add(y))
+        r: U128 = b128_round_pack(negative, exponent: e, sig: x.add(y))
         return(r)
 
     // x - y. An exact zero is +0
@@ -440,7 +440,7 @@ routine b128_add_bits(a: U128, b: U128) -> U128
             ? x_negative
             : x_negative.bitnot()
         negative: Bool = sign.bitand(m.ne(0))
-        r: U128 = b128_round_pack(negative, e, m)
+        r: U128 = b128_round_pack(negative, exponent: e, sig: m)
         return(r)
 
 /// Multiplies `me` by `other` in software, rounded to nearest (ties to even).
@@ -448,7 +448,7 @@ routine b128_add_bits(a: U128, b: U128) -> U128
 /// :returns: `me * other`: infinity on overflow, NaN when either operand is NaN or for `0 * inf`.
 routine B128.mul(me: Me, other: Me) -> Me
     block entry()
-        r: Me = b128_of(b128_mul_bits(me.bits(), other.bits()))
+        r: Me = b128_of(b128_mul_bits(a: me.bits(), b: other.bits()))
         return(r)
 
 /// Multiplies two binary128 values on their bits, rounded to nearest (ties to even): the 226-bit product is formed exactly from 64-bit halves.
@@ -509,7 +509,7 @@ routine b128_mul_bits(a: U128, b: U128) -> U128
 /// :returns: `me / other`: a signed infinity for a nonzero value divided by zero, NaN for `0 / 0`, `inf / inf`, or a NaN operand.
 routine B128.div(me: Me, other: Me) -> Me
     block entry()
-        r: Me = b128_of(b128_div_bits(me.bits(), other.bits()))
+        r: Me = b128_of(b128_div_bits(a: me.bits(), b: other.bits()))
         return(r)
 
 /// Divides two binary128 values on their bits, rounded to nearest (ties to even), with two 3-by-2 limb division steps.
@@ -551,9 +551,9 @@ routine b128_div_bits(a: U128, b: U128) -> U128
         d0: U64 = d.to_wrap[U64]()
         divisor: Divisor3By2 = div_3by2_prepare(d1, d0)
         n: U128 = pa.sig.shl(3)
-        high: Div3By2 = div_3by2(n.shr(64).to[U64](), n.to_wrap[U64](), 0, divisor)
+        high: Div3By2 = div_3by2(u2: n.shr(64).to[U64](), u1: n.to_wrap[U64](), u0: 0, divisor)
         r: U128 = high.remainder
-        low: Div3By2 = div_3by2(r.shr(64).to[U64](), r.to_wrap[U64](), 0, divisor)
+        low: Div3By2 = div_3by2(u2: r.shr(64).to[U64](), u1: r.to_wrap[U64](), u0: 0, divisor)
         q_high: U128 = high.quotient.to[U128]().shl(64)
         q: U128 = q_high.bitor(low.quotient.to[U128]())
         sticky: Bool = low.remainder.ne(0)
@@ -596,9 +596,9 @@ routine b128_sqrt_bits(a: U128) -> U128
         exponent: S64 = e.div(2).add(B128_BIAS)
         root: U128 = isqrt_256(hi, lo)
         // the root is exact exactly when root^2 = radicand. Otherwise set the sticky bit
-        exact: Bool = square_equals(root, hi, lo)
+        exact: Bool = square_equals(x: root, hi, lo)
         sig: U128 = root.bitor(exact.bitnot().to[U128]())
-        bits: U128 = b128_round_pack(false, exponent, sig)
+        bits: U128 = b128_round_pack(negative: false, exponent, sig)
         return(bits)
 
 /// floor(n / x) for n = `hi` × 2^128 + `lo`, when the quotient fits in 128 bits and `hi` < `x` (after normalizing,
@@ -621,10 +621,11 @@ routine div_256_by_128(hi: U128, lo: U128, x: U128) -> U128
         d1: U64 = d.shr(64).to[U64]()
         d0: U64 = d.to_wrap[U64]()
         divisor: Divisor3By2 = div_3by2_prepare(d1, d0)
-        high: Div3By2 = div_3by2(n_hi.shr(64).to[U64](), n_hi.to_wrap[U64](),
-            n_lo.shr(64).to[U64](), divisor)
+        high: Div3By2 = div_3by2(u2: n_hi.shr(64).to[U64](), u1: n_hi.to_wrap[U64](),
+            u0: n_lo.shr(64).to[U64](), divisor)
         r: U128 = high.remainder
-        low: Div3By2 = div_3by2(r.shr(64).to[U64](), r.to_wrap[U64](), n_lo.to_wrap[U64](), divisor)
+        low: Div3By2 = div_3by2(u2: r.shr(64).to[U64](), u1: r.to_wrap[U64](),
+            u0: n_lo.to_wrap[U64](), divisor)
         q_high: U128 = high.quotient.to[U128]().shl(64)
         q: U128 = q_high.bitor(low.quotient.to[U128]())
         return(q)
@@ -818,7 +819,7 @@ routine b128_widen(bits: U64, format: FloatFormat) -> B128
     block sub()
         min_exponent: S64 = 1.sub(bias).add(B128_BIAS)
         pack_exponent: S64 = min_exponent.add(3)
-        r: U128 = b128_round_pack(negative, pack_exponent, top)
+        r: U128 = b128_round_pack(negative, exponent: pack_exponent, sig: top)
         jump done(r)
 
     block done(r: U128)
@@ -868,7 +869,7 @@ routine b128_narrow(value: B128, format: FloatFormat) -> U64
         min_e: S64 = 1.sub(bias)
         e_used: S64 = p.exponent.max(min_e)
         shift: S64 = 112.sub(mantissa_bits.to[S64]()).add(e_used.sub(p.exponent))
-        sticky: U128 = shr_sticky(p.sig, shift.sub(2).max(0))
+        sticky: U128 = shr_sticky(value: p.sig, n: shift.sub(2).max(0))
         grs_shift: S64 = 2.sub(shift).max(0)
         // two extra bits (half, rest) under the kept ones
         grs: U128 = shift.lt(2)
@@ -898,56 +899,56 @@ routine b128_narrow(value: B128, format: FloatFormat) -> U64
 /// :returns: The same value as a B128. NaN payloads move to the top of the fraction.
 routine B64.to[B128](me: Me) -> B128
     block entry()
-        r: B128 = b128_widen(me.bits(), Me.FORMAT.peek())
+        r: B128 = b128_widen(bits: me.bits(), format: Me.FORMAT.peek())
         return(r)
 
 /// Widens to B128, exactly.
 /// :returns: The same value as a B128. NaN payloads move to the top of the fraction.
 routine B32.to[B128](me: Me) -> B128
     block entry()
-        r: B128 = b128_widen(me.bits().to[U64](), Me.FORMAT.peek())
+        r: B128 = b128_widen(bits: me.bits().to[U64](), format: Me.FORMAT.peek())
         return(r)
 
 /// Widens to B128, exactly.
 /// :returns: The same value as a B128. NaN payloads move to the top of the fraction.
 routine B16.to[B128](me: Me) -> B128
     block entry()
-        r: B128 = b128_widen(me.bits().to[U64](), Me.FORMAT.peek())
+        r: B128 = b128_widen(bits: me.bits().to[U64](), format: Me.FORMAT.peek())
         return(r)
 
 /// Widens to B128, exactly.
 /// :returns: The same value as a B128. NaN payloads move to the top of the fraction.
 routine BF16.to[B128](me: Me) -> B128
     block entry()
-        r: B128 = b128_widen(me.bits().to[U64](), Me.FORMAT.peek())
+        r: B128 = b128_widen(bits: me.bits().to[U64](), format: Me.FORMAT.peek())
         return(r)
 
 /// Narrows to B64, rounding once to nearest (ties to even).
 /// :returns: The nearest B64: infinity beyond B64's range, a subnormal or zero for tiny values, NaN for NaN.
 routine B128.to[B64](me: Me) -> B64
     block entry()
-        r: B64 = .from_bits(b128_narrow(me, B64.FORMAT.peek()))
+        r: B64 = .from_bits(b128_narrow(value: me, format: B64.FORMAT.peek()))
         return(r)
 
 /// Narrows to B32, rounding once to nearest (ties to even), so it can differ from going through B64.
 /// :returns: The nearest B32: infinity beyond B32's range, a subnormal or zero for tiny values, NaN for NaN.
 routine B128.to[B32](me: Me) -> B32
     block entry()
-        r: B32 = .from_bits(b128_narrow(me, B32.FORMAT.peek()).to[U32]())
+        r: B32 = .from_bits(b128_narrow(value: me, format: B32.FORMAT.peek()).to[U32]())
         return(r)
 
 /// Narrows to B16, rounding once to nearest (ties to even).
 /// :returns: The nearest B16: infinity above 65504, a subnormal or zero for tiny values, NaN for NaN.
 routine B128.to[B16](me: Me) -> B16
     block entry()
-        r: B16 = .from_bits(b128_narrow(me, B16.FORMAT.peek()).to[U16]())
+        r: B16 = .from_bits(b128_narrow(value: me, format: B16.FORMAT.peek()).to[U16]())
         return(r)
 
 /// Narrows to BF16, rounding once to nearest (ties to even).
 /// :returns: The nearest BF16: infinity beyond BF16's range, a subnormal or zero for tiny values, NaN for NaN.
 routine B128.to[BF16](me: Me) -> BF16
     block entry()
-        r: BF16 = .from_bits(b128_narrow(me, BF16.FORMAT.peek()).to[U16]())
+        r: BF16 = .from_bits(b128_narrow(value: me, format: BF16.FORMAT.peek()).to[U16]())
         return(r)
 
 /// The identity conversion, so generic code can call `to[T]()` when `T` is B128.
@@ -960,7 +961,7 @@ routine B128.to[Me](me: Me) -> Me
 /// :returns: The nearest B128, exact below 2^113.
 routine U128.to[B128](me: Me) -> B128
     block entry()
-        bits: Me = b128_round_pack(false, B128_BIAS.add(115), me)
+        bits: Me = b128_round_pack(negative: false, exponent: B128_BIAS.add(115), sig: me)
         r: B128 = b128_of(bits)
         return(r)
 
@@ -970,7 +971,7 @@ routine S128.to[B128](me: Me) -> B128
     block entry()
         negative: Bool = me.lt(0)
         magnitude: U128 = me.abs_diff(0)
-        bits: U128 = b128_round_pack(negative, B128_BIAS.add(115), magnitude)
+        bits: U128 = b128_round_pack(negative, exponent: B128_BIAS.add(115), sig: magnitude)
         r: B128 = b128_of(bits)
         return(r)
 
@@ -1132,21 +1133,21 @@ routine b128_round_int(bits: U128, mode: B128Rounding) -> U128
 /// :returns: The integer part of `me`, with its sign (-0.5 gives -0.0). Infinities and NaN come back unchanged.
 routine B128.trunc(me: Me) -> Me
     block entry()
-        r: Me = b128_of(b128_round_int(me.bits(), B128Rounding.TOWARD_ZERO))
+        r: Me = b128_of(b128_round_int(bits: me.bits(), mode: B128Rounding.TOWARD_ZERO))
         return(r)
 
 /// Rounds toward negative infinity on the encoding (exact).
 /// :returns: The largest integer value not above `me`. Zeros, infinities and NaN come back unchanged.
 routine B128.floor(me: Me) -> Me
     block entry()
-        r: Me = b128_of(b128_round_int(me.bits(), B128Rounding.DOWN))
+        r: Me = b128_of(b128_round_int(bits: me.bits(), mode: B128Rounding.DOWN))
         return(r)
 
 /// Rounds toward positive infinity on the encoding (exact).
 /// :returns: The smallest integer value not below `me` (-0.5 gives -0.0). Zeros, infinities and NaN come back unchanged.
 routine B128.ceil(me: Me) -> Me
     block entry()
-        r: Me = b128_of(b128_round_int(me.bits(), B128Rounding.UP))
+        r: Me = b128_of(b128_round_int(bits: me.bits(), mode: B128Rounding.UP))
         return(r)
 
 /// Rounds to the nearest integer on the encoding, half-way cases away from zero (exact).
@@ -1154,7 +1155,7 @@ routine B128.ceil(me: Me) -> Me
 ///     back quieted.
 routine B128.round(me: Me) -> Me
     block entry()
-        r: Me = b128_of(b128_round_int(me.bits(), B128Rounding.NEAREST_AWAY))
+        r: Me = b128_of(b128_round_int(bits: me.bits(), mode: B128Rounding.NEAREST_AWAY))
         return(r)
 
 /// Rounds to the nearest integer on the encoding, half-way cases to the even neighbor (exact).
@@ -1162,7 +1163,7 @@ routine B128.round(me: Me) -> Me
 ///     back quieted.
 routine B128.round_ties_even(me: Me) -> Me
     block entry()
-        r: Me = b128_of(b128_round_int(me.bits(), B128Rounding.NEAREST_EVEN))
+        r: Me = b128_of(b128_round_int(bits: me.bits(), mode: B128Rounding.NEAREST_EVEN))
         return(r)
 
 /// `me` minus its integer part, with the sign of `me`.
@@ -1234,7 +1235,7 @@ routine shr_sticky(x: U256, n: S64) -> U256
 /// :see: {b128_fma_bits}
 routine B128.mul_add(me: Me, a: Me, b: Me) -> Me
     block entry()
-        r: Me = b128_of(b128_fma_bits(me.bits(), a.bits(), b.bits()))
+        r: Me = b128_of(b128_fma_bits(x: me.bits(), y: a.bits(), c: b.bits()))
         return(r)
 
 /// Fused multiply-add on binary128 bits: `x * y + c` with a single rounding, the exact product aligned with `c` in 256 bits.
@@ -1263,7 +1264,7 @@ routine b128_fma_bits(x: U128, y: U128, c: U128) -> U128
             p_inf => infinite_product(sign, p_zero, c_inf)
             c_inf => return(c)
             p_zero => zero_product(sign, c_zero)
-            c_zero => return(b128_mul_bits(x, y))
+            c_zero => return(b128_mul_bits(a: x, b: y))
             else => finite(sign)
 
     // inf × 0 and inf - inf are NaN
@@ -1316,7 +1317,7 @@ routine b128_fma_bits(x: U128, y: U128, c: U128) -> U128
         small_neg: Bool = p_first
             ? c_neg
             : p_neg
-        aligned: U256 = shr_sticky(small, diff)
+        aligned: U256 = shr_sticky(x: small, n: diff)
         same: Bool = big_neg.eq(small_neg)
         branch same
             ? sum(big, aligned, e, big_neg)
@@ -1492,7 +1493,7 @@ routine b128_remainder_parts(a: U128, b: U128) -> B128Remainder
             ? mb
             : 0
         rest: U128 = x.peek().sub(taken)
-        bits: U128 = b128_round_pack(false, eb.add(B128_BIAS), rest.shl(3))
+        bits: U128 = b128_round_pack(negative: false, exponent: eb.add(B128_BIAS), sig: rest.shl(3))
         r: B128Remainder = B128Remainder(magnitude: b128_of(bits), odd: odd)
         return(r)
 
@@ -1516,7 +1517,7 @@ routine B128.mod(me: Me, other: Me) -> Me
             else => finite()
 
     block finite()
-        parts: B128Remainder = b128_remainder_parts(me.bits(), other.bits())
+        parts: B128Remainder = b128_remainder_parts(a: me.bits(), b: other.bits())
         r: Me = parts.magnitude.copysign(me)
         return(r)
 
@@ -1543,7 +1544,7 @@ routine B128.rem(me: Me, other: Me) -> Me
     // past half of |other|, or at half with an odd quotient, step down by |other|:
     // r - |other| is exact, as |other| / 2 <= r < |other|
     block finite()
-        parts: B128Remainder = b128_remainder_parts(me.bits(), other.bits())
+        parts: B128Remainder = b128_remainder_parts(a: me.bits(), b: other.bits())
         r: Me = parts.magnitude
         divisor: Me = other.abs()
         twice: Me = r.add(r)
@@ -1611,7 +1612,7 @@ routine B128.mod_euclid(me: Me, other: Me) -> Me
 /// :returns: `me - other` when `me > other`, else +0. NaN when either is NaN.
 routine B128.fdim(me: Me, other: Me) -> Me
     block entry()
-        unordered: Bool = b128_ordered(me.bits(), other.bits()).bitnot()
+        unordered: Bool = b128_ordered(a: me.bits(), b: other.bits()).bitnot()
         above: Bool = me.gt(other)
         subtract: Bool = unordered.bitor(above)
         zero: Me = b128_of(0)
@@ -1775,9 +1776,10 @@ routine B128.scalbn(me: Me, n: S64) -> Me
     // past ±40000 every finite value over- or underflows, and the sum can't wrap
     block finite()
         p: B128Parts = b128_unpack(bits)
-        shift: S64 = n.clamp(-40000, 40000)
+        shift: S64 = n.clamp(lo: -40000, hi: 40000)
         negative: Bool = b128_is_negative_bits(bits)
-        packed: U128 = b128_round_pack(negative, p.exponent.add(shift).add(B128_BIAS), p.sig.shl(3))
+        packed: U128 = b128_round_pack(negative, exponent: p.exponent.add(shift).add(B128_BIAS),
+            sig: p.sig.shl(3))
         r: Me = b128_of(packed)
         return(r)
 
@@ -1852,12 +1854,12 @@ routine B128.is_trunc_in_range(me: Me, lo_bits: S64, hi_bits: S64) -> Bool
 
     block unsigned()
         zero: Me = b128_of(0)
-        r: Bool = whole.in_range(zero, hi)
+        r: Bool = whole.in_range(lo: zero, end: hi)
         return(r)
 
     block signed()
         lo: Me = b128_pow2(lo_bits).neg()
-        r: Bool = whole.in_range(lo, hi)
+        r: Bool = whole.in_range(lo, end: hi)
         return(r)
 
 /// Converts to U128, rounding toward zero and saturating at the ends of its range.
@@ -1900,7 +1902,7 @@ routine B128.to_clamp[S128](me: Me) -> S128
 #track_caller
 routine B128.to[S8](me: Me) -> S8
     block entry()
-        fits: Bool = me.is_trunc_in_range(7, 7)
+        fits: Bool = me.is_trunc_in_range(lo_bits: 7, hi_bits: 7)
         branch fits
             ? continue
             : crash_overflow()
@@ -1913,7 +1915,7 @@ routine B128.to[S8](me: Me) -> S8
 /// :see: {B128.to[S8]} to crash instead, {B128.to_clamp[S8]} to saturate.
 routine B128.to_checked[S8](me: Me) -> Option[S8]
     block entry()
-        fits: Bool = me.is_trunc_in_range(7, 7)
+        fits: Bool = me.is_trunc_in_range(lo_bits: 7, hi_bits: 7)
         value: S8 = me.to_clamp[S8]()
         r: Option[S8] = fits.then_present(value)
         return(r)
@@ -1933,7 +1935,7 @@ routine B128.to_clamp[S8](me: Me) -> S8
 #track_caller
 routine B128.to[S16](me: Me) -> S16
     block entry()
-        fits: Bool = me.is_trunc_in_range(15, 15)
+        fits: Bool = me.is_trunc_in_range(lo_bits: 15, hi_bits: 15)
         branch fits
             ? continue
             : crash_overflow()
@@ -1946,7 +1948,7 @@ routine B128.to[S16](me: Me) -> S16
 /// :see: {B128.to[S16]} to crash instead, {B128.to_clamp[S16]} to saturate.
 routine B128.to_checked[S16](me: Me) -> Option[S16]
     block entry()
-        fits: Bool = me.is_trunc_in_range(15, 15)
+        fits: Bool = me.is_trunc_in_range(lo_bits: 15, hi_bits: 15)
         value: S16 = me.to_clamp[S16]()
         r: Option[S16] = fits.then_present(value)
         return(r)
@@ -1966,7 +1968,7 @@ routine B128.to_clamp[S16](me: Me) -> S16
 #track_caller
 routine B128.to[S32](me: Me) -> S32
     block entry()
-        fits: Bool = me.is_trunc_in_range(31, 31)
+        fits: Bool = me.is_trunc_in_range(lo_bits: 31, hi_bits: 31)
         branch fits
             ? continue
             : crash_overflow()
@@ -1979,7 +1981,7 @@ routine B128.to[S32](me: Me) -> S32
 /// :see: {B128.to[S32]} to crash instead, {B128.to_clamp[S32]} to saturate.
 routine B128.to_checked[S32](me: Me) -> Option[S32]
     block entry()
-        fits: Bool = me.is_trunc_in_range(31, 31)
+        fits: Bool = me.is_trunc_in_range(lo_bits: 31, hi_bits: 31)
         value: S32 = me.to_clamp[S32]()
         r: Option[S32] = fits.then_present(value)
         return(r)
@@ -1999,7 +2001,7 @@ routine B128.to_clamp[S32](me: Me) -> S32
 #track_caller
 routine B128.to[S64](me: Me) -> S64
     block entry()
-        fits: Bool = me.is_trunc_in_range(63, 63)
+        fits: Bool = me.is_trunc_in_range(lo_bits: 63, hi_bits: 63)
         branch fits
             ? continue
             : crash_overflow()
@@ -2012,7 +2014,7 @@ routine B128.to[S64](me: Me) -> S64
 /// :see: {B128.to[S64]} to crash instead, {B128.to_clamp[S64]} to saturate.
 routine B128.to_checked[S64](me: Me) -> Option[S64]
     block entry()
-        fits: Bool = me.is_trunc_in_range(63, 63)
+        fits: Bool = me.is_trunc_in_range(lo_bits: 63, hi_bits: 63)
         value: S64 = me.to_clamp[S64]()
         r: Option[S64] = fits.then_present(value)
         return(r)
@@ -2032,7 +2034,7 @@ routine B128.to_clamp[S64](me: Me) -> S64
 #track_caller
 routine B128.to[S128](me: Me) -> S128
     block entry()
-        fits: Bool = me.is_trunc_in_range(127, 127)
+        fits: Bool = me.is_trunc_in_range(lo_bits: 127, hi_bits: 127)
         branch fits
             ? continue
             : crash_overflow()
@@ -2045,7 +2047,7 @@ routine B128.to[S128](me: Me) -> S128
 /// :see: {B128.to[S128]} to crash instead, {B128.to_clamp[S128]} to saturate.
 routine B128.to_checked[S128](me: Me) -> Option[S128]
     block entry()
-        fits: Bool = me.is_trunc_in_range(127, 127)
+        fits: Bool = me.is_trunc_in_range(lo_bits: 127, hi_bits: 127)
         value: S128 = me.to_clamp[S128]()
         r: Option[S128] = fits.then_present(value)
         return(r)
@@ -2057,7 +2059,7 @@ routine B128.to_checked[S128](me: Me) -> Option[S128]
 #track_caller
 routine B128.to[U8](me: Me) -> U8
     block entry()
-        fits: Bool = me.is_trunc_in_range(-1, 8)
+        fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 8)
         branch fits
             ? continue
             : crash_overflow()
@@ -2070,7 +2072,7 @@ routine B128.to[U8](me: Me) -> U8
 /// :see: {B128.to[U8]} to crash instead, {B128.to_clamp[U8]} to saturate.
 routine B128.to_checked[U8](me: Me) -> Option[U8]
     block entry()
-        fits: Bool = me.is_trunc_in_range(-1, 8)
+        fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 8)
         value: U8 = me.to_clamp[U8]()
         r: Option[U8] = fits.then_present(value)
         return(r)
@@ -2090,7 +2092,7 @@ routine B128.to_clamp[U8](me: Me) -> U8
 #track_caller
 routine B128.to[U16](me: Me) -> U16
     block entry()
-        fits: Bool = me.is_trunc_in_range(-1, 16)
+        fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 16)
         branch fits
             ? continue
             : crash_overflow()
@@ -2103,7 +2105,7 @@ routine B128.to[U16](me: Me) -> U16
 /// :see: {B128.to[U16]} to crash instead, {B128.to_clamp[U16]} to saturate.
 routine B128.to_checked[U16](me: Me) -> Option[U16]
     block entry()
-        fits: Bool = me.is_trunc_in_range(-1, 16)
+        fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 16)
         value: U16 = me.to_clamp[U16]()
         r: Option[U16] = fits.then_present(value)
         return(r)
@@ -2123,7 +2125,7 @@ routine B128.to_clamp[U16](me: Me) -> U16
 #track_caller
 routine B128.to[U32](me: Me) -> U32
     block entry()
-        fits: Bool = me.is_trunc_in_range(-1, 32)
+        fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 32)
         branch fits
             ? continue
             : crash_overflow()
@@ -2136,7 +2138,7 @@ routine B128.to[U32](me: Me) -> U32
 /// :see: {B128.to[U32]} to crash instead, {B128.to_clamp[U32]} to saturate.
 routine B128.to_checked[U32](me: Me) -> Option[U32]
     block entry()
-        fits: Bool = me.is_trunc_in_range(-1, 32)
+        fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 32)
         value: U32 = me.to_clamp[U32]()
         r: Option[U32] = fits.then_present(value)
         return(r)
@@ -2156,7 +2158,7 @@ routine B128.to_clamp[U32](me: Me) -> U32
 #track_caller
 routine B128.to[U64](me: Me) -> U64
     block entry()
-        fits: Bool = me.is_trunc_in_range(-1, 64)
+        fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 64)
         branch fits
             ? continue
             : crash_overflow()
@@ -2169,7 +2171,7 @@ routine B128.to[U64](me: Me) -> U64
 /// :see: {B128.to[U64]} to crash instead, {B128.to_clamp[U64]} to saturate.
 routine B128.to_checked[U64](me: Me) -> Option[U64]
     block entry()
-        fits: Bool = me.is_trunc_in_range(-1, 64)
+        fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 64)
         value: U64 = me.to_clamp[U64]()
         r: Option[U64] = fits.then_present(value)
         return(r)
@@ -2189,7 +2191,7 @@ routine B128.to_clamp[U64](me: Me) -> U64
 #track_caller
 routine B128.to[U128](me: Me) -> U128
     block entry()
-        fits: Bool = me.is_trunc_in_range(-1, 128)
+        fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 128)
         branch fits
             ? continue
             : crash_overflow()
@@ -2202,7 +2204,7 @@ routine B128.to[U128](me: Me) -> U128
 /// :see: {B128.to[U128]} to crash instead, {B128.to_clamp[U128]} to saturate.
 routine B128.to_checked[U128](me: Me) -> Option[U128]
     block entry()
-        fits: Bool = me.is_trunc_in_range(-1, 128)
+        fits: Bool = me.is_trunc_in_range(lo_bits: -1, hi_bits: 128)
         value: U128 = me.to_clamp[U128]()
         r: Option[U128] = fits.then_present(value)
         return(r)

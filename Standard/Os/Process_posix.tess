@@ -213,11 +213,11 @@ private routine Prepared.empty() -> Me
 private routine c_string(text: Bytes, alloc: @MemoryManager) -> @Byte
     block entry()
         n: USize = text.count()
-        p: @Byte = allocate[Byte](n.add(1), alloc)
+        p: @Byte = allocate[Byte](count: n.add(1), alloc)
         branch p.is_null()
             ? return(null)
             : continue
-        p.copy(text.data, n)
+        p.copy(src: text.data, count: n)
         p.stride(n).poke(0x00)
         return(p)
 
@@ -230,13 +230,13 @@ private routine env_entry(v: EnvVar, alloc: @MemoryManager) -> @Byte
     block entry()
         n: USize = v.name.count()
         m: USize = v.value.count()
-        p: @Byte = allocate[Byte](n.add(m).add(2), alloc)
+        p: @Byte = allocate[Byte](count: n.add(m).add(2), alloc)
         branch p.is_null()
             ? return(null)
             : continue
-        p.copy(v.name.data, n)
+        p.copy(src: v.name.data, count: n)
         p.stride(n).poke(b'=')
-        p.stride(n.add(1)).copy(v.value.data, m)
+        p.stride(n.add(1)).copy(src: v.value.data, count: m)
         p.stride(n.add(m).add(1)).poke(0x00)
         return(p)
 
@@ -252,7 +252,7 @@ private routine Prepared.release(me: @Me, alloc: @MemoryManager) -> Void
             ? env(0)
             : continue
         arg_slot: @@Byte = me.argv.peek().stride(i)
-        deallocate(arg_slot.peek(), alloc)
+        deallocate(data: arg_slot.peek(), alloc)
         jump args(i.add(1))
 
     block env(i: USize)
@@ -261,7 +261,7 @@ private routine Prepared.release(me: @Me, alloc: @MemoryManager) -> Void
             ? rest()
             : continue
         entry_slot: @@Byte = envp.stride(me.own_first.peek().add(i))
-        deallocate(entry_slot.peek(), alloc)
+        deallocate(data: entry_slot.peek(), alloc)
         jump env(i.add(1))
 
     block rest()
@@ -269,7 +269,7 @@ private routine Prepared.release(me: @Me, alloc: @MemoryManager) -> Void
         branch argv.is_null()
             ? arrays_done()
             : continue
-        deallocate(argv, alloc)
+        deallocate(data: argv, alloc)
         jump arrays_done()
 
     block arrays_done()
@@ -277,7 +277,7 @@ private routine Prepared.release(me: @Me, alloc: @MemoryManager) -> Void
         branch envp.is_null()
             ? env_done()
             : continue
-        deallocate(envp, alloc)
+        deallocate(data: envp, alloc)
         jump env_done()
 
     block env_done()
@@ -285,7 +285,7 @@ private routine Prepared.release(me: @Me, alloc: @MemoryManager) -> Void
         branch dir.is_null()
             ? return()
             : continue
-        deallocate(dir, alloc)
+        deallocate(data: dir, alloc)
         return()
 
 /// Builds everything the child needs before fork, so the child allocates nothing: the argument vector, the merged
@@ -303,7 +303,7 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
 
     block entry()
         me.poke(Prepared.empty())
-        argv: @@Byte = allocate[@Byte](arg_count.add(2), alloc)
+        argv: @@Byte = allocate[@Byte](count: arg_count.add(2), alloc)
         branch argv.is_null()
             ? return(false)
             : continue
@@ -315,8 +315,8 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
             ? args_done(argv, i)
             : continue
         branch i.eq(0)
-            ? made(argv, i, c_string(program, alloc))
-            : made(argv, i, c_string(args.getitem(i.sub(1)), alloc))
+            ? made(argv, i, c_string(text: program, alloc))
+            : made(argv, i, c_string(text: args.getitem(i.sub(1)), alloc))
 
     block made(argv: @@Byte, i: USize, s: @Byte)
         branch s.is_null()
@@ -329,7 +329,7 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
     block args_done(argv: @@Byte, n: USize)
         argv.stride(n).poke(null)
         when options.directory
-            .Present(d) => directory(c_string(d, alloc))
+            .Present(d) => directory(c_string(text: d, alloc))
             .Absent => environment()
 
     block directory(d: @Byte)
@@ -358,7 +358,7 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
     // The parent's entries the overrides don't name, pointed at as they are (the child gets the same memory), then
     // the overrides, made here.
     block merge(parent: @@Byte, n: USize)
-        envp: @@Byte = allocate[@Byte](n.add(options.env_count).add(1), alloc)
+        envp: @@Byte = allocate[@Byte](count: n.add(options.env_count).add(1), alloc)
         branch envp.is_null()
             ? return(false)
             : continue
@@ -371,7 +371,7 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
             ? own(envp, 0)
             : continue
         entry: @Byte = parent.stride(i).peek()
-        branch is_overridden(entry.to[CStr]().to[Bytes](), options)
+        branch is_overridden(entry: entry.to[CStr]().to[Bytes](), options)
             ? keep(parent, n, envp, i.add(1))
             : continue
         envp.stride(first.peek()).poke(entry)
@@ -382,7 +382,7 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
         branch j.eq(options.env_count)
             ? env_done(envp, j)
             : continue
-        e: @Byte = env_entry(options.env.stride(j).peek(), alloc)
+        e: @Byte = env_entry(v: options.env.stride(j).peek(), alloc)
         branch e.is_null()
             ? env_failed(envp, j)
             : continue
@@ -413,7 +413,7 @@ private routine is_overridden(entry: Bytes, options: ProcessOptions) -> Bool
         branch j.eq(options.env_count)
             ? return(false)
             : continue
-        branch env_key_matches(options.env.stride(j).peek().name, entry, false)
+        branch env_key_matches(name: options.env.stride(j).peek().name, entry, fold: false)
             ? return(true)
             : look(j.add(1))
 
@@ -642,12 +642,12 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
             ? null_fd
             : -1
         streams: ChildStreams = ChildStreams(input: input,
-            output: output_fd(options.stdout, pipes.out_w.peek(), null_fd),
-            error: output_fd(options.stderr, pipes.err_w.peek(), null_fd),
+            output: output_fd(mode: options.stdout, pipe: pipes.out_w.peek(), null_fd),
+            error: output_fd(mode: options.stderr, pipe: pipes.err_w.peek(), null_fd),
             report: pipes.exec_w.peek())
         pid: CInt = c_fork()
         branch pid.eq(0)
-            ? child(p, streams)
+            ? child(p, s: streams)
             : continue
         branch pid.lt(0)
             ? spawn_failed()
@@ -676,8 +676,8 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         c_close(pipes.exec_r.peek())
         pipes.exec_r.poke(-1)
         // drain closes both pipes as each ends.
-        drain(PipeCapture(fd: pipes.out_r.peek(), buffer: out),
-            PipeCapture(fd: pipes.err_r.peek(), buffer: err), alloc)
+        drain(out: PipeCapture(fd: pipes.out_r.peek(), buffer: out),
+            err: PipeCapture(fd: pipes.err_r.peek(), buffer: err), alloc)
         pipes.out_r.poke(-1)
         pipes.err_r.poke(-1)
         status: Option[ExitStatus] = reap(pid)
@@ -705,8 +705,8 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
     block finish(result: Result[ProcessOutput, ProcessError])
         pipes.close_all()
         p.release(alloc)
-        release(out.peek(), alloc)
-        release(err.peek(), alloc)
+        release(b: out.peek(), alloc)
+        release(b: err.peek(), alloc)
         return(result)
 
 /// Frees a capture buffer's memory if it has any.
@@ -718,7 +718,7 @@ private routine release(b: CaptureBuffer, alloc: @MemoryManager) -> Void
         branch b.data.is_null()
             ? return()
             : continue
-        deallocate(b.data, alloc)
+        deallocate(data: b.data, alloc)
         return()
 
 /// Reads both pipes (-1 for one not captured) to their end, whichever has data, and closes them. When poll fails
@@ -831,7 +831,7 @@ routine env_var(name: Bytes, alloc: @MemoryManager) -> Option[Bytes]
         branch too_long.bitor(name.contains("\x00"))
             ? return(.Absent)
             : continue
-        key.to[@Byte]().copy(name.data, name.count())
+        key.to[@Byte]().copy(src: name.data, count: name.count())
         key_end: @Byte = key.to[@Byte]().stride(name.count())
         key_end.poke(0x00)
         value: @Byte = c_getenv(key.to[@Byte]())
@@ -839,10 +839,10 @@ routine env_var(name: Bytes, alloc: @MemoryManager) -> Option[Bytes]
             ? return(.Absent)
             : continue
         n: USize = value.to[CStr]().count()
-        owned: @Byte = allocate[Byte](n.max(1), alloc)
+        owned: @Byte = allocate[Byte](count: n.max(1), alloc)
         branch owned.is_null()
             ? return(.Absent)
             : continue
-        owned.copy(value, n)
+        owned.copy(src: value, count: n)
         text: Bytes = Bytes(data: owned, count: n, alloc: alloc)
         return(.Present(text))

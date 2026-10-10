@@ -92,7 +92,7 @@ require TKey: typename, TValue: typename
 /// :returns: The node, or null when the allocator fails.
 routine SortedDictNode[TKey, TValue].construct(leaf: Bool, alloc: @MemoryManager) -> @Me
 require TKey: typename, TValue: typename
-    local node: @Me = allocate[Me](1, alloc)
+    local node: @Me = allocate[Me](count: 1, alloc)
 
     block entry()
         failed: Bool = node.is_null()
@@ -578,8 +578,9 @@ require TKey: typename, TValue: typename
         mid: USize = NODE_KEYS.div(2)
         right_start: USize = mid.add(1)
         right_count: USize = NODE_KEYS.sub(right_start)
-        right.keys.copy(0, left.keys, right_start, right_count)
-        right.values.copy(0, left.values, right_start, right_count)
+        right.keys.copy(dst_start: 0, src: left.keys, src_start: right_start, count: right_count)
+        right.values.copy(dst_start: 0, src: left.values, src_start: right_start,
+            count: right_count)
         right.count.poke(right_count)
         branch leaf
             ? promote(mid)
@@ -597,13 +598,13 @@ require TKey: typename, TValue: typename
     block child_copy(i: USize, mid: USize, right_count: USize)
         src: USize = mid.add(1).add(i)
         child: @Me = left.children.getitem(src)
-        right.children.setitem(i, child)
+        right.children.setitem(index: i, value: child)
         jump child_loop(i.add(1), mid, right_count)
 
     block promote(mid: USize)
         parent_count: USize = me.count.peek()
-        me.keys.shift_right(index, parent_count)
-        me.values.shift_right(index, parent_count)
+        me.keys.shift_right(start: index, end: parent_count)
+        me.values.shift_right(start: index, end: parent_count)
         jump shift_children(parent_count, mid)
 
     block shift_children(i: USize, mid: USize)
@@ -615,15 +616,15 @@ require TKey: typename, TValue: typename
 
     block move_child(i: USize, mid: USize)
         child: @Me = me.children.getitem(i)
-        me.children.setitem(i.add(1), child)
+        me.children.setitem(index: i.add(1), value: child)
         jump shift_children(i.sub(1), mid)
 
     block install(mid: USize)
         middle_key: TKey = left.keys.getitem(mid)
         middle_value: TValue = left.values.getitem(mid)
-        me.keys.setitem(index, middle_key)
-        me.values.setitem(index, middle_value)
-        me.children.setitem(index.add(1), right)
+        me.keys.setitem(index, value: middle_key)
+        me.values.setitem(index, value: middle_value)
+        me.children.setitem(index: index.add(1), value: right)
         left.count.poke(mid)
         next_count: USize = me.count.peek().add(1)
         next_count.poke_into(me.count)
@@ -651,10 +652,10 @@ require TKey: typename, TValue: typename
     block insert_leaf()
         slot: USize = me.find_index(key)
         count: USize = me.count.peek()
-        me.keys.shift_right(slot, count)
-        me.values.shift_right(slot, count)
-        me.keys.setitem(slot, key)
-        me.values.setitem(slot, value)
+        me.keys.shift_right(start: slot, end: count)
+        me.values.shift_right(start: slot, end: count)
+        me.keys.setitem(index: slot, value: key)
+        me.values.setitem(index: slot, value)
         new_count: USize = count.add(1)
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
@@ -670,7 +671,7 @@ require TKey: typename, TValue: typename
             : descend(slot, child)
 
     block split_then_insert(slot: USize, child: @Me)
-        split: Bool = me.split_child(slot, alloc)
+        split: Bool = me.split_child(index: slot, alloc)
         branch split
             ? continue
             : return(false)
@@ -722,14 +723,14 @@ require TKey: typename, TValue: typename
 
     block first_root()
         alloc: @MemoryManager = me.alloc.peek()
-        first_node: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(true,
-            alloc)
+        first_node: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(
+            leaf: true, alloc)
         no_root: Bool = first_node.is_null()
         branch no_root
             ? return(.Failure(AllocFailed()))
             : continue
-        first_node.keys.setitem(0, key)
-        first_node.values.setitem(0, value)
+        first_node.keys.setitem(index: 0, value: key)
+        first_node.values.setitem(index: 0, value)
         first_node.count.poke(1)
         first_node.subtree_count.poke(1)
         me.root.poke(first_node)
@@ -751,14 +752,14 @@ require TKey: typename, TValue: typename
             : insert_nonfull(root, alloc)
 
     block split_root(alloc: @MemoryManager)
-        new_root: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(false,
-            alloc)
+        new_root: @SortedDictNode[TKey, TValue] = SortedDictNode[TKey, TValue].construct(
+            leaf: false, alloc)
         no_root: Bool = new_root.is_null()
         branch no_root
             ? return(.Failure(AllocFailed()))
             : continue
-        new_root.children.setitem(0, root)
-        split: Bool = new_root.split_child(0, alloc)
+        new_root.children.setitem(index: 0, value: root)
+        split: Bool = new_root.split_child(index: 0, alloc)
         branch split
             ? install_root(new_root, alloc)
             : discard_root(new_root, alloc)
@@ -768,7 +769,7 @@ require TKey: typename, TValue: typename
         jump insert_nonfull(new_root, alloc)
 
     block discard_root(new_root: @SortedDictNode[TKey, TValue], alloc: @MemoryManager)
-        deallocate[SortedDictNode[TKey, TValue]](new_root, alloc)
+        deallocate[SortedDictNode[TKey, TValue]](data: new_root, alloc)
         return(.Failure(AllocFailed()))
 
     block insert_nonfull(root_node: @SortedDictNode[TKey, TValue], alloc: @MemoryManager)
@@ -804,7 +805,7 @@ require TKey: typename, TValue: typename
             : descend_or_missing()
 
     block replace()
-        me.values.setitem(slot, value)
+        me.values.setitem(index: slot, value)
         return(true)
 
     block descend_or_missing()
@@ -824,8 +825,8 @@ require TKey: typename, TValue: typename
     block entry()
         old: TValue = me.values.getitem(index)
         count: USize = me.count.peek()
-        me.keys.shift_left(index, count)
-        me.values.shift_left(index, count)
+        me.keys.shift_left(start: index, end: count)
+        me.values.shift_left(start: index, end: count)
         new_count: USize = count.sub(1)
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
@@ -847,16 +848,16 @@ require TKey: typename, TValue: typename
     local child_count: USize = child.count.peek()
 
     block entry()
-        child.keys.shift_right(0, child_count)
-        child.values.shift_right(0, child_count)
+        child.keys.shift_right(start: 0, end: child_count)
+        child.values.shift_right(start: 0, end: child_count)
         pivot_key: TKey = me.keys.getitem(separator)
         pivot_value: TValue = me.values.getitem(separator)
-        child.keys.setitem(0, pivot_key)
-        child.values.setitem(0, pivot_value)
+        child.keys.setitem(index: 0, value: pivot_key)
+        child.values.setitem(index: 0, value: pivot_value)
         new_pivot_key: TKey = left.keys.getitem(left_count.sub(1))
         new_pivot_value: TValue = left.values.getitem(left_count.sub(1))
-        me.keys.setitem(separator, new_pivot_key)
-        me.values.setitem(separator, new_pivot_value)
+        me.keys.setitem(index: separator, value: new_pivot_key)
+        me.values.setitem(index: separator, value: new_pivot_value)
         leaf: Bool = child.leaf.peek()
         branch leaf
             ? finalize()
@@ -864,9 +865,9 @@ require TKey: typename, TValue: typename
 
     block move_child()
         children: USize = child_count.add(1)
-        child.children.shift_right(0, children)
+        child.children.shift_right(start: 0, end: children)
         moved: @Me = left.children.getitem(left_count)
-        child.children.setitem(0, moved)
+        child.children.setitem(index: 0, value: moved)
         jump finalize()
 
     block finalize()
@@ -889,14 +890,14 @@ require TKey: typename, TValue: typename
     block entry()
         pivot_key: TKey = me.keys.getitem(i)
         pivot_value: TValue = me.values.getitem(i)
-        child.keys.setitem(child_count, pivot_key)
-        child.values.setitem(child_count, pivot_value)
+        child.keys.setitem(index: child_count, value: pivot_key)
+        child.values.setitem(index: child_count, value: pivot_value)
         new_pivot_key: TKey = right.keys.getitem(0)
         new_pivot_value: TValue = right.values.getitem(0)
-        me.keys.setitem(i, new_pivot_key)
-        me.values.setitem(i, new_pivot_value)
-        right.keys.shift_left(0, right_count)
-        right.values.shift_left(0, right_count)
+        me.keys.setitem(index: i, value: new_pivot_key)
+        me.values.setitem(index: i, value: new_pivot_value)
+        right.keys.shift_left(start: 0, end: right_count)
+        right.values.shift_left(start: 0, end: right_count)
         leaf: Bool = child.leaf.peek()
         branch leaf
             ? finalize()
@@ -904,8 +905,8 @@ require TKey: typename, TValue: typename
 
     block move_child()
         moved: @Me = right.children.getitem(0)
-        child.children.setitem(child_count.add(1), moved)
-        right.children.shift_left(0, right_count.add(1))
+        child.children.setitem(index: child_count.add(1), value: moved)
+        right.children.shift_left(start: 0, end: right_count.add(1))
         jump finalize()
 
     block finalize()
@@ -930,28 +931,29 @@ require TKey: typename, TValue: typename
     block entry()
         pivot_key: TKey = me.keys.getitem(i)
         pivot_value: TValue = me.values.getitem(i)
-        left.keys.setitem(left_count, pivot_key)
-        left.values.setitem(left_count, pivot_value)
+        left.keys.setitem(index: left_count, value: pivot_key)
+        left.values.setitem(index: left_count, value: pivot_value)
         dst_start: USize = left_count.add(1)
-        left.keys.copy(dst_start, right.keys, 0, right_count)
-        left.values.copy(dst_start, right.values, 0, right_count)
+        left.keys.copy(dst_start, src: right.keys, src_start: 0, count: right_count)
+        left.values.copy(dst_start, src: right.values, src_start: 0, count: right_count)
         leaf: Bool = left.leaf.peek()
         branch leaf
             ? finalize()
             : copy_children()
 
     block copy_children()
-        left.children.copy(left_count.add(1), right.children, 0, right_count.add(1))
+        left.children.copy(dst_start: left_count.add(1), src: right.children, src_start: 0,
+            count: right_count.add(1))
         jump finalize()
 
     block finalize()
         left.count.poke(left_count.add(1).add(right_count))
         parent_count: USize = me.count.peek()
-        me.keys.shift_left(i, parent_count)
-        me.values.shift_left(i, parent_count)
-        me.children.shift_left(i.add(1), parent_count.add(1))
+        me.keys.shift_left(start: i, end: parent_count)
+        me.values.shift_left(start: i, end: parent_count)
+        me.children.shift_left(start: i.add(1), end: parent_count.add(1))
         me.count.poke(parent_count.sub(1))
-        deallocate[Me](right, alloc)
+        deallocate[Me](data: right, alloc)
         left.recount()
         me.recount()
         return()
@@ -1018,7 +1020,7 @@ require TKey: typename, TValue: typename
 
     block merge_with_left()
         merged_at: USize = i.sub(1)
-        me.merge_children(merged_at, alloc)
+        me.merge_children(i: merged_at, alloc)
         return(merged_at)
 
     block merge_with_right()
@@ -1048,7 +1050,7 @@ require TKey: typename, TValue: typename
 
     block descend()
         count: USize = me.count.peek()
-        actual: USize = me.ensure_min(count, alloc)
+        actual: USize = me.ensure_min(i: count, alloc)
         child: @Me = me.children.getitem(actual)
         key: TKey = child.take_max_key(out_value, alloc)
         me.recount()
@@ -1074,7 +1076,7 @@ require TKey: typename, TValue: typename
         return(key)
 
     block descend()
-        actual: USize = me.ensure_min(0, alloc)
+        actual: USize = me.ensure_min(i: 0, alloc)
         child: @Me = me.children.getitem(actual)
         key: TKey = child.take_min_key(out_value, alloc)
         me.recount()
@@ -1124,10 +1126,10 @@ require TKey: typename, TValue: typename
     block take_pred()
         claim out: @TValue <- .hollow()
         left: @Me = me.children.getitem(slot)
-        replacement_key: TKey = left.take_max_key(out, alloc)
+        replacement_key: TKey = left.take_max_key(out_value: out, alloc)
         replacement_value: TValue = out.peek()
-        me.keys.setitem(slot, replacement_key)
-        me.values.setitem(slot, replacement_value)
+        me.keys.setitem(index: slot, value: replacement_key)
+        me.values.setitem(index: slot, value: replacement_value)
         me.recount()
         return(true)
 
@@ -1142,15 +1144,15 @@ require TKey: typename, TValue: typename
     block take_succ()
         claim out: @TValue <- .hollow()
         right: @Me = me.children.getitem(slot.add(1))
-        replacement_key: TKey = right.take_min_key(out, alloc)
+        replacement_key: TKey = right.take_min_key(out_value: out, alloc)
         replacement_value: TValue = out.peek()
-        me.keys.setitem(slot, replacement_key)
-        me.values.setitem(slot, replacement_value)
+        me.keys.setitem(index: slot, value: replacement_key)
+        me.values.setitem(index: slot, value: replacement_value)
         me.recount()
         return(true)
 
     block merge_and_recurse()
-        me.merge_children(slot, alloc)
+        me.merge_children(i: slot, alloc)
         merged: @Me = me.children.getitem(slot)
         removed: Bool = merged.remove(key, alloc)
         me.recount()
@@ -1161,7 +1163,7 @@ require TKey: typename, TValue: typename
         branch leaf ? return(false): descend()
 
     block descend()
-        actual: USize = me.ensure_min(slot, alloc)
+        actual: USize = me.ensure_min(i: slot, alloc)
         child: @Me = me.children.getitem(actual)
         removed: Bool = child.remove(key, alloc)
         me.recount()
@@ -1204,14 +1206,14 @@ require TKey: typename, TValue: typename
 
     block clear_root()
         alloc: @MemoryManager = me.alloc.peek()
-        deallocate[SortedDictNode[TKey, TValue]](root, alloc)
+        deallocate[SortedDictNode[TKey, TValue]](data: root, alloc)
         me.root.poke(null)
         return(true)
 
     block shrink()
         alloc: @MemoryManager = me.alloc.peek()
         new_root: @SortedDictNode[TKey, TValue] = root.children.getitem(0)
-        deallocate[SortedDictNode[TKey, TValue]](root, alloc)
+        deallocate[SortedDictNode[TKey, TValue]](data: root, alloc)
         me.root.poke(new_root)
         return(true)
 
@@ -1242,7 +1244,7 @@ require TKey: typename, TValue: typename
         jump child_loop(i.add(1), child_count)
 
     block free_self()
-        deallocate[Me](me, alloc)
+        deallocate[Me](data: me, alloc)
         return()
 
 /// Frees the dict's memory through its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.

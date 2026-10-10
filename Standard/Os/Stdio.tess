@@ -65,7 +65,7 @@ private record InputBuffer
 /// :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
 private routine InputBuffer.fill(me: @Me) -> Bool
     block entry()
-        got: Result[USize, FsError] = stdin_read(me.bytes.to[@Byte](), IN_BUFFER)
+        got: Result[USize, FsError] = stdin_read(buffer: me.bytes.to[@Byte](), count: IN_BUFFER)
         when got
             .Success(n) => filled(n)
             .Failure => filled(0)
@@ -108,7 +108,7 @@ private routine InputBuffer.fill_more(me: @Me) -> Bool
 
     block entry()
         free: @Byte = me.bytes.to[@Byte]().stride(end)
-        got: Result[USize, FsError] = stdin_read(free, IN_BUFFER.sub(end))
+        got: Result[USize, FsError] = stdin_read(buffer: free, count: IN_BUFFER.sub(end))
         when got
             .Success(n) => added(n)
             .Failure => return(false)
@@ -192,13 +192,13 @@ private routine InputBuffer.word(me: @Me) -> Option[Bytes]
     block found(length: USize)
         from: USize = me.start.peek()
         buffered: @Byte = me.bytes.to[@Byte]()
-        word: Bytes = Bytes.from_ptr(buffered.stride(from), length)
+        word: Bytes = Bytes.from_ptr(data: buffered.stride(from), count: length)
         me.start.poke(from.add(length))
         return(.Present(word))
 
     // The whole buffer is one word so far: it goes on in memory from the default heap.
     block spill(length: USize)
-        text.append(me.bytes.to[@Byte](), length, DEFAULT_HEAP)
+        text.append(chunk: me.bytes.to[@Byte](), n: length, alloc: DEFAULT_HEAP)
         me.start.poke(length)
         jump spill_next()
 
@@ -213,7 +213,7 @@ private routine InputBuffer.word(me: @Me) -> Option[Bytes]
             ? spill_end()
             : continue
         claim single: @Byte <- byte
-        text.append(single, 1, DEFAULT_HEAP)
+        text.append(chunk: single, n: 1, alloc: DEFAULT_HEAP)
         jump spill_next()
 
     block spill_end()
@@ -259,7 +259,7 @@ routine In.read_into_result(buffer: @Byte, count: USize) -> Result[USize, FsErro
     block held()
         available: USize = b.end.peek().sub(b.start.peek())
         n: USize = available.min(count)
-        buffer.copy(b.bytes.to[@Byte]().stride(b.start.peek()), n)
+        buffer.copy(src: b.bytes.to[@Byte]().stride(b.start.peek()), count: n)
         next_start: USize = b.start.peek().add(n)
         next_start.poke_into(b.start)
         jump finish(.Success(n))
@@ -293,7 +293,8 @@ require T: typename, Parsable[T]
 
     block ended()
         b.lock.unlock()
-        crash("AbsentValueError", "The input ended before In.read<T>() found a word to read.")
+        crash(name: "AbsentValueError",
+            message: "The input ended before In.read<T>() found a word to read.")
 
     // The word may be a view of the buffer, so it's converted before the lock goes.
     block convert(text: Bytes)
@@ -355,7 +356,7 @@ routine In.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USi
 /// :returns: The bytes read (empty when the allocation fails).
 #expensive("allocates what it reads")
 routine In.read_count(count: USize, alloc: @MemoryManager) -> Bytes
-    local buffer: @Byte = allocate[Byte](count.max(1), alloc)
+    local buffer: @Byte = allocate[Byte](count: count.max(1), alloc)
 
     block entry()
         branch buffer.is_null()
@@ -366,7 +367,8 @@ routine In.read_count(count: USize, alloc: @MemoryManager) -> Bytes
         branch n.eq(count)
             ? return(Bytes(data: buffer, count: n, alloc: alloc))
             : continue
-        got: Result[USize, FsError] = Me.read_into_result(buffer.stride(n), count.sub(n))
+        got: Result[USize, FsError] = Me.read_into_result(buffer: buffer.stride(n),
+            count: count.sub(n))
         when got
             .Success(k) => continue
             .Failure => return(Bytes(data: buffer, count: n, alloc: alloc))
@@ -387,7 +389,7 @@ routine In.read_all(alloc: @MemoryManager) -> Bytes
         jump more()
 
     block more()
-        got: Result[USize, FsError] = Me.read_into_result(chunk, 4096)
+        got: Result[USize, FsError] = Me.read_into_result(buffer: chunk, count: 4096)
         when got
             .Success(n) => continue
             .Failure => return(text.owned(alloc))
@@ -409,8 +411,8 @@ routine In.read_line(alloc: @MemoryManager) -> Bytes
         line: Option[Bytes] = Me.read_line_checked(alloc)
         when line
             .Present(text) => return(text)
-            .Absent => crash("AbsentValueError",
-                "The input ended before In.read_line() found a line to read.")
+            .Absent => crash(name: "AbsentValueError",
+                message: "The input ended before In.read_line() found a line to read.")
 
 /// The next line, without its "\n" (or "\r\n"), in memory from alloc, or Absent at the end of the input. A last line
 /// with no "\n" still counts, and a blank line is "". Release it with `destruct()`.
@@ -435,7 +437,7 @@ routine In.read_line_checked(alloc: @MemoryManager) -> Option[Bytes]
             ? done()
             : continue
         claim single: @Byte <- byte
-        text.append(single, 1, alloc)
+        text.append(chunk: single, n: 1, alloc)
         jump next(true)
 
     block ended(any: Bool)
@@ -482,8 +484,8 @@ routine In.read_word(alloc: @MemoryManager) -> Bytes
         word: Option[Bytes] = Me.read_word_checked(alloc)
         when word
             .Present(text) => return(text)
-            .Absent => crash("AbsentValueError",
-                "The input ended before In.read_word() found a word to read.")
+            .Absent => crash(name: "AbsentValueError",
+                message: "The input ended before In.read_word() found a word to read.")
 
 /// The next word (spaces, tabs, and line ends separate words), in memory from alloc, or Absent at the end of the
 /// input. The space after the word stays in the input. Release it with `destruct()`.
@@ -509,7 +511,7 @@ routine In.read_word_checked(alloc: @MemoryManager) -> Option[Bytes]
             ? skip()
             : continue
         single.poke(byte)
-        text.append(single, 1, alloc)
+        text.append(chunk: single, n: 1, alloc)
         jump next()
 
     block next()
@@ -521,7 +523,7 @@ routine In.read_word_checked(alloc: @MemoryManager) -> Option[Bytes]
             ? put_back()
             : continue
         single.poke(byte)
-        text.append(single, 1, alloc)
+        text.append(chunk: single, n: 1, alloc)
         jump next()
 
     block put_back()
@@ -558,7 +560,7 @@ routine Out.writer() -> @Me
 #expensive("makes a system call")
 routine Out.write_all_result(data: @Byte, count: USize) -> Result[Unit, FsError]
     block entry()
-        branch stream_write(StdStream.OUTPUT, data, count)
+        branch stream_write(stream: StdStream.OUTPUT, data, count)
             ? return(.Success(Unit.value()))
             : return(.Failure(FsError.OTHER))
 
@@ -568,7 +570,7 @@ routine Out.write_all_result(data: @Byte, count: USize) -> Result[Unit, FsError]
 #expensive("makes a system call")
 routine Out.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
     block entry()
-        stream_write(StdStream.OUTPUT, data, count)
+        stream_write(stream: StdStream.OUTPUT, data, count)
         return()
 
 /// Whether standard output is a terminal (a console on Windows), not a pipe or a file.
@@ -599,7 +601,7 @@ routine Err.writer() -> @Me
 #expensive("makes a system call")
 routine Err.write_all_result(data: @Byte, count: USize) -> Result[Unit, FsError]
     block entry()
-        branch stream_write(StdStream.ERROR, data, count)
+        branch stream_write(stream: StdStream.ERROR, data, count)
             ? return(.Success(Unit.value()))
             : return(.Failure(FsError.OTHER))
 
@@ -609,7 +611,7 @@ routine Err.write_all_result(data: @Byte, count: USize) -> Result[Unit, FsError]
 #expensive("makes a system call")
 routine Err.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
     block entry()
-        stream_write(StdStream.ERROR, data, count)
+        stream_write(stream: StdStream.ERROR, data, count)
         return()
 
 /// Whether standard error is a terminal (a console on Windows), not a pipe or a file.
@@ -972,12 +974,12 @@ private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: US
     block finish_held()
         need: USize = sequence_length(pending.bytes.getitem(0)).sub(held)
         taken: USize = need.min(count)
-        pending.bytes.to[@Byte]().stride(held).copy(data, taken)
+        pending.bytes.to[@Byte]().stride(held).copy(src: data, count: taken)
         branch taken.lt(need)
             ? still_open(held.add(taken))
             : continue
         pending.count.poke(0)
-        branch console_text(h, pending.bytes.to[@Byte](), held.add(taken))
+        branch console_text(h, data: pending.bytes.to[@Byte](), count: held.add(taken))
             ? body(data.stride(taken), count.sub(taken))
             : return(false)
 
@@ -986,10 +988,10 @@ private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: US
         return(true)
 
     block body(at: @Byte, n: USize)
-        cut: USize = complete_end(at, n)
-        pending.bytes.to[@Byte]().copy(at.stride(cut), n.sub(cut))
+        cut: USize = complete_end(data: at, count: n)
+        pending.bytes.to[@Byte]().copy(src: at.stride(cut), count: n.sub(cut))
         pending.count.poke(n.sub(cut))
-        return(console_text(h, at, cut))
+        return(console_text(h, data: at, count: cut))
 
 /// Writes complete UTF-8 text to a console, a bufferful of UTF-16 at a time.
 /// :param h: The console handle.
@@ -1053,7 +1055,7 @@ private routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Bo
         ok: CInt = c_write_console(h, units, n.to[U32](), written, null)
         w: USize = written.peek().to[USize]()
         branch ok.ne(0).bitand(w.gt(0))
-            ? return(write_units(h, units.stride(w), n.sub(w), written))
+            ? return(write_units(h, units: units.stride(w), n: n.sub(w), written))
             : return(false)
 
 /// Reads up to `count` bytes of standard input: from the console as UTF-8, or from a pipe or a file as they are.
@@ -1116,17 +1118,17 @@ private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USi
             ? 0
             : 1
         joined.to[@U16]().poke(high)
-        joined.to[@U16]().stride(lead).copy(units, n)
+        joined.to[@U16]().stride(lead).copy(src: units, count: n)
         total: USize = n.add(lead)
         joined_units: @U16 = joined.to[@U16]()
         last: U16 = joined_units.stride(total.sub(1)).peek()
-        branch last.between(0xD800, 0xDBFF)
+        branch last.between(lo: 0xD800, hi: 0xDBFF)
             ? hold(joined.to[@U16](), total.sub(1), last)
             : hold(joined.to[@U16](), total, 0)
 
     block hold(joined: @U16, units: USize, high: U16)
         input.high.poke(high)
-        made: USize = narrow(joined, units, input.bytes.to[@Byte]())
+        made: USize = narrow(units: joined, count: units, out: input.bytes.to[@Byte]())
         input.start.poke(0)
         input.end.poke(made)
         branch made.eq(0)
@@ -1137,6 +1139,6 @@ private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USi
         start: USize = input.start.peek()
         available: USize = input.end.peek().sub(start)
         n: USize = available.min(count)
-        buffer.copy(input.bytes.to[@Byte]().stride(start), n)
+        buffer.copy(src: input.bytes.to[@Byte]().stride(start), count: n)
         input.start.poke(start.add(n))
         return(.Success(n))

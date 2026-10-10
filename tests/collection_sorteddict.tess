@@ -78,14 +78,14 @@ routine iteration_hash(map: @SortedDict[S64, S64]) -> S64
             .Absent => return(hash.peek())
         key: S64 = pair.key
         value: S64 = pair.value
-        mix(mix(hash.peek(), key), value).poke_into(hash)
+        mix(hash: mix(hash: hash.peek(), value: key), value).poke_into(hash)
         jump next()
 
 routine rank_hash_at(map: @SortedDict[S64, S64], hash: S64, rank: USize) -> S64
     block entry()
         key: S64 = map.get_by_rank(rank).key
         value: S64 = map.get_by_rank(rank).value
-        return(mix(mix(hash, key), value))
+        return(mix(hash: mix(hash, value: key), value))
 
 // Folds get_by_rank at the first, middle, and last rank, or 0 for an empty map.
 routine rank_hash(map: @SortedDict[S64, S64]) -> S64
@@ -98,20 +98,20 @@ routine rank_hash(map: @SortedDict[S64, S64]) -> S64
             : ranks()
 
     block ranks()
-        first: S64 = rank_hash_at(map, 0, 0)
-        middle: S64 = rank_hash_at(map, first, count.div(2))
-        last: S64 = rank_hash_at(map, middle, count.sub(1))
+        first: S64 = rank_hash_at(map, hash: 0, rank: 0)
+        middle: S64 = rank_hash_at(map, hash: first, rank: count.div(2))
+        last: S64 = rank_hash_at(map, hash: middle, rank: count.sub(1))
         return(last)
 
 routine checkpoint(out: @BufWriter[Out], map: @SortedDict[S64, S64], at: Checkpoint) -> Void
     block entry()
         out.write("phase {at.phase}")
-        labeled(out, "op", at.op.to[S64]())
+        labeled(out, label: "op", value: at.op.to[S64]())
         size: USize = map.count()
-        labeled(out, "length", size.to[S64]())
-        labeled(out, "results", at.results)
-        labeled(out, "iteration", iteration_hash(map))
-        labeled(out, "ranks", rank_hash(map))
+        labeled(out, label: "length", value: size.to[S64]())
+        labeled(out, label: "results", value: at.results)
+        labeled(out, label: "iteration", value: iteration_hash(map))
+        labeled(out, label: "ranks", value: rank_hash(map))
         out.write("\n")
         return()
 
@@ -167,7 +167,7 @@ routine run_phase(harness: Harness, map: @SortedDict[S64, S64], phase: Phase, re
         rank: USize = rng.below(count)
         key: S64 = map.get_by_rank(rank).key
         removed: Bool = map.remove(key)
-        jump record(op, checksum, mix(key, removed.to[S64]()))
+        jump record(op, checksum, mix(hash: key, value: removed.to[S64]()))
 
     block lookup(op: USize, checksum: S64, key: S64)
         found: Bool = map.contains(key)
@@ -180,7 +180,7 @@ routine run_phase(harness: Harness, map: @SortedDict[S64, S64], phase: Phase, re
         jump record(op, checksum, value)
 
     block record(op: USize, checksum: S64, result: S64)
-        mixed: S64 = mix(checksum, result)
+        mixed: S64 = mix(hash: checksum, value: result)
         op_next: USize = op.add(1)
         report: Bool = op_next.mod(500).eq(0)
         branch report
@@ -188,7 +188,8 @@ routine run_phase(harness: Harness, map: @SortedDict[S64, S64], phase: Phase, re
             : next(op_next, mixed)
 
     block report(op: USize, checksum: S64)
-        checkpoint(harness.out, map, Checkpoint(phase: phase.number, op: op, results: checksum))
+        checkpoint(out: harness.out, map,
+            at: Checkpoint(phase: phase.number, op: op, results: checksum))
         jump next(op, checksum)
 
 // Copies from into to from the largest key down, so the two trees are built by a different insertion order.
@@ -203,7 +204,7 @@ routine copy_reversed(from: @SortedDict[S64, S64], to: @SortedDict[S64, S64]) ->
             : copy(rank_end.sub(1))
 
     block copy(rank: USize)
-        to.setitem(from.get_by_rank(rank).key, from.get_by_rank(rank).value)
+        to.setitem(key: from.get_by_rank(rank).key, value: from.get_by_rank(rank).value)
         jump next(rank)
 
 routine report_eq(out: @BufWriter[Out], label: Bytes, equal: Bool) -> Void
@@ -222,28 +223,32 @@ routine start() -> Void
 
         harness: Harness = Harness(out: out, rng: rng)
         r1: S64 = run_phase(harness, map,
-            Phase(number: 1, ops: 3000, keys: 64, puts: 5, removes: 7, rank_removes: 7), 0)
+            phase: Phase(number: 1, ops: 3000, keys: 64, puts: 5, removes: 7, rank_removes: 7),
+            results: 0)
         r2: S64 = run_phase(harness, map,
-            Phase(number: 2, ops: 10000, keys: 20000, puts: 6, removes: 7, rank_removes: 7), r1)
+            phase: Phase(number: 2, ops: 10000, keys: 20000, puts: 6, removes: 7, rank_removes: 7),
+            results: r1)
 
         claim copied: @SortedDict[S64, S64] <- .construct(alloc)
-        report_eq(out, "empty copy equal", map.peek().eq(copied.peek()))
-        copy_reversed(map, copied)
-        report_eq(out, "reversed copy equal", map.peek().eq(copied.peek()))
-        report_eq(out, "reversed copy same order", iteration_hash(map).eq(iteration_hash(copied)))
-        copied.setitem(-1, 0)
-        report_eq(out, "extra key equal", map.peek().eq(copied.peek()))
+        report_eq(out, label: "empty copy equal", equal: map.peek().eq(copied.peek()))
+        copy_reversed(from: map, to: copied)
+        report_eq(out, label: "reversed copy equal", equal: map.peek().eq(copied.peek()))
+        report_eq(out, label: "reversed copy same order",
+            equal: iteration_hash(map).eq(iteration_hash(copied)))
+        copied.setitem(key: -1, value: 0)
+        report_eq(out, label: "extra key equal", equal: map.peek().eq(copied.peek()))
         copied.remove(-1)
-        report_eq(out, "extra key removed equal", map.peek().eq(copied.peek()))
+        report_eq(out, label: "extra key removed equal", equal: map.peek().eq(copied.peek()))
         key: S64 = map.get_by_rank(0).key
         old_value: S64 = map.getitem(key)
-        copied.setitem(key, old_value.add(1))
-        report_eq(out, "changed value equal", map.peek().eq(copied.peek()))
+        copied.setitem(key, value: old_value.add(1))
+        report_eq(out, label: "changed value equal", equal: map.peek().eq(copied.peek()))
         copied.destruct()
 
         r3: S64 = run_phase(harness, map,
-            Phase(number: 3, ops: 14000, keys: 20000, puts: 1, removes: 3, rank_removes: 8), r2)
+            phase: Phase(number: 3, ops: 14000, keys: 20000, puts: 1, removes: 3, rank_removes: 8),
+            results: r2)
         map.destruct()
-        report_eq(out, "freed is empty", map.is_empty())
+        report_eq(out, label: "freed is empty", equal: map.is_empty())
         out.flush()
         return()

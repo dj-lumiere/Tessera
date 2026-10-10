@@ -243,7 +243,7 @@ routine sha256_compress(state: @U32, chunk: @Byte) -> Void
     block round(t: USize)
         k_t: U32 = K.getitem(t)
         w_t: U32 = w.stride(t).peek()
-        next: Working = sha256_round(v.peek(), k_t, w_t)
+        next: Working = sha256_round(v: v.peek(), k: k_t, w: w_t)
         next.poke_into(v)
         jump round_loop(t.add(1))
 
@@ -273,7 +273,7 @@ routine sha256_compress(state: @U32, chunk: @Byte) -> Void
 routine sha256(data: @Byte, len: USize, digest: @U32) -> Void
     block entry()
         h0: @U32 = H0.to[@U32]()
-        digest.copy(h0, 8)
+        digest.copy(src: h0, count: 8)
         full_blocks: USize = len.div(64)
         jump block_loop(0, full_blocks)
 
@@ -287,7 +287,7 @@ routine sha256(data: @Byte, len: USize, digest: @U32) -> Void
     block compress_block(i: USize, full_blocks: USize)
         offset: USize = i.mul(64)
         src: @Byte = data.stride(offset)
-        sha256_compress(digest, src)
+        sha256_compress(state: digest, chunk: src)
         jump block_loop(i.add(1), full_blocks)
 
     // The tail: leftover bytes, then 0x80, zeros, and the message length in
@@ -301,7 +301,7 @@ routine sha256(data: @Byte, len: USize, digest: @U32) -> Void
         tail: @Byte = tail_buf.to[@Byte]()
         tail.zeroinit(128)
         rest: @Byte = data.stride(rest_start)
-        tail.copy(rest, rest_len)
+        tail.copy(src: rest, count: rest_len)
         tail.stride(rest_len).poke(b'\x80')
 
         one_block: Bool = rest_len.lt(56)
@@ -311,14 +311,14 @@ routine sha256(data: @Byte, len: USize, digest: @U32) -> Void
         len_at: USize = tail_len.sub(8)
         bits: U64 = len.to[U64]().shl(3)
         len_dst: @Byte = tail.stride(len_at)
-        store_be64(len_dst, bits)
+        store_be64(p: len_dst, value: bits)
 
-        sha256_compress(digest, tail)
+        sha256_compress(state: digest, chunk: tail)
         branch one_block
             ? return()
             : continue
         second: @Byte = tail.stride(64)
-        sha256_compress(digest, second)
+        sha256_compress(state: digest, chunk: second)
         return()
 
 // ── Output ────────────────────────────────────────────────────────────────────
@@ -364,13 +364,14 @@ routine start() -> Void
     local many: @Slice[Byte] <- .hollow()
 
     block entry()
-        hash_string("empty", "")
-        hash_string("abc", "abc")
-        hash_string("448-bit", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+        hash_string(label: "empty", message: "")
+        hash_string(label: "abc", message: "abc")
+        hash_string(label: "448-bit",
+            message: "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
 
         // One million 'a' bytes: 15,625 full blocks plus a two-block tail.
         claim alloc: @MemoryManager <- make_heap_memory()
-        many.poke(.construct(MILLION, alloc))
+        many.poke(.construct(count: MILLION, alloc))
         jump fill_loop(0)
 
     block fill_loop(i: USize)
@@ -380,10 +381,10 @@ routine start() -> Void
             : fill_byte(i)
 
     block fill_byte(i: USize)
-        many.setitem(i, b'a')
+        many.setitem(index: i, value: b'a')
         jump fill_loop(i.add(1))
 
     block hash_many()
-        hash_and_print("million-a", many.to[@Byte](), MILLION)
+        hash_and_print(label: "million-a", data: many.to[@Byte](), len: MILLION)
         many.destruct()
         return()

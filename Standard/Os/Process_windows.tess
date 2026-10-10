@@ -230,19 +230,19 @@ private routine close_if_open(h: Addr) -> Void
 /// :returns: The units and their count without the 0, or null and 0 when `text` has a NUL or the allocation fails.
 #target(os: "windows")
 private routine utf16(text: Bytes, alloc: @MemoryManager) -> (@U16, USize)
-    local units: @U16 = allocate[U16](text.count().add(1), alloc)
+    local units: @U16 = allocate[U16](count: text.count().add(1), alloc)
 
     block entry()
         branch units.is_null()
             ? return((null, 0))
             : continue
-        n: Option[USize] = encode_utf16(text, units, text.count().add(1))
+        n: Option[USize] = encode_utf16(text, out: units, capacity: text.count().add(1))
         when n
             .Present(count) => return((units, count))
             .Absent => failed()
 
     block failed()
-        deallocate(units, alloc)
+        deallocate(data: units, alloc)
         return((null, 0))
 
 // -- the command line --------------------------------------------------------------------
@@ -279,18 +279,18 @@ private routine has_any(s: Slice[U16], a: U16, b: U16, c: U16) -> Bool
 #target(os: "windows")
 private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
     local start: @U16 = target.stride(1)
-    local units: Slice[U16] = Slice[U16].construct(source, n)
+    local units: Slice[U16] = Slice[U16].construct(data: source, count: n)
 
     block entry()
         branch n.eq(0)
             ? empty()
             : continue
         // ' ', '\t', '"'
-        branch has_any(units, 32, 9, 34)
+        branch has_any(s: units, a: 32, b: 9, c: 34)
             ? continue
             : plain()
         // '"', '\\'
-        branch has_any(units, 34, 92, 34)
+        branch has_any(s: units, a: 34, b: 92, c: 34)
             ? escaped()
             : quoted()
 
@@ -300,12 +300,12 @@ private routine quote_arg(source: @U16, n: USize, target: @U16) -> @U16
         return(target.stride(2))
 
     block plain()
-        target.copy(source, n)
+        target.copy(src: source, count: n)
         return(target.stride(n))
 
     block quoted()
         target.poke(34)
-        target.stride(1).copy(source, n)
+        target.stride(1).copy(src: source, count: n)
         target.stride(n.add(1)).poke(34)
         return(target.stride(n.add(2)))
 
@@ -363,7 +363,7 @@ private routine command_line(program: Bytes, args: Slice[Bytes], alloc: @MemoryM
     // A UTF-8 byte count bounds the UTF-16 unit count, so 2 * bytes + 3 units bound an argument and its space.
     block size(i: USize, capacity: USize)
         branch i.eq(arg_count)
-            ? made(allocate[U16](capacity.add(1), alloc))
+            ? made(allocate[U16](count: capacity.add(1), alloc))
             : count_arg(i, capacity)
 
     block count_arg(i: USize, capacity: USize)
@@ -387,7 +387,7 @@ private routine command_line(program: Bytes, args: Slice[Bytes], alloc: @MemoryM
             : one(line, i, args.getitem(i.sub(1)))
 
     block one(line: @U16, i: USize, arg: Bytes)
-        units, n = utf16(arg, alloc)
+        units, n = utf16(text: arg, alloc)
         branch units.is_null()
             ? failed(line)
             : continue
@@ -401,13 +401,13 @@ private routine command_line(program: Bytes, args: Slice[Bytes], alloc: @MemoryM
         jump quote(line, i, units, n)
 
     block quote(line: @U16, i: USize, units: @U16, n: USize)
-        end: @U16 = quote_arg(units, n, at.peek())
-        deallocate(units, alloc)
+        end: @U16 = quote_arg(source: units, n, target: at.peek())
+        deallocate(data: units, alloc)
         end.poke_into(at)
         jump append(line, i.add(1))
 
     block failed(line: @U16)
-        deallocate(line, alloc)
+        deallocate(data: line, alloc)
         return(null)
 
     block terminate(line: @U16)
@@ -437,7 +437,7 @@ private routine key_units(entry: @U16) -> USize
 #target(os: "windows")
 private routine ascii_lower(u: U16) -> U16
     block entry()
-        branch u.between(65, 90)
+        branch u.between(lo: 65, hi: 90)
             ? return(u.add(32))
             : return(u)
 
@@ -496,27 +496,27 @@ private routine units_of(s: @U16) -> USize
 #target(os: "windows")
 private routine env_entry_utf16(v: EnvVar, alloc: @MemoryManager) -> @U16
     local room: USize = v.name.count().add(v.value.count()).add(2)
-    local units: @U16 = allocate[U16](room, alloc)
+    local units: @U16 = allocate[U16](count: room, alloc)
 
     block entry()
         branch units.is_null()
             ? return(null)
             : continue
-        name_units: Option[USize] = encode_utf16(v.name, units, room)
+        name_units: Option[USize] = encode_utf16(text: v.name, out: units, capacity: room)
         when name_units
             .Present(n) => continue
             .Absent => failed()
         // '='
         units.stride(n).poke(61)
-        value_units: Option[USize] = encode_utf16(v.value, units.stride(n.add(1)),
-            room.sub(n).sub(1))
+        value_units: Option[USize] = encode_utf16(text: v.value, out: units.stride(n.add(1)),
+            capacity: room.sub(n).sub(1))
         branch value_units.is_present()
             ? return(units)
             : failed()
 
     // Not reached after the NUL check, which leaves the texts encodable in the room counted for them.
     block failed()
-        deallocate(units, alloc)
+        deallocate(data: units, alloc)
         return(null)
 
 /// The overrides as "NAME=VALUE" UTF-16 strings, in memory from `alloc`.
@@ -546,7 +546,7 @@ private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Memo
             ? return(false)
             : continue
         copy_slot: @@U16 = out.stride(i.sub(1))
-        deallocate(copy_slot.peek(), alloc)
+        deallocate(data: copy_slot.peek(), alloc)
         jump undo(i.sub(1))
 
 /// This process's environment with the overrides applied, as a sorted block, in memory from `alloc`.
@@ -556,14 +556,14 @@ private routine wide_overrides(options: ProcessOptions, out: @@U16, alloc: @Memo
 ///     before).
 #target(os: "windows")
 private routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U16
-    local own: @@U16 = allocate[@U16](options.env_count.max(1), alloc)
+    local own: @@U16 = allocate[@U16](count: options.env_count.max(1), alloc)
 
     block entry()
         branch own.is_null()
             ? finish(null, null)
             : continue
         // A failure has freed the strings made so far, so only the array is left.
-        branch wide_overrides(options, own, alloc)
+        branch wide_overrides(options, out: own, alloc)
             ? continue
             : finish(null, null)
         parent: @U16 = c_get_environment_strings()
@@ -579,7 +579,7 @@ private routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U1
             : count(parent, at.stride(units_of(at).add(1)), n.add(1))
 
     block collect(parent: @U16, n: USize)
-        all: @@U16 = allocate[@U16](n.add(options.env_count).max(1), alloc)
+        all: @@U16 = allocate[@U16](count: n.add(options.env_count).max(1), alloc)
         branch all.is_null()
             ? done(parent, null, null)
             : keep(parent, all, parent, 0)
@@ -593,7 +593,7 @@ private routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U1
             ? add_own(parent, all, k, 0)
             : continue
         next: @U16 = at.stride(units_of(at).add(1))
-        branch is_overridden(at, own, options.env_count)
+        branch is_overridden(entry: at, own, m: options.env_count)
             ? keep(parent, all, next, k)
             : continue
         all.stride(k).poke(at)
@@ -618,7 +618,7 @@ private routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U1
             : continue
         a: @U16 = all.stride(j.sub(1)).peek()
         b: @U16 = all.stride(j).peek()
-        branch before(b, a)
+        branch before(a: b, b: a)
             ? continue
             : sort(parent, all, total, i.add(1))
         all.stride(j.sub(1)).poke(b)
@@ -627,7 +627,7 @@ private routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U1
 
     block measure(parent: @U16, all: @@U16, total: USize, i: USize, units: USize)
         branch i.eq(total)
-            ? build(parent, all, total, allocate[U16](units, alloc))
+            ? build(parent, all, total, allocate[U16](count: units, alloc))
             : measure(parent, all, total, i.add(1),
                 units.add(units_of(all.stride(i).peek())).add(1))
 
@@ -642,7 +642,7 @@ private routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U1
             : continue
         entry: @U16 = all.stride(i).peek()
         n: USize = units_of(entry).add(1)
-        at.copy(entry, n)
+        at.copy(src: entry, count: n)
         jump place(parent, all, total, block_units, at.stride(n), i.add(1))
 
     block terminate(parent: @U16, all: @@U16, block_units: @U16, at: @U16)
@@ -664,7 +664,7 @@ private routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U1
             ? finish(result, all)
             : continue
         own_slot: @@U16 = own.stride(j)
-        deallocate(own_slot.peek(), alloc)
+        deallocate(data: own_slot.peek(), alloc)
         jump release(all, result, j.add(1))
 
     // The arrays, each when it was made: own is null only when its allocation failed, and all is then null too.
@@ -672,11 +672,11 @@ private routine env_block(options: ProcessOptions, alloc: @MemoryManager) -> @U1
         branch own.is_null()
             ? return(result)
             : continue
-        deallocate(own, alloc)
+        deallocate(data: own, alloc)
         branch all.is_null()
             ? return(result)
             : continue
-        deallocate(all, alloc)
+        deallocate(data: all, alloc)
         return(result)
 
 /// Whether one of the `m` overrides ("NAME=VALUE" each) names the parent entry's variable, ASCII letters in any case.
@@ -694,7 +694,7 @@ private routine is_overridden(entry: @U16, own: @@U16, m: USize) -> Bool
             ? return(false)
             : continue
         o: @U16 = own.stride(j).peek()
-        branch names(entry, o, key_units(o))
+        branch names(entry, name: o, n: key_units(o))
             ? return(true)
             : look(j.add(1))
 
@@ -743,7 +743,7 @@ private routine read_pipe(r: @PipeReader) -> Void
         branch ok.bitand(n.peek().gt(0))
             ? continue
             : return()
-        r.buffer.append(chunk, n.peek().to[USize](), heap)
+        r.buffer.append(chunk, n: n.peek().to[USize](), alloc: heap)
         jump next()
 
 /// Closes this process's copies of the handles the child was given (its ends of the pipes, the null device, and any
@@ -754,7 +754,7 @@ private routine Handles.close_child_side(me: @Me) -> Void
         close_if_open(me.out_w.peek())
         close_if_open(me.err_w.peek())
         close_if_open(me.device.peek())
-        own_input: Bool = same(me.input.peek(), me.device.peek()).bitnot()
+        own_input: Bool = same(a: me.input.peek(), b: me.device.peek()).bitnot()
         branch own_input
             ? continue
             : outputs()
@@ -764,7 +764,7 @@ private routine Handles.close_child_side(me: @Me) -> Void
     // The pipe ends and the device were closed above. The duplicates of this process's handles go here.
     block outputs()
         o: Addr = me.output.peek()
-        branch same(o, me.out_w.peek()).bitor(same(o, me.device.peek()))
+        branch same(a: o, b: me.out_w.peek()).bitor(same(a: o, b: me.device.peek()))
             ? errors()
             : continue
         close_if_open(o)
@@ -772,7 +772,7 @@ private routine Handles.close_child_side(me: @Me) -> Void
 
     block errors()
         e: Addr = me.error.peek()
-        branch same(e, me.err_w.peek()).bitor(same(e, me.device.peek()))
+        branch same(a: e, b: me.err_w.peek()).bitor(same(a: e, b: me.device.peek()))
             ? return()
             : continue
         close_if_open(e)
@@ -841,9 +841,11 @@ private routine Handles.make(me: @Me, options: ProcessOptions, sa: @SecurityAttr
 
     // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
     block standard()
-        me.input.poke(input_handle(options.stdin, me.device.peek()))
-        me.output.poke(output_handle(options.stdout, me.out_w.peek(), me.device.peek(), 0xFFFFFFF5))
-        me.error.poke(output_handle(options.stderr, me.err_w.peek(), me.device.peek(), 0xFFFFFFF4))
+        me.input.poke(input_handle(mode: options.stdin, device: me.device.peek()))
+        me.output.poke(output_handle(mode: options.stdout, pipe: me.out_w.peek(),
+            device: me.device.peek(), which: 0xFFFFFFF5))
+        me.error.poke(output_handle(mode: options.stderr, pipe: me.err_w.peek(),
+            device: me.device.peek(), which: 0xFFFFFFF4))
         return(true)
 
 /// The child's standard input: the null device, or a duplicate of this process's.
@@ -906,7 +908,7 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
             .Present(d) => continue
             .Absent => environment(null)
         units: @U16 = directory.to[@U16]()
-        n: Option[USize] = encode_utf16(d, units, PATH_CAPACITY)
+        n: Option[USize] = encode_utf16(text: d, out: units, capacity: PATH_CAPACITY)
         branch n.is_present()
             ? environment(units)
             : finish(.Failure(ProcessError.INVALID_ARGUMENT))
@@ -950,12 +952,12 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
     block started()
         claim out: @CaptureBuffer <- CaptureBuffer.empty()
         claim err: @PipeReader <- PipeReader(pipe: h.err_r.peek(), buffer: CaptureBuffer.empty())
-        read_both(h.out_r.peek(), out, err, alloc)
+        read_both(out_pipe: h.out_r.peek(), out, err, alloc)
         // INFINITE
         c_wait_for_single_object(pi.process.peek(), U32.MAX)
         claim code: @U32 <- 0
         c_get_exit_code_process(pi.process.peek(), code)
-        errors: CaptureBuffer = moved(err.buffer.peek(), alloc)
+        errors: CaptureBuffer = moved(b: err.buffer.peek(), alloc)
         status: ExitStatus = ExitStatus.Exited(code.peek().to_wrap[S32]())
         output: ProcessOutput = ProcessOutput(status: status, stdout: out.owned(alloc),
             stderr: errors.owned(alloc))
@@ -977,7 +979,7 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
         close_if_open(h.err_r.peek())
         close_if_open(pi.thread.peek())
         close_if_open(pi.process.peek())
-        free_texts(line.peek(), env.peek(), alloc)
+        free_texts(line: line.peek(), env: env.peek(), alloc)
         return(result)
 
 /// Frees the command line and the environment block, each when there is one.
@@ -990,14 +992,14 @@ private routine free_texts(line: @U16, env: @U16, alloc: @MemoryManager) -> Void
         branch line.is_null()
             ? environment()
             : continue
-        deallocate(line, alloc)
+        deallocate(data: line, alloc)
         jump environment()
 
     block environment()
         branch env.is_null()
             ? return()
             : continue
-        deallocate(env, alloc)
+        deallocate(data: env, alloc)
         return()
 
 /// Reads standard output here and standard error on a helper thread when both are captured, and one alone here.
@@ -1023,8 +1025,8 @@ private routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
 
     block both()
         claim heap: @MemoryManager <- make_heap_memory()
-        helper: Thread = Thread.spawn(read_pipe.to[Callable](), err, heap)
-        read_into(out_pipe, out, alloc)
+        helper: Thread = Thread.spawn(entry: read_pipe.to[Callable](), arg: err, alloc: heap)
+        read_into(pipe: out_pipe, buffer: out, alloc)
         helper.join()
         return()
 
@@ -1033,7 +1035,7 @@ private routine read_both(out_pipe: Addr, out: @CaptureBuffer, err: @PipeReader,
         return()
 
     block out_only()
-        read_into(out_pipe, out, alloc)
+        read_into(pipe: out_pipe, buffer: out, alloc)
         return()
 
 /// Reads a pipe to its end into `buffer`, from `alloc`.
@@ -1054,7 +1056,7 @@ private routine read_into(pipe: Addr, buffer: @CaptureBuffer, alloc: @MemoryMana
         branch ok.bitand(n.peek().gt(0))
             ? continue
             : return()
-        buffer.append(chunk, n.peek().to[USize](), alloc)
+        buffer.append(chunk, n: n.peek().to[USize](), alloc)
         jump next()
 
 /// What a helper thread captured on the malloc heap, copied into `alloc` (and the heap copy given back).
@@ -1070,8 +1072,8 @@ private routine moved(b: CaptureBuffer, alloc: @MemoryManager) -> CaptureBuffer
             : continue
         claim heap: @MemoryManager <- make_heap_memory()
         claim copied: @CaptureBuffer <- CaptureBuffer.empty()
-        copied.append(b.data, b.count, alloc)
-        deallocate(b.data, heap)
+        copied.append(chunk: b.data, n: b.count, alloc)
+        deallocate(data: b.data, alloc: heap)
         lost: Bool = copied.failed.peek().bitor(b.failed)
         copied.failed.poke(lost)
         return(copied.peek())
@@ -1091,7 +1093,7 @@ routine env_var(name: Bytes, alloc: @MemoryManager) -> Option[Bytes]
 
     block entry()
         claim key: @Array[U16, 256] <- .hollow()
-        n: Option[USize] = encode_utf16(name, key.to[@U16](), 256)
+        n: Option[USize] = encode_utf16(text: name, out: key.to[@U16](), capacity: 256)
         branch n.is_present()
             ? continue
             : finish(.Absent)
@@ -1104,7 +1106,7 @@ routine env_var(name: Bytes, alloc: @MemoryManager) -> Option[Bytes]
         branch need.eq(0)
             ? finish(.Present(Bytes(data: null, count: 0, alloc: alloc)))
             : continue
-        made: @U16 = allocate[U16](need.to[USize](), alloc)
+        made: @U16 = allocate[U16](count: need.to[USize](), alloc)
         made.poke_into(units)
         branch made.is_null()
             ? finish(.Absent)
@@ -1113,7 +1115,7 @@ routine env_var(name: Bytes, alloc: @MemoryManager) -> Option[Bytes]
         branch got.eq(0).bitor(got.ge(need))
             ? finish(.Absent)
             : continue
-        text: Result[Bytes, FsError] = owned_wide(made, got.to[USize](), alloc)
+        text: Result[Bytes, FsError] = owned_wide(units: made, count: got.to[USize](), alloc)
         when text
             .Success(t) => finish(.Present(t))
             .Failure => finish(.Absent)
@@ -1124,5 +1126,5 @@ routine env_var(name: Bytes, alloc: @MemoryManager) -> Option[Bytes]
         branch held.is_null()
             ? return(value)
             : continue
-        deallocate(held, alloc)
+        deallocate(data: held, alloc)
         return(value)

@@ -216,4 +216,36 @@ public class MigrateTests
         string once = Migrate.Rewrite("a : F32 = f32_bits(b).to<List<F32>>()");
         Assert.Equal(once, Migrate.Rewrite(once));
     }
+
+    [Fact]
+    public void Names_the_arguments_of_a_call_to_a_routine_taking_two_or_more()
+    {
+        const string source = """
+            routine area(width: S64, height: S64) -> S64
+                block entry()
+                    r: S64 = width.mul(height)
+                    return(r)
+
+            #positional
+            routine larger(a: S64, b: S64) -> S64
+                block entry()
+                    r: S64 = a.max(b)
+                    return(r)
+
+            routine start() -> Void
+                block entry()
+                    width: S64 = 3
+                    x: S64 = area(width, 4)
+                    y: S64 = larger(x, 2)
+                    return()
+            """;
+        var migration = new NamedArgsMigration();
+        migration.Index("a.tess", source, library: false);
+        var report = new List<string>();
+        string after = migration.Rewrite("a.tess", source, report);
+        Assert.Contains("x: S64 = area(width, height: 4)", after);
+        Assert.Contains("y: S64 = larger(x, 2)", after);
+        Assert.Empty(report);
+        Assert.Equal(after, migration.Rewrite("a.tess", after, report));
+    }
 }

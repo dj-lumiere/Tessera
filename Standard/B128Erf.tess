@@ -72,8 +72,8 @@ routine wide_erf_exp(x: B128Extended) -> B128Extended
 
     block entry()
         d: B128Extended = x.sub(q.to[B128Extended]().mul(wide_const(0)))
-        last: B128Extended = wide_table(WIDE_EXP_COEF_HI.to[@U128](), WIDE_EXP_COEF_LO.to[@U64](),
-            WIDE_EXP_COEF_EXP.to[@S64](), 22)
+        last: B128Extended = wide_table(hi: WIDE_EXP_COEF_HI.to[@U128](),
+            lo: WIDE_EXP_COEF_LO.to[@U64](), exponent: WIDE_EXP_COEF_EXP.to[@S64](), i: 22)
         last.poke_into(s)
         jump horner(21, d.ldexp(-4))
 
@@ -83,8 +83,9 @@ routine wide_erf_exp(x: B128Extended) -> B128Extended
         branch done
             ? square(0)
             : continue
-        c: B128Extended = wide_table(WIDE_EXP_COEF_HI.to[@U128](), WIDE_EXP_COEF_LO.to[@U64](),
-            WIDE_EXP_COEF_EXP.to[@S64](), i.to[USize]())
+        c: B128Extended = wide_table(hi: WIDE_EXP_COEF_HI.to[@U128](),
+            lo: WIDE_EXP_COEF_LO.to[@U64](), exponent: WIDE_EXP_COEF_EXP.to[@S64](),
+            i: i.to[USize]())
         s.poke(s.peek().mul(t).add(c))
         jump horner(i.sub(1), t)
 
@@ -197,10 +198,11 @@ routine wide_erf(a: B128) -> B128Extended
         tail: Bool = a.ge(B128_ERF_FAST_SPLIT)
         branch tail
             ? tail()
-            : return(wide_erf_cf(z, 100))
+            : return(wide_erf_cf(z, levels: 100))
 
     block tail()
-        c: B128Extended = wide_erfc_cf(z, erfc_cf_levels(a, 22, 400, 1300))
+        c: B128Extended = wide_erfc_cf(z,
+            levels: erfc_cf_levels(a, base: 22, linear: 400, square: 1300))
         r: B128Extended = wide_one().sub(c)
         return(r)
 
@@ -215,11 +217,12 @@ routine wide_erfc(x: B128) -> B128Extended
         tail: Bool = a.ge(B128_ERF_FAST_SPLIT)
         branch tail
             ? tail()
-            : return(wide_one().sub(wide_erf_cf(x.to[B128Extended](), 100)))
+            : return(wide_one().sub(wide_erf_cf(z: x.to[B128Extended](), levels: 100)))
 
     // erfc(-a) = 2 - erfc a
     block tail()
-        c: B128Extended = wide_erfc_cf(a.to[B128Extended](), erfc_cf_levels(a, 22, 400, 1300))
+        c: B128Extended = wide_erfc_cf(z: a.to[B128Extended](),
+            levels: erfc_cf_levels(a, base: 22, linear: 400, square: 1300))
         two: B128Extended = S64.to[B128Extended](2)
         r: B128Extended = negative
             ? two.sub(c)
@@ -232,7 +235,7 @@ routine wide_erfc(x: B128) -> B128Extended
 /// :returns: 2/√π as a B128Big.
 routine big_two_over_sqrt_pi() -> B128Big
     block entry()
-        r: B128Big = big_from_limbs(BIG_TWO_OVER_SQRT_PI.to[@U64](), -447)
+        r: B128Big = big_from_limbs(limbs: BIG_TWO_OVER_SQRT_PI.to[@U64](), exponent: -447)
         return(r)
 
 /// erf a for 0 < a < B128_ERF_ONE: 2/√π e^(-a²) Σ t_n with t_0 = a, t_n = t_(n-1) × 2a² / (2n + 1). Every term
@@ -248,7 +251,7 @@ routine big_erf(a: B128Big) -> B128Big
 
     block series(n: U64, term: B128Big, sum: B128Big, y: B128Big)
         next: B128Big = term.mul(y).div(n.mul(2).add(1))
-        done: Bool = big_is_negligible(next, sum)
+        done: Bool = big_is_negligible(term: next, sum)
         branch done
             ? finish(sum)
             : series(n.add(1), next, sum.add(next), y)
@@ -305,7 +308,8 @@ routine big_erfc(x: B128) -> B128Big
         tail: Bool = a.ge(B128_ERF_SPLIT)
         when
             negative => return(big_one().add(big_erf(big_a)))
-            tail => return(big_erfc_cf(big_a, erfc_cf_levels(a, 48, 1000, 10000)))
+            tail => return(big_erfc_cf(z: big_a,
+                levels: erfc_cf_levels(a, base: 48, linear: 1000, square: 10000)))
             else => return(big_one().sub(big_erf(big_a)))
 
 // -- erf, erfc -----------------------------------------------------------------
@@ -314,7 +318,7 @@ routine big_erfc(x: B128) -> B128Big
 /// :returns: erf(`me`).
 routine B128.erf(me: Me) -> Me
     block entry()
-        r: Me = b128_erf(me, false)
+        r: Me = b128_erf(x: me, exact: false)
         return(r)
 
 /// The complementary error function 1 - erf, correctly rounded: 1 at ±0, 2 from me = -8.6939… down, +0 from
@@ -322,7 +326,7 @@ routine B128.erf(me: Me) -> Me
 /// :returns: erfc(`me`).
 routine B128.erfc(me: Me) -> Me
     block entry()
-        r: Me = b128_erfc(me, false)
+        r: Me = b128_erfc(x: me, exact: false)
         return(r)
 
 /// erf x, correctly rounded. erf is odd and rounding to nearest is symmetric, so the work is done on |x|.
@@ -348,7 +352,7 @@ routine b128_erf(x: B128, exact: Bool) -> B128
             ? slow()
             : continue
         w: B128Extended = wide_erf(a)
-        rounded: WideRounding = wide_round_within(w, B128_ERF_BAND)
+        rounded: WideRounding = wide_round_within(u: w, k: B128_ERF_BAND)
         branch rounded.ok
             ? return(rounded.value.copysign(x))
             : slow()
@@ -381,7 +385,7 @@ routine b128_erfc(x: B128, exact: Bool) -> B128
             ? slow()
             : continue
         w: B128Extended = wide_erfc(x)
-        rounded: WideRounding = wide_round_within(w, B128_ERF_BAND)
+        rounded: WideRounding = wide_round_within(u: w, k: B128_ERF_BAND)
         branch rounded.ok
             ? return(rounded.value)
             : slow()

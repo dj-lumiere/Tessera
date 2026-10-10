@@ -41,7 +41,7 @@ record DecimalParts
 /// :returns: True when the byte is between `0` and `9`.
 routine is_ascii_digit(c: Byte) -> Bool
     block entry()
-        r: Bool = c.between(b'0', b'9')
+        r: Bool = c.between(lo: b'0', hi: b'9')
         return(r)
 
 /// Is text[0..count) word, ignoring ASCII letter case? word must be lowercase letters.
@@ -102,8 +102,9 @@ require LIMBS: USize
         data: @Byte = text.data
         rest: @Byte = data.stride(start)
         left: USize = text.count.sub(start)
-        inf: Bool = matches_word(rest, left, "inf").bitor(matches_word(rest, left, "infinity"))
-        nan: Bool = matches_word(rest, left, "nan")
+        inf: Bool = matches_word(text: rest, count: left,
+            word: "inf").bitor(matches_word(text: rest, count: left, word: "infinity"))
+        nan: Bool = matches_word(text: rest, count: left, word: "nan")
         when
             inf => special(DecimalKind.INFINITY, negative)
             nan => special(DecimalKind.NAN, negative)
@@ -144,7 +145,7 @@ require LIMBS: USize
             else => int_keep(next, negative, kept, exponent, sticky, d)
 
     block int_keep(next: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, d: U64)
-        digits.mul_add(10, d)
+        digits.mul_add(m: 10, addend: d)
         jump int_loop(next, negative, kept.add(1), exponent, sticky, true)
 
     // Fraction digits. Each one kept, or each leading zero, lowers the exponent.
@@ -173,7 +174,7 @@ require LIMBS: USize
             else => frac_keep(next, negative, kept, exponent, sticky, d)
 
     block frac_keep(next: USize, negative: Bool, kept: S64, exponent: S64, sticky: Bool, d: U64)
-        digits.mul_add(10, d)
+        digits.mul_add(m: 10, addend: d)
         jump frac_loop(next, negative, kept.add(1), exponent.sub(1), sticky, true)
 
     // After the mantissa only an exponent may follow: e or E, a sign, digits.
@@ -349,7 +350,7 @@ require LIMBS: USize
 
     // The estimate can be one bit short. Then q has a bit too many: try e + 1.
     block divide(e: S64)
-        q: U128 = a.div_small(b, t, mantissa_bits.add(3).to[USize]())
+        q: U128 = a.div_small(divisor: b, scratch: t, bits: mantissa_bits.add(3).to[USize]())
         limit: U128 = 1.shl(mantissa_bits.add(1).to[U128]())
         too_big: Bool = q.ge(limit)
         branch too_big
@@ -394,13 +395,13 @@ routine Bytes.to_result[B64](me: Me) -> Result[B64, ParseError]
     local digits: @BigNat[72] <- .hollow()
 
     block entry()
-        parsed: Result[DecimalParts, ParseError] = parse_decimal(me, digits, 800)
+        parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 800)
         when parsed
             .Success(parts) => build(parts)
             .Failure(error) => fail(error)
 
     block build(parts: DecimalParts)
-        magnitude: U64 = decimal_to_bits(digits, parts, B64.FORMAT.peek()).to[U64]()
+        magnitude: U64 = decimal_to_bits(digits, parts, format: B64.FORMAT.peek()).to[U64]()
         negative: Bool = parts.negative
         sign: U64 = negative
             ? 0x8000000000000000
@@ -421,13 +422,13 @@ routine Bytes.to_result[B32](me: Me) -> Result[B32, ParseError]
     local digits: @BigNat[72] <- .hollow()
 
     block entry()
-        parsed: Result[DecimalParts, ParseError] = parse_decimal(me, digits, 800)
+        parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 800)
         when parsed
             .Success(parts) => build(parts)
             .Failure(error) => fail(error)
 
     block build(parts: DecimalParts)
-        magnitude: U32 = decimal_to_bits(digits, parts, B32.FORMAT.peek()).to[U32]()
+        magnitude: U32 = decimal_to_bits(digits, parts, format: B32.FORMAT.peek()).to[U32]()
         negative: Bool = parts.negative
         sign: U32 = negative
             ? 0x80000000
@@ -448,13 +449,13 @@ routine Bytes.to_result[B16](me: Me) -> Result[B16, ParseError]
     local digits: @BigNat[72] <- .hollow()
 
     block entry()
-        parsed: Result[DecimalParts, ParseError] = parse_decimal(me, digits, 800)
+        parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 800)
         when parsed
             .Success(parts) => build(parts)
             .Failure(error) => fail(error)
 
     block build(parts: DecimalParts)
-        magnitude: U16 = decimal_to_bits(digits, parts, B16.FORMAT.peek()).to[U16]()
+        magnitude: U16 = decimal_to_bits(digits, parts, format: B16.FORMAT.peek()).to[U16]()
         negative: Bool = parts.negative
         sign: U16 = negative
             ? 0x8000
@@ -475,13 +476,13 @@ routine Bytes.to_result[BF16](me: Me) -> Result[BF16, ParseError]
     local digits: @BigNat[72] <- .hollow()
 
     block entry()
-        parsed: Result[DecimalParts, ParseError] = parse_decimal(me, digits, 800)
+        parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 800)
         when parsed
             .Success(parts) => build(parts)
             .Failure(error) => fail(error)
 
     block build(parts: DecimalParts)
-        magnitude: U16 = decimal_to_bits(digits, parts, BF16.FORMAT.peek()).to[U16]()
+        magnitude: U16 = decimal_to_bits(digits, parts, format: BF16.FORMAT.peek()).to[U16]()
         negative: Bool = parts.negative
         sign: U16 = negative
             ? 0x8000
@@ -502,14 +503,14 @@ routine Bytes.to_result[B128](me: Me) -> Result[B128, ParseError]
     local digits: @BigNat[864] <- .hollow()
 
     block entry()
-        parsed: Result[DecimalParts, ParseError] = parse_decimal(me, digits, 11600)
+        parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 11600)
         when parsed
             .Success(parts) => build(parts)
             .Failure(error) => fail(error)
 
     // B128's largest value is about 1.19e4932 and its smallest subnormal 6.5e-4966.
     block build(parts: DecimalParts)
-        magnitude: U128 = decimal_to_bits(digits, parts, B128.FORMAT.peek())
+        magnitude: U128 = decimal_to_bits(digits, parts, format: B128.FORMAT.peek())
         negative: Bool = parts.negative
         sign: U128 = negative
             ? B128_SIGN
@@ -600,7 +601,7 @@ routine Bytes.to_faithful_result[B128](me: Me) -> Result[B128, ParseError]
     local digits: @BigNat[3] <- .hollow()
 
     block entry()
-        parsed: Result[DecimalParts, ParseError] = parse_decimal(me, digits, 38)
+        parsed: Result[DecimalParts, ParseError] = parse_decimal(text: me, digits, max_kept: 38)
         when parsed
             .Success(parts) => build(parts)
             .Failure(error) => fail(error)
@@ -668,13 +669,13 @@ routine Bytes.to_faithful_result[B128](me: Me) -> Result[B128, ParseError]
         e: S64 = down
             ? neg_e
             : pos_e
-        next: B128Wide = b128_wide_mul(w, m, e)
+        next: B128Wide = b128_wide_mul(a: w, m, e)
         jump power(i.add(1), left.shr(1), down, next, negative, sticky)
 
     // value = mant × 2^exponent = sig × 2^(biased - 16383 - 115)
     block pack(w: B128Wide, negative: Bool, sticky: Bool)
         sig: U128 = w.mant.bitor(sticky.to[U128]())
-        bits: U128 = b128_round_pack(negative, w.exponent.add(16383).add(115), sig)
+        bits: U128 = b128_round_pack(negative, exponent: w.exponent.add(16383).add(115), sig)
         jump done(bits)
 
     block done(bits: U128)

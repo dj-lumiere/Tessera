@@ -122,7 +122,7 @@ routine cm_hyper_exp(u: U128) -> CmFrac
         el: S64 = fs.w2.to_wrap[S64]().shr(20)
         sig: U128 = cm_exp_fast(fs)
         // e^x = (sig + 3) × 2^(el - 123), sig's leading bit at 123
-        r: CmFrac = cm_frac_normalize(sig.add(3), el.add(5))
+        r: CmFrac = cm_frac_normalize(v: sig.add(3), exponent: el.add(5))
         return(r)
 
 /// e^x - 1 from CORE-MATH's fast expm1 path before its rounding: within 5 units of its last bit, a relative
@@ -134,7 +134,7 @@ routine cm_hyper_expm1(u: U128) -> CmFrac
         s: CmExpm1Scaled = cm_expm1_small_fast(u)
         el: S64 = s.el.to_wrap[S64]()
         // e^x - 1 = sig × 2^(el - 127)
-        r: CmFrac = cm_frac_normalize(s.sig, el.add(1))
+        r: CmFrac = cm_frac_normalize(v: s.sig, exponent: el.add(1))
         return(r)
 
 /// The quick tier: sinh, cosh, or tanh of a = |x| from CORE-MATH's fast exp or expm1 path, rounded when its proven
@@ -164,28 +164,29 @@ routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option[U128]
             ? continue
             : sinh_far()
         m: CmFrac = cm_hyper_expm1(u)
-        q: CmFrac = cm_frac_div(m, cm_frac_add(one, m))
-        s: CmFrac = cm_frac_add(m, q)
-        r: Option[U128] = cm_frac_round(s.frac, s.exponent.sub(1), 0, B128_SINH_NEAR_GATE)
+        q: CmFrac = cm_frac_div(a: m, b: cm_frac_add(a: one, b: m))
+        s: CmFrac = cm_frac_add(a: m, b: q)
+        r: Option[U128] = cm_frac_round(frac: s.frac, exponent: s.exponent.sub(1), sign: 0,
+            gate: B128_SINH_NEAR_GATE)
         return(r)
 
     // (e - 1 / e) / 2 with e = e^a
     block sinh_far()
         e: CmFrac = cm_hyper_exp(u)
-        d: CmFrac = cm_frac_sub(e, cm_frac_div(one, e))
+        d: CmFrac = cm_frac_sub(a: e, b: cm_frac_div(a: one, b: e))
         k: S64 = e.exponent.sub(1).min(3)
         gate: U64 = B128_SINH_FAR_GATES.getitem(k.to[USize]())
-        r: Option[U128] = cm_frac_round(d.frac, d.exponent.sub(1), 0, gate)
+        r: Option[U128] = cm_frac_round(frac: d.frac, exponent: d.exponent.sub(1), sign: 0, gate)
         return(r)
 
     // (e + 1 / e) / 2 with e = e^a: e's error enters as tanh a < min(1, 2^(k + 1)) for a in [2^k, 2^(k + 1))
     block cosh()
         e: CmFrac = cm_hyper_exp(u)
-        s: CmFrac = cm_frac_add(e, cm_frac_div(one, e))
+        s: CmFrac = cm_frac_add(a: e, b: cm_frac_div(a: one, b: e))
         k: S64 = b128_exponent(u).sub(16383)
         drop: S64 = 0.sub(k.add(1)).max(0)
         gate: U64 = 129.shr(drop.to[U64]()).add(4)
-        r: Option[U128] = cm_frac_round(s.frac, s.exponent.sub(1), 0, gate)
+        r: Option[U128] = cm_frac_round(frac: s.frac, exponent: s.exponent.sub(1), sign: 0, gate)
         return(r)
 
     // m / (m + 2) with m = e^2a - 1 below 1/4
@@ -197,17 +198,18 @@ routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option[U128]
             : tanh_far(doubled)
         m: CmFrac = cm_hyper_expm1(doubled)
         two: CmFrac = CmFrac(frac: CM_FRAC_TOP, exponent: 2)
-        t: CmFrac = cm_frac_div(m, cm_frac_add(two, m))
-        r: Option[U128] = cm_frac_round(t.frac, t.exponent, 0, B128_TANH_NEAR_GATE)
+        t: CmFrac = cm_frac_div(a: m, b: cm_frac_add(a: two, b: m))
+        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0,
+            gate: B128_TANH_NEAR_GATE)
         return(r)
 
     // (e - 1) / (e + 1) with e = e^2a
     block tanh_far(doubled: U128)
         e: CmFrac = cm_hyper_exp(doubled)
-        t: CmFrac = cm_frac_div(cm_frac_sub(e, one), cm_frac_add(e, one))
+        t: CmFrac = cm_frac_div(a: cm_frac_sub(a: e, b: one), b: cm_frac_add(a: e, b: one))
         k: S64 = e.exponent.sub(1).min(3)
         gate: U64 = B128_TANH_FAR_GATES.getitem(k.to[USize]())
-        r: Option[U128] = cm_frac_round(t.frac, t.exponent, 0, gate)
+        r: Option[U128] = cm_frac_round(frac: t.frac, exponent: t.exponent, sign: 0, gate)
         return(r)
 
 // -- fast tier: B128Extended -----------------------------------------------------
@@ -306,7 +308,7 @@ routine b128_hyper_general(a: B128, kind: HyperKind, exact: Bool) -> B128
 
     block fast()
         w: B128Extended = wide_hyper(a, kind)
-        rounded: WideRounding = wide_round_within(w, B128_HYPER_BAND)
+        rounded: WideRounding = wide_round_within(u: w, k: B128_HYPER_BAND)
         branch rounded.ok
             ? return(rounded.value)
             : slow()
@@ -321,21 +323,21 @@ routine b128_hyper_general(a: B128, kind: HyperKind, exact: Bool) -> B128
 /// :returns: sinh(`me`).
 routine B128.sinh(me: Me) -> Me
     block entry()
-        r: Me = b128_sinh(me, false)
+        r: Me = b128_sinh(x: me, exact: false)
         return(r)
 
 /// cosh, correctly rounded: 1 at ±0, +inf at ±inf, and a quiet NaN for NaN.
 /// :returns: cosh(`me`).
 routine B128.cosh(me: Me) -> Me
     block entry()
-        r: Me = b128_cosh(me, false)
+        r: Me = b128_cosh(x: me, exact: false)
         return(r)
 
 /// tanh, correctly rounded: ±0 gives itself, ±inf gives ±1, and NaN a quiet NaN.
 /// :returns: tanh(`me`).
 routine B128.tanh(me: Me) -> Me
     block entry()
-        r: Me = b128_tanh(me, false)
+        r: Me = b128_tanh(x: me, exact: false)
         return(r)
 
 /// sinh x, correctly rounded (to nearest, ties to even), the body of {B128.sinh}.
@@ -359,7 +361,7 @@ routine b128_sinh(x: B128, exact: Bool) -> B128
             else => general()
 
     block general()
-        r: B128 = b128_hyper_general(a, HyperKind.SINH, exact).copysign(x)
+        r: B128 = b128_hyper_general(a, kind: HyperKind.SINH, exact).copysign(x)
         return(r)
 
 /// cosh x, correctly rounded (to nearest, ties to even), the body of {B128.cosh}.
@@ -384,7 +386,7 @@ routine b128_cosh(x: B128, exact: Bool) -> B128
             else => general()
 
     block general()
-        r: B128 = b128_hyper_general(a, HyperKind.COSH, exact)
+        r: B128 = b128_hyper_general(a, kind: HyperKind.COSH, exact)
         return(r)
 
 /// tanh x, correctly rounded (to nearest, ties to even), the body of {B128.tanh}.
@@ -408,5 +410,5 @@ routine b128_tanh(x: B128, exact: Bool) -> B128
             else => general()
 
     block general()
-        r: B128 = b128_hyper_general(a, HyperKind.TANH, exact).copysign(x)
+        r: B128 = b128_hyper_general(a, kind: HyperKind.TANH, exact).copysign(x)
         return(r)

@@ -538,24 +538,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return shared;
     }
 
-    /// `local NAME : T = value` (a value) or `local NAME : @T <- value` (a slot, what `claim` makes in
+    /// `local NAME: T = value` (a value) or `local NAME: @T <- value` (a slot, what `claim` makes in
     /// a block). Both parse as a BindStmt, the slot over a ClaimExpr: the shapes a block's lines have.
     private BindStmt ParseLocal()
     {
         var pos = Next().Pos;
-        string name = ValueName("the name of a local value: local x : T = value").Text;
+        string name = ValueName("the name of a local value: local x: T = value").Text;
         Expect(TokenKind.Colon, "':'");
         var type = ParseType();
         if (Is(TokenKind.LeftArrow))
         {
             if (type is not { Name: "Ptr", Args.Count: 1 })
                 throw new CompileError(type.Pos,
-                    $"a local slot is memory, so its type is a pointer: local {name} : @{type} <- value, or local {name} : {type} = value for a value");
+                    $"a local slot is memory, so its type is a pointer: local {name}: @{type} <- value, or local {name}: {type} = value for a value");
             Next();
             return new BindStmt(name, type, new ClaimExpr(pos) { Contents = ParseExpr() }, pos);
         }
         if (!Is(TokenKind.Eq))
-            throw Error($"a local line gives a value with '=' or a slot's contents with '<-': local {name} : {type} = value");
+            throw Error($"a local line gives a value with '=' or a slot's contents with '<-': local {name}: {type} = value");
         Next();
         return new BindStmt(name, type, ParseExpr(), pos);
     }
@@ -596,7 +596,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new RecordDecl(file, attrs, name.Text, typeParams, clauses, fields, pos);
     }
 
-    /// `variant Name[T]`, its clauses, then one case per line: `Number : S64` carries a payload, `Empty` doesn't.
+    /// `variant Name[T]`, its clauses, then one case per line: `Number: S64` carries a payload, `Empty` doesn't.
     private VariantDecl ParseVariant(List<Attribute> attrs)
     {
         var pos = Cur.Pos;
@@ -932,7 +932,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
-    /// `block : S64 = 1` or `record : Addr = ...` binds a value named like a keyword, which needs backticks: said so
+    /// `block: S64 = 1` or `record: Addr = ...` binds a value named like a keyword, which needs backticks: said so
     /// here, before the keyword is read as the next block or declaration.
     private void KeywordBinding()
     {
@@ -1147,7 +1147,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Next();
             string message = $"block '{_blockName}' of routine '{_routineDisplay}' is not written yet";
             var crash = new CallExpr("crash", [], [new StrLit("NotImplementedError", pos), new StrLit(message, pos)], pos)
-                { Path = "Standard/Core" };
+                { ArgNames = ["name", "message"], Path = "Standard/Core" };
             return new TodoTarget(crash, _blockName, pos);
         }
         if (IsIdent("continue"))
@@ -1166,7 +1166,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (Is(TokenKind.Ident) && PeekTok(1).Kind == TokenKind.LParen)
         {
             var name = Next();
-            return new CallTarget(name.Text, ParseArgs(), pos);
+            var (args, names) = ParseNamedArgs();
+            return new CallTarget(name.Text, args, pos) { ArgNames = names };
         }
         return new ExprTarget(ParsePostfix(), pos);
     }
@@ -1195,7 +1196,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 var name = Expect(TokenKind.Ident, "a field or method name");
                 var typeArgs = ParseTypeArgsOpt();
                 if (Is(TokenKind.LParen))
-                    e = new MethodCallExpr(e, name.Text, typeArgs, ParseArgs(), pos);
+                {
+                    var (args, names) = ParseNamedArgs();
+                    e = new MethodCallExpr(e, name.Text, typeArgs, args, pos) { ArgNames = names };
+                }
                 else if (typeArgs.Count != 0)
                     throw Error("expected '(' after generic arguments");
                 else
@@ -1236,7 +1240,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 var typeArgs = ParseTypeArgsOpt();
                 // `.Nothing` without arguments can only be a variant case; the checker says so otherwise.
                 if (!Is(TokenKind.LParen) && typeArgs.Count == 0) return new ImplicitMemberExpr(member.Text, t.Pos);
-                return new ImplicitCallExpr(member.Text, typeArgs, ParseArgs(), t.Pos);
+                var (implicitArgs, implicitNames) = ParseNamedArgs();
+                return new ImplicitCallExpr(member.Text, typeArgs, implicitArgs, t.Pos) { ArgNames = implicitNames };
             }
             case TokenKind.LParen when PeekTok(1).Kind == TokenKind.RParen
                                        || (PeekTok(1).Kind == TokenKind.Ident && PeekTok(2).Kind == TokenKind.Colon):
@@ -1322,7 +1327,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             var member = Next();
             var memberTypeArgs = ParseTypeArgsOpt();
             if (Is(TokenKind.LParen))
-                return new NsCallExpr(owner, member.Text, memberTypeArgs, ParseArgs(), pos);
+            {
+                var (args, names) = ParseNamedArgs();
+                return new NsCallExpr(owner, member.Text, memberTypeArgs, args, pos) { ArgNames = names };
+            }
             if (memberTypeArgs.Count != 0) throw Error("expected '(' after generic arguments");
             return new PresetRef(owner, member.Text, pos);
         }
@@ -1352,23 +1360,23 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new RecordLit(null, fields, pos);
     }
 
-    /// `claim p : @T`: a stack slot bound to a pointer name. It takes no initializer; the value goes in with a
+    /// `claim p: @T`: a stack slot bound to a pointer name. It takes no initializer; the value goes in with a
     /// store.
     private Stmt ParseClaim()
     {
         var pos = Next().Pos;
-        string name = ValueName("the name of the value claim binds: claim p : @T").Text;
+        string name = ValueName("the name of the value claim binds: claim p: @T").Text;
         Expect(TokenKind.Colon, "':'");
         var type = ParseType();
         if (type is not { Name: "Ptr", Args.Count: 1 })
-            throw new CompileError(type.Pos, $"claim takes a typed pointer: claim p : @T; found {type}");
+            throw new CompileError(type.Pos, $"claim takes a typed pointer: claim p: @T; found {type}");
         if (Is(TokenKind.Eq))
-            throw new CompileError(pos, $"a claim takes its contents with '<-': claim {name} : {type} <- value");
-        // `claim p : @T <- value` claims the slot and stores the value in it, where the claim stands. A slot a routine
+            throw new CompileError(pos, $"a claim takes its contents with '<-': claim {name}: {type} <- value");
+        // `claim p: @T <- value` claims the slot and stores the value in it, where the claim stands. A slot a routine
         // fills later (an out parameter, `construct`) starts as `.hollow()`, all zero, which its `destruct` leaves alone.
         if (!Is(TokenKind.LeftArrow))
             throw new CompileError(pos,
-                $"a claim says what the slot starts with: claim {name} : {type} <- value, or <- .hollow() when a routine it's passed to fills it");
+                $"a claim says what the slot starts with: claim {name}: {type} <- value, or <- .hollow() when a routine it's passed to fills it");
         Next();
         return new BindStmt(name, type, new ClaimExpr(pos) { Contents = ParseExpr() }, pos);
     }
@@ -1406,42 +1414,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return n;
     }
 
-    /// A call's arguments, each optionally named (`x: 1`): the names, or null when none is named. Naming some and not
-    /// others is an error.
-    private (List<Expr> Args, List<string>? Names) ParseNamedArgs()
+    /// A call's arguments, each optionally named (`x: 1`): each argument's name (null for one written without a name),
+    /// or null when none is named. Which arguments need a name, the checker says once it knows the routine: a value
+    /// already called like its parameter goes by its name alone (`read(fd, count: n)`).
+    private (List<Expr> Args, List<string?>? Names) ParseNamedArgs()
     {
         Expect(TokenKind.LParen, "'('");
         var args = new List<Expr>();
-        var names = new List<string>();
+        var names = new List<string?>();
         if (!Is(TokenKind.RParen))
         {
             do
             {
-                if (Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon)
-                {
-                    names.Add(Next().Text);
-                    Next();
-                }
-                else if (names.Count > 0)
-                {
-                    throw Error("name every argument or none: an argument here has no name");
-                }
+                names.Add(Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon ? Next().Text : null);
+                if (names[^1] is not null) Next();
                 args.Add(ParseExpr());
-                if (names.Count > 0 && names.Count != args.Count)
-                    throw new CompileError(args[^1].Pos, "name every argument or none: an argument here has no name");
             } while (Accept(TokenKind.Comma));
         }
         Expect(TokenKind.RParen, "')'");
-        return (args, names.Count == 0 ? null : names);
-    }
-
-    private List<Expr> ParseArgs()
-    {
-        Expect(TokenKind.LParen, "'('");
-        var args = new List<Expr>();
-        if (!Is(TokenKind.RParen))
-            do args.Add(ParseExpr()); while (Accept(TokenKind.Comma));
-        Expect(TokenKind.RParen, "')'");
-        return args;
+        return (args, names.Any(n => n is not null) ? names : null);
     }
 }

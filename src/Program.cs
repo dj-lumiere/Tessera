@@ -18,7 +18,7 @@ static class Cli
           tessera test  [<target>] [--mode <mode>] [<trace>] <dir-or-file.tess>...
           tessera fmt   [--check] <file-or-dir>...   format .tess files in place (--check: list files that would change)
           tessera fmt   -               format the source on standard input to standard output (for an editor)
-          tessera migrate [--check] <file-or-dir>...   rewrite .tess files to this release's spellings (--check: list them)
+          tessera migrate [--check] [--named-args] <file-or-dir>...   rewrite .tess files to this release's spellings (--check: list them, --named-args: only name call arguments)
           tessera lsp                   run the language server on standard input and output (for an editor)
           tessera lint  <file-or-dir>...   print the style warnings (see lint below), the stdlib's too
           tessera docs  <source-dir> <output-dir>   write the API reference pages of a library from its /// docs

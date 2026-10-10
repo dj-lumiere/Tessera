@@ -103,7 +103,7 @@ routine SliceWriter.to[Bytes](me: Me) -> Bytes
 /// :returns: The bytes written so far, a view into the buffer.
 routine SliceWriter.to[Bytes](me: @Me) -> Bytes
     block entry()
-        s: Bytes = .from_ptr(me.data.peek(), me.count.peek())
+        s: Bytes = .from_ptr(data: me.data.peek(), count: me.count.peek())
         return(s)
 
 /// True once some write did not fit in the buffer, meaning the text was cut off.
@@ -121,19 +121,19 @@ routine SliceWriter.has_overflowed(me: @Me) -> Bool
         return(r)
 
 /// Appends as many of the `count` bytes as fit in the remaining room and drops the rest.
-/// :param bytes: The bytes to append.
+/// :param data: The bytes to append.
 /// :param count: The number of bytes to append.
 /// :note: Sets the overflow flag when anything was dropped, see {SliceWriter.has_overflowed}.
-routine SliceWriter.write_bytes(me: @Me, bytes: @Byte, count: USize) -> Void
+routine SliceWriter.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
     block entry()
         used: USize = me.count.peek()
         capacity: USize = me.capacity.peek()
         room: USize = capacity.sub(used)
         fits: Bool = count.le(room)
         taken: USize = count.min(room)
-        data: @Byte = me.data.peek()
-        to: @Byte = data.stride(used)
-        to.copy(bytes, taken)
+        buffer: @Byte = me.data.peek()
+        to: @Byte = buffer.stride(used)
+        to.copy(src: data, count: taken)
         me.count.poke(used.add(taken))
         branch fits
             ? return()
@@ -185,9 +185,9 @@ require T: typename, Writer[T]
 
 /// Appends to the buffer, flushing it first when the bytes would not fit. A write of 4 KiB or more goes straight to the inner Writer after that flush.
 /// :typeparam T: The inner Writer type.
-/// :param bytes: The bytes to append.
+/// :param data: The bytes to append.
 /// :param count: The number of bytes to append.
-routine BufWriter[T].write_bytes(me: @Me, bytes: @Byte, count: USize) -> Void
+routine BufWriter[T].write_bytes(me: @Me, data: @Byte, count: USize) -> Void
 require T: typename, Writer[T]
     block entry()
         buffered: USize = me.count.peek()
@@ -205,14 +205,14 @@ require T: typename, Writer[T]
 
     block direct()
         inner: @T = me.inner.peek()
-        inner.write_bytes(bytes, count)
+        inner.write_bytes(data, count)
         return()
 
     block append(buffered: USize)
         buffer: @Array[Byte, 4096] = me.data
-        data: @Byte = buffer.to[@Byte]()
-        to: @Byte = data.stride(buffered)
-        to.copy(bytes, count)
+        start: @Byte = buffer.to[@Byte]()
+        to: @Byte = start.stride(buffered)
+        to.copy(src: data, count)
         me.count.poke(buffered.add(count))
         return()
 
@@ -232,9 +232,9 @@ routine CountWriter.construct() -> Me
         return(w)
 
 /// Adds the number of UTF-8 code points in the bytes (every byte that is not a `10xxxxxx` continuation byte) to `count`, without storing the bytes.
-/// :param bytes: The bytes to count.
+/// :param data: The bytes to count.
 /// :param count: The number of bytes.
-routine CountWriter.write_bytes(me: @Me, bytes: @Byte, count: USize) -> Void
+routine CountWriter.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
     local total: @USize <- .hollow()
 
     block entry()
@@ -250,7 +250,7 @@ routine CountWriter.write_bytes(me: @Me, bytes: @Byte, count: USize) -> Void
 
     // continuation bytes are 10xxxxxx
     block step(i: USize)
-        byte: U8 = Byte.to[U8](bytes.stride(i).peek())
+        byte: U8 = Byte.to[U8](data.stride(i).peek())
         starts: Bool = byte.bitand(0xC0).ne(0x80)
         total.peek().add(starts.to[USize]()).poke_into(total)
         jump loop(i.add(1))
@@ -279,7 +279,7 @@ require T: typename, Writer[T]
 routine write_line[T](out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
-        write_str(out, "\n")
+        write_str(out, text: "\n")
         return()
 
 // -- Representable -----------------------------------------------------------------
@@ -365,7 +365,7 @@ require T: typename, Writer[T]
             : magnitude()
 
     block minus()
-        write_str(out, "-")
+        write_str(out, text: "-")
         jump magnitude()
 
     block magnitude()
@@ -393,7 +393,7 @@ require T: typename, Writer[T]
             : magnitude()
 
     block minus()
-        write_str(out, "-")
+        write_str(out, text: "-")
         jump magnitude()
 
     block magnitude()
@@ -421,7 +421,7 @@ require T: typename, Writer[T]
             : magnitude()
 
     block minus()
-        write_str(out, "-")
+        write_str(out, text: "-")
         jump magnitude()
 
     block magnitude()
@@ -497,7 +497,7 @@ require T: typename, Writer[T]
 routine U64.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
-        me.represent_into(out, 0)
+        me.represent_into(out, min_digits: 0)
         return()
 
 /// Writes the U64 in decimal, zero-padded to at least `min_digits` digits (at most 20).
@@ -530,7 +530,7 @@ require T: typename, Writer[T]
 
     block emit(start: USize)
         first: @Byte = digits.stride(start)
-        out.write_bytes(first, 20.sub(start))
+        out.write_bytes(data: first, count: 20.sub(start))
         return()
 
 /// Writes the U64 in lowercase hex with no leading zeros (`0` for zero).
@@ -539,7 +539,7 @@ require T: typename, Writer[T]
 routine U64.represent_hex_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
-        me.represent_hex_into(out, 0)
+        me.represent_hex_into(out, min_digits: 0)
         return()
 
 /// Writes the U64 in lowercase hex, zero-padded to at least `min_digits` digits (at most 16).
@@ -573,7 +573,7 @@ require T: typename, Writer[T]
 
     block emit(start: USize)
         first: @Byte = digits.stride(start)
-        out.write_bytes(first, 16.sub(start))
+        out.write_bytes(data: first, count: 16.sub(start))
         return()
 
 /// Writes the U128 in decimal.
@@ -582,7 +582,7 @@ require T: typename, Writer[T]
 routine U128.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
-        me.represent_into(out, 0)
+        me.represent_into(out, min_digits: 0)
         return()
 
 /// Writes the U128 in decimal, zero-padded to at least `min_digits` digits. It goes out in 19-digit chunks, so only
@@ -606,8 +606,8 @@ require T: typename, Writer[T]
         high: Me = me.div(TEN_POW_19)
         low: Me = me.mod(TEN_POW_19)
         high_min: USize = min_digits.sub_clamp(19)
-        high.represent_into(out, high_min)
-        low.to[U64]().represent_into(out, 19)
+        high.represent_into(out, min_digits: high_min)
+        low.to[U64]().represent_into(out, min_digits: 19)
         return()
 
 /// Writes the U128 in lowercase hex with no leading zeros (`0` for zero).
@@ -630,7 +630,7 @@ require T: typename, Writer[T]
 
     block both()
         high.represent_hex_into(out)
-        low.represent_hex_into(out, 16)
+        low.represent_hex_into(out, min_digits: 16)
         return()
 
 /// Writes the U256 in decimal.
@@ -639,7 +639,7 @@ require T: typename, Writer[T]
 routine U256.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
-        me.represent_into(out, 0)
+        me.represent_into(out, min_digits: 0)
         return()
 
 /// Writes the U256 in decimal, zero-padded to at least `min_digits` digits. It goes out in 19-digit chunks too, until
@@ -663,8 +663,8 @@ require T: typename, Writer[T]
         high: Me = me.div(TEN_POW_19_WIDE)
         low: Me = me.mod(TEN_POW_19_WIDE)
         high_min: USize = min_digits.sub_clamp(19)
-        high.represent_into(out, high_min)
-        low.to[U64]().represent_into(out, 19)
+        high.represent_into(out, min_digits: high_min)
+        low.to[U64]().represent_into(out, min_digits: 19)
         return()
 
 /// Writes the U256 in lowercase hex with no leading zeros (`0` for zero).
@@ -688,8 +688,8 @@ require T: typename, Writer[T]
     block both()
         middle: U64 = low.shr(64).to[U64]()
         high.represent_hex_into(out)
-        middle.represent_hex_into(out, 16)
-        low.to_wrap[U64]().represent_hex_into(out, 16)
+        middle.represent_hex_into(out, min_digits: 16)
+        low.to_wrap[U64]().represent_hex_into(out, min_digits: 16)
         return()
 
 /// Writes the USize in decimal.
@@ -736,8 +736,8 @@ require T: typename, Writer[T]
     block entry()
         claim buf: @Array[Byte, 4] <- .hollow()
         bytes: @Byte = buf.to[@Byte]()
-        count: USize = utf8_encode_into(me, bytes)
-        out.write_bytes(bytes, count)
+        count: USize = utf8_encode_into(char: me, out: bytes)
+        out.write_bytes(data: bytes, count)
         return()
 
 /// Writes `true` or `false`.
@@ -751,11 +751,11 @@ require T: typename, Writer[T]
             : no()
 
     block yes()
-        write_str(out, "true")
+        write_str(out, text: "true")
         return()
 
     block no()
-        write_str(out, "false")
+        write_str(out, text: "false")
         return()
 
 /// Writes the bytes as they are, without quotes or escapes.
@@ -764,7 +764,7 @@ require T: typename, Writer[T]
 routine Bytes.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
-        write_str(out, me)
+        write_str(out, text: me)
         return()
 
 // -- addresses -----------------------------------------------------------------
@@ -781,8 +781,8 @@ routine Addr.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
         address: U64 = ptrtoint[Me, U64](me)
-        write_str(out, "0x")
-        address.represent_hex_into(out, 1)
+        write_str(out, text: "0x")
+        address.represent_hex_into(out, min_digits: 1)
         return()
 
 // -- arrays --------------------------------------------------------------------
@@ -795,7 +795,7 @@ require T: typename, COUNT: USize, Diagnosable[T], TWriter: typename, Writer[TWr
     local slot: @Me <- me
 
     block entry()
-        write_str(out, "[")
+        write_str(out, text: "[")
         jump walk(0)
 
     block walk(at: USize)
@@ -811,7 +811,7 @@ require T: typename, COUNT: USize, Diagnosable[T], TWriter: typename, Writer[TWr
             : separate(at)
 
     block separate(at: USize)
-        write_str(out, ", ")
+        write_str(out, text: ", ")
         jump element(at)
 
     block element(at: USize)
@@ -820,7 +820,7 @@ require T: typename, COUNT: USize, Diagnosable[T], TWriter: typename, Writer[TWr
         jump walk(at.add(1))
 
     block close()
-        write_str(out, "]")
+        write_str(out, text: "]")
         return()
 
 // -- floats --------------------------------------------------------------------
@@ -847,7 +847,7 @@ require T: typename, Writer[T]
             : one(left)
 
     block one(left: USize)
-        write_str(out, "0")
+        write_str(out, text: "0")
         jump loop(left.sub(1))
 
 /// Writes count ASCII digits starting at first.
@@ -859,7 +859,7 @@ routine write_digits[T](out: @T, first: @U8, count: USize) -> Void
 require T: typename, Writer[T]
     block entry()
         bytes: @Byte = first.to[@Byte]()
-        out.write_bytes(bytes, count)
+        out.write_bytes(data: bytes, count)
         return()
 
 /// Writes digits × 10^exponent (digits > 0, at most 19 digits).
@@ -890,7 +890,7 @@ require T: typename, Writer[T]
 
     block layout(start: USize)
         first: @U8 = digits.stride(start)
-        write_decimal_digits(out, first, 20.sub(start), d.exponent)
+        write_decimal_digits(out, first, n: 20.sub(start), exponent: d.exponent)
         return()
 
 /// Writes the n ASCII digits at first times 10^exponent (no leading zero). The
@@ -923,41 +923,41 @@ require T: typename, Writer[T]
 
     // 1234 × 10^2 → 123400.0
     block integral()
-        write_digits(out, first, n)
-        write_zeros(out, exponent.to[USize]())
-        write_str(out, ".0")
+        write_digits(out, first, count: n)
+        write_zeros(out, count: exponent.to[USize]())
+        write_str(out, text: ".0")
         return()
 
     // 1234 × 10^-6 → 0.001234
     block below_one()
-        write_str(out, "0.")
+        write_str(out, text: "0.")
         x_magnitude: USize = x.abs_diff(0).to[USize]()
-        write_zeros(out, x_magnitude.sub(1))
-        write_digits(out, first, n)
+        write_zeros(out, count: x_magnitude.sub(1))
+        write_digits(out, first, count: n)
         return()
 
     // 1234 × 10^-2 → 12.34
     block split()
         tail: USize = exponent.abs_diff(0).to[USize]()
         head: USize = n.sub(tail)
-        write_digits(out, first, head)
-        write_str(out, ".")
+        write_digits(out, first, count: head)
+        write_str(out, text: ".")
         rest: @U8 = first.stride(head)
-        write_digits(out, rest, tail)
+        write_digits(out, first: rest, count: tail)
         return()
 
     // 1234 × 10^20 → 1.234e+23
     block scientific()
-        write_digits(out, first, 1)
+        write_digits(out, first, count: 1)
         more: Bool = n.gt(1)
         branch more
             ? mantissa_tail()
             : exponent_part()
 
     block mantissa_tail()
-        write_str(out, ".")
+        write_str(out, text: ".")
         rest: @U8 = first.stride(1)
-        write_digits(out, rest, n.sub(1))
+        write_digits(out, first: rest, count: n.sub(1))
         jump exponent_part()
 
     // e+XX / e-XX, at least two digits
@@ -968,13 +968,13 @@ require T: typename, Writer[T]
             : plus_exponent()
 
     block minus_exponent()
-        write_str(out, "e-")
-        x.abs_diff(0).represent_into(out, 2)
+        write_str(out, text: "e-")
+        x.abs_diff(0).represent_into(out, min_digits: 2)
         return()
 
     block plus_exponent()
-        write_str(out, "e+")
-        x.abs_diff(0).represent_into(out, 2)
+        write_str(out, text: "e+")
+        x.abs_diff(0).represent_into(out, min_digits: 2)
         return()
 
 /// Writes a binary float of at most 64 bits, given its bits and its format, as its shortest round-trip decimal.
@@ -1006,7 +1006,7 @@ require T: typename, Writer[T]
             : infinity()
 
     block nan()
-        write_str(out, "NaN")
+        write_str(out, text: "NaN")
         return()
 
     block infinity()
@@ -1015,11 +1015,11 @@ require T: typename, Writer[T]
             : positive_infinity()
 
     block negative_infinity()
-        write_str(out, "-inf")
+        write_str(out, text: "-inf")
         return()
 
     block positive_infinity()
-        write_str(out, "inf")
+        write_str(out, text: "inf")
         return()
 
     block sign()
@@ -1028,7 +1028,7 @@ require T: typename, Writer[T]
             : magnitude()
 
     block minus()
-        write_str(out, "-")
+        write_str(out, text: "-")
         jump magnitude()
 
     block magnitude()
@@ -1038,7 +1038,7 @@ require T: typename, Writer[T]
             : digits()
 
     block zero()
-        write_str(out, "0.0")
+        write_str(out, text: "0.0")
         return()
 
     block digits()
@@ -1048,13 +1048,13 @@ require T: typename, Writer[T]
             : narrow()
 
     block double()
-        d: FloatDecimal = ryu_double_decimal(mantissa, exponent.to[S64]())
+        d: FloatDecimal = ryu_double_decimal(mantissa, exponent: exponent.to[S64]())
         write_float_decimal(out, d)
         return()
 
     block narrow()
-        d: FloatDecimal = ryu_float_decimal(mantissa.to[S64](), exponent.to[S64](), mantissa_bits,
-            bias)
+        d: FloatDecimal = ryu_float_decimal(mantissa: mantissa.to[S64](),
+            exponent: exponent.to[S64](), mantissa_bits, bias)
         write_float_decimal(out, d)
         return()
 
@@ -1065,7 +1065,7 @@ routine B64.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U64 = me.bits()
-        write_binary_float(out, bits, Me.FORMAT.peek())
+        write_binary_float(out, bits, format: Me.FORMAT.peek())
         return()
 
 /// Writes the B32 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
@@ -1075,7 +1075,7 @@ routine B32.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U64 = me.bits().to[U64]()
-        write_binary_float(out, bits, Me.FORMAT.peek())
+        write_binary_float(out, bits, format: Me.FORMAT.peek())
         return()
 
 /// Writes the B16 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
@@ -1085,7 +1085,7 @@ routine B16.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U64 = me.bits().to[U64]()
-        write_binary_float(out, bits, Me.FORMAT.peek())
+        write_binary_float(out, bits, format: Me.FORMAT.peek())
         return()
 
 /// Writes the BF16 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
@@ -1095,7 +1095,7 @@ routine BF16.represent_into[T](me: Me, out: @T) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U64 = me.bits().to[U64]()
-        write_binary_float(out, bits, Me.FORMAT.peek())
+        write_binary_float(out, bits, format: Me.FORMAT.peek())
         return()
 
 // -- B128 ----------------------------------------------------------------------
@@ -1197,7 +1197,7 @@ require T: typename, Writer[T]
             : start(k)
 
     block raise(k: S64)
-        s.mul_add(10, 0)
+        s.mul_add(m: 10, addend: 0)
         jump fixup(k.add(1))
 
     block start(k: S64)
@@ -1207,9 +1207,9 @@ require T: typename, Writer[T]
 
     // d = floor(10r / s), r = 10r mod s, and the margins scale by 10 too.
     block next_digit(n: USize, k: S64, digits: @U8)
-        r.mul_add(10, 0)
-        plus.mul_add(10, 0)
-        minus.mul_add(10, 0)
+        r.mul_add(m: 10, addend: 0)
+        plus.mul_add(m: 10, addend: 0)
+        minus.mul_add(m: 10, addend: 0)
         jump take(0, n, k, digits)
 
     block take(d: U8, n: USize, k: S64, digits: @U8)
@@ -1258,7 +1258,7 @@ require T: typename, Writer[T]
         digit: U8 = d.add(round_up.to[U8]())
         digits.stride(n).poke(digit.add(48))
         count: USize = n.add(1)
-        write_decimal_digits(out, digits, count, k.sub(count.to[S64]()))
+        write_decimal_digits(out, first: digits, n: count, exponent: k.sub(count.to[S64]()))
         return()
 
 /// Writes the B128 as the shortest decimal that reads back as the same value, laid out positionally when the decimal exponent is in -4 .. 15 (`0.0001`, `123.5`, `1.0`) and in scientific form otherwise (`1e+16`). Specials are `inf`, `-inf` and `NaN`.
@@ -1285,7 +1285,7 @@ require T: typename, Writer[T]
             else => text("inf")
 
     block text(s: Bytes)
-        write_str(out, s)
+        write_str(out, text: s)
         return()
 
     block sign()
@@ -1294,7 +1294,7 @@ require T: typename, Writer[T]
             : magnitude()
 
     block minus()
-        write_str(out, "-")
+        write_str(out, text: "-")
         jump magnitude()
 
     block magnitude()
@@ -1408,11 +1408,11 @@ require T: typename, Writer[T]
 
     block int_part(chars: @U8, first: USize, int_count: USize)
         from: @U8 = chars.stride(first)
-        write_digits(out, from, int_count)
+        write_digits(out, first: from, count: int_count)
         jump fraction(chars, first.add(int_count))
 
     block zero_int(chars: @U8, first: USize)
-        write_str(out, "0")
+        write_str(out, text: "0")
         jump fraction(chars, first)
 
     block fraction(chars: @U8, from: USize)
@@ -1423,11 +1423,11 @@ require T: typename, Writer[T]
 
     block point(chars: @U8, from: USize)
         count: USize = 16640.sub(from)
-        write_str(out, ".")
-        write_zeros(out, places.sub(count))
+        write_str(out, text: ".")
+        write_zeros(out, count: places.sub(count))
         start: @U8 = chars.stride(from)
-        write_digits(out, start, count)
-        write_zeros(out, digits.sub(places))
+        write_digits(out, first: start, count)
+        write_zeros(out, count: digits.sub(places))
         return()
 
 /// represent_fixed_into for a binary float given its bits and its format: with shift the bias plus the fraction
@@ -1464,11 +1464,11 @@ require T: typename, Writer[T]
             : text("inf")
 
     block text(s: Bytes)
-        write_str(out, s)
+        write_str(out, text: s)
         return()
 
     block minus()
-        write_str(out, "-")
+        write_str(out, text: "-")
         jump magnitude()
 
     block magnitude()
@@ -1491,7 +1491,7 @@ routine B64.represent_fixed_into[T](me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U128 = me.bits().to[U128]()
-        write_binary_fixed(out, bits, Me.FORMAT.peek(), digits)
+        write_binary_fixed(out, bits, format: Me.FORMAT.peek(), digits)
         return()
 
 /// Writes the B32 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1502,7 +1502,7 @@ routine B32.represent_fixed_into[T](me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U128 = me.bits().to[U128]()
-        write_binary_fixed(out, bits, Me.FORMAT.peek(), digits)
+        write_binary_fixed(out, bits, format: Me.FORMAT.peek(), digits)
         return()
 
 /// Writes the B16 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1513,7 +1513,7 @@ routine B16.represent_fixed_into[T](me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U128 = me.bits().to[U128]()
-        write_binary_fixed(out, bits, Me.FORMAT.peek(), digits)
+        write_binary_fixed(out, bits, format: Me.FORMAT.peek(), digits)
         return()
 
 /// Writes the BF16 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1524,7 +1524,7 @@ routine BF16.represent_fixed_into[T](me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer[T]
     block entry()
         bits: U128 = me.bits().to[U128]()
-        write_binary_fixed(out, bits, Me.FORMAT.peek(), digits)
+        write_binary_fixed(out, bits, format: Me.FORMAT.peek(), digits)
         return()
 
 /// Writes the B128 with exactly `digits` digits after the point, correctly rounded from the exact binary value with ties to even. Specials are `inf`, `-inf` and `NaN`.
@@ -1534,7 +1534,7 @@ require T: typename, Writer[T]
 routine B128.represent_fixed_into[T](me: Me, out: @T, digits: USize) -> Void
 require T: typename, Writer[T]
     block entry()
-        write_binary_fixed(out, me.bits(), Me.FORMAT.peek(), digits)
+        write_binary_fixed(out, bits: me.bits(), format: Me.FORMAT.peek(), digits)
         return()
 
 // -- views ---------------------------------------------------------------------
@@ -1687,9 +1687,9 @@ require TValue: typename, TWriter: typename, Writer[TWriter], Representable[TVal
             Align.AFTER_SIGN => after_sign(pad)
 
     block padded(before: USize, after: USize)
-        write_repeated(out, fill, before)
+        write_repeated(out, text: fill, count: before)
         value.represent_into(out)
-        write_repeated(out, fill, after)
+        write_repeated(out, text: fill, count: after)
         return()
 
     block after_sign(pad: USize)
@@ -1700,9 +1700,9 @@ require TValue: typename, TWriter: typename, Writer[TWriter], Representable[TVal
 
 /// Writes the first bytes after the padding, or after a leading `-` or `+`, and passes every later write straight through.
 /// :typeparam T: The inner Writer type.
-/// :param bytes: The bytes being written.
+/// :param data: The bytes being written.
 /// :param count: The number of bytes.
-routine SignPadWriter[T].write_bytes(me: @Me, bytes: @Byte, count: USize) -> Void
+routine SignPadWriter[T].write_bytes(me: @Me, data: @Byte, count: USize) -> Void
 require T: typename, Writer[T]
     local inner: @T = me.inner.peek()
     local pad: USize = me.pad.peek()
@@ -1711,26 +1711,26 @@ require T: typename, Writer[T]
         first: Bool = pad.gt(0).bitand(count.gt(0))
         branch first
             ? first()
-            : pass(bytes, count)
+            : pass(data, count)
 
     block first()
         fill: Bytes = me.fill.peek()
         me.pad.poke(0)
-        byte: U8 = Byte.to[U8](bytes.stride(0).peek())
+        byte: U8 = Byte.to[U8](data.stride(0).peek())
         signed: Bool = byte.eq(45).bitor(byte.eq(43))  // - or +
         branch signed
             ? sign(fill)
-            : pad(fill, bytes, count)
+            : pad(fill, data, count)
 
     block sign(fill: Bytes)
-        inner.write_bytes(bytes, 1)
-        rest: @Byte = bytes.stride(1)
+        inner.write_bytes(data, count: 1)
+        rest: @Byte = data.stride(1)
         jump pad(fill, rest, count.sub(1))
 
     block pad(fill: Bytes, from: @Byte, left: USize)
-        write_repeated(inner, fill, pad)
+        write_repeated(out: inner, text: fill, count: pad)
         jump pass(from, left)
 
     block pass(from: @Byte, left: USize)
-        inner.write_bytes(from, left)
+        inner.write_bytes(data: from, count: left)
         return()

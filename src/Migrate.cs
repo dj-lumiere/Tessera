@@ -41,7 +41,9 @@ public static class Migrate
     public static int Run(string[] args)
     {
         bool check = args.Contains("--check");
-        var paths = args.Where(a => a != "--check").ToList();
+        // `--named-args` runs only the step that names call arguments, which is safe on any source.
+        bool namedArgsOnly = args.Contains("--named-args");
+        var paths = args.Where(a => a is not ("--check" or "--named-args")).ToList();
         if (paths.Count == 0)
         {
             Console.Error.WriteLine("error: migrate: give files or directories to rewrite");
@@ -50,8 +52,8 @@ public static class Migrate
 
         var files = paths.SelectMany(p => Directory.Exists(p)
             ? Directory.EnumerateFiles(p, "*.tess", SearchOption.AllDirectories)
-            : [p]).Order().ToList();
-        int changed = 0;
+            : p.EndsWith(".md", StringComparison.Ordinal) ? [] : [p]).Order().ToList();
+        var changedFiles = new HashSet<string>();
         var strictUtf8 = new UTF8Encoding(false, true);
         var texts = new Dictionary<string, string>();
         foreach (string file in files)
@@ -76,6 +78,7 @@ public static class Migrate
             if (!texts.TryGetValue(file, out string? text)) continue;
             // A program whose manifest says it is written for this release already is left alone: the rules assume
             // the previous spelling, and some of them would change this release's code (`peek` was a queue's front).
+            if (namedArgsOnly) continue;
             string? manifest = Manifest.Find(Path.GetDirectoryName(Path.GetFullPath(file))!);
             if (manifest is not null && WrittenFor(manifest) is { } written && written >= Release)
             {
@@ -88,7 +91,7 @@ public static class Migrate
                 continue;
             }
 
-            changed++;
+            changedFiles.Add(file);
             if (check)
             {
                 Console.WriteLine(file);
@@ -100,14 +103,48 @@ public static class Migrate
             }
         }
 
+        // Every file, whatever release it is written for, has the arguments of its calls named where a routine takes
+        // two or more: the step only adds names, so a file already written for this release is safe to run it on.
+        var namedArgs = new NamedArgsMigration();
+        foreach (var (path, text) in StdlibFiles()) namedArgs.Index(path, text, true);
+        foreach (var (path, text) in texts) namedArgs.Index(path, File.ReadAllText(path), false);
+        // The examples of a documentation page are named too (`--named-args` takes .md files and directories of them).
+        var pages = namedArgsOnly
+            ? paths.SelectMany(p => Directory.Exists(p)
+                ? Directory.EnumerateFiles(p, "*.md", SearchOption.AllDirectories)
+                : p.EndsWith(".md", StringComparison.Ordinal) ? [p] : []).Order().ToList()
+            : [];
+        foreach (string page in pages) namedArgs.IndexMarkdown(page, File.ReadAllText(page));
+        var handRewrites = new List<string>();
+        foreach (string page in pages)
+        {
+            string text = File.ReadAllText(page);
+            string named = namedArgs.RewriteMarkdown(page, text, handRewrites);
+            if (named == text) continue;
+            if (check) Console.WriteLine(page);
+            else File.WriteAllText(page, named, new UTF8Encoding(false));
+            changedFiles.Add(page);
+        }
+        foreach (string file in files)
+        {
+            if (!texts.ContainsKey(file)) continue;
+            string text = File.ReadAllText(file);
+            string named = namedArgs.Rewrite(file, text, handRewrites);
+            if (named == text) continue;
+            if (check) Console.WriteLine(file);
+            else File.WriteAllText(file, named, new UTF8Encoding(false));
+            changedFiles.Add(file);
+        }
+        foreach (string line in handRewrites.Distinct()) Console.WriteLine(line);
+
         foreach (string manifest in migratedManifests) SetWrittenFor(manifest);
         if (!check)
         {
             string already = skipped > 0 ? $", {skipped} already written for {Release.Major}.{Release.Minor}" : "";
-            Console.WriteLine($"migrated {changed} of {files.Count} file(s){already}");
+            Console.WriteLine($"migrated {changedFiles.Count} of {files.Count} file(s){already}");
         }
 
-        return check && changed > 0 ? 1 : 0;
+        return check && changedFiles.Count > 0 ? 1 : 0;
     }
 
     /// The release `migrate` moves sources to.
@@ -636,7 +673,7 @@ public static class Migrate
         {
             string line = lines[i];
             if (line.TrimStart().StartsWith("//", StringComparison.Ordinal)) continue;
-            // Already 0.5: a routine's head line (`local x : T = v`) and a block not written yet (`todo`).
+            // Already 0.5: a routine's head line (`local x: T = v`) and a block not written yet (`todo`).
             if (KeywordLocal.IsMatch(line) || line.Trim() == "todo") continue;
             var sb = new StringBuilder(line);
             int comment = CommentStart(sb, 0, sb.Length);
@@ -659,7 +696,10 @@ public static class Migrate
     }
 
     /// The standard library's sources, when the builder can find them, for the choices it declares.
-    private static IEnumerable<string> StdlibTexts()
+    private static IEnumerable<string> StdlibTexts() => StdlibFiles().Select(f => f.Text);
+
+    /// The standard library's files and their sources, when the builder can find them.
+    private static IEnumerable<(string Path, string Text)> StdlibFiles()
     {
         string dir;
         try
@@ -672,7 +712,7 @@ public static class Migrate
         }
 
         foreach (string file in Directory.EnumerateFiles(dir, "*.tess", SearchOption.AllDirectories))
-            yield return File.ReadAllText(file);
+            yield return (file, File.ReadAllText(file));
     }
 
     /// The choices and their members, and the variant case names, across the files being migrated and the standard

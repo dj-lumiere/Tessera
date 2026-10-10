@@ -312,7 +312,7 @@ public sealed class FunctionGen
         yield return $"#dbg_declare(ptr {slot}, !{variable}, !DIExpression(), !{location})";
     }
 
-    /// Records a binding: `x : T = ...` names `op` as the variable x from here on.
+    /// Records a binding: `x: T = ...` names `op` as the variable x from here on.
     private void DescribeValue(string name, string op, DType t, Pos pos)
     {
         if (!Debug || t is VoidType || _cur.Terminated) return;
@@ -346,7 +346,7 @@ public sealed class FunctionGen
     /// Whether this routine keeps a frame on the crash trace.
     private bool _traced;
 
-    /// The contents of the `claim p : @T <- value` being stored: the argument of a store the program didn't write.
+    /// The contents of the `claim p: @T <- value` being stored: the argument of a store the program didn't write.
     private Expr? _claimContents;
 
     /// The place the frame last got in the LLVM block being written: a second call from the same place there needs
@@ -542,7 +542,7 @@ public sealed class FunctionGen
                     Line($"{op} = {Copy(v, t)}");
                 Define(b.Name, new Val(op, t), b.Pos);
                 DescribeValue(b.Name, op, t, b.Source ?? b.Pos);
-                // `claim p : @T <- value` is the claim, then `p.poke(value)`.
+                // `claim p: @T <- value` is the claim, then `p.poke(value)`.
                 if (b.Value is ClaimExpr { Contents: { } contents })
                 {
                     // The store is the builder's, so a mismatch is said as a binding's, not as an argument's.
@@ -1055,7 +1055,7 @@ public sealed class FunctionGen
     private Val EvalClaim(ClaimExpr a, DType expected)
     {
         if (expected is not PtrType { Pointee: { } t })
-            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim p : @T; found {expected}");
+            throw Err(a.Pos, $"claim needs a typed pointer to fill, such as claim p: @T; found {expected}");
         _c.EnsureTypeDefined(t);
         string slot = $"%s{_allocas.Count}";
         // The alignment is written out: the IR names no data layout, so LLVM would give a U128 slot 8 where an atomic
@@ -1335,7 +1335,7 @@ public sealed class FunctionGen
         {
             if (text.Length == 0) return;
             EvalCall(new CallExpr("write_str", [], [writer, new StrLit(text.ToString(), template.Pos)], template.Pos)
-                { Path = FormatModule },
+                { ArgNames = ["out", "text"], Path = FormatModule },
                 VoidType.Instance);
             text.Clear();
         }
@@ -1356,7 +1356,7 @@ public sealed class FunctionGen
                 text.Append(ch);
                 continue;
             }
-            // The hole ends at its matching '}', so a literal inside it keeps its braces: "{sum2({ 7, 8 })}".
+            // The hole ends at its matching '}'.
             int end = MatchingBrace(s, i);
             if (end < 0) throw Err(template.Pos, "a '{' in a write string is never closed; a literal brace is '{{'");
             string source = s[(i + 1)..end];
@@ -1650,8 +1650,6 @@ public sealed class FunctionGen
                     throw Err(c.Pos, $"'{c.Name}' is a block; blocks are entered with jump/branch, not called");
                 if (set.Count == 0) return null;
                 if (c.WrittenTypeArgs is not null) throw Err(c.Pos, "call type arguments must be types");
-                if (c.ArgNames is not null)
-                    throw Err(c.Pos, $"'{c.Name}' is a routine, and its arguments are given in order, without names");
                 if (set.Count > 1)
                 {
                     var fit = ChooseOverload([.. set.Select(o => (o, new Compiler.TypeEnv(o.File)))], c.TypeArgs, c.Args, 0,
@@ -1739,9 +1737,9 @@ public sealed class FunctionGen
         if (tier.Count == 1) return tier[0];
         string hint = args.Any(a => a is IntLit)
             ? "an untyped integer literal prefers USize (SSize when negative), and that doesn't settle it here; "
-              + "give the literal its type by binding it first (n : U8 = 1)"
+              + "give the literal its type by binding it first (n: U8 = 1)"
             : args.Any(a => a is FloatLit)
-                ? "a float literal can be any float type; give it its type by binding it first (x : B64 = 1.5)"
+                ? "a float literal can be any float type; give it its type by binding it first (x: B64 = 1.5)"
             : tier.All(f => f.Generic)
                 ? "more than one generic overload fits; pass the type arguments, or add an overload for these types"
                 : "give the arguments the types of the overload you mean";
@@ -1962,16 +1960,16 @@ public sealed class FunctionGen
             // An untyped literal receiver takes its type from the arguments: through the parameters of a routine on
             // every type (`7.poke_into(p)` with `dest: @T`), or else as the first typed argument
             // (`0.sub(x)`). Failing both, it takes its type from context.
-            // The result's type says the receiver's only for a routine that returns Me (`x : U64 = 1.shl(3)`), so it
+            // The result's type says the receiver's only for a routine that returns Me (`x: U64 = 1.shl(3)`), so it
             // is borrowed only when it's a type the literal could have.
             rt = BlanketReceiverType(m) ?? m.Args.Select(Infer).FirstOrDefault(t => t is not null)
                  ?? (LiteralCanBe(m.Receiver, expected) ? expected : null);
             if (rt is null)
             {
-                string call = m.Name + (m.TypeArgs.Count == 0 ? "" : $"<{string.Join(", ", m.TypeArgs)}>");
+                string call = m.Name + (m.TypeArgs.Count == 0 ? "" : $"[{string.Join(", ", m.TypeArgs)}]");
                 string fix = m.Receiver switch
                 {
-                    ArrayLit => $"a : Array[T, COUNT] = [...], then a.{call}(...)",
+                    ArrayLit => $"a: Array[T, COUNT] = [...], then a.{call}(...)",
                     RecordLit => "Type(...)",
                     FloatLit => $"B64.{call}(...)",
                     _ => $"S64.{call}(...)",
@@ -2260,7 +2258,50 @@ public sealed class FunctionGen
             var c = (CallExpr)e;
             throw Err(c.Pos, UnknownCall(c));
         }
+        CheckArgNames(e, plan);
         return EmitCall(plan);
+    }
+
+    /// A routine that takes two or more arguments besides `me` has each one named, in the order of its parameters:
+    /// `copy(dest: d, source: s)`. A value already called like its parameter goes by its name alone
+    /// (`copy(dest, source: s)`). A routine marked `#positional` (its arguments alike, as in `max(a, b)`) and a C
+    /// routine take them in order, and a name written there still has to be the parameter's.
+    private void CheckArgNames(Expr e, CallPlan plan)
+    {
+        var names = e switch
+        {
+            CallExpr c => c.ArgNames,
+            NsCallExpr n => n.ArgNames,
+            ImplicitCallExpr i => i.ArgNames,
+            MethodCallExpr m => m.ArgNames,
+            _ => null,
+        };
+        var r = plan.Decl;
+        int offset = r.Params.Count - plan.Args.Count;
+        if (offset < 0) return;
+        var named = r.Params.Skip(offset).Where(p => p.Name != "me").ToList();
+        bool inOrder = r.Attr("positional") is not null || r.Attr("external") is { First: "c" };
+        bool needsNames = named.Count >= 2 && !inOrder;
+        string Shape() => $"{r.DisplayName}({string.Join(", ", named.Select(p => $"{p.Name}: ..."))})";
+        for (int i = 0; i < plan.Args.Count; i++)
+        {
+            var p = r.Params[i + offset];
+            var arg = plan.Args[i];
+            string? label = names?[i];
+            if (p.Name == "me")
+            {
+                if (label is not null)
+                    throw Err(arg.Pos, $"the value '{r.DisplayName}' is called on goes first, without a name");
+                continue;
+            }
+            if (label is not null && label != p.Name)
+                throw Err(arg.Pos, $"argument {i + 1} of '{r.DisplayName}' is named '{label}', but the parameter there is "
+                    + $"'{p.Name}'; the names follow the parameters' order: {Shape()}");
+            bool punned = arg is ValueRef v && v.Name == p.Name;
+            if (label is null && needsNames && !punned)
+                throw Err(arg.Pos, $"'{r.DisplayName}' takes {named.Count} arguments, so each one is named: {Shape()} "
+                    + $"(a value already called '{p.Name}' goes by its name alone)");
+        }
     }
 
     private Val SizeOrAlign(CallExpr c)
@@ -2842,6 +2883,8 @@ public sealed class FunctionGen
 
     private void CheckBlockArgs(CallTarget ct)
     {
+        if (ct.ArgNames?.FirstOrDefault(n => n is not null) is { } named)
+            throw Err(ct.Pos, $"block '{ct.Name}' takes its arguments in order, without names ('{named}:' here)");
         var types = _blockParamTypes[ct.Name];
         if (ct.Args.Count != types.Count)
             throw Err(ct.Pos, $"block '{ct.Name}' takes {types.Count} argument(s), got {ct.Args.Count}");
@@ -2877,7 +2920,7 @@ public sealed class FunctionGen
                 break;
             }
             case CallTarget ct:
-                EmitNoReturnCall(new CallExpr(ct.Name, [], ct.Args, ct.Pos), ct.Pos);
+                EmitNoReturnCall(new CallExpr(ct.Name, [], ct.Args, ct.Pos) { ArgNames = ct.ArgNames }, ct.Pos);
                 break;
             case ExprTarget et:
                 EmitNoReturnCall(et.Call, et.Pos);

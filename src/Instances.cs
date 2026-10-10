@@ -84,7 +84,7 @@ public sealed partial class Compiler
     private static readonly HashSet<string> KnownAttributes =
         ["external", "symbol", "callconv", "noreturn", "variadic", "template", "target", "feature", "llvm",
          "export", "derived", "inline", "noinline", "clobbers", "readonly", "pure", "naked", "source", "track_caller",
-         "no_builtins", "untraced", "trace", "heap_check", ExpensiveCallLint.Attribute];
+         "no_builtins", "untraced", "trace", "heap_check", "positional", ExpensiveCallLint.Attribute];
 
     /// Attributes that describe an assembly routine and mean nothing on another.
     private static readonly string[] AsmAttributes = ["clobbers", "readonly", "pure", "naked"];

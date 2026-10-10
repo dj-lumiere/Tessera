@@ -168,7 +168,7 @@ public sealed partial class Compiler
             case RecordType { TransparentField: { } inner } r:
             {
                 int innerId = DiType(inner);
-                // A field that points back at its record (`prev : @Node`) would make the typedef its own base type
+                // A field that points back at its record (`prev: @Node`) would make the typedef its own base type
                 // through the pointer, a cycle LLVM's debug-info writers recurse on until they crash: such a record is
                 // a structure of its one member instead.
                 if (_onCycle.Contains(t.Key)) MetaSet(id, StructureType(r, id, bits));

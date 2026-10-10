@@ -47,7 +47,7 @@ public class AsmArmTests
 
         routine start() -> Void
             block entry()
-                x : U32 = pick(1, 2)
+                x : U32 = pick(a: 1, b: 2)
                 y : U32 = count(4)
                 return()
 
@@ -145,7 +145,7 @@ public class AsmArmTests
             routine start() -> Void
                 block entry()
                     t : U32 = thread_id()
-                    f : B64 = join(1, 2)
+                    f : B64 = join(lo: 1, hi: 2)
                     claim v : @U32 <- 3
                     w : U32 = walk(v)
                     return()

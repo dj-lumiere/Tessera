@@ -455,7 +455,7 @@ private routine c_path(path: Bytes, out: @Byte) -> Bool
         branch path.contains("\x00")
             ? return(false)
             : continue
-        out.copy(path.data, n)
+        out.copy(src: path.data, count: n)
         out.stride(n).poke(0x00)
         return(true)
 
@@ -473,9 +473,9 @@ private routine c_child_path(dir: @Byte, dir_count: USize, name: @Byte, out: @By
         branch total.ge(PATH_CAPACITY)
             ? return(false)
             : continue
-        out.copy(dir, dir_count)
+        out.copy(src: dir, count: dir_count)
         out.stride(dir_count).poke(b'/')
-        out.stride(dir_count.add(1)).copy(name, name_count)
+        out.stride(dir_count.add(1)).copy(src: name, count: name_count)
         out.stride(total).poke(0x00)
         return(true)
 
@@ -577,10 +577,10 @@ private routine c_statx(dir: CInt, path: @Byte, flags: CInt, mask: U32, out: @St
 private routine Statx.to[Metadata](me: Me) -> Metadata
     block entry()
         mode: U32 = me.mode.to[U32]()
-        modified: S64 = ns_of(me.mtime.sec, me.mtime.nsec.to[S64]())
+        modified: S64 = ns_of(sec: me.mtime.sec, nsec: me.mtime.nsec.to[S64]())
         born: Bool = me.mask.bitand(STATX_BTIME).ne(0)
         created: Option[S64] = born
-            ? Option[S64].Present(ns_of(me.btime.sec, me.btime.nsec.to[S64]()))
+            ? Option[S64].Present(ns_of(sec: me.btime.sec, nsec: me.btime.nsec.to[S64]()))
             : .Absent
         return(Metadata(kind: mode_kind(mode), size: me.size, modified_ns: modified,
             created_ns: created, readonly: mode.bitand(0o200).eq(0)))
@@ -608,7 +608,7 @@ private routine metadata_of(cpath: @Byte, follow: Bool) -> Result[Metadata, FsEr
         flags: CInt = follow
             ? 0
             : AT_SYMLINK_NOFOLLOW
-        branch stat_raw(AT_FDCWD, cpath, flags, st)
+        branch stat_raw(dir: AT_FDCWD, cpath, flags, out: st)
             ? return(.Success(st.peek().to[Metadata]()))
             : return(failed[Metadata]())
 
@@ -620,7 +620,7 @@ private routine metadata_of(cpath: @Byte, follow: Bool) -> Result[Metadata, FsEr
 private routine fd_metadata(fd: CInt) -> Result[Metadata, FsError]
     block entry()
         claim st: @Statx <- .hollow()
-        branch stat_raw(fd, "", AT_EMPTY_PATH, st)
+        branch stat_raw(dir: fd, cpath: "", flags: AT_EMPTY_PATH, out: st)
             ? return(.Success(st.peek().to[Metadata]()))
             : return(failed[Metadata]())
 
@@ -632,7 +632,7 @@ private routine fd_mode(fd: CInt) -> U32
     local st: @Statx <- .hollow()
 
     block entry()
-        branch stat_raw(fd, "", AT_EMPTY_PATH, st)
+        branch stat_raw(dir: fd, cpath: "", flags: AT_EMPTY_PATH, out: st)
             ? permission_bits()
             : return(0o666)
 
@@ -648,7 +648,7 @@ private routine fd_mode(fd: CInt) -> U32
 private routine path_mode(cpath: @Byte) -> Option[U32]
     block entry()
         claim st: @Statx <- .hollow()
-        branch stat_raw(AT_FDCWD, cpath, 0, st)
+        branch stat_raw(dir: AT_FDCWD, cpath, flags: 0, out: st)
             ? return(.Present(st.mode.peek().to[U32]()))
             : return(.Absent)
 
@@ -701,8 +701,8 @@ private routine c_fstat(fd: CInt, out: @DarwinStat) -> CInt
 private routine DarwinStat.to[Metadata](me: Me) -> Metadata
     block entry()
         mode: U32 = me.mode.to[U32]()
-        modified: S64 = ns_of(me.mtime.sec, me.mtime.nsec)
-        created: S64 = ns_of(me.birthtime.sec, me.birthtime.nsec)
+        modified: S64 = ns_of(sec: me.mtime.sec, nsec: me.mtime.nsec)
+        created: S64 = ns_of(sec: me.birthtime.sec, nsec: me.birthtime.nsec)
         return(Metadata(kind: mode_kind(mode), size: me.size.to_wrap[U64](), modified_ns: modified,
             created_ns: .Present(created), readonly: mode.bitand(0o200).eq(0)))
 
@@ -773,8 +773,8 @@ private routine path_mode(cpath: @Byte) -> Option[U32]
 internal routine metadata(path: Bytes) -> Result[Metadata, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(path, cpath.to[@Byte]())
-            ? return(metadata_of(cpath.to[@Byte](), true))
+        branch c_path(path, out: cpath.to[@Byte]())
+            ? return(metadata_of(cpath: cpath.to[@Byte](), follow: true))
             : return(.Failure(path_error(path)))
 
 /// path's metadata. A link describes itself (kind Symlink).
@@ -785,8 +785,8 @@ internal routine metadata(path: Bytes) -> Result[Metadata, FsError]
 internal routine symlink_metadata(path: Bytes) -> Result[Metadata, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(path, cpath.to[@Byte]())
-            ? return(metadata_of(cpath.to[@Byte](), false))
+        branch c_path(path, out: cpath.to[@Byte]())
+            ? return(metadata_of(cpath: cpath.to[@Byte](), follow: false))
             : return(.Failure(path_error(path)))
 
 // -- file handles ------------------------------------------------------------------------
@@ -816,7 +816,7 @@ internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result[Me, FsEr
     local cpath: @Byte = cpath_buffer.to[@Byte]()
 
     block entry()
-        branch c_path(path, cpath)
+        branch c_path(path, out: cpath)
             ? continue
             : return(.Failure(path_error(path)))
         f: OpenFlags = open_flags()
@@ -976,7 +976,7 @@ private routine make_dir(cpath: @Byte) -> CInt
 internal routine create_dir(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(path, cpath.to[@Byte]())
+        branch c_path(path, out: cpath.to[@Byte]())
             ? return(checked(make_dir(cpath.to[@Byte]())))
             : return(.Failure(path_error(path)))
 
@@ -988,7 +988,7 @@ internal routine create_dir(path: Bytes) -> Result[Unit, FsError]
 internal routine remove_file(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(path, cpath.to[@Byte]())
+        branch c_path(path, out: cpath.to[@Byte]())
             ? return(checked(c_unlink(cpath.to[@Byte]())))
             : return(.Failure(path_error(path)))
 
@@ -1001,7 +1001,7 @@ internal routine remove_file(path: Bytes) -> Result[Unit, FsError]
 internal routine remove_dir(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(path, cpath.to[@Byte]())
+        branch c_path(path, out: cpath.to[@Byte]())
             ? return(checked(c_rmdir(cpath.to[@Byte]())))
             : return(.Failure(path_error(path)))
 
@@ -1015,10 +1015,10 @@ internal routine rename(from: Bytes, to: Bytes) -> Result[Unit, FsError]
     block entry()
         claim a: @Array[Byte, PATH_CAPACITY] <- .hollow()
         claim b: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(from, a.to[@Byte]())
+        branch c_path(path: from, out: a.to[@Byte]())
             ? continue
             : return(.Failure(path_error(from)))
-        branch c_path(to, b.to[@Byte]())
+        branch c_path(path: to, out: b.to[@Byte]())
             ? return(checked(c_rename(a.to[@Byte](), b.to[@Byte]())))
             : return(.Failure(path_error(to)))
 
@@ -1054,13 +1054,13 @@ internal routine rename_no_replace(from: Bytes, to: Bytes) -> Result[Unit, FsErr
     block entry()
         claim a: @Array[Byte, PATH_CAPACITY] <- .hollow()
         claim b: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(from, a.to[@Byte]())
+        branch c_path(path: from, out: a.to[@Byte]())
             ? continue
             : return(.Failure(path_error(from)))
-        branch c_path(to, b.to[@Byte]())
+        branch c_path(path: to, out: b.to[@Byte]())
             ? continue
             : return(.Failure(path_error(to)))
-        branch rename_exclusive(a.to[@Byte](), b.to[@Byte]()).eq(0)
+        branch rename_exclusive(a: a.to[@Byte](), b: b.to[@Byte]()).eq(0)
             ? return(fs_done())
             : continue
         e: CInt = errno()
@@ -1087,21 +1087,21 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
     local total: @U64 <- 0
 
     block entry()
-        source: Result[FileHandle, FsError] = FileHandle.open(from, OpenMode.READ)
+        source: Result[FileHandle, FsError] = FileHandle.open(path: from, mode: OpenMode.READ)
         when source
             .Success(f) => target(f)
             .Failure(error) => finish(.Failure(error))
 
     block target(opened: FileHandle)
         src.poke(opened)
-        dest: Result[FileHandle, FsError] = FileHandle.open(to, OpenMode.WRITE)
+        dest: Result[FileHandle, FsError] = FileHandle.open(path: to, mode: OpenMode.WRITE)
         when dest
             .Success(f) => copy(f)
             .Failure(error) => finish(.Failure(error))
 
     block copy(made: FileHandle)
         dst.poke(made)
-        set: Bool = set_mode(dst.fd.peek(), fd_mode(src.fd.peek())).eq(0)
+        set: Bool = set_mode(fd: dst.fd.peek(), mode: fd_mode(src.fd.peek())).eq(0)
         branch set
             ? continue
             : abandon(error_of(errno()))
@@ -1109,7 +1109,7 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
         jump chunk(buffer.to[@Byte]())
 
     block chunk(buffer: @Byte)
-        got: Result[USize, FsError] = src.read_bytes_result(buffer, 16384)
+        got: Result[USize, FsError] = src.read_bytes_result(buffer, count: 16384)
         when got
             .Success(n) => put(buffer, n)
             .Failure(error) => abandon(error)
@@ -1118,7 +1118,7 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
         branch n.eq(0)
             ? finish(.Success(total.peek()))
             : continue
-        wrote: Result[Unit, FsError] = dst.write_all_result(buffer, n)
+        wrote: Result[Unit, FsError] = dst.write_all_result(data: buffer, count: n)
         when wrote
             .Success => continue
             .Failure(error) => abandon(error)
@@ -1181,7 +1181,7 @@ private routine change_mode(cpath: @Byte, mode: U32) -> CInt
 internal routine set_readonly(path: Bytes, readonly: Bool) -> Result[Unit, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(path, cpath.to[@Byte]())
+        branch c_path(path, out: cpath.to[@Byte]())
             ? continue
             : return(.Failure(path_error(path)))
         there: Option[U32] = path_mode(cpath.to[@Byte]())
@@ -1192,8 +1192,8 @@ internal routine set_readonly(path: Bytes, readonly: Bool) -> Result[Unit, FsErr
     block change(cpath: @Byte, mode: U32)
         // S_IWUSR | S_IWGRP | S_IWOTH, or S_IWUSR
         branch readonly
-            ? return(checked(change_mode(cpath, mode.bitand(0o222.bitnot()))))
-            : return(checked(change_mode(cpath, mode.bitor(0o200))))
+            ? return(checked(change_mode(cpath, mode: mode.bitand(0o222.bitnot()))))
+            : return(checked(change_mode(cpath, mode: mode.bitor(0o200))))
 
 /// Whether this process may read, write, or execute path.
 /// :param path: The path to check.
@@ -1203,7 +1203,7 @@ internal routine set_readonly(path: Bytes, readonly: Bool) -> Result[Unit, FsErr
 internal routine is_accessible(path: Bytes, access: Access) -> Bool
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(path, cpath.to[@Byte]())
+        branch c_path(path, out: cpath.to[@Byte]())
             ? continue
             : return(false)
         // R_OK, W_OK, X_OK
@@ -1220,7 +1220,7 @@ internal routine is_accessible(path: Bytes, access: Access) -> Bool
 internal routine touch(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(path, cpath.to[@Byte]())
+        branch c_path(path, out: cpath.to[@Byte]())
             ? continue
             : return(.Failure(path_error(path)))
         f: OpenFlags = open_flags()
@@ -1251,7 +1251,7 @@ record DirIter
 internal routine DirIter.open_path(me: @Me, path: Bytes) -> Result[Unit, FsError]
     block entry()
         me.dir.poke(null)
-        branch c_path(path, me.path.to[@Byte]())
+        branch c_path(path, out: me.path.to[@Byte]())
             ? continue
             : return(.Failure(path_error(path)))
         me.count.poke(path.count())
@@ -1334,8 +1334,9 @@ routine DirIter.entry_metadata_result(me: @Me) -> Result[Metadata, FsError]
 private routine DirIter.entry_metadata_of(me: @Me, follow: Bool) -> Result[Metadata, FsError]
     block entry()
         claim full: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_child_path(me.path.to[@Byte](), me.count.peek(), me.name.peek(), full.to[@Byte]())
-            ? return(metadata_of(full.to[@Byte](), follow))
+        branch c_child_path(dir: me.path.to[@Byte](), dir_count: me.count.peek(),
+            name: me.name.peek(), out: full.to[@Byte]())
+            ? return(metadata_of(cpath: full.to[@Byte](), follow))
             : return(.Failure(FsError.NAME_TOO_LONG))
 
 /// Closes the listing and leaves the handle null, so a second close does nothing.
@@ -1361,11 +1362,11 @@ routine DirIter.close(me: @Me) -> Void
 #target(os: ("linux", "macos"))
 private routine owned(p: @Byte, n: USize, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
-        buffer: @Byte = allocate[Byte](n.max(1), alloc)
+        buffer: @Byte = allocate[Byte](count: n.max(1), alloc)
         branch buffer.is_null()
             ? return(.Failure(FsError.OUT_OF_MEMORY))
             : continue
-        buffer.copy(p, n)
+        buffer.copy(src: p, count: n)
         return(.Success(Bytes(data: buffer, count: n, alloc: alloc)))
 
 /// The value of the environment variable name, when it is set and not empty.
@@ -1393,7 +1394,7 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
         jump attempt(256)
 
     block attempt(capacity: USize)
-        buffer: @Byte = allocate[Byte](capacity, alloc)
+        buffer: @Byte = allocate[Byte](count: capacity, alloc)
         branch buffer.is_null()
             ? return(.Failure(FsError.OUT_OF_MEMORY))
             : continue
@@ -1401,7 +1402,7 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
             ? found(buffer)
             : continue
         e: CInt = errno()
-        deallocate(buffer, alloc)
+        deallocate(data: buffer, alloc)
         // ERANGE: a bigger buffer
         branch e.eq(34)
             ? attempt(capacity.mul(2))
@@ -1420,7 +1421,7 @@ internal routine current_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
 internal routine set_current_dir(path: Bytes) -> Result[Unit, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(path, cpath.to[@Byte]())
+        branch c_path(path, out: cpath.to[@Byte]())
             ? return(checked(c_chdir(cpath.to[@Byte]())))
             : return(.Failure(path_error(path)))
 
@@ -1433,8 +1434,8 @@ internal routine temp_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         t: Option[@Byte] = nonempty_env("TMPDIR")
         when t
-            .Present(dir) => return(owned(dir, dir.to[CStr]().count(), alloc))
-            .Absent => return(owned("/tmp", 4, alloc))
+            .Present(dir) => return(owned(p: dir, n: dir.to[CStr]().count(), alloc))
+            .Absent => return(owned(p: "/tmp", n: 4, alloc))
 
 /// HOME, in memory from alloc. NotFound when it isn't set or is empty.
 /// :param alloc: The allocator for the text.
@@ -1445,7 +1446,7 @@ internal routine home_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         h: Option[@Byte] = nonempty_env("HOME")
         when h
-            .Present(dir) => return(owned(dir, dir.to[CStr]().count(), alloc))
+            .Present(dir) => return(owned(p: dir, n: dir.to[CStr]().count(), alloc))
             .Absent => return(.Failure(FsError.NOT_FOUND))
 
 /// path made absolute by the text alone: the working directory in front of a relative path, nothing resolved.
@@ -1458,7 +1459,7 @@ internal routine home_dir(alloc: @MemoryManager) -> Result[Bytes, FsError]
 internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         branch path.has_prefix("/")
-            ? return(owned(path.data, path.count(), alloc))
+            ? return(owned(p: path.data, n: path.count(), alloc))
             : continue
         cwd: Result[Bytes, FsError] = current_dir(alloc)
         when cwd
@@ -1466,7 +1467,7 @@ internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Byt
             .Failure(error) => return(.Failure(error))
 
     block join(dir: Bytes)
-        full: Bytes = join_path(dir, path, alloc)
+        full: Bytes = join_path(a: dir, b: path, alloc)
         claim cwd: @Bytes <- dir
         cwd.destruct()
         return(.Success(full))
@@ -1481,14 +1482,14 @@ internal routine absolute_path(path: Bytes, alloc: @MemoryManager) -> Result[Byt
 internal routine canonical_path(path: Bytes, alloc: @MemoryManager) -> Result[Bytes, FsError]
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(path, cpath.to[@Byte]())
+        branch c_path(path, out: cpath.to[@Byte]())
             ? continue
             : return(.Failure(path_error(path)))
         resolved: @Byte = c_realpath(cpath.to[@Byte](), null)
         branch resolved.is_null()
             ? return(failed[Bytes]())
             : continue
-        copied: Result[Bytes, FsError] = owned(resolved, resolved.to[CStr]().count(), alloc)
+        copied: Result[Bytes, FsError] = owned(p: resolved, n: resolved.to[CStr]().count(), alloc)
         c_free(resolved)
         return(copied)
 
@@ -1518,7 +1519,7 @@ internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
 
     block entry()
         claim cpath: @Array[Byte, PATH_CAPACITY] <- .hollow()
-        branch c_path(path, cpath.to[@Byte]())
+        branch c_path(path, out: cpath.to[@Byte]())
             ? continue
             : finish(.Failure(path_error(path)))
         flags: CInt = write

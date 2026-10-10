@@ -224,19 +224,19 @@ public static class Derive
     private static void WriteBody(StringBuilder sb, RecordDecl r)
     {
         sb.Append("    block entry()\n");
-        if (r.Fields.Count == 0) sb.Append($"        Standard/Format/write_str(out, \"{r.Name}()\")\n");
+        if (r.Fields.Count == 0) sb.Append($"        Standard/Format/write_str(out, text: \"{r.Name}()\")\n");
         for (int i = 0; i < r.Fields.Count; i++)
         {
             var f = r.Fields[i];
             string before = i == 0 ? $"{r.Name}(" : ", ";
             string value = $"f{i}";
-            sb.Append($"        Standard/Format/write_str(out, \"{before}{f.Name}: \")\n");
+            sb.Append($"        Standard/Format/write_str(out, text: \"{before}{f.Name}: \")\n");
             sb.Append(f.Type.Name == "Ptr"
                 ? $"        {value} : Addr = me.{f.Name}.to[Addr]()\n"
                 : $"        {value}: {f.Type} = me.{f.Name}\n");
             sb.Append($"        {value}.diagnose_into(out)\n");
         }
-        if (r.Fields.Count > 0) sb.Append("        Standard/Format/write_str(out, \")\")\n");
+        if (r.Fields.Count > 0) sb.Append("        Standard/Format/write_str(out, text: \")\")\n");
         sb.Append("        return()\n");
     }
 
@@ -275,7 +275,7 @@ public static class Derive
             var f = r.Fields[i];
             sb.Append($"        a{i}: {f.Type} = me.{f.Name}\n");
             sb.Append($"        g{i}: U64 = a{i}.hash()\n");
-            if (i > 0) sb.Append($"        h{i}: U64 = hash_combine(h{i - 1}, g{i})\n");
+            if (i > 0) sb.Append($"        h{i}: U64 = hash_combine(first: h{i - 1}, second: g{i})\n");
             else sb.Append("        h0: U64 = g0\n");
         }
         sb.Append($"        return(h{r.Fields.Count - 1})\n");
@@ -357,7 +357,7 @@ public static class Derive
                     if (cases[i].Payload is null) continue;
                     string p = Payload(cases[i], "p");
                     sb.Append($"\n    block case{i}({p}: {cases[i].Payload})\n");
-                    sb.Append($"        Standard/Format/write_str(out, \"{prefix}{cases[i].Name}(\")\n");
+                    sb.Append($"        Standard/Format/write_str(out, text: \"{prefix}{cases[i].Name}(\")\n");
                     // A pointer payload writes its address, as a record's pointer field does.
                     if (cases[i].Payload!.Name == "Ptr")
                     {
@@ -365,7 +365,7 @@ public static class Derive
                         sb.Append("        address.diagnose_into(out)\n");
                     }
                     else sb.Append($"        {p}.diagnose_into(out)\n");
-                    sb.Append("        Standard/Format/write_str(out, \")\")\n        return()\n");
+                    sb.Append("        Standard/Format/write_str(out, text: \")\")\n        return()\n");
                 }
                 sb.Append("\n    block named(text: Bytes)\n        Standard/Format/write_str(out, text)\n        return()\n");
                 break;
@@ -423,9 +423,9 @@ public static class Derive
                     string a = Payload(cases[i], "a");
                     sb.Append($"\n    block case{i}({a}: {cases[i].Payload})\n");
                     sb.Append($"        g: U64 = {a}.hash()\n");
-                    sb.Append($"        h: U64 = hash_combine({i}, g)\n        return(h)\n");
+                    sb.Append($"        h: U64 = hash_combine(first: {i}, second: g)\n        return(h)\n");
                 }
-                sb.Append("\n    block bare(index: U64)\n        h: U64 = siphash24(index, hash_key())\n        return(h)\n");
+                sb.Append("\n    block bare(index: U64)\n        h: U64 = siphash24(value: index, key: hash_key())\n        return(h)\n");
                 break;
             }
         }
@@ -459,7 +459,7 @@ public static class Derive
             case "eq":
                 sb.Append($"routine {c.Name}.eq(me: Me, other: Me) -> Bool\n");
                 sb.Append("    block entry()\n");
-                sb.Append("        r: Bool = ieq[Me](me, other)\n");
+                sb.Append("        r: Bool = ieq[Me](a: me, b: other)\n");
                 sb.Append("        return(r)\n");
                 break;
             case "hash":

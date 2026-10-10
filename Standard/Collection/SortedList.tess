@@ -90,7 +90,7 @@ require T: typename
 /// :returns: The node, or null when the allocator fails.
 routine SortedListNode[T].construct(leaf: Bool, alloc: @MemoryManager) -> @Me
 require T: typename
-    local node: @Me = allocate[Me](1, alloc)
+    local node: @Me = allocate[Me](count: 1, alloc)
 
     block entry()
         failed: Bool = node.is_null()
@@ -311,7 +311,7 @@ require T: typename
 routine SortedList[T].add_result(me: @Me, value: T) -> Result[Unit, AllocFailed]
 require T: typename
     block entry()
-        order: USize = me.peek().bound(value, true)
+        order: USize = me.peek().bound(value, or_equal: true)
         inserted: Bool = me.insert_at(order, value)
         branch inserted
             ? return(.Success(Unit.value()))
@@ -324,7 +324,7 @@ require T: typename
 routine SortedList[T].rank(me: Me, value: T) -> USize
 require T: typename
     block entry()
-        rank: USize = me.bound(value, false)
+        rank: USize = me.bound(value, or_equal: false)
         return(rank)
 
 /// The number of elements less than `value`: the position of its first copy if it's there, and where push would put
@@ -417,7 +417,7 @@ require T: typename
             : copy_children(mid, right_count)
 
     block copy_values(mid: USize, right_count: USize)
-        right.values.copy(0, left.values, mid, right_count)
+        right.values.copy(dst_start: 0, src: left.values, src_start: mid, count: right_count)
         jump promote(mid, right_count)
 
     block copy_children(mid: USize, right_count: USize)
@@ -432,7 +432,7 @@ require T: typename
     block child_copy(i: USize, mid: USize, right_count: USize)
         src: USize = mid.add(i)
         child: @Me = left.children.getitem(src)
-        right.children.setitem(i, child)
+        right.children.setitem(index: i, value: child)
         jump child_loop(i.add(1), mid, right_count)
 
     block promote(mid: USize, right_count: USize)
@@ -448,11 +448,11 @@ require T: typename
 
     block move_child(i: USize, mid: USize, right_count: USize)
         child: @Me = me.children.getitem(i)
-        me.children.setitem(i.add(1), child)
+        me.children.setitem(index: i.add(1), value: child)
         jump shift_children(i.sub(1), mid, right_count)
 
     block install(mid: USize, right_count: USize)
-        me.children.setitem(index.add(1), right)
+        me.children.setitem(index: index.add(1), value: right)
         left.count.poke(mid)
         right.count.poke(right_count)
         next_count: USize = me.count.peek().add(1)
@@ -523,8 +523,8 @@ require T: typename
 
     block insert_leaf()
         count: USize = me.count.peek()
-        me.values.shift_right(order, count)
-        me.values.setitem(order, value)
+        me.values.shift_right(start: order, end: count)
+        me.values.setitem(index: order, value)
         new_count: USize = count.add(1)
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
@@ -532,7 +532,7 @@ require T: typename
 
     block insert_internal()
         claim local_order: @USize <- .hollow()
-        slot: USize = me.find_child(order, local_order)
+        slot: USize = me.find_child(order, out_local: local_order)
         local_order_val: USize = local_order.peek()
         child: @Me = me.children.getitem(slot)
         child_count: USize = child.count.peek()
@@ -542,7 +542,7 @@ require T: typename
             : descend(slot, child, local_order_val)
 
     block split_then_insert(slot: USize, local_order: USize)
-        split: Bool = me.split_child(slot, alloc)
+        split: Bool = me.split_child(index: slot, alloc)
         branch split
             ? continue
             : return(false)
@@ -564,7 +564,7 @@ require T: typename
         jump descend(right_slot, child, right_order)
 
     block descend(slot: USize, child: @Me, local_order: USize)
-        inserted: Bool = child.insert_nonfull(local_order, value, alloc)
+        inserted: Bool = child.insert_nonfull(order: local_order, value, alloc)
         branch inserted
             ? continue
             : return(false)
@@ -595,12 +595,12 @@ require T: typename
             : insert_root(root, alloc)
 
     block first_root(alloc: @MemoryManager)
-        root: @SortedListNode[T] = SortedListNode[T].construct(true, alloc)
+        root: @SortedListNode[T] = SortedListNode[T].construct(leaf: true, alloc)
         no_root: Bool = root.is_null()
         branch no_root
             ? return(false)
             : continue
-        root.values.setitem(0, value)
+        root.values.setitem(index: 0, value)
         root.count.poke(1)
         root.subtree_count.poke(1)
         me.root.poke(root)
@@ -615,14 +615,14 @@ require T: typename
             : insert_nonfull(root, alloc)
 
     block split_root(old_root: @SortedListNode[T], alloc: @MemoryManager)
-        new_root: @SortedListNode[T] = SortedListNode[T].construct(false, alloc)
+        new_root: @SortedListNode[T] = SortedListNode[T].construct(leaf: false, alloc)
         no_root: Bool = new_root.is_null()
         branch no_root
             ? return(false)
             : continue
-        new_root.children.setitem(0, old_root)
+        new_root.children.setitem(index: 0, value: old_root)
         new_root.count.poke(1)
-        split: Bool = new_root.split_child(0, alloc)
+        split: Bool = new_root.split_child(index: 0, alloc)
         branch split
             ? install_root(new_root, alloc)
             : discard_root(new_root, alloc)
@@ -632,7 +632,7 @@ require T: typename
         jump insert_nonfull(new_root, alloc)
 
     block discard_root(new_root: @SortedListNode[T], alloc: @MemoryManager)
-        deallocate[SortedListNode[T]](new_root, alloc)
+        deallocate[SortedListNode[T]](data: new_root, alloc)
         return(false)
 
     block insert_nonfull(root: @SortedListNode[T], alloc: @MemoryManager)
@@ -665,15 +665,15 @@ require T: typename
             : internal_borrow()
 
     block leaf_borrow()
-        child.values.shift_right(0, child_count)
+        child.values.shift_right(start: 0, end: child_count)
         v: T = left.values.getitem(left_count.sub(1))
-        child.values.setitem(0, v)
+        child.values.setitem(index: 0, value: v)
         jump finalize()
 
     block internal_borrow()
-        child.children.shift_right(0, child_count)
+        child.children.shift_right(start: 0, end: child_count)
         moved: @Me = left.children.getitem(left_count.sub(1))
-        child.children.setitem(0, moved)
+        child.children.setitem(index: 0, value: moved)
         jump finalize()
 
     block finalize()
@@ -701,14 +701,14 @@ require T: typename
 
     block leaf_borrow()
         v: T = right.values.getitem(0)
-        child.values.setitem(child_count, v)
-        right.values.shift_left(0, right_count)
+        child.values.setitem(index: child_count, value: v)
+        right.values.shift_left(start: 0, end: right_count)
         jump finalize()
 
     block internal_borrow()
         moved: @Me = right.children.getitem(0)
-        child.children.setitem(child_count, moved)
-        right.children.shift_left(0, right_count)
+        child.children.setitem(index: child_count, value: moved)
+        right.children.shift_left(start: 0, end: right_count)
         jump finalize()
 
     block finalize()
@@ -736,19 +736,20 @@ require T: typename
             : internal_merge()
 
     block leaf_merge()
-        left.values.copy(left_count, right.values, 0, right_count)
+        left.values.copy(dst_start: left_count, src: right.values, src_start: 0, count: right_count)
         jump finalize()
 
     block internal_merge()
-        left.children.copy(left_count, right.children, 0, right_count)
+        left.children.copy(dst_start: left_count, src: right.children, src_start: 0,
+            count: right_count)
         jump finalize()
 
     block finalize()
         left.count.poke(left_count.add(right_count))
         parent_count: USize = me.count.peek()
-        me.children.shift_left(i.add(1), parent_count)
+        me.children.shift_left(start: i.add(1), end: parent_count)
         me.count.poke(parent_count.sub(1))
-        deallocate[Me](right, alloc)
+        deallocate[Me](data: right, alloc)
         left.recount()
         me.recount()
         return()
@@ -772,7 +773,7 @@ require T: typename
     block remove_leaf()
         value: T = me.values.getitem(order)
         count: USize = me.count.peek()
-        me.values.shift_left(order, count)
+        me.values.shift_left(start: order, end: count)
         new_count: USize = count.sub(1)
         me.count.poke(new_count)
         me.subtree_count.poke(new_count)
@@ -780,7 +781,7 @@ require T: typename
 
     block remove_internal()
         claim local_order: @USize <- .hollow()
-        slot: USize = me.find_child_strict(order, local_order)
+        slot: USize = me.find_child_strict(order, out_local: local_order)
         local_order_val: USize = local_order.peek()
         child: @Me = me.children.getitem(slot)
         child_count: USize = child.count.peek()
@@ -791,7 +792,7 @@ require T: typename
 
     block descend(slot: USize, local_order: USize)
         child: @Me = me.children.getitem(slot)
-        value: T = child.remove(local_order, alloc)
+        value: T = child.remove(order: local_order, alloc)
         me.recount()
         return(value)
 
@@ -844,7 +845,7 @@ require T: typename
         left_slot: USize = slot.sub(1)
         left: @Me = me.children.getitem(left_slot)
         new_local: USize = left.subtree_count().add(local_order)
-        me.merge_children(left_slot, alloc)
+        me.merge_children(i: left_slot, alloc)
         jump descend(left_slot, new_local)
 
     block right_only(slot: USize, local_order: USize)
@@ -863,7 +864,7 @@ require T: typename
             : do_merge_right(slot, local_order)
 
     block do_merge_right(slot: USize, local_order: USize)
-        me.merge_children(slot, alloc)
+        me.merge_children(i: slot, alloc)
         jump descend(slot, local_order)
 
 /// Removes the element at position `order` in sorted order and returns it, shrinking the tree when the root empties.
@@ -907,14 +908,14 @@ require T: typename
 
     block clear_root(root: @SortedListNode[T], value: T)
         alloc: @MemoryManager = me.alloc.peek()
-        deallocate[SortedListNode[T]](root, alloc)
+        deallocate[SortedListNode[T]](data: root, alloc)
         me.root.poke(null)
         return(value)
 
     block shrink(root: @SortedListNode[T], value: T)
         alloc: @MemoryManager = me.alloc.peek()
         new_root: @SortedListNode[T] = root.children.getitem(0)
-        deallocate[SortedListNode[T]](root, alloc)
+        deallocate[SortedListNode[T]](data: root, alloc)
         me.root.poke(new_root)
         return(value)
 
@@ -945,7 +946,7 @@ require T: typename
         jump child_loop(i.add(1), count)
 
     block free_self()
-        deallocate[Me](me, alloc)
+        deallocate[Me](data: me, alloc)
         return()
 
 /// Frees every node of the tree through the allocator and resets the list to empty. The stored values themselves are not destructed.
@@ -1008,7 +1009,7 @@ require T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
         claim whole: @Me <- me
         iter_val: SortedListIter[T] = .construct(whole)
         claim iter: @SortedListIter[T] <- iter_val
-        diagnose_items[T, SortedListIter[T], TWriter](out, iter, "[", "]")
+        diagnose_items[T, SortedListIter[T], TWriter](out, iter, open: "[", close: "]")
         return()
 
 /// The elements in sorted order, each diagnosed: [1, 2, 3].
@@ -1020,5 +1021,5 @@ require T: typename, Diagnosable[T], TWriter: typename, Writer[TWriter]
         claim whole: @Me <- me
         iter_val: SortedListIter[T] = .construct(whole)
         claim iter: @SortedListIter[T] <- iter_val
-        diagnose_items[T, SortedListIter[T], TWriter](out, iter, "[", "]")
+        diagnose_items[T, SortedListIter[T], TWriter](out, iter, open: "[", close: "]")
         return()

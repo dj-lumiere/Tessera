@@ -67,17 +67,17 @@ routine iteration_hash(set: @Set[S64]) -> S64
     block next(hash: S64)
         item: Option[S64] = iter.next()
         when item
-            .Present(key) => next(mix(hash, key))
+            .Present(key) => next(mix(hash, value: key))
             .Absent => return(hash)
 
 routine checkpoint(out: @BufWriter[Out], set: @Set[S64], at: Checkpoint) -> Void
     block entry()
         out.write("phase {at.phase}")
-        labeled(out, "op", at.op.to[S64]())
+        labeled(out, label: "op", value: at.op.to[S64]())
         size: USize = set.count()
-        labeled(out, "length", size.to[S64]())
-        labeled(out, "results", at.results)
-        labeled(out, "iteration", iteration_hash(set))
+        labeled(out, label: "length", value: size.to[S64]())
+        labeled(out, label: "results", value: at.results)
+        labeled(out, label: "iteration", value: iteration_hash(set))
         out.write("\n")
         return()
 
@@ -119,7 +119,7 @@ routine run_phase(harness: Harness, set: @Set[S64], phase: Phase, results: S64) 
         jump record(op, checksum, found.to[S64]())
 
     block record(op: USize, checksum: S64, result: S64)
-        mixed: S64 = mix(checksum, result)
+        mixed: S64 = mix(hash: checksum, value: result)
         op_next: USize = op.add(1)
         report: Bool = op_next.mod(500).eq(0)
         branch report
@@ -127,7 +127,8 @@ routine run_phase(harness: Harness, set: @Set[S64], phase: Phase, results: S64) 
             : next(op_next, mixed)
 
     block report(op: USize, checksum: S64)
-        checkpoint(harness.out, set, Checkpoint(phase: phase.number, op: op, results: checksum))
+        checkpoint(out: harness.out, set,
+            at: Checkpoint(phase: phase.number, op: op, results: checksum))
         jump next(op, checksum)
 
 // Copies from into to in iteration order, but starting from its second half, so the two sets hold the same elements
@@ -176,31 +177,34 @@ routine start() -> Void
         claim set: @Set[S64] <- .construct(alloc)
 
         harness: Harness = Harness(out: out, rng: rng)
-        r1: S64 = run_phase(harness, set, Phase(number: 1, ops: 3000, keys: 64), 0)
-        r2: S64 = run_phase(harness, set, Phase(number: 2, ops: 8000, keys: 5000), r1)
-        r3: S64 = run_phase(harness, set, Phase(number: 3, ops: 4000, keys: 300), r2)
+        r1: S64 = run_phase(harness, set, phase: Phase(number: 1, ops: 3000, keys: 64), results: 0)
+        r2: S64 = run_phase(harness, set, phase: Phase(number: 2, ops: 8000, keys: 5000),
+            results: r1)
+        r3: S64 = run_phase(harness, set, phase: Phase(number: 3, ops: 4000, keys: 300),
+            results: r2)
 
         claim copied: @Set[S64] <- .construct(alloc)
-        report_eq(out, "empty copy equal", set.peek().eq(copied.peek()))
-        copy_rotated(set, copied)
-        report_eq(out, "rotated copy equal", set.peek().eq(copied.peek()))
-        report_eq(out, "rotated copy same order", iteration_hash(set).eq(iteration_hash(copied)))
+        report_eq(out, label: "empty copy equal", equal: set.peek().eq(copied.peek()))
+        copy_rotated(from: set, to: copied)
+        report_eq(out, label: "rotated copy equal", equal: set.peek().eq(copied.peek()))
+        report_eq(out, label: "rotated copy same order",
+            equal: iteration_hash(set).eq(iteration_hash(copied)))
         copied.add(-1)
-        report_eq(out, "extra element equal", set.peek().eq(copied.peek()))
+        report_eq(out, label: "extra element equal", equal: set.peek().eq(copied.peek()))
         copied.remove(-1)
-        report_eq(out, "extra element removed equal", set.peek().eq(copied.peek()))
+        report_eq(out, label: "extra element removed equal", equal: set.peek().eq(copied.peek()))
         iter_val: SetIter[S64] = .construct(set)
         claim iter: @SetIter[S64] <- iter_val
         first: S64 = iter.next().unwrap()
         copied.remove(first)
-        report_eq(out, "missing element equal", set.peek().eq(copied.peek()))
-        report_eq(out, "missing element equal reversed", copied.peek().eq(set.peek()))
+        report_eq(out, label: "missing element equal", equal: set.peek().eq(copied.peek()))
+        report_eq(out, label: "missing element equal reversed", equal: copied.peek().eq(set.peek()))
         copied.add(first)
-        report_eq(out, "re-added element equal", set.peek().eq(copied.peek()))
-        report_eq(out, "re-added element same order",
-            iteration_hash(set).eq(iteration_hash(copied)))
+        report_eq(out, label: "re-added element equal", equal: set.peek().eq(copied.peek()))
+        report_eq(out, label: "re-added element same order",
+            equal: iteration_hash(set).eq(iteration_hash(copied)))
         copied.destruct()
         set.destruct()
-        report_eq(out, "freed is empty", set.is_empty())
+        report_eq(out, label: "freed is empty", equal: set.is_empty())
         out.flush()
         return()

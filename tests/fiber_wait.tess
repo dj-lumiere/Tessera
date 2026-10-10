@@ -70,12 +70,12 @@ routine play(game: @PingPong, mine: U32, own: @@FiberState, other: @@FiberState)
 
 routine ping(game: @PingPong) -> Void
     block entry()
-        play(game, 0, game.ping, game.pong)
+        play(game, mine: 0, own: game.ping, other: game.pong)
         return()
 
 routine pong(game: @PingPong) -> Void
     block entry()
-        play(game, 1, game.pong, game.ping)
+        play(game, mine: 1, own: game.pong, other: game.ping)
         return()
 
 /// Sleeper n sleeps until (8 - n) * 30 ms after the base, so they wake from the last to the first. The times are
@@ -122,7 +122,8 @@ routine parent(family: @Family) -> Void
         branch done
             ? join(0)
             : continue
-        kids.stride(i).poke(sched.spawn_joinable(child.to[Callable](), family, 65536))
+        kids.stride(i).poke(sched.spawn_joinable(entry: child.to[Callable](), arg: family,
+            stack_size: 65536))
         jump spawn(i.add(1))
 
     block join(i: USize)
@@ -140,7 +141,7 @@ routine parent(family: @Family) -> Void
 routine start() -> Void
     local alloc: @MemoryManager <- make_heap_memory()
     local stacks: @MemoryManager <- make_stack_memory()
-    local sched: @FiberManager <- .construct(4, stacks, alloc)
+    local sched: @FiberManager <- .construct(workers: 4, stacks, alloc)
     local game: @PingPong <- PingPong(sched: sched, turn: 0, ping: null, pong: null, handoffs: 0)
     local sleepers: @Sleepers <- .hollow()
     local sleeper_slots: @Array[Sleeper, 8] <- .hollow()
@@ -155,8 +156,8 @@ routine start() -> Void
         waited: Bool = elapsed.ge(5000000)
         Out.write("thread slept: {waited}\n")
 
-        sched.spawn(ping.to[Callable](), game, 65536)
-        sched.spawn(pong.to[Callable](), game, 65536)
+        sched.spawn(entry: ping.to[Callable](), arg: game, stack_size: 65536)
+        sched.spawn(entry: pong.to[Callable](), arg: game, stack_size: 65536)
 
         sleepers.poke(Sleepers(sched: sched, order: [0, 0, 0, 0, 0, 0, 0, 0], next: 0, short: 0,
             base: monotonic_ns()))
@@ -169,16 +170,17 @@ routine start() -> Void
             : continue
         s: @Sleeper = each.stride(i)
         s.poke(Sleeper(all: sleepers, id: i.to[U64]()))
-        sched.spawn(sleeper.to[Callable](), s, 65536)
+        sched.spawn(entry: sleeper.to[Callable](), arg: s, stack_size: 65536)
         jump sleepers(i.add(1))
 
     block family()
         claim family: @Family <- Family(sched: sched, sum: 0,
             children: [null, null, null, null, null, null, null, null, null, null])
-        sched.spawn(parent.to[Callable](), family, 65536)
+        sched.spawn(entry: parent.to[Callable](), arg: family, stack_size: 65536)
         claim alone: @Family <- Family(sched: sched, sum: 0,
             children: [null, null, null, null, null, null, null, null, null, null])
-        lone: @Join = sched.spawn_joinable(child.to[Callable](), alone, 65536)
+        lone: @Join = sched.spawn_joinable(entry: child.to[Callable](), arg: alone,
+            stack_size: 65536)
         sched.run()
         Out.write("handoffs: {game.handoffs.peek()}\n")
         jump order(lone, 0)

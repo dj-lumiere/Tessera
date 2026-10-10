@@ -72,12 +72,12 @@ routine B64.asinh(me: Me) -> Me
         tiny: Bool = u.lt(0x3E57137449123EF7)  // |x| < 0x1.7137449123ef7p-26: asinh x rounds to x
         when
             zero => return(me)
-            tiny => return(Me.mul_add(-0x1p-60, me, me))
+            tiny => return(Me.mul_add(-0x1p-60, a: me, b: me))
             else => series()
 
     block series()
         x2h: Me = me.mul(me)
-        x2l: Me = b64_mul_error(me, me, x2h)
+        x2l: Me = b64_mul_error(x: me, y: me, p: x2h)
         x3h: Me = x2h.mul(me)
         lt6: Bool = u.lt(0x3F93000000000000)  // |x| < 0x1.3p-6
         lt12: Bool = u.lt(0x3F30000000000000)  // |x| < 2^-12
@@ -113,22 +113,22 @@ routine B64.asinh(me: Me) -> Me
         sure: Bool = lb.eq(ub)
         branch sure
             ? return(lb)
-            : return(cm_b64_asinh_zero(me, x2h, x2l))
+            : return(cm_b64_asinh_zero(x: me, x2h, x2l))
 
     // 0x1.bp-4 <= |x| < 2^26: ah + al = |x| + sqrt(x^2 + 1)
     block moderate()
         x2h: Me = me.mul(me)
-        x2l: Me = b64_mul_error(me, me, x2h)
+        x2l: Me = b64_mul_error(x: me, y: me, p: x2h)
         below: Bool = u.lt(0x3FF0000000000000)
         s: CmF64HypDd = below
-            ? cm_b64_hyp_fasttwosum(1.0, x2h)
-            : cm_b64_hyp_fasttwosum(x2h, 1.0)
+            ? cm_b64_hyp_fasttwosum(x: 1.0, y: x2h)
+            : cm_b64_hyp_fasttwosum(x: x2h, y: 1.0)
         th: Me = s.hi
         tl: Me = s.lo.add(x2l)
         sh: Me = th.sqrt()
         rs: Me = Me.div(0.5, th)
-        sl: Me = tl.sub(sh.mul_add(sh, th.neg())).mul(rs.mul(sh))
-        a: CmF64HypDd = cm_b64_hyp_fasttwosum(sh, ax)
+        sl: Me = tl.sub(sh.mul_add(a: sh, b: th.neg())).mul(rs.mul(sh))
+        a: CmF64HypDd = cm_b64_hyp_fasttwosum(x: sh, y: ax)
         jump log_fast(a.hi, sl.add(a.lo), 0x3FF, x2h, x2l)
 
     // log(ah + al) (less log(2) when off = 0x3FE), from the tables
@@ -143,7 +143,7 @@ routine B64.asinh(me: Me) -> Me
         i1: USize = j.shr(5).to[USize]()
         i2: USize = j.bitand(0x1F).to[USize]()
         r: Me = Me.from_bits(CM_B64_ARCHYP_R1.getitem(i1)).mul(Me.from_bits(CM_B64_ARCHYP_R2.getitem(i2)))
-        dx: Me = r.mul_add(m, -1.0)
+        dx: Me = r.mul_add(a: m, b: -1.0)
         dx2: Me = dx.mul(dx)
         f: Me = dx2.mul(cm_b64_archyp_log_poly(dx, dx2))
         // log(2) as l2h + l2l with l2h on 42 bits, so l2h ed is exact
@@ -166,8 +166,9 @@ routine B64.asinh(me: Me) -> Me
         near0: Bool = ax.lt(0x1p-2)
         when
             sure => return(lb)
-            near0 => return(cm_b64_asinh_zero(me, x2h, x2l))
-            else => return(cm_b64_asinh_refine(me, ah, al, Me.mul(0x1.71547652b82fep+0, lb.abs())))
+            near0 => return(cm_b64_asinh_zero(x: me, x2h, x2l))
+            else => return(cm_b64_asinh_refine(x: me, zh: ah, zl: al,
+                a: Me.mul(0x1.71547652b82fep+0, lb.abs())))
 
 /// The double-double sum (xh + xl) + (ch + cl), the high parts with an exact two-sum.
 /// :param xh: The high part of the first addend.
@@ -194,7 +195,7 @@ private routine cm_b64_asinh_muldd_acc(xh: B64, xl: B64, ch: B64, cl: B64) -> Cm
         ahlh: B64 = ch.mul(xl)
         alhh: B64 = cl.mul(xh)
         ahhh: B64 = ch.mul(xh)
-        ahhl: B64 = b64_mul_error(ch, xh, ahhh).add(alhh.add(ahlh))
+        ahhl: B64 = b64_mul_error(x: ch, y: xh, p: ahhh).add(alhh.add(ahlh))
         h: B64 = ahhh.add(ahhl)
         l: B64 = ahhh.sub(h).add(ahhl)
         return(CmF64HypDd(hi: h, lo: l))
@@ -208,7 +209,7 @@ private routine cm_b64_asinh_mulddd(xh: B64, xl: B64, ch: B64) -> CmF64HypDd
     block entry()
         ahlh: B64 = ch.mul(xl)
         ahhh: B64 = ch.mul(xh)
-        ahhl: B64 = b64_mul_error(ch, xh, ahhh).add(ahlh)
+        ahhl: B64 = b64_mul_error(x: ch, y: xh, p: ahhh).add(ahlh)
         h: B64 = ahhh.add(ahhl)
         l: B64 = ahhh.sub(h).add(ahhl)
         return(CmF64HypDd(hi: h, lo: l))
@@ -233,7 +234,7 @@ private routine cm_b64_asinh_polydd_init(l: B64, c_hi: B64, c_lo: B64) -> CmF64H
 private routine cm_b64_asinh_polydd_step(x: CmF64HypDd, value: CmF64HypDd,
     c: CmF64HypDd) -> CmF64HypDd
     block entry()
-        p: CmF64HypDd = cm_b64_asinh_muldd_acc(x.hi, x.lo, value.hi, value.lo)
+        p: CmF64HypDd = cm_b64_asinh_muldd_acc(xh: x.hi, xl: x.lo, ch: value.hi, cl: value.lo)
         th: B64 = p.hi.add(c.hi)
         tl: B64 = c.hi.sub(th).add(p.hi)
         l: B64 = p.lo.add(tl.add(c.lo))
@@ -251,34 +252,35 @@ private routine cm_b64_asinh_zero(x: B64, x2h: B64, x2l: B64) -> B64
         c1: B64 = x2h.mul(c0).add(-0x1.2e6d98527bcc6p-8)
         c2: B64 = x2h.mul(c1).add(0x1.51712f7bee368p-8)
         y2: B64 = x2h.mul(x2h.mul(c2).add(-0x1.7828d553ec8p-8))
-        p25: CmF64HypDd = cm_b64_asinh_polydd_init(y2, 0x1.a685fc5de7a04p-8, 0x1.40d284a1d67f9p-62)
-        p23: CmF64HypDd = cm_b64_asinh_polydd_step(x2dd, p25,
-            CmF64HypDd(hi: -0x1.df3bd104aa267p-8, lo: -0x1.546da9bc5b32ap-62))
-        p21: CmF64HypDd = cm_b64_asinh_polydd_step(x2dd, p23,
-            CmF64HypDd(hi: 0x1.12ef3ceae4d12p-7, lo: -0x1.ba9c13deb261fp-61))
-        p19: CmF64HypDd = cm_b64_asinh_polydd_step(x2dd, p21,
-            CmF64HypDd(hi: -0x1.3fde50d764083p-7, lo: -0x1.d024df7fa0542p-61))
-        p17: CmF64HypDd = cm_b64_asinh_polydd_step(x2dd, p19,
-            CmF64HypDd(hi: 0x1.7a87878786c7ep-7, lo: 0x1.a83c7bace55ebp-61))
-        p15: CmF64HypDd = cm_b64_asinh_polydd_step(x2dd, p17,
-            CmF64HypDd(hi: -0x1.c999999999977p-7, lo: -0x1.38e7a467ecc55p-61))
-        p13: CmF64HypDd = cm_b64_asinh_polydd_step(x2dd, p15,
-            CmF64HypDd(hi: 0x1.1c4ec4ec4ec4fp-6, lo: -0x1.74e3c1dfd4c3dp-60))
-        p11: CmF64HypDd = cm_b64_asinh_polydd_step(x2dd, p13,
-            CmF64HypDd(hi: -0x1.6e8ba2e8ba2e9p-6, lo: 0x1.17f937248cf81p-60))
-        p9: CmF64HypDd = cm_b64_asinh_polydd_step(x2dd, p11,
-            CmF64HypDd(hi: 0x1.f1c71c71c71c7p-6, lo: 0x1.c71a35cfa0671p-62))
-        p7: CmF64HypDd = cm_b64_asinh_polydd_step(x2dd, p9,
-            CmF64HypDd(hi: -0x1.6db6db6db6db7p-5, lo: 0x1.2492496091b0cp-60))
-        p5: CmF64HypDd = cm_b64_asinh_polydd_step(x2dd, p7,
-            CmF64HypDd(hi: 0x1.3333333333333p-4, lo: 0x1.99999999949dfp-59))
-        p3: CmF64HypDd = cm_b64_asinh_polydd_step(x2dd, p5,
-            CmF64HypDd(hi: -0x1.5555555555555p-3, lo: -0x1.5555555555555p-57))
-        px: CmF64HypDd = cm_b64_asinh_muldd_acc(p3.hi, p3.lo, x2h, x2l)
-        p: CmF64HypDd = cm_b64_asinh_mulddd(px.hi, px.lo, x)
-        s0: CmF64HypDd = cm_b64_hyp_fasttwosum(x, p.hi)
-        s1: CmF64HypDd = cm_b64_hyp_fasttwosum(s0.lo, p.lo)
-        return(s0.hi.add(cm_b64_hyp_nudge(s1.hi, s1.lo)))
+        p25: CmF64HypDd = cm_b64_asinh_polydd_init(l: y2, c_hi: 0x1.a685fc5de7a04p-8,
+            c_lo: 0x1.40d284a1d67f9p-62)
+        p23: CmF64HypDd = cm_b64_asinh_polydd_step(x: x2dd, value: p25,
+            c: CmF64HypDd(hi: -0x1.df3bd104aa267p-8, lo: -0x1.546da9bc5b32ap-62))
+        p21: CmF64HypDd = cm_b64_asinh_polydd_step(x: x2dd, value: p23,
+            c: CmF64HypDd(hi: 0x1.12ef3ceae4d12p-7, lo: -0x1.ba9c13deb261fp-61))
+        p19: CmF64HypDd = cm_b64_asinh_polydd_step(x: x2dd, value: p21,
+            c: CmF64HypDd(hi: -0x1.3fde50d764083p-7, lo: -0x1.d024df7fa0542p-61))
+        p17: CmF64HypDd = cm_b64_asinh_polydd_step(x: x2dd, value: p19,
+            c: CmF64HypDd(hi: 0x1.7a87878786c7ep-7, lo: 0x1.a83c7bace55ebp-61))
+        p15: CmF64HypDd = cm_b64_asinh_polydd_step(x: x2dd, value: p17,
+            c: CmF64HypDd(hi: -0x1.c999999999977p-7, lo: -0x1.38e7a467ecc55p-61))
+        p13: CmF64HypDd = cm_b64_asinh_polydd_step(x: x2dd, value: p15,
+            c: CmF64HypDd(hi: 0x1.1c4ec4ec4ec4fp-6, lo: -0x1.74e3c1dfd4c3dp-60))
+        p11: CmF64HypDd = cm_b64_asinh_polydd_step(x: x2dd, value: p13,
+            c: CmF64HypDd(hi: -0x1.6e8ba2e8ba2e9p-6, lo: 0x1.17f937248cf81p-60))
+        p9: CmF64HypDd = cm_b64_asinh_polydd_step(x: x2dd, value: p11,
+            c: CmF64HypDd(hi: 0x1.f1c71c71c71c7p-6, lo: 0x1.c71a35cfa0671p-62))
+        p7: CmF64HypDd = cm_b64_asinh_polydd_step(x: x2dd, value: p9,
+            c: CmF64HypDd(hi: -0x1.6db6db6db6db7p-5, lo: 0x1.2492496091b0cp-60))
+        p5: CmF64HypDd = cm_b64_asinh_polydd_step(x: x2dd, value: p7,
+            c: CmF64HypDd(hi: 0x1.3333333333333p-4, lo: 0x1.99999999949dfp-59))
+        p3: CmF64HypDd = cm_b64_asinh_polydd_step(x: x2dd, value: p5,
+            c: CmF64HypDd(hi: -0x1.5555555555555p-3, lo: -0x1.5555555555555p-57))
+        px: CmF64HypDd = cm_b64_asinh_muldd_acc(xh: p3.hi, xl: p3.lo, ch: x2h, cl: x2l)
+        p: CmF64HypDd = cm_b64_asinh_mulddd(xh: px.hi, xl: px.lo, ch: x)
+        s0: CmF64HypDd = cm_b64_hyp_fasttwosum(x, y: p.hi)
+        s1: CmF64HypDd = cm_b64_hyp_fasttwosum(x: s0.lo, y: p.lo)
+        return(s0.hi.add(cm_b64_hyp_nudge(y1: s1.hi, y2: s1.lo)))
 
 /// The accurate path of asinh: log(zh + zl) to about 150 bits, where zh + zl is |x| + sqrt(x^2 + 1) (or
 /// 2|x| + 1/(2|x|), or |x| when zl = 0 and the exponent then gets one more) and a approximates log2(zh + zl).
@@ -315,35 +317,36 @@ private routine cm_b64_asinh_refine(x: B64, zh: B64, zl: B64, a: B64) -> B64
         big0: B64 = big.hi.add(el0)
         rt: CmF64HypDd = cm_b64_archyp_rt(i1, i2, i3, i4)
         dh: B64 = rt.hi.mul(m)
-        dl: B64 = b64_mul_error(rt.hi, m, dh)
+        dl: B64 = b64_mul_error(x: rt.hi, y: m, p: dh)
         sh: B64 = rt.lo.mul(m)
-        sl: B64 = b64_mul_error(rt.lo, m, sh)
-        q: CmF64HypDd = cm_b64_hyp_fasttwosum(dh.sub(1.0), dl)
+        sl: B64 = b64_mul_error(x: rt.lo, y: m, p: sh)
+        q: CmF64HypDd = cm_b64_hyp_fasttwosum(x: dh.sub(1.0), y: dl)
         // zl / 2^e, scaled like m = zh / 2^e
         zs: B64 = B64.from_bits(zl.bits().sub_wrap(e.to_wrap[U64]().shl(52)))
         xl: B64 = zero
             ? q.lo
             : q.lo.add(rt.hi.mul(zs))
-        xs: CmF64HypDd = cm_b64_asinh_adddd(q.hi, xl, sh, sl)
+        xs: CmF64HypDd = cm_b64_asinh_adddd(xh: q.hi, xl, ch: sh, cl: sl)
         xh: B64 = xs.hi
         c: B64 = xh.mul(-0x1.55555555c3157p-4).add(0x1.9999999a0754fp-4)
         tail: B64 = xh.mul(xh.mul(c).add(-0x1p-3))
-        p3: CmF64HypDd = cm_b64_asinh_polydd_init(tail, 0x1.5555555555555p-3, 0x1.55540c15cf91fp-57)
-        p2: CmF64HypDd = cm_b64_asinh_polydd_step(xs, p3,
-            CmF64HypDd(hi: -0x1p-2, lo: -0x1.932ce43199a8dp-110))
-        p1: CmF64HypDd = cm_b64_asinh_polydd_step(xs, p2,
-            CmF64HypDd(hi: 0x1p-1, lo: 0x1.24b67ee516e3bp-111))
-        p0: CmF64HypDd = cm_b64_asinh_muldd_acc(xh, xs.lo, p1.hi, p1.lo)
-        pe: CmF64HypDd = cm_b64_asinh_adddd(p0.hi, p0.lo, el1, el2)
-        s: CmF64HypDd = cm_b64_asinh_adddd(pe.hi, pe.lo, big.mid, big.lo)
+        p3: CmF64HypDd = cm_b64_asinh_polydd_init(l: tail, c_hi: 0x1.5555555555555p-3,
+            c_lo: 0x1.55540c15cf91fp-57)
+        p2: CmF64HypDd = cm_b64_asinh_polydd_step(x: xs, value: p3,
+            c: CmF64HypDd(hi: -0x1p-2, lo: -0x1.932ce43199a8dp-110))
+        p1: CmF64HypDd = cm_b64_asinh_polydd_step(x: xs, value: p2,
+            c: CmF64HypDd(hi: 0x1p-1, lo: 0x1.24b67ee516e3bp-111))
+        p0: CmF64HypDd = cm_b64_asinh_muldd_acc(xh, xl: xs.lo, ch: p1.hi, cl: p1.lo)
+        pe: CmF64HypDd = cm_b64_asinh_adddd(xh: p0.hi, xl: p0.lo, ch: el1, cl: el2)
+        s: CmF64HypDd = cm_b64_asinh_adddd(xh: pe.hi, xl: pe.lo, ch: big.mid, cl: big.lo)
         // big0 + s as a triple-double v0 + v1 + v2, renormalized
-        w0: CmF64HypDd = cm_b64_hyp_fasttwosum(big0, s.hi)
-        w1: CmF64HypDd = cm_b64_hyp_fasttwosum(w0.lo, s.lo)
-        w2: CmF64HypDd = cm_b64_hyp_fasttwosum(w0.hi, w1.hi)
-        w3: CmF64HypDd = cm_b64_hyp_fasttwosum(w2.lo, w1.lo)
+        w0: CmF64HypDd = cm_b64_hyp_fasttwosum(x: big0, y: s.hi)
+        w1: CmF64HypDd = cm_b64_hyp_fasttwosum(x: w0.lo, y: s.lo)
+        w2: CmF64HypDd = cm_b64_hyp_fasttwosum(x: w0.hi, y: w1.hi)
+        w3: CmF64HypDd = cm_b64_hyp_fasttwosum(x: w2.lo, y: w1.lo)
         two: B64 = B64.copysign(2.0, x)
         v0: B64 = w2.hi.mul(two)
-        v1: B64 = cm_b64_hyp_nudge(w3.hi.mul(two), w3.lo.mul(two))
+        v1: B64 = cm_b64_hyp_nudge(y1: w3.hi.mul(two), y2: w3.lo.mul(two))
         tu: U64 = v1.bits()
         er: U64 = tu.add_wrap(41).bitand(0x000FFFFFFFFFFFFF)
         v0_top: U64 = v0.bits().shr(52)
@@ -351,7 +354,7 @@ private routine cm_b64_asinh_refine(x: B64, zh: B64, zl: B64, a: B64) -> B64
         res: B64 = v0.add(v1)
         hard: Bool = de.gt(99).bitor(er.lt(80))
         branch hard
-            ? return(cm_b64_asinh_database(x, res))
+            ? return(cm_b64_asinh_database(x, f: res))
             : return(res)
 
 /// The exact asinh x for the arguments the fast and accurate paths can't round, or f for any other x.

@@ -183,7 +183,7 @@ routine B64.compare(me: Me, other: Me) -> S32
 routine B64.hash(me: Me) -> U64
     block entry()
         bits: U64 = me.bits()
-        h: U64 = siphash24(bits, hash_key())
+        h: U64 = siphash24(value: bits, key: hash_key())
         return(h)
 
 // -- generic conversions -------------------------------------------------------
@@ -273,7 +273,7 @@ routine B64.neg(me: Me) -> Me
 /// :returns: `me` with its sign bit replaced by the sign bit of `sign`.
 routine B64.copysign(me: Me, sign: Me) -> Me
     block entry()
-        r: Me = copysign[Me](me, sign)
+        r: Me = copysign[Me](mag: me, sign)
         return(r)
 
 /// 1.0 for +0.0 and positive values, -1.0 for -0.0 and negative values, NaN for NaN.
@@ -281,7 +281,7 @@ routine B64.copysign(me: Me, sign: Me) -> Me
 routine B64.signum(me: Me) -> Me
     block entry()
         nan: Bool = me.is_nan()
-        unit: Me = copysign[Me](1.0, me)
+        unit: Me = copysign[Me](mag: 1.0, sign: me)
         r: Me = nan
             ? me
             : unit
@@ -359,7 +359,8 @@ routine B64.mod(me: Me, other: Me) -> Me
             ? return(Me.copysign(0.0, me))
             : continue
         lz: U64 = rest.leading_zeros()
-        magnitude: Me = b64_round_pack(false, eb.sub(lz.to[S64]()).add(11), rest.shl(lz))
+        magnitude: Me = b64_round_pack(negative: false, exponent: eb.sub(lz.to[S64]()).add(11),
+            sig: rest.shl(lz))
         r: Me = magnitude.copysign(me)
         return(r)
 
@@ -377,7 +378,7 @@ routine B64.recip(me: Me) -> Me
 #target(arch: "aarch64")
 routine B64.mul_add(me: Me, a: Me, b: Me) -> Me
     block entry()
-        r: Me = fma[Me](me, a, b)
+        r: Me = fma[Me](a: me, b: a, c: b)
         return(r)
 
 /// Fused multiply-add: `me * a + b` with a single rounding, computed with the x86 FMA instruction (targets with the `fma` feature, as with `--cpu x86-64-v3`).
@@ -387,7 +388,7 @@ routine B64.mul_add(me: Me, a: Me, b: Me) -> Me
 #[target(arch: "x86_64"), feature("fma")]
 routine B64.mul_add(me: Me, a: Me, b: Me) -> Me
     block entry()
-        r: Me = fma[Me](me, a, b)
+        r: Me = fma[Me](a: me, b: a, c: b)
         return(r)
 
 /// Fused multiply-add: `me * a + b` with a single rounding, computed in software ({B64.mul_add_soft}) on x86 without the `fma` feature.
@@ -454,7 +455,7 @@ private routine B64.mul_add_soft(me: Me, a: Me, b: Me) -> Me
     // rounding tl + e to odd.
     block emulated()
         p: Me = me.mul(a)
-        e: Me = b64_dekker_error(a, me, p)
+        e: Me = b64_dekker_error(x: a, y: me, p)
         th: Me = b.add(p)
         bv: Me = th.sub(b)
         av: Me = th.sub(bv)
@@ -481,7 +482,7 @@ private routine B64.mul_add_soft(me: Me, a: Me, b: Me) -> Me
         decided: Bool = normal.bitand(inside)
         branch decided
             ? return(z)
-            : return(th.add(b64_add_round_to_odd(tl, e)))
+            : return(th.add(b64_add_round_to_odd(a: tl, b: e)))
 
 /// me * a + b with a single rounding, for every operand: the slow path of {B64.mul_add_soft}, kept out of line so
 /// the emulated path that callers inline stays small. It forms the 106-bit product exactly in a U128, aligns b to it
@@ -537,7 +538,7 @@ private routine B64.mul_add_wide(me: Me, a: Me, b: Me) -> Me
         small_neg: Bool = p_first
             ? c_neg
             : p_neg
-        aligned: U128 = shr_sticky(small, diff)
+        aligned: U128 = shr_sticky(value: small, n: diff)
         same: Bool = big_neg.eq(small_neg)
         branch same
             ? sum(big, aligned, e, big_neg)
@@ -881,7 +882,7 @@ routine B64.log(me: Me, base: Me) -> Me
             : return(me.ln().div(base.ln()))
 
     block fast()
-        r: Option[Me] = cm_b64_log_ratio_fast(me, base)
+        r: Option[Me] = cm_b64_log_ratio_fast(x: me, base)
         when r
             .Present(v) => return(v)
             .Absent => wide()
@@ -896,7 +897,7 @@ routine B64.log(me: Me, base: Me) -> Me
             : exact()
 
     block exact()
-        r: B128 = big_log_ratio(me.to[B128](), base.to[B128](), 52)
+        r: B128 = big_log_ratio(x: me.to[B128](), base: base.to[B128](), fraction_bits: 52)
         return(r.to[Me]())
 
 // -- special functions ---------------------------------------------------------
@@ -1100,7 +1101,7 @@ routine b64_add_round_to_odd(a: B64, b: B64) -> B64
 #[target(arch: "aarch64"), inline]
 routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
     block entry()
-        e: B64 = x.mul_add(y, p.neg())
+        e: B64 = x.mul_add(a: y, b: p.neg())
         return(e)
 
 /// The rounding error of the product `p = x * y`: `x * y - p` rounded once, as `x.mul_add(y, p.neg())` gives it,
@@ -1113,7 +1114,7 @@ routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
 #[target(arch: "x86_64"), feature("fma"), inline]
 routine b64_mul_error(x: B64, y: B64, p: B64) -> B64
     block entry()
-        e: B64 = x.mul_add(y, p.neg())
+        e: B64 = x.mul_add(a: y, b: p.neg())
         return(e)
 
 /// The rounding error of the product `p = x * y`: the same value as `x.mul_add(y, p.neg())`, by Dekker's product
@@ -1161,7 +1162,7 @@ private routine b64_mul_error_soft(x: B64, y: B64, p: B64) -> B64
         exact: Bool = factors.bitand(inside)
         branch exact
             ? return(b64_dekker_error(x, y, p))
-            : return(x.mul_add(y, p.neg()))
+            : return(x.mul_add(a: y, b: p.neg()))
 
 /// The rounding error of the product `p = x * y` (rounded to nearest), exactly: `x * y - p`, by Dekker's
 /// product. Each factor splits into a high part of 26 bits (its encoding rounded to nearest at bit 27, then
@@ -1244,7 +1245,7 @@ routine B64.to[Me](me: Me) -> Me
 #track_caller
 routine B64.to[S8](me: Me) -> S8
     block entry()
-        fits: Bool = me.is_trunc_in_range(-128.0, 128.0)
+        fits: Bool = me.is_trunc_in_range(lo: -128.0, hi: 128.0)
         branch fits
             ? continue
             : crash_overflow()
@@ -1257,7 +1258,7 @@ routine B64.to[S8](me: Me) -> S8
 /// :see: {B64.to[S8]} to crash instead, {B64.to_clamp[S8]} to saturate.
 routine B64.to_checked[S8](me: Me) -> Option[S8]
     block entry()
-        fits: Bool = me.is_trunc_in_range(-128.0, 128.0)
+        fits: Bool = me.is_trunc_in_range(lo: -128.0, hi: 128.0)
         value: S8 = fptosi_sat[Me, S8](me)
         r: Option[S8] = fits.then_present(value)
         return(r)
@@ -1277,7 +1278,7 @@ routine B64.to_clamp[S8](me: Me) -> S8
 #track_caller
 routine B64.to[S16](me: Me) -> S16
     block entry()
-        fits: Bool = me.is_trunc_in_range(-32768.0, 32768.0)
+        fits: Bool = me.is_trunc_in_range(lo: -32768.0, hi: 32768.0)
         branch fits
             ? continue
             : crash_overflow()
@@ -1290,7 +1291,7 @@ routine B64.to[S16](me: Me) -> S16
 /// :see: {B64.to[S16]} to crash instead, {B64.to_clamp[S16]} to saturate.
 routine B64.to_checked[S16](me: Me) -> Option[S16]
     block entry()
-        fits: Bool = me.is_trunc_in_range(-32768.0, 32768.0)
+        fits: Bool = me.is_trunc_in_range(lo: -32768.0, hi: 32768.0)
         value: S16 = fptosi_sat[Me, S16](me)
         r: Option[S16] = fits.then_present(value)
         return(r)
@@ -1310,7 +1311,7 @@ routine B64.to_clamp[S16](me: Me) -> S16
 #track_caller
 routine B64.to[S32](me: Me) -> S32
     block entry()
-        fits: Bool = me.is_trunc_in_range(-2147483648.0, 2147483648.0)
+        fits: Bool = me.is_trunc_in_range(lo: -2147483648.0, hi: 2147483648.0)
         branch fits
             ? continue
             : crash_overflow()
@@ -1323,7 +1324,7 @@ routine B64.to[S32](me: Me) -> S32
 /// :see: {B64.to[S32]} to crash instead, {B64.to_clamp[S32]} to saturate.
 routine B64.to_checked[S32](me: Me) -> Option[S32]
     block entry()
-        fits: Bool = me.is_trunc_in_range(-2147483648.0, 2147483648.0)
+        fits: Bool = me.is_trunc_in_range(lo: -2147483648.0, hi: 2147483648.0)
         value: S32 = fptosi_sat[Me, S32](me)
         r: Option[S32] = fits.then_present(value)
         return(r)
@@ -1343,7 +1344,7 @@ routine B64.to_clamp[S32](me: Me) -> S32
 #track_caller
 routine B64.to[S64](me: Me) -> S64
     block entry()
-        fits: Bool = me.is_trunc_in_range(-9223372036854775808.0, 9223372036854775808.0)
+        fits: Bool = me.is_trunc_in_range(lo: -9223372036854775808.0, hi: 9223372036854775808.0)
         branch fits
             ? continue
             : crash_overflow()
@@ -1356,7 +1357,7 @@ routine B64.to[S64](me: Me) -> S64
 /// :see: {B64.to[S64]} to crash instead, {B64.to_clamp[S64]} to saturate.
 routine B64.to_checked[S64](me: Me) -> Option[S64]
     block entry()
-        fits: Bool = me.is_trunc_in_range(-9223372036854775808.0, 9223372036854775808.0)
+        fits: Bool = me.is_trunc_in_range(lo: -9223372036854775808.0, hi: 9223372036854775808.0)
         value: S64 = fptosi_sat[Me, S64](me)
         r: Option[S64] = fits.then_present(value)
         return(r)
@@ -1376,8 +1377,8 @@ routine B64.to_clamp[S64](me: Me) -> S64
 #track_caller
 routine B64.to[S128](me: Me) -> S128
     block entry()
-        fits: Bool = me.is_trunc_in_range(-170141183460469231731687303715884105728.0,
-            170141183460469231731687303715884105728.0)
+        fits: Bool = me.is_trunc_in_range(lo: -170141183460469231731687303715884105728.0,
+            hi: 170141183460469231731687303715884105728.0)
         branch fits
             ? continue
             : crash_overflow()
@@ -1390,8 +1391,8 @@ routine B64.to[S128](me: Me) -> S128
 /// :see: {B64.to[S128]} to crash instead, {B64.to_clamp[S128]} to saturate.
 routine B64.to_checked[S128](me: Me) -> Option[S128]
     block entry()
-        fits: Bool = me.is_trunc_in_range(-170141183460469231731687303715884105728.0,
-            170141183460469231731687303715884105728.0)
+        fits: Bool = me.is_trunc_in_range(lo: -170141183460469231731687303715884105728.0,
+            hi: 170141183460469231731687303715884105728.0)
         value: S128 = fptosi_sat[Me, S128](me)
         r: Option[S128] = fits.then_present(value)
         return(r)
@@ -1411,7 +1412,7 @@ routine B64.to_clamp[S128](me: Me) -> S128
 #track_caller
 routine B64.to[U8](me: Me) -> U8
     block entry()
-        fits: Bool = me.is_trunc_in_range(0.0, 256.0)
+        fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 256.0)
         branch fits
             ? continue
             : crash_overflow()
@@ -1424,7 +1425,7 @@ routine B64.to[U8](me: Me) -> U8
 /// :see: {B64.to[U8]} to crash instead, {B64.to_clamp[U8]} to saturate.
 routine B64.to_checked[U8](me: Me) -> Option[U8]
     block entry()
-        fits: Bool = me.is_trunc_in_range(0.0, 256.0)
+        fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 256.0)
         value: U8 = fptoui_sat[Me, U8](me)
         r: Option[U8] = fits.then_present(value)
         return(r)
@@ -1444,7 +1445,7 @@ routine B64.to_clamp[U8](me: Me) -> U8
 #track_caller
 routine B64.to[U16](me: Me) -> U16
     block entry()
-        fits: Bool = me.is_trunc_in_range(0.0, 65536.0)
+        fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 65536.0)
         branch fits
             ? continue
             : crash_overflow()
@@ -1457,7 +1458,7 @@ routine B64.to[U16](me: Me) -> U16
 /// :see: {B64.to[U16]} to crash instead, {B64.to_clamp[U16]} to saturate.
 routine B64.to_checked[U16](me: Me) -> Option[U16]
     block entry()
-        fits: Bool = me.is_trunc_in_range(0.0, 65536.0)
+        fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 65536.0)
         value: U16 = fptoui_sat[Me, U16](me)
         r: Option[U16] = fits.then_present(value)
         return(r)
@@ -1477,7 +1478,7 @@ routine B64.to_clamp[U16](me: Me) -> U16
 #track_caller
 routine B64.to[U32](me: Me) -> U32
     block entry()
-        fits: Bool = me.is_trunc_in_range(0.0, 4294967296.0)
+        fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 4294967296.0)
         branch fits
             ? continue
             : crash_overflow()
@@ -1490,7 +1491,7 @@ routine B64.to[U32](me: Me) -> U32
 /// :see: {B64.to[U32]} to crash instead, {B64.to_clamp[U32]} to saturate.
 routine B64.to_checked[U32](me: Me) -> Option[U32]
     block entry()
-        fits: Bool = me.is_trunc_in_range(0.0, 4294967296.0)
+        fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 4294967296.0)
         value: U32 = fptoui_sat[Me, U32](me)
         r: Option[U32] = fits.then_present(value)
         return(r)
@@ -1510,7 +1511,7 @@ routine B64.to_clamp[U32](me: Me) -> U32
 #track_caller
 routine B64.to[U64](me: Me) -> U64
     block entry()
-        fits: Bool = me.is_trunc_in_range(0.0, 18446744073709551616.0)
+        fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 18446744073709551616.0)
         branch fits
             ? continue
             : crash_overflow()
@@ -1523,7 +1524,7 @@ routine B64.to[U64](me: Me) -> U64
 /// :see: {B64.to[U64]} to crash instead, {B64.to_clamp[U64]} to saturate.
 routine B64.to_checked[U64](me: Me) -> Option[U64]
     block entry()
-        fits: Bool = me.is_trunc_in_range(0.0, 18446744073709551616.0)
+        fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 18446744073709551616.0)
         value: U64 = fptoui_sat[Me, U64](me)
         r: Option[U64] = fits.then_present(value)
         return(r)
@@ -1543,7 +1544,7 @@ routine B64.to_clamp[U64](me: Me) -> U64
 #track_caller
 routine B64.to[U128](me: Me) -> U128
     block entry()
-        fits: Bool = me.is_trunc_in_range(0.0, 340282366920938463463374607431768211456.0)
+        fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 340282366920938463463374607431768211456.0)
         branch fits
             ? continue
             : crash_overflow()
@@ -1556,7 +1557,7 @@ routine B64.to[U128](me: Me) -> U128
 /// :see: {B64.to[U128]} to crash instead, {B64.to_clamp[U128]} to saturate.
 routine B64.to_checked[U128](me: Me) -> Option[U128]
     block entry()
-        fits: Bool = me.is_trunc_in_range(0.0, 340282366920938463463374607431768211456.0)
+        fits: Bool = me.is_trunc_in_range(lo: 0.0, hi: 340282366920938463463374607431768211456.0)
         value: U128 = fptoui_sat[Me, U128](me)
         r: Option[U128] = fits.then_present(value)
         return(r)
@@ -1576,5 +1577,5 @@ routine B64.to_clamp[U128](me: Me) -> U128
 routine B64.is_trunc_in_range(me: Me, lo: Me, hi: Me) -> Bool
     block entry()
         whole: Me = me.trunc()
-        r: Bool = whole.in_range(lo, hi)
+        r: Bool = whole.in_range(lo, end: hi)
         return(r)
