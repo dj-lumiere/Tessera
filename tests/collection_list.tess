@@ -9,45 +9,45 @@ import Standard/Format
 import Standard/Os
 
 record Rng
-    state : U64
+    state: U64
 
 /// What every phase works with besides the collection.
 record Harness
     /// Where checkpoints are written.
-    out : @BufWriter[Out]
+    out: @BufWriter[Out]
     /// The generator that picks each operation.
-    rng : @Rng
+    rng: @Rng
 
 /// One phase of the run: its number and how many operations of which kinds it makes.
 record Phase
     /// The phase's number, as checkpoints print it.
-    number : USize
+    number: USize
     /// How many operations the phase runs.
-    ops : USize
+    ops: USize
     /// The percentage of operations that push. Pop takes the next 25.
-    push : USize
+    push: USize
 
 /// Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
 record Checkpoint
     /// The phase's number.
-    phase : USize
+    phase: USize
     /// The operations run so far in the phase.
-    op : USize
+    op: USize
     /// The checksum of every result so far.
-    results : S64
+    results: S64
 
 routine Rng.below(me: @Me, bound: USize) -> USize
     block entry()
-        state : U64 = me.state.load()
-        next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+        state: U64 = me.state.load()
+        next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         me.state.store(next)
-        bucket : U64   = next.shr(33).mod(bound.to[U64]())
-        value  : USize = bucket.to[USize]()
+        bucket: U64 = next.shr(33).mod(bound.to[U64]())
+        value: USize = bucket.to[USize]()
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
     block entry()
-        mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
+        mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
 routine labeled[T](out: @T, label: Bytes, value: S64) -> Void
@@ -58,22 +58,22 @@ require T: typename, Writer[T]
 
 // Folds every element in iteration order.
 routine iteration_hash(list: @List[S64]) -> S64
-    local iter : @ListIter[S64] <- .construct(list)
+    local iter: @ListIter[S64] <- .construct(list)
 
     block entry()
         jump next(0)
 
     block next(hash: S64)
-        item : Option[S64] = iter.next()
+        item: Option[S64] = iter.next()
         when item
             .Present(value) => next(mix(hash, value))
-            .Absent         => return(hash)
+            .Absent => return(hash)
 
 routine checkpoint(out: @BufWriter[Out], list: @List[S64], at: Checkpoint) -> Void
     block entry()
         out.write("phase {at.phase}")
         labeled(out, "op", at.op.to[S64]())
-        size : USize = list.count()
+        size: USize = list.count()
         labeled(out, "length", size.to[S64]())
         labeled(out, "results", at.results)
         labeled(out, "iteration", iteration_hash(list))
@@ -83,70 +83,70 @@ routine checkpoint(out: @BufWriter[Out], list: @List[S64], at: Checkpoint) -> Vo
 // Runs ops random operations: push is the percentage of pushes, pop takes the next 25. Returns the updated results
 // checksum.
 routine run_phase(harness: Harness, list: @List[S64], phase: Phase, results: S64) -> S64
-    local rng  : @Rng  = harness.rng
-    local ops  : USize = phase.ops
-    local push : USize = phase.push
+    local rng: @Rng = harness.rng
+    local ops: USize = phase.ops
+    local push: USize = phase.push
 
     block entry()
         jump next(0, results)
 
     block next(op: USize, checksum: S64)
-        done : Bool = op.ge(ops)
+        done: Bool = op.ge(ops)
         branch done
             ? return(checksum)
             : pick(op, checksum)
 
     block pick(op: USize, checksum: S64)
-        kind       : USize = rng.below(1000)
-        pop_end    : USize = push.add(25).mul(10)
-        is_push    : Bool  = kind.lt(push.mul(10))
-        is_pop     : Bool  = kind.lt(pop_end)
-        is_get     : Bool  = kind.lt(pop_end.add(200))
-        is_clear   : Bool  = kind.eq(999)
-        is_reserve : Bool  = kind.eq(998)
+        kind: USize = rng.below(1000)
+        pop_end: USize = push.add(25).mul(10)
+        is_push: Bool = kind.lt(push.mul(10))
+        is_pop: Bool = kind.lt(pop_end)
+        is_get: Bool = kind.lt(pop_end.add(200))
+        is_clear: Bool = kind.eq(999)
+        is_reserve: Bool = kind.eq(998)
         when
-            is_push    => push(op, checksum)
-            is_pop     => pop(op, checksum)
-            is_get     => get(op, checksum)
-            is_clear   => clear(op, checksum)
+            is_push => push(op, checksum)
+            is_pop => pop(op, checksum)
+            is_get => get(op, checksum)
+            is_clear => clear(op, checksum)
             is_reserve => reserve(op, checksum)
-            else       => set(op, checksum)
+            else => set(op, checksum)
 
     block push(op: USize, checksum: S64)
-        value : S64 = rng.below(1000000).to[S64]()
+        value: S64 = rng.below(1000000).to[S64]()
         list.push(value)
         jump record(op, checksum, value)
 
     block pop(op: USize, checksum: S64)
-        empty : Bool = list.is_empty()
+        empty: Bool = list.is_empty()
         branch empty
             ? record(op, checksum, -1)
             : pop_one(op, checksum)
 
     block pop_one(op: USize, checksum: S64)
-        value : S64 = list.pop()
+        value: S64 = list.pop()
         jump record(op, checksum, value)
 
     block get(op: USize, checksum: S64)
-        empty : Bool = list.is_empty()
+        empty: Bool = list.is_empty()
         branch empty
             ? record(op, checksum, -2)
             : get_one(op, checksum)
 
     block get_one(op: USize, checksum: S64)
-        index : USize = rng.below(list.count())
-        value : S64   = list.getitem(index)
+        index: USize = rng.below(list.count())
+        value: S64 = list.getitem(index)
         jump record(op, checksum, value)
 
     block set(op: USize, checksum: S64)
-        empty : Bool = list.is_empty()
+        empty: Bool = list.is_empty()
         branch empty
             ? record(op, checksum, -3)
             : set_one(op, checksum)
 
     block set_one(op: USize, checksum: S64)
-        index : USize = rng.below(list.count())
-        value : S64   = rng.below(1000000).to[S64]()
+        index: USize = rng.below(list.count())
+        value: S64 = rng.below(1000000).to[S64]()
         list.setitem(index, value)
         jump record(op, checksum, index.to[S64]())
 
@@ -155,15 +155,15 @@ routine run_phase(harness: Harness, list: @List[S64], phase: Phase, results: S64
         jump record(op, checksum, -4)
 
     block reserve(op: USize, checksum: S64)
-        extra : USize = rng.below(3000)
-        size  : USize = list.count()
+        extra: USize = rng.below(3000)
+        size: USize = list.count()
         list.reserve(size.add(extra))
         jump record(op, checksum, extra.to[S64]())
 
     block record(op: USize, checksum: S64, result: S64)
-        mixed   : S64   = mix(checksum, result)
-        op_next : USize = op.add(1)
-        report  : Bool  = op_next.mod(500).eq(0)
+        mixed: S64 = mix(checksum, result)
+        op_next: USize = op.add(1)
+        report: Bool = op_next.mod(500).eq(0)
         branch report
             ? report(op_next, mixed)
             : next(op_next, mixed)
@@ -174,13 +174,13 @@ routine run_phase(harness: Harness, list: @List[S64], phase: Phase, results: S64
 
 // Pushes every element of from onto to.
 routine copy_into(from: @List[S64], to: @List[S64]) -> Void
-    local count : USize = from.count()
+    local count: USize = from.count()
 
     block entry()
         jump next(0)
 
     block next(index: USize)
-        done : Bool = index.ge(count)
+        done: Bool = index.ge(count)
         branch done
             ? return()
             : copy(index)
@@ -196,38 +196,38 @@ routine report_eq(out: @BufWriter[Out], label: Bytes, equal: Bool) -> Void
 
 routine start() -> Void
     block entry()
-        fd : @Out = Out.writer()
-        claim out : @BufWriter[Out] <- .hollow()
+        fd: @Out = Out.writer()
+        claim out: @BufWriter[Out] <- .hollow()
         out.construct(fd)
-        claim alloc : @Allocator <- make_heap_allocator()
-        claim rng   : @Rng       <- Rng(state: 2)
-        claim list  : @List[S64] <- .construct(alloc)
+        claim alloc: @Allocator <- make_heap_allocator()
+        claim rng: @Rng <- Rng(state: 2)
+        claim list: @List[S64] <- .construct(alloc)
 
-        harness : Harness = Harness(out: out, rng: rng)
-        r1      : S64     = run_phase(harness, list, Phase(number: 1, ops: 4000, push: 50), 0)
-        r2      : S64     = run_phase(harness, list, Phase(number: 2, ops: 4000, push: 25), r1)
-        r3      : S64     = run_phase(harness, list, Phase(number: 3, ops: 3000, push: 15), r2)
-        r4      : S64     = run_phase(harness, list, Phase(number: 4, ops: 3000, push: 45), r3)
+        harness: Harness = Harness(out: out, rng: rng)
+        r1: S64 = run_phase(harness, list, Phase(number: 1, ops: 4000, push: 50), 0)
+        r2: S64 = run_phase(harness, list, Phase(number: 2, ops: 4000, push: 25), r1)
+        r3: S64 = run_phase(harness, list, Phase(number: 3, ops: 3000, push: 15), r2)
+        r4: S64 = run_phase(harness, list, Phase(number: 4, ops: 3000, push: 45), r3)
 
-        claim copied : @List[S64] <- .construct(alloc)
-        empty_copy : List[S64] = copied.load()
-        full       : List[S64] = list.load()
+        claim copied: @List[S64] <- .construct(alloc)
+        empty_copy: List[S64] = copied.load()
+        full: List[S64] = list.load()
         report_eq(out, "empty copy equal", full.eq(empty_copy))
         copy_into(list, copied)
-        same : List[S64] = copied.load()
+        same: List[S64] = copied.load()
         report_eq(out, "copy equal", full.eq(same))
-        copied_count : USize = copied.count()
-        last_index   : USize = copied_count.sub(1)
-        last         : S64   = copied.getitem(last_index)
+        copied_count: USize = copied.count()
+        last_index: USize = copied_count.sub(1)
+        last: S64 = copied.getitem(last_index)
         copied.setitem(last_index, last.add(1))
-        changed : List[S64] = copied.load()
+        changed: List[S64] = copied.load()
         report_eq(out, "changed last equal", full.eq(changed))
         copied.setitem(last_index, last)
         copied.push(0)
-        longer : List[S64] = copied.load()
+        longer: List[S64] = copied.load()
         report_eq(out, "longer equal", full.eq(longer))
         copied.pop()
-        restored : List[S64] = copied.load()
+        restored: List[S64] = copied.load()
         report_eq(out, "restored equal", full.eq(restored))
         copied.destruct()
         list.destruct()

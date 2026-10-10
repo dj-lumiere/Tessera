@@ -10,52 +10,52 @@ import Standard/Format
 import Standard/Os
 
 record Rng
-    state : U64
+    state: U64
 
 /// What every phase works with besides the collection.
 record Harness
     /// Where checkpoints are written.
-    out : @BufWriter[Out]
+    out: @BufWriter[Out]
     /// The generator that picks each operation.
-    rng : @Rng
+    rng: @Rng
 
 /// One phase of the run: its number and how many operations of which kinds it makes.
 record Phase
     /// The phase's number, as checkpoints print it.
-    number : USize
+    number: USize
     /// How many operations the phase runs.
-    ops : USize
+    ops: USize
     /// The percentages of each push and pop.
-    op_mix : Mix
+    op_mix: Mix
 
 /// Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
 record Checkpoint
     /// The phase's number.
-    phase : USize
+    phase: USize
     /// The operations run so far in the phase.
-    op : USize
+    op: USize
     /// The checksum of every result so far.
-    results : S64
+    results: S64
 
 // Percentages of each push and pop. Get and set take 10 each.
 record Mix
-    push_back  : USize
-    push_front : USize
-    pop_back   : USize
-    pop_front  : USize
+    push_back: USize
+    push_front: USize
+    pop_back: USize
+    pop_front: USize
 
 routine Rng.below(me: @Me, bound: USize) -> USize
     block entry()
-        state : U64 = me.state.load()
-        next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+        state: U64 = me.state.load()
+        next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         me.state.store(next)
-        bucket : U64   = next.shr(33).mod(bound.to[U64]())
-        value  : USize = bucket.to[USize]()
+        bucket: U64 = next.shr(33).mod(bound.to[U64]())
+        value: USize = bucket.to[USize]()
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
     block entry()
-        mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
+        mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
 routine labeled[T](out: @T, label: Bytes, value: S64) -> Void
@@ -66,26 +66,26 @@ require T: typename, Writer[T]
 
 // Folds every element front to back.
 routine iteration_hash(circular_list: @CircularList[S64]) -> S64
-    local iter : @CircularListIter[S64] <- .construct(circular_list)
+    local iter: @CircularListIter[S64] <- .construct(circular_list)
 
     block entry()
         jump next(0)
 
     block next(hash: S64)
-        item : Option[S64] = iter.next()
+        item: Option[S64] = iter.next()
         when item
             .Present(value) => next(mix(hash, value))
-            .Absent         => return(hash)
+            .Absent => return(hash)
 
 routine checkpoint(out: @BufWriter[Out], circular_list: @CircularList[S64], at: Checkpoint) -> Void
     block entry()
         out.write("phase {at.phase}")
         labeled(out, "op", at.op.to[S64]())
-        size : USize = circular_list.count()
+        size: USize = circular_list.count()
         labeled(out, "length", size.to[S64]())
         labeled(out, "results", at.results)
         labeled(out, "iteration", iteration_hash(circular_list))
-        capacity : USize = circular_list.storage.count.load()
+        capacity: USize = circular_list.storage.count.load()
         labeled(out, "capacity", capacity.to[S64]())
         out.write("\n")
         return()
@@ -93,86 +93,86 @@ routine checkpoint(out: @BufWriter[Out], circular_list: @CircularList[S64], at: 
 // Runs ops random operations weighted by op_mix. Returns the updated results checksum.
 routine run_phase(harness: Harness, circular_list: @CircularList[S64], phase: Phase,
     results: S64) -> S64
-    local rng            : @Rng  = harness.rng
-    local ops            : USize = phase.ops
-    local op_mix         : Mix   = phase.op_mix
-    local push_back_end  : USize = op_mix.push_back.mul(10)
-    local push_front_end : USize = push_back_end.add(op_mix.push_front.mul(10))
-    local pop_back_end   : USize = push_front_end.add(op_mix.pop_back.mul(10))
-    local pop_front_end  : USize = pop_back_end.add(op_mix.pop_front.mul(10))
+    local rng: @Rng = harness.rng
+    local ops: USize = phase.ops
+    local op_mix: Mix = phase.op_mix
+    local push_back_end: USize = op_mix.push_back.mul(10)
+    local push_front_end: USize = push_back_end.add(op_mix.push_front.mul(10))
+    local pop_back_end: USize = push_front_end.add(op_mix.pop_back.mul(10))
+    local pop_front_end: USize = pop_back_end.add(op_mix.pop_front.mul(10))
 
     block entry()
         jump next(0, results)
 
     block next(op: USize, checksum: S64)
-        done : Bool = op.ge(ops)
+        done: Bool = op.ge(ops)
         branch done
             ? return(checksum)
             : pick(op, checksum)
 
     block pick(op: USize, checksum: S64)
-        kind          : USize = rng.below(1000)
-        is_push_back  : Bool  = kind.lt(push_back_end)
-        is_push_front : Bool  = kind.lt(push_front_end)
-        is_pop_back   : Bool  = kind.lt(pop_back_end)
-        is_pop_front  : Bool  = kind.lt(pop_front_end)
-        is_get        : Bool  = kind.lt(pop_front_end.add(100))
-        is_clear      : Bool  = kind.eq(999)
+        kind: USize = rng.below(1000)
+        is_push_back: Bool = kind.lt(push_back_end)
+        is_push_front: Bool = kind.lt(push_front_end)
+        is_pop_back: Bool = kind.lt(pop_back_end)
+        is_pop_front: Bool = kind.lt(pop_front_end)
+        is_get: Bool = kind.lt(pop_front_end.add(100))
+        is_clear: Bool = kind.eq(999)
         when
-            is_push_back  => push_back(op, checksum)
+            is_push_back => push_back(op, checksum)
             is_push_front => push_front(op, checksum)
-            is_pop_back   => pop_back(op, checksum)
-            is_pop_front  => pop_front(op, checksum)
-            is_get        => get(op, checksum)
-            is_clear      => clear(op, checksum)
-            else          => set(op, checksum)
+            is_pop_back => pop_back(op, checksum)
+            is_pop_front => pop_front(op, checksum)
+            is_get => get(op, checksum)
+            is_clear => clear(op, checksum)
+            else => set(op, checksum)
 
     block push_back(op: USize, checksum: S64)
-        value : S64 = rng.below(1000000).to[S64]()
+        value: S64 = rng.below(1000000).to[S64]()
         circular_list.push_back(value)
         jump record(op, checksum, value)
 
     block push_front(op: USize, checksum: S64)
-        value : S64 = rng.below(1000000).to[S64]()
+        value: S64 = rng.below(1000000).to[S64]()
         circular_list.push_front(value)
         jump record(op, checksum, value)
 
     block pop_back(op: USize, checksum: S64)
-        empty : Bool = circular_list.is_empty()
+        empty: Bool = circular_list.is_empty()
         branch empty
             ? record(op, checksum, -1)
             : record(op, checksum, circular_list.pop_back())
 
     block pop_front(op: USize, checksum: S64)
-        empty : Bool = circular_list.is_empty()
+        empty: Bool = circular_list.is_empty()
         branch empty
             ? record(op, checksum, -1)
             : pop_front_one(op, checksum)
 
     block pop_front_one(op: USize, checksum: S64)
-        value : S64 = circular_list.pop_front()
+        value: S64 = circular_list.pop_front()
         jump record(op, checksum, value)
 
     block get(op: USize, checksum: S64)
-        empty : Bool = circular_list.is_empty()
+        empty: Bool = circular_list.is_empty()
         branch empty
             ? record(op, checksum, -2)
             : get_one(op, checksum)
 
     block get_one(op: USize, checksum: S64)
-        index : USize = rng.below(circular_list.count())
-        value : S64   = circular_list.getitem(index)
+        index: USize = rng.below(circular_list.count())
+        value: S64 = circular_list.getitem(index)
         jump record(op, checksum, value)
 
     block set(op: USize, checksum: S64)
-        empty : Bool = circular_list.is_empty()
+        empty: Bool = circular_list.is_empty()
         branch empty
             ? record(op, checksum, -3)
             : set_one(op, checksum)
 
     block set_one(op: USize, checksum: S64)
-        index : USize = rng.below(circular_list.count())
-        value : S64   = rng.below(1000000).to[S64]()
+        index: USize = rng.below(circular_list.count())
+        value: S64 = rng.below(1000000).to[S64]()
         circular_list.setitem(index, value)
         jump record(op, checksum, index.to[S64]())
 
@@ -181,9 +181,9 @@ routine run_phase(harness: Harness, circular_list: @CircularList[S64], phase: Ph
         jump record(op, checksum, -4)
 
     block record(op: USize, checksum: S64, result: S64)
-        mixed   : S64   = mix(checksum, result)
-        op_next : USize = op.add(1)
-        report  : Bool  = op_next.mod(500).eq(0)
+        mixed: S64 = mix(checksum, result)
+        op_next: USize = op.add(1)
+        report: Bool = op_next.mod(500).eq(0)
         branch report
             ? report(op_next, mixed)
             : next(op_next, mixed)
@@ -196,11 +196,11 @@ routine run_phase(harness: Harness, circular_list: @CircularList[S64], phase: Ph
 // Copies from into to by pushing each element at the front, back to front, so to has a different start.
 routine copy_reversed_pushes(from: @CircularList[S64], to: @CircularList[S64]) -> Void
     block entry()
-        count : USize = from.count()
+        count: USize = from.count()
         jump next(count)
 
     block next(index: USize)
-        done : Bool = index.eq(0)
+        done: Bool = index.eq(0)
         branch done
             ? return()
             : copy(index.sub(1))
@@ -216,35 +216,34 @@ routine report_eq(out: @BufWriter[Out], label: Bytes, equal: Bool) -> Void
 
 routine start() -> Void
     block entry()
-        fd : @Out = Out.writer()
-        claim out : @BufWriter[Out] <- .hollow()
+        fd: @Out = Out.writer()
+        claim out: @BufWriter[Out] <- .hollow()
         out.construct(fd)
-        claim alloc         : @Allocator         <- make_heap_allocator()
-        claim rng           : @Rng               <- Rng(state: 3)
-        claim circular_list : @CircularList[S64] <- .construct(alloc)
+        claim alloc: @Allocator <- make_heap_allocator()
+        claim rng: @Rng <- Rng(state: 3)
+        claim circular_list: @CircularList[S64] <- .construct(alloc)
 
-        balanced       : Mix     = Mix(push_back: 25, push_front: 25, pop_back: 15, pop_front: 15)
-        front_heavy    : Mix     = Mix(push_back: 5, push_front: 45, pop_back: 20, pop_front: 10)
-        back_heavy     : Mix     = Mix(push_back: 45, push_front: 5, pop_back: 10, pop_front: 20)
-        queue          : Mix     = Mix(push_back: 40, push_front: 0, pop_back: 0, pop_front: 40)
-        reversed_queue : Mix     = Mix(push_back: 0, push_front: 40, pop_back: 40, pop_front: 0)
-        harness        : Harness = Harness(out: out, rng: rng)
-        r1             : S64     = run_phase(harness, circular_list,
-            Phase(number: 1, ops: 3000, op_mix: balanced), 0)
-        r2             : S64     = run_phase(harness, circular_list,
+        balanced: Mix = Mix(push_back: 25, push_front: 25, pop_back: 15, pop_front: 15)
+        front_heavy: Mix = Mix(push_back: 5, push_front: 45, pop_back: 20, pop_front: 10)
+        back_heavy: Mix = Mix(push_back: 45, push_front: 5, pop_back: 10, pop_front: 20)
+        queue: Mix = Mix(push_back: 40, push_front: 0, pop_back: 0, pop_front: 40)
+        reversed_queue: Mix = Mix(push_back: 0, push_front: 40, pop_back: 40, pop_front: 0)
+        harness: Harness = Harness(out: out, rng: rng)
+        r1: S64 = run_phase(harness, circular_list, Phase(number: 1, ops: 3000, op_mix: balanced),
+            0)
+        r2: S64 = run_phase(harness, circular_list,
             Phase(number: 2, ops: 3000, op_mix: front_heavy), r1)
-        r3             : S64     = run_phase(harness, circular_list,
-            Phase(number: 3, ops: 3000, op_mix: back_heavy), r2)
-        r4             : S64     = run_phase(harness, circular_list,
-            Phase(number: 4, ops: 8000, op_mix: queue), r3)
-        r5             : S64     = run_phase(harness, circular_list,
+        r3: S64 = run_phase(harness, circular_list, Phase(number: 3, ops: 3000, op_mix: back_heavy),
+            r2)
+        r4: S64 = run_phase(harness, circular_list, Phase(number: 4, ops: 8000, op_mix: queue), r3)
+        r5: S64 = run_phase(harness, circular_list,
             Phase(number: 5, ops: 8000, op_mix: reversed_queue), r4)
 
-        claim copied : @CircularList[S64] <- .construct(alloc)
+        claim copied: @CircularList[S64] <- .construct(alloc)
         report_eq(out, "empty copy equal", circular_list.load().eq(copied.load()))
         copy_reversed_pushes(circular_list, copied)
         report_eq(out, "copy equal", circular_list.load().eq(copied.load()))
-        front : S64 = copied.getitem(0)
+        front: S64 = copied.getitem(0)
         copied.setitem(0, front.add(1))
         report_eq(out, "changed front equal", circular_list.load().eq(copied.load()))
         copied.setitem(0, front)

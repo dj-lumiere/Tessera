@@ -88,64 +88,64 @@ preset CM_B64_TAN_TINV: @Array[U64, 256] <- [0xff00ff00ff00ff02, 0xfe03f80fe03f8
 /// and NaN comes back quiet.
 /// :returns: tan(`me`).
 routine B64.tan(me: Me) -> Me
-    local ux : U64 = me.bits()
-    local ax : Me  = Me.from_bits(ux.bitand(0x7FFFFFFFFFFFFFFF))
+    local ux: U64 = me.bits()
+    local ax: Me = Me.from_bits(ux.bitand(0x7FFFFFFFFFFFFFFF))
 
     block entry()
-        exp_field : U64  = ux.shr(52).bitand(0x7FF)
-        special   : Bool = exp_field.eq(0x7FF)
+        exp_field: U64 = ux.shr(52).bitand(0x7FF)
+        special: Bool = exp_field.eq(0x7FF)
         branch special
             ? special()
             : continue
         // |x| <= 0x1.d12ed0af1a27ep-27: tan(x) rounds like x + x^3/3
-        tiny : Bool = ax.bits().le(0x3E4D12ED0AF1A27E)
+        tiny: Bool = ax.bits().le(0x3E4D12ED0AF1A27E)
         branch tiny
             ? tiny()
             : continue
-        moderate : Bool = exp_field.lt(1054)
+        moderate: Bool = exp_field.lt(1054)
         branch moderate
             ? moderate()
             : large()
 
     // an infinity gives NaN (inf - inf), a NaN comes back quiet
     block special()
-        inf : Bool = ux.shl(1).eq(0xFFE0000000000000)
+        inf: Bool = ux.shl(1).eq(0xFFE0000000000000)
         branch inf
             ? return(me.sub(me))
             : return(me.add(me))
 
     block tiny()
-        zero : Bool = me.eq(0.0)
+        zero: Bool = me.eq(0.0)
         branch zero
             ? return(me)
             : return(me.mul_add(0x1p-54, me))
 
     // |x| < 2^31: sin and cos within 0x1.dep-64 each, a quarter turn is 2^13 steps of pi/2^14
     block moderate()
-        red : CmF64SinReduced = cm_b64_sin_reduce_moderate(ax)
-        s   : CmF64TrigDD     = cm_b64_sin_moderate_parts(red.k, red.r)
-        c   : CmF64TrigDD     = cm_b64_sin_moderate_parts(red.k.add(0x2000), red.r)
+        red: CmF64SinReduced = cm_b64_sin_reduce_moderate(ax)
+        s: CmF64TrigDD = cm_b64_sin_moderate_parts(red.k, red.r)
+        c: CmF64TrigDD = cm_b64_sin_moderate_parts(red.k.add(0x2000), red.r)
         jump quotient(cm_b64_tan_quotient(s, c, 0x1.dep-63))
 
     // |x| >= 2^31: sin and cos within 0x1.41p-63 each
     block large()
-        red : CmF64SinReduced = cm_b64_sin_reduce_large(ax)
-        s   : CmF64TrigDD     = cm_b64_sin_large_parts(red.k, red.r)
-        c   : CmF64TrigDD     = cm_b64_sin_large_parts(red.k.add(0x2000), red.r)
+        red: CmF64SinReduced = cm_b64_sin_reduce_large(ax)
+        s: CmF64TrigDD = cm_b64_sin_large_parts(red.k, red.r)
+        c: CmF64TrigDD = cm_b64_sin_large_parts(red.k.add(0x2000), red.r)
         jump quotient(cm_b64_tan_quotient(s, c, 0x1.41p-62))
 
     // tan(-x) = -tan(x), and the rounding test is symmetric
     block quotient(q: CmF64TrigBound)
-        flip : Bool = ux.shr(63).eq(1)
-        hi   : Me   = flip
+        flip: Bool = ux.shr(63).eq(1)
+        hi: Me = flip
             ? q.hi.neg()
             : q.hi
-        lo : Me = flip
+        lo: Me = flip
             ? q.lo.neg()
             : q.lo
-        lb   : Me   = hi.add(lo.sub(q.err))
-        ub   : Me   = hi.add(lo.add(q.err))
-        done : Bool = lb.eq(ub)
+        lb: Me = hi.add(lo.sub(q.err))
+        ub: Me = hi.add(lo.add(q.err))
+        done: Bool = lb.eq(ub)
         branch done
             ? return(lb)
             : return(cm_b64_tan_accurate(me))
@@ -157,10 +157,10 @@ routine B64.tan(me: Me) -> Me
 #inline
 private routine cm_b64_tan_two_sum(a: B64, b: B64) -> CmF64TrigDD
     block entry()
-        hi : B64 = a.add(b)
-        bb : B64 = hi.sub(a)
-        ab : B64 = hi.sub(bb)
-        lo : B64 = a.sub(ab).add(b.sub(bb))
+        hi: B64 = a.add(b)
+        bb: B64 = hi.sub(a)
+        ab: B64 = hi.sub(bb)
+        lo: B64 = a.sub(ab).add(b.sub(bb))
         return(CmF64TrigDD(hi: hi, lo: lo))
 
 /// tan x = sin x / cos x from s and c, unevaluated sums within e of sin x and cos x, as hi + lo with a bound err on
@@ -174,20 +174,20 @@ private routine cm_b64_tan_two_sum(a: B64, b: B64) -> CmF64TrigDD
 #inline
 private routine cm_b64_tan_quotient(s: CmF64TrigDD, c: CmF64TrigDD, bound: B64) -> CmF64TrigBound
     block entry()
-        sn  : CmF64TrigDD = cm_b64_tan_two_sum(s.hi, s.lo)
-        cn  : CmF64TrigDD = cm_b64_tan_two_sum(c.hi, c.lo)
-        far : Bool        = cn.hi.abs().ge(0x1p-20)
+        sn: CmF64TrigDD = cm_b64_tan_two_sum(s.hi, s.lo)
+        cn: CmF64TrigDD = cm_b64_tan_two_sum(c.hi, c.lo)
+        far: Bool = cn.hi.abs().ge(0x1p-20)
         branch far
             ? continue
             : return(CmF64TrigBound(hi: 0.0, lo: 0.0, err: B64.from_bits(0x7FF0000000000000)))
-        y  : B64 = B64.div(1.0, cn.hi)
-        qh : B64 = sn.hi.mul(y)
+        y: B64 = B64.div(1.0, cn.hi)
+        qh: B64 = sn.hi.mul(y)
         // qh cn.hi = ph + pl exactly, and sn.hi - ph is exact as ph is within a factor 2 of sn.hi
-        ph : B64 = qh.mul(cn.hi)
-        pl : B64 = b64_mul_error(qh, cn.hi, ph)
-        d  : B64 = sn.hi.sub(ph)
+        ph: B64 = qh.mul(cn.hi)
+        pl: B64 = b64_mul_error(qh, cn.hi, ph)
+        d: B64 = sn.hi.sub(ph)
         // sn - qh cn, the numerator of the remaining part of the quotient
-        n : B64 = d.sub(pl).add(sn.lo).sub(qh.mul(cn.lo))
+        n: B64 = d.sub(pl).add(sn.lo).sub(qh.mul(cn.lo))
         return(CmF64TrigBound(hi: qh, lo: n.mul(y), err: bound.mul(y).mul(y)))
 
 /// 1/a for a non-zero dint, with relative error below 2^-124.999: a 64-bit table seed, three integer Newton
@@ -196,23 +196,23 @@ private routine cm_b64_tan_quotient(s: CmF64TrigDD, c: CmF64TrigDD, bound: B64) 
 /// :returns: 1/`a`.
 private routine cm_b64_tan_inv_dint(a: CmF64TrigDint) -> CmF64TrigDint
     block entry()
-        h      : U64  = cm_b64_trig_hi(a.r)
-        two127 : U128 = U128.shl(1, 127)
-        slot   : U64  = h.shr(55).bitand(0xFF)
-        t0     : U64  = CM_B64_TAN_TINV.getitem(slot.to[USize]())
-        e0     : U128 = t0.to[U128]().mul_wrap(two127.sub_wrap(h.mul_wide(t0)).shr(55))
-        t1     : U64  = t0.add_wrap(cm_b64_trig_lo(e0.shr(72)))
-        e1     : U128 = t1.to[U128]().mul_wrap(two127.sub_wrap(h.mul_wide(t1)).shr(47))
-        t2     : U64  = t1.add_wrap(cm_b64_trig_lo(e1.shr(80)))
-        e2     : U128 = t2.to[U128]().mul_wrap(two127.sub_wrap(h.mul_wide(t2)).shr(31))
-        t3     : U64  = t2.add_wrap(cm_b64_trig_lo(e2.shr(96)))
+        h: U64 = cm_b64_trig_hi(a.r)
+        two127: U128 = U128.shl(1, 127)
+        slot: U64 = h.shr(55).bitand(0xFF)
+        t0: U64 = CM_B64_TAN_TINV.getitem(slot.to[USize]())
+        e0: U128 = t0.to[U128]().mul_wrap(two127.sub_wrap(h.mul_wide(t0)).shr(55))
+        t1: U64 = t0.add_wrap(cm_b64_trig_lo(e0.shr(72)))
+        e1: U128 = t1.to[U128]().mul_wrap(two127.sub_wrap(h.mul_wide(t1)).shr(47))
+        t2: U64 = t1.add_wrap(cm_b64_trig_lo(e1.shr(80)))
+        e2: U128 = t2.to[U128]().mul_wrap(two127.sub_wrap(h.mul_wide(t2)).shr(31))
+        t3: U64 = t2.add_wrap(cm_b64_trig_lo(e2.shr(96)))
         // Newton's iteration r -> r + r (1 - a r)
-        r1  : CmF64TrigDint = cm_b64_trig_dint(t3, 0, S64.sub(1, a.ex), 1)
-        q0  : CmF64TrigDint = cm_b64_trig_dint_mul21(a, r1)
-        r   : CmF64TrigDint = cm_b64_trig_dint(t3, 0, S64.sub(1, a.ex), 0)
-        one : CmF64TrigDint = cm_b64_trig_dint(0x8000000000000000, 0, 1, 0)
-        q1  : CmF64TrigDint = cm_b64_trig_dint_add(one, q0)
-        q2  : CmF64TrigDint = cm_b64_trig_dint_mul(r, q1)
+        r1: CmF64TrigDint = cm_b64_trig_dint(t3, 0, S64.sub(1, a.ex), 1)
+        q0: CmF64TrigDint = cm_b64_trig_dint_mul21(a, r1)
+        r: CmF64TrigDint = cm_b64_trig_dint(t3, 0, S64.sub(1, a.ex), 0)
+        one: CmF64TrigDint = cm_b64_trig_dint(0x8000000000000000, 0, 1, 0)
+        q1: CmF64TrigDint = cm_b64_trig_dint_add(one, q0)
+        q2: CmF64TrigDint = cm_b64_trig_dint_mul(r, q1)
         return(cm_b64_trig_dint_add(r, q2))
 
 /// The accurate path for |x| > 0x1.d12ed0af1a27ep-27, in 128-bit floating point.
@@ -220,46 +220,46 @@ private routine cm_b64_tan_inv_dint(a: CmF64TrigDint) -> CmF64TrigDint
 /// :returns: tan(`x`), correctly rounded.
 private routine cm_b64_tan_accurate(x: B64) -> B64
     block entry()
-        red : CmF64TrigAccurate = cm_b64_trig_accurate_reduce(x.abs())
-        i   : U64               = red.i
-        q   : U64               = red.quadrant
+        red: CmF64TrigAccurate = cm_b64_trig_accurate_reduce(x.abs())
+        i: U64 = red.i
+        q: U64 = red.quadrant
         // pi <= x < 2pi: tan(x) = tan(x - pi), and pi/2 <= x < pi: tan(x) = -1/tan(x - pi/2)
-        q1   : U64 = q.shr(1).bitand(1)
-        sign : U64 = x.lt(0.0)
+        q1: U64 = q.shr(1).bitand(1)
+        sign: U64 = x.lt(0.0)
             ? 1
             : 0
-        neg : U64 = sign.bitxor(q1)
+        neg: U64 = sign.bitxor(q1)
         // pi/4 <= x < pi/2: tan(x) = 1/tan(pi/2 - x)
-        is_tan : U64 = U64.bitxor(1, q1).bitxor(q.shr(2).bitand(1))
+        is_tan: U64 = U64.bitxor(1, q1).bitxor(q.shr(2).bitand(1))
         // sin2pi(R) ~ sin2pi(i/2^11) cos2pi(X) + cos2pi(i/2^11) sin2pi(X)
-        sn_a : CmF64TrigDint = cm_b64_trig_dint_mul(cm_b64_trig_s(i), red.cos)
-        sn_b : CmF64TrigDint = cm_b64_trig_dint_mul(cm_b64_trig_c(i), red.sin)
-        sn   : CmF64TrigDint = cm_b64_trig_dint_add(sn_a, sn_b)
+        sn_a: CmF64TrigDint = cm_b64_trig_dint_mul(cm_b64_trig_s(i), red.cos)
+        sn_b: CmF64TrigDint = cm_b64_trig_dint_mul(cm_b64_trig_c(i), red.sin)
+        sn: CmF64TrigDint = cm_b64_trig_dint_add(sn_a, sn_b)
         // cos2pi(R) ~ cos2pi(i/2^11) cos2pi(X) - sin2pi(i/2^11) sin2pi(X)
-        vv   : CmF64TrigDint = cm_b64_trig_dint_mul(cm_b64_trig_s(i), red.sin)
-        cs_a : CmF64TrigDint = cm_b64_trig_dint_mul(cm_b64_trig_c(i), red.cos)
-        cs   : CmF64TrigDint = cm_b64_trig_dint_add(cs_a, cm_b64_trig_dint_neg(vv))
-        tan  : Bool          = is_tan.ne(0)
-        num  : CmF64TrigDint = tan
+        vv: CmF64TrigDint = cm_b64_trig_dint_mul(cm_b64_trig_s(i), red.sin)
+        cs_a: CmF64TrigDint = cm_b64_trig_dint_mul(cm_b64_trig_c(i), red.cos)
+        cs: CmF64TrigDint = cm_b64_trig_dint_add(cs_a, cm_b64_trig_dint_neg(vv))
+        tan: Bool = is_tan.ne(0)
+        num: CmF64TrigDint = tan
             ? sn
             : cs
-        den : CmF64TrigDint = tan
+        den: CmF64TrigDint = tan
             ? cs
             : sn
-        y : CmF64TrigDint = cm_b64_trig_dint_mul(cm_b64_tan_inv_dint(den), num)
+        y: CmF64TrigDint = cm_b64_trig_dint_mul(cm_b64_tan_inv_dint(den), num)
         // the total error is below 86 ulps of the low word: check the upper 54 bits are determined
-        decided : Bool = cm_b64_trig_is_rounding_decided(y.r, 86)
+        decided: Bool = cm_b64_trig_is_rounding_decided(y.r, 86)
         branch decided
             ? round(neg, y)
             : continue
-        ax    : B64  = x.abs()
-        pos   : Bool = x.gt(0.0)
-        hard1 : Bool = ax.eq(0x1.dffffffffff1fp-22)
-        hard2 : Bool = ax.eq(0x1.dfffffffffc7cp-21)
+        ax: B64 = x.abs()
+        pos: Bool = x.gt(0.0)
+        hard1: Bool = ax.eq(0x1.dffffffffff1fp-22)
+        hard2: Bool = ax.eq(0x1.dfffffffffc7cp-21)
         when
             hard1 => hard1(pos)
             hard2 => hard2(pos)
-            else  => round(neg, y)
+            else => round(neg, y)
 
     block hard1(pos: Bool)
         branch pos
@@ -272,7 +272,7 @@ private routine cm_b64_tan_accurate(x: B64) -> B64
             : return(B64.sub(-0x1.e000000000546p-21, -0x1.658bcedb6e1d4p-147))
 
     block round(neg: U64, y: CmF64TrigDint)
-        flip : Bool = neg.ne(0)
+        flip: Bool = neg.ne(0)
         branch flip
             ? return(CmF64TrigDint.to[B64](cm_b64_trig_dint_neg(y)))
             : return(y.to[B64]())

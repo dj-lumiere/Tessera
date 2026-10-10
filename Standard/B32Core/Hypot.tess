@@ -17,87 +17,87 @@ module Standard/Core
 /// :param other: The other leg.
 /// :returns: The Euclidean distance, +inf on overflow.
 routine B32.hypot(me: Me, other: Me) -> Me
-    local ax : Me  = me.abs()
-    local ay : Me  = other.abs()
-    local tx : U32 = ax.bits()
-    local ty : U32 = ay.bits()
+    local ax: Me = me.abs()
+    local ay: Me = other.abs()
+    local tx: U32 = ax.bits()
+    local ty: U32 = ay.bits()
 
     block entry()
-        special : Bool = tx.ge(0x7F800000).bitor(ty.ge(0x7F800000))
+        special: Bool = tx.ge(0x7F800000).bitor(ty.ge(0x7F800000))
         branch special
             ? special()
             : order()
 
     // x or y is infinite or NaN
     block special()
-        quiet_x : U32  = tx.shr(22).bitand(1)
-        snan_x  : Bool = tx.gt(0x7F800000).bitand(quiet_x.eq(0))
-        quiet_y : U32  = ty.shr(22).bitand(1)
-        snan_y  : Bool = ty.gt(0x7F800000).bitand(quiet_y.eq(0))
-        snan    : Bool = snan_x.bitor(snan_y)
-        inf_x   : Bool = tx.eq(0x7F800000)
-        inf_y   : Bool = ty.eq(0x7F800000)
+        quiet_x: U32 = tx.shr(22).bitand(1)
+        snan_x: Bool = tx.gt(0x7F800000).bitand(quiet_x.eq(0))
+        quiet_y: U32 = ty.shr(22).bitand(1)
+        snan_y: Bool = ty.gt(0x7F800000).bitand(quiet_y.eq(0))
+        snan: Bool = snan_x.bitor(snan_y)
+        inf_x: Bool = tx.eq(0x7F800000)
+        inf_y: Bool = ty.eq(0x7F800000)
         when
-            snan  => return(cm_b32_hypot_quiet_nan(me, other))
+            snan => return(cm_b32_hypot_quiet_nan(me, other))
             inf_x => return(ax)
             inf_y => return(ay)
-            else  => return(cm_b32_hypot_quiet_nan(ax, ay))
+            else => return(cm_b32_hypot_quiet_nan(ax, ay))
 
     // Both legs are finite and non-negative here, so a plain comparison is max / min.
     block order()
-        swap : Bool = ay.gt(ax)
-        big  : Me   = swap
+        swap: Bool = ay.gt(ax)
+        big: Me = swap
             ? ay
             : ax
-        small : Me = swap
+        small: Me = swap
             ? ax
             : ay
-        xd   : B64  = big.to[B64]()
-        yd   : B64  = small.to[B64]()
-        x2   : B64  = xd.mul(xd)
-        y2   : B64  = yd.mul(yd)
-        r2   : B64  = x2.add(y2)
-        tiny : Bool = yd.lt(xd.mul(0x1.fffffep-13))
+        xd: B64 = big.to[B64]()
+        yd: B64 = small.to[B64]()
+        x2: B64 = xd.mul(xd)
+        y2: B64 = yd.mul(yd)
+        r2: B64 = x2.add(y2)
+        tiny: Bool = yd.lt(xd.mul(0x1.fffffep-13))
         branch tiny
             ? return(Me.mul_add(0x1p-13, small, big))
             : root(x2, y2, r2)
 
     block root(x2: B64, y2: B64, r2: B64)
-        r    : B64  = r2.sqrt()
-        tu   : U64  = r.bits()
-        c    : Me   = r.to[Me]()
-        huge : Bool = tu.gt(0x47EFFFFFE0000000)  // r > 0x1.fffffep+127: overflows or rounds down to the max
-        tail : U64  = tu.add_wrap(1).bitand(0xFFFFFFF)
-        far  : Bool = tail.gt(2)  // r is far from a rounding boundary
+        r: B64 = r2.sqrt()
+        tu: U64 = r.bits()
+        c: Me = r.to[Me]()
+        huge: Bool = tu.gt(0x47EFFFFFE0000000)  // r > 0x1.fffffep+127: overflows or rounds down to the max
+        tail: U64 = tu.add_wrap(1).bitand(0xFFFFFFF)
+        far: Bool = tail.gt(2)  // r is far from a rounding boundary
         when
             huge => return(c)
-            far  => return(c)
+            far => return(c)
             else => check(x2, y2, r2, r, c)
 
     // r is close to a rounding boundary: c is exact, or the correction term decides.
     block check(x2: B64, y2: B64, r2: B64, r: B64, c: Me)
-        cd       : B64  = c.to[B64]()
-        residual : B64  = cd.mul(cd).sub(x2)
-        exact    : Bool = residual.sub(y2).eq(0.0)
+        cd: B64 = c.to[B64]()
+        residual: B64 = cd.mul(cd).sub(x2)
+        exact: Bool = residual.sub(y2).eq(0.0)
         branch exact
             ? return(c)
             : correct(x2, y2, r2, r)
 
     block correct(x2: B64, y2: B64, r2: B64, r: B64)
-        ir2 : B64  = B64.div(0.5, r2)
-        dr2 : B64  = x2.sub(r2).add(y2)
-        rs  : B64  = r.mul(ir2)
-        dz  : B64  = dr2.sub(r.mul_add(r, r2.neg()))
-        dr  : B64  = rs.mul(dz)
-        rh  : B64  = r.add(dr)
-        rl  : B64  = dr.add(r.sub(rh))
-        hu  : U64  = rh.bits()
-        mid : Bool = hu.bitand(0xFFFFFFF).eq(0)
-        up  : Bool = mid.bitand(rl.gt(0.0))
-        dn  : Bool = mid.bitand(rl.lt(0.0))
+        ir2: B64 = B64.div(0.5, r2)
+        dr2: B64 = x2.sub(r2).add(y2)
+        rs: B64 = r.mul(ir2)
+        dz: B64 = dr2.sub(r.mul_add(r, r2.neg()))
+        dr: B64 = rs.mul(dz)
+        rh: B64 = r.add(dr)
+        rl: B64 = dr.add(r.sub(rh))
+        hu: U64 = rh.bits()
+        mid: Bool = hu.bitand(0xFFFFFFF).eq(0)
+        up: Bool = mid.bitand(rl.gt(0.0))
+        dn: Bool = mid.bitand(rl.lt(0.0))
         when
-            up   => return(B64.from_bits(hu.add_wrap(1)).to[Me]())
-            dn   => return(B64.from_bits(hu.sub_wrap(1)).to[Me]())
+            up => return(B64.from_bits(hu.add_wrap(1)).to[Me]())
+            dn => return(B64.from_bits(hu.sub_wrap(1)).to[Me]())
             else => return(rh.to[Me]())
 
 /// x as a quiet NaN if it is a NaN, else y as a quiet NaN, the way the x86 x + y picks between NaN operands.
@@ -106,7 +106,7 @@ routine B32.hypot(me: Me, other: Me) -> Me
 /// :returns: The quiet NaN.
 private routine cm_b32_hypot_quiet_nan(x: B32, y: B32) -> B32
     block entry()
-        pick : B32 = x.is_nan()
+        pick: B32 = x.is_nan()
             ? x
             : y
         return(B32.from_bits(pick.bits().bitor(0x00400000)))

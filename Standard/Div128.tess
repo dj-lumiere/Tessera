@@ -16,8 +16,8 @@
 module Standard/Core
 
 record U128DivRem
-    quotient  : U128
-    remainder : U128
+    quotient: U128
+    remainder: U128
 
 /// u / d and u % d.
 /// :param u: The dividend.
@@ -27,39 +27,39 @@ record U128DivRem
 #[target(size: 64), track_caller]
 routine wide_divrem(u: U128, d: U128) -> U128DivRem
     block entry()
-        by_zero : Bool = d.eq(0)
+        by_zero: Bool = d.eq(0)
         branch by_zero
             ? crash_division_by_zero()
             : continue
-        below : Bool = u.lt(d)
+        below: Bool = u.lt(d)
         branch below
             ? return(U128DivRem(quotient: 0, remainder: u))
             : narrow()
 
     // d <= u, so when u fits in 64 bits, both do.
     block narrow()
-        fits : Bool = u.shr(64).eq(0)
+        fits: Bool = u.shr(64).eq(0)
         branch fits
             ? by_u64()
             : by_limbs()
 
     block by_u64()
-        a : U64 = u.to_wrap[U64]()
-        b : U64 = d.to_wrap[U64]()
+        a: U64 = u.to_wrap[U64]()
+        b: U64 = d.to_wrap[U64]()
         return(U128DivRem(quotient: a.div(b).to[U128](), remainder: a.mod(b).to[U128]()))
 
     block by_limbs()
-        one_limb : Bool = d.shr(64).eq(0)
+        one_limb: Bool = d.shr(64).eq(0)
         branch one_limb
             ? by_one_limb()
             : by_two_limbs()
 
     block by_one_limb()
-        r : U128DivRem = u128_divrem_by_limb(u, d.to_wrap[U64]())
+        r: U128DivRem = u128_divrem_by_limb(u, d.to_wrap[U64]())
         return(r)
 
     block by_two_limbs()
-        r : U128DivRem = u128_divrem_by_two_limbs(u, d)
+        r: U128DivRem = u128_divrem_by_two_limbs(u, d)
         return(r)
 
 /// u / d and u % d.
@@ -70,45 +70,45 @@ routine wide_divrem(u: U128, d: U128) -> U128DivRem
 #[target(size: not 64), track_caller]
 routine wide_divrem(u: U128, d: U128) -> U128DivRem
     block entry()
-        by_zero : Bool = d.eq(0)
+        by_zero: Bool = d.eq(0)
         branch by_zero
             ? crash_division_by_zero()
             : continue
-        below : Bool = u.lt(d)
+        below: Bool = u.lt(d)
         branch below
             ? return(U128DivRem(quotient: 0, remainder: u))
             : narrow()
 
     // d <= u, so when u fits in 64 bits, both do.
     block narrow()
-        fits : Bool = u.shr(64).eq(0)
+        fits: Bool = u.shr(64).eq(0)
         branch fits
             ? by_u64()
             : by_words()
 
     block by_u64()
-        a : U64 = u.to_wrap[U64]()
-        b : U64 = d.to_wrap[U64]()
+        a: U64 = u.to_wrap[U64]()
+        b: U64 = d.to_wrap[U64]()
         return(U128DivRem(quotient: a.div(b).to[U128](), remainder: a.mod(b).to[U128]()))
 
     block by_words()
-        wide     : U256 = u.to[U256]()
-        one_word : Bool = d.shr(32).eq(0)
+        wide: U256 = u.to[U256]()
+        one_word: Bool = d.shr(32).eq(0)
         branch one_word
             ? by_one_word(wide)
             : by_several_words(wide)
 
     block by_one_word(wide: U256)
-        r : U256DivRem = divrem_by_word32(wide, d.to_wrap[U32](), 4)
+        r: U256DivRem = divrem_by_word32(wide, d.to_wrap[U32](), 4)
         jump narrowed(r)
 
     block by_several_words(wide: U256)
-        r : U256DivRem = divrem_knuth32(wide, d.to[U256](), 4)
+        r: U256DivRem = divrem_knuth32(wide, d.to[U256](), 4)
         jump narrowed(r)
 
     block narrowed(r: U256DivRem)
-        q   : U128 = r.quotient.to_wrap[U128]()
-        rem : U128 = r.remainder.to_wrap[U128]()
+        q: U128 = r.quotient.to_wrap[U128]()
+        rem: U128 = r.remainder.to_wrap[U128]()
         return(U128DivRem(quotient: q, remainder: rem))
 
 /// u / d and u % d for a nonzero one-limb d: normalized so d's top bit is set, then two 2-by-1 steps.
@@ -118,17 +118,17 @@ routine wide_divrem(u: U128, d: U128) -> U128DivRem
 #target(size: 64)
 private routine u128_divrem_by_limb(u: U128, d: U64) -> U128DivRem
     block entry()
-        shift  : U64  = d.leading_zeros()
-        d_norm : U64  = d.shl(shift)
-        v      : U64  = div_2by1_prepare(d_norm)
-        u_norm : U128 = u.shl(shift.to[U128]())
+        shift: U64 = d.leading_zeros()
+        d_norm: U64 = d.shl(shift)
+        v: U64 = div_2by1_prepare(d_norm)
+        u_norm: U128 = u.shl(shift.to[U128]())
         // The bits shifted out of the top, below d_norm (a funnel shift by 0 gives 0, where a plain shr by 64 would
         // be poison).
-        u_over : U64     = fshl[U64](0, u.shr(64).to_wrap[U64](), shift)
-        high   : Div2By1 = div_2by1(u_over, u_norm.shr(64).to_wrap[U64](), d_norm, v)
-        low    : Div2By1 = div_2by1(high.remainder, u_norm.to_wrap[U64](), d_norm, v)
-        q_high : U128    = high.quotient.to[U128]().shl(64)
-        q      : U128    = q_high.bitor(low.quotient.to[U128]())
+        u_over: U64 = fshl[U64](0, u.shr(64).to_wrap[U64](), shift)
+        high: Div2By1 = div_2by1(u_over, u_norm.shr(64).to_wrap[U64](), d_norm, v)
+        low: Div2By1 = div_2by1(high.remainder, u_norm.to_wrap[U64](), d_norm, v)
+        q_high: U128 = high.quotient.to[U128]().shl(64)
+        q: U128 = q_high.bitor(low.quotient.to[U128]())
         return(U128DivRem(quotient: q, remainder: low.remainder.shr(shift).to[U128]()))
 
 /// u / d and u % d for a two-limb d <= u: normalized so d's top bit is set, then one 3-by-2 step.
@@ -138,16 +138,16 @@ private routine u128_divrem_by_limb(u: U128, d: U64) -> U128DivRem
 #target(size: 64)
 private routine u128_divrem_by_two_limbs(u: U128, d: U128) -> U128DivRem
     block entry()
-        d_top   : U64         = d.shr(64).to_wrap[U64]()
-        shift   : U64         = d_top.leading_zeros()
-        d_norm  : U128        = d.shl(shift.to[U128]())
-        d1      : U64         = d_norm.shr(64).to_wrap[U64]()
-        d0      : U64         = d_norm.to_wrap[U64]()
-        divisor : Divisor3By2 = div_3by2_prepare(d1, d0)
-        u_norm  : U128        = u.shl(shift.to[U128]())
-        u_over  : U64         = fshl[U64](0, u.shr(64).to_wrap[U64](), shift)
-        step    : Div3By2     = div_3by2(u_over, u_norm.shr(64).to_wrap[U64](),
-            u_norm.to_wrap[U64](), divisor)
+        d_top: U64 = d.shr(64).to_wrap[U64]()
+        shift: U64 = d_top.leading_zeros()
+        d_norm: U128 = d.shl(shift.to[U128]())
+        d1: U64 = d_norm.shr(64).to_wrap[U64]()
+        d0: U64 = d_norm.to_wrap[U64]()
+        divisor: Divisor3By2 = div_3by2_prepare(d1, d0)
+        u_norm: U128 = u.shl(shift.to[U128]())
+        u_over: U64 = fshl[U64](0, u.shr(64).to_wrap[U64](), shift)
+        step: Div3By2 = div_3by2(u_over, u_norm.shr(64).to_wrap[U64](), u_norm.to_wrap[U64](),
+            divisor)
         return(U128DivRem(quotient: step.quotient.to[U128](),
             remainder: step.remainder.shr(shift.to[U128]())))
 
@@ -156,7 +156,7 @@ private routine u128_divrem_by_two_limbs(u: U128, d: U128) -> U128DivRem
 /// :returns: The magnitude, 2^127 for `S128.MIN`.
 private routine s128_magnitude(x: S128) -> U128
     block entry()
-        u : U128 = bitcast[S128, U128](x)
+        u: U128 = bitcast[S128, U128](x)
         branch x.lt(0)
             ? return(0.sub_wrap(u))
             : return(u)
@@ -169,12 +169,12 @@ private routine s128_magnitude(x: S128) -> U128
 #track_caller
 routine wide_div(u: S128, d: S128) -> S128
     block entry()
-        overflow : Bool = u.eq(S128.MIN).bitand(d.eq(-1))
+        overflow: Bool = u.eq(S128.MIN).bitand(d.eq(-1))
         branch overflow
             ? crash_overflow()
             : continue
-        r : U128DivRem = wide_divrem(s128_magnitude(u), s128_magnitude(d))
-        q : S128       = bitcast[U128, S128](r.quotient)
+        r: U128DivRem = wide_divrem(s128_magnitude(u), s128_magnitude(d))
+        q: S128 = bitcast[U128, S128](r.quotient)
         branch u.lt(0).bitxor(d.lt(0))
             ? return(q.neg_wrap())
             : return(q)
@@ -187,8 +187,8 @@ routine wide_div(u: S128, d: S128) -> S128
 #track_caller
 routine wide_rem(u: S128, d: S128) -> S128
     block entry()
-        r   : U128DivRem = wide_divrem(s128_magnitude(u), s128_magnitude(d))
-        rem : S128       = bitcast[U128, S128](r.remainder)
+        r: U128DivRem = wide_divrem(s128_magnitude(u), s128_magnitude(d))
+        rem: S128 = bitcast[U128, S128](r.remainder)
         branch u.lt(0)
             ? return(rem.neg_wrap())
             : return(rem)

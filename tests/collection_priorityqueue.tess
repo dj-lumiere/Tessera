@@ -10,54 +10,54 @@ import Standard/Format
 import Standard/Os
 
 record Rng
-    state : U64
+    state: U64
 
 /// What every phase works with besides the collection.
 record Harness
     /// Where checkpoints are written.
-    out : @BufWriter[Out]
+    out: @BufWriter[Out]
     /// The generator that picks each operation.
-    rng : @Rng
+    rng: @Rng
     /// The next job's sequence number, counting across phases.
-    sequence : @S64
+    sequence: @S64
 
 /// One phase of the run: its number and how many operations of which kinds it makes.
 record Phase
     /// The phase's number, as checkpoints print it.
-    number : USize
+    number: USize
     /// How many operations the phase runs.
-    ops : USize
+    ops: USize
     /// The percentage of operations that push.
-    push : USize
+    push: USize
     /// How many distinct priorities a pushed job draws from.
-    priorities : USize
+    priorities: USize
 
 /// Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
 record Checkpoint
     /// The phase's number.
-    phase : USize
+    phase: USize
     /// The operations run so far in the phase.
-    op : USize
+    op: USize
     /// The checksum of every result so far.
-    results : S64
+    results: S64
 
 record Job
 conform Comparable[Job]
-    priority : S64
-    sequence : S64
+    priority: S64
+    sequence: S64
 
 routine Rng.below(me: @Me, bound: USize) -> USize
     block entry()
-        state : U64 = me.state.load()
-        next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+        state: U64 = me.state.load()
+        next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         me.state.store(next)
-        bucket : U64   = next.shr(33).mod(bound.to[U64]())
-        value  : USize = bucket.to[USize]()
+        bucket: U64 = next.shr(33).mod(bound.to[U64]())
+        value: USize = bucket.to[USize]()
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
     block entry()
-        mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
+        mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
 routine labeled[T](out: @T, label: Bytes, value: S64) -> Void
@@ -69,8 +69,8 @@ require T: typename, Writer[T]
 // Lower priority first, equal priorities in push order.
 routine Job.compare(me: Me, other: Me) -> S32
     block entry()
-        by_priority : S32  = me.priority.compare(other.priority)
-        tied        : Bool = by_priority.eq(0)
+        by_priority: S32 = me.priority.compare(other.priority)
+        tied: Bool = by_priority.eq(0)
         branch tied
             ? return(me.sequence.compare(other.sequence))
             : return(by_priority)
@@ -78,16 +78,16 @@ routine Job.compare(me: Me, other: Me) -> S32
 // One number per job for the checksum. Sequence numbers stay below a million.
 routine Job.key(me: Me) -> S64
     block entry()
-        priority : S64 = me.priority
-        sequence : S64 = me.sequence
-        key      : S64 = priority.mul(1000000).add(sequence)
+        priority: S64 = me.priority
+        sequence: S64 = me.sequence
+        key: S64 = priority.mul(1000000).add(sequence)
         return(key)
 
 routine checkpoint(out: @BufWriter[Out], heap: @PriorityQueue[Job, S64], at: Checkpoint) -> Void
     block entry()
         out.write("phase {at.phase}")
         labeled(out, "op", at.op.to[S64]())
-        size : USize = heap.count()
+        size: USize = heap.count()
         labeled(out, "length", size.to[S64]())
         labeled(out, "results", at.results)
         out.write("\n")
@@ -97,59 +97,59 @@ routine checkpoint(out: @BufWriter[Out], heap: @PriorityQueue[Job, S64], at: Che
 // are below priorities, so small bounds make many ties. sequence counts pushes. Returns the updated results checksum.
 routine run_phase(harness: Harness, heap: @PriorityQueue[Job, S64], phase: Phase,
     results: S64) -> S64
-    local rng        : @Rng  = harness.rng
-    local sequence   : @S64  = harness.sequence
-    local ops        : USize = phase.ops
-    local push       : USize = phase.push
-    local priorities : USize = phase.priorities
+    local rng: @Rng = harness.rng
+    local sequence: @S64 = harness.sequence
+    local ops: USize = phase.ops
+    local push: USize = phase.push
+    local priorities: USize = phase.priorities
 
     block entry()
         jump next(0, results)
 
     block next(op: USize, checksum: S64)
-        done : Bool = op.ge(ops)
+        done: Bool = op.ge(ops)
         branch done
             ? return(checksum)
             : pick(op, checksum)
 
     block pick(op: USize, checksum: S64)
-        kind     : USize = rng.below(1000)
-        is_push  : Bool  = kind.lt(push.mul(10))
-        is_pop   : Bool  = kind.lt(push.add(30).mul(10))
-        is_clear : Bool  = kind.eq(999)
+        kind: USize = rng.below(1000)
+        is_push: Bool = kind.lt(push.mul(10))
+        is_pop: Bool = kind.lt(push.add(30).mul(10))
+        is_clear: Bool = kind.eq(999)
         when
-            is_push  => push(op, checksum)
-            is_pop   => pop(op, checksum)
+            is_push => push(op, checksum)
+            is_pop => pop(op, checksum)
             is_clear => clear(op, checksum)
-            else     => peek(op, checksum)
+            else => peek(op, checksum)
 
     block push(op: USize, checksum: S64)
-        priority     : S64 = rng.below(priorities).to[S64]()
-        sequence_val : S64 = sequence.load()
+        priority: S64 = rng.below(priorities).to[S64]()
+        sequence_val: S64 = sequence.load()
         sequence.store(sequence_val.add(1))
-        job : Job = Job(priority: priority, sequence: sequence_val)
-        key : S64 = job.key()
+        job: Job = Job(priority: priority, sequence: sequence_val)
+        key: S64 = job.key()
         heap.push(job, key)
         jump record(op, checksum, key)
 
     block pop(op: USize, checksum: S64)
-        empty : Bool = heap.is_empty()
+        empty: Bool = heap.is_empty()
         branch empty
             ? record(op, checksum, -1)
             : pop_one(op, checksum)
 
     block pop_one(op: USize, checksum: S64)
-        key : S64 = heap.pop()
+        key: S64 = heap.pop()
         jump record(op, checksum, key)
 
     block peek(op: USize, checksum: S64)
-        empty : Bool = heap.is_empty()
+        empty: Bool = heap.is_empty()
         branch empty
             ? record(op, checksum, -2)
             : peek_one(op, checksum)
 
     block peek_one(op: USize, checksum: S64)
-        key : S64 = heap.peek()
+        key: S64 = heap.peek()
         jump record(op, checksum, key)
 
     block clear(op: USize, checksum: S64)
@@ -157,9 +157,9 @@ routine run_phase(harness: Harness, heap: @PriorityQueue[Job, S64], phase: Phase
         jump record(op, checksum, -3)
 
     block record(op: USize, checksum: S64, result: S64)
-        mixed   : S64   = mix(checksum, result)
-        op_next : USize = op.add(1)
-        report  : Bool  = op_next.mod(500).eq(0)
+        mixed: S64 = mix(checksum, result)
+        op_next: USize = op.add(1)
+        report: Bool = op_next.mod(500).eq(0)
         branch report
             ? report(op_next, mixed)
             : next(op_next, mixed)
@@ -170,27 +170,27 @@ routine run_phase(harness: Harness, heap: @PriorityQueue[Job, S64], phase: Phase
 
 // Pops everything, printing the count, a hash of the pop order, and whether each pop was no smaller than the last.
 routine drain(out: @BufWriter[Out], heap: @PriorityQueue[Job, S64]) -> Void
-    local count  : @S64  <- 0
-    local hash   : @S64  <- 0
-    local last   : @S64  <- -1
-    local sorted : @Bool <- true
+    local count: @S64 <- 0
+    local hash: @S64 <- 0
+    local last: @S64 <- -1
+    local sorted: @Bool <- true
 
     block entry()
         jump next()
 
     block next()
-        empty : Bool = heap.is_empty()
+        empty: Bool = heap.is_empty()
         branch empty
             ? done()
             : pop()
 
     block pop()
-        key         : S64  = heap.pop()
-        in_order    : Bool = key.gt(last.load())
-        next_sorted : Bool = sorted.load().bitand(in_order)
-        next_last   : S64  = key
-        next_hash   : S64  = mix(hash.load(), key)
-        next_count  : S64  = count.load().add(1)
+        key: S64 = heap.pop()
+        in_order: Bool = key.gt(last.load())
+        next_sorted: Bool = sorted.load().bitand(in_order)
+        next_last: S64 = key
+        next_hash: S64 = mix(hash.load(), key)
+        next_count: S64 = count.load().add(1)
         next_count.store_into(count)
         next_hash.store_into(hash)
         next_last.store_into(last)
@@ -206,23 +206,22 @@ routine drain(out: @BufWriter[Out], heap: @PriorityQueue[Job, S64]) -> Void
 
 routine start() -> Void
     block entry()
-        fd : @Out = Out.writer()
-        claim out : @BufWriter[Out] <- .hollow()
+        fd: @Out = Out.writer()
+        claim out: @BufWriter[Out] <- .hollow()
         out.construct(fd)
-        claim alloc    : @Allocator               <- make_heap_allocator()
-        claim rng      : @Rng                     <- Rng(state: 4)
-        claim sequence : @S64                     <- 0
-        claim heap     : @PriorityQueue[Job, S64] <- .construct(alloc)
+        claim alloc: @Allocator <- make_heap_allocator()
+        claim rng: @Rng <- Rng(state: 4)
+        claim sequence: @S64 <- 0
+        claim heap: @PriorityQueue[Job, S64] <- .construct(alloc)
 
-        harness : Harness = Harness(out: out, rng: rng, sequence: sequence)
-        r1      : S64     = run_phase(harness, heap,
+        harness: Harness = Harness(out: out, rng: rng, sequence: sequence)
+        r1: S64 = run_phase(harness, heap,
             Phase(number: 1, ops: 4000, push: 55, priorities: 1000000), 0)
-        r2      : S64     = run_phase(harness, heap,
-            Phase(number: 2, ops: 4000, push: 40, priorities: 20), r1)
-        r3      : S64     = run_phase(harness, heap,
-            Phase(number: 3, ops: 3000, push: 25, priorities: 1000), r2)
-        r4      : S64     = run_phase(harness, heap,
-            Phase(number: 4, ops: 3000, push: 60, priorities: 5), r3)
+        r2: S64 = run_phase(harness, heap, Phase(number: 2, ops: 4000, push: 40, priorities: 20),
+            r1)
+        r3: S64 = run_phase(harness, heap, Phase(number: 3, ops: 3000, push: 25, priorities: 1000),
+            r2)
+        r4: S64 = run_phase(harness, heap, Phase(number: 4, ops: 3000, push: 60, priorities: 5), r3)
         drain(out, heap)
         heap.destruct()
         out.write("freed is empty {heap.is_empty()}\n")

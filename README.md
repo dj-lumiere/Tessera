@@ -38,8 +38,8 @@ routine two_sum(list: @S32, count: USize, target: S32) -> Option[(USize, USize)]
         branch right_idx.ge(count)
             ? search_left(left_idx.add(1))
             : continue
-        left_val  : S32 = list.stride(left_idx).load()
-        right_val : S32 = list.stride(right_idx).load()
+        left_val: S32 = list.stride(left_idx).load()
+        right_val: S32 = list.stride(right_idx).load()
         branch left_val.add(right_val).eq(target)
             ? return(.Present([left_idx, right_idx]))
             : search_right(left_idx, right_idx.add(1))
@@ -75,7 +75,7 @@ way: each level is made of whole pieces of the level below.
 | **operation** | One explicit step: a named method (`a.add(b)`), a load (`p.load()`), a store (`p.store(v)`), a stack slot (`claim`), a call. There are no operators, so every operation says what it does and what it costs. |
 | **block**     | A straight run of operations. Values come in as block parameters (no phi nodes), and the block ends in exactly one terminator: `jump`, `branch`, `when`, or `return`.                      |
 | **routine**   | A set of blocks with one entry. Control moves between its blocks only through terminators, and every value is SSA.                                                                         |
-| **module**    | A namespace for routines, types, and constants (`Standard/Format`). It's declared in the source, not tied to files.                                                                       |
+| **module**    | A namespace for routines, types, and constants (`Standard/Format`). It's declared in the source, not tied to files.                                                                        |
 | **solution**  | The code built together to make one application.                                                                                                                                           |
 
 **No operators.** Every step is a named call, so `add` and `add_wrap`, or `shr` on a signed and an unsigned value,

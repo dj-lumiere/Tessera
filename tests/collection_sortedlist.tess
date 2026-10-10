@@ -10,51 +10,51 @@ import Standard/Format
 import Standard/Os
 
 record Rng
-    state : U64
+    state: U64
 
 /// What every phase works with besides the collection.
 record Harness
     /// Where checkpoints are written.
-    out : @BufWriter[Out]
+    out: @BufWriter[Out]
     /// The generator that picks each operation.
-    rng : @Rng
+    rng: @Rng
 
 /// One phase of the run: its number and how many operations of which kinds it makes.
 record Phase
     /// The phase's number, as checkpoints print it.
-    number : USize
+    number: USize
     /// How many operations the phase runs.
-    ops : USize
+    ops: USize
     /// The weight of push among the operations.
-    pushes : USize
+    pushes: USize
     /// The weight of reading by rank.
-    ranks : USize
+    ranks: USize
     /// The weight of the has check.
-    contains : USize
+    contains: USize
     /// The weight of remove.
-    removes : USize
+    removes: USize
 
 /// Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
 record Checkpoint
     /// The phase's number.
-    phase : USize
+    phase: USize
     /// The operations run so far in the phase.
-    op : USize
+    op: USize
     /// The checksum of every result so far.
-    results : S64
+    results: S64
 
 routine Rng.below(me: @Me, bound: USize) -> USize
     block entry()
-        state : U64 = me.state.load()
-        next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+        state: U64 = me.state.load()
+        next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         me.state.store(next)
-        bucket : U64   = next.shr(33).mod(bound.to[U64]())
-        value  : USize = bucket.to[USize]()
+        bucket: U64 = next.shr(33).mod(bound.to[U64]())
+        value: USize = bucket.to[USize]()
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
     block entry()
-        mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
+        mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
 routine labeled[T](out: @T, label: Bytes, value: S64) -> Void
@@ -65,23 +65,23 @@ require T: typename, Writer[T]
 
 // Folds every element in iteration order.
 routine iteration_hash(list: @SortedList[S64]) -> S64
-    local iter_val : SortedListIter[S64]  = .construct(list)
-    local iter     : @SortedListIter[S64] <- iter_val
+    local iter_val: SortedListIter[S64] = .construct(list)
+    local iter: @SortedListIter[S64] <- iter_val
 
     block entry()
         jump next(0)
 
     block next(hash: S64)
-        item : Option[S64] = iter.next()
+        item: Option[S64] = iter.next()
         when item
             .Present(value) => next(mix(hash, value))
-            .Absent         => return(hash)
+            .Absent => return(hash)
 
 routine checkpoint(out: @BufWriter[Out], list: @SortedList[S64], at: Checkpoint) -> Void
     block entry()
         out.write("phase {at.phase}")
         labeled(out, "op", at.op.to[S64]())
-        size : USize = list.count()
+        size: USize = list.count()
         labeled(out, "length", size.to[S64]())
         labeled(out, "results", at.results)
         labeled(out, "iteration", iteration_hash(list))
@@ -93,69 +93,69 @@ routine checkpoint(out: @BufWriter[Out], list: @SortedList[S64], at: Checkpoint)
 // Values are below 1000, so duplicates are common. Remove and get on an empty list record -1. Returns the updated
 // results checksum.
 routine run_phase(harness: Harness, list: @SortedList[S64], phase: Phase, results: S64) -> S64
-    local rng      : @Rng  = harness.rng
-    local ops      : USize = phase.ops
-    local pushes   : USize = phase.pushes
-    local ranks    : USize = phase.ranks
-    local contains : USize = phase.contains
-    local removes  : USize = phase.removes
+    local rng: @Rng = harness.rng
+    local ops: USize = phase.ops
+    local pushes: USize = phase.pushes
+    local ranks: USize = phase.ranks
+    local contains: USize = phase.contains
+    local removes: USize = phase.removes
 
     block entry()
         jump next(0, results)
 
     block next(op: USize, checksum: S64)
-        done : Bool = op.ge(ops)
+        done: Bool = op.ge(ops)
         branch done
             ? return(checksum)
             : pick(op, checksum)
 
     block pick(op: USize, checksum: S64)
-        kind        : USize = rng.below(10)
-        is_push     : Bool  = kind.lt(pushes)
-        is_rank     : Bool  = kind.lt(ranks)
-        is_contains : Bool  = kind.lt(contains)
-        empty       : Bool  = list.is_empty()
+        kind: USize = rng.below(10)
+        is_push: Bool = kind.lt(pushes)
+        is_rank: Bool = kind.lt(ranks)
+        is_contains: Bool = kind.lt(contains)
+        empty: Bool = list.is_empty()
         when
-            is_push     => push(op, checksum)
-            is_rank     => rank(op, checksum)
+            is_push => push(op, checksum)
+            is_rank => rank(op, checksum)
             is_contains => contains(op, checksum)
-            empty       => record(op, checksum, -1)
-            else        => pick_indexed(op, checksum, kind)
+            empty => record(op, checksum, -1)
+            else => pick_indexed(op, checksum, kind)
 
     block pick_indexed(op: USize, checksum: S64, kind: USize)
-        index     : USize = rng.below(list.count())
-        is_remove : Bool  = kind.lt(removes)
+        index: USize = rng.below(list.count())
+        is_remove: Bool = kind.lt(removes)
         branch is_remove
             ? remove(op, checksum, index)
             : get(op, checksum, index)
 
     block push(op: USize, checksum: S64)
-        value : S64 = rng.below(1000).to[S64]()
+        value: S64 = rng.below(1000).to[S64]()
         list.push(value)
         jump record(op, checksum, value)
 
     block rank(op: USize, checksum: S64)
-        value : S64   = rng.below(1000).to[S64]()
-        rank  : USize = list.rank(value)
+        value: S64 = rng.below(1000).to[S64]()
+        rank: USize = list.rank(value)
         jump record(op, checksum, rank.to[S64]())
 
     block contains(op: USize, checksum: S64)
-        value : S64  = rng.below(1000).to[S64]()
-        found : Bool = list.has(value)
+        value: S64 = rng.below(1000).to[S64]()
+        found: Bool = list.has(value)
         jump record(op, checksum, found.to[S64]())
 
     block remove(op: USize, checksum: S64, index: USize)
-        value : S64 = list.remove(index)
+        value: S64 = list.remove(index)
         jump record(op, checksum, value)
 
     block get(op: USize, checksum: S64, index: USize)
-        value : S64 = list.getitem(index)
+        value: S64 = list.getitem(index)
         jump record(op, checksum, value)
 
     block record(op: USize, checksum: S64, result: S64)
-        mixed   : S64   = mix(checksum, result)
-        op_next : USize = op.add(1)
-        report  : Bool  = op_next.mod(500).eq(0)
+        mixed: S64 = mix(checksum, result)
+        op_next: USize = op.add(1)
+        report: Bool = op_next.mod(500).eq(0)
         branch report
             ? report(op_next, mixed)
             : next(op_next, mixed)
@@ -166,17 +166,17 @@ routine run_phase(harness: Harness, list: @SortedList[S64], phase: Phase, result
 
 // Pushes every element of from onto to, in iteration order.
 routine copy_all(from: @SortedList[S64], to: @SortedList[S64]) -> Void
-    local iter_val : SortedListIter[S64]  = .construct(from)
-    local iter     : @SortedListIter[S64] <- iter_val
+    local iter_val: SortedListIter[S64] = .construct(from)
+    local iter: @SortedListIter[S64] <- iter_val
 
     block entry()
         jump next()
 
     block next()
-        item : Option[S64] = iter.next()
+        item: Option[S64] = iter.next()
         when item
             .Present(value) => continue
-            .Absent         => return()
+            .Absent => return()
         to.push(value)
         jump next()
 
@@ -187,26 +187,26 @@ routine report_eq(out: @BufWriter[Out], label: Bytes, equal: Bool) -> Void
 
 routine start() -> Void
     block entry()
-        fd : @Out = Out.writer()
-        claim out : @BufWriter[Out] <- .hollow()
+        fd: @Out = Out.writer()
+        claim out: @BufWriter[Out] <- .hollow()
         out.construct(fd)
-        claim alloc : @Allocator       <- make_heap_allocator()
-        claim rng   : @Rng             <- Rng(state: 1)
-        claim list  : @SortedList[S64] <- .construct(alloc)
+        claim alloc: @Allocator <- make_heap_allocator()
+        claim rng: @Rng <- Rng(state: 1)
+        claim list: @SortedList[S64] <- .construct(alloc)
 
-        harness : Harness = Harness(out: out, rng: rng)
-        r1      : S64     = run_phase(harness, list,
+        harness: Harness = Harness(out: out, rng: rng)
+        r1: S64 = run_phase(harness, list,
             Phase(number: 1, ops: 3000, pushes: 4, ranks: 5, contains: 6, removes: 8), 0)
-        r2      : S64     = run_phase(harness, list,
+        r2: S64 = run_phase(harness, list,
             Phase(number: 2, ops: 10000, pushes: 5, ranks: 6, contains: 7, removes: 8), r1)
 
-        claim copied : @SortedList[S64] <- .construct(alloc)
+        claim copied: @SortedList[S64] <- .construct(alloc)
         report_eq(out, "empty copy equal", list.load().eq(copied.load()))
         copy_all(list, copied)
         report_eq(out, "copy equal", list.load().eq(copied.load()))
-        size   : USize = list.count()
-        middle : USize = size.div(2)
-        old    : S64   = copied.remove(middle)
+        size: USize = list.count()
+        middle: USize = size.div(2)
+        old: S64 = copied.remove(middle)
         report_eq(out, "removed element equal", list.load().eq(copied.load()))
         copied.push(old)
         report_eq(out, "restored element equal", list.load().eq(copied.load()))
@@ -214,7 +214,7 @@ routine start() -> Void
         report_eq(out, "extra element equal", list.load().eq(copied.load()))
         copied.destruct()
 
-        r3 : S64 = run_phase(harness, list,
+        r3: S64 = run_phase(harness, list,
             Phase(number: 3, ops: 19000, pushes: 1, ranks: 2, contains: 3, removes: 9), r2)
         list.destruct()
         report_eq(out, "freed is empty", list.is_empty())

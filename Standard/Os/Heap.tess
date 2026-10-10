@@ -47,7 +47,7 @@ private routine c_free(ptr: Addr) -> Void
 /// :returns: The allocator, which holds no state and needs nothing to free.
 routine make_heap_allocator() -> Allocator
     block entry()
-        alloc : Allocator = DEFAULT_HEAP.load()
+        alloc: Allocator = DEFAULT_HEAP.load()
         return(alloc)
 
 /// An {Allocator} that is the C library's malloc, realloc, and free in every build, with nothing in front of the
@@ -55,7 +55,7 @@ routine make_heap_allocator() -> Allocator
 /// :returns: The allocator, which holds no state and needs nothing to free.
 routine make_c_heap_allocator() -> Allocator
     block entry()
-        alloc : Allocator = Allocator(alloc_fn: c_heap_alloc_fn.to[Callable](),
+        alloc: Allocator = Allocator(alloc_fn: c_heap_alloc_fn.to[Callable](),
             realloc_fn: c_heap_realloc_fn.to[Callable](), free_fn: c_heap_free_fn.to[Callable](),
             state: null)
         return(alloc)
@@ -66,7 +66,7 @@ routine make_c_heap_allocator() -> Allocator
 /// :returns: The new block, null when malloc fails.
 private routine c_heap_alloc_fn(state: Addr, size: USize) -> Addr
     block entry()
-        result : Addr = c_malloc(size)
+        result: Addr = c_malloc(size)
         return(result)
 
 /// The C heap's realloc function: resizes a block with realloc, keeping its contents.
@@ -76,7 +76,7 @@ private routine c_heap_alloc_fn(state: Addr, size: USize) -> Addr
 /// :returns: The resized block (possibly moved), null when realloc fails and the old block is untouched.
 private routine c_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize) -> Addr
     block entry()
-        result : Addr = c_realloc(old_ptr, size)
+        result: Addr = c_realloc(old_ptr, size)
         return(result)
 
 /// The C heap's free function: free of a block from this allocator.
@@ -133,8 +133,8 @@ private preset QUARANTINE_MASK: USize = QUARANTINE_SIZE.sub(1)
 
 /// What the checked heap keeps in front of each block.
 private record BlockHeader
-    tag  : USize
-    size : USize
+    tag: USize
+    size: USize
 
 /// The checked heap's alloc function: malloc of the header and `size` bytes, the header tagged LIVE.
 /// :param state: Unused, the heap allocator has no state.
@@ -143,21 +143,21 @@ private record BlockHeader
 #heap_check("on")
 private routine checked_heap_alloc_fn(state: Addr, size: USize) -> Addr
     block entry()
-        total : Option[USize] = size.add_checked(HEADER_SIZE)
+        total: Option[USize] = size.add_checked(HEADER_SIZE)
         when total
             .Present(bytes) => allocate(bytes)
-            .Absent         => return(null)
+            .Absent => return(null)
 
     block allocate(bytes: USize)
-        raw  : Addr = c_malloc(bytes)
-        none : Bool = raw.is_null()
+        raw: Addr = c_malloc(bytes)
+        none: Bool = raw.is_null()
         branch none
             ? return(null)
             : continue
-        header : @BlockHeader = raw.to[@BlockHeader]()
+        header: @BlockHeader = raw.to[@BlockHeader]()
         header.tag.store(LIVE)
         header.size.store(size)
-        block_start : Addr = raw.offset(HEADER_FORWARD)
+        block_start: Addr = raw.offset(HEADER_FORWARD)
         return(block_start)
 
 /// The checked heap's realloc function: a new block, the contents copied over (as many bytes as both sizes allow),
@@ -170,26 +170,26 @@ private routine checked_heap_alloc_fn(state: Addr, size: USize) -> Addr
 #heap_check("on")
 private routine checked_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize) -> Addr
     block entry()
-        fresh : Bool = old_ptr.is_null()
+        fresh: Bool = old_ptr.is_null()
         branch fresh
             ? return(checked_heap_alloc_fn(state, size))
             : continue
-        header : @BlockHeader = header_of(old_ptr)
-        tag    : USize        = header.tag.atomic_load()
+        header: @BlockHeader = header_of(old_ptr)
+        tag: USize = header.tag.atomic_load()
         when
-            tag.eq(LIVE)  => resize(header)
+            tag.eq(LIVE) => resize(header)
             tag.eq(FREED) => heap_crash("InvalidValueError",
                 "The default heap was asked to resize a block that was already freed.")
-            else          => heap_crash("InvalidValueError",
+            else => heap_crash("InvalidValueError",
                 "The default heap was asked to resize memory that isn't a block it gave out.")
 
     block resize(header: @BlockHeader)
-        new_ptr : Addr = checked_heap_alloc_fn(state, size)
-        failed  : Bool = new_ptr.is_null()
+        new_ptr: Addr = checked_heap_alloc_fn(state, size)
+        failed: Bool = new_ptr.is_null()
         branch failed
             ? return(null)
             : continue
-        kept : USize = header.size.load().min(size)
+        kept: USize = header.size.load().min(size)
         new_ptr.to[@Byte]().copy(old_ptr.to[@Byte](), kept)
         release_block(old_ptr)
         return(new_ptr)
@@ -202,7 +202,7 @@ private routine checked_heap_realloc_fn(state: Addr, old_ptr: Addr, size: USize)
 #heap_check("on")
 private routine checked_heap_free_fn(state: Addr, ptr: Addr) -> Void
     block entry()
-        none : Bool = ptr.is_null()
+        none: Bool = ptr.is_null()
         branch none
             ? return()
             : continue
@@ -215,8 +215,8 @@ private routine checked_heap_free_fn(state: Addr, ptr: Addr) -> Void
 #heap_check("on")
 private routine header_of(block_start: Addr) -> @BlockHeader
     block entry()
-        raw    : Addr         = block_start.offset(HEADER_BACK)
-        header : @BlockHeader = raw.to[@BlockHeader]()
+        raw: Addr = block_start.offset(HEADER_BACK)
+        header: @BlockHeader = raw.to[@BlockHeader]()
         return(header)
 
 /// Tags the block FREED and puts it in the quarantine, crashing when it was freed already or isn't a block of this
@@ -226,22 +226,22 @@ private routine header_of(block_start: Addr) -> @BlockHeader
 ///     isn't a block of this heap.
 #heap_check("on")
 private routine release_block(block_start: Addr) -> Void
-    local header : @BlockHeader = header_of(block_start)
+    local header: @BlockHeader = header_of(block_start)
 
     block entry()
-        was : USize = header.tag.atomic_swap(FREED)
+        was: USize = header.tag.atomic_swap(FREED)
         when
-            was.eq(LIVE)  => quarantine()
+            was.eq(LIVE) => quarantine()
             was.eq(FREED) => heap_crash("DoubleFreeError",
                 "This block was already freed: it was freed twice.")
-            else          => heap_crash("InvalidValueError",
+            else => heap_crash("InvalidValueError",
                 "The default heap was asked to free memory that isn't a block it gave out.")
 
     block quarantine()
-        turn    : USize = QUARANTINE_NEXT.atomic_fetch_add(1)
-        slot    : @Addr = QUARANTINE.at(turn.bitand(QUARANTINE_MASK))
-        evicted : Addr  = slot.atomic_swap(header)
-        empty   : Bool  = evicted.is_null()
+        turn: USize = QUARANTINE_NEXT.atomic_fetch_add(1)
+        slot: @Addr = QUARANTINE.at(turn.bitand(QUARANTINE_MASK))
+        evicted: Addr = slot.atomic_swap(header)
+        empty: Bool = evicted.is_null()
         branch empty
             ? return()
             : continue
@@ -256,8 +256,8 @@ private routine release_block(block_start: Addr) -> Void
 #[heap_check("on"), noreturn]
 private routine heap_crash(name: Bytes, message: Bytes) -> Void
     block entry()
-        place : @SourceLocation = allocator_call_place()
-        known : Bool            = place.is_not_null()
+        place: @SourceLocation = allocator_call_place()
+        known: Bool = place.is_not_null()
         branch known
             ? crash_at(name, message, place)
             : crash(name, message)

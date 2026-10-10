@@ -233,7 +233,7 @@ public static class Derive
             sb.Append($"        Standard/Format/write_str(out, \"{before}{f.Name}: \")\n");
             sb.Append(f.Type.Name == "Ptr"
                 ? $"        {value} : Addr = me.{f.Name}.to[Addr]()\n"
-                : $"        {value} : {f.Type} = me.{f.Name}\n");
+                : $"        {value}: {f.Type} = me.{f.Name}\n");
             sb.Append($"        {value}.diagnose_into(out)\n");
         }
         if (r.Fields.Count > 0) sb.Append("        Standard/Format/write_str(out, \")\")\n");
@@ -252,11 +252,11 @@ public static class Derive
         for (int i = 0; i < r.Fields.Count; i++)
         {
             var f = r.Fields[i];
-            sb.Append($"        a{i} : {f.Type} = me.{f.Name}\n");
-            sb.Append($"        b{i} : {f.Type} = other.{f.Name}\n");
-            sb.Append($"        e{i} : Bool = a{i}.eq(b{i})\n");
-            if (i > 0) sb.Append($"        all{i} : Bool = all{i - 1}.bitand(e{i})\n");
-            else sb.Append("        all0 : Bool = e0\n");
+            sb.Append($"        a{i}: {f.Type} = me.{f.Name}\n");
+            sb.Append($"        b{i}: {f.Type} = other.{f.Name}\n");
+            sb.Append($"        e{i}: Bool = a{i}.eq(b{i})\n");
+            if (i > 0) sb.Append($"        all{i}: Bool = all{i - 1}.bitand(e{i})\n");
+            else sb.Append("        all0: Bool = e0\n");
         }
         sb.Append($"        return(all{r.Fields.Count - 1})\n");
     }
@@ -273,10 +273,10 @@ public static class Derive
         for (int i = 0; i < r.Fields.Count; i++)
         {
             var f = r.Fields[i];
-            sb.Append($"        a{i} : {f.Type} = me.{f.Name}\n");
-            sb.Append($"        g{i} : U64 = a{i}.hash()\n");
-            if (i > 0) sb.Append($"        h{i} : U64 = hash_combine(h{i - 1}, g{i})\n");
-            else sb.Append("        h0 : U64 = g0\n");
+            sb.Append($"        a{i}: {f.Type} = me.{f.Name}\n");
+            sb.Append($"        g{i}: U64 = a{i}.hash()\n");
+            if (i > 0) sb.Append($"        h{i}: U64 = hash_combine(h{i - 1}, g{i})\n");
+            else sb.Append("        h0: U64 = g0\n");
         }
         sb.Append($"        return(h{r.Fields.Count - 1})\n");
     }
@@ -294,16 +294,16 @@ public static class Derive
         {
             var f = r.Fields[i];
             if (i > 0) sb.Append($"\n    block field{i}()\n");
-            sb.Append($"        a{i} : {f.Type} = me.{f.Name}\n");
-            sb.Append($"        b{i} : {f.Type} = other.{f.Name}\n");
-            sb.Append($"        c{i} : S32 = a{i}.compare(b{i})\n");
+            sb.Append($"        a{i}: {f.Type} = me.{f.Name}\n");
+            sb.Append($"        b{i}: {f.Type} = other.{f.Name}\n");
+            sb.Append($"        c{i}: S32 = a{i}.compare(b{i})\n");
             if (i == r.Fields.Count - 1)
             {
                 sb.Append($"        return(c{i})\n");
             }
             else
             {
-                sb.Append($"        differs{i} : Bool = c{i}.ne(0)\n");
+                sb.Append($"        differs{i}: Bool = c{i}.ne(0)\n");
                 sb.Append($"        branch differs{i} ? decided(c{i}) : field{i + 1}()\n");
             }
         }
@@ -361,7 +361,7 @@ public static class Derive
                     // A pointer payload writes its address, as a record's pointer field does.
                     if (cases[i].Payload!.Name == "Ptr")
                     {
-                        sb.Append($"        address : Addr = {p}.to[Addr]()\n");
+                        sb.Append($"        address: Addr = {p}.to[Addr]()\n");
                         sb.Append("        address.diagnose_into(out)\n");
                     }
                     else sb.Append($"        {p}.diagnose_into(out)\n");
@@ -405,7 +405,7 @@ public static class Derive
                     }
                     if (c.Payload is null) continue;
                     sb.Append($"\n    block same{i}({a}: {c.Payload}, {b}: {c.Payload})\n");
-                    sb.Append($"        r : {ret} = {a}.{method}({b})\n        return(r)\n");
+                    sb.Append($"        r: {ret} = {a}.{method}({b})\n        return(r)\n");
                 }
                 break;
             }
@@ -422,10 +422,10 @@ public static class Derive
                     if (cases[i].Payload is null) continue;
                     string a = Payload(cases[i], "a");
                     sb.Append($"\n    block case{i}({a}: {cases[i].Payload})\n");
-                    sb.Append($"        g : U64 = {a}.hash()\n");
-                    sb.Append($"        h : U64 = hash_combine({i}, g)\n        return(h)\n");
+                    sb.Append($"        g: U64 = {a}.hash()\n");
+                    sb.Append($"        h: U64 = hash_combine({i}, g)\n        return(h)\n");
                 }
-                sb.Append("\n    block bare(index: U64)\n        h : U64 = siphash24(index, hash_key())\n        return(h)\n");
+                sb.Append("\n    block bare(index: U64)\n        h: U64 = siphash24(index, hash_key())\n        return(h)\n");
                 break;
             }
         }
@@ -459,22 +459,22 @@ public static class Derive
             case "eq":
                 sb.Append($"routine {c.Name}.eq(me: Me, other: Me) -> Bool\n");
                 sb.Append("    block entry()\n");
-                sb.Append("        r : Bool = ieq[Me](me, other)\n");
+                sb.Append("        r: Bool = ieq[Me](me, other)\n");
                 sb.Append("        return(r)\n");
                 break;
             case "hash":
                 sb.Append($"routine {c.Name}.hash(me: Me) -> U64\n");
                 sb.Append("    block entry()\n");
-                sb.Append($"        v : {u} = bitcast[Me, {u}](me)\n");
-                sb.Append("        r : U64 = v.hash()\n");
+                sb.Append($"        v: {u} = bitcast[Me, {u}](me)\n");
+                sb.Append("        r: U64 = v.hash()\n");
                 sb.Append("        return(r)\n");
                 break;
             case "compare":
                 sb.Append($"routine {c.Name}.compare(me: Me, other: Me) -> S32\n");
                 sb.Append("    block entry()\n");
-                sb.Append($"        a : {u} = bitcast[Me, {u}](me)\n");
-                sb.Append($"        b : {u} = bitcast[Me, {u}](other)\n");
-                sb.Append("        r : S32 = a.compare(b)\n");
+                sb.Append($"        a: {u} = bitcast[Me, {u}](me)\n");
+                sb.Append($"        b: {u} = bitcast[Me, {u}](other)\n");
+                sb.Append("        r: S32 = a.compare(b)\n");
                 sb.Append("        return(r)\n");
                 break;
         }

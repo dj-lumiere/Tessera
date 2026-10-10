@@ -9,8 +9,9 @@ namespace Tessera;
 /// - a doc comment sits directly on its declaration, above any attribute lines;
 /// - a top-level section comment (a group of `//` lines with a `// --`, `// ==`, or `// ──` divider) has a blank line
 ///   before and after it;
-/// - `:`, `=`, `->`, and `<-` have one space on each side, and consecutive lines of one kind (bindings, claims, local
-///   lines, record fields, choice members, variant cases, `when` arms) align them.
+/// - a binding, a claim, a local line, a record field, a choice member and a variant case write their `:` right after
+///   the name with one space after it (`count: USize = 0`), `=`, `->`, `=>` and `<-` have one space on each side, and
+///   nothing is aligned with the line above.
 /// - a routine's head, its `local` lines, sits 4 spaces in right under the header (and its `require` lines), with no
 ///   blank line inside it, and exactly one blank line between it and the first block.
 /// - an inline comment sits exactly two spaces after its code; comments are never aligned with each other.
@@ -53,11 +54,16 @@ public static class Formatter
         return result.Length == 0 ? "" : result + "\n";
     }
 
+    private static readonly System.Text.RegularExpressions.Regex TopLevelSlot =
+        new(@"^((?:private |internal )?(?:preset|global) [A-Za-z_`][\w.`]*) +:", System.Text.RegularExpressions.RegexOptions.Compiled);
+
     private static string Clean(string line)
     {
         int tabs = 0;
         while (tabs < line.Length && line[tabs] == '\t') tabs++;
         line = (new string(' ', tabs * 4) + line[tabs..]).TrimEnd();
+        // a preset's or a global's `:` sits right after its name: `preset COUNT: USize = 100`
+        line = TopLevelSlot.Replace(line, "$1:");
         // an inline comment sits two spaces after its code
         int comment = TopLevelComment(line);
         if (comment > 0 && line[..comment].Trim().Length > 0)
@@ -90,7 +96,9 @@ public static class Formatter
 
             if (indent == 0 && trimmed.Length > 0)
             {
-                string decl = trimmed.StartsWith("private ") ? trimmed[8..] : trimmed;
+                string decl = trimmed.StartsWith("private ") ? trimmed[8..]
+                    : trimmed.StartsWith("internal ") ? trimmed[9..]
+                    : trimmed;
                 if (decl.StartsWith("record ")) context = "record";
                 else if (decl.StartsWith("choice ")) context = "choice";
                 else if (decl.StartsWith("variant ")) context = "variant";
@@ -140,21 +148,19 @@ public static class Formatter
                 group.Add(next);
                 end = j;
             }
-            int nameWidth = group.Max(r => r.Name.Length);
-            int typeWidth = group.Max(r => r.Type?.Length ?? 0);
             foreach (var r in group)
             {
                 string pad = new(' ', r.Indent);
                 result[r.Index] = r.Kind switch
                 {
-                    Kind.Binding => $"{pad}{r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} = {r.Rest}",
+                    Kind.Binding => $"{pad}{r.Name}: {r.Type} = {r.Rest}",
                     Kind.Claim => r.Rest.Length == 0
-                        ? $"{pad}claim {r.Name.PadRight(nameWidth)} : {r.Type}"
-                        : $"{pad}claim {r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} <- {r.Rest}",
-                    Kind.Shared => $"{pad}local {r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} {r.Rest}",
-                    Kind.Field => $"{pad}{r.Name.PadRight(nameWidth)} : {r.Rest}",
-                    Kind.Conform => $"{pad}{r.Name.PadRight(nameWidth)} when {r.Rest}",
-                    _ => $"{pad}{r.Name.PadRight(nameWidth)} => {r.Rest}",
+                        ? $"{pad}claim {r.Name}: {r.Type}"
+                        : $"{pad}claim {r.Name}: {r.Type} <- {r.Rest}",
+                    Kind.Shared => $"{pad}local {r.Name}: {r.Type} {r.Rest}",
+                    Kind.Field => $"{pad}{r.Name}: {r.Rest}",
+                    Kind.Conform => $"{pad}{r.Name} when {r.Rest}",
+                    _ => $"{pad}{r.Name} => {r.Rest}",
                 };
                 result[r.Index] = result[r.Index].TrimEnd();
             }
@@ -245,9 +251,11 @@ public static class Formatter
     /// payload).
     private static (string Name, string Tail)? SplitField(string s)
     {
-        int i = 0;
+        // A private field keeps its keyword in front: `private count: USize`.
+        int i = s.StartsWith("private ", StringComparison.Ordinal) ? "private ".Length : 0;
+        int nameStart = i;
         while (i < s.Length && (char.IsLetterOrDigit(s[i]) || s[i] == '_')) i++;
-        if (i == 0) return null;
+        if (i == nameStart) return null;
         int colon = SkipSpaces(s, i);
         if (colon >= s.Length || s[colon] != ':' || (colon + 1 < s.Length && s[colon + 1] == ':')) return null;
         string rest = s[(colon + 1)..].Trim();

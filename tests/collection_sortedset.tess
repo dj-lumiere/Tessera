@@ -10,49 +10,49 @@ import Standard/Format
 import Standard/Os
 
 record Rng
-    state : U64
+    state: U64
 
 /// What every phase works with besides the collection.
 record Harness
     /// Where checkpoints are written.
-    out : @BufWriter[Out]
+    out: @BufWriter[Out]
     /// The generator that picks each operation.
-    rng : @Rng
+    rng: @Rng
 
 /// One phase of the run: its number and how many operations of which kinds it makes.
 record Phase
     /// The phase's number, as checkpoints print it.
-    number : USize
+    number: USize
     /// How many operations the phase runs.
-    ops : USize
+    ops: USize
     /// How many distinct keys the operations draw from.
-    keys : USize
+    keys: USize
     /// The weight of add among the operations.
-    adds : USize
+    adds: USize
     /// Whether removes go by rank instead of by key.
-    by_rank : Bool
+    by_rank: Bool
 
 /// Where a checkpoint is taken: the phase, the operations so far, and the running results checksum.
 record Checkpoint
     /// The phase's number.
-    phase : USize
+    phase: USize
     /// The operations run so far in the phase.
-    op : USize
+    op: USize
     /// The checksum of every result so far.
-    results : S64
+    results: S64
 
 routine Rng.below(me: @Me, bound: USize) -> USize
     block entry()
-        state : U64 = me.state.load()
-        next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
+        state: U64 = me.state.load()
+        next: U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         me.state.store(next)
-        bucket : U64   = next.shr(33).mod(bound.to[U64]())
-        value  : USize = bucket.to[USize]()
+        bucket: U64 = next.shr(33).mod(bound.to[U64]())
+        value: USize = bucket.to[USize]()
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
     block entry()
-        mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
+        mixed: S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
 routine labeled[T](out: @T, label: Bytes, value: S64) -> Void
@@ -63,40 +63,40 @@ require T: typename, Writer[T]
 
 // Folds every element in iteration order.
 routine iteration_hash(set: @SortedSet[S64]) -> S64
-    local iter : @SortedSetIter[S64] <- .construct(set)
+    local iter: @SortedSetIter[S64] <- .construct(set)
 
     block entry()
         jump next(0)
 
     block next(hash: S64)
-        item : Option[S64] = iter.next()
+        item: Option[S64] = iter.next()
         when item
             .Present(key) => next(mix(hash, key))
-            .Absent       => return(hash)
+            .Absent => return(hash)
 
 // Folds the elements at ranks 0, count / 3, count / 2, and count - 1 (0 for an empty set).
 routine rank_hash(set: @SortedSet[S64]) -> S64
-    local count : USize = set.count()
+    local count: USize = set.count()
 
     block entry()
-        empty : Bool = count.eq(0)
+        empty: Bool = count.eq(0)
         branch empty
             ? return(0)
             : fold()
 
     block fold()
-        first : S64 = set.get_by_rank(0)
-        third : S64 = set.get_by_rank(count.div(3))
-        half  : S64 = set.get_by_rank(count.div(2))
-        last  : S64 = set.get_by_rank(count.sub(1))
-        hash  : S64 = mix(mix(mix(mix(0, first), third), half), last)
+        first: S64 = set.get_by_rank(0)
+        third: S64 = set.get_by_rank(count.div(3))
+        half: S64 = set.get_by_rank(count.div(2))
+        last: S64 = set.get_by_rank(count.sub(1))
+        hash: S64 = mix(mix(mix(mix(0, first), third), half), last)
         return(hash)
 
 routine checkpoint(out: @BufWriter[Out], set: @SortedSet[S64], at: Checkpoint) -> Void
     block entry()
         out.write("phase {at.phase}")
         labeled(out, "op", at.op.to[S64]())
-        size : USize = set.count()
+        size: USize = set.count()
         labeled(out, "length", size.to[S64]())
         labeled(out, "results", at.results)
         labeled(out, "ranks", rank_hash(set))
@@ -108,60 +108,60 @@ routine checkpoint(out: @BufWriter[Out], set: @SortedSet[S64], at: Checkpoint) -
 // a has otherwise. With by_rank, a remove takes the element at a random rank instead of a random key.
 // Returns the updated results checksum.
 routine run_phase(harness: Harness, set: @SortedSet[S64], phase: Phase, results: S64) -> S64
-    local rng     : @Rng  = harness.rng
-    local ops     : USize = phase.ops
-    local keys    : USize = phase.keys
-    local adds    : USize = phase.adds
-    local by_rank : Bool  = phase.by_rank
+    local rng: @Rng = harness.rng
+    local ops: USize = phase.ops
+    local keys: USize = phase.keys
+    local adds: USize = phase.adds
+    local by_rank: Bool = phase.by_rank
 
     block entry()
         jump next(0, results)
 
     block next(op: USize, checksum: S64)
-        done : Bool = op.ge(ops)
+        done: Bool = op.ge(ops)
         branch done
             ? return(checksum)
             : pick(op, checksum)
 
     block pick(op: USize, checksum: S64)
-        key       : S64   = rng.below(keys).to[S64]()
-        kind      : USize = rng.below(10)
-        is_add    : Bool  = kind.lt(adds)
-        is_remove : Bool  = kind.lt(7)
+        key: S64 = rng.below(keys).to[S64]()
+        kind: USize = rng.below(10)
+        is_add: Bool = kind.lt(adds)
+        is_remove: Bool = kind.lt(7)
         when
-            is_add    => add(op, checksum, key)
+            is_add => add(op, checksum, key)
             is_remove => remove(op, checksum, key)
-            else      => lookup(op, checksum, key)
+            else => lookup(op, checksum, key)
 
     block add(op: USize, checksum: S64, key: S64)
-        added : Bool = set.add(key)
+        added: Bool = set.add(key)
         jump record(op, checksum, added.to[S64]())
 
     block remove(op: USize, checksum: S64, key: S64)
-        empty       : Bool = set.is_empty()
-        nonempty    : Bool = empty.bitnot()
-        rank_remove : Bool = by_rank.bitand(nonempty)
+        empty: Bool = set.is_empty()
+        nonempty: Bool = empty.bitnot()
+        rank_remove: Bool = by_rank.bitand(nonempty)
         branch rank_remove
             ? remove_rank(op, checksum)
             : remove_key(op, checksum, key)
 
     block remove_rank(op: USize, checksum: S64)
-        rank : USize = rng.below(set.count())
-        key  : S64   = set.get_by_rank(rank)
+        rank: USize = rng.below(set.count())
+        key: S64 = set.get_by_rank(rank)
         jump remove_key(op, checksum, key)
 
     block remove_key(op: USize, checksum: S64, key: S64)
-        removed : Bool = set.remove(key)
+        removed: Bool = set.remove(key)
         jump record(op, checksum, mix(key, removed.to[S64]()))
 
     block lookup(op: USize, checksum: S64, key: S64)
-        found : Bool = set.has(key)
+        found: Bool = set.has(key)
         jump record(op, checksum, found.to[S64]())
 
     block record(op: USize, checksum: S64, result: S64)
-        mixed   : S64   = mix(checksum, result)
-        op_next : USize = op.add(1)
-        report  : Bool  = op_next.mod(500).eq(0)
+        mixed: S64 = mix(checksum, result)
+        op_next: USize = op.add(1)
+        report: Bool = op_next.mod(500).eq(0)
         branch report
             ? report(op_next, mixed)
             : next(op_next, mixed)
@@ -172,20 +172,20 @@ routine run_phase(harness: Harness, set: @SortedSet[S64], phase: Phase, results:
 
 // Adds from's elements to to by rank, starting from the middle, so to is built in a different order.
 routine copy_rotated(from: @SortedSet[S64], to: @SortedSet[S64]) -> Void
-    local count : USize = from.count()
-    local half  : USize = count.div(2)
+    local count: USize = from.count()
+    local half: USize = count.div(2)
 
     block entry()
         jump next(0)
 
     block next(i: USize)
-        done : Bool = i.ge(count)
+        done: Bool = i.ge(count)
         branch done
             ? return()
             : copy(i)
 
     block copy(i: USize)
-        rank : USize = i.add(half).mod(count)
+        rank: USize = i.add(half).mod(count)
         to.add(from.get_by_rank(rank))
         jump next(i.add(1))
 
@@ -196,22 +196,22 @@ routine report_eq(out: @BufWriter[Out], label: Bytes, equal: Bool) -> Void
 
 routine start() -> Void
     block entry()
-        fd : @Out = Out.writer()
-        claim out : @BufWriter[Out] <- .hollow()
+        fd: @Out = Out.writer()
+        claim out: @BufWriter[Out] <- .hollow()
         out.construct(fd)
-        claim alloc : @Allocator      <- make_heap_allocator()
-        claim rng   : @Rng            <- Rng(state: 1)
-        claim set   : @SortedSet[S64] <- .construct(alloc)
+        claim alloc: @Allocator <- make_heap_allocator()
+        claim rng: @Rng <- Rng(state: 1)
+        claim set: @SortedSet[S64] <- .construct(alloc)
 
-        harness : Harness = Harness(out: out, rng: rng)
-        r1      : S64     = run_phase(harness, set,
+        harness: Harness = Harness(out: out, rng: rng)
+        r1: S64 = run_phase(harness, set,
             Phase(number: 1, ops: 3000, keys: 64, adds: 5, by_rank: false), 0)
-        r2      : S64     = run_phase(harness, set,
+        r2: S64 = run_phase(harness, set,
             Phase(number: 2, ops: 12000, keys: 20000, adds: 5, by_rank: false), r1)
-        r3      : S64     = run_phase(harness, set,
+        r3: S64 = run_phase(harness, set,
             Phase(number: 3, ops: 9000, keys: 20000, adds: 1, by_rank: true), r2)
 
-        claim copied : @SortedSet[S64] <- .construct(alloc)
+        claim copied: @SortedSet[S64] <- .construct(alloc)
         report_eq(out, "empty copy equal", set.load().eq(copied.load()))
         copy_rotated(set, copied)
         report_eq(out, "rotated copy equal", set.load().eq(copied.load()))
@@ -220,8 +220,8 @@ routine start() -> Void
         report_eq(out, "extra element equal", set.load().eq(copied.load()))
         copied.remove(-1)
         report_eq(out, "extra element removed equal", set.load().eq(copied.load()))
-        size : USize = set.count()
-        last : S64   = set.get_by_rank(size.sub(1))
+        size: USize = set.count()
+        last: S64 = set.get_by_rank(size.sub(1))
         copied.remove(last)
         copied.add(last.add(1))
         report_eq(out, "changed element equal", set.load().eq(copied.load()))

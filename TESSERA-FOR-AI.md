@@ -47,10 +47,10 @@ import Standard/Os
 
 routine start() -> Void
     block entry()
-        claim alloc : @Allocator <- make_heap_allocator()
-        claim list  : @List[S64] <- .construct(alloc)
+        claim alloc: @Allocator <- make_heap_allocator()
+        claim list: @List[S64] <- .construct(alloc)
         list.push(42)
-        first : S64 = list.getitem(0)
+        first: S64 = list.getitem(0)
         Out.write("first: {first}, as source: {first.diagnose()}\n")
 
         list.destruct()
@@ -75,7 +75,7 @@ routine start() -> Void
 
 **Values and pointers**
 
-- A value is written by its bare name, pointers included: `x: S64 = ...`, `claim p : @S64`. A bare name is the
+- A value is written by its bare name, pointers included: `x: S64 = ...`, `claim p: @S64`. A bare name is the
   nearest visible value (routine and block parameters, earlier bindings in the block), else a preset, global, or type;
   a call `f(...)` always names a routine. A routine as a value is `f.to[Callable]()` (never a bare `f`), and a value
   named like a keyword (`block`, `null`, `return`, ...) is written between backticks: `` `block` ``. The type says
@@ -101,18 +101,18 @@ routine start() -> Void
   `free_fn: Callable[…] = alloc.free_fn.load()`, then `free_fn.call(state, raw)`. `alloc.free_fn(...)` is an
   error.
 - A field of an SSA record value is read with plain `=`: `key: K = pair.key`.
-- `claim p : @T <- v` claims a slot for the routine call (a stack slot in practice) and stores `v` in it where the
+- `claim p: @T <- v` claims a slot for the routine call (a stack slot in practice) and stores `v` in it where the
   claim stands; its type comes from the binding, which must be written `@T` (anything else is a parse error). The
-  contents are required: `claim list : @List[S64] <- .construct(alloc)`, no `list_val` and no separate store. A
+  contents are required: `claim list: @List[S64] <- .construct(alloc)`, no `list_val` and no separate store. A
   slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) starts as
-  `claim p : @T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, null, a
+  `claim p: @T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, null, a
   collection with no memory, a choice's first member), and every `destruct` leaves it alone. A claim without `<-` is
-  an error. `<-` fills memory and `=` only binds a name to a value, so `claim p : @T = v` is an
+  an error. `<-` fills memory and `=` only binds a name to a value, so `claim p: @T = v` is an
   error too. An array value comes from `[1, 2, x]` or a load (COUNT values at `first: @T` are
   `first.to[@Array[T, COUNT]]().load()`);
   a bare `[1, 2]` isn't a value. Where the type is known from where the value goes (a typed binding, a `preset` or
   `global`, an argument, an element of an outer literal, the pointer of `store_into`), the type can be left off:
-  `preset SORTED: @Array[S64, 3] <- [-8, 0, 7]`, `p : Point = (x: 1, y: 2)`, like `.absent()`. Write the type
+  `preset SORTED: @Array[S64, 3] <- [-8, 0, 7]`, `p: Point = (x: 1, y: 2)`, like `.absent()`. Write the type
   where it isn't on the same line: `sum2([7, 8])` compiles, but prefer `sum2([7, 8])`. A receiver
   gives it no type: `[1, 2].eq(...)` is an error. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot, but its `<-` runs every time the block runs: a claim can't carry a value from one pass to
@@ -147,7 +147,7 @@ routine start() -> Void
   `Standard/Os`, and every program for a target without an OS, passes an allocator.
 - **Memory is declared `@T`, and its contents go in with `<-`.** A name that is an address is written with its
   pointer type, and the declared type is the name's type everywhere:
-  `claim p : @T <- v` (a stack slot, `<- .hollow()` if a routine fills it), `global NAME: @T [<- value]` (mutable, all-zero without a value),
+  `claim p: @T <- v` (a stack slot, `<- .hollow()` if a routine fills it), `global NAME: @T [<- value]` (mutable, all-zero without a value),
   `preset NAME: @T <- value` (read-only). `preset NAME: T = value` is a value, not memory: folded at build time, with
   no address. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
   before it to compute one, on any target), so its contents are known at build time: literals, presets, `null`, `[...]` (an array), `T(field: value)` (a record field by field), a routine for
@@ -205,11 +205,11 @@ routine start() -> Void
   visible only in that block. Anything else must be passed as a block argument. This is the most common error. No
   name is bound twice anywhere: there is no reassignment.
 - **The head: `local` lines.** Between the routine's header (and its `require` lines) and `block entry()`, a
-  routine may share values and slots with every block: `local n : USize = values.count()` (a value) and
-  `local sum : @U64 <- 0` or `<- .hollow()` (a slot, what `claim` makes in a block). The head holds only local
+  routine may share values and slots with every block: `local n: USize = values.count()` (a value) and
+  `local sum: @U64 <- 0` or `<- .hollow()` (a slot, what `claim` makes in a block). The head holds only local
   lines, top to bottom, each seeing the routine's parameters, presets, globals, and the local lines above it; its
   expressions may call routines. It runs once when the routine starts, before `entry`, and `jump entry()` runs entry
-  again, never the head. `fmt` puts the head 4 spaces in right under the header, aligned like bindings, with one
+  again, never the head. `fmt` puts the head 4 spaces in right under the header, with one
   blank line before `block entry()`. `local` in a block, or in an assembly routine, is a build error, and
   `local` is a keyword (a value of that name is written `` `local` ``).
 - **A routine's parameters and local values are there in every block, so a block parameter or a block's binding
@@ -225,12 +225,12 @@ routine start() -> Void
   routine List[T].destruct_all(me: @Me) -> Void
   require T: typename, Destructible[T]
       block entry()
-          first : @T    = me.storage.data.load()
-          count : USize = me.count.load()
+          first: @T = me.storage.data.load()
+          count: USize = me.count.load()
           jump each(first, count, 0)
 
       block each(first: @T, count: USize, i: USize)
-          done : Bool = i.ge(count)
+          done: Bool = i.ge(count)
           ...
           jump each(first, count, i.add(1))
   ```
@@ -240,14 +240,14 @@ routine start() -> Void
   ```tessera
   routine List[T].destruct_all(me: @Me) -> Void
   require T: typename, Destructible[T]
-      local first : @T    = me.storage.data.load()
-      local count : USize = me.count.load()
+      local first: @T = me.storage.data.load()
+      local count: USize = me.count.load()
 
       block entry()
           jump each(0)
 
       block each(i: USize)
-          done : Bool = i.ge(count)
+          done: Bool = i.ge(count)
           ...
           jump each(i.add(1))
   ```
@@ -262,19 +262,19 @@ routine start() -> Void
 
   ```tessera
   routine total(values: Slice[U32]) -> U64
-      local n   : USize = values.count()
-      local sum : @U64  <- 0
+      local n: USize = values.count()
+      local sum: @U64 <- 0
 
       block entry()
           jump add(0)
 
       block add(i: USize)
-          done : Bool = i.ge(n)
+          done: Bool = i.ge(n)
           branch done
               ? return(sum.load())
               : continue
-          value : U32 = values.getitem(i)
-          total : U64 = sum.load()
+          value: U32 = values.getitem(i)
+          total: U64 = sum.load()
           total.add(value.to[U64]()).store_into(sum)
           jump add(i.add(1))
   ```
@@ -293,20 +293,20 @@ routine start() -> Void
   ```tessera
   routine home_path(drive: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
       block entry()
-          p : Option[Bytes] = env_dir("HOMEPATH", alloc)
+          p: Option[Bytes] = env_dir("HOMEPATH", alloc)
           when p
               .Present(path) => join(path)
-              .Absent        => missing()
+              .Absent => missing()
 
       block missing()
-          claim held : @Bytes <- drive
+          claim held: @Bytes <- drive
           held.destruct()
           return(.Failure(FsError.NOT_FOUND))
 
       block join(path: Bytes)
-          both : Bytes = Bytes.concat(drive, path, alloc)
-          claim held_drive : @Bytes <- drive
-          claim held_path  : @Bytes <- path
+          both: Bytes = Bytes.concat(drive, path, alloc)
+          claim held_drive: @Bytes <- drive
+          claim held_path: @Bytes <- path
           held_drive.destruct()
           held_path.destruct()
           return(.Success(both))
@@ -316,18 +316,18 @@ routine start() -> Void
 
   ```tessera
   routine home_path(drive_text: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
-      local drive : @Bytes <- drive_text
-      local path  : @Bytes <- .empty()
+      local drive: @Bytes <- drive_text
+      local path: @Bytes <- .empty()
 
       block entry()
-          p : Option[Bytes] = env_dir("HOMEPATH", alloc)
+          p: Option[Bytes] = env_dir("HOMEPATH", alloc)
           when p
               .Present(text) => join(text)
-              .Absent        => finish(.Failure(FsError.NOT_FOUND))
+              .Absent => finish(.Failure(FsError.NOT_FOUND))
 
       block join(path_text: Bytes)
           path_text.store_into(path)
-          both : Bytes = Bytes.concat(drive.load(), path.load(), alloc)
+          both: Bytes = Bytes.concat(drive.load(), path.load(), alloc)
           jump finish(.Success(both))
 
       block finish(result: Result[Bytes, FsError])
@@ -361,7 +361,7 @@ routine start() -> Void
   ```tessera
   when item
       .Present(value) => continue
-      .Absent         => finish()
+      .Absent => finish()
   total.load().add(value).store_into(total)  // value is bound here
   ```
 
@@ -496,7 +496,7 @@ routine start() -> Void
   (the stdlib's `wide_divrem(u, d)` for `U128` and `U256`, `soft_divmod`, `xxh64(data, len, seed)` beside
   `xxh64(v, seed)`); a type that only passes through (the Writer, an element) is a type parameter instead. Most of
   these sets have no `USize` overload, so a bare literal argument several overloads take is ambiguous: pass a typed
-  value (`m.set(U64.MIN)` on a `BigNat`, or bind `one : U64 = 1` first).
+  value (`m.set(U64.MIN)` on a `BigNat`, or bind `one: U64 = 1` first).
 - When every operand is a literal, name the type with a typewise call: `S64.eq(0, 1)`, `U128.shl(1, 100)`. There are
   no literal suffixes (`0u64`).
 - `Bytes` is the one text type: `data`, `count`, and `alloc` (UTF-8 by convention, unchecked: `is_utf8` checks;
@@ -504,7 +504,7 @@ routine start() -> Void
   (it holds its UTF-8 in the program image), `Bytes.from_ptr`, and every text made from other text (`slice`,
   `getview()`, the iterators, `buf.to[Bytes]()` of a `List[Byte]`). Text a routine allocates (`Bytes.concat`,
   `In.read_line`, `File.read_all_result`, `join_path`, ...) carries its allocator: release it with `destruct()` on a
-  claimed slot (`claim line : @Bytes <- In.read_line()`, read it with `line.getview()` or `line.load()`).
+  claimed slot (`claim line: @Bytes <- In.read_line()`, read it with `line.getview()` or `line.load()`).
   `eq` / `compare` / `hash` ignore `alloc`. `Slice[Byte]` has the same layout and is plain bytes:
   `text.to[Slice[Byte]]()` and `bytes.to[Bytes]()` convert between them as borrowed views. Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
@@ -559,7 +559,7 @@ routine start() -> Void
   `-> (U64, U64)`, `return((q, r))`.
 - `q, r = div_rem(a, b)` takes a tuple apart, every item, no types. It's the only destructuring: a record's
   fields are read by name. Nested tuples come apart one level at a time.
-- A tuple value takes its type from where it goes (`t : (S64, S64) = (1, 2)`); with nowhere to take it from, it's
+- A tuple value takes its type from where it goes (`t: (S64, S64) = (1, 2)`); with nowhere to take it from, it's
   an error. An Array is `[1, 2]`, never `(1, 2)`, and a tuple never `[1, 2]`.
 - Parentheses make a tuple type and hold a call's arguments. Around one value they group nothing, so `(a)` is `a`
   and `fmt` drops them. In `Callable[(A, B), R]` the first list is the parameters.
@@ -567,9 +567,9 @@ routine start() -> Void
 
 **Variants**
 
-- `variant Expr` lists cases, each with at most one payload type (`Number : S64`, `Add : BinaryExpr`, `Empty`); several
-  values go in a record or a tuple. `Option[T]` (`Absent`, `Present : T`) and `Result[TSuccess, TFailure]`
-  (`Failure : TFailure`, `Success : TSuccess`) are variants.
+- `variant Expr` lists cases, each with at most one payload type (`Number: S64`, `Add: BinaryExpr`, `Empty`); several
+  values go in a record or a tuple. `Option[T]` (`Absent`, `Present: T`) and `Result[TSuccess, TFailure]`
+  (`Failure: TFailure`, `Success: TSuccess`) are variants.
 - Build: `Expr.Number(5)`, `.Number(5)` where the type is known, `Expr.Empty` / `.Empty`.
 - Read with `when e`; `Expr.Number(n) => target(n)` binds the payload for that arm's target only (or, on the one
   arm that `continue`s, for the rest of the block), `Expr.Empty` or `.Present` matches without binding. Without `else`, list every case. There's no field access on a variant.
@@ -590,7 +590,7 @@ routine sum_to(n: U64) -> U64
         jump loop(0, 0)
 
     block loop(i: U64, total: U64)
-        done : Bool = i.ge(n)
+        done: Bool = i.ge(n)
         branch done ? return(total) : loop(i.add(1), total.add(i))
 ```
 
@@ -598,16 +598,16 @@ Iterating a collection (`next` returns `Option[T]`):
 
 ```tessera
 routine sum_list(list: @List[S64]) -> S64
-    local iter : @ListIter[S64] <- .construct(list)
+    local iter: @ListIter[S64] <- .construct(list)
 
     block entry()
         jump next(0)
 
     block next(total: S64)
-        item : Option[S64] = iter.next()
+        item: Option[S64] = iter.next()
         when item
             .Present(value) => next(total.add(value))
-            .Absent         => return(total)
+            .Absent => return(total)
 ```
 
 Propagating a `Result`:
@@ -615,7 +615,7 @@ Propagating a `Result`:
 ```tessera
 routine parse_or_zero(text: Bytes) -> B64
     block entry()
-        r : Result[B64, ParseError] = text.to_result[B64]()
+        r: Result[B64, ParseError] = text.to_result[B64]()
         when r
             .Success(value) => return(value)
             .Failure(error) => failed(error)
@@ -642,12 +642,12 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   `OutOfRange`), for every integer type (an optional sign and decimal digits) and every float type. There is no
   `parse`. A type is readable from text when it conforms to `Parsable[T]`, which asks for one routine,
   `routine Bytes.to_result[T](me: Bytes) -> Result[T, ParseError]`, and `to[T]` comes with it. Numbers from
-  standard input: `a : S32 = In.read[S32]()` reads the next word in place (a word longer than the 8192-byte buffer
+  standard input: `a: S32 = In.read[S32]()` reads the next word in place (a word longer than the 8192-byte buffer
   goes through a temporary on `DEFAULT_HEAP`) and crashes at the end of the input or on a word that isn't a T;
   `In.read_checked[T]()` gives `Option[T]` (Absent for both), `In.read_result[T]()` a `Result[T, ParseError]`
   (`Failure(Empty)` at the end).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
-  `Bytes`. A pointer is neither Representable nor Diagnosable, so `{sum}` on a `local sum : @S64` slot is a build
+  `Bytes`. A pointer is neither Representable nor Diagnosable, so `{sum}` on a `local sum: @S64` slot is a build
   error, not its address: write the value with `{sum.load()}`, or the address with `{sum.to[Addr]()}`
   (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
@@ -864,7 +864,7 @@ job goes just before it (`Scheduler.construct(workers, stacks, alloc)`). So the 
 (`construct()` with `Standard/Os`) is the same call with the last argument left off.
 
 **Five or more parameters take a record.** Arguments are positional (there are no named arguments), so a call reads
-by its values: pass named values (`retries : U32 = 3`, then `retries`), not bare literals whose role needs the
+by its values: pass named values (`retries: U32 = 3`, then `retries`), not bare literals whose role needs the
 signature, unless the routine's name already says it (`len.add(1)`, `list.getitem(0)`). A routine with five or more
 parameters, `me` not counted, takes a record instead: one record parameter, or a record plus the few parameters that
 clearly don't belong to the group, so the count drops below five. The record is named for what the group is, its
@@ -932,7 +932,7 @@ array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- [...]`).
 
 ## Style
 
-Run `tessera fmt` on what you write: it aligns `name : T = value` runs, spaces blocks and routines, joins broken
+Run `tessera fmt` on what you write: it writes `name: T = value` (nothing aligned with the line above), spaces blocks and routines, joins broken
 lists and wraps lines over 100 characters at commas (continuation lines 4 spaces further in), and writes a routine's owner type as `Me` after it's declared
 (not in `require` lines). It also orders the top-level declarations: module, sorted imports, defines, globals,
 presets, types, concepts, standalone conformances, routines (in your order), and `when_booted` then `start` last. Follow `../Tessera-Wiki/docs/Style-Guide.md`. In short: one purpose per block, blocks named for what they do (`grow`,

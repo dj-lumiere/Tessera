@@ -4,7 +4,7 @@ namespace Tessera.Tests;
 
 /// <summary>
 /// The formatter's long-line wrapping: a line over 100 columns breaks after commas of a call's or a literal's list,
-/// never inside a type. A tuple type's parentheses and a type's angle brackets (<c>Callable&lt;(Addr,), Void&gt;</c>)
+/// never inside a type. A tuple type's parentheses and a type's square brackets (<c>Callable[(Addr,), Void]</c>)
 /// stay whole, so a line whose only commas are inside a type stays long.
 /// </summary>
 public class FormatterTests
@@ -15,13 +15,13 @@ public class FormatterTests
         string source = """
             routine erase(entry: Callable[(@S64,), Void]) -> Callable[(Addr,), Void]
                 block entry()
-                    erased_entry_routine : Callable[(Addr,), Void] = bitcast(entry_with_a_long_name_past_the_limit)
-                    return(erased_entry_routine)
+                    erased_entry_routines: Callable[(Addr,), Void] = bitcast(entry_with_a_long_name_past_the_limit)
+                    return(erased_entry_routines)
 
             """;
         string formatted = Formatter.Format(source);
         Assert.Contains(
-            "        erased_entry_routine : Callable[(Addr,), Void] = bitcast(entry_with_a_long_name_past_the_limit)\n",
+            "        erased_entry_routines: Callable[(Addr,), Void] = bitcast(entry_with_a_long_name_past_the_limit)\n",
             formatted);
         Assert.Equal(formatted, Formatter.Format(formatted));
     }
@@ -31,12 +31,12 @@ public class FormatterTests
     {
         string source = """
             record FiberState
-                sp   : Addr  // its stack pointer while it isn't running
-                then : Callable[(@Worker, @FiberState), Void]  // where its worker puts it once it is off its stack
+                sp: Addr  // its stack pointer while it isn't running
+                then: Callable[(@Worker, @FiberState), Void]  // where its worker puts it once it is off its stack
 
             """;
         string formatted = Formatter.Format(source);
-        Assert.Contains("    then : Callable[(@Worker, @FiberState), Void]  // where its worker puts it once it is off its stack\n",
+        Assert.Contains("    then: Callable[(@Worker, @FiberState), Void]  // where its worker puts it once it is off its stack\n",
             formatted);
     }
 
@@ -46,12 +46,12 @@ public class FormatterTests
         string source = """
             routine pick(a: U64, b: U64) -> (U64, U64)
                 block entry()
-                    quotient_and_remainder : (U64, U64) = divide_with_a_long_name(a, b, a, b, a, b, a, b, a, b, a, b)
-                    return(quotient_and_remainder)
+                    quotient_and_remainders: (U64, U64) = divide_with_a_long_name(a, b, a, b, a, b, a, b, a, b, a, b)
+                    return(quotient_and_remainders)
 
             """;
         string formatted = Formatter.Format(source);
-        Assert.Contains("        quotient_and_remainder : (U64, U64) = divide_with_a_long_name(a, b, a, b, a, b, a, b, a, b,\n"
+        Assert.Contains("        quotient_and_remainders: (U64, U64) = divide_with_a_long_name(a, b, a, b, a, b, a, b, a, b,\n"
             + "            a, b)\n", formatted);
         Assert.Equal(formatted, Formatter.Format(formatted));
     }
@@ -62,7 +62,7 @@ public class FormatterTests
         string source = """
             routine divide_with_a_long_name_that_fills_the_line(numerator: U64) -> (U64, U64, U64, U64)
                 block entry()
-                    return({ numerator, numerator, numerator, numerator })
+                    return((numerator, numerator, numerator, numerator))
 
             """;
         string formatted = Formatter.Format(source);
