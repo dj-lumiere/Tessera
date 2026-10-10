@@ -69,9 +69,19 @@ public static class Migrate
 
         // The choices a program names may be the standard library's, so its declarations count too.
         var names = ChoiceNames.Collect(texts.Values.Concat(StdlibTexts()));
+        int skipped = 0;
+        var migratedManifests = new HashSet<string>();
         foreach (string file in files)
         {
             if (!texts.TryGetValue(file, out string? text)) continue;
+            // A program whose manifest says it is written for this release already is left alone: the rules assume
+            // the previous spelling, and some of them would change this release's code (`peek` was a queue's front).
+            string? manifest = Manifest.Find(Path.GetDirectoryName(Path.GetFullPath(file))!);
+            if (manifest is not null && WrittenFor(manifest) is { } written && written >= Release)
+            {
+                skipped++;
+                continue;
+            }
             string rewritten = Rewrite(text, names);
             if (rewritten == text)
             {
@@ -86,15 +96,41 @@ public static class Migrate
             else
             {
                 File.WriteAllText(file, rewritten, new UTF8Encoding(false));
+                if (manifest is not null) migratedManifests.Add(manifest);
             }
         }
 
+        foreach (string manifest in migratedManifests) SetWrittenFor(manifest);
         if (!check)
         {
-            Console.WriteLine($"migrated {changed} of {files.Count} file(s)");
+            string already = skipped > 0 ? $", {skipped} already written for {Release.Major}.{Release.Minor}" : "";
+            Console.WriteLine($"migrated {changed} of {files.Count} file(s){already}");
         }
 
         return check && changed > 0 ? 1 : 0;
+    }
+
+    /// The release `migrate` moves sources to.
+    private static readonly Version Release = new(0, 5);
+
+    /// The release a manifest says its sources are written for (`tessera-version = "0.5.0"` under `[package]`), or
+    /// null when it says none.
+    private static Version? WrittenFor(string manifest)
+    {
+        var m = Regex.Match(File.ReadAllText(manifest), @"(?m)^\s*tessera-version\s*=\s*""(\d+)\.(\d+)");
+        return m.Success ? new Version(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value)) : null;
+    }
+
+    /// Writes this release into the manifest's `tessera-version`, adding the key under `[package]` when it's missing.
+    private static void SetWrittenFor(string manifest)
+    {
+        string text = File.ReadAllText(manifest);
+        string value = $"tessera-version = \"{Release.Major}.{Release.Minor}.0\"";
+        var existing = new Regex(@"(?m)^\s*tessera-version\s*=.*$");
+        if (existing.IsMatch(text)) text = existing.Replace(text, value, 1);
+        else if (Regex.IsMatch(text, @"(?m)^\[package\]\s*$")) text = Regex.Replace(text, @"(?m)^\[package\]\s*$", $"[package]\n{value}");
+        else text = $"[package]\n{value}\n\n{text}";
+        File.WriteAllText(manifest, text);
     }
 
     /// The source with the current release's spellings. Inside the body of a routine marked `external("asm")` only the
