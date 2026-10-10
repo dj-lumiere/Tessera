@@ -549,8 +549,9 @@ routine start() -> Void
 - A name is unique under its parent, wherever it's declared: you can add `routine U64.double(...)` to a stdlib type,
   but not a second `U64.midpoint` with the same parameter types (one with other parameter types is an overload). Private names don't count outside their file.
 
-- A record with exactly one field has the same representation as that field (`B128` is an `i128`). Mark it
-  `#aggregate` to keep it a one-member struct; `#layout(align: N)` on a one-field record (a record's alignment; `#aligned` is for fields) needs `#aggregate`.
+- Every record is a struct of its fields, one field included (`record Meters / value: B64` is `{ double }`); only a
+  library `#llvm("iN")` record with no fields is an integer underneath (`B128` is an `i128`). `#layout(align: N)` sets
+  a record's alignment, `#aligned` a field's.
 - A record can't contain itself by value; go through a `Ptr`.
 
 **Tuples**

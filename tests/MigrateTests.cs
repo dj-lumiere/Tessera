@@ -248,4 +248,13 @@ public class MigrateTests
         Assert.Empty(report);
         Assert.Equal(after, migration.Rewrite("a.tess", after, report));
     }
+
+    [Theory]
+    [InlineData("#aggregate\nrecord A\n    x: S8\n", "record A\n    x: S8\n")]
+    [InlineData("#[aggregate, layout(align: 32)]\nrecord A\n", "#[layout(align: 32)]\nrecord A\n")]
+    [InlineData("#[layout(align: 32), aggregate]\nrecord A\n", "#[layout(align: 32)]\nrecord A\n")]
+    public void Takes_aggregate_out(string before, string after)
+    {
+        Assert.Equal(after, Migrate.WithoutAggregate(before));
+    }
 }

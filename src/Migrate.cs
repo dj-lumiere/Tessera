@@ -103,6 +103,19 @@ public static class Migrate
             }
         }
 
+        // `#aggregate` is gone (every record is a struct): its lines and list entries are taken out of every file.
+        if (!namedArgsOnly)
+            foreach (string file in files)
+            {
+                if (!texts.ContainsKey(file)) continue;
+                string text = File.ReadAllText(file);
+                string without = WithoutAggregate(text);
+                if (without == text) continue;
+                if (check) Console.WriteLine(file);
+                else File.WriteAllText(file, without, new UTF8Encoding(false));
+                changedFiles.Add(file);
+            }
+
         // Every file, whatever release it is written for, has the arguments of its calls named where a routine takes
         // two or more: the step only adds names, so a file already written for this release is safe to run it on.
         var namedArgs = new NamedArgsMigration();
@@ -145,6 +158,14 @@ public static class Migrate
         }
 
         return check && changedFiles.Count > 0 ? 1 : 0;
+    }
+
+    /// The source without `#aggregate`: a line of its own goes, and in a list (`#[aggregate, layout(...)]`) the entry.
+    public static string WithoutAggregate(string text)
+    {
+        text = Regex.Replace(text, @"(?m)^[ \t]*#(\[aggregate\]|aggregate)[ \t]*\r?\n", "");
+        text = Regex.Replace(text, @"#\[aggregate,\s*", "#[");
+        return Regex.Replace(text, @",\s*aggregate(?=\s*[,\]])", "");
     }
 
     /// The release `migrate` moves sources to.

@@ -60,7 +60,9 @@ public sealed partial class Compiler
                     ?? throw new InvalidOperationException($"the standard library has no {name} for a traced build");
             _traceRoutines[name] = inst = RequireInstance(r, new TypeEnv(r.File));
         }
-        var ps = inst.Params.Select((p, i) => $"{p.Llvm}{inst.ParamExt(Target, i)} {args[i]}");
+        // A CStr parameter is a record of one pointer: the text's global goes in as a constant of that record.
+        var ps = inst.Params.Select((p, i) => $"{p.Llvm}{inst.ParamExt(Target, i)} "
+                                              + (p is RecordType && args[i].StartsWith('@') ? $"{{ ptr {args[i]} }}" : args[i]));
         return $"call {inst.CcPrefix(Target)}void @{Quote(inst.Symbol)}({string.Join(", ", ps)})";
     }
 }

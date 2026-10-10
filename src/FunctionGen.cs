@@ -1028,18 +1028,18 @@ public sealed class FunctionGen
         string g = _c.StringGlobal(s.Value);
         if (expected is PtrType { Pointee: null or IntType { Kind: IntKind.Byte } })
             return new Val(g, expected);
-        // CStr and CWStr are one-field records over a pointer, so the value is the pointer itself.
+        // CStr and CWStr are records of one field, the pointer to the text.
         if (expected is RecordType { Name: "CStr" } cs)
         {
             _c.EnsureTypeDefined(cs);
-            return new Val(g, cs);
+            return new Val(EmitTmp($"insertvalue {cs.Llvm} poison, ptr {g}, 0"), cs);
         }
         if (expected is RecordType { Name: "CWStr" } cw)
         {
             if (SourceText.HasRawByte(s.Value))
                 throw Err(s.Pos, "a wide string holds characters; a \\x escape above 7F is a raw byte");
             _c.EnsureTypeDefined(cw);
-            return new Val(_c.WideStringGlobal(s.Value), cw);
+            return new Val(EmitTmp($"insertvalue {cw.Llvm} poison, ptr {_c.WideStringGlobal(s.Value)}, 0"), cw);
         }
         if (expected is RecordType { Name: "Bytes" } st)
         {

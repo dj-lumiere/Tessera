@@ -1038,36 +1038,21 @@ public sealed partial class Compiler
         return env;
     }
 
-    private readonly Dictionary<string, DType?> _transparent = [];
-    private readonly HashSet<string> _resolvingTransparent = [];
     private readonly HashSet<string> _definingTypes = [];
 
-    /// A record with exactly one field lowers to that field's type, unless it is `#aggregate` (for C structs with one
-    /// member, which some ABIs pass differently from the member alone). Returns null for an aggregate.
-    /// A library `#llvm("iN")` record with no fields lowers to an N-bit integer the same way.
+    /// A record is a struct of its fields, however many it has: written as it is laid out. Only a library `#llvm("iN")`
+    /// record with no fields lowers to something else, an N-bit integer.
     private DType? TransparentField(RecordType s)
     {
         var d = s.Decl;
+        if (d.AnnotationNamed("aggregate") is { } aggregate)
+            throw new CompileError(aggregate.Pos, $"record '{d.Name}' is a struct already, as every record is: remove #aggregate");
         // A library `#llvm("iN")` record (B128) is an integer of that width underneath. Built-in names never get here.
         if (d.AnnotationNamed("llvm") is { } llvm)
             return llvm.First is ['i', .. var digits] && int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out int bits)
                 ? IntType.U(bits)
                 : throw new CompileError(d.Pos, $"#llvm on a library record takes an integer type (\"i128\"), got \"{llvm.First}\"");
-        if (d.AnnotationNamed("aggregate") is not null || d.Fields.Count != 1) return null;
-        if (_transparent.TryGetValue(s.Key, out var cached)) return cached;
-        if (d.AnnotationNamed("layout") is not null || d.Fields[0].AnnotationNamed("aligned") is not null)
-            throw new CompileError(d.Pos, $"record '{d.Name}' has one field, so it lowers to that field's type; a layout or #aligned needs it to be #aggregate");
-        if (!_resolvingTransparent.Add(s.Key)) throw new CompileError(d.Pos, $"{s} contains itself");
-        try
-        {
-            var field = Fields(s)[0].Type;
-            _ = field.Llvm; // resolves nested transparent records, and finds a record that contains itself
-            return _transparent[s.Key] = field;
-        }
-        finally
-        {
-            _resolvingTransparent.Remove(s.Key);
-        }
+        return null;
     }
 
     private List<DType?> VariantPayloads(VariantType v)
