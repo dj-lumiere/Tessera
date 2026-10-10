@@ -183,6 +183,34 @@ public class MigrateTests
     }
 
     [Fact]
+    public void Renames_collection_routines_by_receiver()
+    {
+        const string before = """
+            routine fill(xs: @List[S64], q: @PriorityQueue[S64, S64], d: @Dict[S64, S64]) -> Void
+                block entry()
+                    xs.push(1)
+                    q.push(2, 3)
+                    d.put(4, 5)
+                    seen: Bool = d.has_key(4)
+                    last: S64 = xs.pop()
+                    top: S64 = q.pop()
+                    return()
+            """;
+        const string after = """
+            routine fill(xs: @List[S64], q: @PriorityQueue[S64, S64], d: @Dict[S64, S64]) -> Void
+                block entry()
+                    xs.add_last(1)
+                    q.add(2, 3)
+                    d.setitem(4, 5)
+                    seen: Bool = d.contains(4)
+                    last: S64 = xs.remove_last()
+                    top: S64 = q.remove()
+                    return()
+            """;
+        Assert.Equal(after, Migrate.Rewrite(before));
+    }
+
+    [Fact]
     public void Rewriting_twice_changes_nothing_more()
     {
         string once = Migrate.Rewrite("a : F32 = f32_bits(b).to<List<F32>>()");

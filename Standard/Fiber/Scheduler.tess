@@ -476,7 +476,7 @@ routine Scheduler.destruct(me: @Me) -> Void
         branch empty
             ? finish()
             : continue
-        sleeper: @FiberState = me.timers.pop()
+        sleeper: @FiberState = me.timers.remove()
         free_fiber(me, sleeper)
         jump timers()
 
@@ -560,7 +560,7 @@ private routine to_timers(w: @Worker, fiber: @FiberState) -> Void
         sched.timer_lock.lock()
         seq: U64 = sched.timer_seq.load()
         seq.add(1).store_into(sched.timer_seq)
-        sched.timers.push(TimerKey(deadline: fiber.deadline.load(), seq: seq), fiber)
+        sched.timers.add(TimerKey(deadline: fiber.deadline.load(), seq: seq), fiber)
         sched.timer_count.atomic_fetch_add(1)
         sched.timer_lock.unlock()
         notify(sched)
@@ -599,7 +599,7 @@ private routine to_io(w: @Worker, fiber: @FiberState) -> Void
     block entry()
         sched: @Scheduler = w.sched.load()
         sched.io_lock.lock()
-        sched.io_queue.push_back(fiber)
+        sched.io_queue.add_last(fiber)
         sched.io_lock.unlock()
         sched.io_epoch.atomic_fetch_add(1)
         wake_one(sched.io_epoch)
@@ -764,7 +764,7 @@ private routine fire_timers(w: @Worker) -> Void
             : done(fired)
 
     block fire(now: U64)
-        due_fiber: @FiberState = sched.timers.pop()
+        due_fiber: @FiberState = sched.timers.remove()
         sched.timer_count.atomic_fetch_sub(1)
         push_ready(w, due_fiber)
         jump next(now, true)
@@ -996,7 +996,7 @@ private routine no_work(arg: Addr) -> Void
 private routine push_ready(w: @Worker, fiber: @FiberState) -> Void
     block entry()
         w.lock.lock()
-        w.queue.push_back(fiber)
+        w.queue.add_last(fiber)
         w.lock.unlock()
         return()
 
@@ -1011,7 +1011,7 @@ private routine pop_front_locked(lock: @Mutex, queue: @CircularList[@FiberState]
         empty: Bool = queue.is_empty()
         branch empty
             ? finish(null)
-            : finish(queue.pop_front())
+            : finish(queue.remove_first())
 
     block finish(fiber: @FiberState)
         lock.unlock()
@@ -1028,7 +1028,7 @@ private routine pop_back_locked(lock: @Mutex, queue: @CircularList[@FiberState])
         empty: Bool = queue.is_empty()
         branch empty
             ? finish(null)
-            : finish(queue.pop_back())
+            : finish(queue.remove_last())
 
     block finish(fiber: @FiberState)
         lock.unlock()
@@ -1049,7 +1049,7 @@ private routine drain(sched: @Scheduler, queue: @CircularList[@FiberState]) -> V
             : drop()
 
     block drop()
-        free_fiber(sched, queue.pop_front())
+        free_fiber(sched, queue.remove_first())
         jump next()
 
 /// Gives a fiber's stack back to the stack allocator and its record to the scheduler's allocator.

@@ -49,7 +49,7 @@ routine start() -> Void
     block entry()
         claim alloc: @Allocator <- make_heap_allocator()
         claim list: @List[S64] <- .construct(alloc)
-        list.push(42)
+        list.add_last(42)
         first: S64 = list.getitem(0)
         Out.write("first: {first}, as source: {first.diagnose()}\n")
 
@@ -673,24 +673,24 @@ All in `Standard/Collection/`, documented in `../Tessera-Wiki/docs/Collections.m
 `Slice[T]`: a `List` is `storage` (a Slice whose count is the capacity) and `count`. `construct(alloc)` keeps
 the allocator (`construct()` with `Standard/Os` uses the default heap), and `destruct()` releases storage and keeps
 the allocator, so the collection can be used again. Element access is
-`getitem(i)` / `setitem(i, v)` (the name says what is fetched), `at(i)` the checked address. Out-of-range access, `pop`
-on empty, and `getitem` of a missing key crash; the `_checked` forms (`getitem_checked`, `pop_checked`,
+`getitem(i)` / `setitem(i, v)` (the name says what is fetched), `at(i)` the checked address. Out-of-range access, `remove_last`
+on empty, and `getitem` of a missing key crash; the `_checked` forms (`getitem_checked`, `remove_last_checked`,
 `peek_checked`) return `Option[T]` instead. Allocation failure crashes too; each
-insertion and `reserve` has a `_result` form (`push_result`, `put_result`, `add_result`) that returns
+insertion and `reserve` has a `_result` form (`add_last_result`, `setitem_result`, `add_result`) that returns
 `Result[T, AllocFailed]` and leaves the collection unchanged on a `Failure`. `_checked` always means `Option`, `_result`
 always `Result`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
 | `Array[T, COUNT]` | `[a, b]` literal, `at`, `getitem` (on a value or a pointer: `[2, 3, 5].getitem(i)`), `setitem`, `getslice`, `to[Slice[T]]`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
-| `List[T]` | `push`, `pop`, `getitem`, `setitem`, `getslice`, `to[Slice[T]]`, `clear`, `reserve` | index |
-| `CircularList[T]` | `push_front`, `push_back`, `pop_front`, `pop_back`, `getitem`, `setitem` | front to back |
-| `Dict[TKey, TValue]` | `put`, `getitem`, `has_key`, `remove` | **insertion order (guaranteed)** |
-| `Set[T]` | `add`, `has`, `remove` | **insertion order (guaranteed)** |
-| `SortedDict[TKey, TValue]` | `put`, `getitem`, `has_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
-| `SortedSet[T]` | `add`, `has`, `remove`, `get_by_rank(rank)` | ascending |
-| `SortedList[T]` | `push` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `has`, `remove(i)` (`T: Comparable[T]`) | ascending |
-| `PriorityQueue[TPriority, TElement]` | `push(priority, element)`, `pop` / `peek` (the element), `pop_entry` / `peek_entry` (a `PriorityEntry` with `priority` and `element`); a min-heap on `TPriority: Comparable[TPriority]`, the smallest first, `Reversed[T]` priorities for the largest first | none (the top first) |
+| `List[T]` | `add_last`, `remove_last`, `getitem`, `setitem`, `getslice`, `to[Slice[T]]`, `clear`, `reserve` | index |
+| `CircularList[T]` | `add_first`, `add_last`, `remove_first`, `remove_last`, `getitem`, `setitem` | front to back |
+| `Dict[TKey, TValue]` | `setitem`, `getitem`, `contains`, `remove` | **insertion order (guaranteed)** |
+| `Set[T]` | `add`, `contains`, `remove` | **insertion order (guaranteed)** |
+| `SortedDict[TKey, TValue]` | `setitem`, `getitem`, `contains`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
+| `SortedSet[T]` | `add`, `contains`, `remove`, `get_by_rank(rank)` | ascending |
+| `SortedList[T]` | `add` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `contains`, `remove(i)` (`T: Comparable[T]`) | ascending |
+| `PriorityQueue[TPriority, TElement]` | `add(priority, element)`, `remove` / `peek` (the element), `remove_entry` / `peek_entry` (a `PriorityEntry` with `priority` and `element`); a min-heap on `TPriority: Comparable[TPriority]`, the smallest first, `Reversed[T]` priorities for the largest first | none (the top first) |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
 removing then re-adding moves it to the end, so output never depends on the (keyed, per-run) hash. Iterators are
@@ -877,11 +877,11 @@ their signature), generated code (files under a `generated` directory, routines 
 emitter writes), and `Callable` types. `tessera lint` warns on the rest (`check`, `build`, `run` too, for the
 program's own files).
 
-**`Bool` routines: `is_` or `has_`.** A routine that answers a question names which kind: `is_` asks about a state of
-the value (`is_empty`, `is_null`, `is_finite`, `is_utf8`, `file.is_present()`, `file.is_accessible(access)`), and
-`has_` about what it contains (`set.has(x)`, `dict.has_key(k)`, `text.has(needle)`, `text.has_prefix(p)` /
-`has_suffix(s)`, `n.has_bit(i)`, `SliceWriter.has_overflowed()`). There are no bare predicates (`empty()`,
-`finite()`, `exists()`, `all()`), no `should_`, and no `contains` / `starts_with`. A capability is `is_[x]able`,
+**`Bool` routines: `is_`, `has_`, or `contains`.** A routine that answers a question names which kind: `is_` asks about
+a state of the value (`is_empty`, `is_null`, `is_finite`, `is_utf8`, `file.is_present()`, `file.is_accessible(access)`),
+`has_` about a part it has (`text.has_prefix(p)` / `has_suffix(s)`, `n.has_bit(i)`, `SliceWriter.has_overflowed()`),
+and membership is `contains` (`set.contains(x)`, `dict.contains(k)`, `text.contains(needle)`). There are no other bare
+predicates (`empty()`, `finite()`, `exists()`, `all()`), no `should_`, and no `starts_with`. A capability is `is_[x]able`,
 never `can_[x]`: `is_readable`, `is_writable`, `is_seekable` (not `can_read`, `can_write`, `can_seek`), and a C ABI
 symbol keeps its own name (`rf_fs_can_read`). A vector mask asks
 `is_all_true()`, `is_any_true()`, `is_none_true()`. A free routine with a family prefix keeps the prefix first

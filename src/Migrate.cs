@@ -138,7 +138,98 @@ public static class Migrate
             lines[i] = inAsmBody ? RewriteTypeArguments(line) : RewriteNames(line);
         }
 
-        return Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names))));
+        return CollectionNames(Literals(LocalAndHollow(NewKeywords(ChoiceCases(WhenArrows(Brackets(string.Join('\n', lines))), names)))));
+    }
+
+    /// The collection routines' 0.5 names, the same as RazorForge's: one name whatever the collection.
+    private static readonly Dictionary<string, string> CollectionRenames = new()
+    {
+        ["push_back"] = "add_last", ["push_back_result"] = "add_last_result",
+        ["push_front"] = "add_first", ["push_front_result"] = "add_first_result",
+        ["pop_back"] = "remove_last", ["pop_back_checked"] = "remove_last_checked",
+        ["pop_front"] = "remove_first", ["pop_front_checked"] = "remove_first_checked",
+        ["pop_entry"] = "remove_entry", ["pop_entry_checked"] = "remove_entry_checked",
+        ["put"] = "setitem", ["put_result"] = "setitem_result", ["put_direct"] = "setitem_direct",
+        ["has_key"] = "contains", ["has"] = "contains",
+    };
+
+    /// `push` and `pop` mean "at the end" on a list and "in order" on a sorted list or a priority queue, which RazorForge
+    /// names `add_last` / `remove_last` and `add` / `remove`.
+    private static readonly Dictionary<string, (string Ends, string Ordered)> EndOrOrdered = new()
+    {
+        ["push"] = ("add_last", "add"), ["push_result"] = ("add_last_result", "add_result"),
+        ["pop"] = ("remove_last", "remove"), ["pop_checked"] = ("remove_last_checked", "remove_checked"),
+    };
+
+    private static readonly Regex CalledName = new(@"\.(push_back_result|push_back|push_front_result|push_front|pop_back_checked|pop_back|pop_front_checked|pop_front|pop_entry_checked|pop_entry|put_result|put_direct|put|has_key|has|push_result|push|pop_checked|pop)(?=\s*[\[(])", RegexOptions.Compiled);
+
+    /// The text with the collection routines renamed (`xs.push(v)` is `xs.add_last(v)`), in code, declarations
+    /// included. For `push` and `pop`, the receiver's type decides: a name declared in the file with a `SortedList` or
+    /// a `PriorityQueue` type (or `me` in a routine on one) takes `add` / `remove`, anything else `add_last` /
+    /// `remove_last`.
+    public static string CollectionNames(string text)
+    {
+        var lines = text.Split('\n');
+        string? owner = null;
+        bool asmPending = false, inAsm = false;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            var header = Regex.Match(line, @"^(?:(?:private|internal)\s+)?routine\s+([A-Z]\w*)(?:\[[^\]]*\])?\.");
+            bool routineLine = Regex.IsMatch(line, @"^(?:(?:private|internal)\s+)?routine\s");
+            if (header.Success) owner = header.Groups[1].Value;
+            else if (routineLine) owner = null;
+            // An assembly routine's lines are instructions (`push[U64](R5)`), not calls of collection routines.
+            if (line.Length > 0 && !char.IsWhiteSpace(line[0]))
+            {
+                if (line.StartsWith('#') && line.Contains("external(\"asm\")", StringComparison.Ordinal)) asmPending = true;
+                else if (routineLine) { inAsm = asmPending; asmPending = false; }
+                else if (!line.StartsWith('#') && !line.StartsWith("//", StringComparison.Ordinal)) { inAsm = false; asmPending = false; }
+            }
+            if (inAsm || line.TrimStart().StartsWith("//", StringComparison.Ordinal)) continue;
+            var sb = new StringBuilder(line);
+            int comment = CommentStart(sb, 0, sb.Length);
+            string code = line[..comment];
+            string renamed = CalledName.Replace(code, m =>
+            {
+                string name = m.Groups[1].Value;
+                if (CollectionRenames.TryGetValue(name, out string? plain)) return "." + plain;
+                var (ends, ordered) = EndOrOrdered[name];
+                string before = string.Join('\n', lines, 0, i + 1);
+                return "." + (IsOrdered(ReceiverType(code, m.Index, before, owner)) ? ordered : ends);
+            });
+            lines[i] = renamed + line[comment..];
+        }
+
+        return string.Join('\n', lines);
+    }
+
+    private static bool IsOrdered(string? type) => type is "SortedList" or "PriorityQueue";
+
+    /// The type of the receiver ending at `dot`: a type written before it (`SortedList[T].push`), `me` in a routine on
+    /// `owner`, or a name (the last of a field chain) declared above it with a type, `q: @PriorityQueue[...]`.
+    private static string? ReceiverType(string code, int dot, string text, string? owner)
+    {
+        int end = dot;
+        if (end > 0 && code[end - 1] == ']')
+        {
+            int depth = 0, k = end - 1;
+            for (; k >= 0; k--)
+            {
+                if (code[k] == ']') depth++;
+                else if (code[k] == '[' && --depth == 0) break;
+            }
+            end = k;
+        }
+        int start = end;
+        while (start > 0 && (char.IsAsciiLetterOrDigit(code[start - 1]) || code[start - 1] == '_')) start--;
+        string name = code[start..end];
+        if (name.Length == 0) return null;
+        if (char.IsAsciiLetterUpper(name[0])) return name;
+        if (name == "me") return owner;
+        // The nearest declaration above the call: the same name may be a List in one routine and a SortedList in another.
+        var declared = Regex.Matches(text, $@"(?<![\w.]){Regex.Escape(name)}\s*:\s*@?(\w+)");
+        return declared.Count > 0 ? declared[^1].Groups[1].Value : null;
     }
 
     private sealed record Brace(int Open, bool Named, bool Tuple, int PrefixStart);
