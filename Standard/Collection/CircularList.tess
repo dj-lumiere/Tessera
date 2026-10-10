@@ -8,10 +8,10 @@
 // before start. When either side runs out the live range is moved back to the
 // center of a new buffer, twice as large if the circular_list is more than half full.
 
-module Standard::Collections
+module Standard/Collections
 
-import Standard::Alloc
-import Standard::Format
+import Standard/Alloc
+import Standard/Format
 
 /// A growable sequence with spare room on both sides of its live range, so `push_front` and `push_back` are both amortized constant time without shifting elements. Logical element `i` lives at `storage.data[start + i]`. When either side runs out, the live range is moved to the center of a new buffer.
 /// :typeparam T: The element type.
@@ -73,16 +73,16 @@ require T: typename
 /// :returns: True when it moved them, false when the allocator failed (the list is left as it was).
 private routine CircularList[T].recenter(me: @Me, new_capacity: USize) -> Bool
 require T: typename
-    shared count     : USize = me.count.load()
-    shared slack     : USize = new_capacity.sub(count)
-    shared new_start : USize = slack.div(2)
+    local count     : USize = me.count.load()
+    local slack     : USize = new_capacity.sub(count)
+    local new_start : USize = slack.div(2)
 
     block entry()
         alloc : @Allocator                    = me.storage.alloc.load()
         made  : Result[Slice[T], AllocFailed] = Slice[T].construct_result(new_capacity, alloc)
         when made
-            .Success(fresh) -> move(fresh)
-            .Failure        -> return(false)
+            .Success(fresh) => move(fresh)
+            .Failure        => return(false)
 
     block move(fresh: Slice[T])
         old_data : @T   = me.storage.data.load()
@@ -149,9 +149,9 @@ require T: typename
 /// :returns: True when there is room, false when the allocator failed.
 private routine CircularList[T].ensure_back(me: @Me) -> Bool
 require T: typename
-    shared start    : USize = me.start.load()
-    shared count    : USize = me.count.load()
-    shared capacity : USize = me.storage.count.load()
+    local start    : USize = me.start.load()
+    local count    : USize = me.count.load()
+    local capacity : USize = me.storage.count.load()
 
     block entry()
         has_back_space : Bool = start.add(count).lt(capacity)
@@ -180,8 +180,8 @@ require T: typename
     block entry()
         pushed : Result[Unit, AllocFailed] = me.push_back_result(value)
         when pushed
-            .Success -> return()
-            .Failure -> crash_allocation()
+            .Success => return()
+            .Failure => crash_allocation()
 
 /// `push_back`, returning a Failure instead of crashing when the allocator fails.
 /// :param value: The element to add.
@@ -229,8 +229,8 @@ require T: typename
     block entry()
         pushed : Result[Unit, AllocFailed] = me.push_front_result(value)
         when pushed
-            .Success -> return()
-            .Failure -> crash_allocation()
+            .Success => return()
+            .Failure => crash_allocation()
 
 /// `push_front`, returning a Failure instead of crashing when the allocator fails.
 /// :param value: The element to add.
@@ -261,15 +261,15 @@ require T: typename
     block entry()
         popped : Option[T] = me.pop_back_checked()
         when popped
-            .Present(value) -> return(value)
-            .Absent         -> crash_absent_value()
+            .Present(value) => return(value)
+            .Absent         => crash_absent_value()
 
 /// `pop_back`, returning Absent instead of crashing on an empty list.
 /// :returns: The removed element.
 /// :absent: When the list is empty.
 routine CircularList[T].pop_back_checked(me: @Me) -> Option[T]
 require T: typename
-    shared count : USize = me.count.load()
+    local count : USize = me.count.load()
 
     block entry()
         empty : Bool = count.eq(0)
@@ -312,15 +312,15 @@ require T: typename
     block entry()
         popped : Option[T] = me.pop_front_checked()
         when popped
-            .Present(value) -> return(value)
-            .Absent         -> crash_absent_value()
+            .Present(value) => return(value)
+            .Absent         => crash_absent_value()
 
 /// `pop_front`, returning Absent instead of crashing on an empty list.
 /// :returns: The removed element.
 /// :absent: When the list is empty.
 routine CircularList[T].pop_front_checked(me: @Me) -> Option[T]
 require T: typename
-    shared count : USize = me.count.load()
+    local count : USize = me.count.load()
 
     block entry()
         empty : Bool = count.eq(0)
@@ -474,7 +474,7 @@ require T: typename, Equatable[T]
 /// :returns: True when the counts match and every element pair is equal.
 private routine CircularList[T].eq_at(me: @Me, other: @Me) -> Bool
 require T: typename, Equatable[T]
-    shared la : USize = me.count.load()
+    local la : USize = me.count.load()
 
     block entry()
         lb       : USize = other.count.load()
@@ -535,11 +535,15 @@ require T: typename
         return()
 
 /// Gives the list's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
-/// :note: Safe to call on a never-filled instance, where it only resets the fields.
+/// :note: Does nothing on a hollow instance (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
 #track_caller
 routine CircularList[T].destruct(me: @Me) -> Void
 require T: typename
     block entry()
+        hollow : Bool = me.storage.alloc.load().is_null()
+        branch hollow
+            ? return()
+            : continue
         me.storage.resize(0)
         me.start.store(0)
         me.count.store(0)
@@ -550,9 +554,9 @@ require T: typename
 #track_caller
 routine CircularList[T].destruct_all(me: @Me) -> Void
 require T: typename, Destructible[T]
-    shared iter_val : CircularListIter[T]  = .construct(me)
-    shared iter     : @CircularListIter[T] <- iter_val
-    shared slot     : @T                   <- uninit
+    local iter_val : CircularListIter[T]  = .construct(me)
+    local iter     : @CircularListIter[T] <- iter_val
+    local slot     : @T                   <- .hollow()
 
     block entry()
         jump next()
@@ -560,8 +564,8 @@ require T: typename, Destructible[T]
     block next()
         item : Option[T] = iter.next()
         when item
-            .Present(value) -> element(value)
-            .Absent         -> finish()
+            .Present(value) => element(value)
+            .Absent         => finish()
 
     block element(value: T)
         slot.store(value)

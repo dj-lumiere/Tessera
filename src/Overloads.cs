@@ -80,7 +80,7 @@ public sealed partial class Compiler
             TypeArgTuple tu => "(" + string.Join(", ", tu.Types.Select(x => SlotText(x, slots))) + ")",
             _ => a.ToString(),
         });
-        return (t.Path is null ? "" : t.Path + "::") + t.Name + "[" + string.Join(", ", args) + "]";
+        return (t.Path is null ? "" : t.Path + "/") + t.Name + "[" + string.Join(", ", args) + "]";
     }
 
     /// Two routines of one name under one parent: neither may have the parameter types of the other (a call couldn't
@@ -157,7 +157,7 @@ public sealed partial class Compiler
             var modules = visible.Select(c => c.Module).Distinct().ToList();
             if (modules.Count > 1)
                 throw new CompileError(pos, $"{what} is ambiguous: it's in {string.Join(" and ", modules.Select(ShowModule))}; "
-                    + $"write the module path ({modules[0]}::...)");
+                    + $"write the module path ({modules[0]}/...)");
             scope = visible;
         }
         return LocalHides(scope, file);
@@ -203,7 +203,7 @@ public sealed partial class Compiler
 
     /// For an error about a call to a routine on a type that takes `args` arguments: a routine of the same type and name
     /// that does take that many but sits in a module `file` doesn't import, named so the error says where it is
-    /// (`List[T].construct()` without an allocator is in Standard::Os). Empty when there is none.
+    /// (`List[T].construct()` without an allocator is in Standard/Os). Empty when there is none.
     public string HiddenOverloadHint(RoutineDecl seen, int args, string file)
     {
         if (seen.Owner is null || !_methods.TryGetValue((seen.Owner.Name, seen.Name), out var all)) return "";

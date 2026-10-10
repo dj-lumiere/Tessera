@@ -4,8 +4,7 @@ namespace Tessera.Tests;
 
 /// <summary>
 /// The finish lint: a routine with a block named <c>finish</c> (the block that releases what the routine holds and is
-/// its only return) gets a warning for each return outside it and for <c>finish</c> destructing a head slot that starts
-/// as <c>&lt;- uninit</c>. A routine without such a block gets nothing.
+/// its only return) gets a warning for each return outside it. A routine without such a block gets nothing.
 /// </summary>
 public class FinishLintTests
 {
@@ -14,7 +13,7 @@ public class FinishLintTests
     {
         var warnings = Lint("""
             routine count_open(text: Bytes, alloc: @Allocator) -> USize
-                shared stack : @List[Byte] <- .construct(alloc)
+                local stack : @List[Byte] <- .construct(alloc)
 
                 block entry()
                     branch text.is_empty()
@@ -35,7 +34,7 @@ public class FinishLintTests
     {
         var warnings = Lint("""
             routine count_open(text: Bytes, alloc: @Allocator) -> USize
-                shared stack : @List[Byte] <- .construct(alloc)
+                local stack : @List[Byte] <- .construct(alloc)
 
                 block entry()
                     branch text.is_empty()
@@ -61,13 +60,13 @@ public class FinishLintTests
                         ? return(-1)
                         : continue
                     when
-                        n.eq(0) -> return(0)
-                        else    -> next()
+                        n.eq(0) => return(0)
+                        else    => next()
 
                 block next()
                     when n
-                        1    -> return(1)
-                        else -> finish(n)
+                        1    => return(1)
+                        else => finish(n)
 
                 block finish(result: S64)
                     return(result)
@@ -77,31 +76,11 @@ public class FinishLintTests
     }
 
     [Fact]
-    public void FinishDestructingAnUninitSlotWarns()
-    {
-        var warnings = Lint("""
-            routine fill(alloc: @Allocator) -> Void
-                shared buf  : @Slice[Byte] <- uninit
-                shared rest : @Slice[Byte] <- .empty()
-
-                block entry()
-                    jump finish()
-
-                block finish()
-                    buf.destruct()
-                    rest.destruct()
-                    return()
-            """);
-        string warning = Assert.Single(warnings);
-        Assert.Contains("t.tess:9:12: warning: finish destructs 'buf', a head slot that starts as uninit", warning);
-    }
-
-    [Fact]
     public void RoutineWithoutFinishIsNotChecked()
     {
         var warnings = Lint("""
             routine sign(n: S64) -> S64
-                shared buf : @Slice[Byte] <- uninit
+                local buf : @Slice[Byte] <- .hollow()
 
                 block entry()
                     branch n.lt(0)

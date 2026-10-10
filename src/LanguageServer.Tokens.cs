@@ -17,21 +17,18 @@ public static partial class LanguageServer
     ];
 
     private static readonly HashSet<string> ControlKeywords =
-        ["jump", "branch", "when", "return", "unreachable", "continue", "else"];
+        ["jump", "branch", "when", "return", "unreachable", "continue", "else", "todo"];
 
     /// Words the improvement plan adds that the parser doesn't take yet (`drop`, the Bool `and` / `or`, the `is` / `as`
-    /// patterns, `local` for `shared`): colored as keywords so code written for the planned surface reads right, and
+    /// patterns): colored as keywords so code written for the planned surface reads right, and
     /// left out of completion, since the builder still rejects them.
-    private static readonly HashSet<string> PlannedKeywords = ["drop", "and", "or", "is", "as", "local"];
+    private static readonly HashSet<string> PlannedKeywords = ["drop", "and", "or", "is", "as"];
 
-    /// Keywords the improvement plan drops or renames (`uninit` gives way to `.hollow()`, `shared` to `local`): still
-    /// colored as keywords and marked `retired`, which the Rider plugin strikes through.
-    private static readonly HashSet<string> RetiredKeywords = ["uninit", "shared"];
 
     private static readonly HashSet<string> Keywords =
     [
-        "routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "define", "block", "claim", "shared",
-        "import", "module", "private", "internal", "require", "uninit", "not", "true", "false", "null", "typename",
+        "routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "define", "block", "claim", "local",
+        "import", "module", "private", "internal", "require", "not", "true", "false", "null", "typename",
     ];
 
     /// A document's last successful check: its text, the declarations parsed from it, and the builder that checked them
@@ -100,16 +97,12 @@ public static partial class LanguageServer
             data.Add(line == prevLine ? ch - prevChar : ch);
             data.Add(length);
             data.Add(Array.IndexOf(TokenTypes, kind));
-            data.Add(kind == "keyword" && IsRetired(sourceLines, line, ch, length) ? 1 : 0);
+            data.Add(0);
             prevLine = line;
             prevChar = ch;
         }
         return new JsonObject { ["data"] = data };
     }
-
-    /// Whether the word at this span is a keyword the plan retires.
-    private static bool IsRetired(string[] lines, int line, int ch, int length) =>
-        line < lines.Length && ch + length <= lines[line].Length && RetiredKeywords.Contains(lines[line].Substring(ch, length));
 
     private static List<Token>? Lex(string shown, string text)
     {
@@ -204,7 +197,7 @@ public static partial class LanguageServer
             TokenKind.Ident when i > 0 && tokens[i - 1].Kind == TokenKind.Hash => "decorator",
             TokenKind.Hash => "decorator",
             TokenKind.Int or TokenKind.Float or TokenKind.Byte or TokenKind.Char => "number",
-            TokenKind.At or TokenKind.LeftArrow or TokenKind.Arrow or TokenKind.Question or TokenKind.ColonEq
+            TokenKind.At or TokenKind.LeftArrow or TokenKind.Arrow or TokenKind.FatArrow or TokenKind.Question or TokenKind.ColonEq
                 or TokenKind.Eq => "operator",
             _ => null,
         };
@@ -236,7 +229,7 @@ public static partial class LanguageServer
         /// The routine's and the current block's parameters: a value by one of these names is a parameter.
         private HashSet<string> _params = [];
 
-        /// The routine head's `shared` names: values every block sees, colored apart from a block's own.
+        /// The routine head's `local` names: values every block sees, colored apart from a block's own.
         private HashSet<string> _shared = [];
 
         /// The routine's result type: what a `return(...)` value is expected to be.
@@ -579,7 +572,7 @@ public static partial class LanguageServer
             RoutineDecl? writeStr;
             try
             {
-                writeStr = analysis.Compiler.FindFree("write_str", analysis.Shown, new Pos(analysis.Shown, 1, 1), "Standard::Format");
+                writeStr = analysis.Compiler.FindFree("write_str", analysis.Shown, new Pos(analysis.Shown, 1, 1), "Standard/Format");
             }
             catch (CompileError)
             {
@@ -787,7 +780,7 @@ public static partial class LanguageServer
                 _params.Add(p.Name);
             }
             Type(r.ReturnType);
-            // The head's `shared` lines: values every block sees, declared once above them.
+            // The head's `local` lines: values every block sees, declared once above them.
             foreach (var shared in r.Shared)
             {
                 _written[shared.Name] = shared.Type;
@@ -1099,7 +1092,7 @@ public static partial class LanguageServer
         private void Type(TypeRef t)
         {
             if (t.Path is not null && _byLine.TryGetValue(t.Pos.Line, out var onLine))
-                foreach (var segment in t.Path.Split("::"))
+                foreach (var segment in t.Path.Split("/"))
                     if (onLine.FirstOrDefault(x => x.Text == segment && x.Pos.Col >= t.Pos.Col) is { } p)
                         _kinds.TryAdd((p.Pos.Line, p.Pos.Col), "namespace");
             if (TypeKind(t) is { } kind) Mark(t.Pos, t.Name, kind, TypeHover(t));

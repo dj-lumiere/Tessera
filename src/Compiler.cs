@@ -81,8 +81,8 @@ public sealed partial class Compiler
             switch (d)
             {
                 case ModuleDecl m:
-                    // `Standard::Core` also declares `Standard`.
-                    for (int i = m.Path.IndexOf("::", StringComparison.Ordinal); i >= 0; i = m.Path.IndexOf("::", i + 2, StringComparison.Ordinal))
+                    // `Standard/Core` also declares `Standard`.
+                    for (int i = m.Path.IndexOf("/", StringComparison.Ordinal); i >= 0; i = m.Path.IndexOf("/", i + 1, StringComparison.Ordinal))
                         _modules.Add(m.Path[..i]);
                     _modules.Add(m.Path);
                     break;
@@ -151,16 +151,16 @@ public sealed partial class Compiler
         }
     }
 
-    private static string FullPath(TypeRef t) => t.Path is null ? t.Name : $"{t.Path}::{t.Name}";
+    private static string FullPath(TypeRef t) => t.Path is null ? t.Name : $"{t.Path}/{t.Name}";
 
     private bool IsModuleAlias(AliasDecl a) => a.Target.Args.Count == 0 && _modules.Contains(FullPath(a.Target));
 
-    /// A module path with a leading defined module name replaced: `Fmt::write_str` is `Standard::Format::write_str`
-    /// after `define Fmt = Standard::Format`.
+    /// A module path with a leading defined module name replaced: `Fmt/write_str` is `Standard/Format/write_str`
+    /// after `define Fmt = Standard/Format`.
     private string? ExpandPath(string? path, string file)
     {
         if (path is null) return null;
-        int cut = path.IndexOf("::", StringComparison.Ordinal);
+        int cut = path.IndexOf("/", StringComparison.Ordinal);
         string head = cut < 0 ? path : path[..cut];
         var aliases = _aliases.GetValueOrDefault(head)?.Where(a => IsModuleAlias(a) && Visible(a, file, null)).ToList();
         if (aliases is not { Count: > 0 }) return path;
@@ -520,7 +520,7 @@ public sealed partial class Compiler
 
     // ── Name lookup ─────────────────────────────────────────────────────────
 
-    public const string CoreModule = "Standard::Core";
+    public const string CoreModule = "Standard/Core";
 
     /// How private symbols name each input file (Program.FileTagPaths): its path from its package root. A stdlib file
     /// is already named from the stdlib directory.
@@ -528,10 +528,10 @@ public sealed partial class Compiler
 
     /// The file part of a private declaration's symbol.
     public string FileTagPath(Decl d) => FileTagPaths.GetValueOrDefault(d.File, d.File);
-    public const string OsModule = "Standard::Os";
+    public const string OsModule = "Standard/Os";
 
     private static bool IsOsModule(string module) =>
-        module == OsModule || module.StartsWith(OsModule + "::", StringComparison.Ordinal);
+        module == OsModule || module.StartsWith(OsModule + "/", StringComparison.Ordinal);
 
     private string NoOs(string module) =>
         $"{module} needs an operating system, and target {Target.Arch}-{Target.Os}-{Target.Abi} has none";
@@ -544,8 +544,8 @@ public sealed partial class Compiler
 
     private static string ShowModule(string module) => module == "" ? "the root module" : module;
 
-    /// Whether `file` sees `d`: by its plain name when `path` is null, or through `path::name`. A plain name reaches
-    /// the file's own module, Standard::Core (always imported), and the modules the file imports. `private` limits a
+    /// Whether `file` sees `d`: by its plain name when `path` is null, or through `path/name`. A plain name reaches
+    /// the file's own module, Standard/Core (always imported), and the modules the file imports. `private` limits a
     /// declaration to its file and `internal` to its module, qualified or not.
     public bool Visible(Decl d, string file, string? path)
     {
@@ -561,10 +561,10 @@ public sealed partial class Compiler
         path is not null && d.Module != path ? $"{what} isn't in {path}; it's in {ShowModule(d.Module)}"
         : d.IsPrivate ? $"{what} is private to {d.File}"
         : d.IsInternal ? $"{what} is internal to {ShowModule(d.Module)}"
-        : $"{what} is in {ShowModule(d.Module)}; import {d.Module} or write {d.Module}::...";
+        : $"{what} is in {ShowModule(d.Module)}; import {d.Module} or write {d.Module}/...";
 
     /// Of the declarations a file sees under one name, the ones that win: the file's own (a `private` one shares its
-    /// name with declarations in other files), else its module's, else all of them, from Standard::Core and the
+    /// name with declarations in other files), else its module's, else all of them, from Standard/Core and the
     /// imports alike.
     private List<T> Nearest<T>(List<T> visible, string file) where T : Decl
     {
@@ -594,7 +594,7 @@ public sealed partial class Compiler
         var modules = nearest.Select(c => c.Module).Distinct().ToList();
         if (modules.Count > 1)
             throw new CompileError(pos, $"{what} is ambiguous: it's in {string.Join(" and ", modules.Select(ShowModule))}; "
-                + $"write the module path ({modules[0]}::...)");
+                + $"write the module path ({modules[0]}/...)");
         throw new CompileError(pos, $"{what} is ambiguous: defined in {string.Join(", ", nearest.Select(c => c.Pos))}");
     }
 
@@ -622,7 +622,7 @@ public sealed partial class Compiler
 
     private Decl? OwnerDecl(TypeRef owner, string file) => TypeDeclQuiet(owner.Name, file, owner.Path);
 
-    /// The declaration behind a type. A built-in type (`S64`, `Ptr[T]`) has one too, a record in Standard::Core that
+    /// The declaration behind a type. A built-in type (`S64`, `Ptr[T]`) has one too, a record in Standard/Core that
     /// carries its conformances; null if there's none.
     private Decl? DeclOf(DType t) => t switch
     {
@@ -733,7 +733,7 @@ public sealed partial class Compiler
         }
         if (t.Path is not null) t = t with { Path = ExpandPath(t.Path, env.File) };
 
-        // The built-in types live in Standard::Core.
+        // The built-in types live in Standard/Core.
         if (t.Path is not (null or CoreModule))
             return ResolveDeclaredType(t, env);
 

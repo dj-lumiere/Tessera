@@ -46,8 +46,8 @@ static class Cli
               the number in <name>.exit (default 0). If <name>.error exists, the build must fail with a message
               containing its text. <name>.input, if present, is its standard input (else it reads an empty one).
         lint: warns on a chain of more than three calls, and in a routine with a block named finish (the block that
-              releases what the routine holds and is its only return), on a return outside finish and on finish
-              destructing a head slot that starts as <- uninit, on a routine with five or more parameters (me aside,
+              releases what the routine holds and is its only return), on a return outside finish, on a routine with
+              blocks not written yet (todo), on a routine with five or more parameters (me aside,
               C ABI signatures and generated code exempt) that should take a record instead, and in a library or example file (one not under a
               tests, playground, scratch, or generated directory) on a routine without a /// doc comment, or whose doc lacks
               a :param line for a parameter (me aside), has one for a name that isn't a parameter, or lacks
@@ -309,7 +309,7 @@ static class Cli
         return 2;
     }
 
-    private sealed class ToolError(string message) : Exception(message);
+    internal sealed class ToolError(string message) : Exception(message);
 
     /// `--target`, `--cpu`, and `--feature`, in any order; Build applies the CPU and features to the triple.
     private sealed class TargetArgs
@@ -487,7 +487,7 @@ static class Cli
             throw compiler.MainRoutine is { } main
                 ? new CompileError(main.Pos,
                     "no entry point: an executable's entry point is 'routine start() -> Void', and main is an ordinary routine name; " +
-                    "rename it to start, return nothing, and set a nonzero exit status with set_exit_code (Standard::Os)")
+                    "rename it to start, return nothing, and set a nonzero exit status with set_exit_code (Standard/Os)")
                 : new CompileError(new Pos(ShownPath(Path.GetFullPath(inputs[0])), 1, 1),
                     "no entry point: an executable needs 'routine start() -> Void' (use 'tessera check' to type-check a file without one)");
         return ir;

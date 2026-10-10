@@ -9,7 +9,7 @@ namespace Tessera;
 /// A choice or variant without `#derive` derives all five, except what it declares itself (a routine of the name, or a
 /// `conform`). Those conformances hold only when the payloads have them (`Comparable[Shape] when Comparable[Circle]`), and
 /// their routines are checked only when something uses them, as library routines are. `#derive()` derives nothing.
-/// Generated code names Standard::Format by its path, and finds its fields' and payloads' methods whatever module
+/// Generated code names Standard/Format by its path, and finds its fields' and payloads' methods whatever module
 /// declares them, so it needs no import.
 public static class Derive
 {
@@ -85,8 +85,8 @@ public static class Derive
         };
     }
 
-    /// Standard::Format's names, written with their path so generated code needs no import.
-    private const string Fmt = "Standard::Format::";
+    /// Standard/Format's names, written with their path so generated code needs no import.
+    private const string Fmt = "Standard/Format/";
 
     private static string Qualified(string concept) => concept is "Representable" or "Diagnosable" ? Fmt + concept : concept;
 
@@ -224,19 +224,19 @@ public static class Derive
     private static void WriteBody(StringBuilder sb, RecordDecl r)
     {
         sb.Append("    block entry()\n");
-        if (r.Fields.Count == 0) sb.Append($"        Standard::Format::write_str(out, \"{r.Name} {{}}\")\n");
+        if (r.Fields.Count == 0) sb.Append($"        Standard/Format/write_str(out, \"{r.Name} {{}}\")\n");
         for (int i = 0; i < r.Fields.Count; i++)
         {
             var f = r.Fields[i];
             string before = i == 0 ? $"{r.Name} {{ " : ", ";
             string value = $"f{i}";
-            sb.Append($"        Standard::Format::write_str(out, \"{before}{f.Name}: \")\n");
+            sb.Append($"        Standard/Format/write_str(out, \"{before}{f.Name}: \")\n");
             sb.Append(f.Type.Name == "Ptr"
                 ? $"        {value} : Addr = me.{f.Name}.to[Addr]()\n"
                 : $"        {value} : {f.Type} = me.{f.Name}\n");
             sb.Append($"        {value}.diagnose_into(out)\n");
         }
-        if (r.Fields.Count > 0) sb.Append("        Standard::Format::write_str(out, \" }\")\n");
+        if (r.Fields.Count > 0) sb.Append("        Standard/Format/write_str(out, \" }\")\n");
         sb.Append("        return()\n");
     }
 
@@ -350,14 +350,14 @@ public static class Derive
                 sb.Append("    block entry()\n        when me\n");
                 for (int i = 0; i < cases.Count; i++)
                     sb.Append(cases[i].Payload is null
-                        ? $"            {v.Name}.{cases[i].Name} -> named(\"{prefix}{cases[i].Name}\")\n"
-                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "p")}) -> case{i}({Payload(cases[i], "p")})\n");
+                        ? $"            {v.Name}.{cases[i].Name} => named(\"{prefix}{cases[i].Name}\")\n"
+                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "p")}) => case{i}({Payload(cases[i], "p")})\n");
                 for (int i = 0; i < cases.Count; i++)
                 {
                     if (cases[i].Payload is null) continue;
                     string p = Payload(cases[i], "p");
                     sb.Append($"\n    block case{i}({p}: {cases[i].Payload})\n");
-                    sb.Append($"        Standard::Format::write_str(out, \"{prefix}{cases[i].Name}(\")\n");
+                    sb.Append($"        Standard/Format/write_str(out, \"{prefix}{cases[i].Name}(\")\n");
                     // A pointer payload writes its address, as a record's pointer field does.
                     if (cases[i].Payload!.Name == "Ptr")
                     {
@@ -365,9 +365,9 @@ public static class Derive
                         sb.Append("        address.diagnose_into(out)\n");
                     }
                     else sb.Append($"        {p}.diagnose_into(out)\n");
-                    sb.Append("        Standard::Format::write_str(out, \")\")\n        return()\n");
+                    sb.Append("        Standard/Format/write_str(out, \")\")\n        return()\n");
                 }
-                sb.Append("\n    block named(text: Bytes)\n        Standard::Format::write_str(out, text)\n        return()\n");
+                sb.Append("\n    block named(text: Bytes)\n        Standard/Format/write_str(out, text)\n        return()\n");
                 break;
             }
             case "eq" or "compare":
@@ -378,8 +378,8 @@ public static class Derive
                 sb.Append("    block entry()\n        when me\n");
                 for (int i = 0; i < cases.Count; i++)
                     sb.Append(cases[i].Payload is null
-                        ? $"            {v.Name}.{cases[i].Name} -> left{i}()\n"
-                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "a")}) -> left{i}({Payload(cases[i], "a")})\n");
+                        ? $"            {v.Name}.{cases[i].Name} => left{i}()\n"
+                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "a")}) => left{i}({Payload(cases[i], "a")})\n");
                 for (int i = 0; i < cases.Count; i++)
                 {
                     var c = cases[i];
@@ -390,18 +390,18 @@ public static class Derive
                         ? $"return({(eq ? "true" : "0")})"
                         : $"same{i}({a}, {b})";
                     sb.Append(c.Payload is null
-                        ? $"            {v.Name}.{c.Name} -> {same}\n"
-                        : $"            {v.Name}.{c.Name}({b}) -> {same}\n");
+                        ? $"            {v.Name}.{c.Name} => {same}\n"
+                        : $"            {v.Name}.{c.Name}({b}) => {same}\n");
                     if (eq)
                     {
-                        if (cases.Count > 1) sb.Append("            else -> return(false)\n");
+                        if (cases.Count > 1) sb.Append("            else => return(false)\n");
                     }
                     else
                     {
                         var before = cases.Take(i).Select(x => $"{v.Name}.{x.Name}").ToList();
                         var after = cases.Skip(i + 1).Select(x => $"{v.Name}.{x.Name}").ToList();
-                        if (before.Count > 0) sb.Append($"            {string.Join(", ", before)} -> return(1)\n");
-                        if (after.Count > 0) sb.Append($"            {string.Join(", ", after)} -> return(-1)\n");
+                        if (before.Count > 0) sb.Append($"            {string.Join(", ", before)} => return(1)\n");
+                        if (after.Count > 0) sb.Append($"            {string.Join(", ", after)} => return(-1)\n");
                     }
                     if (c.Payload is null) continue;
                     sb.Append($"\n    block same{i}({a}: {c.Payload}, {b}: {c.Payload})\n");
@@ -415,8 +415,8 @@ public static class Derive
                 sb.Append("    block entry()\n        when me\n");
                 for (int i = 0; i < cases.Count; i++)
                     sb.Append(cases[i].Payload is null
-                        ? $"            {v.Name}.{cases[i].Name} -> bare({i})\n"
-                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "a")}) -> case{i}({Payload(cases[i], "a")})\n");
+                        ? $"            {v.Name}.{cases[i].Name} => bare({i})\n"
+                        : $"            {v.Name}.{cases[i].Name}({Payload(cases[i], "a")}) => case{i}({Payload(cases[i], "a")})\n");
                 for (int i = 0; i < cases.Count; i++)
                 {
                     if (cases[i].Payload is null) continue;
@@ -451,9 +451,9 @@ public static class Derive
                 sb.Append("    block entry()\n");
                 sb.Append("        when me\n");
                 foreach (var (name, _) in c.Members)
-                    sb.Append($"            {c.Name}.{name} -> named(\"{prefix}{name}\")\n");
+                    sb.Append($"            {c.Name}.{name} => named(\"{prefix}{name}\")\n");
                 sb.Append("\n    block named(text: Bytes)\n");
-                sb.Append("        Standard::Format::write_str(out, text)\n");
+                sb.Append("        Standard/Format/write_str(out, text)\n");
                 sb.Append("        return()\n");
                 break;
             case "eq":

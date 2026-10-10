@@ -75,7 +75,7 @@ way: each level is made of whole pieces of the level below.
 | **operation** | One explicit step: a named method (`a.add(b)`), a load (`p.load()`), a store (`p.store(v)`), a stack slot (`claim`), a call. There are no operators, so every operation says what it does and what it costs. |
 | **block**     | A straight run of operations. Values come in as block parameters (no phi nodes), and the block ends in exactly one terminator: `jump`, `branch`, `when`, or `return`.                      |
 | **routine**   | A set of blocks with one entry. Control moves between its blocks only through terminators, and every value is SSA.                                                                         |
-| **module**    | A namespace for routines, types, and constants (`Standard::Format`). It's declared in the source, not tied to files.                                                                       |
+| **module**    | A namespace for routines, types, and constants (`Standard/Format`). It's declared in the source, not tied to files.                                                                       |
 | **solution**  | The code built together to make one application.                                                                                                                                           |
 
 **No operators.** Every step is a named call, so `add` and `add_wrap`, or `shr` on a signed and an unsigned value,
@@ -158,10 +158,10 @@ sources = ["src"]
 
 ## What works today
 
-- **Modules:** namespaces with `import`, qualified paths, `define`, and `private` / `internal`; `Standard::Core` is
+- **Modules:** namespaces with `import`, qualified paths, `define`, and `private` / `internal`; `Standard/Core` is
   always imported. Two modules may declare the same name, and symbols follow the Itanium C++ mangling.
 - **Solutions:** described by a `config.toml`, or every file on the command line; the stdlib is built in with it.
-- **Standard library:** written in Tessera and layered so that only `Standard::Os` needs libc; a target without an
+- **Standard library:** written in Tessera and layered so that only `Standard/Os` needs libc; a target without an
   operating system builds without it.
 - **Builder:** emits LLVM IR text and links through `clang`, with a formatter (`fmt`) and a type-checker (`check`).
 - **Tooling:** a TextMate grammar ([`Tessera.tmbundle/`](Tessera.tmbundle/)).

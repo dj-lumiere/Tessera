@@ -20,8 +20,8 @@
 //     already-built left subtree has to be freed by hand
 //   * recursion: parse_binary, parse_primary, eval, and free_expr recurse
 
-import Standard::Alloc
-import Standard::Os
+import Standard/Alloc
+import Standard/Os
 
 // ── C FFI ─────────────────────────────────────────────────────────────────────
 
@@ -31,16 +31,16 @@ routine c_printf(fmt: @Byte) -> S32
 // ── Tokens ────────────────────────────────────────────────────────────────────
 
 choice TokenKind: U8
-    Number
-    Plus
-    Minus
-    Star
-    Slash
-    Percent
-    LParen
-    RParen
-    End
-    Invalid
+    NUMBER
+    PLUS
+    MINUS
+    STAR
+    SLASH
+    PERCENT
+    L_PAREN
+    R_PAREN
+    END
+    INVALID
 
 record Token
     kind  : TokenKind
@@ -55,13 +55,13 @@ record CalcError
 // ── Syntax tree ───────────────────────────────────────────────────────────────
 
 choice ExprKind: U8
-    Num
-    Neg
-    Add
-    Sub
-    Mul
-    Div
-    Rem
+    NUM
+    NEG
+    ADD
+    SUB
+    MUL
+    DIV
+    REM
 
 /// A manual sum type: `kind` says which fields mean something.
 ///   Num                    value
@@ -76,7 +76,7 @@ record Expr
     pos   : USize
 
 routine new_expr(node: Expr, alloc: @Allocator) -> @Expr
-    shared p : @Expr = allocate[Expr](1, alloc)
+    local p : @Expr = allocate[Expr](1, alloc)
 
     block entry()
         failed : Bool = p.is_null()
@@ -93,9 +93,9 @@ routine free_expr(e: @Expr, alloc: @Allocator) -> Void
     block entry()
         kind : ExprKind = e.kind.load()
         when kind
-            ExprKind.Num                                                         -> release()
-            ExprKind.Neg                                                         -> free_operand()
-            ExprKind.Add, ExprKind.Sub, ExprKind.Mul, ExprKind.Div, ExprKind.Rem -> free_both()
+            ExprKind.NUM                                                         => release()
+            ExprKind.NEG                                                         => free_operand()
+            ExprKind.ADD, ExprKind.SUB, ExprKind.MUL, ExprKind.DIV, ExprKind.REM => free_both()
 
     block free_operand()
         operand : @Expr = e.lhs.load()
@@ -151,7 +151,7 @@ routine Parser.peek(me: @Me) -> Result[Token, CalcError]
             : classify(i, c)
 
     block end_token(i: USize)
-        tok : Token                    = Token { kind: TokenKind.End, value: 0, pos: i, end: i }
+        tok : Token                    = Token { kind: TokenKind.END, value: 0, pos: i, end: i }
         r   : Result[Token, CalcError] = .Success(tok)
         return(r)
 
@@ -163,14 +163,14 @@ routine Parser.peek(me: @Me) -> Result[Token, CalcError]
 
     block punct(i: USize, c: Byte)
         when c
-            b'+' -> single(i, TokenKind.Plus)
-            b'-' -> single(i, TokenKind.Minus)
-            b'*' -> single(i, TokenKind.Star)
-            b'/' -> single(i, TokenKind.Slash)
-            b'%' -> single(i, TokenKind.Percent)
-            b'(' -> single(i, TokenKind.LParen)
-            b')' -> single(i, TokenKind.RParen)
-            else -> single(i, TokenKind.Invalid)
+            b'+' => single(i, TokenKind.PLUS)
+            b'-' => single(i, TokenKind.MINUS)
+            b'*' => single(i, TokenKind.STAR)
+            b'/' => single(i, TokenKind.SLASH)
+            b'%' => single(i, TokenKind.PERCENT)
+            b'(' => single(i, TokenKind.L_PAREN)
+            b')' => single(i, TokenKind.R_PAREN)
+            else => single(i, TokenKind.INVALID)
 
     block single(i: USize, kind: TokenKind)
         end : USize                    = i.add(1)
@@ -197,14 +197,14 @@ routine Parser.peek(me: @Me) -> Result[Token, CalcError]
     block scale(start: USize, j: USize, acc: S64, c: Byte)
         scaled : Option[S64] = acc.mul_checked(10)
         when scaled
-            .Present(times10) -> continue
-            .Absent           -> too_large(start)
+            .Present(times10) => continue
+            .Absent           => too_large(start)
         digit_code : U8          = c.to[U8]().sub(b'0'.to[U8]())
         digit      : S64         = digit_code.to[S64]()
         sum        : Option[S64] = times10.add_checked(digit)
         when sum
-            .Present(next) -> digits(start, j.add(1), next)
-            .Absent        -> too_large(start)
+            .Present(next) => digits(start, j.add(1), next)
+            .Absent        => too_large(start)
 
     block too_large(start: USize)
         e : CalcError                = CalcError { message: "number too large", pos: start }
@@ -212,7 +212,7 @@ routine Parser.peek(me: @Me) -> Result[Token, CalcError]
         return(r)
 
     block number_done(start: USize, j: USize, acc: S64)
-        tok : Token                    = Token { kind: TokenKind.Number, value: acc, pos: start,
+        tok : Token                    = Token { kind: TokenKind.NUMBER, value: acc, pos: start,
             end: j }
         r   : Result[Token, CalcError] = .Success(tok)
         return(r)
@@ -236,16 +236,16 @@ routine operator_at(kind: TokenKind, level: S64) -> Option[ExprKind]
 
     block additive()
         when kind
-            TokenKind.Plus  -> found(ExprKind.Add)
-            TokenKind.Minus -> found(ExprKind.Sub)
-            else            -> not_found()
+            TokenKind.PLUS  => found(ExprKind.ADD)
+            TokenKind.MINUS => found(ExprKind.SUB)
+            else            => not_found()
 
     block multiplicative()
         when kind
-            TokenKind.Star    -> found(ExprKind.Mul)
-            TokenKind.Slash   -> found(ExprKind.Div)
-            TokenKind.Percent -> found(ExprKind.Rem)
-            else              -> not_found()
+            TokenKind.STAR    => found(ExprKind.MUL)
+            TokenKind.SLASH   => found(ExprKind.DIV)
+            TokenKind.PERCENT => found(ExprKind.REM)
+            else              => not_found()
 
     block found(op: ExprKind)
         r : Option[ExprKind] = .Present(op)
@@ -276,26 +276,26 @@ routine Parser.parse_binary(me: @Me, level: S64) -> Result[@Expr, CalcError]
     block entry()
         first : Result[@Expr, CalcError] = me.parse_operand(level)
         when first
-            .Success(lhs) -> next_op(lhs)
-            .Failure      -> return(first)
+            .Success(lhs) => next_op(lhs)
+            .Failure      => return(first)
 
     block next_op(lhs: @Expr)
         peeked : Result[Token, CalcError] = me.peek()
         when peeked
-            .Success(tok)   -> continue
-            .Failure(error) -> abandon(lhs, error)
+            .Success(tok)   => continue
+            .Failure(error) => abandon(lhs, error)
         tok_kind : TokenKind                = tok.kind
         op       : Option[ExprKind]         = operator_at(tok_kind, level)
         done     : Result[@Expr, CalcError] = .Success(lhs)
         when op
-            .Present(kind) -> continue
-            .Absent        -> return(done)
+            .Present(kind) => continue
+            .Absent        => return(done)
         me.advance(tok)
         rhs : Result[@Expr, CalcError] = me.parse_operand(level)
         pos : USize                    = tok.pos
         when rhs
-            .Success(right) -> continue
-            .Failure(error) -> abandon(lhs, error)
+            .Success(right) => continue
+            .Failure(error) => abandon(lhs, error)
         alloc : @Allocator = me.alloc.load()
         node  : Expr       = Expr { kind: kind, value: 0, lhs: lhs, rhs: right, pos: pos }
         tree  : @Expr      = new_expr(node, alloc)
@@ -312,24 +312,24 @@ routine Parser.parse_primary(me: @Me) -> Result[@Expr, CalcError]
     block entry()
         peeked : Result[Token, CalcError] = me.peek()
         when peeked
-            .Success(tok)   -> continue
-            .Failure(error) -> fail(error)
+            .Success(tok)   => continue
+            .Failure(error) => fail(error)
         kind : TokenKind = tok.kind
         pos  : USize     = tok.pos
         when kind
-            TokenKind.Number  -> number(tok)
-            TokenKind.LParen  -> group(tok)
-            TokenKind.Minus   -> negate(tok)
-            TokenKind.End     -> fail_at("unexpected end of input", pos)
-            TokenKind.Invalid -> fail_at("unexpected character", pos)
-            else              -> fail_at("expected a number or '('", pos)
+            TokenKind.NUMBER  => number(tok)
+            TokenKind.L_PAREN => group(tok)
+            TokenKind.MINUS   => negate(tok)
+            TokenKind.END     => fail_at("unexpected end of input", pos)
+            TokenKind.INVALID => fail_at("unexpected character", pos)
+            else              => fail_at("expected a number or '('", pos)
 
     block number(tok: Token)
         me.advance(tok)
         alloc : @Allocator               = me.alloc.load()
         value : S64                      = tok.value
         pos   : USize                    = tok.pos
-        node  : Expr                     = Expr { kind: ExprKind.Num, value: value, lhs: null,
+        node  : Expr                     = Expr { kind: ExprKind.NUM, value: value, lhs: null,
             rhs: null, pos: pos }
         leaf  : @Expr                    = new_expr(node, alloc)
         r     : Result[@Expr, CalcError] = .Success(leaf)
@@ -340,10 +340,10 @@ routine Parser.parse_primary(me: @Me) -> Result[@Expr, CalcError]
         inner : Result[@Expr, CalcError] = me.parse_primary()
         pos   : USize                    = tok.pos
         when inner
-            .Success(operand) -> continue
-            .Failure          -> return(inner)
+            .Success(operand) => continue
+            .Failure          => return(inner)
         alloc : @Allocator               = me.alloc.load()
-        node  : Expr                     = Expr { kind: ExprKind.Neg, value: 0, lhs: operand,
+        node  : Expr                     = Expr { kind: ExprKind.NEG, value: 0, lhs: operand,
             rhs: null, pos: pos }
         tree  : @Expr                    = new_expr(node, alloc)
         r     : Result[@Expr, CalcError] = .Success(tree)
@@ -354,14 +354,14 @@ routine Parser.parse_primary(me: @Me) -> Result[@Expr, CalcError]
         me.advance(open)
         inner : Result[@Expr, CalcError] = me.parse_binary(0)
         when inner
-            .Success(tree) -> continue
-            .Failure       -> return(inner)
+            .Success(tree) => continue
+            .Failure       => return(inner)
         peeked : Result[Token, CalcError] = me.peek()
         when peeked
-            .Success(close) -> continue
-            .Failure(error) -> abandon(tree, error)
+            .Success(close) => continue
+            .Failure(error) => abandon(tree, error)
         kind   : TokenKind = close.kind
-        closed : Bool      = kind.eq(TokenKind.RParen)
+        closed : Bool      = kind.eq(TokenKind.R_PAREN)
         pos    : USize     = close.pos
         e      : CalcError = CalcError { message: "expected ')'", pos: pos }
         branch closed
@@ -388,22 +388,22 @@ routine Parser.parse_primary(me: @Me) -> Result[@Expr, CalcError]
 
 /// Parses all of source. Anything left after the expression is an error.
 routine parse(source: Bytes, alloc: @Allocator) -> Result[@Expr, CalcError]
-    shared src    : @Byte   = source.data
-    shared len    : USize   = source.count
-    shared parser : @Parser <- Parser { src: src, len: len, pos: 0, alloc: alloc }
+    local src    : @Byte   = source.data
+    local len    : USize   = source.count
+    local parser : @Parser <- Parser { src: src, len: len, pos: 0, alloc: alloc }
 
     block entry()
         parsed : Result[@Expr, CalcError] = parser.parse_binary(0)
         when parsed
-            .Success(tree) -> continue
-            .Failure       -> return(parsed)
+            .Success(tree) => continue
+            .Failure       => return(parsed)
         peeked : Result[Token, CalcError] = parser.peek()
         // a lex error here is still "something after the expression"
         when peeked
-            .Success(tok)   -> continue
-            .Failure(error) -> trailing(tree, error.pos)
+            .Success(tok)   => continue
+            .Failure(error) => trailing(tree, error.pos)
         kind   : TokenKind                = tok.kind
-        at_end : Bool                     = kind.eq(TokenKind.End)
+        at_end : Bool                     = kind.eq(TokenKind.END)
         done   : Result[@Expr, CalcError] = .Success(tree)
         branch at_end
             ? return(done)
@@ -419,14 +419,14 @@ routine parse(source: Bytes, alloc: @Allocator) -> Result[@Expr, CalcError]
 // ── Evaluator ─────────────────────────────────────────────────────────────────
 
 routine eval(e: @Expr) -> Result[S64, CalcError]
-    shared kind : ExprKind = e.kind.load()
-    shared pos  : USize    = e.pos.load()
+    local kind : ExprKind = e.kind.load()
+    local pos  : USize    = e.pos.load()
 
     block entry()
         when kind
-            ExprKind.Num                                                         -> number()
-            ExprKind.Neg                                                         -> negate()
-            ExprKind.Add, ExprKind.Sub, ExprKind.Mul, ExprKind.Div, ExprKind.Rem -> binary()
+            ExprKind.NUM                                                         => number()
+            ExprKind.NEG                                                         => negate()
+            ExprKind.ADD, ExprKind.SUB, ExprKind.MUL, ExprKind.DIV, ExprKind.REM => binary()
 
     block number()
         value : S64                    = e.value.load()
@@ -437,28 +437,28 @@ routine eval(e: @Expr) -> Result[S64, CalcError]
         operand : @Expr                  = e.lhs.load()
         inner   : Result[S64, CalcError] = eval(operand)
         when inner
-            .Success(x) -> checked(x.neg_checked())
-            .Failure    -> return(inner)
+            .Success(x) => checked(x.neg_checked())
+            .Failure    => return(inner)
 
     block binary()
         lhs  : @Expr                  = e.lhs.load()
         left : Result[S64, CalcError] = eval(lhs)
         when left
-            .Success(a) -> continue
-            .Failure    -> return(left)
+            .Success(a) => continue
+            .Failure    => return(left)
         rhs   : @Expr                  = e.rhs.load()
         right : Result[S64, CalcError] = eval(rhs)
         when right
-            .Success(b) -> continue
-            .Failure    -> return(right)
+            .Success(b) => continue
+            .Failure    => return(right)
         zero_divisor : Bool = b.eq(0)
         when kind
-            ExprKind.Add -> checked(a.add_checked(b))
-            ExprKind.Sub -> checked(a.sub_checked(b))
-            ExprKind.Mul -> checked(a.mul_checked(b))
-            ExprKind.Div -> divide(a, b, zero_divisor)
-            ExprKind.Rem -> remainder(a, b, zero_divisor)
-            else         -> unreachable  // only the five binary kinds reach binary()
+            ExprKind.ADD => checked(a.add_checked(b))
+            ExprKind.SUB => checked(a.sub_checked(b))
+            ExprKind.MUL => checked(a.mul_checked(b))
+            ExprKind.DIV => divide(a, b, zero_divisor)
+            ExprKind.REM => remainder(a, b, zero_divisor)
+            else         => unreachable  // only the five binary kinds reach binary()
 
     block divide(a: S64, b: S64, zero_divisor: Bool)
         quotient : Option[S64] = a.div_checked(b)
@@ -477,8 +477,8 @@ routine eval(e: @Expr) -> Result[S64, CalcError]
         error : CalcError              = CalcError { message: "overflow", pos: pos }
         fail  : Result[S64, CalcError] = .Failure(error)
         when result
-            .Present(value) -> return(.Success(value))
-            .Absent         -> return(fail)
+            .Present(value) => return(.Success(value))
+            .Absent         => return(fail)
 
     block division_by_zero()
         error : CalcError              = CalcError { message: "division by zero", pos: pos }
@@ -493,13 +493,13 @@ routine calculate(source: Bytes, alloc: @Allocator) -> Void
         c_printf("%-34s ", src)
         parsed : Result[@Expr, CalcError] = parse(source, alloc)
         when parsed
-            .Success(tree)  -> continue
-            .Failure(error) -> report(error)
+            .Success(tree)  => continue
+            .Failure(error) => report(error)
         result : Result[S64, CalcError] = eval(tree)
         free_expr(tree, alloc)
         when result
-            .Success(value) -> continue
-            .Failure(error) -> report(error)
+            .Success(value) => continue
+            .Failure(error) => report(error)
         c_printf("= %lld\n", value)
         return()
 

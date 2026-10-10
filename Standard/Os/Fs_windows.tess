@@ -4,9 +4,9 @@
 // entry, the working directory) becomes UTF-8 on the way out, an unpaired surrogate as U+FFFD. So any path the
 // filesystem holds works, whatever the code page.
 
-module Standard::Os
+module Standard/Os
 
-import Standard::Alloc
+import Standard/Alloc
 
 preset GENERIC_READ:                 U32 = 0x80000000
 preset GENERIC_WRITE:                U32 = 0x40000000
@@ -365,19 +365,19 @@ private routine c_prefetch_virtual_memory(process: Addr, count: USize, ranges: @
 private routine error_of(e: U32) -> FsError
     block entry()
         when e
-            2, 3     -> return(FsError.NotFound)
-            5        -> return(FsError.PermissionDenied)
-            80, 183  -> return(FsError.AlreadyExists)
-            267      -> return(FsError.NotADirectory)
-            145      -> return(FsError.DirectoryNotEmpty)
-            17       -> return(FsError.CrossDevice)
-            206      -> return(FsError.NameTooLong)
-            123, 161 -> return(FsError.InvalidPath)
-            39, 112  -> return(FsError.NoSpace)
-            19       -> return(FsError.ReadOnly)
-            32, 33   -> return(FsError.Busy)
-            8, 14    -> return(FsError.OutOfMemory)
-            else     -> return(FsError.Other)
+            2, 3     => return(FsError.NOT_FOUND)
+            5        => return(FsError.PERMISSION_DENIED)
+            80, 183  => return(FsError.ALREADY_EXISTS)
+            267      => return(FsError.NOT_A_DIRECTORY)
+            145      => return(FsError.DIRECTORY_NOT_EMPTY)
+            17       => return(FsError.CROSS_DEVICE)
+            206      => return(FsError.NAME_TOO_LONG)
+            123, 161 => return(FsError.INVALID_PATH)
+            39, 112  => return(FsError.NO_SPACE)
+            19       => return(FsError.READ_ONLY)
+            32, 33   => return(FsError.BUSY)
+            8, 14    => return(FsError.OUT_OF_MEMORY)
+            else     => return(FsError.OTHER)
 
 /// The FsError for the calling thread's last Win32 error.
 /// :returns: The matching FsError.
@@ -423,7 +423,7 @@ private routine is_invalid_handle(h: Addr) -> Bool
 /// :absent: When `text` has a NUL or doesn't fit with its 0.
 #target(os: "windows")
 internal routine encode_utf16(text: Bytes, out: @U16, capacity: USize) -> Option[USize]
-    shared iter : @BytesCharsIter <- text.chars()
+    local iter : @BytesCharsIter <- text.chars()
 
     block entry()
         jump next(0)
@@ -431,8 +431,8 @@ internal routine encode_utf16(text: Bytes, out: @U16, capacity: USize) -> Option
     block next(n: USize)
         c : Option[Char] = iter.next()
         when c
-            .Present(char) -> put(n, char.to[U32]())
-            .Absent        -> end(n)
+            .Present(char) => put(n, char.to[U32]())
+            .Absent        => end(n)
 
     block put(n: USize, cp: U32)
         branch cp.eq(0)
@@ -493,7 +493,7 @@ private routine wide_path(path: Bytes, out: @U16) -> Bool
 /// :returns: The bytes written.
 #target(os: "windows")
 internal routine narrow(units: @U16, count: USize, out: @Byte) -> USize
-    shared n : @USize <- 0
+    local n : @USize <- 0
 
     block entry()
         jump next(0)
@@ -555,7 +555,7 @@ internal routine owned_wide(units: @U16, count: USize, alloc: @Allocator) -> Res
     block entry()
         buffer : @Byte = allocate[Byte](count.mul(3).max(1), alloc)
         branch buffer.is_null()
-            ? return(.Failure(FsError.OutOfMemory))
+            ? return(.Failure(FsError.OUT_OF_MEMORY))
             : continue
         n : USize = narrow(units, count, buffer)
         return(.Success(Bytes { data: buffer, count: n, alloc: alloc }))
@@ -594,11 +594,11 @@ private routine kind_of(attributes: U32, tag: U32) -> FileKind
         reparse : Bool = attributes.bitand(FILE_ATTRIBUTE_REPARSE_POINT).ne(0)
         link    : Bool = tag.eq(IO_REPARSE_TAG_SYMLINK).bitor(tag.eq(IO_REPARSE_TAG_MOUNT_POINT))
         branch reparse.bitand(link)
-            ? return(FileKind.Symlink)
+            ? return(FileKind.SYMLINK)
             : continue
         branch attributes.bitand(FILE_ATTRIBUTE_DIRECTORY).ne(0)
-            ? return(FileKind.Directory)
-            : return(FileKind.File)
+            ? return(FileKind.DIRECTORY)
+            : return(FileKind.FILE)
 
 /// A Metadata from the attributes, times, and size Windows reports. Read-only is the read-only attribute.
 /// :param data: The file's attribute bits, times, and size.
@@ -640,7 +640,7 @@ private routine HandleInfo.to[Metadata](me: Me) -> Metadata
 #target(os: "windows")
 private routine handle_metadata(h: Addr) -> Result[Metadata, FsError]
     block entry()
-        claim info : @HandleInfo <- uninit
+        claim info : @HandleInfo <- .hollow()
         branch c_get_file_information_by_handle(h, info).ne(0)
             ? return(.Success(info.load().to[Metadata]()))
             : return(failed[Metadata]())
@@ -653,7 +653,7 @@ private routine handle_metadata(h: Addr) -> Result[Metadata, FsError]
 #target(os: "windows")
 private routine attribute_metadata(wpath: @U16) -> Result[Metadata, FsError]
     block entry()
-        claim data : @AttributeData <- uninit
+        claim data : @AttributeData <- .hollow()
         // GetFileExInfoStandard
         branch c_get_file_attributes_ex(wpath, 0, data).eq(0)
             ? return(failed[Metadata]())
@@ -681,7 +681,7 @@ private routine query_handle(wpath: @U16, link_itself: Bool) -> Addr
 #target(os: "windows")
 internal routine metadata(path: Bytes) -> Result[Metadata, FsError]
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
@@ -697,7 +697,7 @@ internal routine metadata(path: Bytes) -> Result[Metadata, FsError]
     // describe.
     block unopened(wpath: @U16)
         error : FsError = last_error()
-        branch error.eq(FsError.NotFound)
+        branch error.eq(FsError.NOT_FOUND)
             ? return(.Failure(error))
             : return(attribute_metadata(wpath))
 
@@ -708,11 +708,11 @@ internal routine metadata(path: Bytes) -> Result[Metadata, FsError]
 #target(os: "windows")
 internal routine symlink_metadata(path: Bytes) -> Result[Metadata, FsError]
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
-        claim data : @Array[U32, FIND_DATA_WORDS] <- uninit
+        claim data : @Array[U32, FIND_DATA_WORDS] <- .hollow()
         find : Addr = c_find_first_file(wpath.to[@U16](), data.to[@Byte]())
         // A root ("C:\") has no directory entry: its attributes describe it
         branch is_invalid_handle(find)
@@ -745,17 +745,17 @@ routine FileHandle.empty() -> Me
 #target(os: "windows")
 internal routine FileHandle.open(path: Bytes, mode: OpenMode) -> Result[Me, FsError]
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
         when mode
-            OpenMode.Read      -> open(wpath.to[@U16](), GENERIC_READ, OPEN_EXISTING)
-            OpenMode.Write     -> open(wpath.to[@U16](), GENERIC_WRITE, CREATE_ALWAYS)
-            OpenMode.Append    -> open(wpath.to[@U16](), FILE_APPEND_ONLY, OPEN_ALWAYS)
-            OpenMode.ReadWrite -> open(wpath.to[@U16](), GENERIC_READ.bitor(GENERIC_WRITE),
+            OpenMode.READ       => open(wpath.to[@U16](), GENERIC_READ, OPEN_EXISTING)
+            OpenMode.WRITE      => open(wpath.to[@U16](), GENERIC_WRITE, CREATE_ALWAYS)
+            OpenMode.APPEND     => open(wpath.to[@U16](), FILE_APPEND_ONLY, OPEN_ALWAYS)
+            OpenMode.READ_WRITE => open(wpath.to[@U16](), GENERIC_READ.bitor(GENERIC_WRITE),
                 OPEN_EXISTING)
-            OpenMode.CreateNew -> open(wpath.to[@U16](), GENERIC_WRITE, CREATE_NEW)
+            OpenMode.CREATE_NEW => open(wpath.to[@U16](), GENERIC_WRITE, CREATE_NEW)
 
     block open(wpath: @U16, access: U32, disposition: U32)
         h : Addr = c_create_file(wpath, access, FILE_SHARE_ALL, null, disposition,
@@ -809,14 +809,14 @@ internal routine FileHandle.write_some(me: @Me, data: @Byte, count: USize) -> Re
 #target(os: "windows")
 #expensive("asks the operating system")
 routine FileHandle.seek_result(me: @Me, offset: S64, from: SeekFrom) -> Result[U64, FsError]
-    shared at : @S64 <- 0
+    local at : @S64 <- 0
 
     block entry()
         // FILE_BEGIN, FILE_CURRENT, FILE_END
         when from
-            SeekFrom.Start   -> moved(c_set_file_pointer_ex(me.handle.load(), offset, at, 0))
-            SeekFrom.Current -> moved(c_set_file_pointer_ex(me.handle.load(), offset, at, 1))
-            SeekFrom.End     -> moved(c_set_file_pointer_ex(me.handle.load(), offset, at, 2))
+            SeekFrom.START   => moved(c_set_file_pointer_ex(me.handle.load(), offset, at, 0))
+            SeekFrom.CURRENT => moved(c_set_file_pointer_ex(me.handle.load(), offset, at, 1))
+            SeekFrom.END     => moved(c_set_file_pointer_ex(me.handle.load(), offset, at, 2))
 
     block moved(ok: CInt)
         branch ok.ne(0)
@@ -889,7 +889,7 @@ routine FileHandle.close(me: @Me) -> Void
 #target(os: "windows")
 internal routine create_dir(path: Bytes) -> Result[Unit, FsError]
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? return(checked(c_create_directory(wpath.to[@U16](), null)))
             : return(.Failure(path_error(path)))
@@ -901,7 +901,7 @@ internal routine create_dir(path: Bytes) -> Result[Unit, FsError]
 #target(os: "windows")
 internal routine remove_file(path: Bytes) -> Result[Unit, FsError]
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
@@ -926,7 +926,7 @@ internal routine remove_file(path: Bytes) -> Result[Unit, FsError]
 #target(os: "windows")
 internal routine remove_dir(path: Bytes) -> Result[Unit, FsError]
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? return(checked(c_remove_directory(wpath.to[@U16]())))
             : return(.Failure(path_error(path)))
@@ -940,8 +940,8 @@ internal routine remove_dir(path: Bytes) -> Result[Unit, FsError]
 #target(os: "windows")
 private routine move_file(from: Bytes, to: Bytes, flags: U32) -> Result[Unit, FsError]
     block entry()
-        claim a : @Array[U16, PATH_CAPACITY] <- uninit
-        claim b : @Array[U16, PATH_CAPACITY] <- uninit
+        claim a : @Array[U16, PATH_CAPACITY] <- .hollow()
+        claim b : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(from, a.to[@U16]())
             ? continue
             : return(.Failure(path_error(from)))
@@ -1000,8 +1000,8 @@ private routine copy_progress(total_size: S64, transferred: S64, stream_size: S6
 #target(os: "windows")
 internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
     block entry()
-        claim a      : @Array[U16, PATH_CAPACITY] <- uninit
-        claim b      : @Array[U16, PATH_CAPACITY] <- uninit
+        claim a      : @Array[U16, PATH_CAPACITY] <- .hollow()
+        claim b      : @Array[U16, PATH_CAPACITY] <- .hollow()
         claim copied : @U64                       <- 0
         branch wide_path(from, a.to[@U16]())
             ? continue
@@ -1023,7 +1023,7 @@ internal routine copy_file(from: Bytes, to: Bytes) -> Result[U64, FsError]
 #target(os: "windows")
 internal routine set_readonly(path: Bytes, readonly: Bool) -> Result[Unit, FsError]
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
@@ -1070,7 +1070,7 @@ private routine is_program_extension(e: Bytes) -> Bool
 #target(os: "windows")
 internal routine is_accessible(path: Bytes, access: Access) -> Bool
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? continue
             : return(false)
@@ -1079,9 +1079,9 @@ internal routine is_accessible(path: Bytes, access: Access) -> Bool
             ? return(false)
             : continue
         when access
-            Access.Read    -> return(true)
-            Access.Write   -> return(attributes.bitand(FILE_ATTRIBUTE_READONLY).eq(0))
-            Access.Execute -> run(attributes)
+            Access.READ    => return(true)
+            Access.WRITE   => return(attributes.bitand(FILE_ATTRIBUTE_READONLY).eq(0))
+            Access.EXECUTE => run(attributes)
 
     block run(attributes: U32)
         branch attributes.bitand(FILE_ATTRIBUTE_DIRECTORY).ne(0)
@@ -1095,7 +1095,7 @@ internal routine is_accessible(path: Bytes, access: Access) -> Bool
 #target(os: "windows")
 internal routine touch(path: Bytes) -> Result[Unit, FsError]
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
@@ -1128,21 +1128,21 @@ record DirIter
 /// :throws: Returns `Failure` with the reason, `InvalidPath` or `NameTooLong` when `path` doesn't fit a C path.
 #target(os: "windows")
 internal routine DirIter.open_path(me: @Me, path: Bytes) -> Result[Unit, FsError]
-    shared pattern_buffer : @Array[U16, PATH_CAPACITY] <- uninit
-    shared pattern        : @U16                       = pattern_buffer.to[@U16]()
+    local pattern_buffer : @Array[U16, PATH_CAPACITY] <- .hollow()
+    local pattern        : @U16                       = pattern_buffer.to[@U16]()
 
     block entry()
         me.find.store(inttoptr[USize, Addr](USize.MAX))
         me.pending.store(false)
         n : Option[USize] = wide(path, pattern)
         when n
-            .Present(count) -> star(count)
-            .Absent         -> return(.Failure(path_error(path)))
+            .Present(count) => star(count)
+            .Absent         => return(.Failure(path_error(path)))
 
     // path, a separator unless it ends with one, and "*"
     block star(count: USize)
         branch count.add(2).ge(PATH_CAPACITY)
-            ? return(.Failure(FsError.NameTooLong))
+            ? return(.Failure(FsError.NAME_TOO_LONG))
             : continue
         branch count.eq(0)
             ? glob(0)
@@ -1241,7 +1241,7 @@ routine DirIter.close(me: @Me) -> Void
 /// :throws: Returns `Failure` with the reason when the OS can't report it, `OutOfMemory` when `alloc` fails.
 #target(os: "windows")
 internal routine current_dir(alloc: @Allocator) -> Result[Bytes, FsError]
-    shared units : @Slice[U16] <- .empty()
+    local units : @Slice[U16] <- .empty()
 
     block entry()
         need : U32 = c_get_current_directory(0, null)
@@ -1251,8 +1251,8 @@ internal routine current_dir(alloc: @Allocator) -> Result[Bytes, FsError]
         made : Result[Slice[U16], AllocFailed] = Slice[U16].construct_result(need.to[USize](),
             alloc)
         when made
-            .Success(slice) -> read(slice)
-            .Failure        -> finish(.Failure(FsError.OutOfMemory))
+            .Success(slice) => read(slice)
+            .Failure        => finish(.Failure(FsError.OUT_OF_MEMORY))
 
     block read(slice: Slice[U16])
         slice.store_into(units)
@@ -1273,7 +1273,7 @@ internal routine current_dir(alloc: @Allocator) -> Result[Bytes, FsError]
 #target(os: "windows")
 internal routine set_current_dir(path: Bytes) -> Result[Unit, FsError]
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? return(checked(c_set_current_directory(wpath.to[@U16]())))
             : return(.Failure(path_error(path)))
@@ -1286,7 +1286,7 @@ internal routine set_current_dir(path: Bytes) -> Result[Unit, FsError]
 #target(os: "windows")
 internal routine temp_dir(alloc: @Allocator) -> Result[Bytes, FsError]
     block entry()
-        claim units : @Array[U16, PATH_CAPACITY] <- uninit
+        claim units : @Array[U16, PATH_CAPACITY] <- .hollow()
         got : U32 = c_get_temp_path(PATH_CAPACITY.to[U32](), units.to[@U16]())
         branch got.eq(0).bitor(got.to[USize]().ge(PATH_CAPACITY))
             ? fallback()
@@ -1300,7 +1300,7 @@ internal routine temp_dir(alloc: @Allocator) -> Result[Bytes, FsError]
     block fallback()
         buffer : @Byte = allocate[Byte](15, alloc)
         branch buffer.is_null()
-            ? return(.Failure(FsError.OutOfMemory))
+            ? return(.Failure(FsError.OUT_OF_MEMORY))
             : continue
         buffer.copy("C:\\Windows\\Temp", 15)
         return(.Success(Bytes { data: buffer, count: 15, alloc: alloc }))
@@ -1313,15 +1313,15 @@ internal routine temp_dir(alloc: @Allocator) -> Result[Bytes, FsError]
 #target(os: "windows")
 private routine env_dir(name: CWStr, alloc: @Allocator) -> Option[Bytes]
     block entry()
-        claim units : @Array[U16, PATH_CAPACITY] <- uninit
+        claim units : @Array[U16, PATH_CAPACITY] <- .hollow()
         got : U32 = c_get_environment_variable(name, units.to[@U16](), PATH_CAPACITY.to[U32]())
         branch got.eq(0).bitor(got.to[USize]().ge(PATH_CAPACITY))
             ? return(.Absent)
             : continue
         text : Result[Bytes, FsError] = owned_wide(units.to[@U16](), got.to[USize](), alloc)
         when text
-            .Success(t) -> return(.Present(t))
-            .Failure    -> return(.Absent)
+            .Success(t) => return(.Present(t))
+            .Failure    => return(.Absent)
 
 /// USERPROFILE, or HOMEDRIVE and HOMEPATH, in memory from alloc. NotFound when neither is set.
 /// :param alloc: The allocator for the text.
@@ -1330,27 +1330,27 @@ private routine env_dir(name: CWStr, alloc: @Allocator) -> Option[Bytes]
 ///     with `MemoryAllocationError` when `alloc` fails joining HOMEDRIVE and HOMEPATH.
 #target(os: "windows")
 internal routine home_dir(alloc: @Allocator) -> Result[Bytes, FsError]
-    shared drive : @Bytes <- .empty()
-    shared path  : @Bytes <- .empty()
+    local drive : @Bytes <- .empty()
+    local path  : @Bytes <- .empty()
 
     block entry()
         profile : Option[Bytes] = env_dir("USERPROFILE", alloc)
         when profile
-            .Present(dir) -> finish(.Success(dir))
-            .Absent       -> from_drive()
+            .Present(dir) => finish(.Success(dir))
+            .Absent       => from_drive()
 
     block from_drive()
         d : Option[Bytes] = env_dir("HOMEDRIVE", alloc)
         when d
-            .Present(text) -> home_path(text)
-            .Absent        -> finish(.Failure(FsError.NotFound))
+            .Present(text) => home_path(text)
+            .Absent        => finish(.Failure(FsError.NOT_FOUND))
 
     block home_path(drive_text: Bytes)
         drive_text.store_into(drive)
         p : Option[Bytes] = env_dir("HOMEPATH", alloc)
         when p
-            .Present(text) -> join(text)
-            .Absent        -> finish(.Failure(FsError.NotFound))
+            .Present(text) => join(text)
+            .Absent        => finish(.Failure(FsError.NOT_FOUND))
 
     block join(path_text: Bytes)
         path_text.store_into(path)
@@ -1372,18 +1372,18 @@ internal routine home_dir(alloc: @Allocator) -> Result[Bytes, FsError]
 #target(os: "windows")
 internal routine absolute_path(path: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
-        claim full : @Array[U16, PATH_CAPACITY] <- uninit
+        claim full : @Array[U16, PATH_CAPACITY] <- .hollow()
         got : U32 = c_get_full_path_name(wpath.to[@U16](), PATH_CAPACITY.to[U32](), full.to[@U16](),
             null)
         branch got.eq(0)
             ? return(failed[Bytes]())
             : continue
         branch got.to[USize]().ge(PATH_CAPACITY)
-            ? return(.Failure(FsError.NameTooLong))
+            ? return(.Failure(FsError.NAME_TOO_LONG))
             : return(owned_wide(full.to[@U16](), got.to[USize](), alloc))
 
 /// The absolute path with every link, ".", and ".." resolved, and path must exist. The "\\?\" prefix the OS gives is
@@ -1396,7 +1396,7 @@ internal routine absolute_path(path: Bytes, alloc: @Allocator) -> Result[Bytes, 
 #target(os: "windows")
 internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? continue
             : return(.Failure(path_error(path)))
@@ -1404,7 +1404,7 @@ internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result[Bytes,
         branch is_invalid_handle(h)
             ? return(failed[Bytes]())
             : continue
-        claim full : @Array[U16, PATH_CAPACITY] <- uninit
+        claim full : @Array[U16, PATH_CAPACITY] <- .hollow()
         // FILE_NAME_NORMALIZED | VOLUME_NAME_DOS
         got : U32 = c_get_final_path_name_by_handle(h, full.to[@U16](), PATH_CAPACITY.to[U32](), 0)
         e   : U32 = c_get_last_error()
@@ -1413,12 +1413,12 @@ internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result[Bytes,
             ? return(.Failure(error_of(e)))
             : continue
         branch got.to[USize]().ge(PATH_CAPACITY)
-            ? return(.Failure(FsError.NameTooLong))
+            ? return(.Failure(FsError.NAME_TOO_LONG))
             : continue
         text : Result[Bytes, FsError] = owned_wide(full.to[@U16](), got.to[USize](), alloc)
         when text
-            .Success(t)     -> strip(t)
-            .Failure(error) -> return(.Failure(error))
+            .Success(t)     => strip(t)
+            .Failure(error) => return(.Failure(error))
 
     block strip(t: Bytes)
         branch t.has_prefix("\\\\?\\UNC\\")
@@ -1458,10 +1458,10 @@ internal routine canonical_path(path: Bytes, alloc: @Allocator) -> Result[Bytes,
 #target(os: "windows")
 internal routine Mapping.map(path: Bytes, write: Bool, offset: U64,
     count: USize) -> Result[Me, FsError]
-    shared file : @FileHandle <- .empty()
+    local file : @FileHandle <- .empty()
 
     block entry()
-        claim wpath : @Array[U16, PATH_CAPACITY] <- uninit
+        claim wpath : @Array[U16, PATH_CAPACITY] <- .hollow()
         branch wide_path(path, wpath.to[@U16]())
             ? continue
             : finish(.Failure(path_error(path)))

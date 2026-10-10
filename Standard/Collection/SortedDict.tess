@@ -4,10 +4,10 @@
 // Nodes store keys/values/children inline with fixed arrays.
 // The allocator is stored in SortedDict. Node helpers still receive it as a parameter.
 
-module Standard::Collections
+module Standard/Collections
 
-import Standard::Alloc
-import Standard::Format
+import Standard/Alloc
+import Standard/Format
 
 private preset NODE_KEYS: USize = 7
 private preset NODE_CHILDREN: USize = NODE_KEYS.add(1)
@@ -92,7 +92,7 @@ require TKey: typename, TValue: typename
 /// :returns: The node, or null when the allocator fails.
 routine SortedDictNode[TKey, TValue].construct(leaf: Bool, alloc: @Allocator) -> @Me
 require TKey: typename, TValue: typename
-    shared node : @Me = allocate[Me](1, alloc)
+    local node : @Me = allocate[Me](1, alloc)
 
     block entry()
         failed : Bool = node.is_null()
@@ -123,9 +123,9 @@ require TKey: typename, TValue: typename
 /// Recomputes this node's subtree count from its own keys and its children's counts. Call it after the node's contents change.
 routine SortedDictNode[TKey, TValue].recount(me: @Me) -> Void
 require TKey: typename, TValue: typename
-    shared leaf  : Bool   = me.leaf.load()
-    shared count : USize  = me.count.load()
-    shared sum   : @USize <- uninit
+    local leaf  : Bool   = me.leaf.load()
+    local count : USize  = me.count.load()
+    local sum   : @USize <- .hollow()
 
     block entry()
         branch leaf
@@ -194,8 +194,8 @@ require TKey: typename, TValue: typename
     block entry()
         found : Option[TValue] = me.getitem_checked(key)
         when found
-            .Present(value) -> return(value)
-            .Absent         -> crash_key_not_found()
+            .Present(value) => return(value)
+            .Absent         => crash_key_not_found()
 
 /// Reads the value stored under `key`.
 /// :param key: The key to look up.
@@ -273,8 +273,8 @@ require TKey: typename, TValue: typename
     block entry()
         found : Option[@TValue] = me.at_checked(key)
         when found
-            .Present(value) -> return(value)
-            .Absent         -> crash_key_not_found()
+            .Present(value) => return(value)
+            .Absent         => crash_key_not_found()
 
 /// The address of the value under `key`, checked like getitem: a place to update the value in place. Only the
 /// value: changing a key in place would break the order. It stays valid until the dict changes shape or is
@@ -359,8 +359,8 @@ require TKey: typename, TValue: typename, Equatable[TValue]
 /// :returns: True when the counts match and every pair has an equal key and an equal value.
 private routine SortedDict[TKey, TValue].eq_at(me: @Me, other: @Me) -> Bool
 require TKey: typename, TValue: typename, Equatable[TValue]
-    shared a : @SortedDictIter[TKey, TValue] <- uninit
-    shared b : @SortedDictIter[TKey, TValue] <- uninit
+    local a : @SortedDictIter[TKey, TValue] <- .hollow()
+    local b : @SortedDictIter[TKey, TValue] <- .hollow()
 
     block entry()
         la       : USize = me.count.load()
@@ -380,8 +380,8 @@ require TKey: typename, TValue: typename, Equatable[TValue]
         x : Option[KVPair[TKey, TValue]] = a.next()
         y : Option[KVPair[TKey, TValue]] = b.next()
         when x
-            .Present(x_item) -> compare(x_item, y.unwrap())
-            .Absent          -> return(true)
+            .Present(x_item) => compare(x_item, y.unwrap())
+            .Absent          => return(true)
 
     block compare(x: KVPair[TKey, TValue], y: KVPair[TKey, TValue])
         cmp  : S32  = x.key.compare(y.key)
@@ -565,9 +565,9 @@ require TKey: typename, TValue: typename
 /// :returns: True when it split, false when the allocator failed (before anything moved).
 routine SortedDictNode[TKey, TValue].split_child(me: @Me, index: USize, alloc: @Allocator) -> Bool
 require TKey: typename, TValue: typename
-    shared left  : @Me  = me.children.getitem(index)
-    shared leaf  : Bool = left.leaf.load()
-    shared right : @Me  = Me.construct(leaf, alloc)
+    local left  : @Me  = me.children.getitem(index)
+    local leaf  : Bool = left.leaf.load()
+    local right : @Me  = Me.construct(leaf, alloc)
 
     block entry()
         no_right : Bool = right.is_null()
@@ -700,8 +700,8 @@ require TKey: typename, TValue: typename
     block entry()
         put : Result[Unit, AllocFailed] = me.put_result(key, value)
         when put
-            .Success -> return()
-            .Failure -> crash_allocation()
+            .Success => return()
+            .Failure => crash_allocation()
 
 /// `put`, returning a Failure instead of crashing when the allocator fails.
 /// :param key: The key to store under.
@@ -711,7 +711,7 @@ require TKey: typename, TValue: typename
 routine SortedDict[TKey, TValue].put_result(me: @Me, key: TKey,
     value: TValue) -> Result[Unit, AllocFailed]
 require TKey: typename, TValue: typename
-    shared root : @SortedDictNode[TKey, TValue] = me.root.load()
+    local root : @SortedDictNode[TKey, TValue] = me.root.load()
 
     block entry()
         empty : Bool = root.is_null()
@@ -785,7 +785,7 @@ require TKey: typename, TValue: typename
 /// :returns: `true` when the key was found and its value replaced, `false` when it is absent.
 routine SortedDictNode[TKey, TValue].replace(me: @Me, key: TKey, value: TValue) -> Bool
 require TKey: typename, TValue: typename
-    shared slot : USize = me.find_index(key)
+    local slot : USize = me.find_index(key)
 
     block entry()
         count  : USize = me.count.load()
@@ -839,11 +839,11 @@ require TKey: typename, TValue: typename
 /// :param i: The index of the child that is short of keys.
 routine SortedDictNode[TKey, TValue].borrow_from_left(me: @Me, i: USize) -> Void
 require TKey: typename, TValue: typename
-    shared separator   : USize = i.sub(1)
-    shared left        : @Me   = me.children.getitem(separator)
-    shared child       : @Me   = me.children.getitem(i)
-    shared left_count  : USize = left.count.load()
-    shared child_count : USize = child.count.load()
+    local separator   : USize = i.sub(1)
+    local left        : @Me   = me.children.getitem(separator)
+    local child       : @Me   = me.children.getitem(i)
+    local left_count  : USize = left.count.load()
+    local child_count : USize = child.count.load()
 
     block entry()
         child.keys.shift_right(0, child_count)
@@ -880,10 +880,10 @@ require TKey: typename, TValue: typename
 /// :param i: The index of the child that is short of keys.
 routine SortedDictNode[TKey, TValue].borrow_from_right(me: @Me, i: USize) -> Void
 require TKey: typename, TValue: typename
-    shared child       : @Me   = me.children.getitem(i)
-    shared right       : @Me   = me.children.getitem(i.add(1))
-    shared child_count : USize = child.count.load()
-    shared right_count : USize = right.count.load()
+    local child       : @Me   = me.children.getitem(i)
+    local right       : @Me   = me.children.getitem(i.add(1))
+    local child_count : USize = child.count.load()
+    local right_count : USize = right.count.load()
 
     block entry()
         pivot_key   : TKey   = me.keys.getitem(i)
@@ -920,10 +920,10 @@ require TKey: typename, TValue: typename
 /// :param alloc: The allocator that frees the merged node.
 routine SortedDictNode[TKey, TValue].merge_children(me: @Me, i: USize, alloc: @Allocator) -> Void
 require TKey: typename, TValue: typename
-    shared left        : @Me   = me.children.getitem(i)
-    shared right       : @Me   = me.children.getitem(i.add(1))
-    shared left_count  : USize = left.count.load()
-    shared right_count : USize = right.count.load()
+    local left        : @Me   = me.children.getitem(i)
+    local right       : @Me   = me.children.getitem(i.add(1))
+    local left_count  : USize = left.count.load()
+    local right_count : USize = right.count.load()
 
     block entry()
         pivot_key   : TKey   = me.keys.getitem(i)
@@ -1084,7 +1084,7 @@ require TKey: typename, TValue: typename
 /// :returns: `true` when the key was found and removed, `false` otherwise.
 routine SortedDictNode[TKey, TValue].remove(me: @Me, key: TKey, alloc: @Allocator) -> Bool
 require TKey: typename, TValue: typename
-    shared slot : USize = me.find_index(key)
+    local slot : USize = me.find_index(key)
 
     block entry()
         count  : USize = me.count.load()
@@ -1120,7 +1120,7 @@ require TKey: typename, TValue: typename
             : try_succ()
 
     block take_pred()
-        claim out : @TValue <- uninit
+        claim out : @TValue <- .hollow()
         left              : @Me    = me.children.getitem(slot)
         replacement_key   : TKey   = left.take_max_key(out, alloc)
         replacement_value : TValue = out.load()
@@ -1138,7 +1138,7 @@ require TKey: typename, TValue: typename
             : merge_and_recurse()
 
     block take_succ()
-        claim out : @TValue <- uninit
+        claim out : @TValue <- .hollow()
         right             : @Me    = me.children.getitem(slot.add(1))
         replacement_key   : TKey   = right.take_min_key(out, alloc)
         replacement_value : TValue = out.load()
@@ -1170,7 +1170,7 @@ require TKey: typename, TValue: typename
 /// :returns: `true` when an entry was removed, `false` when the key was not present.
 routine SortedDict[TKey, TValue].remove(me: @Me, key: TKey) -> Bool
 require TKey: typename, TValue: typename
-    shared root : @SortedDictNode[TKey, TValue] = me.root.load()
+    local root : @SortedDictNode[TKey, TValue] = me.root.load()
 
     block entry()
         empty : Bool = root.is_null()
@@ -1248,7 +1248,7 @@ require TKey: typename, TValue: typename
 #track_caller
 routine SortedDict[TKey, TValue].destruct(me: @Me) -> Void
 require TKey: typename, TValue: typename
-    shared root : @SortedDictNode[TKey, TValue] = me.root.load()
+    local root : @SortedDictNode[TKey, TValue] = me.root.load()
 
     block entry()
         empty : Bool = root.is_null()
@@ -1270,10 +1270,10 @@ require TKey: typename, TValue: typename
 #track_caller
 routine SortedDict[TKey, TValue].destruct_all(me: @Me) -> Void
 require TKey: typename, TValue: typename, Destructible[TKey], Destructible[TValue]
-    shared iter_val   : SortedDictIter[TKey, TValue]  = .construct(me)
-    shared iter       : @SortedDictIter[TKey, TValue] <- iter_val
-    shared key_slot   : @TKey                         <- uninit
-    shared value_slot : @TValue                       <- uninit
+    local iter_val   : SortedDictIter[TKey, TValue]  = .construct(me)
+    local iter       : @SortedDictIter[TKey, TValue] <- iter_val
+    local key_slot   : @TKey                         <- .hollow()
+    local value_slot : @TValue                       <- .hollow()
 
     block entry()
         jump next()
@@ -1281,8 +1281,8 @@ require TKey: typename, TValue: typename, Destructible[TKey], Destructible[TValu
     block next()
         item : Option[KVPair[TKey, TValue]] = iter.next()
         when item
-            .Present(entry) -> entry_found(entry)
-            .Absent         -> finish()
+            .Present(entry) => entry_found(entry)
+            .Absent         => finish()
 
     block entry_found(entry: KVPair[TKey, TValue])
         key_slot.store(entry.key)
@@ -1299,9 +1299,9 @@ require TKey: typename, TValue: typename, Destructible[TKey], Destructible[TValu
 #track_caller
 routine SortedDict[TKey, TValue].destruct_all_values(me: @Me) -> Void
 require TKey: typename, TValue: typename, Destructible[TValue]
-    shared iter_val   : SortedDictIter[TKey, TValue]  = .construct(me)
-    shared iter       : @SortedDictIter[TKey, TValue] <- iter_val
-    shared value_slot : @TValue                       <- uninit
+    local iter_val   : SortedDictIter[TKey, TValue]  = .construct(me)
+    local iter       : @SortedDictIter[TKey, TValue] <- iter_val
+    local value_slot : @TValue                       <- .hollow()
 
     block entry()
         jump next()
@@ -1309,8 +1309,8 @@ require TKey: typename, TValue: typename, Destructible[TValue]
     block next()
         item : Option[KVPair[TKey, TValue]] = iter.next()
         when item
-            .Present(entry) -> entry_found(entry)
-            .Absent         -> finish()
+            .Present(entry) => entry_found(entry)
+            .Absent         => finish()
 
     block entry_found(entry: KVPair[TKey, TValue])
         value_slot.store(entry.value)

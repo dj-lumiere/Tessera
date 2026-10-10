@@ -72,6 +72,116 @@ public class MigrateTests
         Assert.Equal(after, Migrate.Rewrite(before));
     }
 
+    [Theory]
+    [InlineData("import Standard::Os", "import Standard/Os")]
+    [InlineData("x : U64 = Standard::Format::width(Standard::Core::PI)  // see Standard::Format",
+        "x : U64 = Standard/Format/width(Standard/Core/PI)  // see Standard/Format")]
+    [InlineData("define Numbers = Standard::Collections::List<S64>", "define Numbers = Standard/Collections/List[S64]")]
+    [InlineData("Out.write(\"Standard::Os\")", "Out.write(\"Standard::Os\")")]
+    [InlineData("p : (S64, S64) = { a, b }  // a :: b", "p : (S64, S64) = { a, b }  // a :: b")]
+    public void Writes_module_paths_with_slashes(string before, string after)
+    {
+        Assert.Equal(after, Migrate.Rewrite(before));
+    }
+
+    [Fact]
+    public void Writes_when_arms_with_fat_arrows()
+    {
+        const string before = """
+            routine pick(c: Color,
+                fallback: S64) -> S64
+                block entry()
+                    when c
+                        Color.RED   -> red()  // -> stays in prose
+                        else -> other("a -> b")
+                block red()
+                    return(1)
+            """;
+        const string after = """
+            routine pick(c: Color,
+                fallback: S64) -> S64
+                block entry()
+                    when c
+                        Color.RED   => red()  // -> stays in prose
+                        else => other("a -> b")
+                block red()
+                    return(1)
+            """;
+        Assert.Equal(after, Migrate.Rewrite(before));
+    }
+
+    [Fact]
+    public void Writes_choice_members_in_screaming_snake_case()
+    {
+        const string before = """
+            choice Dir: U8
+                North
+                OutOfRange: 7  // a member with its value
+
+            variant Shape
+                Empty
+                Circle : B64
+
+            routine name(d: Dir, s: Shape) -> Bytes
+                block entry()
+                    when d
+                        Dir.North => north(s.matches(.Empty))
+                        .OutOfRange => far()
+                block north(empty: Bool)
+                    // Dir.North and .North in prose
+                    return("{Dir.North} Dir.North")
+            """;
+        const string after = """
+            choice Dir: U8
+                NORTH
+                OUT_OF_RANGE: 7  // a member with its value
+
+            variant Shape
+                Empty
+                Circle : B64
+
+            routine name(d: Dir, s: Shape) -> Bytes
+                block entry()
+                    when d
+                        Dir.NORTH => north(s.matches(.Empty))
+                        .OUT_OF_RANGE => far()
+                block north(empty: Bool)
+                    // Dir.NORTH and .North in prose
+                    return("{Dir.NORTH} Dir.North")
+            """;
+        Assert.Equal(after, Migrate.Rewrite(before));
+    }
+
+    [Theory]
+    [InlineData("is : USize = jf.mul(2)  // is twice", "`is` : USize = jf.mul(2)  // is twice")]
+    [InlineData("x : U64 = t.getitem(is.add(1)).or(m)", "x : U64 = t.getitem(`is`.add(1)).or(m)")]
+    [InlineData("show(\"and or\", `as`)", "show(\"and or\", `as`)")]
+    public void Writes_values_named_after_new_keywords_in_backticks(string before, string after)
+    {
+        Assert.Equal(after, Migrate.Rewrite(before));
+    }
+
+    [Theory]
+    [InlineData("    shared acc : @S64 <- 0", "    local acc : @S64 <- 0")]
+    [InlineData("        claim p : @List[S64] <- uninit", "        claim p : @List[S64] <- .hollow()")]
+    [InlineData("    shared buf  : @Bytes <- uninit  // filled by read", "    local buf  : @Bytes <- .hollow()  // filled by read")]
+    [InlineData("        n : S64 = shared_count(x)", "        n : S64 = shared_count(x)")]
+    public void Writes_local_and_hollow(string before, string after)
+    {
+        Assert.Equal(after, Migrate.Rewrite(before));
+    }
+
+    [Theory]
+    [InlineData("OutOfRange", "OUT_OF_RANGE")]
+    [InlineData("Log10", "LOG10")]
+    [InlineData("Ln1p", "LN1P")]
+    [InlineData("HTTPServer", "HTTP_SERVER")]
+    [InlineData("NAN", "NAN")]
+    public void Screaming_snake_case(string name, string screaming)
+    {
+        Assert.Equal(screaming, Migrate.Screaming(name));
+    }
+
     [Fact]
     public void Rewriting_twice_changes_nothing_more()
     {

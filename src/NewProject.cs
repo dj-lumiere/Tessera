@@ -26,8 +26,8 @@ static class NewProject
 
                 """),
             ("main.tess", """
-                import Standard::Format
-                import Standard::Os
+                import Standard/Format
+                import Standard/Os
 
                 /// Writes a greeting.
                 routine start() -> Void

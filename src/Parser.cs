@@ -14,23 +14,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private HashSet<string>? _values = values?.ToHashSet();
     private List<string> _routineValues = [];
 
-    /// The routine being parsed: its name as written, and its head's shared lines, for the errors that point there.
+    /// The routine being parsed: its name as written, and its head's local lines, for the errors that point there.
     private string _routineDisplay = "";
+    private string _blockName = "";
     private List<BindStmt> _routineShared = [];
 
     /// Names a value can only have between backticks: the words a statement, a target, or an expression starts with.
     internal static readonly HashSet<string> ReservedValueNames =
     [
-        "jump", "branch", "when", "return", "unreachable", "continue", "else", "block", "claim", "shared", "uninit",
+        "jump", "branch", "when", "return", "unreachable", "continue", "else", "block", "claim", "local",
         "true", "false", "null", "routine", "record", "choice", "variant", "preset", "global", "concept", "conform",
-        "define", "private", "internal", "module", "import",
+        "define", "private", "internal", "module", "import", "and", "or", "is", "as", "todo",
     ];
     /// Inside an `#external("asm")` routine: a statement may carry `#asm_prefix`, and a `branch` may test a bare
     /// comparison name (`eq`, `lt[U64]`).
     private bool _inAsm;
 
     private static readonly HashSet<string> TerminatorKeywords =
-        ["jump", "branch", "when", "return", "unreachable"];
+        ["jump", "branch", "when", "return", "unreachable", "todo"];
 
     private static readonly HashSet<string> DeclKeywords =
         ["routine", "record", "choice", "variant", "preset", "global", "concept", "conform", "define"];
@@ -87,7 +88,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new Module(decls);
     }
 
-    /// `define Fmt = Standard::Format`, `define Numbers = Standard::Collections::List[S64]`.
+    /// `define Fmt = Standard/Format`, `define Numbers = Standard/Collections/List[S64]`.
     private AliasDecl ParseDefine(List<Attribute> attrs)
     {
         var pos = Next().Pos;
@@ -100,7 +101,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new AliasDecl(file, attrs, target, name.Text, pos);
     }
 
-    /// `Standard::Format`: PascalCase names joined by `::`.
+    /// `Standard/Format`: PascalCase names joined by `/`.
     private string ParseModulePath()
     {
         var parts = new List<string>();
@@ -110,8 +111,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (!char.IsAsciiLetterUpper(name.Text[0]))
                 throw new CompileError(name.Pos, $"module names are PascalCase: '{name.Text}'");
             parts.Add(name.Text);
-        } while (Accept(TokenKind.ColonColon));
-        return string.Join("::", parts);
+        } while (Accept(TokenKind.Slash));
+        return string.Join("/", parts);
     }
 
     // ── Tokens ──────────────────────────────────────────────────────────────
@@ -463,14 +464,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             return new RoutineDecl(file, attrs, owner, name, typeParams, parameters, ret, clauses, null, pos) { Fixed = fixedArgs };
 
         // Only an #external routine is declared without a body. Every other one starts with `block entry()`, after
-        // its head: the routine's shared lines, if it has any.
+        // its head: the routine's local lines, if it has any.
         string display = owner is null ? name : $"{owner}.{name}";
         _routineDisplay = display;
         var shared = ParseHead(display);
         if (!IsIdent("block"))
         {
             if (!AtDeclStart())
-                throw Error($"only shared lines go between the header of routine '{display}' and its 'block entry()', "
+                throw Error($"only local lines go between the header of routine '{display}' and its 'block entry()', "
                             + $"and this is {Describe(Cur)}: a statement goes in a block");
             if (shared.Count > 0)
                 throw new CompileError(shared[0].Pos,
@@ -493,8 +494,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             { Fixed = fixedArgs, Source = source, Shared = shared };
     }
 
-    /// The routine's head: its `shared` lines, between the header (and its `require` lines) and the first block.
-    /// Each sees the routine's parameters and the shared lines above it, and every block sees them all.
+    /// The routine's head: its `local` lines, between the header (and its `require` lines) and the first block.
+    /// Each sees the routine's parameters and the local lines above it, and every block sees them all.
     private List<BindStmt> ParseHead(string display)
     {
         var shared = new List<BindStmt>();
@@ -506,7 +507,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             if (Is(TokenKind.Hash))
             {
                 var lineAttrs = ParseAttributes();
-                if (!IsIdent("shared"))
+                if (!IsIdent("local"))
                 {
                     _i = start;   // the attributes of the first block, or of the next declaration
                     break;
@@ -514,13 +515,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 foreach (var a in lineAttrs)
                     lineSource = a.Name == "source"
                         ? SourceOf(a)
-                        : throw new CompileError(a.Pos, $"a shared line takes #source, not #{a.Name}");
+                        : throw new CompileError(a.Pos, $"a local line takes #source, not #{a.Name}");
             }
-            if (!IsIdent("shared")) break;
+            if (!IsIdent("local")) break;
             if (_inAsm)
-                throw Error($"assembly routine '{display}' has no shared values: its blocks pass registers, so each block "
+                throw Error($"assembly routine '{display}' has no local values: its blocks pass registers, so each block "
                             + "takes its values as parameters");
-            var line = ParseShared() with { Source = lineSource };
+            var line = ParseLocal() with { Source = lineSource };
             ExpectLineEnd();
             if (_routineValues.Contains(line.Name))
                 throw new CompileError(line.Pos,
@@ -528,7 +529,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                     + "parameter itself, or share a value under a name of its own");
             if (shared.FirstOrDefault(s => s.Name == line.Name) is { } earlier)
                 throw new CompileError(line.Pos,
-                    $"'{line.Name}' is shared twice in routine '{display}' (first on line {earlier.Pos.Line}): a name is bound once");
+                    $"'{line.Name}' is local twice in routine '{display}' (first on line {earlier.Pos.Line}): a name is bound once");
             shared.Add(line);
             _values.Add(line.Name);
         }
@@ -537,29 +538,24 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return shared;
     }
 
-    /// `shared NAME : T = value` (a value) or `shared NAME : @T <- value` / `<- uninit` (a slot, what `claim` makes in
+    /// `local NAME : T = value` (a value) or `local NAME : @T <- value` (a slot, what `claim` makes in
     /// a block). Both parse as a BindStmt, the slot over a ClaimExpr: the shapes a block's lines have.
-    private BindStmt ParseShared()
+    private BindStmt ParseLocal()
     {
         var pos = Next().Pos;
-        string name = ValueName("the name of a shared value: shared x : T = value").Text;
+        string name = ValueName("the name of a local value: local x : T = value").Text;
         Expect(TokenKind.Colon, "':'");
         var type = ParseType();
         if (Is(TokenKind.LeftArrow))
         {
             if (type is not { Name: "Ptr", Args.Count: 1 })
                 throw new CompileError(type.Pos,
-                    $"a shared slot is memory, so its type is a pointer: shared {name} : @{type} <- value, or shared {name} : {type} = value for a value");
+                    $"a local slot is memory, so its type is a pointer: local {name} : @{type} <- value, or local {name} : {type} = value for a value");
             Next();
-            if (IsIdent("uninit") && PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof)
-            {
-                Next();
-                return new BindStmt(name, type, new ClaimExpr(pos), pos);
-            }
             return new BindStmt(name, type, new ClaimExpr(pos) { Contents = ParseExpr() }, pos);
         }
         if (!Is(TokenKind.Eq))
-            throw Error($"a shared line gives a value with '=' or a slot's contents with '<-': shared {name} : {type} = value");
+            throw Error($"a local line gives a value with '=' or a slot's contents with '<-': local {name} : {type} = value");
         Next();
         return new BindStmt(name, type, ParseExpr(), pos);
     }
@@ -637,6 +633,8 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         while (!AtDeclStart())
         {
             var m = Expect(TokenKind.Ident, "a choice member");
+            if (!IsScreamingSnake(m.Text))
+                throw new CompileError(m.Pos, $"choice members are SCREAMING_SNAKE_CASE: '{m.Text}' is written {Migrate.Screaming(m.Text)}");
             Expr value;
             if (Accept(TokenKind.Colon)) value = ParseExpr();
             else if (members.Count == 0) value = new IntLit(0, m.Pos);
@@ -648,6 +646,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
         return new ChoiceDecl(file, attrs, name.Text, underlying, members, pos);
     }
+
+    private static bool IsScreamingSnake(string name) =>
+        char.IsAsciiLetterUpper(name[0]) && name.All(c => char.IsAsciiLetterUpper(c) || char.IsAsciiDigit(c) || c == '_');
 
     private PresetDecl ParsePreset(List<Attribute> attrs)
     {
@@ -775,18 +776,18 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (items.Count is < MinTupleItems or > MaxTupleItems)
             throw new CompileError(pos, $"a tuple has {MinTupleItems} to {MaxTupleItems} items, not {items.Count}; use a record for more");
         return new TypeRef($"Tuple{items.Count}", items.Select(i => (TypeArg)new TypeArgType(i)).ToList(), pos)
-            { Path = "Standard::Core" };
+            { Path = "Standard/Core" };
     }
 
-    /// `Name` or `Standard::Collections::Name`: the module path, if any, and the name.
+    /// `Name` or `Standard/Collections/Name`: the module path, if any, and the name.
     private (string? Path, Token Name) ParseQualifiedName(string what)
     {
         var name = Expect(TokenKind.Ident, what);
         string? path = null;
-        while (Is(TokenKind.ColonColon) && PeekTok(1).Kind == TokenKind.Ident)
+        while (Is(TokenKind.Slash) && PeekTok(1).Kind == TokenKind.Ident)
         {
             Next();
-            path = path is null ? name.Text : $"{path}::{name.Text}";
+            path = path is null ? name.Text : $"{path}/{name.Text}";
             name = Next();
         }
         return (path, name);
@@ -854,12 +855,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var pos = Cur.Pos;
         ExpectIdent("block");
         var name = Expect(TokenKind.Ident, "a block name");
+        _blockName = name.Text;
         var parameters = ParseParams();
         // A routine's parameters are values every block sees, so a block parameter can't take one's name: passing a
         // parameter along is passing what the block has already, and a value that changes is a different value.
         foreach (var p in parameters.Where(p => _routineValues.Contains(p.Name)))
             throw new CompileError(p.Pos, _routineShared.FirstOrDefault(s => s.Name == p.Name) is { } shared
-                ? $"block '{name.Text}' has a parameter named '{p.Name}', like the value shared in the head of routine "
+                ? $"block '{name.Text}' has a parameter named '{p.Name}', like the local value in the head of routine "
                   + $"'{_routineDisplay}' (line {shared.Pos.Line}), which every block already sees: use '{p.Name}' itself, "
                   + "or give a value that changes its own name"
                 : $"block '{name.Text}' has a parameter named '{p.Name}', like the routine's parameter, which every block "
@@ -959,14 +961,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
-    /// Whether the current line is a `when` arm: it has a `->` before its end. Layout doesn't matter, so this is
+    /// Whether the current line is a `when` arm: it has a `=>` before its end. Layout doesn't matter, so this is
     /// how the arms end when lines follow a `when` with a `continue` arm.
     private bool LineIsArm()
     {
         for (int k = 0; ; k++)
         {
             var t = PeekTok(k);
-            if (t.Kind == TokenKind.Arrow) return true;
+            if (t.Kind == TokenKind.FatArrow) return true;
             if (t.Kind is TokenKind.Newline or TokenKind.Eof) return false;
         }
     }
@@ -984,10 +986,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         var pos = Cur.Pos;
         if (IsIdent("claim")) return ParseClaim();
-        if (IsIdent("shared") && PeekTok(1).Kind == TokenKind.Ident)
-            throw Error($"a shared value is declared in the head of routine '{_routineDisplay}', between its header and "
+        if (IsIdent("local") && PeekTok(1).Kind == TokenKind.Ident)
+            throw Error($"a local value is declared in the head of routine '{_routineDisplay}', between its header and "
                         + "'block entry()', where every block sees it: move this line up there, or bind the value in this "
-                        + "block without 'shared'");
+                        + "block without 'local'");
         if (Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon)
         {
             string name = ValueName("a value name").Text;
@@ -1050,10 +1052,10 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 Next();
                 ExpectLineEnd();
                 var arms = new List<(Expr?, Target)>();
-                while (!AtBlockEnd() && LineIsArm())   // an arm has `->`; the first line without one follows the when
+                while (!AtBlockEnd() && LineIsArm())   // an arm has `=>`; the first line without one follows the when
                 {
                     Expr? cond = AcceptElse() ? null : ParseExpr();
-                    Expect(TokenKind.Arrow, "'->'");
+                    Expect(TokenKind.FatArrow, "'=>'");
                     arms.Add((cond, ParseTarget()));
                     ExpectLineEnd();
                 }
@@ -1076,7 +1078,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                         do cases.Add(BindPayload(ParsePostfix()));
                         while (Accept(TokenKind.Comma));
                     }
-                    Expect(TokenKind.Arrow, "'->'");
+                    Expect(TokenKind.FatArrow, "'=>'");
                     arms.Add((cases, ParseTarget()));
                     ExpectLineEnd();
                 }
@@ -1139,6 +1141,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             Next();
             return new UnreachableTarget(pos);
+        }
+        if (IsIdent("todo"))
+        {
+            Next();
+            string message = $"block '{_blockName}' of routine '{_routineDisplay}' is not written yet";
+            var crash = new CallExpr("crash", [], [new StrLit("NotImplementedError", pos), new StrLit(message, pos)], pos)
+                { Path = "Standard/Core" };
+            return new TodoTarget(crash, _blockName, pos);
         }
         if (IsIdent("continue"))
         {
@@ -1343,17 +1353,12 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             throw new CompileError(type.Pos, $"claim takes a typed pointer: claim p : @T; found {type}");
         if (Is(TokenKind.Eq))
             throw new CompileError(pos, $"a claim takes its contents with '<-': claim {name} : {type} <- value");
-        // `claim p : @T <- value` claims the slot and stores the value in it, where the claim stands. A slot never
-        // goes unfilled by accident: one a routine fills later (an out parameter, `construct`) says so with `uninit`.
+        // `claim p : @T <- value` claims the slot and stores the value in it, where the claim stands. A slot a routine
+        // fills later (an out parameter, `construct`) starts as `.hollow()`, all zero, which its `destruct` leaves alone.
         if (!Is(TokenKind.LeftArrow))
             throw new CompileError(pos,
-                $"a claim says what the slot starts with: claim {name} : {type} <- value, or <- uninit when a routine it's passed to fills it");
+                $"a claim says what the slot starts with: claim {name} : {type} <- value, or <- .hollow() when a routine it's passed to fills it");
         Next();
-        if (IsIdent("uninit") && PeekTok(1).Kind is TokenKind.Newline or TokenKind.Eof)
-        {
-            Next();
-            return new BindStmt(name, type, new ClaimExpr(pos), pos);
-        }
         return new BindStmt(name, type, new ClaimExpr(pos) { Contents = ParseExpr() }, pos);
     }
 
@@ -1369,7 +1374,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     /// A bare name that names a visible value, and isn't a call (a call always names a routine), a path, or a record.
     private bool IsValue(Token t) =>
         _values is not null && _values.Contains(t.Text) && (t.Escaped || !ReservedValueNames.Contains(t.Text))
-        && PeekTok(1).Kind is not (TokenKind.LParen or TokenKind.ColonColon or TokenKind.LBrace);
+        && PeekTok(1).Kind is not (TokenKind.LParen or TokenKind.Slash or TokenKind.LBrace);
 
     /// A name a declaration gives a type or a type parameter. `Me` is the type a routine is on, so it names nothing else.
     private static Token TypeName(Token n) =>

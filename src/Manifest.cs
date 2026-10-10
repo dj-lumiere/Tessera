@@ -179,7 +179,7 @@ public sealed record Manifest(
     }
 
     /// The entry and every file the build needs from the roots: those declaring a module the entry imports, then
-    /// those declaring what they import, and so on. Standard:: modules are the standard library's, always built in;
+    /// those declaring what they import, and so on. Standard/ modules are the standard library's, always built in;
     /// a module no root declares is left for the build to report where it is imported.
     internal static List<string> ImportClosure(string entry, List<string> roots, string buildDir) =>
         ImportClosure(entry, ModuleFiles(roots, buildDir));
@@ -215,7 +215,7 @@ public sealed record Manifest(
             var (own, imports) = Header(pending.Dequeue());
             // The rest of the file's own module comes along: a module may span files.
             foreach (var module in own is null ? imports : imports.Prepend(own))
-                if (!module.StartsWith("Standard::", StringComparison.Ordinal) && byModule.TryGetValue(module, out var files))
+                if (!module.StartsWith("Standard/", StringComparison.Ordinal) && byModule.TryGetValue(module, out var files))
                     foreach (var file in files) Add(file);
         }
         return result;

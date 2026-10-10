@@ -8,10 +8,10 @@
 // Slice of PriorityEntry whose count is the capacity, and it keeps the
 // allocator.
 
-module Standard::Collections
+module Standard/Collections
 
-import Standard::Alloc
-import Standard::Format
+import Standard/Alloc
+import Standard/Format
 
 /// One entry of a PriorityQueue: the priority it is ordered by and the element it carries. `peek_entry` and
 /// `pop_entry` hand it back.
@@ -116,8 +116,8 @@ require TPriority: typename, TElement: typename
             : continue
         resized : Result[Unit, AllocFailed] = me.storage.resize_result(capacity)
         when resized
-            .Success -> return(true)
-            .Failure -> return(false)
+            .Success => return(true)
+            .Failure => return(false)
 
 /// Makes room for `wanted` entries: an empty array starts at 8 slots (or `wanted`, when larger), and a full one
 /// doubles until the request fits.
@@ -125,7 +125,7 @@ require TPriority: typename, TElement: typename
 /// :returns: True when the array is big enough, false when the allocator failed (the queue is left as it was).
 private routine PriorityQueue[TPriority, TElement].make_room(me: @Me, wanted: USize) -> Bool
 require TPriority: typename, TElement: typename
-    shared capacity : USize = me.storage.count.load()
+    local capacity : USize = me.storage.count.load()
 
     block entry()
         enough : Bool = capacity.ge(wanted)
@@ -165,8 +165,8 @@ require TPriority: typename, TElement: typename
     block entry()
         pushed : Result[Unit, AllocFailed] = me.push_result(priority, element)
         when pushed
-            .Success -> return()
-            .Failure -> crash_allocation()
+            .Success => return()
+            .Failure => crash_allocation()
 
 /// `push`, returning a Failure instead of crashing when the allocator fails.
 /// :param priority: The priority the element is ordered by, the smallest first.
@@ -176,7 +176,7 @@ require TPriority: typename, TElement: typename
 routine PriorityQueue[TPriority, TElement].push_result(me: @Me, priority: TPriority,
     element: TElement) -> Result[Unit, AllocFailed]
 require TPriority: typename, TElement: typename
-    shared data_at : @@PriorityEntry[TPriority, TElement] = me.storage.data
+    local data_at : @@PriorityEntry[TPriority, TElement] = me.storage.data
 
     block entry()
         count  : USize = me.count.load()
@@ -251,8 +251,8 @@ require TPriority: typename, TElement: typename
     block entry()
         top : Option[PriorityEntry[TPriority, TElement]] = me.peek_entry_checked()
         when top
-            .Present(found) -> return(.Present(found.element))
-            .Absent         -> return(.Absent)
+            .Present(found) => return(.Present(found.element))
+            .Absent         => return(.Absent)
 
 /// Reads the top entry, the smallest priority with its element, without removing it.
 /// :returns: A copy of the top entry.
@@ -263,8 +263,8 @@ require TPriority: typename, TElement: typename
     block entry()
         top : Option[PriorityEntry[TPriority, TElement]] = me.peek_entry_checked()
         when top
-            .Present(found) -> return(found)
-            .Absent         -> crash_absent_value()
+            .Present(found) => return(found)
+            .Absent         => crash_absent_value()
 
 /// Reads the top entry, the smallest priority with its element, without removing it.
 /// :returns: A copy of the top entry.
@@ -320,8 +320,8 @@ require TPriority: typename, TElement: typename
     block entry()
         top : Option[PriorityEntry[TPriority, TElement]] = me.pop_entry_checked()
         when top
-            .Present(found) -> return(.Present(found.element))
-            .Absent         -> return(.Absent)
+            .Present(found) => return(.Present(found.element))
+            .Absent         => return(.Absent)
 
 /// Removes the top entry, the smallest priority with its element, and returns it, then restores the heap order.
 /// :returns: The removed top entry.
@@ -332,16 +332,16 @@ require TPriority: typename, TElement: typename
     block entry()
         top : Option[PriorityEntry[TPriority, TElement]] = me.pop_entry_checked()
         when top
-            .Present(found) -> return(found)
-            .Absent         -> crash_absent_value()
+            .Present(found) => return(found)
+            .Absent         => crash_absent_value()
 
 /// `pop_entry`, returning Absent instead of crashing on an empty queue.
 /// :returns: The removed top entry.
 /// :absent: When the queue is empty.
 routine PriorityQueue[TPriority, TElement].pop_entry_checked(me: @Me) -> Option[PriorityEntry[TPriority, TElement]]
 require TPriority: typename, TElement: typename
-    shared count   : USize                                = me.count.load()
-    shared data_at : @@PriorityEntry[TPriority, TElement] = me.storage.data
+    local count   : USize                                = me.count.load()
+    local data_at : @@PriorityEntry[TPriority, TElement] = me.storage.data
 
     block entry()
         empty : Bool = count.eq(0)
@@ -417,11 +417,15 @@ require TPriority: typename, TElement: typename
         return()
 
 /// Gives the queue's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored priorities and elements themselves are not destructed.
-/// :note: Safe to call on a never-filled instance, where it only resets the fields.
+/// :note: Does nothing on a hollow instance (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
 #track_caller
 routine PriorityQueue[TPriority, TElement].destruct(me: @Me) -> Void
 require TPriority: typename, TElement: typename
     block entry()
+        hollow : Bool = me.storage.alloc.load().is_null()
+        branch hollow
+            ? return()
+            : continue
         me.storage.resize(0)
         me.count.store(0)
         return()
@@ -430,8 +434,8 @@ require TPriority: typename, TElement: typename
 #track_caller
 routine PriorityQueue[TPriority, TElement].destruct_all(me: @Me) -> Void
 require TPriority: typename, TElement: typename, Destructible[TPriority], Destructible[TElement]
-    shared count : USize                               = me.count.load()
-    shared data  : @PriorityEntry[TPriority, TElement] = me.storage.data.load()
+    local count : USize                               = me.count.load()
+    local data  : @PriorityEntry[TPriority, TElement] = me.storage.data.load()
 
     block entry()
         jump loop(0)
@@ -457,8 +461,8 @@ require TPriority: typename, TElement: typename, Destructible[TPriority], Destru
 #track_caller
 routine PriorityQueue[TPriority, TElement].destruct_all_elements(me: @Me) -> Void
 require TPriority: typename, TElement: typename, Destructible[TElement]
-    shared count : USize                               = me.count.load()
-    shared data  : @PriorityEntry[TPriority, TElement] = me.storage.data.load()
+    local count : USize                               = me.count.load()
+    local data  : @PriorityEntry[TPriority, TElement] = me.storage.data.load()
 
     block entry()
         jump loop(0)
@@ -496,7 +500,7 @@ require TPriority: typename, TElement: typename, Diagnosable[TPriority], Diagnos
 /// :param out: The writer to write to.
 routine PriorityQueue[TPriority, TElement].diagnose_into[TWriter](me: Me, out: @TWriter) -> Void
 require TPriority: typename, TElement: typename, Diagnosable[TPriority], Diagnosable[TElement], TWriter: typename, Writer[TWriter]
-    shared count : USize = me.count
+    local count : USize = me.count
 
     block entry()
         write_str(out, "[")

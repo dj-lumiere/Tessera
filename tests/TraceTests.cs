@@ -66,7 +66,7 @@ public class TraceTests
     }
 
     /// tests/trace_frames with an operating system, tests/freestanding (its own crash handler and board step, no
-    /// Standard::Os) without one, for a Cortex-M CPU on 32-bit ARM, where the builder's entry is a Cortex-M reset vector.
+    /// Standard/Os) without one, for a Cortex-M CPU on 32-bit ARM, where the builder's entry is a Cortex-M reset vector.
     private static string CompileTraceProgram(string triple, bool trace)
     {
         string root = FindRoot();

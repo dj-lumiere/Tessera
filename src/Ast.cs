@@ -7,7 +7,7 @@ namespace Tessera;
 /// A type as written in source: `S64`, `@Byte` (a `Ptr[Byte]`), `Array[T, 8]`, `Callable[(Addr, USize), Addr]`.
 public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 {
-    /// The module a qualified name was written with: `Standard::Collections` in `Standard::Collections::List[T]`.
+    /// The module a qualified name was written with: `Standard/Collections` in `Standard/Collections/List[T]`.
     public string? Path { get; init; }
 
     /// A type the builder filled in rather than one written: `x.to()` takes the type its value goes to.
@@ -15,7 +15,7 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 
     public override string ToString() =>
         Path is null && Name == "Ptr" && Args is [TypeArgType inner] ? $"@{inner}"
-        : (Path is null ? "" : Path + "::") + (Args.Count == 0 ? Name : $"{Name}[{string.Join(", ", Args)}]");
+        : (Path is null ? "" : Path + "/") + (Args.Count == 0 ? Name : $"{Name}[{string.Join(", ", Args)}]");
     public static TypeRef Simple(string name, Pos pos) => new(name, [], pos);
 }
 
@@ -72,7 +72,7 @@ public abstract record Decl(string File, List<Attribute> Attributes, Pos Pos)
     public bool IsPrivate { get; init; }
     /// `internal`: visible only in the declaring module.
     public bool IsInternal { get; init; }
-    /// The module the declaring file names (`Standard::Format`), or "" for a file without a `module` line.
+    /// The module the declaring file names (`Standard/Format`), or "" for a file without a `module` line.
     public string Module { get; init; } = "";
 }
 
@@ -92,8 +92,8 @@ public sealed record RoutineDecl(
     /// declare: `S64` in `S32.to[S64]`, `@T` in `Array[T, COUNT].to[@T]`. A call picks the one its type arguments match.
     public List<TypeRef> Fixed { get; init; } = [];
 
-    /// The head's `shared` lines, top to bottom: values and slots every block sees, made once when the routine starts,
-    /// before `entry`. `shared x : T = v` is a BindStmt of v, and `shared p : @T <- v` (or `<- uninit`) a BindStmt of
+    /// The head's `local` lines, top to bottom: values and slots every block sees, made once when the routine starts,
+    /// before `entry`. `local x : T = v` is a BindStmt of v, and `local p : @T <- v` a BindStmt of
     /// a ClaimExpr, the shapes a block's binding and claim have. Empty for a routine without a body.
     public List<BindStmt> Shared { get; init; } = [];
 
@@ -154,13 +154,13 @@ public sealed record BlockDecl(string Name, List<Param> Params, List<Stmt> Stmts
 
 public sealed record Module(List<Decl> Decls);
 
-/// `module Standard::Format`: the module every declaration in the file belongs to. At most one, first in the file.
+/// `module Standard/Format`: the module every declaration in the file belongs to. At most one, first in the file.
 public sealed record ModuleDecl(string File, string Path, Pos Pos) : Decl(File, [], Pos);
 
-/// `import Standard::Format`: a module the file uses. Imports follow the module line, before any other declaration.
+/// `import Standard/Format`: a module the file uses. Imports follow the module line, before any other declaration.
 public sealed record ImportDecl(string File, string Path, Pos Pos) : Decl(File, [], Pos);
 
-/// `define Fmt = Standard::Format` or `define Numbers = Standard::Collections::List[S64]`: a second name for a module
+/// `define Fmt = Standard/Format` or `define Numbers = Standard/Collections/List[S64]`: a second name for a module
 /// or a type. It belongs to its module like any declaration, so importers see it.
 public sealed record AliasDecl(string File, List<Attribute> Attributes, TypeRef Target, string Name, Pos Pos)
     : Decl(File, Attributes, Pos);
@@ -215,14 +215,14 @@ public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos);
 /// signature, or by the one written.
 public sealed record RoutineRef(string Name, TypeRef? Callable, Pos Pos) : Expr(Pos)
 {
-    /// The module of a qualified routine: `Standard::Os` in `Standard::Os::wake_one.to[Callable]()`.
+    /// The module of a qualified routine: `Standard/Os` in `Standard/Os/wake_one.to[Callable]()`.
     public string? Path { get; init; }
 }
 
 /// `name(args)` or `name[T](args)` — a free routine call.
 public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos)
 {
-    /// The module of a qualified call: `Standard::Format` in `Standard::Format::write_str(...)`.
+    /// The module of a qualified call: `Standard/Format` in `Standard/Format/write_str(...)`.
     public string? Path { get; init; }
 }
 
@@ -240,7 +240,7 @@ public sealed record ImplicitMemberExpr(string Name, Pos Pos) : Expr(Pos);
 /// `NAME` or `Type.NAME` — a preset, or a choice member.
 public sealed record PresetRef(TypeRef? Owner, string Name, Pos Pos) : Expr(Pos)
 {
-    /// The module of a qualified preset without an owner type: `Standard::Core` in `Standard::Core::PI`.
+    /// The module of a qualified preset without an owner type: `Standard/Core` in `Standard/Core/PI`.
     public string? Path { get; init; }
 }
 
@@ -265,7 +265,8 @@ public sealed record SelectExpr(Expr Cond, Expr IfTrue, Expr IfFalse, Pos Pos) :
 /// to an LLVM alloca.
 public sealed record ClaimExpr(Pos Pos) : Expr(Pos)
 {
-    /// `claim p : @T <- value`: stored into the slot where the claim stands; null for `<- uninit`.
+    /// `claim p : @T <- value`: stored into the slot where the claim stands. Null only for a slot the builder makes
+    /// itself, which it fills before any read.
     public Expr? Contents { get; init; }
 }
 
@@ -298,7 +299,11 @@ public sealed record UnreachableTarget(Pos Pos) : Target(Pos);
 /// `continue` as an arm: go on with the next line of the same block.
 public sealed record ContinueTarget(Pos Pos) : Target(Pos);
 /// Any other #noreturn call used as a target, such as `crash_allocation()`.
-public sealed record ExprTarget(Expr Call, Pos Pos) : Target(Pos);
+public record ExprTarget(Expr Call, Pos Pos) : Target(Pos);
+
+/// `todo`: a block not written yet. It crashes with `NotImplementedError`, naming the routine and the block, so a
+/// program with some blocks still to write builds and runs up to them.
+public sealed record TodoTarget(Expr Call, string Block, Pos Pos) : ExprTarget(Call, Pos);
 
 public sealed record JumpTerm(CallTarget Target, Pos Pos) : Terminator(Pos);
 public sealed record BranchTerm(Expr Cond, Target IfTrue, Target IfFalse, Pos Pos) : Terminator(Pos);

@@ -13,10 +13,10 @@
 //
 // entry_state values: 0 = dead, 1 = live.
 
-module Standard::Collections
+module Standard/Collections
 
-import Standard::Alloc
-import Standard::Format
+import Standard/Alloc
+import Standard/Format
 
 private preset SLOT_EMPTY:     USize = USize.MAX
 private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
@@ -93,7 +93,7 @@ require TKey: typename, TValue: typename
 ///     first empty slot.
 routine Dict[TKey, TValue].slot(me: Me, key: TKey, hash: U64) -> USize
 require TKey: typename, TValue: typename
-    shared first_tombstone : @USize <- SLOT_EMPTY
+    local first_tombstone : @USize <- SLOT_EMPTY
 
     block entry()
         capacity : USize = me.slots.count
@@ -107,9 +107,9 @@ require TKey: typename, TValue: typename
         is_empty     : Bool   = entry_idx.eq(SLOT_EMPTY)
         is_tombstone : Bool   = entry_idx.eq(SLOT_TOMBSTONE)
         when
-            is_empty     -> empty_slot(index)
-            is_tombstone -> tombstone_slot(index)
-            else         -> occupied_slot(index, entry_idx)
+            is_empty     => empty_slot(index)
+            is_tombstone => tombstone_slot(index)
+            else         => occupied_slot(index, entry_idx)
 
     block empty_slot(index: USize)
         has_tombstone : Bool  = first_tombstone.load().ne(SLOT_EMPTY)
@@ -254,13 +254,13 @@ require TKey: typename, TValue: typename, Equatable[TValue]
 /// :returns: True when it rehashed, false when the allocator failed (the map is left as it was).
 private routine Dict[TKey, TValue].rehash(me: @Me, new_capacity: USize) -> Bool
 require TKey: typename, TValue: typename
-    shared alloc        : @Allocator     = me.keys.alloc.load()
-    shared fresh        : @Me            <- .construct(alloc)
-    shared keys         : @Slice[TKey]   = fresh.keys
-    shared values       : @Slice[TValue] = fresh.values
-    shared hashes       : @Slice[U64]    = fresh.hashes
-    shared entry_states : @Slice[U8]     = fresh.entry_states
-    shared slots        : @Slice[USize]  = fresh.slots
+    local alloc        : @Allocator     = me.keys.alloc.load()
+    local fresh        : @Me            <- .construct(alloc)
+    local keys         : @Slice[TKey]   = fresh.keys
+    local values       : @Slice[TValue] = fresh.values
+    local hashes       : @Slice[U64]    = fresh.hashes
+    local entry_states : @Slice[U8]     = fresh.entry_states
+    local slots        : @Slice[USize]  = fresh.slots
 
     block entry()
         made_keys : Bool = make_array[TKey](keys, new_capacity)
@@ -342,7 +342,7 @@ require TKey: typename, TValue: typename
 /// :returns: True when there is room, false when the allocator failed (the map is left as it was).
 private routine Dict[TKey, TValue].ensure(me: @Me) -> Bool
 require TKey: typename, TValue: typename
-    shared capacity : USize = me.slots.count.load()
+    local capacity : USize = me.slots.count.load()
 
     block entry()
         empty : Bool = capacity.eq(0)
@@ -372,9 +372,9 @@ require TKey: typename, TValue: typename
 /// :param hash: The key's hash, so rehash can pass the stored one instead of hashing every key again.
 routine Dict[TKey, TValue].put_direct(me: @Me, key: TKey, value: TValue, hash: U64) -> Void
 require TKey: typename, TValue: typename
-    shared slot      : USize  = me.load().slot(key, hash)
-    shared slots     : @USize = me.slots.data.load()
-    shared entry_idx : USize  = slots.stride(slot).load()
+    local slot      : USize  = me.load().slot(key, hash)
+    local slots     : @USize = me.slots.data.load()
+    local entry_idx : USize  = slots.stride(slot).load()
 
     block entry()
         occupied : Bool = entry_idx.lt(SLOT_TOMBSTONE)
@@ -413,8 +413,8 @@ require TKey: typename, TValue: typename
     block entry()
         put : Result[Unit, AllocFailed] = me.put_result(key, value)
         when put
-            .Success -> return()
-            .Failure -> crash_allocation()
+            .Success => return()
+            .Failure => crash_allocation()
 
 /// `put`, returning a Failure instead of crashing when the allocator fails.
 /// :param key: The key to store under.
@@ -439,7 +439,7 @@ require TKey: typename, TValue: typename
 #track_caller
 routine Dict[TKey, TValue].getitem(me: Me, key: TKey) -> TValue
 require TKey: typename, TValue: typename
-    shared entry_idx : USize = me.find(key)
+    local entry_idx : USize = me.find(key)
 
     block entry()
         found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
@@ -469,7 +469,7 @@ require TKey: typename, TValue: typename
 /// :absent: When the key is not present.
 routine Dict[TKey, TValue].getitem_checked(me: Me, key: TKey) -> Option[TValue]
 require TKey: typename, TValue: typename
-    shared entry_idx : USize = me.find(key)
+    local entry_idx : USize = me.find(key)
 
     block entry()
         found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
@@ -500,7 +500,7 @@ require TKey: typename, TValue: typename
 #track_caller
 routine Dict[TKey, TValue].at(me: Me, key: TKey) -> @TValue
 require TKey: typename, TValue: typename
-    shared entry_idx : USize = me.find(key)
+    local entry_idx : USize = me.find(key)
 
     block entry()
         found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
@@ -531,7 +531,7 @@ require TKey: typename, TValue: typename
 /// :absent: When the key is not present.
 routine Dict[TKey, TValue].at_checked(me: Me, key: TKey) -> Option[@TValue]
 require TKey: typename, TValue: typename
-    shared entry_idx : USize = me.find(key)
+    local entry_idx : USize = me.find(key)
 
     block entry()
         found : Bool = entry_idx.lt(SLOT_TOMBSTONE)
@@ -587,11 +587,15 @@ require TKey: typename, TValue: typename
         return(true)
 
 /// Gives the dict's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
-/// :note: Safe to call on a never-filled instance, where it only resets the fields.
+/// :note: Does nothing on a hollow instance (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
 #track_caller
 routine Dict[TKey, TValue].destruct(me: @Me) -> Void
 require TKey: typename, TValue: typename
     block entry()
+        hollow : Bool = me.keys.alloc.load().is_null()
+        branch hollow
+            ? return()
+            : continue
         me.keys.resize(0)
         me.values.resize(0)
         me.hashes.resize(0)
@@ -605,10 +609,10 @@ require TKey: typename, TValue: typename
 #track_caller
 routine Dict[TKey, TValue].destruct_all(me: @Me) -> Void
 require TKey: typename, TValue: typename, Destructible[TKey], Destructible[TValue]
-    shared iter_val   : DictIter[TKey, TValue]  = .construct(me)
-    shared iter       : @DictIter[TKey, TValue] <- iter_val
-    shared key_slot   : @TKey                   <- uninit
-    shared value_slot : @TValue                 <- uninit
+    local iter_val   : DictIter[TKey, TValue]  = .construct(me)
+    local iter       : @DictIter[TKey, TValue] <- iter_val
+    local key_slot   : @TKey                   <- .hollow()
+    local value_slot : @TValue                 <- .hollow()
 
     block entry()
         jump next()
@@ -616,8 +620,8 @@ require TKey: typename, TValue: typename, Destructible[TKey], Destructible[TValu
     block next()
         item : Option[KVPair[TKey, TValue]] = iter.next()
         when item
-            .Present(entry) -> entry_found(entry)
-            .Absent         -> finish()
+            .Present(entry) => entry_found(entry)
+            .Absent         => finish()
 
     block entry_found(entry: KVPair[TKey, TValue])
         key_slot.store(entry.key)
@@ -634,9 +638,9 @@ require TKey: typename, TValue: typename, Destructible[TKey], Destructible[TValu
 #track_caller
 routine Dict[TKey, TValue].destruct_all_values(me: @Me) -> Void
 require TKey: typename, TValue: typename, Destructible[TValue]
-    shared iter_val   : DictIter[TKey, TValue]  = .construct(me)
-    shared iter       : @DictIter[TKey, TValue] <- iter_val
-    shared value_slot : @TValue                 <- uninit
+    local iter_val   : DictIter[TKey, TValue]  = .construct(me)
+    local iter       : @DictIter[TKey, TValue] <- iter_val
+    local value_slot : @TValue                 <- .hollow()
 
     block entry()
         jump next()
@@ -644,8 +648,8 @@ require TKey: typename, TValue: typename, Destructible[TValue]
     block next()
         item : Option[KVPair[TKey, TValue]] = iter.next()
         when item
-            .Present(entry) -> entry_found(entry)
-            .Absent         -> finish()
+            .Present(entry) => entry_found(entry)
+            .Absent         => finish()
 
     block entry_found(entry: KVPair[TKey, TValue])
         value_slot.store(entry.value)
@@ -696,8 +700,8 @@ require T: typename
         alloc : @Allocator                    = into.alloc.load()
         made  : Result[Slice[T], AllocFailed] = Slice[T].construct_result(count, alloc)
         when made
-            .Success(slice) -> stored(slice)
-            .Failure        -> return(false)
+            .Success(slice) => stored(slice)
+            .Failure        => return(false)
 
     block stored(slice: Slice[T])
         slice.store_into(into)

@@ -10,7 +10,7 @@ public abstract class DType : IEquatable<DType>
     public abstract string Name { get; }
 
     /// The type's identity. It's the name, except that a declared type is named by its module (and by its file, if
-    /// it's private), since two modules may each declare a `Point`: `Standard::Core::Option[S64]`.
+    /// it's private), since two modules may each declare a `Point`: `Standard/Core/Option[S64]`.
     public virtual string Key => Name;
 
     /// The LLVM IR spelling.
@@ -31,7 +31,7 @@ public abstract class DType : IEquatable<DType>
     /// A declared type's key: its module path and name, with generic arguments by key.
     public static string DeclKey(Decl d, string name, List<DType> args)
     {
-        string head = d.Module == "" ? name : $"{d.Module}::{name}";
+        string head = d.Module == "" ? name : $"{d.Module}/{name}";
         if (d.IsPrivate) head += "@" + new string(d.File.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_').ToArray());
         return args.Count == 0 ? head : $"{head}[{string.Join(", ", args.Select(a => a.Key))}]";
     }
@@ -246,7 +246,7 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public bool IsTuple => IsTupleDecl(Decl);
 
     public static bool IsTupleDecl(RecordDecl d) =>
-        d.Module == "Standard::Core" && d.Name is "Tuple2" or "Tuple3" or "Tuple4";
+        d.Module == "Standard/Core" && d.Name is "Tuple2" or "Tuple3" or "Tuple4";
 
     /// The type a transparent or library `#llvm("iN")` record lowers to, or null for an aggregate.
     public DType? TransparentField => transparentField(this);
@@ -372,7 +372,7 @@ public sealed record BuildTarget(string Arch, string Os, string Abi, int Size, s
         _ => null,
     };
 
-    /// Whether the target has an operating system, which the hosted layer (Standard::Os) needs.
+    /// Whether the target has an operating system, which the hosted layer (Standard/Os) needs.
     public bool HasOs => Os != "none";
 
     /// Evaluates one `#target(key: value)` predicate.

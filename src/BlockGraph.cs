@@ -2,8 +2,7 @@ namespace Tessera;
 
 /// A routine's blocks as a graph: each block's edges go to the blocks its terminator and its guard lines name. A loop is
 /// a set of blocks that reach each other again through those edges (a strongly connected component), a block that
-/// jumps to itself being the one-block case. UninitReads uses the loops to tell how a slot filled inside one is filled
-/// after it, and ExpensiveCallLint to tell which calls run on every pass.
+/// jumps to itself being the one-block case. ExpensiveCallLint uses the loops to tell which calls run on every pass.
 public static class BlockGraph
 {
     /// Each block's successors, in the order its lines and terminator name them: the blocks a `jump`, a `branch` or

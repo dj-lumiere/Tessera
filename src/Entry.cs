@@ -4,7 +4,7 @@ namespace Tessera;
 
 /// The program's entry. A program's entry point is `routine start() -> Void`. On a target with an operating system the
 /// builder writes the platform's C `main`, which calls `start` and returns the exit status `set_exit_code`
-/// (Standard::Os) stored, 0 when nothing did. On a target without one, a program that defines `start` gets the entry
+/// (Standard/Os) stored, 0 when nothing did. On a target without one, a program that defines `start` gets the entry
 /// symbol `_start` and the generic startup in front of it, in this order: the stack pointer from `__stack_top` (on
 /// Cortex-M the vector table's first word does that), .bss zeroed (`__bss_start` .. `__bss_end`), .data copied from
 /// its load address on the targets that run from flash (`__data_load` to `__data_start` .. `__data_end`: 32-bit ARM
@@ -20,7 +20,7 @@ public sealed partial class Compiler
     public const string WhenBootedName = "when_booted";
 
     /// The module of the startup steps the generated entry calls on a target without an operating system.
-    private const string BootModule = "Standard::Boot";
+    private const string BootModule = "Standard/Boot";
 
     /// The generated entry, appended to the module by Output.
     private readonly StringBuilder _entry = new();
@@ -62,7 +62,7 @@ public sealed partial class Compiler
         if (r.TypeParams.Count != 0 || r.Params.Count != 0 || !returnsVoid)
             throw new CompileError(r.Pos,
                 r.Name == StartName
-                    ? $"{what}, declared '{shape}': no parameters, and it returns nothing (set_exit_code in Standard::Os sets the exit status)"
+                    ? $"{what}, declared '{shape}': no parameters, and it returns nothing (set_exit_code in Standard/Os sets the exit status)"
                     : $"{what}, declared '{shape}'");
         if (r.Blocks is null || IsAsm(r) || r.Attr("export") is not null || r.Attr("inline") is not null)
             throw new CompileError(r.Pos, $"{what}: an ordinary '{shape}' with a body, which the builder calls (no #external, #export, or #inline)");
@@ -91,7 +91,7 @@ public sealed partial class Compiler
     {
         var decl = _free.GetValueOrDefault(name)?.FirstOrDefault(r => r.IsLibrary && r.Module == module)
                    ?? throw new CompileError(pos,
-                       $"the generated entry needs {module}::{name}, which the standard library doesn't have for {Target.Arch}-{Target.Os}-{Target.Abi}");
+                       $"the generated entry needs {module}/{name}, which the standard library doesn't have for {Target.Arch}-{Target.Os}-{Target.Abi}");
         return RequireInstance(decl, new TypeEnv(decl.File));
     }
 
@@ -102,7 +102,7 @@ public sealed partial class Compiler
     /// The attributes of a function the builder writes itself.
     private string EntryAttrs(Pos pos) => $"nounwind{UnwindTable} {CpuModel.For(Target, pos).FnAttrs}";
 
-    /// The platform's C `main`: `start`, then the exit status from Standard::Os's exit_code (what set_exit_code stored
+    /// The platform's C `main`: `start`, then the exit status from Standard/Os's exit_code (what set_exit_code stored
     /// last, 0 when nothing did). A crash ends the process before that with its own status.
     private void PlanHostedMain(RoutineDecl start, Instance startInst)
     {

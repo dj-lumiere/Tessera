@@ -15,10 +15,10 @@
 // page, while a pipe or a file gets the bytes as they are (WriteFile, ReadFile), with no "\n" to "\r\n" change. A
 // UTF-8 sequence split across two writes to a console is held until the rest comes.
 
-module Standard::Os
+module Standard/Os
 
-import Standard::Alloc
-import Standard::Format
+import Standard/Alloc
+import Standard/Format
 
 /// Standard input. Every value is the same stream, so the routines are called on the type, and reader() is the pointer
 /// a Reader parameter takes.
@@ -33,9 +33,9 @@ record Err
 conform Writer[Err]
 
 internal choice StdStream: U8
-    Input
-    Output
-    Error
+    INPUT
+    OUTPUT
+    ERROR
 
 /// What reads bytes: standard input, an open file.
 concept Reader[T]
@@ -67,8 +67,8 @@ private routine InputBuffer.fill(me: @Me) -> Bool
     block entry()
         got : Result[USize, FsError] = stdin_read(me.bytes.to[@Byte](), IN_BUFFER)
         when got
-            .Success(n) -> filled(n)
-            .Failure    -> filled(0)
+            .Success(n) => filled(n)
+            .Failure    => filled(0)
 
     block filled(n: USize)
         me.start.store(0)
@@ -104,14 +104,14 @@ private routine InputBuffer.unread(me: @Me) -> Void
 /// The lock is held.
 /// :returns: True when bytes came, false at the end of the input (or on a failure, which reads as the end).
 private routine InputBuffer.fill_more(me: @Me) -> Bool
-    shared end : USize = me.end.load()
+    local end : USize = me.end.load()
 
     block entry()
         free : @Byte                  = me.bytes.to[@Byte]().stride(end)
         got  : Result[USize, FsError] = stdin_read(free, IN_BUFFER.sub(end))
         when got
-            .Success(n) -> added(n)
-            .Failure    -> return(false)
+            .Success(n) => added(n)
+            .Failure    => return(false)
 
     block added(n: USize)
         me.end.store(end.add(n))
@@ -120,9 +120,9 @@ private routine InputBuffer.fill_more(me: @Me) -> Bool
 /// Moves the bytes the buffer holds to its front, so the free space after them is as large as it can be. The lock is
 /// held.
 private routine InputBuffer.compact(me: @Me) -> Void
-    shared from     : USize = me.start.load()
-    shared held     : USize = me.end.load().sub(from)
-    shared buffered : @Byte = me.bytes.to[@Byte]()
+    local from     : USize = me.start.load()
+    local held     : USize = me.end.load().sub(from)
+    local buffered : @Byte = me.bytes.to[@Byte]()
 
     block entry()
         me.start.store(0)
@@ -147,7 +147,7 @@ private routine InputBuffer.compact(me: @Me) -> Void
 /// :absent: At the end of the input.
 /// :throws: Crashes with `MemoryAllocationError` when a word longer than the buffer can't be copied.
 private routine InputBuffer.word(me: @Me) -> Option[Bytes]
-    shared text : @CaptureBuffer <- CaptureBuffer.empty()
+    local text : @CaptureBuffer <- CaptureBuffer.empty()
 
     block entry()
         jump skip()
@@ -155,8 +155,8 @@ private routine InputBuffer.word(me: @Me) -> Option[Bytes]
     block skip()
         c : Option[Byte] = me.next()
         when c
-            .Present(byte) -> first(byte)
-            .Absent        -> return(.Absent)
+            .Present(byte) => first(byte)
+            .Absent        => return(.Absent)
 
     block first(byte: Byte)
         branch is_space(byte)
@@ -205,8 +205,8 @@ private routine InputBuffer.word(me: @Me) -> Option[Bytes]
     block spill_next()
         c : Option[Byte] = me.next()
         when c
-            .Present(byte) -> spill_byte(byte)
-            .Absent        -> spilled()
+            .Present(byte) => spill_byte(byte)
+            .Absent        => spilled()
 
     block spill_byte(byte: Byte)
         branch is_space(byte)
@@ -241,7 +241,7 @@ routine In.reader() -> @Me
 /// :param count: The most bytes to read.
 /// :returns: How many bytes were read, 0 at the end, or Failure with an {FsError} when the OS read fails.
 routine In.read_into_result(buffer: @Byte, count: USize) -> Result[USize, FsError]
-    shared b : @InputBuffer = STDIN_BUFFER
+    local b : @InputBuffer = STDIN_BUFFER
 
     block entry()
         b.lock.lock()
@@ -282,14 +282,14 @@ routine In.read_into_result(buffer: @Byte, count: USize) -> Result[USize, FsErro
 #track_caller
 routine In.read[T]() -> T
 require T: typename, Parsable[T]
-    shared b : @InputBuffer = STDIN_BUFFER
+    local b : @InputBuffer = STDIN_BUFFER
 
     block entry()
         b.lock.lock()
         word : Option[Bytes] = b.word()
         when word
-            .Present(text) -> convert(text)
-            .Absent        -> ended()
+            .Present(text) => convert(text)
+            .Absent        => ended()
 
     block ended()
         b.lock.unlock()
@@ -312,8 +312,8 @@ require T: typename, Parsable[T]
     block entry()
         converted : Result[T, ParseError] = Me.read_result[T]()
         when converted
-            .Success(value) -> return(.Present(value))
-            .Failure        -> return(.Absent)
+            .Success(value) => return(.Present(value))
+            .Failure        => return(.Absent)
 
 /// Skips white space and reads the next word as a T, like {In.read[T]}, with a Failure instead of a crash: `Empty` at
 /// the end of the input, else why the word isn't a T. The word is gone from the input either way.
@@ -321,14 +321,14 @@ require T: typename, Parsable[T]
 /// :returns: Success with the value, or Failure with a {ParseError}.
 routine In.read_result[T]() -> Result[T, ParseError]
 require T: typename, Parsable[T]
-    shared b : @InputBuffer = STDIN_BUFFER
+    local b : @InputBuffer = STDIN_BUFFER
 
     block entry()
         b.lock.lock()
         word : Option[Bytes] = b.word()
         when word
-            .Present(text) -> convert(text)
-            .Absent        -> finish(.Failure(ParseError.Empty))
+            .Present(text) => convert(text)
+            .Absent        => finish(.Failure(ParseError.EMPTY))
 
     block convert(text: Bytes)
         claim word : @Bytes <- text
@@ -355,7 +355,7 @@ routine In.read_bytes_result(me: @Me, buffer: @Byte, count: USize) -> Result[USi
 /// :returns: The bytes read (empty when the allocation fails).
 #expensive("allocates what it reads")
 routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
-    shared buffer : @Byte = allocate[Byte](count.max(1), alloc)
+    local buffer : @Byte = allocate[Byte](count.max(1), alloc)
 
     block entry()
         branch buffer.is_null()
@@ -368,8 +368,8 @@ routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
             : continue
         got : Result[USize, FsError] = Me.read_into_result(buffer.stride(n), count.sub(n))
         when got
-            .Success(k) -> continue
-            .Failure    -> return(Bytes { data: buffer, count: n, alloc: alloc })
+            .Success(k) => continue
+            .Failure    => return(Bytes { data: buffer, count: n, alloc: alloc })
         branch k.eq(0)
             ? return(Bytes { data: buffer, count: n, alloc: alloc })
             : more(n.add(k))
@@ -379,9 +379,9 @@ routine In.read_count(count: USize, alloc: @Allocator) -> Bytes
 /// :returns: The bytes up to the end of the input (or up to a read failure).
 #expensive("allocates what it reads")
 routine In.read_all(alloc: @Allocator) -> Bytes
-    shared text         : @CaptureBuffer     <- CaptureBuffer.empty()
-    shared chunk_buffer : @Array[Byte, 4096] <- uninit
-    shared chunk        : @Byte              = chunk_buffer.to[@Byte]()
+    local text         : @CaptureBuffer     <- CaptureBuffer.empty()
+    local chunk_buffer : @Array[Byte, 4096] <- .hollow()
+    local chunk        : @Byte              = chunk_buffer.to[@Byte]()
 
     block entry()
         jump more()
@@ -389,8 +389,8 @@ routine In.read_all(alloc: @Allocator) -> Bytes
     block more()
         got : Result[USize, FsError] = Me.read_into_result(chunk, 4096)
         when got
-            .Success(n) -> continue
-            .Failure    -> return(text.owned(alloc))
+            .Success(n) => continue
+            .Failure    => return(text.owned(alloc))
         branch n.eq(0)
             ? return(text.owned(alloc))
             : continue
@@ -408,8 +408,8 @@ routine In.read_line(alloc: @Allocator) -> Bytes
     block entry()
         line : Option[Bytes] = Me.read_line_checked(alloc)
         when line
-            .Present(text) -> return(text)
-            .Absent        -> crash("AbsentValueError",
+            .Present(text) => return(text)
+            .Absent        => crash("AbsentValueError",
                 "The input ended before In.read_line() found a line to read.")
 
 /// The next line, without its "\n" (or "\r\n"), in memory from alloc, or Absent at the end of the input. A last line
@@ -419,8 +419,8 @@ routine In.read_line(alloc: @Allocator) -> Bytes
 /// :absent: At the end of the input.
 #expensive("allocates what it reads")
 routine In.read_line_checked(alloc: @Allocator) -> Option[Bytes]
-    shared b    : @InputBuffer   = STDIN_BUFFER
-    shared text : @CaptureBuffer <- CaptureBuffer.empty()
+    local b    : @InputBuffer   = STDIN_BUFFER
+    local text : @CaptureBuffer <- CaptureBuffer.empty()
 
     block entry()
         b.lock.lock()
@@ -429,8 +429,8 @@ routine In.read_line_checked(alloc: @Allocator) -> Option[Bytes]
     block next(any: Bool)
         c : Option[Byte] = b.next()
         when c
-            .Present(byte) -> continue
-            .Absent        -> ended(any)
+            .Present(byte) => continue
+            .Absent        => ended(any)
         branch byte.eq(b'\n')
             ? done()
             : continue
@@ -481,8 +481,8 @@ routine In.read_word(alloc: @Allocator) -> Bytes
     block entry()
         word : Option[Bytes] = Me.read_word_checked(alloc)
         when word
-            .Present(text) -> return(text)
-            .Absent        -> crash("AbsentValueError",
+            .Present(text) => return(text)
+            .Absent        => crash("AbsentValueError",
                 "The input ended before In.read_word() found a word to read.")
 
 /// The next word (spaces, tabs, and line ends separate words), in memory from alloc, or Absent at the end of the
@@ -492,9 +492,9 @@ routine In.read_word(alloc: @Allocator) -> Bytes
 /// :absent: At the end of the input.
 #expensive("allocates what it reads")
 routine In.read_word_checked(alloc: @Allocator) -> Option[Bytes]
-    shared b      : @InputBuffer   = STDIN_BUFFER
-    shared text   : @CaptureBuffer <- CaptureBuffer.empty()
-    shared single : @Byte          <- uninit
+    local b      : @InputBuffer   = STDIN_BUFFER
+    local text   : @CaptureBuffer <- CaptureBuffer.empty()
+    local single : @Byte          <- .hollow()
 
     block entry()
         b.lock.lock()
@@ -503,8 +503,8 @@ routine In.read_word_checked(alloc: @Allocator) -> Option[Bytes]
     block skip()
         c : Option[Byte] = b.next()
         when c
-            .Present(byte) -> continue
-            .Absent        -> finish(.Absent)
+            .Present(byte) => continue
+            .Absent        => finish(.Absent)
         branch is_space(byte)
             ? skip()
             : continue
@@ -515,8 +515,8 @@ routine In.read_word_checked(alloc: @Allocator) -> Option[Bytes]
     block next()
         c : Option[Byte] = b.next()
         when c
-            .Present(byte) -> continue
-            .Absent        -> done()
+            .Present(byte) => continue
+            .Absent        => done()
         branch is_space(byte)
             ? put_back()
             : continue
@@ -539,7 +539,7 @@ routine In.read_word_checked(alloc: @Allocator) -> Option[Bytes]
 /// :returns: `true` for a terminal.
 routine In.is_terminal() -> Bool
     block entry()
-        return(stream_is_terminal(StdStream.Input))
+        return(stream_is_terminal(StdStream.INPUT))
 
 // -- Out and Err -------------------------------------------------------------------------
 
@@ -558,9 +558,9 @@ routine Out.writer() -> @Me
 #expensive("makes a system call")
 routine Out.write_all_result(data: @Byte, count: USize) -> Result[Unit, FsError]
     block entry()
-        branch stream_write(StdStream.Output, data, count)
+        branch stream_write(StdStream.OUTPUT, data, count)
             ? return(.Success(Unit.value()))
-            : return(.Failure(FsError.Other))
+            : return(.Failure(FsError.OTHER))
 
 /// The Writer side of standard output: a failed write is dropped ({Out.write_all_result} reports it).
 /// :param data: The bytes to write.
@@ -568,21 +568,21 @@ routine Out.write_all_result(data: @Byte, count: USize) -> Result[Unit, FsError]
 #expensive("makes a system call")
 routine Out.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
     block entry()
-        stream_write(StdStream.Output, data, count)
+        stream_write(StdStream.OUTPUT, data, count)
         return()
 
 /// Whether standard output is a terminal (a console on Windows), not a pipe or a file.
 /// :returns: `true` for a terminal.
 routine Out.is_terminal() -> Bool
     block entry()
-        return(stream_is_terminal(StdStream.Output))
+        return(stream_is_terminal(StdStream.OUTPUT))
 
 /// Whether ANSI color sequences work: a terminal takes them (on Windows once this turns them on), a pipe or a file
 /// can't show them.
 /// :returns: `true` when standard output takes ANSI color sequences.
 routine Out.enable_colors() -> Bool
     block entry()
-        return(stream_enable_colors(StdStream.Output))
+        return(stream_enable_colors(StdStream.OUTPUT))
 
 /// A pointer to standard error, for passing where a Writer is taken. Every value of {Err} is the same stream, so the
 /// pointer holds no state and is null.
@@ -599,9 +599,9 @@ routine Err.writer() -> @Me
 #expensive("makes a system call")
 routine Err.write_all_result(data: @Byte, count: USize) -> Result[Unit, FsError]
     block entry()
-        branch stream_write(StdStream.Error, data, count)
+        branch stream_write(StdStream.ERROR, data, count)
             ? return(.Success(Unit.value()))
-            : return(.Failure(FsError.Other))
+            : return(.Failure(FsError.OTHER))
 
 /// The Writer side of standard error: a failed write is dropped ({Err.write_all_result} reports it).
 /// :param data: The bytes to write.
@@ -609,21 +609,21 @@ routine Err.write_all_result(data: @Byte, count: USize) -> Result[Unit, FsError]
 #expensive("makes a system call")
 routine Err.write_bytes(me: @Me, data: @Byte, count: USize) -> Void
     block entry()
-        stream_write(StdStream.Error, data, count)
+        stream_write(StdStream.ERROR, data, count)
         return()
 
 /// Whether standard error is a terminal (a console on Windows), not a pipe or a file.
 /// :returns: `true` for a terminal.
 routine Err.is_terminal() -> Bool
     block entry()
-        return(stream_is_terminal(StdStream.Error))
+        return(stream_is_terminal(StdStream.ERROR))
 
 /// Whether ANSI color sequences work on standard error: a terminal takes them (on Windows once this turns them on), a
 /// pipe or a file can't show them.
 /// :returns: `true` when colors can be used.
 routine Err.enable_colors() -> Bool
     block entry()
-        return(stream_enable_colors(StdStream.Error))
+        return(stream_enable_colors(StdStream.ERROR))
 
 // -- Linux and macOS -------------------------------------------------------------------
 
@@ -650,9 +650,9 @@ private routine c_errno_place() -> @CInt
 private routine fd_of(stream: StdStream) -> CInt
     block entry()
         when stream
-            StdStream.Input  -> return(0)
-            StdStream.Output -> return(1)
-            StdStream.Error  -> return(2)
+            StdStream.INPUT  => return(0)
+            StdStream.OUTPUT => return(1)
+            StdStream.ERROR  => return(2)
 
 /// Whether the stream is a terminal (a console on Windows), not a pipe or a file.
 /// :param stream: The stream.
@@ -701,7 +701,7 @@ internal routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsErro
         errno : CInt = c_errno_place().load()
         branch errno.eq(4)
             ? return(stdin_read(buffer, count))
-            : return(.Failure(FsError.Other))
+            : return(.Failure(FsError.OTHER))
 
 /// Whether ANSI color sequences work on the stream: a terminal takes them as it is.
 /// :param stream: The stream.
@@ -814,9 +814,9 @@ private routine handle_of(stream: StdStream) -> Addr
     block entry()
         // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
         when stream
-            StdStream.Input  -> return(c_get_std_handle(0xFFFFFFF6))
-            StdStream.Output -> return(c_get_std_handle(0xFFFFFFF5))
-            StdStream.Error  -> return(c_get_std_handle(0xFFFFFFF4))
+            StdStream.INPUT  => return(c_get_std_handle(0xFFFFFFF6))
+            StdStream.OUTPUT => return(c_get_std_handle(0xFFFFFFF5))
+            StdStream.ERROR  => return(c_get_std_handle(0xFFFFFFF4))
 
 /// Whether `h` is a real handle: not null and not INVALID_HANDLE_VALUE.
 /// :param h: The handle to test.
@@ -888,7 +888,7 @@ internal routine stream_write(stream: StdStream, data: @Byte, count: USize) -> B
 /// :returns: `true` when every byte was written, `false` on the first failure.
 #target(os: "windows")
 private routine file_write(h: Addr, data: @Byte, count: USize) -> Bool
-    shared wrote : @U32 <- 0
+    local wrote : @U32 <- 0
 
     block entry()
         jump write(data, count)
@@ -911,11 +911,11 @@ private routine sequence_length(b: Byte) -> USize
     block entry()
         u : U8 = b.to[U8]()
         when
-            u.lt(0xC0) -> return(1)
-            u.lt(0xE0) -> return(2)
-            u.lt(0xF0) -> return(3)
-            u.lt(0xF8) -> return(4)
-            else       -> return(1)
+            u.lt(0xC0) => return(1)
+            u.lt(0xE0) => return(2)
+            u.lt(0xF0) => return(3)
+            u.lt(0xF8) => return(4)
+            else       => return(1)
 
 /// Where the last complete sequence of the `count` bytes ends: before a sequence the bytes stop in the middle of.
 /// :param data: The UTF-8 bytes.
@@ -947,7 +947,7 @@ private routine complete_end(data: @Byte, count: USize) -> USize
 #target(os: "windows")
 private routine pending_of(stream: StdStream) -> @PendingUtf8
     block entry()
-        branch stream.eq(StdStream.Error)
+        branch stream.eq(StdStream.ERROR)
             ? return(PENDING_ERROR)
             : return(PENDING_OUTPUT)
 
@@ -960,8 +960,8 @@ private routine pending_of(stream: StdStream) -> @PendingUtf8
 /// :returns: `true` when the text was written (or held), `false` if the console refused.
 #target(os: "windows")
 private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: USize) -> Bool
-    shared pending : @PendingUtf8 = pending_of(stream)
-    shared held    : USize        = pending.count.load()
+    local pending : @PendingUtf8 = pending_of(stream)
+    local held    : USize        = pending.count.load()
 
     block entry()
         branch held.eq(0)
@@ -998,10 +998,10 @@ private routine console_write(stream: StdStream, h: Addr, data: @Byte, count: US
 /// :returns: `true` when all of it was written, `false` if the console refused.
 #target(os: "windows")
 private routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
-    shared written     : @U32              <- 0
-    shared iter        : @BytesCharsIter   <- Bytes.from_ptr(data, count).chars()
-    shared unit_buffer : @Array[U16, 2048] <- uninit
-    shared units       : @U16              = unit_buffer.to[@U16]()
+    local written     : @U32              <- 0
+    local iter        : @BytesCharsIter   <- Bytes.from_ptr(data, count).chars()
+    local unit_buffer : @Array[U16, 2048] <- .hollow()
+    local units       : @U16              = unit_buffer.to[@U16]()
 
     block entry()
         jump fill(0)
@@ -1012,8 +1012,8 @@ private routine console_text(h: Addr, data: @Byte, count: USize) -> Bool
             : continue
         c : Option[Char] = iter.next()
         when c
-            .Present(char) -> put(n, char.to[U32]())
-            .Absent        -> last(n)
+            .Present(char) => put(n, char.to[U32]())
+            .Absent        => last(n)
 
     block put(n: USize, cp: U32)
         branch cp.lt(0x10000)
@@ -1064,7 +1064,7 @@ private routine write_units(h: Addr, units: @U16, n: USize, written: @U32) -> Bo
 #target(os: "windows")
 internal routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsError]
     block entry()
-        h : Addr = handle_of(StdStream.Input)
+        h : Addr = handle_of(StdStream.INPUT)
         branch is_usable(h)
             ? continue
             : return(.Success(0))
@@ -1078,7 +1078,7 @@ internal routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsErro
         // ERROR_BROKEN_PIPE: the writing end closed, which is the end
         branch c_get_last_error().eq(109)
             ? return(.Success(0))
-            : return(.Failure(FsError.Other))
+            : return(.Failure(FsError.OTHER))
 
 /// Hands out UTF-8 from CONSOLE_INPUT, reading the console (as UTF-16) when it is empty.
 /// :param h: The console handle.
@@ -1088,17 +1088,17 @@ internal routine stdin_read(buffer: @Byte, count: USize) -> Result[USize, FsErro
 ///     ReadConsoleW fails.
 #target(os: "windows")
 private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USize, FsError]
-    shared input : @ConsoleReadBuffer = CONSOLE_INPUT
+    local input : @ConsoleReadBuffer = CONSOLE_INPUT
 
     block entry()
         branch input.start.load().lt(input.end.load())
             ? hand_out()
             : continue
-        claim units : @Array[U16, 4096] <- uninit
+        claim units : @Array[U16, 4096] <- .hollow()
         claim got   : @U32              <- 0
         branch c_read_console(h, units.to[@U16](), 4096, got, null).ne(0)
             ? continue
-            : return(.Failure(FsError.Other))
+            : return(.Failure(FsError.OTHER))
         n : USize = got.load().to[USize]()
         branch n.eq(0)
             ? return(.Success(0))
@@ -1110,7 +1110,7 @@ private routine console_read(h: Addr, buffer: @Byte, count: USize) -> Result[USi
 
     // A high surrogate at the end waits for its low half. One held from the last read goes in front.
     block convert(units: @U16, n: USize)
-        claim joined : @Array[U16, 4097] <- uninit
+        claim joined : @Array[U16, 4097] <- .hollow()
         high : U16   = input.high.load()
         lead : USize = high.eq(0)
             ? 0

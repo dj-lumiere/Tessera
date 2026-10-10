@@ -5,9 +5,9 @@
 // directory change or the exec fails, the child writes errno to a close-on-exec pipe. The parent reads that pipe to
 // its end, which comes at the exec or the child's exit, and so knows whether the program started.
 
-module Standard::Os
+module Standard/Os
 
-import Standard::Alloc
+import Standard/Alloc
 
 /// C's `environ`, the process's environment as a null-terminated array of `NAME=VALUE` strings (Linux, while macOS goes
 /// through _NSGetEnviron).
@@ -181,10 +181,10 @@ private routine errno() -> CInt
 private routine spawn_error(e: CInt) -> ProcessError
     block entry()
         when
-            e.eq(2).bitor(e.eq(20)) -> return(ProcessError.NotFound)
-            e.eq(1).bitor(e.eq(13)) -> return(ProcessError.PermissionDenied)
-            e.eq(12)                -> return(ProcessError.OutOfMemory)
-            else                    -> return(ProcessError.Other)
+            e.eq(2).bitor(e.eq(20)) => return(ProcessError.NOT_FOUND)
+            e.eq(1).bitor(e.eq(13)) => return(ProcessError.PERMISSION_DENIED)
+            e.eq(12)                => return(ProcessError.OUT_OF_MEMORY)
+            else                    => return(ProcessError.OTHER)
 
 // -- what the child is given -----------------------------------------------------------
 
@@ -298,8 +298,8 @@ private routine Prepared.release(me: @Me, alloc: @Allocator) -> Void
 #target(os: ("linux", "macos"))
 private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], options: ProcessOptions,
     alloc: @Allocator) -> Bool
-    shared arg_count : USize  = args.count()
-    shared first     : @USize <- uninit
+    local arg_count : USize  = args.count()
+    local first     : @USize <- .hollow()
 
     block entry()
         me.store(Prepared.empty())
@@ -329,8 +329,8 @@ private routine Prepared.make(me: @Me, program: Bytes, args: Slice[Bytes], optio
     block args_done(argv: @@Byte, n: USize)
         argv.stride(n).store(null)
         when options.directory
-            .Present(d) -> directory(c_string(d, alloc))
-            .Absent     -> environment()
+            .Present(d) => directory(c_string(d, alloc))
+            .Absent     => environment()
 
     block directory(d: @Byte)
         branch d.is_null()
@@ -563,7 +563,7 @@ private routine Plumbing.make(me: @Me, options: ProcessOptions) -> Bool
             : return(false)
         me.exec_r.store(fds.getitem(0))
         me.exec_w.store(fds.getitem(1))
-        branch options.stdout.eq(OutputMode.Capture)
+        branch options.stdout.eq(OutputMode.CAPTURE)
             ? continue
             : error_pipe(fds.to[@CInt]())
         branch cloexec_pipe(fds.to[@CInt]())
@@ -574,7 +574,7 @@ private routine Plumbing.make(me: @Me, options: ProcessOptions) -> Bool
         jump error_pipe(fds.to[@CInt]())
 
     block error_pipe(fds: @CInt)
-        branch options.stderr.eq(OutputMode.Capture)
+        branch options.stderr.eq(OutputMode.CAPTURE)
             ? continue
             : null_device()
         branch cloexec_pipe(fds)
@@ -585,8 +585,8 @@ private routine Plumbing.make(me: @Me, options: ProcessOptions) -> Bool
         jump null_device()
 
     block null_device()
-        null_in  : Bool = options.stdin.eq(InputMode.Null)
-        null_out : Bool = options.stdout.eq(OutputMode.Null).bitor(options.stderr.eq(OutputMode.Null))
+        null_in  : Bool = options.stdin.eq(InputMode.NULL)
+        null_out : Bool = options.stdout.eq(OutputMode.NULL).bitor(options.stderr.eq(OutputMode.NULL))
         wanted   : Bool = null_in.bitor(null_out)
         branch wanted
             ? continue
@@ -604,9 +604,9 @@ private routine Plumbing.make(me: @Me, options: ProcessOptions) -> Bool
 private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
     block entry()
         when mode
-            OutputMode.Capture -> return(pipe)
-            OutputMode.Null    -> return(null_fd)
-            OutputMode.Inherit -> return(-1)
+            OutputMode.CAPTURE => return(pipe)
+            OutputMode.NULL    => return(null_fd)
+            OutputMode.INHERIT => return(-1)
 
 /// Starts `program` (looked up on PATH) with fork and execvp, waits for it, and returns how it ended and what it
 /// captured. Captured output is read to the end from both pipes at once. This is the Linux and macOS half. Windows
@@ -622,24 +622,24 @@ private routine output_fd(mode: OutputMode, pipe: CInt, null_fd: CInt) -> CInt
 #expensive("starts a process")
 routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessOptions,
     alloc: @Allocator) -> Result[ProcessOutput, ProcessError]
-    shared p      : @Prepared      <- Prepared.empty()
-    shared pipes  : @Plumbing      <- Plumbing.empty()
-    shared report : @CInt          <- 0
-    shared out    : @CaptureBuffer <- CaptureBuffer.empty()
-    shared err    : @CaptureBuffer <- CaptureBuffer.empty()
+    local p      : @Prepared      <- Prepared.empty()
+    local pipes  : @Plumbing      <- Plumbing.empty()
+    local report : @CInt          <- 0
+    local out    : @CaptureBuffer <- CaptureBuffer.empty()
+    local err    : @CaptureBuffer <- CaptureBuffer.empty()
 
     block entry()
         branch has_nul(program, args, options)
-            ? finish(.Failure(ProcessError.InvalidArgument))
+            ? finish(.Failure(ProcessError.INVALID_ARGUMENT))
             : continue
         branch p.make(program, args, options, alloc)
             ? continue
-            : finish(.Failure(ProcessError.OutOfMemory))
+            : finish(.Failure(ProcessError.OUT_OF_MEMORY))
         branch pipes.make(options)
             ? continue
             : spawn_failed()
         null_fd : CInt = pipes.devnull.load()
-        input   : CInt = options.stdin.eq(InputMode.Null)
+        input   : CInt = options.stdin.eq(InputMode.NULL)
             ? null_fd
             : -1
         streams : ChildStreams = ChildStreams { input: input,
@@ -686,15 +686,15 @@ routine run_process_result(program: Bytes, args: Slice[Bytes], options: ProcessO
             ? finish(.Failure(spawn_error(report.load())))
             : continue
         when status
-            .Present(s) -> exited(s)
-            .Absent     -> finish(.Failure(ProcessError.Other))
+            .Present(s) => exited(s)
+            .Absent     => finish(.Failure(ProcessError.OTHER))
 
     // The output owns the captured bytes from here, so finish has none left to release. A capture that couldn't
     // grow lost bytes: the run fails, and finish releases what was captured.
     block exited(s: ExitStatus)
         lost : Bool = out.failed.load().bitor(err.failed.load())
         branch lost
-            ? finish(.Failure(ProcessError.OutOfMemory))
+            ? finish(.Failure(ProcessError.OUT_OF_MEMORY))
             : continue
         output : ProcessOutput = ProcessOutput { status: s, stdout: out.owned(alloc),
             stderr: err.owned(alloc) }
@@ -729,14 +729,14 @@ private routine release(b: CaptureBuffer, alloc: @Allocator) -> Void
 /// :param alloc: The allocator the buffers grow from.
 #target(os: ("linux", "macos"))
 private routine drain(out: PipeCapture, err: PipeCapture, alloc: @Allocator) -> Void
-    shared out_fd : CInt = out.fd
-    shared err_fd : CInt = err.fd
+    local out_fd : CInt = out.fd
+    local err_fd : CInt = err.fd
     // POLLIN, and poll skips a negative fd
-    shared poll_fds     : @Array[PollFd, 2]  <- { PollFd { fd: out_fd, events: 1, revents: 0 },
+    local poll_fds     : @Array[PollFd, 2]  <- { PollFd { fd: out_fd, events: 1, revents: 0 },
         PollFd { fd: err_fd, events: 1, revents: 0 } }
-    shared chunk_buffer : @Array[Byte, 4096] <- uninit
-    shared fds          : @PollFd            = poll_fds.to[@PollFd]()
-    shared chunk        : @Byte              = chunk_buffer.to[@Byte]()
+    local chunk_buffer : @Array[Byte, 4096] <- .hollow()
+    local fds          : @PollFd            = poll_fds.to[@PollFd]()
+    local chunk        : @Byte              = chunk_buffer.to[@Byte]()
 
     block entry()
         out_open : U32 = out_fd.ge(0).to[U32]()
@@ -796,7 +796,7 @@ private routine drain(out: PipeCapture, err: PipeCapture, alloc: @Allocator) -> 
 /// :absent: When waitpid fails.
 #target(os: ("linux", "macos"))
 private routine reap(pid: CInt) -> Option[ExitStatus]
-    shared status : @CInt <- 0
+    local status : @CInt <- 0
 
     block entry()
         jump wait()
@@ -827,7 +827,7 @@ private routine reap(pid: CInt) -> Option[ExitStatus]
 #expensive("allocates a copy of the variable")
 routine env_var(name: Bytes, alloc: @Allocator) -> Option[Bytes]
     block entry()
-        claim key : @Array[Byte, 256] <- uninit
+        claim key : @Array[Byte, 256] <- .hollow()
         too_long : Bool = name.count().ge(256)
         branch too_long.bitor(name.has("\x00"))
             ? return(.Absent)

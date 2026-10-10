@@ -13,10 +13,10 @@
 //
 // entry_state values: 0 = dead, 1 = live.
 
-module Standard::Collections
+module Standard/Collections
 
-import Standard::Alloc
-import Standard::Format
+import Standard/Alloc
+import Standard/Format
 
 private preset SLOT_EMPTY:     USize = USize.MAX
 private preset SLOT_TOMBSTONE: USize = SLOT_EMPTY.sub(1)
@@ -89,7 +89,7 @@ require T: typename
 /// :returns: The slot holding `key` if found, otherwise the slot where it should be installed: the first tombstone seen, else the first empty slot.
 routine Set[T].slot(me: Me, key: T, hash: U64) -> USize
 require T: typename
-    shared first_tombstone : @USize <- SLOT_EMPTY
+    local first_tombstone : @USize <- SLOT_EMPTY
 
     block entry()
         capacity : USize = me.slots.count
@@ -103,9 +103,9 @@ require T: typename
         is_empty     : Bool   = entry_idx.eq(SLOT_EMPTY)
         is_tombstone : Bool   = entry_idx.eq(SLOT_TOMBSTONE)
         when
-            is_empty     -> empty_slot(index)
-            is_tombstone -> tombstone_slot(index)
-            else         -> occupied_slot(index, entry_idx)
+            is_empty     => empty_slot(index)
+            is_tombstone => tombstone_slot(index)
+            else         => occupied_slot(index, entry_idx)
 
     block empty_slot(index: USize)
         has_tombstone : Bool  = first_tombstone.load().ne(SLOT_EMPTY)
@@ -238,11 +238,11 @@ require T: typename
 /// :returns: True when it rehashed, false when the allocator failed (the set is left as it was).
 private routine Set[T].rehash(me: @Me, new_capacity: USize) -> Bool
 require T: typename
-    shared alloc        : @Allocator    = me.keys.alloc.load()
-    shared keys         : @Slice[T]     <- .construct(0, alloc)
-    shared hashes       : @Slice[U64]   <- .construct(0, alloc)
-    shared entry_states : @Slice[U8]    <- .construct(0, alloc)
-    shared slots        : @Slice[USize] <- .construct(0, alloc)
+    local alloc        : @Allocator    = me.keys.alloc.load()
+    local keys         : @Slice[T]     <- .construct(0, alloc)
+    local hashes       : @Slice[U64]   <- .construct(0, alloc)
+    local entry_states : @Slice[U8]    <- .construct(0, alloc)
+    local slots        : @Slice[USize] <- .construct(0, alloc)
 
     block entry()
         made_keys : Bool = make_array[T](keys, new_capacity)
@@ -317,7 +317,7 @@ require T: typename
 /// :returns: True when there is room, false when the allocator failed (the set is left as it was).
 private routine Set[T].ensure(me: @Me) -> Bool
 require T: typename
-    shared capacity : USize = me.slots.count.load()
+    local capacity : USize = me.slots.count.load()
 
     block entry()
         empty : Bool = capacity.eq(0)
@@ -345,7 +345,7 @@ require T: typename
 /// :returns: True when a new entry was appended, false when an equal element was already live.
 routine Set[T].add_direct(me: @Me, key: T, hash: U64) -> Bool
 require T: typename
-    shared slot : USize = me.load().slot(key, hash)
+    local slot : USize = me.load().slot(key, hash)
 
     block entry()
         slots     : @USize = me.slots.data.load()
@@ -380,8 +380,8 @@ require T: typename
     block entry()
         added : Result[Bool, AllocFailed] = me.add_result(key)
         when added
-            .Success(is_new) -> return(is_new)
-            .Failure         -> crash_allocation()
+            .Success(is_new) => return(is_new)
+            .Failure         => crash_allocation()
 
 /// `add`, returning a Failure instead of crashing when the allocator fails.
 /// :param key: The element to add.
@@ -429,7 +429,7 @@ require T: typename
         return(true)
 
 /// Gives the set's memory back to its allocator and resets it to the empty state, so it can be reused or destructed again. The stored values themselves are not destructed.
-/// :note: Safe to call on a never-filled instance, where it only resets the fields.
+/// :note: Does nothing on a hollow instance (`.hollow()`, no allocator), and only resets the fields of a never-filled one.
 #track_caller
 routine Set[T].destruct(me: @Me) -> Void
 require T: typename
@@ -444,9 +444,9 @@ require T: typename
 #track_caller
 routine Set[T].destruct_all(me: @Me) -> Void
 require T: typename, Destructible[T]
-    shared iter_val : SetIter[T]  = .construct(me)
-    shared iter     : @SetIter[T] <- iter_val
-    shared slot     : @T          <- uninit
+    local iter_val : SetIter[T]  = .construct(me)
+    local iter     : @SetIter[T] <- iter_val
+    local slot     : @T          <- .hollow()
 
     block entry()
         jump next()
@@ -454,8 +454,8 @@ require T: typename, Destructible[T]
     block next()
         item : Option[T] = iter.next()
         when item
-            .Present(value) -> element(value)
-            .Absent         -> finish()
+            .Present(value) => element(value)
+            .Absent         => finish()
 
     block element(value: T)
         slot.store(value)
@@ -505,6 +505,10 @@ private routine destruct_set_arrays[T](keys: @Slice[T], hashes: @Slice[U64],
     entry_states: @Slice[U8], slots: @Slice[USize]) -> Void
 require T: typename
     block entry()
+        hollow : Bool = keys.alloc.load().is_null()
+        branch hollow
+            ? return()
+            : continue
         keys.resize(0)
         hashes.resize(0)
         entry_states.resize(0)

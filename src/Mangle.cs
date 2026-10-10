@@ -5,7 +5,7 @@ namespace Tessera;
 
 /// Symbol names follow the Itanium C++ ABI mangling (Modules → A Tessera ABI): a module is a namespace, a routine on
 /// a type is nested in the type, and every type is a named type by its path, built-in ones included
-/// (`Standard::Core::S64`, `Standard::Core::Ptr[T]`). `Standard::Format::write_str` becomes
+/// (`Standard::Core::S64`, `Standard::Core::Ptr<T>`). `Standard::Format::write_str` becomes
 /// `_ZN8Standard6Format9write_strE...` followed by its parameter types.
 ///
 /// Where Tessera has no C++ counterpart: a `private` declaration carries its file as an ABI tag
@@ -77,9 +77,9 @@ public sealed partial class Compiler
         var steps = new List<Step>();
         if (module == "") return steps;
         string path = "";
-        foreach (var part in module.Split("::"))
+        foreach (var part in module.Split("/"))
         {
-            path = path == "" ? part : path + "::" + part;
+            path = path == "" ? part : path + "/" + part;
             steps.Add(new Step(Source(part), "N:" + path, null, null));
         }
         return steps;
@@ -186,7 +186,7 @@ public sealed partial class Compiler
         private List<Step> Core(string name, List<DType> args, DType t)
         {
             var steps = ModuleSteps(CoreModule);
-            steps.Add(Named(Source(name), CoreModule + "::" + name, args, t));
+            steps.Add(Named(Source(name), CoreModule + "/" + name, args, t));
             return steps;
         }
 
@@ -322,7 +322,7 @@ public sealed partial class Compiler
             if (t.Path is null or CoreModule && t.Name is "Ptr" or "Array" or "Vector")
             {
                 steps = ModuleSteps(CoreModule);
-                qualified = CoreModule + "::" + t.Name;
+                qualified = CoreModule + "/" + t.Name;
                 steps.Add(new Step(Source(t.Name), "TP:" + qualified, null, null));
             }
             else

@@ -69,7 +69,7 @@
 // - large |x|: sinh and cosh round to infinity from B128_HYPER_OVERFLOW on, and tanh to ±1 from B128_TANH_FLAT
 //   on (1 - tanh x < 2^-114, half the ulp below 1). Both are the first B128 past the boundary, found with mpmath.
 
-module Standard::Core
+module Standard/Core
 
 /// The fast tier's error band, as a power of two: a B128Extended result is kept only when all of it × (1 ± 2^-135) rounds to the same B128.
 /// :note: Measured, not proven: the worst fast-tier error seen against mpmath was about 2^-140.3, so the band leaves about 5 bits.
@@ -106,9 +106,9 @@ preset B128_HALF_BITS: U128 = 0x3FFE0000000000000000000000000000
 
 /// Which hyperbolic function the shared tiers compute: `Sinh`, `Cosh` or `Tanh`.
 choice HyperKind: U8
-    Sinh
-    Cosh
-    Tanh
+    SINH
+    COSH
+    TANH
 
 // -- quick tier: CORE-MATH's fast exp and expm1 -----------------------------------
 
@@ -144,8 +144,8 @@ routine cm_hyper_expm1(u: U128) -> CmFrac
 /// :returns: The bits of the correctly rounded result.
 /// :absent: When the result lies too close to a midpoint to decide here, or a is past exp's overflow threshold.
 routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option[U128]
-    shared u   : U128   = a.bits()
-    shared one : CmFrac = CmFrac { frac: CM_FRAC_TOP, exponent: 1 }
+    local u   : U128   = a.bits()
+    local one : CmFrac = CmFrac { frac: CM_FRAC_TOP, exponent: 1 }
 
     block entry()
         beyond : Bool = u.ge(CM_EXP_E_OVERFLOW)
@@ -153,9 +153,9 @@ routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option[U128]
             ? return(.Absent)
             : continue
         when kind
-            HyperKind.Sinh -> sinh()
-            HyperKind.Cosh -> cosh()
-            HyperKind.Tanh -> tanh()
+            HyperKind.SINH => sinh()
+            HyperKind.COSH => cosh()
+            HyperKind.TANH => tanh()
 
     // (m + m / (m + 1)) / 2 with m = e^a - 1 below 1/2
     block sinh()
@@ -217,13 +217,13 @@ routine cm_hyper_quick(a: B128, kind: HyperKind) -> Option[U128]
 /// :param kind: The function.
 /// :returns: The result at 192 bits.
 routine wide_hyper(a: B128, kind: HyperKind) -> B128Extended
-    shared w : B128Extended = a.to[B128Extended]()
+    local w : B128Extended = a.to[B128Extended]()
 
     block entry()
         when kind
-            HyperKind.Sinh -> sinh()
-            HyperKind.Cosh -> cosh()
-            HyperKind.Tanh -> tanh()
+            HyperKind.SINH => sinh()
+            HyperKind.COSH => cosh()
+            HyperKind.TANH => tanh()
 
     // (m + m / (m + 1)) / 2 with m = e^a - 1 below 1/2, else (e^a - e^-a) / 2
     block sinh()
@@ -262,13 +262,13 @@ routine wide_hyper(a: B128, kind: HyperKind) -> B128Extended
 /// :param kind: The function.
 /// :returns: The correctly rounded result.
 routine big_hyper(a: B128, kind: HyperKind) -> B128
-    shared b : B128Big = a.to[B128Big]()
+    local b : B128Big = a.to[B128Big]()
 
     block entry()
         when kind
-            HyperKind.Sinh -> sinh()
-            HyperKind.Cosh -> cosh()
-            HyperKind.Tanh -> tanh()
+            HyperKind.SINH => sinh()
+            HyperKind.COSH => cosh()
+            HyperKind.TANH => tanh()
 
     block sinh()
         m : B128Big = big_exp_m1(b)
@@ -301,8 +301,8 @@ routine b128_hyper_general(a: B128, kind: HyperKind, exact: Bool) -> B128
     block quick()
         q : Option[U128] = cm_hyper_quick(a, kind)
         when q
-            .Present(bits) -> return(b128_of(bits))
-            .Absent        -> fast()
+            .Present(bits) => return(b128_of(bits))
+            .Absent        => fast()
 
     block fast()
         w       : B128Extended = wide_hyper(a, kind)
@@ -343,23 +343,23 @@ routine B128.tanh(me: Me) -> Me
 /// :param exact: True to skip the quick and fast tiers and compute in {B128Big} directly (the tests use it to check the exact tier on its own), or false for the normal three-tier path.
 /// :returns: x itself below 2^-57 in magnitude, a signed infinity from {B128_HYPER_OVERFLOW} on, ±0 for ±0, and a quiet NaN for NaN.
 routine b128_sinh(x: B128, exact: Bool) -> B128
-    shared bits : U128 = x.bits()
-    shared nan  : Bool = b128_is_nan_bits(bits)
-    shared zero : Bool = b128_is_zero_bits(bits)
-    shared a    : B128 = x.abs()
+    local bits : U128 = x.bits()
+    local nan  : Bool = b128_is_nan_bits(bits)
+    local zero : Bool = b128_is_zero_bits(bits)
+    local a    : B128 = x.abs()
 
     block entry()
         tiny : Bool = a.lt(B128_HYPER_TINY)
         over : Bool = a.ge(B128_HYPER_OVERFLOW)  // infinities too
         when
-            nan  -> return(b128_of(b128_quiet(bits)))
-            zero -> return(x)
-            tiny -> return(x)
-            over -> return(B128.INFINITY.copysign(x))
-            else -> general()
+            nan  => return(b128_of(b128_quiet(bits)))
+            zero => return(x)
+            tiny => return(x)
+            over => return(B128.INFINITY.copysign(x))
+            else => general()
 
     block general()
-        r : B128 = b128_hyper_general(a, HyperKind.Sinh, exact).copysign(x)
+        r : B128 = b128_hyper_general(a, HyperKind.SINH, exact).copysign(x)
         return(r)
 
 /// cosh x, correctly rounded (to nearest, ties to even), the body of {B128.cosh}.
@@ -367,24 +367,24 @@ routine b128_sinh(x: B128, exact: Bool) -> B128
 /// :param exact: True to skip the quick and fast tiers and compute in {B128Big} directly (the tests use it to check the exact tier on its own), or false for the normal three-tier path.
 /// :returns: 1 below 2^-57 in magnitude (zeros included), +inf from {B128_HYPER_OVERFLOW} on, and a quiet NaN for NaN.
 routine b128_cosh(x: B128, exact: Bool) -> B128
-    shared bits : U128 = x.bits()
-    shared nan  : Bool = b128_is_nan_bits(bits)
-    shared zero : Bool = b128_is_zero_bits(bits)
-    shared a    : B128 = x.abs()
+    local bits : U128 = x.bits()
+    local nan  : Bool = b128_is_nan_bits(bits)
+    local zero : Bool = b128_is_zero_bits(bits)
+    local a    : B128 = x.abs()
 
     block entry()
         tiny : Bool = a.lt(B128_HYPER_TINY)
         over : Bool = a.ge(B128_HYPER_OVERFLOW)  // infinities too
         one  : B128 = b128_of(B128_ONE)
         when
-            nan  -> return(b128_of(b128_quiet(bits)))
-            zero -> return(one)
-            tiny -> return(one)
-            over -> return(B128.INFINITY)
-            else -> general()
+            nan  => return(b128_of(b128_quiet(bits)))
+            zero => return(one)
+            tiny => return(one)
+            over => return(B128.INFINITY)
+            else => general()
 
     block general()
-        r : B128 = b128_hyper_general(a, HyperKind.Cosh, exact)
+        r : B128 = b128_hyper_general(a, HyperKind.COSH, exact)
         return(r)
 
 /// tanh x, correctly rounded (to nearest, ties to even), the body of {B128.tanh}.
@@ -392,21 +392,21 @@ routine b128_cosh(x: B128, exact: Bool) -> B128
 /// :param exact: True to skip the quick and fast tiers and compute in {B128Big} directly (the tests use it to check the exact tier on its own), or false for the normal three-tier path.
 /// :returns: x itself below 2^-57 in magnitude, ±1 from {B128_TANH_FLAT} on (infinities included), ±0 for ±0, and a quiet NaN for NaN.
 routine b128_tanh(x: B128, exact: Bool) -> B128
-    shared bits : U128 = x.bits()
-    shared nan  : Bool = b128_is_nan_bits(bits)
-    shared zero : Bool = b128_is_zero_bits(bits)
-    shared a    : B128 = x.abs()
+    local bits : U128 = x.bits()
+    local nan  : Bool = b128_is_nan_bits(bits)
+    local zero : Bool = b128_is_zero_bits(bits)
+    local a    : B128 = x.abs()
 
     block entry()
         tiny : Bool = a.lt(B128_HYPER_TINY)
         flat : Bool = a.ge(B128_TANH_FLAT)  // infinities too
         when
-            nan  -> return(b128_of(b128_quiet(bits)))
-            zero -> return(x)
-            tiny -> return(x)
-            flat -> return(b128_of(B128_ONE).copysign(x))
-            else -> general()
+            nan  => return(b128_of(b128_quiet(bits)))
+            zero => return(x)
+            tiny => return(x)
+            flat => return(b128_of(B128_ONE).copysign(x))
+            else => general()
 
     block general()
-        r : B128 = b128_hyper_general(a, HyperKind.Tanh, exact).copysign(x)
+        r : B128 = b128_hyper_general(a, HyperKind.TANH, exact).copysign(x)
         return(r)

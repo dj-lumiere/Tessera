@@ -9,9 +9,9 @@ namespace Tessera;
 /// - a doc comment sits directly on its declaration, above any attribute lines;
 /// - a top-level section comment (a group of `//` lines with a `// --`, `// ==`, or `// ──` divider) has a blank line
 ///   before and after it;
-/// - `:`, `=`, `->`, and `<-` have one space on each side, and consecutive lines of one kind (bindings, claims, shared
+/// - `:`, `=`, `->`, and `<-` have one space on each side, and consecutive lines of one kind (bindings, claims, local
 ///   lines, record fields, choice members, variant cases, `when` arms) align them.
-/// - a routine's head, its `shared` lines, sits 4 spaces in right under the header (and its `require` lines), with no
+/// - a routine's head, its `local` lines, sits 4 spaces in right under the header (and its `require` lines), with no
 ///   blank line inside it, and exactly one blank line between it and the first block.
 /// - an inline comment sits exactly two spaces after its code; comments are never aligned with each other.
 /// - a line longer than 100 characters breaks after commas inside its first bracketed list, continuing 4 spaces
@@ -151,10 +151,10 @@ public static class Formatter
                     Kind.Claim => r.Rest.Length == 0
                         ? $"{pad}claim {r.Name.PadRight(nameWidth)} : {r.Type}"
                         : $"{pad}claim {r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} <- {r.Rest}",
-                    Kind.Shared => $"{pad}shared {r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} {r.Rest}",
+                    Kind.Shared => $"{pad}local {r.Name.PadRight(nameWidth)} : {r.Type!.PadRight(typeWidth)} {r.Rest}",
                     Kind.Field => $"{pad}{r.Name.PadRight(nameWidth)} : {r.Rest}",
                     Kind.Conform => $"{pad}{r.Name.PadRight(nameWidth)} when {r.Rest}",
-                    _ => $"{pad}{r.Name.PadRight(nameWidth)} -> {r.Rest}",
+                    _ => $"{pad}{r.Name.PadRight(nameWidth)} => {r.Rest}",
                 };
                 result[r.Index] = result[r.Index].TrimEnd();
             }
@@ -193,12 +193,12 @@ public static class Formatter
         return (name, type, rest);
     }
 
-    /// `shared name : Type = value` or `shared name : @Type <- contents`: the name, the type, and the rest with its `=`
+    /// `local name : Type = value` or `local name : @Type <- contents`: the name, the type, and the rest with its `=`
     /// or `<-` (value and slot lines align as one group).
     private static (string Name, string Type, string Tail)? SplitShared(string s)
     {
-        if (!s.StartsWith("shared ")) return null;
-        string body = s[7..].TrimStart();
+        if (!s.StartsWith("local ")) return null;
+        string body = s["local ".Length..].TrimStart();
         if (body.Length == 0 || !IsNameStart(body[0])) return null;
         int i = 1;
         while (i < body.Length && (char.IsLetterOrDigit(body[i]) || body[i] == '_')) i++;
@@ -254,10 +254,10 @@ public static class Formatter
         return rest.Length == 0 ? null : (s[..i], rest);
     }
 
-    /// `left -> rest` for a `when` arm.
+    /// `left => rest` for a `when` arm.
     private static (string Left, string Right)? SplitArm(string s)
     {
-        int arrow = TopLevelIndex(s, 0, "->");
+        int arrow = TopLevelIndex(s, 0, "=>");
         if (arrow <= 0) return null;
         string left = s[..arrow].Trim();
         string right = s[(arrow + 2)..].Trim();
@@ -287,8 +287,8 @@ public static class Formatter
             else if (c is ')' or ']' or '}') depth--;
             else if (depth == 0 && string.CompareOrdinal(s, i, token, 0, token.Length) == 0)
             {
-                // `=` alone, not part of `==`, `!=`, `<=`, `>=`, or `->`
-                if (token == "=" && ((i + 1 < s.Length && s[i + 1] == '=') || (i > 0 && s[i - 1] is '=' or '!' or '<' or '>' or ':')))
+                // `=` alone, not part of `==`, `!=`, `<=`, `>=`, or `=>`
+                if (token == "=" && ((i + 1 < s.Length && s[i + 1] is '=' or '>') || (i > 0 && s[i - 1] is '=' or '!' or '<' or '>' or ':')))
                     continue;
                 return i;
             }
@@ -365,7 +365,7 @@ public static class Formatter
         return result;
     }
 
-    /// A routine's head: its shared lines sit 4 spaces in, with no blank line between the header and them or among
+    /// A routine's head: its local lines sit 4 spaces in, with no blank line between the header and them or among
     /// them (Space puts one blank line between the head and the first block).
     private static List<string> HeadLayout(List<string> lines)
     {
@@ -382,7 +382,7 @@ public static class Formatter
                 string t = lines[j].TrimStart();
                 if (continued[j] || t.Length == 0 || t.StartsWith("require ") || t.StartsWith("//") || t.StartsWith("#"))
                     continue;
-                if (!t.StartsWith("shared ")) break;
+                if (!t.StartsWith("local ")) break;
                 lastShared = j;
                 result[j] = "    " + t;
             }
@@ -890,7 +890,7 @@ public static class Formatter
 
     /// Writes `Ptr[X]` as `@X` outside comments and literals. The record's own name stays where it is declared
     /// (`record Ptr[T]`), where a routine is declared on or called through it (`Ptr[X].name`), and when qualified
-    /// (`Standard::Core::Ptr[X]`).
+    /// (`Standard/Core/Ptr[X]`).
     // ── Grouping parentheses ─────────────────────────────────────────────────
 
     /// Drops the parentheses around a single value where an expression starts (after `(`, `,`, `=`, `<-`, `?`, or a
@@ -938,10 +938,10 @@ public static class Formatter
         if (before.Length == 0) return false;
         char last = before[^1];
         if (char.IsLetterOrDigit(last) || last is '_' or '%' or '>' or ')' or ']' or '.')
-            return last == '>' && !signature && before.Length >= 2 && before[^2] == '-';
+            return last == '>' && !signature && before.Length >= 2 && before[^2] == '=';
         string text = before.ToString().TrimEnd();
         if (text.Length == 0) return false;
-        if (text.EndsWith("->", StringComparison.Ordinal)) return !signature;
+        if (text.EndsWith("=>", StringComparison.Ordinal)) return !signature;
         if (text.EndsWith("<-", StringComparison.Ordinal)) return true;
         return text[^1] is '(' or '{' or ',' or '=' or '?';
     }
@@ -1038,9 +1038,9 @@ public static class Formatter
             {
                 if (result[j].StartsWith("require ") || (typeParameter && result[j].StartsWith(' ') && j < FirstBodyLine(result, i, end)))
                     continue;
-                // `claim p : @T` (and a shared slot) spells its pointer type out, so a routine on Ptr<T> keeps it there.
+                // `claim p : @T` (and a local slot) spells its pointer type out, so a routine on Ptr[T] keeps it there.
                 if (atOwner is not null && (result[j].TrimStart().StartsWith("claim ", StringComparison.Ordinal)
-                                            || result[j].TrimStart().StartsWith("shared ", StringComparison.Ordinal)))
+                                            || result[j].TrimStart().StartsWith("local ", StringComparison.Ordinal)))
                     continue;
                 result[j] = Replace(result[j]);
             }
@@ -1048,11 +1048,11 @@ public static class Formatter
         return result;
     }
 
-    /// The routine's first `block` or `shared` line: everything before it is the header (and its `require` lines).
+    /// The routine's first `block` or `local` line: everything before it is the header (and its `require` lines).
     private static int FirstBodyLine(List<string> lines, int header, int end)
     {
         for (int j = header + 1; j < end; j++)
-            if (lines[j].StartsWith("    block ") || lines[j].TrimStart().StartsWith("shared ")) return j;
+            if (lines[j].StartsWith("    block ") || lines[j].TrimStart().StartsWith("local ")) return j;
         return end;
     }
 

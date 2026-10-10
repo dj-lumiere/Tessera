@@ -69,8 +69,6 @@ public sealed class FunctionGen
     private string? _loc;
     private readonly Dictionary<string, List<string>> _blockRecords = [];
 
-    /// The receivers of the calls this instance resolved to one of `Ptr[T]`'s loads: what UninitReads counts as a read.
-    private readonly HashSet<Expr> _pointerLoads = new(ReferenceEqualityComparer.Instance);
 
     /// The calls written in a block that this instance resolved to an `#expensive` routine: what ExpensiveCallLint
     /// checks for loops once every block is built.
@@ -79,9 +77,6 @@ public sealed class FunctionGen
     /// While an arm's arguments are evaluated, the block it goes to (ExpensiveCallLint.LeavesRoutine for a return or a
     /// `#noreturn` call). Null on a block's own lines and conditions.
     private string? _arm;
-
-    private static readonly HashSet<string> PointerLoadNames =
-        ["load", "volatile_load", "load_unaligned", "atomic_load", "atomic_load_relaxed", "atomic_load_acquire"];
 
     public FunctionGen(Compiler c, Instance inst, StringBuilder output)
     {
@@ -161,9 +156,6 @@ public sealed class FunctionGen
         if (Debug) BeginSubprogram();
         EmitHead();
         foreach (var b in blocks) EmitBlock(b);
-        // With every call resolved, a load of a slot that some path reaches before anything was stored into it.
-        if (UninitReads.Find(_decl, m => _pointerLoads.Contains(m.Receiver)) is { } uninitRead)
-            throw Err(uninitRead.Pos, uninitRead.Message);
         _c.NoteExpensiveCalls(ExpensiveCallLint.Check(_decl, _expensiveCalls));
 
         // A BF16 parameter arrives as its i16 bits (see Instance.PassesBf16AsBits) and is bitcast back on entry.
@@ -470,7 +462,7 @@ public sealed class FunctionGen
             throw Err(pos, _routineParams.ContainsKey(name)
                 ? $"'{name}' is a parameter of routine '{_decl.DisplayName}', which every block already sees: use the "
                   + "parameter itself, or share a value under a name of its own"
-                : $"'{name}' is shared twice in routine '{_decl.DisplayName}': a name is bound once");
+                : $"'{name}' is local twice in routine '{_decl.DisplayName}': a name is bound once");
         if (_values.ContainsKey(name) && _routineValues.ContainsKey(name))
             throw Err(pos, $"block '{_blockName}' binds '{name}', like {RoutineValueKind(name)}, which every block "
                 + "already sees: a name is bound once, so give this value its own name");
@@ -484,7 +476,7 @@ public sealed class FunctionGen
     private string RoutineValueKind(string name) =>
         _routineParams.ContainsKey(name)
             ? "the routine's parameter"
-            : $"the value shared in the head of routine '{_decl.DisplayName}'"
+            : $"the local value in the head of routine '{_decl.DisplayName}'"
               + (_decl.Shared.FirstOrDefault(s => s.Name == name) is { } shared ? $" (line {shared.Pos.Line})" : "");
 
     private string LocalOp(string name) => InHead ? $"%h.{IrName(name)}" : $"%v.{_blockName}.{IrName(name)}";
@@ -685,7 +677,7 @@ public sealed class FunctionGen
         typeArgs.Any(t => t is { Args.Count: 0, Path: null } && t.Name != "Me" && _env.Has(t.Name));
 
     /// A derived routine calls its fields' and payloads' methods whatever module declares them: its constraints
-    /// vouch for them, and the type's file needn't import Standard::Format for its represent.
+    /// vouch for them, and the type's file needn't import Standard/Format for its represent.
     private bool Derived => _decl.Attr("derived") is not null;
 
     /// Emits the address of a place chain and returns it with the type stored there.
@@ -797,10 +789,10 @@ public sealed class FunctionGen
     /// A name bound in the routine, used where it isn't visible.
     private string NotVisible(string name, bool fromNextLine = false) =>
         InHead
-            ? $"'{name}' is not visible in the head of routine '{_decl.DisplayName}': a shared line sees the routine's "
-              + "parameters, presets and globals, and the shared lines above it"
+            ? $"'{name}' is not visible in the head of routine '{_decl.DisplayName}': a local line sees the routine's "
+              + "parameters, presets and globals, and the local lines above it"
             : $"'{name}' is not visible in block '{_blockName}'; values from other blocks must be passed as block "
-              + "arguments or shared in the routine head" + (fromNextLine ? ", and a binding is visible from the line after it" : "");
+              + "arguments or local in the routine head" + (fromNextLine ? ", and a binding is visible from the line after it" : "");
 
     /// `b.store(20)` where `b` names no type, preset, global, or routine: a value that isn't there.
     private void UnknownReceiver(TypeRef owner)
@@ -1275,7 +1267,7 @@ public sealed class FunctionGen
     }
 
     /// Where a write template finds write_str, whatever the file imports.
-    private const string FormatModule = "Standard::Format";
+    private const string FormatModule = "Standard/Format";
 
     /// The writer a `.write("x = {x}\n")` writes to, or null when the call is an ordinary one: on a type, a stateless
     /// Writer (`ConsoleOutput.write("...")` writes to `ConsoleOutput.writer()`); on a value, the Writer it points at
@@ -2264,9 +2256,6 @@ public sealed class FunctionGen
         var sig = _c.Signature(plan.Decl, plan.Env);
         if (_blockName.Length > 0 && plan.Decl.Attr(ExpensiveCallLint.Attribute) is not null)
             _expensiveCalls.Add(new ExpensiveCallLint.Call(_blockName, _arm, plan.Pos, plan.Decl));
-        if (plan.Receiver is not null && plan.Decl is { IsLibrary: true, Owner.Name: "Ptr" }
-            && PointerLoadNames.Contains(plan.Decl.Name))
-            _pointerLoads.Add(plan.Receiver);
         int offset = plan.Receiver is null ? 0 : 1;
         int fixedCount = sig.Params.Count - offset - (sig.IsTrackCaller ? 1 : 0);
         bool arityOk = sig.Variadic && sig.IsExternalC ? plan.Args.Count >= fixedCount : plan.Args.Count == fixedCount;
@@ -2796,7 +2785,7 @@ public sealed class FunctionGen
                     _cur = saved;
                 }
                 if (defaultLabel is null)
-                    throw Err(sw.Pos, "when needs an else arm (write 'else -> unreachable' if every case is covered)");
+                    throw Err(sw.Pos, "when needs an else arm (write 'else => unreachable' if every case is covered)");
                 Terminate($"switch {v.Type.Llvm} {v.Op}, label %{defaultLabel} [ {string.Join(" ", cases)} ]");
                 break;
             }

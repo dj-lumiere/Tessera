@@ -8,7 +8,7 @@
 // rounded exp, ln, sin, cos, the atan family, cbrt, hypot, and sqrt are CORE-MATH ports, methods defined in
 // B128Core/.
 
-module Standard::Core
+module Standard/Core
 
 preset WIDE_CONST_HI: @Array[U128, 6] <- { 0xB17217F7D1CF79ABC9E3B39803F2F6AF,
     0xB8AA3B295C17F0BBBE87FED0691D3E88, 0xB504F333F9DE6484597D89B3754ABE9F,
@@ -150,7 +150,7 @@ routine wide_const(i: USize) -> B128Extended
 /// :param lo: Mantissa bits 63..0.
 /// :returns: The normalized value.
 routine wide_normalize(negative: Bool, exponent: S64, hi: U128, lo: U64) -> B128Extended
-    shared adjusted : @S64 <- exponent
+    local adjusted : @S64 <- exponent
 
     block entry()
         zero    : Bool         = hi.eq(0).bitand(lo.eq(0))
@@ -233,10 +233,10 @@ routine wide_shift_right(hi: U128, lo: U64, n: S64) -> B128Extended
         small : Bool = n.lt(64)
         mid   : Bool = n.lt(192)
         when
-            none  -> done(hi, lo)
-            small -> small()
-            mid   -> big()
-            else  -> done(0, 0)
+            none  => done(hi, lo)
+            small => small()
+            mid   => big()
+            else  => done(0, 0)
 
     block small()
         new_lo : U64  = lo.shr(n.to[U64]()).bitor(hi.to_wrap[U64]().shl(64.sub(n).to[U64]()))
@@ -263,9 +263,9 @@ routine B128Extended.add(me: Me, other: Me) -> Me
         a_zero : Bool = me.is_zero()
         b_zero : Bool = other.is_zero()
         when
-            a_zero -> return(other)
-            b_zero -> return(me)
-            else   -> order()
+            a_zero => return(other)
+            b_zero => return(me)
+            else   => order()
 
     // big has the larger magnitude: larger exponent, or the same and a larger mantissa
     block order()
@@ -414,11 +414,11 @@ routine B128Extended.to_nearest[S64](me: Me) -> S64
 /// :param x: The exponent.
 /// :returns: e^x at 192 bits.
 routine wide_exp(x: B128Extended) -> B128Extended
-    shared ln2     : B128Extended  = wide_const(0)
-    shared inv_ln2 : B128Extended  = wide_const(1)
-    shared q       : S64           = x.mul(inv_ln2).to_nearest[S64]()
-    shared d       : B128Extended  = x.sub(q.to[B128Extended]().mul(ln2))
-    shared s       : @B128Extended <- uninit
+    local ln2     : B128Extended  = wide_const(0)
+    local inv_ln2 : B128Extended  = wide_const(1)
+    local q       : S64           = x.mul(inv_ln2).to_nearest[S64]()
+    local d       : B128Extended  = x.sub(q.to[B128Extended]().mul(ln2))
+    local s       : @B128Extended <- .hollow()
 
     block entry()
         last : B128Extended = wide_table(WIDE_EXP_COEF_HI.to[@U128](), WIDE_EXP_COEF_LO.to[@U64](),
@@ -559,7 +559,7 @@ preset WIDE_COS_COEF_EXP: @Array[S64, 18] <- { 0, -1, -5, -10, -16, -22, -29, -3
 /// :param x: The argument, positive.
 /// :returns: ln x at 192 bits.
 routine wide_log(x: B128Extended) -> B128Extended
-    shared s : @B128Extended <- uninit
+    local s : @B128Extended <- .hollow()
 
     block entry()
         sqrt_half : B128Extended = wide_const(2)
@@ -631,7 +631,7 @@ routine limbs_bits64(p: @U64, pos: S64) -> U64
 /// :param x: The argument.
 /// :returns: The quadrant (mod 4) and θ, |θ| <= π/4.
 routine b128_reduce(x: B128) -> Reduced
-    shared p : B128Parts = b128_unpack(x.bits())
+    local p : B128Parts = b128_unpack(x.bits())
 
     block entry()
         small : Bool = p.exponent.lt(-1)  // |x| < 0.5 < π/4
@@ -648,7 +648,7 @@ routine b128_reduce(x: B128) -> Reduced
         start       : S64 = bits_above.div(64)  // first 2/π limb used
         window_bits : S64 = start.add(8).mul(64)
         sh          : S64 = window_bits.sub(p.exponent).add(112)
-        claim prod : @Array[S64, 12] <- uninit
+        claim prod : @Array[S64, 12] <- .hollow()
         limbs : @U64 = prod.to[@U64]()
         limbs.zeroinit(12)
         m0 : U128 = p.sig.bitand(0xFFFFFFFFFFFFFFFF)
@@ -742,7 +742,7 @@ routine b128_reduce(x: B128) -> Reduced
 /// :param lo: The low 128 bits.
 /// :returns: The normalized value, or zero.
 routine wide_from_256(hi: U128, lo: U128) -> B128Extended
-    shared exponent : @S64 <- -1
+    local exponent : @S64 <- -1
 
     block entry()
         jump shift(hi, lo)
@@ -752,9 +752,9 @@ routine wide_from_256(hi: U128, lo: U128) -> B128Extended
         all     : Bool         = empty.bitand(lower.eq(0))
         nothing : B128Extended = wide_zero()
         when
-            all   -> return(nothing)
-            empty -> continue
-            else  -> bits(upper, lower)
+            all   => return(nothing)
+            empty => continue
+            else  => bits(upper, lower)
         exponent.load().sub_wrap(128).store_into(exponent)
         jump shift(lower, 0)
 
@@ -773,16 +773,16 @@ routine wide_from_256(hi: U128, lo: U128) -> B128Extended
 // -- sin, cos, tan -------------------------------------------------------------
 
 choice TrigKind: U8
-    Sin
-    Cos
-    Tan
+    SIN
+    COS
+    TAN
 
 /// sin θ = θ Σ (-θ²)^k / (2k+1)!, 18 terms, for |θ| <= π/4 (the first dropped term is below 2^-139).
 /// :param t: θ.
 /// :returns: sin θ at 192 bits.
 routine wide_sin_core(t: B128Extended) -> B128Extended
-    shared u : B128Extended  = t.mul(t).neg()
-    shared s : @B128Extended <- uninit
+    local u : B128Extended  = t.mul(t).neg()
+    local s : @B128Extended <- .hollow()
 
     block entry()
         last : B128Extended = wide_table(WIDE_SIN_COEF_HI.to[@U128](), WIDE_SIN_COEF_LO.to[@U64](),
@@ -805,8 +805,8 @@ routine wide_sin_core(t: B128Extended) -> B128Extended
 /// :param t: θ.
 /// :returns: cos θ at 192 bits.
 routine wide_cos_core(t: B128Extended) -> B128Extended
-    shared u : B128Extended  = t.mul(t).neg()
-    shared s : @B128Extended <- uninit
+    local u : B128Extended  = t.mul(t).neg()
+    local s : @B128Extended <- .hollow()
 
     block entry()
         last : B128Extended = wide_table(WIDE_COS_COEF_HI.to[@U128](), WIDE_COS_COEF_LO.to[@U64](),
@@ -899,7 +899,7 @@ routine wide_half_pi() -> B128Extended
 /// :param x: The exponent.
 /// :returns: e^x - 1 at 192 bits.
 routine wide_exp_m1(x: B128Extended) -> B128Extended
-    shared s : @B128Extended <- uninit
+    local s : @B128Extended <- .hollow()
 
     block entry()
         small : Bool = x.exponent.lt(-1)
@@ -933,7 +933,7 @@ routine wide_exp_m1(x: B128Extended) -> B128Extended
 /// :param x: The argument, above -1.
 /// :returns: ln(1 + x) at 192 bits.
 routine wide_ln_1p(x: B128Extended) -> B128Extended
-    shared s : @B128Extended <- uninit
+    local s : @B128Extended <- .hollow()
 
     block entry()
         small : Bool = x.exponent.lt(-2)
@@ -970,8 +970,8 @@ routine wide_ln_1p(x: B128Extended) -> B128Extended
 /// :param x: The argument.
 /// :returns: atan x at 192 bits.
 routine wide_atan_series(x: B128Extended) -> B128Extended
-    shared u : B128Extended  = x.mul(x).neg()
-    shared s : @B128Extended <- uninit
+    local u : B128Extended  = x.mul(x).neg()
+    local s : @B128Extended <- .hollow()
 
     block entry()
         last : B128Extended = wide_table(WIDE_LOG_COEF_HI.to[@U128](), WIDE_LOG_COEF_LO.to[@U64](),
@@ -995,9 +995,9 @@ routine wide_atan_series(x: B128Extended) -> B128Extended
 /// :param x: The argument.
 /// :returns: atan x at 192 bits.
 routine wide_atan(x: B128Extended) -> B128Extended
-    shared a   : B128Extended  = x.abs()
-    shared big : Bool          = a.is_above_one()
-    shared t   : @B128Extended <- uninit
+    local a   : B128Extended  = x.abs()
+    local big : Bool          = a.is_above_one()
+    local t   : @B128Extended <- .hollow()
 
     block entry()
         inv   : B128Extended = wide_one().div(a)
@@ -1059,8 +1059,8 @@ routine wide_atan(x: B128Extended) -> B128Extended
 ///     |v_r(x)| >= |p| >= 2^113. But a finite B128 is m 2^e with m < 2^113 and -16494 <= e <= 16271, so
 ///     |v_2(x)| <= 16494 and v_r(x) <= 71 for an odd prime r.
 routine B128.log(me: Me, base: Me) -> Me
-    shared x_bits    : U128 = me.bits()
-    shared base_bits : U128 = base.bits()
+    local x_bits    : U128 = me.bits()
+    local base_bits : U128 = base.bits()
 
     block entry()
         // positive and finite: the sign bit clear and the exponent below the top

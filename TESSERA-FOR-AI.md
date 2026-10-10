@@ -18,16 +18,16 @@ dotnet run -- build                      # build config.toml's entry (executable
 dotnet run -- version                    # the builder's version; help prints every command
 ```
 
-A program's entry point is `routine start() -> Void`, and a nonzero exit status is `set_exit_code(n)` (Standard::Os)
-before it returns. A file may start with `module A::B` and `import` lines. Name lookup follows
-modules: a file sees its own module, `Standard::Core` (always imported: the built-in types, `Option`, `Result`,
-`Bytes`), and what it imports, so printing a number needs `import Standard::Format`, a `List` needs
-`import Standard::Collections`, and `make_heap_allocator` / `Out` need `import Standard::Os` (the hosted layer,
+A program's entry point is `routine start() -> Void`, and a nonzero exit status is `set_exit_code(n)` (Standard/Os)
+before it returns. A file may start with `module A/B` and `import` lines. Name lookup follows
+modules: a file sees its own module, `Standard/Core` (always imported: the built-in types, `Option`, `Result`,
+`Bytes`), and what it imports, so printing a number needs `import Standard/Format`, a `List` needs
+`import Standard/Collections`, and `make_heap_allocator` / `Out` need `import Standard/Os` (the hosted layer,
 the only one that calls libc; a target with OS `none` has none of it). A routine declared in its type's module comes with the type; one another module adds
-to it (like `S64.represent_into` from `Standard::Format`) needs that module imported. A qualified path
-(`Standard::Format::write_str`) reaches any public name without an import. Two modules may declare the same name:
+to it (like `S64.represent_into` from `Standard/Format`) needs that module imported. A qualified path
+(`Standard/Format/write_str`) reaches any public name without an import. Two modules may declare the same name:
 the file's own module wins over its imports, and two imports offering it need the path. `define Fmt =
-Standard::Format` shortens a path (`Fmt::write_str`) without importing; `define Map = Standard::Collections::Dict` names
+Standard/Format` shortens a path (`Fmt/write_str`) without importing; `define Map = Standard/Collections/Dict` names
 a type.
 
 A builder that uses Tessera as a library (RazorForge's Tessera backend) can split one program over two modules, a base
@@ -40,10 +40,10 @@ target. `tests/SplitModuleTests.cs` shows the pair.
 ## Skeleton
 
 ```tessera
-import Standard::Alloc
-import Standard::Collections
-import Standard::Format
-import Standard::Os
+import Standard/Alloc
+import Standard/Collections
+import Standard/Format
+import Standard/Os
 
 routine start() -> Void
     block entry()
@@ -104,9 +104,10 @@ routine start() -> Void
 - `claim p : @T <- v` claims a slot for the routine call (a stack slot in practice) and stores `v` in it where the
   claim stands; its type comes from the binding, which must be written `@T` (anything else is a parse error). The
   contents are required: `claim list : @List[S64] <- .construct(alloc)`, no `list_val` and no separate store. A
-  slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) says so:
-  `claim p : @T <- uninit`, a word that means something only there. A claim without `<-` is an error, so no slot is
-  left unfilled by accident. `<-` fills memory and `=` only binds a name to a value, so `claim p : @T = v` is an
+  slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) starts as
+  `claim p : @T <- .hollow()`: `T.hollow()`, which every type has, is the all-zero value (`0`, `false`, null, a
+  collection with no memory, a choice's first member), and every `destruct` leaves it alone. A claim without `<-` is
+  an error. `<-` fills memory and `=` only binds a name to a value, so `claim p : @T = v` is an
   error too. An array value comes from `Array[T, COUNT] { 1, 2, x }` or a load (COUNT values at `first: @T` are
   `first.to[@Array[T, COUNT]]().load()`);
   a bare `[1, 2]` isn't a value. Where the type is known from where the value goes (a typed binding, a `preset` or
@@ -115,16 +116,7 @@ routine start() -> Void
   where it isn't on the same line: `sum2({ 7, 8 })` compiles, but prefer `sum2(Array[S64, 2] { 7, 8 })`. A receiver
   gives it no type: `{ 1, 2 }.eq(...)` is an error. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot, but its `<-` runs every time the block runs: a claim can't carry a value from one pass to
-  the next. A slot that does is shared in the routine's head (below).
-- **A slot is loaded only after a store on every path.** A `load` (also `volatile_load`, `load_unaligned`, the atomic
-  loads) of a claimed or `shared` slot, or of a place inside one (`p.field.load()`, `p.stride(i).load()`), that some
-  path from the routine's start reaches with nothing stored yet is a build error in every mode, and the error names
-  that path (`entry -> skip -> done`). A slot counts as filled by its `<- value`, by a store through it or through
-  any place inside it (one field or one element fills the whole slot), and from the moment its address goes anywhere
-  but a load: a routine argument or method receiver (`out.construct(...)`, `buf.setitem(i, v)`), a binding, a block
-  argument, a literal, a `write` hole. A loop that stores into the slot anywhere counts as having filled it once the
-  loop is left (a fill-every-element loop, then a load, is fine), but inside the loop a load before the store on the
-  first pass is reported. A head slot filled in the head stays filled, `jump entry()` included.
+  the next. A slot that does is local to the routine, declared in its head (below).
 - **Where values are: `@T` and `Slice[T]`.** `@T` is an address (a claim slot, a field, an element, memory from C)
   and frees nothing. `Slice[T]` (Core) is an address, a count, and `alloc`, the allocator the memory came from: `at(i)`
   is the checked address, and everything through it is `@T`'s own (`load`, `store`, `volatile_load`,
@@ -148,14 +140,14 @@ routine start() -> Void
   of a second `destruct()` of the same block (a quarantine of the last 256 freed blocks keeps that sure); with it off
   it is plain malloc / free, and so is a single-file build without a manifest. Debug and release behave the same.
   Double frees are the heap check's job: the builder makes no build-time check for them.
-- **The default heap comes with `Standard::Os`**, like `Out`: there `DEFAULT_HEAP` is an `@Allocator` ready before
+- **The default heap comes with `Standard/Os`**, like `Out`: there `DEFAULT_HEAP` is an `@Allocator` ready before
   `start` (`make_heap_allocator()` gives the same one), and every collection and `Slice` gets a `construct` without
   the allocator (`List[S64].construct()`, `Slice[U8].construct(n)`). Memory C frees or reallocates, or memory from C's
   malloc, goes through `make_c_heap_allocator()` (plain malloc in every build). A file that doesn't import
-  `Standard::Os`, and every program for a target without an OS, passes an allocator.
+  `Standard/Os`, and every program for a target without an OS, passes an allocator.
 - **Memory is declared `@T`, and its contents go in with `<-`.** A name that is an address is written with its
   pointer type, and the declared type is the name's type everywhere:
-  `claim p : @T <- v` (a stack slot, `<- uninit` if a routine fills it), `global NAME: @T [<- value]` (mutable, all-zero without a value),
+  `claim p : @T <- v` (a stack slot, `<- .hollow()` if a routine fills it), `global NAME: @T [<- value]` (mutable, all-zero without a value),
   `preset NAME: @T <- value` (read-only). `preset NAME: T = value` is a value, not memory: folded at build time, with
   no address. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
   before it to compute one, on any target), so its contents are known at build time: literals, presets, `null`, `{ ... }` (an array, or a record field by field), a routine for
@@ -206,27 +198,27 @@ routine start() -> Void
 
 **Blocks and control flow**
 
-- A routine body is its head (optional `shared` lines) and a list of blocks. The first block is `block entry()`, and
+- A routine body is its head (optional `local` lines) and a list of blocks. The first block is `block entry()`, and
   a routine without blocks must be `#external`.
 - **A routine has two layers of names.** The routine layer, its parameters and the values its head shares, is
   visible in every block. The block layer, the block's parameters, the values it binds and the slots it claims, is
   visible only in that block. Anything else must be passed as a block argument. This is the most common error. No
   name is bound twice anywhere: there is no reassignment.
-- **The head: `shared` lines.** Between the routine's header (and its `require` lines) and `block entry()`, a
-  routine may share values and slots with every block: `shared n : USize = values.count()` (a value) and
-  `shared sum : @U64 <- 0` or `<- uninit` (a slot, what `claim` makes in a block). The head holds only shared
-  lines, top to bottom, each seeing the routine's parameters, presets, globals, and the shared lines above it; its
+- **The head: `local` lines.** Between the routine's header (and its `require` lines) and `block entry()`, a
+  routine may share values and slots with every block: `local n : USize = values.count()` (a value) and
+  `local sum : @U64 <- 0` or `<- .hollow()` (a slot, what `claim` makes in a block). The head holds only local
+  lines, top to bottom, each seeing the routine's parameters, presets, globals, and the local lines above it; its
   expressions may call routines. It runs once when the routine starts, before `entry`, and `jump entry()` runs entry
   again, never the head. `fmt` puts the head 4 spaces in right under the header, aligned like bindings, with one
-  blank line before `block entry()`. `shared` in a block, or in an assembly routine, is a build error, and
-  `shared` is a keyword (a value of that name is written `` `shared` ``).
-- **A routine's parameters and shared values are there in every block, so a block parameter or a block's binding
-  can't take one's name.** Don't pass a routine parameter or a shared value along to a block: use it. A value that
+  blank line before `block entry()`. `local` in a block, or in an assembly routine, is a build error, and
+  `local` is a keyword (a value of that name is written `` `local` ``).
+- **A routine's parameters and local values are there in every block, so a block parameter or a block's binding
+  can't take one's name.** Don't pass a routine parameter or a local value along to a block: use it. A value that
   starts from one and changes (a loop counter, a shrinking count) gets its own name as a block parameter
-  (`jump walk(start)` into `block walk(at: USize)`), or a shared slot.
+  (`jump walk(start)` into `block walk(at: USize)`), or a local slot.
 - **What goes in the head.** A value or a slot made in entry that only travels unchanged through blocks goes in the
   head, instead of being passed along every jump: when moving it there changes no order (it is among entry's first
-  bindings), or its initializer has no effect and costs nothing (a literal, `.empty()`, `uninit`, a field address).
+  bindings), or its initializer has no effect and costs nothing (a literal, `.empty()`, `.hollow()`, a field address).
   Before, `first` and `count` ride along every jump:
 
   ```tessera
@@ -248,8 +240,8 @@ routine start() -> Void
   ```tessera
   routine List[T].destruct_all(me: @Me) -> Void
   require T: typename, Destructible[T]
-      shared first : @T    = me.storage.data.load()
-      shared count : USize = me.count.load()
+      local first : @T    = me.storage.data.load()
+      local count : USize = me.count.load()
 
       block entry()
           jump each(0)
@@ -260,7 +252,7 @@ routine start() -> Void
           jump each(i.add(1))
   ```
 
-- **Accumulating state may live in a shared slot (recommended).** A sum, a count, or a position being advanced can be
+- **Accumulating state may live in a local slot (recommended).** A sum, a count, or a position being advanced can be
   a head slot updated with `load` / `store_into` instead of a block parameter threaded through every jump. The value
   that decides where the loop goes next (the `i` of `jump add(i.add(1))`) stays a block parameter, so the jump line
   shows how the loop advances. The optimizer keeps the slot in a register as long as it is only loaded and stored
@@ -270,8 +262,8 @@ routine start() -> Void
 
   ```tessera
   routine total(values: Slice[U32]) -> U64
-      shared n   : USize = values.count()
-      shared sum : @U64  <- 0
+      local n   : USize = values.count()
+      local sum : @U64  <- 0
 
       block entry()
           jump add(0)
@@ -292,9 +284,10 @@ routine start() -> Void
   that ends the routine does `jump finish(result)` (`jump finish()` for `Void`, or a `finish(...)` arm), and
   `finish` releases everything and is the only `return`. A routine with nothing to release returns wherever it likes.
   `finish` is a convention, not a keyword, so a block that only computes a last step is named for that step
-  (`round`, `pack`). The owners `finish` releases are usually head `shared` slots, and each starts explicitly EMPTY,
-  never `<- uninit`, so releasing it on a path that never filled it does nothing: `<- .empty()` (`Slice`, `Bytes`,
-  `FileHandle`) or a collection's `.construct(alloc)` (allocates nothing). When the result takes over what a slot
+  (`round`, `pack`). The owners `finish` releases are usually head `local` slots, and each starts EMPTY, so releasing
+  it on a path that never filled it does nothing: `<- .hollow()` (all zero, which every `destruct` leaves alone), or
+  the type's own empty value (`.empty()` for `Slice` / `Bytes`, a collection's `.construct(alloc)`, which allocates
+  nothing). When the result takes over what a slot
   holds, store the empty value back before the jump. Before, each exit releases what it has:
 
   ```tessera
@@ -302,13 +295,13 @@ routine start() -> Void
       block entry()
           p : Option[Bytes] = env_dir("HOMEPATH", alloc)
           when p
-              .Present(path) -> join(path)
-              .Absent        -> missing()
+              .Present(path) => join(path)
+              .Absent        => missing()
 
       block missing()
           claim held : @Bytes <- drive
           held.destruct()
-          return(.Failure(FsError.NotFound))
+          return(.Failure(FsError.NOT_FOUND))
 
       block join(path: Bytes)
           both : Bytes = Bytes.concat(drive, path, alloc)
@@ -323,14 +316,14 @@ routine start() -> Void
 
   ```tessera
   routine home_path(drive_text: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
-      shared drive : @Bytes <- drive_text
-      shared path  : @Bytes <- .empty()
+      local drive : @Bytes <- drive_text
+      local path  : @Bytes <- .empty()
 
       block entry()
           p : Option[Bytes] = env_dir("HOMEPATH", alloc)
           when p
-              .Present(text) -> join(text)
-              .Absent        -> finish(.Failure(FsError.NotFound))
+              .Present(text) => join(text)
+              .Absent        => finish(.Failure(FsError.NOT_FOUND))
 
       block join(path_text: Bytes)
           path_text.store_into(path)
@@ -347,11 +340,11 @@ routine start() -> Void
   isn't made safe by an empty value (unlocking a lock not held is a bug): every path into `finish` holds it, so take
   it first or move the locked part into its own routine. A release whose order matters (unlock before a callback or a
   park) stays where it must happen. `tessera lint` (and `check` / `build` / `run` for the program's own files) warns,
-  in a routine with a block named `finish`, on each `return` outside it and on `finish` destructing a head slot that
-  starts as `<- uninit`.
+  in a routine with a block named `finish`, on each `return` outside it.
 
 - Every block ends with exactly one terminator: `jump b(...)`, `branch c ? a(...) : b(...)`, `when`
-  (first condition that holds), `when v` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
+  (first condition that holds), `when v` (match one value), `return(...)`, `unreachable`, or `todo` (a block not
+  written yet: it crashes with `NotImplementedError` when reached, and the build warns once per routine). An arm of `branch` /
   `when` names a block, or is an
   inline `return(...)` or a call to a `#noreturn` routine (`crash(...)`, `crash_overflow()`). Block arguments and the
   returned value may be expressions (`loop(i.add(1))`, `return(x.to[S32]())`), evaluated only when that arm is
@@ -367,18 +360,18 @@ routine start() -> Void
 
   ```tessera
   when item
-      .Present(value) -> continue
-      .Absent         -> finish()
+      .Present(value) => continue
+      .Absent         => finish()
   total.load().add(value).store_into(total)  // value is bound here
   ```
 
-  Same rules as any block binding (not a routine parameter's, a shared value's, or an earlier binding's name, and not
+  Same rules as any block binding (not a routine parameter's, a local value's, or an earlier binding's name, and not
   bound again later). When several arms continue, none of their payloads is bound after the `when`, nor is the
   payload of an arm that leaves: a use is a build error saying why.
 - A line that starts with `?` or `:` continues the one above. `fmt` writes every `branch`, and every select that is a
   binding's or claim's whole value, on three lines: the condition, then `? a` and `: b` 4 spaces further in.
 - An integer `when v` needs an `else` arm. A `when v` on a choice without `else` must list every member. An arm may
-  list several values (`b'+', b'-' -> sign()`); there are no range patterns, so test ranges in `when` with
+  list several values (`b'+', b'-' => sign()`); there are no range patterns, so test ranges in `when` with
   `between` / `in_range`.
 
 **Operations**
@@ -413,10 +406,10 @@ routine start() -> Void
   compare one across runs. Combine part hashes with `hash_combine(a, b)`. `siphash24(data, count, key)` /
   `siphash24(v, key)` / `siphash24(low, high, key)` take a `SipKey { k0, k1 }` of your own. `xxh64` stays as the
   unkeyed fast hash, the same in every run: for checksums and keys you trust, not for a table filled from outside.
-- **Random numbers** are `Xoshiro256` (`import Standard::Random`): `.from_seed(seed)` replays a stream,
+- **Random numbers** are `Xoshiro256` (`import Standard/Random`): `.from_seed(seed)` replays a stream,
   `.from_entropy()` draws one per run from the hash key's source (`entropy_key()`), then `next()`, `next_u32()`,
   `next_f64()` ([0, 1)), and `below(bound)` (unbiased). Not for secrets. JSON string escaping is
-  `text.json_quote_into(out)` in `Standard::Json`.
+  `text.json_quote_into(out)` in `Standard/Json`.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
 - `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to[U8]()` /
   `b.to[S8]()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap[U64]()` / `to_wrap[S64]()`. It has
@@ -533,7 +526,7 @@ routine start() -> Void
   (unwrap of Absent, pop on empty), `crash_key_not_found()`, `crash_unwrap_failure()` / `crash_unwrap_success()`
   (UnwrapFailureError / UnwrapSuccessError), `crash_task_spawn()`, and `crash_logic_breached()` for a state the code
   rules out. A failure with its own message calls `crash(name, message)`. There's no `trap()`: every stop is a crash.
-  A crash calls the crash handler; the default (Standard::Os) prints `tessera: Name: message` and the caller's place
+  A crash calls the crash handler; the default (Standard/Os) prints `tessera: Name: message` and the caller's place
   and exits with status 82, and a program replaces it (a program on a target without an OS must) with
   `#[export("tessera_crash_handler"), noreturn] routine my_handler(name: Bytes, message: Bytes, place:
   @SourceLocation) -> Void`. A stdlib routine that crashes on its caller's mistake is `#track_caller`, so the place is
@@ -577,7 +570,7 @@ routine start() -> Void
   values go in a record or a tuple. `Option[T]` (`Absent`, `Present : T`) and `Result[TSuccess, TFailure]`
   (`Failure : TFailure`, `Success : TSuccess`) are variants.
 - Build: `Expr.Number(5)`, `.Number(5)` where the type is known, `Expr.Empty` / `.Empty`.
-- Read with `when e`; `Expr.Number(n) -> target(n)` binds the payload for that arm's target only (or, on the one
+- Read with `when e`; `Expr.Number(n) => target(n)` binds the payload for that arm's target only (or, on the one
   arm that `continue`s, for the rest of the block), `Expr.Empty` or `.Present` matches without binding. Without `else`, list every case. There's no field access on a variant.
 - Payloads overlap; a payload arm reads through a stack slot (gone at `-O`).
 - A choice or variant without `#derive` derives Representable, Diagnosable, Equatable, Hashable, and Comparable (a variant's only when
@@ -604,7 +597,7 @@ Iterating a collection (`next` returns `Option[T]`):
 
 ```tessera
 routine sum_list(list: @List[S64]) -> S64
-    shared iter : @ListIter[S64] <- .construct(list)
+    local iter : @ListIter[S64] <- .construct(list)
 
     block entry()
         jump next(0)
@@ -612,8 +605,8 @@ routine sum_list(list: @List[S64]) -> S64
     block next(total: S64)
         item : Option[S64] = iter.next()
         when item
-            .Present(value) -> next(total.add(value))
-            .Absent         -> return(total)
+            .Present(value) => next(total.add(value))
+            .Absent         => return(total)
 ```
 
 Propagating a `Result`:
@@ -623,8 +616,8 @@ routine parse_or_zero(text: Bytes) -> B64
     block entry()
         r : Result[B64, ParseError] = text.to_result[B64]()
         when r
-            .Success(value) -> return(value)
-            .Failure(error) -> failed(error)
+            .Success(value) => return(value)
+            .Failure(error) => failed(error)
 
     block failed(error: ParseError)
         return(0.0)
@@ -653,7 +646,7 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   `In.read_checked[T]()` gives `Option[T]` (Absent for both), `In.read_result[T]()` a `Result[T, ParseError]`
   (`Failure(Empty)` at the end).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
-  `Bytes`. A pointer is neither Representable nor Diagnosable, so `{sum}` on a `shared sum : @S64` slot is a build
+  `Bytes`. A pointer is neither Representable nor Diagnosable, so `{sum}` on a `local sum : @S64` slot is a build
   error, not its address: write the value with `{sum.load()}`, or the address with `{sum.to[Addr]()}`
   (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
@@ -677,7 +670,7 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
 
 All in `Standard/Collection/`, documented in `../Tessera-Wiki/docs/Collections.md`. They are built on
 `Slice[T]`: a `List` is `storage` (a Slice whose count is the capacity) and `count`. `construct(alloc)` keeps
-the allocator (`construct()` with `Standard::Os` uses the default heap), and `destruct()` releases storage and keeps
+the allocator (`construct()` with `Standard/Os` uses the default heap), and `destruct()` releases storage and keeps
 the allocator, so the collection can be used again. Element access is
 `getitem(i)` / `setitem(i, v)` (the name says what is fetched), `at(i)` the checked address. Out-of-range access, `pop`
 on empty, and `getitem` of a missing key crash; the `_checked` forms (`getitem_checked`, `pop_checked`,
@@ -713,24 +706,24 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 **Routines every program has.**
 
 - `routine start() -> Void` is the entry point of an executable. With an operating system the builder writes the
-  platform's C `main`, which calls `start` and returns the exit status `set_exit_code(code: S32)` (Standard::Os)
+  platform's C `main`, which calls `start` and returns the exit status `set_exit_code(code: S32)` (Standard/Os)
   stored, 0 when nothing did. It is one atomic value: the last store wins, any thread may set it, and a thread
   still running when `start` returns may or may not get its store in. `exit_code()` reads it back. A crash keeps its
   own status (82 by default). `main` is an ordinary routine name; a program with `main` and no `start` is a build
   error that says so. `start` with parameters or a result is an error too.
 - `routine when_booted() -> Void` is the board step of a program for a target without an operating system (below);
   with one it is a build error.
-- Every routine with a body starts with `block entry()` (after its head's `shared` lines, if it has any), which
+- Every routine with a body starts with `block entry()` (after its head's `local` lines, if it has any), which
   takes no parameters. A routine without blocks must be `#external`.
 
-**Threads and fibers.** `Standard::Os` has `Thread.spawn(routine, state, alloc)` (or without `alloc`, on
+**Threads and fibers.** `Standard/Os` has `Thread.spawn(routine, state, alloc)` (or without `alloc`, on
 `DEFAULT_HEAP`) / `join()` / `detach()`, generic over the state: the routine takes an `@S` and `state` is one
 (`routine work(job: @Job) -> Void`, then `Thread.spawn(work.to[Callable](), job)`), so nothing converts through
 `Addr`; a thread with no state of its own is handed the global it works on. `Mutex`
 (`lock` / `unlock` / `try_lock`), `Condition` (a condition variable for a Mutex: `wait(mutex)`,
 `wait_for(mutex, timeout_ns)` / `wait_until(mutex, deadline_ns)` returning whether it returned in time,
 `wake_one()` / `wake_all()`; a wait may return without a wake, so the waiter checks its condition again in a loop),
-`wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32`, and `monotonic_ns()`. `Standard::Fiber`'s `Scheduler`
+`wait_on` / `wait_on_for` / `wake_one` / `wake_all` on a `@U32`, and `monotonic_ns()`. `Standard/Fiber`'s `Scheduler`
 runs fibers over worker threads: `.construct(workers, stacks, alloc)` (0 = one per processor), then
 `spawn(routine, state, stack_size)` (generic over the state like `Thread.spawn`: the routine takes an `@S` and
 `state` is one, and so for `spawn_joinable` and `run_blocking`), `yield()` inside a fiber, `run()`
@@ -768,9 +761,9 @@ gives it back (and does nothing for a literal path).
 `set_exit_code(status)` sets the status `start` returning ends it with.
 
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
-`x86_64-none-elf`) gets everything but `Standard::Os`: Core, Format (into a `SliceWriter` or `List[Byte]`), Alloc, and
-Collections all check there. `Standard::Os` drops out of the build, so importing it or naming anything in it is one
-build error ("Standard::Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, fiber `Scheduler` (`Standard::Fiber`'s
+`x86_64-none-elf`) gets everything but `Standard/Os`: Core, Format (into a `SliceWriter` or `List[Byte]`), Alloc, and
+Collections all check there. `Standard/Os` drops out of the build, so importing it or naming anything in it is one
+build error ("Standard/Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, fiber `Scheduler` (`Standard/Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
 `make_heap_allocator`, `DEFAULT_HEAP`, or `construct()` without an allocator. The program exports its own crash handler (`#[export("tessera_crash_handler"), noreturn]`, which
 may loop forever), passes its own `Allocator` if it allocates, and brings its link script. A program that defines `start` gets its
@@ -867,7 +860,7 @@ isn't empty is named for what it is: `ProcessOptions.default()` captures both st
 `List[T].construct(alloc)`, `Slice[T].construct(count, alloc)`, `allocate[T](count, alloc)`,
 `deallocate(p, alloc)`, `In.read_line(alloc)`, `Thread.spawn(routine, state, alloc)`. A second allocator for another
 job goes just before it (`Scheduler.construct(workers, stacks, alloc)`). So the form without the allocator
-(`construct()` with `Standard::Os`) is the same call with the last argument left off.
+(`construct()` with `Standard/Os`) is the same call with the last argument left off.
 
 **Five or more parameters take a record.** Arguments are positional (there are no named arguments), so a call reads
 by its values: pass named values (`retries : U32 = 3`, then `retries`), not bare literals whose role needs the
@@ -896,9 +889,10 @@ range checks (`eq`, `lt`, `between`, `in_range`), an overflow test that goes wit
 (`mul_overflows`), and a routine that does something and says whether it worked (`Set.add`, `remove`, `try_lock`,
 `wait_for`). A `Bool` value in a block reads as a predicate too, but needs no prefix (`done`, `found`).
 
-**Name case.** Types, concepts, modules, and choice / variant cases are `PascalCase` (`FsError.NotFound`,
-`.Absent`), with acronyms written as words (`Eof`, `Utf8Decoded`, `Nan`). Routines, fields, blocks, and values are
-`snake_case`. Only presets, globals, and value generic parameters are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
+**Name case.** Types, concepts, modules, and variant cases are `PascalCase` (`.Absent`), with acronyms written as
+words (`Utf8Decoded`). Routines, fields, blocks, and values are `snake_case`. Choice members, presets, globals, and
+value generic parameters are `UPPER_SNAKE_CASE` (`FsError.NOT_FOUND`, `U64.MAX`, `NODE_KEYS`); the build rejects a
+choice member written otherwise.
 
 **Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Option[T]`,
 `Writer[T]`, `BufWriter[T]`, `Thread.spawn[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in
