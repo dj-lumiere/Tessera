@@ -48,7 +48,7 @@ import Standard::Os
 routine start() -> Void
     block entry()
         claim alloc : @Allocator <- make_heap_allocator()
-        claim list  : @List<S64> <- .construct(alloc)
+        claim list  : @List[S64] <- .construct(alloc)
         list.push(42)
         first : S64 = list.getitem(0)
         Out.write("first: {first}, as source: {first.diagnose()}\n")
@@ -77,42 +77,42 @@ routine start() -> Void
 
 - A value is written by its bare name, pointers included: `x: S64 = ...`, `claim p : @S64`. A bare name is the
   nearest visible value (routine and block parameters, earlier bindings in the block), else a preset, global, or type;
-  a call `f(...)` always names a routine. A routine as a value is `f.to<Callable>()` (never a bare `f`), and a value
+  a call `f(...)` always names a routine. A routine as a value is `f.to[Callable]()` (never a bare `f`), and a value
   named like a keyword (`block`, `null`, `return`, ...) is written between backticks: `` `block` ``. The type says
   whether a value is a pointer (`@T`, or `Addr` for an address with no pointee type, C's `void*`). `@T`
-  passes where an `Addr` is expected; the other way takes `a.to<@T>()`. `@T` is how the record `Ptr<T>` is
-  written (`@@Byte`, `@Array<@S32, 3>`); it keeps its name only where routines are declared on it or called through
-  it (`routine Ptr<T>.load`). Attributes start with `#`: `#target(os: "windows")`, `#[external("c"), noreturn]`.
+  passes where an `Addr` is expected; the other way takes `a.to[@T]()`. `@T` is how the record `Ptr[T]` is
+  written (`@@Byte`, `@Array[@S32, 3]`); it keeps its name only where routines are declared on it or called through
+  it (`routine Ptr[T].load`). Attributes start with `#`: `#target(os: "windows")`, `#[external("c"), noreturn]`.
 - `=` only binds. Memory is read and written with methods: `v: S64 = p.load()`, `p.store(v)`,
   `f: T = p.field.load()`, `p.field.store(v)`, `e: T = p.stride(i).load()`, `p.stride(i).store(v)`. Places
-  (`p.field`, `p.stride(i)`) are addresses. An `Addr` has no `load` or `store`: convert it to say what's there, `a.to<@U32>().load()`. Registers:
+  (`p.field`, `p.stride(i)`) are addresses. An `Addr` has no `load` or `store`: convert it to say what's there, `a.to[@U32]().load()`. Registers:
   `volatile_load()` / `volatile_store(...)`. (`:=` and `p = v` are gone and rejected.) From the value's side,
   `v.store_into(p)` is `p.store(v)`, so a chain can end in memory: `a.add(b).store_into(sum)`. A
   read-modify-write on one place reads left to right: `me.count.load().add(1).store_into(me.count)`, not
   `me.count.store(me.count.load().add(1))`. The load needn't come first: `x.sub(p.load()).store_into(p)`
   (for a commutative op, put the load first: `p.load().add(x).store_into(p)`). A literal receiver takes its type from the pointer
   (`0.store_into(count)`).
-- Memory is never read implicitly. A place passed as an argument is its address, so `Byte.to<U8>(p.stride(i))` is an
-  error: write `Byte.to<U8>(p.stride(i).load())`.
+- Memory is never read implicitly. A place passed as an argument is its address, so `Byte.to[U8](p.stride(i))` is an
+  error: write `Byte.to[U8](p.stride(i).load())`.
 - `.addr()` gives a `Callable`'s code address as an `Addr`, for C code that takes a function as `void*`:
   `fn.addr()`, or `my_routine.addr()` (typed by the routine's own signature). A `Callable` never widens to `Addr` on
   its own, and an `Addr` is not callable.
 - A `Callable` value is called with `.call(args)`. One stored in a field is loaded first:
-  `free_fn: Callable<…> = alloc.free_fn.load()`, then `free_fn.call(state, raw)`. `alloc.free_fn(...)` is an
+  `free_fn: Callable[…] = alloc.free_fn.load()`, then `free_fn.call(state, raw)`. `alloc.free_fn(...)` is an
   error.
 - A field of an SSA record value is read with plain `=`: `key: K = pair.key`.
 - `claim p : @T <- v` claims a slot for the routine call (a stack slot in practice) and stores `v` in it where the
   claim stands; its type comes from the binding, which must be written `@T` (anything else is a parse error). The
-  contents are required: `claim list : @List<S64> <- .construct(alloc)`, no `list_val` and no separate store. A
+  contents are required: `claim list : @List[S64] <- .construct(alloc)`, no `list_val` and no separate store. A
   slot that a routine fills later (an out parameter, `out.construct(...)`, an iterator's slot) says so:
   `claim p : @T <- uninit`, a word that means something only there. A claim without `<-` is an error, so no slot is
   left unfilled by accident. `<-` fills memory and `=` only binds a name to a value, so `claim p : @T = v` is an
-  error too. An array value comes from `Array<T, COUNT> { 1, 2, x }` or a load (COUNT values at `first: @T` are
-  `first.to<@Array<T, COUNT>>().load()`);
+  error too. An array value comes from `Array[T, COUNT] { 1, 2, x }` or a load (COUNT values at `first: @T` are
+  `first.to[@Array[T, COUNT]]().load()`);
   a bare `[1, 2]` isn't a value. Where the type is known from where the value goes (a typed binding, a `preset` or
   `global`, an argument, an element of an outer literal, the pointer of `store_into`), the type can be left off:
-  `preset SORTED: @Array<S64, 3> <- { -8, 0, 7 }`, `p : Point = { x: 1, y: 2 }`, like `.absent()`. Write the type
-  where it isn't on the same line: `sum2({ 7, 8 })` compiles, but prefer `sum2(Array<S64, 2> { 7, 8 })`. A receiver
+  `preset SORTED: @Array[S64, 3] <- { -8, 0, 7 }`, `p : Point = { x: 1, y: 2 }`, like `.absent()`. Write the type
+  where it isn't on the same line: `sum2({ 7, 8 })` compiles, but prefer `sum2(Array[S64, 2] { 7, 8 })`. A receiver
   gives it no type: `{ 1, 2 }.eq(...)` is an error. Claimed slots are hoisted to the routine's entry, so a `claim` inside a loop
   block reuses one slot, but its `<-` runs every time the block runs: a claim can't carry a value from one pass to
   the next. A slot that does is shared in the routine's head (below).
@@ -125,21 +125,21 @@ routine start() -> Void
   argument, a literal, a `write` hole. A loop that stores into the slot anywhere counts as having filled it once the
   loop is left (a fill-every-element loop, then a load, is fine), but inside the loop a load before the store on the
   first pass is reported. A head slot filled in the head stays filled, `jump entry()` included.
-- **Where values are: `@T` and `Slice<T>`.** `@T` is an address (a claim slot, a field, an element, memory from C)
-  and frees nothing. `Slice<T>` (Core) is an address, a count, and `alloc`, the allocator the memory came from: `at(i)`
+- **Where values are: `@T` and `Slice[T]`.** `@T` is an address (a claim slot, a field, an element, memory from C)
+  and frees nothing. `Slice[T]` (Core) is an address, a count, and `alloc`, the allocator the memory came from: `at(i)`
   is the checked address, and everything through it is `@T`'s own (`load`, `store`, `volatile_load`,
   `atomic_fetch_add`, ...), `getitem(i)` / `setitem(i, v)` the value shortcuts, `getitem_checked(i)` an `Option`,
-  `getslice(start, count)` a checked range, `getview()` the whole of it, `to<@T>()` the first address.
-  **A null `alloc` means borrowed**, and `destruct()` does nothing: `Slice<T>.construct(data, count)`, `getslice`,
-  `getview()`, and `to<Slice<T>>()` of a `List` / `Array` / `Bytes` are all borrowed. `.construct(count, alloc)` (a
+  `getslice(start, count)` a checked range, `getview()` the whole of it, `to[@T]()` the first address.
+  **A null `alloc` means borrowed**, and `destruct()` does nothing: `Slice[T].construct(data, count)`, `getslice`,
+  `getview()`, and `to[Slice[T]]()` of a `List` / `Array` / `Bytes` are all borrowed. `.construct(count, alloc)` (a
   count of 0 allocates nothing) carries `alloc`: `resize(n)` reallocates (`resize(0)` frees and keeps `alloc`),
   `destruct()` gives the memory back and leaves the slice empty with a null `alloc`, `destruct_all()` destructs the
-  values first. `Slice<T>.empty()` (like `Bytes.empty()`) is the empty borrowed slice, the start value of a slot that
-  a `finish` block destructs. `Array<T, COUNT>` is the other run of values, its count in the type. Heap memory reaches your code as a
+  values first. `Slice[T].empty()` (like `Bytes.empty()`) is the empty borrowed slice, the start value of a slot that
+  a `finish` block destructs. `Array[T, COUNT]` is the other run of values, its count in the type. Heap memory reaches your code as a
   `Slice` or `Bytes` that carries its allocator (or a type built on one). The raw layer under it,
-  `allocate<T>(count, alloc)` / `reallocate<T>(p, count, alloc)` / `deallocate(p, alloc)`, is for node-based
+  `allocate[T](count, alloc)` / `reallocate[T](p, count, alloc)` / `deallocate(p, alloc)`, is for node-based
   structures and C interop. `@T` has no `free`. `dst.copy(src, count)` copies `count` values of `T` (memcpy, no overlap), and
-  `src.copy_into(dst, count)` is the same copy from the source's side. On a `@Array<T, COUNT>` (or any type with its own
+  `src.copy_into(dst, count)` is the same copy from the source's side. On a `@Array[T, COUNT]` (or any type with its own
   `copy`) the type's routine wins, so generic code over `@T` uses `src.copy_into(dst, count)`.
 - **A plain copy copies ownership.** Copying a `Slice` or `Bytes` copies `alloc` with the address (no moves, no unique
   owner), so either copy can free the memory: destruct exactly one, and hand out `getview()` where the receiver only
@@ -150,7 +150,7 @@ routine start() -> Void
   Double frees are the heap check's job: the builder makes no build-time check for them.
 - **The default heap comes with `Standard::Os`**, like `Out`: there `DEFAULT_HEAP` is an `@Allocator` ready before
   `start` (`make_heap_allocator()` gives the same one), and every collection and `Slice` gets a `construct` without
-  the allocator (`List<S64>.construct()`, `Slice<U8>.construct(n)`). Memory C frees or reallocates, or memory from C's
+  the allocator (`List[S64].construct()`, `Slice[U8].construct(n)`). Memory C frees or reallocates, or memory from C's
   malloc, goes through `make_c_heap_allocator()` (plain malloc in every build). A file that doesn't import
   `Standard::Os`, and every program for a target without an OS, passes an allocator.
 - **Memory is declared `@T`, and its contents go in with `<-`.** A name that is an address is written with its
@@ -159,10 +159,10 @@ routine start() -> Void
   `preset NAME: @T <- value` (read-only). `preset NAME: T = value` is a value, not memory: folded at build time, with
   no address. A global or a preset in memory is part of the program image, there before `start` runs (nothing runs
   before it to compute one, on any target), so its contents are known at build time: literals, presets, `null`, `{ ... }` (an array, or a record field by field), a routine for
-  a `Callable` (`f.to<Callable>()`), or the name of another global or preset in memory (its
+  a `Callable` (`f.to[Callable]()`), or the name of another global or preset in memory (its
   address; a global holding a pointer is `@@T`: `global HEAD: @@Node <- null`). Use them as `TICKS.load()`,
   `STATS.calls.store(n)`, `K.getitem(i)`; writing a preset's memory is a build error. Neither kind is a buildtime
-  constant: a preset value is (`Array<S64, N>` with `preset N: USize = 4`). An array preset is always in memory.
+  constant: a preset value is (`Array[S64, N]` with `preset N: USize = 4`). An array preset is always in memory.
 - `#[external("c"), symbol("environ")] global ENVIRON: @@@Byte` declares a C variable (C's `extern`): no `<-`, read and
   written like any global; dllimport on Windows.
 - `#threadlocal global NAME: @T [<- value]` gives each thread its own copy, starting from the value; the name is the
@@ -186,7 +186,7 @@ routine start() -> Void
   crash trace (below); `#untraced` keeps a larger hot routine off it too.
 - `#expensive` (or `#expensive("allocates heap memory")`, the reason reading after the routine's name) marks a routine
   that costs a lot on every call and every target: allocation and freeing (`allocate`, `reallocate`, `deallocate`,
-  `Slice<T>.construct` / `resize`, `Bytes.concat`, `List<T>.reserve`), the operating system (`Out` / `Err` writes,
+  `Slice[T].construct` / `resize`, `Bytes.concat`, `List[T].reserve`), the operating system (`Out` / `Err` writes,
   allocating `In` reads, file and directory operations, `FileHandle` I/O, processes, `Thread.spawn`), `U256` / `S256`
   division and `BigNat` division, and whole-buffer hashes. It changes nothing in the output and goes on routines
   only. `tessera lint` (and `check` / `build` / `run` for the program's own files, and the language server) warns on a
@@ -198,10 +198,10 @@ routine start() -> Void
   only on some targets (64-bit division on 32-bit, 128-bit division, `popcount`) or only now and then (`List.push`),
   nor blocking waits (`Condition.wait`, `wait_on`, `Thread.join`), which belong in loops.
 - A `preset` value is folded by the builder, and only from literals, other presets, integer and `Bool` arithmetic and
-  conversions (`add`, `shl`, `bitor`, `to<U128>()`, `to_wrap<U8>()`, …), B32/B64 `add`/`sub`/`mul`/`div`/`neg`,
+  conversions (`add`, `shl`, `bitor`, `to[U128]()`, `to_wrap[U8]()`, …), B32/B64 `add`/`sub`/`mul`/`div`/`neg`,
   `max`/`min`/`sizeof`/`alignof`, and `T.from_bits(0x…)` for floats and B128. A routine call is an error; nothing
   runs at build time. Overflow or an out-of-range conversion in a preset is a build error.
-- `p.to<@U>()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
+- `p.to[@U]()` reinterprets memory: any sizes, no strict aliasing, but you own bounds, alignment, and value validity
   (`Bool`, `Char`, choices). Pointers may alias.
 
 **Blocks and control flow**
@@ -230,8 +230,8 @@ routine start() -> Void
   Before, `first` and `count` ride along every jump:
 
   ```tessera
-  routine List<T>.destruct_all(me: @Me) -> Void
-  require T: typename, Destructible<T>
+  routine List[T].destruct_all(me: @Me) -> Void
+  require T: typename, Destructible[T]
       block entry()
           first : @T    = me.storage.data.load()
           count : USize = me.count.load()
@@ -246,8 +246,8 @@ routine start() -> Void
   After, the head shares them and the loop passes only what changes:
 
   ```tessera
-  routine List<T>.destruct_all(me: @Me) -> Void
-  require T: typename, Destructible<T>
+  routine List[T].destruct_all(me: @Me) -> Void
+  require T: typename, Destructible[T]
       shared first : @T    = me.storage.data.load()
       shared count : USize = me.count.load()
 
@@ -269,7 +269,7 @@ routine start() -> Void
   slower in a hot loop. At -O0 it costs nothing extra: a block parameter gets a debug slot of its own anyway.
 
   ```tessera
-  routine total(values: Slice<U32>) -> U64
+  routine total(values: Slice[U32]) -> U64
       shared n   : USize = values.count()
       shared sum : @U64  <- 0
 
@@ -283,7 +283,7 @@ routine start() -> Void
               : continue
           value : U32 = values.getitem(i)
           total : U64 = sum.load()
-          total.add(value.to<U64>()).store_into(sum)
+          total.add(value.to[U64]()).store_into(sum)
           jump add(i.add(1))
   ```
 
@@ -298,9 +298,9 @@ routine start() -> Void
   holds, store the empty value back before the jump. Before, each exit releases what it has:
 
   ```tessera
-  routine home_path(drive: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+  routine home_path(drive: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
       block entry()
-          p : Option<Bytes> = env_dir("HOMEPATH", alloc)
+          p : Option[Bytes] = env_dir("HOMEPATH", alloc)
           when p
               .Present(path) -> join(path)
               .Absent        -> missing()
@@ -322,12 +322,12 @@ routine start() -> Void
   After, the owners start empty in the head and every exit goes through `finish`:
 
   ```tessera
-  routine home_path(drive_text: Bytes, alloc: @Allocator) -> Result<Bytes, FsError>
+  routine home_path(drive_text: Bytes, alloc: @Allocator) -> Result[Bytes, FsError]
       shared drive : @Bytes <- drive_text
       shared path  : @Bytes <- .empty()
 
       block entry()
-          p : Option<Bytes> = env_dir("HOMEPATH", alloc)
+          p : Option[Bytes] = env_dir("HOMEPATH", alloc)
           when p
               .Present(text) -> join(text)
               .Absent        -> finish(.Failure(FsError.NotFound))
@@ -337,7 +337,7 @@ routine start() -> Void
           both : Bytes = Bytes.concat(drive.load(), path.load(), alloc)
           jump finish(.Success(both))
 
-      block finish(result: Result<Bytes, FsError>)
+      block finish(result: Result[Bytes, FsError])
           drive.destruct()
           path.destruct()
           return(result)
@@ -354,7 +354,7 @@ routine start() -> Void
   (first condition that holds), `when v` (match one value), `return(...)`, or `unreachable`. An arm of `branch` /
   `when` names a block, or is an
   inline `return(...)` or a call to a `#noreturn` routine (`crash(...)`, `crash_overflow()`). Block arguments and the
-  returned value may be expressions (`loop(i.add(1))`, `return(x.to<S32>())`), evaluated only when that arm is
+  returned value may be expressions (`loop(i.add(1))`, `return(x.to[S32]())`), evaluated only when that arm is
   taken. An ordinary routine call can't be an arm by itself: call it inside a block.
 - There are no `for` / `while` / `if`. A loop is a block that jumps to itself with new arguments.
 - `continue` as an arm of `branch` / `when` goes on with the next line of the same block:
@@ -385,7 +385,7 @@ routine start() -> Void
 
 - There are no operators. Everything is a method, and pure calls chain: `i.add(1).bitand(mask)`.
 - A chain holds at most three calls (`sum.load().add(x).store_into(sum)` is fine). Everything call-shaped counts
-  (`x.f()`, `T.f()`, `f()`, `.stride(i)`, `.to<T>()`), a field doesn't, and each argument and each `{...}`
+  (`x.f()`, `T.f()`, `f()`, `.stride(i)`, `.to[T]()`), a field doesn't, and each argument and each `{...}`
   write-template hole is its own chain. A fourth call gets a binding instead. A read-modify-write is load, then the operation, then the store (`x.load().add(y).store_into(x)`): the basic
   shape of an update, too common to warn about. The lint is there to stop a line from piling up conversions, not to
   split ordinary updates. `check`/`build`/`run` warn (not an error) for the program's own files, and
@@ -395,9 +395,9 @@ routine start() -> Void
 - Signedness lives on the type. `S8` .. `S256` are signed and `U8` .. `U256` unsigned; the methods are plain
   `add`, `div`, `mod`, `lt`, `ge`, `shr` (arithmetic on S, logical on U), and so on. A shift by the width or more
   shifts every bit out (0, or -1 for a negative S value shifted right).
-- Arithmetic crashes on overflow: `add`, `sub`, `mul`, `div`, `neg`, `abs`, `pow`, and a lossy `to<T>()`. Each has
+- Arithmetic crashes on overflow: `add`, `sub`, `mul`, `div`, `neg`, `abs`, `pow`, and a lossy `to[T]()`. Each has
   `_checked` (returns `Option`), `_wrap` (modular), and `_clamp` (saturating) forms: `h.mul_wrap(PRIME)`,
-  `n.to_clamp<U8>()`. Hashes, PRNGs, and bit tricks want `_wrap`.
+  `n.to_clamp[U8]()`. Hashes, PRNGs, and bit tricks want `_wrap`.
 - Subtraction that can underflow crashes even if the result is unused later, so don't compute `len.sub(1)` before
   the branch that knows it's safe: pass it as a branch-arm argument (arm arguments are evaluated lazily), or compute
   it in the arm's block. The same goes for a value select (`c ? a : b`), which evaluates both sides; the
@@ -406,7 +406,7 @@ routine start() -> Void
   `[lo, end)`, on every integer, float, `Byte`, and `Char`.
 - Lengths, indices, counts, sizes, and `sizeof` / `alignof` are `USize`; value generic parameters are `USize` (`COUNT: USize`).
   `USize` / `SSize` are the pointer-width integers (C's `size_t` / `ssize_t`), types of their own that never mix with
-  `U64` / `S64`: convert with `n.to<U64>()` / `x.to<USize>()`. Hashes stay `U64`.
+  `U64` / `S64`: convert with `n.to[U64]()` / `x.to[USize]()`. Hashes stay `U64`.
 - `compare` returns `S32` (-1 / 0 / 1), `hash` returns `U64`, `abs_diff` returns the unsigned type.
 - **`hash()` is keyed.** Every stdlib `hash()` (and every `#derive(Hashable)`) is SipHash-2-4 under a secret 128-bit
   key drawn once per process (`hash_key()`), so a hash value differs from run to run: never print one, store one, or
@@ -418,15 +418,15 @@ routine start() -> Void
   `next_f64()` ([0, 1)), and `below(bound)` (unbiased). Not for secrets. JSON string escaping is
   `text.json_quote_into(out)` in `Standard::Json`.
 - A literal must fit its type: `-1` isn't a `U64`, and `255` isn't an `S8`.
-- `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to<U8>()` /
-  `b.to<S8>()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap<U64>()` / `to_wrap<S64>()`. It has
+- `Byte` is memory with no arithmetic; there are no wider raw-bits types. `x.bits()` and `b.to[U8]()` /
+  `b.to[S8]()` move between it and the numbers, and `S64` <-> `U64` is `to_wrap[U64]()` / `to_wrap[S64]()`. It has
   comparison, `hash`, `bitand` / `bitor` / `bitxor` / `bitnot`, and `shl` / `shr`. Memory and text are `@Byte`;
   a byte literal `b'A'` is a `Byte`, and a `Byte` hex literal has exactly two digits (`0x0A`).
-- `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `c.to<U32>()` and `n.to<Char>()`
+- `Char` is a Unicode scalar value (`'A'`), compared and hashed but not added; `c.to[U32]()` and `n.to[Char]()`
   convert.
-- Conversions are methods: `n.to<S64>()`, `b.to<U64>()` (Bool to 0/1), `x.to<B64>()`. Float to integer is
-  `to<S64>()` (crashes on NaN or out of range), `to_checked<S64>()`, or `to_clamp<S64>()`. A conversion names the type
-  it goes to as a type argument, so `x.to<T>()` works in generic code.
+- Conversions are methods: `n.to[S64]()`, `b.to[U64]()` (Bool to 0/1), `x.to[B64]()`. Float to integer is
+  `to[S64]()` (crashes on NaN or out of range), `to_checked[S64]()`, or `to_clamp[S64]()`. A conversion names the type
+  it goes to as a type argument, so `x.to[T]()` works in generic code.
 - Floats are `B16`, `BF16`, `B32`, `B64`, and software `B128` (an `i128`; stdlib code reads it with `f128_bits`):
   `add`, `mul`, `div`, `mod`, and so on. `x.bits()` gives the bits as the same-width `U`, `B64.from_bits(u)` goes back.
 - Value select: `r: T = cond ? a : b`. Both sides are evaluated.
@@ -435,59 +435,59 @@ routine start() -> Void
 
 - `routine name(a: T, p: @U) -> R`. Methods are `routine Type.name(me: @Me, ...)` (pointer receiver)
   or `(me: Me, ...)` (value receiver). The name `me` is what makes a method: only a first parameter named
-  `me` (typed `Me` or `@Me`) allows `x.name(...)`; anything else is typewise: `List<S64>.construct(alloc)`,
+  `me` (typed `Me` or `@Me`) allows `x.name(...)`; anything else is typewise: `List[S64].construct(alloc)`,
   `Job.compare(a, b)`. `me` and `Me` are reserved: no other parameter, binding, or claim is named `me`, and no type is
   named `Me`. A routine meeting a concept (`eq`, `compare`, `hash`) takes `me` as the concept does. Where the
   type is expected (a binding, an argument, a block argument, a return), a leading `.` leaves it out:
-  `list: List<S64> = .construct(alloc)`, `return(.Absent)`. Not at the head of a chain or as a statement.
+  `list: List[S64] = .construct(alloc)`, `return(.Absent)`. Not at the head of a chain or as a statement.
 - **`@T` or `T`** (for `me` and any parameter): take `@T` when the routine changes the value in place, or
   when copying it is unwanted (a large value); take `T` when a copy is fine and the value isn't changed. There are no
   compound-assignment methods (`add_assign` and the like): change a value in memory by load, act, store —
   `p.load().add(1).store_into(p)`.
 - **Methods through a pointer.** `p.m()` finds `T.m(me: @Me)` first, then `Ptr`'s own methods (`is_null`,
-  `offset`, `to<@U>`, ...). Value methods (`me: Me`, such as every collection's `eq`) aren't reachable through a
+  `offset`, `to[@U]`, ...). Value methods (`me: Me`, such as every collection's `eq`) aren't reachable through a
   pointer, because that would hide a load: load first (`a.load().eq(b.load())`). Don't name your own pointer methods after `Ptr`'s.
 - **Collection methods that change the collection take `me: @Me`**, so it must live in memory (`claim` a
   slot) before you call them. **Read-only ones come in both receiver forms**: next to the `me: Me` routine, a
   `me: @Me` one that forwards to it (`return(me.load().m(...))`, or reads the fields), so a slot or a field
-  reads directly (`list.count()`, `primes.to<Slice<U32>>()`, `line.find("=")` on a claimed `Bytes`, `w.to<Bytes>()`
+  reads directly (`list.count()`, `primes.to[Slice[U32]]()`, `line.find("=")` on a claimed `Bytes`, `w.to[Bytes]()`
   on a `SliceWriter`) and a value too. This holds for the collections, `Slice`, and `Bytes`, and a type of your own
   that people keep in slots does the same for the reads they call there. It's never automatic, and three kinds stay
   value-only because on a pointer they'd be about the pointer: `eq` / `compare` / `hash` (a pointer compares only
   through `ptr_eq`, so `a.load().eq(b.load())`), `represent_into` / `diagnose_into` (a pointer isn't
-  Representable, so `{list}` on a slot is a build error that asks for `{list.load()}`), and a generic `to<T>` (it
+  Representable, so `{list}` on a slot is a build error that asks for `{list.load()}`), and a generic `to[T]` (it
   would hide `Ptr`'s `to<@U>`). You can't call a pointer method on a temporary:
-  `DictIter<TKey, TValue>.construct(m).next()` fails with "has no method 'next'"; claim a slot for
+  `DictIter[TKey, TValue].construct(m).next()` fails with "has no method 'next'"; claim a slot for
   the iterator first.
 - **A constraint is said once, where it belongs.** A record's (or variant's) `require` constraints hold in every
   routine on it, wherever the routine is declared (an extension routine in another module, such as
   `Standard/Os/Defaults.tess`, included): a constraint is a fact about the type, said where the type is declared. So a
-  routine on a record lists its type parameters and only the constraints it adds: `SortedDict<TKey, TValue>.has_key`
+  routine on a record lists its type parameters and only the constraints it adds: `SortedDict[TKey, TValue].has_key`
   calls `key.compare(...)` with `require TKey: typename, TValue: typename`, and `SortedDict.eq` adds just
-  `Equatable<TValue>`. The same goes for a `conform ... when` on the type: it lists only the conditions that
-  conformance adds (`conform Equatable<SortedDict<TKey, TValue>> when TKey: typename, TValue: typename,
-  Equatable<TValue>`, no `Comparable<TKey>`). Don't restate the record's. A free generic routine has no record, so it lists everything its
-  body uses: `require T: typename, Comparable<T>`. Put a constraint on the record only when every use of the type
-  needs it (the keyed collections' `Comparable<TKey>` / `HashEquatable<TKey>`, `PriorityQueue`'s `Comparable<TPriority>`), and
-  element constraints only some routines need on those routines (`List<T>.eq` adds `Equatable<T>`), since a record's
+  `Equatable[TValue]`. The same goes for a `conform ... when` on the type: it lists only the conditions that
+  conformance adds (`conform Equatable[SortedDict[TKey, TValue]] when TKey: typename, TValue: typename,
+  Equatable[TValue]`, no `Comparable[TKey]`). Don't restate the record's. A free generic routine has no record, so it lists everything its
+  body uses: `require T: typename, Comparable[T]`. Put a constraint on the record only when every use of the type
+  needs it (the keyed collections' `Comparable[TKey]` / `HashEquatable[TKey]`, `PriorityQueue`'s `Comparable[TPriority]`), and
+  element constraints only some routines need on those routines (`List[T].eq` adds `Equatable[T]`), since a record's
   `require` limits which instances can exist at all. The builder checks a record's constraints when its type is
   formed and a routine's when a call instantiates it.
 - **A generic body is checked against its constraints before any instantiation.** The constraints in force are the
-  record's (or variant's) `require`, the routine's own, and what they refine (`HashEquatable<T>` gives `Equatable<T>`
-  and `Hashable<T>`). A value of a type parameter has only the required routines of those concepts (and the routines
-  on every type, `T.name`): `key.compare(...)` with no `Comparable<TKey>` in force is a build error at the routine,
+  record's (or variant's) `require`, the routine's own, and what they refine (`HashEquatable[T]` gives `Equatable[T]`
+  and `Hashable[T]`). A value of a type parameter has only the required routines of those concepts (and the routines
+  on every type, `T.name`): `key.compare(...)` with no `Comparable[TKey]` in force is a build error at the routine,
   even if nothing instantiates it, and the error names the concept to add and where. A call to another generic
-  routine, and a generic type the body forms (`Set<T>` needs `HashEquatable<T>`), must have its constraints met by
+  routine, and a generic type the body forms (`Set[T]` needs `HashEquatable[T]`), must have its constraints met by
   the ones in force. A generic conformance is checked too: the routines that meet it must have their constraints met
   by its `when` plus the type's `require`. A routine picked by a type argument that is a type parameter
-  (`x.to<T>()`) is checked at each instantiation. A record whose fields form another generic type (`DictIter` holds
-  a `@Dict<TKey, TValue>`) carries that type's constraints in its own `require`. Concepts: `Equatable`, `Hashable`,
+  (`x.to[T]()`) is checked at each instantiation. A record whose fields form another generic type (`DictIter` holds
+  a `@Dict[TKey, TValue]`) carries that type's constraints in its own `require`. Concepts: `Equatable`, `Hashable`,
   `HashEquatable`, `Comparable`, `Destructible`, `Representable`, `HexRepresentable` (`represent_hex_into`, every
   integer), `FixedRepresentable` (`represent_fixed_into`, every float), `Diagnosable`, `Parsable` (a
   capability is an `-able` adjective), and the roles `Iterator`, `Reader`, `Writer`. Constraints are checked: a type satisfies a
-  concept only through a `conform` (on its record, or a top-level `conform C<X>` line), and the builder checks the
-  declared routines' signatures. Conditional conformance: `conform Equatable<Box<T>> when T: typename, Equatable<T>`.
-  `Reversed<T>` (Core) is a `T` whose `compare` is flipped (`Reversed<S64>.construct(5)`): Comparable, Equatable,
+  concept only through a `conform` (on its record, or a top-level `conform C[X]` line), and the builder checks the
+  declared routines' signatures. Conditional conformance: `conform Equatable[Box[T]] when T: typename, Equatable[T]`.
+  `Reversed[T]` (Core) is a `T` whose `compare` is flipped (`Reversed[S64].construct(5)`): Comparable, Equatable,
   Hashable, Representable, and Diagnosable when `T` is.
 - A bare literal doesn't bind a type parameter: bind it first (`n: S64 = 42`), then pass `n`.
 - **Overloads.** Routines of one name under one parent (a module's free routines, one type's routines) may differ in
@@ -497,7 +497,7 @@ routine start() -> Void
   one; anything else ambiguous, or nothing fitting, is an error listing the overloads. Same parameter types, or a
   difference only in the return type, is an error. A free routine's set is one module's (the file's own module
   hides an import's same name). A routine value of an overloaded name is picked by its Callable type
-  (`f.to<Callable<(S64,), S64>>()`, or where it goes); an overloaded `#export` / `#external("c")` names its C
+  (`f.to[Callable[(S64,), S64]]()`, or where it goes); an overloaded `#export` / `#external("c")` names its C
   symbol. Overload only for one operation over several types: a different behavior gets a different name
   (`add_wrap`, not an `add` that wraps). Don't put a parameter's type in a name the overloads already tell apart
   (the stdlib's `wide_divrem(u, d)` for `U128` and `U256`, `soft_divmod`, `xxh64(data, len, seed)` beside
@@ -509,19 +509,19 @@ routine start() -> Void
 - `Bytes` is the one text type: `data`, `count`, and `alloc` (UTF-8 by convention, unchecked: `is_utf8` checks;
   `chars()` reads a bad sequence as U+FFFD). A null `alloc` means borrowed and `destruct()` does nothing: a literal
   (it holds its UTF-8 in the program image), `Bytes.from_ptr`, and every text made from other text (`slice`,
-  `getview()`, the iterators, `buf.to<Bytes>()` of a `List<Byte>`). Text a routine allocates (`Bytes.concat`,
+  `getview()`, the iterators, `buf.to[Bytes]()` of a `List[Byte]`). Text a routine allocates (`Bytes.concat`,
   `In.read_line`, `File.read_all_result`, `join_path`, ...) carries its allocator: release it with `destruct()` on a
   claimed slot (`claim line : @Bytes <- In.read_line()`, read it with `line.getview()` or `line.load()`).
-  `eq` / `compare` / `hash` ignore `alloc`. `Slice<Byte>` has the same layout and is plain bytes:
-  `text.to<Slice<Byte>>()` and `bytes.to<Bytes>()` convert between them as borrowed views. Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
+  `eq` / `compare` / `hash` ignore `alloc`. `Slice[Byte]` has the same layout and is plain bytes:
+  `text.to[Slice[Byte]]()` and `bytes.to[Bytes]()` convert between them as borrowed views. Escapes: `\xXX` is one byte (strings, `b'..'`), `\uXXXXXX` one
   character by exactly six hex digits (strings, `'..'`), so `"\u01F600"` equals `"\xF0\x9F\x98\x80"`.
   Source files must be UTF-8.
 - String literals are `Bytes` where a `Bytes` is expected, `CStr` / `CWStr` (terminated C text) where one of those
   is, and a NUL-terminated `@Byte` where a pointer is. Declare C string parameters as `s: CStr`. A `CStr` is
   `{ data: @CChar }` (C's `char`, `S8` or `U8` as the target has it), symmetric with `CWStr` over `@CWChar`, so
-  a pointer becomes one with `p.to<CStr>()` (on a `@CChar` or a `@Byte`). A `CStr` stays one pointer (C's ABI), so
-  it carries no allocator. A `Bytes` has no terminator: claim `s.to<OwnedCStr>(alloc)` (a copy that lends `to<CStr>()`
-  and is released with `destruct()`) or use `buf.to<CStr>()` on a `List<Byte>`.
+  a pointer becomes one with `p.to[CStr]()` (on a `@CChar` or a `@Byte`). A `CStr` stays one pointer (C's ABI), so
+  it carries no allocator. A `Bytes` has no terminator: claim `s.to[OwnedCStr](alloc)` (a copy that lends `to[CStr]()`
+  and is released with `destruct()`) or use `buf.to[CStr]()` on a `List[Byte]`.
 
 **Errors**
 
@@ -546,7 +546,7 @@ routine start() -> Void
   `TRACE_CAPACITY`). It's on in debug and release, off in release-time and release-space; `--no-trace` / `--trace`
   or `[debug] trace = false|true` in config.toml override that. Thread-local with an OS, a plain global without.
   A handler's own helper routines should be `#untraced` (they'd push onto the trace it's reading).
-- Expected failures return `Result<TSuccess, TFailure>`. There's no `?`: `when r` with `.Success(v)` / `.Failure(e)` arms.
+- Expected failures return `Result[TSuccess, TFailure]`. There's no `?`: `when r` with `.Success(v)` / `.Failure(e)` arms.
 
 **Records**
 
@@ -568,13 +568,13 @@ routine start() -> Void
   fields are read by name. Nested tuples come apart one level at a time.
 - A tuple value takes its type from where it goes (`t : (S64, S64) = { 1, 2 }`); `(1, 2)` in an expression is an error.
 - Parentheses make a tuple type and hold a call's arguments. Around one value they group nothing, so `(a)` is `a`
-  and `fmt` drops them. In `Callable<(A, B), R>` the first list is the parameters.
+  and `fmt` drops them. In `Callable[(A, B), R]` the first list is the parameters.
 - Use a record when the parts mean something (`quotient`, `remainder`); a tuple when they're just values.
 
 **Variants**
 
 - `variant Expr` lists cases, each with at most one payload type (`Number : S64`, `Add : BinaryExpr`, `Empty`); several
-  values go in a record or a tuple. `Option<T>` (`Absent`, `Present : T`) and `Result<TSuccess, TFailure>`
+  values go in a record or a tuple. `Option[T]` (`Absent`, `Present : T`) and `Result[TSuccess, TFailure]`
   (`Failure : TFailure`, `Success : TSuccess`) are variants.
 - Build: `Expr.Number(5)`, `.Number(5)` where the type is known, `Expr.Empty` / `.Empty`.
 - Read with `when e`; `Expr.Number(n) -> target(n)` binds the payload for that arm's target only (or, on the one
@@ -600,17 +600,17 @@ routine sum_to(n: U64) -> U64
         branch done ? return(total) : loop(i.add(1), total.add(i))
 ```
 
-Iterating a collection (`next` returns `Option<T>`):
+Iterating a collection (`next` returns `Option[T]`):
 
 ```tessera
-routine sum_list(list: @List<S64>) -> S64
-    shared iter : @ListIter<S64> <- .construct(list)
+routine sum_list(list: @List[S64]) -> S64
+    shared iter : @ListIter[S64] <- .construct(list)
 
     block entry()
         jump next(0)
 
     block next(total: S64)
-        item : Option<S64> = iter.next()
+        item : Option[S64] = iter.next()
         when item
             .Present(value) -> next(total.add(value))
             .Absent         -> return(total)
@@ -621,7 +621,7 @@ Propagating a `Result`:
 ```tessera
 routine parse_or_zero(text: Bytes) -> B64
     block entry()
-        r : Result<B64, ParseError> = text.to_result<B64>()
+        r : Result[B64, ParseError] = text.to_result[B64]()
         when r
             .Success(value) -> return(value)
             .Failure(error) -> failed(error)
@@ -636,25 +636,25 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
 `BF16`, or `B128`, and a mismatched format is undefined behavior.
 
 - Writers: `Out` / `Err` (the console's standard output and error, unbuffered; `Out.writer()` is the pointer a
-  Writer parameter takes), a `FileHandle`, `BufWriter<T>` (`out.construct(inner)`, then `flush()`),
-  `SliceWriter` (into a caller buffer), `List<Byte>` (growing text: `buf.write("...")`, then `buf.to<Bytes>()`; it is
-  the string builder). Standard input is `In`: `In.read<T>()`, `In.read_line(alloc)`, `read_word`,
+  Writer parameter takes), a `FileHandle`, `BufWriter[T]` (`out.construct(inner)`, then `flush()`),
+  `SliceWriter` (into a caller buffer), `List[Byte]` (growing text: `buf.write("...")`, then `buf.to[Bytes]()`; it is
+  the string builder). Standard input is `In`: `In.read[T]()`, `In.read_line(alloc)`, `read_word`,
   `read_count(n, alloc)`, `read_all`, `read_into_result(buffer, n)`, all through one buffer the process shares.
   `read_line` and `read_word` crash at the end of the input; `read_line_checked` / `read_word_checked` return
-  `Option<Bytes>`, Absent there (a blank line is `""`), so a loop to the end uses those. Text comes back as `Bytes`
+  `Option[Bytes]`, Absent there (a blank line is `""`), so a loop to the end uses those. Text comes back as `Bytes`
   that carry the allocator: `destruct()` releases it.
-- Reading numbers: text is converted like any value, `text.to<S32>()` (crashes with `InvalidValueError`, naming
-  the text and the type, on bad text) or `text.to_result<S32>()` (`Result<T, ParseError>`: `Empty`, `Invalid`,
+- Reading numbers: text is converted like any value, `text.to[S32]()` (crashes with `InvalidValueError`, naming
+  the text and the type, on bad text) or `text.to_result[S32]()` (`Result[T, ParseError]`: `Empty`, `Invalid`,
   `OutOfRange`), for every integer type (an optional sign and decimal digits) and every float type. There is no
-  `parse`. A type is readable from text when it conforms to `Parsable<T>`, which asks for one routine,
-  `routine Bytes.to_result<T>(me: Bytes) -> Result<T, ParseError>`, and `to<T>` comes with it. Numbers from
-  standard input: `a : S32 = In.read<S32>()` reads the next word in place (a word longer than the 8192-byte buffer
+  `parse`. A type is readable from text when it conforms to `Parsable[T]`, which asks for one routine,
+  `routine Bytes.to_result[T](me: Bytes) -> Result[T, ParseError]`, and `to[T]` comes with it. Numbers from
+  standard input: `a : S32 = In.read[S32]()` reads the next word in place (a word longer than the 8192-byte buffer
   goes through a temporary on `DEFAULT_HEAP`) and crashes at the end of the input or on a word that isn't a T;
-  `In.read_checked<T>()` gives `Option<T>` (Absent for both), `In.read_result<T>()` a `Result<T, ParseError>`
+  `In.read_checked[T]()` gives `Option[T]` (Absent for both), `In.read_result[T]()` a `Result[T, ParseError]`
   (`Failure(Empty)` at the end).
 - `write_str(out, "text")`, `write_line(out)`, `v.represent_into(out)` for every integer, float, `Bool`, and
   `Bytes`. A pointer is neither Representable nor Diagnosable, so `{sum}` on a `shared sum : @S64` slot is a build
-  error, not its address: write the value with `{sum.load()}`, or the address with `{sum.to<Addr>()}`
+  error, not its address: write the value with `{sum.load()}`, or the address with `{sum.to[Addr]()}`
   (`0x7ffd5e8c1a40`, an `Addr` writes itself). A derived routine writes a pointer field's address.
   `v.represent_hex_into(out)` for an integer's bits in hex; `represent_into(out, min_digits)` (`U64`, `U128`, `U256`) and `represent_hex_into(out,
   min_digits)` (`U64`) zero-pad; `represent_fixed_into(out, digits)`; `represent_with_into(out, v, spec)` with a `FormatSpec`.
@@ -663,11 +663,11 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
   record gets routines written for it with `#derive(Representable, Diagnosable, Equatable, Hashable, Comparable)` (any subset), which
   also declares the conformance; choices and variants get all five without asking. Otherwise declare the routine: a
   bare `conform` never generates one. In a template, `{v}` writes `v.represent_into(out)`, and `{v.diagnose()}`
-  writes the Tessera-source form: `v.diagnose()` hands back an adapter (`Diagnosed<T>`) that writes `v` with
+  writes the Tessera-source form: `v.diagnose()` hands back an adapter (`Diagnosed[T]`) that writes `v` with
   `diagnose_into` wherever it goes.
 - `out.write("x = {x}\n")` writes text and values in one line: it expands at build time into
   `write_str` / `.represent_into` calls, a brace holds one expression (loads and chains allowed, and literals with their own braces:
-  `"{sum2(Array<S64, 2> { 7, 8 })}"`), `{{` is a literal brace,
+  `"{sum2(Array[S64, 2] { 7, 8 })}"`), `{{` is a literal brace,
   and there are no format options. The template is a method on any Writer: `out.write("...")` on a pointer
   to one (`buf.write(...)`, `handle.write(...)`), and `Out.write("x = {x}\n")` / `Err.write(...)` on a stateless
   one (it writes to `T.writer()`). It's only ever a method: there is no free `write(out, "...")`, and no
@@ -676,31 +676,31 @@ Format through `Standard/Format.tess`, not printf. printf is for C interop demos
 ## Collections
 
 All in `Standard/Collection/`, documented in `../Tessera-Wiki/docs/Collections.md`. They are built on
-`Slice<T>`: a `List` is `storage` (a Slice whose count is the capacity) and `count`. `construct(alloc)` keeps
+`Slice[T]`: a `List` is `storage` (a Slice whose count is the capacity) and `count`. `construct(alloc)` keeps
 the allocator (`construct()` with `Standard::Os` uses the default heap), and `destruct()` releases storage and keeps
 the allocator, so the collection can be used again. Element access is
 `getitem(i)` / `setitem(i, v)` (the name says what is fetched), `at(i)` the checked address. Out-of-range access, `pop`
 on empty, and `getitem` of a missing key crash; the `_checked` forms (`getitem_checked`, `pop_checked`,
-`peek_checked`) return `Option<T>` instead. Allocation failure crashes too; each
+`peek_checked`) return `Option[T]` instead. Allocation failure crashes too; each
 insertion and `reserve` has a `_result` form (`push_result`, `put_result`, `add_result`) that returns
-`Result<T, AllocFailed>` and leaves the collection unchanged on a `Failure`. `_checked` always means `Option`, `_result`
+`Result[T, AllocFailed]` and leaves the collection unchanged on a `Failure`. `_checked` always means `Option`, `_result`
 always `Result`.
 
 | Type | Key operations | Iteration order |
 |------|----------------|-----------------|
-| `Array<T, COUNT>` | `Array<T, COUNT> { a, b }` literal, `at`, `getitem` (on a value or a pointer: `Array<U64, 3> { 2, 3, 5 }.getitem(i)`), `setitem`, `getslice`, `to<Slice<T>>`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
-| `List<T>` | `push`, `pop`, `getitem`, `setitem`, `getslice`, `to<Slice<T>>`, `clear`, `reserve` | index |
-| `CircularList<T>` | `push_front`, `push_back`, `pop_front`, `pop_back`, `getitem`, `setitem` | front to back |
-| `Dict<TKey, TValue>` | `put`, `getitem`, `has_key`, `remove` | **insertion order (guaranteed)** |
-| `Set<T>` | `add`, `has`, `remove` | **insertion order (guaranteed)** |
-| `SortedDict<TKey, TValue>` | `put`, `getitem`, `has_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
-| `SortedSet<T>` | `add`, `has`, `remove`, `get_by_rank(rank)` | ascending |
-| `SortedList<T>` | `push` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `has`, `remove(i)` (`T: Comparable<T>`) | ascending |
-| `PriorityQueue<TPriority, TElement>` | `push(priority, element)`, `pop` / `peek` (the element), `pop_entry` / `peek_entry` (a `PriorityEntry` with `priority` and `element`); a min-heap on `TPriority: Comparable<TPriority>`, the smallest first, `Reversed<T>` priorities for the largest first | none (the top first) |
+| `Array[T, COUNT]` | `Array[T, COUNT] { a, b }` literal, `at`, `getitem` (on a value or a pointer: `Array[U64, 3] { 2, 3, 5 }.getitem(i)`), `setitem`, `getslice`, `to[Slice[T]]`, `shift_left`, `shift_right`, `copy`, `destruct_all` (no `destruct`: it acquires nothing) | index |
+| `List[T]` | `push`, `pop`, `getitem`, `setitem`, `getslice`, `to[Slice[T]]`, `clear`, `reserve` | index |
+| `CircularList[T]` | `push_front`, `push_back`, `pop_front`, `pop_back`, `getitem`, `setitem` | front to back |
+| `Dict[TKey, TValue]` | `put`, `getitem`, `has_key`, `remove` | **insertion order (guaranteed)** |
+| `Set[T]` | `add`, `has`, `remove` | **insertion order (guaranteed)** |
+| `SortedDict[TKey, TValue]` | `put`, `getitem`, `has_key`, `remove`, `get_by_rank(rank)` (a `KVPair` copy), `value_ptr_by_rank(rank)` | ascending key |
+| `SortedSet[T]` | `add`, `has`, `remove`, `get_by_rank(rank)` | ascending |
+| `SortedList[T]` | `push` (sorted, after equals), `getitem` / `get_by_rank`, `rank(v)`, `has`, `remove(i)` (`T: Comparable[T]`) | ascending |
+| `PriorityQueue[TPriority, TElement]` | `push(priority, element)`, `pop` / `peek` (the element), `pop_entry` / `peek_entry` (a `PriorityEntry` with `priority` and `element`); a min-heap on `TPriority: Comparable[TPriority]`, the smallest first, `Reversed[T]` priorities for the largest first | none (the top first) |
 
 No collection is unordered. Hash collections keep insertion order: updating a present key keeps its position, and
 removing then re-adding moves it to the end, so output never depends on the (keyed, per-run) hash. Iterators are
-`XIter<T>.construct(collection)`. Don't mutate a collection while iterating it.
+`XIter[T].construct(collection)`. Don't mutate a collection while iterating it.
 
 ## Conventions
 
@@ -725,7 +725,7 @@ freeing what you allocated. Don't wrap things in ceremony to look safe; write th
 
 **Threads and fibers.** `Standard::Os` has `Thread.spawn(routine, state, alloc)` (or without `alloc`, on
 `DEFAULT_HEAP`) / `join()` / `detach()`, generic over the state: the routine takes an `@S` and `state` is one
-(`routine work(job: @Job) -> Void`, then `Thread.spawn(work.to<Callable>(), job)`), so nothing converts through
+(`routine work(job: @Job) -> Void`, then `Thread.spawn(work.to[Callable](), job)`), so nothing converts through
 `Addr`; a thread with no state of its own is handed the global it works on. `Mutex`
 (`lock` / `unlock` / `try_lock`), `Condition` (a condition variable for a Mutex: `wait(mutex)`,
 `wait_for(mutex, timeout_ns)` / `wait_until(mutex, deadline_ns)` returning whether it returned in time,
@@ -743,7 +743,7 @@ block's stack fields with the stack), AArch64 outside Windows, and 32-bit ARM (A
 On any other target a program that switches fibers fails to link (`tessera_fibers_unsupported_on_this_target`).
 
 **Files.** `File.at(path)` and `Directory.at(path)` are paths (`Bytes`, UTF-8; the W calls on Windows); each
-routine on them is one thing done there now, returning `Result<T, FsError>`, so each is a `_result` form. A File:
+routine on them is one thing done there now, returning `Result[T, FsError]`, so each is a `_result` form. A File:
 `open_read_result` / `open_write_result` / `open_append_result` / `open_read_write_result` / `create_new_result` give a
 `FileHandle` (claim it: `read_bytes_result`, `write_all_result`, `h.write("...")`, `seek_result`, `size_result`,
 `set_size_result`, `sync_result`, `close`, which leaves it empty, and `FileHandle.empty()` a handle to nothing whose
@@ -759,8 +759,8 @@ that carry it (`read_all_result`, `join_path`, `env_var`): release them with `de
 `home_result`) returns a `File` / `Directory` whose path carries the allocator: `file.destruct()` / `dir.destruct()`
 gives it back (and does nothing for a literal path).
 
-**Processes.** `run_process_result(program, args, options, alloc)` (looked up on PATH, `args` a `Slice<Bytes>`) and
-`run_shell_result(command, options, alloc)` return `Result<ProcessOutput, ProcessError>`: an `ExitStatus`
+**Processes.** `run_process_result(program, args, options, alloc)` (looked up on PATH, `args` a `Slice[Bytes]`) and
+`run_shell_result(command, options, alloc)` return `Result[ProcessOutput, ProcessError]`: an `ExitStatus`
 (`.code()`, `.is_success()`) and the captured `stdout` / `stderr` (`Bytes`, released with the output's
 `destruct()`). `ProcessOptions.default()` captures both and gives the child the null device as input; set
 `directory`, `env` / `env_count` (overrides merged into this process's environment), and each stream's mode.
@@ -768,7 +768,7 @@ gives it back (and does nothing for a literal path).
 `set_exit_code(status)` sets the status `start` returning ends it with.
 
 **Targets without an OS.** A triple whose OS is `none` (`arm-none-eabi`, `riscv32-none-elf`, `aarch64-none-elf`,
-`x86_64-none-elf`) gets everything but `Standard::Os`: Core, Format (into a `SliceWriter` or `List<Byte>`), Alloc, and
+`x86_64-none-elf`) gets everything but `Standard::Os`: Core, Format (into a `SliceWriter` or `List[Byte]`), Alloc, and
 Collections all check there. `Standard::Os` drops out of the build, so importing it or naming anything in it is one
 build error ("Standard::Os needs an operating system ..."); there's no `Out`, files, threads, `#threadlocal`, fiber `Scheduler` (`Standard::Fiber`'s
 `switch_stack` and `initial_stack` are there, which `tests/freestanding_fiber` switches stacks with),
@@ -794,77 +794,77 @@ stdlib supplies `memcpy` / `memmove` / `memset` / `memcmp` (and ARM's `__aeabi_m
 or libgcc: the soft-float routines LLVM calls for B16 / BF16 / B32 / B64 without a floating-point unit (`__addsf3`,
 `__aeabi_dmul`, `__truncsfhf2`, `sqrtf`, ...), integer division (`__udivdi3`, `__aeabi_uldivmod`, ...), and
 `__clzsi2`, written with integer operations only, weak and `#no_builtins`. Each export wraps an ordinary routine
-(`soft_f32_add(a, b)` on the bits, `x.soft_to<B16>()` for a conversion) that any target can call, which is how
+(`soft_f32_add(a, b)` on the bits, `x.soft_to[B16]()` for a conversion) that any target can call, which is how
 `tests/soft_float` checks them against the host's hardware. `tests/freestanding` and `tests/freestanding_float` are such programs (CI builds them, links them with their link
 scripts, and requires that nothing is left undefined; the golden run skips them).
 
 **Assembly.** An `#external("asm")` routine with `#target(arch: ...)` is assembly in Tessera's syntax, put in place at
 each call (`../Tessera-Wiki/docs/Inline-Assembly.md`): one instruction per line written like a call, operands in the
-assembler's order, one type argument per register operand (`add<U64, U64>(R0, R3)`), registers by Tessera's names
+assembler's order, one type argument per register operand (`add[U64, U64](R0, R3)`), registers by Tessera's names
 (`R0`..., `V0`..., `SP`, `ZERO`, `FLAGS`), parameters by name, `reg.offset(n)` for memory, blocks and `branch` for
 jumps. System registers and the words some instructions take are written as the architecture's manual spells them
-and take no type: `mrs<U64>(R0, RNDR)`, `msr<U64>(TPIDR_EL0, R1)`, AArch64's generic `S3_3_C14_C0_2`,
-`csrrs<U64, U64>(R10, mstatus, ZERO)` (a CSR the builder doesn't know goes in by number), `mov<U64>(R0, CR3)`,
-`mov<U16>(R0, CS)`, `dmb(ISH)`, `dc<U64>(CIVAC, R0)`, `fence(rw, rw)`, a rounding mode `rtz`. A routine that names a
+and take no type: `mrs[U64](R0, RNDR)`, `msr[U64](TPIDR_EL0, R1)`, AArch64's generic `S3_3_C14_C0_2`,
+`csrrs[U64, U64](R10, mstatus, ZERO)` (a CSR the builder doesn't know goes in by number), `mov[U64](R0, CR3)`,
+`mov[U16](R0, CS)`, `dmb(ISH)`, `dc[U64](CIVAC, R0)`, `fence(rw, rw)`, a rounding mode `rtz`. A routine that names a
 system register can't be `#pure` or `#readonly`, and an instruction that changes the flags without naming them
 (`RNDR`) still lists `#clobbers(FLAGS)`. 32-bit ARM (`arch: "arm"`): `R0`–`R15` with `SP` / `LR` / `PC`
-(R13–R15), the VFP's `S0`–`S31` (32 bits) and `D0`–`D31` (64 bits), a condition in the mnemonic (`moveq<U32>(R0, 1)`,
+(R13–R15), the VFP's `S0`–`S31` (32 bits) and `D0`–`D31` (64 bits), a condition in the mnemonic (`moveq[U32](R0, 1)`,
 the builder writes Thumb's `it` blocks itself on Cortex-M or `thumb-mode`), register lists as one typed operand
-(`push<U32>({ R4, R5, LR })`), `mrs<U32>(R0, PRIMASK)`, `cpsid(i)`, `dsb(SY)`, `mrc<U32>(p15, 0, R0, c13, c0, 3)`.
+(`push[U32]({ R4, R5, LR })`), `mrs[U32](R0, PRIMASK)`, `cpsid(i)`, `dsb(SY)`, `mrc[U32](p15, 0, R0, c13, c0, 3)`.
 
 **Generated code.** A generator puts `#source("gcd.mini", 5, 9)` (file, line, optional column) on the line before a
 routine, block, statement, or terminator it wrote: debug information and build errors then point at that place.
 
-**Naming conversions.** `to<T>` is the standard spelling of a type conversion: a routine whose job is turning a
-value into another type is the method `x.to<T>()` on the type it converts from, the target a fixed type argument
-(each pair of types is its own routine, `routine S32.to<S64>`): `n.to<S64>()`, `x.to_wrap<U8>()`, `arr.to<@T>()`,
-`p.to<@U>()`, `b.to<U8>()` on a `Byte`, `s.to<OwnedCStr>(alloc)` / `s.to<OwnedCWStr>(alloc)` on a `Bytes` (a conversion may take
-parameters), `list.to<Slice<T>>()`, `bytes.to<Bytes>()` on a `Slice<Byte>`, `buf.to<Bytes>()` on a `List<Byte>` or `SliceWriter`, `c.to<Bytes>()` on a `CStr`,
-`a.to<Vector<B32, 4>>()` on an `Array`, `n.to<B128Big>()`, `f.to<B128Extended>()`. Its variants keep the family
-(`to_wrap`, `to_clamp`, `to_checked`, `to_nearest<S64>()` on a `B128Extended`). There is no `to_s64`, `as_<type>`,
+**Naming conversions.** `to[T]` is the standard spelling of a type conversion: a routine whose job is turning a
+value into another type is the method `x.to[T]()` on the type it converts from, the target a fixed type argument
+(each pair of types is its own routine, `routine S32.to[S64]`): `n.to[S64]()`, `x.to_wrap[U8]()`, `arr.to[@T]()`,
+`p.to[@U]()`, `b.to[U8]()` on a `Byte`, `s.to[OwnedCStr](alloc)` / `s.to[OwnedCWStr](alloc)` on a `Bytes` (a conversion may take
+parameters), `list.to[Slice[T]]()`, `bytes.to[Bytes]()` on a `Slice[Byte]`, `buf.to[Bytes]()` on a `List[Byte]` or `SliceWriter`, `c.to[Bytes]()` on a `CStr`,
+`a.to[Vector[B32, 4]]()` on an `Array`, `n.to[B128Big]()`, `f.to[B128Extended]()`. Its variants keep the family
+(`to_wrap`, `to_clamp`, `to_checked`, `to_nearest[S64]()` on a `B128Extended`). There is no `to_s64`, `as_[type]`,
 `y_from_x`, or `x_to_y`, and a routine that differs from another only in the type it produces takes the type as a
-type argument (`p.read_le<U64>(off)` on a `@Byte`). Text to a value is a conversion too: `text.to<S32>()`, and a
-conversion that can fail on its input is `to_result<T>()`, returning `Result` (there is no `parse`). Not conversions:
+type argument (`p.read_le[U64](off)` on a `@Byte`). Text to a value is a conversion too: `text.to[S32]()`, and a
+conversion that can fail on its input is `to_result[T]()`, returning `Result` (there is no `parse`). Not conversions:
 values built from raw parts (`Bytes.from_ptr(p, n)`), bits seen as another type (`B64.from_bits(u)`, `x.bits()`),
 byte order (`to_be`, `from_le`), the same quantity in another unit (`to_degrees`).
 
 **Naming rules for `to`, `_into`, `from_`, `_checked`, and `_result`.**
 
-- A plain routine name crashes on failure, `name_checked` returns `Option<T>` (Absent on failure), and `name_result`
-  returns `Result<TSuccess, TFailure>` (the failure as a value): `getitem` / `getitem_checked`, `construct` / `construct_result`,
-  `to<T>` / `to_result<T>`, `In.read<T>` / `read_checked<T>` / `read_result<T>`. File and process routines fail for
+- A plain routine name crashes on failure, `name_checked` returns `Option[T]` (Absent on failure), and `name_result`
+  returns `Result[TSuccess, TFailure]` (the failure as a value): `getitem` / `getitem_checked`, `construct` / `construct_result`,
+  `to[T]` / `to_result[T]`, `In.read[T]` / `read_checked[T]` / `read_result[T]`. File and process routines fail for
   reasons the caller handles, so they are `_result` forms (`File.open_read_result`). A `_checked` never returns a
   `Result` or a `Bool`, a `_result` never an `Option`, and a plain name never returns an `Option` or a `Result` just to
   say it failed. An `Option` that is a normal outcome keeps a plain name: `next` (the end), `Bytes.find` (not found),
   `env_var` (not set), `Bool.then_present`; so does `atomic_compare_exchange`, whose `Result` is the answer (the old
   value, or the value found).
 
-- `to<T>()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to<CStr>()`, not
-  `CStr.from_ptr(p)`). A conversion that can fail is `to_result<T>()`.
+- `to[T]()` is a type conversion: one value of type A becomes a value of type B, on A (`p.to[CStr]()`, not
+  `CStr.from_ptr(p)`). A conversion that can fail is `to_result[T]()`.
 - `_into` is the argument-swapped form of a routine that acts on a place: `p.store(v)` is `v.store_into(p)`. The
   plain form's receiver is the place acted on, and the `_into` form's receiver is the thing being put there, with the
   place as the argument. So a chain reads left to right and ends at the place: `x.load().add(1).store_into(x)`,
   `value.represent_into(out)`, `src.copy_into(dst, count)` next to `dst.copy(src, count)`. The Writer's `write_*`
   routines (`write_str(out, text)`, `write_bytes`, `write_line`) keep their names: the verb already says where the
-  bytes go. Memory at a given address is `_at`: `Vector<T, LANES>.load_at(first)`, `v.store_at(first)`.
+  bytes go. Memory at a given address is `_at`: `Vector[T, LANES].load_at(first)`, `v.store_at(first)`.
 - `from_XXX` is rare: it's for building a value where `construct` alone would be ambiguous, several ways to make the
   same type from similar inputs (`Bytes.from_ptr(data, count)`, `B64.from_bits(u)`). A `from_XXX` that is really a
-  one-value conversion is `to<T>` on the source type, and one that could be a `construct` overload without ambiguity
+  one-value conversion is `to[T]` on the source type, and one that could be a `construct` overload without ambiguity
   is `construct`. One exception: a routine that implements a conversion's C runtime call (LLVM lowers
-`B32.to<B16>()` to `__truncsfhf2` on x86, and every float conversion to a call on a target without an FPU) can't be
-that `to<T>`, which would call itself there. It keeps the shape under its own name, `x.soft_to<B16>()`
+`B32.to[B16]()` to `__truncsfhf2` on x86, and every float conversion to a call on a target without an FPU) can't be
+that `to[T]`, which would call itself there. It keeps the shape under its own name, `x.soft_to[B16]()`
 (Standard/SoftFloat), and a shim that only exists to be exported is named for its symbol (`export_truncsfhf2`).
 
 **The empty value: `.empty()` or `.zero()`.** A type's ready-made empty value (what a slot that `finish` releases
 starts as, the "nothing yet" of a record) is a typewise routine without arguments, named by what the type holds. A
 type that holds a pointer, directly or in a field (`Slice`, `Bytes`, `FileHandle`, `Mapping`, a collection, a record
 with a `@T` field), or an OS handle, has `.empty()`. A type with no pointer inside (numbers, records and vectors of
-numbers) has `.zero()`: `Vector<T, LANES>.zero()`. `Option<T>` keeps its case `.Absent`, and a bare pointer keeps the
+numbers) has `.zero()`: `Vector[T, LANES].zero()`. `Option[T]` keeps its case `.Absent`, and a bare pointer keeps the
 literal `null` (tested with `is_null()`), so there is no `none()`, `null()`, or `nothing()` routine. A default that
 isn't empty is named for what it is: `ProcessOptions.default()` captures both streams.
 
 **The allocator comes last.** A routine that takes an `@Allocator` takes it as its last parameter:
-`List<T>.construct(alloc)`, `Slice<T>.construct(count, alloc)`, `allocate<T>(count, alloc)`,
+`List[T].construct(alloc)`, `Slice[T].construct(count, alloc)`, `allocate[T](count, alloc)`,
 `deallocate(p, alloc)`, `In.read_line(alloc)`, `Thread.spawn(routine, state, alloc)`. A second allocator for another
 job goes just before it (`Scheduler.construct(workers, stacks, alloc)`). So the form without the allocator
 (`construct()` with `Standard::Os`) is the same call with the last argument left off.
@@ -876,7 +876,7 @@ parameters, `me` not counted, takes a record instead: one record parameter, or a
 clearly don't belong to the group, so the count drops below five. The record is named for what the group is, its
 fields in reading order and documented, and one record serves every routine that passes the same group. Its literal
 names each field at the call (`fill_rect(canvas, Rect { left: 10, top: 20, width: 300, height: 200 }, orange)`), and a
-value that already is the group passes whole. A pointer and a count that go together are a `Slice<T>`. The allocator
+value that already is the group passes whole. A pointer and a count that go together are a `Slice[T]`. The allocator
 counts too: a routine that reaches five only through it still takes a record for the rest, the allocator staying the
 separate last parameter. Exempt: `#external` declarations, `#export` routines and `#callconv` callbacks (a C ABI sets
 their signature), generated code (files under a `generated` directory, routines with `#source`, what Anvila's Tessera
@@ -887,8 +887,8 @@ program's own files).
 the value (`is_empty`, `is_null`, `is_finite`, `is_utf8`, `file.is_present()`, `file.is_accessible(access)`), and
 `has_` about what it contains (`set.has(x)`, `dict.has_key(k)`, `text.has(needle)`, `text.has_prefix(p)` /
 `has_suffix(s)`, `n.has_bit(i)`, `SliceWriter.has_overflowed()`). There are no bare predicates (`empty()`,
-`finite()`, `exists()`, `all()`), no `should_`, and no `contains` / `starts_with`. A capability is `is_<x>able`,
-never `can_<x>`: `is_readable`, `is_writable`, `is_seekable` (not `can_read`, `can_write`, `can_seek`), and a C ABI
+`finite()`, `exists()`, `all()`), no `should_`, and no `contains` / `starts_with`. A capability is `is_[x]able`,
+never `can_[x]`: `is_readable`, `is_writable`, `is_seekable` (not `can_read`, `can_write`, `can_seek`), and a C ABI
 symbol keeps its own name (`rf_fs_can_read`). A vector mask asks
 `is_all_true()`, `is_any_true()`, `is_none_true()`. A free routine with a family prefix keeps the prefix first
 (`f128_is_integer`, `ryu_is_multiple_of_pow5`). Not questions in this sense, so they keep their names: comparisons and
@@ -900,40 +900,40 @@ range checks (`eq`, `lt`, `between`, `in_range`), an overflow test that goes wit
 `.Absent`), with acronyms written as words (`Eof`, `Utf8Decoded`, `Nan`). Routines, fields, blocks, and values are
 `snake_case`. Only presets, globals, and value generic parameters are `UPPER_SNAKE_CASE` (`U64.MAX`, `NODE_KEYS`).
 
-**Generic parameter names.** Count only the type parameters in scope. One is `T` (`List<T>`, `Option<T>`,
-`Writer<T>`, `BufWriter<T>`, `Thread.spawn<T>`, `S64.represent_into<T>`). Two or more are each `T` + its role in
-PascalCase: `Dict<TKey, TValue>`, `Result<TSuccess, TFailure>` (named for its cases), `Iterator<TItem, TIter>`,
-`Tuple2<TItem0, TItem1>`, `bitcast<TFrom, TTo>`. A routine's own type parameters count together with its owner
-type's, and the owner's keep the names the type declares: `List<T>.represent_into<TWriter>`,
-`Dict<TKey, TValue>.represent_into<TWriter>`, `Ptr<T>.to<@TPointee>`. A value (const) parameter is named like a
-preset, UPPER_SNAKE for what it counts: `Array<T, COUNT>`, `Vector<T, LANES>`, `BigNat<LIMBS>`. Why: a type
+**Generic parameter names.** Count only the type parameters in scope. One is `T` (`List[T]`, `Option[T]`,
+`Writer[T]`, `BufWriter[T]`, `Thread.spawn[T]`, `S64.represent_into[T]`). Two or more are each `T` + its role in
+PascalCase: `Dict[TKey, TValue]`, `Result[TSuccess, TFailure]` (named for its cases), `Iterator[TItem, TIter]`,
+`Tuple2[TItem0, TItem1]`, `bitcast[TFrom, TTo]`. A routine's own type parameters count together with its owner
+type's, and the owner's keep the names the type declares: `List[T].represent_into[TWriter]`,
+`Dict[TKey, TValue].represent_into[TWriter]`, `Ptr[T].to[@TPointee]`. A value (const) parameter is named like a
+preset, UPPER_SNAKE for what it counts: `Array[T, COUNT]`, `Vector[T, LANES]`, `BigNat[LIMBS]`. Why: a type
 parameter can't be told from a real type by its case (both PascalCase), so the leading `T` marks "a type slot", and
 the upper case marks a build-time value like a preset. That's not Hungarian notation: it marks what kind of name it
 is, not the type of a value. `#derive` follows the rule (`T` for the Writer of a non-generic type, `TWriter` next to
 the type's own).
 
-**Arrays and `stride`.** There is no `[]`. `p.stride(i)` is the address of the i-th `T` of a `@T` (a
+**Arrays and `stride`.** `p.stride(i)` is the address of the i-th `T` of a `@T` (a
 `USize`, or an `SSize` to move back; `offset` counts bytes); it's a place, so `p.stride(i).f` works. On a
-`@Array<T, COUNT>` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(i, v)` / `arr.at(i)`
-(bounds checked), or `arr.to<@T>().stride(i).load()` unchecked. Literals name their type: `Array<S32, 3> { 1, 2, 3 }`,
-`Vector<B32, 4> { ... }`. The same holds for array fields (`node.keys.getitem(i)`) and
-array presets (`K.getitem(i)`, with `preset K: @Array<T, COUNT> <- { ... }`).
+`@Array[T, COUNT]` that is the i-th whole array, so array elements are `arr.getitem(i)` / `arr.setitem(i, v)` / `arr.at(i)`
+(bounds checked), or `arr.to[@T]().stride(i).load()` unchecked. Literals name their type: `Array[S32, 3] { 1, 2, 3 }`,
+`Vector[B32, 4] { ... }`. The same holds for array fields (`node.keys.getitem(i)`) and
+array presets (`K.getitem(i)`, with `preset K: @Array[T, COUNT] <- { ... }`).
 
 **Construction and destruction.** A type that acquires something (memory, a handle) pairs `construct` with
 `destruct`:
 
-- `Type.construct(...) -> Me` is the constructor, a typewise routine: `List<S64>.construct(alloc)`,
-  `ListIter<T>.construct(list)`, `CountWriter.construct()`. A type too large to return by value constructs in
-  place instead, through a pointer: `out.construct(inner)` for `BufWriter<T>`.
+- `Type.construct(...) -> Me` is the constructor, a typewise routine: `List[S64].construct(alloc)`,
+  `ListIter[T].construct(list)`, `CountWriter.construct()`. A type too large to return by value constructs in
+  place instead, through a pointer: `out.construct(inner)` for `BufWriter[T]`.
 - `me.destruct()` is the destructor: it releases what `construct` acquired (and what the value acquired since)
   and leaves the value empty. Call it yourself; nothing runs it for you. A collection's `destruct` doesn't touch its
-  elements; `destruct_all()` destructs them first (elements must conform to `Destructible<T>`), and `Dict` / `SortedDict`
-  also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release. `Array<T, COUNT>` acquires
+  elements; `destruct_all()` destructs them first (elements must conform to `Destructible[T]`), and `Dict` / `SortedDict`
+  also have `destruct_all_values()`. Elements that are borrowed pointers are yours to release. `Array[T, COUNT]` acquires
   nothing, so it has no `destruct()`, only `destruct_all()` for elements that own something.
 - Other ways to make a value are named for what they make: `Out.writer()`, `Bytes.from_ptr(p, n)`,
-  `Option<T>.Absent`, `FormatSpec.zero_padded(6)`.
+  `Option[T].Absent`, `FormatSpec.zero_padded(6)`.
 - `deallocate(p, alloc)` (the raw layer) is not a destructor: it hands a block of memory back to its allocator.
-  `Slice<T>.destruct()` / `Bytes.destruct()` are the way to do it for memory that carries its allocator.
+  `Slice[T].destruct()` / `Bytes.destruct()` are the way to do it for memory that carries its allocator.
 
 ## Style
 

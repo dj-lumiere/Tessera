@@ -166,7 +166,7 @@ public static partial class LanguageServer
     private static readonly Regex DocReference = new(@"\{[^{}\s][^{}]*\}");
 
     /// The parts of a doc comment that are its structure rather than its prose: a field (`:param alloc:`, `:returns:`)
-    /// and a reference in braces (`{List<T>.reserve_result}`), on each line opening with `marker`.
+    /// and a reference in braces (`{List[T].reserve_result}`), on each line opening with `marker`.
     private static IEnumerable<(int Line, int Col, int Length, string Kind)> DocSpans(string text, string marker)
     {
         var lines = text.Replace("\r\n", "\n").Split('\n');
@@ -249,14 +249,14 @@ public static partial class LanguageServer
         private string? _blockDoc;
         private Dictionary<string, TypeRef> _written = [];
 
-        /// The clause line that declares each type parameter in scope (`require T: typename, Equal<T>`), and where.
+        /// The clause line that declares each type parameter in scope (`require T: typename, Equal[T]`), and where.
         private Dictionary<string, string> _typeParamLines = [];
         private Dictionary<string, Pos> _typeParamAt = [];
 
         /// The concept being walked: what `Me` means in its routines.
         private ConceptDecl? _concept;
 
-        /// The concepts each type parameter in scope is required to meet (`Equal<T>` for `T`).
+        /// The concepts each type parameter in scope is required to meet (`Equal[T]` for `T`).
         private Dictionary<string, List<TypeRef>> _conceptsOf = [];
 
         /// Where each value of the routine is bound (a parameter, a block parameter, a statement's binding).
@@ -319,7 +319,7 @@ public static partial class LanguageServer
 
         private string? RoutineDoc() => _routine is null ? null : DocAbove(analysis, _routine.Pos);
 
-        /// A type name: its declaration, and what it binds the declaration's type parameters to (`List<S64>`).
+        /// A type name: its declaration, and what it binds the declaration's type parameters to (`List[S64]`).
         private Func<string?>? TypeHover(TypeRef t)
         {
             if (t is { Name: "Me", Path: null } && _routine?.Owner is { } owner && owner.Name != "Me") return TypeHover(owner);
@@ -364,7 +364,7 @@ public static partial class LanguageServer
         }
 
         /// The type a call returns, as its declaration writes it with the receiver's type arguments put in: `p.load()`
-        /// on a `@Dict<K, V>` is a `Dict<K, V>`.
+        /// on a `@Dict[K, V]` is a `Dict[K, V]`.
         private readonly Dictionary<Expr, TypeRef?> _results = new(ReferenceEqualityComparer.Instance);
 
         private TypeRef? ResultType(Expr e)
@@ -448,8 +448,8 @@ public static partial class LanguageServer
             _ => false,
         };
 
-        /// What the type a routine is on requires of its parameters (`record Dict<K, V>` with `HashEqual<K>`), under the
-        /// names the routine writes them with (`routine Dict<K, V>.find`).
+        /// What the type a routine is on requires of its parameters (`record Dict[K, V]` with `HashEqual[K]`), under the
+        /// names the routine writes them with (`routine Dict[K, V].find`).
         private void OwnerConstraints(TypeRef owner)
         {
             var decl = analysis.Compiler.TypeDeclQuiet(owner.Name, analysis.Shown, owner.Path);
@@ -464,7 +464,7 @@ public static partial class LanguageServer
                         (_conceptsOf.TryGetValue(name, out var list) ? list : _conceptsOf[name] = []).Add(concept);
         }
 
-        /// The routine `name` of a concept a type parameter is required to meet: `x.eq(y)` on a `T: Equal<T>`.
+        /// The routine `name` of a concept a type parameter is required to meet: `x.eq(y)` on a `T: Equal[T]`.
         private RoutineDecl? ConceptMethod(TypeRef? t, string name) =>
             t is { Path: null, Args.Count: 0 } && _conceptsOf.TryGetValue(t.Name, out var concepts)
                 ? concepts.Select(c => ConceptRoutine(c, analysis.Shown, name, [])).FirstOrDefault(r => r is not null)
@@ -492,7 +492,7 @@ public static partial class LanguageServer
             var lines = LinesOf(analysis, ptr);
             int at = Array.FindIndex(lines, l => l.Contains("`p.stride(n)`", StringComparison.Ordinal));
             Pos? where = at < 0 ? null : new Pos(ptr, at + 1, lines[at].IndexOf("stride", StringComparison.Ordinal) + 1);
-            Func<string?> hover = () => HoverText("routine Ptr<T>.stride(me: Me, n: USize) -> Me",
+            Func<string?> hover = () => HoverText("routine Ptr[T].stride(me: Me, n: USize) -> Me",
                 Ko("The address `n` `T`s past this one; an `SSize` moves back. Built into the builder: it is a place like a "
                    + "field, so it chains (`p.stride(i).f`), and a load or a store through it keeps a dense record's "
                    + "alignment.",
@@ -736,7 +736,7 @@ public static partial class LanguageServer
                     foreach (var r in concept.Routines) Routine(r, _typeParams);
                     break;
                 case ConformDecl conform:
-                    // `conform Represent<@T> when T: typename` declares its own parameters.
+                    // `conform Represent[@T] when T: typename` declares its own parameters.
                     _typeParams = [.. conform.Clauses.SelectMany(c => c.Params).Select(p => p.Name)];
                     Clauses(conform.Clauses);
                     break;
@@ -757,8 +757,8 @@ public static partial class LanguageServer
             _typeParams = [.. outer, .. r.TypeParams, "Me"];
             if (r.Owner is not null)
             {
-                // `routine List<T>.push`: the owner's written arguments are the routine's parameters too, unless one names a
-                // type (`List<Byte>.to_text` is on the one instance).
+                // `routine List[T].push`: the owner's written arguments are the routine's parameters too, unless one names a
+                // type (`List[Byte].to_text` is on the one instance).
                 foreach (var a in r.Owner.Args.OfType<TypeArgType>())
                     if (a.Type.Args.Count == 0 && a.Type.Path is null &&
                         analysis.Compiler.TypeDeclQuiet(a.Type.Name, analysis.Shown) is null &&
@@ -851,7 +851,7 @@ public static partial class LanguageServer
             }
         }
 
-        /// In a `conform X<Owner<...>> when ...` line, the concept and the type it is about hover as the whole line with
+        /// In a `conform X[Owner[...]] when ...` line, the concept and the type it is about hover as the whole line with
         /// the constraints the owner's `require` adds (each still goes to its own declaration).
         private void ConformNames(Clause c)
         {
@@ -997,7 +997,7 @@ public static partial class LanguageServer
                     foreach (var a in call.Args) Expr(a);
                     break;
                 case NsCallExpr ns:
-                    // `Option<USize>.Present(mid)` makes a case; `SORTED.to<@S64>()` calls a routine on a preset the
+                    // `Option[USize].Present(mid)` makes a case; `SORTED.to[@S64]()` calls a routine on a preset the
                     // parser couldn't tell from a type.
                     if (TypeKind(ns.Owner) is null && ns.Owner.Path is null && ns.Owner.Args.Count == 0 &&
                         IsPreset(ns.Owner.Name))

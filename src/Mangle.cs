@@ -5,7 +5,7 @@ namespace Tessera;
 
 /// Symbol names follow the Itanium C++ ABI mangling (Modules → A Tessera ABI): a module is a namespace, a routine on
 /// a type is nested in the type, and every type is a named type by its path, built-in ones included
-/// (`Standard::Core::S64`, `Standard::Core::Ptr<T>`). `Standard::Format::write_str` becomes
+/// (`Standard::Core::S64`, `Standard::Core::Ptr[T]`). `Standard::Format::write_str` becomes
 /// `_ZN8Standard6Format9write_strE...` followed by its parameter types.
 ///
 /// Where Tessera has no C++ counterpart: a `private` declaration carries its file as an ABI tag
@@ -291,7 +291,7 @@ public sealed partial class Compiler
                 // `PF <ret> <params> E`, each written the way the routine declares it.
                 var parts = t.Args.Where(a => a is not TypeArgAttr).ToList();
                 if (parts is not [TypeArgTuple ps, TypeArgType ret])
-                    throw new CompileError(t.Pos, "Callable is written Callable<(Params...), Ret>");
+                    throw new CompileError(t.Pos, "Callable is written Callable[(Params...), Ret]");
                 string fkey = "FREF:" + t;
                 if (Index("P" + fkey) is { } p)
                 {

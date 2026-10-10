@@ -104,7 +104,7 @@ public class RecordParamLintTests
     public void ConceptRoutinesAreChecked()
     {
         string warning = Assert.Single(Lint("""
-            concept Blender<T>
+            concept Blender[T]
             require T: typename
                 routine Me.blend(me: Me, a: S64, b: S64, c: S64, d: S64, e: S64) -> S64
             """));

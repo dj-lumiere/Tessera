@@ -16,7 +16,7 @@ record Thread
 
 /// What a new thread starts with.
 private record ThreadStart
-    entry : Callable<(Addr,), Void>
+    entry : Callable[(Addr,), Void]
     arg   : Addr
     alloc : @Allocator
 
@@ -25,8 +25,8 @@ private record ThreadStart
 /// :param raw: The {ThreadStart} record.
 private routine thread_body(raw: Addr) -> Void
     block entry()
-        start : @ThreadStart            = raw.to<@ThreadStart>()
-        entry : Callable<(Addr,), Void> = start.entry.load()
+        start : @ThreadStart            = raw.to[@ThreadStart]()
+        entry : Callable[(Addr,), Void] = start.entry.load()
         arg   : Addr                    = start.arg.load()
         deallocate(start, start.alloc.load())
         entry.call(arg)
@@ -40,13 +40,13 @@ private routine thread_body(raw: Addr) -> Void
 /// :returns: The filled record.
 /// :throws: Crashes with `MemoryAllocationError` when `alloc` can't give the record.
 #track_caller
-private routine thread_start<T>(entry: Callable<(@T,), Void>, arg: @T,
+private routine thread_start[T](entry: Callable[(@T,), Void], arg: @T,
     alloc: @Allocator) -> @ThreadStart
 require T: typename
     block entry()
-        erased : Callable<(Addr,), Void> = bitcast(entry)
+        erased : Callable[(Addr,), Void] = bitcast(entry)
         state  : Addr                    = arg
-        start  : @ThreadStart            = allocate<ThreadStart>(1, alloc)
+        start  : @ThreadStart            = allocate[ThreadStart](1, alloc)
         branch start.is_null()
             ? crash_allocation()
             : continue
@@ -62,7 +62,7 @@ require T: typename
 /// :param arg: What `start` is called with.
 /// :returns: 0 on success, or an error number.
 #[external("c"), symbol("pthread_create"), target(os: ("linux", "macos"))]
-private routine c_pthread_create(thread: @Addr, attr: Addr, start: Callable<(Addr,), Addr>,
+private routine c_pthread_create(thread: @Addr, attr: Addr, start: Callable[(Addr,), Addr],
     arg: Addr) -> CInt
 
 /// Binds the C `pthread_join` function, which waits for a thread to return.
@@ -96,12 +96,12 @@ private routine posix_thread_main(arg: Addr) -> Addr
 ///     `TaskSpawnError` when the operating system starts no thread.
 #[target(os: ("linux", "macos")), track_caller]
 #expensive("starts an operating system thread")
-routine Thread.spawn<T>(entry: Callable<(@T,), Void>, arg: @T, alloc: @Allocator) -> Me
+routine Thread.spawn[T](entry: Callable[(@T,), Void], arg: @T, alloc: @Allocator) -> Me
 require T: typename
     block entry()
         start : @ThreadStart = thread_start(entry, arg, alloc)
         claim handle : @Addr <- null
-        result : CInt = c_pthread_create(handle, null, posix_thread_main.to<Callable>(), start)
+        result : CInt = c_pthread_create(handle, null, posix_thread_main.to[Callable](), start)
         failed : Bool = result.ne(0)
         branch failed
             ? crash_task_spawn()
@@ -153,7 +153,7 @@ routine cpu_count() -> USize
         none : Bool  = n.lt(1)
         branch none
             ? return(1)
-            : return(n.to<USize>())
+            : return(n.to[USize]())
 
 // -- Windows --------------------------------------------------------------------------
 
@@ -167,7 +167,7 @@ routine cpu_count() -> USize
 /// :returns: The thread's handle, or null with the last error set.
 #[external("c"), symbol("CreateThread"), callconv("stdcall"), target(os: "windows")]
 private routine c_create_thread(attrs: Addr, stack: USize,
-    start: Callable<#callconv("stdcall"), (Addr,), U32>, arg: Addr, flags: U32, id: Addr) -> Addr
+    start: Callable[#callconv("stdcall"), (Addr,), U32], arg: Addr, flags: U32, id: Addr) -> Addr
 
 /// Binds the Win32 `WaitForSingleObject` function, which waits until an object is signaled.
 /// :param handle: The object, such as a thread.
@@ -206,11 +206,11 @@ private routine windows_thread_main(arg: Addr) -> U32
 ///     `TaskSpawnError` when the operating system starts no thread.
 #[target(os: "windows"), track_caller]
 #expensive("starts an operating system thread")
-routine Thread.spawn<T>(entry: Callable<(@T,), Void>, arg: @T, alloc: @Allocator) -> Me
+routine Thread.spawn[T](entry: Callable[(@T,), Void], arg: @T, alloc: @Allocator) -> Me
 require T: typename
     block entry()
         start  : @ThreadStart = thread_start(entry, arg, alloc)
-        handle : Addr         = c_create_thread(null, 0, windows_thread_main.to<Callable>(), start,
+        handle : Addr         = c_create_thread(null, 0, windows_thread_main.to[Callable](), start,
             0, null)
         failed : Bool         = handle.is_null()
         branch failed
@@ -246,4 +246,4 @@ routine cpu_count() -> USize
         none : Bool = n.lt(1)
         branch none
             ? return(1)
-            : return(n.to<USize>())
+            : return(n.to[USize]())

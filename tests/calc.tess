@@ -15,7 +15,7 @@
 //     payload-carrying choice. Switches on the tag name every kind instead of
 //     using '_', so adding a kind is a build error until each one handles it
 //   * error propagation: every call that can fail is followed by an explicit
-//     tag test and branch. Result<@Expr, CalcError> is spelled out each time
+//     tag test and branch. Result[@Expr, CalcError] is spelled out each time
 //   * cleanup on failure paths: when the right operand fails to parse, the
 //     already-built left subtree has to be freed by hand
 //   * recursion: parse_binary, parse_primary, eval, and free_expr recurse
@@ -76,7 +76,7 @@ record Expr
     pos   : USize
 
 routine new_expr(node: Expr, alloc: @Allocator) -> @Expr
-    shared p : @Expr = allocate<Expr>(1, alloc)
+    shared p : @Expr = allocate[Expr](1, alloc)
 
     block entry()
         failed : Bool = p.is_null()
@@ -130,7 +130,7 @@ routine is_digit(c: Byte) -> Bool
 
 /// Reads the token at the current position without consuming it.
 /// Fails only on a number that doesn't fit in S64.
-routine Parser.peek(me: @Me) -> Result<Token, CalcError>
+routine Parser.peek(me: @Me) -> Result[Token, CalcError]
     block entry()
         start : USize = me.pos.load()
         jump skip_space(start)
@@ -152,7 +152,7 @@ routine Parser.peek(me: @Me) -> Result<Token, CalcError>
 
     block end_token(i: USize)
         tok : Token                    = Token { kind: TokenKind.End, value: 0, pos: i, end: i }
-        r   : Result<Token, CalcError> = .Success(tok)
+        r   : Result[Token, CalcError] = .Success(tok)
         return(r)
 
     block classify(i: USize, c: Byte)
@@ -175,7 +175,7 @@ routine Parser.peek(me: @Me) -> Result<Token, CalcError>
     block single(i: USize, kind: TokenKind)
         end : USize                    = i.add(1)
         tok : Token                    = Token { kind: kind, value: 0, pos: i, end: end }
-        r   : Result<Token, CalcError> = .Success(tok)
+        r   : Result[Token, CalcError] = .Success(tok)
         return(r)
 
     // acc is the value of src[start..j) so far.
@@ -195,26 +195,26 @@ routine Parser.peek(me: @Me) -> Result<Token, CalcError>
             : number_done(start, j, acc)
 
     block scale(start: USize, j: USize, acc: S64, c: Byte)
-        scaled : Option<S64> = acc.mul_checked(10)
+        scaled : Option[S64] = acc.mul_checked(10)
         when scaled
             .Present(times10) -> continue
             .Absent           -> too_large(start)
-        digit_code : U8          = c.to<U8>().sub(b'0'.to<U8>())
-        digit      : S64         = digit_code.to<S64>()
-        sum        : Option<S64> = times10.add_checked(digit)
+        digit_code : U8          = c.to[U8]().sub(b'0'.to[U8]())
+        digit      : S64         = digit_code.to[S64]()
+        sum        : Option[S64] = times10.add_checked(digit)
         when sum
             .Present(next) -> digits(start, j.add(1), next)
             .Absent        -> too_large(start)
 
     block too_large(start: USize)
         e : CalcError                = CalcError { message: "number too large", pos: start }
-        r : Result<Token, CalcError> = .Failure(e)
+        r : Result[Token, CalcError] = .Failure(e)
         return(r)
 
     block number_done(start: USize, j: USize, acc: S64)
         tok : Token                    = Token { kind: TokenKind.Number, value: acc, pos: start,
             end: j }
-        r   : Result<Token, CalcError> = .Success(tok)
+        r   : Result[Token, CalcError] = .Success(tok)
         return(r)
 
 routine Parser.advance(me: @Me, tok: Token) -> Void
@@ -227,7 +227,7 @@ routine Parser.advance(me: @Me, tok: Token) -> Void
 
 /// The binary operator kind stands for at precedence level
 /// (0: + -, 1: * / %), or Absent when it isn't one.
-routine operator_at(kind: TokenKind, level: S64) -> Option<ExprKind>
+routine operator_at(kind: TokenKind, level: S64) -> Option[ExprKind]
     block entry()
         additive : Bool = level.eq(0)
         branch additive
@@ -248,15 +248,15 @@ routine operator_at(kind: TokenKind, level: S64) -> Option<ExprKind>
             else              -> not_found()
 
     block found(op: ExprKind)
-        r : Option<ExprKind> = .Present(op)
+        r : Option[ExprKind] = .Present(op)
         return(r)
 
     block not_found()
-        r : Option<ExprKind> = .Absent
+        r : Option[ExprKind] = .Absent
         return(r)
 
 /// An operand of a level-level operator: the next level down, or a primary.
-routine Parser.parse_operand(me: @Me, level: S64) -> Result<@Expr, CalcError>
+routine Parser.parse_operand(me: @Me, level: S64) -> Result[@Expr, CalcError]
     block entry()
         lowest : Bool = level.eq(0)
         branch lowest
@@ -264,34 +264,34 @@ routine Parser.parse_operand(me: @Me, level: S64) -> Result<@Expr, CalcError>
             : primary()
 
     block term()
-        r : Result<@Expr, CalcError> = me.parse_binary(1)
+        r : Result[@Expr, CalcError] = me.parse_binary(1)
         return(r)
 
     block primary()
-        r : Result<@Expr, CalcError> = me.parse_primary()
+        r : Result[@Expr, CalcError] = me.parse_primary()
         return(r)
 
 /// operand (op operand)* at one precedence level, folded to the left.
-routine Parser.parse_binary(me: @Me, level: S64) -> Result<@Expr, CalcError>
+routine Parser.parse_binary(me: @Me, level: S64) -> Result[@Expr, CalcError]
     block entry()
-        first : Result<@Expr, CalcError> = me.parse_operand(level)
+        first : Result[@Expr, CalcError] = me.parse_operand(level)
         when first
             .Success(lhs) -> next_op(lhs)
             .Failure      -> return(first)
 
     block next_op(lhs: @Expr)
-        peeked : Result<Token, CalcError> = me.peek()
+        peeked : Result[Token, CalcError] = me.peek()
         when peeked
             .Success(tok)   -> continue
             .Failure(error) -> abandon(lhs, error)
         tok_kind : TokenKind                = tok.kind
-        op       : Option<ExprKind>         = operator_at(tok_kind, level)
-        done     : Result<@Expr, CalcError> = .Success(lhs)
+        op       : Option[ExprKind]         = operator_at(tok_kind, level)
+        done     : Result[@Expr, CalcError] = .Success(lhs)
         when op
             .Present(kind) -> continue
             .Absent        -> return(done)
         me.advance(tok)
-        rhs : Result<@Expr, CalcError> = me.parse_operand(level)
+        rhs : Result[@Expr, CalcError] = me.parse_operand(level)
         pos : USize                    = tok.pos
         when rhs
             .Success(right) -> continue
@@ -305,12 +305,12 @@ routine Parser.parse_binary(me: @Me, level: S64) -> Result<@Expr, CalcError>
     block abandon(lhs: @Expr, error: CalcError)
         alloc : @Allocator = me.alloc.load()
         free_expr(lhs, alloc)
-        r : Result<@Expr, CalcError> = .Failure(error)
+        r : Result[@Expr, CalcError] = .Failure(error)
         return(r)
 
-routine Parser.parse_primary(me: @Me) -> Result<@Expr, CalcError>
+routine Parser.parse_primary(me: @Me) -> Result[@Expr, CalcError]
     block entry()
-        peeked : Result<Token, CalcError> = me.peek()
+        peeked : Result[Token, CalcError] = me.peek()
         when peeked
             .Success(tok)   -> continue
             .Failure(error) -> fail(error)
@@ -332,12 +332,12 @@ routine Parser.parse_primary(me: @Me) -> Result<@Expr, CalcError>
         node  : Expr                     = Expr { kind: ExprKind.Num, value: value, lhs: null,
             rhs: null, pos: pos }
         leaf  : @Expr                    = new_expr(node, alloc)
-        r     : Result<@Expr, CalcError> = .Success(leaf)
+        r     : Result[@Expr, CalcError] = .Success(leaf)
         return(r)
 
     block negate(tok: Token)
         me.advance(tok)
-        inner : Result<@Expr, CalcError> = me.parse_primary()
+        inner : Result[@Expr, CalcError] = me.parse_primary()
         pos   : USize                    = tok.pos
         when inner
             .Success(operand) -> continue
@@ -346,17 +346,17 @@ routine Parser.parse_primary(me: @Me) -> Result<@Expr, CalcError>
         node  : Expr                     = Expr { kind: ExprKind.Neg, value: 0, lhs: operand,
             rhs: null, pos: pos }
         tree  : @Expr                    = new_expr(node, alloc)
-        r     : Result<@Expr, CalcError> = .Success(tree)
+        r     : Result[@Expr, CalcError] = .Success(tree)
         return(r)
 
     // "(" expr ")"
     block group(open: Token)
         me.advance(open)
-        inner : Result<@Expr, CalcError> = me.parse_binary(0)
+        inner : Result[@Expr, CalcError] = me.parse_binary(0)
         when inner
             .Success(tree) -> continue
             .Failure       -> return(inner)
-        peeked : Result<Token, CalcError> = me.peek()
+        peeked : Result[Token, CalcError] = me.peek()
         when peeked
             .Success(close) -> continue
             .Failure(error) -> abandon(tree, error)
@@ -370,7 +370,7 @@ routine Parser.parse_primary(me: @Me) -> Result<@Expr, CalcError>
 
     block close(tree: @Expr, close: Token)
         me.advance(close)
-        r : Result<@Expr, CalcError> = .Success(tree)
+        r : Result[@Expr, CalcError] = .Success(tree)
         return(r)
 
     block abandon(tree: @Expr, error: CalcError)
@@ -383,28 +383,28 @@ routine Parser.parse_primary(me: @Me) -> Result<@Expr, CalcError>
         jump fail(e)
 
     block fail(error: CalcError)
-        r : Result<@Expr, CalcError> = .Failure(error)
+        r : Result[@Expr, CalcError] = .Failure(error)
         return(r)
 
 /// Parses all of source. Anything left after the expression is an error.
-routine parse(source: Bytes, alloc: @Allocator) -> Result<@Expr, CalcError>
+routine parse(source: Bytes, alloc: @Allocator) -> Result[@Expr, CalcError]
     shared src    : @Byte   = source.data
     shared len    : USize   = source.count
     shared parser : @Parser <- Parser { src: src, len: len, pos: 0, alloc: alloc }
 
     block entry()
-        parsed : Result<@Expr, CalcError> = parser.parse_binary(0)
+        parsed : Result[@Expr, CalcError] = parser.parse_binary(0)
         when parsed
             .Success(tree) -> continue
             .Failure       -> return(parsed)
-        peeked : Result<Token, CalcError> = parser.peek()
+        peeked : Result[Token, CalcError] = parser.peek()
         // a lex error here is still "something after the expression"
         when peeked
             .Success(tok)   -> continue
             .Failure(error) -> trailing(tree, error.pos)
         kind   : TokenKind                = tok.kind
         at_end : Bool                     = kind.eq(TokenKind.End)
-        done   : Result<@Expr, CalcError> = .Success(tree)
+        done   : Result[@Expr, CalcError] = .Success(tree)
         branch at_end
             ? return(done)
             : trailing(tree, tok.pos)
@@ -413,12 +413,12 @@ routine parse(source: Bytes, alloc: @Allocator) -> Result<@Expr, CalcError>
         free_expr(tree, alloc)
         e : CalcError                = CalcError { message: "unexpected input after expression",
             pos: pos }
-        r : Result<@Expr, CalcError> = .Failure(e)
+        r : Result[@Expr, CalcError] = .Failure(e)
         return(r)
 
 // ── Evaluator ─────────────────────────────────────────────────────────────────
 
-routine eval(e: @Expr) -> Result<S64, CalcError>
+routine eval(e: @Expr) -> Result[S64, CalcError]
     shared kind : ExprKind = e.kind.load()
     shared pos  : USize    = e.pos.load()
 
@@ -430,24 +430,24 @@ routine eval(e: @Expr) -> Result<S64, CalcError>
 
     block number()
         value : S64                    = e.value.load()
-        r     : Result<S64, CalcError> = .Success(value)
+        r     : Result[S64, CalcError] = .Success(value)
         return(r)
 
     block negate()
         operand : @Expr                  = e.lhs.load()
-        inner   : Result<S64, CalcError> = eval(operand)
+        inner   : Result[S64, CalcError] = eval(operand)
         when inner
             .Success(x) -> checked(x.neg_checked())
             .Failure    -> return(inner)
 
     block binary()
         lhs  : @Expr                  = e.lhs.load()
-        left : Result<S64, CalcError> = eval(lhs)
+        left : Result[S64, CalcError] = eval(lhs)
         when left
             .Success(a) -> continue
             .Failure    -> return(left)
         rhs   : @Expr                  = e.rhs.load()
-        right : Result<S64, CalcError> = eval(rhs)
+        right : Result[S64, CalcError] = eval(rhs)
         when right
             .Success(b) -> continue
             .Failure    -> return(right)
@@ -461,28 +461,28 @@ routine eval(e: @Expr) -> Result<S64, CalcError>
             else         -> unreachable  // only the five binary kinds reach binary()
 
     block divide(a: S64, b: S64, zero_divisor: Bool)
-        quotient : Option<S64> = a.div_checked(b)
+        quotient : Option[S64] = a.div_checked(b)
         branch zero_divisor
             ? division_by_zero()
             : checked(quotient)
 
     block remainder(a: S64, b: S64, zero_divisor: Bool)
-        rest : Option<S64> = a.mod_checked(b)
+        rest : Option[S64] = a.mod_checked(b)
         branch zero_divisor
             ? division_by_zero()
             : checked(rest)
 
     // None from a checked operation with a nonzero divisor means overflow.
-    block checked(result: Option<S64>)
+    block checked(result: Option[S64])
         error : CalcError              = CalcError { message: "overflow", pos: pos }
-        fail  : Result<S64, CalcError> = .Failure(error)
+        fail  : Result[S64, CalcError] = .Failure(error)
         when result
             .Present(value) -> return(.Success(value))
             .Absent         -> return(fail)
 
     block division_by_zero()
         error : CalcError              = CalcError { message: "division by zero", pos: pos }
-        r     : Result<S64, CalcError> = .Failure(error)
+        r     : Result[S64, CalcError] = .Failure(error)
         return(r)
 
 // ── Driver ────────────────────────────────────────────────────────────────────
@@ -491,11 +491,11 @@ routine calculate(source: Bytes, alloc: @Allocator) -> Void
     block entry()
         src : @Byte = source.data
         c_printf("%-34s ", src)
-        parsed : Result<@Expr, CalcError> = parse(source, alloc)
+        parsed : Result[@Expr, CalcError] = parse(source, alloc)
         when parsed
             .Success(tree)  -> continue
             .Failure(error) -> report(error)
-        result : Result<S64, CalcError> = eval(tree)
+        result : Result[S64, CalcError] = eval(tree)
         free_expr(tree, alloc)
         when result
             .Success(value) -> continue

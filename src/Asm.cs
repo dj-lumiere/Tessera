@@ -279,9 +279,9 @@ internal sealed class AsmLowering
                     Arch.A64 => ", and no system register the builder knows by that name: write one it doesn't know in "
                                 + "its generic form, S3_3_C2_C4_0 for RNDR",
                     Arch.Rv => ", and no CSR the builder knows by that name: write one it doesn't know by its number, "
-                               + "csrrw<U32, U32>(R10, 0x15, ZERO) for seed",
+                               + "csrrw[U32, U32](R10, 0x15, ZERO) for seed",
                     Arch.Arm => ", and no system register the builder knows by that name: a coprocessor's register is "
-                                + "read by its numbers, mrc<U32>(p15, 0, R0, c13, c0, 3)",
+                                + "read by its numbers, mrc[U32](p15, 0, R0, c13, c0, 3)",
                     _ => "",
                 },
             });
@@ -298,10 +298,10 @@ internal sealed class AsmLowering
     /// How this architecture's instructions read a system register, for a message.
     private string SystemExample => _arch switch
     {
-        Arch.X86 => "mov<U64>(R0, CR3)",
-        Arch.A64 => "mrs<U64>(R0, RNDR)",
-        Arch.Arm => "mrs<U32>(R0, PRIMASK)",
-        _ =>"csrrs<U64, U64>(R10, mstatus, ZERO)",
+        Arch.X86 => "mov[U64](R0, CR3)",
+        Arch.A64 => "mrs[U64](R0, RNDR)",
+        Arch.Arm => "mrs[U32](R0, PRIMASK)",
+        _ =>"csrrs[U64, U64](R10, mstatus, ZERO)",
     };
 
     /// Whether a bare name is an operand of its own kind that takes no type: a system register or a named option,
@@ -514,7 +514,7 @@ internal sealed class AsmLowering
         _ => throw new CompileError(pos, $"aarch64's vector registers hold 8, 16, 32, 64 or 128 bits as a scalar, not {bits}"),
     };
 
-    /// AArch64's arrangement for a vector type: `Vector<B32, 4>` is `4s`.
+    /// AArch64's arrangement for a vector type: `Vector[B32, 4]` is `4s`.
     private string Arrangement(VectorType vt, Pos pos)
     {
         int lane = Bits(vt.Elem, pos);
@@ -778,7 +778,7 @@ internal sealed class AsmLowering
     private (string Text, string? Condition) Instruction(Stmt s)
     {
         if (s is not ExprStmt es)
-            throw new CompileError(s.Pos, "an assembly body holds instructions, one per line: add<U64, U64>(R0, R3)");
+            throw new CompileError(s.Pos, "an assembly body holds instructions, one per line: add[U64, U64](R0, R3)");
         string prefix = "";
         foreach (var a in es.Attributes)
         {
@@ -793,10 +793,10 @@ internal sealed class AsmLowering
         {
             CallExpr { Path: null } c => (c.Name, c.TypeArgs, c.Args),
             NsCallExpr { Owner: { Args.Count: 0, Path: null } o } ns => throw new CompileError(ns.Pos,
-                $"an instruction is written like a routine, its operands in order: {ns.Name}<…>({o.Name}{(ns.Args.Count > 0 ? ", …" : "")})"),
+                $"an instruction is written like a routine, its operands in order: {ns.Name}[…]({o.Name}{(ns.Args.Count > 0 ? ", …" : "")})"),
             MethodCallExpr m => throw new CompileError(m.Pos,
-                $"an instruction is written like a routine, its operands in order: {m.Name}<…>({OperandName(m.Receiver)}{(m.Args.Count > 0 ? ", …" : "")})"),
-            _ => throw new CompileError(es.Pos, "an instruction is written like a routine, its operands in order: add<U64, U64>(R0, R3), rdtsc()"),
+                $"an instruction is written like a routine, its operands in order: {m.Name}[…]({OperandName(m.Receiver)}{(m.Args.Count > 0 ? ", …" : "")})"),
+            _ => throw new CompileError(es.Pos, "an instruction is written like a routine, its operands in order: add[U64, U64](R0, R3), rdtsc()"),
         };
         // A name that is no register and no word of the instruction set is said as that, before the types are counted.
         foreach (var o in operands)
@@ -809,9 +809,9 @@ internal sealed class AsmLowering
             throw new CompileError(es.Pos, wanted switch
             {
                 0 => $"'{mnemonic}' has no register operand, so it takes no types",
-                1 => $"'{mnemonic}' has one register operand, so it takes its type: {mnemonic}<U64>",
+                1 => $"'{mnemonic}' has one register operand, so it takes its type: {mnemonic}[U64]",
                 _ => $"'{mnemonic}' has {wanted} register operands, so it takes {wanted} types, one each: "
-                     + $"{mnemonic}<{string.Join(", ", Enumerable.Repeat("U64", wanted))}>",
+                     + $"{mnemonic}[{string.Join(", ", Enumerable.Repeat("U64", wanted))}]",
             });
         var types = new Queue<DType>(typeArgs.Select(t => _c.ResolveType(t, _sig.Env)));
         var texts = operands.Select(o => Operand(o, IsTyped(o) ? types.Dequeue() : null)).ToList();
@@ -852,7 +852,7 @@ internal sealed class AsmLowering
             {
                 var reg = Register(p.Name, p.Pos);
                 if (reg.Class == RegClass.Flags)
-                    throw new CompileError(p.Pos, "FLAGS is read by a branch condition (FLAGS.Carry, lt<U64>), not as an operand");
+                    throw new CompileError(p.Pos, "FLAGS is read by a branch condition (FLAGS.Carry, lt[U64]), not as an operand");
                 if (reg.Class == RegClass.Pc && _arch is not (Arch.A64 or Arch.Arm))
                     throw new CompileError(p.Pos, "PC is read through offset: PC.offset(8)");
                 Name(reg, t, p.Pos);
@@ -888,7 +888,7 @@ internal sealed class AsmLowering
                 {
                     var reg = Register(p.Name, p.Pos);
                     if (reg.Class == RegClass.Flags)
-                        throw new CompileError(p.Pos, "FLAGS is read by a branch condition (FLAGS.Carry, lt<U32>), not as an operand");
+                        throw new CompileError(p.Pos, "FLAGS is read by a branch condition (FLAGS.Carry, lt[U32]), not as an operand");
                     Name(reg, t, p.Pos);
                     texts.Add(RegText(reg, t, p.Pos));
                     break;
@@ -1029,9 +1029,9 @@ internal sealed class AsmLowering
                 return jump + (negate ? Opposite(code) : code) + " " + label;
             }
             case AsmCondExpr or PresetRef { Owner.Name: "FLAGS" }:
-                throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt<U64>(R10, R11) ? … : …");
+                throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt[U64](R10, R11) ? … : …");
             case NsCallExpr or MethodCallExpr when _arch == Arch.Rv:
-                throw new CompileError(cond.Pos, "a RISC-V branch compares two registers, written like a call: lt<U64>(R10, R11)");
+                throw new CompileError(cond.Pos, "a RISC-V branch compares two registers, written like a call: lt[U64](R10, R11)");
             case CallExpr { Path: null } c when _arch == Arch.Rv:
             {
                 var (name, types, pos) = (c.Name, c.TypeArgs, c.Pos);
@@ -1040,7 +1040,7 @@ internal sealed class AsmLowering
                 if (negate)
                     name = name switch { "eq" => "ne", "ne" => "eq", "lt" => "ge", "ge" => "lt", "gt" => "le", _ => "gt" };
                 if (c.Args.Count != 2 || types.Count > 1)
-                    throw new CompileError(pos, $"a RISC-V branch compares two registers: {name}<U64>(R10, R11)");
+                    throw new CompileError(pos, $"a RISC-V branch compares two registers: {name}[U64](R10, R11)");
                 var (left, right) = (c.Args[0], c.Args[1]);
                 bool? signed = Signedness(name, types.Count == 1 ? types[0] : null, pos);
                 var operandType = types.Count == 1 ? _c.ResolveType(types[0], _sig.Env) : _c.USize;
@@ -1058,12 +1058,12 @@ internal sealed class AsmLowering
             }
             default:
                 throw new CompileError(cond.Pos, _arch == Arch.Rv
-                    ? "a RISC-V branch compares two registers: lt<U64>(R10, R11)"
-                    : "an assembly branch tests the flags: eq, ne, lt<U64> … or a FLAGS field such as FLAGS.Carry");
+                    ? "a RISC-V branch compares two registers: lt[U64](R10, R11)"
+                    : "an assembly branch tests the flags: eq, ne, lt[U64] … or a FLAGS field such as FLAGS.Carry");
         }
     }
 
-    /// The architecture's code for a condition on the flags, `lt<U64>` or `FLAGS.Carry`: x86's `b` / `c`, aarch64's
+    /// The architecture's code for a condition on the flags, `lt[U64]` or `FLAGS.Carry`: x86's `b` / `c`, aarch64's
     /// `lo` / `cs`. Reading the flags means an instruction here set them.
     private string ConditionCode(Expr cond)
     {
@@ -1094,7 +1094,7 @@ internal sealed class AsmLowering
             "x86 spells a condition in the mnemonic (setc, cmovb), so it isn't an operand; a branch tests it"),
         Arch.Arm => throw new CompileError(cond.Pos,
             "32-bit ARM spells a condition in the mnemonic (moveq, addne), so it isn't an operand: a branch tests it"),
-        _ => throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt<U64>(R10, R11) ? … : …"),
+        _ => throw new CompileError(cond.Pos, "RISC-V has no flags: compare two registers, branch lt[U64](R10, R11) ? … : …"),
     };
 
     private string CompareOperand(Expr e, DType t) => e switch
@@ -1110,7 +1110,7 @@ internal sealed class AsmLowering
             throw new CompileError(pos, $"'{name}' isn't a comparison: eq, ne, lt, le, gt, ge");
         if (type is null)
             return name is "eq" or "ne" ? null
-                : throw new CompileError(pos, $"'{name}' compares in order, so it takes a type for the signedness: {name}<S64> or {name}<U64>");
+                : throw new CompileError(pos, $"'{name}' compares in order, so it takes a type for the signedness: {name}[S64] or {name}[U64]");
         return _c.ResolveType(type, _sig.Env).Repr switch
         {
             IntType { Kind: IntKind.Signed } => true,

@@ -19,27 +19,27 @@ public class AsmArmTests
         #[target(arch: "arm"), external("asm"), clobbers(FLAGS), pure]
         routine pick(a: U32 = R2, b: U32 = R3) -> U32
             block entry()
-                cmp<U32, U32>(R2, R3)
-                moveq<U32>(R0, 1)
-                movne<U32>(R0, 0)
-                addseq<U32, U32, U32>(R0, R0, R2)
-                movlo<U32, U32>(R1, R3)
-                mov<U32, U32>(R0, R0)
+                cmp[U32, U32](R2, R3)
+                moveq[U32](R0, 1)
+                movne[U32](R0, 0)
+                addseq[U32, U32, U32](R0, R0, R2)
+                movlo[U32, U32](R1, R3)
+                mov[U32, U32](R0, R0)
                 return(R0)
 
         #[target(arch: "arm"), external("asm"), clobbers(FLAGS)]
         routine count(n: U32 = R1) -> U32
             block entry()
-                mov<U32>(R0, 0)
+                mov[U32](R0, 0)
                 jump check()
 
             block check()
-                cmp<U32>(R1, 0)
+                cmp[U32](R1, 0)
                 branch eq
                     ? done()
                     : continue
-                add<U32, U32, U32>(R0, R0, R1)
-                sub<U32, U32>(R1, R1, 1)
+                add[U32, U32, U32](R0, R0, R1)
+                sub[U32, U32](R1, R1, 1)
                 jump check()
 
             block done()
@@ -78,7 +78,7 @@ public class AsmArmTests
             #[target(arch: "arm"), external("asm")]
             routine mask() -> U32
                 block entry()
-                    mrs<U32>(R0, PRIMASK)
+                    mrs[U32](R0, PRIMASK)
                     cpsid(i)
                     dsb(SY)
                     isb(SY)
@@ -88,12 +88,12 @@ public class AsmArmTests
             #[target(arch: "arm"), external("asm")]
             routine restore(was: U32) -> Void
                 block entry()
-                    msr<U32>(PRIMASK, was)
-                    msr<U32>(BASEPRI, was)
-                    mrs<U32>(R1, CONTROL)
-                    mrs<U32>(R2, PSP)
-                    mrs<U32>(R3, MSP)
-                    mrs<U32>(R1, FAULTMASK)
+                    msr[U32](PRIMASK, was)
+                    msr[U32](BASEPRI, was)
+                    mrs[U32](R1, CONTROL)
+                    mrs[U32](R2, PSP)
+                    mrs[U32](R3, MSP)
+                    mrs[U32](R1, FAULTMASK)
                     cpsie(f)
                     wfi()
                     wfe()
@@ -118,28 +118,28 @@ public class AsmArmTests
             #[target(arch: "arm"), external("asm")]
             routine thread_id() -> U32
                 block entry()
-                    mrc<U32>(p15, 0, R0, c13, c0, 3)
+                    mrc[U32](p15, 0, R0, c13, c0, 3)
                     return(R0)
 
             #[target(arch: "arm"), external("asm"), pure]
             routine join(lo: U32, hi: U32) -> B64
                 block entry()
-                    vmov<B64, U32, U32>(D0, lo, hi)
-                    `vadd.f64`<B64, B64, B64>(D0, D0, D0)
-                    vmov<B32, U32>(S2, lo)
+                    vmov[B64, U32, U32](D0, lo, hi)
+                    `vadd.f64`[B64, B64, B64](D0, D0, D0)
+                    vmov[B32, U32](S2, lo)
                     return(D0)
 
             #[target(arch: "arm"), external("asm")]
             routine walk(p: @U32) -> U32
                 block entry()
-                    push<U32>({ R4, R5, LR })
-                    ldr<U32, U32>(R4, p.offset(4).update())
-                    ldr<U32, U32>(R5, p.after_offset(-4))
-                    ldr<U32, U32>(R0, p.index(R4, 4))
-                    ldr<U32, U32>(R0, PC.offset(0))
-                    pop<U32>({ R4, R5, LR })
-                    vpush<B64>({ D8, D9 })
-                    vpop<B64>({ D8, D9 })
+                    push[U32]({ R4, R5, LR })
+                    ldr[U32, U32](R4, p.offset(4).update())
+                    ldr[U32, U32](R5, p.after_offset(-4))
+                    ldr[U32, U32](R0, p.index(R4, 4))
+                    ldr[U32, U32](R0, PC.offset(0))
+                    pop[U32]({ R4, R5, LR })
+                    vpush[B64]({ D8, D9 })
+                    vpop[B64]({ D8, D9 })
                     return(R0)
 
             routine start() -> Void
@@ -158,13 +158,13 @@ public class AsmArmTests
     }
 
     [Theory]
-    [InlineData("mov<U32, U32>(R0, R16)", "arm has no register R16")]
-    [InlineData("mov<U32, U32>(R0, V1)", "arm has no register V1")]
-    [InlineData("mrs<U32>(R0, PRIMASKS)", "arm has no register PRIMASKS, and no system register the builder knows by that name")]
-    [InlineData("mov<U64, U64>(R0, R1)", "32-bit ARM's general registers hold 32 bits, not U64")]
-    [InlineData("vmov<B64, B64>(S0, D1)", "S0 holds 32 bits, not B64")]
-    [InlineData("vmov<B32, B32>(D0, S1)", "D0 holds 64 bits, not B32")]
-    [InlineData("mov<U32>(R0, eq)", "32-bit ARM spells a condition in the mnemonic")]
+    [InlineData("mov[U32, U32](R0, R16)", "arm has no register R16")]
+    [InlineData("mov[U32, U32](R0, V1)", "arm has no register V1")]
+    [InlineData("mrs[U32](R0, PRIMASKS)", "arm has no register PRIMASKS, and no system register the builder knows by that name")]
+    [InlineData("mov[U64, U64](R0, R1)", "32-bit ARM's general registers hold 32 bits, not U64")]
+    [InlineData("vmov[B64, B64](S0, D1)", "S0 holds 32 bits, not B64")]
+    [InlineData("vmov[B32, B32](D0, S1)", "D0 holds 64 bits, not B32")]
+    [InlineData("mov[U32](R0, eq)", "32-bit ARM spells a condition in the mnemonic")]
     public void OperandErrors(string instruction, string error)
     {
         string source = $$"""

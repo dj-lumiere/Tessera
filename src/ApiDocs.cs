@@ -20,7 +20,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
 
     private static readonly Regex BraceReference = new(@"\{([^{}\n]+)\}");
     private static readonly Regex CodeSpan = new(@"(`+)(.+?)\1");
-    private static readonly Regex TypeReference = new(@"^([A-Za-z_]\w*)(<.*>)?$");
+    private static readonly Regex TypeReference = new(@"^([A-Za-z_]\w*)(\[.*\])?$");
 
     private readonly string _root = Path.GetFullPath(sourceRoot);
     private readonly List<Page> _pages = [];
@@ -151,7 +151,7 @@ public sealed class ApiDocs(string sourceRoot, Func<string, List<Decl>> parse)
             ConceptDecl c => c.TypeParams,
             _ => [],
         };
-        return parameters.Count == 0 ? TypeName(d)! : $"{TypeName(d)}<{string.Join(", ", parameters)}>";
+        return parameters.Count == 0 ? TypeName(d)! : $"{TypeName(d)}[{string.Join(", ", parameters)}]";
     }
 
     private void RegisterTypes(Page page)

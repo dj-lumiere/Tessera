@@ -14,7 +14,7 @@ public class FinishLintTests
     {
         var warnings = Lint("""
             routine count_open(text: Bytes, alloc: @Allocator) -> USize
-                shared stack : @List<Byte> <- .construct(alloc)
+                shared stack : @List[Byte] <- .construct(alloc)
 
                 block entry()
                     branch text.is_empty()
@@ -35,7 +35,7 @@ public class FinishLintTests
     {
         var warnings = Lint("""
             routine count_open(text: Bytes, alloc: @Allocator) -> USize
-                shared stack : @List<Byte> <- .construct(alloc)
+                shared stack : @List[Byte] <- .construct(alloc)
 
                 block entry()
                     branch text.is_empty()
@@ -81,8 +81,8 @@ public class FinishLintTests
     {
         var warnings = Lint("""
             routine fill(alloc: @Allocator) -> Void
-                shared buf  : @Slice<Byte> <- uninit
-                shared rest : @Slice<Byte> <- .empty()
+                shared buf  : @Slice[Byte] <- uninit
+                shared rest : @Slice[Byte] <- .empty()
 
                 block entry()
                     jump finish()
@@ -101,7 +101,7 @@ public class FinishLintTests
     {
         var warnings = Lint("""
             routine sign(n: S64) -> S64
-                shared buf : @Slice<Byte> <- uninit
+                shared buf : @Slice[Byte] <- uninit
 
                 block entry()
                     branch n.lt(0)

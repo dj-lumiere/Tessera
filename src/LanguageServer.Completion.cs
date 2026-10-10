@@ -16,7 +16,7 @@ public static partial class LanguageServer
 
     private static JsonObject CompletionOptions() => new()
     {
-        ["triggerCharacters"] = new JsonArray(".", "<", "("),
+        ["triggerCharacters"] = new JsonArray(".", "[", "("),
         ["resolveProvider"] = true,
     };
 
@@ -178,7 +178,7 @@ public static partial class LanguageServer
             or "B32" or "B64" or "B128"
         || (name.Length > 1 && name[0] is 'S' or 'U' && name[1..].All(char.IsDigit));
 
-    /// The names of `a.b.c` (each with the type arguments written after it, `List<S64>`) before the cursor's `.`.
+    /// The names of `a.b.c` (each with the type arguments written after it, `List[S64]`) before the cursor's `.`.
     private static List<(string Name, List<TypeArg> Args)> ReceiverPath(string head)
     {
         var parts = new List<(string, List<TypeArg>)>();
@@ -186,15 +186,15 @@ public static partial class LanguageServer
         while (true)
         {
             var args = new List<TypeArg>();
-            if (i > 0 && head[i - 1] == '>')
+            if (i > 0 && head[i - 1] == ']')
             {
-                // `List<S64>.`: skip the balanced arguments, keeping them as written.
+                // `List[S64].`: skip the balanced arguments, keeping them as written.
                 int depth = 0, end = i;
                 do
                 {
                     i--;
-                    if (head[i] == '>') depth++;
-                    else if (head[i] == '<') depth--;
+                    if (head[i] == ']') depth++;
+                    else if (head[i] == '[') depth--;
                 } while (i > 0 && depth > 0);
                 string written = head[(i + 1)..(end - 1)];
                 args.AddRange(written.Split(',').Select(a => (TypeArg)new TypeArgType(TypeRef.Simple(a.Trim(), new Pos("", 0, 0)))));

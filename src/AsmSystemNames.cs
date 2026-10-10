@@ -32,7 +32,7 @@ internal static partial class AsmSystemNames
         _ => null,
     };
 
-    /// AArch64's generic encoding of a system register: `S<op0>_<op1>_C<n>_C<m>_<op2>`, `S3_3_C2_C4_0` for RNDR.
+    /// AArch64's generic encoding of a system register: `S[op0]_[op1]_C[n]_C[m]_[op2]`, `S3_3_C2_C4_0` for RNDR.
     [GeneratedRegex(@"^S[0-3]_[0-7]_C(1[0-5]|[0-9])_C(1[0-5]|[0-9])_[0-7]$")]
     private static partial Regex A64Generic();
 

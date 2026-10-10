@@ -69,7 +69,7 @@ public sealed class FunctionGen
     private string? _loc;
     private readonly Dictionary<string, List<string>> _blockRecords = [];
 
-    /// The receivers of the calls this instance resolved to one of `Ptr<T>`'s loads: what UninitReads counts as a read.
+    /// The receivers of the calls this instance resolved to one of `Ptr[T]`'s loads: what UninitReads counts as a read.
     private readonly HashSet<Expr> _pointerLoads = new(ReferenceEqualityComparer.Instance);
 
     /// The calls written in a block that this instance resolved to an `#expensive` routine: what ExpensiveCallLint
@@ -280,7 +280,7 @@ public sealed class FunctionGen
         int file = _c.DiFile(at.File);
         var types = new[] { _c.DiTypeRef(_inst.Ret) }.Concat(_inst.Params.Select(_c.DiTypeRef));
         int fnType = _c.MetaUnique($"!DISubroutineType(types: !{{{string.Join(", ", types)}}})");
-        // No linkageName: a debugger then shows the Tessera name (`S32.to<S64>`) instead of the mangled symbol.
+        // No linkageName: a debugger then shows the Tessera name (`S32.to[S64]`) instead of the mangled symbol.
         _sp = _c.Meta($"distinct !DISubprogram(name: {Compiler.MetaString(_decl.DisplayName)}, "
             + $"scope: !{file}, file: !{file}, line: {at.Line}, "
             + $"type: !{fnType}, scopeLine: {at.Line}, spFlags: {(_c.Optimized ? "DISPFlagDefinition | DISPFlagOptimized" : "DISPFlagDefinition")}, unit: !{_c.DiUnit()}, retainedNodes: !{{}})");
@@ -678,7 +678,7 @@ public sealed class FunctionGen
     /// whatever module declares it: the constraints on the parameter (its record's and the routine's own) vouch for it.
     private bool FromTypeParameter(DType t) => _env.All.Any(kv => kv.Key != "Me" && kv.Value.Equals(t));
 
-    /// A call whose type argument is one of the routine's type parameters (`me.to_result<T>()` in `Bytes.to<T>`) is
+    /// A call whose type argument is one of the routine's type parameters (`me.to_result[T]()` in `Bytes.to[T]`) is
     /// vouched for by the parameter's constraints (its record's and the routine's own), so it finds the routine defined for that type in any module, as a
     /// call on a value of the parameter's type does.
     private bool TypeArgFromParameter(List<TypeRef> typeArgs) =>
@@ -731,7 +731,7 @@ public sealed class FunctionGen
                     if (baseType is PtrType)
                         throw Err(ix.Pos, "this field holds a pointer; load it into a value before stepping it");
                     if (baseType is ArrayType)
-                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .at(i), .getitem(i) / .setitem(i, v), or .to<@T>().stride(i)");
+                        throw Err(ix.Pos, $"stride on a {baseType} steps over whole arrays; for an element use .at(i), .getitem(i) / .setitem(i, v), or .to[@T]().stride(i)");
                     var i = EvalIndex(ix.Index);
                     _c.EnsureTypeDefined(baseType);
                     string elemAddr = EmitTmp($"getelementptr {baseType.Llvm}, ptr {baseAddr}, {i.Type.Llvm} {i.Op}");
@@ -749,7 +749,7 @@ public sealed class FunctionGen
                 if (bp.Pointee is null) throw Err(ix.Pos, "an Addr has no element type to stride over: cast it to @T first, or step bytes with offset");
                 var idx = EvalIndex(ix.Index);
                 _c.EnsureTypeDefined(bp.Pointee);
-                // `Ptr<X>.stride(i)` is the i-th X, whatever X is: on a Ptr<Array<T, COUNT>> it steps over whole arrays
+                // `Ptr[X].stride(i)` is the i-th X, whatever X is: on a Ptr<Array<T, COUNT>> it steps over whole arrays
                 // (elements are .at / .get / .set, or .to<@T>().stride(i)).
                 return (EmitTmp($"getelementptr {bp.Pointee.Llvm}, ptr {b.Op}, {idx.Type.Llvm} {idx.Op}"), bp.Pointee);
             }
@@ -832,7 +832,7 @@ public sealed class FunctionGen
             : e;
 
     /// `p.stride(n)` on a pointer is built in: the address n Ts past p (LLVM GEP's first index; on a
-    /// `Ptr<Array<T, COUNT>>` that's n whole arrays). It's a place like `p.f`, so it chains (`p.stride(i).f`) and a
+    /// `Ptr[Array[T, COUNT]]` that's n whole arrays). It's a place like `p.f`, so it chains (`p.stride(i).f`) and a
     /// load or store through it keeps a dense record's real alignment. n is a USize or an SSize (negative moves back).
     private Expr AsStride(Expr e) =>
         e is MethodCallExpr { Name: "stride", TypeArgs.Count: 0, Args: [var n] } m && Infer(m.Receiver) is PtrType
@@ -1378,7 +1378,7 @@ public sealed class FunctionGen
         return new Val("", VoidType.Instance);
     }
 
-    /// `Array<T, COUNT> { a, b, c }` or `Vector<T, LANES> { a, b, c }`: the elements in order, each typed by T. A bare
+    /// `Array[T, COUNT] { a, b, c }` or `Vector[T, LANES] { a, b, c }`: the elements in order, each typed by T. A bare
     /// `{ a, b, c }` takes the type the value goes to.
     private Val EvalElementsLit(ArrayLit lit, DType expected)
     {
@@ -1517,18 +1517,18 @@ public sealed class FunctionGen
 
         // A bare name is a value, or else a preset or a global: a routine becomes a value only when the code says so.
         if (r.Owner is null && _c.FindFree(r.Name, _env.File, r.Pos, r.Path) is not null)
-            throw Err(r.Pos, $"'{r.Name}' is a routine; as a value it is written {r.Name}.to<Callable>()");
+            throw Err(r.Pos, $"'{r.Name}' is a routine; as a value it is written {r.Name}.to[Callable]()");
         if (r.Owner is null && r.Path is null && BoundInRoutine(r.Name))
             throw Err(r.Pos, NotVisible(r.Name, fromNextLine: true));
         throw Err(r.Pos, $"unknown name '{(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}")}'");
     }
 
-    /// `name.to<Callable>()`: the routine as a function pointer, typed by its own signature, or by the Callable
+    /// `name.to[Callable]()`: the routine as a function pointer, typed by its own signature, or by the Callable
     /// written, which then has to match it.
     private Val RoutineValue(RoutineRef r, DType? expected)
     {
         var set = _c.FreeCandidates(r.Name, _env.File, r.Pos, r.Path);
-        if (set.Count == 0) throw Err(r.Pos, $"'{r.Name}' isn't a routine; to<Callable>() makes a routine a value");
+        if (set.Count == 0) throw Err(r.Pos, $"'{r.Name}' isn't a routine; to[Callable]() makes a routine a value");
         var routine = set.Count == 1 ? set[0] : OverloadForValue(r, set, expected);
         if (Recorded) _c.CallUses.TryAdd((r.Pos, r.Name), new Compiler.CallUse(routine, []));
         // An #inline routine is inlined at every call, so there's no call of its own for a pointer to name.
@@ -1605,7 +1605,7 @@ public sealed class FunctionGen
     }
 
     /// A call through a Callable value: `fn.call(args)`. A Callable stored in memory is loaded first
-    /// (`fn: Callable<…> = alloc.alloc_fn.load()`); calling the field directly would hide that load.
+    /// (`fn: Callable[…] = alloc.alloc_fn.load()`); calling the field directly would hide that load.
     private (Expr Callee, CallableType Callable, List<Expr> Args)? IndirectCall(Expr e)
     {
         if (e is not MethodCallExpr m) return null;
@@ -1619,7 +1619,7 @@ public sealed class FunctionGen
         };
         if (s is null) return null;
         // Any routine of the name means a method call, whichever module it's in and whatever type arguments it's
-        // defined for (`Bytes.to<Slice<Byte>>` beside a generic `Bytes.to<T>` another module adds).
+        // defined for (`Bytes.to[Slice[Byte]]` beside a generic `Bytes.to[T]` another module adds).
         if (_c.MethodsNamed(s, m.Name).Count > 0 || _c.FindMethod(s, m.Name, _env.File, m.Pos) is not null) return null;
         var field = _c.Fields(s).FirstOrDefault(f => f.Name == m.Name);
         if (field.Type is CallableType)
@@ -1787,10 +1787,10 @@ public sealed class FunctionGen
     }
 
     /// While a generic body is checked, a call on a value of a known type whose routine is picked by a type argument
-    /// that is a type parameter (`x.to<T>()`, defined as `S32.to<S64>`, `S32.to<B64>`, ...) has no routine to check
+    /// that is a type parameter (`x.to[T]()`, defined as `S32.to[S64]`, `S32.to[B64]`, ...) has no routine to check
     /// until the parameter is known, and no concept names one, so it is checked at each instantiation. Its type is the
     /// one those routines return for that argument. Null for every other call, and for a routine a concept provides
-    /// (`text.to_result<T>()` under `Parsable<T>`), which the constraints in force must give.
+    /// (`text.to_result[T]()` under `Parsable[T]`), which the constraints in force must give.
     private DType? DeferredType(MethodCallExpr m, DType? expected)
     {
         if (!_c.Prechecking || _c.ConceptProvides(m.Name)) return null;
@@ -1808,7 +1808,7 @@ public sealed class FunctionGen
             if (defined.Count == 0 || defined.Any(d => d.Fixed.Count == 0)) continue;
             try
             {
-                // A routine defined for a pattern (`Ptr<T>.to<@U>`) takes the parameter like any type: no deferring.
+                // A routine defined for a pattern (`Ptr[T].to[@U]`) takes the parameter like any type: no deferring.
                 if (_c.MethodCandidates(owner, m.Name, _env.File, m.Pos, true, d => FixedFits(d, owner, typeArgs, m.Pos)).Count > 0)
                     return null;
                 var d = defined.FirstOrDefault(d => d.Fixed.Count == given.Count);
@@ -1888,7 +1888,7 @@ public sealed class FunctionGen
         RecordLit => "{ name: ... }",
         ImplicitMemberExpr m => $".{m.Name}",
         ImplicitCallExpr ic => $".{ic.Name}(...)",
-        RoutineRef r => $"{r.Name}.to<Callable>()",
+        RoutineRef r => $"{r.Name}.to[Callable]()",
         _ => "a value typed by where it goes",
     };
 
@@ -1900,7 +1900,7 @@ public sealed class FunctionGen
         var want = r.Callable is { } written ? Resolve(written) : expected as CallableType;
         if (want is not CallableType ct)
             throw Err(r.Pos, $"'{r.Name}' is overloaded, so its value names the overload by its Callable type: "
-                + $"{r.Name}.to<Callable<(...), R>>(), or a place that expects that Callable; its overloads are:{list}");
+                + $"{r.Name}.to[Callable[(...), R]](), or a place that expects that Callable; its overloads are:{list}");
         foreach (var o in set.Where(o => o.TypeParams.Count == 0))
         {
             Instance sig;
@@ -1917,7 +1917,7 @@ public sealed class FunctionGen
         var set = _c.FreeCandidates(name, _env.File, pos, path);
         if (set.Count > 1)
             throw Err(pos, $"'{name}' is overloaded, so {name}.addr() doesn't say which one; name it by its type: "
-                + $"{name}.to<Callable<(...), R>>().addr(); its overloads are:"
+                + $"{name}.to[Callable[(...), R]]().addr(); its overloads are:"
                 + string.Concat(set.Select(o => $"\n    {Compiler.ShowSignature(o)} at {o.Pos}")));
     }
 
@@ -1955,7 +1955,7 @@ public sealed class FunctionGen
                 string call = m.Name + (m.TypeArgs.Count == 0 ? "" : $"<{string.Join(", ", m.TypeArgs)}>");
                 string fix = m.Receiver switch
                 {
-                    ArrayLit => "Array<T, COUNT> { ... }",
+                    ArrayLit => "Array[T, COUNT] { ... }",
                     RecordLit => "Type { ... }",
                     FloatLit => $"B64.{call}(...)",
                     _ => $"S64.{call}(...)",
@@ -2009,7 +2009,7 @@ public sealed class FunctionGen
             }
             var env = BindOwner(r, owner, m.Pos);
             var selfType = _c.ResolveType(r.Params[0].Type, env);
-            // Through a pointer, T's method must take exactly that pointer: `slot: Ptr<Addr>` doesn't make
+            // Through a pointer, T's method must take exactly that pointer: `slot: Ptr[Addr]` doesn't make
             // `slot.load()` an Addr method on the slot.
             if (passesPointer ? !selfType.Equals(rt) : !Compatible(rt, selfType)) continue;
             BindExplicit(r, env, m.TypeArgs, m.Pos);
@@ -2027,14 +2027,14 @@ public sealed class FunctionGen
             env.Bind(r.TypeParams[0], en);
             return new CallPlan(r, env, m.Receiver, m.Args, m.Pos);
         }
-        // `x.to<S64>()`: the routines are defined per type argument, and none is for these.
+        // `x.to[S64]()`: the routines are defined per type argument, and none is for these.
         foreach (var (owner, _) in candidates)
             if (_c.MethodsNamed(owner, m.Name) is { Count: > 0 } defined && defined.All(d => d.Fixed.Count > 0))
             {
-                string forms = string.Join(", ", defined.Select(d => $"{m.Name}<{string.Join(", ", d.Fixed)}>"));
+                string forms = string.Join(", ", defined.Select(d => $"{m.Name}[{string.Join(", ", d.Fixed)}]"));
                 throw Err(m.Pos, m.TypeArgs.Count == 0
                     ? $"{owner}.{m.Name} takes the type it goes to: {forms}"
-                    : $"{owner} has no {m.Name}<{string.Join(", ", m.TypeArgs)}>; it has {forms}");
+                    : $"{owner} has no {m.Name}[{string.Join(", ", m.TypeArgs)}]; it has {forms}");
             }
         if (typewise is not null)
             throw Err(m.Pos, $"'{typewise.DisplayName}' doesn't take me, so it isn't a method; call it by its type: "
@@ -2045,8 +2045,8 @@ public sealed class FunctionGen
         {
             string concept = m.Name == "represent_into" ? "Representable" : "Diagnosable";
             string fix = _templateHole is { } hole && m.Name == "represent_into"
-                ? $"write the value with {{{hole}.load()}}, or the address with {{{hole}.to<Addr>()}}"
-                : $"write the value with .load().{m.Name}(out), or the address with .to<Addr>().{m.Name}(out)";
+                ? $"write the value with {{{hole}.load()}}, or the address with {{{hole}.to[Addr]()}}"
+                : $"write the value with .load().{m.Name}(out), or the address with .to[Addr]().{m.Name}(out)";
             throw Err(m.Pos, $"{rt} is a pointer, and a pointer isn't {concept}; {fix}");
         }
         // `p.eq(q)` where T.eq takes values: the load is written, not implied.
@@ -2054,7 +2054,7 @@ public sealed class FunctionGen
             throw Err(m.Pos, $"{held}.{m.Name} takes the value, not a pointer to it; load it: .load().{m.Name}(...)");
         // Memory is read through a typed pointer only; an Addr says where, not what.
         if (rt is PtrType { Pointee: null } && m.Name is "load" or "store" or "volatile_load" or "volatile_store")
-            throw Err(m.Pos, $"an Addr has no pointee type to {m.Name}; cast it first: .to<@T>().{m.Name}(...)");
+            throw Err(m.Pos, $"an Addr has no pointee type to {m.Name}; cast it first: .to[@T]().{m.Name}(...)");
         // A value of a type parameter has the routines its constraints give it, and the error says which would.
         if (_c.Prechecking && (rt as ArchetypeType ?? (rt as PtrType)?.Pointee as ArchetypeType) is { } param)
             throw _c.PrecheckNoMethod(param, m.Name, DescribeReceiver(m.Receiver, rt), rt, m.Pos);
@@ -2082,7 +2082,7 @@ public sealed class FunctionGen
         return env.Get(owner.Name);
     }
 
-    /// Binds the owner's type parameters from a concrete type: `Option<T>` against `Option<S64>` binds T.
+    /// Binds the owner's type parameters from a concrete type: `Option[T]` against `Option[S64]` binds T.
     private Compiler.TypeEnv BindOwner(RoutineDecl r, DType owner, Pos pos)
     {
         // A concept's required routine, which a constraint in force gives a type parameter: the constraint binds it.
@@ -2118,7 +2118,7 @@ public sealed class FunctionGen
         || name is "B16" or "BF16" or "B32" or "B64" or "Bool" or "Void" or "Ptr" or "Addr" or "Array" or "Vector"
         || _c.DeclaresType(name);
 
-    /// Whether a routine defined for type arguments (`S32.to<S64>`, `Ptr<T>.to<@U>`) is the one these name.
+    /// Whether a routine defined for type arguments (`S32.to[S64]`, `Ptr[T].to[@U]`) is the one these name.
     private bool FixedFits(RoutineDecl r, DType owner, List<TypeRef> typeArgs, Pos pos)
     {
         if (typeArgs.Count != r.Fixed.Count) return false;
@@ -2202,8 +2202,8 @@ public sealed class FunctionGen
             case CallableType ct when t.Name == "Callable"
                                       && t.Args.Where(a => a is not TypeArgAttr).ToList() is [TypeArgTuple ps, TypeArgType ret]
                                       && ps.Types.Count == ct.Params.Count:
-                // `Callable<(@S,), Void>` against a routine value: its parameter types (and a non-Void return type)
-                // bind the type parameters they mention, so `Thread.spawn(work.to<Callable>(), state)` needn't say S.
+                // `Callable[(@S,), Void]` against a routine value: its parameter types (and a non-Void return type)
+                // bind the type parameters they mention, so `Thread.spawn(work.to[Callable](), state)` needn't say S.
                 for (int i = 0; i < ps.Types.Count; i++) Unify(ps.Types[i], ct.Params[i], env, unbound);
                 if (ct.Ret is not VoidType) Unify(ret.Type, ct.Ret, env, unbound);
                 break;
@@ -2223,7 +2223,7 @@ public sealed class FunctionGen
         if (e is CallExpr { Name: "caller_location", TypeArgs.Count: 0, Args.Count: 0 } cl
             && _c.FindFree(cl.Name, _env.File, cl.Pos) is null)
             return CallerLocation(cl.Pos);
-        // `type_name<T>()`: the type's name as the builder writes it (`S32`, `List<S64>`), a Bytes, so generic code
+        // `type_name[T]()`: the type's name as the builder writes it (`S32`, `List[S64]`), a Bytes, so generic code
         // can say which type a message is about.
         if (e is CallExpr { Name: "type_name", TypeArgs.Count: 1, Args.Count: 0 } tn
             && _c.FindFree(tn.Name, _env.File, tn.Pos) is null)
@@ -2339,7 +2339,7 @@ public sealed class FunctionGen
             ? new Val(CallerParam, new PtrType(null))
             : new Val(_c.PlaceGlobal(_lineSource ?? callPos), new PtrType(null));
 
-    /// The stdlib's Bytes, the type `type_name<T>()` gives.
+    /// The stdlib's Bytes, the type `type_name[T]()` gives.
     private DType BytesType(Pos pos) => _c.ResolveType(TypeRef.Simple("Bytes", pos), _env);
 
     /// `caller_location()`: inside a `#track_caller` routine, where it was called from.

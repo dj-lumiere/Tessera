@@ -20,7 +20,7 @@ public sealed class ArchetypeType(string name, int id) : DType
 /// anything instantiates it: each of its type parameters stands for an ArchetypeType, and the body is lowered into
 /// throwaway IR the way an instance would be. A call on a value of a type parameter then finds only what the
 /// constraints in force provide: the owning record's (or variant's) `require`, the routine's own `require`, and the
-/// concepts those refine (`HashEquatable<T>` gives `Equatable<T>` and `Hashable<T>`). A call to another generic
+/// concepts those refine (`HashEquatable[T]` gives `Equatable[T]` and `Hashable[T]`). A call to another generic
 /// routine, and a generic type the body forms, must have its constraints met by those. A generic conformance is
 /// checked the same way: the routines it names must have their constraints met by the conformance's `when` and the
 /// conforming type's `require`. The check reaches nothing outside the program: it defines no instance, type, string,
@@ -34,7 +34,7 @@ public sealed partial class Compiler
     /// The routine or conformance being checked, and the constraints in force there.
     private sealed class PrecheckScope(string what, string fix)
     {
-        /// The routine or conformance, as an error names it: `'max_of'`, `conform Equatable<Box<T>>`.
+        /// The routine or conformance, as an error names it: `'max_of'`, `conform Equatable[Box[T]]`.
         public string What { get; } = what;
 
         /// Where a missing constraint goes, said as the end of "add Comparable<T> to ...".
@@ -50,8 +50,8 @@ public sealed partial class Compiler
     /// The concept each required routine (`routine Me.eq(...)` inside a concept) belongs to.
     private readonly Dictionary<RoutineDecl, ConceptDecl> _requirementOf = new(ReferenceEqualityComparer.Instance);
 
-    /// The missing constraint behind a failed conformance query that mentions a type parameter (`Equatable<T>` behind
-    /// `Equatable<Option<T>>`), by the query's key: what the fix names.
+    /// The missing constraint behind a failed conformance query that mentions a type parameter (`Equatable[T]` behind
+    /// `Equatable[Option[T]]`), by the query's key: what the fix names.
     private readonly Dictionary<string, string> _missingConstraint = [];
 
     /// Whether a generic body is being checked against its constraints: nothing the lowering makes is kept.
@@ -94,7 +94,7 @@ public sealed partial class Compiler
             ? $"the require of '{r.DisplayName}'"
             : $"the require of '{r.DisplayName}', or to {ownerName}'s if every one of its instances needs it";
         _precheck = new PrecheckScope($"'{r.DisplayName}'", fix);
-        // A receiver written as a fixed type (`Ptr<T>.to<CStr>(me: @CChar)`) fixes the owner's parameters it matches.
+        // A receiver written as a fixed type (`Ptr[T].to[CStr](me: @CChar)`) fixes the owner's parameters it matches.
         if (r.Owner is { Args.Count: > 0 } fixedOwner && HasReceiver(r) && !NamesMe(r.Params[0].Type)
             && ResolveTypeQuiet(r.Params[0].Type, new TypeEnv(r.File)) is { } receiver)
         {
@@ -145,7 +145,7 @@ public sealed partial class Compiler
             var menv = OwnerEnv(method, owner, conf.Source.Pos);
             foreach (var c in Requires(method.Clauses))
             {
-                // A constraint on the routine's own type parameters (`Writer<TWriter>`) is a call's to meet.
+                // A constraint on the routine's own type parameters (`Writer[TWriter]`) is a call's to meet.
                 List<DType> cargs;
                 try { cargs = ConceptArgs(c, menv); }
                 catch (CompileError) { continue; }
@@ -179,7 +179,7 @@ public sealed partial class Compiler
         clauses.Where(c => c.Kind == "require").SelectMany(c => c.Concepts);
 
     /// Binds one parameter for the check: a type parameter to a fresh ArchetypeType, a value parameter to a count. A
-    /// name the clauses don't declare and that names a type is that type (`Byte` in `Array<Byte, COUNT>.sum`).
+    /// name the clauses don't declare and that names a type is that type (`Byte` in `Array[Byte, COUNT].sum`).
     private void BindPrecheckParam(TypeEnv env, string name, Dictionary<string, TypeRef> kinds, string file, Pos pos)
     {
         if (kinds.TryGetValue(name, out var kind))
@@ -237,7 +237,7 @@ public sealed partial class Compiler
         return cenv;
     }
 
-    /// Whether some concept declares a routine of this name on a fixed type for its parameter (`Bytes.to_result<T>`).
+    /// Whether some concept declares a routine of this name on a fixed type for its parameter (`Bytes.to_result[T]`).
     public bool ConceptProvides(string name) =>
         _conceptDecls.Values.SelectMany(g => g).Any(c => c.Routines.Any(q => q.Name == name && q.Fixed.Count > 0));
 
@@ -255,7 +255,7 @@ public sealed partial class Compiler
     };
 
     /// The type a concept's required routine is on, for one application of the concept: its first parameter for
-    /// `Me.name`, the parameter it names (`TIter.next`), or a fixed type (`Bytes.to_result<T>`).
+    /// `Me.name`, the parameter it names (`TIter.next`), or a fixed type (`Bytes.to_result[T]`).
     private DType? RequirementOwner(ConceptDecl concept, List<DType> args, RoutineDecl req)
     {
         var cenv = ConceptEnv(concept, args);
@@ -264,7 +264,7 @@ public sealed partial class Compiler
     }
 
     /// The routines the constraints in force give a type under this name: the type parameters' routines, and a
-    /// routine a concept puts on a fixed type for one of them (`text.to_result<T>()` under `Parsable<T>`).
+    /// routine a concept puts on a fixed type for one of them (`text.to_result[T]()` under `Parsable[T]`).
     private List<RoutineDecl> ConstraintRoutines(DType owner, string name)
     {
         var found = new List<RoutineDecl>();
@@ -322,7 +322,7 @@ public sealed partial class Compiler
             {
                 var req = c.Routines.First(q => OnParam(c, q));
                 string ownerParam = req.Owner!.Name == "Me" ? c.TypeParams[0] : req.Owner.Name;
-                return $"{c.Name}<{string.Join(", ", c.TypeParams.Select(p => p == ownerParam ? t.Name : p))}>";
+                return $"{c.Name}[{string.Join(", ", c.TypeParams.Select(p => p == ownerParam ? t.Name : p))}]";
             })
             .Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
         string fix = providers.Count switch

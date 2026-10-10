@@ -7,7 +7,7 @@ namespace Tessera;
 /// fields), and checked like any other routine.
 ///
 /// A choice or variant without `#derive` derives all five, except what it declares itself (a routine of the name, or a
-/// `conform`). Those conformances hold only when the payloads have them (`Comparable<Shape> when Comparable<Circle>`), and
+/// `conform`). Those conformances hold only when the payloads have them (`Comparable[Shape] when Comparable[Circle]`), and
 /// their routines are checked only when something uses them, as library routines are. `#derive()` derives nothing.
 /// Generated code names Standard::Format by its path, and finds its fields' and payloads' methods whatever module
 /// declares them, so it needs no import.
@@ -25,7 +25,7 @@ public static class Derive
             .Where(r => r.Owner is not null)
             .Select(r => (r.Owner!.Name, r.Name))
             .ToHashSet();
-        // Conformances declared by a top-level `conform Equatable<Color>`, by concept and type name.
+        // Conformances declared by a top-level `conform Equatable[Color]`, by concept and type name.
         var conformed = decls.OfType<ConformDecl>()
             .SelectMany(c => c.Clauses.SelectMany(cl => cl.Concepts))
             .Where(c => c.Args is [TypeArgType])
@@ -105,7 +105,7 @@ public static class Derive
         if (type is VariantDecl v)
         {
             if (v.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
-                throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}<...>'");
+                throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
             if (concept is "Equatable" or "Hashable" or "Comparable"
                 && v.Cases.FirstOrDefault(c => c.Payload?.Name is "Ptr" or "Addr") is { } pointerCase)
                 throw new CompileError(at, $"{name} can't derive {concept}: case '{pointerCase.Name}' carries a pointer; declare '{method}'");
@@ -115,7 +115,7 @@ public static class Derive
         if (r.Attr("llvm") is not null)
             throw new CompileError(at, $"{name} is an #llvm record, so it has no fields to derive {concept} from");
         if (r.Clauses.Any(c => c.Kind == "conform" && c.Concepts.Any(x => x.Name == concept)))
-            throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}<...>'");
+            throw new CompileError(at, $"{name} derives {concept}, which declares the conformance; drop 'conform {concept}[...]'");
         // A pointer compares by address only through ptr_eq, on purpose (see Type-System, Ptr<T> and T's API),
         // so there's nothing to derive.
         if (concept is "Equatable" or "Hashable" or "Comparable"
@@ -154,13 +154,13 @@ public static class Derive
         var parameters = requires.SelectMany(c => c.Params).ToList();
         string partConcept = Qualified(concept == "Representable" ? "Diagnosable" : concept);
         return parameters.Select(p => $"{p.Name}: {p.Kind}")
-            .Concat(parameters.Where(p => p.Kind.Name == "typename").Select(p => $"{partConcept}<{p.Name}>"))
+            .Concat(parameters.Where(p => p.Kind.Name == "typename").Select(p => $"{partConcept}[{p.Name}]"))
             .Distinct()
             .ToList();
     }
 
     private static string SelfName(string name, List<string> typeParams) =>
-        typeParams.Count == 0 ? name : $"{name}<{string.Join(", ", typeParams)}>";
+        typeParams.Count == 0 ? name : $"{name}[{string.Join(", ", typeParams)}]";
 
     /// The Writer's type parameter in a derived `represent_into` / `diagnose_into`, named by the stdlib's rule: `T`
     /// when it is the only type parameter, `TWriter` next to the type's own (a value parameter like `COUNT` doesn't
@@ -175,7 +175,7 @@ public static class Derive
     }
 
     private static string WriterHeader(string self, string method, string writer) =>
-        $"routine {self}.{method}<{writer}>(me: Me, out: @{writer}) -> Void\n";
+        $"routine {self}.{method}[{writer}](me: Me, out: @{writer}) -> Void\n";
 
     private static string RecordSource(RecordDecl r, string concept, string method)
     {
@@ -183,7 +183,7 @@ public static class Derive
         string self = SelfName(r.Name, r.TypeParams);
 
         var sb = new StringBuilder();
-        sb.Append($"conform {Qualified(concept)}<{self}>");
+        sb.Append($"conform {Qualified(concept)}[{self}]");
         if (constraints.Count > 0) sb.Append($" when {string.Join(", ", constraints)}");
         sb.Append("\n\n");
         switch (method)
@@ -192,7 +192,7 @@ public static class Derive
             {
                 string writer = WriterParam(r.TypeParams, r.Clauses);
                 sb.Append(WriterHeader(self, method, writer));
-                sb.Append($"require {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer<{writer}>"))}\n");
+                sb.Append($"require {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer[{writer}]"))}\n");
                 WriteBody(sb, r);
                 break;
             }
@@ -220,7 +220,7 @@ public static class Derive
 
     /// `Point { x: 1, name: "a" }`, each field diagnosed: inside a record, a string keeps its quotes either way. A
     /// pointer field writes its address (`next: 0x7ffd5e8c1a40`): a pointer isn't Diagnosable, so the derived routine
-    /// says which side it means, `to<Addr>()`, as a hand-written one would.
+    /// says which side it means, `to[Addr]()`, as a hand-written one would.
     private static void WriteBody(StringBuilder sb, RecordDecl r)
     {
         sb.Append("    block entry()\n");
@@ -232,7 +232,7 @@ public static class Derive
             string value = $"f{i}";
             sb.Append($"        Standard::Format::write_str(out, \"{before}{f.Name}: \")\n");
             sb.Append(f.Type.Name == "Ptr"
-                ? $"        {value} : Addr = me.{f.Name}.to<Addr>()\n"
+                ? $"        {value} : Addr = me.{f.Name}.to[Addr]()\n"
                 : $"        {value} : {f.Type} = me.{f.Name}\n");
             sb.Append($"        {value}.diagnose_into(out)\n");
         }
@@ -329,13 +329,13 @@ public static class Derive
             bool writes = method is "represent_into" or "diagnose_into";
             constraints = constraints
                 .Concat(v.Cases.Where(c => c.Payload is { } payload && !(writes && payload.Name == "Ptr"))
-                    .Select(c => $"{part}<{c.Payload}>"))
+                    .Select(c => $"{part}[{c.Payload}]"))
                 .Distinct().ToList();
         }
         string self = SelfName(v.Name, v.TypeParams);
         string Payload(VariantCase c, string name) => $"{name}";
         var sb = new StringBuilder();
-        sb.Append($"conform {Qualified(concept)}<{self}>");
+        sb.Append($"conform {Qualified(concept)}[{self}]");
         if (constraints.Count > 0) sb.Append($" when {string.Join(", ", constraints)}");
         sb.Append("\n\n");
         var cases = v.Cases;
@@ -346,7 +346,7 @@ public static class Derive
                 string prefix = method == "diagnose_into" ? $"{v.Name}." : "";
                 string writer = WriterParam(v.TypeParams, v.Clauses);
                 sb.Append(WriterHeader(self, method, writer));
-                sb.Append($"require {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer<{writer}>"))}\n");
+                sb.Append($"require {string.Join(", ", constraints.Append($"{writer}: typename").Append($"{Fmt}Writer[{writer}]"))}\n");
                 sb.Append("    block entry()\n        when me\n");
                 for (int i = 0; i < cases.Count; i++)
                     sb.Append(cases[i].Payload is null
@@ -361,7 +361,7 @@ public static class Derive
                     // A pointer payload writes its address, as a record's pointer field does.
                     if (cases[i].Payload!.Name == "Ptr")
                     {
-                        sb.Append($"        address : Addr = {p}.to<Addr>()\n");
+                        sb.Append($"        address : Addr = {p}.to[Addr]()\n");
                         sb.Append("        address.diagnose_into(out)\n");
                     }
                     else sb.Append($"        {p}.diagnose_into(out)\n");
@@ -439,7 +439,7 @@ public static class Derive
     {
         var u = c.Underlying;
         var sb = new StringBuilder();
-        sb.Append($"conform {Qualified(concept)}<{c.Name}>\n\n");
+        sb.Append($"conform {Qualified(concept)}[{c.Name}]\n\n");
         switch (method)
         {
             case "represent_into" or "diagnose_into":
@@ -447,7 +447,7 @@ public static class Derive
                     throw new CompileError(c.Pos, $"{c.Name} has no members to {method}");
                 string prefix = method == "diagnose_into" ? $"{c.Name}." : "";
                 sb.Append(WriterHeader(c.Name, method, "T"));
-                sb.Append($"require T: typename, {Fmt}Writer<T>\n");
+                sb.Append($"require T: typename, {Fmt}Writer[T]\n");
                 sb.Append("    block entry()\n");
                 sb.Append("        when me\n");
                 foreach (var (name, _) in c.Members)
@@ -459,21 +459,21 @@ public static class Derive
             case "eq":
                 sb.Append($"routine {c.Name}.eq(me: Me, other: Me) -> Bool\n");
                 sb.Append("    block entry()\n");
-                sb.Append("        r : Bool = ieq<Me>(me, other)\n");
+                sb.Append("        r : Bool = ieq[Me](me, other)\n");
                 sb.Append("        return(r)\n");
                 break;
             case "hash":
                 sb.Append($"routine {c.Name}.hash(me: Me) -> U64\n");
                 sb.Append("    block entry()\n");
-                sb.Append($"        v : {u} = bitcast<Me, {u}>(me)\n");
+                sb.Append($"        v : {u} = bitcast[Me, {u}](me)\n");
                 sb.Append("        r : U64 = v.hash()\n");
                 sb.Append("        return(r)\n");
                 break;
             case "compare":
                 sb.Append($"routine {c.Name}.compare(me: Me, other: Me) -> S32\n");
                 sb.Append("    block entry()\n");
-                sb.Append($"        a : {u} = bitcast<Me, {u}>(me)\n");
-                sb.Append($"        b : {u} = bitcast<Me, {u}>(other)\n");
+                sb.Append($"        a : {u} = bitcast[Me, {u}](me)\n");
+                sb.Append($"        b : {u} = bitcast[Me, {u}](other)\n");
                 sb.Append("        r : S32 = a.compare(b)\n");
                 sb.Append("        return(r)\n");
                 break;

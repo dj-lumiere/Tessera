@@ -235,7 +235,7 @@ public sealed partial class Compiler
         return Apply(receiver, name, args, 1, env, pos);
     }
 
-    /// `to<T>()` and `to_wrap<T>()`, the conversions a preset can fold.
+    /// `to[T]()` and `to_wrap[T]()`, the conversions a preset can fold.
     private static bool IsConversion(string name, List<TypeRef> typeArgs) =>
         name is "to" or "to_wrap" && typeArgs.Count == 1;
 
@@ -318,14 +318,14 @@ public sealed partial class Compiler
         if (v < min || v > max) throw new CompileError(pos, $"{it.Name}.{name} overflows in this preset ({v})");
     }
 
-    /// `to<T>()` (checked, like the routine that crashes) and `to_wrap<T>()` from one integer type to another.
+    /// `to[T]()` (checked, like the routine that crashes) and `to_wrap[T]()` from one integer type to another.
     private ConstVal Convert(BigInteger a, IntType from, string name, TypeRef target, TypeEnv env, Pos pos)
     {
         if (TryResolveType(target, env) is not IntType { IsNumber: true } to)
-            throw new CompileError(pos, $"{from.Name}.{name}<{target}> can't run at build time; a preset is made of {PresetForms}");
+            throw new CompileError(pos, $"{from.Name}.{name}[{target}] can't run at build time; a preset is made of {PresetForms}");
         if (name == "to_wrap") return new ConstVal(to, Wrap(a, to));
         var (min, max) = Range(to);
-        if (a < min || a > max) throw new CompileError(pos, $"{a} doesn't fit in {to.Name} ({from.Name}.to<{to.Name}> in a preset)");
+        if (a < min || a > max) throw new CompileError(pos, $"{a} doesn't fit in {to.Name} ({from.Name}.to[{to.Name}] in a preset)");
         return new ConstVal(to, a);
     }
 

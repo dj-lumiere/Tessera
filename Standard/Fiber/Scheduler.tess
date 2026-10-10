@@ -7,7 +7,7 @@
 //
 //     claim stacks : @Allocator <- make_stack_allocator()   // guard pages
 //     claim sched  : @Scheduler <- .construct(0, stacks, alloc)   // 0: a worker per processor
-//     sched.spawn(worker.to<Callable>(), state, 65536)
+//     sched.spawn(worker.to[Callable](), state, 65536)
 //     sched.run()
 //     sched.destruct()
 //
@@ -70,15 +70,15 @@ private preset FIBER_PARKED:   U32 = 3
 record FiberState
     sp          : Addr  // its stack pointer while it isn't running
     stack       : Addr  // the bottom of its stack, from the scheduler's stack allocator
-    entry       : Callable<(Addr,), Void>
+    entry       : Callable[(Addr,), Void]
     arg         : Addr
     finished    : Bool
-    then        : Callable<(@Worker, @FiberState), Void>  // where its worker puts it after a stop
+    then        : Callable[(@Worker, @FiberState), Void]  // where its worker puts it after a stop
     wake_state  : U32  // FIBER_RUNNING, FIBER_NOTIFIED, FIBER_PARKING or FIBER_PARKED
     deadline    : U64  // when it is due while it sleeps, in monotonic_ns
     join        : @Join  // its Join from spawn_joinable, or null
     waiting_for : @Join  // the Join it waits on in join
-    work        : Callable<(Addr,), Void>  // its blocking call, on an I/O thread
+    work        : Callable[(Addr,), Void]  // its blocking call, on an I/O thread
     work_arg    : Addr
     trace_depth : USize  // its crash trace depth while it isn't running (Trace.tess)
 
@@ -91,7 +91,7 @@ record Join
 /// When a sleeping fiber in the timers is due, its priority there: earliest first, and in the order they went to sleep
 /// when they are due together.
 private record TimerKey
-conform Comparable<TimerKey>
+conform Comparable[TimerKey]
     deadline : U64
     seq      : U64
 
@@ -102,7 +102,7 @@ record Worker
     home    : Addr  // the worker loop's stack pointer while a fiber runs
     current : @FiberState  // the fiber running, or null in the worker loop
     lock    : Mutex
-    queue   : CircularList<@FiberState>
+    queue   : CircularList[@FiberState]
     thread  : Thread  // for every worker but the first, which is run's own thread
 
 record Scheduler
@@ -115,12 +115,12 @@ record Scheduler
     epoch       : U32  // changes when there is work to look for, or none left; idle workers wait on it
     sleepers    : U32  // workers waiting on epoch
     timer_lock  : Mutex
-    timers      : PriorityQueue<TimerKey, @FiberState>  // the sleeping fibers
+    timers      : PriorityQueue[TimerKey, @FiberState]  // the sleeping fibers
     timer_seq   : U64
     timer_count : USize  // entries in timers, read without the lock so a worker skips it when there are none
     io_threads  : @Thread  // IO_THREADS threads running the fibers' blocking calls
     io_lock     : Mutex
-    io_queue    : CircularList<@FiberState>  // parked fibers whose call hasn't started
+    io_queue    : CircularList[@FiberState]  // parked fibers whose call hasn't started
     io_epoch    : U32  // changes when a call is queued or the I/O threads should stop; they wait on it
     io_stop     : U32  // 1 once run is over
 
@@ -158,7 +158,7 @@ routine Scheduler.construct(workers: USize, stacks: @Allocator, alloc: @Allocato
             : make(workers)
 
     block make(count: USize)
-        array : @Worker = allocate<Worker>(count, alloc)
+        array : @Worker = allocate[Worker](count, alloc)
         jump init(count, array, 0)
 
     block init(count: USize, array: @Worker, i: USize)
@@ -168,15 +168,15 @@ routine Scheduler.construct(workers: USize, stacks: @Allocator, alloc: @Allocato
             : one(count, array, i)
 
     block one(count: USize, array: @Worker, i: USize)
-        queue : CircularList<@FiberState> = .construct(alloc)
+        queue : CircularList[@FiberState] = .construct(alloc)
         array.stride(i).store(Worker { sched: null, index: i, home: null, current: null,
             lock: .construct(), queue: queue, thread: Thread { handle: null } })
         jump init(count, array, i.add(1))
 
     block finish(count: USize, array: @Worker)
-        timers     : PriorityQueue<TimerKey, @FiberState> = .construct(alloc)
-        io_threads : @Thread                              = allocate<Thread>(IO_THREADS, alloc)
-        io_queue   : CircularList<@FiberState>            = .construct(alloc)
+        timers     : PriorityQueue[TimerKey, @FiberState] = .construct(alloc)
+        io_threads : @Thread                              = allocate[Thread](IO_THREADS, alloc)
+        io_queue   : CircularList[@FiberState]            = .construct(alloc)
         s          : Me                                   = Me { alloc: alloc, stacks: stacks,
             count: count, workers: array, next: 0, live: 0, epoch: 0, sleepers: 0,
             timer_lock: .construct(), timers: timers, timer_seq: 0, timer_count: 0,
@@ -191,7 +191,7 @@ routine Scheduler.construct(workers: USize, stacks: @Allocator, alloc: @Allocato
 /// :param arg: The state it works on, which must outlive the fiber.
 /// :param stack_size: The size of the fiber's stack in bytes.
 #target(os: not "none")
-routine Scheduler.spawn<T>(me: @Me, entry: Callable<(@T,), Void>, arg: @T,
+routine Scheduler.spawn[T](me: @Me, entry: Callable[(@T,), Void], arg: @T,
     stack_size: USize) -> Void
 require T: typename
     block entry()
@@ -206,11 +206,11 @@ require T: typename
 /// :param stack_size: The size of the fiber's stack in bytes.
 /// :returns: The Join to pass to {Scheduler.join}.
 #target(os: not "none")
-routine Scheduler.spawn_joinable<T>(me: @Me, entry: Callable<(@T,), Void>, arg: @T,
+routine Scheduler.spawn_joinable[T](me: @Me, entry: Callable[(@T,), Void], arg: @T,
     stack_size: USize) -> @Join
 require T: typename
     block entry()
-        j : @Join = allocate<Join>(1, me.alloc.load())
+        j : @Join = allocate[Join](1, me.alloc.load())
         j.store(Join { lock: .construct(), done: 0, waiter: null })
         me.start_fiber(entry, arg, stack_size, j)
         return(j)
@@ -282,7 +282,7 @@ routine Scheduler.park(me: @Me) -> Void
 
     // The worker decides, once the fiber is off its stack, whether a wake came meanwhile (see commit_park).
     block stop()
-        fiber.then.store(commit_park.to<Callable>())
+        fiber.then.store(commit_park.to[Callable]())
         switch_stack(fiber.sp, current_worker().home.load())
         return()
 
@@ -342,7 +342,7 @@ routine Scheduler.sleep(me: @Me, ns: U64) -> Void
     // The worker puts it in the timers once it is off its stack (see to_timers).
     block inside()
         fiber.deadline.store(deadline)
-        fiber.then.store(to_timers.to<Callable>())
+        fiber.then.store(to_timers.to[Callable]())
         switch_stack(fiber.sp, current_worker().home.load())
         return()
 
@@ -362,7 +362,7 @@ routine Scheduler.join(me: @Me, j: @Join) -> Void
     // The worker decides, once the fiber is off its stack, whether to wait (see commit_join).
     block inside()
         fiber.waiting_for.store(j)
-        fiber.then.store(commit_join.to<Callable>())
+        fiber.then.store(commit_join.to[Callable]())
         switch_stack(fiber.sp, current_worker().home.load())
         jump free_join()
 
@@ -402,7 +402,7 @@ routine Scheduler.run(me: @Me) -> Void
 
     block io_one(i: USize)
         io_slot : @Thread = me.io_threads.load().stride(i)
-        io_slot.store(Thread.spawn(io_main.to<Callable>(), me, me.alloc.load()))
+        io_slot.store(Thread.spawn(io_main.to[Callable](), me, me.alloc.load()))
         jump io_start(i.add(1))
 
     block start(i: USize)
@@ -414,7 +414,7 @@ routine Scheduler.run(me: @Me) -> Void
     block one(i: USize)
         w : @Worker = me.workers.load().stride(i)
         w.sched.store(me)
-        w.thread.store(Thread.spawn(worker_loop.to<Callable>(), w, me.alloc.load()))
+        w.thread.store(Thread.spawn(worker_loop.to[Callable](), w, me.alloc.load()))
         jump start(i.add(1))
 
     block own()
@@ -497,7 +497,7 @@ routine Scheduler.destruct(me: @Me) -> Void
 /// :param work: The call that may block.
 /// :param arg: The state it works on.
 #target(os: not "none")
-routine Scheduler.run_blocking<T>(me: @Me, work: Callable<(@T,), Void>, arg: @T) -> Void
+routine Scheduler.run_blocking[T](me: @Me, work: Callable[(@T,), Void], arg: @T) -> Void
 require T: typename
     shared fiber : @FiberState = me.current()
 
@@ -516,7 +516,7 @@ require T: typename
         state : Addr = arg
         fiber.work.store(erased(work))
         fiber.work_arg.store(state)
-        fiber.then.store(to_io.to<Callable>())
+        fiber.then.store(to_io.to[Callable]())
         switch_stack(fiber.sp, current_worker().home.load())
         return()
 
@@ -640,7 +640,7 @@ private routine io_main(sched: @Scheduler) -> Void
 
     // The call is over: the fiber is ready again, in the workers' queues in turn.
     block call(fiber: @FiberState)
-        work : Callable<(Addr,), Void> = fiber.work.load()
+        work : Callable[(Addr,), Void] = fiber.work.load()
         work.call(fiber.work_arg.load())
         place_ready(sched, fiber)
         jump look()
@@ -828,8 +828,8 @@ private routine resume(w: @Worker, fiber: @FiberState) -> Void
 
     // then goes back to requeue before it runs: the fiber may be resumed elsewhere as soon as it is placed.
     block stopped()
-        then : Callable<(@Worker, @FiberState), Void> = fiber.then.load()
-        fiber.then.store(requeue.to<Callable>())
+        then : Callable[(@Worker, @FiberState), Void] = fiber.then.load()
+        fiber.then.store(requeue.to[Callable]())
         then.call(w, fiber)
         return()
 
@@ -910,10 +910,10 @@ private routine place_ready(sched: @Scheduler, fiber: @FiberState) -> Void
 /// :param entry: The routine, on its own state type.
 /// :returns: The same routine, on an Addr.
 #target(os: not "none")
-private routine erased<T>(entry: Callable<(@T,), Void>) -> Callable<(Addr,), Void>
+private routine erased[T](entry: Callable[(@T,), Void]) -> Callable[(Addr,), Void]
 require T: typename
     block entry()
-        on_addr : Callable<(Addr,), Void> = bitcast(entry)
+        on_addr : Callable[(Addr,), Void] = bitcast(entry)
         return(on_addr)
 
 /// A new fiber, ready to run.
@@ -922,17 +922,17 @@ require T: typename
 /// :param stack_size: The size of the fiber's stack in bytes.
 /// :param j: The fiber's Join, or null.
 #target(os: not "none")
-private routine Scheduler.start_fiber<T>(me: @Me, entry: Callable<(@T,), Void>, arg: @T,
+private routine Scheduler.start_fiber[T](me: @Me, entry: Callable[(@T,), Void], arg: @T,
     stack_size: USize, j: @Join) -> Void
 require T: typename
     block entry()
-        stack : @Byte       = allocate<Byte>(stack_size, me.stacks.load())
+        stack : @Byte       = allocate[Byte](stack_size, me.stacks.load())
         sp    : Addr        = initial_stack(stack, stack_size, fiber_start.addr())
         state : Addr        = arg
-        fiber : @FiberState = allocate<FiberState>(1, me.alloc.load())
+        fiber : @FiberState = allocate[FiberState](1, me.alloc.load())
         fiber.store(FiberState { sp: sp, stack: stack, entry: erased(entry), arg: state,
-            finished: false, then: requeue.to<Callable>(), wake_state: FIBER_RUNNING, deadline: 0,
-            join: j, waiting_for: null, work: no_work.to<Callable>(), work_arg: null,
+            finished: false, then: requeue.to[Callable](), wake_state: FIBER_RUNNING, deadline: 0,
+            join: j, waiting_for: null, work: no_work.to[Callable](), work_arg: null,
             trace_depth: 0 })
         me.live.atomic_fetch_add(1)
         place_ready(me, fiber)
@@ -1006,7 +1006,7 @@ private routine push_ready(w: @Worker, fiber: @FiberState) -> Void
 /// :param queue: The queue.
 /// :returns: The fiber, or null when the queue is empty.
 #target(os: not "none")
-private routine pop_front_locked(lock: @Mutex, queue: @CircularList<@FiberState>) -> @FiberState
+private routine pop_front_locked(lock: @Mutex, queue: @CircularList[@FiberState]) -> @FiberState
     block entry()
         lock.lock()
         empty : Bool = queue.is_empty()
@@ -1023,7 +1023,7 @@ private routine pop_front_locked(lock: @Mutex, queue: @CircularList<@FiberState>
 /// :param queue: The queue.
 /// :returns: The fiber, or null when the queue is empty.
 #target(os: not "none")
-private routine pop_back_locked(lock: @Mutex, queue: @CircularList<@FiberState>) -> @FiberState
+private routine pop_back_locked(lock: @Mutex, queue: @CircularList[@FiberState]) -> @FiberState
     block entry()
         lock.lock()
         empty : Bool = queue.is_empty()
@@ -1039,7 +1039,7 @@ private routine pop_back_locked(lock: @Mutex, queue: @CircularList<@FiberState>)
 /// :param sched: The scheduler.
 /// :param queue: The queue to empty.
 #target(os: not "none")
-private routine drain(sched: @Scheduler, queue: @CircularList<@FiberState>) -> Void
+private routine drain(sched: @Scheduler, queue: @CircularList[@FiberState]) -> Void
     block entry()
         jump next()
 
@@ -1059,7 +1059,7 @@ private routine drain(sched: @Scheduler, queue: @CircularList<@FiberState>) -> V
 #target(os: not "none")
 private routine free_fiber(sched: @Scheduler, fiber: @FiberState) -> Void
     block entry()
-        stack : @Byte = fiber.stack.load().to<@Byte>()
+        stack : @Byte = fiber.stack.load().to[@Byte]()
         deallocate(stack, sched.stacks.load())
         deallocate(fiber, sched.alloc.load())
         return()
@@ -1070,7 +1070,7 @@ private routine free_fiber(sched: @Scheduler, fiber: @FiberState) -> Void
 private routine fiber_start() -> Void
     block entry()
         fiber : @FiberState             = current_worker().current.load()
-        entry : Callable<(Addr,), Void> = fiber.entry.load()
+        entry : Callable[(Addr,), Void] = fiber.entry.load()
         entry.call(fiber.arg.load())
         fiber.finished.store(true)
         w : @Worker = current_worker()

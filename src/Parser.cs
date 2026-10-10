@@ -26,7 +26,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         "define", "private", "internal", "module", "import",
     ];
     /// Inside an `#external("asm")` routine: a statement may carry `#asm_prefix`, and a `branch` may test a bare
-    /// comparison name (`eq`, `lt<U64>`).
+    /// comparison name (`eq`, `lt[U64]`).
     private bool _inAsm;
 
     private static readonly HashSet<string> TerminatorKeywords =
@@ -87,7 +87,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new Module(decls);
     }
 
-    /// `define Fmt = Standard::Format`, `define Numbers = Standard::Collections::List<S64>`.
+    /// `define Fmt = Standard::Format`, `define Numbers = Standard::Collections::List[S64]`.
     private AliasDecl ParseDefine(List<Attribute> attrs)
     {
         var pos = Next().Pos;
@@ -231,7 +231,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                         args.Add(ParseAttrValueList(key, negated));
                         continue;
                     }
-                    if (Is(TokenKind.Ident) && PeekTok(1).Kind is TokenKind.LParen or TokenKind.Lt)
+                    if (Is(TokenKind.Ident) && PeekTok(1).Kind is TokenKind.LParen or TokenKind.LBracket)
                     {
                         args.Add(new AttrArg(key, "", negated, ParseExpr()));
                         continue;
@@ -284,7 +284,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return clauses;
     }
 
-    /// One clause line. `require` lists parameters (`T: typename`, `N: USize`) and concept constraints (`Equatable<T>`);
+    /// One clause line. `require` lists parameters (`T: typename`, `N: USize`) and concept constraints (`Equatable[T]`);
     /// `conform` lists concepts, optionally followed by `when` and the constraints under which it holds.
     private Clause ParseClause()
     {
@@ -315,7 +315,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         {
             do concepts.Add(ParseType()); while (Accept(TokenKind.Comma));
             if (IsIdent("require"))
-                throw Error("a conformance's conditions are written with 'when': conform Equatable<Option<T>> when T: typename, Equatable<T>");
+                throw Error("a conformance's conditions are written with 'when': conform Equatable[Option[T]] when T: typename, Equatable[T]");
             if (IsIdent("when"))
             {
                 Next();
@@ -327,7 +327,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new Clause(kind, toks) { Params = parameters, Concepts = concepts, When = when };
     }
 
-    /// `conform C<X, ...> [when ...]` at top level, then `require` lines for its type parameters.
+    /// `conform C[X, ...] [when ...]` at top level, then `require` lines for its type parameters.
     private ConformDecl ParseConformDecl(List<Attribute> attrs)
     {
         var pos = Cur.Pos;
@@ -375,7 +375,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return (true, source);
     }
 
-    /// Every type name a type is written with: `Ptr`, `U` in `@U`, `Array`, `T` and `COUNT` in `Array<T, COUNT>`.
+    /// Every type name a type is written with: `Ptr`, `U` in `@U`, `Array`, `T` and `COUNT` in `Array[T, COUNT]`.
     private static IEnumerable<string> NamesIn(TypeRef t) =>
         new[] { t.Name }.Concat(t.Args.OfType<TypeArgType>().SelectMany(a => NamesIn(a.Type)));
 
@@ -393,9 +393,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private List<string> ParseTypeParamNames()
     {
         var names = new List<string>();
-        if (!Accept(TokenKind.Lt)) return names;
+        if (!Accept(TokenKind.LBracket)) return names;
         do names.Add(TypeName(Expect(TokenKind.Ident, "a type parameter name")).Text); while (Accept(TokenKind.Comma));
-        Expect(TokenKind.Gt, "'>'");
+        Expect(TokenKind.RBracket, "']'");
         return names;
     }
 
@@ -406,7 +406,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var pos = Cur.Pos;
         ExpectIdent("routine");
 
-        // `name`, `name<T>`, `Owner.name`, `Owner<T>.name<U>`
+        // `name`, `name[T]`, `Owner.name`, `Owner[T].name[U]`
         var first = ParseType();
         TypeRef? owner = null;
         string name;
@@ -436,15 +436,15 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         var ret = ParseType();
         ExpectLineEnd();
         var clauses = ParseClauses();
-        // `TFrom.bitcast<TTo>` declares TTo in its `require`. `S32.to<S64>` names the type it is defined for instead, and
-        // `Ptr<T>.to<@U>` a pattern of one: its own parameters there (U) are bound by matching a call's type arguments.
+        // `TFrom.bitcast[TTo]` declares TTo in its `require`. `S32.to[S64]` names the type it is defined for instead, and
+        // `Ptr[T].to[@U]` a pattern of one: its own parameters there (U) are bound by matching a call's type arguments.
         List<TypeRef> fixedArgs = [];
         if (ownArgs.Count != 0)
         {
             var declared = RequiredNames(clauses);
             bool IsParam(TypeRef t) => t is { Args.Count: 0, Path: null } && declared.Contains(t.Name);
-            // A concept's routine declares its parameters without a require of its own: `Me.represent_into<TWriter>`. Type
-            // arguments that are the concept's own parameters fix it instead: `Bytes.to_result<T>` in Parsable<T>.
+            // A concept's routine declares its parameters without a require of its own: `Me.represent_into[TWriter]`. Type
+            // arguments that are the concept's own parameters fix it instead: `Bytes.to_result[T]` in Parsable<T>.
             bool fixedByConcept = inConcept && conceptParams is not null
                                   && ownArgs.Any(t => NamesIn(t).Any(conceptParams.Contains));
             if (!fixedByConcept && (inConcept || ownArgs.All(IsParam))) typeParams = ownArgs.Select(t => t.Name).ToList();
@@ -600,7 +600,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         return new RecordDecl(file, attrs, name.Text, typeParams, clauses, fields, pos);
     }
 
-    /// `variant Name<T>`, its clauses, then one case per line: `Number : S64` carries a payload, `Empty` doesn't.
+    /// `variant Name[T]`, its clauses, then one case per line: `Number : S64` carries a payload, `Empty` doesn't.
     private VariantDecl ParseVariant(List<Attribute> attrs)
     {
         var pos = Cur.Pos;
@@ -717,7 +717,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
         // Required routines are written `routine Me.name(...)`, `routine T.name(...)` with one of the concept's
         // parameters (a multi-type concept), or, indented under the concept, on a fixed type with the concept's
-        // parameters as its type arguments (`routine Bytes.to_result<T>(...)`). They have no body.
+        // parameters as its type arguments (`routine Bytes.to_result[T](...)`). They have no body.
         var routines = new List<RoutineDecl>();
         while (IsIdent("routine") && PeekTok(1) is { Kind: TokenKind.Ident } owner
                                   && (owner.Text == "Me" || typeParams.Contains(owner.Text) || Cur.Pos.Col > 1)
@@ -749,7 +749,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     private TypeRef ParseType()
     {
-        // `@T` is `Ptr<T>`.
+        // `@T` is `Ptr[T]`.
         if (Is(TokenKind.At))
         {
             var at = Next().Pos;
@@ -769,7 +769,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     public const int MinTupleItems = 2, MaxTupleItems = 4;
 
-    /// `(A, B)` is the stdlib's `Tuple2<A, B>`, up to `Tuple4`.
+    /// `(A, B)` is the stdlib's `Tuple2[A, B]`, up to `Tuple4`.
     private static TypeRef TupleType(List<TypeRef> items, Pos pos)
     {
         if (items.Count is < MinTupleItems or > MaxTupleItems)
@@ -793,13 +793,13 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     }
 
     /// Generic arguments. A parenthesized list is a tuple type, except `Callable`'s first one, its parameter list:
-    /// `Callable<(S64, S64), (S64, S64)>` takes two S64s and returns a pair.
+    /// `Callable[(S64, S64), (S64, S64)]` takes two S64s and returns a pair.
     private List<TypeArg> ParseTypeArgs(bool callable = false)
     {
         var args = new List<TypeArg>();
-        if (!Accept(TokenKind.Lt)) return args;
+        if (!Accept(TokenKind.LBracket)) return args;
         do args.Add(ParseTypeArg()); while (Accept(TokenKind.Comma));
-        Expect(TokenKind.Gt, "'>'");
+        Expect(TokenKind.RBracket, "']'");
         bool paramsSeen = false;
         for (int i = 0; i < args.Count; i++)
         {
@@ -839,7 +839,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
             Expect(TokenKind.RParen, "')'");
             return new TypeArgTuple(types);
         }
-        // `sizeof<T>()` reads like a type until the '(': back up and parse it as an expression.
+        // `sizeof[T]()` reads like a type until the '(': back up and parse it as an expression.
         int start = _i;
         var type = ParseType();
         if (!Is(TokenKind.LParen)) return new TypeArgType(type);
@@ -1094,18 +1094,18 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
 
     internal static readonly HashSet<string> AsmComparisons = ["eq", "ne", "lt", "le", "gt", "ge"];
 
-    /// `eq` or `lt<U64>` as an assembly `branch` condition or condition operand (`csel<U64, U64>(R1, R2, lt<U64>)`):
-    /// a comparison of the flags the last instruction left. `lt<U64>(…)` is a call instead, RISC-V's comparison.
+    /// `eq` or `lt[U64]` as an assembly `branch` condition or condition operand (`csel[U64, U64](R1, R2, lt[U64])`):
+    /// a comparison of the flags the last instruction left. `lt[U64](…)` is a call instead, RISC-V's comparison.
     private AsmCondExpr? AsmCondition()
     {
         if (!IsKeyword(Cur) || !AsmComparisons.Contains(Cur.Text)) return null;
         bool bare = PeekTok(1).Kind is TokenKind.Question or TokenKind.Comma or TokenKind.RParen;
-        bool typed = PeekTok(1).Kind == TokenKind.Lt && PeekTok(2).Kind == TokenKind.Ident
-                     && PeekTok(3).Kind == TokenKind.Gt && PeekTok(4).Kind != TokenKind.LParen;
+        bool typed = PeekTok(1).Kind == TokenKind.LBracket && PeekTok(2).Kind == TokenKind.Ident
+                     && PeekTok(3).Kind == TokenKind.RBracket && PeekTok(4).Kind != TokenKind.LParen;
         if (!bare && !typed) return null;
         var name = Next();
         var types = ParseTypeArgsOpt();
-        if (types.Count > 1) throw new CompileError(name.Pos, $"'{name.Text}' takes one type, the operands': {name.Text}<U64>");
+        if (types.Count > 1) throw new CompileError(name.Pos, $"'{name.Text}' takes one type, the operands': {name.Text}[U64]");
         return new AsmCondExpr(name.Text, types.Count == 1 ? types[0] : null, name.Pos);
     }
 
@@ -1191,8 +1191,6 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 else
                     e = new FieldExpr(e, name.Text, pos);
             }
-            else if (Is(TokenKind.LBracket))
-                throw Error("'[]' is gone: p.stride(i) is the address i Ts past p, and .at(i) / .getitem(i) reach an element");
             else return e;
         }
     }
@@ -1247,7 +1245,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
                 // `{ 1, 2, 3 }` / `{ x: 1 }`: the type comes from where the value goes, as with `.absent()`.
                 return ParseRecordLit(null, t.Pos);
             case TokenKind.LBracket:
-                throw Error("an array literal is written with braces: Array<S32, 3> { 1, 2, 3 }, or { 1, 2, 3 } where the type is known");
+                throw Error("an array literal is written with braces: Array[S32, 3] { 1, 2, 3 }, or { 1, 2, 3 } where the type is known");
             case TokenKind.Ident when _inAsm && AsmCondition() is { } condition:
                 return condition;
             case TokenKind.Ident:
@@ -1263,7 +1261,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         }
     }
 
-    /// `f(args)`, `f<T>(args)`, `Type.f(args)`, `Type<T>.f<U>(args)`, `Type.CONST`, `CONST`, `Type { fields }`.
+    /// `f(args)`, `f[T](args)`, `Type.f(args)`, `Type[T].f[U](args)`, `Type.CONST`, `CONST`, `Type { fields }`.
     private Expr ParseNameExpr()
     {
         var pos = Cur.Pos;
@@ -1282,14 +1280,14 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
         if (Is(TokenKind.LBrace)) return ParseRecordLit(owner, owner.Pos);
 
         if (typeArgs.Count == 0 && Is(TokenKind.Dot) && PeekTok(1) is { Kind: TokenKind.Ident, Text: "to" }
-            && PeekTok(2).Kind == TokenKind.Lt && PeekTok(3) is { Kind: TokenKind.Ident, Text: "Callable" })
+            && PeekTok(2).Kind == TokenKind.LBracket && PeekTok(3) is { Kind: TokenKind.Ident, Text: "Callable" })
         {
-            // `name.to<Callable>()`: the routine `name` as a value, typed by its own signature or by the one written.
+            // `name.to[Callable]()`: the routine `name` as a value, typed by its own signature or by the one written.
             Next();
             Next();
             var written = ParseTypeArgsOpt()[0];
             Expect(TokenKind.LParen, "'('");
-            Expect(TokenKind.RParen, "')': a routine becomes a Callable with name.to<Callable>()");
+            Expect(TokenKind.RParen, "')': a routine becomes a Callable with name.to[Callable]()");
             return new RoutineRef(name.Text, written.Args.Count == 0 ? null : written, pos) { Path = path };
         }
 
@@ -1312,7 +1310,7 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     {
         Expect(TokenKind.LBrace, "'{'");
         var fields = new List<(string, Expr, Pos)>();
-        // `Array<T, COUNT> { a, b, c }` / `Vector<T, LANES> { a, b, c }`: elements in order, where a record names its fields.
+        // `Array[T, COUNT] { a, b, c }` / `Vector[T, LANES] { a, b, c }`: elements in order, where a record names its fields.
         if (!Is(TokenKind.RBrace) && !(Cur.Kind == TokenKind.Ident && PeekTok(1).Kind == TokenKind.Colon))
         {
             var elems = new List<Expr>();
@@ -1362,9 +1360,9 @@ public sealed class Parser(List<Token> tokens, string file, bool isLibrary = fal
     private List<TypeRef> ParseTypeArgsOpt()
     {
         var list = new List<TypeRef>();
-        if (!Accept(TokenKind.Lt)) return list;
+        if (!Accept(TokenKind.LBracket)) return list;
         do list.Add(ParseType()); while (Accept(TokenKind.Comma));
-        Expect(TokenKind.Gt, "'>'");
+        Expect(TokenKind.RBracket, "']'");
         return list;
     }
 

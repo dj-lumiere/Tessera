@@ -1,4 +1,4 @@
-// SortedDict<S64, S64> against a model. An LCG drives random put / remove / has_key / get in three phases (few keys,
+// SortedDict[S64, S64] against a model. An LCG drives random put / remove / has_key / get in three phases (few keys,
 // many keys for a deep tree, then a drain that removes keys picked by rank so borrows and merges run). Every 500
 // operations a checkpoint prints the length, a running checksum of every result, a hash of the ascending iteration
 // sequence, and get_by_rank at the first, middle, and last rank. Then eq.
@@ -15,7 +15,7 @@ record Rng
 /// What every phase works with besides the collection.
 record Harness
     /// Where checkpoints are written.
-    out : @BufWriter<Out>
+    out : @BufWriter[Out]
     /// The generator that picks each operation.
     rng : @Rng
 
@@ -48,8 +48,8 @@ routine Rng.below(me: @Me, bound: USize) -> USize
         state : U64 = me.state.load()
         next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         me.state.store(next)
-        bucket : U64   = next.shr(33).mod(bound.to<U64>())
-        value  : USize = bucket.to<USize>()
+        bucket : U64   = next.shr(33).mod(bound.to[U64]())
+        value  : USize = bucket.to[USize]()
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
@@ -57,22 +57,22 @@ routine mix(hash: S64, value: S64) -> S64
         mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
-routine labeled<T>(out: @T, label: Bytes, value: S64) -> Void
-require T: typename, Writer<T>
+routine labeled[T](out: @T, label: Bytes, value: S64) -> Void
+require T: typename, Writer[T]
     block entry()
         out.write(" {label} {value}")
         return()
 
 // Folds every (key, value) pair in iteration order.
-routine iteration_hash(map: @SortedDict<S64, S64>) -> S64
-    shared iter : @SortedDictIter<S64, S64> <- .construct(map)
+routine iteration_hash(map: @SortedDict[S64, S64]) -> S64
+    shared iter : @SortedDictIter[S64, S64] <- .construct(map)
     shared hash : @S64                      <- 0
 
     block entry()
         jump next()
 
     block next()
-        item : Option<KVPair<S64, S64>> = iter.next()
+        item : Option[KVPair[S64, S64]] = iter.next()
         when item
             .Present(pair) -> continue
             .Absent        -> return(hash.load())
@@ -81,14 +81,14 @@ routine iteration_hash(map: @SortedDict<S64, S64>) -> S64
         mix(mix(hash.load(), key), value).store_into(hash)
         jump next()
 
-routine rank_hash_at(map: @SortedDict<S64, S64>, hash: S64, rank: USize) -> S64
+routine rank_hash_at(map: @SortedDict[S64, S64], hash: S64, rank: USize) -> S64
     block entry()
         key   : S64 = map.get_by_rank(rank).key
         value : S64 = map.get_by_rank(rank).value
         return(mix(mix(hash, key), value))
 
 // Folds get_by_rank at the first, middle, and last rank, or 0 for an empty map.
-routine rank_hash(map: @SortedDict<S64, S64>) -> S64
+routine rank_hash(map: @SortedDict[S64, S64]) -> S64
     shared count : USize = map.count()
 
     block entry()
@@ -103,12 +103,12 @@ routine rank_hash(map: @SortedDict<S64, S64>) -> S64
         last   : S64 = rank_hash_at(map, middle, count.sub(1))
         return(last)
 
-routine checkpoint(out: @BufWriter<Out>, map: @SortedDict<S64, S64>, at: Checkpoint) -> Void
+routine checkpoint(out: @BufWriter[Out], map: @SortedDict[S64, S64], at: Checkpoint) -> Void
     block entry()
         out.write("phase {at.phase}")
-        labeled(out, "op", at.op.to<S64>())
+        labeled(out, "op", at.op.to[S64]())
         size : USize = map.count()
-        labeled(out, "length", size.to<S64>())
+        labeled(out, "length", size.to[S64]())
         labeled(out, "results", at.results)
         labeled(out, "iteration", iteration_hash(map))
         labeled(out, "ranks", rank_hash(map))
@@ -118,7 +118,7 @@ routine checkpoint(out: @BufWriter<Out>, map: @SortedDict<S64, S64>, at: Checkpo
 // Runs ops random operations on keys below keys. An operation kind is drawn below 10: below puts it's a put, below
 // removes a remove of a random key, below rank_removes a remove of the key at a random rank, otherwise a lookup.
 // Returns the updated results checksum.
-routine run_phase(harness: Harness, map: @SortedDict<S64, S64>, phase: Phase, results: S64) -> S64
+routine run_phase(harness: Harness, map: @SortedDict[S64, S64], phase: Phase, results: S64) -> S64
     shared rng          : @Rng  = harness.rng
     shared ops          : USize = phase.ops
     shared keys         : USize = phase.keys
@@ -136,7 +136,7 @@ routine run_phase(harness: Harness, map: @SortedDict<S64, S64>, phase: Phase, re
             : pick(op, checksum)
 
     block pick(op: USize, checksum: S64)
-        key            : S64   = rng.below(keys).to<S64>()
+        key            : S64   = rng.below(keys).to[S64]()
         kind           : USize = rng.below(10)
         is_put         : Bool  = kind.lt(puts)
         is_remove      : Bool  = kind.lt(removes)
@@ -148,13 +148,13 @@ routine run_phase(harness: Harness, map: @SortedDict<S64, S64>, phase: Phase, re
             else           -> lookup(op, checksum, key)
 
     block put(op: USize, checksum: S64, key: S64)
-        value : S64 = rng.below(1000000).to<S64>()
+        value : S64 = rng.below(1000000).to[S64]()
         map.put(key, value)
         jump record(op, checksum, value)
 
     block remove(op: USize, checksum: S64, key: S64)
         removed : Bool = map.remove(key)
-        jump record(op, checksum, removed.to<S64>())
+        jump record(op, checksum, removed.to[S64]())
 
     block remove_ranked(op: USize, checksum: S64)
         count : USize = map.count()
@@ -167,7 +167,7 @@ routine run_phase(harness: Harness, map: @SortedDict<S64, S64>, phase: Phase, re
         rank    : USize = rng.below(count)
         key     : S64   = map.get_by_rank(rank).key
         removed : Bool  = map.remove(key)
-        jump record(op, checksum, mix(key, removed.to<S64>()))
+        jump record(op, checksum, mix(key, removed.to[S64]()))
 
     block lookup(op: USize, checksum: S64, key: S64)
         found : Bool = map.has_key(key)
@@ -192,7 +192,7 @@ routine run_phase(harness: Harness, map: @SortedDict<S64, S64>, phase: Phase, re
         jump next(op, checksum)
 
 // Copies from into to from the largest key down, so the two trees are built by a different insertion order.
-routine copy_reversed(from: @SortedDict<S64, S64>, to: @SortedDict<S64, S64>) -> Void
+routine copy_reversed(from: @SortedDict[S64, S64], to: @SortedDict[S64, S64]) -> Void
     block entry()
         jump next(from.count())
 
@@ -206,7 +206,7 @@ routine copy_reversed(from: @SortedDict<S64, S64>, to: @SortedDict<S64, S64>) ->
         to.put(from.get_by_rank(rank).key, from.get_by_rank(rank).value)
         jump next(rank)
 
-routine report_eq(out: @BufWriter<Out>, label: Bytes, equal: Bool) -> Void
+routine report_eq(out: @BufWriter[Out], label: Bytes, equal: Bool) -> Void
     block entry()
         out.write("{label} {equal}\n")
         return()
@@ -214,11 +214,11 @@ routine report_eq(out: @BufWriter<Out>, label: Bytes, equal: Bool) -> Void
 routine start() -> Void
     block entry()
         fd : @Out = Out.writer()
-        claim out : @BufWriter<Out> <- uninit
+        claim out : @BufWriter[Out] <- uninit
         out.construct(fd)
         claim alloc : @Allocator            <- make_heap_allocator()
         claim rng   : @Rng                  <- Rng { state: 1 }
-        claim map   : @SortedDict<S64, S64> <- .construct(alloc)
+        claim map   : @SortedDict[S64, S64] <- .construct(alloc)
 
         harness : Harness = Harness { out: out, rng: rng }
         r1      : S64     = run_phase(harness, map,
@@ -226,7 +226,7 @@ routine start() -> Void
         r2      : S64     = run_phase(harness, map,
             Phase { number: 2, ops: 10000, keys: 20000, puts: 6, removes: 7, rank_removes: 7 }, r1)
 
-        claim copied : @SortedDict<S64, S64> <- .construct(alloc)
+        claim copied : @SortedDict[S64, S64] <- .construct(alloc)
         report_eq(out, "empty copy equal", map.load().eq(copied.load()))
         copy_reversed(map, copied)
         report_eq(out, "reversed copy equal", map.load().eq(copied.load()))

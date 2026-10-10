@@ -168,7 +168,7 @@ public sealed partial class Compiler
             throw new CompileError(r.Pos, $"routine '{r.DisplayName}' has no body (mark it #external to declare it)");
     }
 
-    /// Whether an instance comes from a generic routine: its own type parameters, or its owner's (`List<T>.push`).
+    /// Whether an instance comes from a generic routine: its own type parameters, or its owner's (`List[T].push`).
     public bool IsGenericInstance(Instance inst) =>
         inst.Decl.TypeParams.Count != 0 || OwnerTypeParams(inst.Decl).Count != 0;
 

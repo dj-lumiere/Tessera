@@ -71,8 +71,8 @@ public static partial class LanguageServer
     private static readonly Regex DeclarationWords =
         new(@"^(?:(?:private|internal)\s+)?(?:routine|record|variant|choice|concept)\s+");
 
-    /// The declaration's first line with each bound parameter written out (`Array<Byte, 400>.to<@Byte>(...)` for
-    /// `Array<T, COUNT>.to<@T>(...)`), so a parameter used inside a larger type (`<@T>`) reads as what it stands for.
+    /// The declaration's first line with each bound parameter written out (`Array[Byte, 400].to[@Byte](...)` for
+    /// `Array[T, COUNT].to[@T](...)`), so a parameter used inside a larger type (`<@T>`) reads as what it stands for.
     /// Null when nothing is bound.
     private static string? Instantiated(string code, List<(string Name, string Type)> bindings)
     {
@@ -81,22 +81,22 @@ public static partial class LanguageServer
         string line = DeclarationWords.Replace(code.Split('\n')[0].Trim(), "");
         string written = Regex.Replace(line, @"(?<![\w`])[A-Za-z_]\w*(?![\w`])",
             m => byName.TryGetValue(m.Value, out var type) ? type : m.Value);
-        // `Me` is the type the routine is on, as this instance has it (`me: @Array<Byte, 400>`).
+        // `Me` is the type the routine is on, as this instance has it (`me: @Array[Byte, 400]`).
         if (OwnerOf(written) is { } owner)
             written = Regex.Replace(written, @"(?<![\w`])Me(?![\w`])", owner);
         return written == line ? null : written;
     }
 
-    /// The type a routine line is on: what comes before its name's `.` (`Array<Byte, 400>` in
-    /// `Array<Byte, 400>.to<@Byte>(...)`). Null for a routine on no type.
+    /// The type a routine line is on: what comes before its name's `.` (`Array[Byte, 400]` in
+    /// `Array[Byte, 400].to[@Byte](...)`). Null for a routine on no type.
     private static string? OwnerOf(string routineLine)
     {
         int depth = 0;
         for (int i = 0; i < routineLine.Length; i++)
             switch (routineLine[i])
             {
-                case '<' or '[': depth++; break;
-                case '>' or ']': depth--; break;
+                case '[': depth++; break;
+                case ']': depth--; break;
                 case '(': return null;
                 case '.' when depth == 0: return i > 0 ? routineLine[..i] : null;
             }
@@ -144,7 +144,7 @@ public static partial class LanguageServer
 
     /// The `require` lines of the record or variant `owner` names, which hold in a routine on it or a conformance of it
     /// without being written there: under that place's names for the type parameters (`E` for the record's `T` in
-    /// `routine List<E>.x`), each marked with where it comes from, and none `alreadyWritten` says the place writes.
+    /// `routine List[E].x`), each marked with where it comes from, and none `alreadyWritten` says the place writes.
     private static IEnumerable<string> InheritedRequires(Analysis analysis, TypeRef owner, string file,
         Func<string, bool> alreadyWritten)
     {
@@ -180,7 +180,7 @@ public static partial class LanguageServer
         return doc.Count > 0 ? string.Join("\n", doc) : null;
     }
 
-    /// A `conform X<Owner<...>> when ...` line as written, then the owning record's `require` lines that hold in it
+    /// A `conform X[Owner[...]] when ...` line as written, then the owning record's `require` lines that hold in it
     /// without being written: those its `when` clause doesn't already say.
     private static string ConformText(Analysis analysis, string line, TypeRef owner)
     {
@@ -227,7 +227,7 @@ public static partial class LanguageServer
     private static string? ParamDoc(string? doc, string name) =>
         doc is null ? null : ParseDoc(doc).Fields.FirstOrDefault(f => f.Kind == "param" && f.Name == name).Text;
 
-    /// The type parameters a declared type has: `T` in `List<T>`.
+    /// The type parameters a declared type has: `T` in `List[T]`.
     private static List<string> TypeParamsOf(Decl? d) => d switch
     {
         RecordDecl r => r.TypeParams,

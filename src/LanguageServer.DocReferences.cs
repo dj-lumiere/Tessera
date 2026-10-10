@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 
 namespace Tessera;
 
-/// A reference in a doc comment, `{Allocator}` or `{List<T>.reserve_result}`: hover shows what it names, as hovering
+/// A reference in a doc comment, `{Allocator}` or `{List[T].reserve_result}`: hover shows what it names, as hovering
 /// the name in code does, and go-to-definition goes there.
 public static partial class LanguageServer
 {
@@ -34,7 +34,7 @@ public static partial class LanguageServer
         string file = analysis.Shown;
         int dot = LastTopLevelDot(reference);
         string ownerText = dot < 0 ? reference : reference[..dot];
-        string ownerName = ownerText.Split('<')[0].Trim();
+        string ownerName = ownerText.Split('[')[0].Trim();
         var owner = TypeRef.Simple(ownerName, new Pos(file, 0, 0));
 
         DocTarget Of(Decl d) => new(d.Pos, DeclName(d), HeaderOf(analysis, d), DocAbove(analysis, d.Pos), 0, 0, 0);
@@ -63,15 +63,15 @@ public static partial class LanguageServer
         return Quietly(() => compiler.FindPreset(ownerName, member, file, new Pos(file, 1, 1))) is { } owned ? Of(owned) : null;
     }
 
-    /// The last `.` outside type arguments: `List<T>.reserve_result` splits at the one before `reserve_result`.
+    /// The last `.` outside type arguments: `List[T].reserve_result` splits at the one before `reserve_result`.
     private static int LastTopLevelDot(string reference)
     {
         int depth = 0;
         for (int i = reference.Length - 1; i >= 0; i--)
         {
             char c = reference[i];
-            if (c == '>') depth++;
-            else if (c == '<') depth--;
+            if (c == ']') depth++;
+            else if (c == '[') depth--;
             else if (c == '.' && depth == 0) return i;
         }
         return -1;

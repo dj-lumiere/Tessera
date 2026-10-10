@@ -1,10 +1,10 @@
 namespace Tessera;
 
 /// Concept checking. A concept names a set of required routines (`routine Me.eq(...)`), and may refine other
-/// concepts (`conform Equatable<T>` inside it). A type satisfies a concept through a conformance: a `conform` clause on
+/// concepts (`conform Equatable[T]` inside it). A type satisfies a concept through a conformance: a `conform` clause on
 /// its record, or a top-level `conform` declaration. A conformance may hold only `when` other constraints hold
-/// (`conform Equatable<Option<T>> when Equatable<T>`). A concept with no routines of its own that only refines others
-/// (`HashEquatable<T>`) is satisfied by satisfying them.
+/// (`conform Equatable[Option[T]] when Equatable[T]`). A concept with no routines of its own that only refines others
+/// (`HashEquatable[T]`) is satisfied by satisfying them.
 ///
 /// Constraints are checked where they apply: a routine's `require` concepts when a call instantiates it, a record's
 /// when its type is formed. A routine on a record, and a conformance's `when`, lists only the constraints it adds: the
@@ -70,7 +70,7 @@ public sealed partial class Compiler
         return decl;
     }
 
-    private static string Show(string concept, List<DType> args) => $"{concept}<{string.Join(", ", args.Select(a => a.Name))}>";
+    private static string Show(string concept, List<DType> args) => $"{concept}[{string.Join(", ", args.Select(a => a.Name))}]";
 
     // ── Requirements at use sites ──────────────────────────────────────────
 
@@ -111,7 +111,7 @@ public sealed partial class Compiler
         if (Conforms(decl, args, env.File, at) is not { } why) return;
         // A pointer writes neither its value nor its address on its own, so the fix names both.
         if (decl.Name is "Representable" or "Diagnosable" && args is [PtrType { Pointee: not null }])
-            why = $"a pointer isn't {decl.Name}; write the value with .load(), or the address with .to<Addr>()";
+            why = $"a pointer isn't {decl.Name}; write the value with .load(), or the address with .to[Addr]()";
         // In a generic body being checked, the constraint is missing from the routine's (or its record's) require.
         else if (_precheck is { } scope && args.Any(MentionsArchetype))
             throw new CompileError(at, $"{scope.What} needs {Show(decl.Name, args)}, which {neededBy} requires: {why}"
@@ -129,7 +129,7 @@ public sealed partial class Compiler
 
     // ── Satisfaction ───────────────────────────────────────────────────────
 
-    /// Null when `concept<args>` holds, else the reason it doesn't.
+    /// Null when `concept[args]` holds, else the reason it doesn't.
     private string? Conforms(ConceptDecl concept, List<DType> args, string file, Pos at)
     {
         string key = ConformsKey(concept, args);
@@ -145,7 +145,7 @@ public sealed partial class Compiler
     /// A conformance query's identity: the concept and its arguments by key, so two types of one name (a type
     /// parameter `T` of two routines) stay apart.
     private static string ConformsKey(ConceptDecl concept, List<DType> args) =>
-        $"{concept.Name}<{string.Join(", ", args.Select(a => a.Key))}>";
+        $"{concept.Name}[{string.Join(", ", args.Select(a => a.Key))}]";
 
     /// Carries the constraint missing behind a failed query on to the query that asked it.
     private void Missing(string key, ConceptDecl inner, List<DType> innerArgs)
@@ -276,8 +276,8 @@ public sealed partial class Compiler
         foreach (var req in concept.Routines)
         {
             // `Me.name` belongs to the concept's first parameter. A multi-type concept names the owner, and a routine
-            // on a fixed type (`Bytes.to_result<T>`) names that type, with the concept's parameters as its type
-            // arguments: the conforming routine is the one defined for them (`Bytes.to_result<S32>`).
+            // on a fixed type (`Bytes.to_result[T]`) names that type, with the concept's parameters as its type
+            // arguments: the conforming routine is the one defined for them (`Bytes.to_result[S32]`).
             string ownerParam = req.Owner!.Name == "Me" ? concept.TypeParams[0] : req.Owner.Name;
             var owner = req.Owner.Args.Count == 0 && cenv.Get(ownerParam) is { } bound ? bound : ResolveType(req.Owner, cenv);
             string claim = $"{key} (declared at {conf.Source.Pos})";
@@ -285,7 +285,7 @@ public sealed partial class Compiler
             var methods = MethodCandidates(owner, req.Name, conf.Source.File, conf.Source.Pos,
                 fits: wanted.Count == 0 ? null : m => FixedFor(m, owner, wanted, conf.Source.Pos));
             if (wanted.Count > 0) methods = methods.Where(m => m.Fixed.Count > 0).ToList();
-            string shownName = wanted.Count == 0 ? req.Name : $"{req.Name}<{string.Join(", ", wanted.Select(w => w.Name))}>";
+            string shownName = wanted.Count == 0 ? req.Name : $"{req.Name}[{string.Join(", ", wanted.Select(w => w.Name))}]";
             if (methods.Count == 0)
                 throw new CompileError(conf.Source.Pos, $"{claim} needs routine '{owner.Name}.{shownName}', which doesn't exist");
             // A type conforms through the one overload whose full signature is the requirement's.
@@ -310,7 +310,7 @@ public sealed partial class Compiler
         return met;
     }
 
-    /// Whether a routine defined for type arguments (`Bytes.to_result<S32>`) is the one for `wanted`.
+    /// Whether a routine defined for type arguments (`Bytes.to_result[S32]`) is the one for `wanted`.
     private bool FixedFor(RoutineDecl m, DType owner, List<DType> wanted, Pos at)
     {
         if (m.Fixed.Count != wanted.Count) return false;
@@ -394,7 +394,7 @@ public sealed partial class Compiler
                 var env = new TypeEnv(conf.Source.File);
                 var decl = FindConcept(conf.Concept, conf.Source.File);
                 var args = ConceptArgs(conf.Concept, env);
-                // A conformance conditional on concrete types (`Equatable<Shape> when Equatable<Circle>`) just doesn't hold
+                // A conformance conditional on concrete types (`Equatable[Shape] when Equatable[Circle]`) just doesn't hold
                 // when its condition fails; only one that holds is checked.
                 if (conf.When.Any(w => Conforms(FindConcept(w, conf.Source.File), ConceptArgs(w, env), conf.Source.File,
                         conf.Source.Pos) is not null))

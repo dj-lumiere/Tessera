@@ -4,10 +4,10 @@ namespace Tessera;
 
 // ── Types as written ────────────────────────────────────────────────────────
 
-/// A type as written in source: `S64`, `@Byte` (a `Ptr<Byte>`), `Array<T, 8>`, `Callable<(Addr, USize), Addr>`.
+/// A type as written in source: `S64`, `@Byte` (a `Ptr[Byte]`), `Array[T, 8]`, `Callable[(Addr, USize), Addr]`.
 public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 {
-    /// The module a qualified name was written with: `Standard::Collections` in `Standard::Collections::List<T>`.
+    /// The module a qualified name was written with: `Standard::Collections` in `Standard::Collections::List[T]`.
     public string? Path { get; init; }
 
     /// A type the builder filled in rather than one written: `x.to()` takes the type its value goes to.
@@ -15,7 +15,7 @@ public sealed record TypeRef(string Name, List<TypeArg> Args, Pos Pos)
 
     public override string ToString() =>
         Path is null && Name == "Ptr" && Args is [TypeArgType inner] ? $"@{inner}"
-        : (Path is null ? "" : Path + "::") + (Args.Count == 0 ? Name : $"{Name}<{string.Join(", ", Args)}>");
+        : (Path is null ? "" : Path + "::") + (Args.Count == 0 ? Name : $"{Name}[{string.Join(", ", Args)}]");
     public static TypeRef Simple(string name, Pos pos) => new(name, [], pos);
 }
 
@@ -29,13 +29,13 @@ public sealed record TypeArgTuple(List<TypeRef> Types) : TypeArg
 }
 /// `#callconv("fast")` inside a Callable.
 public sealed record TypeArgAttr(Attribute Attr) : TypeArg { public override string ToString() => $"#{Attr.Name}"; }
-/// A buildtime integer expression as a generic argument: `max(sizeof<A>(), sizeof<B>())` in `Array<Byte, …>`.
+/// A buildtime integer expression as a generic argument: `max(sizeof[A](), sizeof[B]())` in `Array[Byte, …]`.
 public sealed record TypeArgExpr(Expr Expr) : TypeArg { public override string ToString() => "(expr)"; }
 
 // ── Declarations ────────────────────────────────────────────────────────────
 
 /// An attribute argument: `"c"`, `64`, `size: 64`, `os: !"windows"`, or a buildtime expression such as
-/// `max(alignof<A>(), alignof<B>())` (then Expr is set and Value is empty), or a key's list of values, `os: ("linux",
+/// `max(alignof[A](), alignof[B]())` (then Expr is set and Value is empty), or a key's list of values, `os: ("linux",
 /// "macos")` (then Values holds them and Value is the first), which #target matches when the target's value is any of
 /// them (with `not`, none of them).
 public sealed record AttrArg(string? Key, string Value, bool Negated, Expr? Expr = null, List<string>? Values = null);
@@ -51,7 +51,7 @@ public sealed record Param(string Name, TypeRef Type, Pos Pos)
     public Token? Register { get; init; }
 }
 
-/// `require T: typename, N: U64, Equatable<T>` or `conform Equatable<Option<T>> when Equatable<T>`. Tokens keeps the raw text;
+/// `require T: typename, N: U64, Equatable[T]` or `conform Equatable[Option[T]] when Equatable[T]`. Tokens keeps the raw text;
 /// the parsed parts are below.
 public sealed record Clause(string Kind, List<Token> Tokens)
 {
@@ -79,9 +79,9 @@ public abstract record Decl(string File, List<Attribute> Attributes, Pos Pos)
 public sealed record RoutineDecl(
     string File,
     List<Attribute> Attributes,
-    TypeRef? Owner,              // `S64` in `S64.add`, `Option<T>` in `Option<T>.some`, `TFrom` in `TFrom.bitcast<TTo>`
+    TypeRef? Owner,              // `S64` in `S64.add`, `Option[T]` in `Option[T].some`, `TFrom` in `TFrom.bitcast[TTo]`
     string Name,
-    List<string> TypeParams,     // the routine's own: `TTo` in `TFrom.bitcast<TTo>`, `T` in `add<T>`
+    List<string> TypeParams,     // the routine's own: `TTo` in `TFrom.bitcast[TTo]`, `T` in `add[T]`
     List<Param> Params,
     TypeRef ReturnType,
     List<Clause> Clauses,
@@ -89,7 +89,7 @@ public sealed record RoutineDecl(
     Pos Pos) : Decl(File, Attributes, Pos)
 {
     /// The type arguments a routine on a type is defined for, when its `<...>` names types its `require` doesn't
-    /// declare: `S64` in `S32.to<S64>`, `@T` in `Array<T, COUNT>.to<@T>`. A call picks the one its type arguments match.
+    /// declare: `S64` in `S32.to[S64]`, `@T` in `Array[T, COUNT].to[@T]`. A call picks the one its type arguments match.
     public List<TypeRef> Fixed { get; init; } = [];
 
     /// The head's `shared` lines, top to bottom: values and slots every block sees, made once when the routine starts,
@@ -137,7 +137,7 @@ public sealed record PresetDecl(
     public bool IsStorage { get; init; }
 }
 
-/// A top-level `conform C<X, ...> [when ...]`, with `require` clauses naming its type parameters. It declares a
+/// A top-level `conform C[X, ...] [when ...]`, with `require` clauses naming its type parameters. It declares a
 /// conformance no single record can carry: a multi-type concept, or a concept for a type declared elsewhere.
 public sealed record ConformDecl(string File, List<Attribute> Attributes, List<Clause> Clauses, Pos Pos)
     : Decl(File, Attributes, Pos);
@@ -160,7 +160,7 @@ public sealed record ModuleDecl(string File, string Path, Pos Pos) : Decl(File, 
 /// `import Standard::Format`: a module the file uses. Imports follow the module line, before any other declaration.
 public sealed record ImportDecl(string File, string Path, Pos Pos) : Decl(File, [], Pos);
 
-/// `define Fmt = Standard::Format` or `define Numbers = Standard::Collections::List<S64>`: a second name for a module
+/// `define Fmt = Standard::Format` or `define Numbers = Standard::Collections::List[S64]`: a second name for a module
 /// or a type. It belongs to its module like any declaration, so importers see it.
 public sealed record AliasDecl(string File, List<Attribute> Attributes, TypeRef Target, string Name, Pos Pos)
     : Decl(File, Attributes, Pos);
@@ -211,27 +211,27 @@ public sealed record NullLit(Pos Pos) : Expr(Pos);
 /// A value: a parameter, a block parameter, or a binding.
 public sealed record ValueRef(string Name, Pos Pos) : Expr(Pos);
 
-/// `name.to<Callable>()` or `name.to<Callable<(Params), Ret>>()`: the routine `name` as a value, typed by its own
+/// `name.to[Callable]()` or `name.to[Callable[(Params), Ret]]()`: the routine `name` as a value, typed by its own
 /// signature, or by the one written.
 public sealed record RoutineRef(string Name, TypeRef? Callable, Pos Pos) : Expr(Pos)
 {
-    /// The module of a qualified routine: `Standard::Os` in `Standard::Os::wake_one.to<Callable>()`.
+    /// The module of a qualified routine: `Standard::Os` in `Standard::Os::wake_one.to[Callable]()`.
     public string? Path { get; init; }
 }
 
-/// `name(args)` or `name<T>(args)` — a free routine call.
+/// `name(args)` or `name[T](args)` — a free routine call.
 public sealed record CallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos)
 {
     /// The module of a qualified call: `Standard::Format` in `Standard::Format::write_str(...)`.
     public string? Path { get; init; }
 }
 
-/// `Type.name(args)` — a call through a type's namespace: `S64.add(a, b)`, `Option<T>.absent()`, `K.hash(k)`.
+/// `Type.name(args)` — a call through a type's namespace: `S64.add(a, b)`, `Option[T].absent()`, `K.hash(k)`.
 /// If `Owner` turns out to name a preset rather than a type, this is a method call on that preset.
 public sealed record NsCallExpr(TypeRef Owner, string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos)
     : Expr(Pos);
 
-/// `.name(args)`: a typewise call whose type is the expected one (`n: Option<T> = .absent()`).
+/// `.name(args)`: a typewise call whose type is the expected one (`n: Option[T] = .absent()`).
 public sealed record ImplicitCallExpr(string Name, List<TypeRef> TypeArgs, List<Expr> Args, Pos Pos) : Expr(Pos);
 
 /// `.Nothing`: a variant case without a payload, of the variant the value goes to.
@@ -254,7 +254,7 @@ public sealed record FieldExpr(Expr Base, string Name, Pos Pos) : Expr(Pos);
 /// `p[i]` — a place. As a binding value it is an address; with `:=` or as a store target it is memory.
 public sealed record IndexExpr(Expr Base, Expr Index, Pos Pos) : Expr(Pos);
 
-/// `eq`, `lt<U64>`: an assembly `branch` condition, the comparison the flags of the last instruction show. Type gives an
+/// `eq`, `lt[U64]`: an assembly `branch` condition, the comparison the flags of the last instruction show. Type gives an
 /// ordered comparison its signedness.
 public sealed record AsmCondExpr(string Name, TypeRef? Type, Pos Pos) : Expr(Pos);
 
@@ -272,8 +272,8 @@ public sealed record ClaimExpr(Pos Pos) : Expr(Pos)
 /// `Type { field: value, ... }`, or `{ field: value, ... }` typed by where the value goes (Type is null).
 public sealed record RecordLit(TypeRef? Type, List<(string Name, Expr Value, Pos Pos)> Fields, Pos Pos) : Expr(Pos);
 
-/// `[a, b, c]` — the elements of `Array<T, COUNT>.from([...])` or of a preset array.
-/// `Array<T, COUNT> { a, b, c }` or `Vector<T, LANES> { a, b, c }`, or `{ a, b, c }` typed by where the value goes
+/// `[a, b, c]` — the elements of `Array[T, COUNT].from([...])` or of a preset array.
+/// `Array[T, COUNT] { a, b, c }` or `Vector[T, LANES] { a, b, c }`, or `{ a, b, c }` typed by where the value goes
 /// (Type is null).
 public sealed record ArrayLit(List<Expr> Elements, Pos Pos) : Expr(Pos)
 {

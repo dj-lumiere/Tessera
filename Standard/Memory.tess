@@ -29,9 +29,9 @@ import Standard::Format
 
 /// A manual vtable for heap allocation: the allocate, reallocate and free callbacks plus an opaque `state` passed to each. Callers pass `@Allocator` to any routine that allocates, so no allocation is hidden.
 record Allocator
-    alloc_fn   : Callable<(Addr, USize), Addr>
-    realloc_fn : Callable<(Addr, Addr, USize), Addr>
-    free_fn    : Callable<(Addr, Addr), Void>
+    alloc_fn   : Callable[(Addr, USize), Addr]
+    realloc_fn : Callable[(Addr, Addr, USize), Addr]
+    free_fn    : Callable[(Addr, Addr), Void]
     state      : Addr
 
 /// The error of a `_result` operation whose allocator returned null, such as
@@ -52,17 +52,17 @@ record AllocFailed
 /// :param alloc: The allocator to use.
 /// :returns: A pointer to the new block, or a null pointer when the allocator fails.
 /// :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in USize.
-/// :note: The byte size is `sizeof<T>() * count` with checked multiplication. The memory is uninitialized, and a failed allocation returns a null pointer rather than crashing.
+/// :note: The byte size is `sizeof[T]() * count` with checked multiplication. The memory is uninitialized, and a failed allocation returns a null pointer rather than crashing.
 #expensive("allocates heap memory")
-routine allocate<T>(count: USize, alloc: @Allocator) -> @T
+routine allocate[T](count: USize, alloc: @Allocator) -> @T
 require T: typename
     block entry()
-        elem_size : USize                         = sizeof<T>()
+        elem_size : USize                         = sizeof[T]()
         size      : USize                         = elem_size.mul(count)
-        alloc_fn  : Callable<(Addr, USize), Addr> = alloc.alloc_fn.load()
+        alloc_fn  : Callable[(Addr, USize), Addr] = alloc.alloc_fn.load()
         state     : Addr                          = alloc.state.load()
         raw       : Addr                          = alloc_fn.call(state, size)
-        typed     : @T                            = raw.to<@T>()
+        typed     : @T                            = raw.to[@T]()
         return(typed)
 
 /// Resizes the block at `ptr` to hold `new_count` values of `T` through `alloc` and returns the possibly moved pointer.
@@ -75,18 +75,18 @@ require T: typename
 /// :note: A failed reallocation returns a null pointer, and the old block stays valid.
 #track_caller
 #expensive("reallocates heap memory")
-routine reallocate<T>(ptr: @T, new_count: USize, alloc: @Allocator) -> @T
+routine reallocate[T](ptr: @T, new_count: USize, alloc: @Allocator) -> @T
 require T: typename
     block entry()
-        elem_size  : USize                               = sizeof<T>()
+        elem_size  : USize                               = sizeof[T]()
         size       : USize                               = elem_size.mul(new_count)
         raw_old    : Addr                                = ptr
-        realloc_fn : Callable<(Addr, Addr, USize), Addr> = alloc.realloc_fn.load()
+        realloc_fn : Callable[(Addr, Addr, USize), Addr] = alloc.realloc_fn.load()
         state      : Addr                                = alloc.state.load()
         note_call_place(caller_location())
         raw : Addr = realloc_fn.call(state, raw_old, size)
         note_call_place(null)
-        typed : @T = raw.to<@T>()
+        typed : @T = raw.to[@T]()
         return(typed)
 
 /// Hands the block at `data` back to `alloc`, the allocator it came from. Not a destructor: whatever the values own is
@@ -94,14 +94,14 @@ require T: typename
 /// :typeparam T: The element type.
 /// :param data: The block, from `allocate` or `reallocate`.
 /// :param alloc: The allocator the block came from.
-/// :note: The raw layer under {Slice<T>} and {Bytes}, whose `destruct()` calls it. Code that holds a Slice never needs it.
+/// :note: The raw layer under {Slice[T]} and {Bytes}, whose `destruct()` calls it. Code that holds a Slice never needs it.
 #track_caller
 #expensive("frees heap memory")
-routine deallocate<T>(data: @T, alloc: @Allocator) -> Void
+routine deallocate[T](data: @T, alloc: @Allocator) -> Void
 require T: typename
     block entry()
         raw     : Addr                         = data
-        free_fn : Callable<(Addr, Addr), Void> = alloc.free_fn.load()
+        free_fn : Callable[(Addr, Addr), Void] = alloc.free_fn.load()
         state   : Addr                         = alloc.state.load()
         note_call_place(caller_location())
         free_fn.call(state, raw)
@@ -156,10 +156,10 @@ routine allocator_call_place() -> @SourceLocation
 /// :param count: The number of values of `T` to copy.
 /// :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in USize.
 /// :note: The ranges must not overlap, and no destructor or copy hook runs.
-routine Ptr<T>.copy(me: Me, src: Me, count: USize) -> Void
+routine Ptr[T].copy(me: Me, src: Me, count: USize) -> Void
 require T: typename
     block entry()
-        elem_size : USize = sizeof<T>()
+        elem_size : USize = sizeof[T]()
         size      : USize = elem_size.mul(count)
         raw_dst   : Addr  = me
         raw_src   : Addr  = src
@@ -173,10 +173,10 @@ require T: typename
 /// :param count: The number of values of `T` to copy.
 /// :throws: Crashes with `IntegerOverflowError` when the byte size does not fit in USize.
 /// :note: The ranges must not overlap, and no destructor or copy hook runs.
-routine Ptr<T>.copy_into(me: Me, dst: Me, count: USize) -> Void
+routine Ptr[T].copy_into(me: Me, dst: Me, count: USize) -> Void
 require T: typename
     block entry()
-        elem_size : USize = sizeof<T>()
+        elem_size : USize = sizeof[T]()
         size      : USize = elem_size.mul(count)
         raw_dst   : Addr  = dst
         raw_src   : Addr  = me
@@ -197,30 +197,30 @@ private routine copy_bytes(dst: Addr, src: Addr, bytes: USize) -> Void
 // C strings (Types/CStr.tess)
 // ============================================================
 
-/// A NUL-terminated copy of some text, for C, in memory from an allocator: `text.to<OwnedCStr>(alloc)`. It lends a
-/// `CStr` with `to<CStr>()` and gives the memory back with `destruct()`.
+/// A NUL-terminated copy of some text, for C, in memory from an allocator: `text.to[OwnedCStr](alloc)`. It lends a
+/// `CStr` with `to[CStr]()` and gives the memory back with `destruct()`.
 record OwnedCStr
-conform Destructible<OwnedCStr>
-    storage : Slice<CChar>
+conform Destructible[OwnedCStr]
+    storage : Slice[CChar]
 
 /// A copy of some text in wide characters ending with a 0, for C, in memory from an allocator:
-/// `text.to<OwnedCWStr>(alloc)`. It lends a `CWStr` with `to<CWStr>()` and gives the memory back with `destruct()`.
+/// `text.to[OwnedCWStr](alloc)`. It lends a `CWStr` with `to[CWStr]()` and gives the memory back with `destruct()`.
 record OwnedCWStr
-conform Destructible<OwnedCWStr>
-    storage : Slice<CWChar>
+conform Destructible[OwnedCWStr]
+    storage : Slice[CWChar]
 
 /// The text, borrowed: valid until `destruct()`.
 /// :returns: The NUL-terminated text.
-routine OwnedCStr.to<CStr>(me: Me) -> CStr
+routine OwnedCStr.to[CStr](me: Me) -> CStr
     block entry()
-        text : CStr = me.storage.data.to<CStr>()
+        text : CStr = me.storage.data.to[CStr]()
         return(text)
 
 /// The text, borrowed: valid until `destruct()`.
 /// :returns: The NUL-terminated text.
-routine OwnedCStr.to<CStr>(me: @Me) -> CStr
+routine OwnedCStr.to[CStr](me: @Me) -> CStr
     block entry()
-        text : CStr = me.load().to<CStr>()
+        text : CStr = me.load().to[CStr]()
         return(text)
 
 /// Gives the memory back to the allocator it came from.
@@ -232,16 +232,16 @@ routine OwnedCStr.destruct(me: @Me) -> Void
 
 /// The text, borrowed: valid until `destruct()`.
 /// :returns: The 0-terminated wide text.
-routine OwnedCWStr.to<CWStr>(me: Me) -> CWStr
+routine OwnedCWStr.to[CWStr](me: Me) -> CWStr
     block entry()
-        text : CWStr = me.storage.data.to<CWStr>()
+        text : CWStr = me.storage.data.to[CWStr]()
         return(text)
 
 /// The text, borrowed: valid until `destruct()`.
 /// :returns: The 0-terminated wide text.
-routine OwnedCWStr.to<CWStr>(me: @Me) -> CWStr
+routine OwnedCWStr.to[CWStr](me: @Me) -> CWStr
     block entry()
-        text : CWStr = me.load().to<CWStr>()
+        text : CWStr = me.load().to[CWStr]()
         return(text)
 
 /// Gives the memory back to the allocator it came from.
@@ -257,11 +257,11 @@ routine OwnedCWStr.destruct(me: @Me) -> Void
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates a copy")
-routine Bytes.to<OwnedCStr>(me: Me, alloc: @Allocator) -> OwnedCStr
+routine Bytes.to[OwnedCStr](me: Me, alloc: @Allocator) -> OwnedCStr
     block entry()
         count  : USize        = me.count
-        buffer : Slice<CChar> = Slice<CChar>.construct(count.add(1), alloc)
-        buffer.data.to<@Byte>().copy(me.data, count)
+        buffer : Slice[CChar] = Slice[CChar].construct(count.add(1), alloc)
+        buffer.data.to[@Byte]().copy(me.data, count)
         buffer.data.stride(count).store(0)
         owned : OwnedCStr = OwnedCStr { storage: buffer }
         return(owned)
@@ -272,9 +272,9 @@ routine Bytes.to<OwnedCStr>(me: Me, alloc: @Allocator) -> OwnedCStr
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates a copy")
-routine Bytes.to<OwnedCStr>(me: @Me, alloc: @Allocator) -> OwnedCStr
+routine Bytes.to[OwnedCStr](me: @Me, alloc: @Allocator) -> OwnedCStr
     block entry()
-        owned : OwnedCStr = me.load().to<OwnedCStr>(alloc)
+        owned : OwnedCStr = me.load().to[OwnedCStr](alloc)
         return(owned)
 
 /// Converts me to wide characters in memory from alloc, ending with a 0: UTF-16 on Windows, UTF-32 elsewhere. An
@@ -284,8 +284,8 @@ routine Bytes.to<OwnedCStr>(me: @Me, alloc: @Allocator) -> OwnedCStr
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates a copy")
-routine Bytes.to<OwnedCWStr>(me: Me, alloc: @Allocator) -> OwnedCWStr
-    shared storage : Slice<CWChar>   = Slice<CWChar>.construct(me.count.add(1), alloc)
+routine Bytes.to[OwnedCWStr](me: Me, alloc: @Allocator) -> OwnedCWStr
+    shared storage : Slice[CWChar]   = Slice[CWChar].construct(me.count.add(1), alloc)
     shared units   : @CWChar         = storage.data
     shared iter    : @BytesCharsIter <- me.chars()
     shared n       : @USize          <- 0
@@ -294,7 +294,7 @@ routine Bytes.to<OwnedCWStr>(me: Me, alloc: @Allocator) -> OwnedCWStr
         jump next()
 
     block next()
-        c : Option<Char> = iter.next()
+        c : Option[Char] = iter.next()
         when c
             .Present(char) -> continue
             .Absent        -> finish()
@@ -314,9 +314,9 @@ routine Bytes.to<OwnedCWStr>(me: Me, alloc: @Allocator) -> OwnedCWStr
 /// :throws: Crashes with `MemoryAllocationError` when the allocator fails.
 #track_caller
 #expensive("allocates a copy")
-routine Bytes.to<OwnedCWStr>(me: @Me, alloc: @Allocator) -> OwnedCWStr
+routine Bytes.to[OwnedCWStr](me: @Me, alloc: @Allocator) -> OwnedCWStr
     block entry()
-        owned : OwnedCWStr = me.load().to<OwnedCWStr>(alloc)
+        owned : OwnedCWStr = me.load().to[OwnedCWStr](alloc)
         return(owned)
 
 /// Writes `char` at `out` as UTF-16, one unit or a surrogate pair, and returns
@@ -326,7 +326,7 @@ routine Bytes.to<OwnedCWStr>(me: @Me, alloc: @Allocator) -> OwnedCWStr
 /// :returns: The number of units written.
 #target(os: "windows")
 private routine encode_cwchar(char: Char, out: @CWChar) -> USize
-    shared cp : U32 = char.to<U32>()
+    shared cp : U32 = char.to[U32]()
 
     block entry()
         bmp : Bool = cp.lt(0x10000)
@@ -335,15 +335,15 @@ private routine encode_cwchar(char: Char, out: @CWChar) -> USize
             : pair()
 
     block single()
-        out.store(cp.to<U16>())
+        out.store(cp.to[U16]())
         return(1)
 
     block pair()
         v         : U32 = cp.sub(0x10000)
         high_unit : U32 = v.shr(10).add(0xD800)
-        out.store(high_unit.to<U16>())
+        out.store(high_unit.to[U16]())
         low_unit : U32 = v.bitand(0x3FF).add(0xDC00)
-        out.stride(1).store(low_unit.to<U16>())
+        out.stride(1).store(low_unit.to[U16]())
         return(2)
 
 /// Writes `char` at `out` as one UTF-32 unit. CWChar is S32 on some targets and U32 on others (ARM and AArch64 outside
@@ -354,6 +354,6 @@ private routine encode_cwchar(char: Char, out: @CWChar) -> USize
 #target(os: not "windows")
 private routine encode_cwchar(char: Char, out: @CWChar) -> USize
     block entry()
-        unit : @U32 = out.to<@U32>()
-        unit.store(char.to<U32>())
+        unit : @U32 = out.to[@U32]()
+        unit.store(char.to[U32]())
         return(1)

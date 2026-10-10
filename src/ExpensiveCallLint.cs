@@ -8,7 +8,7 @@ namespace Tessera;
 /// Where that is: a block on a loop, one that the block graph reaches again through its jumps and arms (BlockGraph.Loops),
 /// a block that jumps to itself included. A call there runs on every pass, so it is reported with the block that closes
 /// the loop. A call anywhere else (the routine's head, a block on no loop) isn't, and neither is one among the arguments
-/// of an arm that leaves the loop (`? made(allocate<T>(n, alloc))` out of a counting loop), which runs once.
+/// of an arm that leaves the loop (`? made(allocate[T](n, alloc))` out of a counting loop), which runs once.
 ///
 /// Only direct calls are followed: the call has to resolve to an `#expensive` routine itself. A routine that calls one
 /// is not expensive by that, so calling it on a loop isn't reported. Which routine a call resolves to is the build's

@@ -42,7 +42,7 @@ public sealed partial class Compiler
     private readonly Dictionary<string, List<ChoiceDecl>> _choices = [];
     private readonly Dictionary<string, List<RoutineDecl>> _free = [];
     private readonly Dictionary<(string Owner, string Name), List<RoutineDecl>> _methods = [];
-    private readonly Dictionary<string, List<RoutineDecl>> _blanket = []; // owner is a type parameter: `TFrom.bitcast<TTo>`
+    private readonly Dictionary<string, List<RoutineDecl>> _blanket = []; // owner is a type parameter: `TFrom.bitcast[TTo]`
     private readonly Dictionary<(string Owner, string Name), List<PresetDecl>> _presets = [];
     private readonly Dictionary<string, List<AliasDecl>> _aliases = [];
     private readonly List<RoutineDecl> _userRoutines = [];
@@ -227,7 +227,7 @@ public sealed partial class Compiler
         list.Add(value);
     }
 
-    /// `routine TFrom.bitcast<TTo>(...) require TFrom: typename`: the owner is a type parameter, so the routine applies to
+    /// `routine TFrom.bitcast[TTo](...) require TFrom: typename`: the owner is a type parameter, so the routine applies to
     /// every type.
     private static bool IsBlanketOwner(RoutineDecl r) =>
         r.Owner is { Args.Count: 0 } o && ClauseTypeParams(r.Clauses).Contains(o.Name);
@@ -365,7 +365,7 @@ public sealed partial class Compiler
     public sealed record CallUse(RoutineDecl Decl, List<(string Name, DType Type)> Bindings);
 
     /// The calls and the values of the routines that aren't generic, by the position the parser gave them (a call also
-    /// by the routine's name: `claim p : @T <- .make()` calls `make` and stores through `Ptr<T>.store` at one place):
+    /// by the routine's name: `claim p : @T <- .make()` calls `make` and stores through `Ptr[T].store` at one place):
     /// what the language server shows on hover. A generic routine's body means something else in each instance, so it
     /// isn't recorded.
     public Dictionary<(Pos Pos, string Name), CallUse> CallUses { get; } = [];
@@ -622,7 +622,7 @@ public sealed partial class Compiler
 
     private Decl? OwnerDecl(TypeRef owner, string file) => TypeDeclQuiet(owner.Name, file, owner.Path);
 
-    /// The declaration behind a type. A built-in type (`S64`, `Ptr<T>`) has one too, a record in Standard::Core that
+    /// The declaration behind a type. A built-in type (`S64`, `Ptr[T]`) has one too, a record in Standard::Core that
     /// carries its conformances; null if there's none.
     private Decl? DeclOf(DType t) => t switch
     {
@@ -632,7 +632,7 @@ public sealed partial class Compiler
         _ => _records.GetValueOrDefault(t.OwnerName)?.FirstOrDefault(r => r.Module == CoreModule),
     };
 
-    /// Whether a type pattern's name (`List` in `conform Equatable<List<T>>`) means this declaration from `file`.
+    /// Whether a type pattern's name (`List` in `conform Equatable[List[T]]`) means this declaration from `file`.
     public bool NamesDecl(TypeRef pattern, Decl d, string file) =>
         TypeDeclQuiet(pattern.Name, file, pattern.Path) == d;
 
@@ -680,8 +680,8 @@ public sealed partial class Compiler
     public PresetDecl? FindPreset(string owner, string name, string file, Pos pos, string? path = null) =>
         Pick(_presets.GetValueOrDefault((owner, name)), file, pos, $"preset '{(owner == "" ? name : owner + "." + name)}'", path);
 
-    /// The names that are type parameters of the routine's owner: `T` in `Option<T>.some`, `T` and `COUNT` in
-    /// `Array<T, COUNT>.get`, `TFrom` in `TFrom.bitcast<TTo>`.
+    /// The names that are type parameters of the routine's owner: `T` in `Option[T].some`, `T` and `COUNT` in
+    /// `Array[T, COUNT].get`, `TFrom` in `TFrom.bitcast[TTo]`.
     private static List<string> OwnerTypeParams(RoutineDecl r)
     {
         if (r.Owner is null) return [];
@@ -761,12 +761,12 @@ public sealed partial class Compiler
                 };
             case "Array":
                 if (t.Args is not [TypeArgType elem, var count])
-                    throw new CompileError(t.Pos, "Array takes an element type and an element count: Array<T, COUNT>");
+                    throw new CompileError(t.Pos, "Array takes an element type and an element count: Array[T, COUNT]");
                 return new ArrayType(ResolveType(elem.Type, env), ConstInt(count, env, t.Pos));
             case "Vector":
             {
                 if (t.Args is not [TypeArgType lane, var lanes])
-                    throw new CompileError(t.Pos, "Vector takes a lane type and a lane count: Vector<T, LANES>");
+                    throw new CompileError(t.Pos, "Vector takes a lane type and a lane count: Vector[T, LANES]");
                 var laneType = ResolveType(lane.Type, env);
                 // A type parameter's lanes are checked at each instantiation (the lane concepts say which ones work).
                 if (laneType.Repr is not (IntType or FloatType or BoolType or ArchetypeType))
@@ -827,7 +827,7 @@ public sealed partial class Compiler
                     TypeArgExpr te => new ConstArg(EvalConstInt(te.Expr, env, 0)),
                     _ => throw new CompileError(t.Pos, $"invalid generic argument for '{v.Name}'"),
                 });
-            CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}<{string.Join(", ", args.Select(a => a.Name))}>");
+            CheckRequirements(v.Clauses, v.TypeParams, v.File, v.Pos, args, t.Pos, $"{v.Name}[{string.Join(", ", args.Select(a => a.Name))}]");
             return new VariantType(v, args, VariantPayloads);
         }
 
@@ -860,7 +860,7 @@ public sealed partial class Compiler
             parts.RemoveAt(0);
         }
         if (parts is not [TypeArgTuple ps, TypeArgType ret])
-            throw new CompileError(t.Pos, "Callable is written Callable<(Params...), Ret>");
+            throw new CompileError(t.Pos, "Callable is written Callable[(Params...), Ret]");
         return new CallableType(cc, ps.Types.Select(p => ResolveType(p, env)).ToList(), ResolveType(ret.Type, env, allowVoid: true));
     }
 
@@ -972,7 +972,7 @@ public sealed partial class Compiler
         return (long)v.Value;
     }
 
-    /// The tuple of these item types, `(A, B)`: the stdlib's `Tuple2<A, B>` up to `Tuple4`.
+    /// The tuple of these item types, `(A, B)`: the stdlib's `Tuple2[A, B]` up to `Tuple4`.
     public RecordType TupleOf(List<DType> items, Pos pos)
     {
         var decl = _records.GetValueOrDefault($"Tuple{items.Count}")?.FirstOrDefault(RecordType.IsTupleDecl)
@@ -1228,7 +1228,7 @@ public sealed partial class Compiler
                 : PresetStorageGlobal(target, pointee, targetEnv);
         }
         throw new CompileError(e.Pos, t is CallableType
-            ? $"a {t.Name} in memory starts as null or as a routine: name.to<Callable>()"
+            ? $"a {t.Name} in memory starts as null or as a routine: name.to[Callable]()"
             : $"a {t.Name} in memory starts as null or as the address of a global or preset in memory");
     }
 
@@ -1258,12 +1258,12 @@ public sealed partial class Compiler
         return $"{{ [0 x <{shape.WrapAlign} x i8>] zeroinitializer, %\"{s.Key}.dense\" <{{ {body} }}> }}";
     }
 
-    /// `name.to<Callable>()` in a global's or a preset's memory: the routine's address, which the linker knows. Of an
+    /// `name.to[Callable]()` in a global's or a preset's memory: the routine's address, which the linker knows. Of an
     /// overloaded name, the overload whose signature is the Callable the memory holds.
     private string RoutineAddress(RoutineRef r, CallableType want, TypeEnv env)
     {
         var set = FreeCandidates(r.Name, env.File, r.Pos, r.Path);
-        if (set.Count == 0) throw new CompileError(r.Pos, $"'{r.Name}' isn't a routine; to<Callable>() makes a routine a value");
+        if (set.Count == 0) throw new CompileError(r.Pos, $"'{r.Name}' isn't a routine; to[Callable]() makes a routine a value");
         if (r.Callable is { } written && ResolveType(written, env) is var named && !named.Equals(want))
             throw new CompileError(r.Pos, $"expected {want}, found {named}");
         foreach (var routine in set.Where(o => o.TypeParams.Count == 0))

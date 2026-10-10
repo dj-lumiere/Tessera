@@ -13,15 +13,15 @@ public class FormatterTests
     public void CallableTupleInAngleBracketsIsNotBroken()
     {
         string source = """
-            routine erase(entry: Callable<(@S64,), Void>) -> Callable<(Addr,), Void>
+            routine erase(entry: Callable[(@S64,), Void]) -> Callable[(Addr,), Void]
                 block entry()
-                    erased_entry_routine : Callable<(Addr,), Void> = bitcast(entry_with_a_long_name_past_the_limit)
+                    erased_entry_routine : Callable[(Addr,), Void] = bitcast(entry_with_a_long_name_past_the_limit)
                     return(erased_entry_routine)
 
             """;
         string formatted = Formatter.Format(source);
         Assert.Contains(
-            "        erased_entry_routine : Callable<(Addr,), Void> = bitcast(entry_with_a_long_name_past_the_limit)\n",
+            "        erased_entry_routine : Callable[(Addr,), Void] = bitcast(entry_with_a_long_name_past_the_limit)\n",
             formatted);
         Assert.Equal(formatted, Formatter.Format(formatted));
     }
@@ -32,11 +32,11 @@ public class FormatterTests
         string source = """
             record FiberState
                 sp   : Addr  // its stack pointer while it isn't running
-                then : Callable<(@Worker, @FiberState), Void>  // where its worker puts it once it is off its stack
+                then : Callable[(@Worker, @FiberState), Void]  // where its worker puts it once it is off its stack
 
             """;
         string formatted = Formatter.Format(source);
-        Assert.Contains("    then : Callable<(@Worker, @FiberState), Void>  // where its worker puts it once it is off its stack\n",
+        Assert.Contains("    then : Callable[(@Worker, @FiberState), Void]  // where its worker puts it once it is off its stack\n",
             formatted);
     }
 

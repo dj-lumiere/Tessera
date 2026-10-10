@@ -10,7 +10,7 @@ namespace Tessera;
 public sealed partial class Compiler
 {
     /// A type parameter while two signatures are compared: what it is doesn't matter, only which slot it fills, so
-    /// `f<T>(x: T)` and `f<U>(x: U)` have the same parameter types.
+    /// `f[T](x: T)` and `f[U](x: U)` have the same parameter types.
     private sealed class SlotType(string slot) : DType
     {
         public override string Name => slot;
@@ -59,7 +59,7 @@ public sealed partial class Compiler
         return key;
     }
 
-    /// Whether a name in a routine owner's `<...>` is a type parameter (it names no type): `T` in `List<T>.push`.
+    /// Whether a name in a routine owner's `<...>` is a type parameter (it names no type): `T` in `List[T].push`.
     private bool ClauseTypeParamsOrOwnerArg(RoutineDecl r, string name) =>
         OwnerTypeParams(r).Contains(name) && !(IntType.FromName(name) is not null || DeclaresType(name));
 
@@ -80,7 +80,7 @@ public sealed partial class Compiler
             TypeArgTuple tu => "(" + string.Join(", ", tu.Types.Select(x => SlotText(x, slots))) + ")",
             _ => a.ToString(),
         });
-        return (t.Path is null ? "" : t.Path + "::") + t.Name + "<" + string.Join(", ", args) + ">";
+        return (t.Path is null ? "" : t.Path + "::") + t.Name + "[" + string.Join(", ", args) + "]";
     }
 
     /// Two routines of one name under one parent: neither may have the parameter types of the other (a call couldn't
@@ -175,7 +175,7 @@ public sealed partial class Compiler
     /// The routines on a type with this name that `file` may call: its overload set. One declared in the type's own
     /// module goes wherever the type goes. One that another module adds needs that module imported. `anyModule` skips that
     /// check (a call on a value whose type came from a type parameter). `fits` picks among routines defined for
-    /// different type arguments (`S32.to<S64>`, `S32.to<U8>`). A type's own routines of a name hide the routines on
+    /// different type arguments (`S32.to[S64]`, `S32.to[U8]`). A type's own routines of a name hide the routines on
     /// every type (`T.name`) of that name; those are the set only when the type has none.
     public List<RoutineDecl> MethodCandidates(DType ownerType, string name, string file, Pos pos, bool anyModule = false,
         Func<RoutineDecl, bool>? fits = null)
@@ -203,7 +203,7 @@ public sealed partial class Compiler
 
     /// For an error about a call to a routine on a type that takes `args` arguments: a routine of the same type and name
     /// that does take that many but sits in a module `file` doesn't import, named so the error says where it is
-    /// (`List<T>.construct()` without an allocator is in Standard::Os). Empty when there is none.
+    /// (`List[T].construct()` without an allocator is in Standard::Os). Empty when there is none.
     public string HiddenOverloadHint(RoutineDecl seen, int args, string file)
     {
         if (seen.Owner is null || !_methods.TryGetValue((seen.Owner.Name, seen.Name), out var all)) return "";
@@ -252,7 +252,7 @@ public sealed partial class Compiler
         var sb = new StringBuilder("routine ");
         sb.Append(r.Owner is null ? r.Name : $"{r.Owner}.{r.Name}");
         var generics = r.Fixed.Count > 0 ? r.Fixed.Select(f => f.ToString()) : r.TypeParams;
-        if (generics.Any()) sb.Append('<').Append(string.Join(", ", generics)).Append('>');
+        if (generics.Any()) sb.Append('[').Append(string.Join(", ", generics)).Append(']');
         sb.Append('(').Append(string.Join(", ", r.Params.Select(p => $"{p.Name}: {p.Type}"))).Append(')');
         if (r.ReturnType.Name != "Void" || r.ReturnType.Args.Count != 0) sb.Append(" -> ").Append(r.ReturnType);
         return sb.ToString();

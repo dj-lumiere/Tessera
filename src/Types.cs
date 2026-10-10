@@ -6,11 +6,11 @@ namespace Tessera;
 /// A resolved type. Two types are equal when their keys are equal.
 public abstract class DType : IEquatable<DType>
 {
-    /// Source-level name, for messages: `S64`, `@Byte`, `Option<S64>`, `Array<Byte, 20>`.
+    /// Source-level name, for messages: `S64`, `@Byte`, `Option[S64]`, `Array[Byte, 20]`.
     public abstract string Name { get; }
 
     /// The type's identity. It's the name, except that a declared type is named by its module (and by its file, if
-    /// it's private), since two modules may each declare a `Point`: `Standard::Core::Option<S64>`.
+    /// it's private), since two modules may each declare a `Point`: `Standard::Core::Option[S64]`.
     public virtual string Key => Name;
 
     /// The LLVM IR spelling.
@@ -33,7 +33,7 @@ public abstract class DType : IEquatable<DType>
     {
         string head = d.Module == "" ? name : $"{d.Module}::{name}";
         if (d.IsPrivate) head += "@" + new string(d.File.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_').ToArray());
-        return args.Count == 0 ? head : $"{head}<{string.Join(", ", args.Select(a => a.Key))}>";
+        return args.Count == 0 ? head : $"{head}[{string.Join(", ", args.Select(a => a.Key))}]";
     }
     public override string ToString() => Name;
 }
@@ -108,7 +108,7 @@ public sealed class IntType(int bits, IntKind kind, bool isSize = false) : DType
         }
         if (Kind is IntKind.Char)
         {
-            error = "a Char is written as a character literal ('A'), or converted with U32.to<Char>()";
+            error = "a Char is written as a character literal ('A'), or converted with U32.to[Char]()";
             return null;
         }
         if (value < min || value > max)
@@ -185,48 +185,48 @@ public sealed class VoidType : DType
     public override string OwnerName => Name;
 }
 
-/// `Ptr<T>` (written `@T`), or `Addr` when Pointee is null. Every pointer lowers to LLVM `ptr`.
+/// `Ptr[T]` (written `@T`), or `Addr` when Pointee is null. Every pointer lowers to LLVM `ptr`.
 public sealed class PtrType(DType? pointee) : DType
 {
     public DType? Pointee { get; } = pointee;
     public override string Name => Pointee is null ? "Addr" : $"@{Pointee.Name}";
-    public override string Key => Pointee is null ? "Addr" : $"Ptr<{Pointee.Key}>";
+    public override string Key => Pointee is null ? "Addr" : $"Ptr[{Pointee.Key}]";
     public override string Llvm => "ptr";
     public override string OwnerName => Pointee is null ? "Addr" : "Ptr";
 }
 
-/// `Array<T, COUNT>`: COUNT elements of T, stored inline.
+/// `Array[T, COUNT]`: COUNT elements of T, stored inline.
 public sealed class ArrayType(DType elem, long count) : DType
 {
     public DType Elem { get; } = elem;
     public long Count { get; } = count;
-    public override string Name => $"Array<{Elem.Name}, {Count}>";
-    public override string Key => $"Array<{Elem.Key}, {Count}>";
+    public override string Name => $"Array[{Elem.Name}, {Count}]";
+    public override string Key => $"Array[{Elem.Key}, {Count}]";
     public override string Llvm => $"[{Count} x {Elem.Llvm}]";
     public override string OwnerName => "Array";
 }
 
-/// `Vector<T, LANES>`: LANES lanes of T as one SIMD value, LLVM's `<LANES x T>`. `Vector<Bool, LANES>` is a lane mask.
+/// `Vector[T, LANES]`: LANES lanes of T as one SIMD value, LLVM's `<LANES x T>`. `Vector[Bool, LANES]` is a lane mask.
 public sealed class VectorType(DType elem, long count) : DType
 {
     public DType Elem { get; } = elem;
     public long Count { get; } = count;
-    public override string Name => $"Vector<{Elem.Name}, {Count}>";
-    public override string Key => $"Vector<{Elem.Key}, {Count}>";
+    public override string Name => $"Vector[{Elem.Name}, {Count}]";
+    public override string Key => $"Vector[{Elem.Key}, {Count}]";
     public override string Llvm => $"<{Count} x {Elem.Llvm}>";
     public override string OwnerName => "Vector";
 }
 
-/// `Callable<(params), ret>`, or `Callable<#callconv("fast"), (params), ret>`: a function pointer.
+/// `Callable[(params), ret]`, or `Callable[#callconv("fast"), (params), ret]`: a function pointer.
 public sealed class CallableType(string callConv, List<DType> parameters, DType ret) : DType
 {
     public string CallConv { get; } = callConv;
     public List<DType> Params { get; } = parameters;
     public DType Ret { get; } = ret;
     public override string Name =>
-        $"Callable<{(CallConv == "default" ? "" : $"#callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Name))}), {Ret.Name}>";
+        $"Callable[{(CallConv == "default" ? "" : $"#callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Name))}), {Ret.Name}]";
     public override string Key =>
-        $"Callable<{(CallConv == "default" ? "" : $"#callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Key))}), {Ret.Key}>";
+        $"Callable[{(CallConv == "default" ? "" : $"#callconv(\"{CallConv}\"), ")}({string.Join(", ", Params.Select(p => p.Key))}), {Ret.Key}]";
     public override string Llvm => "ptr";
     public override string OwnerName => "Callable";
 }
@@ -239,7 +239,7 @@ public sealed class RecordType(RecordDecl decl, List<DType> args, Func<RecordTyp
     public List<DType> Args { get; } = args;
     public override string Name =>
         IsTuple ? $"({string.Join(", ", Args.Select(a => a.Name))})"
-        : Args.Count == 0 ? Decl.Name : $"{Decl.Name}<{string.Join(", ", Args.Select(a => a.Name))}>";
+        : Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
     public override string Key => DeclKey(Decl, Decl.Name, Args);
 
     /// A tuple, `(A, B)`: the stdlib's `Tuple2` to `Tuple4`.
@@ -265,7 +265,7 @@ public sealed class VariantType(VariantDecl decl, List<DType> args, Func<Variant
 
     public VariantDecl Decl { get; } = decl;
     public List<DType> Args { get; } = args;
-    public override string Name => Args.Count == 0 ? Decl.Name : $"{Decl.Name}<{string.Join(", ", Args.Select(a => a.Name))}>";
+    public override string Name => Args.Count == 0 ? Decl.Name : $"{Decl.Name}[{string.Join(", ", Args.Select(a => a.Name))}]";
     public override string Key => DeclKey(Decl, Decl.Name, Args);
     public override string Llvm => $"%\"{Key}\"";
     public override string OwnerName => Decl.Name;
@@ -290,7 +290,7 @@ public sealed class ChoiceType(ChoiceDecl decl, IntType underlying) : DType
     public override string OwnerName => Decl.Name;
 }
 
-/// An integer generic argument, such as the `8` in `Array<S64, 8>`.
+/// An integer generic argument, such as the `8` in `Array[S64, 8]`.
 public sealed class ConstArg(long value) : DType
 {
     public long Value { get; } = value;

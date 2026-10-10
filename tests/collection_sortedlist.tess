@@ -1,4 +1,4 @@
-// SortedList<S64> against a model. An LCG drives random push / rank / has / remove / get in three phases (small,
+// SortedList[S64] against a model. An LCG drives random push / rank / has / remove / get in three phases (small,
 // growing to thousands of elements, then shrinking to empty so borrows and merges run). Every 500
 // operations a checkpoint prints the length, a running checksum of every result, and a hash of the iteration
 // sequence. Then eq.
@@ -15,7 +15,7 @@ record Rng
 /// What every phase works with besides the collection.
 record Harness
     /// Where checkpoints are written.
-    out : @BufWriter<Out>
+    out : @BufWriter[Out]
     /// The generator that picks each operation.
     rng : @Rng
 
@@ -48,8 +48,8 @@ routine Rng.below(me: @Me, bound: USize) -> USize
         state : U64 = me.state.load()
         next  : U64 = state.mul_wrap(6364136223846793005).add_wrap(1442695040888963407)
         me.state.store(next)
-        bucket : U64   = next.shr(33).mod(bound.to<U64>())
-        value  : USize = bucket.to<USize>()
+        bucket : U64   = next.shr(33).mod(bound.to[U64]())
+        value  : USize = bucket.to[USize]()
         return(value)
 
 routine mix(hash: S64, value: S64) -> S64
@@ -57,32 +57,32 @@ routine mix(hash: S64, value: S64) -> S64
         mixed : S64 = hash.mul_wrap(1000003).add_wrap(value)
         return(mixed)
 
-routine labeled<T>(out: @T, label: Bytes, value: S64) -> Void
-require T: typename, Writer<T>
+routine labeled[T](out: @T, label: Bytes, value: S64) -> Void
+require T: typename, Writer[T]
     block entry()
         out.write(" {label} {value}")
         return()
 
 // Folds every element in iteration order.
-routine iteration_hash(list: @SortedList<S64>) -> S64
-    shared iter_val : SortedListIter<S64>  = .construct(list)
-    shared iter     : @SortedListIter<S64> <- iter_val
+routine iteration_hash(list: @SortedList[S64]) -> S64
+    shared iter_val : SortedListIter[S64]  = .construct(list)
+    shared iter     : @SortedListIter[S64] <- iter_val
 
     block entry()
         jump next(0)
 
     block next(hash: S64)
-        item : Option<S64> = iter.next()
+        item : Option[S64] = iter.next()
         when item
             .Present(value) -> next(mix(hash, value))
             .Absent         -> return(hash)
 
-routine checkpoint(out: @BufWriter<Out>, list: @SortedList<S64>, at: Checkpoint) -> Void
+routine checkpoint(out: @BufWriter[Out], list: @SortedList[S64], at: Checkpoint) -> Void
     block entry()
         out.write("phase {at.phase}")
-        labeled(out, "op", at.op.to<S64>())
+        labeled(out, "op", at.op.to[S64]())
         size : USize = list.count()
-        labeled(out, "length", size.to<S64>())
+        labeled(out, "length", size.to[S64]())
         labeled(out, "results", at.results)
         labeled(out, "iteration", iteration_hash(list))
         out.write("\n")
@@ -92,7 +92,7 @@ routine checkpoint(out: @BufWriter<Out>, list: @SortedList<S64>, at: Checkpoint)
 // below contains a has (both of a random value), below removes a remove at a random index, otherwise a get.
 // Values are below 1000, so duplicates are common. Remove and get on an empty list record -1. Returns the updated
 // results checksum.
-routine run_phase(harness: Harness, list: @SortedList<S64>, phase: Phase, results: S64) -> S64
+routine run_phase(harness: Harness, list: @SortedList[S64], phase: Phase, results: S64) -> S64
     shared rng      : @Rng  = harness.rng
     shared ops      : USize = phase.ops
     shared pushes   : USize = phase.pushes
@@ -130,19 +130,19 @@ routine run_phase(harness: Harness, list: @SortedList<S64>, phase: Phase, result
             : get(op, checksum, index)
 
     block push(op: USize, checksum: S64)
-        value : S64 = rng.below(1000).to<S64>()
+        value : S64 = rng.below(1000).to[S64]()
         list.push(value)
         jump record(op, checksum, value)
 
     block rank(op: USize, checksum: S64)
-        value : S64   = rng.below(1000).to<S64>()
+        value : S64   = rng.below(1000).to[S64]()
         rank  : USize = list.rank(value)
-        jump record(op, checksum, rank.to<S64>())
+        jump record(op, checksum, rank.to[S64]())
 
     block contains(op: USize, checksum: S64)
-        value : S64  = rng.below(1000).to<S64>()
+        value : S64  = rng.below(1000).to[S64]()
         found : Bool = list.has(value)
-        jump record(op, checksum, found.to<S64>())
+        jump record(op, checksum, found.to[S64]())
 
     block remove(op: USize, checksum: S64, index: USize)
         value : S64 = list.remove(index)
@@ -165,22 +165,22 @@ routine run_phase(harness: Harness, list: @SortedList<S64>, phase: Phase, result
         jump next(op, checksum)
 
 // Pushes every element of from onto to, in iteration order.
-routine copy_all(from: @SortedList<S64>, to: @SortedList<S64>) -> Void
-    shared iter_val : SortedListIter<S64>  = .construct(from)
-    shared iter     : @SortedListIter<S64> <- iter_val
+routine copy_all(from: @SortedList[S64], to: @SortedList[S64]) -> Void
+    shared iter_val : SortedListIter[S64]  = .construct(from)
+    shared iter     : @SortedListIter[S64] <- iter_val
 
     block entry()
         jump next()
 
     block next()
-        item : Option<S64> = iter.next()
+        item : Option[S64] = iter.next()
         when item
             .Present(value) -> continue
             .Absent         -> return()
         to.push(value)
         jump next()
 
-routine report_eq(out: @BufWriter<Out>, label: Bytes, equal: Bool) -> Void
+routine report_eq(out: @BufWriter[Out], label: Bytes, equal: Bool) -> Void
     block entry()
         out.write("{label} {equal}\n")
         return()
@@ -188,11 +188,11 @@ routine report_eq(out: @BufWriter<Out>, label: Bytes, equal: Bool) -> Void
 routine start() -> Void
     block entry()
         fd : @Out = Out.writer()
-        claim out : @BufWriter<Out> <- uninit
+        claim out : @BufWriter[Out] <- uninit
         out.construct(fd)
         claim alloc : @Allocator       <- make_heap_allocator()
         claim rng   : @Rng             <- Rng { state: 1 }
-        claim list  : @SortedList<S64> <- .construct(alloc)
+        claim list  : @SortedList[S64] <- .construct(alloc)
 
         harness : Harness = Harness { out: out, rng: rng }
         r1      : S64     = run_phase(harness, list,
@@ -200,7 +200,7 @@ routine start() -> Void
         r2      : S64     = run_phase(harness, list,
             Phase { number: 2, ops: 10000, pushes: 5, ranks: 6, contains: 7, removes: 8 }, r1)
 
-        claim copied : @SortedList<S64> <- .construct(alloc)
+        claim copied : @SortedList[S64] <- .construct(alloc)
         report_eq(out, "empty copy equal", list.load().eq(copied.load()))
         copy_all(list, copied)
         report_eq(out, "copy equal", list.load().eq(copied.load()))

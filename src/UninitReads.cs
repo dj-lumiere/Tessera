@@ -17,9 +17,9 @@ namespace Tessera;
 ///   name, passing it to a block, putting it in a record, an array, or a select, or converting it and handing that
 ///   on. From that point on the slot counts as filled.
 ///
-/// What reads it: a `load` (also `volatile_load`, `load_unaligned`, and the atomic loads) of `Ptr<T>` whose
+/// What reads it: a `load` (also `volatile_load`, `load_unaligned`, and the atomic loads) of `Ptr[T]` whose
 /// receiver is the slot or a place inside it (`p.load()`, `p.field.load()`, `p.stride(i).load()`,
-/// `p.to<@U>().load()`). Which calls are those loads is what the instance being built resolved them to, so a type's
+/// `p.to[@U]().load()`). Which calls are those loads is what the instance being built resolved them to, so a type's
 /// own routine of that name is an ordinary call.
 ///
 /// A block's claim is visible only in its block, so it is followed through the block's lines. A head slot is visible
@@ -35,7 +35,7 @@ public static class UninitReads
     private const string HeadName = "(head)";
 
     /// The routine's first read of an unfilled slot, in source order, or null when there is none.
-    /// <paramref name="isPointerLoad"/> tells whether a method call is one of `Ptr<T>`'s loads.
+    /// <paramref name="isPointerLoad"/> tells whether a method call is one of `Ptr[T]`'s loads.
     public static Finding? Find(RoutineDecl r, Func<MethodCallExpr, bool> isPointerLoad)
     {
         if (r.Blocks is not { Count: > 0 } blocks) return null;

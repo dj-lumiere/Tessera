@@ -13,7 +13,7 @@ public enum TokenKind
     Byte,        // b'A': a Byte
     Char,        // 'A': a Char, a Unicode scalar value
     Str,         // "..."
-    LParen, RParen, LBracket, RBracket, LBrace, RBrace, Lt, Gt,
+    LParen, RParen, LBracket, RBracket, LBrace, RBrace,
     Float,       // 3.14, 1.5e10 — IntValue holds the double's bits
     Comma, Colon, ColonColon, ColonEq, Eq, Arrow, Question, Dot, Underscore,
     LeftArrow,   // <- (the contents of a slot, global, or preset in memory)
@@ -241,12 +241,11 @@ public sealed class Lexer(string file, string src, int line = 1, int col = 1)
                 case ']': kind = TokenKind.RBracket; _depth--; break;
                 case '{': kind = TokenKind.LBrace; _depth++; break;
                 case '}': kind = TokenKind.RBrace; _depth--; break;
-                case '<':
-                    // `<-` fills memory. `<-1` is still a generic argument list starting with a negative literal.
-                    if (Peek() == '-' && !char.IsAsciiDigit(Peek(1))) { Advance(); kind = TokenKind.LeftArrow; }
-                    else kind = TokenKind.Lt;
+                case '<' when Peek() == '-':
+                    // `<-` fills memory.
+                    Advance();
+                    kind = TokenKind.LeftArrow;
                     break;
-                case '>': kind = TokenKind.Gt; break;
                 case ',': kind = TokenKind.Comma; break;
                 case '?': kind = TokenKind.Question; break;
                 case '.': kind = TokenKind.Dot; break;

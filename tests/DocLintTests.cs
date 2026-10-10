@@ -110,7 +110,7 @@ public class DocLintTests
         var warnings = Lint("""
             /// Types that can be compared.
             /// :typeparam T: The type compared.
-            concept Same<T>
+            concept Same[T]
             require T: typename
                 /// True when the two are the same.
                 routine Me.same(me: Me, other: Me) -> Bool

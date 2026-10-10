@@ -2,7 +2,7 @@
   <img src="branding/tessera.svg" alt="Tessera logo" width="112">
 </p>
 
-<h1 align="center">Tessera</h1>
+<h1 align="center">Tessera[/h1]
 
 <p align="center"><strong>A structured SSA language built from explicit operations.</strong></p>
 
@@ -13,11 +13,11 @@
 </p>
 
 <p align="center">
-  <a href="https://tessera.lumi-dev.xyz/">Documentation</a> ·
-  <a href="#quick-start">Quick start</a> ·
-  <a href="TESSERA-FOR-AI.md">Reference for AI assistants</a> ·
-  <a href="examples/README.md">Examples</a> ·
-  <a href="https://github.com/dj-lumiere/RazorForge">RazorForge</a>
+  <a href="https://tessera.lumi-dev.xyz/">Documentation[/a] ·
+  <a href="#quick-start">Quick start[/a] ·
+  <a href="TESSERA-FOR-AI.md">Reference for AI assistants[/a] ·
+  <a href="examples/README.md">Examples[/a] ·
+  <a href="https://github.com/dj-lumiere/RazorForge">RazorForge[/a]
 </p>
 
 Tessera (`.tess`) is an attempt to keep what makes IR honest, one explicit step at a time, while taming what makes
@@ -25,7 +25,7 @@ it painful to write by hand. Nothing happens between the lines: phi nodes become
 become typed values, and hand-rolled loops over memory become collections.
 
 ```tessera
-routine two_sum(list: @S32, count: USize, target: S32) -> Option<(USize, USize)>
+routine two_sum(list: @S32, count: USize, target: S32) -> Option[(USize, USize)]
     block entry()
         jump search_left(0)
 

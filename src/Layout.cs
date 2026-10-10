@@ -119,7 +119,7 @@ public sealed partial class Compiler
 
     private DataLayout Layout(Pos pos) => _dataLayout ??= DataLayout.For(Target, pos);
 
-    /// The size and alignment LLVM gives a type on the target, as `sizeof<T>()` / `alignof<T>()` report at run time.
+    /// The size and alignment LLVM gives a type on the target, as `sizeof[T]()` / `alignof[T]()` report at run time.
     public (long Size, long Align) SizeAlign(DType t, Pos pos)
     {
         switch (t)

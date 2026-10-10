@@ -19,8 +19,8 @@ namespace Tessera;
 ///   (a comment, one long argument) stays as it is;
 /// - a `branch`, and a select that is a binding's or a claim's whole value, always put `? a` and `: b` on their own
 ///   lines, 4 spaces further in, so the two outcomes sit one above the other; a select inside an argument stays.
-/// - a pointer type is written `@T`, not `Ptr<T>`, except where routines are declared on or called through the record
-///   (`routine Ptr<T>.load`); comments and literals are left alone;
+/// - a pointer type is written `@T`, not `Ptr[T]`, except where routines are declared on or called through the record
+///   (`routine Ptr[T].load`); comments and literals are left alone;
 /// - parentheses around one value, which group nothing in a language without operators, are dropped: `(x).add(1)` is
 ///   `x.add(1)`. A call's arguments, a tuple type, and `(a, b)` (an error the builder reports) stay.
 /// - top-level declarations come in one order: module, imports (sorted), defines, globals, presets, types (records,
@@ -28,8 +28,8 @@ namespace Tessera;
 ///   routines last (`when_booted`, then `start`). Within a kind the written order
 ///   stays, a declaration keeps the comments and attributes above it, and a file divided by section comments is
 ///   ordered section by section. A file already in order is left as it is;
-/// - inside `routine Owner.name`, the owner type is written `Me` after the header names it (`List<T>` in a
-///   `List<T>` routine, not `List<U>`); comments and literals are left alone.
+/// - inside `routine Owner.name`, the owner type is written `Me` after the header names it (`List[T]` in a
+///   `List[T]` routine, not `List[U]`); comments and literals are left alone.
 /// Formatting is idempotent: formatting formatted text changes nothing.
 public static class Formatter
 {
@@ -74,7 +74,7 @@ public static class Formatter
     private enum Kind { Binding, Claim, Shared, Field, Arm, Conform }
 
     /// One alignable line split into its columns: `name : type = rest`, `claim name : type <- rest`, `name : rest`,
-    /// `left -> rest`, or `conform C<X> when rest`.
+    /// `left -> rest`, or `conform C[X] when rest`.
     private sealed record Row(int Index, Kind Kind, int Indent, string Name, string? Type, string Rest);
 
     private static List<string> Align(List<string> lines)
@@ -163,7 +163,7 @@ public static class Formatter
         return result;
     }
 
-    /// `conform Equatable<Option<T>> when T: typename, Equatable<T>`: the conformance, and its conditions after `when`.
+    /// `conform Equatable[Option[T]] when T: typename, Equatable[T]`: the conformance, and its conditions after `when`.
     private static (string Head, string Conditions)? SplitConformWhen(string s)
     {
         if (!s.StartsWith("conform ")) return null;
@@ -176,7 +176,7 @@ public static class Formatter
     private static bool IsWhenHeader(string trimmed) =>
         StripComment(trimmed).TrimEnd() is var code && (code == "when" || code.StartsWith("when "));
 
-    /// `name : Type = rest`, where the type may hold spaces inside brackets (`Callable<(A, B), R>`).
+    /// `name : Type = rest`, where the type may hold spaces inside brackets (`Callable[(A, B), R]`).
     private static (string Name, string Type, string Tail)? SplitBinding(string s)
     {
         if (s.Length == 0 || !IsNameStart(s[0])) return null;
@@ -283,9 +283,8 @@ public static class Formatter
                 continue;
             }
             if (c == '/' && i + 1 < s.Length && s[i + 1] == '/') return -1;
-            if (c is '(' or '[' or '{' || IsOpenAngle(s, i)) depth++;
+            if (c is '(' or '[' or '{') depth++;
             else if (c is ')' or ']' or '}') depth--;
-            else if (c == '>' && !(i > 0 && s[i - 1] == '-')) depth--;
             else if (depth == 0 && string.CompareOrdinal(s, i, token, 0, token.Length) == 0)
             {
                 // `=` alone, not part of `==`, `!=`, `<=`, `>=`, or `->`
@@ -581,7 +580,7 @@ public static class Formatter
     {
         if (line.Length <= MaxWidth || line.TrimStart().StartsWith("//")) return [line];
         var cuts = new List<int>();
-        int depth = 0, angle = 0;
+        int depth = 0;
         for (int i = 0; i < line.Length; i++)
         {
             char c = line[i];
@@ -589,8 +588,7 @@ public static class Formatter
             else if (c == '/' && i + 1 < line.Length && line[i + 1] == '/') break;
             else if (c is '(' or '[' or '{') depth++;
             else if (c is ')' or ']' or '}') depth--;
-            else if (IsAngle(line, i, out int step)) angle = Math.Max(0, angle + step);
-            else if (c == ',' && depth == 0 && angle == 0) cuts.Add(i);
+            else if (c == ',' && depth == 0) cuts.Add(i);
         }
         if (cuts.Count == 0) return [line];
         string pad = new(' ', Indent(line));
@@ -619,24 +617,18 @@ public static class Formatter
         return result;
     }
 
-    /// `<` or `>` of a type argument list (`Dict<TKey, TValue>`), whose commas are not break points. Tessera has no comparison
-    /// operators, so every angle bracket is one, except the `>` of `->` and the `<` of `<-`.
-    private static bool IsAngle(string s, int i, out int step)
-    {
-        step = IsOpenAngle(s, i) ? 1 : s[i] == '>' && !(i > 0 && s[i - 1] == '-') ? -1 : 0;
-        return step != 0;
-    }
-
-    private static bool IsOpenAngle(string s, int i) => s[i] == '<' && !(i + 1 < s.Length && s[i + 1] == '-');
+    /// The `[` of a type argument list (`Dict[TKey, TValue]`): one right after a name or another list. The only other
+    /// `[` is an attribute list's, after `#`.
+    private static bool OpensTypeArguments(string s, int i) =>
+        s[i] == '[' && i > 0 && (char.IsLetterOrDigit(s[i - 1]) || s[i - 1] is '_' or ']' or '`');
 
     /// The first `(`, `[`, or `{` group at the line's top level whose own depth holds a comma: its bounds and commas.
-    /// A type is never broken: nothing inside angle brackets (`Callable<(Addr,), Void>`) is a candidate, and outside an
+    /// A type is never broken: nothing inside type arguments (`Callable[(Addr,), Void]`) is a candidate, and outside an
     /// attribute (whose `("linux", "macos")` is a list of values) a `(` that doesn't follow a name opens a tuple type
     /// (`-> (U64, U64)`, `q : (S64, S64) = ...`), skipped whole.
     private static (int Open, int Close, List<int> Commas)? FirstCommaList(string s)
     {
         bool attribute = s.TrimStart().StartsWith('#');
-        int outerAngle = 0;
         for (int i = 0; i < s.Length; i++)
         {
             char c = s[i];
@@ -646,19 +638,14 @@ public static class Formatter
                 continue;
             }
             if (c == '/' && i + 1 < s.Length && s[i + 1] == '/') return null;
-            if (IsAngle(s, i, out int outerStep))
-            {
-                outerAngle = Math.Max(0, outerAngle + outerStep);
-                continue;
-            }
-            if (outerAngle > 0 || c is not ('(' or '[' or '{')) continue;
-            if (c == '(' && !attribute && !FollowsName(s, i))
+            if (c is not ('(' or '[' or '{')) continue;
+            if (OpensTypeArguments(s, i) || (c == '(' && !attribute && !FollowsName(s, i)))
             {
                 i = GroupEnd(s, i);
                 continue;
             }
             var commas = new List<int>();
-            int depth = 0, angle = 0, j = i;
+            int depth = 0, j = i;
             for (; j < s.Length; j++)
             {
                 char d = s[j];
@@ -673,18 +660,17 @@ public static class Formatter
                     depth--;
                     if (depth == 0) break;
                 }
-                else if (IsAngle(s, j, out int step)) angle = Math.Max(0, angle + step);
-                else if (d == ',' && depth == 1 && angle == 0) commas.Add(j);
+                else if (d == ',' && depth == 1) commas.Add(j);
             }
             if (j < s.Length && commas.Count > 0) return (i, j, commas);
         }
         return null;
     }
 
-    /// Whether the `(` at i follows a name, as a call's or a routine's argument list does (`f(`, `.to<U8>(`,
+    /// Whether the `(` at i follows a name, as a call's or a routine's argument list does (`f(`, `.to[U8](`,
     /// `` `block`( ``), rather than opening a tuple type.
     private static bool FollowsName(string s, int i) =>
-        i > 0 && (char.IsLetterOrDigit(s[i - 1]) || s[i - 1] is '_' or '>' or '`');
+        i > 0 && (char.IsLetterOrDigit(s[i - 1]) || s[i - 1] is '_' or ']' or '`');
 
     /// The index of the bracket closing the group opened at i, or the line's last index when it doesn't close there.
     private static int GroupEnd(string s, int i)
@@ -902,9 +888,9 @@ public static class Formatter
 
     // ── @T ──────────────────────────────────────────────────────────────
 
-    /// Writes `Ptr<X>` as `@X` outside comments and literals. The record's own name stays where it is declared
-    /// (`record Ptr<T>`), where a routine is declared on or called through it (`Ptr<X>.name`), and when qualified
-    /// (`Standard::Core::Ptr<X>`).
+    /// Writes `Ptr[X]` as `@X` outside comments and literals. The record's own name stays where it is declared
+    /// (`record Ptr[T]`), where a routine is declared on or called through it (`Ptr[X].name`), and when qualified
+    /// (`Standard::Core::Ptr[X]`).
     // ── Grouping parentheses ─────────────────────────────────────────────────
 
     /// Drops the parentheses around a single value where an expression starts (after `(`, `,`, `=`, `<-`, `?`, or a
@@ -997,7 +983,7 @@ public static class Formatter
                 break;
             }
             bool boundaryBefore = i == 0 || !(char.IsLetterOrDigit(line[i - 1]) || line[i - 1] is '_' or '%' or '.' or ':');
-            if (boundaryBefore && string.CompareOrdinal(line, i, "Ptr<", 0, 4) == 0 && MatchingAngle(line, i + 3) is int close
+            if (boundaryBefore && string.CompareOrdinal(line, i, "Ptr[", 0, 4) == 0 && MatchingBracket(line, i + 3) is int close
                 && !(close + 1 < line.Length && line[close + 1] == '.') && !line[..i].TrimEnd().EndsWith("record", StringComparison.Ordinal))
             {
                 sb.Append('@').Append(UseAt(line[(i + 4)..close]));
@@ -1009,14 +995,14 @@ public static class Formatter
         return sb.ToString();
     }
 
-    /// The `>` that closes the `<` at `open`, or null if the line ends first.
-    private static int? MatchingAngle(string s, int open)
+    /// The `]` that closes the `[` at `open`, or null if the line ends first.
+    private static int? MatchingBracket(string s, int open)
     {
         int depth = 0;
         for (int i = open; i < s.Length; i++)
         {
-            if (IsOpenAngle(s, i)) depth++;
-            else if (s[i] == '>' && !(i > 0 && s[i - 1] == '-') && --depth == 0) return i;
+            if (s[i] == '[') depth++;
+            else if (s[i] == ']' && --depth == 0) return i;
         }
         return null;
     }
@@ -1036,12 +1022,12 @@ public static class Formatter
             while (end < result.Count && (result[end].Length == 0 || result[end].StartsWith(' ') || result[end].StartsWith("require ")))
                 end++;
             // `Me` starts where the owner is declared. A concrete owner is declared by the header (`U64.` in
-            // `routine U64.min`); a type parameter by its `require` line (`routine TFrom.bitcast<TTo>(me: TFrom)` with
+            // `routine U64.min`); a type parameter by its `require` line (`routine TFrom.bitcast[TTo](me: TFrom)` with
             // `require T: typename`), so its header keeps T. `require` lines always name their types.
             bool typeParameter = Enumerable.Range(i + 1, end - i - 1).Any(j => result[j].StartsWith("require ")
                 && System.Text.RegularExpressions.Regex.IsMatch(result[j], $@"(^require |,\s*){owner}\s*:"));
             // A routine on Ptr<T> meets its owner spelled `@T`.
-            string? atOwner = owner.StartsWith("Ptr<", StringComparison.Ordinal) ? "@" + owner[4..^1] : null;
+            string? atOwner = owner.StartsWith("Ptr[", StringComparison.Ordinal) ? "@" + owner[4..^1] : null;
             string Replace(string line) => atOwner is null ? ReplaceType(line, owner) : ReplaceType(ReplaceType(line, owner), atOwner);
             if (!typeParameter)
             {
@@ -1070,20 +1056,20 @@ public static class Formatter
         return end;
     }
 
-    /// `U64` in `routine U64.min(...)`, `List<T>` in `routine List<T>.push(...)`.
+    /// `U64` in `routine U64.min(...)`, `List[T]` in `routine List[T].push(...)`.
     private static string? Owner(string header)
     {
         int i = "routine ".Length;
         int j = i;
         while (j < header.Length && (char.IsLetterOrDigit(header[j]) || header[j] == '_')) j++;
         if (j == i || !char.IsUpper(header[i])) return null;
-        if (j < header.Length && header[j] == '<')
+        if (j < header.Length && header[j] == '[')
         {
             int depth = 0;
             for (; j < header.Length; j++)
             {
-                if (header[j] == '<') depth++;
-                else if (header[j] == '>' && --depth == 0)
+                if (header[j] == '[') depth++;
+                else if (header[j] == ']' && --depth == 0)
                 {
                     j++;
                     break;
@@ -1115,7 +1101,7 @@ public static class Formatter
             bool boundaryBefore = i == 0 || !(char.IsLetterOrDigit(line[i - 1]) || line[i - 1] is '_' or '%' or '.');
             int after = i + type.Length;
             if (boundaryBefore && string.CompareOrdinal(line, i, type, 0, type.Length) == 0
-                && (after >= line.Length || !(char.IsLetterOrDigit(line[after]) || line[after] is '_' or '<')))
+                && (after >= line.Length || !(char.IsLetterOrDigit(line[after]) || line[after] is '_' or '[')))
             {
                 sb.Append("Me");
                 i = after - 1;
